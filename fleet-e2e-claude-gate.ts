@@ -197,6 +197,15 @@ if (silentAlive && silentInWindow) {
   const silentTimeouts = sendBootTimeouts(9, silentStarted);
   check("the no-settle send took no readiness-timeout branch (no audit row)",
     silentTimeouts === 0, silentTimeouts < 0 ? "audit trail unreadable" : `${silentTimeouts} rows`);
+  // ACP-25: this stand-in is a claude by NAME only and renders no composer, so the acceptance
+  // read can locate nothing — the receipt must say so ("unobservable") and must not carry the
+  // old request-flag echo. A real claude answers "observed" here (measured by the real-TUI probe,
+  // docs/messungen/acp25-*); a "not-applicable" would mean the claude adapter lost its composer.
+  const silentReceipt = (await silentSend.clone().json().catch(() => null)) as
+    { receipt?: { submitRequested?: unknown; acceptance?: unknown; submitted?: unknown } } | null;
+  check("a claude stand-in that renders no composer answers acceptance:unobservable, never observed or `submitted`",
+    silentReceipt?.receipt?.submitRequested === true && silentReceipt?.receipt?.acceptance === "unobservable"
+    && !("submitted" in (silentReceipt?.receipt ?? {})), JSON.stringify(silentReceipt?.receipt));
   const silentCap = await tmuxOut("capture-pane", "-t", "s9", "-p");
   check("the no-settle send reaches the already-alive silent pane",
     silentCap.out.includes(silentMarker), silentCap.out.slice(-160));

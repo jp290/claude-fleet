@@ -174,6 +174,21 @@ container, codex; `pi-unfenced` ist serverseitig `automatable:false`, `allowsLan
     unabhängig zurück. Bewusst NICHT gebaut: eine Fehlermeldung für Image↔Kontext-Kopplung — Fleet fragt
     `docker` per Stufe-1-Entscheid nichts, kann das also nicht wissen; es meldet dockers eigener Fehler in der
     Pane. Tiefe: `docs/container.md`, Abschnitt „Per slot, not per fleet".
+  - **`composer` — Annahme wird BEOBACHTET, nicht geechot (ACP-25, 2026-08-22).** Ein Adapter darf
+    deklarieren, wo seine TUI den Composer malt (`{kind:"glyph", re}` = letzte Zeile mit diesem Glyph;
+    `{kind:"rules"}` = Region zwischen den letzten zwei Vollbreiten-Linien). `sendText` liest den
+    Frame mit `capture-pane -e` VOR dem Paste (Residuum ohne dim-Placeholder ⇒ Owner-Entwurf ⇒ 409
+    `delivery:"refused"`, nichts getippt) und NACH dem Enter (leer + Agent alive ⇒ `observed`; noch
+    Text ⇒ `SendNotAccepted` → 409 `acceptance:"not-observed"`, kein Replay, kein zweites Enter; kein
+    Composer im Fenster ⇒ `unobservable`). Ohne Deklaration: `not-applicable`. Gemessen an den echten
+    Binaries: claude 2.1.240 (`❯`, Placeholder `\e[2m`), codex-cli 0.147.0 (`›` — das Transcript-Echo
+    nutzt DENSELBEN Glyph, darum „letzte"), pi 0.84.0 (rules). Der Default-Adapter deklariert `❯` nur
+    bei echtem `IS_CLAUDE`; die Stand-ins der Suiten antworten `unobservable`. `FleetEvent` wird erst
+    nach `observed`/`not-applicable` `delivered`; `submitted` in der `/send`-Receipt ist durch
+    `submitRequested` + `acceptance` ersetzt. Reiner Leser: `composer.ts`; Real-TUI-Beweis:
+    `./acceptance-probe.sh` (kein Gate, kostet Modell-Turns). Befund, der nicht gefixt ist: codex
+    zeigt beim Start einen **Update-Prompt** (`✨ Update available … Press enter to continue`), den
+    `readiness.blocks` nicht kennt — ein dritter Paste-fressender Screen.
 
 ## Die Faktschicht `agent`
 

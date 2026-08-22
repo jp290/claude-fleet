@@ -17,6 +17,7 @@ import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { laneHostCommitLooking, laneStalled, laneWatchEventKind, laneWatchMessage, laneWatchPayload, laneWatchSignal,
   type ClarificationEventPayload, type LaneSignalView, type LaneWatchEventPayload } from "../lane-signals";
+import { composerResidue } from "../composer";
 import { FLEET_REPORT_STATUSES, type FleetReportEventPayload, type FleetReportStatus } from "../src/protocol";
 import { AUTOS_TICK_MS, BASE, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut } from "./harness";
 
@@ -189,11 +190,88 @@ export async function run(): Promise<void> {
     serverSource.indexOf("// The one-line receiver text", tickStart));
   const uncertainAt = tickSource.indexOf('event.status = "send-uncertain";');
   const persistedAt = tickSource.indexOf("await saveStateNow();", uncertainAt);
-  const sendAt = tickSource.indexOf("await sendText(s, text, true);", persistedAt);
+  const sendAt = tickSource.indexOf("await sendText(s, text, true)", persistedAt);
   check("watch transport persists send-uncertain before sendText and retries pending only",
     tickSource.includes('if (event.status !== "pending") continue;')
     && uncertainAt >= 0 && persistedAt > uncertainAt && sendAt > persistedAt,
     `${uncertainAt}:${persistedAt}:${sendAt}`);
+
+  // --- ACP-25: ACCEPTANCE IS OBSERVED, NOT ECHOED. `delivered` used to mean "tmux accepted
+  // paste+Enter"; ACP-21 measured the Enter being lost after a collapsed paste (2/7) and the live
+  // 2026-08-22 codex case left a whole event in the composer while the row said delivered. The
+  // transport now reads the composer after Enter (server.ts sendText, composer.ts). The pure
+  // reader is pinned here against the frames MEASURED on the real binaries on 2026-08-22 — byte
+  // shapes from `capture-pane -p -e`, including the dim placeholder that separates "empty" from
+  // "owner draft". The stand-in harness of this suite declares no composer, so the live half
+  // below proves the not-applicable answer and the delivered-only-after-observation rail.
+  {
+    const E = "\x1b";
+    const claude = { kind: "glyph" as const, re: /^❯/ };
+    const codex = { kind: "glyph" as const, re: /^›/ };
+    const pi = { kind: "rules" as const };
+    const rule = "─".repeat(120);
+    const footer = `${rule}\n  ctx [----------] --%  |  Opus 5 (1M context)\n  ⏵⏵ bypass permissions on`;
+    // claude 2.1.240: idle composer with the dim placeholder (fresh pane, --prompt-suggestions false)
+    const claudeIdle = `${rule}\n${E}[39m❯  ${E}[2mTry "fix lint errors"${E}[0m\n${footer}`;
+    check("acceptance reader: claude's dim placeholder reads as an EMPTY composer",
+      composerResidue(claude, claudeIdle) === "", JSON.stringify(composerResidue(claude, claudeIdle)));
+    // the ACP-21 loss signature: the paste collapsed, Enter gone, 15 s later unchanged
+    const claudeLost = `⏺ earlier turn\n${rule}\n${E}[39m❯  [Pasted text #1 +202 lines]\n${footer}`;
+    check("acceptance reader: the ACP-21 loss signature is RESIDUE, not acceptance",
+      composerResidue(claude, claudeLost) === "[Pasted text #1 +202 lines]",
+      JSON.stringify(composerResidue(claude, claudeLost)));
+    // the hint Claude paints while a queued message waits: dim, then a second SGR, then text —
+    // the form that broke a span-based strip (measured on the real-TUI probe, 2026-08-22)
+    const claudeQueued = `${E}[37m${E}[100m❯ ${E}[97mreply OK${E}[39m\n${rule}\n❯  ${E}[2m${E}[39mPress up to edit queued messages${E}[0m\n${footer}`;
+    check("acceptance reader: claude's queued-messages hint (dim, then another SGR) reads as EMPTY",
+      composerResidue(claude, claudeQueued) === "", JSON.stringify(composerResidue(claude, claudeQueued)));
+    // a typed owner draft carries no dim span — that is what makes it distinguishable at all
+    const claudeDraft = `${rule}\n${E}[39m❯  owner draft${E}[7m ${E}[0m\n${footer}`;
+    check("acceptance reader: a typed claude draft is residue (occupied composer)",
+      composerResidue(claude, claudeDraft) === "owner draft", JSON.stringify(composerResidue(claude, claudeDraft)));
+    // codex-cli 0.147.0 after a submitted turn: the transcript ECHO uses the same `›` glyph above,
+    // the composer below shows its dim rotating placeholder. Only the LAST `›` line is the composer.
+    const codexAfter = [`${E}[1;2m› ${E}[0mACP25 probe one-liner, reply with the single word OK.`, "",
+      "• Working (1s • esc to interrupt)", "", `${E}[1m›${E}[0m ${E}[2mSummarize recent commits${E}[0m`, "",
+      "  gpt-5.6-sol high · /tmp/x"].join("\n");
+    check("acceptance reader: codex's transcript echo above a placeholder composer reads EMPTY (last-glyph rule)",
+      composerResidue(codex, codexAfter) === "", JSON.stringify(composerResidue(codex, codexAfter)));
+    const codexHeld = [`${E}[1;2m› ${E}[0mearlier turn`, "", `${E}[1m›${E}[0m lane-ready event text still here`, ""].join("\n");
+    check("acceptance reader: the 2026-08-22 codex symptom (event text in the composer) is residue",
+      composerResidue(codex, codexHeld) === "lane-ready event text still here",
+      JSON.stringify(composerResidue(codex, codexHeld)));
+    // pi 0.84.0: no glyph; the composer is the region between the last two rules
+    const piFrame = (body: string) => [" ACP25 echo", " ⠇ Working...", rule, body, rule, "/tmp/x", "$0.000 (sub)"].join("\n");
+    check("acceptance reader: pi's empty rule-bounded composer reads EMPTY",
+      composerResidue(pi, piFrame("")) === "", JSON.stringify(composerResidue(pi, piFrame(""))));
+    check("acceptance reader: a typed pi draft between the rules is residue",
+      composerResidue(pi, piFrame(`${E}[39mowner draft${E}[7m ${E}[0m`)) === "owner draft",
+      JSON.stringify(composerResidue(pi, piFrame("owner draft"))));
+    check("acceptance reader: a frame without the composer (dialog, stand-in binary) is null, never empty",
+      composerResidue(claude, "Do you trust the files in this folder?\n  1. Yes\n  2. No") === null
+      && composerResidue(pi, "just text\nno rules") === null, "null expected for both");
+    // the live contract on this suite's stand-in harness: not-applicable, never observed or submitted
+    const naOpen = await post("/api/slots/12/open", { cwd: ROOT });
+    check("acceptance live: a slot opens for the receipt-anatomy probe", naOpen.ok, String(naOpen.status));
+    if (naOpen.ok) {
+      const res = await post("/send", { slot: 12, text: "acp25 receipt anatomy probe", submit: true });
+      const body = await res.json() as { ok?: boolean; receipt?: Record<string, unknown> };
+      check("acceptance live: /send on a composer-less harness answers submitRequested:true + acceptance:not-applicable and no `submitted`",
+        res.ok && body.ok === true && body.receipt?.submitRequested === true
+        && body.receipt?.acceptance === "not-applicable" && !("submitted" in (body.receipt ?? {})),
+        JSON.stringify(body).slice(0, 200));
+      await post("/api/slots/12/kill", {});
+    }
+    // the transport rail, pinned at source: `delivered` is written only after the acceptance
+    // read, and an unobservable send keeps the persisted send-uncertain marker.
+    const acceptAt = tickSource.indexOf("({ acceptance } = await sendText(s, text, true))");
+    const unobsAt = tickSource.indexOf('acceptance === "unobservable"', acceptAt);
+    const deliveredAt = tickSource.indexOf('event.status = "delivered";', unobsAt);
+    check("watch transport: FleetEvent turns delivered only after the acceptance read, and unobservable stays send-uncertain",
+      acceptAt >= 0 && sendAt > acceptAt && unobsAt > acceptAt && deliveredAt > unobsAt
+      && tickSource.slice(unobsAt, deliveredAt).includes("continue;"),
+      `${acceptAt}:${unobsAt}:${deliveredAt}`);
+  }
 
   // --- THE HOST-COMMIT SIBLING. The isolated server deliberately runs with foreign-harness
   // automation OFF (a policy family later proves that refusal). The pure selector below isolates

@@ -34,6 +34,7 @@ import {
   type ContextPackMode,
   type ContextPackTrigger,
 } from "./context-packs";
+import { composerResidue, type ComposerForm } from "./composer";
 import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from "./continuity";
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
 import { trailStats, type TrailRecord, type TrailSummary } from "./trailstats";
@@ -343,6 +344,18 @@ interface Harness {
   // before `accept`, and each carries the phrase a refusal reports — the silent eat is the defect,
   // so the reason must never be generic.
   readiness?: { accept: RegExp; blocks: readonly { re: RegExp; why: string }[] };
+  // Where this harness RENDERS its composer, so a delivery can observe acceptance instead of
+  // echoing the request flag (ACP-25). Measured 2026-08-22 on the installed binaries, rendered
+  // frames with `capture-pane -e`: Claude's composer is the LAST `❯` line (its transcript echoes
+  // a user turn as `>`), Codex's is the LAST `›` line (its transcript echo uses the SAME glyph,
+  // which is why "last" is load-bearing), Pi draws no glyph and keeps the composer between the
+  // last two full-width rules. In Claude and Codex the idle placeholder ("Try …", "Summarize
+  // recent commits") is SGR-dim (`\e[2m`) while typed or pasted text is not — the one rendered
+  // fact that separates an owner draft from an empty composer, and the whole reason the frame is
+  // captured with escapes. Optional because it is a measurement: an adapter without rendered
+  // frames to cite declares nothing, and every delivery to it answers "not-applicable" — never
+  // "observed". A common mechanism, no transcript form invented: only the pane is read.
+  composer?: ComposerForm;
   // Who records a lane's produced files in git. true means the harness is intentionally fenced
   // out of its lane's .git and the HOST commits through POST /api/slots/:id/commit; false means no
   // such ownership transfer is declared. Required and explicit: a new adapter must answer this
@@ -453,7 +466,10 @@ const CLAUDE_HARNESS: Harness = {
   // is literally claude. Keep that measured answer when this default adapter really launches
   // claude; an operator-supplied FLEET_CMD is an unknown TUI and inherits the low, explicitly
   // provisional default instead of pretending this number transfers to it.
-  ...(IS_CLAUDE ? { bootSettleMs: 2500 } : {}),
+  // The composer marker rides the same condition: it was measured on the real claude binary, and a
+  // stand-in named claude (the claude-gate suite's fakes) renders no composer — for those the
+  // observation answers "unobservable", which is the truth, and never "observed".
+  ...(IS_CLAUDE ? { bootSettleMs: 2500, composer: { kind: "glyph" as const, re: /^❯/ } } : {}),
   // Claude owns its repository metadata; Fleet has not fenced it out of commits.
   hostCommits: false,
   // the default adapter is automatable unconditionally — it is what every automation on this fleet
@@ -512,6 +528,12 @@ const PI_ZAI_KEY_FILE = (() => {
 // Adapter #2 — Pi (pi.dev, `@earendil-works/pi-coding-agent`). Every flag below is MEASURED, not
 // read off a README; the measurements are briefs/pi-messungen-2026-08-07.md, section letters cited
 // per line. The one flag this file does NOT take from that report is `transcript` — see below.
+// Measured 2026-08-22 on pi 0.84.0 (one binary for all three Pi adapters): the composer draws no
+// glyph and sits between the LAST TWO full-width rules above the cwd/cost footer; an empty
+// composer is an empty line there, typed text is plain (no dim placeholder). The two "pi" rows
+// above the rules are the transcript echo and the spinner, never inside the composer region.
+const PI_COMPOSER = { kind: "rules" } as const;
+
 const PI_HARNESS: Harness = {
   id: "pi",
   // `--session-id` is create-or-attach in ONE flag (measured (a): a second process with the same
@@ -551,6 +573,7 @@ const PI_HARNESS: Harness = {
   // here for exactly that reason: it is absent between requests, and a comm that comes and goes
   // would make the answer flicker.
   comms: ["pi"],
+  composer: PI_COMPOSER,
   // FALSE since 2026-08-12: an unfenced pi owns its own `.git` and records its own work. The
   // /commit route stays available as a recovery act, not as this adapter's lifecycle.
   hostCommits: false,
@@ -626,6 +649,7 @@ const PI_ZAI_HARNESS: Harness = {
   pinsSession: true,
   // The process is Pi itself; depth-one liveness has the same measured basis as PI_HARNESS.
   comms: ["pi"],
+  composer: PI_COMPOSER,
   // Pi has no known input-eating rendered boot screens, so readiness is not applicable and is
   // deliberately absent. No bootSettleMs is claimed because none was measured for this path.
   hostCommits: false,
@@ -950,6 +974,10 @@ const CODEX_HARNESS: Harness = {
       { re: /Sign in with ChatGPT|Welcome to Codex/, why: "codex sign-in screen" },
     ],
   },
+  // Measured 2026-08-22 (codex-cli 0.147.0): composer = last `›` line; the transcript echo of a
+  // submitted turn is `›` too, dim-bold, above it. The live 2026-08-22 symptom (a lane-ready event
+  // left whole in slot 10's composer, reported delivered) is exactly the residue this observes.
+  composer: { kind: "glyph", re: /^›/ },
   // FALSE since 2026-08-12: the bypass profile leaves `.git` writable, so a codex lane records its
   // own work. The /commit route stays available as a recovery act, not as this adapter's lifecycle.
   hostCommits: false,
@@ -2860,7 +2888,7 @@ function noteComposed(slotId: number, text: string): void {
 // the journal say a human typed it, and "auto" would say a tick did. Neither is true, and the
 // attribution is the point of writing the line at all.
 function logPrompt(s: Slot, text: string, source: "owner" | "share" | "auto" | "terminal" | "steward" | "supervisor", ts: number,
-  sendId?: string, delivery?: "sent" | "uncertain"): void {
+  sendId?: string, delivery?: "sent" | "uncertain" | "unobserved"): void {
   if (source !== "terminal") noteComposed(s.id, text);
   // The six original fields keep their names AND their order (readers only ever add optional keys).
   // What is new is unconditional and is the point of the line: the slot NUMBER identifies a row,
@@ -3046,7 +3074,7 @@ type AuditEvent =
   // the doneLooking outbound channel (Watch): Watch rows record signal capture/skip; the typed
   // FleetEvent rows below record transport, acknowledgement and terminal receiver loss separately.
   | "watch_fire" | "watch_skip"
-  | "fleet_event_delivered" | "fleet_event_send_uncertain" | "fleet_event_ack" | "fleet_event_owner_ack"
+  | "fleet_event_delivered" | "fleet_event_send_uncertain" | "fleet_event_held" | "fleet_event_ack" | "fleet_event_owner_ack"
   | "fleet_event_receiver_gone" | "fleet_event_prune"
   | "clarification_open" | "clarification_answered" | "clarification_refused" | "clarification_prune"
   | "clarification_reply_send_uncertain"
@@ -4769,11 +4797,60 @@ const DEFAULT_BOOT_SETTLE_MS = 250;
 // a timeout counterprobe cannot poll for a non-event without owning the window's width.
 const READY_WAIT_MS = Math.max(1000, Number(process.env.FLEET_READY_WAIT_MS ?? 20_000) | 0);
 
-async function sendText(s: Slot, text: string, submit: boolean): Promise<void> {
+// --- ACP-25: acceptance is OBSERVED, never echoed -------------------------------------------------
+// ACP-21 (docs/messungen/acp21-prompt-annahme-2026-08-22.md) reproduced on the real claude TUI that
+// the one Enter after a collapsed multi-line paste is intermittently lost (2/7): the text stays whole
+// in the composer and the receipt still said submitted:true. On 2026-08-22 the same family hit an
+// established Codex pane (event 461e14d65a57722aaa496564, the whole message left in the input).
+// Process-alive, header readiness and lastOutput-idle prove nothing about prompt acceptance; the
+// only rendered fact is whether the composer DRAINED. So sendText reads the pane, before and after:
+//   "observed"        the composer was on screen and empty after Enter — the TUI took the turn.
+//   "not-observed"    the composer is still holding text after the window: THROWN, so every caller
+//                     lands in the uncertain branch it already has. No replay and no second Enter —
+//                     both could mix owner text, start an empty turn, or fire twice.
+//   "unobservable"    no composer line could be located in the window (a dialog, a stand-in binary
+//                     that renders none): typed, not contradicted, and never claimed as observed.
+//   "not-applicable"  the adapter declares no composer, or submit was not requested.
+// Pre-paste the same read refuses an OCCUPIED composer — an owner draft that a paste would append
+// to and Enter would send as one turn. Thrown before anything is typed, so it is plainly retryable.
+type Acceptance = "observed" | "not-observed" | "unobservable" | "not-applicable";
+class SendRefused extends Error { readonly refused = true; }
+class SendNotAccepted extends Error { readonly acceptance = "not-observed" as const; }
+// Env-tunable for the suites only (same reason as READY_WAIT_MS): a stand-in that renders no composer
+// must not pay the full window on every send. Floor 200 ms — below one redraw the answer is noise.
+const ACCEPT_WAIT_MS = Math.max(200, Number(process.env.FLEET_ACCEPT_WAIT_MS ?? 3000) | 0);
+async function readComposer(s: Slot): Promise<string | null> {
+  const form = harnessOf(s.harness).composer;
+  if (!form) return null;
+  const cap = await tmux("capture-pane", "-p", "-e", "-t", sess(s.id));
+  return cap.code === 0 ? composerResidue(form, cap.out) : null;
+}
+// Poll the composer until `until` holds, within the window. Returns the last residue read.
+async function awaitComposer(s: Slot, until: (r: string | null) => boolean): Promise<string | null> {
+  const started = Date.now();
+  let last: string | null = null;
+  for (;;) {
+    last = await readComposer(s);
+    if (until(last)) return last;
+    if (Date.now() - started >= ACCEPT_WAIT_MS) return last;
+    await Bun.sleep(100);
+  }
+}
+
+async function sendText(s: Slot, text: string, submit: boolean): Promise<{ acceptance: Acceptance }> {
   // route through inputChain like raw keystrokes do — otherwise a compose-box send racing
   // concurrent WS keystrokes (mobile key row, live typing, direct terminal typing) can
   // interleave paste-buffer/send-keys with a concurrent send-keys, reordering pty input
   const task = s.inputChain.then(async () => {
+    const observes = !!harnessOf(s.harness).composer;
+    if (observes) {
+      // one frame, before anything is typed: an occupied composer is an owner draft (the dim
+      // placeholder is stripped, so only typed content counts). Refusing here is the only honest
+      // answer — pasting would append to the draft and Enter would send both as one turn. Read
+      // BEFORE the boot block: a draft is a draft whatever the pane's age.
+      const before = await readComposer(s);
+      if (before) throw new SendRefused(`composer occupied (${before.length} chars) — nothing typed`);
+    }
     // Readiness is a process fact, not an output fact: tmux may repaint before the agent emits a
     // byte, and an agent's startup banner may arrive before its TUI accepts input. `openedAt`
     // answers the separate question "could this pane still be booting?" without misclassifying an
@@ -4818,14 +4895,33 @@ async function sendText(s: Slot, text: string, submit: boolean): Promise<void> {
     if ((await p.exited) !== 0) throw new Error("tmux load-buffer failed — session gone?");
     const pb = await tmux("paste-buffer", "-p", "-d", "-b", buf, "-t", sess(s.id));
     if (pb.code !== 0) throw new Error("tmux paste-buffer failed — session gone?");
-    if (submit) {
-      await Bun.sleep(150);
-      const sk = await tmux("send-keys", "-t", sess(s.id), "Enter");
-      if (sk.code !== 0) throw new Error("tmux send-keys failed — text pasted but not submitted");
+    if (!submit) return { acceptance: "not-applicable" as const };
+    await Bun.sleep(150);
+    // Enter only once the paste is RENDERED in the composer (bounded): an Enter that races the
+    // TUI's collapse of a long paste is the measured loss, and an empty composer read before the
+    // paste has painted would otherwise pass as "drained". A composer that never shows the paste
+    // (not located, or a TUI that does not echo) keeps today's single Enter after the 150 ms.
+    if (observes) await awaitComposer(s, (r) => r === null || r.length > 0);
+    const sk = await tmux("send-keys", "-t", sess(s.id), "Enter");
+    if (sk.code !== 0) throw new Error("tmux send-keys failed — text pasted but not submitted");
+    if (!observes) return { acceptance: "not-applicable" as const };
+    const after = await awaitComposer(s, (r) => r === "");
+    if (after === "") {
+      // A dead agent leaves its LAST frame on screen — composer line, rule, footer — with the bare
+      // shell prompt appended below, so the stale composer reads "empty" while the paste went to
+      // the shell. One process probe closes that: an empty composer is acceptance only while the
+      // agent is alive. Empty comms (the stand-in waiver) keeps "unprobed" semantics as everywhere.
+      const comms = commsFor(s);
+      if (comms.length > 0 && await paneAgentAt(sess(s.id), comms) !== "alive")
+        return { acceptance: "unobservable" as const };
+      return { acceptance: "observed" as const };
     }
+    if (after === null) return { acceptance: "unobservable" as const };
+    throw new SendNotAccepted(
+      `prompt not accepted — composer still holds ${after.length} chars after ${ACCEPT_WAIT_MS}ms`);
   });
   s.inputChain = task.catch(() => {});
-  await task;
+  return await task;
 }
 
 // --- scheduled prompts ---
@@ -9157,7 +9253,16 @@ async function tickAuditPing(): Promise<void> {
       if (!s.cwd || s.worktree !== null || s.label === STEWARD_LABEL || s.awaiting === "owner"
         || backlogSessionKey(s) !== session) continue;
       const text = auditPingMessage(row);
-      await sendText(s, text, true);
+      try {
+        await sendText(s, text, true);
+      } catch (e) {
+        // pending stays pending: nothing typed (occupied composer) or not observed accepted. The
+        // next attempt's pre-paste read refuses while the text still sits there, so this is a
+        // retry without a replay.
+        dirty = setAuditPing(auditAt, { status: "pending",
+          lastResult: `held — ${String(e instanceof Error ? e.message : e).slice(0, 100)}` }) || dirty;
+        continue;
+      }
       const sentAt = Date.now();
       setAuditPing(auditAt, { status: "delivered", deliveredAt: sentAt, slot: s.id, session,
         lastResult: `delivered once to slot ${s.id}` });
@@ -9213,7 +9318,12 @@ async function tickBacklogNudge(): Promise<void> {
       if (!s.cwd || s.worktree !== null || s.label === STEWARD_LABEL || s.awaiting === "owner"
         || backlogSessionKey(s) !== session) continue;
       const text = backlogNudgeMessage(open);
-      await sendText(s, text, true);
+      try {
+        await sendText(s, text, true);
+      } catch (e) {
+        logError("backlogNudgeSend", e); // not counted as tried: nothing observed accepted
+        continue;
+      }
       const sentAt = Date.now();
       backlogNudgeTried.set(s.id, {
         session, openKey, lastAt: sentAt, count: count + 1,
@@ -9426,13 +9536,29 @@ async function tickWatches(): Promise<void> {
         : event.kind === "deploy-terminal"
         ? deployWatchMessage(event.subjectDeployId, event)
         : laneWatchMessage(event.subjectSlot, event.subjectBranch, event);
+      let acceptance: Acceptance;
       try {
-        await sendText(s, text, true);
+        ({ acceptance } = await sendText(s, text, true));
       } catch (e) {
-        // tmux may have accepted some or all of the operation before reporting failure. Preserve
-        // the pre-send marker exactly; neither "failed" nor "delivered" is an observed fact.
+        if (e instanceof SendRefused) {
+          // nothing was typed (an occupied composer, i.e. an owner draft): the event is still
+          // pending and will be offered again once the composer is clear — never appended to it.
+          event.status = "pending";
+          audit("fleet_event_held", event.receiverSlot, `${event.id} ${e.message.slice(0, 120)}`);
+          continue;
+        }
+        // tmux may have accepted some or all of the operation before reporting failure, or the
+        // composer is observably still holding the text (ACP-25). Preserve the pre-send marker
+        // exactly; neither "failed" nor "delivered" is an observed fact, and send-uncertain is
+        // never replayed.
         audit("fleet_event_send_uncertain", event.receiverSlot,
           `${event.id} ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
+        continue;
+      }
+      if (acceptance === "unobservable") {
+        // typed, but no composer could be located to confirm the turn — the honest marker is the
+        // one already persisted. Not "delivered": that word now means observed (ACP-25 DONE 4).
+        audit("fleet_event_send_uncertain", event.receiverSlot, `${event.id} acceptance unobservable`);
         continue;
       }
       const deliveredAt = Date.now();
@@ -13913,9 +14039,12 @@ async function supervisorNudge(s: Slot, body: Record<string, unknown> | null): P
     "",
     text,
   ].join("\n");
+  let acceptance: Acceptance;
   try {
-    await sendText(live, delivered, true);
+    ({ acceptance } = await sendText(live, delivered, true));
   } catch (e) {
+    if (e instanceof SendRefused)
+      return json({ error: e.message, receipt: { sendId: nudgeId, at: Date.now(), delivery: "refused", receiver } }, 409);
     // Neither "failed" nor "delivered" is an observed fact once tmux has thrown — the same truth
     // rule the owner send and the clarification transport follow. The journal write is MANDATORY;
     // history deliberately is not, because a history entry reads as "this text is in that pane".
@@ -13927,9 +14056,9 @@ async function supervisorNudge(s: Slot, body: Record<string, unknown> | null): P
   const ts = Date.now();
   live.history = [...live.history, { text: delivered, ts }].slice(-MAX_HISTORY);
   saveHistory(live);
-  logPrompt(live, delivered, "supervisor", ts, nudgeId, "sent");
+  logPrompt(live, delivered, "supervisor", ts, nudgeId, acceptance === "unobservable" ? "unobserved" : "sent");
   audit("supervisor_nudge", receiver.slot, `${nudgeId} program:${program.id}`); // never the text
-  return json({ ok: true, receipt: { sendId: nudgeId, at: ts, submitted: true, receiver } });
+  return json({ ok: true, receipt: { sendId: nudgeId, at: ts, submitRequested: true, acceptance, receiver } });
 }
 
 async function succeedProgramMain(program: Program, s: Slot, label: string | null, carry: string | null,
@@ -19743,11 +19872,17 @@ Bun.serve<WSData>({
       const sendId = randomBytes(12).toString("hex");
       const submit = body.submit !== false;
       const receiver = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
+      let acceptance: Acceptance;
       try {
-        await sendText(s, body.text, submit);
+        ({ acceptance } = await sendText(s, body.text, submit));
       } catch (e) {
-        // tmux may have accepted part of the paste before reporting failure, so neither "failed"
-        // nor "delivered" is an observed fact — the same truth rule the clarification/attention
+        // Nothing typed: an occupied composer (owner draft) refuses before the paste. Plainly
+        // retryable, so it is neither journaled as a send nor presented as uncertain.
+        if (e instanceof SendRefused)
+          return json({ error: e.message, receipt: { sendId, at: Date.now(), delivery: "refused", receiver } }, 409);
+        // tmux may have accepted part of the paste before reporting failure, or the composer was
+        // OBSERVED still holding the text after Enter (ACP-25) — so neither "failed" nor
+        // "delivered" is an observed fact, the same truth rule the clarification/attention
         // transport follows. The journal write here is MANDATORY: an unjournaled uncertain send is
         // the silent loss this receipt exists to remove, and it used to escape as an untyped 500.
         // History deliberately does NOT gain the entry: history feeds the pane-recall UI, where an
@@ -19755,14 +19890,17 @@ Bun.serve<WSData>({
         // landed would present a guess as a fact. No retry and no tick: the owner sees the 409.
         const at = Date.now();
         logPrompt(s, body.text, "owner", at, sendId, "uncertain");
+        const acceptance = e instanceof SendNotAccepted ? e.acceptance : undefined;
         return json({ error: `send outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}`,
-          receipt: { sendId, at, delivery: "uncertain", receiver } }, 409);
+          receipt: { sendId, at, delivery: "uncertain", ...(acceptance ? { acceptance } : {}), receiver } }, 409);
       }
       const ts = Date.now();
       s.history = [...s.history, { text: body.text, ts }].slice(-MAX_HISTORY);
       saveHistory(s);
-      logPrompt(s, body.text, "owner", ts, sendId, "sent");
-      return json({ ok: true, receipt: { sendId, at: ts, submitted: submit, receiver } });
+      logPrompt(s, body.text, "owner", ts, sendId, acceptance === "unobservable" ? "unobserved" : "sent");
+      // RECEIPT ANATOMY (ACP-25): `submitted` is gone because it only ever echoed the request flag.
+      // `submitRequested` is that flag by its real name; `acceptance` is what the pane showed.
+      return json({ ok: true, receipt: { sendId, at: ts, submitRequested: submit, acceptance, receiver } });
     }
     if (req.method === "POST" && url.pathname === "/resize") {
       const body = await readJson(req);

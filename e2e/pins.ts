@@ -1345,6 +1345,61 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   pin("dispatchTask refuses a foreign harness on an UNATTENDED call — the flag and the adapter's claim, both",
     /!ownerAct && !\(HARNESS_AUTOMATION && spawnH\.automatable\)/.test(dBody),
     dBody.match(/spawnH[^\n]*/)?.[0]?.slice(0, 140) ?? "no unattended guard");
+  // ACP-16 · THE SECOND RELEASE DOOR. Three rules over the SOURCE, because none of the three is
+  // visible at runtime: a handler that read `programId` off a request would answer happily on every
+  // request that happens not to carry one; a bare `t.status = "queued"` would record nothing and
+  // look identical to a release; and a harness gate asking a DIFFERENT question than the tick's
+  // would only be wrong on the fleet where the two answers differ.
+  const relStart = server.indexOf("async function releaseTaskForMain(");
+  const relBody = relStart < 0 ? "" : server.slice(relStart, server.indexOf("\n}\n", relStart));
+  pin("releaseTaskForMain's body is bounded and non-empty (an unbounded slice would make the rules below vacuous)",
+    relStart > 0 && relBody.length > 500 && relBody.length < 20_000, `${relBody.length} bytes`);
+  // Both halves of "the caller cannot nominate its own work": the program comes from the binding
+  // and the repo from the caller's checkout, and the handler mentions neither a request nor a body
+  // at all — the strongest form of the /api/self/autos rule, which merely IGNORES a `slot` field.
+  pin("the Program-MAIN release door DERIVES program and repo — no request field can nominate either",
+    relBody.length > 0
+      && /const bound = boundProgramForMain\(s\);/.test(relBody)
+      && /t\.programId !== program\.id/.test(relBody)
+      && /const mainRepo = await repoKeyOf\(s\);/.test(relBody)
+      && /repoCanon\(target\) !== mainRepo/.test(relBody)
+      && !/\bbody\b/.test(relBody) && !/\breq\b/.test(relBody),
+    relBody.length > 0 ? "derivation" : "releaseTaskForMain missing");
+  const relRouteAt = server.indexOf("const selfTaskRelease = ");
+  const relRouteBody = relRouteAt < 0 ? ""
+    : server.slice(relRouteAt, server.indexOf("const selfEventAck", relRouteAt));
+  pin("the release route hands its handler nothing but the token's own slot and the path id",
+    relRouteAt > 0 && relRouteBody.length > 0
+      && /return releaseTaskForMain\(s, selfTaskRelease\[1\]\);/.test(relRouteBody)
+      && !/readJson/.test(relRouteBody),
+    relRouteBody.length > 0 ? "no body read" : "release route missing");
+  // THE TRANSITION HAS ONE WRITER, and the rule is stated in both directions: every release goes
+  // through releaseTask (so `by` cannot be forgotten), and the direct writes of "queued" stay the
+  // helper's own line plus the two documented restores that are deliberately NOT releases — the
+  // requeue after a failed post-spawn gate and the boot reconcile of an orphaned `sent` row.
+  const releaseCalls = [...server.matchAll(/(?<!function )releaseTask\(([^)]*)\)/g)].map((m) => m[1].trim());
+  pin("releaseTask has exactly the two known call sites — the owner's ▸ queue and the Program-MAIN door",
+    releaseCalls.length === 2 && releaseCalls.includes('t, "owner"') && releaseCalls.includes('t, "machine"'),
+    releaseCalls.join(" | ") || "no releaseTask call");
+  const queuedWrites = (server.match(/\bstatus = "queued";/g) ?? []).length;
+  pin("\"queued\" is written by releaseTask plus exactly the two documented non-release restores",
+    queuedWrites === 3
+      && /function releaseTask\(t: Task, by: "owner" \| "machine"\): void \{\n  t\.status = "queued";/.test(server),
+    `${queuedWrites} direct writes of status = "queued"`);
+  // ONE PREDICATE for "may an unattended path drive this harness", asked by the slot-level gate and
+  // by the release door about the adapter the TICK would spawn (DEFAULT_SPAWN, whose emptiness the
+  // pin above locks). Both named conditions must stay inside it: a helper reduced to `return true`
+  // falls here, and on a suite fleet with FLEET_HARNESS_AUTOMATION=0 nothing else would notice.
+  const hafStart = server.indexOf("function harnessAutomatableFor(");
+  const hafBody = hafStart < 0 ? "" : server.slice(hafStart, server.indexOf("\n}\n", hafStart));
+  pin("the unattended-harness question is ONE predicate carrying both conditions — the operator's flag AND the adapter's own claim",
+    hafBody.length > 0
+      && /if \(h === CLAUDE_HARNESS\) return true;/.test(hafBody)
+      && /return HARNESS_AUTOMATION && h\.automatable;/.test(hafBody)
+      && /return harnessAutomatableFor\(harnessOf\(s\.harness\)\);/.test(server)
+      && /const spawnH = harnessOf\(DEFAULT_SPAWN\.harness\);/.test(relBody)
+      && /if \(!harnessAutomatableFor\(spawnH\)\)/.test(relBody),
+    hafBody.length > 0 ? "shared predicate" : "harnessAutomatableFor missing");
   // The bolt above is generic (it names no adapter), which is what makes it cover an adapter added
   // tomorrow. This one is specific and belongs next to it: the CONTAINER adapter's automatable is an
   // owner decision that has NOT been made, so it fails closed — and unlike pi's `true`, nothing at

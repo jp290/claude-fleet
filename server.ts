@@ -2491,6 +2491,18 @@ const DISPATCH_MAX_LANES = Math.max(1, Number(process.env.FLEET_DISPATCH_MAX_LAN
 // The knob is inert until the owner sets it SMALLER than the repo cap. It prevents nothing today.
 const DISPATCH_MAX_LANES_PER_PROGRAM = Math.max(1,
   Number(process.env.FLEET_DISPATCH_MAX_LANES_PER_PROGRAM ?? DISPATCH_MAX_LANES) | 0);
+// ACP-16: how many rows ONE Program-MAIN may hold released-but-not-yet-started through its own
+// door. Unlike STEWARD_MAX_PENDING this IS a per-object cap, so the number that reaches the machine
+// is a PRODUCT and naming it is part of the cap — a per-program cap whose sum is never stated is
+// the mistake the paragraph above spends ten lines on.
+// THE PRODUCT: a release needs a LIVE bound Program-MAIN, i.e. an occupied slot, so at most
+// MAX_SLOTS (16) programs can be releasing at any moment → 16 × 5 = 80 rows. Why that does not
+// blow anything up, stated rather than assumed: released rows are ROWS, not lanes. What bounds
+// unattended EXECUTION is untouched and lane-shaped — DISPATCH_MAX_LANES per repo (live 2),
+// narrowed by DISPATCH_MAX_LANES_PER_PROGRAM — and the tick starts one lane per tick regardless of
+// how deep the queue is. 80 is also below MAX_TASKS (200), so the product cannot outgrow the list
+// it lives in. The cap bounds QUEUE DEPTH, and it is honest about bounding nothing else.
+const PROGRAM_MAX_RELEASED = Math.max(1, Number(process.env.FLEET_PROGRAM_MAX_RELEASED ?? 5) | 0);
 // createWorktree stores the git TOPLEVEL (symlink-resolved: /tmp → /private/tmp) as a lane's
 // repo, so comparing lanes against a raw configured path would silently match nothing — and a
 // cap that matches nothing is no cap. Canonicalize once per repo (cached — realpaths of repo
@@ -2902,6 +2914,12 @@ type AuditEvent =
   | "guest_ws_connect" | "guest_ws_disconnect"
   | "auto_fire" | "auto_skip"
   | "task_dispatch" // the manual start button — an owner act, distinct from the tick's spawns
+  // pending → queued through the Program-MAIN door (releaseTaskForMain). Recorded SEPARATELY from
+  // the row's own `releasedBy`, because that field is overwritable: server.ts stamps it to "owner"
+  // the moment someone later presses ▸ start, since it answers the LANE question ("was the run
+  // attended") and not the RELEASE question ("who released it"). This row is the only carrier of
+  // the second answer that a later attended click cannot erase.
+  | "task_release"
   | "task_kind" // owner changed a task's category; detail records id and both values
   // the owner released a task the queue analyst had flagged. Recorded because the analyst is
   // advisory: without a trace, an override is indistinguishable from an ordinary promote, and
@@ -4769,7 +4787,13 @@ function commsFor(s: Slot): string[] {
 // is the specific one ("this harness is not automatable") rather than the generic not-alive it would
 // otherwise collapse into — being skipped SILENTLY was the expensive half of the original defect.
 function harnessAutomatable(s: Slot): boolean {
-  const h = harnessOf(s.harness);
+  return harnessAutomatableFor(harnessOf(s.harness));
+}
+// The SAME question one level down — about a Harness rather than about a slot's harness. Extracted
+// when a second caller appeared that asks it about an adapter belonging to no slot yet:
+// releaseTaskForMain asks it about the harness the TICK would spawn for the row it is releasing.
+// Two conditions and the default-adapter exemption live here once, so the two gates cannot drift.
+function harnessAutomatableFor(h: Harness): boolean {
   // the default adapter never consults the flag: it is the harness every automation on this fleet
   // already drives, and gating it would turn one env var into a fleet-wide kill switch by accident.
   if (h === CLAUDE_HARNESS) return true;
@@ -5809,6 +5833,94 @@ function boundProgramForMain(s: Slot): BoundMain {
   return { ok: true, program,
     sessionIdMatch: bound.sessionId === null || s.sessionId === null ? "unknown"
       : bound.sessionId === s.sessionId ? "exact" : "divergent" };
+}
+
+// ACP-16 · THE SECOND CONSUMER OF THE BRACKET ABOVE. A bound Program-MAIN releases a pending row
+// of its OWN Program: `pending → queued`, and nothing else.
+//
+// THE ROUTE DOES NOT DISPATCH, and that single fact is what the whole act rests on. Starting stays
+// with the tick, so every gate that decides whether a queued row may actually RUN is untouched and
+// still the tick's: the master stop and quiet hours (canDeliver, called before dispatchTask), the
+// repo cap DISPATCH_MAX_LANES, the per-program lane cap DISPATCH_MAX_LANES_PER_PROGRAM, the
+// analysis gate and the collision read. This widens WHO may release. It widens nothing about what
+// may run unattended, and a row released here waits in exactly the queue the owner's ▸ queue
+// button fills.
+//
+// IT TAKES NO BODY, and that is a property rather than a tidiness: `programId` and `repo` are
+// precisely the two fields a request could use to nominate work outside the caller's authority, so
+// this handler reads neither — the program comes from boundProgramForMain, the repo from the
+// caller's own checkout. /api/self/autos ignores a `slot` field for the same reason; here there is
+// no body to ignore in the first place (pinned in e2e/pins.ts).
+async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
+  // The authority bracket answers first and IN ITS OWN WORDS — "not bound" and "ambiguously bound"
+  // stay two different refusals, because they tell the caller to go fix two different things.
+  const bound = boundProgramForMain(s);
+  if (!bound.ok) return json({ error: bound.error }, 409);
+  const { program, sessionIdMatch } = bound;
+  const t = tasks.find((x) => x.id === id);
+  if (!t) return json({ error: "unknown task" }, 404);
+  // (1) THE PROGRAM COMES FROM THE BINDING. A row of another Program is not this MAIN's to release,
+  // and an unbracketed row (programId null) is nobody's — for those the owner's ▸ queue stays the
+  // only door, which is exactly the state this act was asked not to change.
+  if (t.programId !== program.id)
+    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN releases only rows of program ${program.id}` }, 409);
+  // (3) An advisory row is not work, in the same words the two existing doors use (dispatchTask's
+  // last lock and the ▸ queue button) — one sentence for one question, wherever it is asked.
+  if (t.kind !== "auftrag")
+    return json({ error: `a ${t.kind} is advisory — the dispatcher never runs this` }, 409);
+  // (4) Only pending → queued is a RELEASE. A `queued` row is already released (by whichever door),
+  // a `sent` row is running, and a terminal row is history; naming the status the caller actually
+  // hit is what lets a nervous retry read its own answer instead of a generic refusal.
+  if (t.status !== "pending")
+    return json({ error: `task is ${t.status} — only a pending row can be released` }, 409);
+  // (2) THE REPO COMES FROM THE BINDING'S CHECKOUT. A released row spawns an unattended lane in its
+  // target repo and eats that repo's DISPATCH_MAX_LANES budget, so a MAIN bound in one repository
+  // must not be able to reach into another — the ONE fact this route derives from the machine
+  // rather than from the row, and it is derived from the caller's own cwd, never from a request.
+  // Failing to derive it fails as ITSELF: an underivable repo is refused under its own sentence,
+  // never silently treated as "matches".
+  const mainRepo = await repoKeyOf(s);
+  if (!mainRepo)
+    return json({ error: "this session's checkout is not a git repository — the release target repo cannot be derived" }, 409);
+  const target = t.repo ?? DISPATCH_REPO;
+  if (!target)
+    return json({ error: "no dispatch repo is configured — a released row would have nowhere to run" }, 409);
+  if (repoCanon(target) !== mainRepo)
+    return json({ error: `task targets ${basename(repoCanon(target))} and this MAIN is bound in ${basename(mainRepo)} — a release never reaches across repositories` }, 409);
+  // (7) THE ENTRY GATE: the automation fitness of the harness the row would actually land on. The
+  // tick starts it UNATTENDED, so a release onto a harness no unattended path may drive is a row
+  // that waits forever while looking released. Derived, not guessed and not taken from a request:
+  // tickDispatch calls dispatchTask with no `spawn` (pinned), so DEFAULT_SPAWN IS the tick's entire
+  // spawn decision and harnessOf(DEFAULT_SPAWN.harness) is the adapter it would use.
+  // Today that is the default adapter and this check can therefore never be the one that refuses —
+  // said plainly rather than left to be discovered, exactly like the honest-price note on
+  // DISPATCH_MAX_LANES_PER_PROGRAM. It is the second lock for the case the absence cannot cover: a
+  // tick that one day names a harness, or an adapter added tomorrow, inherits the refusal here
+  // instead of the permission. The two conditions live in harnessAutomatableFor, which is also what
+  // canDeliver's slot-level gate asks — one predicate, so this door cannot drift away from that one.
+  const spawnH = harnessOf(DEFAULT_SPAWN.harness);
+  if (!harnessAutomatableFor(spawnH))
+    return json({ error: `harness ${spawnH.id} is not automatable — no unattended path may drive it (FLEET_HARNESS_AUTOMATION off)` }, 409);
+  // (8) THE CAP, counted per Program over the rows this door has released and the tick has not yet
+  // started. `sent` rows are deliberately NOT counted: those are lanes, and lanes are already
+  // bounded twice over by the two dispatch caps — counting them here would be a third number
+  // pretending to bound the same resource. The product this per-object cap implies is stated at
+  // PROGRAM_MAX_RELEASED, where the number lives.
+  const openReleased = tasks.filter((x) => x.programId === program.id && x.status === "queued").length;
+  if (openReleased >= PROGRAM_MAX_RELEASED)
+    return json({ error: `program release cap reached (${openReleased}/${PROGRAM_MAX_RELEASED} released rows not yet started) — let the tick start one first` }, 409);
+  // (5) THROUGH THE HELPER, never a bare assignment: releaseTask is where `by` cannot be forgotten,
+  // and a machine release that recorded nothing would be indistinguishable from the attended lands
+  // already on the trail.
+  releaseTask(t, "machine");
+  // (6) …and the trail row the helper's field cannot be, for the reason spelled out at the
+  // "task_release" AuditEvent: `releasedBy` is overwritten by a later attended ▸ start.
+  audit("task_release", s.id, `${t.id} program=${program.id}`);
+  await saveStateNow();
+  // sessionIdMatch is REPORTED, never gated — ACP-13's doctrine, and the same shape openAttention
+  // and handleSelfSucceed answer with.
+  return json({ ok: true, sessionIdMatch,
+    task: { id: t.id, kind: t.kind, status: t.status, releasedBy: t.releasedBy, programId: t.programId } });
 }
 
 const attentionBound = (a: AttentionRequest, s: Slot): boolean =>
@@ -16897,6 +17009,20 @@ Bun.serve<WSData>({
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not raise attention — a lane asks its MAIN via clarification" }, 409);
       return openAttention(s, await readJson(req));
+    }
+
+    // ACP-16 · Program-MAIN release. Non-lane only, like its attention neighbour above and for the
+    // same "one edge per role" reason: a lane executes the row it was founded on, it does not fill
+    // the queue its own MAIN releases from. No body is read here or in the handler — the id comes
+    // from the path, the program from the caller's binding, the repo from the caller's checkout.
+    const selfTaskRelease = /^\/api\/self\/tasks\/([a-z0-9]+)\/release$/.exec(url.pathname);
+    if (selfTaskRelease && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not release a queue row — releasing is the bracket above lanes" }, 409);
+      return releaseTaskForMain(s, selfTaskRelease[1]);
     }
 
     const selfEventAck = /^\/api\/self\/events\/([a-z0-9]+)\/ack$/.exec(url.pathname);

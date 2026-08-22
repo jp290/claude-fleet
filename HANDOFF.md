@@ -1,3 +1,137 @@
+# HANDOFF — ACP Architecture Controller VII (Slot 3), 2026-08-22, ctx 21,9 % GEMESSEN
+
+**Die Huelle wird benutzt.** ACP-16 hatte `POST /api/self/tasks/:id/release` gebaut und niemand
+hatte sie je aufgerufen. Diese Session hat die erste echte Benutzung unter Beobachtung gefahren:
+released, dispatch eingeschaltet, den Tick starten sehen, gelandet, gruen auditiert, dispatch
+wieder aus. Der Weg Program-MAIN -> Queue -> Tick -> Lane -> Land ist damit EINMAL vollstaendig
+belegt statt behauptet.
+
+## 0. Die exakte naechste Handlung
+
+**Den gemessenen Prompt-Annahmefehler als schmalen Diagnose-/Canary-Act schneiden**
+(Owner-Entscheid 2026-08-22, woertlich): eine Zustellung meldet `submitted:true`, aber es
+entsteht KEIN Transcript und KEINE Modellhandlung, bis ein separates Enter nachkommt.
+
+**Ehrlichkeitsvermerk, damit die Nachfolgerin nicht auf einer geliehenen Messung baut: ICH HABE
+DIESEN FEHLER NICHT SELBST GEMESSEN.** Er kommt aus der Owner-Vorgabe. In DIESER Session ist er
+NICHT aufgetreten — der ACP-20-Dispatch hat den Brief vollstaendig zugestellt und die Lane hat
+sofort gearbeitet (Pane um 11:52 gelesen). Das widerlegt ihn nicht, es datiert nur meine
+Nicht-Beobachtung: ein Fehler, der nicht jedes Mal feuert, ist genau der, den ein einzelner
+gruener Lauf nicht ausschliesst. Erste Pflicht des Acts ist deshalb die REPRODUKTION mit einem
+eigenen `check()` auf die Vorbedingung — eine Sonde, die nicht messen konnte, muss als SIE SELBST
+scheitern, nie als das, was sie messen sollte.
+
+Ausdruecklich NICHT jetzt: keine breite Kontext-/Nachfolge-Arbeit, und keine Owner-Sichtung fuer
+Routinedetails. Schmal schneiden.
+
+## 1. Was terminal ist — alles gemessen, nichts geschaetzt
+
+| Act | Land | Land-Gate | Post-Land-Audit | Deploy |
+|---|---|---|---|---|
+| ACP-20 | `b4cb2e4` -> **`1552690`** | ok, exit 0, 116 586 ms, wait 0 | **green** 1 303 529 ms, **2810/0** | nicht geschuldet |
+
+**Der Deploy fehlt nicht, er ist nicht faellig:** der Land beruehrte `docs/self-api.md`,
+`docs/queue-analyst.md` und `e2e/pins.ts` — kein `server.ts`, keine Client-Quelle. Live gemessen
+nach dem Audit: `codeBehind false`, `bundleStale false`. Der Server laeuft weiter auf `83468e0`,
+und das ist RICHTIG, nicht rueckstaendig.
+
+**Die 2810 sind absichtlich unveraendert gegenueber ACP-16 — das ist kein „nichts gemessen".**
+ACP-20 fuegte eine Regel in `e2e/pins.ts` hinzu, und `fleet-e2e.ts` importiert `./e2e/dirs-pins`,
+NICHT `./e2e/pins`. Die Datei ist Stufe 1 der Land-Gate-Kette und kein Modul von
+`./e2e-isolated.sh`; die Audit-Zahl DARF sich davon nicht bewegen. Nachgeprueft, nicht angenommen.
+Das `ms` (1,30 Mio) liegt im Band echter Laeufe.
+
+## 2. Was ACP-20 wirklich geaendert hat (`1552690`, drei Dateien)
+
+- **`docs/self-api.md` §release** — die Referenz, die es seit `83468e0` nicht gab, obwohl das
+  Regelbuch Lanes an diese Datei schickt. Die Lane hat **zehn** Ablehnungen dokumentiert; mein
+  Brief hatte acht verlangt. Die zwei zusaetzlichen sind `unknown task` (404) und die
+  Lane-409 an der Route selbst.
+- **`docs/queue-analyst.md` KORRIGIERT** (nicht ergaenzt): die Aussage „zwei Maschinen-Pfade
+  schreiben `status=queued`" war seit `83468e0` falsch, es sind drei. Dazu die zwei neuen
+  Env-Knoepfe mit Datei:Zeile.
+- **`e2e/pins.ts` — `RULE_ANCHORS`**: jeder von CLAUDE.md zitierte Abschnittsanker der Form
+  `pfad §anker` muss in dieser Datei auf eine Ueberschrift aufloesen. `RULE_PATHS` (`:2158`)
+  prueft ausschliesslich die EXISTENZ der Datei — genau diese Luecke hatte den fehlenden
+  §release-Abschnitt monatelang unsichtbar gemacht, bei durchgehend gruenen Checks.
+
+## 3. Was ich am Bericht der Lane SELBST nachgeprueft habe (nicht geglaubt)
+
+1. **Die Gegenprobe des Pins habe ich eigenhaendig wiederholt.** `## watch` ->
+   `## abonnieren` umbenannt: `FAIL … CLAUDE.md:335 docs/self-api.md §watch`, danach
+   `git checkout --` (sicher, weil der Baum committet und sauber war), Baum clean, `ALL PASS`.
+2. **Die neue Aussage in `docs/queue-analyst.md`, dass NUR die Release-Tuer `releasedBy` stempelt**,
+   habe ich am Code geprueft: `releaseTask` (`server.ts:2306`) setzt beide Felder, die zwei
+   Requeue-Stellen (`:6517`, `:14660`) setzen `status` nackt und fassen `releasedBy` nie an.
+   Die Unterscheidung stand nicht in meinem Brief; sie ist richtig.
+3. **Worktree-Isolation:** die Lane hat `rulebook/` im HAUPT-Checkout GELESEN (mein Brief sagte
+   ihr, das Verzeichnis existiere in ihrem Baum nicht). Lesen ist zulaessig. Geschrieben hat sie
+   dort nichts — nachgeprueft: keine modifizierte getrackte Datei im Haupt-Checkout, und
+   `docs/self-api.md`/`docs/queue-analyst.md` trugen dort weiter mtime 2026-08-18.
+4. **Write-Set exakt gehalten**, keine untracked Dateien, kein `server.ts`.
+
+## 4. Offene Raender, die ich WEITERTRAGE
+
+1. **DIE REGELBUCH-ZEILE IST NUR HOSTLOKAL UND STEHT IN KEINEM DIFF.** `rulebook/` UND
+   `CLAUDE.md` sind beide gitignored (`.gitignore:36`, `:40`). Ich habe
+   `rulebook/self-scheduling.md` um den `§release`-Absatz erweitert und neu gerendert
+   (`CLAUDE.md` 68 673 B, `RULE_RENDER` byte-for-byte gruen, `RULE_ANCHORS` 35 Anker gruen).
+   **Ein `git status` zeigt davon NICHTS.** Wer diese Maschine verliert oder das Repo woanders
+   auscheckt, hat den Absatz nicht. Das ist der Grund, warum er hier steht.
+2. **`autoReview: summarizer timed out without an answer`, ZWEIMAL** in
+   `/api/sessions.errors` (zuletzt 12:03:39, waehrend des Lands). auto-③ feuert auf die
+   done-looking Lane und sein Summarizer antwortet nicht. Nicht diagnostiziert, nicht mein
+   Land-Defekt — aber zweimal in EINER Server-Laufzeit ist eine Notiz wert.
+3. **`d9b9b4c4` ist GEPARKT, nicht erledigt** (Owner-Entscheid 2026-08-22). Ich hatte sie
+   unqueued, damit die Beobachtung eine Variable hatte; der Owner hat entschieden, sie NICHT
+   wieder freizugeben: ihr eigener Text ist eine RICHTUNG mit offenen Schnittfragen und damit
+   kein geeigneter unattended Act. Nicht aus Versehen liegengeblieben.
+4. **`RULE_ANCHORS` deckt nur `pfad §anker` nebeneinander.** Freistehende Anker, deren Pfad
+   weiter vorn im Absatz steht (`CLAUDE.md:137-143`: `§5b`, `§11.2b`, `§11.2c-bis`), bleiben
+   ungeprueft. Von der Lane gemeldet statt gebaut — richtig so, das waere eine andere Sonde.
+5. **`notiz 5ddc8877` (ACP-19)** — Modell/Effort eines LEBENDEN Slots bleiben unreparierbar,
+   unveraendert offen. Slot 1 traegt weiter `model: "fable"`, `effort: null` im Datensatz.
+6. **Der Boot-Reconcile-Defekt `94ab77dd`** und **`~/.codex/config.toml` waechst unbegrenzt**
+   (`notiz 1270b246`) — beide unveraendert, beide in dieser Session folgenlos.
+7. **Die 9 stale Program-Bindungen** unveraendert; wer neu gebunden wird, ist Owner-Sache.
+8. **`dispatch` steht wieder auf `false`**, 0 queued. Der Schalter ist jetzt nicht mehr
+   ungetestet — er wurde einmal kontrolliert benutzt und wieder geschlossen.
+
+## 5. Was ich falsch gemacht habe
+
+- **Ich habe `programId` aus `GET /api/sessions` gelesen und daraus geschlossen, der Lane-Slot
+  sei nicht gestempelt.** Der Poll projiziert das Feld gar nicht; der persistierte Datensatz war
+  die ganze Zeit korrekt (`programId`, `taskId`, `releasedBy` am Slot). Exakt die Klasse, vor der
+  das Regelbuch beim Cast auf eine Netz-Antwort warnt — ich habe sie trotzdem einmal gefahren.
+  **Fuer die Nachfolgerin: fuer Slot-Felder ist `fleet.json` die Quelle, nicht der Owner-Poll.**
+- **Ich habe den Body von `/api/self/watch` geraten** (`{"slot":2}` statt `{"target":2}`) und
+  `bad target` kassiert, obwohl `docs/self-api.md` §watch die Form woertlich fuehrt. Kleine
+  Ironie mit Lehrwert: das ist genau der Schaden, den ACP-20 fuer die Release-Route behoben hat —
+  eine Route ohne Referenzabschnitt wird geraten.
+- **Kein Rendern waehrend eines laufenden Gates — diesmal eingehalten.** Ich habe die
+  Regelbuch-Zeile bewusst BIS NACH dem Post-Land-Audit zurueckgehalten, weil beide Seiten
+  (Fragment ODER `CLAUDE.md`) den byte-for-byte-Pin mitten im Lauf rot gemacht haetten. Der
+  Vorgaenger hat genau das zweimal an einem Tag getroffen.
+
+## 6. Maschinenzustand bei der Uebergabe
+
+- Server laeuft auf **`83468e0`**; main steht auf **`1552690`**. Die Differenz ist doc-/pin-only,
+  `codeBehind false` — **kein Deploy offen.**
+- **DIESER Handoff ist ein DIREKT-Commit aus dem Haupt-Checkout**: keine `fleet/land`-Note, keine
+  `lane-outcomes`-Zeile, kein Post-Land-Audit. `./state.sh`s Land-Health-Zahlen zaehlen nur Lanes
+  und untertreiben an einem Tag mit Direkt-Commits.
+- **`rulebook/` wurde in dieser Session an EINEM Fragment geaendert und ist gitignored** —
+  `rulebook/self-scheduling.md`, siehe §4.1. Gerendert, `bun e2e/pins.ts` ALL PASS.
+- Queue-Bewegungen dieser Session: `8d55fc10` (ACP-20) neu und `done` · `e952c2b2` (HARNESS-01)
+  auf `done` geschlossen, weil von ACP-12 belegt geliefert (`server.ts:475-476`) ·
+  `ad2ee96a` (CTX-01) mit einem Kommentar versehen, dass ACP-11 ihre gemessene Praemisse
+  ueberholt hat (codex traegt heute einen echten ctx-Reader; Slot 10 misst live) ·
+  `d9b9b4c4` unqueued und geparkt (§4.3).
+- Lanes auf Platte: nur `fleet-260821211509-0be7` (Slot 8, 2 Commits ahead, sauber, kein
+  `programId` — eine FREMDE auftragsmarkt-Doku-Lane, nicht meine und nicht ACP).
+- Program `eeba7c04caae64d79969199b` ist occupant-genau an Slot 3 gebunden; freie Slots: 2, 11, 15.
+- `dispatch: false`, 0 queued, 0 sent, keine Suite laeuft.
+
 # HANDOFF — ACP Architecture Controller VI (Slot 2), 2026-08-22, ctx 24,1 % GEMESSEN
 
 **Welle 2 ist VOLLSTAENDIG gefahren.** ACP-15 und ACP-16 sind gebrieft, gebaut, gelandet und

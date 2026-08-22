@@ -1,37 +1,58 @@
-# HANDOFF — ACP Architecture Controller IX (Slot 3), 2026-08-22, ctx 22,4 % GEMESSEN
+# HANDOFF — ACP Architecture Controller IX (Slot 3), 2026-08-22, ctx 24,8 % GEMESSEN
 
-**Der Rollenvertrag steht.** `8bc77d8` hat ihn seit einem Tag verlangt, ACP-22 hat ihn gebaut,
-gelandet (`9bd9071`) und gruen auditiert (2810/0, ms 1 421 893, covers genau diesen Land). Dazu
-zwei Auftraege des Owners mitten in der Session, beide zu Ende: die 15 untracked Dateien sind
-aufgeloest (`b425807`) und das Private-repo-e-Program ist sauber terminalisiert. Nichts liegt halb.
+**Der Rollenvertrag steht, und ACP-23 IST IN FLUG — du erbst eine laufende Lane, keinen Plan.**
+ACP-22 gelandet (`9bd9071`) und gruen auditiert (2810/0, ms 1 421 893). Danach hat der Owner
+ACP-23 PROMOTET, und ich habe es gebrieft und gestartet. **Monitoring, Review und Land gehoeren
+ausdruecklich DIR** (Owner-Anweisung 2026-08-22, woertlich: "the successor owns
+monitoring/review/land").
 
 ## 0. Die exakte naechste Handlung
 
-**`POST /api/self/tasks` briefen — die MAIN darf ihre eigene Zeile ANLEGEN, nicht nur freigeben.**
-Der Vorschlag liegt beim Owner und ist NICHT promotet; ohne sein Go wird nichts gebaut.
+**Den Rueckweg auf Slot 2 NEU ARMEN — als ERSTES, bevor du irgendetwas anderes tust.**
+Ich hatte Watch `865d1fd3` auf Slot 2 armed; **Watches sind slot-gebunden und sterben mit meiner
+Nachfolge.** Ohne diesen einen Aufruf wartest du auf ein Signal, das nie kommt — es gibt keinen
+eingehenden Kanal, niemand ruft an:
 
-Er hat jetzt zwei unabhaengige Belege, und genau das ist die Wiederholung, die §18 der
-Owner-Korrektur vor einer Regel verlangt:
-- **ACP-22 (diese Session, von innen):** §17 gibt der Project MAIN das Recht, eigene begrenzte
-  Tasks „anlegen UND starten"; der Code kann nur `release` einer BESTEHENDEN Zeile
-  (`server.ts:17018`). Einen `POST /api/self/tasks`-Handler gibt es nicht.
-- **Slot 5 / Private-repo-e-Pilot (fremdes Program, von aussen):** dieselbe Klasse, dreimal — fehlende
-  Basis-URL, fehlender Dispatch-Weg, fehlender Schreibweg zum Abschluss
-  (`POST /api/self/fleet-report` antwortet einer MAIN 409 „not a worker lane").
-  Woertlich in `/Users/owner/private-repo-e`, `docs/efficiency-pilot-result.md`.
+```
+curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"target":2}' http://100.64.0.1:8790/api/self/watch
+```
 
-**Ich habe die Luecke in dieser Session SELBST bezahlt:** die ACP-22-Zeile `0ea14929` musste ich
-mit dem OWNER-Token ueber `POST /api/tasks` anlegen. Eine gebundene MAIN benutzt heute das
-Credential des Owners fuer das, was ihre eigene Ebene koennen soll.
+**Danach: NICHT auf die Watch-Nachricht landen.** Sie ist ein SERVER-PRAEDIKAT (idle + clean +
+ahead>0), kein Bericht der Lane — vier Zustaende sehen darin gleich aus. Pane lesen, den Diff
+lesen, die Behauptungen der Lane SELBST am Code nachschlagen, dann erst mergen.
 
-Der Schnitt, wenn er freigegeben wird: Route + `Task.source`, `programId` AUS DER BINDUNG (eine
-Koerperangabe ist 400), nur `pending`, Deckel, Audit-Wort, plus die Ambiguitaets-409 aus
-`handleSelfSucceed`. **Zwei Dinge, die die Analysen vom 2026-08-21 schon geklaert haben und die du
-nicht neu herleiten musst:** (a) die Karten-Zeile MUSS ein EIGENER spaeterer Schnitt sein, sonst
-faellt er an `src/protocol.ts:275` (`stateEffect` ist der Literaltyp `"none"`) — belegt in
-`docs/kritik-opus-2026-08-21.md` Befund 3. (b) Default `notiz` oder `auftrag` ist ein OFFENER
-OWNER-ENTSCHEID, die zwei Praezedenzfaelle zeigen gegeneinander (`docs/synthese-
-rollenarchitektur-2026-08-21.md` §4).
+**Und die Reihenfolge, die meine Vorgaengerin falsch hatte: `POST /api/slots/2/merge` ZUERST,
+`land` ist der TEARDOWN danach.**
+
+### Was ACP-23 ist und wo seine Fallen liegen
+
+Lane **Slot 2**, Branch `fleet/260822122337-67b3`, Queue-Zeile **`d91153f9`**, Opus 5, effort high.
+Der volle Brief steht in der Zeile; hier nur, was du zum PRUEFEN brauchst.
+
+Gebaut wird `POST /api/self/tasks`: eine gebundene Program-MAIN legt ihre EIGENE `pending`-Zeile
+an. Owner-Grenzen woertlich: Default `notiz`, `auftrag` explizit erlaubt (nur im eigenen
+occupant-gebundenen Program), Anlegen IMMER `pending`, **Release bleibt der separate Akt** ueber
+die bestehende Route/den Tick. Write-Set exklusiv: `server.ts`, `e2e/tasks.ts`, `e2e/pins.ts`.
+
+**Die drei Dinge, an denen du den Schnitt pruefst:**
+1. **`server.ts:14210`** — die Reload-Allowlist `["owner","intake","steward"]` fuer `Task.source`.
+   Fehlt `"main"` dort, **verschwindet jede so angelegte Zeile beim naechsten Server-Boot
+   lautlos**, bei durchgehend gruenen Checks. Der Brief verlangt eine eigene Sonde dafuer
+   (anlegen -> State-Reload -> Zeile noch da). Ohne diese Sonde ist der Schnitt nicht fertig.
+2. **`server.ts:1690`** — die `source`-Union braucht `"main"`; `loadTaskKind` (`:1673`) NIMMT
+   `source` entgegen, sein Verhalten fuer den neuen Wert muss ENTSCHIEDEN sein, nicht geraten.
+3. **Die Non-Goals sind einzeln vom Owner benannt und keine Geschmacksfrage:** keine Zeile in der
+   Capability-Karte (faellt an `src/protocol.ts:275`, `stateEffect` ist Literaltyp `"none"` —
+   `docs/kritik-opus-2026-08-21.md` Befund 3), kein Supervisor-Fix, keine Loader-/Host-Naht, keine
+   Studio-Arbeit, kein Anfassen von `releaseTaskForMain`/Tick/`dispatchTask`.
+
+**Verify dieser Lane ist die VOLLE Kette plus `./e2e-isolated.sh`** (sie fasst `e2e/` an) — nicht
+die Prosa-Abkuerzung, die fuer ACP-22 richtig war.
+
+**Zwei offene Entscheidungen, die die Lane BEGRUENDEN soll und die du im Bericht suchst:** wie sie
+`richtung`/`betrieb` behandelt (die Promotion nennt sie nicht) und ob `repo` `null` bleibt oder
+aus dem Checkout abgeleitet wird.
 
 ## 1. Was terminal ist — alles gemessen, nichts geschaetzt
 
@@ -121,7 +142,10 @@ Text vorher sichern. Und die Zustellung habe ich an der PANE geprueft, nicht an
 - **Zehn freie Slots** (2, 4, 5, 7, 9, 11–15) — die GLM-/Fable-Architektursessions sind in dieser
   Session zu Ende gegangen; das Board ist so leer wie lange nicht.
 - Program `eeba7c04caae64d79969199b` ist occupant-genau an Slot 3 gebunden; die Nachfolge erbt es.
-- Queue-Bewegungen dieser Session: `0ea14929` (ACP-22) neu, dispatcht, `done (landed)`.
+- Queue-Bewegungen dieser Session: `0ea14929` (ACP-22) neu, dispatcht, `done (landed)` ·
+  **`d91153f9` (ACP-23) neu, dispatcht, LAEUFT auf Slot 2** — nicht terminal, deiner.
+- **Slot 2 ist belegt** (ACP-23). Preflight `6bd25dc3610f1ed32bf7e9a8` gehoert zu DIESEM
+  Handoff-Commit, nicht zu ACP-23 — er ist mit meiner Nachfolge erledigt.
 - Provenienz beider Lands ist sichtbar: ACP-22 ueber eine Lane (Land-Note, `lane-outcomes`,
   Post-Land-Audit), die Untracked-Aufloesung ueber `main-direct/preflight` + `/finalize`
   (preflight `dc1719b0ed6faa14966a8af7`, Outcome `landed`, `f51bdb9 -> b425807`).

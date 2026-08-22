@@ -2480,11 +2480,12 @@ const DISPATCH_REPO = process.env.FLEET_DISPATCH_REPO ?? "";
 const DISPATCH_MAX_LANES = Math.max(1, Number(process.env.FLEET_DISPATCH_MAX_LANES ?? 3) | 0);
 // A SECOND cap, per Program, and it can only ever NARROW: the repo cap above is checked first and
 // unconditionally, this one after it. It does NOT replace it (owner decision 2026-08-22). Replacing
-// it was the tempting shape and it is the wrong one — 16 slots exist, 13 programs are active, and
-// FLEET_DISPATCH_MAX_LANES stands at 2 live: a per-program cap standing ALONE would permit 13×2 = 26
-// concurrent lanes on 16 slots, i.e. a cap that no longer binds machine load at all. That is the
-// same multiplication docs/kritik-opus-2026-08-21.md:305-318 (finding 9) measured on a per-program
-// TASK cap.
+// it was the tempting shape and the arithmetic is the whole reason it is wrong: a per-program budget
+// MULTIPLIES by the number of programs, while the slot board does not grow — 13 programs were active
+// when this was written, against 16 fixed slots (MAX_SLOTS, :63) and a repo cap of 2
+// (watchdog.sh, FLEET_DISPATCH_MAX_LANES), so a per-program cap standing ALONE would have permitted
+// 13×2 = 26 concurrent lanes on 16 slots, i.e. a number that has stopped binding machine load. Only
+// a cap that is ALSO checked globally keeps that product off the machine.
 // The honest price of the default: it is DISPATCH_MAX_LANES, so out of the box this check can never
 // be the one that holds anything — the repo cap runs first and refuses at the same number or lower.
 // The knob is inert until the owner sets it SMALLER than the repo cap. It prevents nothing today.

@@ -9324,7 +9324,19 @@ async function doSend() {
     const res = await post("/send", { slot, text, submit: true });
     // 409 is the one failure that is not a failure: the paste may have landed in part or in whole,
     // so the red flash alone would read as "nothing went out" and invite a duplicate send.
-    if (res.status === 409) toast("send outcome uncertain — check the pane before retrying");
+    if (res.status === 409) {
+      // three 409 shapes since ACP-25, told apart by receipt.delivery: "refused" typed NOTHING (an
+      // owner draft occupies the composer — clear or send it first), "uncertain" with
+      // acceptance:"not-observed" means the text is OBSERVABLY still in the composer (the pane
+      // needs an Enter from the owner, not a second paste), plain "uncertain" is the tmux case.
+      const body = (await res.clone().json().catch(() => null)) as
+        { receipt?: { delivery?: string; acceptance?: string } } | null;
+      const d = body?.receipt?.delivery;
+      toast(d === "refused" ? "send refused — the composer already holds a draft; nothing was typed"
+        : body?.receipt?.acceptance === "not-observed"
+          ? "prompt not accepted — the text is still in the composer; press Enter in the pane, do not resend"
+          : "send outcome uncertain — check the pane before retrying");
+    }
     if (!res.ok) throw new Error(`send failed: ${res.status}`);
     // the ✨ draft's verdict, decided by what actually went out (see pendingEnhance). Written only
     // after the send SUCCEEDED — a failed send leaves the text in the box and nothing labeled.

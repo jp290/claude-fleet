@@ -137,10 +137,12 @@ Three properties earn the Inspektion its keep, each written against a measured f
   the first live pulse had invented round-minute times, and a register whose timestamps
   are fiction cannot be audited against the audit trail, which is its whole job.
 
-Both pulses send into the steward's own pane, which is where the owner briefs it. The known
-hazard is unchanged: `sendText` is paste-buffer + Enter with no clearing of the input line,
-so text the owner typed but did not submit is prepended to the pulse and both are submitted
-as one prompt. Nothing guards this today.
+Both pulses send into the steward's own pane, which is where the owner briefs it. The old
+hazard — `sendText` pasted onto whatever the owner had typed but not submitted, and Enter sent
+both as one prompt — is closed since ACP-25 (2026-08-22) for every harness that declares a
+`composer`: an occupied composer refuses the send before anything is typed (`SendRefused`, 409
+`delivery:"refused"`), and a pulse counts as delivered only once the composer is observed empty.
+`docs/harness-adapter.md` §composer.
 
 **Track record so far, so this section stays honest:** two Inspektion pulses have run. The
 first filed a verified latent auth gap and, in the same run, an orphaned measurement

@@ -893,7 +893,8 @@ export async function run(): Promise<void> {
       }
       return readSlot(id);
     };
-    type Receipt = { sendId?: unknown; at?: unknown; submitted?: unknown; delivery?: unknown;
+    type Receipt = { sendId?: unknown; at?: unknown; submitRequested?: unknown; acceptance?: unknown;
+      submitted?: unknown; delivery?: unknown;
       receiver?: { slot?: unknown; openedAt?: unknown; sessionId?: unknown } };
     const journalFor = async (sendId: string): Promise<PromptLogEntry | undefined> => {
       // the journal write is async through promptLogChain, so poll for the line — asserting
@@ -924,9 +925,13 @@ export async function run(): Promise<void> {
       const okRes = await post("/send", { slot: 3, text: "receipt-probe-one", submit: false });
       const okBody = (await okRes.json()) as { ok?: unknown; receipt?: Receipt };
       const r1 = okBody.receipt;
-      check("/send answers with a typed receipt carrying a 24-hex sendId and what it submitted",
+      // ACP-25: `submitted` is gone — it only ever echoed the request flag. The receipt now names
+      // the flag (submitRequested) and what the pane SHOWED (acceptance); a stand-in harness that
+      // declares no composer answers not-applicable, never observed.
+      check("/send answers with a typed receipt carrying a 24-hex sendId, the submit REQUEST and the observed acceptance",
         okRes.ok && okBody.ok === true && typeof r1?.sendId === "string"
-        && /^[0-9a-f]{24}$/.test(String(r1.sendId)) && r1.submitted === false
+        && /^[0-9a-f]{24}$/.test(String(r1.sendId)) && r1.submitRequested === false
+        && r1.acceptance === "not-applicable" && !("submitted" in (r1 ?? {}))
         && typeof r1.at === "number" && (r1.at as number) > 0,
         JSON.stringify(okBody).slice(0, 200));
       check("the receipt names the CURRENT occupant, not just the slot row",

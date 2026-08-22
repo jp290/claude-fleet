@@ -1004,7 +1004,9 @@ Send-Identität, und ein partieller Send war ein untypisierter 500 ohne Spur.
   Text wirklich bekam), plus optional `sendId`/`delivery` (absent statt null). Alle sieben
   Journal-Leser vorab geprüft: additiv tolerant, keiner musste angefasst werden.
 - **`/send`:** `sendId` (24 hex) VOR dem Transport gemintet, damit Receipt und Journalzeile in
-  beiden Ausgängen joinbar sind. Erfolg → `{ok, receipt:{sendId, at, submitted, receiver}}` +
+  beiden Ausgängen joinbar sind. Erfolg → `{ok, receipt:{sendId, at, submitted, receiver}}` (seit
+  ACP-25, 2026-08-22: `submitRequested` + `acceptance` statt `submitted` — das Feld echote nur das
+  Request-Flag; `docs/harness-adapter.md` §composer) +
   Journal `delivery:"sent"`. Wurf → Journal `delivery:"uncertain"` PFLICHT im catch + typisierter
   409 mit uncertain-Receipt; kein Retry, kein Tick; History bekommt den Eintrag NICHT (Recall darf
   eine Vermutung nicht als Fakt abspielen). Cut-1-`awaiting`-Klausel byte-identisch erhalten.

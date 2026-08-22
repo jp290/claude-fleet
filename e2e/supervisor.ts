@@ -602,11 +602,12 @@ export async function run(): Promise<void> {
   const nudgeRes = await selfPost("/api/self/nudge", svToken,
     { programId: activeId, text: nudgeText, slot: decoySlot });
   const nudge = await nudgeRes.json() as { ok?: boolean;
-    receipt?: { sendId: string; at: number; submitted: boolean;
+    receipt?: { sendId: string; at: number; submitRequested: boolean; acceptance: string;
       receiver: { slot: number; openedAt: number; sessionId: string | null } } };
   check("supervisor nudge: the happy path answers the owner-send receipt anatomy exactly",
     nudgeRes.ok && nudge.ok === true && /^[0-9a-f]{24}$/.test(nudge.receipt?.sendId ?? "")
-      && nudge.receipt?.submitted === true && typeof nudge.receipt.at === "number"
+      && nudge.receipt?.submitRequested === true && nudge.receipt.acceptance === "not-applicable"
+      && typeof nudge.receipt.at === "number"
       && nudge.receipt.receiver.openedAt === receiverOccupant.openedAt,
     `${nudgeRes.status} ${JSON.stringify(nudge)}`);
   // The body carried `slot` and it changed NOTHING: the receiver is the binding's occupant.

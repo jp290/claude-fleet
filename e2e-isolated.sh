@@ -31,7 +31,8 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 #   e2e-postland-audit.sh  15000 – 16999
 #   drills/drill-3.sh      17400 – 19399
 #   e2e-security.sh        21400 – 23399
-# Next free base: 23400. Add a new harness to this table FIRST, then copy the base into it.
+#   acceptance-probe.sh    23400 – 25399
+# Next free base: 25400. Add a new harness to this table FIRST, then copy the base into it.
 # Disjoint from each other is only half of it — a band also has to be clear of what else listens
 # on this box. Checked with `lsof -nP -iTCP -sTCP:LISTEN` when security was re-spaced: the obvious
 # squatter is cloudflared's metrics pair 20241/20242, which is why security skips 19400 and takes
@@ -141,10 +142,21 @@ cat > "$DIR/fake-pi.c" <<'EOF'
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* ACP-25: it also PAINTS pi's measured composer shape — an empty line between two full-width
+   rules at the bottom — on start and after every consumed line, so the acceptance read in
+   sendText can observe the delivered text leaving the composer exactly as on the real pi. */
+static void composer(void) {
+  int i;
+  for (i = 0; i < 2; i++) { int j; for (j = 0; j < 40; j++) fputs("\xe2\x94\x80", stdout); fputs(i ? "\n" : "\n\n", stdout); }
+  fflush(stdout);
+}
 int main(void) {
   char line[4096];
+  composer();
   while (fgets(line, sizeof line, stdin)) {
-    char *start = strstr(line, "printf 'envprobe-");
+    char *start;
+    composer();
+    start = strstr(line, "printf 'envprobe-");
     if (!start) continue;
     start += strlen("printf '");
     char *end = strstr(start, "=[%s]");
@@ -592,7 +604,7 @@ PI_ZAI_KEY_FILE="$DIR/pi-zai-coding-plan.key"
 mkdir -p "$PI_ZAI_AGENT_DIR"
 printf '%s\n' 'fleet-e2e-zai-stand-in-key' > "$PI_ZAI_KEY_FILE"
 chmod 600 "$PI_ZAI_KEY_FILE"
-SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_HARNESS_AUTOMATION=0 FLEET_CODEX_SESSIONS_DIR='$CODEX_SESSIONS' FLEET_PI_ZAI_AGENT_DIR='$PI_ZAI_AGENT_DIR' FLEET_PI_ZAI_KEY_FILE='$PI_ZAI_KEY_FILE' FLEET_READY_WAIT_MS=3000 FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_MIGRATE_PCT=44 FLEET_MIGRATE_IDLE_MS=0 FLEET_MIGRATE_COOLDOWN_MS=900000 FLEET_MIGRATE_TICK_MS=250 FLEET_MIGRATE_GRACE_MS=500 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=0 FLEET_BACKLOG_NUDGE_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_VERIFY_WAIT_MS=5000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_VERIFY_CMD_REPOS='{\"$REPO2_P\":\"$DIR/fakeverify2\"}' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
+SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_HARNESS_AUTOMATION=0 FLEET_CODEX_SESSIONS_DIR='$CODEX_SESSIONS' FLEET_PI_ZAI_AGENT_DIR='$PI_ZAI_AGENT_DIR' FLEET_PI_ZAI_KEY_FILE='$PI_ZAI_KEY_FILE' FLEET_READY_WAIT_MS=3000 FLEET_ACCEPT_WAIT_MS=300 FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_MIGRATE_PCT=44 FLEET_MIGRATE_IDLE_MS=0 FLEET_MIGRATE_COOLDOWN_MS=900000 FLEET_MIGRATE_TICK_MS=250 FLEET_MIGRATE_GRACE_MS=500 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=0 FLEET_BACKLOG_NUDGE_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_VERIFY_WAIT_MS=5000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_VERIFY_CMD_REPOS='{\"$REPO2_P\":\"$DIR/fakeverify2\"}' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
 tmux -L "$SOCK" new-session -d -s srv \
   "cd '$DIR' && PATH='$DIR:$PATH' FLEET_HOST=127.0.0.1 $SRV_ENV exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.

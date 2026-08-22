@@ -2478,6 +2478,18 @@ function analysisStale(t: Task, view?: Task): boolean {
 // auto-spawning claude sessions from external email is exactly the footgun we refuse by default
 const DISPATCH_REPO = process.env.FLEET_DISPATCH_REPO ?? "";
 const DISPATCH_MAX_LANES = Math.max(1, Number(process.env.FLEET_DISPATCH_MAX_LANES ?? 3) | 0);
+// A SECOND cap, per Program, and it can only ever NARROW: the repo cap above is checked first and
+// unconditionally, this one after it. It does NOT replace it (owner decision 2026-08-22). Replacing
+// it was the tempting shape and it is the wrong one — 16 slots exist, 13 programs are active, and
+// FLEET_DISPATCH_MAX_LANES stands at 2 live: a per-program cap standing ALONE would permit 13×2 = 26
+// concurrent lanes on 16 slots, i.e. a cap that no longer binds machine load at all. That is the
+// same multiplication docs/kritik-opus-2026-08-21.md:305-318 (finding 9) measured on a per-program
+// TASK cap.
+// The honest price of the default: it is DISPATCH_MAX_LANES, so out of the box this check can never
+// be the one that holds anything — the repo cap runs first and refuses at the same number or lower.
+// The knob is inert until the owner sets it SMALLER than the repo cap. It prevents nothing today.
+const DISPATCH_MAX_LANES_PER_PROGRAM = Math.max(1,
+  Number(process.env.FLEET_DISPATCH_MAX_LANES_PER_PROGRAM ?? DISPATCH_MAX_LANES) | 0);
 // createWorktree stores the git TOPLEVEL (symlink-resolved: /tmp → /private/tmp) as a lane's
 // repo, so comparing lanes against a raw configured path would silently match nothing — and a
 // cap that matches nothing is no cap. Canonicalize once per repo (cached — realpaths of repo
@@ -7042,6 +7054,26 @@ async function tickDispatch(): Promise<void> {
       const repo = next.repo ?? DISPATCH_REPO;
       const lanes = slots.filter((s) => inRepo(s, repo)).length;
       if (lanes >= DISPATCH_MAX_LANES) { waiting(`waiting: ${lanes}/${DISPATCH_MAX_LANES} lanes busy in ${basename(repo)} — land or close one`); return; }
+      // ...and then, only for a row that names a Program, the SECOND cap. It runs after the repo
+      // cap and can therefore only narrow (see DISPATCH_MAX_LANES_PER_PROGRAM). The wait-note names
+      // the PROGRAM, not the repo: both caps write onto the same row, and if they said the same
+      // sentence the owner could not tell from the board WHICH one held — the repo cap says "land or
+      // close one", this one says which bracket is full.
+      // A row WITHOUT a programId gets no second check at all. There is deliberately no shared
+      // "null" bucket: unrelated rows, whose only common property is that nobody bracketed them,
+      // would then cap each other — a cap that binds by absence of a fact is not a cap on anything.
+      // And it SKIPS rather than returns, for the same reason the collision check below does: the
+      // repo cap is a condition of the MACHINE and rightly stops the tick, this one is a property
+      // of ONE ROW's bracket. Returning here would let a single full program hold every unrelated
+      // row in the queue behind it — a per-program cap that caps the whole fleet.
+      if (next.programId) {
+        const programLanes = slots.filter((s) => s.cwd && s.programId === next.programId).length;
+        if (programLanes >= DISPATCH_MAX_LANES_PER_PROGRAM) {
+          const title = programs.find((p) => p.id === next.programId)?.title ?? next.programId;
+          waiting(`waiting: ${programLanes}/${DISPATCH_MAX_LANES_PER_PROGRAM} lanes busy in program "${title}" — land or close one of ITS lanes`);
+          continue;
+        }
+      }
       const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
       if (!free) { waiting("waiting: no free slot"); return; }
       // THE UNATTENDED INVARIANT: nothing starts on its own that has not been read against the tree

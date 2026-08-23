@@ -282,3 +282,101 @@ not touch `.env` or other repos, and implements nothing. The one contradiction t
 the brief's §2 sentence "the phase derivation reads them [fleetReports/attentionRequests]" vs the pruning
 facts at `:5876`/`:6127` — resolved *in this review's conditions*, but the brief text should be corrected
 by its Program MAIN before the builder lane starts, so the builder does not implement the weaker reading.
+
+## 13. Prompt for a structural Fleet map
+
+Owner addendum, ordered after and subordinate to the review above: one self-contained prompt for a fresh
+documentation session, recorded here so it survives this lane. It is NOT started by this lane.
+
+**Chosen family: Fable.** The map should be drawn by the family that did not write this review, and Fable's
+causal-audit arm (`b5109df`) already demonstrated the anchor-reverification and count-correction discipline
+a structural map lives or dies by.
+
+--- PROMPT BEGIN ---
+
+You are a fresh Fable documentation lane in a worktree of the claude-fleet repository. Your entire
+assignment: write ONE dated file, `docs/fleet-structural-map-YYYY-MM-DD-fable.md` (today's date, your
+family), mapping how Claude Fleet ACTUALLY works as a machine. You document; you do not build.
+
+EPISTEMIC CONTRACT (violations void the map):
+
+- Current code, ledgers and live sensors outrank all prose — `AGENTS.md`, `SYSTEM.md`, `README.md`, dated
+  docs and this prompt's own anchors included. Where prose and code disagree, the map says so at the
+  exact spot, in its own sentence.
+- Every claim carries a source location re-anchored by YOU (`rg -n`, then a focused read). All anchors
+  below are from tree `3150be3` and WILL have drifted; re-anchor before you cite.
+- Separate, with labelled sections or inline tags, four kinds of content: OBSERVED (you read it in this
+tree — file:line), INFERRED (followed from observed pieces, not itself measured), PROPOSED (a change
+  someone could make — never phrased as existing), UNKNOWN (you could not establish it; never guess,
+  never write zero/false/pass where evidence is missing).
+- Mark TARGET vs OBSERVED explicitly wherever `SYSTEM.md` describes an edge: `SYSTEM.md` self-declares as
+  an owner-facing target image ("Es behauptet nicht, dass jede Kante bereits implementiert ist"). A map
+  that quietly merges target and observed is the failure this assignment exists to prevent.
+- Where surfaces differ (harness adapters claude/pi/codex; owner routes vs `/api/self/*` routes; server vs
+  wire/UI vs docs vs probes), decide each surface as `apply`, `unsupported`, or `not-applicable` —
+  silence is not a decision. Cite the adapter/route that decides it.
+- Every generalization names its transfer predicate: the exact condition under which it holds elsewhere
+  (another repo, another harness, a game studio). No unconditional universals.
+- Suspect your probe before your code: a check that measures nothing reports the same value as a check
+  that measures a failure. A probe that could not run fails under ITS OWN name.
+
+THE MAP — cover each area, each as its own section with an OBSERVED-first inventory:
+
+1. Structurally decisive gates: the unattended-start invariant (analysis fresh-now re-read in
+   `tickDispatch`, ~`server.ts:7597`); repo lane cap and per-program cap (order pinned in `e2e/pins.ts`
+   ~`:1334`); harness automatability; collision read; quiet hours/kill switch (`canDeliver`); the verify
+   tristate (`exit 42` skip → `ok:null`, `server.ts:~10007` `FLEET_VERIFY_CMD_REPOS`, stops at `:13110`/
+   `:13136`); clean-review, security, claude-gate shells; the land gate vs post-land audit split; the
+   isolated tier. For each: WHO can pass it, WHAT evidence it consumes, WHAT it refuses.
+2. Authority boundaries: owner token vs self token (`tokenFrom` channels: bearer/cookie/query); owner
+   routes under `/api/slots|tasks|programs` vs `/api/self/*`; the four levels in `AGENTS.md` and which of
+   them are typed bindings in code; the occupant triple (slot+openedAt+sessionId) as THE bracket
+   (`programOccupancy`, `boundProgramForMain` ~`:6148–6198` — programId derived, never body-supplied);
+   the 409-by-design set for lanes; Supervisor's no-owner-route; Controller's propose-only doors.
+3. Core abstractions, each with its code shape and its `SYSTEM.md` name if they differ: Slot vs occupant
+   vs AgentInstance; Task/originId/programId bracket; Program + main binding; Act/Attempt and
+   `delegate_act` (vocabulary vs implementation — state plainly what exists); ContextEnvelope/context
+   packs/receipts; Trace; PromotionPolicy/LandCandidate (target in `SYSTEM.md`, code status as observed).
+4. Reducers and projections (derived state — name the inputs, never a stored field): `programExecutionView`
+   (~`:2283`), `supervisorView` (~`:14039`), `laneSignalView` (~`:15761`) + `laneWatchSignal` predicates
+   (`lane-signals.ts`, closed payloads, twin-state blind spots), `attentionOwnerView` ranking, the
+   read-side stats tools (`slotstats`, `trailstats`, `briefstats`, `lane-signals`, `capability-map`).
+5. Lifecycles, as state machines with the exact writer of each edge: task `pending→queued→sent→done/
+   archived` (release doors, dispatch, land as the ONLY sent→done writer); program `proposed→confirmed→
+   active→…` + main binding + bootstrap/succession; session vs slot (respawn/resume rules); lane
+   spawn/worktree/shelve/kill/land + `lane-outcomes` rows.
+6. Reports, events, attention, succession: FleetEvent kinds and transport states (`pending`,
+   `send-uncertain`, `delivered`, `inbox`, `acknowledged`, `receiver-gone`) — no replay, why;
+   `fleet-report` rows (`src/protocol.ts` statuses; pruning KEEP=20; report never moves task status);
+   clarifications; attention kinds + dedupe + pruning (open rows never pruned); succession rails
+   (delayed retirement, `successionStarted`, transition watches STN-1/2).
+7. Verify/commit/land/deploy/audit as DISTINCT acts, with the code that keeps them distinct: the ONE
+   `mergeJob(` call site invariant (~`:19076` — count it, don't trust this prompt); `LandProvenance`/
+   land note; undo-land; deploy ledger separate from land; post-land audit scheduling.
+8. Entry points a newcomer actually needs, as an annotated index: the `server.ts` regions (state/persist,
+  ledgers, succession block ~`:5532–5700`, self-route block ~`:17466+`, merge/land region), `e2e/pins.ts`
+   (must-agree pairs, RULE not snapshot), `fleet-e2e.ts` (RUNNER only) vs `e2e/<family>.ts`, `harness.ts`/
+  `ctx.ts`, `docs/self-api.md` (list any missing section as an OBSERVED gap), the ledger files
+  (`lane-outcomes`, `context-receipts`, deploy, post-land-audits).
+9. Observed-vs-target gaps: a table of what `SYSTEM.md`/docs promise and code does not have (start from
+  `docs/kontextschicht-analyse-2026-08-20.md` and the red-team findings — no MAIN land door, no policy
+  object, no budget cap, `delegate_act` unbuilt — then RE-MEASURE each; do not cite them stale).
+
+METHOD:
+
+- Load `AGENTS.md` (auto), then ONLY what a section needs: `rg -n` the symbol, read the focused range.
+  NEVER read `server.ts` (20k+ lines) end-to-end. Long command output goes to files OUTSIDE the repo.
+- Order your work area by area; write the section while the reads are fresh; re-anchor citations at the
+  end against your final tree.
+- Before you finish, ATTACK YOUR OWN MAP: name the three strongest reasons it could be wrong (e.g.
+  dead code mistaken for live, a route unreachable from the real surface, a projection whose inputs you
+  assumed rather than read), and for each give the ONE observation that would falsify the map. Unfixed,
+  the attack ships in the doc.
+
+HARD LIMITS: no production edits (docs file only), no new mechanisms, no state, no route, no registry —
+anything that smells like a second control plane or a duplicate of an existing ledger is OUT OF SCOPE;
+recommendations live in PROPOSED only. One output file, nothing untracked left behind. Verify with
+`git diff --check` and `bun e2e/pins.ts` (judge by the TAIL; a clean run ends `ALL PASS`), commit, POST one
+typed fleet-report, then stop.
+
+--- PROMPT END ---

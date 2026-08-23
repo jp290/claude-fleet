@@ -5,6 +5,8 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { BASE, H, REPO, REPO3, REPO4, ROOT, TOKEN, check, get, post, restartSrv, tmuxOut } from "./harness";
+import { phaseOf, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
+import type { LaneSignalView } from "../lane-signals";
 import type { Ctx } from "./ctx";
 
 type ProgramStatus = "proposed" | "confirmed" | "active" | "complete";
@@ -46,7 +48,11 @@ interface ProgramExecutionRow {
   authority: { boundSlot: number; boundOpenedAt: number; boundSessionId: string | null; boundAt: number;
     sessionIdMatch: "exact" | "divergent" | "unknown"; executionState: "active" | "not-executing" };
   tasks: { rows: { id: string; kind: string; status: string; releasedBy: string | null;
-    slot: number | null; originId: string | null; text: string }[]; total: number; byStatus: Record<string, number> };
+    slot: number | null; originId: string | null; text: string;
+    // derived per request, stored nowhere (program-phase.ts)
+    phase: Phase; phaseBasis: string[]; note: string | null;
+    candidate: { sha: string | null; basis: string } }[];
+    total: number; byStatus: Record<string, number> };
   lanes: { rows: { slot: number; openedAt: number; sessionId: string | null; repo: string | null;
     branch: string | null; taskId: string | null; originId: string | null; harness: string | null;
     model: string | null; effort: string | null }[]; total: number };
@@ -798,6 +804,143 @@ export async function run(ctx: Ctx): Promise<void> {
   check("Program-MAIN self view: a lane token still receives the existing 409",
     laneSelfView.response.status === 409, String(laneSelfView.response.status));
 
+  // --- The derived Program phase (program-phase.ts): a PURE reducer over the closed input list
+  // I1–I6, checked here with hand-built inputs before anything touches a server. Every rule of the
+  // transition table gets its own row, both directions where the rule has two, and the three
+  // UNKNOWN arms are checked as OUTPUTS — the honesty arm is the point of the whole projection and
+  // a serialiser-level fallback would be indistinguishable from a wrong answer.
+  const laneFacts = (over: Partial<LaneSignalView> = {}): LaneSignalView => ({
+    alive: true, idleMs: 0, git: { dirty: 0, ahead: 0 }, gitOp: false, merge: null,
+    observed: true, awaiting: null, hostCommits: false, ...over,
+  });
+  // baseline = a live lane on a sent row that is simply WORKING: busy pane, nothing to show, no
+  // merge, no question. Every rule below is reached by changing exactly the fact it names.
+  const phaseInput = (over: Partial<PhaseInput> = {}): PhaseInput => ({
+    task: { id: "phasetask", kind: "auftrag", status: "sent", note: null },
+    lane: laneFacts(), merge: { inflight: false, start: false, last: null },
+    openAttention: 0, outcome: null, idleThresholdMs: 1_500, ...over,
+  });
+  const basisHas = (result: { phaseBasis: string[] }, needle: string): boolean =>
+    result.phaseBasis.some((line) => line.includes(needle));
+
+  const r0 = phaseOf(phaseInput({ task: { id: "t0", kind: "notiz", status: "pending", note: null } }));
+  check("phase R0: an advisory kind is CONTINUE — no dispatcher motor exists for it, whatever its status",
+    r0.phase === "CONTINUE" && basisHas(r0, "R0") && basisHas(r0, "kind=notiz") && r0.unknown === null,
+    JSON.stringify(r0));
+
+  const r1 = phaseOf(phaseInput({ task: { id: "t1", kind: "auftrag", status: "done", note: null },
+    lane: null, outcome: { disposition: "landed", headSha: "a".repeat(40) } }));
+  const r1archived = phaseOf(phaseInput({ task: { id: "t1b", kind: "auftrag", status: "archived", note: null },
+    lane: null, outcome: { disposition: "landed", headSha: "b".repeat(40) } }));
+  check("phase R1: a terminal row with a landed outcome is CONTINUE for done AND archived, and carries that sha as the candidate",
+    r1.phase === "CONTINUE" && r1.candidate.basis === "lane-outcome" && r1.candidate.sha === "a".repeat(40)
+      && r1archived.phase === "CONTINUE" && r1archived.candidate.sha === "b".repeat(40),
+    JSON.stringify({ r1, r1archived }));
+
+  const r2none = phaseOf(phaseInput({ task: { id: "t2", kind: "auftrag", status: "done", note: null },
+    lane: null }));
+  const r2reverted = phaseOf(phaseInput({ task: { id: "t2b", kind: "auftrag", status: "done", note: null },
+    lane: null, outcome: { disposition: "reverted", headSha: "c".repeat(40) } }));
+  check("phase R2: a terminal row without a landed outcome is UNKNOWN, and the sentence names which of the two gaps it is",
+    r2none.phase === "UNKNOWN" && r2none.unknown?.includes("no lane-outcome row") === true
+      && r2reverted.phase === "UNKNOWN" && r2reverted.unknown?.includes("reverted") === true
+      && /\d/.test(r2none.unknown ?? "") && /\d/.test(r2reverted.unknown ?? ""),
+    JSON.stringify({ r2none, r2reverted }));
+
+  const r3 = phaseOf(phaseInput({ task: { id: "t3", kind: "auftrag", status: "queued", note: null },
+    lane: null, openAttention: 1 }));
+  check("phase R3: an owner question on a queue row outranks its queue position — OWNER_GATE, not READY",
+    r3.phase === "OWNER_GATE" && basisHas(r3, "R3") && basisHas(r3, "1 open attention rows"),
+    JSON.stringify(r3));
+
+  const r4 = phaseOf(phaseInput({ task: { id: "t4", kind: "auftrag", status: "pending", note: null }, lane: null }));
+  const r5 = phaseOf(phaseInput({ task: { id: "t5", kind: "auftrag", status: "queued",
+    note: "waiting: repo lane cap reached" }, lane: null }));
+  const r5other = phaseOf(phaseInput({ task: { id: "t5b", kind: "auftrag", status: "queued",
+    note: "owner prose that is not a tick sentence" }, lane: null }));
+  check("phase R4/R5: pending and queued are both READY, and only the tick's own waiting: sentence is surfaced as note",
+    r4.phase === "READY" && basisHas(r4, "release door") && r4.note === null
+      && r5.phase === "READY" && r5.note === "waiting: repo lane cap reached"
+      && r5other.phase === "READY" && r5other.note === null,
+    JSON.stringify({ r4, r5, r5other }));
+
+  const r6 = phaseOf(phaseInput({ task: { id: "t6", kind: "auftrag", status: "sent", note: null }, lane: null }));
+  check("phase R6: a sent row owning no live lane is UNKNOWN — never READY and never RUNNING",
+    r6.phase === "UNKNOWN" && r6.unknown?.includes("owns no live lane") === true,
+    JSON.stringify(r6));
+
+  const r7inflight = phaseOf(phaseInput({ merge: { inflight: true, start: false,
+    last: { status: "merged", landed: true, candidateSha: "d".repeat(40) } } }));
+  const r7start = phaseOf(phaseInput({ merge: { inflight: false, start: true, last: null } }));
+  check("phase R7: either merge map holding the lane is INTEGRATING, and a persisted candidateSha is reported as the candidate",
+    r7inflight.phase === "INTEGRATING" && r7inflight.candidate.basis === "merge-last"
+      && r7inflight.candidate.sha === "d".repeat(40)
+      && r7start.phase === "INTEGRATING" && r7start.candidate.basis === "none"
+      && r7start.candidate.sha === null,
+    JSON.stringify({ r7inflight, r7start }));
+
+  const nonLand = { status: "blocked", landed: false, candidateSha: null };
+  const r8 = phaseOf(phaseInput({ merge: { inflight: false, start: false, last: nonLand }, openAttention: 2 }));
+  const r9 = phaseOf(phaseInput({ merge: { inflight: false, start: false, last: nonLand } }));
+  const r9landed = phaseOf(phaseInput({ merge: { inflight: false, start: false,
+    last: { status: "merged", landed: true, candidateSha: null } } }));
+  check("phase R8/R9: a non-land merge verdict is REVIEWABLE, OWNER_GATE once a question is open, and a landed verdict is neither",
+    r8.phase === "OWNER_GATE" && basisHas(r8, "2 open attention rows")
+      && r9.phase === "REVIEWABLE" && basisHas(r9, "merge-last non-land verdict")
+      && r9landed.phase === "RUNNING",
+    JSON.stringify({ r8, r9, r9landed }));
+
+  const r10alive = phaseOf(phaseInput({ lane: laneFacts({ alive: null, idleMs: 10_000, git: { dirty: 0, ahead: 3 } }) }));
+  const r10observed = phaseOf(phaseInput({ lane: laneFacts({ observed: false, idleMs: 10_000, git: { dirty: 0, ahead: 3 } }) }));
+  const r10git = phaseOf(phaseInput({ lane: laneFacts({ git: null, idleMs: 10_000 }) }));
+  check("phase R10: an unknown lane fact outranks the predicate — each of the three nulls is UNKNOWN and says which null it was",
+    r10alive.phase === "UNKNOWN" && r10alive.unknown?.includes("alive unknown") === true
+      && r10observed.phase === "UNKNOWN" && r10observed.unknown?.includes("never observed") === true
+      && r10git.phase === "UNKNOWN" && r10git.unknown?.includes("git facts unknown") === true,
+    JSON.stringify({ r10alive, r10observed, r10git }));
+
+  const r11done = phaseOf(phaseInput({ lane: laneFacts({ idleMs: 10_000, git: { dirty: 0, ahead: 2 } }) }));
+  const r11host = phaseOf(phaseInput({ lane: laneFacts({ idleMs: 10_000, git: { dirty: 4, ahead: 0 }, hostCommits: true }) }));
+  const r11early = phaseOf(phaseInput({ lane: laneFacts({ idleMs: 100, git: { dirty: 0, ahead: 2 } }) }));
+  check("phase R11: both lane predicates reach REVIEWABLE and the basis names which one, while an un-idle lane does not",
+    r11done.phase === "REVIEWABLE" && basisHas(r11done, "done-looking")
+      && r11host.phase === "REVIEWABLE" && basisHas(r11host, "host-commit-looking")
+      && r11early.phase === "RUNNING" && r11done.candidate.sha === null && r11done.candidate.basis === "none",
+    JSON.stringify({ r11done, r11host, r11early }));
+
+  const r12 = phaseOf(phaseInput({ openAttention: 1 }));
+  const r13 = phaseOf(phaseInput());
+  check("phase R12/R13: an open question on a running lane is OWNER_GATE, and a plain live lane is RUNNING with its unmet clauses named",
+    r12.phase === "OWNER_GATE" && basisHas(r12, "R12")
+      && r13.phase === "RUNNING" && basisHas(r13, "lane predicate unmet")
+      && basisHas(r13, "idle") && basisHas(r13, "git.ahead>0"),
+    JSON.stringify({ r12, r13 }));
+
+  const stuck = phaseOf(phaseInput({ lane: laneFacts({ idleMs: 10_000, git: { dirty: 2, ahead: 0 } }) }));
+  check("phase blind spot: idle+dirty+ahead=0 is NAMED in the basis of a RUNNING row and never promoted to a phase of its own",
+    stuck.phase === "RUNNING"
+      && basisHas(stuck, "idle ≥ threshold, dirty>0, ahead=0 — not reviewable by predicate")
+      && !PHASE_RULES.some((rule) => String(rule.phase) === "STALLED" || String(rule.phase) === "BLOCKED"),
+    JSON.stringify(stuck));
+
+  const allPhases: Phase[] = ["READY", "RUNNING", "REVIEWABLE", "INTEGRATING", "OWNER_GATE", "CONTINUE", "UNKNOWN"];
+  const sampled = [r0, r1, r2none, r3, r4, r5, r6, r7inflight, r8, r9, r10alive, r11done, r12, r13, stuck];
+  check("phase vocabulary: the table yields exactly the seven declared values, ids R0..R13 in order, and no eighth value",
+    PHASE_RULES.map((rule) => rule.id).join(",") === "R0,R1,R2,R3,R4,R5,R6,R7,R8,R9,R10,R11,R12,R13"
+      && PHASE_RULES.every((rule) => allPhases.includes(rule.phase))
+      && [...new Set(PHASE_RULES.map((rule) => rule.phase))].sort().join(",") === [...allPhases].sort().join(",")
+      && sampled.every((r) => allPhases.includes(r.phase)),
+    `[${[...new Set(PHASE_RULES.map((rule) => rule.phase))].join(",")}]`);
+  check("phase honesty arm: an unknown sentence exists for exactly the UNKNOWN rows and for no other phase",
+    sampled.every((r) => (r.unknown !== null) === (r.phase === "UNKNOWN"))
+      && sampled.filter((r) => r.phase === "UNKNOWN").every((r) => /\d/.test(r.unknown ?? "")),
+    JSON.stringify(sampled.map((r) => [r.phase, r.unknown])));
+
+  const twice = phaseInput({ lane: laneFacts({ idleMs: 10_000, git: { dirty: 0, ahead: 1 } }), openAttention: 0 });
+  check("phase determinism: two evaluations of one unchanged input are byte-identical (a live text input would not be)",
+    JSON.stringify(phaseOf(twice)) === JSON.stringify(phaseOf(twice)),
+    JSON.stringify(phaseOf(twice)));
+
   // --- ProgramExecutionView v1: exact persisted joins around the authoritative MAIN occupant. ---
   const executionMainSlot = mainSlot ?? 0;
   const [executionActive, executionOther, executionLane, executionMissing, executionWrong] = await Promise.all([
@@ -848,6 +991,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const executionProgram = executionState.programs?.find((p) => p.id === mainProgram.id);
   const matchingTaskId = "executiontaskmatch";
   const unattributedTaskId = "executiontasklegacy";
+  const orphanTaskId = "executiontaskorphan";
   const executionOrigin = "executionorigin";
   const matchingOutcomeTs = Date.now() + 10;
   const matchingReceiptAt = Date.now() + 20;
@@ -876,6 +1020,19 @@ export async function run(ctx: Ctx): Promise<void> {
   }, {
     id: unattributedTaskId, originId: executionOrigin,
     text: `same branch ${executionLaneBody.branch} and same time`, source: "owner", from: null,
+    kind: "auftrag", repo: REPO, status: "sent", releasedBy: "owner", created: fixtureNow,
+    slot: executionLaneBody.slot ?? null, note: null,
+  }, {
+    // THE R6 SHAPE, parked on the COMPLETE program so the active program's task tally above stays
+    // exactly what it was: a row persisted as `sent` whose recorded slot is a LIVE lane that belongs
+    // to a different task and program. The projection's lane join is the exact triple
+    // (cwd + taskId + programId), so this row owns no lane while still claiming one — the divergence
+    // R6 exists for. It has to be built this way and not with `slot: null`, because boot reconcile
+    // requeues a sent row whose slot did not come back (server.ts, "requeued after restart"): that
+    // repair is the reason the simpler shape cannot be persisted at all, and a fixture that fought
+    // it would be testing the test.
+    id: orphanTaskId, originId: executionOrigin, programId: completeProgramId,
+    text: "sent row whose recorded slot belongs to another task's lane", source: "owner", from: null,
     kind: "auftrag", repo: REPO, status: "sent", releasedBy: "owner", created: fixtureNow,
     slot: executionLaneBody.slot ?? null, note: null,
   }];
@@ -1029,13 +1186,50 @@ export async function run(ctx: Ctx): Promise<void> {
       && completeFacts.unknown.some((line) => line.includes("1 program has status complete")),
     JSON.stringify({ authority: completeFacts?.authority, unknown: completeFacts?.unknown }));
 
+  // --- the derived phase ON THE ROUTE: the fixture row is a `sent` auftrag whose lane slot carries
+  // the exact taskId+programId triple, so it must project through the sent arms of the table and
+  // never through a queue arm. What it CANNOT be is the assertion — a freshly restarted server has
+  // not necessarily polled git or alive for that lane yet, so REVIEWABLE, RUNNING and the R10
+  // UNKNOWN arm are all legitimate here and pinning one would be pinning the tick's timing.
+  const derivedRow = activeFacts?.tasks.rows.find((row) => row.id === matchingTaskId);
+  const sentArms: Phase[] = ["RUNNING", "REVIEWABLE", "INTEGRATING", "OWNER_GATE", "UNKNOWN"];
+  check("ProgramExecutionView derived phase: the sent row projects a sent-arm phase with an R-numbered basis and never a queue arm",
+    !!derivedRow && sentArms.includes(derivedRow.phase)
+      && derivedRow.phaseBasis.length > 0 && /^R\d+: /.test(derivedRow.phaseBasis[0] ?? ""),
+    JSON.stringify(derivedRow));
+  check("ProgramExecutionView derived candidate: no HEAD sha is invented for a live lane — the persisted outcome row is the only source",
+    derivedRow?.candidate.basis === "lane-outcome" && derivedRow.candidate.sha === "a".repeat(40),
+    JSON.stringify(derivedRow?.candidate));
+  check("ProgramExecutionView derived unknown: an UNKNOWN-phased row contributes exactly one numbered sentence naming its missing input",
+    derivedRow?.phase !== "UNKNOWN"
+      ? !activeFacts?.unknown.some((line) => line.includes(matchingTaskId))
+      : activeFacts?.unknown.filter((line) => line.includes(matchingTaskId)).length === 1
+        && activeFacts.unknown.some((line) => line.includes(matchingTaskId) && /\d/.test(line)),
+    JSON.stringify({ phase: derivedRow?.phase, unknown: activeFacts?.unknown }));
+  const orphanRow = completeFacts?.tasks.rows.find((row) => row.id === orphanTaskId);
+  check("ProgramExecutionView derived phase R6 on the route: a sent row whose claimed slot is another task's lane is UNKNOWN, never READY or RUNNING",
+    orphanRow?.status === "sent"
+      && orphanRow.phase === "UNKNOWN" && orphanRow.phaseBasis.some((line) => line.startsWith("R6: "))
+      && completeFacts?.unknown.some((line) => line.includes(orphanTaskId)
+        && line.includes("owns no live lane") && /\d/.test(line)) === true,
+    JSON.stringify({ row: orphanRow, unknown: completeFacts?.unknown }));
+
   const beforeExecutionReload = facts;
   await restartSrv();
   const afterExecutionReload = await selfExecution(mainSelfToken);
-  check("ProgramExecutionView restart: persisted facts reconstruct field-for-field apart from the fresh observation timestamp",
+  // `phase` and its basis are DERIVED from live predicates (alive/git/idle caches the tick refills
+  // after a restart), so they are excluded here for the same reason `at` is: this check asserts that
+  // the PERSISTED half reconstructs, and folding a live fact into it would make the check a clock.
+  // The phase's own reconstruction is asserted by the reducer rows above, over fixed inputs.
+  const withoutDerived = (rows: ProgramExecutionRow[] | undefined): unknown => canonical((rows ?? []).map((row) => ({
+    ...row,
+    tasks: { ...row.tasks, rows: row.tasks.rows.map(({ phase, phaseBasis, note, candidate, ...rest }) => rest) },
+    unknown: row.unknown.filter((line) => !line.includes("projects as phase UNKNOWN")),
+  })));
+  check("ProgramExecutionView restart: persisted facts reconstruct field-for-field apart from the fresh timestamp and the live-derived phase",
     afterExecutionReload.response.ok
-      && JSON.stringify({ session: afterExecutionReload.view?.session, programs: canonical(afterExecutionReload.view?.programs) })
-        === JSON.stringify({ session: beforeExecutionReload.session, programs: canonical(beforeExecutionReload.programs) })
+      && JSON.stringify({ session: afterExecutionReload.view?.session, programs: withoutDerived(afterExecutionReload.view?.programs) })
+        === JSON.stringify({ session: beforeExecutionReload.session, programs: withoutDerived(beforeExecutionReload.programs) })
       && (afterExecutionReload.view?.at ?? 0) >= beforeExecutionReload.at,
     JSON.stringify({ beforeAt: beforeExecutionReload.at, afterAt: afterExecutionReload.view?.at }));
 
@@ -1051,13 +1245,30 @@ export async function run(ctx: Ctx): Promise<void> {
   check("ProgramExecutionView slot recycle: same slot with new openedAt inherits no Program",
     recycledExecution.response.ok && recycledExecution.view?.programs.length === 0,
     `${recycledExecution.response.status} ${JSON.stringify(recycledExecution.view)}`);
+  // Killing the lane moves the row's PERSISTED status (killSlot → detachSlotTasks writes it back to
+  // `pending`), and the projection must follow that writer rather than the pane: the phase leaves the
+  // sent arms in the same GET, with no phase-unknown sentence, because nothing about this row is
+  // unknown any more. The boot-recovery arm — a row still `sent` with no lane — is the orphan
+  // fixture above, and the two must not be confused: one is a deliberate teardown, the other a gap.
+  const beforeLaneKill = await selfExecution(mainSelfToken);
+  const runningRow = beforeLaneKill.view?.programs.find((x) => x.program.id === mainProgram.id)
+    ?.tasks.rows.find((row) => row.id === matchingTaskId);
   if (executionLaneBody.slot) await post(`/api/slots/${executionLaneBody.slot}/kill`, {});
+  const afterLaneKill = await selfExecution(mainSelfToken);
+  const activeAfterKill = afterLaneKill.view?.programs.find((x) => x.program.id === mainProgram.id);
+  const killedRow = activeAfterKill?.tasks.rows.find((row) => row.id === matchingTaskId);
+  check("ProgramExecutionView derived phase tracks the actuator: a killed lane detaches the row to pending and the phase becomes READY in the same GET",
+    !!runningRow && sentArms.includes(runningRow.phase)
+      && killedRow?.status === "pending" && killedRow.phase === "READY"
+      && killedRow.phaseBasis.some((line) => line.startsWith("R4: "))
+      && !activeAfterKill?.unknown.some((line) => line.includes(matchingTaskId)),
+    JSON.stringify({ before: runningRow?.phase, after: killedRow, unknown: activeAfterKill?.unknown }));
   await post(`/api/slots/${recycleSlot}/kill`, {});
   await tmuxOut("kill-session", "-t", "srv");
   await Bun.sleep(500);
   const executionCleanup = readState();
   executionCleanup.tasks = (executionCleanup.tasks ?? [])
-    .filter((t) => t.id !== matchingTaskId && t.id !== unattributedTaskId);
+    .filter((t) => t.id !== matchingTaskId && t.id !== unattributedTaskId && t.id !== orphanTaskId);
   executionCleanup.watches = (executionCleanup.watches ?? [])
     .filter((w) => ![attributedWatchId, legacyWatchId, foreignWatchId, malformedWatchId].includes(String(w.id)));
   executionCleanup.events = (executionCleanup.events ?? [])

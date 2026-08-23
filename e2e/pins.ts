@@ -2733,6 +2733,108 @@ const SOURCE_DIR = ((): string | null => {
 
 pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (otherwise its runtime checks measure nothing)", /const MIGRATE_PCT = Number\(process\.env\.FLEET_MIGRATE_PCT \?\? 0\) \| 0/.test(server) && /\bFLEET_MIGRATE_PCT=[1-9]\d*\b/.test(read("e2e-isolated.sh")));
 
+// --- SLICE A: THE DERIVED PROGRAM PHASE IS A PROJECTION, AND A PROJECTION HAS TO STAY ONE.
+// program-phase.ts computes where a Program row sits on the rail from a closed input list. Three
+// things could quietly turn it into something else, and none of them is visible to a compiler:
+// a third consumer (an actuator reading `phase` and then DOING something), a pruned or spawning
+// input sneaking into the reducer, and a second `mergeJob(` call site appearing under cover of
+// "the projection needed it". Each row below is a rule, not a snapshot.
+{
+  const RULE_PHASE = "the program phase reducer is a projection, never an actuator";
+  const reducer = read("program-phase.ts");
+  const body = (name: string): string =>
+    server.match(new RegExp(`async function ${name}\\(s: Slot\\): Promise<Response> \\{[\\s\\S]*?\\n\\}`))?.[0] ?? "";
+  const execBody = body("programExecutionView");
+  const supBody = body("supervisorView");
+  const callsIn = (text: string): number => text.split("phaseOf(").length - 1;
+  // the honesty arm is part of the TYPE, so a build that dropped it could not compile a caller
+  // that handles it — this pin catches the edit that removes it from the union instead.
+  const phaseUnion = reducer.match(/export type Phase =([\s\S]*?);/)?.[1] ?? "";
+  pin(`${RULE_PHASE} — Phase keeps its UNKNOWN arm and the reducer exports phaseOf`,
+    /"UNKNOWN"/.test(phaseUnion) && /export function phaseOf\(/.test(reducer),
+    `union=[${phaseUnion.trim()}]`);
+  pin(`${RULE_PHASE} — server.ts calls phaseOf in exactly the two view functions and nowhere else`,
+    execBody !== "" && supBody !== "" && callsIn(execBody) === 1 && callsIn(supBody) === 1
+      && callsIn(server) === 2,
+    `exec=${callsIn(execBody)} supervisor=${callsIn(supBody)} server=${callsIn(server)}`);
+  // Condition 1 of the review: a pruned input (fleetReports, terminal attention rows) or a git
+  // spawn would make the same row project differently between two GETs with no fact change.
+  // comments STRIPPED first: the file's header names these very tokens to say it must not read
+  // them, and a pin that failed on the prose explaining the rule would delete the explanation.
+  const reducerCode = reducer.split("\n").filter((l) => !l.trim().startsWith("//"))
+    .map((l) => l.replace(/\s\/\/.*$/, "")).join("\n");
+  const forbidden = ["fleetReports", "spawnSync", "execFile", "readLedger", "transcript"]
+    .filter((token) => reducerCode.includes(token));
+  pin(`${RULE_PHASE} — the reducer reads no pruned, spawned or text input`,
+    forbidden.length === 0, `[${forbidden.join(",")}]`);
+  // …and the other half of that pair: the server-side input builder is the ONE place attention
+  // rows enter, so its filter must carry the open-status guard rather than counting pruned rows.
+  const inputBuilder = server.match(/function programPhaseInput\([\s\S]*?\n\}/)?.[0] ?? "";
+  const attentionFilters = server.split("attentionRequests.filter(").length - 1;
+  // Falsifier §10.6: the Supervisor rollup is the one place a projection could leak row bodies onto
+  // the largest Supervisor payload. A histogram is under 100 B per program; per-row bases are not.
+  const rollup = supBody.match(/tasks: \{[^}]*phases[^}]*\}/)?.[0] ?? "";
+  pin(`${RULE_PHASE} — the Supervisor rollup carries phase COUNTS, never row bodies`,
+    rollup !== "" && !/phaseBasis|candidate|rows:/.test(rollup)
+      && /phases\[derived\.phase\] = \(phases\[derived\.phase\] \?\? 0\) \+ 1;/.test(supBody),
+    rollup === "" ? "no phases rollup found in supervisorView" : rollup.trim());
+  pin(`${RULE_PHASE} — the phase input counts only OPEN attention rows`,
+    inputBuilder !== "" && /attentionRequests\.filter\(/.test(inputBuilder)
+      && /a\.status === "open" \|\| a\.status === "send-uncertain"/.test(inputBuilder),
+    inputBuilder === "" ? "programPhaseInput not found in server.ts"
+      : `${attentionFilters} attentionRequests.filter sites in server.ts`);
+}
+
+// --- ONE LAND PATH. The phase projection names INTEGRATING and CONTINUE; naming them must never
+// become a reason to actuate them. server.ts:596 states the invariant in prose ("the single
+// `mergeJob(` call site is a route too") — this is the file that holds it to a number.
+{
+  const RULE_LAND = "server.ts has exactly one mergeJob call site and it is the owner merge route";
+  const lines = server.split("\n");
+  const callSites = lines
+    .map((line, i) => ({ line, n: i }))
+    .filter(({ line }) => line.includes("mergeJob(")
+      && !line.trim().startsWith("//")
+      && !/^async function mergeJob\(/.test(line.trim()));
+  const routeStart = lines.findIndex((l) => l.includes("const mgMatch = /^\\/api\\/slots\\/(\\d+)\\/merge$/"));
+  // the next route matcher after the call site bounds the route body without needing a brace count
+  const nextRoute = callSites.length === 1
+    ? lines.findIndex((l, i) => i > callSites[0].n && /\/\^\\\/api\\\//.test(l)) : -1;
+  pin(`${RULE_LAND} — exactly one call site`, callSites.length === 1,
+    `${callSites.length} sites: [${callSites.map((c) => c.n + 1).join(",")}]`);
+  pin(`${RULE_LAND} — that site sits inside the ⏫ owner merge route`,
+    callSites.length === 1 && routeStart >= 0 && routeStart < callSites[0].n
+      && nextRoute > callSites[0].n,
+    `route=${routeStart + 1} call=${callSites.length === 1 ? callSites[0].n + 1 : "?"} nextRoute=${nextRoute + 1}`);
+}
+
+// --- THE EVENT KINDS ARE A CLOSED SET. Every new kind inherits the whole transport failure surface
+// (pending / send-uncertain / delivered / inbox / receiver-gone), and the state slice deliberately
+// adds none: it derives from facts the server already holds. A kind appearing here without that
+// decision being made on purpose is exactly the drift this fastens.
+{
+  const RULE_KINDS = "the FleetEvent kind set is closed";
+  const expected = ["lane-ready", "host-commit-ready", "merge-terminal", "post-land-audit",
+    "deploy-terminal", "clarification-request", "fleet-report", "supervisor-transition"].sort();
+  const signals = read("lane-signals.ts");
+  const laneKinds = (signals.match(/export type LaneWatchEventKind =([^;\n]+)/)?.[1] ?? "")
+    .split("|").map((w) => w.trim().replace(/"/g, "")).filter(Boolean);
+  const found = new Set<string>();
+  for (const block of server.match(/interface \w+FleetEvent extends FleetEventBase \{[\s\S]*?\n\}/g) ?? []) {
+    const kind = block.match(/\n\s+kind: ([^;]+);/)?.[1]?.trim() ?? "";
+    if (kind === "LaneWatchEventKind") laneKinds.forEach((k) => found.add(k));
+    else kind.split("|").forEach((k) => found.add(k.trim().replace(/"/g, "")));
+  }
+  const union = (server.match(/type FleetEvent =([\s\S]*?);/)?.[1] ?? "")
+    .split("|").map((w) => w.trim()).filter(Boolean);
+  const got = [...found].sort();
+  pin(`${RULE_KINDS} — the interfaces yield exactly the eight known kinds`,
+    JSON.stringify(got) === JSON.stringify(expected), `[${got.join(",")}]`);
+  pin(`${RULE_KINDS} — every union member is one of those interfaces (no kind enters off-list)`,
+    union.length > 0 && union.every((m) => new RegExp(`interface ${m} extends FleetEventBase \\{`).test(server)),
+    `[${union.join(",")}]`);
+}
+
 console.log(rows.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

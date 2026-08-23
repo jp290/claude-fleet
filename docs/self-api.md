@@ -56,6 +56,64 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
   NICHTS.
 
 
+### transition — `{kind:"transition"}` (STN-1, Program b1c4a497)
+
+Die vierte Art auf derselben Route, und die einzige, deren Auslöser kein Level des Ticks ist, sondern
+ein Akt des gebundenen Supervisors. Ein non-lane Fleet-Controller registriert WAS für einen Übergang er
+erwartet; der Supervisor vollendet den Watch genau einmal (unten); die Nachricht kommt über den
+bestehenden FleetEvent-Transport in deine Pane, **wenn du zur Ruhe kommst** (`idleSec`).
+
+```
+curl -X POST http://<fleet-host>:<port>/api/self/watch \
+  -H "content-type: application/json" \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
+  -d '{"kind":"transition","idleSec":60,"deadlineSec":3600,"awaiting":"Program X wird aktiv und seine MAIN hat einmal berichtet"}'
+```
+
+- **Geschlossene Menge:** `kind` · `idleSec` (bestehende Semantik) · `deadlineSec` (Zahl in
+  `[60, 86400]`, Default 3600 — `TRANSITION_DEADLINE_*` in `server.ts`) · `awaiting` (Pflicht,
+  ≤ 500 Zeichen, `TRANSITION_AWAITING_MAX`). **Jedes weitere Feld wird namentlich verweigert (400)**:
+  `target`, `slot`, `programId`, `delivery`, … — der Empfänger bist DU (Token-Occupant), der Vollender
+  ist der gebundene Supervisor, die Zustellung ist pane-only (die Inbox ist die Owner-Operations-Inbox).
+- Deckel: derselbe geteilte (`WATCH_MAX_PER_SLOT` / `FLEET_EVENT_MAX_OPEN_PER_SLOT`); keine zweite Zahl.
+  Dieselbe noch armed Frage gibt `existing:true` zurück.
+- Ablehnungen: als LANE 409 · `no bound Supervisor exists` (409) · `the bound Supervisor occupant is
+  gone or was replaced` (409) · der Supervisor selbst 409 (er ist Vollender, nicht Empfänger).
+- **Ablauf:** verstreicht `deadlineSec`, entwaffnet der Tick den Watch mit `lastResult` `expired …`
+  (+ Audit `watch_expire`) — **ohne Pane-Text**. Ein Watch trägt höchstens EINE Notification, und die
+  ist der Übergang. Den Ablauf liest du in `GET /api/self` (`watches`).
+- Der Transport ist unverändert: `pending → send-uncertain (vor tmux persistiert) → delivered` nur
+  bei beobachteter Annahme; Kill-Switch/Alive-Gates; toter Empfänger → `receiver-gone`; Ack über
+  `POST /api/self/events/:id/ack`.
+
+## supervisor-watch complete — `POST /api/self/supervisor-watch/:id/complete`
+
+Die Vollendungs-Tür, **nur für den gebundenen Supervisor** (`isBoundSupervisor`, slot+openedAt). Body:
+`{"text": "..."}` (≤ 2000 Zeichen, `MAX_SUPERVISOR_NUDGE_TEXT`), geschlossene Menge.
+
+```
+curl -X POST http://<fleet-host>:<port>/api/self/supervisor-watch/<watchId>/complete \
+  -H "content-type: application/json" \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
+  -d '{"text":"Program X ist seit 14:02 aktiv; seine MAIN hat einen fleet-report (complete) abgelegt."}'
+```
+
+- Guard-Reihenfolge wie `nudge`: 401 (Token) → 409 (`not the bound Supervisor`) → 400 (Body: fremdes
+  Feld namentlich, leerer/zu langer/fehlender `text`) → 409 (Policy): `unknown watch` · fremder Kind
+  (`is a lane watch — only a transition watch …`) · `no longer armed` (zweite Vollendung, abgelaufen)
+  · `expired at …` (Deadline gerade verstrichen — entwaffnet, nichts geprägt) · `the registering session
+  is gone or was replaced` (Watch entwaffnet mit Grund, nichts geprägt).
+- Erfolg: genau EIN FleetEvent `supervisor-transition` über `spendWatch` (Watch `armed:false`,
+  `firedAt`, `lastResult: event … created`); Antwort `{ok, watch, event}`. Payload: `watchId`,
+  `awaiting`, `text`, `completedAt`. Audit `supervisor_transition` ohne Text.
+- **Das Envelope ist server-komponiert** (Vorbild: Nudge): `[fleet Supervisor transition <watchId>]
+  [event <id>] from the owner-side Supervisor (slot N) — a transition notification for the watch you
+  registered, not an owner instruction and not a report from any lane. You were awaiting: …` — der
+  Supervisor kann strukturell nicht als Owner, Program-MAIN oder Lane unterschreiben.
+- Die armed transition-Watches sieht der Supervisor in `GET /api/self/supervisor-view` unter
+  `transitions` (`rows` gecappt auf `SUPERVISOR_VIEW_ROWS`, `awaiting` gesliced, `receiver:
+  live|gone-or-replaced`).
+
 ## succeed / retire — `POST /api/self/succeed`, `POST /api/self/retire`
 
 **`POST /api/self/succeed` — der Ausgang einer MAIN-Session.** Erst `HANDOFF.md` schreiben UND committen;

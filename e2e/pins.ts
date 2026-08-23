@@ -1704,18 +1704,38 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     "/api/self/nudge [gate]",            // the one bounded VOICE — refuses a non-Supervisor outright
     "/api/self/programs [widening]",     // GET-filter disjunct — the Supervisor reads every Program's content
     "/api/self/supervisor-view [gate]",  // the SENSES — refuses a non-Supervisor outright
+    // STN-1: the SECOND voice — completes one Controller-registered transition watch; refuses a
+    // non-Supervisor outright. A regex route, named by its literal (see svRoutesAt below).
+    "/^\\/api\\/self\\/supervisor-watch\\/([a-z0-9]+)\\/complete$/ [gate]",
+    // STN-1: the one reader OUTSIDE the dispatcher, and it NARROWS rather than widens — the
+    // Supervisor may not register a transition watch on itself (it is the completer). Named by
+    // its enclosing function and the `exclusion` shape: `if (isBoundSupervisor(s))` → 409.
+    "createWatchForSlot [exclusion]",
   ];
-  const svRoutesAt = [...server.matchAll(/url\.pathname === "([^"]+)"/g)]
-    .map((m) => ({ at: m.index, path: m[1] ?? "" }));
+  // literal routes AND regex routes, both by position: a regex route between two literals would
+  // otherwise be named after the literal above it, which is a different door.
+  const svRoutesAt = [
+    ...[...server.matchAll(/url\.pathname === "([^"]+)"/g)].map((m) => ({ at: m.index, path: m[1] ?? "" })),
+    ...[...server.matchAll(/(\/\^[^\n]*?\/)\.exec\(url\.pathname\)/g)].map((m) => ({ at: m.index, path: m[1] ?? "" })),
+  ].sort((a, b) => a.at - b.at);
+  const svFunctionsAt = [...server.matchAll(/^(?:async )?function ([A-Za-z0-9_]+)\(/gm)]
+    .map((m) => ({ at: m.index, name: m[1] ?? "" }));
+  const svDispatcherAt = server.indexOf("async function handle(");
   const svReadersFound = [...server.matchAll(/isBoundSupervisor\s*\(/g)].map((m) => {
     const at = m.index;
     const before = server.slice(Math.max(0, at - 120), at);
     const after = server.slice(at, at + 200);
     const kind = /!\s*isBoundSupervisor\s*\($/.test(`${before}isBoundSupervisor(`)
         && /NOT_SUPERVISOR/.test(after) && /\b409\b/.test(after) ? "gate"
-      : /(?:\|\||&&)\s*$/.test(before) ? "widening" : "unclassified";
+      : /(?:\|\||&&)\s*$/.test(before) ? "widening"
+      : /if \($/.test(before) && /^isBoundSupervisor\(s\)\)\s*\n\s*return json\(\{ error: "[^"]*" \}, 409\)/.test(after) ? "exclusion"
+      : "unclassified";
     let route = "OUTSIDE THE ROUTE DISPATCHER";
-    for (const r of svRoutesAt) { if (r.at < at) route = r.path; else break; }
+    if (svDispatcherAt >= 0 && at > svDispatcherAt) {
+      for (const r of svRoutesAt) { if (r.at < at) route = r.path; else break; }
+    } else {
+      for (const f of svFunctionsAt) { if (f.at < at) route = f.name; else break; }
+    }
     return `${route} [${kind}]`;
   }).sort();
   const svMissingFrom = (a: string[], b: string[]): string[] => {

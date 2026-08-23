@@ -76,6 +76,14 @@ const PRE_AUTH_ROUTES = [
   // receiver, and a pane with no agent behind it.
   '= /api/self/supervisor-view',
   '= /api/self/nudge',
+  // STN-1, the Supervisor's second voice and the one that PERSISTS: it completes exactly one
+  // transition watch a non-lane Controller registered, minting one FleetEvent onto the existing
+  // transport. Same 401 rail and same occupancy 409 as its two neighbours. What bounds it: the
+  // watch id comes from the path and the receiver from that watch's registrant occupant
+  // (re-resolved at completion, never from the body — `text` is the only field read, pinned in
+  // e2e/security.ts §STN-1), once-only through spendWatch, expiry refused, and a lane can never
+  // be the receiver because a lane can never register (the /api/self/watch lane rule, unchanged).
+  String.raw`~ /^\/api\/self\/supervisor-watch\/([a-z0-9]+)\/complete$/`,
   '= /api/self/main-direct', // scoped non-lane provenance view; both git heads are server-read
   '= /api/self/main-direct/preflight',
   '= /api/self/main-direct/finalize',
@@ -398,6 +406,61 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   check("§3 control: the live lane's selfToken authenticates (so the refusals below mean revocation)",
     live.ok && !!liveJ.auto, `${live.status} ${JSON.stringify(liveJ)}`);
   if (liveJ.auto) await post(`/api/autos/${liveJ.auto.id}/delete`, {});
+
+  // ===== §STN-1 the transition rail's perimeter: nobody impersonates the Supervisor, nobody
+  // nominates a receiver, and no Supervisor text can reach a lane =====
+  {
+    const completeUrl = `${BASE}/api/self/supervisor-watch/deadbeef/complete`;
+    const completeAs = (headers: Record<string, string>): Promise<Response> =>
+      fetch(completeUrl, { method: "POST", headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify({ text: "perimeter probe" }) });
+    const [noCred, ownerTok, stewardTok, guestCookie, plainSession, laneSession] = await Promise.all([
+      completeAs({}),
+      completeAs({ authorization: `Bearer ${TOKEN}` }),
+      completeAs({ authorization: `Bearer ${sc.token}` }),
+      completeAs({ cookie: ctx.shICookie }),
+      completeAs({ "x-fleet-self-token": plainSelf }),
+      completeAs({ "x-fleet-self-token": selfTok }),
+    ]);
+    check("§STN-1 the completion door is a self-principal door: owner, steward, guest and no credential are all 401",
+      noCred.status === 401 && ownerTok.status === 401 && stewardTok.status === 401 && guestCookie.status === 401,
+      `${noCred.status}/${ownerTok.status}/${stewardTok.status}/${guestCookie.status}`);
+    check("§STN-1 a recognized self principal that is not the bound Supervisor is 409 (plain and lane alike) — no token hunt",
+      plainSession.status === 409 && laneSession.status === 409
+        && (await plainSession.text()).includes("not the bound Supervisor"),
+      `${plainSession.status}/${laneSession.status}`);
+    const register = (tok: string, body: unknown): Promise<Response> =>
+      fetch(`${BASE}/api/self/watch`, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": tok }, body: JSON.stringify(body) });
+    const base = { kind: "transition", idleSec: 60, deadlineSec: 600, awaiting: "perimeter" };
+    const [laneRegisters, nominatesTarget, nominatesSlot, asksInbox] = await Promise.all([
+      register(selfTok, base),
+      register(plainSelf, { ...base, target: ln.slot }),
+      register(plainSelf, { ...base, slot: ln.slot }),
+      register(plainSelf, { ...base, delivery: "inbox" }),
+    ]);
+    const [tTarget, tSlot, tInbox] = await Promise.all([nominatesTarget, nominatesSlot, asksInbox].map((r) => r.text()));
+    check("§STN-1 a lane never registers a transition watch, so Supervisor text can structurally never reach a lane pane (409)",
+      laneRegisters.status === 409 && (await laneRegisters.text()).includes("a lane may not subscribe"),
+      String(laneRegisters.status));
+    check("§STN-1 no caller nominates a receiver anywhere: target and slot are refused by name at registration (400)",
+      nominatesTarget.status === 400 && tTarget.includes("[target] is not read")
+        && nominatesSlot.status === 400 && tSlot.includes("[slot] is not read"),
+      `${nominatesTarget.status}:${tTarget} | ${nominatesSlot.status}:${tSlot}`);
+    check("§STN-1 the owner operations inbox is not a Controller's: delivery is refused by name for a transition watch (400)",
+      asksInbox.status === 400 && tInbox.includes("[delivery] is not read"), `${asksInbox.status}:${tInbox}`);
+    // the source rule behind the two refusals above: the completion handler reads `text` and
+    // nothing else from the body, and the receiver comes from the WATCH's slot.
+    const srv = readFileSync(`${ROOT}/server.ts`, "utf8");
+    const handlerAt = srv.indexOf("async function completeTransitionWatch(");
+    const handlerEnd = srv.indexOf("\n}\n", handlerAt);
+    const handler = handlerAt < 0 ? "" : srv.slice(handlerAt, handlerEnd);
+    check("§STN-1 source: completeTransitionWatch reads only `text` from the body and derives the receiver from the watch's own slot",
+      handler.includes('Object.keys(body).filter((k) => k !== "text")')
+        && handler.includes("const receiver = slotFrom(w.slot);")
+        && !/body\.(slot|target|receiver|programId|delivery)/.test(handler),
+      `${handlerAt}:${handlerEnd}`);
+  }
 
   // ===== §4 no secret reaches a non-owner-readable payload =====
   const SHARE_PW = "sec-sweep-password-7712";

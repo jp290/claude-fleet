@@ -1833,6 +1833,218 @@ export async function run(): Promise<void> {
       && goneInboxOwnerAck.status === 409,
     `${JSON.stringify(goneInboxAfter)} ${goneInboxOwnerAck.status} ${await goneInboxOwnerAck.text()}`);
 
+  // --- STN-1 · THE TRANSITION WATCH, registration side. A Controller registers a question in its
+  // own words; ONLY the bound Supervisor can answer it (e2e/supervisor.ts proves that door); the
+  // answer rides the same transport every other Watch kind rides. Proved here: the refusals at
+  // registration (lane, closed body, bounds, no Supervisor, the Supervisor itself), that the cap is
+  // the SHARED one, that the parser is fail-closed for the new kind, that a deadline disarms with
+  // no pane text, and that a receiver gone during transport ends the event as receiver-gone. ---
+  {
+    interface TransitionWatchRow {
+      id: string; kind: string; slot: number; slotOpenedAt?: number; idleSec: number; armed: boolean;
+      created: number; firedAt: number | null; lastResult: string | null; awaiting: string; deadlineAt: number;
+    }
+    interface TransitionEventRow {
+      id: string; watchId: string | null; kind: string; status: string; receiverSlot: number; attempts: number;
+    }
+    const stateToken = (slot: number): string => (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { slots?: Record<string, { selfToken?: string; openedAt?: number; sessionId?: string | null }> })
+      .slots?.[String(slot)]?.selfToken ?? "";
+    const stateSlot = (slot: number): { openedAt: number; sessionId: string | null } => {
+      const row = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots?: Record<string, { openedAt?: number; sessionId?: string | null }> }).slots?.[String(slot)];
+      return { openedAt: row?.openedAt ?? 0, sessionId: row?.sessionId ?? null };
+    };
+    const allWatches = async (): Promise<TransitionWatchRow[]> =>
+      ((await (await get("/api/sessions")).json()) as { watches: TransitionWatchRow[] }).watches;
+    const allEvents = async (): Promise<TransitionEventRow[]> =>
+      ((await (await get("/api/sessions")).json()) as { events: TransitionEventRow[] }).events;
+    const transitionTexts = async (slot: number): Promise<number> =>
+      (await plogRead()).filter((e) => e.slot === slot && e.text.startsWith("[fleet Supervisor transition ")).length;
+    const complete = (tok: string, id: string, text: string): Promise<Response> =>
+      fetch(`${BASE}/api/self/supervisor-watch/${id}/complete`, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": tok }, body: JSON.stringify({ text }) });
+
+    const ctl = await freeSlot();
+    const ctlOpen = await post(`/api/slots/${ctl}/open`, { cwd: REPO, label: "stn1-controller" });
+    const sv = await freeSlot();
+    const svOpen = await post(`/api/slots/${sv}/open`, { cwd: REPO, label: "stn1-supervisor-fixture" });
+    const ctlTok = stateToken(ctl);
+    const svTok = stateToken(sv);
+    const lane = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; branch: string };
+    const laneTok = stateToken(lane.slot);
+    check("stn1 registration fixtures: a Controller, a Supervisor-to-be and a lane, each with a distinct credential",
+      ctlOpen.ok && svOpen.ok && lane.slot > 0 && new Set([ctlTok, svTok, laneTok]).size === 3
+        && [ctlTok, svTok, laneTok].every((t) => /^[0-9a-f]{32}$/.test(t)),
+      `${ctl}/${sv}/${lane.slot}`);
+
+    const body = (over: Record<string, unknown> = {}): Record<string, unknown> =>
+      ({ kind: "transition", idleSec: 3600, deadlineSec: 600, awaiting: "the portfolio moves", ...over });
+    const noSv = await selfWatch(ctlTok, body());
+    const noSvText = await noSv.text();
+    check("stn1 registration: with no bound Supervisor the watch is refused 409 — it could never be completed",
+      noSv.status === 409 && noSvText.includes("no bound Supervisor"), `${noSv.status} ${noSvText}`);
+
+    // the binding, installed the way every occupant fixture in this suite is: through the state
+    // file, because a real bootstrap would prove the bootstrap (e2e/supervisor.ts does) and
+    // nothing about registration. The supervisor module's baseline asserts a null binding, so
+    // this block removes it again on its way out.
+    const bindSupervisor = async (binding: Record<string, unknown> | null): Promise<void> => {
+      await tmuxOut("kill-session", "-t", "srv");
+      await Bun.sleep(500);
+      const st = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as Record<string, unknown>;
+      st.supervisor = binding;
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
+      await restartSrv();
+    };
+    const svOccupant = stateSlot(sv);
+    await bindSupervisor({ slot: sv, openedAt: svOccupant.openedAt, sessionId: svOccupant.sessionId, boundAt: Date.now() });
+
+    const watchesBefore = (await allWatches()).length;
+    const [rLane, rTarget, rSlot, rProgram, rDelivery, rNoAwait, rEmptyAwait, rLongAwait, rLowDl, rHighDl, rStrDl, rSelf]
+      = await Promise.all([
+        selfWatch(laneTok, body()),
+        selfWatch(ctlTok, body({ target: lane.slot })),
+        selfWatch(ctlTok, body({ slot: sv })),
+        selfWatch(ctlTok, body({ programId: "p".repeat(24) })),
+        selfWatch(ctlTok, body({ delivery: "inbox" })),
+        selfWatch(ctlTok, { kind: "transition", idleSec: 0 }),
+        selfWatch(ctlTok, body({ awaiting: "   " })),
+        selfWatch(ctlTok, body({ awaiting: "x".repeat(501) })),
+        selfWatch(ctlTok, body({ deadlineSec: 59 })),
+        selfWatch(ctlTok, body({ deadlineSec: 86_401 })),
+        selfWatch(ctlTok, body({ deadlineSec: "600" })),
+        selfWatch(svTok, body()),
+      ]);
+    const rTexts = await Promise.all([rLane, rTarget, rSlot, rProgram, rDelivery, rNoAwait, rEmptyAwait, rLongAwait,
+      rLowDl, rHighDl, rStrDl, rSelf].map((r) => r.text()));
+    check("stn1 registration: a lane may not register a transition watch — the route's 409, unchanged",
+      rLane.status === 409 && rTexts[0]!.includes("a lane may not subscribe"), `${rLane.status} ${rTexts[0]}`);
+    check("stn1 registration: the body is a CLOSED set — target, slot, programId and delivery are refused BY NAME (400)",
+      rTarget.status === 400 && rTexts[1]!.includes("[target] is not read")
+        && rSlot.status === 400 && rTexts[2]!.includes("[slot] is not read")
+        && rProgram.status === 400 && rTexts[3]!.includes("[programId] is not read")
+        && rDelivery.status === 400 && rTexts[4]!.includes("[delivery] is not read") && rTexts[4]!.includes("pane-only"),
+      `${rTarget.status}:${rTexts[1]} | ${rSlot.status} | ${rProgram.status} | ${rDelivery.status}:${rTexts[4]}`);
+    check("stn1 registration: awaiting is required, non-blank and at most 500 chars (400 each)",
+      rNoAwait.status === 400 && rTexts[5]!.includes("awaiting must be")
+        && rEmptyAwait.status === 400 && rLongAwait.status === 400 && rTexts[7]!.includes("at most 500"),
+      `${rNoAwait.status}:${rTexts[5]} ${rEmptyAwait.status} ${rLongAwait.status}:${rTexts[7]}`);
+    check("stn1 registration: deadlineSec is structurally bounded to [60, 86400] and must be a number (400 each)",
+      rLowDl.status === 400 && rTexts[8]!.includes("[60, 86400]") && rHighDl.status === 400 && rStrDl.status === 400,
+      `${rLowDl.status}:${rTexts[8]} ${rHighDl.status} ${rStrDl.status}`);
+    check("stn1 registration: the bound Supervisor cannot register one on itself — it is the completer (409)",
+      rSelf.status === 409 && rTexts[11]!.includes("cannot register a transition watch on itself"),
+      `${rSelf.status} ${rTexts[11]}`);
+    check("stn1 registration: not one refusal persisted a watch",
+      (await allWatches()).length === watchesBefore, `${watchesBefore} -> ${(await allWatches()).length}`);
+
+    // --- the cap is the SHARED one. Five armed transition watches fill it, and the SIXTH of a
+    // DIFFERENT kind (a lane watch on a real lane) is refused with the one shared number. ---
+    const minted: TransitionWatchRow[] = [];
+    for (let i = 0; i < 5; i++) {
+      const r = await (await selfWatch(ctlTok, body({ awaiting: `question ${i}` }))).json() as
+        { watch?: TransitionWatchRow; existing?: boolean };
+      if (r.watch) minted.push(r.watch);
+    }
+    const first = minted[0];
+    check("stn1 registration: five distinct questions mint five armed watches with default-free explicit deadlines",
+      minted.length === 5 && minted.every((w) => w.kind === "transition" && w.armed && w.slot === ctl
+        && w.slotOpenedAt === stateSlot(ctl).openedAt && w.deadlineAt === w.created + 600_000)
+        && new Set(minted.map((w) => w.id)).size === 5,
+      JSON.stringify(minted.map((w) => [w.id, w.awaiting, w.armed])));
+    const dup = await (await selfWatch(ctlTok, body({ awaiting: "question 0" }))).json() as
+      { watch?: TransitionWatchRow; existing?: boolean };
+    check("stn1 registration: the same armed question is returned as existing, never minted twice",
+      dup.existing === true && dup.watch?.id === first?.id, JSON.stringify(dup));
+    const sixthLane = await post(`/api/slots/${ctl}/watch`, { target: lane.slot, idleSec: 3600 });
+    const sixthText = await sixthLane.text();
+    const sixthTransition = await selfWatch(ctlTok, body({ awaiting: "question 5" }));
+    check("stn1 cap: the shared per-slot budget refuses the sixth watch of ANY kind with the one shared number",
+      sixthLane.status === 400 && sixthText.includes("max 5 active watches per slot") && sixthTransition.status === 400
+        && (await allWatches()).filter((w) => w.slot === ctl && w.armed).length === 5,
+      `${sixthLane.status} ${sixthText} | ${sixthTransition.status}`);
+
+    // --- expiry and the fail-closed parser, across one restart. The first watch's deadline is
+    // moved into the past; two malformed transition rows (an inbox one, an awaiting-less one) are
+    // planted beside it and must not load. ---
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    {
+      const st = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { watches?: Record<string, unknown>[] };
+      const row = (st.watches ?? []).find((w) => w.id === first?.id);
+      if (row) row.deadlineAt = Date.now() - 1;
+      st.watches?.push({ ...(row ?? {}), id: "stn1inboxfixture", awaiting: "planted", delivery: "inbox",
+        deadlineAt: Date.now() + 600_000 });
+      st.watches?.push({ ...(row ?? {}), id: "stn1noawaitfixture", awaiting: undefined, deadlineAt: Date.now() + 600_000 });
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
+    }
+    await restartSrv();
+    let expired: TransitionWatchRow | undefined;
+    for (let i = 0; i < 40 && expired?.armed !== false; i++) {
+      expired = (await allWatches()).find((w) => w.id === first?.id);
+      if (expired?.armed !== false) await Bun.sleep(250);
+    }
+    check("stn1 expiry: the tick disarms a watch past its deadline with lastResult 'expired' and no event",
+      expired?.armed === false && (expired.lastResult ?? "").startsWith("expired")
+        && !(await allEvents()).some((e) => e.watchId === first?.id),
+      JSON.stringify(expired ?? null));
+    check("stn1 expiry: no pane text accompanies an expiry — the rail carries transitions, not a second stream",
+      (await transitionTexts(ctl)) === 0, String(await transitionTexts(ctl)));
+    const lateComplete = await complete(svTok, first?.id ?? "x", "too late");
+    const lateText = await lateComplete.text();
+    check("stn1 expiry: completing an expired watch is 409 'no longer armed' and mints nothing",
+      lateComplete.status === 409 && lateText.includes("no longer armed") && lateText.includes("expired")
+        && !(await allEvents()).some((e) => e.watchId === first?.id),
+      `${lateComplete.status} ${lateText}`);
+    check("stn1 parser: a persisted transition row claiming inbox delivery or lacking awaiting is dropped fail-closed",
+      !(await allWatches()).some((w) => w.id === "stn1inboxfixture" || w.id === "stn1noawaitfixture")
+        && (await allWatches()).filter((w) => w.slot === ctl && w.kind === "transition").length === 5,
+      JSON.stringify((await allWatches()).filter((w) => w.slot === ctl).map((w) => [w.id, w.armed])));
+    const expiredAudit = ((await (await get("/api/audit")).json()) as { rows?: { event: string; detail?: string }[];
+      events?: { event: string; detail?: string }[] });
+    const auditRows = expiredAudit.rows ?? expiredAudit.events ?? [];
+    check("stn1 expiry: the audit trail carries one watch_expire row naming the watch",
+      auditRows.some((r) => r.event === "watch_expire" && (r.detail ?? "").includes(first?.id ?? "?")),
+      JSON.stringify(auditRows.filter((r) => r.event === "watch_expire").slice(-2)));
+
+    // --- the transport end: a completed watch whose receiver dies while the event is still
+    // pending. idleSec 3600 keeps the Controller's event pending (it is never that idle), so the
+    // teardown is what ends it — as receiver-gone, never as delivered, with no pane text. ---
+    const second = minted[1];
+    const doneRes = await complete(svTok, second?.id ?? "x", "the portfolio moved");
+    const done = await doneRes.json() as { ok?: boolean; event?: TransitionEventRow };
+    check("stn1 transport: completion mints one pending event for a not-yet-idle receiver",
+      doneRes.ok && done.event?.status === "pending" && done.event.receiverSlot === ctl && done.event.attempts === 0,
+      `${doneRes.status} ${JSON.stringify(done)}`);
+    await Bun.sleep(AUTOS_TICK_MS * 3 + 200);
+    const stillPending = (await allEvents()).find((e) => e.id === done.event?.id);
+    await post(`/api/slots/${ctl}/kill`, {});
+    const gone = (await allEvents()).find((e) => e.id === done.event?.id);
+    check("stn1 transport: teardown of the registrant turns the pending event receiver-gone and types nothing",
+      stillPending?.status === "pending" && gone?.status === "receiver-gone" && (await transitionTexts(ctl)) === 0,
+      JSON.stringify({ stillPending, gone }));
+    check("stn1 transport: the dead registrant's remaining armed watches are dropped with it — nothing to complete",
+      !(await allWatches()).some((w) => w.slot === ctl),
+      JSON.stringify((await allWatches()).filter((w) => w.slot === ctl).map((w) => w.id)));
+    const ghost = await complete(svTok, minted[2]?.id ?? "x", "to nobody");
+    check("stn1 transport: completing a dropped watch is 409 'unknown watch'",
+      ghost.status === 409 && (await ghost.text()).includes("unknown watch"), String(ghost.status));
+
+    // the transport honesty for this kind is the SAME code path, pinned at source: the new
+    // message branch sits between the persisted send-uncertain marker and the sendText call of
+    // the one FACT 2 loop, so every ACP-25 rule proved above for lane events binds it too.
+    const transitionBranchAt = tickSource.indexOf('event.kind === "supervisor-transition"');
+    check("stn1 transport: the supervisor-transition message is composed inside FACT 2 after send-uncertain is persisted and before sendText",
+      transitionBranchAt > persistedAt && transitionBranchAt < sendAt, `${persistedAt}:${transitionBranchAt}:${sendAt}`);
+
+    await bindSupervisor(null);
+    check("stn1 cleanup: the fixture binding is gone again and the Supervisor module's null baseline holds",
+      ((await (await get("/api/programs")).json()) as { supervisor: unknown }).supervisor === null);
+    await post(`/api/slots/${sv}/kill`, {});
+    await post(`/api/slots/${lane.slot}/kill`, {});
+  }
+
   // --- PANE TRANSPORT WITHOUT A SESSION ACKNOWLEDGEMENT, CLIENT HALF. `delivered` means tmux
   // accepted paste+Enter and nothing else; the conversation on the other side never said it read
   // the text. Measured gap: delivered +3s, acknowledged +368s, and only because the owner happened

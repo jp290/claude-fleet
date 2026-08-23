@@ -12,6 +12,7 @@ import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessa
   type AuditWatchEventPayload, type DeployWatchEventPayload, type ClarificationEventPayload,
   type ClarificationBasis,
   laneQuietSince, DONE_LOOKING_PROSE, laneStalled, laneStalledSince, STALLED_PROSE } from "./lane-signals";
+import { phaseOf, type Phase, type PhaseInput, type PhaseOutcomeFacts } from "./program-phase";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { buildAnalysisPrompt, ANALYSIS_BLOCKERS } from "./analysis-prompt";
 import { analysisStaleness } from "./analysis-staleness";
@@ -2277,6 +2278,58 @@ type ProgramDigest = Pick<Program, "id" | "status" | "title" | "createdAt">;
 const programDigest = (p: Program): ProgramDigest => ({ id: p.id, status: p.status,
   title: p.title, createdAt: p.createdAt });
 
+// --- the ONE assembly point for the phase reducer's inputs (program-phase.ts, brief §2 I1–I6).
+// Both readers of `phase` go through this, so the Program view and the Supervisor rollup can never
+// be looking at differently-assembled facts — the same argument laneSignalView makes for the
+// done-looking predicate one bracket lower.
+//
+// It READS ONLY: no map is mutated, no ledger written, no subprocess spawned (a git spawn inside a
+// view is forbidden — the sessions poll must never block on one). The open-status guard on the
+// attention filter lives HERE rather than at the callers, because terminal attention rows are
+// pruned (ATTENTION_KEEP_TERMINAL) and a projection over prunable rows would drift with age
+// instead of with facts.
+function programPhaseInput(t: Task, programId: string, outcome: PhaseOutcomeFacts | null,
+  now: number): PhaseInput {
+  // I2, the exact triple: a slot that merely shares the cwd is not this row's lane, and a slot
+  // whose worktree is gone (`cwd` falsy) is not a lane at all.
+  const lane = slots.find((x) => x.cwd && x.taskId === t.id && x.programId === programId) ?? null;
+  const openAttention = attentionRequests.filter((a) => a.programId === programId
+    && a.provenance?.taskId === t.id
+    && (a.status === "open" || a.status === "send-uncertain")).length;
+  // I4. A legacy verdict without candidateSha carries null through; absence is UNKNOWN, never a
+  // synthesised sha (the MergeLast comment states the same rule at the source).
+  const last = lane ? mergeLast.get(lane.id) ?? null : null;
+  return {
+    task: { id: t.id, kind: t.kind, status: t.status, note: t.note },
+    lane: lane ? laneSignalView(lane, now) : null,
+    merge: {
+      inflight: lane !== null && mergeInflight.has(lane.id),
+      start: lane !== null && mergeStart.has(lane.id),
+      last: last
+        ? { status: last.status, landed: last.landed, candidateSha: last.candidateSha ?? null }
+        : null,
+    },
+    openAttention,
+    outcome,
+    idleThresholdMs: AUTO_REVIEW_IDLE_MS,
+  };
+}
+
+// I6: the NEWEST lane-outcome row per task id, off a list the caller has already sorted newest
+// first. Rows without a string taskId belong to no row here and are skipped rather than guessed at.
+function newestOutcomeByTask(sortedRows: Record<string, unknown>[]): Map<string, PhaseOutcomeFacts> {
+  const byTask = new Map<string, PhaseOutcomeFacts>();
+  for (const row of sortedRows) {
+    const taskId = typeof row.taskId === "string" ? row.taskId : null;
+    if (taskId === null || byTask.has(taskId)) continue;
+    byTask.set(taskId, {
+      disposition: typeof row.disposition === "string" ? row.disposition : null,
+      headSha: typeof row.headSha === "string" ? row.headSha : null,
+    });
+  }
+  return byTask;
+}
+
 // ProgramExecutionView v1 is deliberately a projection, never a second lifecycle model. The
 // bound MAIN occupant is the only authority bracket; everything below joins by persisted ids or
 // the full receiver occupant triple, and every gap stays visible as an explicit unknown.
@@ -2285,6 +2338,7 @@ async function programExecutionView(s: Slot): Promise<Response> {
     readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE),
     readLedger<Record<string, unknown>>(CONTEXT_RECEIPT_FILE),
   ]);
+  const now = Date.now();
   const boundPrograms = programs.filter((p) => p.main
     && p.main.slot === s.id && p.main.openedAt === s.openedAt);
   const projected = boundPrograms.map((p) => {
@@ -2295,6 +2349,7 @@ async function programExecutionView(s: Slot): Promise<Response> {
     const outcomeRows = outcomeLedger.rows.filter((row) => row.programId === p.id);
     outcomeRows.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0)
       - (typeof a.ts === "number" ? a.ts : 0));
+    const outcomeByTask = newestOutcomeByTask(outcomeRows);
     const receiptRows = receiptLedger.rows.filter((row) => row.programId === p.id);
     receiptRows.sort((a, b) => (typeof b.at === "number" ? b.at : 0)
       - (typeof a.at === "number" ? a.at : 0));
@@ -2335,10 +2390,18 @@ async function programExecutionView(s: Slot): Promise<Response> {
         executionState: p.status === "active" ? "active" : "not-executing",
       },
       tasks: {
-        rows: programTasks.map((t) => ({
-          id: t.id, kind: t.kind, status: t.status, releasedBy: t.releasedBy ?? null,
-          slot: t.slot ?? null, originId: t.originId ?? null, text: t.text.slice(0, 200),
-        })),
+        rows: programTasks.map((t) => {
+          // DERIVED per request, stored nowhere. `phase` says where the row sits on the rail; it
+          // never says the work is good, and nothing here moves a persisted status.
+          const derived = phaseOf(programPhaseInput(t, p.id, outcomeByTask.get(t.id) ?? null, now));
+          if (derived.unknown !== null) unknown.push(derived.unknown);
+          return {
+            id: t.id, kind: t.kind, status: t.status, releasedBy: t.releasedBy ?? null,
+            slot: t.slot ?? null, originId: t.originId ?? null, text: t.text.slice(0, 200),
+            phase: derived.phase, phaseBasis: derived.phaseBasis, note: derived.note,
+            candidate: derived.candidate,
+          };
+        }),
         total: programTasks.length,
         byStatus,
       },
@@ -14052,6 +14115,10 @@ async function supervisorView(s: Slot): Promise<Response> {
   // occupant. The liveness rule is programOccupancy's — the SAME function GET /api/programs
   // answers with, so a view can never report a receiver an actual send would refuse, and the two
   // program lists can never disagree about the same binding.
+  const now = Date.now();
+  // I6 for the rollup, built ONCE off the whole ledger newest-first — the same derivation the
+  // Program view does per program, so the two brackets cannot disagree about the same row.
+  const phaseOutcomes = newestOutcomeByTask([...outcomeLedger.rows].sort((a, b) => num(b.ts) - num(a.ts)));
   const ordered = [...programs].sort((a, b) => b.createdAt - a.createdAt);
   const portfolio = ordered.slice(0, SUPERVISOR_VIEW_PROGRAMS).map((p) => {
     const main = p.main ?? null;
@@ -14059,6 +14126,18 @@ async function supervisorView(s: Slot): Promise<Response> {
     const programTasks = tasks.filter((t) => t.programId === p.id);
     const byStatus: Record<string, number> = {};
     for (const t of programTasks) byStatus[t.status] = (byStatus[t.status] ?? 0) + 1;
+    // COUNTS ONLY, never row bodies. This route already carries the largest Supervisor payload and
+    // the Controller reads it on a turn; a phase histogram is under 100 B per program, a list of
+    // per-row bases would not be. The Program-MAIN's own view carries the bodies.
+    const phases: Partial<Record<Phase, number>> = {};
+    let unknownPhased = 0;
+    for (const t of programTasks) {
+      const derived = phaseOf(programPhaseInput(t, p.id, phaseOutcomes.get(t.id) ?? null, now));
+      phases[derived.phase] = (phases[derived.phase] ?? 0) + 1;
+      if (derived.phase === "UNKNOWN") unknownPhased++;
+    }
+    if (unknownPhased > 0)
+      unknown.push(`${unknownPhased} tasks of program ${p.id} project as phase UNKNOWN; the bound MAIN's program-execution view names each missing input.`);
     return {
       program: {
         id: p.id, status: p.status, title: p.title.slice(0, SUPERVISOR_VIEW_TEXT),
@@ -14068,7 +14147,7 @@ async function supervisorView(s: Slot): Promise<Response> {
       main: main ? { slot: main.slot, openedAt: main.openedAt, sessionId: main.sessionId,
         boundAt: main.boundAt } : null,
       occupancy,
-      tasks: { total: programTasks.length, byStatus },
+      tasks: { total: programTasks.length, byStatus, phases },
     };
   });
   if (ordered.length > portfolio.length)

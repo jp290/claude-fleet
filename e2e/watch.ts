@@ -447,11 +447,16 @@ export async function run(): Promise<void> {
     const watchedSub = await subscribe(main1, watched);
     const agreedSub = await subscribe(main1, agreed);
     const conflictSub = await subscribe(main2, conflicted);
+    // `conflicted` is program-bound to main1 AND carries two distinct watch occupants (main1+main2).
+    // Before the receiver reorder that combination was the WORST case a bound lane could be in: the
+    // multi-watcher refusal fires before any program branch is reached, so the lane with the most
+    // evidence about who coordinates it was the one that could not file at all.
+    const conflictSub2 = await subscribe(main1, conflicted);
     const multiSub1 = await subscribe(main1, multi);
     const multiSub2 = await subscribe(main2, multi);
     const replacedMainSub = await subscribe(main2, replacedMainWorker);
     check("clarification lane-watch fixtures: fresh receiver-occupant Watches are persisted before derivation",
-      [watchedSub, agreedSub, conflictSub, multiSub1, multiSub2, replacedMainSub]
+      [watchedSub, agreedSub, conflictSub, conflictSub2, multiSub1, multiSub2, replacedMainSub]
         .every((x) => x.response.ok && (x.body.watch?.slotOpenedAt ?? 0) > 0));
 
     await tmuxOut("kill-session", "-t", "srv");
@@ -516,10 +521,9 @@ export async function run(): Promise<void> {
     const beforeRejectEvents = (await clarificationEventRows()).length;
     const noEvidence = await selfClarify(laneTokens.get(none.slot) ?? "", { question: "Who coordinates me?" });
     const legacyOnly = await selfClarify(laneTokens.get(legacy.slot) ?? "", { question: "Who owns this legacy watch?" });
-    const conflict = await selfClarify(laneTokens.get(conflicted.slot) ?? "", { question: "Which MAIN?" });
     const multiple = await selfClarify(laneTokens.get(multi.slot) ?? "", { question: "Which watcher?" });
-    const [noEvidenceText, legacyOnlyText, conflictText, multipleText] = await Promise.all([
-      noEvidence.text(), legacyOnly.text(), conflict.text(), multiple.text(),
+    const [noEvidenceText, legacyOnlyText, multipleText] = await Promise.all([
+      noEvidence.text(), legacyOnly.text(), multiple.text(),
     ]);
     const rejectedState = JSON.parse(readFileSync(clarificationStatePath, "utf8")) as {
       clarifications?: unknown[]; slots?: Record<string, { awaiting?: string | null }>;
@@ -530,9 +534,6 @@ export async function run(): Promise<void> {
     check("clarification rejection: legacy Watch without slotOpenedAt has its own named 409",
       legacyOnly.status === 409 && legacyOnlyText.includes("only legacy lane-watch evidence exists without slotOpenedAt")
         && (rejectedState.slots?.[String(legacy.slot)]?.awaiting ?? null) === null);
-    check("clarification rejection: disagreeing Program/Watch evidence is a distinct 409 without mutation",
-      conflict.status === 409 && conflictText.includes("program-main and lane-watch evidence disagree")
-        && (rejectedState.slots?.[String(conflicted.slot)]?.awaiting ?? null) === null);
     check("clarification rejection: two Watch occupants are a distinct 409 without request or event",
       multiple.status === 409 && multipleText.includes("lane-watch evidence names multiple receiver occupants")
         && (await clarificationEventRows()).length === beforeRejectEvents
@@ -593,14 +594,45 @@ export async function run(): Promise<void> {
     const agreeOpen = await selfClarify(agreedTok, { question: "Both facts agree" });
     const agreeRequest = (await agreeOpen.json() as { request?: ClarificationRow }).request;
     check("clarification matching Program+Watch evidence resolves once to one occupant and one event",
-      agreeOpen.ok && agreeRequest?.basis === "program-main+lane-watch" && agreeRequest.receiver.slot === main1
+      agreeOpen.ok && agreeRequest?.basis === "program-main" && agreeRequest.receiver.slot === main1
         && (await clarificationEventRows()).filter((e) => e.payload.requestId === agreeRequest.id).length === 1);
+
+    // --- receiver: program binding first ---------------------------------------------------
+    // clarificationReceiverFor answers "who coordinates this lane" for BOTH self-routes (the
+    // clarification above and the fleet-report below it in server.ts), so the two directions are
+    // one rule and are checked as a pair. Losing either is a distinct, opposite defect:
+    //   (a) consulting watch evidence first refuses a BOUND lane for something it cannot fix —
+    //       a stranger's stale subscription, invisible from inside the pane, and the worker's
+    //       result then has nowhere to go at exactly the moment it has something to say;
+    //   (b) dropping the program-LESS refusal would silently pick one of two watchers, which is
+    //       a coin toss dressed as a routing decision.
+    // BREAKS IF: the `basis: "program-main"` return moves back below `const watchReceivers`.
+    const eventsBeforeDirections = (await clarificationEventRows()).length;
+    const boundOpen = await selfClarify(laneTokens.get(conflicted.slot) ?? "", { question: "Which MAIN?" });
+    const boundRequest = (await boundOpen.json() as { request?: ClarificationRow }).request;
+    const boundEvent = (await clarificationEventRows()).find((e) => e.id === boundRequest?.eventId);
+    check("receiver direction (a): a program-bound lane reaches its bound MAIN past two watchers naming different occupants",
+      boundOpen.ok && boundRequest?.basis === "program-main" && boundRequest.receiver.slot === main1
+        && boundRequest.provenance.programId === programId
+        && boundEvent?.receiverSlot === main1 && boundEvent.watchId === null
+        && boundEvent.payload.basis === "program-main",
+      JSON.stringify({ status: boundOpen.status, basis: boundRequest?.basis,
+        receiver: boundRequest?.receiver, event: boundEvent?.receiverSlot }));
+    // …and the opposite direction, re-asked on the same fixture that was refused above: the
+    // sentence is the contract, so it is matched verbatim rather than by status alone.
+    const unboundAgain = await selfClarify(laneTokens.get(multi.slot) ?? "", { question: "Still which watcher?" });
+    const unboundText = await unboundAgain.text();
+    check("receiver direction (b): a program-LESS lane with two watchers keeps the exact refusal and mints nothing",
+      unboundAgain.status === 409
+        && unboundText.includes("lane-watch evidence names multiple receiver occupants")
+        && (await clarificationEventRows()).length === eventsBeforeDirections + 1,
+      `${unboundAgain.status} ${unboundText}`);
     const [workerScope, mainScope, foreignScope] = await Promise.all([
       selfClarifications(progTok), selfClarifications(main1Tok), selfClarifications(main2Tok),
     ]);
     check("clarification GET scope: worker sees only its occupant rows; MAIN sees only exact receiver rows",
       workerScope.requests.length === 1 && workerScope.requests[0]?.id === progRequest?.id
-        && mainScope.requests.length === 3
+        && mainScope.requests.length === 4
         && mainScope.requests.every((c) => c.receiver.slot === main1)
         && foreignScope.requests.length === 0,
       JSON.stringify({ worker: workerScope.requests.map((c) => c.id), main: mainScope.requests.map((c) => c.id), foreign: foreignScope.requests }));

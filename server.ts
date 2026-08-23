@@ -5786,6 +5786,14 @@ function clarificationReceiverFor(lane: Slot): ClarificationReceiver | { error: 
     if (main && live?.cwd && live.id === main.slot && live.openedAt === main.openedAt)
       programReceiver = { slot: live.id, openedAt: live.openedAt, sessionId: live.sessionId };
   }
+  // PROGRAM BINDING WINS, AND IT WINS *BEFORE* THE WATCH EVIDENCE IS EVEN READ. A bound lane has
+  // exactly one coordinating occupant by construction — the owner confirmed it when the Program was
+  // activated — so watch rows can only ever agree with that fact, contradict it, or be ambiguous
+  // about it. Consulting them first made all three cost the same: a second watcher (someone else
+  // idly subscribed to this lane) or a stale one pointing elsewhere refused the report with a
+  // 409 the worker could not act on, and the answer went nowhere. The refusals below are still
+  // exactly right for a lane with NO program — there, watch evidence is the only evidence there is.
+  if (programReceiver) return { receiver: programReceiver, basis: "program-main" };
 
   const legacyMatches = watches.filter((w) => "target" in w && w.target === lane.id
     && w.targetCwd === lane.cwd && w.targetBranch === lane.worktree?.branch
@@ -5804,11 +5812,9 @@ function clarificationReceiverFor(lane: Slot): ClarificationReceiver | { error: 
   if (distinctWatchReceivers.length > 1)
     return { error: "lane-watch evidence names multiple receiver occupants" };
   const watchReceiver = distinctWatchReceivers[0] ?? null;
-  if (programReceiver && watchReceiver && !sameOccupant(programReceiver, watchReceiver))
-    return { error: "program-main and lane-watch evidence disagree" };
-  if (programReceiver && watchReceiver)
-    return { receiver: programReceiver, basis: "program-main+lane-watch" };
-  if (programReceiver) return { receiver: programReceiver, basis: "program-main" };
+  // Reachable only for a program-LESS lane now, which is why there is no program branch left here.
+  // "program-main+lane-watch" stays in the ClarificationBasis union on purpose: rows persisted
+  // before this reorder carry it, and loadState validates against that list.
   if (watchReceiver) return { receiver: watchReceiver, basis: "lane-watch" };
   if (legacyMatches.length > 0)
     return { error: "only legacy lane-watch evidence exists without slotOpenedAt" };
@@ -6985,6 +6991,43 @@ function briefSourceOf(t: Task, clarify: boolean): BriefSource {
 // for the ledger, not two. It joins no lane outcome only because a Program-MAIN is not a lane.
 const FOUNDING_BRIEF_SOURCE: BriefSource = "founding";
 
+// THE LANE'S OWN ENDING, WRITTEN INTO EVERY MUTATING BRIEF. Measured root cause:
+// docs/messungen/2026-08-23-rootcause-lane-ohne-commit-und-report.md — a finished lane wrote its
+// result to an UNTRACKED file, sat idle-dirty ~20 min (so the lane-ready watch, idle+clean+ahead>0,
+// could not fire) and filed nothing. The delivered brief was task text plus anchor block: it said
+// what to DO and never what to LEAVE BEHIND. Harness and model behaviour were refuted there by
+// transcript, which is why the fix is at this seam and not in any one brief.
+// Three acts, deterministic bytes, appended once at the single assembly seam below so a brief
+// cannot be delivered without them. A clarify lane is exempt by construction: it must STOP and let
+// the owner answer, and telling it to report would be telling it to finish.
+// The status list is read from the route's own constant — a footer that named a status the route
+// rejects would teach the lane a 400.
+const LANE_EXIT_FOOTER = `
+
+--- HOW THIS LANE ENDS (three acts, in this order — they are the deliverable, not paperwork)
+
+1. COMMIT. A lane that stops with uncommitted work cannot be landed, and NO untracked files may
+   remain in the worktree — they block the land outright. Scratch files belong in the session
+   scratchpad, never in the tree. Run \`git status --porcelain\` and see it empty before act 2.
+
+2. FILE ONE TYPED FLEET-REPORT — this is how your result leaves the pane:
+
+   curl -s -X POST http://${HOST}:${PORT}/api/self/fleet-report \\
+     -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \\
+     -d '{"status":"<${FLEET_REPORT_STATUSES.join("|")}>","text":"<summary + quoted verification result>"}'
+
+   status is exactly one of: ${FLEET_REPORT_STATUSES.join(" · ")} — complete = the slice is done and
+   verified, needs-main = you finished what you could and a decision is owed, failed = it did not
+   work and you are saying so. \`text\` is prose for a human reader: what you did, the quoted
+   verification result, and one line for anything left unresolved. The body takes ONLY those two
+   fields. A report is a MESSAGE, never a state change — it does not move your task's status, does
+   not land anything, and does not deploy.
+
+3. THEN GO IDLE. Do not poll for a reply and do not schedule a check-in to wait for one: the server
+   delivers the report to your coordinator, and any answer arrives in this pane on its own.
+
+`;
+
 async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: string; branch: string; form: LaneForm },
   ownerAct: boolean, clarify = false): Promise<void> {
   // clarify mode ignores the compiled brief entirely: the enhancer turns a draft into a work brief
@@ -7092,7 +7135,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     const plan: ContextPlan = { selected: [...base.selected, ...repoPlan.selected],
       omitted: [...base.omitted, ...repoPlan.omitted] };
     const anchorBlock = renderContextAnchorBlock(plan);
-    const deliveredBrief = `${brief}${anchorBlock}`;
+    const deliveredBrief = `${brief}${anchorBlock}${clarify ? "" : LANE_EXIT_FOOTER}`;
     const selected = contextReceiptSelections(plan.selected);
     const omitted = plan.omitted.map((entry) => ({ ...entry }));
     await sendText(free, deliveredBrief, true);

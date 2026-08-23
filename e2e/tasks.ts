@@ -572,9 +572,10 @@ export async function run(ctx: Ctx): Promise<void> {
       !!dig && dig.text === undefined && !raw.includes(MARK), JSON.stringify(dig));
     // Typed operation events intentionally ride this poll so an owner can see waiting/spent
     // subscriptions. They are independently capped; the prompt-text regression this probe guards
-    // is still separated by orders of magnitude, while 12 KiB leaves room for that bounded trail.
-    check("the sessions payload stays under 12 KB with a 15 KB task in the queue and bounded event facts",
-      bytes < 12 * 1024, `${bytes} B`);
+    // is still separated by orders of magnitude. The fixed board grew from 16 to 28 slot facts;
+    // 16 KiB budgets that explicit hot-poll cost while keeping the 15 KB prompt itself off-poll.
+    check("the 28-slot sessions payload stays under 16 KB with a 15 KB task queued and bounded event facts",
+      bytes < 16 * 1024, `${bytes} B`);
     const fullT = ((await (await get("/api/tasks")).json()) as { tasks: { id: string; text: string }[] })
       .tasks.find((t) => t.id === bigT.task.id);
     check("the full prompt text is reachable behind GET /api/tasks (what the queue overlay renders)",

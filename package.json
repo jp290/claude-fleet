@@ -1,6 +1,6 @@
 {
   "name": "claude-fleet",
-  "description": "Web dashboard for up to 16 persistent tmux-backed Claude Code sessions \u2014 token auth, split panes, live typing, scrollback replay",
+  "description": "Web dashboard for up to 28 persistent tmux-backed Claude Code sessions \u2014 token auth, split panes, live typing, scrollback replay",
   "license": "MIT",
   "author": "jp290",
   "repository": {

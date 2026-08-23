@@ -1772,8 +1772,53 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     && !/(?:readFileSync|Bun\.file|readText)\(PI_ZAI_KEY_FILE/.test(pzCode),
     pzCode.match(/ZAI_API_KEY=[^\n]+/)?.[0]?.slice(0, 180) ?? "no ZAI_API_KEY assignment");
   pin("pi-zai is registered in the stable harness order beside the two Pi adapters",
-    server.includes("const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS, PI_ZAI_HARNESS, PI_UNFENCED_HARNESS, CONTAINER_HARNESS, CODEX_HARNESS];"),
+    server.includes("const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS, PI_ZAI_HARNESS, PI_OX_HARNESS, PI_UNFENCED_HARNESS, CONTAINER_HARNESS, CODEX_HARNESS];"),
     server.match(/const HARNESSES: readonly Harness\[\] = \[[^\n]+/)?.[0] ?? "registry absent");
+
+  const poStart = server.indexOf("const PI_OX_HARNESS: Harness = {");
+  const poBody = poStart < 0 ? "" : server.slice(poStart, server.indexOf("\n};\n", poStart));
+  const poCode = poBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  pin("pi-ox is a bounded self-contained adapter declaration, never a native OpenCode harness",
+    poStart > 0 && poBody.length > 500 && poBody.length < 8_000 && !poCode.includes("..."),
+    `${poBody.length} bytes`);
+  pin("pi-ox pins Pi, provider, model, cycle list and public Canary key without a fallback",
+    poCode.includes("pi --provider opencode --model 'x-preview-f-free' --models opencode/x-preview-f-free --api-key public --no-approve --no-extensions --no-skills --no-prompt-templates --no-themes --verbose")
+      && (poCode.match(/--provider /g) ?? []).length === 1
+      && (poCode.match(/--models /g) ?? []).length === 1
+      && (poCode.match(/--no-extensions/g) ?? []).length === 1
+      && !/(?:OPENCODE|OPENAI)_API_KEY=/.test(poCode),
+    poCode.match(/let cmd = [^\n]+/)?.[0] ?? "no pi-ox command");
+  const poCatalog = poCode.match(/const catalog = '([^']+)'/)?.[1] ?? "";
+  let poCatalogShape: unknown = null;
+  try { poCatalogShape = JSON.parse(poCatalog); } catch { /* asserted below */ }
+  const poProvider = (poCatalogShape as { providers?: { opencode?: { apiKey?: unknown; models?: unknown[] } } } | null)
+    ?.providers?.opencode;
+  pin("pi-ox's single-quoted shell catalogue is JSON-safe and contains exactly the Canary's one public model",
+    !!poCatalog && !poCatalog.includes("'") && poProvider?.apiKey === "public"
+      && poProvider.models?.length === 1
+      && (poProvider.models[0] as { id?: unknown })?.id === "x-preview-f-free",
+    `bytes=${poCatalog.length} models=${poProvider?.models?.length ?? "invalid"}`);
+  pin("pi-ox validates a separate absolute base and derives one fail-closed root per Fleet session UUID",
+    server.includes('throw new Error("FLEET_PI_OX_AGENT_DIR must be a safe absolute path without ..")')
+      && server.includes("sessionId && CODEX_UUID_RE.test(sessionId) ? `${PI_OX_AGENT_DIR}/${sessionId}` : null")
+      && poCode.includes("if (!agentDir)")
+      && poCode.includes("PI_CODING_AGENT_DIR='${agentDir}'")
+      && (poCode.match(/PI_CODING_AGENT_DIR=/g) ?? []).length === 1,
+    poCode.match(/PI_CODING_AGENT_DIR=[^\n]+/)?.[0]?.slice(0, 180) ?? "no isolated root");
+  pin("pi-ox replaces its session-local catalogue atomically and fails closed before Pi on preparation errors",
+    poCode.includes("mktemp '${agentDir}/.models.json.XXXXXX'")
+      && poCode.includes("mv -f \"$fleet_pi_ox_catalog_tmp\" '${agentDir}/models.json'")
+      && poCode.includes("rm -f \"$fleet_pi_ox_catalog_tmp\"")
+      && poCode.indexOf("mv -f \"$fleet_pi_ox_catalog_tmp\"") < poCode.indexOf("PI_CODING_AGENT_DIR=")
+      && !poCode.includes("> '${agentDir}/models.json'"),
+    poCode.match(/fleet_pi_ox_catalog_tmp[^\n]+/)?.[0]?.slice(0, 280) ?? "no atomic catalogue prelude");
+  pin("pi-ox automation is paired with explicit no-trust startup and a blocking readiness seam",
+    /automatable: true/.test(poCode)
+      && poCode.includes("--no-approve --no-extensions --no-skills --no-prompt-templates --no-themes --verbose")
+      && /readiness: \{/.test(poCode)
+      && /accept: \/Model scope: x-preview-f-free\//.test(poCode)
+      && /re: \/Trust project folder\\\?\//.test(poCode),
+    poCode.match(/readiness: \{[\s\S]{0,240}?\n  \}/)?.[0] ?? "no pi-ox readiness");
 
   // The one unfenced Pi is an explicit adapter, never a conditional hole in normal Pi's fence.
   // Pin both the power and all three blast-radius limits: changing only one side would make either
@@ -1891,14 +1936,14 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // operating mode, every agent records its own work, and /commit is a recovery act. A `true`
   // reappearing here would silently re-route a harness's lifecycle through host rescue.
   const ownerHostCommitExpected: Record<string, string> = {
-    CLAUDE: "false", PI: "false", PI_ZAI: "false", PI_UNFENCED: "false", CONTAINER: "false", CODEX: "false",
+    CLAUDE: "false", PI: "false", PI_ZAI: "false", PI_OX: "false", PI_UNFENCED: "false", CONTAINER: "false", CODEX: "false",
   };
   const wrongOwnerDecision = Object.entries(ownerHostCommitExpected)
     .filter(([name, expected]) => hostCommitsOf(name) !== expected);
   pin("every adapter keeps its owner-decided commit ownership — nobody is fenced out of .git",
     wrongOwnerDecision.length === 0,
     wrongOwnerDecision.map(([name, expected]) => `${name}:${hostCommitsOf(name) ?? "missing"} expected=${expected}`).join(" ")
-      || "all six agree");
+      || "all seven agree");
   // `supports` is written inline on one adapter and one-field-per-line on the others, so the
   // field is matched WITHOUT its leading newline — anchoring on the layout would have made this
   // rule true for three adapters and unaskable for the fourth.

@@ -557,6 +557,26 @@ export async function run(ctx: Ctx): Promise<void> {
       && /^[0-9a-f-]{36}$/.test(piZaiPersistState.sessionId ?? ""),
     `${piZaiPersistOpen.status} / ${JSON.stringify(piZaiPersistState)}`);
 
+  const PI_OX_PERSIST_SLOT = 13;
+  await post(`/api/slots/${PI_OX_PERSIST_SLOT}/kill`, {});
+  const piOxPersistOpen = await post(`/api/slots/${PI_OX_PERSIST_SLOT}/open`, {
+    cwd: codexCwd, harness: "pi-ox", model: "x-preview-f-free",
+  });
+  let piOxPersistState: { harness?: string; model?: string; effort?: string | null; sessionId?: string } | undefined;
+  for (let i = 0; i < 60; i++) {
+    piOxPersistState = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { slots?: Record<string, { harness?: string; model?: string; effort?: string | null; sessionId?: string }> })
+      .slots?.[String(PI_OX_PERSIST_SLOT)];
+    if (piOxPersistState?.harness === "pi-ox" && piOxPersistState.model === "x-preview-f-free"
+      && /^[0-9a-f-]{36}$/.test(piOxPersistState.sessionId ?? "")) break;
+    await Bun.sleep(50);
+  }
+  check("pi-ox restart fixture persists the exact harness/model triple and pinned Pi session",
+    piOxPersistOpen.ok && piOxPersistState?.harness === "pi-ox"
+      && piOxPersistState.model === "x-preview-f-free" && (piOxPersistState.effort ?? null) === null
+      && /^[0-9a-f-]{36}$/.test(piOxPersistState.sessionId ?? ""),
+    `${piOxPersistOpen.status} / ${JSON.stringify(piOxPersistState)}`);
+
   // --- restart persistence ---
   const srvKill = Bun.spawn(["tmux", "-L", SOCK, "kill-session", "-t", "srv"]);
   await srvKill.exited;
@@ -616,7 +636,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // "kein Eintrag" must stay `verify` ABSENT — unconfigured, never a silent green (P-7c).
   const cmdEnv = ["FLEET_CMD", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS", "FLEET_AUDIT_ROTATE_BYTES",
     "FLEET_INTAKE_SECRET", "FLEET_DISPATCH_REPO", "FLEET_VERIFY_CMD_REPOS", "FLEET_CODEX_SESSIONS_DIR",
-    "FLEET_PI_ZAI_AGENT_DIR", "FLEET_PI_ZAI_KEY_FILE",
+    "FLEET_PI_ZAI_AGENT_DIR", "FLEET_PI_ZAI_KEY_FILE", "FLEET_PI_OX_AGENT_DIR",
     // without these the post-restart server reverts to the 60s idle gate / 15s tick and no
     // auto-③ can be observed inside the suite's budget
     "FLEET_AUTO_REVIEW_MS", "FLEET_AUTO_REVIEW_IDLE_MS",
@@ -651,6 +671,25 @@ export async function run(ctx: Ctx): Promise<void> {
   const piZaiAfterRestart = api.slots.find((s) => s.id === PI_ZAI_PERSIST_SLOT);
   check("after restart: a saved pi-zai slot still resolves as pi-zai, never the default adapter",
     piZaiAfterRestart?.harness === "pi-zai", JSON.stringify(piZaiAfterRestart));
+  const piOxAfterRestart = api.slots.find((s) => s.id === PI_OX_PERSIST_SLOT);
+  check("after restart: a saved pi-ox slot still resolves as pi-ox, never default Pi or OpenCode",
+    piOxAfterRestart?.harness === "pi-ox", JSON.stringify(piOxAfterRestart));
+  await tmuxOut("kill-session", "-t", `s${PI_OX_PERSIST_SLOT}`);
+  let piOxHealCmd = "";
+  const piOxHealUntil = Date.now() + 7000;
+  do {
+    piOxHealCmd = (await tmuxOut("display-message", "-p", "-t", `s${PI_OX_PERSIST_SLOT}`,
+      "#{pane_start_command}")).out.replaceAll("\\", "");
+    if (piOxHealCmd.includes("pi --provider opencode --model 'x-preview-f-free' --models opencode/x-preview-f-free --api-key public --no-approve --no-extensions --no-skills --no-prompt-templates --no-themes --verbose")) break;
+    await Bun.sleep(100);
+  } while (Date.now() < piOxHealUntil);
+  check("after restart: harnessOf heals pi-ox with its exact Pi profile and same pinned session",
+    piOxHealCmd.includes("pi --provider opencode --model 'x-preview-f-free' --models opencode/x-preview-f-free --api-key public --no-approve --no-extensions --no-skills --no-prompt-templates --no-themes --verbose")
+      && piOxHealCmd.includes(`--session-id ${piOxPersistState?.sessionId ?? "missing"}`)
+      && piOxHealCmd.includes(`PI_CODING_AGENT_DIR='${process.env.FLEET_PI_OX_AGENT_DIR}/${piOxPersistState?.sessionId ?? "missing"}'`)
+      && !piOxHealCmd.includes("--thinking"),
+    piOxHealCmd.slice(-520));
+  await post(`/api/slots/${PI_OX_PERSIST_SLOT}/kill`, {});
   await tmuxOut("kill-session", "-t", `s${PI_ZAI_PERSIST_SLOT}`);
   let piZaiHealCmd = "";
   const piZaiHealUntil = Date.now() + 7000;

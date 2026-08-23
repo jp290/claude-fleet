@@ -191,6 +191,7 @@ const CLAUDE_CONTEXT_WINDOWS: Readonly<Record<string, number | undefined>> = {
 export function contextWindowFor(model: string | null): number | null {
   if (!model) return null;
   if (model === "glm-5.3") return CONTEXT_WINDOW_GLM_5_3;
+  if (model === "x-preview-f-free") return CONTEXT_WINDOW_1M;
   if (/(?:^|\/)gpt-[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9_-]+)?$/i.test(model)) {
     return CONTEXT_WINDOW_GPT;
   }

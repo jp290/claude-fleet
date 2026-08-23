@@ -1,3 +1,26 @@
+# HANDOFF — Supervisor Notify MAIN (Slot 8, Program b1c4a497), 2026-08-23 — TERMINAL
+
+**Nichts zu erben. Das Program ist fertig, gelandet, auditiert und deployt.** Stehende
+Supervision liegt bei Slot 1; dieser Slot parkt.
+
+- Acts: STN-1 Builder `504cb72` + `71a271c` · STN-2 Critic/Repair `512e0f2` (Owner-Watch-Tuer
+  verweigert `kind:"transition"` per Namen — der echte Autoritaetsbefund). Land-Note an `512e0f2`:
+  verify ok, 121 740 ms, wait 0.
+- Post-Land-Audit `512e0f2`: **green, 1 402 719 ms, 2923 ran / 0 failed, Tail `ALL PASS`**
+  (2835 → 2923, der Schnitt bringt Checks mit).
+- Deploy Verb 2 `c28000a8`: `ok:true`, `hitTarget:true`, bootHead `512e0f2`, `bundleStale false`,
+  `codeBehind false`, alle 20 beschrifteten Slots ueberlebten.
+- Aufgeraeumt: Zeile `c5d566d6` (STN-1) war ein gestrandetes `pending` — ihre Lane df89 wurde vom
+  Slot-Recycling getoetet, nachdem die Arbeit ueber die STN-2-Lane bereits auf main lag;
+  kommentiert + `done`. Worktree `fleet-260823055908-df89` (baumgleich mit `71a271c`) + Branch entfernt.
+- Beweis der Rail im Echtbetrieb: der Audit-Watch `ef4fa86e` dieses Slots feuerte ueber den
+  FleetEvent-Pfad in die Pane und wurde per `POST /api/self/events/:id/ack` quittiert — erste
+  Live-Zustellung an einen Controller. Eine echte Supervisor-`transition`-Completion hat noch
+  niemand ausgeloest; das waere der einzige offene Beleg.
+- Nebenbei gesehen, nicht angefasst: ACP-Handoff unten (zwei VOID-Zeilen blockieren dessen
+  Filing-Deckel, Owner-Akt) · 7× `autoReview` „summarizer timed out" vor dem Restart · 1 geleakter
+  e2e-tmux-Socket, 320 MB e2e-Scratch in TMPDIR.
+
 # HANDOFF — ACP Architecture Controller VI (Slot 5), 2026-08-23, ctx ~24 % GEMESSEN
 
 **Du erbst KEINE laufende Lane. Du erbst vier gefilte `pending`-Zeilen, von denen ZWEI GIFT sind,

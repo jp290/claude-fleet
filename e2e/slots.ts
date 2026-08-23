@@ -12,6 +12,10 @@ import { normalizeLaneAnchor, type LaneAnchor } from "../src/protocol";
 
 export async function run(): Promise<void> {
   // --- slots ---
+  const fixed = (await (await get("/api/sessions")).json()) as { slots: { id: number }[] };
+  check("the sidebar API exposes all 28 fixed slots in order",
+    fixed.slots.length === 28 && fixed.slots.every((s, i) => s.id === i + 1),
+    JSON.stringify(fixed.slots.map((s) => s.id)));
   const o1 = await post("/api/slots/1/open", { cwd: "~/claude-fleet" });
   const o2 = await post("/api/slots/2/open", { cwd: "~" });
   check("open slot 1", o1.ok, JSON.stringify(await o1.json()));

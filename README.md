@@ -2,7 +2,7 @@
 
 **Run and steer coding-agent sessions from one local control plane — from your desk or phone.**
 
-Web dashboard (desktop + mobile) for up to 16 persistent tmux-backed agent sessions on one machine.
+Web dashboard (desktop + mobile) for up to 28 persistent tmux-backed agent sessions on one machine.
 Fleet began as a multi-session Claude harness and now also coordinates Codex- and Pi-compatible
 harnesses, isolated lanes, Programs, delegation and evidence-backed promotion. The stable target
 model — controllers, Project MAINs, Workers, Supervisors, Acts and context layers — lives in
@@ -38,11 +38,11 @@ A reachable fleet is **remote code execution as your user** — every session is
 
 Not provided: TLS, multi-user, rate limiting. For HTTPS + tailnet-identity auth in front, `tailscale serve` works well.
 
-## Architecture — tmux without attach, ×16
+## Architecture — tmux without attach, ×28
 
 Same core as claude-deck (see its README for the full rationale), parameterized per slot:
 
-- tmux socket `claudefleet`, sessions `s1`..`s16`, each created lazily in a directory chosen via the picker (recents are persisted)
+- tmux socket `claudefleet`, sessions `s1`..`s28`, each created lazily in a directory chosen via the picker (recents are persisted)
 - `pipe-pane` per session → `streams/sN.raw`; the Bun server tails all active streams (100ms poll) and broadcasts per-slot over `ws://…/ws/<N>`
 - Reconnect/slot-switch replays the last 2 MB of that slot's stream
 - Per-slot input promise chains and per-slot tmux paste buffers (`fleetbufN`) — one hung session can't stall input to the others, and concurrent sends can't race

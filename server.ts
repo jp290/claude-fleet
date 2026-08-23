@@ -61,7 +61,7 @@ const PORT = Number(process.env.FLEET_PORT ?? 8790);
 // separate tmux socket per instance — lets a test instance (FLEET_SOCK=fleettest)
 // run its own s1..sN sessions without touching the live fleet's
 const SOCK = process.env.FLEET_SOCK ?? "claudefleet";
-const MAX_SLOTS = 16; // fixed places — the sidebar always shows all of them
+const MAX_SLOTS = 28; // fixed places — the sidebar always shows all of them
 // lines of scrollback every WS connect is seeded with, from a fresh capture-pane. Capture
 // output is line-aligned and already reflowed to the pane's width, so it can neither begin
 // mid-escape-sequence nor replay the raw stream's stale wrapping — and it costs a few KB
@@ -2562,11 +2562,11 @@ const DISPATCH_MAX_LANES = Math.max(1, Number(process.env.FLEET_DISPATCH_MAX_LAN
 // A SECOND cap, per Program, and it can only ever NARROW: the repo cap above is checked first and
 // unconditionally, this one after it. It does NOT replace it (owner decision 2026-08-22). Replacing
 // it was the tempting shape and the arithmetic is the whole reason it is wrong: a per-program budget
-// MULTIPLIES by the number of programs, while the slot board does not grow — 13 programs were active
-// when this was written, against 16 fixed slots (MAX_SLOTS, :63) and a repo cap of 2
-// (watchdog.sh, FLEET_DISPATCH_MAX_LANES), so a per-program cap standing ALONE would have permitted
-// 13×2 = 26 concurrent lanes on 16 slots, i.e. a number that has stopped binding machine load. Only
-// a cap that is ALSO checked globally keeps that product off the machine.
+// MULTIPLIES by the number of programs, while the slot board is fixed — with all 28 slots carrying
+// distinct programs and a repo cap of 2 (watchdog.sh, FLEET_DISPATCH_MAX_LANES), a per-program cap
+// standing ALONE would nominally permit 28×2 = 56 concurrent lanes against 28 physical places. The
+// slots would stop the 29th lane, but the intended machine-load cap would have stopped binding long
+// before that. Only a cap that is ALSO checked globally keeps that product off the machine.
 // The honest price of the default: it is DISPATCH_MAX_LANES, so out of the box this check can never
 // be the one that holds anything — the repo cap runs first and refuses at the same number or lower.
 // The knob is inert until the owner sets it SMALLER than the repo cap. It prevents nothing today.
@@ -2577,11 +2577,11 @@ const DISPATCH_MAX_LANES_PER_PROGRAM = Math.max(1,
 // is a PRODUCT and naming it is part of the cap — a per-program cap whose sum is never stated is
 // the mistake the paragraph above spends ten lines on.
 // THE PRODUCT: a release needs a LIVE bound Program-MAIN, i.e. an occupied slot, so at most
-// MAX_SLOTS (16) programs can be releasing at any moment → 16 × 5 = 80 rows. Why that does not
+// MAX_SLOTS (28) programs can be releasing at any moment → 28 × 5 = 140 rows. Why that does not
 // blow anything up, stated rather than assumed: released rows are ROWS, not lanes. What bounds
 // unattended EXECUTION is untouched and lane-shaped — DISPATCH_MAX_LANES per repo (live 2),
 // narrowed by DISPATCH_MAX_LANES_PER_PROGRAM — and the tick starts one lane per tick regardless of
-// how deep the queue is. 80 is also below MAX_TASKS (200), so the product cannot outgrow the list
+// how deep the queue is. 140 is below MAX_TASKS (200), so this door alone cannot outgrow the list
 // it lives in. The cap bounds QUEUE DEPTH, and it is honest about bounding nothing else.
 const PROGRAM_MAX_RELEASED = Math.max(1, Number(process.env.FLEET_PROGRAM_MAX_RELEASED ?? 5) | 0);
 // ACP-23: how many rows ONE Program-MAIN may hold FILED-but-not-yet-released through its own
@@ -2590,8 +2590,9 @@ const PROGRAM_MAX_RELEASED = Math.max(1, Number(process.env.FLEET_PROGRAM_MAX_RE
 // released yet. A released row leaves this count and enters PROGRAM_MAX_RELEASED's, so the two
 // compose instead of double-counting — one MAIN can hold 5 unreleased drafts plus 5 released ones.
 // THE PRODUCT: filing needs a LIVE bound Program-MAIN, i.e. an occupied slot, so at most MAX_SLOTS
-// (16) programs can be filing at any moment → 16 × 5 = 80 rows, and 80 + the release cap's 80 is
-// still under MAX_TASKS (200). What this bounds is QUEUE DEPTH and nothing else — a filed row is
+// (28) programs can be filing at any moment → 28 × 5 = 140 rows. Together the two per-program caps
+// can hold 280 live rows; that exceeds nominal MAX_TASKS (200), whose capTasks deliberately retains
+// every non-terminal row. What this bounds is QUEUE DEPTH and nothing else — a filed row is
 // PENDING, so it is not even a candidate for the tick; what bounds unattended EXECUTION remains
 // lane-shaped and untouched (DISPATCH_MAX_LANES per repo, narrowed by DISPATCH_MAX_LANES_PER_PROGRAM).
 const PROGRAM_MAX_PENDING = Math.max(1, Number(process.env.FLEET_PROGRAM_MAX_PENDING ?? 5) | 0);
@@ -3653,7 +3654,7 @@ async function briefPayload(s: Slot): Promise<BriefPayload | null> {
 }
 
 // branch/dirty/ahead-behind per active slot, refreshed on a slow tick — the sessions
-// poll must never block on 16 git spawns, so it reads this cache instead
+// poll must never block on 28 git spawns, so it reads this cache instead
 const gitInfo = new Map<number, GitInfo | null>(); // null = cwd is not a git repo
 // Canonical toplevel per active slot. A main may run in a subdirectory, so cwd is insufficient
 // for the client's same-repo ownership check; cached on this tick so the 2 s owner poll never
@@ -8260,7 +8261,7 @@ async function tickHarvest(): Promise<void> {
 // --- BACKLOG #14 Phase 2: the ephemeral summarizer agent. The default route runs headless
 // `codex exec` read-only; the explicit rollback route runs an INTERACTIVE claude in a throwaway
 // tmux session (cwd = the slot's checkout, so repo context rides along) — NOT `claude -p`.
-// Never one of the 16 slots; click-only (POST),
+// Never one of the 28 slots; click-only (POST),
 // cached on the exact git state; GET returns the cache without ever spawning.
 // Evidence only by prompt contract — no land/merge verdicts. The answer comes from the selected
 // transport's explicit channel (-o for Codex, transcript JSONL for Claude), never TUI scraping.

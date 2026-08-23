@@ -320,18 +320,28 @@ authority incident (`AGENTS.md` Project MAIN level, clause C).
 
 ### Honest labels — `PLAYABLE` may not mean policy replay
 
-| Label | Means exactly | Who holds the controls |
+A label is a **worker claim** about what the worker itself did. Three other facts sit beside it
+and are never folded into it: the **critic verdict** (a fresh lane's tracked file), **owner
+playtest** (the owner actually played; absent until then), and **promoted status** (an owner act
+in the decision record). Each has its own producer; none is derived from the others.
+
+| Worker-claim label | Means exactly | Who held the controls |
 |---|---|---|
-| `automaton-demo` | the build runs under a scripted policy or replay; frames/clips exist; **nobody held the controls** | no one |
-| `agent-hands-on` | a fresh agent lane launched the delivered artifact and played it through the real input path; its verdict and captures are tracked | an agent |
-| `owner-playtested` | the owner launched the delivered artifact and recorded a verdict (quote + build stamp in the decision record, Private-repo-g O1 form) | the owner |
+| `automaton-demo` | the build ran under a scripted policy or replay; frames/clips exist; **nobody held the controls** | no one |
+| `agent-hands-on` | a fresh agent lane launched the delivered artifact and played it through the real input path; its verdict and captures are tracked at a named sha | an agent |
+
+`owner-playtested` is **not a label a worker or MAIN may write**. It is the separate owner-playtest
+fact, present only when the owner launched the delivered artifact and a verdict with build stamp
+is recorded by or from the owner (Private-repo-g O1 form: quote + `build 564c761` + "Owner-Akt; kein
+Skript kann ihn ersetzen"). Until then it is absent — not pending, not implied by a green critic.
 
 Rules: a label names the *strongest evidence that actually exists*, never the intended one. A
 milestone, site banner, pack title or attention text may use the word `PLAYABLE` only with one of
-these labels attached; `PLAYABLE-READY` over three policy sessions (Tower 15:36:45, "nobody has
-held the keyboard" in its own evidence file) is the forbidden form. The owner gate opens only from
-`agent-hands-on` or better. `automaton-demo` is a fine sim-truth artifact and a wrong owner-facing
-one.
+the two worker labels attached; `PLAYABLE-READY` over three policy sessions (Tower 15:36:45,
+"nobody has held the keyboard" in its own evidence file) is the forbidden form. An
+`agent-hands-on` pass **advances autonomous repair** (steps 3–4) and opens the owner gate; it
+never advances owner playtest or promoted status. `automaton-demo` is a fine sim-truth artifact
+and a wrong owner-facing one.
 
 ### Research needs a consumer or a deferral
 
@@ -347,26 +357,41 @@ waited 90 min on the owner with nothing telling the owner (`private-repo-g.md` �
 ### The communication rail this loop consumes
 
 This loop adds no channel and no control plane; it rides the transitions already under design
-(`docs/program-transitions-brief-2026-08-23.md`, T1–T4) and names what each carries:
+(`docs/program-transitions-brief-2026-08-23.md`, T1–T4). The projection built there answers only
+three questions — **where is the Program mechanically, what durable evidence exists, who must act
+next** — and never whether the creative work is good. This section names what each rail carries
+and keeps the semantic side in provenance-bearing prose:
 
-- **Step 3 and 4 return as T1 worker reports:** `POST /api/self/fleet-report` with
+- **Durable evidence lives in the product repo, not in the report.** The facts a projection may
+  derive from are tracked at a sha: the anchor or waiver entry in the decision record, the launch
+  artifact (tracked file or serve command + manifest), the critic verdict file with its `base:`
+  line, the owner-playtest entry. `fleetReports` are prunable and their text is a pointer; a
+  derivation that needs the report text to know the Program's state is wrong by construction.
+- **Steps 3 and 4 return as T1 worker reports:** `POST /api/self/fleet-report` with
   `{status: complete|needs-main|failed, text}` (`src/protocol.ts:33`, `server.ts:5905`). The text
-  begins with the label and the lane HEAD sha, then the artifact path, critic verdict path and the
-  one named defect or `none`; the rich sensory prose lives in the tracked critic artifact the text
-  points at, not in the report.
+  begins with the worker label and the lane HEAD sha, then the artifact path, the critic verdict
+  path and the one named defect or `none`. Achievement, unknowns, falsifiers and the worker's own
+  self-attack stay in the tracked critic/report artifact the text points at.
 - **Step 6 is T4:** `POST /api/self/attention` kind `review-ready`, text beginning
   `PLAYABLE agent-hands-on <sha> <url-or-file>` — the brief's own convention for the taste gate
   until a sensor field exists. A `review-ready` whose text starts `PLAYABLE automaton-demo` is
-  malformed by this profile and the MAIN must not send it.
+  malformed by this profile and the MAIN must not send it. The owner-playtest fact stays absent
+  through this request; the request asks for it, it does not assert it.
 - **Machine facts stay machine facts:** the transition row carries status, sha, artifact ref,
-  expected next step; it never carries a semantic quality number. No score, no ranking of
-  "ambition" — the private-repo-l MAIN's own sentence stands ("two verdicts saying an artifact is
-  ambitious is not that … `unknown` until he looks", `docs/kit-v3-feedback.md:188-192` there).
+  expected next step and who acts; it never carries a semantic quality number. No score, no
+  ranking of "ambition" — the private-repo-l MAIN's own sentence stands ("two verdicts saying an
+  artifact is ambitious is not that … `unknown` until he looks", `docs/kit-v3-feedback.md:188-192`
+  there).
+- **Succession keeps the split:** when a Studio-MAIN hands over (`POST /api/self/succeed`), the
+  successor derives where the loop stands from the tracked facts above plus the projection; the
+  semantic state — what the anchor means, which defect is open, what the owner is being asked —
+  travels in `HANDOFF.md`. Neither replaces the other.
 - **No pane polling:** a Studio-MAIN waits on `{kind:"lane"}` / `{kind:"merge"}` watches and
   T1 reports, never on `capture-pane`.
 
 UNKNOWN until built: the program projection's `phase` field (brief §2) does not yet know the
-labels; until it does, the label lives in the report/attention text prefix only.
+worker labels or the owner-playtest fact; until it does, the label lives in the report/attention
+text prefix and the facts live only in the tracked files.
 
 ### Owner touchpoints, stated once
 

@@ -206,6 +206,217 @@ a universal rule.
 Technical agents may help prepare screenshots, video, audio comparisons and playtest evidence,
 but an AI judging AI output is not the sole proof of taste.
 
+What must exist before the owner is brought to that tasting point — and how the build is labelled
+when it arrives — is fixed in the next section; a tasting point reached without it is the Tower
+failure.
+
+## The pre-owner loop: what must exist before the owner is asked
+
+**Status:** promoted workflow correction, 2026-08-23. Trigger: the Private-repo-k owner
+freeze (`private-repo-k@e786a7e`, O2: "result poor, no playtest; await Product-Studio
+workflow correction") and two independent forensic audits of that run — GLM
+(`docs/worktrail-audit-III/tower-grossfehler-glm.md`, lane `fleet/260823151620-c4cd@8710eee`) and
+Ox/Sol (`docs/worktrail-audit-III/tower-grossfehler-ox.md`, lane `fleet/260823152423-fb4e@0bbd0aa`).
+Both are read-only evidence; this section is the one durable consequence. It adds no role, no
+framework and no second normative file: it states what a Studio-MAIN must have in hand before it
+raises the owner gate, and how it labels what it has. Everything below is OBSERVED unless marked
+INFERRED, PROPOSED or UNKNOWN.
+
+### Three kinds of truth, kept apart
+
+| Truth | What proves it | What it may constrain |
+|---|---|---|
+| **Simulation truth** — the rules, economy, determinism, replay identity | exact logs, predicates with demonstrated breakers, replay hashes, fixed-tick parity | the sim core and its tests — **only** that |
+| **Product/creative thesis** — the first-minute fantasy, the one gesture, the look, the promoted territory | an owner promotion (or a recorded waiver) plus a visible anchor the first builder actually reads | which tiny playable is built first and what it must show |
+| **Hands-on and sensory evidence** — what a hand on the real controls experiences, what the first 30 s look like | a human or agent session through the delivered input path, a fresh sensory critic on the actual build | whether the owner is asked at all, and with which label |
+
+**Parity constrains the sim, never the human input contract.** A sim's input record is an
+interface to its rules, not the UI. Tower made them identical: its E2 brief required "input built
+ONLY from the input record" (`docs/briefs/F-playable-layer.md@0be2632:25`), the record was the
+automaton vocabulary `{aim, move: -1|0|+1, fire, place, interact}` (`game/play/input_map.gd:44-58`),
+and from 13:00 on no later act could give the player free movement without failing the only
+machine-enforced gate (GLM §4; Ox I8). The brief's goal sentence was "A human can play one run of
+the loop" (`F-playable-layer.md@0be2632:17`) — play *the model*, not a game that expresses it. All
+deterministic falsifiers stay; the sentence that makes the sim's resolution the game's resolution
+is forbidden in a Studio brief.
+
+### Why neither half alone
+
+- **Playable-first alone reproduced Private-task-01.** Private-spiel-f was immediately playable,
+  mechanically green and landed (`private-repo-n@28897b7`), and the owner dismissed it as
+  not ambitious enough (`docs/content-ledger.md:54` there; Ox O9/I4). The first Auftragsmarkt attempt
+  had no quality floor and no `AGENTS.md` (`README.md:44-51` there).
+- **Proof-first alone reproduced Tower and Private-repo-f.** Tower: 20 h 38 min from program activation
+  to the first human-controllable scene (`c445bf6`, 2026-08-23T15:00:51+02), 13.7 % player-facing
+  lines vs 56.7 % sim/proof (GLM §7); the T2 pack went out at 15:36:17 (`f305f5d`) with the motion
+  critic still pending, although `docs/owner-taste-gates.md@51bda1e:19` had required "one critic
+  run on stills and one on motion" since founding. Private-repo-f: 77.5 % machinery, owner never played
+  (GLM §8, adopted there from worktrail-audit II; not re-measured here).
+- **Both halves together are the measured strong runs.** Private-repo-g: walking-skeleton build lane
+  7 min 16 s after MAIN start, ask→link 68 s, the owner played 10 min 57 s *before* any graphics
+  round, and the graphics round was then ordered on that play (`private-repo-g.md` §(c), §(4) last
+  paragraph — "Inhalt vor Aussehen … ein Owner, der das Spielbare selbst gespielt hat"). Private-repo-l:
+  quality floor written at 16:49:32 (`1243dd0`), builder briefed 16:50:38 (`bf03a39`), runnable
+  file 18:02:01 (`5a57365`), fresh blind critic, then five repair passes that each closed a
+  *perceived* defect on a running game (`private-repo-l.md` §Frage 3 (a)–(c), `quality-floor.md@1243dd0`
+  Bar 2: "FAILS WHEN — the critic, shown two impact frames with the HUD cropped out, cannot say
+  which one scored"). Neither strong run proves owner delight (Ox O32: Auftragsmarkt `AGENTS.md:36`
+  "owner in the loop: no, per task"); they prove that a concrete product image existed early and
+  was hardened afterwards instead of proved first and imagined never.
+
+INFERRED from the four runs: the ordering that produces a legible game early is *anchor → tiny
+playable → foreign sensory read → bounded repair → owner* (Ox I22), and the Tower loss came from
+running the halves in the other order with no hands-on step anywhere (GLM §5 "Missing:
+human-hands gate").
+
+### The loop
+
+A Studio-MAIN runs this for every first product slice and every slice whose next decision is
+taste. It is the smallest autonomous pre-owner loop; the owner hears nothing until step 6 or an
+authority incident (`AGENTS.md` Project MAIN level, clause C).
+
+1. **Promoted creative anchor, or a recorded waiver.** Before the first builder is briefed, one
+   anchor exists in the product repo: the first-minute fantasy, the one gesture, a territory with a
+   positive and a negative reference, and the quality bars in `BAR / FAILS WHEN / INSTRUMENT` form
+   (the private-repo-l floor shape). If the owner has not promoted one, the MAIN records an explicit
+   waiver in the decision record ("first playable built on interim anchor X; T1 reopens after first
+   play") — a dated decision, never a silent default. Tower's interim defaults under O1 (camera,
+   win rule, "art — none: grey-box only", decision A8) were exactly the silent form. **The first
+   builder's Read set must include the anchor**; a brief that forbids reading the art research
+   (`F-playable-layer.md@0be2632:10`) fails this step by construction.
+2. **Tiny playable: one gesture, one sensory thesis.** The first build is the smallest thing a
+   hand can hold: one input gesture, one visible consequence that the anchor says must be felt,
+   one end state, restart. It is built on the real stack, in one-step-launchable form (a tracked
+   single file, or a URL the MAIN can serve in one command). It must exist **before any second
+   sim/proof act is dispatched** — not before the sim (sim truth may come first as a throwaway
+   model), but before sim repair rounds consume the program. Calibration, not a rule: Auftragsmarkt's
+   floors reached a runnable file 72–84 min after the builder brief; Private-repo-g's skeleton lane
+   took 7 min. Tower spent the whole morning (07:21–11:39) on predicate repair of a model nobody
+   could hold (GLM §3).
+3. **Independent hands-on + sensory critic on the actual controls.** A fresh, read-only lane
+   launches the artifact through the delivered path and *holds the controls itself* — keyboard,
+   mouse or a scripted human-input driver against the real input layer, never the sim API and
+   never a policy replay — and answers, with captures: does the first 30 s explain itself; does
+   the gesture produce the promised consequence; is there gross visual/motion underreach against
+   the anchor; what is the one defect a first-time player hits. Its rubric **may not exclude art,
+   feel, fun or camera when the next decision is owner taste** (Tower's play rubric excluded
+   exactly those, `docs/critic/play-01/rubric.md:22` there; Ox O41). Blindness is proved by commit
+   ancestry (`base:` line, private-repo-l `gate/critic-check.sh`), not by a sentence. A capture that
+   could not be taken fails as itself and names the debt; it is never reported as the game.
+4. **Bounded repair.** At most two builder rounds, each briefed to close one *named perceived
+   defect* from step 3, each with a regress counter-check on the bars it touches (private-repo-l
+   §Frage 4 (3): one full round was lost to a regress nobody checked). A round that cannot close
+   its defect stops and is reported; the MAIN does not open a third round on its own authority.
+5. **Durable one-step launch artifact.** What the owner receives is one URL or one tracked file,
+   launched by the MAIN itself over the live path with its own capture and the build stamp read
+   back from the served asset (Private-repo-g chain: build → serve → fetch the served JS → read the
+   stamp → screenshot → hand over, 68 s). A host-specific binary path with a document index in
+   front of it is not a launch artifact (GLM §7 "Playable-path steps"; Ox I23).
+6. **Owner review.** Only now the MAIN raises attention. The request carries the label from the
+   next subsection, the launch artifact, the critic verdict path, the anchor or waiver, and the
+   three to five taste questions the owner alone can answer. Nothing else reaches the owner during
+   steps 1–5 except an authority incident (credentials, spend, irreversible/public effect, deploy,
+   provenance) or a blocked repair after step 4.
+
+### Honest labels — `PLAYABLE` may not mean policy replay
+
+| Label | Means exactly | Who holds the controls |
+|---|---|---|
+| `automaton-demo` | the build runs under a scripted policy or replay; frames/clips exist; **nobody held the controls** | no one |
+| `agent-hands-on` | a fresh agent lane launched the delivered artifact and played it through the real input path; its verdict and captures are tracked | an agent |
+| `owner-playtested` | the owner launched the delivered artifact and recorded a verdict (quote + build stamp in the decision record, Private-repo-g O1 form) | the owner |
+
+Rules: a label names the *strongest evidence that actually exists*, never the intended one. A
+milestone, site banner, pack title or attention text may use the word `PLAYABLE` only with one of
+these labels attached; `PLAYABLE-READY` over three policy sessions (Tower 15:36:45, "nobody has
+held the keyboard" in its own evidence file) is the forbidden form. The owner gate opens only from
+`agent-hands-on` or better. `automaton-demo` is a fine sim-truth artifact and a wrong owner-facing
+one.
+
+### Research needs a consumer or a deferral
+
+Every research act (art territories, references, engine comparison) names, in its brief, **the
+consumer** (which later brief's Read set, which decision) and **the consumption edge** (the step of
+this loop at which it is read). If no consumer exists yet, the MAIN records a deferral in the
+decision record with a reopen trigger ("reopen T1 after first agent-hands-on"). A research track
+with neither is inventory, and inventory dies silently: Tower's B1 art research (450 lines,
+`b521a35`) was forbidden reading for every game brief and consumed by no commit afterwards (GLM E10;
+Ox I20). Private-repo-g's appearance gate shows the mirror failure — a research/anchor step that
+waited 90 min on the owner with nothing telling the owner (`private-repo-g.md` §(b), §(4) 1).
+
+### The communication rail this loop consumes
+
+This loop adds no channel and no control plane; it rides the transitions already under design
+(`docs/program-transitions-brief-2026-08-23.md`, T1–T4) and names what each carries:
+
+- **Step 3 and 4 return as T1 worker reports:** `POST /api/self/fleet-report` with
+  `{status: complete|needs-main|failed, text}` (`src/protocol.ts:33`, `server.ts:5905`). The text
+  begins with the label and the lane HEAD sha, then the artifact path, critic verdict path and the
+  one named defect or `none`; the rich sensory prose lives in the tracked critic artifact the text
+  points at, not in the report.
+- **Step 6 is T4:** `POST /api/self/attention` kind `review-ready`, text beginning
+  `PLAYABLE agent-hands-on <sha> <url-or-file>` — the brief's own convention for the taste gate
+  until a sensor field exists. A `review-ready` whose text starts `PLAYABLE automaton-demo` is
+  malformed by this profile and the MAIN must not send it.
+- **Machine facts stay machine facts:** the transition row carries status, sha, artifact ref,
+  expected next step; it never carries a semantic quality number. No score, no ranking of
+  "ambition" — the private-repo-l MAIN's own sentence stands ("two verdicts saying an artifact is
+  ambitious is not that … `unknown` until he looks", `docs/kit-v3-feedback.md:188-192` there).
+- **No pane polling:** a Studio-MAIN waits on `{kind:"lane"}` / `{kind:"merge"}` watches and
+  T1 reports, never on `capture-pane`.
+
+UNKNOWN until built: the program projection's `phase` field (brief §2) does not yet know the
+labels; until it does, the label lives in the report/attention text prefix only.
+
+### Owner touchpoints, stated once
+
+After a well-described idea the owner hears from a Studio-MAIN at exactly two kinds of moment:
+a **startable review boundary** (step 6, labelled `agent-hands-on` or better, with a one-step
+launch) or an **authority incident** (clause C). Not every 90 minutes, not for interim choices —
+those become recorded waivers — and not through a resident controller reading panes. The Grok
+proposal "playable slice before parallel research", deferred on 2026-08-22 as a violation of
+Tower's founding order (`docs/product-studio-calibration-2026-08-22.md`, main-checkout working
+copy, Grok table row 5), is adopted here in its narrow form: the tiny playable precedes the second
+proof act, not the first model.
+
+### What this section does not change
+
+The four-level role contract, owner promotion, isolated production, the server land gate, the
+Director → Builder → Critic → Owner ordering for coupled visual work, and the artillery gates below
+all stand. The artillery gate order (promise → risk spike → named shot → one-turn feel → tiny
+match) already encodes steps 1–2; this section supplies what it lacked and what Tower bypassed:
+the waiver form, the hands-on step, the labels, the research edge and the exact rail.
+
+### Attack: what would falsify this design, and what stays owner taste
+
+1. **A matched run that follows all six steps and is still judged "very poor" by the owner** —
+   with a promoted anchor, an `agent-hands-on` verdict and a one-step launch. Then the loop
+   selects for legibility, not for the game the owner wanted, and the missing piece is in the
+   anchor's content, not in the order. Settler: the owner's verdict text against that run's
+   decision record.
+2. **An `agent-hands-on` verdict that systematically disagrees with the owner** — the agent holds
+   the controls and reports "first 30 s explain themselves" while the owner finds no play button
+   or a test mode. Then step 3 is a proxy that does not proxy, and the loop degrades to Tower
+   with one more document. Settler: three consecutive slices where the owner's first complaint is
+   absent from the critic verdict. Today there is **no evidence either way**: no positive control
+   has an owner play trace (Ox O32, U9), and Tower has none (U1).
+3. **A scope-matched proof-first run that produces a concrete game** — a 3D Godot shooter of
+   Tower's breadth built parity-first under the Tower founding order that the owner finds legible.
+   Then the audits' causation is scope cost misread as order (Ox O51/U8), and this section is
+   ordering superstition. Settler: that repo's history and captures.
+4. **The tiny playable becoming the product** — if step 2's one-gesture build is repeatedly
+   polished instead of widened, the loop has swapped Tower's failure for private-repo-h's
+   (technically proved, experientially rejected). Settler: a program whose third slice is still
+   the first gesture.
+5. **A waiver that silently becomes a default** — if MAINs record waivers but never reopen them,
+   step 1 is O1's "interim defaults" with a new name. Settler: decision records with waivers and
+   no reopen entry after the first `agent-hands-on`.
+
+Owner taste, and only that: whether the promoted anchor is the right fantasy; whether the one
+gesture is the right gesture; whether the territory, camera and pacing are wanted; whether the
+thing is fun; when to widen, simplify or stop. No step above decides any of these — they decide
+only that the owner is asked with a real thing in hand, with an honest label, once.
+
 ## First proving slice: Visual Loop v0
 
 The first slice changes no Fleet schema and builds no general harness. It uses private-repo-h as a
@@ -462,7 +673,9 @@ The target is self-directed refinement under taste constraints, not unattended c
 ### Then — the artillery calibration game
 
 1. Create a fresh Program and Fable Program-MAIN with quality targets before architecture.
-2. Run the five gates above; maintain serial ownership for coupled visual/game-feel surfaces.
+2. Run the five gates above inside the pre-owner loop (anchor or waiver → tiny playable →
+   agent-hands-on critic → bounded repair → one-step launch → owner); maintain serial ownership
+   for coupled visual/game-feel surfaces.
 3. Preserve prompt/pack receipts, harness/model/effort, captures, decisions, corrections and owner
    disposition as the first full Game-Studio Work Trail.
 4. Only after tasting, compare against a narrow one-shot or an alternate harness run; do not spend

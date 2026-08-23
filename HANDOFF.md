@@ -1,3 +1,123 @@
+# HANDOFF — ACP Architecture Controller VI (Slot 5), 2026-08-23, ctx ~24 % GEMESSEN
+
+**Du erbst KEINE laufende Lane. Du erbst vier gefilte `pending`-Zeilen, von denen ZWEI GIFT sind,
+und einen Filing-Deckel, der voll ist.**
+
+## 0. Die exakte naechste Handlung
+
+**Den Owner um die Loeschung von `793c9cd9` und `bfbb788c` bitten — sonst kannst du nichts filen.**
+Beide tragen die vom Owner am 2026-08-23 AUSDRUECKLICH KORRIGIERTE enge Fassung (nur Land,
+clean-green, alles andere Owner-Gate). Sie sind VOID. Sie zu loeschen ist ein Owner-Akt: die
+Filing-Tuer liest einen geschlossenen Body und kann keinen Text aendern.
+
+**Gemessen, nicht vermutet** — der Deckel steht auf 5/5 und verweigert bereits:
+```
+{"error":"program filing cap reached (5/5 filed rows not yet released) — release or drop one first"}
+```
+Solange die zwei VOID-Zeilen den Platz belegen, kannst du **ACP-31 (Tower-Verify-Adapter)** und
+**ACP-32 (Wellen-Critic)** NICHT filen. Beide sind vom Owner verlangt und beide fehlen noch.
+
+**Und: NICHTS freigeben, solange STN-1 (`c5d566d6`, Program b1c4a497…) `sent` ist.** `dispatch`
+steht auf **`true`** — eine Freigabe startet SOFORT. Das ist der Grund, warum alles `pending` liegt.
+
+## 1. Was terminal ist — gemessen, nichts geschaetzt
+
+| Act | Land | Land-Gate | Post-Land-Audit |
+|---|---|---|---|
+| ACP-23 `POST /api/self/tasks` | `790729f` -> **`2d188da`** | ok, exit 0, **123 943 ms**, wait 0 | **green**, **1 311 096 ms**, **2822/0**, covers genau dieses Land |
+| ACP-24 `Task.spawn` | `2d188da` -> **`096c577`** | ok, exit 0, **121 936 ms**, wait 0 | **green**, **1 319 161 ms**, **2835/0**, covers genau dieses Land |
+
+Beide Zahlen sind BEWEGT (2810 -> 2822 -> 2835) und decken sich mit den Diffs. Bei Schnitten, die
+neue Checks mitbringen, waere eine unbewegte Zahl das Verdaechtige.
+
+**ACP-24s Vorschau habe ich SELBST gefahren**, weil der Lauf der Lane von aussen per SIGTERM
+getoetet wurde (3 Zeilen Log, 0 PASS, 0 FAIL, **keine run-id** — „nie gemessen", nicht „rot").
+Meiner: Tail `ALL PASS`, PASS=2835 FAIL=0, **genau eine** run-id `isolated-20260822T151223Z-7189`,
+`tree=096c577 dirty=false`. Die Lane stand 0 hinter main -> Fast-forward -> **Vorschau, Gate und
+Audit sahen denselben Commit.**
+
+## 2. ZWEI KORREKTUREN an frueheren Handoffs — beide bezahlt
+
+1. **`merge` macht den TEARDOWN MIT.** Die Fassung „`merge` zuerst, `land` ist der Teardown danach"
+   ist falsch. Nach `landed=YES` ist der Slot frei und der Worktree weg; ein nachgeschobenes
+   `POST /api/slots/:id/land` antwortet `{"error":"not a fleet-created worktree lane"}`. Zweimal so
+   erlebt (Slot 2, Slot 7).
+2. **`codeBehind: true` ist NICHT mehr der `.gitignore`-Fehlalarm** aus dem Handoff der
+   Vorvorgaengerin. Ab ACP-23 steckt echtes `server.ts` dahinter. Aktuell steht es auf `false`
+   (bootHead `429bfe1`, head `557bf3a`, behind 1 = ein Docs-Commit).
+
+## 3. Der Stand der Owner-Politik — die Korrektur ist der Auftrag
+
+**Nudge 1 (2026-08-23, eng):** owner-confirmed per-Program PromotionPolicy, MAIN darf Land
+ANFRAGEN, nur clean/rebased + fresh verify ok:true, alles andere Owner-Gate.
+-> kompiliert als ACP-27 `793c9cd9` + Critic ACP-28 `bfbb788c`.
+
+**Nudge 2 (2026-08-23, KORREKTUR, ersetzt Nudge 1):** *review-ready autonomy*. Die MAIN besitzt die
+GANZE reversible Programmschleife bis zum reviewbaren Build — Decomposition, Filing/Release,
+Model+Harness-Routing, Retries/Ersatz, Konfliktaufloesung mit frischem Reverify/Critic, rote Checks,
+Untersuchung ODER ausdrueckliche nonblocking-Klassifikation von Unknowns, interim kreative
+Entscheidungen, In-Envelope-Tradeoffs, Land, lokale Preview-Builds, Screenshots/Playtests,
+reversible Dev-Deploys. Fresh-agent reviews sind autonom. **Unknown/skipped ist nie ein Pass — aber
+MAIN-Arbeit statt Owner-Gate.** Gestoppt wird NUR fuer: finale Owner-Produkt-/Geschmacks-Promotion ·
+Aenderung der bestaetigten Produkt-Intent · irreversible/oeffentliche Produktionswirkung · neue
+Credentials oder bezahlte Ausgaben/Budgetbruch · echt ungeloester Widerspruch nach BEGRENZTEN
+Repair-/Critic-Runden.
+-> kompiliert als **ACP-29 `80abd6d1`** (Policy) + **ACP-30 `9617afe9`** (portabler Vertrag +
+Studio-Vorlage).
+
+**Der Owner hat ausdruecklich verlangt, dass der fruehere enge Schnitt die ueberholte Fassung nicht
+fossilisiert.** Deshalb sind ACP-27/28 VOID und nicht „zusammenzufuehren".
+
+## 4. Was ich beim Briefen am Code verankert habe (damit du es nicht neu suchst)
+
+- **Die Mechanik existiert schon, der Act aendert nur, WER sie anstoesst.** `mergeJob`
+  (`server.ts:12738`) entscheidet bereits dreiwertig; die Entscheidungsstelle ist
+  `server.ts:12995` (`else if (verify && verify.ok === null)` — SKIPPED / TIMED OUT / NEVER STARTED
+  bekommen denselben Stop wie Rot). `VERIFY_SKIP_EXIT` = `server.ts:10049`.
+- **Heutige Autoritaet:** die EINZIGE `mergeJob(`-Aufrufstelle ist `server.ts:18866`, erreichbar
+  allein ueber die Owner-Route `/^\/api\/slots\/(\d+)\/merge$/` (`server.ts:18570`). Kein Tick
+  landet. Diese Aussage muss nach ACP-29 weiter pruefbar sein.
+- `interface Program` (`server.ts:2131`) hat **kein** Policy-Feld — die Policy ist ein neues
+  optionales Feld, Abwesenheit = owner-only.
+- `boundProgramForMain` `:6070` · `releaseTaskForMain` `:6099` · `createTaskForMain` `:6199` ·
+  `PROGRAM_MAX_RELEASED` `:2665` · `PROGRAM_MAX_PENDING` `:2677` (Default 5, der volle Deckel).
+
+## 5. Der Tower-Befund — SELBST gemessen, und er ist noch ungefilt
+
+`FLEET_VERIFY_CMD_REPOS` (`.env`) nennt nur `private-repo-h`, `private-repo-n` und
+`private-repo-i`. **`/Users/owner/private-repo-k` fehlt**, faellt also auf den globalen
+`FLEET_VERIFY_CMD`, dessen erste Zeile lautet:
+`[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }`
+-> **exit 42 = SKIPPED -> `verify.ok: null` -> auto-landet NIE.** Genau wie der Owner sagte.
+Slot 7 ist die Tower-Studio-MAIN, Slot 3 eine Tower-Lane. **ACP-31 (Tower-Verify-Adapter) ist
+gebrieft im Kopf, aber NICHT gefilt — der Deckel war voll.** Beachte: die Filing-Tuer leitet `repo`
+aus DEINEM Checkout ab und reicht nie ueber Repo-Grenzen; die `.env`-Naht liegt hier, der
+Gate-Skript-Inhalt liegt drueben.
+
+## 6. Offene Raender, die ich WEITERTRAGE
+
+1. **`0325ba73`** (Board etikettiert `main`-Zeilen als „owner", `src/client.ts:6048`/`:6493`,
+   Union `:257`) — selbst am Baum bestaetigt. Der Text nennt sich faelschlich „ACP-24 KANDIDAT";
+   ACP-24 ist inzwischen `Task.spawn`. Braucht eine neue Nummer beim Aufgreifen.
+2. **`docs/self-api.md` hat keinen §tasks-Abschnitt** — offener Rand seit ACP-23, in ACP-29/30 als
+   zu entscheidende Flaeche benannt.
+3. **ACP-24 hat die unbeaufsichtigte Reichweite VERGROESSERT:** `tickDispatch` reicht
+   `taskSpawnOf(next)` durch (`server.ts:7462`), `FLEET_HARNESS_AUTOMATION` live `1`. Doppelt
+   verriegelt, aber eine Owner-Grenze, keine Implementierungsfrage.
+4. **STUDIO-00 (`7aaa6644`)** bleibt `pending`. Von seinen drei Vorbedingungen ist genau EINE zu:
+   der Result-Rail ist live (am ACP-23-Canary belegt). Die anderen zwei sind Owner-Entscheide.
+   **Nudge 2 beruehrt sie inhaltlich — pruefe, ob die Korrektur (2) und (3) bereits beantwortet.**
+5. `96d000b0` (ACP-03 CRITIC) und `ad2ee96a` (CTX-01) unveraendert `pending`.
+6. Vier Worktrees auf Platte, davon `fleet-260822142649-61ec` ohne Slot (Waise).
+
+## 7. Maschinenzustand bei der Uebergabe
+
+- main **`557bf3a`**, Server-Boot `429bfe1`, `bundleStale false`, `codeBehind false`.
+- **`dispatch: TRUE`** — das ist neu und der Grund fuer jede `pending`-Entscheidung oben.
+- Program `eeba7c04caae64d79969199b` ist occupant-genau an Slot 5 gebunden; die Nachfolge erbt es.
+- Keine Suite laeuft. Keine ACP-Lane in Flug.
+- Meine Watches sterben mit dieser Nachfolge — es gibt aktuell nichts zu beobachten, also nichts
+  neu zu armen.
 # HANDOFF — ACP Architecture Controller IX (Slot 3), 2026-08-22, ctx 24,8 % GEMESSEN
 
 **Der Rollenvertrag steht, und ACP-23 IST IN FLUG — du erbst eine laufende Lane, keinen Plan.**

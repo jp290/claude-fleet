@@ -77,7 +77,7 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
   ist der gebundene Supervisor, die Zustellung ist pane-only (die Inbox ist die Owner-Operations-Inbox).
 - Deckel: derselbe geteilte (`WATCH_MAX_PER_SLOT` / `FLEET_EVENT_MAX_OPEN_PER_SLOT`); keine zweite Zahl.
   Dieselbe noch armed Frage gibt `existing:true` zurück.
-- Ablehnungen: als LANE 409 · `no bound Supervisor exists` (409) · `the bound Supervisor occupant is
+- Ablehnungen: als LANE 409 · über die Owner-Route `POST /api/slots/:id/watch` 409 (STN-2: die Frage stellt nur die empfangende Session selbst — sonst liefe der Owner um die Lane-Regel herum) · `no bound Supervisor exists` (409) · `the bound Supervisor occupant is
   gone or was replaced` (409) · der Supervisor selbst 409 (er ist Vollender, nicht Empfänger).
 - **Ablauf:** verstreicht `deadlineSec`, entwaffnet der Tick den Watch mit `lastResult` `expired …`
   (+ Audit `watch_expire`) — **ohne Pane-Text**. Ein Watch trägt höchstens EINE Notification, und die

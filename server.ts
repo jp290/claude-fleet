@@ -19978,7 +19978,14 @@ Bun.serve<WSData>({
     if (req.method === "POST" && watchCreate) {
       const s = slotFrom(watchCreate[1]);
       if (!s) return json({ error: "bad slot" }, 400);
-      return await createWatchForSlot(s, await readJson(req));
+      const body = await readJson(req);
+      // STN-2: a transition watch is the receiver's OWN question, asked in its own words, and the
+      // self route carries the not-a-lane rule that keeps Supervisor text out of lane panes. The
+      // owner's wider reach here would route around that rule by registering one on a lane's behalf
+      // — so this kind is refused by name at the owner door, never silently rebound.
+      if (body?.kind === "transition")
+        return json({ error: "a transition watch is registered by the receiving session itself via POST /api/self/watch — the owner route does not register one on a session's behalf" }, 409);
+      return await createWatchForSlot(s, body);
     }
     const watchAct = /^\/api\/watches\/([a-z0-9]+)\/delete$/.exec(url.pathname);
     if (req.method === "POST" && watchAct) {

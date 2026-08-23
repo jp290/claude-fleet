@@ -1920,6 +1920,15 @@ export async function run(): Promise<void> {
       rLowDl, rHighDl, rStrDl, rSelf].map((r) => r.text()));
     check("stn1 registration: a lane may not register a transition watch — the route's 409, unchanged",
       rLane.status === 409 && rTexts[0]!.includes("a lane may not subscribe"), `${rLane.status} ${rTexts[0]}`);
+    // STN-2: the owner door feeds the same createWatchForSlot — without this refusal the owner
+    // could register a transition watch on a LANE and the self route's 409 above would be moot.
+    const rOwnerLane = await post(`/api/slots/${lane.slot}/watch`, body());
+    const rOwnerCtl = await post(`/api/slots/${ctl}/watch`, body());
+    const [rOwnerLaneText, rOwnerCtlText] = await Promise.all([rOwnerLane.text(), rOwnerCtl.text()]);
+    check("stn1 registration: the owner route refuses kind transition by name (409) — for a lane and a plain session alike; only the receiving session registers its own question",
+      rOwnerLane.status === 409 && rOwnerLaneText.includes("registered by the receiving session itself")
+        && rOwnerCtl.status === 409 && rOwnerCtlText.includes("registered by the receiving session itself"),
+      `${rOwnerLane.status} ${rOwnerLaneText} / ${rOwnerCtl.status}`);
     check("stn1 registration: the body is a CLOSED set — target, slot, programId and delivery are refused BY NAME (400)",
       rTarget.status === 400 && rTexts[1]!.includes("[target] is not read")
         && rSlot.status === 400 && rTexts[2]!.includes("[slot] is not read")

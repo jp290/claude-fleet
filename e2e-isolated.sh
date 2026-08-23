@@ -150,8 +150,26 @@ static void composer(void) {
   for (i = 0; i < 2; i++) { int j; for (j = 0; j < 40; j++) fputs("\xe2\x94\x80", stdout); fputs(i ? "\n" : "\n\n", stdout); }
   fflush(stdout);
 }
-int main(void) {
+static int has_arg(int argc, char **argv, const char *needle) {
+  int i;
+  for (i = 1; i < argc; i++) if (!strcmp(argv[i], needle)) return 1;
+  return 0;
+}
+int main(int argc, char **argv) {
   char line[4096];
+  int ox = has_arg(argc, argv, "opencode") && has_arg(argc, argv, "x-preview-f-free");
+  /* This is a falsifiable strict-profile stand-in, not merely a happy-screen painter: removing
+     --no-approve changes the signature to Pi's blocking selector; omitting any discovery/verbose
+     pin withholds the exact readiness marker consumed by the security probe. */
+  if (ox && !has_arg(argc, argv, "--no-approve")) {
+    fputs("Trust project folder?\n", stdout);
+  } else if (ox && has_arg(argc, argv, "--no-extensions")
+      && has_arg(argc, argv, "--no-skills")
+      && has_arg(argc, argv, "--no-prompt-templates")
+      && has_arg(argc, argv, "--no-themes")
+      && has_arg(argc, argv, "--verbose")) {
+    fputs("Model scope: x-preview-f-free (Ctrl+P to cycle)\n", stdout);
+  }
   composer();
   while (fgets(line, sizeof line, stdin)) {
     char *start;
@@ -601,10 +619,12 @@ CODEX_SESSIONS="$DIR/codex-sessions"
 mkdir -p "$CODEX_SESSIONS"
 PI_ZAI_AGENT_DIR="$DIR/pi-zai-agent"
 PI_ZAI_KEY_FILE="$DIR/pi-zai-coding-plan.key"
+PI_OX_AGENT_DIR="$DIR/pi-ox-agent"
 mkdir -p "$PI_ZAI_AGENT_DIR"
+mkdir -p "$PI_OX_AGENT_DIR"
 printf '%s\n' 'fleet-e2e-zai-stand-in-key' > "$PI_ZAI_KEY_FILE"
 chmod 600 "$PI_ZAI_KEY_FILE"
-SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_HARNESS_AUTOMATION=0 FLEET_CODEX_SESSIONS_DIR='$CODEX_SESSIONS' FLEET_PI_ZAI_AGENT_DIR='$PI_ZAI_AGENT_DIR' FLEET_PI_ZAI_KEY_FILE='$PI_ZAI_KEY_FILE' FLEET_READY_WAIT_MS=3000 FLEET_ACCEPT_WAIT_MS=300 FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_MIGRATE_PCT=44 FLEET_MIGRATE_IDLE_MS=0 FLEET_MIGRATE_COOLDOWN_MS=900000 FLEET_MIGRATE_TICK_MS=250 FLEET_MIGRATE_GRACE_MS=500 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=0 FLEET_BACKLOG_NUDGE_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_VERIFY_WAIT_MS=5000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_VERIFY_CMD_REPOS='{\"$REPO2_P\":\"$DIR/fakeverify2\"}' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
+SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_HARNESS_AUTOMATION=0 FLEET_CODEX_SESSIONS_DIR='$CODEX_SESSIONS' FLEET_PI_ZAI_AGENT_DIR='$PI_ZAI_AGENT_DIR' FLEET_PI_ZAI_KEY_FILE='$PI_ZAI_KEY_FILE' FLEET_PI_OX_AGENT_DIR='$PI_OX_AGENT_DIR' FLEET_READY_WAIT_MS=3000 FLEET_ACCEPT_WAIT_MS=300 FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_MIGRATE_PCT=44 FLEET_MIGRATE_IDLE_MS=0 FLEET_MIGRATE_COOLDOWN_MS=900000 FLEET_MIGRATE_TICK_MS=250 FLEET_MIGRATE_GRACE_MS=500 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=0 FLEET_BACKLOG_NUDGE_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_VERIFY_WAIT_MS=5000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_VERIFY_CMD_REPOS='{\"$REPO2_P\":\"$DIR/fakeverify2\"}' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
 tmux -L "$SOCK" new-session -d -s srv \
   "cd '$DIR' && PATH='$DIR:$PATH' FLEET_HOST=127.0.0.1 $SRV_ENV exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.

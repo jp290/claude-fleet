@@ -93,9 +93,55 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
 
 ## Harness-Adapter
 
-Die Adapter-Liste ist `HARNESSES` in `server.ts` (aktuell claude, pi, pi-zai, pi-unfenced,
+Die Adapter-Liste ist `HARNESSES` in `server.ts` (aktuell claude, pi, pi-zai, pi-ox, pi-unfenced,
 container, codex; `pi-unfenced` ist serverseitig `automatable:false`, `allowsLanes:false`,
 `singleton:true` — genau EINE Main-Session, warnt im Picker vor unbeschränkten Rechten).
+
+### `pi-ox`: festes, derzeit anonym erreichbares Ox-Alpha-Profil in Pi
+
+`pi-ox` ist bewusst **kein** nativer OpenCode-Harness. Pi besitzt TUI, Session-ID, Resume,
+Liveness, Git und den normalen Lane-Lifecycle; der Adapter pinnt nur den Provider und das eine am
+2026-08-22 live geprüfte kostenlose Modell. Eine Task-Auswahl lautet exakt
+`{"harness":"pi-ox","model":"x-preview-f-free"}`. Der Spawn trägt immer
+`--provider opencode --model 'x-preview-f-free' --models opencode/x-preview-f-free --api-key public
+--no-approve --no-extensions --no-skills --no-prompt-templates --no-themes --verbose`;
+ein anderer Modellname, irgendein `effort`, `harness:"opencode"` oder Container-Feld wird am
+Request-Rand abgewiesen. Es gibt keinen Provider-/Modell-Fallback.
+
+Der vollständige einknotige Canary-Katalog deklariert Basis-URL, OpenAI-Completions-Wire, derzeitige
+Nullkosten, 1.000.000 Kontext, 131.072 Max-Tokens, Text-/Bild-Eingabe und Compat-Felder. Diese Werte
+sind Katalogbeobachtungen, keine End-to-End-Beweise der Grenzkontexte oder des Bildpfads: der reale
+Canary belegt kleine Text-Turns, einen Read-Tool-Roundtrip, Session-Fortsetzung und die damalige
+Nullkosten-Nutzung; der synthetische JSONL-Proof belegt nur Parser, Reverse-State und den
+1M-Nenner. Jeder Spawn leitet aus der validierten Fleet-Session-UUID einen eigenen
+`PI_CODING_AGENT_DIR` unterhalb der Adapter-Basis ab; parallele `pi-ox`-Prozesse teilen damit weder
+Settings, Extensions, Sessions, Retry-/Proxy- noch Compaction-Zustand. Restart und Resume verwenden
+dieselbe UUID und damit denselben Root. Der Katalog wird dort über eine temporäre Datei und ein
+atomares Rename ersetzt. Eine fehlende oder ungültige Session-UUID sowie jeder Schreibfehler stoppt
+vor Pi statt auf einen geteilten Root oder andere Config auszuweichen. Default-Basis ist
+`~/.config/claude-fleet/pi-ox-agent`; `FLEET_PI_OX_AGENT_DIR` darf sie auf einen anderen sicheren
+absoluten Pfad ohne `..` legen. `~/.pi/agent`, die `pi-zai`-Ablage und globale OpenCode-Konfiguration
+bleiben unberührt. Pi-Lifecycle, OpenAI-Completions-Wire, Session/Resume, exakte Modellwahl, Lanes,
+Automatisierung, Built-in-Tools, das unabhängig geladene `AGENTS.md`, Fleet-Briefzustellung und
+Reverse-State sind `apply`; Clientdarstellung und Task-Wire verwenden unverändert die generischen
+Harness-Felder. Transcript, Effort, Self-Schedule und Container sind `unsupported`. Ebenfalls
+`unsupported` sind für dieses unattended Profil project-local Pi-Settings,
+`.pi/SYSTEM.md`/`.pi/APPEND_SYSTEM.md` sowie project- und adapter-globale Pi-Extensions, Skills,
+Prompt-Templates und Themes; `pi-ox` lädt also keine Pi-Plugins. `--no-approve` verhindert den
+eingabefressenden `Trust project folder?`-Selector, während die vier Discovery-Sperren insbesondere
+verhindern, dass eine Extension Provider oder Modell nachträglich umbiegt. `--verbose` hält den
+Readiness-Marker auch bei einer späteren globalen `quietStartup`-Einstellung sichtbar. Ein
+separater OpenCode-Lifecycle ist `not-applicable`. Provider-Grenzkontext und Bild-Eingabe bleiben
+`unknown`, bis ein eigener realer Canary sie belegt.
+
+Der lokale Katalog verzeichnet die damaligen Providerkosten von null, aber `/models` liefert nur
+Identität und keinen maschinenlesbaren Preis. Es wird daher kein erfundener Live-Kostensensor
+behauptet. Der Owner hat Automatisierung nach dem realen Canary ausdrücklich freigegeben:
+`automatable:true`. Der literale öffentliche Key ist kein Account-/Billing-Credential; zusammen
+mit exaktem Provider, Modell und Cycle-Set gibt es keinen monetären oder modellseitigen Fallback.
+Withdrawal, API-Ausfall oder geänderte Zugangskonditionen müssen am anonymen gepinnten Request
+scheitern. Verfügbarkeit und Providerbedingungen bleiben veränderlich; lokale Rechen- und
+Netzwerkkosten werden nicht als null behauptet.
 
 - **Harness-Adapter (2026-08-07, `a64b681`):** `FLEET_CMD` muss nicht claude sein. Drei Env-Knöpfe, alle
   optional, alle wirkungslos solange `FLEET_CMD` mit `claude` beginnt:

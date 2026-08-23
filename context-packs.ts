@@ -20,7 +20,7 @@ export type ContextPackTrigger = (typeof CONTEXT_PACK_TRIGGERS)[number];
 export const CONTEXT_PACK_HARDNESS = ["hard", "guidance"] as const;
 export type ContextPackHardness = (typeof CONTEXT_PACK_HARDNESS)[number];
 
-export const CONTEXT_PACK_HARNESSES = ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"] as const;
+export const CONTEXT_PACK_HARNESSES = ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container", "codex"] as const;
 export type ContextPackHarness = (typeof CONTEXT_PACK_HARNESSES)[number];
 
 export const CONTEXT_PACK_MODES = ["read-only", "mutating", "monitoring"] as const;

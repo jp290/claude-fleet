@@ -489,10 +489,11 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
       defaultModel?: string };
   const pi = cat.harnesses.find((h) => h.id === "pi");
   const piZai = cat.harnesses.find((h) => h.id === "pi-zai");
+  const piOx = cat.harnesses.find((h) => h.id === "pi-ox");
   const piHost = cat.harnesses.find((h) => h.id === "pi-unfenced");
   const def = cat.harnesses.find((h) => h.default);
-  check("§6 the catalogue names the default and all three explicit Pi-family adapters",
-    !!pi && !!piZai && !!piHost && !!def && def.id === "claude", cat.harnesses.map((h) => h.id).join(","));
+  check("§6 the catalogue names the default and all four explicit Pi-family adapters",
+    !!pi && !!piZai && !!piOx && !!piHost && !!def && def.id === "claude", cat.harnesses.map((h) => h.id).join(","));
   check("§6 pi-unfenced is attended, main-only and singleton — the exception cannot become a pool",
     piHost?.automatable === false && piHost.allowsLanes === false && piHost.singleton === true
     && /UNFENCED/.test(piHost.note ?? "") && /unrestricted filesystem writes, git and network/.test(piHost.note ?? ""),
@@ -516,9 +517,9 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   check("§6 every catalogue entry declares an axis — agent (what) or place (where), none unlabelled",
     places.length + agents.length === cat.harnesses.length,
     cat.harnesses.map((h) => `${h.id}:${h.role ?? "MISSING"}`).join(","));
-  check("§6 the container hull is the only PLACE, and all five selectable agent modes are agents",
+  check("§6 the container hull is the only PLACE, and all six selectable agent modes are agents",
     places.join(",") === "container"
-    && ["claude", "pi", "pi-zai", "pi-unfenced", "codex"].every((id) => agents.includes(id)),
+    && ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "codex"].every((id) => agents.includes(id)),
     `places=${places.join(",")} agents=${agents.join(",")}`);
   // the inverse, which is what makes the pair meaningful: a `place` is exactly the entry that runs
   // something somewhere else, so it is also the only one carrying supports.container. If these two
@@ -532,7 +533,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     typeof cat.defaultModel === "string" && cat.defaultModel.length > 0, String(cat.defaultModel));
 
   // --- the quote, per adapter. Rejected BEFORE it can reach a shell line, both times.
-  for (const h of ["pi", "pi-zai", "pi-unfenced", "claude", "codex"]) {
+  for (const h of ["pi", "pi-zai", "pi-ox", "pi-unfenced", "claude", "codex"]) {
     const q = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: h, model: "a/b'c" });
     check(`§6 harness ${h} rejects a model carrying a single quote (400)`, q.status === 400, String(q.status));
   }
@@ -884,6 +885,170 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   check("§6a all pi-zai probes leave global ~/.pi/agent/models.json absent",
     !existsSync(globalPiModels), globalPiModels);
 
+  // --- §6a2 PI-OX: Pi lifecycle, one fixed free OpenCode model, no ambient fallback. ---
+  check("§6a2 pi-ox publishes the closed declared capability set",
+    piOx?.automatable === true && piOx.allowsLanes === true && piOx.singleton === false
+    && piOx.supports.resume === true && piOx.supports.transcript === false
+    && piOx.supports.model === true && piOx.supports.effort === false
+    && piOx.supports.selfSchedule === false && piOx.supports.container === false
+    && JSON.stringify(piOx.effortLevels) === "[]",
+    JSON.stringify(piOx));
+  check("§6a2 pi-ox's picker note names anonymous auth, mutable terms and missing billing/model fallback",
+    /opencode\/x-preview-f-free/.test(piOx?.note ?? "")
+      && /anonymous/.test(piOx?.note ?? "") && /no billing credential/.test(piOx?.note ?? "")
+      && /no model\/provider fallback/.test(piOx?.note ?? "")
+      && /terms may change/.test(piOx?.note ?? ""),
+    piOx?.note ?? "missing");
+
+  const oxTaskResponse = await post("/api/tasks", {
+    text: "pi-ox-task-spawn-probe", queue: false, harness: "pi-ox", model: "x-preview-f-free",
+  });
+  const oxTask = (await oxTaskResponse.json()) as
+    { task?: { id?: string; spawn?: { harness: string | null; model: string | null; effort: string | null } } };
+  const oxTaskId = oxTask.task?.id ?? "";
+  check("§6a2 Task.spawn preserves the selected pi-ox triple byte-for-byte",
+    oxTaskResponse.ok && JSON.stringify(oxTask.task?.spawn)
+      === JSON.stringify({ harness: "pi-ox", model: "x-preview-f-free", effort: null }),
+    `${oxTaskResponse.status} / ${JSON.stringify(oxTask.task?.spawn)}`);
+  const oxRejectSurfaces = [
+    ["open", (body: Record<string, unknown>) => post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, ...body })],
+    ["open-worktree", (body: Record<string, unknown>) => post(`/api/slots/${HARNESS_SLOT}/open-worktree`, { repo: REPO, ...body })],
+    ["lanes", (body: Record<string, unknown>) => post("/api/lanes", { repo: REPO, ...body })],
+    ["dispatch", (body: Record<string, unknown>) => post(`/api/tasks/${oxTaskId}/dispatch`, body)],
+  ] as const;
+  if (oxTaskId) {
+    for (const [surface, call] of oxRejectSurfaces) {
+      const wrongModel = await call({ harness: "pi-ox", model: "x-preview-f" });
+      check(`§6a2 ${surface} rejects every pi-ox model except exact x-preview-f-free (400)`,
+        wrongModel.status === 400, String(wrongModel.status));
+      const effort = await call({ harness: "pi-ox", effort: "low" });
+      check(`§6a2 ${surface} rejects effort because pi-ox has no effort contract (400)`,
+        effort.status === 400, String(effort.status));
+    }
+  }
+  check("§6a2 a native opencode harness id remains rejected rather than becoming a second lifecycle",
+    (await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "opencode" })).status === 400
+      && (await post("/api/tasks", { text: "native-opencode-must-stay-closed", queue: false,
+        harness: "opencode" })).status === 400);
+
+  const oxAgentDir = process.env.FLEET_PI_OX_AGENT_DIR ?? "";
+  const oxModels = '{"providers":{"opencode":{"baseUrl":"https://opencode.ai/zen/v1","api":"openai-completions","apiKey":"public","models":[{"id":"x-preview-f-free","name":"Ox Alpha Free (Unlimited)","reasoning":true,"input":["text","image"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":1000000,"maxTokens":131072,"thinkingLevelMap":{"off":null,"minimal":null,"low":"low","medium":null,"high":"high","xhigh":null,"max":"max"},"compat":{"supportsStore":false,"supportsDeveloperRole":false,"maxTokensField":"max_tokens"}}]}}}\n';
+  check("§6a2 pi-ox fixture uses a distinct scratch agent directory",
+    !!oxAgentDir && realpathSync(oxAgentDir).startsWith(realpathSync(ROOT) + "/")
+      && realpathSync(oxAgentDir) !== realpathSync(zaiAgentDir),
+    `${oxAgentDir} / ${zaiAgentDir}`);
+  const waitForOxModels = async (agentDir: string): Promise<string> => {
+    let text = "";
+    for (let i = 0; i < 40; i++) {
+      try { text = readFileSync(`${agentDir}/models.json`, "utf8"); } catch { text = ""; }
+      if (text === oxModels) break;
+      await Bun.sleep(100);
+    }
+    return text;
+  };
+
+  // A fresh adapter root has no Pi trust store. Project-local `.pi` settings are sufficient to
+  // trigger Pi 0.84's trust selector without --no-approve; two simultaneous opens additionally
+  // prove that each UUID-derived home receives an independent atomically replaced catalogue.
+  const oxParallelSlot = 11;
+  const oxProjectConfigDir = `${REPO}/.pi`;
+  check("§6a2 trust-selector fixture starts without a pre-existing project .pi directory",
+    !existsSync(oxProjectConfigDir), oxProjectConfigDir);
+  mkdirSync(oxProjectConfigDir);
+  writeFileSync(`${oxProjectConfigDir}/settings.json`, "{}\n");
+  writeFileSync(`${oxAgentDir}/models.json`, "{base-must-not-participate\n");
+  await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+  await post(`/api/slots/${oxParallelSlot}/kill`, {});
+  const [poOpen, poParallelOpen] = await Promise.all([
+    post(`/api/slots/${HARNESS_SLOT}/open`, {
+      cwd: REPO, harness: "pi-ox", model: "x-preview-f-free",
+    }),
+    post(`/api/slots/${oxParallelSlot}/open`, {
+      cwd: REPO, harness: "pi-ox", model: "x-preview-f-free",
+    }),
+  ]);
+  const poCmd = (await tmuxOut("display-message", "-p", "-t", `s${HARNESS_SLOT}`, "#{pane_start_command}"))
+    .out.replaceAll("\\", "");
+  const poParallelCmd = (await tmuxOut("display-message", "-p", "-t", `s${oxParallelSlot}`, "#{pane_start_command}"))
+    .out.replaceAll("\\", "");
+  const poSid = poCmd.match(/--session-id ([0-9a-f-]{36})\b/)?.[1] ?? "";
+  const poParallelSid = poParallelCmd.match(/--session-id ([0-9a-f-]{36})\b/)?.[1] ?? "";
+  const oxSessionAgentDir = `${oxAgentDir}/${poSid}`;
+  const oxParallelAgentDir = `${oxAgentDir}/${poParallelSid}`;
+  check("§6a2 pi-ox spawn pins Pi provider/model/cycle/key/no-trust/session and its session-local home",
+    poOpen.ok && poParallelOpen.ok
+      && poCmd.includes("pi --provider opencode --model 'x-preview-f-free' --models opencode/x-preview-f-free --api-key public --no-approve --no-extensions --no-skills --no-prompt-templates --no-themes --verbose")
+      && /--session-id [0-9a-f-]{36}\b/.test(poCmd)
+      && poCmd.includes(`PI_CODING_AGENT_DIR='${oxSessionAgentDir}'`)
+      && !poCmd.includes("--thinking"), poCmd.slice(-520));
+  check("§6a2 concurrent pi-ox sessions get distinct UUID-derived homes, never a shared base home",
+    poSid !== poParallelSid
+      && poParallelCmd.includes(`PI_CODING_AGENT_DIR='${oxParallelAgentDir}'`)
+      && !poCmd.includes(`PI_CODING_AGENT_DIR='${oxAgentDir}' pi`)
+      && !poParallelCmd.includes(`PI_CODING_AGENT_DIR='${oxAgentDir}' pi`),
+    `${oxSessionAgentDir} / ${oxParallelAgentDir}`);
+  check("§6a2 both parallel controlled Pi processes start under the pi-ox profile",
+    (await waitForPi(`s${HARNESS_SLOT}`)).includes("pi")
+      && (await waitForPi(`s${oxParallelSlot}`)).includes("pi"));
+  check("§6a2 parallel spawns write an exact independent Canary catalogue in both session homes",
+    await waitForOxModels(oxSessionAgentDir) === oxModels
+      && await waitForOxModels(oxParallelAgentDir) === oxModels,
+    `${oxSessionAgentDir} / ${oxParallelAgentDir}`);
+  check("§6a2 session-local atomic replacement leaves no private temporary file in either home",
+    [oxSessionAgentDir, oxParallelAgentDir].every((dir) =>
+      readdirSync(dir).every((name) => !name.startsWith(".models.json."))),
+    `${readdirSync(oxSessionAgentDir).join(",")} / ${readdirSync(oxParallelAgentDir).join(",")}`);
+  check("§6a2 malformed base-root catalogue remains unused by both isolated sessions",
+    readFileSync(`${oxAgentDir}/models.json`, "utf8") === "{base-must-not-participate\n",
+    `${oxAgentDir}/models.json`);
+  let oxReadyPane = "";
+  for (let i = 0; i < 80; i++) {
+    oxReadyPane = (await tmuxOut("capture-pane", "-p", "-t", `s${HARNESS_SLOT}`)).out;
+    if (oxReadyPane.includes("Model scope: x-preview-f-free")
+      || oxReadyPane.includes("Trust project folder?")) break;
+    await Bun.sleep(100);
+  }
+  check("§6a2 --no-approve bypasses the input-eating project-trust selector and reaches exact model readiness",
+    oxReadyPane.includes("Model scope: x-preview-f-free")
+      && !oxReadyPane.includes("Trust project folder?"), oxReadyPane.slice(-520));
+  rmSync(`${oxProjectConfigDir}/settings.json`, { force: true });
+  rmSync(oxProjectConfigDir, { recursive: true, force: true });
+  await post(`/api/slots/${oxParallelSlot}/kill`, {});
+  check("§6a2 pi-ox never writes the global Pi catalogue",
+    !existsSync(globalPiModels), globalPiModels);
+
+  const oxSessionDir = `${oxSessionAgentDir}/sessions/--${realpathSync(REPO).replace(/^\/+/, "").replaceAll("/", "-")}--`;
+  mkdirSync(oxSessionDir, { recursive: true });
+  const oxSession = JSON.stringify({ type: "session", version: 3, id: poSid,
+    timestamp: "2026-08-22T00:00:00.000Z", cwd: realpathSync(REPO) });
+  const oxUsage = JSON.stringify({ type: "message", message: { role: "assistant",
+    usage: { input: 1_167, output: 585, cacheRead: 51_712, cacheWrite: 0, reasoning: 116, totalTokens: 53_464 } } });
+  const oxSessionFile = `${oxSessionDir}/2026-08-22T00-00-00.000Z_${poSid}.jsonl`;
+  writeFileSync(oxSessionFile, `${oxSession}\n${oxUsage}\n`);
+  let oxMeasured: PiFill = null;
+  for (let i = 0; i < 20 && oxMeasured === null; i++) {
+    oxMeasured = await piFill();
+    if (oxMeasured === null) await Bun.sleep(100);
+  }
+  check("§6a2 pi-ox reverse-state reads only its relocated Pi JSONL with the exact 1M denominator",
+    oxMeasured?.usedTokens === 52_879 && oxMeasured.windowTokens === 1_000_000 && oxMeasured.pct === 5.3,
+    JSON.stringify(oxMeasured));
+  rmSync(oxSessionFile, { force: true });
+
+  writeFileSync(`${oxSessionAgentDir}/models.json`, "{}\n");
+  await post(`/api/slots/${HARNESS_SLOT}/restart`, {});
+  const poRestartCmd = (await tmuxOut("display-message", "-p", "-t", `s${HARNESS_SLOT}`, "#{pane_start_command}"))
+    .out.replaceAll("\\", "");
+  check("§6a2 restart preserves the exact pi-ox session/profile and repairs catalogue drift",
+    poRestartCmd.includes("pi --provider opencode --model 'x-preview-f-free' --models opencode/x-preview-f-free --api-key public --no-approve --no-extensions --no-skills --no-prompt-templates --no-themes --verbose")
+      && poRestartCmd.includes(`--session-id ${poSid}`)
+      && poRestartCmd.includes(`PI_CODING_AGENT_DIR='${oxSessionAgentDir}'`)
+      && await waitForOxModels(oxSessionAgentDir) === oxModels,
+    poRestartCmd.slice(-520));
+  await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+  rmSync(`${oxAgentDir}/models.json`, { force: true });
+  if (oxTaskId) await post(`/api/tasks/${oxTaskId}/delete`, {});
+
   const piProbeOpen = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "pi" });
   check("§6b fixture: a Pi slot is active before the per-slot liveness cache is measured",
     piProbeOpen.ok, String(piProbeOpen.status));
@@ -1134,7 +1299,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     rdash.status === 400, String(rdash.status));
   // ...and NAMED FOR A HARNESS THAT HAS NO BOX: refused, not dropped. Dropping it is the failure
   // that matters most in this family — the owner would believe the session is contained.
-  for (const h of ["claude", "pi", "pi-zai", "codex"]) {
+  for (const h of ["claude", "pi", "pi-zai", "pi-ox", "codex"]) {
     const rh = await post(`/api/slots/${BOX_SLOT_A}/open`, { cwd: REPO, harness: h, container: "box-a" });
     check(`§6d2 harness ${h} refuses a container it would never enter (400, never silently dropped)`,
       rh.status === 400, String(rh.status));

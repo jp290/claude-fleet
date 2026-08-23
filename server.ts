@@ -524,6 +524,20 @@ const PI_ZAI_KEY_FILE = (() => {
     throw new Error("FLEET_PI_ZAI_KEY_FILE must be a safe absolute path without ..");
   return path.replace(/\/+$/, "");
 })();
+// `pi-ox` owns one Pi home PER pinned Fleet session, deliberately separate from normal Pi,
+// pi-zai and every other pi-ox process. The operator chooses only this validated base; the child
+// is an already-validated Fleet UUID, so restart/resume returns to the same root without an
+// `unbound` sharing fallback. The catalogue is the exact one-node result of the 2026-08-22 live
+// Canary; it is still atomically replaced so a same-session restart cannot expose partial bytes.
+const PI_OX_AGENT_DIR = (() => {
+  const path = process.env.FLEET_PI_OX_AGENT_DIR ?? `${HOME}/.config/claude-fleet/pi-ox-agent`;
+  if (!SPAWN_PATH_RE.test(path) || path === "/" || path.split("/").includes(".."))
+    throw new Error("FLEET_PI_OX_AGENT_DIR must be a safe absolute path without ..");
+  return path.replace(/\/+$/, "");
+})();
+function piOxAgentDirFor(sessionId: string | null): string | null {
+  return sessionId && CODEX_UUID_RE.test(sessionId) ? `${PI_OX_AGENT_DIR}/${sessionId}` : null;
+}
 
 // Adapter #2 — Pi (pi.dev, `@earendil-works/pi-coding-agent`). Every flag below is MEASURED, not
 // read off a README; the measurements are briefs/pi-messungen-2026-08-07.md, section letters cited
@@ -670,6 +684,71 @@ const PI_ZAI_HARNESS: Harness = {
     container: false,
   },
   note: "fixed provider zai/glm-5.3 (Coding Plan); key from ~/.config/claude-fleet/secrets/zai-coding-plan.key; full local reach like pi; process-local agent directory leaves ~/.pi untouched",
+  role: "agent",
+};
+
+// Adapter #2c — Pi pinned to OpenCode Zen's one free Ox Alpha preview model. This is NOT an
+// OpenCode lifecycle adapter: Pi remains the process, session store, composer and liveness fact.
+// `--provider`, `--model`, `--models` and `--api-key` are all literal so neither ambient Pi config
+// nor a provider/model fallback can change which endpoint receives a Fleet task.
+const PI_OX_HARNESS: Harness = {
+  id: "pi-ox",
+  spawnCmd: (o) => {
+    const agentDir = piOxAgentDirFor(o.sessionId);
+    if (!agentDir) {
+      const identityError = "pi-ox: missing or invalid pinned Fleet session UUID";
+      return `${PATH_EXPORT}printf '%s\\n' '${identityError}'; exec ${SHELL}`;
+    }
+    let cmd = "pi --provider opencode --model 'x-preview-f-free' --models opencode/x-preview-f-free --api-key public --no-approve --no-extensions --no-skills --no-prompt-templates --no-themes --verbose";
+    if (o.sessionId) cmd += ` --session-id ${o.sessionId}`;
+    const catalog = '{"providers":{"opencode":{"baseUrl":"https://opencode.ai/zen/v1","api":"openai-completions","apiKey":"public","models":[{"id":"x-preview-f-free","name":"Ox Alpha Free (Unlimited)","reasoning":true,"input":["text","image"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":1000000,"maxTokens":131072,"thinkingLevelMap":{"off":null,"minimal":null,"low":"low","medium":null,"high":"high","xhigh":null,"max":"max"},"compat":{"supportsStore":false,"supportsDeveloperRole":false,"maxTokensField":"max_tokens"}}]}}}';
+    const catalogError = `pi-ox: could not atomically prepare session-local catalogue: ${agentDir}/models.json`;
+    return `${PATH_EXPORT}mkdir -p '${agentDir}' || { printf '%s\\n' '${catalogError}'; exec ${SHELL}; }; `
+      + `fleet_pi_ox_catalog_tmp="$(mktemp '${agentDir}/.models.json.XXXXXX')" `
+      + `|| { printf '%s\\n' '${catalogError}'; exec ${SHELL}; }; `
+      + `printf '%s\\n' '${catalog}' > "$fleet_pi_ox_catalog_tmp" `
+      + `&& mv -f "$fleet_pi_ox_catalog_tmp" '${agentDir}/models.json' `
+      + `|| { rm -f "$fleet_pi_ox_catalog_tmp"; printf '%s\\n' '${catalogError}'; exec ${SHELL}; }; `
+      + `PI_CODING_AGENT_DIR='${agentDir}' ${cmd}; exec ${SHELL}`;
+  },
+  // Pi has neither Fleet's Claude transcript return channel nor the worker tier's ToolProfile.
+  worker: () => null,
+  context: { file: piOxContextFile, used: readPiUsedTokens },
+  pinsSession: true,
+  comms: ["pi"],
+  composer: PI_COMPOSER,
+  // Pi 0.84 asks a selector question before drawing the composer when an untrusted project has
+  // local `.pi` resources. An unattended Fleet brief would answer that selector and disappear.
+  // `--no-approve` makes the policy mechanical: ignore project-local executable/config resources
+  // and never render the selector. The four `--no-*` discovery flags also close adapter-global
+  // extensions (which could setModel/registerProvider), skills, templates and themes. Built-in
+  // tools and the independently loaded AGENTS.md context remain. `--verbose` makes the accept
+  // marker independent of mutable quietStartup settings in the session-local root. The block
+  // remains defense-in-depth against a CLI regression.
+  readiness: {
+    accept: /Model scope: x-preview-f-free/,
+    blocks: [{ re: /Trust project folder\?/, why: "pi project trust prompt" }],
+  },
+  hostCommits: false,
+  // Owner-authorized for unattended tasks after the 2026-08-22 live Canary proved prompt, a real
+  // read tool call and session continuation. The literal public credential cannot reach an owner
+  // billing account; provider withdrawal or changed terms must fail this exact anonymous request,
+  // never fall through to another credential, provider or model.
+  automatable: true,
+  allowsLanes: true,
+  singleton: false,
+  laneForm: null,
+  modelRe: /^x-preview-f-free$/,
+  effortLevels: [],
+  supports: {
+    resume: true,
+    transcript: false,
+    model: true,
+    effort: false,
+    selfSchedule: false,
+    container: false,
+  },
+  note: "fixed anonymous opencode/x-preview-f-free via Pi; no billing credential and no model/provider fallback; availability and provider terms may change",
   role: "agent",
 };
 
@@ -1061,7 +1140,7 @@ const CODEX_HARNESS: Harness = {
 // prose and must have a positive answer. Neither moves per slot, and neither should.
 const HARNESS_AUTOMATION = process.env.FLEET_HARNESS_AUTOMATION === "1";
 
-const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS, PI_ZAI_HARNESS, PI_UNFENCED_HARNESS, CONTAINER_HARNESS, CODEX_HARNESS];
+const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS, PI_ZAI_HARNESS, PI_OX_HARNESS, PI_UNFENCED_HARNESS, CONTAINER_HARNESS, CODEX_HARNESS];
 // null/unknown → the default adapter. Unknown ids never reach persistence (the routes reject
 // them), so this fallback is for a hand-edited state file, and it fails toward the safe harness.
 const harnessOf = (id: string | null | undefined): Harness =>
@@ -15572,13 +15651,16 @@ function contextFill(s: Slot): ContextFill | null {
   const h = harnessOf(s.harness);
   const reader = h.context;
   if (!reader) return null;
-  // Only the default adapter and pi-zai have a model Fleet can name when the slot has no explicit
-  // pin: Claude receives DEFAULT_MODEL, while pi-zai's spawn line always passes literal glm-5.3.
+  // Only the default adapter and the two fixed Pi profiles have a model Fleet can name when the
+  // slot has no explicit pin: their spawn lines always pass their respective literal model.
   // Every other foreign harness's ambient model is unknown; borrowing either default would invent.
   // A reader that carries its own denominator never reaches this: for Codex the window is in the
   // rollout, and contextWindowFor names no Codex model on purpose.
   const modelWindow = reader.windowFromFile ? null : contextWindowFor(s.model
-    ?? (h === CLAUDE_HARNESS ? DEFAULT_MODEL : h === PI_ZAI_HARNESS ? "glm-5.3" : null));
+    ?? (h === CLAUDE_HARNESS ? DEFAULT_MODEL
+      : h === PI_ZAI_HARNESS ? "glm-5.3"
+      : h === PI_OX_HARNESS ? "x-preview-f-free"
+      : null));
   // Absence 5 for a model-denominator reader, decided BEFORE any disk work exactly as before — so
   // neither the answer nor the cost of the claude/pi/pi-zai path is touched by this branch.
   if (!reader.windowFromFile && modelWindow === null) return null;
@@ -15696,10 +15778,22 @@ function piContextFile(o: { cwd: string; sessionId: string }): string | null {
 // root. Keep piContextFile itself unchanged: normal Pi must continue reading ~/.pi/agent exactly
 // as before, while this adapter can never observe or mutate that global directory.
 function piZaiContextFile(o: { cwd: string; sessionId: string }): string | null {
+  return isolatedPiContextFile(PI_ZAI_AGENT_DIR, o);
+}
+
+// pi-ox uses the same Pi session wire format inside its UUID-derived per-session root. Keeping the
+// resolver shared makes its reverse-state identity rule byte-for-byte the pi-zai rule: cwd slug,
+// filename UUID and session header must all agree, and ambiguity stays unknown.
+function piOxContextFile(o: { cwd: string; sessionId: string }): string | null {
+  const root = piOxAgentDirFor(o.sessionId);
+  return root ? isolatedPiContextFile(root, o) : null;
+}
+
+function isolatedPiContextFile(root: string, o: { cwd: string; sessionId: string }): string | null {
   let real: string;
   try { real = realpathSync(o.cwd); } catch { real = o.cwd; }
   const slug = `--${real.replace(/^\/+/, "").replaceAll("/", "-")}--`;
-  const dir = `${PI_ZAI_AGENT_DIR}/sessions/${slug}`;
+  const dir = `${root}/sessions/${slug}`;
   let names: string[];
   try { names = readdirSync(dir).filter((n) => n.endsWith(`_${o.sessionId}.jsonl`)); }
   catch { return null; }

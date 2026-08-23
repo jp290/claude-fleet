@@ -37,8 +37,10 @@ read its probe-fix commit bodies (`937abfa`, `ec3bb33`); do not merge it.
    order (each its own sentence): exact live bound MAIN (slot+openedAt+sessionId; ambiguous = second
    refusal) → task known → task of this Program → kind `auftrag`, status `sent`, live lane slot →
    lane repo = caller checkout (`repoKeyOf`) → policy present and not `off` → repo has its own
-   `FLEET_VERIFY_CMD_REPOS` entry → per-task attempt cap (`FLEET_SELF_LAND_MAX_ATTEMPTS` default 3,
-   409 with the number) → lane done-looking (`laneWatchSignal`) → not inflight (shared reservation
+   `FLEET_VERIFY_CMD_REPOS` entry → progress guard: no fixed attempt count (owner policy §1) — the route refuses only
+   a literally unchanged retry (same `(task, candidate)` as the last non-land verdict, nothing new
+   recorded: 409 `no progress since the last verdict — repair or escalate`); repeated no-progress
+   is an escalation class, never a counter → lane done-looking (`laneWatchSignal`) → not inflight (shared reservation
    with the owner route). Candidate = lane HEAD at invocation; same `(task, candidate)` already
    landed → 409 `already landed`. Calls the EXISTING `mergeJob` through a helper shared with the
    owner route; `mergeJob` logic unchanged.

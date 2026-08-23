@@ -15234,7 +15234,9 @@ autos = autos.filter((a) => slotFrom(a.slot)?.cwd);
 watches = watches.filter((w) => {
   const s = slotFrom(w.slot);
   if (!s?.cwd) return false;
-  if (watchKind(w) === "audit" || watchKind(w) === "deploy") return true;
+  // STN-1: a transition watch has no target slot — its other party is the bound Supervisor,
+  // re-resolved at completion — so a receiver that came back is all it needs to stay.
+  if (watchKind(w) === "audit" || watchKind(w) === "deploy" || watchKind(w) === "transition") return true;
   if (!("target" in w)) return false;
   const t = slotFrom(w.target);
   // Preserve the legacy lane-watch boot rule exactly. Merge subscriptions stay visible when the

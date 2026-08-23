@@ -2835,6 +2835,57 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     `[${union.join(",")}]`);
 }
 
+// --- SLICE B: THE RETURN PATH. Two halves of one rule, and they fail in opposite directions.
+// clarificationReceiverFor answers "who coordinates this lane" for both self-routes. For a lane
+// with a Program the answer is the binding and nothing else may outrank it — an outsider's stale
+// subscription is not evidence about a bound lane, and consulting it first refused reports the
+// worker could not have prevented. For a lane WITHOUT a Program the watch rows are the only
+// evidence there is, so two of them naming different occupants must stay a refusal rather than
+// become a coin toss. Textual order is the pin because both halves are one function's control
+// flow: a compiler cannot see that a return moved below a block.
+{
+  const RULE_RECEIVER = "the clarification receiver answers program binding BEFORE watch evidence";
+  const receiver = server.match(/function clarificationReceiverFor\([\s\S]*?\n\}/)?.[0] ?? "";
+  const programReturn = receiver.indexOf('return { receiver: programReceiver, basis: "program-main" };');
+  const watchBlock = receiver.indexOf("const watchReceivers");
+  pin(`${RULE_RECEIVER} — the program-main return precedes the watch block (B1)`,
+    receiver !== "" && programReturn >= 0 && watchBlock >= 0 && programReturn < watchBlock,
+    receiver === "" ? "clarificationReceiverFor not found in server.ts"
+      : `program-main@${programReturn} watchReceivers@${watchBlock}`);
+  // The opposite direction, and it is NOT implied by the one above: a reorder that also deleted
+  // the refusal would pass B1 and silently route a program-less lane to an arbitrary watcher.
+  pin(`${RULE_RECEIVER} — the program-LESS multi-watcher refusal survives verbatim (B2)`,
+    receiver.includes('return { error: "lane-watch evidence names multiple receiver occupants" };'),
+    receiver === "" ? "clarificationReceiverFor not found in server.ts"
+      : `${(receiver.match(/return \{ error: "[^"]*" \}/g) ?? []).length} refusal sentences in the function`);
+  // B3, doc ↔ route ↔ footer. The footer is the only text most lanes ever read about how to end,
+  // so a route renamed without it becomes a curl that 404s in every founding brief from then on.
+  const selfApi = read("docs/self-api.md");
+  const footer = server.match(/const LANE_EXIT_FOOTER = `[\s\S]*?\n`;/)?.[0] ?? "";
+  const statuses = ["complete", "needs-main", "failed"];
+  pin(`${RULE_RECEIVER} — docs/self-api.md carries §fleet-report and §tasks, and the footer names the route (B3)`,
+    /^## fleet-report/m.test(selfApi) && /^## tasks/m.test(selfApi)
+      && footer.includes("/api/self/fleet-report") && selfApi.includes("/api/self/fleet-report"),
+    `fleet-report=${/^## fleet-report/m.test(selfApi)} tasks=${/^## tasks/m.test(selfApi)} footer=${footer !== ""}`);
+  // …and the three statuses are ONE list. The footer interpolates FLEET_REPORT_STATUSES so it
+  // cannot drift from the route by construction; the doc is prose and can, which is why it is
+  // checked against the same literal source the route validates against.
+  const declared = (read("src/protocol.ts").match(/FLEET_REPORT_STATUSES = \[([^\]]*)\]/)?.[1] ?? "")
+    .split(",").map((w) => w.trim().replace(/"/g, "")).filter(Boolean);
+  const reportSection = selfApi.slice(selfApi.indexOf("## fleet-report"));
+  pin(`${RULE_RECEIVER} — the three report statuses are one list across protocol, footer and doc`,
+    JSON.stringify(declared) === JSON.stringify(statuses)
+      && footer.includes("FLEET_REPORT_STATUSES.join")
+      && statuses.every((status) => reportSection.includes(status)),
+    `declared=[${declared.join(",")}]`);
+  // The footer is a LIFECYCLE instruction, and a clarify lane has a different lifecycle: it stops
+  // for the owner. Appending it there would tell a lane to finish work it was told not to start.
+  pin(`${RULE_RECEIVER} — the exit footer is appended to mutating briefs only, clarify exempted at the seam`,
+    /const deliveredBrief = `\$\{brief\}\$\{anchorBlock\}\$\{clarify \? "" : LANE_EXIT_FOOTER\}`;/.test(server)
+      && (server.split("LANE_EXIT_FOOTER").length - 1) === 2,
+    `LANE_EXIT_FOOTER mentions=${server.split("LANE_EXIT_FOOTER").length - 1}`);
+}
+
 console.log(rows.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

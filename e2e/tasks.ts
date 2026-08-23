@@ -14,6 +14,11 @@ import { classifyAnalystOffWarning } from "../task-analysis-warning";
 import { analysisStaleness } from "../analysis-staleness";
 import type { Ctx } from "./ctx";
 
+// The first bytes of briefAndSend's LANE_EXIT_FOOTER. Deliberately the HEADING and not the whole
+// block: this file checks that the ending is delivered and what it names, while the exact wording
+// stays free to improve. e2e/pins.ts holds the must-agree pair (footer ↔ route ↔ docs/self-api.md).
+const LANE_EXIT_MARK = "\n\n--- HOW THIS LANE ENDS";
+
 export async function run(ctx: Ctx): Promise<void> {
   interface ContextReceipt {
     id: string; hash: string; at: number; repo: string; head: string;
@@ -789,10 +794,31 @@ export async function run(ctx: Ctx): Promise<void> {
       await Bun.sleep(500);
     }
     const deliveredPrompt = autoRows.find((p) => p.text?.startsWith(DBRIEF))?.text ?? "";
+    // Since the lifecycle footer the delivered bytes are brief + anchor block + footer. The two
+    // checks below are split along that seam ON PURPOSE, so each fails for its own reason: this
+    // one measures the ANCHOR REGION (what the planner appended) and reads the footer only to know
+    // where that region ends; (d-footer) measures the footer. A missing footer must not red the
+    // anchor check as well, or the failure stops naming which of the two broke.
+    const lifecycleAt = deliveredPrompt.indexOf(LANE_EXIT_MARK);
+    const lifecycleFooter = lifecycleAt >= 0 ? deliveredPrompt.slice(lifecycleAt) : "";
+    const anchorRegion = deliveredPrompt.slice(DBRIEF.length,
+      lifecycleAt >= 0 ? lifecycleAt : deliveredPrompt.length);
     check("a dispatch into a FOREIGN tree delivers the STORED brief alone — no anchor block at all",
-      deliveredPrompt === DBRIEF && !deliveredPrompt.includes("ContextPlan v2 anchors")
+      deliveredPrompt.startsWith(DBRIEF) && anchorRegion === ""
+      && !deliveredPrompt.includes("ContextPlan v2 anchors")
       && !deliveredPrompt.includes("dispatch-gate-probe"),
       JSON.stringify(autoRows.slice(0, 3)).slice(0, 300));
+    // THE FOOTER IS THE LANE'S ENDING, DELIVERED — not a template that exists somewhere. Measured
+    // root cause: docs/messungen/2026-08-23-rootcause-lane-ohne-commit-und-report.md — a lane left
+    // its result untracked, sat idle-dirty, and filed nothing. This probe fails
+    // under its OWN name if the block is absent, so a missing ending can never read as a passing
+    // dispatch. Its counterpart is (i-footer): the clarify brief must NOT carry it.
+    check("(d-footer) a MUTATING brief ends with the three exit acts — commit (no untracked), typed fleet-report, idle",
+      lifecycleFooter.includes("1. COMMIT") && lifecycleFooter.includes("NO untracked files")
+      && lifecycleFooter.includes("/api/self/fleet-report")
+      && ["complete", "needs-main", "failed"].every((status) => lifecycleFooter.includes(status))
+      && lifecycleFooter.includes("3. THEN GO IDLE"),
+      JSON.stringify(lifecycleFooter).slice(0, 400));
     const expectedHead = spawnSync("git", ["-C", REPO, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
     check("a delivered lane produces exactly one receipt carrying task/origin/program provenance and integration HEAD",
       !!deliveredReceipt && (await contextReceipts()).total === receiptsBeforeDispatch.total + 1
@@ -804,7 +830,7 @@ export async function run(ctx: Ctx): Promise<void> {
       deliveredReceipt?.selected.length === 0 && deliveredReceipt.omitted.length === 6
       && deliveredReceipt.omitted.every((entry) => entry.why === "source-unavailable"),
       JSON.stringify(deliveredReceipt ?? null));
-    const anchorBlock = deliveredPrompt.slice(DBRIEF.length);
+    const anchorBlock = anchorRegion; // exactly the bytes the receipt hashed — footer excluded
     const recomputedHash = deliveredReceipt ? createHash("sha256").update(JSON.stringify({
       anchorBlock,
       planFacts: {
@@ -1143,8 +1169,15 @@ export async function run(ctx: Ctx): Promise<void> {
     const brokenCommit = writeManifest("[{\"id\": broken json,,,\n", "break the manifest");
     const badBrief = "DISPATCH-MANIFEST FIXTURE — the same tree, manifest now malformed";
     const bad = await dispatchInto(badBrief, "dispatch-manifest-invalid");
+    // Same seam-split as (d): the claim is about the ANCHOR REGION (a broken manifest must append
+    // nothing there rather than drop the omission silently), so the lifecycle footer is measured
+    // out of the way instead of being allowed to read as an appended block.
+    const badFooterAt = bad.prompt.indexOf(LANE_EXIT_MARK);
+    const badAnchorRegion = bad.prompt.slice(badBrief.length,
+      badFooterAt >= 0 ? badFooterAt : bad.prompt.length);
     check("an invalid manifest at the dispatch seam is the named @manifest omission, never a silent drop",
-      brokenCommit === 0 && bad.prompt === badBrief && !bad.prompt.includes("ContextPlan v2 anchors")
+      brokenCommit === 0 && bad.prompt.startsWith(badBrief) && badAnchorRegion === ""
+      && !bad.prompt.includes("ContextPlan v2 anchors")
       && bad.receipt?.selected.length === 0 && bad.receipt.omitted.length === 7
       && JSON.stringify(bad.receipt.omitted.at(-1)) === JSON.stringify({ id: "@manifest", why: "manifest-invalid" }),
       JSON.stringify(bad.receipt ?? null));
@@ -1657,7 +1690,7 @@ export async function run(ctx: Ctx): Promise<void> {
       (ps) => ps.some((p) => p.startsWith(BRIEFMARK)));
     check("(h3) a released task starts and receives the STORED brief intact",
       qRow?.status === "sent" && !!qBrief?.text.startsWith(BRIEFMARK)
-      && sent.some((prompt) => prompt === qBrief!.text),
+      && sent.some((prompt) => prompt.startsWith(qBrief!.text)),
       JSON.stringify({ status: qRow?.status, brief: qBrief?.text.slice(0, 60), sentCount: sent.length }));
     // …and the receipt names the machine as the author. This is the only path in the suite where a
     // brief exists that the owner never touched, so it is the only place the "compiled" arm of the
@@ -1736,10 +1769,10 @@ export async function run(ctx: Ctx): Promise<void> {
     const offPrompts = await till(
       async () => ((await (await get("/api/prompts?limit=100")).json()) as { prompts: { source?: string; text?: string }[] }).prompts
         .filter((p) => p.source === "auto").map((p) => p.text ?? ""),
-      (ps) => ps.some((prompt) => prompt === OFF_RAW));
+      (ps) => ps.some((prompt) => prompt.startsWith(OFF_RAW)));
     check("(h4r) analyst OFF changes no dispatch semantics: the released unread row starts with its raw request",
       dispatchResumed.ok && offStarted?.status === "sent"
-      && offPrompts.some((prompt) => prompt === OFF_RAW),
+      && offPrompts.some((prompt) => prompt.startsWith(OFF_RAW)),
       JSON.stringify({ resume: dispatchResumed.status, row: offStarted,
         rawPromptSeen: offPrompts.some((prompt) => prompt.startsWith(OFF_RAW)) }));
     if (typeof offStarted?.slot === "number") await post(`/api/slots/${offStarted.slot}/kill`, {});
@@ -2402,6 +2435,10 @@ export async function run(ctx: Ctx): Promise<void> {
       !!iSent && (iSent.text ?? "").includes(MARK) && (iSent.text ?? "").includes("not to implement it yet")
       && !(iSent.text ?? "").includes("enhanced prompt. own your work!"),
       JSON.stringify(iSent?.text ?? null).slice(0, 300));
+    check("(i-footer) a clarify brief carries NO exit footer — it must stop for the owner, not finish and report",
+      !!iSent && !(iSent.text ?? "").includes(LANE_EXIT_MARK)
+      && !(iSent.text ?? "").includes("/api/self/fleet-report"),
+      JSON.stringify((iSent?.text ?? "").slice(-300)));
     // …and the receipt says so in one word. Booking a clarify lane as "raw" would be the costly
     // reading: a clarify lane is briefed to settle a criterion and NOT to commit, so every one that
     // works as designed would land in the empty-lane rate of raw dispatches.

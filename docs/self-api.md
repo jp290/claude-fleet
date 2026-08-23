@@ -248,3 +248,67 @@ ein `task_release`-Audit-Event, weil ein späterer beaufsichtigter ▸ start das
     die sein, die ablehnt — gesagt statt zum Entdecken übriggelassen.
   - **Deckel** (409): `program release cap reached (N/M released rows not yet started) — let the
     tick start one first`.
+
+
+## fleet-report — `POST /api/self/fleet-report`, `GET /api/self/fleet-report`
+
+**Der Rückweg einer arbeitenden Lane — und die einzige Tür, durch die ihr Ergebnis die Pane
+verlässt.** Gemessener Anlass:
+`docs/messungen/2026-08-23-rootcause-lane-ohne-commit-und-report.md`. Jeder *mutierende* Gründungsbrief endet seit dem Return-Path-Schnitt mit derselben
+deterministischen Fußzeile (`LANE_EXIT_FOOTER` in `server.ts`, an der EINEN Zusammenbaunaht in
+`briefAndSend`), die drei Akte benennt: **committen → einen getypten Report filen → idle gehen.**
+Eine Clarify-Lane ist ausgenommen — sie soll STOPPEN, nicht fertig werden.
+
+```
+curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"status":"complete","text":"<Zusammenfassung + zitiertes Verifikationsergebnis>"}'
+```
+
+- **Der Body trägt GENAU zwei Felder**, `status` und `text`; jedes weitere ist 400
+  (`body must contain only status and text`) — dieselbe Form wie bei `release`: was ein Request
+  nicht nennen kann, kann er nicht erschleichen. Worker, Empfänger und Provenienz (`taskId`,
+  `originId`, `programId`) stempelt der Server aus dem Slot.
+- **`status` ist genau einer von drei** (`FLEET_REPORT_STATUSES` in `src/protocol.ts`, dieselbe
+  Liste, aus der die Fußzeile ihren Text interpoliert):
+  `complete` (die Scheibe ist fertig UND verifiziert) · `needs-main` (fertig, soweit möglich, eine
+  Entscheidung steht aus) · `failed` (es hat nicht funktioniert, und die Lane sagt es).
+  Alles andere ist 400 mit der erlaubten Liste im Fehlertext.
+- **`text` ist PROSA für einen menschlichen Leser**, nicht-leer und ≤ `MAX_FLEET_REPORT_TEXT`
+  (4000 Zeichen). Es gibt bewusst keinen JSON-Ergebniskörper: der Empfänger ist eine Session, die
+  liest, kein Reducer.
+- **Ein Report bewegt NIE `Task.status`.** Er legt eine `FleetReport`-Zeile plus ein
+  `fleet-report`-FleetEvent an und sonst nichts — er landet nicht, deployt nicht und schließt
+  keine Zeile. Wer den Status bewegt, ist der bestehende Schreiber (Tick, `landLane`, der Owner).
+  Ein Report ist eine NACHRICHT.
+
+**Empfänger-Ableitung, in dieser Reihenfolge** (`clarificationReceiverFor`, geteilt mit
+`/api/self/clarifications`): **die Program-Bindung gewinnt, bevor Watch-Evidenz überhaupt gelesen
+wird.** Eine gebundene Lane hat per Konstruktion genau einen koordinierenden Occupant — der Owner
+hat ihn bei der Aktivierung bestätigt — also kann eine fremde, abgelaufene oder doppelte
+Watch-Subscription daran nichts korrigieren, nur stören. Vorher taten genau das drei 409er, die
+eine Lane von innen weder sehen noch reparieren konnte. Erst für eine Lane **ohne** Program werden
+die Watch-Zeilen gelesen, und dort bleibt die Ablehnung exakt wie sie war:
+
+- `lane-watch evidence names multiple receiver occupants` — zwei verschiedene Watch-Occupants sind
+  kein Empfänger, sondern ein Münzwurf. Bleibt wortgleich (`e2e/pins.ts`, B2).
+- `only legacy lane-watch evidence exists without slotOpenedAt` · `no exact clarification receiver
+  evidence` — unverändert.
+
+`basis` steht danach auf `"program-main"` (gebunden) oder `"lane-watch"` (ungebunden) und reitet in
+die `fleet_report_open`-Audit-Zeile. `"program-main+lane-watch"` bleibt im `ClarificationBasis`-Typ,
+weil vor dem Schnitt persistierte Zeilen ihn tragen und `loadState` gegen diese Liste validiert —
+neu vergeben wird er nicht mehr.
+
+**Weitere Ablehnungen:** MAIN und `⚙ steward` sind 409 (`not a worker lane — MAIN and the steward
+cannot file a fleet report`) — es berichtet, wer ARBEITET. Hat der Empfänger kein
+Zustellbudget mehr (offene Events + armed Watches ≥ `FLEET_EVENT_MAX_OPEN_PER_SLOT`, heute 5), ist
+es 409 `fleet-report receiver has no FleetEvent delivery budget`.
+
+**`GET /api/self/fleet-report`** liefert die Zeilen, in denen der Aufrufer Worker ODER Empfänger
+ist — exakt an Slot, `openedAt` und `sessionId` gebunden. **Retention: `FLEET_REPORT_KEEP = 20`**
+terminale Zeilen, älteste zuerst verworfen. Terminal heißt: das zugehörige Event steht auf
+`acknowledged` oder `receiver-gone` — **oder es existiert nicht mehr** (`pruneFleetReports`
+behandelt ein fehlendes Event als terminal, sonst hielte eine Zeile ohne Event die Liste ewig).
+Eine Zeile mit noch offenem Event wird nie gepruned. Ein Report ist also kein Archiv — was bleiben soll, gehört in den
+Commit.

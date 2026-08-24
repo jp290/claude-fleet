@@ -8047,10 +8047,21 @@ async function tickDispatch(): Promise<void> {
       };
       // count lanes in the task's TARGET repo: the cap bounds unattended fan-out per project —
       // a hand-driven lane in an unrelated repo used to eat the budget and stall the queue
-      // with no signal
+      // with no signal.
+      // …and it SKIPS rather than returns (2026-08-24). It used to `return`, under the reading that
+      // a full repo is "a condition of the MACHINE". It is not: the cap is counted PER REPO
+      // (`inRepo(s, repo)`) against a row's OWN target, so a full repo A says nothing whatsoever
+      // about repo B — and the sweep is ordered oldest-first across every repo at once. One
+      // saturated project therefore held every unrelated row in the queue behind its own oldest
+      // one, indefinitely and while displaying a note that read like healthy backpressure. The
+      // sentence "condition of the machine" is true of exactly one gate below, `no free slot`,
+      // which is the only genuinely fleet-wide resource here and the only one that still stops the
+      // tick for a reason other than "one lane per tick".
+      // The note stays on the BLOCKED row (`waiting`), so the reason is still visible where the
+      // owner looks for it — the row waits, the sweep does not.
       const repo = next.repo ?? DISPATCH_REPO;
       const lanes = slots.filter((s) => inRepo(s, repo)).length;
-      if (lanes >= DISPATCH_MAX_LANES) { waiting(`waiting: ${lanes}/${DISPATCH_MAX_LANES} lanes busy in ${basename(repo)} — land or close one`); return; }
+      if (lanes >= DISPATCH_MAX_LANES) { waiting(`waiting: ${lanes}/${DISPATCH_MAX_LANES} lanes busy in ${basename(repo)} — land or close one`); continue; }
       // ...and then, only for a row that names a Program, the SECOND cap. It runs after the repo
       // cap and can therefore only narrow (see DISPATCH_MAX_LANES_PER_PROGRAM). The wait-note names
       // the PROGRAM, not the repo: both caps write onto the same row, and if they said the same
@@ -8059,10 +8070,10 @@ async function tickDispatch(): Promise<void> {
       // A row WITHOUT a programId gets no second check at all. There is deliberately no shared
       // "null" bucket: unrelated rows, whose only common property is that nobody bracketed them,
       // would then cap each other — a cap that binds by absence of a fact is not a cap on anything.
-      // And it SKIPS rather than returns, for the same reason the collision check below does: the
-      // repo cap is a condition of the MACHINE and rightly stops the tick, this one is a property
-      // of ONE ROW's bracket. Returning here would let a single full program hold every unrelated
-      // row in the queue behind it — a per-program cap that caps the whole fleet.
+      // And it SKIPS rather than returns, for the same reason the repo cap above and the collision
+      // check below do: it is a property of ONE ROW's bracket, not of the machine. Returning here
+      // would let a single full program hold every unrelated row in the queue behind it — a
+      // per-program cap that caps the whole fleet.
       if (next.programId) {
         const programLanes = slots.filter((s) => s.cwd && s.programId === next.programId).length;
         if (programLanes >= DISPATCH_MAX_LANES_PER_PROGRAM) {
@@ -8076,9 +8087,9 @@ async function tickDispatch(): Promise<void> {
       // non-automatable choice, but the owner's ▸ queue and create-and-release are attended acts
       // that do not; a row that reaches the queue anyway must say WHY it never starts instead of
       // sitting silent, and it must not fall back to the default adapter. Same predicate as the
-      // release door and canDeliver's slot gate. SKIPS rather than returns, like the collision
-      // check: this is a property of one row, not of the machine, and a single such row must not
-      // hold every unrelated row in the queue behind it.
+      // release door and canDeliver's slot gate. SKIPS rather than returns, like the two caps above
+      // and the collision check: this is a property of one row, not of the machine, and a single
+      // such row must not hold every unrelated row in the queue behind it.
       const rowSpawn = taskSpawnOf(next);
       const rowH = harnessOf(rowSpawn.harness);
       if (!harnessAutomatableFor(rowH)) {
@@ -8146,10 +8157,11 @@ async function tickDispatch(): Promise<void> {
         //     would pin a row indefinitely on a fact that has expired — invisibly wrong, which is
         //     worse than not checking. With ANALYSIS_TICK_MS = 0 there is no collision data being
         //     produced, so none is read.
-        //   · it SKIPS rather than returns. Every gate above is a condition of the machine and
-        //     rightly stops the tick; this one is a property of one row, and a collision clears on
-        //     lane-land timescales. Blocking the queue head for hours on it would have replaced a
-        //     cap that starts too little with a check that starts nothing.
+        //   · it SKIPS rather than returns, like the two caps and the harness gate above. Only a
+        //     genuinely fleet-wide condition — `no free slot` — still stops the tick; this one is a
+        //     property of one row, and a collision clears on lane-land timescales. Blocking the
+        //     queue head for hours on it would have replaced a cap that starts too little with a
+        //     check that starts nothing.
         const hit = a.collides.find((c) => runningIds.has(c) || runningBranches.has(c));
         if (hit) { waiting(`waiting: collides with running work (${hit}) — same files, says the analyst`.slice(0, 200)); continue; }
       }

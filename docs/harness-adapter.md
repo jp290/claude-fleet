@@ -272,3 +272,10 @@ Netzwerkkosten werden nicht als null behauptet.
   nichts benennen konnte: Pane lebt, nimmt Tasten an, kein Agent dahinter — was ein unauflösbares Modell
   hinterlässt. Cache (git-Tick), also Bericht, nie Gate; jedes Gate behält seine eigene frische Probe. `null`
   = Tick war noch nicht da, das ist KEINE Antwort. Ein Board-Knopf existiert dafür noch nicht.
+
+**Land-Historie ACP-26R (2026-08-24):** der erste Land-Versuch des Kandidaten `d0fa215` endete
+`verify RED, exit 127, 936 ms` — nicht der Baum, sondern der frisch eingetragene
+Fleet-Repo-Verify-Befehl in `FLEET_VERIFY_CMD_REPOS` trug die `\`-Fortsetzungen des Regelbuchs als
+LITERALE Newlines (JSON-Strings kennen keine Shell-Continuations; Zeilen 2–4 liefen als eigene
+Kommandos, `--target: command not found`). Der Eintrag ist seither einzeilig; der Kandidat war im
+roten Lauf NIE gemessen. Regel daraus: ein per-Repo-Verify-Wert ist IMMER eine einzige Zeile.

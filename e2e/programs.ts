@@ -2703,8 +2703,12 @@ export async function run(ctx: Ctx): Promise<void> {
         && ambientRows.length === ambientBefore + 1
         && (ambientRows[ambientRows.length - 1]?.detail ?? "").includes(`program=${landProgram.id}`),
       JSON.stringify({ row: suspectRow?.status, note: suspectNote, ambient: ambientRows.slice(-2) }));
-    // the counter-proof: the BOARD's own channel is not the ambient shape and must not be flagged.
-    // A flag that fired on the cookie too would count every ordinary owner land as suspect.
+    // the counter-proof, and it doubles as THE LEGACY PROBE: the promotion is revoked first, so this
+    // is a Program with NO policy at all — the shape every Program has until the owner says
+    // otherwise. It must behave exactly as it did before this slice existed: the owner's board
+    // channel lands it, the note and the outcome row carry the ordinary owner shape, and nothing is
+    // flagged. A flag that fired on the cookie too would count every ordinary owner land as suspect.
+    await setPromotion(landProgram.id, null);
     const cookieRowId = await makeTask({ text: "self-land cookie probe row", programId: landProgram.id, repo: REPO2 });
     const cookieLane = await conflictLane(cookieRowId);
     if (cookieLane.cwd) {
@@ -2732,6 +2736,22 @@ export async function run(ctx: Ctx): Promise<void> {
         && cookieNote.actor.via === "cookie" && cookieNote.actor.suspect === undefined
         && slAudits().filter((r) => r.event === "owner_token_ambient_use").length === ambientBefore2,
       JSON.stringify({ row: cookieRow?.status, note: cookieNote }));
+    // …and the legacy half of the same land, stated as itself: a Program WITHOUT a promotion is
+    // owner-only, and the outcome row it produces is the ordinary one — `landedBy` names the owner
+    // and its channel, `confirmedByHuman` is false because no confirm step was taken, and there is
+    // no `main` anywhere in it. This is the byte-for-byte claim the whole slice rests on.
+    const cookieOutcome = ((await (await get("/api/lane-outcomes?limit=100")).json()) as
+      { outcomes: { disposition: string; taskId?: string; confirmedByHuman?: boolean;
+        landedBy?: { kind?: string; via?: string; slot?: number } }[] })
+      .outcomes.find((o) => o.disposition === "landed" && o.taskId === cookieRowId);
+    const cookieSelfLand = await selfLand(landTok, cookieRowId);
+    const cookieSelfText = await cookieSelfLand.text();
+    check("legacy: a Program with NO promotion lands the ordinary owner way, and its own MAIN's self-land door refuses with the absent-policy sentence",
+      cookieOutcome?.landedBy?.kind === "owner" && cookieOutcome.landedBy.via === "cookie"
+        && cookieOutcome.landedBy.slot === undefined && cookieOutcome.confirmedByHuman === false
+        && cookieSelfLand.status === 409
+        && (cookieSelfText.includes("(absent)") || cookieSelfText.includes("already landed")),
+      JSON.stringify({ outcome: cookieOutcome ?? null, selfLand: cookieSelfText.slice(0, 160) }));
 
     for (const slot of [redLaneSlot, greenLaneSlot, cfLane.slot, cf2Lane.slot, suspectLane.slot,
       cookieLane.slot, landMainSlot, ladderSlot]) if (slot !== null) await post(`/api/slots/${slot}/kill`, {});

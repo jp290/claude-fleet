@@ -2491,10 +2491,14 @@ export async function run(ctx: Ctx): Promise<void> {
         && redVerdict.verify?.ok === false && (await slRow(redRowId))?.status === "sent"
         && spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim() === redMainBefore,
       JSON.stringify({ first: redFirst.status, verdict: redVerdict }));
+    // the merge job rebased this lane onto the main the green land moved, so its git facts are
+    // freshly stale; done-looking gates ABOVE the progress guard and the probe would otherwise
+    // measure the tick rather than the guard.
+    const redRetryReady = redLaneSlot === null ? false : await waitDoneLooking(redLaneSlot);
     const redRetry = await selfLand(landTok, redRowId);
     const redRetryText = await redRetry.text();
     check("self-land progress guard: the LITERALLY unchanged retry is refused as no-progress — and the words are repair-or-escalate, not a counter",
-      redRetry.status === 409 && redRetryText.includes("no progress since the last verdict — repair or escalate")
+      redRetryReady && redRetry.status === 409 && redRetryText.includes("no progress since the last verdict — repair or escalate")
         && !/attempt|cap|\d+\/\d+/.test(redRetryText.replace(/[0-9a-f]{8}/g, "")),
       `${redRetry.status} ${redRetryText.slice(0, 220)}`);
     // …and the counter-proof, which is what separates a PROGRESS budget from a cap: the same task,
@@ -2565,15 +2569,21 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify({ ready: cfReady, first: cfFirst.status, verdict: cfVerdict }));
     // green-only refuses it, and the refusal NAMES the rung that would not — a caller must be able
     // to tell "never" from "not with this permission".
+    // …but the done-looking gate sits ABOVE the ⏸ hold in the ladder, and the merge job just
+    // rewrote this lane (the resolver rebased it). Without re-waiting for the server's own git
+    // facts to catch up, this call would come back with the not-done-looking sentence and the
+    // probe would read "the ⏸ hold is gone" — a probe measuring the tick's timing, not the rung.
+    const cfReady2 = cfLane.slot === null ? false : await waitDoneLooking(cfLane.slot);
     const cfGreenOnly = await selfLand(landTok, cfRowId);
     const cfGreenOnlyText = await cfGreenOnly.text();
     check("guarded rung: a 'green-only' promotion refuses the unreviewed resolution and names the rung that would take it",
-      cfGreenOnly.status === 409 && cfGreenOnlyText.includes("conflict resolution awaits your review")
+      cfReady2 && cfGreenOnly.status === 409 && cfGreenOnlyText.includes("conflict resolution awaits your review")
         && cfGreenOnlyText.includes('"green-only" promotion never lands an unreviewed conflict resolution')
         && cfGreenOnlyText.includes("guarded"),
       `${cfGreenOnly.status} ${cfGreenOnlyText.slice(0, 240)}`);
     await setPromotion(landProgram.id, { v: 1, selfLand: "guarded" });
     const cfMainBefore = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
+    const cfReady3 = cfLane.slot === null ? false : await waitDoneLooking(cfLane.slot);
     const cfConfirm = await selfLand(landTok, cfRowId);
     const cfConfirmBody = await cfConfirm.json() as { running?: boolean; confirm?: string; candidate?: string;
       resolution?: { conflicted?: string[]; resolvedBy?: string | null; repairRounds?: number }; error?: string };
@@ -2584,7 +2594,7 @@ export async function run(ctx: Ctx): Promise<void> {
     }
     const cfMainAfter = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
     check("guarded rung: the bound MAIN confirms the resolved candidate and it LANDS — conflicted:true alone never blocked it",
-      cfConfirm.ok && cfConfirmBody.running === true && cfConfirmBody.confirm === "resolved-candidate"
+      cfReady3 && cfConfirm.ok && cfConfirmBody.running === true && cfConfirmBody.confirm === "resolved-candidate"
         && cfConfirmBody.candidate === cfVerdict?.candidateSha
         && (cfConfirmBody.resolution?.conflicted?.length ?? 0) > 0
         && cfRow?.status === "done" && cfMainAfter !== cfMainBefore,
@@ -2658,10 +2668,13 @@ export async function run(ctx: Ctx): Promise<void> {
         main: cf2MainBefore.slice(0, 8) }));
     // …and the confirmation is SPENT for this candidate: the identical next call does not buy a
     // second full suite run, it falls into the ordinary no-progress guard.
+    // …and the same re-wait, for the same reason: the no-progress guard sits BELOW done-looking, so
+    // a lane whose git facts have not been re-read yet would answer with the wrong sentence.
+    const cf2Ready3 = cf2Lane.slot === null ? false : await waitDoneLooking(cf2Lane.slot);
     const cf2Again = await selfLand(landTok, cf2RowId);
     const cf2AgainText = await cf2Again.text();
     check("guarded rung: the confirmation is spent per candidate — the identical next call is no-progress, not a second suite run",
-      cf2Again.status === 409 && cf2AgainText.includes("no progress since the last verdict"),
+      cf2Ready3 && cf2Again.status === 409 && cf2AgainText.includes("no progress since the last verdict"),
       `${cf2Again.status} ${cf2AgainText.slice(0, 200)}`);
     await setMergeMode("blocked");
     await setPromotion(landProgram.id, { v: 1, selfLand: "green-only" });

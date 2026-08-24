@@ -12,12 +12,13 @@
 // (FLEET_AUTOS_TICK_MS), but the git facts the predicate reads refresh on the 10s tickGit, so the
 // first fire cannot happen sooner than that. Every wait here is a POLL with a loud bound, never a
 // fixed sleep.
-import { appendFileSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
-import { laneHostCommitLooking, laneStalled, laneWatchEventKind, laneWatchMessage, laneWatchPayload, laneWatchSignal,
-  type ClarificationEventPayload, type LaneSignalView, type LaneWatchEventPayload } from "../lane-signals";
-import { composerResidue } from "../composer";
+import { auditWatchMessage, laneHostCommitLooking, laneStalled, laneWatchEventKind, laneWatchMessage, laneWatchPayload, laneWatchSignal,
+  type AuditWatchEventPayload, type AuditWatchEventView, type ClarificationEventPayload, type LaneSignalView,
+  type LaneWatchEventPayload } from "../lane-signals";
+import { composerHoldsExactly, composerResidue, composerRows } from "../composer";
 import { FLEET_REPORT_STATUSES, type FleetReportEventPayload, type FleetReportStatus } from "../src/protocol";
 import { AUTOS_TICK_MS, BASE, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut } from "./harness";
 
@@ -38,6 +39,20 @@ interface FleetEventRow {
   createdAt: number; status: FleetEventStatus; attempts: number;
   deliveredAt: number | null; acknowledgedAt: number | null; delivery?: "pane" | "inbox";
 }
+const ACP26_AUDIT_FIXTURES: { repo: string; mainAfter: string; event: AuditWatchEventView }[] = [
+  { repo: "/Users/owner/claude-fleet", mainAfter: "135ea83b91a27d2b348b40c6e65e9bd665f3cdf1",
+    event: { id: "f426d94b8bb603d354c6e570", kind: "post-land-audit", payload: {
+      result: "green", mainSha: "135ea83b91a27d2b348b40c6e65e9bd665f3cdf1",
+      covers: [{ branch: "fleet/260822162835-53ca", mainAfter: "135ea83b91a27d2b348b40c6e65e9bd665f3cdf1" }],
+      checks: { ran: 2847, failed: 0 },
+    } } },
+  { repo: "/Users/owner/claude-fleet", mainAfter: "d93ab4a19f72ba0e031290b25ba14591852cc541",
+    event: { id: "df8ca5c5b526e30582e56249", kind: "post-land-audit", payload: {
+      result: "green", mainSha: "d93ab4a19f72ba0e031290b25ba14591852cc541",
+      covers: [{ branch: "fleet/260823182201-a33f", mainAfter: "d93ab4a19f72ba0e031290b25ba14591852cc541" }],
+      checks: { ran: 2946, failed: 0 },
+    } } },
+];
 interface DeployWatchRow {
   id: string; kind: "deploy"; slot: number; deployId: string;
   slotOpenedAt?: number; delivery?: "pane" | "inbox";
@@ -190,7 +205,7 @@ export async function run(): Promise<void> {
     serverSource.indexOf("// The one-line receiver text", tickStart));
   const uncertainAt = tickSource.indexOf('event.status = "send-uncertain";');
   const persistedAt = tickSource.indexOf("await saveStateNow();", uncertainAt);
-  const sendAt = tickSource.indexOf("await sendText(s, text, true)", persistedAt);
+  const sendAt = tickSource.indexOf("await sendText(s, text, true, { rollbackOwnPayload: true })", persistedAt);
   check("watch transport persists send-uncertain before sendText and retries pending only",
     tickSource.includes('if (event.status !== "pending") continue;')
     && uncertainAt >= 0 && persistedAt > uncertainAt && sendAt > persistedAt,
@@ -250,6 +265,95 @@ export async function run(): Promise<void> {
     check("acceptance reader: a frame without the composer (dialog, stand-in binary) is null, never empty",
       composerResidue(claude, "Do you trust the files in this folder?\n  1. Yes\n  2. No") === null
       && composerResidue(pi, "just text\nno rules") === null, "null expected for both");
+
+    // ACP-26: rollback compares the complete freshly rendered region with Fleet's own payload.
+    // These are the TWO observed production post-land event shapes, copied without credentials:
+    // explicit pane delivery / 60 s (f426…, one attempt) and legacy absent delivery / 15 s
+    // (df8…, attempts accumulated while the occupied composer correctly refused another paste).
+    const auditFixtures = ACP26_AUDIT_FIXTURES;
+    const wrapPayload = (text: string, width = 106): string[] => {
+      const rows: string[] = [];
+      let rest = text;
+      while (rest.length > width) {
+        const at = rest.lastIndexOf(" ", width);
+        if (at <= 0) throw new Error("rollback fixture has no wrap boundary");
+        rows.push(rest.slice(0, at));
+        rest = rest.slice(at + 1); // the measured visual wrap omits this one payload space
+      }
+      rows.push(rest);
+      return rows;
+    };
+    const claudeWrapped = (rows: readonly string[]) => `${rule}\n${E}[39m❯\u00a0${rows[0]}\n`
+      + `${rows.slice(1).map((r) => `  ${r}`).join("\n")}\n${footer}`;
+    const codexWrapped = (rows: readonly string[]) => [`${E}[1;2m› ${E}[0mearlier turn`, "",
+      `${E}[1m›${E}[0m ${rows[0]}`, ...rows.slice(1).map((r) => `  ${r}`), "",
+      `  ${E}[2;3mno matches${E}[0m`, "", `  Press ${E}[2menter${E}[0m to insert or ${E}[2mesc${E}[0m to close`].join("\n");
+    const piWrapped = (rows: readonly string[]) => piFrame(rows.join("\n"));
+    const exact = (form: typeof claude | typeof pi, frame: string, payload: string): boolean => {
+      const rows = composerRows(form, frame);
+      return rows !== null && composerHoldsExactly(rows, payload);
+    };
+    for (const [i, fixture] of auditFixtures.entries()) {
+      const payload = auditWatchMessage(fixture.repo, fixture.mainAfter, fixture.event);
+      const rows = wrapPayload(payload);
+      check(`rollback reader: observed post-land event shape ${i + 1} reconstructs exactly on Claude, Codex and Pi`,
+        exact(claude, claudeWrapped(rows), payload) && exact(codex, codexWrapped(rows), payload)
+          && exact(pi, piWrapped(rows), payload),
+        JSON.stringify({ bytes: Buffer.byteLength(payload), rows: rows.length }));
+    }
+    const exactPayload = auditWatchMessage(auditFixtures[0].repo, auditFixtures[0].mainAfter,
+      auditFixtures[0].event);
+    const exactRows = wrapPayload(exactPayload);
+    const ownerAppend = [...exactRows.slice(0, -1), `${exactRows.at(-1)} owner append`];
+    const ownerPrepend = [`owner prepend ${exactRows[0]}`, ...exactRows.slice(1)];
+    const ownerEdit = [...exactRows];
+    ownerEdit[1] = ownerEdit[1].replace("reached", "REACHED");
+    const boundaryEdit = [...exactRows];
+    boundaryEdit[1] = boundaryEdit[1].slice(1);
+    const hiddenAfterBlank = [`${E}[1m›${E}[0m ${exactRows[0]}`,
+      ...exactRows.slice(1).map((r) => `  ${r}`), "", "  owner text after an input blank", "",
+      "  gpt-5.6-sol high · ~/x"].join("\n");
+    check("rollback falsifier: append, prepend, edit, wrap-boundary edit and text below a blank all survive as differences",
+      !exact(codex, codexWrapped(ownerAppend), exactPayload)
+      && !exact(claude, claudeWrapped(ownerPrepend), exactPayload)
+      && !exact(pi, piWrapped(ownerEdit), exactPayload)
+      && !exact(codex, codexWrapped(boundaryEdit), exactPayload)
+      && composerRows(codex, hiddenAfterBlank) === null,
+      "all five comparisons must be false/null");
+    check("rollback falsifier: placeholder, unobservable composer and empty region never equal Fleet's payload",
+      !composerHoldsExactly(composerRows(claude, claudeLost) ?? [], exactPayload)
+      && composerRows(claude, "Do you trust the files in this folder?") === null
+      && !composerHoldsExactly([""], exactPayload), "false / null / false expected");
+    check("rollback reader: exact rows preserve owner whitespace and NBSP instead of normalizing or trimming it",
+      composerRows(pi, piFrame(` ${exactPayload} `))?.[0] === ` ${exactPayload} `
+      && !exact(pi, piFrame(` ${exactPayload} `), exactPayload)
+      && !exact(pi, piFrame(exactPayload.replace(" ", "\u00a0")), exactPayload),
+      JSON.stringify(composerRows(pi, piFrame(` ${exactPayload} `))?.[0]?.slice(0, 20)));
+
+    // Source-order falsifiers pin the destructive boundary: only the event caller opts in; identity
+    // and the fresh exact read precede BSpace; no broad clear or second Enter exists in rollback;
+    // event truth reaches deliveredAt only after observed acceptance.
+    const rollbackSource = serverSource.slice(serverSource.indexOf("async function rollbackOwnComposerPayload("),
+      serverSource.indexOf("async function awaitComposer("));
+    const eventSendAt = tickSource.indexOf("rollbackOwnPayload: true");
+    const eventCatchAt = tickSource.indexOf("fleet_event_send_uncertain", eventSendAt);
+    const eventDeliveredAt = tickSource.indexOf('event.status = "delivered";', eventCatchAt);
+    const eraseAt = rollbackSource.indexOf('"BSpace"');
+    const beforeErase = rollbackSource.slice(0, eraseAt);
+    check("rollback boundary: event-only opt-in, fresh read + repeated exact identity checks precede exact-count BSpace",
+      eventSendAt >= 0 && rollbackSource.includes("readExactComposer(s)") && eraseAt > 0
+      && beforeErase.indexOf("readExactComposer(s)") < beforeErase.lastIndexOf("sameComposerOccupant(s, occupant)")
+      && (beforeErase.match(/sameComposerOccupant\(s, occupant\)/g)?.length ?? 0) >= 3
+      && beforeErase.includes('read.kind === "failed"') && beforeErase.includes('read.kind === "unobservable"')
+      && serverSource.indexOf('if (after === null) return { acceptance: "unobservable" as const };')
+        < serverSource.indexOf("rollbackOwnComposerPayload(s, text, occupant)"),
+      `${eventSendAt}:${rollbackSource.length}`);
+    check("rollback boundary: no Ctrl-C/Ctrl-U/broad clear/second Enter, and uncertain events cannot acquire deliveredAt",
+      !rollbackSource.includes("C-c") && !rollbackSource.includes("C-u") && !rollbackSource.includes("Enter")
+      && rollbackSource.match(/send-keys/g)?.length === 1
+      && eventCatchAt > eventSendAt && eventDeliveredAt > eventCatchAt
+      && tickSource.slice(eventCatchAt, eventDeliveredAt).includes("continue;"),
+      `${eventCatchAt}:${eventDeliveredAt}`);
     // the live contract on this suite's stand-in harness: not-applicable, never observed or submitted
     const naOpen = await post("/api/slots/12/open", { cwd: ROOT });
     check("acceptance live: a slot opens for the receipt-anatomy probe", naOpen.ok, String(naOpen.status));
@@ -264,7 +368,7 @@ export async function run(): Promise<void> {
     }
     // the transport rail, pinned at source: `delivered` is written only after the acceptance
     // read, and an unobservable send keeps the persisted send-uncertain marker.
-    const acceptAt = tickSource.indexOf("({ acceptance } = await sendText(s, text, true))");
+    const acceptAt = tickSource.indexOf("({ acceptance } = await sendText(s, text, true, { rollbackOwnPayload: true }))");
     const unobsAt = tickSource.indexOf('acceptance === "unobservable"', acceptAt);
     const deliveredAt = tickSource.indexOf('event.status = "delivered";', unobsAt);
     check("watch transport: FleetEvent turns delivered only after the acceptance read, and unobservable stays send-uncertain",
@@ -340,6 +444,124 @@ export async function run(): Promise<void> {
     const uTok = await paneEnv(`s${uId}`, "FLEET_SELF_TOKEN") ?? "";
     check("watch pi-unfenced fixture: the live receiver answers with its pane-exported Self token",
       /^[0-9a-f]{32}$/.test(uTok), `[${uTok}]`);
+
+    // ACP-26 LIVE: real FleetEvent transport, not a direct /send surrogate. The stand-in swallows
+    // Enter under a suite-owned mode, keeps its internal input bytes in a side file, and implements
+    // exact BSpace. The first two rows carry the production payload values above and cover both the
+    // explicit delivery:"pane" and legacy absent-delivery forms. A successful rollback still
+    // leaves send-uncertain + deliveredAt:null and is never retried.
+    const composerMode = process.env.FLEET_E2E_COMPOSER_MODE ?? "";
+    const composerState = process.env.FLEET_E2E_COMPOSER_STATE ?? "";
+    const auditFile = `${ROOT}/post-land-audits.jsonl`;
+    const auditFileExisted = existsSync(auditFile);
+    const auditFileBefore = auditFileExisted ? readFileSync(auditFile, "utf8") : "";
+    check("rollback live fixture: suite-owned mode/state paths and the raw-mode stand-in are observable",
+      composerMode.length > 0 && composerState.length > 0 && existsSync(composerMode) && existsSync(composerState),
+      JSON.stringify({ modePath: !!composerMode, statePath: !!composerState }));
+    const stateBuffer = (): { phase: string; text: string } => {
+      const raw = readFileSync(composerState, "utf8");
+      const nl = raw.indexOf("\n");
+      return { phase: nl < 0 ? raw : raw.slice(0, nl), text: nl < 0 ? "" : raw.slice(nl + 1) };
+    };
+    const waitComposerState = async (eventId: string,
+      accepts: (s: { phase: string; text: string }) => boolean): Promise<{ phase: string; text: string }> => {
+      let state = stateBuffer();
+      for (let i = 0; i < 160 && !(state.phase.endsWith(`:${eventId}`) && accepts(state)); i++) {
+        await Bun.sleep(50);
+        state = stateBuffer();
+      }
+      return state;
+    };
+    const setComposerMode = (mode: string) => writeFileSync(composerMode, `${mode}\n`);
+    const appendAudit = (mainAfter: string, mainSha: string, checks: { ran: number; failed: number }) => {
+      const at = Date.now() + Number.parseInt(mainAfter.slice(0, 4), 16);
+      appendFileSync(auditFile, `${JSON.stringify({ at, startedAt: at - 1, ms: 1, repo: REPO, main: "main",
+        mainSha, result: "green", cmd: "acp26-fixture", exitCode: 0, out: "ALL PASS", checks,
+        covers: [{ branch: `fleet/acp26-${mainAfter.slice(0, 8)}`, mainAfter, at: at - 2 }] })}\n`);
+    };
+    interface LiveAuditEvent {
+      id: string; watchId: string; receiverSlot: number; receiverOpenedAt: number;
+      receiverSessionId: string | null; receiverIdleSec: number; kind: "post-land-audit";
+      subjectRepo: string; subjectMainAfter: string; payload: AuditWatchEventPayload;
+      createdAt: number; status: FleetEventStatus; attempts: number; deliveredAt: number | null;
+      acknowledgedAt: number | null; delivery?: "pane" | "inbox";
+    }
+    const waitAuditEvent = async (watchId: string): Promise<LiveAuditEvent | undefined> => {
+      let event: LiveAuditEvent | undefined;
+      for (let i = 0; i < 120 && event?.status !== "send-uncertain"; i++) {
+        event = ((await eventRows()) as unknown as LiveAuditEvent[]).find((e) => e.watchId === watchId);
+        if (event?.status !== "send-uncertain") await Bun.sleep(100);
+      }
+      return event;
+    };
+    const fireAudit = async (fixture: typeof ACP26_AUDIT_FIXTURES[number], delivery: "pane" | undefined,
+      mode: string): Promise<{ event?: LiveAuditEvent; expected: string; watchStatus: number }> => {
+      setComposerMode(mode);
+      appendAudit(fixture.mainAfter, fixture.event.payload.mainSha, fixture.event.payload.checks!);
+      const response = await post(`/api/slots/${uId}/watch`, {
+        kind: "audit", repo: REPO, mainAfter: fixture.mainAfter, idleSec: 0,
+        ...(delivery ? { delivery } : {}),
+      });
+      const body = await response.json() as { watch?: { id: string } };
+      const event = body.watch?.id ? await waitAuditEvent(body.watch.id) : undefined;
+      const expected = event ? auditWatchMessage(event.subjectRepo, event.subjectMainAfter, event) : "";
+      return { event, expected, watchStatus: response.status };
+    };
+
+    for (const [i, fixture] of ACP26_AUDIT_FIXTURES.entries()) {
+      const live = await fireAudit(fixture, i === 0 ? "pane" : undefined, "hold");
+      const internal = live.event
+        ? await waitComposerState(live.event.id, (s) => s.phase.startsWith("backspace:") && s.text === "")
+        : stateBuffer();
+      const frame = (await tmuxOut("capture-pane", "-p", "-e", "-t", `s${uId}`)).out;
+      check(`rollback live: observed audit shape ${i + 1} cannot strand exact Fleet text`,
+        live.watchStatus === 200 && live.event?.status === "send-uncertain"
+        && live.event.attempts === 1 && live.event.deliveredAt === null
+        && internal.text === "" && composerResidue({ kind: "rules" }, frame) === "",
+        JSON.stringify({ status: live.watchStatus, event: live.event?.status, attempts: live.event?.attempts,
+          deliveredAt: live.event?.deliveredAt, state: internal.phase, bytes: internal.text.length }));
+      if (live.event) await fetch(`${BASE}/api/self/events/${live.event.id}/ack`, {
+        method: "POST", headers: { "x-fleet-self-token": uTok },
+      });
+    }
+
+    const ownerCases = [
+      { mode: "append", suffix: " owner append" },
+      { mode: "edit", suffix: null },
+      { mode: "placeholder", suffix: null },
+    ] as const;
+    for (const [i, ownerCase] of ownerCases.entries()) {
+      const mainAfter = `${(0xa110 + i).toString(16).padStart(4, "0")}${"0".repeat(36)}`;
+      const fixture = { repo: REPO, mainAfter, event: { id: "0".repeat(24), kind: "post-land-audit" as const,
+        payload: { result: "green" as const, mainSha: mainAfter,
+          covers: [{ branch: `fleet/acp26-owner-${i}`, mainAfter }], checks: { ran: 1, failed: 0 } } } };
+      const live = await fireAudit(fixture, undefined, ownerCase.mode);
+      const internal = live.event
+        ? await waitComposerState(live.event.id, (s) => s.phase.startsWith("entered:")) : stateBuffer();
+      const expectedInternal = ownerCase.mode === "append" ? `${live.expected}${ownerCase.suffix}`
+        : ownerCase.mode === "edit" ? `${live.expected[0]}${live.expected[1] === "f" ? "F" : "X"}${live.expected.slice(2)}`
+        : live.expected;
+      check(`rollback live falsifier: ${ownerCase.mode} leaves the complete internal composer byte-for-byte`,
+        live.event?.status === "send-uncertain" && live.event.deliveredAt === null
+        && internal.text === expectedInternal,
+        JSON.stringify({ status: live.event?.status, deliveredAt: live.event?.deliveredAt,
+          phase: internal.phase, gotBytes: internal.text.length, expectedBytes: expectedInternal.length }));
+      if (live.event) await fetch(`${BASE}/api/self/events/${live.event.id}/ack`, {
+        method: "POST", headers: { "x-fleet-self-token": uTok },
+      });
+      // The probe, acting as the owner, clears only its synthetic fixture between cases. Product
+      // rollback never reaches this line and never uses a broad clear.
+      await tmuxOut("send-keys", "-t", `s${uId}`, "-N", String([...internal.text].length), "BSpace");
+      if (live.event) await waitComposerState(live.event.id, (s) => s.text === "");
+      setComposerMode("hold");
+    }
+    // Later modules own the post-land ledger's zero-row and exact-count fixtures. Restore the byte
+    // snapshot rather than making them measure ACP-26's synthetic transport rows.
+    if (auditFileExisted) writeFileSync(auditFile, auditFileBefore);
+    else rmSync(auditFile, { force: true });
+    setComposerMode("normal");
+    await tmuxOut("send-keys", "-t", `s${uId}`, "BSpace"); // repaint the now-empty normal composer
+    await Bun.sleep(100);
     const catalog = (await (await get("/api/harnesses")).json()) as
       { harnesses: { id: string; automatable: boolean; allowsLanes: boolean; singleton: boolean }[] };
     const uHarness = catalog.harnesses.find((h) => h.id === "pi-unfenced");
@@ -401,6 +623,52 @@ export async function run(): Promise<void> {
         && e.text.startsWith(`[fleet] slot ${uTgt.slot} (${uTgt.branch})`)).length === 1
       && !(await watchRows()).some((w) => w.slot === uId && (w.lastResult ?? "").includes(oldPolicySkip)),
       JSON.stringify({ watch: uAfter, event: uEventAfter }));
+
+    // Identity falsifier: recycle the numeric slot while an exact held payload is inside the
+    // failure window, then type an owner draft into the successor. rollbackOwnComposerPayload must
+    // compare the snapshotted slot+openedAt+sessionId before BSpace and leave the successor bytes.
+    const identityMainAfter = `ac260000${"0".repeat(32)}`;
+    setComposerMode("hold");
+    appendAudit(identityMainAfter, identityMainAfter, { ran: 1, failed: 0 });
+    const identityWatchRes = await post(`/api/slots/${uId}/watch`, {
+      kind: "audit", repo: REPO, mainAfter: identityMainAfter, idleSec: 0,
+    });
+    const identityWatch = await identityWatchRes.json() as { watch?: { id: string } };
+    const identityEvent = identityWatch.watch?.id ? await waitAuditEvent(identityWatch.watch.id) : undefined;
+    const heldIdentity = identityEvent
+      ? await waitComposerState(identityEvent.id, (s) => s.phase.startsWith("entered:") && s.text.includes(identityEvent.id))
+      : stateBuffer();
+    const oldOpenedAt = identityEvent?.receiverOpenedAt;
+    await post(`/api/slots/${uId}/kill`, {});
+    setComposerMode("normal");
+    const successorOpen = await post(`/api/slots/${uId}/open`, { cwd: REPO, harness: "pi-unfenced" });
+    let successorOpenedAt = 0;
+    let successorAgent: string | null = null;
+    for (let i = 0; i < 80 && successorAgent !== "alive"; i++) {
+      const row = ((await (await get("/api/sessions")).json()) as
+        { slots: { id: number; openedAt: number; agent: string | null }[] }).slots.find((s) => s.id === uId);
+      successorOpenedAt = row?.openedAt ?? 0;
+      successorAgent = row?.agent ?? null;
+      if (successorAgent !== "alive") await Bun.sleep(50);
+    }
+    // Let the old inputChain settle through its identity refusal before composing on the successor.
+    await Bun.sleep(Number(process.env.FLEET_ACCEPT_WAIT_MS ?? 800) + 200);
+    const successorDraft = "owner successor draft survives slot reuse";
+    const successorSend = await post("/send", { slot: uId, text: successorDraft, submit: false });
+    let successorState = stateBuffer();
+    for (let i = 0; i < 80 && successorState.text !== successorDraft; i++) {
+      await Bun.sleep(50);
+      successorState = stateBuffer();
+    }
+    check("rollback live falsifier: recycled slot identity leaves the successor owner's draft byte-for-byte",
+      identityWatchRes.ok && heldIdentity.text.includes(identityEvent?.id ?? "not-an-event")
+      && successorOpen.ok && successorAgent === "alive" && successorOpenedAt !== oldOpenedAt
+      && successorSend.ok && successorState.text === successorDraft,
+      JSON.stringify({ watch: identityWatchRes.status, heldBytes: heldIdentity.text.length,
+        open: successorOpen.status, agent: successorAgent, identityChanged: successorOpenedAt !== oldOpenedAt,
+        send: successorSend.status, draftBytes: successorState.text.length }));
+    if (auditFileExisted) writeFileSync(auditFile, auditFileBefore);
+    else rmSync(auditFile, { force: true });
     await post(`/api/slots/${uTgt.slot}/kill`, {});
     await post(`/api/slots/${uId}/kill`, {});
   }

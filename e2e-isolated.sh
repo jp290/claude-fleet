@@ -127,6 +127,12 @@ mkdir -p "$REPO4"
 
 SHAREHOST=sharetest
 INTAKE=e2e-intake-secret
+COMPOSER_MODE="$DIR/fake-pi-composer.mode"
+COMPOSER_STATE="$DIR/fake-pi-composer.state"
+printf 'normal\n' > "$COMPOSER_MODE"
+: > "$COMPOSER_STATE"
+export FLEET_E2E_COMPOSER_MODE="$COMPOSER_MODE"
+export FLEET_E2E_COMPOSER_STATE="$COMPOSER_STATE"
 export FLEET_E2E_REPO="$REPO"
 export FLEET_E2E_REPO2="$REPO2"
 export FLEET_E2E_REPO3="$REPO3"
@@ -142,12 +148,49 @@ cat > "$DIR/fake-pi.c" <<'EOF'
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-/* ACP-25: it also PAINTS pi's measured composer shape — an empty line between two full-width
-   rules at the bottom — on start and after every consumed line, so the acceptance read in
-   sendText can observe the delivered text leaving the composer exactly as on the real pi. */
+#include <termios.h>
+#include <unistd.h>
+/* ACP-25 paints Pi's measured rule-bounded composer. ACP-26 gives the stand-in a real raw-mode
+   input buffer: Enter normally consumes it, while a suite-owned mode file can swallow one Enter,
+   append/edit owner bytes, paint a placeholder, or hide the composer. BSpace removes one UTF-8
+   code point. A state file exposes the stand-in's INTERNAL buffer to the probe; pane rendering is
+   deliberately not allowed to prove that an unobservable composer survived. */
+static char buf[16384];
+static size_t len = 0;
+static char display_mode[32] = "normal";
+static char turn_id[25] = "none";
+static const char *mode_path(void) { return getenv("FLEET_E2E_COMPOSER_MODE"); }
+static const char *state_path(void) { return getenv("FLEET_E2E_COMPOSER_STATE"); }
+static void read_mode(void) {
+  FILE *f;
+  display_mode[0] = '\0';
+  f = mode_path() ? fopen(mode_path(), "r") : NULL;
+  if (f) { if (!fgets(display_mode, sizeof display_mode, f)) display_mode[0] = '\0'; fclose(f); }
+  display_mode[strcspn(display_mode, "\r\n")] = '\0';
+  if (!display_mode[0]) strcpy(display_mode, "normal");
+}
+static void save_state(const char *phase) {
+  FILE *f = state_path() ? fopen(state_path(), "w") : NULL;
+  if (!f) return;
+  fprintf(f, "%s:%s\n", phase, turn_id);
+  fwrite(buf, 1, len, f);
+  fclose(f);
+}
 static void composer(void) {
-  int i;
-  for (i = 0; i < 2; i++) { int j; for (j = 0; j < 40; j++) fputs("\xe2\x94\x80", stdout); fputs(i ? "\n" : "\n\n", stdout); }
+  int j;
+  if (!strcmp(display_mode, "unobservable")) {
+    fputs("\033[?1049h\033[2J\033[HDo you trust the files in this folder?\n  1. Yes\n  2. No\n", stdout);
+    fflush(stdout);
+    return;
+  }
+  fputs("\033[?1049l", stdout);
+  for (j = 0; j < 40; j++) fputs("\xe2\x94\x80", stdout);
+  fputs("\n", stdout);
+  if (!strcmp(display_mode, "placeholder")) fputs("[Pasted text #1 +4 lines]", stdout);
+  else fwrite(buf, 1, len, stdout);
+  fputs("\n", stdout);
+  for (j = 0; j < 40; j++) fputs("\xe2\x94\x80", stdout);
+  fputs("\n", stdout);
   fflush(stdout);
 }
 static int has_arg(int argc, char **argv, const char *needle) {
@@ -155,12 +198,25 @@ static int has_arg(int argc, char **argv, const char *needle) {
   for (i = 1; i < argc; i++) if (!strcmp(argv[i], needle)) return 1;
   return 0;
 }
+static void consume(void) {
+  char *start, *end;
+  buf[len] = '\0';
+  start = strstr(buf, "printf 'envprobe-");
+  if (start) {
+    start += strlen("printf '");
+    end = strstr(start, "=[%s]");
+    if (end) {
+      *end = '\0';
+      printf("%s=[%s]\n", start, getenv("FLEET_SELF_TOKEN") ? getenv("FLEET_SELF_TOKEN") : "");
+    }
+  }
+  len = 0;
+}
 int main(int argc, char **argv) {
-  char line[4096];
+  struct termios t;
+  int c;
   int ox = has_arg(argc, argv, "opencode") && has_arg(argc, argv, "x-preview-f-free");
-  /* This is a falsifiable strict-profile stand-in, not merely a happy-screen painter: removing
-     --no-approve changes the signature to Pi's blocking selector; omitting any discovery/verbose
-     pin withholds the exact readiness marker consumed by the security probe. */
+  /* This remains a falsifiable strict-profile stand-in for the pi-ox readiness/security probes. */
   if (ox && !has_arg(argc, argv, "--no-approve")) {
     fputs("Trust project folder?\n", stdout);
   } else if (ox && has_arg(argc, argv, "--no-extensions")
@@ -170,18 +226,43 @@ int main(int argc, char **argv) {
       && has_arg(argc, argv, "--verbose")) {
     fputs("Model scope: x-preview-f-free (Ctrl+P to cycle)\n", stdout);
   }
+  if (tcgetattr(STDIN_FILENO, &t) == 0) {
+    t.c_lflag &= ~(ICANON | ECHO);
+    tcsetattr(STDIN_FILENO, TCSANOW, &t);
+  }
+  read_mode();
+  save_state("ready");
   composer();
-  while (fgets(line, sizeof line, stdin)) {
-    char *start;
+  while ((c = getchar()) != EOF) {
+    // Mode changes are visible while a paste is arriving, not only after Enter. This makes the
+    // unobservable falsifier remove the composer before sendText's post-paste read can authorize
+    // rollback from a stale visible frame.
+    read_mode();
+    if (c == '\r' || c == '\n') {
+      char *event_id;
+      buf[len] = '\0';
+      event_id = strstr(buf, "[event ");
+      if (event_id && strlen(event_id + 7) >= 24) {
+        memcpy(turn_id, event_id + 7, 24);
+        turn_id[24] = '\0';
+      }
+      if (!strcmp(display_mode, "append")) {
+        const char *owner = " owner append";
+        if (len + strlen(owner) < sizeof buf) { memcpy(buf + len, owner, strlen(owner)); len += strlen(owner); }
+      } else if (!strcmp(display_mode, "edit") && len > 1) {
+        buf[1] = buf[1] == 'f' ? 'F' : 'X';
+      } else if (!strcmp(display_mode, "normal")) {
+        consume();
+      }
+      save_state("entered");
+    } else if (c == 0x7f || c == 0x08) {
+      if (len > 0) { len--; while (len > 0 && (((unsigned char)buf[len]) & 0xc0) == 0x80) len--; }
+      save_state("backspace");
+    } else if (len < sizeof buf - 1) {
+      buf[len++] = (char)c;
+      save_state("typing");
+    }
     composer();
-    start = strstr(line, "printf 'envprobe-");
-    if (!start) continue;
-    start += strlen("printf '");
-    char *end = strstr(start, "=[%s]");
-    if (!end) continue;
-    *end = '\0';
-    printf("%s=[%s]\n", start, getenv("FLEET_SELF_TOKEN") ? getenv("FLEET_SELF_TOKEN") : "");
-    fflush(stdout);
   }
   return 0;
 }
@@ -624,7 +705,7 @@ mkdir -p "$PI_ZAI_AGENT_DIR"
 mkdir -p "$PI_OX_AGENT_DIR"
 printf '%s\n' 'fleet-e2e-zai-stand-in-key' > "$PI_ZAI_KEY_FILE"
 chmod 600 "$PI_ZAI_KEY_FILE"
-SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_HARNESS_AUTOMATION=0 FLEET_CODEX_SESSIONS_DIR='$CODEX_SESSIONS' FLEET_PI_ZAI_AGENT_DIR='$PI_ZAI_AGENT_DIR' FLEET_PI_ZAI_KEY_FILE='$PI_ZAI_KEY_FILE' FLEET_PI_OX_AGENT_DIR='$PI_OX_AGENT_DIR' FLEET_READY_WAIT_MS=3000 FLEET_ACCEPT_WAIT_MS=300 FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_MIGRATE_PCT=44 FLEET_MIGRATE_IDLE_MS=0 FLEET_MIGRATE_COOLDOWN_MS=900000 FLEET_MIGRATE_TICK_MS=250 FLEET_MIGRATE_GRACE_MS=500 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=0 FLEET_BACKLOG_NUDGE_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_VERIFY_WAIT_MS=5000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_VERIFY_CMD_REPOS='{\"$REPO2_P\":\"$DIR/fakeverify2\"}' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
+SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_HARNESS_AUTOMATION=0 FLEET_E2E_COMPOSER_MODE='$COMPOSER_MODE' FLEET_E2E_COMPOSER_STATE='$COMPOSER_STATE' FLEET_CODEX_SESSIONS_DIR='$CODEX_SESSIONS' FLEET_PI_ZAI_AGENT_DIR='$PI_ZAI_AGENT_DIR' FLEET_PI_ZAI_KEY_FILE='$PI_ZAI_KEY_FILE' FLEET_PI_OX_AGENT_DIR='$PI_OX_AGENT_DIR' FLEET_READY_WAIT_MS=3000 FLEET_ACCEPT_WAIT_MS=800 FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_MIGRATE_PCT=44 FLEET_MIGRATE_IDLE_MS=0 FLEET_MIGRATE_COOLDOWN_MS=900000 FLEET_MIGRATE_TICK_MS=250 FLEET_MIGRATE_GRACE_MS=500 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=0 FLEET_BACKLOG_NUDGE_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_VERIFY_WAIT_MS=5000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_VERIFY_CMD_REPOS='{\"$REPO2_P\":\"$DIR/fakeverify2\"}' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
 tmux -L "$SOCK" new-session -d -s srv \
   "cd '$DIR' && PATH='$DIR:$PATH' FLEET_HOST=127.0.0.1 $SRV_ENV exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.

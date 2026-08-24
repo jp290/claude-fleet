@@ -35,7 +35,7 @@ import {
   type ContextPackMode,
   type ContextPackTrigger,
 } from "./context-packs";
-import { composerResidue, type ComposerForm } from "./composer";
+import { composerHoldsExactly, composerRows, composerResidue, type ComposerForm } from "./composer";
 import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from "./continuity";
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
 import { trailStats, type TrailRecord, type TrailSummary } from "./trailstats";
@@ -5109,7 +5109,16 @@ const READY_WAIT_MS = Math.max(1000, Number(process.env.FLEET_READY_WAIT_MS ?? 2
 // to and Enter would send as one turn. Thrown before anything is typed, so it is plainly retryable.
 type Acceptance = "observed" | "not-observed" | "unobservable" | "not-applicable";
 class SendRefused extends Error { readonly refused = true; }
-class SendNotAccepted extends Error { readonly acceptance = "not-observed" as const; }
+// The result of the one conservative ACP-26 action. "cleared" is still an uncertain SUBMIT — it
+// proves only that Fleet's own payload was removed after acceptance was not observed. Every kept
+// result means no erase key was sent. "residue" means the exact-count erase was attempted but a
+// fresh empty composer could not be observed; callers must not retry either shape.
+type ComposerRollback = "cleared" | "residue" | "kept:differs" | "kept:unobservable"
+  | "kept:identity-changed" | "kept:agent-unobservable" | "kept:read-failed";
+class SendNotAccepted extends Error {
+  readonly acceptance = "not-observed" as const;
+  constructor(message: string, readonly rollback: ComposerRollback | null = null) { super(message); }
+}
 // Env-tunable for the suites only (same reason as READY_WAIT_MS): a stand-in that renders no composer
 // must not pay the full window on every send. Floor 200 ms — below one redraw the answer is noise.
 const ACCEPT_WAIT_MS = Math.max(200, Number(process.env.FLEET_ACCEPT_WAIT_MS ?? 3000) | 0);
@@ -5118,6 +5127,52 @@ async function readComposer(s: Slot): Promise<string | null> {
   if (!form) return null;
   const cap = await tmux("capture-pane", "-p", "-e", "-t", sess(s.id));
   return cap.code === 0 ? composerResidue(form, cap.out) : null;
+}
+
+type ExactComposerRead = { kind: "rows"; rows: string[] } | { kind: "unobservable" } | { kind: "failed" };
+async function readExactComposer(s: Slot): Promise<ExactComposerRead> {
+  const form = harnessOf(s.harness).composer;
+  if (!form) return { kind: "unobservable" };
+  try {
+    const cap = await tmux("capture-pane", "-p", "-e", "-t", sess(s.id));
+    if (cap.code !== 0) return { kind: "failed" };
+    const rows = composerRows(form, cap.out);
+    return rows === null ? { kind: "unobservable" } : { kind: "rows", rows };
+  } catch {
+    return { kind: "failed" };
+  }
+}
+
+interface ComposerOccupant { slot: number; openedAt: number; sessionId: string | null }
+const sameComposerOccupant = (s: Slot, o: ComposerOccupant): boolean =>
+  s.id === o.slot && s.openedAt === o.openedAt && s.sessionId === o.sessionId;
+
+// Rollback belongs only to a caller that marks the text as Fleet-owned. It is deliberately not the
+// default for /send or any owner draft. The fresh read is the authorization for exactly N BSpaces,
+// where N is Fleet's payload code-point count — never Ctrl-C, Ctrl-U, a broad clear, or another
+// Enter. Identity is checked before and after that read, and liveness must be observable. Any
+// appended/prepended/edited byte, collapsed-paste placeholder, missing composer or read failure
+// therefore leaves the pane untouched and returns an explicit uncertainty.
+async function rollbackOwnComposerPayload(
+  s: Slot, payload: string, occupant: ComposerOccupant,
+): Promise<ComposerRollback> {
+  if (!sameComposerOccupant(s, occupant)) return "kept:identity-changed";
+  const comms = commsFor(s);
+  if (comms.length === 0 || await paneAgentAt(sess(s.id), comms) !== "alive")
+    return "kept:agent-unobservable";
+  const read = await readExactComposer(s);
+  if (read.kind === "failed") return "kept:read-failed";
+  if (read.kind === "unobservable") return "kept:unobservable";
+  if (!sameComposerOccupant(s, occupant)) return "kept:identity-changed";
+  if (!composerHoldsExactly(read.rows, payload)) return "kept:differs";
+  // Re-check immediately before the sole mutating operation. inputChain serializes Fleet inputs;
+  // this closes slot reuse, while the read-back below reports (rather than hides) a direct-owner
+  // race in the irreducible read→key interval.
+  if (!sameComposerOccupant(s, occupant)) return "kept:identity-changed";
+  const erase = await tmux("send-keys", "-t", sess(s.id), "-N", String([...payload].length), "BSpace");
+  if (erase.code !== 0) return "residue";
+  const after = await awaitComposer(s, (r) => r === "");
+  return sameComposerOccupant(s, occupant) && after === "" ? "cleared" : "residue";
 }
 // Poll the composer until `until` holds, within the window. Returns the last residue read.
 async function awaitComposer(s: Slot, until: (r: string | null) => boolean): Promise<string | null> {
@@ -5131,12 +5186,14 @@ async function awaitComposer(s: Slot, until: (r: string | null) => boolean): Pro
   }
 }
 
-async function sendText(s: Slot, text: string, submit: boolean): Promise<{ acceptance: Acceptance }> {
+async function sendText(s: Slot, text: string, submit: boolean,
+  options: { rollbackOwnPayload?: true } = {}): Promise<{ acceptance: Acceptance }> {
   // route through inputChain like raw keystrokes do — otherwise a compose-box send racing
   // concurrent WS keystrokes (mobile key row, live typing, direct terminal typing) can
   // interleave paste-buffer/send-keys with a concurrent send-keys, reordering pty input
   const task = s.inputChain.then(async () => {
     const observes = !!harnessOf(s.harness).composer;
+    const occupant: ComposerOccupant = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
     if (observes) {
       // one frame, before anything is typed: an occupied composer is an owner draft (the dim
       // placeholder is stripped, so only typed content counts). Refusing here is the only honest
@@ -5211,8 +5268,12 @@ async function sendText(s: Slot, text: string, submit: boolean): Promise<{ accep
       return { acceptance: "observed" as const };
     }
     if (after === null) return { acceptance: "unobservable" as const };
+    const rollback = options.rollbackOwnPayload
+      ? await rollbackOwnComposerPayload(s, text, occupant) : null;
     throw new SendNotAccepted(
-      `prompt not accepted — composer still holds ${after.length} chars after ${ACCEPT_WAIT_MS}ms`);
+      `prompt not accepted — composer still holds ${after.length} chars after ${ACCEPT_WAIT_MS}ms`
+        + (rollback ? `; Fleet payload rollback ${rollback}` : ""),
+      rollback);
   });
   s.inputChain = task.catch(() => {});
   return await task;
@@ -10213,7 +10274,7 @@ async function tickWatches(): Promise<void> {
         : laneWatchMessage(event.subjectSlot, event.subjectBranch, event);
       let acceptance: Acceptance;
       try {
-        ({ acceptance } = await sendText(s, text, true));
+        ({ acceptance } = await sendText(s, text, true, { rollbackOwnPayload: true }));
       } catch (e) {
         if (e instanceof SendRefused) {
           // nothing was typed (an occupied composer, i.e. an owner draft): the event is still
@@ -10226,8 +10287,9 @@ async function tickWatches(): Promise<void> {
         // composer is observably still holding the text (ACP-25). Preserve the pre-send marker
         // exactly; neither "failed" nor "delivered" is an observed fact, and send-uncertain is
         // never replayed.
+        const rollback = e instanceof SendNotAccepted && e.rollback ? ` rollback=${e.rollback}` : "";
         audit("fleet_event_send_uncertain", event.receiverSlot,
-          `${event.id} ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
+          `${event.id}${rollback} ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
         continue;
       }
       if (acceptance === "unobservable") {

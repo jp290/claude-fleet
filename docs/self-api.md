@@ -406,6 +406,45 @@ die zur Attention gehen.
 **Die Note eines so gelandeten Kandidaten trägt** `conflicted`, `resolvedBy`, `repairRounds`,
 `candidateSha`, das FRISCHE Verify-Ergebnis und `confirmedByHuman:false`.
 
+### Aktor-Provenienz: wer den Integrations-Branch bewegt hat
+
+Bis 2026-08-23 beantwortete die `fleet/land`-Note nur `confirmedByHuman` — ein Land, das eine
+Session durch Lesen von `fleet.json` und Ruf der OWNER-Route gemacht hat (einmal gemessen,
+`9cc8b1e`), war im Register BYTE-IDENTISCH mit einem Owner-Akt vom Board. `LandProvenance.actor`
+schliesst genau das: nicht den Zugriff auf das Token, sondern die Unfähigkeit des Registers, die
+Aktor-KLASSE überhaupt zu benennen.
+
+**Drei Arme, und der dritte ist kein Default:**
+
+- `{kind:"owner", via:"cookie"|"bearer"|"query", suspect?}` — `via` ist der Token-KANAL, den
+  `tokenFrom` ohnehin schon gelesen und dann weggeworfen hat: das Board schickt das Cookie, ein
+  Skript Bearer, eine getippte URL `?token=`.
+- `{kind:"main", slot, program, task, sessionIdMatch}` — die Self-Route. `sessionIdMatch` wird hier
+  BERICHTET, obwohl die Route auf dem exakten Triple GATET: die Note ist ein Record, und ein Record,
+  der die Tatsache fallen liesse, zwänge eine spätere Prüfung, sie aus einem inzwischen recycelten
+  Slot zu rekonstruieren.
+- `{kind:"unknown", why}` — erreichbar aus GENAU EINER Stelle: einem Land-Intent-Marker eines
+  Binaries, das das Feld noch nicht kannte, beim nächsten Boot wiederhergestellt. Dort einen Owner
+  zu erfinden wäre exakt die Unwahrheit, gegen die dieser Typ existiert.
+
+**Das Feld ist PFLICHT, nicht optional.** Ein optionales Feld wäre genau bei dem Land abwesend, das
+niemand zuordnen wollte. Es steht auf drei Trägern, weil jeder einen anderen Leser bedient: die
+`fleet/land`-Note (reist mit dem Commit), `LaneOutcome.landedBy` (die Frage „welche Lands hat eine
+Program-MAIN gemacht" ist eine Frage über LANES), und die Trail-Zeile `land_actor` (überlebt ein
+Repo, das nie jemand klont). Geschrieben in `recordLand` — dem einen Choke-Point, durch den JEDES
+main-BEWEGENDE Land läuft.
+
+**Der `suspect`-Flag, eng gefasst:** ein Owner-Token-Merge über `bearer`/`query` auf einer Lane,
+deren Zeile zu einem Program mit LEBENDER gebundener MAIN gehört ⇒
+`actor.suspect:"owner-token-outside-board"` + Audit-Zeile `owner_token_ambient_use`. **Das Land
+läuft weiter** — die eigenen Skripte des Owners nutzen Bearer. Der Cookie-Kanal des Boards wird nie
+geflaggt (als Gegenprobe geprüft), sonst zählte der Flag jedes gewöhnliche Owner-Land mit.
+
+**VERHINDERUNG ist als UNSUPPORTED klassifiziert, und zwar ehrlich:** jede Session auf diesem Host
+läuft unter der Owner-uid, und `fleet.json` ist 0600, aber same-uid lesbar aus jedem Worktree.
+Akquise zu stoppen bräuchte Host-Sandboxing, das der Owner ausgeschlossen hat. Was existiert, ist
+ein Register, das die Klasse BENENNEN kann — nie eine Schranke.
+
 **Trail:** ein Start schreibt `self_land_start` (Slot, Zeile, Program, Lane, Kandidat, Sprosse) —
 die einzige Zeile, die sagt, dass eine MAIN GEFRAGT hat, auch wenn das Gate danach rot war. Keine
 Ablehnung schreibt sie (in `e2e/programs.ts` als Gegenprobe geprüft).

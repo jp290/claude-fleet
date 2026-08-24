@@ -3284,6 +3284,16 @@ type AuditEvent =
   // outcome row), and what none of them can state is that a MAIN ASKED — including the attempts
   // that ended in a red gate and landed nothing.
   | "self_land_start"
+  // WHO landed. Written at recordLand — the one choke point every main-MOVING land funnels through
+  // — beside the provenance note that carries the same fact. Two carriers on purpose: the note
+  // lives in the repo and travels with the commit, this row lives in the fleet's own trail and
+  // survives a repo that was never cloned anywhere.
+  | "land_actor"
+  // an owner-token merge arriving over bearer/query on a lane whose task belongs to a Program with
+  // a LIVE bound MAIN — i.e. the shape a session reaching for fleet.json's token produces. The land
+  // PROCEEDS (the owner's own scripts use Bearer); this row is what makes the actor class countable
+  // at all. Prevention is UNSUPPORTED and documented as such — see docs/self-api.md.
+  | "owner_token_ambient_use"
   // a steward filing whose `ref` matched a live proposal — answered with the existing row, so the
   // trail shows the pulse KEPT seeing the condition without the queue growing a duplicate
   | "steward_task_dedup"
@@ -6412,14 +6422,14 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
 // can never land something unverified.
 const selfConfirmSpent = new Map<string, string>(); // task id -> candidate already re-verified here
 async function guardedConfirmJob(lane: Slot, cwd: string, repo: string, main: string,
-  branch: string): Promise<void> {
+  branch: string, actor: LandActor): Promise<void> {
   // the verdict as it stands BEFORE the confirm — it is what a non-land outcome must preserve.
   // Dropping `conflicted`/`resolvedBy` here would lift the ⏸ guard off a lane that still holds
   // unreviewed resolutions, i.e. let the next ordinary merge run auto-land them.
   const prev = mergeLast.get(lane.id);
   let res: MergeLast;
   try {
-    const out = await confirmResolvedCandidate(lane, cwd, repo, main, branch, { byHuman: false });
+    const out = await confirmResolvedCandidate(lane, cwd, repo, main, branch, { byHuman: false, actor });
     // A "merged" body means the confirm path itself moved main and already wrote its own verdict,
     // note, outcome row and merge event (including the landed-but-teardown-failed sub-case). There
     // is nothing left for this job to record, and writing a verdict on top would overwrite the land.
@@ -6582,6 +6592,11 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
   // two jobs on one lane between them.
   if (mergeInflight.has(lane.id) || mergeStart.has(lane.id)) return json({ running: true });
   mergeStart.add(lane.id);
+  // WHO IS LANDING, and it is the whole reason this route exists beside the owner one: an
+  // attributable path. `sessionIdMatch` is REPORTED here even though the ladder above GATED on the
+  // exact triple — the note is a record, and a record that dropped the fact would make an
+  // after-the-fact audit re-derive it from a slot that has since been recycled.
+  const actor: LandActor = { kind: "main", slot: s.id, program: program.id, task: t.id, sessionIdMatch };
   try {
     if (commitInflight.has(lane.id))
       return json({ error: "a commit is in progress on this lane — try again in a moment" }, 409);
@@ -6601,7 +6616,7 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
     if (resolvedCandidate) {
       selfConfirmSpent.set(t.id, candidate);
       audit("self_land_start", s.id, `${t.id} program=${program.id} lane=${lane.id} candidate=${candidate.slice(0, 8)} policy=guarded confirm=resolved-candidate`);
-      const confirmJob: Promise<void> = guardedConfirmJob(lane, cwd, repo, integration, branch)
+      const confirmJob: Promise<void> = guardedConfirmJob(lane, cwd, repo, integration, branch, actor)
         .finally(() => { if (mergeInflight.get(lane.id) === confirmJob) mergeInflight.delete(lane.id); });
       mergeInflight.set(lane.id, confirmJob);
       return json({ running: true, task: { id: t.id, status: t.status, programId: t.programId },
@@ -6624,7 +6639,7 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
     // than behind a shared wrapper on purpose: the pin that matters is that `mergeJob(` has exactly
     // two textual call sites and both are routes, and a wrapper would let a third caller — a tick —
     // hide behind one name.
-    const job: Promise<void> = mergeJob(lane, cwd, repo, branch, integration, carry.carried, carry.carriedBy)
+    const job: Promise<void> = mergeJob(lane, cwd, repo, branch, integration, carry.carried, carry.carriedBy, actor)
       .finally(() => { if (mergeInflight.get(lane.id) === job) mergeInflight.delete(lane.id); });
     mergeInflight.set(lane.id, job);
     // EVERY non-green outcome — resolved/conflict, verify red, verify unknown — reaches the MAIN
@@ -11047,11 +11062,87 @@ function undoableFor(repo: string): { branch: string; at: number } | null {
 // only when the SAME tip is landed twice (e.g. undo-land then re-land of identical work onto
 // the same main tip); a re-opened branch re-landed onto a NEW tip gets a fresh note there.
 // Not pushed by default (fleet is local-first) — read with `git log --notes=fleet/land`.
+// WHO MOVED THE INTEGRATION BRANCH, named. Until 2026-08-23 the note answered `confirmedByHuman`
+// and nothing else, so a land a session made by reading fleet.json's owner token and calling the
+// owner route (measured once, `9cc8b1e`) was BYTE-IDENTICAL in the ledger to one the owner made
+// from the board. That is the defect this field closes: not the acquisition of the token — see the
+// honesty note below — but the ledger's inability to say the actor class at all.
+//
+// `via` is the token CHANNEL and it is a cheap, real signal rather than an identity: the board
+// sends the cookie, a script sends Bearer, a hand-typed URL carries ?token=. It was already read
+// by tokenFrom on every request and then discarded.
+//
+// `sessionIdMatch` on the main arm is REPORTED here even though the self-land route gates on the
+// full identity triple — the note is a record, and a record that dropped the fact would make an
+// after-the-fact audit re-derive it from a slot that has since been recycled.
+//
+// PREVENTION IS CLASSIFIED UNSUPPORTED, and honestly: every session on this host runs as the owner
+// uid, and fleet.json is 0600 but same-uid readable from any worktree. Stopping acquisition needs
+// host sandboxing, which the owner excluded. What exists is this field, the `suspect` flag and the
+// `owner_token_ambient_use` audit row — a ledger that can NAME the class, never a barrier.
+type LandActor =
+  | { kind: "owner"; via: "cookie" | "bearer" | "query"; suspect?: "owner-token-outside-board" }
+  | { kind: "main"; slot: number; program: string; task: string;
+      sessionIdMatch: "exact" | "divergent" | "unknown" }
+  // THE THIRD ARM IS NOT A DEFAULT — it is reachable from exactly one place: a land-intent marker
+  // written by a binary that predates this field and recovered at the next boot. Inventing an
+  // owner there would be the precise falsehood this whole type exists to end, and leaving `actor`
+  // absent would put a hole in "every new note carries one". So the note says, in its own words,
+  // that the actor cannot be recovered.
+  | { kind: "unknown"; why: string };
+// the channel tokenFrom actually accepted, in tokenFrom's own precedence order — derived from the
+// request rather than guessed, and null only where no token was offered at all (unreachable behind
+// the owner gate, which is why the caller may name its own fallback).
+function tokenChannel(req: Request): "cookie" | "bearer" | "query" | null {
+  const auth = req.headers.get("authorization");
+  if (auth?.startsWith("Bearer ")) return "bearer";
+  const cookie = req.headers.get("cookie");
+  if (cookie && /(?:^|;\s*)fleet=([^;]+)/.test(cookie)) return "cookie";
+  return new URL(req.url).searchParams.get("token") !== null ? "query" : null;
+}
+// The owner-route arm of the actor, including the one inference. Split out because THREE owner
+// paths need the identical answer (the merge job, the confirm-land, the ⏏ already-integrated land)
+// and a second derivation is how "who landed this" grows two answers.
+function ownerLandActor(req: Request, lane: Slot): Extract<LandActor, { kind: "owner" }> {
+  // no token channel is unreachable behind the owner gate; `cookie` is the board's own shape and
+  // the honest fallback for a request that got here without one.
+  const via = tokenChannel(req) ?? "cookie";
+  if (via === "cookie") return { kind: "owner", via };
+  const t = lane.taskId ? tasks.find((x) => x.id === lane.taskId) : undefined;
+  const program = t?.programId ? programs.find((p) => p.id === t.programId) : undefined;
+  const ambient = !!program && program.status === "active" && programOccupancy(program) === "live";
+  return ambient ? { kind: "owner", via, suspect: "owner-token-outside-board" } : { kind: "owner", via };
+}
+const landActorDetail = (a: LandActor): string => a.kind === "owner"
+  ? `owner via=${a.via}${a.suspect ? ` suspect=${a.suspect}` : ""}`
+  : a.kind === "unknown" ? `unknown (${a.why})`
+  : `main slot=${a.slot} program=${a.program} task=${a.task} sessionIdMatch=${a.sessionIdMatch}`;
+// the load-time reader of a persisted marker's actor, in loadPromotion's discipline: anything that
+// is not exactly one of the two REAL arms becomes the honest third one. Never repaired field-wise —
+// half an attribution is a different claim, not a weaker one.
+const loadLandActor = (value: unknown): LandActor => {
+  const r = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  if (r?.kind === "owner" && (r.via === "cookie" || r.via === "bearer" || r.via === "query"))
+    return r.suspect === "owner-token-outside-board"
+      ? { kind: "owner", via: r.via, suspect: "owner-token-outside-board" }
+      : { kind: "owner", via: r.via };
+  if (r?.kind === "main" && Number.isInteger(r.slot) && typeof r.program === "string" && r.program
+    && typeof r.task === "string" && r.task
+    && (r.sessionIdMatch === "exact" || r.sessionIdMatch === "divergent" || r.sessionIdMatch === "unknown"))
+    return { kind: "main", slot: r.slot as number, program: r.program, task: r.task,
+      sessionIdMatch: r.sessionIdMatch };
+  if (r?.kind === "unknown" && typeof r.why === "string" && r.why) return { kind: "unknown", why: r.why };
+  return { kind: "unknown", why: "recovered from a land-intent marker whose actor was absent or unreadable" };
+};
 interface LandProvenance {
   conflicted?: string[];
   resolverDetail?: string;
   verify?: MergeLast["verify"];
   confirmedByHuman: boolean;
+  // REQUIRED, not optional, and that is the whole point: an optional actor would be absent on
+  // exactly the land nobody wanted to attribute. Every new note carries one; notes written before
+  // this field existed carry none and are ambiguous forever, which is what a reader must say.
+  actor: LandActor;
   // THE RESOLUTION'S OWN STORY, written by the confirm path only — the owner policy of 2026-08-23
   // names these three by name as what a conflict land must record. Absent everywhere else, because
   // a clean auto-land resolved nothing and a key there would be a measurement of nothing.
@@ -11074,6 +11165,7 @@ async function writeLandNote(repo: string, branch: string, mainBefore: string, m
       ...(prov.candidateSha ? { candidateSha: prov.candidateSha } : {}),
       ...(prov.verify ? { verify: prov.verify } : {}),
       confirmedByHuman: prov.confirmedByHuman,
+      actor: prov.actor,
       at: Date.now(),
     };
     const r = await git(repo, "notes", "--ref=fleet/land", "add", "-f", "-m", JSON.stringify(note), tip);
@@ -11106,6 +11198,11 @@ async function recordLand(repo: string, main: string, branch: string, mainBefore
   saveState(); // the undo record is persisted state — persist it AT the main-move, so it
   // survives a restart even when a downstream saveState is skipped (e.g. the mergeJob tail's
   // recycle guard on the slot-recycled teardown-failure sub-case).
+  // the trail's copy of the same fact, written HERE because this is the one choke point every
+  // main-MOVING land funnels through. The note travels with the commit; this row stays in the fleet
+  // even for a repo nobody ever clones, and it is a flat one-liner rather than the note's JSON
+  // because a trail row is read by eye.
+  audit("land_actor", undefined, `${basename(repo)} ${branch} ${mainAfter.slice(0, 8)} ${landActorDetail(prov.actor)}`);
   await writeLandNote(repo, branch, mainBefore, mainAfter, prov); // best-effort — never throws
   // VERIFICATION TIER 2 — main moved, so there is something new on the integration branch that the
   // fast land gate did not fully check. This is the one choke point every main-MOVING land funnels
@@ -11810,6 +11907,12 @@ interface LaneOutcome {
   // which a fallback value could not. Distinct from `confirmedByHuman` below on purpose — that is
   // the LAND art, and reading it as the release counts 77 attended lands as unattended.
   releasedBy?: "owner" | "machine";
+  // WHO LANDED IT — the outcome ledger's copy of LandProvenance.actor, and the reason it is here
+  // rather than only in the git note is that the note lives at a COMMIT while this row lives at a
+  // LANE: "which lands did a Program-MAIN make, and how did they fare" is a question about lanes.
+  // Meaningful only on a land; omitted (never nulled, never invented) on every other disposition
+  // and on every row written before the field existed — absence says "this row cannot say".
+  landedBy?: LandActor;
   shortstat: string;
   commitCount: number;
   filesTouched: string[];
@@ -11891,6 +11994,10 @@ type LandFacts = { resolvedConflict: boolean; repairRounds: number; confirmedByH
   // paired with resolvedConflict above: only the land site knows which resolver produced the tree
   resolvedBy?: "agent" | "author";
   verified: boolean | null; baseSha?: string;
+  // the actor, carried from the land SITE for exactly the reason every other field here is: only
+  // the site knows which principal drove this land. Optional because the two already-merged owner
+  // paths pass a const shape; each names its own actor explicitly at the call.
+  landedBy?: LandActor;
   // the commit `main` ended up at, carried for the same reason baseSha is: only the land site knows
   // it. Reading it here instead would be a guess — by record time main has already advanced, but
   // WHICH branch is the integration branch is the caller's fact, not this function's.
@@ -12099,6 +12206,9 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     ...(facts.resolvedConflict && facts.resolvedBy ? { resolvedBy: facts.resolvedBy } : {}),
     repairRounds: facts.repairRounds,
     confirmedByHuman: facts.confirmedByHuman,
+    // only a land has an actor; a kill or a shelve moved no integration branch and a key there
+    // would be a measurement of nothing.
+    ...(kind === "landed" && facts.landedBy ? { landedBy: facts.landedBy } : {}),
     review,
     // only a land carries a shadow verdict, and only the clean auto-land site states it
     ...(kind === "landed" && facts.cleanReviewShadow ? { cleanReviewShadow: facts.cleanReviewShadow } : {}),
@@ -13309,7 +13419,7 @@ function freshConfirmRefusal(fresh: MergeLast["verify"]): string {
 // vocabulary: the owner route as JSON, the MAIN's background job as a merge verdict + event.
 type ConfirmLandResult = { status: number; body: Record<string, unknown> };
 async function confirmResolvedCandidate(s: Slot, cwd: string, repo: string, main: string,
-  branch: string, opts: { byHuman: boolean }): Promise<ConfirmLandResult> {
+  branch: string, opts: { byHuman: boolean; actor: LandActor }): Promise<ConfirmLandResult> {
   // the "resolved" verdict the caller is confirming — its resolver detail, conflicted
   // files, and verify result are the review story this land is owning. Read it BEFORE
   // the delete below so the provenance note carries what the confirmer actually reviewed.
@@ -13423,7 +13533,7 @@ async function confirmResolvedCandidate(s: Slot, cwd: string, repo: string, main
   // rounds it took inside the merge job, and `candidateSha` names the exact commit that was
   // confirmed — the note's `mainAfter` equals it on a fast-forward, but only on a fast-forward.
   const prov: LandProvenance = { conflicted: reviewed?.conflicted, resolverDetail,
-    verify: verifyProv, confirmedByHuman: opts.byHuman,
+    verify: verifyProv, confirmedByHuman: opts.byHuman, actor: opts.actor,
     ...(reviewed?.resolvedBy ? { resolvedBy: reviewed.resolvedBy } : {}),
     ...(reviewed?.repairRounds ? { repairRounds: reviewed.repairRounds } : {}),
     ...(currentCandidate ? { candidateSha: currentCandidate.candidateSha } : {}) };
@@ -13460,7 +13570,8 @@ async function confirmResolvedCandidate(s: Slot, cwd: string, repo: string, main
     confirmedByHuman: opts.byHuman,
     verified: verifyProv ? verifyProv.ok : null,
     baseSha: mainBefore, // the lane is rebased onto exactly this commit — its true fork point
-    mainAfter },         // …and this is where it ended up, so the row can open its own files
+    mainAfter,           // …and this is where it ended up, so the row can open its own files
+    landedBy: opts.actor },
     () => mintMergeEvents(s.id, cwd, branch, landedOutcome));
   if ("error" in land) {
     const failed: MergeLast = { status: "merged", landed: false, branch, at: Date.now(),
@@ -13532,8 +13643,14 @@ async function carriedFromPendingVerdict(s: Slot, repo: string, main: string, br
 // Empty for a first run. `carriedBy` is WHO chose those resolutions — it rides along because this
 // re-run is the only place the attribution can be lost: the lane looks identical whether an author
 // or a worker produced it, and the land site reads it off the verdict this run is about to write.
+// `actor` is a PASS-THROUGH and nothing else: it is written into the provenance note and the
+// outcome row at the clean auto-land site below and is read nowhere in this function's logic. It
+// exists because the note is authored here and the caller is the only thing that knows which
+// principal drove the run — the same reason `carried`/`carriedBy` ride along. Defaulted to the
+// board's own shape so no call site can forget it into an absence.
 async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main: string,
-  carried: string[] = [], carriedBy: "agent" | "author" = "agent"): Promise<void> {
+  carried: string[] = [], carriedBy: "agent" | "author" = "agent",
+  actor: LandActor = { kind: "owner", via: "cookie" }): Promise<void> {
   let res: MergeLast;
   let candidateMainSha: string | null = null;
   const bindCandidate = async (r: MergeLast): Promise<MergeLast> => {
@@ -13855,7 +13972,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             if (landSync) throw new Error(`${landSync.error} — nothing was landed`);
             // declare the land before making it — the marker is on disk before main moves, so a
             // restart in the advance→record window is finishable at boot instead of unrecoverable
-            const prov: LandProvenance = { verify, confirmedByHuman: false };
+            const prov: LandProvenance = { verify, confirmedByHuman: false, actor };
             await markLandIntent(root, main, branch, mainBefore, (await git(root, "rev-parse", branch)).out, prov);
             const adv = await advanceIntegration(root, main, branch);
             if (adv) {
@@ -13877,7 +13994,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                 // clean auto-land — n/a land-shape facts (the ONLY unattended land), but the verify
                 // verdict this job just produced is the local truth the record needs
                 ? await landLane(s, { ...NO_LAND_FACTS, verified: verify ? verify.ok : null, baseSha: mainBefore,
-                    mainAfter, ...(shadow ? { cleanReviewShadow: shadow } : {}) },
+                    mainAfter, landedBy: actor, ...(shadow ? { cleanReviewShadow: shadow } : {}) },
                     () => mintMergeEvents(s.id, cwd, branch, landedOutcome))
                 : { error: "slot changed during the merge — lane merged but not landed", code: 409 };
               res = "error" in land
@@ -15916,7 +16033,12 @@ if (existsSync(STATE_FILE)) {
           && typeof (v as LandPending).prov === "object" && (v as LandPending).prov !== null)
           landPending.set(k, { repo: k, main: (v as LandPending).main, branch: (v as LandPending).branch,
             mainBefore: (v as LandPending).mainBefore, laneTip: (v as LandPending).laneTip,
-            at: (v as LandPending).at, prov: (v as LandPending).prov });
+            at: (v as LandPending).at,
+            // the marker's provenance rides back as it was written, EXCEPT the actor, which is
+            // JUDGED: a marker from a binary that predates the field would otherwise finish its
+            // land at boot with an `undefined` where the note promises an attribution.
+            prov: { ...(v as LandPending).prov,
+              actor: loadLandActor(((v as LandPending).prov as Partial<LandProvenance>).actor) } });
   } catch {
     // Keep the evidence — but under its OWN name. `.bak` is now written by saveState from the
     // last file that PARSED, so it is the recovery source; copying the damaged file over it here
@@ -19551,6 +19673,17 @@ Bun.serve<WSData>({
           undoable: undoableFor(s.worktree.repo) });
       if (mergeInflight.has(s.id) || mergeStart.has(s.id)) return json({ running: true });
       mergeStart.add(s.id); // reserve BEFORE the first await — two parallel POSTs otherwise both start a rebase
+      // WHO IS CALLING, as far as this route can honestly tell. The channel is what tokenFrom
+      // already accepted; the SUSPECT flag is the one inference on top of it, and it is narrow on
+      // purpose: an owner token arriving over bearer/query on a lane whose task belongs to a
+      // Program that HAS a live bound MAIN is the exact shape a session reaching for fleet.json
+      // produces. The owner's own scripts use Bearer too, which is why this flags and never blocks
+      // — the land proceeds, and the sufficient unflagged path for a MAIN is now the self route.
+      const ownerActor = ownerLandActor(req, s);
+      if (ownerActor.suspect) {
+        const at = s.taskId ? tasks.find((x) => x.id === s.taskId) : undefined;
+        audit("owner_token_ambient_use", s.id, `task=${at?.id ?? "none"} program=${at?.programId ?? "none"} via=${ownerActor.via}`);
+      }
       try {
         if (commitInflight.has(s.id)) return json({ status: "blocked", detail: "a commit is in progress on this lane — try again in a moment" });
         const body = await readJson(req);
@@ -19632,7 +19765,8 @@ Bun.serve<WSData>({
           // owner arm marks a superseded verify stale rather than re-running it, and records the
           // land as human-confirmed. Everything else is one function, so the two confirms cannot
           // drift into two land paths.
-          const confirmed = await confirmResolvedCandidate(s, cwd, repo, main, branch, { byHuman: true });
+          const confirmed = await confirmResolvedCandidate(s, cwd, repo, main, branch,
+            { byHuman: true, actor: ownerActor });
           return json(confirmed.body, confirmed.status);
         }
         // already merged (by hand, or an empty lane)? No agent needed — land directly.
@@ -19641,7 +19775,7 @@ Bun.serve<WSData>({
         if (done.out.trim()) {
           const landedOutcome: MergeLast = { status: "merged", landed: true, branch, at: Date.now(),
             detail: "already merged — landed without the agent" };
-          const land = await landLane(s, OWNER_LAND_FACTS,
+          const land = await landLane(s, { ...OWNER_LAND_FACTS, landedBy: ownerActor },
             () => mintMergeEvents(s.id, cwd, branch, landedOutcome));
           if ("error" in land) {
             await mintMergeEvents(s.id, cwd, branch, { status: "error", landed: false, branch,
@@ -19685,7 +19819,7 @@ Bun.serve<WSData>({
         // …and the job itself, started at the route the way it always was. Deliberately NOT behind
         // a helper: `mergeJob(` having exactly TWO textual call sites, both of them routes, is the
         // property e2e/pins.ts holds — a wrapper would hide a third caller (a tick) behind one name.
-        const job: Promise<void> = mergeJob(s, cwd, repo, branch, main, carry.carried, carry.carriedBy)
+        const job: Promise<void> = mergeJob(s, cwd, repo, branch, main, carry.carried, carry.carriedBy, ownerActor)
           .finally(() => { if (mergeInflight.get(s.id) === job) mergeInflight.delete(s.id); });
         mergeInflight.set(s.id, job);
         return json({ running: true });
@@ -20758,7 +20892,7 @@ Bun.serve<WSData>({
         return json({ ok: true, resumed: pinned !== null && s.sessionId === pinned });
       }
       if (slotMatch[2] === "land") {
-        const land = await landLane(s, OWNER_LAND_FACTS);
+        const land = await landLane(s, { ...OWNER_LAND_FACTS, landedBy: ownerLandActor(req, s) });
         if ("error" in land) return json({ error: land.error }, land.code);
         return json({ ok: true, ...land });
       }

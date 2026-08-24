@@ -2,7 +2,7 @@
 // own conflict-free script pre-pass, identity-bound confirm-land, the V1 deterministic
 // verify gate, and the orphan reattach / remove / discard flows.
 import { spawnSync } from "node:child_process";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { BASE, REPO, REPO2, REPO3, ROOT, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { exists, fakeClaudeInPane, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
@@ -228,7 +228,7 @@ export async function run(lc: LaneCtx): Promise<void> {
   // script pre-pass: a conflict-FREE lane is rebased and landed by the server itself, the
   // agent is NEVER spawned. Proof: mergemode is set to "blocked" — if the agent were
   // consulted the lane would be kept, not landed.
-  const lnClean = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  const lnClean = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
   await Bun.write(`${lnClean.cwd}/clean-lane.txt`, "lane side\n");
   spawnSync("git", ["-C", lnClean.cwd, "add", "clean-lane.txt"]);
   spawnSync("git", ["-C", lnClean.cwd, "commit", "-qm", "clean lane work"]);
@@ -242,6 +242,35 @@ export async function run(lc: LaneCtx): Promise<void> {
   check("conflict-free lane merges + lands via the script, agent never consulted", vC.gone, JSON.stringify(vC));
   check("script-path lane commit reached main",
     spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString().includes("clean lane work"));
+  // WHO LANDED IT, on all three carriers. Until 2026-08-24 the land note answered `confirmedByHuman`
+  // and nothing else, so a land a session made by reading fleet.json's owner token was
+  // BYTE-IDENTICAL in the ledger to one the owner made from the board (measured once, `9cc8b1e`).
+  // The note now names the actor class and the token CHANNEL it arrived on; `landedBy` on the
+  // outcome row is the same fact where a reader asks about LANES rather than commits; the trail row
+  // survives a repo nobody ever clones. This suite drives the owner routes over
+  // `Authorization: Bearer` (harness `H`), so `via` is asserted as exactly that — a probe that
+  // accepted any channel could not tell the field from a constant. No `suspect`: this lane's task
+  // has no Program, and the flag is scoped to a lane whose Program has a LIVE bound MAIN.
+  const cleanNoteRaw = spawnSync("git", ["-C", REPO, "notes", "--ref=fleet/land", "show", "main"]);
+  type LandNoteShape = { actor?: { kind?: string; via?: string; suspect?: string }; confirmedByHuman?: boolean };
+  let cleanNote: LandNoteShape | null = null;
+  try { cleanNote = JSON.parse(cleanNoteRaw.stdout.toString()) as LandNoteShape; } catch { /* asserted below */ }
+  check("the land note names the ACTOR and the token channel it arrived on, beside confirmedByHuman",
+    cleanNoteRaw.status === 0 && cleanNote?.actor?.kind === "owner" && cleanNote.actor.via === "bearer"
+      && cleanNote.actor.suspect === undefined && cleanNote.confirmedByHuman === false,
+    cleanNoteRaw.stdout.toString().trim().slice(0, 300));
+  const cleanOutcome = ((await (await get("/api/lane-outcomes?limit=50")).json()) as
+    { outcomes: { branch: string | null; disposition: string; landedBy?: { kind?: string; via?: string } }[] })
+    .outcomes.find((o) => o.disposition === "landed" && o.branch === lnClean.branch);
+  check("the outcome row carries the same actor as landedBy — the LANE-side copy of the note's fact",
+    cleanOutcome?.landedBy?.kind === "owner" && cleanOutcome.landedBy.via === "bearer",
+    JSON.stringify(cleanOutcome ?? null));
+  const landActorRows = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+    .flatMap((line) => { try { return [JSON.parse(line) as { event?: string; detail?: string }]; } catch { return []; } })
+    .filter((r) => r.event === "land_actor");
+  check("recordLand books a land_actor trail row naming the same actor",
+    landActorRows.some((r) => (r.detail ?? "").includes(lnClean.branch) && (r.detail ?? "").includes("owner via=bearer")),
+    JSON.stringify(landActorRows.slice(-3)));
 
   // the UNTRACKED twin of the dirty-holder refusal (2026-08-05): a file the lane ADDS that lies
   // untracked in the primary used to pass this guard (it filtered ?? out) and die at the very end

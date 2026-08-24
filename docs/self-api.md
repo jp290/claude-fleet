@@ -313,6 +313,68 @@ behandelt ein fehlendes Event als terminal, sonst hielte eine Zeile ohne Event d
 Eine Zeile mit noch offenem Event wird nie gepruned. Ein Report ist also kein Archiv — was bleiben soll, gehört in den
 Commit.
 
+## land — `POST /api/self/tasks/:id/land`
+
+**Die eine Self-Route, die einen Integrations-Branch bewegt.** Eine gebundene Program-MAIN landet
+eine done-looking Lane ihres EIGENEN Programs — ohne Owner-Token. Nicht-Lane-only (Lane 409,
+`⚙ steward` 409, beides nie 401). **Sie liest KEINEN Body:** Program kommt aus der Bindung, die
+Lane aus der Zeile, das Repo aus dem eigenen Checkout, der Kandidat aus dem HEAD der Lane. Es gibt
+keine zweite Merge-Implementierung — gelandet wird durch DASSELBE `mergeJob`, das die Owner-Route
+ruft (`e2e/pins.ts`: genau zwei Aufrufstellen, beide Routen, kein Tick).
+
+```
+curl -X POST http://<fleet-host>:<port>/api/self/tasks/<taskId>/land \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN"
+```
+
+Erfolg: `{running:true, task, laneSlot, candidate, sessionIdMatch, selfLand,
+watch:{kind:"merge",target:<laneSlot>}}`. **Sofort danach `POST /api/self/watch` mit genau diesem
+`watch`-Objekt abonnieren** — jedes nicht-grüne Ergebnis (Konflikt, rotes Verify, unbekanntes
+Verify) erreicht dich über das bestehende merge-terminal-Event. Die Route macht KEINEN Retry und
+öffnet KEINE Attention: was bei einem roten Land zu tun ist, ist das Urteil der MAIN.
+
+**Die Ablehnungsleiter, in dieser Reihenfolge, jede mit eigenem Satz** (die Sätze sind
+unterscheidbar, weil sie den Aufrufer an verschiedene Stellen schicken):
+
+1. nicht gebunden · mehrdeutig gebunden — zwei verschiedene Ablehnungen, wie an allen Self-Türen.
+2. **`sessionId` muss EXAKT stimmen.** Die einzige Route, die sie GATET statt sie nur zu melden:
+   `slot+openedAt` allein identifiziert die Okkupation, aber Landen ist der Akt, bei dem ein
+   unbestätigter Occupant kein kleineres Problem ist. Beide Seiten `null` zählt als exakt (eine
+   Fleet, deren Harness keine Session-Id pinnt, kann die Route sonst strukturell nie benutzen).
+3. Zeile unbekannt (404) · Zeile eines fremden Programs · `kind` nicht `auftrag` · Zeile schon
+   `done` (`already landed`) · Zeile nicht `sent` · kein lebender Lane-Slot.
+4. Lane-Repo ≠ eigener Checkout (`repoKeyOf`) — ein Land reicht nie über Repo-Grenzen. Ein nicht
+   ableitbares Repo scheitert als ES SELBST, nie still als „passt".
+5. **Policy vorhanden und nicht `off`** (§promotion). Der Satz NENNT den Zustand: `(absent)` und
+   `(off)` sind unterscheidbar, weil „nie gesagt" und „ausdrücklich nein" verschiedene Dinge sind.
+6. **Das Repo braucht einen EIGENEN `FLEET_VERIFY_CMD_REPOS`-Eintrag.** Das globale
+   `FLEET_VERIFY_CMD` ist für das Fleet-Repo geschrieben und beendet sich außerhalb mit 42 ⇒
+   `verify.ok:null` ⇒ unbekannt, und unbekannt ist nie grün. Eine Erlaubnis über ein Repo, das nur
+   „unbekannt" antworten kann, wäre eine, die nie greift — also Ablehnung VOR dem Start.
+7. Kandidat nicht lesbar ⇒ Ablehnung (ein unbekannter Kandidat wird nie gelandet).
+8. **Duplikat:** trägt genau dieser Kandidat schon eine `fleet/land`-Note, ist er bereits auf dem
+   Integrations-Branch ⇒ 409 `already landed`. Abwesende oder unlesbare Note blockt NIE — der
+   Note-Schreiber ist best-effort, und „ich konnte nicht lesen" ist kein Beleg für ein Land.
+9. **Der Progress-Guard, und er ist bewusst KEIN Zähler.** Abgelehnt wird ausschließlich der
+   *buchstäblich unveränderte* Retry: das letzte Verdikt der Lane ist ein Nicht-Land-Verdikt, das an
+   genau diesen Kandidaten gebunden ist — seither wurde nichts aufgezeichnet und der Baum hat sich
+   nicht bewegt. 409 `no progress since the last verdict — repair or escalate`. Ein neuer Commit,
+   ein reparierter Baum, irgendein neues Verdikt: durchgelassen. Grund (Owner-Policy 2026-08-23):
+   Reparatur ist durch ein PROGRESS-BUDGET begrenzt, und wiederholte Nicht-Bewegung ist eine
+   ESKALATIONSKLASSE — ein fester Versuchs-Deckel stoppt die reparierende MAIN und sagt nichts über
+   die kreisende.
+10. Lane nicht `done-looking` (`laneWatchSignal`, `MERGE_IDLE_MS`) — lebendig, idle, sauber, ahead.
+    Ein Server-Prädikat über Fakten, keine Aussage über die Qualität: die liefert die MAIN, indem
+    sie überhaupt ruft.
+11. Nicht inflight — dieselbe Reservierung (`mergeStart`/`mergeInflight`), die die Owner-Route
+    hält, plus `commitInflight`. Zwei Türen, ein Job pro Lane.
+12. Ungeprüfte Konfliktlösungen in der Lane (die ⏸-Sperre) sind hier eine ABLEHNUNG, nicht ein
+    Land: `green-only` landet sie nie.
+
+**Trail:** ein Start schreibt `self_land_start` (Slot, Zeile, Program, Lane, Kandidat, Sprosse) —
+die einzige Zeile, die sagt, dass eine MAIN GEFRAGT hat, auch wenn das Gate danach rot war. Keine
+Ablehnung schreibt sie (in `e2e/programs.ts` als Gegenprobe geprüft).
+
 ## promotion — `POST /api/programs/:id/promotion` (OWNER-Route, nicht `/api/self/*`)
 
 Sie steht hier, weil sie die eine Erlaubnis erteilt, die eine Session an anderer Stelle VERBRAUCHT

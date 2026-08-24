@@ -136,6 +136,29 @@ const PRE_AUTH_ROUTES = [
   // no pane, starts nothing and reaches no foreign slot.
   '= /api/self/tasks',
   String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/release$/`,
+  // ACP · THE LAND DOOR, and it is by a distance the most consequential entry on this list: it is
+  // the only pre-auth route that can move an INTEGRATION BRANCH. It is here for the same structural
+  // reason as its neighbours — the exact self principal IS the boundary — but what bounds it is a
+  // longer list than theirs, and every item is a refusal BEFORE anything starts:
+  //   · non-lane only AND steward-excluded (both 409, never 401);
+  //   · the caller must be the current bound MAIN of an ACTIVE program, matched on the full
+  //     identity triple slot+openedAt+sessionId — the one route that GATES sessionId rather than
+  //     merely reporting it, because landing is the act where an unconfirmed occupant is not a
+  //     smaller problem;
+  //   · the row must belong to THAT program, be an `auftrag`, be `sent`, and name a LIVE lane slot
+  //     whose repo canonicalises to the caller's own checkout (no land crosses repositories);
+  //   · the Program must carry an OWNER-CONFIRMED `promotion` record whose selfLand is not `off` —
+  //     absent is the default and refuses, and only the owner route below can write it;
+  //   · the repo must have its OWN FLEET_VERIFY_CMD_REPOS entry, so a promotion over a repo that
+  //     can structurally only answer `unknown` (exit 42) is refused rather than waved through;
+  //   · the candidate must be readable and must not already carry a fleet/land note, a literally
+  //     unchanged retry is refused as no-progress, the lane must be done-looking, and no merge or
+  //     commit may be in flight (the SAME reservation pair the owner route holds).
+  // It reads NO body (the program comes from the binding, the lane from the row, the repo from the
+  // checkout, the candidate from the lane's HEAD), it starts nothing unattended, it writes into no
+  // pane and it reaches no foreign slot. The land itself runs through the SAME mergeJob the owner
+  // route calls — there is no second merge implementation.
+  String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/land$/`,
   '~ /^\\/api\\/self\\/events\\/([a-z0-9]+)\\/ack$/', // same slot+session credential; idempotent receipt only
   '= /api/self/succeed',  // non-lane only: committed HANDOFF → one successor; caller retires on grace
   '= /api/self/retire',   // non-lane only: immediately retire the token's own slot after reporting

@@ -875,9 +875,10 @@ export async function run(): Promise<void> {
       && /if \(k\.unknown\) kel\.appendChild\(chip\(`\$\{k\.unknown\} unknown`, "warn"/.test(kBlock),
       kBlock.slice(kBlock.indexOf("davon"), kBlock.indexOf("davon") + 60));
     // TRUTH IN LABELS. `confirmedByHuman:false` records that no second confirm click was needed; it
-    // is NOT evidence that nobody was attending, because mergeJob has exactly one caller and it is
-    // an owner route. §1 wants UNATTENDED lands, so the chip that counts toward it must not use the
-    // word the criterion uses for a property this data cannot show.
+    // is NOT evidence that nobody was attending, because every caller of mergeJob is a ROUTE — since
+    // 2026-08-24 two of them, the owner merge route and the Program-MAIN self-land route, and no
+    // tick (pinned in e2e/pins.ts). §1 wants UNATTENDED lands, so the chip that counts toward it
+    // must not use the word the criterion uses for a property this data cannot show.
     check("client: the sub-count chip names the confirm step and never claims an unattended land",
       /ohne Confirm-Schritt|no confirm step/i.test(kBlock)
       && /nicht|not evidence|NOT evidence/.test(kBlock)
@@ -966,8 +967,9 @@ export async function run(): Promise<void> {
     // and the renderer used to print the strongest positive claim in the whole feed ("auto-landed
     // clean+green") for a row that recorded NOTHING. Its neighbours have the same shape. And the
     // wording itself: `confirmedByHuman:false` means "no confirm step", never "no human involved" —
-    // mergeJob has exactly one caller (POST /api/slots/:id/merge), so every land on the ledger was
-    // started by an owner request.
+    // every caller of mergeJob is a route (POST /api/slots/:id/merge and, since 2026-08-24,
+    // POST /api/self/tasks/:id/land), so every land on the ledger was started by a request some
+    // principal made.
     const ocBlock = cliSrc.slice(cliSrc.indexOf('if (dispo === "landed") {'),
       cliSrc.indexOf("row.appendChild(facts);"));
     check("client: an absent confirmedByHuman renders as not-recorded, never as a positive land claim",

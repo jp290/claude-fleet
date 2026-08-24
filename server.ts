@@ -593,8 +593,10 @@ const PI_HARNESS: Harness = {
   // /commit route stays available as a recovery act, not as this adapter's lifecycle.
   hostCommits: false,
   // TRUE by owner decision (2026-08-07, reaffirmed 2026-08-12 for the full-access mode). What it
-  // does NOT admit: no tick can land. The ONE mergeJob call site is a route (server.ts, grep
-  // `mergeJob(`), so the reachable set is scheduled autos, dispatch, steward sends, done-looking →
+  // does NOT admit: no tick can land. EVERY mergeJob call site is a route (server.ts, grep
+  // `mergeJob(` — two of them since 2026-08-24, the owner merge route and the Program-MAIN
+  // self-land route, and e2e/pins.ts reads the tick bodies to hold it), so the reachable set for
+  // anything unattended is scheduled autos, dispatch, steward sends, done-looking →
   // /api/self/watch and auto-③ — every one of them a PROMPT into a pane, none a write to main.
   automatable: true,
   allowsLanes: true,
@@ -3277,6 +3279,11 @@ type AuditEvent =
   // On the trail because it is the one act that widens WHO may move an integration branch, and the
   // record it writes is otherwise only visible by reading the Program row.
   | "program_promotion"
+  // a bound Program-MAIN started a land through POST /api/self/tasks/:id/land. Recorded at the
+  // START rather than only at the outcome: the outcome has its own rails (merge verdict, land note,
+  // outcome row), and what none of them can state is that a MAIN ASKED — including the attempts
+  // that ended in a red gate and landed nothing.
+  | "self_land_start"
   // a steward filing whose `ref` matched a live proposal — answered with the existing row, so the
   // trail shows the pulse KEPT seeing the condition without the queue growing a duplicate
   | "steward_task_dedup"
@@ -6380,6 +6387,173 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // and handleSelfSucceed answer with.
   return json({ ok: true, sessionIdMatch,
     task: { id: t.id, kind: t.kind, status: t.status, releasedBy: t.releasedBy, programId: t.programId } });
+}
+
+// ACP · THE FOURTH CONSUMER OF THE AUTHORITY BRACKET, and the only one that moves an INTEGRATION
+// BRANCH. A bound Program-MAIN lands a done-looking lane of its OWN Program — without an owner token.
+//
+// WHY IT EXISTS, measured: until 2026-08-23 the only `mergeJob(` call site was the owner merge
+// route, so a Project-MAIN that had reviewed its lane had exactly two options — relay through the
+// owner, or read fleet.json and call the owner route with the owner's own credential. One land did
+// the latter (`9cc8b1e`) and is indistinguishable in the ledger from an owner act. The owner's
+// policy of 2026-08-23 says the first option is itself the defect: "ordinary clean/green in-program
+// land decisions belong to the owning Project MAIN, not the Owner … a `review-ready` attention for
+// a routine clean/green in-program land is a MAIN defect." This route is that decision's door.
+//
+// WHAT IT IS NOT. It is not an auto-land: nothing here runs on a tick, and `done-looking` is never
+// treated as "reviewed" — a MAIN calls this because it read the diff, and the route's job is to
+// check that the MAIN is ALLOWED to and that the machine is in a state where landing means
+// something. It does not touch mergeJob's logic, runVerify or the dispatcher. It reads NO body,
+// for the same reason the release door does not: `programId`, `slot`, `branch` and `repo` are
+// precisely the fields a request could use to nominate work outside the caller's authority, so
+// every one of them is derived — the program from the binding, the lane from the task row, the
+// repo from the caller's own checkout, the candidate from the lane's HEAD.
+//
+// EVERY REFUSAL IS ITS OWN SENTENCE, in the order below, because they send the caller to fix
+// different things — and several of them (dirty/not-done-looking/busy) are MAIN-side repairs it can
+// make and call again, while the rest are not.
+async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
+  // (1) THE BRACKET, in its own words. "not bound" and "ambiguously bound" stay two refusals here
+  // exactly as at the release and filing doors.
+  const bound = boundProgramForMain(s);
+  if (!bound.ok) return json({ error: bound.error }, 409);
+  const { program, sessionIdMatch } = bound;
+  // ...and for THIS act the identity is EXACT, which is a deliberate departure from the
+  // reported-never-gated doctrine its three neighbours follow. Those widen who may WRITE A ROW or
+  // ASK A QUESTION; this one moves an integration branch. The comparison is the recorded triple
+  // itself (slot + openedAt already matched above), so a fleet whose harness pins no session id —
+  // both sides null — is an exact match and can use this route, while a session re-minted inside
+  // the pane loses land rights until the owner rebinds the MAIN. Refusing is the recoverable
+  // direction; landing under an identity nobody confirmed is not.
+  if (program.main!.sessionId !== s.sessionId)
+    return json({ error: `this session's id does not match the bound MAIN identity (${sessionIdMatch}) — landing is the one act bound to the exact recorded occupant; ask the owner to re-bind the Program-MAIN`, sessionIdMatch }, 409);
+  // (2) THE ROW.
+  const t = tasks.find((x) => x.id === id);
+  if (!t) return json({ error: "unknown task" }, 404);
+  // (3) ...of THIS Program. A row of another Program is not this MAIN's to land, and an unbracketed
+  // row is nobody's — for those the owner's board stays the only door.
+  if (t.programId !== program.id)
+    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN lands only rows of program ${program.id}` }, 409);
+  // (4) ...that is executable and RUNNING, with a lane. Three separate sentences: an advisory row
+  // never had a lane, a `done` row already landed, and any other status means there is nothing
+  // running to land.
+  if (t.kind !== "auftrag")
+    return json({ error: `a ${t.kind} is advisory — it never produced a lane, so there is nothing to land` }, 409);
+  if (t.status === "done")
+    return json({ error: "already landed — this row is done; a landed row is not landed twice" }, 409);
+  if (t.status !== "sent")
+    return json({ error: `task is ${t.status} — only a running row has a lane to land` }, 409);
+  const lane = typeof t.slot === "number" ? slotFrom(t.slot) : null;
+  if (!lane?.cwd || !lane.worktree || lane.taskId !== t.id)
+    return json({ error: "this row names no live lane slot — the lane it ran in is gone, so nothing can be landed for it" }, 409);
+  // (5) THE REPO COMES FROM THE BINDING'S CHECKOUT, by the same helper and the same rule as the
+  // release door: a MAIN bound in one repository never reaches into another. Failing to derive it
+  // fails as ITSELF rather than silently reading as "matches".
+  const mainRepo = await repoKeyOf(s);
+  if (!mainRepo)
+    return json({ error: "this session's checkout is not a git repository — the land target repo cannot be derived" }, 409);
+  if (repoCanon(lane.worktree.repo) !== mainRepo)
+    return json({ error: `the lane is in ${basename(repoCanon(lane.worktree.repo))} and this MAIN is bound in ${basename(mainRepo)} — a land never reaches across repositories` }, 409);
+  // (6) THE PERMISSION. Absent is the legacy shape and the honest default: without an owner-
+  // confirmed record this route refuses and the owner lands from the board, exactly as before.
+  // `off` is refused in the same sentence but NAMES ITSELF, because "the owner never said" and
+  // "the owner said no" are two different things for a MAIN deciding whether to ask.
+  const policy = program.promotion;
+  if (!policy || policy.selfLand === "off")
+    return json({ error: `no self-land promotion on this program (${policy ? policy.selfLand : "absent"}) — the owner grants it with POST /api/programs/${program.id}/promotion`, selfLand: policy?.selfLand ?? null }, 409);
+  // (7) THE GATE MUST BE ABLE TO MEASURE THIS REPO. The global FLEET_VERIFY_CMD is written for the
+  // fleet repo and exits 42 anywhere else, which becomes `verify.ok: null` — unknown, never green.
+  // A promotion over a repo that can only ever answer unknown would be a permission that never
+  // applies, so it is refused BEFORE anything starts, in words that name the fix. This is also the
+  // structural reason "unknown/skipped is never green" needs no branch of its own on this route:
+  // a repo that could produce a skip cannot reach the land at all.
+  if (!VERIFY_CMD_REPOS.get(repoCanon(lane.worktree.repo)))
+    return json({ error: "repo has no owner-configured verify entry — the global command skips (exit 42) outside the fleet repo, and skipped is never green" }, 409);
+  // (8) THE CANDIDATE: the lane's HEAD right now. There is no stored "approved sha" and no sha is
+  // read from a request — the server never trusted a MAIN-supplied one to begin with, and a lane
+  // that moves after this read is simply re-evaluated on the next call.
+  const headRead = await gitRead(lane.cwd, "rev-parse", "HEAD");
+  if (headRead.code !== 0 || !/^[0-9a-f]{40,64}$/.test(headRead.out))
+    return json({ error: "the lane's HEAD could not be read — the candidate commit is unknown, and an unknown candidate is never landed" }, 409);
+  const candidate = headRead.out;
+  // (9) DUPLICATE PROTECTION for the pair (this row, this candidate). A fleet/land note on this
+  // exact commit means the candidate is already an integration tip: on the ordinary clean
+  // fast-forward `mainAfter` IS the lane tip, so the note sits on the sha this route just read.
+  // Absent or unreadable is not evidence of a land and never blocks — the note write is
+  // best-effort by contract, and a guard that treated "I could not read it" as "it happened" would
+  // refuse a land nobody made.
+  const landed = await readLandNote(repoCanon(lane.worktree.repo), candidate);
+  if (landed.state === "read")
+    return json({ error: `already landed — ${candidate.slice(0, 8)} already carries a fleet/land note, so this candidate is on the integration branch`, candidate }, 409);
+  // (10) THE PROGRESS GUARD, and it is deliberately NOT a counter. The owner policy of 2026-08-23
+  // says repair is bounded by a PROGRESS BUDGET — "continue while each round closes a named defect
+  // without regression" — and that repeated no-progress is one of the five ESCALATION CLASSES, not
+  // a number the server counts down. A fixed attempt cap contradicts that: it stops a MAIN that is
+  // repairing and says nothing about one that is cycling.
+  // So the only retry this route refuses is a LITERALLY UNCHANGED one: the lane's last verdict is a
+  // non-land verdict bound to this very candidate, i.e. nothing has been recorded since it and the
+  // tree has not moved. Re-running the same gate over the same bytes cannot produce a different
+  // answer for any reason the MAIN could act on. Everything else — a new commit, a repaired tree, a
+  // verdict superseded by anything at all — passes.
+  const pending = mergeLast.get(lane.id) ?? null;
+  const unchangedRetry = pending !== null && pending.landed !== true
+    && pending.candidateSha === candidate;
+  if (unchangedRetry)
+    return json({ error: `no progress since the last verdict — repair or escalate: ${pending.status} on the same candidate ${candidate.slice(0, 8)}, and nothing has been recorded since`,
+      candidate, last: { status: pending.status, at: pending.at,
+        verify: pending.verify ? { ok: pending.verify.ok } : null } }, 409);
+  // (11) THE LANE MUST LOOK DONE. `done-looking` and nothing weaker: host-commit-looking is the
+  // disjoint predicate for an uncommitted tree, and there is nothing there to fast-forward. This is
+  // a server predicate over facts, not a claim that the work is good — the MAIN supplies that
+  // judgement by calling at all.
+  const signal = laneWatchSignal(laneSignalView(lane, Date.now()), MERGE_IDLE_MS);
+  if (signal !== "done-looking")
+    return json({ error: `the lane is not done-looking (${signal ?? "no signal"}) — it must be alive, idle, clean and ahead of its base; let it finish, or commit its work, then call again`, signal }, 409);
+  // (12) NOT BUSY, exactly as the owner route asks it, and the reservation is taken BEFORE the
+  // first await inside the block for the same reason: two parallel calls would otherwise both start
+  // a rebase. It is the SAME reservation pair the owner route holds, so the two doors cannot start
+  // two jobs on one lane between them.
+  if (mergeInflight.has(lane.id) || mergeStart.has(lane.id)) return json({ running: true });
+  mergeStart.add(lane.id);
+  try {
+    if (commitInflight.has(lane.id))
+      return json({ error: "a commit is in progress on this lane — try again in a moment" }, 409);
+    const repo = lane.worktree.repo;
+    const cwd = lane.cwd;
+    const branch = lane.worktree.branch;
+    const integration = await integrationBranch(repo);
+    if (!integration) return json({ error: "cannot resolve the repo's integration branch" }, 409);
+    if (integration === branch) return json({ error: "the integration branch is the lane branch itself" }, 409);
+    // the lane's ref mirror, for the same reason every advanceIntegration call site refreshes it:
+    // on a clone lane the root-side refs do not describe this lane until they are synced.
+    const laneSync = await syncLaneRefs(lane.worktree, cwd);
+    if (laneSync) return json({ error: `${laneSync.error} — nothing was merged or landed` }, 409);
+    // the SHARED derivation — same helper the owner route uses, so unreviewed carried resolutions
+    // can never be dropped on one path and honoured on the other. Its ⏸ hold is a REFUSAL here:
+    // resolutions nobody has seen are not landed by a `green-only` promotion. (The `guarded` rung
+    // is what changes that, and it is the next slice — until it exists, both rungs refuse here.)
+    const carry = await carriedFromPendingVerdict(lane, repo, integration, branch);
+    if ("hold" in carry)
+      return json({ error: `${carry.hold.detail} — a Program-MAIN never lands unreviewed conflict resolutions`,
+        last: carry.hold.last }, 409);
+    audit("self_land_start", s.id, `${t.id} program=${program.id} lane=${lane.id} candidate=${candidate.slice(0, 8)} policy=${policy.selfLand}`);
+    // …and the SAME job the owner route starts, started the same way. Kept as a literal call rather
+    // than behind a shared wrapper on purpose: the pin that matters is that `mergeJob(` has exactly
+    // two textual call sites and both are routes, and a wrapper would let a third caller — a tick —
+    // hide behind one name.
+    const job: Promise<void> = mergeJob(lane, cwd, repo, branch, integration, carry.carried, carry.carriedBy)
+      .finally(() => { if (mergeInflight.get(lane.id) === job) mergeInflight.delete(lane.id); });
+    mergeInflight.set(lane.id, job);
+    // EVERY non-green outcome — resolved/conflict, verify red, verify unknown — reaches the MAIN
+    // through the merge-terminal event it is told to subscribe to here. This route adds no retry
+    // and no automatic attention: what to do about a red land is the MAIN's judgement, and a loop
+    // that re-ran it would be the auto-land this Program's non-goals forbid.
+    return json({ running: true, task: { id: t.id, status: t.status, programId: t.programId },
+      laneSlot: lane.id, candidate, sessionIdMatch, selfLand: policy.selfLand,
+      watch: { kind: "merge", target: lane.id } });
+  } finally {
+    mergeStart.delete(lane.id);
+  }
 }
 
 // ACP-23 · THE THIRD CONSUMER OF THE BRACKET ABOVE, and the door ACP-16 turned out to presuppose.
@@ -12998,6 +13172,53 @@ function shadowOf(r: { verdict: "ok" | "review"; reason: string; raw: boolean; a
   };
 }
 
+// --- WHAT A FRESH RUN CARRIES OUT OF THE VERDICT IT SUPERSEDES, and the ⏸ guard that sometimes
+// stops the run entirely. Extracted 2026-08-24 so the self-land route and the owner merge route
+// share ONE derivation: the whole point of that route is that it is the SAME land, and two copies
+// of this logic is exactly how one of them would silently stop carrying unreviewed resolutions.
+// Behaviour is unchanged; only the shape of the answer moved (a `hold` the caller renders in its
+// own vocabulary, instead of a Response built here).
+//
+// `conflicted` OR `resolvedBy`, not AND. Every writer sets the two together or neither — the
+// conflict branch (`if (unreviewed.length)`), the author hand-off (reachable only via a non-halted
+// non-clean pre-pass, which by construction carries files), and the error path
+// (`carried.length ? {conflicted, resolvedBy} : {}`) — so on any row a writer made, OR and AND
+// agree. They part only on a row nobody wrote that way, and boot restores `mergeLast` with a cast
+// that validates neither field (see the `merges` loader): OR keeps the guard STANDING on such a
+// row, which is the fail-safe direction for a guard whose job is to stop unreviewed work landing.
+type MergeCarry =
+  | { hold: { last: MergeLast; detail: string } }
+  | { carried: string[]; carriedBy: "agent" | "author" };
+async function carriedFromPendingVerdict(s: Slot, repo: string, main: string, branch: string): Promise<MergeCarry> {
+  const pend = mergeLast.get(s.id);
+  const holdsResolution = (pend?.conflicted?.length ?? 0) > 0 || !!pend?.resolvedBy;
+  if ((pend?.status === "resolved" && holdsResolution)
+      || (pend?.status === "interrupted" && (pend.conflicted?.length ?? 0) > 0)) {
+    const anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
+    if (anc.code === 0)
+      return { hold: { last: pend, detail: pend.status === "resolved"
+        ? "conflict resolution awaits your review — open the board and land it from there"
+        : "a merge run was interrupted while an agent was resolving conflicts here, and the lane is rebased on top of "
+          + `${main} with those resolutions — nobody has seen them and no verdict was ever recorded. Review the diff and land it from the board, or discard the lane.` } };
+  }
+  // The VERDICT is superseded; the FACT it recorded is not. If it held agent-chosen conflict
+  // resolutions, those commits are still in this lane and still unreviewed — and a verdict that
+  // HOLDS one reaches this line by exactly one route, the guard above LAPSING because main moved
+  // on, which is precisely when the fresh run's pre-pass rebases them cleanly. Carry them, or the
+  // clean auto-land branch lands work no human has seen (`unreviewed` in mergeJob). A "resolved"
+  // that holds NONE reaches this line too (the sharpened guard lets it through, on purpose):
+  // `conflicted` is absent, so `carried` is `[]` and every downstream use of it is inert.
+  const carried = (pend?.conflicted ?? []).slice(0, 50);
+  // …and WHO chose them. This is the one hop where the attribution can be lost: the verdict is
+  // about to be deleted, and the tree it describes looks the same whichever resolver made it.
+  // Default "agent" matches every verdict written before resolvedBy existed — those were all
+  // worker resolutions, so the default is a fact about the old rows, not a guess.
+  const carriedBy = pend?.resolvedBy ?? "agent";
+  mergeLast.delete(s.id); // a new run supersedes the previous verdict
+  saveState();
+  return { carried, carriedBy };
+}
+
 // `carried` = conflict files whose resolution is ALREADY committed in this lane and has never been
 // reviewed, taken from the verdict this re-run supersedes (see the ⏸ guard in the merge route).
 // Empty for a first run. `carriedBy` is WHO chose those resolutions — it rides along because this
@@ -16589,7 +16810,7 @@ function bundleStale(): BundleStale {
 // `unknowable`. So this rejects with 409 and says why; it never waits, and it never kills.
 //
 // NOT WIRED TO ANYTHING. No tick calls this, no auto, no dispatch path — it is a route and only a
-// route, the same line the land path holds (the single `mergeJob(` call site is a route too).
+// route, the same line the land path holds (every `mergeJob(` call site is a route too).
 // Who may pull it, and whether anything unattended ever does, is the owner's decision, not this
 // region's.
 const DEPLOY_FILE = `${import.meta.dir}/deploys.jsonl`;
@@ -17890,6 +18111,23 @@ Bun.serve<WSData>({
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not release a queue row — releasing is the bracket above lanes" }, 409);
       return releaseTaskForMain(s, selfTaskRelease[1]);
+    }
+
+    // ACP · Program-MAIN land. Non-lane only for the same "one edge per role" reason as its three
+    // neighbours, and steward-excluded for the reason succeed/retire exclude it: the steward is a
+    // standing role across programs, not the MAIN of one. Placed BELOW the release route so that
+    // route's "reads no body" pin keeps holding over the source region between its own opening line
+    // and the events-ack line — this handler reads no body either, but the pin is about a region.
+    const selfTaskLand = /^\/api\/self\/tasks\/([a-z0-9]+)\/land$/.exec(url.pathname);
+    if (selfTaskLand && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not land — a lane executes the row it was founded on, and its own MAIN adjudicates whether that work reaches the integration branch" }, 409);
+      if (s.label === STEWARD_LABEL)
+        return json({ error: "the steward may not land — it is a standing role across programs, not the MAIN of one" }, 409);
+      return selfLandTaskForMain(s, selfTaskLand[1]);
     }
 
     const selfEventAck = /^\/api\/self\/events\/([a-z0-9]+)\/ack$/.exec(url.pathname);
@@ -19254,45 +19492,17 @@ Bun.serve<WSData>({
         // flake proof (run the same tree again) could not be driven through the gate at all and
         // the only exit from the verdict was `{confirm:true}`, the path that skips the measurement.
         // So: discriminate on the RESOLUTION, not on the word.
-        const pend = mergeLast.get(s.id);
-        // `conflicted` OR `resolvedBy`, not AND. Every writer sets the two together or neither —
-        // the conflict branch (`if (unreviewed.length)`), the author hand-off (reachable only via
-        // a non-halted non-clean pre-pass, which by construction carries files), and the error
-        // path (`carried.length ? {conflicted, resolvedBy} : {}`) — so on any row a writer made,
-        // OR and AND agree. They part only on a row nobody wrote that way, and boot restores
-        // `mergeLast` with a cast that validates neither field (see the `merges` loader): OR keeps
-        // the guard STANDING on such a row, which is the fail-safe direction for a guard whose job
-        // is to stop unreviewed work from landing.
-        const holdsResolution = (pend?.conflicted?.length ?? 0) > 0 || !!pend?.resolvedBy;
-        if ((pend?.status === "resolved" && holdsResolution)
-            || (pend?.status === "interrupted" && (pend.conflicted?.length ?? 0) > 0)) {
-          const anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
-          if (anc.code === 0)
-            return json({ running: false, last: pend, status: pend.status,
-              detail: pend.status === "resolved"
-                ? "conflict resolution awaits your review — open the board and land it from there"
-                : "a merge run was interrupted while an agent was resolving conflicts here, and the lane is rebased on top of "
-                  + `${main} with those resolutions — nobody has seen them and no verdict was ever recorded. Review the diff and land it from the board, or discard the lane.` });
-        }
-        // The VERDICT is superseded; the FACT it recorded is not. If it held agent-chosen conflict
-        // resolutions, those commits are still in this lane and still unreviewed — and a verdict
-        // that HOLDS one reaches this line by exactly one route, the guard above LAPSING because
-        // main moved on, which is precisely when the fresh run's pre-pass rebases them cleanly.
-        // Carry them, or the clean auto-land branch lands work no human has seen (`unreviewed` in
-        // mergeJob). A "resolved" that holds NONE now reaches this line too (the sharpened guard
-        // lets it through, on purpose): `conflicted` is absent, so `carried` is `[]` and every
-        // downstream use of it is inert — `unreviewed` stays empty on a clean re-rebase, the error
-        // path's `carried.length ?` spread writes nothing, and `carriedBy` is read only where
-        // `carried` is non-empty. Passing it on is a no-op, not a silent carry.
-        const carried = (pend?.conflicted ?? []).slice(0, 50);
-        // …and WHO chose them. This is the one hop where the attribution can be lost: the verdict
-        // is about to be deleted, and the tree it describes looks the same whichever resolver made
-        // it. Default "agent" matches every verdict written before resolvedBy existed — those were
-        // all worker resolutions, so the default is a fact about the old rows, not a guess.
-        const carriedBy = pend?.resolvedBy ?? "agent";
-        mergeLast.delete(s.id); // a new run supersedes the previous verdict
-        saveState();
-        const job: Promise<void> = mergeJob(s, cwd, repo, branch, main, carried, carriedBy)
+        // Both halves — the ⏸ hold and what a fresh run carries out of the superseded verdict —
+        // live in ONE helper shared with the Program-MAIN self-land route, so the two doors cannot
+        // drift into honouring unreviewed resolutions on one path and dropping them on the other.
+        const carry = await carriedFromPendingVerdict(s, repo, main, branch);
+        if ("hold" in carry)
+          return json({ running: false, last: carry.hold.last, status: carry.hold.last.status,
+            detail: carry.hold.detail });
+        // …and the job itself, started at the route the way it always was. Deliberately NOT behind
+        // a helper: `mergeJob(` having exactly TWO textual call sites, both of them routes, is the
+        // property e2e/pins.ts holds — a wrapper would hide a third caller (a tick) behind one name.
+        const job: Promise<void> = mergeJob(s, cwd, repo, branch, main, carry.carried, carry.carriedBy)
           .finally(() => { if (mergeInflight.get(s.id) === job) mergeInflight.delete(s.id); });
         mergeInflight.set(s.id, job);
         return json({ running: true });

@@ -1,10 +1,10 @@
 // Program/Origin Artifact v1: a durable planning bracket above tasks and lanes. Sessions may
 // propose; only the owner confirms and advances it. Full bodies stay off the 2 s sessions poll.
-import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
-import { BASE, H, REPO, REPO3, REPO4, ROOT, TOKEN, check, get, post, restartSrv, tmuxOut } from "./harness";
+import { BASE, H, REPO, REPO2, REPO3, REPO4, ROOT, TOKEN, check, get, paneEnv, post, restartSrv, tmuxOut } from "./harness";
 import { phaseOf, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import type { LaneSignalView } from "../lane-signals";
 import type { Ctx } from "./ctx";
@@ -2185,6 +2185,303 @@ export async function run(ctx: Ctx): Promise<void> {
     await setPromotion(controlProgram.id, null);
     await programPost(promoProgram.id, "complete");
     await programPost(controlProgram.id, "complete");
+  }
+
+  // === THE LAND DOOR: POST /api/self/tasks/:id/land ============================================
+  // The defect, measured: until 2026-08-24 the only `mergeJob(` call site was the owner merge
+  // route, so a Program-MAIN that had reviewed its lane could either relay through the owner or
+  // read fleet.json and call that route with the OWNER's credential. One land did the latter
+  // (`9cc8b1e`, 2026-08-23) and is byte-identical in the ledger to an owner act. The owner's policy
+  // of 2026-08-23 calls the first option a MAIN defect in its own right: "ordinary clean/green
+  // in-program land decisions belong to the owning Project MAIN, not the Owner."
+  // Two halves are proved here: the ordered refusal ladder in front of the land, and the land
+  // itself happening WITHOUT an owner token.
+  {
+    type LandTask = { id: string; kind: string; status: string; programId?: string; slot?: number | null };
+    type LandSlot = { id: number; cwd: string | null; label: string | null;
+      git: { dirty: number; ahead: number } | null; lastOutput: number };
+    const slSess = async (): Promise<{ slots: LandSlot[]; now: number; tasks: LandTask[] }> =>
+      (await (await get("/api/sessions")).json()) as { slots: LandSlot[]; now: number; tasks: LandTask[] };
+    const slRow = async (id: string): Promise<LandTask | undefined> => (await slSess()).tasks.find((t) => t.id === id);
+    const selfLand = (token: string, id: string): Promise<Response> =>
+      fetch(`${BASE}/api/self/tasks/${id}/land`, { method: "POST", headers: { "x-fleet-self-token": token } });
+    const setPromotion = (id: string, policy: unknown): Promise<Response> =>
+      fetch(`${BASE}/api/programs/${id}/promotion`, {
+        method: "POST", headers: H, body: JSON.stringify({ policy }),
+      });
+    const slAudits = (): { event?: string; slot?: number; detail?: string }[] =>
+      readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+        .flatMap((line) => { try { return [JSON.parse(line) as { event?: string; slot?: number; detail?: string }]; } catch { return []; } });
+    // done-looking is a SERVER predicate over git facts refreshed on the slow tick plus a pane idle
+    // clause — so a fixture that only commits and calls would race the tick and read as "the route
+    // refuses a finished lane". Polled on the same facts the predicate reads (MERGE_IDLE_MS=3000).
+    const waitDoneLooking = async (slot: number): Promise<boolean> => {
+      for (let i = 0; i < 120; i++) {
+        const body = await slSess();
+        const row = body.slots.find((x) => x.id === slot);
+        if (row?.git && row.git.dirty === 0 && row.git.ahead > 0 && body.now - row.lastOutput >= 3000) return true;
+        await Bun.sleep(250);
+      }
+      return false;
+    };
+
+    // --- (0) THE FIXTURE THE GREEN ARM NEEDS, and it fails as ITSELF if it cannot be built.
+    // `preflightProgramMain` refuses to found a Program-MAIN in a TARGET repo without a tracked,
+    // non-empty root AGENTS.md, and REPO2 is the ONE repo on this fleet with its own
+    // FLEET_VERIFY_CMD_REPOS entry ($DIR/fakeverify2) — i.e. the only place a promotion can be
+    // measured at all. REPO3 deliberately keeps NONE: it is the negative control for exactly that
+    // 400 earlier in this file, so the two repos differ in two paired ways and each difference is
+    // load-bearing for a different check. The text carries no sabotage marker, so fakeverify2's
+    // git-grep is unaffected. Written here rather than in the wrapper so this slice stays inside
+    // its declared write set; idempotent, because a re-run must not add a second commit.
+    if (REPO2 && !existsSync(`${REPO2}/AGENTS.md`)) {
+      writeFileSync(`${REPO2}/AGENTS.md`,
+        "# Throwaway repository contract\nUse this repository own commands and evidence.\n");
+      spawnSync("git", ["-C", REPO2, "add", "AGENTS.md"]);
+      spawnSync("git", ["-C", REPO2, "commit", "-qm", "root contract"]);
+    }
+    const repo2Contract = spawnSync("git", ["-C", REPO2 || ROOT, "cat-file", "-s", "HEAD:AGENTS.md"]);
+    check("self-land fixture: REPO2 carries a tracked non-empty root AGENTS.md, so a MAIN can be founded there",
+      !!REPO2 && repo2Contract.status === 0 && Number(repo2Contract.stdout.toString().trim()) > 0,
+      JSON.stringify({ REPO2, status: repo2Contract.status, size: repo2Contract.stdout.toString().trim(),
+        err: repo2Contract.stderr.toString().trim().slice(0, 120) }));
+
+    // --- (1) THE REFUSAL LADDER, in the FLEET repo — which has NO FLEET_VERIFY_CMD_REPOS entry, so
+    // this arm can reach every refusal down to the verify one and no further. Its own Program and
+    // its own MAIN: the fixture asserts the binding is live and its identity triple matches,
+    // because the route GATES on exactly that and a probe that could not establish it would read
+    // every refusal below as a pass.
+    const ladderProgram = await activateNewProgram("Self-land refusal ladder");
+    const ladderBoot = await beginBootstrap(ladderProgram.id, { cwd: REPO, label: "selfland-ladder-main" });
+    const ladderBody = await ladderBoot.json() as { slot?: number; error?: string };
+    const ladderSlot = ladderBody.slot ?? null;
+    const ladderState = ladderSlot === null ? undefined : readState().slots?.[String(ladderSlot)];
+    const ladderTok = ladderState?.selfToken ?? "";
+    const ladderBinding = (await ownerPrograms()).find((p) => p.id === ladderProgram.id)?.main;
+    check("self-land fixture: a LIVE bound MAIN whose recorded identity triple matches its occupant",
+      ladderBoot.ok && ladderSlot !== null && /^[0-9a-f]{32}$/.test(ladderTok)
+        && ladderBinding?.slot === ladderSlot && ladderBinding.openedAt === ladderState?.openedAt
+        && (ladderBinding.sessionId ?? null) === (ladderState?.sessionId ?? null),
+      JSON.stringify({ boot: ladderBoot.status, err: ladderBoot.ok ? "" : JSON.stringify(ladderBody),
+        slot: ladderSlot, binding: ladderBinding, openedAt: ladderState?.openedAt }));
+
+    const ladderRowId = await makeTask({ text: "self-land ladder row", programId: ladderProgram.id, repo: REPO });
+    const landForeignProgram = await activateNewProgram("Self-land foreign bracket");
+    const landForeignRowId = await makeTask({ text: "self-land foreign row", programId: landForeignProgram.id, repo: REPO });
+    const landNotizRowId = await makeTask({ text: "self-land advisory row", programId: ladderProgram.id, repo: REPO, kind: "notiz" });
+
+    // (1a) THE TWO SCOPE REFUSALS, and they are the reason this route is on the pre-auth list at
+    // all: the exact self principal IS the boundary. A LANE is refused because it executes the row
+    // it was founded on and does not adjudicate it; the ⚙ steward is refused because it is a
+    // standing role across programs, not the MAIN of one. Both 409, never 401 — nobody should go
+    // looking for a token they already hold.
+    const laneProbe = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+    const laneProbeTok = await paneEnv(`s${laneProbe.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const stewardSlot = (await slSess()).slots.find((x) => !x.cwd)?.id ?? null;
+    if (stewardSlot !== null) {
+      await post(`/api/slots/${stewardSlot}/open`, { cwd: REPO, label: "selfland-steward-probe" });
+      await post(`/api/slots/${stewardSlot}/rename`, { label: "⚙ steward" });
+    }
+    const stewardTok = stewardSlot === null ? "" : readState().slots?.[String(stewardSlot)]?.selfToken ?? "";
+    const laneRefusal = await selfLand(laneProbeTok, ladderRowId);
+    const laneRefusalText = await laneRefusal.text();
+    const stewardRefusal = await selfLand(stewardTok, ladderRowId);
+    const stewardRefusalText = await stewardRefusal.text();
+    check("self-land scope: a LANE and the ⚙ steward are each refused 409 in their OWN sentence, never 401",
+      /^[0-9a-f]{32}$/.test(laneProbeTok) && /^[0-9a-f]{32}$/.test(stewardTok)
+        && laneRefusal.status === 409 && laneRefusalText.includes("a lane may not land")
+        && stewardRefusal.status === 409 && stewardRefusalText.includes("the steward may not land")
+        && laneRefusalText !== stewardRefusalText,
+      `lane=${laneRefusal.status}:${laneRefusalText.slice(0, 100)} steward=${stewardRefusal.status}:${stewardRefusalText.slice(0, 100)}`);
+    if (stewardSlot !== null) await post(`/api/slots/${stewardSlot}/rename`, { label: "selfland-unbound" });
+    const unboundTok = stewardTok;
+    const unboundRefusal = await selfLand(unboundTok, ladderRowId);
+    const unboundRefusalText = await unboundRefusal.text();
+    check("self-land ladder: a session with no MAIN binding gets boundProgramForMain's own sentence, not the ambiguity one",
+      unboundRefusal.status === 409 && unboundRefusalText.includes("not the current bound MAIN")
+        && !unboundRefusalText.includes("ambiguous"),
+      `${unboundRefusal.status}:${unboundRefusalText.slice(0, 160)}`);
+
+    // (1b) THE ROW REFUSALS, each with its own sentence because each sends the caller somewhere else.
+    const unknownRow = await selfLand(ladderTok, "0".repeat(8));
+    const foreignRefusal = await selfLand(ladderTok, landForeignRowId);
+    const foreignText = await foreignRefusal.text();
+    const notizRefusal = await selfLand(ladderTok, landNotizRowId);
+    const notizText = await notizRefusal.text();
+    const pendingRefusal = await selfLand(ladderTok, ladderRowId);
+    const pendingText = await pendingRefusal.text();
+    check("self-land ladder: unknown row is 404, and foreign-program / advisory / not-running each get their OWN sentence",
+      unknownRow.status === 404
+        && foreignRefusal.status === 409 && foreignText.includes("belongs to no program of this MAIN")
+        && notizRefusal.status === 409 && notizText.includes("advisory")
+        && pendingRefusal.status === 409 && pendingText.includes("only a running row has a lane to land"),
+      JSON.stringify({ unknown: unknownRow.status, foreign: foreignText.slice(0, 110),
+        notiz: notizText.slice(0, 110), pending: pendingText.slice(0, 110) }));
+
+    // (1c) …and from here on the row needs a REAL lane, which is what the owner's attended start
+    // produces. The policy rungs are then walked in order: absent → off → granted-but-unmeasurable.
+    const ladderDispatch = await post(`/api/tasks/${ladderRowId}/dispatch`, {});
+    const ladderRow = await slRow(ladderRowId);
+    const noPolicyRefusal = await selfLand(ladderTok, ladderRowId);
+    const noPolicyText = await noPolicyRefusal.text();
+    await setPromotion(ladderProgram.id, { v: 1, selfLand: "off" });
+    const offPolicyRefusal = await selfLand(ladderTok, ladderRowId);
+    const offPolicyText = await offPolicyRefusal.text();
+    await setPromotion(ladderProgram.id, { v: 1, selfLand: "green-only" });
+    const noVerifyRefusal = await selfLand(ladderTok, ladderRowId);
+    const noVerifyText = await noVerifyRefusal.text();
+    check("self-land ladder: absent policy and selfLand:'off' refuse in DISTINGUISHABLE words, then green-only stops at the repo's missing verify entry",
+      ladderDispatch.ok && ladderRow?.status === "sent" && typeof ladderRow.slot === "number"
+        && noPolicyRefusal.status === 409 && noPolicyText.includes("(absent)")
+        && offPolicyRefusal.status === 409 && offPolicyText.includes("(off)")
+        && noVerifyRefusal.status === 409 && noVerifyText.includes("no owner-configured verify entry"),
+      JSON.stringify({ dispatch: ladderDispatch.status, row: ladderRow,
+        absent: noPolicyText.slice(0, 130), off: offPolicyText.slice(0, 110), noVerify: noVerifyText.slice(0, 150) }));
+    // …and the counter-proof that makes the whole ladder mean something: not ONE of those refusals
+    // started anything. A refusal that had already booked the ask would be a land nobody can see.
+    check("self-land ladder: not one refusal booked a self_land_start row",
+      !slAudits().some((r) => r.event === "self_land_start" && (r.detail ?? "").startsWith(ladderRowId)),
+      JSON.stringify(slAudits().filter((r) => r.event === "self_land_start").slice(-3)));
+    if (typeof ladderRow?.slot === "number") await post(`/api/slots/${ladderRow.slot}/kill`, {});
+    await post(`/api/slots/${laneProbe.slot}/kill`, {});
+    if (stewardSlot !== null) await post(`/api/slots/${stewardSlot}/kill`, {});
+
+    // --- (2) THE REAL LAND, in REPO2 — the one repo with its own FLEET_VERIFY_CMD_REPOS entry.
+    // Everything above proved what is refused; this proves the act itself: an integration branch
+    // moves because a bound MAIN asked, with no owner token anywhere in the request.
+    const landProgram = await activateNewProgram("Self-land green arm");
+    const landBoot = await beginBootstrap(landProgram.id, { cwd: REPO2, label: "selfland-green-main" });
+    const landBootBody = await landBoot.json() as { slot?: number; error?: string };
+    const landMainSlot = landBootBody.slot ?? null;
+    const landMainState = landMainSlot === null ? undefined : readState().slots?.[String(landMainSlot)];
+    const landTok = landMainState?.selfToken ?? "";
+    await setPromotion(landProgram.id, { v: 1, selfLand: "green-only" });
+    check("self-land green fixture: the MAIN is bound in the ONE repo that has its own verify entry",
+      landBoot.ok && landMainSlot !== null && /^[0-9a-f]{32}$/.test(landTok)
+        && (landMainState?.cwd ?? "").includes("testrepo2"),
+      JSON.stringify({ boot: landBoot.status, err: landBoot.ok ? "" : JSON.stringify(landBootBody),
+        slot: landMainSlot, cwd: landMainState?.cwd }));
+
+    const greenRowId = await makeTask({ text: "self-land green row", programId: landProgram.id, repo: REPO2 });
+    const greenDispatch = await post(`/api/tasks/${greenRowId}/dispatch`, {});
+    const greenRow = await slRow(greenRowId);
+    const greenLaneSlot = greenRow?.slot ?? null;
+    const greenLaneCwd = greenLaneSlot === null ? "" :
+      (await slSess()).slots.find((x) => x.id === greenLaneSlot)?.cwd ?? "";
+    if (greenLaneCwd) {
+      writeFileSync(`${greenLaneCwd}/selfland-green.txt`, "work a Program-MAIN reviewed and landed\n");
+      spawnSync("git", ["-C", greenLaneCwd, "add", "selfland-green.txt"]);
+      spawnSync("git", ["-C", greenLaneCwd, "commit", "-qm", "selfland green work"]);
+    }
+    const greenReady = greenLaneSlot === null ? false : await waitDoneLooking(greenLaneSlot);
+    const greenMainBefore = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
+    check("self-land green fixture: the row is running on a live lane that is idle, clean and ahead",
+      greenDispatch.ok && greenRow?.status === "sent" && greenLaneSlot !== null && !!greenLaneCwd && greenReady,
+      JSON.stringify({ dispatch: greenDispatch.status, slot: greenLaneSlot, cwd: greenLaneCwd, ready: greenReady }));
+
+    const landRes = await selfLand(landTok, greenRowId);
+    const landRespBody = await landRes.json() as { running?: boolean; candidate?: string; laneSlot?: number;
+      selfLand?: string; watch?: { kind?: string; target?: number }; error?: string };
+    check("self-land: the bound MAIN starts the land WITHOUT an owner token and is handed its candidate and the watch to subscribe",
+      landRes.ok && landRespBody.running === true && /^[0-9a-f]{40,64}$/.test(landRespBody.candidate ?? "")
+        && landRespBody.laneSlot === greenLaneSlot && landRespBody.selfLand === "green-only"
+        && landRespBody.watch?.kind === "merge" && landRespBody.watch.target === greenLaneSlot,
+      `${landRes.status} ${JSON.stringify(landRespBody)}`);
+    let greenLanded = await slRow(greenRowId);
+    for (let i = 0; i < 240 && greenLanded?.status !== "done"; i++) {
+      await Bun.sleep(250);
+      greenLanded = await slRow(greenRowId);
+    }
+    const greenMainAfter = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
+    check("self-land: the integration branch moved and the row retired — the land completed through the ordinary land path",
+      greenLanded?.status === "done" && greenMainAfter !== greenMainBefore
+        && spawnSync("git", ["-C", REPO2, "log", "--oneline", "-3"]).stdout.toString().includes("selfland green work"),
+      JSON.stringify({ status: greenLanded?.status, before: greenMainBefore.slice(0, 8), after: greenMainAfter.slice(0, 8) }));
+    check("self-land: the trail books the ASK itself (self_land_start), which no other rail can state",
+      slAudits().some((r) => r.event === "self_land_start" && r.slot === landMainSlot
+        && (r.detail ?? "").startsWith(greenRowId) && (r.detail ?? "").includes(`program=${landProgram.id}`)
+        && (r.detail ?? "").includes("policy=green-only")),
+      JSON.stringify(slAudits().filter((r) => r.event === "self_land_start").slice(-3)));
+    const relandRes = await selfLand(landTok, greenRowId);
+    const relandText = await relandRes.text();
+    check("self-land: a second call on the same landed row is refused 'already landed' — a landed row is not landed twice",
+      relandRes.status === 409 && relandText.includes("already landed"), `${relandRes.status} ${relandText.slice(0, 160)}`);
+
+    // --- (3) THE RED GATE AND THE PROGRESS GUARD. `fakeverify2` fails on a VERIFY2BAD marker, so
+    // this candidate is a RED gate rather than a conflict: the lane stays clean, idle and ahead, and
+    // every earlier rung of the ladder is therefore genuinely passed. Two facts follow, and the
+    // second is the one the owner policy of 2026-08-23 asked for by name:
+    //   (a) a red candidate lands NOTHING — unknown is never green, and neither is red;
+    //   (b) the LITERALLY unchanged retry is refused as NO PROGRESS, not as attempt N of a counter.
+    //       The owner's words: repair is bounded by a progress budget, and repeated no-progress is
+    //       an escalation class. A fixed cap would stop a MAIN that is repairing and say nothing
+    //       about one that is cycling.
+    const redRowId = await makeTask({ text: "self-land red row", programId: landProgram.id, repo: REPO2 });
+    const redDispatch = await post(`/api/tasks/${redRowId}/dispatch`, {});
+    const redRow = await slRow(redRowId);
+    const redLaneSlot = redRow?.slot ?? null;
+    const redLaneCwd = redLaneSlot === null ? "" :
+      (await slSess()).slots.find((x) => x.id === redLaneSlot)?.cwd ?? "";
+    if (redLaneCwd) {
+      writeFileSync(`${redLaneCwd}/selfland-red.txt`, "VERIFY2BAD — this tree must fail its own repo's gate\n");
+      spawnSync("git", ["-C", redLaneCwd, "add", "selfland-red.txt"]);
+      spawnSync("git", ["-C", redLaneCwd, "commit", "-qm", "selfland red work"]);
+    }
+    const redReady = redLaneSlot === null ? false : await waitDoneLooking(redLaneSlot);
+    const redMainBefore = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
+    const redFirst = await selfLand(landTok, redRowId);
+    let redVerdict: { status?: string; landed?: boolean; candidateSha?: string; verify?: { ok?: boolean | null } } | null = null;
+    for (let i = 0; i < 240; i++) {
+      await Bun.sleep(250);
+      const mg = (await (await get(`/api/slots/${redLaneSlot}/merge`)).json()) as
+        { running?: boolean; last?: { status?: string; landed?: boolean; candidateSha?: string; verify?: { ok?: boolean | null } } | null };
+      if (mg.running === false && mg.last) { redVerdict = mg.last; break; }
+    }
+    check("self-land red gate: a verify-RED candidate lands NOTHING and the row stays running",
+      redDispatch.ok && redReady && redFirst.ok && redVerdict?.landed === false
+        && redVerdict.verify?.ok === false && (await slRow(redRowId))?.status === "sent"
+        && spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim() === redMainBefore,
+      JSON.stringify({ first: redFirst.status, verdict: redVerdict }));
+    const redRetry = await selfLand(landTok, redRowId);
+    const redRetryText = await redRetry.text();
+    check("self-land progress guard: the LITERALLY unchanged retry is refused as no-progress — and the words are repair-or-escalate, not a counter",
+      redRetry.status === 409 && redRetryText.includes("no progress since the last verdict — repair or escalate")
+        && !/attempt|cap|\d+\/\d+/.test(redRetryText.replace(/[0-9a-f]{8}/g, "")),
+      `${redRetry.status} ${redRetryText.slice(0, 220)}`);
+    // …and the counter-proof, which is what separates a PROGRESS budget from a cap: the same task,
+    // after a real repair, is admitted again. One commit that removes the sabotage marker moves the
+    // candidate, and the very next call gets past the guard and lands.
+    if (redLaneCwd) {
+      writeFileSync(`${redLaneCwd}/selfland-red.txt`, "repaired: the marker is gone\n");
+      spawnSync("git", ["-C", redLaneCwd, "add", "selfland-red.txt"]);
+      spawnSync("git", ["-C", redLaneCwd, "commit", "-qm", "selfland red repaired"]);
+    }
+    const repairedReady = redLaneSlot === null ? false : await waitDoneLooking(redLaneSlot);
+    const repaired = await selfLand(landTok, redRowId);
+    const repairedBody = await repaired.json() as { running?: boolean; candidate?: string; error?: string };
+    let repairedRow = await slRow(redRowId);
+    for (let i = 0; i < 240 && repairedRow?.status !== "done"; i++) {
+      await Bun.sleep(250);
+      repairedRow = await slRow(redRowId);
+    }
+    check("self-land progress guard: a REPAIRED candidate is admitted on the very next call and lands — the guard bounds cycling, not repair",
+      repairedReady && repaired.ok && repairedBody.running === true
+        && repairedBody.candidate !== redVerdict?.candidateSha && repairedRow?.status === "done"
+        && spawnSync("git", ["-C", REPO2, "log", "--oneline", "-4"]).stdout.toString().includes("selfland red repaired"),
+      JSON.stringify({ ready: repairedReady, res: repaired.status, body: repairedBody,
+        row: repairedRow?.status, wasCandidate: redVerdict?.candidateSha?.slice(0, 8) }));
+
+    for (const slot of [redLaneSlot, greenLaneSlot, landMainSlot, ladderSlot]) if (slot !== null) await post(`/api/slots/${slot}/kill`, {});
+    for (const id of [ladderRowId, landForeignRowId, landNotizRowId, greenRowId, redRowId]) {
+      await post(`/api/tasks/${id}/done`, {});
+      await post(`/api/tasks/${id}/delete`, {});
+    }
+    await setPromotion(ladderProgram.id, null);
+    await setPromotion(landProgram.id, null);
+    await programPost(ladderProgram.id, "complete");
+    await programPost(landForeignProgram.id, "complete");
+    await programPost(landProgram.id, "complete");
+    await restartSrv();
   }
 
   // These four Programs exist only to exercise mutually exclusive bootstrap states. Remove those

@@ -2584,12 +2584,16 @@ export async function run(ctx: Ctx): Promise<void> {
     // probe would read "the ⏸ hold is gone" — a probe measuring the tick's timing, not the rung.
     const cfReady2 = cfLane.slot === null ? false : await waitDoneLooking(cfLane.slot);
     const cfGreenOnly = await selfLand(landTok, cfRowId);
-    const cfGreenOnlyText = await cfGreenOnly.text();
+    // read the PARSED error, not the raw body: the sentence quotes the rung name, and in the wire
+    // bytes those quotes are JSON-escaped (`\"green-only\"`). Matching the phrase against the raw
+    // text failed on a refusal that was already exactly right — a probe reading the transport
+    // instead of the message.
+    const cfGreenOnlyErr = ((await cfGreenOnly.json()) as { error?: string; selfLand?: string }).error ?? "";
     check("guarded rung: a 'green-only' promotion refuses the unreviewed resolution and names the rung that would take it",
-      cfReady2 && cfGreenOnly.status === 409 && cfGreenOnlyText.includes("conflict resolution awaits your review")
-        && cfGreenOnlyText.includes('"green-only" promotion never lands an unreviewed conflict resolution')
-        && cfGreenOnlyText.includes("guarded"),
-      `${cfGreenOnly.status} ${cfGreenOnlyText.slice(0, 240)}`);
+      cfReady2 && cfGreenOnly.status === 409 && cfGreenOnlyErr.includes("conflict resolution awaits your review")
+        && cfGreenOnlyErr.includes('"green-only" promotion never lands an unreviewed conflict resolution')
+        && cfGreenOnlyErr.includes('"guarded" rung'),
+      JSON.stringify({ ready: cfReady2, status: cfGreenOnly.status, error: cfGreenOnlyErr.slice(0, 240) }));
     await setPromotion(landProgram.id, { v: 1, selfLand: "guarded" });
     const cfMainBefore = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
     const cfReady3 = cfLane.slot === null ? false : await waitDoneLooking(cfLane.slot);

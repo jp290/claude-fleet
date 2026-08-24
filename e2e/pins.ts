@@ -3039,6 +3039,57 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     `LANE_EXIT_FOOTER mentions=${server.split("LANE_EXIT_FOOTER").length - 1}`);
 }
 
+// --- THE PROGRAM-MAIN EXECUTION RAIL ↔ THE TWO PROSE CONTRACTS. The block is the only text a
+// freshly founded Program-MAIN is guaranteed to read, and it is the reason the doors it names must
+// keep existing under those spellings. TypeScript sees none of that: `AGENTS.md` is the portable
+// contract a session binds to and `docs/self-api.md` is the reference it is sent to, and both are
+// markdown. A route renamed in one place and not the others produces a founding brief full of
+// curls that 404, exactly the way the lane exit footer would — same failure, same kind of pin.
+{
+  const RULE_RAIL = "the founding execution rail, the portable role contract and the Self-API reference name ONE set of doors";
+  const rail = server.match(/const PROGRAM_MAIN_RAIL_BLOCK = `[\s\S]*?\n[^\n]*`;/)?.[0] ?? "";
+  const selfApiDoc = read("docs/self-api.md");
+  const agents = read("AGENTS.md");
+  // The doors, spelled as the delivered text spells them. `<taskId>` in the brief and `:id` in the
+  // docs are the same door in two notations, so each is checked against its own side's spelling.
+  const doors: readonly (readonly [string, string])[] = [
+    ["GET /api/self/program-execution", "GET /api/self/program-execution"],
+    ["POST /api/self/tasks with", "POST /api/self/tasks"],
+    ["POST /api/self/tasks/<taskId>/release", "POST /api/self/tasks/:id/release"],
+    ["POST /api/self/tasks/<taskId>/land", "POST /api/self/tasks/:id/land"],
+    ["POST /api/self/watch", "POST /api/self/watch"],
+    ["POST /api/self/attention", "POST /api/self/attention"],
+  ];
+  const missingRail = doors.filter(([inRail]) => !rail.includes(inRail)).map(([d]) => d);
+  const missingDoc = doors.filter(([, inDoc]) => !selfApiDoc.includes(inDoc)).map(([, d]) => d);
+  pin(`${RULE_RAIL} — every door the founding block names has a section that documents it (A)`,
+    rail !== "" && /^## Program-MAIN-Ausführungsschiene/m.test(selfApiDoc)
+      && missingRail.length === 0 && missingDoc.length === 0,
+    rail === "" ? "PROGRAM_MAIN_RAIL_BLOCK not found in server.ts"
+      : `railMissing=[${missingRail.join(",")}] docMissing=[${missingDoc.join(",")}]`);
+  // The ADDRESS is the falsifier the owner paid for by hand: a MAIN that has to search for Fleet.
+  // It must be the server's OWN interpolated HOST/PORT — a literal would be right on this machine
+  // and wrong on every other — and it must be the self credential, never an owner one.
+  pin(`${RULE_RAIL} — the block interpolates the server's own address and names only the self credential (B)`,
+    rail.includes("http://${HOST}:${PORT}")
+      && rail.includes("x-fleet-self-token: $FLEET_SELF_TOKEN")
+      && !/x-fleet-token|\/api\/slots\/|\/api\/programs\//.test(rail),
+    `host=${rail.includes("http://${HOST}:${PORT}")} selfToken=${rail.includes("x-fleet-self-token: $FLEET_SELF_TOKEN")}`);
+  // THE OWNER'S CORRECTION OF 2026-08-24 lives in three files and fails in opposite directions in
+  // each: a blanket "every mutation goes to a worker" makes the MAIN a scheduler, and dropping the
+  // lane half puts the whole product back in the MAIN checkout. The portable contract is where a
+  // session actually binds to it, so it is the side that must not go silent — and it must stay a
+  // JUDGEMENT: a posture enum, a size threshold or a decision table is precisely what was refused.
+  const agentsRule = agents.includes("is a JUDGEMENT, never a posture, a")
+    && agents.includes("Small, reversible, low-risk changes inside the confirmed scope")
+    && agents.includes("isolated worker lane");
+  const railRule = rail.includes("THE ROLE SPLIT IS A JUDGEMENT, NOT A WALL")
+    && rail.includes("Use an isolated worker lane for substantial product implementation");
+  pin(`${RULE_RAIL} — both halves of the role judgement stand in the block and in the portable contract (C)`,
+    agentsRule && railRule && !/\b\d+\s*(lines|files|LOC)\b/.test(rail),
+    `agents=${agentsRule} rail=${railRule}`);
+}
+
 console.log(rows.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

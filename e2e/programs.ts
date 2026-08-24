@@ -1434,6 +1434,102 @@ export async function run(ctx: Ctx): Promise<void> {
       && successionReceipt?.briefHash === briefHashOf(successionPrompt),
     JSON.stringify(successionReceipt ?? null));
 
+  // --- THE PROGRAM-MAIN EXECUTION RAIL: one block, four founding shapes, byte for byte. ---
+  // Every prompt this section reads was already delivered above, and together they are EVERY
+  // variant the server can build: Fleet frame and target-repo frame, bootstrap and succession.
+  // Until 2026-08-24 all four ended at "choose the next smallest bounded Program act" and named no
+  // door at all — two live target-repo MAINs built their whole product in their own checkout
+  // because they never learned a worker lane existed, and one filed its first worker only after the
+  // owner typed the Self routes into its pane. What these checks hold is the delivered TEXT; every
+  // route it names is covered as a MECHANISM by its own section elsewhere in this module.
+  const RAIL_HEAD = "\n\n--- HOW THIS PROGRAM IS EXECUTED";
+  const railOf = (prompt: string): string => {
+    const from = prompt.indexOf(RAIL_HEAD);
+    if (from < 0) return "";
+    const to = prompt.indexOf("\n\nContextPlan v2 anchors", from);
+    return to >= 0 ? prompt.slice(from, to) : prompt.slice(from);
+  };
+  const railShapes: readonly (readonly [string, string])[] = [
+    ["fleet-bootstrap", fleetPrompt], ["fleet-succession", fleetSuccessionPrompt],
+    ["target-bootstrap", deliveredPrompt], ["target-succession", successionPrompt],
+  ];
+  const rails = railShapes.map(([, prompt]) => railOf(prompt));
+  const rail = rails[0] ?? "";
+  check("Program-MAIN rail: all four founding shapes carry ONE execution block, byte for byte",
+    rail.length > 0 && rails.every((one) => one === rail) && railShapes.length === 4,
+    railShapes.map(([name], i) => `${name}=${rails[i]!.length}`).join(" "));
+  // The block's POSITION is part of the contract: after the owner's Program payload (so the payload
+  // is never split) and before the anchors (so the receipt hash, which is computed over the anchor
+  // block alone, keeps recomputing from the delivered prompt exactly as it did before).
+  check("Program-MAIN rail: it sits after the owner Program payload and before the anchors, in every shape",
+    railShapes.every(([, prompt]) => {
+      const payload = prompt.indexOf("Owner-confirmed Program content (verbatim JSON)");
+      const railAt = prompt.indexOf(RAIL_HEAD);
+      const anchors = prompt.indexOf("\n\nContextPlan v2 anchors");
+      return payload >= 0 && railAt > payload && (anchors < 0 || railAt < anchors);
+    }),
+    railShapes.map(([name, prompt]) => `${name}@${prompt.indexOf(RAIL_HEAD)}`).join(" "));
+  // THE FIRST FALSIFIER, and the one the owner paid for by hand: a fresh MAIN that has to search
+  // sources, the process table or a state file for Fleet's address. The base is the SERVER's own
+  // HOST/PORT — this instance was booted with exactly those, so BASE is the same string.
+  const railDoors = ["GET /api/self/program-execution", "POST /api/self/tasks with",
+    "POST /api/self/tasks/<taskId>/release", "POST /api/self/tasks/<taskId>/land",
+    "POST /api/self/watch", "POST /api/self/attention"];
+  check("Program-MAIN rail: it names Fleet's own address, the self-token header, and every door of the loop",
+    rail.includes(`answers this pane at ${BASE} `)
+      && rail.includes('"x-fleet-self-token: $FLEET_SELF_TOKEN"')
+      && railDoors.every((door) => rail.includes(door))
+      && rail.includes('"kind":"auftrag"')
+      && rail.includes('watch {"kind":"merge","target":<laneSlot>}')
+      && rail.includes('{"kind":"audit","repo":"<this checkout\'s git toplevel>","mainAfter":"<that candidate sha>"}'),
+    `base=${rail.includes(`answers this pane at ${BASE} `)} missing=[${railDoors.filter((d) => !rail.includes(d)).join(", ")}]`);
+  // A founding brief reaches a session that holds ONLY a self token. Naming an owner route or an
+  // owner credential there would teach it to reach for one it does not have — and printing the
+  // owner token into a prompt would BE the leak. Checked as absence over the delivered bytes.
+  const railForbidden = ["x-fleet-token", "Bearer ", "/api/slots/", "/api/programs/", "/api/tasks",
+    "fleet.json", "tmux", "capture-pane", "send-keys", "ps -eo"];
+  check("Program-MAIN rail: no owner credential, no owner route, and no pane- or process-observation instruction",
+    railForbidden.every((text) => !rail.includes(text)) && !rail.includes(TOKEN)
+      && rail.includes("wait WITHOUT WATCHING") && rail.includes("Do not poll a pane"),
+    `present=[${railForbidden.filter((text) => rail.includes(text)).join(", ")}] ownerToken=${rail.includes(TOKEN)}`);
+  // THE FOUR REMAINING FALSIFIERS, each as the sentence that answers it. They are asserted as text
+  // because text is the whole deliverable here: the mechanisms behind them already have their own
+  // checks, and what failed in the field was that nobody had been told.
+  check("Program-MAIN rail: release is a queue fact, a report is a claim, and PLAYABLE is not owner-playtested",
+    rail.includes("The reply is a QUEUE FACT") && rail.includes("it is NOT a lane")
+      && rail.includes("as a CLAIM, not as proof")
+      && rail.includes("A worker stating that a check passed is not a check passing.")
+      && rail.includes("Land only when the projection grants it")
+      && rail.includes("it does NOT")
+      && rail.includes("mean the owner has played it")
+      && rail.includes("raise exactly ONE POST /api/self/attention"),
+    `queueFact=${rail.includes("The reply is a QUEUE FACT")} claim=${rail.includes("as a CLAIM, not as proof")} playable=${rail.includes("mean the owner has played it")}`);
+  // THE OWNER'S CORRECTION OF 2026-08-24, and it has TWO halves that fail in opposite directions.
+  // A blanket "every mutation goes to a worker" would make the MAIN a scheduler; dropping the lane
+  // guidance would put the whole product back in the MAIN checkout. Both halves must be in the
+  // text, and the rule must stay a JUDGEMENT — no posture enum, no size threshold, no table.
+  check("Program-MAIN rail: small reversible work stays the MAIN's own act AND substantial work goes to a lane",
+    rail.includes("THE ROLE SPLIT IS A JUDGEMENT, NOT A WALL")
+      && rail.includes("Small, reversible, low-risk changes inside the confirmed scope you may simply")
+      && rail.includes("delegating them would cost more than the change itself")
+      && rail.includes("Use an isolated worker lane for substantial product implementation")
+      && rail.includes("has become a scheduler")
+      && !/\b\d+\s*(lines|files|LOC)\b/.test(rail) && !rail.includes("posture"),
+    `judgement=${rail.includes("THE ROLE SPLIT IS A JUDGEMENT, NOT A WALL")} direct=${rail.includes("Small, reversible, low-risk changes inside the confirmed scope you may simply")} lane=${rail.includes("Use an isolated worker lane for substantial product implementation")}`);
+  // THE RECEIPT KEEPS ITS TWO DIFFERENT JOBS, and the block proves the difference rather than
+  // assuming it. `hash` is the CONTEXT chain (anchor block + plan facts) and must be unmoved by a
+  // brief-body change; `briefHash` is the DELIVERED BYTES and must move with them — a briefHash
+  // that still matched the prompt minus the rail would mean the ledger no longer records what
+  // crossed the seam. Both receipts below were already asserted equal to their prompts above.
+  const railStripped = successionPrompt.replace(rail, "");
+  check("Program-MAIN rail: the context hash is unmoved by it while briefHash covers the delivered bytes",
+    !!successionReceipt && successionReceipt.hash === successionHash
+      && successionReceipt.briefHash === briefHashOf(successionPrompt)
+      && railStripped !== successionPrompt
+      && successionReceipt.briefHash !== briefHashOf(railStripped)
+      && successionReceipt.deliveredBytes === new TextEncoder().encode(successionPrompt).byteLength,
+    `hash=${successionReceipt?.hash === successionHash} briefHash=${successionReceipt?.briefHash}`);
+
   const successorToken = readState().slots?.[String(successorSlot)]?.selfToken ?? "";
   const [successorView, predecessorView] = await Promise.all([
     selfPrograms(successorToken), selfPrograms(mainSelfTokenAfterRestart),

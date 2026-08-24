@@ -132,6 +132,60 @@ begrenzt; der echte Transfer ist `HANDOFF.md`. Nach dem Schlussbericht räumt `P
 Slot sofort. Kein freier Slot oder kein frischer sauberer Handoff = 409, und die Vorgängerin bleibt stehen.
 
 
+## Program-MAIN-Ausführungsschiene (der Gründungsbrief benennt sie)
+
+**Was neu ist, ist der TEXT, nicht der Mechanismus.** Die Türen unten gab es alle schon; bis
+2026-08-24 endeten alle vier Program-MAIN-Gründungsbriefe (Fleet-Frame und Ziel-Repo-Frame, jeweils
+Bootstrap und Nachfolge) bei „choose the next smallest bounded Program act" und nannten keine
+einzige. Gemessene Folge: zwei Ziel-Repo-MAINs (iOS, Tower) bauten das GANZE Produkt im eigenen
+Checkout, weil sie nie erfuhren, dass eine Worker-Lane zur Verfügung steht, und die Tower-MAIN legte
+ihren ersten Worker erst an, nachdem der Owner ihr die Routen von Hand in die Pane getippt hatte. `PROGRAM_MAIN_RAIL_BLOCK` in `server.ts` ist dieser Text — EIN
+Block, byte-identisch in allen vier Varianten, angehängt zwischen Program-JSON und Anker-Block.
+
+**Was er sagt** (Reihenfolge ist die Schiene, nicht eine Empfehlung):
+
+- **Adresse und Credential zuerst.** `http://<fleet-host>:<port>` — der Server rendert seine EIGENEN
+  `HOST`/`PORT` in den Brief — und der Header `x-fleet-self-token: $FLEET_SELF_TOKEN`, der in jeder
+  Pane schon exportiert ist. Der Falsifikator, den das schließt: eine frische MAIN, die Quelltext,
+  Prozessliste oder State-Datei nach Fleets Adresse durchsucht.
+- **`GET /api/self/program-execution` ist die Lebenszyklus-Projektion** — `phase`, `phaseBasis`,
+  `candidate`, `nextAction`, `unknown[]`. Gelesen statt geraten, vor jedem Akt.
+- **Die Rollenteilung ist ein URTEIL, keine Mauer** (Owner-Korrektur 2026-08-24: kein Pauschalverbot,
+  intelligence-first bounded autonomy bleibt). Inspizieren, entscheiden, zerlegen, briefen, Diff
+  prüfen, gewöhnliche Konflikte auflösen und integrieren gehören in die MAIN-Pane — und **kleine,
+  reversible, risikoarme Änderungen im bestätigten Scope** darf die MAIN dort auch direkt machen,
+  wenn Delegieren teurer wäre als die Änderung: knappe Steuerungs-/Doku-Edits, winzige
+  Integrations-Glue, gewöhnliche Konfliktauflösung, eine eng beobachtete Verifikations-Reparatur.
+  In eine **isolierte Worker-Lane** gehören substanzielle Produkt-Implementierung, breite oder
+  parallele Arbeit, Spezialistenarbeit, Arbeit, die frische Kritik will, und Arbeit, deren
+  unabhängige Evidenz/Isolation materiell zählt. **Kein Posture-Enum, keine Größenschwelle, keine
+  Entscheidungstabelle, kein neuer Zustand** — genau das wäre die Haltung, die die Korrektur
+  ausschließt. Jedes Urteil darin bleibt das der MAIN; wer jeden kleinen Edit durch einen Worker
+  routet, ist zum Scheduler geworden.
+- **Die Schleife:** bounded Akt wählen → für einen Akt, der nach dem Urteil oben eine Lane will,
+  `POST /api/self/tasks` mit EXPLIZITEM `kind:"auftrag"` und
+  bewusst gewähltem Spawn-Triple (`harness`/`model`/`effort`; der Default `notiz` läuft nie) →
+  `POST /api/self/tasks/:id/release` → **die Antwort ist ein QUEUE-FAKT, keine Lane** (kein Slot,
+  kein Branch, keine Worker-Identität; wer darauf wartet, wartet auf nichts) → **warten ohne
+  beobachten**: der typisierte Worker-Report und jedes terminale Event kommen von selbst in die Pane,
+  kein Pane-/tmux-Polling → den Report als BEHAUPTUNG lesen und Diff plus zitierten Prüfausgang
+  selbst ansehen → landen **nur wenn die Projektion es zuteilt** (`nextAction` nennt
+  `POST /api/self/tasks/:id/land`; ohne Promotion nennt sie das Board, und dann landet der Owner) →
+  das zurückgegebene `watch:{kind:"merge",…}` abonnieren, bei `landed=YES` danach
+  `{kind:"audit",repo,mainAfter:<candidate>}`.
+- **Wo es endet:** weiter bis PLAYABLE-Evidenz — ein Artefakt, das ein Mensch ausführen kann und das
+  die MAIN laufen gesehen hat — oder bis zu einem konkreten Blocker bzw. einer Owner-Grenze
+  (Scope-Wachstum, irreversible Richtung, externe Wirkung/Kosten, Deploy/Release, deklariertes
+  Geschmacks-Gate). **PLAYABLE heißt nicht owner-playtested**, und es so zu berichten ist eine
+  Falschaussage. An genau dieser Grenze — und nur dort — GENAU EINE `POST /api/self/attention`. Ein
+  gewöhnliches sauberes, grünes In-Program-Land ist keine Grenze, sondern der eigene Akt der MAIN.
+
+**Was der Block NICHT tut:** keine neue Route, kein neues Schema, kein Timer, kein persistierter
+Zustand. Der Context-Receipt-`hash` bleibt die Kette über `anchorBlock` + `planFacts` und ändert
+sich nicht; `briefHash`/`deliveredBytes` beschreiben die ausgelieferten Bytes und wandern mit dem
+Block mit — genau das ist ihr Vertrag. Rückweg: die Konstante wieder aus den beiden Buildern
+nehmen.
+
 ## tasks — `POST /api/self/tasks`, `GET /api/self/program-execution`
 
 Zwei Türen desselben Brackets: die eine LEGT eine Zeile an, die andere SIEHT, wo die Zeilen des

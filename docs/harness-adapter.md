@@ -235,6 +235,32 @@ Netzwerkkosten werden nicht als null behauptet.
     `./acceptance-probe.sh` (kein Gate, kostet Modell-Turns). Befund, der nicht gefixt ist: codex
     zeigt beim Start einen **Update-Prompt** (`✨ Update available … Press enter to continue`), den
     `readiness.blocks` nicht kennt — ein dritter Paste-fressender Screen.
+  - **ACP-26 — Rollback nur für Fleets eigenen Event-Payload (2026-08-24).** Zwei echte
+    `post-land-audit`-Zeilen belegten denselben Schaden gegen denselben Controller-Okkupanten:
+    `f426d94b8bb603d354c6e570` (`delivery:"pane"`, idle 60 s, attempts 1) und
+    `df8ca5c5b526e30582e56249` (Legacy ohne `delivery`, idle 15 s, attempts 2573) blieben jeweils
+    vollständig im Owner-Composer, während `deliveredAt:null` korrekt blieb; der Owner sah beide
+    Texte direkt. Nach `not-observed` darf deshalb ausschließlich der FleetEvent-Aufruf von
+    `sendText` den Rückbau anfordern. Er liest die komplette Composer-Region FRISCH und sendet exakt
+    N×`BSpace` nur wenn Slot + `openedAt` + `sessionId` vor und nach dem Read unverändert, der Agent
+    frisch als lebend beobachtet und die Region Fleets vollständigen Payload byte-exakt
+    rekonstruiert. Append, Prepend, Edit, zusätzliche Leerzeichen, der Claude-Paste-Placeholder,
+    fehlender Composer und Capture-Fehler senden **keine** Taste. Nie `Ctrl-C`/`Ctrl-U`, nie zweites
+    Enter, nie Replay: auch `cleared` bleibt `send-uncertain`, `attempts` steigt nicht erneut und
+    `deliveredAt` bleibt `null`; die Event-Zeile bleibt über `/api/self/events` die Wahrheit.
+    Ein direkter Owner-`/send`, Supervisor-Nudge und alle übrigen Aufrufer sind **not-applicable**
+    für diesen Event-eigenen Rückbau, daher ändern Studio und Client-Protokoll sich nicht.
+
+    Adapterentscheidung aus den gemessenen Composer-Formen: **Claude apply** für vollständig
+    sichtbare Einzeiler; eingeklappte Mehrzeiler (`[Pasted text #N +M lines]`) sind **unsupported**
+    und bleiben unberührt. **Codex apply** (Glyph-Region einschließlich des beobachteten
+    `$FLEET_SELF_TOKEN`-Mention-Popup-Falls; nach einer Leerzeile ist nur der gemessene Mention-/
+    Modellstatus-Suffix Chrome — jede andere Folgezeile macht den Read unobservable). **Pi apply**,
+    **pi-zai apply** und **pi-ox apply**, weil alle drei denselben Pi-0.84-Rule-Composer und dieselbe
+    Pi-Prozess-Liveness verwenden; ihre verschiedenen Pre-Send-Readiness-Regeln bleiben unberührt.
+    Ein Adapter ohne `composer`-Deklaration ist **not-applicable**. Reiner Vergleich:
+    `composerRows` + `composerHoldsExactly`; Lebenszyklus-Falsifizierer: `e2e/watch.ts` und der
+    Raw-Mode-Stand-in in `e2e-isolated.sh`.
 
 ## Die Faktschicht `agent`
 

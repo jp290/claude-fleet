@@ -5157,8 +5157,7 @@ async function rollbackOwnComposerPayload(
   s: Slot, payload: string, occupant: ComposerOccupant,
 ): Promise<ComposerRollback> {
   if (!sameComposerOccupant(s, occupant)) return "kept:identity-changed";
-  const comms = commsFor(s);
-  if (comms.length === 0 || await paneAgentAt(sess(s.id), comms) !== "alive")
+  if (commsFor(s).length === 0 || await paneAgentAt(sess(s.id), commsFor(s)) !== "alive")
     return "kept:agent-unobservable";
   const read = await readExactComposer(s);
   if (read.kind === "failed") return "kept:read-failed";

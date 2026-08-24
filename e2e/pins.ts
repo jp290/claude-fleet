@@ -2815,27 +2815,58 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       : `${attentionFilters} attentionRequests.filter sites in server.ts`);
 }
 
-// --- ONE LAND PATH. The phase projection names INTEGRATING and CONTINUE; naming them must never
-// become a reason to actuate them. server.ts:596 states the invariant in prose ("the single
-// `mergeJob(` call site is a route too") — this is the file that holds it to a number.
+// --- ONE LAND PATH, NOW WITH TWO DOORS ONTO IT. The phase projection names INTEGRATING and
+// CONTINUE; naming them must never become a reason to actuate them. From 2026-08-24 `mergeJob(` has
+// exactly TWO textual call sites and both are ROUTES: the owner merge route and the Program-MAIN
+// self-land route. The NUMBER is not the property — the property is that no TICK calls it. An
+// auto-land is a non-goal of the authority slice in the owner's own words, and the whole difference
+// between "a principal asked" and "the server decided" is one call site inside a scheduler.
+// Deliberately counted textually rather than through a wrapper: a `startMergeRun()` helper would
+// read as one call site and let a third caller hide behind its name.
 {
-  const RULE_LAND = "server.ts has exactly one mergeJob call site and it is the owner merge route";
+  const RULE_LAND = "mergeJob is reachable only from routes";
   const lines = server.split("\n");
   const callSites = lines
     .map((line, i) => ({ line, n: i }))
     .filter(({ line }) => line.includes("mergeJob(")
       && !line.trim().startsWith("//")
       && !/^async function mergeJob\(/.test(line.trim()));
-  const routeStart = lines.findIndex((l) => l.includes("const mgMatch = /^\\/api\\/slots\\/(\\d+)\\/merge$/"));
-  // the next route matcher after the call site bounds the route body without needing a brace count
-  const nextRoute = callSites.length === 1
-    ? lines.findIndex((l, i) => i > callSites[0].n && /\/\^\\\/api\\\//.test(l)) : -1;
-  pin(`${RULE_LAND} — exactly one call site`, callSites.length === 1,
+  const ownerRoute = lines.findIndex((l) => l.includes("const mgMatch = /^\\/api\\/slots\\/(\\d+)\\/merge$/"));
+  const selfHandler = lines.findIndex((l) => l.includes("async function selfLandTaskForMain("));
+  const selfHandlerEnd = lines.findIndex((l, i) => i > selfHandler && l === "}");
+  pin(`${RULE_LAND} — exactly two call sites`, callSites.length === 2,
     `${callSites.length} sites: [${callSites.map((c) => c.n + 1).join(",")}]`);
-  pin(`${RULE_LAND} — that site sits inside the ⏫ owner merge route`,
-    callSites.length === 1 && routeStart >= 0 && routeStart < callSites[0].n
-      && nextRoute > callSites[0].n,
-    `route=${routeStart + 1} call=${callSites.length === 1 ? callSites[0].n + 1 : "?"} nextRoute=${nextRoute + 1}`);
+  // …and WHERE they sit. One inside the ⏫ owner merge route (bounded by the next route matcher,
+  // which needs no brace count), one inside the self-land handler.
+  const ownerCall = callSites.find((c) => c.n > ownerRoute);
+  const nextRoute = ownerCall ? lines.findIndex((l, i) => i > ownerCall.n && /\/\^\\\/api\\\//.test(l)) : -1;
+  const selfCall = callSites.find((c) => c.n > selfHandler && c.n < selfHandlerEnd);
+  pin(`${RULE_LAND} — one sits inside the ⏫ owner merge route, the other inside selfLandTaskForMain`,
+    !!ownerCall && ownerRoute >= 0 && nextRoute > ownerCall.n
+      && !!selfCall && selfHandler >= 0 && selfHandlerEnd > selfHandler,
+    `owner route=${ownerRoute + 1} call=${(ownerCall?.n ?? -1) + 1} nextRoute=${nextRoute + 1} | self ${selfHandler + 1}..${selfHandlerEnd + 1} call=${(selfCall?.n ?? -1) + 1}`);
+  // …and the direction that actually matters, asserted as ITSELF rather than inferred from the two
+  // above: NO tick calls it. A third call site added inside a scheduler would move the count to 3
+  // and fail the first pin, but a future edit that also relaxed the count would slip past — so the
+  // tick bodies are read directly.
+  const tickBody = (sig: string): string => {
+    const i = server.indexOf(sig);
+    return i < 0 ? "" : server.slice(i, server.indexOf("\n}\n", i));
+  };
+  const ticks = ["async function tickDispatch(", "async function tickAutos(", "async function tickGit(",
+    "async function tickWatches(", "async function tickAutoReview("].map(tickBody).filter(Boolean);
+  pin(`${RULE_LAND} — no tick calls mergeJob at all`,
+    ticks.length >= 3 && ticks.every((b) => !b.includes("mergeJob(")),
+    `${ticks.length} tick bodies scanned`);
+  // …and both doors derive what a re-run carries out of the superseded verdict through the ONE
+  // shared helper. A route that grew its own copy would sooner or later drop unreviewed conflict
+  // resolutions on one path while honouring them on the other — the ⏸ guard lives in there too.
+  const carryCalls = lines.filter((l) => l.includes("carriedFromPendingVerdict(")
+    && !l.trim().startsWith("//") && !/^async function carriedFromPendingVerdict\(/.test(l.trim()));
+  pin(`${RULE_LAND} — both doors derive carried/carriedBy through the one shared helper`,
+    carryCalls.length === 2
+    && !/const carried = \(pend\?\.conflicted/.test(server.slice(server.indexOf("const mgMatch = /^"))),
+    `${carryCalls.length} carriedFromPendingVerdict call sites`);
 }
 
 // --- THE EVENT KINDS ARE A CLOSED SET. Every new kind inherits the whole transport failure surface

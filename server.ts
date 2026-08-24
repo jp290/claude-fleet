@@ -2375,6 +2375,30 @@ function newestOutcomeByTask(sortedRows: Record<string, unknown>[]): Map<string,
   return byTask;
 }
 
+// The row-level pointer that rides beside `phase`. Fact-only by construction: every branch is a
+// function of the phase, the row's own status and the Program's owner-granted promotion record —
+// no pane text, no quality judgement, nothing stored. `null` is a real answer and means "no door
+// belongs to this row right now" (a running lane, a terminal row, or a row whose phase is UNKNOWN,
+// where the projection already emits its own sentence saying which input is missing).
+function nextActionFor(phase: Phase, t: Task, promotion: PromotionPolicy | undefined): string | null {
+  if (phase === "READY")
+    return t.status === "pending"
+      ? `release → POST /api/self/tasks/${t.id}/release`
+      : "queued — the dispatch tick starts it; no door belongs to this row";
+  if (phase === "REVIEWABLE")
+    // THE ONE LINE THE AUTHORITY SLICE ADDS, and it is the whole point of naming the door at all:
+    // with a promotion the land is the MAIN's own act, without one it is still the owner's. The
+    // absent case names the reason rather than going silent, so a MAIN can tell "not mine" from
+    // "nothing here".
+    return promotion && promotion.selfLand !== "off"
+      ? `inspect the diff, then land it yourself → POST /api/self/tasks/${t.id}/land`
+      : "inspect the diff — the owner lands it from the board (this program carries no self-land promotion)";
+  if (phase === "INTEGRATING")
+    return 'a merge job holds this lane — subscribe {kind:"merge"} on /api/self/watch and read the outcome there';
+  if (phase === "OWNER_GATE") return "an open question is waiting on the owner — nothing here moves until it is answered";
+  return null;
+}
+
 // ProgramExecutionView v1 is deliberately a projection, never a second lifecycle model. The
 // bound MAIN occupant is the only authority bracket; everything below joins by persisted ids or
 // the full receiver occupant triple, and every gap stays visible as an explicit unknown.
@@ -2445,6 +2469,14 @@ async function programExecutionView(s: Slot): Promise<Response> {
             slot: t.slot ?? null, originId: t.originId ?? null, text: t.text.slice(0, 200),
             phase: derived.phase, phaseBasis: derived.phaseBasis, note: derived.note,
             candidate: derived.candidate,
+            // WHICH DOOR IS NEXT, derived from the phase and the Program's promotion record and
+            // stored nowhere. It is a POINTER, never a grade: it names the route a bound MAIN would
+            // call from where the row sits, and says nothing about whether the work is any good —
+            // the same line program-phase.ts draws for `phase` itself. It exists because the MAIN
+            // reading this view is exactly the principal that now has a land door, and a projection
+            // that showed REVIEWABLE without naming the door left the MAIN to rediscover it (or,
+            // measured once as `9cc8b1e`, to reach for the owner token instead).
+            nextAction: nextActionFor(derived.phase, t, p.promotion),
           };
         }),
         total: programTasks.length,

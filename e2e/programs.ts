@@ -55,6 +55,9 @@ interface ProgramExecutionRow {
     slot: number | null; originId: string | null; text: string;
     // derived per request, stored nowhere (program-phase.ts)
     phase: Phase; phaseBasis: string[]; note: string | null;
+    // derived beside `phase` and stored nowhere: WHICH DOOR is next from where the row sits. A
+    // pointer, never a grade. null = no door belongs to this row right now.
+    nextAction: string | null;
     candidate: { sha: string | null; basis: string } }[];
     total: number; byStatus: Record<string, number> };
   lanes: { rows: { slot: number; openedAt: number; sessionId: string | null; repo: string | null;
@@ -1227,7 +1230,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // The phase's own reconstruction is asserted by the reducer rows above, over fixed inputs.
   const withoutDerived = (rows: ProgramExecutionRow[] | undefined): unknown => canonical((rows ?? []).map((row) => ({
     ...row,
-    tasks: { ...row.tasks, rows: row.tasks.rows.map(({ phase, phaseBasis, note, candidate, ...rest }) => rest) },
+    tasks: { ...row.tasks, rows: row.tasks.rows.map(({ phase, phaseBasis, note, candidate, nextAction, ...rest }) => rest) },
     unknown: row.unknown.filter((line) => !line.includes("projects as phase UNKNOWN")),
   })));
   check("ProgramExecutionView restart: persisted facts reconstruct field-for-field apart from the fresh timestamp and the live-derived phase",
@@ -2379,6 +2382,25 @@ export async function run(ctx: Ctx): Promise<void> {
     check("self-land green fixture: the row is running on a live lane that is idle, clean and ahead",
       greenDispatch.ok && greenRow?.status === "sent" && greenLaneSlot !== null && !!greenLaneCwd && greenReady,
       JSON.stringify({ dispatch: greenDispatch.status, slot: greenLaneSlot, cwd: greenLaneCwd, ready: greenReady }));
+
+    // --- THE PROJECTION TIE-IN (brief §2.6), measured where the state is deterministic: this lane
+    // is idle, clean and ahead, so its row is REVIEWABLE, and the Program carries `green-only`. The
+    // pointer must therefore name THIS MAIN's own door. Both directions, because a pointer that
+    // said the same thing with and without the permission would be decoration: with the promotion
+    // revoked the SAME row must point at the board instead, and say why.
+    const nextWith = (await selfExecution(landTok)).view?.programs
+      .find((row) => row.program.id === landProgram.id)?.tasks.rows.find((row) => row.id === greenRowId);
+    await setPromotion(landProgram.id, null);
+    const nextWithout = (await selfExecution(landTok)).view?.programs
+      .find((row) => row.program.id === landProgram.id)?.tasks.rows.find((row) => row.id === greenRowId);
+    await setPromotion(landProgram.id, { v: 1, selfLand: "green-only" });
+    check("projection nextAction: a REVIEWABLE row of a promoted Program names the MAIN's OWN land door, and without the promotion the board's",
+      nextWith?.phase === "REVIEWABLE" && nextWith.nextAction === `inspect the diff, then land it yourself → POST /api/self/tasks/${greenRowId}/land`
+        && nextWithout?.phase === "REVIEWABLE"
+        && (nextWithout.nextAction ?? "").includes("the owner lands it from the board")
+        && !(nextWithout.nextAction ?? "").includes("/land"),
+      JSON.stringify({ with: nextWith?.nextAction, without: nextWithout?.nextAction,
+        phase: nextWith?.phase }));
 
     const landRes = await selfLand(landTok, greenRowId);
     const landRespBody = await landRes.json() as { running?: boolean; candidate?: string; laneSlot?: number;

@@ -2873,6 +2873,34 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   // resolutions on one path while honouring them on the other — the ⏸ guard lives in there too.
   const carryCalls = lines.filter((l) => l.includes("carriedFromPendingVerdict(")
     && !l.trim().startsWith("//") && !/^async function carriedFromPendingVerdict\(/.test(l.trim()));
+  // --- THE ACTOR IS NEVER ABSENT ON A NEW NOTE. `LandProvenance.actor` is a REQUIRED field, which
+  // tsc enforces at every construction — but tsc cannot stop the field from being made optional in
+  // a later edit, and an optional actor would be absent on exactly the land nobody wanted to
+  // attribute. So the requirement itself is pinned, together with the note writer actually writing
+  // it: a required field that writeLandNote dropped would be a type nobody could read back.
+  const provDecl = server.slice(server.indexOf("interface LandProvenance {"),
+    server.indexOf("\n}", server.indexOf("interface LandProvenance {")));
+  const noteWriter = server.slice(server.indexOf("async function writeLandNote("),
+    server.indexOf("\n}", server.indexOf("async function writeLandNote(")));
+  pin(`${RULE_LAND} — LandProvenance.actor is REQUIRED and writeLandNote puts it in every note it writes`,
+    /\n  actor: LandActor;/.test(provDecl) && !/actor\?:/.test(provDecl)
+    && /\n      actor: prov\.actor,/.test(noteWriter),
+    JSON.stringify({ required: /\n  actor: LandActor;/.test(provDecl),
+      written: /actor: prov\.actor/.test(noteWriter) }));
+  // …and the CHANNEL is READ, not guessed. `tokenChannel` mirrors tokenFrom's own precedence
+  // (bearer → cookie → query); if the two ever disagree the suspect flag would be stamped on the
+  // wrong requests and nothing at runtime would notice. Asserted as "both read the same three
+  // sources in the same order" rather than by comparing bodies, which would break on a reformat.
+  const chanBody = server.slice(server.indexOf("function tokenChannel("),
+    server.indexOf("\n}", server.indexOf("function tokenChannel(")));
+  const fromBody = server.slice(server.indexOf("function tokenFrom("),
+    server.indexOf("\n}", server.indexOf("function tokenFrom(")));
+  const tokenOrder = (b: string): string[] =>
+    [...b.matchAll(/authorization|fleet=|searchParams\.get\("token"\)/g)].map((m) => m[0]);
+  pin(`${RULE_LAND} — tokenChannel reads the SAME three token sources in the SAME order tokenFrom accepts them`,
+    tokenOrder(chanBody).length === 3
+    && JSON.stringify(tokenOrder(chanBody)) === JSON.stringify(tokenOrder(fromBody)),
+    JSON.stringify({ channel: tokenOrder(chanBody), from: tokenOrder(fromBody) }));
   // …and the CONFIRM step has exactly one implementation too, with two callers. The `guarded` rung
   // widens WHO may take the existing confirm, and the whole argument for allowing it rests on there
   // being no second land path to audit — so a second `markLandIntent` outside the two known writers

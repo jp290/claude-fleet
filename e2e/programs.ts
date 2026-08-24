@@ -2398,6 +2398,32 @@ export async function run(ctx: Ctx): Promise<void> {
       greenLanded?.status === "done" && greenMainAfter !== greenMainBefore
         && spawnSync("git", ["-C", REPO2, "log", "--oneline", "-3"]).stdout.toString().includes("selfland green work"),
       JSON.stringify({ status: greenLanded?.status, before: greenMainBefore.slice(0, 8), after: greenMainAfter.slice(0, 8) }));
+    // THE POINT OF THE WHOLE ACT: the ledger can NAME the actor. Three carriers, all three asserted,
+    // because each answers a different reader — the note travels with the commit, the outcome row
+    // answers about LANES, the trail survives a repo nobody ever clones.
+    const greenNoteRaw = spawnSync("git", ["-C", REPO2, "notes", "--ref=fleet/land", "show", greenMainAfter]);
+    type GreenNote = { actor?: { kind?: string; slot?: number; program?: string; task?: string;
+      sessionIdMatch?: string; via?: string }; confirmedByHuman?: boolean };
+    let greenNote: GreenNote | null = null;
+    try { greenNote = JSON.parse(greenNoteRaw.stdout.toString()) as GreenNote; } catch { /* asserted below */ }
+    check("self-land provenance: the land note names actor.kind 'main' with the MAIN's slot, program and task — never an owner",
+      greenNoteRaw.status === 0 && greenNote?.actor?.kind === "main"
+        && greenNote.actor.slot === landMainSlot && greenNote.actor.program === landProgram.id
+        && greenNote.actor.task === greenRowId && greenNote.actor.via === undefined
+        && greenNote.confirmedByHuman === false,
+      greenNoteRaw.stdout.toString().trim().slice(0, 320));
+    const greenOutcome = ((await (await get("/api/lane-outcomes?limit=100")).json()) as
+      { outcomes: { disposition: string; taskId?: string;
+        landedBy?: { kind?: string; slot?: number; task?: string } }[] })
+      .outcomes.find((o) => o.disposition === "landed" && o.taskId === greenRowId);
+    check("self-land provenance: the outcome row's landedBy names the same MAIN, so a LANE-side reader can attribute it too",
+      greenOutcome?.landedBy?.kind === "main" && greenOutcome.landedBy.slot === landMainSlot
+        && greenOutcome.landedBy.task === greenRowId,
+      JSON.stringify(greenOutcome ?? null));
+    check("self-land provenance: the trail's land_actor row names the same MAIN, and survives a repo nobody clones",
+      slAudits().some((r) => r.event === "land_actor" && (r.detail ?? "").includes(`main slot=${landMainSlot}`)
+        && (r.detail ?? "").includes(`task=${greenRowId}`) && (r.detail ?? "").includes(`program=${landProgram.id}`)),
+      JSON.stringify(slAudits().filter((r) => r.event === "land_actor").slice(-3)));
     check("self-land: the trail books the ASK itself (self_land_start), which no other rail can state",
       slAudits().some((r) => r.event === "self_land_start" && r.slot === landMainSlot
         && (r.detail ?? "").startsWith(greenRowId) && (r.detail ?? "").includes(`program=${landProgram.id}`)
@@ -2618,9 +2644,77 @@ export async function run(ctx: Ctx): Promise<void> {
     await setMergeMode("blocked");
     await setPromotion(landProgram.id, { v: 1, selfLand: "green-only" });
 
-    for (const slot of [redLaneSlot, greenLaneSlot, cfLane.slot, cf2Lane.slot, landMainSlot, ladderSlot])
-      if (slot !== null) await post(`/api/slots/${slot}/kill`, {});
-    for (const id of [ladderRowId, landForeignRowId, landNotizRowId, greenRowId, redRowId, cfRowId, cf2RowId]) {
+    // --- (5) THE OTHER HALF OF THE REPAIR: an OWNER-token merge that arrives the way a session
+    // reaching for fleet.json would. The self route is the sufficient attributable path; this flag
+    // is what makes the class COUNTABLE when someone takes the other one. It is narrow on purpose —
+    // bearer/query on a lane whose task belongs to a Program with a LIVE bound MAIN — and it never
+    // blocks, because the owner's own scripts use Bearer too. Both directions are probed, and the
+    // cookie one is the direction that would otherwise look like a success: the board's own channel
+    // must NOT be flagged, or the flag would mean nothing.
+    const suspectRowId = await makeTask({ text: "self-land suspect probe row", programId: landProgram.id, repo: REPO2 });
+    const suspectLane = await conflictLane(suspectRowId);
+    if (suspectLane.cwd) {
+      writeFileSync(`${suspectLane.cwd}/suspect.txt`, "an owner-token land on a program lane\n");
+      spawnSync("git", ["-C", suspectLane.cwd, "add", "suspect.txt"]);
+      spawnSync("git", ["-C", suspectLane.cwd, "commit", "-qm", "selfland suspect work"]);
+    }
+    const suspectReady = suspectLane.slot === null ? false : await waitDoneLooking(suspectLane.slot);
+    const ambientBefore = slAudits().filter((r) => r.event === "owner_token_ambient_use").length;
+    // the harness `post` helper sends the owner token as `Authorization: Bearer` — exactly the
+    // channel this flag is scoped to, and exactly the shape a session reading fleet.json produces.
+    await post(`/api/slots/${suspectLane.slot}/merge`, {});
+    let suspectRow = await slRow(suspectRowId);
+    for (let i = 0; i < 240 && suspectRow?.status !== "done"; i++) {
+      await Bun.sleep(250);
+      suspectRow = await slRow(suspectRowId);
+    }
+    const suspectMain = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
+    const suspectNoteRaw = spawnSync("git", ["-C", REPO2, "notes", "--ref=fleet/land", "show", suspectMain]);
+    type OwnerNote = { actor?: { kind?: string; via?: string; suspect?: string } };
+    let suspectNote: OwnerNote | null = null;
+    try { suspectNote = JSON.parse(suspectNoteRaw.stdout.toString()) as OwnerNote; } catch { /* asserted below */ }
+    const ambientRows = slAudits().filter((r) => r.event === "owner_token_ambient_use");
+    check("owner-token ambient use: a BEARER merge on a program lane with a live bound MAIN lands, and is FLAGGED on the note and the trail",
+      suspectReady && suspectRow?.status === "done"
+        && suspectNote?.actor?.kind === "owner" && suspectNote.actor.via === "bearer"
+        && suspectNote.actor.suspect === "owner-token-outside-board"
+        && ambientRows.length === ambientBefore + 1
+        && (ambientRows[ambientRows.length - 1]?.detail ?? "").includes(`program=${landProgram.id}`),
+      JSON.stringify({ row: suspectRow?.status, note: suspectNote, ambient: ambientRows.slice(-2) }));
+    // the counter-proof: the BOARD's own channel is not the ambient shape and must not be flagged.
+    // A flag that fired on the cookie too would count every ordinary owner land as suspect.
+    const cookieRowId = await makeTask({ text: "self-land cookie probe row", programId: landProgram.id, repo: REPO2 });
+    const cookieLane = await conflictLane(cookieRowId);
+    if (cookieLane.cwd) {
+      writeFileSync(`${cookieLane.cwd}/cookie.txt`, "a board land on the same kind of lane\n");
+      spawnSync("git", ["-C", cookieLane.cwd, "add", "cookie.txt"]);
+      spawnSync("git", ["-C", cookieLane.cwd, "commit", "-qm", "selfland cookie work"]);
+    }
+    const cookieReady = cookieLane.slot === null ? false : await waitDoneLooking(cookieLane.slot);
+    const ambientBefore2 = slAudits().filter((r) => r.event === "owner_token_ambient_use").length;
+    await fetch(`${BASE}/api/slots/${cookieLane.slot}/merge`, {
+      method: "POST", headers: { "content-type": "application/json", cookie: `fleet=${TOKEN}` },
+      body: "{}",
+    });
+    let cookieRow = await slRow(cookieRowId);
+    for (let i = 0; i < 240 && cookieRow?.status !== "done"; i++) {
+      await Bun.sleep(250);
+      cookieRow = await slRow(cookieRowId);
+    }
+    const cookieMain = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
+    const cookieNoteRaw = spawnSync("git", ["-C", REPO2, "notes", "--ref=fleet/land", "show", cookieMain]);
+    let cookieNote: OwnerNote | null = null;
+    try { cookieNote = JSON.parse(cookieNoteRaw.stdout.toString()) as OwnerNote; } catch { /* asserted below */ }
+    check("owner-token ambient use: the BOARD's cookie channel on the same shape of lane is NOT flagged — the flag names a channel, not every owner land",
+      cookieReady && cookieRow?.status === "done" && cookieNote?.actor?.kind === "owner"
+        && cookieNote.actor.via === "cookie" && cookieNote.actor.suspect === undefined
+        && slAudits().filter((r) => r.event === "owner_token_ambient_use").length === ambientBefore2,
+      JSON.stringify({ row: cookieRow?.status, note: cookieNote }));
+
+    for (const slot of [redLaneSlot, greenLaneSlot, cfLane.slot, cf2Lane.slot, suspectLane.slot,
+      cookieLane.slot, landMainSlot, ladderSlot]) if (slot !== null) await post(`/api/slots/${slot}/kill`, {});
+    for (const id of [ladderRowId, landForeignRowId, landNotizRowId, greenRowId, redRowId, cfRowId,
+      cf2RowId, suspectRowId, cookieRowId]) {
       await post(`/api/tasks/${id}/done`, {});
       await post(`/api/tasks/${id}/delete`, {});
     }

@@ -577,10 +577,17 @@ export async function run(ctx: Ctx): Promise<void> {
       !!dig && dig.text === undefined && !raw.includes(MARK), JSON.stringify(dig));
     // Typed operation events intentionally ride this poll so an owner can see waiting/spent
     // subscriptions. They are independently capped; the prompt-text regression this probe guards
-    // is still separated by orders of magnitude. The fixed board grew from 16 to 28 slot facts;
-    // 16 KiB budgets that explicit hot-poll cost while keeping the 15 KB prompt itself off-poll.
-    check("the 28-slot sessions payload stays under 16 KB with a 15 KB task queued and bounded event facts",
-      bytes < 16 * 1024, `${bytes} B`);
+    // is still separated by orders of magnitude. The fixed board is back at 16 slot facts (the
+    // 28-slot experiment is over), so the budget is RE-MEASURED here rather than merely renamed:
+    // 13 033 B and 13 053 B on two runs of this fixed point (2026-08-24) — 20 B of run-to-run
+    // variance. The 16 KiB the 28-slot board needed would now be a ceiling nothing could ever
+    // touch, and a budget with that much slack stops being a budget. 14 KiB leaves ~1 300 B of
+    // headroom over the higher measurement — measured on a bare instance, a slot row
+    // costs 183 B empty and 285 B occupied, so that covers ordinary board movement, while the
+    // regression this check exists for (a 15 KB prompt riding the hot poll) is ~12× the headroom
+    // and still cannot hide under it.
+    check("the 16-slot sessions payload stays under 14 KB with a 15 KB task queued and bounded event facts",
+      bytes < 14 * 1024, `${bytes} B`);
     const fullT = ((await (await get("/api/tasks")).json()) as { tasks: { id: string; text: string }[] })
       .tasks.find((t) => t.id === bigT.task.id);
     check("the full prompt text is reachable behind GET /api/tasks (what the queue overlay renders)",

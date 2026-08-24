@@ -154,7 +154,12 @@ const PRE_AUTH_ROUTES = [
   // The handler sits before the steward interceptor only so a steward credential meets the same
   // tokenGate 401 as any other non-owner credential. Every matching route calls tokenGate inline
   // before the owner handler; the regex is pinned here as an explicitly reviewed pre-auth shape.
-  String.raw`~ /^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main))?$/`,
+  // `promotion` joined the verb set 2026-08-23. It is the OWNER's grant of the self-land permission
+  // a bound Program-MAIN consumes, and it is on the owner side of this line precisely so that a
+  // session can never widen its own authority: the record is written by this route alone (pinned in
+  // e2e/pins.ts), and a self token meets the same tokenGate 401 here as any other non-owner
+  // credential.
+  String.raw`~ /^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion))?$/`,
   // Same placement and same reason as the Programs regex above, one bracket higher: the Supervisor
   // is cross-program owner identity, so the handler sits before the steward interceptor only so a
   // steward credential meets the same tokenGate 401 as any other non-owner credential. The route

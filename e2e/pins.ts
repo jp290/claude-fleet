@@ -2050,6 +2050,36 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   pin("every advanceIntegration call site refreshes the lane mirror first (a clone lands from the mirror, not from the tree)",
     advCalls.length > 0 && advUnsynced.length === 0,
     `${advCalls.length} call sites, ${advUnsynced.length} without a preceding syncLaneRefs`);
+  // --- THE PROMOTION RECORD HAS EXACTLY ONE WRITER, and it is the OWNER route. A self route that
+  // could write it would be a permission granting itself — the one shape this whole record exists
+  // to prevent. It is a rule over the source because on a fleet with no promotion record, which is
+  // every fleet by default, no runtime probe can see a second writer that simply never fired.
+  // Assignment AND deletion are both counted: a revocation written from a second place is the same
+  // defect pointing the other way.
+  const promoWrites = [...serverExec.matchAll(/(?:\w+)\.promotion = |delete (?:\w+)\.promotion/g)];
+  const promoRouteStart = serverExec.indexOf("const promotionRoute = /^");
+  const promoRouteEnd = serverExec.indexOf("const action = /^", promoRouteStart);
+  pin("program.promotion is written by exactly one route — the owner promotion door, and nothing else",
+    promoWrites.length === 2 && promoRouteStart > 0 && promoRouteEnd > promoRouteStart
+    && promoWrites.every((m) => m.index > promoRouteStart && m.index < promoRouteEnd),
+    `${promoWrites.length} write(s): ${promoWrites.map((m) => m[0]).join(" | ")}`);
+  // ...and the three rungs of the ladder are the SAME closed set in the type, the runtime list and
+  // the loader. They are three separate expressions of one decision, and a value added to the type
+  // alone would compile while the route refused it — a permission that exists and cannot be granted.
+  pin("the selfLand ladder is off/green-only/guarded in the type and in the runtime list the route validates against",
+    /type PromotionSelfLand = "off" \| "green-only" \| "guarded";/.test(server)
+    && /const PROMOTION_SELF_LAND: PromotionSelfLand\[\] = \["off", "green-only", "guarded"\];/.test(server),
+    JSON.stringify({ type: /type PromotionSelfLand =[^\n]*/.exec(server)?.[0] ?? "absent",
+      list: /const PROMOTION_SELF_LAND[^\n]*/.exec(server)?.[0] ?? "absent" }));
+  // ...and the loader degrades a malformed record to ABSENT rather than repairing it field-wise.
+  // The dangerous direction is planted at runtime in e2e/programs.ts; this is the structural half,
+  // because a field-wise repair added later would still pass that probe for the one field it kept.
+  const promoLoader = server.slice(server.indexOf("const loadPromotion = "),
+    server.indexOf("\n};", server.indexOf("const loadPromotion = ")));
+  pin("loadPromotion returns undefined on every malformed shape — no field-wise repair of a permission",
+    promoLoader.length > 0 && (promoLoader.match(/return undefined;/g) ?? []).length === 5
+    && (promoLoader.match(/return \{ v: 1,/g) ?? []).length === 1,
+    JSON.stringify({ rejects: (promoLoader.match(/return undefined;/g) ?? []).length }));
   // ...and WHO chooses the form. `createWorktree`'s third parameter defaults to "worktree", so a
   // new lane-creating path that simply omits it compiles and runs — and silently drops whatever
   // form the CALLER named (an explicit clone request would come back a worktree, torn down later

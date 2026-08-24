@@ -6602,11 +6602,22 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
   // fresh. It is available once per candidate (selfConfirmSpent), so the call after a fresh red
   // falls back into the guard below with nothing changed, which is exactly where it belongs.
   const holdsResolution = (pending?.conflicted?.length ?? 0) > 0 || !!pending?.resolvedBy;
-  const resolvedCandidate = policy.selfLand === "guarded" && pending !== null
+  const guardedRung = policy.selfLand === "guarded";
+  const resolvedCandidate = guardedRung && pending !== null
     && pending.status === "resolved" && pending.landed !== true && holdsResolution
     && pending.candidateSha === candidate && selfConfirmSpent.get(t.id) !== candidate;
+  // …and ONE more exclusion, measured rather than reasoned into place (isolated run
+  // `isolated-20260824T005524Z-86492`): a verdict holding an unreviewed resolution under a rung
+  // that may not take it is NOT a no-progress retry. "Repair or escalate" is the wrong instruction
+  // there — nothing in the tree needs repairing and nothing has stalled; what is missing is a
+  // PERMISSION, and the ⏸ hold below says exactly that and names the rung that would take it.
+  // Sending the caller to repair a tree that is fine is the worst kind of accurate-sounding
+  // refusal. Under `guarded` the exclusion does NOT apply: there the confirm IS the act, so once it
+  // has been spent on these bytes an identical call really is a retry with nothing new, and the
+  // guard is the right answer.
   const unchangedRetry = pending !== null && pending.landed !== true
-    && pending.candidateSha === candidate && !resolvedCandidate;
+    && pending.candidateSha === candidate && !resolvedCandidate
+    && !(holdsResolution && !guardedRung);
   if (unchangedRetry)
     return json({ error: `no progress since the last verdict — repair or escalate: ${pending.status} on the same candidate ${candidate.slice(0, 8)}, and nothing has been recorded since`,
       candidate, last: { status: pending.status, at: pending.at,

@@ -26,6 +26,9 @@ interface Program extends ProgramContent {
   proposedBy: { kind: "session"; slot: number; openedAt: number; sessionId: string | null }
     | { kind: "owner" };
   main?: { slot: number; openedAt: number; sessionId: string | null; boundAt: number };
+  // the owner's self-land permission — absent on every Program until the owner grants it, which is
+  // the shape every assertion here reads as "owner-only land".
+  promotion?: { v: number; selfLand: string; confirmedAt: number };
   confirmedAt?: number;
   activatedAt?: number;
   completedAt?: number;
@@ -2064,6 +2067,125 @@ export async function run(ctx: Ctx): Promise<void> {
   check("Program-MAIN routes: an unknown bootstrap id is 404", unknownBootstrap.status === 404,
     String(unknownBootstrap.status));
   await programPost(mainProgram.id, "complete");
+
+  // === THE PROMOTION RECORD: the owner's grant of self-land authority ==========================
+  // It is a PERMISSION, so both directions are probed and the dangerous one is planted: a record
+  // that cannot be parsed must degrade to ABSENT (owner-only), never to its nearest readable
+  // meaning. Everything here is about who may WRITE the record; who may USE it is the land door.
+  {
+    const setPromotion = (id: string, policy: unknown): Promise<Response> =>
+      fetch(`${BASE}/api/programs/${id}/promotion`, {
+        method: "POST", headers: H, body: JSON.stringify({ policy }),
+      });
+    const promoProgram = await activateNewProgram("Promotion record door");
+    // A permission is exactly the record where a SILENTLY IGNORED field is expensive: the owner
+    // would believe a grant was narrower (or wider) than the one that was stored. So every
+    // off-schema shape is a 400, and each is asserted to leave the record ABSENT — not half-written.
+    const badBodies: [string, unknown][] = [
+      ["unknown key inside the policy", { v: 1, selfLand: "green-only", maxPerDay: 5 }],
+      ["a version this server does not know", { v: 2, selfLand: "green-only" }],
+      ["a selfLand value outside the closed set", { v: 1, selfLand: "always" }],
+      ["a policy that is not an object", "green-only"],
+      ["confirmedAt dictated from the wire", { v: 1, selfLand: "green-only", confirmedAt: 1 }],
+    ];
+    const badResults = await Promise.all(badBodies.map(([, body]) => setPromotion(promoProgram.id, body)));
+    const extraKey = await fetch(`${BASE}/api/programs/${promoProgram.id}/promotion`, {
+      method: "POST", headers: H, body: JSON.stringify({ policy: { v: 1, selfLand: "green-only" }, maxPerDay: 5 }),
+    });
+    const noPolicy = await fetch(`${BASE}/api/programs/${promoProgram.id}/promotion`, {
+      method: "POST", headers: H, body: JSON.stringify({}),
+    });
+    check("promotion door: every off-schema grant is 400 and leaves NO record behind",
+      badResults.every((r) => r.status === 400) && extraKey.status === 400 && noPolicy.status === 400
+        && (await ownerPrograms()).find((p) => p.id === promoProgram.id)?.promotion === undefined,
+      `${badResults.map((r) => r.status).join("/")} extra=${extraKey.status} none=${noPolicy.status}`);
+    // ...and all THREE rungs of the ladder are grantable, because a value that exists in the type
+    // and is refused by the route is a permission nobody can use. `guarded` is the rung this slice
+    // adds, so a probe that only exercised green-only would ship it unreachable.
+    const rungs = await Promise.all((["off", "green-only", "guarded"] as const).map(async (rung) => {
+      const res = await setPromotion(promoProgram.id, { v: 1, selfLand: rung });
+      const row = (await ownerPrograms()).find((p) => p.id === promoProgram.id);
+      return { rung, ok: res.ok, stored: row?.promotion?.selfLand ?? null,
+        stamped: typeof row?.promotion?.confirmedAt === "number" && row.promotion.confirmedAt > 0 };
+    }));
+    const revoked = await setPromotion(promoProgram.id, null);
+    const revokedRow = (await ownerPrograms()).find((p) => p.id === promoProgram.id);
+    const revokeAgain = await setPromotion(promoProgram.id, null);
+    check("promotion door: each of off/green-only/guarded stores with a server-stamped confirmedAt, and {policy:null} takes it back idempotently",
+      rungs.every((r) => r.ok && r.stored === r.rung && r.stamped)
+        && revoked.ok && revokedRow?.promotion === undefined && revokeAgain.ok,
+      JSON.stringify({ rungs, revoked: revokedRow?.promotion ?? null, again: revokeAgain.status }));
+    // the credential boundary, and it is the whole reason this record lives on the OWNER side of
+    // the auth line: a session that could write it would be granting itself the permission.
+    const selfAsOwner = await fetch(`${BASE}/api/programs/${promoProgram.id}/promotion`, {
+      method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": plainToken },
+      body: JSON.stringify({ policy: { v: 1, selfLand: "guarded" } }),
+    });
+    const selfWrote = (await ownerPrograms()).find((p) => p.id === promoProgram.id)?.promotion;
+    check("promotion door: a self token is not a credential here — the owner gate answers 401 and nothing is written",
+      selfAsOwner.status === 401 && selfWrote === undefined,
+      `${selfAsOwner.status} ${JSON.stringify(selfWrote ?? null)}`);
+    const unknownProgram = await setPromotion("0".repeat(24), { v: 1, selfLand: "guarded" });
+    check("promotion door: an unknown program id is 404", unknownProgram.status === 404,
+      String(unknownProgram.status));
+
+    // --- THE LOADER, PROBED IN THE DANGEROUS DIRECTION. A persisted record this build cannot parse
+    // must come back ABSENT, because absent is owner-only and any repair would be the server
+    // inventing a permission nobody granted. Both halves are planted in ONE boot: "everything
+    // vanished" would satisfy the danger half on its own, so a well-formed `guarded` record sits
+    // beside the malformed one and must survive that same restart.
+    const controlProgram = await activateNewProgram("Promotion loader control");
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const loaderState = readState();
+    const dangerRow = loaderState.programs?.find((x) => x.id === promoProgram.id);
+    const controlRow = loaderState.programs?.find((x) => x.id === controlProgram.id);
+    if (dangerRow) (dangerRow as unknown as Record<string, unknown>).promotion =
+      { v: 2, selfLand: "green-only", confirmedAt: Date.now() };
+    if (controlRow) (controlRow as unknown as Record<string, unknown>).promotion =
+      { v: 1, selfLand: "guarded", confirmedAt: Date.now() };
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(loaderState, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const afterLoad = await ownerPrograms();
+    check("promotion loader: a v2 record loads as ABSENT while a well-formed v1 'guarded' beside it survives the same boot",
+      !!dangerRow && !!controlRow
+        && afterLoad.find((x) => x.id === promoProgram.id)?.promotion === undefined
+        && afterLoad.find((x) => x.id === controlProgram.id)?.promotion?.selfLand === "guarded",
+      JSON.stringify({ danger: afterLoad.find((x) => x.id === promoProgram.id)?.promotion ?? null,
+        control: afterLoad.find((x) => x.id === controlProgram.id)?.promotion ?? null }));
+    // ...and the other malformed shapes reach the same absence through the same boot, one plant per
+    // rejection branch the loader has. Asserted as a set so a loader that started repairing ONE of
+    // them field-wise cannot hide behind the four that still fail.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const shapes: unknown[] = [
+      { v: 1, selfLand: "green-only" },                                  // no confirmedAt at all
+      { v: 1, selfLand: "always", confirmedAt: Date.now() },             // value outside the set
+      { v: 1, selfLand: "guarded", confirmedAt: 0 },                     // an absurd stamp
+      { v: 1, selfLand: "guarded", confirmedAt: Date.now(), extra: 1 },  // an unknown key
+    ];
+    const shapeState = readState();
+    const shapeIds: string[] = [];
+    for (const shape of shapes) {
+      const row = (shapeState.programs ?? []).find((x) => !shapeIds.includes(x.id)
+        && x.status === "active" && x.id !== controlProgram.id);
+      if (!row) continue;
+      shapeIds.push(row.id);
+      (row as unknown as Record<string, unknown>).promotion = shape;
+    }
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(shapeState, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const afterShapes = await ownerPrograms();
+    check("promotion loader: no field-wise repair — every malformed shape loads absent, and the control record still survives",
+      shapeIds.length === shapes.length
+        && shapeIds.every((id) => afterShapes.find((x) => x.id === id)?.promotion === undefined)
+        && afterShapes.find((x) => x.id === controlProgram.id)?.promotion?.selfLand === "guarded",
+      JSON.stringify({ planted: shapeIds.length,
+        survivors: shapeIds.filter((id) => afterShapes.find((x) => x.id === id)?.promotion !== undefined) }));
+    await setPromotion(controlProgram.id, null);
+    await programPost(promoProgram.id, "complete");
+    await programPost(controlProgram.id, "complete");
+  }
 
   // These four Programs exist only to exercise mutually exclusive bootstrap states. Remove those
   // fixtures from the persisted registry after their own restart proof so the later sessions-poll

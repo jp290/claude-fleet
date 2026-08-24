@@ -312,3 +312,42 @@ terminale Zeilen, älteste zuerst verworfen. Terminal heißt: das zugehörige Ev
 behandelt ein fehlendes Event als terminal, sonst hielte eine Zeile ohne Event die Liste ewig).
 Eine Zeile mit noch offenem Event wird nie gepruned. Ein Report ist also kein Archiv — was bleiben soll, gehört in den
 Commit.
+
+## promotion — `POST /api/programs/:id/promotion` (OWNER-Route, nicht `/api/self/*`)
+
+Sie steht hier, weil sie die eine Erlaubnis erteilt, die eine Session an anderer Stelle VERBRAUCHT
+(§land) — aber sie ist eine **Owner-Route hinter `tokenGate`**: ein Self-Token bekommt hier 401,
+nicht 409. Das ist Absicht und die ganze Pointe des Records: eine Session, die ihn schreiben
+könnte, würde sich ihre eigene Land-Autorität erteilen. Genau EIN Schreiber im Server
+(`e2e/pins.ts` pinnt es), und kein Loader legt ihn je an.
+
+```
+curl -X POST http://<fleet-host>:<port>/api/programs/<program>/promotion \
+  -H "content-type: application/json" -H "authorization: Bearer $FLEET_TOKEN" \
+  -d '{"policy":{"v":1,"selfLand":"guarded"}}'      # erteilen
+curl -X POST http://<fleet-host>:<port>/api/programs/<program>/promotion \
+  -H "content-type: application/json" -H "authorization: Bearer $FLEET_TOKEN" \
+  -d '{"policy":null}'                              # widerrufen (idempotent)
+```
+
+**Der Record ist geschlossen und versioniert:** `{v:1, selfLand:"off"|"green-only"|"guarded"}`.
+`confirmedAt` stempelt der Server — ein Wert von der Leitung würde den Owner-Akt datieren lassen.
+Der Body liest ausschließlich `policy`; jeder weitere Top-Level-Key ist 400, jeder unbekannte Key
+INNERHALB der Policy ebenso, `v !== 1` ebenso, ein `selfLand` außerhalb der Liste ebenso. Nichts
+wird still verworfen: ein ignoriertes Feld ist ein Feld, das der Owner für berücksichtigt hält.
+
+**Die drei Sprossen, und die Abwesenheit als vierte:**
+
+| Wert | Was eine gebundene Program-MAIN darf |
+| --- | --- |
+| *(kein Record)* | nichts — Owner-only, die Legacy-Form jedes Programs |
+| `"off"` | nichts, aber der Owner hat es AUSGESPROCHEN (unterscheidbar von „nie gesagt") |
+| `"green-only"` | ein sauberes, grünes Land der eigenen Zeile über §land |
+| `"guarded"` | zusätzlich: einen agent-AUFGELÖSTEN Konflikt bestätigen, mit frischem Verify |
+
+**Der Loader degradiert zur ABWESENHEIT, nie feldweise.** Alles, was kein exakter v1-Satz ist —
+unbekannter Key, falsche Version, unbekannter Wert, fehlender oder absurder Stempel —, lädt als
+„der Owner hat nichts erteilt". Eine halbe Erlaubnis ist keine schwächere, sondern eine andere.
+
+**Trail:** jede Erteilung und jeder echte Widerruf schreibt `program_promotion`. Ein Widerruf auf
+einen ohnehin abwesenden Record ist `ok:true` ohne Zeile — es gibt nichts zu datieren.

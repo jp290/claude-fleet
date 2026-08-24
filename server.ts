@@ -2192,10 +2192,53 @@ interface Program {
   proposedBy: { kind: "session"; slot: number; openedAt: number; sessionId: string | null }
     | { kind: "owner" };
   main?: { slot: number; openedAt: number; sessionId: string | null; boundAt: number };
+  // THE OWNER'S PROMOTION RECORD, and it is deliberately NOT part of ProgramContent: content is
+  // what a session may PROPOSE and the owner only corrects, this is a permission the owner grants
+  // and nothing else may write. Absent = owner-only land, which is the honest legacy shape and the
+  // shape every Program has until the owner says otherwise. Written by exactly one route
+  // (POST /api/programs/:id/promotion), revoked by the same one with {"policy": null}, never
+  // backfilled at load and never written by a self route.
+  promotion?: PromotionPolicy;
   confirmedAt?: number;
   activatedAt?: number;
   completedAt?: number;
 }
+// CLOSED, VERSIONED, DEFAULT-DENY. `v` exists so a v2 shape can never be read as a v1 permission:
+// the loader below refuses anything but 1, so an unknown version degrades to ABSENT (owner-only)
+// rather than to its nearest v1 reading. There is no `verify` field, because "the repo must have
+// its own FLEET_VERIFY_CMD_REPOS entry" is the ONLY v1 behaviour — a field with one legal value is
+// a decision nobody makes, and the land route simply refuses a repo without an entry.
+// `confirmedAt` is stamped server-side: a wire value there would let a caller date the owner's act.
+//
+// THE THREE VALUES ARE A LADDER, and each rung is the owner policy of 2026-08-23 in one word:
+//   "off"        — the record exists and grants nothing. Distinct from ABSENT on purpose: absent is
+//                  "the owner never said", off is "the owner said no", and a ledger that could not
+//                  tell them apart would make a revocation look like a program nobody ever reached.
+//   "green-only" — an ordinary clean/green in-program land is the owning MAIN's to make. This is the
+//                  rung that ends the routine `review-ready` attention for a clean land.
+//   "guarded"    — additionally: a lane sitting on an agent-RESOLVED conflict may be confirmed by
+//                  that MAIN, with the server re-running the authoritative verification FRESH on the
+//                  resolved candidate and landing only on ok:true. Conflict inside the confirmed
+//                  scope is MAIN work; `conflicted:true` alone never blocks promotion.
+type PromotionSelfLand = "off" | "green-only" | "guarded";
+interface PromotionPolicy { v: 1; selfLand: PromotionSelfLand; confirmedAt: number }
+const PROMOTION_SELF_LAND: PromotionSelfLand[] = ["off", "green-only", "guarded"];
+// The load-time reader, in loadTaskSpawn's exact discipline and for the same reason: this record is
+// a PERMISSION, so its degradation direction is the whole design. Anything that is not exactly a
+// well-formed v1 record — unknown key, wrong version, unknown value, missing or absurd stamp —
+// loads as ABSENT, i.e. owner-only. There is no field-wise repair here (unlike a spawn choice,
+// where a half-valid row still names a real adapter): half a permission is not a weaker
+// permission, it is a different one, and the only safe reading of a record nobody can parse is
+// "the owner granted nothing".
+const loadPromotion = (value: unknown): PromotionPolicy | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !["v", "selfLand", "confirmedAt"].includes(k))) return undefined;
+  if (r.v !== 1) return undefined;
+  if (typeof r.selfLand !== "string" || !PROMOTION_SELF_LAND.includes(r.selfLand as PromotionSelfLand)) return undefined;
+  if (typeof r.confirmedAt !== "number" || !Number.isFinite(r.confirmedAt) || r.confirmedAt <= 0) return undefined;
+  return { v: 1, selfLand: r.selfLand as PromotionSelfLand, confirmedAt: r.confirmedAt };
+};
 type ProgramContent = Pick<Program, "title" | "intent" | "successCriterion" | "nonGoals"
   | "decisions" | "evidence" | "openQuestions">;
 type ProgramValidation = { ok: true; content: ProgramContent } | { ok: false; error: string };
@@ -3230,6 +3273,10 @@ type AuditEvent =
   // that pair is separate: filing and releasing are two acts, and a trail that could not tell them
   // apart would make "the machine wrote itself work" and "the machine started work" one line.
   | "main_task"
+  // the owner granted or revoked a Program's self-land permission (POST /api/programs/:id/promotion).
+  // On the trail because it is the one act that widens WHO may move an integration branch, and the
+  // record it writes is otherwise only visible by reading the Program row.
+  | "program_promotion"
   // a steward filing whose `ref` matched a live proposal — answered with the existing row, so the
   // trail shows the pulse KEPT seeing the condition without the queue growing a duplicate
   | "steward_task_dedup"
@@ -14688,6 +14735,54 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     await saveStateNow();
     return json({ ok: true, program });
   }
+  // THE PROMOTION DOOR — the only writer of `program.promotion`, and its own route rather than a
+  // fifth verb on the action router because it is the only one of them that reads a BODY carrying a
+  // permission. Two acts, one door: `{"policy": {...}}` grants, `{"policy": null}` revokes, and
+  // revocation is the same request shape so an owner never has to reach for a different tool to
+  // take a permission back.
+  // Everything is refused by a CLOSED set rather than dropped: a key silently ignored is a key the
+  // owner believes was honoured, and this is precisely the record where that belief is expensive.
+  // No status gate: the record is inert on anything but an ACTIVE program with a live bound MAIN,
+  // because the land route derives its caller through boundProgramForMain — so gating here would be
+  // a second, drifting copy of that rule rather than a safety property.
+  const promotionRoute = /^\/api\/programs\/([^/]+)\/promotion$/.exec(url.pathname);
+  if (promotionRoute) {
+    if (req.method !== "POST") return json({ error: "bad request" }, 400);
+    const program = programs.find((p) => p.id === promotionRoute[1]);
+    if (!program) return json({ error: "unknown program" }, 404);
+    const body = await readJson(req);
+    if (!body || typeof body !== "object" || Array.isArray(body))
+      return json({ error: "invalid json" }, 400);
+    const extra = Object.keys(body).filter((k) => k !== "policy");
+    if (extra.length)
+      return json({ error: `this door reads policy only — [${extra.join(", ")}] is not read` }, 400);
+    if (!("policy" in body))
+      return json({ error: 'policy is required — send {"policy": {"v":1,"selfLand":"green-only"}} to grant, {"policy": null} to revoke' }, 400);
+    if (body.policy === null) {
+      // idempotent by construction: revoking an absent record is not an error, it is the state the
+      // caller asked for. Audited only where something was actually taken back, because "the owner
+      // revoked" is a dateable act and "the owner revoked nothing" is not.
+      const had = program.promotion !== undefined;
+      delete program.promotion;
+      if (had) audit("program_promotion", undefined, `${program.id} revoked`);
+      await saveStateNow();
+      return json({ ok: true, program });
+    }
+    const raw = body.policy;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw))
+      return json({ error: "policy must be an object or null" }, 400);
+    const fields = raw as Record<string, unknown>;
+    const unknown = Object.keys(fields).filter((k) => k !== "v" && k !== "selfLand");
+    if (unknown.length)
+      return json({ error: `unknown promotion key(s): ${unknown.join(", ")} — v1 is exactly {v, selfLand}` }, 400);
+    if (fields.v !== 1) return json({ error: "v must be 1 — this server knows no other promotion schema" }, 400);
+    if (typeof fields.selfLand !== "string" || !PROMOTION_SELF_LAND.includes(fields.selfLand as PromotionSelfLand))
+      return json({ error: `selfLand must be one of: ${PROMOTION_SELF_LAND.join(", ")}` }, 400);
+    program.promotion = { v: 1, selfLand: fields.selfLand as PromotionSelfLand, confirmedAt: Date.now() };
+    audit("program_promotion", undefined, `${program.id} selfLand=${program.promotion.selfLand}`);
+    await saveStateNow();
+    return json({ ok: true, program });
+  }
   const action = /^\/api\/programs\/([^/]+)\/(confirm|activate|complete|discard|bootstrap-main)$/.exec(url.pathname);
   if (!action || req.method !== "POST") return json({ error: "bad request" }, 400);
   const program = programs.find((p) => p.id === action[1]);
@@ -15048,8 +15143,10 @@ if (existsSync(STATE_FILE)) {
         if (status !== "proposed" && confirmedAt === undefined) continue;
         if ((status === "active" || status === "complete") && activatedAt === undefined) continue;
         if (status === "complete" && completedAt === undefined) continue;
+        const promotion = loadPromotion(x.promotion);
         loaded.push({ id: x.id, ...valid.content, status, createdAt: x.createdAt, proposedBy,
           ...(main ? { main } : {}),
+          ...(promotion ? { promotion } : {}),
           ...(status !== "proposed" ? { confirmedAt: confirmedAt! } : {}),
           ...(status === "active" || status === "complete" ? { activatedAt: activatedAt! } : {}),
           ...(status === "complete" ? { completedAt: completedAt! } : {}) });
@@ -17966,7 +18063,7 @@ Bun.serve<WSData>({
     // Programs are owner truth after proposal. They deliberately take the same tokenGate as the
     // task owner API, but are checked before the steward dispatcher so a steward credential is a
     // plain owner-auth failure (401), never a second authority over confirm/activate/complete.
-    if (/^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main))?$/.test(url.pathname)) {
+    if (/^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion))?$/.test(url.pathname)) {
       if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
       return handleOwnerProgramRoute(req, url);
     }

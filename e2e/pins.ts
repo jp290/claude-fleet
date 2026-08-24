@@ -2046,10 +2046,20 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // earlier version of the lane, which is the worst failure this file guards against.
   const advCalls = [...serverExec.matchAll(/\badvanceIntegration\(/g)]
     .filter((m) => !/(async function|await advanceIntegration in)/.test(serverExec.slice(m.index - 30, m.index)));
-  const advUnsynced = advCalls.filter((m) => !serverExec.slice(Math.max(0, m.index - 2500), m.index).includes("syncLaneRefs("));
+  // Scoped to the ENCLOSING top-level function rather than to a byte window. The window version
+  // (2500 chars) was arbitrary and started failing the day the confirm path grew its fresh-verify
+  // arm between the two calls — a rule that fires on a line it cannot describe teaches its readers
+  // to loosen it, so it was replaced by the boundary the property actually lives in: the land site
+  // is one function, and the mirror refresh has to be somewhere in it before the advance.
+  const fnStartBefore = (at: number): number => {
+    const head = serverExec.slice(0, at);
+    return Math.max(head.lastIndexOf("\nasync function "), head.lastIndexOf("\nfunction "));
+  };
+  const advUnsynced = advCalls.filter((m) =>
+    !serverExec.slice(Math.max(0, fnStartBefore(m.index)), m.index).includes("syncLaneRefs("));
   pin("every advanceIntegration call site refreshes the lane mirror first (a clone lands from the mirror, not from the tree)",
     advCalls.length > 0 && advUnsynced.length === 0,
-    `${advCalls.length} call sites, ${advUnsynced.length} without a preceding syncLaneRefs`);
+    `${advCalls.length} call sites, ${advUnsynced.length} without a syncLaneRefs earlier in the same function`);
   // --- THE PROMOTION RECORD HAS EXACTLY ONE WRITER, and it is the OWNER route. A self route that
   // could write it would be a permission granting itself — the one shape this whole record exists
   // to prevent. It is a rule over the source because on a fleet with no promotion record, which is
@@ -2863,6 +2873,31 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   // resolutions on one path while honouring them on the other — the ⏸ guard lives in there too.
   const carryCalls = lines.filter((l) => l.includes("carriedFromPendingVerdict(")
     && !l.trim().startsWith("//") && !/^async function carriedFromPendingVerdict\(/.test(l.trim()));
+  // …and the CONFIRM step has exactly one implementation too, with two callers. The `guarded` rung
+  // widens WHO may take the existing confirm, and the whole argument for allowing it rests on there
+  // being no second land path to audit — so a second `markLandIntent` outside the two known writers
+  // (the clean auto-land in mergeJob and this confirm function) is the shape that breaks it.
+  const confirmCalls = lines.filter((l) => l.includes("confirmResolvedCandidate(")
+    && !l.trim().startsWith("//") && !/^async function confirmResolvedCandidate\(/.test(l.trim()));
+  const intentCalls = lines.filter((l) => l.includes("markLandIntent(")
+    && !l.trim().startsWith("//") && !/^async function markLandIntent\(/.test(l.trim()));
+  pin(`${RULE_LAND} — one confirm implementation with two callers, and only two writers declare a land intent`,
+    confirmCalls.length === 2 && intentCalls.length === 2,
+    `${confirmCalls.length} confirmResolvedCandidate call sites, ${intentCalls.length} markLandIntent call sites`);
+  // …and the two arms differ in exactly the dimension the owner policy names: the MAIN arm
+  // RE-VERIFIES. A `byHuman:false` path that reached the land without a runVerify would be a
+  // "guarded" promotion that guards nothing, and no runtime probe on a fleet without a promotion
+  // record could see it.
+  const confirmBody = server.slice(server.indexOf("async function confirmResolvedCandidate("),
+    server.indexOf("\n}\n", server.indexOf("async function confirmResolvedCandidate(")));
+  pin(`${RULE_LAND} — the MAIN arm of the confirm re-runs runVerify and lands only on ok:true`,
+    /if \(!opts\.byHuman\) \{/.test(confirmBody)
+    && /runVerify\(cwd, repo, mainBefore\)/.test(confirmBody)
+    && /if \(!fresh \|\| fresh\.ok !== true\)/.test(confirmBody)
+    && confirmBody.indexOf("runVerify(") < confirmBody.indexOf("markLandIntent("),
+    JSON.stringify({ arm: /if \(!opts\.byHuman\) \{/.test(confirmBody),
+      run: /runVerify\(cwd, repo, mainBefore\)/.test(confirmBody),
+      beforeIntent: confirmBody.indexOf("runVerify(") < confirmBody.indexOf("markLandIntent(") }));
   pin(`${RULE_LAND} — both doors derive carried/carriedBy through the one shared helper`,
     carryCalls.length === 2
     && !/const carried = \(pend\?\.conflicted/.test(server.slice(server.indexOf("const mgMatch = /^"))),

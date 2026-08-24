@@ -3,8 +3,8 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { check, get, post, restartSrv, afterTick, paneEnv, plogRead, tmuxOut, BASE, DISPATCH_TICK_MS, REPO, ROOT } from "./harness";
+import { basename, resolve } from "node:path";
+import { check, get, post, restartSrv, afterTick, paneEnv, plogRead, tmuxOut, BASE, DISPATCH_TICK_MS, REPO, REPO2, REPO3, ROOT } from "./harness";
 import { buildAnalysisPrompt } from "../analysis-prompt";
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
@@ -1024,6 +1024,120 @@ export async function run(ctx: Ctx): Promise<void> {
     await post("/api/dispatch", { on: false });
     for (const s of (await pSess()).slots) if (s.worktree && s.id !== ctx.restartSelfSlot) await post(`/api/slots/${s.id}/kill`, {});
     for (const id of [pAnchor.task.id, pHeld.task.id, pOpen.task.id]) {
+      await post(`/api/tasks/${id}/done`, {});
+      await post(`/api/tasks/${id}/delete`, {});
+    }
+    await restartSrv();
+  }
+
+  // --- (e3) THE REPO CAP HOLDS ITS OWN ROW, NOT THE SWEEP (server.ts tickDispatch, the
+  // DISPATCH_MAX_LANES branch). Until 2026-08-24 that branch `return`ed, on the reading that a full
+  // repo is a condition of the machine. It is not: the cap counts lanes in the ROW'S TARGET repo,
+  // so a saturated project A says nothing about project B — yet A's oldest row stopped the sweep
+  // and every unrelated repo's queue starved behind it, displaying a note that reads like ordinary
+  // backpressure. The two facts that have to hold AT ONCE, and neither is visible to tsc:
+  //   (a) the YOUNGER row of the unsaturated repo B starts, from behind the blocked one;
+  //   (b) in that same window A's row is still queued and still carries the REPO cap's own note.
+  // (a) is the load-bearing half and also what DATES the observation: at the instant B is `sent`,
+  // a tick has provably walked PAST A to completion. This needs two repos on one server — REPO2 and
+  // REPO3 are the pair the wrapper already builds — because a one-repo fleet cannot tell `return`
+  // from `continue` at all. The structural half is pinned in e2e/pins.ts. ---
+  {
+    type ERow = { id: string; status: string; note?: string | null; slot?: number | null };
+    type ESlot = { id: number; cwd: string | null; worktree: { repo: string } | null };
+    const eSess = async (): Promise<{ slots: ESlot[]; tasks: ERow[]; dispatch: { on: boolean; maxLanes: number } }> =>
+      (await (await get("/api/sessions")).json()) as
+        { slots: ESlot[]; tasks: ERow[]; dispatch: { on: boolean; maxLanes: number } };
+    const eRow = async (id: string): Promise<ERow | undefined> => (await eSess()).tasks.find((t) => t.id === id);
+    // realpath on BOTH sides, and it is not tidiness: TMPDIR here is under /var, itself a symlink to
+    // /private/var, and the server stores the RESOLVED toplevel while this process holds the path as
+    // written. An exact string compare silently counted zero lanes in a repo that had one — which
+    // reads as "the fixture's precondition failed", not as "the comparison is wrong".
+    const eLanesIn = async (repo: string): Promise<number> => {
+      const want = realpathSync(repo);
+      return (await eSess()).slots
+        .filter((x) => !!x.worktree && realpathSync(x.worktree.repo) === want).length;
+    };
+    // PRECONDITION AS ITSELF #0 — the wrapper built both scratch repos. Without this the whole
+    // block would silently degrade into a one-repo probe, i.e. exactly the fixture that cannot see
+    // the bug, while every assertion below still passed.
+    check("(e3) fixture: the two scratch repos this regression needs both exist and are distinct",
+      !!REPO2 && !!REPO3 && REPO2 !== REPO3 && existsSync(`${REPO2}/.git`) && existsSync(`${REPO3}/.git`),
+      JSON.stringify({ REPO2, REPO3 }));
+
+    // cap of 1 so ONE hand-opened lane saturates repo A — the smallest field in which the branch
+    // under test can fire at all.
+    await restartSrv({ FLEET_DISPATCH_MAX_LANES: "1" });
+    const eCfg = await eSess();
+    // PRECONDITION AS ITSELF #1 — the restart's env reached the server.
+    check("(e3) fixture: the cap restart took effect — the dispatcher reports maxLanes 1",
+      eCfg.dispatch.maxLanes === 1, JSON.stringify({ maxLanes: eCfg.dispatch.maxLanes }));
+
+    // a clean field: no foreign lane in either scratch repo, no foreign released row that could win
+    // a tick ahead of the probes. The restart section's persistence lane is never touched — it
+    // lives in a THIRD repo, so it cannot contribute to either cap count.
+    for (const x of (await eSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
+    await Bun.sleep(600);
+    for (const t of (await eSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
+
+    // repo A is saturated by an ATTENDED lane — the cap bounds unattended fan-out, and a hand-opened
+    // lane is exactly what used to eat the budget with no signal.
+    const eLaneA = (await (await post("/api/lanes", { repo: REPO3 })).json()) as { slot?: number };
+    const eClean = await eSess();
+    // PRECONDITION AS ITSELF #2 — A really is AT its cap, B really is empty, and a slot is free for
+    // B to start in. Without all three, "A did not start" could mean "nothing could have started".
+    check("(e3) fixture: repo A is at 1/1, repo B is empty, and a free slot exists for B",
+      typeof eLaneA.slot === "number" && (await eLanesIn(REPO3)) === 1 && (await eLanesIn(REPO2)) === 0
+      && eClean.slots.filter((x) => !x.cwd).length >= 1,
+      JSON.stringify({ laneA: eLaneA.slot, inA: await eLanesIn(REPO3), inB: await eLanesIn(REPO2),
+        free: eClean.slots.filter((x) => !x.cwd).length }));
+
+    // OLDER row first, into the SATURATED repo; the younger runnable row behind it. Filed in this
+    // order on purpose: `tasks` keeps insertion order, so the sweep reaches A first — a fixture that
+    // queued B first would never notice a cap that stops the tick.
+    await post("/api/dispatch", { on: true });
+    const eOld = (await (await post("/api/tasks", {
+      text: "(e3) older row in the SATURATED repo — the cap must hold this row alone",
+      queue: true, repo: REPO3,
+    })).json()) as { task: { id: string } };
+    const eYoung = (await (await post("/api/tasks", {
+      text: "(e3) younger row in an UNSATURATED repo — it must start from behind the held one",
+      queue: true, repo: REPO2,
+    })).json()) as { task: { id: string } };
+
+    let eYoungRow = await eRow(eYoung.task.id);
+    for (let i = 0; i < 80 && eYoungRow?.status !== "sent"; i++) {
+      await Bun.sleep(250);
+      eYoungRow = await eRow(eYoung.task.id);
+    }
+    check("(e3)(a) a younger runnable row in an unsaturated repo dispatches while an older row is cap-blocked in another",
+      eYoungRow?.status === "sent" && typeof eYoungRow?.slot === "number"
+      && (await eLanesIn(REPO2)) === 1,
+      JSON.stringify({ status: eYoungRow?.status, slot: eYoungRow?.slot, inB: await eLanesIn(REPO2) }));
+    // ...and in that same window the blocked row did not move, and its note is the REPO cap's own
+    // sentence naming repo A — not the program cap's, and not silence.
+    const eOldRow = await eRow(eOld.task.id);
+    const eOldNote = eOldRow?.note ?? "";
+    check("(e3)(b) the cap-blocked row stays QUEUED and keeps the repo cap's own wait-note naming its repo",
+      eOldRow?.status === "queued" && eOldRow?.slot == null
+      && eOldNote === `waiting: 1/1 lanes busy in ${basename(REPO3)} — land or close one`,
+      JSON.stringify({ status: eOldRow?.status, slot: eOldRow?.slot, note: eOldNote }));
+    // (c) the hold is a WAIT, not a verdict — the same closing proof (e2) makes for the other cap.
+    if (typeof eLaneA.slot === "number") await post(`/api/slots/${eLaneA.slot}/kill`, {});
+    let eFreed = await eRow(eOld.task.id);
+    for (let i = 0; i < 80 && eFreed?.status !== "sent"; i++) {
+      await Bun.sleep(250);
+      eFreed = await eRow(eOld.task.id);
+    }
+    check("(e3)(c) with repo A's lane closed the held row starts on its own — the cap is a wait, not a refusal",
+      eFreed?.status === "sent", JSON.stringify({ status: eFreed?.status, note: eFreed?.note }));
+
+    // cleanup — dispatcher OFF first (a killed lane's brief tail can requeue its task, and a live
+    // tick would then leak a fresh lane), then close every lane this block spawned and retire the
+    // rows. The final restart hands the next section the env it had before this block existed.
+    await post("/api/dispatch", { on: false });
+    for (const x of (await eSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
+    for (const id of [eOld.task.id, eYoung.task.id]) {
       await post(`/api/tasks/${id}/done`, {});
       await post(`/api/tasks/${id}/delete`, {});
     }

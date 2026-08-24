@@ -1356,6 +1356,20 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   pin("each lane cap names ITSELF on the row — the repo one names the repo, the program one names the program",
     !!repoNote && !!progNote && repoNote !== progNote && !repoNote.includes("program"),
     JSON.stringify({ repoNote, progNote }));
+  // ...and WHAT EACH CAP DOES TO THE SWEEP, which is a different rule from the two above and the
+  // one no runtime test can see on a single-repo fleet: the per-repo cap must hold ITS OWN ROW and
+  // let the sweep walk on. It used to `return`, so one saturated project stopped the whole tick and
+  // every unrelated repo's queue starved behind it while its row displayed an ordinary-looking
+  // wait-note. The behavioural half is the two-repo regression in e2e/tasks.ts (e3); this is the
+  // structural half, because a fleet with one repo — which is every suite fixture by default —
+  // cannot tell `return` from `continue` at all. `no free slot` is deliberately asserted as the
+  // OPPOSITE: it is the one genuinely fleet-wide resource here, and it must still stop the tick.
+  const capStmt = tBody.match(/if \(lanes >= DISPATCH_MAX_LANES\) \{[^\n]*\}/)?.[0] ?? "";
+  const freeStmt = tBody.match(/if \(!free\) \{[^\n]*\}/)?.[0] ?? "";
+  pin("the repo cap holds only its own row, never the sweep — it continues, while the fleet-wide 'no free slot' still returns",
+    /\bcontinue;\s*\}$/.test(capStmt) && !/\breturn;/.test(capStmt)
+    && /\breturn;\s*\}$/.test(freeStmt),
+    JSON.stringify({ capStmt: capStmt.slice(0, 200), freeStmt }));
   // THE SECOND LOCK, for the case the absence above cannot cover: a future unattended caller that
   // does pass one. Same two conditions as every other unattended path (the operator's env flag AND
   // the adapter's own claim), so a harness added tomorrow inherits the refusal rather than the

@@ -368,8 +368,43 @@ unterscheidbar, weil sie den Aufrufer an verschiedene Stellen schicken):
     sie überhaupt ruft.
 11. Nicht inflight — dieselbe Reservierung (`mergeStart`/`mergeInflight`), die die Owner-Route
     hält, plus `commitInflight`. Zwei Türen, ein Job pro Lane.
-12. Ungeprüfte Konfliktlösungen in der Lane (die ⏸-Sperre) sind hier eine ABLEHNUNG, nicht ein
-    Land: `green-only` landet sie nie.
+12. Ungeprüfte Konfliktlösungen in der Lane (die ⏸-Sperre) sind unter `green-only` eine
+    ABLEHNUNG, und die Ablehnung NENNT die Sprosse, die sie nähme (`guarded`). Unter `guarded`
+    greift stattdessen die bestätigte Konflikt-Bestätigung unten.
+
+### Die `guarded`-Sprosse: eine aufgelöste Konfliktlösung bestätigen
+
+Owner-Policy 2026-08-23, wörtlich: „Conflict is MAIN work … the MAIN inspects both sides, chooses
+or commissions a resolution, records `conflicted` / `resolvedBy` / `repairRounds` / `candidateSha`,
+re-runs the authoritative verification fresh on the resolved candidate, reviews the diff, lands if
+fresh and green. `conflicted:true` alone never blocks promotion."
+
+Heute endet eine Auflösung als `status:"resolved", landed:false`, und nur das Owner-Confirm des
+Boards landet sie. Unter `guarded` darf die GEBUNDENE MAIN denselben Schritt für die eigene Zeile
+tun. Es gibt dafür **keine zweite Merge- oder Land-Implementierung**: es ist dieselbe Funktion
+(`confirmResolvedCandidate`), die das Board ruft, mit genau drei Unterschieden —
+
+| | Board-⏸ (`byHuman:true`) | MAIN unter `guarded` |
+| --- | --- | --- |
+| Verify | wird als `stale` MARKIERT, nie neu gefahren | wird FRISCH auf dem Kandidaten gefahren |
+| Landet bei | Owner-Ermessen (auch bei `ok:false`) | **ausschließlich `ok:true`** |
+| `confirmedByHuman` | `true` | `false` (wer es war, steht auf dem Actor-Rail) |
+
+**Sie läuft im HINTERGRUND** wie der Merge-Job und aus demselben Grund: ein frischer `runVerify`
+kann die Maschine für die volle Suite-Laufzeit halten. Die Antwort ist sofort
+`{running:true, confirm:"resolved-candidate", candidate, resolution:{conflicted,resolvedBy,
+repairRounds}, watch:{kind:"merge",target}}` — der Ausgang kommt über das merge-terminal-Event.
+
+**Sie ist PRO KANDIDAT verbraucht.** Ein frisches Rot landet nichts und lässt das Verdikt stehen
+(inkl. `conflicted`/`resolvedBy`, damit die ⏸-Sperre gegen einen späteren gewöhnlichen Merge-Lauf
+weiter steht) — der *identische* nächste Ruf kauft dann keinen zweiten Suite-Lauf, sondern fällt in
+den Progress-Guard (Punkt 9). Der Marker ist memory-resident: ein Neustart erlaubt eine weitere
+frische Prüfung, er kann nie etwas Ungeprüftes landen. **Keine Attention wird geöffnet** — was bei
+einer roten Bestätigung zu tun ist, ist das Urteil der MAIN; die fünf Eskalationsklassen sind es,
+die zur Attention gehen.
+
+**Die Note eines so gelandeten Kandidaten trägt** `conflicted`, `resolvedBy`, `repairRounds`,
+`candidateSha`, das FRISCHE Verify-Ergebnis und `confirmedByHuman:false`.
 
 **Trail:** ein Start schreibt `self_land_start` (Slot, Zeile, Program, Lane, Kandidat, Sprosse) —
 die einzige Zeile, die sagt, dass eine MAIN GEFRAGT hat, auch wenn das Gate danach rot war. Keine

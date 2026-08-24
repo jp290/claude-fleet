@@ -6389,6 +6389,63 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
     task: { id: t.id, kind: t.kind, status: t.status, releasedBy: t.releasedBy, programId: t.programId } });
 }
 
+// --- THE GUARDED CONFIRMATION, and the two things that keep it from becoming a loop.
+//
+// WHAT IT IS. Today a conflict resolution ends `status:"resolved", landed:false` and only the
+// board's owner confirm may land it. Under an owner-granted `guarded` promotion the BOUND MAIN may
+// take that same step for its own Program's row — with the server re-running the authoritative
+// verification FRESH on the resolved candidate and landing only on `ok:true`. That is the owner
+// policy of 2026-08-23 verbatim: "conflict is MAIN work … `conflicted:true` alone never blocks
+// promotion." It is the SAME confirm step (confirmResolvedCandidate), never a second land path.
+//
+// (1) IT RUNS IN THE BACKGROUND, like the merge job and for the same reason: a fresh runVerify can
+// hold the machine for the whole suite runtime, and an HTTP handler that waited would be a request
+// nobody can interrupt. The MAIN is handed the merge watch and reads the outcome there.
+//
+// (2) IT IS SPENT PER CANDIDATE. Without that, a fresh RED would leave the verdict looking exactly
+// as confirmable as before and the next call would buy another full suite run over identical bytes
+// — the cycling the owner policy calls an escalation class, dressed as diligence. So the candidate
+// this route has already spent a fresh confirmation on is remembered, and the second call on the
+// same bytes falls into the ordinary no-progress guard instead. MEMORY-RESIDENT and said so
+// wherever it matters: it resets on restart, which is the honest bound of a map nobody persisted,
+// and the direction of that reset is safe — after a restart the MAIN may re-verify once more, it
+// can never land something unverified.
+const selfConfirmSpent = new Map<string, string>(); // task id -> candidate already re-verified here
+async function guardedConfirmJob(lane: Slot, cwd: string, repo: string, main: string,
+  branch: string): Promise<void> {
+  // the verdict as it stands BEFORE the confirm — it is what a non-land outcome must preserve.
+  // Dropping `conflicted`/`resolvedBy` here would lift the ⏸ guard off a lane that still holds
+  // unreviewed resolutions, i.e. let the next ordinary merge run auto-land them.
+  const prev = mergeLast.get(lane.id);
+  let res: MergeLast;
+  try {
+    const out = await confirmResolvedCandidate(lane, cwd, repo, main, branch, { byHuman: false });
+    // A "merged" body means the confirm path itself moved main and already wrote its own verdict,
+    // note, outcome row and merge event (including the landed-but-teardown-failed sub-case). There
+    // is nothing left for this job to record, and writing a verdict on top would overwrite the land.
+    if (out.body.status === "merged") return;
+    const bodyVerify = out.body.verify as MergeLast["verify"] | null | undefined;
+    res = {
+      ...(prev ?? { status: "resolved" as const, landed: false, branch, at: 0, detail: "" }),
+      status: prev?.status ?? "resolved", landed: false, branch, at: Date.now(),
+      ...(bodyVerify ? { verify: bodyVerify } : {}),
+      detail: String(out.body.detail ?? "the guarded confirmation did not land").slice(0, 600),
+    };
+  } catch (e) {
+    res = { ...(prev ?? { status: "error" as const, landed: false, branch, at: 0, detail: "" }),
+      status: "error", landed: false, branch, at: Date.now(),
+      detail: (e instanceof Error ? e.message : "the guarded confirmation threw").slice(0, 600) };
+  }
+  // the verdict + the terminal event, in the same order and with the same durability the merge job
+  // uses: the MAIN is waiting on a merge watch, and a job that settled without minting one would be
+  // a land that never answers.
+  if (!lane.cwd || lane.cwd === cwd) {
+    mergeLast.set(lane.id, res);
+    await mintMergeEvents(lane.id, cwd, branch, res);
+    await saveStateNow();
+  }
+}
+
 // ACP · THE FOURTH CONSUMER OF THE AUTHORITY BRACKET, and the only one that moves an INTEGRATION
 // BRANCH. A bound Program-MAIN lands a done-looking lane of its OWN Program — without an owner token.
 //
@@ -6496,8 +6553,18 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
   // answer for any reason the MAIN could act on. Everything else — a new commit, a repaired tree, a
   // verdict superseded by anything at all — passes.
   const pending = mergeLast.get(lane.id) ?? null;
+  // …with ONE exception, and it is the `guarded` rung of the promotion rather than a hole in the
+  // guard. A verdict that HOLDS AN AGENT-CHOSEN RESOLUTION for exactly this candidate is not a
+  // retry of anything: nobody has yet taken the confirm step on it, and taking it is a DIFFERENT
+  // act from re-running the gate — the MAIN inspects the resolution and the server re-verifies it
+  // fresh. It is available once per candidate (selfConfirmSpent), so the call after a fresh red
+  // falls back into the guard below with nothing changed, which is exactly where it belongs.
+  const holdsResolution = (pending?.conflicted?.length ?? 0) > 0 || !!pending?.resolvedBy;
+  const resolvedCandidate = policy.selfLand === "guarded" && pending !== null
+    && pending.status === "resolved" && pending.landed !== true && holdsResolution
+    && pending.candidateSha === candidate && selfConfirmSpent.get(t.id) !== candidate;
   const unchangedRetry = pending !== null && pending.landed !== true
-    && pending.candidateSha === candidate;
+    && pending.candidateSha === candidate && !resolvedCandidate;
   if (unchangedRetry)
     return json({ error: `no progress since the last verdict — repair or escalate: ${pending.status} on the same candidate ${candidate.slice(0, 8)}, and nothing has been recorded since`,
       candidate, last: { status: pending.status, at: pending.at,
@@ -6528,14 +6595,30 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
     // on a clone lane the root-side refs do not describe this lane until they are synced.
     const laneSync = await syncLaneRefs(lane.worktree, cwd);
     if (laneSync) return json({ error: `${laneSync.error} — nothing was merged or landed` }, 409);
+    // THE GUARDED ARM, decided before the carry helper because that helper DELETES the verdict and
+    // this path is the one that needs to read it. Same reservation, same lane, same confirm step
+    // the board's ⏸ takes — only the principal and the fresh verification differ.
+    if (resolvedCandidate) {
+      selfConfirmSpent.set(t.id, candidate);
+      audit("self_land_start", s.id, `${t.id} program=${program.id} lane=${lane.id} candidate=${candidate.slice(0, 8)} policy=guarded confirm=resolved-candidate`);
+      const confirmJob: Promise<void> = guardedConfirmJob(lane, cwd, repo, integration, branch)
+        .finally(() => { if (mergeInflight.get(lane.id) === confirmJob) mergeInflight.delete(lane.id); });
+      mergeInflight.set(lane.id, confirmJob);
+      return json({ running: true, task: { id: t.id, status: t.status, programId: t.programId },
+        laneSlot: lane.id, candidate, sessionIdMatch, selfLand: policy.selfLand,
+        confirm: "resolved-candidate",
+        resolution: { conflicted: pending?.conflicted ?? [], resolvedBy: pending?.resolvedBy ?? null,
+          repairRounds: pending?.repairRounds ?? 0 },
+        watch: { kind: "merge", target: lane.id } });
+    }
     // the SHARED derivation — same helper the owner route uses, so unreviewed carried resolutions
     // can never be dropped on one path and honoured on the other. Its ⏸ hold is a REFUSAL here:
     // resolutions nobody has seen are not landed by a `green-only` promotion. (The `guarded` rung
     // is what changes that, and it is the next slice — until it exists, both rungs refuse here.)
     const carry = await carriedFromPendingVerdict(lane, repo, integration, branch);
     if ("hold" in carry)
-      return json({ error: `${carry.hold.detail} — a Program-MAIN never lands unreviewed conflict resolutions`,
-        last: carry.hold.last }, 409);
+      return json({ error: `${carry.hold.detail} — a "${policy.selfLand}" promotion never lands an unreviewed conflict resolution; the owner grants the "guarded" rung for that`,
+        selfLand: policy.selfLand, last: carry.hold.last }, 409);
     audit("self_land_start", s.id, `${t.id} program=${program.id} lane=${lane.id} candidate=${candidate.slice(0, 8)} policy=${policy.selfLand}`);
     // …and the SAME job the owner route starts, started the same way. Kept as a literal call rather
     // than behind a shared wrapper on purpose: the pin that matters is that `mergeJob(` has exactly
@@ -10969,6 +11052,15 @@ interface LandProvenance {
   resolverDetail?: string;
   verify?: MergeLast["verify"];
   confirmedByHuman: boolean;
+  // THE RESOLUTION'S OWN STORY, written by the confirm path only — the owner policy of 2026-08-23
+  // names these three by name as what a conflict land must record. Absent everywhere else, because
+  // a clean auto-land resolved nothing and a key there would be a measurement of nothing.
+  // `resolvedBy` is WHO chose the lines now in the tree, `repairRounds` how many resolver↔verify
+  // rounds the merge job spent getting them green, and `candidateSha` the exact commit that was
+  // confirmed — equal to `mainAfter` on a fast-forward, but only on a fast-forward.
+  resolvedBy?: "agent" | "author";
+  repairRounds?: number;
+  candidateSha?: string;
 }
 async function writeLandNote(repo: string, branch: string, mainBefore: string, mainAfter: string, prov: LandProvenance): Promise<void> {
   const tip = mainAfter; // the fast-forwarded integration branch IS the landed commit
@@ -10977,6 +11069,9 @@ async function writeLandNote(repo: string, branch: string, mainBefore: string, m
       branch, mainBefore, mainAfter,
       ...(prov.conflicted && prov.conflicted.length ? { conflicted: prov.conflicted } : {}),
       ...(prov.resolverDetail ? { resolverDetail: prov.resolverDetail } : {}),
+      ...(prov.resolvedBy ? { resolvedBy: prov.resolvedBy } : {}),
+      ...(prov.repairRounds ? { repairRounds: prov.repairRounds } : {}),
+      ...(prov.candidateSha ? { candidateSha: prov.candidateSha } : {}),
       ...(prov.verify ? { verify: prov.verify } : {}),
       confirmedByHuman: prov.confirmedByHuman,
       at: Date.now(),
@@ -13170,6 +13265,219 @@ function shadowOf(r: { verdict: "ok" | "review"; reason: string; raw: boolean; a
     // stopped, so that tail would misdescribe the row the owner reads. Drop it, keep the substance.
     notes: r.reason.replace(/ — stopping for a human look$/, "").slice(0, 400),
   };
+}
+
+// The MAIN arm's non-land sentence, one per reason the fresh run did not produce a green. Its own
+// function so the three cases stay legible AND so the confirm path's syncLaneRefs → advanceIntegration
+// region stays short enough for the mirror-refresh pin to read (e2e/pins.ts scans a byte window).
+// Absent, red, skipped, timed out and never-started are five different things to a reader deciding
+// what to repair, and exactly one thing to the land: not green.
+function freshConfirmRefusal(fresh: MergeLast["verify"]): string {
+  if (fresh === undefined)
+    return "the resolved candidate could not be verified: no verify command is configured for this repo — nothing was landed";
+  if (fresh.ok === false)
+    return `the resolved candidate was re-verified FRESH and the gate is RED (${fresh.cmd}) — nothing was landed; repair the tree, or escalate`.slice(0, 600);
+  const why = fresh.timedOut ? "timed out" : fresh.waitedOut ? "never started" : "skipped";
+  return `the resolved candidate's fresh verification never produced a measurement (${fresh.cmd}, ${why}) — unknown is never green, so nothing was landed`.slice(0, 600);
+}
+
+// --- CONFIRM A RESOLVED CANDIDATE. Extracted from the ⏫ owner merge route on 2026-08-24 so a
+// bound Program-MAIN can take the SAME step under an owner-granted `guarded` promotion. There is
+// deliberately NO second merge implementation and no second land path: this is the existing confirm
+// step, widened in exactly one dimension — WHO may take it — and narrowed in exactly one — the MAIN
+// arm re-verifies FRESH and lands only on ok:true.
+//
+// What the owner policy of 2026-08-23 says, and why that lands here: "Conflict is MAIN work: a
+// git/content conflict inside the confirmed Program scope and declared write sets → the MAIN
+// inspects both sides, chooses or commissions a resolution, records conflicted files / resolvedBy /
+// repairRounds / candidateSha, re-runs the authoritative verification fresh on the resolved
+// candidate, reviews the diff, lands if fresh and green. `conflicted:true` alone never blocks
+// promotion." Every clause of that sentence is a line below.
+//
+// TWO ARMS, and the differences are exactly three:
+//   · `byHuman:true`  — the board's ⏸ confirm. Verify is MARKED stale, never re-run (a re-run would
+//                       hold the request for the suite runtime); owner latitude stands, so a red
+//                       recorded verify does not block; `confirmedByHuman` is true.
+//   · `byHuman:false` — the bound MAIN's confirm. Verify is RE-RUN fresh against the candidate and
+//                       ok:true is the only outcome that lands; `confirmedByHuman` is false, and
+//                       WHO it was lives on the actor/`landedBy` rail instead.
+// Everything else — the two candidate-identity gates, the controlled replay when main moved, the
+// ref mirror sync, markLandIntent → advanceIntegration → recordLand → landLane — is byte-for-byte
+// the code the owner route always ran, because it is literally that code.
+//
+// It returns `{status, body}` rather than a Response so the two callers can render it in their own
+// vocabulary: the owner route as JSON, the MAIN's background job as a merge verdict + event.
+type ConfirmLandResult = { status: number; body: Record<string, unknown> };
+async function confirmResolvedCandidate(s: Slot, cwd: string, repo: string, main: string,
+  branch: string, opts: { byHuman: boolean }): Promise<ConfirmLandResult> {
+  // the "resolved" verdict the caller is confirming — its resolver detail, conflicted
+  // files, and verify result are the review story this land is owning. Read it BEFORE
+  // the delete below so the provenance note carries what the confirmer actually reviewed.
+  const reviewed = mergeLast.get(s.id);
+  const readCandidateIdentity = async (): Promise<{ mainSha: string; candidateSha: string; diffHash: string } | null> => {
+    const [mainNow, tipNow] = await Promise.all([
+      git(repo, "rev-parse", main), git(cwd, "rev-parse", "HEAD"),
+    ]);
+    if (mainNow.code !== 0 || tipNow.code !== 0
+      || !/^[0-9a-f]{40,64}$/.test(mainNow.out) || !/^[0-9a-f]{40,64}$/.test(tipNow.out)) return null;
+    const diff = await git(cwd, "diff", "--binary", `${mainNow.out}...${tipNow.out}`, "--");
+    if (diff.code !== 0) return null;
+    const diffHash = await patchIdOf(cwd, diff.out, "");
+    return diffHash ? { mainSha: mainNow.out, candidateSha: tipNow.out, diffHash } : null;
+  };
+  const identityKnown = reviewed !== undefined
+    && /^[0-9a-f]{40,64}$/.test(reviewed.mainSha ?? "")
+    && /^[0-9a-f]{40,64}$/.test(reviewed.candidateSha ?? "")
+    && /^[0-9a-f]{40,64}$/.test(reviewed.diffHash ?? "");
+  // Main moving is not a candidate edit: the existing replay path handles it and marks
+  // verify stale. Before that controlled rewrite, BOTH the lane tip and stable diff must
+  // still be exactly what the verdict bound.
+  const candidateMatches = (current: { mainSha: string; candidateSha: string; diffHash: string } | null,
+    expectedSha: string | null, requireReviewedDiff: boolean): boolean => current !== null && expectedSha !== null
+      && current.candidateSha === expectedSha
+      && (!requireReviewedDiff || reviewed?.diffHash === current.diffHash);
+  let currentCandidate = await readCandidateIdentity();
+  if (identityKnown && !candidateMatches(currentCandidate, reviewed!.candidateSha!, true)) return { status: 409, body: { status: "stale", landed: false,
+    detail: "the reviewed lane tip or canonical diff changed — run merge again and review the new candidate before confirming",
+    reviewed: reviewed ? { mainSha: reviewed.mainSha ?? null, candidateSha: reviewed.candidateSha ?? null,
+      diffHash: reviewed.diffHash ?? null } : null,
+    current: currentCandidate } };
+  // Defensive ancestry check for a structurally fresh identity. Normal resolved verdicts
+  // are already descendants of their bound mainSha; when main moved, the server may replay
+  // onto it and the second identity check accepts only the exact tip that replay produced.
+  // rerere stays off: no recorded resolution can silently become a land.
+  let allowedCandidateSha = identityKnown ? reviewed!.candidateSha! : null;
+  let serverReplayed = false;
+  let anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
+  if (anc.code !== 0) {
+    // Same plumbing, same hazard as the merge pre-pass (see tryScriptRebase): index.lock
+    // contention makes these fail, so both go through gitRetry's backoff — and the abort's
+    // exit code cannot be discarded here either. "Re-run ⏫" is only sound advice if the
+    // lane is actually back where it started; a lane left mid-rebase bounces off the
+    // gitOpInProgress guard on every future attempt, so it has to be told the truth instead.
+    const rb = await gitRetry(cwd, "-c", "rerere.enabled=false", "rebase", main);
+    if (rb.code !== 0) {
+      await gitRetry(cwd, "rebase", "--abort");
+      return { status: 409, body: { status: "blocked",
+        detail: await gitOpInProgress(cwd)
+          ? `${main} moved, the resolution no longer replays cleanly onto it, and \`git rebase --abort\` could not undo the attempt — this lane is left mid-rebase. Finish or abort the rebase in the session first.`
+          : `${main} moved and the resolution no longer replays cleanly onto it — re-run ⏫ merge to resolve against the new ${main}.` } };
+    }
+    anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
+    if (anc.code !== 0) return { status: 409, body: { status: "error",
+      detail: `re-rebased onto ${main}, but it is still not an ancestor — lane kept` } };
+    // SERVER-OBSERVED REPLAY-TIP: this exact rewrite is server-controlled. The SHA read
+    // immediately afterwards becomes the second guard's authority; patch-id cannot be
+    // compared across this boundary because nearby main context changes its hash even
+    // when the lane hunk is byte-identical.
+    const replayedTip = await git(cwd, "rev-parse", "HEAD");
+    allowedCandidateSha = replayedTip.code === 0 ? replayedTip.out : null;
+    serverReplayed = true;
+  }
+  // the re-rebase above (if it ran) rewrote the lane tip — the root's mirror is now behind
+  // the very commits about to be landed, and markLandIntent/advanceIntegration both read it
+  const rebasedSync = await syncLaneRefs(s.worktree, cwd);
+  if (rebasedSync) return { status: 409, body: { status: "error", detail: `${rebasedSync.error} — lane kept, nothing landed` } };
+  // Re-read after sync so a concurrent commit or main move cannot cross the review→intent
+  // boundary. The first check above protects the old rebase/replay block; this one is the
+  // final identity gate immediately before markLandIntent.
+  currentCandidate = await readCandidateIdentity();
+  if (identityKnown && !candidateMatches(currentCandidate, allowedCandidateSha, !serverReplayed)) return { status: 409, body: { status: "stale", landed: false,
+    detail: "the reviewed land candidate changed while confirm was preparing the land — review the current candidate and confirm again",
+    reviewed: { mainSha: reviewed!.mainSha ?? null, candidateSha: reviewed!.candidateSha ?? null,
+      diffHash: reviewed!.diffHash ?? null }, current: currentCandidate } };
+  const mainBefore = currentCandidate?.mainSha ?? (await git(repo, "rev-parse", main)).out;
+  // THE FRESH RUN, and it exists on the MAIN arm ONLY. The owner's confirm deliberately does NOT
+  // re-verify: it MARKS a superseded verify stale, because a re-run would hold the owner's request
+  // for the whole suite runtime and owner latitude stands anyway (OWNER.md §4a — a human confirm
+  // never hard-blocks on ok:false). A Program-MAIN's confirm is the opposite trade in every term:
+  // it has no latitude, it is not holding a browser open, and the owner policy of 2026-08-23 grants
+  // it the conflict path only "with the authoritative verification re-run FRESH on the resolved
+  // candidate". So this arm measures rather than marks, and lands ONLY on ok:true — a red, a
+  // skip, a timeout and a never-started all end here as a non-land, which is the same
+  // "unknown/skipped is never green" invariant the whole land gate is built on.
+  // It runs through reportServerRun for the same reason mergeJob's gate does: the suite mutex and
+  // the verify-intent board must see this run, or two gates would fight over one machine.
+  let fresh: MergeLast["verify"];
+  if (!opts.byHuman) {
+    fresh = await reportServerRun(`land:${s.id}`,
+      { slot: s.id, label: s.label, branch, suite: "guarded confirm gate", cwd },
+      () => runVerify(cwd, repo, mainBefore));
+    if (!fresh || fresh.ok !== true)
+      return { status: 409, body: { status: "resolved", landed: false, branch, verify: fresh ?? null,
+        candidate: currentCandidate?.candidateSha ?? null, detail: freshConfirmRefusal(fresh) } };
+  }
+  // stale-verify guard, the OWNER arm's answer: `verify.mainSha` bound the verdict to the main it
+  // verified against — if main moved past it since (the replay above), the recorded green never saw
+  // the landed state. MARK it stale rather than re-running (see the fresh run above for why the two
+  // arms differ). Owner latitude stands — stale never blocks.
+  const rv = reviewed?.verify;
+  const verifyProv = opts.byHuman
+    ? (rv && rv.mainSha !== mainBefore ? { ...rv, stale: true } : rv)
+    : fresh;
+  const resolverDetail = identityKnown ? reviewed?.detail
+    : `${reviewed?.detail ? `${reviewed.detail} ` : ""}Land candidate identity was not recorded; freshness was UNKNOWN at confirm.`;
+  // THE RESOLUTION'S OWN STORY, written into the note because after the land the tree looks the
+  // same whichever principal confirmed it and whichever resolver produced the lines. `conflicted`
+  // and `resolvedBy` say WHAT was resolved and BY WHOM, `repairRounds` how many resolver↔verify
+  // rounds it took inside the merge job, and `candidateSha` names the exact commit that was
+  // confirmed — the note's `mainAfter` equals it on a fast-forward, but only on a fast-forward.
+  const prov: LandProvenance = { conflicted: reviewed?.conflicted, resolverDetail,
+    verify: verifyProv, confirmedByHuman: opts.byHuman,
+    ...(reviewed?.resolvedBy ? { resolvedBy: reviewed.resolvedBy } : {}),
+    ...(reviewed?.repairRounds ? { repairRounds: reviewed.repairRounds } : {}),
+    ...(currentCandidate ? { candidateSha: currentCandidate.candidateSha } : {}) };
+  // same declaration-before-the-advance as the clean auto-land path (see markLandIntent)
+  const laneTip = currentCandidate?.candidateSha ?? (await git(repo, "rev-parse", branch)).out;
+  await markLandIntent(repo, main, branch, mainBefore, laneTip, prov);
+  const adv = await advanceIntegration(repo, main, branch);
+  if (adv) {
+    clearLandIntent(repo);
+    return { status: 409, body: { status: "error",
+      detail: `fast-forwarding ${main} failed: ${adv.error} — lane kept` } };
+  }
+  const mainAfter = (await git(repo, "rev-parse", main)).out;
+  if (LAND_PAUSE_MS) await Bun.sleep(LAND_PAUSE_MS); // TEST-ONLY, 0 in production
+  // main HAS moved — record the land BEFORE the teardown, so a landLane failure
+  // can never leave a moved main without its note + undo record
+  await recordLand(repo, main, branch, mainBefore, mainAfter, prov);
+  const landedOutcome: MergeLast = { status: "merged", landed: true, branch, at: Date.now(),
+    verify: verifyProv, detail: opts.byHuman ? "reviewed resolution — landed"
+      : "resolved candidate confirmed by the bound MAIN, re-verified fresh — landed" };
+  // the owner reviewed an agent-resolved conflict and confirm-landed it — record that shape:
+  // resolvedConflict from the verdict's conflicted files, repairRounds it carried, human-confirmed.
+  const land = await landLane(s, {
+    resolvedConflict: (reviewed?.conflicted?.length ?? 0) > 0,
+    // ② is live, so this is no longer always the throwaway resolver: the verdict the owner
+    // is confirming names its own resolver, and that is the only thing here that knows.
+    // The `?? "agent"` covers verdicts written before the field existed — those predate the
+    // author path entirely, so the default is a fact about them, not a guess.
+    resolvedBy: reviewed?.resolvedBy ?? "agent",
+    repairRounds: reviewed?.repairRounds ?? 0,
+    // FALSE on the MAIN arm, and that is the honest reading of the field rather than a downgrade:
+    // `confirmedByHuman` records that a HUMAN took the confirm step. A MAIN's confirm is a machine
+    // act under an owner-granted policy — WHO it was is `landedBy`/the note's actor, never this flag.
+    confirmedByHuman: opts.byHuman,
+    verified: verifyProv ? verifyProv.ok : null,
+    baseSha: mainBefore, // the lane is rebased onto exactly this commit — its true fork point
+    mainAfter },         // …and this is where it ended up, so the row can open its own files
+    () => mintMergeEvents(s.id, cwd, branch, landedOutcome));
+  if ("error" in land) {
+    const failed: MergeLast = { status: "merged", landed: false, branch, at: Date.now(),
+      verify: verifyProv, landError: land.error,
+      detail: `landed on ${main} (recorded), but lane teardown failed: ${land.error}` };
+    await mintMergeEvents(s.id, cwd, branch, failed);
+    await saveStateNow(); // the undo record and terminal event survive the failed teardown
+    return { status: land.code, body: { status: "merged", landed: false, branch, landError: land.error,
+      detail: `landed on ${main} (recorded), but lane teardown failed: ${land.error}` } };
+  }
+  mergeLast.delete(s.id);
+  saveState();
+  // The owner arm's body is byte-for-byte what the route always returned; the MAIN arm differs only
+  // in the sentence, because "reviewed resolution" would name a review that did not happen.
+  return { status: 200, body: { status: "merged", landed: true, branch,
+    detail: opts.byHuman ? "reviewed resolution — landed"
+      : "resolved candidate confirmed by the bound MAIN, re-verified fresh — landed" } };
 }
 
 // --- WHAT A FRESH RUN CARRIES OUT OF THE VERDICT IT SUPERSEDES, and the ⏸ guard that sometimes
@@ -19320,137 +19628,12 @@ Bun.serve<WSData>({
         // the ff-merge is safe. If main moved since the resolution the ancestry fails and we
         // send them back to re-run ⏫ (which re-rebases against the new main).
         if (body?.confirm === true) {
-          // the "resolved" verdict the human is confirming — its resolver detail, conflicted
-          // files, and verify result are the review story this land is owning. Read it BEFORE
-          // the delete below so the provenance note carries what the owner actually reviewed.
-          const reviewed = mergeLast.get(s.id);
-          const readCandidateIdentity = async (): Promise<{ mainSha: string; candidateSha: string; diffHash: string } | null> => {
-            const [mainNow, tipNow] = await Promise.all([
-              git(repo, "rev-parse", main), git(cwd, "rev-parse", "HEAD"),
-            ]);
-            if (mainNow.code !== 0 || tipNow.code !== 0
-              || !/^[0-9a-f]{40,64}$/.test(mainNow.out) || !/^[0-9a-f]{40,64}$/.test(tipNow.out)) return null;
-            const diff = await git(cwd, "diff", "--binary", `${mainNow.out}...${tipNow.out}`, "--");
-            if (diff.code !== 0) return null;
-            const diffHash = await patchIdOf(cwd, diff.out, "");
-            return diffHash ? { mainSha: mainNow.out, candidateSha: tipNow.out, diffHash } : null;
-          };
-          const identityKnown = reviewed !== undefined
-            && /^[0-9a-f]{40,64}$/.test(reviewed.mainSha ?? "")
-            && /^[0-9a-f]{40,64}$/.test(reviewed.candidateSha ?? "")
-            && /^[0-9a-f]{40,64}$/.test(reviewed.diffHash ?? "");
-          // Main moving is not a candidate edit: the existing replay path handles it and marks
-          // verify stale. Before that controlled rewrite, BOTH the lane tip and stable diff must
-          // still be exactly what the verdict bound.
-          const candidateMatches = (current: { mainSha: string; candidateSha: string; diffHash: string } | null,
-            expectedSha: string | null, requireReviewedDiff: boolean): boolean => current !== null && expectedSha !== null
-              && current.candidateSha === expectedSha
-              && (!requireReviewedDiff || reviewed?.diffHash === current.diffHash);
-          let currentCandidate = await readCandidateIdentity();
-          if (identityKnown && !candidateMatches(currentCandidate, reviewed!.candidateSha!, true)) return json({ status: "stale", landed: false,
-            detail: "the reviewed lane tip or canonical diff changed — run merge again and review the new candidate before confirming",
-            reviewed: reviewed ? { mainSha: reviewed.mainSha ?? null, candidateSha: reviewed.candidateSha ?? null,
-              diffHash: reviewed.diffHash ?? null } : null,
-            current: currentCandidate }, 409);
-          // Defensive ancestry check for a structurally fresh identity. Normal resolved verdicts
-          // are already descendants of their bound mainSha; when main moved, the server may replay
-          // onto it and the second identity check accepts only the exact tip that replay produced.
-          // rerere stays off: no recorded resolution can silently become a land.
-          let allowedCandidateSha = identityKnown ? reviewed!.candidateSha! : null;
-          let serverReplayed = false;
-          let anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
-          if (anc.code !== 0) {
-            // Same plumbing, same hazard as the merge pre-pass (see tryScriptRebase): index.lock
-            // contention makes these fail, so both go through gitRetry's backoff — and the abort's
-            // exit code cannot be discarded here either. "Re-run ⏫" is only sound advice if the
-            // lane is actually back where it started; a lane left mid-rebase bounces off the
-            // gitOpInProgress guard on every future attempt, so it has to be told the truth instead.
-            const rb = await gitRetry(cwd, "-c", "rerere.enabled=false", "rebase", main);
-            if (rb.code !== 0) {
-              await gitRetry(cwd, "rebase", "--abort");
-              return json({ status: "blocked",
-                detail: await gitOpInProgress(cwd)
-                  ? `${main} moved, the resolution no longer replays cleanly onto it, and \`git rebase --abort\` could not undo the attempt — this lane is left mid-rebase. Finish or abort the rebase in the session first.`
-                  : `${main} moved and the resolution no longer replays cleanly onto it — re-run ⏫ merge to resolve against the new ${main}.` });
-            }
-            anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
-            if (anc.code !== 0) return json({ status: "error",
-              detail: `re-rebased onto ${main}, but it is still not an ancestor — lane kept` }, 409);
-            // SERVER-OBSERVED REPLAY-TIP: this exact rewrite is server-controlled. The SHA read
-            // immediately afterwards becomes the second guard's authority; patch-id cannot be
-            // compared across this boundary because nearby main context changes its hash even
-            // when the lane hunk is byte-identical.
-            const replayedTip = await git(cwd, "rev-parse", "HEAD");
-            allowedCandidateSha = replayedTip.code === 0 ? replayedTip.out : null;
-            serverReplayed = true;
-          }
-          // the re-rebase above (if it ran) rewrote the lane tip — the root's mirror is now behind
-          // the very commits about to be landed, and markLandIntent/advanceIntegration both read it
-          const rebasedSync = await syncLaneRefs(s.worktree, cwd);
-          if (rebasedSync) return json({ status: "error", detail: `${rebasedSync.error} — lane kept, nothing landed` }, 409);
-          // Re-read after sync so a concurrent commit or main move cannot cross the review→intent
-          // boundary. The first check above protects the old rebase/replay block; this one is the
-          // final identity gate immediately before markLandIntent.
-          currentCandidate = await readCandidateIdentity();
-          if (identityKnown && !candidateMatches(currentCandidate, allowedCandidateSha, !serverReplayed)) return json({ status: "stale", landed: false,
-            detail: "the reviewed land candidate changed while confirm was preparing the land — review the current candidate and confirm again",
-            reviewed: { mainSha: reviewed!.mainSha ?? null, candidateSha: reviewed!.candidateSha ?? null,
-              diffHash: reviewed!.diffHash ?? null }, current: currentCandidate }, 409);
-          const mainBefore = currentCandidate?.mainSha ?? (await git(repo, "rev-parse", main)).out;
-          // stale-verify guard: `verify.mainSha` bound the verdict to the main it verified
-          // against — if main moved past it since (the replay above), the recorded green
-          // never saw the landed state. MARK it stale rather than re-running: a re-run
-          // would hold this request for the whole suite runtime (and its SIGTERM-only
-          // timeout could hang the land). Owner latitude stands — stale never blocks.
-          const rv = reviewed?.verify;
-          const verifyProv = rv && rv.mainSha !== mainBefore ? { ...rv, stale: true } : rv;
-          const resolverDetail = identityKnown ? reviewed?.detail
-            : `${reviewed?.detail ? `${reviewed.detail} ` : ""}Land candidate identity was not recorded; freshness was UNKNOWN at confirm.`;
-          const prov: LandProvenance = { conflicted: reviewed?.conflicted, resolverDetail,
-            verify: verifyProv, confirmedByHuman: true };
-          // same declaration-before-the-advance as the clean auto-land path (see markLandIntent)
-          const laneTip = currentCandidate?.candidateSha ?? (await git(repo, "rev-parse", branch)).out;
-          await markLandIntent(repo, main, branch, mainBefore, laneTip, prov);
-          const adv = await advanceIntegration(repo, main, branch);
-          if (adv) {
-            clearLandIntent(repo);
-            return json({ status: "error",
-              detail: `fast-forwarding ${main} failed: ${adv.error} — lane kept` }, 409);
-          }
-          const mainAfter = (await git(repo, "rev-parse", main)).out;
-          if (LAND_PAUSE_MS) await Bun.sleep(LAND_PAUSE_MS); // TEST-ONLY, 0 in production
-          // main HAS moved — record the land BEFORE the teardown, so a landLane failure
-          // can never leave a moved main without its note + undo record
-          await recordLand(repo, main, branch, mainBefore, mainAfter, prov);
-          const landedOutcome: MergeLast = { status: "merged", landed: true, branch, at: Date.now(),
-            verify: verifyProv, detail: "reviewed resolution — landed" };
-          // the owner reviewed an agent-resolved conflict and confirm-landed it — record that shape:
-          // resolvedConflict from the verdict's conflicted files, repairRounds it carried, human-confirmed.
-          const land = await landLane(s, {
-            resolvedConflict: (reviewed?.conflicted?.length ?? 0) > 0,
-            // ② is live, so this is no longer always the throwaway resolver: the verdict the owner
-            // is confirming names its own resolver, and that is the only thing here that knows.
-            // The `?? "agent"` covers verdicts written before the field existed — those predate the
-            // author path entirely, so the default is a fact about them, not a guess.
-            resolvedBy: reviewed?.resolvedBy ?? "agent",
-            repairRounds: reviewed?.repairRounds ?? 0,
-            confirmedByHuman: true,
-            verified: verifyProv ? verifyProv.ok : null,
-            baseSha: mainBefore, // the lane is rebased onto exactly this commit — its true fork point
-            mainAfter },         // …and this is where it ended up, so the row can open its own files
-            () => mintMergeEvents(s.id, cwd, branch, landedOutcome));
-          if ("error" in land) {
-            const failed: MergeLast = { status: "merged", landed: false, branch, at: Date.now(),
-              verify: verifyProv, landError: land.error,
-              detail: `landed on ${main} (recorded), but lane teardown failed: ${land.error}` };
-            await mintMergeEvents(s.id, cwd, branch, failed);
-            await saveStateNow(); // the undo record and terminal event survive the failed teardown
-            return json({ status: "merged", landed: false, branch, landError: land.error,
-              detail: `landed on ${main} (recorded), but lane teardown failed: ${land.error}` }, land.code);
-          }
-          mergeLast.delete(s.id);
-          saveState();
-          return json({ status: "merged", landed: true, branch, detail: "reviewed resolution — landed" });
+          // THE SAME step the Program-MAIN self-land route takes under a `guarded` promotion; the
+          // owner arm marks a superseded verify stale rather than re-running it, and records the
+          // land as human-confirmed. Everything else is one function, so the two confirms cannot
+          // drift into two land paths.
+          const confirmed = await confirmResolvedCandidate(s, cwd, repo, main, branch, { byHuman: true });
+          return json(confirmed.body, confirmed.status);
         }
         // already merged (by hand, or an empty lane)? No agent needed — land directly.
         // Against the integration branch, not the primary's HEAD (which may be parked off it).

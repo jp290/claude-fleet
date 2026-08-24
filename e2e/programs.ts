@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import { BASE, H, REPO, REPO2, REPO3, REPO4, ROOT, TOKEN, check, get, paneEnv, post, restartSrv, tmuxOut } from "./harness";
 import { phaseOf, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import type { LaneSignalView } from "../lane-signals";
+import { setMergeMode } from "./lane-helpers";
 import type { Ctx } from "./ctx";
 
 type ProgramStatus = "proposed" | "confirmed" | "active" | "complete";
@@ -2471,8 +2472,155 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify({ ready: repairedReady, res: repaired.status, body: repairedBody,
         row: repairedRow?.status, wasCandidate: redVerdict?.candidateSha?.slice(0, 8) }));
 
-    for (const slot of [redLaneSlot, greenLaneSlot, landMainSlot, ladderSlot]) if (slot !== null) await post(`/api/slots/${slot}/kill`, {});
-    for (const id of [ladderRowId, landForeignRowId, landNotizRowId, greenRowId, redRowId]) {
+    // --- (4) THE GUARDED RUNG: conflict is MAIN work. Owner policy 2026-08-23, verbatim: "a
+    // git/content conflict inside the confirmed Program scope … the MAIN inspects both sides,
+    // chooses or commissions a resolution, records conflicted files / resolvedBy / repairRounds /
+    // candidateSha, re-runs the authoritative verification fresh on the resolved candidate, reviews
+    // the diff, lands if fresh and green. `conflicted:true` alone never blocks promotion."
+    // The FIXTURE is a real conflict: main and the lane both rewrite code.txt, and the stand-in
+    // merge agent resolves with `-X theirs`. That produces exactly the state this rung is about —
+    // `resolved`, `landed:false`, holding an agent-chosen resolution nobody has confirmed.
+    const conflictLane = async (rowId: string): Promise<{ slot: number | null; cwd: string }> => {
+      await post(`/api/tasks/${rowId}/dispatch`, {});
+      const row = await slRow(rowId);
+      const slot = row?.slot ?? null;
+      const cwd = slot === null ? "" : (await slSess()).slots.find((x) => x.id === slot)?.cwd ?? "";
+      return { slot, cwd };
+    };
+    await setMergeMode("do");
+
+    // (4a) THE GREEN ARM. Under `green-only` the ⏸ hold refuses and NAMES the rung that would not;
+    // under `guarded` the same call takes the confirm step, re-verifies fresh and lands.
+    const cfRowId = await makeTask({ text: "self-land guarded conflict row", programId: landProgram.id, repo: REPO2 });
+    const cfLane = await conflictLane(cfRowId);
+    if (cfLane.cwd) {
+      writeFileSync(`${cfLane.cwd}/code.txt`, "lane side of the conflict\n");
+      spawnSync("git", ["-C", cfLane.cwd, "commit", "-qam", "selfland conflict lane side"]);
+    }
+    writeFileSync(`${REPO2}/code.txt`, "main side of the conflict\n");
+    spawnSync("git", ["-C", REPO2, "commit", "-qam", "selfland conflict main side"]);
+    const cfReady = cfLane.slot === null ? false : await waitDoneLooking(cfLane.slot);
+    const cfFirst = await selfLand(landTok, cfRowId);
+    type CfVerdict = { status?: string; landed?: boolean; conflicted?: string[]; resolvedBy?: string;
+      candidateSha?: string; verify?: { ok?: boolean | null }; detail?: string };
+    let cfVerdict: CfVerdict | null = null;
+    for (let i = 0; i < 240; i++) {
+      await Bun.sleep(250);
+      const mg = (await (await get(`/api/slots/${cfLane.slot}/merge`)).json()) as
+        { running?: boolean; last?: CfVerdict | null };
+      if (mg.running === false && mg.last) { cfVerdict = mg.last; break; }
+    }
+    check("guarded fixture: the conflict path produced a RESOLVED verdict that holds an agent-chosen resolution and landed nothing",
+      cfReady && cfFirst.ok && cfVerdict?.status === "resolved" && cfVerdict.landed === false
+        && (cfVerdict.conflicted?.length ?? 0) > 0 && !!cfVerdict.resolvedBy
+        && /^[0-9a-f]{40,64}$/.test(cfVerdict.candidateSha ?? ""),
+      JSON.stringify({ ready: cfReady, first: cfFirst.status, verdict: cfVerdict }));
+    // green-only refuses it, and the refusal NAMES the rung that would not — a caller must be able
+    // to tell "never" from "not with this permission".
+    const cfGreenOnly = await selfLand(landTok, cfRowId);
+    const cfGreenOnlyText = await cfGreenOnly.text();
+    check("guarded rung: a 'green-only' promotion refuses the unreviewed resolution and names the rung that would take it",
+      cfGreenOnly.status === 409 && cfGreenOnlyText.includes("conflict resolution awaits your review")
+        && cfGreenOnlyText.includes('"green-only" promotion never lands an unreviewed conflict resolution')
+        && cfGreenOnlyText.includes("guarded"),
+      `${cfGreenOnly.status} ${cfGreenOnlyText.slice(0, 240)}`);
+    await setPromotion(landProgram.id, { v: 1, selfLand: "guarded" });
+    const cfMainBefore = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
+    const cfConfirm = await selfLand(landTok, cfRowId);
+    const cfConfirmBody = await cfConfirm.json() as { running?: boolean; confirm?: string; candidate?: string;
+      resolution?: { conflicted?: string[]; resolvedBy?: string | null; repairRounds?: number }; error?: string };
+    let cfRow = await slRow(cfRowId);
+    for (let i = 0; i < 240 && cfRow?.status !== "done"; i++) {
+      await Bun.sleep(250);
+      cfRow = await slRow(cfRowId);
+    }
+    const cfMainAfter = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
+    check("guarded rung: the bound MAIN confirms the resolved candidate and it LANDS — conflicted:true alone never blocked it",
+      cfConfirm.ok && cfConfirmBody.running === true && cfConfirmBody.confirm === "resolved-candidate"
+        && cfConfirmBody.candidate === cfVerdict?.candidateSha
+        && (cfConfirmBody.resolution?.conflicted?.length ?? 0) > 0
+        && cfRow?.status === "done" && cfMainAfter !== cfMainBefore,
+      JSON.stringify({ res: cfConfirm.status, body: cfConfirmBody, row: cfRow?.status,
+        before: cfMainBefore.slice(0, 8), after: cfMainAfter.slice(0, 8) }));
+    // …and the note carries the four facts the owner policy names, plus confirmedByHuman FALSE —
+    // no human took the confirm step, and a record that claimed one would be the exact falsehood
+    // this rail exists to end.
+    const cfNoteRaw = spawnSync("git", ["-C", REPO2, "notes", "--ref=fleet/land", "show", cfMainAfter]);
+    type CfNote = { conflicted?: string[]; resolvedBy?: string; repairRounds?: number;
+      candidateSha?: string; confirmedByHuman?: boolean; verify?: { ok?: boolean | null; mainSha?: string } };
+    let cfNote: CfNote | null = null;
+    try { cfNote = JSON.parse(cfNoteRaw.stdout.toString()) as CfNote; } catch { /* asserted below */ }
+    check("guarded provenance: the land note records conflicted + resolvedBy + candidateSha, the FRESH verify, and confirmedByHuman:false",
+      cfNoteRaw.status === 0 && (cfNote?.conflicted?.length ?? 0) > 0 && !!cfNote?.resolvedBy
+        && cfNote.candidateSha === cfVerdict?.candidateSha && cfNote.confirmedByHuman === false
+        && cfNote.verify?.ok === true && cfNote.verify.mainSha === cfMainBefore,
+      cfNoteRaw.stdout.toString().trim().slice(0, 400));
+
+    // (4b) THE RED ARM, and it is the half that makes "fresh" mean something: the recorded verdict
+    // is green, the tree is then sabotaged so the FRESH run is red, and nothing lands. Then the
+    // second call — same bytes, confirmation already spent — falls into the ordinary no-progress
+    // guard rather than buying another full suite run. And no attention row is opened by any of it:
+    // what to do about a red confirmation is the MAIN's judgement, not a notification.
+    const cf2RowId = await makeTask({ text: "self-land guarded red row", programId: landProgram.id, repo: REPO2 });
+    const cf2Lane = await conflictLane(cf2RowId);
+    if (cf2Lane.cwd) {
+      writeFileSync(`${cf2Lane.cwd}/code.txt`, "lane side of the second conflict\n");
+      spawnSync("git", ["-C", cf2Lane.cwd, "commit", "-qam", "selfland conflict 2 lane side"]);
+    }
+    writeFileSync(`${REPO2}/code.txt`, "main side of the second conflict\n");
+    spawnSync("git", ["-C", REPO2, "commit", "-qam", "selfland conflict 2 main side"]);
+    const cf2Ready = cf2Lane.slot === null ? false : await waitDoneLooking(cf2Lane.slot);
+    await selfLand(landTok, cf2RowId);
+    let cf2Verdict: CfVerdict | null = null;
+    for (let i = 0; i < 240; i++) {
+      await Bun.sleep(250);
+      const mg = (await (await get(`/api/slots/${cf2Lane.slot}/merge`)).json()) as
+        { running?: boolean; last?: CfVerdict | null };
+      if (mg.running === false && mg.last) { cf2Verdict = mg.last; break; }
+    }
+    // the sabotage goes in AFTER the verdict: the recorded verify saw a clean tree, so a confirm
+    // that trusted the record would land this. Only a FRESH run can see it.
+    if (cf2Lane.cwd) {
+      writeFileSync(`${cf2Lane.cwd}/sabotage.txt`, "VERIFY2BAD — planted after the verdict was recorded\n");
+      spawnSync("git", ["-C", cf2Lane.cwd, "add", "sabotage.txt"]);
+      spawnSync("git", ["-C", cf2Lane.cwd, "commit", "-qm", "selfland conflict 2 sabotage"]);
+    }
+    const cf2Ready2 = cf2Lane.slot === null ? false : await waitDoneLooking(cf2Lane.slot);
+    const attnBefore = ((await (await get("/api/attention")).json()) as { requests: unknown[] }).requests.length;
+    const cf2MainBefore = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
+    const cf2Confirm = await selfLand(landTok, cf2RowId);
+    const cf2ConfirmBody = await cf2Confirm.json() as { running?: boolean; confirm?: string; error?: string };
+    let cf2After: CfVerdict | null = null;
+    for (let i = 0; i < 400; i++) {
+      await Bun.sleep(250);
+      const mg = (await (await get(`/api/slots/${cf2Lane.slot}/merge`)).json()) as
+        { running?: boolean; last?: CfVerdict | null };
+      if (mg.running === false && mg.last && (mg.last.verify?.ok === false
+        || (mg.last.detail ?? "").includes("re-verified FRESH"))) { cf2After = mg.last; break; }
+    }
+    check("guarded rung: a FRESH RED on the resolved candidate lands NOTHING, keeps the resolution on the verdict, and opens no attention",
+      cf2Ready && cf2Ready2 && (cf2Verdict?.conflicted?.length ?? 0) > 0
+        && cf2Confirm.ok && cf2ConfirmBody.confirm === "resolved-candidate"
+        && cf2After?.landed === false && (cf2After.detail ?? "").includes("re-verified FRESH")
+        && (cf2After.conflicted?.length ?? 0) > 0
+        && (await slRow(cf2RowId))?.status === "sent"
+        && spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim() === cf2MainBefore
+        && ((await (await get("/api/attention")).json()) as { requests: unknown[] }).requests.length === attnBefore,
+      JSON.stringify({ first: cf2Verdict, confirm: cf2ConfirmBody, after: cf2After,
+        main: cf2MainBefore.slice(0, 8) }));
+    // …and the confirmation is SPENT for this candidate: the identical next call does not buy a
+    // second full suite run, it falls into the ordinary no-progress guard.
+    const cf2Again = await selfLand(landTok, cf2RowId);
+    const cf2AgainText = await cf2Again.text();
+    check("guarded rung: the confirmation is spent per candidate — the identical next call is no-progress, not a second suite run",
+      cf2Again.status === 409 && cf2AgainText.includes("no progress since the last verdict"),
+      `${cf2Again.status} ${cf2AgainText.slice(0, 200)}`);
+    await setMergeMode("blocked");
+    await setPromotion(landProgram.id, { v: 1, selfLand: "green-only" });
+
+    for (const slot of [redLaneSlot, greenLaneSlot, cfLane.slot, cf2Lane.slot, landMainSlot, ladderSlot])
+      if (slot !== null) await post(`/api/slots/${slot}/kill`, {});
+    for (const id of [ladderRowId, landForeignRowId, landNotizRowId, greenRowId, redRowId, cfRowId, cf2RowId]) {
       await post(`/api/tasks/${id}/done`, {});
       await post(`/api/tasks/${id}/delete`, {});
     }

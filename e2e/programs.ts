@@ -2106,12 +2106,16 @@ export async function run(ctx: Ctx): Promise<void> {
     // ...and all THREE rungs of the ladder are grantable, because a value that exists in the type
     // and is refused by the route is a permission nobody can use. `guarded` is the rung this slice
     // adds, so a probe that only exercised green-only would ship it unreachable.
-    const rungs = await Promise.all((["off", "green-only", "guarded"] as const).map(async (rung) => {
+    // SEQUENTIALLY, and the reason is a measurement: written as `Promise.all(...map(async …))` the
+    // three grant→read pairs interleave, and every read came back holding the NEXT rung's value —
+    // a probe that looked like an off-by-one in the server and was an off-by-one in the probe.
+    const rungs: { rung: string; ok: boolean; stored: string | null; stamped: boolean }[] = [];
+    for (const rung of ["off", "green-only", "guarded"] as const) {
       const res = await setPromotion(promoProgram.id, { v: 1, selfLand: rung });
       const row = (await ownerPrograms()).find((p) => p.id === promoProgram.id);
-      return { rung, ok: res.ok, stored: row?.promotion?.selfLand ?? null,
-        stamped: typeof row?.promotion?.confirmedAt === "number" && row.promotion.confirmedAt > 0 };
-    }));
+      rungs.push({ rung, ok: res.ok, stored: row?.promotion?.selfLand ?? null,
+        stamped: typeof row?.promotion?.confirmedAt === "number" && row.promotion.confirmedAt > 0 });
+    }
     const revoked = await setPromotion(promoProgram.id, null);
     const revokedRow = (await ownerPrograms()).find((p) => p.id === promoProgram.id);
     const revokeAgain = await setPromotion(promoProgram.id, null);
@@ -2160,6 +2164,11 @@ export async function run(ctx: Ctx): Promise<void> {
     // ...and the other malformed shapes reach the same absence through the same boot, one plant per
     // rejection branch the loader has. Asserted as a set so a loader that started repairing ONE of
     // them field-wise cannot hide behind the four that still fail.
+    // one carrier program PER shape, made for it. Scavenging whatever active programs happened to
+    // exist planted only two of the four — and `planted: 2` reads as "the loader ate them", which is
+    // the opposite of what it meant. A probe that cannot build its own field must fail as itself.
+    const shapeCarriers: string[] = [];
+    for (let i = 0; i < 4; i++) shapeCarriers.push((await activateNewProgram(`Promotion loader shape ${i}`)).id);
     await tmuxOut("kill-session", "-t", "srv");
     await Bun.sleep(500);
     const shapes: unknown[] = [
@@ -2170,12 +2179,11 @@ export async function run(ctx: Ctx): Promise<void> {
     ];
     const shapeState = readState();
     const shapeIds: string[] = [];
-    for (const shape of shapes) {
-      const row = (shapeState.programs ?? []).find((x) => !shapeIds.includes(x.id)
-        && x.status === "active" && x.id !== controlProgram.id);
+    for (let i = 0; i < shapes.length; i++) {
+      const row = (shapeState.programs ?? []).find((x) => x.id === shapeCarriers[i]);
       if (!row) continue;
       shapeIds.push(row.id);
-      (row as unknown as Record<string, unknown>).promotion = shape;
+      (row as unknown as Record<string, unknown>).promotion = shapes[i];
     }
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(shapeState, null, 2), { mode: 0o600 });
     await restartSrv();
@@ -2184,11 +2192,12 @@ export async function run(ctx: Ctx): Promise<void> {
       shapeIds.length === shapes.length
         && shapeIds.every((id) => afterShapes.find((x) => x.id === id)?.promotion === undefined)
         && afterShapes.find((x) => x.id === controlProgram.id)?.promotion?.selfLand === "guarded",
-      JSON.stringify({ planted: shapeIds.length,
+      JSON.stringify({ planted: shapeIds.length, carriers: shapeCarriers.length,
         survivors: shapeIds.filter((id) => afterShapes.find((x) => x.id === id)?.promotion !== undefined) }));
     await setPromotion(controlProgram.id, null);
     await programPost(promoProgram.id, "complete");
     await programPost(controlProgram.id, "complete");
+    for (const id of shapeCarriers) await programPost(id, "complete");
   }
 
   // === THE LAND DOOR: POST /api/self/tasks/:id/land ============================================
@@ -2554,7 +2563,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const cfReady = cfLane.slot === null ? false : await waitDoneLooking(cfLane.slot);
     const cfFirst = await selfLand(landTok, cfRowId);
     type CfVerdict = { status?: string; landed?: boolean; conflicted?: string[]; resolvedBy?: string;
-      candidateSha?: string; verify?: { ok?: boolean | null }; detail?: string };
+      candidateSha?: string; verify?: { ok?: boolean | null; at?: number }; detail?: string };
     let cfVerdict: CfVerdict | null = null;
     for (let i = 0; i < 240; i++) {
       await Bun.sleep(250);
@@ -2605,24 +2614,41 @@ export async function run(ctx: Ctx): Promise<void> {
     // this rail exists to end.
     const cfNoteRaw = spawnSync("git", ["-C", REPO2, "notes", "--ref=fleet/land", "show", cfMainAfter]);
     type CfNote = { conflicted?: string[]; resolvedBy?: string; repairRounds?: number;
-      candidateSha?: string; confirmedByHuman?: boolean; verify?: { ok?: boolean | null; mainSha?: string } };
+      candidateSha?: string; confirmedByHuman?: boolean;
+      verify?: { ok?: boolean | null; mainSha?: string; at?: number } };
     let cfNote: CfNote | null = null;
     try { cfNote = JSON.parse(cfNoteRaw.stdout.toString()) as CfNote; } catch { /* asserted below */ }
-    check("guarded provenance: the land note records conflicted + resolvedBy + candidateSha, the FRESH verify, and confirmedByHuman:false",
+    check("guarded provenance: the land note records conflicted + resolvedBy + candidateSha, a STRICTLY LATER verify measurement, and confirmedByHuman:false",
       cfNoteRaw.status === 0 && (cfNote?.conflicted?.length ?? 0) > 0 && !!cfNote?.resolvedBy
         && cfNote.candidateSha === cfVerdict?.candidateSha && cfNote.confirmedByHuman === false
-        && cfNote.verify?.ok === true && cfNote.verify.mainSha === cfMainBefore,
-      cfNoteRaw.stdout.toString().trim().slice(0, 400));
+        && cfNote.verify?.ok === true && cfNote.verify.mainSha === cfMainBefore
+        // THE FRESHNESS PROOF, and it has to be the CLOCK rather than the mainSha: nothing landed
+        // between the resolver's own run and this confirm, so both were measured against the same
+        // main and a mainSha comparison could not tell a re-run from the record. A strictly later
+        // `verify.at` can only come from a second measurement.
+        && (cfNote.verify.at ?? 0) > (cfVerdict?.verify?.at ?? 0),
+      JSON.stringify({ noteAt: cfNote?.verify?.at, verdictAt: cfVerdict?.verify?.at,
+        note: cfNoteRaw.stdout.toString().trim().slice(0, 300) }));
 
-    // (4b) THE RED ARM, and it is the half that makes "fresh" mean something: the recorded verdict
-    // is green, the tree is then sabotaged so the FRESH run is red, and nothing lands. Then the
-    // second call — same bytes, confirmation already spent — falls into the ordinary no-progress
-    // guard rather than buying another full suite run. And no attention row is opened by any of it:
-    // what to do about a red confirmation is the MAIN's judgement, not a notification.
+    // (4b) THE RED ARM: a resolved candidate whose gate is RED lands NOTHING, and the identical next
+    // call is no-progress rather than a second full suite run.
+    // THE SABOTAGE RIDES IN THE CONFLICT ITSELF, and that placement is the correction of a measured
+    // probe error (isolated run `isolated-20260824T005524Z-86492`). Planting it as an EXTRA commit
+    // after the verdict moved the lane tip, so the verdict no longer described the candidate and
+    // the route declined — correctly, and for a reason that had nothing to do with the red gate the
+    // probe meant to measure. A confirmation is BOUND TO A CANDIDATE; a fixture that moves the
+    // candidate is testing staleness, not verification. The freshness of the run is proved in the
+    // green arm above, by a strictly later `verify.at`.
+    // No attention row is opened by any of this: what to do about a red confirmation is the MAIN's
+    // judgement, and the five escalation classes are what go to attention.
     const cf2RowId = await makeTask({ text: "self-land guarded red row", programId: landProgram.id, repo: REPO2 });
     const cf2Lane = await conflictLane(cf2RowId);
     if (cf2Lane.cwd) {
-      writeFileSync(`${cf2Lane.cwd}/code.txt`, "lane side of the second conflict\n");
+      // the lane's side of the conflict CARRIES the marker, so `-X theirs` keeps it and the
+      // resolved candidate is red the moment it exists. fakeverify2 greps the tracked tree for
+      // VERIFY2BAD; fakemerge's REPAIRING pass scrubs only `VERIFYBAD`, which is not a substring of
+      // it, so the bounded repair rounds cannot accidentally rescue this tree.
+      writeFileSync(`${cf2Lane.cwd}/code.txt`, "lane side of the second conflict — VERIFY2BAD\n");
       spawnSync("git", ["-C", cf2Lane.cwd, "commit", "-qam", "selfland conflict 2 lane side"]);
     }
     writeFileSync(`${REPO2}/code.txt`, "main side of the second conflict\n");
@@ -2636,18 +2662,14 @@ export async function run(ctx: Ctx): Promise<void> {
         { running?: boolean; last?: CfVerdict | null };
       if (mg.running === false && mg.last) { cf2Verdict = mg.last; break; }
     }
-    // the sabotage goes in AFTER the verdict: the recorded verify saw a clean tree, so a confirm
-    // that trusted the record would land this. Only a FRESH run can see it.
-    if (cf2Lane.cwd) {
-      writeFileSync(`${cf2Lane.cwd}/sabotage.txt`, "VERIFY2BAD — planted after the verdict was recorded\n");
-      spawnSync("git", ["-C", cf2Lane.cwd, "add", "sabotage.txt"]);
-      spawnSync("git", ["-C", cf2Lane.cwd, "commit", "-qm", "selfland conflict 2 sabotage"]);
-    }
+    // the candidate is NOT touched here — see the note above. The lane is only re-settled, because
+    // the merge job rewrote it and done-looking gates above the guarded branch.
     const cf2Ready2 = cf2Lane.slot === null ? false : await waitDoneLooking(cf2Lane.slot);
     const attnBefore = ((await (await get("/api/attention")).json()) as { requests: unknown[] }).requests.length;
     const cf2MainBefore = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
     const cf2Confirm = await selfLand(landTok, cf2RowId);
-    const cf2ConfirmBody = await cf2Confirm.json() as { running?: boolean; confirm?: string; error?: string };
+    const cf2ConfirmBody = await cf2Confirm.json() as { running?: boolean; confirm?: string;
+      candidate?: string; error?: string };
     let cf2After: CfVerdict | null = null;
     for (let i = 0; i < 400; i++) {
       await Bun.sleep(250);
@@ -2656,8 +2678,9 @@ export async function run(ctx: Ctx): Promise<void> {
       if (mg.running === false && mg.last && (mg.last.verify?.ok === false
         || (mg.last.detail ?? "").includes("re-verified FRESH"))) { cf2After = mg.last; break; }
     }
-    check("guarded rung: a FRESH RED on the resolved candidate lands NOTHING, keeps the resolution on the verdict, and opens no attention",
+    check("guarded rung: a RED resolved candidate lands NOTHING, keeps the resolution on the verdict, and opens no attention",
       cf2Ready && cf2Ready2 && (cf2Verdict?.conflicted?.length ?? 0) > 0
+        && cf2Verdict?.candidateSha === cf2ConfirmBody.candidate
         && cf2Confirm.ok && cf2ConfirmBody.confirm === "resolved-candidate"
         && cf2After?.landed === false && (cf2After.detail ?? "").includes("re-verified FRESH")
         && (cf2After.conflicted?.length ?? 0) > 0

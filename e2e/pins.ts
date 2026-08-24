@@ -2832,6 +2832,21 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     rollup !== "" && !/phaseBasis|candidate|rows:/.test(rollup)
       && /phases\[derived\.phase\] = \(phases\[derived\.phase\] \?\? 0\) \+ 1;/.test(supBody),
     rollup === "" ? "no phases rollup found in supervisorView" : rollup.trim());
+  // …and the POINTER that rides beside the phase. `nextAction` is a projection like `phase` and
+  // inherits its one hard rule: it says WHERE a row sits and WHICH door is next, never whether the
+  // work is good. A grading word here would smuggle a judgement into a mechanism that must not
+  // grade — and it would do it on the surface a MAIN reads before deciding to land. Checked as a
+  // rule over the source because the branches are few and every one of them is a literal.
+  const nextBody = server.slice(server.indexOf("function nextActionFor("),
+    server.indexOf("\n}", server.indexOf("function nextActionFor(")));
+  const grading = ["good", "bad", "ready to ship", "looks", "quality", "healthy", "broken", "safe"]
+    .filter((w) => new RegExp(`\\b${w}\\b`, "i").test(nextBody.split("\n")
+      .filter((l) => !l.trim().startsWith("//")).join("\n")));
+  pin(`${RULE_PHASE} — nextAction names a door, never a grade, and reads only phase + status + the promotion record`,
+    nextBody !== "" && grading.length === 0
+    && !/fleetReports|lastOutput|transcript|readLedger|spawnSync/.test(nextBody)
+    && /promotion && promotion\.selfLand !== "off"/.test(nextBody),
+    JSON.stringify({ grading, hasPolicyBranch: /promotion && promotion\.selfLand !== "off"/.test(nextBody) }));
   pin(`${RULE_PHASE} — the phase input counts only OPEN attention rows`,
     inputBuilder !== "" && /attentionRequests\.filter\(/.test(inputBuilder)
       && /a\.status === "open" \|\| a\.status === "send-uncertain"/.test(inputBuilder),

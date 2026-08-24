@@ -449,6 +449,24 @@ ein Register, das die Klasse BENENNEN kann — nie eine Schranke.
 die einzige Zeile, die sagt, dass eine MAIN GEFRAGT hat, auch wenn das Gate danach rot war. Keine
 Ablehnung schreibt sie (in `e2e/programs.ts` als Gegenprobe geprüft).
 
+### `nextAction` in der Program-Execution-Sicht
+
+`GET /api/self/program-execution` trägt je Zeile neben `phase` jetzt `nextAction: string | null` —
+abgeleitet, nirgends gespeichert, und ein ZEIGER, keine Note. Er sagt, welche Tür von dort aus die
+nächste ist, nie ob die Arbeit gut ist (dieselbe Linie, die `program-phase.ts` für `phase` zieht;
+in `e2e/pins.ts` als Regel über die Quelle gehalten). `null` ist eine echte Antwort und heißt „zu
+dieser Zeile gehört gerade keine Tür".
+
+| phase | nextAction |
+| --- | --- |
+| READY (`pending`) | `release → POST /api/self/tasks/:id/release` |
+| READY (`queued`) | der Dispatch-Tick startet sie; keine Tür |
+| REVIEWABLE **mit** Promotion (≠ `off`) | `inspect the diff, then land it yourself → POST /api/self/tasks/:id/land` |
+| REVIEWABLE **ohne** Promotion | der Owner landet vom Board — und der Satz sagt warum |
+| INTEGRATING | `{kind:"merge"}` abonnieren und den Ausgang dort lesen |
+| OWNER_GATE | eine offene Frage wartet auf den Owner |
+| RUNNING · CONTINUE · UNKNOWN | `null` |
+
 ## promotion — `POST /api/programs/:id/promotion` (OWNER-Route, nicht `/api/self/*`)
 
 Sie steht hier, weil sie die eine Erlaubnis erteilt, die eine Session an anderer Stelle VERBRAUCHT

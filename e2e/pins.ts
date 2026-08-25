@@ -3040,14 +3040,17 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   // record could see it.
   const confirmBody = server.slice(server.indexOf("async function confirmResolvedCandidate("),
     server.indexOf("\n}\n", server.indexOf("async function confirmResolvedCandidate(")));
-  pin(`${RULE_LAND} — the MAIN arm of the confirm re-runs runVerify and lands only on ok:true`,
+  const confirmPlan = confirmBody.indexOf("verifyPlanFor(cwd, repo, mainBefore)");
+  const confirmReport = confirmBody.indexOf("reportServerRun(");
+  const confirmRun = confirmBody.indexOf("runVerify(cwd, mainBefore, verifyPlan)");
+  pin(`${RULE_LAND} — the MAIN arm plans before publishing its run, then verifies and lands only on ok:true`,
     /if \(!opts\.byHuman\) \{/.test(confirmBody)
-    && /runVerify\(cwd, repo, mainBefore\)/.test(confirmBody)
+    && confirmPlan >= 0 && confirmReport > confirmPlan && confirmRun > confirmReport
     && /if \(!fresh \|\| fresh\.ok !== true\)/.test(confirmBody)
-    && confirmBody.indexOf("runVerify(") < confirmBody.indexOf("markLandIntent("),
+    && confirmRun < confirmBody.indexOf("markLandIntent("),
     JSON.stringify({ arm: /if \(!opts\.byHuman\) \{/.test(confirmBody),
-      run: /runVerify\(cwd, repo, mainBefore\)/.test(confirmBody),
-      beforeIntent: confirmBody.indexOf("runVerify(") < confirmBody.indexOf("markLandIntent(") }));
+      plan: confirmPlan, report: confirmReport, run: confirmRun,
+      beforeIntent: confirmRun < confirmBody.indexOf("markLandIntent(") }));
   pin(`${RULE_LAND} — both doors derive carried/carriedBy through the one shared helper`,
     carryCalls.length === 2
     && !/const carried = \(pend\?\.conflicted/.test(server.slice(server.indexOf("const mgMatch = /^"))),

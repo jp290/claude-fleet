@@ -32,6 +32,7 @@ import {
   SYSTEM_CAPABILITIES, SELF_GET_ADAPTER_PROBE, QUESTION_ROUTES,
   UNMODELED_CAPABILITY_DIMENSIONS, renderSystemCapabilities,
 } from "../capability-map";
+import { collectRepoMap, firstCommentLine, renderRepoMap } from "../repo-map";
 import { CAPABILITY_FUNCTIONS } from "../src/protocol";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
 // re-implemented the validator would only pin its own copy of the rules.
@@ -877,6 +878,75 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       && ["uiGesture", "traceEffect", "harnessSupport"].every((name) => dimensions.get(name as never)?.includes("not modeled"))
       && generated?.includes("## Dimensions not yet modeled") === true,
     `[${[...dimensions].map(([name, gap]) => `${name}:${gap}`).join(" | ")}]`);
+}
+
+// ================================================================================================
+// 3c. Repo top level -> generated repo map
+// ================================================================================================
+// `rg` finds only what the searcher can already spell, and nothing named this repo's ten top-level
+// directories in one place: `lerntisch/` and `studio-kit/` appeared in no start-context file, and
+// `task-waves.ts` in no prose at all (docs/messungen/video-codebase-klarheit-2026-08-25.md §2.4).
+// docs/repo-map.generated.md is that name list. Same fastener as 3b — the document is a projection,
+// the repo's own top level is the executable side — plus one rule 3b does not need: the document is
+// held against an INDEPENDENT enumeration too, because a renderer that dropped a row would drop it
+// from both sides of a freshness comparison and the pin would go green on a shorter map.
+{
+  const DOC = "docs/repo-map.generated.md";
+  const RULE_MAP = "the generated repo map names every top-level directory and entry file";
+  const probe = collectRepoMap(ROOT);
+  const generated = ((): string | null => { try { return read(DOC); } catch { return null; } })();
+  if (!probe.ok) {
+    // A probe that could not run must fail as ITSELF. "git named no paths" is not "the map is stale".
+    pin(`${RULE_MAP} — PROBE: git named the repo's top level`, false, probe.detail);
+  } else if (generated === null) {
+    pin(`${RULE_MAP} — PROBE: the generated map is readable`, false, `${DOC} missing; run \`bun repo-map.ts\``);
+  } else {
+    const rendered = renderRepoMap(probe.facts);
+    pin("the generated repo map is byte-for-byte fresh from repo-map.ts",
+      generated === rendered,
+      `rendered ${Buffer.byteLength(rendered)} B vs file ${Buffer.byteLength(generated)} B`);
+
+    // The independent side: enumerate the top level again, straight from git, and require a row for
+    // each name. This is what catches a new top-level file whose author never re-rendered.
+    const ls = spawnSync("git", ["-C", ROOT, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+      { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, maxBuffer: 16 * 1024 * 1024 });
+    if (ls.error || ls.status !== 0) {
+      pin(`${RULE_MAP} — PROBE: the independent enumeration ran`, false,
+        (ls.error?.message || ls.stderr || `git ls-files exited ${String(ls.status)}`).trim().slice(0, 160));
+    } else {
+      const paths = ls.stdout.split("\0").filter(Boolean);
+      const wantDirs = [...new Set(paths.filter((p) => p.includes("/")).map((p) => p.slice(0, p.indexOf("/"))))];
+      const wantFiles = paths.filter((p) => !p.includes("/") && (p.endsWith(".ts") || p.endsWith(".sh")));
+      const missing = [
+        ...wantDirs.filter((name) => !generated.includes(`\n- \`${name}/\` — `)).map((name) => `${name}/`),
+        ...wantFiles.filter((name) => !generated.includes(`\n- \`${name}\` — `)),
+      ];
+      const counted = /^## Directories \((\d+)\)$/m.exec(generated)?.[1];
+      const countedFiles = /^## Top-level `\.ts` and `\.sh` files \((\d+)\)$/m.exec(generated)?.[1];
+      pin(RULE_MAP,
+        missing.length === 0 && counted === String(wantDirs.length) && countedFiles === String(wantFiles.length),
+        `${wantDirs.length} dir(s) / ${wantFiles.length} file(s) on disk, doc says ${counted}/${countedFiles}; missing=[${missing.join(",")}]`);
+    }
+
+    // A row whose sentence is unavailable must SAY so. The whole defect this map answers is a thing
+    // that was present but unnamed, so an empty sentence rendered as nothing would rebuild it.
+    const unsentenced = [...probe.facts.directories, ...probe.facts.files].filter((entry) => entry.note === null);
+    const marked = generated.split("**no sentence**").length - 1;
+    pin("every top-level entry without a sentence renders a visible marker instead of an empty row",
+      marked === unsentenced.length,
+      `${unsentenced.length} without a header comment or a DIRECTORY_NOTES entry [${unsentenced.map((e) => e.name).join(",")}], ${marked} marker(s) in the doc`);
+
+    // The sentences are the FILES' OWN first comment lines. Held against the files directly, so a
+    // renderer that started inventing prose — or reading a second line — is a red, not a nicer map.
+    const drifted = probe.facts.files.filter((entry) => {
+      if (entry.note === null) return false;
+      let source: string;
+      try { source = read(entry.name); } catch { return true; }
+      return firstCommentLine(source) !== entry.note;
+    });
+    pin("a file's sentence in the map is that file's own first comment line and nothing else",
+      drifted.length === 0, `[${drifted.map((e) => e.name).join(",")}]`);
+  }
 }
 
 // ================================================================================================

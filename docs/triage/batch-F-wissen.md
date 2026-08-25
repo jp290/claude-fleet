@@ -37,7 +37,7 @@ DONE-KRITERIUM (hart):
   - Jeder Pfad, jede Route und jedes Kommando darin ist am HEAD nachgeschlagen und existiert. Als Beleg: nenne im Commit-Body, WIE du das geprueft hast (die Pruefschleife aus docs/README.md „Keeping this index honest" ist das Muster).
   - Kein Abschnitt wiederholt eine Regel aus CLAUDE.md laenger als einen Satz; wo mehr noetig waere, steht ein Zeiger.
   - Der Doktrin-Teil ist als GERUEST mit offenen Fragen erkennbar, nicht als Behauptung.
-  - Die Public-Pflichtpruefung ist gefahren: `git grep -inE 'example|100\\.64\\.0\\.1'` ueber deinen Diff ist leer.
+  - Die Public-Pflichtpruefung gegen die Deploy-Identitaets-Muster aus CLAUDE.md §Deploy ist ueber deinen Diff gefahren und leer.
 VERIFIKATION: volle Gate-Kette (`bun e2e/pins.ts` ist die Stufe, die hier wirklich etwas prueft). `./e2e-isolated.sh` NUR, falls du e2e/ anfasst — bei einer reinen Doc-Scheibe also nicht.
 
 NICHT Teil dieser Scheibe: den top-level README umschreiben, docs/README.md umbauen, oder eine der zwoelf operativen Docs anfassen. Wenn dir dabei auffaellt, dass eine davon falsch ist, MELDE es im Bericht — repariere es nicht nebenbei.

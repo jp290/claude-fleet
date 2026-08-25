@@ -75,8 +75,8 @@ Self-Token an einer Self-Route verhaut, taucht hier gar nicht auf.
 `FLEET_SHARE_HOSTS`:
 
 ```
-FLEET_ALLOWED_HOSTS='cowork.example.com,klaus.example.com'
-FLEET_SHARE_HOSTS='cowork.example.com,klaus.example.com'
+FLEET_ALLOWED_HOSTS='cowork.example.com,console.example.com'
+FLEET_SHARE_HOSTS='cowork.example.com,console.example.com'
 ```
 
 Der Share-Host-Block (`server.ts:18498-18512`) läuft **vor** jedem `tokenGate` und antwortet auf

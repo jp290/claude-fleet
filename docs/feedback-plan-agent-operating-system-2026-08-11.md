@@ -104,7 +104,7 @@ Content-Hash + Zeitstempel, keine aufloesbare Fassung.
 §10.7 verbietet Identitaeten im getrackten Baum, aber P1-A/P1-C ("thematische, oeffentlich
 tragbare Regeln in getrackte Module") ist genau der Schritt, der massenhaft Text aus dem privaten
 Buch in den public Baum bewegt — inklusive Incident-Erzaehlungen, die Betriebsdetails tragen. Der
-bestehende Check (`git grep -inE 'example|100\.64\.0\.1'`) faengt nur die zwei
+bestehende Check gegen die Deploy-Identitaets-Muster aus CLAUDE.md §Deploy faengt nur die zwei
 bekannten Literale.
 **Empfehlung:** Der P1-C-Schnitt bekommt als Teil seines Done-Kriteriums einen Redaktionsdurchlauf
 (zweites Augenpaar/Worker read-only ueber den Diff, explizit auf Betriebs-/Identitaetsdetails), und

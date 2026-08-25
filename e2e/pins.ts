@@ -62,6 +62,104 @@ const shellScripts = [
   ...readdirSync(`${ROOT}/drills`).filter((f) => f.endsWith(".sh")).map((f) => `drills/${f}`),
 ].sort();
 
+// The checkout a lane's copies and private deployment configuration come FROM. `.git` is a
+// DIRECTORY in the main checkout and a FILE pointing at `…/.git/worktrees/<name>` in a lane.
+// Read, never write: the public-repo leak pin and sections 6/6b all need this source boundary.
+const SOURCE_DIR = ((): string | null => {
+  try {
+    if (statSync(`${ROOT}/.git`).isDirectory()) return ROOT;
+    const m = /gitdir:\s*(\S+)/.exec(readFileSync(`${ROOT}/.git`, "utf8"));
+    const i = m ? m[1].indexOf("/.git/worktrees/") : -1;
+    return i > 0 ? m![1].slice(0, i) : null;
+  } catch { return null; }
+})();
+
+// ================================================================================================
+// 0. Public-repository deployment identity
+// ================================================================================================
+// The forbidden values are private configuration, so writing them into this tracked probe would
+// reproduce the leak it guards. Derive the configured hosts at runtime, then ask git to search
+// only paths it tracks. A public clone has neither source; that is an explicit unprobed result.
+{
+  const RULE = "leak-pin: tracked files contain no configured deploy identity";
+  const keys = ["FLEET_HOST", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS"] as const;
+  const configured = new Map<string, string>();
+  for (const key of keys) {
+    const value = process.env[key]?.trim();
+    if (value) configured.set(key, value);
+  }
+
+  let sourceEnvPresent = false;
+  let sourceEnvUnreadable = false;
+  if (SOURCE_DIR !== null) {
+    const path = `${SOURCE_DIR}/.env`;
+    try {
+      const envText = readFileSync(path, "utf8");
+      sourceEnvPresent = true;
+      for (const line of envText.split("\n")) {
+        const match = /^(?:export\s+)?(FLEET_(?:HOST|ALLOWED_HOSTS|SHARE_HOSTS))\s*=\s*(.*)\s*$/.exec(line.trim());
+        if (!match || configured.has(match[1])) continue;
+        let value = match[2].trim();
+        if ((value.startsWith("'") && value.endsWith("'"))
+          || (value.startsWith('"') && value.endsWith('"'))) value = value.slice(1, -1);
+        if (value) configured.set(match[1], value);
+      }
+    } catch {
+      try { statSync(path); sourceEnvUnreadable = true; }
+      catch { /* absent in a public clone is handled explicitly below */ }
+    }
+  }
+
+  if (configured.size === 0 && sourceEnvUnreadable) {
+    pin("leak-pin: identity source is readable", false, "source-checkout .env exists but could not be read");
+  } else if (configured.size === 0 && !sourceEnvPresent) {
+    skip("leak-pin: no identity source, unprobed", "FLEET identity env and source-checkout .env absent");
+  } else {
+    const publicExamples = /^(?:localhost|0\.0\.0\.0|127\.0\.0\.1|::|::1|100\.64\.0\.1)$/i;
+    const reservedDomains = /(?:^|\.)(?:example\.(?:com|org|net)|example|invalid|test)$/i;
+    const malformed: string[] = [];
+    const hosts = [...new Set([...configured.values()].flatMap((value) => value.split(","))
+      .map((entry) => {
+        const raw = entry.trim();
+        if (!raw) return null;
+        try {
+          return new URL(raw.includes("://") ? raw : `http://${raw}`).hostname.toLowerCase();
+        } catch {
+          malformed.push(raw);
+          return null;
+        }
+      })
+      .filter((host): host is string => host !== null && !publicExamples.test(host) && !reservedDomains.test(host)))];
+    const identities = [...new Set(hosts.flatMap((host) => {
+      const labels = host.split(".");
+      const parent = !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) && labels.length >= 3
+        ? labels.slice(1).join(".") : null;
+      return parent && !reservedDomains.test(parent) ? [host, parent] : [host];
+    }))];
+
+    if (malformed.length > 0 || identities.length === 0) {
+      pin("leak-pin: identity source is probeable", false,
+        `${configured.size} configured field(s), ${malformed.length} malformed value(s), ${identities.length} searchable host(s)`);
+    } else {
+      const args = ["-C", ROOT, "grep", "-I", "-i", "-n", "-F"];
+      for (const identity of identities) args.push("-e", identity);
+      args.push("--");
+      const probe = spawnSync("git", args,
+        { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, maxBuffer: 16 * 1024 * 1024 });
+      if (probe.error || probe.status === null || probe.status > 1) {
+        pin("leak-pin: tracked-file search probe completed", false,
+          (probe.error?.message || probe.stderr || `git grep exited ${String(probe.status)}`).trim().slice(0, 160));
+      } else if (probe.status === 1) {
+        pin(RULE, true, `${identities.length} configured host(s) checked`);
+      } else {
+        const locations = probe.stdout.trim().split("\n").filter(Boolean)
+          .map((line) => /^(.+?:\d+):/.exec(line)?.[1] ?? "tracked file (line unavailable)");
+        pin(RULE, false, `${locations.length} hit(s): [${locations.join(", ")}]`);
+      }
+    }
+  }
+}
+
 // ================================================================================================
 // 1. Instance staging — the class of bug that killed two harnesses silently
 // ================================================================================================
@@ -2285,19 +2383,6 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       `${castsSeen} cast(s) over ${emitted.size} emitted keys; offenders=[${offenders}]`);
   }
 }
-
-// The checkout a lane's copies come FROM. `.git` is a DIRECTORY in the main checkout and a FILE
-// pointing at `…/.git/worktrees/<name>` in a lane. Read, never shelled out to — this file is
-// fs-only by design. Sections 6 and 6b both need it: one to age CLAUDE.md against its source, the
-// other to reach `rulebook/`, which is gitignored and therefore exists in the source alone.
-const SOURCE_DIR = ((): string | null => {
-  try {
-    if (statSync(`${ROOT}/.git`).isDirectory()) return ROOT;
-    const m = /gitdir:\s*(\S+)/.exec(readFileSync(`${ROOT}/.git`, "utf8"));
-    const i = m ? m[1].indexOf("/.git/worktrees/") : -1;
-    return i > 0 ? m![1].slice(0, i) : null;
-  } catch { return null; }
-})();
 
 // ================================================================================================
 // 6. CLAUDE.md — the one steering document with no drift pin at all

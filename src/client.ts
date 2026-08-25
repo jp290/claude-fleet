@@ -5958,6 +5958,16 @@ let qBsBusy = false;
 // — not the error line, not the two inputs, not the busy flag of the request that replaced it.
 // A p.id comparison alone would not do: A → B → A is back at the same id with a different draft.
 let qBsSeq = 0;
+// The promote draft. It holds no typed text — only the in-flight half of a two-step the owner can
+// walk away from mid-way, which is exactly why it carries the founding draft's generation guard.
+let qPlFor: string | null = null;
+let qPlErr: string | null = null;  // the server's own sentence, kept verbatim across repaints
+let qPlBusy = false;
+// Same reason as qBsSeq: confirm→activate is two awaits, and a late answer must not write into a
+// draft that has since been reset or moved to another program. Generation AND id — A → B → A is
+// back at the same id with a different draft.
+let qPlSeq = 0;
+
 // the composer's program picker, same once-per-open lifecycle as qRepoIn
 let qProgSel: HTMLSelectElement | null = null;
 
@@ -6225,6 +6235,81 @@ function renderProgramDetail(shell: Shell, id: string): void {
           + " missing fact first — an unknown binding is not an absent one."));
     return;
   }
+  // PROMOTION LIVED IN A TERMINAL. This pane could say "the server will answer 409 until it is
+  // active" and nothing more, so the two owner transitions the server already gates were reachable
+  // only through promote-program.sh. Both doors below are those exact routes with an EMPTY body:
+  // confirm corrects nothing and re-validates the stored proposal, activate carries no body at all.
+  if (p.status === "proposed" || p.status === "confirmed") {
+    if (qPlFor !== p.id) {
+      qPlFor = p.id;
+      qPlSeq++; // a DIFFERENT program; anything still in flight for the old one is orphaned
+      qPlErr = null; qPlBusy = false;
+    }
+    const forId = p.id;
+    // One step, one sentence. The two 409s read alike ("illegal transition: cannot … a … program"),
+    // so the step NAMES itself around the server's verbatim answer — a paraphrase would drop the
+    // half that says which door closed.
+    const step = async (action: "confirm" | "activate"): Promise<string | null> => {
+      const r = await post(`/api/programs/${forId}/${action}`, {});
+      if (r.ok) return null;
+      const j = (await r.json().catch(() => null)) as { error?: string } | null;
+      return j?.error ? `${action} failed — ${r.status}: ${j.error}`
+        : `${action} failed — the server answered ${r.status} with no readable reason`;
+    };
+    const run = async (from: "proposed" | "confirmed"): Promise<void> => {
+      const seq = ++qPlSeq;
+      const mine = () => seq === qPlSeq && qPlFor === forId;
+      qPlBusy = true; qPlErr = null;
+      qDetailKey = ""; renderQueueDetail();
+      let err: string | null = null;
+      let moved = false; // did a transition actually happen? Then the cached facts are stale.
+      if (from === "proposed") {
+        err = await step("confirm");
+        moved = err === null;
+      }
+      // A CONFIRM THAT LANDED IS KEPT. If activate then fails, the program IS confirmed: the facts
+      // are re-read so the pane repaints with the activate door, and the ACTIVATE sentence is what
+      // the owner reads. No rollback, and confirm is never re-issued as a repair.
+      if (err === null) {
+        err = await step("activate");
+        moved = moved || err === null;
+      }
+      // An orphaned answer still refreshes the FACTS — a transition that happened, happened — but
+      // writes nothing into a draft that is no longer the one it was sent from.
+      if (!mine()) {
+        if (moved) { await loadPrograms(true); qKey = ""; renderQueue(); }
+        return;
+      }
+      qPlBusy = false;
+      qPlErr = err;
+      if (moved) await loadPrograms(true);
+      qKey = ""; qDetailKey = "";
+      renderQueue(); renderQueueDetail();
+    };
+
+    const pr = qDetailSection(shell.detail, "Promote");
+    pr.appendChild(el("div", "shellhint", p.status === "proposed"
+      ? `POST /api/programs/${p.id}/confirm, then /activate — the owner-only pair that turns a`
+        + " proposal into a program Fleet will act on. Both are sent empty, so nothing here rewrites"
+        + " the proposal; every refusal below is the server's own sentence, word for word."
+      : `POST /api/programs/${p.id}/activate — this program is already confirmed, so only the second`
+        + " transition is left. It is also the repair door after a confirm that landed while its"
+        + " activate did not: the confirmed half stands, and only what failed is retried."));
+    if (qPlErr) pr.appendChild(el("div", "pkdwarn", qPlErr));
+    const pacts = el("div", "pkdacts");
+    pacts.style.marginTop = "10px";
+    const promote = el("button", "shrbtn primary", p.status === "proposed"
+      ? (qPlBusy ? "promoting…" : "confirm and activate")
+      : (qPlBusy ? "activating…" : "activate")) as HTMLButtonElement;
+    promote.disabled = qPlBusy;
+    promote.title = p.status === "proposed"
+      ? "runs both owner transitions in order; a confirm that succeeds is kept even if activate fails"
+      : "the second transition on its own — the program is already confirmed";
+    promote.onclick = () => { void run(p.status === "proposed" ? "proposed" : "confirmed"); };
+    pacts.appendChild(promote);
+    pr.appendChild(pacts);
+  }
+
   if (mark === "live") return;
 
   const bs = qDetailSection(shell.detail, "Found a Program-MAIN");

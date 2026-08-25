@@ -3090,6 +3090,71 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     `agents=${agentsRule} rail=${railRule}`);
 }
 
+// --- THE PROMOTE DOOR ON THE BOARD ↔ THE TWO OWNER-GATED ROUTES. Promotion was terminal-only
+// (promote-program.sh) until the Program pane grew a button for it. There is no DOM harness here,
+// so the client half of that pair can only be fastened at the source — and these are exactly the
+// properties no compiler sees: that both transitions are issued from ONE pane and in order, that a
+// refusal reaches the owner as the server's own sentence, and that the pane never re-issues a
+// confirm as a repair. The route half is measured live in e2e/programs.ts ("promote button: …").
+{
+  const RULE_PROMOTE = "the Board's promote door is the two owner-gated transitions, in order, and nowhere else";
+  const client = read("src/client.ts");
+  const from = client.indexOf("function renderProgramDetail(");
+  // bounded by the function's OWN closing brace (column 0), not by whatever function follows it:
+  // an anchor on the next declaration would swallow a promote door pasted in between and call it
+  // "inside the pane" — which is precisely the edit the outside-count below exists to catch.
+  const detail = from < 0 ? "" : client.slice(from, client.indexOf("\n}\n", from) + 3);
+  const blockAt = detail.indexOf('if (p.status === "proposed" || p.status === "confirmed") {');
+  const block = blockAt < 0 ? "" : detail.slice(blockAt, detail.indexOf("const bs = qDetailSection", blockAt));
+  // BOTH transitions, and only from here. Every POST the client aims at a program route is
+  // collected, so a second promote door built anywhere else fails this row instead of quietly
+  // becoming a second surface onto an owner-only rail.
+  const posts = [...client.matchAll(/post\(`\/api\/programs\/\$\{[^}]+\}\//g)];
+  const outside = posts.filter((m) => (m.index ?? -1) < from || (m.index ?? -1) >= from + detail.length);
+  pin(`${RULE_PROMOTE} — renderProgramDetail posts confirm AND activate, and no other client code posts a program transition`,
+    detail !== "" && block !== "" && outside.length === 0
+      && /action: "confirm" \| "activate"/.test(block)
+      && /post\(`\/api\/programs\/\$\{forId\}\/\$\{action\}`, \{\}\)/.test(block)
+      && /step\("confirm"\)/.test(block) && /step\("activate"\)/.test(block),
+    detail === "" ? "renderProgramDetail not found in src/client.ts"
+      : block === "" ? "the promote section was not found in renderProgramDetail"
+        : `postsOutsideThePane=${outside.length}`);
+  // ORDER, and the guard on it. An unconditional activate would turn a refused confirm into a
+  // second refusal the owner has to decode, and on a proposed row it would simply be wrong.
+  const confirmAt = block.indexOf('await step("confirm")');
+  const activateAt = block.indexOf('await step("activate")');
+  pin(`${RULE_PROMOTE} — activate runs after confirm and only on confirm's ok; nothing activates unconditionally`,
+    confirmAt >= 0 && activateAt > confirmAt
+      && /if \(err === null\) \{/.test(block.slice(confirmAt, activateAt))
+      && block.split('await step("activate")').length - 1 === 1,
+    `confirm=${confirmAt} activate=${activateAt}`);
+  // VERBATIM. confirm's 409 and activate's 409 are the same sentence shape, so the pane must carry
+  // the server's status AND its own words, name the step, and put it where the pane already puts
+  // refusals — a toast would take the one line that says which door closed and float it away.
+  const stepFn = block.match(/const step = async[\s\S]*?\n    \};/)?.[0] ?? "";
+  pin(`${RULE_PROMOTE} — a refusal renders the server's own status and sentence, names its step, and is never a toast`,
+    /\$\{r\.status\}: \$\{j\.error\}/.test(stepFn) && /no readable reason/.test(stepFn)
+      && /\$\{action\} failed/.test(stepFn)
+      && /pkdwarn", qPlErr/.test(block) && !/toast\(|alert\(|window\.confirm/.test(block),
+    stepFn === "" ? "the promote step function was not found" : `${stepFn.split("\n").length} lines`);
+  // BUSY AND GENERATION, both. The busy flag alone still lets a late answer write into a draft that
+  // has moved on; the generation alone still lets the owner fire the pair twice.
+  pin(`${RULE_PROMOTE} — the button is disabled in flight AND a late answer is fenced by generation and id`,
+    /qPlBusy = true;/.test(block) && /\.disabled = qPlBusy;/.test(block)
+      && /const seq = \+\+qPlSeq;/.test(block) && /seq === qPlSeq && qPlFor === forId/.test(block)
+      && /qPlSeq\+\+;/.test(block),
+    `busy=${/\.disabled = qPlBusy;/.test(block)} seq=${/const seq = \+\+qPlSeq;/.test(block)}`);
+  // THE RECOVERY DOOR. A confirm that landed while its activate failed is a real state, and it is
+  // repairable here only if `confirmed` renders its own action AND that action starts at activate.
+  // Re-issuing confirm as a repair would meet the server's "conflicting confirm" 409 for a row that
+  // is in fact perfectly fine.
+  pin(`${RULE_PROMOTE} — a confirmed program gets its own activate action and never re-issues confirm as a repair`,
+    /run\(p\.status === "proposed" \? "proposed" : "confirmed"\)/.test(block)
+      && /if \(from === "proposed"\) \{\s*\n\s*err = await step\("confirm"\);/.test(block)
+      && /if \(moved\) await loadPrograms\(true\);/.test(block),
+    `confirmedBranch=${/: "confirmed"\)/.test(block)}`);
+}
+
 console.log(rows.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

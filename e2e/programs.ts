@@ -288,6 +288,57 @@ export async function run(ctx: Ctx): Promise<void> {
   check("programs owner boundary: steward token cannot mutate lifecycle or bootstrap Program-MAIN (401)",
     !!stewardToken && stewardAuth.every((r) => r.status === 401), stewardAuth.map((r) => r.status).join(","));
 
+  // --- THE BOARD'S PROMOTE DOOR, measured at the routes it actually sends. renderProgramDetail
+  // sends confirm and then activate with EMPTY bodies, so what the button leans on is not what is
+  // already proven above and is NOT repeated here: owner corrections and confirm
+  // idempotency/conflict stand at "programs confirm"/"programs confirm idempotency", the self- and
+  // steward-token 401 across every lifecycle action at "programs owner boundary", and the refused
+  // transitions at "programs illegal transitions". These three rows add only what is new.
+  const promoteContent = (row: Program | undefined): string =>
+    JSON.stringify(Object.keys(content).map((k) => (row as unknown as Record<string, unknown> | undefined)?.[k]));
+  const twoStep = ((await (await post("/api/programs",
+    { ...content, title: "Board promote: the empty-body two-step" })).json()) as { program: Program }).program;
+  const proposalBytes = promoteContent(twoStep);
+  const stepConfirm = await programPost(twoStep.id, "confirm", {});
+  const stepConfirmed = (await stepConfirm.json() as { program?: Program }).program;
+  const stepActivate = await programPost(twoStep.id, "activate", {});
+  const stepActivated = (await stepActivate.json() as { program?: Program }).program;
+  check("promote button: the empty-body two-step confirms without rewriting the proposal, then activates",
+    stepConfirm.status === 200 && stepConfirmed?.status === "confirmed"
+      && promoteContent(stepConfirmed) === proposalBytes
+      && stepActivate.status === 200 && stepActivated?.status === "active"
+      && promoteContent(stepActivated) === proposalBytes,
+    `confirm=${stepConfirm.status}:${stepConfirmed?.status} activate=${stepActivate.status}:${stepActivated?.status}`
+      + ` contentMoved=${promoteContent(stepActivated) !== proposalBytes}`);
+
+  // The state the button is built to survive: confirm landed, activate did not. The confirmed half
+  // must stay confirmed, a retried confirm must not be a conflict, and activate must still reach
+  // active — otherwise a half-promoted program would need promote-program.sh after all.
+  const partial = ((await (await post("/api/programs",
+    { ...content, title: "Board promote: recovery after a failed activate" })).json()) as { program: Program }).program;
+  const landedConfirm = await programPost(partial.id, "confirm", {});
+  const retryConfirm = await programPost(partial.id, "confirm", {});
+  const retryBody = await retryConfirm.json() as { ok?: boolean; existing?: boolean; program?: Program };
+  const repairActivate = await programPost(partial.id, "activate", {});
+  const repaired = (await repairActivate.json() as { program?: Program }).program;
+  check("promote button recovery: a confirm that landed stays confirmed, a retried confirm is existing:true, and activate still reaches active",
+    landedConfirm.status === 200 && retryConfirm.status === 200 && retryBody.existing === true
+      && retryBody.program?.status === "confirmed" && repairActivate.status === 200
+      && repaired?.status === "active" && promoteContent(repaired) === promoteContent(partial),
+    `confirm=${landedConfirm.status} retry=${retryConfirm.status}:${JSON.stringify(retryBody.existing)}`
+      + ` activate=${repairActivate.status}:${repaired?.status}`);
+
+  // What the busy flag DEGRADES to. The client disables its button while the pair is in flight, but
+  // a double click that got through must not be an error the owner has to read as a failure.
+  const doubleActivate = await programPost(partial.id, "activate", {});
+  const doubleBody = await doubleActivate.json() as { ok?: boolean; existing?: boolean; program?: Program };
+  check("promote button duplicate click: a second activate on an active program is ok/existing:true 200, never an error",
+    doubleActivate.status === 200 && doubleBody.ok === true && doubleBody.existing === true
+      && doubleBody.program?.status === "active",
+    `${doubleActivate.status} ${JSON.stringify(doubleBody.existing)} ${doubleBody.program?.status}`);
+  await programPost(twoStep.id, "complete");
+  await programPost(partial.id, "complete");
+
   const invalidCases: { name: string; body: Record<string, unknown>; message: string }[] = [
     { name: "empty intent", body: { ...content, intent: "   " }, message: "intent must be 1–4000 chars" },
     { name: "21-item nonGoals", body: { ...content, nonGoals: Array(21).fill("x") }, message: "nonGoals must contain at most 20 items" },

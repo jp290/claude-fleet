@@ -91,3 +91,5 @@ früh; beide Programm-Bindungen (S1/S3) tragen seit dem Boot wieder Session-IDs.
   (same-tree: 1× rot, 1× grün) — Kandidat für `docs/verify-tiering.md`.
 - Der Merge-Sensor-Bug `d825eca6` (`last:"interrupted"` neben `running:true`) trat heute ~5× auf —
   kosmetisch, Task ist pending.
+
+- Direktcommits dieser Session (Hand-Verify pins ALL PASS, kein Land-Ledger): Handoffs `01bec30`/`0c3937b` und der Controller-Rollenbrief `f6bf86f` (`docs/controller.md`).

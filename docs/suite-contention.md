@@ -74,7 +74,8 @@ refused (`gitOpInProgress`) until a human aborts by hand; and the verdict blames
 > **CLOSED 2026-07-28, verified again 2026-08-02.** This section describes a real gap that no
 > longer exists, and it is kept because the rest of the argument rests on it. `e2e-stage.sh` now
 > takes `/tmp/fleet-e2e.lock` at SOURCE time (`ddc5128`), and every one of the seven wrappers
-> sources it — `e2e-isolated.sh:55` included, which is the very script the post-land audit runs.
+> sources it — `e2e-isolated.sh#stage_instance` included (the mutex itself is
+> `e2e-stage.sh#FLEET_SUITE_LOCK`), which is the very script the post-land audit runs.
 > So the automated runner does hold the lock now, and holds it by construction rather than by an
 > agent remembering to. Two details the fix brought with it: the lock dir EXISTING does not mean
 > the lock is held (the `pid` file inside decides, and a dead holder is reaped by the next
@@ -101,8 +102,8 @@ correctness fix and a load reduction. This belongs in the merge path, so it must
 
 **(b) Make the lock real and machine-held.** Move it inside the suite scripts themselves, so every
 invocation serializes — lane, audit, or human — without anyone remembering. The audit's existing
-burst-coalescing (`server.ts:2880-2885`: bursts fold into one run against the current tip) already
-handles the queueing a blocking lock would create.
+burst-coalescing (`server.ts#drainPostLandAudits`: bursts fold into one run against the current
+tip) already handles the queueing a blocking lock would create.
 
 **(c) Stop running the full suite once per lane. This is the biggest cost, and it is my error.**
 

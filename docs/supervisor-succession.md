@@ -5,8 +5,11 @@ owner-seitige Supervisor-Session kontext-sparsam?* Es ist kein Arbeitsregister. 
 bleiben `./state.sh`, `./register.sh`, `GET /api/programs` und die `supervisor-view` selbst; jede
 Zahl hier ist ein Zeiger dorthin, nie eine Kopie.
 
-**Methode und ihre Grenze.** Jede Struktur-Aussage trägt `file:line` gegen **meinen Baum,
-HEAD `51aace1`** — die Zeilen wandern, der Name der Naht nicht. Drei Etiketten, nie vermischt:
+**Methode und ihre Grenze.** Jede Struktur-Aussage trägt `datei#symbol` (Konvention seit 2026-08-25,
+owner-promoviert: Zeilenverweise in `server.ts` rotten binnen Stunden, ein Symbolname übersteht jede
+Einfügung und löst mit einem `rg -n '<symbol>' server.ts` auf — Beleg
+`docs/messungen/video-codebase-klarheit-2026-08-25.md` §2.1, 96 % Fehlschussquote bei
+Zeilenverweisen). Drei Etiketten, nie vermischt:
 
 - **GEMESSEN** — ich habe die Zahl in dieser Lane erzeugt (Kommando genannt) oder aus einem Ledger
   gelesen.
@@ -23,28 +26,31 @@ Code-Gegencheck; wo Handoff und Code auseinandergehen, gilt der Code (§5).
 
 ### 1.1 Die Identität
 
-`SupervisorBinding` ist ein **Singleton** neben `programs` (`server.ts:1896` Typ, `1902` der
-Zustand, `1903` der Inflight-Riegel) mit exakt der Occupant-Form von `Program.main`:
-`{slot, openedAt, sessionId, boundAt}`. Zwei Eigenschaften tragen alles darüber:
+`SupervisorBinding` ist ein **Singleton** neben `programs` (`server.ts#SupervisorBinding` Typ,
+`server.ts#supervisor` der Zustand, `server.ts#supervisorBootstrapInflight` der Inflight-Riegel) mit
+exakt der Occupant-Form von `Program.main`: `{slot, openedAt, sessionId, boundAt}`. Zwei
+Eigenschaften tragen alles darüber:
 
-- **Occupancy, nicht Name.** `isBoundSupervisor` (`server.ts:12424-12425`) joint auf
+- **Occupancy, nicht Name.** `isBoundSupervisor` (`server.ts#isBoundSupervisor`) joint auf
   `slot + openedAt`. Ein recycelter Slot erbt die Bindung strukturell nie, und ein Label
   「🧿 Supervisor」 verleiht keinerlei Autorität — anders als `⚙ steward`, das ein magischer
-  Label-String ist (`STEWARD_LABEL`).
-- **Tolerantes Laden, nie halb.** Der Loader (`server.ts:13236-13243`) akzeptiert die Bindung nur
-  vollständig; abwesend ODER malformed lädt als `null`. Begründung im Code: eine halbe Bindung wäre
-  nicht ein schwächerer Fakt, sondern ein anderer.
+  Label-String ist (`STEWARD_LABEL`, `server.ts#STEWARD_LABEL`).
+- **Tolerantes Laden, nie halb.** Der Loader (`server.ts#STATE_FILE`, der Startup-Ladeblock direkt
+  nach `claimInstanceLock`) akzeptiert die Bindung nur vollständig; abwesend ODER malformed lädt als
+  `null`. Begründung im Code: eine halbe Bindung wäre nicht ein schwächerer Fakt, sondern ein
+  anderer.
 
 Die Bindung überlebt den Prozess-Neustart (Teil des persistierten States, ausgeliefert an
-`GET /api/programs` als `{programs, supervisor}`, `server.ts:12863`).
+`GET /api/programs` als `{programs, supervisor}`, `server.ts#handleOwnerProgramRoute`).
 
 ### 1.2 Der Gründungsbrief — und was er NICHT enthält
 
-Beide Briefe teilen sich einen Rumpf, `supervisorBriefBody()` (`server.ts:12194-12199`); der
-Bootstrap-Brief (`buildSupervisorBrief`, `12201`) und der Nachfolge-Brief
-(`buildSupervisorSuccessionBrief`, `12208`) unterscheiden sich in **zwei Zeilen**: der Kopfzeile
-(`[fleet Supervisor]` vs. `[fleet Supervisor succession] … everything handed over is in HANDOFF.md`)
-und dem optionalen `carry` (max. `MAX_SUCCESSION_CARRY = 500` Zeichen, `server.ts:4828`).
+Beide Briefe teilen sich einen Rumpf, `supervisorBriefBody()` (`server.ts#supervisorBriefBody`); der
+Bootstrap-Brief (`buildSupervisorBrief`, `server.ts#buildSupervisorBrief`) und der Nachfolge-Brief
+(`buildSupervisorSuccessionBrief`, `server.ts#buildSupervisorSuccessionBrief`) unterscheiden sich in
+**zwei Zeilen**: der Kopfzeile (`[fleet Supervisor]` vs.
+`[fleet Supervisor succession] … everything handed over is in HANDOFF.md`) und dem optionalen
+`carry` (max. `MAX_SUCCESSION_CARRY = 500` Zeichen, `server.ts#MAX_SUCCESSION_CARRY`).
 
 Der Rumpf sagt vier Dinge und nichts weiter:
 
@@ -54,24 +60,28 @@ Der Rumpf sagt vier Dinge und nichts weiter:
 2. **Strukturelle Unfähigkeiten, ausdrücklich benannt** — kein Confirm/Activate, kein Land, kein
    Deploy, kein Code.
 3. **Kanal-Liste** — `GET /api/self`, `POST /api/self/programs` (propose-only),
-   `POST /api/self/attention`, `GET /api/self/supervisor-view`, `POST /api/self/nudge`. (Zu
-   `attention` siehe §5.2 — der Brief nennt hier einen Kanal, den die gebundene Supervisor-Session
-   heute nicht bedienen kann.)
+   `POST /api/self/attention`, `GET /api/self/supervisor-view`, `POST /api/self/nudge`,
+   `POST /api/self/supervisor-watch/:id/complete` (STN-1, beantwortet genau einen von einem
+   Controller registrierten Transition-Watch — **im Baum von heute ein sechster Kanal, den diese
+   Liste bislang nicht führte**; nachgetragen bei dieser Umstellung, `server.ts#supervisorBriefBody`).
+   (Zu `attention` siehe §5.2 — der Brief nennt hier einen Kanal, den die gebundene
+   Supervisor-Session heute nicht bedienen kann.)
 4. **Startordnung** — `./state.sh`, dann `./register.sh`, dann beobachten und den Owner nur
    ansprechen, wenn etwas ihn braucht.
 
-**Was der Brief bewusst nicht trägt** (Kommentar bei `server.ts:12190-12193`): kein
+**Was der Brief bewusst nicht trägt** (Kommentar über `server.ts#supervisorBriefBody`): kein
 Verhaltens-Rulebook. Und, für die Kostenrechnung entscheidend: **kein Programm-JSON.** Der
 Program-MAIN-Brief serialisiert `programContent(program)` verbatim in den Text
-(`server.ts:12144`, `12156` im Bootstrap-Brief, `12174`, `12186` im Nachfolge-Brief); der
-Supervisor-Brief tut das nicht — er sitzt *quer* zu
+(`server.ts#buildProgramMainBrief` im Bootstrap-Brief, `server.ts#buildProgramMainSuccessionBrief`
+im Nachfolge-Brief); der Supervisor-Brief tut das nicht — er sitzt *quer* zu
 allen Programmen und liest ihren Inhalt bei Bedarf über `GET /api/self/programs`
-(`server.ts:15616-15617`, dessen Disjunkt ausdrücklich `isBoundSupervisor(s)` enthält).
+(`server.ts#"/api/self/programs"`, dessen Disjunkt ausdrücklich `isBoundSupervisor(s)` enthält).
 
 ### 1.3 ContextPlan-Anker — Zeiger, nie Inhalt
 
 Beide Rails hängen denselben Anker-Block an: `programMainContextFacts(frame, harness)`
-(`server.ts:12071-12079`) → `planContext` → `renderContextAnchorBlock` (`server.ts:5972-5984`). Der
+(`server.ts#programMainContextFacts`) → `planContext` → `renderContextAnchorBlock`
+(`server.ts#renderContextAnchorBlock`). Der
 Renderer emittiert **eine Zeile je Anker** und gibt `""` zurück, wenn nichts ausgewählt wurde — kein
 zweiter leerer Pfad. Die Zeile im Brief sagt es selbst: *"fresh advisory pointers; no source content
 is copied"*.
@@ -88,11 +98,12 @@ allein trägt auch eine gewöhnliche Lane):
 Zum Vergleich, aus demselben Ledger: eine Program-MAIN-Zustellung derselben Woche wog **5302 B** —
 der Unterschied ist im Wesentlichen das eingebettete Programm-JSON.
 
-### 1.4 Die typisierten Sinne (`GET /api/self/supervisor-view`, `server.ts:12445`)
+### 1.4 Die typisierten Sinne (`GET /api/self/supervisor-view`, `server.ts#supervisorView`)
 
 Read-only, occupancy-gated (`isBoundSupervisor`, sonst **409** `NOT_SUPERVISOR` — nicht 401, die
-Session hat ja ein gültiges Token), **nie auf dem 2-s-Poll** (Kommentar `server.ts:12441-12443`:
-`/api/sessions` ist die größte Nutzlast des Servers und hat Bytes an Headroom). Fünf Faktgruppen aus
+Session hat ja ein gültiges Token), **nie auf dem 2-s-Poll** (Kommentar über
+`server.ts#supervisorView`: `/api/sessions` ist die größte Nutzlast des Servers und hat Bytes an
+Headroom). Fünf Faktgruppen aus
 Quellen, die ohnehin existieren:
 
 | Gruppe | Quelle | Deckel |
@@ -108,27 +119,28 @@ Programme, unattribuierbare Outcome-Zeilen, malformed-Zähler je Ledger, ein
 `deployGap: null` ausdrücklich als *"not measured yet, which is not an all-clear"* — und eine
 konstante Zeile: *"1 lineage gap: no persisted Supervisor lineage exists"* (§5.1).
 
-### 1.5 Die eine Stimme (`POST /api/self/nudge`, `server.ts:12602`)
+### 1.5 Die eine Stimme (`POST /api/self/nudge`, `server.ts#supervisorNudge`)
 
-**Der Empfänger wird ABGELEITET, nie benannt** (Kommentar `12594-12599`): der Body nennt eine
-`programId`, der Empfänger ist deren gebundener Program-MAIN-Occupant. Ein Nudge kann strukturell
-keine Pane erreichen, die das Portfolio nicht ohnehin nennt. Fünf Verweigerungen, alle 409 und alle
-vor jedem Transport: unbekanntes Programm · Programm nicht `active` · kein gebundener MAIN ·
-Occupant weg/ersetzt · `awaiting === "owner"` (*"escalate, never nudge past it"*). Danach
-`canDeliver` mit der attended Waiver-Menge, **ohne** Nachlass auf `alive` — in eine agentenlose Pane
-zu pasten wäre Prosa in eine Shell. Text max. 2000 Zeichen (`MAX_SUPERVISOR_NUDGE_TEXT`,
-`server.ts:12435`).
+**Der Empfänger wird ABGELEITET, nie benannt** (Kommentar über `server.ts#supervisorNudge`): der
+Body nennt eine `programId`, der Empfänger ist deren gebundener Program-MAIN-Occupant. Ein Nudge
+kann strukturell keine Pane erreichen, die das Portfolio nicht ohnehin nennt. Fünf Verweigerungen,
+alle 409 und alle vor jedem Transport: unbekanntes Programm · Programm nicht `active` · kein
+gebundener MAIN · Occupant weg/ersetzt · `awaiting === "owner"` (*"escalate, never nudge past it"*).
+Danach `canDeliver` mit der attended Waiver-Menge, **ohne** Nachlass auf `alive` — in eine
+agentenlose Pane zu pasten wäre Prosa in eine Shell. Text max. 2000 Zeichen
+(`MAX_SUPERVISOR_NUDGE_TEXT`, `server.ts#MAX_SUPERVISOR_NUDGE_TEXT`).
 
-Was er **nicht** ist (Kommentar `12599-12601`): keine Persistenz, kein `FleetEvent`, kein Watch, kein
-Tick, kein Retry. Der Receipt an den Aufrufer, die Journal-Zeile (`logPrompt(..., "supervisor", ...)`,
-Source-Union bei `server.ts:2484`) und das Audit-Ereignis `supervisor_nudge` **ohne Text**
-(`server.ts:12660`) sind der ganze Datensatz.
+Was er **nicht** ist (Kommentar über `server.ts#supervisorNudge`): keine Persistenz, kein
+`FleetEvent`, kein Watch, kein Tick, kein Retry. Der Receipt an den Aufrufer, die Journal-Zeile
+(`logPrompt(..., "supervisor", ...)`, Source-Union bei `server.ts#logPrompt`) und das Audit-Ereignis
+`supervisor_nudge` **ohne Text** (innerhalb `server.ts#supervisorNudge`) sind der ganze Datensatz.
 
 ### 1.6 Reichweite über Programme
 
 `GET /api/self/programs` gibt dem gebundenen Supervisor **jedes** Programm mit vollem Inhalt
-(`server.ts:15616-15617`) — Intent, successCriterion, nonGoals, openQuestions; `POST` bleibt
-propose-only (`status: "proposed"`, `proposedBy.kind: "session"`, `15622-15627`). Die Reichweite
+(`server.ts#"/api/self/programs"`) — Intent, successCriterion, nonGoals, openQuestions; `POST`
+bleibt propose-only (`status: "proposed"`, `proposedBy.kind: "session"`, im selben Routenblock
+`server.ts#"/api/self/programs"`). Die Reichweite
 folgt der **Bindung**, nicht einer Proposer-Identität — sie überlebt also die Nachfolge.
 
 ---
@@ -164,7 +176,7 @@ reflexhaftes „erst beide Skripte" ist für einen Supervisor, der nur die Portf
 die teuerste Zeile seiner Startordnung.
 
 **`supervisor-view` habe ich NICHT gemessen** und schätze sie hier auch nicht: die Route antwortet
-einer Lane mit 409 (`server.ts:15649`), und eine Schätzung aus den Deckeln allein (50 + 4×20 + 2×5
+einer Lane mit 409 (`server.ts#"/api/self/supervisor-view"`), und eine Schätzung aus den Deckeln allein (50 + 4×20 + 2×5
 Zeilen, Freitext auf 200 Zeichen) spannt eine Größenordnung auf, die als Zahl seriöser aussähe, als
 sie ist. **Das ist die erste Messung, die der nächste bindende Supervisor nachtragen sollte** — ein
 `curl … | wc -c` aus seiner eigenen Pane, ein Kommando, eine Zeile in dieser Tabelle.
@@ -213,7 +225,7 @@ Entscheid der Session statt einer Vorab-Wette des Servers.
 |---|---|
 | Programm-Inhalte im Brief | Ein Supervisor sitzt quer zu allen Programmen; `n × programContent` wäre unbeschränkt. Reichweite ist gebaut (`GET /api/self/programs`), Zustellung wäre eine Wette. |
 | `HANDOFF.md`-Inhalt | Zeiger statt Kopie. Zustellung kostete ~5,4 %; die oberste Sektion, die die Nachfolgerin selbst liest, kostet ~0,09 %. |
-| Verhaltens-Rulebook | Ausdrücklicher Non-Goal des Cuts (`server.ts:12190-12193`): ein Rulebook vor der ersten Beobachtung wäre Prosa, die der nächste Cut als Vertrag erbt. Bleibt owner-promotet und später. |
+| Verhaltens-Rulebook | Ausdrücklicher Non-Goal des Cuts (Kommentar über `server.ts#supervisorBriefBody`): ein Rulebook vor der ersten Beobachtung wäre Prosa, die der nächste Cut als Vertrag erbt. Bleibt owner-promotet und später. |
 | `CLAUDE.md` | Kein Pack, kein Anker, ~2,7 %. `AGENTS.md` ist der dünne Zeiger, und er ist Anker-Ziel. |
 | Nudge-/Prompt-Historie | Existiert im Journal; die Session braucht sie nicht, um zu starten. |
 | `land-mechanics`, `task-queue`, `harness-adapter`, `private-deploy-overlay` | Vom Plan selbst als `trigger-not-matched` verworfen (GEMESSEN, §1.3) — ein Supervisor landet nicht, dispatcht nicht und wählt keinen Harness. |
@@ -221,7 +233,7 @@ Entscheid der Session statt einer Vorab-Wette des Servers.
 
 ### 3.4 Zwei benennbare Sparhebel, die heute noch offen sind
 
-- **Die Startordnung des Briefs schreibt `register.sh` vor** (`server.ts:12198`) — die teuerste Zeile
+- **Die Startordnung des Briefs schreibt `register.sh` vor** (`server.ts#supervisorBriefBody`) — die teuerste Zeile
   (~0,93 %) für eine Rolle, die keine Queue-Zeile dispatcht. Ein Supervisor-Brief, der
   `GET /api/self/supervisor-view` **vor** `register.sh` stellt und letzteres nur bei konkretem
   Bedarf nennt, wäre der billigste real verfügbare Schnitt. **Nicht getan** — der Brief-Rumpf ist
@@ -251,26 +263,32 @@ curl -s -X POST http://100.64.0.1:8790/api/supervisor/bootstrap \
   -d '{"cwd":"/Users/owner/claude-fleet","harness":"claude","model":"claude-fable-5","label":"🧿 Supervisor"}'
 ```
 
-**Owner-only** (`server.ts:15934-15938`): ein Self-Token ist hier gar keine Kredenz (401), ein
-Steward-Token ist ein gewöhnlicher Auth-Fehlschlag — wer den Fleet supervisiert, entscheidet der
-Owner. Vorbedingungen, jede mit eigener Antwort:
+**Owner-only** (`server.ts#"/api/supervisor/bootstrap"`): ein Self-Token ist hier gar keine Kredenz
+(401), ein Steward-Token ist ein gewöhnlicher Auth-Fehlschlag — wer den Fleet supervisiert,
+entscheidet der Owner. Vorbedingungen, jede mit eigener Antwort:
 
 | Bedingung | Naht | Antwort, wenn verletzt |
 |---|---|---|
-| `cwd` ist ein Git-Repo, HEAD + Branch lesbar | `preflightProgramMain`, `server.ts:12041-12068` | 400 |
+| `cwd` ist ein Git-Repo, HEAD + Branch lesbar | `preflightProgramMain`, `server.ts#preflightProgramMain` | 400 |
 | Fremdes Repo: getrackte, nicht-leere `AGENTS.md` | ebd. | 400 |
-| Harness/Modell/Effort gültig für den Adapter | `bootstrapSupervisor`, `server.ts:12316-12322` | 400 |
-| `label` fehlt | Default `SUPERVISOR_LABEL = "🧿 Supervisor"` (`server.ts:1904`, gesetzt `12346`) | — |
-| Kein freier Slot | `server.ts:12341` | 409 `no free slot` |
-| Bindung existiert und ihr Occupant lebt | `server.ts:12328-12331` | **200** `{ok:true, existing:true}` — idempotent, kein zweiter Supervisor |
-| Bindung existiert, Occupant tot (*stale*) | `server.ts:12332` | 409 mit Slot + `openedAt` — **und es gibt keinen Clear-Weg** (§5.1) |
-| Ein Bootstrap läuft bereits | `server.ts:12334` | 409 |
+| Harness/Modell/Effort gültig für den Adapter | `bootstrapSupervisor`, `server.ts#bootstrapSupervisor` | 400 |
+| `label` fehlt | Default `SUPERVISOR_LABEL = "🧿 Supervisor"` (`server.ts#SUPERVISOR_LABEL`, gesetzt in `server.ts#bootstrapSupervisor`) | — |
+| Kein freier Slot | `server.ts#bootstrapSupervisor` | 409 `no free slot` |
+| Bindung existiert und ihr Occupant lebt | `server.ts#bootstrapSupervisor` | **200** `{ok:true, existing:true}` — idempotent, kein zweiter Supervisor |
+| Bindung existiert, Occupant tot (*stale*) | `server.ts#bootstrapSupervisor` | 409 mit Slot + `openedAt` — **und es gibt keinen Clear-Weg** (§5.1) |
+| Ein Bootstrap läuft bereits | `server.ts#bootstrapSupervisor` (Riegel `server.ts#supervisorBootstrapInflight`) | 409 |
 
 Danach: Slot öffnen, 4 s Boot-Ruhe, `canDeliver`-Gate, `waitForFoundingReadiness`, Brief senden,
-**dann erst** binden. Die Crash-Grenze ist einseitig und im Code begründet (`server.ts:12270-12275`):
-Prozessverlust *vor* dem Send lädt die alte Bindung; Verlust *nach* dem Send lädt sie ebenfalls,
+**dann erst** binden (`server.ts#bootstrapSupervisor`). Die Bindung wird strukturell nur nach
+erfolgreichem Send gesetzt: **korrigiert gegenüber der Vorfassung**, die hier von einer "alten
+Bindung" sprach, die es beim ERSTEN Bootstrap nie geben kann (existiert bereits eine Bindung, kehrt
+die Funktion vorher zurück, siehe Tabelle oben). Für den Bootstrap-Pfad gilt: Prozessverlust *vor*
+dem Send lässt `supervisor` unverändert `null` — als wäre der Aufruf nie geschehen. Verlust *nach*
+dem Send, aber vor `saveStateNow`, verliert die In-Memory-Bindung beim Neustart wieder auf `null`,
 während die belieferte Nachfolgerin eine gewöhnliche ungebundene Session bleibt — der Owner
-entscheidet dann.
+entscheidet dann. Die *Nachfolge* (§4.2) hat dagegen eine echte alte Bindung und einen im Code
+benannten Kommentar dazu (`server.ts#succeedSupervisor`, „Same one-way crash boundary as the
+Program-MAIN rail").
 
 ### 4.2 Nachfolge auslösen (aus der Pane des Supervisors)
 
@@ -280,23 +298,25 @@ curl -s -X POST http://100.64.0.1:8790/api/self/succeed \
   -d '{"carry":"das Erste, was ich als Nächstes täte"}'
 ```
 
-Vorbedingungen der Reihe nach (`handleSelfSucceed`, `server.ts:4885-4921`):
+Vorbedingungen der Reihe nach (`handleSelfSucceed`, `server.ts#handleSelfSucceed`):
 
-1. **Kein Lane, kein Steward** — `successionScopeError` (`server.ts:4849`).
+1. **Kein Lane, kein Steward** — `successionScopeError` (`server.ts#successionScopeError`).
 2. **Keine zweite Nachfolge derselben Session** — `successionStarted`/`successionInflight`, 409.
 3. **`HANDOFF.md` existiert, ist sauber und hat einen Commit jünger als diese Session**
-   (`handoffCommittedAfterOpen`, `server.ts:4873`; 409 mit der Begründung *„otherwise the successor
-   would have nothing to read"*). **Das ist der einzige harte Zwang des ganzen Rails** — der Brief
-   verweist auf `HANDOFF.md`, also muss die Datei existieren.
+   (`handoffCommittedAfterOpen`, `server.ts#handoffCommittedAfterOpen`; 409 mit der Begründung
+   *„otherwise the successor would have nothing to read"*). **Das ist der einzige harte Zwang des
+   ganzen Rails** — der Brief verweist auf `HANDOFF.md`, also muss die Datei existieren.
 4. **Nicht gleichzeitig Program-MAIN eines aktiven Programms** — sonst 409 *„ambiguous succession:
-   this session is both the Supervisor and Program-MAIN"* (`server.ts:4915-4917`). Zwei Autoritäten
-   auf einer Session haben keine definierte Übertragungsreihenfolge, und der Code erfindet keine.
+   this session is both the Supervisor and Program-MAIN"* (innerhalb `server.ts#handleSelfSucceed`).
+   Zwei Autoritäten auf einer Session haben keine definierte Übertragungsreihenfolge, und der Code
+   erfindet keine.
 5. **Freier Slot** — sonst 409, und die Vorgängerin bleibt stehen.
 
-Der Weg danach ist `succeedSupervisor` (`server.ts:12217`) und Zeile für Zeile der Bootstrap-Pfad,
-mit derselben Ein-Weg-Crash-Grenze. Die Vorgängerin räumt der Grace-Timer
-(`MIGRATE_GRACE_MS`, Default 120 s, `server.ts:7936`, persistierte Deadline — der nächste Boot wird
-Executor, wenn dieser Prozess stirbt); sofort räumen geht mit `POST /api/self/retire`.
+Der Weg danach ist `succeedSupervisor` (`server.ts#succeedSupervisor`) und Zeile für Zeile der
+Bootstrap-Pfad, mit derselben Ein-Weg-Crash-Grenze (hier trägt sie einen eigenen Kommentar, s.o.).
+Die Vorgängerin räumt der Grace-Timer (`MIGRATE_GRACE_MS`, Default 120 s,
+`server.ts#MIGRATE_GRACE_MS`, persistierte Deadline — der nächste Boot wird Executor, wenn dieser
+Prozess stirbt); sofort räumen geht mit `POST /api/self/retire`.
 
 ### 4.3 Wenn der Attention-Kanal nicht trägt
 
@@ -318,9 +338,9 @@ Supervisor ist, bekommt dort 409** (§5.2). Bis das ein Cut schließt gilt:
 ### 5.1 Keine Supervisor-Lineage, und ein Stale-Binding hat keinen Clear-Weg
 
 Die Bindung ist ein **Singleton**, kein Verlauf: `supervisor = {…}` wird bei Bootstrap
-(`server.ts:12388`) und Nachfolge (`server.ts:12283`) **überschrieben**. Frühere Occupants sind
-nicht rekonstruierbar; die `supervisor-view` sagt es über sich selbst
-(`unknown`-Zeile *„1 lineage gap"*, `server.ts:12583`). Der einzige forensische Rest sind die
+(`server.ts#bootstrapSupervisor`) und Nachfolge (`server.ts#succeedSupervisor`) **überschrieben**.
+Frühere Occupants sind nicht rekonstruierbar; die `supervisor-view` sagt es über sich selbst
+(`unknown`-Zeile *„1 lineage gap"*, `server.ts#supervisorView`). Der einzige forensische Rest sind die
 `context-receipts.jsonl`-Zeilen mit `programId:null` **und** `taskId:null` — das ist die Signatur, an
 der ich §1.3 gemessen habe, aber sie ist ein Nebenprodukt, kein Register.
 
@@ -333,24 +353,25 @@ Geerbt vom Program-MAIN-Modell und in beiden Cut-Reviews benannt.
 ### 5.2 Der Attention-Kanal stirbt mit dem Programm-Abschluss
 
 `openAttention` verlangt `boundProgramForMain(s)` — ein **aktives** Programm, dessen `main` genau
-diese Session ist (`server.ts:5345-5349`, angewandt `5363-5365`; die Route selbst bei
-`server.ts:15752-15759`). Die Supervisor-Bindung ist ein *anderer* Singleton und erfüllt dieses
-Prädikat nie. Die einzige Session, die heute beides war, war die erste — solange ihr Programm
-`active` war.
+diese Session ist (`server.ts#boundProgramForMain`, angewandt in `server.ts#openAttention`; die
+Route selbst bei `server.ts#"/api/self/attention"`). Die Supervisor-Bindung ist ein *anderer*
+Singleton und erfüllt dieses Prädikat nie. Die einzige Session, die heute beides war, war die
+erste — solange ihr Programm `active` war.
 
 **Das ist ein Widerspruch zwischen zugestelltem Text und Code**, und der Code gilt: der Brief
-(`server.ts:12197`) verspricht *„POST /api/self/attention (reach the owner)"*, `openAttention`
-antwortet dem gebundenen Supervisor mit 409 *„not the current bound MAIN of an active program"*.
-**Kosten:** die Rolle, die den Owner ansprechen soll, hat dafür keinen typisierten Kanal — und
-merkt es erst am 409. Der billigste Schnitt wäre, `openAttention` das Occupancy-Prädikat
-`isBoundSupervisor` als zweiten Disjunkt zu geben, genau wie `GET /api/self/programs` es tut
-(`server.ts:15616-15617`) — mit `programId: null` als ehrlichem cross-program-Scope, derselben
-Konvention, die der Supervisor-Receipt schon benutzt. **Vorschlag, nicht Änderung:** diese Lane ist
-doc-only, und die Naht ist owner-promotet.
+(`server.ts#supervisorBriefBody`) verspricht *„POST /api/self/attention (reach the owner)"*,
+`openAttention` antwortet dem gebundenen Supervisor mit 409
+*„not the current bound MAIN of an active program"*. **Kosten:** die Rolle, die den Owner
+ansprechen soll, hat dafür keinen typisierten Kanal — und merkt es erst am 409. Der billigste
+Schnitt wäre, `openAttention` das Occupancy-Prädikat `isBoundSupervisor` als zweiten Disjunkt zu
+geben, genau wie `GET /api/self/programs` es tut (`server.ts#"/api/self/programs"`) — mit
+`programId: null` als ehrlichem cross-program-Scope, derselben Konvention, die der
+Supervisor-Receipt schon benutzt. **Vorschlag, nicht Änderung:** diese Lane ist doc-only, und die
+Naht ist owner-promotet.
 
 ### 5.3 Die Rollen-Schicht hat keinen Träger
 
-`ContextPlanInput` (`context-plan.ts:18-24`) kennt keine Rolle; `mode` ist eine Berechtigungsform,
+`ContextPlanInput` (`context-plan.ts#ContextPlanInput`) kennt keine Rolle; `mode` ist eine Berechtigungsform,
 keine Disziplin (`docs/working-circle-analysis-2026-08-16.md` §2.2 Zeile 5, §4 G3). Die
 Supervisor-Rolle existiert deshalb **ausschließlich** als Prosa in `supervisorBriefBody()` — nicht
 versioniert, nicht ausgewählt, nicht durch einen Receipt als geliefert beweisbar, während die
@@ -383,5 +404,5 @@ wartet auf einen Träger, den es noch nicht gibt.
   Laufzeitverhalten, die ich nicht in der Quelle gelesen habe.
 - **`context-packs.ts` nur über die Receipt-Zeilen und `docs/working-circle-analysis-2026-08-16.md`
   §2.1** — die Pack-Definitionen selbst habe ich nicht gelesen.
-- **Zeilennummern gegen `51aace1`**; sie wandern mit dem nächsten `server.ts`-Land, die Namen der
-  Nähte nicht.
+- **Verweise sind `datei#symbol`, nicht `datei:zeile`** (umgestellt 2026-08-25, s. Methode-Absatz
+  oben); ein Symbolname überlebt jedes weitere `server.ts`-Land, eine Zeilennummer nicht.

@@ -164,7 +164,7 @@ Netzwerkkosten werden nicht als null behauptet.
     **`commsFor(s)`** ist die, die canDeliver und der git-Tick fragen (Adapter-comms des Slots, sonst der
     Default), `HARNESS_COMMS` ist nur noch dessen Fallback (mit „unprobed"-Waiver für undeklariert),
     `AUTHOR_COMMS` = `HARNESS_COMMS ∪ {claude}` (nur `wakeAuthor`, nimmt den Waiver NIE, weil dort Prosa in
-    die Pane geht), und literal `["claude"]` auf **`CLAUDE_HARNESS.worker`** (`server.ts:274-276`; der
+    die Pane geht), und literal `["claude"]` auf **`CLAUDE_HARNESS.worker`** (`server.ts#CLAUDE_HARNESS`; der
     Summarizer spawnt claude beim Namen, egal was `FLEET_CMD` ist). **Korrektur 2026-08-08 (`2a86cec`): das
     war bis dahin eine freistehende Funktion `claudeAliveAt`, 1700 Zeilen von der Zeile entfernt, die sie
     beschrieb** — richtig, solange der Worker claude BAUT, falsch in dem Moment, in dem die Zeile aus einem

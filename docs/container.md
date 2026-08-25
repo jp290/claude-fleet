@@ -8,7 +8,7 @@ traps that each look like a different bug than they are.
 Fleet welds four things together through the filesystem: the pane byte stream (`streams/<n>`,
 written by tmux's `pipe-pane`, read by the server), the agent transcript
 (`~/.claude/projects/<cwd-slug>/<uuid>.jsonl`, written by `claude`, read by the server —
-`projDir`, `server.ts:361`), and the git worktrees the server and the agent both operate on.
+`server.ts#projDir`), and the git worktrees the server and the agent both operate on.
 Server, tmux, claude and git therefore need one filesystem **and one path vocabulary**.
 
 A boundary can go around that bundle. A boundary *through* it blinds every transcript-derived
@@ -269,7 +269,7 @@ semantics and has **not** been executed — this run is where it would first be 
 
 ## Trap 1 — binding 0.0.0.0 is half the move
 
-`ALLOWED_HOSTS` (`server.ts:4474`) admits exactly `$FLEET_HOST:$FLEET_PORT`,
+`ALLOWED_HOSTS` (`server.ts#ALLOWED_HOSTS`) admits exactly `$FLEET_HOST:$FLEET_PORT`,
 `localhost:$FLEET_PORT` and `127.0.0.1:$FLEET_PORT`. With `FLEET_HOST=0.0.0.0` that set holds
 nothing a browser will ever send, so the published address is refused by the DNS-rebinding
 guard. Measured: `-p 18790:8790` answers **403 on every route, dashboard included** — which

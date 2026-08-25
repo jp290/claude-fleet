@@ -10,8 +10,8 @@ lane "done".
 
 ## 1. A lane does not land on `main`. It lands on its repo's integration branch.
 
-`integrationBranch(repo)` (`server.ts:772`) is `repoBases[repo]`, and with no configured
-base it falls through to **that repo's own HEAD**. `laneBaseRef` (`server.ts:778`) prefers
+`integrationBranch(repo)` (`server.ts#integrationBranch`) is `repoBases[repo]`, and with no configured
+base it falls through to **that repo's own HEAD**. `laneBaseRef` (`server.ts#laneBaseRef`) prefers
 the base recorded at fork time, so the target is pinned when the lane is created, not
 re-derived later.
 
@@ -28,7 +28,7 @@ that directory has checked out.
 
 ## 2. The ref advance runs *inside* whichever worktree holds the branch
 
-`advanceIntegration` (`server.ts:1201`) branches on whether some worktree has the
+`advanceIntegration` (`server.ts#advanceIntegration`) branches on whether some worktree has the
 integration branch checked out:
 
 - **holder found** → `git merge --ff-only <lane>` **in the holder's tree**, wrapped in

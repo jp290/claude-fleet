@@ -1,9 +1,9 @@
 // Program/Origin Artifact v1: a durable planning bracket above tasks and lanes. Sessions may
 // propose; only the owner confirms and advances it. Full bodies stay off the 2 s sessions poll.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { BASE, H, REPO, REPO2, REPO3, REPO4, ROOT, TOKEN, check, get, paneEnv, post, restartSrv, tmuxOut } from "./harness";
 import { phaseOf, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import type { LaneSignalView } from "../lane-signals";
@@ -2351,6 +2351,107 @@ export async function run(ctx: Ctx): Promise<void> {
     await programPost(promoProgram.id, "complete");
     await programPost(controlProgram.id, "complete");
     for (const id of shapeCarriers) await programPost(id, "complete");
+  }
+
+  // === THE OWNER BOARD'S PROMOTION SECTION, run rather than described ==========================
+  // The route probes above prove what the SERVER stores. What they cannot reach is what the owner
+  // is told it stored — and this record's whole design is a distinction the display can destroy:
+  // ABSENT ("the owner never said") and `off` ("the owner said no") are two facts, kept apart in
+  // the schema, in the loader and in the land route's refusal sentence. A pane that rendered them
+  // alike would make a revocation look like a program nobody ever reached.
+  //
+  // So the REAL `promotionState` is cut out of src/client.ts, transpiled and RUN over every state
+  // it can be handed — the same method as the criteria counter (e2e/outcomes.ts) and the tree
+  // painter (e2e/explorer.ts), and for the same reason: the counting rules ARE the feature, and a
+  // regex over them would assert about their spelling. `fmtTs` is supplied as a MARKER rather than
+  // cut out with it: the question here is which number reaches the formatter, and a stand-in that
+  // echoes its argument answers exactly that without dragging a locale into the assertion.
+  {
+    let cliSrc = "";
+    let cliErr = "";
+    try {
+      cliSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+    } catch (e) { cliErr = e instanceof Error ? e.message : String(e); }
+    // the precondition fails AS ITSELF: a probe that could not read its subject must never fail as
+    // the subject, or a missing symlink reads as a broken promotion pane.
+    check("promotion UI precondition: node_modules exposes src/client.ts for the display probes",
+      cliSrc.length > 1000, cliErr || `${cliSrc.length} bytes`);
+    const psAt = cliSrc.indexOf("\nfunction promotionState(p: ProgramInfo)");
+    const headAt = cliSrc.indexOf("type PromotionStateName");
+    const psSrc = psAt < 0 || headAt < 0 || headAt > psAt ? ""
+      : cliSrc.slice(headAt, cliSrc.indexOf("\n}\n", psAt) + 3);
+    check("promotion UI precondition: promotionState is extractable and carries no DOM and no clock",
+      psSrc.includes("function promotionState") && psSrc.includes("PROMOTION_RUNGS")
+        && !/document|\bel\(|chip\(|Date\.now\(|new Date\(/.test(psSrc),
+      psSrc === "" ? `not found (head=${headAt} fn=${psAt})` : `${psSrc.length} bytes`);
+    if (psSrc !== "") {
+      type PmView = { state: string; label: string; tone: string; sentence: string; stamped: string | null };
+      const PRELUDE = 'function fmtTs(ts) { return "TS:" + ts; }\n';
+      const promotionState = new Function(
+        new Bun.Transpiler({ loader: "ts" }).transformSync(PRELUDE + psSrc)
+        + "\nreturn promotionState;")() as (p: { promotion?: unknown }) => PmView;
+      const STAMP = 1750000000000;
+      const mk = (promotion: unknown): PmView => promotionState({ promotion });
+
+      const absent = promotionState({});
+      const nulled = mk(null);
+      const off = mk({ v: 1, selfLand: "off", confirmedAt: STAMP });
+      const green = mk({ v: 1, selfLand: "green-only", confirmedAt: STAMP });
+      const guarded = mk({ v: 1, selfLand: "guarded", confirmedAt: STAMP });
+
+      // (a) THE FOUR DISPLAYED STATES. Label and tone are asserted as exact values, not as "has a
+      // label": a tone that silently became `ok` on `off` would paint a refusal green.
+      check("promotion UI: the four states carry their own exact label and tone",
+        absent.state === "absent" && absent.label === "self-land: never granted" && absent.tone === "dim"
+          && off.state === "off" && off.label === "self-land: off" && off.tone === "dim"
+          && green.state === "green-only" && green.label === "self-land: green-only" && green.tone === "ok"
+          && guarded.state === "guarded" && guarded.label === "self-land: guarded" && guarded.tone === "ok",
+        JSON.stringify([absent, off, green, guarded].map((v) => [v.state, v.label, v.tone])));
+      // (b) …AND ABSENT IS NOT OFF. The one distinction the whole record was versioned to keep.
+      check("promotion UI: never-granted and an explicit off are different labels AND different sentences",
+        absent.label !== off.label && absent.sentence !== off.sentence
+          && absent.sentence.length > 40 && off.sentence.length > 40
+          && JSON.stringify(nulled) === JSON.stringify(absent),
+        JSON.stringify({ absentSentence: absent.sentence.slice(0, 60), offSentence: off.sentence.slice(0, 60),
+          nullIsAbsent: JSON.stringify(nulled) === JSON.stringify(absent) }));
+      // (c) THE TWO GRANTS SAY WHAT THEY PERMIT, and they do not say the same thing: green-only
+      // must name the conflict rung as still refused, guarded must name the FRESH re-verification
+      // the server runs before landing a resolved candidate.
+      check("promotion UI: green-only names the conflict rung as still refused; guarded names the fresh re-verification",
+        green.sentence !== guarded.sentence
+          && /refused/.test(green.sentence) && /conflict/i.test(green.sentence)
+          && /FRESH|fresh/.test(guarded.sentence) && /verification|verif/i.test(guarded.sentence),
+        JSON.stringify({ green: green.sentence.slice(0, 80), guarded: guarded.sentence.slice(0, 80) }));
+      // (d) PRESENT BUT UNREADABLE IS ITS OWN STATE. Every shape the server's own loader refuses is
+      // handed in, and NONE of them may come back as "absent": absence says nothing is stored,
+      // and here something is. Readability follows the loader's rule exactly, so the pane can never
+      // show a live permission over a record the running server is already ignoring.
+      const badShapes: [string, unknown][] = [
+        ["a version this build does not know", { v: 2, selfLand: "green-only", confirmedAt: STAMP }],
+        ["a selfLand outside the closed set", { v: 1, selfLand: "always", confirmedAt: STAMP }],
+        ["no confirmedAt at all", { v: 1, selfLand: "guarded" }],
+        ["an absurd stamp", { v: 1, selfLand: "guarded", confirmedAt: 0 }],
+        ["a stamp that is not a number", { v: 1, selfLand: "guarded", confirmedAt: "yesterday" }],
+        ["a policy that is not an object", "green-only"],
+        ["an array where a record belongs", [{ v: 1, selfLand: "guarded", confirmedAt: STAMP }]],
+      ];
+      const bad = badShapes.map(([name, shape]) => ({ name, view: mk(shape) }));
+      check("promotion UI: every record this build cannot read renders as 'unreadable' — never as never-granted",
+        bad.every((b) => b.view.state === "unreadable" && b.view.label === "self-land: unreadable record"
+          && b.view.tone === "warn" && b.view.stamped === null
+          && b.view.sentence !== absent.sentence && b.view.label !== absent.label),
+        JSON.stringify(bad.map((b) => [b.name, b.view.state, b.view.tone, b.view.stamped])));
+      // (e) THE STAMP IS THE SERVER'S, and it is the RECORD's number that reaches the formatter —
+      // proved by handing in a second, different confirmedAt and reading a second, different
+      // string. A constant or a client clock would pass a single-value check and fail this one.
+      const other = mk({ v: 1, selfLand: "green-only", confirmedAt: 1700000000001 });
+      check("promotion UI: the displayed time is the record's own confirmedAt, and there is none without a readable record",
+        off.stamped === `TS:${STAMP}` && green.stamped === `TS:${STAMP}` && guarded.stamped === `TS:${STAMP}`
+          && other.stamped === "TS:1700000000001"
+          && absent.stamped === null && nulled.stamped === null,
+        JSON.stringify({ off: off.stamped, green: green.stamped, guarded: guarded.stamped,
+          other: other.stamped, absent: absent.stamped }));
+    }
   }
 
   // === THE LAND DOOR: POST /api/self/tasks/:id/land ============================================

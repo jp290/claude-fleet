@@ -5832,6 +5832,13 @@ interface ProgramInfo extends ProgramDigest {
   // ABSENT or null = unbound. A PRESENT object may still be incomplete, and that is `unknown`,
   // never `live` — see programMark.
   main?: { slot?: number; openedAt?: number; sessionId?: string | null; boundAt?: number } | null;
+  // THE OWNER'S SELF-LAND PERMISSION, as it comes off the wire — and every field is optional on
+  // purpose. The server stores a closed `{v:1, selfLand, confirmedAt}` and its loader refuses
+  // anything else, but a client type is an ASSERTION about a foreign surface, not a proof about
+  // one: an older server, a proxy, a hand-edited fleet.json in the reader's path can all put a
+  // shape here that this build cannot read. So the type admits that, and `promotionState` below
+  // turns "present but unreadable" into its own displayed state rather than into "absent".
+  promotion?: { v?: number; selfLand?: string; confirmedAt?: number } | null;
 }
 let programsPoll: ProgramDigest[] = [];   // the digest set the 2 s poll already carries
 let programsList: ProgramInfo[] = [];     // the full rows, from GET /api/programs
@@ -5918,6 +5925,63 @@ function programMark(p: ProgramInfo): { mark: ProgramMark; why: string } {
     + " Program.main.sessionId against, so that half is unchecked" };
 }
 
+// --- THE OWNER'S SELF-LAND PROMOTION, read for display ---
+// The five states this pane can show, and the reason there are five rather than three. The server
+// keeps a three-rung ladder (off / green-only / guarded) and ABSENCE is its fourth, legacy fact —
+// "the owner never said" — which its land route refuses in different words from "the owner said
+// no". Collapsing those two into one "not granted" would make a revocation look like a program
+// nobody ever reached, which is exactly the confusion the record was versioned to prevent. The
+// fifth, `unreadable`, exists because this row arrives over the wire: a shape this build cannot
+// read as a v1 grant is NOT absence, and rendering it as absence would tell the owner nothing is
+// stored while something is.
+//
+// PURE AND TOP-LEVEL ON PURPOSE: no globals, no DOM, no clock. It is cut out of this source,
+// transpiled and RUN over all five states by e2e/programs.ts, the way kProgress and the tree
+// painter already are. `stamped` is the SERVER's confirmedAt through fmtTs and nothing else —
+// a client-invented time on a permission record would date the owner's act for them.
+//
+// READABILITY IS THE SERVER'S OWN RULE, restated: v must be 1, selfLand must be in the closed set,
+// and confirmedAt must be a positive finite number. server.ts's loadPromotion refuses anything
+// else, so a record failing any of those clauses is one the RUNNING SERVER is already treating as
+// absent — and this pane must not describe it as a permission that is in force.
+type PromotionStateName = "absent" | "off" | "green-only" | "guarded" | "unreadable";
+const PROMOTION_RUNGS = ["off", "green-only", "guarded"];
+function promotionState(p: ProgramInfo): {
+  state: PromotionStateName; label: string; tone: "ok" | "dim" | "warn";
+  sentence: string; stamped: string | null;
+} {
+  const rec = p.promotion;
+  if (rec === undefined || rec === null)
+    return { state: "absent", label: "self-land: never granted", tone: "dim", stamped: null,
+      sentence: "No owner record at all — nothing was ever granted or refused here. The bound MAIN's"
+        + " land route refuses in exactly those words, and you land this program's reviewable rows"
+        + " from the board, as on every program that has not been promoted." };
+  if (typeof rec !== "object" || Array.isArray(rec) || rec.v !== 1
+    || typeof rec.selfLand !== "string" || !PROMOTION_RUNGS.includes(rec.selfLand)
+    || typeof rec.confirmedAt !== "number" || !Number.isFinite(rec.confirmedAt) || rec.confirmedAt <= 0)
+    return { state: "unreadable", label: "self-land: unreadable record", tone: "warn", stamped: null,
+      sentence: "A promotion record IS stored on this program, but it is not a shape this build can"
+        + " read as a v1 grant — so nothing here says what was granted, and no time is shown because"
+        + " an unreadable stamp is not a date. This is not the never-granted case: something is"
+        + " stored. The server's own loader refuses the same shape, so its land route is treating"
+        + " this program as unpromoted; granting a rung below overwrites the record outright." };
+  const stamped = fmtTs(rec.confirmedAt);
+  if (rec.selfLand === "off")
+    return { state: "off", label: "self-land: off", tone: "dim", stamped,
+      sentence: "The record exists and grants nothing — this is you having said NO, not you having"
+        + " never said. The bound MAIN is refused exactly as it would be without a record, but the"
+        + " fact is a different one: this program was decided, and the decision is dated." };
+  if (rec.selfLand === "green-only")
+    return { state: "green-only", label: "self-land: green-only", tone: "ok", stamped,
+      sentence: "The bound MAIN may land its own reviewable rows, and only through the existing"
+        + " clean/fresh-green ladder the board already uses. A lane sitting on an unreviewed"
+        + " conflict resolution is still refused — that rung is not in this grant." };
+  return { state: "guarded", label: "self-land: guarded", tone: "ok", stamped,
+    sentence: "Everything green-only permits, PLUS one rung: a lane sitting on an agent-resolved"
+      + " conflict may be confirmed by that MAIN, and the server re-runs the authoritative"
+      + " verification FRESH on the resolved candidate, landing only on a green." };
+}
+
 // the picker's pinned + recent roots as an <input list=> source. Shared by the task composer and
 // the Program-MAIN founding flow — both ask for a directory, and a second copy of this fetch
 // would be a second thing to keep in step. The inputs work without it: a failed fetch costs the
@@ -5967,6 +6031,18 @@ let qPlBusy = false;
 // draft that has since been reset or moved to another program. Generation AND id — A → B → A is
 // back at the same id with a different draft.
 let qPlSeq = 0;
+// The promotion draft, and it is deliberately NOT the promote draft above. Both are owner acts on
+// the same pane, but one advances a program's lifecycle and the other grants or takes back a
+// PERMISSION — sharing a busy flag would disable a door the owner never touched, and sharing an
+// error line would paint one act's refusal under the other's buttons. Same generation guard, same
+// reason: the POST is an await the owner can walk away from, and A → B → A is back at the same id.
+let qPmFor: string | null = null;
+let qPmErr: string | null = null;  // the server's own sentence, kept verbatim across repaints
+let qPmBusy = false;
+// WHICH act is in flight, not merely THAT one is. Four doors share one busy flag, so a bare flag
+// would put "…" on all four and claim three sends nobody made.
+let qPmAct: string | null = null;
+let qPmSeq = 0;
 
 // the composer's program picker, same once-per-open lifecycle as qRepoIn
 let qProgSel: HTMLSelectElement | null = null;
@@ -6219,6 +6295,120 @@ function renderProgramDetail(shell: Shell, id: string): void {
       frame.appendChild(el("div", "rvhead", "success criterion"));
       frame.appendChild(el("div", "qdtext", p.successCriterion));
     }
+  }
+
+  // THE PERMISSION, ON THE PANE THAT OWNS IT. POST /api/programs/:id/promotion existed with no
+  // owner surface at all, so the only way to grant or take back a MAIN's self-land authority was a
+  // curl with the owner token — a shape in which the four acts are indistinguishable typos of each
+  // other. It sits ABOVE the stale/unknown early return on purpose: a program whose MAIN died is
+  // exactly a program whose standing permission an owner may want to take back, and that return
+  // would hide the only door that can.
+  //
+  // FOUR EXPLICIT ACTS AND NOTHING IMPLIED. Nothing is preselected, nothing is submitted on render,
+  // and no rung is inferred from the program's status: this is a permission, and a permission that
+  // arrives by default is one nobody granted. The prose may say which rung is the ordinary choice;
+  // it must never be the one already pressed.
+  {
+    if (qPmFor !== p.id) {
+      qPmFor = p.id;
+      qPmSeq++; // a DIFFERENT program; anything still in flight for the old one is orphaned
+      qPmErr = null; qPmBusy = false; qPmAct = null;
+    }
+    const forPmId = p.id;
+    const st = promotionState(p);
+    // THE FOUR BODIES, WRITTEN OUT. The server reads a CLOSED set — any extra top-level key is a
+    // 400 and an unknown key inside the policy is a 400 — so the shapes are stated here as data
+    // rather than assembled from the button that was clicked. A body built by concatenation is a
+    // body a later edit can widen without anyone reading this pane again.
+    type PmAct = "green-only" | "guarded" | "off" | "revoke";
+    const PM_BODY: Record<PmAct, { policy: { v: 1; selfLand: string } | null }> = {
+      "green-only": { policy: { v: 1, selfLand: "green-only" } },
+      guarded: { policy: { v: 1, selfLand: "guarded" } },
+      off: { policy: { v: 1, selfLand: "off" } },
+      revoke: { policy: null },
+    };
+    // A REQUEST THAT GOT NO ANSWER is a third outcome, not a refusal — same reason as the promote
+    // door below: no status came back, so none is invented, and the sentence says the outcome is
+    // unknown rather than claiming the permission did or did not change.
+    const pmNoAnswer = (act: PmAct) =>
+      `${act} did not reach the server — no answer came back, so whether this permission changed is unknown`;
+    const pmRun = async (act: PmAct): Promise<void> => {
+      const seq = ++qPmSeq;
+      const mine = () => seq === qPmSeq && qPmFor === forPmId;
+      qPmBusy = true; qPmErr = null; qPmAct = act;
+      qDetailKey = ""; renderQueueDetail();
+      let err: string | null = null;
+      // moved-UNKNOWN, exactly as the promote door counts it: an unanswered request may well have
+      // been applied, so the facts are re-read instead of the old state being repainted over a
+      // permission that has in truth already changed.
+      let moved = false;
+      try {
+        const r = await post(`/api/programs/${forPmId}/promotion`, PM_BODY[act]).catch(() => null);
+        if (!r) { err = pmNoAnswer(act); moved = true; }
+        else if (r.ok) moved = true;
+        else {
+          const j = (await r.json().catch(() => null)) as { error?: string } | null;
+          err = j?.error ? `${act} failed — ${r.status}: ${j.error}`
+            : `${act} failed — the server answered ${r.status} with no readable reason`;
+        }
+      } finally {
+        // EVERY exit clears the busy flag, fenced by mine(): a flag set by a NEWER run belongs to
+        // that run, and an orphan must not enable a door that is in flight.
+        if (mine()) {
+          qPmBusy = false; qPmAct = null;
+          qPmErr = err;
+          if (moved) await loadPrograms(true);
+          qKey = ""; qDetailKey = "";
+          renderQueue(); renderQueueDetail();
+        } else if (moved) {
+          await loadPrograms(true); qKey = ""; renderQueue();
+        }
+      }
+    };
+
+    const pm = qDetailSection(shell.detail, "Self-land promotion");
+    const pmFacts = el("div", "ocfacts");
+    pmFacts.appendChild(chip(st.label, st.tone, st.sentence));
+    pmFacts.appendChild(chip(st.stamped ? `granted ${st.stamped}` : "never granted", "dim",
+      st.stamped ? "the server's own confirmedAt on this record — it stamps the act, no client clock is involved"
+        : "no readable grant is stored, so there is no date to show"));
+    pm.appendChild(pmFacts);
+    pm.appendChild(el("div", "shellhint", st.sentence));
+    pm.appendChild(el("div", "shellhint",
+      `POST /api/programs/${p.id}/promotion — the owner-only door, and the only writer of this`
+      + " record. green-only is the ordinary grant: it ends the routine attention on a clean land"
+      + " without handing over an unreviewed conflict. Each act below is sent on its own click,"
+      + " nothing is preselected, and every refusal is the server's own sentence, word for word."));
+    // …and the honest caveat where the row is CACHED. programMark already fails closed on a failed
+    // read; the promotion shown here comes off the same row, so it inherits the same doubt. The
+    // acts still go to the server, which is why they stay enabled.
+    if (programsRead !== "ok") pm.appendChild(el("div", "pkdwarn",
+      "the last GET /api/programs did not answer — the state above is CACHED context, not current"
+      + " truth. The four acts below still reach the server and are safe to repeat."));
+    if (qPmErr) pm.appendChild(el("div", "pkdwarn", qPmErr));
+    const pmActs = el("div", "pkdacts");
+    pmActs.style.marginTop = "10px";
+    // Safely repeatable by construction: granting the rung already stored re-stamps the same
+    // permission, and revoking an absent record is the server's own idempotent no-op. Neither
+    // needs a confirmation dialog, and this pane has none to offer.
+    const pmButtons: [PmAct, string, string, string][] = [
+      ["green-only", "grant green-only", "shrbtn primary",
+        "the MAIN lands its own clean/fresh-green rows; an unreviewed conflict resolution stays refused"],
+      ["guarded", "grant guarded", "shrbtn",
+        "green-only plus the MAIN-confirmed conflict-resolution rung, which the server re-verifies fresh"],
+      ["off", "set off", "shrbtn",
+        "stores an explicit NO — refused like an absent record, but dated and readable as a decision"],
+      ["revoke", "revoke", "shrbtn danger",
+        "removes the record entirely, back to never-granted; revoking twice is an ordinary success"],
+    ];
+    for (const [act, label, cls, tip] of pmButtons) {
+      const b = el("button", cls, qPmBusy && qPmAct === act ? `${label}…` : label) as HTMLButtonElement;
+      b.disabled = qPmBusy;
+      b.title = tip;
+      b.onclick = () => { void pmRun(act); };
+      pmActs.appendChild(b);
+    }
+    pm.appendChild(pmActs);
   }
 
   if (mark === "stale" || mark === "unknown") {

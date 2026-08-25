@@ -47,7 +47,7 @@ gate sat after W7. Reversibility did not recover the time spent proving the wron
 
 | Layer | Today | Honest boundary |
 |---|---|---|
-| Program / Origin | Built and used by private-repo-h. Its W0-W7 Program is complete; Visual Loop v0 is a separate active Program. | Owner promotion remains the only source of binding intent. |
+| Program / Origin | Built and used by private-repo-h. Its W0-W7 Program is complete; Visual Loop v0 is a separate active Program. | Owner promotion is the only source of binding **Program direction**; inside a promoted direction a Studio-MAIN promotes its own reversible working anchors (see the authority section below). |
 | ContextPlan + delivery receipt | Built as a fresh projection with immutable delivery evidence. | Packs still point only into Fleet. A target-repo Program-MAIN now omits them honestly; foreign task dispatch still forces Fleet context. |
 | Program-MAIN lifecycle | Target-repo bootstrap and program-aware succession are built. | A profile-specific Director contract is not built. |
 | Harness continuity | Codex automatic and attended conversation recovery are built. | Equivalent continuity is adapter-specific, not a universal session claim. |
@@ -127,12 +127,50 @@ capability and output contract; the same harness may serve several roles at diff
 For coupled visible work, roles are ordered rather than fanned out indiscriminately:
 
 ```text
-owner-confirmed direction -> Director -> one Builder pass -> fresh blind Critic -> Owner taste
+promoted direction -> Director -> one Builder pass -> fresh blind Critic -> Owner taste
 ```
 
 The Director owns coherence. A Builder owns an exclusive writable surface. A Critic begins fresh
-and read-only. The owner decides promotion and stop. Parallel proposals are useful before a
-direction is chosen; parallel mutations to lighting, camera, UI and tone are not.
+and read-only. The Studio-MAIN promotes internally and decides stop; the owner decides at the
+seven boundaries in the next section. Parallel proposals are useful before a direction is chosen;
+parallel mutations to lighting, camera, UI and tone are not.
+
+## Where a Studio-MAIN decides alone, and where the owner's gate stands
+
+Owner strictness review, 2026-08-23. The first drafts of this profile routed ordinary studio
+decisions to the owner; the correction is that a Studio-MAIN is autonomous up to taste and release.
+These seven clauses are the authority contract for every Studio-MAIN, and they override any older
+sentence in this document that reads "the owner promotes".
+
+1. **The creative anchor is MAIN-promotable.** A Studio-MAIN runs a divergence pass — two to three
+   theses, references, the first-minute fantasy, the risk and a kill criterion — plus a fresh
+   critic, and then promotes a **reversible working anchor** carrying its provenance and an
+   explicit reopen trigger. The owner is asked only when the core fantasy itself would change, or
+   at final taste. No numeric score, no owner interruption inside the loop.
+2. **Repair runs on a bounded progress budget, not a repair count.** There is no "at most two
+   repairs". A MAIN continues while each round closes a *named* defect without regression, inside
+   its declared time, cost and scope envelope. It escalates on no-progress, on cycling, or on
+   boundary pressure — never on having used up a number.
+3. **Recoverable trouble is MAIN repair work, not an owner question.** Recoverable provenance gaps,
+   an initial red or unknown verification, and an ordinary critic rejection are the MAIN's own work
+   to repair. A `conflicted:true` alone never blocks a promotion.
+4. **Local, reversible review serving is not a production deploy.** Standing up a build for review
+   or tasting is ordinary studio work. Only an actual production deploy or release crosses into the
+   owner's gate.
+5. **Pre-authorized tools, cost and credentials are usable inside the envelope.** What has already
+   been authorized does not need re-asking per act. New spend or a new secret does (clause 7).
+6. **A MAIN promotes worker results and product decisions internally.** Ordinary clean, green,
+   in-program lands are the owning MAIN's decision, never the owner's. Once a self-land mechanism
+   exists, raising a `review-ready` attention for a routine land is a MAIN defect, not diligence.
+7. **The owner's gate is exactly seven boundaries** — and nothing else:
+   Program direction · a material change to product identity · final taste and release ·
+   a declared gate · new spend or a new secret · an irreversible external effect ·
+   exhausted recovery (no progress, cycling, or a genuinely unrecoverable state).
+
+What this deliberately does **not** re-introduce: "a conflict means ask the owner", a fixed repair
+count, a posture enum, or a size threshold. Each of those is the persisted posture the correction
+rules out; the judgement stays the session's. The `ownerPlaytest` separation and the one-step launch
+are preserved unchanged — they are taste and release, which is clause 7's own territory.
 
 ## Smart session enrichment: information layers
 
@@ -173,8 +211,10 @@ but an AI judging AI output is not the sole proof of taste.
 The first slice changes no Fleet schema and builds no general harness. It uses private-repo-h as a
 known fixture, not as a commitment to rescue that product.
 
-1. The owner confirms a short `VISUAL_DIRECTION.md`: intended machine fantasy, motion/weight,
-   sensor readability, UI hierarchy, desired and forbidden mood, plus any reference images.
+1. The Studio-MAIN promotes a short `VISUAL_DIRECTION.md` as the working anchor: intended machine
+   fantasy, motion/weight, sensor readability, UI hierarchy, desired and forbidden mood, plus any
+   reference images. It carries its provenance and a reopen trigger, and the owner is asked only if
+   the core fantasy itself would change.
 2. The game repository exposes one reproducible `run-overview` state. A capture produces a short
    clip for human motion judgment, a fixed key-frame/contact sheet for models, one still image, and
    a manifest containing repo HEAD, seed, viewport, frame indices and content hashes. Capture
@@ -325,8 +365,10 @@ The repo-local, owner-promoted context set should be small and strong:
 
 These are pointers into tracked target-repo sources, not copied prose in Fleet. Before they are
 delivered to task lanes, Fleet must close the known foreign-dispatch bug and receipt the exact
-repo-local pointers. A new-repo initializer may create the small files and commands, but only an
-owner decision promotes their content.
+repo-local pointers. A new-repo initializer may create the small files and commands; the
+Studio-MAIN promotes their content as a reversible working anchor, carrying provenance and a reopen
+trigger, and asks the owner only when a change is material to product identity, or at final taste
+and release.
 
 ## Next product calibration: a small turn-based artillery game
 
@@ -410,7 +452,7 @@ The target is self-directed refinement under taste constraints, not unattended c
 ### Then — calibrate the working-circle inputs
 
 1. Run Pi/Z.ai vision H0 and compare one read-only GLM criticism with the proven Fable path.
-2. Materialize the smallest owner-promoted Product/Quality/Creative/Game-Feel/UI/Capture pointers
+2. Materialize the smallest promoted Product/Quality/Creative/Game-Feel/UI/Capture pointers
    in a product repo and receipt them through ContextPlan; no generic context registry.
 3. Configure Director -> one Builder -> fresh Critic -> Owner as a thin profile over existing
    Programs, tasks, lanes, clarifications, events and outcomes.

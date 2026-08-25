@@ -50,9 +50,11 @@ früh; beide Programm-Bindungen (S1/S3) tragen seit dem Boot wieder Session-IDs.
 
 ## IN FLIGHT
 
-- **S13 (GLM, Hygiene-Report `e6edd49b`):** hing 6¼ h in EINEM Turn (Token eingefroren), per Esc
-  unterbrochen + Steering zugestellt, arbeitet wieder. Lane-Watch armed. Wenn sie wieder hängt:
-  killen und auf Sol requeuen — der Auftrag ist docs-only.
+- **S13 ERLEDIGT nach Rettung:** hing 6¼ h in EINEM Turn, per Esc + Steering geweckt, lieferte
+  vollständig und landete kurzkettig (1,2 s). Report: `docs/messungen/hygiene-report-2026-08-25.md`
+  — 14 Worktrees SAFE-TO-DISCARD (Copy-Paste-Liste), geleakter pi-Socket seit 08-23, 789 MB TMPDIR.
+  NEU dabei: **origin/main 1015 Commits hinter lokal, kein Push seit 08-21** (Publish = Owner-Akt
+  von der Hauptmaschine).
 - **Post-Land-Audits** der zwei Kurz-Ketten-Lands (S15/S8) laufen/queuen — volle Läufe, das
   Sicherheitsnetz der Proportionalität. Rot dort = zuerst §7-Familie verdächtigen, dann Baum.
 - Watches auf Slot 9 sterben mit dem Slot; Nachfolger verankert neu, was er braucht.

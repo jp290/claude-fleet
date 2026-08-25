@@ -3193,6 +3193,151 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       : `sentence=${noAnswerFn.trim().length} chars`);
 }
 
+// --- THE SELF-LAND PROMOTION DOOR, CLIENT HALF ------------------------------------------------
+// The route half is measured live in e2e/programs.ts ("promotion door: …") and the pure display
+// function is CUT OUT AND RUN there too. What neither of those can reach is the wiring: that the
+// four owner acts are issued from ONE pane, that each is an explicit click and none fires on a
+// render, that the bodies are exactly the closed shapes the server reads, and that a refusal
+// reaches the owner as the server's own sentence. Those are properties of the source, so they are
+// fastened at the source — the same reason and the same shape as RULE_PROMOTE above.
+//
+// A PERMISSION IS WHY THIS IS PINNED AT ALL. A promote door that quietly grew a second call site,
+// a body that grew a fifth key, or a grant that fired on render would each hand a MAIN authority
+// nobody clicked for — and none of the three is visible to a compiler.
+{
+  const RULE_PROMOTION_UI = "the Board's self-land promotion door is four explicit owner acts in one pane, and nowhere else";
+  const client = read("src/client.ts");
+  const from = client.indexOf("function renderProgramDetail(");
+  // the function's OWN closing brace, exactly as RULE_PROMOTE bounds it, and for the same reason:
+  // an anchor on the next declaration would swallow a promotion door pasted in between.
+  const detail = from < 0 ? "" : client.slice(from, client.indexOf("\n}\n", from) + 3);
+  const pmAt = detail.indexOf("if (qPmFor !== p.id) {");
+  const staleAt = detail.indexOf('if (mark === "stale" || mark === "unknown") {');
+  const pm = pmAt < 0 || staleAt < 0 || staleAt < pmAt ? "" : detail.slice(pmAt, staleAt);
+
+  // (1) ONE DOOR. Every promotion POST the client makes is collected across the WHOLE file: a
+  // second surface onto an owner-only permission rail fails this row instead of quietly existing.
+  const pmPostsAll = [...client.matchAll(/post\(`\/api\/programs\/\$\{[^}]+\}\/promotion`/g)];
+  const pmOutside = pmPostsAll.filter((m) => {
+    const i = m.index ?? -1;
+    return i < from || i >= from + detail.length || i - from < pmAt || i - from >= staleAt;
+  });
+  pin(`${RULE_PROMOTION_UI} — exactly one promotion POST exists in the client and it is inside renderProgramDetail's promotion section`,
+    detail !== "" && pm !== "" && pmPostsAll.length === 1 && pmOutside.length === 0,
+    detail === "" ? "renderProgramDetail not found in src/client.ts"
+      : pm === "" ? `the promotion section was not found (pmAt=${pmAt} staleAt=${staleAt})`
+        : `posts=${pmPostsAll.length} outside=${pmOutside.length}`);
+
+  // (2) PLACEMENT IS LOAD-BEARING, not taste. Above the stale/unknown early return, because that
+  // return fires for exactly the program whose standing permission an owner most wants back; and
+  // clear of RULE_PROMOTE's own span, which is sliced by text and would otherwise swallow this.
+  const frameAt = detail.indexOf('qDetailSection(shell.detail, "Frame"');
+  const promoteAt = detail.indexOf('if (p.status === "proposed" || p.status === "confirmed") {');
+  pin(`${RULE_PROMOTION_UI} — the section sits after Frame, before the stale/unknown return, and outside the promote block`,
+    frameAt >= 0 && promoteAt >= 0 && frameAt < pmAt && pmAt < staleAt && staleAt < promoteAt,
+    `frame=${frameAt} pm=${pmAt} stale=${staleAt} promote=${promoteAt}`);
+
+  // (3) THE FOUR BODIES, AND NO FIFTH. The server refuses an extra top-level key and an unknown key
+  // inside the policy, so the client must not be able to assemble one: the shapes are DATA, stated
+  // once, and the counts below are what makes "closed" checkable — three rungs, one revoke, and a
+  // `policy` that appears nowhere but the table and its type.
+  // counted on `selfLand: "` — the quote matters: the Record's own type annotation carries a bare
+  // `selfLand: string`, and counting that as a rung would let a fourth rung slip in unnoticed.
+  const rungs = pm.split('selfLand: "').length - 1;
+  const revokes = pm.split("policy: null").length - 1;
+  pin(`${RULE_PROMOTION_UI} — the four bodies are the server's exact closed shapes, written as data, with no fifth key`,
+    /const PM_BODY: Record<PmAct, \{ policy: \{ v: 1; selfLand: string \} \| null \}> = \{/.test(pm)
+      && /"green-only": \{ policy: \{ v: 1, selfLand: "green-only" \} \},/.test(pm)
+      && /guarded: \{ policy: \{ v: 1, selfLand: "guarded" \} \},/.test(pm)
+      && /off: \{ policy: \{ v: 1, selfLand: "off" \} \},/.test(pm)
+      && /revoke: \{ policy: null \},/.test(pm)
+      && rungs === 3 && revokes === 1
+      && /post\(`\/api\/programs\/\$\{forPmId\}\/promotion`, PM_BODY\[act\]\)/.test(pm),
+    `rungs=${rungs} revokes=${revokes}`);
+
+  // (4) BUSY AND GENERATION, both — the busy flag alone still lets a late answer write into a pane
+  // that has moved to another program; the generation alone still lets the owner fire twice.
+  pin(`${RULE_PROMOTION_UI} — every button is disabled in flight AND a late answer is fenced by generation and id`,
+    /qPmBusy = true;/.test(pm) && /b\.disabled = qPmBusy;/.test(pm)
+      && /const seq = \+\+qPmSeq;/.test(pm) && /seq === qPmSeq && qPmFor === forPmId/.test(pm)
+      && /qPmSeq\+\+;/.test(pm),
+    `busy=${/b\.disabled = qPmBusy;/.test(pm)} seq=${/const seq = \+\+qPmSeq;/.test(pm)}`);
+
+  // (5) CLEARED IN A FINALLY, ONCE. The failure this prevents is the one the promote door already
+  // paid for: an exit before the tail leaves all four doors disabled forever, recoverable only by
+  // selecting another program. `mine()` still fences the write — a flag set by a NEWER run is that
+  // run's, and an orphan must not enable a door that is in flight.
+  const pmRunFn = pm.match(/const pmRun = async[\s\S]*?\n    \};/)?.[0] ?? "";
+  const pmFinallyAt = pmRunFn.indexOf("} finally {");
+  const pmClearAt = pmRunFn.indexOf("qPmBusy = false;");
+  pin(`${RULE_PROMOTION_UI} — the busy flag is cleared in a finally, on every exit, and nowhere else in the run`,
+    pmRunFn !== "" && /\n      try \{/.test(pmRunFn) && pmFinallyAt > 0 && pmClearAt > pmFinallyAt
+      && pmRunFn.split("qPmBusy = false;").length - 1 === 1
+      && /if \(mine\(\)\) \{\s*\n\s*qPmBusy = false; qPmAct = null;/.test(pmRunFn),
+    pmRunFn === "" ? "the promotion run function was not found" : `finally=${pmFinallyAt} clear=${pmClearAt}`);
+
+  // (6) A REJECTED REQUEST IS AN OUTCOME, NOT AN ESCAPE. `post` → `api` → `fetch`, and a fetch that
+  // rejects (offline, a dropped link, the server restarting under the click — the board is read
+  // from a phone) would walk out of pmRun and out of the `void pmRun(...)` in the onclick as an
+  // unhandled rejection, leaving four dead doors and a pane that says nothing. Caught AT the call.
+  const pmPostsInBlock = [...pm.matchAll(/post\(`[^`]*`, PM_BODY\[act\]\)(\.catch\()?/g)];
+  const pmUnguarded = pmPostsInBlock.filter((m) => !m[1]).length;
+  pin(`${RULE_PROMOTION_UI} — a request that rejects is caught at its call and becomes a sentence, never an escaping rejection`,
+    pmPostsInBlock.length === 1 && pmUnguarded === 0
+      && /\.catch\(\(\) => null\)/.test(pmRunFn)
+      && /if \(!r\) \{ err = pmNoAnswer\(act\); moved = true; \}/.test(pmRunFn),
+    `posts=${pmPostsInBlock.length} unguarded=${pmUnguarded}`);
+
+  // (7) VERBATIM, AND NEVER A TOAST. The server's refusals here name which key was not read and
+  // which rung is not in the closed set — the half a paraphrase drops is exactly the half that says
+  // what to send instead. And an unanswered request HAS no status, so it borrows none and counts as
+  // moved-UNKNOWN: the facts are re-read rather than a stale permission repainted.
+  const pmNoAnswerFn = pm.match(/const pmNoAnswer = [\s\S]*?;\n/)?.[0] ?? "";
+  pin(`${RULE_PROMOTION_UI} — a refusal renders the server's own status and sentence in the pane, and an unanswered request invents no status`,
+    /\$\{act\} failed — \$\{r\.status\}: \$\{j\.error\}/.test(pm)
+      && /no readable reason/.test(pm)
+      && /pkdwarn", qPmErr/.test(pm) && !/toast\(|alert\(|window\.confirm/.test(pm)
+      && pmNoAnswerFn !== "" && !/r\.status/.test(pmNoAnswerFn) && /\$\{act\}/.test(pmNoAnswerFn)
+      && /if \(moved\) await loadPrograms\(true\);/.test(pm),
+    pmNoAnswerFn === "" ? "the unanswered-request sentence was not found" : `${pmNoAnswerFn.trim().length} chars`);
+
+  // (8) NOTHING AUTO-SUBMITS. A permission that arrives by default is one nobody granted, so the
+  // only path to the POST is a click: `pmRun` appears exactly twice in the section — its own
+  // definition and the onclick that calls it — and no render path reaches it.
+  // `pmRun` is DECLARED as `const pmRun = async (act…` — no parenthesis after the name — so every
+  // `pmRun(` in the section is a CALL. Exactly one, and it is the click handler.
+  const pmRunCalls = pm.split("pmRun(").length - 1;
+  const onclicks = pm.split("b.onclick = () => { void pmRun(act); };").length - 1;
+  pin(`${RULE_PROMOTION_UI} — no act fires on a render: the only call site of the run is a click handler`,
+    pmRunCalls === 1 && onclicks === 1 && !/pmRun\("/.test(pm),
+    `calls=${pmRunCalls} onclick=${onclicks}`);
+
+  // (9) THE DISPLAY FUNCTION IS PURE AND TOP-LEVEL, which is what lets e2e/programs.ts cut it out
+  // and RUN it over all five states. A DOM reference or a clock inside it would make that probe
+  // impossible and would also let the pane date the owner's act for them: the stamp is the
+  // SERVER's confirmedAt through fmtTs and nothing else.
+  const psAt = client.indexOf("\nfunction promotionState(p: ProgramInfo)");
+  const ps = psAt < 0 ? "" : client.slice(psAt, client.indexOf("\n}\n", psAt) + 3);
+  const states = ["absent", "off", "green-only", "guarded", "unreadable"];
+  pin(`${RULE_PROMOTION_UI} — promotionState is top-level, DOM-free and clock-free, and names all five displayed states`,
+    ps !== "" && !/document|\bel\(|chip\(|Date\.now\(|new Date\(/.test(ps)
+      && states.every((st) => ps.includes(`state: "${st}"`))
+      && /const stamped = fmtTs\(rec\.confirmedAt\);/.test(ps)
+      && ps.split("stamped: null").length - 1 === 2,
+    ps === "" ? "promotionState not found in src/client.ts" : `${ps.split("\n").length} lines`);
+
+  // (10) ABSENT AND OFF MUST NOT READ ALIKE. The server keeps them apart on purpose — "the owner
+  // never said" vs "the owner said no" — and a pane that collapsed them would make a revocation
+  // look like a program nobody ever reached. Readability follows the SERVER's own loader rule, so
+  // a record the running server treats as absent is never displayed here as a live permission.
+  pin(`${RULE_PROMOTION_UI} — absent and off carry different labels, and readability follows the server's own v1 rule`,
+    /label: "self-land: never granted"/.test(ps) && /label: "self-land: off"/.test(ps)
+      && /label: "self-land: unreadable record"/.test(ps)
+      && /rec\.v !== 1/.test(ps) && /!PROMOTION_RUNGS\.includes\(rec\.selfLand\)/.test(ps)
+      && /!Number\.isFinite\(rec\.confirmedAt\) \|\| rec\.confirmedAt <= 0/.test(ps),
+    `absent=${/label: "self-land: never granted"/.test(ps)} off=${/label: "self-land: off"/.test(ps)}`);
+}
+
 console.log(rows.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

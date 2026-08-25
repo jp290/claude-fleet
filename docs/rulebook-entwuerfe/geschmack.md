@@ -23,7 +23,7 @@ Ein-Datei-Bauweise ist keine Schuld, die man abträgt. Was hier gilt:
   sich, nicht das Wachstum der bestehenden.
 - **Ausgelagert wird, was REIN ist — nicht, was groß ist.** `rulebook.ts`, `verify-proportion.ts`,
   `context-plan.ts`, `merge-prompt.ts`, `lane-signals.ts`: Logik ohne I/O, damit eine Sonde sie ohne
-  Server prüfen kann. `rulebook.ts:11-13` nennt den Grund selbst: „it reads NOTHING … the caller is
+  Server prüfen kann. `rulebook.ts:10-11` nennt den Grund selbst: „it reads NOTHING … the caller is
   the only side that knows which checkout it is allowed to read."
 - **Ein Kommentar erklärt den Mechanismus und seinen Preis, nie was die Zeile tut.**
   `e2e/harness.ts:98-101` erklärt eine Falle und schreibt dazu, was sie gekostet hat („12 red checks

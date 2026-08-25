@@ -3,6 +3,23 @@
 Vorheriger Inhalt (Supervisor Slot 1, 23.08.) liegt in der git-Historie. Zustand wird ABGELEITET:
 `./state.sh` · `./register.sh` · Live-Queue. Hier steht nur, was daraus nicht hervorgeht.
 
+## North Star (Owner, 2026-08-25)
+
+Fleet ist fertig, wenn der Owner nur noch Richtung und Geschmack gibt — und sonst nichts.
+Zwei Etappen, in dieser Reihenfolge:
+
+1. **Qualitative Autonomie zu Ende bauen.** Nicht mehr Automatisierung, sondern verlässliche:
+   jeder Kreis (Ziel → Act → Lane → Land → Audit → Deploy) läuft ohne Menschen-Akt durch, und
+   jedes Anhalten ist sichtbar, benannt und adressiert — die „fehlende Schicht" der Systemanalyse.
+   Der Maßstab ist qualitativ: ein stehender Kreis meldet sich selbst, statt still zu stehen;
+   ein Owner-Akt kommt nur noch an Geschmacks-, Identitäts- und Release-Türen vor.
+2. **Dann produzieren.** Games und Apps als Programme unter promovierten Policies — Fleet baut,
+   misst und landet; der Owner spielt, urteilt und released. Ab dieser Etappe ist Arbeit an Fleet
+   selbst Wartung im Dienst der Studios, kein Selbstzweck mehr.
+
+Jede künftige Priorisierung misst sich an dieser Reihenfolge: was Etappe 1 nicht abschließt oder
+Etappe 2 nicht näherbringt, liegt unter der Schnittlinie.
+
 ## Rolle und Owner-Auftrag dieser Session
 
 Diese Session hat die **Controller-Rolle vom Codex-Controller (Slot 2) übernommen** (Owner-Entscheid).
@@ -45,6 +62,10 @@ Autonomie > Funktionsfähigkeit > Härtung.
   endet mit **3 ausformulierten dispatchbaren Slices** — die dispatcht der Nachfolger direkt.
 - **S4** (Opus): Auth-Fail-Forensik (Task `afaaaf94`) · **S13** (GLM): Hygiene-Report REPORT-ONLY
   (Task `e6edd49b`). Beide docs-only, Watches armed.
+- **S14** (Fable, high): Kommunikationsschichten-Analyse (Task `07e8675b`, Owner-Wunsch) →
+  `docs/messungen/kommunikationsschichten-2026-08-25.md`. **OHNE Watch** — das Budget-5-Limit hat
+  den sechsten Watch abgelehnt (das §B.6b-Limit, live ein zweites Mal bewiesen). Der Nachfolger
+  verankert den Rückweg, sobald ein Watch-Platz frei wird, oder liest die Pane.
 - **Pending, Startbedingung wartet:** `0c1b3145` GLM-Gegencheck der Sol-Verdikte — dispatchen
   (pi-zai/glm-5.3/high), sobald das Review auf main liegt. `d825eca6` Merge-Sensor-Fix
   (`last:"interrupted"` neben `running:true` — 3× beobachtet, kosmetisch aber unehrlich) —

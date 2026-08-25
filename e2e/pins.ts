@@ -651,6 +651,14 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       + `suites missing=[${missSuite}] extra=[${extraSuite}]; tsc missing=[${missTsc}] extra=[${extraTsc}]`);
   }
 
+  const proportionalCmd = /const VERIFY_PROPORTIONAL_CMD = '([^']+)'/.exec(server)?.[1] ?? "";
+  const proportionalSteps = stepsOf(proportionalCmd);
+  pin("the docs-proportional server gate is exactly install then pins (pins are never optional)",
+    proportionalCmd === "bun install --frozen-lockfile && bun e2e/pins.ts"
+      && proportionalSteps.length === 2
+      && proportionalSteps[0] === "install" && proportionalSteps[1] === "pins",
+    `cmd=${JSON.stringify(proportionalCmd)} chain=[${proportionalSteps.join(">")}]`);
+
   // and the anchors, held HARD — unlike section 6's, which are advisory because a lane's CLAUDE.md
   // is a spawn-time copy. This file is tracked, so the tree it ships with is the tree it describes.
   // CLAUDE.md is the one exception and it is named rather than derived: it is git-ignored, so a

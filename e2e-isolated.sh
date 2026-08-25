@@ -84,12 +84,17 @@ mkdir -p "$REPO"
 # were the stragglers. On macOS this changes nothing, which is the point: it makes an inherited
 # accident into a stated fact.
 ( cd "$REPO" && git init -q -b main && git config user.email t@t && git config user.name t \
-  && printf 'root\n' > code.txt && printf 'SECRET=1\n' > .env && printf '.env\nOWNER.md\n' > .gitignore \
+  && printf 'root\n' > code.txt && printf 'SECRET=1\n' > .env && printf '.env\nOWNER.md\nnode_modules/\n' > .gitignore \
   && printf '# Throwaway repository contract\nUse this repository own commands and evidence.\n' > AGENTS.md \
+  && printf '{"name":"proportional-gate-fixture","private":true,"dependencies":{"fixture-dep":"file:vendor/fixture-dep"}}\n' > package.json \
+  && mkdir -p vendor/fixture-dep && printf '{"name":"fixture-dep","version":"1.0.0"}\n' > vendor/fixture-dep/package.json \
+  && mkdir -p e2e && printf 'console.log("proportional fixture pins PASS");\n' > e2e/pins.ts \
+  && printf '// proportional gate fixture sentinel\n' > fleet-e2e.ts && bun install >/dev/null \
   && awk 'BEGIN{for(i=0;i<24;i++)print "ctxmod-"i}' > ctx-mod.txt \
   && awk 'BEGIN{for(i=0;i<4000;i++)print "ctxbig-"i}' > ctx-big.txt \
   && printf 'link target original\n' > ctx-linked.txt \
-  && git add AGENTS.md code.txt .gitignore ctx-mod.txt ctx-big.txt ctx-linked.txt && git commit -qm init )
+  && git add AGENTS.md code.txt .gitignore package.json bun.lock vendor/fixture-dep/package.json e2e/pins.ts fleet-e2e.ts ctx-mod.txt ctx-big.txt ctx-linked.txt \
+  && git commit -qm init )
 
 # Two MORE throwaway repos, and they exist for exactly one question (P-7c): does a land in repo X
 # run the verify command configured for repo X? That is only answerable with more than one repo on

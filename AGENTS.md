@@ -133,8 +133,9 @@ below (`install`, `pins`, `tsc`, `build`, `clean-review`, `security`, `claude-ga
 route is unreachable, run the full chain below. Every selected step must pass; stop at the first
 failure.
 
-The server-side land gate still always runs its full configured chain. Local proof is the fast
-lane recommendation; the server gate remains authoritative and is never weakened by it.
+The server-side land gate remains authoritative: it runs its full configured chain except that,
+since 2026-08-25, a docs-only land runs the short `install` + `pins` proof; the post-land audit
+remains full. Local proof and the land gate use the same classification source.
 
 The full chain, copyable and in order:
 

@@ -18,7 +18,8 @@ import { buildAnalysisPrompt, ANALYSIS_BLOCKERS } from "./analysis-prompt";
 import { analysisStaleness } from "./analysis-staleness";
 import { buildClarifyBrief } from "./clarify-prompt";
 import { buildRefinePrompt } from "./refine-prompt";
-import { localProofFor, type LocalProof } from "./verify-proportion";
+import { LOCAL_PROOF_STEPS, localProofFor, verificationProportionFor,
+  type LocalProof, type LocalProofStep } from "./verify-proportion";
 import {
   RULEBOOK_DIR, RULEBOOK_FRAGMENTS, fragmentFileName, renderRulebook, renderBackref, rulebookBody,
   type RulebookFragment,
@@ -3736,7 +3737,7 @@ async function laneLocalProof(s: Slot): Promise<LocalProof | null> {
   if (!s.cwd || !s.worktree) return null;
   const base = s.worktree.baseSha ?? await laneBaseRef(s);
   if (!base) return null;
-  const changed = await gitRead(s.cwd, "diff", "--name-only", `${base}...HEAD`);
+  const changed = await gitRead(s.cwd, "diff", "--no-renames", "--name-only", `${base}...HEAD`);
   if (changed.code !== 0) return null;
   return localProofFor(changed.out.split("\n").filter(Boolean));
 }
@@ -10589,6 +10590,10 @@ const CLEAN_REVIEW_TIMEOUT_MS = Math.max(30_000, Number(process.env.FLEET_CLEAN_
 // deterministic verify (design note §3): a per-repo command run against the REBASED tree.
 // Unset → no verify at all (verdict field absent, "unverified"). e.g. the CLAUDE.md tsc line.
 const VERIFY_CMD = process.env.FLEET_VERIFY_CMD ?? null;
+// The only reduced server-side gate: a non-empty candidate whose EVERY changed path is classified
+// docs-or-prose by verify-proportion.ts. Install establishes the pinned Bun toolchain and pins
+// checks the cross-file prose claims. Any other footprint keeps VERIFY_CMD.
+const VERIFY_PROPORTIONAL_CMD = 'bun install --frozen-lockfile && bun e2e/pins.ts';
 // PER-REPO verify commands (BACKLOG P-7c), and what they replace. One FLEET_VERIFY_CMD string had
 // to serve every repo a lane could live in, so the only way for it to be right in more than one
 // was to look at the tree in front of it and DECLINE elsewhere — the SKIP contract below, whose
@@ -10882,8 +10887,16 @@ async function drain(stream: ReadableStream<Uint8Array>, onLine?: (line: string)
 // resolved on (verifyCmdFor), and the resolution happens HERE rather than at the call sites so
 // there is exactly one place that can answer "which gate ran on this tree".
 async function runVerify(cwd: string, repo: string, mainSha: string): Promise<MergeLast["verify"]> {
-  const cmd = verifyCmdFor(repo);
-  if (!cmd) return undefined;
+  const configuredCmd = verifyCmdFor(repo);
+  if (!configuredCmd) return undefined;
+  // Classify the exact rebased candidate the gate is about to execute against. A failed diff and an
+  // empty diff both become the conservative full chain; no absence is evidence of harmlessness.
+  const changed = await gitRead(cwd, "diff", "--no-renames", "--name-only", `${mainSha}...HEAD`, "--");
+  const proportion = verificationProportionFor(changed.code === 0
+    ? changed.out.split("\n").filter(Boolean) : []);
+  const proportional = changed.code === 0 && proportion.proportional;
+  const steps: LocalProofStep[] = proportional ? [...proportion.steps] : [...LOCAL_PROOF_STEPS];
+  const cmd = proportional ? VERIFY_PROPORTIONAL_CMD : configuredCmd;
   const startedAt = Date.now();
   const p = Bun.spawn(["sh", "-c", cmd], { cwd, stdout: "pipe", stderr: "pipe" });
   let timedOut = false, waitedOut = false;
@@ -10962,7 +10975,7 @@ async function runVerify(cwd: string, repo: string, mainSha: string): Promise<Me
     const skipped = !timedOut && !waitedOut
       && (code === VERIFY_SKIP_EXIT || (code === 0 && VERIFY_SKIP_MARK.test(`${out}${err}`)));
     const kept = retainRunOutput(out, err, Math.max(0, VERIFY_OUT_CAP - byteLen(note)));
-    return { cmd, ok: timedOut || waitedOut || skipped ? null : code === 0,
+    return { cmd, ok: timedOut || waitedOut || skipped ? null : code === 0, proportional, steps,
       ...(timedOut ? { timedOut: true as const } : {}),
       ...(waitedOut ? { waitedOut: true as const } : {}),
       // p.exitCode, not the awaited status: Bun reports null for a signal death, which is the
@@ -11058,9 +11071,11 @@ interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "int
   // not report its waits, which is not the same as zero), `exitCode` null on a signal death.
   // `waitPartial` marks `waitMs` as a LOWER BOUND: a step was still queued when the run ended, so
   // its wait is known only to the last heartbeat (see suiteWait).
+  // Every new run also names whether it used the docs-only proportional chain and its exact ordered
+  // steps. Optional only for old persisted verdicts/notes, which cannot honestly reconstruct them.
   verify?: { cmd: string; ok: boolean | null; out: string; at: number; mainSha: string; stale?: boolean;
     timedOut?: true; waitedOut?: true; startedAt?: number; ms?: number; waitMs?: number; waitPartial?: true;
-    exitCode?: number | null };
+    exitCode?: number | null; proportional?: boolean; steps?: LocalProofStep[] };
   // set when main WAS advanced (the land is recorded — note + undo) but the lane teardown
   // failed afterwards; distinct from `detail` so "landed but not torn down" is machine-readable
   landError?: string;

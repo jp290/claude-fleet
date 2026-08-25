@@ -1,7 +1,7 @@
 // One-gesture land, ↩ undo-land and its refusals, V2 git-note provenance, the G1 guarantees that
 // provenance survives a failed teardown or a stale verify, and the resolver↔verify repair loop.
 import { spawnSync } from "node:child_process";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { REPO, ROOT, check, get, post } from "./harness";
 import { VerifyField, exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
@@ -283,6 +283,71 @@ export async function run(): Promise<void> {
       try { return { ok: true, json: JSON.parse(r.stdout.toString().trim()) as Record<string, unknown> }; }
       catch { return { ok: false, json: null }; }
     };
+
+    // --- DOCS-PROPORTIONAL LAND GATE -----------------------------------------------------------
+    // The test server gives the two-step docs chain and the full chain different executables. A
+    // command-selection regression therefore changes the observable command/output, not merely a
+    // label. All three candidates are clean rebases and green, so each also leaves the authoritative
+    // server-written note behind for the chain provenance check.
+    const landProportionCase = async (name: string, files: Record<string, string>) => {
+      const l = (await (await post("/api/lanes", { repo: REPO })).json()) as
+        { slot: number; cwd: string; branch: string };
+      for (const [file, content] of Object.entries(files)) {
+        mkdirSync(`${l.cwd}/${file.split("/").slice(0, -1).join("/")}`, { recursive: true });
+        await Bun.write(`${l.cwd}/${file}`, content);
+      }
+      spawnSync("git", ["-C", l.cwd, "add", "-A"]);
+      const committed = spawnSync("git", ["-C", l.cwd, "commit",
+        ...(Object.keys(files).length === 0 ? ["--allow-empty"] : []), "-qm", `${name} proportional gate fixture`]);
+      if (committed.status !== 0)
+        throw new Error(`${name} proportional-gate fixture did not commit: ${committed.stderr.toString().slice(0, 200)}`);
+      const before = headOf(REPO, "main");
+      await landClean(l.slot);
+      const after = headOf(REPO, "main");
+      const note = readNote(REPO, after);
+      return { landed: before !== after && (await get(`/api/slots/${l.slot}/merge`)).status === 400,
+        verify: note.json?.verify as VerifyField | undefined, note };
+    };
+    const docsGate = await landProportionCase("docs-only", {
+      "docs/proportional-only.md": "measurement note\n",
+    });
+    check("docs-proportional gate: a docs-only lane runs the short chain and lands",
+      docsGate.landed && docsGate.verify?.ok === true
+      && docsGate.verify.cmd.includes("bun install --frozen-lockfile")
+      && docsGate.verify.cmd.endsWith("bun e2e/pins.ts")
+      && docsGate.verify.out.includes("proportional fixture pins PASS"), JSON.stringify(docsGate));
+
+    const fullSteps = ["install", "pins", "tsc", "build", "clean-review", "security", "claude-gate"];
+    const mixedGate = await landProportionCase("mixed", {
+      "docs/proportional-mixed.md": "measurement note\n",
+      "src/proportional-mixed.ts": "export const measured = true;\n",
+    });
+    check("docs-proportional gate: a mixed docs+code lane runs the full chain",
+      mixedGate.landed && mixedGate.verify?.ok === true
+      && mixedGate.verify.cmd === process.env.FLEET_VERIFY_CMD
+      && mixedGate.verify.proportional === false
+      && JSON.stringify(mixedGate.verify.steps) === JSON.stringify(fullSteps), JSON.stringify(mixedGate));
+
+    const codeGate = await landProportionCase("one-code-file", {
+      "src/proportional-code.ts": "export const oneCodeFile = true;\n",
+    });
+    check("docs-proportional gate: even one code file runs the full chain",
+      codeGate.landed && codeGate.verify?.ok === true
+      && codeGate.verify.cmd === process.env.FLEET_VERIFY_CMD
+      && codeGate.verify.proportional === false
+      && JSON.stringify(codeGate.verify.steps) === JSON.stringify(fullSteps), JSON.stringify(codeGate));
+
+    const emptyGate = await landProportionCase("empty-diff", {});
+    check("docs-proportional gate: an empty diff never counts as harmless and runs the full chain",
+      emptyGate.landed && emptyGate.verify?.ok === true
+      && emptyGate.verify.cmd === process.env.FLEET_VERIFY_CMD
+      && emptyGate.verify.proportional === false
+      && JSON.stringify(emptyGate.verify.steps) === JSON.stringify(fullSteps), JSON.stringify(emptyGate));
+
+    check("docs-proportional gate: the land note marks a short green with its exact steps",
+      docsGate.note.ok && docsGate.verify?.proportional === true
+      && JSON.stringify(docsGate.verify.steps) === JSON.stringify(["install", "pins"]),
+      JSON.stringify(docsGate.note.json?.verify));
 
     // (1) clean-path land → a note that PARSES and carries the land's own before/after +
     //     the server verify result (green). Mutation guard: drop writeLandNote → this fails.

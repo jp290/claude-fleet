@@ -336,6 +336,12 @@ export async function run(ctx: Ctx): Promise<void> {
     doubleActivate.status === 200 && doubleBody.ok === true && doubleBody.existing === true
       && doubleBody.program?.status === "active",
     `${doubleActivate.status} ${JSON.stringify(doubleBody.existing)} ${doubleBody.program?.status}`);
+  // AND WHAT NO ROW HERE CAN WITNESS. A request that never reaches the server — offline, a dropped
+  // link, the server restarting under the click — is a CLIENT-side condition: the fetch rejects, so
+  // this suite's server sees no request at all and there is nothing on this side to measure. The
+  // three behaviours it needs (the rejection is caught into a sentence, the busy flag is cleared in
+  // a finally, an unanswered step invents no status and still re-reads the facts) are pinned in
+  // e2e/pins.ts under RULE_PROMOTE. A server-side probe for it would be an invented one.
   await programPost(twoStep.id, "complete");
   await programPost(partial.id, "complete");
 

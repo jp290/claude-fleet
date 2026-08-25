@@ -6249,8 +6249,15 @@ function renderProgramDetail(shell: Shell, id: string): void {
     // One step, one sentence. The two 409s read alike ("illegal transition: cannot … a … program"),
     // so the step NAMES itself around the server's verbatim answer — a paraphrase would drop the
     // half that says which door closed.
+    // A REQUEST THAT GOT NO ANSWER AT ALL is a third outcome, not a refusal: offline, a dropped
+    // link, the server restarting under the click — the normal condition of a board read from a
+    // phone. It has no status, so it invents none, and it is built here in ONE place so `run` can
+    // recognise it again without parsing prose.
+    const noAnswer = (action: "confirm" | "activate") =>
+      `${action} did not reach the server — no answer came back, so whether it landed is unknown`;
     const step = async (action: "confirm" | "activate"): Promise<string | null> => {
-      const r = await post(`/api/programs/${forId}/${action}`, {});
+      const r = await post(`/api/programs/${forId}/${action}`, {}).catch(() => null);
+      if (!r) return noAnswer(action);
       if (r.ok) return null;
       const j = (await r.json().catch(() => null)) as { error?: string } | null;
       return j?.error ? `${action} failed — ${r.status}: ${j.error}`
@@ -6262,29 +6269,40 @@ function renderProgramDetail(shell: Shell, id: string): void {
       qPlBusy = true; qPlErr = null;
       qDetailKey = ""; renderQueueDetail();
       let err: string | null = null;
-      let moved = false; // did a transition actually happen? Then the cached facts are stale.
-      if (from === "proposed") {
-        err = await step("confirm");
-        moved = err === null;
+      // `moved` is "the cached facts may be stale", not "a transition is proven": a step that got no
+      // answer is moved-UNKNOWN, never moved-false. An unanswered request is not evidence that
+      // nothing happened — the confirm may well be on the server — so the pane re-reads the facts
+      // instead of repainting a guess over a program that has in truth already moved.
+      let moved = false;
+      try {
+        if (from === "proposed") {
+          err = await step("confirm");
+          moved = err === null || err === noAnswer("confirm");
+        }
+        // A CONFIRM THAT LANDED IS KEPT. If activate then fails, the program IS confirmed: the facts
+        // are re-read so the pane repaints with the activate door, and the ACTIVATE sentence is what
+        // the owner reads. No rollback, and confirm is never re-issued as a repair.
+        if (err === null) {
+          err = await step("activate");
+          moved = moved || err === null || err === noAnswer("activate");
+        }
+      } finally {
+        // EVERY exit clears the busy flag — that is what a `finally` is for here, rather than each
+        // branch remembering. The path that used to leave the door disabled on "promoting…" forever
+        // was a request that never answered. `mine()` still fences the write: a busy flag set by a
+        // NEWER run belongs to that run, and an orphan must not enable a button that is in flight.
+        if (mine()) {
+          qPlBusy = false;
+          qPlErr = err;
+          if (moved) await loadPrograms(true);
+          qKey = ""; qDetailKey = "";
+          renderQueue(); renderQueueDetail();
+        } else if (moved) {
+          // An orphaned answer still refreshes the FACTS — a transition that happened, happened —
+          // but writes nothing into a draft that is no longer the one it was sent from.
+          await loadPrograms(true); qKey = ""; renderQueue();
+        }
       }
-      // A CONFIRM THAT LANDED IS KEPT. If activate then fails, the program IS confirmed: the facts
-      // are re-read so the pane repaints with the activate door, and the ACTIVATE sentence is what
-      // the owner reads. No rollback, and confirm is never re-issued as a repair.
-      if (err === null) {
-        err = await step("activate");
-        moved = moved || err === null;
-      }
-      // An orphaned answer still refreshes the FACTS — a transition that happened, happened — but
-      // writes nothing into a draft that is no longer the one it was sent from.
-      if (!mine()) {
-        if (moved) { await loadPrograms(true); qKey = ""; renderQueue(); }
-        return;
-      }
-      qPlBusy = false;
-      qPlErr = err;
-      if (moved) await loadPrograms(true);
-      qKey = ""; qDetailKey = "";
-      renderQueue(); renderQueueDetail();
     };
 
     const pr = qDetailSection(shell.detail, "Promote");

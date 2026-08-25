@@ -3153,6 +3153,44 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && /if \(from === "proposed"\) \{\s*\n\s*err = await step\("confirm"\);/.test(block)
       && /if \(moved\) await loadPrograms\(true\);/.test(block),
     `confirmedBranch=${/: "confirmed"\)/.test(block)}`);
+  // A REJECTED REQUEST IS AN OUTCOME, NOT AN ESCAPE. `post` → `api` → `fetch`, and a fetch that
+  // rejects (offline, a dropped link, the server restarting under the click — the board is read
+  // from a phone) walks out of the step, out of the run and out of the `void run(...)` in the
+  // onclick as an unhandled rejection: the door then stays disabled on "promoting…" and the pane
+  // says nothing at all. Every promote request is therefore caught AT its call and the caught case
+  // returns a sentence, exactly like a refusal does.
+  const promotePosts = [...block.matchAll(/post\(`[^`]*`, \{\}\)(\.catch\()?/g)];
+  const unguarded = promotePosts.filter((m) => !m[1]).length;
+  pin(`${RULE_PROMOTE} — a request that rejects is caught at its call and becomes a sentence, never an escaping rejection`,
+    promotePosts.length > 0 && unguarded === 0
+      && /\.catch\(\(\) => null\)/.test(stepFn) && /if \(!r\) return noAnswer\(action\);/.test(stepFn),
+    stepFn === "" ? "the promote step function was not found"
+      : `promotePosts=${promotePosts.length} unguarded=${unguarded}`);
+  // CLEARED ON EVERY EXIT, not per branch. The flag used to be cleared in the one branch that
+  // reached the tail, so any exit before it left the button disabled forever — recoverable only by
+  // selecting another program, which is not a recovery the owner can be expected to find. A
+  // `finally` cannot be exited around; `mine()` still fences the write, because a busy flag set by
+  // a NEWER run belongs to that run and an orphan must not enable a button that is in flight.
+  const runFn = block.match(/const run = async[\s\S]*?\n    \};/)?.[0] ?? "";
+  const finallyAt = runFn.indexOf("} finally {");
+  const clearAt = runFn.indexOf("qPlBusy = false;");
+  pin(`${RULE_PROMOTE} — the busy flag is cleared in a finally, on every exit, and nowhere else in the run`,
+    runFn !== "" && /\n      try \{/.test(runFn) && finallyAt > 0 && clearAt > finallyAt
+      && runFn.split("qPlBusy = false;").length - 1 === 1
+      && /if \(mine\(\)\) \{\s*\n\s*qPlBusy = false;/.test(runFn),
+    runFn === "" ? "the promote run function was not found" : `finally=${finallyAt} clear=${clearAt}`);
+  // NO INVENTED STATUS, AND NOT A PROOF THAT NOTHING HAPPENED. A refusal prints the server's own
+  // status; a request that got no answer HAS none, so its sentence names its step and says the
+  // outcome is unknown rather than borrowing a number. And because it may well have landed, it
+  // counts as moved-UNKNOWN at BOTH steps: the facts are re-read instead of a stale `proposed`
+  // being repainted over a program that is in truth already confirmed.
+  const noAnswerFn = block.match(/const noAnswer = [\s\S]*?;\n/)?.[0] ?? "";
+  pin(`${RULE_PROMOTE} — an unanswered request invents no status code and counts as moved-UNKNOWN at both steps`,
+    noAnswerFn !== "" && !/r\.status/.test(noAnswerFn) && /\$\{action\}/.test(noAnswerFn)
+      && /moved = err === null \|\| err === noAnswer\("confirm"\);/.test(block)
+      && /moved = moved \|\| err === null \|\| err === noAnswer\("activate"\);/.test(block),
+    noAnswerFn === "" ? "the unanswered-request sentence was not found"
+      : `sentence=${noAnswerFn.trim().length} chars`);
 }
 
 console.log(rows.join("\n"));

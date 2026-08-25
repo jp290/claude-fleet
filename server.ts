@@ -10883,12 +10883,15 @@ async function drain(stream: ReadableStream<Uint8Array>, onLine?: (line: string)
 // exclusive by construction rather than by a check someone has to remember.
 // `mainSha` binds the result to the main the tree was rebased onto — a verdict is void once main
 // moves past it (§6 rule 3).
-// `repo` is the lane's REPO TOPLEVEL, not its worktree: it is the key the per-repo command is
-// resolved on (verifyCmdFor), and the resolution happens HERE rather than at the call sites so
-// there is exactly one place that can answer "which gate ran on this tree".
-async function runVerify(cwd: string, repo: string, mainSha: string): Promise<MergeLast["verify"]> {
+interface VerifyPlan { cmd: string; proportional: boolean; steps: LocalProofStep[] }
+
+// Resolve and classify before reportServerRun publishes `running`: that row means the command has
+// actually been spawned, not that an asynchronous git preflight is still deciding what to run.
+// `repo` is the lane's REPO TOPLEVEL, not its worktree, and this remains the single command-selection
+// site for every land path.
+async function verifyPlanFor(cwd: string, repo: string, mainSha: string): Promise<VerifyPlan | null> {
   const configuredCmd = verifyCmdFor(repo);
-  if (!configuredCmd) return undefined;
+  if (!configuredCmd) return null;
   // Classify the exact rebased candidate the gate is about to execute against. A failed diff and an
   // empty diff both become the conservative full chain; no absence is evidence of harmlessness.
   const changed = await gitRead(cwd, "diff", "--no-renames", "--name-only", `${mainSha}...HEAD`, "--");
@@ -10897,6 +10900,12 @@ async function runVerify(cwd: string, repo: string, mainSha: string): Promise<Me
   const proportional = changed.code === 0 && proportion.proportional;
   const steps: LocalProofStep[] = proportional ? [...proportion.steps] : [...LOCAL_PROOF_STEPS];
   const cmd = proportional ? VERIFY_PROPORTIONAL_CMD : configuredCmd;
+  return { cmd, proportional, steps };
+}
+
+async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null): Promise<MergeLast["verify"]> {
+  if (!plan) return undefined;
+  const { cmd, proportional, steps } = plan;
   const startedAt = Date.now();
   const p = Bun.spawn(["sh", "-c", cmd], { cwd, stdout: "pipe", stderr: "pipe" });
   let timedOut = false, waitedOut = false;
@@ -13700,9 +13709,10 @@ async function confirmResolvedCandidate(s: Slot, cwd: string, repo: string, main
   // the verify-intent board must see this run, or two gates would fight over one machine.
   let fresh: MergeLast["verify"];
   if (!opts.byHuman) {
+    const verifyPlan = await verifyPlanFor(cwd, repo, mainBefore);
     fresh = await reportServerRun(`land:${s.id}`,
       { slot: s.id, label: s.label, branch, suite: "guarded confirm gate", cwd },
-      () => runVerify(cwd, repo, mainBefore));
+      () => runVerify(cwd, mainBefore, verifyPlan));
     if (!fresh || fresh.ok !== true)
       return { status: 409, body: { status: "resolved", landed: false, branch, verify: fresh ?? null,
         candidate: currentCandidate?.candidateSha ?? null, detail: freshConfirmRefusal(fresh) } };
@@ -14021,7 +14031,8 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         // a sub-millisecond row and stays true while it is up: the gate step DID run, it declined.
         const gateRun = <T,>(fn: () => Promise<T>): Promise<T> =>
           reportServerRun(`land:${s.id}`, { slot: s.id, label: s.label, branch, suite: "land gate", cwd }, fn);
-        let verify = await gateRun(() => runVerify(cwd, root, mainSha));
+        const firstVerifyPlan = await verifyPlanFor(cwd, root, mainSha);
+        let verify = await gateRun(() => runVerify(cwd, mainSha, firstVerifyPlan));
         // Bounded resolver↔verify repair loop (CONFLICT path only). A conflict resolution can
         // rebase cleanly yet fail the deterministic verify (a dropped symbol, a broken type). Rather
         // than dead-end at a red verdict, feed the exact failure back to the resolver for up to
@@ -14053,7 +14064,8 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             const anc2 = await git(root, "merge-base", "--is-ancestor", main, branch);
             if (anc2.code !== 0) break; // repair broke the rebase onto main — abandon, keep prior state
             repairRounds = round;
-            const rv = await gateRun(() => runVerify(cwd, root, mainSha));
+            const repairVerifyPlan = await verifyPlanFor(cwd, root, mainSha);
+            const rv = await gateRun(() => runVerify(cwd, mainSha, repairVerifyPlan));
             if (rv) verify = rv;
             if (verify && verify.ok) break; // repaired to green — done
           }

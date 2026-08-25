@@ -1,6 +1,7 @@
 // Local proof is deliberately conservative: an empty or unfamiliar footprint expands to the
-// full local chain, because a fast answer is useful only when it is also honest. This module is
-// advisory; the server-side land gate remains authoritative and always runs its configured chain.
+// full local chain, because a fast answer is useful only when it is also honest. The local
+// recommendation is advisory; the authoritative server gate uses this same classification for
+// its docs-only short chain and otherwise runs its full configured chain.
 
 export const LOCAL_PROOF_STEPS = [
   "install",
@@ -18,6 +19,10 @@ export interface LocalProof {
   steps: LocalProofStep[];
   isolatedPreview: IsolatedPreview;
   classifiedAs: Record<string, string>;
+}
+
+export interface VerificationProportion extends LocalProof {
+  proportional: boolean;
 }
 
 const DOC_STEPS: readonly LocalProofStep[] = ["install", "pins"];
@@ -51,18 +56,20 @@ function ruleFor(path: string): Rule {
   return DEFAULT_RULE;
 }
 
-export function localProofFor(files: string[]): LocalProof {
+export function verificationProportionFor(files: string[]): VerificationProportion {
   if (files.length === 0) {
-    return { steps: [...LOCAL_PROOF_STEPS], isolatedPreview: "self-assess", classifiedAs: {} };
+    return { steps: [...LOCAL_PROOF_STEPS], isolatedPreview: "self-assess", classifiedAs: {}, proportional: false };
   }
 
   const selected = new Set<LocalProofStep>();
   const classifications: [string, string][] = [];
   let isolatedPreview: IsolatedPreview = false;
+  let proportional = true;
 
   for (const file of files) {
     const rule = ruleFor(file);
     classifications.push([file, rule.label]);
+    if (rule.label !== DOC_RULE.label) proportional = false;
     for (const step of rule.steps) selected.add(step);
     if (rule.isolatedPreview === true) isolatedPreview = true;
     else if (rule.isolatedPreview === "self-assess" && isolatedPreview === false)
@@ -73,5 +80,11 @@ export function localProofFor(files: string[]): LocalProof {
     steps: LOCAL_PROOF_STEPS.filter((step) => selected.has(step)),
     isolatedPreview,
     classifiedAs: Object.fromEntries(classifications),
+    proportional,
   };
+}
+
+export function localProofFor(files: string[]): LocalProof {
+  const { proportional: _, ...proof } = verificationProportionFor(files);
+  return proof;
 }

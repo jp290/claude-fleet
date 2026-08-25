@@ -395,6 +395,19 @@ unterscheidbar, weil sie den Aufrufer an verschiedene Stellen schicken):
    `slot+openedAt` allein identifiziert die Okkupation, aber Landen ist der Akt, bei dem ein
    unbestätigter Occupant kein kleineres Problem ist. Beide Seiten `null` zählt als exakt (eine
    Fleet, deren Harness keine Session-Id pinnt, kann die Route sonst strukturell nie benutzen).
+
+   **Und die Bindung LERNT, statt zu erstarren.** `bootstrapProgramMain` stempelt das Tripel zur
+   Bind-Zeit; ein Harness, der beim Spawn keine Session-Id pinnt (codex), hat dort `sessionId:null`
+   und erfährt die echte Id erst danach. Weil diese Sprosse exakt vergleicht, machte genau dieser
+   Lernvorgang aus einer gültigen Bindung eine dauerhafte 409 — und `bootstrap-main` heilt es nicht,
+   weil sein Live-Occupant-Guard für dieselbe laufende MAIN `existing:true` antwortet (gemessen
+   2026-08-25: Programm 6fcc2971, Slot 3, zwei 409). Seit `backfillProgramMainSessionId` füllt jede
+   Stelle, an der ein Slot seine Id lernt (Codex-Auto-Bind, `/codex-bind`, ein Heal, der eine
+   entdeckte Id über den Respawn trägt — und der Boot, für schon festgefahrene Bindungen), das
+   aufgezeichnete `null` nach. **Der Vergleich selbst ist unverändert:** eine aufgezeichnete
+   NICHT-null-Id wird nie überschrieben (`divergent` bleibt `divergent`, und der Owner rebindet),
+   ein abweichendes `openedAt` wird nie angefasst, und ein Programm, das nicht `active` ist, auch
+   nicht. Geschlossen wird nur das Fenster zwischen Binden und Lernen.
 3. Zeile unbekannt (404) · Zeile eines fremden Programs · `kind` nicht `auftrag` · Zeile schon
    `done` (`already landed`) · Zeile nicht `sent` · kein lebender Lane-Slot.
 4. Lane-Repo ≠ eigener Checkout (`repoKeyOf`) — ein Land reicht nie über Repo-Grenzen. Ein nicht

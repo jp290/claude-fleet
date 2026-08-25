@@ -1,104 +1,91 @@
-# HANDOFF — Controller (Slot 9, Fable), 2026-08-25
+# HANDOFF — Controller (Slot 9, Fable), 2026-08-25 abends
 
-Vorheriger Inhalt (Supervisor Slot 1, 23.08.) liegt in der git-Historie. Zustand wird ABGELEITET:
-`./state.sh` · `./register.sh` · Live-Queue. Hier steht nur, was daraus nicht hervorgeht.
+Zustand wird ABGELEITET: `./state.sh` · `./register.sh` · Live-Queue. Hier steht nur, was daraus
+nicht hervorgeht. Vorgänger-Handoff (gleicher Tag, morgens) in der git-Historie.
 
-## North Star (Owner, 2026-08-25)
+## North Star (Owner, 2026-08-25 — unverändert)
 
 Fleet ist fertig, wenn der Owner nur noch Richtung und Geschmack gibt — und sonst nichts.
-Zwei Etappen, in dieser Reihenfolge:
+Etappe 1: qualitative Autonomie zu Ende bauen (jeder Kreis läuft ohne Menschen-Akt durch, jedes
+Anhalten meldet sich selbst). Etappe 2: dann produzieren (Games/Apps als Programme). Owner-Akte
+nur noch an Geschmacks-, Identitäts- und Release-Türen.
 
-1. **Qualitative Autonomie zu Ende bauen.** Nicht mehr Automatisierung, sondern verlässliche:
-   jeder Kreis (Ziel → Act → Lane → Land → Audit → Deploy) läuft ohne Menschen-Akt durch, und
-   jedes Anhalten ist sichtbar, benannt und adressiert — die „fehlende Schicht" der Systemanalyse.
-   Der Maßstab ist qualitativ: ein stehender Kreis meldet sich selbst, statt still zu stehen;
-   ein Owner-Akt kommt nur noch an Geschmacks-, Identitäts- und Release-Türen vor.
-2. **Dann produzieren.** Games und Apps als Programme unter promovierten Policies — Fleet baut,
-   misst und landet; der Owner spielt, urteilt und released. Ab dieser Etappe ist Arbeit an Fleet
-   selbst Wartung im Dienst der Studios, kein Selbstzweck mehr.
+## Der Meilenstein dieser Session
 
-Jede künftige Priorisierung misst sich an dieser Reihenfolge: was Etappe 1 nicht abschließt oder
-Etappe 2 nicht näherbringt, liegt unter der Schnittlinie.
+**Der Kreis hat sich zum ersten Mal ohne Menschen geschlossen:** Slot 3 (Programm Computer Use
+Bridge) hat seine Lane SELBST gelandet — Trail `self_land_start` slot=3 policy=guarded, Bridge-main
+auf `28cf9cf`, kein 409. Ermöglicht durch: Bindungs-Fix `f16b470` (vorige Session) + Deploy heute
+früh; beide Programm-Bindungen (S1/S3) tragen seit dem Boot wieder Session-IDs. Das Audit dazu ist
+`unknown` (Bridge-Repo hat kein Audit-Kommando — ehrlich, kein Rot).
 
-## Rolle und Owner-Auftrag dieser Session
+## Was diese Session geschlossen hat (Bodies lesen: git log 6e61078..HEAD)
 
-Diese Session hat die **Controller-Rolle vom Codex-Controller (Slot 2) übernommen** (Owner-Entscheid).
-Slot 2 ist in bestätigtem Standby — ob er stirbt, entscheidet der Owner. Arbeitsmodus, vom Owner
-ausdrücklich gesetzt: **Controller erörtert Probleme, AGENTEN fixen sie** — selbst nur briefen,
-landen, deployen, ernten. Owner-Ziel: Fleet **autonom** laufen lassen (Apps/Spiele), Priorität
-Autonomie > Funktionsfähigkeit > Härtung.
+1. **Deploy-Rückstand aufgeholt** (morgens `b62e8370` auf `6e61078`, abends `dce8f8f7` auf
+   `3814f40`), beide Boot-Verdikte ok, bundleStale false.
+2. **Analyse-Staffel komplett geerntet und gelandet:** Türen-Inventar (23 Türen, `7730870`) ·
+   Kommunikationsschichten (`bebebf0`) · Stab-Review mit 3 Slices (`aea965d`) · Auth-Forensik
+   (`5649879`) · GLM-Gegencheck (`1fcbe15`).
+3. **System-Map** `docs/system-map-2026-08-25.md` (`303abf7`): 62 belegte Strom-Zeilen, Rollen-,
+   Schichten-Inventar, 2 Mermaid-Diagramme — fürs Owner-Verständnis gebaut.
+4. **Video-Analyse** „Turn off Claude Code's Memory" (Theo) via Delegations-Kette (Session + 2
+   Sub-Agenten) → `docs/messungen/video-memory-theo-2026-08-25.md` (`0b2a38e`): Verdikt
+   „dosieren, nicht abschalten", eigene Messung 1,75:1 write:read, K1–K3 mit Schnittlinie.
+5. **Memory-System fixiert (K1, Owner-delegiert):** Index 35→11 Zeilen mit Disziplin-Kopfzeile,
+   26 gespiegelte project-/reference-Memories reversibel in `memory/attic/`, 9 feedback-* bleiben.
+6. **Memory-Erkenntnisse ins Regelwerk gefaltet** (`b861b9a`, `7158a43`, `12c8fe6`): Studio-Doc
+   trägt alle 7 Owner-Korrekturen vom 23.08.; zwei **unpromovierte** Fragment-Entwürfe
+   `docs/rulebook-entwuerfe/geschmack.md` + `owner.md` (K2); Rollenbrief-Check: kein Widerspruch,
+   eine Lücke (Supervisor-Brief behauptet tote Route `POST /api/self/attention`).
+7. **Public-Repo-Leak gefunden und geschlossen** (`b2e0bf6`): 11 Zeilen echte Domain/IP in 5
+   getrackten Dateien redigiert; neuer **Leak-Pin** bezieht Muster zur Laufzeit aus Env/.env
+   (rot-bewiesen, env-los sichtbarer Skip). Veröffentlichtes Repo war nie betroffen.
+8. **Docs-proportionales Land-Gate** (Owner-Entscheid): Feature `6fc2bdb`, Post-Land-Audit ROT →
+   seriell same-tree bewiesen (identisch) → als `real` adjudiziert → Race repariert `3814f40`
+   (phase=running wurde vor dem async diff-Preflight publiziert; jetzt Preflight vor sichtbarer
+   Phase, synchroner Spawn). **Live bewiesen: S15-Land in 804 ms, S8 in 893 ms** (`proportional:
+   true`, steps install+pins) statt bis 26 min. Audit bleibt voll. Regelbuch-Fragment
+   `rulebook/lane-discipline.md` + CLAUDE.md-Render nachgezogen.
+9. Merge-Train-Richtung als Queue-Zeile `23eef33d` (advisory), docs-Gate-Notiz `df8a0579` erledigt
+   durch 8.
 
-## Was diese Session geschlossen hat (Kurzform, Details in den Commit-Bodies)
+## IN FLIGHT
 
-1. **Die verschwundene Autonomie erklärt und behoben:** Die Authority-Kette (23./24.08.) ist
-   default-deny — kein aktives Programm war promotet, jede MAIN parkte an
-   `self-land not promoted (absent)`. Fix: 4 Promotions `guarded` erteilt (Programme 69305ad8,
-   6fcc2971, 20081c5c, 5457c0e5), `computer-use-bridge` in `FLEET_VERIFY_CMD_REPOS` eingetragen
-   (`make verify`), deployed.
-2. **Bindungs-Deadlock gefunden und per Lane gefixt** (`f16b470`): Bindungen mit `sessionId:null`
-   von vor dem ID-Learn erstarrten zur Dauer-409; jetzt Backfill an 4 Lernstellen inkl. Boot.
-   **Der Deploy dafür steht noch aus** (siehe In-Flight) — erst der nächste Boot heilt die zwei
-   erstarrten Bindungen (S1: 69305ad8, S3: 6fcc2971).
-3. **Analyse-Staffel gelandet:** `docs/messungen/system-analyse-2026-08-25.md` (Opus, 459 Z.;
-   Kernbefund: jeder Weg Maschine→Owner beginnt mit einem Agenten-Akt — die Fehlerklasse „der
-   Agent ist das, was stehenblieb" hat keinen Kanal; Rangliste: waitingOn-Zeile je Programm ·
-   Uhr im Phasenmodell · Heil-Tür für Bindung) und `docs/messungen/program-triage-2026-08-25.md`
-   (GLM; 7 COMPLETE / 7 REBIND / 1 UNKLAR / 10 proposed).
-4. **Codex-Hooks repariert** (`~/.codex/hooks/block-no-verify.sh`, `stop-reminder.sh`): Codex parst
-   Hook-stdout strikt als JSON; Klartext/Echo brach jede Codex-Session. Lektion in
-   `~/.claude/knowledge/stacks/fugen.md`.
-5. Zwei Owner-Verb-Lands für die Bridge (`c5b0653`→`6a0179c` via `8ef31c8c`), ehrlich geflaggt als
-   `owner via=bearer suspect=owner-token-outside-board` — das ist der Provenienz-Mechanismus, kein
-   Vorfall.
+- **S13 (GLM, Hygiene-Report `e6edd49b`):** hing 6¼ h in EINEM Turn (Token eingefroren), per Esc
+  unterbrochen + Steering zugestellt, arbeitet wieder. Lane-Watch armed. Wenn sie wieder hängt:
+  killen und auf Sol requeuen — der Auftrag ist docs-only.
+- **Post-Land-Audits** der zwei Kurz-Ketten-Lands (S15/S8) laufen/queuen — volle Läufe, das
+  Sicherheitsnetz der Proportionalität. Rot dort = zuerst §7-Familie verdächtigen, dann Baum.
+- Watches auf Slot 9 sterben mit dem Slot; Nachfolger verankert neu, was er braucht.
 
-## IN FLIGHT — Rückwege liegen als Watches auf Slot 9; stirbt Slot 9, neu verankern
+## Offene OWNER-Entscheide (gesammelt, nicht selbst treffen)
 
-- **Deploy wartet auf Audit:** Audit-Watch `70094433` auf `mainAfter=f16b470` feuert, wenn die
-  serielle Audit-Queue leer ist → dann `POST /api/deploy` (wurde einmal korrekt mit 409
-  „audit running" abgewiesen). **Ohne diesen Deploy bleiben die zwei Codex-Bindungen tot.**
-- **S8** (Sol, xhigh): Türen-Inventar → `docs/messungen/autonomie-tueren-2026-08-25.md`. Läuft lang
-  (großer Lesejob). Lane-Watch armed.
-- **S10** (Sol, xhigh): **Stab-Review** der Systemanalyse → `system-analyse-review-2026-08-25.md`,
-  endet mit **3 ausformulierten dispatchbaren Slices** — die dispatcht der Nachfolger direkt.
-- **S4** (Opus): Auth-Fail-Forensik (Task `afaaaf94`) · **S13** (GLM): Hygiene-Report REPORT-ONLY
-  (Task `e6edd49b`). Beide docs-only, Watches armed.
-- **S14** (Fable, high): Kommunikationsschichten-Analyse (Task `07e8675b`, Owner-Wunsch) →
-  `docs/messungen/kommunikationsschichten-2026-08-25.md`. **OHNE Watch** — das Budget-5-Limit hat
-  den sechsten Watch abgelehnt (das §B.6b-Limit, live ein zweites Mal bewiesen). Der Nachfolger
-  verankert den Rückweg, sobald ein Watch-Platz frei wird, oder liest die Pane.
-- **Pending, Startbedingung wartet:** `0c1b3145` GLM-Gegencheck der Sol-Verdikte — dispatchen
-  (pi-zai/glm-5.3/high), sobald das Review auf main liegt. `d825eca6` Merge-Sensor-Fix
-  (`last:"interrupted"` neben `running:true` — 3× beobachtet, kosmetisch aber unehrlich) —
-  dispatchen, wenn Slots frei.
+- **Fragment-Promotion (K2):** `docs/rulebook-entwuerfe/geschmack.md` + `owner.md` sind Entwürfe —
+  Geschmacks-/Identitäts-Tür, nur der Owner promotet sie in `rulebook/`.
+- **7 COMPLETE-Empfehlungen** der Programm-Triage · **Hygiene-Discard** (wartet auf S13-Report) ·
+  **Slot 2** (Standby töten/umwidmen?) · **REBIND der Spiele** (private-repo-i, Private-repo-f, Worktrail B —
+  Owner will „langsam wieder den Spielen widmen"; Empfehlung: mit EINEM Programm starten) ·
+  **Merge-Train** `23eef33d` (erst Scoping-Lane nach der Bau-Welle) · **Linux-Maschine** als
+  zweite Suite-Maschine (Programm-Kandidat).
 
-## Offene OWNER-Entscheide (nicht selbst treffen)
+## Nächste Bau-Welle (Material liegt fertig, Reihenfolge begründet)
 
-- **7 COMPLETE-Empfehlungen** aus der Programm-Triage ausführen? (mechanisch belegt; ein Wort genügt)
-- **Hygiene-Discard**: der S13-Report liefert die SAFE-Liste; Löschen ist Owner-Akt.
-- **Slot 2** (Codex-Controller im Standby) töten oder umwidmen?
-- REBIND-Kandidaten (private-repo-i, Private-repo-f, Worktrail B …) wieder aufwecken? Needle ruht per Owner-Pause.
+1. **Slice 3 — Rückweg-Budget sichtbar machen** (heute 5× live belegt: fleet-report-409 in fünf
+   Lanes). Brief in `docs/messungen/system-analyse-review-2026-08-25.md` §Slices.
+2. **Slice 1 — Authority-Gesundheit je Programm** (waitingOn ablesbar).
+3. **Supervisor-Brief-Falschaussage** (`POST /api/self/attention` 409t strukturell) — kleine Zeile,
+   gleiche Klasse wie V4.
+4. **K3 — Payload-Decke als Check** (Video-Analyse; Flake-Risiko zuerst klären).
+   **Slice 2 ist GEBAUT** (`f16b470`) — der Gegencheck hat die Doppelarbeit verhindert; nicht
+   erneut dispatchen.
 
-## Was der Nachfolger wissen muss, das nirgends sonst steht
+## Lektionen dieser Session (Regel-Kandidaten, unpromoviert)
 
-- **Watch-/Report-Budget 5 pro Slot ist ein reales Koordinations-Limit** (§B.6b der Systemanalyse,
-  an dieser Session bewiesen: 4 armed Watches blockten den Report der eigenen Lane 7×). Vor jedem
-  Watch: Budget denken. Sols Review bewertet den Befund — Fix-Entscheid danach.
-- **Nie zwei Lands parallel, und die Audits teilen denselben Mutex** — der dritte Land des Tages
-  wartete ~40 min hinter Vorschau+Audits. Owner-Idee dazu: die **alte Linux-Maschine** als zweite
-  Suite-/Audit-Maschine — als Programm-Kandidat aufnehmen, nicht ad hoc bauen.
-- Promotion neuer Programme ist seit `fe27764` **ein Board-Klick** (Programm-Detail); default bleibt
-  deny — jedes neue Programm braucht den Grant, sonst parkt seine MAIN wieder.
-- Der 15-min-**Triage-Takt** (`f77be39a`, Auto auf Slot 9) beantwortet Attentions mechanisch selbst
-  und bereitet nur Geschmack/Release/Identität für den Owner auf — beim Nachfolger neu anlegen,
-  Autos sterben mit dem Slot.
-- Codex-MAINs nach `/clear` oder resume bleiben `divergent` (Doktrin der Tür) — Owner-Rebind bleibt
-  dafür der Weg; nur das null→ID-Erstarren ist geschlossen.
-
-## Reihenfolge für die nächste Session
-
-1. Deploy nachziehen (falls Audit-Watch noch nicht gefeuert hat) und **verifizieren, dass S1/S3
-   wieder self-landen können** (Trail: `self_land_start`, kein 409 identity).
-2. S8/S10/S4/S13 ernten und landen (seriell), GLM-Gegencheck `0c1b3145` dispatchen.
-3. Aus Sols 3 Slices + Gegencheck die nächste Bau-Welle briefen — das ist der eigentliche
-   Verbesserungs-Pfad aus der Analyse-Staffel.
-4. Owner-Entscheide oben einholen, `d825eca6` dispatchen.
+- **Infrastruktur vor Durchsatz:** ein beschlossener Fix, der die Kosten wartender Arbeit senkt,
+  landet ZUERST (Owner-Korrektur; 4 docs-Lands zahlten unnötig die volle Kette, ein Land starb am
+  Mutex-Timeout in der Warteschleife).
+- **Hintergrund-Suite = EIN langer Wait, kein Poll-Takt** (Owner-Korrektur an S4; Polling verbrannte
+  Kontext). Gehört in künftige Briefs.
+- Der §7-/Watch-Dedup-Check in `e2e/verify-queue.ts` hat eine bewiesene Flake-Instanz
+  (same-tree: 1× rot, 1× grün) — Kandidat für `docs/verify-tiering.md`.
+- Der Merge-Sensor-Bug `d825eca6` (`last:"interrupted"` neben `running:true`) trat heute ~5× auf —
+  kosmetisch, Task ist pending.

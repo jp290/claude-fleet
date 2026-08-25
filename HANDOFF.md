@@ -55,6 +55,10 @@ früh; beide Programm-Bindungen (S1/S3) tragen seit dem Boot wieder Session-IDs.
   — 14 Worktrees SAFE-TO-DISCARD (Copy-Paste-Liste), geleakter pi-Socket seit 08-23, 789 MB TMPDIR.
   NEU dabei: **origin/main 1015 Commits hinter lokal, kein Push seit 08-21** (Publish = Owner-Akt
   von der Hauptmaschine).
+- **S4 NEU (Opus high, Task `c770f365`, Branch `fleet/260825204003-e600`): Video-Zweitanalyse
+  CODEBASE-KLARHEIT** (Owner-Auftrag nach dem Handoff) → `docs/messungen/video-codebase-klarheit-
+  2026-08-25.md`. Nutzt die P-Liste der Erstanalyse wieder; max 3 Kandidaten mit Schnittlinie.
+  ERNTEN + GEGENCHECKEN + LANDEN gehört der Nachfolge — Watch neu verankern, die des Slots 9 sind tot.
 - **Post-Land-Audits** der zwei Kurz-Ketten-Lands (S15/S8) laufen/queuen — volle Läufe, das
   Sicherheitsnetz der Proportionalität. Rot dort = zuerst §7-Familie verdächtigen, dann Baum.
 - Watches auf Slot 9 sterben mit dem Slot; Nachfolger verankert neu, was er braucht.

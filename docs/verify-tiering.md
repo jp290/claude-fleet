@@ -21,7 +21,7 @@ explicitly relative to it. This doc deliberately does not touch `gate-coverage.m
    flakes**" false as written, which matters because that sentence is the licence lanes use to
    treat a red suite as their own defect.
 2. ~~**A verify timeout is recorded as a failure, not as a non-measurement (§5).** `runVerify`
-   returns `ok: !timedOut && code === 0` (`server.ts:2550`), so a timeout is `ok:false` — it stops
+   returns `ok: !timedOut && code === 0` (`server.ts#runVerify`), so a timeout is `ok:false` — it stops
    the land *and* writes `verified:false` to the outcome ledger, although the project has an
    `ok:null` "nothing was measured" state one line away. *Cost:* the same number-poisoning
    `gate-coverage.md` §4 documents for `verified:true`, in the opposite direction, and it gets
@@ -46,7 +46,7 @@ explicitly relative to it. This doc deliberately does not touch `gate-coverage.m
    regression can take out the undo record and the auditor together, and its symptom is an empty
    trail — indistinguishable from "nothing landed". The auditor cannot audit its own trigger.
 4. ~~**`undo-land`, the rollback tier 2 names, is a one-land, until-the-next-land guarantee (§6c).**
-   One record per repo (`server.ts:2599`); the route refuses *and deletes the record* once main
+   One record per repo (`server.ts#pushUndo`); the route refuses *and deletes the record* once main
    moved past it. *Cost:* in the exact burst tier 2's coalescing was built for (three lands in
    ~110 s), the earlier lands are already un-undoable when the audit reports on them.~~
    **Widened 2026-08-08**: the record is a CAPPED STACK (`UNDO_STACK_MAX = 3`, `pushUndo` /
@@ -85,7 +85,7 @@ round's exit code — it is a column because one of them is not 0.
 
 | what | median | min – max | rc per round | raw ms |
 |---|---|---|---|---|
-| **(a) the live gate**, exactly as `watchdog.sh:57` builds it | **46.9 s** | 46.8 – 47.1 s | 0, 0, 0 | 47052 / 46911 / 46809 |
+| **(a) the live gate**, exactly as `watchdog.sh#VERIFY_CMD` built it on 2026-07-25 | **46.9 s** | 46.8 – 47.1 s | 0, 0, 0 | 47052 / 46911 / 46809 |
 | **(b) `./e2e-isolated.sh`** (759 checks) | **5 min 36.6 s** | 5 min 36.5 s – **7 min 36.4 s** | 0, **1**, 0 | 336635 / **456355** / 336505 |
 | **(c) `./e2e-clean-review.sh`** (25 checks, 2 server boots) | **23.0 s** | 18.7 – 26.8 s | 0, 0, 0 | 26846 / 23022 / 18671 |
 | **(d) `bun run build`** (both client bundles, minified) | **0.09 s** | 0.079 – 0.100 s | 0, 0, 0 | 91 / 100 / 79 |
@@ -114,22 +114,27 @@ What the decomposition says (VERIFIED):
   (it reports `Checked 9 installs across 10 packages (no changes) [3.00ms]`), `tsc` is ~1.5 s, and
   the behaviour suite is ~45 s of a ~47 s gate. Every statement about "the gate's cost" is a
   statement about that one script.
-- **That script's cost is mostly scheduled waiting, not work.** Unconditional sleeps:
-  `fleet-e2e-claude-gate.ts:45,50,63,68` are 1500 + 7000 + 1500 + 7000 ms, plus `sleep 2` in
-  `e2e-claude-gate.sh:73` — ≥ 19 s of the ~45 s is the harness waiting for panes to settle, before
-  any polling loop. INFERRED consequence: the gate will not get much faster on a quieter box and
-  will not inflate much on a loud one, which is what the narrow span shows.
+- **That script's cost is mostly scheduled waiting, not work.** Unconditional sleeps as of 2026-07-25
+  (`fleet-e2e-claude-gate.ts`, grep `Bun.sleep`; the file has grown substantially since — see §11.2f —
+  so the specific offsets are not re-derived here) were 1500 + 7000 + 1500 + 7000 ms, plus `sleep 2`
+  in `e2e-claude-gate.sh` (grep `sleep 2`) — ≥ 19 s of the ~45 s was the harness waiting for panes to
+  settle, before any polling loop. INFERRED consequence: the gate will not get much faster on a
+  quieter box and will not inflate much on a loud one, which is what the narrow span shows.
 - **`bun run build` is free** (~90 ms; `Bundled 7 modules in 25ms` + `Bundled 4 modules in 13ms`).
   It is not in the gate and does not need to be — client bundles are a deploy step (CLAUDE.md), and
   no verification tier discussed here covers the client at all.
 
 ## 3. What `./e2e-claude-gate.sh` actually checks — counted, not quoted
 
-**25 executed checks, not 26.** VERIFIED twice: `grep -n 'check("' fleet-e2e-claude-gate.ts` gives
-25 call sites, and round 1's run emitted 25 `PASS` lines (`grep -c "^PASS\|^FAIL"` = 25, 0 FAIL).
-`gate-coverage.md:17` says 26; `grep -c 'check(' ` gives 26 because it also counts the
-`function check(name: string, …)` definition at `fleet-e2e-claude-gate.ts:21`. An off-by-one from a
-grep, not a removed check.
+**25 executed checks, not 26, as measured 2026-07-25.** VERIFIED twice that day: `grep -n 'check("'
+fleet-e2e-claude-gate.ts` gave 25 call sites, and round 1's run emitted 25 `PASS` lines
+(`grep -c "^PASS\|^FAIL"` = 25, 0 FAIL). `gate-coverage.md` said 26 at the time; `grep -c 'check(' `
+gave 26 because it also counted the `function check(name: string, …)` definition, then still local
+to this file. **Stale as of this pass:** `check()` is no longer defined in
+`fleet-e2e-claude-gate.ts` at all — it now lives in `e2e/harness.ts#check`, consistent with
+`fleet-e2e.ts`'s "shared plumbing lives in `e2e/harness.ts`" split. The off-by-one mechanism this
+paragraph describes no longer applies to this file, and the check count has grown well past 25
+since 2026-07-25 (§11.2f alone added several); neither is re-measured here.
 
 The six check families, all six about `claudeAlive()`:
 
@@ -158,8 +163,9 @@ builds every agent prompt". **It does not.** `tsc` follows imports.
 
 - VERIFIED by listing: `tsc --listFiles` over the four entry points resolves **34 tracked repo
   files**, including `merge-prompt.ts`, `lane-signals.ts`, `enhance-prompt.ts`, `src/md.ts` and all
-  27 `e2e/*.ts` — because `server.ts:6–8` imports the first three and `fleet-e2e.ts:10–35` imports
-  the suite.
+  27 `e2e/*.ts` (now more than 27 — the suite has grown, not re-counted here) — because `server.ts`'s
+  own top-of-file imports pull in the first three (grep `^import` at the top of `server.ts`) and
+  `fleet-e2e.ts`'s top-of-file imports pull in the suite.
 - VERIFIED by mutation, which is the proof that matters: into a scratch copy of `merge-prompt.ts` I
   appended `const __proof: number = "not a number";`, then ran the exact gate `tsc` line. Output:
 
@@ -185,25 +191,29 @@ today and adding them cannot turn a sound land red.
 ## 5. Can the full suite be a synchronous gate if the timeout is raised?
 
 **Mechanically: yes, and it is not even a code change.** `FLEET_VERIFY_TIMEOUT_MS` is read at
-`server.ts:2495` (`Math.max(5_000, Number(process.env.FLEET_VERIFY_TIMEOUT_MS ?? 120_000) | 0)`) and
+`server.ts#VERIFY_TIMEOUT_MS` (`Math.max(5_000, Number(process.env.FLEET_VERIFY_TIMEOUT_MS ?? 120_000) | 0)`) and
 a grep over every `*.sh`, `*.ts` and `*.md` in the repo returns that one line and nothing else —
-it is set nowhere, named in no doc. VERIFIED. The live 120 s is a default nobody chose.
+it is set nowhere, named in no doc. VERIFIED **at the time of writing (2026-07-25)**; superseded by
+§8 — `watchdog.sh` now sets `FLEET_VERIFY_TIMEOUT_MS=300000` on the srv-spawn line. The live 120 s
+default nobody chose is history, not the current state.
 
 **Practically: no, and the blocker is not the timeout.** Three costs, in ascending order of how
 much they hurt:
 
 1. **Per-land latency.** Clean path = gate + suite ≈ 6.4 min median (table §2). The land is
-   owner-initiated (`mergeJob` is called from exactly one site, `server.ts:5299`, the merge POST)
+   owner-initiated (`mergeJob` was called from exactly one site at the time of writing, `server.ts#mergeJob`,
+   the merge POST — **now two sites since 2026-08-24**, the owner merge route and the Program-MAIN
+   release route both call it, grep `` mergeJob( `` in `server.ts`)
    but the POST returns before the job finishes — the route's own comment says a conflictful rebase
-   "outlives any request-held connection, never synchronous" (`server.ts:5153`). VERIFIED. So the
+   "outlives any request-held connection, never synchronous" (`server.ts#mergeJob`). VERIFIED. So the
    owner is not blocked at the browser; the *lane* is blocked, for six minutes, and `tickAutoReview`
-   skips any slot with a merge in flight (`server.ts:2285`).
-2. **The repair-path multiplier.** `runVerify` runs once (`server.ts:3247`) and again after each of
-   `MERGE_REPAIR_ROUNDS = 2` repair rounds (`server.ts:2475`, `:3275`) — up to **three full runs**
+   skips any slot with a merge in flight (`server.ts#tickAutoReview`).
+2. **The repair-path multiplier.** `runVerify` runs once (`server.ts#mergeJob`) and again after each of
+   `MERGE_REPAIR_ROUNDS = 2` repair rounds (`server.ts#MERGE_REPAIR_ROUNDS`) — up to **three full runs**
    for one conflicted land, ~19 min plus two resolver agent invocations. VERIFIED by reading the
    loop.
 3. **Unbounded concurrency, which is the real one.** `mergeInflight` is keyed per slot
-   (`server.ts:2585`, set at `:5301`) and there is no global merge lock, so *k* lanes landing
+   (`server.ts#mergeInflight`, set inside `server.ts#mergeJob`'s call sites) and there is no global merge lock, so *k* lanes landing
    together run *k* full suites at once — each booting its own fleet server and driving its own
    tmux socket, on the same box the live fleet's sessions run on. VERIFIED structurally. Tier 2, by
    contrast, serialises deliberately ("one repo at a time, and one run at a time across ALL repos",
@@ -213,9 +223,9 @@ much they hurt:
 And one finding about the gate **as it stands today**, which raising the content would sharpen:
 
 > **A verify timeout is recorded as a failure, not as a non-measurement.** `runVerify` returns
-> `ok: skipped ? null : !timedOut && code === 0` (`server.ts:2550`) — so a timeout is `ok:false`,
+> `ok: skipped ? null : !timedOut && code === 0` (`server.ts#runVerify`) — so a timeout is `ok:false`,
 > which stops the land *and* writes `verified:false` onto the outcome row. The project has a third
-> state for "nothing was measured" (`ok:null`, the SKIP contract, `server.ts:2518`, `:2550`) and a
+> state for "nothing was measured" (`ok:null`, the SKIP contract, `server.ts#VERIFY_SKIP_EXIT`, `server.ts#runVerify`) and a
 > timeout does not use it. Today's headroom is 120 s against a measured 45–48 s gate (~2.5×), which
 > is fine; at 66–74 s (my proposal, §8) it is 1.6×, and at 384 s it is negative. INFERRED, not
 > observed: I saw no timeout in any of the 19 suite runs measured here. The cost is that a machine-load artefact enters K1 as a
@@ -254,7 +264,8 @@ would give, because it is the *same* tree passing and failing.
 The three failures, read (not inferred from their names):
 
 - `outcome: a lane that ends while a review is running records review.state "inflight"`
-  (`e2e/review.ts:177`). The check sets the stand-in reviewer's delay to 6 s, fires a review
+  (`e2e/review.ts`, grep the quoted check name — currently `check("outcome: a lane that ends while a
+  review is running records review.state \"inflight\""`). The check sets the stand-in reviewer's delay to 6 s, fires a review
   without awaiting it, sleeps 1500 ms and kills the slot, expecting to catch the review in flight.
   What was recorded instead was
   `{"state":"superseded", …, "scope":"uncommitted changes plus recent commits (no lane base to diff against)", "notes":"no code changes in scope — nothing to review", "findings":[]}` —
@@ -263,9 +274,9 @@ The three failures, read (not inferred from their names):
   merely miss a deadline, it silently fell into a *different code path*. I did **not** root-cause
   why `laneBaseRef` yielded no base in that run (§9).
 - `a second send of the same kind×slot within the episode window is 429` — got **409**
-  (`e2e/steward-core.ts:208–211`). The first send's paste echo resets the target pane's idle clock,
+  (`e2e/steward-core.ts#run`, grep the quoted check name). The first send's paste echo resets the target pane's idle clock,
   and `canDeliver` runs *before* the cap gates — the harness knows this and waits it out before the
-  *next* send (`e2e/steward-core.ts:223–225` says so in as many words) but not before this one. Under
+  *next* send (`e2e/steward-core.ts#run`, grep `canDeliver runs` says so in as many words) but not before this one. Under
   load the echo lands first and the request 409s on busy instead of 429ing on the cap.
 - `a capped send is audited (steward_send_capped)` — a direct consequence of the previous: no cap
   was hit, so no cap event was written.
@@ -287,7 +298,7 @@ this lane's question:
 **Correction to the rulebook, reported as text because `CLAUDE.md` is gitignored and only copied
 into lanes:** the line "A clean run tails 'ALL PASS' — **no known flakes**. … a fail is now yours
 until proven fails-identically-at-HEAD" is false as of today. Two flakes are named above with
-file:line and a mechanism, and a third (`e2e/review.ts:177`) whose mechanism I could only partly
+a locator and a mechanism, and a third (the `"inflight"` check in `e2e/review.ts`, above) whose mechanism I could only partly
 establish. The rule that a fail is the lane's until proven otherwise is still the right default;
 the "no known flakes" premise it rests on is not.
 
@@ -305,7 +316,8 @@ each has a class the other structurally cannot see.
   `covers[]` field exists because of this. That is the right engineering choice for a background
   auditor, and it is also a permanent limit on what its red means.
 - **(c) A rollback that is not needed** — because the one it would need is narrower than the phrase
-  "↩ undo-land is the rollback" suggests. VERIFIED at `server.ts:5121–5148` (2026-07-26): `undoLast`
+  "↩ undo-land is the rollback" suggests. VERIFIED at the undo-land route (2026-07-26, `server.ts`
+  grep `/api/repos/undo-land`): the pre-2026-08-08 undo record
   held **one record per repo**, and the route refused *and permanently deleted the record* as soon
   as main moved past `mainAfter`, or as soon as the commit was on any remote. So in the exact
   scenario tier 2's coalescing was built for — "three lands arrived within ~110 s on 2026-07-25",
@@ -318,7 +330,7 @@ each has a class the other structurally cannot see.
   at the gap, and a red that names three lands still identifies none of them — the bisect is the
   owner's. The rollback is a pointer with a short memory, not history.
 - **(d) Coverage of the auditor's own trigger.** `schedulePostLandAudit` is called at the end of
-  `recordLand`, the same function that writes the undo record (`server.ts:2643–2645` plus the
+  `recordLand`, the same function that writes the undo record (`server.ts#recordLand` plus the
   sibling lane's addition). Both are invisible to tier 1 (§3: zero mentions). A land-path regression
   that makes `recordLand` early-return — it opens with
   `if (!mainBefore || !mainAfter || mainBefore === mainAfter) return;` — or throw takes out the undo
@@ -375,7 +387,7 @@ Read first-hand: `git -C …/post-land-audit diff main...HEAD` (5 lane commits, 
 - The decisions I would otherwise have argued for are already taken and argued at the decision site:
   it gates nothing, it does not auto-undo, `unknown` is never rounded to green or red, the child
   inherits no `FLEET_*` variable (so no recursion and no live tokens), and it is ~~**default OFF** with
-  the enabling lines pre-written but commented out in `watchdog.sh:60–74`~~ — default off in
+  the enabling lines pre-written but commented out in `watchdog.sh`~~ — default off in
   `server.ts` still, but **switched on in `watchdog.sh` since 2026-07-25**; the lines are live, not
   commented out.
 - 32 checks in `fleet-e2e-postland-audit.ts` plus 2 default-off non-regression checks in the main
@@ -456,7 +468,7 @@ That argument does not expire when someone raises a timeout.
 
 **One assumption of theirs I verified for them, since their whole tier rests on it.** Running the
 suite from a `git archive` snapshot (a tree, no `.git`) is safe: `e2e-isolated.sh`'s `$DIR` is
-already a plain `cp -R` copy and never a git repo (`e2e-isolated.sh:25–29`; it `git init`s only its
+already a plain `cp -R` copy and never a git repo (`e2e-isolated.sh#DIR`; it `git init`s only its
 throwaway `testrepo`), and no check in `e2e/*.ts` runs git against `ROOT`
 (`grep -rn ROOT e2e/*.ts | grep -i git` → empty). VERIFIED by reading, not by executing an audit
 run — so the *class* of problem is excluded, not the specific run.
@@ -487,13 +499,18 @@ harnesses to the `tsc` list. Measured cost: 1.5 s → 1.538 s, no new errors (§
 
 - It drives the **real clean auto-land path end to end**. Its checks assert
   `"the ok'd lane's commit reached main"` and `"the downgraded lane's commit did NOT reach main"`
-  (`fleet-e2e-clean-review.ts:218,224,244,254`) — i.e. `tryScriptRebase` → `runVerify` →
+  (`fleet-e2e-clean-review.ts`, grep the quoted check names) — i.e. `tryScriptRebase` → `runVerify` →
   `advanceIntegration` → `recordLand` → `landLane`, the path §3 showed the gate does not touch at
   all, and the path §6d showed tier 2 depends on.
-- It is the only suite that exercises `runCleanReview`, which is **live on this fleet right now** in
-  `shadow` mode (`watchdog.sh:65`) and therefore runs on every clean auto-land in production.
+- It is the only suite that exercises `runCleanReview`, which was **live on this fleet in `shadow`
+  mode at the time of writing** (`watchdog.sh#FLEET_CLEAN_REVIEW`) and therefore ran on every clean
+  auto-land in production. **Stale as of this pass (2026-08-25): the live srv-spawn line now carries
+  `FLEET_CLEAN_REVIEW=off`**, not `shadow` — the reviewer is not live today. §7 below (this doc,
+  written the same week) says why: the K2 shadow series ended 2026-07-28 (45 rows, all "pass", zero
+  contradiction) and the reviewer was switched off then — so this has been stale since 2026-07-28,
+  not just as of this pass.
 - It is safe as a gate step: `FLEET_CMD=true`, stand-in reviewer and merge agent, `FLEET_AUTO_REVIEW_MS=0`,
-  own `$$`-derived socket/port/dir (`e2e-clean-review.sh:14–16,73`) — it cannot spawn a real
+  own `$$`-derived socket/port/dir (`e2e-clean-review.sh#DIR`) — it cannot spawn a real
   model session and cannot reach socket `claudefleet`. VERIFIED by reading the wrapper, and by
   running it from inside this lane worktree, which *is* the environment `runVerify` uses.
 - **It burns in clean, which after §5b is the question that decides eligibility, not cost.**
@@ -508,12 +525,13 @@ Against the 120 s default that is 1.6× headroom at worst case, which is too thi
 timeout moves in the same change.
 
 **Step 2b — 34 s, and it closes a gap that surprised me: the security regression suite runs in no
-gate at all.** `./e2e-security.sh` (46 checks) is what `docs/security-model.md:7–8` names as the
-regression suite for the whole perimeter document, and `docs/README.md:157` repeats it. It is in no
+gate at all.** `./e2e-security.sh` (46 checks) is what `docs/security-model.md` (an internal working
+doc, deliberately unpublished per `docs/README.md`'s "Not published at all" list) named as the
+regression suite for the whole perimeter document at the time of writing. It is in no
 gate, in no CLAUDE.md verify list, and its harness is one of the three files `tsc` never sees (§4).
 It is isolation-safe on the same pattern (own port band, `FLEET_CMD=true`,
-`FLEET_AUTO_REVIEW_MS=0` — `e2e-security.sh:12–17,41–52`). Measured 34.2 / 34.5 s, both green.
-*Superseded 2026-07-28 on two points: it has since entered the pre-land gate (`watchdog.sh:71`
+`FLEET_AUTO_REVIEW_MS=0` — `e2e-security.sh#DIR`). Measured 34.2 / 34.5 s, both green.
+*Superseded 2026-07-28 on two points: it has since entered the pre-land gate (`watchdog.sh#VERIFY_CMD`
 runs `./e2e-clean-review.sh && ./e2e-security.sh && ./e2e-claude-gate.sh`, and that same line's
 `tsc` covers all three harnesses, so §4's "files tsc never sees" is closed too); and its band was
 15200+ here, which overlapped the post-land audit's 15000–16999 by 1800 ports — every band is now
@@ -555,8 +573,8 @@ belongs (§5, §6).
   unattended moves main in two directions with no human in either") is right, and §6c is a second
   reason: the undo record is frequently already void.
 - A sliced "land-path only" subset of the main suite as a middle tier. It sounds like the obvious
-  answer and it is not a config change: `fleet-e2e.ts:63–75` threads one mutable `LaneCtx` through
-  `lanesBasic` → `lanesLifecycle` → `merge`, and `fleet-e2e.ts:5–9` states the order is load-bearing
+  answer and it is not a config change: `fleet-e2e.ts` threads one mutable `LaneCtx` through
+  `lanesBasic` → `lanesLifecycle` → `merge` (grep `LaneCtx`), and its top-of-file comment states the order is load-bearing
   because the suite is one sequential session against one server. Extracting the merge/land modules
   is a refactor of the suite's fixture model, and it should be costed as one before anyone plans on
   it.
@@ -571,17 +589,20 @@ belongs (§5, §6).
 - **I did not measure on a quiet box**, and could not: other lanes were working throughout. Every
   number carries that.
 - **I did not prove that two gate runs from two lanes cannot interfere.** The `$$`-derived
-  socket/port/dir make it very unlikely (`e2e-clean-review.sh:14–16`, `e2e-claude-gate.sh:13–16`,
+  socket/port/dir make it very unlikely (`e2e-clean-review.sh#DIR`, `e2e-claude-gate.sh#DIR`,
   distinct port bands) and my runs overlapped other lanes' runs without failing, but I did not
   construct the collision deliberately.
 - **Nothing measured here verifies the built client.** `bun run build` is in the table only to
-  price it (~90 ms). The closest thing that exists is `fleet-e2e-security.ts:293–325`, which
+  price it (~90 ms). The closest thing that exists is `fleet-e2e-security.ts` §7 (grep `§7`), which
   asserts *source-level* invariants — no HTML/eval sink in `src/*.ts` beyond one reviewed static-icon
   exception, no inline script in the served `public/*.html`, `src/md.ts` uses `textContent` — i.e.
-  exactly the "asserted only at source-string level" caveat `lane-brief-template.md:81` names.
+  exactly the "asserted only at source-string level" caveat `lane-brief-template.md` names (grep the
+  quoted phrase; `docs/lane-brief-template.md` is undated, so its own line refs carry the same risk
+  this pass is closing — not re-verified here, out of this file's scope).
   It ran in no gate when this was written; since 2026-07-26 (`58203f2`) it is in the pre-land gate,
   so the caveat about *what* it asserts stands while "runs nowhere" no longer does.
-- **I did not root-cause the `e2e/review.ts:177` failure** (§5b) — I established what was recorded
+- **I did not root-cause the `e2e/review.ts` `"outcome: a lane that ends while a review is running
+  records review.state \"inflight\""` check's failure** (§5b) — I established what was recorded
   and that the stand-in never ran, not why `laneBaseRef` produced no base on that run. It may be a
   harness race, and it may be adjacent to the defect the sibling lane's commit `e47313e`
   ("a failed git read is not an empty diff — runReview must not fake a clean review") repairs. I did
@@ -590,8 +611,8 @@ belongs (§5, §6).
   diff, and ran nothing in that worktree.
 - **I did not read all 46 checks of `fleet-e2e-security.ts`.** I measured the suite (n = 2, which
   §8 says is not a burn-in), read its wrapper in full and its scope header and §7 client block
-  (`fleet-e2e-security.ts:1–12,288–325`); the rest of what it asserts I took from
-  `docs/security-model.md:7–8`, not from reading each check.
+  (`fleet-e2e-security.ts`, top-of-file comment and §7, grep `§7`); the rest of what it asserts I took from
+  `docs/security-model.md` (unpublished internal doc, per `docs/README.md`), not from reading each check.
 
 ## 10. One artefact found while measuring, reported not touched
 
@@ -600,7 +621,8 @@ belongs (§5, §6).
 four, one of which has been running **2 days 1 h** — a leaked `e2e-isolated.sh` instance
 (`tmux -L fleettest23870`, its `$DIR` still in `TMPDIR`). VERIFIED by `ls` and `ps`.
 
-My own failed round-2 run added to the pile exactly as designed: `e2e-isolated.sh:215` keeps the
+My own failed round-2 run added to the pile exactly as designed: `e2e-isolated.sh` (grep `kept test
+instance for inspection`) keeps the
 instance directory on a non-zero exit for post-mortem (`kept test instance for inspection:
 …/fleet-e2e-instance-41581`). Correct behaviour for a hand-run suite; for an unattended per-land
 tier it means every red run leaves a full copy of the repo behind.
@@ -648,8 +670,8 @@ the lane tree is still unmerged:
   `FIX1: concurrent merges settle to a single clean resolution`, and
   `outcome: repaired conflict resolution … / confirm-land …` (3).
 
-This is the merge/resolver family and it is distinct from §5b's three (`e2e/review.ts:177`, the
-steward send-cap 429/409, and its audit consequence).
+This is the merge/resolver family and it is distinct from §5b's three (the `"inflight"` check in
+`e2e/review.ts`, the steward send-cap 429/409, and its audit consequence).
 
 > **ROOT-CAUSED AND FIXED 2026-07-28** (`fix(merge): the land path survives its own git
 > plumbing`): `.git/index.lock` from Fleet's own status polls authored FIX1 — read-only git now
@@ -661,7 +683,7 @@ steward send-cap 429/409, and its audit consequence).
 > paragraph below is the pre-fix state, kept as history.
 
 **Not root-caused** *(historical, superseded above)* — same state §5b left
-`e2e/review.ts:177` in. Recorded so the next person does not re-derive it: nothing in the four
+the `"inflight"` check in `e2e/review.ts` in. Recorded so the next person does not re-derive it: nothing in the four
 landed lanes touches the merge path, and the same checks pass on the same tree on a re-run.
 
 ### 11.2b A fifth family: the reseed + live-bytes check (2026-07-28, third sighting 2026-08-01)
@@ -714,15 +736,19 @@ that carry the dependent check (5.2 %); 3 of the 76 that carry the root check (3
 first instance. This is the corrected reading; the row's own VERIFIKATION clause (every cited run
 id must exist in the trail and carry `ok:false`) is what produced it.
 
-**Mechanism — from the fixture's own comment (`e2e/review.ts:327-340`), not inferred.** This
+**Mechanism — from the fixture's own comment in `e2e/review.ts#run` (grep `A RENDERED PANE IS NOT
+AN OBSERVED PANE`), not inferred.** This
 harness runs `FLEET_CMD=true`, so a freshly opened pane emits no bytes and `lastOutput` stays 0.
 `ensureSlot` sets `quietUntil = now + 1500` when it starts piping, and `poll()` streams output
 inside that window *without* stamping `lastOutput` — a repaint tmux just caused is not the session
 working. A probe fired inside the window therefore renders, satisfies `paneEnv`, and still leaves
-`lastOutput` at 0. The fixture's guard against that is a fixed `await Bun.sleep(2000)` (`:340`),
-and a fixed wait is exactly what machine load defeats.
+`lastOutput` at 0. The fixture's guard against that was, at the time this was diagnosed, a fixed
+`await Bun.sleep(2000)`,
+and a fixed wait is exactly what machine load defeats. **That line is gone from the current
+fixture** — see "Closed — fixed in this lane" below, which replaced it with the per-round re-fire
+this paragraph goes on to propose.
 
-**It is fixable, and the fix is named.** The poll below the probes (`:349`) waits on `stalled`,
+**It is fixable, and the fix is named.** The poll below the probes waits on `stalled`,
 not on `observed`; when `observed` never flips, it spins its full 40 s and the setup check fails
 anyway. Re-firing the probe *inside* a poll on `observed === true` removes the fixed wait's
 assumption without weakening any assertion. Not built here — the honest verification is three
@@ -730,8 +756,10 @@ serial `./e2e-isolated.sh` runs (~30 min of suite mutex, so never beside a land)
 job, not a doc's. Part (b) of `32c89530` remains open with this as its brief.
 
 **Closed — fixed in this lane.** Nothing above this paragraph was rewritten; the addendum is the
-whole change, so the `:327-340`/`:349` line refs above point at the code as it was *when the family
-was diagnosed*, not at today's. Part (b) was built exactly as the paragraph before it names: the
+whole change, so the code cited above is the code as it was *when the family
+was diagnosed*, not at today's (this is exactly why this pass moved this file's locators off line
+numbers and onto symbols — a symbol survives the rewrite this paragraph describes; a line number
+does not). Part (b) was built exactly as the paragraph before it names: the
 fixed `Bun.sleep(2000)` is gone, the
 probe is re-fired *per round*, and the round's exit condition is read off the server's
 `observed`/`lastOutput` rather than off `paneEnv`'s return value — a pane that has been observed is
@@ -883,8 +911,8 @@ committed a dirty lane *without* `confirm`, although the risk preview the owner 
 says in as many words that the uncommitted work is committed first. On a lane still producing
 output that 409s, and the body carries `reason`, not `error`, so the owner's alert read
 `Land failed — could not commit the work first: undefined` for a perfectly healthy tree. Now
-`confirm: true`, same reasoning as `doCommit`'s `activeConfirmed`. The e2e probe at
-`e2e/land-provenance.ts:37` says it mirrors `doLand`, and mirrors it again.
+`confirm: true`, same reasoning as `doCommit`'s `activeConfirmed`. The e2e probe in
+`e2e/land-provenance.ts#run` (grep `Mirrors doLand`) says it mirrors `doLand`, and mirrors it again.
 
 **Proof, at the price §11.2c set: three serial `./e2e-isolated.sh` runs on the fixed tree, nothing
 else on the machine, all green** — trail ids `isolated-20260808T034334Z-27704`,
@@ -937,7 +965,7 @@ it is what `94b1362` *proved*, using this very family's `silent-alive` fixture a
 its stand-in (`claude-hang.c`, `for (;;) pause();`) prints nothing by construction and got a
 timestamp anyway. `94b1362` therefore moved the boot-wait decision in `sendText` off `lastOutput`
 and onto a process probe (`paneAgentAt`) plus an `openedAt` freshness window. **The fixtures did
-not follow.** Re-read at `4614da8`: `sendText` (`server.ts:4472`) does not mention `lastOutput`
+not follow.** Re-read at `4614da8`: `sendText` (`server.ts#sendText`) does not mention `lastOutput`
 anywhere — the four `lastOutput === 0` lines were preconditions for a code path that no longer
 exists, asserting a *negative* the fixture does not own and a repaint can destroy at any instant.
 (Three of the four went in the first cut; the fourth, `boot-timeout`, is the correction below.)
@@ -1180,7 +1208,7 @@ recorded in §11.1 cost ~25 minutes and settled one lane's attribution. **Ten bu
 permanently.**
 
 Also noted while re-reading: the check-level determinism split I was about to propose in place of
-the registry is already refuted in §8 — `fleet-e2e.ts:63-75` threads one mutable `LaneCtx` through
+the registry is already refuted in §8 — `fleet-e2e.ts` (grep `LaneCtx`) threads one mutable `LaneCtx` through
 `lanesBasic → lanesLifecycle → merge` with a load-bearing order, so slicing the suite is a fixture
 refactor, not a config change.
 
@@ -1262,9 +1290,13 @@ Die Regel steht in `CLAUDE.md` §Deploy; hier der Befund im Original:
 
 - **`GET /api/sessions` TRÄGT KEIN `awaiting` — und eine Sonde, die es trotzdem fragt, scheitert als
   „der Filter ist kaputt"** (2026-08-09 ZWEIMAL gemessen, in zwei Dateien, von zwei verschiedenen
-  Autoren: `fleet-e2e-postland-audit.ts` → repariert in `8e2b3e5`, `e2e/tasks.ts:122` → offen). Die
+  Autoren: `fleet-e2e-postland-audit.ts` → repariert in `8e2b3e5`, `e2e/tasks.ts` → damals offen,
+  **inzwischen ebenfalls repariert**: `e2e/tasks.ts#run` trägt heute einen expliziten Kommentar
+  „`awaiting` is deliberately NOT on SRow" plus einen eigenen `Persisted`-Typ, der das Feld aus dem
+  persistierten Zustand liest statt es auf `/api/sessions` zu casten — wann genau, ist hier nicht
+  nachvollzogen). Die
   Slot-Objekte des Owner-Polls haben elf Schlüssel (`agent ctx cwd git id label lastOutput mergePending
-  model share worktree`); `awaiting` ist keiner davon — es lebt auf `laneSignalView` (`server.ts:10326`),
+  model share worktree`); `awaiting` ist keiner davon — es lebt auf `laneSignalView` (`server.ts#laneSignalView`),
   also der STEWARD-Sicht. `undefined === "owner"` ist immer falsch, der Check kann nie grün werden, und
   **`tsc` sieht es nie**, weil beide Male ein `as`-Cast auf dem `fetch`-Helfer das Feld behauptet hat.
   Beide Male war das Produkt in Ordnung und die Fixture schrieb die Flagge korrekt nach `fleet.json`.

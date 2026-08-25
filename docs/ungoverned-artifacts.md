@@ -14,11 +14,11 @@ are, respectively, the file that governs every lane and the data that will decid
   `dispositions.jsonl`, `audit.jsonl`, `steward-journal.jsonl`.
 - `git ls-files --error-unmatch CLAUDE.md` → *did not match any file known to git*. It is not
   merely ignored, it is **untracked**: no history, no diff, no blame, no review, no rollback.
-- It reaches lanes by a deliberate copy: the copy loop inside `createWorktree` — `server.ts:1256`
-  as read on 2026-08-07, but **grep `createWorktree`, not the number** — copies `.env`,
-  `CLAUDE.md`, `.claude/settings.local.json` into a new worktree — and, by design, **only if the
-  file is git-ignored**, precisely so the copy cannot dirty the lane and block `land`. The
-  mechanism is well-built and well-commented; the consequences below are unintended.
+- It reaches lanes by a deliberate copy: the copy loop inside `createWorktree`
+  (`server.ts#createWorktree`) copies `.env`, `CLAUDE.md`, `.claude/settings.local.json` into a
+  new worktree — and, by design, **only if the file is git-ignored**, precisely so the copy
+  cannot dirty the lane and block `land`. The mechanism is well-built and well-commented; the
+  consequences below are unintended.
   *Correction 2026-08-07: this line read `server.ts:868–877`, a range that pointed at unrelated
   code. The reason it now carries a name and not just a number is measured, not stylistic:
   `docs/attic/agent-visibility-2026-08-06.md` corrected the same reference to `1251`, which was exact

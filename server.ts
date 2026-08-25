@@ -3403,7 +3403,11 @@ type AuditEvent =
   // Program was rebound" from "it was bootstrapped for the first time" after the fact — the
   // response says it once, to one caller. Detail names the program and the REPLACED occupation
   // (slot + openedAt), never a line of the Program's content or of the founding brief.
-  | "program_main_rebound";
+  | "program_main_rebound"
+  // the recorded MAIN binding learned the session id its pane discovered AFTER the bind
+  // (backfillProgramMainSessionId). Detail names the program and the id that filled the `null`;
+  // there is no row for the no-op case, because "nothing to fill" is not an event.
+  | "program_main_session_backfill";
 // generic append-only event-log chain: format (one JSON line), chmod 600, single-generation
 // rotation. audit.jsonl is the first consumer but not the only shape this fits (automation-
 // synergies.md finding 5 — journal/outcome logs later reuse this exact discipline instead of
@@ -4152,6 +4156,9 @@ async function tickCodexRecovery(s: Slot): Promise<void> {
       s.codexRecoveryState = "bound";
       dirty = true;
       audit("codex_bind", s.id, `session=${candidates[0].id}`);
+      // a bound Program-MAIN on this pane recorded `null` at bind time; it learns here, with the
+      // pane, or its self-land door stays shut forever (backfillProgramMainSessionId).
+      backfillProgramMainSessionId(s);
     } else if (candidates.length >= 2) {
       s.codexRecoveryState = "ambiguous"; // terminal for this pane life: never newest-wins
       dirty = true;
@@ -4828,6 +4835,10 @@ async function ensureSlot(s: Slot, cause: "heal" | "restart" = "heal"): Promise<
       // Preserve it across this heal even though pinsSession correctly remains false. Only a
       // deliberate openSlot recycle clears it before reaching here.
       s.sessionId = h.pinsSession ? candidate : codex && priorSessionId ? priorSessionId : null;
+      // the same learn-site backfill as tickCodexRecovery's: a heal that carries a discovered
+      // Codex id across a respawn is the third way a recorded `null` becomes knowable, and the
+      // helper is a no-op for every other shape (still null, or already recorded).
+      backfillProgramMainSessionId(s);
       if (codex) {
         s.codexPaneSpawnedAt = Date.now();
         // An automatic heal must not erase evidence the owner has not resolved. Ambiguity remains
@@ -6373,6 +6384,52 @@ function programOccupancy(p: Program): ProgramOccupancy {
   if (!main) return "unbound";
   const live = slotFrom(main.slot);
   return live?.cwd && live.id === main.slot && live.openedAt === main.openedAt ? "live" : "stale";
+}
+
+// THE BACKFILL AT THE LEARN SITE — and it exists because the binding is stamped BEFORE the
+// identity it records can be known. `bootstrapProgramMain` writes `main = {slot, openedAt,
+// sessionId, boundAt}` at bind time, and for a harness that does not pin a session id at spawn
+// (codex: `pinsSession` is false, so ensureSlot's spawn block records none) that third field is
+// `null` there — the conversation id is discovered LATER, by tickCodexRecovery's single-candidate
+// bind, by the owner's /codex-bind, or preserved across a heal.
+//
+// The self-land door (selfLandTaskForMain) is the one consumer that compares the recorded triple
+// EXACTLY. Once the pane learned its id, the recorded `null` reads as `divergent` and every land
+// is refused — and `bootstrap-main` cannot heal it, because its live-occupant guard answers
+// `existing: true` for precisely this still-running MAIN. Deadlock by construction, measured
+// 2026-08-25: program 6fcc2971 on slot 3, two 409s, no door in and none out.
+//
+// THE REPAIR BELONGS HERE AND NOT AT THE DOOR. The door's comparison stays byte-identical, so a
+// session re-minted inside the pane still loses land rights and a fleet that pins nothing still
+// matches null-to-null. What this closes is only the window between bind and learn — the one
+// stretch in which the recorded value is not a statement about identity but an absence of one.
+//
+// THREE THINGS IT NEVER DOES, each a different wrong outcome:
+//  · it never overwrites a NON-NULL recorded id. That value is what the binding act saw, and
+//    quietly moving it to whatever the slot says now would turn `divergent` (refuse — recoverable,
+//    the owner rebinds) into "the door believes whoever currently holds the pane";
+//  · it never touches a binding whose (slot, openedAt) is not EXACT. openedAt is the only thing
+//    separating a numeric successor in the same slot from the occupation that was bound;
+//  · it never touches a program that is not `active`.
+//
+// `for`, not `find`, for boundProgramForMain's reason: an ambiguous state (two active Programs on
+// one occupation) is refused there rather than silently resolved, and filling both nulls here
+// leaves that refusal exactly as loud as it was.
+//
+// Returns whether anything changed; the CALLER saves, because every call site already sits inside
+// a save it owns.
+function backfillProgramMainSessionId(s: Slot): boolean {
+  if (s.sessionId === null) return false;
+  let changed = false;
+  for (const p of programs) {
+    const main = p.main;
+    if (p.status !== "active" || !main) continue;
+    if (main.slot !== s.id || main.openedAt !== s.openedAt || main.sessionId !== null) continue;
+    p.main = { ...main, sessionId: s.sessionId };
+    changed = true;
+    audit("program_main_session_backfill", s.id, `${p.id} session=${s.sessionId}`);
+  }
+  return changed;
 }
 
 // The one authority bracket, and it is the SAME occupant rule programExecutionView and
@@ -16111,6 +16168,15 @@ if (existsSync(STATE_FILE)) {
         }
       }
     }
+    // THE FOURTH LEARN SITE, and the only one that heals a binding that is ALREADY stuck. The
+    // three live ones fire the moment a pane discovers its id; a fleet whose pane learned before
+    // this code existed has that moment behind it forever, and its `null` was persisted. Here both
+    // halves are in memory for the first time — programs load above, slots load in the loop just
+    // closed (including the codex normalization that can put `sessionId` BACK to null, which is why
+    // this runs after the loop and not inside it). Same helper, same three refusals, so a boot can
+    // no more overwrite a recorded identity than a live learn can. No save: the value is now what
+    // every ordinary saveState will write, and a boot that dies before one simply does this again.
+    for (const s of slots) backfillProgramMainSessionId(s);
     // dispatcher toggle survives deploys — queued tasks persist, so the thing that
     // drains them must too (the silent off-after-restart was the cols/rows bug's twin)
     const prb = (persisted as { repoBases?: unknown }).repoBases;
@@ -19312,6 +19378,7 @@ Bun.serve<WSData>({
         return json({ error: `slot already bound to ${s.sessionId}` }, 409);
       s.sessionId = id;
       s.codexRecoveryState = "bound";
+      backfillProgramMainSessionId(s); // before the save, so one write carries both facts
       saveState();
       audit("codex_owner_bind", s.id, `session=${id}`);
       return json({ ok: true, existing: false, state: "bound", sessionId: id });

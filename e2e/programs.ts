@@ -3047,6 +3047,93 @@ export async function run(ctx: Ctx): Promise<void> {
         && (cookieSelfText.includes("(absent)") || cookieSelfText.includes("already landed")),
       JSON.stringify({ outcome: cookieOutcome ?? null, selfLand: cookieSelfText.slice(0, 160) }));
 
+    // --- (6) THE BIND-BEFORE-LEARN WINDOW, and it is probed in the DANGEROUS direction first.
+    // The binding's identity triple is stamped at BIND time; a harness that pins no session id at
+    // spawn (codex) has `sessionId: null` there and learns the real id afterwards. Because the land
+    // door compares that triple EXACTLY, the learn used to turn a working binding into a permanent
+    // 409 — and `bootstrap-main` answers `existing:true` for the still-live occupant, so there was
+    // no door in and none out (measured 2026-08-25: program 6fcc2971 on slot 3, two 409s).
+    //
+    // THE FIXTURE IS THE PERSISTED STATE, not a codex pane: what the three live learn sites and the
+    // loader all reduce to is "the slot carries an id the binding recorded as null", and planting
+    // that shape in fleet.json reaches it without a rollout file, a real codex binary or a heal.
+    // The load-bearing property of the pair below is that BOTH arms send the SAME request with the
+    // SAME token to the SAME row — an unknown id, so the only rung either can be stopped at above
+    // it is the identity one. 404 means identity passed; 409 means it did not.
+    const bfLearned = "3f2b7c10-9a41-4d2e-8b55-6c1d0e7a9f31";
+    const bfOther = "8d5e1a02-77c3-41f6-9e0b-2a4c8b6d3157";
+    const bfUnknownRow = "0".repeat(8);
+    const bfPlant = async (mutate: (main: Record<string, unknown>, slot: Record<string, unknown>) => void): Promise<boolean> => {
+      await tmuxOut("kill-session", "-t", "srv");
+      await Bun.sleep(500);
+      const st = readState();
+      const prog = (st.programs ?? []).find((x) => x.id === ladderProgram.id);
+      const slotRow = ladderSlot === null ? undefined : st.slots?.[String(ladderSlot)];
+      const planted = !!prog?.main && !!slotRow;
+      if (prog?.main && slotRow)
+        mutate(prog.main as unknown as Record<string, unknown>, slotRow as unknown as Record<string, unknown>);
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
+      await restartSrv();
+      return planted;
+    };
+    const bfBinding = async (): Promise<Program["main"] | undefined> =>
+      (await ownerPrograms()).find((x) => x.id === ladderProgram.id)?.main;
+
+    // (6a) THE REPAIR ITSELF: recorded null, slot carrying the id its pane learned.
+    const bfPlantedA = await bfPlant((main, slot) => { main.sessionId = null; slot.sessionId = bfLearned; });
+    const bfAfterA = await bfBinding();
+    const bfDoorA = await selfLand(ladderTok, bfUnknownRow);
+    const bfDoorAText = await bfDoorA.text();
+    check("bind-before-learn: a MAIN binding that recorded `null` learns the id its slot carries, and the land door's identity rung is passed",
+      bfPlantedA && bfAfterA?.slot === ladderSlot && bfAfterA.sessionId === bfLearned
+        && bfDoorA.status === 404 && !bfDoorAText.includes("bound MAIN identity"),
+      JSON.stringify({ planted: bfPlantedA, binding: bfAfterA, door: bfDoorA.status,
+        text: bfDoorAText.slice(0, 160) }));
+
+    // (6b) …AND IT SURVIVES THE BOOT. The file assertion is the half that separates "persisted"
+    // from "re-derived on every boot": the loader pass would reproduce the same value, so only the
+    // bytes on disk can say the backfill was actually written. `setPromotion` goes through
+    // saveStateNow, so the file is durable by the time it returns.
+    await setPromotion(ladderProgram.id, { v: 1, selfLand: "green-only" });
+    const bfOnDisk = readState().programs?.find((x) => x.id === ladderProgram.id)?.main?.sessionId ?? null;
+    await restartSrv();
+    const bfAfterBoot = await bfBinding();
+    check("bind-before-learn: the backfilled identity is written to fleet.json and comes back from the next boot",
+      bfOnDisk === bfLearned && bfAfterBoot?.sessionId === bfLearned,
+      JSON.stringify({ onDisk: bfOnDisk, afterBoot: bfAfterBoot?.sessionId ?? null }));
+
+    // (6c) THE COUNTER-PROOF THAT MAKES 6a MEAN ANYTHING: a recorded NON-NULL id is never
+    // overwritten. This is the direction where a repair would be a widening — it would turn
+    // `divergent` (refuse, and the owner rebinds) into "the door believes whoever holds the pane".
+    // Same token, same unknown row: the outcome flips from 404 back to 409.
+    const bfPlantedC = await bfPlant((main, slot) => { main.sessionId = bfOther; slot.sessionId = bfLearned; });
+    const bfAfterC = await bfBinding();
+    const bfDoorC = await selfLand(ladderTok, bfUnknownRow);
+    const bfDoorCText = await bfDoorC.text();
+    check("bind-before-learn: a recorded NON-NULL id is left alone even when the slot carries a different one — the door still refuses on identity",
+      bfPlantedC && bfAfterC?.sessionId === bfOther && bfDoorC.status === 409
+        && bfDoorCText.includes("does not match the bound MAIN identity")
+        && bfDoorCText.includes("divergent"),
+      JSON.stringify({ planted: bfPlantedC, binding: bfAfterC, door: bfDoorC.status,
+        text: bfDoorCText.slice(0, 200) }));
+
+    // (6d) …and the other refusal the backfill must never soften: a binding whose openedAt names a
+    // DIFFERENT occupation of the same slot. `null` stays `null` there, because openedAt is the only
+    // thing separating a numeric successor in one slot from the session that was actually bound.
+    const bfPlantedD = await bfPlant((main, slot) => {
+      main.sessionId = null;
+      main.openedAt = (main.openedAt as number) + 1;
+      slot.sessionId = bfLearned;
+    });
+    const bfAfterD = await bfBinding();
+    const bfDoorD = await selfLand(ladderTok, bfUnknownRow);
+    const bfDoorDText = await bfDoorD.text();
+    check("bind-before-learn: an openedAt that names a DIFFERENT occupation is not backfilled — the recorded null stays null and the caller is told it is not the bound MAIN",
+      bfPlantedD && bfAfterD?.sessionId === null && bfDoorD.status === 409
+        && bfDoorDText.includes("not the current bound MAIN"),
+      JSON.stringify({ planted: bfPlantedD, binding: bfAfterD, door: bfDoorD.status,
+        text: bfDoorDText.slice(0, 160) }));
+
     for (const slot of [redLaneSlot, greenLaneSlot, cfLane.slot, cf2Lane.slot, suspectLane.slot,
       cookieLane.slot, landMainSlot, ladderSlot]) if (slot !== null) await post(`/api/slots/${slot}/kill`, {});
     for (const id of [ladderRowId, landForeignRowId, landNotizRowId, greenRowId, redRowId, cfRowId,

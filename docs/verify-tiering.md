@@ -1250,7 +1250,7 @@ main, and a probe that reads the note the moment main moves races that gap (meas
 instance: a read ~190 ms after the ref move finds no note). The same holds for the trail row —
 `server.ts#audit` queues its line on an append chain rather than writing it inline.
 
-**Repaired in `<REPAIRSHA>` (`e2e/programs.ts` only).** `driveLand(slot, before, fire)` fires the
+**Repaired in `70698a7` (`e2e/programs.ts` only).** `driveLand(slot, before, fire)` fires the
 merge exactly once — the flag is written when the ROUTE is entered, so a second POST would write a
 second trail row and make the count unreadable — and then polls the GOAL: the integration branch
 moving off the tip the probe itself recorded. Bounded at 60 s, with every terminal short of the goal
@@ -1310,7 +1310,7 @@ not contain `052da8e` (committed 09:21 local), so the red existed two hours befo
 cause did. The mechanism is entirely in the probe and no undo is owed. The note's §11.2f
 classification and its prescription — control the settle, `driveMergeUntil`-style — were right.
 
-**No free pass for the past:** reds in this family before `<REPAIRSHA>` are still adjudicated by the
+**No free pass for the past:** reds in this family before `70698a7` are still adjudicated by the
 same-tree/cross-tree rule above. A red here **after** it is real and yours.
 
 ### 11.3 Correction to the prescribed proof method

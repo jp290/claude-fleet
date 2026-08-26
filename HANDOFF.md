@@ -30,12 +30,18 @@ vorigen Land verbraucht war und die Folge-Lane ohne frischen Watch spawnte.
    Deploy steht noch aus**: der Preflight lehnt ihn ab, solange ein Post-Land-Audit läuft
    (`a post-land audit is running on claude-fleet — killing srv now would leave a red that measured
    nothing`). Ein Hintergrund-Watcher rückte ihn nach; **prüfe als Erstes, ob er durch ist, und
-   MISS das Ergebnis**, statt es anzunehmen:
+   MISS das Ergebnis**, statt es anzunehmen — und nimm die srv-PANE als Quelle, nicht `pgrep`:
    ```
-   for p in $(pgrep -f 'bun server.ts'); do ps eww -p "$p" | grep -o 'src/helper\.ts' | wc -l; done
+   SRV=$(tmux -L claudefleet list-panes -t srv -F '#{pane_pid}')
+   ps eww -p "$SRV" | grep -o 'src/helper\.ts' | wc -l
    ```
    Erwartet: `1`. Kommt `0`, ist der Deploy nicht gelaufen — dann `POST /api/deploy` wiederholen,
-   sobald kein Audit läuft. (Token-Hygiene: `ps eww` NIE ungefiltert ausgeben, nur zählen.)
+   sobald kein Audit läuft. **Zwei Fallen in dieser einen Messung**, beide heute erlebt:
+   `pgrep -f 'bun server.ts'` fängt die EIGENE Shell mit, weil deren Kommandozeile das Muster
+   enthält — ich hielt das Ergebnis kurz für einen zweiten Live-Server und damit für die
+   historische „sessions vanished"-Lage; der Prozess in der srv-Pane ist die eindeutige Antwort
+   (gegenprüfbar mit `lsof -nP -iTCP:8790 -sTCP:LISTEN`). Und: `ps eww` NIE ungefiltert ausgeben —
+   die Self-Tokens aller Slots stehen per Konstruktion in den Kommandozeilen, nur zählen.
 
 ## Der Befund hinter Punkt 4 (Stichprobe `dffef24`, von mir nachgemessen)
 

@@ -7,8 +7,9 @@ directory this repo carries, and every top-level `.ts`/`.sh` file, with one sent
 
 Scope and sources, so the omissions are not silent:
 
-- Entries come from `git ls-files --cached --others --exclude-standard`, so gitignored trees
-  (`node_modules/`, `graphify-out/`, `streams/`, `drops/`) never appear and a brand-new file does.
+- Entries come from `git ls-files --cached` — the TRACKED tree only, so gitignored trees
+  (`node_modules/`, `graphify-out/`, `streams/`, `drops/`) never appear, and a new top-level file
+  counts from its `git add`, not from being written to disk.
 - A directory's sentence is maintained in `repo-map.ts#DIRECTORY_NOTES`.
 - A file's sentence is that file's own first comment line, read from the file.
 - Top-level files that are not `.ts` or `.sh` are out of scope by design: `README.md`, `AGENTS.md`,

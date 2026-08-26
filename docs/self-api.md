@@ -304,6 +304,80 @@ ein `task_release`-Audit-Event, weil ein späterer beaufsichtigter ▸ start das
     tick start one first`.
 
 
+## suite-offer — `POST/GET /api/self/suite-offer`, `POST /api/self/suite-offer/withdraw`
+
+**Die fünfte lane-only Route** (Scope-Regel wie `drift`/`gate`/`criterion`/`verify-intent`: eine
+Nicht-Lane bekommt 409 `not a lane — a suite offer hands over a lane's own working tree`, nie 401).
+Sie bietet den eigenen `./e2e-isolated.sh`-VORSCHAULAUF dem Remote-Helfer-Portal an, statt den
+einen Suite-Mutex dieser Maschine dafür zu halten. Anlass und Messungen:
+`docs/helper-lane-suiten-entwurf-2026-08-26.md`.
+
+```
+curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
+  http://<fleet-host>:<port>/api/self/suite-offer
+curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
+  http://<fleet-host>:<port>/api/self/suite-offer          # Zustand + Verdikt
+curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{}' http://<fleet-host>:<port>/api/self/suite-offer/withdraw
+```
+
+**Der Body des Angebots ist geschlossen** — dieselbe Bauart wie `POST /api/self/tasks/:id/release`:
+Repo, Branch, cwd und Slot kommen aus der Token-Zeile, das Kommando ist `./e2e-isolated.sh` fest.
+Kein Feld kann nominieren, WELCHER Baum gebündelt wird. `withdraw` liest genau ein Feld, `abandon`.
+
+**Ein offenes Angebot pro Slot.** Ein zweites POST gibt das bestehende zurück (`existing: true`),
+das Muster von `createWatchForSlot`.
+
+**Was der Server aufnimmt, und wann.** Erst beim CLAIM, in `buildLaneSuiteBundle`: `git stash
+create` (leer bei sauberem Baum ⇒ `HEAD`) → transientes `refs/heads/fleet-suite/<jobId>` →
+`git bundle create` → `finally` `update-ref -d`. Der Stash-STACK bleibt unberührt (gemessen 0/0),
+was der Grund ist, dass das trotz des `git stash`-Verbots in `CLAUDE.md` zulässig ist. **Untracked
+Dateien reisen NICHT mit**; ihre Zahl steht als `untracked` im Job, damit ein grünes Verdikt nicht
+über einen anderen Baum spricht als die Lane meint.
+
+**Antwortfelder von `GET`:**
+
+- `offer` — `null`, wenn diese Lane noch nie eines gemacht hat, sonst:
+  `id` · `state` (`open|claimed|reported|withdrawn|abandoned|lapsed|reaped`) · `branch` ·
+  `offeredAt` · `commitSha` · `treeSha` · `untracked` · `claim{name,claimedAt,expiresAt}` ·
+  `result`. Ein abgelaufener Claim liest sich sofort als `lapsed`, ohne auf den Sweep zu warten.
+- `result` (bei `state:"reported"`) — `exitCode` · `result` (`green|red|unknown`) · `reason` (nur
+  bei `unknown`) · `tail` (4096 B gedeckelt) · `trail` · `checks{ran,failed}` (`null` = nicht
+  zählbar, nie eine erfundene Null) · **`remote{name,claimedAt,reportedAt}`** · `treeSha` · `ms`.
+- `waitPolicy{freeMs,heldMs}` — die Wartezahlen aus `SUITE_OFFER_WAIT_FREE_MS` /
+  `SUITE_OFFER_WAIT_HELD_MS`, damit die Lane sie nicht aus dem Gedächtnis zitiert.
+- `suiteLock` — dieselbe Sicht wie in `/api/self/gate`: `null` frei, sonst `state`
+  `held|overdue|stale|parked`. Sie entscheidet, wie lange Warten sich lohnt.
+
+**Die Ablehnungen von `withdraw`:**
+
+- kein offenes Angebot → **404** `no open suite offer on this lane`.
+- Angebot offen → **200**, `mayRunLocally: true`, `state: "withdrawn"`. **Diese 200 IST die
+  Erlaubnis, lokal zu fahren** — es gibt keine andere.
+- Angebot LIVE GECLAIMT, ohne `abandon` → **409**, mit Gerätename und Ablaufzeit. Eine 200 dort
+  würde den zweiten Lauf autorisieren, und genau das ist die Invariante des Portals.
+- Angebot live geclaimt, `{"abandon": true}` → **200**, `state: "abandoned"`. Bewusster Ausweg,
+  damit ein stummer Helfer die Lane nicht verklemmt; ein danach eintreffendes Verdikt wird mit
+  409 abgelehnt. Kosten: die Zeit des Helfers — keine Korrektheitsverletzung, weil nichts gegated.
+- Ein ABGELAUFENER Claim zählt überall als abwesend, hier auch: er kann eine Lane nicht 45 min
+  festhalten.
+
+**Auf der Portal-Seite** erscheint das Angebot in derselben Liste wie ein Audit-Job, unterschieden
+durch `kind: "lane-suite"`, mit `covers: 0` und `localRunning: false` (nichts auf dieser Maschine
+draint eine Vorschau). Der Helfer klont mit **`git clone -b <branch>`** — ohne `-b` entsteht KEIN
+Arbeitsbaum und keine Meldung, die das sagt.
+
+**Was ein Remote-Verdikt NICHT ist:** eine Messung dieser Maschine. Exit-Code und Tail tippt ein
+Mensch ein (`src/helper.ts#doReport` prüft nur `/^-?\d+$/`). Deshalb trägt jedes Verdikt `remote{}`
+und `treeSha`, und deshalb steht in einem Lane-Report nie „`./e2e-isolated.sh` grün" ohne Zusatz.
+
+**Kein Ledger.** Ein Lane-Ergebnis geht NICHT nach `post-land-audits.jsonl`: dessen Joins laufen
+über `mainSha`/`covers[].mainAfter`, die eine Vorschau beide nicht hat — eine Zeile dort würde die
+Fragen von Tier 2 nicht scheitern lassen, sondern still falsch beantworten. Das Verdikt lebt im
+Job-Datensatz (`laneSuiteJobs`, in `fleet.json` persistiert wie die Claims, weil das Deploy-Ritual
+hier land-dann-`kill-session -t srv` ist).
+
+
 ## fleet-report — `POST /api/self/fleet-report`, `GET /api/self/fleet-report`
 
 **Der Rückweg einer arbeitenden Lane — und die einzige Tür, durch die ihr Ergebnis die Pane

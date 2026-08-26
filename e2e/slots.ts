@@ -955,17 +955,44 @@ export async function run(): Promise<void> {
         && j1.source === "owner" && j1.text === "receipt-probe-one" && "label" in j1,
         JSON.stringify(j1));
 
-      // 3) UNCERTAIN. The pane is destroyed AND its cwd removed, so the 2s self-heal cannot
-      // rebuild it (`tmux new-session -c <gone>` fails) — sendText then throws deterministically
-      // rather than racing the heal. Mutation that breaks it: an un-caught sendText (untyped 500,
-      // no journal line), or journaling the attempt into history as if it had arrived.
+      // 3) UNCERTAIN. The transport must fail while the OCCUPANT stays the same row — and the
+      // 2s self-heal loop must be structurally unable to interfere, not merely outrun.
+      //
+      // The form this replaces removed the cwd and killed the session, asserting that
+      // `tmux new-session -c <gone>` would then fail. It does not: measured on tmux 3.6a, a `-c`
+      // whose directory is gone silently falls back to $HOME and the session comes back. So the
+      // premise was false and the check only ever won a race — the heal rebuilt the pane inside
+      // the ~50 ms before /send, and the probe read `200 delivery:"sent"` (flake family 9,
+      // verify-tiering.md §11.2g, ~2 fails per 146 runs, all three group members together).
+      //
+      // What controls the heal instead: the heal loop rebuilds only when `has-session` FAILS
+      // (server.ts#ensureSlot). With `remain-on-exit` on, killing the pane's process leaves the
+      // SESSION alive with a dead pane — `has-session` answers 0, so the loop's every tick is a
+      // no-op, while `paste-buffer -t s3` answers non-zero ("target pane has exited") and sendText
+      // throws. Nothing in the server respawns a dead pane. Both halves are facts this fixture
+      // creates and then asserts under their own name; neither is a wager on timing.
+      // Mutation that breaks the CHECK: an un-caught sendText (untyped 500, no journal line), or
+      // journaling the attempt into history as if it had arrived.
       const histBefore = ((await (await get("/api/slots/3/history")).json()) as
         { history: unknown[] }).history.length;
-      rmSync(scratch, { recursive: true, force: true });
-      await tmuxOut("kill-session", "-t", "s3");
-      const gone = await tmuxOut("has-session", "-t", "s3");
-      check("send-receipt fixture: the target pane is gone and its cwd cannot be respawned",
-        gone.code !== 0 && !exists(scratch), `has-session=${gone.code} cwd=${exists(scratch)}`);
+      const keepAlive = await tmuxOut("set", "-w", "-t", "s3", "remain-on-exit", "on");
+      const panePid = (await tmuxOut("display-message", "-p", "-t", "s3", "#{pane_pid}")).out.trim();
+      if (keepAlive.code === 0 && /^\d+$/.test(panePid)) {
+        try { process.kill(Number(panePid), "SIGKILL"); } catch { /* asserted below, not here */ }
+      }
+      let dead = "";
+      let alive = { code: 1 };
+      for (let i = 0; i < 60; i++) {
+        dead = (await tmuxOut("display-message", "-p", "-t", "s3", "#{pane_dead}")).out.trim();
+        alive = await tmuxOut("has-session", "-t", "s3");
+        if (dead === "1") break;
+        await Bun.sleep(50);
+      }
+      // its own check, under its own name: a precondition that could not be established must fail
+      // as ITSELF, never as the route it was built to measure (§11.2f/§11.2g repair form)
+      check("send-receipt fixture: the pane is DEAD while its session survives — the self-heal cannot fire",
+        keepAlive.code === 0 && /^\d+$/.test(panePid) && dead === "1" && alive.code === 0,
+        `remain-on-exit=${keepAlive.code} pane_pid=${panePid || "?"} pane_dead=${dead || "?"} has-session=${alive.code}`);
       const badRes = await post("/send", { slot: 3, text: "receipt-probe-uncertain", submit: false });
       const badBody = (await badRes.json()) as { error?: unknown; receipt?: Receipt };
       const r2 = badBody.receipt;

@@ -227,7 +227,7 @@ INFERRED, PROPOSED or UNKNOWN.
 | Truth | What proves it | What it may constrain |
 |---|---|---|
 | **Simulation truth** — the rules, economy, determinism, replay identity | exact logs, predicates with demonstrated breakers, replay hashes, fixed-tick parity | the sim core and its tests — **only** that |
-| **Product/creative thesis** — the first-minute fantasy, the one gesture, the look, the promoted territory | an owner promotion (or a recorded waiver) plus a visible anchor the first builder actually reads | which tiny playable is built first and what it must show |
+| **Product/creative thesis** — the first-minute fantasy, the one gesture, the look, the promoted territory | a promotion act — the MAIN's own reversible working anchor under clause 1, or the owner's where Program direction or product identity is at stake — plus a visible anchor the first builder actually reads | which tiny playable is built first and what it must show |
 | **Hands-on and sensory evidence** — what a hand on the real controls experiences, what the first 30 s look like | a human or agent session through the delivered input path, a fresh sensory critic on the actual build | whether the owner is asked at all, and with which label |
 
 **Parity constrains the sim, never the human input contract.** A sim's input record is an
@@ -272,16 +272,17 @@ human-hands gate").
 ### The loop
 
 A Studio-MAIN runs this for every first product slice and every slice whose next decision is
-taste. It is the smallest autonomous pre-owner loop; the owner hears nothing until step 6 or an
-authority incident (`AGENTS.md` Project MAIN level, clause C).
+taste. It is the smallest autonomous pre-owner loop; the owner hears nothing until step 6 or a
+boundary of the authority contract above (clause 7).
 
-1. **Promoted creative anchor, or a recorded waiver.** Before the first builder is briefed, one
-   anchor exists in the product repo: the first-minute fantasy, the one gesture, a territory with a
-   positive and a negative reference, and the quality bars in `BAR / FAILS WHEN / INSTRUMENT` form
-   (the private-repo-l floor shape). If the owner has not promoted one, the MAIN records an explicit
-   waiver in the decision record ("first playable built on interim anchor X; T1 reopens after first
-   play") — a dated decision, never a silent default. Tower's interim defaults under O1 (camera,
-   win rule, "art — none: grey-box only", decision A8) were exactly the silent form. **The first
+1. **Promoted creative anchor.** Before the first builder is briefed, one anchor exists in the
+   product repo: the first-minute fantasy, the one gesture, a territory with a positive and a
+   negative reference, and the quality bars in `BAR / FAILS WHEN / INSTRUMENT` form (the private-repo-l
+   floor shape). Per clause 1 the **MAIN promotes it itself** after a divergence pass and a fresh
+   critic, as a reversible working anchor carrying its provenance and an explicit reopen trigger;
+   the owner is asked only when the core fantasy itself would change. Either way the anchor is a
+   dated entry in the decision record, never a silent default. Tower's interim defaults under O1
+   (camera, win rule, "art — none: grey-box only", decision A8) were exactly the silent form. **The first
    builder's Read set must include the anchor**; a brief that forbids reading the art research
    (`F-playable-layer.md@0be2632:10`) fails this step by construction.
 2. **Tiny playable: one gesture, one sensory thesis.** The first build is the smallest thing a
@@ -303,27 +304,30 @@ authority incident (`AGENTS.md` Project MAIN level, clause C).
    exactly those, `docs/critic/play-01/rubric.md:22` there; Ox O41). Blindness is proved by commit
    ancestry (`base:` line, private-repo-l `gate/critic-check.sh`), not by a sentence. A capture that
    could not be taken fails as itself and names the debt; it is never reported as the game.
-4. **Bounded repair.** At most two builder rounds, each briefed to close one *named perceived
-   defect* from step 3, each with a regress counter-check on the bars it touches (private-repo-l
-   §Frage 4 (3): one full round was lost to a regress nobody checked). A round that cannot close
-   its defect stops and is reported; the MAIN does not open a third round on its own authority.
+4. **Bounded repair.** Builder rounds run on clause 2's progress budget, not on a round count:
+   each is briefed to close one *named perceived defect* from step 3, each carries a regress
+   counter-check on the bars it touches (private-repo-l §Frage 4 (3): one full round was lost to a
+   regress nobody checked), and the MAIN continues while every round closes a named defect without
+   regression inside its declared time, cost and scope envelope. It stops and reports on
+   no-progress, on cycling, or on boundary pressure — never on having used up a number.
 5. **Durable one-step launch artifact.** What the owner receives is one URL or one tracked file,
    launched by the MAIN itself over the live path with its own capture and the build stamp read
    back from the served asset (Private-repo-g chain: build → serve → fetch the served JS → read the
    stamp → screenshot → hand over, 68 s). A host-specific binary path with a document index in
    front of it is not a launch artifact (GLM §7 "Playable-path steps"; Ox I23).
 6. **Owner review.** Only now the MAIN raises attention. The request carries the label from the
-   next subsection, the launch artifact, the critic verdict path, the anchor or waiver, and the
+   next subsection, the launch artifact, the critic verdict path, the anchor with its reopen
+   trigger, and the
    three to five taste questions the owner alone can answer. Nothing else reaches the owner during
-   steps 1–5 except an authority incident (credentials, spend, irreversible/public effect, deploy,
-   provenance) or a blocked repair after step 4.
+   steps 1–5 except one of clause 7's seven boundaries or a repair stopped under step 4.
 
 ### Honest labels — `PLAYABLE` may not mean policy replay
 
 A label is a **worker claim** about what the worker itself did. Three other facts sit beside it
 and are never folded into it: the **critic verdict** (a fresh lane's tracked file), **owner
-playtest** (the owner actually played; absent until then), and **promoted status** (an owner act
-in the decision record). Each has its own producer; none is derived from the others.
+playtest** (the owner actually played; absent until then), and **promoted status** (a promotion
+act in the decision record — the MAIN's own under clause 1, the owner's at clause 7's boundaries).
+Each has its own producer; none is derived from the others.
 
 | Worker-claim label | Means exactly | Who held the controls |
 |---|---|---|
@@ -363,7 +367,8 @@ next** — and never whether the creative work is good. This section names what 
 and keeps the semantic side in provenance-bearing prose:
 
 - **Durable evidence lives in the product repo, not in the report.** The facts a projection may
-  derive from are tracked at a sha: the anchor or waiver entry in the decision record, the launch
+  derive from are tracked at a sha: the anchor entry with its reopen trigger in the decision
+  record, the launch
   artifact (tracked file or serve command + manifest), the critic verdict file with its `base:`
   line, the owner-playtest entry. `fleetReports` are prunable and their text is a pointer; a
   derivation that needs the report text to know the Program's state is wrong by construction.
@@ -397,8 +402,9 @@ text prefix and the facts live only in the tracked files.
 
 After a well-described idea the owner hears from a Studio-MAIN at exactly two kinds of moment:
 a **startable review boundary** (step 6, labelled `agent-hands-on` or better, with a one-step
-launch) or an **authority incident** (clause C). Not every 90 minutes, not for interim choices —
-those become recorded waivers — and not through a resident controller reading panes. The Grok
+launch) or one of clause 7's seven boundaries. Not every 90 minutes, not for interim choices —
+those are the MAIN's own promoted anchors with a reopen trigger — and not through a resident
+controller reading panes. The Grok
 proposal "playable slice before parallel research", deferred on 2026-08-22 as a violation of
 Tower's founding order (`docs/product-studio-calibration-2026-08-22.md`, main-checkout working
 copy, Grok table row 5), is adopted here in its narrow form: the tiny playable precedes the second
@@ -406,11 +412,13 @@ proof act, not the first model.
 
 ### What this section does not change
 
-The four-level role contract, owner promotion, isolated production, the server land gate, the
-Director → Builder → Critic → Owner ordering for coupled visual work, and the artillery gates below
-all stand. The artillery gate order (promise → risk spike → named shot → one-turn feel → tiny
-match) already encodes steps 1–2; this section supplies what it lacked and what Tower bypassed:
-the waiver form, the hands-on step, the labels, the research edge and the exact rail.
+The four-level role contract, the seven-boundary authority contract above, isolated production,
+the server land gate, the Director → Builder → Critic → Owner ordering for coupled visual work, and
+the artillery gates below all stand — this section is subordinate to that contract and never
+re-routes a decision it leaves with the MAIN. The artillery gate order (promise → risk spike →
+named shot → one-turn feel → tiny match) already encodes steps 1–2; this section supplies what it
+lacked and what Tower bypassed: the hands-on step, the labels, the research edge and the exact
+rail.
 
 ### Attack: what would falsify this design, and what stays owner taste
 
@@ -433,9 +441,10 @@ the waiver form, the hands-on step, the labels, the research edge and the exact 
    polished instead of widened, the loop has swapped Tower's failure for private-repo-h's
    (technically proved, experientially rejected). Settler: a program whose third slice is still
    the first gesture.
-5. **A waiver that silently becomes a default** — if MAINs record waivers but never reopen them,
-   step 1 is O1's "interim defaults" with a new name. Settler: decision records with waivers and
-   no reopen entry after the first `agent-hands-on`.
+5. **A reopen trigger that silently becomes a default** — if MAINs promote interim anchors with
+   reopen triggers but never fire them, step 1 is O1's "interim defaults" with a new name.
+   Settler: decision records with reopen triggers and no reopen entry after the first
+   `agent-hands-on`.
 
 Owner taste, and only that: whether the promoted anchor is the right fantasy; whether the one
 gesture is the right gesture; whether the territory, camera and pacing are wanted; whether the
@@ -698,7 +707,7 @@ The target is self-directed refinement under taste constraints, not unattended c
 ### Then — the artillery calibration game
 
 1. Create a fresh Program and Fable Program-MAIN with quality targets before architecture.
-2. Run the five gates above inside the pre-owner loop (anchor or waiver → tiny playable →
+2. Run the five gates above inside the pre-owner loop (promoted anchor → tiny playable →
    agent-hands-on critic → bounded repair → one-step launch → owner); maintain serial ownership
    for coupled visual/game-feel surfaces.
 3. Preserve prompt/pack receipts, harness/model/effort, captures, decisions, corrections and owner

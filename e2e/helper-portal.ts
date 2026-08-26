@@ -313,11 +313,20 @@ export async function run(h: {
     lapsedReport.status === 409, `${lapsedReport.status} ${JSON.stringify(await lapsedReport.json())}`);
   // THE FALLBACK ITSELF: a LOCAL row, with no `remote` field on it.
   const fellBack = await waitNewRepoRows(2);
-  const local = fellBack.find((r) => !r.remote);
+  await waitNoLocalRun();
+  await Bun.sleep(2500); // a THIRD row would arrive after the second — wait for it before counting
+  const settled = await newRepoRows();
+  const local = settled.find((r) => !r.remote && r.covers.some((c) => c.branch === lapseMe.branch));
   check("(K) THE ABANDONED JOB IS AUDITED HERE AFTER ALL — a local row, unmarked, for the same tree",
-    fellBack.length === 2 && !!local && local.result === "green"
-      && local.covers.some((c) => c.branch === lapseMe.branch),
-    JSON.stringify(fellBack.map((r) => `${r.result}${r.remote ? `/remote:${r.remote.name}` : "/local"}`)));
+    fellBack.length === 2 && !!local && local.result === "green",
+    JSON.stringify(settled.map((r) => `${r.result}${r.remote ? `/remote:${r.remote.name}` : "/local"}`)));
+  // …and the whole section in one line. Two trees were handed to two different auditors; each must
+  // have been measured EXACTLY ONCE. A tip appearing twice is the duplicate run, whichever way it
+  // got there — and this states it as a property of the ledger rather than of any one code path.
+  const shas = settled.map((r) => r.mainSha);
+  check("(K) NOTHING RAN TWICE — every tip audited in this section carries exactly one row",
+    settled.length === 2 && new Set(shas).size === shas.length,
+    JSON.stringify(settled.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`)));
   check("(K) the queue is empty again — nothing was left holding a job nobody runs",
     (await jobs()).jobs.length === 0, JSON.stringify((await jobs()).jobs));
 }

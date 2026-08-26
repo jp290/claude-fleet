@@ -11644,6 +11644,15 @@ const POSTLAND_AUDIT_OUT_CAP = 4096; // byte budget for the retained stdout/stde
 const POSTLAND_AUDIT_KILL_GRACE_MS = 5_000; // SIGTERM → this long → SIGKILL, on the timeout path
 // the lands one audit run followed — a run is coalesced (below), so it can cover more than one
 interface AuditCover { branch: string; mainAfter: string; at: number }
+// …and its identity AS A VALUE. The drain can consume its own frozen slice positionally, because
+// it holds the machine for the whole run and never lets go of the objects. Nothing else may: a
+// remote claim outlives a `kill-session -t srv`, and both sides of it — the queue file and the
+// claim in fleet.json — come back from disk as FRESH objects. Reference equality across that
+// boundary silently matches nothing, so the covers a helper had already audited stayed queued and
+// the drain ran the same tree a second time. Measured 2026-08-26 in e2e/helper-portal.ts: one tip
+// with two rows, `green remote` and `green local`, which is exactly the duplicate this rail exists
+// to prevent. The three fields together are the cover — a branch lands once at one tip at one time.
+const coverKey = (c: AuditCover): string => `${c.branch}\u0000${c.mainAfter}\u0000${c.at}`;
 // The durable row. `mainSha` is the integration tip actually audited and `covers` names every land
 // since the previous run, so the two questions this tier exists to answer are plain joins over the
 // trail: "which land was the last GREEN audit" = the newest green row's covers/mainSha, and "which
@@ -12346,13 +12355,16 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
   };
   lastPostLandAudit = row;
   recordAuditDuration(row); // a no-op for a remote row by contract — see auditCounts
-  // consume by IDENTITY, not by position: the drain may splice its own head off a shared entry
-  // because it holds the machine for the whole run, while this one competes with lands that arrived
-  // during a 45-minute claim — a positional splice would retire the wrong covers.
+  // consume by VALUE, and neither by position nor by reference. Position is the drain's privilege
+  // (it holds the machine for its whole run); this one competes with lands that arrived during a
+  // 45-minute claim, so a positional splice would retire the wrong covers. Reference equality was
+  // the first attempt and it was WRONG for the one case that matters most — see coverKey: a restart
+  // between claim and result reloads both sides from disk, nothing matches, and the tree gets a
+  // second, local audit.
   const q = auditQueue.get(repo);
   if (q) {
-    const frozen = new Set(claim.covers);
-    const rest = q.covers.filter((c) => !frozen.has(c));
+    const frozen = new Set(claim.covers.map(coverKey));
+    const rest = q.covers.filter((c) => !frozen.has(coverKey(c)));
     q.covers.length = 0;
     q.covers.push(...rest);
     if (!q.covers.length) auditQueue.delete(repo);

@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Audit helper — Claude Fleet</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#131316">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg: #131316; --panel: #17171b; --raised: #1d1d22; --line: #26262c;
+    --text: #d6d6dc; --dim: #86868f; --faint: #5c5c66;
+    --accent: #7aa2f7; --live: #3fb950; --amber: #e0af68; --danger: #f85149;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 13px; line-height: 1.5; padding: 16px calc(14px + env(safe-area-inset-right)) 40px
+      calc(14px + env(safe-area-inset-left)); max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 15px; font-weight: 700; color: #ececf1; margin-bottom: 2px; }
+  .sub { color: var(--faint); font-size: 11px; margin-bottom: 16px; }
+  .lbl { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
+  button, input, textarea { font-family: inherit; font-size: 13px; color: var(--text);
+    background: var(--raised); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); color: #ececf1; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  a { color: var(--accent); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px; margin-bottom: 12px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1 1 200px; min-width: 0; }
+  .chip { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; border-radius: 5px;
+    padding: 2px 7px; border: 1px solid var(--line); color: var(--dim); }
+  .chip.mine { color: var(--live); border-color: #2c4a34; background: #17211a; }
+  .chip.busy { color: var(--amber); border-color: #4a3f2c; background: #211d17; }
+  .chip.other { color: var(--danger); border-color: #4a2c2c; background: #211717; }
+  pre { background: #101013; border: 1px solid var(--line); border-radius: 6px; padding: 10px;
+    overflow-x: auto; white-space: pre; font-size: 12px; color: var(--dim); margin-top: 8px; }
+  textarea { width: 100%; min-height: 120px; white-space: pre; overflow-wrap: normal;
+    overflow-x: auto; margin-top: 6px; }
+  .msg { margin-top: 8px; font-size: 12px; }
+  .msg.err { color: var(--danger); }
+  .msg.ok { color: var(--live); }
+  .muted { color: var(--faint); font-size: 11px; }
+  .branches { color: var(--dim); font-size: 11px; word-break: break-all; }
+</style>
+</head>
+<body>
+<h1>Audit helper</h1>
+<div class="sub" id="sub">post-land audits this fleet has queued — claim one and run it here</div>
+
+<div class="card">
+  <div class="row">
+    <span class="lbl">this device</span>
+    <input class="grow" id="name" placeholder="name this machine" maxlength="40">
+    <button id="savename">save</button>
+  </div>
+  <div class="muted" id="namemsg">the name is stored on the fleet and rides along on every result you report.</div>
+</div>
+
+<div id="jobs"></div>
+<div id="lapsed"></div>
+
+<script>
+// The portal is a page, not an app: no build step, no framework, no external asset. It talks to
+// five routes and holds exactly two pieces of local state — the token it was opened with, and a
+// device id. The NAME is not local state: it lives on the fleet, because a ledger row must stay
+// readable after this browser forgets everything.
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+const H = TOKEN ? { "x-fleet-helper-token": TOKEN } : {};
+const qs = (id) => document.getElementById(id);
+// a per-browser id, never a secret: it only ties this browser to the name it chose.
+let deviceId = localStorage.getItem("fleetHelperDevice");
+if (!/^[a-z0-9]{8,32}$/.test(deviceId || "")) {
+  deviceId = Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, "0")).join("");
+  localStorage.setItem("fleetHelperDevice", deviceId);
+}
+let deviceName = "";
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const ago = (t) => {
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  return s < 90 ? s + "s" : s < 5400 ? Math.round(s / 60) + "m" : Math.round(s / 3600) + "h";
+};
+const left = (t) => {
+  const s = Math.max(0, Math.round((t - Date.now()) / 1000));
+  return s < 90 ? s + "s" : Math.round(s / 60) + "m";
+};
+async function api(path, opts) {
+  const r = await fetch(path, { ...opts, headers: { ...H, ...(opts && opts.body ? { "content-type": "application/json" } : {}), ...((opts || {}).headers || {}) } });
+  let body = {};
+  try { body = await r.json(); } catch (e) { /* a non-JSON answer is still an answer */ }
+  return { ok: r.ok, status: r.status, body };
+}
+// ONE claim per device at a time is a portal convention, not a server rule: the server refuses a
+// second machine on the same tree, but nothing stops one human from claiming two different repos.
+// Keeping the last claim here is only so the run box knows which bundle it is talking about.
+let claimed = JSON.parse(localStorage.getItem("fleetHelperClaim") || "null");
+const setClaimed = (c) => {
+  claimed = c;
+  if (c) localStorage.setItem("fleetHelperClaim", JSON.stringify(c));
+  else localStorage.removeItem("fleetHelperClaim");
+};
+
+function bootstrap(job) {
+  const file = job.id + "-" + job.mainSha.slice(0, 8) + ".bundle";
+  return [
+    "# needs: bun · tmux · git · zsh on PATH",
+    "# 1 — download the bundle with the button above, then, in its directory:",
+    "git clone " + file + " fleet-audit && cd fleet-audit",
+    "bun install --frozen-lockfile",
+    "./e2e-isolated.sh > log 2>&1; echo \"exit=$?\"",
+    "# 2 — paste these two into the boxes below:",
+    "tail -40 log",
+    "grep -ao 'isolated-[0-9TZ]*-[0-9]*' log | sort -u | head -1   # trail id",
+  ].join("\n");
+}
+
+function jobCard(j) {
+  const mine = claimed && claimed.id === j.id;
+  const chip = j.localRunning
+    ? '<span class="chip busy">local audit running</span>'
+    : mine
+      ? '<span class="chip mine">yours · ' + esc(left(claimed.expiresAt)) + " left</span>"
+      : j.claim
+        ? '<span class="chip other">' + esc(j.claim.name) + " · " + esc(left(j.claim.expiresAt)) + " left</span>"
+        : '<span class="chip">open</span>';
+  const head = '<div class="row"><b>' + esc(j.repo) + " " + esc(j.main) + "</b>" + chip
+    + '<span class="muted grow" style="text-align:right">' + j.covers + " land(s) · oldest " + esc(ago(j.oldestAt)) + " ago</span></div>"
+    + '<div class="branches">' + esc(j.branches.join(", ")) + "</div>";
+  if (!mine) {
+    const can = !j.claim && !j.localRunning;
+    return '<div class="card">' + head
+      + '<div class="row" style="margin-top:8px"><button data-claim="' + j.id + '"' + (can ? "" : " disabled") + ">claim this audit</button></div>"
+      + '<div class="msg" id="m-' + j.id + '"></div></div>';
+  }
+  const url = "/api/helper/bundle/" + j.id + (TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "");
+  return '<div class="card">' + head
+    + '<div class="row" style="margin-top:8px"><a href="' + url + '" download>download bundle ('
+    + esc(claimed.mainSha.slice(0, 8)) + ")</a></div>"
+    + "<pre>" + esc(bootstrap(claimed)) + "</pre>"
+    + '<div class="row" style="margin-top:10px"><span class="lbl">exit code</span>'
+    + '<input id="exit-' + j.id + '" style="width:90px" inputmode="numeric" placeholder="0">'
+    + '<span class="lbl">trail id</span><input class="grow" id="trail-' + j.id + '" placeholder="isolated-…">'
+    + "</div>"
+    + '<textarea id="tail-' + j.id + '" placeholder="paste the tail of log here"></textarea>'
+    + '<div class="row" style="margin-top:8px"><button data-report="' + j.id + '">report result</button></div>'
+    + '<div class="msg" id="m-' + j.id + '"></div></div>';
+}
+
+async function refresh() {
+  const r = await api("/api/helper/jobs?deviceId=" + deviceId);
+  if (!r.ok) {
+    qs("jobs").innerHTML = '<div class="card msg err">' + esc(r.body.error || ("HTTP " + r.status)) + "</div>";
+    return;
+  }
+  const d = r.body;
+  if (d.device && d.device.name !== deviceName) { deviceName = d.device.name; qs("name").value = deviceName; }
+  qs("sub").textContent = d.configured
+    ? "post-land audits this fleet has queued — a claim lasts " + Math.round(d.claimTimeoutMs / 60000) + " min, then the job falls back to the local drain"
+    : "this fleet has no post-land audit command configured — nothing will ever queue here";
+  // a job we hold that the fleet no longer lists is a job that lapsed or was reported: drop the
+  // local memory of it rather than showing a run box for work nobody is waiting for.
+  if (claimed && !d.jobs.some((j) => j.id === claimed.id && j.claim)) setClaimed(null);
+  qs("jobs").innerHTML = d.jobs.length
+    ? d.jobs.map(jobCard).join("")
+    : '<div class="card muted">no audit is waiting. Land something and this page fills up.</div>';
+  qs("lapsed").innerHTML = d.lapsed.length
+    ? '<div class="card"><div class="lbl">lapsed claims</div>' + d.lapsed.map((l) =>
+        '<div class="muted">' + esc(l.name) + " · " + esc(l.repo) + " · held " + esc(ago(l.claimedAt))
+        + ", expired " + esc(ago(l.expiredAt)) + " ago · " + l.covers + " land(s) went back to the local drain</div>").join("")
+      + "</div>"
+    : "";
+}
+
+document.addEventListener("click", async (e) => {
+  const claimBtn = e.target.closest("[data-claim]");
+  const reportBtn = e.target.closest("[data-report]");
+  if (claimBtn) {
+    const id = claimBtn.dataset.claim;
+    claimBtn.disabled = true;
+    const r = await api("/api/helper/claim", { method: "POST", body: JSON.stringify({ jobId: id, deviceId }) });
+    if (!r.ok) {
+      qs("m-" + id).className = "msg err";
+      qs("m-" + id).textContent = r.body.error || ("HTTP " + r.status);
+      claimBtn.disabled = false;
+      return;
+    }
+    setClaimed(r.body.job);
+    await refresh();
+    return;
+  }
+  if (reportBtn) {
+    const id = reportBtn.dataset.report;
+    const raw = qs("exit-" + id).value.trim();
+    const m = qs("m-" + id);
+    if (!/^-?\d+$/.test(raw)) { m.className = "msg err"; m.textContent = "an exit code is the verdict — type the number the run printed."; return; }
+    reportBtn.disabled = true;
+    const r = await api("/api/helper/result", { method: "POST", body: JSON.stringify({
+      jobId: id, exitCode: Number(raw), tail: qs("tail-" + id).value, trail: qs("trail-" + id).value }) });
+    if (!r.ok) {
+      m.className = "msg err";
+      m.textContent = r.body.error || ("HTTP " + r.status);
+      reportBtn.disabled = false;
+      return;
+    }
+    setClaimed(null);
+    m.className = "msg ok";
+    m.textContent = "reported: " + r.body.result + (r.body.reason ? " — " + r.body.reason : "");
+    setTimeout(refresh, 1200);
+  }
+});
+
+qs("savename").addEventListener("click", async () => {
+  const name = qs("name").value.trim();
+  const r = await api("/api/helper/device", { method: "POST", body: JSON.stringify({ deviceId, name }) });
+  qs("namemsg").className = r.ok ? "muted" : "msg err";
+  qs("namemsg").textContent = r.ok
+    ? "saved on the fleet as “" + r.body.device.name + "”."
+    : (r.body.error || ("HTTP " + r.status));
+  if (r.ok) deviceName = r.body.device.name;
+});
+
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>

@@ -75,6 +75,21 @@ war und die Folge-Lane ohne frischen Watch spawnte):
    deterministische Festkomma-Kern (95 verify-Checks) bleibt als Baustein. **Die Ausführung war
    sauber — das Nein traf das Produkt.**
 
+## Dispatch-Falle: `ok:true` ist KEINE Zustellbestätigung (heute vom Owner ausgebadet)
+
+`POST /api/tasks/:id/dispatch` antwortet `{ok:true, slot, branch}`, **sobald der Slot geöffnet und
+der Tail GESTARTET ist** — der Brief ist da noch nicht in der Pane (`server.ts`, die Zeile
+`r.tail.catch(() => {})` direkt vor dem `audit("task_dispatch", …)`). Bei der Fix-Lane auf Slot 5
+landete der Brief im Composer, ohne abgeschickt zu werden; **der Owner musste das Enter selbst
+drücken**, und ich hätte es nicht gemerkt, weil ich nach dem Dispatch nur den Watch setzte.
+`rawAcknowledged` im Antwortkörper hilft NICHT — das markiert nur „bewusst unanalysiert gestartet"
+und sagt nichts über die Zustellung.
+
+**Regel: nach jedem Dispatch die Pane lesen, nicht der Route glauben.** Rund 30–60 s warten, dann
+`tmux -L claudefleet capture-pane -p -t s<N> | tail`. Arbeitet sie (Spinner, Tool-Zeilen), ist gut;
+steht Text im Composer und nichts läuft, fehlt das Enter — `tmux -L claudefleet send-keys -t s<N>
+Enter`. Der Task-Status fängt diesen Fall NICHT: die Zeile steht auf `sent`, denn gepastet wurde ja.
+
 ## Bedienungs-Falle, heute zweimal bezahlt
 
 Eine Pane in einem AskUserQuestion-Menü ist für `POST /send` „composer occupied" — **die Frage

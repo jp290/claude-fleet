@@ -2801,7 +2801,8 @@ export async function run(ctx: Ctx): Promise<void> {
   {
     type LandTask = { id: string; kind: string; status: string; programId?: string; slot?: number | null };
     type LandSlot = { id: number; cwd: string | null; label: string | null;
-      git: { dirty: number; ahead: number } | null; lastOutput: number };
+      git: { dirty: number; ahead: number } | null; lastOutput: number;
+      worktree: { branch: string } | null };
     const slSess = async (): Promise<{ slots: LandSlot[]; now: number; tasks: LandTask[] }> =>
       (await (await get("/api/sessions")).json()) as { slots: LandSlot[]; now: number; tasks: LandTask[] };
     const slRow = async (id: string): Promise<LandTask | undefined> => (await slSess()).tasks.find((t) => t.id === id);
@@ -3130,12 +3131,15 @@ export async function run(ctx: Ctx): Promise<void> {
     // The FIXTURE is a real conflict: main and the lane both rewrite code.txt, and the stand-in
     // merge agent resolves with `-X theirs`. That produces exactly the state this rung is about —
     // `resolved`, `landed:false`, holding an agent-chosen resolution nobody has confirmed.
-    const conflictLane = async (rowId: string): Promise<{ slot: number | null; cwd: string }> => {
+    // …and it hands back the BRANCH as well as the tree. A land is read on the integration branch
+    // and the note the server writes there, and both of those only mean anything against the name
+    // of the lane that produced them — see driveLand below.
+    const conflictLane = async (rowId: string): Promise<{ slot: number | null; cwd: string; branch: string }> => {
       await post(`/api/tasks/${rowId}/dispatch`, {});
       const row = await slRow(rowId);
       const slot = row?.slot ?? null;
-      const cwd = slot === null ? "" : (await slSess()).slots.find((x) => x.id === slot)?.cwd ?? "";
-      return { slot, cwd };
+      const lane = slot === null ? undefined : (await slSess()).slots.find((x) => x.id === slot);
+      return { slot, cwd: lane?.cwd ?? "", branch: lane?.worktree?.branch ?? "" };
     };
     await setMergeMode("do");
 
@@ -3302,6 +3306,76 @@ export async function run(ctx: Ctx): Promise<void> {
     // blocks, because the owner's own scripts use Bearer too. Both directions are probed, and the
     // cookie one is the direction that would otherwise look like a success: the board's own channel
     // must NOT be flagged, or the flag would mean nothing.
+    //
+    // THE LAND BOTH PROBES READ IS DRIVEN, NOT OUTRUN (§11.2h). Both used to poll the TASK ROW for
+    // `done` and then read the note — and the row is the one carrier of that fact this fixture does
+    // NOT control. `POST /api/tasks/:id/dispatch` answers as soon as the lane stands and the row is
+    // `sent`; the founding brief is delivered by a DETACHED tail (`server.ts#briefAndSend`, taken as
+    // `tail` and only `.catch()`ed). That tail sleeps 4000 ms and then delivers — and on any failure
+    // in that window it REQUEUES the row: `status:"queued"`, `slot:null`, over whatever
+    // `server.ts#landLane` had written (landLane marks only rows that are still `sent`, so nothing
+    // writes it back). Nowhere else in this file does a land finish near that window; here it does,
+    // measured 4.0–4.9 s after dispatch, so the two collide about one run in ten. The failing run
+    // says so in its own ledger: the flagged lane's outcome row carries `briefHash: null` and has no
+    // context receipt at all, while its cookie sibling in the same run has both.
+    //
+    // What IS ours is the integration branch and the note the server writes on it — and those are
+    // TWO facts, not one: `server.ts#recordLand` writes the note AFTER `advanceIntegration` has
+    // already moved main, so reading the note the moment main moves is its own race (measured: a
+    // 190 ms read misses it). Both are therefore polled, bounded, and a land that never happened
+    // fails as ITSELF under its own name — with the merge job's short-settled verdict quoted —
+    // instead of reading as "the flag is missing".
+    const main2Of = (): string =>
+      spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
+    const driveLand = async (slot: number | null, before: string, fire: () => Promise<Response>,
+        ms = 60_000): Promise<{ main: string; log: string[] }> => {
+      const log: string[] = [];
+      if (slot === null) return { main: before, log: ["no lane was spawned — nothing to merge"] };
+      const fired = await fire();
+      if (!fired.ok) log.push(`the merge POST was refused ${fired.status} ${(await fired.text()).slice(0, 160)}`);
+      const deadline = Date.now() + ms;
+      while (Date.now() < deadline) {
+        if (main2Of() !== before) break;
+        const r = await get(`/api/slots/${slot}/merge`);
+        if (r.status === 400) { log.push("the slot is gone"); break; }
+        const m = (await r.json()) as
+          { running?: boolean; last?: { status?: string; landed?: boolean; detail?: string } | null };
+        // `running:false` is terminal either way, and the two ways are different sentences: a
+        // verdict that settled short, or no job at all (a blocked/refused POST leaves none).
+        if (m.running === false) {
+          log.push(m.last
+            ? `settled as ${m.last.status}/landed=${m.last.landed} — ${(m.last.detail ?? "").slice(0, 160)}`
+            : "no job ran — the merge was refused and left no verdict");
+          break;
+        }
+        await Bun.sleep(120);
+      }
+      // re-read AFTER the loop on purpose: the teardown that answers 400 above happens once main
+      // has already moved, so "the slot is gone" is a line in the log, never a verdict on the land.
+      return { main: main2Of(), log };
+    };
+    type OwnerNote = { branch?: string; actor?: { kind?: string; via?: string; suspect?: string } };
+    // the second fact, waited for rather than sampled — see the note above. `null` after the cap is
+    // a real answer (the note write is best-effort by contract), and the checks below say so.
+    const landNote = async (sha: string, ms = 20_000): Promise<OwnerNote | null> => {
+      const deadline = Date.now() + ms;
+      for (;;) {
+        const raw = spawnSync("git", ["-C", REPO2, "notes", "--ref=fleet/land", "show", sha]);
+        if (raw.status === 0) {
+          try { return JSON.parse(raw.stdout.toString()) as OwnerNote; } catch { return null; }
+        }
+        if (Date.now() >= deadline) return null;
+        await Bun.sleep(120);
+      }
+    };
+    // …and the third: `audit()` queues its line on an append chain, so the trail row is not on disk
+    // the instant the route that wrote it answered. Waited for up to the cap, then read as it is.
+    const ambientCount = (): number => slAudits().filter((r) => r.event === "owner_token_ambient_use").length;
+    const ambientReach = async (want: number, ms = 10_000): Promise<number> => {
+      const deadline = Date.now() + ms;
+      while (ambientCount() < want && Date.now() < deadline) await Bun.sleep(120);
+      return ambientCount();
+    };
     const suspectRowId = await makeTask({ text: "self-land suspect probe row", programId: landProgram.id, repo: REPO2 });
     const suspectLane = await conflictLane(suspectRowId);
     if (suspectLane.cwd) {
@@ -3310,28 +3384,33 @@ export async function run(ctx: Ctx): Promise<void> {
       spawnSync("git", ["-C", suspectLane.cwd, "commit", "-qm", "selfland suspect work"]);
     }
     const suspectReady = suspectLane.slot === null ? false : await waitDoneLooking(suspectLane.slot);
-    const ambientBefore = slAudits().filter((r) => r.event === "owner_token_ambient_use").length;
+    const ambientBefore = ambientCount();
+    const suspectBefore = main2Of();
     // the harness `post` helper sends the owner token as `Authorization: Bearer` — exactly the
     // channel this flag is scoped to, and exactly the shape a session reading fleet.json produces.
-    await post(`/api/slots/${suspectLane.slot}/merge`, {});
-    let suspectRow = await slRow(suspectRowId);
-    for (let i = 0; i < 240 && suspectRow?.status !== "done"; i++) {
-      await Bun.sleep(250);
-      suspectRow = await slRow(suspectRowId);
+    // Fired exactly ONCE, and that is load-bearing: the flag is written when the ROUTE is entered,
+    // so a second POST would write a second trail row and make the count below unreadable.
+    const suspectDrive = await driveLand(suspectLane.slot, suspectBefore,
+      () => post(`/api/slots/${suspectLane.slot}/merge`, {}));
+    const suspectMain = suspectDrive.main;
+    // the branch is part of the PRECONDITION, not of the claim: an empty one would make the note
+    // assertion below fail as "the note is wrong" when the truth is "no lane was named".
+    const suspectLanded = suspectReady && suspectLane.branch !== "" && suspectMain !== suspectBefore;
+    check("owner-token ambient use fixture: the BEARER merge LANDED — main moved off the tip this probe recorded",
+      suspectLanded, JSON.stringify({ ready: suspectReady, before: suspectBefore.slice(0, 8),
+        after: suspectMain.slice(0, 8), branch: suspectLane.branch, drive: suspectDrive.log }));
+    if (suspectLanded) {
+      const suspectNote = await landNote(suspectMain);
+      const ambientNow = await ambientReach(ambientBefore + 1);
+      const ambientRows = slAudits().filter((r) => r.event === "owner_token_ambient_use");
+      check("owner-token ambient use: a BEARER merge on a program lane with a live bound MAIN lands, and is FLAGGED on the note and the trail",
+        suspectNote?.branch === suspectLane.branch
+          && suspectNote.actor?.kind === "owner" && suspectNote.actor.via === "bearer"
+          && suspectNote.actor.suspect === "owner-token-outside-board"
+          && ambientNow === ambientBefore + 1
+          && (ambientRows[ambientRows.length - 1]?.detail ?? "").includes(`program=${landProgram.id}`),
+        JSON.stringify({ note: suspectNote, ambient: ambientRows.slice(-2) }));
     }
-    const suspectMain = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
-    const suspectNoteRaw = spawnSync("git", ["-C", REPO2, "notes", "--ref=fleet/land", "show", suspectMain]);
-    type OwnerNote = { actor?: { kind?: string; via?: string; suspect?: string } };
-    let suspectNote: OwnerNote | null = null;
-    try { suspectNote = JSON.parse(suspectNoteRaw.stdout.toString()) as OwnerNote; } catch { /* asserted below */ }
-    const ambientRows = slAudits().filter((r) => r.event === "owner_token_ambient_use");
-    check("owner-token ambient use: a BEARER merge on a program lane with a live bound MAIN lands, and is FLAGGED on the note and the trail",
-      suspectReady && suspectRow?.status === "done"
-        && suspectNote?.actor?.kind === "owner" && suspectNote.actor.via === "bearer"
-        && suspectNote.actor.suspect === "owner-token-outside-board"
-        && ambientRows.length === ambientBefore + 1
-        && (ambientRows[ambientRows.length - 1]?.detail ?? "").includes(`program=${landProgram.id}`),
-      JSON.stringify({ row: suspectRow?.status, note: suspectNote, ambient: ambientRows.slice(-2) }));
     // the counter-proof, and it doubles as THE LEGACY PROBE: the promotion is revoked first, so this
     // is a Program with NO policy at all — the shape every Program has until the owner says
     // otherwise. It must behave exactly as it did before this slice existed: the owner's board
@@ -3346,29 +3425,28 @@ export async function run(ctx: Ctx): Promise<void> {
       spawnSync("git", ["-C", cookieLane.cwd, "commit", "-qm", "selfland cookie work"]);
     }
     const cookieReady = cookieLane.slot === null ? false : await waitDoneLooking(cookieLane.slot);
-    const ambientBefore2 = slAudits().filter((r) => r.event === "owner_token_ambient_use").length;
-    await fetch(`${BASE}/api/slots/${cookieLane.slot}/merge`, {
-      method: "POST", headers: { "content-type": "application/json", cookie: `fleet=${TOKEN}` },
-      body: "{}",
-    });
-    let cookieRow = await slRow(cookieRowId);
-    for (let i = 0; i < 240 && cookieRow?.status !== "done"; i++) {
-      await Bun.sleep(250);
-      cookieRow = await slRow(cookieRowId);
+    const ambientBefore2 = ambientCount();
+    const cookieBefore = main2Of();
+    // the same drive on the OTHER channel — the board's cookie, sent by hand because the harness
+    // helper only speaks Bearer, which is the whole distinction under test here.
+    const cookieDrive = await driveLand(cookieLane.slot, cookieBefore, () =>
+      fetch(`${BASE}/api/slots/${cookieLane.slot}/merge`, {
+        method: "POST", headers: { "content-type": "application/json", cookie: `fleet=${TOKEN}` },
+        body: "{}",
+      }));
+    const cookieMain = cookieDrive.main;
+    const cookieLanded = cookieReady && cookieLane.branch !== "" && cookieMain !== cookieBefore;
+    check("owner-token ambient use fixture: the COOKIE merge LANDED — main moved off the tip this probe recorded",
+      cookieLanded, JSON.stringify({ ready: cookieReady, before: cookieBefore.slice(0, 8),
+        after: cookieMain.slice(0, 8), branch: cookieLane.branch, drive: cookieDrive.log }));
+    if (cookieLanded) {
+      const cookieNote = await landNote(cookieMain);
+      check("owner-token ambient use: the BOARD's cookie channel on the same shape of lane is NOT flagged — the flag names a channel, not every owner land",
+        cookieNote?.branch === cookieLane.branch && cookieNote.actor?.kind === "owner"
+          && cookieNote.actor.via === "cookie" && cookieNote.actor.suspect === undefined
+          && ambientCount() === ambientBefore2,
+        JSON.stringify({ note: cookieNote, ambient: ambientCount() - ambientBefore2 }));
     }
-    const cookieMain = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
-    const cookieNoteRaw = spawnSync("git", ["-C", REPO2, "notes", "--ref=fleet/land", "show", cookieMain]);
-    let cookieNote: OwnerNote | null = null;
-    try { cookieNote = JSON.parse(cookieNoteRaw.stdout.toString()) as OwnerNote; } catch { /* asserted below */ }
-    check("owner-token ambient use: the BOARD's cookie channel on the same shape of lane is NOT flagged — the flag names a channel, not every owner land",
-      cookieReady && cookieRow?.status === "done" && cookieNote?.actor?.kind === "owner"
-        && cookieNote.actor.via === "cookie" && cookieNote.actor.suspect === undefined
-        && slAudits().filter((r) => r.event === "owner_token_ambient_use").length === ambientBefore2,
-      JSON.stringify({ row: cookieRow?.status, note: cookieNote }));
-    // …and the legacy half of the same land, stated as itself: a Program WITHOUT a promotion is
-    // owner-only, and the outcome row it produces is the ordinary one — `landedBy` names the owner
-    // and its channel, `confirmedByHuman` is false because no confirm step was taken, and there is
-    // no `main` anywhere in it. This is the byte-for-byte claim the whole slice rests on.
     const cookieOutcome = ((await (await get("/api/lane-outcomes?limit=100")).json()) as
       { outcomes: { disposition: string; taskId?: string; confirmedByHuman?: boolean;
         landedBy?: { kind?: string; via?: string; slot?: number } }[] })

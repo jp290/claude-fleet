@@ -1193,6 +1193,126 @@ answers `200` anyway; the new form holds its precondition across the same tick a
 **No free pass for the past:** reds in this family before `4bde073` are still adjudicated by the
 same-tree re-run rule. A red here **after** it is real and yours.
 
+### 11.2h A tenth family: the owner-token-ambient-use pair reads a land off a row it does not own (2026-08-26, repaired same day)
+
+**Signature, verbatim** — `e2e/programs.ts`, isolated suite, the self-land section's owner-token pair:
+
+> `owner-token ambient use: a BEARER merge on a program lane with a live bound MAIN lands, and is FLAGGED on the note and the trail`
+
+with detail `{"row":"queued", …}`. In every sighting the REST of that detail is already correct: the
+land note carries `actor.kind:"owner"`, `actor.via:"bearer"`,
+`actor.suspect:"owner-token-outside-board"`, a `mainBefore`/`mainAfter` pair that moved and a green
+`verify`, and `audit.jsonl` carries exactly one `owner_token_ambient_use` line naming the task and
+the program. **The product half of this check has never failed. Only the row did.**
+
+**Base rate: 7 red in 78 runs (9.0 %), the highest single-check rate on this register.** The check
+entered in `52731e2`; its first trail row is 2026-08-24T00:55 Z. Read out of BOTH trail directories
+— see "where an audit's trail rows go", below:
+
+- `e2e-trail/` (lane and hand runs): 4 red / 43 — `isolated-20260826T061703Z-58003` (tree `7ffe41f`,
+  dirty) · `…095618Z-32591` and `…101836Z-59053` (both tree `93182c6`, dirty) · `…103601Z-32692`
+  (tree `28e6f3f`, **clean**)
+- `$TMPDIR/fleet-e2e-trail/` (post-land audits): 3 red / 35 — `isolated-20260826T082534Z-25083` ·
+  `…084752Z-54784` · `…112127Z-57223` (audit rows carry `tree:null`; by the audit ledger's clock
+  these are the runs on `1e0cbd3b`, `8b553849` and `28e6f3f8`)
+
+`msSincePrev` is ≈ 65 s in every one of the seven: the probe's whole 60 s poll cap spent, plus its
+fixture. The two group siblings — `owner-token ambient use: the BOARD's cookie channel …` and
+`legacy: a Program with NO promotion …` — are 0 red / 78. Same form, more timing margin; not
+immunity, which is why both halves of the pair are repaired below.
+
+**Mechanism.** `POST /api/tasks/:id/dispatch` answers as soon as `server.ts#dispatchTask` has the
+lane standing and the row at `sent`. The founding brief is delivered by a DETACHED tail — the route
+takes the promise as `tail` and only `.catch()`es it. That tail (`server.ts#briefAndSend`) sleeps
+4000 ms and THEN re-checks the lane identity (`free.cwd !== wt.path || free.worktree?.branch !==
+wt.branch || next.slot !== free.id`). A mismatch runs its `requeue`: `status:"queued"`, `slot:null`,
+note overwritten to `slot changed during spawn — requeued; lane kept (…)` — straight over whatever
+`server.ts#landLane` had written, and nothing writes it back, because landLane marks only rows that
+are still `sent`.
+
+Nowhere else in this file does a land finish near that window. This pair does — measured 4.0–4.9 s
+after dispatch (dispatch → one commit → `waitDoneLooking` → an owner ff-merge whose gate is a 22 ms
+stand-in) — so the land and the tail collide, and the lane the tail comes back to has been torn
+down by the probe's own land. **The failing run says so in its own ledger**: in the kept instance of
+`isolated-20260826T082534Z-25083`, the flagged lane `fleet/260826083706-91f2` has `briefHash: null`
+on its `landed` outcome row and NO row at all in `context-receipts.jsonl`, while its cookie sibling
+`fleet/260826083812-b4d6` in the same run has both — and that sibling's receipt is stamped 4.25 s
+BEFORE its own land. The brief was never delivered to the flagged lane; the requeue took its place.
+
+Nothing in production reaches this shape — a real lane is landed minutes after it is dispatched,
+not seconds — so the tail is left exactly as it is.
+
+This is the **§11.2f form** — a probe asserting a settled verdict it does not control — with the
+TASK ROW as the uncontrolled object. The row is not a carrier of "this landed" that a fixture may
+read. The integration branch is, and so is the note the server writes on it — but those are TWO
+facts, not one: `server.ts#recordLand` writes the note AFTER `advanceIntegration` has already moved
+main, and a probe that reads the note the moment main moves races that gap (measured on a scratch
+instance: a read ~190 ms after the ref move finds no note). The same holds for the trail row —
+`server.ts#audit` queues its line on an append chain rather than writing it inline.
+
+**Repaired in `<REPAIRSHA>` (`e2e/programs.ts` only).** `driveLand(slot, before, fire)` fires the
+merge exactly once — the flag is written when the ROUTE is entered, so a second POST would write a
+second trail row and make the count unreadable — and then polls the GOAL: the integration branch
+moving off the tip the probe itself recorded. Bounded at 60 s, with every terminal short of the goal
+kept and quoted (a settled verdict, a refused POST, a slot that is gone). `landNote(sha)` and
+`ambientReach(n)` wait for the two lagging facts instead of sampling them. A land that did not
+happen now fails as a named FIXTURE check — `owner-token ambient use fixture: the BEARER merge
+LANDED — main moved off the tip this probe recorded` — and the product check under it does not run,
+so a fixture that could not be built can never be read as "the flag is missing". Both halves of the
+pair carry the identical repair. The row is not asserted anywhere; that claim is already carried by
+the self-land checks earlier in the same file, whose lands are minutes clear of the tail.
+
+**Mutation proof** (isolated scratch instance, own socket/port, `FLEET_CMD=true`; the ONE controlled
+variable is when the merge is fired, relative to the tail's 4000 ms sleep):
+
+```
+FAST arm — merge fired at t+3.2s, so the land completes INSIDE the tail's 4000 ms sleep
+  row timeline: t+  85ms sent   note="lane fleet/260826124240-e9d7"
+              | t+3658ms done   note="landed (fleet/260826124240-e9d7)"
+              | t+4038ms queued note="slot changed during spawn — requeued; lane kept (git status …"
+  OLD FORM FAIL after 60675ms — detail {"row":"queued"}
+  NEW FORM PASS after   260ms — main 018aedaa->39617304 note.branch=fleet/260826124240-e9d7
+  (round 2, identical: done at t+3592ms, queued at t+4065ms, OLD FAIL 60786ms, NEW PASS 315ms)
+
+SLOW arm — merge fired at t+8.0s, so the tail has delivered and returned first
+  row timeline: t+  47ms sent | t+8590ms done note="landed (fleet/260826124506-7d3b)"   [no third state]
+  OLD FORM PASS after 45ms — detail {"row":"done"}
+  NEW FORM PASS after 317ms — main 18146075->878a19e0 note.branch=fleet/260826124506-7d3b
+  (round 2, identical)
+```
+
+The FAST arm reproduces the historic signature exactly and DETERMINISTICALLY — both rounds, the
+same 60 s burn, the same `{"row":"queued"}` — and it also names the requeue path out loud in the
+row's own note. The SLOW arm is the control: move the land 4 s later and the old form passes, with
+nothing else changed. In all four the NEW form answers in under 320 ms with the land it drove.
+
+**Proof order: cross-tree, not same-tree.** §11.3's same-tree re-run does not clear this one, and
+did not: on tree `93182c6` it fell in two runs and passed in a third (`…093315Z-79108`) — at a 9 %
+rate a same-tree pair can come back either way. What identifies the family is the spread above
+(four trees, one clean, no ancestor relation to one change) plus the failing detail's own evidence:
+**a red whose note and trail row already show the product working is a probe defect until proven
+otherwise.**
+
+**And where an audit's trail rows go, because this section needed them.** The post-land audit runs
+its suite inside a git-less snapshot of the integration tip (`server.ts#runPostLandAudit` →
+`snapshotIntegrationTree`, under `$TMPDIR/fleet-postland-audit-*`), so `e2e/trail-emit.ts`'s
+`sourceTree()` resolves nothing and the trail falls back to `$TMPDIR/fleet-e2e-trail/` with
+`tree:null` on every row. **A §11.6 query over `e2e-trail/` alone therefore silently omits every
+post-land audit run** — here, 3 of the 7 sightings, i.e. the run that ADJUDICATES a land is the one
+a flake query cannot see. Same trap as the gitignore-blind `rg`: the answer comes back empty, and
+empty reads as "it did not happen". Both directories, or the number is wrong.
+
+**Superseding the filing that motivated this section.** Queue note `9a83554e` proposed that these
+reds were a fixture race opened by the verdict-delivery land `052da8e` (the verdict typing into the
+lane pane, moving the settle). They are not. The earliest sighting,
+`isolated-20260826T061703Z-58003`, ran on tree `7ffe41f` (committed 07:23 local) — a tree that does
+not contain `052da8e` (committed 09:21 local), so the red existed two hours before the suspected
+cause did. The mechanism is entirely in the probe and no undo is owed. The note's §11.2f
+classification and its prescription — control the settle, `driveMergeUntil`-style — were right.
+
+**No free pass for the past:** reds in this family before `<REPAIRSHA>` are still adjudicated by the
+same-tree/cross-tree rule above. A red here **after** it is real and yours.
+
 ### 11.3 Correction to the prescribed proof method
 
 `CLAUDE.md` tells a lane to clear a suspected flake with **a fresh HEAD worktree, same check,

@@ -30,11 +30,17 @@ interface Program extends ProgramContent {
   // the owner's self-land permission — absent on every Program until the owner grants it, which is
   // the shape every assertion here reads as "owner-only land".
   promotion?: { v: number; selfLand: string; confirmedAt: number };
+  // V1b — the return path into this program's MAIN. Derived per request exactly like `occupancy`
+  // and persisted nowhere, so it is read off the ROUTE and never off fleet.json.
+  deliveryBudget?: { state?: string; deliveryDebts?: number; armedReservations?: number;
+    cap?: number; free?: number; reason?: string };
+  deliveryBudgetNote?: string;
   confirmedAt?: number;
   activatedAt?: number;
   completedAt?: number;
 }
 interface FleetState {
+  supervisor?: Record<string, unknown> | null;
   programs?: Program[];
   attentionRequests?: Record<string, unknown>[];
   tasks?: Record<string, unknown>[];
@@ -1618,6 +1624,32 @@ export async function run(ctx: Ctx): Promise<void> {
     liveOccupancy.find((p) => p.id === mainProgram.id)?.occupancy === "live"
       && !!neverBootstrapped && neverBootstrapped.occupancy === "unbound",
     JSON.stringify(liveOccupancy.map((p) => [p.id, p.occupancy])));
+  // V1b · THE RETURN PATH, on the same read and by the same attribution rule. A budget belongs to
+  // an OCCUPANT; a program owns one only where its binding names a live occupant nobody else names.
+  // The numbers are checked against the persisted transport rows rather than against themselves —
+  // a projection compared to its own output would pass while counting the wrong array.
+  const budgetState = readState();
+  const liveBudgetRow = liveOccupancy.find((p) => p.id === mainProgram.id);
+  const liveDebts = (budgetState.events ?? []).filter((e) => e.receiverSlot === successorSlot
+    && !["acknowledged", "receiver-gone"].includes(String(e.status))).length;
+  const liveArmed = (budgetState.watches ?? []).filter((w) => w.slot === successorSlot && w.armed === true).length;
+  check("V1b: a uniquely live binding projects a KNOWN delivery budget whose numbers are the transport's own",
+    liveBudgetRow?.deliveryBudget?.state === "known"
+      && liveBudgetRow.deliveryBudget.cap === 5
+      && liveBudgetRow.deliveryBudget.deliveryDebts === liveDebts
+      && liveBudgetRow.deliveryBudget.armedReservations === liveArmed
+      && liveBudgetRow.deliveryBudget.free === Math.max(0, 5 - liveDebts - liveArmed)
+      && (liveBudgetRow.deliveryBudgetNote ?? "").startsWith(`return path open at slot ${successorSlot}: `),
+    JSON.stringify({ projected: liveBudgetRow?.deliveryBudget, persisted: { liveDebts, liveArmed },
+      note: liveBudgetRow?.deliveryBudgetNote }));
+  // ABSENT BINDING IS NOT AN EMPTY ONE. "there is no receiver" and "the receiver has no room left"
+  // are opposite facts, so the unbound arm must carry a reason and must NOT carry a number.
+  check("V1b: a never-bootstrapped program reads UNKNOWN with its reason, and carries no free count at all",
+    neverBootstrapped?.deliveryBudget?.state === "unknown"
+      && (neverBootstrapped.deliveryBudget.reason ?? "").includes("no MAIN binding")
+      && neverBootstrapped.deliveryBudget.free === undefined
+      && (neverBootstrapped.deliveryBudgetNote ?? "").startsWith("return path unknown: "),
+    JSON.stringify({ budget: neverBootstrapped?.deliveryBudget, note: neverBootstrapped?.deliveryBudgetNote }));
 
   // === what boundProgramForMain answers, and IN WHOSE WORDS ====================================
   // Both fixtures are planted in the persisted state with srv down — the technique every other
@@ -1644,6 +1676,18 @@ export async function run(ctx: Ctx): Promise<void> {
   // bound" and read like the cut failing, when nothing was ever measured.
   check("ambiguity fixture: two active programs are loaded naming the identical occupation",
     twinsLoaded === 2, `${twinsLoaded} active programs name slot ${successorSlot} openedAt ${transferredBinding?.openedAt}`);
+  // V1b on the SAME twin fixture: one occupation named twice is not a doubled budget, it is a
+  // budget that belongs to no single program. Reporting the sum under both names would let an
+  // owner spend the same five places twice on paper.
+  const twinBudgets = (await ownerPrograms()).filter((p) => p.id === mainProgram.id || p.id === twinId);
+  check("V1b attribution: two programs naming one occupation read UNKNOWN on BOTH, with the count in the reason",
+    twinBudgets.length === 2
+      && twinBudgets.every((p) => p.deliveryBudget?.state === "unknown"
+        && (p.deliveryBudget.reason ?? "").includes("2 programs name the same live occupant")
+        && (p.deliveryBudget.reason ?? "").includes(`slot ${successorSlot}`)
+        && p.deliveryBudget.free === undefined
+        && (p.deliveryBudgetNote ?? "").startsWith("return path unknown: ")),
+    JSON.stringify(twinBudgets.map((p) => [p.id, p.deliveryBudget, p.deliveryBudgetNote])));
   const ambiguous = await attentionRaise(successorToken, "which program am I the MAIN of?");
   const ambiguousText = await ambiguous.text();
   const unboundProbeSlot = (await sessions()).slots.find((x) => !x.cwd)?.id ?? null;
@@ -1714,6 +1758,107 @@ export async function run(ctx: Ctx): Promise<void> {
       === JSON.stringify(transferredBinding)
       && (readState().attentionRequests ?? []).length === attentionBeforeProbes.length,
     `binding=${JSON.stringify((await ownerPrograms()).find((x) => x.id === mainProgram.id)?.main)} rows=${(readState().attentionRequests ?? []).length}`);
+
+  // === V1b · THE RETURN PATH, IN BOTH SIGHTS AT ONCE ===========================================
+  // The slice's own subject. A MAIN whose FleetEvent delivery budget is FULL has closed the way
+  // back to itself: every fleet report and every clarification from its lanes is refused, and until
+  // this cut that fact lived only inside the 409 the lane got. So the owner's board and the
+  // Supervisor's senses must not merely both mention it — they must carry the SAME projection and
+  // the SAME sentence, because two renderings of one fact are how two views of it start disagreeing.
+  //
+  // PLANTED, not driven: five armed watches IS the cap, and minting them live would cost five lanes
+  // to say nothing more. That these five numbers are the ones the doors actually spend is proven
+  // where it belongs — driven, against the real refusal, in e2e/watch.ts.
+  const svSlotId = (await sessions()).slots.find((x) => !x.cwd)?.id ?? null;
+  const svOpen = svSlotId === null ? null
+    : await post(`/api/slots/${svSlotId}/open`, { cwd: ROOT, label: "v1b-supervisor" });
+  const svToken = readState().slots?.[String(svSlotId)]?.selfToken ?? "";
+  // FIXTURE PRECONDITION, its own check: without a live bound Supervisor the view below answers 409
+  // and the comparison would read as "the two sights agree" while nothing was ever compared.
+  check("V1b fixture: a plain slot is open to be bound as Supervisor and carries its own credential",
+    !!svOpen?.ok && /^[0-9a-f]{32}$/.test(svToken), `${svSlotId} ${svOpen?.status}`);
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const closedState = readState();
+  const svSlotRow = closedState.slots?.[String(svSlotId)];
+  closedState.supervisor = { slot: svSlotId, openedAt: svSlotRow?.openedAt,
+    sessionId: svSlotRow?.sessionId ?? null, boundAt: Date.now() };
+  const plantedWatchIds = ["b1b0", "b1b1", "b1b2", "b1b3", "b1b4"];
+  closedState.watches = [...(closedState.watches ?? []), ...plantedWatchIds.map((id) => ({
+    id, kind: "transition", slot: successorSlot, slotOpenedAt: transferredBinding?.openedAt,
+    idleSec: 60, armed: true, created: Date.now(), firedAt: null, lastResult: null,
+    awaiting: "a transition that holds one delivery place", deadlineAt: Date.now() + 3_600_000,
+  }))];
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(closedState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const closedArmed = (readState().watches ?? [])
+    .filter((w) => w.slot === successorSlot && w.armed === true).length;
+  check("V1b fixture: five armed watches survive the load on the bound MAIN, so the cap is full before any sight is read",
+    closedArmed === 5, `${closedArmed} armed watches on slot ${successorSlot}`);
+  // BASELINE, not zero. This slot id has carried occupants before this section and their TERMINAL
+  // event rows are still in the state document — they are no debt (that is what terminal means) and
+  // they are not this section's to count. What the reads below may not do is ADD one.
+  const eventsBeforeReads = (readState().events ?? [])
+    .filter((e) => e.receiverSlot === successorSlot).length;
+  const ownerClosed = (await ownerPrograms()).find((p) => p.id === mainProgram.id);
+  const svRes = await fetch(`${BASE}/api/self/supervisor-view`, { headers: { "x-fleet-self-token": svToken } });
+  const svBody = await svRes.json() as { portfolio?: { program: { id: string };
+    deliveryBudget?: Program["deliveryBudget"]; deliveryBudgetNote?: string }[] };
+  const svClosed = (svBody.portfolio ?? []).find((r) => r.program.id === mainProgram.id);
+  check("V1b: at ZERO free places both sights carry the same projection and the same sentence, and it names the refusal",
+    svRes.ok && ownerClosed?.deliveryBudget?.state === "known"
+      && ownerClosed.deliveryBudget.free === 0 && ownerClosed.deliveryBudget.cap === 5
+      && ownerClosed.deliveryBudget.armedReservations === 5
+      && JSON.stringify(svClosed?.deliveryBudget) === JSON.stringify(ownerClosed.deliveryBudget)
+      && svClosed?.deliveryBudgetNote === ownerClosed.deliveryBudgetNote
+      && (ownerClosed.deliveryBudgetNote ?? "").includes(`return path CLOSED at slot ${successorSlot}`)
+      && (ownerClosed.deliveryBudgetNote ?? "").includes('refused with "receiver has no FleetEvent delivery budget"'),
+    JSON.stringify({ status: svRes.status, owner: ownerClosed?.deliveryBudget,
+      supervisor: svClosed?.deliveryBudget, note: ownerClosed?.deliveryBudgetNote,
+      svNote: svClosed?.deliveryBudgetNote }));
+  // …and not only for the one program the fixture aimed at. Every row the Supervisor can see must
+  // match the owner's row for the same program, or the two lists disagree about SOME receiver.
+  const ownerAll = await ownerPrograms();
+  const mismatched = (svBody.portfolio ?? []).filter((r) => {
+    const own = ownerAll.find((p) => p.id === r.program.id);
+    return JSON.stringify(own?.deliveryBudget) !== JSON.stringify(r.deliveryBudget)
+      || (own?.deliveryBudgetNote ?? null) !== (r.deliveryBudgetNote ?? null);
+  });
+  check("V1b: every program in the Supervisor portfolio carries byte-identical budget and sentence to the owner's row",
+    (svBody.portfolio ?? []).length > 0 && mismatched.length === 0,
+    JSON.stringify({ rows: (svBody.portfolio ?? []).length,
+      mismatched: mismatched.map((r) => [r.program.id, r.deliveryBudget]) }));
+  // THE SIGHT IS A READ. Three more reads across both routes may not acknowledge an event, disarm a
+  // watch, move a cap or mint anything — a projection that spent the budget it describes would be
+  // the one failure this shape must never have.
+  await ownerPrograms();
+  await fetch(`${BASE}/api/self/supervisor-view`, { headers: { "x-fleet-self-token": svToken } });
+  const afterReads = (await ownerPrograms()).find((p) => p.id === mainProgram.id);
+  const afterState = readState();
+  check("V1b: reading the sight changes nothing — same five armed watches, no event minted, no debt, same numbers",
+    (afterState.watches ?? []).filter((w) => w.slot === successorSlot && w.armed === true).length === 5
+      && (afterState.events ?? []).filter((e) => e.receiverSlot === successorSlot).length === eventsBeforeReads
+      && afterReads?.deliveryBudget?.deliveryDebts === 0
+      && JSON.stringify(afterReads?.deliveryBudget) === JSON.stringify(ownerClosed?.deliveryBudget)
+      && afterReads?.deliveryBudgetNote === ownerClosed?.deliveryBudgetNote,
+    JSON.stringify({ after: afterReads?.deliveryBudget, eventsBeforeReads,
+      eventsAfter: (afterState.events ?? []).filter((e) => e.receiverSlot === successorSlot).length }));
+  // Put it back exactly: the planted watches and the planted binding both go, because the sections
+  // below run on this same MAIN and e2e/supervisor.ts opens on the fact that no Supervisor is bound.
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const v1bCleanup = readState();
+  v1bCleanup.supervisor = null;
+  v1bCleanup.watches = (v1bCleanup.watches ?? []).filter((w) => !plantedWatchIds.includes(String(w.id)));
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(v1bCleanup, null, 2), { mode: 0o600 });
+  await restartSrv();
+  if (svSlotId !== null) await post(`/api/slots/${svSlotId}/kill`, {});
+  const restored = (await ownerPrograms()).find((p) => p.id === mainProgram.id);
+  check("V1b cleanup: no Supervisor is bound, the planted watches are gone and the return path reads open again",
+    (readState().supervisor ?? null) === null
+      && (readState().watches ?? []).every((w) => !plantedWatchIds.includes(String(w.id)))
+      && restored?.deliveryBudget?.state === "known" && restored.deliveryBudget.free === 5,
+    JSON.stringify({ supervisor: readState().supervisor ?? null, budget: restored?.deliveryBudget }));
 
   // === ACP-16 · THE PROGRAM-MAIN RELEASE DOOR ==================================================
   // Runs on the binding the cleanup above just restored: mainProgram is ACTIVE and bound LIVE to

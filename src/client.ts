@@ -5179,8 +5179,11 @@ async function refresh() {
       // the same rule for a program pane: its MARK moves with the SLOTS, not with the program,
       // so a pane keyed on the program alone would keep claiming a MAIN that just died
       const p = programsList.find((x) => `prog:${x.id}` === qPick);
+      // the return-path note belongs in the key for the same reason the mark does: it moves with
+      // the transport, not with the program, so a pane keyed without it would keep showing room
+      // that a report has since spent.
       const dk = p ? JSON.stringify(["prog", p.id, p.status, p.title, programMark(p).mark,
-        p.main?.slot ?? null, p.main?.openedAt ?? null]) : "prog-gone";
+        p.main?.slot ?? null, p.main?.openedAt ?? null, p.deliveryBudgetNote ?? null]) : "prog-gone";
       if (dk !== qDetailKey) { qDetailKey = dk; renderQueueDetail(); }
     } else if (qShell?.isOpen() && qPick !== null) {
       const t = tasksList.find((x) => x.id === qPick);
@@ -5839,6 +5842,16 @@ interface ProgramInfo extends ProgramDigest {
   // shape here that this build cannot read. So the type admits that, and `promotionState` below
   // turns "present but unreadable" into its own displayed state rather than into "absent".
   promotion?: { v?: number; selfLand?: string; confirmedAt?: number } | null;
+  // V1b — THE RETURN PATH INTO THIS PROGRAM'S MAIN, derived by the server per request and stored
+  // nowhere. Same reason every field above is optional: this is an ASSERTION about a foreign
+  // surface, not a proof about one, and an older server simply does not send it. `state` is read
+  // as a string rather than a union for the same reason — anything that is not exactly `known`
+  // with two numbers is rendered as UNKNOWN, never as room.
+  deliveryBudget?: { state?: string; deliveryDebts?: number; armedReservations?: number;
+    cap?: number; free?: number; reason?: string } | null;
+  // the server's own sentence about that budget, shown verbatim. The Supervisor's senses are
+  // handed the same string; a second phrasing here is how two sights of one fact start disagreeing.
+  deliveryBudgetNote?: string;
 }
 let programsPoll: ProgramDigest[] = [];   // the digest set the 2 s poll already carries
 let programsList: ProgramInfo[] = [];     // the full rows, from GET /api/programs
@@ -6285,8 +6298,27 @@ function renderProgramDetail(shell: Shell, id: string): void {
     facts.appendChild(chip(`slot ${p.main.slot}`, "dim",
       `the stored binding names slot ${p.main.slot}${typeof p.main.boundAt === "number" ? `, bound ${fmtTs(p.main.boundAt)}` : ""}`));
   facts.appendChild(chip(fmtTs(p.createdAt), "dim", "when this program was created"));
+  // V1b — THE RETURN PATH, on the pane that already answers "can this MAIN still be reached". A
+  // MAIN whose FleetEvent delivery budget is full has closed the way back to itself: every fleet
+  // report and every clarification from its lanes is refused, and that 409 used to be visible only
+  // inside the lane that got it. Rendered ONLY while a read stands, because this is the one number
+  // here that moves without any program field moving — a cached one would read as current room.
+  const budgetNote = programsRead === "ok" && typeof p.deliveryBudgetNote === "string"
+    ? p.deliveryBudgetNote : "";
+  const budget = p.deliveryBudget;
+  const room = programsRead === "ok" && !!budget && budget.state === "known"
+    && typeof budget.free === "number" && typeof budget.cap === "number"
+    ? { free: budget.free, cap: budget.cap } : null;
+  if (budgetNote)
+    facts.appendChild(chip(room ? `return path ${room.free}/${room.cap}` : "return path unknown",
+      !room ? "dim" : room.free === 0 ? "warn" : "ok",
+      `${budgetNote} — as read at ${fmtTs(programsAt)}`));
   shell.detail.appendChild(facts);
   shell.detail.appendChild(el("div", "shellhint", why));
+  // the sentence itself, not only as a tooltip, exactly where it costs something: a closed return
+  // path and an unreadable one are the two states an owner must not scroll past.
+  if (budgetNote && (!room || room.free === 0))
+    shell.detail.appendChild(el("div", "shellhint", budgetNote));
 
   if (p.intent || p.successCriterion) {
     const frame = qDetailSection(shell.detail, "Frame", true, false);

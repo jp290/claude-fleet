@@ -5183,7 +5183,10 @@ async function refresh() {
       // the transport, not with the program, so a pane keyed without it would keep showing room
       // that a report has since spent.
       const dk = p ? JSON.stringify(["prog", p.id, p.status, p.title, programMark(p).mark,
-        p.main?.slot ?? null, p.main?.openedAt ?? null, p.deliveryBudgetNote ?? null]) : "prog-gone";
+        p.main?.slot ?? null, p.main?.openedAt ?? null, p.deliveryBudgetNote ?? null,
+        // the identity half moves with the OCCUPANT, not with the program: a pane keyed without it
+        // would keep painting `identity exact` over a session that has since been re-minted.
+        p.health?.sessionIdMatch ?? null, p.health?.occupancy ?? null]) : "prog-gone";
       if (dk !== qDetailKey) { qDetailKey = dk; renderQueueDetail(); }
     } else if (qShell?.isOpen() && qPick !== null) {
       const t = tasksList.find((x) => x.id === qPick);
@@ -5852,6 +5855,14 @@ interface ProgramInfo extends ProgramDigest {
   // the server's own sentence about that budget, shown verbatim. The Supervisor's senses are
   // handed the same string; a second phrasing here is how two sights of one fact start disagreeing.
   deliveryBudgetNote?: string;
+  // V1a — THE BOUND MAIN'S HEALTH, derived by the server per request and stored nowhere. Two
+  // halves of one question: `occupancy` (is the binding still on a living occupant — the same
+  // fact `programMark` derives locally from the poll) and `sessionIdMatch` (is that occupant
+  // still the one that was bound — the half `programMark` cannot check at all). Optional and
+  // read as loose strings for the reason every field above is: this is an ASSERTION about a
+  // foreign surface, and anything that is not one of the three known words is rendered as
+  // unreadable, never as a match.
+  health?: { occupancy?: string; sessionIdMatch?: string } | null;
 }
 let programsPoll: ProgramDigest[] = [];   // the digest set the 2 s poll already carries
 let programsList: ProgramInfo[] = [];     // the full rows, from GET /api/programs
@@ -5935,7 +5946,8 @@ function programMark(p: ProgramInfo): { mark: ProgramMark; why: string } {
       + ` current occupant opened ${fmtTs(occ.openedAt)})` };
   return { mark: "live", why: `slot ${main.slot} still holds the bound session (opened ${fmtTs(main.openedAt)});`
     + " slot and openedAt were compared — this poll carries no top-level session id to match"
-    + " Program.main.sessionId against, so that half is unchecked" };
+    + " Program.main.sessionId against, so that half is unchecked HERE. The identity chip beside"
+    + " this one carries the server's own comparison of it (V1a)" };
 }
 
 // --- THE OWNER'S SELF-LAND PROMOTION, read for display ---
@@ -5993,6 +6005,73 @@ function promotionState(p: ProgramInfo): {
     sentence: "Everything green-only permits, PLUS one rung: a lane sitting on an agent-resolved"
       + " conflict may be confirmed by that MAIN, and the server re-runs the authoritative"
       + " verification FRESH on the resolved candidate, landing only on a green." };
+}
+
+// --- V1a · THE IDENTITY HALF OF THE BOUND MAIN, read for display ---
+// WHAT THIS EXISTS TO SHOW. `programMark` above answers "is the bound slot still held" from the
+// 2 s poll and says out loud that it cannot answer the other half — the poll carries no session id
+// to match `Program.main.sessionId` against. That unchecked half is exactly the one the self-land
+// door compares, so until this cut a program could paint `MAIN live` on this pane while every land
+// its MAIN attempted came back refused, with the refusal visible only inside that MAIN's own pane.
+// The server now derives both halves in one helper (`programHealth`) and hands them to this board
+// and to the Supervisor's senses alike; this function does nothing but put the server's answer
+// into words.
+//
+// FOUR DISPLAYED STATES, and `unreadable` is the fourth for the same reason promotionState has one:
+// a row that carries no health record (an older server, a proxy, a hand-edited file) is NOT a
+// match, and rendering it as one would paint a green identity over an unasked question.
+//
+// IT IS NOT A LAND VERDICT AND MAY NOT BE READ AS ONE. The land door compares the two recorded
+// values DIRECTLY, so both-null (a harness that pins no session id) is an admitted match while a
+// null on one side alone is refused — and both label `unknown` here. The door also requires an
+// active program, an unambiguous binding and an owner promotion, none of which this pair looks at.
+//
+// PURE AND TOP-LEVEL ON PURPOSE, like promotionState: no globals, no DOM, no clock — the read
+// state is an ARGUMENT rather than a global read, so e2e/programs.ts can cut it out, transpile it
+// and RUN it over every state a row can arrive in.
+type HealthIdentityName = "exact" | "divergent" | "unknown" | "unreadable";
+const HEALTH_MATCHES = ["exact", "divergent", "unknown"];
+function programHealthState(p: ProgramInfo, read: "unread" | "ok" | "fail"): {
+  state: HealthIdentityName; label: string; tone: "ok" | "dim" | "warn"; sentence: string;
+} {
+  if (read !== "ok")
+    return { state: "unreadable", label: "identity unreadable", tone: "dim",
+      sentence: read === "fail"
+        ? "The last GET /api/programs did not answer, so no comparison of the bound MAIN's identity"
+          + " is current. A cached one would be a claim about a session nobody has looked at since."
+        : "GET /api/programs has not been read yet, so nothing about the bound MAIN's identity is"
+          + " known — and unknown is never shown as a match." };
+  const health = p.health;
+  const occupancy = health && typeof health.occupancy === "string" ? health.occupancy : "";
+  const match = health && typeof health.sessionIdMatch === "string" ? health.sessionIdMatch : "";
+  if (typeof health !== "object" || health === null || !HEALTH_MATCHES.includes(match))
+    return { state: "unreadable", label: "identity unreadable", tone: "dim",
+      sentence: "This row carries no health record this build can read — an older server does not"
+        + " send one at all. That is not a match and not a mismatch: it is a comparison nobody"
+        + " made, and it is shown as one." };
+  if (match === "divergent")
+    return { state: "divergent", label: "identity divergent", tone: "warn",
+      sentence: "The occupant holding the bound slot reports a DIFFERENT session id than the"
+        + " binding recorded — same slot, same openedAt, a session re-minted inside the pane"
+        + " (/clear, resume, respawn). This is the state that costs land rights: POST"
+        + " /api/self/tasks/:id/land is refused with \"this session's id does not match the bound"
+        + " MAIN identity\" until the owner re-binds the Program-MAIN. Attention and release are"
+        + " NOT affected — they report the mismatch rather than gate on it." };
+  if (match === "exact")
+    return { state: "exact", label: "identity exact", tone: "ok",
+      sentence: "The occupant holding the bound slot reports exactly the session id the binding"
+        + " recorded — the half the MAIN mark cannot check. The self-land door compares the same"
+        + " two values; what else it requires (an active program, an unambiguous binding, an owner"
+        + " promotion) is separate and is not answered here." };
+  return { state: "unknown", label: "identity unknown", tone: "dim",
+    sentence: occupancy === "live"
+      ? "One of the two sides records no session id, so there is nothing to compare. This is NOT a"
+        + " verdict on the land door: it compares the two values directly, so a harness that pins"
+        + " no session id at all (both sides null) is an admitted match, while a null on only one"
+        + " side is refused. Which of the two this is, the binding above tells you."
+      : `There is no live bound occupant to compare an identity against (occupancy ${occupancy || "unread"}),`
+        + " so no comparison is made. A stale binding names an occupant that is gone, and matching"
+        + " its recorded id against whoever holds the slot now would answer a question nobody asked." };
 }
 
 // the picker's pinned + recent roots as an <input list=> source. Shared by the task composer and
@@ -6297,6 +6376,12 @@ function renderProgramDetail(shell: Shell, id: string): void {
   if (p.main && typeof p.main.slot === "number")
     facts.appendChild(chip(`slot ${p.main.slot}`, "dim",
       `the stored binding names slot ${p.main.slot}${typeof p.main.boundAt === "number" ? `, bound ${fmtTs(p.main.boundAt)}` : ""}`));
+  // V1a — THE IDENTITY HALF, on every row and on every read state, because the question it answers
+  // ("is the occupant still the one that was bound") has no other answer on this pane and its
+  // absence reads as a yes. Unconditional on purpose, unlike the return-path chip below: that one
+  // is a NUMBER that would go stale, this one degrades to its own `unreadable` state instead.
+  const hs = programHealthState(p, programsRead);
+  facts.appendChild(chip(hs.label, hs.tone, hs.sentence));
   facts.appendChild(chip(fmtTs(p.createdAt), "dim", "when this program was created"));
   // V1b — THE RETURN PATH, on the pane that already answers "can this MAIN still be reached". A
   // MAIN whose FleetEvent delivery budget is full has closed the way back to itself: every fleet
@@ -6319,6 +6404,9 @@ function renderProgramDetail(shell: Shell, id: string): void {
   // path and an unreadable one are the two states an owner must not scroll past.
   if (budgetNote && (!room || room.free === 0))
     shell.detail.appendChild(el("div", "shellhint", budgetNote));
+  // …and the identity sentence in full where it COSTS something: a divergent identity is a MAIN
+  // whose lands are already being refused, and a tooltip is not where an owner finds that out.
+  if (hs.state === "divergent") shell.detail.appendChild(el("div", "pkdwarn", hs.sentence));
 
   if (p.intent || p.successCriterion) {
     const frame = qDetailSection(shell.detail, "Frame", true, false);

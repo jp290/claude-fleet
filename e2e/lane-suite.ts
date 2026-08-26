@@ -34,11 +34,16 @@ interface OfferView {
   id: string; state: string; branch: string; offeredAt: number;
   commitSha: string | null; treeSha: string | null; untracked: number | null;
   claim: { name: string; claimedAt: number; expiresAt: number } | null;
+  // `remote` and `treeSha` are OPTIONAL here on purpose, and it is the same rule
+  // e2e/helper-portal.ts states about its own row type: what is under test is that the server
+  // WRITES the provenance, and a type that made the field mandatory would let a server that never
+  // wrote it take the module down with a TypeError instead of failing the named check. Measured:
+  // stripping the remote block from laneSuiteView did exactly that until this line was written.
   result: {
-    exitCode: number | null; result: string; reason?: string; tail: string; trail?: string;
-    checks: { ran: number; failed: number } | null;
-    remote: { name: string; claimedAt: number; reportedAt: number };
-    treeSha: string; ms: number;
+    exitCode: number | null; result: string; reason?: string; tail?: string; trail?: string;
+    checks?: { ran: number; failed: number } | null;
+    remote?: { name: string; claimedAt: number; reportedAt: number };
+    treeSha?: string; ms?: number;
   } | null;
 }
 interface OfferPayload {
@@ -255,7 +260,7 @@ export async function run(): Promise<void> {
       && verdict.checks?.ran === 2 && verdict.checks.failed === 0 && verdict.trail === TRAIL,
     JSON.stringify({ state: reported.offer?.state, r: verdict?.result, e: verdict?.exitCode, c: verdict?.checks, t: verdict?.trail }));
   check("(LS) …MARKED REMOTE: the device name and both timestamps travel with the number",
-    verdict?.remote.name === DEVICE_NAME && verdict.remote.claimedAt === claim.job?.claimedAt
+    verdict?.remote?.name === DEVICE_NAME && verdict.remote.claimedAt === claim.job?.claimedAt
       && verdict.remote.reportedAt >= verdict.remote.claimedAt,
     JSON.stringify(verdict?.remote));
   // …and the question the tree sha exists to answer: has MY tree moved since I gave it away? The

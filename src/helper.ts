@@ -12,18 +12,29 @@
 const TOKEN = new URLSearchParams(location.search).get("token") ?? "";
 const HDR: Record<string, string> = TOKEN ? { "x-fleet-helper-token": TOKEN } : {};
 
+// TWO JOB KINDS, one list, one button. `kind` is the whole difference this page sees: an `audit`
+// carries a landed integration tip and `covers` lands; a `lane-suite` carries a LANE's working tree
+// (uncommitted work included) and covers no land at all. Optional on the wire so a page served by an
+// older server still renders — an absent kind is read as `audit`, which is what it was.
 interface Job {
-  id: string; repo: string; main: string; branches: string[]; covers: number; oldestAt: number;
+  id: string; kind?: string; repo: string; main: string; branches: string[]; covers: number;
+  oldestAt: number;
   claim: { name: string; claimedAt: number; expiresAt: number } | null; localRunning: boolean;
+  untracked?: number;
 }
+const isLaneSuite = (j: { kind?: string }): boolean => j.kind === "lane-suite";
 interface Lapse { id: string; repo: string; name: string; claimedAt: number; expiredAt: number; covers: number }
 interface JobsPayload {
   claimTimeoutMs: number; configured: boolean; jobs: Job[]; lapsed: Lapse[];
   device: { id: string; name: string } | null; error?: string;
 }
 interface ClaimedJob {
-  id: string; repo: string; main: string; mainSha: string;
+  id: string; kind?: string; repo: string; main: string; mainSha: string;
   branches: string[]; covers: number; claimedAt: number; expiresAt: number; name: string;
+  // lane-suite only. `branch` is the transient branch the bundle carries and the ONE string the
+  // clone command must name — it is served rather than reconstructed here, because a clone whose
+  // branch name is wrong (or missing) produces an EMPTY directory and no hint why.
+  branch?: string; treeSha?: string; untracked?: number;
 }
 
 const qs = (id: string): HTMLElement => document.getElementById(id) as HTMLElement;
@@ -93,10 +104,21 @@ function setClaimed(c: ClaimedJob | null): void {
 
 function bootstrapText(job: ClaimedJob): string {
   const file = `${job.id}-${job.mainSha.slice(0, 8)}.bundle`;
+  // THE ONE LINE THAT DIFFERS, and it is not cosmetic. An audit bundle names the integration branch
+  // and a plain `git clone` checks it out. A preview bundle names a TRANSIENT branch that is not the
+  // bundle's HEAD, and a plain clone of it produces a directory with no working tree in it — no
+  // error a person would read as "you needed -b". So the preview clone names the branch, and the
+  // comment above it says what happens without it.
+  const clone = isLaneSuite(job)
+    ? [
+      `# the -b is required: without it this bundle clones with NO working tree and no error saying so`,
+      `git clone -b ${job.branch ?? ""} ${file} fleet-suite && cd fleet-suite`,
+    ]
+    : [`git clone ${file} fleet-audit && cd fleet-audit`];
   return [
     "# needs: bun · tmux · git · zsh on PATH",
     "# 1 — download the bundle with the link above, then in the directory it landed in:",
-    `git clone ${file} fleet-audit && cd fleet-audit`,
+    ...clone,
     "bun install --frozen-lockfile",
     './e2e-isolated.sh > log 2>&1; echo "exit=$?"',
     "# 2 — paste both of these into the boxes below:",
@@ -107,6 +129,8 @@ function bootstrapText(job: ClaimedJob): string {
 
 function chipFor(j: Job, mine: boolean): HTMLElement {
   if (j.localRunning) return el("span", { class: "chip busy" }, "local audit running");
+  // …and there is deliberately no "local preview running" twin: nothing on this machine drains a
+  // preview, so a chip claiming otherwise would be a statement about a state nothing measures.
   if (mine && claimed) return el("span", { class: "chip mine" }, `yours · ${left(claimed.expiresAt)} left`);
   if (j.claim) return el("span", { class: "chip other" }, `${j.claim.name} · ${left(j.claim.expiresAt)} left`);
   return el("span", { class: "chip" }, "open");
@@ -115,16 +139,25 @@ function chipFor(j: Job, mine: boolean): HTMLElement {
 function jobCard(j: Job): HTMLElement {
   const mine = !!claimed && claimed.id === j.id;
   const card = el("div", { class: "card" });
+  // The right-hand line says WHAT this job is, and the two kinds have nothing in common there: an
+  // audit answers for N landed branches, a preview answers for one lane's working tree — including
+  // the part of it that is not committed, which is exactly what a helper needs to know before
+  // spending ~13 minutes on it.
+  const summary = isLaneSuite(j)
+    ? `preview suite · offered ${ago(j.oldestAt)} ago`
+      + (j.untracked ? ` · ${j.untracked} untracked file(s) NOT included` : "")
+    : `${j.covers} land(s) · oldest ${ago(j.oldestAt)} ago`;
   card.append(
     el("div", { class: "row" },
       el("b", {}, `${j.repo} ${j.main}`),
       chipFor(j, mine),
-      el("span", { class: "muted grow right" }, `${j.covers} land(s) · oldest ${ago(j.oldestAt)} ago`)),
-    el("div", { class: "branches" }, j.branches.join(", ")));
+      el("span", { class: "muted grow right" }, summary)),
+    el("div", { class: "branches" },
+      isLaneSuite(j) ? "a lane's own tree, uncommitted work included" : j.branches.join(", ")));
   const msg = el("div", { class: "msg", id: `m-${j.id}` });
 
   if (!mine || !claimed) {
-    const btn = el("button", { "data-claim": j.id }, "claim this audit");
+    const btn = el("button", { "data-claim": j.id }, isLaneSuite(j) ? "claim this preview run" : "claim this audit");
     if (j.claim || j.localRunning) btn.setAttribute("disabled", "");
     card.append(el("div", { class: "row spaced" }, btn), msg);
     return card;
@@ -167,16 +200,22 @@ async function refresh(): Promise<void> {
   const d = a.body;
   const nameBox = qs("name") as unknown as HTMLInputElement;
   if (d.device && document.activeElement !== nameBox) nameBox.value = d.device.name;
+  // The subline used to say "post-land audits this fleet has queued", full stop, and that sentence
+  // was the reason a lane's preview run could not be found here — it described the only source
+  // there was. Both are named now, and so is the difference in what a lapse means: an audit falls
+  // back to this machine, a preview does not (nothing drains it; its lane runs it itself).
+  const claimMin = Math.round(d.claimTimeoutMs / 60000);
   qs("sub").textContent = d.configured
-    ? `post-land audits this fleet has queued — a claim lasts ${Math.round(d.claimTimeoutMs / 60000)} min,`
-      + " then the job falls back to the local drain"
-    : "this fleet has no post-land audit command configured — nothing will ever queue here";
+    ? `post-land audits this fleet has queued, and preview suites its lanes have offered — a claim`
+      + ` lasts ${claimMin} min; an audit then falls back to the local drain, a preview goes back to its lane`
+    : `this fleet has no post-land audit command configured — only preview suites a lane offers can`
+      + ` appear here, and a claim on one lasts ${claimMin} min`;
   // a job we believe we hold that the fleet no longer lists as claimed is a job that lapsed or was
   // already reported: drop the local memory of it rather than showing a run box for work nobody is
   // waiting for.
   if (claimed && !d.jobs.some((j) => j.id === claimed?.id && j.claim)) setClaimed(null);
   if (!d.jobs.length) jobsBox.append(el("div", { class: "card muted" },
-    "no audit is waiting. Land something and this page fills up."));
+    "nothing is waiting. Land something, or let a lane offer its preview suite, and this page fills up."));
   for (const j of d.jobs) jobsBox.append(jobCard(j));
   const lapsedBox = qs("lapsed");
   clear(lapsedBox);

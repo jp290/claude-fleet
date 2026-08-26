@@ -3521,6 +3521,94 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     `absent=${/label: "self-land: never granted"/.test(ps)} off=${/label: "self-land: off"/.test(ps)}`);
 }
 
+// ================================================================================================
+// LANE SUITES IN THE REMOTE HELPER PORTAL — the two pairs whose other side is not TypeScript
+// ================================================================================================
+// The feature's own behaviour is proved in e2e/lane-suite.ts against a live server. What NO check
+// there can see is where its statements go OUT of TypeScript: into a shell line a human types on
+// another machine, and into a rulebook fragment that is not even in this tree.
+{
+  const helperSrc = ((): string => { try { return read("src/helper.ts"); } catch { return ""; } })();
+  const serverSrc = ((): string => { try { return read("server.ts"); } catch { return ""; } })();
+
+  // --- S8. THE `-b` IN THE BOOTSTRAP, and it is the whole difference between a helper who can work
+  // and one who cannot. An audit bundle names the integration branch and a plain `git clone` checks
+  // it out; a PREVIEW bundle carries a transient branch that is not its HEAD, and cloning it without
+  // `-b` produces a directory with NO working tree and no error a person would read as "you needed
+  // -b" (measured, design doc M6). The line is typed by a human, so no compiler is on this seam.
+  const RULE_CLONE = "the portal's preview bootstrap clones with -b, and the branch it names comes from the claim";
+  if (helperSrc === "") skip(RULE_CLONE, "src/helper.ts is not in this tree");
+  else {
+    const fn = /function bootstrapText\([\s\S]*?\n}/.exec(helperSrc)?.[0] ?? "";
+    // both arms, and the negative half matters as much as the positive: the AUDIT arm must NOT
+    // grow a `-b`, or the two kinds have silently become one command that is wrong for one of them
+    const laneArm = /isLaneSuite\(job\)[\s\S]*?:\s*\[`git clone /.exec(fn)?.[0] ?? "";
+    const auditArm = /:\s*\[`git clone ([^`]*)`\]/.exec(fn)?.[1] ?? "";
+    pin(RULE_CLONE,
+      fn !== "" && /git clone -b \$\{job\.branch/.test(laneArm) && auditArm !== "" && !/ -b /.test(auditArm)
+        && /branch\?: string/.test(helperSrc),
+      fn === "" ? "bootstrapText not found" : `laneArm=${/git clone -b/.test(laneArm)} audit=${JSON.stringify(auditArm)}`);
+  }
+
+  // --- and the sentence that WAS the bug. The portal's subline and its empty card described the
+  // audit queue as the only source there was ("post-land audits this fleet has queued" / "no audit
+  // is waiting"), which is exactly why a lane's offered preview could not be found on this page.
+  // A page that lists two sources and names one is a page that lies about what it shows.
+  // …and the STATIC half of the same sentence, which is where the wrong one physically sat: the
+  // page ships a fallback subline in markup, and that is what a viewer reads until the first poll
+  // answers. It was found here by grep, not by this rule — so the rule now covers it.
+  const RULE_SAYS_BOTH = "the portal's subline and empty card name BOTH job sources, not audits alone";
+  const pageSrc = ((): string => { try { return read("public/helper.html"); } catch { return ""; } })();
+  if (pageSrc !== "") {
+    const sub = /id="sub"[^>]*>([^<]*)</.exec(pageSrc)?.[1]?.toLowerCase() ?? "";
+    pin(`${RULE_SAYS_BOTH} — including the static fallback subline in public/helper.html`,
+      sub !== "" && sub.includes("preview") && sub.includes("audit"),
+      sub === "" ? 'no id="sub" node in public/helper.html' : JSON.stringify(sub.slice(0, 90)));
+  } else skip(`${RULE_SAYS_BOTH} — including the static fallback subline in public/helper.html`,
+    "public/helper.html is not in this tree");
+  if (helperSrc === "") skip(RULE_SAYS_BOTH, "src/helper.ts is not in this tree");
+  else {
+    const refresh = /async function refresh\([\s\S]*?\n}/.exec(helperSrc)?.[0] ?? "";
+    const strings = [...refresh.matchAll(/"([^"\\]{20,})"|`([^`\\$]{20,})`/g)].map((m) => m[1] ?? m[2] ?? "");
+    const prose = strings.join(" ").toLowerCase();
+    pin(RULE_SAYS_BOTH,
+      refresh !== "" && prose.includes("preview") && prose.includes("audit")
+        && !/no audit is waiting/.test(refresh),
+      refresh === "" ? "refresh() not found"
+        : `preview=${prose.includes("preview")} audit=${prose.includes("audit")} `
+          + `auditOnlyEmptyCard=${/no audit is waiting/.test(refresh)}`);
+  }
+
+  // --- S9. THE WAITING NUMBERS, held across the one boundary that has no compiler at all: the
+  // rulebook fragment lives in the SOURCE checkout, is gitignored, and a worktree never materialises
+  // it — so this rule reads it through SOURCE_DIR and SKIPS under its own name where it cannot look,
+  // exactly like section 6b. It also skips while the rule itself has not been promoted into the
+  // fragment yet: a lane may PROPOSE a rule, only the owner makes it normative, and a pin that went
+  // red over an un-promoted proposal would be this file demanding its own change be adopted.
+  const RULE_WAIT = "the suite-offer waiting numbers are the same in rulebook/lane-discipline.md and server.ts";
+  const freeSec = Number(/const SUITE_OFFER_WAIT_FREE_MS = ([0-9_]+)/.exec(serverSrc)?.[1]?.replaceAll("_", "") ?? NaN) / 1000;
+  const heldSec = Number(/const SUITE_OFFER_WAIT_HELD_MS = ([0-9_]+)/.exec(serverSrc)?.[1]?.replaceAll("_", "") ?? NaN) / 1000;
+  const fragment = ((): string | null => {
+    if (SOURCE_DIR === null) return null;
+    try { return readFileSync(`${SOURCE_DIR}/${RULEBOOK_DIR}/${fragmentFileName("lane-discipline")}`, "utf8"); }
+    catch { return null; }
+  })();
+  if (!Number.isFinite(freeSec) || !Number.isFinite(heldSec))
+    pin(RULE_WAIT, false, `server.ts names no SUITE_OFFER_WAIT_* pair (free=${freeSec} held=${heldSec})`);
+  else if (fragment === null)
+    skip(RULE_WAIT, SOURCE_DIR === null ? "source checkout not locatable from here"
+      : "rulebook/lane-discipline.md not readable in the source checkout");
+  else if (!fragment.includes("/api/self/suite-offer"))
+    skip(RULE_WAIT, "the suite-offer rule is not in the rulebook yet — proposed, not promoted");
+  else {
+    // the numbers as the fragment writes them, in seconds, beside the route they belong to
+    const hasFree = new RegExp(`\\b${freeSec} s\\b`).test(fragment);
+    const hasHeld = new RegExp(`\\b${heldSec} s\\b`).test(fragment);
+    pin(RULE_WAIT, hasFree && hasHeld,
+      `server free=${freeSec}s held=${heldSec}s; fragment names them: free=${hasFree} held=${hasHeld}`);
+  }
+}
+
 console.log(rows.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

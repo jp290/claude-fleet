@@ -464,9 +464,11 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
 {
   // the type gate must see every entry file in the tree. It did not: fleet-e2e-postland-audit.ts was
   // absent from this list, so the harness guarding the whole tier-2 path had no type coverage at all.
+  // src/helper.ts (the remote helper portal's page script, 2026-08-26) is an ENTRY too — nothing
+  // imports it, so unlike src/md.ts it gets no coverage by being reached from client.ts.
   const tscArgs = /--types bun ([^&]+?)(?:&&|$)/.exec(verifyCmd)?.[1]?.trim().split(/\s+/) ?? [];
   const entries = [
-    "server.ts", "src/client.ts", "src/share.ts", "fleet-e2e.ts",
+    "server.ts", "src/client.ts", "src/share.ts", "src/helper.ts", "fleet-e2e.ts",
     ...readdirSync(ROOT).filter((f) => /^fleet-e2e-.*\.ts$/.test(f)).sort(),
   ];
   const uncovered = entries.filter((f) => !tscArgs.includes(f));

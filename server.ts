@@ -5030,6 +5030,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   backlogNudgeTried.delete(s.id); // a dead pane reopened in place is still a new main session
   autos = autos.filter((x) => x.slot !== s.id); // and no inherited schedules
   dropWatchesFor(s.id); // nor an inherited subscription, in either direction
+  reapLaneSuiteOffersFor(s.id); // …nor an offer of a tree the previous occupant held
   await rm(historyPath(s.id), { force: true });
   recents = [cwd, ...recents.filter((r) => r !== cwd)].slice(0, MAX_RECENTS);
   audit("slot_open", s.id, cwd);
@@ -5086,6 +5087,7 @@ async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<v
   shares = shares.filter((x) => x.slot !== s.id); // a share must not outlive its session
   autos = autos.filter((x) => x.slot !== s.id); // neither must a scheduled prompt
   dropWatchesFor(s.id); // and a watch on THIS slot must stop promising news that cannot come
+  reapLaneSuiteOffersFor(s.id); // …and a suite offer must stop inviting 13 minutes of somebody's time
   saveState();
   await tmux("kill-session", "-t", sess(s.id));
   await rm(streamPath(s.id), { force: true });
@@ -6366,6 +6368,20 @@ async function ownerAcknowledgeFleetEvent(id: string): Promise<Response> {
   pruneFleetEvents(event.receiverSlot);
   await saveStateNow();
   return json({ ok: true, existing: false, event });
+}
+
+// The same teardown act for the OTHER promise a slot can leave behind: an open suite offer in the
+// helper portal. The 15 s lapse sweep reaps it anyway and the claim path re-checks liveness, so
+// this is not what makes the rail correct — it is what keeps the portal from showing a human a job
+// for a lane that no longer exists, for up to a sweep. Reaped, never "withdrawn": the lane did not
+// take it back, the lane is gone, and the helper reads that sentence.
+function reapLaneSuiteOffersFor(slotId: number): void {
+  for (const j of laneSuiteJobs.values()) {
+    if (j.slot !== slotId || (j.state !== "open" && j.state !== "claimed")) continue;
+    if (j.claim) { try { rmSync(j.claim.bundle, { force: true }); } catch { /* already gone */ } }
+    j.claim = null;
+    j.state = "reaped";
+  }
 }
 
 // slot teardown (open OR kill), from both sides, and they are NOT symmetric:
@@ -11822,7 +11838,13 @@ interface LaneSuiteResult {
   ms: number;
 }
 interface LaneSuiteJob {
-  id: string;                // 12 hex, like a helper job id — RANDOM, because a lane is not a repo
+  // 12 hex, the SAME shape an audit job id has, and deliberately so: the claim, result and bundle
+  // routes validate `/^[a-f0-9]{12}$/` and the perimeter regex pins `bundle/[0-9a-f]{12}` — a
+  // wider id would have meant a new pre-auth route shape for no gain. RANDOM rather than derived,
+  // because an audit id is `sha256(repo)` (one per repo, stable across boots) while a lane may
+  // offer several trees in a row. The two id spaces are resolved in one lookup order (lane first),
+  // so a collision would misroute one job; at 48 bits that is not a risk worth a wire change.
+  id: string;
   slot: number;
   slotOpenedAt: number;      // slot + openedAt is the identity: bare slot ids get recycled
   repo: string;              // the integration repo the lane hangs off (git toplevel)

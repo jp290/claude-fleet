@@ -22,7 +22,8 @@ import { BASE, check, get, post } from "./harness";
 import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
 
 interface HelperJob {
-  id: string; repo: string; main: string; branches: string[]; covers: number; oldestAt: number;
+  id: string; kind?: string; repo: string; main: string; branches: string[]; covers: number;
+  oldestAt: number;
   claim: { name: string; claimedAt: number; expiresAt: number } | null; localRunning: boolean;
 }
 interface HelperJobs {
@@ -146,7 +147,7 @@ export async function run(h: {
   // protects is checked by scanning src/ — a page carrying its own script would be code that scan
   // never sees. This check is the same statement from the serving side.
   check("(K) GET /helper with the helper token serves the portal page, script bundled not inline",
-    page.ok && pageText.includes("Audit helper") && pageText.includes(`<script src="/helper.js">`)
+    page.ok && pageText.includes("Fleet helper") && pageText.includes(`<script src="/helper.js">`)
       && !/<script(?![^>]*\bsrc=)/.test(pageText),
     `${page.status} bytes=${pageText.length}`);
   const listRes = await hget(`/api/helper/jobs?deviceId=${DEVICE}`);
@@ -178,6 +179,12 @@ export async function run(h: {
     takeMeLanded.gone && !!queued && queued.claim === null && queued.localRunning === false
       && queued.branches.includes(takeMe.branch),
     JSON.stringify(queued));
+  // …and it is marked as the kind it is. The portal grew a SECOND source (a lane offering its own
+  // preview suite — e2e/lane-suite.ts, which cannot create an audit job and so cannot assert this
+  // half). `kind` is what keeps the two apart on one list, and an audit job losing its label would
+  // send a helper a bootstrap that clones the wrong way.
+  check("(K) an audit job is labelled kind:'audit' — the field that keeps two sources on one list",
+    queued?.kind === "audit", JSON.stringify({ kind: queued?.kind, covers: queued?.covers }));
   const decoyJob = await jobFor(DECOY);
   check("(K) the job the local drain is running says so, and refuses the claim",
     decoyJob?.localRunning === true, JSON.stringify(decoyJob));
@@ -262,6 +269,12 @@ export async function run(h: {
     resultRes.ok && ((await resultRes.json()) as { result: string }).result === "green", `${resultRes.status}`);
   const remoteRows = await waitNewRepoRows(1);
   const remote = remoteRows[0];
+  // THE POSITIVE CONTROL for the split e2e/lane-suite.ts asserts from the other side: an AUDIT
+  // report adds exactly one row to post-land-audits.jsonl. Its twin over there asserts a preview
+  // report adds NONE. Neither statement means anything without the other — "the ledger did not
+  // move" is also what a helperResult that silently wrote nowhere would produce.
+  check("(K) …and the audit report added EXACTLY ONE ledger row (the control for the preview's zero)",
+    remoteRows.length === 1, `${remoteRows.length} new row(s) for this repo`);
   check("(K) the ledger row lands on the SAME trail, green, against the tree that was handed over",
     remoteRows.length === 1 && remote?.result === "green" && remote.mainSha === takeMeSha
       && remote.exitCode === 0 && remote.covers.some((c) => c.branch === takeMe.branch),

@@ -174,6 +174,19 @@ const PRE_AUTH_ROUTES = [
   '= /api/self/gate',     // same credential, read-only: the live land-gate facts (env-derived)
   '= /api/self/criterion', // same credential: the lane's PROPOSED done-criterion (slot-bound, owner confirms)
   '= /api/self/verify-intent', // same credential: the lane's advisory gate-phase report (slot-bound)
+  // The fifth lane-only pair, added 2026-08-26 with LANE SUITES IN THE REMOTE HELPER PORTAL. On
+  // this list for the same structural reason as every neighbour — the exact self principal IS the
+  // boundary — and what bounds it is that OFFERING IS NOT RUNNING: no suite is spawned, no queue is
+  // filled, the land gate is untouched, and a remote verdict gates nothing (tier 2 gates nothing).
+  // Lane-only in the drift/gate/criterion direction: the answer is about the caller's OWN working
+  // tree. It reads NO body on the offer door (the repo, branch, cwd and slot all come from the
+  // token's own row, so nothing can nominate WHICH tree is bundled), the withdraw door reads the
+  // single boolean `abandon`, one open offer per slot, it writes into no pane and reaches no
+  // foreign slot. What it exposes to the helper principal is one git bundle of the caller's own
+  // worktree — through the EXISTING /api/helper/bundle route, which is why the helper perimeter
+  // below is unchanged by this feature.
+  '= /api/self/suite-offer',
+  '= /api/self/suite-offer/withdraw',
   // The handler sits before the steward interceptor only so a steward credential meets the same
   // tokenGate 401 as any other non-owner credential. Every matching route calls tokenGate inline
   // before the owner handler; the regex is pinned here as an explicitly reviewed pre-auth shape.

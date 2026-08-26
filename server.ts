@@ -15028,6 +15028,7 @@ const STATIC: Record<string, { path: string; type: string }> = {
   "/": { path: `${import.meta.dir}/public/index.html`, type: "text/html; charset=utf-8" },
   "/app.js": { path: `${import.meta.dir}/public/app.js`, type: "text/javascript" },
   "/share.js": { path: `${import.meta.dir}/public/share.js`, type: "text/javascript" },
+  "/helper.js": { path: `${import.meta.dir}/public/helper.js`, type: "text/javascript" },
   "/xterm.css": { path: `${import.meta.dir}/node_modules/@xterm/xterm/css/xterm.css`, type: "text/css" },
   "/manifest.webmanifest": { path: `${import.meta.dir}/public/manifest.webmanifest`, type: "application/manifest+json" },
   "/icon.svg": { path: `${import.meta.dir}/public/icon.svg`, type: "image/svg+xml" },
@@ -15242,11 +15243,13 @@ async function staticResponse(req: Request, url: URL, st: { path: string; type: 
     const html = (await Bun.file(st.path).text()).replace('src="/app.js"', `src="/app.js?v=${bundleV()}"`);
     return new Response(html, { headers: { "content-type": st.type, "cache-control": "no-store" } });
   }
-  if (url.pathname === "/app.js" || url.pathname === "/share.js") {
+  if (url.pathname === "/app.js" || url.pathname === "/share.js" || url.pathname === "/helper.js") {
     const b = await bundleBytes(st.path);
     if (!b) return new Response("bundle not built", { status: 404 });
     // only app.js gets the immutable cache: index.html is the only page whose script URL we
-    // version, and share.html is the public surface — it keeps its unchanged no-store behaviour
+    // version. share.html is the public surface and helper.html is opened by hand on another
+    // machine — both keep the unchanged no-store behaviour, so a redeploy is never one stale
+    // bundle away from a portal that cannot claim
     const versioned = url.pathname === "/app.js" && url.searchParams.get("v") === String(b.mtime);
     const gz = wantsGzip(req);
     const body = gz ? b.gz : b.raw;

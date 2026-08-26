@@ -140,9 +140,14 @@ export async function run(h: {
     badApi.status === 401, `${badApi.status}`);
   const page = await hget(`/helper`);
   const pageText = await page.text();
-  check("(K) GET /helper with the helper token serves the self-contained portal page",
-    page.ok && pageText.includes("Audit helper") && pageText.includes("/api/helper/claim")
-      && !pageText.includes("<script src="),
+  // …and it is the repo's page shape, not a self-contained one: markup here, every line of client
+  // code in src/ behind a bundle reference. fleet-e2e-security.ts §7 asserts that as a property of
+  // the whole public/ directory ("no HTML sink, no inline script"), because the XSS rule it
+  // protects is checked by scanning src/ — a page carrying its own script would be code that scan
+  // never sees. This check is the same statement from the serving side.
+  check("(K) GET /helper with the helper token serves the portal page, script bundled not inline",
+    page.ok && pageText.includes("Audit helper") && pageText.includes(`<script src="/helper.js">`)
+      && !/<script(?![^>]*\bsrc=)/.test(pageText),
     `${page.status} bytes=${pageText.length}`);
   const listRes = await hget(`/api/helper/jobs?deviceId=${DEVICE}`);
   const list0 = (await listRes.json()) as HelperJobs;

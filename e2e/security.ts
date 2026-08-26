@@ -196,7 +196,10 @@ const PRE_AUTH_ROUTES = [
   String.raw`~ /^\/s\/[a-z0-9]+$/`,
   String.raw`~ /^\/ws-share\/([a-z0-9]+)$/`,
 ];
-const STATIC_ROUTES = ["/", "/app.js", "/share.js", "/xterm.css", "/manifest.webmanifest", "/icon.svg", "/icon-180.png"];
+// `/helper.js` joined this set 2026-08-26 with the remote helper portal, on the same reasoning as
+// `/share.js`: a BUNDLE carries no secret, and the page it belongs to is gated (handleHelperRoute)
+// while its script is not — exactly the split share.html already has.
+const STATIC_ROUTES = ["/", "/app.js", "/share.js", "/helper.js", "/xterm.css", "/manifest.webmanifest", "/icon.svg", "/icon-180.png"];
 // The steward token bypasses the owner gate entirely (server.ts ~4499), so its route set is a
 // second pre-auth surface — pinned for the same reason.
 const STEWARD_ROUTES = [

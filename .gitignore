@@ -33,6 +33,7 @@ public/app.js
 .playwright-mcp/
 .env
 public/share.js
+public/helper.js
 CLAUDE.md
 OWNER.md
 # CLAUDE.md is a GENERAT of the seven fragments in rulebook/ — they carry the same deploy

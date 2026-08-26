@@ -348,6 +348,54 @@ export async function run(): Promise<void> {
       docsGate.note.ok && docsGate.verify?.proportional === true
       && JSON.stringify(docsGate.verify.steps) === JSON.stringify(["install", "pins"]),
       JSON.stringify(docsGate.note.json?.verify));
+    check("docs-proportional gate: the short chain is repo-guarded and the guard passed in THIS repo",
+      docsGate.verify?.cmd.startsWith('[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }; ') === true
+      && docsGate.verify.ok === true && !docsGate.verify.out.includes("verify skipped:"),
+      JSON.stringify(docsGate.verify));
+
+    // --- THE SHORT CHAIN IN A REPO THAT IS NOT THIS ONE -----------------------------------------
+    // The short chain is the one gate string chosen for a repo without being written for it: any
+    // repo whose candidate is docs-only gets this fleet-shaped command in place of its own. That
+    // repo has no e2e/pins.ts, so unguarded the chain died on "Module not found" in ~44ms and
+    // recorded ok:false — a RED verdict with the signature of a reasoned rejection over a tree
+    // nothing had looked at. The full chain has carried a repo guard for exactly this since the
+    // tri-state was built; this asserts the short one carries the SAME one, i.e. that the verdict
+    // is SKIPPED (ok:null, exit 42), never red. Mutation guard: drop the guard from
+    // VERIFY_PROPORTIONAL_CMD and exitCode is no longer 42 and ok is no longer null.
+    const foreign = await freshRepo("proportional-foreign");
+    const fgLane = (await (await post("/api/lanes", { repo: foreign.repo })).json()) as
+      { slot: number; cwd: string; branch: string };
+    mkdirSync(`${fgLane.cwd}/docs`, { recursive: true });
+    await Bun.write(`${fgLane.cwd}/docs/foreign-note.md`, "a docs-only change in a foreign repo\n");
+    spawnSync("git", ["-C", fgLane.cwd, "add", "-A"]);
+    // retried like the skip family in e2e/merge.ts: the server polls lane git state on a timer, and
+    // a poll holding index.lock makes a one-shot commit fail — an empty candidate would take the
+    // conservative FULL chain and report this case's own failure for the wrong reason
+    let fgCommitted = false;
+    for (let i = 0; i < 20 && !fgCommitted; i++) {
+      fgCommitted = spawnSync("git", ["-C", fgLane.cwd, "commit", "-qm", "foreign docs-only candidate"]).status === 0;
+      if (!fgCommitted) await Bun.sleep(150);
+    }
+    check("foreign-repo short chain setup: the docs-only candidate committed (precondition for the skip)",
+      fgCommitted, spawnSync("git", ["-C", fgLane.cwd, "status", "--porcelain"]).stdout.toString().trim());
+    const fgBefore = headOf(foreign.repo, foreign.main);
+    await setMergeMode("blocked"); // clean rebase — the agent is never consulted
+    await settleForMerge(fgLane.slot);
+    await post(`/api/slots/${fgLane.slot}/merge`, {});
+    const fgV = await waitMerge(fgLane.slot);
+    check("docs-proportional gate: in a repo without fleet-e2e.ts the short chain SKIPS (ok:null, exit 42), never red",
+      fgV.last?.verify?.ok === null && fgV.last.verify.exitCode === 42
+      && fgV.last.verify.proportional === true
+      && fgV.last.verify.out.includes("verify skipped: not the fleet repo")
+      && fgV.last.verify.timedOut === undefined && fgV.last.verify.waitedOut === undefined,
+      JSON.stringify(fgV.last?.verify));
+    check("docs-proportional gate: that skip stops the land like every other skip (resolved, lane kept, main unmoved)",
+      !fgV.gone && fgV.last?.status === "resolved" && fgV.last.landed === false
+      && (fgV.last.detail ?? "").includes("SKIPPED")
+      && headOf(foreign.repo, foreign.main) === fgBefore && exists(fgLane.cwd),
+      JSON.stringify({ detail: fgV.last?.detail, landed: fgV.last?.landed, main: headOf(foreign.repo, foreign.main), before: fgBefore }));
+    await post(`/api/slots/${fgLane.slot}/kill`, {});
+    await post("/api/worktrees/discard", { repo: foreign.repo, path: fgLane.cwd, branch: fgLane.branch });
 
     // (1) clean-path land → a note that PARSES and carries the land's own before/after +
     //     the server verify result (green). Mutation guard: drop writeLandNote → this fails.

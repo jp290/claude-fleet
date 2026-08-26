@@ -10739,7 +10739,18 @@ const VERIFY_CMD = process.env.FLEET_VERIFY_CMD ?? null;
 // The only reduced server-side gate: a non-empty candidate whose EVERY changed path is classified
 // docs-or-prose by verify-proportion.ts. Install establishes the pinned Bun toolchain and pins
 // checks the cross-file prose claims. Any other footprint keeps VERIFY_CMD.
-const VERIFY_PROPORTIONAL_CMD = 'bun install --frozen-lockfile && bun e2e/pins.ts';
+//
+// IT CARRIES THE FULL CHAIN'S REPO GUARD, and must: this string is fleet-shaped (`bun e2e/pins.ts`)
+// yet it REPLACES whatever command a repo configured, for every repo whose candidate happens to be
+// docs-only. In a repo that is not this one, pins.ts does not exist, so the unguarded chain died on
+// "Module not found" after ~44ms and recorded `ok:false` — a RED gate over a tree nothing had
+// looked at, in the shape of a reasoned rejection. The guard turns that into the state the tri-
+// state already had for exactly this case (VERIFY_SKIP_EXIT below): SKIPPED, ok:null, never an
+// auto-land. Same sentinel, same words, same exit code as watchdog.sh's VERIFY_CMD, and e2e/pins.ts
+// holds the two guards against each other so neither can move alone. 42 is spelled out rather than
+// interpolated because VERIFY_SKIP_EXIT is declared below this line; the pin is what keeps them one
+// number, the same way it does for the shell side.
+const VERIFY_PROPORTIONAL_CMD = '[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile && bun e2e/pins.ts';
 // PER-REPO verify commands (BACKLOG P-7c), and what they replace. One FLEET_VERIFY_CMD string had
 // to serve every repo a lane could live in, so the only way for it to be right in more than one
 // was to look at the tree in front of it and DECLINE elsewhere — the SKIP contract below, whose

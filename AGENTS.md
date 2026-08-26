@@ -135,7 +135,9 @@ failure.
 
 The server-side land gate remains authoritative: it runs its full configured chain except that,
 since 2026-08-25, a docs-only land runs the short `install` + `pins` proof; the post-land audit
-remains full. Local proof and the land gate use the same classification source.
+remains full. Local proof and the land gate use the same classification source. The short proof is
+repo-guarded like the full chain: in a repo that is not this one it declines out loud — verdict
+SKIPPED, never a red gate over a tree nothing looked at.
 
 The full chain, copyable and in order:
 

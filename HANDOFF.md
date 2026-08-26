@@ -90,6 +90,16 @@ und sagt nichts über die Zustellung.
 steht Text im Composer und nichts läuft, fehlt das Enter — `tmux -L claudefleet send-keys -t s<N>
 Enter`. Der Task-Status fängt diesen Fall NICHT: die Zeile steht auf `sent`, denn gepastet wurde ja.
 
+## Der Lane-Watch feuert NACH dem Land noch einmal (heute 2×, Slot 3 und Slot 1)
+
+Nach einem erfolgreichen Land kommt der `done-looking`-Weckruf für dieselbe Lane oft noch einmal —
+mit Fakten von VOR dem Reap („1 ahead / 0 dirty"), obwohl tmux-Session und Worktree schon weg sind.
+Kein Defekt: das Prädikat war zur Auswertungszeit wahr, und die Zustellung wartet, bis die
+Empfänger-Pane zur Ruhe kommt. Operativ heißt es nur: **die Prüfung, die die Nachricht ohnehin
+verlangt, fängt es** — `tmux has-session -t s<N>` und `ls -d <worktree>` sind zusammen die
+Zwei-Sekunden-Antwort, danach acken und nichts tun. Wer stattdessen sofort `POST /merge` schickt,
+bekommt `{"error":"not a fleet-created worktree lane"}` und hält es für einen Fehler.
+
 ## Bedienungs-Falle, heute zweimal bezahlt
 
 Eine Pane in einem AskUserQuestion-Menü ist für `POST /send` „composer occupied" — **die Frage

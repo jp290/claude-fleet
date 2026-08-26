@@ -1,113 +1,91 @@
-# HANDOFF — Controller (Slot 9, Fable), Nacht 2026-08-25→26
+# HANDOFF — Controller (Slot 9, Fable), Tagsession 2026-08-26
 
 Zustand wird ABGELEITET: `./state.sh` · `./register.sh` · Live-Queue. Hier steht nur, was daraus
-nicht hervorgeht. Vorgänger-Handoff (25.08. abends) in der git-Historie.
+nicht hervorgeht. Vorgänger-Handoff (Nacht 25.→26.08.) in der git-Historie (`7ffe41f`).
 
-## North Star (Owner, 2026-08-25 — unverändert)
+## North Star (Owner, unverändert)
 
-Fleet ist fertig, wenn der Owner nur noch Richtung und Geschmack gibt — und sonst nichts.
-Etappe 1: qualitative Autonomie zu Ende bauen. Etappe 2: dann produzieren (Games/Apps als
-Programme). Owner-Akte nur an Geschmacks-, Identitäts- und Release-Türen.
+Fleet ist fertig, wenn der Owner nur noch Richtung und Geschmack gibt. Etappe 1: qualitative
+Autonomie. Etappe 2: produzieren (Games/Apps als Programme). **Diese Session hat Etappe 2 breit
+geöffnet — der Owner ist im Ideen-/Gründungs-Modus, erwarte weitere Programm-Gründungen.**
 
-## Was diese Session geschlossen hat (Bodies lesen: git log 92bfdf5..HEAD)
+## Was diese Session geschlossen hat (Bodies lesen: git log 7ffe41f..HEAD)
 
-1. **Die komplette Bau-Welle der System-Analyse, gelandet UND live deployt** (2 Deploys, beide
-   Boot-Verdikte ok, bundleStale false): V1b Rückweg-Budget (`7d745db`) · V1a Authority-Gesundheit
-   (`e702628`) · Supervisor-Brief-Falschaussage (`0071935`) · K1 Symbolverweise in 8 undatierten
-   Docs (`ffb11a6`) · K2 generierte Repo-Karte mit Byte-Pin (`a1487a6`). Die Rangliste aus
-   `docs/messungen/system-analyse-review-2026-08-25.md` ist damit ABGEARBEITET; alles darunter
-   braucht laut Review erst neue Messungen.
-2. **K3 nicht gebaut, sondern widerlegt:** die Payload-Decke existiert seit `e901287`
-   (`e2e/tasks.ts`, Schwellen-Check). Klärungs-Notiz `f35a73f`, Doc-Lücke geschlossen `fdddca1`.
-   Zweiter Fall in zwei Tagen, in dem der Gegencheck vor dem Dispatch Doppelarbeit verhinderte.
-3. **§7-Fixture an der Wurzel gehärtet** (`7875c19`, Land in Flug, s.u.): beide Drive-Loops
-   brachen bei jedem gesetzten `last`, aber drei Merge-Ausgänge setzen `last` ohne Gate-Lauf.
-   `docs/verify-tiering.md` §11.2g (`810b71e`) re-attribuiert die drei `lines=0`-Sichtungen und
-   zählt die **neunte Flake-Familie** (send-receipt/Self-Heal-Race, OFFEN, Reparatur hat keine
-   Lane). Regelbuch-Fragment Acht→Neun + Render nachgezogen (gitignored, nur Haupt-Checkout).
-4. **Alle Audit-Zeilen der Nacht adjudiziert** (2× flake mit Mechanismus-Beweis, 3× unknowable
-   mit Grund, 1 Korrektur-Zeile für einen eigenen Fehlgriff — `tail -1` traf das falsche Audit;
-   die Korrektur ist die jüngste Zeile auf dem Adjudikations-Ledger).
-5. **Video-Zweitanalyse geerntet/gelandet** (`5dd25b8`) → K1/K2 vom Owner promoviert und gebaut.
-6. **Hygiene gefahren (Owner-Freigabe):** 14 Worktrees + Branches (je `git cherry`-Gegenprobe
-   leer), 12 Socket-Leichen inkl. pi-Probe-Server, TMPDIR 1,7 GB→839 MB. BEHALTEN: die zwei
-   „kept"-Audit-Instanzen (Beweismaterial) und `fleet-e2e-trail`.
-7. **Private-repo-j als GameStudio-Programm aufgesetzt** (Owner-Auftrag): Repo `~/private-repo-j`
-   (remote-los, Intake `77a2786` + AGENTS.md `cd34ed9` + Grafik-Nachtrag `b02b758` = Owner-Entscheid
-   5: AoE×RCT, „stimmiger und schöner, AA Indie"). Programm `ff4420b7…` active, MAIN auf S10
-   (Opus high; ERSTER Boot starb — Pane ohne Session, self_heal, kill —, zweiter Boot ersetzte die
-   stale Bindung sauber). Modell-Mix-Entscheid (Owner-delegiert, im Programm dokumentiert):
-   MAIN=Opus high · Design-Lanes=Fable medium · Code-Bau=Opus high.
+1. **Land-Verdikt-Zustellung gebaut, gelandet, deployt, LIVE** (`052da8e`, Audit grün 3086/0,
+   Deploy `4de91f28` boot-ok): mergeJob stellt kept-lane-Verdikte (error/waited/review) selbst in
+   die Lane-Pane zu — die Handtriebe-Lücke der Nacht ist zu. Offen laut Lane-Report: der
+   CONFIRM-Land-Pfad stellt weiterhin nichts zu (nächster kleiner Schnitt, falls gewollt).
+2. **Rotes Audit auf `69615a5` als flake adjudiziert** — Beweisordnung: Same-Tree-Worktree,
+   `./e2e-isolated.sh` erneut = ALL PASS exit 0 (run 20260826T054905Z-3484). Gefallener Check war
+   `e2e/outcomes.ts` (raw-review), Land berührte nur `e2e/verify-queue.ts` — kein Überlapp.
+3. **Private-repo-j-Welle gelandet** (alle via `{confirm:true}` auf `/api/slots/:id/merge` — im
+   Nicht-Fleet-Repo skippt das Gate-Verify sich per Konstruktion, exit 42): Sim-Kern `dd59c79` ·
+   DEM-Lizenz-Doku `213d9b0` · Renderer+P1 `971caad` (24 Ticks/s + 59,5 fps auf 380×512, Ledger
+   2/4). **S8 baut noch DEM+P2** (Hydrologie auf echtem DEM; P2 stand zwischenzeitlich ehrlich
+   auf fail/Rhein). Warum die Lands nicht von selbst passierten, ist dem Owner erklärt: kein
+   Automatismus darf landen + Private-repo-j hat keine Self-Land-Promotion (S7 baut genau das).
+4. **Programm „Private-repo-q" gegründet** (Owner-Idee wörtlich gebunden): Navigations-App für Eilige —
+   Linie durch die Stadt malen ⇒ Route auf vorklassifizierten Wegen, Zeit-/Wochentags-Verstand.
+   Repo `~/private-repo-q` (remote-los, Intake `bb73b18`), Programm `894e681c…` active, **MAIN auf S11,
+   Slot-Datensatz verifiziert `model fable, effort xhigh`**. Owner-Gates: Name (Private-repo-q ist
+   Platzhalter), Modalität Auto/Rad, Datenquellen-Lizenz, Eilig-Gate (Owner fährt echten Weg).
+5. **15 Ideen-Dossiers gelandet** (`docs/ideen/2026-08-26-{apps,spiele,wildcard}.md`, drei
+   Fable-xhigh-Lanes): je 5 Apps / Spiele / Wildcard, jedes mit prüfbarer Hypothese, harten
+   Prädikaten, Machbarkeit, Owner-Gates. BEWUSST ohne Rangliste — **Dossier-Auswahl = Owner-Tür;
+   Gewinner werden wie Private-repo-q gegründet.** Lizenz-Entscheide im Spiele-Doc-Schlussteil
+   (Bayern-DGM1 · OSM-ODbL · Ortsnamen-Recht).
+6. **Sonden-Lücke gefunden + als Queue-Notiz `cb525212`:** die proportionale Kurzkette
+   (docs-only ⇒ install+pins) umgeht den `[ -f fleet-e2e.ts ]`-Repo-Guard — in fremden Repos
+   wird ein docs-Land verify-RED („Module not found", 44 ms = nie gemessen) statt SKIPPED.
+   Fix = derselbe exit-42-Guard vor der Kurzkette; kleiner Schnitt, unbebrieft.
 
-## IN FLIGHT (Rückwege: die Watches/Autos dieses Slots sterben mit ihm — neu verankern!)
+## IN FLIGHT (Watches sterben mit diesem Slot — NEU verankern!)
 
-- **§7-Härtung IST GELANDET** (`69615a5`; dritter Anlauf — Anlauf 1 ff-Bruch durch meinen
-  Direktcommit, Anlauf 2 verify-rot als Interferenz-Flake, Anlauf 3 grün). Kein Deploy nötig:
-  e2e-only, `codeBehind:false` bestätigt.
-- **Repo-Karten-Fix IST GELANDET** (`ff4ef29`): beide `--others`-Stellen umgestellt (auch die
-  Pin-Zweitaufzählung — selbst gefunden), Gegenproben gemessen, Mutationsbeweis wiederholt.
-  Hand-pins im Haupt-Checkout sind wieder grün (nach dem Land verifiziert, Exit 0, ALL PASS).
-- **S10: Private-repo-j-MAIN hat selbständig dekomponiert und zwei Worker gestartet** (05:00): S8 baut
-  das Wasserspielzeug (Flow-Sim, Massenerhaltungs-/Determinismus-Tests, ehrliches 512²-Budget),
-  S11 fährt die DEM-Lizenzrecherche read-only an Primärquellen. Nächste Owner-Gates: DEM-Download
-  (Lizenz), Spaß-Gate (Owner spielt 10 min). Controller begleitet NUR Gates.
-- Zwei neue Queue-Zeilen (pending, clarify-first): `d95ca602` Remote-Suite-Helfer (s.u.) ·
-  `3ee70386` Land-Verdikt-Zustellung an die Lane selbst (Owner: „sowas sollte die lane ja eig
-  selbst machen" — 3 Handtriebe dieser Nacht als Beleg).
+- **S4 = Mutex-Helfer-Bau (`d95ca602`, fleet/260826053401-c3cc, Opus high)** — der
+  Owner-Prioritäts-Bau: Helfer-Portal, damit die Owner-Hauptmaschine Suiten mitfährt. Owner-
+  Entscheide IM BRIEF (eigener scoped Token · Audit-Queue mit Claim · harte Invariante „nie
+  doppelt, nie verloren" mit Claim-Timeout · gleiches Ledger + einstellbarer Gerätename · kein
+  Auto-Dispatch/ssh). Stand: Bau committed (`f664be5` + Nachbesserungen, u.a. Audit-Ledger-
+  Identität als Wert), fährt seine vier Suiten erneut. NACH dem Land: **Deploy nötig**
+  (Server-Code) — und dank Punkt 1 bekommt die Lane ihr Verdikt jetzt selbst.
+- **S8 = Private-repo-j DEM+P2** (läuft) · **S11 = Private-repo-q-MAIN** (dekomponiert, erwartet Recherche-
+  Lanes) · S10 = Private-repo-j-MAIN. Private-repo-j-Lands laufen bis zur Self-Land-Promotion über den
+  Controller: **Watch auf jede Worker-Lane legen, per confirm landen, S10 benachrichtigen.**
+- Post-Land-Audits der drei Ideen-Lands ziehen seriell durch — docs-only, erwartbar grün/kurz.
 
-## Lektionen dieser Session (Regel-Kandidaten, unpromoviert)
+## Lektionen dieser Session (unpromoviert)
 
-- **Hand-Verify nie hinter einer Pipe:** `bun e2e/pins.ts | tail -1` verschluckt den Exit-Code —
-  ein Direktcommit ging trotz 3 roter Pins durch (inhaltlich unabhängig, aber der Guard war
-  keiner). Exit separat prüfen oder `set -o pipefail`.
-- **Kein Direktcommit auf main, solange ein Land läuft** — der ff-Check ist SHA-basiert, „andere
-  Dateien" schützt nicht. Erst `GET /api/slots/:id/merge` aller aktiven Lanes prüfen.
-- **Merge-Watch-Dedup:** `{kind:"merge"}` auf dasselbe Ziel gibt nach dem ersten Terminal den
-  VERBRAUCHTEN Watch zurück (armed:false) — ein zweiter Merge-Lauf hat damit keinen Watch-Rückweg;
-  Hintergrund-Watcher nötig. Kandidat für eine kleine Fix-Zeile.
-- `d825eca6` (last:"interrupted" neben running:true) mehrfach wieder gesehen — weiter kosmetisch,
-  Task pending.
-- Fleet-Report-409 „no delivery budget" traf 3× MICH als Empfänger (Composer-Rest 81 Zeichen hielt
-  Zustellungen; Deckel = Watches+Events). Seit V1b ist das auf beiden Sichten ablesbar.
+- **`/api/slots/:id/land` ist NUR Teardown** (setzt integrierten Branch voraus); der Confirm-Land
+  nach Review ist `POST /api/slots/:id/merge {confirm:true}` — waivt sogar das Idle-Gate.
+- **Level-Watch feuert wiederholt auf geparkter Lane** (idle+clean+ahead bleibt wahr): nach dem
+  ersten Fehl-Feuer nicht blind re-armen — acken und auf Report/Triage-Takt stützen.
+- **Idle-Gate blockt Merge direkt nach dem Lane-Report** („actively working") — der noch scharfe
+  done-looking-Watch ist das saubere Retry-Signal, kein Timer.
+- Ein Lane-Report kann „gelandet" sagen und meinen „committed" — Land IMMER an main-Log/Note
+  verifizieren, nie am Report-Wortlaut.
 
-## Direktcommits dieser Session (kein Land-Ledger; Hand-Verify wie angegeben)
+## Direktcommits dieser Session
 
-- `fdddca1` docs(data-saver) — pins ALL PASS · `810b71e` docs(verify-tiering §11.2g) — **Hand-
-  Verify war durch Pipe wirkungslos; pins zeigten die 3 bekannten Repo-Karten-Fails (unabhängig)**
-  · Haupt-Checkout-Pflege ohne Commit: `rulebook/lane-discipline.md` 2× (Symbolverweis-Konvention,
-  Neun Familien) + CLAUDE.md-Render.
+- Nur dieser Handoff (Land lief dabei nicht; Hand-Verify: `bun e2e/pins.ts`, Exit separat
+  geprüft). Alles andere lief über Lands mit Ledger. In `~/private-repo-q`: `bb73b18` (eigenes Repo).
 
-## Offene OWNER-Entscheide (gesammelt, nicht selbst treffen)
+## Offene OWNER-Entscheide (gesammelt)
 
-- Fragment-Promotion `docs/rulebook-entwuerfe/geschmack.md` + `owner.md` · 7 COMPLETE-Empfehlungen
-  + 10 proposed-Discards der Programm-Triage (`bf01ef52` wohl erledigt) · **Slot 2** (Codex-Standby,
-  65 % voll) · **Publish-Rückstand** (origin ~1020 Commits hinter, Push nur von der Hauptmaschine) ·
-  **Spiele-REBIND** (private-repo-i/Private-repo-f/Worktrail B; Private-repo-j ist bewusst das EINE neue Programm) ·
-  Merge-Train `23eef33d` · Linux-Maschine · Kopfkommentare für die 3 satzlosen Karten-Dateien.
+- **NEU: Dossier-Auswahl aus `docs/ideen/`** (15 Stück) · Lizenz-Trio im Spiele-Doc ·
+  DEM-Download Private-repo-j (Vorlage `private-repo-j:docs/dem-quellen.md`) · Spaß-Gate Private-repo-j ·
+  Private-repo-q: Name/Modalität (kommen, wenn die MAIN das Kostenbild liefert).
+- Bestand: Fragment-Promotion geschmack/owner · 7 COMPLETEs + 10 Discards Programm-Triage ·
+  Slot 2 (Codex-Standby, 65 %) · Publish-Rückstand (~1020 Commits) · Spiele-REBIND ·
+  Merge-Train `23eef33d` · Linux-Maschine (= Stufe 2 des Mutex-Helfers) · Kopfkommentare
+  Karten-Dateien.
 
 ## Nächste Schritte (Reihenfolge begründet)
 
-1. S4-Land bestätigen (falls offen, s. IN FLIGHT). KEIN Deploy fällig — `codeBehind:false`,
-   alle jüngsten Lands sind e2e-/docs-only.
-2. Bau-Kandidaten klären + dispatchen: `3ee70386` (Land-Verdikt an die Lane — schließt die
-   Handtriebe-Lücke) · `d95ca602` (Remote-Suite-Helfer Stufe 1).
-3. Familie 9 (send-receipt) reparieren lassen — Brief-Skizze in §11.2g („control the heal").
-4. **Ernte-Durchgang der 15 ARBEIT-Worktrees** (Liste: hygiene-report §Tabelle; je sichten,
-   landen was trägt, Rest dem Owner zum Verwerfen).
-5. Private-repo-j begleiten (nur Gates, MAIN arbeitet selbst).
-
-## NEU: Remote-Suite-Helfer (Owner-Entscheid, Nacht 26.08.)
-
-Der Suite-Mutex war diese Nacht der Engpass (Timeout-Audits, 30-min-Warteschlangen), nicht die
-CPU. Owner hat entschieden, zweite Verify-Maschinen anzuschließen, zweistufig:
-- **Hauptmaschine über eine WEBSEITE** (Owner wörtlich: „eine webseite … wo mein gerät alles
-  bekommt was es braucht und einfach helfen kann, koordiniert von der devmaschine … simpel aber
-  effektiv"): der Fleet-Server serviert ein Helfer-Portal (Tailscale, authentifiziert) — Gerät
-  öffnet die Seite, bekommt Baum (Bundle) + Bootstrap-Kommando, fährt die Suite mit ihrem EIGENEN
-  lokalen Mutex, meldet den Tail zurück; die Dev-Maschine koordiniert Jobs und schreibt das
-  Ergebnis ehrlich aufs Ledger (Maschine weg ⇒ `unknown`, nie stilles Grün).
-- **Alter Linux-Rechner später via ssh** (klassischer Runner, gleiche Job-Queue).
-Queue-Zeile ist angelegt; Stufe 1 (Portal + manueller Rückweg) zuerst — sie ist der Messlauf, ob
-die Vollintegration (Server dispatcht Audits remote) sich lohnt. Suiten sind fast self-contained
-(bun/tmux/git/zsh, `$$`-abgeleitete Ports, maschinenlokaler Mutex); die Arbeit ist Transport +
-Rückweg + Job-Koordination, nicht die Suite selbst.
+1. **S4 ernten → landen → deployen** (Server-Code; Deploy erst nach Audit-Ende, 409 sonst).
+   Merge-/Audit-Watch neu legen, Task-Status prüfen (`d95ca602` steht `sent`).
+2. **Familie 9 (send-receipt) briefen** — Skizze `docs/verify-tiering.md` §11.2g („control the
+   heal"); war nur wegen Mutex-Stau zurückgestellt.
+3. **`cb525212` fixen lassen** (Kurzketten-Repo-Guard) — kleiner Schnitt, gern mit Familie 9
+   in einer Welle, NACH dem S4-Land (derselbe Verify-Pfad).
+4. **Ernte-Durchgang der 15 ARBEIT-Worktrees** (hygiene-report §Tabelle) — zweimal verschoben.
+5. Private-repo-j/Private-repo-q an den Gates begleiten; Dossier-Auswahl des Owners in Gründungen umsetzen.

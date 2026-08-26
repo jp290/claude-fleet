@@ -1145,8 +1145,8 @@ precondition checks under their own names; reverted, then full chain + isolated 
 
 **The ninth family, counted and not asserted** — §5b's three, merge/resolver (§11.2),
 reseed+live-bytes (§11.2b), the `stalled` race (§11.2c), the 💾-commit idle gate (§11.2e), the
-send-boot fixtures (§11.2f) — eight; this is the ninth, and it is **open**, not repaired.
-Signature, verbatim, in `e2e/slots.ts` (isolated suite, send-receipt/uncertain group):
+send-boot fixtures (§11.2f) — eight; this is the ninth, and it was **open** when this section was
+written. Signature, verbatim, in `e2e/slots.ts` (isolated suite, send-receipt/uncertain group):
 
 > `a send whose transport threw answers 409 with an uncertain receipt`
 
@@ -1156,8 +1156,42 @@ returns `200 delivery:"sent"` — the self-heal won the race against the deliber
 throw. Same §11.2f form: a precondition asserted, not controlled. Base rate from the trail: the
 same three fell identically on clean tree `7a3a253` (2026-08-23, `dirty:false`, no ancestor
 relation), 2 fails per 146 runs each. Proof for the K2 sighting: same tree serial re-run ALL PASS.
-**No free pass**: the family is open — a red there is yours until the same-tree re-run proves
-otherwise, and a repair (control the heal, don't outrun it) has no lane yet.
+
+**REPAIRED 2026-08-26 in `4bde073` (`e2e/slots.ts` only). The family stays listed; its status is
+closed.** The
+root was one sentence of the fixture's own comment that was simply untrue: *"its cwd removed, so
+the 2s self-heal cannot rebuild it (`tmux new-session -c <gone>` fails)"*. Measured on tmux 3.6a,
+`new-session -c` whose directory is gone does **not** fail — it silently falls back to `$HOME` and
+returns 0. So the heal always succeeded; the check only ever won a ~50 ms race against a 2 s tick,
+which is exactly the ~1.4 % base rate the trail recorded. The throw was never deterministic and the
+"deliberately deterministic" claim was the defect.
+
+What controls the heal now, instead of outrunning it: `server.ts#ensureSlot` rebuilds **only when
+`has-session` fails**. With `remain-on-exit` set on the window and the pane's process SIGKILLed,
+the *session* survives with a *dead pane* — `has-session` answers 0, so every heal tick is a no-op
+for the whole measurement, while `paste-buffer -t s3` answers non-zero (`target pane has exited`)
+and `sendText` throws. Nothing in the server respawns a dead pane. The occupant row is untouched, so
+the receipt's `openedAt` attribution is preserved without killing anything. Both halves are asserted
+under their own name (§11.2f form) — `send-receipt fixture: the pane is DEAD while its session
+survives — the self-heal cannot fire` — so a precondition that could not be established fails as
+ITSELF, never as the route it was built to measure.
+
+Mutation proof (isolated scratch instance, own socket/port, `FLEET_CMD=true`; both forms run with a
+deliberate 2500 ms pause before `/send`, i.e. one guaranteed heal tick, which turns the historic
+1.4 % race into a deterministic verdict):
+
+```
+OLD FORM: precondition[has-session=1 cwd=false] after-2500ms[has-session=0 pane_dead=0]
+          /send -> 200 {"ok":true,"receipt":{...,"acceptance":"not-applicable",...}}
+NEW FORM: precondition[remain-on-exit=0 pane_dead=1 has-session=0] after-2500ms[has-session=0 pane_dead=1]
+          /send -> 409 {"error":"send outcome uncertain: tmux paste-buffer failed — session gone?",...}
+```
+
+The old form reproduces the historic signature exactly — its precondition line PASSes and the route
+answers `200` anyway; the new form holds its precondition across the same tick and gets the `409`.
+
+**No free pass for the past:** reds in this family before `4bde073` are still adjudicated by the
+same-tree re-run rule. A red here **after** it is real and yours.
 
 ### 11.3 Correction to the prescribed proof method
 

@@ -347,6 +347,21 @@ the two worker labels attached; `PLAYABLE-READY` over three policy sessions (Tow
 never advances owner playtest or promoted status. `automaton-demo` is a fine sim-truth artifact
 and a wrong owner-facing one.
 
+### PROPOSAL 2026-08-26 (unpromoted — promotion is an owner act): two enforcement sentences
+
+Provenance: `docs/messungen/studio-verify-quervergleich-2026-08-26.md` (K1 hit 4/5 repos, K4 hit
+5/5; the norms above existed since 23.08. and nothing enforced them — private-repo-j repeated the
+already-named class four days later) and `docs/messungen/2026-08-26-private-repo-j-worktrail-audit.md`.
+
+1. **A verifier counts as predicate proof only after a demonstrated breaker** — a mutation shown
+   to flip it red. Until that demonstration exists, it is a *structure test* and is labeled as
+   one, in its own output and in every artifact or attention text that cites it. (Same label
+   discipline as above: the label names the strongest evidence that actually exists.)
+2. **An owner waiver changes the proof artifact itself**: a machine-readable field carrying the
+   date and the owner's wording, placed at the artifact it weakens. Prose beside the artifact is
+   not a waiver; a verify run that reports ALL PASS while a prose-only waiver stands is the
+   forbidden form.
+
 ### Research needs a consumer or a deferral
 
 Every research act (art territories, references, engine comparison) names, in its brief, **the

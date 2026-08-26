@@ -2,7 +2,7 @@
 // provenance survives a failed teardown or a stale verify, and the resolver↔verify repair loop.
 import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
-import { REPO, ROOT, check, get, post } from "./harness";
+import { REPO, REPO2, ROOT, check, get, post } from "./harness";
 import { VerifyField, exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
 export async function run(): Promise<void> {
@@ -353,15 +353,22 @@ export async function run(): Promise<void> {
       && docsGate.verify.ok === true && !docsGate.verify.out.includes("verify skipped:"),
       JSON.stringify(docsGate.verify));
 
-    // --- THE SHORT CHAIN IN A REPO THAT IS NOT THIS ONE -----------------------------------------
-    // The short chain is the one gate string chosen for a repo without being written for it: any
-    // repo whose candidate is docs-only gets this fleet-shaped command in place of its own. That
-    // repo has no e2e/pins.ts, so unguarded the chain died on "Module not found" in ~44ms and
-    // recorded ok:false — a RED verdict with the signature of a reasoned rejection over a tree
-    // nothing had looked at. The full chain has carried a repo guard for exactly this since the
-    // tri-state was built; this asserts the short one carries the SAME one, i.e. that the verdict
-    // is SKIPPED (ok:null, exit 42), never red. Mutation guard: drop the guard from
-    // VERIFY_PROPORTIONAL_CMD and exitCode is no longer 42 and ok is no longer null.
+    // --- A DOCS-ONLY CANDIDATE IN A REPO THAT IS NOT THIS ONE -----------------------------------
+    // Docs-only is a property of the DIFF; being verifiable by `bun e2e/pins.ts` is a property of
+    // the REPO, and until 2026-08-26 `proportional` asked only the first. So any repo whose
+    // candidate happened to be docs-only had its OWN configured command replaced by the fleet's
+    // short chain, which then hit its own `[ -f fleet-e2e.ts ]` guard and exited 42: SKIPPED,
+    // ok:null, no auto-land — and nothing measured, in a repo that has a real gate configured for
+    // it. Twice live on 2026-08-26 (private-repo-j lands 5ddfcea and 6d9a1cd, both noted
+    // `proportional:true, steps:["install","pins"], exitCode:42`).
+    // These two assert the repo half of the question, on the fixture with NO map entry: the global
+    // FLEET_VERIFY_CMD runs, it measures the tree, and the note stamps the full chain it ran.
+    // Mutation guard: drop `&& repoRunsShortChain(repo)` from verifyPlanFor and the fleet-shaped
+    // command is chosen again — cmd stops being fakeverify, out says "verify skipped: not the
+    // fleet repo", ok goes null and the land never happens.
+    // The guard inside VERIFY_PROPORTIONAL_CMD stays the second line of defense (it is what still
+    // catches a FLEET lane that moved the sentinel); that it is still IN the string is pinned
+    // statically by e2e/pins.ts, which is where that half is now asserted from.
     const foreign = await freshRepo("proportional-foreign");
     const fgLane = (await (await post("/api/lanes", { repo: foreign.repo })).json()) as
       { slot: number; cwd: string; branch: string };
@@ -376,26 +383,72 @@ export async function run(): Promise<void> {
       fgCommitted = spawnSync("git", ["-C", fgLane.cwd, "commit", "-qm", "foreign docs-only candidate"]).status === 0;
       if (!fgCommitted) await Bun.sleep(150);
     }
-    check("foreign-repo short chain setup: the docs-only candidate committed (precondition for the skip)",
+    check("foreign-repo docs-only setup: the candidate committed (precondition — an empty diff takes the full chain for another reason)",
       fgCommitted, spawnSync("git", ["-C", fgLane.cwd, "status", "--porcelain"]).stdout.toString().trim());
     const fgBefore = headOf(foreign.repo, foreign.main);
-    await setMergeMode("blocked"); // clean rebase — the agent is never consulted
-    await settleForMerge(fgLane.slot);
-    await post(`/api/slots/${fgLane.slot}/merge`, {});
-    const fgV = await waitMerge(fgLane.slot);
-    check("docs-proportional gate: in a repo without fleet-e2e.ts the short chain SKIPS (ok:null, exit 42), never red",
-      fgV.last?.verify?.ok === null && fgV.last.verify.exitCode === 42
-      && fgV.last.verify.proportional === true
-      && fgV.last.verify.out.includes("verify skipped: not the fleet repo")
-      && fgV.last.verify.timedOut === undefined && fgV.last.verify.waitedOut === undefined,
-      JSON.stringify(fgV.last?.verify));
-    check("docs-proportional gate: that skip stops the land like every other skip (resolved, lane kept, main unmoved)",
-      !fgV.gone && fgV.last?.status === "resolved" && fgV.last.landed === false
-      && (fgV.last.detail ?? "").includes("SKIPPED")
-      && headOf(foreign.repo, foreign.main) === fgBefore && exists(fgLane.cwd),
-      JSON.stringify({ detail: fgV.last?.detail, landed: fgV.last?.landed, main: headOf(foreign.repo, foreign.main), before: fgBefore }));
-    await post(`/api/slots/${fgLane.slot}/kill`, {});
-    await post("/api/worktrees/discard", { repo: foreign.repo, path: fgLane.cwd, branch: fgLane.branch });
+    await landClean(fgLane.slot);
+    const fgAfter = headOf(foreign.repo, foreign.main);
+    const fgVerify = readNote(foreign.repo, fgAfter).json?.verify as VerifyField | undefined;
+    check("docs-proportional gate: a docs-only candidate in a foreign repo runs THAT REPO'S configured chain, not the fleet short chain",
+      fgVerify?.ok === true && fgVerify.cmd === process.env.FLEET_VERIFY_CMD
+      && !fgVerify.out.includes("verify skipped: not the fleet repo")
+      && fgVerify.out.includes("verify OK: no sabotage marker in the tree"), JSON.stringify(fgVerify));
+    check("docs-proportional gate: the foreign-repo note stamps the FULL chain it actually ran, never install+pins",
+      fgVerify?.proportional === false
+      && JSON.stringify(fgVerify.steps) === JSON.stringify(fullSteps), JSON.stringify(fgVerify));
+    check("docs-proportional gate: measured green, the foreign docs-only lane LANDS (the skip used to stop it here)",
+      fgAfter !== fgBefore && (await get(`/api/slots/${fgLane.slot}/merge`)).status === 400,
+      JSON.stringify({ before: fgBefore, after: fgAfter }));
+
+    // --- THE SAME CASE WHERE THE REPO HAS ITS OWN ENTRY, AND THE GATE HAS SOMETHING TO SAY --------
+    // testrepo2 is the one fixture repo with its own FLEET_VERIFY_CMD_REPOS command ($DIR/
+    // fakeverify2) — the production shape of the incident: a product repo for which a real verify
+    // IS configured. The docs-only candidate carries fakeverify2's own sabotage marker, so the
+    // check is not "a different string was recorded" but "that command READ THIS TREE": only
+    // fakeverify2 knows VERIFY2BAD, and the short chain would never have looked. This is the half
+    // the note's own words cannot fake — under the old behaviour the whole tree went unmeasured.
+    // Mutation guard: drop `&& repoRunsShortChain(repo)` from verifyPlanFor and this lane's
+    // sabotage is never seen — ok:null with "verify skipped: not the fleet repo" instead of red.
+    if (REPO2 && exists(REPO2)) {
+      const r2Lane = (await (await post("/api/lanes", { repo: REPO2 })).json()) as
+        { slot: number; cwd: string; branch: string };
+      mkdirSync(`${r2Lane.cwd}/docs`, { recursive: true });
+      await Bun.write(`${r2Lane.cwd}/docs/proportional-sabotage.md`,
+        "a docs-only change carrying a VERIFY2BAD marker only fakeverify2 knows\n");
+      spawnSync("git", ["-C", r2Lane.cwd, "add", "-A"]);
+      let r2Committed = false;
+      for (let i = 0; i < 20 && !r2Committed; i++) {
+        r2Committed = spawnSync("git", ["-C", r2Lane.cwd, "commit", "-qm", "repo2 docs-only sabotage candidate"]).status === 0;
+        if (!r2Committed) await Bun.sleep(150);
+      }
+      check("per-repo docs-only setup: the sabotage candidate committed (an uncommitted marker verifies GREEN and lands)",
+        r2Committed, spawnSync("git", ["-C", r2Lane.cwd, "status", "--porcelain"]).stdout.toString().trim());
+      const r2Before = headOf(REPO2, "main");
+      await setMergeMode("blocked"); // clean rebase — the agent is never consulted
+      await settleForMerge(r2Lane.slot);
+      await post(`/api/slots/${r2Lane.slot}/merge`, {});
+      const r2V = await waitMerge(r2Lane.slot);
+      const r2Verify = r2V.last?.verify;
+      check("docs-proportional gate: a docs-only candidate in a repo WITH its own FLEET_VERIFY_CMD_REPOS entry runs that entry",
+        r2Verify?.cmd?.endsWith("fakeverify2") === true
+        && !(r2Verify.out ?? "").includes("verify skipped: not the fleet repo"),
+        JSON.stringify(r2Verify?.cmd));
+      check("docs-proportional gate: that command READ the docs-only tree — it names the marker only it knows",
+        (r2Verify?.out ?? "").includes("verify2 FAIL") && (r2Verify?.out ?? "").includes("VERIFY2BAD"),
+        JSON.stringify((r2Verify?.out ?? "").slice(0, 200)));
+      check("docs-proportional gate: the red verdict keeps the lane and holds main — a docs diff buys no exemption",
+        r2Verify?.ok === false && r2Verify.proportional === false
+        && JSON.stringify(r2Verify.steps) === JSON.stringify(fullSteps)
+        && !r2V.gone && r2V.last?.status === "resolved" && r2V.last.landed === false
+        && headOf(REPO2, "main") === r2Before,
+        JSON.stringify({ ok: r2Verify?.ok, proportional: r2Verify?.proportional, steps: r2Verify?.steps,
+          gone: r2V.gone, landed: r2V.last?.landed, main: headOf(REPO2, "main"), before: r2Before }));
+      await post(`/api/slots/${r2Lane.slot}/kill`, {});
+      await post("/api/worktrees/discard", { repo: REPO2, path: r2Lane.cwd, branch: r2Lane.branch });
+    } else {
+      check("per-repo docs-only setup: testrepo2 exists (precondition — this check is about WHICH command ran)",
+        false, JSON.stringify({ REPO2 }));
+    }
 
     // (1) clean-path land → a note that PARSES and carries the land's own before/after +
     //     the server verify result (green). Mutation guard: drop writeLandNote → this fails.

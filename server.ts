@@ -10772,6 +10772,17 @@ const VERIFY_CMD = process.env.FLEET_VERIFY_CMD ?? null;
 // interpolated because VERIFY_SKIP_EXIT is declared below this line; the pin is what keeps them one
 // number, the same way it does for the shell side.
 const VERIFY_PROPORTIONAL_CMD = '[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile && bun e2e/pins.ts';
+// MAY the short chain be chosen for this repo at all — the guard above asked BEFORE the selection
+// instead of after it. Deliberately the same sentinel and therefore the same question, so the two
+// cannot disagree about which trees the short chain is for; git toplevel identity (FLEET_REPO_ROOT)
+// answers a different question — WHICH repository this is — and would call every stand-in fleet
+// tree foreign, the isolated suite's own included. The guard in the command stays where it is and
+// stays the second line: it is what still catches a fleet lane that MOVED the sentinel, and a
+// disagreement between the two can only ever cost a SKIP, never buy a false green.
+// The REPO TOPLEVEL, not the lane worktree: a worktree that deleted the sentinel is exactly the
+// case the in-command guard exists to catch, and answering it here would silently hand that lane
+// the full chain instead.
+const repoRunsShortChain = (repo: string): boolean => existsSync(`${repoCanon(repo)}/fleet-e2e.ts`);
 // PER-REPO verify commands (BACKLOG P-7c), and what they replace. One FLEET_VERIFY_CMD string had
 // to serve every repo a lane could live in, so the only way for it to be right in more than one
 // was to look at the tree in front of it and DECLINE elsewhere — the SKIP contract below, whose
@@ -11075,7 +11086,16 @@ async function verifyPlanFor(cwd: string, repo: string, mainSha: string): Promis
   const changed = await gitRead(cwd, "diff", "--no-renames", "--name-only", `${mainSha}...HEAD`, "--");
   const proportion = verificationProportionFor(changed.code === 0
     ? changed.out.split("\n").filter(Boolean) : []);
-  const proportional = changed.code === 0 && proportion.proportional;
+  // AND the short chain has to be ABOUT this repo. Docs-only is a property of the DIFF; being
+  // verifiable by `bun e2e/pins.ts` is a property of the REPO, and until 2026-08-26 only the first
+  // was asked. A docs-only candidate in a product repo therefore had its own configured command
+  // REPLACED by this fleet-shaped one, which then hit its own guard and exited 42 — SKIPPED, no
+  // auto-land, and nothing measured, in a repo that has a real gate configured for it (two live
+  // private-repo-j lands, 5ddfcea and 6d9a1cd: `proportional:true, steps:["install","pins"],
+  // exitCode:42`). The server knows no short form for a foreign repo, so there is none to offer.
+  const proportional = changed.code === 0 && proportion.proportional && repoRunsShortChain(repo);
+  // Both stamps follow that same boolean, so a foreign repo's note reports the full chain it
+  // actually ran rather than the two steps it did not.
   const steps: LocalProofStep[] = proportional ? [...proportion.steps] : [...LOCAL_PROOF_STEPS];
   const cmd = proportional ? VERIFY_PROPORTIONAL_CMD : configuredCmd;
   return { cmd, proportional, steps };

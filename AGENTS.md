@@ -134,10 +134,13 @@ route is unreachable, run the full chain below. Every selected step must pass; s
 failure.
 
 The server-side land gate remains authoritative: it runs its full configured chain except that,
-since 2026-08-25, a docs-only land runs the short `install` + `pins` proof; the post-land audit
-remains full. Local proof and the land gate use the same classification source. The short proof is
-repo-guarded like the full chain: in a repo that is not this one it declines out loud — verdict
-SKIPPED, never a red gate over a tree nothing looked at.
+since 2026-08-25, a docs-only land in THIS repo runs the short `install` + `pins` proof; the
+post-land audit remains full. Local proof and the land gate use the same classification source.
+The short proof is this repo's own chain — `bun e2e/pins.ts` is a file only this tree has — so
+since 2026-08-26 it is only ever chosen here: a land in another repo runs that repo's configured
+chain unchanged, docs-only or not, and its note stamps that full chain rather than the two steps.
+The guard inside the short proof stays as a second line: a tree it does not recognise makes it
+decline out loud — verdict SKIPPED, never a red gate over a tree nothing looked at.
 
 The full chain, copyable and in order:
 

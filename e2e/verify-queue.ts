@@ -30,7 +30,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, s
 import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { BASE, REPO, ROOT, TOKEN, check, get, post, readText, restartSrv } from "./harness";
-import { exists, openLane, settleForMerge, waitMerge } from "./lane-helpers";
+import { exists, openLane, settleForMerge, waitMerge, type MergeVerdict } from "./lane-helpers";
 
 const TMP = process.env.TMPDIR ?? "/tmp";
 const REAL_LOCK = process.env.FLEET_SUITE_LOCK ?? "/tmp/fleet-e2e.lock"; // what e2e-stage.sh took
@@ -449,6 +449,56 @@ export async function run(): Promise<void> {
     };
     const isServer = (r: GateReport): boolean => r.origin === "server";
 
+    // --- DRIVING A MERGE UNTIL ITS PRECONDITION HOLDS, not until something happened -------------
+    // The two loops this replaces stopped at `running || last !== null` — at the first sign of ANY
+    // outcome — and everything below then spoke about a gate run, or a land, the fixture had never
+    // established. Every no-measurement exit from the merge job wears exactly that shape: an author
+    // hand-off records `awaiting-author` and never spawns the gate, a halted pre-pass records
+    // `error` before it, a ⏸ hold answers with a verdict this run did not write, and a red verify
+    // records `resolved` — at `last !== null` all four are the same fact. That is how §7 read
+    // `lines=0` as a broken land gate three times (2026-08-25/26, twice as a post-land audit) when
+    // the true sentence was "this section never got a gate run to look at".
+    //
+    // So the goal itself is polled, and a verdict that did NOT reach it is a reason to fire the
+    // merge again rather than a reason to stop — which is also the cure for the transient half of
+    // the race (an index.lock-halted pre-pass writes `error` and the next attempt rebases fine).
+    // Bounded, because a lane that structurally cannot reach the goal (a conflict the author path
+    // keeps handing back) must end as a FAILING PRECONDITION and not as a hang. Every attempt that
+    // settled short is kept in `log` and quoted by the check that gives up: a probe that could not
+    // run has to say what it saw, or the next reader is back to inferring a mechanism from a zero.
+    type MergeState = { gone: boolean; running: boolean; last: MergeVerdict | null };
+    const driveMergeUntil = async (slot: number, reached: (s: MergeState | null) => boolean,
+        tries = 4, perTryMs = 30_000): Promise<{ ok: boolean; log: string[] }> => {
+      const log: string[] = [];
+      let seen: MergeState | null = null;
+      for (let attempt = 1; attempt <= tries; attempt++) {
+        if (reached(seen)) return { ok: true, log };
+        await settleForMerge(slot);
+        const m = await post(`/api/slots/${slot}/merge`, {});
+        if (!m.ok) log.push(`try ${attempt}: merge POST refused ${m.status} ${(await m.text()).slice(0, 120)}`);
+        const deadline = Date.now() + perTryMs;
+        let why = `the merge job was still running after ${perTryMs}ms`;
+        while (Date.now() < deadline) {
+          const r = await get(`/api/slots/${slot}/merge`);
+          seen = r.status === 400
+            ? { gone: true, running: false, last: null }
+            : { gone: false, ...((await r.json()) as { running: boolean; last: MergeVerdict | null }) };
+          if (reached(seen)) return { ok: true, log };
+          if (seen.gone) { why = "the slot is gone, and that was not the goal"; break; }
+          if (!seen.running) {
+            why = seen.last === null
+              ? "no job ran (the merge was refused and left no verdict)"
+              : `settled as ${seen.last.status}/landed=${seen.last.landed} without reaching the goal`
+                + ` — ${seen.last.detail.slice(0, 160)}`;
+            break;
+          }
+          await Bun.sleep(120);
+        }
+        log.push(`try ${attempt}: ${why}`);
+      }
+      return { ok: reached(seen), log };
+    };
+
     // --- (a) the LAND GATE, on a lane that is KEPT ---------------------------------------------
     // The verify is made to FAIL on purpose, which is not about the verdict: a lane that lands is
     // torn down, and a row that vanishes because its slot did cannot tell "the entry was removed"
@@ -456,22 +506,19 @@ export async function run(): Promise<void> {
     // cwd, so the disappearance below is the removal itself.
     writeFileSync(FAILFLAG, "fail\n");
     const lnA = await openLane(REPO, "gaterun-kept");
-    await settleForMerge(lnA.slot);
-    for (let i = 0; i < 8; i++) {
-      await post(`/api/slots/${lnA.slot}/merge`, {});
-      const r = await get(`/api/slots/${lnA.slot}/merge`);
-      if (r.status === 400) break;
-      const j = (await r.json()) as { running: boolean; last: unknown };
-      if (j.running || j.last !== null) break;
-      await Bun.sleep(400);
-      await settleForMerge(lnA.slot);
-    }
+    // THE PRECONDITION, DRIVEN rather than hoped for: fire the merge until the stand-in has
+    // announced itself on THIS lane's tree. It announces BEFORE it sleeps, so this hands back
+    // INSIDE the gate run — the in-flight row every assertion below is about is still up, with
+    // the whole of the stand-in's sleep left to observe it in.
+    const droveA = await driveMergeUntil(lnA.slot, () => marks(MARK_V) > 0);
     const { row: gateRow, all: gateSnap } = await pollGate((r) => isServer(r) && r.slot === lnA.slot);
-    // THE PRECONDITION, as its own check. If the stand-in never ran there was no land gate to see,
-    // and every assertion under it would be about a run that does not exist.
+    // …and as its own check. If the stand-in never ran there was no land gate to see, and every
+    // assertion under it would be about a run that does not exist — so this failing says "§7 could
+    // not set itself up", never "the land gate is broken", and the drive log names which exit out
+    // of the merge job took the run away.
     const gateRan = marks(MARK_V) > 0;
     check("§7 fixture: the land gate actually ran on this lane's tree (the stand-in announced itself)",
-      gateRan, `${MARK_V} lines=${marks(MARK_V)}`);
+      gateRan, `${MARK_V} lines=${marks(MARK_V)}${droveA.log.length ? ` · ${droveA.log.join(" | ")}` : ""}`);
     if (gateRan) {
       check("§7 a server-side land gate names ITSELF on /api/sessions while it runs — no ps, no lsof",
         !!gateRow && gateRow.origin === "server" && gateRow.slot === lnA.slot
@@ -498,22 +545,16 @@ export async function run(): Promise<void> {
     // --- (b) the POST-LAND AUDIT, which has no slot at all ---------------------------------------
     rmSync(FAILFLAG, { force: true }); // this lane's gate passes, so it lands, so tier 2 fires
     const lnB = await openLane(REPO, "gaterun-landed");
-    await settleForMerge(lnB.slot);
-    for (let i = 0; i < 8; i++) {
-      const r0 = await get(`/api/slots/${lnB.slot}/merge`);
-      if (r0.status === 400) break;
-      await post(`/api/slots/${lnB.slot}/merge`, {});
-      const r = await get(`/api/slots/${lnB.slot}/merge`);
-      if (r.status === 400) break;
-      const j = (await r.json()) as { running: boolean; last: unknown };
-      if (j.running || j.last !== null) break;
-      await Bun.sleep(400);
-      await settleForMerge(lnB.slot);
-    }
+    // Same shape, different goal: this section's precondition here is the LAND (see below), so the
+    // LAND is what gets driven — a merge that settles short of it buys another attempt instead of
+    // handing the assertions a run that was never scheduled. The audit row is deliberately NOT the
+    // goal; deriving the precondition from it is the circularity the comment below refuses.
+    const droveB = await driveMergeUntil(lnB.slot, (s) => !!s && (s.gone || s.last?.landed === true));
     const { row: auditRow } = await pollGate((r) => isServer(r) && r.slot === null);
     const vB = await waitMerge(lnB.slot);
     check("§7 fixture: lane B landed, so a tier-2 audit was actually scheduled",
-      vB.gone || vB.last?.landed === true, JSON.stringify(vB.last?.status ?? "gone"));
+      vB.gone || vB.last?.landed === true,
+      `${JSON.stringify(vB.last?.status ?? "gone")}${droveB.log.length ? ` · ${droveB.log.join(" | ")}` : ""}`);
     // the precondition here is the LAND, not the row: with tier 2 configured, a land that moves main
     // schedules an audit by construction. Deriving it from `auditRow` instead would be circular —
     // the row's own existence cannot be the evidence that there was something for it to report.

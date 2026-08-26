@@ -1379,3 +1379,48 @@ Geschichte samt aller vier Lehren:
   - **Die allgemeine Form, und sie gilt über Shell hinaus:** eine Datei, deren Ende abgeschnitten
     wird, ist oft noch syntaktisch gültig — dann verschwindet nicht das Ergebnis, sondern die
     ARBEIT, und übrig bleibt ein Erfolg. Wer eine Zeile am Dateiende ändert, prüft die Zeilenzahl.
+
+## 14. Der Remote-Helfer: Tier 2 auf einer zweiten Maschine (Stufe 1, 2026-08-26)
+
+Tier 2 ist der einzige Ort, an dem eine 5,6-Minuten-Suite leben kann (§6) — und genau darum ist er
+auch der einzige Ort, an dem das Auslagern auf eine zweite Maschine überhaupt etwas einbringt: die
+Arbeit blockiert niemanden, sie kostet nur die Maschine. Das Helfer-Portal ist die Tür dafür.
+
+**Die harte Invariante, in den Worten des Owners:** „es muss nur so aufgebaut sein dass wir am Ende
+wirklich Arbeit abnehmen, nicht dass irgendwas doppelt läuft". Drei Mechanismen tragen sie, und
+keiner verlässt sich darauf, dass die andere Maschine sich benimmt (`server.ts#handleHelperRoute`
+und die Nachbarfunktionen):
+
+- **Claim ⇒ der lokale Drain überspringt das Repo.** Die Auswahl des Drains
+  (`server.ts#drainPostLandAudits`) und das Schreiben des Claims sind je in EINEM Turn atomar; die
+  Gegenrichtung schließt `auditRunningRepo`, eine Marke, die synchron neben der Auswahl gesetzt
+  wird. Ein Claim auf einen Baum, den der Drain schon angefangen hat, ist 409 — und umgekehrt.
+- **Der Claim VERFÄLLT** (`FLEET_HELPER_CLAIM_TIMEOUT_MS`, Default 45 min). Abgelaufen zählt
+  überall sofort als abwesend (`helperClaimOf`), unabhängig davon, ob der Sweep
+  (`FLEET_HELPER_SWEEP_MS`) die Verfallszeile schon gebucht hat. Die Fehlerrichtung ist gewählt:
+  lieber einmal lokal zu viel als ein Baum, den niemand geprüft hat. Ein Ergebnis, das NACH dem
+  Verfall eintrifft, wird abgelehnt (409) — es würde sonst eine Zeile über einen Baum schreiben,
+  den diese Maschine gerade selbst prüft.
+- **Das Ergebnis ist eine Zeile auf DEMSELBEN Ledger** (`post-land-audits.jsonl`), markiert mit
+  `remote: {name, claimedAt, reportedAt, trail?}`. Kein zweites Trail: die Fragen, für die Tier 2
+  existiert („welches Land war das letzte grüne Audit"), sind Joins über EINE Datei. Die
+  Laufzeit-Verteilung nimmt eine Remote-Zeile bewusst NICHT auf (`auditCounts`) — ihre `ms` ist
+  Claim→Report auf fremder Hardware und beantwortet nicht die Frage, für die die Verteilung da ist.
+
+**Was ein Claim überlebt:** einen Server-Neustart. Das ist die tragende Hälfte, nicht Kosmetik — das
+Deploy-Ritual hier ist land-dann-`kill-session -t srv`, ~10×/Tag; ein nur im Speicher lebender Claim
+würde von der routiniertesten Handlung dieser Maschine gelöscht, der Boot-Drain nähme den Baum, und
+der Helfer meldete in eine Fleet, die längst selbst geprüft hat. Claims, Verfallszeilen und
+Gerätenamen liegen deshalb in `fleet.json`.
+
+**Nicht-Ziele Stufe 1 (Owner):** kein Auto-Dispatch (der Server weist nichts zu — ein Mensch klickt),
+kein ssh-Runner, kein `git push`. Transport ist ein `git bundle`, EINMAL beim Claim gebaut; der SHA,
+den der Claim festhält, wird aus dem Bundle-Header gelesen statt separat aufgelöst, damit „was der
+Claim nennt" und „was der Helfer bekommen hat" derselbe Baum sind.
+
+**Beweis:** `e2e/helper-portal.ts`, Abschnitt (K) in `./e2e-postland-audit.sh` — die einzige Suite,
+die mit gesetztem `FLEET_POSTLAND_AUDIT_CMD` bootet und deshalb überhaupt eine Queue hat, aus der
+etwas beansprucht werden könnte. Die Fixtur, ohne die keine dieser Prüfungen existieren kann, ist ein
+ZWEITES Repo: eine wartende Zeile bei leerlaufendem Drain gibt es nicht — der Drain startet auf dem
+Land, das sie einreiht —, ein beanspruchbarer Job braucht also einen Drain, der anderswo beschäftigt
+ist.

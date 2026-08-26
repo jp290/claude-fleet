@@ -210,6 +210,19 @@ const STEWARD_ROUTES = [
   String.raw`~ /^\/api\/steward\/slots\/(\d+)\/transcript$/`,
 ];
 
+// …and the SECOND scoped principal's, added 2026-08-26 with the remote helper portal. Same rule,
+// same reason: `handleHelperRoute` sits above the owner gate, so its route set is pre-auth surface
+// and a new entry here is a security decision. What the portal's token buys is bounded to exactly
+// these six: read the queue, name this device, take one job, fetch its bundle, report its verdict.
+// `/api/helper/token` is deliberately ABSENT — reading the credential is the owner's act and lives
+// below the owner gate, and the handler's own guard regex leaves it out.
+const HELPER_ROUTES = [
+  String.raw`~ /^\/(helper|api\/helper\/(jobs|device|claim|result|bundle\/[0-9a-f]{12}))$/`,
+  "= /helper", "= /api/helper/jobs", "= /api/helper/device",
+  "= /api/helper/claim", "= /api/helper/result",
+  String.raw`~ /^\/api\/helper\/bundle\/([0-9a-f]{12})$/`,
+];
+
 const LITERAL = /url\.pathname === "([^"]+)"/g;
 const REGEXP = /(\/\^[^\n]*?\/)\.(?:exec|test)\(url\.pathname\)/g;
 const routeSet = (src: string): string[] => [...new Set([
@@ -369,6 +382,26 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   // chain below it. If this `?? json(…403)` ever becomes a fallthrough, every owner route opens.
   check("§1 the steward gate ends in a default-deny (an unmatched path 403s, never falls through)",
     /const r = await handleStewardRoute\(req, url\);\s*\n\s*return r \?\? json\(\{ error: "steward token: route not in scope" \}, 403\);/.test(src));
+  // the helper principal, held to the same three properties as the steward's. The FIRST of them is
+  // the load-bearing one for this handler in particular: its guard is a regex rather than a
+  // `startsWith` prefix precisely so the extractor below can see what it opens — a prefix would have
+  // been a working pre-auth surface this whole section is blind to.
+  const helpSrc = src.slice(src.indexOf("async function handleHelperRoute"), src.indexOf("// --- ADJUDICATION"));
+  const helpStray = unrecognized(helpSrc);
+  const helpAlias = pathAliases(helpSrc);
+  const helpFound = routeSet(helpSrc);
+  check("§1 the helper principal's route set equals the reviewed allowlist, in a form the extractor reads",
+    helpSrc.length > 500 && helpStray.length === 0 && helpAlias.length === 0
+      && helpFound.join("\n") === [...HELPER_ROUTES].sort().join("\n"),
+    `slice=${helpSrc.length} stray: [${helpStray.join(" | ")}] alias: [${helpAlias.join(" | ")}] unexpected: [${helpFound.filter((r) => !HELPER_ROUTES.includes(r)).join(", ")}] missing: [${HELPER_ROUTES.filter((r) => !helpFound.includes(r)).join(", ")}]`);
+  // …and its two ends. It must AUTHENTICATE before it does anything (the guard regex is the only
+  // thing above that line), and an unmatched path inside it must 403 rather than reach the owner
+  // chain. The dispatch in fetch() returns only a non-null answer, so the second half is what stops
+  // a helper path from ever falling through.
+  check("§1 the helper gate authenticates before every route and default-denies an unmatched path",
+    /return null;\n\s*if \(!\(await helperAuthed\(req, url\)\)\) return json\(\{ error: "unauthorized" \}, 401\);/.test(helpSrc)
+      && /return json\(\{ error: "helper token: route not in scope" \}, 403\);\n\}/.test(helpSrc),
+    `authFirst=${/return null;\n\s*if \(!\(await helperAuthed/.test(helpSrc)} deny=${/route not in scope" \}, 403\);\n\}/.test(helpSrc)}`);
 
   // ===== §2 the non-owner principals × the dangerous owner surface =====
   const sess = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] };

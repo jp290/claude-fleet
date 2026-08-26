@@ -3361,6 +3361,13 @@ type AuditEvent =
   // recovered (note + undo record + tier-2 audit written late) or unaccountable (audited, dropped)
   | "land_recovered" | "land_recover_fail"
   | "postland_audit"
+  // THE REMOTE HELPER PORTAL (stage 1). Three events, and each names a boundary the local machine
+  // cannot otherwise account for: a job LEFT this machine, a job CAME BACK with a verdict, and a
+  // claim DIED without one. The third is the load-bearing one — a helper that vanishes must be a
+  // recorded lapse and a job that falls back to the local drain, never a silent green and never a
+  // job nobody ever runs again.
+  | "helper_claim" | "helper_result" | "helper_claim_expired"
+  | "helper_auth_fail"
   // the deploy verb (Verb 2): one row when a build fails, one when a restart is launched, one when
   // the NEXT BOOT judges it. The trio is what makes "was the deploy verified?" answerable at all —
   // the verb kills the process that would otherwise report its own result.
@@ -3518,7 +3525,9 @@ function saveState(): void {
   for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
-  const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, watches,
+  const body = JSON.stringify({ token: persistedToken, stewardToken, helperToken,
+    helperClaims: Object.fromEntries(helperClaims), helperLapses, helperDevices: [...helperDevices.values()],
+    slots: active, recents, pins, shares, autos, watches,
     events: fleetEvents, clarifications, fleetReports, attentionRequests, tasks, programs, supervisor,
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
@@ -11657,6 +11666,10 @@ interface PostLandAuditRow {
   out: string;         // byte-capped TAIL of stdout+stderr (the failing lines of a suite are at its end)
   checks: PostLandAuditChecks | null; // null = output was incomplete/inconsistent, NEVER an invented zero
   covers: AuditCover[];
+  // Present ONLY on a row a remote helper produced (see THE REMOTE HELPER PORTAL). Its absence is
+  // the statement "this machine measured it itself" — which is why the field is optional rather
+  // than a nullable one every historical row would suddenly claim to have answered.
+  remote?: { name: string; claimedAt: number; reportedAt: number; trail?: string };
 }
 // the newest row, for the board. In memory for the poll path, but REHYDRATED from the trail at boot
 // (see the boot block): a red audit is typically followed within minutes by the deploy that restarts
@@ -11678,6 +11691,81 @@ let auditDraining = false;
 // known yet. Reporting "" there would be a claim; null is the absence of one.
 interface RunningAudit { repo: string; main: string; mainSha: string | null; covers: AuditCover[]; startedAt: number }
 let runningPostLandAudit: RunningAudit | null = null;
+// The repo the drain has COMMITTED to, marked synchronously in the same turn as the selection that
+// picked it and cleared in the same turn that consumes its covers. `runningPostLandAudit` is nearly
+// this fact but is stamped one `await` too late (inside runPostLandAudit, behind reportServerRun),
+// and that gap is exactly where a remote claim could slip in and make two machines run one tree.
+// This exists so "who owns this repo's audit right now" has an answer with NO interleaving point.
+let auditRunningRepo: string | null = null;
+
+// --- THE REMOTE HELPER PORTAL (stage 1) --------------------------------------------------------
+// A second machine takes a tier-2 audit off this one. The whole design is one invariant, stated by
+// the owner and enforced here rather than promised: WORK IS TAKEN OVER, NEVER DUPLICATED AND NEVER
+// LOST. Three mechanisms carry it, and none of them relies on the remote machine behaving:
+//   · a CLAIM makes the local drain skip that repo — the drain's selection and the claim's write
+//     are each atomic within their own turn, and `auditRunningRepo` closes the other direction;
+//   · a claim EXPIRES. A helper that is unplugged, sleeps, or simply loses interest cannot park a
+//     job forever: past `expiresAt` the claim counts as absent everywhere (helperClaimOf), so the
+//     job falls back to the local drain even if the sweep that books the lapse is late. The failure
+//     direction is chosen: too much local work, never a tree nobody audited.
+//   · a RESULT is a row on the SAME ledger, marked `remote`. Not a second trail — the questions
+//     tier 2 exists to answer ("which land was the last green audit") are joins over one file, and
+//     a second file would silently answer them wrong.
+// What this is NOT (stage 1, owner's non-goals): no auto-dispatch — the server assigns nothing, a
+// human on the other machine clicks claim; no ssh runner; no push. The transport is a git bundle
+// over the same authenticated HTTP surface the board already is.
+// 45 minutes by default — the owner's number, and the right order of magnitude: a full
+// ./e2e-isolated.sh takes 5.8–9.8 min, plus a clone, an install and a human noticing. The floor is
+// a typo guard (a `0` or a NaN would make every claim dead on arrival), not a policy: the harness
+// runs this rail at a few seconds, because the property under test is the FALLBACK, not the wait.
+const HELPER_CLAIM_TIMEOUT_MS = Math.max(5_000, Number(process.env.FLEET_HELPER_CLAIM_TIMEOUT_MS ?? 2_700_000) | 0);
+const HELPER_SWEEP_MS = Math.max(500, Number(process.env.FLEET_HELPER_SWEEP_MS ?? 15_000) | 0);
+const HELPER_LAPSE_KEEP = 20;      // enough to see a flaky helper as a pattern, not a history
+const HELPER_DEVICE_KEEP = 20;     // ...and the same for the names devices gave themselves
+const HELPER_TAIL_CAP = 4096;      // same byte budget the local audit's `out` gets
+const HELPER_BUNDLE_DIR = `${tmpdir()}/fleet-helper-bundles`;
+// The bundle is built ONCE, AT CLAIM TIME, and the sha the claim records is parsed out of the
+// bundle's own header — not from a separate `rev-parse`. A second resolution would be a second
+// moment, and main can move between two moments: the claim would then name a tree the helper never
+// received. Here the recorded sha is the bundled tree by construction.
+interface HelperClaim {
+  id: string;            // the job id the portal shows — derived from the repo, stable across boots
+  repo: string;          // git toplevel (never sent to the portal: the wire carries basename only)
+  main: string;
+  mainSha: string;       // read out of the bundle header — provably the tree that was handed over
+  deviceId: string;
+  name: string;          // the device's own name, as it set it here
+  claimedAt: number;
+  expiresAt: number;
+  covers: AuditCover[];  // FROZEN at claim, exactly as the drain freezes its slice
+  bundle: string;        // path of the bundle file this claim handed out
+}
+const helperClaims = new Map<string, HelperClaim>(); // repo toplevel -> the live claim on it
+// A lapse is a FACT about this fleet, not a note in a log: it says a job was promised to a machine
+// that never answered. Kept bounded and served on the portal so the owner can see a helper that
+// keeps taking jobs it does not finish.
+interface HelperLapse { id: string; repo: string; name: string; claimedAt: number; expiredAt: number; covers: number }
+let helperLapses: HelperLapse[] = [];
+// The device name is stored SERVER-SIDE on the owner's instruction: a name that lived only in the
+// helper's browser would vanish with a cleared cache, and every past ledger row would then point at
+// a machine nobody could name any more.
+interface HelperDevice { id: string; name: string; lastSeen: number }
+const helperDevices = new Map<string, HelperDevice>();
+// The portal's own credential. Server-minted and persisted like the steward's, and deliberately
+// NEITHER the owner token (which opens the whole board) NOR a slot's self token (which is scoped to
+// one pane and rotates under it). Scope is by POSITION, the same model the steward token uses: the
+// handler below is the only thing this token can reach.
+let helperToken: string | null = null;
+const helperJobId = (repo: string): string => createHash("sha256").update(repo).digest("hex").slice(0, 12);
+// EXPIRED COUNTS AS ABSENT, everywhere, without waiting for the sweep. The sweep books the lapse and
+// frees the bundle; this decides who may work. Splitting them that way is what makes a late or dead
+// sweep harmless: the worst case is a job the local drain picks up while a stale row still sits in
+// the map, and that row can never make a second machine run the same tree, because every claim path
+// goes through here too.
+function helperClaimOf(repo: string): HelperClaim | null {
+  const c = helperClaims.get(repo);
+  return c && Date.now() < c.expiresAt ? c : null;
+}
 // The RUNTIME DISTRIBUTION, per repo — the half that turns the elapsed number into an answer. "This
 // audit has run 4:12" does not tell the owner whether to keep waiting or start looking for a wedge;
 // "4:12, and p50 here is 8:18" does. Derived from the same ledger the view already owns, so this is
@@ -11700,6 +11788,11 @@ const AUDIT_DURATION_MIN_N = 3;    // below this, say NOTHING: two samples are a
 //   · PERCENTILES, never a mean, for the residual this filter cannot catch: a run killed in a way
 //     that leaves an ordinary exit code still lands in the sample, and a percentile absorbs it.
 function auditCounts(row: PostLandAuditRow): boolean {
+  // A REMOTE ROW IS NEVER A SAMPLE OF THIS MACHINE'S COST. Its `ms` is claim→report wall clock on
+  // somebody else's hardware, with a human's coffee break inside it — the same class of number as
+  // the 16 s kill above, and it would poison the same distribution, which exists to answer "should
+  // I keep waiting for the audit running HERE". The row still lands on the ledger in full.
+  if (row.remote) return false;
   if (row.result !== "green" && row.result !== "red") return false;
   if (row.exitCode !== null && row.exitCode > 128 && row.exitCode <= 165) return false;
   return typeof row.ms === "number" && row.ms > 0;
@@ -11771,7 +11864,18 @@ async function drainPostLandAudits(): Promise<void> {
     // one repo at a time, and one run at a time across ALL repos: the audit's payload boots a server
     // and drives tmux, so parallelism here buys latency and pays in load and cross-talk.
     while (auditQueue.size) {
-      const [repo, q] = [...auditQueue.entries()][0];
+      // ...and one repo at a time SKIPPING the ones a remote helper holds. `find`, not `[0]`, and
+      // the `break` under it is the load-bearing half: with `continue` a queue whose every entry is
+      // claimed would spin this loop at full speed forever. Breaking leaves the entries exactly
+      // where they are — a claim that lapses, or a result that arrives, calls kickAuditDrain and
+      // this loop starts again. Nothing is dropped by not running it now.
+      const entry = [...auditQueue.entries()].find(([r]) => !helperClaimOf(r));
+      if (!entry) break;
+      const [repo, q] = entry;
+      // THE SELECTION AND THIS MARK ARE ONE TURN — no `await` sits between them. That is what makes
+      // "the drain committed to this repo" observable by the claim route with no window in which
+      // both sides believe they won (see auditRunningRepo).
+      auditRunningRepo = repo;
       // FROZEN before the run, not deleted: the covers this run stands for are exactly the ones
       // queued now, while a land that arrives DURING the suite appends to the same entry and must
       // be folded into the next run (the coalescing contract above) rather than retired by this
@@ -11796,6 +11900,7 @@ async function drainPostLandAudits(): Promise<void> {
       // direction is chosen: a duplicate row is visible and cheap, a silent miss is the bug.
       q.covers.splice(0, covers.length);
       if (!q.covers.length) auditQueue.delete(repo);
+      auditRunningRepo = null; // same synchronous block that consumes the covers — see the mark above
       savePostLandAuditQueue();
     }
   } finally {
@@ -11804,6 +11909,9 @@ async function drainPostLandAudits(): Promise<void> {
     // nothing would ever drain, and that land's audit would simply never happen. Here no other
     // microtask can interleave — the loop's failing condition and this line are one turn.
     auditDraining = false;
+    // ...and the commit mark, for the exits the line inside the loop cannot reach (a throw, and the
+    // `break` above). Leaving it set would make every later claim on that repo a 409 forever.
+    auditRunningRepo = null;
     // ...and the same turn ends the in-flight view. This is the ONLY place it is cleared, which is
     // what makes it total: whether the loop ended normally, on an empty queue, or by a throw, no
     // record can survive the drain that owns it. Between iterations there is nothing to clear —
@@ -12054,6 +12162,282 @@ function postLandAuditLiveView(): PostLandAuditLiveInfo | null {
       : null;
   if (!running && !waiting.length) return null;
   return { running, waiting, stats: r ? auditStats(r.repo) : null };
+}
+
+// --- THE REMOTE HELPER PORTAL: the moving parts ------------------------------------------------
+// Ordered the way the job moves: expire → kick → claim (bundle) → download → result.
+
+// The lapse sweep. It books what helperClaimOf already decided — that is the split, and it is the
+// reason a dead or slow sweep cannot strand a job: the DECISION is time, the BOOKKEEPING is this.
+// Returns whether anything changed, so the caller pays for a state write only when there is one.
+function expireHelperClaims(): boolean {
+  const now = Date.now();
+  let changed = false;
+  for (const [repo, c] of [...helperClaims]) {
+    if (now < c.expiresAt) continue;
+    helperClaims.delete(repo);
+    helperLapses = [{ id: c.id, repo, name: c.name, claimedAt: c.claimedAt, expiredAt: now, covers: c.covers.length },
+      ...helperLapses].slice(0, HELPER_LAPSE_KEEP);
+    try { rmSync(c.bundle, { force: true }); } catch { /* already gone — the claim is what mattered */ }
+    audit("helper_claim_expired", undefined,
+      `${c.name} held ${basename(repo)} ${c.main}@${c.mainSha.slice(0, 8)} for ${Math.round((now - c.claimedAt) / 1000)}s`
+      + ` without a result — ${c.covers.length} land(s) fall back to the local drain`);
+    changed = true;
+  }
+  return changed;
+}
+// The one way anything OUTSIDE the land path restarts the drain. `schedulePostLandAudit` owns the
+// land path's own kick; this is for the two moments a job becomes drainable again without a land:
+// a claim lapsed, or a helper reported and left a fresh cover behind.
+function kickAuditDrain(): void {
+  if (!POSTLAND_AUDIT_CMD || auditDraining || !auditQueue.size) return;
+  auditDraining = true;
+  void drainPostLandAudits();
+}
+// A device names ITSELF, and the name is kept here rather than in the helper's browser (owner's
+// instruction): a ledger row two weeks old must still be able to say which machine produced it,
+// and a cleared cache on the other side must not erase that.
+function helperDeviceName(deviceId: string): string {
+  return helperDevices.get(deviceId)?.name ?? "unnamed device";
+}
+function setHelperDevice(deviceId: string, name: string): HelperDevice {
+  const d: HelperDevice = { id: deviceId, name, lastSeen: Date.now() };
+  helperDevices.delete(deviceId);
+  helperDevices.set(deviceId, d); // re-inserted at the tail, so iteration order is oldest-first
+  // eviction never touches a LIVE claimant: a name is worth keeping exactly as long as something
+  // can still point at it.
+  for (const [k] of helperDevices) {
+    if (helperDevices.size <= HELPER_DEVICE_KEEP) break;
+    if (k === deviceId || [...helperClaims.values()].some((c) => c.deviceId === k)) continue;
+    helperDevices.delete(k);
+  }
+  return d;
+}
+// Build the bundle and read the sha back OUT of it. Both halves matter: `git bundle create` with a
+// branch name produces a bundle a plain `git clone` can consume (verified — the clone checks out
+// that branch), and its header's second line names the exact object it packed, so the claim never
+// has to guess which tree it handed over. Positional args to git, never a shell string — the repo
+// path is the owner's and may carry spaces.
+async function buildHelperBundle(repo: string, main: string, file: string): Promise<{ sha: string } | { error: string }> {
+  try { mkdirSync(HELPER_BUNDLE_DIR, { recursive: true }); chmodSync(HELPER_BUNDLE_DIR, 0o700); }
+  catch (e) { return { error: `could not create the bundle dir: ${e instanceof Error ? e.message : "mkdir failed"}` }; }
+  const p = Bun.spawn(["git", "-C", repo, "bundle", "create", file, main],
+    { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+  const err = await new Response(p.stderr).text();
+  await new Response(p.stdout).text();
+  if ((await p.exited) !== 0) return { error: `git bundle failed: ${err.trim().slice(0, 200)}` };
+  let head = "";
+  try {
+    const fd = openSync(file, "r");
+    const buf = Buffer.alloc(4096);
+    try { head = buf.subarray(0, readSync(fd, buf, 0, 4096, 0)).toString("utf8"); } finally { closeSync(fd); }
+  } catch (e) { return { error: `bundle unreadable: ${e instanceof Error ? e.message : "read failed"}` }; }
+  const escaped = main.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = new RegExp(`^([0-9a-f]{40}) refs/heads/${escaped}$`, "m").exec(head);
+  if (!m) return { error: `the bundle names no ${main} tip — nothing to hand over` };
+  return { sha: m[1]! };
+}
+// What the portal shows. Repo PATHS never cross this line — a basename is enough to recognize the
+// job and it is all the other machine needs; the id is what every write refers to.
+interface HelperJobView {
+  id: string; repo: string; main: string; branches: string[]; covers: number; oldestAt: number;
+  claim: { name: string; claimedAt: number; expiresAt: number } | null; localRunning: boolean;
+}
+function helperJobsView(): {
+  claimTimeoutMs: number; configured: boolean; jobs: HelperJobView[];
+  lapsed: HelperLapse[];
+} {
+  const jobs: HelperJobView[] = [];
+  for (const [repo, q] of auditQueue) {
+    if (!q.covers.length) continue;
+    const c = helperClaimOf(repo);
+    jobs.push({
+      id: helperJobId(repo), repo: basename(repo), main: q.main,
+      branches: q.covers.map((x) => x.branch).slice(0, 10),
+      covers: q.covers.length,
+      oldestAt: Math.min(...q.covers.map((x) => x.at)),
+      claim: c ? { name: c.name, claimedAt: c.claimedAt, expiresAt: c.expiresAt } : null,
+      localRunning: auditRunningRepo === repo || runningPostLandAudit?.repo === repo,
+    });
+  }
+  return { claimTimeoutMs: HELPER_CLAIM_TIMEOUT_MS, configured: !!POSTLAND_AUDIT_CMD, jobs,
+    lapsed: helperLapses.map((l) => ({ ...l, repo: basename(l.repo) })) };
+}
+// The claim. Every refusal below is a REFUSAL TO DUPLICATE WORK — that is the whole function, and
+// the 409s are the feature the owner asked for, not error handling around it.
+async function helperClaim(body: Record<string, unknown> | null): Promise<Response> {
+  const jobId = typeof body?.jobId === "string" ? body.jobId : "";
+  const deviceId = typeof body?.deviceId === "string" ? body.deviceId : "";
+  if (!/^[a-f0-9]{12}$/.test(jobId)) return json({ error: "expected jobId" }, 400);
+  if (!/^[a-z0-9]{8,32}$/.test(deviceId)) return json({ error: "expected deviceId" }, 400);
+  expireHelperClaims();
+  const hit = [...auditQueue.entries()].find(([r, q]) => helperJobId(r) === jobId && q.covers.length);
+  if (!hit) return json({ error: "no such open audit job — it may already have been audited" }, 404);
+  const [repo, q] = hit;
+  // …the two ways this tree could already be somebody's work. Reported apart, not merged: they are
+  // different facts, and the helper deserves to know which one it hit.
+  const held = helperClaimOf(repo);
+  if (held) return json({ error: `already claimed by ${held.name} — it expires ${new Date(held.expiresAt).toISOString()}` }, 409);
+  if (auditRunningRepo === repo || runningPostLandAudit?.repo === repo)
+    return json({ error: "the local drain is already auditing this tree — nothing to take over" }, 409);
+  const id = helperJobId(repo);
+  const file = `${HELPER_BUNDLE_DIR}/${id}-${randomBytes(4).toString("hex")}.bundle`;
+  const built = await buildHelperBundle(repo, q.main, file);
+  if ("error" in built) {
+    try { rmSync(file, { force: true }); } catch { /* never written */ }
+    return json({ error: built.error }, 500);
+  }
+  // RE-CHECKED after the await. Bundling takes seconds, and the drain may have committed to this
+  // repo meanwhile — the mark is what makes that visible, and throwing a bundle away is cheaper
+  // than the duplicate run the alternative would authorize.
+  if (helperClaimOf(repo) || auditRunningRepo === repo || runningPostLandAudit?.repo === repo) {
+    try { rmSync(file, { force: true }); } catch { /* nothing to clean */ }
+    return json({ error: "the tree was taken while the bundle was being built — try again" }, 409);
+  }
+  const now = Date.now();
+  const claim: HelperClaim = {
+    id, repo, main: q.main, mainSha: built.sha, deviceId, name: helperDeviceName(deviceId),
+    claimedAt: now, expiresAt: now + HELPER_CLAIM_TIMEOUT_MS, covers: q.covers.slice(), bundle: file,
+  };
+  helperClaims.set(repo, claim);
+  if (helperDevices.has(deviceId)) setHelperDevice(deviceId, claim.name); // touch lastSeen
+  audit("helper_claim", undefined,
+    `${claim.name} claimed ${basename(repo)} ${q.main}@${built.sha.slice(0, 8)} (${claim.covers.length} land(s))`);
+  await saveStateNow();
+  return json({ job: { id, repo: basename(repo), main: q.main, mainSha: built.sha,
+    branches: claim.covers.map((c) => c.branch), covers: claim.covers.length,
+    claimedAt: now, expiresAt: claim.expiresAt, name: claim.name } });
+}
+// The result. Same classification as the local run's (runPostLandAudit), on purpose: a remote green
+// and a local green must mean the same thing, or the ledger's joins stop being answerable. The one
+// added `unknown` is "the helper sent no exit code at all", which is the same class of fact as a
+// timeout — a non-measurement, never a red.
+async function helperResult(body: Record<string, unknown> | null): Promise<Response> {
+  const jobId = typeof body?.jobId === "string" ? body.jobId : "";
+  if (!/^[a-f0-9]{12}$/.test(jobId)) return json({ error: "expected jobId" }, 400);
+  expireHelperClaims();
+  const hit = [...helperClaims.entries()].find(([r, c]) => c.id === jobId && helperClaimOf(r));
+  // A LAPSED CLAIM IS REFUSED, deliberately: past the timeout the job belongs to the local drain
+  // again, so accepting a late verdict would write a row about a tree this machine may be auditing
+  // right now — the exact double-count the timeout exists to prevent.
+  if (!hit) return json({ error: "no live claim for this job — it lapsed or was already reported" }, 409);
+  const [repo, claim] = hit;
+  const rawExit = body?.exitCode;
+  const exitCode = typeof rawExit === "number" && Number.isFinite(rawExit) ? Math.trunc(rawExit) : null;
+  const tail = retainRunOutput(typeof body?.tail === "string" ? body.tail : "", "", HELPER_TAIL_CAP).trim();
+  const trail = typeof body?.trail === "string" && body.trail.trim() ? body.trail.trim().slice(0, 120) : undefined;
+  let result: PostLandAuditRow["result"] = "unknown";
+  let reason: string | undefined = "the helper reported no exit code — no verdict";
+  if (exitCode === VERIFY_SKIP_EXIT) reason = `the audit command declined to run (exit ${VERIFY_SKIP_EXIT})`;
+  else if (exitCode === 126 || exitCode === 127) reason = `the audit command could not be started (exit ${exitCode})`;
+  else if (exitCode === 0) { result = "green"; reason = undefined; }
+  else if (exitCode !== null) { result = "red"; reason = undefined; }
+  const measured = exitCode !== null && exitCode !== VERIFY_SKIP_EXIT && exitCode !== 126 && exitCode !== 127;
+  const now = Date.now();
+  const row: PostLandAuditRow = {
+    at: now, startedAt: claim.claimedAt, ms: now - claim.claimedAt,
+    repo, main: claim.main, mainSha: claim.mainSha, result, ...(reason ? { reason } : {}),
+    // the command is named as the REMOTE one it was: nothing on this machine ran, and a row quoting
+    // FLEET_POSTLAND_AUDIT_CMD would be claiming otherwise
+    cmd: `remote helper (${claim.name}): ./e2e-isolated.sh`,
+    exitCode, out: tail, checks: measured ? postLandAuditChecks(tail, exitCode) : null,
+    covers: claim.covers,
+    remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now, ...(trail ? { trail } : {}) },
+  };
+  lastPostLandAudit = row;
+  recordAuditDuration(row); // a no-op for a remote row by contract — see auditCounts
+  // consume by IDENTITY, not by position: the drain may splice its own head off a shared entry
+  // because it holds the machine for the whole run, while this one competes with lands that arrived
+  // during a 45-minute claim — a positional splice would retire the wrong covers.
+  const q = auditQueue.get(repo);
+  if (q) {
+    const frozen = new Set(claim.covers);
+    const rest = q.covers.filter((c) => !frozen.has(c));
+    q.covers.length = 0;
+    q.covers.push(...rest);
+    if (!q.covers.length) auditQueue.delete(repo);
+    savePostLandAuditQueue();
+  }
+  helperClaims.delete(repo);
+  try { rmSync(claim.bundle, { force: true }); } catch { /* the helper has its copy */ }
+  await appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
+  await mintAuditEvents(row);
+  audit("helper_result", undefined,
+    `${result} ${basename(repo)} ${claim.main}@${claim.mainSha.slice(0, 8)} from ${claim.name}`
+    + `${trail ? ` [${trail}]` : ""}${reason ? ` — ${reason}` : ""}`.slice(0, 240));
+  if (result !== "green")
+    console.log(`POST-LAND AUDIT ${result.toUpperCase()} (remote, ${claim.name}): ${claim.main}@${claim.mainSha.slice(0, 8)}`
+      + ` in ${basename(repo)} after landing ${claim.covers.map((c) => c.branch).join(", ").slice(0, 120)}`
+      + `${reason ? ` (${reason})` : ""} — this audit gates nothing; ↩ undo-land is the rollback.`);
+  await saveStateNow();
+  kickAuditDrain(); // a land that arrived during the claim is drainable again this instant
+  return json({ ok: true, result, ...(reason ? { reason } : {}) });
+}
+// The portal's own gate. The owner's own credential opens it too — checked FIRST and synchronously,
+// so opening the page from the board costs nothing — and every other credential pays the same flat
+// 400 ms the owner gate pays, with no escalating lockout for the same reason it has none.
+async function helperAuthed(req: Request, url: URL): Promise<boolean> {
+  const given = req.headers.get("x-fleet-helper-token") ?? url.searchParams.get("token") ?? tokenFrom(req) ?? "";
+  if (given && tokenOk(given)) return true;
+  if (given && helperToken && secretEq(given, helperToken)) return true;
+  await Bun.sleep(400);
+  audit("helper_auth_fail"); // never the attempted token itself
+  return false;
+}
+// Scope by POSITION, exactly the steward token's model: this handler is the only surface the helper
+// token can reach, and it returns null for every path that is not its own, so the owner's routes
+// below are untouched by its existence.
+async function handleHelperRoute(req: Request, url: URL): Promise<Response | null> {
+  // ONE regex NAMES the whole pre-auth surface this principal has, and it is written this way on
+  // purpose: e2e/security.ts §1 pins the route set of every pre-owner-gate handler by extracting it
+  // from the source, and it reads exactly two spellings: an equality against the pathname, and a
+  // regex literal tested against it. A
+  // `startsWith` prefix would be a working route the perimeter pin is structurally blind to — which
+  // is the exact failure that pin exists to prevent. It also settles /api/helper/token by leaving it
+  // OUT: reading the portal's credential is the OWNER's act and lives below the owner gate, beside
+  // /api/steward/token. A prefix guard would have swallowed it and answered the owner 403.
+  if (!/^\/(helper|api\/helper\/(jobs|device|claim|result|bundle\/[0-9a-f]{12}))$/.test(url.pathname)) return null;
+  if (!(await helperAuthed(req, url))) return json({ error: "unauthorized" }, 401);
+  if (url.pathname === "/helper" && req.method === "GET")
+    return new Response(Bun.file(`${import.meta.dir}/public/helper.html`), {
+      headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+    });
+  if (url.pathname === "/api/helper/jobs" && req.method === "GET") {
+    expireHelperClaims();
+    const deviceId = url.searchParams.get("deviceId") ?? "";
+    const device = /^[a-z0-9]{8,32}$/.test(deviceId) ? helperDevices.get(deviceId) ?? null : null;
+    return json({ ...helperJobsView(), device });
+  }
+  if (url.pathname === "/api/helper/device" && req.method === "POST") {
+    const body = await readJson(req);
+    const deviceId = typeof body?.deviceId === "string" ? body.deviceId : "";
+    const raw = typeof body?.name === "string" ? body.name : "";
+    // printable-only and short: this string ends up in a ledger row, a console line and an audit
+    // detail, and none of those wants a newline the other machine chose.
+    const name = [...raw.trim()].filter((ch) => ch >= " " && ch !== "\u007f").join("").slice(0, 40).trim();
+    if (!/^[a-z0-9]{8,32}$/.test(deviceId)) return json({ error: "expected deviceId" }, 400);
+    if (!name) return json({ error: "expected a name" }, 400);
+    const d = setHelperDevice(deviceId, name);
+    await saveStateNow();
+    return json({ device: d });
+  }
+  if (url.pathname === "/api/helper/claim" && req.method === "POST") return await helperClaim(await readJson(req));
+  if (url.pathname === "/api/helper/result" && req.method === "POST") return await helperResult(await readJson(req));
+  const bundle = /^\/api\/helper\/bundle\/([0-9a-f]{12})$/.exec(url.pathname);
+  if (bundle && req.method === "GET") {
+    expireHelperClaims();
+    // served off the LIVE claim only. A bundle whose claim lapsed belongs to a job that is the local
+    // drain's again, and handing it out would invite exactly the second run this rail exists to
+    // prevent.
+    const claim = [...helperClaims.entries()].find(([r, c]) => c.id === bundle[1] && helperClaimOf(r))?.[1];
+    if (!claim) return json({ error: "no live claim for this job" }, 409);
+    if (!existsSync(claim.bundle)) return json({ error: "the bundle is gone — let the claim lapse and take it again" }, 410);
+    return new Response(Bun.file(claim.bundle), {
+      headers: { "content-type": "application/octet-stream", "cache-control": "no-store",
+        "content-disposition": `attachment; filename="${claim.id}-${claim.mainSha.slice(0, 8)}.bundle"` },
+    });
+  }
+  return json({ error: "helper token: route not in scope" }, 403);
 }
 
 // --- ADJUDICATION: a red audit must be able to say that somebody LOOKED AT IT --------------------
@@ -16210,6 +16594,26 @@ if (existsSync(STATE_FILE)) {
     if (typeof persisted.token === "string") persistedToken = persisted.token;
     if (typeof (persisted as { stewardToken?: unknown }).stewardToken === "string")
       stewardToken = (persisted as { stewardToken: string }).stewardToken;
+    if (typeof (persisted as { helperToken?: unknown }).helperToken === "string")
+      helperToken = (persisted as { helperToken: string }).helperToken;
+    // A CLAIM MUST SURVIVE A RESTART, and this is the load-bearing half of the whole rail. The
+    // deploy ritual here is land-then-`kill-session -t srv`, ~10× a day: a claim that lived only in
+    // memory would be erased by the most routine thing this machine does, the local drain would
+    // pick the tree up at boot, and a helper that is still running the suite would report into a
+    // fleet that had already audited it — a duplicate run, which is the one thing the owner named.
+    // An EXPIRED row restored here is harmless: helperClaimOf reads it as absent and the sweep books
+    // it at the next tick.
+    const persistedClaims = (persisted as { helperClaims?: unknown }).helperClaims;
+    if (persistedClaims && typeof persistedClaims === "object")
+      for (const [repo, c] of Object.entries(persistedClaims as Record<string, HelperClaim>))
+        if (c && typeof c.id === "string" && typeof c.expiresAt === "number" && Array.isArray(c.covers))
+          helperClaims.set(repo, c);
+    if (Array.isArray((persisted as { helperLapses?: unknown }).helperLapses))
+      helperLapses = ((persisted as { helperLapses: HelperLapse[] }).helperLapses)
+        .filter((l) => l && typeof l.id === "string" && typeof l.expiredAt === "number").slice(0, HELPER_LAPSE_KEEP);
+    if (Array.isArray((persisted as { helperDevices?: unknown }).helperDevices))
+      for (const d of (persisted as { helperDevices: HelperDevice[] }).helperDevices)
+        if (d && typeof d.id === "string" && typeof d.name === "string") helperDevices.set(d.id, d);
     if (Array.isArray((persisted as { autos?: unknown }).autos))
       autos = ((persisted as { autos: unknown[] }).autos).filter((x): x is Auto =>
         typeof x === "object" && x !== null
@@ -16689,6 +17093,7 @@ if (process.env.FLEET_TOKEN) {
   TOKEN = persistedToken;
 }
 if (!stewardToken) stewardToken = randomBytes(16).toString("hex"); // same width as selfToken
+if (!helperToken) helperToken = randomBytes(16).toString("hex"); // same width, same persistence
 const ls = await tmux("list-sessions", "-F", "#{session_name}");
 if (ls.code === 0) {
   for (const name of ls.out.split("\n")) {
@@ -16890,6 +17295,15 @@ if (ANALYSIS_ON) setInterval(() => void tickAnalysisSweep().catch((e: unknown) =
 // FLEET_ENHANCE_CMD stand-in MUST leave FLEET_BRIEF_MS at 0, or the suite spawns a real agent.
 if (BRIEF_ON) setInterval(() => void tickBriefSweep().catch((e: unknown) => logError("tickBriefSweep", e)), BRIEF_TICK_MS);
 setInterval(() => void tickHarvest().catch((e: unknown) => logError("tickHarvest", e)), 5000);
+// the helper-claim lapse sweep. Not on the 100 ms poll: a claim's granularity is 45 minutes, and
+// the DECISION whether a claim is live is already made by the clock (helperClaimOf) — this tick only
+// books the lapse, frees the bundle and restarts the drain, so being a few seconds late costs
+// nothing that matters.
+setInterval(() => {
+  if (!expireHelperClaims()) return;
+  void saveStateNow().catch((e: unknown) => logError("helperClaimSweep", e));
+  kickAuditDrain();
+}, HELPER_SWEEP_MS);
 // auto-③ on done-looking lanes (advisory; FLEET_AUTO_REVIEW_MS=0 turns the tick off entirely)
 if (AUTO_REVIEW_MS > 0) setInterval(() => void tickAutoReview().catch((e: unknown) => logError("tickAutoReview", e)), AUTO_REVIEW_MS);
 if (BACKLOG_NUDGE_MS > 0) setInterval(() => void tickBacklogNudge().catch((e: unknown) => logError("tickBacklogNudge", e)), BACKLOG_NUDGE_MS);
@@ -19374,6 +19788,17 @@ Bun.serve<WSData>({
       return r ?? json({ error: "steward token: route not in scope" }, 403);
     }
 
+    // helper principal (THE REMOTE HELPER PORTAL): same placement rationale as the steward block
+    // above — after the SHARE_HOSTS gate, so the portal is structurally unreachable from the public
+    // tunnel, and before the owner gate, so a helper token never falls through to it. Unlike the
+    // steward block this dispatches on the PATH first and only then checks the credential: the
+    // owner's own cookie must open /helper from the board, and a path-blind interception would have
+    // made every owner request pay this handler's auth.
+    {
+      const r = await handleHelperRoute(req, url);
+      if (r) return r;
+    }
+
     // login: /?token=… sets the cookie and redirects to a clean URL
     if (url.pathname === "/" && url.searchParams.has("token")) {
       if (!(await tokenGate(url.searchParams.get("token")))) return json({ error: "bad token" }, 401);
@@ -19942,6 +20367,11 @@ Bun.serve<WSData>({
     // pane's env (FLEET_STEWARD_TOKEN) by hand — same access model as /api/audit.
     if (url.pathname === "/api/steward/token" && req.method === "GET")
       return json({ token: stewardToken });
+    // ...and the helper portal's, same access model and same purpose: the owner reads it once and
+    // hands the other machine `http://<this box>/helper?token=…`. Never baked into a tracked file —
+    // this repo is public, and the host half of that URL is the owner's own to type.
+    if (url.pathname === "/api/helper/token" && req.method === "GET")
+      return json({ token: helperToken, claimTimeoutMs: HELPER_CLAIM_TIMEOUT_MS });
     // ✨ rework a compose-box draft. Runs in the focused slot's cwd so repo context
     // (CLAUDE.md etc.) rides along; the result replaces the box, never auto-sends.
     // The slot's deterministic git state rides along as a DATA block — the same briefPayload

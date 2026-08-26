@@ -23,6 +23,7 @@ import { spawnSync } from "node:child_process";
 // reasons too.
 import { BASE, check, failures, get, IP, paneEnv, plogRead, PORT, post, results, SOCK } from "./e2e/harness";
 import { driveMerge, openLane, seedRepo, settleForMerge, type Lane, type MergeVerdict } from "./e2e/lane-helpers";
+import * as helperPortal from "./e2e/helper-portal";
 
 // the stand-in suite's control + evidence files (both live next to this script, = the server's dir)
 const setAuditMode = (m: string): Promise<number> => Bun.write(`${import.meta.dir}/auditmode`, m);
@@ -152,11 +153,15 @@ const killSrv = async (): Promise<void> => {
   await Bun.spawn(["tmux", "-L", SOCK, "kill-session", "-t", "srv"]).exited;
   await Bun.sleep(500);
 };
-const startSrv = async (opts: { audit: boolean; auditPing?: boolean }): Promise<boolean> => {
+// `extra` is appended LAST and therefore wins over the inherited value — the same shape
+// e2e/harness.ts's restartSrv uses, and the way the helper-portal section boots one server with a
+// 10-minute claim timeout and the next with a few seconds without touching the wrapper.
+const startSrv = async (opts: { audit: boolean; auditPing?: boolean; extra?: Record<string, string> }): Promise<boolean> => {
   const env = ["FLEET_CMD", "FLEET_AUTO_REVIEW_MS", "FLEET_VERIFY_CMD", "FLEET_MERGE_CMD",
     "FLEET_CLEAN_REVIEW", "FLEET_CLEAN_REVIEW_CMD", "FLEET_POSTLAND_AUDIT_TIMEOUT_MS",
     ...(opts.audit ? ["FLEET_POSTLAND_AUDIT_CMD"] : [])]
-    .map((k) => envArg(k, process.env[k])).join("");
+    .map((k) => envArg(k, process.env[k])).join("")
+    + Object.entries(opts.extra ?? {}).map(([k, v]) => envArg(k, v)).join("");
   const pingEnv = opts.auditPing
     ? "FLEET_AUDIT_PING_MS=250 FLEET_BACKLOG_NUDGE_IDLE_MS=100 "
     : "FLEET_AUDIT_PING_MS=0 ";
@@ -919,6 +924,13 @@ check("(J) delivered stays delivered across restart and is still exactly once",
 check("(J) an already-adjudicated red is never pinged",
   !(await pingPrompts()).some((p) => p.text.includes(`at=${garbled.at}`) || p.text.includes(garbledLane.branch)),
   JSON.stringify((await pingPrompts()).map((p) => p.text.slice(0, 100))));
+
+// ===== (K) THE REMOTE HELPER PORTAL =============================================================
+// Runs LAST, and that placement is load-bearing rather than tidy: this section seeds a second repo
+// and adds audit rows for it, and every section above counts rows by absolute number (waitRows(3),
+// waitRows(8), …). Anywhere earlier it would shift all of them. It leaves the server booted with a
+// seconds-long claim timeout, which is why nothing may follow it.
+await helperPortal.run({ REPO, setAuditMode, killSrv, startSrv, auditRows, headOf });
 
 console.log(results.join("\n"));
 console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");

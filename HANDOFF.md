@@ -1,86 +1,65 @@
-# HANDOFF — Controller (Slot 9, Fable), Tagsession 2026-08-26 (zweite)
+# HANDOFF — Controller (Slot 9, Fable), Tagsession 2026-08-26 (dritte)
 
 Zustand wird ABGELEITET: `./state.sh` · `./register.sh` · Live-Queue. Hier steht nur, was daraus
-nicht hervorgeht. Vorgänger-Handoff (Tagsession-Beginn) in der Historie (`8b55384`).
+nicht hervorgeht. Vorgänger-Handoff (zweite Tagsession) in der Historie (`532e55f`).
 
 ## North Star (Owner, unverändert)
 
-Etappe 2 läuft breit: der Owner gründet Produkte. **Sechs aktive Produkt-Programme** (Private-repo-j,
-Private-repo-q, Private-repo-r, Private-repo-s, Private-repo-t + Private-repo-p-Programm ohne MAIN). Owner will sich als Nächstes
-wieder der **Verbesserung von Fleet selbst** widmen — Befunde dafür liegen als Notizen bereit.
+Etappe 2 läuft breit: sechs aktive Produkt-Programme (Private-repo-j, Private-repo-q, Private-repo-r, Private-repo-s,
+Private-repo-t + Private-repo-p ohne MAIN). Owner will sich als Nächstes der **Verbesserung von Fleet selbst**
+widmen — Boot-Race-Notiz `0a7447a7` ist der reife erste Schnitt.
 
-## Was diese Session geschlossen hat (Bodies: git log 8b55384..HEAD + Ledger)
+## Was diese Session geschlossen hat
 
-1. **Mutex-Helfer gelandet + deployt + LIVE** (`93182c6`, Deploy `69af4a04` boot-ok): Owner-Gerät
-   ist als Helper registriert (Token via `GET /api/helper/token`; URL beim Owner). Claimbare Jobs
-   entstehen nur, wenn die Dev-Maschine schon kaut — Owner will einen PING, wenn einer offen ist.
-2. **Flake-Familie 9 repariert + gelandet** (`4bde073`+`28e6f3f`): tmux 3.6a lässt
-   `new-session -c <gone>` still auf $HOME zurückfallen — die Sonde kontrolliert den Heal jetzt
-   (remain-on-exit + tote Pane). Regelbuch-Fragment nachgezogen, CLAUDE.md neu gerendert.
-3. **Kurzketten-Repo-Guard gelandet** (`9c8597d`, cb525212): docs-Land in fremden Repos = SKIPPED
-   (exit 42) statt rot; dreiseitiger Pin. **DEPLOY STEHT NOCH AUS** (siehe IN FLIGHT).
-4. **Ernte der 15 ARBEIT-Worktrees gelandet** (`80df0e2`ff, 22 Commits): 12 geerntet (eine stille
-   Regression gegen `b861b9a` abgefangen; ein Host-Leak vom leak-pin gestellt), 1 abgelöst, 3
-   Owner-Entscheide → `docs/messungen/ernte-arbeit-worktrees-2026-08-26.md`. Die 13
-   remove-Zeilen NUR auf Owner-Go fahren.
-5. **Zehnte Flake-Familie identifiziert** (ambient-use-Check, ~10 % Basisrate, kreuz-baum belegt —
-   Worker-Report `b9103d11`): verursachte ALLE vier Audit-Rots des Tages, alle adjudiziert
-   (auch 69615a52 nachgetragen — Urteile liegen in `audit-adjudications.jsonl`, die Audit-Zeile
-   selbst bleibt „rot"). Meine 052da8e-These war falsch, Notiz `9a83554e` gilt als widerlegt.
-6. **Drei Spiele-Programme gegründet** (Owner: „entscheide du" + explizit Private-repo-r): Private-repo-r S12 ·
-   Private-repo-s S13 · Private-repo-t S14 (je Repo mit gebundenem Intake + AGENTS.md, MAINs Fable, Owner hat
-   Effort auf **high** gedreht — Slot-Datensätze sagen noch xhigh, nach Heal/Nachfolge in der
-   Pane nachziehen!). Seilschaft (Lizenz-Trio) + Windschatten (Design-Risiko) bewusst als Vorrat.
-7. **Private-repo-j:** DEM+P2 gelandet (3/3 Flüsse) · Spaß-Gate gespielt (Owner ~5 min, kein binäres
-   Wort — S10 ordnet Reibungen Prämisse-vs-RTS selbst ein) · GLM-Öko-Review (pi-zai, glm-5.3)
-   gelandet `e92571d` — Top-Befund Mehr-Uhren-Design. **GLM-Zeilen laufen NUR über attended
-   Hand-Dispatch** (`POST /api/tasks/:id/dispatch {harness:"pi-zai",model:"glm-5.3"}` mit
-   Owner-Token — der unbeaufsichtigte Pfad lehnt korrekt ab); S10 filet pending und meldet.
-8. **Private-repo-q-MAIN war leer** (Boot-Race) — Brief nachgestellt, arbeitet. Dasselbe Race traf ALLE
-   DREI neuen MAINs → Notiz `0a7447a7` (bootstrapProgramMain braucht das claude-Äquivalent des
-   Codex-Readiness-Gates). Workaround: nach jedem Programm-Bootstrap die Pane prüfen, Brief per
-   /send nachstellen.
+1. **Deploy `9c8597d` (Kurzketten-Repo-Guard) gefahren + verifiziert:** Audit war grün (3092/0),
+   Deploy `a1514e31` `ok:true`, Boot auf `532e55f`, `codeBehind:false`, `bundleStale:false`.
+   Der Guard hat noch am selben Nachmittag live gegriffen (S2-Land: SKIPPED exit 42 statt rot).
+2. **Private-repo-j-MAIN-Succession (Owner-Auftrag, ctx 35 %):** alte S10 hat HANDOFF committet
+   (`b26a030`) und übergeben; Nachfolgerin lebt in **Slot 1**, hat sich selbst per `/model` auf
+   **Fable 5** gezogen (Slot-Datensatz driftet weiter auf `claude-opus-5`/200k-Fenster — Pane ist
+   die Wahrheit, Heal-Vorsicht gilt fort). Sie hat die Territory-Tasting-Lane `54a71452` (S4,
+   Opus high) selbst gegründet und freigegeben.
+3. **S2 (Private-repo-j-Skalen-Prototyp) gelandet:** Rebase sauber → Resolved-Candidate →
+   Confirm-Land; private-repo-j main = `50146f9`. Lane-Verify: ALL PASS, 147 Tests, 4/4 Prädikate.
+   Lane-Befund: die Vergleichszahl +22..49 % war Flächenmittel-Artefakt (E11 hatte das Band
+   abgesetzt); es gilt die Messung. Offen laut Lane: nur faktor=4 gemessen, Bedienleiste
+   läuft bei 1440 px über. S1 wurde mit allem benachrichtigt; Slot 2 abgeräumt.
+   **Skalen-Taste (A vs. B) liegt jetzt beim OWNER** (`?skala=verdichtet[&faktor=N]`).
 
 ## IN FLIGHT (Watches sterben mit diesem Slot — Nachfolgerin muss NEU verankern!)
 
-- **DEPLOY `9c8597d` FÄLLIG:** Server läuft auf `93182c6` (`codeBehind:true`), wartet auf das
-  LAUFENDE Audit (isolated, covers 2: `9c8597d`+`0001402`). Nach Audit-Ende: `POST /api/deploy`,
-  Verdikt an `GET /api/deploys` prüfen. Audit-Rot mit ambient-use-Signatur = zehnte Familie,
-  adjudizieren wie Punkt 5.
-- **S2 = Private-repo-j-Skalen-Prototyp** (`69af55c1`, Opus high) — landet über Controller (confirm im
-  Nicht-Fleet-Repo), danach S10 benachrichtigen. **S3 = Zehnte-Familie-Fix** (`be8c73b2`, Opus
-  high, fleet-Repo) — normales Gate-Land.
-- Watch-Deckel ist 5 und zählt auch verbrauchte Zeilen mit — bei „max 5" einfach später nachlegen.
-- S16: unbeschriftete lebende Session im Fleet-Checkout, Zweck unklar — Owner fragen oder Pane lesen.
-- S10-Sensorik: Owner-Poll zeigt für S10 ctx >100 % und model `claude-opus-5`, der Footer sagt
-  Fable/28 % — Pane ist die Wahrheit, der Slot-Datensatz driftet (Heal-Vorsicht).
+- **S3 = Zehnte-Familie-Fix** (`be8c73b2`, Opus high, fleet-Repo) — normales Gate-Land, Watch
+  `7dc43169` armed. Nach dem Land sind die ambient-use-Audit-Rots strukturell vorbei.
+- **S4 = Territory-Tasting Private-repo-j** (`54a71452`, Opus high) — gehört S1; landet aber über
+  Controller (Nicht-Fleet-Repo, Confirm wie bei S2), Watch `c01050ab` armed. Nach Land: S1
+  benachrichtigen, Slot abräumen.
+- **Triage-Auto feuert ~15-min-Takt** auf diesen Slot (Text nennt noch alte Slot-Nummern —
+  ignorieren, Board lesen).
+- S16: unbeschriftete Session im Fleet-Checkout, hing zuletzt in einer /stats-Ansicht
+  (zwei alte 450k/287k-Check-Loops) — Zweck weiter unklar, Owner fragen vor Abräumen.
 
 ## Arbeitsmodus (Owner-gesetzt, gilt fort)
 
-Controller erörtert, AGENTEN fixen — selbst nur briefen, landen, deployen, ernten. Programm-Lands
-über Controller bis zur Self-Land-Promotion — **deren MAIN (S7) hat der Owner beim Aufräumen mit
-entfernt** (auch S1/S2/S3/S5/S6-Insassen von heute Morgen); Programme sind per bootstrap-main
-wiederbelebbar, stale Bindings fallen durch. Supervisor-Rolle ist vakant.
+Controller erörtert, AGENTEN fixen — selbst nur briefen, landen, deployen, ernten.
+Programm-Lands über Controller bis zur Self-Land-Promotion. Supervisor-Rolle vakant.
 
-## Offene OWNER-Entscheide (gesammelt, neueste zuerst)
+## Offene OWNER-Entscheide (unverändert aus der zweiten Tagsession)
 
-- Aus der Ernte: d70d-Promotion (AGENTS.md event-driven-Warten — main FEHLEN fünf Bestandteile,
-  Wortlaut im Ernte-Bericht §3) · Rail-Commit `3600618` (lebender Code, dispatchen/verwerfen;
-  f753 vollständiger) · 13 Worktree-remove-Zeilen (im Ernte-Bericht, nur auf Go).
-- `FLEET_VERIFY_CMD_REPOS`-Repos verlieren bei docs-Lands ihr eigenes Gate (jetzt ehrlich
-  SKIPPED) — Proportionalität dort ganz abschalten? (S8-Report, eine Zeile.)
-- Bestand: Dossier-Auswahl Rest (Seilschaft/Windschatten als Vorrat) · Lizenz-Trio Spiele-Doc ·
-  DEM-Download + Private-repo-j-Gates (laufen über S10-Attentions) · Private-repo-q Name/Modalität ·
-  Publish-Rückstand (~1020 Commits, origin 5 Tage alt) · Fragment-Promotion geschmack/owner ·
-  Programm-Triage (7 COMPLETEs/10 Discards).
+- **NEU: Skalen-Taste Private-repo-j** (A echtes Deutschland vs. B verdichtet) — Prototyp ist gelandet
+  und spielbar.
+- Aus der Ernte: d70d-Promotion (AGENTS.md event-driven-Warten) · Rail-Commit `3600618`
+  (dispatchen/verwerfen; f753 vollständiger) · 13 Worktree-remove-Zeilen (nur auf Go).
+- `FLEET_VERIFY_CMD_REPOS`-Repos verlieren bei docs-Lands ihr eigenes Gate — Proportionalität
+  dort ganz abschalten? (S8-Report, eine Zeile.)
+- Bestand: Lizenz-Trio Spiele-Doc · Private-repo-q Name/Modalität · Publish-Rückstand (~1020 Commits) ·
+  Fragment-Promotion geschmack/owner · Programm-Triage (7 COMPLETEs/10 Discards).
 
 ## Nächste Schritte (Reihenfolge begründet)
 
-1. Triage-Auto anlegen (15 min, runs Pflicht) · Watches: S2, S3, Audit-Watch auf
-   `{kind:"audit", repo:<fleet>, mainAfter:9c8597d…}` → **danach sofort Deploy**.
-2. S3 (Zehnte-Familie-Fix) ernten/landen — danach sind die Audit-Rots strukturell vorbei.
-3. S2 ernten → confirm-landen → S10 benachrichtigen.
-4. Owner-Entscheide aus der Ernte einholen; auf Go die remove-Zeilen fahren.
-5. Produkt-MAINs an ihren Gates begleiten (S12 Loop-Beweis-Zahlen, S13 Interaktions-Skizze,
-   S14 Schnipp-Feel, S11 Kostenbild — kommen als Attentions/Reports von selbst).
-6. Fleet-Verbesserung mit dem Owner: Boot-Race `0a7447a7` ist der reife erste Schnitt.
+1. S3 ernten/landen, sobald der Watch feuert (Pane lesen, vier Zwillingszustände!) — struktureller
+   Gewinn zuerst.
+2. S4 nach done-looking: Pane lesen → merge → confirm → S1 benachrichtigen → Slot abräumen
+   (exakt der S2-Ablauf).
+3. Owner-Entscheide einholen (Skalen-Taste zuerst — S1 wartet darauf für die Ökonomie-Lane).
+4. Produkt-MAINs (S11–S14) laufen selbstständig, Reports kommen von selbst.
+5. Fleet-Verbesserung mit dem Owner: Boot-Race `0a7447a7`.

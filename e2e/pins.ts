@@ -908,7 +908,7 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
 
     // The independent side: enumerate the top level again, straight from git, and require a row for
     // each name. This is what catches a new top-level file whose author never re-rendered.
-    const ls = spawnSync("git", ["-C", ROOT, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    const ls = spawnSync("git", ["-C", ROOT, "ls-files", "--cached", "-z"],
       { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, maxBuffer: 16 * 1024 * 1024 });
     if (ls.error || ls.status !== 0) {
       pin(`${RULE_MAP} — PROBE: the independent enumeration ran`, false,

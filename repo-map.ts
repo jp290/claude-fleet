@@ -60,10 +60,13 @@ export function firstCommentLine(source: string): string | null {
 }
 
 // Facts come from git, not from a raw directory read: `node_modules/` appears the moment anyone runs
-// `bun install`, and a map that grew a row from an install would not be a map of this repo. Tracked
-// AND untracked-but-not-ignored, so a new top-level file counts the moment it is written.
+// `bun install`, and a map that grew a row from an install would not be a map of this repo. TRACKED
+// ONLY — a map that fed a gate off untracked files would depend on whatever owner scratch happened to
+// sit in that particular checkout (measured: the main checkout carried untracked owner artifacts a
+// lane worktree never sees, so the same pin was red there and green everywhere else). A new top-level
+// file counts from its `git add`, which is soon enough: a lane may not land with untracked files.
 export function collectRepoMap(root: string): RepoMapProbe {
-  const ls = spawnSync("git", ["-C", root, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+  const ls = spawnSync("git", ["-C", root, "ls-files", "--cached", "-z"],
     { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, maxBuffer: 16 * 1024 * 1024 });
   if (ls.error || ls.status !== 0)
     return { ok: false, detail: (ls.error?.message || ls.stderr || `git ls-files exited ${String(ls.status)}`).trim().slice(0, 160) };
@@ -93,8 +96,9 @@ export function renderRepoMap(facts: RepoMapFacts): string {
     "",
     "Scope and sources, so the omissions are not silent:",
     "",
-    "- Entries come from `git ls-files --cached --others --exclude-standard`, so gitignored trees",
-    "  (`node_modules/`, `graphify-out/`, `streams/`, `drops/`) never appear and a brand-new file does.",
+    "- Entries come from `git ls-files --cached` — the TRACKED tree only, so gitignored trees",
+    "  (`node_modules/`, `graphify-out/`, `streams/`, `drops/`) never appear, and a new top-level file",
+    "  counts from its `git add`, not from being written to disk.",
     "- A directory's sentence is maintained in `repo-map.ts#DIRECTORY_NOTES`.",
     "- A file's sentence is that file's own first comment line, read from the file.",
     "- Top-level files that are not `.ts` or `.sh` are out of scope by design: `README.md`, `AGENTS.md`,",

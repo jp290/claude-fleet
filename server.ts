@@ -3527,6 +3527,11 @@ function saveState(): void {
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, helperToken,
     helperClaims: Object.fromEntries(helperClaims), helperLapses, helperDevices: [...helperDevices.values()],
+    // …and the lane-suite offers, for the SAME reason the claims are persisted: the deploy ritual
+    // here is land-then-`kill-session -t srv`, ~10× a day, and an offer that lived only in memory
+    // would be erased by the most routine thing this machine does — the helper would still be
+    // running the suite while the lane's own GET said "no offer".
+    laneSuiteJobs: [...laneSuiteJobs.values()],
     slots: active, recents, pins, shares, autos, watches,
     events: fleetEvents, clarifications, fleetReports, attentionRequests, tasks, programs, supervisor,
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
@@ -11771,6 +11776,92 @@ let helperLapses: HelperLapse[] = [];
 // a machine nobody could name any more.
 interface HelperDevice { id: string; name: string; lastSeen: number }
 const helperDevices = new Map<string, HelperDevice>();
+
+// --- THE SECOND JOB KIND: a LANE's preview suite -----------------------------------------------
+// The portal's job list used to be the tier-2 audit queue and nothing else, so the one suite run a
+// human on this box actually waits for — a lane's own `./e2e-isolated.sh` preview — could never be
+// handed to another machine. Measured 2026-08-26 (docs/helper-lane-suiten-entwurf-2026-08-26.md):
+// the local audit's own runtime distribution is p50 800 s / p90 1426 s over 271 measured rows, and
+// the ONE suite mutex on this box was held by exactly such a preview for the whole investigation.
+//
+// FOUR PROPERTIES separate this from an audit job, and each one is a decision, not an accident:
+//   · THE LANE OFFERS IT. There is no server-side trigger: a post-land audit exists because
+//     `recordLand` queued it, while a preview is the lane's own reading of the rulebook. The
+//     `isolatedPreview` field of `laneLocalProof` is advisory and has a value that says "the lane
+//     decides" — a server that made a job out of it would turn advice into an obligation.
+//   · THE TREE IS THE WORKING TREE, not a landed tip. `buildLaneSuiteBundle` takes it through
+//     `git stash create`, so UNCOMMITTED work travels; a bundle of HEAD would be the plausible
+//     wrong implementation that disguises itself as green (the suite runs — on the wrong tree).
+//   · THE VERDICT NEVER TOUCHES THE AUDIT LEDGER. `post-land-audits.jsonl` answers joins over
+//     `mainSha`/`covers[].mainAfter`; a preview row has neither, and would make those joins
+//     silently wrong. It lives in the job record and nowhere else.
+//   · THERE IS NO DRAIN BEHIND IT. An audit job that lapses falls back to this machine; a preview
+//     job's only interested party is one lane, which may already have landed. A lapsed preview is
+//     REAPED (booked as a lapse so a helper that takes work and vanishes stays visible), never
+//     requeued.
+// And the failure direction is the OPPOSITE of the audit's, deliberately: an audit prefers one run
+// too many over a tree nobody looked at; a preview prefers "not previewed" over "run twice",
+// because tier 2 gates nothing and the post-land audit sees the same code ~9 min after the land.
+// SIX terminal states, and `reaped` is not a synonym for `withdrawn`: "the lane took its offer
+// back" and "the lane is gone" are different facts about the world, and the refusal a helper reads
+// quotes the state. Collapsing them made the portal tell a helper that a lane which had been KILLED
+// "is running the suite itself" — measured on the first run of e2e/lane-suite.ts.
+type LaneSuiteState = "open" | "claimed" | "reported" | "withdrawn" | "abandoned" | "lapsed" | "reaped";
+interface LaneSuiteResult {
+  exitCode: number | null;
+  result: "green" | "red" | "unknown";
+  reason?: string;                  // present on `unknown` only — WHY nothing was measured
+  tail: string;                     // byte-capped, HELPER_TAIL_CAP, exactly the audit's budget
+  trail?: string;
+  checks: PostLandAuditChecks | null; // null = the tail was not countable, NEVER an invented zero
+  // The provenance half, and §6 of the design doc makes it non-negotiable: the exit code and the
+  // tail are TYPED IN BY A HUMAN on the other machine. A verdict served without a name attached is
+  // the one sentence a lane report may never write ("./e2e-isolated.sh green", full stop).
+  remote: { name: string; claimedAt: number; reportedAt: number };
+  treeSha: string;                  // the tree that was handed over — the lane compares its own
+  ms: number;
+}
+interface LaneSuiteJob {
+  id: string;                // 12 hex, like a helper job id — RANDOM, because a lane is not a repo
+  slot: number;
+  slotOpenedAt: number;      // slot + openedAt is the identity: bare slot ids get recycled
+  repo: string;              // the integration repo the lane hangs off (git toplevel)
+  cwd: string;               // the lane's worktree — where the tree is taken from
+  branch: string;            // the lane's own branch, for the human reading the card
+  offeredAt: number;
+  state: LaneSuiteState;
+  // filled at CLAIM time, out of the bundle build itself — one moment, no second resolution
+  commitSha: string | null;
+  treeSha: string | null;
+  untracked: number | null;  // `git stash create` does not carry untracked files; the count is
+                             // recorded so a green verdict cannot silently be about another tree
+  claim: { deviceId: string; name: string; claimedAt: number; expiresAt: number; bundle: string } | null;
+  result: LaneSuiteResult | null;
+}
+const laneSuiteJobs = new Map<string, LaneSuiteJob>(); // job id -> the offer
+// A settled offer stays readable so the lane that made it can still fetch its verdict after the
+// helper is gone; bounded because nothing else prunes it. Open/claimed offers are never evicted.
+const LANE_SUITE_KEEP = 20;
+// The prefix of the transient branch a bundle is built through. It lives in the COMMON git dir
+// (a worktree shares refs/heads with its main checkout), so it is visible there for the seconds the
+// bundle takes to build and is deleted in a `finally`. Fleet-owned name, so nothing else collides.
+const LANE_SUITE_REF_PREFIX = "refs/heads/fleet-suite";
+const laneSuiteRef = (id: string): string => `${LANE_SUITE_REF_PREFIX}/${id}`;
+// what `git clone -b <this>` takes — the ref without its refs/heads/ prefix. Derived, never spelled
+// a second time: the bootstrap the helper is shown and the ref the bundle carries must be the same
+// string or the clone lands in an empty directory with no hint why (measured M6).
+const laneSuiteBranch = (id: string): string => laneSuiteRef(id).replace(/^refs\/heads\//, "");
+// THE LANE'S WAITING POLICY — advisory, served, and pinned. Nothing on the server enforces these:
+// the wait is a foreground loop in the lane's own pane. They live here anyway because the rulebook
+// quotes them, and a rule whose number drifts from the code is worse than no rule (e2e/pins.ts
+// holds the two sides together).
+//   freeMs: the suite mutex is FREE, so a local run could start this instant — every waiting second
+//     is pure loss. 180 s on a p50 of 800 s is a 22.5 % surcharge, paid for ~18 refreshes of the
+//     portal page (it polls every 10 s) — long enough for a human at the other machine to see it.
+//   heldMs: the mutex is HELD, so a local run would queue anyway and waiting costs nothing. The cap
+//     is the measured p50 of a full run: waiting longer than the run itself takes is never right.
+const SUITE_OFFER_WAIT_FREE_MS = 180_000;
+const SUITE_OFFER_WAIT_HELD_MS = 800_000;
 // The portal's own credential. Server-minted and persisted like the steward's, and deliberately
 // NEITHER the owner token (which opens the whole board) NOR a slot's self token (which is scoped to
 // one pane and rotates under it). Scope is by POSITION, the same model the steward token uses: the
@@ -12204,7 +12295,76 @@ function expireHelperClaims(): boolean {
       + ` without a result — ${c.covers.length} land(s) fall back to the local drain`);
     changed = true;
   }
+  // …and the SAME sweep for the second job kind, extended here rather than added as a sibling tick
+  // on purpose: this is the one function every claim path already calls, and a second sweep with
+  // its own call sites is one forgotten call away from a job that never expires.
+  //
+  // Two reapers, and the difference from the audit branch above is the whole point: a lapsed
+  // preview is NOT requeued anywhere. There is no drain behind it, so the only honest outcome is
+  // to book the lapse (a helper that takes jobs and vanishes must stay visible) and close the job.
+  for (const [id, j] of [...laneSuiteJobs]) {
+    const c = j.claim;
+    if (c && now >= c.expiresAt) {
+      try { rmSync(c.bundle, { force: true }); } catch { /* already gone */ }
+      j.claim = null;
+      j.state = "lapsed";
+      helperLapses = [{ id, repo: j.repo, name: c.name, claimedAt: c.claimedAt, expiredAt: now, covers: 0 },
+        ...helperLapses].slice(0, HELPER_LAPSE_KEEP);
+      audit("helper_claim_expired", j.slot,
+        `${c.name} held the preview suite of ${basename(j.repo)} ${j.branch} for `
+        + `${Math.round((now - c.claimedAt) / 1000)}s without a result — no drain takes it over`);
+      changed = true;
+      continue;
+    }
+    // The lane itself can be gone — landed, killed, or its slot recycled under a new session. An
+    // offer nobody is waiting for must not sit in the portal inviting somebody to spend 13 minutes
+    // on it. Identity is slot + openedAt, never the bare slot id (ids are recycled).
+    const live = slots.some((x) => x.id === j.slot && x.openedAt === j.slotOpenedAt && x.cwd);
+    if (!live && (j.state === "open" || j.state === "claimed")) {
+      if (j.claim) { try { rmSync(j.claim.bundle, { force: true }); } catch { /* already gone */ } }
+      j.claim = null;
+      j.state = "reaped";
+      audit("helper_claim_expired", j.slot,
+        `the lane that offered the preview suite of ${basename(j.repo)} ${j.branch} is gone — offer reaped`);
+      changed = true;
+    }
+  }
+  // bounded, and only over SETTLED offers: an open or claimed one is somebody's live work
+  const settled = [...laneSuiteJobs.values()].filter((j) => j.state !== "open" && j.state !== "claimed");
+  for (const j of settled.slice(0, Math.max(0, settled.length - LANE_SUITE_KEEP))) {
+    laneSuiteJobs.delete(j.id);
+    changed = true;
+  }
   return changed;
+}
+// A lane-suite job is CLAIMED only while its claim is still live — expired counts as absent here for
+// exactly the reason helperClaimOf gives on the audit side: the decision is the clock, the sweep is
+// only bookkeeping, so a late or dead sweep can never strand a job.
+function laneSuiteClaimOf(j: LaneSuiteJob): LaneSuiteJob["claim"] {
+  return j.claim && Date.now() < j.claim.expiresAt ? j.claim : null;
+}
+// The one open offer of a slot. At most one exists by construction (the offer door returns the
+// existing one instead of minting a second), and this is where that is read back.
+function laneSuiteOfferOf(s: Slot): LaneSuiteJob | null {
+  for (const j of laneSuiteJobs.values())
+    if (j.slot === s.id && j.slotOpenedAt === s.openedAt && (j.state === "open" || j.state === "claimed")) return j;
+  return null;
+}
+// The lane's own view of its offer — the whole of what GET /api/self/suite-offer serves about a job.
+// `treeSha` sits on the offer AND on the verdict on purpose: the first says which tree was handed
+// over, the second says which tree the number is about, and a lane that kept working needs both to
+// answer "has my tree moved since I gave it away" (the commit sha wanders with the clock, the tree
+// sha does not — measured M8).
+function laneSuiteView(j: LaneSuiteJob): Record<string, unknown> {
+  const c = laneSuiteClaimOf(j);
+  return {
+    // an EXPIRED claim reads as lapsed here and not as "claimed", without waiting for the sweep —
+    // the same split as helperClaimOf: the clock decides, the sweep only books
+    id: j.id, state: j.state === "claimed" && !c ? "lapsed" : j.state, branch: j.branch, offeredAt: j.offeredAt,
+    commitSha: j.commitSha, treeSha: j.treeSha, untracked: j.untracked,
+    claim: c ? { name: c.name, claimedAt: c.claimedAt, expiresAt: c.expiresAt } : null,
+    result: j.result,
+  };
 }
 // The one way anything OUTSIDE the land path restarts the drain. `schedulePostLandAudit` owns the
 // land path's own kick; this is for the two moments a job becomes drainable again without a land:
@@ -12257,11 +12417,97 @@ async function buildHelperBundle(repo: string, main: string, file: string): Prom
   if (!m) return { error: `the bundle names no ${main} tip — nothing to hand over` };
   return { sha: m[1]! };
 }
+// Run a git command and hand back its trimmed stdout. Positional args, never a shell string — the
+// lane's path is the owner's and may carry spaces.
+async function gitOut(cwd: string, ...args: string[]): Promise<{ out: string; err: string; code: number }> {
+  const p = Bun.spawn(["git", "-C", cwd, ...args], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+  const out = await new Response(p.stdout).text();
+  const err = await new Response(p.stderr).text();
+  return { out: out.trim(), err: err.trim(), code: await p.exited };
+}
+// THE BUNDLE OF A LANE'S WORKING TREE, and the one function in this file where the plausible wrong
+// implementation is a SILENT one. Every step below was measured before it was written
+// (docs/helper-lane-suiten-entwurf-2026-08-26.md §3.1, M1–M10):
+//
+//   · `git stash create` (M3), NOT `HEAD`. A lane's tree is typically dirty, and a bundle of HEAD
+//     would hand the helper a tree that compiles, runs the suite, and answers a question nobody
+//     asked — green, about code the lane has not got. That is why this is the plan's most important
+//     breaker. `stash create` writes a commit object and LEAVES THE STASH STACK ALONE (measured 0
+//     before / 0 after), which is what makes it usable at all here: CLAUDE.md forbids bare
+//     `git stash`/`pop` because the stack is shared between the main checkout and every worktree.
+//   · A CLEAN tree makes `stash create` print nothing — then the tree to bundle IS `HEAD`. Named
+//     rather than treated as a failure, because it is the ordinary state of a lane that just
+//     committed.
+//   · The sha must become a REF under `refs/heads/` (M4/M5/M6): a bare sha refuses to bundle, a ref
+//     outside refs/heads clones EMPTY, and a refs/heads ref without a matching HEAD clones without a
+//     working tree. Only `git clone -b <branch> <bundle>` (M7) gives the helper something to run.
+//   · The ref lives in the COMMON git dir, so it is briefly visible as a branch in the main
+//     checkout. Deleted in a `finally`, under a fleet-owned name.
+//   · UNTRACKED FILES DO NOT TRAVEL. Lane discipline forbids them anyway (they block the land), but
+//     if there are any the helper measures a different tree than the lane means — so the COUNT is
+//     recorded and served, and a verdict that arrives with `untracked > 0` says so.
+//   · The sha is read back OUT OF THE BUNDLE HEADER, the same rule buildHelperBundle states: a
+//     second resolution would be a second moment.
+async function buildLaneSuiteBundle(job: LaneSuiteJob, file: string):
+  Promise<{ commitSha: string; treeSha: string; untracked: number } | { error: string }> {
+  try { mkdirSync(HELPER_BUNDLE_DIR, { recursive: true }); chmodSync(HELPER_BUNDLE_DIR, 0o700); }
+  catch (e) { return { error: `could not create the bundle dir: ${e instanceof Error ? e.message : "mkdir failed"}` }; }
+  const stash = await gitOut(job.cwd, "stash", "create");
+  if (stash.code !== 0) return { error: `git stash create failed: ${stash.err.slice(0, 200)}` };
+  let sha = stash.out;
+  if (!sha) {
+    const head = await gitOut(job.cwd, "rev-parse", "HEAD");
+    if (head.code !== 0 || !/^[0-9a-f]{40}$/.test(head.out))
+      return { error: `the lane's HEAD is unreadable: ${head.err.slice(0, 200)}` };
+    sha = head.out;
+  }
+  if (!/^[0-9a-f]{40}$/.test(sha)) return { error: `git named no commit to hand over (got ${JSON.stringify(sha.slice(0, 60))})` };
+  const tree = await gitOut(job.cwd, "rev-parse", `${sha}^{tree}`);
+  if (tree.code !== 0 || !/^[0-9a-f]{40}$/.test(tree.out))
+    return { error: `the tree of ${sha.slice(0, 8)} is unreadable: ${tree.err.slice(0, 200)}` };
+  const others = await gitOut(job.cwd, "ls-files", "--others", "--exclude-standard");
+  const untracked = others.code === 0 && others.out ? others.out.split("\n").filter(Boolean).length : 0;
+  const ref = laneSuiteRef(job.id);
+  const made = await gitOut(job.cwd, "update-ref", ref, sha);
+  if (made.code !== 0) return { error: `could not write ${ref}: ${made.err.slice(0, 200)}` };
+  try {
+    const bundled = await gitOut(job.cwd, "bundle", "create", file, ref);
+    if (bundled.code !== 0) return { error: `git bundle failed: ${bundled.err.slice(0, 200)}` };
+    let head = "";
+    try {
+      const fd = openSync(file, "r");
+      const buf = Buffer.alloc(4096);
+      try { head = buf.subarray(0, readSync(fd, buf, 0, 4096, 0)).toString("utf8"); } finally { closeSync(fd); }
+    } catch (e) { return { error: `bundle unreadable: ${e instanceof Error ? e.message : "read failed"}` }; }
+    const m = new RegExp(`^([0-9a-f]{40}) ${ref.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m").exec(head);
+    if (!m) return { error: `the bundle names no ${ref} tip — nothing to hand over` };
+    return { commitSha: m[1]!, treeSha: tree.out, untracked };
+  } finally {
+    // ALWAYS, including every error path above: the ref is a transient in the shared git dir, and
+    // one left behind is a stray branch in the owner's main checkout.
+    await gitOut(job.cwd, "update-ref", "-d", ref);
+  }
+}
 // What the portal shows. Repo PATHS never cross this line — a basename is enough to recognize the
 // job and it is all the other machine needs; the id is what every write refers to.
+// TWO SOURCES, ONE LIST — and `kind` is the entire difference the other machine sees. The owner's
+// non-goal for stage 1 was a second portal; the helper clicks the same button, downloads through the
+// same route and reports through the same one. What changes is which tree the bundle carries and
+// where the verdict goes.
 interface HelperJobView {
-  id: string; repo: string; main: string; branches: string[]; covers: number; oldestAt: number;
-  claim: { name: string; claimedAt: number; expiresAt: number } | null; localRunning: boolean;
+  id: string;
+  kind: "audit" | "lane-suite";
+  repo: string;
+  // audit: the integration branch. lane-suite: the LANE's own branch — a preview has no main to
+  // speak of, and the card's first line is what tells the human which tree they are about to run.
+  main: string;
+  branches: string[];
+  covers: number;      // audit: how many lands this run answers for. lane-suite: 0 — a preview
+                       // covers no land, and inventing a 1 here would make it joinable
+  oldestAt: number;
+  claim: { name: string; claimedAt: number; expiresAt: number } | null;
+  localRunning: boolean;
+  untracked?: number;  // lane-suite only, and only once the tree has been taken (i.e. after a claim)
 }
 function helperJobsView(): {
   claimTimeoutMs: number; configured: boolean; jobs: HelperJobView[];
@@ -12272,7 +12518,7 @@ function helperJobsView(): {
     if (!q.covers.length) continue;
     const c = helperClaimOf(repo);
     jobs.push({
-      id: helperJobId(repo), repo: basename(repo), main: q.main,
+      id: helperJobId(repo), kind: "audit", repo: basename(repo), main: q.main,
       branches: q.covers.map((x) => x.branch).slice(0, 10),
       covers: q.covers.length,
       oldestAt: Math.min(...q.covers.map((x) => x.at)),
@@ -12280,8 +12526,78 @@ function helperJobsView(): {
       localRunning: auditRunningRepo === repo || runningPostLandAudit?.repo === repo,
     });
   }
+  for (const j of laneSuiteJobs.values()) {
+    if (j.state !== "open" && j.state !== "claimed") continue;
+    const c = laneSuiteClaimOf(j);
+    if (!c && j.state === "claimed") continue; // lapsed but not yet swept — not offerable
+    jobs.push({
+      id: j.id, kind: "lane-suite", repo: basename(j.repo), main: j.branch,
+      branches: [j.branch], covers: 0, oldestAt: j.offeredAt,
+      claim: c ? { name: c.name, claimedAt: c.claimedAt, expiresAt: c.expiresAt } : null,
+      // A preview is never run by the local drain — there is no drain behind it. Reporting `true`
+      // here would be a claim about a machine state nothing measures.
+      localRunning: false,
+      ...(j.untracked !== null ? { untracked: j.untracked } : {}),
+    });
+  }
+  // `configured` still answers for the AUDIT queue alone, and the portal's own subline says both
+  // halves: a fleet with no audit command can still be offered a lane's preview.
   return { claimTimeoutMs: HELPER_CLAIM_TIMEOUT_MS, configured: !!POSTLAND_AUDIT_CMD, jobs,
     lapsed: helperLapses.map((l) => ({ ...l, repo: basename(l.repo) })) };
+}
+// The lane-suite half of the claim. Same shape as its audit sibling and the same rule behind every
+// refusal — nothing may be worked on twice — but the facts it checks are the lane's, not the queue's:
+// a withdrawn offer is GONE (404, not 409: there is nothing to take), a lapsed or reported one is
+// finished, and a lane whose slot has died takes its offer with it.
+async function claimLaneSuite(j: LaneSuiteJob, deviceId: string): Promise<Response> {
+  if (j.state === "withdrawn" || j.state === "abandoned")
+    return json({ error: "the lane withdrew this preview offer — it is running the suite itself" }, 404);
+  if (j.state === "reaped")
+    return json({ error: "the lane that offered this preview is gone — nothing to run it for" }, 404);
+  if (j.state === "reported") return json({ error: "this preview was already reported" }, 404);
+  if (j.state === "lapsed") return json({ error: "this preview offer lapsed and was not renewed" }, 404);
+  const held = laneSuiteClaimOf(j);
+  if (held) return json({ error: `already claimed by ${held.name} — it expires ${new Date(held.expiresAt).toISOString()}` }, 409);
+  const live = slots.find((x) => x.id === j.slot && x.openedAt === j.slotOpenedAt && x.cwd);
+  if (!live) {
+    // reaped in the same turn it is refused: an offer whose lane is gone must not be offered again
+    j.state = "withdrawn";
+    await saveStateNow();
+    return json({ error: "the lane that offered this preview is gone — nothing to run it for" }, 409);
+  }
+  const file = `${HELPER_BUNDLE_DIR}/${j.id}-${randomBytes(4).toString("hex")}.bundle`;
+  const built = await buildLaneSuiteBundle(j, file);
+  if ("error" in built) {
+    try { rmSync(file, { force: true }); } catch { /* never written */ }
+    return json({ error: built.error }, 500);
+  }
+  // RE-CHECKED after the await, the same way the audit path re-checks: taking the tree costs
+  // seconds, and the lane may have withdrawn meanwhile. Throwing a bundle away is cheaper than the
+  // duplicate run the alternative would authorize.
+  if (laneSuiteClaimOf(j) || (j.state !== "open")) {
+    try { rmSync(file, { force: true }); } catch { /* nothing to clean */ }
+    return json({ error: "the offer changed while the bundle was being built — try again" }, 409);
+  }
+  const now = Date.now();
+  j.commitSha = built.commitSha;
+  j.treeSha = built.treeSha;
+  j.untracked = built.untracked;
+  j.state = "claimed";
+  j.claim = { deviceId, name: helperDeviceName(deviceId), claimedAt: now,
+    expiresAt: now + HELPER_CLAIM_TIMEOUT_MS, bundle: file };
+  if (helperDevices.has(deviceId)) setHelperDevice(deviceId, j.claim.name); // touch lastSeen
+  audit("helper_claim", j.slot,
+    `${j.claim.name} claimed the preview suite of ${basename(j.repo)} ${j.branch}`
+    + `@${built.commitSha.slice(0, 8)} tree ${built.treeSha.slice(0, 8)}`
+    + `${built.untracked ? ` (${built.untracked} untracked file(s) NOT included)` : ""}`);
+  await saveStateNow();
+  return json({ job: { id: j.id, kind: "lane-suite", repo: basename(j.repo), main: j.branch,
+    mainSha: built.commitSha, treeSha: built.treeSha, untracked: built.untracked,
+    // the branch the helper must clone with `-b`. Without it the clone produces no working tree at
+    // all and says nothing about why (M6), so it is served rather than reconstructed on the page.
+    branch: laneSuiteBranch(j.id),
+    branches: [j.branch], covers: 0,
+    claimedAt: now, expiresAt: j.claim.expiresAt, name: j.claim.name } });
 }
 // The claim. Every refusal below is a REFUSAL TO DUPLICATE WORK — that is the whole function, and
 // the 409s are the feature the owner asked for, not error handling around it.
@@ -12291,6 +12607,11 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
   if (!/^[a-f0-9]{12}$/.test(jobId)) return json({ error: "expected jobId" }, 400);
   if (!/^[a-z0-9]{8,32}$/.test(deviceId)) return json({ error: "expected deviceId" }, 400);
   expireHelperClaims();
+  // THE SECOND SOURCE, resolved before the audit queue's find so a lane-suite job answers with its
+  // OWN refusals rather than falling through to "no such open audit job". Everything below the
+  // branch is the audit path, byte for byte as it was.
+  const lane = laneSuiteJobs.get(jobId);
+  if (lane) return await claimLaneSuite(lane, deviceId);
   const hit = [...auditQueue.entries()].find(([r, q]) => helperJobId(r) === jobId && q.covers.length);
   if (!hit) return json({ error: "no such open audit job — it may already have been audited" }, 404);
   const [repo, q] = hit;
@@ -12324,9 +12645,51 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
   audit("helper_claim", undefined,
     `${claim.name} claimed ${basename(repo)} ${q.main}@${built.sha.slice(0, 8)} (${claim.covers.length} land(s))`);
   await saveStateNow();
-  return json({ job: { id, repo: basename(repo), main: q.main, mainSha: built.sha,
+  return json({ job: { id, kind: "audit", repo: basename(repo), main: q.main, mainSha: built.sha,
     branches: claim.covers.map((c) => c.branch), covers: claim.covers.length,
     claimedAt: now, expiresAt: claim.expiresAt, name: claim.name } });
+}
+// The exit-code classification, shared by both kinds and extracted for exactly that reason: a
+// remote green and a local green mean the same thing only if ONE function decides what green is.
+// Tri-state, and the third state is load-bearing (A4, unknown ≠ zero) — a command that declined
+// (VERIFY_SKIP_EXIT) or could not be started (126/127) measured NOTHING, which is never a red.
+function remoteVerdictOf(exitCode: number | null): { result: PostLandAuditRow["result"]; reason?: string } {
+  if (exitCode === null) return { result: "unknown", reason: "the helper reported no exit code — no verdict" };
+  if (exitCode === VERIFY_SKIP_EXIT) return { result: "unknown", reason: `the audit command declined to run (exit ${VERIFY_SKIP_EXIT})` };
+  if (exitCode === 126 || exitCode === 127) return { result: "unknown", reason: `the audit command could not be started (exit ${exitCode})` };
+  return exitCode === 0 ? { result: "green" } : { result: "red" };
+}
+// The lane-suite verdict. It lands in the JOB and nowhere else — no ledger, no duration sample, no
+// drain kick — and it keeps the provenance the audit row keeps, for the same reason (§6 of the
+// design doc): the exit code and the tail were TYPED IN by a human on another machine, so a verdict
+// served without a name on it is the one sentence a lane report may never write.
+async function reportLaneSuite(j: LaneSuiteJob, body: Record<string, unknown> | null): Promise<Response> {
+  const claim = laneSuiteClaimOf(j);
+  // Same refusal shape as the audit side's, and the same reason turned around: past the deadline
+  // the lane has been told to stop waiting and may already be running the suite itself, so a late
+  // verdict would be a second answer about a tree somebody is measuring right now.
+  if (!claim) return json({ error: "no live claim for this preview — it lapsed, was withdrawn, or was already reported" }, 409);
+  const rawExit = body?.exitCode;
+  const exitCode = typeof rawExit === "number" && Number.isFinite(rawExit) ? Math.trunc(rawExit) : null;
+  const tail = retainRunOutput(typeof body?.tail === "string" ? body.tail : "", "", HELPER_TAIL_CAP).trim();
+  const trail = typeof body?.trail === "string" && body.trail.trim() ? body.trail.trim().slice(0, 120) : undefined;
+  const { result, reason } = remoteVerdictOf(exitCode);
+  const measured = result !== "unknown";
+  const now = Date.now();
+  j.result = {
+    exitCode, result, ...(reason ? { reason } : {}), tail, ...(trail ? { trail } : {}),
+    checks: measured ? postLandAuditChecks(tail, exitCode as number) : null,
+    remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now },
+    treeSha: j.treeSha ?? "", ms: now - claim.claimedAt,
+  };
+  j.state = "reported";
+  j.claim = null;
+  try { rmSync(claim.bundle, { force: true }); } catch { /* the helper has its copy */ }
+  audit("helper_result", j.slot,
+    `${result} preview of ${basename(j.repo)} ${j.branch} tree ${(j.treeSha ?? "").slice(0, 8)} from ${claim.name}`
+    + `${trail ? ` [${trail}]` : ""}${reason ? ` — ${reason}` : ""}`.slice(0, 240));
+  await saveStateNow();
+  return json({ ok: true, kind: "lane-suite", result, ...(reason ? { reason } : {}) });
 }
 // The result. Same classification as the local run's (runPostLandAudit), on purpose: a remote green
 // and a local green must mean the same thing, or the ledger's joins stop being answerable. The one
@@ -12336,6 +12699,13 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
   const jobId = typeof body?.jobId === "string" ? body.jobId : "";
   if (!/^[a-f0-9]{12}$/.test(jobId)) return json({ error: "expected jobId" }, 400);
   expireHelperClaims();
+  // THE FORK. A lane-suite verdict is NOT a ledger row and must never become one: `newestAuditFor`
+  // and `auditRowMatches` join over `mainSha`/`covers[].mainAfter`, and a preview has neither — a
+  // row without them does not fail those joins, it answers them WRONG. So the two kinds part here,
+  // before a single audit-side side effect (appendEvent, mintAuditEvents, recordAuditDuration,
+  // kickAuditDrain) has run.
+  const lane = laneSuiteJobs.get(jobId);
+  if (lane) return await reportLaneSuite(lane, body);
   const hit = [...helperClaims.entries()].find(([r, c]) => c.id === jobId && helperClaimOf(r));
   // A LAPSED CLAIM IS REFUSED, deliberately: past the timeout the job belongs to the local drain
   // again, so accepting a late verdict would write a row about a tree this machine may be auditing
@@ -12346,13 +12716,8 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
   const exitCode = typeof rawExit === "number" && Number.isFinite(rawExit) ? Math.trunc(rawExit) : null;
   const tail = retainRunOutput(typeof body?.tail === "string" ? body.tail : "", "", HELPER_TAIL_CAP).trim();
   const trail = typeof body?.trail === "string" && body.trail.trim() ? body.trail.trim().slice(0, 120) : undefined;
-  let result: PostLandAuditRow["result"] = "unknown";
-  let reason: string | undefined = "the helper reported no exit code — no verdict";
-  if (exitCode === VERIFY_SKIP_EXIT) reason = `the audit command declined to run (exit ${VERIFY_SKIP_EXIT})`;
-  else if (exitCode === 126 || exitCode === 127) reason = `the audit command could not be started (exit ${exitCode})`;
-  else if (exitCode === 0) { result = "green"; reason = undefined; }
-  else if (exitCode !== null) { result = "red"; reason = undefined; }
-  const measured = exitCode !== null && exitCode !== VERIFY_SKIP_EXIT && exitCode !== 126 && exitCode !== 127;
+  const { result, reason } = remoteVerdictOf(exitCode); // the SHARED classifier — see remoteVerdictOf
+  const measured = result !== "unknown";
   const now = Date.now();
   const row: PostLandAuditRow = {
     at: now, startedAt: claim.claimedAt, ms: now - claim.claimedAt,
@@ -12360,7 +12725,10 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
     // the command is named as the REMOTE one it was: nothing on this machine ran, and a row quoting
     // FLEET_POSTLAND_AUDIT_CMD would be claiming otherwise
     cmd: `remote helper (${claim.name}): ./e2e-isolated.sh`,
-    exitCode, out: tail, checks: measured ? postLandAuditChecks(tail, exitCode) : null,
+    // `measured` is derived from the shared classifier, which the compiler cannot use to narrow
+    // exitCode — the cast is safe by that classifier's own definition: only a non-null, non-skip,
+    // non-126/127 code yields anything but `unknown`.
+    exitCode, out: tail, checks: measured ? postLandAuditChecks(tail, exitCode as number) : null,
     covers: claim.covers,
     remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now, ...(trail ? { trail } : {}) },
   };
@@ -12452,6 +12820,18 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
     // served off the LIVE claim only. A bundle whose claim lapsed belongs to a job that is the local
     // drain's again, and handing it out would invite exactly the second run this rail exists to
     // prevent.
+    // BOTH KINDS come out of this one route — that is the point of the second source not having its
+    // own perimeter (S7): the pre-auth surface e2e/security.ts §1 pins is unchanged by this feature.
+    const laneJob = laneSuiteJobs.get(bundle[1]!);
+    if (laneJob) {
+      const lc = laneSuiteClaimOf(laneJob);
+      if (!lc) return json({ error: "no live claim for this job" }, 409);
+      if (!existsSync(lc.bundle)) return json({ error: "the bundle is gone — let the claim lapse and take it again" }, 410);
+      return new Response(Bun.file(lc.bundle), {
+        headers: { "content-type": "application/octet-stream", "cache-control": "no-store",
+          "content-disposition": `attachment; filename="${laneJob.id}-${(laneJob.commitSha ?? "").slice(0, 8)}.bundle"` },
+      });
+    }
     const claim = [...helperClaims.entries()].find(([r, c]) => c.id === bundle[1] && helperClaimOf(r))?.[1];
     if (!claim) return json({ error: "no live claim for this job" }, 409);
     if (!existsSync(claim.bundle)) return json({ error: "the bundle is gone — let the claim lapse and take it again" }, 410);
@@ -16634,6 +17014,13 @@ if (existsSync(STATE_FILE)) {
       for (const [repo, c] of Object.entries(persistedClaims as Record<string, HelperClaim>))
         if (c && typeof c.id === "string" && typeof c.expiresAt === "number" && Array.isArray(c.covers))
           helperClaims.set(repo, c);
+    // An offer restored here may be stale in three ways, and all three are handled by the ordinary
+    // sweep rather than by a filter: an EXPIRED claim reads as absent (laneSuiteClaimOf), a lane
+    // whose slot did not come back is reaped, and a settled row is evicted past LANE_SUITE_KEEP.
+    if (Array.isArray((persisted as { laneSuiteJobs?: unknown }).laneSuiteJobs))
+      for (const j of (persisted as { laneSuiteJobs: LaneSuiteJob[] }).laneSuiteJobs)
+        if (j && typeof j.id === "string" && typeof j.slot === "number" && typeof j.slotOpenedAt === "number"
+          && typeof j.cwd === "string" && typeof j.state === "string") laneSuiteJobs.set(j.id, j);
     if (Array.isArray((persisted as { helperLapses?: unknown }).helperLapses))
       helperLapses = ((persisted as { helperLapses: HelperLapse[] }).helperLapses)
         .filter((l) => l && typeof l.id === "string" && typeof l.expiredAt === "number").slice(0, HELPER_LAPSE_KEEP);
@@ -19757,6 +20144,103 @@ Bun.serve<WSData>({
       saveState();
       audit("criterion_proposed", s.id, t.id);
       return json({ ok: true, proposedAt: t.criterion.proposedAt });
+    }
+
+    // THE OFFER DOOR — the fifth lane-only route, and the one that lets a lane hand its OWN preview
+    // suite to another machine instead of holding this box's single suite mutex for ~13 minutes
+    // (measured p50, docs/helper-lane-suiten-entwurf-2026-08-26.md §1.1).
+    //
+    // WHY LANE-ONLY, resolved against the family's two opposite scope rules rather than guessed:
+    // the lane-only four (drift, gate, criterion, verify-intent) are narrow because their ANSWER is
+    // only defined for a lane; the non-lane-only four (watch, tasks/:id/release, succeed, retire)
+    // are narrow because they would let a lane enter a COUPLING only the owner may make visible.
+    // An offer is the first kind and not the second: it is a statement about one lane's own tree,
+    // meaningless to a session that will never run a preview, and it couples the lane to a machine
+    // that holds no slot at all — never to another lane.
+    //
+    // THE BODY IS CLOSED, exactly as at POST /api/self/tasks/:id/release: the repo, the branch, the
+    // cwd and the slot all come from the token's own row, and the command is `./e2e-isolated.sh`
+    // fixed. No field can nominate WHICH tree gets bundled, so this route cannot be pointed at
+    // anything but the caller's own worktree.
+    //
+    // AND IT STARTS NOTHING. Offering is not running: no suite is spawned here, no queue is filled,
+    // the land gate is untouched, and a red remote verdict gates nothing (tier 2 gates nothing —
+    // docs/verify-tiering.md §6). What the offer DOES do is bind the lane: while its own offer is
+    // open or claimed it must not run the suite locally, and the withdraw door below is where that
+    // permission comes back. That makes "I am running it myself" a state transition the server
+    // witnessed instead of an intention in a pane.
+    if (url.pathname === "/api/self/suite-offer" && (req.method === "GET" || req.method === "POST")) {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      if (!s.worktree) return json({ error: "not a lane — a suite offer hands over a lane's own working tree" }, 409);
+      expireHelperClaims();
+      const existing = laneSuiteOfferOf(s);
+      // THE READ HALF: state, and on a settled offer the verdict WITH its provenance. `waitPolicy`
+      // and `suiteLock` travel with it because the lane's wait is its own foreground loop and those
+      // two numbers are what decides how long waiting is worth it (§5.2): free mutex ⇒ every waiting
+      // second is pure loss, held mutex ⇒ a local run would queue anyway and waiting costs nothing.
+      if (req.method === "GET") {
+        // a settled offer is still readable by the lane that made it — the verdict outlives the
+        // offer, or a lane that asked one second too late could never learn its own answer
+        const last = existing ?? [...laneSuiteJobs.values()]
+          .filter((j) => j.slot === s.id && j.slotOpenedAt === s.openedAt)
+          .sort((a, b) => b.offeredAt - a.offeredAt)[0] ?? null;
+        return json({
+          offer: last ? laneSuiteView(last) : null,
+          waitPolicy: { freeMs: SUITE_OFFER_WAIT_FREE_MS, heldMs: SUITE_OFFER_WAIT_HELD_MS },
+          suiteLock: suiteLockView(),
+        });
+      }
+      // ONE OPEN OFFER PER SLOT. A second POST returns the first with `existing: true` rather than
+      // minting a rival — the same idempotent shape createWatchForSlot uses, and for the same
+      // reason: a caller that retries must not end up holding two of anything.
+      if (existing) return json({ offer: laneSuiteView(existing), existing: true });
+      const job: LaneSuiteJob = {
+        id: randomBytes(6).toString("hex"), slot: s.id, slotOpenedAt: s.openedAt,
+        repo: s.worktree.repo, cwd: s.cwd!, branch: s.worktree.branch, offeredAt: Date.now(),
+        state: "open", commitSha: null, treeSha: null, untracked: null, claim: null, result: null,
+      };
+      laneSuiteJobs.set(job.id, job);
+      audit("helper_claim", s.id, `offered the preview suite of ${basename(job.repo)} ${job.branch} to the portal`);
+      await saveStateNow();
+      return json({ offer: laneSuiteView(job), existing: false });
+    }
+
+    // …and the way back out of it. Two answers, and the difference between them is the whole mutex:
+    //   · an OPEN offer withdraws with 200, and that 200 is the lane's permission to run the suite
+    //     locally. Nothing else grants it.
+    //   · a LIVE-CLAIMED offer answers 409 by default, because somebody is running that tree right
+    //     now and the owner's invariant for this portal is that work is taken over, never doubled.
+    //     `{"abandon": true}` overrides it deliberately — a lane must be able to stop waiting on a
+    //     helper that took the job and went quiet (§5.3). The cost of abandoning is the helper's
+    //     time, and it is not a correctness violation because nothing here gates: the job is marked
+    //     `abandoned` and a verdict arriving afterwards is refused, exactly as a lapsed one is.
+    // An EXPIRED claim is absent everywhere, here included: it can never hold a lane for 45 minutes.
+    if (url.pathname === "/api/self/suite-offer/withdraw" && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      if (!s.worktree) return json({ error: "not a lane — a suite offer hands over a lane's own working tree" }, 409);
+      expireHelperClaims();
+      const job = laneSuiteOfferOf(s);
+      if (!job) return json({ error: "no open suite offer on this lane" }, 404);
+      const held = laneSuiteClaimOf(job);
+      const body = await readJson(req);
+      const abandon = body?.abandon === true;
+      if (held && !abandon)
+        return json({ error: `${held.name} is running this preview — it expires ${new Date(held.expiresAt).toISOString()}.`
+          + ` Do NOT run it locally as well; re-send with {"abandon":true} to give the run up deliberately.` }, 409);
+      if (held) { try { rmSync(held.bundle, { force: true }); } catch { /* the helper has its copy */ } }
+      job.claim = null;
+      job.state = held ? "abandoned" : "withdrawn";
+      audit("helper_result", s.id,
+        `${held ? "abandoned" : "withdrew"} the preview offer of ${basename(job.repo)} ${job.branch}`
+        + `${held ? ` while ${held.name} held it` : ""}`);
+      await saveStateNow();
+      // `mayRunLocally` is the point of the whole call: it is TRUE in both 200 branches, and the
+      // only place a lane is told it may take the suite mutex back.
+      return json({ ok: true, offer: laneSuiteView(job), mayRunLocally: true });
     }
 
     // the lane's own account of a verify-suite run — same principal and same flat-cost auth as the

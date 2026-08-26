@@ -33,6 +33,7 @@ import * as drops from "./e2e/drops";
 import * as landProvenance from "./e2e/land-provenance";
 import * as concurrency from "./e2e/concurrency";
 import * as selfToken from "./e2e/self-token";
+import * as laneSuite from "./e2e/lane-suite";
 import * as programs from "./e2e/programs";
 import * as supervisor from "./e2e/supervisor";
 import * as refAdvance from "./e2e/ref-advance";
@@ -112,6 +113,11 @@ if (REPO) {
   await landProvenance.run();
   await concurrency.run();
   await selfToken.run(ctx);
+  // the LANE-SUITE half of the remote helper portal — a lane offering its own preview run. Right
+  // after the self-token family because that is the credential it is driven with, and before
+  // programs.run() because that section restarts the scratch server. It opens and kills its own
+  // lanes and leaves no offer behind, so it shares no fixture with either neighbour.
+  await laneSuite.run();
   // Programs are planning-session artifacts above lanes. They use both the plain session and the
   // surviving lane self-token established immediately above, and restart the scratch server once.
   await programs.run(ctx);

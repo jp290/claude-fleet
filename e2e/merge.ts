@@ -1292,6 +1292,212 @@ export async function run(lc: LaneCtx): Promise<void> {
       JSON.stringify(aOut));
   }
 
+  // --- THE VERDICT GOES BACK TO THE LANE THAT WROTE THE TREE (2026-08-26) ---------------------
+  // A merge run that KEEPS the lane used to end on the owner's board and nowhere else: the session
+  // that wrote the code sat idle beside a tree it believed it had finished. The terminal of
+  // mergeJob now types the verdict into that pane once, through the same sendText/canDeliver pair
+  // wakeAuthor and every FleetEvent transport use.
+  //
+  // FIVE exits are asserted here and they are not variations of one check: three of them are the
+  // WORDS a lane acts on (fix-or-prove · rebase · nothing-to-fix), and two are the silences —
+  // a land must say nothing at all, and a delivered verdict must never be said twice.
+  {
+    type VerdictDelivery = { at: number; attempts: number; sent: boolean; kind: string; gate?: string };
+    const verdictSends = async (branch: string): Promise<string[]> =>
+      (await plogRead()).filter((e) => e.text.includes(`[fleet land verdict — ${branch}]`)).map((e) => e.text);
+    const verdictMark = async (slot: number): Promise<VerdictDelivery | null> => {
+      const r = await get(`/api/slots/${slot}/merge`);
+      if (r.status === 400) return null; // slot torn down — a land, which delivers nothing
+      return ((await r.json()) as { last: { verdictDelivery?: VerdictDelivery } | null })
+        .last?.verdictDelivery ?? null;
+    };
+    // Deterministic, never a sleep-then-look: poll the server's own marker until it reaches the
+    // state under test. Returns whatever it last saw so a failure prints the real shape.
+    const awaitMark = async (slot: number, want: (d: VerdictDelivery) => boolean): Promise<VerdictDelivery | null> => {
+      let seen: VerdictDelivery | null = null;
+      for (let i = 0; i < 400; i++) {
+        seen = await verdictMark(slot);
+        if (seen && want(seen)) return seen;
+        await Bun.sleep(50);
+      }
+      return seen;
+    };
+    // One lane carrying one sabotage marker, plus an unrelated commit on main so the rebase is
+    // CLEAN and no agent is consulted. Same commit-retry as every other marker lane in this file:
+    // a server git poll holding index.lock makes a one-shot commit fail, and a lane with no marker
+    // committed would verify GREEN and land — failing the checks below for the wrong reason.
+    const markerLane = async (name: string, body: string): Promise<{ slot: number; cwd: string; branch: string }> => {
+      const ln = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+      await Bun.write(`${ln.cwd}/${name}.txt`, body);
+      spawnSync("git", ["-C", ln.cwd, "add", `${name}.txt`]);
+      let committed = false;
+      for (let i = 0; i < 20 && !committed; i++) {
+        committed = spawnSync("git", ["-C", ln.cwd, "commit", "-qm", `${name} lane work`]).status === 0;
+        if (!committed) await Bun.sleep(150);
+      }
+      check(`land-verdict setup: the ${name} lane committed its marker (precondition for the verdict below)`,
+        committed, spawnSync("git", ["-C", ln.cwd, "status", "--porcelain"]).stdout.toString().trim());
+      await Bun.write(`${REPO}/${name}-main.txt`, "main side\n");
+      spawnSync("git", ["-C", REPO, "add", `${name}-main.txt`]);
+      spawnSync("git", ["-C", REPO, "commit", "-qm", `${name} main work`]);
+      return ln;
+    };
+    const dropLane = async (ln: { slot: number; cwd: string; branch: string }): Promise<void> => {
+      await post(`/api/slots/${ln.slot}/kill`, {});
+      await post("/api/worktrees/discard", { repo: REPO, path: ln.cwd, branch: ln.branch });
+    };
+
+    // (i) VERIFY RED on a kept lane — the exit this whole path exists for.
+    const lnR = await markerLane("verdict-red", "lane work with a VERIFYBAD marker\n");
+    await settleForMerge(lnR.slot);
+    await post(`/api/slots/${lnR.slot}/merge`, {});
+    const vR = await waitMerge(lnR.slot);
+    check("land verdict setup: the red lane settles as resolved/NOT landed and is KEPT",
+      !vR.gone && vR.last?.status === "resolved" && vR.last.landed === false
+        && vR.last.verify?.ok === false && exists(lnR.cwd), JSON.stringify(vR.last));
+    const markR = await awaitMark(lnR.slot, (d) => d.sent);
+    const sendsR = await verdictSends(lnR.branch);
+    check("land verdict: a kept verify-RED lane is told, exactly once, on its first attempt",
+      markR?.sent === true && markR.kind === "review" && markR.attempts === 1 && sendsR.length === 1,
+      JSON.stringify({ mark: markR, sends: sendsR.length }));
+    // WHAT it was told. Three independent halves: the verdict, the gate's own last lines, and an
+    // instruction that names BOTH exits the rulebook allows on a red check — re-run the same tree
+    // to prove non-determinism, or fix it. A message that carried only "fix it" would push every
+    // flake into a hunt for a defect that is not there.
+    check("land verdict: the red text carries the verdict, the verify tail and the fix-or-prove instruction",
+      (sendsR[0] ?? "").includes("landed=NO")
+        && (sendsR[0] ?? "").includes("VERIFYBAD marker present in the rebased tree")
+        && (sendsR[0] ?? "").includes("run the SAME tree again")
+        && (sendsR[0] ?? "").includes("report done again"),
+      JSON.stringify((sendsR[0] ?? "").slice(0, 400)));
+    // …and it is the SERVER speaking, in the same fixed envelope every other injected prompt
+    // carries. A verdict that could read as the owner talking is a different kind of message.
+    const plogR = (await plogRead()).filter((e) => e.text.includes(`[fleet land verdict — ${lnR.branch}]`));
+    check("land verdict: it is journalled against the lane's own slot as machine-typed text",
+      plogR.length === 1 && plogR[0].slot === lnR.slot && plogR[0].source === "auto",
+      JSON.stringify(plogR.map((e) => ({ slot: e.slot, source: e.source }))));
+    // (ii) …and NEVER twice. The tick that owns the bounded retry (FACT 3 in tickWatches) runs
+    // every FLEET_AUTOS_TICK_MS=250ms here, so this window is many ticks — every one of them sees
+    // the same terminal state and must stay silent.
+    await Bun.sleep(3_000);
+    const sendsR2 = await verdictSends(lnR.branch);
+    const markR2 = await verdictMark(lnR.slot);
+    check("land verdict: a dozen further ticks on the SAME terminal state send nothing more",
+      sendsR2.length === 1 && markR2?.attempts === 1 && markR2.sent === true,
+      JSON.stringify({ sends: sendsR2.length, mark: markR2 }));
+    await dropLane(lnR);
+
+    // (iii) an ERROR verdict — the lane is kept, main did not move, and the only thing that helps
+    // is a rebase the lane does itself. Produced by the lying agent, which is this file's
+    // deterministic route to `status:"error"` on a kept lane.
+    const lnE = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${lnE.cwd}/code.txt`, "root\nverdict-error-lane\n");
+    spawnSync("git", ["-C", lnE.cwd, "commit", "-aqm", "verdict-error lane work"]);
+    await Bun.write(`${REPO}/code.txt`, "root\nverdict-error-main\n"); // same file+lines → real conflict
+    spawnSync("git", ["-C", REPO, "commit", "-aqm", "verdict-error main work"]);
+    await setMergeMode("lie");
+    await settleForMerge(lnE.slot);
+    await post(`/api/slots/${lnE.slot}/merge`, {});
+    const vE = await waitMerge(lnE.slot);
+    check("land verdict setup: the lying-agent lane settles as error/NOT landed and is KEPT",
+      !vE.gone && vE.last?.status === "error" && vE.last.landed === false && exists(lnE.cwd),
+      JSON.stringify(vE.last));
+    const markE = await awaitMark(lnE.slot, (d) => d.sent);
+    const sendsE = await verdictSends(lnE.branch);
+    check("land verdict: an error verdict is delivered once and tells the lane to rebase and re-verify",
+      markE?.sent === true && markE.kind === "error" && sendsE.length === 1
+        && (sendsE[0] ?? "").includes("Rebase it onto") && (sendsE[0] ?? "").includes("run the verification chain")
+        && !(sendsE[0] ?? "").includes("NOTHING TO FIX"),
+      JSON.stringify({ mark: markE, text: (sendsE[0] ?? "").slice(-260) }));
+    await dropLane(lnE);
+
+    // (iii-bis) THE COUNTER-PROBE to (i), and the reason `review` is not one text: a conflict the
+    // agent resolved stops for the owner's review with a GREEN gate. It is the same kind and the
+    // same envelope, but "fix it" would be a lie about this tree — so the closing line must be the
+    // other one. Without this check a mutation collapsing the two would leave (i) green.
+    await setMergeMode("do");
+    const lnC = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${lnC.cwd}/code.txt`, "root\nverdict-clean-conflict-lane\n");
+    spawnSync("git", ["-C", lnC.cwd, "commit", "-aqm", "verdict-clean-conflict lane work"]);
+    await Bun.write(`${REPO}/code.txt`, "root\nverdict-clean-conflict-main\n"); // same lines → real conflict
+    spawnSync("git", ["-C", REPO, "commit", "-aqm", "verdict-clean-conflict main work"]);
+    await settleForMerge(lnC.slot);
+    await post(`/api/slots/${lnC.slot}/merge`, {});
+    const vC = await waitMerge(lnC.slot);
+    check("land verdict setup: the resolved-conflict lane is kept with a GREEN gate, not landed",
+      !vC.gone && vC.last?.status === "resolved" && vC.last.landed === false
+        && vC.last.verify?.ok === true && exists(lnC.cwd), JSON.stringify(vC.last?.verify));
+    const markC = await awaitMark(lnC.slot, (d) => d.sent);
+    const sendsC = await verdictSends(lnC.branch);
+    check("land verdict: a resolved verdict with NO failure says so — no fix order, no flake proof",
+      markC?.sent === true && markC.kind === "review" && sendsC.length === 1
+        && (sendsC[0] ?? "").includes("nothing here to fix")
+        && (sendsC[0] ?? "").includes("stopped for the owner's review")
+        && !(sendsC[0] ?? "").includes("run the SAME tree again"),
+      JSON.stringify({ mark: markC, text: (sendsC[0] ?? "").slice(-260) }));
+    await dropLane(lnC);
+
+    // (iv) a WAIT-OUT — the one kept-lane exit that carries NO work. The gate was killed while
+    // still queued behind the suite mutex and never looked at the tree, so a fix-or-prove
+    // instruction here would send a session hunting a defect nothing ever measured: verbatim the
+    // afternoon lost on 2026-08-06. Asserted as the ABSENCE of that instruction, not only as the
+    // presence of its own words — the two texts share the envelope and differ exactly there.
+    const lnW = await markerLane("verdict-wait", "lane work carrying a VERIFYWAIT marker\n");
+    await settleForMerge(lnW.slot);
+    await post(`/api/slots/${lnW.slot}/merge`, {});
+    const vW = await waitMerge(lnW.slot);
+    check("land verdict setup: the queued-verify lane settles as resolved with verify.waitedOut",
+      !vW.gone && vW.last?.status === "resolved" && vW.last.verify?.waitedOut === true && exists(lnW.cwd),
+      JSON.stringify(vW.last?.verify));
+    const markW = await awaitMark(lnW.slot, (d) => d.sent);
+    const sendsW = await verdictSends(lnW.branch);
+    check("land verdict: a wait-out is delivered as its own text — nothing to fix, no proof to run",
+      markW?.sent === true && markW.kind === "waited" && sendsW.length === 1
+        && (sendsW[0] ?? "").includes("NEVER LOOKED AT THIS TREE")
+        && (sendsW[0] ?? "").includes("NOTHING TO FIX")
+        && !(sendsW[0] ?? "").includes("run the SAME tree again")
+        && !(sendsW[0] ?? "").includes("Rebase it onto"),
+      JSON.stringify({ mark: markW, text: (sendsW[0] ?? "").slice(-300) }));
+    await dropLane(lnW);
+
+    // (vi) THE BOUND, and the check that makes (ii) mean something: a delivery the gate REFUSES is
+    // retried exactly once and then stands. Driven deterministically rather than hoped for — the
+    // VERIFYHANG gate holds the job for the whole 8s work budget, so the pane can be made busy
+    // AFTER the merge starts (the merge route has an idle gate of its own and would refuse the
+    // start), and it is still busy at the terminal and at every retry tick after it.
+    const lnB = await markerLane("verdict-busy", "lane work carrying a VERIFYHANG marker\n");
+    await settleForMerge(lnB.slot);
+    await post(`/api/slots/${lnB.slot}/merge`, {});
+    await tmuxOut("send-keys", "-t", `s${lnB.slot}`, "while true; do date; sleep 0.2; done", "Enter");
+    const vB2 = await waitMerge(lnB.slot);
+    check("land verdict setup: the busy lane settles as a kept resolved verdict (timed-out gate)",
+      !vB2.gone && vB2.last?.status === "resolved" && vB2.last.verify?.timedOut === true,
+      JSON.stringify(vB2.last?.verify));
+    const markB = await awaitMark(lnB.slot, (d) => d.attempts >= 2);
+    await Bun.sleep(3_000); // many further ticks — the cap must hold, not merely be reached
+    const markB2 = await verdictMark(lnB.slot);
+    const sendsB = await verdictSends(lnB.branch);
+    check("land verdict: a refused delivery is retried exactly ONCE, then gives up and stays visible",
+      markB?.attempts === 2 && markB2?.attempts === 2 && markB2.sent === false
+        && markB2.gate === "busy" && sendsB.length === 0,
+      JSON.stringify({ mark: markB2, sends: sendsB.length }));
+    await tmuxOut("send-keys", "-t", `s${lnB.slot}`, "C-c");
+    await dropLane(lnB);
+
+    // (v) THE SILENCE THAT MATTERS MOST: a successful land delivers nothing. It holds by
+    // construction — the land tears the worktree down before the delivery runs — and that is
+    // exactly why it needs an assertion: a future edit that moved the call ahead of the teardown
+    // would type a verdict into a pane whose lane no longer exists.
+    const lnG = await markerLane("verdict-green", "clean lane work, no marker\n");
+    await settleForMerge(lnG.slot);
+    await post(`/api/slots/${lnG.slot}/merge`, {});
+    const vG = await waitMerge(lnG.slot);
+    await Bun.sleep(1_500); // several retry ticks after the land, in case anything wanted to speak
+    check("land verdict: a successful land tells the lane NOTHING — the lane is gone",
+      vG.gone && !exists(lnG.cwd) && (await verdictSends(lnG.branch)).length === 0,
+      JSON.stringify({ gone: vG.gone, last: vG.last }));
+  }
+
   // orphan flow: a killed lane's worktree survives on disk, shows slot:null in the map,
   // can be reattached into a fresh slot (landable again) or safely removed
   const ln2 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };

@@ -3302,6 +3302,11 @@ type AuditEvent =
   // ② the conflict went to the lane's OWN session instead of the throwaway resolver — the durable
   // half of `resolvedBy`, recorded at the moment of the decision rather than reconstructed at land
   | "merge_wake_author"
+  // the terminal verdict of a merge run going back into the lane it describes, and the refusal
+  // when the delivery gate was closed. Both on the trail because this is the server typing prose
+  // into a session's pane: what it sent, and what it decided not to send, are the same class of
+  // fact as merge_wake_author one line up.
+  | "merge_verdict_sent" | "merge_verdict_skip"
   | "steward_send" | "steward_send_capped"
   | "steward_journal" | "steward_journal_capped" | "steward_task" | "steward_propose_outcome"
   // ACP-23 · a bound Program-MAIN filed a row of its own Program through POST /api/self/tasks.
@@ -10314,7 +10319,9 @@ async function tickMigrate(): Promise<void> {
 // it — it spawns no agent and costs nothing while no Watch is armed and no event is pending.
 let watchTickBusy = false;
 async function tickWatches(): Promise<void> {
-  if (!watches.some((w) => w.armed) && !fleetEvents.some((e) => e.status === "pending")) return;
+  const verdictsDue = verdictRetryDue();
+  if (!verdictsDue.length && !watches.some((w) => w.armed)
+    && !fleetEvents.some((e) => e.status === "pending")) return;
   if (watchTickBusy) return; // canDeliver shells out (ps/pgrep); a slow round must not overlap
   watchTickBusy = true;
   try {
@@ -10494,6 +10501,15 @@ async function tickWatches(): Promise<void> {
       await saveStateNow();
       console.log(`event ${event.id}: delivered ${event.kind} to slot ${event.receiverSlot}`);
     }
+
+    // FACT 3: the ONE bounded retry of a terminal merge verdict whose first delivery was refused at
+    // the gate — the lane was still producing output, the fleet was paused, an owner draft sat in
+    // the composer. A second refusal is FINAL: the marker stays on the merge status, where the
+    // owner can read it, and nothing asks again. Recomputed here rather than reusing the list from
+    // the top of the tick, because the loops above spend seconds in tmux and a lane can land, be
+    // recycled or start a fresh merge run inside that window.
+    for (const s of verdictRetryDue()) await deliverMergeVerdict(s, s.cwd!, s.worktree!.branch);
+
     if (dirty) saveState();
   } finally {
     watchTickBusy = false;
@@ -11216,7 +11232,15 @@ interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "int
   // OPT-IN clean-path advisory reviewer verdict (present only when FLEET_CLEAN_REVIEW ran on the clean
   // auto-land path). "review" DOWNGRADED an auto-land to a stop-and-review; "ok" rode along on a land.
   // Advisory FACTS for the human, never a gate — the deterministic verify stays the authority.
-  cleanReview?: { verdict: "ok" | "review"; reason: string } }
+  cleanReview?: { verdict: "ok" | "review"; reason: string };
+  // WHETHER THIS RUN'S VERDICT REACHED THE LANE THAT PRODUCED THE TREE (deliverMergeVerdict).
+  // The run identity is THIS OBJECT: every merge run replaces the whole MergeLast wholesale
+  // (mergeJob's durable-intent write), so an absent marker means "this run has not tried yet" and
+  // can never be mistaken for a previous run's attempt — which is what makes "exactly once per
+  // run" hold without an id to compare. `sent:false` with `gate` is a refusal that STANDS: the
+  // attempt count is capped, so a lane that never goes quiet is told at most twice and the refusal
+  // then stays readable here instead of being re-offered on every tick forever.
+  verdictDelivery?: { at: number; attempts: number; sent: boolean; kind: MergeVerdictKind; gate?: string } }
 const mergeInflight = new Map<number, Promise<void>>();
 // slots whose merge POST is still in its pre-flight guards: the `has(inflight)` check and
 // the `set` are separated by several awaits, so without this SYNCHRONOUS reservation two
@@ -13969,6 +13993,150 @@ async function carriedFromPendingVerdict(s: Slot, repo: string, main: string, br
 // exists because the note is authored here and the caller is the only thing that knows which
 // principal drove the run — the same reason `carried`/`carriedBy` ride along. Defaulted to the
 // board's own shape so no call site can forget it into an absence.
+// --- THE VERDICT'S WAY BACK TO THE LANE THAT WROTE THE TREE -----------------------------------
+// A merge run that KEEPS the lane ends on the owner's board and nowhere else. The session that
+// wrote the code is left idle beside a tree it believes it finished, and everything it needs in
+// order to act — the status, the reason, the gate's own last lines — is already in the verdict.
+// So the verdict is typed into that pane, ONCE per run, through the same sendText the author brief
+// and every FleetEvent transport use, behind the same canDeliver choke-point. No new channel, no
+// poll, and deliberately no auto-retry of the MERGE itself: this delivers a fact, it decides
+// nothing.
+//
+// A SUCCESSFUL land delivers nothing, and that holds by construction rather than by a branch: the
+// land tears the lane down, so `s.cwd` no longer names this worktree by the time this runs.
+type MergeVerdictKind = "review" | "error" | "waited";
+// One retry, on the next tick, and then the refusal stands (see verdictDelivery). A lane that is
+// permanently busy must not be re-offered the same verdict for the rest of its life.
+const MERGE_VERDICT_MAX_ATTEMPTS = 2;
+
+// The three exits that keep a lane AND leave it something to do. Everything else is silent on
+// purpose: `blocked` never touched the tree and the route already answered the owner synchronously,
+// a `merged` row is either landed or a teardown failure that no rebase in the lane repairs,
+// `awaiting-author` has just put a brief in this very pane, and `interrupted` is the durable-intent
+// marker rather than a verdict at all.
+//
+// ORDER IS MEANING here. `waited` is split out of the resolved group because it is the one outcome
+// that carries NO work: the gate was killed while still queued behind the suite mutex and never
+// looked at the tree, so a fix-or-prove instruction would send a session hunting a defect that was
+// never measured — verbatim the afternoon lost on 2026-08-06.
+function mergeVerdictKind(r: MergeLast): MergeVerdictKind | null {
+  if (r.landed) return null;
+  if (r.status === "error") return "error";
+  if (r.status !== "resolved") return null;
+  return r.verify?.waitedOut ? "waited" : "review";
+}
+
+// Last non-blank lines of what the gate printed. Bounded twice — by lines and by bytes — because
+// `out` is unbounded external input and this string is about to be typed into a terminal.
+function verifyTail(out: string, lines = 15): string {
+  return out.split("\n").filter((l) => l.trim()).slice(-lines).join("\n").slice(-2000);
+}
+
+// SERVER-COMPOSED, with the same fixed envelope every other injected prompt carries: the prefix
+// names the principal, so this text can structurally never read as the owner speaking or as a
+// report from another session.
+function mergeVerdictMessage(kind: MergeVerdictKind, r: MergeLast, main: string): string {
+  const head = `[fleet land verdict — ${r.branch}] The server ran this lane's ⏫ merge/land. This is its `
+    + `own result, not an owner instruction and not another session speaking. `
+    + `status=${r.status} landed=NO\n\n${r.detail}`;
+  if (kind === "waited")
+    return `${head}\n\nThe gate NEVER LOOKED AT THIS TREE — it was killed while still queued behind the `
+      + `suite mutex, so it says nothing whatever about your work. There is NOTHING TO FIX and no `
+      + `same-tree proof to run: the run will be started again. Wait.`;
+  if (kind === "error")
+    return `${head}\n\nThe lane was KEPT and nothing reached ${main}. Rebase it onto ${main} yourself, `
+      + `run the verification chain, and report done again.`;
+  const tail = r.verify?.out ? `\n\nLast lines of the verify output:\n${verifyTail(r.verify.out)}` : "";
+  // THE CLOSING LINE IS DERIVED, NOT FIXED, and this is the one place `review` is not one thing.
+  // A RED gate leaves the lane both exits the rulebook allows — re-run the same tree to prove the
+  // red is non-deterministic, or fix it. Every other resolved verdict reaching here (a conflict
+  // resolution stopped for review, a gate that skipped itself or timed out) reports NO failure
+  // about this tree, and telling that lane to "fix it" would send it after a defect nothing
+  // measured — the same mistake the wait-out branch above exists to avoid, one state over.
+  const close = r.verify?.ok === false
+    ? `Either run the SAME tree again to prove the red is non-deterministic, or fix it — then `
+      + `report done again.`
+    : `The gate reported no failure about this tree, so there is nothing here to fix: this is `
+      + `stopped for the owner's review. Read the verdict above before re-running ⏫.`;
+  return `${head}${tail}\n\nThe lane was KEPT and nothing reached ${main}. ${close}`;
+}
+
+// EXACTLY ONCE PER RUN, at most twice attempted. Called at mergeJob's terminal and — only for an
+// attempt the gate refused — once more from tickWatches. Every precondition is re-read here rather
+// than trusted from the caller, because both call sites reach it across awaits.
+async function deliverMergeVerdict(s: Slot, cwd: string, branch: string): Promise<void> {
+  const outcome = mergeLast.get(s.id);
+  if (!outcome || outcome.branch !== branch) return;
+  const kind = mergeVerdictKind(outcome);
+  if (!kind) return;
+  // the lane must still BE this lane: a slot recycled onto another cwd mid-run, or a lane whose
+  // worktree was removed, is not the session that wrote this tree — and is the same identity check
+  // `record` makes one function down.
+  if (!s.cwd || s.cwd !== cwd || s.worktree?.branch !== branch) return;
+  const prev = outcome.verdictDelivery;
+  if (prev?.sent || (prev?.attempts ?? 0) >= MERGE_VERDICT_MAX_ATTEMPTS) return;
+  const attempts = (prev?.attempts ?? 0) + 1;
+  // The stamp writes only while the map still holds THIS object. That is the whole dedupe: a run
+  // superseded mid-delivery must not mark the successor's verdict as already delivered.
+  const mark = async (sent: boolean, gate?: string): Promise<void> => {
+    if (mergeLast.get(s.id) !== outcome) return;
+    mergeLast.set(s.id, { ...outcome,
+      verdictDelivery: { at: Date.now(), attempts, sent, kind, ...(gate ? { gate } : {}) } });
+    await saveStateNow();
+  };
+  // ⏫ is an owner act and this is its RESULT going back to the session that produced the tree, so
+  // the master stop and quiet hours are waived exactly as wakeAuthor waives them — and the foreign-
+  // harness WORK-PROMPT policy with them, on the same ground tickWatches states: the text is a
+  // fixed server-composed fact, never caller-chosen work. The liveness, blocked-screen and idle
+  // gates STAND: prose into a pane with no agent behind it executes as shell commands, and a
+  // verdict pasted over a session mid-turn is the interruption the author brief refuses to be.
+  const gate = await canDeliver(s, { now: Date.now(), killSwitch: false, harness: false,
+    quietHours: false, idleMs: MERGE_IDLE_MS });
+  if (!gate.ok) {
+    await mark(false, gate.gate);
+    audit("merge_verdict_skip", s.id, `${branch}: ${kind} — ${gate.gate} (attempt ${attempts}/${MERGE_VERDICT_MAX_ATTEMPTS})`);
+    return;
+  }
+  const main = (s.worktree ? await integrationBranch(s.worktree.repo) : null) ?? "the integration branch";
+  const text = mergeVerdictMessage(kind, outcome, main);
+  try {
+    await sendText(s, text, true);
+  } catch (e) {
+    // SendRefused typed nothing at all (an owner draft in the composer); anything else may have
+    // typed part of it. Neither is retried beyond the shared cap, and both are named in the marker.
+    await mark(false, e instanceof SendRefused ? "composer-occupied" : "send-failed");
+    audit("merge_verdict_skip", s.id, `${branch}: ${kind} — ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
+    return;
+  }
+  // server-injected text in the owner's own pane belongs in the same two records every other
+  // injected prompt lands in. Source "auto", not "owner", for wakeAuthor's reason: ownerPrompts is
+  // an owner-ATTENTION proxy and Fleet's own verdict costs the owner none.
+  // SAME KNOWN COUPLING as the author brief, inherited deliberately: laneOwnerPrompts reads the
+  // FIRST owner-or-auto prompt as a lane's founding brief, so on a lane that never received one
+  // this verdict becomes its `laneBrief`. Every dispatched lane is briefed before it can ever be
+  // merged, so the shape needs a hand-made, prompt-less lane whose code someone committed from
+  // outside — and the alternative (keeping server-typed text out of the one journal that records
+  // such things) is the worse trade, exactly as it was there.
+  const now = Date.now();
+  s.history = [...s.history, { text, ts: now }].slice(-MAX_HISTORY);
+  saveHistory(s);
+  logPrompt(s, text, "auto", now);
+  await mark(true);
+  audit("merge_verdict_sent", s.id, `${branch}: ${kind}`);
+}
+
+// Lanes whose ONE retry is owed — see FACT 3 in tickWatches. A slot with a merge run in flight is
+// excluded: that run supersedes this verdict and will deliver its own.
+function verdictRetryDue(): Slot[] {
+  return slots.filter((s) => {
+    if (!s.cwd || !s.worktree) return false;
+    if (mergeInflight.has(s.id) || mergeStart.has(s.id)) return false;
+    const r = mergeLast.get(s.id);
+    const d = r?.verdictDelivery;
+    return !!r && !!d && !d.sent && d.attempts < MERGE_VERDICT_MAX_ATTEMPTS && !!mergeVerdictKind(r);
+  });
+}
+
 async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main: string,
   carried: string[] = [], carriedBy: "agent" | "author" = "agent",
   actor: LandActor = { kind: "owner", via: "cookie" }): Promise<void> {
@@ -14345,6 +14513,10 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
     for (const d of graphDirs) try { rmSync(d, { recursive: true, force: true }); } catch { /* inert in TMPDIR */ }
   }
   await record(res);
+  // THE VERDICT GOES BACK TO THE LANE. After `record`, never before: the fact is on disk first, so
+  // a death between the two loses a notification and never a verdict. A land tore the worktree
+  // down and is filtered out inside.
+  await deliverMergeVerdict(s, cwd, branch);
 }
 
 // --- auth: single access token, sent once via ?token= then held in a SameSite=Strict cookie.

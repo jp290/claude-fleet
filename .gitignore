@@ -43,6 +43,10 @@ rulebook/
 graphify-out/
 # graphify hook config carries a machine-local absolute path (account name) — advisory hook stays local-only
 .claude/settings.json
+# the agent harness drops COPIES of installed skills here (graphify, kriterium-grill, mess-notiz,
+# unslop — the originals live in ~/.claude/skills/). Machine-local, and tracking them in a PUBLIC
+# repo would publish them; untracked they block every land, which is how this was noticed.
+.agents/
 inspektion-register.jsonl
 
 # uploads the owner drops into a session (POST /api/slots/:id/upload). Ignored on purpose: an

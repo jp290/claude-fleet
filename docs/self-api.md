@@ -466,6 +466,55 @@ unterscheidbar, weil sie den Aufrufer an verschiedene Stellen schicken):
     ABLEHNUNG, und die Ablehnung NENNT die Sprosse, die sie nähme (`guarded`). Unter `guarded`
     greift stattdessen die bestätigte Konflikt-Bestätigung unten.
 
+### Die Identität ist sichtbar, bevor die Tür sie prüft (V1a)
+
+Sprosse 2 oben ist die einzige, die eine Session **an ihrer Identität** abweist — und genau dieser
+Zustand war von außen unsichtbar. Beide Program-Sichten zeigten `occupancy: "live"` (die Pane hält
+den gebundenen Slot ja), während jedes Self-Land derselben MAIN bereits abgelehnt wurde; die
+Ablehnung stand nur in ihrer eigenen Pane. Seit V1a projiziert EIN gemeinsamer reiner Helfer
+(`server.ts#programHealth`) beide Hälften auf die **zwei vorhandenen** Sichten —
+**`GET /api/programs` (Owner) und `GET /api/self/supervisor-view` → `portfolio[]` (Supervisor)** —
+als EIN additives Feld je Program:
+
+- `health.occupancy` — `live` · `stale` · `unbound`. **Hier wohnt seit V1a die frühere Top-Level-
+  `occupancy`**; die Regel selbst (`server.ts#programOccupancy`) ist unverändert. Zwei Kopien eines
+  abgeleiteten Feldes auf einer Zeile sind zwei Antworten, die auseinanderlaufen — es gibt jetzt
+  genau eine.
+- `health.sessionIdMatch` — `exact` · `divergent` · `unknown`. **Nur beim live gebundenen Occupant**
+  wird verglichen; `stale` und `unbound` ergeben `unknown`, weil eine tote Bindung einen Occupant
+  nennt, der weg ist, und ein Vergleich gegen dessen Nachfolger eine Frage beantwortete, die
+  niemand gestellt hat. Der Vergleich ist **keine neue Regel**: `server.ts#sessionIdMatchOf` ist der
+  eine Ausdruck, den auch `server.ts#boundProgramForMain` und `ProgramExecutionView` lesen.
+
+**Es ist kein Land-Urteil und darf nie als eines gelesen werden.** Die Tür vergleicht die beiden
+Werte DIREKT — beide `null` ist für sie ein exakter Treffer, ein `null` auf nur einer Seite eine
+Ablehnung; hier heißen beide `unknown`. Und sie verlangt zusätzlich ein `active` Programm, eine
+EINDEUTIGE Bindung (`ambiguous Program-MAIN binding`) und eine Policy — nichts davon sieht diese
+Projektion an. Sie meldet IDENTITÄT; die Autorität bleibt, wo sie entschieden wird. Konsequenz für
+zwei Programme auf derselben Okkupation: das Zustellbudget (V1b) wird dort `unknown`, `health`
+NICHT — ein Budget gehört einem Occupant und lässt sich nicht teilen, ein Identitätsvergleich ist
+pro Bindung wohldefiniert, und was die Mehrdeutigkeit kostet, lehnt die Tür selbst ab.
+
+**Dazu trägt `portfolio[]` seit V1a den rohen `promotion`-Record** (sonst `null`) — bis dahin trug
+es ihn gar nicht, so dass „der Owner hat nein gesagt", „der Owner hat nie etwas gesagt" und „der
+Owner hat eine Sprosse erteilt" für den Supervisor EIN Schweigen waren, während das Owner-Board
+alle drei unterscheidet. Verbatim, ohne Übersetzung: die fünf angezeigten Zustände
+(`absent|off|green-only|guarded|unreadable`) sind das Vokabular des Client-Helfers
+`src/client.ts#promotionState`, und ein zweiter Übersetzer wäre ein zweites Vokabular. Der
+Owner-GET behält seinen vorhandenen Top-Level-Record unverändert. **`promotion: null` behauptet
+nichts über ein Warten auf den Owner** — die Owner-Policy vom 2026-08-23 reserviert diese Tür für
+eine konkret REVIEWABLE Zeile ohne nutzbare Policy, und diese Projektion sieht keine Zeile an.
+
+**Reine PROJEKTION:** nichts wird geschrieben, nichts persistiert, pro Request neu gerechnet — wie
+`occupancy` und das Rückweg-Budget daneben, weil der Occupant zwischen zwei Reads sterben kann.
+Beweise: `e2e/programs.ts` (alle drei Arme an der vorhandenen Divergenz-Fixture — `divergent` ist
+dasselbe Wort, das die Tür meldet —, die Twin-Fixture, der stale-Arm, und die Byte-Gleichheit von
+`health` zwischen beiden Sichten) und `e2e/supervisor.ts` (beide Hälften im Portfolio, der
+HELD-aber-nicht-gebundene Slot, der rohe Promotion-Record und die Abwesenheit jedes `waitingOn`).
+Auf dem Board zeigt `src/client.ts#programHealthState` die Identitätshälfte auf JEDER Zeile
+dauerhaft — vier Zustände, `unreadable` als vierter, weil eine Zeile ohne lesbaren Record kein
+Treffer ist.
+
 ### Die `guarded`-Sprosse: eine aufgelöste Konfliktlösung bestätigen
 
 Owner-Policy 2026-08-23, wörtlich: „Conflict is MAIN work … the MAIN inspects both sides, chooses

@@ -35,6 +35,9 @@ interface Program extends ProgramContent {
   deliveryBudget?: { state?: string; deliveryDebts?: number; armedReservations?: number;
     cap?: number; free?: number; reason?: string };
   deliveryBudgetNote?: string;
+  // V1a — the bound MAIN's health, both halves from one server helper. Derived per request and
+  // persisted nowhere, so it is read off the ROUTE and never off fleet.json.
+  health?: { occupancy?: string; sessionIdMatch?: string };
   confirmedAt?: number;
   activatedAt?: number;
   completedAt?: number;
@@ -122,13 +125,13 @@ const ownerPrograms = async (): Promise<Program[]> =>
   ((await (await get("/api/programs")).json()) as { programs: Program[] }).programs;
 // occupancy is DERIVED per request and never persisted, so it is read off the route and never off
 // fleet.json — a state-file read would answer `undefined` for every program and look like "the
-// field is missing" rather than "this reader asked the wrong source".
-type ProgramOccupancy = "live" | "stale" | "unbound";
-const programsWithOccupancy = async (): Promise<(Program & { occupancy?: ProgramOccupancy })[]> =>
-  ((await (await get("/api/programs")).json()) as
-    { programs: (Program & { occupancy?: ProgramOccupancy })[] }).programs;
-const occupancyOf = async (id: string): Promise<ProgramOccupancy | undefined> =>
-  (await programsWithOccupancy()).find((p) => p.id === id)?.occupancy;
+// field is missing" rather than "this reader asked the wrong source". Since V1a it lives inside
+// `health` beside `sessionIdMatch`: one helper answers both halves of "is the bound MAIN still
+// there, and is it still the one that was bound", and a top-level copy would be a second rendering.
+const occupancyOf = async (id: string): Promise<string | undefined> =>
+  (await ownerPrograms()).find((p) => p.id === id)?.health?.occupancy;
+const healthOf = async (id: string): Promise<Program["health"]> =>
+  (await ownerPrograms()).find((p) => p.id === id)?.health;
 const selfPrograms = async (token: string): Promise<{ response: Response; programs: Program[] }> => {
   const response = await fetch(`${BASE}/api/self/programs`, { headers: { "x-fleet-self-token": token } });
   const body = await response.json() as { programs?: Program[] };
@@ -1618,12 +1621,33 @@ export async function run(ctx: Ctx): Promise<void> {
       && JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main)
         === JSON.stringify(transferredBinding),
     `${bootstrapAfterSuccession.status} ${JSON.stringify(afterSuccessionBody)}`);
-  const liveOccupancy = await programsWithOccupancy();
+  const liveOccupancy = await ownerPrograms();
   const neverBootstrapped = liveOccupancy.find((p) => !p.main);
+  const liveHealthRow = liveOccupancy.find((p) => p.id === mainProgram.id);
   check("GET /api/programs occupancy: a live binding reads live and a never-bootstrapped program reads unbound",
-    liveOccupancy.find((p) => p.id === mainProgram.id)?.occupancy === "live"
-      && !!neverBootstrapped && neverBootstrapped.occupancy === "unbound",
-    JSON.stringify(liveOccupancy.map((p) => [p.id, p.occupancy])));
+    liveHealthRow?.health?.occupancy === "live"
+      && !!neverBootstrapped && neverBootstrapped.health?.occupancy === "unbound",
+    JSON.stringify(liveOccupancy.map((p) => [p.id, p.health?.occupancy])));
+  // V1a · THE IDENTITY HALF TRAVELS WITH IT, AND THERE IS EXACTLY ONE RENDERING OF EACH. The
+  // top-level `occupancy` is asserted GONE rather than merely ignored: two copies of one derived
+  // fact on one row is precisely the drift this helper exists to prevent, and a leftover copy
+  // would keep every reader below passing while the two answers slowly parted.
+  //
+  // BOTH SIDES RECORD NO SESSION ID in this harness (FLEET_CMD=true pins none), and that is
+  // reported as `unknown` — never as a match. The pair is claimed together on purpose: if the
+  // harness ever started pinning ids, `exact` would be the right answer and this check must fail
+  // as ITSELF rather than keep asserting a comparison nobody made.
+  const liveBindingSession = liveHealthRow?.main?.sessionId ?? null;
+  const liveSlotSession = readState().slots?.[String(successorSlot)]?.sessionId ?? null;
+  check("V1a: occupancy and sessionIdMatch arrive as ONE health record, and the former top-level occupancy is gone",
+    liveHealthRow?.health?.sessionIdMatch === "unknown"
+      && liveBindingSession === null && liveSlotSession === null
+      && neverBootstrapped?.health?.sessionIdMatch === "unknown"
+      && (liveHealthRow as unknown as Record<string, unknown>).occupancy === undefined
+      && (neverBootstrapped as unknown as Record<string, unknown>).occupancy === undefined,
+    JSON.stringify({ health: liveHealthRow?.health, unbound: neverBootstrapped?.health,
+      binding: liveBindingSession, pane: liveSlotSession,
+      topLevel: (liveHealthRow as unknown as Record<string, unknown>).occupancy }));
   // V1b · THE RETURN PATH, on the same read and by the same attribution rule. A budget belongs to
   // an OCCUPANT; a program owns one only where its binding names a live occupant nobody else names.
   // The numbers are checked against the persisted transport rows rather than against themselves —
@@ -1688,6 +1712,17 @@ export async function run(ctx: Ctx): Promise<void> {
         && p.deliveryBudget.free === undefined
         && (p.deliveryBudgetNote ?? "").startsWith("return path unknown: ")),
     JSON.stringify(twinBudgets.map((p) => [p.id, p.deliveryBudget, p.deliveryBudgetNote])));
+  // V1a on the SAME twin fixture, and it deliberately does NOT follow the budget into `unknown`.
+  // A budget belongs to an OCCUPANT and cannot be split between two names; an identity comparison
+  // is per-BINDING and stays well defined — each program recorded an id, and the live pane reports
+  // one. What ambiguity costs is AUTHORITY, and that refusal lives where it is decided:
+  // boundProgramForMain answers "ambiguous Program-MAIN binding" to every door regardless of what
+  // this pair says, which is exactly why the pair must never be read as a land verdict.
+  check("V1a attribution: two programs naming one occupation keep a defined health on BOTH — identity is per-binding, ambiguity is the door's own refusal",
+    twinBudgets.length === 2
+      && twinBudgets.every((row) => row.health?.occupancy === "live"
+        && row.health.sessionIdMatch === "unknown"),
+    JSON.stringify(twinBudgets.map((row) => [row.id, row.health])));
   const ambiguous = await attentionRaise(successorToken, "which program am I the MAIN of?");
   const ambiguousText = await ambiguous.text();
   const unboundProbeSlot = (await sessions()).slots.find((x) => !x.cwd)?.id ?? null;
@@ -1739,6 +1774,40 @@ export async function run(ctx: Ctx): Promise<void> {
     divergent.ok && divergentBody.ok === true && divergentBody.sessionIdMatch === "divergent"
       && divergentBody.request?.programId === mainProgram.id,
     `${divergent.status} ${JSON.stringify(divergentBody)}`);
+  // V1a · THE WHOLE POINT OF THE SLICE, on the fixture that already proves the door's own answer.
+  // This is the state that was invisible from outside: occupancy reads LIVE (the pane is right
+  // there, holding the bound slot) while the recorded identity no longer matches — so the board
+  // painted a healthy MAIN whose every self-land was already being refused. The projection is
+  // asserted against the DOOR's own word on the same tree, not against a second expectation, so
+  // the two cannot part without this failing.
+  const divergentHealth = await healthOf(mainProgram.id);
+  check("V1a: a divergent identity under a LIVE occupancy is projected — and it is the same word the door reports",
+    divergentHealth?.occupancy === "live" && divergentHealth.sessionIdMatch === "divergent"
+      && divergentHealth.sessionIdMatch === divergentBody.sessionIdMatch,
+    JSON.stringify({ health: divergentHealth, door: divergentBody.sessionIdMatch }));
+  // …and the OTHER non-unknown arm, because a projection that only ever said `divergent` would
+  // pass the check above. Same occupation, same recorded id — only the pane's id is planted to
+  // match — and the answer flips to `exact`. One restart buys the one state the land door admits.
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const exactState = readState();
+  const exactSlotRow = exactState.slots?.[String(successorSlot)];
+  if (exactSlotRow) exactSlotRow.sessionId = recordedSession;
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(exactState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const exactLoadedPane = readState().slots?.[String(successorSlot)]?.sessionId;
+  const exactLoadedBinding = (await ownerPrograms()).find((x) => x.id === mainProgram.id)?.main?.sessionId;
+  // the precondition fails AS ITSELF, for the reason the divergence fixture above states: a slot
+  // sessionId is re-validated on load, and a rejected value silently becomes null — which would
+  // leave both sides null and let the subject below pass as `unknown` for the wrong reason, or
+  // fail as if the projection were broken when nothing was ever planted.
+  check("exactness fixture: the loaded binding and the loaded pane carry the SAME planted session id",
+    exactLoadedPane === recordedSession && exactLoadedBinding === recordedSession,
+    `binding=${exactLoadedBinding} pane=${exactLoadedPane}`);
+  const exactHealth = await healthOf(mainProgram.id);
+  check("V1a: the same occupation with the same id on both sides projects EXACT — the comparison is real, not a constant",
+    exactHealth?.occupancy === "live" && exactHealth.sessionIdMatch === "exact",
+    JSON.stringify({ health: exactHealth, pane: exactLoadedPane }));
 
   // Put the state back the way the sections below expect to find it: the twin is already gone, the
   // planted session ids return to the null pair the succession check proved, and the attention row
@@ -1758,6 +1827,14 @@ export async function run(ctx: Ctx): Promise<void> {
       === JSON.stringify(transferredBinding)
       && (readState().attentionRequests ?? []).length === attentionBeforeProbes.length,
     `binding=${JSON.stringify((await ownerPrograms()).find((x) => x.id === mainProgram.id)?.main)} rows=${(readState().attentionRequests ?? []).length}`);
+  // V1a: the restored null pair is `unknown` AGAIN — the third arm, and the one that proves the
+  // projection follows the state rather than latching. `unknown` is not a lesser `exact`: the land
+  // door compares the two values directly, so this very row (null on both sides) is one it admits,
+  // which is precisely why the sight must not spell it as a match.
+  const restoredHealth = await healthOf(mainProgram.id);
+  check("V1a: restoring the null pair returns the identity to unknown — the projection latches nothing",
+    restoredHealth?.occupancy === "live" && restoredHealth.sessionIdMatch === "unknown",
+    JSON.stringify(restoredHealth));
 
   // === V1b · THE RETURN PATH, IN BOTH SIGHTS AT ONCE ===========================================
   // The slice's own subject. A MAIN whose FleetEvent delivery budget is FULL has closed the way
@@ -1802,8 +1879,9 @@ export async function run(ctx: Ctx): Promise<void> {
     .filter((e) => e.receiverSlot === successorSlot).length;
   const ownerClosed = (await ownerPrograms()).find((p) => p.id === mainProgram.id);
   const svRes = await fetch(`${BASE}/api/self/supervisor-view`, { headers: { "x-fleet-self-token": svToken } });
-  const svBody = await svRes.json() as { portfolio?: { program: { id: string };
-    deliveryBudget?: Program["deliveryBudget"]; deliveryBudgetNote?: string }[] };
+  const svBody = await svRes.json() as { portfolio?: (Record<string, unknown> & { program: { id: string };
+    health?: Program["health"]; promotion?: unknown;
+    deliveryBudget?: Program["deliveryBudget"]; deliveryBudgetNote?: string })[] };
   const svClosed = (svBody.portfolio ?? []).find((r) => r.program.id === mainProgram.id);
   check("V1b: at ZERO free places both sights carry the same projection and the same sentence, and it names the refusal",
     svRes.ok && ownerClosed?.deliveryBudget?.state === "known"
@@ -1828,6 +1906,31 @@ export async function run(ctx: Ctx): Promise<void> {
     (svBody.portfolio ?? []).length > 0 && mismatched.length === 0,
     JSON.stringify({ rows: (svBody.portfolio ?? []).length,
       mismatched: mismatched.map((r) => [r.program.id, r.deliveryBudget]) }));
+  // V1a · THE SAME PROOF FOR THE OTHER SHARED HELPER, on the same paired read. `health` is the one
+  // fact both sights derive about the same MAIN, so a row where they differ is a row on which the
+  // owner and the Supervisor would act differently about one occupant.
+  const healthMismatched = (svBody.portfolio ?? []).filter((r) => {
+    const own = ownerAll.find((p) => p.id === r.program.id);
+    return JSON.stringify(own?.health) !== JSON.stringify(r.health);
+  });
+  check("V1a: every program in the Supervisor portfolio carries byte-identical health to the owner's row",
+    (svBody.portfolio ?? []).length > 0 && healthMismatched.length === 0
+      && (svBody.portfolio ?? []).every((r) => typeof r.health?.occupancy === "string"
+        && typeof r.health.sessionIdMatch === "string"),
+    JSON.stringify({ rows: (svBody.portfolio ?? []).length,
+      mismatched: healthMismatched.map((r) => [r.program.id, r.health]) }));
+  // …and the RAW promotion record, `null` where there is none. None of these fixtures was ever
+  // promoted, so `null` is the right answer for every row — and it must be an explicit null rather
+  // than a missing key, because a reader that cannot tell "no permission" from "this projection
+  // does not carry permissions" learns nothing from either. `waitingOn` is asserted ABSENT on the
+  // same rows: `promotion:null` is not an owner door, and inventing one here would be the exact
+  // claim the owner's policy of 2026-08-23 reserves for a REVIEWABLE row with no usable policy.
+  check("V1a: the portfolio carries the raw promotion record as an explicit null, and claims nothing about the owner waiting",
+    (svBody.portfolio ?? []).length > 0
+      && (svBody.portfolio ?? []).every((r) => "promotion" in r && r.promotion === null)
+      && (svBody.portfolio ?? []).every((r) => !("waitingOn" in r)),
+    JSON.stringify((svBody.portfolio ?? []).map((r) => [r.program.id.slice(-4),
+      "promotion" in r ? r.promotion : "MISSING", "waitingOn" in r])));
   // THE SIGHT IS A READ. Three more reads across both routes may not acknowledge an event, disarm a
   // watch, move a cap or mint anything — a projection that spent the budget it describes would be
   // the one failure this shape must never have.
@@ -2281,11 +2384,17 @@ export async function run(ctx: Ctx): Promise<void> {
 
   if (successorSlot !== null) await post(`/api/slots/${successorSlot}/kill`, {});
   const occupiedAfterKill = (await sessions()).slots.filter((s) => s.cwd).length;
+  const killedHealth = await healthOf(mainProgram.id);
   check("GET /api/programs occupancy: killing the bound occupant flips the SAME program to stale",
-    (await occupancyOf(mainProgram.id)) === "stale"
+    killedHealth?.occupancy === "stale"
       && JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main)
         === JSON.stringify(transferredBinding),
-    `${await occupancyOf(mainProgram.id)} ${JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main)}`);
+    `${killedHealth?.occupancy} ${JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main)}`);
+  // V1a: a dead occupation has no identity to compare, so the identity half goes `unknown` WITH it
+  // rather than reporting on whoever holds that slot next. Both halves move together because both
+  // describe ONE occupant.
+  check("V1a: a stale occupancy carries an unknown identity — a gone occupant is not compared to its successor",
+    killedHealth?.sessionIdMatch === "unknown", JSON.stringify(killedHealth));
 
   // THE CUT: a stale binding is overwritable, because the alternative was a permanently orphaned
   // Program. The bootstrap runs its whole founding path — so the probe plants the harness screen
@@ -2596,6 +2705,87 @@ export async function run(ctx: Ctx): Promise<void> {
           && absent.stamped === null && nulled.stamped === null,
         JSON.stringify({ off: off.stamped, green: green.stamped, guarded: guarded.stamped,
           other: other.stamped, absent: absent.stamped }));
+    }
+
+    // === V1a · THE IDENTITY CHIP, run rather than described ===================================
+    // Same method and same reason as the promotion block above: the route probes prove what the
+    // SERVER derives, and what they cannot reach is what the owner is TOLD. The distinction this
+    // display can destroy is the one the whole slice exists for — `unknown` is a comparison nobody
+    // made, and a pane that painted it like `exact` would put a green identity on the very MAIN
+    // whose lands are being refused for a null on one side. `read` is an ARGUMENT rather than a
+    // global, which is what makes the helper cuttable at all.
+    const hsAt = cliSrc.indexOf("\nfunction programHealthState(p: ProgramInfo");
+    const hsHeadAt = cliSrc.indexOf("type HealthIdentityName");
+    const hsSrc = hsAt < 0 || hsHeadAt < 0 || hsHeadAt > hsAt ? ""
+      : cliSrc.slice(hsHeadAt, cliSrc.indexOf("\n}\n", hsAt) + 3);
+    check("health UI precondition: programHealthState is extractable and carries no DOM, no clock and no global read state",
+      hsSrc.includes("function programHealthState") && hsSrc.includes("HEALTH_MATCHES")
+        && !/document|\bel\(|chip\(|Date\.now\(|new Date\(|programsRead|programsList/.test(hsSrc),
+      hsSrc === "" ? `not found (head=${hsHeadAt} fn=${hsAt})` : `${hsSrc.length} bytes`);
+    if (hsSrc !== "") {
+      type HsView = { state: string; label: string; tone: string; sentence: string };
+      const programHealthState = new Function(
+        new Bun.Transpiler({ loader: "ts" }).transformSync(hsSrc)
+        + "\nreturn programHealthState;")() as
+        (p: { health?: unknown }, read: "unread" | "ok" | "fail") => HsView;
+      const hv = (health: unknown): HsView => programHealthState({ health }, "ok");
+      const exactView = hv({ occupancy: "live", sessionIdMatch: "exact" });
+      const divergentView = hv({ occupancy: "live", sessionIdMatch: "divergent" });
+      const unknownLive = hv({ occupancy: "live", sessionIdMatch: "unknown" });
+      const unknownStale = hv({ occupancy: "stale", sessionIdMatch: "unknown" });
+
+      // (a) THE THREE SERVER WORDS BECOME THREE DISPLAYED STATES with their own exact tone. A
+      // `divergent` that painted `ok` would be the whole defect back in a different colour.
+      check("health UI: exact, divergent and unknown are three states with three tones, and only exact is ok-toned",
+        exactView.state === "exact" && exactView.tone === "ok"
+          && divergentView.state === "divergent" && divergentView.tone === "warn"
+          && unknownLive.state === "unknown" && unknownLive.tone === "dim"
+          && exactView.label !== divergentView.label && divergentView.label !== unknownLive.label,
+        JSON.stringify([exactView, divergentView, unknownLive].map((v) => [v.state, v.label, v.tone])));
+      // (b) THE TWO UNKNOWNS ARE NOT ONE SENTENCE. "there is no live occupant to compare" and "one
+      // of the two sides records no id" are different facts with different next steps, and the
+      // second must say out loud that it is NOT a land verdict — the door compares the values, so
+      // a both-null row it admits and a one-null row it refuses arrive here under one word.
+      check("health UI: an unknown under a live occupancy and one under a stale occupancy are different sentences, and neither claims a land verdict",
+        unknownLive.sentence !== unknownStale.sentence
+          && /NOT a verdict|not a verdict/.test(unknownLive.sentence)
+          && unknownStale.sentence.includes("stale")
+          && !/may land|is allowed to land/.test(unknownLive.sentence + unknownStale.sentence),
+        JSON.stringify({ live: unknownLive.sentence.slice(0, 70), stale: unknownStale.sentence.slice(0, 70) }));
+      // (c) THE DIVERGENT SENTENCE NAMES THE DOOR AND THE WAY OUT. An owner reading it must learn
+      // that lands are already refused and that a re-bind is what fixes it — the refusal is
+      // otherwise visible only inside that MAIN's own pane.
+      check("health UI: the divergent sentence names the refused land route and the owner re-bind that ends it",
+        divergentView.sentence.includes("/api/self/tasks/:id/land")
+          && /re-bind/i.test(divergentView.sentence)
+          && /Attention and release/i.test(divergentView.sentence),
+        divergentView.sentence.slice(0, 120));
+      // (d) EVERYTHING THIS BUILD CANNOT READ IS `unreadable`, NEVER A MATCH — including a row from
+      // a server that sends no health at all, which is exactly what an older one does.
+      const badHealth: [string, unknown][] = [
+        ["no health field at all", undefined],
+        ["an explicit null", null],
+        ["a word outside the closed set", { occupancy: "live", sessionIdMatch: "probably" }],
+        ["no sessionIdMatch at all", { occupancy: "live" }],
+        ["a health that is not an object", "live"],
+        ["an array where a record belongs", [{ occupancy: "live", sessionIdMatch: "exact" }]],
+      ];
+      const badViews = badHealth.map(([name, health]) => ({ name, view: hv(health) }));
+      check("health UI: every health record this build cannot read renders as unreadable — never as exact",
+        badViews.every((b) => b.view.state === "unreadable" && b.view.tone === "dim"
+          && b.view.label !== exactView.label && b.view.sentence !== exactView.sentence),
+        JSON.stringify(badViews.map((b) => [b.name, b.view.state, b.view.tone])));
+      // (e) A FAILED OR UNMADE READ IS ITS OWN SENTENCE, not a cached identity. The row on the
+      // pane is the last one that arrived; claiming its comparison is current would date a session
+      // nobody has looked at since.
+      const failView = programHealthState({ health: { occupancy: "live", sessionIdMatch: "exact" } }, "fail");
+      const unreadView = programHealthState({ health: { occupancy: "live", sessionIdMatch: "exact" } }, "unread");
+      check("health UI: a failed and an unmade read both refuse to repeat a cached exact, in two different sentences",
+        failView.state === "unreadable" && unreadView.state === "unreadable"
+          && failView.sentence !== unreadView.sentence
+          && failView.sentence.includes("did not answer")
+          && unreadView.sentence.includes("has not been read"),
+        JSON.stringify({ fail: failView.sentence.slice(0, 60), unread: unreadView.sentence.slice(0, 60) }));
     }
   }
 

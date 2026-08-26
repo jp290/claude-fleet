@@ -366,8 +366,14 @@ export async function run(): Promise<void> {
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
     await restartSrv();
   };
+  // V1a — ONE of the four fixtures carries an owner promotion, planted as the stored record the
+  // server's own loader accepts (v:1, a rung in the closed set, a positive stamp). It is here so
+  // the portfolio's promotion field has a NON-null arm to be proved on: a projection asserted only
+  // against `null` would pass just as happily if it always answered null.
+  const promoStamp = 1750000000000;
   await installPrograms([
-    programFixture(activeId, "active", receiverOccupant, "Active with a live bound MAIN"),
+    { ...programFixture(activeId, "active", receiverOccupant, "Active with a live bound MAIN"),
+      promotion: { v: 1, selfLand: "green-only", confirmedAt: promoStamp } },
     programFixture(proposedId, "proposed", receiverOccupant, "Proposed, never activated"),
     programFixture(staleId, "active", { ...receiverOccupant, openedAt: receiverOccupant.openedAt + 1 },
       "Active, but its binding names a replaced occupant"),
@@ -414,8 +420,10 @@ export async function run(): Promise<void> {
   const viewRes = await selfGet("/api/self/supervisor-view", svToken);
   const view = await viewRes.json() as {
     at?: number;
-    portfolio?: { program: { id: string; status: string; title: string; completedAt: number | null };
-      main: { slot: number } | null; occupancy: string; tasks: { total: number; byStatus: Record<string, number> } }[];
+    portfolio?: (Record<string, unknown> & { program: { id: string; status: string; title: string; completedAt: number | null };
+      main: { slot: number } | null; health?: { occupancy?: string; sessionIdMatch?: string };
+      promotion?: { v?: number; selfLand?: string; confirmedAt?: number } | null;
+      tasks: { total: number; byStatus: Record<string, number> } })[];
     operations?: { outcomes: { rows: unknown[]; total: number; malformed: number };
       debts: { rows: { id: string; kind: string; receiverSlot: number; delivery: string; attempts: number }[];
         total: number; ownerAckOnly: number } };
@@ -431,14 +439,53 @@ export async function run(): Promise<void> {
       && !!view.provenance && Array.isArray(view.unknown) && view.unknown.length > 0
       && typeof view.at === "number",
     `${viewRes.status} groups=${Object.keys(view).join(",")}`);
+  const rowOf = (id: string) => view.portfolio?.find((p) => p.program.id === id);
   check("supervisor view: the portfolio carries every fixture program with its derived occupancy",
-    view.portfolio?.find((p) => p.program.id === activeId)?.occupancy === "live"
-      && view.portfolio?.find((p) => p.program.id === staleId)?.occupancy === "stale"
-      && view.portfolio?.find((p) => p.program.id === unboundId)?.occupancy === "unbound"
-      && view.portfolio?.find((p) => p.program.id === activeId)?.main?.slot === receiverSlot
-      && typeof view.portfolio?.find((p) => p.program.id === activeId)?.tasks.total === "number",
+    rowOf(activeId)?.health?.occupancy === "live"
+      && rowOf(staleId)?.health?.occupancy === "stale"
+      && rowOf(unboundId)?.health?.occupancy === "unbound"
+      && rowOf(activeId)?.main?.slot === receiverSlot
+      && typeof rowOf(activeId)?.tasks.total === "number",
     JSON.stringify(view.portfolio?.filter((p) => fixtureIds.includes(p.program.id))
-      .map((p) => [p.program.id.slice(-4), p.occupancy]) ?? []));
+      .map((p) => [p.program.id.slice(-4), p.health?.occupancy]) ?? []));
+  // V1a · THE IDENTITY HALF, and the fixture that makes it worth having. `staleId` binds the SAME
+  // slot as `activeId` at `openedAt + 1` — so the slot is HELD, by a living session, and it is
+  // simply not the occupation that was bound. That is the one shape in which a naive comparison
+  // would have something to compare and would be answering the wrong question; the rule is
+  // `unknown` outside a live occupation, and this is where it earns its keep.
+  //
+  // The top-level `occupancy` is asserted GONE on the same rows: this projection and the owner's
+  // route share one helper, and a leftover copy on either would be a second answer waiting to drift.
+  // The live arm's `unknown` is claimed TOGETHER with its cause — this harness pins no session id,
+  // so both sides are null. If that ever changed, `exact` would be the right answer and this check
+  // must fail as ITSELF rather than go on asserting a comparison nobody made.
+  check("V1a: the Supervisor's portfolio carries both health halves, and a HELD-but-not-bound slot still reports an unknown identity",
+    receiverOccupant.sessionId === null
+      && rowOf(activeId)?.health?.sessionIdMatch === "unknown"
+      && rowOf(staleId)?.health?.sessionIdMatch === "unknown"
+      && rowOf(unboundId)?.health?.sessionIdMatch === "unknown"
+      && readState().slots?.[String(receiverSlot)]?.cwd !== undefined
+      && (view.portfolio ?? []).every((p) => !("occupancy" in p)),
+    JSON.stringify({ boundSession: receiverOccupant.sessionId,
+      rows: view.portfolio?.filter((p) => fixtureIds.includes(p.program.id))
+        .map((p) => [p.program.id.slice(-4), p.health]) ?? [] }));
+  // V1a · THE OWNER'S RECORD, RAW. Until this cut the portfolio carried NO promotion at all, so
+  // "the owner said no", "the owner never said" and "the owner granted a rung" were one silence to
+  // the Supervisor while the owner's own board keeps all three apart. It is shipped as the stored
+  // record and nothing else — no rung is translated here, because the five displayed states are the
+  // client helper `promotionState`'s vocabulary and a second translator would be a second one.
+  //
+  // And `promotion: null` claims NOTHING about the owner waiting: `waitingOn` is asserted absent on
+  // every row, because the owner's policy of 2026-08-23 reserves that door for a REVIEWABLE row
+  // with no usable policy — a fact this projection never looks at.
+  const promoRow = rowOf(activeId)?.promotion;
+  check("V1a: the portfolio ships the owner's promotion record verbatim, an explicit null where there is none, and never a waitingOn",
+    !!promoRow && promoRow.v === 1 && promoRow.selfLand === "green-only"
+      && promoRow.confirmedAt === promoStamp
+      && rowOf(staleId)?.promotion === null && rowOf(unboundId)?.promotion === null
+      && (view.portfolio ?? []).every((p) => "promotion" in p && !("waitingOn" in p)),
+    JSON.stringify(view.portfolio?.filter((p) => fixtureIds.includes(p.program.id))
+      .map((p) => [p.program.id.slice(-4), p.promotion, "waitingOn" in p]) ?? []));
   check("supervisor view: the ledger-backed groups are shaped and bounded even when a ledger is empty",
     Array.isArray(view.operations?.outcomes.rows) && view.operations!.outcomes.rows.length <= 20
       && typeof view.operations?.debts.ownerAckOnly === "number"

@@ -2455,8 +2455,7 @@ async function programExecutionView(s: Slot): Promise<Response> {
       authority: {
         boundSlot: main.slot, boundOpenedAt: main.openedAt, boundSessionId: main.sessionId,
         boundAt: main.boundAt,
-        sessionIdMatch: main.sessionId === null || s.sessionId === null ? "unknown"
-          : main.sessionId === s.sessionId ? "exact" : "divergent",
+        sessionIdMatch: sessionIdMatchOf(main.sessionId, s.sessionId),
         executionState: p.status === "active" ? "active" : "not-executing",
       },
       tasks: {
@@ -6411,6 +6410,47 @@ function programOccupancy(p: Program): ProgramOccupancy {
   return live?.cwd && live.id === main.slot && live.openedAt === main.openedAt ? "live" : "stale";
 }
 
+// V1a — THE AUTHORITY HALF OF THE SAME HEALTH FACT. `occupancy` above answers whether the binding
+// still names a LIVING occupant and deliberately says nothing about WHO that occupant is. The
+// board's own mark says that gap out loud ("this poll carries no top-level session id to match
+// Program.main.sessionId against, so that half is unchecked") — and the unchecked half is exactly
+// what the self-land door compares. So a program can read `live` in both sights while every land
+// its MAIN attempts is refused, which is the state this cut makes visible before it is hit.
+//
+// THE COMPARISON IS NOT A NEW RULE. It is the one boundProgramForMain and ProgramExecutionView
+// already made, cut out here so all three read the same two lines instead of three copies of them:
+// a second copy of this ternary is a second answer waiting to drift from the first.
+type SessionIdMatch = "exact" | "divergent" | "unknown";
+function sessionIdMatchOf(recorded: string | null, live: string | null): SessionIdMatch {
+  return recorded === null || live === null ? "unknown"
+    : recorded === live ? "exact" : "divergent";
+}
+
+// WHAT THIS PAIR IS NOT: a land verdict, and no reader may turn it into one.
+//  · `unknown` spans BOTH directions of the door. The land route compares the recorded value
+//    against the live one DIRECTLY, so two nulls (a harness that pins no session id) are an
+//    admitted match while one null on either side is refused — both label as `unknown` here;
+//  · the door additionally requires an ACTIVE status and an UNAMBIGUOUS binding (boundProgramForMain
+//    refuses two active programs on one occupation in its own words). Neither is checked here, so
+//    an `exact` on an ambiguous occupation is still a land that door refuses.
+// It reports IDENTITY. Authority stays where it is decided, and a sight that claimed otherwise
+// would be exactly as wrong as the silence it replaces.
+//
+// PURE PROJECTION, like `occupancy` and the return path beside it: nothing is written, nothing is
+// persisted, and it is recomputed per request because the occupant it describes can die between two.
+interface ProgramHealth { occupancy: ProgramOccupancy; sessionIdMatch: SessionIdMatch }
+function programHealth(p: Program): ProgramHealth {
+  const occupancy = programOccupancy(p);
+  const main = p.main ?? null;
+  const live = main ? slotFrom(main.slot) : undefined;
+  // `unknown` OUTSIDE a live occupation, and NOT a comparison against whoever holds the slot now:
+  // a stale binding names an occupant that is gone, and matching its recorded id against the
+  // successor's would answer a question nobody asked — in the vocabulary of the land door, which
+  // reads it as a statement about the bound MAIN.
+  if (occupancy !== "live" || !main || !live) return { occupancy, sessionIdMatch: "unknown" };
+  return { occupancy, sessionIdMatch: sessionIdMatchOf(main.sessionId, live.sessionId) };
+}
+
 // V1b — THE RETURN PATH AS A SHARED HEALTH FACT, and the reason it is one helper and not two
 // renderings. A lane reports and asks through the FleetEvent transport, so a MAIN that has filled
 // its own delivery budget has CLOSED the way back to itself: every fleet-report and every
@@ -6542,8 +6582,7 @@ function boundProgramForMain(s: Slot): BoundMain {
   if (!program) return { ok: false, error: "not the current bound MAIN of an active program — attention is raised by a program's own main session" };
   const bound = program.main!;
   return { ok: true, program,
-    sessionIdMatch: bound.sessionId === null || s.sessionId === null ? "unknown"
-      : bound.sessionId === s.sessionId ? "exact" : "divergent" };
+    sessionIdMatch: sessionIdMatchOf(bound.sessionId, s.sessionId) };
 }
 
 // ACP-16 · THE SECOND CONSUMER OF THE BRACKET ABOVE. A bound Program-MAIN releases a pending row
@@ -15232,7 +15271,7 @@ async function supervisorView(s: Slot): Promise<Response> {
   const ordered = [...programs].sort((a, b) => b.createdAt - a.createdAt);
   const portfolio = ordered.slice(0, SUPERVISOR_VIEW_PROGRAMS).map((p) => {
     const main = p.main ?? null;
-    const occupancy = programOccupancy(p);
+    const health = programHealth(p);
     const programTasks = tasks.filter((t) => t.programId === p.id);
     const byStatus: Record<string, number> = {};
     for (const t of programTasks) byStatus[t.status] = (byStatus[t.status] ?? 0) + 1;
@@ -15256,8 +15295,21 @@ async function supervisorView(s: Slot): Promise<Response> {
       },
       main: main ? { slot: main.slot, openedAt: main.openedAt, sessionId: main.sessionId,
         boundAt: main.boundAt } : null,
-      occupancy,
-      // the SAME projection GET /api/programs answers with, for the same reason `occupancy` is:
+      // the SAME projection GET /api/programs answers with, for the reason the return path below
+      // repeats: two sights of one MAIN may not say different things about whether it is still
+      // there and still the one that was bound.
+      health,
+      // THE OWNER'S RECORD, RAW AND UNTRANSLATED — `null` where there is none. The Supervisor is
+      // the one reader that must be able to see WHY a program's routine lands still come to the
+      // owner, and it could not: the portfolio carried no promotion at all, so "the owner said no"
+      // and "the owner never said" were equally invisible here while the board distinguishes them.
+      // Shipped as the stored record and nothing else: the five displayed states are the client
+      // helper `promotionState`'s to name, and a second translator on this route would be a second
+      // vocabulary for one permission. `promotion: null` is NOT a claim that anyone is waiting on
+      // the owner — the owner's policy of 2026-08-23 reserves that door for a REVIEWABLE row with
+      // no usable policy, and this projection never looks at a row.
+      promotion: p.promotion ?? null,
+      // the SAME projection GET /api/programs answers with, for the same reason `health` above is:
       // two sights of one receiver may not say different things about its return path.
       ...programReturnPath(p),
       tasks: { total: programTasks.length, byStatus, phases },
@@ -15744,11 +15796,16 @@ async function bootstrapProgramMain(program: Program, body: Record<string, unkno
 
 async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response> {
   // additive proof read: the cross-program binding has no list of its own, and the client reads
-  // .programs, so it stays compatible by construction. `occupancy` is the same additive shape and
-  // the same computation the Supervisor portfolio uses — a DERIVED field, never persisted: it is
-  // recomputed per request because the slot it describes can die between two of them.
+  // .programs, so it stays compatible by construction. `health` and the return path beside it are
+  // the same additive shape and the same computations the Supervisor portfolio uses — DERIVED
+  // fields, never persisted: they are recomputed per request because the occupant they describe can
+  // die between two of them. `health.occupancy` is where the former top-level `occupancy` lives
+  // since V1a: it and `sessionIdMatch` are two halves of one question ("is the bound MAIN still
+  // there, and is it still the one that was bound"), and splitting them across the row invited a
+  // reader to answer the first and forget the second. The owner's own top-level `promotion` record
+  // rides along in `...p` untouched — this cut adds no second rendering of it.
   if (url.pathname === "/api/programs" && req.method === "GET")
-    return json({ programs: programs.map((p) => ({ ...p, occupancy: programOccupancy(p),
+    return json({ programs: programs.map((p) => ({ ...p, health: programHealth(p),
       ...programReturnPath(p) })), supervisor });
   if (url.pathname === "/api/programs" && req.method === "POST") {
     const valid = validateProgramContent(await readJson(req));

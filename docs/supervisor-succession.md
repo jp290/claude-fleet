@@ -108,11 +108,28 @@ Quellen, die ohnehin existieren:
 
 | Gruppe | Quelle | Deckel |
 |---|---|---|
-| `portfolio` | `programs` + Occupancy-Regel (`live`/`stale`/`unbound`) + Task-Zählung je Status | 50 Programme |
+| `portfolio` | `programs` + `health` + `promotion` + Rückweg-Budget + Task-Zählung je Status/Phase | 50 Programme |
 | `operations` | `lane-outcomes.jsonl` + offene `fleetEvents` (Transport-Schulden, `ownerAckOnly` als Zahl) | 20 Zeilen je Liste |
 | `integration` | `deploys.jsonl`, `post-land-audits.jsonl` + Adjudikationen, `deployFacts` (derselbe Git-Tick-Cache wie das Board) | 5 Zeilen je Liste |
 | `attention` | offene/`send-uncertain` `attentionRequests` | 20 Zeilen, Text auf 200 Zeichen |
 | `provenance` | `context-receipts.jsonl` | 20 Zeilen |
+
+Die `portfolio`-Zeile trägt mehr als ihre Kurzform: **jedes Feld unter ihr ist eine reine
+Projektion, die der Owner-GET `GET /api/programs` aus DEMSELBEN Helfer bekommt** — zwei Sichten
+eines MAIN dürfen nicht Verschiedenes über ihn sagen, und genau darum ist je Fakt ein Helfer und
+nicht ein Rendering je Sicht:
+
+| Feld | Helfer | Was es sagt, und was es NICHT sagt |
+|---|---|---|
+| `health.occupancy` | `server.ts#programOccupancy` | `live`/`stale`/`unbound` — nennt die Bindung noch einen lebenden Occupant. Seit V1a wohnt sie hier statt top-level; es gibt genau eine Kopie. |
+| `health.sessionIdMatch` | `server.ts#sessionIdMatchOf` | `exact`/`divergent`/`unknown` — ist dieser Occupant noch der GEBUNDENE. Nur beim live gebundenen Occupant verglichen. **Kein Land-Urteil:** die Tür vergleicht die Werte direkt (beide `null` = Treffer, ein `null` = Ablehnung, beides hier `unknown`) und verlangt zusätzlich `active`, eine eindeutige Bindung und eine Policy. |
+| `promotion` | — (roher Record, sonst `null`) | Der Owner-Record VERBATIM. Die fünf angezeigten Zustände sind `src/client.ts#promotionState`s Vokabular; hier wird nichts übersetzt. `null` behauptet **nicht**, dass jemand auf den Owner wartet. |
+| `deliveryBudget` / `deliveryBudgetNote` | `server.ts#programReturnPath` | Der Rückweg in diese MAIN (V1b): `free === 0` ist exakt die Ablehnungsbedingung der drei mintenden Türen. Zuordnung nur über die eindeutige live `slot+openedAt`-Bindung — sonst `unknown` mit Grund und **ohne Zahl**. |
+| `tasks.byStatus` / `tasks.phases` | `program-phase.ts#phaseOf` | Zählungen, nie Zeilenkörper — die Bodies trägt die Program-MAIN-eigene Sicht. |
+
+Referenz und Ablehnungen im Detail: `docs/self-api.md` §land → *Die Identität ist sichtbar, bevor
+die Tür sie prüft (V1a)* und §fleet-report → *Das Zustellbudget ist sichtbar, bevor du dagegen
+läufst (V1b)*.
 
 Dazu `unknown: string[]` — jede Lücke wird als Satz benannt statt weggelassen: nicht projizierte
 Programme, unattribuierbare Outcome-Zeilen, malformed-Zähler je Ledger, ein

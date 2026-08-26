@@ -1118,6 +1118,47 @@ still an honest reader of it.
 check a flake. After this cut a red one has one fewer excuse, not more — and the four precondition
 rows are there precisely so the next red says which it is.
 
+### 11.2g Re-filing the `lines=0` §7 sightings, and a ninth family in `e2e/slots.ts` (2026-08-26)
+
+**Correction to a filing in this file.** Three sightings of
+`§7 fixture: the land gate actually ran on this lane's tree (the stand-in announced itself)` with
+detail `lines=0` (two red post-land audits on 2026-08-25/26, adjudicated `flake` at
+`1787690960427` and `1787698917832`, plus run 1/2 of the V1b lane, report `f37ecd8594c0`) were
+adjudicated under **merge/resolver (§11)**. The repair lane read `server.ts#mergeJob` instead of
+inferring and found the true mechanism one level up: both §7 drive loops broke on
+`j.running || j.last !== null` — the first sign of ANY settled outcome — but three merge exits set
+`last` without the gate ever running (the author hand-off returns before the verify site; a halted
+pre-pass lands as `error`; a ⏸ hold answers with a verdict this run never wrote). At
+`last !== null` those three are indistinguishable from "the gate ran and was red". So the fixture
+read an empty gaterun file as *gate broken* when it meant *never measured* — the §11.2f form
+(**a fixture asserting a precondition it does not control**), with the merge verdict as the
+uncontrolled object instead of the pane. The adjudications stand as flake; their family
+attribution is corrected here.
+
+**Repaired in `7875c19`** (`e2e/verify-queue.ts` only): `driveMergeUntil(slot, reached)` polls the
+GOAL itself and re-fires the merge on an early-settled verdict instead of breaking, capped 4×30 s
+so a lane that structurally never reaches the goal ends as a FAILED PRECONDITION under its own
+name, quoting the protocol of every short-settled attempt. Mutation-proved: a stand-in that runs
+but never announces produced exactly the historic signature and exactly 2 FAILURES, both
+precondition checks under their own names; reverted, then full chain + isolated serial:
+3553 PASS / 0 FAIL.
+
+**The ninth family, counted and not asserted** — §5b's three, merge/resolver (§11.2),
+reseed+live-bytes (§11.2b), the `stalled` race (§11.2c), the 💾-commit idle gate (§11.2e), the
+send-boot fixtures (§11.2f) — eight; this is the ninth, and it is **open**, not repaired.
+Signature, verbatim, in `e2e/slots.ts` (isolated suite, send-receipt/uncertain group):
+
+> `a send whose transport threw answers 409 with an uncertain receipt`
+
+and its two group siblings falling with it. Mechanism, measured by the K2 lane (2026-08-26, tree
+`b364048`): the fixture line PASSes (`has-session=1 cwd=false`), and 51 ms later `/send` still
+returns `200 delivery:"sent"` — the self-heal won the race against the deliberately deterministic
+throw. Same §11.2f form: a precondition asserted, not controlled. Base rate from the trail: the
+same three fell identically on clean tree `7a3a253` (2026-08-23, `dirty:false`, no ancestor
+relation), 2 fails per 146 runs each. Proof for the K2 sighting: same tree serial re-run ALL PASS.
+**No free pass**: the family is open — a red there is yours until the same-tree re-run proves
+otherwise, and a repair (control the heal, don't outrun it) has no lane yet.
+
 ### 11.3 Correction to the prescribed proof method
 
 `CLAUDE.md` tells a lane to clear a suspected flake with **a fresh HEAD worktree, same check,

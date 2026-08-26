@@ -52,9 +52,9 @@ Messnotiz und im Audit §Reparaturrichtung.
 
 - **S3** = Baumechanik-Staffel Stufe 1 (private-repo-j, Fable, `7b39cb22`, reine Design-Lane, KEIN
   Code) — Report geht an S1; Land ggf. per Confirm über Controller.
-- **S5** = Kronen-Messreihe (private-repo-j, Opus high, `5eacd837`, reine Mess-Lane) — erwartbar
-  `FILES: keine` → **Pane-Bericht ernten**, nicht landen; Ergebnis gehört S1 (Damm-Mechanik-
-  Entscheid).
+- ~~S5 Kronen-Messreihe~~ ERLEDIGT noch in dieser Session: gelandet als `9240647` (Antwort:
+  Krone ist Tiefen-, kein Flächen-Regler; Ursache Geländeband ohne Ufer; Kaskade 3×0,9 m als
+  konstruktiver Teil), S1 benachrichtigt (Receipt 26c8e6d7), Slot abgeräumt.
 - **Slot 4** = Sol-GPT-Session (gpt-5.6-sol), owner-geführter Worktrail-Audit — nicht anfassen.
 - **S1 Private-repo-j-MAIN real ~27 %** (Datensatz zeigt >130 % gegen falsches Fenster) — ihre
   Succession steht bald an; sie regelt sie selbst, aber das Board warnt NICHT (Drift). Nach

@@ -5472,6 +5472,36 @@ function createAutoForSlot(s: Slot, body: Record<string, unknown> | null, opts: 
   return json({ ok: true, auto: a });
 }
 
+// THE DELIVERY BUDGET, IN ONE PLACE — the arithmetic three doors spend and two sights read.
+//
+// Every receiver has a hard ceiling on how much undelivered future it may owe: open (non-terminal)
+// FleetEvents plus armed Watches, capped at FLEET_EVENT_MAX_OPEN_PER_SLOT. An armed Watch reserves
+// one future event, a delivered-but-unacknowledged one still holds its own, and when the two fill
+// the cap the minting doors refuse — the watch route with `max N active watches per slot`, the two
+// report doors with `… receiver has no FleetEvent delivery budget`.
+//
+// `free === 0` is EXACTLY that refusal condition (debts + reservations >= cap), which is the whole
+// reason this is a function rather than three copies of one sum: a sight built on it can never
+// claim room a send would not find. Clamped at 0 because the sum is READ, never trusted — a cap
+// lowered under live rows would otherwise project a negative as "less than none".
+interface DeliveryBudgetKnown {
+  state: "known";
+  deliveryDebts: number;
+  armedReservations: number;
+  cap: number;
+  free: number;
+}
+type DeliveryBudget = DeliveryBudgetKnown | { state: "unknown"; reason: string };
+
+function slotDeliveryBudget(slotId: number): DeliveryBudgetKnown {
+  const deliveryDebts = fleetEvents.filter((e) => e.receiverSlot === slotId
+    && !["acknowledged", "receiver-gone"].includes(e.status)).length;
+  const armedReservations = watches.filter((w) => w.armed && w.slot === slotId).length;
+  const cap = FLEET_EVENT_MAX_OPEN_PER_SLOT;
+  return { state: "known", deliveryDebts, armedReservations, cap,
+    free: Math.max(0, cap - deliveryDebts - armedReservations) };
+}
+
 // mint a watch: slot `s` asks to be told, once, when slot `target` looks done. TWO principals now
 // reach this function, and the history of why is worth one paragraph: it was owner-only, on a
 // MEASUREMENT — FLEET_SELF_TOKEN used to be baked into a LANE's pane and never a plain session's,
@@ -5594,9 +5624,9 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
   // An armed Watch reserves one future event slot. Delivered-but-unacknowledged and uncertain
   // events reserve theirs until the receiver closes them; otherwise repeated subscribe/fire
   // cycles could grow fleet.json without bound while the facts we may not prune accumulate.
-  const deliveryDebts = fleetEvents.filter((e) => e.receiverSlot === s.id
-    && !["acknowledged", "receiver-gone"].includes(e.status)).length;
-  if (watches.filter((w) => w.armed && w.slot === s.id).length + deliveryDebts >= FLEET_EVENT_MAX_OPEN_PER_SLOT)
+  // The sum is slotDeliveryBudget's, shared with both report doors and with the sights that show
+  // this budget — the refusal and the projection cannot drift apart while they are one function.
+  if (slotDeliveryBudget(s.id).free === 0)
     return json({ error: `max ${WATCH_MAX_PER_SLOT} active watches per slot` }, 400);
   const common: WatchBase = {
     id: randomBytes(4).toString("hex"), slot: s.id, slotOpenedAt: s.openedAt,
@@ -6059,10 +6089,7 @@ async function openClarification(s: Slot, body: Record<string, unknown> | null):
 
   const resolved = clarificationReceiverFor(s);
   if ("error" in resolved) return json({ error: resolved.error }, 409);
-  const deliveryDebts = fleetEvents.filter((e) => e.receiverSlot === resolved.receiver.slot
-    && !["acknowledged", "receiver-gone"].includes(e.status)).length;
-  const armedReservations = watches.filter((w) => w.armed && w.slot === resolved.receiver.slot).length;
-  if (deliveryDebts + armedReservations >= FLEET_EVENT_MAX_OPEN_PER_SLOT)
+  if (slotDeliveryBudget(resolved.receiver.slot).free === 0)
     return json({ error: "clarification receiver has no FleetEvent delivery budget" }, 409);
 
   const askedAt = Date.now();
@@ -6155,10 +6182,7 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
 
   const resolved = clarificationReceiverFor(s);
   if ("error" in resolved) return json({ error: resolved.error }, 409);
-  const deliveryDebts = fleetEvents.filter((e) => e.receiverSlot === resolved.receiver.slot
-    && !["acknowledged", "receiver-gone"].includes(e.status)).length;
-  const armedReservations = watches.filter((w) => w.armed && w.slot === resolved.receiver.slot).length;
-  if (deliveryDebts + armedReservations >= FLEET_EVENT_MAX_OPEN_PER_SLOT)
+  if (slotDeliveryBudget(resolved.receiver.slot).free === 0)
     return json({ error: "fleet-report receiver has no FleetEvent delivery budget" }, 409);
 
   const reportedAt = Date.now();
@@ -6385,6 +6409,64 @@ function programOccupancy(p: Program): ProgramOccupancy {
   if (!main) return "unbound";
   const live = slotFrom(main.slot);
   return live?.cwd && live.id === main.slot && live.openedAt === main.openedAt ? "live" : "stale";
+}
+
+// V1b — THE RETURN PATH AS A SHARED HEALTH FACT, and the reason it is one helper and not two
+// renderings. A lane reports and asks through the FleetEvent transport, so a MAIN that has filled
+// its own delivery budget has CLOSED the way back to itself: every fleet-report and every
+// clarification from its lanes is refused, and until now that refusal lived only inside the 409 the
+// lane got. Neither the owner's board nor the Supervisor's senses could see it — the state measured
+// five times on 2026-08-25. Both sights now read this function, so they cannot describe the same
+// receiver differently, and neither can describe one the doors above would refuse.
+//
+// PROJECTION, NEVER AN ACT. It reads the same two arrays the doors read and writes to neither: no
+// event is acknowledged, no watch disarmed, no cap moved, no retry scheduled, nothing persisted.
+// It is recomputed per request exactly like `occupancy`, because the budget it describes can change
+// between two of them.
+//
+// ATTRIBUTION IS THE EXACT LIVE BINDING OR NOTHING. A budget belongs to an OCCUPANT; it is
+// attributed to a PROGRAM only where that program's binding names one live occupant (slot AND
+// openedAt) and no other program names the same one. Every other case is `unknown` with its reason
+// and NEVER 0 — "there is no receiver" and "the receiver has no room left" are opposite facts, and
+// a 0 would read as the second while meaning the first.
+function programReturnPath(p: Program): { deliveryBudget: DeliveryBudget; deliveryBudgetNote: string } {
+  const budget = programDeliveryBudget(p);
+  const slot = budget.state === "known" ? p.main?.slot ?? null : null;
+  return { deliveryBudget: budget, deliveryBudgetNote: deliveryBudgetNote(budget, slot) };
+}
+
+function programDeliveryBudget(p: Program): DeliveryBudget {
+  const main = p.main ?? null;
+  if (!main)
+    return { state: "unknown", reason: "this program has no MAIN binding, so there is no receiver"
+      + " slot whose budget could be read" };
+  const live = slotFrom(main.slot);
+  if (!(live?.cwd && live.id === main.slot && live.openedAt === main.openedAt))
+    return { state: "unknown", reason: `the binding names slot ${main.slot} opened ${main.openedAt},`
+      + " which no live occupant matches — a dead binding has no budget, and no budget is not a free one" };
+  // Two programs naming the same occupation is not a receiver with a doubled budget: it is one
+  // occupant whose room belongs to neither program alone. Reporting the sum under both names would
+  // let an owner spend it twice on paper.
+  const twins = programs.filter((o) => !!o.main && o.main.slot === main.slot
+    && o.main.openedAt === main.openedAt);
+  if (twins.length > 1)
+    return { state: "unknown", reason: `${twins.length} programs name the same live occupant`
+      + ` (slot ${main.slot}), so this receiver's budget belongs to no single one of them` };
+  return slotDeliveryBudget(live.id);
+}
+
+// ONE SENTENCE, BOTH SIGHTS. The owner's board and the Supervisor's senses show the same words
+// because they are given the same words — a second phrasing of the same numbers is how two views
+// of one fact start disagreeing about it.
+function deliveryBudgetNote(b: DeliveryBudget, slot: number | null): string {
+  if (b.state === "unknown") return `return path unknown: ${b.reason}`;
+  return b.free === 0
+    ? `return path CLOSED at slot ${slot}: ${b.deliveryDebts} open events + ${b.armedReservations}`
+      + ` armed watches fill the delivery cap of ${b.cap}, so the next fleet report or clarification`
+      + ' addressed to this MAIN is refused with "receiver has no FleetEvent delivery budget" until'
+      + " it acknowledges an event or a watch disarms"
+    : `return path open at slot ${slot}: ${b.free} of ${b.cap} delivery places free`
+      + ` (${b.deliveryDebts} open events + ${b.armedReservations} armed watches)`;
 }
 
 // THE BACKFILL AT THE LEARN SITE — and it exists because the binding is stamped BEFORE the
@@ -15175,6 +15257,9 @@ async function supervisorView(s: Slot): Promise<Response> {
       main: main ? { slot: main.slot, openedAt: main.openedAt, sessionId: main.sessionId,
         boundAt: main.boundAt } : null,
       occupancy,
+      // the SAME projection GET /api/programs answers with, for the same reason `occupancy` is:
+      // two sights of one receiver may not say different things about its return path.
+      ...programReturnPath(p),
       tasks: { total: programTasks.length, byStatus, phases },
     };
   });
@@ -15663,7 +15748,8 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
   // the same computation the Supervisor portfolio uses — a DERIVED field, never persisted: it is
   // recomputed per request because the slot it describes can die between two of them.
   if (url.pathname === "/api/programs" && req.method === "GET")
-    return json({ programs: programs.map((p) => ({ ...p, occupancy: programOccupancy(p) })), supervisor });
+    return json({ programs: programs.map((p) => ({ ...p, occupancy: programOccupancy(p),
+      ...programReturnPath(p) })), supervisor });
   if (url.pathname === "/api/programs" && req.method === "POST") {
     const valid = validateProgramContent(await readJson(req));
     if (!valid.ok) return json({ error: valid.error }, 400);

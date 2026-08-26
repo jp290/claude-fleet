@@ -359,6 +359,33 @@ cannot file a fleet report`) — es berichtet, wer ARBEITET. Hat der Empfänger 
 Zustellbudget mehr (offene Events + armed Watches ≥ `FLEET_EVENT_MAX_OPEN_PER_SLOT`, heute 5), ist
 es 409 `fleet-report receiver has no FleetEvent delivery budget`.
 
+### Das Zustellbudget ist sichtbar, bevor du dagegen läufst (V1b)
+
+Diese Ablehnung war bis 2026-08-25 von außen unsichtbar: sie stand nur im 409 der Lane, die sie
+bekam — fünfmal an einem Tag live belegt. Dieselbe Summe, die die drei Türen ausgeben
+(`slotDeliveryBudget` in `server.ts`: offene, nicht-terminale FleetEvents + armed Watches gegen
+`FLEET_EVENT_MAX_OPEN_PER_SLOT`), projiziert jetzt EIN gemeinsamer reiner Helfer
+(`programReturnPath`) auf die beiden vorhandenen Sichten — **`GET /api/programs` (Owner) und
+`GET /api/self/supervisor-view` → `portfolio[]` (Supervisor)**, je Program als zwei additive Felder:
+
+- `deliveryBudget` — `{state:"known", deliveryDebts, armedReservations, cap, free}` oder
+  `{state:"unknown", reason}`. **`free === 0` ist exakt die Ablehnungsbedingung** der drei Türen,
+  nicht eine Näherung daran.
+- `deliveryBudgetNote` — EIN Satz, wörtlich derselbe in beiden Sichten. Bei `free === 0` nennt er
+  den Slot, die Zerlegung (`N open events + M armed watches`) und die Ablehnung, die als nächstes
+  kommt.
+
+**Zuordnung nur über die eindeutige LIVE `slot+openedAt`-Bindung.** Kein `main`, eine Bindung ohne
+lebenden Occupant, oder zwei Programme, die dieselbe Occupation nennen ⇒ `state:"unknown"` **mit
+Grund und ohne Zahl** — nie `0`. „Es gibt keinen Empfänger" und „der Empfänger hat keinen Platz
+mehr" sind entgegengesetzte Fakten, und eine 0 läse sich als das zweite.
+
+**Es ist eine reine PROJEKTION:** nichts wird acked, kein Watch entwaffnet, kein Cap oder Retry
+bewegt, nichts persistiert — pro Request neu gerechnet wie `occupancy`, weil sich das Budget
+zwischen zwei Reads ändert. Beweise: `e2e/watch.ts` (die 4-Watches-plus-1-Debt-Gegenprobe gegen die
+echte Ablehnung, plus der zurückgegebene Platz) und `e2e/programs.ts` (Zuordnungsregeln und die
+Byte-Gleichheit beider Sichten).
+
 **`GET /api/self/fleet-report`** liefert die Zeilen, in denen der Aufrufer Worker ODER Empfänger
 ist — exakt an Slot, `openedAt` und `sessionId` gebunden. **Retention: `FLEET_REPORT_KEEP = 20`**
 terminale Zeilen, älteste zuerst verworfen. Terminal heißt: das zugehörige Event steht auf

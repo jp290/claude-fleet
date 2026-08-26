@@ -174,6 +174,18 @@ const selfFleetReports = async (tok: string): Promise<{ response: Response; repo
 const fleetReportEventRows = async (): Promise<FleetReportEventRow[]> =>
   (((await (await get("/api/sessions")).json()) as { events: unknown[] }).events as FleetReportEventRow[])
     .filter((e) => e.kind === "fleet-report");
+// V1b — the return-path projection, read off the ROUTE. It is derived per request and persisted
+// nowhere, so a fleet.json read would answer `undefined` for every program and look like a missing
+// field rather than a reader asking the wrong source.
+interface ProgramBudgetRow {
+  id: string;
+  deliveryBudget?: { state?: string; deliveryDebts?: number; armedReservations?: number;
+    cap?: number; free?: number; reason?: string };
+  deliveryBudgetNote?: string;
+}
+const programBudget = async (id: string): Promise<ProgramBudgetRow | undefined> =>
+  (((await (await get("/api/programs")).json()) as { programs: ProgramBudgetRow[] }).programs)
+    .find((p) => p.id === id);
 interface AuditRow { event?: string; slot?: number; detail?: string }
 let auditReadError = "";
 const auditRows = (): AuditRow[] => [
@@ -1411,6 +1423,142 @@ export async function run(): Promise<void> {
     cleaned.fleetReports = [];
     cleaned.programs = (cleaned.programs ?? []).filter((p) => p.id !== programId);
     writeFileSync(reportStatePath, JSON.stringify(cleaned, null, 2), { mode: 0o600 });
+    await restartSrv();
+  }
+
+  // === V1b · THE RETURN PATH, DRIVEN ==========================================================
+  // The projection GET /api/programs and the Supervisor senses show is only worth something if its
+  // numbers are the ones the DOORS spend. So this block builds the exact shape the slice was cut
+  // for — four armed watches plus one delivery debt on one bound MAIN — and then walks a lane into
+  // it. What must come back is the refusal that already existed and was invisible from outside:
+  // `fleet-report receiver has no FleetEvent delivery budget`, measured five times on 2026-08-25.
+  //
+  // Reservations and debts are counted by the SAME sum (slotDeliveryBudget), which is why both are
+  // present here: a cut that read only one of them would still pass a probe built from the other.
+  {
+    const bMain = await freeSlot();
+    const bOpen = bMain ? await post(`/api/slots/${bMain}/open`, { cwd: REPO, label: "return-path-main" }) : null;
+    const budgetLanes: { slot: number; cwd: string; branch: string }[] = [];
+    for (let i = 0; i < 4; i++)
+      budgetLanes.push((await (await post("/api/lanes", { repo: REPO })).json()) as
+        { slot: number; cwd: string; branch: string });
+    check("V1b fixture: one plain MAIN occupant and four distinct lanes exist",
+      !!bOpen?.ok && new Set([bMain, ...budgetLanes.map((l) => l.slot)]).size === 5,
+      JSON.stringify({ bMain, lanes: budgetLanes.map((l) => l.slot) }));
+    const bMainTok = await paneEnv(`s${bMain}`, "FLEET_SELF_TOKEN") ?? "";
+    const laneToks: string[] = [];
+    for (const l of budgetLanes) laneToks.push(await paneEnv(`s${l.slot}`, "FLEET_SELF_TOKEN") ?? "");
+    check("V1b fixture: every participant carries its own exact scoped credential",
+      [bMainTok, ...laneToks].every((t) => /^[0-9a-f]{32}$/.test(t))
+        && new Set([bMainTok, ...laneToks]).size === 5,
+      `lengths=${[bMainTok, ...laneToks].map((t) => t.length).join("/")}`);
+
+    // The binding is the ONE server fact clarificationReceiverFor reads to name the receiver, and
+    // it is planted with srv down — the technique every binding fixture in this file uses. No body
+    // below names a receiver, a program or a slot.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const budgetStatePath = `${ROOT}/fleet.json`;
+    const budgetPlant = JSON.parse(readFileSync(budgetStatePath, "utf8")) as {
+      slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
+    };
+    const budgetProgramId = "e".repeat(24);
+    const bMainRow = budgetPlant.slots[String(bMain)];
+    budgetPlant.programs = [...(budgetPlant.programs ?? []), {
+      id: budgetProgramId, title: "Return path fixture",
+      intent: "Receive the typed results of its own lanes",
+      successCriterion: "The budget the doors spend is the budget the sights show",
+      nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+      status: "active", createdAt: Date.now() - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: Date.now() - 900, activatedAt: Date.now() - 800,
+      main: { slot: bMain, openedAt: bMainRow.openedAt, sessionId: bMainRow.sessionId,
+        boundAt: Date.now() - 700 },
+    }];
+    for (const l of budgetLanes) budgetPlant.slots[String(l.slot)].programId = budgetProgramId;
+    writeFileSync(budgetStatePath, JSON.stringify(budgetPlant, null, 2), { mode: 0o600 });
+    await restartSrv();
+
+    const openBudget = await programBudget(budgetProgramId);
+    check("V1b: a fresh live binding projects the FULL return path — five of five places, and the sentence says open",
+      openBudget?.deliveryBudget?.state === "known" && openBudget.deliveryBudget.cap === 5
+        && openBudget.deliveryBudget.deliveryDebts === 0
+        && openBudget.deliveryBudget.armedReservations === 0
+        && openBudget.deliveryBudget.free === 5
+        && (openBudget.deliveryBudgetNote ?? "").startsWith(`return path open at slot ${bMain}: 5 of 5`),
+      JSON.stringify({ budget: openBudget?.deliveryBudget, note: openBudget?.deliveryBudgetNote }));
+
+    // FOUR RESERVATIONS. Every target is a fresh lane with no commits, so the done-looking
+    // predicate never classifies it and none of these can fire — a fire would DISARM, quietly
+    // turning the four the doors count into three with no check noticing.
+    for (const l of budgetLanes) {
+      const armed = await post(`/api/slots/${bMain}/watch`, { target: l.slot, idleSec: 3600 });
+      check(`V1b: the MAIN subscribes to lane ${l.slot} — one armed reservation`,
+        armed.ok, `${armed.status} ${await armed.text()}`);
+    }
+    // …AND ONE DEBT. An accepted report is exactly the act the fifth place pays for, so this call
+    // must still succeed: four reservations leave one.
+    const firstReport = await selfFleetReport(laneToks[0],
+      { status: "complete", text: "the fifth delivery place is now spent" });
+    check("V1b: with four reservations one place is left, and a report spends it",
+      firstReport.ok, `${firstReport.status} ${await firstReport.text()}`);
+    const closedBudget = await programBudget(budgetProgramId);
+    check("V1b: four armed watches plus one delivery debt read as a CLOSED return path — before any lane hits it",
+      closedBudget?.deliveryBudget?.state === "known"
+        && closedBudget.deliveryBudget.deliveryDebts === 1
+        && closedBudget.deliveryBudget.armedReservations === 4
+        && closedBudget.deliveryBudget.cap === 5 && closedBudget.deliveryBudget.free === 0
+        && (closedBudget.deliveryBudgetNote ?? "").includes(`return path CLOSED at slot ${bMain}`),
+      JSON.stringify({ budget: closedBudget?.deliveryBudget, note: closedBudget?.deliveryBudgetNote }));
+
+    // THE COUNTERPROBE ITSELF: the same 4+1 the sight just described is what the doors refuse on,
+    // each in its own words. Two doors, one sum — a later cut that gave either door its own
+    // arithmetic would pass one of these and fail the other.
+    const refusedReport = await selfFleetReport(laneToks[1],
+      { status: "complete", text: "there is no place left for me" });
+    const refusedReportText = await refusedReport.text();
+    const refusedClarify = await selfClarify(laneToks[1], { question: "and no place for a question either?" });
+    const refusedClarifyText = await refusedClarify.text();
+    check("V1b counterprobe: at zero free places BOTH minting doors refuse, in the words the sight quoted",
+      refusedReport.status === 409
+        && refusedReportText.includes("fleet-report receiver has no FleetEvent delivery budget")
+        && refusedClarify.status === 409
+        && refusedClarifyText.includes("clarification receiver has no FleetEvent delivery budget"),
+      `${refusedReport.status} ${refusedReportText} / ${refusedClarify.status} ${refusedClarifyText}`);
+    const afterRefusal = (await fleetReportEventRows()).filter((e) => e.receiverSlot === bMain);
+    const armedAfterRefusal = (await watchRows()).filter((w) => w.slot === bMain && w.armed).length;
+    check("V1b: the refusals minted nothing, and reading the sight again acknowledges nothing and disarms nothing",
+      afterRefusal.length === 1 && afterRefusal.every((e) => e.status !== "acknowledged")
+        && armedAfterRefusal === 4
+        && JSON.stringify((await programBudget(budgetProgramId))?.deliveryBudget)
+          === JSON.stringify(closedBudget?.deliveryBudget),
+      JSON.stringify({ events: afterRefusal.map((e) => [e.id, e.status]), armedAfterRefusal }));
+
+    // A RELEASED PLACE IS A PLACE. `free` has to track both directions, or it is a counter that
+    // only grows and every closed return path would look permanent: killing one watched lane
+    // disarms its reservation, and the next report goes through on the place that came back.
+    await post(`/api/slots/${budgetLanes[3].slot}/kill`, {});
+    const releasedBudget = await programBudget(budgetProgramId);
+    const secondReport = await selfFleetReport(laneToks[2],
+      { status: "needs-main", text: "the place a disarmed watch gave back" });
+    check("V1b: a disarmed reservation gives its place back — the sight sees it and the door honours it",
+      releasedBudget?.deliveryBudget?.state === "known"
+        && releasedBudget.deliveryBudget.armedReservations === 3
+        && releasedBudget.deliveryBudget.free === 1
+        && (releasedBudget.deliveryBudgetNote ?? "").startsWith(`return path open at slot ${bMain}: 1 of 5`)
+        && secondReport.ok,
+      JSON.stringify({ budget: releasedBudget?.deliveryBudget, second: secondReport.status }));
+
+    for (const slot of [bMain, ...budgetLanes.map((l) => l.slot)])
+      await post(`/api/slots/${slot}/kill`, {});
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const budgetCleanup = JSON.parse(readFileSync(budgetStatePath, "utf8")) as {
+      events?: { kind?: string }[]; fleetReports?: unknown[]; programs?: { id?: string }[];
+    };
+    budgetCleanup.events = (budgetCleanup.events ?? []).filter((e) => e.kind !== "fleet-report");
+    budgetCleanup.fleetReports = [];
+    budgetCleanup.programs = (budgetCleanup.programs ?? []).filter((p) => p.id !== budgetProgramId);
+    writeFileSync(budgetStatePath, JSON.stringify(budgetCleanup, null, 2), { mode: 0o600 });
     await restartSrv();
   }
 

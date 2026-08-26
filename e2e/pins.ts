@@ -656,11 +656,26 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
 
   const proportionalCmd = /const VERIFY_PROPORTIONAL_CMD = '([^']+)'/.exec(server)?.[1] ?? "";
   const proportionalSteps = stepsOf(proportionalCmd);
-  pin("the docs-proportional server gate is exactly install then pins (pins are never optional)",
-    proportionalCmd === "bun install --frozen-lockfile && bun e2e/pins.ts"
+  // The REPO GUARD is pinned as a THIRD side of the same sentence, because the short chain is the
+  // one gate string that is chosen for a repo without being written for it: any repo whose
+  // candidate is docs-only gets this fleet-shaped command instead of its own. Unguarded, that is a
+  // RED verdict on a tree nothing looked at (`bun e2e/pins.ts` → Module not found) where the tri-
+  // state has a state for exactly this — SKIPPED. Guard TEXT and EXIT CODE are held against
+  // watchdog.sh's own guard and against server.ts's VERIFY_SKIP_EXIT: three files, one sentence,
+  // and shell on one side of it, so no compiler sees this drift.
+  const skipExitHere = Number(/const VERIFY_SKIP_EXIT = (\d+)/.exec(server)?.[1] ?? NaN);
+  const REPO_GUARD = /^\[ -f fleet-e2e\.ts \] \|\| \{ echo "(verify skipped: [^"]+)"; exit (\d+); \}; /;
+  const propGuard = REPO_GUARD.exec(proportionalCmd);
+  const gateGuard = REPO_GUARD.exec(verifyCmd);
+  pin("the docs-proportional server gate carries the full chain's repo guard, then is exactly install then pins",
+    proportionalCmd.replace(REPO_GUARD, "") === "bun install --frozen-lockfile && bun e2e/pins.ts"
+      && !!propGuard && !!gateGuard && propGuard[1] === gateGuard[1]
+      && Number(propGuard[2]) === skipExitHere
       && proportionalSteps.length === 2
       && proportionalSteps[0] === "install" && proportionalSteps[1] === "pins",
-    `cmd=${JSON.stringify(proportionalCmd)} chain=[${proportionalSteps.join(">")}]`);
+    `cmd=${JSON.stringify(proportionalCmd)} chain=[${proportionalSteps.join(">")}] `
+    + `guard=${JSON.stringify(propGuard?.[1] ?? null)}/${propGuard?.[2] ?? null} `
+    + `gateGuard=${JSON.stringify(gateGuard?.[1] ?? null)} skipExit=${skipExitHere}`);
 
   // and the anchors, held HARD — unlike section 6's, which are advisory because a lane's CLAUDE.md
   // is a spawn-time copy. This file is tracked, so the tree it ships with is the tree it describes.

@@ -3376,6 +3376,27 @@ export async function run(ctx: Ctx): Promise<void> {
       while (ambientCount() < want && Date.now() < deadline) await Bun.sleep(120);
       return ambientCount();
     };
+    // …and the FOURTH, which is the one the change above MOVED THIS ARM ONTO. The row-wait these
+    // two probes gave up sat AFTER `server.ts#landLane` had already handed its `landed` line to the
+    // append chain, so everything downstream of it read a ledger that was necessarily written. The
+    // note-wait that replaced it sits BEFORE landLane runs at all: `server.ts#recordLand` writes the
+    // note the moment main has moved, and the outcome line follows only once buildLaneOutcome's
+    // half-dozen git reads are done. Measured on a one-commit fixture (own socket/port, FLEET_CMD
+    // =true): 229 ms between the note becoming readable and the row appearing — and the legacy read
+    // below used to fire ~20 ms after the note check. So it is waited for, bounded, like the three
+    // above; `undefined` after the cap is a real answer and the check quotes it.
+    type LandedOutcome = { disposition: string; taskId?: string; confirmedByHuman?: boolean;
+      landedBy?: { kind?: string; via?: string; slot?: number } };
+    const landedOutcomeOf = async (taskId: string, ms = 20_000): Promise<LandedOutcome | undefined> => {
+      const deadline = Date.now() + ms;
+      for (;;) {
+        const found = ((await (await get("/api/lane-outcomes?limit=100")).json()) as
+          { outcomes: LandedOutcome[] }).outcomes
+          .find((o) => o.disposition === "landed" && o.taskId === taskId);
+        if (found || Date.now() >= deadline) return found;
+        await Bun.sleep(120);
+      }
+    };
     const suspectRowId = await makeTask({ text: "self-land suspect probe row", programId: landProgram.id, repo: REPO2 });
     const suspectLane = await conflictLane(suspectRowId);
     if (suspectLane.cwd) {
@@ -3447,10 +3468,7 @@ export async function run(ctx: Ctx): Promise<void> {
           && ambientCount() === ambientBefore2,
         JSON.stringify({ note: cookieNote, ambient: ambientCount() - ambientBefore2 }));
     }
-    const cookieOutcome = ((await (await get("/api/lane-outcomes?limit=100")).json()) as
-      { outcomes: { disposition: string; taskId?: string; confirmedByHuman?: boolean;
-        landedBy?: { kind?: string; via?: string; slot?: number } }[] })
-      .outcomes.find((o) => o.disposition === "landed" && o.taskId === cookieRowId);
+    const cookieOutcome = await landedOutcomeOf(cookieRowId);
     const cookieSelfLand = await selfLand(landTok, cookieRowId);
     const cookieSelfText = await cookieSelfLand.text();
     check("legacy: a Program with NO promotion lands the ordinary owner way, and its own MAIN's self-land door refuses with the absent-policy sentence",

@@ -1219,7 +1219,8 @@ entered in `52731e2`; its first trail row is 2026-08-24T00:55 Z. Read out of BOT
 `msSincePrev` is ≈ 65 s in every one of the seven: the probe's whole 60 s poll cap spent, plus its
 fixture. The two group siblings — `owner-token ambient use: the BOARD's cookie channel …` and
 `legacy: a Program with NO promotion …` — are 0 red / 78. Same form, more timing margin; not
-immunity, which is why both halves of the pair are repaired below.
+immunity, which is why both halves of the pair are repaired below. (The `legacy` sibling went red on
+the very first run AFTER that repair, and for a reason the repair introduced — see 11.2h-bis.)
 
 **Mechanism.** `POST /api/tasks/:id/dispatch` answers as soon as `server.ts#dispatchTask` has the
 lane standing and the row at `sent`. The founding brief is delivered by a DETACHED tail — the route
@@ -1312,6 +1313,70 @@ classification and its prescription — control the settle, `driveMergeUntil`-st
 
 **No free pass for the past:** reds in this family before `70698a7` are still adjudicated by the
 same-tree/cross-tree rule above. A red here **after** it is real and yours.
+
+### 11.2h-bis The third instance, and the repair above is what opened it (2026-08-26, repaired same day)
+
+**Signature, verbatim** — same file, same section, the check immediately downstream of the repaired
+pair:
+
+> `legacy: a Program with NO promotion lands the ordinary owner way, and its own MAIN's self-land door refuses with the absent-policy sentence`
+
+with detail `{"outcome":null,"selfLand":"{\"error\":\"no self-land promotion on this program (absent) — …\"}"}`.
+The `selfLand` half is the exact sentence the check demands; only the ledger row is missing.
+
+**Rate: 1 red in 1 run — every run of this check that carries `70698a7` is red.** The trail holds 36
+runs of it across both directories; 35 predate `70698a7` (landed 14:46 local) and are green, and the
+one after it — `isolated-20260826T130627Z-25331`, a post-land audit, check at 15:18:14 local — is
+red. `msSincePrev: 20`. The 9.0 % framing in 11.2h above does not apply here: this is not a rare
+collision, it is a read that now happens too early **every time**, and the single red is simply the
+only run there has been. (And it is again visible only in `$TMPDIR/fleet-e2e-trail/` — the
+post-land-audit trap 11.2h closes with, paid a second time within the hour.)
+
+**Mechanism: the repair moved this arm's read point ACROSS the fact it reads.** The wait
+`70698a7` removed was "poll the task row until it is `done`". `server.ts#landLane` stamps that row
+in a loop that runs *after* `emitLaneOutcome`, so everything downstream of that wait read a
+lane-outcomes ledger the server had necessarily already written. The wait that replaced it is
+`landNote(sha)` — and `server.ts#recordLand` writes the note the moment `advanceIntegration` has
+moved main, i.e. BEFORE `landLane` is called at all. Between the two sits landLane's
+`buildLaneOutcome`: half a dozen `git` subprocesses (`diff --shortstat`, `rev-list --count`,
+`diff --name-only`, the owner-prompt scan, the review read, the transcript read) before the line
+reaches the append chain. The ledger read fired ~20 ms behind the note check and the row was not
+there yet. Nothing about the product changed; the probe simply took the earlier of two carriers and
+kept reading the later one.
+
+**Not the `briefAndSend` requeue.** The 11.2h root cannot produce this shape, and the code says why:
+`requeue` runs only when `identityLost()` — and the identity is only lost once `landLane` has
+already killed the slot, i.e. after the outcome row is out. Confirmed on the scratch instance: with
+the land driven INSIDE the tail's 4000 ms sleep, the tail found its identity intact, delivered the
+brief normally, and the row ended `done` — the ledger row was late all the same.
+
+**Repaired in `e2e/programs.ts` only:** `landedOutcomeOf(taskId, ms = 20_000)` — the FOURTH lagging
+fact of this land, waited for on the same 120 ms cadence and bounded like `landNote`/`ambientReach`
+beside it. `undefined` after the cap stays a real answer and the check quotes it, so a land that
+truly produced no row still fails as itself. The two repaired probes above are untouched.
+
+**Mutation proof** (scratch instance, own socket/port, `FLEET_CMD=true`, one task dispatched into a
+lane, one commit, an owner Bearer ff-land; BOTH readings taken in the same run, so the only variable
+is the probe form):
+
+```
+                       OLD FORM (sample once, right after the note)   NEW FORM (bounded wait)
+FLEET_TEST_LAND_PAUSE_MS=0      FAIL  outcome=null   x6                PASS  x6
+FLEET_TEST_LAND_PAUSE_MS=20000  FAIL  outcome=null   x5                PASS  x5
+measured gap, note readable -> ledger row readable (the 5 instrumented runs of the 11):
+  229 / 244 / 245 / 244 / 128 ms
+```
+
+`FLEET_TEST_LAND_PAUSE_MS` (`server.ts#LAND_PAUSE_MS`, the product's own TEST-ONLY knob) sits between
+`advanceIntegration` and `recordLand`, so at 20 000 the note appears 20 s after main moves. The gap
+measured after it is unchanged — which is the point of that arm: the window is anchored to
+note→`landLane`, not to the merge job's own timing, and no amount of latitude before the note closes
+it. Eleven runs, eleven times the same verdict; the old form never once got in ahead of the append.
+
+**The general lesson, and it is the third time this file states it:** when a probe stops waiting on
+one carrier of a fact and starts waiting on another, the new carrier's position in the server's own
+write order is part of the change. Here the two carriers bracket the write the check downstream
+depends on. Moving a wait is never a local edit — the read points BELOW it move with it.
 
 ### 11.3 Correction to the prescribed proof method
 

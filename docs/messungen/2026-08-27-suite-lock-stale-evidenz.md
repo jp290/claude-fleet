@@ -1,6 +1,6 @@
 ---
 frage: Was belegt der Befund „terminaler isolierter Lauf, Suite-Lock danach state=stale (pid 36538, alive=false, heldMs 1175742), gate.reports leer, keine wartende Session" für die D1-/Suite-Sicht?
-urteil: Der stale Lock gehört nicht dem terminalen Lauf 49666, sondern einem unidentifizierten Halter, der ihn 16:51:08Z übernahm und vor 17:10:44Z spurlos starb; stale-nach-terminal und reports=[] sind dagegen designtes Ruheverhalten, und Trail-Id-Raum (Runner-Pid) und Lock-Pid-Raum (Wrapper-$$) sind disjunkt, sodass die Sicht diesen Join heute nicht leisten kann
+urteil: Der stale Lock gehört nicht dem terminalen Lauf 49666, sondern einem unidentifizierten Halter, der ihn 16:51:08Z übernahm und vor 17:10:44Z spurlos starb; stale-nach-terminal und reports=[] sind designtes Ruheverhalten, der Mutex trägt null Information über foreign-repo-Lands (Private-repo-o-Land cabf794e ist per Ledger verified=true belegt, sein Audit endete nach 281 ms mit exit 42 VOR dem Mutex), und Trail-Id-Raum (Runner-Pid) und Lock-Pid-Raum (Wrapper-$$) sind disjunkt
 bereich: [suite-mutex, sensorik, verify]
 belege: [e2e-stage.sh, server.ts#suiteLockView, server.ts#gateView, e2e/trail-emit.ts#TRAIL_RUN, /tmp/fleet-e2e.lock]
 nicht-gemessen: Identität des Halters pid 36538 (tot, keine ps-Zeile, keine Ledger-Zeile, keine server.log-Zeile) und die Ursache der 6 Composer-Rollback-FAILs
@@ -56,9 +56,10 @@ von 16:51:08Z, 39 Minuten nach Runner-Boot, kann nicht von diesem Wrapper stamme
 musste 49666s Wrapper bereits tot sein (sonst hätte der Reap ihn nicht überschrieben — der Reap
 prüft die pid auf Leben). **Gemessene Kette:** Lauf 49666 lief ≈ 16:12–16:4xZ und wurde terminal;
 sein Lock blieb designgemäß mit toter pid stehen; um 16:51:08Z reapte ein neuer Anwärter
-(pid 36538), erwarb — **und starb selbst vor 17:10:44Z**, ohne Ledger-Zeile
-(`post-land-audits.jsonl`: letzte Zeile 14:32Z, exit 42), ohne server.log-Zeile danach, ohne
-`ps`-Spur zur Messzeit. Wer 36538 war — ein weiterer Audit-Anlauf, eine Lane-Vorschau, ein
+(pid 36538), erwarb — **und starb selbst vor 17:10:44Z**, ohne Ledger-Zeile im Fenster
+(`post-land-audits.jsonl`: Nachbarzeilen 15:43:57Z private-repo-j und 17:12:50Z private-repo-o, beide
+exit 42 und beide ohne Mutex-Berührung, §5), ohne server.log-Zeile danach, ohne `ps`-Spur zur
+Messzeit. Wer 36538 war — ein weiterer Audit-Anlauf, eine Lane-Vorschau, ein
 Hand-Start — **bleibt Inferenz bis zur Sensorprüfung**, genau wie vom Owner gerahmt. Fest steht
 nur: zwischen 16:51 und 17:10Z hat auf dieser Maschine ein Suite-Prozess den Mutex übernommen und
 ihn nicht überlebt, und keine Fleet-Fläche hat davon eine Zeile.
@@ -89,6 +90,34 @@ Sensorkandidaten daraus (VORSCHLAG, ungebaut, gehört neben D1 in die Schwarm-Ra
 Trail-Run-Namen in die Lock-Dir, `suiteLockView` reicht ihn durch — der Join wird ein Feld statt
 Arithmetik; (b) die Sicht nennt den Erwerbszeitpunkt (pid-mtime) explizit, statt ihn in heldMs zu
 verrechnen. Beides Sensorik; nichts davon gated oder handelt.
+
+### 5. Korrektur/Zusatz (Owner, verifiziert): der Mutex sagt NICHTS über foreign-repo-Lands
+
+Owner-Nachtrag zur selben Beobachtungsepisode, alle drei Behauptungen an den Ledgern des
+Haupt-Checkouts nachgemessen:
+
+- **Der Land HAT stattgefunden.** `lane-outcomes.jsonl`, Zeile `fleet/260827144022-d36a`:
+  `disposition=landed, verified=true, landedBy={kind:main, slot:3, task:cabf794e,
+  sessionIdMatch:exact}, mainAfter=37763f84…` — der Nudge an Project-MAIN Slot 3 hat gegriffen,
+  MAIN landete selbst (laut Owner ≈ 43 s nach dem Send; die Latenz ist seine Beobachtung, die
+  Land-Fakten sind Ledger).
+- **Warum der Mutex davon nie etwas sah:** `watchdog.sh` (AUDIT_CMD) guardet den Audit mit
+  `[ -f fleet-e2e.ts ] || { echo "audit skipped: not the fleet repo"; exit 42; }` — für
+  `/Users/owner/private-repo-o` endet der Audit **vor** `./e2e-isolated.sh`. Gemessen an der
+  Ledger-Zeile: startedAt 17:12:50.611Z, at 17:12:50.892Z, **ms=281**, exitCode 42,
+  out `audit skipped: not the fleet repo`, result `unknown`. 281 ms, kein Suite-Start, keine
+  Lock-Berührung.
+- **Klassifikationsregel für die D1-/Suite-Sicht daraus:** Land-/Outcome-Fakten (Task-Status,
+  `lane-outcomes.jsonl`, Land-Note) und Mutex-Zustand sind **getrennte Sensoren**; ein
+  idle/stale Mutex plus foreign-repo exit 42 darf nie als „nicht gelandet" gelesen werden — der
+  Mutex misst ausschließlich fleet-repo-Suiten, und exit 42 heißt per Konstruktion „nie
+  gemessen", nicht „rot" (dieselbe A4-Regel, die den Audit-`unknown` trägt).
+
+Zur Halter-Frage bleibt der Befund aus §3 unverändert: die Private-repo-o-Episode (17:12:50Z,
+281 ms, kein Lock) kann pid 36538 (Erwerb 16:51:08Z) nicht stellen. Die Owner-Zuschreibung
+„stammt aus dem früheren Fleet-Lauf" ist mit der mtime verträglich, sofern „früher" einen
+Fleet-Suite-Prozess meint, der um 16:51:08Z erwarb — der Wrapper des Laufs 49666 selbst kann es
+nicht sein (hielt vor 16:12:10Z); die Identität bleibt offen wie in §3.
 
 ## Methode
 

@@ -8,8 +8,9 @@ description: Wenn dein Auftrag eine Messung oder Analyse ohne Code-Änderung ist
 Adaption von pstack/show-me-your-work (github.com/cursor/plugins, MIT, © 2026 Lauren Tan) für
 Fleet-Lanes.
 
-**Warum:** 97 von 350 Lanes mit Branch endeten `killed-empty` (28 %, `lane-outcomes.jsonl`,
-gemessen 2026-08-19 — Herleitung in `docs/werkzeugkosten-grundlinie-2026-08-19.md` §4). Das ist der
+**Warum:** 123 von 567 Lane-Ausgängen endeten `killed-empty` (21,7 %, gegen 371 `landed`;
+`lane-outcomes.jsonl`, frisch gezogen 2026-08-27; die ältere Lesung 97/350 = 28 % vom 2026-08-19 und
+ihre Herleitung stehen in `docs/werkzeugkosten-grundlinie-2026-08-19.md` §4). Das ist der
 Normalausgang einer Mess-Lane: das Ergebnis stand nur im Pane-Bericht und starb mit dem Slot. Eine
 getrackte Notiz kostet einen Commit und macht aus „FILES: keine" ein landbares Ergebnis.
 
@@ -25,6 +26,15 @@ Nicht anwenden, wenn die Lane ohnehin Code ändert; dort trägt der Commit-Body 
 Eine Datei `docs/messungen/YYYY-MM-DD-<slug>.md`, getrackt und committet:
 
 ```markdown
+---
+frage: <eine Zeile — was gemessen wurde>
+urteil: <eine Zeile — die ANTWORT, nicht die Zusammenfassung>
+bereich: [<tag>, <tag>]
+belege: [<pfad>#<symbol>, ...]
+nicht-gemessen: <eine Zeile>
+stand: YYYY-MM-DD
+---
+
 # <Frage, die gemessen wurde>
 
 <Datum>, Lane <branch>. Frage: **<die Frage in einem Satz>**
@@ -41,6 +51,46 @@ Eine Datei `docs/messungen/YYYY-MM-DD-<slug>.md`, getrackt und committet:
 
 Regeln für den Inhalt: der **unslop**-Skill gilt auch hier. Zahl statt Wertung, Beleg statt
 Beteuerung, gemessen und abgeleitet getrennt.
+
+### Die sechs Front-Matter-Felder
+
+Das Front-Matter ist der maschinenlesbare Teil der Notiz: es macht den Korpus querlesbar, statt nur
+auffindbar. Alle sechs Felder sind Pflicht, in dieser Reihenfolge.
+
+- `frage` — **was** gemessen wurde, eine Zeile. Deckt sich mit der Überschrift.
+- `urteil` — die **Antwort**, eine Zeile, nicht die Zusammenfassung. „Nein, der Pin liefe in jeder
+  Lane rot" ist ein Urteil; „Untersuchung der Pin-Frage" ist keins. Diese Zeile wandert wörtlich in
+  den Index — sie muss allein stehen können.
+- `bereich` — **freie Tags**, YAML-Liste, ein bis drei Stück. Kein festes Vokabular (Owner-Frage
+  offen); nimm den Begriff, unter dem jemand die Notiz suchen würde.
+- `belege` — YAML-Liste von Zeigern, `<pfad>#<symbol>` (`server.ts#handleSelfSucceed`), Commit-SHA
+  oder Doc-Pfad. **Symbol, nicht Zeilennummer**, außer die Notiz trägt ein Datum im Namen und
+  vermisst einen datierten Baum.
+- `nicht-gemessen` — eine Zeile, was außerhalb lag. Die Kurzform des gleichnamigen Abschnitts; ein
+  leeres Feld gibt es nicht, „nichts ausgeschlossen" wäre selbst eine Aussage.
+- `stand` — `YYYY-MM-DD`, der Tag der Messung, nicht der Tag des Commits.
+
+### Die Index-Zeile
+
+Nach dem Schreiben der Notiz hängst du **genau eine Zeile** an `docs/messungen/INDEX.md` an:
+
+```
+- <urteil> — docs/messungen/<datei>.md · bereich: a,b · stand: YYYY-MM-DD
+```
+
+`<urteil>` ist wörtlich das Feld aus dem Front-Matter, `bereich` dessen Tags mit Komma verbunden.
+Angehängt, nicht erzeugt: der Index wird von der schreibenden Notiz fortgeschrieben, nie aus dem
+Korpus generiert — ein generierter Index driftet gegen die Dateien, ein angehängter kann es nicht.
+Eine Notiz, eine Zeile; wer eine bestehende Notiz überarbeitet, ändert ihre Zeile, statt eine
+zweite anzufügen. Das `urteil` darf kein ` — ` enthalten (Gedankenstrich mit Leerzeichen davor und
+danach) — das ist das Trennzeichen der Zeile; steht es im Urteil, ist die Zeile nicht mehr
+maschinell in Urteil und Pfad zerlegbar.
+
+### Fremder Harness
+
+Läufst du unter einem fremden Harness (`pi-*`, `codex`), gehört das Template oben **in den Brief**:
+`.agents/` ist gitignored und existiert in keinem Worktree, dieses Skill erreicht dich dort also
+nicht.
 
 ## Entscheidungs-Trail (nur für autonome Läufe über ~30 min)
 
@@ -62,6 +112,7 @@ ts	phase	entscheidung	warum	beleg	ergebnis
 
 - Keine untracked Files im Worktree (sie blockieren das Land) — die Notiz gehört committet, Scratch
   in den Scratchpad.
+- Alle sechs Front-Matter-Felder gefüllt, und `docs/messungen/INDEX.md` trägt genau eine neue Zeile.
 - Jede Trail-Zeile deckt sich mit dem, was wirklich passiert ist. Erfundene oder geplante Zeilen
   streichen.
 - Im Report auf die Datei zeigen, nicht die Zahlen wiederholen.

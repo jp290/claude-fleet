@@ -33,6 +33,14 @@ künftige Spiel-Sessions**, gerankt mit Schnittlinie. Leitplanken, beide Owner-W
 Sol-Lanes: GPT-Fenster 258 400, `ctx:null` am Slot — Selbstauskunft „bei halbvoll" steht in beiden
 Briefs. Nach jedem Dispatch Pane lesen; `ok:true` ist keine Zustellung.
 
+**Dritter Schritt NACH der Synthese** (Owner-Auftrag, wörtlich: „sobald die funde des workflows
+klar sind sollten wir außerdem noch einen sol worker beauftragen der dann wiederum checkt nach
+ähnlichen strukturellen fehlern und blindspots guckt"): einen weiteren Sol-Worker briefen, der die
+synthetisierten Befundklassen als Suchmuster nimmt und den GESAMTEN Studio-/Fleet-Workflow auf
+weitere Instanzen derselben Klassen und auf verwandte Blindspots absucht (Meta-Audit). Erst nach
+der Synthese — die Befundklassen sind sein Input. Dispatch-Konvention:
+`{"harness":"codex","model":"gpt-5.6-sol","effort":"xhigh"}`.
+
 ## Was diese Session geschlossen hat (Bodies: `git log e89d093..HEAD`)
 
 1. **Gate-Fix ZU (Punkt 4 des Vorgängers)**: Deploy `8c3c01ac` grün, am neuen srv nachgemessen

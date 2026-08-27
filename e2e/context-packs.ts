@@ -9,8 +9,11 @@ import {
   CONTEXT_PACKS,
   type ContextPackCapability,
   type ContextPackHarness,
+  type ContextPackMode,
+  type ContextPackTrigger,
 } from "../context-packs";
 import { USE_WHEN_MAX, validateContextPacks, type ContextPackRepoFacts } from "../context-pack-validator";
+import { CONTEXT_MANIFEST_PATH, planRepoContext, readContextManifest } from "../context-manifest";
 
 export type ContextPackCheck = (name: string, ok: boolean, detail?: string) => void;
 
@@ -65,6 +68,33 @@ function collectRepoFacts(): { facts: ContextPackRepoFacts | null; error: string
   } catch (error) {
     return { facts: null, error: `could not locate fixture tree: ${error instanceof Error ? error.message : String(error)}` };
   }
+}
+
+// THE SOURCE CHECKOUT, WHICH IS NOT ALWAYS THE TREE THIS RUN STANDS IN. Measured 2026-08-27 in
+// e2e-isolated: the staged instance `git init`s a repository of its own, so "is there a git repo
+// here" answers YES in the staged shape and never reaches the checkout — and the staged copy carries
+// no `.fleet/` at all. The node_modules symlink is the instance's one pointer home. So both
+// candidates are TRIED, and the one that actually holds a readable manifest wins; a run that finds
+// the manifest in neither says so under its own name rather than reporting an undelivered pack.
+type SourceCheckout = { readonly root: string; readonly manifest: string; readonly trackedPaths: ReadonlySet<string> };
+function sourceCheckout(): { checkout: SourceCheckout | null; error: string | null } {
+  const here = resolve(import.meta.dir, "..");
+  const candidates = [here];
+  try { candidates.push(dirname(realpathSync(resolve(here, "node_modules")))); } catch { /* no pointer home */ }
+  const why: string[] = [];
+  for (const root of candidates) {
+    let manifest: string;
+    try { manifest = readFileSync(resolve(root, CONTEXT_MANIFEST_PATH), "utf8"); }
+    catch { why.push(`${root}: no ${CONTEXT_MANIFEST_PATH}`); continue; }
+    const git = spawnSync("git", ["-C", root, "ls-files", "-z"], {
+      encoding: "utf8",
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    if (git.status !== 0) { why.push(`${root}: git ls-files exited ${String(git.status)}`); continue; }
+    return { checkout: { root, manifest, trackedPaths: new Set(git.stdout.split("\0").filter(Boolean)) }, error: null };
+  }
+  return { checkout: null, error: why.join("; ") || "no candidate tree" };
 }
 
 export async function run(externalCheck?: ContextPackCheck): Promise<void> {
@@ -201,6 +231,78 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
     const repeatB = validateContextPacks({ packs: cycle, repo: fixture.facts, capabilities });
     check("context packs: repeated validation is byte-deterministic",
       JSON.stringify(repeatA) === JSON.stringify(repeatB), JSON.stringify(repeatA.issues));
+  }
+
+  // ================================================================================================
+  // FLEET'S OWN TRACKED MANIFEST, PLANNED WITH THE REAL DISPATCH FACTS
+  // ================================================================================================
+  // e2e/pins.ts already proves the tracked manifest VALIDATES. Valid is not delivered: a pack can be
+  // impeccable and still be omitted by every rule of the ladder, and the omission row is invisible
+  // unless somebody reads a receipt. This block asserts the other half for the one pointer whose
+  // whole purpose is that a lane sees it before it starts measuring — the measurement-note index.
+  //
+  // THE DELIVERY FACTS ARE READ OUT OF server.ts, NEVER RESTATED HERE. Restating them would make
+  // this check pass against a seam that has since stopped passing `always` or stopped granting
+  // `tracked-source-read` — it would assert its own fixture. The three constants are the entire
+  // supply of dispatch facts (e2e/pins.ts RULE_REACH pins that same call site), so a probe that
+  // cannot find them fails UNDER ITS OWN NAME rather than as "the pack is not delivered".
+  const RULE_INDEX = "context manifest: the measurement-note index is delivered to a dispatched lane";
+  const INDEX_PACK = "messnotiz-index";
+  const INDEX_SOURCE = { path: "docs/messungen/INDEX.md", anchor: "# Index der Messnotizen" };
+  const source = sourceCheckout();
+  if (source.checkout === null) {
+    check(`${RULE_INDEX} — PROBE: a checkout carrying the tracked manifest was located`, false, source.error ?? "");
+  } else {
+    const { root, trackedPaths } = source.checkout;
+    const readAt = (path: string): string | null => {
+      try { return readFileSync(resolve(root, path), "utf8"); } catch { return null; }
+    };
+    const server = readAt("server.ts");
+    const listOf = (name: string, kind: string): string[] | null => {
+      if (server === null) return null;
+      const match = new RegExp(`const ${name}: readonly ${kind}\\[\\] = \\[([^\\]]*)\\]`).exec(server);
+      // `[a-z0-9-]` and not `[a-z-]`: `e2e-run` carries a digit, and the narrower class dropped it
+      // silently — a capability set short by one reads exactly like a capability the seam withholds.
+      return match ? [...match[1].matchAll(/"([a-z0-9-]+)"/g)].map((m) => m[1]) : null;
+    };
+    const modeMatch = server === null ? null : /const DISPATCH_CONTEXT_MODE: ContextPackMode = "([a-z-]+)";/.exec(server);
+    const triggers = listOf("DISPATCH_CONTEXT_TRIGGERS", "ContextPackTrigger");
+    const capabilities = listOf("DISPATCH_CONTEXT_CAPABILITIES", "ContextPackCapability");
+    const manifest = readContextManifest(source.checkout.manifest);
+
+    if (server === null || !modeMatch || !triggers || !capabilities || manifest.kind !== "packs")
+      check(`${RULE_INDEX} — PROBE: the manifest parsed and the three dispatch constants were read`, false,
+        `root=${root} server=${server === null ? "unreadable" : "ok"} manifest=${manifest.kind}`
+          + ` mode=${modeMatch?.[1] ?? "not found"} triggers=${triggers ?? "not found"} capabilities=${capabilities ?? "not found"}`);
+    else {
+      // Only tracked, readable sources reach the validator — exactly what repoManifestContextPlan
+      // hands it at the seam. A source this probe could not read must stay OUT, so an unchecked
+      // anchor is reported as unchecked instead of hopefully delivered.
+      const sourceBytes = new Map<string, string>();
+      for (const path of manifest.referencedPaths) {
+        if (!trackedPaths.has(path)) continue;
+        const bytes = readAt(path);
+        if (bytes !== null) sourceBytes.set(path, bytes);
+      }
+      const plan = planRepoContext({
+        manifest,
+        repo: { trackedPaths, sourceBytes },
+        facts: {
+          harness: "claude",
+          mode: modeMatch[1] as ContextPackMode,
+          triggers: triggers as ContextPackTrigger[],
+          capabilities: capabilities as ContextPackCapability[],
+        },
+      });
+      const selection = plan.selected.find((pack) => pack.id === INDEX_PACK);
+      const omission = plan.omitted.find((pack) => pack.id === INDEX_PACK);
+      check(`${RULE_INDEX}, with its own anchor`,
+        selection !== undefined && omission === undefined
+          && JSON.stringify(selection.sources) === JSON.stringify([INDEX_SOURCE]),
+        `selected=[${plan.selected.map((pack) => pack.id).join(",")}]`
+          + ` omitted=[${plan.omitted.map((pack) => `${pack.id}:${pack.why}`).join(",")}]`
+          + ` sources=${JSON.stringify(selection?.sources ?? null)}`);
+    }
   }
 
   if (!externalCheck) {

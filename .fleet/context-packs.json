@@ -17,5 +17,23 @@
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
+  },
+  {
+    "id": "messnotiz-index",
+    "useWhen": "Bevor du misst: pruefe im Index, ob deine Frage in diesem Repo schon vermessen wurde.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["always"],
+    "hardness": "guidance",
+    "sources": [
+      { "path": "docs/messungen/INDEX.md", "anchor": "# Index der Messnotizen" }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 11700,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
   }
 ]

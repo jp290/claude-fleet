@@ -1378,6 +1378,46 @@ one carrier of a fact and starts waiting on another, the new carrier's position 
 write order is part of the change. Here the two carriers bracket the write the check downstream
 depends on. Moving a wait is never a local edit — the read points BELOW it move with it.
 
+### 11.2i An eleventh family: the suite-server PHASE RESTART races the dying tmux server (2026-08-27, filed — NOT repaired)
+
+**Status: open.** Filed from a live triple-proof; the fix is proposed, not built. A red on these
+lines is still a flake candidate until someone lands the wait — after that land, this section gets
+its repair stamp and a red there is ECHT again.
+
+**The mechanism, one root with two known mouths.** Both `e2e-clean-review.sh` (phase 1 → 2 handover,
+`tmux kill-session -t srv` immediately followed by `new-session` on the same socket/port, lines
+~127–137) and `e2e-claude-gate.sh` (phase 2 → 3, `kill-server` directly before `new-session`,
+~255–257) restart a suite server with NO wait between the kill and the spawn. When the `new-session`
+client catches the tmux server mid-death, tmux itself answers `server exited unexpectedly` (that
+string exists nowhere in this repo — it is tmux's, and its presence in a suite's stderr is this
+family's fingerprint). The phase then waits its bounded 30 s on a bind that never comes and runs on,
+so the red reads as "server did not come up" with **zero failing checks**.
+
+**Post-mortem discriminator, two shapes.** (a) claude-gate mouth: NO `server.log` in the preserved
+instance — the §-known "nie gemessen" signature (`fleet-e2e-unprobed-instance-85260`, checked: zero
+`*.log`). (b) clean-review mouth: `server.log` EXISTS but carries only the PRIOR phase's lines — the
+restarted server never wrote one line. Both mean the pane never executed its command; neither is a
+code verdict.
+
+**The proof, §11.7 order (same tree re-run first, no HEAD excursion).** Tree `c098d87` (P0: two
+files, `.claude/skills/mess-notiz/SKILL.md` + `docs/messungen/INDEX.md` — no `.ts`, no `.sh`, no
+line any suite server reads), three runs: (1) land gate — died at claude-gate phase 3, no
+server.log; (2) lane re-run, full local chain — died at clean-review phase 2 shadow, server.log
+with only phase-1 lines; (3) lane serial re-run — clean-review (both phases), security, claude-gate
+(all three phases) **ALL PASS**. Two runs of one tree died at two DIFFERENT places, the third at
+none: non-determinism proven directly. Contention raises the hit rate (run (1) spent 31 s of 181 s
+waiting on `/tmp/fleet-e2e.lock`; a foreign `e2e-isolated.sh` was live), but the race exists
+without it.
+
+**Proposed fix (not built; suite edits were out of the finding lane's mandate):** before each
+`new-session` that follows a kill on the same socket, wait for `tmux has-session` to report the old
+server actually gone (bounded), instead of racing the death. Two call sites, one guard.
+
+**Bookkeeping:** this is the eleventh family (three in §5b · §11.2 · §11.2b · §11.2c · §11.2e ·
+§11.2f · §11.2g · §11.2h — ten before this). `CLAUDE.md`'s "Zehn bekannte Flake-Familien" is one
+short as of this filing; the rulebook line is a generat (`rulebook.ts`) and is NOT updated by this
+docs-only commit — noted in the 2026-08-27 handoff as a pending rulebook edit.
+
 ### 11.3 Correction to the prescribed proof method
 
 `CLAUDE.md` tells a lane to clear a suspected flake with **a fresh HEAD worktree, same check,

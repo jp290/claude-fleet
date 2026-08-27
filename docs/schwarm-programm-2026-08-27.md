@@ -116,7 +116,9 @@ ein generierter Index driftet, ein angehängter nicht.
 **Done-Kriterium.** Das Skill-Template verlangt die sechs Felder und die Index-Zeile; eine nach dem neuen
 Template geschriebene Notiz hat gültiges Front-Matter und genau eine neue Zeile in `INDEX.md`.
 
-**Verify.** `bun e2e/pins.ts` grün, plus ein neuer Pin (siehe Risiko).
+**Verify.** Lokal `bun e2e/pins.ts`; der Land-Gate fährt die VOLLE Kette — `.claude/skills/…` ist
+bei `ruleFor` `conservative-default`, nicht Doku (gemessen am Land von P0, 2026-08-27: 253 s Gate
+statt 0,5 s). Der ursprünglich hier erwähnte Pin ist gestrichen, siehe Risiko-Absatz.
 
 **Dateien.** `.claude/skills/mess-notiz/SKILL.md` (getrackt, seit `3235561`) und
 `docs/messungen/INDEX.md` (neu). **Sonst nichts.**

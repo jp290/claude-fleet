@@ -92,11 +92,12 @@ baue keinen Pin.**
 die Index-Zeile, `docs/messungen/INDEX.md` existiert, und eine nach dem neuen Template
 probeweise geschriebene Notiz hat gültiges Front-Matter und genau eine Index-Zeile.
 
-**Verify (wörtlich).**
-
-    bun install --frozen-lockfile && bun e2e/pins.ts
-
-Grün = letzte Zeile `ALL PASS`. Dein Diff ist reine Doku, das ist die richtige kurze Kette.
+**Verify.** Lokal reicht `bun install --frozen-lockfile && bun e2e/pins.ts` — **aber wisse, was der
+Land-Gate fahren wird** (am 2026-08-27 an genau diesem Paket gemessen): `.claude/skills/…` fällt bei
+`verify-proportion.ts#ruleFor` unter KEINEN der Doku-Präfixe (`docs/`, `briefs/`, `drops/`,
+Root-`*.md`) → `conservative-default` → **volle Kette, ~3–4 min Land-Fenster**, nicht die
+~0,5-s-Docs-Kurzkette. Die erste Fassung dieses Briefs behauptete die kurze Kette; das war falsch
+und hat ein Land-Fenster erzeugt, in das ein Direkt-Commit fiel (Fast-Forward tot, Lane erhalten).
 
 **Nicht-Umfang.** Kein Server-Code. Keine Änderung an bestehenden Notizen (das ist P0b). Keine
 Laufzeit-Validierung des Front-Matters. Kein Generator für den Index — er wird angehängt, nicht

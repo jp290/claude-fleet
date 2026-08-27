@@ -1,93 +1,112 @@
-# HANDOFF — Controller (Slot 10), Nachtsession 2026-08-27 → Succession auf Owner-Wunsch
+# HANDOFF — Themen-Session „hugFaceInci" (Slot 9), 2026-08-27
 
 Zustand wird ABGELEITET: `./state.sh` · `./register.sh` · Live-Queue. Hier steht nur, was daraus
-nicht hervorgeht. Vorgänger-Handoff: `423d059` (Slot 9). Diese Succession ist ein OWNER-Auftrag
-(„sobald du das gemacht hast möchte ich das du einen handoff schreibst und eine succession
-durchführst"), keine Band-Übergabe — Kontext lag bei ~22 %.
+nicht hervorgeht. **Vorgänger-Handoff: `820bf9a`** (Controller, Nachtsession) — er beschreibt
+Arbeit, die WEITERLÄUFT und nicht mir gehört, siehe §5.
 
-## Lage: der Sol-Audit-Zyklus ist ABGESCHLOSSEN, der Private-repo-j-Akt LÄUFT bei der MAIN
+Diese Session war **kein Controller-Zyklus**, sondern ein Themen-Auftrag: den OpenAI/Hugging-Face-
+Vorfall auswerten und daraus ableiten, was Fleet an Struktur lernen kann. Übergabe auf
+Owner-Wunsch bei ctx ~28 %.
 
-Kein Erntedruck, keine offene Lane dieses Controllers. Vier Lands dieser Session auf main:
-`b0e303e` (Worktrail-Audit II) · `319dae9` (Visual-Workflow-Audit) · `83eb170` (meine Synthese)
-· `d5c681c` (Meta-Blindspot-Audit, K1–K11). Details und Kernbefunde: die drei Papiere unter
-`docs/messungen/2026-08-27-*.md` und die Commit-Bodies.
+## 1. Was entstanden ist (fünf Commits)
 
-## Was NACH dem letzten Handoff-Commit (513b67a) passierte — der eigentliche Kontext
+`bdcc6d3` Ausarbeitung · `e3e5d29` GLM-Gegencheck (kam regulär über eine Lane herein) ·
+`a8aa258` Korrekturen daraus · `22dc5c8` fünf Arbeitsaufträge · `1a51291` Selbstprüfung dieser
+Aufträge. Die Befunde stehen in den Commit-Bodies, das Programm in
+`docs/schwarm-programm-2026-08-27.md`, die Aufträge in
+`briefs/schwarm-programm-auftraege-2026-08-27.md`.
 
-1. **Owner-Gespräch, Entscheidung delegiert** („entscheide du"): Ehrliche Diagnose geliefert
-   (drei Gründe: statischer Damm auf echtem DEM kann mechanisch nichts · Prozess maß statt zu
-   pivotieren · es wurde nie ein Spiel gebaut). Meine ursprüngliche Akt-1/Akt-2-Trennung
-   (Mechanik zuerst, Grafik danach) hat der Owner mit „ich will grafik eig gleich direkt im
-   ersten playtest sehen" gekippt — und er hatte recht: das Blind-A/B-Kill-Kriterium ist auf
-   Diagnose-Grafik unfair (ein funktionierender Damm kann an unlesbarem Render durchfallen;
-   E19 fiel vermutlich genau so).
-2. **Gebundener Akt „Spielbarer Rohbau"** (~2 Tage), an die Private-repo-j-MAIN gefunkt und
-   ZUGESTELLT — **inzwischen an SLOT 5 auf FABLE** (siehe Punkt 5): authored Tal
-   + adversarialer Loop + Probe-B-Renderer LIVE am Sim; Kette Damm→Stau→nass→Vegetation im
-   ersten Playtest sichtbar. Leitplanken: Grafik rendert NUR echten Sim-Zustand ·
-   Telemetrie-UI und Relief-Look schon in v1 verboten · Kugelbäume als Rohbau erlaubt · kein
-   DEM-Messakt. Kill-Kriterium: Blind-A/B 60 s + Damm ändert gegnerische Ressource/Passage/
-   Frist, sonst statischer Rückstau tot → EIN Versuch dynamisches Wasser → ehrlicher Schluss.
-   **DEM-Herabstufung ist über die delegierte Entscheidung PROMOVIERT**; die MAIN trägt sie in
-   `docs/entscheide.md` (Private-repo-j) ein. Akt endet mit Playtest-Artefakt + Clip → Owner-Taste.
-   Erst nach bestandenem Loop: voller B+-Stilvertrag-Pass mit frischem blinden Critic.
-3. **Defundierte Zeile geparkt:** Die MAIN hatte ~15 min vor dem Akt die E27-Folge-Mess-Lane
-   `7a177954` released (queued, kein Slot); der Akt defundiert sie ausdrücklich. Per
-   `POST /api/tasks/7a177954/unqueue` auf `pending` geparkt — nichts verbrannt. Löschen/
-   Archivieren entscheidet die MAIN.
-4. **Fund der MAIN, quittiert und relevant für Akt 1:** `ufer-angebot.ts` rechnet mit
-   `DEFAULT_CONFIG.seaLevel = 0`, die Sim-Werkzeuge bauen mit `SEA_LEVEL_M = -500`. Für
-   authored Terrain folgenlos; jede Wiederverwendung von Angebots-/Benetzbarkeits-Arithmetik
-   muss die Diskrepanz kennen. (Von der MAIN in Private-repo-j-E27 dokumentiert.)
-5. **Private-repo-j-MAIN neu gebootstrappt: Slot 7 (Opus, 27 % von 200k) → SLOT 5 (FABLE), auf
-   Owner-Wunsch** („vllt ist auch fable hier besser" — die drei anderen Studio-MAINs laufen
-   schon Fable). Ablauf: Owner-Interrupt an S7 · `POST /api/slots/7/kill` ·
-   `POST /api/programs/ff4420b7f48d4d14569b5c1d/bootstrap-main` (model fable) → Slot 5 ·
-   Akt-Brief v2 (Original + Nachtrag: geparkte 7a177954, seaLevel-Diskrepanz, Erdungsreihenfolge,
-   entscheide.md-Eintrag) zugestellt und in der Pane bestätigt. Scratch:
-   `<scratchpad>/private-repo-j-akt1{,-v2}.json` trägt den Brief-Wortlaut.
-6. **Zwei lose Enden für dich:** (a) **Slot 1** = unbeschriftete Private-repo-j-Session, idle seit
-   02:08, 6 % ctx — vermutlich Rest der S3→S7-Succession; Owner weiß davon, schließen ist
-   wahrscheinlich richtig, aber unbestätigt. (b) **Slot 3** = unerklärte LEERE Lane
-   `fleet/260827034248-3026` (frischer Worktree, kein Brief, kein Task, Composer leer),
-   entstanden in derselben Sekunde wie mein erster succeed-Versuch (der laut Code bei
-   Brief-Fehlschlag killSlot fährt und KEINEN Worktree baut — Herkunft ungeklärt, evtl.
-   Owner-Klick am Board). Nicht angefasst; klären oder killen (killed-empty ist billig).
+Kern in einem Satz: der Schwarm im OpenAI-Vorfall war zu **93 %** ein Negativ-Wissens-Bus über die
+**22 %** unlösbaren Tasks — und genau diesen Bus hat Fleet dreimal halb gebaut. Aus vier
+Feature-Ideen wurden **eine Vorbedingung, zwei Schnitte, eine Praxis und ein Sensor**.
 
-## Deine Rolle als Nachfolgerin
+## 2. WAS GERADE FLIEGT — und die Falle darin
 
-Die Private-repo-j-MAIN (SLOT 5, Fable) führt den Akt SELBST (self-land guarded, zerlegt selbst in
-Lanes). Du bist
-Ansprechpartnerin, nicht Treiberin: Cross-Session-Kanal und `POST /api/self/attention`-Türen
-beobachten, bei Rot/Entscheidungsbedarf reagieren. Kein Watch nötig, solange keine Fleet-Lane
-läuft — die Private-repo-j-Arbeit läuft ggf. wieder in lokalen Worktrees (Befundklasse K10, bekannt
-und noch nicht gefixt).
+Zwei Lanes laufen, beide `claude`/`opus`/`effort high`, beide um ~10:41 angestoßen:
 
-## Offene OWNER-Türen (nicht dispatchen, erinnern)
+- **Slot 6** — `fleet/260827083450-376d` — Auftrag **P0** (Claim-Block + Index im
+  `mess-notiz`-Skill).
+- **Slot 10** — `fleet/260827083510-80fe` — Auftrag **D1** (Stuck-Retention in `tickGit`).
 
-- **Klassen-Entscheid K1–K11** (Meta-Audit `d5c681c`): sieben Klassen oberhalb der Schnittlinie
-  verdienen Promote-/Fix-/Contain-Entscheid vor dem nächsten breiten Studio-Lauf; K1 (Stop-Gate)
-  und K10 (Schatten-Orchestrierung) führen. Das Stop-Gate ist für PRIVATE-REPO-J bereits im Akt-Brief
-  gebunden; als Workflow-Regel für alle Programme ist es NICHT promoviert.
-- **Notiz `fc2066a5`**: zwei bewiesene Tier-2-Flakes (watch-re-subscribe-dedup ·
-  ⏸-re-run-guard „actively working"), beide seriell am selben Baum bewiesen und adjudiziert;
-  watch-dedup-Familie fehlt noch in `docs/verify-tiering.md` (zusammen mit Task `4ce7aefc`).
-- Ererbte Akte unverändert: S9-Regelbuch-Fragment (`f69ceb2` → `rulebook/lane-discipline.md`,
-  Pin auf SKIP) · localProof-Fremd-Repo-Zeile · Private-repo-q Tür 1 · Codex-Update-Skip ·
-  Push-Etikette.
+**DIE FALLE, und sie ist der wichtigste Satz dieses Handoffs:** beide Briefe kamen mit
+`acceptance: "unobservable"` an und lagen danach **im Composer, nicht abgeschickt** — die Panes
+waren beim Paste noch im Boot, der Enter verpuffte. Ich habe von Hand `tmux -L claudefleet
+send-keys -t s6 Enter` (und `s10`) nachgeschoben, danach liefen beide an (ctx 7 %, Composer leer,
+verifiziert). **Wer nach einem `POST /send` auf eine frisch geöffnete Lane `unobservable` sieht,
+muss in die Pane schauen** — der Text über der Composer-Trennlinie ohne Prompt-Marker und ohne
+Spinner heißt „liegt da, läuft nicht". Ein Watch rettet das NICHT: eine nie gestartete Lane wird
+nie `done-looking`, der Watch feuert also nie, und das Warten sieht wie Arbeit aus.
 
-## Fallen dieser Session (je einmal bezahlt oder bestätigt)
+**Zweite Konsequenz, die mit meinem Slot stirbt:** beide Lanes sollen per
+`POST /api/self/fleet-report` berichten. Ihr Empfänger ist mein `kind:"lane"`-Watch auf Slot 9
+(`clarificationReceiverFor` → `basis: "lane-watch"`). **Stirbt Slot 9, haben sie keinen Empfänger
+mehr und ihr Report läuft in 409.** Wer übernimmt: entweder zügig selbst je einen
+`POST /api/self/watch {"kind":"lane","target":6|10}` setzen, oder die Panes direkt lesen. Die
+Alternative wäre gewesen, die Lanes programm-gebunden zu öffnen — dann wäre der Empfänger
+`program-main` und an keine Session gekoppelt. Für die nächsten drei Aufträge ist das der bessere
+Weg.
 
-- **Tier-2-Rots einzeln prüfen, nicht glauben:** beide 1/3133-Rots waren Sonden-Rennen; Beweis
-  je: frischer Worktree am auditieren Tip, seriell (Maschine frei prüfen:
-  `ps -eo command | grep -c '^/bin/sh ./e2e-'`), ALL PASS; Trail-Zeile trägt tree-SHA+dirty.
-  Adjudizieren mit `{at, verdict:"flake", note}` (Note ≤300 Zeichen).
-- `POST /api/self/watch` dedupliziert pro Target und behält das idleSec des ERSTEN Subscribe.
-- Slot-Datensatz-`ctx` vs. Pane-Footer widersprechen sich weiter (S7: 113,7 % vs. 23 %) — Pane
-  ist die Wahrheit.
-- Lane-Watches feuern nach Land-Start je 1× stale (bekannt, acken, nichts tun).
-- Direkt-Commits dieser Session (`83eb170`, `513b67a`, dieser): Verifikation von Hand als
-  Docs-Kurzkette (install+pins, ALL PASS) — reine Prosa; `./state.sh`-Land-Health untertreibt
-  entsprechend.
+## 3. Die nächsten Aufträge, in ihrer Reihenfolge und ihrem Warum
 
-Slot 2 gehört dem Owner. Programm-Lands laufen über die MAINs (guarded).
+Kette **P0 → P0b → A → C**; **D1** läuft unabhängig (fliegt schon).
+
+- **P0b** (Retrofit der 30 Notizen) startet erst, wenn P0 gelandet ist — es richtet 30 Dateien an
+  einem Template aus, das noch nicht existiert. **Harness `pi-zai`, Modell `glm-5.3`, effort max**:
+  30 Notizen sind ~139k Tokens, das trägt ein 1M-Fenster und ein ~258k-Fenster nicht. Nicht aus
+  Gewohnheit auf claude umstellen.
+- **A** (ein Context-Pack auf den Index) braucht einen befüllten `INDEX.md`, also P0b.
+- **C** (Schwarm-Praxis dokumentieren) kann sofort nach P0 laufen, ist reine Doku.
+
+Die Briefe sind pasteable Abschnitte in `briefs/schwarm-programm-auftraege-2026-08-27.md`. **Beim
+Dispatch den Kopfblock mitschicken** (Verbote + Verify-Provenienz) — die Abschnitte verweisen
+darauf, und eine Lane, die nur ihren Abschnitt bekommt, hätte ihn nicht. Mein Extraktor trennt an
+`\n---\n+(?=## )`, nicht an `\n---\n##`.
+
+## 4. Drei Owner-Entscheidungen, die offen sind
+
+1. **`bereich`** im Claim-Block — freie Tags oder feste Liste? P0 baut freie Tags und liefert die
+   gefundenen Tags als Vorlage mit.
+2. **N und T** fürs Stuck-Prädikat (D1). Vorgabe zum Draufschlagen: 15 % Fensterzuwachs über
+   20 min — geraten, muss an echten Lanes kalibriert werden. D1 baut sie als benannte Konstanten
+   an EINER Stelle.
+3. **Wer schreibt `.agents/`?** Nicht belegt. Der Kommentar in `.gitignore:49` nennt
+   `~/.claude/skills/`, dort liegt aber nur `graphify`. Für P0 folgenlos, offen bevor sich jemand
+   auf die Kopie verlässt.
+
+## 5. Was weiterläuft und NICHT mir gehört
+
+Der **Private-repo-j-Akt „Spielbarer Rohbau"** liegt bei der Program-MAIN auf **Slot 5 (Fable)**, und
+die defundierte Zeile `7a177954` ist auf `pending` geparkt. Vollständig beschrieben im
+Vorgänger-Handoff `820bf9a` — ich habe daran nichts angefasst und nichts entschieden.
+
+## 6. Regelbuch-Drift, die ich im Vorbeigehen gemessen habe
+
+Drei Stellen, alle nachgeprüft, keine davon gefixt (Regelbuch ist ein Generat aus `rulebook.ts`,
+und `CLAUDE.md` ist gitignored):
+
+1. **`POST /api/self/watch` kennt fünf Arten, nicht drei.** Der Fehler nennt sie wörtlich:
+   `lane`, `merge`, `audit`, **`deploy`**, **`transition`**. Und die Slot-Art heißt `lane`, nicht
+   `slot` — `{"kind":"slot"}` wird abgelehnt. Der Abschnitt §Self-scheduling nennt nur drei.
+2. **Pane-Ziele heißen `s<N>`, nicht `claude-<N>`.** `tmux -L claudefleet capture-pane -t claude-6`
+   antwortet `can't find pane`. `list-sessions` zeigt `s1…s16` plus `srv`.
+3. **Die Verify-Zeile in `CLAUDE.md` ist eine Vereinfachung.** `watchdog.sh:91` `VERIFY_CMD` trägt
+   zusätzlich den Sentinel-Guard und einen expliziten install-Fehlerzweig statt `&&`. Gleiche
+   Schrittfolge, aber das Regelbuch sagt selbst „bei Abweichung gilt die Datei" — und ich hatte die
+   vereinfachte Fassung zuerst in alle fünf Briefe geschrieben.
+
+## 7. Zwei Grundlinien, beide am 2026-08-27 gezogen, beide neu ziehbar
+
+- `lane-outcomes.jsonl`: **567 Lane-Ausgänge, 123 `killed-empty` (21,7 %)**, 371 `landed` (65,4 %).
+  Erfolgsmaß des Programms: sinkt der Anteil bei Mess- und Audit-Lanes.
+- **4 von 211 distinkten `originId`s** haben einen zweiten Lane-Ausgang, keiner einen dritten
+  (**1,9 %**). Diese Zahl hat Auftrag **B** (`unfulfillable`) gestrichen. Wiedervorlage nach C —
+  und dann **neu messen, nicht erinnern**; das Ledger wuchs während dieser Session um 31 Zeilen.
+
+## 8. Was ich NICHT geprüft habe
+
+Ob die zwei fliegenden Lanes ihre Aufträge richtig verstehen — sie liefen bei Übergabe ~2 min.
+Ob `e2e/lanes-lifecycle.ts` wirklich die beste Heimat für D1s Check ist (ich habe den Fetch der
+Steward-Sicht dort gefunden, die Datei aber nicht gelesen; der Brief sagt der Lane, sie soll eine
+bessere Familie melden statt eine neue Datei anzulegen). Und keinen einzigen Suite-Lauf jenseits
+von `bun e2e/pins.ts` — alle fünf Commits dieser Session sind reine Prosa und liefen bewusst die
+Docs-Kurzkette.

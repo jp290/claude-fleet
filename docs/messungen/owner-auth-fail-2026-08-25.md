@@ -1,3 +1,12 @@
+---
+frage: Wer erzeugt die 1219 owner_auth_fail-Zeilen im Ledger, und was lässt sich über den Client aus den vorhandenen Daten beweisen?
+urteil: Der Client ist aus den vorhandenen Daten nicht identifizierbar (das Ereignis trägt nur ts und event); bewiesen ist, dass kein Fehlschlag vom öffentlichen Tunnel kommt, dass sich drei Client-Formen sauber trennen, und dass der Browser-Poll-Pump bei totem Cookie für immer weiterläuft
+bereich: [hygiene]
+belege: [audit.jsonl, server.ts#tokenGate, src/client.ts, .env, server.log]
+nicht-gemessen: Ob der Burst vom 23.08. die Red-Team-Lane war (nicht entscheidbar); welcher Tab am 07-25; die 30-Zeilen-Differenz zur Auftragszahl; der self_heal_recreate-Topf; kein ps-Aufruf
+stand: 2026-08-25
+---
+
 # `owner_auth_fail` 2026-08-25 — 1 219 Zeilen, drei Client-Formen, kein identifizierbarer Client
 
 Messung, keine Mutation: gelesen wurden `/Users/owner/claude-fleet/audit.jsonl` (Stand

@@ -1,3 +1,12 @@
+---
+frage: Welche stillschweigende Voraussetzung macht jede der vier Kommunikationsschichten (Hinweg-Brief, Transport, Rückweg, Format), wo ist sie gemessen gebrochen, und was wäre je Schicht die nächste kleine Stufe Richtung typisierter Funktionen?
+urteil: Je Schicht brach eine stillschweigende Voraussetzung (Spawn-Snapshot-Brief, geteilter Watch/Event-Deckel, Prosa als Beleg); über der Schnittlinie stehen V-K1 Budget-Split, V-K2 Server-Stempel auf FleetReport und V-K3 Brief-Rücklesetür
+bereich: [lane-lifecycle, harness]
+belege: [server.ts#briefAndSend, server.ts#sendText, server.ts:2988, lane-signals.ts, docs/messungen/system-analyse-2026-08-25.md]
+nicht-gemessen: Die Ledger-Zahlen selbst (held-Sturm, Enter-Verlustrate, 409-Anzahl) aus Vornotizen übernommen, Diskrepanz 4 vs 7 offen; ob Lane-git-Fakten für V-K2 am Slot gecacht sind; wie oft V-K3 null liefern würde; Attention-/Nudge-Transport nur als Typ gelesen
+stand: 2026-08-25
+---
+
 # Kommunikationsschichten — Formate, Transporte und die Annahmen darunter
 
 2026-08-25, Lane `fleet/260825134622-c71a`, Baum `40e1bf8`. Frage: **Welche stillschweigende

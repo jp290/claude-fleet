@@ -1,3 +1,12 @@
+---
+frage: Tragen die fünf Verdikte des Reviews der System-Analyse (V1 bis V4 plus Delivery-Verdict) gegen Original-Analyse und zitierte Code-Nähte?
+urteil: Kein Verdikt gekippt; ein Realbefund ist, dass die zweite dispatchbare Slice (V2-Ersatz null-zu-ID) bei Review-Landung bereits als f16b470 gebaut war und raus aus der Liste muss; eine Lücke bleibt, dass der falsche Owner-Kanal-Satz im Supervisor-Brief unsliced ist
+bereich: [verify, lane-lifecycle]
+belege: [docs/messungen/system-analyse-review-2026-08-25.md, f16b470, aea965d, server.ts#backfillProgramMainSessionId]
+nicht-gemessen: <nicht ausgewiesen>
+stand: 2026-08-25
+---
+
 # Gegencheck der Review-Verdikte — system-analyse-review-2026-08-25.md
 
 2026-08-25, Lane `fleet/260825145050-0eb5`, Baum `aea965d` (= main). Startbedingung erfüllt:

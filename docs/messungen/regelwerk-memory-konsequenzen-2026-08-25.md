@@ -1,3 +1,12 @@
+---
+frage: Welche der drei Lücken aus video-memory-theo lassen sich als Regelwerk-Text schließen, und widerspricht eine Rollenanweisung der neuen Memory-Disziplin?
+urteil: Studio-Policy ist gespiegelt (Vollzug), die zwei Fragment-Entwürfe liegen unpromoviert unter docs/rulebook-entwuerfe/ (rulebook/ ist gitignored); kein Rollenwiderspruch, eine Lücke (Gründungsbriefe nennen keinen Zielort für dauerhafte Befunde) und die alte Behauptung, Lanes bekämen keine Auto-Memory, ist widerlegt
+bereich: [regelwerk]
+belege: [docs/messungen/video-memory-theo-2026-08-25.md, docs/product-studio-working-circle.md, docs/rulebook-entwuerfe/geschmack.md, 86b8c00, ead324c]
+nicht-gemessen: Ob die Entwürfe gut sind (belegt, nicht erprobt); ob geschmack.md vollständig (src/client.ts und server.ts-Rumpf nicht gelesen); die Lane-Memory-Beobachtung ist einzelne Evidenz; kein Sieben-Punkte-Check gegen den gehaltenen Entwurf 3f412f4
+stand: 2026-08-25
+---
+
 # Memory-Erkenntnisse ins Regelwerk gefaltet — was geändert, was vorgeschlagen, was offen
 
 2026-08-25, Lane `fleet/260825154327-a4c5`. Auftrag: die Konsequenzen aus

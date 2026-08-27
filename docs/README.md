@@ -82,6 +82,10 @@ One line per doc — its *purpose*, not its contents, so this index points witho
 - **`tailored-context.md`** — the brief principle: shape the environment, induce silent
   capture of the complementary parameters, emit only the result. The lever on review cost.
 - **`lane-brief-template.md`** — the per-task framing passed at launch.
+- **`schwarm-praxis.md`** — N Lanes auf EINE Frage, Befunde statt Commits: der Aufbau in
+  sechs Schritten (Programm → Program-MAIN → program-gebundene Auftragszeilen), die vier
+  Deckel-Fakten (Rückkanal, Docs-Kurzkette, kein Suite-Mutex, kein Lane-Deckel) und das
+  Zustellbudget, das die Schwarm-Größe wirklich bindet. Read before fanning lanes out by hand.
 - **`scope-inflation.md`** — the step from a finding to a *program*, and how it inflates: a
   ranked list without a cut line is a portfolio, not a plan. Quote the owner's ask verbatim
   and cut the list where it is satisfied.

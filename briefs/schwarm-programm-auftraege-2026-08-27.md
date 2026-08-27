@@ -119,8 +119,8 @@ und trag sie in `INDEX.md` ein.
 **Voraussetzung.** P0 ist gelandet. Lies zuerst `.claude/skills/mess-notiz/SKILL.md` — das dortige
 Front-Matter ist verbindlich, nicht das, was du für besser hältst.
 
-**Was du tust.** Für jede Datei in `docs/messungen/` (30 Stück, ~555 KB gesamt), in
-alphabetischer Reihenfolge:
+**Was du tust.** Für jede Notiz in `docs/messungen/` (**31 Stück**, ~570 KB gesamt — `INDEX.md`
+gehört NICHT dazu und wird nie indiziert), in alphabetischer Reihenfolge:
 1. Notiz lesen.
 2. `frage` und `urteil` **aus der Notiz belegen** — nicht formulieren, was du für gemeint hältst.
    Wenn die Notiz kein klares Urteil trägt, schreib `urteil: <kein explizites Urteil in der Notiz>`
@@ -131,6 +131,16 @@ alphabetischer Reihenfolge:
    `<nicht ausgewiesen>`.
 6. `stand` aus dem Dateinamen oder dem Datum in der Notiz.
 7. Eine Zeile an `INDEX.md` anhängen.
+
+**Ein Constraint, den die P0-Lane aus ihrer eigenen Probe gewonnen hat:** das `urteil` darf
+**kein ` — ` (Leerzeichen–Gedankenstrich–Leerzeichen)** enthalten — das ist das Trennzeichen der
+Index-Zeile. Formuliere in so einem Fall um, statt das Trennzeichen zu ändern.
+
+**`bereich` — Vokabular.** Die P0-Lane hat freie Tags gebaut und aus dem Korpus diese neun
+vorgeschlagen: `verify` · `lane-lifecycle` · `autoritaet` · `queue` · `harness` · `studio` ·
+`hygiene` · `regelwerk` · `kosten`. **Nimm diese neun**, sofern der Owner nichts anderes gesagt hat,
+und melde im Report jeden Fall, in dem keiner passte — das ist die Vorlage für die Entscheidung, ob
+daraus eine feste Liste wird.
 
 **Das schärfste Verbot dieses Auftrags.** **Kein Umschreiben der Notiz-Körper.** Kein Glätten,
 kein Vereinheitlichen der Überschriften, kein Korrigieren von Zahlen, die dir falsch vorkommen.
@@ -145,11 +155,15 @@ wörtlich oder sinngleich so in der Notiz.
 
     bun install --frozen-lockfile && bun e2e/pins.ts
 
-Zusätzlich selbst prüfen, mit konkreten Zahlen statt Gefühl: `docs/messungen/` enthielt am
-2026-08-27 **30 Notizen**; nach P0 kommt `INDEX.md` dazu, also zählt `ls docs/messungen/*.md | wc -l`
-danach **31**. `INDEX.md` trägt **30 Eintragszeilen** plus seine Überschrift. Stimmt eine der beiden
-Zahlen nicht, hast du eine Notiz übersprungen oder `INDEX.md` mitindiziert — beides ist ein Fehler,
-kein Rundungsproblem.
+Zusätzlich selbst prüfen, mit konkreten Zahlen statt Gefühl: **`ls docs/messungen/*.md | wc -l`
+sagt 32** (31 Notizen + `INDEX.md`), und **`INDEX.md` trägt 31 Eintragszeilen** plus seine
+Überschrift. Stimmt eine der beiden Zahlen nicht, hast du eine Notiz übersprungen oder `INDEX.md`
+mitindiziert — beides ist ein Fehler, kein Rundungsproblem.
+
+**Warum die Zahl von der ersten Fassung abweicht:** dort stand 30. Während der Session, die diesen
+Auftrag schrieb, landete die Gegencheck-Notiz `e3e5d29` und machte 31 daraus. **Zähl zu Beginn
+selbst nach** statt dieser Zahl zu glauben — wenn zwischen Auftrag und Ausführung wieder eine
+Notiz landet, ist meine Zahl wieder alt. Genau diesen Fehler hat die P0-Lane an mir gefunden.
 
 **Nicht-Umfang.** Keine neuen Notizen. Keine Änderung am Skill. Kein Löschen veralteter Notizen —
 auch nicht, wenn eine offensichtlich überholt ist; das ist eine Owner-Entscheidung.

@@ -1,3 +1,12 @@
+---
+frage: Welche der Vorschläge der SYSTEM.md-Analyse überleben den adversariellen Gegenbeweis (Verdikte V1 bis V4 plus Delivery)?
+urteil: V1 bestätigt (stark geschnitten), V2 und V3 refutiert, V4 bestätigt mit erweitertem Scope, Delivery zurückgestellt; überleben V1a Authority-Gesundheit, V2-Ersatz (null-zu-ID-Nachführung an der Quelle) und V1b Rückweg-Budget als erste dispatchbare Slices
+bereich: [autoritaet, verify]
+belege: [docs/messungen/system-analyse-2026-08-25.md, server.ts#boundProgramForMain, docs/authority-slice-brief-2026-08-23.md, docs/messungen/program-triage-2026-08-25.md]
+nicht-gemessen: V1s 24-Stunden-Nutzungsrate; die tatsächliche Lesefrequenz von supervisorView; eine post-d0fa215 Held-Event-Verteilung; die Historie aller heutigen Pending-Zeilen
+stand: 2026-08-25
+---
+
 # Adversarialer Review der SYSTEM.md-Analyse — was den Gegenbeweis überlebt
 
 2026-08-25, Lane `fleet/260825130027-0c11`, Ausgangsbaum `0dc7a33`. Startbedingung erfüllt:

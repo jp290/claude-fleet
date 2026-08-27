@@ -1,3 +1,12 @@
+---
+frage: In drei zufällig gezogenen Bereichen je Behauptung, trägt der Code sie heute, kann die Sonde überhaupt fallen, und was hat keine Gegenprobe?
+urteil: Fünf Funde, schwerster ist, dass der LIVE-Land-Gate src/helper.ts seit sieben Tagen nicht typprüft (der Watchdog liest VERIFY_CMD nur bei eigenem Neustart); dazu 26 ungetestete Validator-Codes, eine nicht-fallbare .git-Sonde und zwei Sonden ohne Invarianten-Deckel
+bereich: [verify]
+belege: [watchdog.sh:91, e2e/dirs-pins.ts:70, context-pack-validator.ts, server.ts#buildCodeGraph, server.ts#fleetReportsFor]
+nicht-gemessen: Keine Suite gefahren (Sonde-bleibt-grün-Aussagen für Fund 4 und 5 sind abgeleitet); die vier Messungen im buildCodeGraph-Kommentar nicht nachgemessen; kumulatives Zeitbudget nicht verfolgt; kein Ausspruch über src/helper.ts-Inhalt
+stand: 2026-08-26
+---
+
 # Stichprobe: tragen die Behauptungen in drei GEZOGENEN Bereichen noch?
 
 2026-08-26, Lane `fleet/260826174445-b746`. Frage: **In drei zufällig gezogenen Bereichen — je

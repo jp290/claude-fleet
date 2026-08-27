@@ -1,3 +1,12 @@
+---
+frage: Was von diesem Video trifft unsere vier Wissens-Ebenen, und sollten wir Claude-Code-Auto-Memory abschalten oder anders dosieren?
+urteil: Dosieren, nicht abschalten; die eigene Messung fällt milder aus als die des Videos (1,75 zu 1 statt 3 zu 1 write zu read, 27 von 35 Dateien nie gelesen), der Recall trägt eine Altersmarkierung, und die feedback-Klasse ist die vom Video selbst ausgenommene
+bereich: [regelwerk]
+belege: [~/.claude/projects/-Users-owner-claude-fleet/memory/, e2e/pins.ts, AGENTS.md, docs/data-saver.md]
+nicht-gemessen: Das Fenster ist 30 Tage (die 27 nie-gelesenen sind Obergrenze); ob Auto-Memory geschadet hat nicht gemessen; Kontamination von Modellvergleichen möglich, nicht nachgesehen; die 22 undatierten docs nicht inhaltlich geprüft; das Video nicht angesehen
+stand: 2026-08-25
+---
+
 # Video-Tiefenanalyse: „Turn off Claude Code's Memory" (Theo / t3.gg)
 
 2026-08-25, Lane `fleet/260825151208-57de`. Quelle:

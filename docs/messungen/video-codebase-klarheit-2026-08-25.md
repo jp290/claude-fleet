@@ -1,3 +1,12 @@
+---
+frage: Was sagt das Video über Codebase-Selbsterklärung, und was davon trifft diesen Codebase? (Zweitpassung der Video-Analyse, Memory-Frage ausgenommen)
+urteil: Von 28 prüfbaren Bezeichner-Zeile-Paaren verfehlen 96 Prozent ihr Ziel (Verweise in server.ts rotten, in kleine Dateien halten); kein Dokument nennt alle zehn Top-Level-Verzeichnisse; über der Linie stehen K1 Symbolverweise statt Zeilenverweise und K2 eine generierte Dateikarte
+bereich: [hygiene, regelwerk]
+belege: [docs/messungen/video-memory-theo-2026-08-25.md, SYSTEM.md, e2e/pins.ts:694, docs/system-capabilities.generated.md, docs/rulebook-entwuerfe/geschmack.md]
+nicht-gemessen: Die 96-Prozent-Sonde prüft Position, nicht Wahrheit; nur server.ts-Verweise vermessen; nur 5 der 23 undatierten Dokumente gelesen; ob eine Ordner-Karte wirklich hilft nicht geprüft; das Video selbst nicht angesehen
+stand: 2026-08-25
+---
+
 # Video-Zweitanalyse: wie ein Codebase sich selbst erklärt
 
 2026-08-25, Lane `fleet/260825204003-e600`. Quelle: dasselbe Video wie die Erstanalyse —

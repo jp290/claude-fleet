@@ -1,3 +1,12 @@
+---
+frage: Trägt die heutige Mechanik die Produktidee hinter SYSTEM.md, gemessen an Autonomie zuerst, Funktionsfähigkeit danach, Härtung zuletzt?
+urteil: Jeder Weg von der Maschine zum Owner beginnt mit einem Agenten-Akt (openAttention ist der einzige Schreiber und verlangt eine MAIN-Bindung); 80 pending-Zeilen mit Median 16 Tage haben keine Uhr, und die vier Promotion-Grants waren ein 76-ms-Stapelakt; Rangliste V1 Betriebs-Blick, V3 Uhr, V2 Heil-Tür
+bereich: [autoritaet, lane-lifecycle]
+belege: [server.ts#openAttention, program-phase.ts, fleet.json, audit.jsonl, server.ts#boundProgramForMain]
+nicht-gemessen: Warum free.sessionId zum Bindungszeitpunkt null ist (Task c7629ff7); ob ein Supervisor gebunden ist; ob pending-Zeilen aus sent zurückfallen; owner_auth_fail und self_heal_recreate nur gezählt; Red-Team 5.4 zitiert, nicht nachgemessen
+stand: 2026-08-25
+---
+
 # SYSTEM.md gegen den Ist-Stand — was das Zielbild eigentlich will, und wo der Kreis heute steht
 
 2026-08-25, Lane `fleet/260825120215-eef1`, Baum `fe27764`. Frage: **Trägt die heutige Mechanik die

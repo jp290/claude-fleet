@@ -1,3 +1,12 @@
+---
+frage: Warum hat die dispatchte C1-Critic-Lane (Task d527fb9f) weder committet noch berichtet?
+urteil: Wurzel ist ein fehlender Completion-Kontrakt auf der Dispatch-Schicht (briefAndSend liefert Task-Text plus Ankerblock, keinen Commit-/Report-/Idle-Auftrag); Harness- und Modellverhalten vom Transkript widerlegt
+bereich: [lane-lifecycle, harness]
+belege: [server.ts#briefAndSend, server.ts#openFleetReport, docs/self-api.md, 45a402d]
+nicht-gemessen: Die ~34 Minuten MAIN-Verzögerung zwischen lane-ready und Land (Slot-7-Transkript) lagen außerhalb des Scopes
+stand: 2026-08-23
+---
+
 # Root-Cause: warum eine dispatchte Lane weder committete noch berichtete (2026-08-23)
 
 **Geerntet, nicht nacherzaehlt.** Die Lane hat ausdruecklich nichts geaendert und nichts committet

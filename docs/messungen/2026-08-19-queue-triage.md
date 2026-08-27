@@ -1,3 +1,12 @@
+---
+frage: Welche offene Queue-Zeile beschreibt einen Zustand, den es am HEAD noch gibt?
+urteil: Von 71 offenen Queue-Zeilen sind 4 erledigt oder widerlegt und 8 haben eine veraltete Prämisse; Dreiteilung in 8 BAU, 21 zweiter Blick, 40 Archiv-Vorschlag, der Archivschnitt selbst ist nicht ausgeführt
+bereich: [queue]
+belege: [fleet.json, a317fc0, lane-outcomes.jsonl]
+nicht-gemessen: Ob eine Zeile noch gewollt ist (Owner-Frage); die 49 briefs/-Dateien ohne verlässlichen Land-Test; die 3 nach der Triage entstandenen Zeilen; der Archivschnitt nur vorgeschlagen
+stand: 2026-08-19
+---
+
 # Welche der 71 offenen Queue-Zeilen sind heute noch wahr?
 
 2026-08-18/19, Session `taskCleanUP` (Slot 11, Haupt-Checkout, kein Branch).

@@ -1,3 +1,12 @@
+---
+frage: Ob UMBRA und AFTERIMAGE jetzt als Studio- oder Canary-Programm laufen sollten (GLM Decision Review, geernteter Bericht)
+urteil: Weder Konzept jetzt als Studio/Canary; beide als billige Wissensartefakte plus falsifizierbare Papier-Piloten; AFTERIMAGE zusätzlich als eingefrorene determinism-benchmark SPEC; die Produktfrage bleibt ausdrücklich Owner-Geschmack
+bereich: [studio, autoritaet]
+belege: [docs/messungen/2026-08-20-gamestudio-readiness.md, 7d3ebcea, 92a7b854]
+nicht-gemessen: Ob ein Papier-Piloten-Erfolg Studio-Erfolg vorhersagt (vom Bericht selbst ungemessen genannt); UMBRAs Kommerz-Annahme beruht auf ungeprüfter Recherche
+stand: 2026-08-23
+---
+
 # GLM Decision Review — UMBRA / AFTERIMAGE (2026-08-23)
 
 **Geerntet, nicht nacherzaehlt.** Diese Lane hat den Baum nicht angefasst (`read-only, no tree

@@ -1,3 +1,12 @@
+---
+frage: Was steht zwischen dem rohen Ziel (eine Idee einmal, Studio-Main autonom bis reviewable Build) und dem heutigen Code?
+urteil: Die Schleife bis lane finished ist fast geschlossen, aber ihr Ende ist doppelt ein Owner-Klick (Merge-Start und Confirm); land und budget sind maschinell noch nicht existent, alles andere sind Grade
+bereich: [autoritaet, studio]
+belege: [server.ts#mergeJob, server.ts#boundProgramForMain, server.ts#createTaskForMain, server.ts#releaseTaskForMain, 105c234]
+nicht-gemessen: Ob Session-Heals sessionId-Divergenz praktisch erzeugen; ob die Spiel-Repos eigene Ledger führen; main-direct-Preflights nur als Routenköpfe gelesen; die drei Queue-Zeilen nicht auf Umsetzbarkeit geprüft
+stand: 2026-08-23
+---
+
 # Red-Team 1/3 — GLM: Was steht zwischen dem rohen Ziel und dem heutigen Code?
 
 2026-08-23, Red-Team-Lane (GLM-5.3), Baum `105c234` (Anker-Baum war `557bf3a`; alle zitierten

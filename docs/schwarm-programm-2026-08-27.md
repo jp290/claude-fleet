@@ -39,17 +39,22 @@ fremden Lane.
 `FLEET_ANALYSIS_MS=0` und kein `FLEET_BRIEF_MS`. Dispatch liefert `next.text` roh. Ein Eingriff in
 `runEnhance` hätte einen Pfad getroffen, der hier nicht läuft.
 
-**(d) Ein 6. Task-Status ist die falsche Bewegung.** Es gibt **kein einziges `switch`** auf Task-Status;
-jeder Konsument ist ein String-Membership-Test. Ein neuer Wert bricht **einmal laut**
-(`src/client.ts:263`) und **elfmal leise** — darunter zwei Loader-Allowlists (`server.ts:17141/17151`),
-die eine Zeile mit unbekanntem Status beim nächsten Boot **stillschweigend verwerfen**. Datenverlust als
+**(d) Ein 6. Task-Status ist die falsche Bewegung.** Es gibt **kein einziges `switch`** auf Task-Status
+(der einzige `switch` im ganzen TS-Bestand ist `src/client.ts:7612` auf `event`); jeder Konsument ist ein
+String-Membership-Test. Ein neuer Wert bricht **einmal laut** (`src/client.ts:263`) und mehrfach leise —
+entscheidend ist **EINE Loader-Allowlist** (`server.ts:17137-17141`), die eine Zeile mit unbekanntem Status
+beim nächsten Boot **stillschweigend verwirft**. (Korrigiert nach Gegencheck `e3e5d29`: die erste Fassung
+sprach von zwei Allowlists — `:17151` ist eine Kommentarzeile, eine zweite existiert nicht. Die Folge,
+stiller Datenverlust, bleibt über `:17141` wahr.) Datenverlust als
 Preis für ein Vokabular. `archived` IST bereits „terminal, nicht erledigt" (`taskTerminal`,
 `qGroupOf→closed`, `unarchive→pending`); es fehlt nur das WARUM.
 
 **(e) Der Schwarm-Modus braucht weder Modus noch Code.** `POST /api/self/fleet-report`
 (`server.ts#openFleetReport`) ist lane-only, typisiert (`complete|needs-main|failed`), ≤4000 Zeichen,
-persistiert, mit Ack. Einzige harte Vorbedingung: ein Empfänger — den liefert
-`clarificationReceiverFor` geschenkt, sobald die Lanes **programm-gebunden** starten. Dazu die
+persistiert, mit Ack. Zwei harte Vorbedingungen, nicht eine: ein Empfänger aus
+`clarificationReceiverFor` (409, `:6203`) **und** freies FleetEvent-Budget beim Empfänger
+(`slotDeliveryBudget`, 409, `:6205`). Den Empfänger liefert `clarificationReceiverFor` geschenkt, sobald
+die Lanes **programm-gebunden** starten; ein exakter Lane-Watch tut es auch. Dazu die
 Docs-Kurzkette `DOC_STEPS = ["install","pins"]` (`verify-proportion.ts#ruleFor`), die den **Suite-Mutex
 nie nimmt**. N Findings-Lanes kollidieren an nichts.
 Deckel: der beaufsichtigte Pfad `POST /api/lanes` hat **gar keinen Lane-Deckel** (nur `MAX_SLOTS = 16`);
@@ -58,8 +63,10 @@ die Deckel 2/3 binden ausschließlich den Tick.
 **(f) Der Stuck-Sensor ist ein Retentions-, kein Messproblem.** `laneStalled` existiert
 (`lane-signals.ts`), verlangt aber **idle** — eine Lane in der fix-run-fail-Schleife druckt ununterbrochen,
 `idleMs` wächst nie, `stalled` ist per Konstruktion falsch. Die beiden Zahlen, die reichen würden,
-werden bereits jeden Tick berechnet und **weggeworfen**: `contextFill(s).usedTokens` (Budget, monoton)
-und `gitInfo.get(s.id).{ahead,dirty}` (Fortschritt).
+werden bereits regelmäßig berechnet und **nicht zurückbehalten**: `contextFill(s).usedTokens`
+(Budget, monoton) im **2-s-Owner-Poll** (`server.ts:20643`) und `gitInfo.get(s.id).{ahead,dirty}`
+(Fortschritt) im **10-s-`tickGit`** (`:17742`, Schleife `:4209`, `gitInfo.set` `:4269`). Zwei Kadenzen,
+nicht eine — die Vorprobe gehört an die langsamere.
 
 **(g) Und der wunde Punkt, der alles verbindet: `docs/messungen/` ist Prosa, keine Daten.** Drei gelesene
 Notizen, drei verschiedene Strukturen, kein Front-Matter, keine stabile Claim-Zeile. Eine Maschine kann
@@ -75,7 +82,7 @@ Die Vorbedingung war in keinem der vier Vorschläge enthalten und ist der eigent
 | P0 | Claim-Block + Index-Zeile im `mess-notiz`-Skill | Skill-Datei | — |
 | P0b | Retrofit der 30 vorhandenen Notizen | mechanisch | P0 |
 | A | Ein Context-Pack, das auf den Index zeigt | 1 JSON-Eintrag | P0, P0b |
-| B | `unfulfillable` als propose/promote | server.ts + client | — |
+| ~~B~~ | ~~`unfulfillable`~~ — nach Messung zurückgestellt (1,9 % Wiederholer) | — | — |
 | C | Schwarm-Praxis dokumentieren | Doku | P0, A |
 | D1 | Stuck-Retention in `tickGit` | server.ts | — |
 
@@ -111,15 +118,27 @@ Template geschriebene Notiz hat gültiges Front-Matter und genau eine neue Zeile
 
 **Verify.** `bun e2e/pins.ts` grün, plus ein neuer Pin (siehe Risiko).
 
-**Dateien.** `.claude/skills/mess-notiz/SKILL.md` **und** `.agents/skills/mess-notiz/SKILL.md`
-(heute byte-identisch), `docs/messungen/INDEX.md` (neu), `e2e/pins.ts`.
+**Dateien.** `.claude/skills/mess-notiz/SKILL.md` (getrackt, seit `3235561`) und
+`docs/messungen/INDEX.md` (neu). **Sonst nichts.**
 
 **Nicht-Umfang.** Kein Server-Code. Keine Änderung an bestehenden Notizen (das ist P0b). Keine
 Validierung des Front-Matters zur Laufzeit.
 
-**Risiko / Pin.** Die zwei Skill-Kopien sind identisch, und **kein Pin hält sie synchron** (selbst
-geprüft). Wer eine ändert, lässt die andere rotten. P0 muss den Pin mitbringen — sonst pflanzt es
-genau die Drift-Klasse, die das Regelbuch sonst überall schließt.
+**Risiko — und die Korrektur, die P0 KLEINER macht.** Die erste Fassung verschrieb einen Pin, der
+`.claude/skills/…` und `.agents/skills/…` synchron hält. Der Gegencheck (`e3e5d29`, U2) hat die Prämisse
+zerlegt, und die Nachmessung bestätigt sie: **`.agents/` ist vollständig gitignored** (`.gitignore:49`)
+und existiert **in keinem Worktree**; `.claude/skills/` ist getrackt und liegt in jedem Worktree
+(nachgesehen: `graphify`, `kriterium-grill`, `mess-notiz`, `unslop`). Es liegen also nicht zwei
+Repo-Dateien nebeneinander, sondern **eine getrackte Quelle und eine maschinenlokale, abgeleitete Kopie**,
+die der Harness ablegt. Konsequenz: **P0 bringt KEINEN Pin mit.** Ein strenger Pin liefe in jeder Lane
+rot (die Datei fehlt dort), ein „skip if absent" öffnete die Drift genau dort, wo geschrieben wird — der
+Gegencheck hat beide Hörner korrekt benannt. Richtig ist die dritte Tür, die er nicht sah: eine Quelle
+pinnen heißt gar nichts pinnen, wenn die zweite Datei ein Artefakt ist. `.agents/` gehört stattdessen in
+die Liste der ungovernierten Artefakte (`docs/ungoverned-artifacts.md`), zusammen mit `CLAUDE.md`.
+
+**Offen und NICHT geraten:** wer `.agents/` schreibt, ist nicht belegt. Der Kommentar in `.gitignore:49`
+sagt, die Originale lägen in `~/.claude/skills/` — dort liegt aber nur `graphify`. Das ist zu klären,
+bevor jemand sich auf die Kopie verlässt; für P0 ist es folgenlos, weil P0 die Quelle anfasst.
 
 **Offene Owner-Entscheidung.** Sind sechs Felder die richtigen? `bereich` ist das einzige, das eine
 Vokabular-Entscheidung braucht — freie Tags oder eine feste Liste.
@@ -174,7 +193,21 @@ kein Hindernis, er ist die Stelle, an der so eine Entscheidung dokumentiert werd
 
 ---
 
-## B — `unfulfillable` als propose/promote
+## B — `unfulfillable` als propose/promote — **ZURÜCKGESTELLT (2026-08-27, nach Messung)**
+
+**Nicht bauen.** Der Gegencheck nannte B als einziges verfrühtes Paket; die Nachmessung an
+`lane-outcomes.jsonl` gibt ihm recht: von **211 distinkten `originId`s haben 4 einen zweiten
+Lane-Ausgang, keiner einen dritten — 1,9 %.** Es gibt keine gemessene Nachfrage. B ist zugleich das
+einzige Paket, das `server.ts` UND `src/client.ts` UND fünf neue e2e-Fälle bewegt, also das teuerste
+Slice auf der empfindlichsten Fläche.
+
+**Wiedervorlage:** wenn C (Schwarm-Praxis) gelaufen ist und die Wiederholer-Quote messbar steigt. Die
+Messung ist ein Einzeiler über das Ledger und gehört dann wiederholt, nicht erinnert.
+
+Der Entwurf bleibt unten stehen, weil er fertig durchdacht ist und die Wiedervorlage sonst bei null
+anfängt.
+
+### Entwurf (nicht beauftragt)
 
 **Ziel.** Eine Lane, die feststellt, dass ihre Zeile so nicht erfüllbar ist, kann das als Vorschlag
 hinterlegen; der Owner bestätigt und archiviert mit Grund. Heute geht die Zeile über
@@ -234,6 +267,12 @@ lesen; die vier Fakten sind mit `file#symbol` belegt.
 **Nicht-Umfang.** Kein Board-Knopf, keine Route, kein „Schwarm-Objekt". Wenn die Praxis sich bewährt und
 das Aufsetzen von Hand nervt, ist DANN der Zeitpunkt für Mechanik — nicht vorher.
 
+**Neue Tatsache, empirisch belegt.** Eine Lane mit fremdem Harness hat **keine Skills** — `.agents/`
+ist gitignored und fehlt im Worktree, und die `.claude/skills/`-Kopie ist die claude-seitige. Die
+GLM-Gegencheck-Lane vom 2026-08-27 hat trotzdem eine formgerechte Notiz geliefert, weil die STRUKTUR im
+Brief stand. Regel für C: **bei fremdem Harness gehört das Notiz-Template in den Brief, nicht als
+Skill-Verweis.**
+
 **Risiken, die in die Seite gehören.** Maschinenlast (die gemessene Nicht-Determiniertheit bei zwei
 gleichzeitigen isolierten Suiten gilt auch hier) · Provider-Kontext · die 16-Slot-Decke wird mit echter
 Arbeit geteilt.
@@ -279,7 +318,11 @@ Das ist geraten und muss an echten Lanes kalibriert werden, bevor irgendwer dara
 
 - **Task-relevante Trigger-Auswahl** (`DISPATCH_CONTEXT_TRIGGERS` aus `next: Task`) — bricht
   `e2e/pins.ts#RULE_REACH` absichtlich; ein `always`-Pack mit Index beantwortet die Frage billiger.
-- **Ein 6. Task-Status** — elf leise Brüche, zwei davon datenverlierend.
+- **Ein 6. Task-Status** — mehrere leise Brüche, einer davon datenverlierend.
+- **`unfulfillable` (B)** — zurückgestellt, nicht verworfen: 1,9 % Wiederholer-Quote im Ledger, keine
+  gemessene Nachfrage. Wiedervorlage nach C.
+- **Ein Sync-Pin auf die Skill-Kopien** — `.agents/` ist ein maschinenlokales Artefakt, kein zweiter
+  Vertrag; ein Pin darauf wäre in jeder Lane rot.
 - **Ein Schwarm-Modus als Feature** — beide Bausteine existieren; ein Objekt darüber wäre Verpackung.
 - **Ein Verhaltens-Monitor über Transkripte** (der „CoT-Monitor"-Gedanke) — reizvoll, aber er braucht den
   inkrementellen Leser aus D1s Upgrade, und ohne D1s Kalibrierung wüsste niemand, worauf er schauen soll.
@@ -300,7 +343,18 @@ unmöglich.
 
 ## 6. Gesammelte offene Owner-Entscheidungen
 
-1. `bereich` — freie Tags oder feste Liste? (P0)
-2. Setzt ein `unfulfillable`-Vorschlag den Slot auf `awaiting: "owner"`? (B)
-3. N und T für das Stuck-Prädikat. (D1)
-4. Reihenfolge: P0 → P0b → A → C ist eine Kette. B und D1 sind unabhängig und können parallel laufen.
+1. **`bereich`** im Claim-Block — freie Tags oder feste Liste? (P0)
+2. **N und T** für das Stuck-Prädikat. (D1) Vorschlag zum Draufschlagen: 15 % Fensterzuwachs über
+   20 min — geraten, muss an echten Lanes kalibriert werden.
+3. **Wer schreibt `.agents/`?** Nicht belegt, für P0 folgenlos, aber offen, bevor sich jemand auf die
+   Kopie verlässt.
+4. Reihenfolge: **P0 → P0b → A → C** ist eine Kette. **D1** ist unabhängig und kann parallel laufen.
+   **B** ist zurückgestellt.
+
+## 7. Provenienz
+
+Erste Fassung `bdcc6d3`. Gegengeprüft von einer GLM-Lane (`pi-zai`/`glm-5.3`, Slot 10) gegen genau
+diesen Commit: `docs/messungen/2026-08-27-gegencheck-schwarm-programm.md` (`e3e5d29`) — zwölf
+Behauptungen, elf verifiziert, ein Detail widerlegt, zwei Urteile. Diese Fassung trägt die
+Korrekturen; die Ledger-Messung zu B habe ich selbst gezogen, weil der Gegencheck sie ausdrücklich
+als „nicht gemessen" auswies.

@@ -1,3 +1,12 @@
+---
+frage: Kann irgendein Principal außer der exakt gebundenen MAIN eines Programms mit Owner-promoteter Policy einen Land auslösen, nicht-grünen/unknownen/stalen Baum landen, außerhalb guarded bestätigen, doppelt landen oder unattribuiert landen?
+urteil: Kein Pfad gefunden, über den ein nicht gebundener, stale, Lane-, Steward-, Worker- oder Self-Token-Principal einen Land auslöst oder unattribuiert landet; die zwei dokumentierten Design-Grenzen (textueller Call-Site-Pin, via-Spoofbarkeit des Suspect-Flags) gewähren keine Autorität
+bereich: [autoritaet, verify]
+belege: [docs/authority-slice-brief-2026-08-23.md, server.ts#selfLandTaskForMain, e2e/pins.ts, e2e/programs.ts, fleet/260824000948-c4a7]
+nicht-gemessen: <nicht ausgewiesen>
+stand: 2026-08-24
+---
+
 # Authority-Critic — Branch `fleet/260824000948-c4a7` (10 commits, 6f75a8c → 210fcd9)
 
 Read-only security/authority review of the AUTHORITY slice (task 2574cb20). Spec:

@@ -1,3 +1,12 @@
+---
+frage: Sind die zwölf Lastannahmen aus docs/schwarm-programm-2026-08-27.md am Baum belegt? (Gegenprobe, kein Bau)
+urteil: Keine der zwölf Lastannahmen ist im Kern widerlegt (zwei korrigierbare Detailfehler); Paket B ist verfrüht, und P0s Sync-Pin-Prämisse ist falsch, weil .agents/ gitignored und in keinem Worktree existiert
+bereich: [verify, regelwerk]
+belege: [server.ts#briefAndSend, context-pack-validator.ts, verify-proportion.ts, e2e/pins.ts, .gitignore]
+nicht-gemessen: Ob der LIVE-Prozess wirklich mit dem Env der watchdog-Zeile läuft; sendText-Transportdetails nicht end-to-end beobachtet; die §1-Ledgerzahlen nicht nachgezählt; slotDeliveryBudget-Dynamik nur gelesen
+stand: 2026-08-27
+---
+
 # Frage
 
 Sind die zwölf Lastannahmen aus `docs/schwarm-programm-2026-08-27.md` (Committ bdcc6d3) am Baum

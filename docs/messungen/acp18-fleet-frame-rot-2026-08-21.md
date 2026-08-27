@@ -1,3 +1,12 @@
+---
+frage: Was ist die Ursache dafür, dass vier Checks der Familie Program-MAIN Fleet frame/succession in ./e2e-isolated.sh seit dem 2026-08-21 reproduzierbar rot sind?
+urteil: Der Fehler liegt in der Sonde, nicht im Produktcode; waitForLabel liefert den Slot vor ensureSlot (Label-Fenster 25 bis 41 ms gegen den 50-ms-Sampler), der Fix 8ad4192 lässt die Sonde auf die Pane warten und als sie selbst scheitern
+bereich: [verify, lane-lifecycle]
+belege: [e2e/programs.ts#waitForLabel, server.ts#openSlot, 8ad4192, e2e/tasks.ts]
+nicht-gemessen: Warum die Fleet-Gründung im roten Lauf 3/3 verliert ist erschlossen, nicht gemessen; weitere Wege ins Rot nicht ausgeschlossen; die ~62-Minuten-Lücke vor dem Beweislauf blieb unerklärt
+stand: 2026-08-21
+---
+
 # Warum die vier "Program-MAIN Fleet frame/succession"-Checks rot sind
 
 2026-08-21, Lane `fleet/260821172714-5d3b` (ACP-18). Frage: **Was ist die Ursache dafür, dass vier

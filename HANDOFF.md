@@ -1,112 +1,79 @@
-# HANDOFF — Themen-Session „hugFaceInci" (Slot 9), 2026-08-27
+# HANDOFF — Themen-Session „hugFaceInci" (Slot 9), 2026-08-27, zweite Fassung
 
-Zustand wird ABGELEITET: `./state.sh` · `./register.sh` · Live-Queue. Hier steht nur, was daraus
-nicht hervorgeht. **Vorgänger-Handoff: `820bf9a`** (Controller, Nachtsession) — er beschreibt
-Arbeit, die WEITERLÄUFT und nicht mir gehört, siehe §5.
+Zustand wird ABGELEITET: `./state.sh` · `./register.sh` · Live-Queue. Vorgänger-Handoffs: `3cc7f95`
+(erste Fassung dieser Session, dort die volle Vorgeschichte) und `820bf9a` (Controller — Private-repo-j
+läuft weiter auf Slot 5, gehört NICHT mir).
 
-Diese Session war **kein Controller-Zyklus**, sondern ein Themen-Auftrag: den OpenAI/Hugging-Face-
-Vorfall auswerten und daraus ableiten, was Fleet an Struktur lernen kann. Übergabe auf
-Owner-Wunsch bei ctx ~28 %.
+Thema der Session: OpenAI/HF-Vorfall → Schwarm-Programm → Ausführung. Programm:
+`docs/schwarm-programm-2026-08-27.md` · Aufträge: `briefs/schwarm-programm-auftraege-2026-08-27.md`.
+Owner-Entscheid inzwischen: **`bereich` = freie Tags**, Startvokabular die neun aus dem P0-Report.
 
-## 1. Was entstanden ist (fünf Commits)
+## 1. Stand der Pakete
 
-`bdcc6d3` Ausarbeitung · `e3e5d29` GLM-Gegencheck (kam regulär über eine Lane herein) ·
-`a8aa258` Korrekturen daraus · `22dc5c8` fünf Arbeitsaufträge · `1a51291` Selbstprüfung dieser
-Aufträge. Die Befunde stehen in den Commit-Bodies, das Programm in
-`docs/schwarm-programm-2026-08-27.md`, die Aufträge in
-`briefs/schwarm-programm-auftraege-2026-08-27.md`.
+- **P0 GELANDET** (`c098d87`): Skill-Template mit sechs Front-Matter-Feldern + leerer
+  `docs/messungen/INDEX.md`.
+- **P0b FLIEGT** — Slot 8, `fleet/260827120929-bb8c`, **pi-zai/glm-5.3/max**. Retrofit der 31
+  Notizen. Brief trägt den Owner-Entscheid (freie Tags, neun Startbegriffe).
+- **C FLIEGT** — Slot 14, `fleet/260827120935-b549`, opus/high. Schwarm-Praxis-Doku.
+- **D1 FERTIG, NICHT GELANDET** — Slot 10, `fleet/260827083510-80fe`, 1 ahead, sauber. Land ist
+  **zu Recht geblockt**: siehe §2. Bericht der Lane ist stark (Evidenz-statt-Verdikt-Route,
+  `dirty`-Asymmetrie als eigentlicher Trennmechanismus, ihre e2e-Checks laufen erst im
+  Post-Land-Audit).
+- **A WARTET** auf P0bs gefüllten Index. Brief liegt fertig in der Auftragsdatei.
+- **B GESTRICHEN** (1,9 % gemessen), **elfte Flake-Familie GEFILET** (`dda507d`,
+  `docs/verify-tiering.md` §11.2i — offen, Fix vorgeschlagen, nicht gebaut).
 
-Kern in einem Satz: der Schwarm im OpenAI-Vorfall war zu **93 %** ein Negativ-Wissens-Bus über die
-**22 %** unlösbaren Tasks — und genau diesen Bus hat Fleet dreimal halb gebaut. Aus vier
-Feature-Ideen wurden **eine Vorbedingung, zwei Schnitte, eine Praxis und ein Sensor**.
+## 2. WARUM D1 NICHT LANDET — nichts tun, bis Slot 16 committet
 
-## 2. WAS GERADE FLIEGT — und die Falle darin
+`POST /api/slots/10/merge` → `blocked: main is checked out … with uncommitted changes to server.ts`.
+Das ist **lebende Arbeit von Slot 16** (GPT-5.6-Sol, cwd = Haupt-Checkout, um 13:26–13:56 editiert):
+`server.ts` +44/−19 (u. a. `LANE_EXIT_FOOTER` drei→fünf Akte, `BASE_CMD`-Default), `AGENTS.md`,
+`README.md`, `e2e/pins.ts|programs.ts|tasks.ts` — mit laufendem `./e2e-isolated.sh` (der
+Mutex-Halter). **Nicht committen, nicht stashen, nicht checkout** — Slot 16 committet selbst, danach
+D1s Merge neu anstoßen (`POST /api/slots/10/merge`, dann `{"kind":"merge","target":10}`-Watch).
+D1 wird dabei server-seitig auf das neue main rebased; ihr Diff berührt `server.ts`
+(`tickGit`-Vorprobe) — **Kollision mit Slot 16s server.ts-Arbeit ist MÖGLICH**; wenn der Merge
+`resolved` mit Konflikten meldet, Pane lesen, nicht raten.
 
-Zwei Lanes laufen, beide `claude`/`opus`/`effort high`, beide um ~10:41 angestoßen:
+## 3. Die drei operativen Lehren dieser Session (alle zweimal gesehen oder gemessen)
 
-- **Slot 6** — `fleet/260827083450-376d` — Auftrag **P0** (Claim-Block + Index im
-  `mess-notiz`-Skill).
-- **Slot 10** — `fleet/260827083510-80fe` — Auftrag **D1** (Stuck-Retention in `tickGit`).
+1. **`acceptance: "unobservable"` nach `POST /send` auf eine frische Lane = in die Pane schauen.**
+   Zweimal passiert (Slots 6/10, dann Slot 14): Brief liegt im Composer, Enter verpuffte im Boot.
+   Fix: `tmux -L claudefleet send-keys -t s<N> Enter` nachschieben, dann ctx-% prüfen. Ein
+   `observed` (Slot 8/pi) braucht nichts. Panes heißen **`s<N>`**, nicht `claude-<N>`.
+2. **Ein Direkt-Commit auf main während eines laufenden Lands killt den Fast-Forward** — auch ohne
+   gemeinsame Datei (P0-Land-Versuch 1, mein `2377769` fiel ins 253-s-Fenster). Und das Fenster war
+   so groß, weil `.claude/skills/…` bei `ruleFor` **`conservative-default`** ist, nicht Doku.
+   Reihenfolge seither: erst main-Commits, dann Land, nie beides.
+3. **`last.status:"interrupted"` + `running:true` = Startmarker ohne Verdikt**, kein abgebrochener
+   Lauf („the server was interrupted mid-run" liest sich dramatischer als es ist). Und ein
+   `resolved/landed:false` mit `exitCode:3` + „no server.log" ist §11.2i, nicht dein Regress.
 
-**DIE FALLE, und sie ist der wichtigste Satz dieses Handoffs:** beide Briefe kamen mit
-`acceptance: "unobservable"` an und lagen danach **im Composer, nicht abgeschickt** — die Panes
-waren beim Paste noch im Boot, der Enter verpuffte. Ich habe von Hand `tmux -L claudefleet
-send-keys -t s6 Enter` (und `s10`) nachgeschoben, danach liefen beide an (ctx 7 %, Composer leer,
-verifiziert). **Wer nach einem `POST /send` auf eine frisch geöffnete Lane `unobservable` sieht,
-muss in die Pane schauen** — der Text über der Composer-Trennlinie ohne Prompt-Marker und ohne
-Spinner heißt „liegt da, läuft nicht". Ein Watch rettet das NICHT: eine nie gestartete Lane wird
-nie `done-looking`, der Watch feuert also nie, und das Warten sieht wie Arbeit aus.
+## 4. Empfänger-Problem der fliegenden Lanes — WICHTIG für die Nachfolge
 
-**Zweite Konsequenz, die mit meinem Slot stirbt:** beide Lanes sollen per
-`POST /api/self/fleet-report` berichten. Ihr Empfänger ist mein `kind:"lane"`-Watch auf Slot 9
-(`clarificationReceiverFor` → `basis: "lane-watch"`). **Stirbt Slot 9, haben sie keinen Empfänger
-mehr und ihr Report läuft in 409.** Wer übernimmt: entweder zügig selbst je einen
-`POST /api/self/watch {"kind":"lane","target":6|10}` setzen, oder die Panes direkt lesen. Die
-Alternative wäre gewesen, die Lanes programm-gebunden zu öffnen — dann wäre der Empfänger
-`program-main` und an keine Session gekoppelt. Für die nächsten drei Aufträge ist das der bessere
-Weg.
+P0b (8), C (14) und D1 (10) melden per `fleet-report` an **meine lane-Watches auf Slot 9**. Stirbt
+Slot 9, laufen ihre Reports in 409. Nachfolge-Session: sofort eigene Watches setzen
+(`POST /api/self/watch {"kind":"lane","target":8|14}` + merge-Watch auf 10, sobald Slot 16 durch
+ist) — oder Panes direkt lesen. Für künftige Schwarm-Läufe: programm-gebunden öffnen (Empfänger
+`program-main`, sessionunabhängig).
 
-## 3. Die nächsten Aufträge, in ihrer Reihenfolge und ihrem Warum
+## 5. Offene Kleinigkeiten, geordnet
 
-Kette **P0 → P0b → A → C**; **D1** läuft unabhängig (fliegt schon).
+1. **Slot 16 abwarten → D1 landen** (§2). Danach läuft D1s Check-Familie erstmals im Post-Land-Audit
+   — ein Rot dort zuerst gegen §11.2i und die zwei ungefahrenen Route-Checks halten.
+2. **A starten**, sobald P0b gelandet ist (Brief fertig; opus/high; Verify volle Kette + isolated-
+   Vorschau, steht im Brief).
+3. **Rulebook-Edits sammeln** (rulebook.ts ist getrackt → volle Kette): „Zehn Flake-Familien" → elf
+   (§11.2i) · watch kennt 5 Arten, Slot-Art heißt `lane` · Panes heißen `s<N>` · Verify-Zeile ist
+   Vereinfachung von `watchdog.sh:91`. Ein Commit, EIN Land-Fenster.
+4. **§11.2i-Fix** (bounded `has-session`-Wait vor `new-session`, zwei Stellen) — eigener kleiner
+   Auftrag, Suite-Dateien → volle Kette + isolated-Vorschau.
+5. D1s Folgefund (`STUCK_LOOPING_PROSE` + Anti-Drift-Check in `e2e/steward-core.ts`) · 46 alte
+   `fleet-e2e-*instance-*`-Verzeichnisse unter /var/folders (nur zählen war erlaubt) · `.agents/`-
+   Schreiber unbelegt (`.gitignore:49`-Kommentar nennt ~/.claude/skills, dort liegt nur graphify).
+6. **B-Wiedervorlage** erst nach C, mit frischer Ledger-Messung (Einzeiler steht im Programm-Doc §B).
 
-- **P0b** (Retrofit der 30 Notizen) startet erst, wenn P0 gelandet ist — es richtet 30 Dateien an
-  einem Template aus, das noch nicht existiert. **Harness `pi-zai`, Modell `glm-5.3`, effort max**:
-  30 Notizen sind ~139k Tokens, das trägt ein 1M-Fenster und ein ~258k-Fenster nicht. Nicht aus
-  Gewohnheit auf claude umstellen.
-- **A** (ein Context-Pack auf den Index) braucht einen befüllten `INDEX.md`, also P0b.
-- **C** (Schwarm-Praxis dokumentieren) kann sofort nach P0 laufen, ist reine Doku.
+## 6. Grundlinien (2026-08-27, vor Wiederverwendung neu ziehen)
 
-Die Briefe sind pasteable Abschnitte in `briefs/schwarm-programm-auftraege-2026-08-27.md`. **Beim
-Dispatch den Kopfblock mitschicken** (Verbote + Verify-Provenienz) — die Abschnitte verweisen
-darauf, und eine Lane, die nur ihren Abschnitt bekommt, hätte ihn nicht. Mein Extraktor trennt an
-`\n---\n+(?=## )`, nicht an `\n---\n##`.
-
-## 4. Drei Owner-Entscheidungen, die offen sind
-
-1. **`bereich`** im Claim-Block — freie Tags oder feste Liste? P0 baut freie Tags und liefert die
-   gefundenen Tags als Vorlage mit.
-2. **N und T** fürs Stuck-Prädikat (D1). Vorgabe zum Draufschlagen: 15 % Fensterzuwachs über
-   20 min — geraten, muss an echten Lanes kalibriert werden. D1 baut sie als benannte Konstanten
-   an EINER Stelle.
-3. **Wer schreibt `.agents/`?** Nicht belegt. Der Kommentar in `.gitignore:49` nennt
-   `~/.claude/skills/`, dort liegt aber nur `graphify`. Für P0 folgenlos, offen bevor sich jemand
-   auf die Kopie verlässt.
-
-## 5. Was weiterläuft und NICHT mir gehört
-
-Der **Private-repo-j-Akt „Spielbarer Rohbau"** liegt bei der Program-MAIN auf **Slot 5 (Fable)**, und
-die defundierte Zeile `7a177954` ist auf `pending` geparkt. Vollständig beschrieben im
-Vorgänger-Handoff `820bf9a` — ich habe daran nichts angefasst und nichts entschieden.
-
-## 6. Regelbuch-Drift, die ich im Vorbeigehen gemessen habe
-
-Drei Stellen, alle nachgeprüft, keine davon gefixt (Regelbuch ist ein Generat aus `rulebook.ts`,
-und `CLAUDE.md` ist gitignored):
-
-1. **`POST /api/self/watch` kennt fünf Arten, nicht drei.** Der Fehler nennt sie wörtlich:
-   `lane`, `merge`, `audit`, **`deploy`**, **`transition`**. Und die Slot-Art heißt `lane`, nicht
-   `slot` — `{"kind":"slot"}` wird abgelehnt. Der Abschnitt §Self-scheduling nennt nur drei.
-2. **Pane-Ziele heißen `s<N>`, nicht `claude-<N>`.** `tmux -L claudefleet capture-pane -t claude-6`
-   antwortet `can't find pane`. `list-sessions` zeigt `s1…s16` plus `srv`.
-3. **Die Verify-Zeile in `CLAUDE.md` ist eine Vereinfachung.** `watchdog.sh:91` `VERIFY_CMD` trägt
-   zusätzlich den Sentinel-Guard und einen expliziten install-Fehlerzweig statt `&&`. Gleiche
-   Schrittfolge, aber das Regelbuch sagt selbst „bei Abweichung gilt die Datei" — und ich hatte die
-   vereinfachte Fassung zuerst in alle fünf Briefe geschrieben.
-
-## 7. Zwei Grundlinien, beide am 2026-08-27 gezogen, beide neu ziehbar
-
-- `lane-outcomes.jsonl`: **567 Lane-Ausgänge, 123 `killed-empty` (21,7 %)**, 371 `landed` (65,4 %).
-  Erfolgsmaß des Programms: sinkt der Anteil bei Mess- und Audit-Lanes.
-- **4 von 211 distinkten `originId`s** haben einen zweiten Lane-Ausgang, keiner einen dritten
-  (**1,9 %**). Diese Zahl hat Auftrag **B** (`unfulfillable`) gestrichen. Wiedervorlage nach C —
-  und dann **neu messen, nicht erinnern**; das Ledger wuchs während dieser Session um 31 Zeilen.
-
-## 8. Was ich NICHT geprüft habe
-
-Ob die zwei fliegenden Lanes ihre Aufträge richtig verstehen — sie liefen bei Übergabe ~2 min.
-Ob `e2e/lanes-lifecycle.ts` wirklich die beste Heimat für D1s Check ist (ich habe den Fetch der
-Steward-Sicht dort gefunden, die Datei aber nicht gelesen; der Brief sagt der Lane, sie soll eine
-bessere Familie melden statt eine neue Datei anzulegen). Und keinen einzigen Suite-Lauf jenseits
-von `bun e2e/pins.ts` — alle fünf Commits dieser Session sind reine Prosa und liefen bewusst die
-Docs-Kurzkette.
+`lane-outcomes.jsonl`: 567 Ausgänge, 123 `killed-empty` (21,7 %) — das Erfolgsmaß des Programms.
+Wiederholer: 4/211 originIds (1,9 %) — hat B gestrichen.

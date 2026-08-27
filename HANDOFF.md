@@ -21,8 +21,8 @@ Kein Erntedruck, keine offene Lane dieses Controllers. Vier Lands dieser Session
    ersten playtest sehen" gekippt — und er hatte recht: das Blind-A/B-Kill-Kriterium ist auf
    Diagnose-Grafik unfair (ein funktionierender Damm kann an unlesbarem Render durchfallen;
    E19 fiel vermutlich genau so).
-2. **Gebundener Akt „Spielbarer Rohbau"** (~2 Tage), an die Private-repo-j-MAIN (Slot 7) gefunkt und
-   ZUGESTELLT (Pane gelesen, MAIN arbeitet, bestätigt per Cross-Session-Nachricht): authored Tal
+2. **Gebundener Akt „Spielbarer Rohbau"** (~2 Tage), an die Private-repo-j-MAIN gefunkt und
+   ZUGESTELLT — **inzwischen an SLOT 5 auf FABLE** (siehe Punkt 5): authored Tal
    + adversarialer Loop + Probe-B-Renderer LIVE am Sim; Kette Damm→Stau→nass→Vegetation im
    ersten Playtest sichtbar. Leitplanken: Grafik rendert NUR echten Sim-Zustand ·
    Telemetrie-UI und Relief-Look schon in v1 verboten · Kugelbäume als Rohbau erlaubt · kein
@@ -39,10 +39,25 @@ Kein Erntedruck, keine offene Lane dieses Controllers. Vier Lands dieser Session
    `DEFAULT_CONFIG.seaLevel = 0`, die Sim-Werkzeuge bauen mit `SEA_LEVEL_M = -500`. Für
    authored Terrain folgenlos; jede Wiederverwendung von Angebots-/Benetzbarkeits-Arithmetik
    muss die Diskrepanz kennen. (Von der MAIN in Private-repo-j-E27 dokumentiert.)
+5. **Private-repo-j-MAIN neu gebootstrappt: Slot 7 (Opus, 27 % von 200k) → SLOT 5 (FABLE), auf
+   Owner-Wunsch** („vllt ist auch fable hier besser" — die drei anderen Studio-MAINs laufen
+   schon Fable). Ablauf: Owner-Interrupt an S7 · `POST /api/slots/7/kill` ·
+   `POST /api/programs/ff4420b7f48d4d14569b5c1d/bootstrap-main` (model fable) → Slot 5 ·
+   Akt-Brief v2 (Original + Nachtrag: geparkte 7a177954, seaLevel-Diskrepanz, Erdungsreihenfolge,
+   entscheide.md-Eintrag) zugestellt und in der Pane bestätigt. Scratch:
+   `<scratchpad>/private-repo-j-akt1{,-v2}.json` trägt den Brief-Wortlaut.
+6. **Zwei lose Enden für dich:** (a) **Slot 1** = unbeschriftete Private-repo-j-Session, idle seit
+   02:08, 6 % ctx — vermutlich Rest der S3→S7-Succession; Owner weiß davon, schließen ist
+   wahrscheinlich richtig, aber unbestätigt. (b) **Slot 3** = unerklärte LEERE Lane
+   `fleet/260827034248-3026` (frischer Worktree, kein Brief, kein Task, Composer leer),
+   entstanden in derselben Sekunde wie mein erster succeed-Versuch (der laut Code bei
+   Brief-Fehlschlag killSlot fährt und KEINEN Worktree baut — Herkunft ungeklärt, evtl.
+   Owner-Klick am Board). Nicht angefasst; klären oder killen (killed-empty ist billig).
 
 ## Deine Rolle als Nachfolgerin
 
-Die Private-repo-j-MAIN führt den Akt SELBST (self-land guarded, zerlegt selbst in Lanes). Du bist
+Die Private-repo-j-MAIN (SLOT 5, Fable) führt den Akt SELBST (self-land guarded, zerlegt selbst in
+Lanes). Du bist
 Ansprechpartnerin, nicht Treiberin: Cross-Session-Kanal und `POST /api/self/attention`-Türen
 beobachten, bei Rot/Entscheidungsbedarf reagieren. Kein Watch nötig, solange keine Fleet-Lane
 läuft — die Private-repo-j-Arbeit läuft ggf. wieder in lokalen Worktrees (Befundklasse K10, bekannt

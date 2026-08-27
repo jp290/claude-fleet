@@ -27,6 +27,13 @@ Zeilen ausgeben nein · `rg` respektiert `.gitignore`, und gitignored sind `CLAU
 `fleet.json`, `*.jsonl`, `.env`, `.agents/` — dafür `rg -uu` oder `grep`, sonst liest sich ein
 leeres Ergebnis wie „gibt es nicht".
 
+**Herkunft der Verify-Zeilen (nachgeprüft 2026-08-27).** Die unten ausgeschriebenen Ketten sind die
+LOKALE Beweiskette. Der autoritative Land-Gate ist `watchdog.sh:91` `VERIFY_CMD`; er trägt zusätzlich
+den Sentinel-Guard (`[ -f fleet-e2e.ts ] || … exit 42`) und einen expliziten install-Fehlerzweig
+(`|| { echo "verify failed: …"; exit 1; }`) statt `&&`. Inhaltlich dieselbe Schrittfolge — aber die
+Fassung in `CLAUDE.md` ist eine Vereinfachung, und bei Abweichung gilt die Datei. Frag im Zweifel
+`GET /api/self/gate` (self-token, lane-only): die Route liest den Env des LAUFENDEN Servers.
+
 ---
 
 ## P0 — Claim-Block und Index im `mess-notiz`-Skill
@@ -41,7 +48,17 @@ nichts, was ein Synthese-Schritt lesen könnte (C).
 
 **Was du tust.**
 1. Lies `.claude/skills/mess-notiz/SKILL.md` (67 Zeilen, getrackt seit `3235561`) ganz.
-2. Ergänze das Notiz-Template um dieses Front-Matter, wörtlich diese sechs Felder:
+
+**ACHTUNG, das ist die Falle dieses Auftrags.** Die Datei hat ZWEI Front-Matter-Ebenen:
+- Zeilen 1–4 sind das **Front-Matter des SKILLS selbst** (`name:`, `description:`). **Fass das nicht
+  an.**
+- Ab ~Zeile 27 steht in einem ```markdown-Block das **Template der NOTIZ** (`# <Frage…>`,
+  `## Ergebnis`, `## Methode`, `## Was nicht gemessen wurde`). **Dorthin** gehört das neue
+  Front-Matter — an den Anfang des Template-Blocks, also in das, was eine Lane später in ihre
+  `.md`-Datei schreibt.
+Wer das verwechselt, gibt dem Skill ein Feld `frage:` und jeder Notiz keins.
+
+2. Ergänze das NOTIZ-Template um dieses Front-Matter, wörtlich diese sechs Felder:
 
        ---
        frage: <eine Zeile — was gemessen wurde>
@@ -58,6 +75,12 @@ nichts, was ein Synthese-Schritt lesen könnte (C).
    Noch ohne Einträge — die kommen in P0b.
 5. Schreib in das Skill EINEN Satz, dass bei fremdem Harness (`pi-*`, `codex`) das Template in den
    Brief gehört, weil `.agents/` gitignored ist und im Worktree fehlt.
+6. **Eine einzige veraltete Zahl korrigieren, sonst nichts.** Das Skill begründet sich mit
+   „97 von 350 Lanes … `killed-empty` (28 %, gemessen 2026-08-19)". Frisch gezogen am 2026-08-27:
+   **123 von 567 Lane-Ausgängen, 21,7 %** (gegen 371 `landed`). Setz die neue Zahl mit Datum daneben
+   oder an ihre Stelle — die Herleitung in `docs/werkzeugkosten-grundlinie-2026-08-19.md` bleibt
+   unangetastet. **Miss nicht selbst nach**, die Zahl steht hier; und ändere sonst keinen Satz der
+   Begründung.
 
 **Ausdrücklich KEIN Pin.** Die erste Fassung des Programms verlangte einen Pin, der
 `.claude/skills/…` und `.agents/skills/…` synchron hält. Das ist widerlegt: `.agents/` ist
@@ -122,8 +145,11 @@ wörtlich oder sinngleich so in der Notiz.
 
     bun install --frozen-lockfile && bun e2e/pins.ts
 
-Zusätzlich selbst prüfen: `ls docs/messungen/*.md | wc -l` und die Zeilenzahl von `INDEX.md`
-müssen zusammenpassen (Index hat eine Zeile je Notiz, `INDEX.md` selbst zählt nicht mit).
+Zusätzlich selbst prüfen, mit konkreten Zahlen statt Gefühl: `docs/messungen/` enthielt am
+2026-08-27 **30 Notizen**; nach P0 kommt `INDEX.md` dazu, also zählt `ls docs/messungen/*.md | wc -l`
+danach **31**. `INDEX.md` trägt **30 Eintragszeilen** plus seine Überschrift. Stimmt eine der beiden
+Zahlen nicht, hast du eine Notiz übersprungen oder `INDEX.md` mitindiziert — beides ist ein Fehler,
+kein Rundungsproblem.
 
 **Nicht-Umfang.** Keine neuen Notizen. Keine Änderung am Skill. Kein Löschen veralteter Notizen —
 auch nicht, wenn eine offensichtlich überholt ist; das ist eine Owner-Entscheidung.
@@ -196,8 +222,11 @@ zusammensetzt, plus die Deckel-Fakten, die sonst jede Session neu ausmisst.
 **Die vier Fakten, die belegt in die Seite gehören** (jeder mit `datei#symbol`, prüf sie nach,
 zitier sie nicht aus diesem Brief):
 1. Lanes **programm-gebunden** öffnen macht `POST /api/self/fleet-report` legal — `basis:
-   "program-main"` aus `clarificationReceiverFor`. Nenne beide 409-Türen: fehlender Empfänger
-   (`server.ts:6203`) UND erschöpftes Empfänger-Budget (`slotDeliveryBudget`, `:6205`).
+   "program-main"` aus `clarificationReceiverFor`. Nenne beide 409-Türen — sie stehen in
+   `server.ts#openFleetReport` direkt untereinander: erst `clarificationReceiverFor(s)` mit
+   `if ("error" in resolved) … 409`, dann `if (slotDeliveryBudget(resolved.receiver.slot).free === 0)
+   … 409` („fleet-report receiver has no FleetEvent delivery budget"). Verweise per Symbol, nicht
+   per Zeile.
 2. Jede Lane schreibt eine Messnotiz und landet sie über die Docs-Kurzkette:
    `verify-proportion.ts#ruleFor` → `DOC_RULE` → `DOC_STEPS = ["install","pins"]`. Beleg aus der
    Praxis, den du zitieren darfst: der Gegencheck-Land `e3e5d29` lief in **559 ms**, `fleet/land`-Note
@@ -286,8 +315,13 @@ und für einen Slot, der in derselben Zeit committet, ein falsches.
       merge-prompt.ts && \
     bun run build && ./e2e-clean-review.sh && ./e2e-security.sh && ./e2e-claude-gate.sh
 
-Der Check gehört in die Familie, die `laneSignalView`/`lane-signals.ts` abdeckt — such sie über
-`rg -n 'laneStalled|laneSignalView' e2e/`, und bau neben die vorhandenen Prädikat-Checks.
+**Wo der Check hingehört, damit du nicht suchen musst.** `/api/steward/sessions` wird in
+`e2e/lanes-lifecycle.ts` abgefragt — der einzige echte Fetch der Steward-Sicht in der Suite; das ist
+die erste Adresse. `e2e/review.ts` und `e2e/prompts.ts` haben zwar viele `stalled`-Treffer, die
+betreffen aber Review- und Prompt-Zustände, nicht die Lane-Signale: bau dort NICHT hinein. Das
+Prädikat lebt in `lane-signals.ts` (`STALLED_RULES`, `laneStalled`), der View in
+`server.ts#laneSignalView`. Passt `e2e/lanes-lifecycle.ts` nach deiner Lektüre nicht, melde die
+bessere Familie im Report — leg keine neue Datei an.
 
 **Ein Hinweis, der dir Zeit spart.** Deine Sonde braucht kontrollierte Werte, keine echten Lanes.
 Bau sie so, dass sie die Vorprobe direkt setzt, statt auf einen Tick zu warten — und wenn die Sonde

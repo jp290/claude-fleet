@@ -1,3 +1,12 @@
+---
+frage: Welche der 34 Worktrees, tmux-Sockets und TMPDIR-Scratch-Familien sind sauber verwerfbar, welche tragen Arbeit, und welche sind live?
+urteil: Von 34 Worktrees sind 14 SAFER, 16 ARBEIT (2 Rail-Lanes nachweislich abgelöst, 1 vermutlich), 0 UNKLAR, 4 AKTIV; alles ist report-only, Ausführung ist ausschließlich Ownersache
+bereich: [hygiene]
+belege: [f16b470, /Users/owner/claude-fleet.worktrees/, /private/tmp/tmux-501/]
+nicht-gemessen: Der Haupt-Checkout selbst (dessen Untracked-Dateien lagen außerhalb des Auftrags, nur gemeldet); die Messung ist ein Schnappschuss eines lebenden Systems (main, e2e und Slots schoben während des Lesens weiter)
+stand: 2026-08-25
+---
+
 # Maschinen-Hygiene 2026-08-25 — Bestandsaufnahme (REPORT-ONLY)
 
 Gemessen am 2026-08-25 ~15:45 von Lane `fleet/260825134349-0d91`. Diese Lane hat nichts gelöscht,

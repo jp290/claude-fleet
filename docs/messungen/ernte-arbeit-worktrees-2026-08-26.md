@@ -1,3 +1,12 @@
+---
+frage: Welche der 15 ARBEIT-Worktrees aus dem Hygiene-Report tragen patch-echte Arbeit, die geerntet, abgelöst oder nur per Owner-Entscheid verwerfbar ist?
+urteil: 12 Branches geerntet, 1 abgelöst-mit-Beleg, 3 Owner-Entscheid; die Hygiene-Fußnote zu d70d ist widerlegt (die Lane-Regel ist nicht abgelöst), und 3600618 (typisierte Meilensteine) lebt undisplaced in a0e9/f753
+bereich: [hygiene, lane-lifecycle]
+belege: [docs/messungen/hygiene-report-2026-08-25.md, docs/product-studio-working-circle.md, 3600618, d0fa215, 28e6f3f]
+nicht-gemessen: Ob jeder geerntete Text heute noch stimmt (patch-echt geprüft, nicht aktualitätsgerecht); die .agents/-Einstufung aus Hygiene-Fußnote 3 übernommen, nicht neu gemessen; die Worktrees selbst nicht betreten
+stand: 2026-08-26
+---
+
 # Ernte der 15 ARBEIT-Worktrees — 2026-08-26
 
 Folgeakt zu `docs/messungen/hygiene-report-2026-08-25.md` §A. Gemessen und geerntet von Lane

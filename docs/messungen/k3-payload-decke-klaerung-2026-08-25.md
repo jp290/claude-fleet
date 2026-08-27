@@ -1,3 +1,12 @@
+---
+frage: Ist eine deterministische Fixture für einen Payload-Decken-Check auf /api/sessions billig genug, um sie zu bauen, oder wird daraus die neunte Flake-Familie?
+urteil: Nicht dispatchen; der Check existiert seit einem Monat (e2e/tasks.ts, seit e901287), ist in keiner der acht Flake-Familien genannt, und die Schwellenwert-Bauart ist gegen nicht-deterministische Felder robust; die K3-Behauptung, es gebe keinen solchen Check, ist widerlegt
+bereich: [verify]
+belege: [e2e/tasks.ts:589, e2e/slots.ts, e2e/transport.ts, e901287, docs/messungen/video-memory-theo-2026-08-25.md]
+nicht-gemessen: Ob die 14-KiB-Decke bei mehr als 16 Slots hält; ob transport.ts und slots.ts dieselbe Bauart durchhalten; kein Check gebaut oder ausgeführt; der Video-Beleg (P80/P82/P83) nicht erneut geprüft
+stand: 2026-08-25
+---
+
 # K3 — ist eine deterministische `/api/sessions`-Payload-Decke als Check billig?
 
 2026-08-25, Lane `fleet/260825211516-4d40`. Frage: **Ist eine deterministische Fixture für einen

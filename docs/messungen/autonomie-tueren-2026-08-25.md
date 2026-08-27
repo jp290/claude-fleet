@@ -1,3 +1,12 @@
+---
+frage: Welche Türen blockieren den autonomen Kreis Release, Ausführung, Integration, integrierter Nachweis und Live-Schaltung, und welche davon sind by-design, mechanisch schließbar oder verwaist?
+urteil: Im untersuchten Schnitt bleiben 23 gruppierte Türen (13 by-design Owner-Türen, 7 mechanische Lücken, 3 verwaiste Türen); der Kreis bleibt ohne drei Owner-Entscheidungen (Steward-Deploy-Vertrag, unknown-Audit-Akteur, finale Adjudikation) nach dem Land offen
+bereich: [autoritaet, lane-lifecycle]
+belege: [server.ts#releaseTaskForMain, server.ts#selfLandTaskForMain, lane-signals.ts, watchdog.sh, .claude/commands/rundgang.md]
+nicht-gemessen: Historische Ledgermengen; die Runtime-Werte von dispatchOn und autosOn blieben über den Lane-Self-Sensor unbeobachtbar (unknown); der Graphify-Graph diente nur als Suchhilfe (103 dangling Kanten)
+stand: 2026-08-25
+---
+
 # Autonomie-Tueren im Release-Land-Audit-Deploy-Kreis (2026-08-25)
 
 Untersuchter Baum: `fe2776444fc688c508dddb82a3ef25a305f9b673`.

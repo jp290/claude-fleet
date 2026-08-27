@@ -1,3 +1,12 @@
+---
+frage: Unter welchen Bedingungen lässt Fleets Zustellform (load-buffer, paste-buffer, 150 ms, send-keys Enter) an einer echten claude-TUI den Prompt im Composer stehen, statt ihn abzuschicken?
+urteil: Bei einem mehrzeiligen Paste, den die CLI zu einem Platzhalter einklappt, geht das Enter intermittierend verloren (2 von 7 Mehrzeiler-Sends bei 150 ms, Einzeiler 0/20, bei 2500 ms 0/4); die Quittung submitted ist ein Echo, keine Beobachtung
+bereich: [harness]
+belege: [server.ts#sendText, server.ts:4753, server.ts:19534]
+nicht-gemessen: Der Fleet-Server selbst (keine Zelle lief durch POST /send); die Einklapp-Schwelle; große einzeilige Pastes; die 400-ms-Zelle; Mehrzeiler in etablierter Pane; Maschinenlast; der CLI-Quellcode
+stand: 2026-08-22
+---
+
 # ACP-21 — Wann laesst Fleets Zustellform den Prompt im Composer stehen?
 
 2026-08-22, Lane `fleet/260822103951-f3c2` (Program `eeba7c04caae64d79969199b`, Act ACP-21,

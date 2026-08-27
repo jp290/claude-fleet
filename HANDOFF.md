@@ -1,142 +1,86 @@
-# HANDOFF — Controller (Slot 9), Abendsession 2026-08-26 (vierte) → Übergabe
+# HANDOFF — Controller (Slot 9), Nachtsession 2026-08-26/27 → Übergabe
 
 Zustand wird ABGELEITET: `./state.sh` · `./register.sh` · Live-Queue. Hier steht nur, was daraus
-nicht hervorgeht. Vorgänger-Handoff: `c73e24d` (dritte Tagsession).
+nicht hervorgeht. Vorgänger-Handoff: `e89d093` (vierte Tagsession).
 
-## Dein Auftrag: ERNTEN. Drei Lanes und ein Deploy sind in Flug
+## Dein Auftrag: ZWEI SOL-AUDITS ERNTEN UND SELBST SYNTHETISIEREN
 
-**Watches sterben mit meinem Slot — neu verankern, bevor du irgendetwas anderes tust.** Genau das
-hat heute einmal Zeit gekostet: eine fertige Lane lag ~20 min unbeachtet, weil der Watch nach dem
-vorigen Land verbraucht war und die Folge-Lane ohne frischen Watch spawnte.
+**Watches sterben mit meinem Slot — als Erstes neu verankern** (`POST /api/self/watch`, je
+`{"target":N,"idleSec":0}`):
 
-1. **Slot 1 — Entwurfs-Lane „Lane-Suiten im Helper-Portal"** (Task `00bef3fc`, Branch
-   `fleet/260826183744-2af3`, Opus xhigh). Anlass, Owner wörtlich: er wollte die laufende Suite der
-   Lane auf Slot 5 über das Audit-Helper-Portal annehmen, „aber es tauchte nicht auf". Ursache
-   (von mir vorab gemessen, die Lane verifiziert sie): `helperJobsView` (`server.ts#helperJobsView`)
-   iteriert ausschließlich über `auditQueue`, also Post-Land-Audits — der Vorschau-Lauf einer Lane
-   steht dort nie drin, obwohl er dieselben ~11 min Suite-Mutex frisst. Sie liefert
-   `docs/helper-lane-suiten-entwurf-2026-08-26.md` mit einem Schnittplan (je Schritt Datei, Symbol,
-   Sonde, Breaker). **Danach ist eine ZWEITE, gestaffelte Lane zu briefen, die nach diesem Dokument
-   implementiert — so vom Owner angeordnet.** Erst landen, dann Lane B aus dem gelandeten Dokument
-   briefen.
-2. **Slot 5 — Fix des Proportional-Pfads** (Task `4a257283`, Branch `fleet/260826175851-f68e`).
-   Fasst den Land-Pfad an ⇒ volle Verify-Kette + `./e2e-isolated.sh` sind Pflicht, und sie liefert
-   eine Sonde MIT vorgeführtem Breaker. Beim Land: der Post-Land-Audit ist selbst ein
-   `e2e-isolated`-Lauf — nichts danebenstellen.
-3. **Slot 6 — Private-repo-j-Lane** (`fleet/260826180624-8796`), liefert das Stück, das S3 für die
-   Route-(b)-Owner-Frage aus Stufe 2 §3 braucht. Land per Confirm über den Controller.
-4. **Der Gate-Fix ist HALB durch — das ist die wichtigste offene Zeile.** Owner-Go liegt vor, der
-   Watchdog-Kickstart ist gefahren (neue pid, srv und alle Sessions haben überlebt), **aber der
-   Deploy steht noch aus**: der Preflight lehnt ihn ab, solange ein Post-Land-Audit läuft
-   (`a post-land audit is running on claude-fleet — killing srv now would leave a red that measured
-   nothing`). Ein Hintergrund-Watcher rückte ihn nach; **prüfe als Erstes, ob er durch ist, und
-   MISS das Ergebnis**, statt es anzunehmen — und nimm die srv-PANE als Quelle, nicht `pgrep`:
-   ```
-   SRV=$(tmux -L claudefleet list-panes -t srv -F '#{pane_pid}')
-   ps eww -p "$SRV" | grep -o 'src/helper\.ts' | wc -l
-   ```
-   Erwartet: `1`. Kommt `0`, ist der Deploy nicht gelaufen — dann `POST /api/deploy` wiederholen,
-   sobald kein Audit läuft. **Zwei Fallen in dieser einen Messung**, beide heute erlebt:
-   `pgrep -f 'bun server.ts'` fängt die EIGENE Shell mit, weil deren Kommandozeile das Muster
-   enthält — ich hielt das Ergebnis kurz für einen zweiten Live-Server und damit für die
-   historische „sessions vanished"-Lage; der Prozess in der srv-Pane ist die eindeutige Antwort
-   (gegenprüfbar mit `lsof -nP -iTCP:8790 -sTCP:LISTEN`). Und: `ps eww` NIE ungefiltert ausgeben —
-   die Self-Tokens aller Slots stehen per Konstruktion in den Kommandozeilen, nur zählen.
+1. **Slot 3 — Worktrail-Audit II Private-repo-j** (Task `284d89cb`, Branch `fleet/260827002633-ace0`,
+   codex/gpt-5.6-sol xhigh). Frage F1–F4: Trail quantifizieren · Stall-Mechanismus als geprüfte
+   Hypothese · Verdikt rettbar? · Rettungsrouten gerankt. Deliverable
+   `docs/messungen/2026-08-27-private-repo-j-worktrail-audit-II.md`.
+2. **Slot 5 — Visual-Workflow-Audit** (Task `d4224259`, Branch `fleet/260827005007-4979`, ebenso
+   Sol xhigh). Frage V1–V4: warum sind die Spiele „grafisch völlig langweilig" (Owner-Wortlaut),
+   was fehlt dem Workflow strukturell, Fixes gerankt, Anwendung auf Private-repo-j. Deliverable
+   `docs/messungen/2026-08-27-visual-workflow-audit.md`.
 
-## Der Befund hinter Punkt 4 (Stichprobe `dffef24`, von mir nachgemessen)
+**Die Synthese ist DEINE Arbeit, nicht delegierbar** (Owner: „überleg gut. Own Your Work"):
+beide Reports lesen, Fundstellen stichprobenartig gegenprüfen, dann EIN Papier an den Owner mit
+(a) **Direktfix Private-repo-j** — kleiner erster Schnitt mit Kill-Kriterium, (b) **Workflow-Fixes für
+künftige Spiel-Sessions**, gerankt mit Schnittlinie. Leitplanken, beide Owner-Wortlaut und gebunden:
+- Zielbild: **„visuell nice, AA indie RTS biber game"**. Das entscheidet nebenbei die offene
+  Territory-Tür Richtung **AA-Indie (Probe B)** — bewusst NOCH NICHT an die Private-repo-j-MAIN
+  gefunkt, damit sie vor dem Rettungsurteil keine Arbeit spawnt. Beim Direktfix mitliefern.
+- Kernproblem zuerst: „aktuell scheinen nichtmal dämme im spielzeug zu funktionieren."
+- Meine Arbeitshypothese (am Audit PRÜFEN, nicht übernehmen): kein Sim-Bug, sondern
+  Terrain/Skala — echtes DEM bei 423 m staut nicht fühlbar (Krone folgt Terrain,
+  `src/sim/sim.ts:179`; PU-Serie E27: auch mit Ufer nichts; Confound „hat Ufer"≈„ist Rinnsal").
+  Kandidat: Autoren-Terrain statt Mess-Terrain.
 
-**Der laufende Land-Gate typprüfte `src/helper.ts` nicht**, obwohl `watchdog.sh:91`, `AGENTS.md:148`,
-`CLAUDE.md:65` und das Rulebook-Fragment es einig behaupten: die Live-Kommandozeile enthielt sie 0×,
-`src/share.ts` dagegen 2×. `VERIFY_CMD` wird zur SPAWN-Zeit in den Watchdog gebacken; der lief seit
-dem 19.08., der Eintrag kam heute früh (`13451c0`). Ein Server-Restart zieht das NICHT nach, nur
-`launchctl kickstart`. Der Diff, den der Kickstart nachzieht, ist genau zwei Zeilen (helper.ts in
-die tsc-Liste · `FLEET_VERIFY_WAIT_MS`, fährt live schon) — also praktisch nur die eine.
-**Offen geblieben und ehrlich als offen zu führen:** warum der Live-Server den WAIT_MS-Wert vom
-20.08. fuhr, obwohl der Watchdog vom 19.08. stammte. Mein Modell der Naht erklärt das nicht; die
-helper.ts-Messung steht davon unabhängig.
+Sol-Lanes: GPT-Fenster 258 400, `ctx:null` am Slot — Selbstauskunft „bei halbvoll" steht in beiden
+Briefs. Nach jedem Dispatch Pane lesen; `ok:true` ist keine Zustellung.
 
-## Drei Fallen, heute bezahlt — sie kosten die nächste Session sonst dieselbe Zeit
+## Was diese Session geschlossen hat (Bodies: `git log e89d093..HEAD`)
 
-- **`dispatch` antwortet `ok:true`, bevor der Brief in der Pane ist.** Der Zustell-Tail läuft
-  asynchron (`server.ts`, `r.tail.catch(() => {})` vor der `audit("task_dispatch")`-Zeile). Bei der
-  Fix-Lane blieb der Brief im Composer stehen; **der Owner musste das Enter selbst drücken**.
-  `rawAcknowledged` ist KEIN Sensor dafür (markiert nur „bewusst unanalysiert gestartet"), der
-  Task-Status auch nicht (steht auf `sent`, gepastet wurde ja). **Regel: nach jedem Dispatch die
-  Pane lesen** — `tmux -L claudefleet capture-pane -p -t s<N> | tail`; steht Text im Composer und
-  nichts läuft, `send-keys -t s<N> Enter`. Heute beim vierten Dispatch angewandt und bestätigt.
-- **Eine Pane in einem AskUserQuestion-Menü ist für `POST /send` „composer occupied"** — die Frage
-  erreicht das Board nie und der Owner sieht sie nicht. So standen Private-repo-rs Tür 1 und Private-repo-ts Gate 0
-  unbemerkt. Notweg: Menü per `capture-pane` lesen, mit `send-keys` navigieren. **Ist „Type
-  something" schon markiert, tippt eine Ziffer TEXT ins Freitextfeld statt zu navigieren** (`❯ 5. 3`)
-  — dann `BSpace`, und entweder mit Pfeiltasten navigieren oder das Freitextfeld bewusst nutzen
-  (`send-keys -l "<text>"` + `Enter`), was für ein Urteil mit Begründung ohnehin besser ist.
-- **Der Lane-Watch feuert nach dem Land noch einmal** (heute 2×), mit Fakten von VOR dem Reap. Kein
-  Defekt — das Prädikat war zur Auswertungszeit wahr. `tmux has-session -t s<N>` plus
-  `ls -d <worktree>` ist die Zwei-Sekunden-Antwort; danach acken und nichts tun. Wer stattdessen
-  `POST /merge` schickt, bekommt `not a fleet-created worktree lane` und hält es für einen Fehler.
+1. **Gate-Fix ZU (Punkt 4 des Vorgängers)**: Deploy `8c3c01ac` grün, am neuen srv nachgemessen
+   `helper.ts=1`. Die zweite „LIVE"-PID in state.sh war die eigene zsh (pgrep-Falle bestätigt).
+2. **Lane-Suiten-Portal S1–S9 gelandet** (`27c6472`, Audit grün 3128/0) — Entwurfs-Lane gelandet
+   (`898bd53`), Lane B daraus gebrieft, Mid-Flight-Succession bei 50 % ctx (HANDOFF-LANE.md-Muster,
+   danach ausgetragen `07e39b3`). Flake-Adjudikation dreistufig: Lauf 1 3125/2, Lauf 2 3123/5
+   (andere Familie), Lauf 3 seriell 3128/0.
+3. **Proportional-Pfad-Fix gelandet** (`a5a7109`, Audit grün 3133/0): Docs-Kurzkette nur noch im
+   Fleet-Repo (`repoRunsShortChain`), Mutation vorgeführt. Private-repo-j-Vorfallsklasse zu.
+4. **Deploy `9e4e7134` grün** — beide Lands + Gate-Fix live, bundle frisch, errors null.
+5. **Self-Land-Promotion `guarded` für ALLE 20 aktiven Programme** (Owner-Entscheid „sehe keinen
+   grund es nicht direkt standardmäßig zu machen"). Wurzelbefund davor: Slot 11 KONNTE nicht
+   landen (`promotion:null`, 409 aus `server.ts#selfLandTaskForMain`), Controller-confirm-Prosa
+   hatte keinen Transport. Alle 4 Studio-MAINs gebrieft: Self-Land ist ihrer,
+   Controller-confirm beendet, Owner-Türen als `POST /api/self/attention`. Private-repo-q hat B3+B2a
+   danach selbst gelandet, Private-repo-r Slice 1 auch — der Kreislauf läuft.
+6. **Private-repo-j**: Lane s6 (Ufer-Messreihe, PU-Serie) fertig, Land an die MAIN (Slot 7, guarded)
+   übergeben — prüfen, ob er vollzogen ist. MAIN-Succession S3→S7 lief auf meinen Stups.
 
-## Betriebsbefund: Fable-5-Credits sind erschöpft
+## Offene Owner-Akte (nicht dispatchen, erinnern)
 
-„out of usage credits" — eine private-repo-r-Lane wurde MITTEN im Lauf abgeräumt (Deliverable war zum Glück
-schon geschrieben). Geprüft und ENTWARNT für neue Arbeit: `FLEET_DEFAULT_MODEL` ist
-`claude-opus-5[1m]` (`src/protocol.ts#FLEET_DEFAULT_MODEL`), `SUMMARY_MODEL` ist
-`claude-sonnet-5[1m]`. Betroffen sind nur explizit auf Fable gepinnte Slots. **Die Programm-MAINs
-haben in ihrer Pane selbst auf Opus gewechselt, ihr Slot-Datensatz sagt weiter `fable`** — bei
-Nachfolge oder Pane-Heal fällt das still zurück (keine Route ändert Modell/Effort eines LEBENDEN
-Slots). Nach jeder Succession in der Pane `/model` prüfen. Worker-Lanes: Opus für Kern/Kritik,
-Sonnet für mechanische Arbeit; beiden betroffenen MAINs so zugestellt.
+- **S9-Regelbuch-Fragment** aus Branch-Historie `f69ceb2` (HANDOFF-LANE.md §6) →
+  `rulebook/lane-discipline.md`; der Pin dafür steht bis dahin auf SKIP.
+- **Task `4ce7aefc`** (waitComposerState fällt als sie selbst + rollback-live-Familie in
+  verify-tiering.md dokumentieren) — pending, Freigabe ausstehend.
+- **localProof-Empfehlung für Fremd-Repos** lügt weiter (Slot-5-Report, „Owner-Entscheid") —
+  Folge-Zeile angeboten, unbeantwortet.
+- **Private-repo-q Tür 1** (Modalität Auto/Rad/beides) — offene Attention auf dem Board.
+- **Codex-Update 0.147.0→0.150.0** übersprungen („skip until next version") — beim nächsten
+  Versionssprung kommt der Boot-Prompt wieder; ggf. `betrieb`-Zeile.
+- **Push-Etikette** (zusammengehörige Owner-Türen als EINE Attention bündeln) — als Nachtrag an
+  die MAINs angeboten, Owner hat nicht entschieden.
 
-## Was diese Session geschlossen hat (Bodies: `git log c73e24d..HEAD`)
+## Fallen dieser Session (je einmal bezahlt)
 
-1. **Gate-Naht zu**: `FLEET_VERIFY_CMD_REPOS` trägt jetzt private-repo-r `./verify` · private-repo-t `bun verify.js` ·
-   private-repo-j `bun run verify` · private-repo-q `./verify.sh`. Zwei Deploys (`fa61d842`, `97cd40dc`), beide
-   grün, Keys in der Server-Env nachgemessen. `.env`-Backup `~/.env.fleet.bak-2026-08-26`.
-   private-repo-s fehlt bewusst — dort existiert noch kein Code.
-2. **Norm-Sätze als PROPOSAL** (`037d246`): Breaker-Pflicht für Prädikat-Beweise · maschinenlesbare
-   Waiver-Form. **Promotion steht aus (Owner-Akt).** Private-repo-r hat die Norm noch am selben Abend
-   erfüllt (V8-Stale-Detektor mit vorgeführter Mutation).
-3. **Vier Lands**: Private-repo-j Stufe 1 (`5ddfcea`) und Stufe 2 (`6d9a1cd`), beide über Hand-Verify +
-   Confirm · **private-repo-r main = `7f21ac8`** (ff über vier Commits, `./verify` ALL PASS V0–V8 vorher
-   selbst gefahren) · **private-repo-t main = `4ad9c03`** (Archiv). Dazu die Stichprobe `dffef24`.
-4. **Drei Owner-Türen entschieden**: Private-repo-r Tür 1 = „Ja, mit Ort-Auflage" (steht als bindendes
-   Abnahme-Kriterium in private-repo-rs `AGENTS.md`: bester ORT-Zug über bestem TERMIN-Zug, sonst ist
-   Slice 1 nicht done; heutige Latte laut Lane C: reiner Orts-Zug erreicht 31 % des Termin-Zugs) ·
-   Private-repo-s Gate 1 = Option A + Dichte-Latte „unter ~5 % Fehlgriffe nach 1 min" · **Private-repo-t
-   EINGESTELLT**.
-5. **Private-repo-t sauber beendet**: Owner-Urteil „Ich mag das Spiel nicht", auf Rückfrage als
-   KONZEPT-Urteil präzisiert (nicht die Geste, nicht das fehlende Duell). `ARCHIV.md` mit
-   Schlussbilanz, `bun verify.js` ALL PASS, Kanarienvogel ehrlich als OFFEN. **Slot 14 hat
-   retired.** Der Festkomma-Kern (95 Checks) bleibt als Baustein. Der Programm-Datensatz in
-   `fleet.json` steht noch auf aktiv — Board-Akt für den Owner.
-6. **S1→S3-Succession** (Private-repo-j), neue MAIN läuft Opus 5.
+- **Codex-Boot-Screen ist auch ein UPDATE-Prompt**: 2× ehrliche Requeue „ready marker within
+  20s", Ursache erst an manuell geöffneter Pane sichtbar. Antwort „3 = Skip until next version"
+  persistiert; danach saß der Dispatch.
+- **`POST /api/slots/:id/restart` RESUMED die Session** (ctx blieb 50 %) — für eine frische
+  Session im selben Worktree: `/clear` per `POST /send`, dann neu briefen.
+- **Slot-Datensatz-`ctx` vs. Pane-Footer können sich widersprechen** (93,9 % vs. „19 %" an S3):
+  der Datensatz rechnet offenbar gegen ein anderes Fenster als der Footer. Vor einem
+  Succession-Stups beide lesen; die Pane ist die Wahrheit über das laufende Modell.
+- **Ein Lane-Watch feuert nach dem Land/Merge-Start noch einmal stale** (bekannt, wieder 2×) —
+  acken, Pane lesen, nichts tun.
+- Audits liefen 3× `unknown` (2× 30-min-Timeout leer, 1× 276 ms nie gestartet) unter
+  Maschinenlast; die zwei grünen danach (3128/0, 3133/0) waren echte Läufe mit Zahlen.
 
-## Vier neue Queue-Zeilen aus der Stichprobe (nicht dispatchen ohne Lesen)
-
-`e5792d0b` **auftrag** — zwei Sonden-Lücken mit Mutationsbeweis schließen: `e2e/dirs-pins.ts:70`
-(„never descends into .git") KANN NICHT FALLEN, auf Scratch-Kopie bewiesen; und
-`e2e/context-packs.ts` prüft 12 von 38 Validator-Codes, alle 26 ungeprüften feuern.
-· `d5ea3b5d` **auftrag** — `server.ts#buildCodeGraph`: die Invariante „Bau außerhalb des Worktrees"
-hat keine Sonde; ihr Bruch kostete schon einmal 54 rote Checks und tarnte sich als fremde
-Flake-Signatur. · `aadb6754` **notiz** (abgeleitet, nicht gemessen) — `#fleetReportsFor` bindet auf
-slot+openedAt+sessionId, geprüft wird nur slot. · `b2265631` **notiz** — Off-by-one in
-`docs/rollen-evidenz-2026-08-21.md` §1.
-
-## Offene OWNER-Entscheide (neueste zuerst)
-
-- **Norm-Sätze-Promotion** (Proposal steht in `docs/product-studio-working-circle.md`).
-- **Private-repo-qs drei Türen** (Modalität · Kartenbasis inkl. Extrakt-Freigabe + Owner-Stadt ·
-  On-Device-Auslegung) — als Entscheidungsfragen angefordert, noch nicht eingetroffen.
-- **Private-repo-j Route-(b)-Frage** — S3 hält sie bewusst zurück, bis ihre Lane geliefert hat. Gutes
-  Urteil, nicht drängen.
-- **Private-repo-t-Programmzeile** in `fleet.json` auf beendet setzen (Board).
-- **Stufe-1½-Session** (Audit §236): Startbedingung erfüllt, aber als OPUS-Lane fahren (Fable ist
-  credit-los) und weiter als FRISCHE Lane, nicht S3 — der Audit verlangt einen frischen Critic.
-- Bestand: d70d-Promotion · Rail-Commit `3600618` · 13 Worktree-remove-Zeilen (nur auf Go) ·
-  Lizenz-Trio · Publish-Rückstand (~1020 Commits) · Fragment-Promotion geschmack/owner ·
-  Programm-Triage.
-
-## Arbeitsmodus (Owner-gesetzt, gilt fort)
-
-Controller erörtert, AGENTEN fixen — selbst nur briefen, landen, deployen, ernten. Programm-Lands
-per Confirm über den Controller. Supervisor-Rolle vakant. **Slot 2 gehört dem OWNER selbst** (er
-arbeitet dort an einer Auftragsmarkt-/App-Idee) — nicht anfassen, nicht beobachten.
+Slot 2 gehört dem Owner. Programm-Lands laufen jetzt über die MAINs (guarded), nicht mehr über
+den Controller.

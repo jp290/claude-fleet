@@ -1,65 +1,78 @@
-# HANDOFF — Controller (Slot 10), Nachtsession 2026-08-27
+# HANDOFF — Controller (Slot 10), Nachtsession 2026-08-27 → Succession auf Owner-Wunsch
 
 Zustand wird ABGELEITET: `./state.sh` · `./register.sh` · Live-Queue. Hier steht nur, was daraus
-nicht hervorgeht. Vorgänger-Handoff: `423d059` (Slot 9, manuelle Succession).
+nicht hervorgeht. Vorgänger-Handoff: `423d059` (Slot 9). Diese Succession ist ein OWNER-Auftrag
+(„sobald du das gemacht hast möchte ich das du einen handoff schreibst und eine succession
+durchführst"), keine Band-Übergabe — Kontext lag bei ~22 %.
 
-## Der Sol-Audit-Auftrag ist VOLLSTÄNDIG ABGESCHLOSSEN
+## Lage: der Sol-Audit-Zyklus ist ABGESCHLOSSEN, der Private-repo-j-Akt LÄUFT bei der MAIN
 
-Alle drei Schritte des Vorgänger-Handoffs sind durch, alles liegt auf main:
+Kein Erntedruck, keine offene Lane dieses Controllers. Vier Lands dieser Session auf main:
+`b0e303e` (Worktrail-Audit II) · `319dae9` (Visual-Workflow-Audit) · `83eb170` (meine Synthese)
+· `d5c681c` (Meta-Blindspot-Audit, K1–K11). Details und Kernbefunde: die drei Papiere unter
+`docs/messungen/2026-08-27-*.md` und die Commit-Bodies.
 
-1. **`b0e303e`** — Worktrail-Audit II Private-repo-j (Sol, F1–F4). Tier-2 grün 3133/0.
-   Kernbefund: konditional rettbar, aber nicht als „statischer Damm auf echtem DEM";
-   `placeDam` deckelt am tiefsten Riegelpunkt, Stall = Nicht-Pivotierung nach E19.
-2. **`319dae9`** — Visual-Workflow-Audit (Sol, V1–V4). Kernbefund: der Übergang
-   `Intake → Stilvertrag → Visual Builder → Bildkritik → Owner-Taste` existiert im Working
-   Circle, kommt aber in keinem Builder-Brief an; B ist AA-Rohbau-Baseline, kein Sieger.
-3. **`83eb170`** — MEINE Synthese (`docs/messungen/2026-08-27-synthese-private-repo-j-direktfix-workflow.md`):
-   Direktfix = Akt 1 (adversarialer Kernloop auf authored Terrain, Kill-Kriterium Blind-A/B 60 s)
-   → Akt 2 (B+ „lebender Rückstau", an Pass gebunden; Territory-Tür: B Baseline). Workflow-Fixes
-   gerankt, Stop-Gate auf Platz 1. Befundklassen K1–K6 definiert.
-   Beide Audits vorher stichprobenverifiziert (alle Stichproben bestanden, Liste im Commit-Body).
-4. **`d5c681c`** — Meta-Blindspot-Audit (Sol, auf K1–K6 gebrieft): alle sechs Klassen im
-   Suchraum belegt (mit ehrlichen Negativbefunden), fünf NEUE Klassen K7–K11, Schnittlinie:
-   K1/K10/K7/K2/K11/K8/K9 verdienen Promote-/Fix-/Contain-Entscheid vor dem nächsten breiten
-   Studio-Lauf. Drei Stichproben bestanden (Private-repo-s-P1-Mutation, Private-repo-q/Private-repo-s-Schatten-
-   Worktrees, Watch-vs-Report-Starving).
+## Was NACH dem letzten Handoff-Commit (513b67a) passierte — der eigentliche Kontext
 
-## Offene OWNER-Türen aus dieser Session (nicht dispatchen, erinnern)
+1. **Owner-Gespräch, Entscheidung delegiert** („entscheide du"): Ehrliche Diagnose geliefert
+   (drei Gründe: statischer Damm auf echtem DEM kann mechanisch nichts · Prozess maß statt zu
+   pivotieren · es wurde nie ein Spiel gebaut). Meine ursprüngliche Akt-1/Akt-2-Trennung
+   (Mechanik zuerst, Grafik danach) hat der Owner mit „ich will grafik eig gleich direkt im
+   ersten playtest sehen" gekippt — und er hatte recht: das Blind-A/B-Kill-Kriterium ist auf
+   Diagnose-Grafik unfair (ein funktionierender Damm kann an unlesbarem Render durchfallen;
+   E19 fiel vermutlich genau so).
+2. **Gebundener Akt „Spielbarer Rohbau"** (~2 Tage), an die Private-repo-j-MAIN (Slot 7) gefunkt und
+   ZUGESTELLT (Pane gelesen, MAIN arbeitet, bestätigt per Cross-Session-Nachricht): authored Tal
+   + adversarialer Loop + Probe-B-Renderer LIVE am Sim; Kette Damm→Stau→nass→Vegetation im
+   ersten Playtest sichtbar. Leitplanken: Grafik rendert NUR echten Sim-Zustand ·
+   Telemetrie-UI und Relief-Look schon in v1 verboten · Kugelbäume als Rohbau erlaubt · kein
+   DEM-Messakt. Kill-Kriterium: Blind-A/B 60 s + Damm ändert gegnerische Ressource/Passage/
+   Frist, sonst statischer Rückstau tot → EIN Versuch dynamisches Wasser → ehrlicher Schluss.
+   **DEM-Herabstufung ist über die delegierte Entscheidung PROMOVIERT**; die MAIN trägt sie in
+   `docs/entscheide.md` (Private-repo-j) ein. Akt endet mit Playtest-Artefakt + Clip → Owner-Taste.
+   Erst nach bestandenem Loop: voller B+-Stilvertrag-Pass mit frischem blinden Critic.
+3. **Defundierte Zeile geparkt:** Die MAIN hatte ~15 min vor dem Akt die E27-Folge-Mess-Lane
+   `7a177954` released (queued, kein Slot); der Akt defundiert sie ausdrücklich. Per
+   `POST /api/tasks/7a177954/unqueue` auf `pending` geparkt — nichts verbrannt. Löschen/
+   Archivieren entscheidet die MAIN.
+4. **Fund der MAIN, quittiert und relevant für Akt 1:** `ufer-angebot.ts` rechnet mit
+   `DEFAULT_CONFIG.seaLevel = 0`, die Sim-Werkzeuge bauen mit `SEA_LEVEL_M = -500`. Für
+   authored Terrain folgenlos; jede Wiederverwendung von Angebots-/Benetzbarkeits-Arithmetik
+   muss die Diskrepanz kennen. (Von der MAIN in Private-repo-j-E27 dokumentiert.)
 
-- **Private-repo-j Akt 1 braucht Owner-Promotion:** „echtes Deutschland-DEM" wird vom Produktinvariant
-  zum optionalen Kartenrohstoff herabgestuft (Synthese §a; E17-Wortlaut stützt es). Ohne die
-  Promotion darf die Private-repo-j-MAIN Akt 1 nicht auf authored Terrain gründen.
-- **Klassen-Entscheid K1–K11** (Meta-Audit, oberhalb der Schnittlinie sieben Klassen; K1 Stop-Gate
-  und K10 Schatten-Orchestrierung führen das Folgekosten-Ranking).
-- Die Synthese ist dem Owner berichtet, aber die Private-repo-j-MAIN (Slot 7, gesund, Pane 23 %) hat
-  sie noch NICHT bekommen — bewusst: erst Owner-Promotion der DEM-Frage, dann funken.
-- Ererbte offene Akte des Vorgängers unverändert: S9-Regelbuch-Fragment (`f69ceb2` →
-  `rulebook/lane-discipline.md`, Pin auf SKIP) · Task `4ce7aefc` (verify-tiering-Doku) ·
-  localProof-Fremd-Repo-Zeile · Private-repo-q Tür 1 · Codex-Update-Skip · Push-Etikette.
+## Deine Rolle als Nachfolgerin
 
-## Was diese Session sonst geschlossen/gelernt hat
+Die Private-repo-j-MAIN führt den Akt SELBST (self-land guarded, zerlegt selbst in Lanes). Du bist
+Ansprechpartnerin, nicht Treiberin: Cross-Session-Kanal und `POST /api/self/attention`-Türen
+beobachten, bei Rot/Entscheidungsbedarf reagieren. Kein Watch nötig, solange keine Fleet-Lane
+läuft — die Private-repo-j-Arbeit läuft ggf. wieder in lokalen Worktrees (Befundklasse K10, bekannt
+und noch nicht gefixt).
 
-- **Zwei Tier-2-Rots (je 1/3133, VERSCHIEDENE Signaturen) seriell als Flake bewiesen und
-  adjudiziert:** (1) watch-re-subscribe-dedup auf `319dae9` (zwei Watch-IDs; Verdacht: Ziel-Watch
-  feuert zwischen den Subscribes der Sonde, zweite ID legitim), (2) ⏸-re-run-guard auf `d5c681c`
-  („session is actively working" — Pane-Beobachtungs-Rennstelle). Beweisläufe: frischer Worktree
-  am auditieren Tip, seriell, Maschine frei, ALL PASS; Trail-Zeilen tragen tree-SHA + dirty=false.
-  Notiz-Zeile `fc2066a5` in der Queue (watch-dedup-Familie fehlt noch in verify-tiering.md).
-- **Direkt-Commits dieser Session** (`83eb170`, dieses Handoff): Verifikation von Hand als
-  Docs-Kurzkette (install+pins, ALL PASS) — reine Prosa; die volle Suite lief am selben Tag
-  mehrfach grün/bewiesen auf den Nachbar-Tips. `./state.sh`-Land-Health untertreibt entsprechend.
-- Der s6-Land (Private-repo-j Ufer-Messreihe) war vollzogen (`856d8fc` mit Land-Note) —
-  Vorgänger-Punkt 6 geschlossen.
-- Slot-7-`ctx` 113,7 % im Datensatz war die bekannte Datensatz-vs-Footer-Falle (Pane: 23 %).
-- `POST /api/self/watch` dedupliziert pro Target (`existing:true`) und behält das idleSec des
-  ERSTEN Subscribe — ein Re-Subscribe mit anderem idleSec ändert nichts.
-- Lane-Watches feuerten wieder je 1× stale nach Land-Start (bekannt, geackt, nichts getan).
-- Meta-Sol-Dispatch saß im ersten Zug (Codex-Boot-Prompt war durch Skip-Antwort des Vorgängers
-  persistiert); Zustellung an der Pane verifiziert.
+## Offene OWNER-Türen (nicht dispatchen, erinnern)
 
-## Zustand beim Schreiben
+- **Klassen-Entscheid K1–K11** (Meta-Audit `d5c681c`): sieben Klassen oberhalb der Schnittlinie
+  verdienen Promote-/Fix-/Contain-Entscheid vor dem nächsten breiten Studio-Lauf; K1 (Stop-Gate)
+  und K10 (Schatten-Orchestrierung) führen. Das Stop-Gate ist für PRIVATE-REPO-J bereits im Akt-Brief
+  gebunden; als Workflow-Regel für alle Programme ist es NICHT promoviert.
+- **Notiz `fc2066a5`**: zwei bewiesene Tier-2-Flakes (watch-re-subscribe-dedup ·
+  ⏸-re-run-guard „actively working"), beide seriell am selben Baum bewiesen und adjudiziert;
+  watch-dedup-Familie fehlt noch in `docs/verify-tiering.md` (zusammen mit Task `4ce7aefc`).
+- Ererbte Akte unverändert: S9-Regelbuch-Fragment (`f69ceb2` → `rulebook/lane-discipline.md`,
+  Pin auf SKIP) · localProof-Fremd-Repo-Zeile · Private-repo-q Tür 1 · Codex-Update-Skip ·
+  Push-Etikette.
 
-Alle Lanes dieser Session gelandet und abgeräumt; keine offene Arbeit in Flug. Scharfe Watches:
-keine mehr nötig (alle Ziele terminal). Slot 2 gehört dem Owner. Programm-Lands laufen über die
-MAINs (guarded). Kontext beim Schreiben: ~21 % (gemessen 17,8 % vor den letzten zwei Zügen, Tilde
-weil seither nicht neu gemessen).
+## Fallen dieser Session (je einmal bezahlt oder bestätigt)
+
+- **Tier-2-Rots einzeln prüfen, nicht glauben:** beide 1/3133-Rots waren Sonden-Rennen; Beweis
+  je: frischer Worktree am auditieren Tip, seriell (Maschine frei prüfen:
+  `ps -eo command | grep -c '^/bin/sh ./e2e-'`), ALL PASS; Trail-Zeile trägt tree-SHA+dirty.
+  Adjudizieren mit `{at, verdict:"flake", note}` (Note ≤300 Zeichen).
+- `POST /api/self/watch` dedupliziert pro Target und behält das idleSec des ERSTEN Subscribe.
+- Slot-Datensatz-`ctx` vs. Pane-Footer widersprechen sich weiter (S7: 113,7 % vs. 23 %) — Pane
+  ist die Wahrheit.
+- Lane-Watches feuern nach Land-Start je 1× stale (bekannt, acken, nichts tun).
+- Direkt-Commits dieser Session (`83eb170`, `513b67a`, dieser): Verifikation von Hand als
+  Docs-Kurzkette (install+pins, ALL PASS) — reine Prosa; `./state.sh`-Land-Health untertreibt
+  entsprechend.
+
+Slot 2 gehört dem Owner. Programm-Lands laufen über die MAINs (guarded).

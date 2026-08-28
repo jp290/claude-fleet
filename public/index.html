@@ -1122,6 +1122,11 @@
   .bbtn.ghost:hover:not(:disabled) { background: #1d1710; }
   .bbtn.subtle { margin-top: 5px; padding: 3px 9px; font-size: 10px; color: var(--dim); }
   .bbtn.subtle:hover:not(:disabled) { color: var(--text); border-color: #3a3a44; }
+  /* one helper device: a card in the machine-level group. The board is 264px wide and a device
+     names ITSELF (up to 40 chars), so the name must wrap rather than push the panel sideways —
+     everything else in here is an ordinary block and wraps on its own. */
+  .bdev { padding-top: 8px; }
+  .bdev .bidhead { word-break: break-word; }
   /* AGENTS group: make the advisory / read-only nature legible */
   .bagenthint { color: var(--faint); font-size: 10px; margin-bottom: 2px; }
   /* a commit row is a <button>: both lists are clickable, and Enter/Space + the focus ring come

@@ -204,13 +204,18 @@ machinery — is that severance in one form or another.
    checkout, a target repo's primary checkout, and **any linked worktree of Fleet itself** — that
    last one has its own git toplevel and is `linked`, so only repository *identity* (the canonical
    `--git-common-dir`, the object store every worktree of one repo shares) catches it. An
-   unreadable identity refuses too. **Dedicated is enforced**: a second live session standing in
-   the same worktree refuses the founding, because it makes every observation the MAIN reports
-   unattributable; a succession excludes exactly its own retiring predecessor and refuses any
-   second occupant. Every refusal lands before a slot opens, before a binding moves and before a
-   receipt is written, and the same rules are re-asked at succession — the predecessor's cwd is
-   inherited verbatim. While a founding of that Program is in flight the profile record itself is
-   locked (409), because the founding reads it twice with seconds of awaits in between.
+   unreadable identity refuses too. **Dedicated is enforced continuously**: a process-local lease
+   reserves the requested tree before the first await, canonicalizes to git's toplevel after
+   preflight and stays held through brief, binding and receipt; every `openSlot` variant announces an
+   intent and checks live Game-Maker trees plus leases before its first await. A second live or
+   in-flight session in the same worktree therefore refuses in either request order. A succession's
+   only permit is the exact bound predecessor `{slot, openedAt}`; another linked worktree sharing the
+   repository remains a different tree. Game-Maker MAIN starts at the canonical git toplevel;
+   Standard cwd handling stays byte-identical. Every refusal lands before a slot opens, before a
+   binding moves and before a receipt is written. While a founding is in flight a **real profile
+   change** is locked (409), because the founding reads it twice with seconds of awaits in between;
+   an identical grant/clear retry answers 200 before that and every lifecycle gate, with no new
+   timestamp, audit or save.
 3. **Succession carries a checkpoint.** See the next section.
 
 **The sensory gate, in the delivered text.** Before any sensory claim and before widening
@@ -236,8 +241,10 @@ label discipline the *Honest labels* section above already states, carried into 
 references, the build sha, the one-step launch, the controls, a seed and where the captures are. It
 may never carry MAIN's current hypothesis, an open defect it is chasing, a rejected direction or an
 earlier verdict: those belong in MAIN's own checkpoint or in an explicit non-critic task brief. A
-critic who reads the answer before looking is no longer a fresh one. Context-pack vocabularies and
-delivery are unchanged.
+fresh critic gets the Game Card, product references, build, launch, controls, seed, artifact and
+captures; its brief says explicitly that it must not read `HANDOFF.md`. Neither the checkpoint path
+nor its contents belong in the critic brief, ContextPlan or context pack. A critic who reads the
+answer before looking is no longer a fresh one. Context-pack vocabularies and delivery are unchanged.
 
 ## The Game-Maker succession checkpoint
 
@@ -266,10 +273,10 @@ repository actually has: forty hex digits are a shape, not a build, and a sha na
 the successor's comparison into an unanswerable check dressed as a check.
 
 **A game-maker succession takes no `carry`** (409). There is exactly one handover channel and it is
-the committed checkpoint — readable by the successor, by a critic and by the owner, and it outlives
-the pane. `carry` is one unpersisted sentence in a prompt; accepting both would give the successor
-two channels that can disagree with no way to tell which it obeyed. The first act belongs on the
-`Next:` line. Standard Programs keep `carry` unchanged.
+the committed checkpoint — predecessor-to-successor state and Owner proof, and it outlives the pane.
+It is not critic input. `carry` is one unpersisted sentence in a prompt; accepting both would give
+the successor two channels that can disagree with no way to tell which it obeyed. The first act
+belongs on the `Next:` line. Standard Programs keep `carry` unchanged.
 
 The successor's brief then requires, in this order and before any mutation: read the repository root
 `AGENTS.md`; ground on git; read **only** that top checkpoint section; execute its `Launch:` line;

@@ -6241,6 +6241,20 @@ function promotionState(p: ProgramInfo): {
 //
 // PURE AND TOP-LEVEL ON PURPOSE, like promotionState and programHealthState: no globals, no DOM, no
 // clock, so e2e/programs.ts can cut it out, transpile it and RUN it over all three states.
+type ProfileAct = "game-maker" | "clear";
+type ProfileRequest = {
+  path: string;
+  body: { profile: { v: 1; kind: "game-maker" } | null };
+};
+function profileRequestOf(programId: string, act: ProfileAct): ProfileRequest {
+  return {
+    path: `/api/programs/${programId}/profile`,
+    body: act === "game-maker"
+      ? { profile: { v: 1, kind: "game-maker" } }
+      : { profile: null },
+  };
+}
+
 type ProfileStateName = "absent" | "game-maker" | "unreadable";
 const PROFILE_KINDS = ["game-maker"];
 function profileState(p: ProgramInfo): {
@@ -6714,17 +6728,9 @@ function renderProgramDetail(shell: Shell, id: string): void {
     }
     const forPrId = p.id;
     const prSt = profileState(p);
-    // THE TWO BODIES, WRITTEN OUT AS DATA. The server reads a CLOSED set — an extra top-level key
-    // is a 400 and an unknown key inside the record is a 400 — so a body assembled from whichever
-    // button was clicked is a body a later edit can widen without anyone reading this pane again.
-    type PrAct = "game-maker" | "clear";
-    const PR_BODY: Record<PrAct, { profile: { v: 1; kind: string } | null }> = {
-      "game-maker": { profile: { v: 1, kind: "game-maker" } },
-      clear: { profile: null },
-    };
-    const prNoAnswer = (act: PrAct) =>
+    const prNoAnswer = (act: ProfileAct) =>
       `${act} did not reach the server — no answer came back, so whether this profile changed is unknown`;
-    const prRun = async (act: PrAct): Promise<void> => {
+    const prRun = async (act: ProfileAct): Promise<void> => {
       const seq = ++qPrSeq;
       const mine = () => seq === qPrSeq && qPrFor === forPrId;
       qPrBusy = true; qPrErr = null; qPrAct = act;
@@ -6735,7 +6741,8 @@ function renderProgramDetail(shell: Shell, id: string): void {
       // record that has in truth already changed.
       let moved = false;
       try {
-        const r = await post(`/api/programs/${forPrId}/profile`, PR_BODY[act]).catch(() => null);
+        const request = profileRequestOf(forPrId, act);
+        const r = await post(request.path, request.body).catch(() => null);
         if (!r) { err = prNoAnswer(act); moved = true; }
         else if (r.ok) moved = true;
         else {
@@ -6782,7 +6789,7 @@ function renderProgramDetail(shell: Shell, id: string): void {
     if (qPrErr) pr.appendChild(el("div", "pkdwarn", qPrErr));
     const prActs = el("div", "pkdacts");
     prActs.style.marginTop = "10px";
-    const prButtons: [PrAct, string, string, string][] = [
+    const prButtons: [ProfileAct, string, string, string][] = [
       ["game-maker", "grant game-maker", "shrbtn primary",
         "the next founding builds a Lead Game Developer MAIN — only in a dedicated linked worktree of a target repo"],
       ["clear", "clear", "shrbtn danger",

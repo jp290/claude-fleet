@@ -3467,11 +3467,20 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     `openSlot=${openBody.length}`);
   const firstFoundingPermit = openBody.indexOf("assertGameMakerFoundingTargetOpen");
   const secondFoundingPermit = openBody.indexOf("assertGameMakerFoundingTargetOpen", firstFoundingPermit + 1);
+  const orphanTeardown = openBody.indexOf('await killSlot(s, "reopen")');
+  const testLatch = openBody.indexOf("await waitForGameMakerOpenTestLatch(treeLease)");
   pin(`${RULE_GM_TREE} — openSlot revalidates its exact founding permit after tmux teardown and before Slot mutation`,
     firstFoundingPermit >= 0
       && secondFoundingPermit > openBody.indexOf('await tmux("has-session"')
       && secondFoundingPermit < openBody.indexOf("s.cwd = cwd"),
     `first=${firstFoundingPermit} await=${openBody.indexOf('await tmux("has-session"')} second=${secondFoundingPermit} mutation=${openBody.indexOf("s.cwd = cwd")}`);
+  pin(`${RULE_GM_TREE} — the default-off E2E latch sits only after orphan teardown and before the second permit check`,
+    server.includes("process.env.FLEET_TEST_GAME_MAKER_OPEN_LATCH ?? null")
+      && orphanTeardown >= 0 && testLatch > orphanTeardown && testLatch < secondFoundingPermit
+      && read("e2e/programs.ts").includes("FLEET_TEST_GAME_MAKER_OPEN_LATCH: gmPreOpenKillLatch")
+      && read("e2e/programs.ts").includes("gmPreOpenKillReached")
+      && read("e2e/programs.ts").includes("gmPreOpenKillRelease"),
+    `teardown=${orphanTeardown} latch=${testLatch} second=${secondFoundingPermit}`);
   pin(`${RULE_GM_TREE} — only the dedicated conflict type selects 409 at owner open seams`,
     /class GameMakerTreeConflict extends Error/.test(server)
       && /e instanceof GameMakerTreeConflict \? 409 : 400/.test(server)

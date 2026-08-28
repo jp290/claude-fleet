@@ -123,6 +123,8 @@ Controller is a scope a plain session carries, not a binding — do not read thi
 - Provider-, lifecycle-, or client-shaped work must decide every relevant adapter and surface as
   `apply`, `unsupported`, or `not-applicable`. Relevant surfaces can include protocol/wire,
   server, client, reverse-state, docs, and probes; silence is not a decision.
+- After an external await, a continuation that can spawn or write a reusable Slot must re-prove its
+  exact occupant identity; teardown and recycle must join any spawn already in flight.
 - Communicate in this order: **problem and importance -> solution and effect -> evidence -> open
   boundary**. Never lead with an implementation inventory.
 

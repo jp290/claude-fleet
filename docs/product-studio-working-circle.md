@@ -127,13 +127,15 @@ capability and output contract; the same harness may serve several roles at diff
 For coupled visible work, roles are ordered rather than fanned out indiscriminately:
 
 ```text
-promoted direction -> Director -> one Builder pass -> fresh blind Critic -> Owner taste
+Program -> Architect DRAFT Card -> fresh cross-model Review -> MAIN ACCEPT
+        -> one Builder pass -> sealed post-play sensory Critic -> Owner taste
 ```
 
-The Director owns coherence. A Builder owns an exclusive writable surface. A Critic begins fresh
-and read-only. The Studio-MAIN promotes internally and decides stop; the owner decides at the
-seven boundaries in the next section. Parallel proposals are useful before a direction is chosen;
-parallel mutations to lighting, camera, UI and tone are not.
+The Architect proposes coherence; the independent Reviewer may refine only the Card inside the
+confirmed Program. A Builder owns an exclusive writable surface. A sensory Critic begins fresh only
+after a playable and sees only the operator's sealed play pack. The Studio-MAIN promotes internally
+and decides stop; the owner decides at the seven boundaries in the next section. Parallel proposals
+are useful before a direction is chosen; parallel mutations to lighting, camera, UI and tone are not.
 
 ## Where a Studio-MAIN decides alone, and where the owner's gate stands
 
@@ -143,8 +145,8 @@ These seven clauses are the authority contract for every Studio-MAIN, and they o
 sentence in this document that reads "the owner promotes".
 
 1. **The creative anchor is MAIN-promotable.** A Studio-MAIN runs a divergence pass — two to three
-   theses, references, the first-minute fantasy, the risk and a kill criterion — plus a fresh
-   critic, and then promotes a **reversible working anchor** carrying its provenance and an
+   theses, references, the first-minute fantasy, the risk and a kill criterion — plus one fresh
+   independent cross-model Review, and then promotes a **reversible working anchor** carrying its provenance and an
    explicit reopen trigger. The owner is asked only when the core fantasy itself would change, or
    at final taste. No numeric score, no owner interruption inside the loop.
 2. **Repair runs on a bounded progress budget, not a repair count.** There is no "at most two
@@ -196,8 +198,8 @@ machinery — is that severance in one form or another.
    sits where the generic paragraph sits. It states that MAIN is the long-lived **Lead Game
    Developer** and owns the playable product and its experience; that substantial serial product
    work may stay in that pane **only** while play, perception, implementation, repair and replay are
-   indivisible; and that separable specialist work, parallel mutation, independent proof and work
-   wanting fresh criticism still leave as worker lanes. Appending an override instead would have
+   indivisible; and that separable specialist work, parallel mutation and independent proof still
+   leave as worker lanes. Appending an override instead would have
    left the contradictory generic sentence standing beside it.
 2. **The machine is narrower.** A game-maker MAIN may be founded only in a **dedicated linked git
    worktree of a target repository**. Refused, each with its own sentence: the Fleet-control
@@ -245,6 +247,25 @@ owner intentionally ends or retires product work. It still refuses a live Foundi
 automatically kill an existing MAIN pane; pane retirement and Program lifecycle are separate owner
 decisions.
 
+**Preflight, before implementation.** Every new Game Program uses the existing task rail in one
+order: **Architect -> 0-2 named fact/risk probes -> fresh independent cross-model Review -> MAIN
+`ACCEPT|RETHINK|OWNER`**. The Architect's sole deliverable is one committed DRAFT `GAME-CARD.md`
+with 1–4 executable first-slice briefs; each names dependencies, an exclusive write set, a stop
+line, Done and a literal Verify command. After it, MAIN may run zero to two named probes that answer
+specific fact/risk questions. The fresh Reviewer uses a different model and sees only the
+owner-confirmed Program, repository, Architect SHA and named probe facts — never chat or rationale.
+Inside the confirmed Program boundary its isolated Review act may optimize the Card and its 1–4
+briefs, commit the final Card and return exactly `ACCEPT <final-card-sha>` on acceptance.
+
+No implementation task may be filed or released before `ACCEPT`. On `ACCEPT`, MAIN lands the Card,
+specifically the Reviewer's final commit, copies its first-slice briefs verbatim into normal tasks
+and releases only dependency-free roots. `RETHINK` and `OWNER` land no final Card and create no
+implementation task. `RETHINK` is not a review loop: a new pass requires named new evidence;
+`OWNER` raises the unresolved decision.
+A Direct Slice bypasses Preflight only for a small feature inside an already accepted Program/Card,
+and only when bounded, reversible, low-risk and free of core-contract changes. This is prompt and
+operator policy over existing tasks, reports and lands — no new route, Task field or persisted state.
+
 **The sensory gate, in the delivered text.** Before any sensory claim and before widening
 player-facing work, MAIN must launch the exact artifact; exercise it through the app's real input
 layer with actual keyboard/mouse/gamepad input or a scripted human-input driver through that same
@@ -254,51 +275,20 @@ stays `unknown` unless an audio capture can actually be inspected. A missing, la
 keeps that sense `unknown` — restoring or changing the harness comes first, and a missing instrument
 is never converted into a pass.
 
-**Criticism.** MAIN self-critiques continuously and brings in **one fresh, context-rich, hands-on
-critic** at four moments: before the first build under a new anchor the owner did not fix, after the
-first tiny playable, before a declared taste gate, and when claiming a player-facing defect closed.
-The critic is **evidence, not authority** — MAIN decides, repairs and replays; the owner keeps final
-taste and release. There is no standing Advisor and nothing nudges on a timer.
+**SENSORY CRITIC IS POST-PLAY ONLY.** Once a playable exists, an operator may orchestrate one fresh,
+independent sensory look over a sealed build, launch, real-input and capture pack. The Critic is
+**evidence, not authority** — MAIN decides, repairs and replays; the owner keeps final taste and
+release. There is no standing Advisor, automatic nudge or Critic route.
 
 **Four truths stay apart** and are never folded into one another: `technical`, `hands_on`,
 `sensory_critic`, `owner_taste`. A technical green never implies any of the other three — the same
 label discipline the *Honest labels* section above already states, carried into the founding text.
 
-**Critic-safe context is now a closed act.** The bound Game-Maker MAIN calls
-`POST /api/self/critic` with the exact build, launch, actual controls, replay input and safe relative
-capture paths. Fleet snapshots those regular-file bytes at create time, records their full SHA-256,
-and places the resulting versioned `Task.critic` on the existing pending/release/dispatch rail.
-There is one open Critic act per Program and an exact retry returns it rather than rereading mutable
-source evidence.
-
-The fresh lane starts at that exact build. Its canonical brief is assembled only from the sealed
-record: no queue prose, current hypothesis, open defect, rejected direction, earlier verdict,
-checkpoint path, ContextPlan or mutating worker footer enters it. The Critic observes and returns one
-strict `fleet-report`. A central allowlist admits exactly that Self POST and returns 409 for every
-other current or future Self mutation; generic owner task edits, commit, merge and land are closed as
-well. The one owner stop is audited `POST /api/tasks/:id/critic-cancel`, which archives rather than
-promotes. These are Fleet policy guards, not a claim of process or operating-system containment.
-
-Delivery is evidence too: Fleet persists full brief SHA-256 plus `send-uncertain` before touching
-the pane, then records the observed adapter acceptance; restart never replays an uncertain send.
-The report routes only to the exact MAIN occupant that requested it. If succession already replaced
-that occupant, its FleetEvent becomes `receiver-gone` and is never redirected to the successor.
-`program-execution` shows sealed evidence and delivery state, never a land candidate. A critic who
-reads the answer before looking is no longer a fresh one.
-
-Create reserves the Program synchronously before its first await: identical concurrent requests join
-one durable result, while a different request is 409, and binding/open-act facts are checked again
-before insert. Failed create/report saves roll back their in-memory and snapshot mutation so an
-identical retry must establish durability again. Requester loss before release, lane loss after
-delivery and explicit cancellation are terminal; `delivered` and `send-uncertain` are never reset or
-blindly resent.
-
-Active Critic evidence is also a startup safety marker. Malformed metadata, a missing snapshot or
-tampered bytes refuse startup rather than degrading the same row into a Standard Task; the loader
-hashes each file once. Retained evidence is capped at 8 acts/64 MiB per Program and 64 acts/512 MiB
-globally. Archived roots are removed after their durable terminal save, completed roots after 24
-hours, and a successful startup removes orphans. A terminal row therefore loads with either its full
-valid snapshot set or no set after cleanup, never a partial one.
+**Blind sensory context.** The operator supplies only that sealed play pack. The Critic receives no
+Game Card, no `HANDOFF.md` and no hypotheses; MAIN/Architect chat, rationale, open defects, rejected
+directions and earlier verdicts are excluded too. ContextPlan, the accepted Card and the succession
+checkpoint remain MAIN inputs, not sensory-Critic inputs. Context-pack vocabularies and delivery are
+unchanged.
 
 ## The Game-Maker succession checkpoint
 
@@ -455,7 +445,7 @@ boundary of the authority contract above (clause 7).
    product repo: the first-minute fantasy, the one gesture, a territory with a positive and a
    negative reference, and the quality bars in `BAR / FAILS WHEN / INSTRUMENT` form (the private-repo-l
    floor shape). Per clause 1 the **MAIN promotes it itself** after a divergence pass and a fresh
-   critic, as a reversible working anchor carrying its provenance and an explicit reopen trigger;
+   cross-model Review, as a reversible working anchor carrying its provenance and an explicit reopen trigger;
    the owner is asked only when the core fantasy itself would change. Either way the anchor is a
    dated entry in the decision record, never a silent default. Tower's interim defaults under O1
    (camera, win rule, "art — none: grey-box only", decision A8) were exactly the silent form. **The first
@@ -470,16 +460,15 @@ boundary of the authority contract above (clause 7).
    floors reached a runnable file 72–84 min after the builder brief; Private-repo-g's skeleton lane
    took 7 min. Tower spent the whole morning (07:21–11:39) on predicate repair of a model nobody
    could hold (GLM §3).
-3. **Independent hands-on + sensory critic on the actual controls.** A fresh, read-only lane
-   launches the artifact through the delivered path and *holds the controls itself* — keyboard,
-   mouse or a scripted human-input driver against the real input layer, never the sim API and
-   never a policy replay — and answers, with captures: does the first 30 s explain itself; does
-   the gesture produce the promised consequence; is there gross visual/motion underreach against
-   the anchor; what is the one defect a first-time player hits. Its rubric **may not exclude art,
-   feel, fun or camera when the next decision is owner taste** (Tower's play rubric excluded
-   exactly those, `docs/critic/play-01/rubric.md:22` there; Ox O41). Blindness is proved by commit
-   ancestry (`base:` line, private-repo-l `gate/critic-check.sh`), not by a sentence. A capture that
-   could not be taken fails as itself and names the debt; it is never reported as the game.
+3. **Independent hands-on + sensory critic on the actual controls.** After the playable exists, the
+   operator seals build, one-step launch, real input and captures, then gives only that pack to one
+   fresh sensory Critic. The Critic gets no anchor/Card, `HANDOFF.md`, hypothesis or rationale. It
+   launches through the delivered path and *holds the controls itself* — keyboard, mouse or a
+   scripted human-input driver against the real input layer, never the sim API and never a policy
+   replay — and answers from captures: does the first 30 s explain itself; does the gesture produce
+   a visible consequence; what gross visual/motion underreach is present; what is the one defect a
+   first-time player hits. The pack's full hashes prove blindness and identity. A capture that could
+   not be taken fails as itself and names the debt; it is never reported as the game.
 4. **Bounded repair.** Builder rounds run on clause 2's progress budget, not on a round count:
    each is briefed to close one *named perceived defect* from step 3, each carries a regress
    counter-check on the bars it touches (private-repo-l §Frage 4 (3): one full round was lost to a
@@ -890,8 +879,9 @@ The target is self-directed refinement under taste constraints, not unattended c
 1. Run Pi/Z.ai vision H0 and compare one read-only GLM criticism with the proven Fable path.
 2. Materialize the smallest promoted Product/Quality/Creative/Game-Feel/UI/Capture pointers
    in a product repo and receipt them through ContextPlan; no generic context registry.
-3. Configure Director -> one Builder -> fresh Critic -> Owner as a thin profile over existing
-   Programs, tasks, lanes, clarifications, events and outcomes.
+3. Configure Architect DRAFT Card -> cross-model Review -> MAIN ACCEPT -> one Builder -> sealed
+   post-play sensory Critic -> Owner as a thin policy over existing Programs, tasks, lanes,
+   clarifications, events and outcomes.
 4. Resume Private-repo-h only if it remains the cheapest way to validate a particular loop field. One clear
    owner preference may land the visual candidate; `indifferent` discards it.
 

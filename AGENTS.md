@@ -52,8 +52,8 @@ Controller is a scope a plain session carries, not a binding — do not read thi
 | Level | Purpose | Autonomy | Back-channel, verified in this tree | Decides itself |
 |---|---|---|---|---|
 | Fleet Controller | hold the portfolio across programs and translate owner intent into programs | proposes; confirm and activate are owner acts | `POST /api/self/programs` proposes and reads (non-lane). **No owner route of its own** — it reports in its own pane. | which program to propose, how to phrase it, what to ground first |
-| Project MAIN | run one confirmed program end to end | intelligence-first bounded: (A) reversible inside the confirmed scope -> act · (B) bounded execution, resources, routing -> act inside stated limits · (C) scope growth, irreversible direction, external effect or cost, deploy/submit, declared taste gate -> owner | `POST /api/self/attention` reaches the owner (program derived from the binding) · `POST /api/self/clarifications/:id/reply` answers a worker · `POST /api/self/tasks` creates a capped pending row inside its occupant-bound own program and repository · a Game-Maker MAIN uses `POST /api/self/critic` to seal one exact replay-evidence Task · `POST /api/self/tasks/:id/release` separately moves its own pending row to queued and does not dispatch (the reply is a queue fact, never a lane) · `GET /api/self/program-execution` is its lifecycle projection (`phase`, `phaseBasis`, `candidate`, `nextAction`, `unknown[]`) · `POST /api/self/tasks/:id/land` lands its own reviewable non-critic row where the projection grants it and an owner promotion exists · `POST /api/self/watch` `{kind:"merge"}` then `{kind:"audit"}` returns the land and post-land verdicts. | ordering, decomposition and task filing inside scope, worker and model choice, nudge/retry/replace, ordinary conflict resolution and integration, ordinary critic repairs |
-| Act Lead / Worker | Worker: execute one bounded act in a lane and prove it. **Act Lead is not built**: `SYSTEM.md` lets a complex worker open child acts, and the role is to date neither adopted nor refused. | Worker: acts inside the write set and stop line of its brief; verify and land gates are machines it may interpret but never replace. A critic lane observes sealed evidence and may only report: its central Self-POST allowlist admits exactly `fleet-report`, while Fleet rejects every other Self mutation plus generic owner task, commit, merge and land mutation. Act Lead: none, because no mechanism exists. | `POST /api/self/clarifications` asks its MAIN · `POST /api/self/fleet-report` returns a result · `GET /api/self/drift` and `GET /api/self/gate` are its lane senses. A lane may not release, subscribe or raise attention (409 by design). The owner can terminate a Critic only through audited `POST /api/tasks/:id/critic-cancel`. **Act Lead has no route**: `delegate_act` in `SYSTEM.md` is target vocabulary with no implementation. | how to solve inside its write set, whether a red check is its own, when to stop and report |
+| Project MAIN | run one confirmed program end to end | intelligence-first bounded: (A) reversible inside the confirmed scope -> act · (B) bounded execution, resources, routing -> act inside stated limits · (C) scope growth, irreversible direction, external effect or cost, deploy/submit, declared taste gate -> owner | `POST /api/self/attention` reaches the owner (program derived from the binding) · `POST /api/self/clarifications/:id/reply` answers a worker · `POST /api/self/tasks` creates a capped pending row inside its occupant-bound own program and repository · `POST /api/self/tasks/:id/release` separately moves its own pending row to queued and does not dispatch (the reply is a queue fact, never a lane) · `GET /api/self/program-execution` is its lifecycle projection (`phase`, `phaseBasis`, `candidate`, `nextAction`, `unknown[]`) · `POST /api/self/tasks/:id/land` lands its own reviewable row where the projection grants it and an owner promotion exists · `POST /api/self/watch` `{kind:"merge"}` then `{kind:"audit"}` returns the land and post-land verdicts. | ordering, decomposition and task filing inside scope, worker and model choice, nudge/retry/replace, ordinary conflict resolution and integration, ordinary critic repairs |
+| Act Lead / Worker | Worker: execute one bounded act in a lane and prove it. **Act Lead is not built**: `SYSTEM.md` lets a complex worker open child acts, and the role is to date neither adopted nor refused. | Worker: acts inside the write set and stop line of its brief; verify and land gates are machines it may interpret but never replace. Act Lead: none, because no mechanism exists. | `POST /api/self/clarifications` asks its MAIN · `POST /api/self/fleet-report` returns a result · `GET /api/self/drift` and `GET /api/self/gate` are its lane senses. A lane may not release, subscribe or raise attention (409 by design). **Act Lead has no route**: `delegate_act` in `SYSTEM.md` is target vocabulary with no implementation. | how to solve inside its write set, whether a red check is its own, when to stop and report |
 | Supervisor | watch sessions, acts, questions, deadlines and evidence chains; name stalls, non-delivery and contradictory state | observes and nudges; never a second owner voice, never a command level | `GET /api/self/supervisor-view` reads, `POST /api/self/nudge` reaches a bound Program MAIN. **No route to the owner** — attention requires a MAIN binding, so its escalation is owner-read, not owner-sent. | what to watch, what counts as a stall, whom to nudge and when silence is correct |
 
 ### Hard invariants
@@ -81,18 +81,20 @@ Controller is a scope a plain session carries, not a binding — do not read thi
   implementation, launch, actual control, perception, repair and replay form one
   causally coupled product act — the perception is the product, and a fresh session per repair
   round cannot carry it.
-  Separable, parallel, specialist, independent-proof and fresh-critic work stays isolated there too.
-  Its committed game checkpoint is predecessor-to-successor state and owner proof, never critic
-  context. `POST /api/self/critic` snapshots the named capture bytes and full hashes at create time;
-  its canonical brief carries only the exact build, launch, controls, replay input and those sealed
-  captures. It carries no checkpoint path, prior verdict, ContextPlan or mutating lane footer.
-  Creation is a synchronous per-Program single-flight reservation: identical concurrent requests
-  join one durable result; a different request is 409. Active Critic metadata and every sealed byte
-  are a startup safety marker — malformed, missing or tampered evidence refuses startup instead of
-  degrading the row to Standard. Requester loss before release, evidence-lane loss and explicit
-  cancellation archive the act; delivered or send-uncertain work is never reset or resent. Retained
-  evidence is capped per Program and globally by acts and bytes; archived snapshots are removed
-  after their durable terminal save, completed ones after 24 hours, and startup removes orphan roots.
+  Separable, parallel, specialist and independent-proof work stays isolated there too. Every new
+  Game Program completes one Preflight before implementation, using only the normal task rail:
+  **Architect -> 0-2 named fact/risk probes -> fresh independent cross-model Review -> MAIN
+  `ACCEPT|RETHINK|OWNER`**. The Architect commits one DRAFT Game Card with 1–4 executable
+  first-slice briefs. The isolated Reviewer may optimize that Card within the confirmed Program and
+  returns `ACCEPT <final-card-sha>` for its final commit. No implementation task is filed or released
+  before `ACCEPT`; MAIN lands exactly the Reviewer commit, copies its briefs verbatim and releases
+  only dependency-free roots. `RETHINK`/`OWNER` land no final Card and create no implementation
+  task; `RETHINK` requires named new evidence rather than a review loop, while `OWNER` escalates.
+  A Direct Slice is permitted only for a small feature inside
+  an accepted Program/Card when it is bounded, reversible, low-risk and changes no core contract.
+  **SENSORY CRITIC IS POST-PLAY ONLY** and operator-orchestrated from a sealed build/launch/real-input/
+  capture pack. It receives no Game Card, `HANDOFF.md`, hypotheses or rationale. The committed game
+  checkpoint remains predecessor-to-successor state and owner proof, never sensory-Critic context.
 - A worker's report is a CLAIM. Proof is the diff plus the exact verification output. `PLAYABLE`
   means an artefact exists and was seen to run; it never means the owner has played it.
 - Observations precede labels. Missing or failed evidence is `unknown`, never zero, false, or pass.

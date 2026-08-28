@@ -1,5 +1,5 @@
 import { stat, rm, readdir, appendFile, mkdtemp } from "node:fs/promises";
-import { constants as fsConstants, existsSync, statSync, fstatSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, unlinkSync, realpathSync } from "node:fs";
+import { existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
@@ -1967,183 +1967,6 @@ interface Task {
   // verdict start a PENDING task with no owner promote — which meant the machine picked work out of
   // the owner's own un-promoted drafts. Now the owner's promote is the decision and this is the
   // evidence he decides on. Written only by tickAnalysisSweep.
-  critic?: TaskCritic;
-}
-
-type CriticDeliveryStatus = "pending" | "send-uncertain" | "delivered";
-interface TaskCriticCapture {
-  path: string;
-  snapshot: string;
-  bytes: number;
-  sha256: string;
-}
-interface TaskCritic {
-  v: 1;
-  requestSha256: string;
-  sha256: string;
-  build: string;
-  launch: string;
-  controls: string;
-  input: string;
-  captures: TaskCriticCapture[];
-  requester: { slot: number; openedAt: number; sessionId: string | null };
-  delivery: {
-    status: CriticDeliveryStatus;
-    at: number | null;
-    briefSha256: string | null;
-    acceptance: Acceptance | null;
-    report: { id: string; eventId: string; reportedAt: number } | null;
-  };
-}
-const CRITIC_BODY_FIELDS = ["v", "build", "launch", "controls", "input", "captures"] as const;
-const CRITIC_TEXT_MAX = 4000;
-const CRITIC_CAPTURE_MAX = 12;
-const CRITIC_CAPTURE_BYTES_MAX = 16 * 1024 * 1024;
-const CRITIC_PROGRAM_RETAINED_ACTS_MAX = 8;
-const CRITIC_GLOBAL_RETAINED_ACTS_MAX = 64;
-const CRITIC_PROGRAM_RETAINED_BYTES_MAX = 64 * 1024 * 1024;
-const CRITIC_GLOBAL_RETAINED_BYTES_MAX = 512 * 1024 * 1024;
-const CRITIC_SNAPSHOT_RETENTION_MS = 24 * 60 * 60 * 1000;
-const SHA256_RE = /^[0-9a-f]{64}$/;
-
-const exactKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean => {
-  const actual = Object.keys(value).sort();
-  const expected = [...keys].sort();
-  return actual.length === expected.length && actual.every((key, i) => key === expected[i]);
-};
-const criticSnapshotRoot = (taskId: string): string => `${STREAM_DIR}/critics/${taskId}`;
-function taskCriticFrom(value: unknown, taskId: string, taskStatus: Task["status"]): TaskCritic | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const r = value as Record<string, unknown>;
-  if (!exactKeys(r, ["v", "requestSha256", "sha256", "build", "launch", "controls", "input", "captures", "requester", "delivery"])
-    || r.v !== 1 || typeof r.requestSha256 !== "string" || !SHA256_RE.test(r.requestSha256)
-    || typeof r.sha256 !== "string" || !SHA256_RE.test(r.sha256)
-    || typeof r.build !== "string" || !/^[0-9a-f]{40}$/.test(r.build)
-    || typeof r.launch !== "string" || !r.launch || r.launch.length > CRITIC_TEXT_MAX
-    || typeof r.controls !== "string" || !r.controls || r.controls.length > CRITIC_TEXT_MAX
-    || typeof r.input !== "string" || !r.input || r.input.length > CRITIC_TEXT_MAX
-    || !Array.isArray(r.captures) || r.captures.length < 1 || r.captures.length > CRITIC_CAPTURE_MAX) return null;
-  const root = resolve(criticSnapshotRoot(taskId));
-  const captures: TaskCriticCapture[] = [];
-  const capturePaths = new Set<string>();
-  const snapshotPaths = new Set<string>();
-  let captureBytes = 0;
-  let presentSnapshots = 0;
-  for (const raw of r.captures) {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-    const c = raw as Record<string, unknown>;
-    if (!exactKeys(c, ["path", "snapshot", "bytes", "sha256"])
-      || typeof c.path !== "string" || !safeCriticRelativePath(c.path)
-      || typeof c.snapshot !== "string" || !isPathInside(root, resolve(c.snapshot))
-      || !Number.isInteger(c.bytes) || Number(c.bytes) < 0 || Number(c.bytes) > CRITIC_CAPTURE_BYTES_MAX
-      || typeof c.sha256 !== "string" || !SHA256_RE.test(c.sha256)) return null;
-    const snapshot = resolve(c.snapshot);
-    if (capturePaths.has(c.path) || snapshotPaths.has(snapshot)) return null;
-    capturePaths.add(c.path);
-    snapshotPaths.add(snapshot);
-    captureBytes += Number(c.bytes);
-    if (captureBytes > CRITIC_CAPTURE_BYTES_MAX) return null;
-    if (existsSync(snapshot)) {
-      presentSnapshots++;
-      try {
-        const st = lstatSync(snapshot);
-        if (st.isSymbolicLink() || !st.isFile() || st.size !== Number(c.bytes)
-          || !isPathInside(root, realpathSync(snapshot))
-          || createHash("sha256").update(readFileSync(snapshot)).digest("hex") !== c.sha256) return null;
-      } catch { return null; }
-    }
-    captures.push({ path: c.path, snapshot: c.snapshot, bytes: Number(c.bytes), sha256: c.sha256 });
-  }
-  const terminal = taskStatus === "done" || taskStatus === "archived";
-  if ((!terminal && presentSnapshots !== captures.length)
-    || (terminal && presentSnapshots !== 0 && presentSnapshots !== captures.length)) return null;
-  const requester = r.requester as Record<string, unknown> | null;
-  if (!requester || !exactKeys(requester, ["slot", "openedAt", "sessionId"])
-    || !Number.isInteger(requester.slot) || Number(requester.slot) < 1 || Number(requester.slot) > MAX_SLOTS
-    || typeof requester.openedAt !== "number" || !Number.isFinite(requester.openedAt) || requester.openedAt <= 0
-    || !(requester.sessionId === null || typeof requester.sessionId === "string")) return null;
-  const delivery = r.delivery as Record<string, unknown> | null;
-  if (!delivery || !exactKeys(delivery, ["status", "at", "briefSha256", "acceptance", "report"])
-    || !["pending", "send-uncertain", "delivered"].includes(String(delivery.status))
-    || !(delivery.at === null || (typeof delivery.at === "number" && Number.isFinite(delivery.at) && delivery.at > 0))
-    || !(delivery.briefSha256 === null || (typeof delivery.briefSha256 === "string" && SHA256_RE.test(delivery.briefSha256)))
-    || !(delivery.acceptance === null || ["observed", "not-observed", "unobservable", "not-applicable"].includes(String(delivery.acceptance)))) return null;
-  if ((delivery.status === "pending"
-      && (delivery.at !== null || delivery.briefSha256 !== null || delivery.acceptance !== null))
-    || (delivery.status === "send-uncertain"
-      && (delivery.at === null || delivery.briefSha256 === null
-        || ![null, "not-observed", "unobservable"].includes(delivery.acceptance as null | string)))
-    || (delivery.status === "delivered"
-      && (delivery.at === null || delivery.briefSha256 === null
-        || !["observed", "not-applicable"].includes(String(delivery.acceptance))))) return null;
-  let report: TaskCritic["delivery"]["report"] = null;
-  if (delivery.report !== null) {
-    if (!delivery.report || typeof delivery.report !== "object" || Array.isArray(delivery.report)) return null;
-    const rr = delivery.report as Record<string, unknown>;
-    if (!exactKeys(rr, ["id", "eventId", "reportedAt"])
-      || typeof rr.id !== "string" || !/^[0-9a-f]{24}$/.test(rr.id)
-      || typeof rr.eventId !== "string" || !/^[0-9a-f]{24}$/.test(rr.eventId)
-      || typeof rr.reportedAt !== "number" || !Number.isFinite(rr.reportedAt) || rr.reportedAt <= 0) return null;
-    report = { id: rr.id, eventId: rr.eventId, reportedAt: rr.reportedAt };
-  }
-  if ((taskStatus === "pending" || taskStatus === "queued")
-      && (delivery.status !== "pending" || report !== null)) return null;
-  if (taskStatus === "sent" && report !== null) return null;
-  if (taskStatus === "done" && report === null) return null;
-  if (taskStatus === "archived" && report !== null) return null;
-  const requestSha256 = createHash("sha256").update(JSON.stringify({ v: 1, build: r.build,
-    launch: r.launch, controls: r.controls, input: r.input, captures: captures.map((capture) => capture.path) })).digest("hex");
-  const sha256 = createHash("sha256").update(JSON.stringify({ v: 1, build: r.build,
-    launch: r.launch, controls: r.controls, input: r.input,
-    captures: captures.map(({ path, bytes, sha256 }) => ({ path, bytes, sha256 })) })).digest("hex");
-  if (r.requestSha256 !== requestSha256 || r.sha256 !== sha256) return null;
-  return {
-    v: 1, requestSha256: r.requestSha256, sha256: r.sha256, build: r.build,
-    launch: r.launch, controls: r.controls, input: r.input, captures,
-    requester: { slot: Number(requester.slot), openedAt: requester.openedAt, sessionId: requester.sessionId as string | null },
-    delivery: { status: delivery.status as CriticDeliveryStatus, at: delivery.at as number | null,
-      briefSha256: delivery.briefSha256 as string | null, acceptance: delivery.acceptance as Acceptance | null, report },
-  };
-}
-
-const criticCaptureBytes = (critic: TaskCritic): number =>
-  critic.captures.reduce((total, capture) => total + capture.bytes, 0);
-const criticSnapshotsRetained = (task: Task): boolean =>
-  !!task.critic && existsSync(criticSnapshotRoot(task.id));
-function cleanupCriticSnapshot(task: Task): void {
-  if (!task.critic) return;
-  rmSync(criticSnapshotRoot(task.id), { recursive: true, force: true });
-}
-function pruneCriticSnapshots(now = Date.now()): void {
-  const known = new Set(tasks.filter((task) => task.critic).map((task) => task.id));
-  const root = `${STREAM_DIR}/critics`;
-  for (const task of tasks) {
-    if (!task.critic || !criticSnapshotsRetained(task)) continue;
-    const terminalAt = task.status === "done" ? task.critic.delivery.report?.reportedAt ?? null
-      : task.status === "archived" ? task.created : null;
-    if (terminalAt !== null && (task.status === "archived" || now - terminalAt >= CRITIC_SNAPSHOT_RETENTION_MS))
-      cleanupCriticSnapshot(task);
-  }
-  if (!existsSync(root)) return;
-  for (const entry of readdirSync(root)) {
-    if (!known.has(entry)) rmSync(`${root}/${entry}`, { recursive: true, force: true });
-  }
-}
-function criticQuotaProblem(programId: string, addingBytes: number): string | null {
-  pruneCriticSnapshots();
-  const retained = tasks.filter((task) => task.critic && criticSnapshotsRetained(task));
-  const inProgram = retained.filter((task) => task.programId === programId);
-  const programBytes = inProgram.reduce((total, task) => total + criticCaptureBytes(task.critic!), 0);
-  const globalBytes = retained.reduce((total, task) => total + criticCaptureBytes(task.critic!), 0);
-  if (inProgram.length >= CRITIC_PROGRAM_RETAINED_ACTS_MAX)
-    return `critic retained-act quota reached for Program (${inProgram.length}/${CRITIC_PROGRAM_RETAINED_ACTS_MAX})`;
-  if (retained.length >= CRITIC_GLOBAL_RETAINED_ACTS_MAX)
-    return `critic global retained-act quota reached (${retained.length}/${CRITIC_GLOBAL_RETAINED_ACTS_MAX})`;
-  if (programBytes + addingBytes > CRITIC_PROGRAM_RETAINED_BYTES_MAX)
-    return `critic retained-byte quota reached for Program (${programBytes + addingBytes}/${CRITIC_PROGRAM_RETAINED_BYTES_MAX})`;
-  if (globalBytes + addingBytes > CRITIC_GLOBAL_RETAINED_BYTES_MAX)
-    return `critic global retained-byte quota reached (${globalBytes + addingBytes}/${CRITIC_GLOBAL_RETAINED_BYTES_MAX})`;
-  return null;
 }
 // The brief and the verdict are deliberately SEPARATE records with separate lifetimes: a brief is
 // compiled once per draft (a fresh lane's git-fact block is empty by construction, so nothing about
@@ -2740,35 +2563,6 @@ async function programExecutionView(s: Slot): Promise<Response> {
       },
       tasks: {
         rows: programTasks.map((t) => {
-          if (t.critic) {
-            const event = t.critic.delivery.report
-              ? fleetEvents.find((candidate) => candidate.id === t.critic!.delivery.report!.eventId) : null;
-            const phase: Phase = t.status === "pending" || t.status === "queued" ? "READY"
-              : t.status === "sent" && t.slot !== null ? "RUNNING"
-              : t.status === "sent" ? "UNKNOWN" : "CONTINUE";
-            return {
-              id: t.id, kind: t.kind, status: t.status, releasedBy: t.releasedBy ?? null,
-              slot: t.slot ?? null, originId: t.originId ?? null, text: t.text.slice(0, 200),
-              phase,
-              phaseBasis: [t.status === "pending" ? "critic evidence captured; exact requester may release"
-                : t.status === "queued" ? "critic released; dispatch tick will replay the captured evidence"
-                : t.status === "sent" ? "critic lane is observing the exact captured build"
-                : "critic report is terminal evidence; it is not a land candidate"],
-              note: t.note,
-              candidate: { sha: null, basis: "none" as const },
-              nextAction: t.status === "pending" ? `release → POST /api/self/tasks/${t.id}/release`
-                : t.status === "queued" ? "queued — the dispatch tick starts the critic lane"
-                : t.status === "sent" ? "wait for the critic's one strict fleet report"
-                : null,
-              critic: {
-                v: t.critic.v,
-                evidence: { sha256: t.critic.sha256, build: t.critic.build,
-                  launch: t.critic.launch, controls: t.critic.controls, input: t.critic.input,
-                  captures: t.critic.captures.map(({ path, bytes, sha256 }) => ({ path, bytes, sha256 })) },
-                delivery: { ...t.critic.delivery, reportEventStatus: event?.status ?? null },
-              },
-            };
-          }
           // DERIVED per request, stored nowhere. `phase` says where the row sits on the rail; it
           // never says the work is good, and nothing here moves a persisted status.
           const derived = phaseOf(programPhaseInput(t, p.id, outcomeByTask.get(t.id) ?? null, now));
@@ -3622,7 +3416,7 @@ type AuditEvent =
   // Named after its PRODUCER like steward_task, and separate from task_release for the same reason
   // that pair is separate: filing and releasing are two acts, and a trail that could not tell them
   // apart would make "the machine wrote itself work" and "the machine started work" one line.
-  | "main_task" | "critic_create" | "critic_cancel"
+  | "main_task"
   // the owner granted or revoked a Program's self-land permission (POST /api/programs/:id/promotion).
   // On the trail because it is the one act that widens WHO may move an integration branch, and the
   // record it writes is otherwise only visible by reading the Program row.
@@ -4775,7 +4569,7 @@ function laneRulebookFor(repo: string, at: string): string | null {
 // creates <repo-toplevel>.worktrees/<branch-slug> on a NEW branch off the repo's current
 // HEAD. Worktrees only materialize tracked files, so the two files agents predictably
 // need but repos predictably don't track (.env, CLAUDE.md) are copied in when present.
-async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm = "worktree", exactStart?: string): Promise<{ repo: string; path: string; branch: string; form: LaneForm }> {
+async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm = "worktree"): Promise<{ repo: string; path: string; branch: string; form: LaneForm }> {
   const root = await repoRootOf(repoRaw);
   // auto name carries seconds + a random suffix so two lanes spawned in the same minute
   // (e.g. back-to-back dispatcher ticks) can't slug to the same worktree path and collide
@@ -4790,7 +4584,7 @@ async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm
   // may be parked on a working branch, and a lane must still branch from (and later land onto)
   // the integration branch. Unset config → integrationBranch is the primary's HEAD, so this is
   // the same start point as the bare `worktree add -b` default (no-op today).
-  const start = exactStart ?? await integrationBranch(root);
+  const start = await integrationBranch(root);
   if (form === "clone") {
     // A clone lane's branch is mirrored back into the root under the SAME NAME (syncLaneRefs), and
     // that mirror is FORCED — a rebase rewrites the lane tip, so a fast-forward-only push-back
@@ -4805,12 +4599,9 @@ async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm
     // optimisation HARDLINKS the object files, so the two repos would share the very bytes this
     // form exists to separate. Measured on this repo: ~98 MB of objects per clone.
     // --no-local implies it; --no-hardlinks is the narrower, explicit statement.
-    const cloneStart = exactStart ? await integrationBranch(root) : start;
-    const cl = await git(root, "clone", "--no-hardlinks", ...(cloneStart ? ["--branch", cloneStart] : []), root, path);
+    const cl = await git(root, "clone", "--no-hardlinks", ...(start ? ["--branch", start] : []), root, path);
     if (cl.code !== 0) throw new Error(`clone failed: ${(cl.err || cl.out).slice(0, 300)}`);
-    const co = exactStart
-      ? await git(path, "checkout", "-b", branch, exactStart)
-      : await git(path, "checkout", "-b", branch);
+    const co = await git(path, "checkout", "-b", branch);
     if (co.code !== 0) throw new Error(`clone checkout failed: ${(co.err || co.out).slice(0, 300)}`);
   } else {
     const add = start
@@ -5008,8 +4799,6 @@ async function removeWorktreeSafe(repo: string, path: string, branch: string, fo
 // slot pointing at an orphaned tree. Shared by the ⏏ land endpoint and the merge agent.
 async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS,
   beforeTeardown?: () => Promise<void>): Promise<{ error: string; code: number } | { removed: string; branch: string }> {
-  if (criticTaskForSlot(s))
-    return { error: "critic lanes cannot merge or land through Fleet", code: 409 };
   if (!s.cwd || !s.worktree) return { error: "not a fleet-created worktree lane", code: 400 };
   const { repo, branch } = s.worktree;
   const path = s.cwd;
@@ -5520,7 +5309,6 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // Detach before the teardown below, so a recycled slot's tasks carry THIS reason —
   // killSlot's own detach would otherwise get there first and file the abort under
   // "lane closed before landing".
-  await closeCriticsForEndingSlot(s, "slot recycled before critic completion");
   detachSlotTasks(s.id, "slot recycled before landing"); // recycling an active slot is a teardown too
   // a share must not outlive its session (same invariant killSlot enforces) — recycling
   // an active slot onto a different cwd must not leave an old guest link/password
@@ -5636,7 +5424,6 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
 function detachSlotTasks(slotId: number, note: string): void {
   for (const t of tasks) {
     if (t.slot === slotId && t.status === "sent") {
-      if (t.critic) continue; // the awaited Critic close above is terminal; it must never be requeued here
       t.status = "pending"; // back to owner review, NOT auto-queued — the abort was deliberate
       t.note = note;
       t.slot = null;
@@ -5644,47 +5431,10 @@ function detachSlotTasks(slotId: number, note: string): void {
   }
 }
 
-async function archiveCriticTasks(closing: Task[], note: string, actorSlot?: number): Promise<void> {
-  const unique = [...new Map(closing.filter((task) => task.critic).map((task) => [task.id, task])).values()];
-  if (!unique.length) return;
-  const before = unique.map((task) => ({ task, status: task.status, slot: task.slot, note: task.note }));
-  for (const task of unique) {
-    task.status = "archived";
-    task.slot = null;
-    task.note = note;
-  }
-  try {
-    await saveStateNow();
-  } catch (e) {
-    for (const prior of before) {
-      prior.task.status = prior.status;
-      prior.task.slot = prior.slot;
-      prior.task.note = prior.note;
-    }
-    throw e;
-  }
-  for (const task of unique) {
-    audit("critic_cancel", actorSlot, `${task.id} ${note}`);
-    cleanupCriticSnapshot(task);
-  }
-}
-
-async function closeCriticsForEndingSlot(s: Slot, note: string): Promise<void> {
-  const closing = tasks.filter((task) => {
-    if (!task.critic || task.status === "done" || task.status === "archived") return false;
-    const laneEnded = task.status === "sent" && task.slot === s.id;
-    const requesterEnded = (task.status === "pending" || task.status === "queued")
-      && task.critic.requester.slot === s.id && task.critic.requester.openedAt === s.openedAt;
-    return laneEnded || requesterEnded;
-  });
-  await archiveCriticTasks(closing, note, s.id);
-}
-
 // `why` is mandatory: a session's lifetime is uninterpretable without it — a median of minutes
 // means slot recycling if the kills are `reopen`, and abandoned work if they are `owner`. Every
 // call site knows its own reason; none of them may pass it as an afterthought (slotstats.ts).
 async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<void> {
-  await closeCriticsForEndingSlot(s, `critic terminal: ${why} ended its requester or evidence lane`);
   audit("slot_kill", s.id, why);
   s.cwd = null; // clear first so the self-heal loop can't resurrect it mid-kill
   s.label = null;
@@ -6870,10 +6620,6 @@ type ClarificationReceiver = {
   receiver: { slot: number; openedAt: number; sessionId: string | null };
   basis: ClarificationBasis;
 };
-function criticTaskForSlot(s: Slot): Task | null {
-  return tasks.find((t) => t.critic && t.slot === s.id && s.taskId === t.id
-    && s.openedAt > 0 && s.cwd !== null) ?? null;
-}
 function clarificationReceiverFor(lane: Slot): ClarificationReceiver | { error: string } {
   let programReceiver: ClarificationReceiver["receiver"] | null = null;
   if (lane.programId) {
@@ -6972,8 +6718,6 @@ function markFleetEventReceiverGone(slotId: number): boolean {
 }
 
 async function openClarification(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
-  if (criticTaskForSlot(s))
-    return json({ error: "critic lanes cannot open clarifications; they return one strict fleet report" }, 409);
   if (!body || typeof body.question !== "string")
     return json({ error: "question must be a string" }, 400);
   const question = body.question.trim();
@@ -7081,27 +6825,9 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
   if (text.length > MAX_FLEET_REPORT_TEXT)
     return json({ error: `text must be at most ${MAX_FLEET_REPORT_TEXT} chars` }, 400);
 
-  const criticTask = criticTaskForSlot(s);
-  const existingCriticReport = criticTask?.critic?.delivery.report;
-  if (existingCriticReport) {
-    const existing = fleetReports.find((report) => report.id === existingCriticReport.id);
-    if (existing?.status === body.status && existing.text === text) {
-      await saveStateNow();
-      return json({ ok: true, existing: true, report: existing });
-    }
-    return json({ error: "critic lane already filed its one immutable report" }, 409);
-  }
-  if (criticTask?.critic?.delivery.status === "pending")
-    return json({ error: "critic evidence brief was not attempted; no critic report receipt can be accepted" }, 409);
-  const resolved: ClarificationReceiver | { error: string } = criticTask
-    ? { receiver: { ...criticTask.critic!.requester }, basis: "program-main" }
-    : clarificationReceiverFor(s);
+  const resolved = clarificationReceiverFor(s);
   if ("error" in resolved) return json({ error: resolved.error }, 409);
-  const receiver = slotFrom(resolved.receiver.slot);
-  const receiverGone = criticTask !== null && (!receiver?.cwd
-    || receiver.openedAt !== resolved.receiver.openedAt
-    || receiver.sessionId !== resolved.receiver.sessionId);
-  if (!receiverGone && slotDeliveryBudget(resolved.receiver.slot).free === 0)
+  if (slotDeliveryBudget(resolved.receiver.slot).free === 0)
     return json({ error: "fleet-report receiver has no FleetEvent delivery budget" }, 409);
 
   const reportedAt = Date.now();
@@ -7123,38 +6849,14 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
     kind: "fleet-report",
     payload: { reportId: id, status, text, taskId: s.taskId, originId: s.originId,
       programId: s.programId, basis: resolved.basis },
-    createdAt: reportedAt, status: receiverGone ? "receiver-gone" : "pending",
-    attempts: 0, deliveredAt: null, acknowledgedAt: null,
+    createdAt: reportedAt, status: "pending", attempts: 0, deliveredAt: null, acknowledgedAt: null,
   };
   fleetReports = [...fleetReports, report];
   fleetEvents = [...fleetEvents, event];
-  const criticBefore = criticTask?.critic ? {
-    status: criticTask.status,
-    note: criticTask.note,
-    report: criticTask.critic.delivery.report,
-  } : null;
-  if (criticTask?.critic) {
-    criticTask.critic.delivery.report = { id, eventId, reportedAt };
-    criticTask.status = "done";
-    criticTask.note = receiverGone ? "critic report recorded; requester occupant is gone"
-      : "critic report recorded for its requesting MAIN occupant";
-  }
-  try {
-    await saveStateNow();
-  } catch (e) {
-    fleetReports = fleetReports.filter((candidate) => candidate.id !== id);
-    fleetEvents = fleetEvents.filter((candidate) => candidate.id !== eventId);
-    if (criticTask?.critic && criticTask.critic.delivery.report?.id === id && criticBefore) {
-      criticTask.status = criticBefore.status;
-      criticTask.note = criticBefore.note;
-      criticTask.critic.delivery.report = criticBefore.report;
-    }
-    throw e;
-  }
   audit("fleet_report_open", s.id,
     `${id} receiver=${resolved.receiver.slot} status=${status} basis=${resolved.basis}`);
   pruneFleetReports();
-  saveState();
+  await saveStateNow();
   return json({ ok: true, report });
 }
 
@@ -7572,8 +7274,6 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // only door, which is exactly the state this act was asked not to change.
   if (t.programId !== program.id)
     return json({ error: `task belongs to no program of this MAIN — a Program-MAIN releases only rows of program ${program.id}` }, 409);
-  if (t.critic && !sameCriticRequester(t.critic, s))
-    return json({ error: "critic release belongs to the exact MAIN occupant that requested it" }, 409);
   // (3) An advisory row is not work, in the same words the two existing doors use (dispatchTask's
   // last lock and the ▸ queue button) — one sentence for one question, wherever it is asked.
   if (t.kind !== "auftrag")
@@ -7730,7 +7430,6 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
   // (2) THE ROW.
   const t = tasks.find((x) => x.id === id);
   if (!t) return json({ error: "unknown task" }, 404);
-  if (t.critic) return json({ error: "critic tasks are evidence and are never landed" }, 409);
   // (3) ...of THIS Program. A row of another Program is not this MAIN's to land, and an unbracketed
   // row is nobody's — for those the owner's board stays the only door.
   if (t.programId !== program.id)
@@ -8002,219 +7701,6 @@ async function createTaskForMain(s: Slot, body: Record<string, unknown> | null):
   // sessionIdMatch is REPORTED, never gated — ACP-13's doctrine, the same shape releaseTaskForMain
   // and openAttention answer with.
   return json({ ok: true, sessionIdMatch, task: t });
-}
-
-function isPathInside(root: string, candidate: string): boolean {
-  const cleanRoot = resolve(root);
-  const cleanCandidate = resolve(candidate);
-  return cleanCandidate === cleanRoot || cleanCandidate.startsWith(`${cleanRoot}/`);
-}
-
-function safeCriticRelativePath(path: string): boolean {
-  if (!path || path.length > 500 || isAbsolute(path) || path.includes("\\")) return false;
-  const parts = path.split("/");
-  return parts.every((part) => part.length > 0 && part !== "." && part !== "..");
-}
-
-const sameCriticRequester = (critic: TaskCritic, s: Slot): boolean =>
-  critic.requester.slot === s.id && critic.requester.openedAt === s.openedAt
-  && critic.requester.sessionId === s.sessionId;
-
-type CriticRequest = { v: 1; build: string; launch: string; controls: string; input: string; captures: string[] };
-function criticRequestFrom(body: Record<string, unknown> | null): CriticRequest | { error: string } {
-  if (!body) return { error: "invalid json" };
-  if (!exactKeys(body, CRITIC_BODY_FIELDS))
-    return { error: `body must contain exactly: ${CRITIC_BODY_FIELDS.join(", ")}` };
-  if (body.v !== 1) return { error: "v must be 1" };
-  if (typeof body.build !== "string" || !/^[0-9a-f]{40}$/.test(body.build))
-    return { error: "build must be one full 40-character lowercase commit sha" };
-  for (const key of ["launch", "controls", "input"] as const) {
-    if (typeof body[key] !== "string" || !body[key].trim() || body[key].length > CRITIC_TEXT_MAX)
-      return { error: `${key} must be a non-empty string of at most ${CRITIC_TEXT_MAX} chars` };
-  }
-  if (!Array.isArray(body.captures) || body.captures.length < 1 || body.captures.length > CRITIC_CAPTURE_MAX
-    || body.captures.some((path) => typeof path !== "string" || !safeCriticRelativePath(path)))
-    return { error: `captures must contain 1..${CRITIC_CAPTURE_MAX} safe relative paths` };
-  const captures = body.captures as string[];
-  if (new Set(captures).size !== captures.length) return { error: "captures must not contain duplicate paths" };
-  return { v: 1, build: body.build, launch: body.launch as string,
-    controls: body.controls as string, input: body.input as string, captures };
-}
-
-function readCriticCapture(sourceRoot: string, path: string): { bytes: Uint8Array; sha256: string } | { error: string } {
-  const candidate = resolve(sourceRoot, path);
-  if (!isPathInside(sourceRoot, candidate)) return { error: `capture escapes source worktree: ${path}` };
-  let cursor = sourceRoot;
-  try {
-    for (const part of path.split("/")) {
-      cursor = `${cursor}/${part}`;
-      if (lstatSync(cursor).isSymbolicLink()) return { error: `capture path contains a symlink: ${path}` };
-    }
-    const resolved = realpathSync(candidate);
-    if (!isPathInside(sourceRoot, resolved)) return { error: `capture resolves outside source worktree: ${path}` };
-    const fd = openSync(candidate, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-    try {
-      const before = fstatSync(fd, { bigint: true });
-      if (!before.isFile()) return { error: `capture is not a regular file: ${path}` };
-      if (before.size > BigInt(CRITIC_CAPTURE_BYTES_MAX))
-        return { error: `capture exceeds ${CRITIC_CAPTURE_BYTES_MAX} bytes: ${path}` };
-      const bytes = readFileSync(fd);
-      const after = fstatSync(fd, { bigint: true });
-      const final = lstatSync(candidate, { bigint: true });
-      const stable = before.dev === after.dev && before.ino === after.ino && before.size === after.size
-        && before.mtimeNs === after.mtimeNs && before.ctimeNs === after.ctimeNs
-        && after.dev === final.dev && after.ino === final.ino && after.size === final.size
-        && after.mtimeNs === final.mtimeNs && after.ctimeNs === final.ctimeNs && !final.isSymbolicLink()
-        && realpathSync(candidate) === resolved;
-      if (!stable || BigInt(bytes.byteLength) !== after.size)
-        return { error: `capture changed while it was being snapshotted: ${path}` };
-      return { bytes, sha256: createHash("sha256").update(bytes).digest("hex") };
-    } finally {
-      closeSync(fd);
-    }
-  } catch (e) {
-    return { error: `capture could not be snapshotted: ${path} (${e instanceof Error ? e.message : e})` };
-  }
-}
-
-interface CriticCreateReservation {
-  requestSha256: string;
-  requester: TaskCritic["requester"];
-  promise: Promise<Response>;
-}
-const criticCreateReservations = new Map<string, CriticCreateReservation>();
-
-async function finishCriticCreate(s: Slot, program: Program, sessionIdMatch: "exact" | "divergent" | "unknown",
-  requester: TaskCritic["requester"], sourceCwd: string, parsed: CriticRequest,
-  requestSha256: string): Promise<Response> {
-  const requesterStillOwnsSource = (): boolean => {
-    const live = slotFrom(requester.slot);
-    return live?.cwd === sourceCwd && live.openedAt === requester.openedAt
-      && live.sessionId === requester.sessionId;
-  };
-  const mainRepo = await repoKeyOf(s);
-  if (!requesterStillOwnsSource())
-    return json({ error: "requesting MAIN occupant changed while critic source facts were read" }, 409);
-  if (!mainRepo) return json({ error: "this session's checkout is not a git repository" }, 409);
-  const object = await gitRead(sourceCwd, "rev-parse", "--verify", `${parsed.build}^{commit}`);
-  if (!requesterStillOwnsSource())
-    return json({ error: "requesting MAIN occupant changed while critic build was verified" }, 409);
-  if (object.code !== 0 || object.out !== parsed.build)
-    return json({ error: "build does not name that exact commit in the source repository" }, 400);
-  let sourceRoot: string;
-  try { sourceRoot = realpathSync(sourceCwd); }
-  catch { return json({ error: "requesting MAIN source worktree disappeared before capture" }, 409); }
-  const captured: { path: string; bytes: Uint8Array; sha256: string }[] = [];
-  let capturedBytes = 0;
-  for (const path of parsed.captures) {
-    const read = readCriticCapture(sourceRoot, path);
-    if ("error" in read) return json({ error: read.error }, 400);
-    capturedBytes += read.bytes.byteLength;
-    if (capturedBytes > CRITIC_CAPTURE_BYTES_MAX)
-      return json({ error: `capture set exceeds ${CRITIC_CAPTURE_BYTES_MAX} bytes` }, 400);
-    captured.push({ path, ...read });
-  }
-  const quotaProblem = criticQuotaProblem(program.id, capturedBytes);
-  if (quotaProblem) return json({ error: quotaProblem }, 409);
-  const id = randomBytes(4).toString("hex");
-  const snapshotRoot = criticSnapshotRoot(id);
-  const captures: TaskCriticCapture[] = [];
-  try {
-    mkdirSync(`${STREAM_DIR}/critics`, { recursive: true, mode: 0o700 });
-    mkdirSync(snapshotRoot, { recursive: false, mode: 0o700 });
-    for (let i = 0; i < captured.length; i++) {
-      const source = captured[i];
-      const snapshot = `${snapshotRoot}/${String(i + 1).padStart(2, "0")}-${basename(source.path)}`;
-      writeFileSync(snapshot, source.bytes, { flag: "wx", mode: 0o600 });
-      captures.push({ path: source.path, snapshot, bytes: source.bytes.byteLength, sha256: source.sha256 });
-    }
-  } catch (e) {
-    rmSync(snapshotRoot, { recursive: true, force: true });
-    return json({ error: `capture snapshot write failed: ${e instanceof Error ? e.message : e}` }, 500);
-  }
-  const stillBound = boundProgramForMain(s);
-  if (!requesterStillOwnsSource() || !stillBound.ok || stillBound.program.id !== program.id) {
-    rmSync(snapshotRoot, { recursive: true, force: true });
-    return json({ error: "requesting MAIN occupant changed before critic insertion" }, 409);
-  }
-  if (tasks.some((task) => task.programId === program.id && task.critic
-    && (task.status === "pending" || task.status === "queued" || task.status === "sent"))) {
-    rmSync(snapshotRoot, { recursive: true, force: true });
-    return json({ error: "program already gained an open critic act before insertion" }, 409);
-  }
-  const finalQuotaProblem = criticQuotaProblem(program.id, capturedBytes);
-  if (finalQuotaProblem) {
-    rmSync(snapshotRoot, { recursive: true, force: true });
-    return json({ error: finalQuotaProblem }, 409);
-  }
-  const sha256 = createHash("sha256").update(JSON.stringify({
-    v: 1, build: parsed.build, launch: parsed.launch, controls: parsed.controls, input: parsed.input,
-    captures: captures.map(({ path, bytes, sha256 }) => ({ path, bytes, sha256 })),
-  })).digest("hex");
-  const critic: TaskCritic = {
-    v: 1, requestSha256, sha256, build: parsed.build, launch: parsed.launch,
-    controls: parsed.controls, input: parsed.input, captures,
-    requester,
-    delivery: { status: "pending", at: null, briefSha256: null, acceptance: null, report: null },
-  };
-  const task: Task = { id, originId: id, text: "Fresh critic replay over immutable captured evidence",
-    source: "main", from: null, kind: "auftrag", repo: mainRepo, programId: program.id,
-    status: "pending", created: Date.now(), slot: null, note: null, critic };
-  const beforeTasks = tasks;
-  tasks = capTasks([...tasks, task]);
-  try {
-    await saveStateNow();
-  } catch (e) {
-    tasks = beforeTasks;
-    rmSync(snapshotRoot, { recursive: true, force: true });
-    throw e;
-  }
-  pruneCriticSnapshots();
-  audit("critic_create", s.id, `${id} program=${program.id} evidence=${sha256}`);
-  return json({ ok: true, sessionIdMatch, task });
-}
-
-async function createCriticForMain(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
-  const bound = boundProgramForMain(s);
-  if (!bound.ok) return json({ error: bound.error }, 409);
-  const { program, sessionIdMatch } = bound;
-  const requester = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
-  const sourceCwd = s.cwd!;
-  if (!isGameMaker(program)) return json({ error: "a critic act requires an active game-maker Program" }, 409);
-  const parsed = criticRequestFrom(body);
-  if ("error" in parsed) return json({ error: parsed.error }, 400);
-  const requestSha256 = createHash("sha256").update(JSON.stringify(parsed)).digest("hex");
-  const existing = criticCreateReservations.get(program.id);
-  if (existing) {
-    if (existing.requestSha256 !== requestSha256
-      || existing.requester.slot !== requester.slot || existing.requester.openedAt !== requester.openedAt
-      || existing.requester.sessionId !== requester.sessionId)
-      return json({ error: "program already has a different critic create in progress" }, 409);
-    return (await existing.promise).clone();
-  }
-  const open = tasks.find((t) => t.programId === program.id && t.critic
-    && (t.status === "pending" || t.status === "queued" || t.status === "sent"));
-  if (open) {
-    if (sameCriticRequester(open.critic!, s) && open.critic!.requestSha256 === requestSha256) {
-      await saveStateNow();
-      return json({ ok: true, existing: true, sessionIdMatch, task: open });
-    }
-    return json({ error: `program already has an open critic act (${open.id})` }, 409);
-  }
-  let resolveReservation!: (response: Response) => void;
-  let rejectReservation!: (error: unknown) => void;
-  const promise = new Promise<Response>((resolvePromise, rejectPromise) => {
-    resolveReservation = resolvePromise;
-    rejectReservation = rejectPromise;
-  });
-  const reservation: CriticCreateReservation = { requestSha256, requester, promise };
-  criticCreateReservations.set(program.id, reservation);
-  void finishCriticCreate(s, program, sessionIdMatch, requester, sourceCwd, parsed, requestSha256)
-    .then(resolveReservation, rejectReservation)
-    .finally(() => {
-      if (criticCreateReservations.get(program.id) === reservation) criticCreateReservations.delete(program.id);
-    });
-  return (await promise).clone();
 }
 
 const attentionBound = (a: AttentionRequest, s: Slot): boolean =>
@@ -8603,81 +8089,6 @@ const DEFAULT_SPAWN: DispatchSpawn = { harness: null, model: null, effort: null 
 // door's entry gate) goes through this accessor, so "which agent would this row run" has exactly
 // one answer — never a request value, never an env default (pinned in e2e/pins.ts).
 const taskSpawnOf = (t: Task): DispatchSpawn => t.spawn ?? DEFAULT_SPAWN;
-
-function buildCriticBrief(task: Task): string {
-  const critic = task.critic!;
-  const captures = critic.captures.flatMap((capture, index) => [
-    `${index + 1}. ${capture.path}`,
-    `   snapshot: ${capture.snapshot}`,
-    `   bytes: ${capture.bytes}`,
-    `   sha256: ${capture.sha256}`,
-  ]);
-  return [
-    "You are the fresh Critic for one replay evidence set. Observe and report; do not modify, commit, merge, or land.",
-    "Use only the build and immutable capture snapshots named below as prior evidence. Do not seek earlier opinions, summaries, verdicts, transcripts, or prompt journals.",
-    "Run the product at the exact build, replay the stated input through the stated controls, and judge what you directly observe.",
-    `Task: ${task.id}`,
-    `Evidence SHA-256: ${critic.sha256}`,
-    `Exact build: ${critic.build}`,
-    `Launch: ${critic.launch}`,
-    `Controls: ${critic.controls}`,
-    `Replay input: ${critic.input}`,
-    "Immutable captures (verify each full SHA-256 before relying on it):",
-    ...captures,
-    "Return exactly one result through POST /api/self/fleet-report with only status and text. State observations before conclusions and call missing evidence unknown.",
-  ].join("\n");
-}
-
-async function criticBriefAndSend(next: Task, free: Slot,
-  wt: { repo: string; path: string; branch: string; form: LaneForm }, ownerAct: boolean): Promise<void> {
-  const critic = next.critic!;
-  const deliveredBrief = buildCriticBrief(next);
-  const briefSha256 = createHash("sha256").update(deliveredBrief).digest("hex");
-  await Bun.sleep(4000);
-  const identityLost = (): boolean =>
-    free.cwd !== wt.path || free.worktree?.branch !== wt.branch || next.slot !== free.id;
-  if (identityLost()) {
-    next.note = "critic lane identity changed before delivery; no replay was attempted";
-    await saveStateNow();
-    return;
-  }
-  const gateOpts = ownerAct ? { idleMs: 0, killSwitch: false, quietHours: false, harness: false } : { idleMs: 0 };
-  const boot = await canDeliver(free, { now: Date.now(), ...gateOpts });
-  if (!boot.ok) {
-    next.note = `critic delivery held (${boot.gate}${boot.detail ? `: ${boot.detail}` : ""}); no automatic replay`;
-    await saveStateNow();
-    return;
-  }
-  const readiness = await waitForFoundingReadiness(free, () => !identityLost());
-  if (!readiness.ok) {
-    next.note = `${readiness.reason}; critic delivery not attempted`;
-    await saveStateNow();
-    return;
-  }
-  critic.delivery = { ...critic.delivery, status: "send-uncertain", at: Date.now(), briefSha256, acceptance: null };
-  next.note = "critic brief send is unresolved";
-  await saveStateNow();
-  try {
-    const { acceptance } = await sendText(free, deliveredBrief, true, { rollbackOwnPayload: true });
-    critic.delivery.acceptance = acceptance;
-    if (acceptance === "unobservable") {
-      await saveStateNow();
-      return;
-    }
-    critic.delivery.status = "delivered";
-    critic.delivery.at = Date.now();
-    next.note = "critic replay evidence delivered";
-    free.history = [...free.history, { text: deliveredBrief, ts: critic.delivery.at }].slice(-MAX_HISTORY);
-    saveHistory(free);
-    logPrompt(free, deliveredBrief, "auto", critic.delivery.at);
-    await saveStateNow();
-  } catch (e) {
-    critic.delivery.acceptance = e instanceof SendNotAccepted ? e.acceptance : null;
-    next.note = `critic brief send uncertain: ${e instanceof Error ? e.message : e}`.slice(0, 200);
-    await saveStateNow();
-  }
-}
-
 async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify = false,
   spawn: DispatchSpawn = DEFAULT_SPAWN):
   Promise<{ ok: true; slot: number; branch: string; tail: Promise<void> } | { ok: false; error: string }> {
@@ -8719,14 +8130,14 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     // fresh-lane creator too, and must persist the same one-time same-repo decision.
     const dispatchRepo = await repoRootOf(next.repo ?? DISPATCH_REPO);
     const anchor = await decideLaneAnchor(dispatchRepo, undefined);
-    const wt = await createWorktree(dispatchRepo, "", dForm.form, next.critic?.build);
+    const wt = await createWorktree(dispatchRepo, "", dForm.form);
     // no `base` here (the dispatcher lane keeps today's live re-derivation), but the fork
     // commit is still captured — the outcome record needs it after the land moves main
     // model/harness/effort ride in from the attended request or the row's own persisted choice
     // (DEFAULT_SPAWN is the absence shape and is the claude adapter); `label` stays null here
     // because the line below names the slot.
     const dRef: LaneRef = { repo: wt.repo, branch: wt.branch,
-      baseSha: next.critic?.build ?? await laneForkSha(wt.path, await integrationBranch(wt.repo)),
+      baseSha: await laneForkSha(wt.path, await integrationBranch(wt.repo)),
       ...(anchor ? { anchor } : {}),
       // written only for a clone, exactly as openLaneInSlot writes it: a dispatched worktree lane's
       // persisted record must stay byte-identical to the one every dispatch before this produced.
@@ -8882,7 +8293,6 @@ const LANE_EXIT_FOOTER = `
 
 async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: string; branch: string; form: LaneForm },
   ownerAct: boolean, clarify = false): Promise<void> {
-  if (next.critic) return criticBriefAndSend(next, free, wt, ownerAct);
   // clarify mode ignores the compiled brief entirely: the enhancer turns a draft into a work brief
   // WITH a done-criterion, and a task that reached this button is precisely one where that cannot
   // be done yet. Deterministic frame + the raw request, no model call, no failure mode.
@@ -9169,7 +8579,6 @@ function analysisFailed(t: Task, reason: string, head: string | null): TaskAnaly
 // ONE rule for "this row needs the analyst", so there is one place to read and one place to test:
 // never analysed · answered but the ground moved · or a failed reading whose backoff has elapsed.
 function analysisDue(t: Task, now: number): boolean {
-  if (t.critic) return false;
   if (t.kind !== "auftrag" || dispatchingTasks.has(t.id)) return false;
   if (t.status !== "pending" && t.status !== "queued") return false;
   const a = t.analysis;
@@ -9251,7 +8660,6 @@ const briefRetry = new Map<string, { attempts: number; at: number }>();
 // invalidate a brief), the analyst's is a property of the TREE. Sharing analysisDue would have
 // coupled the compiler to a reader that may not exist, which is the very fusion this splits.
 function briefDue(t: Task, now: number): boolean {
-  if (t.critic) return false;
   if (t.kind !== "auftrag" || dispatchingTasks.has(t.id)) return false;
   if (t.status !== "pending" && t.status !== "queued") return false;
   if (t.brief) return false; // machine-written or owner-edited: both mean "compiled, hands off"
@@ -9655,9 +9063,6 @@ async function tickDispatch(): Promise<void> {
       // the tree. Letting it satisfy this gate would hand the unattended queue a permission that
       // nothing had earned — the invariant is about a READING, not about a well-worded prompt.
       if (ANALYSIS_ON) {
-        if (next.critic) {
-          // The critic's server-built evidence brief is not a queue draft and has no analyst verdict.
-        } else {
         const a = next.analysis;
         if (!a || a.verdict === "unknown") { waiting("waiting: not analysed yet — the analyst runs on its own"); return; }
         // A row may now show a real verdict while its re-reading keeps failing (analysisFailed), so
@@ -9703,7 +9108,6 @@ async function tickDispatch(): Promise<void> {
         //     check that starts nothing.
         const hit = a.collides.find((c) => runningIds.has(c) || runningBranches.has(c));
         if (hit) { waiting(`waiting: collides with running work (${hit}) — same files, says the analyst`.slice(0, 200)); continue; }
-        }
       }
       // master stop + quiet hours gate the dispatcher BEFORE a lane is spawned (was
       // synergy-findings.md Tier-0 #1 — neither reached this path) — a paused or quiet fleet leaves
@@ -11826,8 +11230,6 @@ async function agentCommitMessage(cwd: string, repo: string | null): Promise<str
 }
 
 async function commitLane(s: Slot, mode: "quick" | "agent"): Promise<Response> {
-  if (criticTaskForSlot(s))
-    return json({ error: "critic lanes cannot commit through Fleet" }, 409);
   const cwd = s.cwd!;
   const lane = !!s.worktree;
   const st = await statusLines(cwd); // column-preserving — see statusLines
@@ -17411,6 +16813,32 @@ merely order the work: it owns the playable product and the experience a person 
 coherence cannot be delegated, because what is being judged is what a hand and an eye meet, and
 that meeting happens here.
 
+EVERY NEW GAME PROGRAM COMPLETES ONE PREFLIGHT BEFORE ANY IMPLEMENTATION. The order is:
+Architect -> 0-2 named fact/risk probes -> fresh independent cross-model Review -> MAIN ACCEPT|RETHINK|OWNER.
+
+FILE ONE NORMAL ARCHITECT TASK first. Its sole deliverable is one committed DRAFT GAME-CARD.md
+containing one to four executable first-slice briefs. Every brief names dependencies, exclusive write set, stop, Done and literal Verify.
+It proposes implementation; it performs none.
+
+OPTIONALLY RUN ZERO TO TWO NAMED FACT/RISK PROBES after the Architect result. A probe answers one
+named uncertainty with evidence and may not mutate the product or silently widen the Card.
+
+THEN RUN ONE FRESH INDEPENDENT CROSS-MODEL REVIEW after the Architect and every probe. Use a model
+different from the Architect's. Give it only the owner-confirmed Program, repository, Architect SHA and named probe facts -
+never the MAIN/Architect chat or rationale. Inside that confirmed Program boundary the isolated
+Review act may optimize the Card and its one to four briefs, then commits the final Card. It outputs
+one verdict and, on acceptance, exactly ACCEPT <final-card-sha>.
+
+MAIN DISPOSITION IS EXACTLY ACCEPT, RETHINK OR OWNER. On ACCEPT, LAND EXACTLY THE REVIEWER'S FINAL
+CARD COMMIT, copy its first-slice briefs verbatim into normal tasks, and release only dependency-free
+roots. RETHINK is not a review loop: file no implementation task, land no final Card and obtain the
+named missing evidence before starting one new Preflight. OWNER likewise files no implementation
+task and lands no final Card; raise one attention with the unresolved decision. NO IMPLEMENTATION TASK MAY BE FILED OR RELEASED BEFORE ACCEPT.
+
+DIRECT SLICE is the only Preflight bypass: a small feature inside an already accepted Program and
+GAME-CARD.md, and only when it is bounded, reversible, low-risk and changes no core contract. A
+new Program, a missing Card, a broad surface or a core-contract change is never a Direct Slice.
+
 BEFORE ANY SENSORY CLAIM, and before you widen any player-facing work, do all four.
 Launch the exact artifact you are about to speak about.
 Exercise it through the app's REAL input layer with actual keyboard, mouse or gamepad input, or
@@ -17427,17 +16855,16 @@ SUBSTANTIAL SERIAL PRODUCT WORK MAY STAY IN THIS PANE, for exactly one reason: f
 play, perception, implementation, repair and replay are indivisible - the perception IS the
 product, and a fresh session per repair round cannot carry what the last replay felt like. That is
 not a licence to keep everything. Separable specialist work, parallel mutation of different
-surfaces, independent proof, and work that wants fresh criticism still leave this pane as isolated
-worker lanes, exactly as the loop below describes. When the two readings are close, ask whether the
-next act needs YOUR hands on the controls; if it does not, it is a lane.
+surfaces and independent proof still leave this pane as isolated worker lanes, exactly as the loop
+below describes. When the two readings are close, ask whether the next act needs YOUR hands on the
+controls; if it does not, it is a lane.
 
-YOU CRITIQUE YOUR OWN WORK CONTINUOUSLY, and at four moments you bring in
-one fresh, context-rich, hands-on critic instead of trusting that habit: before the first build
-under a new anchor the owner did not fix for you, after the first tiny playable, before a declared
-taste gate, and when you are about to call a player-facing defect closed. The critic is evidence, not authority -
-you decide, you repair, you replay. Final taste and release stay the owner's.
-There is no standing Advisor in this Program and nothing nudges you on a timer: you ask for a critic when one of those
-four moments arrives, and otherwise you work.
+SENSORY CRITIC IS POST-PLAY ONLY. After a playable exists, an operator may orchestrate one fresh,
+independent sensory look using a sealed build, launch, real-input and capture pack. The Critic gets
+no Game Card, no HANDOFF.md and no hypotheses; it also gets no rationale, open defect, rejected
+direction or earlier verdict. It reports what the sealed play evidence shows. The Critic is
+evidence, not authority: you decide, repair and replay; final taste and release stay the owner's.
+There is no standing Advisor, automatic nudge or Critic route in this Program.
 
 FOUR TRUTHS STAY APART and are never folded into one another:
 technical, hands_on, sensory_critic and owner_taste.
@@ -17447,17 +16874,8 @@ KEEP THE COMMITTED "## Current game checkpoint" CURRENT throughout your tenure, 
 succession is already due. It has exactly seven one-line fields in this order: ${GAME_CHECKPOINT_FIELDS.join(", ")}.
 Last replay names the exact seed, real input and capture evidence when those apply. This is
 predecessor-to-successor and owner evidence, not a substitute for replay and never input to a fresh
-critic.
-
-A REPO-DECLARED CONTEXT ANCHOR IS A CRITIC-SAFE POINTER SET AND NOTHING MORE. The ContextPlan card
-your repository declares may carry the product promise, its references, the build sha, the one-step
-launch, the controls, a seed and where the captures are. It may never carry any of four things:
-your current hypothesis, an open defect you are chasing, a rejected direction, or an earlier verdict.
-Those belong in your own checkpoint or in an explicit non-critic task brief. The committed
-HANDOFF.md checkpoint is predecessor-to-successor and owner proof: never give a fresh critic its
-path or contents, and tell that critic explicitly not to read HANDOFF.md. A fresh critic gets only
-the Game Card, product references, build, launch, controls, seed, artifact and captures; a critic
-who reads your answer before looking is no longer a fresh one.`;
+sensory critic. ContextPlan, GAME-CARD.md and HANDOFF.md remain MAIN/succession inputs, never sensory
+Critic inputs.`;
 
 const RAIL_TAIL = `
 
@@ -18995,28 +18413,12 @@ if (existsSync(STATE_FILE)) {
     if (Array.isArray(persisted.recents)) recents = persisted.recents.filter((r): r is string => typeof r === "string");
     if (Array.isArray((persisted as { pins?: unknown }).pins))
       pins = ((persisted as { pins: unknown[] }).pins).filter((r): r is string => typeof r === "string").slice(0, MAX_PINS);
-    if (Array.isArray((persisted as { tasks?: unknown }).tasks)) {
-      const parsedCritics = new WeakMap<object, TaskCritic>();
-      tasks = ((persisted as { tasks: unknown[] }).tasks).filter((x): x is Task => {
-        const markedCritic = typeof x === "object" && x !== null
-          && Object.prototype.hasOwnProperty.call(x, "critic");
-        const structurallyValid = typeof x === "object" && x !== null
-          && typeof (x as Task).id === "string" && typeof (x as Task).text === "string"
-          && ["owner", "intake", "steward", "main"].includes((x as Task).source)
-          && ["pending", "queued", "sent", "done", "archived"].includes((x as Task).status);
-        if (!structurallyValid || (markedCritic && !/^[a-z0-9]+$/.test((x as Task).id))) {
-          if (markedCritic) startupStateRefusal ??= "fleet.json contains a Critic marker on an unreadable Task row";
-          return false;
-        }
-        if (!markedCritic) return true;
-        const parsedCritic = taskCriticFrom((x as { critic?: unknown }).critic, (x as Task).id, (x as Task).status);
-        if (parsedCritic === null) {
-          startupStateRefusal ??= `Critic Task ${(x as Task).id} has malformed metadata or missing/tampered snapshot evidence`;
-          return false;
-        }
-        parsedCritics.set(x, parsedCritic);
-        return true;
-      })
+    if (Array.isArray((persisted as { tasks?: unknown }).tasks))
+      tasks = ((persisted as { tasks: unknown[] }).tasks).filter((x): x is Task =>
+        typeof x === "object" && x !== null
+        && typeof (x as Task).id === "string" && typeof (x as Task).text === "string"
+        && ["owner", "intake", "steward", "main"].includes((x as Task).source)
+        && ["pending", "queued", "sent", "done", "archived"].includes((x as Task).status))
         // The 2026-08-10 kind migration is deliberately a load normalisation: legacy lane/note
         // rows become auftrag/notiz, already-migrated rows remain byte-stable on every reload,
         // and malformed/pre-field rows retain the old source-based safe default. The spread keeps
@@ -19034,10 +18436,6 @@ if (existsSync(STATE_FILE)) {
           // Program membership is owner-authored provenance. Preserve a valid persisted string,
           // but never infer one from the Program registry or strip one because that registry moved.
           programId: typeof t.programId === "string" && t.programId ? t.programId : undefined,
-          // Parsed and hashed exactly once above. Re-reading snapshot bytes here doubled both the
-          // startup cost and the TOCTOU surface, and an invalid second read used to degrade the
-          // row to an ordinary Task after the filter had admitted it.
-          critic: Object.prototype.hasOwnProperty.call(t, "critic") ? parsedCritics.get(t) : undefined,
           // rows released before this field existed stay ABSENT, and a malformed value degrades to
           // absent too — never to "owner". The whole point of the field is that a released row can
           // be told apart from one nobody recorded; a default would erase exactly that distinction
@@ -19099,7 +18497,6 @@ if (existsSync(STATE_FILE)) {
               .slice(-MAX_COMMENTS_PER_TASK)
             : undefined }));
       tasks = capTasks(tasks);
-    }
     // Programs are a durable owner bracket, but old state has no such member. Absence therefore
     // stays the initialized [], with no provenance inferred from slots or tasks. Valid rows are
     // reconstructed from their declared fields so extra hand-written keys are never persisted.
@@ -19532,34 +18929,17 @@ pruneClarifications();
 // back is refused at boot rather than left pointing at a slot number someone else may now hold.
 reconcileAttention();
 pruneAttention();
-// Close Critic ownership before the ordinary task reconcile. An unpublished act loses its only
-// requester terminally; an attempted delivery loses its lane terminally and is never made
-// resendable. Only a Critic whose prompt was never attempted can return to the released queue.
+// a task dispatched just before shutdown is persisted as `sent` pointing at a slot; if that
+// slot didn't come back as a live lane (worktree removed out-of-band, pane gone), requeue it
+// instead of leaving it "sent" forever with nothing running
 for (const t of tasks) {
-  if (t.critic && (t.status === "pending" || t.status === "queued")) {
-    const requester = slotFrom(t.critic.requester.slot);
-    if (!requester?.cwd || requester.openedAt !== t.critic.requester.openedAt
-      || requester.sessionId !== t.critic.requester.sessionId) {
-      t.status = "archived";
-      t.slot = null;
-      t.note = "critic terminal: requester occupant absent after restart";
-      continue;
-    }
-  }
   if (t.status === "sent" && !(t.slot != null && slotFrom(t.slot)?.worktree)) {
-    if (t.critic && t.critic.delivery.status !== "pending") {
-      t.status = "archived";
-      t.note = `critic terminal: delivery ${t.critic.delivery.status}; lane absent after restart; no automatic resend`;
-      t.slot = null;
-      continue;
-    }
     t.status = "queued";
     t.note = "requeued after restart";
     t.slot = null;
   }
 }
-await saveStateNow();
-pruneCriticSnapshots();
+saveState();
 for (const s of slots) {
   if (!s.cwd) continue;
   const retirement = s.successionRetirement;
@@ -21611,26 +20991,6 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
   return null;
 }
 
-function guardCriticSelfPost(req: Request, url: URL): Response | null {
-  const selfPath = url.pathname === "/api/self" || url.pathname.startsWith("/api/self/");
-  if (req.method !== "POST" || !selfPath
-    || url.pathname === "/api/self/fleet-report") return null;
-  const given = req.headers.get("x-fleet-self-token") ?? "";
-  const s = given ? slots.find((slot) => slot.cwd && slot.selfToken && secretEq(given, slot.selfToken)) : undefined;
-  if (!s || !criticTaskForSlot(s)) return null;
-  return json({ error: "critic lanes may POST only their one fleet-report" }, 409);
-}
-
-function guardCriticOwnerTaskPost(req: Request, url: URL): Response | null {
-  if (req.method !== "POST") return null;
-  const match = /^\/api\/tasks\/([a-z0-9]+)\/([a-z0-9-]+)$/.exec(url.pathname);
-  if (!match || match[2] === "critic-cancel") return null;
-  const task = tasks.find((candidate) => candidate.id === match[1]);
-  return task?.critic
-    ? json({ error: "critic tasks accept only the explicit critic-cancel owner mutation" }, 409)
-    : null;
-}
-
 
 Bun.serve<WSData>({
   hostname: HOST,
@@ -21686,9 +21046,6 @@ Bun.serve<WSData>({
         || /^\/(s\/[a-z0-9]+(\/(auth|info|send|diff|comments|brief|summary|transcript))?|ws-share\/[a-z0-9]+)$/.test(url.pathname);
       if (!pub) return new Response("not found", { status: 404 });
     }
-
-    const criticSelfPostBlocked = guardCriticSelfPost(req, url);
-    if (criticSelfPostBlocked) return criticSelfPostBlocked;
 
     // the session's own row — the read half of the self family, and the one that belongs to EVERY
     // session rather than to a lane. It exists because /api/self/gate is the wrong carrier for it:
@@ -21966,15 +21323,6 @@ Bun.serve<WSData>({
       return openAttention(s, await readJson(req));
     }
 
-    if (url.pathname === "/api/self/critic" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
-      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
-      if (s.worktree)
-        return json({ error: "a critic is requested by the bound Program-MAIN, never by a lane" }, 409);
-      return createCriticForMain(s, await readJson(req));
-    }
-
     // ACP-23 · Program-MAIN filing. Non-lane only, for the same "one edge per role" reason as its
     // two neighbours: a lane EXECUTES the row it was founded on — it does not fill the queue its
     // own MAIN releases from. Placed ABOVE the release route on purpose: that route's pin holds
@@ -22155,7 +21503,6 @@ Bun.serve<WSData>({
       // find-by-slot used elsewhere can hit a landed row, because landLane leaves `t.slot` set
       const t = tasks.find((x) => x.slot === s.id && x.status === "sent");
       if (!t) return json({ error: "no founding task on this slot to attach a criterion to" }, 409);
-      if (t.critic) return json({ error: "critic lanes cannot open clarifications or propose completion criteria" }, 409);
       // re-proposing REPLACES an unconfirmed draft (the lane may refine it mid-conversation) but
       // never a confirmed one: that would let the producer edit the anchor after the promotion
       if (t.criterion?.confirmedAt) return json({ error: "criterion already confirmed by the owner — it is theirs now" }, 409);
@@ -22483,9 +21830,6 @@ Bun.serve<WSData>({
 
     // everything below carries authority — token required
     if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
-
-    const criticOwnerTaskPostBlocked = guardCriticOwnerTaskPost(req, url);
-    if (criticOwnerTaskPostBlocked) return criticOwnerTaskPostBlocked;
 
     const wsMatch = /^\/ws\/(\d+)$/.exec(url.pathname);
     if (wsMatch) {
@@ -23286,7 +22630,6 @@ Bun.serve<WSData>({
       if (req.method === "GET")
         return json({ running: mergeInflight.has(s.id) || mergeStart.has(s.id), last: mergeLast.get(s.id) ?? null,
           undoable: undoableFor(s.worktree.repo) });
-      if (criticTaskForSlot(s)) return json({ error: "critic lanes cannot merge or land through Fleet" }, 409);
       if (mergeInflight.has(s.id) || mergeStart.has(s.id)) return json({ running: true });
       mergeStart.add(s.id); // reserve BEFORE the first await — two parallel POSTs otherwise both start a rebase
       // WHO IS CALLING, as far as this route can honestly tell. The channel is what tokenFrom
@@ -23933,24 +23276,6 @@ Bun.serve<WSData>({
     // Surface/cluster fields are read-only views over the current tracked tree; never persist the
     // weaker derivation merely because a dashboard was opened.
     if (url.pathname === "/api/tasks" && req.method === "GET") return json({ tasks: tasks.map(taskView) });
-    const criticCancel = /^\/api\/tasks\/([a-z0-9]+)\/critic-cancel$/.exec(url.pathname);
-    if (req.method === "POST" && criticCancel) {
-      const task = tasks.find((candidate) => candidate.id === criticCancel[1]);
-      if (!task) return json({ error: "unknown task" }, 404);
-      if (!task.critic) return json({ error: "task is not a critic act" }, 409);
-      if (task.status === "archived") {
-        cleanupCriticSnapshot(task);
-        return json({ ok: true, existing: true, task });
-      }
-      if (task.status === "done") return json({ error: "completed critic evidence cannot be cancelled" }, 409);
-      const lane = task.status === "sent" && task.slot !== null ? slotFrom(task.slot) : null;
-      if (lane?.cwd && lane.taskId === task.id) {
-        await killSlot(lane, "owner");
-      } else {
-        await archiveCriticTasks([task], "critic terminal: explicitly cancelled by owner");
-      }
-      return json({ ok: true, task });
-    }
     // The reversible category route. `adopt` predates the four-value model and remains below as a
     // compatibility alias for notiz→auftrag; this route is the complete owner surface, including
     // the route back. It sits past tokenGate, like every other owner task mutation.
@@ -23983,7 +23308,6 @@ Bun.serve<WSData>({
     if (req.method === "POST" && taskDispatch) {
       const t = tasks.find((x) => x.id === taskDispatch[1]);
       if (!t) return json({ error: "unknown task" }, 404);
-      if (t.critic) return json({ error: "critic dispatch is released only by its exact requesting MAIN" }, 409);
       // a task with its own target repo starts fine without the env default
       if (!DISPATCH_REPO && !t.repo) return json({ error: "no target repo — set FLEET_DISPATCH_REPO or give the task a repo" }, 400);
       if (t.kind !== "auftrag") return json({ error: `${t.kind} is advisory — the dispatcher never runs this` }, 409);
@@ -24236,7 +23560,6 @@ Bun.serve<WSData>({
     if (req.method === "POST" && taskAct) {
       const t = tasks.find((x) => x.id === taskAct[1]);
       if (!t) return json({ error: "unknown task" }, 404);
-      if (t.critic) return json({ error: "critic tasks have one closed create/release/report lifecycle" }, 409);
       // a running lane's founding task must stay tracked — the shelf is not a place to hide live
       // work. `delete` shares the guard (2026-08-05): deleting a sent row didn't just hide it, it
       // orphaned the lane — /api/self/criterion resolves the founding task by slot+status "sent",

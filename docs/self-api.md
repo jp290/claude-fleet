@@ -740,22 +740,49 @@ die erlaubende Antwort liest, ist keins.
 
 **Dediziert heißt dediziert (409).** Der Schutz gilt nicht nur in einem Preflight-Snapshot:
 `gameMakerTreeLeases` reserviert den angefragten Baum synchron und kanonisiert ihn nach dem git-
-Preflight; jede `openSlot`-Variante meldet davor ein `OpenSlotIntent` und prüft dieselbe Grenze. Damit
-schließen beide Reihenfolgen — Game-Maker zuerst oder generischer Open zuerst — bevor zwei Sessions
-denselben Baum betreten. Eine laufende Game-Maker-MAIN hält ihren konkreten linked worktree bis Kill
-oder Program-Abschluss exklusiv. Ein sibling linked worktree desselben Repositories bleibt erlaubt;
-Standard gegen Standard bleibt unverändert. Die Nachfolge besitzt als einzigen Permit exakt
-`{slot, openedAt}` ihrer gebundenen Vorgängerin und lehnt jede weitere Besetzung ab.
+Preflight; jede `openSlot`-Variante meldet davor ein `OpenSlotIntent` und prüft dieselbe Grenze. Nach
+Preflight und Slot-Auswahl trägt das Program zusätzlich den server-erzeugten, geschlossenen
+Sicherheitsmarker `founding?: {v:1, attemptId, mode:"bootstrap"|"succession", canonicalRoot,
+target:{slot,openedAt}, predecessor:{slot,openedAt}|null, startedAt}`. Er wird durabel geschrieben,
+**bevor** `openSlot` oder der Pane-Spawn beginnt; kein Request-Body darf `attemptId` oder
+`openedAt` wählen. Der gemeinsame Tree-Gate schützt Live-Bindungen, synchrone Leases und persistierte
+`founding.canonicalRoot`s. Nur der interne Versuch mit genau derselben Attempt-/Target-Identität
+darf seinen reservierten Slot öffnen.
 
-Alle diese Ablehnungen gelten für Bootstrap UND Nachfolge und kommen, BEVOR ein Slot geöffnet, eine
-Bindung bewegt oder ein Context-Receipt geschrieben wurde. Standard-Programs sind nicht berührt.
+Damit schließen beide Reihenfolgen — Game-Maker zuerst oder generischer Open zuerst — bevor zwei
+Sessions denselben Baum betreten, auch über einen Server-Neustart hinweg. Eine laufende Game-Maker-
+MAIN hält ihren konkreten linked worktree bis Kill oder Program-Abschluss exklusiv. Ein sibling
+linked worktree desselben Repositories bleibt erlaubt; Standard gegen Standard bleibt unverändert.
+Die Nachfolge besitzt als einzigen Permit exakt `{slot, openedAt}` ihrer gebundenen Vorgängerin und
+lehnt jede weitere Besetzung ab.
 
-**Die Gründung ist gegen einen Profilschreiber gesperrt.** Solange ein Program-MAIN-Founding dieses
-Programs läuft (`programBootstrapInflight`), antwortet die Profil-Tür auf eine **echte Änderung**
-409: die Gründung liest den Record ZWEIMAL — an der Maschinenprüfung und beim Bauen des Briefs — und
-dazwischen liegen Slot-Öffnung, Boot-Grace und Readiness-Wait. Ohne diese Sperre könnte ein Standard-
-Bootstrap, dessen Maschinenprüfung niemand gefahren hat, einen game-maker-Brief ausgeliefert
-bekommen. Ein identischer Retry antwortet davor 200 und schreibt nichts.
+Preflight-Ablehnungen gelten für Bootstrap UND Nachfolge und kommen, BEVOR ein Slot geöffnet, eine
+Bindung bewegt oder ein Context-Receipt geschrieben wurde. Sobald der Sicherheitsmarker existiert,
+ist er selbst die beabsichtigte Crash-Barriere. Standard-Programs tragen ihn nie und sind in Shape,
+Prompt-Bytes und Verhalten nicht berührt.
+
+**Restart und der eine Erfolgsschnitt.** Der Loader akzeptiert `founding` nur als den exakten v1-
+Satz oben und nur an einem aktiven `game-maker`-Program. Ein vorhandener unbekannter oder
+missgebildeter Marker verweigert den Serverstart; nur Legacy-Abwesenheit bleibt Abwesenheit. Nach
+State-/Slot-Load und tmux-Adoption, aber vor Self-Heal und `Bun.serve`, wird ein valider offener
+Versuch deterministisch zurückgerollt: ohne Kandidat wird nur der stale Marker gelöscht; der exakt
+passende Kandidat wird zuerst beendet, seine tmux-Abwesenheit bewiesen und erst dann werden Slot und
+Marker gelöscht. Ein recycelter Target-Slot in einem anderen Baum bleibt unangetastet und nur der
+Marker fällt; eine widersprüchliche Belegung im geschützten Baum verweigert den Start und lässt
+Marker und Pane stehen. Eine Succession behält dabei ihre alte `Program.main`-Bindung. Es gibt weder
+Brief-Replay noch Auto-Bind; ein bereits geschriebenes Receipt darf verwaisen und ist nie
+Bindungsquelle. Erfolg schreibt zuerst das Receipt und verschiebt dann in genau einem durablen
+Program-State-Cut `founding -> main`. Owner-Kill eines exakten Founding-Targets benutzt denselben
+kill→Abwesenheitsbeweis→Slot-/Marker-Cleanup-Pfad.
+
+**Lifecycle-Schreiber sind während der Gründung gesperrt.** Solange ein Program-MAIN-Founding dieses
+Programs läuft — synchron in `programBootstrapInflight` oder durabel in `Program.founding` —
+antworten eine **echte Profiländerung**, ein zweites Founding und `complete` mit 409. Die Gründung
+liest das Profil ZWEIMAL — an der Maschinenprüfung und beim Bauen des Briefs — und dazwischen liegen
+Slot-Öffnung, Boot-Grace und Readiness-Wait. Ohne diese Sperre könnte ein Standard-Bootstrap, dessen
+Maschinenprüfung niemand gefahren hat, einen game-maker-Brief ausgeliefert bekommen; `complete`
+könnte eine später gebundene MAIN an ein terminales Program hängen. Ein identischer Profil-Retry
+antwortet vor allen Sperren 200 und schreibt nichts.
 
 **Die Nachfolge hat ein zweites Gate.** Das generische bleibt unverändert (HANDOFF.md existiert, ist
 sauber, jünger als die Session). Für `game-maker` wird zusätzlich die COMMITTETE HEAD-Fassung

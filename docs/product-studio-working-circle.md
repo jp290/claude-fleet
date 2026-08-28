@@ -204,19 +204,30 @@ machinery — is that severance in one form or another.
    checkout, a target repo's primary checkout, and **any linked worktree of Fleet itself** — that
    last one has its own git toplevel and is `linked`, so only repository *identity* (the canonical
    `--git-common-dir`, the object store every worktree of one repo shares) catches it. An
-   unreadable identity refuses too. **Dedicated is enforced continuously**: a process-local lease
-   reserves the requested tree before the first await, canonicalizes to git's toplevel after
-   preflight and stays held through brief, binding and receipt; every `openSlot` variant announces an
-   intent and checks live Game-Maker trees plus leases before its first await. A second live or
-   in-flight session in the same worktree therefore refuses in either request order. A succession's
-   only permit is the exact bound predecessor `{slot, openedAt}`; another linked worktree sharing the
-   repository remains a different tree. Game-Maker MAIN starts at the canonical git toplevel;
-   Standard cwd handling stays byte-identical. Every refusal lands before a slot opens, before a
-   binding moves and before a receipt is written. While a founding is in flight a **real profile
-   change** is locked (409), because the founding reads it twice with seconds of awaits in between;
-   an identical grant/clear retry answers 200 before that and every lifecycle gate, with no new
-   timestamp, audit or save.
+   unreadable identity refuses too. **Dedicated is enforced continuously**: a synchronous lease
+   reserves the requested tree before the first await and canonicalizes to git's toplevel after
+   preflight. Before pane creation, Fleet durably records one closed v1 `Program.founding` with a
+   server-created attempt, canonical root and exact `{slot, openedAt}` target. Every `openSlot`
+   variant checks live Game-Maker trees, leases and persisted founding roots before its first await;
+   only the exact internal attempt may cross its own reservation. A second live or in-flight session
+   in the same worktree therefore refuses in either request order and after a Fleet restart. A
+   succession's predecessor remains its exact bound `{slot, openedAt}`; another linked worktree
+   sharing the repository remains a different tree. Game-Maker MAIN starts at the canonical git
+   toplevel; Standard cwd handling stays byte-identical. Preflight refusals land before a slot,
+   binding or receipt exists. While a founding is in flight a **real profile change**, `complete`
+   and another founding are locked (409); an identical grant/clear retry answers 200 before every
+   lifecycle gate, with no new timestamp, audit or save.
 3. **Succession carries a checkpoint.** See the next section.
+
+**A restart never guesses authority.** A malformed or unknown-version `founding` marker stops
+startup rather than degrading to absence. A valid unfinished attempt is recovered after tmux
+adoption and before any self-heal or server listen: no candidate clears the stale marker; an exact
+candidate is killed and its tmux absence proved before Slot and marker are cleared; a different-tree
+occupant is preserved; an ambiguous occupant inside the protected tree stops startup with both pane
+and marker untouched. Succession recovery leaves the predecessor binding unchanged. Fleet never
+re-sends the brief and never binds from a Receipt. On success the Receipt is written first; then one
+durable state mutation installs the exact target as `main` and removes `founding`. An orphan Receipt
+is evidence of an interrupted delivery, not authority.
 
 **The sensory gate, in the delivered text.** Before any sensory claim and before widening
 player-facing work, MAIN must launch the exact artifact; exercise it through the app's real input

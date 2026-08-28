@@ -76,7 +76,12 @@ Controller is a scope a plain session carries, not a binding — do not read thi
   than the change. Substantial product implementation, broad or parallel work, specialist work, work
   that wants fresh criticism, and work whose independent evidence or isolation materially matters go
   to an isolated worker lane. Routing every small edit through a worker is the scheduler failure;
-  building the whole product in the MAIN checkout is the other.
+  building the whole product in the MAIN checkout is the other. One narrow exception, and only by
+  owner promotion: a **Game-Maker Program-MAIN** may do substantial serial work itself where
+  implementation, launch, actual control, perception, repair and replay form one
+  causally coupled product act — the perception is the product, and a fresh session per repair
+  round cannot carry it.
+  Separable, parallel, specialist, independent-proof and fresh-critic work stays isolated there too.
 - A worker's report is a CLAIM. Proof is the diff plus the exact verification output. `PLAYABLE`
   means an artefact exists and was seen to run; it never means the owner has played it.
 - Observations precede labels. Missing or failed evidence is `unknown`, never zero, false, or pass.

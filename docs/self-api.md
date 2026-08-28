@@ -684,6 +684,100 @@ dieser Zeile gehört gerade keine Tür".
 | OWNER_GATE | eine offene Frage wartet auf den Owner |
 | RUNNING · CONTINUE · UNKNOWN | `null` |
 
+## profile — `POST /api/programs/:id/profile` (OWNER-Route, nicht `/api/self/*`)
+
+Sie steht hier aus demselben Grund wie §promotion: sie schreibt einen Record, den eine Session an
+anderer Stelle VERBRAUCHT — nur ist es diesmal keine Erlaubnis, sondern die **Ausführungsumgebung**,
+in die eine Program-MAIN gegründet und in der sie danach beurteilt wird. Auch sie ist eine
+**Owner-Route hinter `tokenGate`**: ein Self-Token bekommt 401, nicht 409. Eine Session, die ihn
+schreiben könnte, würde sich ihre eigene Umgebung aussuchen. Genau EIN Schreiber im Server, und
+kein Loader legt ihn je an.
+
+```
+curl -X POST http://<fleet-host>:<port>/api/programs/<program>/profile \
+  -H "content-type: application/json" -H "authorization: Bearer $FLEET_TOKEN" \
+  -d '{"profile":{"v":1,"kind":"game-maker"}}'   # erteilen
+curl -X POST http://<fleet-host>:<port>/api/programs/<program>/profile \
+  -H "content-type: application/json" -H "authorization: Bearer $FLEET_TOKEN" \
+  -d '{"profile":null}'                          # löschen (idempotent)
+```
+
+**Der Record ist geschlossen und versioniert:** `{v:1, kind:"game-maker"}`. `confirmedAt` stempelt
+der Server. Der Body liest ausschließlich `profile`; jeder weitere Top-Level-Key ist 400, jeder
+unbekannte Key INNERHALB des Records ebenso, `v !== 1` ebenso, ein `kind` außerhalb der Liste
+ebenso. **Abwesenheit ist die exakte Legacy-Form** — die Standard-MAIN, Byte für Byte.
+
+**Der Loader degradiert zur ABWESENHEIT, nie feldweise** (wie bei §promotion) — und er nimmt dabei
+nie die Program-Zeile mit: ein unlesbares Profil kostet den Record, nicht die bestätigte
+Owner-Arbeit.
+
+**Unveränderlichkeit, und warum sie hier strenger ist als bei der Promotion.** Eine Promotion wird
+pro Land ausgegeben und an der Land-Route frisch geprüft; ein Profil wird EINMAL ausgegeben, bei der
+Gründung — Gründungstext, Maschinenprüfung und Nachfolge-Gate hängen alle daran. Deshalb:
+
+| Zustand | Schreiben |
+| --- | --- |
+| `complete` | 409 — Receipts, Outcomes und Briefs sind gegen die gelaufene Umgebung datiert |
+| `active` **und** LIVE gebundene MAIN | 409 — die Session wurde unter diesem Vertrag gegründet |
+| `active`, Bindung stale oder abwesend | erlaubt — genau hier soll die nächste Gründung eine frische Owner-Entscheidung benutzen |
+| identische Erteilung / Löschung | `ok:true` als echter No-Op; `confirmedAt` wird NICHT neu gestempelt |
+
+**Die Maschinengrenze von `game-maker`** wird aus git-Fakten abgeleitet, nie aus Dateinamen oder
+Prompt-Text: `--absolute-git-dir` gegen `--git-common-dir` für die Checkout-Art, und der
+**kanonische `--git-common-dir` für die Repository-IDENTITÄT** (alle worktrees eines Repositories
+teilen einen Object-Store). Eine game-maker-MAIN darf nur in einem **dedizierten linked worktree
+eines Ziel-Repositories** gegründet werden. Abgelehnt (400) werden daher drei Formen, jede mit
+eigenem Satz:
+
+| cwd | Warum |
+| --- | --- |
+| Fleet-Control-Checkout | eine Game-MAIN, die Fleet mutiert, ist nicht der Produktakt, den der Owner gewählt hat |
+| PRIMÄR-Checkout des Ziel-Repos | der Baum, in dem alles andere steht, inklusive des Owners |
+| **linked worktree von FLEET selbst** | hat einen eigenen toplevel, liest also `target-repo` UND `linked` — nur die Repository-Identität lehnt ihn ab |
+
+Eine **unlesbare** Identität lehnt ebenfalls ab: ein Gate, das seine eigene fehlende Messung als
+die erlaubende Antwort liest, ist keins.
+
+**Dediziert heißt dediziert (409).** Steht eine ZWEITE lebende Session im selben linked worktree,
+wird die Gründung abgelehnt — eine zweite Session im Baum macht jede Beobachtung der MAIN
+unzuordenbar. Die Nachfolge schließt genau ihre eigene Vorgängerin aus (sie geht ja) und lehnt
+jede weitere Besetzung ab. Das ist ein Pfad-Fakt über den Verzeichnisbaum, kein Namensheuristik.
+
+Alle diese Ablehnungen gelten für Bootstrap UND Nachfolge und kommen, BEVOR ein Slot geöffnet, eine
+Bindung bewegt oder ein Context-Receipt geschrieben wurde. Standard-Programs sind nicht berührt.
+
+**Die Gründung ist gegen einen Profilschreiber gesperrt.** Solange ein Program-MAIN-Founding dieses
+Programs läuft (`programBootstrapInflight`), antwortet die Profil-Tür 409: die Gründung liest den
+Record ZWEIMAL — an der Maschinenprüfung und beim Bauen des Briefs — und dazwischen liegen
+Slot-Öffnung, Boot-Grace und Readiness-Wait. Ohne diese Sperre könnte ein Standard-Bootstrap, dessen
+Maschinenprüfung niemand gefahren hat, einen game-maker-Brief ausgeliefert bekommen.
+
+**Die Nachfolge hat ein zweites Gate.** Das generische bleibt unverändert (HANDOFF.md existiert, ist
+sauber, jünger als die Session). Für `game-maker` wird zusätzlich die COMMITTETE HEAD-Fassung
+gelesen: ihr erster Abschnitt muss höchstens 4096 Bytes groß sein, exakt `## Current game
+checkpoint` überschrieben sein und genau die sieben einzeiligen Felder `Build` (40 Zeichen
+kleingeschriebenes Hex) · `Launch` · `Last replay` · `Experience` · `Open defect` · `Next` ·
+`Critic` tragen — keine Zeile mehr. Fehlend, doppelt, mehrzeilig, leer oder zu groß ⇒ 409, ohne
+Slot, ohne Rebind, ohne Receipt. **`Build` muss zusätzlich ein Commit sein, das dieses Repository
+HAT** (`git cat-file -t`): vierzig Hex-Zeichen sind eine Form, kein Build, und eine sha, die nichts
+benennt, macht den Vergleich der Nachfolgerin zu einer unbeantwortbaren Prüfung im Gewand einer
+Prüfung. Dass Fleet damit den GESPIELTEN Commit beweist, folgt daraus NICHT — das bleibt die eigene
+Beobachtung der Session und bleibt bei Abweichung `unknown`.
+
+**`carry` ist für eine game-maker-Nachfolge 409.** Es gibt genau EINEN Übergabekanal, und das ist
+der committete Checkpoint: lesbar für Nachfolgerin, Kritiker und Owner, und er überlebt die Pane.
+`carry` ist ein unpersistierter Satz im Prompt; beide zusammen wären zwei Kanäle, die einander
+widersprechen können. Abgelehnt statt ignoriert — ein still verworfener carry ist eine Übergabe, die
+ihre Autorin für zugestellt hält. Für Standard-Programs bleibt `carry` unverändert.
+
+**Projektion:** `GET /api/programs` trägt den Record im vollen Row mit; `GET
+/api/self/program-execution` trägt ihn als `program.profile` (`null` = Standard-MAIN), damit die
+gebundene MAIN einen typisierten Sensor hat statt ihre eigene Prosa zu lesen. Der heiße
+`ProgramDigest` der 2-s-Sessions-Poll bleibt unverändert bei vier Feldern.
+
+**Trail:** jede Erteilung und jede echte Löschung schreibt `program_profile`.
+
+
 ## promotion — `POST /api/programs/:id/promotion` (OWNER-Route, nicht `/api/self/*`)
 
 Sie steht hier, weil sie die eine Erlaubnis erteilt, die eine Session an anderer Stelle VERBRAUCHT

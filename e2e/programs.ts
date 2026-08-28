@@ -2317,10 +2317,28 @@ export async function run(ctx: Ctx): Promise<void> {
       && gmRole.includes("OWNER likewise files no implementation")
       && gmRole.includes("lands no final Card"),
     gmRole.slice(gmRole.indexOf("THEN RUN ONE"), gmRole.indexOf("DIRECT SLICE")));
-  check("game-maker preflight: Direct Slice is only a small bounded, reversible, low-risk feature inside an accepted Program/Card with no core-contract change",
+  const gmPreflightTruth = [
+    ["binding role obligation, not a machine claim", "BINDING ROLE OBLIGATION, NOT A SERVER GATE"],
+    ["reachable doors do not grant bypass authority", "EXISTING DOORS DO NOT AUTHORIZE A BYPASS"],
+    ["receipt carries Architect task/model/SHA", "Architect task/model/SHA"],
+    ["receipt carries Reviewer task/model/reported SHA", "Reviewer task/model/reported SHA"],
+    ["receipt carries observed landed SHA", "actual landed SHA"],
+    ["Fleet does not claim to prove the receipt", "Fleet does not assemble or prove this receipt"],
+    ["owner Board is the fallback land door", "owner lands that exact Reviewer commit from the Board"],
+  ] as const;
+  const gmMissingTruth = gmPreflightTruth.filter(([, marker]) => !gmRole.includes(marker));
+  check("game-maker preflight: the binding role rule requires a manual auditable receipt and does not claim machine enforcement",
+    gmMissingTruth.length === 0
+      && gmRole.includes("remain technically reachable")
+      && gmRole.includes("an absent comparison is unknown")
+      && gmRole.includes("Only after that comparison"),
+    `missing=[${gmMissingTruth.map(([why]) => why).join(" | ")}] reachable=${gmRole.includes("remain technically reachable")} unknown=${gmRole.includes("an absent comparison is unknown")} releaseAfter=${gmRole.includes("Only after that comparison")}`);
+  check("game-maker preflight: Direct Slice is a small accepted-scope feature, not necessarily a named Card slice; a new game or core pivot re-Preflights",
     gmRole.includes("DIRECT SLICE")
-      && gmRole.includes("inside an already accepted Program and")
-      && ["bounded", "reversible", "low-risk", "changes no core contract"].every((text) => gmRole.includes(text))
+      && gmRole.includes("inside an accepted game scope")
+      && gmRole.includes("need not be one of the Card's named first slices")
+      && ["bounded", "reversible", "low-risk", "change no core contract"].every((text) => gmRole.includes(text))
+      && gmRole.includes("owner-confirmed core pivot or new game inside an existing Program starts a new Preflight")
       && gmRole.includes("never a Direct Slice"),
     gmRole.slice(gmRole.indexOf("DIRECT SLICE"), gmRole.indexOf("BEFORE ANY SENSORY CLAIM")));
   check("game-maker sensory critic: the operator provides only sealed post-play evidence, never Card, HANDOFF, hypotheses or rationale",
@@ -2329,6 +2347,8 @@ export async function run(ctx: Ctx): Promise<void> {
       && gmRole.includes("sealed build, launch, real-input and capture pack")
       && gmRole.includes("no Game Card, no HANDOFF.md and no hypotheses")
       && ["no rationale", "open defect", "rejected direction", "earlier verdict"].every((text) => gmRole.includes(text))
+      && gmRole.includes("Hashes identify the sealed bytes only")
+      && gmRole.includes("blindness and delivery are operator-attested or unknown")
       && gmRole.includes("predecessor-to-successor and owner evidence")
       && gmRole.includes("never sensory\nCritic inputs"),
     gmRole.slice(gmRole.indexOf("SENSORY CRITIC"), gmRole.length));
@@ -4138,6 +4158,16 @@ export async function run(ctx: Ctx): Promise<void> {
           && prAbsent.label !== prGame.label && prAbsent.sentence !== prGame.sentence
           && /standard/i.test(prAbsent.sentence) && /game/i.test(prGame.label),
         JSON.stringify([prAbsent, prGame].map((v) => [v.state, v.label, v.tone, v.stamped])));
+      const profileSummaryMarkers = [
+        "new game or owner-confirmed core pivot",
+        "Preflight",
+        "Sensory Critic is an operator-run post-play act",
+      ];
+      const profileSummaryMissing = profileSummaryMarkers.filter((marker) =>
+        !prGame.sentence.includes(marker));
+      check("profile UI: the game-maker summary names re-Preflight and operator-run post-play criticism without the stale worker-Critic rule",
+        profileSummaryMissing.length === 0 && !prGame.sentence.includes("fresh-critic work still goes"),
+        `missing=[${profileSummaryMissing.join(" | ")}] stale=${prGame.sentence.includes("fresh-critic work still goes")}`);
       const prBad: [string, unknown][] = [
         ["a version this build does not know", { v: 2, kind: "game-maker", confirmedAt: PSTAMP }],
         ["a kind outside the closed set", { v: 1, kind: "game-studio", confirmedAt: PSTAMP }],

@@ -6288,8 +6288,10 @@ function profileState(p: ProgramInfo): {
       + " playable product and may do substantial serial work itself while play, perception,"
       + " implementation, repair and replay stay indivisible. It may be founded ONLY in a dedicated"
       + " linked git worktree of a target repository, and its succession additionally requires a"
-      + " committed \"## Current game checkpoint\" section. Separable, parallel, specialist,"
-      + " independent-proof and fresh-critic work still goes to a worker lane." };
+      + " committed \"## Current game checkpoint\" section. A new game or owner-confirmed core pivot"
+      + " starts a fresh Architect-to-Review Preflight before implementation; separable, parallel,"
+      + " specialist and independent-proof work still goes to a worker lane. The "
+      + "Sensory Critic is an operator-run post-play act, not a worker-lane role." };
 }
 
 // --- V1a · THE IDENTITY HALF OF THE BOUND MAIN, read for display ---

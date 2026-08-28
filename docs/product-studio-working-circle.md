@@ -257,14 +257,26 @@ owner-confirmed Program, repository, Architect SHA and named probe facts — nev
 Inside the confirmed Program boundary its isolated Review act may optimize the Card and its 1–4
 briefs, commit the final Card and return exactly `ACCEPT <final-card-sha>` on acceptance.
 
-No implementation task may be filed or released before `ACCEPT`. On `ACCEPT`, MAIN lands the Card,
-specifically the Reviewer's final commit, copies its first-slice briefs verbatim into normal tasks
-and releases only dependency-free roots. `RETHINK` and `OWNER` land no final Card and create no
+**THIS PREFLIGHT IS A BINDING ROLE OBLIGATION, NOT A SERVER GATE; EXISTING DOORS DO NOT AUTHORIZE A BYPASS.**
+Task filing, release, land and direct checkout access remain technically reachable, but none
+certifies `ACCEPT` or grants role authority to skip this order.
+
+No implementation task may be filed or released before `ACCEPT`. On `ACCEPT`, MAIN first checks
+that the Reviewer lane's live HEAD equals its reported SHA, then lands exactly that final Card
+commit. If the lifecycle projection does not grant self-land, the owner lands that exact Reviewer
+commit from the Board. MAIN observes the actual landed SHA and writes one auditable comparison into
+the ordinary Program report or tracked decision: **Architect task/model/SHA, Reviewer
+task/model/reported SHA, and actual landed SHA**. The Architect and Reviewer models must differ and
+both Reviewer SHAs must match. Fleet does not assemble or prove this receipt; an absent comparison
+remains `unknown`. Only then does MAIN copy the accepted briefs verbatim into normal task rows and
+release dependency-free roots. `RETHINK` and `OWNER` land no final Card and create no
 implementation task. `RETHINK` is not a review loop: a new pass requires named new evidence;
 `OWNER` raises the unresolved decision.
-A Direct Slice bypasses Preflight only for a small feature inside an already accepted Program/Card,
-and only when bounded, reversible, low-risk and free of core-contract changes. This is prompt and
-operator policy over existing tasks, reports and lands — no new route, Task field or persisted state.
+A Direct Slice is permitted only for a small feature inside an accepted game scope with an accepted
+Card; it need not be one of the Card's named first slices, and must remain bounded, reversible,
+low-risk and free of core-contract changes. An owner-confirmed core pivot or new game inside an
+existing Program starts a new Preflight. This is prompt and operator policy over existing tasks,
+reports and lands — no new route, Task field or persisted state.
 
 **The sensory gate, in the delivered text.** Before any sensory claim and before widening
 player-facing work, MAIN must launch the exact artifact; exercise it through the app's real input
@@ -288,7 +300,8 @@ label discipline the *Honest labels* section above already states, carried into 
 Game Card, no `HANDOFF.md` and no hypotheses; MAIN/Architect chat, rationale, open defects, rejected
 directions and earlier verdicts are excluded too. ContextPlan, the accepted Card and the succession
 checkpoint remain MAIN inputs, not sensory-Critic inputs. Context-pack vocabularies and delivery are
-unchanged.
+unchanged. Hashes identify the sealed bytes only; they do not prove blindness or delivery. Critic
+blindness and delivery are operator-attested or unknown.
 
 ## The Game-Maker succession checkpoint
 
@@ -467,7 +480,9 @@ boundary of the authority contract above (clause 7).
    scripted human-input driver against the real input layer, never the sim API and never a policy
    replay — and answers from captures: does the first 30 s explain itself; does the gesture produce
    a visible consequence; what gross visual/motion underreach is present; what is the one defect a
-   first-time player hits. The pack's full hashes prove blindness and identity. A capture that could
+   first-time player hits. Full hashes identify the sealed pack bytes only. They do not prove that
+   the Critic was blind to excluded context or that the pack was delivered unchanged; the operator
+   attests those facts, otherwise they remain `unknown`. A capture that could
    not be taken fails as itself and names the debt; it is never reported as the game.
 4. **Bounded repair.** Builder rounds run on clause 2's progress budget, not on a round count:
    each is briefed to close one *named perceived defect* from step 3, each carries a regress

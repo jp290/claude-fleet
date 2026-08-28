@@ -229,6 +229,17 @@ re-sends the brief and never binds from a Receipt. On success the Receipt is wri
 durable state mutation installs the exact target as `main` and removes `founding`. An orphan Receipt
 is evidence of an interrupted delivery, not authority.
 
+Tmux observation is explicitly `present | absent | unknown`. Only a successful session enumeration
+proves membership or absence; a failed probe or pane-path read is unknown, never HOME and never an
+absence claim. Before stale or foreign-marker cleanup, Fleet also scans every observed live/adopted
+slot root. Another session in the protected root preserves the marker and session and refuses
+startup.
+
+Program `complete` is the owner act that releases Game-Maker tree exclusivity, valid only after the
+owner intentionally ends or retires product work. It still refuses a live Founding and does not
+automatically kill an existing MAIN pane; pane retirement and Program lifecycle are separate owner
+decisions.
+
 **The sensory gate, in the delivered text.** Before any sensory claim and before widening
 player-facing work, MAIN must launch the exact artifact; exercise it through the app's real input
 layer with actual keyboard/mouse/gamepad input or a scripted human-input driver through that same
@@ -265,6 +276,10 @@ sufficient — a successor's first act is to **replay**, and it can only replay 
 named. So the committed HEAD version's first section is additionally read as a closed shape: at most
 4096 bytes, headed exactly `## Current game checkpoint`, and carrying exactly these seven
 single-line fields, no other line:
+
+Checkpoint field order: `Build`, `Launch`, `Last replay`, `Experience`, `Open defect`, `Next`, `Critic`.
+`Last replay` names the exact seed, real input and capture evidence when those apply; it
+does not add an eighth field.
 
 ```text
 ## Current game checkpoint

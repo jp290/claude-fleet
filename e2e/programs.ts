@@ -1856,33 +1856,40 @@ export async function run(ctx: Ctx): Promise<void> {
   await programPost(gmOwnerKillProgram.id, "complete");
 
   // PRE-OPEN OWNER-KILL TOCTOU. An orphan tmux session makes openSlot await its teardown after the
-  // durable marker check but before Slot mutation. The hook sentinel proves that exact window is
-  // open; owner kill then removes the marker. The post-await permit check must refuse the stale
+  // durable marker check but before Slot mutation. The test-only latch stops at that exact seam;
+  // owner kill then removes the marker. The post-await permit check must refuse the stale
   // attempt before it can publish or spawn anything. Removing that second check strands the slot
   // and pane after the founding request notices its marker disappeared.
+  const gmPreOpenKillLatch = `${ROOT}/gm-pre-open-kill-latch`;
+  const gmPreOpenKillReached = `${gmPreOpenKillLatch}.reached`;
+  const gmPreOpenKillRelease = `${gmPreOpenKillLatch}.release`;
+  for (const path of [gmPreOpenKillLatch, gmPreOpenKillReached, gmPreOpenKillRelease])
+    if (existsSync(path)) unlinkSync(path);
+  await restartSrv({ FLEET_TEST_GAME_MAKER_OPEN_LATCH: gmPreOpenKillLatch });
   const gmPreOpenKillProgram = await activateNewProgram("Game-Maker pre-open owner-kill race");
   await setProfile(gmPreOpenKillProgram.id, GAME_MAKER);
   const gmPreOpenKillSlot = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? 0;
-  const gmPreOpenKillSentinel = `${ROOT}/gm-pre-open-kill-hook`;
-  if (existsSync(gmPreOpenKillSentinel)) unlinkSync(gmPreOpenKillSentinel);
-  const gmPreOpenHook = await tmuxOut("set-hook", "-g", "after-kill-session",
-    `run-shell "touch '${gmPreOpenKillSentinel}'; sleep 2"`);
   const gmPreOpenOrphan = gmPreOpenKillSlot > 0
     ? await tmuxOut("new-session", "-d", "-s", `s${gmPreOpenKillSlot}`, "-c", gameWt, "sleep 60")
     : { code: 1, out: "no free slot" };
+  writeFileSync(gmPreOpenKillLatch, "armed\n", { mode: 0o600 });
   const gmPreOpenReceiptsBefore = (await contextReceipts()).receipts
     .filter((row) => row.programId === gmPreOpenKillProgram.id).length;
   const gmPreOpenPending = beginBootstrap(gmPreOpenKillProgram.id, {
     cwd: gameWt, label: "game-maker-pre-open-kill", harness: "codex", model: "gpt-5.5", effort: "high",
   });
-  for (let i = 0; i < 100 && !existsSync(gmPreOpenKillSentinel); i++) await Bun.sleep(20);
+  for (let i = 0; i < 250 && !existsSync(gmPreOpenKillReached); i++) await Bun.sleep(20);
+  const gmPreOpenReached = existsSync(gmPreOpenKillReached);
   const gmPreOpenMarker = (await ownerPrograms()).find((p) => p.id === gmPreOpenKillProgram.id)?.founding;
-  const gmPreOpenOwnerKill = gmPreOpenKillSlot > 0
+  const gmPreOpenOwnerKill = gmPreOpenReached && gmPreOpenKillSlot > 0
     ? await post(`/api/slots/${gmPreOpenKillSlot}/kill`, {}) : null;
+  if (existsSync(gmPreOpenKillLatch)) unlinkSync(gmPreOpenKillLatch);
+  writeFileSync(gmPreOpenKillRelease, "release\n", { mode: 0o600 });
   const gmPreOpenResponse = await gmPreOpenPending;
   const gmPreOpenText = await gmPreOpenResponse.text();
-  await tmuxOut("set-hook", "-gu", "after-kill-session");
-  if (existsSync(gmPreOpenKillSentinel)) unlinkSync(gmPreOpenKillSentinel);
+  for (const path of [gmPreOpenKillReached, gmPreOpenKillRelease])
+    if (existsSync(path)) unlinkSync(path);
+  await restartSrv();
   const gmPreOpenAfter = (await ownerPrograms()).find((p) => p.id === gmPreOpenKillProgram.id);
   const gmPreOpenRecoverSlot = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? 0;
   const gmPreOpenRecover = gmPreOpenRecoverSlot > 0
@@ -1890,7 +1897,7 @@ export async function run(ctx: Ctx): Promise<void> {
       cwd: gameWt, label: "game-maker-pre-open-kill-recoverable",
     }) : null;
   check("game-maker pre-open owner kill: post-await permit recheck leaves no main, receipt, pane or slot orphan and the tree recoverable",
-    gmPreOpenHook.code === 0 && gmPreOpenOrphan.code === 0 && gmPreOpenKillSlot > 0
+    gmPreOpenReached && gmPreOpenOrphan.code === 0 && gmPreOpenKillSlot > 0
       && gmPreOpenMarker?.target.slot === gmPreOpenKillSlot && gmPreOpenOwnerKill?.ok === true
       && gmPreOpenResponse.status === 409 && gmPreOpenText.includes("durable founding marker")
       && gmPreOpenAfter?.main === undefined && gmPreOpenAfter?.founding === undefined
@@ -1899,7 +1906,7 @@ export async function run(ctx: Ctx): Promise<void> {
       && (await contextReceipts()).receipts.filter((row) => row.programId === gmPreOpenKillProgram.id).length
         === gmPreOpenReceiptsBefore
       && gmPreOpenRecover?.ok === true,
-    JSON.stringify({ hook: gmPreOpenHook.code, orphan: gmPreOpenOrphan.code,
+    JSON.stringify({ reached: gmPreOpenReached, orphan: gmPreOpenOrphan.code,
       marker: gmPreOpenMarker, kill: gmPreOpenOwnerKill?.status,
       founding: [gmPreOpenResponse.status, gmPreOpenText], after: gmPreOpenAfter,
       recover: gmPreOpenRecover?.status }));
@@ -2000,11 +2007,29 @@ export async function run(ctx: Ctx): Promise<void> {
   const gmWrongProgram = await activateNewProgram("Game-Maker wrong-target crash recovery");
   await setProfile(gmStaleProgram.id, GAME_MAKER);
   await setProfile(gmWrongProgram.id, GAME_MAKER);
-  const gmWrongSlot = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? 0;
-  const gmWrongOpen = gmWrongSlot ? await post(`/api/slots/${gmWrongSlot}/open`, {
+  const gmWrongSlot = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? null;
+  const gmWrongOpen = gmWrongSlot !== null ? await post(`/api/slots/${gmWrongSlot}/open`, {
     cwd: gameWtSibling, label: "foreign-occupant-survives-founding-recovery",
   }) : null;
-  const gmWrongOpenedAt = readState().slots?.[String(gmWrongSlot)]?.openedAt ?? 0;
+  const gmWrongLive = gmWrongSlot === null ? null
+    : (await sessions()).slots.find((slot) => slot.id === gmWrongSlot) ?? null;
+  let gmWrongDurable: { slot: number; openedAt: number; cwd: string } | null = null;
+  if (gmWrongSlot !== null && gmWrongLive?.cwd === realpathSync(gameWtSibling)
+    && typeof gmWrongLive.openedAt === "number" && gmWrongLive.openedAt > 0) {
+    for (let i = 0; i < 100; i++) {
+      const persisted = readState().slots?.[String(gmWrongSlot)];
+      if (persisted?.cwd === gmWrongLive.cwd && persisted.openedAt === gmWrongLive.openedAt) {
+        gmWrongDurable = { slot: gmWrongSlot, openedAt: gmWrongLive.openedAt, cwd: gmWrongLive.cwd };
+        break;
+      }
+      await Bun.sleep(20);
+    }
+  }
+  check("game-maker wrong-target fixture: positive live slot identity reaches exact fleet.json parity before restart",
+    gmWrongOpen?.ok === true && gmWrongDurable !== null,
+    JSON.stringify({ open: gmWrongOpen?.status, live: gmWrongLive, durable: gmWrongDurable }));
+  if (gmWrongDurable === null)
+    throw new Error("game-maker wrong-target fixture never reached durable slot identity parity");
   const gmStaleSlot = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? 0;
   await tmuxOut("kill-session", "-t", "srv");
   await Bun.sleep(500);
@@ -2016,21 +2041,22 @@ export async function run(ctx: Ctx): Promise<void> {
     canonicalRoot: realpathSync(gameWt), target: { slot: gmStaleSlot, openedAt: plantedAt },
     predecessor: null, startedAt: plantedAt };
   if (wrongRow) wrongRow.founding = { v: 1, attemptId: "b".repeat(32), mode: "bootstrap",
-    canonicalRoot: realpathSync(gameWt), target: { slot: gmWrongSlot, openedAt: gmWrongOpenedAt },
+    canonicalRoot: realpathSync(gameWt),
+    target: { slot: gmWrongDurable.slot, openedAt: gmWrongDurable.openedAt },
     predecessor: null, startedAt: plantedAt };
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(planted, null, 2), { mode: 0o600 });
   await restartSrv();
   const gmRecoveryRows = await ownerPrograms();
   check("game-maker boot recovery: a pre-open marker clears, while a different-tree target is preserved and only its stale marker clears",
-    gmStaleSlot > 0 && gmWrongSlot > 0 && gmWrongOpen?.ok === true
+    gmStaleSlot > 0 && gmWrongOpen?.ok === true
       && gmRecoveryRows.find((p) => p.id === gmStaleProgram.id)?.founding === undefined
       && gmRecoveryRows.find((p) => p.id === gmWrongProgram.id)?.founding === undefined
-      && (await sessions()).slots.find((slot) => slot.id === gmWrongSlot)?.cwd === realpathSync(gameWtSibling)
-      && (await tmuxOut("has-session", "-t", `s${gmWrongSlot}`)).code === 0,
+      && (await sessions()).slots.find((slot) => slot.id === gmWrongDurable.slot)?.cwd === realpathSync(gameWtSibling)
+      && (await tmuxOut("has-session", "-t", `s${gmWrongDurable.slot}`)).code === 0,
     JSON.stringify({ stale: gmRecoveryRows.find((p) => p.id === gmStaleProgram.id),
       wrong: gmRecoveryRows.find((p) => p.id === gmWrongProgram.id),
-      slot: (await sessions()).slots.find((slot) => slot.id === gmWrongSlot) }));
-  if (gmWrongOpen?.ok) await post(`/api/slots/${gmWrongSlot}/kill`, {});
+      slot: (await sessions()).slots.find((slot) => slot.id === gmWrongDurable.slot) }));
+  if (gmWrongOpen?.ok) await post(`/api/slots/${gmWrongDurable.slot}/kill`, {});
   await programPost(gmStaleProgram.id, "complete");
   await programPost(gmWrongProgram.id, "complete");
 

@@ -5329,8 +5329,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // placed after the cwd validation: a bad path must never destroy a running session.
   try {
     if ((await tmux("has-session", "-t", sess(s.id))).code === 0) await killSlot(s, "reopen");
-    // The await above is an owner-kill window: an exact pre-open kill may have durably removed the
-    // marker while this request was waiting for an orphan pane to die. Recheck before publishing
+    await waitForGameMakerOpenTestLatch(treeLease);
+    // The awaits above are an owner-kill window: an exact pre-open kill may have durably removed
+    // the marker after orphan teardown. Recheck before publishing
     // even one byte of the new occupant; the process-local lease alone is not durable authority.
     assertGameMakerFoundingTargetOpen(s, treeLease);
   } catch (e) {
@@ -11593,6 +11594,20 @@ const VERIFY_SKIP_MARK = /^verify skipped:/m;
 // by timing from the outside — and an unproven fix for it would be worth nothing, so the hole
 // gets a handle. Nothing but the sleep changes; the land path is byte-identical when unset.
 const LAND_PAUSE_MS = Math.max(0, Number(process.env.FLEET_TEST_LAND_PAUSE_MS ?? 0) | 0);
+// TEST-ONLY and absent in every real deployment. The Game-Maker restart suite needs to stop at
+// one otherwise unobservable await boundary: after an orphan pane is gone, but before openSlot
+// revalidates the durable founding marker and publishes a new occupant. The armed/reached/release
+// files form one bounded latch, not runtime state or an API.
+const GAME_MAKER_OPEN_LATCH = process.env.FLEET_TEST_GAME_MAKER_OPEN_LATCH ?? null;
+async function waitForGameMakerOpenTestLatch(permit: GameMakerTreeLease | null): Promise<void> {
+  if (!permit || GAME_MAKER_OPEN_LATCH === null || !existsSync(GAME_MAKER_OPEN_LATCH)) return;
+  writeFileSync(`${GAME_MAKER_OPEN_LATCH}.reached`, `${permit.programId}\n`, { mode: 0o600 });
+  for (let waited = 0; waited < 10_000; waited += 10) {
+    if (existsSync(`${GAME_MAKER_OPEN_LATCH}.release`)) return;
+    await Bun.sleep(10);
+  }
+  throw new Error("game-maker E2E open latch timed out before release");
+}
 // --- how much of a verify run was not verifying ------------------------------------------------
 // The gate chain's steps each take the machine-wide suite mutex before they can start, and its
 // holder may be any suite on the box. So VERIFY_TIMEOUT_MS — a wall-clock budget — silently
@@ -17802,18 +17817,20 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
 async function bootstrapProgramMain(program: Program, req: Request): Promise<Response> {
   // Reserve before body parsing: the action route's status check and this function used to be
   // separated by `await readJson(req)`, where complete could win and the founding would continue
-  // against a terminal Program. The wrapper owns the one reservation for every return below.
-  if (programBootstrapInflight.has(program.id) || program.founding)
-    return json({ error: "Program-MAIN founding already in flight" }, 409);
-  programBootstrapInflight.add(program.id);
+  // against a terminal Program. The first caller owns the reservation across that await. A caller
+  // arriving during succession still validates its request, then may observe the exact live MAIN;
+  // it does not acquire or release the succession caller's reservation.
+  const alreadyInflight = programBootstrapInflight.has(program.id) || program.founding !== undefined;
+  if (!alreadyInflight) programBootstrapInflight.add(program.id);
   try {
-    return await bootstrapProgramMainReserved(program, await readJson(req) ?? {});
+    return await bootstrapProgramMainReserved(program, await readJson(req) ?? {}, alreadyInflight);
   } finally {
-    programBootstrapInflight.delete(program.id);
+    if (!alreadyInflight) programBootstrapInflight.delete(program.id);
   }
 }
 
-async function bootstrapProgramMainReserved(program: Program, body: Record<string, unknown>): Promise<Response> {
+async function bootstrapProgramMainReserved(program: Program, body: Record<string, unknown>,
+  alreadyInflight: boolean): Promise<Response> {
   const ho = harnessIdOf(body);
   if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
   const hh = harnessOf(ho.harness);
@@ -17839,8 +17856,10 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
     const occupant = slotFrom(program.main.slot);
     if (occupant?.cwd && occupant.openedAt === program.main.openedAt)
       return json({ ok: true, existing: true, program });
-    replaced = { ...program.main };
   }
+  if (alreadyInflight || program.founding)
+    return json({ error: "Program-MAIN founding already in flight" }, 409);
+  if (program.main) replaced = { ...program.main };
   let treeLease: GameMakerTreeLease | null = null;
   try {
     try {

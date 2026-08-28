@@ -30,6 +30,9 @@ interface Program extends ProgramContent {
   // the owner's self-land permission — absent on every Program until the owner grants it, which is
   // the shape every assertion here reads as "owner-only land".
   promotion?: { v: number; selfLand: string; confirmedAt: number };
+  // the owner's EXECUTION ENVIRONMENT for this program's MAIN — absent on every Program until the
+  // owner grants it, and absent is the exact legacy Standard MAIN every assertion here reads as.
+  profile?: { v: number; kind: string; confirmedAt: number };
   // V1b — the return path into this program's MAIN. Derived per request exactly like `occupancy`
   // and persisted nowhere, so it is read off the ROUTE and never off fleet.json.
   deliveryBudget?: { state?: string; deliveryDebts?: number; armedReservations?: number;
@@ -57,7 +60,8 @@ interface FleetState {
 
 interface ProgramExecutionRow {
   program: { id: string; status: ProgramStatus; title: string; createdAt: number;
-    confirmedAt: number | null; activatedAt: number | null; completedAt: number | null };
+    confirmedAt: number | null; activatedAt: number | null; completedAt: number | null;
+    profile: { v: number; kind: string; confirmedAt: number } | null };
   authority: { boundSlot: number; boundOpenedAt: number; boundSessionId: string | null; boundAt: number;
     sessionIdMatch: "exact" | "divergent" | "unknown"; executionState: "active" | "not-executing" };
   tasks: { rows: { id: string; kind: string; status: string; releasedBy: string | null;
@@ -1596,6 +1600,477 @@ export async function run(ctx: Ctx): Promise<void> {
       && successionReceipt.deliveredBytes === new TextEncoder().encode(successionPrompt).byteLength,
     `hash=${successionReceipt?.hash === successionHash} briefHash=${successionReceipt?.briefHash}`);
 
+  // === THE GAME-MAKER PROFILE: an owner-selected execution environment around the SAME MAIN =====
+  // WHY IT EXISTS. The generic rail above tells a Program-MAIN to send substantial product
+  // implementation to a lane. For a game that severed the one agent that must stay inside the
+  // repeated launch → actual controls → visual perception → repair → replay loop: the perception is
+  // the product, and a fresh lane per repair round cannot carry it. The fix is deliberately thin —
+  // ONE closed owner record on Program, and the SAME MAIN in a different execution environment.
+  //
+  // WHAT THESE CHECKS HOLD. (1) the machine boundary: a game-maker MAIN may be founded ONLY in a
+  // dedicated LINKED git worktree of a target repository, derived from git facts and refused before
+  // any slot, binding or receipt exists; (2) the role block: one text, byte-identical across target
+  // bootstrap and target succession, REPLACING the generic paragraph rather than overriding it
+  // after the fact; (3) the standard shapes are untouched. Every route the block names is proved as
+  // a MECHANISM elsewhere in this module — what is proved here is the delivered TEXT.
+  const setProfile = (id: string, profile: unknown): Promise<Response> =>
+    fetch(`${BASE}/api/programs/${id}/profile`, {
+      method: "POST", headers: H, body: JSON.stringify({ profile }),
+    });
+  const GAME_MAKER: unknown = { v: 1, kind: "game-maker" };
+  // A target product repository AND a dedicated linked worktree of it. Built here rather than
+  // reusing REPO because the linked worktree is a repository-level fact: `git worktree list` would
+  // carry it into every later module that reasons about REPO's worktrees.
+  const gameRepo = `${ROOT}/gamerepo`;
+  const gameWt = `${ROOT}/gamerepo-wt`;
+  mkdirSync(gameRepo, { recursive: true });
+  gitIn(gameRepo, "init", "-q", "-b", "main");
+  gitIn(gameRepo, "config", "user.email", "t@t");
+  gitIn(gameRepo, "config", "user.name", "t");
+  gitIn(gameRepo, "config", "commit.gpgsign", "false");
+  writeFileSync(`${gameRepo}/AGENTS.md`, "# Game target contract\n\n## Repo contract\nProve with this repo's own chain.\n");
+  writeFileSync(`${gameRepo}/index.html`, "<!doctype html><title>tiny playable</title>\n");
+  gitIn(gameRepo, "add", "-A");
+  const gameRepoInit = gitIn(gameRepo, "commit", "-qm", "init");
+  const gameWtAdd = gitIn(gameRepo, "worktree", "add", "-q", gameWt, "-b", "gm-lane");
+  check("game-maker fixture: a target repository and a dedicated LINKED worktree of it both exist",
+    gameRepoInit.status === 0 && gameWtAdd.status === 0 && existsSync(`${gameWt}/AGENTS.md`)
+      && spawnSync("git", ["-C", gameWt, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).stdout.trim()
+        !== spawnSync("git", ["-C", gameRepo, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).stdout.trim(),
+    `init=${gameRepoInit.status} worktree=${gameWtAdd.status}`);
+
+  // WHAT "NO SLOT" MEANS, and why it is not a count. The section above retires its predecessor on a
+  // grace timer, so the number of occupied slots can FALL between two reads for reasons that have
+  // nothing to do with the call under test — measured once as exactly that flake. The invariant
+  // these probes actually need is that the refused call OPENED nothing: no slot that was free
+  // before may be occupied after. Concurrent reaping cannot make that true or false by accident.
+  const occupiedIds = async (): Promise<Set<number>> =>
+    new Set((await sessions()).slots.filter((s) => s.cwd).map((s) => s.id));
+  const openedNothing = (before: Set<number>, after: Set<number>): boolean =>
+    [...after].every((id) => before.has(id));
+
+  const gmProgram = await activateNewProgram("Game-Maker founding rail");
+  const gmGrant = await setProfile(gmProgram.id, GAME_MAKER);
+  const gmGranted = (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.profile;
+  check("game-maker profile: the owner door grants the closed v1 record on an active unbound program",
+    gmGrant.ok && gmGranted?.v === 1 && gmGranted.kind === "game-maker"
+      && typeof gmGranted.confirmedAt === "number" && gmGranted.confirmedAt > 0,
+    `${gmGrant.status} ${JSON.stringify(gmGranted ?? null)}`);
+
+  // (1) THE MACHINE BOUNDARY, in both refusing directions, and both BEFORE anything exists. The
+  // Fleet-control checkout is refused because a game MAIN that edits Fleet is not the product act
+  // the profile describes; a target repo's PRIMARY checkout is refused because the profile's whole
+  // premise is that this MAIN mutates a tree nobody else is standing in.
+  // …INCLUDING A LINKED WORKTREE OF FLEET ITSELF, which is the shape `frame` alone waves through:
+  // it has its own git toplevel, so it classifies target-repo, and it is `linked`, so both other
+  // clauses pass it. Only repository identity — the object store every worktree of one repo shares
+  // — refuses it, and this fixture is the only thing that can tell the two derivations apart.
+  const fleetWt = `${ROOT}-fleetwt`;
+  const fleetWtAdd = gitIn(ROOT, "worktree", "add", "-q", fleetWt, "-b", "fleet-gm-probe");
+  check("game-maker fixture: a LINKED worktree of the Fleet checkout exists and reads as its own target-repo toplevel",
+    fleetWtAdd.status === 0 && existsSync(`${fleetWt}/AGENTS.md`)
+      && spawnSync("git", ["-C", fleetWt, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).stdout.trim()
+        !== spawnSync("git", ["-C", ROOT, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).stdout.trim()
+      && spawnSync("git", ["-C", fleetWt, "rev-parse", "--git-common-dir"], { encoding: "utf8" }).stdout.trim()
+        !== "",
+    String(fleetWtAdd.status));
+
+  const gmRefusals: { name: string; cwd: string; status: number; text: string }[] = [];
+  for (const [name, cwd] of [["fleet-control", ROOT], ["primary target checkout", gameRepo],
+    ["linked worktree of Fleet itself", fleetWt]] as const) {
+    const before = await occupiedIds();
+    const receiptsBefore = await contextReceipts();
+    const res = await beginBootstrap(gmProgram.id, { cwd });
+    const text = await res.text();
+    const after = await occupiedIds();
+    gmRefusals.push({ name, cwd, status: res.status, text });
+    check(`game-maker machine boundary: a ${name} founding is refused with no slot, no binding and no receipt`,
+      res.status === 400 && text.includes("linked git worktree")
+        && openedNothing(before, after)
+        && !(await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main
+        && (await contextReceipts()).total === receiptsBefore.total,
+      `${res.status} opened=[${[...after].filter((id) => !before.has(id)).join(",")}] ${text}`);
+  }
+  check("game-maker machine boundary: the three refusals name their own reason, and no two are the same sentence",
+    gmRefusals.length === 3 && gmRefusals[0]!.text.includes("Fleet-control")
+      && !gmRefusals[1]!.text.includes("Fleet-control") && gmRefusals[1]!.text.includes("primary checkout")
+      && gmRefusals[2]!.text.includes("Fleet repository")
+      && !gmRefusals[2]!.text.includes("primary checkout")
+      && new Set(gmRefusals.map((r) => r.text)).size === 3,
+    gmRefusals.map((r) => `${r.name}:${r.status}:${r.text.slice(0, 120)}`).join(" | "));
+  // the Fleet worktree leaves again immediately: a registered probe worktree is a fact every later
+  // `git worktree list` reader in this instance would inherit.
+  const fleetWtRemoved = gitIn(ROOT, "worktree", "remove", "--force", fleetWt);
+  gitIn(ROOT, "branch", "-D", "fleet-gm-probe");
+  check("game-maker fixture: the Fleet probe worktree is unregistered again",
+    fleetWtRemoved.status === 0 && !existsSync(fleetWt), String(fleetWtRemoved.status));
+
+  // (1b) DEDICATED MEANS DEDICATED. A second live session standing in the same linked worktree
+  // makes every observation the game MAIN reports unattributable — which build did it launch, whose
+  // edit did it just see. Refused as a 409 (the tree is right, the moment is wrong) before a slot,
+  // a binding or a receipt exists.
+  const squatter = (await sessions()).slots.find((s) => !s.cwd)?.id ?? 0;
+  const squatterOpen = squatter ? await post(`/api/slots/${squatter}/open`,
+    { cwd: gameWt, label: "game-maker-squatter" }) : null;
+  const squatBefore = await occupiedIds();
+  const receiptsBeforeSquat = (await contextReceipts()).total;
+  const squatRefusal = await beginBootstrap(gmProgram.id, { cwd: gameWt });
+  const squatText = await squatRefusal.text();
+  const squatAfter = await occupiedIds();
+  check("game-maker dedication: a second live session in the linked worktree refuses the founding with no slot, no binding and no receipt",
+    !!squatterOpen?.ok && squatRefusal.status === 409
+      && squatText.includes("needs its linked worktree to itself") && squatText.includes(`slot ${squatter}`)
+      && openedNothing(squatBefore, squatAfter)
+      && !(await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main
+      && (await contextReceipts()).total === receiptsBeforeSquat,
+    `open=${squatterOpen?.status} ${squatRefusal.status} opened=[${[...squatAfter].filter((id) => !squatBefore.has(id)).join(",")}] ${squatText}`);
+  if (squatter) await post(`/api/slots/${squatter}/kill`, {});
+
+  // (2) THE LINKED WORKTREE FOUNDING SUCCEEDS, and the delivered text is the whole deliverable.
+  const gmLabel = "program-main-game-maker";
+  const gmReceiptsBefore = await contextReceipts();
+  const gmPending = beginBootstrap(gmProgram.id, {
+    cwd: gameWt, label: gmLabel, harness: "codex", model: "gpt-5.5", effort: "high",
+  });
+  const gmSlot = await waitForLabel(gmLabel);
+  check("game-maker founding precondition: the linked-worktree founding occupant became observable",
+    gmSlot !== null, String(gmSlot));
+  if (gmSlot !== null) await respawnScreen(gmSlot, ">_ OpenAI Codex (v0.147.0)");
+  const gmResponse = await gmPending;
+  const gmBody = await gmResponse.json() as { ok?: boolean; slot?: number; program?: Program };
+  const gmHistory = typeof gmBody.slot === "number"
+    ? await (await get(`/api/slots/${gmBody.slot}/history`)).json() as { history: { text: string }[] }
+    : { history: [] as { text: string }[] };
+  const gmPrompt = gmHistory.history.at(-1)?.text ?? "";
+  const gmReceipts = await contextReceipts();
+  const gmReceipt = gmReceipts.receipts.find((row) => row.programId === gmProgram.id);
+  check("game-maker founding: a linked target worktree founds, binds, and receipts the exact delivered bytes",
+    gmResponse.ok && gmBody.slot === gmSlot && gmBody.program?.main?.slot === gmSlot
+      && !!gmReceipt && gmReceipts.total === gmReceiptsBefore.total + 1
+      && gmReceipt.repo === resolve(gameWt) && gmReceipt.briefSource === "founding"
+      && gmReceipt.briefHash === briefHashOf(gmPrompt)
+      && gmReceipt.deliveredBytes === new TextEncoder().encode(gmPrompt).byteLength,
+    `${gmResponse.status} ${JSON.stringify(gmReceipt ?? null)}`);
+
+  // (3) THE PROFILE ROLE BLOCK — selected in place of the generic paragraph, never appended after
+  // it. The falsifier this holds: a block that ADDED a "you may work directly" override would leave
+  // the generic "substantial product implementation goes to a lane" sentence standing beside it,
+  // and a session reading both would follow the first one it hit.
+  const GM_HEAD = "\n\nYOU ARE THE LEAD GAME DEVELOPER";
+  const gmRoleOf = (prompt: string): string => {
+    const from = prompt.indexOf(GM_HEAD);
+    if (from < 0) return "";
+    const to = prompt.indexOf("\n\nTHE LOOP, once per bounded act:", from);
+    return to >= 0 ? prompt.slice(from, to) : "";
+  };
+  const GENERIC_ROLE_SENTENCE = "Use an isolated worker lane for substantial product implementation";
+  const gmRole = gmRoleOf(gmPrompt);
+  check("game-maker rail: the standard shapes keep the generic role paragraph and carry no profile block",
+    rail.includes(GENERIC_ROLE_SENTENCE) && rail.includes("THE ROLE SPLIT IS A JUDGEMENT, NOT A WALL")
+      && railShapes.every(([, prompt]) => !prompt.includes(GM_HEAD)),
+    `generic=${rail.includes(GENERIC_ROLE_SENTENCE)} carriers=[${railShapes.filter(([, p]) => p.includes(GM_HEAD)).map(([n]) => n).join(",")}]`);
+  check("game-maker rail: the profile block REPLACES the generic paragraph — it appears once and the contradictory sentence is gone",
+    gmRole.length > 0 && gmPrompt.split(GM_HEAD).length === 2
+      && !gmPrompt.includes(GENERIC_ROLE_SENTENCE)
+      && !gmPrompt.includes("THE ROLE SPLIT IS A JUDGEMENT, NOT A WALL")
+      && gmPrompt.indexOf(GM_HEAD) > gmPrompt.indexOf("YOUR LIFECYCLE PROJECTION")
+      && gmPrompt.indexOf(GM_HEAD) < gmPrompt.indexOf("\n\nTHE LOOP, once per bounded act:"),
+    `len=${gmRole.length} occurrences=${gmPrompt.split(GM_HEAD).length - 1} generic=${gmPrompt.includes(GENERIC_ROLE_SENTENCE)}`);
+  // WHAT THE BLOCK MUST SAY, as the sentences that answer each measured failure. Text, because text
+  // is the deliverable: the mechanisms behind every claim have their own checks elsewhere.
+  const gmSentences: [string, string][] = [
+    ["long-lived owner of the product, not a scheduler", "long-lived Lead Game Developer"],
+    ["it owns the playable product and its experience", "owns the playable product"],
+    ["launch the exact artifact before any sensory claim", "Launch the exact artifact"],
+    ["real input hardware or a scripted human-input driver", "scripted human-input driver"],
+    ["never the sim/game API instead of the input layer", "never a simulation or game API"],
+    ["look at a capture with its own visual tool", "Inspect the screenshot"],
+    ["compare the served build stamp against the named commit", "served build stamp"],
+    ["audio stays unknown unless audio can be inspected", "Audio stays unknown"],
+    ["a missing tool keeps the verdict unknown", "keeps that verdict unknown"],
+    ["serial direct work only while the loop is indivisible", "indivisible"],
+    ["separable, parallel, specialist, proof and critic work still leaves", "fresh criticism"],
+    ["one fresh hands-on critic at the four named moments", "one fresh, context-rich, hands-on critic"],
+    ["the critic is evidence, not authority", "evidence, not authority"],
+    ["no standing advisor and no automatic nudge", "no standing Advisor"],
+    ["four truths stay apart", "technical, hands_on, sensory_critic and owner_taste"],
+    ["technical green implies nothing about the other three", "never implies"],
+  ];
+  const gmMissing = gmSentences.filter(([, text]) => !gmRole.includes(text));
+  check("game-maker rail: the block states the role, the sensory gate, the delegation split, the critic and the four truths",
+    gmRole.length > 0 && gmMissing.length === 0,
+    `missing=[${gmMissing.map(([why]) => why).join(" | ")}]`);
+  // CRITIC-SAFE CONTEXT, stated as a boundary rather than a new vocabulary: the repo-declared
+  // ContextPlan card is a POINTER set a fresh critic may read without being told the answer. The
+  // four things it may never carry are named, because each of them turns a blind critic into a
+  // confirming one.
+  const gmCriticSafe = ["current hypothesis", "open defect", "rejected direction", "earlier verdict"];
+  check("game-maker rail: repo-declared anchors are critic-safe pointers, and the four leaking facts are named as forbidden",
+    gmRole.includes("CRITIC-SAFE") && gmRole.includes("ContextPlan")
+      && gmCriticSafe.every((text) => gmRole.includes(text))
+      && gmRole.includes("checkpoint"),
+    `criticSafe=${gmRole.includes("CRITIC-SAFE")} missing=[${gmCriticSafe.filter((t) => !gmRole.includes(t)).join(", ")}]`);
+  check("game-maker rail: the profile block names no owner credential and no owner route either",
+    gmRole.length > 0 && railForbidden.every((text) => !gmRole.includes(text)) && !gmRole.includes(TOKEN),
+    `present=[${railForbidden.filter((text) => gmRole.includes(text)).join(", ")}]`);
+
+  // (4) THE PROFILE IS A TYPED SENSOR FOR THE BOUND MAIN, and the hot digest is untouched.
+  const gmMainToken = readState().slots?.[String(gmSlot)]?.selfToken ?? "";
+  const gmExecution = await selfExecution(gmMainToken);
+  const gmExecRow = gmExecution.view?.programs.find((r) => r.program.id === gmProgram.id);
+  const gmPoll = await (await get("/api/sessions")).json() as { programs: Record<string, unknown>[] };
+  const gmDigest = gmPoll.programs.find((p) => p.id === gmProgram.id);
+  check("game-maker projection: the bound MAIN reads its own profile fact while ProgramDigest stays exactly four fields",
+    gmExecution.response.ok && gmExecRow?.program.profile?.kind === "game-maker"
+      && gmExecRow.program.profile.v === 1 && typeof gmExecRow.program.profile.confirmedAt === "number"
+      && !!gmDigest && JSON.stringify(Object.keys(gmDigest).sort())
+        === JSON.stringify(["createdAt", "id", "status", "title"]),
+    `exec=${JSON.stringify(gmExecRow?.program ?? null)} digest=${JSON.stringify(gmDigest)}`);
+  // ...and the permission is FIXED while that MAIN is live: an execution environment a session can
+  // have changed underneath it is not one it can be judged against.
+  const gmLiveChange = await setProfile(gmProgram.id, null);
+  const gmLiveChangeText = await gmLiveChange.text();
+  check("game-maker profile: a LIVE bound active program refuses to change or clear its profile",
+    gmLiveChange.status === 409 && gmLiveChangeText.includes("LIVE bound")
+      && (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.profile?.kind === "game-maker",
+    `${gmLiveChange.status} ${gmLiveChangeText}`);
+
+  // (5) THE SUCCESSION CHECKPOINT. The generic gate (committed, clean, newer than this session)
+  // stays exactly as it is for a Standard program; a game-maker MAIN additionally has to leave the
+  // ONE thing a successor cannot reconstruct: what was actually played, on which build, and what it
+  // felt like. Every malformed shape is refused BEFORE a slot opens, before the binding moves and
+  // before a receipt is written — a successor founded on a checkpoint nobody could read would
+  // reconstruct the state from its predecessor's transcript, which is the failure this gate exists
+  // for.
+  const gmOpenedAt = readState().slots?.[String(gmSlot)]?.openedAt ?? Date.now();
+  const writeCheckpoint = (body: string, message: string): number | null => {
+    writeFileSync(`${gameWt}/HANDOFF.md`, body);
+    const add = spawnSync("git", ["-C", gameWt, "add", "HANDOFF.md"]);
+    if (add.status !== 0) return add.status;
+    return spawnSync("git", ["-C", gameWt, "commit", "-qm", message]).status;
+  };
+  // A REAL COMMIT, read out of the worktree itself. Forty hex digits are a SHAPE; the successor is
+  // told to compare a served build stamp against this sha, and a sha naming nothing turns that
+  // comparison into an unanswerable one dressed as a check. This commit is the worktree's first,
+  // so it stays reachable however many checkpoint commits land on top of it.
+  const GOOD_BUILD = spawnSync("git", ["-C", gameWt, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+  check("game-maker checkpoint fixture: the worktree yielded a real 40-char commit to name as Build",
+    /^[0-9a-f]{40}$/.test(GOOD_BUILD), GOOD_BUILD);
+  const goodCheckpoint = "## Current game checkpoint\n"
+    + `Build: ${GOOD_BUILD}\n`
+    + "Launch: bun run serve && open http://127.0.0.1:5173\n"
+    + "Last replay: held WASD for 40 s; the dash fires but reads as a teleport\n"
+    + "Experience: the first gesture lands, the second reads as noise\n"
+    + "Open defect: dash has no anticipation frame\n"
+    + "Next: add three anticipation frames and replay the same seed\n"
+    + "Critic: docs/critic/play-03.md\n";
+  // the generic gate first: a game-maker session with NO committed handoff at all must still get
+  // the existing 409, not a checkpoint sentence — the profile ADDS a gate, it never replaces one.
+  await Bun.sleep(Math.max(0, (Math.floor(gmOpenedAt / 1000) + 2) * 1000 - Date.now()));
+  const gmNoHandoff = await selfSucceed(gmMainToken);
+  const gmNoHandoffText = await gmNoHandoff.text();
+  check("game-maker succession: with no committed HANDOFF.md at all the EXISTING generic gate answers first",
+    gmNoHandoff.status === 409 && gmNoHandoffText.includes("HANDOFF.md must exist"),
+    `${gmNoHandoff.status} ${gmNoHandoffText}`);
+
+  const badCheckpoints: [string, string, string][] = [
+    ["wrong heading", "## Handover\n" + goodCheckpoint.split("\n").slice(1).join("\n"), "Current game checkpoint"],
+    ["a missing field", goodCheckpoint.replace(/^Next: .*\n/m, ""), "missing checkpoint field"],
+    ["a duplicated field", goodCheckpoint + "Next: something else\n", "duplicate checkpoint field"],
+    ["a multi-line field value", goodCheckpoint.replace("Experience: the first gesture lands, the second reads as noise\n",
+      "Experience: the first gesture lands,\n  and the second reads as noise\n"), "unrecognised checkpoint line"],
+    ["an empty field value", goodCheckpoint.replace(/^Open defect: .*$/m, "Open defect:   "), "unrecognised checkpoint line"],
+    ["a Build that is not a 40-char lowercase sha", goodCheckpoint.replace(GOOD_BUILD, "HEAD~1"), "Build must be"],
+    // the shape is right and the object is absent — the case a hex-only check cannot see at all.
+    ["a Build naming no commit in this repository", goodCheckpoint.replace(GOOD_BUILD, "b".repeat(40)), "names no commit"],
+    ["an oversized checkpoint", "## Current game checkpoint\n" + `Filler: ${"x".repeat(4200)}\n`
+      + goodCheckpoint.split("\n").slice(1).join("\n"), "at most 4096"],
+  ];
+  for (const [name, body, expect] of badCheckpoints) {
+    const before = await occupiedIds();
+    const receiptsBefore = (await contextReceipts()).total;
+    const bindingBefore = JSON.stringify((await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main ?? null);
+    const committed = writeCheckpoint(body, `checkpoint fixture: ${name}`);
+    const res = await selfSucceed(gmMainToken);
+    const text = await res.text();
+    const after = await occupiedIds();
+    const binding = JSON.stringify((await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main ?? null);
+    const receipts = (await contextReceipts()).total;
+    check(`game-maker checkpoint: ${name} is a loud 409 with no slot, no rebind and no receipt`,
+      committed === 0 && res.status === 409 && text.includes(expect)
+        && openedNothing(before, after) && binding === bindingBefore && receipts === receiptsBefore,
+      `commit=${committed} ${res.status} opened=[${[...after].filter((id) => !before.has(id)).join(",")}] ${text}`);
+  }
+
+  const gmSuccessorLabel = "program-main-game-maker-successor";
+  const gmGoodCommit = writeCheckpoint(goodCheckpoint, "checkpoint fixture: the readable one");
+
+  // EXACTLY ONE HANDOVER CHANNEL. `carry` is one unpersisted sentence delivered into a prompt; the
+  // checkpoint is committed, readable by the successor, by a critic and by the owner, and it
+  // survives the pane. Accepting both would give a game-maker succession two channels that can
+  // disagree with no way to tell which the successor obeyed — so a carry is REFUSED rather than
+  // dropped, because a silently discarded carry is a handover its author believes was delivered.
+  // Measured with a VALID checkpoint already committed, so nothing but the carry can be the cause.
+  const carryBefore = await occupiedIds();
+  const carryReceiptsBefore = (await contextReceipts()).total;
+  const carryBindingBefore = JSON.stringify((await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main ?? null);
+  const gmCarryRefusal = await selfSucceed(gmMainToken, { carry: "replay the dash seed first" });
+  const gmCarryText = await gmCarryRefusal.text();
+  check("game-maker succession: a non-null carry is refused before slot, rebind or receipt — the checkpoint is the one channel",
+    gmGoodCommit === 0 && gmCarryRefusal.status === 409 && gmCarryText.includes("takes no carry")
+      && gmCarryText.includes("Current game checkpoint")
+      && openedNothing(carryBefore, await occupiedIds())
+      && JSON.stringify((await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main ?? null) === carryBindingBefore
+      && (await contextReceipts()).total === carryReceiptsBefore,
+    `${gmCarryRefusal.status} ${gmCarryText}`);
+
+  // …and the dedication rule again at the succession seam, where it needs ONE exclusion and only
+  // one: the retiring predecessor is the occupant that is about to leave, and any SECOND occupant
+  // still refuses. A successor founded beside a third party inherits a tree it cannot attribute.
+  const succSquatter = (await sessions()).slots.find((s) => !s.cwd)?.id ?? 0;
+  const succSquatterOpen = succSquatter ? await post(`/api/slots/${succSquatter}/open`,
+    { cwd: gameWt, label: "game-maker-succession-squatter" }) : null;
+  const succSquatBefore = await occupiedIds();
+  const succSquatReceipts = (await contextReceipts()).total;
+  const succSquatRefusal = await selfSucceed(gmMainToken);
+  const succSquatText = await succSquatRefusal.text();
+  check("game-maker dedication: a succession excludes its own predecessor but refuses any second occupant, with no slot, rebind or receipt",
+    !!succSquatterOpen?.ok && succSquatRefusal.status === 409
+      && succSquatText.includes("needs its linked worktree to itself")
+      && succSquatText.includes(`slot ${succSquatter}`)
+      && openedNothing(succSquatBefore, await occupiedIds())
+      && JSON.stringify((await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main ?? null) === carryBindingBefore
+      && (await contextReceipts()).total === succSquatReceipts,
+    `open=${succSquatterOpen?.status} ${succSquatRefusal.status} ${succSquatText}`);
+  if (succSquatter) await post(`/api/slots/${succSquatter}/kill`, {});
+
+  const gmSuccessionReceiptsBefore = (await contextReceipts()).total;
+  const gmSuccessionPending = selfSucceed(gmMainToken, { label: gmSuccessorLabel });
+  const gmSuccessorSlot = await waitForLabel(gmSuccessorLabel);
+  if (gmSuccessorSlot !== null) {
+    await Bun.sleep(250);
+    await respawnScreen(gmSuccessorSlot, ">_ OpenAI Codex (v0.147.0)");
+  }
+  const gmSuccessionResponse = await gmSuccessionPending;
+  const gmSuccessionBody = await gmSuccessionResponse.json() as { ok?: boolean; slot?: number };
+  const gmSuccessionHistory = typeof gmSuccessionBody.slot === "number"
+    ? await (await get(`/api/slots/${gmSuccessionBody.slot}/history`)).json() as { history: { text: string }[] }
+    : { history: [] as { text: string }[] };
+  const gmSuccessionPrompt = gmSuccessionHistory.history.at(-1)?.text ?? "";
+  check("game-maker checkpoint: a readable committed checkpoint founds the successor and rebinds the Program",
+    gmGoodCommit === 0 && gmSuccessionResponse.ok && gmSuccessionBody.slot === gmSuccessorSlot
+      && (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main?.slot === gmSuccessorSlot
+      && (await contextReceipts()).total === gmSuccessionReceiptsBefore + 1,
+    `commit=${gmGoodCommit} ${gmSuccessionResponse.status} ${JSON.stringify(gmSuccessionBody)}`);
+  // THE SHARED BLOCK, byte for byte. Two founding seams, one text — the falsifier is a bootstrap
+  // and a succession that drift into two nearly-identical role blocks nobody diffs again.
+  const gmSuccessionRole = gmRoleOf(gmSuccessionPrompt);
+  check("game-maker rail: bootstrap and succession carry EXACTLY ONE byte-identical profile role block",
+    gmRole.length > 0 && gmSuccessionRole === gmRole
+      && gmSuccessionPrompt.split(GM_HEAD).length === 2
+      && !gmSuccessionPrompt.includes(GENERIC_ROLE_SENTENCE),
+    `bootstrap=${gmRole.length} succession=${gmSuccessionRole.length} equal=${gmSuccessionRole === gmRole}`);
+  // AND THE SUCCESSOR'S ORDER OF OPERATIONS. What it must do before it changes anything, and what
+  // it may never reconstruct the state from. The ordering is asserted as POSITIONS in the delivered
+  // text, not as presence: a successor told to replay somewhere below "start working" has been told
+  // nothing.
+  const gmOrder = ["root AGENTS.md", "Ground on git", "## Current game checkpoint",
+    "Launch:", "actual controls", "fresh capture", "served build stamp",
+    "GET /api/self/program-execution"];
+  const gmOrderAt = gmOrder.map((text) => gmSuccessionPrompt.indexOf(text));
+  check("game-maker succession brief: replay comes before the program projection and before any mutation, in this order",
+    gmOrderAt.every((at) => at >= 0)
+      && gmOrderAt.every((at, i) => i === 0 || at > gmOrderAt[i - 1]!)
+      && gmSuccessionPrompt.includes("hands_on")
+      && gmSuccessionPrompt.includes("before you change anything"),
+    gmOrder.map((text, i) => `${text}@${gmOrderAt[i]}`).join(" "));
+  check("game-maker succession brief: reconstruction from transcript, pane history or prompt journal is forbidden",
+    gmSuccessionPrompt.includes("Do not reconstruct")
+      && gmSuccessionPrompt.includes("transcript") && gmSuccessionPrompt.includes("pane history")
+      && gmSuccessionPrompt.includes("prompt journal")
+      && gmSuccessionPrompt.includes("read only that checkpoint"),
+    gmSuccessionPrompt.slice(0, 600));
+  // FLEET CANNOT PROVE THE PLAYED SHA, and the brief must not pretend otherwise: the comparison is
+  // between two things the SESSION observed, and a mismatch is `unknown`, never a repair verdict.
+  check("game-maker succession brief: a build-stamp mismatch is unknown, never a pass and never a repair",
+    /mismatch|does not match/i.test(gmSuccessionPrompt)
+      && gmSuccessionPrompt.includes("hands_on") && gmSuccessionPrompt.includes("unknown")
+      && !gmSuccessionPrompt.includes("Fleet verifies")
+      && !gmSuccessionPrompt.includes("Fleet proves"),
+    gmSuccessionPrompt.slice(-800));
+
+  // (6) THE PROFILE/FOUNDING RACE, run as a race rather than reasoned about. A founding reads the
+  // profile TWICE — at the machine preflight and again when the brief is built — and between them
+  // it awaits a slot open, a boot grace and a readiness wait: several seconds of real time. Without
+  // a gate an owner clicking "grant game-maker" in that window would have a Standard bootstrap,
+  // whose machine check nobody ran, delivered a game-maker brief. The probe grants the profile
+  // while a Standard bootstrap into a PRIMARY checkout is genuinely in flight — a cwd a game-maker
+  // founding must never reach — and then reads the bytes that were actually delivered.
+  const raceProgram = await activateNewProgram("Profile write against a founding in flight");
+  const raceLabel = "program-main-profile-race";
+  const raceReceiptsBefore = (await contextReceipts()).total;
+  const racePending = beginBootstrap(raceProgram.id, {
+    cwd: gameRepo, label: raceLabel, harness: "codex", model: "gpt-5.5", effort: "high",
+  });
+  const raceSlot = await waitForLabel(raceLabel);
+  check("profile race precondition: the Standard founding occupant became observable while its bootstrap is still in flight",
+    raceSlot !== null, String(raceSlot));
+  const raceFlip = await setProfile(raceProgram.id, GAME_MAKER);
+  const raceFlipText = await raceFlip.text();
+  const raceProfileDuring = (await ownerPrograms()).find((p) => p.id === raceProgram.id)?.profile;
+  if (raceSlot !== null) await respawnScreen(raceSlot, ">_ OpenAI Codex (v0.147.0)");
+  const raceResponse = await racePending;
+  const raceBody = await raceResponse.json() as { ok?: boolean; slot?: number };
+  const raceHistory = typeof raceBody.slot === "number"
+    ? await (await get(`/api/slots/${raceBody.slot}/history`)).json() as { history: { text: string }[] }
+    : { history: [] as { text: string }[] };
+  const racePrompt = raceHistory.history.at(-1)?.text ?? "";
+  const raceReceipt = (await contextReceipts()).receipts.find((row) => row.programId === raceProgram.id);
+  check("profile race: a write is refused while that program's founding is in flight, and the record does not move",
+    raceFlip.status === 409 && raceFlipText.includes("in flight")
+      && raceProfileDuring === undefined,
+    `${raceFlip.status} ${raceFlipText}`);
+  check("profile race: the founding that passed the Standard machine check is delivered a Standard brief, and the receipt covers those bytes",
+    raceResponse.ok && racePrompt.length > 0 && !racePrompt.includes(GM_HEAD)
+      && racePrompt.includes(GENERIC_ROLE_SENTENCE)
+      && !!raceReceipt && (await contextReceipts()).total === raceReceiptsBefore + 1
+      && raceReceipt.briefHash === briefHashOf(racePrompt)
+      && raceReceipt.deliveredBytes === new TextEncoder().encode(racePrompt).byteLength,
+    `gmBlock=${racePrompt.includes(GM_HEAD)} generic=${racePrompt.includes(GENERIC_ROLE_SENTENCE)}`);
+  // …and the in-flight refusal is about the MOMENT, never about the program. Once the founding has
+  // ANSWERED the same write is refused by a DIFFERENT gate with a different sentence (the binding
+  // it just created is live), and once that binding is gone the write lands. Three states, three
+  // answers: a gate that stayed shut would have locked the record for good, and one that opened
+  // too early would be the race back again.
+  const raceAfterFounding = await setProfile(raceProgram.id, GAME_MAKER);
+  const raceAfterFoundingText = await raceAfterFounding.text();
+  if (raceBody.slot) await post(`/api/slots/${raceBody.slot}/kill`, {});
+  const raceAfterKill = await setProfile(raceProgram.id, GAME_MAKER);
+  check("profile race: the in-flight refusal names the moment — afterwards a LIVE binding refuses in different words, and a stale one writes",
+    raceAfterFounding.status === 409 && raceAfterFoundingText.includes("LIVE bound")
+      && !raceAfterFoundingText.includes("in flight")
+      && raceAfterKill.ok
+      && (await ownerPrograms()).find((p) => p.id === raceProgram.id)?.profile?.kind === "game-maker",
+    `afterFounding=${raceAfterFounding.status}:${raceAfterFoundingText} afterKill=${raceAfterKill.status}`);
+  await setProfile(raceProgram.id, null);
+  await programPost(raceProgram.id, "complete");
+
+  if (gmBody.slot) await post(`/api/slots/${gmBody.slot}/kill`, {});
+  if (gmSuccessionBody.slot) await post(`/api/slots/${gmSuccessionBody.slot}/kill`, {});
+  // the binding is stale now, so the profile is the owner's to take back again — the other half of
+  // the immutability rule, and the reason it is worded around a LIVE binding rather than a bound one.
+  const gmStaleClear = await setProfile(gmProgram.id, null);
+  check("game-maker profile: once the binding is stale the owner may clear the profile again",
+    gmStaleClear.ok && (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.profile === undefined,
+    `${gmStaleClear.status}`);
+  await programPost(gmProgram.id, "complete");
+  // The linked worktree leaves again for the reason the Fleet-frame manifest probe leaves: a
+  // fixture that quietly stays registered is a fact every later `git worktree list` reader inherits.
+  const gmWtRemoved = gitIn(gameRepo, "worktree", "remove", "--force", gameWt);
+  check("game-maker fixture: the linked worktree is unregistered again, so no later reader inherits it",
+    gmWtRemoved.status === 0 && !existsSync(gameWt),
+    String(gmWtRemoved.status));
+
   const successorToken = readState().slots?.[String(successorSlot)]?.selfToken ?? "";
   const [successorView, predecessorView] = await Promise.all([
     selfPrograms(successorToken), selfPrograms(mainSelfTokenAfterRestart),
@@ -2607,6 +3082,207 @@ export async function run(ctx: Ctx): Promise<void> {
     for (const id of shapeCarriers) await programPost(id, "complete");
   }
 
+  // === THE EXECUTION-PROFILE RECORD: the owner's choice of environment, not of content ==========
+  // Same shape and same reasons as the promotion record one section up, and deliberately separate
+  // from BOTH: `promotion` is a permission a MAIN spends, `profile` is the environment a MAIN is
+  // founded into, and neither is ProgramContent — a session may propose content, it may never
+  // propose the environment it will be judged in. Absent is the legacy Standard MAIN, byte for
+  // byte; everything this record can be is checked here, and the founding text it selects is
+  // checked in the Game-Maker section above.
+  {
+    const profileDoor = (id: string, body: unknown): Promise<Response> =>
+      fetch(`${BASE}/api/programs/${id}/profile`, { method: "POST", headers: H, body: JSON.stringify(body) });
+    const setProfileOn = (id: string, profile: unknown): Promise<Response> => profileDoor(id, { profile });
+    const profileOf = async (id: string): Promise<Program["profile"]> =>
+      (await ownerPrograms()).find((p) => p.id === id)?.profile;
+    const profProgram = await activateNewProgram("Execution profile door");
+    // EVERY off-schema shape is a 400 that leaves NO record. A profile silently narrowed to the
+    // nearest readable value would found a MAIN into an environment the owner did not choose.
+    const badProfiles: [string, unknown][] = [
+      ["an unknown key inside the record", { v: 1, kind: "game-maker", strict: true }],
+      ["a version this server does not know", { v: 2, kind: "game-maker" }],
+      ["a kind outside the closed set", { v: 1, kind: "game-studio" }],
+      ["a record that is not an object", "game-maker"],
+      ["an array where a record belongs", [{ v: 1, kind: "game-maker" }]],
+      ["confirmedAt dictated from the wire", { v: 1, kind: "game-maker", confirmedAt: 1 }],
+      ["no kind at all", { v: 1 }],
+    ];
+    const badProfileResults = await Promise.all(badProfiles.map(([, body]) => setProfileOn(profProgram.id, body)));
+    const profileExtraKey = await profileDoor(profProgram.id, { profile: { v: 1, kind: "game-maker" }, force: true });
+    const profileNoField = await profileDoor(profProgram.id, {});
+    check("profile door: every off-schema record is 400 and leaves NO profile behind",
+      badProfileResults.every((r) => r.status === 400) && profileExtraKey.status === 400
+        && profileNoField.status === 400 && (await profileOf(profProgram.id)) === undefined,
+      `${badProfileResults.map((r) => r.status).join("/")} extra=${profileExtraKey.status} none=${profileNoField.status}`);
+    // THE SERVER STAMPS THE ACT. A wire `confirmedAt` is already refused above; this is the other
+    // half — the stored stamp is a server clock reading, and an identical repeat does not re-date
+    // the owner's decision, because a permission that re-dates itself has no dateable act at all.
+    const beforeGrant = Date.now();
+    const grant = await setProfileOn(profProgram.id, { v: 1, kind: "game-maker" });
+    const granted = await profileOf(profProgram.id);
+    const afterGrant = Date.now();
+    const regrant = await setProfileOn(profProgram.id, { v: 1, kind: "game-maker" });
+    const regranted = await profileOf(profProgram.id);
+    check("profile door: a valid grant stores a server-stamped v1 record and an identical repeat is a true no-op",
+      grant.ok && granted?.v === 1 && granted.kind === "game-maker"
+        && typeof granted.confirmedAt === "number"
+        && granted.confirmedAt >= beforeGrant && granted.confirmedAt <= afterGrant
+        && regrant.ok && JSON.stringify(regranted) === JSON.stringify(granted),
+      `${grant.status} ${JSON.stringify(granted ?? null)} repeat=${regrant.status} ${JSON.stringify(regranted ?? null)}`);
+    const cleared = await setProfileOn(profProgram.id, null);
+    const clearedRow = await profileOf(profProgram.id);
+    const clearAgain = await setProfileOn(profProgram.id, null);
+    check("profile door: {\"profile\":null} clears the record and clearing an absent one is an ordinary success",
+      cleared.ok && clearedRow === undefined && clearAgain.ok
+        && (await profileOf(profProgram.id)) === undefined,
+      `clear=${cleared.status} again=${clearAgain.status} ${JSON.stringify(clearedRow ?? null)}`);
+    // the credential boundary, for the same reason the promotion record has one: a session that
+    // could write this would be choosing the environment it is judged in.
+    const profileAsSelf = await fetch(`${BASE}/api/programs/${profProgram.id}/profile`, {
+      method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": plainToken },
+      body: JSON.stringify({ profile: { v: 1, kind: "game-maker" } }),
+    });
+    const profileUnknownId = await setProfileOn("0".repeat(24), { v: 1, kind: "game-maker" });
+    check("profile door: a self token is not a credential here (401), and an unknown program id is 404",
+      profileAsSelf.status === 401 && (await profileOf(profProgram.id)) === undefined
+        && profileUnknownId.status === 404,
+      `self=${profileAsSelf.status} unknown=${profileUnknownId.status}`);
+    // A CONFIRMED DECISION ON FINISHED WORK IS NOT REWRITABLE. The complete program is the one
+    // whose receipts, outcomes and briefs are already dated against the environment it ran in.
+    const doneProgram = await activateNewProgram("Execution profile on completed work");
+    await setProfileOn(doneProgram.id, { v: 1, kind: "game-maker" });
+    await programPost(doneProgram.id, "complete");
+    const completedChange = await setProfileOn(doneProgram.id, null);
+    const completedText = await completedChange.text();
+    check("profile door: a complete program refuses every profile write and keeps the record it ran under",
+      completedChange.status === 409 && completedText.includes("complete")
+        && (await profileOf(doneProgram.id))?.kind === "game-maker",
+      `${completedChange.status} ${completedText}`);
+    // …and the OTHER half of the immutability rule: an ACTIVE program whose binding is stale or
+    // absent is exactly the program whose next founding should use a fresh owner decision, so it
+    // must stay writable. (The live-bound refusal is measured on a real bound MAIN in the
+    // Game-Maker section above, where a live occupant actually exists.)
+    const staleProgram = await activateNewProgram("Execution profile on a stale binding");
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const staleState = readState();
+    const staleRow = staleState.programs?.find((x) => x.id === staleProgram.id);
+    if (staleRow) staleRow.main = { slot: 14, openedAt: 1, sessionId: null, boundAt: 1 };
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(staleState, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const staleGrant = await setProfileOn(staleProgram.id, { v: 1, kind: "game-maker" });
+    check("profile door: an ACTIVE program on a stale or absent binding stays writable, so the next founding uses a fresh owner decision",
+      !!staleRow && staleGrant.ok && (await profileOf(staleProgram.id))?.kind === "game-maker"
+        && (await ownerPrograms()).find((p) => p.id === staleProgram.id)?.health?.occupancy === "stale",
+      `${staleGrant.status} occupancy=${(await ownerPrograms()).find((p) => p.id === staleProgram.id)?.health?.occupancy}`);
+
+    // THE ENVIRONMENT CANNOT BE PROPOSED, ONLY GRANTED — and the adversary here is a session, not
+    // a typo. Program CONTENT is the one thing a session may write into a Program, and it reaches
+    // storage through validateProgramContent, which builds a CLOSED object from seven named fields.
+    // So a `profile` riding on a self proposal, on an owner-direct proposal, or on the owner's own
+    // confirm corrections must never land: it is accepted-but-absent, which is the boundary this
+    // repo already draws for `id`, `status` and `proposedBy` on the same door. If it ever landed,
+    // a session could choose the environment it is judged in without the owner ever pressing the
+    // one door that grants it.
+    const smuggleProfile = { v: 1, kind: "game-maker" };
+    const smuggleSelf = await selfPropose(plainToken, {
+      ...content, title: "Smuggle a profile through a session proposal", profile: smuggleProfile });
+    const smuggleSelfRow = (await smuggleSelf.json()) as { program?: Program };
+    const smuggleOwner = await post("/api/programs", {
+      ...content, title: "Smuggle a profile through an owner proposal", profile: smuggleProfile });
+    const smuggleOwnerRow = (await smuggleOwner.json()) as { program?: Program };
+    const smuggleConfirm = smuggleOwnerRow.program
+      ? await programPost(smuggleOwnerRow.program.id, "confirm", { profile: smuggleProfile })
+      : null;
+    const smuggleConfirmRow = smuggleConfirm ? (await smuggleConfirm.json()) as { program?: Program } : null;
+    const smuggleIds = [smuggleSelfRow.program?.id, smuggleOwnerRow.program?.id]
+      .filter((id): id is string => typeof id === "string");
+    const smuggleStored = (await ownerPrograms()).filter((p) => smuggleIds.includes(p.id));
+    check("profile boundary: a profile cannot be smuggled through a session proposal, an owner proposal, or confirm corrections",
+      smuggleIds.length === 2 && smuggleStored.length === 2
+        && smuggleStored.every((p) => p.profile === undefined && !("profile" in p))
+        && smuggleSelfRow.program?.profile === undefined
+        && smuggleOwnerRow.program?.profile === undefined
+        && smuggleConfirm?.status === 200
+        && smuggleConfirmRow?.program?.profile === undefined
+        && !("profile" in (smuggleConfirmRow?.program ?? {})),
+      JSON.stringify({ self: smuggleSelfRow.program?.profile ?? null,
+        owner: smuggleOwnerRow.program?.profile ?? null, confirm: smuggleConfirm?.status,
+        stored: smuggleStored.map((p) => p.profile ?? null) }));
+    if (smuggleSelfRow.program) await programPost(smuggleSelfRow.program.id, "discard");
+    if (smuggleOwnerRow.program) { // already confirmed by the probe above, so it leaves the other way
+      await programPost(smuggleOwnerRow.program.id, "activate");
+      await programPost(smuggleOwnerRow.program.id, "complete");
+    }
+
+    // --- THE LOADER, PROBED IN THE DANGEROUS DIRECTION, exactly as the promotion record is: a
+    // persisted profile this build cannot parse must come back ABSENT — the legacy Standard MAIN —
+    // and it must not take the rest of an otherwise valid Program down with it.
+    const profileCarriers: string[] = [];
+    for (let i = 0; i < 4; i++) profileCarriers.push((await activateNewProgram(`Profile loader shape ${i}`)).id);
+    const profileControl = await activateNewProgram("Profile loader control");
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const profileShapes: unknown[] = [
+      { v: 2, kind: "game-maker", confirmedAt: Date.now() },              // a version nobody knows
+      { v: 1, kind: "game-studio", confirmedAt: Date.now() },             // a kind outside the set
+      { v: 1, kind: "game-maker", confirmedAt: 0 },                       // an absurd stamp
+      { v: 1, kind: "game-maker", confirmedAt: Date.now(), strict: 1 },   // an unknown key
+    ];
+    const profileState = readState();
+    const plantedIds: string[] = [];
+    for (let i = 0; i < profileShapes.length; i++) {
+      const row = (profileState.programs ?? []).find((x) => x.id === profileCarriers[i]);
+      if (!row) continue;
+      plantedIds.push(row.id);
+      (row as unknown as Record<string, unknown>).profile = profileShapes[i];
+    }
+    const controlRowP = (profileState.programs ?? []).find((x) => x.id === profileControl.id);
+    if (controlRowP) (controlRowP as unknown as Record<string, unknown>).profile =
+      { v: 1, kind: "game-maker", confirmedAt: Date.now() };
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(profileState, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const afterProfileLoad = await ownerPrograms();
+    check("profile loader: every malformed persisted profile degrades to ABSENT, and a well-formed one beside it survives the same boot",
+      plantedIds.length === profileShapes.length && !!controlRowP
+        && plantedIds.every((id) => afterProfileLoad.find((x) => x.id === id)?.profile === undefined)
+        && afterProfileLoad.find((x) => x.id === profileControl.id)?.profile?.kind === "game-maker",
+      JSON.stringify({ planted: plantedIds.length,
+        survivors: plantedIds.filter((id) => afterProfileLoad.find((x) => x.id === id)?.profile !== undefined) }));
+    // ...and a malformed profile never invalidates the ROW. The carriers must still be here, with
+    // their content intact — degrading a Program out of existence over an unreadable environment
+    // record would lose the owner's confirmed work to protect a preference.
+    check("profile loader: an unreadable profile costs the record, never the Program — every carrier row still loads with its content",
+      plantedIds.every((id) => {
+        const row = afterProfileLoad.find((x) => x.id === id);
+        return !!row && row.status === "active" && row.intent === content.intent
+          && Array.isArray(row.evidence) && row.evidence.length === content.evidence.length;
+      }),
+      JSON.stringify(plantedIds.map((id) => [id, afterProfileLoad.find((x) => x.id === id)?.status ?? "GONE"])));
+    // …and the legacy row: a Program persisted before this record existed carries no profile and
+    // gains none at load. Absence is the Standard MAIN, and no loader may backfill a preference.
+    const legacyProfileRow = afterProfileLoad.find((p) => p.id === proposed.id);
+    check("profile loader: a legacy Program without the field loads with no profile and is never backfilled",
+      !!legacyProfileRow && legacyProfileRow.profile === undefined
+        && !("profile" in legacyProfileRow),
+      JSON.stringify(legacyProfileRow ?? null));
+    // THE HOT DIGEST IS UNTOUCHED, and the full record carries the fact. Same split the promotion
+    // record keeps: a 2 s poll is not where an owner-decision document belongs.
+    const profilePoll = await (await get("/api/sessions")).json() as { programs: Record<string, unknown>[] };
+    const profileDigest = profilePoll.programs.find((p) => p.id === profileControl.id);
+    check("profile projection: GET /api/programs carries the record while the 2 s ProgramDigest stays exactly four fields",
+      !!profileDigest && JSON.stringify(Object.keys(profileDigest).sort())
+        === JSON.stringify(["createdAt", "id", "status", "title"])
+        && !("profile" in profileDigest)
+        && afterProfileLoad.find((p) => p.id === profileControl.id)?.profile?.v === 1,
+      `digest=${JSON.stringify(profileDigest)}`);
+    await setProfileOn(profileControl.id, null);
+    await programPost(profProgram.id, "complete");
+    await programPost(staleProgram.id, "complete");
+    await programPost(profileControl.id, "complete");
+    for (const id of profileCarriers) await programPost(id, "complete");
+  }
+
   // === THE OWNER BOARD'S PROMOTION SECTION, run rather than described ==========================
   // The route probes above prove what the SERVER stores. What they cannot reach is what the owner
   // is told it stored — and this record's whole design is a distinction the display can destroy:
@@ -2707,6 +3383,65 @@ export async function run(ctx: Ctx): Promise<void> {
           other: other.stamped, absent: absent.stamped }));
     }
 
+    // === THE EXECUTION-PROFILE CHIP, run rather than described ================================
+    // Third helper cut out of the same file for the third time, and for the same one reason: this
+    // record has a state the display can silently destroy. A profile that is STORED but not
+    // readable as v1 is not absence — the running server's own loader is already ignoring it, so
+    // the board must say "something is stored that this build cannot read", never "Standard MAIN".
+    // Painting it as absence would tell the owner they are founding a Standard MAIN while a record
+    // they cannot see sits on the row.
+    const prAt = cliSrc.indexOf("\nfunction profileState(p: ProgramInfo)");
+    const prHeadAt = cliSrc.indexOf("type ProfileStateName");
+    const prSrc = prAt < 0 || prHeadAt < 0 || prHeadAt > prAt ? ""
+      : cliSrc.slice(prHeadAt, cliSrc.indexOf("\n}\n", prAt) + 3);
+    check("profile UI precondition: profileState is extractable and carries no DOM and no clock",
+      prSrc.includes("function profileState") && prSrc.includes("PROFILE_KINDS")
+        && !/document|\bel\(|chip\(|Date\.now\(|new Date\(|programsRead|programsList/.test(prSrc),
+      prSrc === "" ? `not found (head=${prHeadAt} fn=${prAt})` : `${prSrc.length} bytes`);
+    if (prSrc !== "") {
+      type PrView = { state: string; label: string; tone: string; sentence: string; stamped: string | null };
+      const PRELUDE2 = 'function fmtTs(ts) { return "TS:" + ts; }\n';
+      const profileState = new Function(
+        new Bun.Transpiler({ loader: "ts" }).transformSync(PRELUDE2 + prSrc)
+        + "\nreturn profileState;")() as (p: { profile?: unknown }) => PrView;
+      const PSTAMP = 1750000000000;
+      const pv = (profile: unknown): PrView => profileState({ profile });
+      const prAbsent = profileState({});
+      const prNull = pv(null);
+      const prGame = pv({ v: 1, kind: "game-maker", confirmedAt: PSTAMP });
+      check("profile UI: absent renders as the Standard MAIN and game-maker renders as its own named environment",
+        prAbsent.state === "absent" && prAbsent.stamped === null
+          && JSON.stringify(prNull) === JSON.stringify(prAbsent)
+          && prGame.state === "game-maker" && prGame.stamped === `TS:${PSTAMP}`
+          && prAbsent.label !== prGame.label && prAbsent.sentence !== prGame.sentence
+          && /standard/i.test(prAbsent.sentence) && /game/i.test(prGame.label),
+        JSON.stringify([prAbsent, prGame].map((v) => [v.state, v.label, v.tone, v.stamped])));
+      const prBad: [string, unknown][] = [
+        ["a version this build does not know", { v: 2, kind: "game-maker", confirmedAt: PSTAMP }],
+        ["a kind outside the closed set", { v: 1, kind: "game-studio", confirmedAt: PSTAMP }],
+        ["no confirmedAt at all", { v: 1, kind: "game-maker" }],
+        ["an absurd stamp", { v: 1, kind: "game-maker", confirmedAt: 0 }],
+        ["a stamp that is not a number", { v: 1, kind: "game-maker", confirmedAt: "friday" }],
+        ["a record that is not an object", "game-maker"],
+        ["an array where a record belongs", [{ v: 1, kind: "game-maker", confirmedAt: PSTAMP }]],
+        // the CLOSED key set, and it is the shape a display drops most easily: every field this
+        // build reads is valid, and one it does not read rides along. server.ts's loader refuses
+        // it outright, so the running server is already treating this program as unprofiled — a
+        // pane that painted it game-maker would show an environment nobody is founding into.
+        ["a valid record carrying one extra key", { v: 1, kind: "game-maker", confirmedAt: PSTAMP, future: true }],
+      ];
+      const prBadViews = prBad.map(([name, shape]) => ({ name, view: pv(shape) }));
+      check("profile UI: every record this build cannot read renders as 'unreadable' — never as the Standard MAIN",
+        prBadViews.every((b) => b.view.state === "unreadable" && b.view.stamped === null
+          && b.view.label !== prAbsent.label && b.view.sentence !== prAbsent.sentence
+          && b.view.label !== prGame.label),
+        JSON.stringify(prBadViews.map((b) => [b.name, b.view.state, b.view.tone, b.view.stamped])));
+      // THE STAMP IS THE RECORD'S, proved by a second, different number reaching the formatter.
+      const prOther = pv({ v: 1, kind: "game-maker", confirmedAt: PSTAMP + 86_400_000 });
+      check("profile UI: the displayed grant time is the record's own confirmedAt, not a client clock",
+        prOther.stamped === `TS:${PSTAMP + 86_400_000}` && prOther.stamped !== prGame.stamped,
+        `${prGame.stamped} vs ${prOther.stamped}`);
+    }
     // === V1a · THE IDENTITY CHIP, run rather than described ===================================
     // Same method and same reason as the promotion block above: the route probes prove what the
     // SERVER derives, and what they cannot reach is what the owner is TOLD. The distinction this

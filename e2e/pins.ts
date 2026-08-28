@@ -20,6 +20,7 @@
 //
 // NOT what this file is for: e2e/dirs-pins.ts, an unrelated neighbour, tests the directory picker's
 // bookmark list. "Pin" there is a UI feature; "pin" here is a fastener between two files.
+import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
@@ -3230,7 +3231,18 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
 // curls that 404, exactly the way the lane exit footer would — same failure, same kind of pin.
 {
   const RULE_RAIL = "the founding execution rail, the portable role contract and the Self-API reference name ONE set of doors";
-  const rail = server.match(/const PROGRAM_MAIN_RAIL_BLOCK = `[\s\S]*?\n[^\n]*`;/)?.[0] ?? "";
+  // The rail is COMPOSED since the execution-profile cut: one head, one selected role paragraph,
+  // one tail. Read the parts and join them the way the server joins them, so this rule keeps
+  // measuring the DELIVERED text rather than one constant's spelling — and so the game-maker
+  // composition is measurable at all.
+  const railPart = (name: string): string =>
+    server.match(new RegExp(`const ${name} = \`[\\s\\S]*?\\n[^\\n]*\`;`))?.[0] ?? "";
+  const railHead = railPart("RAIL_HEAD");
+  const railRoleStandard = railPart("RAIL_ROLE_STANDARD");
+  const railRoleGameMaker = railPart("RAIL_ROLE_GAME_MAKER");
+  const railTail = railPart("RAIL_TAIL");
+  const rail = railHead === "" || railRoleStandard === "" || railTail === ""
+    ? "" : railHead + railRoleStandard + railTail;
   const selfApiDoc = read("docs/self-api.md");
   const agents = read("AGENTS.md");
   // The doors, spelled as the delivered text spells them. `<taskId>` in the brief and `:id` in the
@@ -3248,7 +3260,7 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   pin(`${RULE_RAIL} — every door the founding block names has a section that documents it (A)`,
     rail !== "" && /^## Program-MAIN-Ausführungsschiene/m.test(selfApiDoc)
       && missingRail.length === 0 && missingDoc.length === 0,
-    rail === "" ? "PROGRAM_MAIN_RAIL_BLOCK not found in server.ts"
+    rail === "" ? "the RAIL_HEAD / RAIL_ROLE_STANDARD / RAIL_TAIL parts were not all found in server.ts"
       : `railMissing=[${missingRail.join(",")}] docMissing=[${missingDoc.join(",")}]`);
   // The ADDRESS is the falsifier the owner paid for by hand: a MAIN that has to search for Fleet.
   // It must be the server's OWN interpolated HOST/PORT — a literal would be right on this machine
@@ -3271,6 +3283,44 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   pin(`${RULE_RAIL} — both halves of the role judgement stand in the block and in the portable contract (C)`,
     agentsRule && railRule && !/\b\d+\s*(lines|files|LOC)\b/.test(rail),
     `agents=${agentsRule} rail=${railRule}`);
+  // (D) THE PROFILE SELECTS ITS ROLE PARAGRAPH, IT DOES NOT APPEND AN OVERRIDE. Two role paragraphs
+  // exist and they say opposite things about substantial work; the composition is what guarantees a
+  // founding text carries exactly one. The falsifier this closes: a game-maker rail that still
+  // carried "Use an isolated worker lane for substantial product implementation" beside its own
+  // licence to work serially, leaving the session to follow whichever sentence it reached first.
+  // The owner's amendment is checked on the portable-contract side too, since that is where a
+  // session actually binds to it.
+  const gameMakerRail = railHead === "" || railRoleGameMaker === "" || railTail === ""
+    ? "" : railHead + railRoleGameMaker + railTail;
+  const gmExclusive = gameMakerRail !== ""
+    && !gameMakerRail.includes("Use an isolated worker lane for substantial product implementation")
+    && !gameMakerRail.includes("THE ROLE SPLIT IS A JUDGEMENT, NOT A WALL")
+    && gameMakerRail.includes("SUBSTANTIAL SERIAL PRODUCT WORK MAY STAY IN THIS PANE")
+    && gameMakerRail.includes("fresh criticism")
+    && !railRoleStandard.includes("SUBSTANTIAL SERIAL PRODUCT WORK MAY STAY IN THIS PANE");
+  const agentsProfile = agents.includes("Game-Maker Program-MAIN")
+    && agents.includes("causally coupled product act");
+  // (E) THE LEGACY STANDARD RAIL IS FROZEN, AND THE HASH IS THE POINT. e2e/programs.ts proves the
+  // four founding shapes carry ONE block byte for byte — which is true of four shapes that drifted
+  // TOGETHER, and the whole rail is now composed, so a change to the shared head or tail moves all
+  // four at once and that check stays green. This row is the change-control rule the composition
+  // needs: the standard rail's bytes are pinned to a baseline, so editing it is a deliberate act
+  // that updates this constant, never a side effect of touching the profile beside it. Rewrite the
+  // baseline ONLY when the text was meant to change, and say so in the commit body.
+  const RAIL_STANDARD_SHA256 = "bfba216cd986eb70d47046c244c321a9bfed8468b9caa9e7e0c72ea50e860065";
+  const railBody = (part: string): string =>
+    part === "" ? "" : part.slice(part.indexOf("`") + 1, part.lastIndexOf("`"));
+  const standardBytes = rail === ""
+    ? "" : railBody(railHead) + railBody(railRoleStandard) + railBody(railTail);
+  const standardSha = standardBytes === ""
+    ? "" : createHash("sha256").update(standardBytes).digest("hex");
+  pin(`${RULE_RAIL} — the legacy Standard rail still hashes to its pinned baseline (E)`,
+    standardSha === RAIL_STANDARD_SHA256,
+    standardBytes === "" ? "the rail parts were not all found in server.ts"
+      : `bytes=${standardBytes.length} sha256=${standardSha}`);
+  pin(`${RULE_RAIL} — the game-maker role paragraph REPLACES the generic one, and the portable contract names the same exception (D)`,
+    gmExclusive && agentsProfile && !/\b\d+\s*(lines|files|LOC)\b/.test(gameMakerRail),
+    `exclusive=${gmExclusive} agents=${agentsProfile} gmLen=${gameMakerRail.length}`);
 }
 
 // --- THE PROMOTE DOOR ON THE BOARD ↔ THE TWO OWNER-GATED ROUTES. Promotion was terminal-only

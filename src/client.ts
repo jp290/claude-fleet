@@ -6060,6 +6060,12 @@ interface ProgramInfo extends ProgramDigest {
   // shape here that this build cannot read. So the type admits that, and `promotionState` below
   // turns "present but unreadable" into its own displayed state rather than into "absent".
   promotion?: { v?: number; selfLand?: string; confirmedAt?: number } | null;
+  // THE OWNER'S EXECUTION PROFILE for this program's MAIN, as it comes off the wire, and optional
+  // for exactly the reason `promotion` above is: the server stores a closed `{v:1, kind, confirmedAt}`
+  // and its loader refuses anything else, but a client type is an ASSERTION about a foreign surface.
+  // `profileState` below turns "present but unreadable" into its own displayed state — never into
+  // the Standard MAIN, which is what absence means and what an owner would act on.
+  profile?: { v?: number; kind?: string; confirmedAt?: number } | null;
   // V1b — THE RETURN PATH INTO THIS PROGRAM'S MAIN, derived by the server per request and stored
   // nowhere. Same reason every field above is optional: this is an ASSERTION about a foreign
   // surface, not a proof about one, and an older server simply does not send it. `state` is read
@@ -6222,6 +6228,56 @@ function promotionState(p: ProgramInfo): {
       + " verification FRESH on the resolved candidate, landing only on a green." };
 }
 
+// --- THE OWNER'S EXECUTION PROFILE, read for display ---
+// THREE states, and `unreadable` is the third for exactly the reason promotionState has one: this
+// row arrives over the wire, and a shape this build cannot read as a v1 record is NOT absence.
+// Absence has a meaning here — it is the Standard MAIN, the unchanged legacy founding — so painting
+// an unreadable record as absence would tell the owner they are founding a Standard MAIN while
+// something they cannot see sits on the row and the server's own loader is already ignoring it.
+//
+// READABILITY IS THE SERVER'S OWN RULE, restated: v must be 1, kind must be in the closed set, and
+// confirmedAt must be a positive finite number. `stamped` is the SERVER's confirmedAt through
+// fmtTs and nothing else — a client clock on an owner decision would date the act for them.
+//
+// PURE AND TOP-LEVEL ON PURPOSE, like promotionState and programHealthState: no globals, no DOM, no
+// clock, so e2e/programs.ts can cut it out, transpile it and RUN it over all three states.
+type ProfileStateName = "absent" | "game-maker" | "unreadable";
+const PROFILE_KINDS = ["game-maker"];
+function profileState(p: ProgramInfo): {
+  state: ProfileStateName; label: string; tone: "ok" | "dim" | "warn";
+  sentence: string; stamped: string | null;
+} {
+  const rec = p.profile;
+  if (rec === undefined || rec === null)
+    return { state: "absent", label: "profile: standard MAIN", tone: "dim", stamped: null,
+      sentence: "No execution profile is stored, and that is the standard shape every program has"
+        + " until you choose otherwise. Its Program-MAIN is founded with the ordinary rail: it"
+        + " inspects, decides, decomposes and briefs, and substantial product implementation goes"
+        + " to an isolated worker lane." };
+  if (typeof rec !== "object" || Array.isArray(rec) || rec.v !== 1
+    // the CLOSED key set, and it is the half a display most easily drops: the server's loader
+    // refuses an unknown key outright, so a record carrying one is already being ignored by the
+    // running server. Rendering it as a live game-maker profile would be this pane's own version
+    // of the field-wise repair the loader refuses.
+    || Object.keys(rec).some((k) => k !== "v" && k !== "kind" && k !== "confirmedAt")
+    || typeof rec.kind !== "string" || !PROFILE_KINDS.includes(rec.kind)
+    || typeof rec.confirmedAt !== "number" || !Number.isFinite(rec.confirmedAt) || rec.confirmedAt <= 0)
+    return { state: "unreadable", label: "profile: unreadable record", tone: "warn", stamped: null,
+      sentence: "An execution profile IS stored on this program, but it is not a shape this build"
+        + " can read as a v1 record — so nothing here says which environment was chosen, and no"
+        + " time is shown because an unreadable stamp is not a date. This is NOT the standard case:"
+        + " something is stored. The server's own loader refuses the same shape, so its next"
+        + " founding would use the ordinary rail; granting below overwrites the record outright." };
+  const stamped = fmtTs(rec.confirmedAt);
+  return { state: "game-maker", label: "profile: game-maker", tone: "ok", stamped,
+    sentence: "This program's MAIN is founded as a long-lived Lead Game Developer: it owns the"
+      + " playable product and may do substantial serial work itself while play, perception,"
+      + " implementation, repair and replay stay indivisible. It may be founded ONLY in a dedicated"
+      + " linked git worktree of a target repository, and its succession additionally requires a"
+      + " committed \"## Current game checkpoint\" section. Separable, parallel, specialist,"
+      + " independent-proof and fresh-critic work still goes to a worker lane." };
+}
+
 // --- V1a · THE IDENTITY HALF OF THE BOUND MAIN, read for display ---
 // WHAT THIS EXISTS TO SHOW. `programMark` above answers "is the bound slot still held" from the
 // 2 s poll and says out loud that it cannot answer the other half — the poll carries no session id
@@ -6350,6 +6406,15 @@ let qPmBusy = false;
 // would put "…" on all four and claim three sends nobody made.
 let qPmAct: string | null = null;
 let qPmSeq = 0;
+// The execution-profile draft, and it is a THIRD independent one on the same pane for the reason
+// the promotion draft is a second: these are three different owner acts (advance a lifecycle,
+// grant a permission, choose an environment), and a shared busy flag or error line would put one
+// act's refusal under another act's buttons.
+let qPrFor: string | null = null;
+let qPrErr: string | null = null;  // the server's own sentence, kept verbatim across repaints
+let qPrBusy = false;
+let qPrAct: string | null = null;
+let qPrSeq = 0;
 
 // the composer's program picker, same once-per-open lifecycle as qRepoIn
 let qProgSel: HTMLSelectElement | null = null;
@@ -6630,6 +6695,107 @@ function renderProgramDetail(shell: Shell, id: string): void {
       frame.appendChild(el("div", "rvhead", "success criterion"));
       frame.appendChild(el("div", "qdtext", p.successCriterion));
     }
+  }
+
+  // THE EXECUTION ENVIRONMENT, ON THE PANE THAT OWNS IT — and above the promotion door because it
+  // is the earlier decision: the profile chooses what the NEXT founding builds, the promotion
+  // chooses what a MAIN may then do. Two explicit acts and nothing implied: nothing is preselected,
+  // nothing is submitted on render, and no kind is inferred from the program's status or repo.
+  //
+  // IT SITS ABOVE THE STALE/UNKNOWN EARLY RETURN for the same reason the promotion door does, and
+  // with a sharper edge: a program whose MAIN died is EXACTLY the program whose next founding
+  // should use a fresh owner decision, and the server keeps it writable for that reason. Hiding
+  // the door there would strand the choice where nothing can restate it.
+  {
+    if (qPrFor !== p.id) {
+      qPrFor = p.id;
+      qPrSeq++; // a DIFFERENT program; anything still in flight for the old one is orphaned
+      qPrErr = null; qPrBusy = false; qPrAct = null;
+    }
+    const forPrId = p.id;
+    const prSt = profileState(p);
+    // THE TWO BODIES, WRITTEN OUT AS DATA. The server reads a CLOSED set — an extra top-level key
+    // is a 400 and an unknown key inside the record is a 400 — so a body assembled from whichever
+    // button was clicked is a body a later edit can widen without anyone reading this pane again.
+    type PrAct = "game-maker" | "clear";
+    const PR_BODY: Record<PrAct, { profile: { v: 1; kind: string } | null }> = {
+      "game-maker": { profile: { v: 1, kind: "game-maker" } },
+      clear: { profile: null },
+    };
+    const prNoAnswer = (act: PrAct) =>
+      `${act} did not reach the server — no answer came back, so whether this profile changed is unknown`;
+    const prRun = async (act: PrAct): Promise<void> => {
+      const seq = ++qPrSeq;
+      const mine = () => seq === qPrSeq && qPrFor === forPrId;
+      qPrBusy = true; qPrErr = null; qPrAct = act;
+      qDetailKey = ""; renderQueueDetail();
+      let err: string | null = null;
+      // moved-UNKNOWN, exactly as the two doors below count it: an unanswered request may well have
+      // been applied, so the facts are re-read instead of the old state being repainted over a
+      // record that has in truth already changed.
+      let moved = false;
+      try {
+        const r = await post(`/api/programs/${forPrId}/profile`, PR_BODY[act]).catch(() => null);
+        if (!r) { err = prNoAnswer(act); moved = true; }
+        else if (r.ok) moved = true;
+        else {
+          const j = (await r.json().catch(() => null)) as { error?: string } | null;
+          err = j?.error ? `${act} failed — ${r.status}: ${j.error}`
+            : `${act} failed — the server answered ${r.status} with no readable reason`;
+        }
+      } finally {
+        if (mine()) {
+          qPrBusy = false; qPrAct = null;
+          qPrErr = err;
+          if (moved) await loadPrograms(true);
+          qKey = ""; qDetailKey = "";
+          renderQueue(); renderQueueDetail();
+        } else if (moved) {
+          await loadPrograms(true); qKey = ""; renderQueue();
+        }
+      }
+    };
+
+    const pr = qDetailSection(shell.detail, "Execution profile");
+    const prFacts = el("div", "ocfacts");
+    prFacts.appendChild(chip(prSt.label, prSt.tone, prSt.sentence));
+    // THREE labels for three states, because two would lie in the third. "no profile chosen" is a
+    // statement about ABSENCE; saying it over an unreadable record would tell the owner nothing is
+    // stored while something is — the exact confusion profileState exists to prevent.
+    prFacts.appendChild(chip(
+      prSt.stamped ? `chosen ${prSt.stamped}`
+        : prSt.state === "unreadable" ? "no readable profile stamp" : "no profile chosen", "dim",
+      prSt.stamped ? "the server's own confirmedAt on this record — it stamps the act, no client clock is involved"
+        : prSt.state === "unreadable"
+          ? "a record IS stored, but this build cannot read its stamp — an unreadable stamp is not a date"
+          : "no record is stored at all, so there is no date to show"));
+    pr.appendChild(prFacts);
+    pr.appendChild(el("div", "shellhint", prSt.sentence));
+    pr.appendChild(el("div", "shellhint",
+      `POST /api/programs/${p.id}/profile — the owner-only door, and the only writer of this record.`
+      + " It is FIXED while a live bound MAIN holds this program, and on a complete program, because"
+      + " that session was founded under it; a stale or unbound active program stays writable so the"
+      + " next founding uses a fresh decision. Every refusal below is the server's own sentence."));
+    if (programsRead !== "ok") pr.appendChild(el("div", "pkdwarn",
+      "the last GET /api/programs did not answer — the state above is CACHED context, not current"
+      + " truth. The two acts below still reach the server and are safe to repeat."));
+    if (qPrErr) pr.appendChild(el("div", "pkdwarn", qPrErr));
+    const prActs = el("div", "pkdacts");
+    prActs.style.marginTop = "10px";
+    const prButtons: [PrAct, string, string, string][] = [
+      ["game-maker", "grant game-maker", "shrbtn primary",
+        "the next founding builds a Lead Game Developer MAIN — only in a dedicated linked worktree of a target repo"],
+      ["clear", "clear", "shrbtn danger",
+        "back to the standard MAIN; clearing an absent record is an ordinary success"],
+    ];
+    for (const [act, label, cls, tip] of prButtons) {
+      const b = el("button", cls, qPrBusy && qPrAct === act ? `${label}…` : label) as HTMLButtonElement;
+      b.disabled = qPrBusy;
+      b.title = tip;
+      b.onclick = () => { void prRun(act); };
+      prActs.appendChild(b);
+    }
+    pr.appendChild(prActs);
   }
 
   // THE PERMISSION, ON THE PANE THAT OWNS IT. POST /api/programs/:id/promotion existed with no

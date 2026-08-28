@@ -195,7 +195,7 @@ const PRE_AUTH_ROUTES = [
   // session can never widen its own authority: the record is written by this route alone (pinned in
   // e2e/pins.ts), and a self token meets the same tokenGate 401 here as any other non-owner
   // credential.
-  String.raw`~ /^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion))?$/`,
+  String.raw`~ /^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile))?$/`,
   // Same placement and same reason as the Programs regex above, one bracket higher: the Supervisor
   // is cross-program owner identity, so the handler sits before the steward interceptor only so a
   // steward credential meets the same tokenGate 401 as any other non-owner credential. The route

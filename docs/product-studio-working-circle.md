@@ -49,7 +49,7 @@ gate sat after W7. Reversibility did not recover the time spent proving the wron
 |---|---|---|
 | Program / Origin | Built and used by private-repo-h. Its W0-W7 Program is complete; Visual Loop v0 is a separate active Program. | Owner promotion is the only source of binding **Program direction**; inside a promoted direction a Studio-MAIN promotes its own reversible working anchors (see the authority section below). |
 | ContextPlan + delivery receipt | Built as a fresh projection with immutable delivery evidence. | Packs still point only into Fleet. A target-repo Program-MAIN now omits them honestly; foreign task dispatch still forces Fleet context. |
-| Program-MAIN lifecycle | Target-repo bootstrap and program-aware succession are built. | A profile-specific Director contract is not built. |
+| Program-MAIN lifecycle | Target-repo bootstrap and program-aware succession are built. Since 2026-08-28 a Program carries an optional owner-granted execution profile (`{v:1, kind:"game-maker"}`, `POST /api/programs/:id/profile`); absent is the unchanged Standard MAIN. | The profile changes the founding text, the machine boundary and the succession checkpoint — nothing else. No Director role, no standing Advisor, no studio subsystem, no scheduler. |
 | Harness continuity | Codex automatic and attended conversation recovery are built. | Equivalent continuity is adapter-specific, not a universal session claim. |
 | Program execution and help | ProgramExecutionView and worker-to-MAIN clarification are built on existing facts/events. | MAIN-to-owner attention is not typed; clarification has three named transport/view edges; `done-looking` is not semantic completion. |
 | Harnesses | Claude, Codex, Pi and Pi/Z.ai can be selected; model, effort and provenance travel. Fable consumed the Private-repo-h PNGs through a real image tool result. | Multimodality is not yet a declared/routable Fleet capability. Pi/GLM has no image-path canary and remains attended-only. |
@@ -171,6 +171,117 @@ What this deliberately does **not** re-introduce: "a conflict means ask the owne
 count, a posture enum, or a size threshold. Each of those is the persisted posture the correction
 rules out; the judgement stays the session's. The `ownerPlaytest` separation and the one-step launch
 are preserved unchanged — they are taste and release, which is clause 7's own territory.
+
+## The Game-Maker profile: one MAIN inside the loop, not a new organization
+
+**Status:** owner-selected execution environment, built 2026-08-28. It is a **thin** record on
+Program — `profile?: {v:1, kind:"game-maker", confirmedAt}` — written by one owner-only route and by
+nothing else. Absence is the exact legacy Standard MAIN, whose founding bytes are pinned to a
+baseline hash so they cannot drift as a side effect of this work. A session may propose Program
+*content*; it can never propose this record, on any door. It adds no role, no document, no event, no
+score and no scheduler.
+
+**The measured problem.** The generic founding rail (`AGENTS.md` §Hard invariants, and
+`RAIL_ROLE_STANDARD` in `server.ts`) sends substantial product implementation to an isolated worker
+lane. For a game that severs the one session that has to stay inside the repeated loop *launch →
+actual controls → visual perception → repair → replay*: the perception **is** the product, and a
+fresh lane per repair round cannot carry what the last replay felt like. Every failure this document
+already records on the pre-owner loop — Tower's 20 h to a controllable scene, Private-repo-f's 77.5 %
+machinery — is that severance in one form or another.
+
+**What the profile changes, exactly three things.**
+
+1. **The role paragraph in the founding rail is REPLACED, not overridden.** One block
+   (`RAIL_ROLE_GAME_MAKER`), delivered byte-identically by target bootstrap and target succession,
+   sits where the generic paragraph sits. It states that MAIN is the long-lived **Lead Game
+   Developer** and owns the playable product and its experience; that substantial serial product
+   work may stay in that pane **only** while play, perception, implementation, repair and replay are
+   indivisible; and that separable specialist work, parallel mutation, independent proof and work
+   wanting fresh criticism still leave as worker lanes. Appending an override instead would have
+   left the contradictory generic sentence standing beside it.
+2. **The machine is narrower.** A game-maker MAIN may be founded only in a **dedicated linked git
+   worktree of a target repository**. Refused, each with its own sentence: the Fleet-control
+   checkout, a target repo's primary checkout, and **any linked worktree of Fleet itself** — that
+   last one has its own git toplevel and is `linked`, so only repository *identity* (the canonical
+   `--git-common-dir`, the object store every worktree of one repo shares) catches it. An
+   unreadable identity refuses too. **Dedicated is enforced**: a second live session standing in
+   the same worktree refuses the founding, because it makes every observation the MAIN reports
+   unattributable; a succession excludes exactly its own retiring predecessor and refuses any
+   second occupant. Every refusal lands before a slot opens, before a binding moves and before a
+   receipt is written, and the same rules are re-asked at succession — the predecessor's cwd is
+   inherited verbatim. While a founding of that Program is in flight the profile record itself is
+   locked (409), because the founding reads it twice with seconds of awaits in between.
+3. **Succession carries a checkpoint.** See the next section.
+
+**The sensory gate, in the delivered text.** Before any sensory claim and before widening
+player-facing work, MAIN must launch the exact artifact; exercise it through the app's real input
+layer with actual keyboard/mouse/gamepad input or a scripted human-input driver through that same
+layer (never a simulation or game API, never a policy replay); inspect the screenshot or capture
+with its own visual tool; and compare the served build stamp with the commit it is naming. Audio
+stays `unknown` unless an audio capture can actually be inspected. A missing, latent or refused tool
+keeps that sense `unknown` — restoring or changing the harness comes first, and a missing instrument
+is never converted into a pass.
+
+**Criticism.** MAIN self-critiques continuously and brings in **one fresh, context-rich, hands-on
+critic** at four moments: before the first build under a new anchor the owner did not fix, after the
+first tiny playable, before a declared taste gate, and when claiming a player-facing defect closed.
+The critic is **evidence, not authority** — MAIN decides, repairs and replays; the owner keeps final
+taste and release. There is no standing Advisor and nothing nudges on a timer.
+
+**Four truths stay apart** and are never folded into one another: `technical`, `hands_on`,
+`sensory_critic`, `owner_taste`. A technical green never implies any of the other three — the same
+label discipline the *Honest labels* section above already states, carried into the founding text.
+
+**Critic-safe context.** A repo-declared ContextPlan card may carry the product promise, its
+references, the build sha, the one-step launch, the controls, a seed and where the captures are. It
+may never carry MAIN's current hypothesis, an open defect it is chasing, a rejected direction or an
+earlier verdict: those belong in MAIN's own checkpoint or in an explicit non-critic task brief. A
+critic who reads the answer before looking is no longer a fresh one. Context-pack vocabularies and
+delivery are unchanged.
+
+## The Game-Maker succession checkpoint
+
+The generic succession gate is unchanged for Standard Programs: `HANDOFF.md` exists, is clean, and
+carries a commit newer than the retiring session. For a game-maker Program that is necessary and not
+sufficient — a successor's first act is to **replay**, and it can only replay what its predecessor
+named. So the committed HEAD version's first section is additionally read as a closed shape: at most
+4096 bytes, headed exactly `## Current game checkpoint`, and carrying exactly these seven
+single-line fields, no other line:
+
+```text
+## Current game checkpoint
+Build: <40-char lowercase hex commit>
+Launch: <one command or artifact>
+Last replay: <what the actual controls and capture showed>
+Experience: <current product judgment>
+Open defect: <one defect, or none>
+Next: <one bounded act>
+Critic: <verdict path, or none>
+```
+
+Missing, duplicated, malformed, over-long or multi-line shapes refuse the succession with a 409
+**before** a slot opens, before the binding moves and before a receipt is appended — the predecessor
+stays standing, which is the recoverable state. `Build` must additionally name a commit the
+repository actually has: forty hex digits are a shape, not a build, and a sha naming nothing turns
+the successor's comparison into an unanswerable check dressed as a check.
+
+**A game-maker succession takes no `carry`** (409). There is exactly one handover channel and it is
+the committed checkpoint — readable by the successor, by a critic and by the owner, and it outlives
+the pane. `carry` is one unpersisted sentence in a prompt; accepting both would give the successor
+two channels that can disagree with no way to tell which it obeyed. The first act belongs on the
+`Next:` line. Standard Programs keep `carry` unchanged.
+
+The successor's brief then requires, in this order and before any mutation: read the repository root
+`AGENTS.md`; ground on git; read **only** that top checkpoint section; execute its `Launch:` line;
+hold the actual controls and inspect a fresh capture; read the served build stamp back off the
+running artifact and compare it with `Build:`; then read `GET /api/self/program-execution`. It
+forbids reconstructing any of this from the predecessor's transcript, pane history or prompt
+journal.
+
+**Fleet cannot mechanically prove which commit was played.** The comparison is between two things
+the session itself observed. A checkpoint/build-stamp mismatch, or an unavailable sense, marks
+`hands_on` **unknown** — never a pass and never a repair verdict. The same rule binds any later
+critic verdict.
 
 ## Smart session enrichment: information layers
 

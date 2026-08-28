@@ -16479,6 +16479,11 @@ FOUR TRUTHS STAY APART and are never folded into one another:
 technical, hands_on, sensory_critic and owner_taste.
 A technical green never implies any of the other three. Name the one you actually have.
 
+KEEP THE COMMITTED "## Current game checkpoint" CURRENT throughout your tenure, not only when
+succession is already due. It has exactly seven one-line fields in this order: Build, Seed, Launch,
+Experience, Open defect, Next and Critic. This is predecessor-to-successor and owner evidence, not
+a substitute for replay and never input to a fresh critic.
+
 A REPO-DECLARED CONTEXT ANCHOR IS A CRITIC-SAFE POINTER SET AND NOTHING MORE. The ContextPlan card
 your repository declares may carry the product promise, its references, the build sha, the one-step
 launch, the controls, a seed and where the captures are. It may never carry any of four things:

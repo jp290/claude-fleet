@@ -2,6 +2,7 @@
 // prompt log, shares, schedules, a lane's selfToken) and the audit log with its rotation.
 // Sets up the deploy-gap repo and the env line the steward section is measured against.
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { BASE, IP, PORT, ROOT, SOCK, TOKEN, check, get, plogRead, post, readText, restartSrv, tmuxOut, wsUrl } from "./harness";
@@ -81,14 +82,40 @@ const codexTokenCount = (total: number, window: number | null): string => JSON.s
 export async function run(ctx: Ctx): Promise<void> {
   let persistedCodex: { anchor: number; disconnectSeenAt: number; id: string } | null = null;
   // --- file permissions ---
-  const streamPath = `${ROOT}/streams/s1.raw`;
-  const streamStat = statOrNull(streamPath);
-  check("precondition: slot 1 has a stream file", streamStat !== null, streamPath);
+  const statePath = `${ROOT}/fleet.json`;
+  const liveSlot1 = ((await (await get("/api/sessions")).json()) as
+    { slots: { id: number; cwd: string | null; openedAt: number }[] }).slots.find((s) => s.id === 1);
+  const durableSlot1 = (JSON.parse(readFileSync(statePath, "utf8")) as
+    { slots?: Record<string, { cwd?: unknown; openedAt?: unknown; selfToken?: unknown }> }).slots?.["1"];
+  const durableSelfToken = typeof durableSlot1?.selfToken === "string"
+    && /^[0-9a-f]{32}$/.test(durableSlot1.selfToken) ? durableSlot1.selfToken : null;
+  const currentIdentity = !!liveSlot1 && typeof liveSlot1.cwd === "string"
+    && typeof durableSlot1?.cwd === "string" && durableSlot1.cwd === liveSlot1.cwd
+    && typeof durableSlot1.openedAt === "number" && durableSlot1.openedAt === liveSlot1.openedAt
+    && Number.isFinite(liveSlot1.openedAt) && liveSlot1.openedAt > 0 && durableSelfToken !== null;
+  check("precondition: slot 1 live and durable occupant identities agree", currentIdentity,
+    JSON.stringify({
+      live: liveSlot1 ? { cwd: liveSlot1.cwd, openedAt: liveSlot1.openedAt } : null,
+      durable: durableSlot1 ? {
+        cwd: durableSlot1.cwd, openedAt: durableSlot1.openedAt,
+        selfTokenValid: durableSelfToken !== null,
+      } : null,
+    }));
+  const streamName = currentIdentity && liveSlot1 && durableSelfToken
+    ? `s1-${liveSlot1.openedAt}-${createHash("sha256").update(durableSelfToken).digest("hex").slice(0, 16)}.raw`
+    : "";
+  const slot1Streams = readdirSync(`${ROOT}/streams`).filter((name) => /^s1-\d+-[0-9a-f]{16}\.raw$/.test(name));
+  const streamPath = streamName ? `${ROOT}/streams/${streamName}` : "";
+  check("precondition: slot 1 has exactly its current occupant stream file",
+    !!streamName && slot1Streams.length === 1 && slot1Streams[0] === streamName && existsSync(streamPath),
+    JSON.stringify({ expected: streamName, found: slot1Streams }));
+  const legacyStreamPath = `${ROOT}/streams/s1.raw`;
+  check("precondition: reusable legacy slot 1 stream is absent", !existsSync(legacyStreamPath), legacyStreamPath);
+  const streamStat = streamPath ? statOrNull(streamPath) : null;
   if (streamStat) {
     const streamMode = Number(streamStat.mode) & 0o777;
     check("stream file is 600", streamMode === 0o600, streamMode.toString(8));
   }
-  const statePath = `${ROOT}/fleet.json`;
   const stateStat = statOrNull(statePath);
   check("precondition: fleet state file exists", stateStat !== null, statePath);
   if (stateStat) {

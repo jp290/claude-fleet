@@ -1612,6 +1612,131 @@ function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
   return head;
 }
 
+// --- WHICH MACHINES TAKE WORK OFF THIS BOX: the helper device register --------------------------
+// The board's only view of the second machine. It sits with the gate line rather than in the lane
+// story because it is a fact about the MACHINE ROOM, not about the lane under the cursor: which
+// helpers exist, whether they are beating, what the owner asked of them, what they hold right now.
+//
+// EVERY FIELD BELOW IS FOREIGN DATA. The name, the reported mode, the load and the capability list
+// are strings another machine chose and this fleet stores verbatim; they reach the DOM only through
+// `el()` / createTextNode (textContent), never as markup and never interpolated into one. Wire
+// shape is tolerant on purpose — an older server sends no `helperDevices` at all (the panel is then
+// absent, which is what "no register" looks like), and a device that has never reported a mode has
+// no `mode` key. `mode` is typed as a plain string, not the closed set: a value this client does
+// not know must render as the text it is, never be silently mapped onto one this client does know.
+interface HelperDeviceClaim { kind?: string; repo: string; ref: string; expiresAt: number }
+interface HelperDeviceInfo {
+  id: string; name: string; lastSeen: number;
+  mode?: string; load?: number; capabilities?: string[];
+  desiredMode?: string; desiredSet?: boolean;
+  claims?: HelperDeviceClaim[]; lapses?: number;
+}
+// ONLINE/OFFLINE IS DERIVED, NEVER STORED — the same reading that makes a claim expire: there is no
+// "offline" event anywhere in this system, only a heartbeat that stopped arriving. This is the
+// threshold, and 90 s is chosen rather than tight:
+//   · the portal page beats every 10 s while it is open (src/helper.ts, its refresh interval), and
+//     the S3 daemon's own interval is not fixed yet — a 30 s window would turn one slow beat, one
+//     backoff or one suspended laptop lid into a false "offline".
+//   · it is short enough that a machine switched off is grey within a minute and a half, which is
+//     the question this dot exists to answer ("can I hand it work right now").
+// The age is ALWAYS printed next to the word, so "offline" is never a bare claim: it says how long
+// ago the last beat was and lets the owner judge the gap themselves. Note what touches `lastSeen`
+// today — a device POST and a claim (server.ts#setHelperDevice) — so before the S3 daemon exists, a
+// device that registered once and went quiet reads offline here after 90 s, correctly: nothing is
+// beating.
+const DEVICE_ONLINE_MS = 90_000;
+// The closed set the owner can wish for. It is the server's `DEVICE_MODES` (server.ts) spelled a
+// second time — deliberately not pinned: the server validates the value and refuses anything else
+// with a 400 the button surfaces, so a drift here is a loud button, not a silent wrong state.
+const DEVICE_WISH_MODES = ["active", "quiet", "off"] as const;
+const DEVICE_WISH_TITLE: Record<string, string> = {
+  active: "Take work: the daemon polls for jobs and may claim them.",
+  quiet: "Finish what you hold, take nothing new.",
+  off: "Stop polling entirely. Anything it holds lapses and falls back to this box.",
+};
+let helperDevicesInfo: HelperDeviceInfo[] = [];
+function devicesSection(): HTMLElement | null {
+  // no register, no chrome — the same rule the gate and deploy lines follow. A fleet that has never
+  // seen a helper draws nothing at all here.
+  if (!helperDevicesInfo.length) return null;
+  const sec = el("div", "bsec");
+  sec.appendChild(el("h3", "", "helper devices"));
+  for (const d of helperDevicesInfo) sec.appendChild(deviceCard(d));
+  return sec;
+}
+function deviceCard(d: HelperDeviceInfo): HTMLElement {
+  const box = el("div", "bdev");
+  box.appendChild(el("div", "bidhead", d.name));
+  const age = Math.max(0, Date.now() - d.lastSeen);
+  const online = age < DEVICE_ONLINE_MS;
+  const state = el("div", "bstate");
+  const dot = el("span", online ? "ready" : "", online ? "● online" : "○ offline");
+  dot.title = online
+    ? `Its last heartbeat is ${gateAge(age)} old — younger than the ${Math.round(DEVICE_ONLINE_MS / 1000)}s window. Derived from lastSeen; nothing here pings the machine.`
+    : `Nothing has been heard from it for ${gateAge(age)} (window: ${Math.round(DEVICE_ONLINE_MS / 1000)}s). That is a silence, not a report — the machine may be off, asleep, or simply not running the daemon.`;
+  state.appendChild(dot);
+  // the device's OWN reading of itself, and absent means it never said — not "active"
+  state.appendChild(document.createTextNode(
+    ` · ${d.mode ? `reports ${d.mode}` : "has never reported a mode"} · last beat ${gateAge(age)} ago`));
+  state.title = "What the device says about itself, from its last heartbeat. It is a report, not a setting — the owner's wish is the row below.";
+  box.appendChild(state);
+  // the owner's half: a wish, stored and nothing more. The device finds out on its next heartbeat.
+  const wish = el("div", "bidmeta", d.desiredSet
+    ? "your wish for it:"
+    : "your wish for it: never set — the default below is what it pulls");
+  wish.title = "Stored only. Fleet never opens a connection to that machine: it reads this wish in the reply to its own next heartbeat, or never, if it has stopped beating.";
+  box.appendChild(wish);
+  const row = el("div", "bbtnrow");
+  const btns: HTMLButtonElement[] = [];
+  for (const m of DEVICE_WISH_MODES) {
+    const b = el("button", `bbtn subtle${d.desiredMode === m ? " on" : ""}`, m) as HTMLButtonElement;
+    b.title = DEVICE_WISH_TITLE[m] ?? m;
+    b.onclick = async () => {
+      for (const x of btns) x.disabled = true;
+      const res = await post(`/api/helper/devices/${encodeURIComponent(d.id)}/mode`, { mode: m });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => null)) as { error?: string } | null;
+        alert(j?.error ?? "the mode could not be set");
+        for (const x of btns) x.disabled = false;
+        return;
+      }
+      // paint the answer at once rather than waiting for the next 2 s poll — the same row is
+      // rebuilt from the server's own payload on that poll either way, so this can only be early,
+      // never wrong.
+      d.desiredMode = m;
+      d.desiredSet = true;
+      void renderBoard();
+    };
+    btns.push(b);
+    row.appendChild(b);
+  }
+  box.appendChild(row);
+  for (const c of d.claims ?? []) {
+    const what = c.kind === "lane-suite" ? "a lane preview" : c.kind === "audit" ? "an audit" : `a ${c.kind ?? "?"} job`;
+    const r = el("div", "bidmeta", `holds ${what} · ${c.repo} ${c.ref} · ${gateAge(Math.max(0, c.expiresAt - Date.now()))} left`);
+    r.title = "Work this machine has taken off this box. The local drain skips it until the claim expires; past that it falls back here, whether or not the helper ever answers.";
+    box.appendChild(r);
+  }
+  // ALWAYS drawn, including the zero: "this device has never dropped a job" is the fact the owner
+  // is looking for, and an omitted line would be indistinguishable from a device with no history.
+  const lap = el("div", "bidmeta", d.lapses === undefined
+    ? "lapse count not reported by this server"
+    : d.lapses === 0 ? "no lapses" : `${d.lapses} lapse${d.lapses === 1 ? "" : "s"}`);
+  lap.title = "A lapse is a job this device claimed and never answered for. Counted by device identity; rows booked before that identity was recorded join by NAME, so a device renamed since then does not carry its older lapses here.";
+  box.appendChild(lap);
+  // what it says it is carrying, and what it says it can run — reported, uncorroborated, and drawn
+  // only when it actually said something
+  const rep: string[] = [];
+  if (d.load !== undefined) rep.push(`load ${d.load}`);
+  if (d.capabilities?.length) rep.push(`can run ${d.capabilities.join(", ")}`);
+  if (rep.length) {
+    const r = el("div", "bidmeta", rep.join(" · "));
+    r.title = "Reported by the device itself on its last heartbeat. Nothing on this box reads these — they are for your eye.";
+    box.appendChild(r);
+  }
+  return box;
+}
+
 // --- is a deploy due? ------------------------------------------------------------------------
 // Landing is not deploying, and building is not landing. Both facts existed already but were
 // served only to the steward, so the owner — the only principal who restarts srv or runs the
@@ -2053,8 +2178,11 @@ async function renderBoard() {
       const gt = gateSection();
       const dp = deploySection();
       const er = errorsSection();
+      // ...and so is the device register: which machines can take work is a fact about the room,
+      // not about the empty pane.
+      const dv = devicesSection();
       boardBody.replaceChildren(...(dp ? [dp] : []), ...(er ? [er] : []), ...(gt ? [gt] : []),
-        el("div", "bempty", "no session in the focused pane"));
+        ...(dv ? [dv] : []), el("div", "bempty", "no session in the focused pane"));
       return;
     }
     const [briefRes, prompts, wtRes, mgRes] = await Promise.all([
@@ -2087,6 +2215,11 @@ async function renderBoard() {
     if (esec0) nodes.push(esec0);
     const gsec0 = gateSection();
     if (gsec0) nodes.push(gsec0);
+    // last of the machine-level group and below the gate line, in the same order those three read:
+    // "is the running code the code you think" → "has it been throwing" → "can anything verify
+    // right now" → "and who else could verify it for you".
+    const dsec1 = devicesSection();
+    if (dsec1) nodes.push(dsec1);
 
     // 1 — IDENTITY: which lane this is, how to reach it, session-level actions
     const idsec = el("div", "bsec");
@@ -5092,6 +5225,9 @@ async function refresh() {
       programs?: ProgramDigest[];
       postLandAudit?: PostLandAuditInfo | null; postLandAuditLive?: PostLandAuditLiveInfo | null;
       gate?: GateInfo | null; errors?: ErrorsInfo | null;
+      // omitted by the server when the register is empty — absent means "no device has ever
+      // registered", never "the server does not know about devices"
+      helperDevices?: HelperDeviceInfo[];
       attentionOpen?: number;
       events?: FleetEventRow[];
       deployGap?: DeployGapInfo | null; bundleStale?: BundleStaleInfo | null };
@@ -5125,6 +5261,9 @@ async function refresh() {
     // own repaint owns. The elapsed clock does not wait on this poll — it ticks off the client.
     postLandLive = data.postLandAuditLive ?? null;
     errorsInfo = data.errors ?? null;
+    // same rail as the gate line: read on the 2 s poll, painted by the board's own timer, because
+    // the panel lives inside a board that is closed most of the time
+    helperDevicesInfo = data.helperDevices ?? [];
     // the attention inbox's whole share of the 2s poll: one number. It paints the badge, and while
     // the panel is open a CHANGE in it is what re-fetches the rows — the panel never polls itself.
     setAttentionOpen(data.attentionOpen ?? 0);

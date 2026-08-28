@@ -102,3 +102,21 @@ Programm-Plans `docs/linux-second-host-programm-2026-08-28.md`, `server.ts#setHe
   `fleet.json`-Zeilen laden unverändert, und die drei Fremddaten-Felder werden beim Boot erneut
   gegen das geschlossene Set bzw. die Caps validiert. Beleg über einen Neustart mitten im Lauf:
   Check „…and so does the device register" in `e2e/helper-portal.ts`.
+
+**Und der offene Punkt oben ist mit Schnitt S2 beantwortet** (`src/client.ts#devicesSection` +
+`server.ts#helperDevicesView`, e2e §K.2a/K.2c):
+
+- Das Panel sitzt in der MASCHINEN-Gruppe des rechten Boards, als letzter Abschnitt hinter
+  deploy → errors → gate (`renderBoard`, beide Zweige — auch der mit leerem Pane, denn welche
+  Maschine Arbeit nehmen kann, ist keine Aussage über die fokussierte Lane). Es fehlt ganz,
+  solange kein Gerät registriert ist; das Board ist ohnehin desktop-only (`isMobile()`-Abbruch in
+  `renderBoard`), die Karte bricht bei 264 px Breite um statt zu überlaufen.
+- Datenquelle ist der bestehende 2-s-Poll: `/api/sessions` trägt `helperDevices` und LÄSST DAS
+  FELD WEG, solange das Register leer ist (Byte-Decke `docs/data-saver.md` §1). Zwei Felder der
+  Projektion sind JOINS, die auf einer `HelperDevice`-Zeile gar nicht existieren — die aktuell
+  gehaltenen Claims (über `helperClaimOf`/`laneSuiteClaimOf`, ein abgelaufener Claim ist ohne
+  Sweep weg) und der Lapse-Zähler. Der Zähler joint über `deviceId`; Zeilen aus der Zeit davor
+  tragen nur den Namen und joinen über ihn, was das Panel im Tooltip sagt.
+- online/offline ist ABGELEITET, Schwelle `DEVICE_ONLINE_MS = 90 s` in `src/client.ts`, dort
+  kommentiert; das Alter des letzten Heartbeats steht immer daneben, damit „offline" nie eine
+  nackte Behauptung ist.

@@ -11814,7 +11814,14 @@ const helperClaims = new Map<string, HelperClaim>(); // repo toplevel -> the liv
 // A lapse is a FACT about this fleet, not a note in a log: it says a job was promised to a machine
 // that never answered. Kept bounded and served on the portal so the owner can see a helper that
 // keeps taking jobs it does not finish.
-interface HelperLapse { id: string; repo: string; name: string; claimedAt: number; expiredAt: number; covers: number }
+// `deviceId` is booked since stage B of the register (2026-08-28) so the board's per-device lapse
+// counter can join on IDENTITY rather than on a name the device chose for itself. It is optional
+// because rows written before that date carry only the name: those are counted by name, and a
+// device renamed since then simply does not join its own older lapses — stated on the panel rather
+// than papered over. It never reaches the helper portal (helperJobsView strips it): a deviceId is
+// what a claim is made with, and the owner's board is not a place to hand one machine another's.
+interface HelperLapse { id: string; repo: string; name: string; claimedAt: number; expiredAt: number; covers: number;
+  deviceId?: string }
 let helperLapses: HelperLapse[] = [];
 // The device name is stored SERVER-SIDE on the owner's instruction: a name that lived only in the
 // helper's browser would vanish with a cleared cache, and every past ledger row would then point at
@@ -12373,7 +12380,8 @@ function expireHelperClaims(): boolean {
   for (const [repo, c] of [...helperClaims]) {
     if (now < c.expiresAt) continue;
     helperClaims.delete(repo);
-    helperLapses = [{ id: c.id, repo, name: c.name, claimedAt: c.claimedAt, expiredAt: now, covers: c.covers.length },
+    helperLapses = [{ id: c.id, repo, name: c.name, deviceId: c.deviceId,
+      claimedAt: c.claimedAt, expiredAt: now, covers: c.covers.length },
       ...helperLapses].slice(0, HELPER_LAPSE_KEEP);
     try { rmSync(c.bundle, { force: true }); } catch { /* already gone — the claim is what mattered */ }
     audit("helper_claim_expired", undefined,
@@ -12394,7 +12402,8 @@ function expireHelperClaims(): boolean {
       try { rmSync(c.bundle, { force: true }); } catch { /* already gone */ }
       j.claim = null;
       j.state = "lapsed";
-      helperLapses = [{ id, repo: j.repo, name: c.name, claimedAt: c.claimedAt, expiredAt: now, covers: 0 },
+      helperLapses = [{ id, repo: j.repo, name: c.name, deviceId: c.deviceId,
+        claimedAt: c.claimedAt, expiredAt: now, covers: 0 },
         ...helperLapses].slice(0, HELPER_LAPSE_KEEP);
       audit("helper_claim_expired", j.slot,
         `${c.name} held the preview suite of ${basename(j.repo)} ${j.branch} for `
@@ -12632,8 +12641,64 @@ function helperJobsView(): {
   }
   // `configured` still answers for the AUDIT queue alone, and the portal's own subline says both
   // halves: a fleet with no audit command can still be offered a lane's preview.
+  // Field by field rather than a spread: the row now carries the claimant's deviceId, and that is
+  // the one thing on it this principal may not read (see HelperLapse). A spread would have leaked
+  // it the day the field was added, silently.
   return { claimTimeoutMs: HELPER_CLAIM_TIMEOUT_MS, configured: !!POSTLAND_AUDIT_CMD, jobs,
-    lapsed: helperLapses.map((l) => ({ ...l, repo: basename(l.repo) })) };
+    lapsed: helperLapses.map((l) => ({ id: l.id, repo: basename(l.repo), name: l.name,
+      claimedAt: l.claimedAt, expiredAt: l.expiredAt, covers: l.covers })) };
+}
+
+// --- THE OWNER'S HALF OF THE REGISTER ----------------------------------------------------------
+// The register reaches two principals through two projections, and the split is the point:
+// `helperJobsView` answers a HELPER ("what may I take, and what did my own device call itself"),
+// this one answers the OWNER's 2 s poll ("which machines exist, are they beating, what did I ask
+// of them, what are they holding right now, and how often have they dropped something"). The last
+// two facts do not live on a HelperDevice row at all — they are joins, and doing them here is what
+// keeps the client from re-deriving fleet semantics it has no business knowing.
+//   · `desiredMode` is the RESOLVED value — the exact string the daemon pulls out of its own
+//     heartbeat reply — and `desiredSet` says whether an owner ever decided it. Shipping the bare
+//     optional instead would let the board draw "no mode set" over a device that is provably being
+//     told `active`, which is the one thing this panel exists to make impossible.
+//   · claims go through helperClaimOf / laneSuiteClaimOf, so an EXPIRED claim is absent here
+//     without waiting for the sweep: the board reads the same clock the drain obeys, never a
+//     bookkeeping lag.
+//   · `repo` is a basename, exactly like on the portal. A git toplevel is a path on this box and
+//     the panel has no use for one.
+interface HelperDeviceClaimView { kind: "audit" | "lane-suite"; repo: string; ref: string; expiresAt: number }
+interface HelperDeviceView {
+  id: string; name: string; lastSeen: number;
+  mode?: DeviceMode; load?: number; capabilities?: string[];
+  desiredMode: DeviceMode; desiredSet: boolean;
+  claims: HelperDeviceClaimView[];
+  lapses: number;
+}
+function helperDevicesView(): HelperDeviceView[] {
+  const held = new Map<string, HelperDeviceClaimView[]>();
+  const push = (deviceId: string, c: HelperDeviceClaimView): void => {
+    const list = held.get(deviceId);
+    if (list) list.push(c); else held.set(deviceId, [c]);
+  };
+  for (const [repo, c] of helperClaims)
+    if (helperClaimOf(repo)) push(c.deviceId, { kind: "audit", repo: basename(repo), ref: c.main, expiresAt: c.expiresAt });
+  for (const j of laneSuiteJobs.values()) {
+    const c = laneSuiteClaimOf(j);
+    if (c) push(c.deviceId, { kind: "lane-suite", repo: basename(j.repo), ref: j.branch, expiresAt: c.expiresAt });
+  }
+  // newest heartbeat first: the map's own order is oldest-first (it is an eviction order, not a
+  // reading order), and the machine that just spoke is the one the owner is looking for.
+  return [...helperDevices.values()].sort((a, b) => b.lastSeen - a.lastSeen).map((d) => ({
+    id: d.id, name: d.name, lastSeen: d.lastSeen,
+    // the three reported fields ride only when the device actually reported them — absent is
+    // "never said", which the panel draws differently from any value it could invent here
+    ...(d.mode ? { mode: d.mode } : {}),
+    ...(d.load !== undefined ? { load: d.load } : {}),
+    ...(d.capabilities?.length ? { capabilities: d.capabilities } : {}),
+    desiredMode: d.desiredMode ?? DEVICE_MODE_DEFAULT, desiredSet: !!d.desiredMode,
+    claims: held.get(d.id) ?? [],
+    // identity first, name only for rows written before deviceId was booked (see HelperLapse)
+    lapses: helperLapses.filter((l) => (l.deviceId ? l.deviceId === d.id : l.name === d.name)).length,
+  }));
 }
 // The lane-suite half of the claim. Same shape as its audit sibling and the same rule behind every
 // refusal — nothing may be worked on twice — but the facts it checks are the lane's, not the queue's:
@@ -20675,6 +20740,19 @@ Bun.serve<WSData>({
         // the suite mutex and the lanes' own verify reports — null when neither has anything to
         // say. Sight, not control: see the verify GATE region for why nothing here reaps or runs.
         gate: gateView(),
+        // the helper device register — machine-level like the gate line beside it, and the owner's
+        // ONLY view of the machines that take work off this box (the portal is the helper's view,
+        // and it shows one device: its own). OMITTED WHEN EMPTY, like attentionOpen above and for
+        // the same 14 KB reason: a fleet nobody has ever registered a device with pays nothing for
+        // this feature, and absent reads as "no device has ever registered" — which is exactly
+        // what it means. It rides this poll rather than a route of its own because the panel is
+        // drawn beside the gate line and must move with it, and because the whole payload is one
+        // small array. MEASURED, not guessed (2026-08-28, two registered devices, one holding a
+        // claim): 293 B for the fat row (three capabilities, a held claim), 192 B for the plain
+        // one. The ceiling is HELPER_DEVICE_KEEP=20 such rows, ~5 KB, which is real against the
+        // 14 KB budget e2e/tasks.ts holds — but 20 devices means twenty machines the owner runs,
+        // and the honest fix then is a cap here, not a smaller row.
+        ...(helperDevices.size ? { helperDevices: helperDevicesView() } : {}),
         // what this server has thrown since it booted — null while nothing has, so an untroubled
         // fleet pays ~14 bytes for it. Sight only: nothing here retries, suppresses or heals
         // anything. The rows are behind GET /api/errors (see THE ERROR CHANNEL).

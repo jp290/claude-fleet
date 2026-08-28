@@ -38,6 +38,19 @@ interface DeviceView {
   id: string; name: string; lastSeen: number;
   mode?: string; load?: number; capabilities?: string[]; desiredMode?: string;
 }
+// The OWNER's projection of the same register (server.ts#helperDevicesView), carried on the 2 s
+// poll and shaped differently on purpose: it holds the two JOINS the helper's own view has no
+// business seeing — which claims that device holds RIGHT NOW and how often it has dropped one —
+// and a desiredMode that is RESOLVED (the string the daemon pulls), with `desiredSet` saying
+// whether an owner ever decided it. Non-optional here where the server always sends it: this type
+// is the contract under test, so a field the server stopped sending must fail a check, not degrade.
+interface OwnerDeviceView {
+  id: string; name: string; lastSeen: number;
+  mode?: string; load?: number; capabilities?: string[];
+  desiredMode: string; desiredSet: boolean;
+  claims: { kind: string; repo: string; ref: string; expiresAt: number }[];
+  lapses: number;
+}
 // The row shape this module asserts on. Deliberately its own copy rather than an import from the
 // harness: what is being proven is that a REMOTE row carries `remote`, and a type that made the
 // field mandatory would hide a server that never wrote it.
@@ -100,6 +113,10 @@ export async function run(h: {
   const hpost = (path: string, body: unknown): Promise<Response> =>
     post(path, body, { ...HH, "content-type": "application/json" });
   const jobs = async (): Promise<HelperJobs> => (await (await hget(`/api/helper/jobs?deviceId=${DEVICE}`)).json()) as HelperJobs;
+  // the OWNER's poll — the board's only source for the device panel. `undefined` is a fact, not a
+  // read failure: the server omits the field entirely while no device has ever registered.
+  const ownerDevices = async (): Promise<OwnerDeviceView[] | undefined> =>
+    ((await (await get("/api/sessions")).json()) as { helperDevices?: OwnerDeviceView[] }).helperDevices;
   const jobFor = async (repo: string): Promise<HelperJob | undefined> =>
     (await jobs()).jobs.find((j) => j.repo === repo.split("/").pop());
   const liveRepo = async (): Promise<string | null> =>
@@ -168,6 +185,11 @@ export async function run(h: {
   const outOfScope = await fetch(`${BASE}/api/sessions`, { headers: HH });
   check("(K) the helper token cannot reach an owner route",
     outOfScope.status === 401, `${outOfScope.status}`);
+  // …and the owner's own poll, before any device exists: the register field is ABSENT, not an empty
+  // array. This is the byte rule /api/sessions is held to (docs/data-saver.md §1) and it is also
+  // the client's contract — the board draws no device panel at all in this state.
+  check("(K) with no device ever registered, the owner poll carries no device field at all",
+    (await ownerDevices()) === undefined, JSON.stringify(await ownerDevices()));
 
   // ===== (K.2) A CLAIMABLE JOB, AND THE 409s THAT REFUSE TO DUPLICATE WORK ========================
   // The decoy occupies the drain (25s), so the land that follows queues a job nothing is running.
@@ -279,6 +301,31 @@ export async function run(h: {
   check("(K) …and a claim's lastSeen touch does not erase the register's mode fields",
     afterClaim?.desiredMode === "quiet" && afterClaim.mode === "quiet" && afterClaim.load === 1.25,
     JSON.stringify(afterClaim));
+
+  // ===== (K.2c) THE SAME REGISTER, AS THE OWNER'S BOARD SEES IT =================================
+  // The device panel reads the 2 s poll and nothing else, so what the poll carries IS the panel's
+  // contract. Two of these fields exist nowhere on a HelperDevice row — the held claim and the
+  // lapse count are joins over helperClaims/laneSuiteJobs and the lapse ledger — and asserting
+  // them here is what keeps that join out of the client, where it would be a second implementation
+  // of fleet semantics against a payload it cannot verify.
+  const owned = (await ownerDevices()) ?? [];
+  const mine = owned.find((d) => d.id === DEVICE);
+  check("(K) the owner poll carries the register: name, beat, reported mode and the owner's wish",
+    owned.length === 1 && mine?.name === DEVICE_NAME && typeof mine.lastSeen === "number"
+      && mine.lastSeen > 0 && mine.mode === "quiet" && mine.load === 1.25
+      && JSON.stringify(mine.capabilities) === '["bun","tmux"]'
+      && mine.desiredMode === "quiet" && mine.desiredSet === true,
+    JSON.stringify(owned));
+  // THE JOIN, and the reason it is server-side: the panel says "holds an audit of <repo> <branch>,
+  // Nm left" while the helper's own view says only that the JOB is claimed. The expiry is the same
+  // number the claim named — read through helperClaimOf, so an expired claim would be absent here
+  // without waiting for the sweep.
+  check("(K) …and the claim this device is holding right now, with the job's own deadline",
+    mine?.claims.length === 1 && mine.claims[0]?.kind === "audit"
+      && mine.claims[0]?.repo === "testrepo" && mine.claims[0]?.expiresAt === claim.job?.expiresAt,
+    JSON.stringify(mine?.claims));
+  check("(K) …and a device that has never dropped a job counts ZERO lapses, not an absent field",
+    mine?.lapses === 0, JSON.stringify({ lapses: mine?.lapses }));
 
   // ===== (K.3) THE TRANSPORT IS REAL ============================================================
   // A 200 with bytes proves nothing about whether the other machine can WORK. The bundle is written
@@ -397,6 +444,13 @@ export async function run(h: {
     afterLapse.lapsed.some((l) => l.id === lapseJob?.id && l.name === DEVICE_NAME && l.covers === 1
       && l.expiredAt >= l.claimedAt),
     JSON.stringify(afterLapse.lapsed).slice(0, 300));
+  // …and the owner's board learns the same thing through its own poll: the counter is what makes a
+  // helper that repeatedly takes work and vanishes visible as a PATTERN, and the claim it was
+  // holding is gone from the row the moment it expired.
+  const afterLapseOwner = (await ownerDevices())?.find((d) => d.id === DEVICE);
+  check("(K) …and the owner poll counts the lapse against THAT device and drops its claim",
+    (afterLapseOwner?.lapses ?? 0) >= 1 && afterLapseOwner?.claims.length === 0,
+    JSON.stringify(afterLapseOwner));
   // open again, or already consumed by the drain that took it back — both are the same fact, and
   // which one is observed depends only on how fast the decoy's 25s run ended
   const reopened = await jobFor(REPO);

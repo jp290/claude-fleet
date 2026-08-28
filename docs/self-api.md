@@ -166,6 +166,22 @@ Block, byte-identisch in allen vier Varianten, angehängt zwischen Program-JSON 
   Entscheidungstabelle, kein neuer Zustand** — genau das wäre die Haltung, die die Korrektur
   ausschließt. Jedes Urteil darin bleibt das der MAIN; wer jeden kleinen Edit durch einen Worker
   routet, ist zum Scheduler geworden.
+- **Game-Maker-Preflight vor jeder Implementierung eines neuen Game Programs.** Die selektierte
+  Rollenhälfte benutzt nur die vorhandenen Türen, in dieser Reihenfolge: **Architect -> 0-2 named
+  fact/risk probes -> fresh independent cross-model Review -> MAIN `ACCEPT|RETHINK|OWNER`**. Der
+  Architect committed genau eine DRAFT `GAME-CARD.md` mit 1–4 ausführbaren First-Slice-Briefs
+  (Abhängigkeiten, exklusives Write-Set, Stop, Done, literales Verify). Der Reviewer sieht nur
+  Owner-Program, Repository, Architect-SHA und benannte Probe-Fakten, nie Chat oder Rationale. In
+  diesem bestätigten Scope darf sein isolierter Review-Act Card und Briefs optimieren, committed die
+  finale Fassung und meldet bei Annahme `ACCEPT <final-card-sha>`. Vor `ACCEPT` wird keine
+  Implementierungszeile angelegt oder freigegeben; danach landet MAIN exakt diesen Reviewer-Commit,
+  kopiert seine Briefs verbatim und released nur wurzelnde, abhängigkeitfreie Zeilen. `RETHINK` und
+  `OWNER` landen keine finale Card und erzeugen keine Implementierungszeile; `RETHINK` braucht neue
+  benannte Evidenz statt einer Review-Schleife, `OWNER` eskaliert. Ein Direct Slice ist nur für ein
+  kleines Feature innerhalb eines akzeptierten Programs/Card zulässig, wenn es bounded, reversibel,
+  risikoarm und ohne Core-Contract-Änderung bleibt. **SENSORY CRITIC IS POST-PLAY ONLY**: der Operator
+  orchestriert einen frischen Blick mit einem versiegelten Build-/Launch-/Real-Input-/Capture-Pack;
+  Game Card, `HANDOFF.md`, Hypothesen und Rationale bleiben draußen.
 - **Die Schleife:** bounded Akt wählen → für einen Akt, der nach dem Urteil oben eine Lane will,
   `POST /api/self/tasks` mit EXPLIZITEM `kind:"auftrag"` und
   bewusst gewähltem Spawn-Triple (`harness`/`model`/`effort`; der Default `notiz` läuft nie) →
@@ -242,77 +258,6 @@ Basis-Zeile, nicht als Phase: ein `STALLED` zu erfinden wäre eine Qualitätsaus
 **Supervisor** (`GET /api/self/supervisor-view`) bekommt davon **nur Zahlen**: `tasks.phases` ist ein
 Histogramm `{Phase: count}` je Program, keine Zeilen-Bodies. Die Bodies stehen in der View der
 gebundenen MAIN.
-
-## critic — `POST /api/self/critic` (nur Game-Maker MAIN)
-
-Die Route legt keinen zweiten Queue-Typ an. Sie erzeugt eine normale `Task`-Zeile mit einem
-geschlossenen, versionierten `critic`-Record; `pending → queued → sent → done` bleiben die
-bestehenden Task-Übergänge und der normale `POST /api/self/tasks`-Body bleibt unverändert.
-
-```
-curl -X POST http://<fleet-host>:<port>/api/self/critic \
-  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
-  -d '{"v":1,"build":"<40 lowercase hex>","launch":"<one-step launch>","controls":"<actual controls>","input":"<exact replay input>","captures":["captures/run-17.png"]}'
-```
-
-Der Body enthält **genau** `v`, `build`, `launch`, `controls`, `input`, `captures`; zusätzliche
-oder fehlende Keys sind 400. Program, Repo und Requester-Occupant (`slot`, `openedAt`, `sessionId`)
-stempelt der Server. Nur eine aktive Game-Maker MAIN darf anlegen. Pro Program existiert höchstens
-ein offener Critic-Akt (`pending|queued|sent`). Eine byte-identische Wiederholung desselben
-Requester-Occupants liefert dieselbe Task; ein anderer Request ist 409. Das gilt auch für echte
-Gleichzeitigkeit: vor dem ersten `await` reserviert der Server das Program synchron, identische
-Requests teilen dieselbe Response und vor dem Insert werden Requester-Bindung und offene Acts erneut
-geprüft. Ein exakter Retry bestätigt die vorhandene Zeile erst wieder mit einer Durability-Barriere.
-
-`build` muss der volle, vorhandene Commit sein. Jeder Capture-Pfad ist relativ zum konkreten
-Source-Worktree, bleibt darin, enthält keinen Symlink und benennt eine reguläre Datei. Der Server
-liest sie einmal über einen nicht-folgenden File Descriptor, vergleicht Dateiidentität und Metadaten
-vor/nach dem Read und schreibt die Bytes in einen privaten immutable Snapshot. Record und Brief
-tragen Dateigröße und den **vollen SHA-256** jeder Capture sowie einen vollen SHA-256 über Build,
-Launch, Controls, Input und die Capture-Liste. Eine spätere Änderung der Source-Datei ändert weder
-Snapshot noch Retry-Ergebnis.
-
-Retained Snapshot-Evidenz ist vierfach gedeckelt: pro Program höchstens 8 Acts und 64 MiB, global
-höchstens 64 Acts und 512 MiB. Der 16-MiB-Deckel eines einzelnen Acts bleibt separat. Jeder Deckel
-antwortet 409 mit seinem eigenen Namen; Acts ohne retained Snapshot verbrauchen diese Budgets nicht.
-
-Nur der gespeicherte exakte Requester darf die pending Task über die gewöhnliche Release-Route
-freigeben. Der vorhandene Tick gründet eine frische Lane am **exakten Build**; Analyst und Brief-
-Compiler sehen diese Zeile nicht. Der Server baut einen kanonischen Beobachtungsbrief ausschließlich
-aus dem Critic-Record. Er enthält keine frühere Task-Prosa, keinen ContextPlan, keinen Checkpoint,
-keine alten Urteile und keine mutierende Lane-Fußzeile.
-
-Unmittelbar vor dem Pane-Input persistiert der Server `delivery.status:"send-uncertain"` plus den
-vollen Brief-SHA-256. Erst eine beobachtete oder für den Adapter nicht anwendbare Annahme wird
-`delivered`; unobservierbare oder fehlgeschlagene Annahme bleibt `send-uncertain`. Ein Neustart
-sendet diesen Brief nie automatisch erneut. Diese Zustände sind Transportbelege, keine Aussage über
-Prozess- oder Betriebssystem-Isolation.
-
-Die Critic-Lane darf genau einen strikten `fleet-report` ablegen. Zentral vor allen einzelnen
-Self-Routen gilt: unter `/api/self/*` ist **genau** `POST /api/self/fleet-report` erlaubt, jede andere
-Self-Mutation ist 409. Der Report setzt diese Task auf `done`,
-aber landet nichts. Empfänger bleibt der bei Create gespeicherte Requester. Ist dieser Occupant
-beendet oder durch eine MAIN-Nachfolgerin ersetzt, wird das Event sofort `receiver-gone`; die
-Nachfolgerin erhält weder Pane-Zustellung noch die Report-Zeile. Commit-, Merge-, Land-,
-Clarification- und Criterion-Türen sowie jede generische Owner-Task-Mutation lehnen Critic-Zeilen ab.
-Die einzige Owner-Ausnahme ist das auditierte `POST /api/tasks/:id/critic-cancel`; es archiviert,
-landet und sendet nichts. In `program-execution` trägt die Zeile `critic.evidence` und
-`critic.delivery`; ihr `nextAction` nennt Release, Dispatch oder Report, niemals Land.
-
-Requester-Verlust vor Release und der Tod der Evidence-Lane sind terminal und archivieren den Act.
-Insbesondere werden `delivered` und `send-uncertain` nie auf `pending` gesetzt und nie blind erneut
-gesendet. Ein fehlgeschlagenes Speichern von Create oder Report bestätigt nichts: der Server rollt
-seine Task/Event/Report-Mutation und neue Snapshot-Root zurück; der identische Retry versucht die
-Durability erneut.
-
-Der Loader ist geschlossen und hasht jede Snapshot-Datei genau einmal: malformed/unknown-version,
-fehlende oder manipulierte Evidenz einer aktiven Critic-Task verweigert den gesamten Serverstart,
-statt die Zeile zu droppen oder als ausführbare Standard-Task zu degradieren. Fehlt das `critic`-Feld,
-bleibt die Legacy-Standardform unverändert. Terminale Zeilen akzeptieren entweder alle validen
-Snapshots oder keinen — niemals einen partiellen Satz. Archivierte Snapshots werden erst nach dem
-durablen Terminal-Save entfernt, `done`-Snapshots nach 24 Stunden; nach erfolgreichem Parse entfernt
-Startup zusätzlich verwaiste Critic-Roots. Diese Retention-Ausnahme ist die einzige absichtliche
-Form eines fehlenden Snapshot-Satzes.
 
 ## release — `POST /api/self/tasks/:id/release`
 
@@ -480,13 +425,12 @@ curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report \
 - **`text` ist PROSA für einen menschlichen Leser**, nicht-leer und ≤ `MAX_FLEET_REPORT_TEXT`
   (4000 Zeichen). Es gibt bewusst keinen JSON-Ergebniskörper: der Empfänger ist eine Session, die
   liest, kein Reducer.
-- **Ein gewöhnlicher Report bewegt NIE `Task.status`.** Er legt eine `FleetReport`-Zeile plus ein
+- **Ein Report bewegt NIE `Task.status`.** Er legt eine `FleetReport`-Zeile plus ein
   `fleet-report`-FleetEvent an und sonst nichts — er landet nicht, deployt nicht und schließt
   keine Zeile. Wer den Status bewegt, ist der bestehende Schreiber (Tick, `landLane`, der Owner).
-  Ein Report ist eine NACHRICHT. Die geschlossene Critic-Ausnahme oben setzt ihre eigene
-  Evidenz-Task nach dem einen Report auf `done`, ohne einen Land-Pfad zu öffnen.
+  Ein Report ist eine NACHRICHT.
 
-**Empfänger-Ableitung für gewöhnliche Lanes, in dieser Reihenfolge** (`clarificationReceiverFor`, geteilt mit
+**Empfänger-Ableitung, in dieser Reihenfolge** (`clarificationReceiverFor`, geteilt mit
 `/api/self/clarifications`): **die Program-Bindung gewinnt, bevor Watch-Evidenz überhaupt gelesen
 wird.** Eine gebundene Lane hat per Konstruktion genau einen koordinierenden Occupant — der Owner
 hat ihn bei der Aktivierung bestätigt — also kann eine fremde, abgelaufene oder doppelte
@@ -896,11 +840,11 @@ der committete Checkpoint: lesbar für Nachfolgerin und Owner-Proof, und er übe
 widersprechen können. Abgelehnt statt ignoriert — ein still verworfener carry ist eine Übergabe, die
 ihre Autorin für zugestellt hält. Für Standard-Programs bleibt `carry` unverändert.
 
-Ein frischer Kritiker erhält diesen Checkpoint **nie**: weder Pfad noch Inhalt dürfen in seinem
-kanonischen Brief stehen. `POST /api/self/critic` baut ihn stattdessen ausschließlich aus dem
-exakten Build, Launch/Controls, Replay-Input und den beim Create versiegelten Capture-Snapshots.
-Der Critic-Pfad ruft keinen ContextPlan auf. `Experience`, `Open defect`, `Next` und frühere
-`Critic`-Urteile bleiben predecessor→successor-/Owner-Evidenz statt Vorprägung des frischen Blicks.
+Ein frischer sensorischer Kritiker liest diesen Checkpoint **nie**: weder Pfad noch Inhalt dürfen in
+seinem Pack stehen. Er wird erst nach einem Playable operator-orchestriert und erhält nur den
+versiegelten Build, Launch, Real-Input und die Captures — keine Game Card, kein `HANDOFF.md`, keine
+Hypothesen oder Rationale. `Experience`, `Open defect`, `Next` und frühere `Critic`-Urteile bleiben
+damit predecessor→successor-/Owner-Evidenz statt Vorprägung des frischen Blicks.
 
 **Projektion:** `GET /api/programs` trägt den Record im vollen Row mit; `GET
 /api/self/program-execution` trägt ihn als `program.profile` (`null` = Standard-MAIN), damit die

@@ -113,13 +113,6 @@ const PRE_AUTH_ROUTES = [
   // triple. The answer side — the half that does type into a pane — is owner-gated and lives on
   // /api/attention, deliberately not here.
   '= /api/self/attention',
-  // A bound Game-Maker MAIN can mint one fresh sensory-critic act over immutable replay evidence.
-  // The body is closed; Program, repo and exact requester come from the self-token occupant. The
-  // route only creates a pending Task.critic row and snapshots caller-relative regular captures;
-  // release, dispatch and report stay on the existing Task/FleetEvent rails. Once dispatched, the
-  // central guard before this whole family admits exactly fleet-report for that Critic principal;
-  // no later self route may accidentally widen it by forgetting a route-local critic check.
-  '= /api/self/critic',
   // ACP-16, and it is the entry on this list that comes closest to the queue: a bound Program-MAIN
   // releases a PENDING row of its own Program, `pending → queued` and nothing else. It is on the
   // pre-auth surface for the same reason as its neighbours — the exact self principal IS the
@@ -391,18 +384,6 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   check("§1 the pre-auth route set equals the reviewed allowlist",
     found.join("\n") === [...PRE_AUTH_ROUTES].sort().join("\n"),
     `unexpected: [${found.filter((r) => !PRE_AUTH_ROUTES.includes(r)).join(", ")}] missing: [${PRE_AUTH_ROUTES.filter((r) => !found.includes(r)).join(", ")}]`);
-  const criticSelfGuardAt = src.indexOf("function guardCriticSelfPost");
-  const criticSelfGuardEnd = src.indexOf("\n}\n", criticSelfGuardAt);
-  const criticSelfGuard = criticSelfGuardAt < 0 ? "" : src.slice(criticSelfGuardAt, criticSelfGuardEnd);
-  const criticSelfGuardCall = preAuth.indexOf("const criticSelfPostBlocked = guardCriticSelfPost(req, url)");
-  const firstSelfRoute = preAuth.indexOf('if (url.pathname === "/api/self"');
-  check("§1 Critic Self authority is one pre-route POST allowlist: exactly fleet-report passes and every later Self mutation is closed",
-    criticSelfGuard.includes('req.method !== "POST"')
-      && criticSelfGuard.includes('url.pathname === "/api/self" || url.pathname.startsWith("/api/self/")')
-      && criticSelfGuard.includes('url.pathname === "/api/self/fleet-report"')
-      && criticSelfGuard.includes("critic lanes may POST only their one fleet-report")
-      && criticSelfGuardCall >= 0 && criticSelfGuardCall < firstSelfRoute,
-    `guard=${criticSelfGuardAt}:${criticSelfGuardEnd} call=${criticSelfGuardCall} firstSelf=${firstSelfRoute}`);
   const statics = [...src.slice(src.indexOf("const STATIC"), src.indexOf("function bundleV")).matchAll(/^\s*"([^"]+)": \{ path/gm)].map((m) => m[1]);
   check("§1 the unauthenticated static map equals the reviewed set (no new file served without a token)",
     [...statics].sort().join(" ") === [...STATIC_ROUTES].sort().join(" "), statics.join(" "));

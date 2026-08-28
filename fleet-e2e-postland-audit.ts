@@ -24,6 +24,7 @@ import { spawnSync } from "node:child_process";
 import { BASE, check, failures, get, IP, paneEnv, plogRead, PORT, post, results, SOCK } from "./e2e/harness";
 import { driveMerge, openLane, seedRepo, settleForMerge, type Lane, type MergeVerdict } from "./e2e/lane-helpers";
 import * as helperPortal from "./e2e/helper-portal";
+import * as helperDaemon from "./e2e/helper-daemon";
 
 // the stand-in suite's control + evidence files (both live next to this script, = the server's dir)
 const setAuditMode = (m: string): Promise<number> => Bun.write(`${import.meta.dir}/auditmode`, m);
@@ -929,8 +930,14 @@ check("(J) an already-adjudicated red is never pinged",
 // Runs LAST, and that placement is load-bearing rather than tidy: this section seeds a second repo
 // and adds audit rows for it, and every section above counts rows by absolute number (waitRows(3),
 // waitRows(8), …). Anywhere earlier it would shift all of them. It leaves the server booted with a
-// seconds-long claim timeout, which is why nothing may follow it.
+// seconds-long claim timeout, which is why only (HD) may follow it — that section restarts the
+// server with a generous one as its first act, and every row count it makes is relative.
 await helperPortal.run({ REPO, setAuditMode, killSrv, startSrv, auditRows, headOf });
+
+// ===== (HD) THE HELPER DAEMON — the other machine's half, as a real process ======================
+// Same fixture, one step further: instead of a human reading a bootstrap and pasting an exit code,
+// helper-daemon/daemon.ts claims, clones, installs, runs and reports on its own.
+await helperDaemon.run({ REPO, setAuditMode, killSrv, startSrv, auditRows, headOf });
 
 console.log(results.join("\n"));
 console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");

@@ -11775,9 +11775,15 @@ let auditRunningRepo: string | null = null;
 //   · a RESULT is a row on the SAME ledger, marked `remote`. Not a second trail — the questions
 //     tier 2 exists to answer ("which land was the last green audit") are joins over one file, and
 //     a second file would silently answer them wrong.
-// What this is NOT (stage 1, owner's non-goals): no auto-dispatch — the server assigns nothing, a
-// human on the other machine clicks claim; no ssh runner; no push. The transport is a git bundle
-// over the same authenticated HTTP surface the board already is.
+// What this is NOT (stage 1, owner's non-goals): no auto-dispatch — the server assigns nothing; no
+// ssh runner; no push. The transport is a git bundle over the same authenticated HTTP surface the
+// board already is.
+// REVISED 2026-08-28 (owner promotion G0, programme docs/linux-second-host-programm-2026-08-28.md):
+// stage 1 also said "a human on the other machine clicks claim", and that sentence no longer holds
+// — a daemon on the owner's Linux box (helper-daemon/daemon.ts) may claim, run and report on its
+// own. Nothing on THIS side changed to allow it: the daemon is a client of the same five routes a
+// browser uses, so "the server assigns nothing" is still true, literally, in the code below. The
+// other three non-goals are untouched and are stop lines, not negotiating room.
 // 45 minutes by default — the owner's number, and the right order of magnitude: a full
 // ./e2e-isolated.sh takes 5.8–9.8 min, plus a clone, an install and a human noticing. The floor is
 // a typo guard (a `0` or a NaN would make every claim dead on arrival), not a policy: the harness

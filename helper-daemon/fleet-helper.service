@@ -1,0 +1,49 @@
+# TEMPLATE — every ALL-CAPS placeholder below has to be replaced before this file is installed.
+# It carries no host, no address and no credential on purpose: this repository is public.
+#
+# Install (an OWNER act on the helper machine — nothing in this repo deploys itself):
+#   install -d -m 0700 -o USER -g GROUP /etc/fleet-helper /var/lib/fleet-helper/work
+#   install -m 0600 -o USER -g GROUP config.json /etc/fleet-helper/config.json
+#   cp fleet-helper.service /etc/systemd/system/ && systemctl daemon-reload
+#   systemctl enable --now fleet-helper.service
+
+[Unit]
+Description=Fleet remote helper daemon (claims and runs suites for a Fleet on another machine)
+Documentation=file:///CHECKOUT-DIR/helper-daemon/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=USER
+Group=GROUP
+WorkingDirectory=CHECKOUT-DIR
+ExecStart=BUN-PATH CHECKOUT-DIR/helper-daemon/daemon.ts /etc/fleet-helper/config.json
+
+# THE TOKEN IS NOT HERE, AND MUST NEVER BE. An `Environment=` line is readable by any account on
+# the box through `systemctl show`, `systemd-analyze` and /proc/<pid>/environ. The daemon reads the
+# credential from the 0600 config file named above and sends it only as a request header; it also
+# refuses to start if that file is group- or world-readable.
+
+Restart=on-failure
+RestartSec=60
+# Exit 78 (EX_CONFIG) is the daemon's "the fleet refused this token" / "this config is wrong".
+# Restarting into it would produce one rejected request per minute forever; stopping makes the
+# failure visible in `systemctl status` instead of burying it in the fleet's audit trail.
+RestartPreventExitStatus=78
+
+# The suite this daemon runs boots its own tmux server and takes the machine-wide suite lock at
+# /tmp/fleet-e2e.lock (e2e-stage.sh). PrivateTmp would give this service a /tmp of its own, so a
+# suite a human starts by hand and one this daemon starts would no longer serialize against each
+# other — the one thing that lock exists for.
+PrivateTmp=false
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=false
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fleet-helper
+
+[Install]
+WantedBy=multi-user.target

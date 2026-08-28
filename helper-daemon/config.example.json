@@ -1,0 +1,17 @@
+{
+  "fleetUrl": "http://FLEET-HOST:PORT",
+  "token": "PASTE-THE-HELPER-TOKEN-HERE",
+  "deviceId": "changemedeviceid",
+  "name": "NAME THIS MACHINE",
+  "workDir": "/var/lib/fleet-helper/work",
+  "pollSec": 15,
+  "offRecheckSec": 900,
+  "quietHours": { "from": "23:00", "to": "07:00" },
+  "maxLoad1": 2,
+  "capabilities": ["bun", "tmux", "git", "zsh"],
+  "installCmd": "bun install --frozen-lockfile",
+  "suiteCmd": "./e2e-isolated.sh",
+  "suiteTimeoutSec": 3600,
+  "keepRuns": 10,
+  "enabled": true
+}

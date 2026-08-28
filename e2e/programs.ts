@@ -1891,25 +1891,32 @@ export async function run(ctx: Ctx): Promise<void> {
     if (existsSync(path)) unlinkSync(path);
   await restartSrv();
   const gmPreOpenAfter = (await ownerPrograms()).find((p) => p.id === gmPreOpenKillProgram.id);
+  const gmPreOpenSlotAbsent = !(await sessions()).slots
+    .find((slot) => slot.id === gmPreOpenKillSlot)?.cwd;
+  const gmPreOpenPaneAbsent = gmPreOpenKillSlot > 0
+    && (await tmuxOut("has-session", "-t", `s${gmPreOpenKillSlot}`)).code !== 0;
+  const gmPreOpenReceiptsAfter = (await contextReceipts()).receipts
+    .filter((row) => row.programId === gmPreOpenKillProgram.id).length;
   const gmPreOpenRecoverSlot = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? 0;
   const gmPreOpenRecover = gmPreOpenRecoverSlot > 0
     ? await post(`/api/slots/${gmPreOpenRecoverSlot}/open`, {
       cwd: gameWt, label: "game-maker-pre-open-kill-recoverable",
     }) : null;
-  check("game-maker pre-open owner kill: post-await permit recheck leaves no main, receipt, pane or slot orphan and the tree recoverable",
+  check("game-maker pre-open owner kill: post-await permit recheck leaves no main, receipt, pane or slot orphan",
     gmPreOpenReached && gmPreOpenOrphan.code === 0 && gmPreOpenKillSlot > 0
       && gmPreOpenMarker?.target.slot === gmPreOpenKillSlot && gmPreOpenOwnerKill?.ok === true
       && gmPreOpenResponse.status === 409 && gmPreOpenText.includes("durable founding marker")
       && gmPreOpenAfter?.main === undefined && gmPreOpenAfter?.founding === undefined
-      && !(await sessions()).slots.find((slot) => slot.id === gmPreOpenKillSlot)?.cwd
-      && (await tmuxOut("has-session", "-t", `s${gmPreOpenKillSlot}`)).code !== 0
-      && (await contextReceipts()).receipts.filter((row) => row.programId === gmPreOpenKillProgram.id).length
-        === gmPreOpenReceiptsBefore
-      && gmPreOpenRecover?.ok === true,
+      && gmPreOpenSlotAbsent && gmPreOpenPaneAbsent
+      && gmPreOpenReceiptsAfter === gmPreOpenReceiptsBefore,
     JSON.stringify({ reached: gmPreOpenReached, orphan: gmPreOpenOrphan.code,
       marker: gmPreOpenMarker, kill: gmPreOpenOwnerKill?.status,
       founding: [gmPreOpenResponse.status, gmPreOpenText], after: gmPreOpenAfter,
-      recover: gmPreOpenRecover?.status }));
+      slotAbsent: gmPreOpenSlotAbsent, paneAbsent: gmPreOpenPaneAbsent,
+      receipts: [gmPreOpenReceiptsBefore, gmPreOpenReceiptsAfter] }));
+  check("game-maker pre-open owner kill: the released tree remains recoverable",
+    gmPreOpenRecover?.ok === true,
+    JSON.stringify({ slot: gmPreOpenRecoverSlot, recover: gmPreOpenRecover?.status }));
   if (gmPreOpenRecover?.ok) await post(`/api/slots/${gmPreOpenRecoverSlot}/kill`, {});
   await programPost(gmPreOpenKillProgram.id, "complete");
 
@@ -1917,7 +1924,8 @@ export async function run(ctx: Ctx): Promise<void> {
   // unusable while fleet.json remains writable, then let the real candidate reach delivery. A
   // swallowed append error binds a MAIN with no promised evidence; the strict path must instead
   // roll the candidate and marker back. Replacing appendEventStrict with appendEvent makes this
-  // check observe 200 plus a live binding.
+  // check observe 200 plus a live binding. Removing ensureSlot's post-await identity check or its
+  // spawn barrier instead leaves the pane assertion red after rollback clears the occupant.
   const gmReceiptFaultProgram = await activateNewProgram("Game-Maker receipt persistence failure");
   await setProfile(gmReceiptFaultProgram.id, GAME_MAKER);
   const gmReceiptFaultLabel = "game-maker-receipt-fault";
@@ -1945,15 +1953,19 @@ export async function run(ctx: Ctx): Promise<void> {
   }
   const gmReceiptFaultText = await gmReceiptFaultResponse.text();
   const gmReceiptFaultAfter = (await ownerPrograms()).find((p) => p.id === gmReceiptFaultProgram.id);
+  const gmReceiptFaultSlotAfter = gmReceiptFaultSlot === null ? null
+    : (await sessions()).slots.find((slot) => slot.id === gmReceiptFaultSlot) ?? null;
+  const gmReceiptFaultPaneAfter = gmReceiptFaultSlot === null ? null
+    : (await tmuxOut("has-session", "-t", `s${gmReceiptFaultSlot}`)).code;
   check("game-maker founding receipt failure: an unwritable receipt ledger rolls back without binding, marker, pane or evidence",
     gmReceiptFaultSlot !== null && gmReceiptFaultResponse.status === 500
       && gmReceiptFaultText.includes("receipt persistence failed")
       && gmReceiptFaultAfter?.main === undefined && gmReceiptFaultAfter?.founding === undefined
-      && !(await sessions()).slots.find((slot) => slot.id === gmReceiptFaultSlot)?.cwd
-      && (await tmuxOut("has-session", "-t", `s${gmReceiptFaultSlot}`)).code !== 0
+      && !gmReceiptFaultSlotAfter?.cwd && gmReceiptFaultPaneAfter !== 0
       && (await contextReceipts()).receipts.filter((row) => row.programId === gmReceiptFaultProgram.id).length
         === gmReceiptFaultBefore,
-    JSON.stringify({ slot: gmReceiptFaultSlot,
+    JSON.stringify({ slot: gmReceiptFaultSlot, slotAfter: gmReceiptFaultSlotAfter,
+      paneAfter: gmReceiptFaultPaneAfter,
       founding: [gmReceiptFaultResponse.status, gmReceiptFaultText], after: gmReceiptFaultAfter }));
   if (gmReceiptFaultAfter?.main) await post(`/api/slots/${gmReceiptFaultAfter.main.slot}/kill`, {});
   await programPost(gmReceiptFaultProgram.id, "complete");
@@ -2009,8 +2021,9 @@ export async function run(ctx: Ctx): Promise<void> {
   await setProfile(gmWrongProgram.id, GAME_MAKER);
   const gmWrongSlot = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? null;
   const gmWrongOpen = gmWrongSlot !== null ? await post(`/api/slots/${gmWrongSlot}/open`, {
-    cwd: gameWtSibling, label: "foreign-occupant-survives-founding-recovery",
+    cwd: gameWtSibling, label: "foreign-occupant-for-founding",
   }) : null;
+  const gmWrongOpenText = gmWrongOpen === null ? null : await gmWrongOpen.clone().text();
   const gmWrongLive = gmWrongSlot === null ? null
     : (await sessions()).slots.find((slot) => slot.id === gmWrongSlot) ?? null;
   let gmWrongDurable: { slot: number; openedAt: number; cwd: string } | null = null;
@@ -2027,7 +2040,8 @@ export async function run(ctx: Ctx): Promise<void> {
   }
   check("game-maker wrong-target fixture: positive live slot identity reaches exact fleet.json parity before restart",
     gmWrongOpen?.ok === true && gmWrongDurable !== null,
-    JSON.stringify({ open: gmWrongOpen?.status, live: gmWrongLive, durable: gmWrongDurable }));
+    JSON.stringify({ open: [gmWrongOpen?.status, gmWrongOpenText], live: gmWrongLive,
+      durable: gmWrongDurable }));
   if (gmWrongDurable === null)
     throw new Error("game-maker wrong-target fixture never reached durable slot identity parity");
   const gmStaleSlot = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? 0;

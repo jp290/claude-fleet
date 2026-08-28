@@ -3336,6 +3336,57 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && railRoleGameMaker.includes("sealed build, launch, real-input and capture pack")
       && preflightDocs,
     `order=[${preflightOrderAt.join(",")}] docs=${preflightDocs}`);
+  const preflightTruthMarkers = [
+    "BINDING ROLE OBLIGATION, NOT A SERVER GATE",
+    "EXISTING DOORS DO NOT AUTHORIZE A BYPASS",
+    "Architect task/model/SHA",
+    "Reviewer task/model/reported SHA",
+    "actual landed SHA",
+    "Fleet does not assemble or prove this receipt",
+    "owner lands that exact Reviewer commit from the Board",
+    "need not be one of the Card's named first slices",
+    "owner-confirmed core pivot or new game inside an existing Program starts a new Preflight",
+    "Hashes identify the sealed bytes only",
+    "blindness and delivery are operator-attested or unknown",
+  ] as const;
+  const compactText = (text: string): string => text.replace(/\s+/g, " ");
+  const missingRailTruth = preflightTruthMarkers.filter((marker) =>
+    !compactText(railRoleGameMaker).includes(marker));
+  const selfApiTruthMarkers = [
+    "BINDING ROLE OBLIGATION, NOT A SERVER GATE",
+    "EXISTING DOORS DO NOT AUTHORIZE A BYPASS",
+    "Architect task/model/SHA",
+    "Reviewer task/model/reported SHA",
+    "actual landed SHA",
+    "Fleet does not assemble or prove this receipt",
+    "landet der Owner exakt diesen Reviewer-Commit über das Board",
+    "muss nicht zu den benannten First Slices der Card gehören",
+    "vom Owner bestätigter Core-Pivot oder ein neues Spiel in einem bestehenden Program startet einen neuen Preflight",
+    "Hashes identifizieren nur die versiegelten Bytes",
+    "Blindheit und Zustellung bestätigt der Operator, sonst bleiben sie `unknown`",
+  ] as const;
+  const docTruthSurfaces = [
+    ["AGENTS.md", agents, preflightTruthMarkers],
+    ["docs/self-api.md", selfApiDoc, selfApiTruthMarkers],
+    ["docs/product-studio-working-circle.md", studioDoc, preflightTruthMarkers],
+  ] as const;
+  const missingDocTruth = docTruthSurfaces.map(([name, text, markers]) => ({
+    name,
+    missing: markers.filter((marker) => !compactText(text).includes(marker)),
+  })).filter(({ missing }) => missing.length > 0);
+  pin(`${RULE_RAIL} — Preflight names its role authority, manual receipt and hash limits without inventing machine enforcement`,
+    missingRailTruth.length === 0 && missingDocTruth.length === 0,
+    `railMissing=[${missingRailTruth.join(" | ")}] docsMissing=${JSON.stringify(missingDocTruth)}`);
+  const client = read("src/client.ts");
+  const profileAt = client.indexOf("function profileState(");
+  const profileSummary = profileAt < 0 ? "" : client.slice(profileAt,
+    client.indexOf("// --- V1a", profileAt));
+  pin(`${RULE_RAIL} — the Board profile summary names re-Preflight and the operator-run post-play Critic`,
+    profileSummary.includes("new game or owner-confirmed core pivot")
+      && profileSummary.includes("Preflight")
+      && profileSummary.includes("Sensory Critic is an operator-run post-play act")
+      && !profileSummary.includes("fresh-critic work still goes"),
+    `profileFound=${profileAt >= 0} pivot=${profileSummary.includes("new game or owner-confirmed core pivot")} preflight=${profileSummary.includes("Preflight")} postPlay=${profileSummary.includes("Sensory Critic is an operator-run post-play act")} stale=${profileSummary.includes("fresh-critic work still goes")}`);
   pin(`${RULE_RAIL} — the Game-Maker rail, machine gate and both operator contracts share one ordered checkpoint vocabulary`,
     checkpointFields.length === 7
       && JSON.stringify(selfApiCheckpointFields) === JSON.stringify(checkpointFields)

@@ -16816,6 +16816,10 @@ that meeting happens here.
 EVERY NEW GAME PROGRAM COMPLETES ONE PREFLIGHT BEFORE ANY IMPLEMENTATION. The order is:
 Architect -> 0-2 named fact/risk probes -> fresh independent cross-model Review -> MAIN ACCEPT|RETHINK|OWNER.
 
+THIS PREFLIGHT IS A BINDING ROLE OBLIGATION, NOT A SERVER GATE. EXISTING DOORS DO NOT AUTHORIZE A BYPASS:
+task filing, release, land and direct checkout access remain technically reachable, do not certify
+ACCEPT and confer no authority to skip this order. Capability is not permission.
+
 FILE ONE NORMAL ARCHITECT TASK first. Its sole deliverable is one committed DRAFT GAME-CARD.md
 containing one to four executable first-slice briefs. Every brief names dependencies, exclusive write set, stop, Done and literal Verify.
 It proposes implementation; it performs none.
@@ -16829,15 +16833,25 @@ never the MAIN/Architect chat or rationale. Inside that confirmed Program bounda
 Review act may optimize the Card and its one to four briefs, then commits the final Card. It outputs
 one verdict and, on acceptance, exactly ACCEPT <final-card-sha>.
 
-MAIN DISPOSITION IS EXACTLY ACCEPT, RETHINK OR OWNER. On ACCEPT, LAND EXACTLY THE REVIEWER'S FINAL
-CARD COMMIT, copy its first-slice briefs verbatim into normal tasks, and release only dependency-free
-roots. RETHINK is not a review loop: file no implementation task, land no final Card and obtain the
-named missing evidence before starting one new Preflight. OWNER likewise files no implementation
-task and lands no final Card; raise one attention with the unresolved decision. NO IMPLEMENTATION TASK MAY BE FILED OR RELEASED BEFORE ACCEPT.
+MAIN DISPOSITION IS EXACTLY ACCEPT, RETHINK OR OWNER. On ACCEPT, verify the Reviewer lane HEAD is
+the reported final SHA, then LAND EXACTLY THE REVIEWER'S FINAL CARD COMMIT. Use self-land only when
+the lifecycle projection grants it; otherwise the owner lands that exact Reviewer commit from the
+Board.
+Observe the actual landed SHA before copying or releasing anything. MANUALLY RECORD AND COMPARE ONE
+AUDITABLE PREFLIGHT RECEIPT in the ordinary Program report or tracked decision: Architect
+task/model/SHA, Reviewer task/model/reported SHA, and actual landed SHA. Confirm that the two models
+differ and both Reviewer SHAs match. Fleet does not assemble or prove this receipt; an absent
+comparison is unknown, not ACCEPT evidence. Only after that comparison may MAIN copy its first-slice briefs verbatim into
+normal tasks and release dependency-free roots. RETHINK is not a review loop: file no implementation
+task, land no final Card and obtain the named missing evidence before starting one new Preflight.
+OWNER likewise files no implementation task and lands no final Card; raise one attention with the
+unresolved decision. NO IMPLEMENTATION TASK MAY BE FILED OR RELEASED BEFORE ACCEPT.
 
-DIRECT SLICE is the only Preflight bypass: a small feature inside an already accepted Program and
-GAME-CARD.md, and only when it is bounded, reversible, low-risk and changes no core contract. A
-new Program, a missing Card, a broad surface or a core-contract change is never a Direct Slice.
+DIRECT SLICE is permitted only for a small feature inside an accepted game scope with an accepted
+GAME-CARD.md; it need not be one of the Card's named first slices. It must be bounded, reversible,
+low-risk and change no core contract. An owner-confirmed core pivot or new game inside an existing
+Program starts a new Preflight. A new Program, a missing Card, a broad surface or any other
+core-contract change is never a Direct Slice.
 
 BEFORE ANY SENSORY CLAIM, and before you widen any player-facing work, do all four.
 Launch the exact artifact you are about to speak about.
@@ -16864,6 +16878,8 @@ independent sensory look using a sealed build, launch, real-input and capture pa
 no Game Card, no HANDOFF.md and no hypotheses; it also gets no rationale, open defect, rejected
 direction or earlier verdict. It reports what the sealed play evidence shows. The Critic is
 evidence, not authority: you decide, repair and replay; final taste and release stay the owner's.
+Hashes identify the sealed bytes only; they do not prove blindness or delivery. Critic blindness
+and delivery are operator-attested or unknown.
 There is no standing Advisor, automatic nudge or Critic route in this Program.
 
 FOUR TRUTHS STAY APART and are never folded into one another:

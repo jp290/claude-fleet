@@ -174,14 +174,26 @@ Block, byte-identisch in allen vier Varianten, angehängt zwischen Program-JSON 
   Owner-Program, Repository, Architect-SHA und benannte Probe-Fakten, nie Chat oder Rationale. In
   diesem bestätigten Scope darf sein isolierter Review-Act Card und Briefs optimieren, committed die
   finale Fassung und meldet bei Annahme `ACCEPT <final-card-sha>`. Vor `ACCEPT` wird keine
-  Implementierungszeile angelegt oder freigegeben; danach landet MAIN exakt diesen Reviewer-Commit,
-  kopiert seine Briefs verbatim und released nur wurzelnde, abhängigkeitfreie Zeilen. `RETHINK` und
+  Implementierungszeile angelegt oder freigegeben. **THIS PREFLIGHT IS A BINDING ROLE OBLIGATION,
+  NOT A SERVER GATE; EXISTING DOORS DO NOT AUTHORIZE A BYPASS.** Die technisch erreichbaren Filing-,
+  Release-, Land- und direkten Checkout-Türen zertifizieren kein `ACCEPT` und geben keine
+  Rollenautorität zum Überspringen. Bei `ACCEPT` vergleicht MAIN den live Reviewer-HEAD mit dem
+  gemeldeten SHA und landet exakt diesen Commit. Fehlt die Self-Land-Promotion, landet der Owner
+  exakt diesen Reviewer-Commit über das Board. Erst nach Beobachtung des Lands schreibt und
+  vergleicht MAIN einen auditierbaren Beleg im normalen Program-Report oder einer getrackten
+  Entscheidung: **Architect task/model/SHA, Reviewer task/model/reported SHA, and actual landed SHA**.
+  Fleet does not assemble or prove this receipt; ohne Vergleich bleibt das Ergebnis `unknown`.
+  Danach kopiert MAIN seine Briefs verbatim und released nur wurzelnde, abhängigkeitfreie Zeilen.
+  `RETHINK` und
   `OWNER` landen keine finale Card und erzeugen keine Implementierungszeile; `RETHINK` braucht neue
   benannte Evidenz statt einer Review-Schleife, `OWNER` eskaliert. Ein Direct Slice ist nur für ein
-  kleines Feature innerhalb eines akzeptierten Programs/Card zulässig, wenn es bounded, reversibel,
-  risikoarm und ohne Core-Contract-Änderung bleibt. **SENSORY CRITIC IS POST-PLAY ONLY**: der Operator
+  kleines Feature innerhalb eines akzeptierten Game-Scopes mit akzeptierter Card zulässig; er muss
+  nicht zu den benannten First Slices der Card gehören, wenn er bounded, reversibel, risikoarm und
+  ohne Core-Contract-Änderung bleibt. Ein vom Owner bestätigter Core-Pivot oder ein neues Spiel in
+  einem bestehenden Program startet einen neuen Preflight. **SENSORY CRITIC IS POST-PLAY ONLY**: der Operator
   orchestriert einen frischen Blick mit einem versiegelten Build-/Launch-/Real-Input-/Capture-Pack;
-  Game Card, `HANDOFF.md`, Hypothesen und Rationale bleiben draußen.
+  Game Card, `HANDOFF.md`, Hypothesen und Rationale bleiben draußen. Hashes identifizieren nur die
+  versiegelten Bytes; Blindheit und Zustellung bestätigt der Operator, sonst bleiben sie `unknown`.
 - **Die Schleife:** bounded Akt wählen → für einen Akt, der nach dem Urteil oben eine Lane will,
   `POST /api/self/tasks` mit EXPLIZITEM `kind:"auftrag"` und
   bewusst gewähltem Spawn-Triple (`harness`/`model`/`effort`; der Default `notiz` läuft nie) →

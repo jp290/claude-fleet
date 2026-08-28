@@ -87,14 +87,26 @@ Controller is a scope a plain session carries, not a binding — do not read thi
   `ACCEPT|RETHINK|OWNER`**. The Architect commits one DRAFT Game Card with 1–4 executable
   first-slice briefs. The isolated Reviewer may optimize that Card within the confirmed Program and
   returns `ACCEPT <final-card-sha>` for its final commit. No implementation task is filed or released
-  before `ACCEPT`; MAIN lands exactly the Reviewer commit, copies its briefs verbatim and releases
-  only dependency-free roots. `RETHINK`/`OWNER` land no final Card and create no implementation
+  before `ACCEPT`. **THIS PREFLIGHT IS A BINDING ROLE OBLIGATION, NOT A SERVER GATE; EXISTING DOORS
+  DO NOT AUTHORIZE A BYPASS.** Filing, release, land and direct checkout access remain technically
+  reachable but do not certify acceptance or grant role authority to skip the order. On `ACCEPT`,
+  MAIN checks the Reviewer's live HEAD against its report and lands exactly that commit; if self-land
+  is unavailable, the owner lands that exact Reviewer commit from the Board. Before any implementation
+  row is copied or released, MAIN writes and compares an auditable receipt in the ordinary Program
+  report or tracked decision: **Architect task/model/SHA, Reviewer task/model/reported SHA, and actual
+  landed SHA**. Fleet does not assemble or prove this receipt; missing comparison remains `unknown`.
+  MAIN then copies the accepted briefs verbatim and releases only dependency-free roots.
+  `RETHINK`/`OWNER` land no final Card and create no implementation
   task; `RETHINK` requires named new evidence rather than a review loop, while `OWNER` escalates.
-  A Direct Slice is permitted only for a small feature inside
-  an accepted Program/Card when it is bounded, reversible, low-risk and changes no core contract.
+  A Direct Slice is permitted only for a small feature inside an accepted game scope with an accepted
+  Card; it need not be one of the Card's named first slices, provided it is bounded, reversible,
+  low-risk and changes no core contract. An owner-confirmed core pivot or new game inside an existing
+  Program starts a new Preflight.
   **SENSORY CRITIC IS POST-PLAY ONLY** and operator-orchestrated from a sealed build/launch/real-input/
   capture pack. It receives no Game Card, `HANDOFF.md`, hypotheses or rationale. The committed game
   checkpoint remains predecessor-to-successor state and owner proof, never sensory-Critic context.
+  Hashes identify the sealed bytes only; they do not prove blindness or delivery. Critic blindness
+  and delivery are operator-attested or unknown.
 - A worker's report is a CLAIM. Proof is the diff plus the exact verification output. `PLAYABLE`
   means an artefact exists and was seen to run; it never means the owner has played it.
 - Observations precede labels. Missing or failed evidence is `unknown`, never zero, false, or pass.

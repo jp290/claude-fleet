@@ -259,7 +259,10 @@ Der Body enthält **genau** `v`, `build`, `launch`, `controls`, `input`, `captur
 oder fehlende Keys sind 400. Program, Repo und Requester-Occupant (`slot`, `openedAt`, `sessionId`)
 stempelt der Server. Nur eine aktive Game-Maker MAIN darf anlegen. Pro Program existiert höchstens
 ein offener Critic-Akt (`pending|queued|sent`). Eine byte-identische Wiederholung desselben
-Requester-Occupants liefert dieselbe Task; ein anderer Request ist 409.
+Requester-Occupants liefert dieselbe Task; ein anderer Request ist 409. Das gilt auch für echte
+Gleichzeitigkeit: vor dem ersten `await` reserviert der Server das Program synchron, identische
+Requests teilen dieselbe Response und vor dem Insert werden Requester-Bindung und offene Acts erneut
+geprüft. Ein exakter Retry bestätigt die vorhandene Zeile erst wieder mit einer Durability-Barriere.
 
 `build` muss der volle, vorhandene Commit sein. Jeder Capture-Pfad ist relativ zum konkreten
 Source-Worktree, bleibt darin, enthält keinen Symlink und benennt eine reguläre Datei. Der Server
@@ -268,6 +271,10 @@ vor/nach dem Read und schreibt die Bytes in einen privaten immutable Snapshot. R
 tragen Dateigröße und den **vollen SHA-256** jeder Capture sowie einen vollen SHA-256 über Build,
 Launch, Controls, Input und die Capture-Liste. Eine spätere Änderung der Source-Datei ändert weder
 Snapshot noch Retry-Ergebnis.
+
+Retained Snapshot-Evidenz ist vierfach gedeckelt: pro Program höchstens 8 Acts und 64 MiB, global
+höchstens 64 Acts und 512 MiB. Der 16-MiB-Deckel eines einzelnen Acts bleibt separat. Jeder Deckel
+antwortet 409 mit seinem eigenen Namen; Acts ohne retained Snapshot verbrauchen diese Budgets nicht.
 
 Nur der gespeicherte exakte Requester darf die pending Task über die gewöhnliche Release-Route
 freigeben. Der vorhandene Tick gründet eine frische Lane am **exakten Build**; Analyst und Brief-
@@ -281,17 +288,31 @@ vollen Brief-SHA-256. Erst eine beobachtete oder für den Adapter nicht anwendba
 sendet diesen Brief nie automatisch erneut. Diese Zustände sind Transportbelege, keine Aussage über
 Prozess- oder Betriebssystem-Isolation.
 
-Die Critic-Lane darf genau einen strikten `fleet-report` ablegen. Er setzt diese Task auf `done`,
+Die Critic-Lane darf genau einen strikten `fleet-report` ablegen. Zentral vor allen einzelnen
+Self-Routen gilt: unter `/api/self/*` ist **genau** `POST /api/self/fleet-report` erlaubt, jede andere
+Self-Mutation ist 409. Der Report setzt diese Task auf `done`,
 aber landet nichts. Empfänger bleibt der bei Create gespeicherte Requester. Ist dieser Occupant
 beendet oder durch eine MAIN-Nachfolgerin ersetzt, wird das Event sofort `receiver-gone`; die
 Nachfolgerin erhält weder Pane-Zustellung noch die Report-Zeile. Commit-, Merge-, Land-,
-Clarification- und Criterion-Türen lehnen Critic-Lanes ab. In `program-execution` trägt die Zeile
-`critic.evidence` und `critic.delivery`; ihr `nextAction` nennt Release, Dispatch oder Report,
-niemals Land.
+Clarification- und Criterion-Türen sowie jede generische Owner-Task-Mutation lehnen Critic-Zeilen ab.
+Die einzige Owner-Ausnahme ist das auditierte `POST /api/tasks/:id/critic-cancel`; es archiviert,
+landet und sendet nichts. In `program-execution` trägt die Zeile `critic.evidence` und
+`critic.delivery`; ihr `nextAction` nennt Release, Dispatch oder Report, niemals Land.
 
-Der Loader ist geschlossen: ein vorhandener, aber malformed/unknown-version `critic`-Record
-quarantänisiert die ganze Task statt als ausführbare Standard-Task zu degradieren. Fehlt das Feld,
-bleibt die Legacy-Standardform unverändert.
+Requester-Verlust vor Release und der Tod der Evidence-Lane sind terminal und archivieren den Act.
+Insbesondere werden `delivered` und `send-uncertain` nie auf `pending` gesetzt und nie blind erneut
+gesendet. Ein fehlgeschlagenes Speichern von Create oder Report bestätigt nichts: der Server rollt
+seine Task/Event/Report-Mutation und neue Snapshot-Root zurück; der identische Retry versucht die
+Durability erneut.
+
+Der Loader ist geschlossen und hasht jede Snapshot-Datei genau einmal: malformed/unknown-version,
+fehlende oder manipulierte Evidenz einer aktiven Critic-Task verweigert den gesamten Serverstart,
+statt die Zeile zu droppen oder als ausführbare Standard-Task zu degradieren. Fehlt das `critic`-Feld,
+bleibt die Legacy-Standardform unverändert. Terminale Zeilen akzeptieren entweder alle validen
+Snapshots oder keinen — niemals einen partiellen Satz. Archivierte Snapshots werden erst nach dem
+durablen Terminal-Save entfernt, `done`-Snapshots nach 24 Stunden; nach erfolgreichem Parse entfernt
+Startup zusätzlich verwaiste Critic-Roots. Diese Retention-Ausnahme ist die einzige absichtliche
+Form eines fehlenden Snapshot-Satzes.
 
 ## release — `POST /api/self/tasks/:id/release`
 

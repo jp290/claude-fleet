@@ -3952,6 +3952,19 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && serverSrc.includes("critic lanes cannot merge or land through Fleet")
       && serverSrc.includes("critic tasks are evidence and are never landed"),
     "one or more critic lifecycle guards are absent");
+  pin(`${RULE_CRITIC} — one central self-POST allowlist admits fleet-report and refuses every other present or future mutation`,
+    serverSrc.includes("function guardCriticSelfPost")
+      && serverSrc.includes('url.pathname === "/api/self" || url.pathname.startsWith("/api/self/")')
+      && serverSrc.includes('url.pathname === "/api/self/fleet-report"')
+      && serverSrc.includes("critic lanes may POST only their one fleet-report")
+      && /const criticSelfPostBlocked = guardCriticSelfPost\(req, url\);[\s\S]{0,120}if \(criticSelfPostBlocked\) return criticSelfPostBlocked/.test(serverSrc),
+    "critic self mutations are guarded route-by-route instead of by one fleet-report allowlist");
+  pin(`${RULE_CRITIC} — owner task mutation is centrally denied and cancellation is one explicit audited terminal path`,
+    serverSrc.includes("function guardCriticOwnerTaskPost")
+      && serverSrc.includes('critic-cancel')
+      && serverSrc.includes('audit("critic_cancel"')
+      && serverSrc.includes("critic tasks accept only the explicit critic-cancel owner mutation"),
+    "generic owner task mutations still reach critic rows or cancellation has no explicit audit path");
   pin(`${RULE_CRITIC} — capture sealing rejects traversal and symlinks, reads one stable regular fd, and records full hashes`,
     serverSrc.includes("safeCriticRelativePath")
       && serverSrc.includes("fsConstants.O_NOFOLLOW")
@@ -3962,17 +3975,28 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && serverSrc.includes("capture changed while it was being snapshotted")
       && serverSrc.includes('createHash("sha256").update(bytes).digest("hex")'),
     "the capture boundary lost one of traversal/symlink/fd-stability/full-hash");
-  const criticCreateStart = serverSrc.indexOf("async function createCriticForMain");
+  const criticCreateStart = serverSrc.indexOf("interface CriticCreateReservation");
   const criticCreateBody = criticCreateStart < 0 ? "" : serverSrc.slice(criticCreateStart,
     serverSrc.indexOf("const attentionBound", criticCreateStart));
+  const criticCreateDoorStart = serverSrc.indexOf("async function createCriticForMain", criticCreateStart);
+  const criticCreateDoor = criticCreateDoorStart < 0 ? "" : serverSrc.slice(criticCreateDoorStart,
+    serverSrc.indexOf("const attentionBound", criticCreateDoorStart));
+  pin(`${RULE_CRITIC} — create reserves the Program synchronously, joins the identical in-flight request and revalidates before insertion`,
+    serverSrc.includes("const criticCreateReservations = new Map")
+      && criticCreateBody.includes("criticCreateReservations.set(program.id")
+      && criticCreateBody.includes("existing.requestSha256 !== requestSha256")
+      && criticCreateBody.includes("return (await existing.promise).clone()")
+      && criticCreateBody.includes("requesting MAIN occupant changed before critic insertion")
+      && criticCreateBody.includes("program already gained an open critic act before insertion"),
+    "per-Program create is not a synchronous single-flight reservation with a final authority/open-row check");
   pin(`${RULE_CRITIC} — the exact build founds the lane, while an exact retry keys the immutable request before rereading mutable files`,
     serverSrc.includes('gitRead(sourceCwd, "rev-parse", "--verify", `${parsed.build}^{commit}`)')
       && serverSrc.includes('createWorktree(dispatchRepo, "", dForm.form, next.critic?.build)')
       && serverSrc.includes("next.critic?.build ?? await laneForkSha")
       && serverSrc.includes("launch: body.launch as string")
-      && criticCreateBody.indexOf("open.critic!.requestSha256 === requestSha256") >= 0
-      && criticCreateBody.indexOf("open.critic!.requestSha256 === requestSha256")
-        < criticCreateBody.indexOf("readCriticCapture(sourceRoot, path)"),
+      && criticCreateDoor.indexOf("open.critic!.requestSha256 === requestSha256") >= 0
+      && criticCreateDoor.indexOf("open.critic!.requestSha256 === requestSha256")
+        < criticCreateDoor.indexOf("finishCriticCreate(s, program"),
     "exact build start or request-before-file idempotency seam is absent");
   pin(`${RULE_CRITIC} — capture source authority is an exact occupant snapshot revalidated after every async git read`,
     serverSrc.includes("const requesterStillOwnsSource = (): boolean")
@@ -3988,7 +4012,10 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     "pre-send durability, full receipt hash or restart no-replay rule is absent");
   pin(`${RULE_CRITIC} — malformed critic metadata quarantines its whole Task while a legacy Standard row has no new required key`,
     serverSrc.includes('Object.prototype.hasOwnProperty.call(x, "critic")')
-      && serverSrc.includes("taskCriticFrom((x as { critic?: unknown }).critic, (x as Task).id, (x as Task).status) !== null")
+      && serverSrc.includes("const parsedCritics = new WeakMap<object, TaskCritic>()")
+      && serverSrc.includes("const parsedCritic = taskCriticFrom((x as { critic?: unknown }).critic, (x as Task).id, (x as Task).status)")
+      && serverSrc.includes("if (parsedCritic === null)")
+      && serverSrc.includes("missing/tampered snapshot evidence")
       && serverSrc.includes("capturePaths.has(c.path) || snapshotPaths.has(snapshot)")
       && serverSrc.includes("captureBytes > CRITIC_CAPTURE_BYTES_MAX")
       && serverSrc.includes('delivery.status === "pending"')
@@ -3998,6 +4025,44 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && serverSrc.includes("critic evidence brief was not attempted")
       && /interface Task \{[\s\S]*?critic\?: TaskCritic;[\s\S]*?\n\}/.test(serverSrc),
     "closed loader or optional legacy shape is absent");
+  pin(`${RULE_CRITIC} — startup parses and hashes each Critic marker once, with all-or-none terminal snapshot cleanup distinct from active corruption`,
+    (serverSrc.match(/taskCriticFrom\(/g) ?? []).length === 2
+      && serverSrc.includes("const terminal = taskStatus === \"done\" || taskStatus === \"archived\"")
+      && serverSrc.includes("!terminal && presentSnapshots !== captures.length")
+      && serverSrc.includes("terminal && presentSnapshots !== 0 && presentSnapshots !== captures.length")
+      && serverSrc.includes("critic: Object.prototype.hasOwnProperty.call(t, \"critic\") ? parsedCritics.get(t) : undefined"),
+    `taskCriticFrom calls=${(serverSrc.match(/taskCriticFrom\(/g) ?? []).length}`);
+  pin(`${RULE_CRITIC} — retained evidence has independent per-Program/global byte and act ceilings plus terminal, retention and orphan cleanup`,
+    serverSrc.includes("CRITIC_PROGRAM_RETAINED_ACTS_MAX = 8")
+      && serverSrc.includes("CRITIC_GLOBAL_RETAINED_ACTS_MAX = 64")
+      && serverSrc.includes("CRITIC_PROGRAM_RETAINED_BYTES_MAX = 64 * 1024 * 1024")
+      && serverSrc.includes("CRITIC_GLOBAL_RETAINED_BYTES_MAX = 512 * 1024 * 1024")
+      && serverSrc.includes("CRITIC_SNAPSHOT_RETENTION_MS = 24 * 60 * 60 * 1000")
+      && serverSrc.includes("critic retained-act quota reached for Program")
+      && serverSrc.includes("critic global retained-act quota reached")
+      && serverSrc.includes("critic retained-byte quota reached for Program")
+      && serverSrc.includes("critic global retained-byte quota reached")
+      && /if \(!known\.has\(entry\)\) rmSync/.test(serverSrc)
+      && serverSrc.includes("task.status === \"archived\" || now - terminalAt >= CRITIC_SNAPSHOT_RETENTION_MS"),
+    "one or more independent quota/cleanup dimensions disappeared");
+  pin(`${RULE_CRITIC} — create and report retry either cross a durability barrier or precisely roll back their own in-memory/file mutation`,
+    criticCreateBody.includes("const beforeTasks = tasks")
+      && /catch \(e\) \{\s*tasks = beforeTasks;\s*rmSync\(snapshotRoot/.test(criticCreateBody)
+      && /open\.critic!\.requestSha256 === requestSha256\) \{\s*await saveStateNow\(\)/.test(criticCreateDoor)
+      && /if \(existing\?\.status === body\.status && existing\.text === text\) \{\s*await saveStateNow\(\)/.test(serverSrc)
+      && serverSrc.includes("fleetReports = fleetReports.filter((candidate) => candidate.id !== id)")
+      && serverSrc.includes("fleetEvents = fleetEvents.filter((candidate) => candidate.id !== eventId)")
+      && serverSrc.includes("criticTask.critic.delivery.report = criticBefore.report"),
+    "a create/report retry can acknowledge state that its failed save never made durable");
+  pin(`${RULE_CRITIC} — requester loss before release and evidence-lane loss after delivery are terminal, never pending or blindly resent`,
+    serverSrc.includes("async function closeCriticsForEndingSlot")
+      && serverSrc.includes('task.status === "pending" || task.status === "queued"')
+      && serverSrc.includes('task.status === "sent" && task.slot === s.id')
+      && serverSrc.includes('task.status = "archived"')
+      && serverSrc.includes("if (t.critic) continue")
+      && serverSrc.includes("no automatic resend")
+      && serverSrc.includes("await closeCriticsForEndingSlot(s"),
+    "a Critic terminal boundary can still fall back into the ordinary Task retry lifecycle");
   pin(`${RULE_CRITIC} — reports name the stored requester and terminal receiver-gone instead of consulting a successor binding`,
     serverSrc.includes("? { receiver: { ...criticTask.critic!.requester }, basis: \"program-main\" }")
       && serverSrc.includes('status: receiverGone ? "receiver-gone" : "pending"')

@@ -1,6 +1,6 @@
 // Program/Origin Artifact v1: a durable planning bracket above tasks and lanes. Sessions may
 // propose; only the owner confirms and advances it. Full bodies stay off the 2 s sessions poll.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
@@ -61,7 +61,7 @@ interface FleetState {
     taskId?: string | null; originId?: string | null; programId?: string | null }>;
 }
 interface CriticTaskState {
-  id: string; status: string; slot: number | null; note: string | null;
+  id: string; programId?: string; status: string; slot: number | null; note: string | null;
   critic: { v: number; requestSha256: string; sha256: string; build: string; launch: string;
     controls: string; input: string; requester: { slot: number; openedAt: number; sessionId: string | null };
     captures: { path: string; snapshot: string; bytes: number; sha256: string }[];
@@ -2380,8 +2380,12 @@ export async function run(ctx: Ctx): Promise<void> {
       && criticSymlink.status === 400 && criticBadBuild.status === 400,
     `auth=${criticUnauthorized.status} extra=${criticExtra.status} escape=${criticEscape.status} symlink=${criticSymlink.status} build=${criticBadBuild.status}`);
 
-  const criticCreatedResponse = await selfCritic(gmMainToken, criticRequest);
+  const [criticCreatedResponse, criticJoinedResponse] = await Promise.all([
+    selfCritic(gmMainToken, criticRequest),
+    selfCritic(gmMainToken, criticRequest),
+  ]);
   const criticCreatedBody = await criticCreatedResponse.json() as { ok?: boolean; task?: CriticTaskState };
+  const criticJoinedBody = await criticJoinedResponse.json() as { ok?: boolean; existing?: boolean; task?: CriticTaskState };
   const criticTaskId = criticCreatedBody.task?.id ?? "";
   const sealed = criticCreatedBody.task?.critic.captures[0];
   const sealedBytesBefore = sealed?.snapshot ? readFileSync(sealed.snapshot, "utf8") : "";
@@ -2391,6 +2395,13 @@ export async function run(ctx: Ctx): Promise<void> {
   const criticConflict = await selfCritic(gmMainToken, { ...criticRequest, input: "different replay" });
   const criticWhitespaceConflict = await selfCritic(gmMainToken,
     { ...criticRequest, launch: `${criticRequest.launch} ` });
+  const criticProgramTasks = (readState().tasks ?? []).filter((task) => task.programId === gmProgram.id
+    && Object.prototype.hasOwnProperty.call(task, "critic"));
+  check("critic create reservation: Promise.all identical creates join one durable Task before mutable evidence is reread",
+    criticCreatedResponse.ok && criticJoinedResponse.ok
+      && criticJoinedBody.task?.id === criticTaskId && criticProgramTasks.length === 1,
+    `first=${criticCreatedResponse.status}:${criticTaskId} joined=${criticJoinedResponse.status}:${criticJoinedBody.task?.id ?? "none"}`
+      + ` rows=${criticProgramTasks.map((task) => String(task.id)).join(",")}`);
   check("critic snapshot/idempotency: the exact retry returns one Task and later source mutation cannot change its full SHA-256 evidence",
     criticCreatedResponse.ok && /^[a-z0-9]+$/.test(criticTaskId)
       && sealedBytesBefore === criticOriginal && readFileSync(sealed?.snapshot ?? "", "utf8") === criticOriginal
@@ -2430,20 +2441,115 @@ export async function run(ctx: Ctx): Promise<void> {
     `release=${criticRelease.status} state=${criticRunning?.status}/${criticRunning?.critic.delivery.status} head=${criticLaneHead.slice(0, 8)} prompt=${criticPrompt.length}`);
 
   const criticToken = criticLane?.selfToken ?? "";
-  const criticClarify = await fetch(`${BASE}/api/self/clarifications`, {
-    method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": criticToken },
-    body: JSON.stringify({ question: "may I change the evidence?" }),
-  });
+  const criticSelfMutations: { name: string; path: string; body: unknown }[] = [
+    { name: "self root", path: "/api/self", body: {} },
+    { name: "autos", path: "/api/self/autos", body: { text: "mutate", in: 60 } },
+    { name: "program propose", path: "/api/self/programs", body: content },
+    { name: "supervisor nudge", path: "/api/self/nudge", body: {} },
+    { name: "main-direct preflight", path: "/api/self/main-direct/preflight", body: {} },
+    { name: "watch", path: "/api/self/watch", body: {} },
+    { name: "clarification", path: "/api/self/clarifications", body: { question: "may I change the evidence?" } },
+    { name: "clarification reply", path: `/api/self/clarifications/${"0".repeat(24)}/reply`, body: { text: "mutate" } },
+    { name: "attention", path: "/api/self/attention", body: { kind: "decision", text: "mutate" } },
+    { name: "critic create", path: "/api/self/critic", body: criticRequest },
+    { name: "task create", path: "/api/self/tasks", body: { text: "mutate" } },
+    { name: "task release", path: `/api/self/tasks/${criticTaskId}/release`, body: {} },
+    { name: "task land", path: `/api/self/tasks/${criticTaskId}/land`, body: {} },
+    { name: "event ack", path: `/api/self/events/${"0".repeat(24)}/ack`, body: {} },
+    { name: "succeed", path: "/api/self/succeed", body: {} },
+    { name: "retire", path: "/api/self/retire", body: {} },
+    { name: "criterion", path: "/api/self/criterion", body: { text: "mutate" } },
+    { name: "suite offer", path: "/api/self/suite-offer", body: {} },
+    { name: "suite withdraw", path: "/api/self/suite-offer/withdraw", body: {} },
+    { name: "verify intent", path: "/api/self/verify-intent", body: { state: "started" } },
+  ];
+  const criticSelfMutationResults = await Promise.all(criticSelfMutations.map(async (mutation) => {
+    const response = await fetch(`${BASE}${mutation.path}`, {
+      method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": criticToken },
+      body: JSON.stringify(mutation.body),
+    });
+    return { ...mutation, status: response.status };
+  }));
+  check("critic self-POST allowlist: every named mutation except fleet-report is a central 409",
+    criticSelfMutationResults.every((result) => result.status === 409),
+    criticSelfMutationResults.map((result) => `${result.name}=${result.status}`).join(" "));
+
+  const criticOwnerTaskMutations: { name: string; path: string; body: unknown }[] = [
+    { name: "kind", path: `/api/tasks/${criticTaskId}/kind`, body: { kind: "notiz" } },
+    { name: "dispatch", path: `/api/tasks/${criticTaskId}/dispatch`, body: {} },
+    { name: "reanalyse", path: `/api/tasks/${criticTaskId}/reanalyse`, body: {} },
+    { name: "refine", path: `/api/tasks/${criticTaskId}/refine`, body: {} },
+    { name: "refine-confirm", path: `/api/tasks/${criticTaskId}/refine-confirm`, body: {} },
+    { name: "brief", path: `/api/tasks/${criticTaskId}/brief`, body: { text: "mutate" } },
+    { name: "comment", path: `/api/tasks/${criticTaskId}/comment`, body: { text: "mutate" } },
+    { name: "comment-delete", path: `/api/tasks/${criticTaskId}/comment-delete`, body: { comment: "missing" } },
+    { name: "criterion-confirm", path: `/api/tasks/${criticTaskId}/criterion-confirm`, body: {} },
+    ...["queue", "unqueue", "done", "delete", "archive", "unarchive", "adopt"].map((act) =>
+      ({ name: act, path: `/api/tasks/${criticTaskId}/${act}`, body: {} })),
+  ];
+  const criticOwnerTaskResults = await Promise.all(criticOwnerTaskMutations.map(async (mutation) => {
+    const response = await post(mutation.path, mutation.body);
+    return { ...mutation, status: response.status };
+  }));
   const [criticCommit, criticMerge, criticLand, criticSelfLand] = await Promise.all([
     post(`/api/slots/${criticSlot}/commit`, { mode: "quick", confirm: true }),
     post(`/api/slots/${criticSlot}/merge`, {}),
     post(`/api/slots/${criticSlot}/land`, {}),
     fetch(`${BASE}/api/self/tasks/${criticTaskId}/land`, { method: "POST", headers: { "x-fleet-self-token": gmMainToken } }),
   ]);
-  check("critic mutation firewall: clarification, Fleet commit, merge and both land doors reject the evidence lane",
-    criticClarify.status === 409 && criticCommit.status === 409 && criticMerge.status === 409
+  check("critic owner mutation firewall: every named generic task mutation plus Fleet commit, merge and both land doors rejects the evidence lane",
+    criticOwnerTaskResults.every((result) => result.status === 409)
+      && criticCommit.status === 409 && criticMerge.status === 409
       && criticLand.status === 409 && criticSelfLand.status === 409,
-    `clarify=${criticClarify.status} commit=${criticCommit.status} merge=${criticMerge.status} land=${criticLand.status}/${criticSelfLand.status}`);
+    `${criticOwnerTaskResults.map((result) => `${result.name}=${result.status}`).join(" ")}`
+      + ` commit=${criticCommit.status} merge=${criticMerge.status} land=${criticLand.status}/${criticSelfLand.status}`);
+
+  // Startup is the negative gate: an active slot plus an unreadable Critic marker is not a Standard
+  // Task. Exercise metadata, absence and content tamper separately while the exact lane survives.
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const criticFailClosedState = readState();
+  const criticLegacyId = "criticlegacystandard";
+  criticFailClosedState.tasks = [...(criticFailClosedState.tasks ?? []).filter((task) => task.id !== criticLegacyId), {
+    id: criticLegacyId, originId: criticLegacyId, text: "legacy Standard Task has no Critic marker",
+    source: "owner", from: null, kind: "auftrag", repo: null, status: "archived",
+    created: Date.now(), slot: null, note: null,
+  }];
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(criticFailClosedState, null, 2), { mode: 0o600 });
+  const criticFailClosedBaseline = readFileSync(`${ROOT}/fleet.json`);
+  const snapshotPath = sealed?.snapshot ?? "";
+  const snapshotBaseline = snapshotPath ? readFileSync(snapshotPath) : Buffer.alloc(0);
+  const startAgainstCriticFault = (): { status: number | null; text: string } => {
+    const run = spawnSync("bun", ["server.ts"], {
+      cwd: ROOT, encoding: "utf8", timeout: 5000,
+      env: { ...process.env, FLEET_HOST: IP, FLEET_PORT: String(PORT), FLEET_SOCK: SOCK, FLEET_TOKEN: TOKEN },
+    });
+    return { status: run.status, text: `${run.stdout ?? ""}${run.stderr ?? ""}` };
+  };
+  const malformedState = JSON.parse(criticFailClosedBaseline.toString()) as FleetState;
+  const malformedCritic = malformedState.tasks?.find((task) => task.id === criticTaskId) as unknown as CriticTaskState | undefined;
+  if (malformedCritic) malformedCritic.critic.sha256 = "0".repeat(64);
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(malformedState, null, 2), { mode: 0o600 });
+  const criticMalformedStart = startAgainstCriticFault();
+  writeFileSync(`${ROOT}/fleet.json`, criticFailClosedBaseline, { mode: 0o600 });
+  const heldSnapshot = `${snapshotPath}.missing-fixture`;
+  if (snapshotPath) renameSync(snapshotPath, heldSnapshot);
+  const criticMissingStart = startAgainstCriticFault();
+  if (snapshotPath) renameSync(heldSnapshot, snapshotPath);
+  if (snapshotPath) writeFileSync(snapshotPath, Buffer.concat([snapshotBaseline, Buffer.from("tamper")]), { mode: 0o600 });
+  const criticTamperedStart = startAgainstCriticFault();
+  if (snapshotPath) writeFileSync(snapshotPath, snapshotBaseline, { mode: 0o600 });
+  await restartSrv();
+  const criticAfterRefusal = (readState().tasks ?? []).find((task) => task.id === criticTaskId) as unknown as CriticTaskState | undefined;
+  const legacyAfterRefusal = (readState().tasks ?? []).find((task) => task.id === criticLegacyId);
+  check("critic fail-closed startup: malformed metadata, a missing snapshot and tampered bytes each refuse by Task id without degrading it to Standard",
+    [criticMalformedStart, criticMissingStart, criticTamperedStart].every((run) => run.status !== 0
+      && run.text.includes("REFUSING TO START") && run.text.includes(criticTaskId))
+      && criticAfterRefusal?.critic.v === 1 && criticAfterRefusal.status === "sent"
+      && criticAfterRefusal.slot === criticSlot && legacyAfterRefusal?.critic === undefined
+      && readState().slots?.[String(criticSlot)]?.cwd === criticLane?.cwd,
+    `malformed=${criticMalformedStart.status} missing=${criticMissingStart.status} tampered=${criticTamperedStart.status}`
+      + ` task=${criticAfterRefusal?.status}/${criticAfterRefusal?.slot} legacy=${legacyAfterRefusal?.status}`);
   rmSync(`${gameWt}/captures`, { recursive: true, force: true });
 
   // THE SHARED USE GATE. Once a Game-Maker MAIN is live, every other open path must see the same
@@ -2650,6 +2756,16 @@ export async function run(ctx: Ctx): Promise<void> {
     ? readState().slots?.[String(gmSuccessionBody.slot)]?.selfToken ?? "" : "";
   const criticTokenAfterRestart = criticSlot > 0 ? readState().slots?.[String(criticSlot)]?.selfToken ?? "" : "";
   const criticReportText = "Observed the sealed red-door replay at the exact build; jump timing remained late on frame 317.";
+  const criticRootMode = statSync(ROOT).mode & 0o777;
+  let criticReportSaveFailure: Response;
+  chmodSync(ROOT, 0o500);
+  try {
+    criticReportSaveFailure = await selfFleetReport(criticTokenAfterRestart,
+      { status: "failed", text: criticReportText });
+  } finally {
+    chmodSync(ROOT, criticRootMode);
+  }
+  const criticAfterReportSaveFailure = (readState().tasks ?? []).find((task) => task.id === criticTaskId) as unknown as CriticTaskState | undefined;
   const criticReportResponse = await selfFleetReport(criticTokenAfterRestart,
     { status: "failed", text: criticReportText });
   const criticReportBody = await criticReportResponse.json() as { ok?: boolean; report?: { id: string; eventId: string } };
@@ -2663,15 +2779,145 @@ export async function run(ctx: Ctx): Promise<void> {
   const successorCritic = successorExecution.view?.programs.find((row) => row.program.id === gmProgram.id)
     ?.tasks.rows.find((task) => task.id === criticTaskId);
   check("critic succession routing: a post-succession report terminates at receiver-gone for the stored requester and is never delivered to its successor",
-    criticTokenAfterRestart === criticToken && criticReportResponse.ok && criticReportRetry.ok
+    criticTokenAfterRestart === criticToken && criticReportSaveFailure.status === 500
+      && criticAfterReportSaveFailure?.status === "sent" && criticAfterReportSaveFailure.critic.delivery.report === null
+      && criticReportResponse.ok && criticReportRetry.ok
       && (criticReportEvent as { status?: string } | undefined)?.status === "receiver-gone"
       && !successorReports.reports.some((report) => report.id === criticReportBody.report?.id)
       && successorCritic?.status === "done" && successorCritic.nextAction === null
       && successorCritic.critic?.delivery.reportEventStatus === "receiver-gone"
       && !String(successorCritic.nextAction).includes("land"),
-    `report=${criticReportResponse.status}/${criticReportRetry.status} event=${JSON.stringify(criticReportEvent ?? null)} successorReports=${successorReports.reports.length}`);
+    `save-failure=${criticReportSaveFailure.status}/${criticAfterReportSaveFailure?.status}`
+      + ` report=${criticReportResponse.status}/${criticReportRetry.status} event=${JSON.stringify(criticReportEvent ?? null)} successorReports=${successorReports.reports.length}`);
   if (criticSlot > 0) await post(`/api/slots/${criticSlot}/kill`, {});
   if (criticLane?.cwd) await post("/api/worktrees/remove", { repo: gameRepo, path: criticLane.cwd });
+
+  // Retained terminal snapshots, not Task rows, spend the quota. The fixtures use valid closed
+  // Critic rows and real hashed bytes so startup must parse them before create can count them.
+  writeFileSync(`${gameWt}/captures/replay.txt`, criticOriginal);
+  const criticSnapshotDir = `${ROOT}/streams/critics`;
+  const criticQuotaCloneIds: string[] = [];
+  const plantCriticClones = (state: FleetState, count: number, programIdOf: (index: number) => string): void => {
+    const template = state.tasks?.find((task) => task.id === criticTaskId) as unknown as CriticTaskState | undefined;
+    if (!template) return;
+    for (let i = 0; i < count; i++) {
+      const id = `cq${i.toString(16).padStart(6, "0")}`;
+      criticQuotaCloneIds.push(id);
+      const clone = JSON.parse(JSON.stringify(template)) as CriticTaskState;
+      clone.id = id;
+      clone.programId = programIdOf(i);
+      clone.status = "done";
+      clone.slot = null;
+      clone.note = "quota fixture";
+      clone.critic.delivery.report = {
+        id: (i + 1).toString(16).padStart(24, "0"),
+        eventId: (i + 1000).toString(16).padStart(24, "0"),
+        reportedAt: Date.now(),
+      };
+      const root = `${criticSnapshotDir}/${id}`;
+      mkdirSync(root, { recursive: true, mode: 0o700 });
+      clone.critic.captures = clone.critic.captures.map((capture, captureIndex) => {
+        const snapshot = `${root}/${String(captureIndex + 1).padStart(2, "0")}-replay.txt`;
+        writeFileSync(snapshot, snapshotBaseline, { mode: 0o600 });
+        return { ...capture, snapshot };
+      });
+      state.tasks = [...(state.tasks ?? []), clone as unknown as Record<string, unknown>];
+    }
+  };
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const criticGlobalQuotaState = readState();
+  plantCriticClones(criticGlobalQuotaState, 63, (index) => `critic-global-${index}`);
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(criticGlobalQuotaState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const criticGlobalQuota = await selfCritic(gmSuccessorToken, criticRequest);
+  const criticGlobalQuotaText = await criticGlobalQuota.text();
+  check("critic global retained-act quota: sixty-four real retained terminal snapshots refuse the next create by the global limit",
+    criticGlobalQuota.status === 409 && criticGlobalQuotaText.includes("global retained-act quota"),
+    `${criticGlobalQuota.status} ${criticGlobalQuotaText}`);
+
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const criticProgramQuotaState = readState();
+  criticProgramQuotaState.tasks = (criticProgramQuotaState.tasks ?? [])
+    .filter((task) => !criticQuotaCloneIds.includes(String(task.id)));
+  for (const id of criticQuotaCloneIds) rmSync(`${criticSnapshotDir}/${id}`, { recursive: true, force: true });
+  criticQuotaCloneIds.length = 0;
+  plantCriticClones(criticProgramQuotaState, 7, () => gmProgram.id);
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(criticProgramQuotaState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const criticProgramQuota = await selfCritic(gmSuccessorToken, criticRequest);
+  const criticProgramQuotaText = await criticProgramQuota.text();
+  check("critic per-Program retained-act quota: eight real retained terminal snapshots refuse the next create by the Program limit",
+    criticProgramQuota.status === 409 && criticProgramQuotaText.includes("retained-act quota reached for Program"),
+    `${criticProgramQuota.status} ${criticProgramQuotaText}`);
+
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const criticRetentionState = readState();
+  const expiredCritics = (criticRetentionState.tasks ?? []).filter((task) => task.id === criticTaskId
+    || criticQuotaCloneIds.includes(String(task.id))) as unknown as CriticTaskState[];
+  for (const task of expiredCritics) {
+    if (task.critic.delivery.report) task.critic.delivery.report.reportedAt = Date.now() - 2 * 24 * 60 * 60 * 1000;
+  }
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(criticRetentionState, null, 2), { mode: 0o600 });
+  const criticOrphanRoot = `${criticSnapshotDir}/criticorphanfixture`;
+  mkdirSync(criticOrphanRoot, { recursive: true, mode: 0o700 });
+  writeFileSync(`${criticOrphanRoot}/orphan.txt`, "orphan\n", { mode: 0o600 });
+  await restartSrv();
+  check("critic snapshot retention cleanup: expired terminal roots and an orphan root disappear only after a successful parse/startup",
+    expiredCritics.every((task) => !existsSync(`${criticSnapshotDir}/${task.id}`))
+      && !existsSync(criticOrphanRoot),
+    `expired=${expiredCritics.filter((task) => existsSync(`${criticSnapshotDir}/${task.id}`)).map((task) => task.id).join(",")}`
+      + ` orphan=${existsSync(criticOrphanRoot)}`);
+
+  const criticTasksBeforeFailedCreate = (readState().tasks ?? []).filter((task) => task.programId === gmProgram.id
+    && Object.prototype.hasOwnProperty.call(task, "critic")).length;
+  const criticRootsBeforeFailedCreate = existsSync(criticSnapshotDir) ? readdirSync(criticSnapshotDir).sort() : [];
+  let criticCreateSaveFailure: Response;
+  chmodSync(ROOT, 0o500);
+  try {
+    criticCreateSaveFailure = await selfCritic(gmSuccessorToken, criticRequest);
+  } finally {
+    chmodSync(ROOT, criticRootMode);
+  }
+  const criticTasksAfterFailedCreate = (readState().tasks ?? []).filter((task) => task.programId === gmProgram.id
+    && Object.prototype.hasOwnProperty.call(task, "critic")).length;
+  const criticRootsAfterFailedCreate = existsSync(criticSnapshotDir) ? readdirSync(criticSnapshotDir).sort() : [];
+  const criticCreateRetry = await selfCritic(gmSuccessorToken, criticRequest);
+  const criticCreateRetryBody = await criticCreateRetry.json() as { task?: CriticTaskState };
+  const criticKillTaskId = criticCreateRetryBody.task?.id ?? "";
+  check("critic create durability: a failed fleet.json save rolls back the Task and snapshot root, then the identical retry persists one act",
+    criticCreateSaveFailure.status === 500
+      && criticTasksAfterFailedCreate === criticTasksBeforeFailedCreate
+      && JSON.stringify(criticRootsAfterFailedCreate) === JSON.stringify(criticRootsBeforeFailedCreate)
+      && criticCreateRetry.ok && !!criticKillTaskId,
+    `failure=${criticCreateSaveFailure.status} tasks=${criticTasksBeforeFailedCreate}/${criticTasksAfterFailedCreate}`
+      + ` roots=${criticRootsBeforeFailedCreate.length}/${criticRootsAfterFailedCreate.length} retry=${criticCreateRetry.status}:${criticKillTaskId}`);
+
+  const criticKillRelease = await selfTaskRelease(gmSuccessorToken, criticKillTaskId);
+  let criticKillRunning: CriticTaskState | null = null;
+  for (let i = 0; i < 100; i++) {
+    criticKillRunning = (readState().tasks ?? []).find((task) => task.id === criticKillTaskId) as unknown as CriticTaskState ?? null;
+    if (criticKillRunning?.status === "sent" && criticKillRunning.critic.delivery.status === "delivered") break;
+    await Bun.sleep(100);
+  }
+  const criticKillSlot = criticKillRunning?.slot ?? 0;
+  const criticKillLane = criticKillSlot ? readState().slots?.[String(criticKillSlot)] : undefined;
+  const criticKillResponse = criticKillSlot ? await post(`/api/slots/${criticKillSlot}/kill`, {}) : null;
+  const criticKilled = (readState().tasks ?? []).find((task) => task.id === criticKillTaskId) as unknown as CriticTaskState | undefined;
+  await restartSrv();
+  const criticKilledAfterRestart = (readState().tasks ?? []).find((task) => task.id === criticKillTaskId) as unknown as CriticTaskState | undefined;
+  check("critic lane kill after delivery: the act is durably archived, snapshots are removed and restart never requeues or resends it",
+    criticKillRelease.ok && criticKillRunning?.critic.delivery.status === "delivered"
+      && criticKillResponse?.ok === true && criticKilled?.status === "archived" && criticKilled.slot === null
+      && !existsSync(`${criticSnapshotDir}/${criticKillTaskId}`)
+      && criticKilledAfterRestart?.status === "archived" && criticKilledAfterRestart.slot === null
+      && !(readState().slots ?? {})[String(criticKillSlot)]?.taskId,
+    `release=${criticKillRelease.status} kill=${criticKillResponse?.status}`
+      + ` before=${criticKillRunning?.status}/${criticKillRunning?.critic.delivery.status}`
+      + ` after=${criticKilled?.status}/${criticKilledAfterRestart?.status}`);
+  if (criticKillLane?.cwd) await post("/api/worktrees/remove", { repo: gameRepo, path: criticKillLane.cwd });
   // THE SHARED BLOCK, byte for byte. Two founding seams, one text — the falsifier is a bootstrap
   // and a succession that drift into two nearly-identical role blocks nobody diffs again.
   const gmSuccessionRole = gmRoleOf(gmSuccessionPrompt);
@@ -2744,6 +2990,16 @@ export async function run(ctx: Ctx): Promise<void> {
   const gmIdentityMainBefore = (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main;
   const gmIdentityBindingBefore = JSON.stringify(gmIdentityMainBefore ?? null);
   const gmIdentityReceiptsBefore = (await contextReceipts()).total;
+  const criticOwnerCancelCreate = await selfCritic(gmIdentityRaceToken, criticRequest);
+  const criticOwnerCancelBody = await criticOwnerCancelCreate.json() as { task?: CriticTaskState };
+  const criticOwnerCancelId = criticOwnerCancelBody.task?.id ?? "";
+  const criticOwnerCancel = criticOwnerCancelId
+    ? await post(`/api/tasks/${criticOwnerCancelId}/critic-cancel`, {}) : null;
+  const criticOwnerCancelRetry = criticOwnerCancelId
+    ? await post(`/api/tasks/${criticOwnerCancelId}/critic-cancel`, {}) : null;
+  const criticRequesterLossCreate = await selfCritic(gmIdentityRaceToken, criticRequest);
+  const criticRequesterLossBody = await criticRequesterLossCreate.json() as { task?: CriticTaskState };
+  const criticRequesterLossId = criticRequesterLossBody.task?.id ?? "";
   const gmIdentityPending = selfSucceed(gmIdentityRaceToken, { label: "must-not-downgrade-to-generic" });
   for (let i = 0; i < 200 && !existsSync(gmIdentityReady); i++) await Bun.sleep(20);
   const gmIdentityHookReady = existsSync(gmIdentityReady);
@@ -2751,6 +3007,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const gmIdentitySelfRetireText = gmIdentitySelfRetire ? await gmIdentitySelfRetire.text() : "hook did not block";
   const gmIdentityOwnerKill = gmIdentityHookReady && gmIdentityRaceSlot > 0
     ? await post(`/api/slots/${gmIdentityRaceSlot}/kill`, {}) : null;
+  const criticAfterRequesterLoss = (readState().tasks ?? []).find((task) => task.id === criticRequesterLossId) as unknown as CriticTaskState | undefined;
   const gmIdentityRecycle = gmIdentityOwnerKill?.ok
     ? await post(`/api/slots/${gmIdentityRaceSlot}/open`, {
       cwd: gameWt, label: "replacement-during-succession-preflight",
@@ -2769,6 +3026,10 @@ export async function run(ctx: Ctx): Promise<void> {
       && gmIdentityHookReady && gmIdentitySelfRetire?.status === 409
       && gmIdentitySelfRetireText.includes("succession is in flight")
       && gmIdentityOwnerKill?.ok === true && gmIdentityRecycle?.ok === true
+      && criticOwnerCancelCreate.ok && criticOwnerCancel?.ok === true && criticOwnerCancelRetry?.ok === true
+      && !existsSync(`${ROOT}/streams/critics/${criticOwnerCancelId}`)
+      && criticRequesterLossCreate.ok && criticAfterRequesterLoss?.status === "archived"
+      && criticAfterRequesterLoss.slot === null && !existsSync(`${ROOT}/streams/critics/${criticRequesterLossId}`)
       && gmIdentityResponse.status === 409 && gmIdentityText.includes("session changed during succession preflight")
       && openedNothing(gmIdentityOccupiedBefore, gmIdentityOccupiedAfter)
       && gmIdentityReplacement?.cwd === realpathSync(gameWt)
@@ -2781,6 +3042,8 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify({ setup: [gmIdentityAdd.status, gmIdentityCommit.status, gmIdentityConfig.status],
       ready: gmIdentityHookReady, retire: [gmIdentitySelfRetire?.status, gmIdentitySelfRetireText],
       ownerKill: gmIdentityOwnerKill?.status, recycle: gmIdentityRecycle?.status,
+      ownerCancel: [criticOwnerCancelCreate.status, criticOwnerCancel?.status, criticOwnerCancelRetry?.status],
+      requesterLoss: [criticRequesterLossCreate.status, criticAfterRequesterLoss?.status],
       succeed: [gmIdentityResponse.status, gmIdentityText],
       occupied: [[...gmIdentityOccupiedBefore], [...gmIdentityOccupiedAfter]],
       binding: [(await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main, gmIdentityBindingBefore],

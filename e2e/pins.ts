@@ -3297,6 +3297,9 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     && !gameMakerRail.includes("THE ROLE SPLIT IS A JUDGEMENT, NOT A WALL")
     && gameMakerRail.includes("SUBSTANTIAL SERIAL PRODUCT WORK MAY STAY IN THIS PANE")
     && gameMakerRail.includes("fresh criticism")
+    && gameMakerRail.includes('KEEP THE COMMITTED "## Current game checkpoint" CURRENT')
+    && ["Build", "Seed", "Launch", "Experience", "Open defect", "Next", "Critic"]
+      .every((field) => gameMakerRail.includes(field))
     && !railRoleStandard.includes("SUBSTANTIAL SERIAL PRODUCT WORK MAY STAY IN THIS PANE");
   const agentsProfile = agents.includes("Game-Maker Program-MAIN")
     && agents.includes("causally coupled product act");

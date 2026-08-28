@@ -178,8 +178,8 @@ are preserved unchanged — they are taste and release, which is clause 7's own 
 Program — `profile?: {v:1, kind:"game-maker", confirmedAt}` — written by one owner-only route and by
 nothing else. Absence is the exact legacy Standard MAIN, whose founding bytes are pinned to a
 baseline hash so they cannot drift as a side effect of this work. A session may propose Program
-*content*; it can never propose this record, on any door. It adds no role, no document, no event, no
-score and no scheduler.
+*content*; it can never propose this record, on any door. It adds one owner-audit event, but no
+role, document, score or scheduler.
 
 **The measured problem.** The generic founding rail (`AGENTS.md` §Hard invariants, and
 `RAIL_ROLE_STANDARD` in `server.ts`) sends substantial product implementation to an isolated worker

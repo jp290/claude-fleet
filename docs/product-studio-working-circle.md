@@ -216,7 +216,10 @@ machinery — is that severance in one form or another.
    toplevel; Standard cwd handling stays byte-identical. Preflight refusals land before a slot,
    binding or receipt exists. While a founding is in flight a **real profile change**, `complete`
    and another founding are locked (409); an identical grant/clear retry answers 200 before every
-   lifecycle gate, with no new timestamp, audit or save.
+   lifecycle gate, with no new timestamp, audit or save. A succession request captures the caller's
+   exact `{slot, openedAt, cwd, selfToken}` before its first await and revalidates it after the Git
+   handoff check; self-retire is 409 while that token is in flight, while owner kill/recycle remains
+   authoritative and makes the old request refuse rather than become generic succession.
 3. **Succession carries a checkpoint.** See the next section.
 
 **A restart never guesses authority.** A malformed or unknown-version `founding` marker stops
@@ -232,8 +235,10 @@ is evidence of an interrupted delivery, not authority.
 Tmux observation is explicitly `present | absent | unknown`. Only a successful session enumeration
 proves membership or absence; a failed probe or pane-path read is unknown, never HOME and never an
 absence claim. Before stale or foreign-marker cleanup, Fleet also scans every observed live/adopted
-slot root. Another session in the protected root preserves the marker and session and refuses
-startup.
+slot root and every restored `Slot.cwd` row. A dormant row is a pending self-heal, not absence;
+another row in the protected root preserves marker and state and refuses startup. The exact bound
+succession predecessor is the only same-root exception, while a sibling linked-worktree path does
+not block cleanup.
 
 Program `complete` is the owner act that releases Game-Maker tree exclusivity, valid only after the
 owner intentionally ends or retires product work. It still refuses a live Founding and does not
@@ -285,7 +290,7 @@ does not add an eighth field.
 ## Current game checkpoint
 Build: <40-char lowercase hex commit>
 Launch: <one command or artifact>
-Last replay: <what the actual controls and capture showed>
+Last replay: <exact seed; real input; what the capture showed>
 Experience: <current product judgment>
 Open defect: <one defect, or none>
 Next: <one bounded act>

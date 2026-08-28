@@ -56,7 +56,7 @@ interface FleetState {
   watches?: Record<string, unknown>[];
   events?: Record<string, unknown>[];
   stewardToken?: string;
-  slots?: Record<string, { cwd?: string; selfToken?: string; openedAt?: number; sessionId?: string | null;
+  slots?: Record<string, { cwd?: string; label?: string | null; selfToken?: string; openedAt?: number; sessionId?: string | null;
     harness?: string | null; model?: string | null; effort?: string | null; successionRetirement?: unknown;
     taskId?: string | null; originId?: string | null; programId?: string | null }>;
 }
@@ -158,6 +158,10 @@ const selfPropose = (token: string, body: unknown): Promise<Response> => fetch(`
 const selfSucceed = (token: string, body: unknown = {}): Promise<Response> => fetch(`${BASE}/api/self/succeed`, {
   method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
   body: JSON.stringify(body),
+});
+const selfRetire = (token: string): Promise<Response> => fetch(`${BASE}/api/self/retire`, {
+  method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
+  body: "{}",
 });
 const programPost = (id: string, action: "confirm" | "activate" | "complete" | "discard" | "bootstrap-main",
   body: unknown = {}, headers: Record<string, string> = H): Promise<Response> =>
@@ -2112,6 +2116,57 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify({ open: gmSameRootOpen?.status,
       slot: (await sessions()).slots.find((slot) => slot.id === gmSameRootSlot) }));
   if (gmSameRootOpen?.ok) await post(`/api/slots/${gmSameRootSlot}/kill`, {});
+
+  // A restored Slot row is a future self-heal even when tmux has no pane yet. Scanning tmux alone
+  // would clear this marker and then let ensureSlot create the second writer a few lines later.
+  // Removing the persisted-Slot scan makes this planted process serve instead of refusing.
+  const gmDormantSameRootSlots = (await sessions()).slots.filter((slot) => !slot.cwd).slice(0, 2);
+  const gmDormantSameRootSlot = gmDormantSameRootSlots[0]?.id ?? 0;
+  const gmDormantSameRootTarget = gmDormantSameRootSlots[1]?.id ?? 0;
+  await expectFoundingStartupRefusal(
+    "game-maker founding recovery: a dormant same-root Slot row is preserved and refuses startup",
+    (state) => {
+      const at = Date.now();
+      const row = state.programs?.find((p) => p.id === gmRefusalProgram.id);
+      if (row) row.founding = plantedBootstrap(gmDormantSameRootTarget, "4", at);
+      state.slots ??= {};
+      state.slots[String(gmDormantSameRootSlot)] = {
+        ...(state.slots[String(gmDormantSameRootSlot)] ?? {}), cwd: realpathSync(gameWt),
+        label: "dormant-same-root-recovery-ambiguity", openedAt: at - 1, selfToken: "4".repeat(32),
+      };
+    }, `restored slot ${gmDormantSameRootSlot} also occupies`);
+
+  // A sibling linked worktree shares repository identity but not the concrete tree. It must remain
+  // a restored row without holding a stale marker for another worktree. Replacing path overlap with
+  // common-dir equality makes this startup refuse falsely.
+  const gmDormantSiblingSlots = (await sessions()).slots.filter((slot) => !slot.cwd).slice(0, 2);
+  const gmDormantSiblingSlot = gmDormantSiblingSlots[0]?.id ?? 0;
+  const gmDormantSiblingTarget = gmDormantSiblingSlots[1]?.id ?? 0;
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const gmDormantSiblingState = readState();
+  const gmDormantSiblingAt = Date.now();
+  const gmDormantSiblingProgram = gmDormantSiblingState.programs?.find((p) => p.id === gmRefusalProgram.id);
+  if (gmDormantSiblingProgram)
+    gmDormantSiblingProgram.founding = plantedBootstrap(gmDormantSiblingTarget, "5", gmDormantSiblingAt);
+  gmDormantSiblingState.slots ??= {};
+  gmDormantSiblingState.slots[String(gmDormantSiblingSlot)] = {
+    ...(gmDormantSiblingState.slots[String(gmDormantSiblingSlot)] ?? {}), cwd: realpathSync(gameWtSibling),
+    label: "dormant-sibling-root-recovery", openedAt: gmDormantSiblingAt - 1,
+    selfToken: "5".repeat(32),
+  };
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(gmDormantSiblingState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const gmDormantSiblingAfter = (await ownerPrograms()).find((p) => p.id === gmRefusalProgram.id);
+  check("game-maker founding recovery: a dormant sibling-root Slot row does not block stale-marker cleanup",
+    gmDormantSiblingSlot > 0 && gmDormantSiblingTarget > 0
+      && gmDormantSiblingAfter?.founding === undefined
+      && (await sessions()).slots.find((slot) => slot.id === gmDormantSiblingSlot)?.cwd
+        === realpathSync(gameWtSibling)
+      && (await tmuxOut("has-session", "-t", `s${gmDormantSiblingSlot}`)).code === 0,
+    JSON.stringify({ program: gmDormantSiblingAfter,
+      slot: (await sessions()).slots.find((slot) => slot.id === gmDormantSiblingSlot) }));
+  if (gmDormantSiblingSlot > 0) await post(`/api/slots/${gmDormantSiblingSlot}/kill`, {});
   await programPost(gmRefusalProgram.id, "complete");
 
   // (2) THE LINKED WORKTREE FOUNDING SUCCEEDS, and the delivered text is the whole deliverable.
@@ -2365,6 +2420,10 @@ export async function run(ctx: Ctx): Promise<void> {
     ["a Build that is not a 40-char lowercase sha", goodCheckpoint.replace(GOOD_BUILD, "HEAD~1"), "Build must be"],
     // the shape is right and the object is absent — the case a hex-only check cannot see at all.
     ["a Build naming no commit in this repository", goodCheckpoint.replace(GOOD_BUILD, "b".repeat(40)), "names no commit"],
+    ["a shuffled field order", goodCheckpoint.replace(
+      `Build: ${GOOD_BUILD}\nLaunch: bun run serve && open http://127.0.0.1:5173\n`,
+      `Launch: bun run serve && open http://127.0.0.1:5173\nBuild: ${GOOD_BUILD}\n`),
+    "checkpoint field order must be"],
     ["an oversized checkpoint", "## Current game checkpoint\n" + `Filler: ${"x".repeat(4200)}\n`
       + goodCheckpoint.split("\n").slice(1).join("\n"), "at most 4096"],
   ];
@@ -2511,6 +2570,84 @@ export async function run(ctx: Ctx): Promise<void> {
       && !gmSuccessionPrompt.includes("Fleet verifies")
       && !gmSuccessionPrompt.includes("Fleet proves"),
     gmSuccessionPrompt.slice(-800));
+
+  // OCCUPANT IDENTITY MUST SURVIVE THE HANDOFF AWAIT. A real fsmonitor hook holds the server inside
+  // `git status`; there is no server test knob. While it is held, self-retire must refuse, while an
+  // owner kill remains authoritative. Recycling the same slot/cwd gives the mutable Slot object a
+  // new openedAt+token. Without the post-HANDOFF identity check the pending request classifies that
+  // replacement as unbound and opens a generic successor, bypassing every Game-Maker gate.
+  const gmIdentityRaceSlot = typeof gmSuccessionBody.slot === "number" ? gmSuccessionBody.slot : 0;
+  const gmIdentityRaceToken = readState().slots?.[String(gmIdentityRaceSlot)]?.selfToken ?? "";
+  const gmIdentityCheckpoint = goodCheckpoint.replace("Critic: docs/critic/play-03.md",
+    "Critic: docs/critic/play-04-identity-race.md");
+  writeFileSync(`${gameWt}/HANDOFF.md`, gmIdentityCheckpoint);
+  const gmIdentityAdd = spawnSync("git", ["-C", gameWt, "add", "HANDOFF.md"]);
+  const gmIdentityFuture = new Date(Date.now() + 120_000).toISOString();
+  const gmIdentityCommit = spawnSync("git", ["-C", gameWt, "commit", "-qm", "checkpoint fixture: identity race"], {
+    env: { ...process.env, GIT_AUTHOR_DATE: gmIdentityFuture, GIT_COMMITTER_DATE: gmIdentityFuture },
+  });
+  const gmIdentityGitDir = spawnSync("git", ["-C", gameWt, "rev-parse", "--absolute-git-dir"],
+    { encoding: "utf8" }).stdout.trim();
+  const gmIdentityHook = `${gmIdentityGitDir}/fleet-fsmonitor-identity-race.sh`;
+  const gmIdentityReady = `${gmIdentityGitDir}/fleet-fsmonitor-identity-race.ready`;
+  const gmIdentityRelease = `${gmIdentityGitDir}/fleet-fsmonitor-identity-race.release`;
+  for (const path of [gmIdentityHook, gmIdentityReady, gmIdentityRelease])
+    if (existsSync(path)) unlinkSync(path);
+  const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+  writeFileSync(gmIdentityHook, [
+    "#!/bin/sh",
+    `: > ${shellQuote(gmIdentityReady)}`,
+    `while [ ! -e ${shellQuote(gmIdentityRelease)} ]; do sleep 0.02; done`,
+    "exit 1",
+    "",
+  ].join("\n"), { mode: 0o700 });
+  const gmIdentityConfig = spawnSync("git", ["-C", gameWt, "config", "core.fsmonitor", gmIdentityHook]);
+  const gmIdentityOccupiedBefore = await occupiedIds();
+  const gmIdentityMainBefore = (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main;
+  const gmIdentityBindingBefore = JSON.stringify(gmIdentityMainBefore ?? null);
+  const gmIdentityReceiptsBefore = (await contextReceipts()).total;
+  const gmIdentityPending = selfSucceed(gmIdentityRaceToken, { label: "must-not-downgrade-to-generic" });
+  for (let i = 0; i < 200 && !existsSync(gmIdentityReady); i++) await Bun.sleep(20);
+  const gmIdentityHookReady = existsSync(gmIdentityReady);
+  const gmIdentitySelfRetire = gmIdentityHookReady ? await selfRetire(gmIdentityRaceToken) : null;
+  const gmIdentitySelfRetireText = gmIdentitySelfRetire ? await gmIdentitySelfRetire.text() : "hook did not block";
+  const gmIdentityOwnerKill = gmIdentityHookReady && gmIdentityRaceSlot > 0
+    ? await post(`/api/slots/${gmIdentityRaceSlot}/kill`, {}) : null;
+  const gmIdentityRecycle = gmIdentityOwnerKill?.ok
+    ? await post(`/api/slots/${gmIdentityRaceSlot}/open`, {
+      cwd: gameWt, label: "replacement-during-succession-preflight",
+    }) : null;
+  writeFileSync(gmIdentityRelease, "release\n");
+  const gmIdentityResponse = await gmIdentityPending;
+  const gmIdentityText = await gmIdentityResponse.text();
+  spawnSync("git", ["-C", gameWt, "config", "--unset", "core.fsmonitor"]);
+  for (const path of [gmIdentityHook, gmIdentityReady, gmIdentityRelease])
+    if (existsSync(path)) unlinkSync(path);
+  const gmIdentityOccupiedAfter = await occupiedIds();
+  const gmIdentityReplacement = readState().slots?.[String(gmIdentityRaceSlot)];
+  check("game-maker succession identity: retire is refused in flight, owner recycle cannot downgrade Program succession",
+    gmIdentityRaceSlot > 0 && /^[0-9a-f]{32}$/.test(gmIdentityRaceToken)
+      && gmIdentityAdd.status === 0 && gmIdentityCommit.status === 0 && gmIdentityConfig.status === 0
+      && gmIdentityHookReady && gmIdentitySelfRetire?.status === 409
+      && gmIdentitySelfRetireText.includes("succession is in flight")
+      && gmIdentityOwnerKill?.ok === true && gmIdentityRecycle?.ok === true
+      && gmIdentityResponse.status === 409 && gmIdentityText.includes("session changed during succession preflight")
+      && openedNothing(gmIdentityOccupiedBefore, gmIdentityOccupiedAfter)
+      && gmIdentityReplacement?.cwd === realpathSync(gameWt)
+      && gmIdentityReplacement.openedAt !== gmIdentityMainBefore?.openedAt
+      && gmIdentityReplacement.selfToken !== gmIdentityRaceToken
+      && JSON.stringify((await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main ?? null)
+        === gmIdentityBindingBefore
+      && (await contextReceipts()).total === gmIdentityReceiptsBefore
+      && !(await sessions()).slots.some((slot) => slot.label === "must-not-downgrade-to-generic"),
+    JSON.stringify({ setup: [gmIdentityAdd.status, gmIdentityCommit.status, gmIdentityConfig.status],
+      ready: gmIdentityHookReady, retire: [gmIdentitySelfRetire?.status, gmIdentitySelfRetireText],
+      ownerKill: gmIdentityOwnerKill?.status, recycle: gmIdentityRecycle?.status,
+      succeed: [gmIdentityResponse.status, gmIdentityText],
+      occupied: [[...gmIdentityOccupiedBefore], [...gmIdentityOccupiedAfter]],
+      binding: [(await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main, gmIdentityBindingBefore],
+      receipts: [gmIdentityReceiptsBefore, (await contextReceipts()).total] }));
+  if (gmIdentityRecycle?.ok) await post(`/api/slots/${gmIdentityRaceSlot}/kill`, {});
 
   // COMPLETION ENDS THE EXCLUSIVE PRODUCT ACT. The session may still be alive for its terminal
   // report, but the Program no longer owns the tree. An identical profile retry must also remain a

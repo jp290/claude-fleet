@@ -129,7 +129,11 @@ curl -X POST http://<fleet-host>:<port>/api/self/succeed \
 Fleet öffnet einen freien Slot im selben cwd mit Modell/Harness der Vorgängerin, schickt den servergebauten
 Gründungsbrief und räumt den alten Slot nach der Grace-Frist. `carry` ist optional und auf 500 Zeichen
 begrenzt; der echte Transfer ist `HANDOFF.md`. Nach dem Schlussbericht räumt `POST /api/self/retire` denselben
-Slot sofort. Kein freier Slot oder kein frischer sauberer Handoff = 409, und die Vorgängerin bleibt stehen.
+Slot sofort. Während `succeed` läuft, antwortet `retire` für exakt diese Session 409. `succeed` hält ab
+Request-Eintritt `{slot, openedAt, cwd, selfToken}` fest und prüft diese Identität nach dem Git-Handoff-
+Await erneut; Owner-Kill/Recycling bleibt erlaubt, kann den alten Request aber nicht auf die generische
+Nachfolge umlenken. Kein freier Slot oder kein frischer sauberer Handoff = 409, und die Vorgängerin bleibt
+stehen.
 
 
 ## Program-MAIN-Ausführungsschiene (der Gründungsbrief benennt sie)
@@ -778,8 +782,11 @@ kill→Abwesenheitsbeweis→Slot-/Marker-Cleanup-Pfad.
 Die tmux-Grenze ist dabei dreiwertig: `present`, `absent`, `unknown`. Nur eine erfolgreiche
 Session-Aufzählung beweist Zugehörigkeit oder Abwesenheit; ein fehlgeschlagener Probe- oder
 Pfad-Read ist `unknown`, nie HOME und nie Abwesenheit. Vor dem Löschen eines stale oder fremd
-recycelten Markers wird zusätzlich jeder live beobachtete Slot-Root gegen `canonicalRoot` geprüft.
-Eine andere Session im selben Baum lässt den Start mit Marker und Session unangetastet verweigern.
+recycelten Markers wird zusätzlich jeder live beobachtete Slot-Root **und jeder geladene `Slot.cwd`-
+Root** gegen `canonicalRoot` geprüft: eine persistierte Zeile ohne Pane ist ein bevorstehender Self-Heal,
+nicht Abwesenheit. Nur die exakt gebundene Succession-Vorgängerin `{slot, openedAt}` ist ausgenommen.
+Eine andere Session oder dormant Slot-Zeile im selben Baum lässt den Start mit Marker und Zeile/Persistenz
+unangetastet verweigern; ein sibling linked worktree bleibt ein anderer Baum.
 
 **Lifecycle-Schreiber sind während der Gründung gesperrt.** Solange ein Program-MAIN-Founding dieses
 Programs läuft — synchron in `programBootstrapInflight` oder durabel in `Program.founding` —

@@ -5520,19 +5520,32 @@ async function proveFoundingCandidateStopped(s: Slot, founding: ProgramFounding)
   return after;
 }
 
+const exactFoundingPredecessor = (program: Program, founding: ProgramFounding, slot: Slot): boolean =>
+  founding.mode === "succession" && !!founding.predecessor
+  && slot.id === founding.predecessor.slot && slot.openedAt === founding.predecessor.openedAt
+  && program.main?.slot === founding.predecessor.slot
+  && program.main.openedAt === founding.predecessor.openedAt;
+
+function assertNoFoundingSlotOccupant(program: Program, founding: ProgramFounding): void {
+  for (const slot of slots) {
+    if (!slot.cwd || !treePathsOverlap(repoCanon(slot.cwd), founding.canonicalRoot)) continue;
+    if (!exactFoundingPredecessor(program, founding, slot))
+      throw new Error(`REFUSING TO START: Program ${program.id} founding ${founding.attemptId} cannot unlock ${founding.canonicalRoot}; restored slot ${slot.id} also occupies ${repoCanon(slot.cwd)}`);
+  }
+}
+
 function assertNoFoundingTreeOccupant(program: Program, founding: ProgramFounding,
   observed: TmuxSlotObservations): void {
   if (!observed.known)
     throw new Error(`REFUSING TO START: Program ${program.id} founding ${founding.attemptId} cannot prove its protected tree empty because tmux state is unknown: ${observed.detail}`);
+  // A restored cwd row is a pending self-heal even with no pane today. Clear the marker only when
+  // neither the observed tmux world nor the persisted world can create a second writer.
+  assertNoFoundingSlotOccupant(program, founding);
   for (const [name, root] of observed.sessions) {
     const match = /^s(\d+)$/.exec(name);
     if (!match || !treePathsOverlap(root, founding.canonicalRoot)) continue;
     const slot = slotFrom(match[1]);
-    const predecessor = founding.mode === "succession" && founding.predecessor
-      && slot?.id === founding.predecessor.slot && slot.openedAt === founding.predecessor.openedAt
-      && program.main?.slot === founding.predecessor.slot
-      && program.main.openedAt === founding.predecessor.openedAt;
-    if (!predecessor)
+    if (!slot || !exactFoundingPredecessor(program, founding, slot))
       throw new Error(`REFUSING TO START: Program ${program.id} founding ${founding.attemptId} cannot unlock ${founding.canonicalRoot}; live session ${name} also occupies ${root}`);
   }
 }
@@ -6320,6 +6333,17 @@ const MAX_SUCCESSION_CARRY = 500;
 const successionInflight = new Set<string>();
 const successionStarted = new Map<number, string>(); // slot → the current occupant's selfToken
 
+interface SuccessionPredecessorIdentity {
+  slot: number;
+  openedAt: number;
+  cwd: string;
+  selfToken: string;
+}
+
+const sameSuccessionOccupant = (s: Slot, expected: SuccessionPredecessorIdentity): boolean =>
+  !!s.cwd && s.id === expected.slot && s.openedAt === expected.openedAt
+  && s.cwd === expected.cwd && s.selfToken === expected.selfToken;
+
 async function retireSucceededSession(s: Slot, expected: SuccessionRetirement): Promise<void> {
   const pending = s.successionRetirement;
   // The slot comes from `s`; cwd + token are the occupant identity. All three must still name the
@@ -6412,6 +6436,10 @@ function readGameCheckpoint(text: string): { ok: true; build: string } | { ok: f
   }
   const missing = GAME_CHECKPOINT_FIELDS.filter((f) => !seen.has(f));
   if (missing.length) return { ok: false, error: `missing checkpoint field(s): ${missing.join(", ")}` };
+  const actual = [...seen.keys()];
+  const shuffledAt = GAME_CHECKPOINT_FIELDS.findIndex((field, index) => actual[index] !== field);
+  if (shuffledAt >= 0)
+    return { ok: false, error: `checkpoint field order must be ${GAME_CHECKPOINT_FIELDS.join(", ")} (found ${actual.join(", ")})` };
   const build = seen.get("Build") ?? "";
   if (!/^[0-9a-f]{40}$/.test(build))
     return { ok: false, error: "Build must be a 40-character lowercase hex commit — a ref name or a short sha names no build a successor can compare against" };
@@ -6443,7 +6471,12 @@ async function gameMakerCheckpointError(program: Program, s: Slot): Promise<stri
 async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
   const scoped = successionScopeError(s);
   if (scoped) return scoped;
-  const identity = s.selfToken;
+  // Slot is one mutable object reused by every occupant. Capture the authenticated occupant before
+  // the first await; a later token alone cannot distinguish the old session from a recycled row.
+  const predecessorIdentity: SuccessionPredecessorIdentity = {
+    slot: s.id, openedAt: s.openedAt, cwd: s.cwd!, selfToken: s.selfToken,
+  };
+  const identity = predecessorIdentity.selfToken;
   if (successionStarted.get(s.id) === identity || successionInflight.has(identity))
     return json({ error: "succession already started for this session" }, 409);
   successionInflight.add(identity);
@@ -6459,9 +6492,14 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
     const carry = typeof body?.carry === "string"
       ? body.carry.slice(0, MAX_SUCCESSION_CARRY).trim() || null
       : null;
-    const predecessor = { cwd: s.cwd!, token: identity };
+    const predecessor = { cwd: predecessorIdentity.cwd, token: identity };
 
-    if (!(await handoffCommittedAfterOpen(s)))
+    const handoffReady = await handoffCommittedAfterOpen(s);
+    // Git is an external await. Owner kill/recycle is allowed while it runs, but that new occupant
+    // cannot inherit this request and silently downgrade a Program succession to the generic path.
+    if (!sameSuccessionOccupant(s, predecessorIdentity))
+      return json({ error: "predecessor session changed during succession preflight — retry from the current occupant" }, 409);
+    if (!handoffReady)
       return json({ error: "HANDOFF.md must exist, be clean, and have a commit newer than this session — otherwise the successor would have nothing to read" }, 409);
 
     const bound = programs.filter((p) => p.status === "active" && p.main
@@ -6538,6 +6576,8 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
 async function handleSelfRetire(s: Slot): Promise<Response> {
   const scoped = successionScopeError(s);
   if (scoped) return scoped;
+  if (successionInflight.has(s.selfToken))
+    return json({ error: "cannot retire while succession is in flight for this session" }, 409);
   await killSlot(s, "handoff");
   return json({ ok: true });
 }

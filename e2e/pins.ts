@@ -3299,8 +3299,8 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     [...(text.match(new RegExp(`${label}: ([^\\n]+)`))?.[1] ?? "").matchAll(/`([^`]+)`/g)]
       .map((match) => match[1]!);
   const selfApiCheckpointFields = documentedCheckpointFields(selfApiDoc, "Checkpoint-Feldreihenfolge");
-  const studioCheckpointFields = documentedCheckpointFields(
-    read("docs/product-studio-working-circle.md"), "Checkpoint field order");
+  const studioDoc = read("docs/product-studio-working-circle.md");
+  const studioCheckpointFields = documentedCheckpointFields(studioDoc, "Checkpoint field order");
   const gmExclusive = gameMakerRail !== ""
     && !gameMakerRail.includes("Use an isolated worker lane for substantial product implementation")
     && !gameMakerRail.includes("THE ROLE SPLIT IS A JUDGEMENT, NOT A WALL")
@@ -3313,8 +3313,19 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     checkpointFields.length === 7
       && JSON.stringify(selfApiCheckpointFields) === JSON.stringify(checkpointFields)
       && JSON.stringify(studioCheckpointFields) === JSON.stringify(checkpointFields)
-      && railRoleGameMaker.includes('${GAME_CHECKPOINT_FIELDS.join(", ")}'),
+      && railRoleGameMaker.includes('${GAME_CHECKPOINT_FIELDS.join(", ")}')
+      && /Last replay: <[^>\n]*seed[^>\n]*input[^>\n]*capture[^>\n]*>/i.test(studioDoc),
     `machine=[${checkpointFields.join(", ")}] selfApi=[${selfApiCheckpointFields.join(", ")}] studio=[${studioCheckpointFields.join(", ")}] railSource=${railRoleGameMaker.includes('${GAME_CHECKPOINT_FIELDS.join(", ")}')}`);
+  const checkpointReaderAt = server.indexOf("function readGameCheckpoint(");
+  const checkpointReader = checkpointReaderAt < 0 ? "" : server.slice(checkpointReaderAt,
+    server.indexOf("async function gameMakerCheckpointError", checkpointReaderAt));
+  pin(`${RULE_RAIL} — the checkpoint reader enforces that shared vocabulary as an exact order, not a set`,
+    checkpointReader.includes("GAME_CHECKPOINT_FIELDS.findIndex")
+      && checkpointReader.includes("checkpoint field order must be")
+      && checkpointReader.indexOf("GAME_CHECKPOINT_FIELDS.findIndex")
+        < checkpointReader.indexOf("return { ok: true, build }")
+      && read("e2e/programs.ts").includes('["a shuffled field order"'),
+    "ordered reader or shuffled-field runtime rejection missing");
   const agentsProfile = agents.includes("Game-Maker Program-MAIN")
     && agents.includes("causally coupled product act");
   // (E) THE LEGACY STANDARD RAIL IS FROZEN, AND THE HASH IS THE POINT. e2e/programs.ts proves the
@@ -3411,7 +3422,15 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     server.indexOf("// The Supervisor binding", programLoadAt));
   const completeAt = server.indexOf('if (action[2] === "complete")');
   const completeBody = completeAt < 0 ? "" : server.slice(completeAt, server.indexOf('if (program.status !== "proposed")', completeAt));
+  const selfSucceedAt = server.indexOf("async function handleSelfSucceed(");
+  const selfSucceedBody = selfSucceedAt < 0 ? "" : server.slice(selfSucceedAt,
+    server.indexOf("async function handleSelfRetire", selfSucceedAt));
+  const selfRetireAt = server.indexOf("async function handleSelfRetire(");
+  const selfRetireBody = selfRetireAt < 0 ? "" : server.slice(selfRetireAt,
+    server.indexOf("function pruneSpentWatches", selfRetireAt));
   const bootRecoverAt = server.indexOf("await recoverInterruptedProgramFoundings(bootTmux);");
+  const bootObserveAt = server.indexOf("const bootTmux = await observeTmuxSlots();");
+  const bootAdoptAt = server.indexOf("if (bootTmux.known)", bootObserveAt);
   const ensureBootAt = server.indexOf("for (const s of slots) {", bootRecoverAt);
   pin(`${RULE_GM_FOUNDING} — the closed v1 parser rejects malformed/unknown markers into a startup refusal, never absent`,
     /interface ProgramFounding[\s\S]*?v: 1[\s\S]*?attemptId[\s\S]*?mode[\s\S]*?canonicalRoot[\s\S]*?target[\s\S]*?predecessor[\s\S]*?startedAt/.test(server)
@@ -3446,9 +3465,21 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
         < completeBody.indexOf('program.status = "complete"'),
     completeBody);
   pin(`${RULE_GM_FOUNDING} — boot recovery runs after tmux adoption and before any restored-slot ensure`,
-    bootRecoverAt > server.indexOf('const ls = await tmux("list-sessions"')
-      && ensureBootAt > bootRecoverAt && bootRecoverAt < server.indexOf("Bun.serve<WSData>"),
-    `recover=${bootRecoverAt} ensure=${ensureBootAt}`);
+    bootObserveAt >= 0 && bootAdoptAt > bootObserveAt && bootRecoverAt > bootAdoptAt
+      && ensureBootAt > bootRecoverAt && server.indexOf("Bun.serve<WSData>") > ensureBootAt,
+    `observe=${bootObserveAt} adopt=${bootAdoptAt} recover=${bootRecoverAt} ensure=${ensureBootAt} serve=${server.indexOf("Bun.serve<WSData>")}`);
+  const identityCaptureAt = selfSucceedBody.indexOf("const predecessorIdentity");
+  const firstSucceedAwaitAt = selfSucceedBody.indexOf("await readJson(req)");
+  const handoffAwaitAt = selfSucceedBody.indexOf("await handoffCommittedAfterOpen(s)");
+  const identityRecheckAt = selfSucceedBody.indexOf("sameSuccessionOccupant(s, predecessorIdentity)", handoffAwaitAt);
+  const bindingClassifyAt = selfSucceedBody.indexOf("const bound = programs.filter");
+  pin(`${RULE_GM_FOUNDING} — self succession captures the exact occupant before its first await and revalidates after HANDOFF before classification`,
+    identityCaptureAt >= 0 && identityCaptureAt < firstSucceedAwaitAt
+      && handoffAwaitAt > firstSucceedAwaitAt && identityRecheckAt > handoffAwaitAt
+      && bindingClassifyAt > identityRecheckAt
+      && selfRetireBody.includes("successionInflight.has(s.selfToken)")
+      && read("e2e/programs.ts").includes("retire is refused in flight, owner recycle cannot downgrade Program succession"),
+    `capture=${identityCaptureAt} firstAwait=${firstSucceedAwaitAt} handoff=${handoffAwaitAt} recheck=${identityRecheckAt} classify=${bindingClassifyAt} retireGate=${selfRetireBody.includes("successionInflight.has(s.selfToken)")}`);
   pin(`${RULE_GM_FOUNDING} — cleanup proves tmux absence before killSlot state clearing, and owner kill uses that path`,
     /async function proveFoundingCandidateStopped[\s\S]*?observeTmuxSlots\(\)[\s\S]*?tmux\("kill-session"[\s\S]*?observeTmuxSlots\(\)[\s\S]*?presence !== "absent"[\s\S]*?await killSlot/.test(server)
       && server.includes('rollbackProgramFounding(foundingProgram, founding, "owner-kill")'),
@@ -3464,6 +3495,13 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && recoveryBody.includes('presence !== "absent"')
       && recoveryBody.includes("assertNoFoundingTreeOccupant"),
     "tri-state observation, explicit absence or same-root scan is missing");
+  pin(`${RULE_GM_FOUNDING} — recovery scans restored Slot cwd rows as well as tmux, except the exact succession predecessor`,
+    /const exactFoundingPredecessor = [\s\S]*?founding\.predecessor\.slot[\s\S]*?founding\.predecessor\.openedAt/.test(server)
+      && /function assertNoFoundingSlotOccupant[\s\S]*?for \(const slot of slots\)[\s\S]*?treePathsOverlap[\s\S]*?exactFoundingPredecessor/.test(server)
+      && /function assertNoFoundingTreeOccupant[\s\S]*?assertNoFoundingSlotOccupant/.test(server)
+      && read("e2e/programs.ts").includes("a dormant same-root Slot row is preserved and refuses startup")
+      && read("e2e/programs.ts").includes("a dormant sibling-root Slot row does not block stale-marker cleanup"),
+    "persisted Slot root scan, exact predecessor exception or planted restart arms missing");
   pin(`${RULE_GM_FOUNDING} — a wrong occupant outside the tree survives; one inside the protected tree stops startup`,
     recoveryBody.indexOf("!treePathsOverlap(targetRoot, founding.canonicalRoot)") >= 0
       && recoveryBody.indexOf("assertNoFoundingTreeOccupant(program, founding, bootTmux)") >= 0
@@ -3495,6 +3533,10 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     "inconsistent lifecycle timestamps with a marker refuse startup",
     "tmux observation failure is unknown, preserves the marker and refuses startup",
     "a same-root other-slot occupant is preserved and refuses startup",
+    "a dormant same-root Slot row is preserved and refuses startup",
+    "a dormant sibling-root Slot row does not block stale-marker cleanup",
+    "retire is refused in flight, owner recycle cannot downgrade Program succession",
+    '["a shuffled field order"',
     "candidate rolls back while predecessor binding and receipt count stay unchanged",
   ];
   pin(`${RULE_GM_FOUNDING} — runtime suite names bootstrap, complete, pre-open, exact-candidate, foreign-target and succession crash arms`,

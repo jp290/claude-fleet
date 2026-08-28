@@ -335,7 +335,17 @@ if (INTAKE && DISPATCH_REPO) {
   check("§8 fleet.json (owner token, steward token, share secrets) is 0600",
     mode(`${ROOT}/fleet.json`) === 0o600, mode(`${ROOT}/fleet.json`).toString(8));
   check("§8 the stream directory is 0700", mode(`${ROOT}/streams`) === 0o700, mode(`${ROOT}/streams`).toString(8));
-  check("§8 a pane stream file is 0600", mode(`${ROOT}/streams/s1.raw`) === 0o600, mode(`${ROOT}/streams/s1.raw`).toString(8));
+  const slot1 = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+    { slots?: Record<string, { openedAt?: unknown; selfToken?: unknown }> }).slots?.["1"];
+  const streamName = typeof slot1?.openedAt === "number" && typeof slot1.selfToken === "string"
+    ? `s1-${slot1.openedAt}-${createHash("sha256").update(slot1.selfToken).digest("hex").slice(0, 16)}.raw`
+    : "";
+  const slot1Streams = readdirSync(`${ROOT}/streams`).filter((name) => /^s1-\d+-[0-9a-f]{16}\.raw$/.test(name));
+  check("§8 the exact current occupant's pane stream is the only s1 occupant stream and is 0600",
+    !!streamName && slot1Streams.length === 1 && slot1Streams[0] === streamName
+      && mode(`${ROOT}/streams/${streamName}`) === 0o600,
+    JSON.stringify({ streamName, found: slot1Streams, mode: mode(`${ROOT}/streams/${streamName}`).toString(8) }));
+  check("§8 the reusable legacy s1.raw stream is absent", !existsSync(`${ROOT}/streams/s1.raw`));
   check("§8 the audit log is 0600", mode(`${ROOT}/audit.jsonl`) === 0o600, mode(`${ROOT}/audit.jsonl`).toString(8));
   const sessions = await (await get("/api/sessions")).text();
   check("§8 the owner dashboard payload does not echo the owner token back",

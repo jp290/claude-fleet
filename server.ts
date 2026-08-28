@@ -3223,7 +3223,21 @@ const SITE_URL = process.env.FLEET_SITE_URL ?? "";
 const SHARE_HOSTS = new Set((process.env.FLEET_SHARE_HOSTS ?? "").split(",").map((h) => h.trim()).filter(Boolean));
 
 const sess = (id: number) => `s${id}`;
-const streamPath = (id: number) => `${STREAM_DIR}/s${id}.raw`;
+interface SlotStreamOccupant { slot: number; openedAt: number; selfToken: string }
+const slotStreamOccupant = (s: Slot): SlotStreamOccupant | null => s.cwd
+  ? { slot: s.id, openedAt: s.openedAt, selfToken: s.selfToken }
+  : null;
+const sameSlotStreamOccupant = (s: Slot, occupant: SlotStreamOccupant): boolean =>
+  !!s.cwd && s.id === occupant.slot && s.openedAt === occupant.openedAt && s.selfToken === occupant.selfToken;
+const occupantStreamPath = (occupant: SlotStreamOccupant): string => {
+  const tokenHash = createHash("sha256").update(occupant.selfToken).digest("hex").slice(0, 16);
+  return `${STREAM_DIR}/s${occupant.slot}-${occupant.openedAt}-${tokenHash}.raw`;
+};
+const occupantStreamStagePath = (occupant: SlotStreamOccupant): string => `${occupantStreamPath(occupant)}.stage`;
+// Read only long enough to migrate a pane created before occupant-specific streams existed. New
+// occupants never write this reusable name, and kill removes it synchronously while it still owns
+// the slot, so an old continuation cannot turn the compatibility path into a shared channel again.
+const legacyStreamPath = (id: number): string => `${STREAM_DIR}/s${id}.raw`;
 // claude's transcript dir for a cwd (used by ensureSlot's resume check at boot,
 // so it must be defined before the startup section runs)
 const projDir = (cwd: string) => `${HOME}/.claude/projects/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
@@ -3617,6 +3631,59 @@ async function tmux(...args: string[]): Promise<TmuxResult> {
   return { out: out.trim(), err: err.trim(), code };
 }
 
+interface TmuxNewSessionResult { out: string; err: string; code: number | null; timedOut: boolean }
+const tmuxNewSessionTimeout = (raw: string | undefined): number => {
+  const parsed = raw !== undefined && /^\d+$/.test(raw) ? Number(raw) : NaN;
+  return Number.isSafeInteger(parsed) && parsed >= 100 ? parsed : 15_000;
+};
+const TMUX_NEW_SESSION_TIMEOUT_MS = tmuxNewSessionTimeout(process.env.FLEET_TMUX_NEW_SESSION_TIMEOUT_MS);
+const TMUX_NEW_SESSION_KILL_GRACE_MS = 500;
+
+// Only process creation gets a wall-clock bound. A generic timeout on has-session, capture-pane or
+// send-keys would turn an unknown observation/delivery into an ordinary negative result at dozens
+// of unrelated call sites. new-session is different: open/kill wait on its per-slot promise, so an
+// unbounded client process strands both lifecycle verbs. Kill only the exact Bun child we started:
+// TERM first, KILL after a short grace, and never a name-pattern/process-tree sweep.
+async function tmuxNewSession(...args: string[]): Promise<TmuxNewSessionResult> {
+  const p = Bun.spawn(["tmux", "-L", SOCK, "new-session", ...args], { stdout: "pipe", stderr: "pipe" });
+  const outP = new Response(p.stdout).text().catch(() => "");
+  const errP = new Response(p.stderr).text().catch(() => "");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"timeout">((resolveTimeout) => {
+    timer = setTimeout(() => resolveTimeout("timeout"), TMUX_NEW_SESSION_TIMEOUT_MS);
+  });
+  const settled = await Promise.race([p.exited, deadline]);
+  if (timer) clearTimeout(timer);
+  let code: number | null = typeof settled === "number" ? settled : null;
+  const timedOut = settled === "timeout";
+  if (timedOut) {
+    try { p.kill(); } catch { /* already exited */ }
+    const term = await Promise.race([
+      p.exited,
+      Bun.sleep(TMUX_NEW_SESSION_KILL_GRACE_MS).then(() => "grace" as const),
+    ]);
+    if (term === "grace") {
+      try { p.kill(9); } catch { /* already exited */ }
+      const killed = await Promise.race([
+        p.exited,
+        Bun.sleep(TMUX_NEW_SESSION_KILL_GRACE_MS).then(() => null),
+      ]);
+      if (typeof killed === "number") code = killed;
+    } else {
+      code = term;
+    }
+  }
+  const bounded = (value: Promise<string>): Promise<string> => timedOut
+    ? Promise.race([value, Bun.sleep(TMUX_NEW_SESSION_KILL_GRACE_MS).then(() => "")])
+    : value;
+  const [out, err] = await Promise.all([bounded(outP), bounded(errP)]);
+  return { out: out.trim(), err: err.trim(), code, timedOut };
+}
+
+class TmuxNewSessionUnavailable extends Error {
+  readonly availability = "unknown" as const;
+}
+
 type TmuxPresence = "present" | "absent" | "unknown";
 interface TmuxSlotObservation { presence: TmuxPresence; root: string | null }
 interface TmuxSlotObservations {
@@ -3655,7 +3722,7 @@ async function observeTmuxSlots(): Promise<TmuxSlotObservations> {
   const direct = await tmux("list-sessions", "-F", "#{session_name}\t#{pane_current_path}");
   if (direct.code === 0) return readEnumeration(direct, null);
   const probe = `fleet-observe-${process.pid}`;
-  const started = await tmux("new-session", "-d", "-s", probe, "-c", import.meta.dir, "sleep 30");
+  const started = await tmuxNewSession("-d", "-s", probe, "-c", import.meta.dir, "sleep 30");
   if (started.code !== 0)
     return { known: false, sessions: new Map(), detail: `probe create exited ${started.code}: ${started.err || started.out}` };
   const listed = await tmux("list-sessions", "-F", "#{session_name}\t#{pane_current_path}");
@@ -5101,14 +5168,27 @@ async function openLaneInSlot(s: Slot, repo: string, branch: string, model: stri
   return { cwd: s.cwd ?? wt.path, branch: wt.branch };
 }
 
-// resize jiggle: SIGWINCH makes the TUI repaint into the fresh pipe so the client aligns
-async function repaint(name: string): Promise<void> {
-  const size = await tmux("display-message", "-p", "-t", name, "#{window_width} #{window_height}");
+interface TmuxTarget { paneId: string; windowId: string }
+const parseTmuxTarget = (out: string): TmuxTarget | null => {
+  const row = out.split("\n").at(-1) ?? "";
+  const match = /^(%\d+)\t(@\d+)$/.exec(row);
+  return match ? { paneId: match[1], windowId: match[2] } : null;
+};
+async function existingTmuxTarget(name: string): Promise<TmuxTarget | null> {
+  const shown = await tmux("display-message", "-p", "-t", name, "#{pane_id}\t#{window_id}");
+  return shown.code === 0 ? parseTmuxTarget(shown.out) : null;
+}
+
+// resize jiggle: SIGWINCH makes the TUI repaint into the fresh pipe so the client aligns. The
+// immutable @window id matters: sN can be recycled while the sleep is in flight, but an @id is
+// never reassigned during the tmux server's life.
+async function repaint(windowId: string): Promise<void> {
+  const size = await tmux("display-message", "-p", "-t", windowId, "#{window_width} #{window_height}");
   const [w, h] = size.out.split(" ").map(Number);
   if (!w || !h) return;
-  await tmux("resize-window", "-t", name, "-x", String(w), "-y", String(h - 1));
+  await tmux("resize-window", "-t", windowId, "-x", String(w), "-y", String(h - 1));
   await Bun.sleep(200);
-  await tmux("resize-window", "-t", name, "-x", String(w), "-y", String(h));
+  await tmux("resize-window", "-t", windowId, "-x", String(w), "-y", String(h));
 }
 
 // capture-pane's text output separates rows with a bare LF, never a CR. A raw terminal
@@ -5127,11 +5207,8 @@ const crlf = (text: string) => text.replace(/\r?\n/g, "\r\n");
 // flight is refused rather than queued behind a pane that is already coming back.
 const restarting = new Set<number>();
 
-interface SlotSpawnOccupant {
-  slot: number;
+interface SlotSpawnOccupant extends SlotStreamOccupant {
   cwd: string;
-  openedAt: number;
-  selfToken: string;
   label: string | null;
   sessionId: string | null;
   model: string | null;
@@ -5155,6 +5232,18 @@ const sameSlotSpawnOccupant = (s: Slot, expected: SlotSpawnOccupant): boolean =>
   && s.harness === expected.harness && s.effort === expected.effort
   && s.container === expected.container && s.containerContext === expected.containerContext;
 
+const SLOT_POST_CAPTURE_LATCH = process.env.FLEET_TEST_SLOT_POST_CAPTURE_LATCH ?? null;
+let slotPostCaptureLatchUsed = false;
+async function waitForSlotPostCaptureTestLatch(occupant: SlotSpawnOccupant,
+  finalPath: string, stagePath: string): Promise<void> {
+  if (!SLOT_POST_CAPTURE_LATCH || slotPostCaptureLatchUsed) return;
+  slotPostCaptureLatchUsed = true;
+  writeFileSync(`${SLOT_POST_CAPTURE_LATCH}.reached`, JSON.stringify({
+    slot: occupant.slot, openedAt: occupant.openedAt, final: finalPath, stage: stagePath,
+  }), { mode: 0o600 });
+  while (!existsSync(`${SLOT_POST_CAPTURE_LATCH}.release`)) await Bun.sleep(20);
+}
+
 // Only the irreducible tmux new-session await and its state commit are serialized. Teardown waits
 // for this promise before clearing/recycling the occupant, so a successful old spawn cannot finish
 // behind the new occupant. This is not a general slot lock: capture, pipe and repaint stay outside.
@@ -5166,7 +5255,7 @@ async function waitForSlotSpawn(slot: number): Promise<void> {
 
 // `cause` only picks which audit event the rebuild is booked under; the rebuild itself is
 // identical either way. "heal" = the pane died on us, "restart" = the owner asked for it.
-async function ensureSlot(s: Slot, cause: "heal" | "restart" = "heal"): Promise<void> {
+async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"): Promise<void> {
   let occupant = slotSpawnOccupant(s);
   if (!occupant) return;
   const entrySpawn = slotSpawnInflight.get(s.id);
@@ -5174,6 +5263,12 @@ async function ensureSlot(s: Slot, cause: "heal" | "restart" = "heal"): Promise<
   const name = sess(s.id);
   const has = await tmux("has-session", "-t", name);
   if (!sameSlotSpawnOccupant(s, occupant)) return;
+  let target: TmuxTarget | null = null;
+  if (has.code === 0) {
+    target = await existingTmuxTarget(name);
+    if (!sameSlotSpawnOccupant(s, occupant)) return;
+    if (!target) return;
+  }
   const probedSpawn = slotSpawnInflight.get(s.id);
   if (probedSpawn) { await probedSpawn; return; }
   if (has.code !== 0) {
@@ -5260,7 +5355,8 @@ async function ensureSlot(s: Slot, cause: "heal" | "restart" = "heal"): Promise<
     if (!sameSlotSpawnOccupant(s, occupant)) return;
     let spawn: Promise<void>;
     spawn = (async () => {
-      const created = await tmux("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", occupant.cwd,
+      const created = await tmuxNewSession("-d", "-P", "-F", "#{pane_id}\t#{window_id}",
+        "-s", name, "-x", "200", "-y", "50", "-c", occupant.cwd,
       // `cwd: occupant.cwd` is the SAME value tmux is given with `-c` two arguments up, and passing the
       // one variable to both is the point: Pi's write fence is anchored at it, so a fence built
       // from anything else would grant a directory the pane is not in.
@@ -5269,7 +5365,19 @@ async function ensureSlot(s: Slot, cause: "heal" | "restart" = "heal"): Promise<
       // openSlot and killSlot wait on this barrier before changing occupant identity. The equality
       // remains defence in depth for other same-process mutations; a mismatch authorizes neither a
       // state commit nor blind cleanup, because the named tmux session may already be the successor's.
-      if (created.code !== 0 || !sameSlotSpawnOccupant(s, occupant)) return;
+      target = created.code === 0 && !created.timedOut ? parseTmuxTarget(created.out) : null;
+      if (!target) {
+        const detail = created.timedOut
+          ? `timed out after ${TMUX_NEW_SESSION_TIMEOUT_MS}ms`
+          : `exited ${created.code ?? "unknown"}: ${created.err || created.out || "no diagnostic"}`;
+        const unavailable = new TmuxNewSessionUnavailable(`tmux new-session unavailable (${detail})`);
+        if (cause === "heal") {
+          logError("ensureSlot:new-session", unavailable);
+          return;
+        }
+        throw unavailable;
+      }
+      if (!sameSlotSpawnOccupant(s, occupant)) return;
       s.cols = 200;
       s.rows = 50;
       // record the pin only if the adapter actually PASSED it. For the default adapter this is
@@ -5306,39 +5414,52 @@ async function ensureSlot(s: Slot, cause: "heal" | "restart" = "heal"): Promise<
     }
     if (!sameSlotSpawnOccupant(s, occupant)) return;
   }
+  if (!target) return;
   // the size cache follows TMUX TRUTH, not the other way round: the in-memory cols/rows
   // die with every server restart (deploys!) while the pane keeps whatever the last
   // owner client set — a guest reading the stale 200×50 default then renders a terminal
   // that has nothing to do with the actual pane. Re-sync on every ensure.
-  const size = await tmux("display-message", "-p", "-t", name, "#{window_width} #{window_height}");
+  const size = await tmux("display-message", "-p", "-t", target.paneId, "#{window_width} #{window_height}");
   if (!sameSlotSpawnOccupant(s, occupant)) return;
   const sm = /^(\d+) (\d+)$/.exec(size.out);
   if (sm) {
     s.cols = Number(sm[1]);
     s.rows = Number(sm[2]);
   }
-  const pipe = await tmux("display-message", "-p", "-t", name, "#{pane_pipe}");
+  const pipe = await tmux("display-message", "-p", "-t", target.paneId, "#{pane_pipe}");
   if (!sameSlotSpawnOccupant(s, occupant)) return;
   const pipeOpen = pipe.out === "1";
-  const file = streamPath(s.id);
+  const finalPath = occupantStreamPath(occupant);
+  const stagePath = occupantStreamStagePath(occupant);
+  const legacyPath = legacyStreamPath(s.id);
   // terminal output can contain secrets — keep the stream private no matter which
   // process created the file (tmux's `cat >>` creates it with the default umask)
-  if (existsSync(file) && (statSync(file).mode & 0o777) !== 0o600) chmodSync(file, 0o600);
-  if (pipeOpen && existsSync(file)) return;
+  if (existsSync(finalPath) && (statSync(finalPath).mode & 0o777) !== 0o600) chmodSync(finalPath, 0o600);
+  if (pipeOpen && existsSync(finalPath)) return;
   if (pipeOpen) {
-    await tmux("pipe-pane", "-t", name); // close stale pipe (file was deleted)
+    await tmux("pipe-pane", "-t", target.paneId); // close a legacy/deleted stream pipe on this exact pane
     if (!sameSlotSpawnOccupant(s, occupant)) return;
   }
+  // A live pre-migration pipe wrote sN.raw. Once its exact pane pipe is closed, the capture below
+  // contains that pane's whole history, so deleting the ambiguous compatibility file loses no
+  // rendered terminal state and prevents a later occupant from ever inheriting it.
+  if (existsSync(legacyPath)) rmSync(legacyPath, { force: true });
+  rmSync(stagePath, { force: true });
   // seed stream with full pane history, then start piping raw output
-  const cap = await tmux("capture-pane", "-t", name, "-e", "-p", "-S", "-");
+  const cap = await tmux("capture-pane", "-t", target.paneId, "-e", "-p", "-S", "-");
   if (!sameSlotSpawnOccupant(s, occupant)) return;
-  await Bun.write(file, crlf(cap.out) + "\r\n");
-  if (!sameSlotSpawnOccupant(s, occupant)) return;
-  chmodSync(file, 0o600);
-  await tmux("pipe-pane", "-t", name, "-o", `exec cat >> '${file}'`);
+  await waitForSlotPostCaptureTestLatch(occupant, finalPath, stagePath);
+  await Bun.write(stagePath, crlf(cap.out) + "\r\n");
+  if (!sameSlotSpawnOccupant(s, occupant)) {
+    await rm(stagePath, { force: true });
+    return;
+  }
+  chmodSync(stagePath, 0o600);
+  renameSync(stagePath, finalPath);
+  await tmux("pipe-pane", "-t", target.paneId, "-o", `exec cat >> '${finalPath}'`);
   if (!sameSlotSpawnOccupant(s, occupant)) return;
   s.quietUntil = Date.now() + 1500;
-  await repaint(name);
+  await repaint(target.windowId);
 }
 
 function expandCwd(raw: string): string {
@@ -5406,7 +5527,18 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // than s.cwd — state and tmux can disagree (an adopted pane, a kill that failed). Deliberately
   // placed after the cwd validation: a bad path must never destroy a running session.
   try {
-    if ((await tmux("has-session", "-t", sess(s.id))).code === 0) await killSlot(s, "reopen");
+    const priorStreamOccupant = slotStreamOccupant(s);
+    const priorPane = await tmux("has-session", "-t", sess(s.id));
+    if (priorStreamOccupant && !sameSlotStreamOccupant(s, priorStreamOccupant))
+      throw new Error("slot occupant changed during open");
+    if (priorPane.code === 0) await killSlot(s, "reopen");
+    else if (priorStreamOccupant) {
+      // A dead pane cannot take killSlot's branch, but its files still belong to the exact occupant
+      // captured before the probe. Remove them synchronously before publishing the successor row.
+      rmSync(occupantStreamPath(priorStreamOccupant), { force: true });
+      rmSync(occupantStreamStagePath(priorStreamOccupant), { force: true });
+      rmSync(legacyStreamPath(s.id), { force: true });
+    }
     await waitForGameMakerOpenTestLatch(treeLease);
     // The awaits above are an owner-kill window: an exact pre-open kill may have durably removed
     // the marker after orphan teardown. Recheck before publishing
@@ -5490,7 +5622,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   recents = [cwd, ...recents.filter((r) => r !== cwd)].slice(0, MAX_RECENTS);
   audit("slot_open", s.id, cwd);
   saveState();
-  await ensureSlot(s);
+  await ensureSlot(s, "open");
   } finally {
     openSlotIntents.delete(openIntent);
   }
@@ -5514,7 +5646,16 @@ function detachSlotTasks(slotId: number, note: string): void {
 // means slot recycling if the kills are `reopen`, and abandoned work if they are `owner`. Every
 // call site knows its own reason; none of them may pass it as an afterthought (slotstats.ts).
 async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<void> {
+  const streamOccupant = slotStreamOccupant(s);
   await waitForSlotSpawn(s.id);
+  if (streamOccupant && !sameSlotStreamOccupant(s, streamOccupant)) return;
+  if (streamOccupant) {
+    // These paths are derived from the occupant captured before the spawn await. Remove them before
+    // clearing the row; no later await may rediscover a reusable sN path and delete its successor's.
+    rmSync(occupantStreamPath(streamOccupant), { force: true });
+    rmSync(occupantStreamStagePath(streamOccupant), { force: true });
+    rmSync(legacyStreamPath(s.id), { force: true });
+  }
   audit("slot_kill", s.id, why);
   s.cwd = null; // clear first so the self-heal loop can't resurrect it mid-kill
   s.label = null;
@@ -5549,7 +5690,12 @@ async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<v
   reapLaneSuiteOffersFor(s.id); // …and a suite offer must stop inviting 13 minutes of somebody's time
   saveState();
   await tmux("kill-session", "-t", sess(s.id));
-  await rm(streamPath(s.id), { force: true });
+  if (streamOccupant) {
+    // A pipe-pane command already in flight can recreate only this hashed old path after the first
+    // removal. The second cleanup is safe after an await because the successor has a different path.
+    await rm(occupantStreamPath(streamOccupant), { force: true });
+    await rm(occupantStreamStagePath(streamOccupant), { force: true });
+  }
   await rm(historyPath(s.id), { force: true });
   s.history = [];
   s.offset = 0;
@@ -9237,16 +9383,20 @@ function broadcast(s: Slot, from: number, chunk: Uint8Array): void {
 async function poll(): Promise<void> {
   await Promise.all(
     slots.map(async (s) => {
-      if (!s.cwd) return;
+      const occupant = slotStreamOccupant(s);
+      if (!occupant) return;
+      const file = occupantStreamPath(occupant);
       try {
-        const size = (await stat(streamPath(s.id))).size;
+        const size = (await stat(file)).size;
+        if (!sameSlotStreamOccupant(s, occupant)) return;
         if (size < s.offset) {
           s.offset = 0;
           // stream was truncated (session recreated) — clear stale scrollback on connected clients
           broadcast(s, -1, CLEAR);
         }
         if (size > s.offset) {
-          const buf = await Bun.file(streamPath(s.id)).slice(s.offset, size).arrayBuffer();
+          const buf = await Bun.file(file).slice(s.offset, size).arrayBuffer();
+          if (!sameSlotStreamOccupant(s, occupant)) return;
           const from = s.offset;
           s.offset = size;
           // output during a quiet window is a repaint we caused (resize jiggle),
@@ -10106,10 +10256,11 @@ async function summaryViaSession(prompt: string, cwd: string, doneMark: string,
     throw new Error(`harness "${WORKER_HARNESS.id}" cannot host a worker session `
       + `(the worker's answer is read from a host-side transcript; this harness writes none)`);
   }
-  const sp = await tmux("new-session", "-d", "-s", name, "-c", cwd, "-x", "200", "-y", "50", w.cmd);
-  if (sp.code !== 0) throw new Error("summarizer session failed to start");
   const file = `${projDir(cwd)}/${sid}.jsonl`;
   try {
+    const sp = await tmuxNewSession("-d", "-s", name, "-c", cwd, "-x", "200", "-y", "50", w.cmd);
+    if (sp.code !== 0 || sp.timedOut)
+      throw new Error(`summarizer session failed to start${sp.timedOut ? " (tmux new-session timed out)" : ""}`);
     // the transcript file only appears AFTER the first prompt — readiness is "the agent process
     // hangs under the pane" (same probe as the auto gate), plus a short settle so the TUI actually
     // accepts input. The comms come from the adapter that built the line above, so the probe asks
@@ -19148,6 +19299,8 @@ for (const t of tasks) {
 saveState();
 for (const s of slots) {
   if (!s.cwd) continue;
+  const streamOccupant = slotStreamOccupant(s);
+  if (!streamOccupant) continue;
   const retirement = s.successionRetirement;
   // As with deploy-inflight, the next boot owns an overdue intent. Its identity gate still names
   // this slot's exact cwd + token, so restoring a recycled occupant can never retire it.
@@ -19157,7 +19310,9 @@ for (const s of slots) {
     if (!s.cwd) continue;
   }
   await ensureSlot(s);
-  s.offset = existsSync(streamPath(s.id)) ? (await stat(streamPath(s.id))).size : 0;
+  if (!sameSlotStreamOccupant(s, streamOccupant)) continue;
+  const file = occupantStreamPath(streamOccupant);
+  s.offset = existsSync(file) ? (await stat(file)).size : 0;
   // ...and the same restart must not leave the pane looking IDLE SINCE THE EPOCH. `offset` is
   // stamped so that everything written before now is not replayed as new output — but `lastOutput`
   // stayed 0, so `now - s.lastOutput` read as ~1.79e12 ms for every restored lane until its next
@@ -23994,8 +24149,9 @@ Bun.serve<WSData>({
         try {
           await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box);
         } catch (e) {
-          return json({ error: e instanceof Error ? e.message : "open failed" },
-            e instanceof GameMakerTreeConflict ? 409 : 400);
+          return json({ error: e instanceof Error ? e.message : "open failed",
+            ...(e instanceof TmuxNewSessionUnavailable ? { availability: e.availability } : {}) },
+          e instanceof TmuxNewSessionUnavailable ? 503 : e instanceof GameMakerTreeConflict ? 409 : 400);
         }
         void tickGit().catch(() => {}); // refresh the badge now, not on the next 10s tick
         return json({ ok: true, cwd: s.cwd, label: s.label });
@@ -24022,8 +24178,9 @@ Bun.serve<WSData>({
           const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model, ho.harness, eo.effort, fo.form, bo.box, parent.parent);
           return json({ ok: true, cwd: r.cwd, branch: r.branch, form: fo.form });
         } catch (e) {
-          return json({ error: e instanceof Error ? e.message : "worktree failed" },
-            e instanceof GameMakerTreeConflict ? 409 : 400);
+          return json({ error: e instanceof Error ? e.message : "worktree failed",
+            ...(e instanceof TmuxNewSessionUnavailable ? { availability: e.availability } : {}) },
+          e instanceof TmuxNewSessionUnavailable ? 503 : e instanceof GameMakerTreeConflict ? 409 : 400);
         } finally {
           laneSpawn.delete(s.id);
         }
@@ -24049,6 +24206,10 @@ Bun.serve<WSData>({
           // are also exactly when the owner is watching the board, and a slot that reads dead there
           // invites a second click on something else.
           await ensureSlot(s, "restart");
+        } catch (e) {
+          if (e instanceof TmuxNewSessionUnavailable)
+            return json({ error: e.message, availability: e.availability }, 503);
+          throw e;
         } finally {
           restarting.delete(s.id);
         }
@@ -24149,14 +24310,21 @@ Bun.serve<WSData>({
       // keyboard nudging the viewport a few px while typing) can't retrigger it
       if (c === s.cols && r === s.rows) return json({ ok: true, cols: c, rows: r });
       const name = sess(s.id);
+      const occupant = slotStreamOccupant(s);
+      if (!occupant) return json({ error: "slot not active" }, 409);
+      const target = await existingTmuxTarget(name);
+      if (!target || !sameSlotStreamOccupant(s, occupant))
+        return json({ error: "slot pane unavailable or changed during resize" }, 409);
       const task = s.resizeChain.then(async () => {
+        if (!sameSlotStreamOccupant(s, occupant)) return;
         s.quietUntil = Date.now() + 1500; // the repaint this causes is not session activity
-        await tmux("resize-window", "-t", name, "-x", String(c), "-y", String(r));
+        await tmux("resize-window", "-t", target.windowId, "-x", String(c), "-y", String(r));
+        if (!sameSlotStreamOccupant(s, occupant)) return;
         s.cols = c;
         s.rows = r;
         // force the TUI to redraw into the new size now, instead of waiting on its own
         // SIGWINCH handling (a plain shell prompt won't reflow on its own at all)
-        await repaint(name);
+        await repaint(target.windowId);
       });
       s.resizeChain = task.catch(() => {});
       await task;
@@ -24173,6 +24341,9 @@ Bun.serve<WSData>({
     async open(ws) {
       transportWs(ws); // wraps ws.send: per-message deflate + the byte ledger (TRANSPORT region)
       const s = slots[ws.data.slot - 1];
+      const occupant = slotStreamOccupant(s);
+      if (!occupant) { ws.close(4001, "slot gone"); return; }
+      const streamFile = occupantStreamPath(occupant);
       s.clients.add(ws);
       if (ws.data.share) audit("guest_ws_connect", s.id, ws.data.share);
       const { cols, rows, force } = ws.data;
@@ -24181,6 +24352,12 @@ Bun.serve<WSData>({
       // to [50, SEED_LINES] at the upgrade, so this can only ever shrink the seed.
       const seedLines = ws.data.seed || SEED_LINES;
       const name = sess(s.id);
+      const target = await existingTmuxTarget(name);
+      if (!target || !sameSlotStreamOccupant(s, occupant)) {
+        s.clients.delete(ws);
+        ws.close(4001, "slot changed during connect");
+        return;
+      }
       if (cols && rows && (force || cols !== s.cols || rows !== s.rows)) {
         // this client's width doesn't match the pane's current width (or the client
         // explicitly asked for a reseed regardless — see the `force` comment above).
@@ -24194,8 +24371,10 @@ Bun.serve<WSData>({
         // between this one and its capture-pane, handing this client a seed
         // reflowed to the OTHER client's width instead of its own.
         const task = s.resizeChain.then(async () => {
+          if (!sameSlotStreamOccupant(s, occupant)) return;
           s.quietUntil = Date.now() + 1500;
-          await tmux("resize-window", "-t", name, "-x", String(cols), "-y", String(rows));
+          await tmux("resize-window", "-t", target.windowId, "-x", String(cols), "-y", String(rows));
+          if (!sameSlotStreamOccupant(s, occupant)) return;
           s.cols = cols;
           s.rows = rows;
           // -e (color) is safe here, and the reason it was left off is not reproducible on this
@@ -24209,14 +24388,16 @@ Bun.serve<WSData>({
           // The fear was legitimate and is now a CHECK rather than a sacrificed capability:
           // e2e/slots.ts pins that the seed carries SGR and carries no cursor-motion escape, so
           // a tmux that ever starts emitting one goes red here instead of silently garbling.
-          const cap = await tmux("capture-pane", "-t", name, "-e", "-p", "-S", `-${seedLines}`);
+          const cap = await tmux("capture-pane", "-t", target.paneId, "-e", "-p", "-S", `-${seedLines}`);
+          if (!sameSlotStreamOccupant(s, occupant)) return;
           ws.send(new TextEncoder().encode(crlf(cap.out) + "\r\n"));
           try {
-            s.offset = (await stat(streamPath(s.id))).size;
+            const size = (await stat(streamFile)).size;
+            if (sameSlotStreamOccupant(s, occupant)) s.offset = size;
           } catch {
             // stream file briefly missing during recreate — next poll tick picks it up
           }
-          await repaint(name);
+          await repaint(target.windowId);
         });
         s.resizeChain = task.catch(() => {});
         await task;
@@ -24234,7 +24415,8 @@ Bun.serve<WSData>({
         // above: it adds SGR and nothing else, so it cannot change how a guest's terminal wraps
         // the seed — the guest's unknown width was only ever a risk via cursor-motion escapes,
         // which this tmux does not emit.
-        const cap = await tmux("capture-pane", "-t", name, "-e", "-p", "-S", `-${seedLines}`);
+        const cap = await tmux("capture-pane", "-t", target.paneId, "-e", "-p", "-S", `-${seedLines}`);
+        if (!sameSlotStreamOccupant(s, occupant)) return;
         ws.send(new TextEncoder().encode(crlf(cap.out) + "\r\n"));
       } else {
         // Owner reconnect at a width that already matches the pane — the common case, since a
@@ -24262,11 +24444,13 @@ Bun.serve<WSData>({
         // capture itself may be in it and get resent: that residual window is one capture-pane
         // spawn wide instead of a poll tick, and it is inherent to every capture-based seed here.
         try {
-          ws.data.seedUntil = (await stat(streamPath(s.id))).size;
+          const size = (await stat(streamFile)).size;
+          if (sameSlotStreamOccupant(s, occupant)) ws.data.seedUntil = size;
         } catch {
           // stream file briefly missing during recreate — skip nothing, replay what arrives
         }
-        const cap = await tmux("capture-pane", "-t", name, "-e", "-p", "-S", `-${seedLines}`);
+        const cap = await tmux("capture-pane", "-t", target.paneId, "-e", "-p", "-S", `-${seedLines}`);
+        if (!sameSlotStreamOccupant(s, occupant)) return;
         ws.send(new TextEncoder().encode(crlf(cap.out) + "\r\n"));
       }
       ws.data.ready = true;

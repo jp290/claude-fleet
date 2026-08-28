@@ -1634,16 +1634,17 @@ interface HelperDeviceInfo {
 // ONLINE/OFFLINE IS DERIVED, NEVER STORED — the same reading that makes a claim expire: there is no
 // "offline" event anywhere in this system, only a heartbeat that stopped arriving. This is the
 // threshold, and 90 s is chosen rather than tight:
-//   · the portal page beats every 10 s while it is open (src/helper.ts, its refresh interval), and
-//     the S3 daemon's own interval is not fixed yet — a 30 s window would turn one slow beat, one
-//     backoff or one suspended laptop lid into a false "offline".
+//   · nothing beats on a fixed tick TODAY. The portal page polls the JOB LIST every 10 s
+//     (src/helper.ts) and that read touches nothing; only a device POST and a claim move `lastSeen`
+//     (server.ts#setHelperDevice). The S3 daemon is what will beat, and its interval is not fixed
+//     yet — so a 30 s window would turn one slow beat, one backoff or one suspended laptop lid into
+//     a false "offline" before that number even exists.
 //   · it is short enough that a machine switched off is grey within a minute and a half, which is
 //     the question this dot exists to answer ("can I hand it work right now").
 // The age is ALWAYS printed next to the word, so "offline" is never a bare claim: it says how long
-// ago the last beat was and lets the owner judge the gap themselves. Note what touches `lastSeen`
-// today — a device POST and a claim (server.ts#setHelperDevice) — so before the S3 daemon exists, a
-// device that registered once and went quiet reads offline here after 90 s, correctly: nothing is
-// beating.
+// ago the last beat was and lets the owner judge the gap themselves. Consequence of the paragraph
+// above, stated rather than discovered: before the S3 daemon exists, a device that registered once
+// and went quiet reads offline here after 90 s — which is correct, because nothing is beating.
 const DEVICE_ONLINE_MS = 90_000;
 // The closed set the owner can wish for. It is the server's `DEVICE_MODES` (server.ts) spelled a
 // second time — deliberately not pinned: the server validates the value and refuses anything else

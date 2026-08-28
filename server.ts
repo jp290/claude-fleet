@@ -3539,16 +3539,16 @@ type AuditEvent =
 // costs nothing yet — split per-file if a second consumer's volume ever makes that a problem.
 let auditChain: Promise<unknown> = Promise.resolve();
 let auditWriteFailed = false; // report a wedged event log once, not on every subsequent event
-function appendEvent(file: string, obj: Record<string, unknown>): Promise<void> {
+function queueEventWrite(file: string, obj: Record<string, unknown>): Promise<void> {
   const line = `${JSON.stringify(obj)}\n`;
-  auditChain = auditChain
+  const raw = auditChain
     .then(async () => {
       if (existsSync(file) && statSync(file).size >= AUDIT_ROTATE_BYTES)
         renameSync(file, `${file}.1`);
       await appendFile(file, line, { mode: 0o600 });
       chmodSync(file, 0o600); // append doesn't guarantee mode on a pre-existing file
-    })
-    .catch((e: unknown) => {
+    });
+  auditChain = raw.catch((e: unknown) => {
       // the latch stays: this one is per-EVENT, so a wedged disk would otherwise call logError on
       // every audited action. logError's own repeat-suppression counts those; this one drops them,
       // which is the older and stricter promise and the one this file's readers already rely on.
@@ -3556,7 +3556,15 @@ function appendEvent(file: string, obj: Record<string, unknown>): Promise<void> 
       auditWriteFailed = true;
       logError("eventLog", e);
     });
-  return auditChain.then(() => undefined);
+  return raw;
+}
+function appendEvent(file: string, obj: Record<string, unknown>): Promise<void> {
+  return queueEventWrite(file, obj).catch(() => undefined);
+}
+// Founding receipts are evidence promised by the authority transition, so their caller must see a
+// failed append and roll back. Every unrelated event keeps the historical best-effort contract.
+function appendEventStrict(file: string, obj: Record<string, unknown>): Promise<void> {
+  return queueEventWrite(file, obj);
 }
 // The READ counterpart of appendEvent, rotation-aware (a single-file reader is invisible to
 // rotation: at AUDIT_ROTATE_BYTES the whole history becomes `x.jsonl.1` and `x.jsonl` restarts
@@ -3600,11 +3608,62 @@ function audit(event: AuditEvent, slot?: number, detail?: string): void {
   });
 }
 
-async function tmux(...args: string[]): Promise<{ out: string; code: number }> {
+interface TmuxResult { out: string; err: string; code: number }
+async function tmux(...args: string[]): Promise<TmuxResult> {
   const p = Bun.spawn(["tmux", "-L", SOCK, ...args], { stdout: "pipe", stderr: "pipe" });
-  const out = await new Response(p.stdout).text();
-  const code = await p.exited;
-  return { out: out.trim(), code };
+  const [out, err, code] = await Promise.all([
+    new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited,
+  ]);
+  return { out: out.trim(), err: err.trim(), code };
+}
+
+type TmuxPresence = "present" | "absent" | "unknown";
+interface TmuxSlotObservation { presence: TmuxPresence; root: string | null }
+interface TmuxSlotObservations {
+  known: boolean;
+  sessions: ReadonlyMap<string, string>;
+  detail: string;
+}
+
+const tmuxSlotObservation = (observed: TmuxSlotObservations, slot: number): TmuxSlotObservation => {
+  if (!observed.known) return { presence: "unknown", root: null };
+  const root = observed.sessions.get(sess(slot));
+  return root === undefined ? { presence: "absent", root: null } : { presence: "present", root };
+};
+
+// tmux's missing-session and unavailable-server diagnostics share failure-shaped exits. A
+// temporary, non-slot session makes list-sessions return a successful complete enumeration even
+// when Fleet has no live panes, so absence never depends on an English stderr string.
+async function observeTmuxSlots(): Promise<TmuxSlotObservations> {
+  const readEnumeration = (listed: TmuxResult, ignored: string | null): TmuxSlotObservations => {
+    if (listed.code !== 0)
+      return { known: false, sessions: new Map(), detail: `enumeration exited ${listed.code}: ${listed.err || listed.out}` };
+    const sessions = new Map<string, string>();
+    for (const line of listed.out.split("\n")) {
+      if (!line) continue;
+      const tab = line.indexOf("\t");
+      if (tab < 1) return { known: false, sessions: new Map(), detail: "tmux enumeration returned an unreadable row" };
+      const name = line.slice(0, tab);
+      const cwd = line.slice(tab + 1);
+      if (name === ignored) continue;
+      if (!isAbsolute(cwd))
+        return { known: false, sessions: new Map(), detail: `tmux session ${name} returned no absolute pane path` };
+      sessions.set(name, repoCanon(cwd));
+    }
+    return { known: true, sessions, detail: "successful enumeration" };
+  };
+  const direct = await tmux("list-sessions", "-F", "#{session_name}\t#{pane_current_path}");
+  if (direct.code === 0) return readEnumeration(direct, null);
+  const probe = `fleet-observe-${process.pid}`;
+  const started = await tmux("new-session", "-d", "-s", probe, "-c", import.meta.dir, "sleep 30");
+  if (started.code !== 0)
+    return { known: false, sessions: new Map(), detail: `probe create exited ${started.code}: ${started.err || started.out}` };
+  const listed = await tmux("list-sessions", "-F", "#{session_name}\t#{pane_current_path}");
+  const stopped = await tmux("kill-session", "-t", probe);
+  if (listed.code !== 0 || stopped.code !== 0)
+    return { known: false, sessions: new Map(),
+      detail: `enumeration exited ${listed.code}, probe cleanup exited ${stopped.code}: ${listed.err || stopped.err || listed.out}` };
+  return readEnumeration(listed, probe);
 }
 
 // The ONE place a slot's absent box becomes an effective one. Both the spawn line (ensureSlot) and
@@ -4877,8 +4936,20 @@ const sameProgramFounding = (a: ProgramFounding | undefined, b: ProgramFounding)
       && a.predecessor.openedAt === b.predecessor.openedAt);
 
 const exactGameMakerFoundingPermit = (lease: GameMakerTreeLease | null, program: Program): boolean =>
-  !!lease?.founding && lease.programId === program.id
+  program.status === "active" && isGameMaker(program)
+  && !!lease?.founding && lease.programId === program.id
   && sameProgramFounding(program.founding, lease.founding);
+
+function assertGameMakerFoundingTargetOpen(s: Slot, permit: GameMakerTreeLease | null): void {
+  if (permit && (!permit.founding
+    || permit.founding.target.slot !== s.id
+    || !programs.some((program) => exactGameMakerFoundingPermit(permit, program))))
+    throw new GameMakerTreeConflict("game-maker target open does not match its durable founding marker");
+  for (const program of programs) {
+    if (program.founding?.target.slot === s.id && !exactGameMakerFoundingPermit(permit, program))
+      throw new GameMakerTreeConflict(`slot ${s.id} is reserved by game-maker Program ${program.id}'s durable founding`);
+  }
+}
 
 const gameMakerLeaseRoot = (lease: GameMakerTreeLease): string =>
   lease.canonicalRoot ?? lease.requestedRoot;
@@ -5221,14 +5292,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   box: BoxPin = NO_BOX, treeLease: GameMakerTreeLease | null = null): Promise<void> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
-  if (treeLease && (!treeLease.founding
-    || treeLease.founding.target.slot !== s.id
-    || !programs.some((program) => exactGameMakerFoundingPermit(treeLease, program))))
-    throw new GameMakerTreeConflict("game-maker target open does not match its durable founding marker");
-  for (const program of programs) {
-    if (program.founding?.target.slot === s.id && !exactGameMakerFoundingPermit(treeLease, program))
-      throw new GameMakerTreeConflict(`slot ${s.id} is reserved by game-maker Program ${program.id}'s durable founding`);
-  }
+  assertGameMakerFoundingTargetOpen(s, treeLease);
   const openIntent: OpenSlotIntent = { root: repoCanon(cwd), lease: treeLease };
   assertGameMakerTreeOpen(openIntent.root, treeLease);
   openSlotIntents.add(openIntent);
@@ -5265,6 +5329,10 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // placed after the cwd validation: a bad path must never destroy a running session.
   try {
     if ((await tmux("has-session", "-t", sess(s.id))).code === 0) await killSlot(s, "reopen");
+    // The await above is an owner-kill window: an exact pre-open kill may have durably removed the
+    // marker while this request was waiting for an orphan pane to die. Recheck before publishing
+    // even one byte of the new occupant; the process-local lease alone is not durable authority.
+    assertGameMakerFoundingTargetOpen(s, treeLease);
   } catch (e) {
     if (h.singleton) singletonSpawn.delete(h.id);
     throw e;
@@ -5430,16 +5498,43 @@ const currentGameMakerFounding = (program: Program, founding: ProgramFounding, s
     : !!founding.predecessor && program.main?.slot === founding.predecessor.slot
       && program.main.openedAt === founding.predecessor.openedAt);
 
-async function proveFoundingCandidateStopped(s: Slot, founding: ProgramFounding): Promise<void> {
+async function proveFoundingCandidateStopped(s: Slot, founding: ProgramFounding): Promise<TmuxSlotObservations> {
   if (!exactFoundingCandidate(s, founding))
     throw new Error(`slot ${s.id} no longer matches founding ${founding.attemptId}`);
-  if ((await tmux("has-session", "-t", sess(s.id))).code === 0)
+  const before = await observeTmuxSlots();
+  const candidate = tmuxSlotObservation(before, s.id);
+  if (candidate.presence === "unknown")
+    throw new Error(`could not observe tmux session ${sess(s.id)} for founding ${founding.attemptId}: ${before.detail}`);
+  if (candidate.presence === "present" && candidate.root !== founding.canonicalRoot
+    && !candidate.root?.startsWith(`${founding.canonicalRoot}/`))
+    throw new Error(`refusing to kill tmux session ${sess(s.id)} for founding ${founding.attemptId}: its live root is ${candidate.root}`);
+  if (candidate.presence === "present")
     await tmux("kill-session", "-t", sess(s.id));
-  if ((await tmux("has-session", "-t", sess(s.id))).code === 0)
-    throw new Error(`could not prove tmux session ${sess(s.id)} absent for founding ${founding.attemptId}`);
+  const after = await observeTmuxSlots();
+  const stopped = tmuxSlotObservation(after, s.id);
+  if (stopped.presence !== "absent")
+    throw new Error(`could not prove tmux session ${sess(s.id)} absent for founding ${founding.attemptId}: ${after.detail}`);
   // killSlot clears persisted slot state only after the pane absence above is observed. Its own
   // second kill is harmless and closes every non-tmux lifetime (shares, watches, history, caches).
   await killSlot(s, "reopen");
+  return after;
+}
+
+function assertNoFoundingTreeOccupant(program: Program, founding: ProgramFounding,
+  observed: TmuxSlotObservations): void {
+  if (!observed.known)
+    throw new Error(`REFUSING TO START: Program ${program.id} founding ${founding.attemptId} cannot prove its protected tree empty because tmux state is unknown: ${observed.detail}`);
+  for (const [name, root] of observed.sessions) {
+    const match = /^s(\d+)$/.exec(name);
+    if (!match || !treePathsOverlap(root, founding.canonicalRoot)) continue;
+    const slot = slotFrom(match[1]);
+    const predecessor = founding.mode === "succession" && founding.predecessor
+      && slot?.id === founding.predecessor.slot && slot.openedAt === founding.predecessor.openedAt
+      && program.main?.slot === founding.predecessor.slot
+      && program.main.openedAt === founding.predecessor.openedAt;
+    if (!predecessor)
+      throw new Error(`REFUSING TO START: Program ${program.id} founding ${founding.attemptId} cannot unlock ${founding.canonicalRoot}; live session ${name} also occupies ${root}`);
+  }
 }
 
 async function clearProgramFounding(program: Program, founding: ProgramFounding,
@@ -5461,24 +5556,35 @@ async function rollbackProgramFounding(program: Program, founding: ProgramFoundi
   detail: string): Promise<boolean> {
   if (!sameProgramFounding(program.founding, founding)) return false;
   const target = slotFrom(founding.target.slot);
-  if (!target?.cwd) return clearProgramFounding(program, founding, `${detail}:no-candidate`);
+  if (!target?.cwd) {
+    const observed = await observeTmuxSlots();
+    if (tmuxSlotObservation(observed, founding.target.slot).presence !== "absent")
+      throw new Error(`refusing to clear founding ${founding.attemptId}: target tmux state is not explicitly absent (${observed.detail})`);
+    assertNoFoundingTreeOccupant(program, founding, observed);
+    return clearProgramFounding(program, founding, `${detail}:no-candidate`);
+  }
   if (!exactFoundingCandidate(target, founding))
     throw new Error(`refusing to clear founding ${founding.attemptId}: target slot ${founding.target.slot} is occupied by a different session`);
   await proveFoundingCandidateStopped(target, founding);
   return clearProgramFounding(program, founding, `${detail}:candidate-stopped`);
 }
 
-async function recoverInterruptedProgramFoundings(): Promise<void> {
+async function recoverInterruptedProgramFoundings(bootTmux: TmuxSlotObservations): Promise<void> {
   for (const program of programs) {
     const founding = program.founding;
     if (!founding) continue;
     const target = slotFrom(founding.target.slot);
     if (!target?.cwd) {
+      const targetObservation = tmuxSlotObservation(bootTmux, founding.target.slot);
+      if (targetObservation.presence !== "absent")
+        throw new Error(`REFUSING TO START: Program ${program.id} founding ${founding.attemptId} cannot clear its pre-open marker because target tmux state is ${targetObservation.presence}: ${bootTmux.detail}`);
+      assertNoFoundingTreeOccupant(program, founding, bootTmux);
       await clearProgramFounding(program, founding, "boot-stale-before-open");
       continue;
     }
     if (exactFoundingCandidate(target, founding)) {
-      await proveFoundingCandidateStopped(target, founding);
+      const after = await proveFoundingCandidateStopped(target, founding);
+      assertNoFoundingTreeOccupant(program, founding, after);
       await clearProgramFounding(program, founding, "boot-rollback");
       continue;
     }
@@ -5486,8 +5592,12 @@ async function recoverInterruptedProgramFoundings(): Promise<void> {
     // foreign occupant and retire only the stale intent. Inside the same tree, identity is
     // ambiguous: killing may destroy foreign work and unlocking may admit a second writer, so
     // startup stops with the marker untouched.
-    const targetRoot = repoCanon(target.cwd);
-    if (!treePathsOverlap(targetRoot, founding.canonicalRoot)) {
+    const targetObservation = tmuxSlotObservation(bootTmux, target.id);
+    if (targetObservation.presence === "unknown")
+      throw new Error(`REFUSING TO START: Program ${program.id} founding ${founding.attemptId} cannot classify target slot ${target.id}: ${bootTmux.detail}`);
+    const targetRoot = targetObservation.presence === "present" ? targetObservation.root : null;
+    if (targetRoot === null || !treePathsOverlap(targetRoot, founding.canonicalRoot)) {
+      assertNoFoundingTreeOccupant(program, founding, bootTmux);
       await clearProgramFounding(program, founding, "boot-stale-foreign-target-preserved");
       continue;
     }
@@ -6277,8 +6387,6 @@ async function handoffCommittedAfterOpen(s: Slot): Promise<boolean> {
 // value continued on a second line is a value this reader would have to guess the end of.
 const GAME_CHECKPOINT_HEADING = "## Current game checkpoint";
 const GAME_CHECKPOINT_MAX_BYTES = 4096;
-const GAME_CHECKPOINT_FIELDS = ["Build", "Launch", "Last replay", "Experience",
-  "Open defect", "Next", "Critic"] as const;
 function readGameCheckpoint(text: string): { ok: true; build: string } | { ok: false; error: string } {
   const lines = text.split("\n");
   // the FIRST section: everything up to the next `## ` heading, or the whole file if there is none.
@@ -16653,6 +16761,10 @@ Fleet already has one of those.`;
 // paragraph therefore does is narrow: it names the coupling that licenses serial direct work, it
 // makes the sensory gate explicit and unfakeable, it keeps every separable kind of work in a lane,
 // and it keeps the four truths apart. It adds no role, no route, no schema and no timer.
+// One ordered vocabulary drives both this delivered rail and the succession reader. Two
+// hand-written lists let a MAIN obey its founding brief and still be refused at succession.
+const GAME_CHECKPOINT_FIELDS = ["Build", "Launch", "Last replay", "Experience",
+  "Open defect", "Next", "Critic"] as const;
 const RAIL_ROLE_GAME_MAKER = `
 
 YOU ARE THE LEAD GAME DEVELOPER of this Program, and that is a standing role, not a scheduling one.
@@ -16694,9 +16806,10 @@ technical, hands_on, sensory_critic and owner_taste.
 A technical green never implies any of the other three. Name the one you actually have.
 
 KEEP THE COMMITTED "## Current game checkpoint" CURRENT throughout your tenure, not only when
-succession is already due. It has exactly seven one-line fields in this order: Build, Seed, Launch,
-Experience, Open defect, Next and Critic. This is predecessor-to-successor and owner evidence, not
-a substitute for replay and never input to a fresh critic.
+succession is already due. It has exactly seven one-line fields in this order: ${GAME_CHECKPOINT_FIELDS.join(", ")}.
+Last replay names the exact seed, real input and capture evidence when those apply. This is
+predecessor-to-successor and owner evidence, not a substitute for replay and never input to a fresh
+critic.
 
 A REPO-DECLARED CONTEXT ANCHOR IS A CRITIC-SAFE POINTER SET AND NOTHING MORE. The ContextPlan card
 your repository declares may carry the product promise, its references, the build sha, the one-step
@@ -17555,15 +17668,20 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         anchorBlock,
         planFacts: { harness: free.harness, mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted },
       })).digest("hex");
-      await appendEvent(CONTEXT_RECEIPT_FILE, {
-        id: randomBytes(16).toString("hex"), hash, at, repo, head: preflight.value.head,
-        taskId: null, originId: null, programId: program.id, slot: free.id, branch: preflight.value.branch,
-        harness: free.harness, model: free.model, effort: free.effort,
-        mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
-        deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
-        renderer: CONTEXT_ANCHOR_RENDERER,
-        briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
-      });
+      try {
+        await (founding ? appendEventStrict : appendEvent)(CONTEXT_RECEIPT_FILE, {
+          id: randomBytes(16).toString("hex"), hash, at, repo, head: preflight.value.head,
+          taskId: null, originId: null, programId: program.id, slot: free.id, branch: preflight.value.branch,
+          harness: free.harness, model: free.model, effort: free.effort,
+          mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
+          deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
+          renderer: CONTEXT_ANCHOR_RENDERER,
+          briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
+        });
+      } catch (e) {
+        await cleanup();
+        return json({ error: `Program-MAIN successor receipt persistence failed: ${e instanceof Error ? e.message : e}` }, 500);
+      }
       free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
       saveHistory(free);
       logPrompt(free, deliveredBrief, "auto", at);
@@ -17757,15 +17875,20 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
         anchorBlock,
         planFacts: { harness: free.harness, mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted },
       })).digest("hex");
-      await appendEvent(CONTEXT_RECEIPT_FILE, {
-        id: randomBytes(16).toString("hex"), hash, at, repo, head: preflight.value.head,
-        taskId: null, originId: null, programId: program.id, slot: free.id, branch: preflight.value.branch,
-        harness: free.harness, model: free.model, effort: free.effort,
-        mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
-        deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
-        renderer: CONTEXT_ANCHOR_RENDERER,
-        briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
-      });
+      try {
+        await (founding ? appendEventStrict : appendEvent)(CONTEXT_RECEIPT_FILE, {
+          id: randomBytes(16).toString("hex"), hash, at, repo, head: preflight.value.head,
+          taskId: null, originId: null, programId: program.id, slot: free.id, branch: preflight.value.branch,
+          harness: free.harness, model: free.model, effort: free.effort,
+          mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
+          deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
+          renderer: CONTEXT_ANCHOR_RENDERER,
+          briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
+        });
+      } catch (e) {
+        await cleanup();
+        return json({ error: `Program-MAIN receipt persistence failed: ${e instanceof Error ? e.message : e}` }, 500);
+      }
       free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
       saveHistory(free);
       logPrompt(free, deliveredBrief, "auto", at);
@@ -18691,9 +18814,9 @@ if (process.env.FLEET_TOKEN) {
 }
 if (!stewardToken) stewardToken = randomBytes(16).toString("hex"); // same width as selfToken
 if (!helperToken) helperToken = randomBytes(16).toString("hex"); // same width, same persistence
-const ls = await tmux("list-sessions", "-F", "#{session_name}");
-if (ls.code === 0) {
-  for (const name of ls.out.split("\n")) {
+const bootTmux = await observeTmuxSlots();
+if (bootTmux.known) {
+  for (const [name, root] of bootTmux.sessions) {
     // background-claude sessions (summarizer/enhancer/merge agent) are throwaways whose
     // cleanup lives in a process-memory finally — a deploy mid-run skips it and leaves a
     // write-capable agent running invisibly (it matches no slot regex, shows nowhere).
@@ -18706,8 +18829,7 @@ if (ls.code === 0) {
     const m = /^s(\d+)$/.exec(name);
     const s = m ? slotFrom(m[1]) : null;
     if (s && !s.cwd) {
-      const p = await tmux("display-message", "-p", "-t", name, "#{pane_current_path}");
-      s.cwd = p.out || HOME;
+      s.cwd = root;
       console.log(`slot ${s.id}: adopted existing tmux session '${name}'`);
     }
   }
@@ -18715,7 +18837,7 @@ if (ls.code === 0) {
 // Roll back the exact candidate a crash stranded, before any general reconciliation, self-heal or
 // HTTP route can observe it. This never replays a brief and never binds from a receipt. A failed
 // tmux absence proof or failed durable cleanup aborts startup, leaving the marker as the lock.
-await recoverInterruptedProgramFoundings();
+await recoverInterruptedProgramFoundings(bootTmux);
 // a share whose session didn't survive the downtime must not come back — same for schedules
 shares = shares.filter((sh) => slotFrom(sh.slot)?.cwd);
 autos = autos.filter((a) => slotFrom(a.slot)?.cwd);

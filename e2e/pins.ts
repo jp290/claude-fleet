@@ -1422,7 +1422,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // date — so one writer omitting it would forever read as an old row instead of a gap. The two
   // values are a PAIR by construction: briefHash without briefSource cannot say by which route the
   // bytes were authored, and briefSource without briefHash joins nothing.
-  const receiptWrites = [...server.matchAll(/appendEvent\(CONTEXT_RECEIPT_FILE, \{[\s\S]*?\n\s*\}\);/g)]
+  const receiptWrites = [...server.matchAll(/(?:appendEvent|\(founding \? appendEventStrict : appendEvent\))\(CONTEXT_RECEIPT_FILE, \{[\s\S]*?\n\s*\}\);/g)]
     .map((m) => m[0]);
   pin("every context-receipt writer carries briefHash AND briefSource — the ledger has one row shape, not two",
     receiptWrites.length === 5
@@ -3292,15 +3292,29 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   // session actually binds to it.
   const gameMakerRail = railHead === "" || railRoleGameMaker === "" || railTail === ""
     ? "" : railHead + railRoleGameMaker + railTail;
+  const checkpointFields = [...(server.match(
+    /const GAME_CHECKPOINT_FIELDS = \[([\s\S]*?)\] as const;/)?.[1] ?? "")
+    .matchAll(/"([^"]+)"/g)].map((match) => match[1]!);
+  const documentedCheckpointFields = (text: string, label: string): string[] =>
+    [...(text.match(new RegExp(`${label}: ([^\\n]+)`))?.[1] ?? "").matchAll(/`([^`]+)`/g)]
+      .map((match) => match[1]!);
+  const selfApiCheckpointFields = documentedCheckpointFields(selfApiDoc, "Checkpoint-Feldreihenfolge");
+  const studioCheckpointFields = documentedCheckpointFields(
+    read("docs/product-studio-working-circle.md"), "Checkpoint field order");
   const gmExclusive = gameMakerRail !== ""
     && !gameMakerRail.includes("Use an isolated worker lane for substantial product implementation")
     && !gameMakerRail.includes("THE ROLE SPLIT IS A JUDGEMENT, NOT A WALL")
     && gameMakerRail.includes("SUBSTANTIAL SERIAL PRODUCT WORK MAY STAY IN THIS PANE")
     && gameMakerRail.includes("fresh criticism")
     && gameMakerRail.includes('KEEP THE COMMITTED "## Current game checkpoint" CURRENT')
-    && ["Build", "Seed", "Launch", "Experience", "Open defect", "Next", "Critic"]
-      .every((field) => gameMakerRail.includes(field))
+    && railRoleGameMaker.includes('${GAME_CHECKPOINT_FIELDS.join(", ")}')
     && !railRoleStandard.includes("SUBSTANTIAL SERIAL PRODUCT WORK MAY STAY IN THIS PANE");
+  pin(`${RULE_RAIL} — the Game-Maker rail, machine gate and both operator contracts share one ordered checkpoint vocabulary`,
+    checkpointFields.length === 7
+      && JSON.stringify(selfApiCheckpointFields) === JSON.stringify(checkpointFields)
+      && JSON.stringify(studioCheckpointFields) === JSON.stringify(checkpointFields)
+      && railRoleGameMaker.includes('${GAME_CHECKPOINT_FIELDS.join(", ")}'),
+    `machine=[${checkpointFields.join(", ")}] selfApi=[${selfApiCheckpointFields.join(", ")}] studio=[${studioCheckpointFields.join(", ")}] railSource=${railRoleGameMaker.includes('${GAME_CHECKPOINT_FIELDS.join(", ")}')}`);
   const agentsProfile = agents.includes("Game-Maker Program-MAIN")
     && agents.includes("causally coupled product act");
   // (E) THE LEGACY STANDARD RAIL IS FROZEN, AND THE HASH IS THE POINT. e2e/programs.ts proves the
@@ -3362,6 +3376,13 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && openBody.includes("openSlotIntents.delete(openIntent)")
       && openBody.includes("finally"),
     `openSlot=${openBody.length}`);
+  const firstFoundingPermit = openBody.indexOf("assertGameMakerFoundingTargetOpen");
+  const secondFoundingPermit = openBody.indexOf("assertGameMakerFoundingTargetOpen", firstFoundingPermit + 1);
+  pin(`${RULE_GM_TREE} — openSlot revalidates its exact founding permit after tmux teardown and before Slot mutation`,
+    firstFoundingPermit >= 0
+      && secondFoundingPermit > openBody.indexOf('await tmux("has-session"')
+      && secondFoundingPermit < openBody.indexOf("s.cwd = cwd"),
+    `first=${firstFoundingPermit} await=${openBody.indexOf('await tmux("has-session"')} second=${secondFoundingPermit} mutation=${openBody.indexOf("s.cwd = cwd")}`);
   pin(`${RULE_GM_TREE} — only the dedicated conflict type selects 409 at owner open seams`,
     /class GameMakerTreeConflict extends Error/.test(server)
       && /e instanceof GameMakerTreeConflict \? 409 : 400/.test(server)
@@ -3390,7 +3411,7 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     server.indexOf("// The Supervisor binding", programLoadAt));
   const completeAt = server.indexOf('if (action[2] === "complete")');
   const completeBody = completeAt < 0 ? "" : server.slice(completeAt, server.indexOf('if (program.status !== "proposed")', completeAt));
-  const bootRecoverAt = server.indexOf("await recoverInterruptedProgramFoundings();");
+  const bootRecoverAt = server.indexOf("await recoverInterruptedProgramFoundings(bootTmux);");
   const ensureBootAt = server.indexOf("for (const s of slots) {", bootRecoverAt);
   pin(`${RULE_GM_FOUNDING} — the closed v1 parser rejects malformed/unknown markers into a startup refusal, never absent`,
     /interface ProgramFounding[\s\S]*?v: 1[\s\S]*?attemptId[\s\S]*?mode[\s\S]*?canonicalRoot[\s\S]*?target[\s\S]*?predecessor[\s\S]*?startedAt/.test(server)
@@ -3429,32 +3450,51 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && ensureBootAt > bootRecoverAt && bootRecoverAt < server.indexOf("Bun.serve<WSData>"),
     `recover=${bootRecoverAt} ensure=${ensureBootAt}`);
   pin(`${RULE_GM_FOUNDING} — cleanup proves tmux absence before killSlot state clearing, and owner kill uses that path`,
-    /async function proveFoundingCandidateStopped[\s\S]*?tmux\("kill-session"[\s\S]*?tmux\("has-session"[\s\S]*?await killSlot/.test(server)
+    /async function proveFoundingCandidateStopped[\s\S]*?observeTmuxSlots\(\)[\s\S]*?tmux\("kill-session"[\s\S]*?observeTmuxSlots\(\)[\s\S]*?presence !== "absent"[\s\S]*?await killSlot/.test(server)
       && server.includes('rollbackProgramFounding(foundingProgram, founding, "owner-kill")'),
     "absence proof or owner-kill routing missing");
   const recoveryAt = server.indexOf("async function recoverInterruptedProgramFoundings(");
   const recoveryBody = recoveryAt < 0 ? "" : server.slice(recoveryAt,
     server.indexOf("const SEND_BOOT_FRESH_MS", recoveryAt));
+  pin(`${RULE_GM_FOUNDING} — restart observation is tri-state and successful enumeration replaces HOME inference`,
+    server.includes('type TmuxPresence = "present" | "absent" | "unknown"')
+      && server.includes("async function observeTmuxSlots")
+      && server.includes("TmuxSlotObservations")
+      && !server.includes("s.cwd = p.out || HOME")
+      && recoveryBody.includes('presence !== "absent"')
+      && recoveryBody.includes("assertNoFoundingTreeOccupant"),
+    "tri-state observation, explicit absence or same-root scan is missing");
   pin(`${RULE_GM_FOUNDING} — a wrong occupant outside the tree survives; one inside the protected tree stops startup`,
     recoveryBody.indexOf("!treePathsOverlap(targetRoot, founding.canonicalRoot)") >= 0
+      && recoveryBody.indexOf("assertNoFoundingTreeOccupant(program, founding, bootTmux)") >= 0
       && recoveryBody.indexOf('clearProgramFounding(program, founding, "boot-stale-foreign-target-preserved")') >= 0
-      && recoveryBody.indexOf("throw new Error(`REFUSING TO START:")
+      && recoveryBody.indexOf("throw new Error(`REFUSING TO START:",
+        recoveryBody.indexOf("!treePathsOverlap(targetRoot, founding.canonicalRoot)"))
         > recoveryBody.indexOf("!treePathsOverlap(targetRoot, founding.canonicalRoot)"),
     recoveryBody);
   pin(`${RULE_GM_FOUNDING} — receipt precedes the one durable marker-to-binding state cut in both founding modes`,
-    bootstrapBody.indexOf("await appendEvent(CONTEXT_RECEIPT_FILE") >= 0
-      && bootstrapBody.indexOf("await appendEvent(CONTEXT_RECEIPT_FILE") < bootstrapBody.indexOf("delete program.founding")
+    server.includes("function appendEventStrict")
+      && bootstrapBody.indexOf("await (founding ? appendEventStrict : appendEvent)(CONTEXT_RECEIPT_FILE") >= 0
+      && bootstrapBody.indexOf("await (founding ? appendEventStrict : appendEvent)(CONTEXT_RECEIPT_FILE") < bootstrapBody.indexOf("delete program.founding")
       && bootstrapBody.indexOf("delete program.founding") < bootstrapBody.indexOf("await saveStateNow()", bootstrapBody.indexOf("delete program.founding"))
-      && succeedBody.indexOf("await appendEvent(CONTEXT_RECEIPT_FILE") >= 0
-      && succeedBody.indexOf("await appendEvent(CONTEXT_RECEIPT_FILE") < succeedBody.indexOf("delete program.founding")
+      && succeedBody.indexOf("await (founding ? appendEventStrict : appendEvent)(CONTEXT_RECEIPT_FILE") >= 0
+      && succeedBody.indexOf("await (founding ? appendEventStrict : appendEvent)(CONTEXT_RECEIPT_FILE") < succeedBody.indexOf("delete program.founding")
       && succeedBody.indexOf("delete program.founding") < succeedBody.indexOf("await saveStateNow()", succeedBody.indexOf("delete program.founding")),
     `bootstrap=${bootstrapBody.length} succession=${succeedBody.length}`);
   const runtimeCases = [
     "bootstrap persists the exact target before delivery, blocks complete",
     "the exact founding target follows kill, absence proof, slot and marker cleanup",
-    "an exact opened candidate is stopped and cleared without receipt or binding",
+    "post-await permit recheck leaves no main, receipt, pane or slot orphan and the tree recoverable",
+    "an unwritable receipt ledger rolls back without binding, marker, pane or evidence",
+    "a matching orphan receipt never auto-binds and survives exact-candidate cleanup as history",
     "a pre-open marker clears, while a different-tree target is preserved",
-    "an unknown marker version refuses startup and remains byte-for-byte present",
+    "an unknown marker version refuses startup and preserves the marker bytes",
+    "a bootstrap marker plus an existing main refuses startup",
+    "a succession predecessor that is not current main refuses startup",
+    "a marker on an otherwise unreadable Program row refuses startup",
+    "inconsistent lifecycle timestamps with a marker refuse startup",
+    "tmux observation failure is unknown, preserves the marker and refuses startup",
+    "a same-root other-slot occupant is preserved and refuses startup",
     "candidate rolls back while predecessor binding and receipt count stay unchanged",
   ];
   pin(`${RULE_GM_FOUNDING} — runtime suite names bootstrap, complete, pre-open, exact-candidate, foreign-target and succession crash arms`,
@@ -3464,8 +3504,10 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     foundingSelfApi.includes("Program.founding")
       && documentedMarkerAt >= 0 && documentedRecoveryAt > documentedMarkerAt
       && foundingSelfApi.includes("Brief-Replay noch Auto-Bind")
+      && foundingSelfApi.includes("Completion beendet eine vorhandene MAIN-Pane nicht automatisch")
       && foundingStudioDoc.includes("A restart never guesses authority")
-      && foundingStudioDoc.includes("evidence of an interrupted delivery, not authority"),
+      && foundingStudioDoc.includes("evidence of an interrupted delivery, not authority")
+      && foundingStudioDoc.includes("automatically kill an existing MAIN pane"),
     "the durable marker/recovery contract drifted out of the operator or studio document");
 }
 

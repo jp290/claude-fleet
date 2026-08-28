@@ -775,6 +775,12 @@ Bindungsquelle. Erfolg schreibt zuerst das Receipt und verschiebt dann in genau 
 Program-State-Cut `founding -> main`. Owner-Kill eines exakten Founding-Targets benutzt denselben
 kill→Abwesenheitsbeweis→Slot-/Marker-Cleanup-Pfad.
 
+Die tmux-Grenze ist dabei dreiwertig: `present`, `absent`, `unknown`. Nur eine erfolgreiche
+Session-Aufzählung beweist Zugehörigkeit oder Abwesenheit; ein fehlgeschlagener Probe- oder
+Pfad-Read ist `unknown`, nie HOME und nie Abwesenheit. Vor dem Löschen eines stale oder fremd
+recycelten Markers wird zusätzlich jeder live beobachtete Slot-Root gegen `canonicalRoot` geprüft.
+Eine andere Session im selben Baum lässt den Start mit Marker und Session unangetastet verweigern.
+
 **Lifecycle-Schreiber sind während der Gründung gesperrt.** Solange ein Program-MAIN-Founding dieses
 Programs läuft — synchron in `programBootstrapInflight` oder durabel in `Program.founding` —
 antworten eine **echte Profiländerung**, ein zweites Founding und `complete` mit 409. Die Gründung
@@ -783,6 +789,11 @@ Slot-Öffnung, Boot-Grace und Readiness-Wait. Ohne diese Sperre könnte ein Stan
 Maschinenprüfung niemand gefahren hat, einen game-maker-Brief ausgeliefert bekommen; `complete`
 könnte eine später gebundene MAIN an ein terminales Program hängen. Ein identischer Profil-Retry
 antwortet vor allen Sperren 200 und schreibt nichts.
+
+`complete` ist der Owner-Akt, der die Game-Maker-Exklusivität freigibt. Er ist nur wahr, nachdem
+der Owner die Produktarbeit bewusst beendet oder stillgelegt hat; ein laufendes `founding` bleibt
+409. Completion beendet eine vorhandene MAIN-Pane nicht automatisch — Pane-Retirement und
+Program-Lifecycle bleiben getrennte Owner-Entscheidungen.
 
 **Die Nachfolge hat ein zweites Gate.** Das generische bleibt unverändert (HANDOFF.md existiert, ist
 sauber, jünger als die Session). Für `game-maker` wird zusätzlich die COMMITTETE HEAD-Fassung
@@ -795,6 +806,10 @@ HAT** (`git cat-file -t`): vierzig Hex-Zeichen sind eine Form, kein Build, und e
 benennt, macht den Vergleich der Nachfolgerin zu einer unbeantwortbaren Prüfung im Gewand einer
 Prüfung. Dass Fleet damit den GESPIELTEN Commit beweist, folgt daraus NICHT — das bleibt die eigene
 Beobachtung der Session und bleibt bei Abweichung `unknown`.
+
+Checkpoint-Feldreihenfolge: `Build`, `Launch`, `Last replay`, `Experience`, `Open defect`, `Next`, `Critic`.
+`Last replay` benennt, soweit anwendbar, den exakten Seed, den realen Input und die
+Capture-Evidenz; es ist kein achtes Feld.
 
 **`carry` ist für eine game-maker-Nachfolge 409.** Es gibt genau EINEN Übergabekanal, und das ist
 der committete Checkpoint: lesbar für Nachfolgerin und Owner-Proof, und er überlebt die Pane.

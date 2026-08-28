@@ -2135,49 +2135,49 @@ export async function run(ctx: Ctx): Promise<void> {
       if (row) row.founding = plantedBootstrap(gmRefusalTarget, "2");
     }, "tmux state is unknown", "x".repeat(200));
 
-  // A different slot in the protected tree is neither the target nor the succession predecessor.
-  // Recovery must preserve both its pane and the marker by refusing startup; deleting the live-root
-  // scan clears the marker and lets the process serve with two potential writers.
-  const gmSameRootSlot = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? 0;
-  const gmSameRootOpen = gmSameRootSlot > 0 ? await post(`/api/slots/${gmSameRootSlot}/open`, {
-    cwd: gameWt, label: "same-root-recovery-ambiguity",
-  }) : null;
-  const gmSameRootOpenText = gmSameRootOpen === null ? null : await gmSameRootOpen.clone().text();
+  // A numeric tmux session outside Fleet's 1..16 Slot domain cannot be adopted into restored state.
+  // It therefore isolates the independent live-root scan: deleting that scan clears the marker and
+  // lets the process serve while this same-root writer remains alive.
+  const gmSameRootSession = "s99";
   const gmSameRootTarget = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? 0;
-  let gmSameRootPaneLive = false;
-  if (gmSameRootOpen?.ok && gmSameRootSlot > 0) {
-    for (let i = 0; i < 250; i++) {
-      if ((await tmuxOut("has-session", "-t", `s${gmSameRootSlot}`)).code === 0) {
-        gmSameRootPaneLive = true;
-        break;
-      }
-      await Bun.sleep(20);
-    }
+  const gmSameRootBefore = await tmuxOut("has-session", "-t", gmSameRootSession);
+  const gmSameRootSpawn = gmSameRootBefore.code !== 0 && gmSameRootTarget > 0
+    ? await tmuxOut("new-session", "-d", "-s", gmSameRootSession, "-c", gameWt, "sleep 300") : null;
+  const gmSameRootLive = gmSameRootSpawn?.code === 0
+    ? await tmuxOut("has-session", "-t", gmSameRootSession) : null;
+  const gmSameRootCwd = gmSameRootSpawn?.code === 0
+    ? await tmuxOut("display-message", "-p", "-t", gmSameRootSession, "#{pane_current_path}") : null;
+  const gmSameRootFixture = gmSameRootBefore.code !== 0 && gmSameRootSpawn?.code === 0
+    && gmSameRootLive?.code === 0 && gmSameRootCwd?.out.trim() === realpathSync(gameWt)
+    && gmSameRootTarget > 0;
+  check("game-maker founding recovery fixture: an out-of-domain same-root tmux session is live before startup",
+    gmSameRootFixture, JSON.stringify({ before: gmSameRootBefore.code, spawn: gmSameRootSpawn?.code,
+      live: gmSameRootLive?.code, cwd: gmSameRootCwd?.out.trim(), target: gmSameRootTarget }));
+  if (!gmSameRootFixture) {
+    if (gmSameRootSpawn?.code === 0) await tmuxOut("kill-session", "-t", gmSameRootSession);
+    throw new Error("game-maker independent live-tmux fixture never became observable");
   }
-  // `/open` publishes the Slot row before its pane is necessarily observable. Without this named
-  // precondition the arm below measures the dormant-Slot refusal a second time while claiming it
-  // measured the independent live-tmux scan. Removing the poll makes this fixture fail as itself.
-  check("game-maker founding recovery fixture: the same-root open reaches a live pane before the startup cut",
-    gmSameRootOpen?.ok === true && gmSameRootPaneLive && gmSameRootTarget > 0
-      && gmSameRootTarget !== gmSameRootSlot,
-    JSON.stringify({ open: [gmSameRootOpen?.status, gmSameRootOpenText], slot: gmSameRootSlot,
-      target: gmSameRootTarget, paneLive: gmSameRootPaneLive }));
-  if (!gmSameRootOpen?.ok || !gmSameRootPaneLive || gmSameRootTarget <= 0
-    || gmSameRootTarget === gmSameRootSlot)
-    throw new Error("game-maker same-root live-tmux fixture never became observable");
-  await expectFoundingStartupRefusal(
-    "game-maker founding recovery: a same-root other-slot occupant is preserved and refuses startup",
-    (state) => {
-      const row = state.programs?.find((p) => p.id === gmRefusalProgram.id);
-      if (row) row.founding = plantedBootstrap(gmSameRootTarget, "3");
-    }, `live session s${gmSameRootSlot} also occupies`);
-  check("game-maker founding recovery: the refused same-root occupant still exists after fixture repair",
-    gmSameRootOpen?.ok === true
-      && (await sessions()).slots.find((slot) => slot.id === gmSameRootSlot)?.cwd === realpathSync(gameWt)
-      && (await tmuxOut("has-session", "-t", `s${gmSameRootSlot}`)).code === 0,
-    JSON.stringify({ open: gmSameRootOpen?.status,
-      slot: (await sessions()).slots.find((slot) => slot.id === gmSameRootSlot) }));
-  if (gmSameRootOpen?.ok) await post(`/api/slots/${gmSameRootSlot}/kill`, {});
+  try {
+    await expectFoundingStartupRefusal(
+      "game-maker founding recovery: a same-root other-slot occupant is preserved and refuses startup",
+      (state) => {
+        const row = state.programs?.find((p) => p.id === gmRefusalProgram.id);
+        if (row) row.founding = plantedBootstrap(gmSameRootTarget, "3");
+      }, `live session ${gmSameRootSession} also occupies`);
+    const gmSameRootPreserved = await tmuxOut("has-session", "-t", gmSameRootSession);
+    const gmSameRootPreservedCwd = await tmuxOut(
+      "display-message", "-p", "-t", gmSameRootSession, "#{pane_current_path}");
+    check("game-maker founding recovery: the refused live tmux occupant survives fixture repair",
+      gmSameRootPreserved.code === 0
+        && gmSameRootPreservedCwd.out.trim() === realpathSync(gameWt),
+      JSON.stringify({ live: gmSameRootPreserved.code, cwd: gmSameRootPreservedCwd.out.trim() }));
+  } finally {
+    const gmSameRootKilled = await tmuxOut("kill-session", "-t", gmSameRootSession);
+    const gmSameRootAbsent = await tmuxOut("has-session", "-t", gmSameRootSession);
+    check("game-maker founding recovery fixture: the out-of-domain tmux session is cleaned exactly",
+      gmSameRootKilled.code === 0 && gmSameRootAbsent.code !== 0,
+      JSON.stringify({ killed: gmSameRootKilled.code, absent: gmSameRootAbsent.code }));
+  }
 
   // A restored Slot row is a future self-heal even when tmux has no pane yet. Scanning tmux alone
   // would clear this marker and then let ensureSlot create the second writer a few lines later.

@@ -1,10 +1,10 @@
 // Slots: open/reject/rename, WS streaming + input, the width-aware reseed, the data-saver
 // seed budget + poll plan, and HTML/txt export (including the real-metacharacter escaping
 // regression).
-import { mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname } from "node:path";
-import { BASE, IP, PORT, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
+import { BASE, IP, PORT, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
 import { exists } from "./lane-helpers";
 import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 import { slotStats } from "../slotstats";
@@ -36,6 +36,24 @@ export async function run(): Promise<void> {
   // observed live 2026-07-25 on the steward slot. Slot 3 is free here (its open was rejected
   // above) and is killed again at the end of this block. ---
   const HOME = process.env.HOME ?? "";
+  type PersistedSlot3 = { label?: string | null; cwd?: string | null } | null | undefined;
+  const persistedSlot3 = async (): Promise<PersistedSlot3> => {
+    try {
+      return ((await Bun.file(`${ROOT}/fleet.json`).json()) as
+        { slots?: Record<string, { label?: string | null; cwd?: string | null }> }).slots?.["3"] ?? null;
+    } catch { return undefined; }
+  };
+  const waitForPersistedSlot3 = async (accept: (row: PersistedSlot3) => boolean,
+    timeoutMs = 3000): Promise<PersistedSlot3> => {
+    const until = Date.now() + timeoutMs;
+    let row: PersistedSlot3 = undefined;
+    while (Date.now() < until) {
+      row = await persistedSlot3();
+      if (accept(row)) return row;
+      await Bun.sleep(25);
+    }
+    return row;
+  };
   const panePath = async (target: string, want: string): Promise<string> => {
     let seen = "";
     for (let i = 0; i < 60; i++) { // the shell's cwd, polled — never a fixed sleep
@@ -79,6 +97,136 @@ export async function run(): Promise<void> {
     (await (await get("/api/sessions")).json() as { slots: { id: number; label: string | null; cwd: string | null }[] })
       .slots.find((x) => x.id === 3)?.label === "⚙ steward");
   await post("/api/slots/3/kill", {});
+  const initialKillPersisted = await waitForPersistedSlot3((row) => row === null);
+  check("slot-stream fixture: slot 3 kill is durable before restarting with the latch",
+    initialKillPersisted === null, JSON.stringify(initialKillPersisted) ?? "unreadable");
+
+  // --- a stale ensureSlot continuation may finish after the slot was killed and recycled. The
+  // spawn barrier intentionally ends before capture/pipe/repaint, so those later effects need their
+  // own immutable occupant path and tmux ids. This latch stops A after capture but before its first
+  // file write; B must be able to replace it while stopped. Mutations caught here: returning to the
+  // shared streams/s3.raw path, dropping the post-write occupant check, or targeting pipe/repaint at
+  // the reusable name s3 instead of the captured pane/window ids. ---
+  {
+    const streamDir = `${ROOT}/streams`;
+    const latch = `${ROOT}/slot-post-capture-latch`;
+    const reachedPath = `${latch}.reached`;
+    const releasePath = `${latch}.release`;
+    const waitForFile = async (path: string, timeoutMs = 5000): Promise<boolean> => {
+      const until = Date.now() + timeoutMs;
+      while (Date.now() < until) {
+        if (await exists(path)) return true;
+        await Bun.sleep(25);
+      }
+      return false;
+    };
+    for (const path of [latch, reachedPath, releasePath]) rmSync(path, { force: true });
+    await restartSrv({ FLEET_TEST_SLOT_POST_CAPTURE_LATCH: latch });
+    const staleOpen = post("/api/slots/3/open", { cwd: "~", label: "stream-race-A" });
+    const reached = await waitForFile(reachedPath);
+    check("slot-stream fixture: A reaches the post-capture latch before any stream write", reached,
+      reached ? readFileSync(reachedPath, "utf8").trim() : "latch not reached");
+    let aFinal = "", aStage = "";
+    if (reached) {
+      try {
+        const row = JSON.parse(readFileSync(reachedPath, "utf8")) as { final?: unknown; stage?: unknown };
+        if (typeof row.final === "string") aFinal = row.final;
+        if (typeof row.stage === "string") aStage = row.stage;
+      } catch { /* fixture check below owns malformed latch evidence */ }
+    }
+    check("slot-stream fixture: latch names A's occupant-specific final and stage paths",
+      aFinal.startsWith(`${streamDir}/s3-`) && aFinal.endsWith(".raw") && aStage === `${aFinal}.stage`,
+      JSON.stringify({ aFinal, aStage }));
+    const killedA = await post("/api/slots/3/kill", {});
+    check("slot-stream fixture: kill A completes while its post-capture continuation is paused",
+      killedA.ok, `${killedA.status} ${await killedA.text()}`);
+    const openedB = await post("/api/slots/3/open", { cwd: "~/claude-fleet", label: "stream-race-B" });
+    check("slot-stream fixture: B opens in the same reusable slot while A remains paused",
+      openedB.ok, `${openedB.status} ${await openedB.text()}`);
+    const bRaw = readdirSync(streamDir)
+      .filter((name) => name.startsWith("s3-") && name.endsWith(".raw") && `${streamDir}/${name}` !== aFinal)
+      .map((name) => `${streamDir}/${name}`);
+    check("slot-stream fixture: B owns exactly one different occupant-specific stream",
+      bRaw.length === 1, JSON.stringify(bRaw));
+    const bFinal = bRaw[0] ?? "";
+    const beforeMarker = "STREAM-RACE-B-BEFORE";
+    const afterMarker = "STREAM-RACE-B-AFTER";
+    if (bFinal) appendFileSync(bFinal, `${beforeMarker}\n`);
+    writeFileSync(releasePath, "release\n", { mode: 0o600 });
+    const staleResult = await staleOpen;
+    check("slot-stream fixture: releasing A lets its stale open return without hanging B",
+      staleResult.ok, `${staleResult.status} ${await staleResult.text()}`);
+    await tmuxOut("send-keys", "-t", "s3", `printf '${afterMarker}\\n'`, "Enter");
+    let bBody = "";
+    for (let i = 0; i < 60; i++) {
+      try { bBody = readFileSync(bFinal, "utf8"); } catch { bBody = ""; }
+      if (bBody.includes(afterMarker)) break;
+      await Bun.sleep(50);
+    }
+    const raceState = await waitForPersistedSlot3((row) =>
+      row?.label === "stream-race-B" && row.cwd === `${HOME}/claude-fleet`);
+    const leftovers = readdirSync(streamDir).filter((name) => name.startsWith("s3-") && name.endsWith(".stage"));
+    check("a stale A continuation cannot overwrite B's stream, retarget B's pipe, or relabel B",
+      raceState?.label === "stream-race-B" && raceState.cwd === `${HOME}/claude-fleet`
+        && bBody.includes(beforeMarker) && bBody.includes(afterMarker)
+        && !bBody.includes("stream-race-A") && !readdirSync(streamDir).includes("s3.raw")
+        && !readdirSync(streamDir).includes(aFinal.split("/").pop() ?? "") && leftovers.length === 0,
+      JSON.stringify({ raceState, bBody: bBody.slice(-200), leftovers }));
+    await post("/api/slots/3/kill", {});
+    const raceKillPersisted = await waitForPersistedSlot3((row) => row === null);
+    check("slot-stream fixture: B kill is durable before the latch restart", raceKillPersisted === null,
+      JSON.stringify(raceKillPersisted) ?? "unreadable");
+    await restartSrv();
+    for (const path of [latch, reachedPath, releasePath]) rmSync(path, { force: true });
+  }
+
+  // --- tmux new-session is the only tmux command that owns a process timeout. A PATH-local fake
+  // blocks its first new-session and delegates everything else (and every later new-session) to the
+  // real binary. The first open must return typed UNKNOWN within timeout+TERM/KILL grace; kill and a
+  // successful second open prove the per-slot spawn promise was removed in finally. Mutations caught:
+  // using generic tmux() for a new-session, TERM without KILL escalation, or leaking slotSpawnInflight. ---
+  {
+    const fakeBin = `${ROOT}/tmux-new-session-timeout-bin`;
+    const marker = `${ROOT}/tmux-new-session-timeout.once`;
+    const realTmux = Bun.which("tmux") ?? "";
+    rmSync(fakeBin, { recursive: true, force: true });
+    rmSync(marker, { force: true });
+    mkdirSync(fakeBin, { recursive: true });
+    const fakeTmux = `${fakeBin}/tmux`;
+    writeFileSync(fakeTmux, `#!/bin/sh\ncase " $* " in\n  *" new-session "*)\n    if [ ! -e '${marker}' ]; then\n      : > '${marker}'\n      exec sleep 60\n    fi\n    ;;\nesac\nexec '${realTmux}' "$@"\n`, { mode: 0o700 });
+    chmodSync(fakeTmux, 0o700);
+    check("tmux-timeout fixture: the real tmux binary and executable blocking shim exist",
+      realTmux.startsWith("/") && await exists(fakeTmux), JSON.stringify({ realTmux, fakeTmux }));
+    await restartSrv({
+      PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+      FLEET_TMUX_NEW_SESSION_TIMEOUT_MS: "150",
+    });
+    const started = Date.now();
+    const unavailable = await post("/api/slots/3/open", { cwd: "~", label: "tmux-timeout-A" });
+    const unavailableText = await unavailable.text();
+    let unavailableBody: { error?: unknown; availability?: unknown } = {};
+    try { unavailableBody = JSON.parse(unavailableText) as typeof unavailableBody; } catch { /* asserted below */ }
+    const unavailableMs = Date.now() - started;
+    check("a blocked tmux new-session returns 503 named unavailable/unknown within timeout plus kill grace",
+      unavailable.status === 503 && unavailableBody.availability === "unknown"
+        && String(unavailableBody.error ?? "").includes("tmux new-session unavailable")
+        && unavailableMs >= 100 && unavailableMs < 2500,
+      `${unavailable.status} ${unavailableMs}ms ${unavailableText.slice(0, 180)}`);
+    const timeoutKill = await post("/api/slots/3/kill", {});
+    check("the timed-out occupant remains killable after the spawn barrier finally clears",
+      timeoutKill.ok, `${timeoutKill.status} ${await timeoutKill.text()}`);
+    const recovered = await post("/api/slots/3/open", { cwd: "~", label: "tmux-timeout-B" });
+    check("a second open succeeds after the first timed-out spawn (no leaked in-flight promise)",
+      recovered.ok && (await tmuxOut("has-session", "-t", "s3")).code === 0,
+      `${recovered.status} ${await recovered.text()}`);
+    await post("/api/slots/3/kill", {});
+    const timeoutKillPersisted = await waitForPersistedSlot3((row) => row === null);
+    check("tmux-timeout fixture: recovered occupant kill is durable before restoring PATH",
+      timeoutKillPersisted === null, JSON.stringify(timeoutKillPersisted) ?? "unreadable");
+    await restartSrv();
+    rmSync(fakeBin, { recursive: true, force: true });
+    rmSync(marker, { force: true });
+  }
 
   // --- rename ---
   const rn = await post("/api/slots/2/rename", { label: "research-agent" });
@@ -277,7 +425,10 @@ export async function run(): Promise<void> {
     // 1) size. Flood the pane so the raw stream is far bigger than one screenful of history,
     // then wait for it to stop growing (never a fixed sleep) before measuring.
     await tmuxOut("send-keys", "-t", "s2", "seq 1 30000", "Enter");
-    const rawPath = `${ROOT}/streams/s2.raw`;
+    const rawName = readdirSync(`${ROOT}/streams`).find((name) => name.startsWith("s2-") && name.endsWith(".raw"));
+    const rawPath = rawName ? `${ROOT}/streams/${rawName}` : "";
+    check("the active slot stream is occupant-specific rather than the reusable s2.raw name",
+      !!rawName && !readdirSync(`${ROOT}/streams`).includes("s2.raw"), rawName ?? "missing");
     let raw = 0;
     for (let i = 0; i < 100; i++) {
       const n = Bun.file(rawPath).size;

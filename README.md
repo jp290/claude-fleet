@@ -112,7 +112,7 @@ bun run build                              # rebuild client bundles after editin
 ./e2e-claude-gate.sh                       # separate: exercises the claude-alive gate against a real compiled stand-in binary (needs a C compiler; own socket/port)
 ```
 
-Env: `FLEET_HOST` (default `127.0.0.1`), `FLEET_PORT` (8790), `FLEET_SOCK` (tmux socket, default `claudefleet`), `FLEET_TOKEN`, `FLEET_ALLOWED_HOSTS`, `FLEET_CMD`, `FLEET_CHIPS`, and for sharing `FLEET_SHARE_HOSTS` + `FLEET_SHARE_URL` (see SHARING.md).
+Env: `FLEET_HOST` (default `127.0.0.1`), `FLEET_PORT` (8790), `FLEET_SOCK` (tmux socket, default `claudefleet`), `FLEET_TOKEN`, `FLEET_ALLOWED_HOSTS`, `FLEET_CMD`, `FLEET_CHIPS`, `FLEET_TMUX_NEW_SESSION_TIMEOUT_MS` (default 15000; empty, malformed, or below 100 uses the default), and for sharing `FLEET_SHARE_HOSTS` + `FLEET_SHARE_URL` (see SHARING.md).
 
 ## Pinned: xterm 5.5.0, NOT 6.x
 

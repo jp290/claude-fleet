@@ -3488,18 +3488,56 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   const hasAwait = ensureBody.indexOf('await tmux("has-session"');
   const afterHasIdentity = ensureBody.indexOf("sameSlotSpawnOccupant(s, occupant)", hasAwait);
   const beforeSpawnIdentity = ensureBody.lastIndexOf("sameSlotSpawnOccupant(s, occupant)",
-    ensureBody.indexOf('tmux("new-session"'));
+    ensureBody.indexOf("tmuxNewSession("));
   pin(`${RULE_GM_TREE} — self-heal snapshots the occupant, rechecks after has-session and before spawn, while teardown joins the spawn commit`,
     /let occupant = slotSpawnOccupant\(s\)/.test(ensureBody)
       && hasAwait >= 0 && afterHasIdentity > hasAwait
       && beforeSpawnIdentity > afterHasIdentity
-      && beforeSpawnIdentity < ensureBody.indexOf('tmux("new-session"')
+      && beforeSpawnIdentity < ensureBody.indexOf("tmuxNewSession(")
       && ensureBody.includes("slotSpawnInflight.set(s.id, spawn)")
       && ensureBody.includes("if (slotSpawnInflight.get(s.id) === spawn) slotSpawnInflight.delete(s.id)")
       && /const concurrentSpawn = slotSpawnInflight\.get\(s\.id\);[\s\S]*?if \(concurrentSpawn\) \{ await concurrentSpawn; return; \}[\s\S]*?if \(!sameSlotSpawnOccupant\(s, occupant\)\) return;[\s\S]*?slotSpawnInflight\.set\(s\.id, spawn\)/.test(ensureBody)
       && openBody.indexOf("await waitForSlotSpawn(s.id)") < openBody.indexOf('await tmux("has-session"')
       && killBody.indexOf("await waitForSlotSpawn(s.id)") < killBody.indexOf('audit("slot_kill"'),
-    `has=${hasAwait} after=${afterHasIdentity} before=${beforeSpawnIdentity} spawn=${ensureBody.indexOf('tmux("new-session"')}`);
+    `has=${hasAwait} after=${afterHasIdentity} before=${beforeSpawnIdentity} spawn=${ensureBody.indexOf("tmuxNewSession(")}`);
+  const streamPathAt = server.indexOf("const occupantStreamPath");
+  const stageWriteAt = ensureBody.indexOf("await Bun.write(stagePath");
+  const postCaptureLatchAt = ensureBody.indexOf("await waitForSlotPostCaptureTestLatch");
+  const publishAt = ensureBody.indexOf("renameSync(stagePath, finalPath)");
+  const exactPipeAt = ensureBody.indexOf('tmux("pipe-pane", "-t", target.paneId');
+  const exactRepaintAt = ensureBody.indexOf("await repaint(target.windowId)");
+  pin(`${RULE_GM_TREE} — stream files are occupant-specific and a staged capture publishes only after the post-capture identity recheck`,
+    streamPathAt >= 0 && server.includes("createHash(\"sha256\").update(occupant.selfToken)")
+      && ensureBody.includes("const finalPath = occupantStreamPath(occupant)")
+      && ensureBody.includes("const stagePath = occupantStreamStagePath(occupant)")
+      && postCaptureLatchAt > ensureBody.indexOf('tmux("capture-pane", "-t", target.paneId')
+      && stageWriteAt > postCaptureLatchAt
+      && ensureBody.indexOf("sameSlotSpawnOccupant(s, occupant)", stageWriteAt) > stageWriteAt
+      && publishAt > ensureBody.indexOf("sameSlotSpawnOccupant(s, occupant)", stageWriteAt),
+    `path=${streamPathAt} latch=${postCaptureLatchAt} write=${stageWriteAt} publish=${publishAt}`);
+  pin(`${RULE_GM_TREE} — capture/pipe/repaint bind immutable tmux pane/window ids, never the reusable sN name`,
+    ensureBody.includes('"-P", "-F", "#{pane_id}\\t#{window_id}"')
+      && ensureBody.includes("await existingTmuxTarget(name)")
+      && exactPipeAt >= 0 && exactRepaintAt > exactPipeAt
+      && !/tmux\("(?:capture-pane|pipe-pane)"[\s\S]*?"-t", name/.test(ensureBody),
+    `pipe=${exactPipeAt} repaint=${exactRepaintAt}`);
+  pin(`${RULE_GM_TREE} — only tmuxNewSession owns new-session, with bounded TERM/KILL and honest invalid-env fallback`,
+    !server.includes('tmux("new-session"')
+      && server.includes("async function tmuxNewSession(")
+      && server.includes("TMUX_NEW_SESSION_TIMEOUT_MS")
+      && server.includes("FLEET_TMUX_NEW_SESSION_TIMEOUT_MS")
+      && /raw !== undefined && \/\^\\d\+\$\/\.test\(raw\)/.test(server)
+      && server.includes("p.kill()") && server.includes("p.kill(9)")
+      && ensureBody.includes("await tmuxNewSession(")
+      && read("e2e/slots.ts").includes('FLEET_TMUX_NEW_SESSION_TIMEOUT_MS: "150"'),
+    "new-session bypass, timeout escalation, invalid-env fallback, or runtime arm is missing");
+  pin(`${RULE_GM_TREE} — teardown removes only its captured occupant stream and the legacy sN.raw name is migration-only`,
+    killBody.includes("const streamOccupant = slotStreamOccupant(s)")
+      && killBody.includes("sameSlotStreamOccupant(s, streamOccupant)")
+      && killBody.includes("occupantStreamPath(streamOccupant)")
+      && ensureBody.includes("legacyStreamPath(s.id)")
+      && read("e2e/slots.ts").includes("slot-post-capture-latch"),
+    "exact cleanup, legacy migration, or deterministic stale-continuation arm is missing");
   pin(`${RULE_GM_TREE} — only the dedicated conflict type selects 409 at owner open seams`,
     /class GameMakerTreeConflict extends Error/.test(server)
       && /e instanceof GameMakerTreeConflict \? 409 : 400/.test(server)

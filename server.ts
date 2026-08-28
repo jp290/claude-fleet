@@ -12681,7 +12681,11 @@ function helperDevicesView(): HelperDeviceView[] {
   };
   for (const [repo, c] of helperClaims)
     if (helperClaimOf(repo)) push(c.deviceId, { kind: "audit", repo: basename(repo), ref: c.main, expiresAt: c.expiresAt });
+  // the STATE guard beside the clock, the same pair helperJobsView uses: a settled offer nulls its
+  // claim (reported/withdrawn/reaped all do), so this is belt-and-braces — but "holds a preview" is
+  // a sentence about another machine's next 13 minutes, and it may not survive one forgotten null.
   for (const j of laneSuiteJobs.values()) {
+    if (j.state !== "claimed") continue;
     const c = laneSuiteClaimOf(j);
     if (c) push(c.deviceId, { kind: "lane-suite", repo: basename(j.repo), ref: j.branch, expiresAt: c.expiresAt });
   }

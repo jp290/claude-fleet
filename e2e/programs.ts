@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, stat
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
-import { BASE, H, REPO, REPO2, REPO3, REPO4, ROOT, TOKEN, check, get, paneEnv, post, restartSrv, tmuxOut } from "./harness";
+import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, post, restartSrv, tmuxOut } from "./harness";
 import { phaseOf, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import type { LaneSignalView } from "../lane-signals";
 import { setMergeMode } from "./lane-helpers";
@@ -33,6 +33,9 @@ interface Program extends ProgramContent {
   // the owner's EXECUTION ENVIRONMENT for this program's MAIN — absent on every Program until the
   // owner grants it, and absent is the exact legacy Standard MAIN every assertion here reads as.
   profile?: { v: number; kind: string; confirmedAt: number };
+  founding?: { v: number; attemptId: string; mode: "bootstrap" | "succession";
+    canonicalRoot: string; target: { slot: number; openedAt: number };
+    predecessor: { slot: number; openedAt: number } | null; startedAt: number };
   // V1b — the return path into this program's MAIN. Derived per request exactly like `occupancy`
   // and persisted nowhere, so it is read off the ROUTE and never off fleet.json.
   deliveryBudget?: { state?: string; deliveryDebts?: number; armedReservations?: number;
@@ -1785,6 +1788,148 @@ export async function run(ctx: Ctx): Promise<void> {
   if (gmRaceUnlockedOpen?.ok) await post(`/api/slots/${gmRaceUnlockedSlot}/kill`, {});
   for (const program of gmRaceRows) await programPost(program.id, "complete");
 
+  // OWNER KILL IS THE SAME ROLLBACK, not a generic slot clear that strands the marker. The
+  // candidate is still pre-delivery here, so a complete rollback has four observable effects:
+  // pane absent, slot empty, marker absent, and no receipt or binding invented.
+  const gmOwnerKillProgram = await activateNewProgram("Game-Maker owner-kill rollback");
+  await setProfile(gmOwnerKillProgram.id, GAME_MAKER);
+  const gmOwnerKillLabel = "game-maker-owner-kill";
+  const gmOwnerKillReceiptsBefore = (await contextReceipts()).receipts
+    .filter((row) => row.programId === gmOwnerKillProgram.id).length;
+  const gmOwnerKillPending = beginBootstrap(gmOwnerKillProgram.id, {
+    cwd: gameWt, label: gmOwnerKillLabel, harness: "codex", model: "gpt-5.5", effort: "high",
+  });
+  const gmOwnerKillSlot = await waitForLabel(gmOwnerKillLabel);
+  const gmOwnerKillMarker = (await ownerPrograms()).find((p) => p.id === gmOwnerKillProgram.id)?.founding;
+  const gmOwnerKillResponse = gmOwnerKillSlot === null
+    ? null
+    : await post(`/api/slots/${gmOwnerKillSlot}/kill`, {});
+  const gmOwnerKillFoundingResponse = await gmOwnerKillPending;
+  const gmOwnerKillAfter = (await ownerPrograms()).find((p) => p.id === gmOwnerKillProgram.id);
+  check("game-maker owner kill: the exact founding target follows kill, absence proof, slot and marker cleanup",
+    gmOwnerKillSlot !== null && gmOwnerKillMarker?.target.slot === gmOwnerKillSlot
+      && gmOwnerKillResponse?.ok === true && gmOwnerKillFoundingResponse.status === 500
+      && gmOwnerKillAfter?.status === "active" && gmOwnerKillAfter.main === undefined
+      && gmOwnerKillAfter.founding === undefined
+      && !(await sessions()).slots.find((slot) => slot.id === gmOwnerKillSlot)?.cwd
+      && (await tmuxOut("has-session", "-t", `s${gmOwnerKillSlot}`)).code !== 0
+      && (await contextReceipts()).receipts.filter((row) => row.programId === gmOwnerKillProgram.id).length
+        === gmOwnerKillReceiptsBefore,
+    JSON.stringify({ marker: gmOwnerKillMarker, kill: gmOwnerKillResponse?.status,
+      founding: gmOwnerKillFoundingResponse.status, after: gmOwnerKillAfter }));
+  await programPost(gmOwnerKillProgram.id, "complete");
+
+  // CRASH AFTER TARGET OPEN, BEFORE DELIVERY. The durable marker and exact Slot identity are both
+  // visible before srv dies. The next boot must kill that candidate, clear only its marker, invent
+  // neither a receipt nor a binding, and return the Program to active/unbound.
+  const gmCrashProgram = await activateNewProgram("Game-Maker bootstrap crash recovery");
+  await setProfile(gmCrashProgram.id, GAME_MAKER);
+  const gmCrashLabel = "game-maker-bootstrap-crash";
+  const gmCrashReceiptsBefore = (await contextReceipts()).receipts
+    .filter((row) => row.programId === gmCrashProgram.id).length;
+  const gmCrashPending = beginBootstrap(gmCrashProgram.id, {
+    cwd: gameWt, label: gmCrashLabel, harness: "codex", model: "gpt-5.5", effort: "high",
+  }).catch(() => null);
+  const gmCrashSlot = await waitForLabel(gmCrashLabel);
+  const gmCrashMarker = (await ownerPrograms()).find((p) => p.id === gmCrashProgram.id)?.founding;
+  await restartSrv();
+  await gmCrashPending;
+  const gmCrashAfter = (await ownerPrograms()).find((p) => p.id === gmCrashProgram.id);
+  const gmCrashReceiptsAfter = (await contextReceipts()).receipts
+    .filter((row) => row.programId === gmCrashProgram.id).length;
+  check("game-maker bootstrap restart: an exact opened candidate is stopped and cleared without receipt or binding",
+    gmCrashSlot !== null && gmCrashMarker?.target.slot === gmCrashSlot
+      && gmCrashAfter?.status === "active" && gmCrashAfter.main === undefined && gmCrashAfter.founding === undefined
+      && !(await sessions()).slots.find((slot) => slot.id === gmCrashSlot)?.cwd
+      && (await tmuxOut("has-session", "-t", `s${gmCrashSlot}`)).code !== 0
+      && gmCrashReceiptsAfter === gmCrashReceiptsBefore,
+    JSON.stringify({ before: gmCrashMarker, after: gmCrashAfter,
+      pane: gmCrashSlot === null ? null : (await tmuxOut("has-session", "-t", `s${gmCrashSlot}`)).code,
+      receipts: [gmCrashReceiptsBefore, gmCrashReceiptsAfter] }));
+  await programPost(gmCrashProgram.id, "complete");
+
+  // CRASH BEFORE OPEN, plus the safe wrong-target arm. These states are planted while srv is down:
+  // both are persisted crash facts, not request-time mocks. A target with no occupant is stale; a
+  // recycled target in a different tree is foreign work and must survive while only the marker is
+  // retired.
+  const gmStaleProgram = await activateNewProgram("Game-Maker pre-open crash recovery");
+  const gmWrongProgram = await activateNewProgram("Game-Maker wrong-target crash recovery");
+  await setProfile(gmStaleProgram.id, GAME_MAKER);
+  await setProfile(gmWrongProgram.id, GAME_MAKER);
+  const gmWrongSlot = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? 0;
+  const gmWrongOpen = gmWrongSlot ? await post(`/api/slots/${gmWrongSlot}/open`, {
+    cwd: gameWtSibling, label: "foreign-occupant-survives-founding-recovery",
+  }) : null;
+  const gmWrongOpenedAt = readState().slots?.[String(gmWrongSlot)]?.openedAt ?? 0;
+  const gmStaleSlot = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? 0;
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const planted = readState();
+  const plantedAt = Date.now();
+  const staleRow = planted.programs?.find((p) => p.id === gmStaleProgram.id);
+  const wrongRow = planted.programs?.find((p) => p.id === gmWrongProgram.id);
+  if (staleRow) staleRow.founding = { v: 1, attemptId: "a".repeat(32), mode: "bootstrap",
+    canonicalRoot: realpathSync(gameWt), target: { slot: gmStaleSlot, openedAt: plantedAt },
+    predecessor: null, startedAt: plantedAt };
+  if (wrongRow) wrongRow.founding = { v: 1, attemptId: "b".repeat(32), mode: "bootstrap",
+    canonicalRoot: realpathSync(gameWt), target: { slot: gmWrongSlot, openedAt: gmWrongOpenedAt },
+    predecessor: null, startedAt: plantedAt };
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(planted, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const gmRecoveryRows = await ownerPrograms();
+  check("game-maker boot recovery: a pre-open marker clears, while a different-tree target is preserved and only its stale marker clears",
+    gmStaleSlot > 0 && gmWrongSlot > 0 && gmWrongOpen?.ok === true
+      && gmRecoveryRows.find((p) => p.id === gmStaleProgram.id)?.founding === undefined
+      && gmRecoveryRows.find((p) => p.id === gmWrongProgram.id)?.founding === undefined
+      && (await sessions()).slots.find((slot) => slot.id === gmWrongSlot)?.cwd === realpathSync(gameWtSibling)
+      && (await tmuxOut("has-session", "-t", `s${gmWrongSlot}`)).code === 0,
+    JSON.stringify({ stale: gmRecoveryRows.find((p) => p.id === gmStaleProgram.id),
+      wrong: gmRecoveryRows.find((p) => p.id === gmWrongProgram.id),
+      slot: (await sessions()).slots.find((slot) => slot.id === gmWrongSlot) }));
+  if (gmWrongOpen?.ok) await post(`/api/slots/${gmWrongSlot}/kill`, {});
+  await programPost(gmStaleProgram.id, "complete");
+  await programPost(gmWrongProgram.id, "complete");
+
+  // A PRESENT BUT UNKNOWN safety marker is not an optional preference. Let the real process read a
+  // v2 record, prove it exits before serving, and prove the bytes remain for owner inspection. The
+  // fixture then removes only its own planted marker and returns through the ordinary restart path.
+  const gmMalformedProgram = await activateNewProgram("Game-Maker malformed founding refusal");
+  await setProfile(gmMalformedProgram.id, GAME_MAKER);
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const malformedState = readState();
+  const malformedRow = malformedState.programs?.find((p) => p.id === gmMalformedProgram.id);
+  const malformedAt = Date.now();
+  if (malformedRow) (malformedRow as unknown as Record<string, unknown>).founding = {
+    v: 2, attemptId: "c".repeat(32), mode: "bootstrap", canonicalRoot: realpathSync(gameWt),
+    target: { slot: 16, openedAt: malformedAt }, predecessor: null, startedAt: malformedAt,
+  };
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(malformedState, null, 2), { mode: 0o600 });
+  const refusalLogAt = existsSync(`${ROOT}/server.log`) ? statSync(`${ROOT}/server.log`).size : 0;
+  const refusalSpawn = await tmuxOut("new-session", "-d", "-s", "srv",
+    `cd '${ROOT}' && FLEET_HOST=${IP} FLEET_PORT=${PORT} FLEET_SOCK=${SOCK} exec bun server.ts >> server.log 2>&1`);
+  let refusalStopped = false;
+  for (let i = 0; i < 60; i++) {
+    if ((await tmuxOut("has-session", "-t", "srv")).code !== 0) { refusalStopped = true; break; }
+    await Bun.sleep(50);
+  }
+  const refusalLog = existsSync(`${ROOT}/server.log`)
+    ? readFileSync(`${ROOT}/server.log`, "utf8").slice(refusalLogAt) : "";
+  const refusedState = readState();
+  check("game-maker founding loader: an unknown marker version refuses startup and remains byte-for-byte present",
+    !!malformedRow && refusalSpawn.code === 0 && refusalStopped
+      && refusalLog.includes("REFUSING TO START") && refusalLog.includes("v must be 1")
+      && (refusedState.programs?.find((p) => p.id === gmMalformedProgram.id)?.founding as unknown as { v?: number })?.v === 2,
+    JSON.stringify({ spawn: refusalSpawn.code, stopped: refusalStopped,
+      refusal: refusalLog.slice(-300), marker: refusedState.programs?.find((p) => p.id === gmMalformedProgram.id)?.founding }));
+  if (!refusalStopped) await tmuxOut("kill-session", "-t", "srv");
+  const repairedState = readState();
+  const repairedRow = repairedState.programs?.find((p) => p.id === gmMalformedProgram.id);
+  if (repairedRow) delete repairedRow.founding;
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(repairedState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  await programPost(gmMalformedProgram.id, "complete");
+
   // (2) THE LINKED WORKTREE FOUNDING SUCCEEDS, and the delivered text is the whole deliverable.
   const gmLabel = "program-main-game-maker";
   const gmReceiptsBefore = await contextReceipts();
@@ -1795,6 +1940,27 @@ export async function run(ctx: Ctx): Promise<void> {
   check("game-maker founding precondition: the linked-worktree founding occupant became observable",
     gmSlot !== null, String(gmSlot));
   const gmProfileBeforeInflightRetry = (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.profile;
+  const gmFoundingDuringBootstrap = (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.founding;
+  const gmCompleteDuringBootstrap = await programPost(gmProgram.id, "complete");
+  const gmCompleteDuringBootstrapText = await gmCompleteDuringBootstrap.text();
+  const gmPendingOpenSlot = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? 0;
+  const gmPendingGenericOpen = gmPendingOpenSlot ? await post(`/api/slots/${gmPendingOpenSlot}/open`, {
+    cwd: gameWt, label: "generic-into-pending-game-maker",
+  }) : null;
+  const gmPendingGenericText = gmPendingGenericOpen ? await gmPendingGenericOpen.text() : "no free slot";
+  check("game-maker founding marker: bootstrap persists the exact target before delivery, blocks complete, and protects the tree from generic open",
+    gmSlot !== null && gmFoundingDuringBootstrap?.v === 1
+      && gmFoundingDuringBootstrap.mode === "bootstrap"
+      && gmFoundingDuringBootstrap.canonicalRoot === realpathSync(gameWt)
+      && gmFoundingDuringBootstrap.target.slot === gmSlot
+      && gmFoundingDuringBootstrap.target.openedAt === readState().slots?.[String(gmSlot)]?.openedAt
+      && gmFoundingDuringBootstrap.predecessor === null
+      && gmCompleteDuringBootstrap.status === 409 && gmCompleteDuringBootstrapText.includes("founding")
+      && gmPendingOpenSlot > 0 && gmPendingGenericOpen?.status === 409
+      && gmPendingGenericText.includes("founding")
+      && (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.status === "active",
+    JSON.stringify({ founding: gmFoundingDuringBootstrap, complete: [gmCompleteDuringBootstrap.status, gmCompleteDuringBootstrapText],
+      open: [gmPendingGenericOpen?.status, gmPendingGenericText] }));
   const gmInflightRetry = await setProfile(gmProgram.id, GAME_MAKER);
   const gmProfileAfterInflightRetry = (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.profile;
   check("game-maker profile: an identical grant retry is a true 200 no-op even while founding is in flight",
@@ -1816,6 +1982,18 @@ export async function run(ctx: Ctx): Promise<void> {
       && gmReceipt.briefHash === briefHashOf(gmPrompt)
       && gmReceipt.deliveredBytes === new TextEncoder().encode(gmPrompt).byteLength,
     `${gmResponse.status} ${JSON.stringify(gmReceipt ?? null)}`);
+  const gmBoundBeforeRestart = (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main;
+  check("game-maker founding marker: successful bootstrap atomically leaves a binding and no pending marker",
+    !!gmBoundBeforeRestart && gmBoundBeforeRestart.slot === gmSlot
+      && (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.founding === undefined
+      && readState().programs?.find((p) => p.id === gmProgram.id)?.founding === undefined,
+    JSON.stringify((await ownerPrograms()).find((p) => p.id === gmProgram.id)));
+  await restartSrv();
+  const gmAfterBootstrapRestart = (await ownerPrograms()).find((p) => p.id === gmProgram.id);
+  check("game-maker founding marker: a successful binding survives restart without recreating an intent",
+    JSON.stringify(gmAfterBootstrapRestart?.main) === JSON.stringify(gmBoundBeforeRestart)
+      && gmAfterBootstrapRestart?.founding === undefined,
+    JSON.stringify(gmAfterBootstrapRestart));
   check("game-maker founding: a subdirectory-shaped request is normalized to git's linked-worktree toplevel",
     gmBody.slot !== undefined
       && (await sessions()).slots.find((slot) => slot.id === gmBody.slot)?.cwd === realpathSync(gameWt),
@@ -2056,9 +2234,46 @@ export async function run(ctx: Ctx): Promise<void> {
       && JSON.stringify((await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main ?? null) === carryBindingBefore,
     `open=${succSquatterOpen?.status} ${succSquatterText}`);
 
+  // SUCCESSION CRASH: the old MAIN remains the authority until the one durable binding cut. Kill
+  // srv after the target+marker exist but before readiness; boot must stop only the candidate,
+  // preserve predecessor+binding, clear the marker and mint no receipt.
+  const gmSuccessionCrashLabel = "program-main-game-maker-successor-crash";
+  const gmSuccessionCrashReceiptsBefore = (await contextReceipts()).total;
+  const gmBindingBeforeSuccessionCrash = (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main;
+  const gmSuccessionCrashPending = selfSucceed(gmMainToken, { label: gmSuccessionCrashLabel }).catch(() => null);
+  const gmSuccessionCrashSlot = await waitForLabel(gmSuccessionCrashLabel);
+  const gmSuccessionCrashMarker = (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.founding;
+  await restartSrv();
+  await gmSuccessionCrashPending;
+  const gmAfterSuccessionCrash = (await ownerPrograms()).find((p) => p.id === gmProgram.id);
+  check("game-maker succession restart: candidate rolls back while predecessor binding and receipt count stay unchanged",
+    gmSuccessionCrashSlot !== null && gmSuccessionCrashMarker?.mode === "succession"
+      && gmSuccessionCrashMarker.target.slot === gmSuccessionCrashSlot
+      && gmSuccessionCrashMarker.predecessor?.slot === gmSlot
+      && JSON.stringify(gmAfterSuccessionCrash?.main) === JSON.stringify(gmBindingBeforeSuccessionCrash)
+      && gmAfterSuccessionCrash?.founding === undefined
+      && !(await sessions()).slots.find((slot) => slot.id === gmSuccessionCrashSlot)?.cwd
+      && (await tmuxOut("has-session", "-t", `s${gmSuccessionCrashSlot}`)).code !== 0
+      && (await contextReceipts()).total === gmSuccessionCrashReceiptsBefore,
+    JSON.stringify({ marker: gmSuccessionCrashMarker, before: gmBindingBeforeSuccessionCrash,
+      after: gmAfterSuccessionCrash, receipts: [gmSuccessionCrashReceiptsBefore, (await contextReceipts()).total] }));
+
   const gmSuccessionReceiptsBefore = (await contextReceipts()).total;
   const gmSuccessionPending = selfSucceed(gmMainToken, { label: gmSuccessorLabel });
   const gmSuccessorSlot = await waitForLabel(gmSuccessorLabel);
+  const gmDuringSuccession = (await ownerPrograms()).find((p) => p.id === gmProgram.id);
+  const gmCompleteDuringSuccession = await programPost(gmProgram.id, "complete");
+  const gmCompleteDuringSuccessionText = await gmCompleteDuringSuccession.text();
+  check("game-maker founding marker: succession names target and predecessor and blocks completion without moving the old binding",
+    gmSuccessorSlot !== null && gmDuringSuccession?.founding?.mode === "succession"
+      && gmDuringSuccession.founding.target.slot === gmSuccessorSlot
+      && gmDuringSuccession.founding.predecessor?.slot === gmSlot
+      && gmDuringSuccession.founding.predecessor.openedAt === readState().slots?.[String(gmSlot)]?.openedAt
+      && gmDuringSuccession.main?.slot === gmSlot
+      && gmCompleteDuringSuccession.status === 409 && gmCompleteDuringSuccessionText.includes("founding")
+      && (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.status === "active",
+    JSON.stringify({ row: gmDuringSuccession,
+      complete: [gmCompleteDuringSuccession.status, gmCompleteDuringSuccessionText] }));
   if (gmSuccessorSlot !== null) {
     await Bun.sleep(250);
     await respawnScreen(gmSuccessorSlot, ">_ OpenAI Codex (v0.147.0)");

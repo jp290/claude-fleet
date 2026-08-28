@@ -3334,7 +3334,7 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   const RULE_GM_TREE = "a Game-Maker tree stays exclusive from request entry through receipt, at the shared open seam";
   const openAt = server.indexOf("async function openSlot(");
   const openBody = openAt < 0 ? "" : server.slice(openAt, server.indexOf("\n}\n", openAt) + 3);
-  const bootstrapAt = server.indexOf("async function bootstrapProgramMain(");
+  const bootstrapAt = server.indexOf("async function bootstrapProgramMainReserved(");
   const bootstrapBody = bootstrapAt < 0 ? "" : server.slice(bootstrapAt, server.indexOf("\n}\n", bootstrapAt) + 3);
   const succeedAt = server.indexOf("async function succeedProgramMain(");
   const succeedBody = succeedAt < 0 ? "" : server.slice(succeedAt, bootstrapAt);
@@ -3370,6 +3370,103 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   pin(`${RULE_GM_TREE} — Fleet and candidate repository identity both fail closed`,
     /FLEET_GIT_COMMON === null \|\| v\.commonDir === null/.test(server),
     "gameMakerMachineError does not reject an unreadable Fleet or candidate common-dir");
+}
+
+// A Game-Maker founding is a persisted transition, not a process-local promise. Runtime exercises
+// the crash cuts; these rules hold the ordering and fail-closed loader/IO seams that a graceful
+// single-process run cannot manufacture without killing its own server.
+{
+  const RULE_GM_FOUNDING = "a Game-Maker founding has one durable target identity across crash, complete and cleanup";
+  const foundingSelfApi = read("docs/self-api.md");
+  const foundingStudioDoc = read("docs/product-studio-working-circle.md");
+  const documentedMarkerAt = foundingSelfApi.indexOf("bevor** `openSlot`");
+  const documentedRecoveryAt = foundingSelfApi.indexOf("Restart und der eine Erfolgsschnitt");
+  const bootstrapAt = server.indexOf("async function bootstrapProgramMain(");
+  const bootstrapBody = bootstrapAt < 0 ? "" : server.slice(bootstrapAt, server.indexOf("async function handleOwnerProgramRoute", bootstrapAt));
+  const succeedAt = server.indexOf("async function succeedProgramMain(");
+  const succeedBody = succeedAt < 0 ? "" : server.slice(succeedAt, bootstrapAt);
+  const programLoadAt = server.indexOf("const loaded: Program[] = [];");
+  const programLoadBody = programLoadAt < 0 ? "" : server.slice(programLoadAt,
+    server.indexOf("// The Supervisor binding", programLoadAt));
+  const completeAt = server.indexOf('if (action[2] === "complete")');
+  const completeBody = completeAt < 0 ? "" : server.slice(completeAt, server.indexOf('if (program.status !== "proposed")', completeAt));
+  const bootRecoverAt = server.indexOf("await recoverInterruptedProgramFoundings();");
+  const ensureBootAt = server.indexOf("for (const s of slots) {", bootRecoverAt);
+  pin(`${RULE_GM_FOUNDING} — the closed v1 parser rejects malformed/unknown markers into a startup refusal, never absent`,
+    /interface ProgramFounding[\s\S]*?v: 1[\s\S]*?attemptId[\s\S]*?mode[\s\S]*?canonicalRoot[\s\S]*?target[\s\S]*?predecessor[\s\S]*?startedAt/.test(server)
+      && server.includes("const loadProgramFounding =")
+      && server.includes("repoCanon(r.canonicalRoot) !== r.canonicalRoot")
+      && server.includes("predecessor.slot === target.slot")
+      && server.includes("startupStateRefusal")
+      && server.includes("REFUSING TO START")
+      && server.includes("The safety marker was left on disk for owner inspection")
+      && programLoadBody.indexOf("const foundingRead =") >= 0
+      && programLoadBody.indexOf("const foundingRead =") < programLoadBody.indexOf("validateProgramContent(x)")
+      && programLoadBody.includes("has a succession founding marker that does not name its current MAIN")
+      && programLoadBody.includes("has a bootstrap founding marker but is not unbound"),
+    "closed parser or startup refusal missing");
+  pin(`${RULE_GM_FOUNDING} — marker save rejects to its caller, precedes openSlot, and exact openedAt comes from that marker`,
+    server.includes("const raw = saveChain") && server.includes("return raw;")
+      && bootstrapBody.indexOf("await persistGameMakerFounding") >= 0
+      && bootstrapBody.indexOf("await persistGameMakerFounding") < bootstrapBody.indexOf("await openSlot")
+      && succeedBody.indexOf("await persistGameMakerFounding") >= 0
+      && succeedBody.indexOf("await persistGameMakerFounding") < succeedBody.indexOf("await openSlot")
+      && server.includes("treeLease?.founding?.target.openedAt ?? Date.now()"),
+    `bootstrap=${bootstrapBody.length} succession=${succeedBody.length}`);
+  pin(`${RULE_GM_FOUNDING} — bootstrap persists marker plus unbound fallback, while succession retains its exact predecessor`,
+    /if \(mode === "bootstrap"\) delete program\.main;[\s\S]*?program\.founding = founding;[\s\S]*?await saveStateNow\(\)/.test(server)
+      && server.includes('mode === "bootstrap"') && server.includes("lease.predecessor === null")
+      && server.includes("program.main?.slot === founding.predecessor.slot")
+      && server.includes("program.main.openedAt === founding.predecessor.openedAt"),
+    "the durable marker does not encode the promised bootstrap/succession fallback");
+  pin(`${RULE_GM_FOUNDING} — complete checks both the synchronous lease and durable marker before status mutation`,
+    completeBody.includes("programBootstrapInflight.has(program.id) || program.founding")
+      && completeBody.indexOf("programBootstrapInflight.has(program.id) || program.founding")
+        < completeBody.indexOf('program.status = "complete"'),
+    completeBody);
+  pin(`${RULE_GM_FOUNDING} — boot recovery runs after tmux adoption and before any restored-slot ensure`,
+    bootRecoverAt > server.indexOf('const ls = await tmux("list-sessions"')
+      && ensureBootAt > bootRecoverAt && bootRecoverAt < server.indexOf("Bun.serve<WSData>"),
+    `recover=${bootRecoverAt} ensure=${ensureBootAt}`);
+  pin(`${RULE_GM_FOUNDING} — cleanup proves tmux absence before killSlot state clearing, and owner kill uses that path`,
+    /async function proveFoundingCandidateStopped[\s\S]*?tmux\("kill-session"[\s\S]*?tmux\("has-session"[\s\S]*?await killSlot/.test(server)
+      && server.includes('rollbackProgramFounding(foundingProgram, founding, "owner-kill")'),
+    "absence proof or owner-kill routing missing");
+  const recoveryAt = server.indexOf("async function recoverInterruptedProgramFoundings(");
+  const recoveryBody = recoveryAt < 0 ? "" : server.slice(recoveryAt,
+    server.indexOf("const SEND_BOOT_FRESH_MS", recoveryAt));
+  pin(`${RULE_GM_FOUNDING} — a wrong occupant outside the tree survives; one inside the protected tree stops startup`,
+    recoveryBody.indexOf("!treePathsOverlap(targetRoot, founding.canonicalRoot)") >= 0
+      && recoveryBody.indexOf('clearProgramFounding(program, founding, "boot-stale-foreign-target-preserved")') >= 0
+      && recoveryBody.indexOf("throw new Error(`REFUSING TO START:")
+        > recoveryBody.indexOf("!treePathsOverlap(targetRoot, founding.canonicalRoot)"),
+    recoveryBody);
+  pin(`${RULE_GM_FOUNDING} — receipt precedes the one durable marker-to-binding state cut in both founding modes`,
+    bootstrapBody.indexOf("await appendEvent(CONTEXT_RECEIPT_FILE") >= 0
+      && bootstrapBody.indexOf("await appendEvent(CONTEXT_RECEIPT_FILE") < bootstrapBody.indexOf("delete program.founding")
+      && bootstrapBody.indexOf("delete program.founding") < bootstrapBody.indexOf("await saveStateNow()", bootstrapBody.indexOf("delete program.founding"))
+      && succeedBody.indexOf("await appendEvent(CONTEXT_RECEIPT_FILE") >= 0
+      && succeedBody.indexOf("await appendEvent(CONTEXT_RECEIPT_FILE") < succeedBody.indexOf("delete program.founding")
+      && succeedBody.indexOf("delete program.founding") < succeedBody.indexOf("await saveStateNow()", succeedBody.indexOf("delete program.founding")),
+    `bootstrap=${bootstrapBody.length} succession=${succeedBody.length}`);
+  const runtimeCases = [
+    "bootstrap persists the exact target before delivery, blocks complete",
+    "the exact founding target follows kill, absence proof, slot and marker cleanup",
+    "an exact opened candidate is stopped and cleared without receipt or binding",
+    "a pre-open marker clears, while a different-tree target is preserved",
+    "an unknown marker version refuses startup and remains byte-for-byte present",
+    "candidate rolls back while predecessor binding and receipt count stay unchanged",
+  ];
+  pin(`${RULE_GM_FOUNDING} — runtime suite names bootstrap, complete, pre-open, exact-candidate, foreign-target and succession crash arms`,
+    runtimeCases.every((text) => read("e2e/programs.ts").includes(text)),
+    `missing=[${runtimeCases.filter((text) => !read("e2e/programs.ts").includes(text)).join(" | ")}]`);
+  pin(`${RULE_GM_FOUNDING} — operator and studio docs distinguish durable intent, rollback and evidence from authority`,
+    foundingSelfApi.includes("Program.founding")
+      && documentedMarkerAt >= 0 && documentedRecoveryAt > documentedMarkerAt
+      && foundingSelfApi.includes("Brief-Replay noch Auto-Bind")
+      && foundingStudioDoc.includes("A restart never guesses authority")
+      && foundingStudioDoc.includes("evidence of an interrupted delivery, not authority"),
+    "the durable marker/recovery contract drifted out of the operator or studio document");
 }
 
 // The profile buttons are an owner actuator, not decorative prose. Runtime executes the pure

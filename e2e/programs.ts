@@ -2142,7 +2142,29 @@ export async function run(ctx: Ctx): Promise<void> {
   const gmSameRootOpen = gmSameRootSlot > 0 ? await post(`/api/slots/${gmSameRootSlot}/open`, {
     cwd: gameWt, label: "same-root-recovery-ambiguity",
   }) : null;
+  const gmSameRootOpenText = gmSameRootOpen === null ? null : await gmSameRootOpen.clone().text();
   const gmSameRootTarget = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? 0;
+  let gmSameRootPaneLive = false;
+  if (gmSameRootOpen?.ok && gmSameRootSlot > 0) {
+    for (let i = 0; i < 250; i++) {
+      if ((await tmuxOut("has-session", "-t", `s${gmSameRootSlot}`)).code === 0) {
+        gmSameRootPaneLive = true;
+        break;
+      }
+      await Bun.sleep(20);
+    }
+  }
+  // `/open` publishes the Slot row before its pane is necessarily observable. Without this named
+  // precondition the arm below measures the dormant-Slot refusal a second time while claiming it
+  // measured the independent live-tmux scan. Removing the poll makes this fixture fail as itself.
+  check("game-maker founding recovery fixture: the same-root open reaches a live pane before the startup cut",
+    gmSameRootOpen?.ok === true && gmSameRootPaneLive && gmSameRootTarget > 0
+      && gmSameRootTarget !== gmSameRootSlot,
+    JSON.stringify({ open: [gmSameRootOpen?.status, gmSameRootOpenText], slot: gmSameRootSlot,
+      target: gmSameRootTarget, paneLive: gmSameRootPaneLive }));
+  if (!gmSameRootOpen?.ok || !gmSameRootPaneLive || gmSameRootTarget <= 0
+    || gmSameRootTarget === gmSameRootSlot)
+    throw new Error("game-maker same-root live-tmux fixture never became observable");
   await expectFoundingStartupRefusal(
     "game-maker founding recovery: a same-root other-slot occupant is preserved and refuses startup",
     (state) => {
@@ -2291,6 +2313,10 @@ export async function run(ctx: Ctx): Promise<void> {
   };
   const GENERIC_ROLE_SENTENCE = "Use an isolated worker lane for substantial product implementation";
   const gmRole = gmRoleOf(gmPrompt);
+  // The delivered template wraps prose for readability. Collapse formatting whitespace only:
+  // deleting or changing any required word still fails, while moving the same sentence across an
+  // 80-column boundary does not become a product regression.
+  const gmRoleWords = gmRole.replace(/\s+/g, " ");
   check("game-maker rail: the standard shapes keep the generic role paragraph and carry no profile block",
     rail.includes(GENERIC_ROLE_SENTENCE) && rail.includes("THE ROLE SPLIT IS A JUDGEMENT, NOT A WALL")
       && railShapes.every(([, prompt]) => !prompt.includes(GM_HEAD)),
@@ -2347,15 +2373,16 @@ export async function run(ctx: Ctx): Promise<void> {
       && gmRole.includes("never the MAIN/Architect chat or rationale"),
     `order=[${gmPreflightAt.join(",")}]`);
   check("game-maker preflight: Review may finalize inside scope; ACCEPT lands that exact commit, while RETHINK and OWNER create no implementation or final land",
-    gmRole.includes("optimize the Card and its one to four briefs")
-      && gmRole.includes("ACCEPT <final-card-sha>")
-      && gmRole.includes("LAND EXACTLY THE REVIEWER'S FINAL")
-      && gmRole.includes("copy its first-slice briefs verbatim")
-      && gmRole.includes("release only dependency-free")
-      && gmRole.includes("RETHINK is not a review loop")
-      && gmRole.includes("named missing evidence")
-      && gmRole.includes("OWNER likewise files no implementation")
-      && gmRole.includes("lands no final Card"),
+    gmRoleWords.includes("optimize the Card and its one to four briefs")
+      && gmRoleWords.includes("ACCEPT <final-card-sha>")
+      && gmRoleWords.includes("LAND EXACTLY THE REVIEWER'S FINAL")
+      && gmRoleWords.includes("copy its first-slice briefs verbatim")
+      // Mutation: widening this to all roots or removing the dependency qualifier fails here.
+      && gmRoleWords.includes("release dependency-free roots")
+      && gmRoleWords.includes("RETHINK is not a review loop")
+      && gmRoleWords.includes("named missing evidence")
+      && gmRoleWords.includes("OWNER likewise files no implementation")
+      && gmRoleWords.includes("lands no final Card"),
     gmRole.slice(gmRole.indexOf("THEN RUN ONE"), gmRole.indexOf("DIRECT SLICE")));
   const gmPreflightTruth = [
     ["binding role obligation, not a machine claim", "BINDING ROLE OBLIGATION, NOT A SERVER GATE"],
@@ -2366,31 +2393,35 @@ export async function run(ctx: Ctx): Promise<void> {
     ["Fleet does not claim to prove the receipt", "Fleet does not assemble or prove this receipt"],
     ["owner Board is the fallback land door", "owner lands that exact Reviewer commit from the Board"],
   ] as const;
-  const gmMissingTruth = gmPreflightTruth.filter(([, marker]) => !gmRole.includes(marker));
+  // Mutation: dropping any task/model/SHA receipt member, Board fallback, or unknown boundary
+  // still removes words from the normalized delivered text and fails this list.
+  const gmMissingTruth = gmPreflightTruth.filter(([, marker]) => !gmRoleWords.includes(marker));
   check("game-maker preflight: the binding role rule requires a manual auditable receipt and does not claim machine enforcement",
     gmMissingTruth.length === 0
-      && gmRole.includes("remain technically reachable")
-      && gmRole.includes("an absent comparison is unknown")
-      && gmRole.includes("Only after that comparison"),
-    `missing=[${gmMissingTruth.map(([why]) => why).join(" | ")}] reachable=${gmRole.includes("remain technically reachable")} unknown=${gmRole.includes("an absent comparison is unknown")} releaseAfter=${gmRole.includes("Only after that comparison")}`);
+      && gmRoleWords.includes("remain technically reachable")
+      && gmRoleWords.includes("an absent comparison is unknown")
+      && gmRoleWords.includes("Only after that comparison"),
+    `missing=[${gmMissingTruth.map(([why]) => why).join(" | ")}] reachable=${gmRoleWords.includes("remain technically reachable")} unknown=${gmRoleWords.includes("an absent comparison is unknown")} releaseAfter=${gmRoleWords.includes("Only after that comparison")}`);
   check("game-maker preflight: Direct Slice is a small accepted-scope feature, not necessarily a named Card slice; a new game or core pivot re-Preflights",
-    gmRole.includes("DIRECT SLICE")
-      && gmRole.includes("inside an accepted game scope")
-      && gmRole.includes("need not be one of the Card's named first slices")
-      && ["bounded", "reversible", "low-risk", "change no core contract"].every((text) => gmRole.includes(text))
-      && gmRole.includes("owner-confirmed core pivot or new game inside an existing Program starts a new Preflight")
-      && gmRole.includes("never a Direct Slice"),
+    gmRoleWords.includes("DIRECT SLICE")
+      && gmRoleWords.includes("inside an accepted game scope")
+      && gmRoleWords.includes("need not be one of the Card's named first slices")
+      && ["bounded", "reversible", "low-risk", "change no core contract"].every((text) => gmRoleWords.includes(text))
+      // Mutation: allowing a new game/core pivot through Direct Slice removes this re-Preflight rule.
+      && gmRoleWords.includes("owner-confirmed core pivot or new game inside an existing Program starts a new Preflight")
+      && gmRoleWords.includes("never a Direct Slice"),
     gmRole.slice(gmRole.indexOf("DIRECT SLICE"), gmRole.indexOf("BEFORE ANY SENSORY CLAIM")));
   check("game-maker sensory critic: the operator provides only sealed post-play evidence, never Card, HANDOFF, hypotheses or rationale",
-    gmRole.includes("SENSORY CRITIC IS POST-PLAY ONLY")
-      && gmRole.includes("After a playable exists")
-      && gmRole.includes("sealed build, launch, real-input and capture pack")
-      && gmRole.includes("no Game Card, no HANDOFF.md and no hypotheses")
-      && ["no rationale", "open defect", "rejected direction", "earlier verdict"].every((text) => gmRole.includes(text))
-      && gmRole.includes("Hashes identify the sealed bytes only")
-      && gmRole.includes("blindness and delivery are operator-attested or unknown")
-      && gmRole.includes("predecessor-to-successor and owner evidence")
-      && gmRole.includes("never sensory\nCritic inputs"),
+    gmRoleWords.includes("SENSORY CRITIC IS POST-PLAY ONLY")
+      && gmRoleWords.includes("After a playable exists")
+      && gmRoleWords.includes("sealed build, launch, real-input and capture pack")
+      // Mutation: adding any Card/HANDOFF/hypothesis/rationale channel removes one of these bans.
+      && gmRoleWords.includes("no Game Card, no HANDOFF.md and no hypotheses")
+      && ["no rationale", "open defect", "rejected direction", "earlier verdict"].every((text) => gmRoleWords.includes(text))
+      && gmRoleWords.includes("Hashes identify the sealed bytes only")
+      && gmRoleWords.includes("blindness and delivery are operator-attested or unknown")
+      && gmRoleWords.includes("predecessor-to-successor and owner evidence")
+      && gmRoleWords.includes("never sensory Critic inputs"),
     gmRole.slice(gmRole.indexOf("SENSORY CRITIC"), gmRole.length));
   check("game-maker rail: the profile block names no owner credential and no owner route either",
     gmRole.length > 0 && railForbidden.every((text) => !gmRole.includes(text)) && !gmRole.includes(TOKEN),

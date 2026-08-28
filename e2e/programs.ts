@@ -2848,6 +2848,171 @@ export async function run(ctx: Ctx): Promise<void> {
 
   if (gmBody.slot) await post(`/api/slots/${gmBody.slot}/kill`, {});
   if (gmSuccessionBody.slot) await post(`/api/slots/${gmSuccessionBody.slot}/kill`, {});
+
+  // SUCCESSION AUTHORITY IS A LIVE LEASE, not a request authenticated once at its beginning. These
+  // two default-off server latches stop on opposite sides of the receipt append. The first uses a
+  // Standard Program because that path historically moved Program.main before awaiting its
+  // best-effort receipt; the second uses Game-Maker's strict receipt so its one orphan row is
+  // durable evidence but cannot become authority. Each failure is named as its own fixture first.
+  const clearSuccessionLatch = (base: string): void => {
+    for (const path of [base, `${base}.reached`, `${base}.release`])
+      if (existsSync(path)) unlinkSync(path);
+  };
+  const waitForSuccessionLatch = async (path: string, name: string): Promise<boolean> => {
+    for (let i = 0; i < 500 && !existsSync(path); i++) await Bun.sleep(20);
+    const reached = existsSync(path);
+    check(name, reached, reached ? path : `not reached after 10000ms: ${path}`);
+    return reached;
+  };
+  const bootstrapRevocationMain = async (program: Program, cwd: string, label: string,
+    name: string): Promise<{ slot: number; openedAt: number; token: string }> => {
+    const pending = beginBootstrap(program.id, {
+      cwd, label, harness: "codex", model: "gpt-5.5", effort: "high",
+    });
+    const slot = await waitForLabel(label);
+    if (slot !== null) await respawnScreen(slot, ">_ OpenAI Codex (v0.147.0)");
+    const response = await pending;
+    const body = await response.json() as { slot?: number };
+    const state = slot === null ? undefined : readState().slots?.[String(slot)];
+    const ok = response.ok && body.slot === slot && slot !== null
+      && typeof state?.openedAt === "number" && state.openedAt > 0
+      && typeof state.selfToken === "string" && /^[0-9a-f]{32}$/.test(state.selfToken);
+    check(name, ok, JSON.stringify({ response: response.status, body, slot, state }));
+    if (!ok || slot === null || !state?.openedAt || !state.selfToken)
+      throw new Error(`${name} could not establish an exact predecessor`);
+    return { slot, openedAt: state.openedAt, token: state.selfToken };
+  };
+  const commitRevocationHandoff = async (cwd: string, openedAt: number, body: string,
+    message: string): Promise<number | null> => {
+    await Bun.sleep(Math.max(0, (Math.floor(openedAt / 1000) + 2) * 1000 - Date.now()));
+    writeFileSync(`${cwd}/HANDOFF.md`, body);
+    spawnSync("git", ["-C", cwd, "add", "HANDOFF.md"]);
+    return spawnSync("git", ["-C", cwd, "commit", "-qm", message]).status;
+  };
+
+  const afterOpenLatch = `${ROOT}/succession-after-open-latch`;
+  clearSuccessionLatch(afterOpenLatch);
+  await restartSrv({ FLEET_TEST_SUCCESSION_AFTER_OPEN_LATCH: afterOpenLatch });
+  const standardRevocationProgram = await activateNewProgram("Standard succession authority revocation");
+  const standardPredecessor = await bootstrapRevocationMain(
+    standardRevocationProgram, gameWt, "standard-revocation-predecessor",
+    "succession revocation fixture: the Standard predecessor is bound with an exact live identity");
+  const standardHandoffCommit = await commitRevocationHandoff(gameWt, standardPredecessor.openedAt,
+    `## Program succession\ncontinue ${standardRevocationProgram.title}\n`,
+    "succession fixture: Standard authority revocation");
+  const standardBindingBefore = (await ownerPrograms())
+    .find((p) => p.id === standardRevocationProgram.id)?.main;
+  const standardReceiptsBefore = (await contextReceipts()).receipts
+    .filter((row) => row.programId === standardRevocationProgram.id).length;
+  writeFileSync(afterOpenLatch, "armed\n", { mode: 0o600 });
+  const standardSuccessorLabel = "standard-revocation-candidate";
+  const standardSuccessionPending = selfSucceed(standardPredecessor.token,
+    { label: standardSuccessorLabel, carry: "must lose authority before receipt" });
+  const standardCandidateSlot = await waitForLabel(standardSuccessorLabel);
+  const afterOpenReached = await waitForSuccessionLatch(`${afterOpenLatch}.reached`,
+    "succession revocation fixture: the Standard candidate reaches the post-open authority cut");
+  const standardOwnerKill = afterOpenReached
+    ? await post(`/api/slots/${standardPredecessor.slot}/kill`, {}) : null;
+  const standardRecycle = standardOwnerKill?.ok
+    ? await post(`/api/slots/${standardPredecessor.slot}/open`, {
+      cwd: gameWtSibling, label: "replacement-after-standard-revocation",
+    }) : null;
+  const standardReplacement = readState().slots?.[String(standardPredecessor.slot)];
+  writeFileSync(`${afterOpenLatch}.release`, "release\n", { mode: 0o600 });
+  const standardRevokedResponse = await standardSuccessionPending;
+  const standardRevokedText = await standardRevokedResponse.text();
+  const standardAfter = (await ownerPrograms()).find((p) => p.id === standardRevocationProgram.id);
+  const standardReceiptsAfter = (await contextReceipts()).receipts
+    .filter((row) => row.programId === standardRevocationProgram.id).length;
+  const standardCandidateAbsent = standardCandidateSlot !== null
+    && !(await sessions()).slots.find((slot) => slot.id === standardCandidateSlot)?.cwd
+    && (await tmuxOut("has-session", "-t", `s${standardCandidateSlot}`)).code !== 0;
+  const standardReplacementAfter = readState().slots?.[String(standardPredecessor.slot)];
+  check("Program-MAIN succession revocation after target open rejects before receipt and preserves recycled predecessor",
+    standardHandoffCommit === 0 && afterOpenReached && standardOwnerKill?.ok === true
+      && standardRecycle?.ok === true && standardRevokedResponse.status === 409
+      && standardRevokedText.includes("predecessor authority changed")
+      && JSON.stringify(standardAfter?.main) === JSON.stringify(standardBindingBefore)
+      && standardAfter?.founding === undefined && standardReceiptsAfter === standardReceiptsBefore
+      && standardCandidateAbsent
+      && standardReplacementAfter?.cwd === realpathSync(gameWtSibling)
+      && standardReplacementAfter.openedAt === standardReplacement?.openedAt
+      && standardReplacementAfter.selfToken === standardReplacement?.selfToken
+      && !standardReplacementAfter.successionRetirement,
+    JSON.stringify({ handoff: standardHandoffCommit, reached: afterOpenReached,
+      kill: standardOwnerKill?.status, recycle: standardRecycle?.status,
+      response: [standardRevokedResponse.status, standardRevokedText],
+      binding: [standardBindingBefore, standardAfter?.main],
+      receipts: [standardReceiptsBefore, standardReceiptsAfter], candidate: standardCandidateSlot,
+      candidateAbsent: standardCandidateAbsent, replacement: standardReplacementAfter }));
+  if (standardCandidateSlot !== null
+    && (await sessions()).slots.find((slot) => slot.id === standardCandidateSlot)?.cwd)
+    await post(`/api/slots/${standardCandidateSlot}/kill`, {});
+  if (standardRecycle?.ok) await post(`/api/slots/${standardPredecessor.slot}/kill`, {});
+  await programPost(standardRevocationProgram.id, "complete");
+  clearSuccessionLatch(afterOpenLatch);
+
+  const afterReceiptLatch = `${ROOT}/succession-after-receipt-latch`;
+  clearSuccessionLatch(afterReceiptLatch);
+  await restartSrv({ FLEET_TEST_SUCCESSION_AFTER_RECEIPT_LATCH: afterReceiptLatch });
+  const gmRevocationProgram = await activateNewProgram("Game-Maker succession authority revocation");
+  await setProfile(gmRevocationProgram.id, GAME_MAKER);
+  const gmRevocationPredecessor = await bootstrapRevocationMain(
+    gmRevocationProgram, gameWt, "game-maker-revocation-predecessor",
+    "succession revocation fixture: the Game-Maker predecessor is bound with an exact live identity");
+  const gmRevocationHandoffCommit = await commitRevocationHandoff(
+    gameWt, gmRevocationPredecessor.openedAt,
+    goodCheckpoint.replace("Critic: docs/critic/play-03.md",
+      "Critic: docs/critic/play-05-authority-revocation.md"),
+    "succession fixture: Game-Maker authority revocation");
+  const gmRevocationBindingBefore = (await ownerPrograms())
+    .find((p) => p.id === gmRevocationProgram.id)?.main;
+  const gmRevocationReceiptsBefore = (await contextReceipts()).receipts
+    .filter((row) => row.programId === gmRevocationProgram.id).length;
+  writeFileSync(afterReceiptLatch, "armed\n", { mode: 0o600 });
+  const gmRevocationSuccessorLabel = "game-maker-revocation-candidate";
+  const gmRevocationPending = selfSucceed(gmRevocationPredecessor.token,
+    { label: gmRevocationSuccessorLabel });
+  const gmRevocationCandidateSlot = await waitForLabel(gmRevocationSuccessorLabel);
+  if (gmRevocationCandidateSlot !== null) {
+    await Bun.sleep(250);
+    await respawnScreen(gmRevocationCandidateSlot, ">_ OpenAI Codex (v0.147.0)");
+  }
+  const afterReceiptReached = await waitForSuccessionLatch(`${afterReceiptLatch}.reached`,
+    "succession revocation fixture: the Game-Maker receipt is durable before authority is revoked");
+  const gmRevocationOwnerKill = afterReceiptReached
+    ? await post(`/api/slots/${gmRevocationPredecessor.slot}/kill`, {}) : null;
+  writeFileSync(`${afterReceiptLatch}.release`, "release\n", { mode: 0o600 });
+  const gmRevokedResponse = await gmRevocationPending;
+  const gmRevokedText = await gmRevokedResponse.text();
+  const gmRevocationAfter = (await ownerPrograms()).find((p) => p.id === gmRevocationProgram.id);
+  const gmRevocationReceiptsAfter = (await contextReceipts()).receipts
+    .filter((row) => row.programId === gmRevocationProgram.id);
+  const gmRevocationOrphan = gmRevocationReceiptsAfter.at(-1);
+  const gmRevocationCandidateAbsent = gmRevocationCandidateSlot !== null
+    && !(await sessions()).slots.find((slot) => slot.id === gmRevocationCandidateSlot)?.cwd
+    && (await tmuxOut("has-session", "-t", `s${gmRevocationCandidateSlot}`)).code !== 0;
+  check("Game-Maker succession revocation after receipt leaves one orphan receipt without transferring authority",
+    gmRevocationHandoffCommit === 0 && afterReceiptReached && gmRevocationOwnerKill?.ok === true
+      && gmRevokedResponse.status === 409 && gmRevokedText.includes("predecessor authority changed")
+      && JSON.stringify(gmRevocationAfter?.main) === JSON.stringify(gmRevocationBindingBefore)
+      && gmRevocationAfter?.founding === undefined && gmRevocationCandidateAbsent
+      && gmRevocationReceiptsAfter.length === gmRevocationReceiptsBefore + 1
+      && gmRevocationOrphan?.slot === gmRevocationCandidateSlot
+      && !readState().slots?.[String(gmRevocationPredecessor.slot)]?.successionRetirement,
+    JSON.stringify({ handoff: gmRevocationHandoffCommit, reached: afterReceiptReached,
+      kill: gmRevocationOwnerKill?.status, response: [gmRevokedResponse.status, gmRevokedText],
+      binding: [gmRevocationBindingBefore, gmRevocationAfter?.main],
+      receipts: [gmRevocationReceiptsBefore, gmRevocationReceiptsAfter.length],
+      orphan: gmRevocationOrphan, candidate: gmRevocationCandidateSlot,
+      candidateAbsent: gmRevocationCandidateAbsent }));
+  if (gmRevocationCandidateSlot !== null
+    && (await sessions()).slots.find((slot) => slot.id === gmRevocationCandidateSlot)?.cwd)
+    await post(`/api/slots/${gmRevocationCandidateSlot}/kill`, {});
+  await programPost(gmRevocationProgram.id, "complete");
+  clearSuccessionLatch(afterReceiptLatch);
+  await restartSrv();
+
   // The linked worktree leaves again for the reason the Fleet-frame manifest probe leaves: a
   // fixture that quietly stays registered is a fact every later `git worktree list` reader inherits.
   const gmWtRemoved = gitIn(gameRepo, "worktree", "remove", "--force", gameWt);

@@ -1806,7 +1806,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   pin("every program-aware founding rail and the dispatch tail share the BOUNDED readiness wait — a blind sleep is never the proof",
     /pane blocked on \$\{rd\.why\}/.test(server) && /never showed its ready marker within/.test(server)
     && /READY_WAIT_MS/.test(server) && /waitForFoundingReadiness\(free, \(\) => !identityLost\(\)\)/.test(server)
-    && /waitForFoundingReadiness\(free, stillCurrent\)/.test(successionBody)
+    && /waitForFoundingReadiness\(free, candidateCurrent\)/.test(successionBody)
     && /waitForFoundingReadiness\(free, stillCurrent\)/.test(bootstrapBody),
     "shared founding readiness wait used by briefAndSend, Program-MAIN bootstrap, and succession");
   const executionStart = server.indexOf("async function programExecutionView(");
@@ -3625,6 +3625,32 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && succeedBody.indexOf("await (founding ? appendEventStrict : appendEvent)(CONTEXT_RECEIPT_FILE") < succeedBody.indexOf("delete program.founding")
       && succeedBody.indexOf("delete program.founding") < succeedBody.indexOf("await saveStateNow()", succeedBody.indexOf("delete program.founding")),
     `bootstrap=${bootstrapBody.length} succession=${succeedBody.length}`);
+  const candidateCurrentAt = succeedBody.indexOf("const candidateCurrent =");
+  const transferCurrentAt = succeedBody.indexOf("const transferCurrent =");
+  const afterOpenLatchAt = succeedBody.indexOf("SUCCESSION_AFTER_OPEN_LATCH");
+  const afterOpenRecheckAt = succeedBody.indexOf("if (!transferCurrent())", afterOpenLatchAt);
+  const sendAt = succeedBody.indexOf("await sendText(free, deliveredBrief, true)");
+  const afterSendRecheckAt = succeedBody.indexOf("if (!transferCurrent())", sendAt);
+  const receiptAt = succeedBody.indexOf("await (founding ? appendEventStrict : appendEvent)(CONTEXT_RECEIPT_FILE");
+  const afterReceiptLatchAt = succeedBody.indexOf("SUCCESSION_AFTER_RECEIPT_LATCH", receiptAt);
+  const afterReceiptRecheckAt = succeedBody.indexOf("if (!transferCurrent())", afterReceiptLatchAt);
+  const bindingCutAt = succeedBody.indexOf("program.main = { slot: free.id", afterReceiptRecheckAt);
+  pin(`${RULE_GM_FOUNDING} — succession keeps candidate identity separate from live predecessor authority and rechecks both around delivery evidence`,
+    /interface SuccessionPredecessorIdentity\s*{\s*readonly slot:[\s\S]*?readonly openedAt:[\s\S]*?readonly cwd:[\s\S]*?readonly selfToken:/.test(server)
+      && server.includes("predecessor: SuccessionPredecessorIdentity | null")
+      && succeedBody.includes("predecessor: SuccessionPredecessorIdentity")
+      && candidateCurrentAt >= 0 && transferCurrentAt > candidateCurrentAt
+      && succeedBody.includes("sameSuccessionOccupant(free, candidateIdentity)")
+      && succeedBody.includes("sameSuccessionOccupant(s, predecessor)")
+      && succeedBody.includes("const transferCurrent = (): boolean => candidateCurrent() && predecessorCurrent()")
+      && succeedBody.includes("else if (candidateCurrent()) await killSlot(free, \"reopen\")")
+      && afterOpenLatchAt > transferCurrentAt && afterOpenRecheckAt > afterOpenLatchAt
+      && sendAt > afterOpenRecheckAt && afterSendRecheckAt > sendAt && afterSendRecheckAt < receiptAt
+      && afterReceiptLatchAt > receiptAt && afterReceiptRecheckAt > afterReceiptLatchAt
+      && bindingCutAt > afterReceiptRecheckAt
+      && read("e2e/programs.ts").includes("revocation after target open rejects before receipt and preserves recycled predecessor")
+      && read("e2e/programs.ts").includes("revocation after receipt leaves one orphan receipt without transferring authority"),
+    `candidate=${candidateCurrentAt} transfer=${transferCurrentAt} openLatch=${afterOpenLatchAt}/${afterOpenRecheckAt} send=${sendAt}/${afterSendRecheckAt} receipt=${receiptAt}/${afterReceiptLatchAt}/${afterReceiptRecheckAt} bind=${bindingCutAt}`);
   const runtimeCases = [
     "bootstrap persists the exact target before delivery, blocks complete",
     "the exact founding target follows kill, absence proof, slot and marker cleanup",
@@ -3645,6 +3671,8 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     "retire is refused in flight, owner recycle cannot downgrade Program succession",
     '["a shuffled field order"',
     "candidate rolls back while predecessor binding and receipt count stay unchanged",
+    "revocation after target open rejects before receipt and preserves recycled predecessor",
+    "revocation after receipt leaves one orphan receipt without transferring authority",
   ];
   pin(`${RULE_GM_FOUNDING} — runtime suite names bootstrap, complete, pre-open, exact-candidate, foreign-target and succession crash arms`,
     runtimeCases.every((text) => read("e2e/programs.ts").includes(text)),
@@ -3653,9 +3681,11 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     foundingSelfApi.includes("Program.founding")
       && documentedMarkerAt >= 0 && documentedRecoveryAt > documentedMarkerAt
       && foundingSelfApi.includes("Brief-Replay noch Auto-Bind")
+      && foundingSelfApi.includes("Den Live-Identitätscheck bis zum Bindungsschnitt")
       && foundingSelfApi.includes("Completion beendet eine vorhandene MAIN-Pane nicht automatisch")
       && foundingStudioDoc.includes("A restart never guesses authority")
       && foundingStudioDoc.includes("evidence of an interrupted delivery, not authority")
+      && foundingStudioDoc.includes("revoked transfer is still evidence only")
       && foundingStudioDoc.includes("automatically kill an existing MAIN pane"),
     "the durable marker/recovery contract drifted out of the operator or studio document");
 }

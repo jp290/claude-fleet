@@ -5002,11 +5002,13 @@ function assertGameMakerLeaseAvailable(lease: GameMakerTreeLease, includeLiveSlo
   }
 }
 
-function reserveGameMakerTree(program: Program, cwd: string, predecessor: Slot | null): GameMakerTreeLease | null {
+function reserveGameMakerTree(program: Program, cwd: string,
+  predecessor: SuccessionPredecessorIdentity | null): GameMakerTreeLease | null {
   if (!isGameMaker(program)) return null;
-  const expected = predecessor === null ? null : program.main?.slot === predecessor.id
-    && program.main.openedAt === predecessor.openedAt
-    ? { slot: predecessor.id, openedAt: predecessor.openedAt } : null;
+  const occupant = predecessor === null ? null : slotFrom(predecessor.slot);
+  const expected = predecessor !== null && occupant && program.main?.slot === predecessor.slot
+    && program.main.openedAt === predecessor.openedAt && sameSuccessionOccupant(occupant, predecessor)
+    ? { slot: predecessor.slot, openedAt: predecessor.openedAt } : null;
   if (predecessor !== null && expected === null)
     throw new GameMakerTreeConflict("game-maker succession permit does not match the bound predecessor");
   const lease: GameMakerTreeLease = {
@@ -6412,10 +6414,10 @@ const successionInflight = new Set<string>();
 const successionStarted = new Map<number, string>(); // slot → the current occupant's selfToken
 
 interface SuccessionPredecessorIdentity {
-  slot: number;
-  openedAt: number;
-  cwd: string;
-  selfToken: string;
+  readonly slot: number;
+  readonly openedAt: number;
+  readonly cwd: string;
+  readonly selfToken: string;
 }
 
 const sameSuccessionOccupant = (s: Slot, expected: SuccessionPredecessorIdentity): boolean =>
@@ -6606,7 +6608,7 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
         return json({ error: "game-maker succession takes no carry — the committed \"## Current game checkpoint\" section is the one handover channel, and its Next: line is where the first act belongs. Put it there and succeed without a carry" }, 409);
       const checkpoint = await gameMakerCheckpointError(bound[0]!, s);
       if (checkpoint) return json({ error: checkpoint }, 409);
-      return await succeedProgramMain(bound[0]!, s, label, carry, predecessor);
+      return await succeedProgramMain(bound[0]!, s, label, carry, predecessorIdentity);
     }
     if (isSupervisor) return await succeedSupervisor(s, label, carry, predecessor);
 
@@ -11684,6 +11686,20 @@ async function waitForGameMakerOpenTestLatch(permit: GameMakerTreeLease | null):
     await Bun.sleep(10);
   }
   throw new Error("game-maker E2E open latch timed out before release");
+}
+// TEST-ONLY, absent in production. Succession has two authority cuts that cannot be reached from an
+// external probe by timing: after its target is open and after its founding receipt is durable. The
+// files widen only those cuts so E2E can revoke the predecessor between them and the next mutation.
+const SUCCESSION_AFTER_OPEN_LATCH = process.env.FLEET_TEST_SUCCESSION_AFTER_OPEN_LATCH ?? null;
+const SUCCESSION_AFTER_RECEIPT_LATCH = process.env.FLEET_TEST_SUCCESSION_AFTER_RECEIPT_LATCH ?? null;
+async function waitForSuccessionTestLatch(path: string | null, programId: string): Promise<void> {
+  if (path === null || !existsSync(path)) return;
+  writeFileSync(`${path}.reached`, `${programId}\n`, { mode: 0o600 });
+  for (let waited = 0; waited < 10_000; waited += 10) {
+    if (existsSync(`${path}.release`)) return;
+    await Bun.sleep(10);
+  }
+  throw new Error("succession E2E authority latch timed out before release");
 }
 // --- how much of a verify run was not verifying ------------------------------------------------
 // The gate chain's steps each take the machine-wide suite mutex before they can start, and its
@@ -17719,19 +17735,26 @@ async function completeTransitionWatch(s: Slot, id: string, body: Record<string,
 }
 
 async function succeedProgramMain(program: Program, s: Slot, label: string | null, carry: string | null,
-  predecessor: { cwd: string; token: string }): Promise<Response> {
+  predecessor: SuccessionPredecessorIdentity): Promise<Response> {
   if (programBootstrapInflight.has(program.id) || program.founding)
     return json({ error: "Program-MAIN founding already in flight" }, 409);
+  const predecessorCurrent = (): boolean => program.status === "active"
+    && program.main?.slot === predecessor.slot && program.main.openedAt === predecessor.openedAt
+    && sameSuccessionOccupant(s, predecessor);
+  if (!predecessorCurrent())
+    return json({ error: "Program-MAIN predecessor authority changed before succession started" }, 409);
   programBootstrapInflight.add(program.id); // synchronous reservation before any transfer await
   let treeLease: GameMakerTreeLease | null = null;
   try {
     try {
-      treeLease = reserveGameMakerTree(program, predecessor.cwd, s);
+      treeLease = reserveGameMakerTree(program, predecessor.cwd, predecessor);
     } catch (e) {
       if (e instanceof GameMakerTreeConflict) return json({ error: e.message }, 409);
       throw e;
     }
     const preflight = await preflightProgramMain(predecessor.cwd);
+    if (!predecessorCurrent())
+      return json({ error: "Program-MAIN predecessor authority changed during succession preflight" }, 409);
     if (!preflight.ok) return json({ error: preflight.error }, 400);
     // The SAME machine rule the bootstrap applies, at the same point in the sequence. A succession
     // that skipped it would be the one way a game-maker MAIN could end up in a primary checkout:
@@ -17757,6 +17780,10 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
             e instanceof GameMakerTreeConflict ? 409 : 500);
         }
       }
+      if (!predecessorCurrent()) {
+        if (founding) await rollbackProgramFounding(program, founding, "predecessor-revoked-before-open");
+        return json({ error: "Program-MAIN predecessor authority changed before successor open" }, 409);
+      }
       try {
         await openSlot(free, isGameMaker(program) ? preflight.value.repoRoot : predecessor.cwd,
           null, s.model, label, s.harness, s.effort,
@@ -17768,13 +17795,38 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
           e instanceof GameMakerTreeConflict ? 409 : 500);
       }
 
-      const openedAt = free.openedAt;
-      const stillCurrent = (): boolean => !!free.cwd && free.openedAt === openedAt
-        && (!founding || currentGameMakerFounding(program, founding, free));
-      const cleanup = async (): Promise<void> => {
-        if (founding) await rollbackProgramFounding(program, founding, "successor-failed");
-        else if (stillCurrent()) await killSlot(free, "reopen");
+      const candidateIdentity: SuccessionPredecessorIdentity = {
+        slot: free.id, openedAt: free.openedAt, cwd: free.cwd!, selfToken: free.selfToken,
       };
+      const candidateCurrent = (): boolean => sameSuccessionOccupant(free, candidateIdentity)
+        && (!founding || sameProgramFounding(program.founding, founding)
+          && exactFoundingCandidate(free, founding));
+      const transferCurrent = (): boolean => candidateCurrent() && predecessorCurrent();
+      const cleanup = async (): Promise<void> => {
+        if (founding) {
+          if (!sameProgramFounding(program.founding, founding)) return;
+          const target = slotFrom(founding.target.slot);
+          // A recycled target is a new owner. Preserve it and the fail-closed marker; only the
+          // exact candidate, or an explicitly absent target, belongs to this request's rollback.
+          if (candidateCurrent() || !target?.cwd)
+            await rollbackProgramFounding(program, founding, "successor-failed");
+        } else if (candidateCurrent()) await killSlot(free, "reopen");
+      };
+      const revoked = async (phase: string): Promise<Response> => {
+        await cleanup();
+        return json({ error: `Program-MAIN predecessor authority changed ${phase}` }, 409);
+      };
+      try {
+        await waitForSuccessionTestLatch(SUCCESSION_AFTER_OPEN_LATCH, program.id);
+      } catch (e) {
+        await cleanup();
+        return json({ error: `Program-MAIN successor post-open latch failed: ${e instanceof Error ? e.message : e}` }, 500);
+      }
+      if (!candidateCurrent()) {
+        await cleanup();
+        return json({ error: "Program-MAIN successor slot changed after open" }, 500);
+      }
+      if (!transferCurrent()) return await revoked("after successor open");
       if (founding) {
         try {
           // openSlot's queued save is not the barrier: this awaited snapshot proves the exact
@@ -17785,18 +17837,34 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
           return json({ error: `Program-MAIN successor candidate persistence failed: ${e instanceof Error ? e.message : e}` }, 500);
         }
       }
+      if (!candidateCurrent()) {
+        await cleanup();
+        return json({ error: "Program-MAIN successor slot changed during candidate persistence" }, 500);
+      }
+      if (!transferCurrent()) return await revoked("during candidate persistence");
       await Bun.sleep(4000);
-      if (!stillCurrent()) {
+      if (!candidateCurrent()) {
         await cleanup();
         return json({ error: "Program-MAIN successor slot changed during boot" }, 500);
       }
+      if (!transferCurrent()) return await revoked("during successor boot");
       const gate = await canDeliver(free, { now: Date.now(), idleMs: 0,
         killSwitch: false, quietHours: false, harness: false });
+      if (!candidateCurrent()) {
+        await cleanup();
+        return json({ error: "Program-MAIN successor slot changed during delivery gate" }, 500);
+      }
+      if (!transferCurrent()) return await revoked("during delivery gate");
       if (!gate.ok) {
         await cleanup();
         return json({ error: `Program-MAIN successor delivery held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})` }, 500);
       }
-      const readiness = await waitForFoundingReadiness(free, stillCurrent);
+      const readiness = await waitForFoundingReadiness(free, candidateCurrent);
+      if (!candidateCurrent()) {
+        await cleanup();
+        return json({ error: "Program-MAIN successor slot changed during readiness" }, 500);
+      }
+      if (!transferCurrent()) return await revoked("during successor readiness");
       if (!readiness.ok) {
         await cleanup();
         return json({ error: `Program-MAIN successor ${readiness.reason}` }, 500);
@@ -17804,15 +17872,21 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
 
       const planFacts = programMainContextFacts(preflight.value.frame, free.harness);
       const plan = await programMainContextPlan(preflight.value, planFacts);
+      if (!candidateCurrent()) {
+        await cleanup();
+        return json({ error: "Program-MAIN successor slot changed during context planning" }, 500);
+      }
+      if (!transferCurrent()) return await revoked("during context planning");
       const anchorBlock = renderContextAnchorBlock(plan);
       const deliveredBrief = buildProgramMainSuccessionBrief(program, carry, preflight.value.frame, anchorBlock);
       const selected = contextReceiptSelections(plan.selected);
       const omitted = plan.omitted.map((entry) => ({ ...entry }));
       const repo = free.cwd!;
-      if (!stillCurrent()) {
+      if (!candidateCurrent()) {
         await cleanup();
         return json({ error: "Program-MAIN successor slot changed before founding delivery" }, 500);
       }
+      if (!transferCurrent()) return await revoked("before founding delivery");
 
       // Crash boundaries are deliberately one-way and never heuristic. Until the final state cut,
       // the old binding remains authoritative and the durable founding marker owns the candidate.
@@ -17824,10 +17898,15 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         await cleanup();
         return json({ error: `Program-MAIN successor founding brief failed: ${e instanceof Error ? e.message : e}` }, 500);
       }
+      if (!candidateCurrent()) {
+        await cleanup();
+        return json({ error: "Program-MAIN successor slot changed after founding delivery" }, 500);
+      }
+      // Delivery is not authority. A predecessor revoked while sendText awaited cannot authorize
+      // even an evidence append, so this check necessarily sits before the receipt boundary.
+      if (!transferCurrent()) return await revoked("after founding delivery");
 
       const at = Date.now();
-      if (!founding) program.main = { slot: free.id, openedAt: free.openedAt,
-        sessionId: free.sessionId ?? null, boundAt: at };
       const hash = createHash("sha256").update(JSON.stringify({
         anchorBlock,
         planFacts: { harness: free.harness, mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted },
@@ -17846,41 +17925,56 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         await cleanup();
         return json({ error: `Program-MAIN successor receipt persistence failed: ${e instanceof Error ? e.message : e}` }, 500);
       }
+      if (!candidateCurrent()) {
+        await cleanup();
+        return json({ error: "Program-MAIN successor slot changed during receipt persistence" }, 500);
+      }
+      if (founding) {
+        try {
+          await waitForSuccessionTestLatch(SUCCESSION_AFTER_RECEIPT_LATCH, program.id);
+        } catch (e) {
+          await cleanup();
+          return json({ error: `Program-MAIN successor post-receipt latch failed: ${e instanceof Error ? e.message : e}` }, 500);
+        }
+      }
+      if (!candidateCurrent()) {
+        await cleanup();
+        return json({ error: "Program-MAIN successor slot changed after receipt persistence" }, 500);
+      }
+      // The receipt is evidence, never a lease. This is the final authority observation and is
+      // immediately followed by the synchronous binding cut; no await can admit a revoked caller.
+      if (!transferCurrent()) return await revoked("after receipt persistence");
+      const retirement: SuccessionRetirement = {
+        at: at + Math.max(0, MIGRATE_GRACE_MS), cwd: predecessor.cwd, token: predecessor.selfToken,
+      };
+      const oldMain = program.main ? { ...program.main } : undefined;
+      const oldRetirement = s.successionRetirement;
+      const oldStarted = successionStarted.get(s.id);
+      program.main = { slot: free.id, openedAt: free.openedAt,
+        sessionId: free.sessionId ?? null, boundAt: at };
+      if (founding) delete program.founding;
+      s.successionRetirement = retirement;
+      successionStarted.set(s.id, predecessor.selfToken);
+      try {
+        // One state cut moves authority and removes the crash marker. A receipt orphaned before
+        // this cut remains evidence only and is never read as authority or replayed into a bind.
+        await saveStateNow();
+      } catch (e) {
+        if (oldMain) program.main = oldMain; else delete program.main;
+        if (founding) program.founding = founding;
+        if (sameSuccessionOccupant(s, predecessor)) {
+          s.successionRetirement = oldRetirement;
+          if (oldStarted === undefined) successionStarted.delete(s.id);
+          else successionStarted.set(s.id, oldStarted);
+        }
+        await cleanup();
+        return json({ error: `Program-MAIN successor binding persistence failed: ${e instanceof Error ? e.message : e}` }, 500);
+      }
       free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
       saveHistory(free);
       logPrompt(free, deliveredBrief, "auto", at);
-      const retirement = { at: at + Math.max(0, MIGRATE_GRACE_MS), ...predecessor };
-      if (founding) {
-        if (!currentGameMakerFounding(program, founding, free)) {
-          await cleanup();
-          return json({ error: "Program-MAIN successor state changed before binding" }, 409);
-        }
-        const oldMain = program.main ? { ...program.main } : undefined;
-        const oldRetirement = s.successionRetirement;
-        program.main = { slot: free.id, openedAt: free.openedAt,
-          sessionId: free.sessionId ?? null, boundAt: at };
-        delete program.founding;
-        s.successionRetirement = retirement;
-        successionStarted.set(s.id, predecessor.token);
-        try {
-          // One state cut moves authority and removes the crash marker. The receipt above may
-          // orphan on a crash, but is never read as authority and never causes an auto-bind.
-          await saveStateNow();
-        } catch (e) {
-          if (oldMain) program.main = oldMain; else delete program.main;
-          program.founding = founding;
-          s.successionRetirement = oldRetirement;
-          successionStarted.delete(s.id);
-          await cleanup();
-          return json({ error: `Program-MAIN successor binding persistence failed: ${e instanceof Error ? e.message : e}` }, 500);
-        }
-      } else {
-        s.successionRetirement = retirement;
-        successionStarted.set(s.id, predecessor.token);
-        await saveStateNow();
-      }
       const response = json({ ok: true, slot: free.id, label: free.label, program: programDigest(program) });
-      scheduleSuccessionRetirement(s, retirement);
+      if (sameSuccessionOccupant(s, predecessor)) scheduleSuccessionRetirement(s, retirement);
       return response;
     } finally {
       laneSpawn.delete(free.id);

@@ -3932,6 +3932,78 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     pin(RULE_WAIT, hasFree && hasHeld,
       `server free=${freeSec}s held=${heldSec}s; fragment names them: free=${hasFree} held=${hasHeld}`);
   }
+
+  const RULE_CRITIC = "a Game-Maker critic is one closed Task act on the existing scheduler, never a second queue";
+  pin(`${RULE_CRITIC} — one self route creates it and the ordinary task door remains unchanged`,
+    serverSrc.includes('if (url.pathname === "/api/self/critic" && req.method === "POST")')
+      && serverSrc.includes("interface TaskCritic")
+      && serverSrc.includes("critic?: TaskCritic")
+      && serverSrc.includes("createCriticForMain(s, await readJson(req))")
+      && serverSrc.includes("async function createTaskForMain("),
+    `route=${serverSrc.includes('/api/self/critic')} type=${serverSrc.includes('interface TaskCritic')}`);
+  pin(`${RULE_CRITIC} — its deterministic brief bypasses analyst, ContextPlan and the mutating exit footer`,
+    serverSrc.includes("buildCriticBrief")
+      && serverSrc.includes("if (next.critic) return criticBriefAndSend")
+      && serverSrc.includes("if (t.critic) return false")
+      && !/buildCriticBrief[\s\S]{0,4000}(?:planContext|renderContextAnchorBlock|LANE_EXIT_FOOTER)/.test(serverSrc),
+    "critic brief must be assembled on its own evidence-only seam");
+  pin(`${RULE_CRITIC} — every Fleet mutation door recognizes critic lanes before commit, merge or land`,
+    serverSrc.includes("critic lanes cannot commit through Fleet")
+      && serverSrc.includes("critic lanes cannot merge or land through Fleet")
+      && serverSrc.includes("critic tasks are evidence and are never landed"),
+    "one or more critic lifecycle guards are absent");
+  pin(`${RULE_CRITIC} — capture sealing rejects traversal and symlinks, reads one stable regular fd, and records full hashes`,
+    serverSrc.includes("safeCriticRelativePath")
+      && serverSrc.includes("fsConstants.O_NOFOLLOW")
+      && serverSrc.includes("lstatSync(cursor).isSymbolicLink()")
+      && serverSrc.includes("fstatSync(fd, { bigint: true })")
+      && serverSrc.includes("after.mtimeNs === final.mtimeNs")
+      && serverSrc.includes("after.ctimeNs === final.ctimeNs")
+      && serverSrc.includes("capture changed while it was being snapshotted")
+      && serverSrc.includes('createHash("sha256").update(bytes).digest("hex")'),
+    "the capture boundary lost one of traversal/symlink/fd-stability/full-hash");
+  const criticCreateStart = serverSrc.indexOf("async function createCriticForMain");
+  const criticCreateBody = criticCreateStart < 0 ? "" : serverSrc.slice(criticCreateStart,
+    serverSrc.indexOf("const attentionBound", criticCreateStart));
+  pin(`${RULE_CRITIC} — the exact build founds the lane, while an exact retry keys the immutable request before rereading mutable files`,
+    serverSrc.includes('gitRead(sourceCwd, "rev-parse", "--verify", `${parsed.build}^{commit}`)')
+      && serverSrc.includes('createWorktree(dispatchRepo, "", dForm.form, next.critic?.build)')
+      && serverSrc.includes("next.critic?.build ?? await laneForkSha")
+      && serverSrc.includes("launch: body.launch as string")
+      && criticCreateBody.indexOf("open.critic!.requestSha256 === requestSha256") >= 0
+      && criticCreateBody.indexOf("open.critic!.requestSha256 === requestSha256")
+        < criticCreateBody.indexOf("readCriticCapture(sourceRoot, path)"),
+    "exact build start or request-before-file idempotency seam is absent");
+  pin(`${RULE_CRITIC} — capture source authority is an exact occupant snapshot revalidated after every async git read`,
+    serverSrc.includes("const requesterStillOwnsSource = (): boolean")
+      && (serverSrc.match(/if \(!requesterStillOwnsSource\(\)\)/g) ?? []).length === 2
+      && serverSrc.includes("requesting MAIN occupant changed while critic source facts were read")
+      && serverSrc.includes("requesting MAIN occupant changed while critic build was verified")
+      && serverSrc.includes("const sourceCwd = s.cwd!"),
+    "critic create can outlive or drift away from its source MAIN occupant");
+  pin(`${RULE_CRITIC} — send uncertainty is durable before pane input, never requeued after restart, and the strict receipt carries the full brief hash`,
+    /status: "send-uncertain"[\s\S]{0,300}await saveStateNow\(\);[\s\S]{0,160}await sendText\(free, deliveredBrief/.test(serverSrc)
+      && serverSrc.includes('briefSha256 = createHash("sha256").update(deliveredBrief).digest("hex")')
+      && /t\.critic && t\.critic\.delivery\.status !== "pending"[\s\S]{0,300}no automatic resend/.test(serverSrc),
+    "pre-send durability, full receipt hash or restart no-replay rule is absent");
+  pin(`${RULE_CRITIC} — malformed critic metadata quarantines its whole Task while a legacy Standard row has no new required key`,
+    serverSrc.includes('Object.prototype.hasOwnProperty.call(x, "critic")')
+      && serverSrc.includes("taskCriticFrom((x as { critic?: unknown }).critic, (x as Task).id, (x as Task).status) !== null")
+      && serverSrc.includes("capturePaths.has(c.path) || snapshotPaths.has(snapshot)")
+      && serverSrc.includes("captureBytes > CRITIC_CAPTURE_BYTES_MAX")
+      && serverSrc.includes('delivery.status === "pending"')
+      && serverSrc.includes('delivery.status === "send-uncertain"')
+      && serverSrc.includes('delivery.status === "delivered"')
+      && serverSrc.includes('taskStatus === "done" && report === null')
+      && serverSrc.includes("critic evidence brief was not attempted")
+      && /interface Task \{[\s\S]*?critic\?: TaskCritic;[\s\S]*?\n\}/.test(serverSrc),
+    "closed loader or optional legacy shape is absent");
+  pin(`${RULE_CRITIC} — reports name the stored requester and terminal receiver-gone instead of consulting a successor binding`,
+    serverSrc.includes("? { receiver: { ...criticTask.critic!.requester }, basis: \"program-main\" }")
+      && serverSrc.includes('status: receiverGone ? "receiver-gone" : "pending"')
+      && serverSrc.includes("criticTask.critic.delivery.report = { id, eventId, reportedAt }")
+      && serverSrc.includes('criticTask.status = "done"'),
+    "critic report routing is not fixed to the recorded requester");
 }
 
 console.log(rows.join("\n"));

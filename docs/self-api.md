@@ -243,6 +243,56 @@ Basis-Zeile, nicht als Phase: ein `STALLED` zu erfinden wäre eine Qualitätsaus
 Histogramm `{Phase: count}` je Program, keine Zeilen-Bodies. Die Bodies stehen in der View der
 gebundenen MAIN.
 
+## critic — `POST /api/self/critic` (nur Game-Maker MAIN)
+
+Die Route legt keinen zweiten Queue-Typ an. Sie erzeugt eine normale `Task`-Zeile mit einem
+geschlossenen, versionierten `critic`-Record; `pending → queued → sent → done` bleiben die
+bestehenden Task-Übergänge und der normale `POST /api/self/tasks`-Body bleibt unverändert.
+
+```
+curl -X POST http://<fleet-host>:<port>/api/self/critic \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"v":1,"build":"<40 lowercase hex>","launch":"<one-step launch>","controls":"<actual controls>","input":"<exact replay input>","captures":["captures/run-17.png"]}'
+```
+
+Der Body enthält **genau** `v`, `build`, `launch`, `controls`, `input`, `captures`; zusätzliche
+oder fehlende Keys sind 400. Program, Repo und Requester-Occupant (`slot`, `openedAt`, `sessionId`)
+stempelt der Server. Nur eine aktive Game-Maker MAIN darf anlegen. Pro Program existiert höchstens
+ein offener Critic-Akt (`pending|queued|sent`). Eine byte-identische Wiederholung desselben
+Requester-Occupants liefert dieselbe Task; ein anderer Request ist 409.
+
+`build` muss der volle, vorhandene Commit sein. Jeder Capture-Pfad ist relativ zum konkreten
+Source-Worktree, bleibt darin, enthält keinen Symlink und benennt eine reguläre Datei. Der Server
+liest sie einmal über einen nicht-folgenden File Descriptor, vergleicht Dateiidentität und Metadaten
+vor/nach dem Read und schreibt die Bytes in einen privaten immutable Snapshot. Record und Brief
+tragen Dateigröße und den **vollen SHA-256** jeder Capture sowie einen vollen SHA-256 über Build,
+Launch, Controls, Input und die Capture-Liste. Eine spätere Änderung der Source-Datei ändert weder
+Snapshot noch Retry-Ergebnis.
+
+Nur der gespeicherte exakte Requester darf die pending Task über die gewöhnliche Release-Route
+freigeben. Der vorhandene Tick gründet eine frische Lane am **exakten Build**; Analyst und Brief-
+Compiler sehen diese Zeile nicht. Der Server baut einen kanonischen Beobachtungsbrief ausschließlich
+aus dem Critic-Record. Er enthält keine frühere Task-Prosa, keinen ContextPlan, keinen Checkpoint,
+keine alten Urteile und keine mutierende Lane-Fußzeile.
+
+Unmittelbar vor dem Pane-Input persistiert der Server `delivery.status:"send-uncertain"` plus den
+vollen Brief-SHA-256. Erst eine beobachtete oder für den Adapter nicht anwendbare Annahme wird
+`delivered`; unobservierbare oder fehlgeschlagene Annahme bleibt `send-uncertain`. Ein Neustart
+sendet diesen Brief nie automatisch erneut. Diese Zustände sind Transportbelege, keine Aussage über
+Prozess- oder Betriebssystem-Isolation.
+
+Die Critic-Lane darf genau einen strikten `fleet-report` ablegen. Er setzt diese Task auf `done`,
+aber landet nichts. Empfänger bleibt der bei Create gespeicherte Requester. Ist dieser Occupant
+beendet oder durch eine MAIN-Nachfolgerin ersetzt, wird das Event sofort `receiver-gone`; die
+Nachfolgerin erhält weder Pane-Zustellung noch die Report-Zeile. Commit-, Merge-, Land-,
+Clarification- und Criterion-Türen lehnen Critic-Lanes ab. In `program-execution` trägt die Zeile
+`critic.evidence` und `critic.delivery`; ihr `nextAction` nennt Release, Dispatch oder Report,
+niemals Land.
+
+Der Loader ist geschlossen: ein vorhandener, aber malformed/unknown-version `critic`-Record
+quarantänisiert die ganze Task statt als ausführbare Standard-Task zu degradieren. Fehlt das Feld,
+bleibt die Legacy-Standardform unverändert.
+
 ## release — `POST /api/self/tasks/:id/release`
 
 **Die Route DISPATCHT NICHT.** Sie schreibt genau einen Übergang, `pending → queued`, und nichts
@@ -409,12 +459,13 @@ curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report \
 - **`text` ist PROSA für einen menschlichen Leser**, nicht-leer und ≤ `MAX_FLEET_REPORT_TEXT`
   (4000 Zeichen). Es gibt bewusst keinen JSON-Ergebniskörper: der Empfänger ist eine Session, die
   liest, kein Reducer.
-- **Ein Report bewegt NIE `Task.status`.** Er legt eine `FleetReport`-Zeile plus ein
+- **Ein gewöhnlicher Report bewegt NIE `Task.status`.** Er legt eine `FleetReport`-Zeile plus ein
   `fleet-report`-FleetEvent an und sonst nichts — er landet nicht, deployt nicht und schließt
   keine Zeile. Wer den Status bewegt, ist der bestehende Schreiber (Tick, `landLane`, der Owner).
-  Ein Report ist eine NACHRICHT.
+  Ein Report ist eine NACHRICHT. Die geschlossene Critic-Ausnahme oben setzt ihre eigene
+  Evidenz-Task nach dem einen Report auf `done`, ohne einen Land-Pfad zu öffnen.
 
-**Empfänger-Ableitung, in dieser Reihenfolge** (`clarificationReceiverFor`, geteilt mit
+**Empfänger-Ableitung für gewöhnliche Lanes, in dieser Reihenfolge** (`clarificationReceiverFor`, geteilt mit
 `/api/self/clarifications`): **die Program-Bindung gewinnt, bevor Watch-Evidenz überhaupt gelesen
 wird.** Eine gebundene Lane hat per Konstruktion genau einen koordinierenden Occupant — der Owner
 hat ihn bei der Aktivierung bestätigt — also kann eine fremde, abgelaufene oder doppelte
@@ -824,11 +875,11 @@ der committete Checkpoint: lesbar für Nachfolgerin und Owner-Proof, und er übe
 widersprechen können. Abgelehnt statt ignoriert — ein still verworfener carry ist eine Übergabe, die
 ihre Autorin für zugestellt hält. Für Standard-Programs bleibt `carry` unverändert.
 
-Ein frischer Kritiker liest diesen Checkpoint **nie**: weder Pfad noch Inhalt dürfen in seinem Brief,
-ContextPlan oder Context-Pack stehen. Sein Context ist Game Card, Produktreferenzen, Build,
-Launch/Controls, Seed, Artefakt und Captures; der Brief verbietet das Lesen von `HANDOFF.md`
-ausdrücklich. `Experience`, `Open defect`, `Next` und frühere `Critic`-Urteile bleiben damit
-predecessor→successor-/Owner-Evidenz statt Vorprägung des frischen Blicks.
+Ein frischer Kritiker erhält diesen Checkpoint **nie**: weder Pfad noch Inhalt dürfen in seinem
+kanonischen Brief stehen. `POST /api/self/critic` baut ihn stattdessen ausschließlich aus dem
+exakten Build, Launch/Controls, Replay-Input und den beim Create versiegelten Capture-Snapshots.
+Der Critic-Pfad ruft keinen ContextPlan auf. `Experience`, `Open defect`, `Next` und frühere
+`Critic`-Urteile bleiben predecessor→successor-/Owner-Evidenz statt Vorprägung des frischen Blicks.
 
 **Projektion:** `GET /api/programs` trägt den Record im vollen Row mit; `GET
 /api/self/program-execution` trägt ihn als `program.profile` (`null` = Standard-MAIN), damit die

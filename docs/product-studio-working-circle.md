@@ -264,14 +264,25 @@ taste and release. There is no standing Advisor and nothing nudges on a timer.
 `sensory_critic`, `owner_taste`. A technical green never implies any of the other three — the same
 label discipline the *Honest labels* section above already states, carried into the founding text.
 
-**Critic-safe context.** A repo-declared ContextPlan card may carry the product promise, its
-references, the build sha, the one-step launch, the controls, a seed and where the captures are. It
-may never carry MAIN's current hypothesis, an open defect it is chasing, a rejected direction or an
-earlier verdict: those belong in MAIN's own checkpoint or in an explicit non-critic task brief. A
-fresh critic gets the Game Card, product references, build, launch, controls, seed, artifact and
-captures; its brief says explicitly that it must not read `HANDOFF.md`. Neither the checkpoint path
-nor its contents belong in the critic brief, ContextPlan or context pack. A critic who reads the
-answer before looking is no longer a fresh one. Context-pack vocabularies and delivery are unchanged.
+**Critic-safe context is now a closed act.** The bound Game-Maker MAIN calls
+`POST /api/self/critic` with the exact build, launch, actual controls, replay input and safe relative
+capture paths. Fleet snapshots those regular-file bytes at create time, records their full SHA-256,
+and places the resulting versioned `Task.critic` on the existing pending/release/dispatch rail.
+There is one open Critic act per Program and an exact retry returns it rather than rereading mutable
+source evidence.
+
+The fresh lane starts at that exact build. Its canonical brief is assembled only from the sealed
+record: no queue prose, current hypothesis, open defect, rejected direction, earlier verdict,
+checkpoint path, ContextPlan or mutating worker footer enters it. The Critic observes and returns one
+strict `fleet-report`; Fleet rejects commit, merge, land and clarification for that lane. These are
+Fleet policy guards, not a claim of process or operating-system containment.
+
+Delivery is evidence too: Fleet persists full brief SHA-256 plus `send-uncertain` before touching
+the pane, then records the observed adapter acceptance; restart never replays an uncertain send.
+The report routes only to the exact MAIN occupant that requested it. If succession already replaced
+that occupant, its FleetEvent becomes `receiver-gone` and is never redirected to the successor.
+`program-execution` shows sealed evidence and delivery state, never a land candidate. A critic who
+reads the answer before looking is no longer a fresh one.
 
 ## The Game-Maker succession checkpoint
 

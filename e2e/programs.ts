@@ -1,6 +1,6 @@
 // Program/Origin Artifact v1: a durable planning bracket above tasks and lanes. Sessions may
 // propose; only the owner confirms and advances it. Full bodies stay off the 2 s sessions poll.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
@@ -60,6 +60,14 @@ interface FleetState {
     harness?: string | null; model?: string | null; effort?: string | null; successionRetirement?: unknown;
     taskId?: string | null; originId?: string | null; programId?: string | null }>;
 }
+interface CriticTaskState {
+  id: string; status: string; slot: number | null; note: string | null;
+  critic: { v: number; requestSha256: string; sha256: string; build: string; launch: string;
+    controls: string; input: string; requester: { slot: number; openedAt: number; sessionId: string | null };
+    captures: { path: string; snapshot: string; bytes: number; sha256: string }[];
+    delivery: { status: string; at: number | null; briefSha256: string | null; acceptance: string | null;
+      report: { id: string; eventId: string; reportedAt: number } | null } };
+}
 
 interface ProgramExecutionRow {
   program: { id: string; status: ProgramStatus; title: string; createdAt: number;
@@ -74,7 +82,11 @@ interface ProgramExecutionRow {
     // derived beside `phase` and stored nowhere: WHICH DOOR is next from where the row sits. A
     // pointer, never a grade. null = no door belongs to this row right now.
     nextAction: string | null;
-    candidate: { sha: string | null; basis: string } }[];
+    candidate: { sha: string | null; basis: string };
+    critic?: { v: number; evidence: { sha256: string; build: string; launch: string; controls: string;
+      input: string; captures: { path: string; bytes: number; sha256: string }[] };
+      delivery: { status: string; at: number | null; briefSha256: string | null; acceptance: string | null;
+        report: { id: string; eventId: string; reportedAt: number } | null; reportEventStatus: string | null } } }[];
     total: number; byStatus: Record<string, number> };
   lanes: { rows: { slot: number; openedAt: number; sessionId: string | null; repo: string | null;
     branch: string | null; taskId: string | null; originId: string | null; harness: string | null;
@@ -162,6 +174,17 @@ const selfSucceed = (token: string, body: unknown = {}): Promise<Response> => fe
 const selfRetire = (token: string): Promise<Response> => fetch(`${BASE}/api/self/retire`, {
   method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
   body: "{}",
+});
+const selfCritic = (token: string | null, body: unknown): Promise<Response> => fetch(`${BASE}/api/self/critic`, {
+  method: "POST",
+  headers: { "content-type": "application/json", ...(token === null ? {} : { "x-fleet-self-token": token }) },
+  body: JSON.stringify(body),
+});
+const selfTaskRelease = (token: string, id: string): Promise<Response> =>
+  fetch(`${BASE}/api/self/tasks/${id}/release`, { method: "POST", headers: { "x-fleet-self-token": token } });
+const selfFleetReport = (token: string, body: unknown): Promise<Response> => fetch(`${BASE}/api/self/fleet-report`, {
+  method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
+  body: JSON.stringify(body),
 });
 const programPost = (id: string, action: "confirm" | "activate" | "complete" | "discard" | "bootstrap-main",
   body: unknown = {}, headers: Record<string, string> = H): Promise<Response> =>
@@ -2335,6 +2358,94 @@ export async function run(ctx: Ctx): Promise<void> {
       && (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.profile?.kind === "game-maker",
     `retry=${gmLiveRetry.status} change=${gmLiveChange.status} ${gmLiveChangeText}`);
 
+  // A critic is one Task on the ordinary queue. Creation seals the replay bytes before any lane
+  // exists; release and dispatch then use the existing scheduler, while the critic-specific
+  // receipt makes a possibly-sent prompt distinguishable from one that was never attempted.
+  mkdirSync(`${gameWt}/captures`, { recursive: true });
+  const criticOriginal = "frame=317\nseed=red-door\ninput=left,left,jump\n";
+  writeFileSync(`${gameWt}/captures/replay.txt`, criticOriginal);
+  const criticLink = `${gameWt}/captures/replay-link.txt`;
+  if (existsSync(criticLink)) unlinkSync(criticLink);
+  symlinkSync("replay.txt", criticLink);
+  const criticBuild = gitIn(gameWt, "rev-parse", "HEAD").stdout.trim();
+  const criticRequest = { v: 1, build: criticBuild, launch: "bun run game -- --seed red-door",
+    controls: "left/right arrows and jump", input: "left,left,jump", captures: ["captures/replay.txt"] };
+  const criticUnauthorized = await selfCritic(null, criticRequest);
+  const criticExtra = await selfCritic(gmMainToken, { ...criticRequest, programId: gmProgram.id });
+  const criticEscape = await selfCritic(gmMainToken, { ...criticRequest, captures: ["../outside.txt"] });
+  const criticSymlink = await selfCritic(gmMainToken, { ...criticRequest, captures: ["captures/replay-link.txt"] });
+  const criticBadBuild = await selfCritic(gmMainToken, { ...criticRequest, build: "0".repeat(40) });
+  check("critic create boundary: scoped auth, a closed body, safe relative regular captures and an exact build all fail by name",
+    criticUnauthorized.status === 401 && criticExtra.status === 400 && criticEscape.status === 400
+      && criticSymlink.status === 400 && criticBadBuild.status === 400,
+    `auth=${criticUnauthorized.status} extra=${criticExtra.status} escape=${criticEscape.status} symlink=${criticSymlink.status} build=${criticBadBuild.status}`);
+
+  const criticCreatedResponse = await selfCritic(gmMainToken, criticRequest);
+  const criticCreatedBody = await criticCreatedResponse.json() as { ok?: boolean; task?: CriticTaskState };
+  const criticTaskId = criticCreatedBody.task?.id ?? "";
+  const sealed = criticCreatedBody.task?.critic.captures[0];
+  const sealedBytesBefore = sealed?.snapshot ? readFileSync(sealed.snapshot, "utf8") : "";
+  writeFileSync(`${gameWt}/captures/replay.txt`, "mutated after create\n");
+  const criticRetryResponse = await selfCritic(gmMainToken, criticRequest);
+  const criticRetryBody = await criticRetryResponse.json() as { existing?: boolean; task?: CriticTaskState };
+  const criticConflict = await selfCritic(gmMainToken, { ...criticRequest, input: "different replay" });
+  const criticWhitespaceConflict = await selfCritic(gmMainToken,
+    { ...criticRequest, launch: `${criticRequest.launch} ` });
+  check("critic snapshot/idempotency: the exact retry returns one Task and later source mutation cannot change its full SHA-256 evidence",
+    criticCreatedResponse.ok && /^[a-z0-9]+$/.test(criticTaskId)
+      && sealedBytesBefore === criticOriginal && readFileSync(sealed?.snapshot ?? "", "utf8") === criticOriginal
+      && sealed?.sha256 === createHash("sha256").update(criticOriginal).digest("hex")
+      && criticRetryResponse.ok && criticRetryBody.existing === true && criticRetryBody.task?.id === criticTaskId
+      && criticRetryBody.task?.critic.sha256 === criticCreatedBody.task?.critic.sha256
+      && criticConflict.status === 409 && criticWhitespaceConflict.status === 409,
+    `create=${criticCreatedResponse.status} retry=${criticRetryResponse.status}/${criticRetryBody.existing} conflict=${criticConflict.status}/${criticWhitespaceConflict.status}`);
+
+  const criticBeforeRelease = await selfExecution(gmMainToken);
+  const criticBeforeRow = criticBeforeRelease.view?.programs.find((row) => row.program.id === gmProgram.id)
+    ?.tasks.rows.find((task) => task.id === criticTaskId);
+  const criticRelease = await selfTaskRelease(gmMainToken, criticTaskId);
+  await post("/api/dispatch", { on: true });
+  let criticRunning: CriticTaskState | null = null;
+  for (let i = 0; i < 100; i++) {
+    criticRunning = (readState().tasks ?? []).find((task) => task.id === criticTaskId) as unknown as CriticTaskState ?? null;
+    if (criticRunning?.status === "sent" && criticRunning.critic.delivery.status === "delivered") break;
+    await Bun.sleep(100);
+  }
+  const criticSlot = criticRunning?.slot ?? 0;
+  const criticLane = criticSlot > 0 ? readState().slots?.[String(criticSlot)] : undefined;
+  const criticLaneHead = criticLane?.cwd ? gitIn(criticLane.cwd, "rev-parse", "HEAD").stdout.trim() : "";
+  const criticHistory = criticSlot > 0
+    ? await (await get(`/api/slots/${criticSlot}/history`)).json() as { history: { text: string }[] }
+    : { history: [] as { text: string }[] };
+  const criticPrompt = criticHistory.history.at(-1)?.text ?? "";
+  check("critic dispatch: ordinary release starts a fresh lane at the exact build with one evidence-only brief and strict full-hash receipt",
+    criticBeforeRow?.phase === "READY" && criticBeforeRow.nextAction?.includes("/release") === true
+      && criticRelease.ok && criticRunning?.status === "sent" && criticLaneHead === criticBuild
+      && criticRunning.critic.delivery.status === "delivered"
+      && criticRunning.critic.delivery.briefSha256 === createHash("sha256").update(criticPrompt).digest("hex")
+      && criticPrompt.includes(criticRunning.critic.sha256) && criticPrompt.includes(sealed?.sha256 ?? "missing")
+      && criticPrompt.includes(sealed?.snapshot ?? "missing")
+      && !criticPrompt.includes("ContextPlan") && !criticPrompt.includes("HANDOFF")
+      && !criticPrompt.includes("Fresh critic replay over immutable captured evidence"),
+    `release=${criticRelease.status} state=${criticRunning?.status}/${criticRunning?.critic.delivery.status} head=${criticLaneHead.slice(0, 8)} prompt=${criticPrompt.length}`);
+
+  const criticToken = criticLane?.selfToken ?? "";
+  const criticClarify = await fetch(`${BASE}/api/self/clarifications`, {
+    method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": criticToken },
+    body: JSON.stringify({ question: "may I change the evidence?" }),
+  });
+  const [criticCommit, criticMerge, criticLand, criticSelfLand] = await Promise.all([
+    post(`/api/slots/${criticSlot}/commit`, { mode: "quick", confirm: true }),
+    post(`/api/slots/${criticSlot}/merge`, {}),
+    post(`/api/slots/${criticSlot}/land`, {}),
+    fetch(`${BASE}/api/self/tasks/${criticTaskId}/land`, { method: "POST", headers: { "x-fleet-self-token": gmMainToken } }),
+  ]);
+  check("critic mutation firewall: clarification, Fleet commit, merge and both land doors reject the evidence lane",
+    criticClarify.status === 409 && criticCommit.status === 409 && criticMerge.status === 409
+      && criticLand.status === 409 && criticSelfLand.status === 409,
+    `clarify=${criticClarify.status} commit=${criticCommit.status} merge=${criticMerge.status} land=${criticLand.status}/${criticSelfLand.status}`);
+  rmSync(`${gameWt}/captures`, { recursive: true, force: true });
+
   // THE SHARED USE GATE. Once a Game-Maker MAIN is live, every other open path must see the same
   // concrete tree protection: a plain owner open and a Standard Program bootstrap are both 409.
   // Repository identity is deliberately not the lock: a sibling linked worktree from the same
@@ -2534,6 +2645,33 @@ export async function run(ctx: Ctx): Promise<void> {
       && (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.main?.slot === gmSuccessorSlot
       && (await contextReceipts()).total === gmSuccessionReceiptsBefore + 1,
     `commit=${gmGoodCommit} ${gmSuccessionResponse.status} ${JSON.stringify(gmSuccessionBody)}`);
+
+  const gmSuccessorToken = typeof gmSuccessionBody.slot === "number"
+    ? readState().slots?.[String(gmSuccessionBody.slot)]?.selfToken ?? "" : "";
+  const criticTokenAfterRestart = criticSlot > 0 ? readState().slots?.[String(criticSlot)]?.selfToken ?? "" : "";
+  const criticReportText = "Observed the sealed red-door replay at the exact build; jump timing remained late on frame 317.";
+  const criticReportResponse = await selfFleetReport(criticTokenAfterRestart,
+    { status: "failed", text: criticReportText });
+  const criticReportBody = await criticReportResponse.json() as { ok?: boolean; report?: { id: string; eventId: string } };
+  const criticReportRetry = await selfFleetReport(criticTokenAfterRestart,
+    { status: "failed", text: criticReportText });
+  const successorReports: { reports: { id: string }[] } = gmSuccessorToken
+    ? await (await fetch(`${BASE}/api/self/fleet-report`, { headers: { "x-fleet-self-token": gmSuccessorToken } })).json()
+    : { reports: [] as { id: string }[] };
+  const criticReportEvent = (readState().events ?? []).find((event) => event.id === criticReportBody.report?.eventId);
+  const successorExecution = await selfExecution(gmSuccessorToken);
+  const successorCritic = successorExecution.view?.programs.find((row) => row.program.id === gmProgram.id)
+    ?.tasks.rows.find((task) => task.id === criticTaskId);
+  check("critic succession routing: a post-succession report terminates at receiver-gone for the stored requester and is never delivered to its successor",
+    criticTokenAfterRestart === criticToken && criticReportResponse.ok && criticReportRetry.ok
+      && (criticReportEvent as { status?: string } | undefined)?.status === "receiver-gone"
+      && !successorReports.reports.some((report) => report.id === criticReportBody.report?.id)
+      && successorCritic?.status === "done" && successorCritic.nextAction === null
+      && successorCritic.critic?.delivery.reportEventStatus === "receiver-gone"
+      && !String(successorCritic.nextAction).includes("land"),
+    `report=${criticReportResponse.status}/${criticReportRetry.status} event=${JSON.stringify(criticReportEvent ?? null)} successorReports=${successorReports.reports.length}`);
+  if (criticSlot > 0) await post(`/api/slots/${criticSlot}/kill`, {});
+  if (criticLane?.cwd) await post("/api/worktrees/remove", { repo: gameRepo, path: criticLane.cwd });
   // THE SHARED BLOCK, byte for byte. Two founding seams, one text — the falsifier is a bootstrap
   // and a succession that drift into two nearly-identical role blocks nobody diffs again.
   const gmSuccessionRole = gmRoleOf(gmSuccessionPrompt);

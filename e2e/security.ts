@@ -113,6 +113,11 @@ const PRE_AUTH_ROUTES = [
   // triple. The answer side — the half that does type into a pane — is owner-gated and lives on
   // /api/attention, deliberately not here.
   '= /api/self/attention',
+  // A bound Game-Maker MAIN can mint one fresh sensory-critic act over immutable replay evidence.
+  // The body is closed; Program, repo and exact requester come from the self-token occupant. The
+  // route only creates a pending Task.critic row and snapshots caller-relative regular captures;
+  // release, dispatch and report stay on the existing Task/FleetEvent rails.
+  '= /api/self/critic',
   // ACP-16, and it is the entry on this list that comes closest to the queue: a bound Program-MAIN
   // releases a PENDING row of its own Program, `pending → queued` and nothing else. It is on the
   // pre-auth surface for the same reason as its neighbours — the exact self principal IS the

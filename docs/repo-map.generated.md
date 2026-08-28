@@ -17,7 +17,7 @@ Scope and sources, so the omissions are not silent:
   `bun.lock`, `launchd-example.plist`, `worker-deepseek.py`, `LICENSE`.
 - A row with no sentence available says so in the row. It is never dropped.
 
-## Directories (12)
+## Directories (13)
 
 - `.claude/` — Session-scoped Claude Code commands (`⚙ steward`'s five pulses) and the repo-local skills — `graphify`, `kriterium-grill`, `mess-notiz`, `unslop`.
 - `.fleet/` — This repo's own context manifest (`context-packs.json`) — the pointers a target repo publishes about itself, validated by e2e/pins.ts before every land.
@@ -27,6 +27,7 @@ Scope and sources, so the omissions are not silent:
 - `docs/` — The knowledge shelf: how to brief a session, what a green gate attests, which failures are the machine's — including `docs/messungen/` for tracked measurement notes.
 - `drills/` — Fire drills — seeded-defect runs that point a real model at a real path, deliberately outside the deterministic suites.
 - `e2e/` — The check modules `fleet-e2e.ts` boots in order, plus `pins.ts`: the must-agree pairs whose other side is not TypeScript.
+- `helper-daemon/` — The other machine's half of the remote helper portal: a Bun daemon that claims a job, clones its bundle, runs the suite and reports back — plus its config format and a placeholder systemd unit.
 - `lerntisch/` — The learning bench — agent/information layers measured as data (`daten/`) against captured sources (`quellen/`), with its own HTML view.
 - `public/` — Static assets `server.ts` serves: the dashboard, share and landing pages, icons and manifest. The client bundles beside them are gitignored build output.
 - `src/` — Modules shared across the server, the browser bundle and the suites — protocol types, the client, share rendering, shell quoting, markdown, backoff.

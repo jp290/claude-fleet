@@ -3670,7 +3670,7 @@ async function observeTmuxSlots(): Promise<TmuxSlotObservations> {
 // the row an owner reads (/api/sessions) go through it, so "which VM am I in" has a single answer
 // by construction — two resolutions of the same fallback is how the board comes to say one thing
 // while the pane does another.
-function boxFor(s: Slot): { container: string; containerContext: string } {
+function boxFor(s: Pick<Slot, "container" | "containerContext">): { container: string; containerContext: string } {
   return { container: s.container ?? CONTAINER_NAME, containerContext: s.containerContext ?? CONTAINER_CONTEXT };
 }
 
@@ -5125,15 +5125,59 @@ const crlf = (text: string) => text.replace(/\r?\n/g, "\r\n");
 // flight is refused rather than queued behind a pane that is already coming back.
 const restarting = new Set<number>();
 
+interface SlotSpawnOccupant {
+  slot: number;
+  cwd: string;
+  openedAt: number;
+  selfToken: string;
+  label: string | null;
+  sessionId: string | null;
+  model: string | null;
+  harness: string | null;
+  effort: string | null;
+  container: string | null;
+  containerContext: string | null;
+}
+
+const slotSpawnOccupant = (s: Slot): SlotSpawnOccupant | null => s.cwd ? {
+  slot: s.id, cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken, label: s.label,
+  sessionId: s.sessionId, model: s.model, harness: s.harness, effort: s.effort,
+  container: s.container, containerContext: s.containerContext,
+} : null;
+
+// label is a captured spawn input, not occupant identity: the owner may relabel a live session
+// without recycling it, and that documented change only affects the pane on its next respawn.
+const sameSlotSpawnOccupant = (s: Slot, expected: SlotSpawnOccupant): boolean =>
+  s.id === expected.slot && s.cwd === expected.cwd && s.openedAt === expected.openedAt
+  && s.selfToken === expected.selfToken && s.sessionId === expected.sessionId && s.model === expected.model
+  && s.harness === expected.harness && s.effort === expected.effort
+  && s.container === expected.container && s.containerContext === expected.containerContext;
+
+// Only the irreducible tmux new-session await and its state commit are serialized. Teardown waits
+// for this promise before clearing/recycling the occupant, so a successful old spawn cannot finish
+// behind the new occupant. This is not a general slot lock: capture, pipe and repaint stay outside.
+const slotSpawnInflight = new Map<number, Promise<void>>();
+async function waitForSlotSpawn(slot: number): Promise<void> {
+  const pending = slotSpawnInflight.get(slot);
+  if (pending) await pending;
+}
+
 // `cause` only picks which audit event the rebuild is booked under; the rebuild itself is
 // identical either way. "heal" = the pane died on us, "restart" = the owner asked for it.
 async function ensureSlot(s: Slot, cause: "heal" | "restart" = "heal"): Promise<void> {
-  if (!s.cwd) return;
+  let occupant = slotSpawnOccupant(s);
+  if (!occupant) return;
+  const entrySpawn = slotSpawnInflight.get(s.id);
+  if (entrySpawn) { await entrySpawn; return; }
   const name = sess(s.id);
   const has = await tmux("has-session", "-t", name);
+  if (!sameSlotSpawnOccupant(s, occupant)) return;
+  const probedSpawn = slotSpawnInflight.get(s.id);
+  if (probedSpawn) { await probedSpawn; return; }
   if (has.code !== 0) {
     await tmux("set", "-g", "history-limit", "50000");
-    const h = harnessOf(s.harness);
+    if (!sameSlotSpawnOccupant(s, occupant)) return;
+    const h = harnessOf(occupant.harness);
     // pane died but we know its harness-specific conversation evidence still exists →
     // self-heal RESUMES the conversation instead of starting a blank one.
     // Otherwise: fresh harness, fresh candidate uuid — only if WE win the has-session/
@@ -5146,17 +5190,19 @@ async function ensureSlot(s: Slot, cause: "heal" | "restart" = "heal"): Promise<
     // (measured). Codex is stricter: its discovered id is necessary but not sufficient, so the
     // exact rollout filename carrying that id must still exist before every resume.
     const codex = h.id === "codex";
-    const priorSessionId = s.sessionId;
+    const priorSessionId = occupant.sessionId;
     const priorCodexState = s.codexRecoveryState;
     const codexRollout = codex && priorSessionId && CODEX_UUID_RE.test(priorSessionId)
       ? await codexRolloutForId(priorSessionId) : null;
-    const resume = !!s.sessionId && h.supports.resume
+    if (!sameSlotSpawnOccupant(s, occupant)) return;
+    const resume = !!priorSessionId && h.supports.resume
       && (codex ? !!codexRollout
-        : h.supports.transcript ? existsSync(`${projDir(s.cwd)}/${s.sessionId}.jsonl`) : true);
+        : h.supports.transcript ? existsSync(`${projDir(occupant.cwd)}/${priorSessionId}.jsonl`) : true);
     // A missing exact rollout is not permission to guess, use --last, or silently relabel a fresh
     // TUI as the old conversation. Keep the old id as the loss evidence and surface the state;
     // the owner can deliberately recycle the slot to start clean.
     if (codex && priorSessionId && !resume && s.codexRecoveryState !== "lost") {
+      if (!sameSlotSpawnOccupant(s, occupant)) return;
       s.codexRecoveryState = "lost";
       saveState();
       audit("codex_resume_lost", s.id, `session=${priorSessionId}`);
@@ -5169,8 +5215,8 @@ async function ensureSlot(s: Slot, cause: "heal" | "restart" = "heal"): Promise<
     // always-truthy candidate, and reading it there collapsed the formula to "which BASE_CMD" —
     // no-session became unreachable and every race heal read as a broken promise (b7d449a0,
     // found by the inspection pulse on the first day of the measurement it poisoned).
-    const healDetail = resume ? "resumed" : s.sessionId ? "created:no-transcript" : "created:no-session";
-    const candidate = resume ? s.sessionId! : crypto.randomUUID();
+    const healDetail = resume ? "resumed" : priorSessionId ? "created:no-transcript" : "created:no-session";
+    const candidate = resume ? priorSessionId! : crypto.randomUUID();
     // self-scheduling credential: EVERY session with a cwd gets it, lane or not. It can check in
     // on itself later and read its own row, scoped to exactly this slot, without ever touching the
     // owner token. This used to be keyed on `s.worktree`, and that carve-out was never a security
@@ -5197,20 +5243,31 @@ async function ensureSlot(s: Slot, cause: "heal" | "restart" = "heal"): Promise<
     // into other slots. Withholding the NARROWER credential from that one pane protects nothing
     // and would only deny the longest-lived session on the board the ability to schedule its own
     // next look — which is precisely what a watching role needs most.
-    const selfExport = `export FLEET_SELF_TOKEN='${s.selfToken}'; export FLEET_SELF_SLOT='${s.id}'; `;
+    const selfExport = `export FLEET_SELF_TOKEN='${occupant.selfToken}'; export FLEET_SELF_SLOT='${occupant.slot}'; `;
     // the steward principal's scoped token, baked with the same exposure as FLEET_SELF_TOKEN
     // above but keyed on the steward LABEL (not the worktree flag): the pane that is currently
     // the ⚙ steward can then self-serve /api/steward/* (the Rundgang) without the owner token.
     // Env is only injectable at spawn, so a live relabel takes effect on the pane's next
     // (re)spawn — identical semantics to FLEET_SELF_TOKEN, never patched into a running pane.
-    const stewardExport = s.label === STEWARD_LABEL && stewardToken
+    const stewardExport = occupant.label === STEWARD_LABEL && stewardToken
       ? `export FLEET_STEWARD_TOKEN='${stewardToken}'; ` : "";
-    const created = await tmux("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", s.cwd,
-      // `cwd: s.cwd` is the SAME value tmux is given with `-c` two arguments up, and passing the
+    // A second ensure may have reached the same absent pane while the probes above ran. Join its
+    // exact spawn instead of issuing a duplicate. No await separates this check from map.set.
+    const concurrentSpawn = slotSpawnInflight.get(s.id);
+    if (concurrentSpawn) { await concurrentSpawn; return; }
+    if (!sameSlotSpawnOccupant(s, occupant)) return;
+    let spawn: Promise<void>;
+    spawn = (async () => {
+      const created = await tmux("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", occupant.cwd,
+      // `cwd: occupant.cwd` is the SAME value tmux is given with `-c` two arguments up, and passing the
       // one variable to both is the point: Pi's write fence is anchored at it, so a fence built
       // from anything else would grant a directory the pane is not in.
-      `${selfExport}${stewardExport}${h.spawnCmd({ sessionId: candidate, resume, model: s.model, effort: s.effort, cwd: s.cwd, ...boxFor(s) })}`);
-    if (created.code === 0) {
+        `${selfExport}${stewardExport}${h.spawnCmd({ sessionId: candidate, resume, model: occupant.model,
+          effort: occupant.effort, cwd: occupant.cwd, ...boxFor(occupant) })}`);
+      // openSlot and killSlot wait on this barrier before changing occupant identity. The equality
+      // remains defence in depth for other same-process mutations; a mismatch authorizes neither a
+      // state commit nor blind cleanup, because the named tmux session may already be the successor's.
+      if (created.code !== 0 || !sameSlotSpawnOccupant(s, occupant)) return;
       s.cols = 200;
       s.rows = 50;
       // record the pin only if the adapter actually PASSED it. For the default adapter this is
@@ -5220,6 +5277,9 @@ async function ensureSlot(s: Slot, cause: "heal" | "restart" = "heal"): Promise<
       // Preserve it across this heal even though pinsSession correctly remains false. Only a
       // deliberate openSlot recycle clears it before reaching here.
       s.sessionId = h.pinsSession ? candidate : codex && priorSessionId ? priorSessionId : null;
+      // This is ensureSlot's own identity refinement, not a recycle. Advance the local snapshot so
+      // the post-spawn checks accept exactly this new pin and still reject every external change.
+      occupant = { ...occupant, sessionId: s.sessionId };
       // the same learn-site backfill as tickCodexRecovery's: a heal that carries a discovered
       // Codex id across a respawn is the third way a recorded `null` becomes knowable, and the
       // helper is a no-op for every other shape (still null, or already recorded).
@@ -5234,32 +5294,47 @@ async function ensureSlot(s: Slot, cause: "heal" | "restart" = "heal"): Promise<
       }
       saveState();
       audit(cause === "restart" ? "slot_restart" : "self_heal_recreate", s.id, healDetail); // classified pre-spawn — see healDetail above
-      console.log(`slot ${s.id}: ${resume ? `resumed ${h.id} session ${candidate} in` : "created tmux session"} '${name}' in ${s.cwd}`);
+      console.log(`slot ${s.id}: ${resume ? `resumed ${h.id} session ${candidate} in` : "created tmux session"} '${name}' in ${occupant.cwd}`);
+    })();
+    slotSpawnInflight.set(s.id, spawn);
+    try {
+      await spawn;
+    } finally {
+      if (slotSpawnInflight.get(s.id) === spawn) slotSpawnInflight.delete(s.id);
     }
+    if (!sameSlotSpawnOccupant(s, occupant)) return;
   }
   // the size cache follows TMUX TRUTH, not the other way round: the in-memory cols/rows
   // die with every server restart (deploys!) while the pane keeps whatever the last
   // owner client set — a guest reading the stale 200×50 default then renders a terminal
   // that has nothing to do with the actual pane. Re-sync on every ensure.
   const size = await tmux("display-message", "-p", "-t", name, "#{window_width} #{window_height}");
+  if (!sameSlotSpawnOccupant(s, occupant)) return;
   const sm = /^(\d+) (\d+)$/.exec(size.out);
   if (sm) {
     s.cols = Number(sm[1]);
     s.rows = Number(sm[2]);
   }
   const pipe = await tmux("display-message", "-p", "-t", name, "#{pane_pipe}");
+  if (!sameSlotSpawnOccupant(s, occupant)) return;
   const pipeOpen = pipe.out === "1";
   const file = streamPath(s.id);
   // terminal output can contain secrets — keep the stream private no matter which
   // process created the file (tmux's `cat >>` creates it with the default umask)
   if (existsSync(file) && (statSync(file).mode & 0o777) !== 0o600) chmodSync(file, 0o600);
   if (pipeOpen && existsSync(file)) return;
-  if (pipeOpen) await tmux("pipe-pane", "-t", name); // close stale pipe (file was deleted)
+  if (pipeOpen) {
+    await tmux("pipe-pane", "-t", name); // close stale pipe (file was deleted)
+    if (!sameSlotSpawnOccupant(s, occupant)) return;
+  }
   // seed stream with full pane history, then start piping raw output
   const cap = await tmux("capture-pane", "-t", name, "-e", "-p", "-S", "-");
+  if (!sameSlotSpawnOccupant(s, occupant)) return;
   await Bun.write(file, crlf(cap.out) + "\r\n");
+  if (!sameSlotSpawnOccupant(s, occupant)) return;
   chmodSync(file, 0o600);
   await tmux("pipe-pane", "-t", name, "-o", `exec cat >> '${file}'`);
+  if (!sameSlotSpawnOccupant(s, occupant)) return;
   s.quietUntil = Date.now() + 1500;
   await repaint(name);
 }
@@ -5292,6 +5367,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   box: BoxPin = NO_BOX, treeLease: GameMakerTreeLease | null = null): Promise<void> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
+  await waitForSlotSpawn(s.id);
   assertGameMakerFoundingTargetOpen(s, treeLease);
   const openIntent: OpenSlotIntent = { root: repoCanon(cwd), lease: treeLease };
   assertGameMakerTreeOpen(openIntent.root, treeLease);
@@ -5436,6 +5512,7 @@ function detachSlotTasks(slotId: number, note: string): void {
 // means slot recycling if the kills are `reopen`, and abandoned work if they are `owner`. Every
 // call site knows its own reason; none of them may pass it as an afterthought (slotstats.ts).
 async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<void> {
+  await waitForSlotSpawn(s.id);
   audit("slot_kill", s.id, why);
   s.cwd = null; // clear first so the self-heal loop can't resurrect it mid-kill
   s.label = null;

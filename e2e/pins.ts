@@ -3481,6 +3481,25 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && read("e2e/programs.ts").includes("gmPreOpenKillReached")
       && read("e2e/programs.ts").includes("gmPreOpenKillRelease"),
     `teardown=${orphanTeardown} latch=${testLatch} second=${secondFoundingPermit}`);
+  const ensureAt = server.indexOf("async function ensureSlot(");
+  const ensureBody = ensureAt < 0 ? "" : server.slice(ensureAt, server.indexOf("\n}\n", ensureAt) + 3);
+  const killAt = server.indexOf("async function killSlot(");
+  const killBody = killAt < 0 ? "" : server.slice(killAt, server.indexOf("\n}\n", killAt) + 3);
+  const hasAwait = ensureBody.indexOf('await tmux("has-session"');
+  const afterHasIdentity = ensureBody.indexOf("sameSlotSpawnOccupant(s, occupant)", hasAwait);
+  const beforeSpawnIdentity = ensureBody.lastIndexOf("sameSlotSpawnOccupant(s, occupant)",
+    ensureBody.indexOf('tmux("new-session"'));
+  pin(`${RULE_GM_TREE} — self-heal snapshots the occupant, rechecks after has-session and before spawn, while teardown joins the spawn commit`,
+    /let occupant = slotSpawnOccupant\(s\)/.test(ensureBody)
+      && hasAwait >= 0 && afterHasIdentity > hasAwait
+      && beforeSpawnIdentity > afterHasIdentity
+      && beforeSpawnIdentity < ensureBody.indexOf('tmux("new-session"')
+      && ensureBody.includes("slotSpawnInflight.set(s.id, spawn)")
+      && ensureBody.includes("if (slotSpawnInflight.get(s.id) === spawn) slotSpawnInflight.delete(s.id)")
+      && /const concurrentSpawn = slotSpawnInflight\.get\(s\.id\);[\s\S]*?if \(concurrentSpawn\) \{ await concurrentSpawn; return; \}[\s\S]*?if \(!sameSlotSpawnOccupant\(s, occupant\)\) return;[\s\S]*?slotSpawnInflight\.set\(s\.id, spawn\)/.test(ensureBody)
+      && openBody.indexOf("await waitForSlotSpawn(s.id)") < openBody.indexOf('await tmux("has-session"')
+      && killBody.indexOf("await waitForSlotSpawn(s.id)") < killBody.indexOf('audit("slot_kill"'),
+    `has=${hasAwait} after=${afterHasIdentity} before=${beforeSpawnIdentity} spawn=${ensureBody.indexOf('tmux("new-session"')}`);
   pin(`${RULE_GM_TREE} — only the dedicated conflict type selects 409 at owner open seams`,
     /class GameMakerTreeConflict extends Error/.test(server)
       && /e instanceof GameMakerTreeConflict \? 409 : 400/.test(server)
@@ -3609,7 +3628,8 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   const runtimeCases = [
     "bootstrap persists the exact target before delivery, blocks complete",
     "the exact founding target follows kill, absence proof, slot and marker cleanup",
-    "post-await permit recheck leaves no main, receipt, pane or slot orphan and the tree recoverable",
+    "post-await permit recheck leaves no main, receipt, pane or slot orphan",
+    "the released tree remains recoverable",
     "an unwritable receipt ledger rolls back without binding, marker, pane or evidence",
     "a matching orphan receipt never auto-binds and survives exact-candidate cleanup as history",
     "a pre-open marker clears, while a different-tree target is preserved",

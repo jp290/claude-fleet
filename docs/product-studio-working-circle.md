@@ -274,8 +274,10 @@ source evidence.
 The fresh lane starts at that exact build. Its canonical brief is assembled only from the sealed
 record: no queue prose, current hypothesis, open defect, rejected direction, earlier verdict,
 checkpoint path, ContextPlan or mutating worker footer enters it. The Critic observes and returns one
-strict `fleet-report`; Fleet rejects commit, merge, land and clarification for that lane. These are
-Fleet policy guards, not a claim of process or operating-system containment.
+strict `fleet-report`. A central allowlist admits exactly that Self POST and returns 409 for every
+other current or future Self mutation; generic owner task edits, commit, merge and land are closed as
+well. The one owner stop is audited `POST /api/tasks/:id/critic-cancel`, which archives rather than
+promotes. These are Fleet policy guards, not a claim of process or operating-system containment.
 
 Delivery is evidence too: Fleet persists full brief SHA-256 plus `send-uncertain` before touching
 the pane, then records the observed adapter acceptance; restart never replays an uncertain send.
@@ -283,6 +285,20 @@ The report routes only to the exact MAIN occupant that requested it. If successi
 that occupant, its FleetEvent becomes `receiver-gone` and is never redirected to the successor.
 `program-execution` shows sealed evidence and delivery state, never a land candidate. A critic who
 reads the answer before looking is no longer a fresh one.
+
+Create reserves the Program synchronously before its first await: identical concurrent requests join
+one durable result, while a different request is 409, and binding/open-act facts are checked again
+before insert. Failed create/report saves roll back their in-memory and snapshot mutation so an
+identical retry must establish durability again. Requester loss before release, lane loss after
+delivery and explicit cancellation are terminal; `delivered` and `send-uncertain` are never reset or
+blindly resent.
+
+Active Critic evidence is also a startup safety marker. Malformed metadata, a missing snapshot or
+tampered bytes refuse startup rather than degrading the same row into a Standard Task; the loader
+hashes each file once. Retained evidence is capped at 8 acts/64 MiB per Program and 64 acts/512 MiB
+globally. Archived roots are removed after their durable terminal save, completed roots after 24
+hours, and a successful startup removes orphans. A terminal row therefore loads with either its full
+valid snapshot set or no set after cleanup, never a partial one.
 
 ## The Game-Maker succession checkpoint
 

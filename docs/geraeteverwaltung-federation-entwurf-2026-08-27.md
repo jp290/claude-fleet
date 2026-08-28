@@ -86,7 +86,19 @@ Machbarkeits-Notiz). Zwei Formen, bewusst getrennt:
 ## 5. Offen / nicht geprüft
 
 Wo genau das Geräte-Panel im Board sitzt (src/client.ts ist 9 974 Zeilen; Panel-Struktur nicht
-vermessen) · ob der Heartbeat den bestehenden `/api/helper/device`-Vertrag erweitert oder eine
-Schwester-Route wird (Perimeter-Regex `server.ts#handleHelperRoute` müsste bei einer neuen Route
-wachsen — bei Erweiterung nicht) · Persistenz-Migration alter `HelperDevice`-Zeilen (Felder sind
-optional ergänzbar, ABGELEITET aus der bestehenden Boot-Validierung, nicht getestet).
+vermessen).
+
+**Zwei Punkte dieser Liste sind mit Stufe A gebaut und damit erledigt** (Schnitt S1 des
+Programm-Plans `docs/linux-second-host-programm-2026-08-28.md`, `server.ts#setHelperDevice` +
+`e2e/helper-portal.ts` §K.2b):
+
+- Der Heartbeat ERWEITERT den bestehenden `/api/helper/device`-Vertrag, es gibt keine
+  Schwester-Route: `mode`/`load`/`capabilities` sind optionale Body-Felder, `desiredMode` reist
+  in der Antwort mit. Der Perimeter-Regex in `server.ts#handleHelperRoute` ist unverändert. Die
+  Owner-Route `POST /api/helper/devices/:id/mode` liegt unter dem Owner-Gate neben
+  `/api/helper/token` — für den Helfer-Prinzipal ein 401, weil sein Header vom Owner-Gate gar
+  nicht gelesen wird; sie SPEICHERT nur, sie dispatcht nichts.
+- Die Persistenz-Migration ist getestet statt abgeleitet: alle vier Felder sind optional, alte
+  `fleet.json`-Zeilen laden unverändert, und die drei Fremddaten-Felder werden beim Boot erneut
+  gegen das geschlossene Set bzw. die Caps validiert. Beleg über einen Neustart mitten im Lauf:
+  Check „…and so does the device register" in `e2e/helper-portal.ts`.

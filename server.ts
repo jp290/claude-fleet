@@ -3368,6 +3368,9 @@ type AuditEvent =
   // job nobody ever runs again.
   | "helper_claim" | "helper_result" | "helper_claim_expired"
   | "helper_auth_fail"
+  // stage A of the device register: the owner set a device's WISH-mode. It is a config write with
+  // no dispatch behind it, so this row is the only place the change is ever visible from outside.
+  | "helper_device_mode"
   // the deploy verb (Verb 2): one row when a build fails, one when a restart is launched, one when
   // the NEXT BOOT judges it. The trio is what makes "was the deploy verified?" answerable at all —
   // the verb kills the process that would otherwise report its own result.
@@ -11810,8 +11813,43 @@ let helperLapses: HelperLapse[] = [];
 // The device name is stored SERVER-SIDE on the owner's instruction: a name that lived only in the
 // helper's browser would vanish with a cleared cache, and every past ledger row would then point at
 // a machine nobody could name any more.
-interface HelperDevice { id: string; name: string; lastSeen: number }
+//
+// STAGE A OF THE DEVICE REGISTER (docs/geraeteverwaltung-federation-entwurf-2026-08-27.md §2) adds
+// two kinds of field to that row, and keeping them apart is the whole design:
+//   · `mode`/`load`/`capabilities` are what the DEVICE says about itself — foreign data, validated
+//     against a closed set and size caps on the way in, never trusted and never interpolated.
+//   · `desiredMode` is what the OWNER wants of it. The helper principal can only ever READ it: it
+//     is written by an owner route that lives below the owner gate, and the device receives it in
+//     the reply to its own heartbeat. That is a PULL — this server never opens a connection to the
+//     other machine, which is the portal's founding constraint and stays untouched by this feature.
+// Every one of them is OPTIONAL: a device that never reports a mode, and a `fleet.json` row written
+// before this existed, are both ordinary rows here.
+type DeviceMode = "active" | "quiet" | "off";
+const DEVICE_MODES: readonly DeviceMode[] = ["active", "quiet", "off"];
+const isDeviceMode = (v: unknown): v is DeviceMode =>
+  typeof v === "string" && (DEVICE_MODES as readonly string[]).includes(v);
+// The mode a device is under when the owner has never said otherwise. Unset means "nothing was
+// decided", which the daemon must read as "work" — an absent owner is not a stop order.
+const DEVICE_MODE_DEFAULT: DeviceMode = "active";
+const DEVICE_CAPS_KEEP = 8;        // a capability list is a hint, not an inventory
+const DEVICE_CAP_LEN = 24;
+interface HelperDevice {
+  id: string; name: string; lastSeen: number;
+  mode?: DeviceMode;         // the device's own reading of itself, last heartbeat
+  load?: number;             // ...and its own load figure. A hint for the owner's eye, nothing reads it
+  capabilities?: string[];   // ...and what it says it can run
+  desiredMode?: DeviceMode;  // the OWNER's wish. Never written by the helper principal
+}
 const helperDevices = new Map<string, HelperDevice>();
+// What a heartbeat is allowed to carry. Keys are present only when the device actually sent them,
+// so a plain lastSeen touch (the claim paths) can spread this over the stored row without erasing
+// the last real report.
+type HelperHeartbeat = { mode?: DeviceMode; load?: number; capabilities?: string[] };
+// Foreign strings land in a ledger row, a console line and an audit detail — same treatment the
+// device name already gets: printable only, and short.
+function printableShort(raw: string, cap: number): string {
+  return [...raw.trim()].filter((ch) => ch >= " " && ch !== "\u007f").join("").slice(0, cap).trim();
+}
 
 // --- THE SECOND JOB KIND: a LANE's preview suite -----------------------------------------------
 // The portal's job list used to be the tier-2 audit queue and nothing else, so the one suite run a
@@ -12422,8 +12460,12 @@ function kickAuditDrain(): void {
 function helperDeviceName(deviceId: string): string {
   return helperDevices.get(deviceId)?.name ?? "unnamed device";
 }
-function setHelperDevice(deviceId: string, name: string): HelperDevice {
-  const d: HelperDevice = { id: deviceId, name, lastSeen: Date.now() };
+// `reported` is the heartbeat's fields and is OMITTED by the two claim paths, which only touch
+// lastSeen. Hence the spread of the stored row first: rebuilding the object from scratch — what
+// this function did before stage A — would now silently erase the owner's desiredMode and the last
+// heartbeat every time a device claimed a job.
+function setHelperDevice(deviceId: string, name: string, reported?: HelperHeartbeat): HelperDevice {
+  const d: HelperDevice = { ...helperDevices.get(deviceId), ...reported, id: deviceId, name, lastSeen: Date.now() };
   helperDevices.delete(deviceId);
   helperDevices.set(deviceId, d); // re-inserted at the tail, so iteration order is oldest-first
   // eviction never touches a LIVE claimant: a name is worth keeping exactly as long as something
@@ -12847,12 +12889,36 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
     const raw = typeof body?.name === "string" ? body.name : "";
     // printable-only and short: this string ends up in a ledger row, a console line and an audit
     // detail, and none of those wants a newline the other machine chose.
-    const name = [...raw.trim()].filter((ch) => ch >= " " && ch !== "\u007f").join("").slice(0, 40).trim();
+    const name = printableShort(raw, 40);
     if (!/^[a-z0-9]{8,32}$/.test(deviceId)) return json({ error: "expected deviceId" }, 400);
     if (!name) return json({ error: "expected a name" }, 400);
-    const d = setHelperDevice(deviceId, name);
+    // The heartbeat half (stage A). Each field is optional and each is refused LOUDLY when present
+    // and wrong — a daemon that reports a mode this fleet does not know is a version skew, and
+    // swallowing it would leave the board showing a stale mode forever with nothing to point at.
+    // An old client that sends neither field takes none of these branches and behaves exactly as
+    // it did before.
+    const reported: HelperHeartbeat = {};
+    if (body?.mode !== undefined) {
+      if (!isDeviceMode(body.mode)) return json({ error: `mode must be one of ${DEVICE_MODES.join(", ")}` }, 400);
+      reported.mode = body.mode;
+    }
+    if (body?.load !== undefined) {
+      if (typeof body.load !== "number" || !Number.isFinite(body.load) || body.load < 0)
+        return json({ error: "load must be a finite number >= 0" }, 400);
+      reported.load = Math.round(Math.min(body.load, 9999) * 100) / 100;
+    }
+    if (body?.capabilities !== undefined) {
+      if (!Array.isArray(body.capabilities) || body.capabilities.some((c) => typeof c !== "string"))
+        return json({ error: "capabilities must be an array of strings" }, 400);
+      reported.capabilities = (body.capabilities as string[])
+        .map((c) => printableShort(c, DEVICE_CAP_LEN)).filter(Boolean).slice(0, DEVICE_CAPS_KEEP);
+    }
+    const d = setHelperDevice(deviceId, name, reported);
     await saveStateNow();
-    return json({ device: d });
+    // `device` keeps its exact old shape plus optional fields, so a pre-stage-A client reads it
+    // unchanged; `desiredMode` is the RESOLVED pull value (never undefined) and is the one field
+    // the daemon acts on.
+    return json({ device: d, desiredMode: d.desiredMode ?? DEVICE_MODE_DEFAULT });
   }
   if (url.pathname === "/api/helper/claim" && req.method === "POST") return await helperClaim(await readJson(req));
   if (url.pathname === "/api/helper/result" && req.method === "POST") return await helperResult(await readJson(req));
@@ -17066,9 +17132,22 @@ if (existsSync(STATE_FILE)) {
     if (Array.isArray((persisted as { helperLapses?: unknown }).helperLapses))
       helperLapses = ((persisted as { helperLapses: HelperLapse[] }).helperLapses)
         .filter((l) => l && typeof l.id === "string" && typeof l.expiredAt === "number").slice(0, HELPER_LAPSE_KEEP);
+    // A row written before stage A has none of the four new fields and is restored unchanged —
+    // they are all optional. The three foreign ones are re-validated rather than trusted: this file
+    // is on disk, and a mode that is not in the closed set must not enter the map through the back
+    // door just because it once got past a different version of the route.
     if (Array.isArray((persisted as { helperDevices?: unknown }).helperDevices))
       for (const d of (persisted as { helperDevices: HelperDevice[] }).helperDevices)
-        if (d && typeof d.id === "string" && typeof d.name === "string") helperDevices.set(d.id, d);
+        if (d && typeof d.id === "string" && typeof d.name === "string")
+          helperDevices.set(d.id, {
+            id: d.id, name: d.name, lastSeen: typeof d.lastSeen === "number" ? d.lastSeen : 0,
+            ...(isDeviceMode(d.mode) ? { mode: d.mode } : {}),
+            ...(typeof d.load === "number" && Number.isFinite(d.load) ? { load: d.load } : {}),
+            ...(Array.isArray(d.capabilities)
+              ? { capabilities: d.capabilities.filter((c): c is string => typeof c === "string").slice(0, DEVICE_CAPS_KEEP) }
+              : {}),
+            ...(isDeviceMode(d.desiredMode) ? { desiredMode: d.desiredMode } : {}),
+          });
     if (Array.isArray((persisted as { autos?: unknown }).autos))
       autos = ((persisted as { autos: unknown[] }).autos).filter((x): x is Auto =>
         typeof x === "object" && x !== null
@@ -20924,6 +21003,28 @@ Bun.serve<WSData>({
     // this repo is public, and the host half of that URL is the owner's own to type.
     if (url.pathname === "/api/helper/token" && req.method === "GET")
       return json({ token: helperToken, claimTimeoutMs: HELPER_CLAIM_TIMEOUT_MS });
+    // ...and the owner's half of the device register (stage A). It lives HERE, below the owner
+    // gate and beside /api/helper/token, for the same reason that route does: handleHelperRoute
+    // scopes by an exact-match regex, so a path it does not name falls straight through to the
+    // owner gate — the helper principal cannot reach this, and the perimeter regex e2e/security.ts
+    // pins does not grow by one character.
+    // The route STORES A WISH AND NOTHING ELSE: no dispatch, no connection to the device, no
+    // effect on any claim it currently holds. The device finds out on its next heartbeat, or never
+    // if it has stopped polling — which degrades exactly like a dead daemon does today.
+    const devMode = /^\/api\/helper\/devices\/([a-z0-9]{8,32})\/mode$/.exec(url.pathname);
+    if (devMode && req.method === "POST") {
+      const body = await readJson(req);
+      if (!isDeviceMode(body?.mode)) return json({ error: `mode must be one of ${DEVICE_MODES.join(", ")}` }, 400);
+      // Unknown device is a 404 rather than a row created here: the register is a record of
+      // machines that HAVE reported, and a wish for a device nobody has ever seen would show up on
+      // the board as a peer that does not exist.
+      const d = helperDevices.get(devMode[1]!);
+      if (!d) return json({ error: "no such device" }, 404);
+      d.desiredMode = body.mode;
+      await saveStateNow();
+      audit("helper_device_mode", undefined, `${d.name} -> ${d.desiredMode}`);
+      return json({ device: d });
+    }
     // ✨ rework a compose-box draft. Runs in the focused slot's cwd so repo context
     // (CLAUDE.md etc.) rides along; the result replaces the box, never auto-sends.
     // The slot's deterministic git state rides along as a DATA block — the same briefPayload

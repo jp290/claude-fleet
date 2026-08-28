@@ -29,7 +29,14 @@ interface HelperJob {
 interface HelperJobs {
   claimTimeoutMs: number; configured: boolean; jobs: HelperJob[];
   lapsed: { id: string; repo: string; name: string; claimedAt: number; expiredAt: number; covers: number }[];
-  device: { id: string; name: string } | null;
+  device: DeviceView | null;
+}
+// The register row as the wire carries it (stage A). Every field past `lastSeen` is optional here
+// for the same reason it is optional on the server: an old row and a device that reports nothing
+// are both ordinary.
+interface DeviceView {
+  id: string; name: string; lastSeen: number;
+  mode?: string; load?: number; capabilities?: string[]; desiredMode?: string;
 }
 // The row shape this module asserts on. Deliberately its own copy rather than an import from the
 // harness: what is being proven is that a REMOTE row carries `remote`, and a type that made the
@@ -198,6 +205,63 @@ export async function run(h: {
     named.ok && ((await named.json()) as { device: { name: string } }).device.name === DEVICE_NAME
       && (await jobs()).device?.name === DEVICE_NAME, `${named.status}`);
 
+  // ===== (K.2b) THE DEVICE REGISTER, STAGE A: reported mode in, owner's WISH out =================
+  // One route, two directions, and the asymmetry is the whole design. The device reports what it is
+  // doing; the reply tells it what the owner wants of it. Nothing here is a dispatch — this fleet
+  // never opens a connection towards the other machine, so a wish can only ever travel as the reply
+  // to a heartbeat the device itself sent. A device that stops polling therefore stops learning,
+  // and degrades exactly the way a dead daemon degrades today: its claim lapses.
+  const beat1 = await hpost("/api/helper/device",
+    { deviceId: DEVICE, name: DEVICE_NAME, mode: "active", load: 1.25, capabilities: ["bun", "tmux"] });
+  const beat1Body = (await beat1.json()) as { device?: DeviceView; desiredMode?: string };
+  check("(K) a heartbeat's mode/load/capabilities are stored, and the reply carries the wish-mode",
+    beat1.ok && beat1Body.device?.mode === "active" && beat1Body.device.load === 1.25
+      && JSON.stringify(beat1Body.device.capabilities) === '["bun","tmux"]'
+      && beat1Body.desiredMode === "active" && beat1Body.device.desiredMode === undefined,
+    `${beat1.status} ${JSON.stringify(beat1Body)}`);
+  // …and the two refusals. A mode outside the closed set is a version skew on one side or the
+  // other, and storing the string would leave the board showing a mode nothing can act on.
+  const beatBad = await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME, mode: "turbo" });
+  check("(K) should-reject: a device reporting a mode outside the closed set is a 400, not a stored string",
+    beatBad.status === 400 && (await jobs()).device?.mode === "active",
+    `${beatBad.status} ${JSON.stringify((await jobs()).device)}`);
+  const wishBad = await post(`/api/helper/devices/${DEVICE}/mode`, { mode: "sleepy" });
+  check("(K) should-reject: the owner cannot set a wish-mode outside the closed set either",
+    wishBad.status === 400, `${wishBad.status} ${JSON.stringify(await wishBad.json())}`);
+  const wishNobody = await post("/api/helper/devices/e2enosuchdev/mode", { mode: "off" });
+  check("(K) should-reject: a wish for a device that has never reported is a 404, not a row invented here",
+    wishNobody.status === 404, `${wishNobody.status}`);
+  // THE SCOPE LINE. The wish is the OWNER's field: the helper principal reads it and can never
+  // write it. The route sits below the owner gate beside /api/helper/token, so handleHelperRoute's
+  // exact-match perimeter does not name it — and the portal's credential travels in a header the
+  // owner gate does not read at all, which is why this is a plain 401 and not a scope 403.
+  const helperWish = await hpost(`/api/helper/devices/${DEVICE}/mode`, { mode: "off" });
+  check("(K) the helper principal cannot set the wish-mode — that route is not in its scope",
+    helperWish.status === 401 && (await jobs()).device?.desiredMode === undefined,
+    `${helperWish.status} ${JSON.stringify((await jobs()).device)}`);
+  const wish = await post(`/api/helper/devices/${DEVICE}/mode`, { mode: "quiet" });
+  check("(K) the OWNER sets the wish-mode and the value is only STORED — no dispatch, no claim touched",
+    wish.ok && ((await wish.json()) as { device: DeviceView }).device.desiredMode === "quiet"
+      && (await jobFor(REPO))?.claim === null,
+    `${wish.status}`);
+  // …and only now, on the device's own next heartbeat, does it find out.
+  const beat2 = await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME, mode: "quiet" });
+  const beat2Body = (await beat2.json()) as { device?: DeviceView; desiredMode?: string };
+  check("(K) …and the device PULLS the owner's wish on its next heartbeat",
+    beat2.ok && beat2Body.desiredMode === "quiet" && beat2Body.device?.desiredMode === "quiet",
+    `${beat2.status} ${JSON.stringify(beat2Body)}`);
+  // THE COMPATIBILITY HALF. A daemon built before stage A sends deviceId+name and nothing else. It
+  // must keep working, keep its old reply shape — and it must not ERASE the register, which is the
+  // failure a rebuilt-from-scratch row would produce.
+  const legacy = await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME });
+  const legacyBody = (await legacy.json()) as { device?: DeviceView; desiredMode?: string };
+  check("(K) a pre-stage-A device POST still works, keeps its old reply shape, and erases nothing",
+    legacy.ok && legacyBody.device?.id === DEVICE && legacyBody.device.name === DEVICE_NAME
+      && typeof legacyBody.device.lastSeen === "number"
+      && legacyBody.device.mode === "quiet" && legacyBody.device.desiredMode === "quiet"
+      && legacyBody.device.load === 1.25,
+    `${legacy.status} ${JSON.stringify(legacyBody)}`);
+
   const claimRes = await hpost("/api/helper/claim", { jobId: queued?.id ?? "", deviceId: DEVICE });
   const claim = (await claimRes.json()) as {
     job?: { id: string; mainSha: string; covers: number; name: string; claimedAt: number; expiresAt: number };
@@ -208,6 +272,13 @@ export async function run(h: {
   const claimAgain = await hpost("/api/helper/claim", { jobId: queued?.id ?? "", deviceId: DEVICE });
   check("(K) claiming an already-claimed job is a 409 — even for the device that holds it",
     claimAgain.status === 409, `${claimAgain.status} ${JSON.stringify(await claimAgain.json())}`);
+  // A claim TOUCHES lastSeen through the same writer the heartbeat uses. Before stage A that writer
+  // rebuilt the row from scratch, which would now drop the owner's wish every time a device took a
+  // job — the register would be correct until the first moment it mattered.
+  const afterClaim = (await jobs()).device;
+  check("(K) …and a claim's lastSeen touch does not erase the register's mode fields",
+    afterClaim?.desiredMode === "quiet" && afterClaim.mode === "quiet" && afterClaim.load === 1.25,
+    JSON.stringify(afterClaim));
 
   // ===== (K.3) THE TRANSPORT IS REAL ============================================================
   // A 200 with bytes proves nothing about whether the other machine can WORK. The bundle is written
@@ -256,6 +327,11 @@ export async function run(h: {
   check("(K) the claim survives the restart, with its device name and its deadline",
     afterRestart?.claim?.name === DEVICE_NAME && (afterRestart?.claim?.expiresAt ?? 0) === (claim.job?.expiresAt ?? -1),
     JSON.stringify(afterRestart));
+  const afterBoot = (await jobs()).device;
+  check("(K) …and so does the device register: an owner's wish and a reported mode survive the boot",
+    afterBoot?.desiredMode === "quiet" && afterBoot.mode === "quiet"
+      && JSON.stringify(afterBoot.capabilities) === '["bun","tmux"]',
+    JSON.stringify(afterBoot));
   check("(K) …and the boot-time drain does not audit it either",
     (await newRepoRows()).length === 0, JSON.stringify((await newRepoRows()).map((r) => r.result)));
 

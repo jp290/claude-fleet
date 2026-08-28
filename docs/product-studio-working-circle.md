@@ -213,15 +213,18 @@ machinery — is that severance in one form or another.
    variant checks live Game-Maker trees, leases and persisted founding roots before its first await;
    only the exact internal attempt may cross its own reservation. A second live or in-flight session
    in the same worktree therefore refuses in either request order and after a Fleet restart. A
-   succession's predecessor remains its exact bound `{slot, openedAt}`; another linked worktree
+   succession's persisted predecessor remains its exact bound `{slot, openedAt}`; its live transfer
+   authority is the pre-await `{slot, openedAt, cwd, selfToken}` until the binding cut. Another linked worktree
    sharing the repository remains a different tree. Game-Maker MAIN starts at the canonical git
    toplevel; Standard cwd handling stays byte-identical. Preflight refusals land before a slot,
    binding or receipt exists. While a founding is in flight a **real profile change**, `complete`
    and another founding are locked (409); an identical grant/clear retry answers 200 before every
    lifecycle gate, with no new timestamp, audit or save. A succession request captures the caller's
    exact `{slot, openedAt, cwd, selfToken}` before its first await and revalidates it after the Git
-   handoff check; self-retire is 409 while that token is in flight, while owner kill/recycle remains
-   authoritative and makes the old request refuse rather than become generic succession.
+   handoff check, after target open, after send before receipt and after receipt immediately before
+   binding. This applies to Standard and Game-Maker succession. Self-retire is 409 while that token
+   is in flight, while owner kill/recycle remains authoritative, returns the old request as 409 and
+   rolls back only its exact candidate. A receipt written before revocation remains evidence only.
 3. **Succession carries a checkpoint.** See the next section.
 
 **A restart never guesses authority.** A malformed or unknown-version `founding` marker stops
@@ -231,8 +234,9 @@ candidate is killed and its tmux absence proved before Slot and marker are clear
 occupant is preserved; an ambiguous occupant inside the protected tree stops startup with both pane
 and marker untouched. Succession recovery leaves the predecessor binding unchanged. Fleet never
 re-sends the brief and never binds from a Receipt. On success the Receipt is written first; then one
-durable state mutation installs the exact target as `main` and removes `founding`. An orphan Receipt
-is evidence of an interrupted delivery, not authority.
+durable state mutation installs the exact target as `main` and, for Game-Maker, removes `founding`.
+An orphan Receipt is evidence of an interrupted delivery, not authority. The same row after a
+revoked transfer is still evidence only.
 
 Tmux observation is explicitly `present | absent | unknown`. Only a successful session enumeration
 proves membership or absence; a failed probe or pane-path read is unknown, never HOME and never an

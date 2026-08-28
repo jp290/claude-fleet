@@ -786,12 +786,15 @@ Sessions denselben Baum betreten, auch über einen Server-Neustart hinweg. Eine 
 MAIN hält ihren konkreten linked worktree bis Kill oder Program-Abschluss exklusiv. Ein sibling
 linked worktree desselben Repositories bleibt erlaubt; Standard gegen Standard bleibt unverändert.
 Die Nachfolge besitzt als einzigen Permit exakt `{slot, openedAt}` ihrer gebundenen Vorgängerin und
-lehnt jede weitere Besetzung ab.
+lehnt jede weitere Besetzung ab. Als laufende Autorität reicht dieser persistierte Permit nicht:
+bis zum Bindungsschnitt muss zusätzlich die vor dem ersten Await erfasste Live-Identität
+`{slot, openedAt, cwd, selfToken}` unverändert im Vorgänger-Slot stehen.
 
 Preflight-Ablehnungen gelten für Bootstrap UND Nachfolge und kommen, BEVOR ein Slot geöffnet, eine
 Bindung bewegt oder ein Context-Receipt geschrieben wurde. Sobald der Sicherheitsmarker existiert,
-ist er selbst die beabsichtigte Crash-Barriere. Standard-Programs tragen ihn nie und sind in Shape,
-Prompt-Bytes und Verhalten nicht berührt.
+ist er selbst die beabsichtigte Crash-Barriere. Standard-Programs tragen ihn nie; Shape,
+Prompt-Bytes und Tree-Regeln bleiben unverändert. Den Live-Identitätscheck bis zum Bindungsschnitt
+teilen Standard- und Game-Maker-Succession, weil Owner-Kill dieselbe Autorität in beiden beendet.
 
 **Restart und der eine Erfolgsschnitt.** Der Loader akzeptiert `founding` nur als den exakten v1-
 Satz oben und nur an einem aktiven `game-maker`-Program. Ein vorhandener unbekannter oder
@@ -803,8 +806,12 @@ Marker gelöscht. Ein recycelter Target-Slot in einem anderen Baum bleibt unange
 Marker fällt; eine widersprüchliche Belegung im geschützten Baum verweigert den Start und lässt
 Marker und Pane stehen. Eine Succession behält dabei ihre alte `Program.main`-Bindung. Es gibt weder
 Brief-Replay noch Auto-Bind; ein bereits geschriebenes Receipt darf verwaisen und ist nie
-Bindungsquelle. Erfolg schreibt zuerst das Receipt und verschiebt dann in genau einem durablen
-Program-State-Cut `founding -> main`. Owner-Kill eines exakten Founding-Targets benutzt denselben
+Bindungsquelle. Nach Target-Open, nach Brief-Send vor dem Receipt und nach dem Receipt unmittelbar
+vor dem Bindungsschnitt wird die vollständige Live-Identität erneut geprüft. Owner-Kill oder Recycle
+der Vorgängerin ergibt 409 und räumt nur den exakten Kandidaten auf; ein bereits geschriebenes
+Receipt bleibt dabei als verwaiste Evidenz stehen. Erfolg schreibt zuerst das Receipt und verschiebt
+dann in genau einem durablen Program-State-Cut die Bindung; Game-Maker entfernt darin zusätzlich
+`founding`. Owner-Kill eines exakten Founding-Targets benutzt denselben
 kill→Abwesenheitsbeweis→Slot-/Marker-Cleanup-Pfad.
 
 Die tmux-Grenze ist dabei dreiwertig: `present`, `absent`, `unknown`. Nur eine erfolgreiche

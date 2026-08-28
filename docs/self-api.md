@@ -717,10 +717,10 @@ Gründung — Gründungstext, Maschinenprüfung und Nachfolge-Gate hängen alle 
 
 | Zustand | Schreiben |
 | --- | --- |
-| `complete` | 409 — Receipts, Outcomes und Briefs sind gegen die gelaufene Umgebung datiert |
-| `active` **und** LIVE gebundene MAIN | 409 — die Session wurde unter diesem Vertrag gegründet |
+| `complete` | echte Änderung 409 — Receipts, Outcomes und Briefs sind gegen die gelaufene Umgebung datiert |
+| `active` **und** LIVE gebundene MAIN | echte Änderung 409 — die Session wurde unter diesem Vertrag gegründet |
 | `active`, Bindung stale oder abwesend | erlaubt — genau hier soll die nächste Gründung eine frische Owner-Entscheidung benutzen |
-| identische Erteilung / Löschung | `ok:true` als echter No-Op; `confirmedAt` wird NICHT neu gestempelt |
+| identische Erteilung / Löschung | **vor allen** Inflight-/LIVE-/Complete-Gates `ok:true` als echter No-Op; kein Audit, kein Save, `confirmedAt` wird NICHT neu gestempelt |
 
 **Die Maschinengrenze von `game-maker`** wird aus git-Fakten abgeleitet, nie aus Dateinamen oder
 Prompt-Text: `--absolute-git-dir` gegen `--git-common-dir` für die Checkout-Art, und der
@@ -738,19 +738,24 @@ eigenem Satz:
 Eine **unlesbare** Identität lehnt ebenfalls ab: ein Gate, das seine eigene fehlende Messung als
 die erlaubende Antwort liest, ist keins.
 
-**Dediziert heißt dediziert (409).** Steht eine ZWEITE lebende Session im selben linked worktree,
-wird die Gründung abgelehnt — eine zweite Session im Baum macht jede Beobachtung der MAIN
-unzuordenbar. Die Nachfolge schließt genau ihre eigene Vorgängerin aus (sie geht ja) und lehnt
-jede weitere Besetzung ab. Das ist ein Pfad-Fakt über den Verzeichnisbaum, kein Namensheuristik.
+**Dediziert heißt dediziert (409).** Der Schutz gilt nicht nur in einem Preflight-Snapshot:
+`gameMakerTreeLeases` reserviert den angefragten Baum synchron und kanonisiert ihn nach dem git-
+Preflight; jede `openSlot`-Variante meldet davor ein `OpenSlotIntent` und prüft dieselbe Grenze. Damit
+schließen beide Reihenfolgen — Game-Maker zuerst oder generischer Open zuerst — bevor zwei Sessions
+denselben Baum betreten. Eine laufende Game-Maker-MAIN hält ihren konkreten linked worktree bis Kill
+oder Program-Abschluss exklusiv. Ein sibling linked worktree desselben Repositories bleibt erlaubt;
+Standard gegen Standard bleibt unverändert. Die Nachfolge besitzt als einzigen Permit exakt
+`{slot, openedAt}` ihrer gebundenen Vorgängerin und lehnt jede weitere Besetzung ab.
 
 Alle diese Ablehnungen gelten für Bootstrap UND Nachfolge und kommen, BEVOR ein Slot geöffnet, eine
 Bindung bewegt oder ein Context-Receipt geschrieben wurde. Standard-Programs sind nicht berührt.
 
 **Die Gründung ist gegen einen Profilschreiber gesperrt.** Solange ein Program-MAIN-Founding dieses
-Programs läuft (`programBootstrapInflight`), antwortet die Profil-Tür 409: die Gründung liest den
-Record ZWEIMAL — an der Maschinenprüfung und beim Bauen des Briefs — und dazwischen liegen
-Slot-Öffnung, Boot-Grace und Readiness-Wait. Ohne diese Sperre könnte ein Standard-Bootstrap, dessen
-Maschinenprüfung niemand gefahren hat, einen game-maker-Brief ausgeliefert bekommen.
+Programs läuft (`programBootstrapInflight`), antwortet die Profil-Tür auf eine **echte Änderung**
+409: die Gründung liest den Record ZWEIMAL — an der Maschinenprüfung und beim Bauen des Briefs — und
+dazwischen liegen Slot-Öffnung, Boot-Grace und Readiness-Wait. Ohne diese Sperre könnte ein Standard-
+Bootstrap, dessen Maschinenprüfung niemand gefahren hat, einen game-maker-Brief ausgeliefert
+bekommen. Ein identischer Retry antwortet davor 200 und schreibt nichts.
 
 **Die Nachfolge hat ein zweites Gate.** Das generische bleibt unverändert (HANDOFF.md existiert, ist
 sauber, jünger als die Session). Für `game-maker` wird zusätzlich die COMMITTETE HEAD-Fassung
@@ -765,10 +770,16 @@ Prüfung. Dass Fleet damit den GESPIELTEN Commit beweist, folgt daraus NICHT —
 Beobachtung der Session und bleibt bei Abweichung `unknown`.
 
 **`carry` ist für eine game-maker-Nachfolge 409.** Es gibt genau EINEN Übergabekanal, und das ist
-der committete Checkpoint: lesbar für Nachfolgerin, Kritiker und Owner, und er überlebt die Pane.
+der committete Checkpoint: lesbar für Nachfolgerin und Owner-Proof, und er überlebt die Pane.
 `carry` ist ein unpersistierter Satz im Prompt; beide zusammen wären zwei Kanäle, die einander
 widersprechen können. Abgelehnt statt ignoriert — ein still verworfener carry ist eine Übergabe, die
 ihre Autorin für zugestellt hält. Für Standard-Programs bleibt `carry` unverändert.
+
+Ein frischer Kritiker liest diesen Checkpoint **nie**: weder Pfad noch Inhalt dürfen in seinem Brief,
+ContextPlan oder Context-Pack stehen. Sein Context ist Game Card, Produktreferenzen, Build,
+Launch/Controls, Seed, Artefakt und Captures; der Brief verbietet das Lesen von `HANDOFF.md`
+ausdrücklich. `Experience`, `Open defect`, `Next` und frühere `Critic`-Urteile bleiben damit
+predecessor→successor-/Owner-Evidenz statt Vorprägung des frischen Blicks.
 
 **Projektion:** `GET /api/programs` trägt den Record im vollen Row mit; `GET
 /api/self/program-execution` trägt ihn als `program.profile` (`null` = Standard-MAIN), damit die

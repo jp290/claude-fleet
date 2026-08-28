@@ -4760,6 +4760,112 @@ const laneSpawn = new Set<number>();
 // A singleton adapter is reserved synchronously before openSlot's first await. Active-slot state
 // alone has a gap: two owner tabs can both pass it while the first is still tearing down its slot.
 const singletonSpawn = new Set<string>();
+// A Game-Maker tree is a resource for the whole founding, not only for its preflight. The lease is
+// process-local because it bridges awaits; the durable truth after founding is still Program.main
+// plus the live slot. `canonicalRoot` begins unknown so the request can reserve synchronously, then
+// becomes git's toplevel after preflight. Object identity is the release token: one request can
+// never delete another request's lease just because both named the same path.
+interface GameMakerTreeLease {
+  readonly programId: string;
+  readonly requestedRoot: string;
+  canonicalRoot: string | null;
+  readonly predecessor: { readonly slot: number; readonly openedAt: number } | null;
+}
+const gameMakerTreeLeases = new Set<GameMakerTreeLease>();
+
+// Every open, including Standard and generic owner opens, announces its path before its first
+// await. A concurrent Game-Maker preflight can therefore see the request while it is neither a
+// slot occupant nor a git-canonical tree yet. Standard opens do not conflict with each other; this
+// set exists only so a Game-Maker lease can refuse them and so they can see a Game-Maker lease.
+interface OpenSlotIntent {
+  readonly root: string;
+  readonly lease: GameMakerTreeLease | null;
+}
+const openSlotIntents = new Set<OpenSlotIntent>();
+
+class GameMakerTreeConflict extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GameMakerTreeConflict";
+  }
+}
+
+const treePathsOverlap = (a: string, b: string): boolean =>
+  a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+
+const exactGameMakerPredecessor = (lease: GameMakerTreeLease | null, program: Program,
+  slot: Slot): boolean => lease?.programId === program.id
+    && lease.predecessor?.slot === slot.id && lease.predecessor.openedAt === slot.openedAt
+    && program.main?.slot === slot.id && program.main.openedAt === slot.openedAt;
+
+const gameMakerLeaseRoot = (lease: GameMakerTreeLease): string =>
+  lease.canonicalRoot ?? lease.requestedRoot;
+
+function assertGameMakerTreeOpen(root: string, permit: GameMakerTreeLease | null): void {
+  if (permit && !treePathsOverlap(root, gameMakerLeaseRoot(permit)))
+    throw new GameMakerTreeConflict("game-maker tree permit does not cover the requested open path");
+  for (const lease of gameMakerTreeLeases) {
+    if (lease !== permit && treePathsOverlap(root, gameMakerLeaseRoot(lease)))
+      throw new GameMakerTreeConflict(`game-maker tree is reserved by Program ${lease.programId} while its MAIN founding is in flight`);
+  }
+  for (const program of programs) {
+    if (program.status !== "active" || !isGameMaker(program) || !program.main) continue;
+    const occupant = slotFrom(program.main.slot);
+    if (!occupant?.cwd || occupant.openedAt !== program.main.openedAt) continue;
+    const protectedRoot = repoCanon(occupant.cwd);
+    if (treePathsOverlap(root, protectedRoot) && !exactGameMakerPredecessor(permit, program, occupant))
+      throw new GameMakerTreeConflict(`game-maker Program ${program.id} holds ${protectedRoot} exclusively in slot ${occupant.id}`);
+  }
+}
+
+function assertGameMakerLeaseAvailable(lease: GameMakerTreeLease, includeLiveSlots: boolean): void {
+  const root = gameMakerLeaseRoot(lease);
+  for (const other of gameMakerTreeLeases) {
+    if (other !== lease && treePathsOverlap(root, gameMakerLeaseRoot(other)))
+      throw new GameMakerTreeConflict(`game-maker tree is already reserved by Program ${other.programId}`);
+  }
+  for (const intent of openSlotIntents) {
+    if (intent.lease !== lease && treePathsOverlap(root, intent.root))
+      throw new GameMakerTreeConflict("game-maker tree has another slot open in flight");
+  }
+  if (includeLiveSlots) {
+    for (const slot of slots) {
+      if (!slot.cwd) continue;
+      const permitted = lease.predecessor?.slot === slot.id
+        && lease.predecessor.openedAt === slot.openedAt;
+      if (!permitted && treePathsOverlap(root, repoCanon(slot.cwd)))
+        throw new GameMakerTreeConflict(`game-maker tree is already open in slot ${slot.id}`);
+    }
+  }
+}
+
+function reserveGameMakerTree(program: Program, cwd: string, predecessor: Slot | null): GameMakerTreeLease | null {
+  if (!isGameMaker(program)) return null;
+  const expected = predecessor === null ? null : program.main?.slot === predecessor.id
+    && program.main.openedAt === predecessor.openedAt
+    ? { slot: predecessor.id, openedAt: predecessor.openedAt } : null;
+  if (predecessor !== null && expected === null)
+    throw new GameMakerTreeConflict("game-maker succession permit does not match the bound predecessor");
+  const lease: GameMakerTreeLease = {
+    programId: program.id,
+    requestedRoot: repoCanon(resolve(expandCwd(cwd))),
+    canonicalRoot: null,
+    predecessor: expected,
+  };
+  assertGameMakerLeaseAvailable(lease, false);
+  gameMakerTreeLeases.add(lease);
+  return lease;
+}
+
+function canonicalizeGameMakerTreeLease(lease: GameMakerTreeLease | null, repoRoot: string): void {
+  if (!lease) return;
+  lease.canonicalRoot = repoCanon(repoRoot);
+  assertGameMakerLeaseAvailable(lease, true);
+}
+
+function releaseGameMakerTreeLease(lease: GameMakerTreeLease | null): void {
+  if (lease) gameMakerTreeLeases.delete(lease);
+}
 // worktree paths mid-attach — see the attach race note in /api/lanes
 const attachBusy = new Set<string>();
 
@@ -4986,9 +5092,13 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // the daemon it lives on are one decision, and a positional list where the caller can pass the
   // second and forget the first is the argument-order bug this shape cannot have. Defaulted, so the
   // three callers that spawn no container (attach, the dispatcher, a plain open) say nothing at all.
-  box: BoxPin = NO_BOX): Promise<void> {
+  box: BoxPin = NO_BOX, treeLease: GameMakerTreeLease | null = null): Promise<void> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
+  const openIntent: OpenSlotIntent = { root: repoCanon(cwd), lease: treeLease };
+  assertGameMakerTreeOpen(openIntent.root, treeLease);
+  openSlotIntents.add(openIntent);
+  try {
   const h = harnessOf(harness);
   // Defence in depth for every caller, including future ones that bypass openLaneInSlot.
   if (worktree && !h.allowsLanes) throw new Error(`harness ${h.id} is main-session only — it cannot open a lane`);
@@ -5099,6 +5209,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   audit("slot_open", s.id, cwd);
   saveState();
   await ensureSlot(s);
+  } finally {
+    openSlotIntents.delete(openIntent);
+  }
 }
 
 // a task's `sent` state is only meaningful while ITS lane lives in that slot. On any
@@ -6044,8 +6157,9 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
       // `carry` in particular keeps its exact meaning and its exact bytes everywhere else.
       //
       // EXACTLY ONE HANDOFF CHANNEL. For a game-maker Program the committed checkpoint IS the
-      // handover, and it is committed on purpose: it is readable by the successor, by a critic and
-      // by the owner, and it survives the pane it was written in. `carry` is none of those — it is
+      // handover, and it is committed on purpose: it is readable by the successor and by the owner,
+      // and it survives the pane it was written in. A fresh critic never receives HANDOFF.md; `carry`
+      // is none of those — it is
       // one unpersisted sentence delivered into a prompt — so accepting both would create a second
       // channel that can disagree with the first, with no way to tell which the successor obeyed.
       // Refused rather than ignored: a silently dropped carry is a handover its author believes
@@ -6066,7 +6180,8 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
         await openSlot(free, predecessor.cwd, null, s.model, label, s.harness, s.effort,
           { container: s.container, containerContext: s.containerContext });
       } catch (e) {
-        return json({ error: `successor open failed: ${e instanceof Error ? e.message : e}` }, 500);
+        return json({ error: `successor open failed: ${e instanceof Error ? e.message : e}` },
+          e instanceof GameMakerTreeConflict ? 409 : 500);
       }
 
       const brief = buildSuccessionBrief(carry);
@@ -16171,29 +16286,13 @@ const gameMakerMachineError = (program: Program, v: ProgramMainPreflight): strin
   // clauses around this one would pass it. Repository identity is the object store both checkouts
   // share, never the path they sit at. An unreadable identity refuses too — a gate that treats its
   // own missing measurement as the permissive answer is not a gate.
-  if (FLEET_GIT_COMMON !== null && v.commonDir === null)
+  if (FLEET_GIT_COMMON === null || v.commonDir === null)
     return "a game-maker Program-MAIN needs a dedicated linked git worktree of a target product repository, and this cwd's repository identity could not be read — refusing rather than guessing";
-  if (FLEET_GIT_COMMON !== null && v.commonDir === FLEET_GIT_COMMON)
+  if (v.commonDir === FLEET_GIT_COMMON)
     return "a game-maker Program-MAIN may not be founded anywhere in the Fleet repository — this cwd is a linked git worktree of Fleet itself, and it needs a dedicated linked git worktree of the target product repository";
   if (v.checkout !== "linked")
     return `a game-maker Program-MAIN needs a dedicated linked git worktree of the target repository, not its primary checkout (this cwd reads as ${v.checkout}) — create one with \`git worktree add\` and found there`;
   return null;
-};
-
-// DEDICATED MEANS DEDICATED, and it is a fact about the filesystem tree rather than about
-// repository identity — so it is answered by canonical path containment, which is exact here
-// (both sides are realpaths) rather than a heuristic. The profile's premise is that ONE long-lived
-// session implements, launches, plays and repairs in ONE tree; a second live session standing in
-// the same worktree makes every observation that session reports unattributable. Succession
-// excludes exactly its own predecessor, which is the one occupant that is about to leave, and
-// refuses any second one.
-const gameMakerOccupancyError = (program: Program, v: ProgramMainPreflight,
-  predecessor: Slot | null): string | null => {
-  if (!isGameMaker(program)) return null;
-  const inTree = slots.filter((x) => x.cwd && x !== predecessor
-    && (repoCanon(x.cwd) === v.repoRoot || repoCanon(x.cwd).startsWith(`${v.repoRoot}/`)));
-  if (inTree.length === 0) return null;
-  return `a game-maker Program-MAIN needs its linked worktree to itself — slot ${inTree[0]!.id} is already open in this tree (${inTree.length} occupant${inTree.length === 1 ? "" : "s"}), and a second session standing in it makes every observation unattributable`;
 };
 
 const programMainContextFacts = (frame: ProgramMainFrame, harness: string | null) => ({
@@ -16384,8 +16483,11 @@ A REPO-DECLARED CONTEXT ANCHOR IS A CRITIC-SAFE POINTER SET AND NOTHING MORE. Th
 your repository declares may carry the product promise, its references, the build sha, the one-step
 launch, the controls, a seed and where the captures are. It may never carry any of four things:
 your current hypothesis, an open defect you are chasing, a rejected direction, or an earlier verdict.
-Those belong in your own checkpoint or in an explicit non-critic task brief, because a critic who
-reads your answer before looking is no longer a fresh one.`;
+Those belong in your own checkpoint or in an explicit non-critic task brief. The committed
+HANDOFF.md checkpoint is predecessor-to-successor and owner proof: never give a fresh critic its
+path or contents, and tell that critic explicitly not to read HANDOFF.md. A fresh critic gets only
+the Game Card, product references, build, launch, controls, seed, artifact and captures; a critic
+who reads your answer before looking is no longer a fresh one.`;
 
 const RAIL_TAIL = `
 
@@ -16565,7 +16667,8 @@ async function succeedSupervisor(s: Slot, label: string | null, carry: string | 
           { container: s.container, containerContext: s.containerContext });
       } catch (e) {
         if (free.cwd) await killSlot(free, "reopen");
-        return json({ error: `Supervisor successor open failed: ${e instanceof Error ? e.message : e}` }, 500);
+        return json({ error: `Supervisor successor open failed: ${e instanceof Error ? e.message : e}` },
+          e instanceof GameMakerTreeConflict ? 409 : 500);
       }
 
       const openedAt = free.openedAt;
@@ -16686,7 +16789,8 @@ async function bootstrapSupervisor(body: Record<string, unknown>): Promise<Respo
       try {
         await openSlot(free, body.cwd, null, mo.model, label, ho.harness, eo.effort);
       } catch (e) {
-        return json({ error: `Supervisor open failed: ${e instanceof Error ? e.message : e}` }, 500);
+        return json({ error: `Supervisor open failed: ${e instanceof Error ? e.message : e}` },
+          e instanceof GameMakerTreeConflict ? 409 : 500);
       }
 
       const openedAt = free.openedAt;
@@ -17123,7 +17227,14 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
   if (programBootstrapInflight.has(program.id))
     return json({ error: "Program-MAIN bootstrap already in flight" }, 409);
   programBootstrapInflight.add(program.id); // synchronous reservation before any transfer await
+  let treeLease: GameMakerTreeLease | null = null;
   try {
+    try {
+      treeLease = reserveGameMakerTree(program, predecessor.cwd, s);
+    } catch (e) {
+      if (e instanceof GameMakerTreeConflict) return json({ error: e.message }, 409);
+      throw e;
+    }
     const preflight = await preflightProgramMain(predecessor.cwd);
     if (!preflight.ok) return json({ error: preflight.error }, 400);
     // The SAME machine rule the bootstrap applies, at the same point in the sequence. A succession
@@ -17131,21 +17242,24 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
     // the predecessor's cwd is inherited verbatim, so the rule has to be re-asked, not assumed.
     const machine = gameMakerMachineError(program, preflight.value);
     if (machine) return json({ error: machine }, 400);
-    // …and the same dedication rule, with exactly ONE exclusion: `s` is the occupant that is about
-    // to retire. Any OTHER session in the tree still refuses — a successor founded beside a third
-    // party would inherit a worktree it cannot attribute.
-    const occupied = gameMakerOccupancyError(program, preflight.value, s);
-    if (occupied) return json({ error: occupied }, 409);
+    try {
+      canonicalizeGameMakerTreeLease(treeLease, preflight.value.repoRoot);
+    } catch (e) {
+      if (e instanceof GameMakerTreeConflict) return json({ error: e.message }, 409);
+      throw e;
+    }
     const free = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
     if (!free) return json({ error: "no free slot" }, 409);
     laneSpawn.add(free.id);
     try {
       try {
-        await openSlot(free, predecessor.cwd, null, s.model, label, s.harness, s.effort,
-          { container: s.container, containerContext: s.containerContext });
+        await openSlot(free, isGameMaker(program) ? preflight.value.repoRoot : predecessor.cwd,
+          null, s.model, label, s.harness, s.effort,
+          { container: s.container, containerContext: s.containerContext }, treeLease);
       } catch (e) {
         if (free.cwd) await killSlot(free, "reopen");
-        return json({ error: `Program-MAIN successor open failed: ${e instanceof Error ? e.message : e}` }, 500);
+        return json({ error: `Program-MAIN successor open failed: ${e instanceof Error ? e.message : e}` },
+          e instanceof GameMakerTreeConflict ? 409 : 500);
       }
 
       const openedAt = free.openedAt;
@@ -17223,6 +17337,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
       laneSpawn.delete(free.id);
     }
   } finally {
+    releaseGameMakerTreeLease(treeLease);
     programBootstrapInflight.delete(program.id);
   }
 }
@@ -17257,17 +17372,26 @@ async function bootstrapProgramMain(program: Program, body: Record<string, unkno
     return json({ error: "Program-MAIN bootstrap already in flight" }, 409);
 
   programBootstrapInflight.add(program.id); // synchronous reservation before any slot await
+  let treeLease: GameMakerTreeLease | null = null;
   try {
+    try {
+      treeLease = reserveGameMakerTree(program, body.cwd, null);
+    } catch (e) {
+      if (e instanceof GameMakerTreeConflict) return json({ error: e.message }, 409);
+      throw e;
+    }
     const preflight = await preflightProgramMain(body.cwd);
     if (!preflight.ok) return json({ error: preflight.error }, 400);
     // BEFORE a slot is opened, before the binding moves and before a receipt is appended: a
     // refusal that had already spawned a session would have founded the very MAIN it refuses.
     const machine = gameMakerMachineError(program, preflight.value);
     if (machine) return json({ error: machine }, 400);
-    // 409 rather than 400: the tree is right and the moment is wrong, which is a state conflict
-    // the owner can clear by closing the other session — not a malformed request.
-    const occupied = gameMakerOccupancyError(program, preflight.value, null);
-    if (occupied) return json({ error: occupied }, 409);
+    try {
+      canonicalizeGameMakerTreeLease(treeLease, preflight.value.repoRoot);
+    } catch (e) {
+      if (e instanceof GameMakerTreeConflict) return json({ error: e.message }, 409);
+      throw e;
+    }
     const free = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
     if (!free) return json({ error: "no free slot" }, 409);
     laneSpawn.add(free.id);
@@ -17276,9 +17400,11 @@ async function bootstrapProgramMain(program: Program, body: Record<string, unkno
         ? body.label.trim() || null
         : `Program-MAIN: ${program.title}`.slice(0, MAX_LABEL);
       try {
-        await openSlot(free, body.cwd, null, mo.model, label, ho.harness, eo.effort);
+        await openSlot(free, isGameMaker(program) ? preflight.value.repoRoot : body.cwd,
+          null, mo.model, label, ho.harness, eo.effort, NO_BOX, treeLease);
       } catch (e) {
-        return json({ error: `Program-MAIN open failed: ${e instanceof Error ? e.message : e}` }, 500);
+        return json({ error: `Program-MAIN open failed: ${e instanceof Error ? e.message : e}` },
+          e instanceof GameMakerTreeConflict ? 409 : 500);
       }
 
       const openedAt = free.openedAt;
@@ -17344,6 +17470,7 @@ async function bootstrapProgramMain(program: Program, body: Record<string, unkno
       laneSpawn.delete(free.id);
     }
   } finally {
+    releaseGameMakerTreeLease(treeLease);
     programBootstrapInflight.delete(program.id);
   }
 }
@@ -17416,6 +17543,14 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
         return json({ error: `kind must be one of: ${PROGRAM_PROFILE_KINDS.join(", ")}` }, 400);
       desired = { v: 1, kind: fields.kind as ProgramProfileKind, confirmedAt: 0 }; // stamped below
     }
+    // IDENTICAL RETRIES ARE READS OF THE ACT THAT ALREADY LANDED, not writes. Answer them before
+    // every lifecycle/in-flight gate: a lost 200 may be retried while the founding it enabled is
+    // already running, or after the Program completed, and returning 409 there would make an
+    // idempotent owner actuator non-idempotent. This branch changes no timestamp, writes no audit
+    // row and performs no save. Only a REAL change reaches the locks below.
+    const current = program.profile;
+    if (desired === null ? current === undefined : current?.kind === desired.kind && current.v === 1)
+      return json({ ok: true, program });
     // THE RACE, CLOSED AT THE ONE WRITER. A founding reads this record twice — once at the machine
     // preflight and once when the brief is built — and between those two reads it awaits a slot
     // open, a boot grace and a readiness wait, several seconds in which a profile write would land.
@@ -17432,12 +17567,6 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     const liveBound = !!program.main && !!occupant?.cwd && occupant.openedAt === program.main.openedAt;
     if (program.status === "active" && liveBound)
       return json({ error: `this program has a LIVE bound Program-MAIN in slot ${program.main!.slot} — its execution profile is fixed for that session, because it was founded under this one. Retire or replace the binding first` }, 409);
-    // IDEMPOTENT BY CONSTRUCTION, and the no-op preserves the stamp: an identical grant that
-    // re-dated `confirmedAt` would mean the owner's act has no date at all, only a last-touched
-    // time. Clearing an absent record is likewise the state the caller asked for, not an error.
-    const current = program.profile;
-    if (desired === null ? current === undefined : current?.kind === desired.kind && current.v === 1)
-      return json({ ok: true, program });
     if (desired === null) {
       delete program.profile;
       audit("program_profile", undefined, `${program.id} cleared`);
@@ -21786,7 +21915,8 @@ Bun.serve<WSData>({
         const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "", laneModel.model, laneH.harness, laneEffort.effort, laneForm.form, laneBox.box, laneParent.parent);
         return json({ ok: true, slot: free.id, cwd: r.cwd, branch: r.branch, form: laneForm.form });
       } catch (e) {
-        return json({ error: e instanceof Error ? e.message : "lane failed" }, 400);
+        return json({ error: e instanceof Error ? e.message : "lane failed" },
+          e instanceof GameMakerTreeConflict ? 409 : 400);
       } finally {
         laneSpawn.delete(free.id);
         if (attachPath) attachBusy.delete(attachPath);
@@ -23106,7 +23236,8 @@ Bun.serve<WSData>({
         try {
           await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box);
         } catch (e) {
-          return json({ error: e instanceof Error ? e.message : "open failed" }, 400);
+          return json({ error: e instanceof Error ? e.message : "open failed" },
+            e instanceof GameMakerTreeConflict ? 409 : 400);
         }
         void tickGit().catch(() => {}); // refresh the badge now, not on the next 10s tick
         return json({ ok: true, cwd: s.cwd, label: s.label });
@@ -23133,7 +23264,8 @@ Bun.serve<WSData>({
           const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model, ho.harness, eo.effort, fo.form, bo.box, parent.parent);
           return json({ ok: true, cwd: r.cwd, branch: r.branch, form: fo.form });
         } catch (e) {
-          return json({ error: e instanceof Error ? e.message : "worktree failed" }, 400);
+          return json({ error: e instanceof Error ? e.message : "worktree failed" },
+            e instanceof GameMakerTreeConflict ? 409 : 400);
         } finally {
           laneSpawn.delete(s.id);
         }

@@ -82,6 +82,9 @@ Controller is a scope a plain session carries, not a binding — do not read thi
   causally coupled product act — the perception is the product, and a fresh session per repair
   round cannot carry it.
   Separable, parallel, specialist, independent-proof and fresh-critic work stays isolated there too.
+  Its committed game checkpoint is predecessor-to-successor state and owner proof, never critic
+  context. A fresh critic receives the Game Card, launch/controls, seed, artifact and captures and
+  is explicitly forbidden to read `HANDOFF.md`; neither its path nor content belongs in that brief.
 - A worker's report is a CLAIM. Proof is the diff plus the exact verification output. `PLAYABLE`
   means an artefact exists and was seen to run; it never means the owner has played it.
 - Observations precede labels. Missing or failed evidence is `unknown`, never zero, false, or pass.

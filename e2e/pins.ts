@@ -3323,6 +3323,97 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     `exclusive=${gmExclusive} agents=${agentsProfile} gmLen=${gameMakerRail.length}`);
 }
 
+// --- THE GAME-MAKER TREE IS A LEASE, NOT A ONE-TIME PREFLIGHT. The runtime suite races the two
+// request orders and proves the resulting topology. These source rules cover the pieces a
+// single-process happy path cannot see: reservation before the first await, object-identity release,
+// the common open gate, and an error whose 409 mapping cannot widen every existing open failure.
+{
+  const RULE_GM_TREE = "a Game-Maker tree stays exclusive from request entry through receipt, at the shared open seam";
+  const openAt = server.indexOf("async function openSlot(");
+  const openBody = openAt < 0 ? "" : server.slice(openAt, server.indexOf("\n}\n", openAt) + 3);
+  const bootstrapAt = server.indexOf("async function bootstrapProgramMain(");
+  const bootstrapBody = bootstrapAt < 0 ? "" : server.slice(bootstrapAt, server.indexOf("\n}\n", bootstrapAt) + 3);
+  const succeedAt = server.indexOf("async function succeedProgramMain(");
+  const succeedBody = succeedAt < 0 ? "" : server.slice(succeedAt, bootstrapAt);
+  pin(`${RULE_GM_TREE} — process-local lease and open-intent reservations exist beside laneSpawn`,
+    /interface GameMakerTreeLease[\s\S]*?programId: string[\s\S]*?requestedRoot: string[\s\S]*?canonicalRoot: string \| null[\s\S]*?predecessor:/.test(server)
+      && /const gameMakerTreeLeases = new Set<GameMakerTreeLease>\(\)/.test(server)
+      && /interface OpenSlotIntent/.test(server)
+      && /const openSlotIntents = new Set<OpenSlotIntent>\(\)/.test(server),
+    "lease/open-intent declarations are missing or incomplete");
+  pin(`${RULE_GM_TREE} — bootstrap and succession reserve before preflight, canonicalize after it, permit only their exact lease, and release by object identity`,
+    bootstrapBody.indexOf("reserveGameMakerTree") >= 0
+      && bootstrapBody.indexOf("reserveGameMakerTree") < bootstrapBody.indexOf("await preflightProgramMain")
+      && bootstrapBody.indexOf("canonicalizeGameMakerTreeLease") > bootstrapBody.indexOf("await preflightProgramMain")
+      && /openSlot\([\s\S]*?treeLease\)/.test(bootstrapBody)
+      && /releaseGameMakerTreeLease\(treeLease\)/.test(bootstrapBody)
+      && succeedBody.indexOf("reserveGameMakerTree") >= 0
+      && succeedBody.indexOf("reserveGameMakerTree") < succeedBody.indexOf("await preflightProgramMain")
+      && succeedBody.indexOf("canonicalizeGameMakerTreeLease") > succeedBody.indexOf("await preflightProgramMain")
+      && /openSlot\([\s\S]*?treeLease\)/.test(succeedBody)
+      && /releaseGameMakerTreeLease\(treeLease\)/.test(succeedBody),
+    `bootstrap=${bootstrapBody.length} succession=${succeedBody.length}`);
+  pin(`${RULE_GM_TREE} — openSlot checks the shared Game-Maker gate and holds one intent until its finally`,
+    openBody.includes("assertGameMakerTreeOpen")
+      && openBody.includes("openSlotIntents.add(openIntent)")
+      && openBody.includes("openSlotIntents.delete(openIntent)")
+      && openBody.includes("finally"),
+    `openSlot=${openBody.length}`);
+  pin(`${RULE_GM_TREE} — only the dedicated conflict type selects 409 at owner open seams`,
+    /class GameMakerTreeConflict extends Error/.test(server)
+      && /e instanceof GameMakerTreeConflict \? 409 : 400/.test(server)
+      && /e instanceof GameMakerTreeConflict \? 409 : 500/.test(server),
+    "the typed conflict or its narrow HTTP mappings are missing");
+  pin(`${RULE_GM_TREE} — Fleet and candidate repository identity both fail closed`,
+    /FLEET_GIT_COMMON === null \|\| v\.commonDir === null/.test(server),
+    "gameMakerMachineError does not reject an unreadable Fleet or candidate common-dir");
+}
+
+// The profile buttons are an owner actuator, not decorative prose. Runtime executes the pure
+// request builder; these pins keep the real click path on that one builder and preserve its
+// busy/generation/finally discipline.
+{
+  const RULE_PROFILE_ACTOR = "the Board's profile buttons execute one pure, closed request builder";
+  const client = read("src/client.ts");
+  const actorAt = client.indexOf("function profileRequestOf(");
+  const actor = actorAt < 0 ? "" : client.slice(actorAt, client.indexOf("\n}\n", actorAt) + 3);
+  const runAt = client.indexOf("const prRun = async");
+  const run = runAt < 0 ? "" : client.slice(runAt, client.indexOf("\n    };", runAt) + 7);
+  pin(`${RULE_PROFILE_ACTOR} — the pure builder is closed over exactly grant and clear`,
+    client.includes('type ProfileAct = "game-maker" | "clear"')
+      && actor.includes("/api/programs/${programId}/profile")
+      && actor.includes('{ profile: { v: 1, kind: "game-maker" } }')
+      && actor.includes("{ profile: null }")
+      && !/\bpost\(|document|qPr|Date\.now/.test(actor),
+    actor === "" ? "profileRequestOf not found" : `${actor.length} bytes`);
+  pin(`${RULE_PROFILE_ACTOR} — prRun posts only the builder result and retains generation, busy and finally guards`,
+    run.includes("const request = profileRequestOf(forPrId, act)")
+      && run.includes("post(request.path, request.body)")
+      && !run.includes("PR_BODY")
+      && run.includes("const seq = ++qPrSeq") && run.includes("const mine = () =>")
+      && run.includes("qPrBusy = true") && run.includes("finally") && run.includes("qPrBusy = false"),
+    run === "" ? "prRun not found" : `${run.length} bytes`);
+  pin(`${RULE_PROFILE_ACTOR} — the builder has one runtime consumer and prRun itself fires only from the click handler`,
+    client.split("profileRequestOf(").length - 1 === 2
+      && client.split("prRun(").length - 1 === 1
+      && /b\.onclick = \(\) => \{ void prRun\(act\); \}/.test(client),
+    `builderOccurrences=${client.split("profileRequestOf(").length - 1} prRunOccurrences=${client.split("prRun(").length - 1}`);
+
+  const serverProfileAt = server.indexOf('const profileRoute = /^\\/api\\/programs\\/([^/]+)\\/profile$/');
+  const serverProfile = serverProfileAt < 0 ? ""
+    : server.slice(serverProfileAt, server.indexOf("// THE PROMOTION DOOR", serverProfileAt));
+  const noOpAt = serverProfile.indexOf("const current = program.profile");
+  const inflightAt = serverProfile.indexOf("programBootstrapInflight.has(program.id)");
+  const completeAt = serverProfile.indexOf('program.status === "complete"');
+  const liveAt = serverProfile.indexOf('program.status === "active" && liveBound');
+  const noOpReturn = noOpAt < 0 ? "" : serverProfile.slice(noOpAt, inflightAt);
+  pin(`${RULE_PROFILE_ACTOR} — identical grants and clears return before inflight/LIVE/complete without audit, timestamp or save`,
+    noOpAt >= 0 && inflightAt > noOpAt && completeAt > inflightAt && liveAt > completeAt
+      && noOpReturn.includes("return json({ ok: true, program })")
+      && !/confirmedAt: Date\.now|\baudit\(|saveState/.test(noOpReturn),
+    `noOp=${noOpAt} inflight=${inflightAt} complete=${completeAt} live=${liveAt}`);
+}
+
 // --- THE PROMOTE DOOR ON THE BOARD ↔ THE TWO OWNER-GATED ROUTES. Promotion was terminal-only
 // (promote-program.sh) until the Program pane grew a button for it. There is no DOM harness here,
 // so the client half of that pair can only be fastened at the source — and these are exactly the

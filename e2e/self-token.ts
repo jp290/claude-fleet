@@ -3,7 +3,7 @@
 // accept it for — including both opposite scope rules (lane-only questions vs main-only exit).
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { BASE, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post } from "./harness";
+import { BASE, REPO, REPO2, REPO3, ROOT, TOKEN, check, get, paneEnv, plogRead, post } from "./harness";
 import type { Ctx } from "./ctx";
 import { LOCAL_PROOF_STEPS, localProofFor } from "../verify-proportion";
 import {
@@ -409,6 +409,65 @@ export async function run(ctx: Ctx): Promise<void> {
   spawnSync("git", ["-C", brokenRepo, "worktree", "remove", "--force", brokenTree]);
   rmSync(brokenTree, { recursive: true, force: true });
   rmSync(brokenRepo, { recursive: true, force: true });
+
+  // --- WHICH VERIFY COMMAND a lane is told about is a property of its REPOSITORY, not of the path
+  // its checkout happens to sit at. A checkout that is ITSELF a linked worktree has a toplevel of
+  // its own, and that toplevel is what a MAIN founded there reports and what every lane it spawns
+  // records as its repo — so until 2026-08-29 an owner entry configured under the repository's
+  // primary path was simply missed: the gate named the global command and self-land step 7 refused
+  // with "repo has no owner-configured verify entry" for a repository that has one (measured live
+  // on a Game-Maker program rooted in `…/private-repo-o.worktrees/…-fresh`).
+  // Three arms, because the fix must widen IDENTITY and not POLICY: the configured repo itself, a
+  // linked worktree OF it (must resolve to the same entry), and a linked worktree of the repo the
+  // owner deliberately left unconfigured (must still get the global, i.e. no entry — which is the
+  // same `verifyEntryFor` answer step 7 refuses on). The two fixture repos differ in exactly the
+  // configured-ness that makes the pair separable (harness.ts: REPO2 has an entry, REPO3 has none).
+  const vwTrees: [string, string][] = [];
+  // One lane at a time, torn down before the next arm opens: three simultaneous probe lanes would
+  // race the suite's free-slot budget and report "no free slot" as if it were a resolution answer.
+  const vwCmdFor = async (repo: string): Promise<{ cmd: string | null; err: string }> => {
+    const res = await post("/api/lanes", { repo });
+    const lane = (await res.json()) as { ok?: boolean; slot?: number; error?: string };
+    if (lane.ok !== true || typeof lane.slot !== "number") return { cmd: null, err: `lane: ${JSON.stringify(lane)}` };
+    try {
+      const tok = await paneEnv(`s${lane.slot}`, "FLEET_SELF_TOKEN");
+      if (!/^[0-9a-f]{32}$/.test(tok ?? "")) return { cmd: null, err: "the probe lane's pane never answered with a token" };
+      const gRes = await selfGate(tok ?? "");
+      const g = (await gRes.json()) as Gate;
+      return { cmd: g.verify?.cmd ?? null, err: `${gRes.status} ${JSON.stringify(g.verify)}` };
+    } finally { await post(`/api/slots/${lane.slot}/kill`, {}); }
+  };
+  // The worktrees are built HERE rather than in the wrapper so this slice stays inside its own
+  // write set; both are removed below so REPO2/REPO3 are handed on with the worktree list they had.
+  const mkWorktree = (repo: string, dir: string, branch: string): string => {
+    rmSync(dir, { recursive: true, force: true });
+    const add = spawnSync("git", ["-C", repo, "worktree", "add", "-q", "-b", branch, dir]);
+    if (add.status === 0) vwTrees.push([repo, dir]);
+    return add.status === 0 ? "" : add.stderr.toString().slice(0, 200);
+  };
+  const vwTree2 = `${ROOT}/verify-key-wt2`;
+  const vwTree3 = `${ROOT}/verify-key-wt3`;
+  const vwErr2 = REPO2 ? mkWorktree(REPO2, vwTree2, "verify-key-probe2") : "REPO2 unset";
+  const vwErr3 = REPO3 ? mkWorktree(REPO3, vwTree3, "verify-key-probe3") : "REPO3 unset";
+  check("verify-key fixture: a linked worktree of the configured repo and one of the unconfigured repo both exist",
+    vwErr2 === "" && vwErr3 === "", JSON.stringify({ REPO2, REPO3, vwErr2, vwErr3 }));
+  const vwPrimary = vwErr2 === "" ? await vwCmdFor(REPO2) : { cmd: null, err: vwErr2 };
+  const vwLinked = vwErr2 === "" ? await vwCmdFor(vwTree2) : { cmd: null, err: vwErr2 };
+  const vwForeign = vwErr3 === "" ? await vwCmdFor(vwTree3) : { cmd: null, err: vwErr3 };
+  check("gate: a lane in a LINKED WORKTREE of a configured repo is told that repo's own verify entry, not the global",
+    vwPrimary.cmd !== null && vwPrimary.cmd.endsWith("/fakeverify2")
+      && vwLinked.cmd === vwPrimary.cmd,
+    JSON.stringify({ primary: vwPrimary, linked: vwLinked }));
+  check("gate: the worktree fallback widens identity and NOT policy — a worktree of the UNCONFIGURED repo still gets the global command",
+    vwForeign.cmd !== null && vwForeign.cmd.endsWith("/fakeverify")
+      && !vwForeign.cmd.endsWith("/fakeverify2") && vwForeign.cmd !== vwPrimary.cmd,
+    JSON.stringify({ foreign: vwForeign, primary: vwPrimary.cmd }));
+  for (const [repo, dir] of vwTrees) {
+    spawnSync("git", ["-C", repo, "worktree", "remove", "--force", dir]);
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(`${dir}.worktrees`, { recursive: true, force: true });
+    spawnSync("git", ["-C", repo, "worktree", "prune"]);
+  }
 
   // rulebook compare: identical copy reads false, a moved source reads true. Fixtures are
   // UNTRACKED files in REPO and the lane — removed right after, an untracked file in either

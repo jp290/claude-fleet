@@ -7969,7 +7969,7 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
   // applies, so it is refused BEFORE anything starts, in words that name the fix. This is also the
   // structural reason "unknown/skipped is never green" needs no branch of its own on this route:
   // a repo that could produce a skip cannot reach the land at all.
-  if (!VERIFY_CMD_REPOS.get(repoCanon(lane.worktree.repo)))
+  if (!(await verifyEntryFor(lane.worktree.repo)))
     return json({ error: "repo has no owner-configured verify entry — the global command skips (exit 42) outside the fleet repo, and skipped is never green" }, 409);
   // (8) THE CANDIDATE: the lane's HEAD right now. There is no stored "approved sha" and no sha is
   // read from a request — the server never trusted a MAIN-supplied one to begin with, and a lane
@@ -11955,9 +11955,49 @@ const VERIFY_CMD_REPOS: Map<string, string> = (() => {
   }
   return m;
 })();
-// The resolver. `repo` is a toplevel, never a lane worktree: a worktree's own path is not a repo
-// identity — every lane of the same repo would need its own entry, and they come and go.
-const verifyCmdFor = (repo: string): string | null => VERIFY_CMD_REPOS.get(repoCanon(repo)) ?? VERIFY_CMD;
+// WHICH KEY of the map a checkout is, and it is not always its own toplevel. A checkout that is
+// ITSELF a linked worktree has a toplevel of its own (`…/foo.worktrees/bar`), and that is the path
+// a MAIN founded there reports — and the path every lane it spawns records as its repo. So an entry
+// the owner configured for the same repository under its primary path was missed. Measured live on
+// 2026-08-29: a Game-Maker program rooted in `…/private-repo-o.worktrees/game-maker-…-fresh` while the
+// map carried `…/private-repo-o`, and self-land step 7 refused with "repo has no owner-configured
+// verify entry" for a repository that has one.
+// The fallback resolves IDENTITY, never policy. Every worktree of one repository shares one object
+// store and `--git-common-dir` names it — the same fact `gitCommonDirOf` already reads to keep a
+// Program-MAIN in its repo frame. A repository the owner never configured has no entry under either
+// spelling and is refused exactly as before; nothing here can invent one.
+// Cached per canonical path for the reason `repoCanon` caches: a checkout's repository identity does
+// not move underfoot, and this resolver is reached from `/api/self/gate`, which lanes poll.
+const verifyRepoKeyCache = new Map<string, string | null>();
+async function verifyRepoKey(repo: string): Promise<string | null> {
+  const canon = repoCanon(repo);
+  if (VERIFY_CMD_REPOS.has(canon)) return canon;
+  const cached = verifyRepoKeyCache.get(canon);
+  if (cached !== undefined) return cached;
+  const common = await gitCommonDirOf(canon);
+  // A probe that could not run is NOT a cached "no such repository": leaving it uncached costs one
+  // git read next time and keeps a transient failure from freezing into a permanent refusal.
+  if (common === null) return null;
+  // Only the ordinary non-bare layout is derived, and deliberately so: `<primary>/.git` names the
+  // primary toplevel by construction, while a bare repo or a relocated GIT_DIR names none at all.
+  // Guessing there would be the widening this fallback must not do.
+  const primary = basename(common) === ".git" ? repoCanon(dirname(common)) : null;
+  const key = primary !== null && primary !== canon && VERIFY_CMD_REPOS.has(primary) ? primary : null;
+  verifyRepoKeyCache.set(canon, key);
+  return key;
+}
+// THE entry lookup, and there is exactly one. The self-land route's step 7 asks it whether this repo
+// can be measured at all, and the resolver below asks it which command that is: a route that refuses
+// a repo the gate would have measured (or the reverse) is two different answers to one question.
+const verifyEntryFor = async (repo: string): Promise<string | null> => {
+  const key = await verifyRepoKey(repo);
+  return key === null ? null : VERIFY_CMD_REPOS.get(key) ?? null;
+};
+// The resolver: the repo's own entry, else the global. `repo` is a toplevel, never a LANE worktree —
+// a lane's path is not a repo identity, and every lane of one repo would need its own entry while
+// they come and go. That is a different question from the one above, which asks which repository a
+// toplevel BELONGS to; a lane's `repo` field already answers this one before either is asked.
+const verifyCmdFor = async (repo: string): Promise<string | null> => (await verifyEntryFor(repo)) ?? VERIFY_CMD;
 // The GRACE in the verify kill staffel (fire() in runVerify): SIGTERM → this long → SIGKILL. Same
 // number and same reasoning as POSTLAND_AUDIT_KILL_GRACE_MS — long enough for a shell to run its
 // traps and reap its foreground child, short enough that the server is not quietly waiting out a
@@ -12240,7 +12280,7 @@ interface VerifyPlan { cmd: string; proportional: boolean; steps: LocalProofStep
 // `repo` is the lane's REPO TOPLEVEL, not its worktree, and this remains the single command-selection
 // site for every land path.
 async function verifyPlanFor(cwd: string, repo: string, mainSha: string): Promise<VerifyPlan | null> {
-  const configuredCmd = verifyCmdFor(repo);
+  const configuredCmd = await verifyCmdFor(repo);
   if (!configuredCmd) return null;
   // Classify the exact rebased candidate the gate is about to execute against. A failed diff and an
   // empty diff both become the conservative full chain; no absence is evidence of harmlessness.
@@ -22136,14 +22176,18 @@ Bun.serve<WSData>({
           : rendered;
         rulebookDrifted = rulebookBody(copy) !== rulebookBody(expected);
       } catch { /* either side unreadable → stays null */ }
+      // Resolved ONCE, through the same entry lookup the self-land route gates on — a lane whose
+      // repo is a linked worktree of a configured repository must be told the command it will
+      // actually meet, not the global.
+      const gateVerifyCmd = await verifyCmdFor(s.worktree.repo);
       return json({
         // `timeoutMs` is the WORK budget and `waitMs` the queueing one — two numbers because a
         // single one is what let a land be killed by somebody else's suite (VERIFY_WAIT_MS).
         // The cmd is resolved for THIS LANE'S REPO, not read off the global: since P-7c the two
         // can differ, and a self-report that showed the global would tell a lane in a repo with
         // its own command about a gate it will never meet.
-        verify: verifyCmdFor(s.worktree.repo)
-          ? { cmd: verifyCmdFor(s.worktree.repo), timeoutMs: VERIFY_TIMEOUT_MS, waitMs: VERIFY_WAIT_MS, skipExit: VERIFY_SKIP_EXIT }
+        verify: gateVerifyCmd
+          ? { cmd: gateVerifyCmd, timeoutMs: VERIFY_TIMEOUT_MS, waitMs: VERIFY_WAIT_MS, skipExit: VERIFY_SKIP_EXIT }
           : null,
         cleanReview: CLEAN_REVIEW_MODE,
         autoReview: AUTO_REVIEW_MS > 0 ? { tickMs: AUTO_REVIEW_MS, idleMs: AUTO_REVIEW_IDLE_MS } : null,

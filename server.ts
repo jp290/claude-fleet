@@ -1611,6 +1611,13 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
     // be persisted without the other (a slot-bound inbox report would be typed at nobody; an
     // owner-receiver pane report would be typed at a pane that does not exist).
     || (e.kind === "clarification-request" && e.delivery === "inbox")
+    // THE OWNER PRINCIPAL EXISTS FOR EXACTLY ONE KIND. Every other event is a Watch completion
+    // addressed to the session that subscribed, and a null triple there names nobody at all: it
+    // could never be delivered, never go receiver-gone, and never be acked by the session it was
+    // minted for — but it WOULD count as an owner debt and squat a place at the inbox ceiling
+    // until someone acked a row they never asked for. Fail-closed, at the base, before any
+    // per-kind branch can be reasoned about separately.
+    || (ownerReceiver && e.kind !== "fleet-report")
     || (e.kind === "fleet-report" && (e.delivery === "inbox") !== ownerReceiver)
     // FACT 2 selects `pending` alone, so an owner row can never be sent and can never go
     // receiver-gone: `inbox` until the owner acks it, `acknowledged` after. Anything else on such
@@ -1652,11 +1659,26 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
       || !(p.taskId === null || typeof p.taskId === "string")
       || !(p.originId === null || typeof p.originId === "string")
       || !(p.programId === null || typeof p.programId === "string")
-      || !["program-main", "lane-watch", "program-main+lane-watch"].includes(String(p.basis))) return null;
+      // FOUR values here, three in the clarification branch above, and the difference is the
+      // point: only a REPORT can be filed to the owner principal. Missing "owner-inbox" made the
+      // door and the parser disagree — the row minted fine and was silently dropped on the way
+      // back in, so an unread owner report died at the next restart with nothing said.
+      || !["program-main", "lane-watch", "program-main+lane-watch", "owner-inbox"]
+        .includes(String(p.basis))
+      // THE THIRD CARRIER OF THE SAME FACT, tied to the receiver like the other two. `delivery`
+      // says how the row travels and the base rule binds it; `FleetReport.basis` says who the
+      // ROW was filed to and fleetReportFrom binds it; this one says who the EVENT was filed to,
+      // and it is what the board and the Supervisor projection actually read. Unbound, a row
+      // could hydrate with a null receiver while its payload claimed "program-main" — the owner
+      // would see a report addressed to a MAIN that was never told — or with a session receiver
+      // while claiming "owner-inbox". Both are lies about the one thing the row exists to say.
+      || ((p.basis === "owner-inbox") !== ownerReceiver)) return null;
     return { ...base, subjectSlot: Number(e.subjectSlot), subjectBranch: e.subjectBranch,
       kind: e.kind, payload: { reportId: p.reportId, status: p.status as FleetReportStatus,
         text: p.text, taskId: p.taskId, originId: p.originId, programId: p.programId,
-        basis: p.basis as ClarificationBasis } };
+        // the report payload's own union, NOT ClarificationBasis: the two vocabularies differ by
+        // exactly this value, and casting to the narrower one would re-hide the mismatch above.
+        basis: p.basis as FleetReportEventPayload["basis"] } };
   }
   if (e.kind === "lane-ready" || e.kind === "host-commit-ready") {
     if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0 || typeof e.subjectBranch !== "string") return null;

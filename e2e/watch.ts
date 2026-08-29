@@ -1641,10 +1641,74 @@ export async function run(): Promise<void> {
       createdAt: Date.now() - 1000 + i, status: "inbox", delivery: "inbox",
       attempts: 0, deliveredAt: null, acknowledgedAt: null,
     }));
-    capState.events = [...(capState.events ?? []), ...filler];
+    // ADVERSARIAL ROWS, planted in the SAME restart as the legitimate filler so one hydration
+    // proves both directions at once: the loader must accept exactly the 25 real owner rows and
+    // drop all three of these. A probe that only planted valid rows could not tell "fail-closed"
+    // from "accepts anything", and a probe that only planted invalid ones could not tell it from
+    // "drops everything".
+    const adversarial = [
+      // (a) THE OWNER PRINCIPAL BELONGS TO ONE KIND. A Watch completion with a null triple names
+      // nobody: undeliverable, un-gone-able, un-ackable by its own subscriber — yet it would
+      // count as an owner debt and squat a place at the ceiling forever.
+      { id: "b4advforeignkind", watchId: "b4advwatch",
+        receiverSlot: null, receiverOpenedAt: null, receiverSessionId: null, receiverIdleSec: 0,
+        subjectSlot: capLane.slot, subjectBranch: capLane.branch, kind: "lane-ready",
+        payload: { ahead: 1, dirty: 0, idleMs: 1000, observed: true, gitOp: false,
+          awaiting: null, hostCommits: false },
+        createdAt: Date.now(), status: "inbox", delivery: "inbox",
+        attempts: 0, deliveredAt: null, acknowledgedAt: null },
+      // (b) an owner receiver without inbox transport — a report addressed to a pane that does
+      // not exist. FACT 2 would select it the moment it were `pending`.
+      { id: "b4advownerpane", watchId: null,
+        receiverSlot: null, receiverOpenedAt: null, receiverSessionId: null, receiverIdleSec: 0,
+        subjectSlot: capLane.slot, subjectBranch: capLane.branch, kind: "fleet-report",
+        payload: { reportId: `${"b".repeat(16)}00000001`, status: "complete", text: "owner without inbox",
+          taskId: null, originId: null, programId: null, basis: "owner-inbox" },
+        createdAt: Date.now(), status: "inbox",
+        attempts: 0, deliveredAt: null, acknowledgedAt: null },
+      // (c) the opposite half: inbox transport bound to a SESSION — a row filed at the owner that
+      // a slot recycle could turn `receiver-gone` under him while it was still unread.
+      { id: "b4advslotinbox", watchId: null,
+        receiverSlot: capLane.slot, receiverOpenedAt: Date.now() - 1000, receiverSessionId: null,
+        receiverIdleSec: 0, subjectSlot: capLane.slot, subjectBranch: capLane.branch,
+        kind: "fleet-report",
+        payload: { reportId: `${"c".repeat(16)}00000001`, status: "complete", text: "inbox at a session",
+          taskId: null, originId: null, programId: null, basis: "owner-inbox" },
+        createdAt: Date.now(), status: "inbox", delivery: "inbox",
+        attempts: 0, deliveredAt: null, acknowledgedAt: null },
+      // (d) and (e) mutate the THIRD carrier — the event payload's own `basis`, which is what the
+      // board and the Supervisor projection read. Both rows are consistent in `delivery` and in
+      // the receiver triple, so only the payload↔receiver equivalence can catch them.
+      // (d) filed to NOBODY while claiming a bound Program-MAIN: the owner would read a report
+      // addressed to a MAIN that was never told it existed.
+      { id: "b4advbasisprogram", watchId: null,
+        receiverSlot: null, receiverOpenedAt: null, receiverSessionId: null, receiverIdleSec: 0,
+        subjectSlot: capLane.slot, subjectBranch: capLane.branch, kind: "fleet-report",
+        payload: { reportId: `${"d".repeat(16)}00000001`, status: "complete", text: "null receiver, program basis",
+          taskId: null, originId: null, programId: null, basis: "program-main" },
+        createdAt: Date.now(), status: "inbox", delivery: "inbox",
+        attempts: 0, deliveredAt: null, acknowledgedAt: null },
+      // (e) the reverse: a pane row at a real session that claims it was filed to the owner.
+      { id: "b4advbasisowner", watchId: null,
+        receiverSlot: capLane.slot, receiverOpenedAt: Date.now() - 1000, receiverSessionId: null,
+        receiverIdleSec: 60, subjectSlot: capLane.slot, subjectBranch: capLane.branch,
+        kind: "fleet-report",
+        payload: { reportId: `${"e".repeat(16)}00000001`, status: "complete", text: "session receiver, owner basis",
+          taskId: null, originId: null, programId: null, basis: "owner-inbox" },
+        createdAt: Date.now(), status: "pending",
+        attempts: 0, deliveredAt: null, acknowledgedAt: null },
+    ];
+    capState.events = [...(capState.events ?? []), ...filler, ...adversarial];
     writeFileSync(b4Path, JSON.stringify(capState, null, 2), { mode: 0o600 });
     await restartSrv();
+    const allAfterHydration = ((await (await get("/api/sessions")).json()) as
+      { events: { id: string }[] }).events;
+    const survivedAdversarial = adversarial.filter((row) =>
+      allAfterHydration.some((e) => e.id === row.id)).map((row) => row.id);
     const loadedFiller = (await fleetReportEventRows()).filter((e) => e.id.startsWith("b4cap"));
+    check("B4 reverse-state is fail-closed: foreign kind, pane-owner, session-inbox and both payload-basis lies are refused",
+      survivedAdversarial.length === 0 && loadedFiller.length === 25,
+      `survived=[${survivedAdversarial.join(",")}] legitimateFiller=${loadedFiller.length}`);
     const capRefused = await selfFleetReport(b4Tok.get(capLane.slot) ?? "",
       { status: "complete", text: "the inbox is full" });
     const capRefusedText = await capRefused.text();

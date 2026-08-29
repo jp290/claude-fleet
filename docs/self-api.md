@@ -494,8 +494,14 @@ Fehlt beides, geht der Report daher in die **bestehende Owner-Operations-Inbox (
 
 - **`basis: "owner-inbox"`, `receiver: null`.** Der Owner ist ein PRINZIPAL, kein Occupant. Es
   wird kein `slot/openedAt/sessionId` erfunden — die drei Felder sind auf der `FleetReport`-Zeile
-  wie auf dem `FleetEvent` gemeinsam `null`, und `fleetEventFrom`/`fleetReportFrom` prüfen beide
-  Hälften als EINE Äquivalenz (halb-null ist malformed, nicht „Transportwahl").
+  wie auf dem `FleetEvent` gemeinsam `null` (halb-null ist malformed, nicht „Transportwahl").
+  **DREI Felder tragen denselben Fakt „an wen wurde das gefilet", und jedes ist im Reverse-State
+  einzeln an den Empfänger gebunden** — `delivery` (wie die Zeile reist), `payload.basis` (was
+  Board und Supervisor-Projektion lesen) und `FleetReport.basis` (die Zeile selbst). Ein
+  ungebundenes davon scheitert nicht laut: es hydriert und LÜGT dann die Sicht an, die es liest.
+  Dazu die vierte Klausel: der Owner-Prinzipal existiert nur für `kind: "fleet-report"` — ein
+  Null-Tripel auf einer Watch-Completion nennt niemanden, wäre nie zustellbar und würde trotzdem
+  einen Platz an der Inbox-Decke besetzen.
 - **`status: "inbox"`, `delivery: "inbox"`.** `inbox` ist kein pending-Zustand, und FACT 2 wählt
   ausschließlich `pending` — der Zeile kann strukturell kein `sendText`, kein History-Append und
   kein Prompt-Journal-Eintrag zustoßen. Kein Guard, ein Zustandsautomat.

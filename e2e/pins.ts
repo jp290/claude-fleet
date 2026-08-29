@@ -3262,11 +3262,25 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   // The equivalence, in the reverse-state parser rather than the door: a row that survives a
   // restart must still be unable to claim inbox transport with a session receiver, or a slot
   // recycle would mark the owner's unread report `receiver-gone`.
-  pin(`${RULE_RECEIVER} — a persisted fleet-report is an inbox row exactly when its receiver is the owner (B4)`,
-    eventParser.includes('|| (e.kind === "fleet-report" && (e.delivery === "inbox") !== ownerReceiver)')
-      && eventParser.includes('|| (e.kind === "clarification-request" && e.delivery === "inbox")')
-      && eventParser.includes('|| (ownerReceiver && e.status !== "inbox" && e.status !== "acknowledged")'),
-    `equivalence=${eventParser.includes('(e.delivery === "inbox") !== ownerReceiver')}`);
+  // THREE fields carry "who was this filed to" — the transport (`delivery`), the event payload's
+  // `basis`, and the persisted FleetReport's `basis`. Each is pinned to the receiver separately,
+  // because an unbound one does not fail loudly: it hydrates and then LIES to whichever sight
+  // reads it. The fourth clause keeps the owner principal to the one kind that can have one.
+  const ownerEquivalences = [
+    '|| (ownerReceiver && e.kind !== "fleet-report")',
+    '|| (e.kind === "fleet-report" && (e.delivery === "inbox") !== ownerReceiver)',
+    '|| ((p.basis === "owner-inbox") !== ownerReceiver)) return null;',
+    '|| (e.kind === "clarification-request" && e.delivery === "inbox")',
+    '|| (ownerReceiver && e.status !== "inbox" && e.status !== "acknowledged")',
+  ];
+  const reportRowParser = server.match(/function fleetReportFrom\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_RECEIVER} — every carrier of "filed to the owner" is bound to the receiver, in the parser (B4)`,
+    ownerEquivalences.every((clause) => eventParser.includes(clause))
+      && eventParser.includes('"program-main+lane-watch", "owner-inbox"')
+      && reportRowParser.includes('(r.basis === "owner-inbox" ? r.receiver !== null : !occupant(r.receiver, false))'),
+    `missing=[${ownerEquivalences.filter((c) => !eventParser.includes(c)).map((c) => c.slice(3, 40)).join(" | ")}]`
+      + ` allowlist=${eventParser.includes('"program-main+lane-watch", "owner-inbox"')}`
+      + ` reportRow=${reportRowParser.includes('r.basis === "owner-inbox" ? r.receiver !== null')}`);
   // The footer is a LIFECYCLE instruction, and a clarify lane has a different lifecycle: it stops
   // for the owner. Appending it there would tell a lane to finish work it was told not to start.
   pin(`${RULE_RECEIVER} — the exit footer is appended to mutating briefs only, clarify exempted at the seam`,

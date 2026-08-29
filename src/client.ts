@@ -6048,6 +6048,21 @@ async function loadTaskTexts() {
 // its own: the poll's digest set is the change signal, plus a floor for the one rebinding path
 // (succession) that moves a binding without moving any digest field.
 interface ProgramDigest { id: string; status: string; title: string; createdAt: number }
+type PublicProgramFoundingMode = "bootstrap" | "succession";
+interface PublicProgramFoundingOccupant { slot: number; openedAt: number }
+interface PublicProgramFoundingV1 {
+  v: 1; attemptId: string; mode: PublicProgramFoundingMode; canonicalRoot: string;
+  target: PublicProgramFoundingOccupant; predecessor: PublicProgramFoundingOccupant | null; startedAt: number;
+}
+interface PublicProgramFoundingV2 {
+  v: 2; profileKind: "standard" | "game-maker"; attemptId: string; mode: PublicProgramFoundingMode;
+  targetRoot: string; target: PublicProgramFoundingOccupant;
+  predecessor: PublicProgramFoundingOccupant | null; startedAt: number;
+}
+type PublicProgramFounding = PublicProgramFoundingV1 | PublicProgramFoundingV2;
+type ProgramFoundingState = { state: "absent" }
+  | { state: "pending"; record: PublicProgramFounding }
+  | { state: "unreadable" };
 interface ProgramInfo extends ProgramDigest {
   intent?: string; successCriterion?: string; nonGoals?: string[];
   // ABSENT or null = unbound. A PRESENT object may still be incomplete, and that is `unknown`,
@@ -6060,6 +6075,11 @@ interface ProgramInfo extends ProgramDigest {
   // shape here that this build cannot read. So the type admits that, and `promotionState` below
   // turns "present but unreadable" into its own displayed state rather than into "absent".
   promotion?: { v?: number; selfLand?: string; confirmedAt?: number } | null;
+  // THE DURABLE FOUNDING MARKER, in the redacted public shape returned by GET /api/programs. V1 and
+  // V2 use different root/profile fields, but both expose only the affected occupant pair. Runtime
+  // decoding below is deliberately closed: a present shape this build cannot read locks founding
+  // as UNKNOWN instead of degrading to an absent marker and offering another bootstrap.
+  founding?: PublicProgramFounding | null;
   // THE OWNER'S EXECUTION PROFILE for this program's MAIN, as it comes off the wire, and optional
   // for exactly the reason `promotion` above is: the server stores a closed `{v:1, kind, confirmedAt}`
   // and its loader refuses anything else, but a client type is an ASSERTION about a foreign surface.
@@ -6084,6 +6104,53 @@ interface ProgramInfo extends ProgramDigest {
   // foreign surface, and anything that is not one of the three known words is rendered as
   // unreadable, never as a match.
   health?: { occupancy?: string; sessionIdMatch?: string } | null;
+}
+
+const wireRecord = (value: unknown): Record<string, unknown> | null =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : null;
+const exactWireKeys = (record: Record<string, unknown>, keys: string[]): boolean =>
+  Object.keys(record).length === keys.length && Object.keys(record).every((key) => keys.includes(key));
+const publicFoundingOccupant = (value: unknown): PublicProgramFoundingOccupant | null => {
+  const record = wireRecord(value);
+  if (!record || !exactWireKeys(record, ["slot", "openedAt"])
+    || !Number.isInteger(record.slot) || (record.slot as number) < 1
+    || typeof record.openedAt !== "number" || !Number.isFinite(record.openedAt) || record.openedAt <= 0) return null;
+  return { slot: record.slot as number, openedAt: record.openedAt };
+};
+
+// This is the GET /api/programs wire boundary. Undefined alone is absence; null, partial records,
+// unknown keys and unknown versions are unreadable PRESENT facts and therefore fail closed.
+function programFoundingState(value: unknown): ProgramFoundingState {
+  if (value === undefined) return { state: "absent" };
+  const record = wireRecord(value);
+  if (!record || (record.v !== 1 && record.v !== 2)) return { state: "unreadable" };
+  const keys = record.v === 1
+    ? ["v", "attemptId", "mode", "canonicalRoot", "target", "predecessor", "startedAt"]
+    : ["v", "profileKind", "attemptId", "mode", "targetRoot", "target", "predecessor", "startedAt"];
+  if (!exactWireKeys(record, keys)
+    || typeof record.attemptId !== "string" || !/^[0-9a-f]{32}$/.test(record.attemptId)
+    || (record.mode !== "bootstrap" && record.mode !== "succession")
+    || typeof record.startedAt !== "number" || !Number.isFinite(record.startedAt) || record.startedAt <= 0)
+    return { state: "unreadable" };
+  const target = publicFoundingOccupant(record.target);
+  const predecessor = record.predecessor === null ? null : publicFoundingOccupant(record.predecessor);
+  if (!target || (record.predecessor !== null && !predecessor)
+    || (record.mode === "bootstrap" && predecessor !== null)
+    || (record.mode === "succession" && predecessor === null)) return { state: "unreadable" };
+  if (record.v === 1) {
+    if (typeof record.canonicalRoot !== "string" || record.canonicalRoot.length === 0)
+      return { state: "unreadable" };
+    return { state: "pending", record: { v: 1, attemptId: record.attemptId,
+      mode: record.mode, canonicalRoot: record.canonicalRoot, target, predecessor,
+      startedAt: record.startedAt } };
+  }
+  if ((record.profileKind !== "standard" && record.profileKind !== "game-maker")
+    || typeof record.targetRoot !== "string" || record.targetRoot.length === 0)
+    return { state: "unreadable" };
+  return { state: "pending", record: { v: 2, profileKind: record.profileKind,
+    attemptId: record.attemptId, mode: record.mode, targetRoot: record.targetRoot,
+    target, predecessor, startedAt: record.startedAt } };
 }
 let programsPoll: ProgramDigest[] = [];   // the digest set the 2 s poll already carries
 let programsList: ProgramInfo[] = [];     // the full rows, from GET /api/programs
@@ -6129,7 +6196,7 @@ async function loadPrograms(force = false): Promise<void> {
   }
 }
 
-type ProgramMark = "live" | "stale" | "unbound" | "unknown";
+type ProgramMark = "live" | "stale" | "founding" | "unbound" | "unknown";
 // The mark is DERIVED here and stored nowhere: the server keeps a binding, not a verdict about
 // one. UNKNOWN is a real answer and never softens into live — a missing field or a missing
 // snapshot means "cannot be checked", which an owner must not read as a working MAIN.
@@ -6149,6 +6216,16 @@ function programMark(p: ProgramInfo): { mark: ProgramMark; why: string } {
       ? "the last GET /api/programs did not answer — this row is CACHED context, not current truth,"
         + " so no binding claim is made from it until a fresh read succeeds"
       : "GET /api/programs has not been read yet, so nothing about this binding is known" };
+  const founding = programFoundingState(p.founding);
+  if (founding.state === "unreadable")
+    return { mark: "unknown", why: "a durable founding field is present but this client cannot read its exact"
+      + " public v1/v2 shape — binding and availability are unknown, so bootstrap stays locked" };
+  if (founding.state === "pending") {
+    const f = founding.record;
+    return { mark: "founding", why: `Program-MAIN founding recovery pending — ${f.mode} attempt ${f.attemptId}`
+      + ` affects slot ${f.target.slot} (opened ${fmtTs(f.target.openedAt)}); availability unknown, recovery pending,`
+      + " and no second bootstrap is available while this durable marker exists" };
+  }
   const main = p.main;
   if (main === null || main === undefined)
     return { mark: "unbound", why: "no Program-MAIN binding — nothing has been founded for this program yet" };
@@ -6169,6 +6246,36 @@ function programMark(p: ProgramInfo): { mark: ProgramMark; why: string } {
     + " slot and openedAt were compared — this poll carries no top-level session id to match"
     + " Program.main.sessionId against, so that half is unchecked HERE. The identity chip beside"
     + " this one carries the server's own comparison of it (V1a)" };
+}
+
+interface BootstrapUnavailable {
+  availability: "unknown";
+  recovery: "pending" | "rolled-back";
+  affected: { attemptId: string; slot: number; openedAt: number };
+}
+const bootstrapUnavailableFrom = (value: unknown): BootstrapUnavailable | null => {
+  const record = wireRecord(value);
+  const affected = wireRecord(record?.affected);
+  if (!record || record.availability !== "unknown"
+    || (record.recovery !== "pending" && record.recovery !== "rolled-back")
+    || !affected || !exactWireKeys(affected, ["attemptId", "slot", "openedAt"])
+    || typeof affected.attemptId !== "string" || !/^[0-9a-f]{32}$/.test(affected.attemptId)
+    || !Number.isInteger(affected.slot) || (affected.slot as number) < 1
+    || typeof affected.openedAt !== "number" || !Number.isFinite(affected.openedAt)
+    || affected.openedAt <= 0) return null;
+  return { availability: "unknown", recovery: record.recovery,
+    affected: { attemptId: affected.attemptId, slot: affected.slot as number, openedAt: affected.openedAt } };
+};
+
+function bootstrapFailureMessage(status: number, value: unknown): string {
+  const body = wireRecord(value);
+  const base = typeof body?.error === "string" && body.error.length > 0
+    ? `${status}: ${body.error}` : `the server answered ${status} with no readable reason`;
+  const unavailable = status === 503 ? bootstrapUnavailableFrom(value) : null;
+  if (!unavailable) return base;
+  return `${base} — availability ${unavailable.availability}; recovery ${unavailable.recovery};`
+    + ` affected attempt ${unavailable.affected.attemptId}; affected slot ${unavailable.affected.slot}`
+    + ` (opened ${fmtTs(unavailable.affected.openedAt)})`;
 }
 
 // --- THE OWNER'S SELF-LAND PROMOTION, read for display ---
@@ -6921,6 +7028,32 @@ function renderProgramDetail(shell: Shell, id: string): void {
     pm.appendChild(pmActs);
   }
 
+  if (mark === "founding") {
+    const founding = programFoundingState(p.founding);
+    const pending = qDetailSection(shell.detail, "Program-MAIN founding recovery pending");
+    if (founding.state === "pending") {
+      const record = founding.record;
+      const pendingFacts = el("div", "ocfacts");
+      pendingFacts.appendChild(chip(`mode ${record.mode}`, "warn",
+        "the durable marker's founding mode"));
+      pendingFacts.appendChild(chip(`attempt ${record.attemptId}`, "dim",
+        "the server-issued durable attempt id"));
+      pendingFacts.appendChild(chip(`affected slot ${record.target.slot}`, "warn",
+        `the durable marker names slot ${record.target.slot}, opened ${fmtTs(record.target.openedAt)}`));
+      pending.appendChild(pendingFacts);
+      pending.appendChild(el("div", "pkdwarn",
+        `availability unknown; recovery pending. ${record.mode} attempt ${record.attemptId} affects slot`
+          + ` ${record.target.slot} (opened ${fmtTs(record.target.openedAt)}). No bootstrap form is available`
+          + " while this durable marker exists; a fresh GET /api/programs decides when recovery clears it."));
+    } else {
+      pending.appendChild(el("div", "pkdwarn",
+        "the founding marker became unreadable while rendering — availability and recovery are unknown,"
+          + " and bootstrap stays locked"));
+    }
+    if (qBsFor === p.id && qBsErr) pending.appendChild(el("div", "pkdwarn", qBsErr));
+    return;
+  }
+
   if (mark === "stale" || mark === "unknown") {
     const st = qDetailSection(shell.detail, "Binding");
     st.appendChild(el("div", "shellhint", mark === "stale"
@@ -7131,27 +7264,30 @@ function renderProgramDetail(shell: Shell, id: string): void {
       ...(qBsModel ? { model: qBsModel } : {}),
       ...(qBsEffort ? { effort: qBsEffort } : {}),
     });
-    const j = (await r.json().catch(() => null)) as { error?: string; slot?: number } | null;
-    // An orphaned answer still refreshes the FACTS (a spawn that happened, happened) but writes
-    // nothing into a draft that is no longer the one it was sent from.
+    const j = (await r.json().catch(() => null)) as unknown;
+    const failure = r.ok ? null : bootstrapFailureMessage(r.status, j);
+    // Every answer can change durable Program facts, including a typed 503: rolled-back may clear
+    // the marker and become unbound, while pending must repaint from the marker and stay locked.
+    await refresh();
+    await loadPrograms(true);
+    // An orphaned answer still refreshes the FACTS but writes nothing into a draft that is no
+    // longer the one it was sent from.
     if (!mine()) {
-      if (r.ok) { await refresh(); await loadPrograms(true); qKey = ""; renderQueue(); }
+      qKey = ""; renderQueue();
       return;
     }
     qBsBusy = false;
-    if (!r.ok) {
-      // VERBATIM. A 409 here names exactly which door closed — wrong status, no free slot, a
-      // binding this server cannot clear — and a paraphrase would drop that half of the answer.
-      qBsErr = j?.error ? `${r.status}: ${j.error}` : `the server answered ${r.status} with no readable reason`;
-      qDetailKey = ""; renderQueueDetail();
+    if (failure !== null) {
+      // The server sentence stays verbatim at the front. A typed 503 keeps the additive
+      // availability/recovery/affected facts beside it instead of collapsing them into that prose.
+      qBsErr = failure;
+      qKey = ""; qDetailKey = "";
+      renderQueue(); renderQueueDetail();
       return;
     }
     qBsErr = null;
     if (qBsCwd) qBsCwd.value = "";
     if (qBsLabel) qBsLabel.value = "";
-    qDetailKey = ""; renderQueueDetail();
-    await refresh();
-    await loadPrograms(true);
     qKey = ""; qDetailKey = "";
     renderQueue(); renderQueueDetail();
   };

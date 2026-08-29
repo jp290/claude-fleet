@@ -3884,6 +3884,135 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     "the durable marker/recovery contract drifted out of the operator or studio document");
 }
 
+// --- THE OWNER BOARD'S DURABLE FOUNDING MARKER -------------------------------------------------
+// The server can answer bootstrap-main with a typed 503 after it has durably written Program.founding.
+// This source boundary is the last guard against the Board erasing that fact back to `unbound` and
+// offering a second bootstrap. The live suite proves the server transition; these rules execute the
+// client's wire decoder/classifier and fasten the DOM/response wiring that no TypeScript type can see.
+{
+  const RULE_FOUNDING_BOARD = "the Board treats a public durable founding marker as pending recovery, never bootstrap room";
+  const client = read("src/client.ts");
+  const stateHeadAt = client.indexOf("type PublicProgramFoundingMode");
+  const stateFnAt = client.indexOf("\nfunction programFoundingState(");
+  const stateTailAt = stateFnAt < 0 ? -1 : client.indexOf("\n}\n", stateFnAt);
+  const stateSource = stateHeadAt < 0 || stateFnAt < stateHeadAt || stateTailAt < stateFnAt ? ""
+    : client.slice(stateHeadAt, stateTailAt + 3);
+
+  type FoundingView = { state: string; record?: { v?: number; mode?: string;
+    attemptId?: string; target?: { slot?: number; openedAt?: number } } };
+  let foundingState: ((value: unknown) => FoundingView) | null = null;
+  let foundingStateErr = "";
+  if (stateSource !== "") {
+    try {
+      foundingState = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(stateSource)
+        + "\nreturn programFoundingState;")() as (value: unknown) => FoundingView;
+    } catch (e) { foundingStateErr = e instanceof Error ? e.message : String(e); }
+  }
+  pin(`${RULE_FOUNDING_BOARD} — the public v1/v2 decoder is extractable, DOM-free and carries no token or hash field`,
+    foundingState !== null && !/document|\bel\(|selfToken|Hash/.test(stateSource),
+    stateSource === "" ? "programFoundingState not found" : foundingStateErr || `${stateSource.length} bytes`);
+
+  const V1 = { v: 1, attemptId: "a".repeat(32), mode: "bootstrap", canonicalRoot: "/repo",
+    target: { slot: 4, openedAt: 1750000000000 }, predecessor: null, startedAt: 1750000000001 };
+  const V2 = { v: 2, profileKind: "standard", attemptId: "b".repeat(32), mode: "succession",
+    targetRoot: "/repo", target: { slot: 5, openedAt: 1750000000002 },
+    predecessor: { slot: 4, openedAt: 1750000000000 }, startedAt: 1750000000003 };
+  const views = foundingState ? {
+    absent: foundingState(undefined), v1: foundingState(V1), v2: foundingState(V2),
+    nulled: foundingState(null), extra: foundingState({ ...V1, surprise: true }),
+    leaked: foundingState({ ...V2, target: { ...V2.target, selfTokenHash: "f".repeat(64) } }),
+  } : null;
+  // Mutation caught: accepting null, an unknown top-level key or a private identity hash would turn
+  // an unreadable/private wire shape into an actionable pending record; dropping either v1 or v2
+  // would make a real durable marker disappear back into bootstrap room.
+  pin(`${RULE_FOUNDING_BOARD} — exact public v1 and v2 are pending; absent, null, unknown-key and private-hash edges fail closed`,
+    !!views && views.absent.state === "absent"
+      && views.v1.state === "pending" && views.v1.record?.v === 1
+      && views.v2.state === "pending" && views.v2.record?.v === 2
+      && views.nulled.state === "unreadable" && views.extra.state === "unreadable"
+      && views.leaked.state === "unreadable",
+    JSON.stringify(views));
+
+  const markAt = client.indexOf("\nfunction programMark(p: ProgramInfo)");
+  const markTailAt = markAt < 0 ? -1 : client.indexOf("\n}\n", markAt);
+  const markSource = markAt < 0 || markTailAt < markAt ? "" : client.slice(markAt, markTailAt + 3);
+  let mark: ((p: Record<string, unknown>) => { mark: string; why: string }) | null = null;
+  let markErr = "";
+  if (stateSource !== "" && markSource !== "") {
+    try {
+      const prelude = 'let programsRead = "ok"; let fleet = []; function fmtTs(ts) { return "TS:" + ts; }\n';
+      mark = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(
+        prelude + stateSource + markSource) + "\nreturn programMark;")();
+    } catch (e) { markErr = e instanceof Error ? e.message : String(e); }
+  }
+  const marks = mark ? { pending: mark({ founding: V2 }), absent: mark({}), malformed: mark({ founding: null }) } : null;
+  // Mutation caught: moving the main-absence branch above foundingState recreates the production bug:
+  // the same no-main row changes from `founding` to `unbound` and regrows bootstrap controls.
+  pin(`${RULE_FOUNDING_BOARD} — classification checks pending/unreadable founding before the no-main unbound branch`,
+    !!marks && marks.pending.mark === "founding" && marks.absent.mark === "unbound"
+      && marks.malformed.mark === "unknown" && /recovery pending/.test(marks.pending.why),
+    markErr || JSON.stringify(marks));
+
+  const detailAt = client.indexOf("function renderProgramDetail(");
+  const detailTailAt = detailAt < 0 ? -1 : client.indexOf("\n}\n", detailAt);
+  const detail = detailAt < 0 || detailTailAt < detailAt ? "" : client.slice(detailAt, detailTailAt + 3);
+  const pendingAt = detail.indexOf('if (mark === "founding") {');
+  const staleAt = detail.indexOf('if (mark === "stale" || mark === "unknown") {');
+  const bootstrapAt = detail.indexOf('const bs = qDetailSection(shell.detail, "Found a Program-MAIN")');
+  const pendingBlock = pendingAt < 0 || staleAt < pendingAt ? "" : detail.slice(pendingAt, staleAt);
+  // Mutation caught: deleting the pending return or moving the bootstrap section above it makes one
+  // durable attempt render cwd/label inputs and the "found Program-MAIN" button again.
+  pin(`${RULE_FOUNDING_BOARD} — pending Board copy names mode, attempt and affected slot, says availability/recovery, and returns before every bootstrap control`,
+    pendingBlock !== "" && /record\.mode/.test(pendingBlock) && /record\.attemptId/.test(pendingBlock)
+      && /record\.target\.slot/.test(pendingBlock) && pendingBlock.includes("availability unknown")
+      && pendingBlock.includes("recovery pending") && /\n\s*return;/.test(pendingBlock)
+      && staleAt > pendingAt && bootstrapAt > staleAt,
+    `pending=${pendingAt} stale=${staleAt} bootstrap=${bootstrapAt}`);
+
+  const responseAt = detail.indexOf("const j = (await r.json().catch(() => null)) as unknown;");
+  const response = responseAt < 0 ? "" : detail.slice(responseAt, detail.indexOf("acts.appendChild(go);", responseAt));
+  const refreshAt = response.indexOf("await loadPrograms(true);");
+  const failureAt = response.indexOf("if (failure !== null)");
+  // Mutation caught: restoring the old success-only refresh leaves a typed pending 503 classified
+  // from stale pre-click facts, so rolled-back cannot unlock and pending cannot visibly stay locked.
+  pin(`${RULE_FOUNDING_BOARD} — every answered bootstrap refreshes Program facts before its failure branch, including typed 503`,
+    response !== "" && response.includes("bootstrapFailureMessage(r.status, j)")
+      && refreshAt >= 0 && failureAt > refreshAt
+      && response.split("await loadPrograms(true);").length - 1 === 1,
+    response === "" ? "bootstrap response path not found" : `refresh=${refreshAt} failure=${failureAt}`);
+
+  const failureHeadAt = client.indexOf("interface BootstrapUnavailable");
+  const failureFnAt = client.indexOf("\nfunction bootstrapFailureMessage(");
+  const failureTailAt = failureFnAt < 0 ? -1 : client.indexOf("\n}\n", failureFnAt);
+  const failureSource = failureHeadAt < 0 || failureFnAt < failureHeadAt || failureTailAt < failureFnAt ? ""
+    : client.slice(failureHeadAt, failureTailAt + 3);
+  let failureMessage: ((status: number, value: unknown) => string) | null = null;
+  let failureErr = "";
+  if (stateSource !== "" && failureSource !== "") {
+    try {
+      const prelude = 'function fmtTs(ts) { return "TS:" + ts; }\n';
+      failureMessage = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(
+        prelude + stateSource + failureSource) + "\nreturn bootstrapFailureMessage;")();
+    } catch (e) { failureErr = e instanceof Error ? e.message : String(e); }
+  }
+  const pending503 = failureMessage?.(503, { error: "founding delivery outcome is unknown",
+    availability: "unknown", recovery: "pending",
+    affected: { attemptId: "c".repeat(32), slot: 6, openedAt: 1750000000004 } }) ?? "";
+  const rolledBack503 = failureMessage?.(503, { error: "founding rolled back",
+    availability: "unknown", recovery: "rolled-back",
+    affected: { attemptId: "d".repeat(32), slot: 7, openedAt: 1750000000005 } }) ?? "";
+  // Mutation caught: narrowing the response to `{error,slot}` or omitting one typed field makes the
+  // operator lose which durable attempt/slot is pending, or mistake rolled-back for pending.
+  pin(`${RULE_FOUNDING_BOARD} — typed pending and rolled-back 503 messages preserve error, availability, recovery and the exact affected identity`,
+    pending503.startsWith("503: founding delivery outcome is unknown")
+      && pending503.includes("availability unknown") && pending503.includes("recovery pending")
+      && pending503.includes("affected attempt " + "c".repeat(32))
+      && pending503.includes("affected slot 6") && pending503.includes("TS:1750000000004")
+      && rolledBack503.startsWith("503: founding rolled back")
+      && rolledBack503.includes("recovery rolled-back") && rolledBack503.includes("affected slot 7"),
+    failureErr || JSON.stringify({ pending503, rolledBack503 }));
+}
+
 // The profile buttons are an owner actuator, not decorative prose. Runtime executes the pure
 // request builder; these pins keep the real click path on that one builder and preserve its
 // busy/generation/finally discipline.

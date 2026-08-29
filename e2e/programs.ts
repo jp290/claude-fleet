@@ -1855,11 +1855,12 @@ export async function run(ctx: Ctx): Promise<void> {
       founding: gmOwnerKillFoundingResponse.status, after: gmOwnerKillAfter }));
   await programPost(gmOwnerKillProgram.id, "complete");
 
-  // PRE-OPEN OWNER-KILL TOCTOU. An orphan tmux session makes openSlot await its teardown after the
-  // durable marker check but before Slot mutation. The test-only latch stops at that exact seam;
-  // owner kill then removes the marker. The post-await permit check must refuse the stale
-  // attempt before it can publish or spawn anything. Removing that second check strands the slot
-  // and pane after the founding request notices its marker disappeared.
+  // PRE-OPEN OWNER-KILL TOCTOU. The test-only latch stops after openSlot proves the selected empty
+  // slot has no pane but before it publishes a candidate; owner kill then removes the marker. The
+  // post-await permit check must refuse the stale attempt before it can publish or spawn anything.
+  // Removing that second check strands the slot and pane after the founding request notices its
+  // marker disappeared. An unowned tmux pane is deliberately not this fixture: openSlot must refuse
+  // rather than destroy a process that has no exact Fleet occupant identity.
   const gmPreOpenKillLatch = `${ROOT}/gm-pre-open-kill-latch`;
   const gmPreOpenKillReached = `${gmPreOpenKillLatch}.reached`;
   const gmPreOpenKillRelease = `${gmPreOpenKillLatch}.release`;
@@ -1869,9 +1870,6 @@ export async function run(ctx: Ctx): Promise<void> {
   const gmPreOpenKillProgram = await activateNewProgram("Game-Maker pre-open owner-kill race");
   await setProfile(gmPreOpenKillProgram.id, GAME_MAKER);
   const gmPreOpenKillSlot = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? 0;
-  const gmPreOpenOrphan = gmPreOpenKillSlot > 0
-    ? await tmuxOut("new-session", "-d", "-s", `s${gmPreOpenKillSlot}`, "-c", gameWt, "sleep 60")
-    : { code: 1, out: "no free slot" };
   writeFileSync(gmPreOpenKillLatch, "armed\n", { mode: 0o600 });
   const gmPreOpenReceiptsBefore = (await contextReceipts()).receipts
     .filter((row) => row.programId === gmPreOpenKillProgram.id).length;
@@ -1903,14 +1901,14 @@ export async function run(ctx: Ctx): Promise<void> {
       cwd: gameWt, label: "game-maker-pre-open-kill-recoverable",
     }) : null;
   check("game-maker pre-open owner kill: post-await permit recheck leaves no main, receipt, pane or slot orphan",
-    gmPreOpenReached && gmPreOpenOrphan.code === 0 && gmPreOpenKillSlot > 0
+    gmPreOpenReached && gmPreOpenKillSlot > 0
       && gmPreOpenMarker?.target.slot === gmPreOpenKillSlot && gmPreOpenOwnerKill?.ok === true
       && gmPreOpenResponse.status === 409 && gmPreOpenText.includes("durable founding marker")
       && gmPreOpenAfter?.main === undefined && gmPreOpenAfter?.founding === undefined
       && gmPreOpenSlotAbsent && gmPreOpenPaneAbsent
       && gmPreOpenReceiptsAfter === gmPreOpenReceiptsBefore,
-    JSON.stringify({ reached: gmPreOpenReached, orphan: gmPreOpenOrphan.code,
-      marker: gmPreOpenMarker, kill: gmPreOpenOwnerKill?.status,
+    JSON.stringify({ reached: gmPreOpenReached, marker: gmPreOpenMarker,
+      kill: gmPreOpenOwnerKill?.status,
       founding: [gmPreOpenResponse.status, gmPreOpenText], after: gmPreOpenAfter,
       slotAbsent: gmPreOpenSlotAbsent, paneAbsent: gmPreOpenPaneAbsent,
       receipts: [gmPreOpenReceiptsBefore, gmPreOpenReceiptsAfter] }));

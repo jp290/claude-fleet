@@ -149,8 +149,11 @@ interface JobView {
   id: string; kind?: string; repo: string; main: string; branches: string[]; covers: number;
   claim: { name: string } | null; localRunning: boolean;
 }
+// The claim answer as it comes off the wire — unvalidated by us, so the two ref fields are typed
+// the way the server actually serves them: a lane-suite claim carries `branch`, an audit claim
+// carries `main`, and neither kind ever carries both (server.ts#helperClaim, #claimLaneSuite).
 interface ClaimedJob {
-  id: string; kind?: string; repo: string; main: string; mainSha: string;
+  id: string; kind?: string; repo: string; main?: string; mainSha: string;
   branch?: string; treeSha?: string; untracked?: number;
 }
 
@@ -254,14 +257,38 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
     if (!bundleRes.ok) { await report(cfg, j, 127, `the bundle download answered HTTP ${bundleRes.status}`); return; }
     await Bun.write(bundlePath, await bundleRes.arrayBuffer());
 
-    // THE `-b` IS REQUIRED FOR A PREVIEW BUNDLE and harmless nowhere else: a lane-suite bundle's
-    // only ref is a transient branch that is not its HEAD, and a plain clone of it produces a
-    // directory with NO working tree and no error saying so (src/helper.ts#bootstrapText, M6).
-    const cloneCmd = j.branch
-      ? `git clone -q -b ${sh(j.branch)} ${sh(bundlePath)} ${sh(clone)}`
-      : `git clone -q ${sh(bundlePath)} ${sh(clone)}`;
+    // THE `-b` IS REQUIRED FOR BOTH KINDS, and the ref it names is the only thing that differs
+    // between them. A bundle carries exactly the refs it was built from and NO HEAD, so a plain
+    // clone only checks anything out when git can GUESS the single ref as HEAD — and it guesses
+    // with `init.defaultBranch`. On a machine where that is `master` (the Debian default, and the
+    // value of an unset one) the guess misses: the clone still exits 0, prints
+    // `warning: remote HEAD refers to nonexistent ref, unable to checkout` and leaves an EMPTY
+    // tree. Measured live on the linux work-horse, 2026-08-29. ONE expression picks the ref for
+    // both kinds — a lane-suite claim names it `branch`, an audit claim names it `main`.
+    const ref = j.branch ?? j.main;
+    // A claim with NEITHER is a job this daemon cannot run. It is reported in the currency the rail
+    // already has for "nothing was measured" (no exit code / 127 → unknown), never as a red and
+    // never as a silent clone that might come back empty.
+    if (!ref) {
+      await report(cfg, j, 127, "the claim named no ref to clone (neither `branch` nor `main`) — this daemon cannot run that job");
+      return;
+    }
+    const cloneCmd = `git clone -q -b ${sh(ref)} ${sh(bundlePath)} ${sh(clone)}`;
     const cloned = await runCmd(cloneCmd, runDir, logPath, 300_000);
     if (cloned.code !== 0) { await report(cfg, j, 127, `the clone failed (exit ${cloned.code})`, logPath); return; }
+
+    // THE BELT AGAINST THE WHOLE CLASS, not just against the ref name above. `installCmd` needs a
+    // populated tree; when that precondition broke, the first thing to notice was
+    // `bun install --frozen-lockfile` finding no package.json — so the ledger said "install failed"
+    // about a clone that had checked nothing out. That is the wrong error at the wrong place, and
+    // an empty clone must fail as ITSELF.
+    const populated = ((): boolean => {
+      try { return readdirSync(clone).some((n) => n !== ".git"); } catch { return false; }
+    })();
+    if (!populated) {
+      await report(cfg, j, 127, `the clone of ${ref} left an EMPTY working tree — nothing to install or run`, logPath);
+      return;
+    }
 
     const installed = await runCmd(cfg.installCmd, clone, logPath, 900_000);
     // A TREE THAT COULD NOT BE PREPARED MEASURED NOTHING, and `unknown` is the only honest verdict

@@ -42,7 +42,7 @@ interface OfferView {
   result: {
     exitCode: number | null; result: string; reason?: string; tail?: string; trail?: string;
     checks?: { ran: number; failed: number } | null;
-    remote?: { name: string; claimedAt: number; reportedAt: number };
+    remote?: { name: string; claimedAt: number; reportedAt: number; clonedSha?: string };
     treeSha?: string; ms?: number;
   } | null;
 }
@@ -239,6 +239,10 @@ export async function run(): Promise<void> {
   const resultRes = await hpost("/api/helper/result", {
     jobId, exitCode: 0, trail: TRAIL,
     tail: "PASS  a remote check\nPASS  another remote check\nALL PASS",
+    // A MALFORMED clone sha, deliberately. The field arrives off the network, and the server's job
+    // is to store a measurement or nothing at all — a rejected value that got stored anyway would
+    // be worse than the absence it replaced, because the ledger reads the field as a measurement.
+    clonedSha: "not-a-sha",
   });
   const resultBody = await bodyOf<{ kind?: string; result?: string }>(resultRes);
   check("(LS) the preview verdict is accepted and answers as its own kind",
@@ -259,6 +263,12 @@ export async function run(): Promise<void> {
     reported.offer?.state === "reported" && verdict?.result === "green" && verdict.exitCode === 0
       && verdict.checks?.ran === 2 && verdict.checks.failed === 0 && verdict.trail === TRAIL,
     JSON.stringify({ state: reported.offer?.state, r: verdict?.result, e: verdict?.exitCode, c: verdict?.checks, t: verdict?.trail }));
+  // The negative half of the 2026-08-29 class-fix (its positive half is in e2e/helper-portal.ts and
+  // e2e/helper-daemon.ts): a clone sha that is not one is DROPPED, and absence is what the reader
+  // then sees — never the string that was sent.
+  check("(LS) a malformed clone sha is refused into ABSENCE, not stored as if it were a measurement",
+    verdict?.remote !== undefined && !("clonedSha" in verdict.remote),
+    JSON.stringify(verdict?.remote));
   check("(LS) …MARKED REMOTE: the device name and both timestamps travel with the number",
     verdict?.remote?.name === DEVICE_NAME && verdict.remote.claimedAt === claim.job?.claimedAt
       && verdict.remote.reportedAt >= verdict.remote.claimedAt,

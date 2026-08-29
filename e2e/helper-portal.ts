@@ -58,7 +58,7 @@ interface Row {
   at: number; ms: number; repo: string; main: string; mainSha: string; result: string; reason?: string;
   cmd: string; exitCode: number | null; out: string; checks?: { ran: number; failed: number } | null;
   covers: { branch: string; mainAfter: string }[];
-  remote?: { name: string; claimedAt: number; reportedAt: number; trail?: string };
+  remote?: { name: string; claimedAt: number; reportedAt: number; trail?: string; clonedSha?: string };
 }
 interface LiveView {
   postLandAuditLive: { running: { repo: string | null; phase: string } | null } | null;
@@ -387,6 +387,9 @@ export async function run(h: {
   const resultRes = await hpost("/api/helper/result", {
     jobId: queued?.id ?? "", exitCode: 0, trail: TRAIL,
     tail: "PASS  a remote check\nPASS  another remote check\nALL PASS",
+    // the sha this suite really checked the bundle out to, up at (K)'s clone probe — the field a
+    // daemon fills with its own `git rev-parse HEAD`
+    clonedSha: cloneHead,
   });
   check("(K) the result POST is accepted and reports the verdict it wrote",
     resultRes.ok && ((await resultRes.json()) as { result: string }).result === "green", `${resultRes.status}`);
@@ -407,6 +410,13 @@ export async function run(h: {
     mark?.name === DEVICE_NAME && mark.claimedAt === claim.job?.claimedAt
       && mark.reportedAt >= mark.claimedAt && mark.trail === TRAIL,
     JSON.stringify(mark));
+  // The server side of the 2026-08-29 class-fix: what the helper says it RAN is kept apart from
+  // what this machine says it HANDED OVER, and both are on the row. Only their coexistence makes a
+  // remote red adjudicable; `mainSha` alone never could, because it is this server's own reading of
+  // a bundle header and says nothing about what the other machine did with it.
+  check("(K) …and the row keeps the helper's own clone sha BESIDE the sha this machine handed over",
+    mark?.clonedSha === cloneHead && cloneHead === takeMeSha && remote?.mainSha === takeMeSha,
+    `cloned=${mark?.clonedSha ?? "ABSENT"} mainSha=${remote?.mainSha} cloneHead=${cloneHead}`);
   check("(K) the row's checks are counted from the tail the helper actually sent",
     remote?.checks?.ran === 2 && remote.checks.failed === 0, JSON.stringify(remote?.checks));
   check("(K) the row NAMES the remote command rather than quoting this machine's audit command",

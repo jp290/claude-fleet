@@ -3013,6 +3013,110 @@ export async function run(ctx: Ctx): Promise<void> {
   clearSuccessionLatch(afterReceiptLatch);
   await restartSrv();
 
+  // A composed founding send owns the candidate observed before it enters inputChain. This first
+  // arm pauses before Paste, recycles the candidate, then proves the stale closure cannot resolve
+  // reusable sN into B. Mutation caught: moving slotStreamOccupant into the queued closure. ---
+  const beforePasteLatch = `${ROOT}/founding-before-paste-latch`;
+  clearSuccessionLatch(beforePasteLatch);
+  const queuedSendProgram = await activateNewProgram("Queued founding send generation fence");
+  writeFileSync(beforePasteLatch, queuedSendProgram.title, { mode: 0o600 });
+  await restartSrv({ FLEET_TEST_SEND_BEFORE_PASTE_LATCH: beforePasteLatch });
+  const queuedSendReceiptsBefore = (await contextReceipts()).receipts
+    .filter((row) => row.programId === queuedSendProgram.id).length;
+  const queuedSendLabel = "queued-send-candidate";
+  const queuedSendPending = beginBootstrap(queuedSendProgram.id, {
+    cwd: gameWt, label: queuedSendLabel, harness: "codex", model: "gpt-5.5", effort: "high",
+  });
+  const queuedSendSlot = await waitForLabel(queuedSendLabel);
+  if (queuedSendSlot !== null) await respawnScreen(queuedSendSlot, ">_ OpenAI Codex (v0.147.0)");
+  const queuedSendReached = await waitForSuccessionLatch(`${beforePasteLatch}.reached`,
+    "queued-send fixture: the founding send reaches the pre-Paste generation cut");
+  const queuedCandidate = queuedSendSlot === null ? undefined : readState().slots?.[String(queuedSendSlot)];
+  const queuedKill = queuedSendReached && queuedSendSlot !== null
+    ? await post(`/api/slots/${queuedSendSlot}/kill`, {}) : null;
+  const queuedReplacement = queuedKill?.ok && queuedSendSlot !== null
+    ? await post(`/api/slots/${queuedSendSlot}/open`, { cwd: gameWtSibling, label: "queued-send-replacement" }) : null;
+  const queuedReplacementBefore = queuedSendSlot === null ? undefined : readState().slots?.[String(queuedSendSlot)];
+  writeFileSync(`${beforePasteLatch}.release`, "release\n", { mode: 0o600 });
+  const queuedSendResponse = await queuedSendPending;
+  const queuedSendText = await queuedSendResponse.text();
+  const queuedSendAfter = (await ownerPrograms()).find((p) => p.id === queuedSendProgram.id);
+  const queuedSendReceiptsAfter = (await contextReceipts()).receipts
+    .filter((row) => row.programId === queuedSendProgram.id).length;
+  const queuedReplacementAfter = queuedSendSlot === null ? undefined : readState().slots?.[String(queuedSendSlot)];
+  const queuedCapture = queuedSendSlot === null ? { code: 1, out: "" }
+    : await tmuxOut("capture-pane", "-p", "-t", `s${queuedSendSlot}`);
+  check("queued founding send cannot paste into a recycled candidate",
+    queuedSendReached && queuedKill?.ok === true && queuedReplacement?.ok === true
+      && queuedSendResponse.status === 409 && queuedSendText.includes("slot changed")
+      && queuedSendAfter?.main === undefined && queuedSendAfter?.founding === undefined
+      && queuedSendReceiptsAfter === queuedSendReceiptsBefore
+      && !!queuedCandidate?.openedAt && !!queuedReplacementBefore?.openedAt
+      && queuedReplacementBefore.openedAt !== queuedCandidate.openedAt
+      && queuedReplacementAfter?.openedAt === queuedReplacementBefore.openedAt
+      && queuedReplacementAfter.selfToken === queuedReplacementBefore.selfToken
+      && !queuedCapture.out.includes(queuedSendProgram.title),
+    JSON.stringify({ reached: queuedSendReached, kill: queuedKill?.status, open: queuedReplacement?.status,
+      response: [queuedSendResponse.status, queuedSendText], program: queuedSendAfter,
+      receipts: [queuedSendReceiptsBefore, queuedSendReceiptsAfter], candidate: queuedCandidate,
+      replacement: [queuedReplacementBefore, queuedReplacementAfter], capture: queuedCapture.out.slice(-160) }));
+  if (queuedReplacement?.ok && queuedSendSlot !== null) await post(`/api/slots/${queuedSendSlot}/kill`, {});
+  await programPost(queuedSendProgram.id, "complete");
+  clearSuccessionLatch(beforePasteLatch);
+
+  // The second arm pauses after Paste but before Enter. Killing the exact Game-Maker candidate rolls
+  // back its marker, then B reuses the slot. Mutation caught: an Enter or bind that re-resolves sN,
+  // or a post-send bootstrap cut that checks only slot number/openedAt. ---
+  const afterPasteLatch = `${ROOT}/founding-after-paste-latch`;
+  clearSuccessionLatch(afterPasteLatch);
+  await restartSrv({ FLEET_TEST_SEND_AFTER_PASTE_LATCH: afterPasteLatch });
+  const pastedSendProgram = await activateNewProgram("Pasted founding brief generation fence");
+  await setProfile(pastedSendProgram.id, GAME_MAKER);
+  writeFileSync(afterPasteLatch, pastedSendProgram.title, { mode: 0o600 });
+  const pastedReceiptsBefore = (await contextReceipts()).receipts
+    .filter((row) => row.programId === pastedSendProgram.id).length;
+  const pastedLabel = "pasted-send-candidate";
+  const pastedPending = beginBootstrap(pastedSendProgram.id, {
+    cwd: gameWt, label: pastedLabel, harness: "codex", model: "gpt-5.5", effort: "high",
+  });
+  const pastedSlot = await waitForLabel(pastedLabel);
+  if (pastedSlot !== null) await respawnScreen(pastedSlot, ">_ OpenAI Codex (v0.147.0)");
+  const pastedReached = await waitForSuccessionLatch(`${afterPasteLatch}.reached`,
+    "post-Paste fixture: the founding brief is pasted before candidate recycle");
+  const pastedCandidate = pastedSlot === null ? undefined : readState().slots?.[String(pastedSlot)];
+  const pastedKill = pastedReached && pastedSlot !== null
+    ? await post(`/api/slots/${pastedSlot}/kill`, {}) : null;
+  const pastedReplacement = pastedKill?.ok && pastedSlot !== null
+    ? await post(`/api/slots/${pastedSlot}/open`, { cwd: gameWtSibling, label: "pasted-send-replacement" }) : null;
+  const pastedReplacementBefore = pastedSlot === null ? undefined : readState().slots?.[String(pastedSlot)];
+  writeFileSync(`${afterPasteLatch}.release`, "release\n", { mode: 0o600 });
+  const pastedResponse = await pastedPending;
+  const pastedText = await pastedResponse.text();
+  const pastedAfter = (await ownerPrograms()).find((p) => p.id === pastedSendProgram.id);
+  const pastedReceiptsAfter = (await contextReceipts()).receipts
+    .filter((row) => row.programId === pastedSendProgram.id).length;
+  const pastedReplacementAfter = pastedSlot === null ? undefined : readState().slots?.[String(pastedSlot)];
+  const pastedCapture = pastedSlot === null ? { code: 1, out: "" }
+    : await tmuxOut("capture-pane", "-p", "-t", `s${pastedSlot}`);
+  check("pasted founding brief cannot Enter or bind after candidate recycle",
+    pastedReached && pastedKill?.ok === true && pastedReplacement?.ok === true
+      && pastedResponse.status === 409 && pastedText.includes("slot changed")
+      && pastedAfter?.main === undefined && pastedAfter?.founding === undefined
+      && pastedReceiptsAfter === pastedReceiptsBefore
+      && !!pastedCandidate?.openedAt && !!pastedReplacementBefore?.openedAt
+      && pastedReplacementBefore.openedAt !== pastedCandidate.openedAt
+      && pastedReplacementAfter?.openedAt === pastedReplacementBefore.openedAt
+      && pastedReplacementAfter.selfToken === pastedReplacementBefore.selfToken
+      && !pastedCapture.out.includes(pastedSendProgram.title),
+    JSON.stringify({ reached: pastedReached, kill: pastedKill?.status, open: pastedReplacement?.status,
+      response: [pastedResponse.status, pastedText], program: pastedAfter,
+      receipts: [pastedReceiptsBefore, pastedReceiptsAfter], candidate: pastedCandidate,
+      replacement: [pastedReplacementBefore, pastedReplacementAfter], capture: pastedCapture.out.slice(-160) }));
+  if (pastedReplacement?.ok && pastedSlot !== null) await post(`/api/slots/${pastedSlot}/kill`, {});
+  await programPost(pastedSendProgram.id, "complete");
+  clearSuccessionLatch(afterPasteLatch);
+  await restartSrv();
+
   // The linked worktree leaves again for the reason the Fleet-frame manifest probe leaves: a
   // fixture that quietly stays registered is a fact every later `git worktree list` reader inherits.
   const gmWtRemoved = gitIn(gameRepo, "worktree", "remove", "--force", gameWt);

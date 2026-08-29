@@ -36,7 +36,7 @@ export async function run(): Promise<void> {
   // observed live 2026-07-25 on the steward slot. Slot 3 is free here (its open was rejected
   // above) and is killed again at the end of this block. ---
   const HOME = process.env.HOME ?? "";
-  type PersistedSlot3 = { label?: string | null; cwd?: string | null } | null | undefined;
+  type PersistedSlot3 = { label?: string | null; cwd?: string | null; openedAt?: number; selfToken?: string } | null | undefined;
   const persistedSlot3 = async (): Promise<PersistedSlot3> => {
     try {
       return ((await Bun.file(`${ROOT}/fleet.json`).json()) as
@@ -226,6 +226,89 @@ export async function run(): Promise<void> {
     await restartSrv();
     rmSync(fakeBin, { recursive: true, force: true });
     rmSync(marker, { force: true });
+  }
+
+  // --- Owner input is bound to the occupant and pane observed when the socket opens. Pausing one
+  // queued message lets A die and B reuse s3 before the old closure resumes. Mutation caught:
+  // resolving `s3` inside the queued callback, or retaining only the reusable slot number. ---
+  {
+    const latch = `${ROOT}/owner-ws-input-latch`;
+    for (const path of [latch, `${latch}.reached`, `${latch}.release`]) rmSync(path, { force: true });
+    writeFileSync(latch, "3\n", { mode: 0o600 });
+    await restartSrv({ FLEET_TEST_WS_INPUT_LATCH: latch });
+    const openedA = await post("/api/slots/3/open", { cwd: "~", label: "ws-input-race-A" });
+    const stateA = await waitForPersistedSlot3((row) => row?.label === "ws-input-race-A");
+    const marker = "OLD-OWNER-WS-MUST-NOT-REACH-B";
+    let socket: WebSocket | null = null;
+    const connected = await new Promise<boolean>((resolveConnected) => {
+      const ws = new WebSocket(wsUrl(3));
+      socket = ws;
+      const timeout = setTimeout(() => resolveConnected(false), 3000);
+      ws.onmessage = () => { clearTimeout(timeout); resolveConnected(true); };
+      ws.onerror = () => resolveConnected(false);
+    });
+    if (connected && socket) (socket as WebSocket).send(marker);
+    let reached = false;
+    for (let i = 0; i < 200 && !(reached = await exists(`${latch}.reached`)); i++) await Bun.sleep(25);
+    check("owner-WS fixture: A's queued bytes reach the generation-bound latch", openedA.ok && connected && reached,
+      JSON.stringify({ open: openedA.status, connected, reached, stateA }));
+    const killedA = reached ? await post("/api/slots/3/kill", {}) : null;
+    const openedB = killedA?.ok
+      ? await post("/api/slots/3/open", { cwd: "~/claude-fleet", label: "ws-input-race-B" }) : null;
+    const stateB = await waitForPersistedSlot3((row) => row?.label === "ws-input-race-B");
+    writeFileSync(`${latch}.release`, "release\n", { mode: 0o600 });
+    await Bun.sleep(250);
+    const bCapture = await tmuxOut("capture-pane", "-p", "-t", "s3");
+    const bHistory = await (await get("/api/slots/3/history")).json() as { history?: { text?: string }[] };
+    check("old owner WS input cannot reach the recycled occupant",
+      killedA?.ok === true && openedB?.ok === true && !!stateA?.openedAt && !!stateB?.openedAt
+        && stateB.openedAt !== stateA.openedAt && stateB.selfToken !== stateA.selfToken
+        && !bCapture.out.includes(marker) && !(bHistory.history ?? []).some((row) => row.text?.includes(marker)),
+      JSON.stringify({ kill: killedA?.status, open: openedB?.status, stateA, stateB,
+        capture: bCapture.out.slice(-160), history: bHistory.history }));
+    if (socket) (socket as WebSocket).close();
+    await post("/api/slots/3/kill", {});
+    await restartSrv();
+    for (const path of [latch, `${latch}.reached`, `${latch}.release`]) rmSync(path, { force: true });
+  }
+
+  // --- Teardown publishes no partial row. While A is paused, a duplicate kill must join, open B
+  // must wait, and the heal tick must not recreate an externally stopped A pane. Mutation caught:
+  // late latch registration, a reusable `kill-session -t s3`, or ensureSlot ignoring teardown. ---
+  {
+    const latch = `${ROOT}/slot-teardown-latch`;
+    for (const path of [latch, `${latch}.reached`, `${latch}.release`]) rmSync(path, { force: true });
+    writeFileSync(latch, "3\n", { mode: 0o600 });
+    await restartSrv({ FLEET_TEST_SLOT_TEARDOWN_LATCH: latch });
+    const openedA = await post("/api/slots/3/open", { cwd: "~", label: "teardown-race-A" });
+    const stateA = await waitForPersistedSlot3((row) => row?.label === "teardown-race-A");
+    const paneA = (await tmuxOut("display-message", "-p", "-t", "s3", "#{pane_id}")).out.trim();
+    const killOne = post("/api/slots/3/kill", {});
+    let reached = false;
+    for (let i = 0; i < 200 && !(reached = await exists(`${latch}.reached`)); i++) await Bun.sleep(25);
+    const killTwo = post("/api/slots/3/kill", {});
+    const openB = post("/api/slots/3/open", { cwd: "~/claude-fleet", label: "teardown-race-B" });
+    const publishedDuring = await persistedSlot3();
+    if (/^%\d+$/.test(paneA)) await tmuxOut("kill-pane", "-t", paneA);
+    await Bun.sleep(2300);
+    const noHealDuring = (await tmuxOut("has-session", "-t", "s3")).code !== 0;
+    const stillPublished = await persistedSlot3();
+    writeFileSync(`${latch}.release`, "release\n", { mode: 0o600 });
+    const [killOneResult, killTwoResult, openBResult] = await Promise.all([killOne, killTwo, openB]);
+    const stateB = await waitForPersistedSlot3((row) => row?.label === "teardown-race-B");
+    const paneB = await tmuxOut("has-session", "-t", "s3");
+    check("teardown keeps A published, joins duplicate kill, suppresses heal and preserves B",
+      openedA.ok && reached && /^%\d+$/.test(paneA) && !!stateA?.openedAt
+        && publishedDuring?.openedAt === stateA.openedAt && publishedDuring.selfToken === stateA.selfToken
+        && stillPublished?.openedAt === stateA.openedAt && stillPublished.selfToken === stateA.selfToken
+        && noHealDuring && killOneResult.ok && killTwoResult.ok && openBResult.ok
+        && !!stateB?.openedAt && stateB.openedAt !== stateA.openedAt && stateB.selfToken !== stateA.selfToken
+        && stateB.label === "teardown-race-B" && paneB.code === 0,
+      JSON.stringify({ openA: openedA.status, reached, paneA, stateA, publishedDuring, stillPublished,
+        noHealDuring, kills: [killOneResult.status, killTwoResult.status], openB: openBResult.status, stateB, paneB: paneB.code }));
+    await post("/api/slots/3/kill", {});
+    await restartSrv();
+    for (const path of [latch, `${latch}.reached`, `${latch}.release`]) rmSync(path, { force: true });
   }
 
   // --- rename ---

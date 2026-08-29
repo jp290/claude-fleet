@@ -1,79 +1,58 @@
-# HANDOFF — Themen-Session „hugFaceInci" (Slot 9), 2026-08-27, zweite Fassung
+# HANDOFF — Program-MAIN „Linux-Work-Horse" (Slot 16, second-hostImplementierung), 2026-08-29
 
-Zustand wird ABGELEITET: `./state.sh` · `./register.sh` · Live-Queue. Vorgänger-Handoffs: `3cc7f95`
-(erste Fassung dieser Session, dort die volle Vorgeschichte) und `820bf9a` (Controller — Private-repo-j
-läuft weiter auf Slot 5, gehört NICHT mir).
+Zustand wird ABGELEITET: `./state.sh` · `./register.sh` · Live-Queue. Vorgänger-Handoff: `3c209d7`
+(Themen-Session hugFaceInci; deren §2-Blocker ist inzwischen anders gelöst, siehe unten „Stash").
 
-Thema der Session: OpenAI/HF-Vorfall → Schwarm-Programm → Ausführung. Programm:
-`docs/schwarm-programm-2026-08-27.md` · Aufträge: `briefs/schwarm-programm-auftraege-2026-08-27.md`.
-Owner-Entscheid inzwischen: **`bereich` = freie Tags**, Startvokabular die neun aus dem P0-Report.
+## Rolle und Programm — DU BIST DIE NACHFOLGERIN DIESER PROGRAM-MAIN
 
-## 1. Stand der Pakete
+Programm **fcf3fec9c9e88bd33749e7d5** „Linux-Work-Horse-Anbindung", Status active, Plan:
+`docs/linux-second-host-programm-2026-08-28.md`. G0-Promotion (Daemon darf claimen) ist im
+Programm-Datensatz `decisions` verankert; Stop-Linien unverändert: kein Auto-Dispatch, kein
+ssh-Runner (Richtung Mac←Linux), kein Push, kein B2-Proxy. Owner-Gates: G1 erledigt (Owner sah
+Panel, forderte 💻-Knopf nach, geliefert). **G2 ist vom Owner freigegeben** („gogo", 2026-08-29,
+nach Wecken des Rechners) — der Daemon-Deploy auf den second-host ist dein nächster Schritt.
 
-- **P0 GELANDET** (`c098d87`): Skill-Template mit sechs Front-Matter-Feldern + leerer
-  `docs/messungen/INDEX.md`.
-- **P0b FLIEGT** — Slot 8, `fleet/260827120929-bb8c`, **pi-zai/glm-5.3/max**. Retrofit der 31
-  Notizen. Brief trägt den Owner-Entscheid (freie Tags, neun Startbegriffe).
-- **C FLIEGT** — Slot 14, `fleet/260827120935-b549`, opus/high. Schwarm-Praxis-Doku.
-- **D1 FERTIG, NICHT GELANDET** — Slot 10, `fleet/260827083510-80fe`, 1 ahead, sauber. Land ist
-  **zu Recht geblockt**: siehe §2. Bericht der Lane ist stark (Evidenz-statt-Verdikt-Route,
-  `dirty`-Asymmetrie als eigentlicher Trennmechanismus, ihre e2e-Checks laufen erst im
-  Post-Land-Audit).
-- **A WARTET** auf P0bs gefüllten Index. Brief liegt fertig in der Auftragsdatei.
-- **B GESTRICHEN** (1,9 % gemessen), **elfte Flake-Familie GEFILET** (`dda507d`,
-  `docs/verify-tiering.md` §11.2i — offen, Fix vorgeschlagen, nicht gebaut).
+## Stand: S1–S3 KOMPLETT (gelandet, auditiert grün, deployt)
 
-## 2. WARUM D1 NICHT LANDET — nichts tun, bis Slot 16 committet
+- S1 Geräte-Register `d56cb20` · S3 Helper-Daemon `7b96534` · S2 Panel+💻 `fdae94e` — alle drei
+  Audits grün 3133/0. Live-Server läuft auf `fdae94e` (Verb-2-Deploy verifiziert: bootHead=HEAD,
+  bundleStale:false). Tasks e69a2bec/ff9fbf06/d923ad4c done im Programm.
+- Zwei Land-Rots unterwegs waren BEIDE die claude-gate-Phase-3-Flake („server did not come up",
+  KEINE server.log = nie gemessen), beide von den Lanes regelkonform am selben Baum widerlegt.
+  Dritte Sichtung wäre ein Fall für docs/verify-tiering.md.
 
-`POST /api/slots/10/merge` → `blocked: main is checked out … with uncommitted changes to server.ts`.
-Das ist **lebende Arbeit von Slot 16** (GPT-5.6-Sol, cwd = Haupt-Checkout, um 13:26–13:56 editiert):
-`server.ts` +44/−19 (u. a. `LANE_EXIT_FOOTER` drei→fünf Akte, `BASE_CMD`-Default), `AGENTS.md`,
-`README.md`, `e2e/pins.ts|programs.ts|tasks.ts` — mit laufendem `./e2e-isolated.sh` (der
-Mutex-Halter). **Nicht committen, nicht stashen, nicht checkout** — Slot 16 committet selbst, danach
-D1s Merge neu anstoßen (`POST /api/slots/10/merge`, dann `{"kind":"merge","target":10}`-Watch).
-D1 wird dabei server-seitig auf das neue main rebased; ihr Diff berührt `server.ts`
-(`tickGit`-Vorprobe) — **Kollision mit Slot 16s server.ts-Arbeit ist MÖGLICH**; wenn der Merge
-`resolved` mit Konflikten meldet, Pane lesen, nicht raten.
+## Was JETZT ansteht (S4, in dieser Reihenfolge)
 
-## 3. Die drei operativen Lehren dieser Session (alle zweimal gesehen oder gemessen)
+1. **ssh auf den second-host**: `ssh second-hostowner@100.64.0.2`. Der Rechner LÄUFT (per WoL
+   geweckt 2026-08-29 früh). Blocker beim Übergabezeitpunkt: unser Key
+   (`~/.ssh/id_ed25519.pub`, owner@owner-mac.local) war NICHT in dessen
+   authorized_keys — der Owner wollte ihn eintragen. Erst testen, bei Ablehnung Owner erinnern.
+2. **Konnektivität second-host→Fleet**: von dort `curl http://100.64.0.1:8790/` — HTTP-Code egal,
+   Erreichbarkeit zählt (Tailnet-ACL-Frage aus dem Setup-Report offen).
+3. **Daemon-Deploy (G2, freigegeben)**: `helper-daemon/README.md` folgen — Verzeichnis kopieren,
+   Config 0600 mit Helper-Token (`fleet.json` → `helperToken`), Unit-Vorlage
+   `fleet-helper.service`. Token NIE in argv/URL/Unit-Env. Owner schläft ggf. im selben Raum —
+   Modus-Empfehlung beim Start: quiet/off respektieren; Daemon-Semantik ist „leiser gewinnt"
+   (bewusste Abweichung, Kopfkommentar in helper-daemon/daemon.ts).
+4. **S4-Baseline**: ≥3× `./e2e-isolated.sh` auf dem second-host (tmux 3.5a! Regelbuch-Flakes sind
+   an 3.6a vermessen), Laufzeiten+Signaturen als Mess-Notiz unter docs/messungen/ — OHNE echte
+   IPs/User/MAC (Repo public; Gerätename „second-host" ok). Mindestens ein echter Portal-Job remote
+   im Ledger = Programm-DONE, dann Programm auf complete.
 
-1. **`acceptance: "unobservable"` nach `POST /send` auf eine frische Lane = in die Pane schauen.**
-   Zweimal passiert (Slots 6/10, dann Slot 14): Brief liegt im Composer, Enter verpuffte im Boot.
-   Fix: `tmux -L claudefleet send-keys -t s<N> Enter` nachschieben, dann ctx-% prüfen. Ein
-   `observed` (Slot 8/pi) braucht nichts. Panes heißen **`s<N>`**, nicht `claude-<N>`.
-2. **Ein Direkt-Commit auf main während eines laufenden Lands killt den Fast-Forward** — auch ohne
-   gemeinsame Datei (P0-Land-Versuch 1, mein `2377769` fiel ins 253-s-Fenster). Und das Fenster war
-   so groß, weil `.claude/skills/…` bei `ruleFor` **`conservative-default`** ist, nicht Doku.
-   Reihenfolge seither: erst main-Commits, dann Land, nie beides.
-3. **`last.status:"interrupted"` + `running:true` = Startmarker ohne Verdikt**, kein abgebrochener
-   Lauf („the server was interrupted mid-run" liest sich dramatischer als es ist). Und ein
-   `resolved/landed:false` mit `exitCode:3` + „no server.log" ist §11.2i, nicht dein Regress.
+## Fakten, die nur hier stehen
 
-## 4. Empfänger-Problem der fliegenden Lanes — WICHTIG für die Nachfolge
-
-P0b (8), C (14) und D1 (10) melden per `fleet-report` an **meine lane-Watches auf Slot 9**. Stirbt
-Slot 9, laufen ihre Reports in 409. Nachfolge-Session: sofort eigene Watches setzen
-(`POST /api/self/watch {"kind":"lane","target":8|14}` + merge-Watch auf 10, sobald Slot 16 durch
-ist) — oder Panes direkt lesen. Für künftige Schwarm-Läufe: programm-gebunden öffnen (Empfänger
-`program-main`, sessionunabhängig).
-
-## 5. Offene Kleinigkeiten, geordnet
-
-1. **Slot 16 abwarten → D1 landen** (§2). Danach läuft D1s Check-Familie erstmals im Post-Land-Audit
-   — ein Rot dort zuerst gegen §11.2i und die zwei ungefahrenen Route-Checks halten.
-2. **A starten**, sobald P0b gelandet ist (Brief fertig; opus/high; Verify volle Kette + isolated-
-   Vorschau, steht im Brief).
-3. **Rulebook-Edits sammeln** (rulebook.ts ist getrackt → volle Kette): „Zehn Flake-Familien" → elf
-   (§11.2i) · watch kennt 5 Arten, Slot-Art heißt `lane` · Panes heißen `s<N>` · Verify-Zeile ist
-   Vereinfachung von `watchdog.sh:91`. Ein Commit, EIN Land-Fenster.
-4. **§11.2i-Fix** (bounded `has-session`-Wait vor `new-session`, zwei Stellen) — eigener kleiner
-   Auftrag, Suite-Dateien → volle Kette + isolated-Vorschau.
-5. D1s Folgefund (`STUCK_LOOPING_PROSE` + Anti-Drift-Check in `e2e/steward-core.ts`) · 46 alte
-   `fleet-e2e-*instance-*`-Verzeichnisse unter /var/folders (nur zählen war erlaubt) · `.agents/`-
-   Schreiber unbelegt (`.gitignore:49`-Kommentar nennt ~/.claude/skills, dort liegt nur graphify).
-6. **B-Wiedervorlage** erst nach C, mit frischer Ledger-Messung (Einzeiler steht im Programm-Doc §B).
-
-## 6. Grundlinien (2026-08-27, vor Wiederverwendung neu ziehen)
-
-`lane-outcomes.jsonl`: 567 Ausgänge, 123 `killed-empty` (21,7 %) — das Erfolgsmaß des Programms.
-Wiederholer: 4/211 originIds (1,9 %) — hat B gestrichen.
+- **Setup-Report des second-host liegt PRIVAT**: `~/claude-fleet-private/docs/second-host-setup-report-2026-08-28.md`
+  (IPs, User, MAC, WoL-Kommando — nie ins public Repo). WoL geht nur als LAN-Broadcast; dieser
+  Mac hängt selbst im 178er-LAN und kann direkt wecken (Kommando in der Notiz).
+- **Stash@{0} im Haupt-Checkout**: verwaiste Slot-16-Sol-Arbeit vom 27.08. (server.ts u. a.).
+  Autor-Session tot, Slot-12-Sol verneinte Besitz; ich habe gestasht statt committet, um Lands zu
+  entsperren. Owner hat nie über Verbleib entschieden — NICHT droppen, bei Gelegenheit Owner
+  fragen. Das D1-Land aus Handoff 3c209d7 §2 (Slot 10) wurde dadurch ebenfalls entsperrt, gehört
+  aber nicht diesem Programm.
+- **Watch-Naht-Lektion (2× bezahlt)**: `{kind:"merge"}`-Subscribe nach einem Terminal-Ergebnis
+  oder während ein Merge LÄUFT gibt den VERBRAUCHTEN Watch zurück (`armed:false`) und feuert nie
+  für den nächsten Merge — immer `armed:true` im Response prüfen, sonst Poll als Fallback.
+- Für Program-Zeilen-Nachschub: Owner-Route `POST /api/tasks` mit `programId` + `/brief` +
+  `/dispatch` (diese Session war nie mechanisch als program.main gebunden — bootstrap-main spawnt
+  nur neue Sessions; operativ ging alles über Owner-Routen, `owner_token_ambient_use`-Flag ist
+  dabei bekanntes Rauschen).

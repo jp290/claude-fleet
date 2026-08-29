@@ -29,7 +29,7 @@ interface Row {
   at: number; ms: number; repo: string; main: string; mainSha: string; result: string; reason?: string;
   cmd: string; exitCode: number | null; out: string; checks?: { ran: number; failed: number } | null;
   covers: { branch: string; mainAfter: string }[];
-  remote?: { name: string; claimedAt: number; reportedAt: number; trail?: string };
+  remote?: { name: string; claimedAt: number; reportedAt: number; trail?: string; clonedSha?: string };
 }
 interface HelperJob {
   id: string; kind?: string; repo: string; main: string; branches: string[]; covers: number;
@@ -319,6 +319,18 @@ export async function run(h: {
     remoteRow?.remote?.name === DEVICE_NAME && remoteRow.remote.trail === TRAIL
       && remoteRow.remote.reportedAt >= remoteRow.remote.claimedAt,
     JSON.stringify(remoteRow?.remote));
+  // THE PROOF OF THE 2026-08-29 CLASS-FIX, and the only check in this file that can carry it: the
+  // daemon really runs here, so `remote.clonedSha` is a `git rev-parse HEAD` performed in the clone
+  // rather than anything this suite arranged. Two statements, both needed — it is PRESENT (a daemon
+  // that stopped sending it would leave the field absent, which the server stores as absence and a
+  // reader cannot distinguish from an old row), and it EQUALS the sha the server bundled. While the
+  // field did not exist, a remote red over a repo under parallel edit was unfalsifiable: "the helper
+  // measured another tree" could be neither shown nor ruled out
+  // (docs/messungen/2026-08-29-adjudikation-second-host-401.md).
+  check("(HD) …and the row carries the sha the DAEMON checked out, measured in its own clone, equal to the one handed over",
+    !!remoteRow?.remote?.clonedSha && remoteRow.remote.clonedSha === jobSha
+      && remoteRow.mainSha === jobSha,
+    `cloned=${remoteRow?.remote?.clonedSha ?? "ABSENT"} mainSha=${remoteRow?.mainSha} handedOver=${jobSha}`);
   check("(HD) the row's checks are counted from the tail the DAEMON sent, and name the remote command",
     remoteRow?.checks?.ran === 2 && remoteRow.checks.failed === 0
       && remoteRow.cmd.includes("remote helper") && remoteRow.cmd.includes(DEVICE_NAME),

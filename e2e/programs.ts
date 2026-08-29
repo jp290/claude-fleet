@@ -3440,7 +3440,17 @@ export async function run(ctx: Ctx): Promise<void> {
       && !existsSync(gameWt) && !existsSync(gameWtSibling),
     `${gmWtRemoved.status}/${gmSiblingWtRemoved.status}`);
 
-  const successorToken = readState().slots?.[String(successorSlot)]?.selfToken ?? "";
+  // THE PRECONDITION OF EVERY SELF-TOKEN CHECK BELOW, and it fails as ITSELF. This used to read
+  // `?? ""`, and an empty token is not a missing token to the server: it answers 401 `unauthorized`,
+  // so the whole ACP-16 and task-spawn stretch below reported a PRODUCT that refuses its own MAIN.
+  // That is exactly what the remote red of 2026-08-29 (748ec97) said, and reading it cost a day
+  // (docs/messungen/2026-08-29-adjudikation-second-host-401.md). The token's LENGTH is reported, never
+  // the token — CLAUDE.md, token hygiene.
+  const successorSlotRow = successorSlot === null ? undefined : readState().slots?.[String(successorSlot)];
+  const successorToken = successorSlotRow?.selfToken ?? "";
+  check("Program-MAIN succession precondition: the successor slot exists and carries a self token — every self-token check below measures nothing without it",
+    successorSlot !== null && /^[0-9a-f]{32}$/.test(successorToken),
+    `slot=${successorSlot} row=${successorSlotRow ? "present" : "absent"} token=${successorToken.length} chars`);
   const [successorView, predecessorView] = await Promise.all([
     selfPrograms(successorToken), selfPrograms(mainSelfTokenAfterRestart),
   ]);

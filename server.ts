@@ -12844,7 +12844,14 @@ interface PostLandAuditRow {
   // Present ONLY on a row a remote helper produced (see THE REMOTE HELPER PORTAL). Its absence is
   // the statement "this machine measured it itself" — which is why the field is optional rather
   // than a nullable one every historical row would suddenly claim to have answered.
-  remote?: { name: string; claimedAt: number; reportedAt: number; trail?: string };
+  // `clonedSha` is the ONE fact in this row the helper measured about ITSELF: the sha it actually
+  // had checked out. `mainSha` above is this server's reading of the bundle header it built — what
+  // was handed OVER, not what was RUN. Separated on purpose, because a remote red is only
+  // adjudicable when the two can be COMPARED; while the field did not exist, every remote red over
+  // a repo under parallel edit was unfalsifiable by construction (2026-08-29, 748ec97 —
+  // docs/messungen/2026-08-29-adjudikation-second-host-401.md). Optional and absent when unmeasured:
+  // a historical row, or a daemon too old to send it, must never read as "the shas agreed".
+  remote?: { name: string; claimedAt: number; reportedAt: number; trail?: string; clonedSha?: string };
 }
 // the newest row, for the board. In memory for the poll path, but REHYDRATED from the trail at boot
 // (see the boot block): a red audit is typically followed within minutes by the deploy that restarts
@@ -13057,7 +13064,9 @@ interface LaneSuiteResult {
   // The provenance half, and §6 of the design doc makes it non-negotiable: the exit code and the
   // tail are TYPED IN BY A HUMAN on the other machine. A verdict served without a name attached is
   // the one sentence a lane report may never write ("./e2e-isolated.sh green", full stop).
-  remote: { name: string; claimedAt: number; reportedAt: number };
+  // `clonedSha` belongs to the same half and is the strongest part of it: the sha the helper had
+  // checked out, measured there rather than asserted here. Absent when the daemon did not send one.
+  remote: { name: string; claimedAt: number; reportedAt: number; clonedSha?: string };
   treeSha: string;                  // the tree that was handed over — the lane compares its own
   ms: number;
 }
@@ -14023,10 +14032,17 @@ async function reportLaneSuite(j: LaneSuiteJob, body: Record<string, unknown> | 
   const { result, reason } = remoteVerdictOf(exitCode);
   const measured = result !== "unknown";
   const now = Date.now();
+  // Same field, same reason as on the audit path, and here the pair it can be compared against is
+  // `commitSha` — the commit this server bundled out of the lane's `stash create`. The preview
+  // verdict is the one a lane quotes in its own report, so "which tree did that green describe?"
+  // has to be answerable from the job and not from the daemon's log on another machine.
+  const clonedSha = typeof body?.clonedSha === "string" && /^[0-9a-f]{40}$/.test(body.clonedSha)
+    ? body.clonedSha : undefined;
   j.result = {
     exitCode, result, ...(reason ? { reason } : {}), tail, ...(trail ? { trail } : {}),
     checks: measured ? postLandAuditChecks(tail, exitCode as number) : null,
-    remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now },
+    remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now,
+      ...(clonedSha ? { clonedSha } : {}) },
     treeSha: j.treeSha ?? "", ms: now - claim.claimedAt,
   };
   j.state = "reported";
@@ -14034,6 +14050,9 @@ async function reportLaneSuite(j: LaneSuiteJob, body: Record<string, unknown> | 
   try { rmSync(claim.bundle, { force: true }); } catch { /* the helper has its copy */ }
   audit("helper_result", j.slot,
     `${result} preview of ${basename(j.repo)} ${j.branch} tree ${(j.treeSha ?? "").slice(0, 8)} from ${claim.name}`
+    + `${clonedSha ? ` (ran ${clonedSha.slice(0, 8)})` : " (the helper named no clone sha)"}`
+    + `${clonedSha && j.commitSha && clonedSha !== j.commitSha
+        ? ` — THE HELPER RAN ${clonedSha.slice(0, 8)}, NOT THE ${j.commitSha.slice(0, 8)} HANDED OVER` : ""}`
     + `${trail ? ` [${trail}]` : ""}${reason ? ` — ${reason}` : ""}`.slice(0, 240));
   await saveStateNow();
   return json({ ok: true, kind: "lane-suite", result, ...(reason ? { reason } : {}) });
@@ -14063,6 +14082,10 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
   const exitCode = typeof rawExit === "number" && Number.isFinite(rawExit) ? Math.trunc(rawExit) : null;
   const tail = retainRunOutput(typeof body?.tail === "string" ? body.tail : "", "", HELPER_TAIL_CAP).trim();
   const trail = typeof body?.trail === "string" && body.trail.trim() ? body.trail.trim().slice(0, 120) : undefined;
+  // VALIDATED, never trusted: this comes off the network from a machine the owner enrolled, and a
+  // malformed sha stored as though it were one would be worse than the absence it replaced.
+  const clonedSha = typeof body?.clonedSha === "string" && /^[0-9a-f]{40}$/.test(body.clonedSha)
+    ? body.clonedSha : undefined;
   const { result, reason } = remoteVerdictOf(exitCode); // the SHARED classifier — see remoteVerdictOf
   const measured = result !== "unknown";
   const now = Date.now();
@@ -14077,7 +14100,8 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
     // non-126/127 code yields anything but `unknown`.
     exitCode, out: tail, checks: measured ? postLandAuditChecks(tail, exitCode as number) : null,
     covers: claim.covers,
-    remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now, ...(trail ? { trail } : {}) },
+    remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now, ...(trail ? { trail } : {}),
+      ...(clonedSha ? { clonedSha } : {}) },
   };
   lastPostLandAudit = row;
   recordAuditDuration(row); // a no-op for a remote row by contract — see auditCounts
@@ -14100,13 +14124,21 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
   try { rmSync(claim.bundle, { force: true }); } catch { /* the helper has its copy */ }
   await appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
   await mintAuditEvents(row);
+  // THE COMPARISON THE FIELD EXISTS FOR. It changes NO verdict — a mismatch does not make a red
+  // green, and inventing that rule here would be a new gate nobody asked for — but it must never be
+  // something a reader has to go looking for: a row whose helper ran a different tree than this
+  // server handed over says nothing at all about the sha the ledger files it under.
+  const shaDivergence = clonedSha && clonedSha !== claim.mainSha
+    ? ` — THE HELPER RAN ${clonedSha.slice(0, 8)}, NOT THE ${claim.mainSha.slice(0, 8)} THIS ROW IS FILED UNDER`
+    : "";
   audit("helper_result", undefined,
     `${result} ${basename(repo)} ${claim.main}@${claim.mainSha.slice(0, 8)} from ${claim.name}`
-    + `${trail ? ` [${trail}]` : ""}${reason ? ` — ${reason}` : ""}`.slice(0, 240));
+    + `${clonedSha ? ` (ran ${clonedSha.slice(0, 8)})` : " (the helper named no clone sha)"}`
+    + `${trail ? ` [${trail}]` : ""}${reason ? ` — ${reason}` : ""}${shaDivergence}`.slice(0, 240));
   if (result !== "green")
     console.log(`POST-LAND AUDIT ${result.toUpperCase()} (remote, ${claim.name}): ${claim.main}@${claim.mainSha.slice(0, 8)}`
       + ` in ${basename(repo)} after landing ${claim.covers.map((c) => c.branch).join(", ").slice(0, 120)}`
-      + `${reason ? ` (${reason})` : ""} — this audit gates nothing; ↩ undo-land is the rollback.`);
+      + `${reason ? ` (${reason})` : ""}${shaDivergence} — this audit gates nothing; ↩ undo-land is the rollback.`);
   await saveStateNow();
   kickAuditDrain(); // a land that arrived during the claim is drainable again this instant
   return json({ ok: true, result, ...(reason ? { reason } : {}) });

@@ -49,6 +49,15 @@ the helper machine; everything this daemon does is a pull.
   working tree now fails as ITSELF rather than as a failed install.
 - **One suite at a time.** Enforced in-process; the machine-wide lock (`/tmp/fleet-e2e.lock`, taken
   by `e2e-stage.sh` inside the clone) is deliberately not duplicated.
+- **The daemon reports the sha it actually checked out.** After a successful clone it runs
+  `git rev-parse HEAD` in the tree and sends the result as `clonedSha`; the Fleet stores it under
+  `remote.clonedSha` on the ledger row, BESIDE — never instead of — the `mainSha` the server derived
+  from the bundle header it built. The two answer different questions: `mainSha` is what was handed
+  over, `clonedSha` is what was run. Until this existed, a remote red over a repo somebody was
+  editing in parallel could not be adjudicated at all, because "the helper measured a different
+  tree" was neither provable nor refutable (2026-08-29, `748ec97`). Measured or absent: a rev-parse
+  that fails sends no field, and the server drops anything that is not 40 hex digits — an absent
+  field is honest, a stored non-measurement is not.
 - **A tree that could not be prepared reports `unknown`, never `red`.** A failed clone or install
   reports exit 127 and a timeout reports no exit code at all — both of which the Fleet classifies
   as "nothing was measured". A red for a suite that never ran is the one lie this rail must not

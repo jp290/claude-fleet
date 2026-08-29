@@ -209,6 +209,24 @@ async function runCmd(cmd: string, cwd: string, logPath: string, timeoutMs: numb
   } finally { closeSync(fd); }
 }
 
+// THE ONE FACT ONLY THIS MACHINE CAN SUPPLY: the sha this daemon actually checked out. It needs
+// its own spawn because runCmd sends stdout INTO the suite log by design, and this value has to be
+// read rather than logged. The claim's `mainSha` is the server's reading of the bundle header it
+// built — it says what was HANDED OVER, never what was RUN here, and the two are only the same
+// commit if the clone did what it was told. Without this line a remote red over a repo somebody is
+// editing in parallel cannot be adjudicated at all: "the helper measured a different tree" can be
+// neither shown nor ruled out (2026-08-29, 748ec97 — docs/messungen/2026-08-29-adjudikation-second-host-401.md).
+// MEASURED OR ABSENT, never guessed: a rev-parse that fails hands back undefined, and the server
+// stores nothing rather than a value the ledger would read as a measurement.
+async function clonedHeadOf(dir: string): Promise<string | undefined> {
+  try {
+    const p = Bun.spawn(["git", "-C", dir, "rev-parse", "HEAD"],
+      { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: childEnv() });
+    const out = (await new Response(p.stdout).text()).trim();
+    return (await p.exited) === 0 && /^[0-9a-f]{40}$/.test(out) ? out : undefined;
+  } catch { return undefined; }
+}
+
 // the last N lines, read out of the tail of the file rather than the whole of it: a real
 // ./e2e-isolated.sh log is hundreds of kilobytes and only its end is ever sent.
 export function tailOf(text: string, lines = 40): string {
@@ -276,6 +294,11 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
     const cloneCmd = `git clone -q -b ${sh(ref)} ${sh(bundlePath)} ${sh(clone)}`;
     const cloned = await runCmd(cloneCmd, runDir, logPath, 300_000);
     if (cloned.code !== 0) { await report(cfg, j, 127, `the clone failed (exit ${cloned.code})`, logPath); return; }
+    // Measured HERE — before the belt below and before anything is installed or run — so that every
+    // report from this point on carries the tree it is talking about, including the two that say
+    // nothing was measured. Those are the reports where the question "which tree?" is hardest to
+    // answer afterwards.
+    const clonedSha = await clonedHeadOf(clone);
 
     // THE BELT AGAINST THE WHOLE CLASS, not just against the ref name above. `installCmd` needs a
     // populated tree; when that precondition broke, the first thing to notice was
@@ -286,7 +309,7 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
       try { return readdirSync(clone).some((n) => n !== ".git"); } catch { return false; }
     })();
     if (!populated) {
-      await report(cfg, j, 127, `the clone of ${ref} left an EMPTY working tree — nothing to install or run`, logPath);
+      await report(cfg, j, 127, `the clone of ${ref} left an EMPTY working tree — nothing to install or run`, logPath, clonedSha);
       return;
     }
 
@@ -295,7 +318,7 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
     // for it. Exit 127 is the code the server's shared classifier reads as "could not be started"
     // (server.ts#remoteVerdictOf) — reporting 1 here would put a RED on the ledger for a suite that
     // never ran, which is the one lie this rail must not tell.
-    if (installed.code !== 0) { await report(cfg, j, 127, `${cfg.installCmd} failed (exit ${installed.code})`, logPath); return; }
+    if (installed.code !== 0) { await report(cfg, j, 127, `${cfg.installCmd} failed (exit ${installed.code})`, logPath, clonedSha); return; }
 
     const started = Date.now();
     const ran = await runCmd(cfg.suiteCmd, clone, logPath, cfg.suiteTimeoutSec * 1000);
@@ -303,7 +326,7 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
     // A TIMEOUT REPORTS NO EXIT CODE AT ALL. The server reads a missing code as `unknown` with a
     // reason, which is what a killed run is — never a red, and never a silent green.
     await report(cfg, j, ran.timedOut ? null : ran.code,
-      ran.timedOut ? `the suite passed ${cfg.suiteTimeoutSec}s and was killed here` : "", logPath);
+      ran.timedOut ? `the suite passed ${cfg.suiteTimeoutSec}s and was killed here` : "", logPath, clonedSha);
   } finally {
     suiteBusy = false;
     try { rmSync(clone, { recursive: true, force: true }); } catch { /* the verdict is already sent */ }
@@ -312,8 +335,8 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
   }
 }
 
-async function report(cfg: HelperConfig, j: ClaimedJob, exitCode: number | null, note: string, logPath?: string)
-  : Promise<void> {
+async function report(cfg: HelperConfig, j: ClaimedJob, exitCode: number | null, note: string,
+  logPath?: string, clonedSha?: string): Promise<void> {
   const size = logPath && existsSync(logPath) ? statSync(logPath).size : 0;
   const head = logPath ? await readSlice(logPath, 0, Math.min(size, 65_536)) : "";
   const end = logPath ? await readSlice(logPath, Math.max(0, size - 65_536), size) : "";
@@ -321,7 +344,11 @@ async function report(cfg: HelperConfig, j: ClaimedJob, exitCode: number | null,
   const trail = trailIdOf(head);
   const res = await api(cfg, "/api/helper/result", {
     method: "POST",
-    body: JSON.stringify({ jobId: j.id, exitCode, tail, ...(trail ? { trail } : {}) }),
+    // `clonedSha` is SPREAD, so a report from before the clone (or after a rev-parse that failed)
+    // carries no such key at all. An absent field is the honest shape for "not measured"; a null
+    // one would be a claim this daemon is not in a position to make.
+    body: JSON.stringify({ jobId: j.id, exitCode, tail, ...(trail ? { trail } : {}),
+      ...(clonedSha ? { clonedSha } : {}) }),
   });
   const body = await bodyOf<{ result?: string }>(res);
   log(`reported ${j.id} exit=${exitCode} → ${res.status} ${body.result ?? body.error ?? ""}`);

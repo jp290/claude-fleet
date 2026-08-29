@@ -59,6 +59,17 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
 - Stirbt das Ziel, während du wartest, wird der Watch entwaffnet statt gelöscht, mit Grund
   (`target session ended — no notification will come`) — sichtbar in `GET /api/self`. In die Pane kommt dabei
   NICHTS.
+- **Ein Abo, das du nicht selbst gemacht hast: der terminale Land einer Lane deines Programs.** Landet
+  irgendwer — Owner ⏏, Owner ⏫, ein Confirm — eine Lane, deren Task zu einem aktiven Program mit
+  GEBUNDENER, lebender MAIN gehört, armt der Server dieser MAIN im letzten Moment vor dem Teardown
+  genau den merge-Watch, den sie selbst gemacht hätte (`server.ts#armProgramMainLandWatch`), und
+  `mintMergeEvents` gibt ihn sofort aus. Es ist dasselbe merge-terminal-Event wie sonst, occupant-
+  gebunden (Slot + openedAt + sessionId), über dieselbe Transportschiene. GENAU EINES: ist bereits ein
+  passender Watch armed, wird nichts daneben gearmt; ein fremdes Program, ein recycelter/nachgefolgter
+  MAIN-Slot und eine Lane ohne Program bekommen NICHTS; ist das Zustellbudget der MAIN voll, wird
+  nichts gearmt und die Stille steht als `program_main_land_event_skipped` auf dem Trail. Grund:
+  bis 2026-08-29 erfuhr eine MAIN, deren eigene Land-Tür zu war, von einem Owner-Land gar nichts und
+  blieb auf veralteter Ausführungswahrheit stehen (Program f99e9354, Task 8e91fdc9).
 
 
 ### transition — `{kind:"transition"}` (STN-1, Program b1c4a497)
@@ -527,6 +538,11 @@ watch:{kind:"merge",target:<laneSlot>}}`. **Sofort danach `POST /api/self/watch`
 `watch`-Objekt abonnieren** — jedes nicht-grüne Ergebnis (Konflikt, rotes Verify, unbekanntes
 Verify) erreicht dich über das bestehende merge-terminal-Event. Die Route macht KEINEN Retry und
 öffnet KEINE Attention: was bei einem roten Land zu tun ist, ist das Urteil der MAIN.
+
+Kommst du zu spät zum Abo — oder landet ein anderer (Owner ⏏/⏫, Confirm) die Lane deines Tasks —,
+bleibst du trotzdem nicht stehen: der terminale Land armt dir denselben Watch selbst und gibt ihn
+aus (§watch, letzter Punkt). Das ersetzt das eigene Abo NICHT (es deckt nur den LAND, nicht das rote
+oder aufgelöste Verdikt, bei dem nichts landet), aber ein gelandeter Task erreicht dich als Ereignis.
 
 **Die Ablehnungsleiter, in dieser Reihenfolge, jede mit eigenem Satz** (die Sätze sind
 unterscheidbar, weil sie den Aufrufer an verschiedene Stellen schicken):

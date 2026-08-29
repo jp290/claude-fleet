@@ -3605,7 +3605,11 @@ type AuditEvent =
   // the recorded MAIN binding learned the session id its pane discovered AFTER the bind
   // (backfillProgramMainSessionId). Detail names the program and the id that filled the `null`;
   // there is no row for the no-op case, because "nothing to fill" is not an event.
-  | "program_main_session_backfill";
+  | "program_main_session_backfill"
+  // a terminal land armed the merge subscription its bound Program-MAIN never made
+  // (armProgramMainLandWatch), or declined to because that MAIN's return path is full. The second
+  // row is the one that matters: a MAIN told nothing must not be told nothing SILENTLY.
+  | "program_main_land_watch" | "program_main_land_event_skipped";
 // generic append-only event-log chain: format (one JSON line), chmod 600, single-generation
 // rotation. audit.jsonl is the first consumer but not the only shape this fits (automation-
 // synergies.md finding 5 — journal/outcome logs later reuse this exact discipline instead of
@@ -5004,7 +5008,20 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS,
   // A merge terminal event binds to the lane identity that is about to disappear. Its caller
   // persists that event here, after removal succeeded (so landed:true is known) but before
   // killSlot/dropWatchesFor can disarm the subscription as target-gone.
+  //
+  // The bound Program-MAIN's subscription is armed HERE, immediately before that mint, because
+  // this is the last instant at which the lane identity it binds to still exists.
+  armProgramMainLandWatch(s, path, branch);
   if (beforeTeardown) await beforeTeardown();
+  // …and a caller that passes NO callback still owes the same event. The ⏏ door tore a lane down
+  // without ever minting a merge terminal, so every armed subscription on it — the implicit one
+  // above included — died in dropWatchesFor as "no notification will come" while the land had in
+  // fact happened. One fallback here rather than a fourth copy at the route, and it is a no-op
+  // wherever beforeTeardown already spent those watches (spendWatch is per-watch idempotent).
+  // The wording claims exactly what this door guarantees and no more: removeWorktreeSafe let the
+  // tree go, so the work was already merged or already pushed — it does NOT say main moved here.
+  else await mintMergeEvents(s.id, path, branch, { status: "merged", landed: true, branch,
+    at: Date.now(), detail: "landed (⏏) — the lane was torn down directly, its work already merged or pushed" });
   await killSlot(s, "landed");
   void tickGit().catch(() => {});
   return { removed: path, branch };
@@ -6763,6 +6780,57 @@ async function mintMergeEvents(target: number, cwd: string, branch: string, outc
     dirty = spendWatch(w, event) || dirty;
   }
   if (dirty) await saveStateNow();
+}
+
+// THE EVENT A BOUND PROGRAM-MAIN NEVER SUBSCRIBED FOR — and the reason it has to be minted on its
+// behalf. A MAIN learns a merge terminal through a Watch IT armed, and the self-land route hands it
+// the subscription only AFTER its own job started. So every land the MAIN did not itself start —
+// the owner's ⏏ or ⏫, an already-merged land, a confirm — reached a MAIN that had armed nothing,
+// and the row went `done` with no event addressed to anyone. The Program-MAIN then stood on stale
+// execution truth until a poll or a human nudge, with its next dependent task blocked behind it
+// (measured 2026-08-29 on program f99e9354, task 8e91fdc9 — the land itself was correct).
+//
+// This arms exactly the subscription the MAIN would have made, in the receiver's name, at the one
+// moment the fact becomes terminal; the ordinary mintMergeEvents beside it spends it. NO second
+// lifecycle record and no second transport: what arrives is the same merge-terminal FleetEvent,
+// occupant-bound (slot + openedAt + sessionId) like every other one, acknowledged and pruned by the
+// same doors.
+//
+// EXACTLY ONE, and each way that could break is answered here rather than downstream:
+//  · an already-armed merge watch of the SAME receiver occupant on THIS lane means the
+//    subscription exists — arm nothing, and that watch fires instead (one event, not two);
+//  · the receiver is the live occupant of the ACTIVE program the LANE belongs to, taken from
+//    clarificationReceiverFor's `program-main` basis and nothing weaker. Its lane-watch fallback is
+//    deliberately NOT honoured: a watcher who subscribed already owns a row here, and a foreign
+//    program or a recycled/succeeded MAIN slot matches no binding at all, so it gets nothing;
+//  · a MAIN whose return path is full is refused exactly as the two report doors refuse it, loudly
+//    in the trail rather than by growing a debt it cannot pay;
+//  · this runs once per terminal landLane, and a retry finds no lane left to land.
+const PROGRAM_MAIN_LAND_IDLE_SEC = 60; // createWatchForSlot's own default: deliver at rest
+function armProgramMainLandWatch(lane: Slot, cwd: string, branch: string): void {
+  if (!lane.programId) return;
+  const resolved = clarificationReceiverFor(lane);
+  if ("error" in resolved || resolved.basis !== "program-main") return;
+  const { receiver } = resolved;
+  if (receiver.slot === lane.id) return; // a session watching itself learns nothing
+  if (watches.some((w) => w.armed && watchKind(w) === "merge" && "target" in w
+    && w.target === lane.id && w.targetCwd === cwd && w.targetBranch === branch
+    && w.slot === receiver.slot && w.slotOpenedAt === receiver.openedAt)) return;
+  const budget = slotDeliveryBudget(receiver.slot);
+  if (budget.free === 0) {
+    audit("program_main_land_event_skipped", receiver.slot,
+      `lane=${lane.id} program=${lane.programId} no delivery budget`
+      + ` (${budget.deliveryDebts} open + ${budget.armedReservations} armed of ${budget.cap})`);
+    return;
+  }
+  const w: MergeWatch = {
+    id: randomBytes(4).toString("hex"), slot: receiver.slot, slotOpenedAt: receiver.openedAt,
+    idleSec: PROGRAM_MAIN_LAND_IDLE_SEC, armed: true, created: Date.now(), firedAt: null,
+    lastResult: null, delivery: "pane",
+    kind: "merge", target: lane.id, targetCwd: cwd, targetBranch: branch,
+  };
+  watches = [...watches, w];
+  audit("program_main_land_watch", receiver.slot, `${w.id} lane=${lane.id} program=${lane.programId}`);
 }
 
 function auditRowMatches(row: PostLandAuditRow, repo: string, mainAfter: string): boolean {

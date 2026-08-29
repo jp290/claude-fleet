@@ -2341,12 +2341,11 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     .map((m) => m[1]);
   const sendStart = server.indexOf("async function sendText(");
   const sendBody = sendStart < 0 ? "" : server.slice(sendStart, server.indexOf("// --- scheduled prompts", sendStart));
-  const sendLocalProbes = [...sendBody.matchAll(/paneAgentAt\(sess\(s\.id\), comms\)/g)].length;
+  const sendLocalProbes = [...sendBody.matchAll(/paneAgentAt\(bound\.paneId, bound\.comms\)/g)].length;
   const sendProbeResolved = /const comms = commsFor\(s\);/.test(sendBody) && sendLocalProbes > 0;
   pin("every slot liveness/readiness probe resolves through commsFor(s), never the fleet-wide set",
     sendProbeResolved && slotProbeArgs.length > 0
-      && slotProbeArgs.filter((a) => a === "comms").length === sendLocalProbes
-      && slotProbeArgs.every((a) => a === "commsFor(s)" || a === "AUTHOR_COMMS" || a === "comms"),
+      && slotProbeArgs.every((a) => a === "commsFor(s)" || a === "AUTHOR_COMMS"),
     `${sendProbeResolved ? "send-resolved" : "send-unresolved"}: ${slotProbeArgs.join(" | ")}`);
   // Pane output is not readiness: tmux can repaint before the agent prints, and the agent can print
   // before its composer is ready. A separate openedAt guard first answers whether this pane could
@@ -2354,7 +2353,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // after the transition, or audited fall-through so an owner can still type into a newly opened
   // pane whose agent died. An established dead pane never enters this block and stays immediate.
   const sendCode = sendBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
-  const sendFreshnessGuard = /const mayStillBeBooting = s\.openedAt > 0\s*&& Date\.now\(\) - s\.openedAt < SEND_BOOT_FRESH_MS;\s*if \(mayStillBeBooting\) \{\s*const comms = commsFor\(s\);/.test(sendCode);
+  const sendFreshnessGuard = /const mayStillBeBooting = Date\.now\(\) - occupant\.openedAt < SEND_BOOT_FRESH_MS;\s*if \(mayStillBeBooting\) \{\s*if \(bound\.comms\.length > 0\)/.test(sendCode);
   const freshLiteral = /const SEND_BOOT_FRESH_MS = ([\d_]+);/.exec(server)?.[1];
   const waitLiteral = /const SEND_BOOT_WAIT_MS = ([\d_]+);/.exec(server)?.[1];
   const freshMs = Number(freshLiteral?.replaceAll("_", ""));
@@ -2370,7 +2369,8 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       && !/\bs\.lastOutput\b/.test(sendCode)
       && sendLocalProbes >= 2
       && (sendCode.match(/\bSEND_BOOT_WAIT_MS\b/g) ?? []).length >= 2
-      && sendCode.includes("bootSettleMs ?? DEFAULT_BOOT_SETTLE_MS")
+      && sendBody.includes("const bootSettleMs = form.bootSettleMs ?? DEFAULT_BOOT_SETTLE_MS")
+      && sendCode.includes("await Bun.sleep(bound.bootSettleMs)")
       && timeoutStillDelivers,
     `fresh=${sendFreshnessGuard} windows=${freshMs}/${waitMs} output=${/\bs\.lastOutput\b/.test(sendCode)} probes=${sendLocalProbes} fallthrough=${timeoutStillDelivers}`);
   // ...and the POLICY is not the probe: aliveInfo (a gate) carries harnessAutomatable, agentInfo
@@ -3471,9 +3471,11 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   const testLatch = openBody.indexOf("await waitForGameMakerOpenTestLatch(treeLease)");
   pin(`${RULE_GM_TREE} — openSlot revalidates its exact founding permit after tmux teardown and before Slot mutation`,
     firstFoundingPermit >= 0
-      && secondFoundingPermit > openBody.indexOf('await tmux("has-session"')
+      && openBody.indexOf("await waitForSlotTeardown(s.id)") >= 0
+      && orphanTeardown > openBody.indexOf("await waitForSlotTeardown(s.id)")
+      && secondFoundingPermit > orphanTeardown
       && secondFoundingPermit < openBody.indexOf("s.cwd = cwd"),
-    `first=${firstFoundingPermit} await=${openBody.indexOf('await tmux("has-session"')} second=${secondFoundingPermit} mutation=${openBody.indexOf("s.cwd = cwd")}`);
+    `first=${firstFoundingPermit} teardown=${orphanTeardown} second=${secondFoundingPermit} mutation=${openBody.indexOf("s.cwd = cwd")}`);
   pin(`${RULE_GM_TREE} — the default-off E2E latch sits only after orphan teardown and before the second permit check`,
     server.includes("process.env.FLEET_TEST_GAME_MAKER_OPEN_LATCH ?? null")
       && orphanTeardown >= 0 && testLatch > orphanTeardown && testLatch < secondFoundingPermit
@@ -3485,6 +3487,8 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   const ensureBody = ensureAt < 0 ? "" : server.slice(ensureAt, server.indexOf("\n}\n", ensureAt) + 3);
   const killAt = server.indexOf("async function killSlot(");
   const killBody = killAt < 0 ? "" : server.slice(killAt, server.indexOf("\n}\n", killAt) + 3);
+  const teardownAt = server.indexOf("async function teardownSlotOccupant(");
+  const teardownBody = teardownAt < 0 ? "" : server.slice(teardownAt, killAt);
   const hasAwait = ensureBody.indexOf('await tmux("has-session"');
   const afterHasIdentity = ensureBody.indexOf("sameSlotSpawnOccupant(s, occupant)", hasAwait);
   const beforeSpawnIdentity = ensureBody.lastIndexOf("sameSlotSpawnOccupant(s, occupant)",
@@ -3496,9 +3500,10 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && beforeSpawnIdentity < ensureBody.indexOf("tmuxNewSession(")
       && ensureBody.includes("slotSpawnInflight.set(s.id, spawn)")
       && ensureBody.includes("if (slotSpawnInflight.get(s.id) === spawn) slotSpawnInflight.delete(s.id)")
-      && /const concurrentSpawn = slotSpawnInflight\.get\(s\.id\);[\s\S]*?if \(concurrentSpawn\) \{ await concurrentSpawn; return; \}[\s\S]*?if \(!sameSlotSpawnOccupant\(s, occupant\)\) return;[\s\S]*?slotSpawnInflight\.set\(s\.id, spawn\)/.test(ensureBody)
-      && openBody.indexOf("await waitForSlotSpawn(s.id)") < openBody.indexOf('await tmux("has-session"')
-      && killBody.indexOf("await waitForSlotSpawn(s.id)") < killBody.indexOf('audit("slot_kill"'),
+      && /const concurrentSpawn = slotSpawnInflight\.get\(s\.id\);[\s\S]*?if \(concurrentSpawn\) \{ await concurrentSpawn; return; \}[\s\S]*?if \(!sameSlotSpawnOccupant\(s, occupant\) \|\| slotTeardownInflight\.has\(s\.id\)\) return;[\s\S]*?slotSpawnInflight\.set\(s\.id, spawn\)/.test(ensureBody)
+      && ensureBody.includes("if (slotTeardownInflight.has(s.id)) return")
+      && openBody.indexOf("await waitForSlotTeardown(s.id)") < openBody.indexOf("await waitForSlotSpawn(s.id)")
+      && teardownBody.indexOf("await waitForSlotSpawn(streamOccupant.slot)") < teardownBody.indexOf('audit("slot_kill"'),
     `has=${hasAwait} after=${afterHasIdentity} before=${beforeSpawnIdentity} spawn=${ensureBody.indexOf("tmuxNewSession(")}`);
   const streamPathAt = server.indexOf("const occupantStreamPath");
   const stageWriteAt = ensureBody.indexOf("await Bun.write(stagePath");
@@ -3533,11 +3538,66 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     "new-session bypass, timeout escalation, invalid-env fallback, or runtime arm is missing");
   pin(`${RULE_GM_TREE} — teardown removes only its captured occupant stream and the legacy sN.raw name is migration-only`,
     killBody.includes("const streamOccupant = slotStreamOccupant(s)")
-      && killBody.includes("sameSlotStreamOccupant(s, streamOccupant)")
-      && killBody.includes("occupantStreamPath(streamOccupant)")
+      && teardownBody.includes("sameSlotStreamOccupant(s, streamOccupant)")
+      && teardownBody.includes("occupantStreamPath(streamOccupant)")
       && ensureBody.includes("legacyStreamPath(s.id)")
       && read("e2e/slots.ts").includes("slot-post-capture-latch"),
     "exact cleanup, legacy migration, or deterministic stale-continuation arm is missing");
+
+  const sendAt = server.indexOf("async function sendText(");
+  const sendBody = sendAt < 0 ? "" : server.slice(sendAt, server.indexOf("\n}\n", sendAt) + 3);
+  const wsAt = server.indexOf("websocket: {");
+  const wsBody = wsAt < 0 ? "" : server.slice(wsAt, server.indexOf("\n  },\n});", wsAt));
+  const occupantCaptureAt = sendBody.indexOf("const occupant = slotStreamOccupant(s)");
+  const enqueueAt = sendBody.indexOf("s.inputChain.then");
+  const targetAt = sendBody.indexOf("await existingTmuxTarget(sess(occupant.slot))", enqueueAt);
+  const pasteAt = sendBody.indexOf('tmux("paste-buffer"');
+  const enterAt = sendBody.indexOf('tmux("send-keys"');
+  pin(`${RULE_GM_TREE} — every composed send binds one caller-time occupant and immutable pane through paste, Enter, reads and rollback`,
+    occupantCaptureAt >= 0 && occupantCaptureAt < enqueueAt && targetAt > enqueueAt
+      && sendBody.includes("sameBoundPane(s, bound)")
+      && pasteAt > targetAt && sendBody.indexOf("sameBoundPane(s, bound)", targetAt) < pasteAt
+      && enterAt > pasteAt && sendBody.lastIndexOf("sameBoundPane(s, bound)", enterAt) >= pasteAt
+      && !/tmux\("(?:capture-pane|paste-buffer|send-keys)"[\s\S]*?"-t", sess\(s\.id\)/.test(sendBody)
+      && server.includes("readComposer(s, bound)") && server.includes("readExactComposer(s, bound)")
+      && server.includes("awaitComposer(s, bound,") && server.includes("rollbackOwnComposerPayload(s, bound,"),
+    `capture=${occupantCaptureAt} enqueue=${enqueueAt} target=${targetAt} paste=${pasteAt} enter=${enterAt}`);
+  pin(`${RULE_GM_TREE} — composed sends own unique tmux buffers and delete them in finally`,
+    sendBody.includes("randomBytes(8).toString(\"hex\")")
+      && sendBody.includes('tmux("delete-buffer", "-b", buf)') && sendBody.includes("finally"),
+    "sendText lacks a unique buffer or its finally cleanup");
+  const teardownRegisterAt = killBody.indexOf("slotTeardownInflight.set(s.id, latch)");
+  const teardownAwaitAt = killBody.indexOf("await promise");
+  const cwdNullAt = teardownBody.indexOf("s.cwd = null");
+  const teardownSaveAt = teardownBody.indexOf("saveState()", cwdNullAt);
+  pin(`${RULE_GM_TREE} — teardown registers synchronously, joins duplicates, stops an exact pane and publishes cwd null last`,
+    server.includes("const slotTeardownInflight = new Map<number, SlotTeardownLatch>()")
+      && killBody.includes("if (existing) { await existing.promise; return; }")
+      && teardownRegisterAt >= 0 && teardownRegisterAt < teardownAwaitAt
+      && teardownBody.includes('tmux("kill-pane", "-t", target.paneId)')
+      && !teardownBody.includes('tmux("kill-session", "-t", sess(s.id))')
+      && teardownBody.includes("s.inputChain = Promise.resolve()")
+      && teardownBody.includes("s.resizeChain = Promise.resolve()")
+      && cwdNullAt > teardownBody.indexOf("s.clients.clear()")
+      && teardownSaveAt > cwdNullAt
+      && !teardownBody.slice(cwdNullAt, teardownSaveAt).includes("await "),
+    `register=${teardownRegisterAt}/${teardownAwaitAt} cwdNull=${cwdNullAt} save=${teardownSaveAt}`);
+  pin(`${RULE_GM_TREE} — owner WebSocket input stores and rechecks an occupant-bound immutable pane`,
+    /ownerInput\?: \{ occupant: SlotStreamOccupant; paneId: string \}/.test(server)
+      && wsBody.includes("ws.data.ownerInput = { occupant, paneId: target.paneId }")
+      && wsBody.includes("const binding = ws.data.ownerInput")
+      && wsBody.includes('tmux("send-keys", "-t", binding.paneId')
+      && wsBody.includes("sameSlotStreamOccupant(s, binding.occupant)")
+      && !wsBody.includes('tmux("send-keys", "-t", sess(s.id)'),
+    "owner WS input is not bound to one occupant and %pane");
+  const lifecycleRuntime = read("e2e/slots.ts");
+  const foundingRuntime = read("e2e/programs.ts");
+  pin(`${RULE_GM_TREE} — runtime names queued-send, post-paste, owner-WS and teardown/recycle race arms`,
+    foundingRuntime.includes("queued founding send cannot paste into a recycled candidate")
+      && foundingRuntime.includes("pasted founding brief cannot Enter or bind after candidate recycle")
+      && lifecycleRuntime.includes("old owner WS input cannot reach the recycled occupant")
+      && lifecycleRuntime.includes("teardown keeps A published, joins duplicate kill, suppresses heal and preserves B"),
+    "one or more deterministic P2a runtime arms are absent");
   pin(`${RULE_GM_TREE} — only the dedicated conflict type selects 409 at owner open seams`,
     /class GameMakerTreeConflict extends Error/.test(server)
       && /e instanceof GameMakerTreeConflict \? 409 : 400/.test(server)
@@ -3603,6 +3663,19 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && server.includes("program.main?.slot === founding.predecessor.slot")
       && server.includes("program.main.openedAt === founding.predecessor.openedAt"),
     "the durable marker does not encode the promised bootstrap/succession fallback");
+  const bootstrapCandidateAt = bootstrapBody.indexOf("const candidateIdentity: SuccessionPredecessorIdentity");
+  const bootstrapSendAt = bootstrapBody.indexOf("await sendText(free, deliveredBrief, true)", bootstrapCandidateAt);
+  const bootstrapAfterSendAt = bootstrapBody.indexOf("if (!stillCurrent())", bootstrapSendAt);
+  const bootstrapReceiptAt = bootstrapBody.indexOf("await (founding ? appendEventStrict : appendEvent)", bootstrapAfterSendAt);
+  const bootstrapPreBindAt = bootstrapBody.indexOf("if (!stillCurrent())", bootstrapReceiptAt);
+  const bootstrapBindAt = bootstrapBody.indexOf("program.main = { slot: candidateIdentity.slot", bootstrapPreBindAt);
+  pin(`${RULE_GM_FOUNDING} — Standard and Game-Maker bootstrap bind only the full live candidate after send and receipt`,
+    bootstrapCandidateAt >= 0 && bootstrapBody.includes("sameSuccessionOccupant(free, candidateIdentity)")
+      && bootstrapBody.includes("expectedMainCurrent") && bootstrapSendAt > bootstrapCandidateAt
+      && bootstrapAfterSendAt > bootstrapSendAt && bootstrapReceiptAt > bootstrapAfterSendAt
+      && bootstrapPreBindAt > bootstrapReceiptAt && bootstrapBindAt > bootstrapPreBindAt
+      && !/\bprogram\.main\s*=(?!=)/.test(bootstrapBody.slice(bootstrapCandidateAt, bootstrapBindAt)),
+    `candidate=${bootstrapCandidateAt} send=${bootstrapSendAt} after=${bootstrapAfterSendAt} receipt=${bootstrapReceiptAt} prebind=${bootstrapPreBindAt} bind=${bootstrapBindAt}`);
   pin(`${RULE_GM_FOUNDING} — complete checks both the synchronous lease and durable marker before status mutation`,
     completeBody.includes("programBootstrapInflight.has(program.id) || program.founding")
       && completeBody.indexOf("programBootstrapInflight.has(program.id) || program.founding")
@@ -3624,8 +3697,12 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && selfRetireBody.includes("successionInflight.has(s.selfToken)")
       && read("e2e/programs.ts").includes("retire is refused in flight, owner recycle cannot downgrade Program succession"),
     `capture=${identityCaptureAt} firstAwait=${firstSucceedAwaitAt} handoff=${handoffAwaitAt} recheck=${identityRecheckAt} classify=${bindingClassifyAt} retireGate=${selfRetireBody.includes("successionInflight.has(s.selfToken)")}`);
+  const proveStopAt = server.indexOf("async function proveFoundingCandidateStopped");
+  const proveStopBody = proveStopAt < 0 ? "" : server.slice(proveStopAt,
+    server.indexOf("const exactFoundingPredecessor", proveStopAt));
   pin(`${RULE_GM_FOUNDING} — cleanup proves tmux absence before killSlot state clearing, and owner kill uses that path`,
-    /async function proveFoundingCandidateStopped[\s\S]*?observeTmuxSlots\(\)[\s\S]*?tmux\("kill-session"[\s\S]*?observeTmuxSlots\(\)[\s\S]*?presence !== "absent"[\s\S]*?await killSlot/.test(server)
+    /observeTmuxSlots\(\)[\s\S]*?await killSlot\(s, "reopen"\)[\s\S]*?observeTmuxSlots\(\)[\s\S]*?presence !== "absent"/.test(proveStopBody)
+      && !proveStopBody.includes('tmux("kill-session"')
       && server.includes('rollbackProgramFounding(foundingProgram, founding, "owner-kill")'),
     "absence proof or owner-kill routing missing");
   const recoveryAt = server.indexOf("async function recoverInterruptedProgramFoundings(");

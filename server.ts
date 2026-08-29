@@ -1284,6 +1284,7 @@ type WSData = {
   seedUntil: number;
   seed?: number; // client's scrollback budget for the connect seed; 0/absent = SEED_LINES
   share?: string; // set on guest connections: the share id this socket belongs to
+  ownerInput?: { occupant: SlotStreamOccupant; paneId: string };
 };
 
 // a share exposes exactly ONE slot to a guest behind its own password — the owner
@@ -5253,27 +5254,52 @@ async function waitForSlotSpawn(slot: number): Promise<void> {
   if (pending) await pending;
 }
 
+interface SlotTeardownLatch { occupant: SlotStreamOccupant; promise: Promise<void> }
+const slotTeardownInflight = new Map<number, SlotTeardownLatch>();
+async function waitForSlotTeardown(slot: number): Promise<void> {
+  const pending = slotTeardownInflight.get(slot);
+  if (pending) await pending.promise;
+}
+
+const SLOT_TEARDOWN_TEST_LATCH = process.env.FLEET_TEST_SLOT_TEARDOWN_LATCH ?? null;
+let slotTeardownTestLatchUsed = false;
+async function waitForSlotTeardownTestLatch(occupant: SlotStreamOccupant, target: TmuxTarget | null): Promise<void> {
+  if (!SLOT_TEARDOWN_TEST_LATCH || slotTeardownTestLatchUsed || !existsSync(SLOT_TEARDOWN_TEST_LATCH)) return;
+  const expected = readFileSync(SLOT_TEARDOWN_TEST_LATCH, "utf8").trim();
+  if (expected && expected !== String(occupant.slot)) return;
+  slotTeardownTestLatchUsed = true;
+  writeFileSync(`${SLOT_TEARDOWN_TEST_LATCH}.reached`, JSON.stringify({
+    slot: occupant.slot, openedAt: occupant.openedAt, paneId: target?.paneId ?? null,
+  }), { mode: 0o600 });
+  for (let waited = 0; waited < 10_000; waited += 10) {
+    if (existsSync(`${SLOT_TEARDOWN_TEST_LATCH}.release`)) return;
+    await Bun.sleep(10);
+  }
+  throw new Error("slot teardown E2E latch timed out before release");
+}
+
 // `cause` only picks which audit event the rebuild is booked under; the rebuild itself is
 // identical either way. "heal" = the pane died on us, "restart" = the owner asked for it.
 async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"): Promise<void> {
+  if (slotTeardownInflight.has(s.id)) return;
   let occupant = slotSpawnOccupant(s);
   if (!occupant) return;
   const entrySpawn = slotSpawnInflight.get(s.id);
   if (entrySpawn) { await entrySpawn; return; }
   const name = sess(s.id);
   const has = await tmux("has-session", "-t", name);
-  if (!sameSlotSpawnOccupant(s, occupant)) return;
+  if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
   let target: TmuxTarget | null = null;
   if (has.code === 0) {
     target = await existingTmuxTarget(name);
-    if (!sameSlotSpawnOccupant(s, occupant)) return;
+    if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
     if (!target) return;
   }
   const probedSpawn = slotSpawnInflight.get(s.id);
   if (probedSpawn) { await probedSpawn; return; }
   if (has.code !== 0) {
     await tmux("set", "-g", "history-limit", "50000");
-    if (!sameSlotSpawnOccupant(s, occupant)) return;
+    if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
     const h = harnessOf(occupant.harness);
     // pane died but we know its harness-specific conversation evidence still exists →
     // self-heal RESUMES the conversation instead of starting a blank one.
@@ -5291,7 +5317,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"):
     const priorCodexState = s.codexRecoveryState;
     const codexRollout = codex && priorSessionId && CODEX_UUID_RE.test(priorSessionId)
       ? await codexRolloutForId(priorSessionId) : null;
-    if (!sameSlotSpawnOccupant(s, occupant)) return;
+    if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
     const resume = !!priorSessionId && h.supports.resume
       && (codex ? !!codexRollout
         : h.supports.transcript ? existsSync(`${projDir(occupant.cwd)}/${priorSessionId}.jsonl`) : true);
@@ -5299,7 +5325,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"):
     // TUI as the old conversation. Keep the old id as the loss evidence and surface the state;
     // the owner can deliberately recycle the slot to start clean.
     if (codex && priorSessionId && !resume && s.codexRecoveryState !== "lost") {
-      if (!sameSlotSpawnOccupant(s, occupant)) return;
+      if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
       s.codexRecoveryState = "lost";
       saveState();
       audit("codex_resume_lost", s.id, `session=${priorSessionId}`);
@@ -5352,7 +5378,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"):
     // exact spawn instead of issuing a duplicate. No await separates this check from map.set.
     const concurrentSpawn = slotSpawnInflight.get(s.id);
     if (concurrentSpawn) { await concurrentSpawn; return; }
-    if (!sameSlotSpawnOccupant(s, occupant)) return;
+    if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
     let spawn: Promise<void>;
     spawn = (async () => {
       const created = await tmuxNewSession("-d", "-P", "-F", "#{pane_id}\t#{window_id}",
@@ -5377,7 +5403,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"):
         }
         throw unavailable;
       }
-      if (!sameSlotSpawnOccupant(s, occupant)) return;
+      if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
       s.cols = 200;
       s.rows = 50;
       // record the pin only if the adapter actually PASSED it. For the default adapter this is
@@ -5412,7 +5438,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"):
     } finally {
       if (slotSpawnInflight.get(s.id) === spawn) slotSpawnInflight.delete(s.id);
     }
-    if (!sameSlotSpawnOccupant(s, occupant)) return;
+    if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
   }
   if (!target) return;
   // the size cache follows TMUX TRUTH, not the other way round: the in-memory cols/rows
@@ -5420,14 +5446,14 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"):
   // owner client set — a guest reading the stale 200×50 default then renders a terminal
   // that has nothing to do with the actual pane. Re-sync on every ensure.
   const size = await tmux("display-message", "-p", "-t", target.paneId, "#{window_width} #{window_height}");
-  if (!sameSlotSpawnOccupant(s, occupant)) return;
+  if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
   const sm = /^(\d+) (\d+)$/.exec(size.out);
   if (sm) {
     s.cols = Number(sm[1]);
     s.rows = Number(sm[2]);
   }
   const pipe = await tmux("display-message", "-p", "-t", target.paneId, "#{pane_pipe}");
-  if (!sameSlotSpawnOccupant(s, occupant)) return;
+  if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
   const pipeOpen = pipe.out === "1";
   const finalPath = occupantStreamPath(occupant);
   const stagePath = occupantStreamStagePath(occupant);
@@ -5438,7 +5464,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"):
   if (pipeOpen && existsSync(finalPath)) return;
   if (pipeOpen) {
     await tmux("pipe-pane", "-t", target.paneId); // close a legacy/deleted stream pipe on this exact pane
-    if (!sameSlotSpawnOccupant(s, occupant)) return;
+    if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
   }
   // A live pre-migration pipe wrote sN.raw. Once its exact pane pipe is closed, the capture below
   // contains that pane's whole history, so deleting the ambiguous compatibility file loses no
@@ -5447,17 +5473,17 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"):
   rmSync(stagePath, { force: true });
   // seed stream with full pane history, then start piping raw output
   const cap = await tmux("capture-pane", "-t", target.paneId, "-e", "-p", "-S", "-");
-  if (!sameSlotSpawnOccupant(s, occupant)) return;
+  if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
   await waitForSlotPostCaptureTestLatch(occupant, finalPath, stagePath);
   await Bun.write(stagePath, crlf(cap.out) + "\r\n");
-  if (!sameSlotSpawnOccupant(s, occupant)) {
+  if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) {
     await rm(stagePath, { force: true });
     return;
   }
   chmodSync(stagePath, 0o600);
   renameSync(stagePath, finalPath);
   await tmux("pipe-pane", "-t", target.paneId, "-o", `exec cat >> '${finalPath}'`);
-  if (!sameSlotSpawnOccupant(s, occupant)) return;
+  if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
   s.quietUntil = Date.now() + 1500;
   await repaint(target.windowId);
 }
@@ -5490,6 +5516,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   box: BoxPin = NO_BOX, treeLease: GameMakerTreeLease | null = null): Promise<void> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
+  await waitForSlotTeardown(s.id);
   await waitForSlotSpawn(s.id);
   assertGameMakerFoundingTargetOpen(s, treeLease);
   const openIntent: OpenSlotIntent = { root: repoCanon(cwd), lease: treeLease };
@@ -5528,16 +5555,12 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // placed after the cwd validation: a bad path must never destroy a running session.
   try {
     const priorStreamOccupant = slotStreamOccupant(s);
-    const priorPane = await tmux("has-session", "-t", sess(s.id));
-    if (priorStreamOccupant && !sameSlotStreamOccupant(s, priorStreamOccupant))
-      throw new Error("slot occupant changed during open");
-    if (priorPane.code === 0) await killSlot(s, "reopen");
-    else if (priorStreamOccupant) {
-      // A dead pane cannot take killSlot's branch, but its files still belong to the exact occupant
-      // captured before the probe. Remove them synchronously before publishing the successor row.
-      rmSync(occupantStreamPath(priorStreamOccupant), { force: true });
-      rmSync(occupantStreamStagePath(priorStreamOccupant), { force: true });
-      rmSync(legacyStreamPath(s.id), { force: true });
+    if (priorStreamOccupant) await killSlot(s, "reopen");
+    else {
+      const observed = await observeTmuxSlots();
+      const priorPane = tmuxSlotObservation(observed, s.id);
+      if (priorPane.presence !== "absent")
+        throw new Error(`slot ${s.id} pane unavailable for open: ${observed.detail}`);
     }
     await waitForGameMakerOpenTestLatch(treeLease);
     // The awaits above are an owner-kill window: an exact pre-open kill may have durably removed
@@ -5645,58 +5668,61 @@ function detachSlotTasks(slotId: number, note: string): void {
 // `why` is mandatory: a session's lifetime is uninterpretable without it — a median of minutes
 // means slot recycling if the kills are `reopen`, and abandoned work if they are `owner`. Every
 // call site knows its own reason; none of them may pass it as an afterthought (slotstats.ts).
-async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<void> {
-  const streamOccupant = slotStreamOccupant(s);
-  await waitForSlotSpawn(s.id);
-  if (streamOccupant && !sameSlotStreamOccupant(s, streamOccupant)) return;
-  if (streamOccupant) {
-    // These paths are derived from the occupant captured before the spawn await. Remove them before
-    // clearing the row; no later await may rediscover a reusable sN path and delete its successor's.
-    rmSync(occupantStreamPath(streamOccupant), { force: true });
-    rmSync(occupantStreamStagePath(streamOccupant), { force: true });
-    rmSync(legacyStreamPath(s.id), { force: true });
+async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
+  why: Exclude<SlotEnding, "unknown">): Promise<void> {
+  await waitForSlotSpawn(streamOccupant.slot);
+  if (!sameSlotStreamOccupant(s, streamOccupant))
+    throw new Error(`slot ${streamOccupant.slot} occupant changed before teardown`);
+  const target = await existingTmuxTarget(sess(streamOccupant.slot));
+  if (!sameSlotStreamOccupant(s, streamOccupant))
+    throw new Error(`slot ${streamOccupant.slot} occupant changed during teardown probe`);
+  await waitForSlotTeardownTestLatch(streamOccupant, target);
+  if (!sameSlotStreamOccupant(s, streamOccupant))
+    throw new Error(`slot ${streamOccupant.slot} occupant changed during teardown`);
+  if (target) {
+    await tmux("kill-pane", "-t", target.paneId);
   }
-  audit("slot_kill", s.id, why);
-  s.cwd = null; // clear first so the self-heal loop can't resurrect it mid-kill
+  const observed = await observeTmuxSlots();
+  const absence = tmuxSlotObservation(observed, streamOccupant.slot);
+  if (!sameSlotStreamOccupant(s, streamOccupant))
+    throw new Error(`slot ${streamOccupant.slot} occupant changed before teardown publication`);
+  if (absence.presence !== "absent")
+    throw new Error(`could not prove tmux session ${sess(streamOccupant.slot)} absent: ${observed.detail}`);
+
+  rmSync(occupantStreamPath(streamOccupant), { force: true });
+  rmSync(occupantStreamStagePath(streamOccupant), { force: true });
+  rmSync(legacyStreamPath(streamOccupant.slot), { force: true });
+  rmSync(historyPath(streamOccupant.slot), { force: true });
+  audit("slot_kill", streamOccupant.slot, why);
   s.label = null;
   s.openedAt = 0;
   s.successionRetirement = null;
-  s.mission = null; // dies with the session it was written for, same as the label
-  s.awaiting = null; // no session left to wait for anything — same lifetime as the label
-  summaryCache.delete(s.id); // a recycled slot must never show the previous session's summary
-  reviewCache.delete(s.id); // …nor the previous session's 🔍 review
-  reviewAutoTried.delete(s.id); // …and the next lane in this slot gets its own auto-③ budget
-  backlogNudgeTried.delete(s.id); // …nor the previous main session's backlog budget/cooldown
-  migrateTried.delete(s.id); // …and the next main session gets its own handoff budget
-  successionStarted.delete(s.id); // any delayed retirement belongs only to the occupant being killed
-  harvest.delete(s.id); // no cursor on a dead slot — a later open re-seeds it
+  s.mission = null;
+  s.awaiting = null;
+  summaryCache.delete(s.id);
+  reviewCache.delete(s.id);
+  reviewAutoTried.delete(s.id);
+  backlogNudgeTried.delete(s.id);
+  migrateTried.delete(s.id);
+  successionStarted.delete(s.id);
+  harvest.delete(s.id);
   startCache.delete(s.id);
-  mergeInflight.delete(s.id); mergeStart.delete(s.id); // F5: a recycled slot must not inherit the prior lane's in-flight merge job as running:true (the old job's finally self-checks identity via mergeInflight.get === job, so this drop is safe)
-  parkMergeVerdict(s.id, false); // a reviewable ⏸ follows the branch into the park (reattach restores it); merged/blocked stay visible as before
-  s.worktree = null; // the worktree itself stays on disk — land removes it, kill never does
-  s.model = null; // the per-slot model dies with the session it was chosen for
-  s.harness = null; // ...as does the harness that ran it: the next occupant of this slot is a new
-  s.effort = null;  // session and must be spawned by whatever IT chose, never by what was here
-  s.taskId = null; // ...as do the queue row and provenance brackets that spawned this occupant
+  mergeInflight.delete(s.id); mergeStart.delete(s.id);
+  parkMergeVerdict(s.id, false);
+  s.worktree = null;
+  s.model = null;
+  s.harness = null;
+  s.effort = null;
+  s.taskId = null;
   s.originId = null;
   s.programId = null;
-  s.releasedBy = null; // ...as does the release that started it — same lifetime, same reason
+  s.releasedBy = null;
   detachSlotTasks(s.id, "lane closed before landing — review and requeue if still wanted");
-  saveState();
   for (const sh of shares) if (sh.slot === s.id) closeShareClients(s, sh.id);
-  shares = shares.filter((x) => x.slot !== s.id); // a share must not outlive its session
-  autos = autos.filter((x) => x.slot !== s.id); // neither must a scheduled prompt
-  dropWatchesFor(s.id); // and a watch on THIS slot must stop promising news that cannot come
-  reapLaneSuiteOffersFor(s.id); // …and a suite offer must stop inviting 13 minutes of somebody's time
-  saveState();
-  await tmux("kill-session", "-t", sess(s.id));
-  if (streamOccupant) {
-    // A pipe-pane command already in flight can recreate only this hashed old path after the first
-    // removal. The second cleanup is safe after an await because the successor has a different path.
-    await rm(occupantStreamPath(streamOccupant), { force: true });
-    await rm(occupantStreamStagePath(streamOccupant), { force: true });
-  }
-  await rm(historyPath(s.id), { force: true });
+  shares = shares.filter((x) => x.slot !== s.id);
+  autos = autos.filter((x) => x.slot !== s.id);
+  dropWatchesFor(s.id);
+  reapLaneSuiteOffersFor(s.id);
   s.history = [];
   s.offset = 0;
   s.lastOutput = 0;
@@ -5709,6 +5735,30 @@ async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<v
   s.codexDisconnectSeenAt = null;
   for (const ws of s.clients) ws.close(4000, "slot killed");
   s.clients.clear();
+  s.inputChain = Promise.resolve();
+  s.resizeChain = Promise.resolve();
+  recentComposed.delete(s.id);
+  s.cwd = null;
+  saveState();
+}
+
+async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<void> {
+  const streamOccupant = slotStreamOccupant(s);
+  const existing = slotTeardownInflight.get(s.id);
+  if (existing) { await existing.promise; return; }
+  if (!streamOccupant) return;
+
+  let begin!: () => void;
+  const start = new Promise<void>((resolveStart) => { begin = resolveStart; });
+  const promise = start.then(() => teardownSlotOccupant(s, streamOccupant, why));
+  const latch: SlotTeardownLatch = { occupant: streamOccupant, promise };
+  slotTeardownInflight.set(s.id, latch);
+  begin();
+  try {
+    await promise;
+  } finally {
+    if (slotTeardownInflight.get(s.id) === latch) slotTeardownInflight.delete(s.id);
+  }
 }
 
 const exactFoundingCandidate = (s: Slot, founding: ProgramFounding): boolean =>
@@ -5734,15 +5784,11 @@ async function proveFoundingCandidateStopped(s: Slot, founding: ProgramFounding)
   if (candidate.presence === "present" && candidate.root !== founding.canonicalRoot
     && !candidate.root?.startsWith(`${founding.canonicalRoot}/`))
     throw new Error(`refusing to kill tmux session ${sess(s.id)} for founding ${founding.attemptId}: its live root is ${candidate.root}`);
-  if (candidate.presence === "present")
-    await tmux("kill-session", "-t", sess(s.id));
+  await killSlot(s, "reopen");
   const after = await observeTmuxSlots();
   const stopped = tmuxSlotObservation(after, s.id);
   if (stopped.presence !== "absent")
     throw new Error(`could not prove tmux session ${sess(s.id)} absent for founding ${founding.attemptId}: ${after.detail}`);
-  // killSlot clears persisted slot state only after the pane absence above is observed. Its own
-  // second kill is harmless and closes every non-tmux lifetime (shares, watches, history, caches).
-  await killSlot(s, "reopen");
   return after;
 }
 
@@ -5895,30 +5941,38 @@ class SendNotAccepted extends Error {
 // Env-tunable for the suites only (same reason as READY_WAIT_MS): a stand-in that renders no composer
 // must not pay the full window on every send. Floor 200 ms — below one redraw the answer is noise.
 const ACCEPT_WAIT_MS = Math.max(200, Number(process.env.FLEET_ACCEPT_WAIT_MS ?? 3000) | 0);
-async function readComposer(s: Slot): Promise<string | null> {
-  const form = harnessOf(s.harness).composer;
+interface BoundSlotPane {
+  occupant: SlotStreamOccupant;
+  paneId: string;
+  composer: ComposerForm | null;
+  comms: string[];
+  bootSettleMs: number;
+}
+const sameBoundPane = (s: Slot, bound: BoundSlotPane): boolean =>
+  sameSlotStreamOccupant(s, bound.occupant) && !slotTeardownInflight.has(s.id);
+
+async function readComposer(s: Slot, bound: BoundSlotPane): Promise<string | null> {
+  if (!sameBoundPane(s, bound)) return null;
+  const form = bound.composer;
   if (!form) return null;
-  const cap = await tmux("capture-pane", "-p", "-e", "-t", sess(s.id));
-  return cap.code === 0 ? composerResidue(form, cap.out) : null;
+  const cap = await tmux("capture-pane", "-p", "-e", "-t", bound.paneId);
+  return cap.code === 0 && sameBoundPane(s, bound) ? composerResidue(form, cap.out) : null;
 }
 
 type ExactComposerRead = { kind: "rows"; rows: string[] } | { kind: "unobservable" } | { kind: "failed" };
-async function readExactComposer(s: Slot): Promise<ExactComposerRead> {
-  const form = harnessOf(s.harness).composer;
+async function readExactComposer(s: Slot, bound: BoundSlotPane): Promise<ExactComposerRead> {
+  if (!sameBoundPane(s, bound)) return { kind: "failed" };
+  const form = bound.composer;
   if (!form) return { kind: "unobservable" };
   try {
-    const cap = await tmux("capture-pane", "-p", "-e", "-t", sess(s.id));
-    if (cap.code !== 0) return { kind: "failed" };
+    const cap = await tmux("capture-pane", "-p", "-e", "-t", bound.paneId);
+    if (cap.code !== 0 || !sameBoundPane(s, bound)) return { kind: "failed" };
     const rows = composerRows(form, cap.out);
     return rows === null ? { kind: "unobservable" } : { kind: "rows", rows };
   } catch {
     return { kind: "failed" };
   }
 }
-
-interface ComposerOccupant { slot: number; openedAt: number; sessionId: string | null }
-const sameComposerOccupant = (s: Slot, o: ComposerOccupant): boolean =>
-  s.id === o.slot && s.openedAt === o.openedAt && s.sessionId === o.sessionId;
 
 // Rollback belongs only to a caller that marks the text as Fleet-owned. It is deliberately not the
 // default for /send or any owner draft. The fresh read is the authorization for exactly N BSpaces,
@@ -5927,63 +5981,116 @@ const sameComposerOccupant = (s: Slot, o: ComposerOccupant): boolean =>
 // appended/prepended/edited byte, collapsed-paste placeholder, missing composer or read failure
 // therefore leaves the pane untouched and returns an explicit uncertainty.
 async function rollbackOwnComposerPayload(
-  s: Slot, payload: string, occupant: ComposerOccupant,
+  s: Slot, bound: BoundSlotPane, payload: string,
 ): Promise<ComposerRollback> {
-  if (!sameComposerOccupant(s, occupant)) return "kept:identity-changed";
-  if (commsFor(s).length === 0 || await paneAgentAt(sess(s.id), commsFor(s)) !== "alive")
+  if (!sameBoundPane(s, bound)) return "kept:identity-changed";
+  if (bound.comms.length === 0 || await paneAgentAt(bound.paneId, bound.comms) !== "alive")
     return "kept:agent-unobservable";
-  const read = await readExactComposer(s);
+  const read = await readExactComposer(s, bound);
   if (read.kind === "failed") return "kept:read-failed";
   if (read.kind === "unobservable") return "kept:unobservable";
-  if (!sameComposerOccupant(s, occupant)) return "kept:identity-changed";
+  if (!sameBoundPane(s, bound)) return "kept:identity-changed";
   if (!composerHoldsExactly(read.rows, payload)) return "kept:differs";
   // Re-check immediately before the sole mutating operation. inputChain serializes Fleet inputs;
   // this closes slot reuse, while the read-back below reports (rather than hides) a direct-owner
   // race in the irreducible read→key interval.
-  if (!sameComposerOccupant(s, occupant)) return "kept:identity-changed";
-  const erase = await tmux("send-keys", "-t", sess(s.id), "-N", String([...payload].length), "BSpace");
+  if (!sameBoundPane(s, bound)) return "kept:identity-changed";
+  const erase = await tmux("send-keys", "-t", bound.paneId, "-N", String([...payload].length), "BSpace");
   if (erase.code !== 0) return "residue";
-  const after = await awaitComposer(s, (r) => r === "");
-  return sameComposerOccupant(s, occupant) && after === "" ? "cleared" : "residue";
+  const after = await awaitComposer(s, bound, (r) => r === "");
+  return sameBoundPane(s, bound) && after === "" ? "cleared" : "residue";
 }
 // Poll the composer until `until` holds, within the window. Returns the last residue read.
-async function awaitComposer(s: Slot, until: (r: string | null) => boolean): Promise<string | null> {
+async function awaitComposer(s: Slot, bound: BoundSlotPane,
+  until: (r: string | null) => boolean): Promise<string | null> {
   const started = Date.now();
   let last: string | null = null;
   for (;;) {
-    last = await readComposer(s);
+    if (!sameBoundPane(s, bound)) return null;
+    last = await readComposer(s, bound);
     if (until(last)) return last;
     if (Date.now() - started >= ACCEPT_WAIT_MS) return last;
     await Bun.sleep(100);
   }
 }
 
+const SEND_BEFORE_PASTE_TEST_LATCH = process.env.FLEET_TEST_SEND_BEFORE_PASTE_LATCH ?? null;
+const SEND_AFTER_PASTE_TEST_LATCH = process.env.FLEET_TEST_SEND_AFTER_PASTE_LATCH ?? null;
+let sendBeforePasteTestLatchUsed = false;
+let sendAfterPasteTestLatchUsed = false;
+async function waitForSendTestLatch(path: string | null, phase: "before-paste" | "after-paste",
+  bound: BoundSlotPane, text: string): Promise<void> {
+  if (!path || !existsSync(path)) return;
+  if (phase === "before-paste" ? sendBeforePasteTestLatchUsed : sendAfterPasteTestLatchUsed) return;
+  const marker = readFileSync(path, "utf8").trim();
+  if (marker && !text.includes(marker)) return;
+  if (phase === "before-paste") sendBeforePasteTestLatchUsed = true;
+  else sendAfterPasteTestLatchUsed = true;
+  writeFileSync(`${path}.reached`, JSON.stringify({
+    phase, slot: bound.occupant.slot, openedAt: bound.occupant.openedAt, paneId: bound.paneId,
+  }), { mode: 0o600 });
+  for (let waited = 0; waited < 10_000; waited += 10) {
+    if (existsSync(`${path}.release`)) return;
+    await Bun.sleep(10);
+  }
+  throw new Error(`send ${phase} E2E latch timed out before release`);
+}
+
+const WS_INPUT_TEST_LATCH = process.env.FLEET_TEST_WS_INPUT_LATCH ?? null;
+let wsInputTestLatchUsed = false;
+async function waitForWsInputTestLatch(bound: { occupant: SlotStreamOccupant; paneId: string }): Promise<void> {
+  if (!WS_INPUT_TEST_LATCH || wsInputTestLatchUsed || !existsSync(WS_INPUT_TEST_LATCH)) return;
+  const expected = readFileSync(WS_INPUT_TEST_LATCH, "utf8").trim();
+  if (expected && expected !== String(bound.occupant.slot)) return;
+  wsInputTestLatchUsed = true;
+  writeFileSync(`${WS_INPUT_TEST_LATCH}.reached`, JSON.stringify({
+    slot: bound.occupant.slot, openedAt: bound.occupant.openedAt, paneId: bound.paneId,
+  }), { mode: 0o600 });
+  for (let waited = 0; waited < 10_000; waited += 10) {
+    if (existsSync(`${WS_INPUT_TEST_LATCH}.release`)) return;
+    await Bun.sleep(10);
+  }
+  throw new Error("owner WebSocket input E2E latch timed out before release");
+}
+
 async function sendText(s: Slot, text: string, submit: boolean,
   options: { rollbackOwnPayload?: true } = {}): Promise<{ acceptance: Acceptance }> {
+  const occupant = slotStreamOccupant(s);
+  if (!occupant || slotTeardownInflight.has(s.id)) throw new Error("slot unavailable for send");
+  const harnessName = s.harness ?? "default";
+  const form = harnessOf(s.harness);
+  const composer = form.composer ?? null;
+  const comms = commsFor(s);
+  const bootSettleMs = form.bootSettleMs ?? DEFAULT_BOOT_SETTLE_MS;
   // route through inputChain like raw keystrokes do — otherwise a compose-box send racing
   // concurrent WS keystrokes (mobile key row, live typing, direct terminal typing) can
   // interleave paste-buffer/send-keys with a concurrent send-keys, reordering pty input
   const task = s.inputChain.then(async () => {
-    const observes = !!harnessOf(s.harness).composer;
-    const occupant: ComposerOccupant = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
+    if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
+      throw new Error("slot changed before send");
+    const target = await existingTmuxTarget(sess(occupant.slot));
+    if (!target || !sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
+      throw new Error("slot pane unavailable or changed before send");
+    const bound: BoundSlotPane = { occupant, paneId: target.paneId, composer, comms, bootSettleMs };
+    const observes = !!bound.composer;
     if (observes) {
       // one frame, before anything is typed: an occupied composer is an owner draft (the dim
       // placeholder is stripped, so only typed content counts). Refusing here is the only honest
       // answer — pasting would append to the draft and Enter would send both as one turn. Read
       // BEFORE the boot block: a draft is a draft whatever the pane's age.
-      const before = await readComposer(s);
+      const before = await readComposer(s, bound);
+      if (!sameBoundPane(s, bound)) throw new Error("slot changed during composer probe");
       if (before) throw new SendRefused(`composer occupied (${before.length} chars) — nothing typed`);
     }
     // Readiness is a process fact, not an output fact: tmux may repaint before the agent emits a
     // byte, and an agent's startup banner may arrive before its TUI accepts input. `openedAt`
     // answers the separate question "could this pane still be booting?" without misclassifying an
     // established dead agent as a boot. Empty comms remains the intentional fast-path waiver.
-    const mayStillBeBooting = s.openedAt > 0 && Date.now() - s.openedAt < SEND_BOOT_FRESH_MS;
+    const mayStillBeBooting = Date.now() - occupant.openedAt < SEND_BOOT_FRESH_MS;
     if (mayStillBeBooting) {
-      const comms = commsFor(s);
-      if (comms.length > 0) {
+      if (bound.comms.length > 0) {
         const started = Date.now();
-        let state = await paneAgentAt(sess(s.id), comms);
+        let state = await paneAgentAt(bound.paneId, bound.comms);
         // The FIRST probe is the boot discriminator: already alive means established and takes the
         // old send path with no settle. Settle belongs only to the transition this race is about —
         // not alive at first, then alive within the bounded wait.
@@ -5992,60 +6099,62 @@ async function sendText(s: Slot, text: string, submit: boolean,
           && Date.now() - started < SEND_BOOT_WAIT_MS) {
           await Bun.sleep(100);
           if (Date.now() - started >= SEND_BOOT_WAIT_MS) break;
-          state = await paneAgentAt(sess(s.id), comms);
+          if (!sameBoundPane(s, bound)) throw new Error("slot changed during send readiness probe");
+          state = await paneAgentAt(bound.paneId, bound.comms);
         }
         // Count probe time against the same budget: a slow ps/pgrep must not turn a nominally
         // bounded route into the 30-second worker wait this cut explicitly rejects.
         const becameAlive = waitedForAlive && state === "alive"
           && Date.now() - started < SEND_BOOT_WAIT_MS;
         if (becameAlive) {
-          await Bun.sleep(harnessOf(s.harness).bootSettleMs ?? DEFAULT_BOOT_SETTLE_MS);
+          await Bun.sleep(bound.bootSettleMs);
         } else if (waitedForAlive && !becameAlive) {
           // No prompt text in the trail. This row says exactly what could have happened: delivery
           // proceeds (owner capability preserved), but the pane never became observably ready.
           audit("send_boot_timeout", s.id,
-            `harness=${s.harness ?? "default"} budget=${SEND_BOOT_WAIT_MS}ms`);
+            `harness=${harnessName} budget=${SEND_BOOT_WAIT_MS}ms`);
         }
       }
     }
-    const buf = `fleetbuf${s.id}`;
-    const p = Bun.spawn(["tmux", "-L", SOCK, "load-buffer", "-b", buf, "-"], { stdin: "pipe" });
-    p.stdin.write(text);
-    await p.stdin.end();
-    // failures must THROW, not vanish: a pane dying between the caller's alive-check and
-    // this send otherwise records "sent" in autos/history/prompt-log for a prompt that
-    // never arrived — a false audit trail is worse than a failed send
-    if ((await p.exited) !== 0) throw new Error("tmux load-buffer failed — session gone?");
-    const pb = await tmux("paste-buffer", "-p", "-d", "-b", buf, "-t", sess(s.id));
-    if (pb.code !== 0) throw new Error("tmux paste-buffer failed — session gone?");
-    if (!submit) return { acceptance: "not-applicable" as const };
-    await Bun.sleep(150);
-    // Enter only once the paste is RENDERED in the composer (bounded): an Enter that races the
-    // TUI's collapse of a long paste is the measured loss, and an empty composer read before the
-    // paste has painted would otherwise pass as "drained". A composer that never shows the paste
-    // (not located, or a TUI that does not echo) keeps today's single Enter after the 150 ms.
-    if (observes) await awaitComposer(s, (r) => r === null || r.length > 0);
-    const sk = await tmux("send-keys", "-t", sess(s.id), "Enter");
-    if (sk.code !== 0) throw new Error("tmux send-keys failed — text pasted but not submitted");
-    if (!observes) return { acceptance: "not-applicable" as const };
-    const after = await awaitComposer(s, (r) => r === "");
-    if (after === "") {
-      // A dead agent leaves its LAST frame on screen — composer line, rule, footer — with the bare
-      // shell prompt appended below, so the stale composer reads "empty" while the paste went to
-      // the shell. One process probe closes that: an empty composer is acceptance only while the
-      // agent is alive. Empty comms (the stand-in waiver) keeps "unprobed" semantics as everywhere.
-      const comms = commsFor(s);
-      if (comms.length > 0 && await paneAgentAt(sess(s.id), comms) !== "alive")
-        return { acceptance: "unobservable" as const };
-      return { acceptance: "observed" as const };
+    const buf = `fleetbuf${occupant.slot}-${occupant.openedAt}-${randomBytes(8).toString("hex")}`;
+    try {
+      if (!sameBoundPane(s, bound)) throw new Error("slot changed before buffer load");
+      const p = Bun.spawn(["tmux", "-L", SOCK, "load-buffer", "-b", buf, "-"], { stdin: "pipe" });
+      p.stdin.write(text);
+      await p.stdin.end();
+      if ((await p.exited) !== 0) throw new Error("tmux load-buffer failed — session gone?");
+      await waitForSendTestLatch(SEND_BEFORE_PASTE_TEST_LATCH, "before-paste", bound, text);
+      if (!sameBoundPane(s, bound)) throw new Error("slot changed before paste");
+      const pb = await tmux("paste-buffer", "-p", "-b", buf, "-t", bound.paneId);
+      if (pb.code !== 0) throw new Error("tmux paste-buffer failed — session gone?");
+      await waitForSendTestLatch(SEND_AFTER_PASTE_TEST_LATCH, "after-paste", bound, text);
+      if (!sameBoundPane(s, bound)) throw new Error("slot changed after paste");
+      if (!submit) return { acceptance: "not-applicable" as const };
+      await Bun.sleep(150);
+      if (!sameBoundPane(s, bound)) throw new Error("slot changed before submit");
+      if (observes) await awaitComposer(s, bound, (r) => r === null || r.length > 0);
+      if (!sameBoundPane(s, bound)) throw new Error("slot changed before Enter");
+      const sk = await tmux("send-keys", "-t", bound.paneId, "Enter");
+      if (sk.code !== 0) throw new Error("tmux send-keys failed — text pasted but not submitted");
+      if (!observes) return { acceptance: "not-applicable" as const };
+      const after = await awaitComposer(s, bound, (r) => r === "");
+      if (!sameBoundPane(s, bound)) throw new Error("slot changed after submit");
+      if (after === "") {
+        if (bound.comms.length > 0 && await paneAgentAt(bound.paneId, bound.comms) !== "alive")
+          return { acceptance: "unobservable" as const };
+        if (!sameBoundPane(s, bound)) throw new Error("slot changed during acceptance probe");
+        return { acceptance: "observed" as const };
+      }
+      if (after === null) return { acceptance: "unobservable" as const };
+      const rollback = options.rollbackOwnPayload
+        ? await rollbackOwnComposerPayload(s, bound, text) : null;
+      throw new SendNotAccepted(
+        `prompt not accepted — composer still holds ${after.length} chars after ${ACCEPT_WAIT_MS}ms`
+          + (rollback ? `; Fleet payload rollback ${rollback}` : ""),
+        rollback);
+    } finally {
+      await tmux("delete-buffer", "-b", buf);
     }
-    if (after === null) return { acceptance: "unobservable" as const };
-    const rollback = options.rollbackOwnPayload
-      ? await rollbackOwnComposerPayload(s, text, occupant) : null;
-    throw new SendNotAccepted(
-      `prompt not accepted — composer still holds ${after.length} chars after ${ACCEPT_WAIT_MS}ms`
-        + (rollback ? `; Fleet payload rollback ${rollback}` : ""),
-      rollback);
   });
   s.inputChain = task.catch(() => {});
   return await task;
@@ -18227,11 +18336,25 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
           e instanceof GameMakerTreeConflict ? 409 : 500);
       }
 
-      const openedAt = free.openedAt;
-      const stillCurrent = (): boolean => !!free.cwd && free.openedAt === openedAt
-        && (!founding || currentGameMakerFounding(program, founding, free));
+      const candidateIdentity: SuccessionPredecessorIdentity = {
+        slot: free.id, openedAt: free.openedAt, cwd: free.cwd!, selfToken: free.selfToken,
+      };
+      const expectedMain = program.main ? { ...program.main } : undefined;
+      const expectedMainCurrent = (): boolean => expectedMain
+        ? program.main?.slot === expectedMain.slot && program.main.openedAt === expectedMain.openedAt
+          && program.main.sessionId === expectedMain.sessionId && program.main.boundAt === expectedMain.boundAt
+        : program.main === undefined;
+      const stillCurrent = (): boolean => sameSuccessionOccupant(free, candidateIdentity)
+        && program.status === "active" && (founding
+          ? currentGameMakerFounding(program, founding, free)
+          : expectedMainCurrent());
       const cleanup = async (): Promise<void> => {
-        if (founding) await rollbackProgramFounding(program, founding, "bootstrap-failed");
+        if (founding) {
+          if (!sameProgramFounding(program.founding, founding)) return;
+          const target = slotFrom(founding.target.slot);
+          if (stillCurrent() || !target?.cwd)
+            await rollbackProgramFounding(program, founding, "bootstrap-failed");
+        }
         else if (stillCurrent()) await killSlot(free, "reopen");
       };
       if (founding) {
@@ -18273,17 +18396,18 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
       try {
         await sendText(free, deliveredBrief, true);
       } catch (e) {
+        const changed = !stillCurrent();
         await cleanup();
-        return json({ error: `Program-MAIN founding brief failed: ${e instanceof Error ? e.message : e}` }, 500);
+        return json({ error: changed
+          ? "Program-MAIN slot changed during founding delivery"
+          : `Program-MAIN founding brief failed: ${e instanceof Error ? e.message : e}` }, changed ? 409 : 500);
+      }
+      if (!stillCurrent()) {
+        await cleanup();
+        return json({ error: "Program-MAIN slot changed after founding delivery" }, 409);
       }
 
       const at = Date.now();
-      if (!founding) program.main = { slot: free.id, openedAt: free.openedAt,
-        sessionId: free.sessionId ?? null, boundAt: at };
-      // booked HERE and not at the stale branch above: a bootstrap that dies in preflight, boot or
-      // founding delivery replaced nothing, and a trail row for it would claim otherwise.
-      if (replaced && !founding)
-        audit("program_main_rebound", free.id, `${program.id} replaced slot:${replaced.slot} openedAt:${replaced.openedAt}`);
       const hash = createHash("sha256").update(JSON.stringify({
         anchorBlock,
         planFacts: { harness: free.harness, mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted },
@@ -18302,31 +18426,31 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
         await cleanup();
         return json({ error: `Program-MAIN receipt persistence failed: ${e instanceof Error ? e.message : e}` }, 500);
       }
+      if (!stillCurrent()) {
+        await cleanup();
+        return json({ error: "Program-MAIN slot changed after receipt" }, 409);
+      }
+      const oldMain = program.main ? { ...program.main } : undefined;
+      program.main = { slot: candidateIdentity.slot, openedAt: candidateIdentity.openedAt,
+        sessionId: free.sessionId ?? null, boundAt: at };
+      if (founding) delete program.founding;
+      try {
+        await saveStateNow();
+      } catch (e) {
+        if (oldMain) program.main = oldMain; else delete program.main;
+        if (founding) program.founding = founding;
+        await cleanup();
+        return json({ error: `Program-MAIN binding persistence failed: ${e instanceof Error ? e.message : e}` }, 500);
+      }
+      // booked only after the binding is durable: a bootstrap that dies in preflight, delivery,
+      // receipt or the synchronous authority cut replaced nothing.
+      if (replaced)
+        audit("program_main_rebound", free.id, `${program.id} replaced slot:${replaced.slot} openedAt:${replaced.openedAt}`);
+      if (!sameSuccessionOccupant(free, candidateIdentity))
+        return json({ error: "Program-MAIN slot changed after binding persistence" }, 409);
       free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
       saveHistory(free);
       logPrompt(free, deliveredBrief, "auto", at);
-      if (founding) {
-        if (!currentGameMakerFounding(program, founding, free)) {
-          await cleanup();
-          return json({ error: "Program-MAIN state changed before binding" }, 409);
-        }
-        const oldMain = program.main ? { ...program.main } : undefined;
-        program.main = { slot: free.id, openedAt: free.openedAt,
-          sessionId: free.sessionId ?? null, boundAt: at };
-        delete program.founding;
-        try {
-          await saveStateNow();
-        } catch (e) {
-          if (oldMain) program.main = oldMain; else delete program.main;
-          program.founding = founding;
-          await cleanup();
-          return json({ error: `Program-MAIN binding persistence failed: ${e instanceof Error ? e.message : e}` }, 500);
-        }
-        if (replaced)
-          audit("program_main_rebound", free.id, `${program.id} replaced slot:${replaced.slot} openedAt:${replaced.openedAt}`);
-      } else {
-        await saveStateNow();
-      }
       return json({ ok: true, slot: free.id, program, ...(replaced ? { replaced } : {}) });
     } finally {
       laneSpawn.delete(free.id);
@@ -22179,6 +22303,7 @@ Bun.serve<WSData>({
       if (wsGate) return wsGate;
       const s = slots[sh.slot - 1];
       if (!s.cwd) return json({ error: "session gone" }, 404);
+      if (slotTeardownInflight.has(s.id)) return json({ error: "session is stopping" }, 409);
       // guests never pass cols/rows: they must not resize the owner's pty, so they
       // take the plain replay-tail path and render at the session's current size
       if (server.upgrade(req, { data: { slot: s.id, queue: [], ready: false, seedUntil: 0, cols: 0, rows: 0, force: false, share: sh.id } }))
@@ -22196,6 +22321,7 @@ Bun.serve<WSData>({
     if (wsMatch) {
       const s = slotFrom(wsMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 404);
+      if (slotTeardownInflight.has(s.id)) return json({ error: "slot is stopping" }, 409);
       // cols/rows are the connecting client's real terminal size, known synchronously
       // at connect time — unlike the client's separate /resize POST (fired onopen),
       // this avoids a race between the initial replay and the first resize
@@ -24196,16 +24322,26 @@ Bun.serve<WSData>({
       // (measured 2026-08-06). Nothing outside the pane can put it back; only a respawn can.
       if (slotMatch[2] === "restart") {
         if (!s.cwd) return json({ error: "slot not active" }, 400);
+        if (slotTeardownInflight.has(s.id)) return json({ error: "slot is stopping" }, 409);
         if (restarting.has(s.id)) return json({ error: "a restart is already in flight" }, 409);
         const pinned = s.sessionId;
+        const occupant = slotStreamOccupant(s);
+        if (!occupant) return json({ error: "slot not active" }, 409);
         restarting.add(s.id);
         try {
-          await tmux("kill-session", "-t", sess(s.id));
+          const target = await existingTmuxTarget(sess(occupant.slot));
+          if (!target || !sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
+            return json({ error: "slot pane unavailable or changed during restart" }, 409);
+          const stopped = await tmux("kill-pane", "-t", target.paneId);
+          if (stopped.code !== 0 || !sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
+            return json({ error: "slot changed while restart stopped its pane" }, 409);
           // rebuilt INLINE rather than left to the 2s self-heal loop: the button promises a session
           // that is back, and a route that only kills cannot say whether it is. Those two seconds
           // are also exactly when the owner is watching the board, and a slot that reads dead there
           // invites a second click on something else.
           await ensureSlot(s, "restart");
+          if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
+            return json({ error: "slot changed while restart rebuilt its pane" }, 409);
         } catch (e) {
           if (e instanceof TmuxNewSessionUnavailable)
             return json({ error: e.message, availability: e.availability }, 503);
@@ -24342,7 +24478,7 @@ Bun.serve<WSData>({
       transportWs(ws); // wraps ws.send: per-message deflate + the byte ledger (TRANSPORT region)
       const s = slots[ws.data.slot - 1];
       const occupant = slotStreamOccupant(s);
-      if (!occupant) { ws.close(4001, "slot gone"); return; }
+      if (!occupant || slotTeardownInflight.has(s.id)) { ws.close(4001, "slot gone"); return; }
       const streamFile = occupantStreamPath(occupant);
       s.clients.add(ws);
       if (ws.data.share) audit("guest_ws_connect", s.id, ws.data.share);
@@ -24353,11 +24489,12 @@ Bun.serve<WSData>({
       const seedLines = ws.data.seed || SEED_LINES;
       const name = sess(s.id);
       const target = await existingTmuxTarget(name);
-      if (!target || !sameSlotStreamOccupant(s, occupant)) {
+      if (!target || !sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id)) {
         s.clients.delete(ws);
         ws.close(4001, "slot changed during connect");
         return;
       }
+      if (!ws.data.share) ws.data.ownerInput = { occupant, paneId: target.paneId };
       if (cols && rows && (force || cols !== s.cols || rows !== s.rows)) {
         // this client's width doesn't match the pane's current width (or the client
         // explicitly asked for a reseed regardless — see the `force` comment above).
@@ -24371,10 +24508,10 @@ Bun.serve<WSData>({
         // between this one and its capture-pane, handing this client a seed
         // reflowed to the OTHER client's width instead of its own.
         const task = s.resizeChain.then(async () => {
-          if (!sameSlotStreamOccupant(s, occupant)) return;
+          if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
           s.quietUntil = Date.now() + 1500;
           await tmux("resize-window", "-t", target.windowId, "-x", String(cols), "-y", String(rows));
-          if (!sameSlotStreamOccupant(s, occupant)) return;
+          if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
           s.cols = cols;
           s.rows = rows;
           // -e (color) is safe here, and the reason it was left off is not reproducible on this
@@ -24389,14 +24526,15 @@ Bun.serve<WSData>({
           // e2e/slots.ts pins that the seed carries SGR and carries no cursor-motion escape, so
           // a tmux that ever starts emitting one goes red here instead of silently garbling.
           const cap = await tmux("capture-pane", "-t", target.paneId, "-e", "-p", "-S", `-${seedLines}`);
-          if (!sameSlotStreamOccupant(s, occupant)) return;
+          if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
           ws.send(new TextEncoder().encode(crlf(cap.out) + "\r\n"));
           try {
             const size = (await stat(streamFile)).size;
-            if (sameSlotStreamOccupant(s, occupant)) s.offset = size;
+            if (sameSlotStreamOccupant(s, occupant) && !slotTeardownInflight.has(s.id)) s.offset = size;
           } catch {
             // stream file briefly missing during recreate — next poll tick picks it up
           }
+          if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
           await repaint(target.windowId);
         });
         s.resizeChain = task.catch(() => {});
@@ -24416,7 +24554,7 @@ Bun.serve<WSData>({
         // the seed — the guest's unknown width was only ever a risk via cursor-motion escapes,
         // which this tmux does not emit.
         const cap = await tmux("capture-pane", "-t", target.paneId, "-e", "-p", "-S", `-${seedLines}`);
-        if (!sameSlotStreamOccupant(s, occupant)) return;
+        if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
         ws.send(new TextEncoder().encode(crlf(cap.out) + "\r\n"));
       } else {
         // Owner reconnect at a width that already matches the pane — the common case, since a
@@ -24445,13 +24583,18 @@ Bun.serve<WSData>({
         // spawn wide instead of a poll tick, and it is inherent to every capture-based seed here.
         try {
           const size = (await stat(streamFile)).size;
-          if (sameSlotStreamOccupant(s, occupant)) ws.data.seedUntil = size;
+          if (sameSlotStreamOccupant(s, occupant) && !slotTeardownInflight.has(s.id)) ws.data.seedUntil = size;
         } catch {
           // stream file briefly missing during recreate — skip nothing, replay what arrives
         }
         const cap = await tmux("capture-pane", "-t", target.paneId, "-e", "-p", "-S", `-${seedLines}`);
-        if (!sameSlotStreamOccupant(s, occupant)) return;
+        if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
         ws.send(new TextEncoder().encode(crlf(cap.out) + "\r\n"));
+      }
+      if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id)) {
+        s.clients.delete(ws);
+        ws.close(4001, "slot changed during connect");
+        return;
       }
       ws.data.ready = true;
       for (const q of ws.data.queue) {
@@ -24472,10 +24615,17 @@ Bun.serve<WSData>({
       // so this cannot be weakened by a share record, a body field or a stale ws.data.
       if (ws.data.share) return;
       const s = slots[ws.data.slot - 1];
+      const binding = ws.data.ownerInput;
+      if (!binding || !sameSlotStreamOccupant(s, binding.occupant) || slotTeardownInflight.has(s.id)) return;
       const bytes = typeof msg === "string" ? new TextEncoder().encode(msg) : new Uint8Array(msg);
       if (bytes.length === 0 || bytes.length > WS_INPUT_MAX_BYTES) return;
       const hex = [...bytes].map((b) => b.toString(16).padStart(2, "0"));
-      s.inputChain = s.inputChain.then(() => tmux("send-keys", "-t", sess(s.id), "-H", ...hex)).catch(() => {});
+      const task = s.inputChain.then(async () => {
+        await waitForWsInputTestLatch(binding);
+        if (!sameSlotStreamOccupant(s, binding.occupant) || slotTeardownInflight.has(s.id)) return;
+        await tmux("send-keys", "-t", binding.paneId, "-H", ...hex);
+      });
+      s.inputChain = task.catch(() => {});
     },
   },
 });

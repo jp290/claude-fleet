@@ -1,9 +1,9 @@
 ---
 frage: Ist das rote Post-Land-Audit auf 748ec97 (remote=second-host, 9 Fails, task-spawn 401) ein Produktdefekt?
-urteil: Ein rotes Remote-Audit ohne Produktdefekt: die Sonde faellt als das, was sie messen sollte
+urteil: Unentscheidbar. Welchen Baum der Second-host wirklich auditiert hat, ist offen, weil das Bundle aus refs/heads/main zum Bau-Zeitpunkt gebaut wird
 bereich: [verify, harness, queue]
 belege: [e2e/programs.ts#successorToken, e2e/programs.ts#spawnFile, post-land-audits.jsonl, server.ts#writeAuditAdjudication]
-nicht-gemessen: Der Lauf wurde auf dem Second-host NICHT wiederholt — welche Umgebungs-Voraussetzung dort fehlte, ist geschlossen, nicht gemessen.
+nicht-gemessen: Welchen Commit-Stand das Helfer-Bundle wirklich enthielt; der Lauf wurde auf dem Second-host nicht wiederholt.
 stand: 2026-08-29
 ---
 
@@ -14,7 +14,20 @@ echten Regress — oder scheitert die Sonde an ihrer eigenen Voraussetzung?**
 
 ## Ergebnis
 
-**Kein Produktdefekt.** Adjudiziert als `stale-test`. Fünf Belege, alle am Baum geprüft:
+**Unentscheidbar.** Adjudiziert zuerst als `stale-test` — **das war überkonfident und ist am
+2026-08-29 auf `unknowable` korrigiert worden**; beide Urteile stehen im Ledger. Was am Baum
+belegbar ist, steht unten; was ich daraus geschlossen hatte, trug nicht.
+
+**Der Fehler:** ich habe geprüft, was zwischen dem letzten Grün und dem auditierten SHA liegt, und
+daraus geschlossen, der Second-host habe genau diesen Baum gesehen. Das folgt nicht.
+`server.ts#buildHelperBundle` baut das Bundle aus **`refs/heads/main` zum Bau-Zeitpunkt**, nicht aus
+dem gelandeten SHA. Parallel arbeitete an diesem Morgen eine zweite Session schwer an genau den
+Dateien der roten Checks — `0cd5e23` (08:48) allein mit `server.ts` +453 und `e2e/programs.ts` +320,
+dazu `06bfbf4`, `60b6bfa`, `3d5daff` und `972dd48` (**12:24, mitten im Lauf 12:22–12:32**). Keiner
+davon ist Vorfahr von `748ec97` — aber ob einer im BUNDLE war, ist eine andere Frage, und die habe
+ich nicht gestellt.
+
+Fünf Belege, die weiterhin am Baum stehen:
 
 1. **Der auditierte Land ist reine Doku.** `748ec97` ändert genau eine Datei,
    `docs/verify-tiering.md`, +44 Zeilen. Kein Code, kein Test.
@@ -33,7 +46,10 @@ echten Regress — oder scheitert die Sonde an ihrer eigenen Voraussetzung?**
    Vergleichsläufe liefen auf dem Mac; die zwei Remote-Läufe davor sind `unknown` am leeren Klon —
    der Fall, den ausgerechnet der auditierte Commit als §14.1 aufschreibt.
 
-**Wahrscheinliche Wurzel, inferiert:** `e2e/programs.ts` liest
+**Was die fünf Belege NICHT tragen:** sie zeigen, dass der *auditierte SHA* unschuldig ist — nicht,
+dass der *auditierte Baum* es war. Genau diese Lücke macht das Urteil unentscheidbar.
+
+**Eine Kandidaten-Wurzel, inferiert:** `e2e/programs.ts` liest
 `successorToken = readState().slots?.[String(successorSlot)]?.selfToken ?? ""`. Der `?? ""`-Fallback
 macht einen fehlenden Successor-Slot **ununterscheidbar von einem Produkt-401**. Ein leerer Token
 erklärt alle vier roten Zeilen und den Absturz mit **einer** Wurzel.
@@ -52,6 +68,10 @@ und den `task-spawn`-Block · `e2e/self-token.ts` · `server.ts#writeAuditAdjudi
 
 ## Was nicht gemessen wurde
 
+- **Was das Bundle wirklich enthielt.** Die entscheidende Frage. `buildHelperBundle` liest
+  `refs/heads/main` beim Bau; zwischen Land und Claim kann main gewandert sein. Ohne den
+  tatsächlichen Klon-Stand ist „welcher Code lief" nicht beantwortet — und `mainSha` in der
+  Ledger-Zeile ist die BEHAUPTUNG des Servers, nicht die Messung des Helfers.
 - **Die Reproduktion auf dem Second-host.** Ohne sie ist die Wurzel geschlossen, nicht gemessen; welche
   Voraussetzung dort fehlte (tmux-Pane, Succession, `restartSrv`), bleibt offen.
 - Ob `checks.ran` tatsächlich aus dem gedeckelten Tail gefüllt wird. Der Kontrakt sagt
@@ -70,6 +90,10 @@ nicht hat — und der Second-host verdient damit seinen Unterhalt schon vor dem 
 
 ## Zu tun (nicht hier gemacht)
 
+0. **Zuerst: den Klon-Stand feststellbar machen.** Der Helfer sollte den SHA melden, den er
+   tatsächlich ausgecheckt hat, und die Ledger-Zeile ihn neben `mainSha` führen. Solange das fehlt,
+   ist jedes Remote-Rot mit einem parallel arbeitenden Repo prinzipiell unentscheidbar — und das ist
+   der eigentliche Befund dieser Notiz.
 1. `?? ""` bei `successorToken` durch einen eigenen `check()` auf die Voraussetzung ersetzen, damit
    ein fehlender Token als **Harness-Fehler** fällt und nicht als 401 des Produkts.
 2. Den Audit auf demselben Tip auf dem Second-host wiederholen — erst dann ist die Ursache gemessen.

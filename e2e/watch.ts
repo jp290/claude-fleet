@@ -1609,6 +1609,46 @@ export async function run(): Promise<void> {
     await post(`/api/slots/${st.slot}/kill`, {});
   }
 
+  // --- a lane on a harness the automation policy declines can NEVER be classified done-looking:
+  // aliveInfo folds harnessAutomatable into `alive`, and both looking predicates require
+  // alive === true. Measured live 2026-08-29 on pi-zai (adapter declines); this suite fleet runs
+  // FLEET_HARNESS_AUTOMATION=0, so here the FLAG half of harnessAutomatableFor refuses `pi` —
+  // adapter-side automatable:true — through the same never-fires physics. `naTgt` stays open for
+  // the self-path row in the twin below and is killed there. ---
+  const naTgt = (await (await post("/api/lanes", { repo: REPO, harness: "pi" })).json()) as
+    { slot: number; cwd: string; branch: string };
+  check("watch non-automatable fixture: a pi-harness lane exists as a target",
+    naTgt.slot > 0, JSON.stringify(naTgt));
+  const rNa = await post(`/api/slots/${aId}/watch`, { target: naTgt.slot });
+  const rNaText = await rNa.text();
+  check("watch on a lane whose harness the policy declines is refused 409 — it could never fire",
+    rNa.status === 409 && rNaText.includes("harness pi is not automatable")
+      && rNaText.includes("its slot never reads as alive to the done-looking predicate, so this watch could never fire")
+      && rNaText.includes("FLEET_HARNESS_AUTOMATION is off; no named harness is automatable without it"),
+    `${rNa.status} ${rNaText}`);
+  // the merge twin on the SAME target must be refused for the MERGE reason only — the tick reads
+  // the merge terminal factor for merge, not laneSignalView, and such a lane demonstrably fires a
+  // merge watch. A harness 409 here would forbid a watch that works.
+  const rNaMerge = await post(`/api/slots/${aId}/watch`, { kind: "merge", target: naTgt.slot });
+  const rNaMergeText = await rNaMerge.text();
+  check("the same target as {kind:\"merge\"} is refused for the merge reason only — the harness clause is lane-scoped",
+    rNaMerge.status === 409 && rNaMergeText.includes("no running or persisted terminal merge exists")
+      && !rNaMergeText.includes("not automatable"),
+    `${rNaMerge.status} ${rNaMergeText}`);
+  // GEGENPROBE: same receiver, same shape, DEFAULT adapter — accepted and armed. Without it the
+  // 409s above could be any regression that broke the route. Watch deleted and lane killed right
+  // after, so neither can answer a later duplicate subscription with existing:true.
+  const okTgt = (await (await post("/api/lanes", { repo: REPO })).json()) as
+    { slot: number; cwd: string; branch: string };
+  const rOk = await post(`/api/slots/${aId}/watch`, { target: okTgt.slot, idleSec: 3600 });
+  const rOkJ = (await rOk.json()) as { ok?: boolean; watch?: WatchRow };
+  check("GEGENPROBE: the same watch on a default-adapter lane is accepted and armed",
+    rOk.status === 200 && rOkJ.ok === true && rOkJ.watch?.armed === true
+      && rOkJ.watch?.target === okTgt.slot,
+    `${rOk.status} ${JSON.stringify(rOkJ.watch ?? null)}`);
+  if (rOkJ.watch?.id) await post(`/api/watches/${rOkJ.watch.id}/delete`, {});
+  await post(`/api/slots/${okTgt.slot}/kill`, {});
+
   // === THE SELF TWIN: POST /api/self/watch =====================================================
   // Same mint (createWatchForSlot), different principal: `s` comes from the token instead of the
   // URL. The delivery machinery is therefore already proven by the owner half above and is not
@@ -1679,6 +1719,7 @@ export async function run(): Promise<void> {
       ["itself", { target: cId }, 400, "a session cannot watch itself"],
       ["an inactive slot", { target: idle }, 400, "target slot not active"],
       ["a non-lane slot", { target: aId }, 409, "target is not a lane — done-looking only classifies lanes"],
+      ["a lane on a non-automatable harness", { target: naTgt.slot }, 409, "is not automatable"],
       ["the ⚙ steward", { target: peers[4].slot }, 409, "the ⚙ steward is never classified done-looking"],
     ];
     for (const [what, body, status, reason] of targetRejects) {
@@ -1689,6 +1730,7 @@ export async function run(): Promise<void> {
     }
     check("self-watch setup: peers[4]'s label is restored, so the cap block targets a real lane",
       (await post(`/api/slots/${peers[4].slot}/rename`, { label: "watch-peer" })).ok);
+    await post(`/api/slots/${naTgt.slot}/kill`, {});
 
     // --- the binding, and the reason a pane-typing route can be handed to a session at all: the
     // RECEIVER is the token's slot. A `slot` field naming a different one is not validated and

@@ -4949,6 +4949,10 @@ export async function run(ctx: Ctx): Promise<void> {
   // in-program land decisions belong to the owning Project MAIN, not the Owner."
   // Two halves are proved here: the ordered refusal ladder in front of the land, and the land
   // itself happening WITHOUT an owner token.
+  //
+  // THE SLOTS THIS SECTION FOUNDS A MAIN INTO, collected for the fixture cleanup at the end of the
+  // module — see it for why. Declared out here because the cleanup lives outside this block.
+  const landFixtureMains: number[] = [];
   {
     type LandTask = { id: string; kind: string; status: string; programId?: string; slot?: number | null };
     type LandSlot = { id: number; cwd: string | null; label: string | null;
@@ -5011,6 +5015,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const ladderSlot = ladderBody.slot ?? null;
     const ladderState = ladderSlot === null ? undefined : readState().slots?.[String(ladderSlot)];
     const ladderTok = ladderState?.selfToken ?? "";
+    if (ladderSlot !== null) landFixtureMains.push(ladderSlot);
     const ladderBinding = (await ownerPrograms()).find((p) => p.id === ladderProgram.id)?.main;
     check("self-land fixture: a LIVE bound MAIN whose recorded identity triple matches its occupant",
       ladderBoot.ok && ladderSlot !== null && /^[0-9a-f]{32}$/.test(ladderTok)
@@ -5109,6 +5114,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const landMainSlot = landBootBody.slot ?? null;
     const landMainState = landMainSlot === null ? undefined : readState().slots?.[String(landMainSlot)];
     const landTok = landMainState?.selfToken ?? "";
+    if (landMainSlot !== null) landFixtureMains.push(landMainSlot);
     await setPromotion(landProgram.id, { v: 1, selfLand: "green-only" });
     check("self-land green fixture: the MAIN is bound in the ONE repo that has its own verify entry",
       landBoot.ok && landMainSlot !== null && /^[0-9a-f]{32}$/.test(landTok)
@@ -5716,6 +5722,217 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify({ planted: bfPlantedD, binding: bfAfterD, door: bfDoorD.status,
         text: bfDoorDText.slice(0, 160) }));
 
+    // --- (7) THE LAND THAT REACHED NOBODY. A bound Program-MAIN learns a merge terminal only
+    // through a Watch IT armed, and the self-land route hands it that subscription only AFTER its
+    // own job started. So every land the MAIN did not itself start left it standing on stale
+    // execution truth with its dependent rows blocked behind it, until a poll or a human nudge
+    // (measured 2026-08-29 on program f99e9354, task 8e91fdc9 — the land itself was correct). The
+    // ⏏ door was worse than "no subscription": it minted NO merge terminal at all, so even a MAIN
+    // that had one got the "no notification will come" disarm over a land that had happened.
+    //
+    // Five facts, and the four negatives are what separate "the MAIN is told" from "somebody is
+    // told": a foreign program's live MAIN, a recycled MAIN occupant, a pre-existing subscription
+    // and a retry must each produce NOTHING NEW.
+    type PmEvent = { id: string; watchId: string | null; kind: string; receiverSlot: number;
+      receiverOpenedAt: number; subjectSlot: number; status: string;
+      payload?: { status?: string; landed?: boolean; branch?: string } };
+    type PmWatch = { id: string; kind?: string; slot: number; slotOpenedAt?: number;
+      target?: number; targetBranch?: string; armed: boolean };
+    const pmPoll = async (): Promise<{ events: PmEvent[]; watches: PmWatch[] }> =>
+      (await (await get("/api/sessions")).json()) as { events: PmEvent[]; watches: PmWatch[] };
+    // JOINED ON THE BRANCH, never on the slot id: slot numbers are recycled inside this very
+    // section, and a count keyed on one would fold two different lanes into one number.
+    const pmEvents = async (branch: string): Promise<PmEvent[]> =>
+      (await pmPoll()).events.filter((e) => e.kind === "merge-terminal" && e.payload?.branch === branch);
+    const pmWatches = async (branch: string): Promise<PmWatch[]> =>
+      (await pmPoll()).watches.filter((w) => w.kind === "merge" && w.targetBranch === branch);
+    // the land mints inside landLane, before the teardown the driver observes — but the poll is
+    // bounded rather than sampled, for the same reason every other read in this section is.
+    const pmWaitEvents = async (branch: string, want: number, ms = 20_000): Promise<PmEvent[]> => {
+      const deadline = Date.now() + ms;
+      for (;;) {
+        const rows = await pmEvents(branch);
+        if (rows.length >= want || Date.now() >= deadline) return rows;
+        await Bun.sleep(120);
+      }
+    };
+    // TWO FRESH PROGRAMS, each with its OWN newly founded MAIN — the subject and the foreign
+    // control — founded in the SAME repo on purpose: then the ONLY thing separating the two
+    // receivers is the program bracket, which is exactly the fact under test.
+    //
+    // THE SUBJECT IS NOT `landProgram`, AND THAT IS A MEASUREMENT, not tidiness. Every land in
+    // sections (2)–(5) is a terminal land of a task of that Program, so this rule armed and spent
+    // five events into its MAIN's slot — the delivery cap (FLEET_EVENT_MAX_OPEN_PER_SLOT = 5) was
+    // therefore already full here, and both the arming and the MAIN's own /api/self/watch were
+    // refused, correctly (measured 2026-08-29: five merge-terminal rows on that slot, the last one
+    // the cookie lane's). A receiver that has spent its budget is a different fact from the one
+    // under test, so the budget is asserted as a PRECONDITION below rather than assumed.
+    const pmProgram = await activateNewProgram("Land event subject bracket");
+    const pmBoot = await beginBootstrap(pmProgram.id, { cwd: REPO2, label: "landevent-subject-main" });
+    const pmMainSlot = (await pmBoot.json() as { slot?: number; error?: string }).slot ?? null;
+    const pmMainState = pmMainSlot === null ? undefined : readState().slots?.[String(pmMainSlot)];
+    const pmTok = pmMainState?.selfToken ?? "";
+    const pmForeignProgram = await activateNewProgram("Land event foreign bracket");
+    const pmForeignBoot = await beginBootstrap(pmForeignProgram.id, { cwd: REPO2, label: "landevent-foreign-main" });
+    const pmForeignSlot = (await pmForeignBoot.json() as { slot?: number; error?: string }).slot ?? null;
+    for (const slot of [pmMainSlot, pmForeignSlot]) if (slot !== null) landFixtureMains.push(slot);
+    const pmPrograms = await ownerPrograms();
+    const pmForeignBinding = pmPrograms.find((p) => p.id === pmForeignProgram.id)?.main;
+    const pmSubject = pmPrograms.find((p) => p.id === pmProgram.id);
+    check("land-event fixture: two active programs each carry a LIVE bound MAIN in two different slots, and the subject MAIN's return path is OPEN",
+      pmBoot.ok && pmForeignBoot.ok && pmMainSlot !== null && pmForeignSlot !== null
+        && pmForeignSlot !== pmMainSlot && /^[0-9a-f]{32}$/.test(pmTok)
+        && pmForeignBinding?.slot === pmForeignSlot
+        && pmSubject?.main?.slot === pmMainSlot && pmSubject.main.openedAt === pmMainState?.openedAt
+        && (pmSubject.deliveryBudget?.free ?? 0) >= 3,
+      JSON.stringify({ subject: pmMainSlot, subjectBinding: pmSubject?.main,
+        budget: pmSubject?.deliveryBudget, foreign: pmForeignSlot, foreignBinding: pmForeignBinding }));
+
+    // (7a) THE BOARD'S ⏫ LAND — the exact channel the measurement observed (landedBy owner, via
+    // cookie). That path already MINTED a merge terminal; what it had no receiver for is a MAIN
+    // that never subscribed, which is every MAIN whose own land door was shut.
+    await setMergeMode("blocked"); // clean auto-land: the agent is never consulted
+    const pmRowId = await makeTask({ text: "land event owner-merge row", programId: pmProgram.id, repo: REPO2 });
+    const pmLane = await conflictLane(pmRowId);
+    if (pmLane.cwd) {
+      writeFileSync(`${pmLane.cwd}/landevent.txt`, "work the owner lands from the board\n");
+      spawnSync("git", ["-C", pmLane.cwd, "add", "landevent.txt"]);
+      spawnSync("git", ["-C", pmLane.cwd, "commit", "-qm", "land event owner work"]);
+    }
+    const pmReady = pmLane.slot === null ? false : await waitDoneLooking(pmLane.slot);
+    const pmBefore = main2Of();
+    const pmDrive = await driveLand(pmLane.slot, pmBefore, () => post(`/api/slots/${pmLane.slot}/merge`, {}));
+    const pmLanded = pmReady && pmLane.branch !== "" && pmDrive.main !== pmBefore;
+    check("land-event fixture: the board's ⏫ land moved main off the tip this probe recorded",
+      pmLanded, JSON.stringify({ ready: pmReady, before: pmBefore.slice(0, 8),
+        after: pmDrive.main.slice(0, 8), branch: pmLane.branch, drive: pmDrive.log }));
+    const pmRows = await pmWaitEvents(pmLane.branch, 1);
+    // BRANCH-SCOPED, never slot-scoped: slot ids are recycled across the whole run, so a global
+    // "no event for the foreign slot" would answer about strangers' rows from earlier modules.
+    const pmLaneWatches = pmLane.branch === "" ? [] : await pmWatches(pmLane.branch);
+    check("owner land: the bound Program-MAIN gets exactly ONE durable merge-terminal event, bound to its own occupant — and the OTHER program's live MAIN gets neither event nor watch",
+      pmLanded && pmRows.length === 1 && pmRows[0]?.receiverSlot === pmMainSlot
+        && pmRows[0]?.receiverOpenedAt === pmMainState?.openedAt
+        && pmRows[0]?.subjectSlot === pmLane.slot && pmRows[0]?.payload?.landed === true
+        && pmLaneWatches.length === 1 && pmLaneWatches[0]?.slot === pmMainSlot
+        && pmRows.every((e) => e.receiverSlot !== pmForeignSlot)
+        && pmLaneWatches.every((w) => w.slot !== pmForeignSlot),
+      JSON.stringify({ rows: pmRows, watches: pmLaneWatches, foreignSlot: pmForeignSlot }));
+    // …and the retry, which is the same land asked for twice: the lane is gone, both owner doors
+    // refuse it, and the count is exactly where it was.
+    const pmRetryLand = await post(`/api/slots/${pmLane.slot}/land`, {});
+    const pmRetryMerge = await post(`/api/slots/${pmLane.slot}/merge`, {});
+    check("owner land: a retry on the torn-down lane is refused by both owner doors and mints no second event",
+      !pmRetryLand.ok && !pmRetryMerge.ok && (await pmEvents(pmLane.branch)).length === 1,
+      JSON.stringify({ land: pmRetryLand.status, merge: pmRetryMerge.status,
+        events: (await pmEvents(pmLane.branch)).length }));
+
+    // (7b) THE ⏏ DOOR, which is the half that minted nothing at all. A lane with no commits of its
+    // own is clean and already merged, so this is the pure teardown path: no agent, no verify, no
+    // integration branch movement — and it must still tell the MAIN its row is done.
+    const pmDirectRowId = await makeTask({ text: "land event direct-land row", programId: pmProgram.id, repo: REPO2 });
+    const pmDirect = await conflictLane(pmDirectRowId);
+    const pmDirectWatchesBefore = pmDirect.branch === "" ? -1 : (await pmWatches(pmDirect.branch)).length;
+    const pmDirectLand = await post(`/api/slots/${pmDirect.slot}/land`, {});
+    const pmDirectRows = pmDirect.branch === "" ? [] : await pmWaitEvents(pmDirect.branch, 1);
+    const pmDirectWatch = pmDirect.branch === "" ? [] : await pmWatches(pmDirect.branch);
+    // `audit()` queues its line on an append chain, so the trail row is not on disk the instant the
+    // route answered — waited for, bounded, exactly as the ambient-use probe above waits for its own.
+    const pmTrailRow = async (watchId: string | undefined, ms = 10_000): Promise<boolean> => {
+      const deadline = Date.now() + ms;
+      for (;;) {
+        if (!!watchId && slAudits().some((r) => r.event === "program_main_land_watch"
+          && (r.detail ?? "").startsWith(`${watchId} `))) return true;
+        if (Date.now() >= deadline) return false;
+        await Bun.sleep(120);
+      }
+    };
+    check("⏏ direct land: the door that minted no merge terminal at all now arms the MAIN's missing subscription and spends it — one event, one watch, on the trail",
+      pmDirectLand.ok && pmDirectWatchesBefore === 0 && pmDirectRows.length === 1
+        && pmDirectRows[0]?.receiverSlot === pmMainSlot
+        && pmDirectRows[0]?.receiverOpenedAt === pmMainState?.openedAt
+        && pmDirectRows[0]?.payload?.landed === true
+        && pmDirectWatch.length === 1 && pmDirectWatch[0]?.armed === false
+        && pmDirectRows[0]?.watchId === pmDirectWatch[0]?.id
+        && await pmTrailRow(pmDirectWatch[0]?.id),
+      JSON.stringify({ land: pmDirectLand.status, text: pmDirectLand.ok ? "" : await pmDirectLand.text(),
+        rows: pmDirectRows, watches: pmDirectWatch }));
+
+    // (7c) THE SUBSCRIPTION THAT ALREADY EXISTS. FLEET_TEST_LAND_PAUSE_MS is the product's own
+    // test knob (the same one land-durability uses) and it holds the job between "main moved" and
+    // the teardown — the exact window in which a MAIN's merge subscription is accepted. With one
+    // armed, nothing may be armed beside it and no twin may be minted: ONE watch, ONE event, and
+    // it carries the id of the subscription the MAIN made itself.
+    await restartSrv({ FLEET_TEST_LAND_PAUSE_MS: "8000" });
+    const pmDupRowId = await makeTask({ text: "land event pre-armed row", programId: pmProgram.id, repo: REPO2 });
+    const pmDup = await conflictLane(pmDupRowId);
+    if (pmDup.cwd) {
+      writeFileSync(`${pmDup.cwd}/landevent-dup.txt`, "work landed while its MAIN already listens\n");
+      spawnSync("git", ["-C", pmDup.cwd, "add", "landevent-dup.txt"]);
+      spawnSync("git", ["-C", pmDup.cwd, "commit", "-qm", "land event pre-armed work"]);
+    }
+    const pmDupReady = pmDup.slot === null ? false : await waitDoneLooking(pmDup.slot);
+    const pmDupBefore = main2Of();
+    const pmDupStart = await post(`/api/slots/${pmDup.slot}/merge`, {});
+    let pmDupAdvanced = false;
+    for (let i = 0; i < 300 && !pmDupAdvanced; i++) {
+      pmDupAdvanced = main2Of() !== pmDupBefore;
+      if (!pmDupAdvanced) await Bun.sleep(100);
+    }
+    const pmDupSub = await fetch(`${BASE}/api/self/watch`, {
+      method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": pmTok },
+      body: JSON.stringify({ kind: "merge", target: pmDup.slot, idleSec: 0 }),
+    });
+    const pmDupSubBody = await pmDupSub.json() as { watch?: { id: string; armed: boolean }; error?: string };
+    const pmDupRows = pmDup.branch === "" ? [] : await pmWaitEvents(pmDup.branch, 1, 30_000);
+    const pmDupWatches = pmDup.branch === "" ? [] : await pmWatches(pmDup.branch);
+    check("pre-armed subscription: the MAIN's OWN watch is spent and no second one is armed beside it — one watch, one event, its id",
+      pmDupReady && pmDupStart.ok && pmDupAdvanced && pmDupSub.ok && pmDupSubBody.watch?.armed === true
+        && pmDupWatches.length === 1 && pmDupWatches[0]?.id === pmDupSubBody.watch.id
+        && pmDupRows.length === 1 && pmDupRows[0]?.watchId === pmDupSubBody.watch.id
+        && pmDupRows[0]?.receiverSlot === pmMainSlot && pmDupRows[0]?.payload?.landed === true,
+      JSON.stringify({ ready: pmDupReady, started: pmDupStart.status, advanced: pmDupAdvanced,
+        sub: pmDupSubBody, watches: pmDupWatches, rows: pmDupRows }));
+    await restartSrv(); // …and the pause knob is gone with it
+
+    // (7d) THE RECYCLED MAIN. The binding names an occupation, not a slot number: the same slot
+    // reopened is a DIFFERENT session, and inheriting the predecessor's event would tell a
+    // stranger that a row it never filed is done. Nothing is minted and nothing is armed — and the
+    // fixture proves the recycle first, so this cannot pass because the land failed.
+    if (pmMainSlot !== null) {
+      await post(`/api/slots/${pmMainSlot}/kill`, {});
+      // the teardown and the reopen are two acts on one slot; the pane has to be gone before the
+      // next open takes it, so this is polled rather than assumed (a failed reopen would leave the
+      // binding UNBOUND instead of STALE, which is a different negative than the one under test).
+      for (let i = 0; i < 40; i++) {
+        if ((await post(`/api/slots/${pmMainSlot}/open`, { cwd: REPO2, label: "landevent-recycled-main" })).ok) break;
+        await Bun.sleep(250);
+      }
+    }
+    const pmRecycledState = pmMainSlot === null ? undefined : readState().slots?.[String(pmMainSlot)];
+    const pmStaleBinding = (await ownerPrograms()).find((p) => p.id === pmProgram.id);
+    const pmRecycled = !!pmRecycledState?.cwd && pmStaleBinding?.main?.slot === pmMainSlot
+      && pmStaleBinding.main.openedAt !== pmRecycledState.openedAt
+      && pmStaleBinding.health?.occupancy === "stale";
+    const pmStaleRowId = await makeTask({ text: "land event stale-binding row", programId: pmProgram.id, repo: REPO2 });
+    const pmStale = await conflictLane(pmStaleRowId);
+    const pmStaleLand = await post(`/api/slots/${pmStale.slot}/land`, {});
+    check("recycled MAIN: a binding whose occupant was replaced inherits nothing — the land succeeds and mints no event and arms no watch",
+      pmRecycled && pmStaleLand.ok && pmStale.branch !== ""
+        && (await pmEvents(pmStale.branch)).length === 0
+        && (await pmWatches(pmStale.branch)).length === 0,
+      JSON.stringify({ recycled: pmRecycled, occupancy: pmStaleBinding?.main,
+        live: pmRecycledState?.openedAt, land: pmStaleLand.status,
+        events: pmStale.branch === "" ? -1 : (await pmEvents(pmStale.branch)).length }));
+
+    for (const id of [pmRowId, pmDirectRowId, pmDupRowId, pmStaleRowId]) {
+      await post(`/api/tasks/${id}/done`, {});
+      await post(`/api/tasks/${id}/delete`, {});
+    }
+    for (const slot of [pmForeignSlot, pmMainSlot]) if (slot !== null) await post(`/api/slots/${slot}/kill`, {});
+    await programPost(pmForeignProgram.id, "complete");
+    await programPost(pmProgram.id, "complete");
+
     for (const slot of [redLaneSlot, greenLaneSlot, cfLane.slot, cf2Lane.slot, suspectLane.slot,
       cookieLane.slot, landMainSlot, ladderSlot]) if (slot !== null) await post(`/api/slots/${slot}/kill`, {});
     for (const id of [ladderRowId, landForeignRowId, landNotizRowId, greenRowId, redRowId, cfRowId,
@@ -5738,6 +5955,20 @@ export async function run(ctx: Ctx): Promise<void> {
   await Bun.sleep(500);
   const cleaned = readState();
   cleaned.programs = (cleaned.programs ?? []).filter((p) => bootstrapBaselineIds.has(p.id));
+  // …and the SAME rule for what those fixtures left in the event trail. Every land of a
+  // fixture-Program lane arms and spends one merge-terminal event into its MAIN's slot
+  // (`server.ts#armProgramMainLandWatch`), and a terminal event is retained per slot — so the land
+  // door's eight fixture lands rode the 2 s sessions poll from here to the end of the run and cost
+  // the byte budget ~4.9 KB of pure test residue (measured 2026-08-29: 15 857 B against a 14 KiB
+  // budget, 11 of 18 event rows). Dropped by RECEIVER SLOT and only for slots this module founded
+  // a MAIN into, and only for rows whose receiver is already gone: nothing live is touched, and a
+  // merge-terminal another module minted into a slot it owns survives.
+  const fixtureMainSlots = new Set(landFixtureMains);
+  cleaned.events = (cleaned.events ?? []).filter((e) => {
+    const row = e as { receiverSlot?: number; kind?: string; status?: string };
+    return !(row.kind === "merge-terminal" && row.status === "receiver-gone"
+      && typeof row.receiverSlot === "number" && fixtureMainSlots.has(row.receiverSlot));
+  });
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(cleaned, null, 2), { mode: 0o600 });
   await restartSrv();
   check("Program-MAIN fixture cleanup: only the pre-bootstrap registry rows remain",

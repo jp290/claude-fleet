@@ -1,18 +1,19 @@
-# HANDOFF — Program-MAIN „Linux-Work-Horse" (Slot 1, S4-Erstbetrieb), 2026-08-29 mittags
+# HANDOFF — Programm „Linux-Work-Horse" ABGESCHLOSSEN (Slot 1), 2026-08-29 mittags
 
 Zustand wird ABGELEITET: `./state.sh` · `./register.sh` · Live-Queue. Vorgänger-Handoff: `0d4dca8`
 (dessen S4-Fahrplan ist unten abgearbeitet; die dortige Stash-Warnung gilt WEITER).
 
 ## Rolle und Programm
 
-Programm **fcf3fec9c9e88bd33749e7d5** „Linux-Work-Horse-Anbindung", Status active, Plan:
+Programm **fcf3fec9c9e88bd33749e7d5** „Linux-Work-Horse-Anbindung", Status **complete**
+(12:33, alle fünf S4-Kriterien belegt), Plan:
 `docs/linux-second-host-programm-2026-08-28.md` (mit neuem Abschnitt „S4 — was der Erstbetrieb
 geändert hat"). Stop-Linien unverändert: kein Auto-Dispatch, kein ssh-Runner (Mac←Linux), kein
 Push, kein B2-Proxy. G0/G1/G2 alle erteilt. **Neu am 2026-08-29: der Owner hat Option B des
 S4-Gates freigegeben** (der Grace-Knopf, siehe unten) — das ist eine Erweiterung über „Programm
 endet mit S4" hinaus und steht als solche im Plan.
 
-## S4 — Stand: (1)–(4) FERTIG, (5) fast
+## S4 — ALLE FÜNF FERTIG. Programm steht auf `complete` (12:33)
 
 - **(1) Zugang**: `ssh` auf den second-host geht mit dem Key dieses Macs. Der Setup-Report behauptete
   das schon am 28.08., es stimmte NICHT — eine Peer-Session hatte mit ihrem eigenen Schlüsselpaar
@@ -28,9 +29,11 @@ endet mit S4" hinaus und steht als solche im Plan.
   `./e2e-isolated.sh`, deterministisch 1655 PASS / 67 FAIL, Abbruch bei `programs.ts:2250`,
   byte-identisch über alle drei Läufe. Das ist die Adjudikationsgrundlage: **diese Signatur ist
   Plattform, jede andere ein echter Befund.**
-- **(5) Portal-Job remote im Ledger**: der Claim FUNKTIONIERT (Zeile mit `remote:{name:second-host}`
-  im Ledger, 11:54), aber das Ergebnis war `unknown` — siehe „Der Fund" unten. Nach dem
-  ausstehenden Deploy fehlt nur noch EIN Auslöser-Land für eine GEMESSENE Zeile.
+- **(5) Portal-Job remote im Ledger**: ERFÜLLT um 12:32:48. Ledger-Zeile für `748ec97`:
+  `result: red · ms: 596841 · exitCode: 1 · checks{ran:12,failed:9} · remote{name:"second-host"}`,
+  Abbruch an `programs.ts:2250`. **Rot war die vorab hingeschriebene Erwartung** — 597 s liegen
+  exakt im Baseline-Korridor (598/611/604 s) und die Signatur ist die bekannte. Es ist eine
+  MESSUNG, kein `unknown`, und damit der Beweis, den das Kriterium verlangt.
 
 ## Was heute gelandet ist (Bodies lesen: `git log 0d4dca8..HEAD`)
 
@@ -40,8 +43,10 @@ endet mit S4" hinaus und steht als solche im Plan.
   darum für heute.
 - `050f96c` `FLEET_AUDIT_HELPER_GRACE_MS` (Lane) — Post-Land-Audit grün 3133/0, deployt `ef4cae9b`.
 - `1395962` S4-Nachtrag in Plan + Baseline-Notiz (Lane).
-- **In Flug beim Schreiben dieses Handoffs**: `baf2a3a` (Lane `fleet/260829095944-e9d1`), der
-  Klon-Fix. Land war gestartet; Ergebnis in `git log` und `git notes --ref=fleet/land` nachsehen.
+- `5707b76` Klon-Fix `-b` für Audit-Jobs (Lane) — Gate grün, volle Kette; deployt `0d607b3d`.
+- `6e6f450` dieser Handoff (Direkt-Commit, docs-only, pins ALL PASS).
+- `748ec97` `docs/verify-tiering.md` §14.1, der Adjudikationseintrag (Lane) — und zugleich das
+  Auslöser-Land, dessen Audit der second-host remote gemessen hat.
 
 ## DER FUND, der den Zweitrechner gerechtfertigt hat
 
@@ -61,23 +66,25 @@ ER SELBST statt sich als Install-Fehler zu tarnen) und macht die Fixture fähig,
 (`GIT_CONFIG_*` auf den Daemon-Prozess, NICHT auf `~/.gitconfig`). Die Lane hat die Mutation
 gefahren: zurückgedreht → 6 FAILs mit exakt der Live-Signatur.
 
-## OFFEN — das Nächste, in dieser Reihenfolge
+## OFFEN — für die Nachfolge, nach Dringlichkeit
 
-1. **Land von `baf2a3a` prüfen**, dann **Verb-2-Deploy** (`POST /api/deploy`; 409 heißt „ein
-   Post-Land-Audit läuft" und ist richtig — dann Audit-Watch armieren und warten).
-2. **Den second-host-Checkout auf den neuen Stand bringen** — er hängt auf `0d4dca8` und der Daemon
-   fährt von dort. Weg: `git bundle create` hier, `scp`, im Remote-Checkout fetchen/resetten,
-   `sudo systemctl restart fleet-helper`. **Nicht vergessen**, sonst läuft dort weiter der Code
-   mit dem Klon-Fehler.
-3. **Ein Auslöser-Land** (jede echte Lane) → der Audit queued, die Grace (60 s) gibt dem second-host
-   vier Poll-Versuche → **gemessene** Ledger-Zeile mit `remote`. **Erwartung vorab, damit sie
-   nicht umgedeutet wird: sie wird ROT sein**, mit den 67 bekannten Linux-Signaturen. Genau das
-   ist der bestandene Beweis für S4-(5), nicht sein Fehlschlag. Danach Programm auf `complete`.
-4. **Owner-Entscheidung, von der Lane sauber liegengelassen**: der MENSCHLICHE Pfad hat dasselbe
+1. **Owner-Entscheidung, von zwei Lanes sauber liegengelassen**: der MENSCHLICHE Pfad hat dasselbe
    Loch. `src/helper.ts#bootstrapText` gibt für einen Audit-Job `git clone <file> fleet-audit`
    ohne `-b` aus, und `e2e/pins.ts` RULE_CLONE pinnt das AKTIV fest („the AUDIT arm must NOT grow
-   a `-b`"). Der Pin kodiert einen heute widerlegten Satz. Ein-Zeilen-Fix plus Umdrehen des Pins —
-   aber ein Pin umzudrehen ist eine Regeländerung und gehört dem Owner.
+   a `-b`"). Der Pin kodiert einen heute widerlegten Satz — der Daemon ist repariert, die von
+   Hand kopierbare Anleitung im Portal führt einen Menschen weiter in denselben leeren Baum.
+   Ein-Zeilen-Fix plus Umdrehen des Pins — aber ein Pin umzudrehen ist eine Regeländerung.
+2. **Die 67 Linux-FAILs** (`docs/messungen/second-host-baseline-2026-08-29.md`): EINE Wurzel in der
+   Codex-Stand-in-Fixture von `e2e/programs.ts`, plus die dash-Kill-Familie. Solange sie steht,
+   kann der second-host für den Fleet-Baum kein Grün liefern — jedes Remote-Verdikt ist „rot mit
+   bekannter Signatur". Das ist die erste Wurzel für jedes Folge-Programm.
+3. **S5-Kandidat**: `daemon.ts` fährt EINEN `suiteCmd` für BEIDE Job-Arten (`kind` wird nur
+   geloggt); für eine lane-suite-Vorschau aus einem echt fremden Repo würde die Fleet-Repo-Wache
+   still zu `unknown`.
+4. **Owner-Interesse, notiert 2026-08-29**: den second-host als VOLLE Fleet-Instanz nutzen, nicht
+   nur als Suite-Helfer. Zwei Varianten (eigener Server dort mit systemd statt launchd · oder der
+   Mac-Fleet spawnt Lanes per ssh — das wäre der in G0 ausgeschlossene ssh-Runner). Braucht ein
+   eigenes Programm und eine Owner-Entscheidung; 7,6 GiB RAM sind die reale Grenze.
 
 ## Fakten, die nur hier stehen
 

@@ -27,6 +27,14 @@ the helper machine; everything this daemon does is a pull.
   stop the daemon before it makes any call at all — no heartbeat, no job poll. A machine that does
   not poll claims nothing, and a claim that is never made cannot be lost: the portal's expiry rail
   falls a job back to the Fleet's own drain.
+- **A fresh audit job may be held for this machine — `FLEET_AUDIT_HELPER_GRACE_MS`, on the Fleet
+  side.** A land kicks the Fleet's own drain synchronously, so without it an audit is already the
+  Fleet's before this daemon's 15 s poll has seen it exist (measured 2026-08-29,
+  `docs/messungen/second-host-baseline-2026-08-29.md`). Set above zero, the Fleet's drain leaves an
+  entry that young alone for that long — but only while a device is registered, wished `active`,
+  reporting `active` and beating recently. Unset or `0` is the old behaviour exactly. It never
+  starves anything: the moment the grace lapses the local drain takes the job, which is the same
+  fallback the expiry rail above provides, one step earlier.
 - **The quieter of the two modes wins.** The owner's `desiredMode`, pulled in the reply to this
   machine's heartbeat, always wins downwards; it never overrides quiet hours or the load threshold
   upwards, because the person who set those is standing next to the machine.

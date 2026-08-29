@@ -477,4 +477,123 @@ export async function run(h: {
     JSON.stringify(settled.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`)));
   check("(K) the queue is empty again — nothing was left holding a job nobody runs",
     (await jobs()).jobs.length === 0, JSON.stringify((await jobs()).jobs));
+
+  // ===== (K.7) THE PORTAL'S RIGHT OF FIRST REFUSAL — FLEET_AUDIT_HELPER_GRACE_MS ================
+  // Everything above needed the DECOY to exist at all: a land kicks the drain synchronously, so an
+  // audit job is this box's before the other machine's 15 s poll has ever seen it. Measured
+  // 2026-08-29 (docs/messungen/second-host-baseline-2026-08-29.md) — a helper could not take one
+  // fleet audit in live operation. The grace is the owner's answer: for that long the drain leaves
+  // a fresh entry alone, IF a machine that could actually claim it is standing there.
+  //
+  // Four checks, and they are one statement split four ways: the grace HOLDS (1), the grace never
+  // STARVES (2), the default is untouched (3), and it never holds for a machine that cannot take
+  // the work (4). Each of the last three changes exactly ONE variable against the first.
+  const GRACE_MS = 8000;
+  await killSrv();
+  check("(K7) setup: the server restarts with a grace, and a claim timeout a claim fits inside",
+    await startSrv({ audit: true, extra: { FLEET_AUDIT_HELPER_GRACE_MS: String(GRACE_MS),
+      FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000", FLEET_HELPER_SWEEP_MS: "15000" } }));
+  await Bun.sleep(750);
+  await setAuditMode("green");
+  // THE PRECONDITION, set rather than assumed: the register came back from disk carrying (K.2b)'s
+  // quiet on both halves, and a grace that never engages would make every check below pass for the
+  // wrong reason — "the drain took it" is also what a correct grace does when nobody can claim.
+  await post(`/api/helper/devices/${DEVICE}/mode`, { mode: "active" });
+  const beatOn = await hpost("/api/helper/device",
+    { deviceId: DEVICE, name: DEVICE_NAME, mode: "active", load: 0.2 });
+  check("(K7) setup: a live device that says active, under an owner's wish of active",
+    beatOn.ok && ((await beatOn.json()) as { desiredMode?: string }).desiredMode === "active"
+      && (await jobs()).device?.mode === "active",
+    `${beatOn.status} ${JSON.stringify((await jobs()).device)}`);
+
+  // (1) THE GRACE HOLDS. No decoy anywhere — this is the case that was unreachable before.
+  const rowsBeforeGrace = (await newRepoRows()).length;
+  const graceLane = await openLane(REPO, "graceme");
+  const graceLanded = await driveMerge(graceLane, graceLane.branch);
+  const graceSha = headOf();
+  await Bun.sleep(2500); // a (wrong) local run has had 2.5s of an 8s grace in which to appear
+  const graceJob = await jobFor(REPO);
+  check("(K7) WITH A LIVE HELPER, THE DRAIN LEAVES A FRESH JOB ALONE — no decoy, nothing running",
+    graceLanded.gone && !!graceJob && graceJob.claim === null && graceJob.localRunning === false
+      && (await liveRepo()) === null && (await newRepoRows()).length === rowsBeforeGrace,
+    `${JSON.stringify(graceJob)} live=${await liveRepo()} rows=${(await newRepoRows()).length}/${rowsBeforeGrace}`);
+  const graceClaim = graceJob ? await hpost("/api/helper/claim", { jobId: graceJob.id, deviceId: DEVICE }) : null;
+  const graceBody = (await graceClaim?.json()) as { job?: { mainSha: string } } | undefined;
+  check("(K7) …and the helper CLAIMS it inside the grace, on the tree that just landed",
+    graceClaim?.ok === true && graceBody?.job?.mainSha === graceSha,
+    `${graceClaim?.status} ${JSON.stringify(graceBody)} want=${graceSha}`);
+  const graceReport = await hpost("/api/helper/result",
+    { jobId: graceJob?.id ?? "", exitCode: 0, tail: "PASS  remote under grace\nALL PASS" });
+  const graceRows = await waitNewRepoRows(rowsBeforeGrace + 1);
+  check("(K7) …and the whole loop closes: one REMOTE row for that tree, and no local twin",
+    graceReport.ok && graceRows.filter((r) => r.mainSha === graceSha).length === 1
+      && graceRows.find((r) => r.mainSha === graceSha)?.remote?.name === DEVICE_NAME,
+    `${graceReport.status} ${JSON.stringify(graceRows.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`))}`);
+
+  // (2) THE GRACE NEVER STARVES. Nobody claims this one, and NOTHING ELSE would ever wake the
+  // drain: the land's own kick already happened, and the only other kicks in the server are a claim
+  // lapsing and a helper reporting — neither of which occurs here. So the row below can only exist
+  // because the skip armed its own return (armAuditGraceKick). That is what this check measures.
+  const rowsBeforeFall = (await newRepoRows()).length;
+  const fallLane = await openLane(REPO, "gracefall");
+  await driveMerge(fallLane, fallLane.branch);
+  const fallSha = headOf();
+  const landedAt = Date.now();
+  await Bun.sleep(2500);
+  const stillOpen = await jobFor(REPO);
+  check("(K7) setup: 2.5s in, the unclaimed job is still open and still un-audited here",
+    !!stillOpen && stillOpen.claim === null && stillOpen.localRunning === false
+      && (await newRepoRows()).length === rowsBeforeFall,
+    JSON.stringify(stillOpen));
+  const fallRows = await waitNewRepoRows(rowsBeforeFall + 1, 60_000);
+  const fellBackRow = fallRows.find((r) => r.mainSha === fallSha);
+  check("(K7) NOTHING STARVES: the grace lapses and the LOCAL drain takes the job after all",
+    !!fellBackRow && !fellBackRow.remote && fellBackRow.result === "green"
+      && fellBackRow.covers.some((c) => c.branch === fallLane.branch),
+    `after ${Date.now() - landedAt}ms ${JSON.stringify(fellBackRow).slice(0, 220)}`);
+  await waitNoLocalRun();
+
+  // (4) NO CLAIM-CAPABLE DEVICE, SAME GRACE. One variable changed against (1): the owner's wish.
+  // A grace held for a machine that would refuse the job is pure delay on this box's own work.
+  const wishOff = await post(`/api/helper/devices/${DEVICE}/mode`, { mode: "off" });
+  check("(K7) setup: the only device is wished OFF — nothing here could claim now",
+    wishOff.ok && ((await wishOff.json()) as { device: DeviceView }).device.desiredMode === "off",
+    `${wishOff.status}`);
+  const rowsBeforeOff = (await newRepoRows()).length;
+  const offLane = await openLane(REPO, "nohelper");
+  await driveMerge(offLane, offLane.branch);
+  const offSha = headOf();
+  const offLandedAt = Date.now();
+  const offRows = await waitNewRepoRows(rowsBeforeOff + 1, 60_000);
+  const offElapsed = Date.now() - offLandedAt;
+  check("(K7) with NO claim-capable device the grace does not apply — the drain takes it at once",
+    offRows.some((r) => r.mainSha === offSha && !r.remote) && offElapsed < GRACE_MS,
+    `row after ${offElapsed}ms, grace ${GRACE_MS}ms`);
+
+  // (3) THE DEFAULT. Grace unset, and the live helper from (1) put back exactly as it was — the one
+  // variable that differs is the env key itself. This is the "byte for byte" half of the contract.
+  await killSrv();
+  check("(K7) setup: the server restarts WITHOUT the grace key",
+    await startSrv({ audit: true, extra: { FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000",
+      FLEET_HELPER_SWEEP_MS: "15000" } }));
+  await Bun.sleep(750);
+  await post(`/api/helper/devices/${DEVICE}/mode`, { mode: "active" });
+  const beatBack = await hpost("/api/helper/device",
+    { deviceId: DEVICE, name: DEVICE_NAME, mode: "active", load: 0.2 });
+  check("(K7) setup: the same live, claim-capable device is back",
+    beatBack.ok && ((await beatBack.json()) as { desiredMode?: string }).desiredMode === "active",
+    `${beatBack.status}`);
+  await setAuditMode("slow"); // 6s — the default takes the tree instantly, so give it a visible run
+  const nowLane = await openLane(REPO, "defaultnow");
+  await driveMerge(nowLane, nowLane.branch);
+  check("(K7) GRACE UNSET IS TODAY'S BEHAVIOUR: the drain takes the tree at once, helper or not",
+    await waitLocalRun(REPO, 5000), `live=${await liveRepo()}`);
+  const nowJob = await jobFor(REPO);
+  const nowClaim = nowJob ? await hpost("/api/helper/claim", { jobId: nowJob.id, deviceId: DEVICE }) : null;
+  check("(K7) …and the claim is refused with the 409 it has always been refused with",
+    nowJob?.localRunning === true && nowClaim?.status === 409,
+    `${JSON.stringify(nowJob)} ${nowClaim?.status} ${JSON.stringify(await nowClaim?.json())}`);
+  await setAuditMode("green");
+  check("(K7) …and that run finished, leaving the queue empty for whatever follows",
+    await waitNoLocalRun() && (await jobs()).jobs.length === 0, JSON.stringify((await jobs()).jobs));
 }

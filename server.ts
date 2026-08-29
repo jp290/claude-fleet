@@ -11761,6 +11761,10 @@ let runningPostLandAudit: RunningAudit | null = null;
 // and that gap is exactly where a remote claim could slip in and make two machines run one tree.
 // This exists so "who owns this repo's audit right now" has an answer with NO interleaving point.
 let auditRunningRepo: string | null = null;
+// The ONE armed re-kick for a grace skip (armAuditGraceKick, beside kickAuditDrain). Declared here
+// with the drain's other state because that is what it is: the drain's memory that it left work
+// lying on purpose and owes itself a second look.
+let auditGraceTimer: ReturnType<typeof setTimeout> | null = null;
 
 // --- THE REMOTE HELPER PORTAL (stage 1) --------------------------------------------------------
 // A second machine takes a tier-2 audit off this one. The whole design is one invariant, stated by
@@ -11790,6 +11794,23 @@ let auditRunningRepo: string | null = null;
 // runs this rail at a few seconds, because the property under test is the FALLBACK, not the wait.
 const HELPER_CLAIM_TIMEOUT_MS = Math.max(5_000, Number(process.env.FLEET_HELPER_CLAIM_TIMEOUT_MS ?? 2_700_000) | 0);
 const HELPER_SWEEP_MS = Math.max(500, Number(process.env.FLEET_HELPER_SWEEP_MS ?? 15_000) | 0);
+// THE PORTAL'S RIGHT OF FIRST REFUSAL, and the measurement that asked for it. A land kicks the
+// drain SYNCHRONOUSLY (schedulePostLandAudit), so an audit job is the local drain's before the
+// helper daemon's 15 s poll has ever seen it exist — measured 2026-08-29
+// (docs/messungen/second-host-baseline-2026-08-29.md): in live operation a helper machine could not
+// take a single fleet audit, and even e2e/helper-daemon.ts has to land into a DECOY repo to make
+// one claimable at all. With a grace above zero the drain LEAVES a fresh entry alone for that long,
+// so a machine that is actually there gets the first look at it.
+// Zero — the default, and what an unset or unparseable value falls to — is today's behaviour byte
+// for byte: the skip below is not reached, no timer is armed, no path changes.
+const AUDIT_HELPER_GRACE_MS = Math.max(0, Number(process.env.FLEET_AUDIT_HELPER_GRACE_MS ?? 0) | 0);
+// …and how long a heartbeat still means "that machine is there". Derived from the sweep clock
+// rather than written as its own number so the two cannot drift apart: HELPER_SWEEP_MS is this
+// server's helper clock and the daemon polls at the same 15 s cadence, so three of them survives
+// one missed beat and a slow network while a box switched off ten minutes ago cannot hold a job
+// back. The failure direction is the safe one — too strict simply means no grace, which is exactly
+// today's behaviour, never a job nobody runs.
+const HELPER_FRESH_MS = 3 * HELPER_SWEEP_MS;
 const HELPER_LAPSE_KEEP = 20;      // enough to see a flaky helper as a pattern, not a history
 const HELPER_DEVICE_KEEP = 20;     // ...and the same for the names devices gave themselves
 const HELPER_TAIL_CAP = 4096;      // same byte budget the local audit's `out` gets
@@ -11862,6 +11883,27 @@ type HelperHeartbeat = { mode?: DeviceMode; load?: number; capabilities?: string
 // device name already gets: printable only, and short.
 function printableShort(raw: string, cap: number): string {
   return [...raw.trim()].filter((ch) => ch >= " " && ch !== "\u007f").join("").slice(0, cap).trim();
+}
+// IS THERE A MACHINE THAT COULD ACTUALLY TAKE A JOB RIGHT NOW? The one question the grace above
+// hangs on, and three different parties answer it — all three must say yes, because a grace granted
+// to a machine that cannot claim is pure delay on this box's own work:
+//   · the OWNER's wish. Unset resolves to active (DEVICE_MODE_DEFAULT) — an absent owner is not a
+//     stop order, and that is the same resolution the daemon pulls on its heartbeat.
+//   · the DEVICE's own last reading of itself. `quiet` never claims (helper-daemon/daemon.ts's
+//     `stricter`), so holding a job for it would hold it for nobody. A device that reports NO mode
+//     is a pre-register daemon, and those do claim — absent is not quiet.
+//   · the CLOCK. A row whose heartbeat stopped is a machine nobody is listening on any more.
+// Deliberately NOT asked: whether that device already holds another claim. It may finish and take
+// this one next, and the grace is short — refusing on that would make the common case (one helper,
+// two lands) fall straight back to today's behaviour.
+function helperClaimCandidateExists(now = Date.now()): boolean {
+  for (const d of helperDevices.values()) {
+    if ((d.desiredMode ?? DEVICE_MODE_DEFAULT) !== "active") continue;
+    if (d.mode && d.mode !== "active") continue;
+    if (now - d.lastSeen > HELPER_FRESH_MS) continue;
+    return true;
+  }
+  return false;
 }
 
 // --- THE SECOND JOB KIND: a LANE's preview suite -----------------------------------------------
@@ -12073,8 +12115,31 @@ async function drainPostLandAudits(): Promise<void> {
       // claimed would spin this loop at full speed forever. Breaking leaves the entries exactly
       // where they are — a claim that lapses, or a result that arrives, calls kickAuditDrain and
       // this loop starts again. Nothing is dropped by not running it now.
-      const entry = [...auditQueue.entries()].find(([r]) => !helperClaimOf(r));
-      if (!entry) break;
+      // …and, when the owner has granted one, SKIPPING the ones still inside the portal's grace.
+      // Re-read every iteration rather than hoisted: the loop awaits a whole suite between passes,
+      // and both the clock and the device register move while it runs.
+      const graceOn = AUDIT_HELPER_GRACE_MS > 0 && helperClaimCandidateExists();
+      // the earliest moment a grace-skipped entry becomes drainable, 0 = nothing was skipped for it
+      let graceUntil = 0;
+      const entry = [...auditQueue.entries()].find(([r, q]) => {
+        if (helperClaimOf(r)) return false;
+        if (!graceOn) return true;
+        // the YOUNGEST cover: a coalesced entry keeps growing while it waits, and the grace is a
+        // promise about the newest land in it, not about the oldest. An entry with no covers is
+        // not fresh in any sense — it is nothing to audit — and falls through unchanged.
+        const youngest = q.covers.reduce((m, c) => Math.max(m, c.at), 0);
+        const readyAt = youngest + AUDIT_HELPER_GRACE_MS;
+        if (readyAt <= Date.now()) return true;
+        graceUntil = graceUntil ? Math.min(graceUntil, readyAt) : readyAt;
+        return false;
+      });
+      if (!entry) {
+        // NOTHING ELSE WOULD EVER WAKE THIS. The land that queued the entry has already kicked the
+        // drain, and the only other kicks are a claim lapsing and a helper reporting — neither of
+        // which happens when the helper simply never shows up. So a grace skip arms its own return.
+        if (graceUntil) armAuditGraceKick(graceUntil);
+        break;
+      }
       const [repo, q] = entry;
       // THE SELECTION AND THIS MARK ARE ONE TURN — no `await` sits between them. That is what makes
       // "the drain committed to this repo" observable by the claim route with no window in which
@@ -12468,6 +12533,18 @@ function kickAuditDrain(): void {
   if (!POSTLAND_AUDIT_CMD || auditDraining || !auditQueue.size) return;
   auditDraining = true;
   void drainPostLandAudits();
+}
+// …and the THIRD moment, the one the grace invented: a job the drain deliberately left lying. One
+// timer, never one per skip — `auditGraceTimer` is the armed-guard, and it is cleared before the
+// kick so the pass it triggers can arm the next one. Arming the earliest ready moment is enough
+// even when a later skip is armed first: the grace is a fixed offset from a cover's time, so the
+// oldest entry is always the first to become drainable and a newly queued one can only be later.
+function armAuditGraceKick(readyAt: number): void {
+  if (auditGraceTimer) return;
+  auditGraceTimer = setTimeout(() => {
+    auditGraceTimer = null;
+    kickAuditDrain();
+  }, Math.max(50, readyAt - Date.now()));
 }
 // A device names ITSELF, and the name is kept here rather than in the helper's browser (owner's
 // instruction): a ledger row two weeks old must still be able to say which machine produced it,

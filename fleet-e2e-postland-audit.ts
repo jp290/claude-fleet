@@ -930,8 +930,9 @@ check("(J) an already-adjudicated red is never pinged",
 // Runs LAST, and that placement is load-bearing rather than tidy: this section seeds a second repo
 // and adds audit rows for it, and every section above counts rows by absolute number (waitRows(3),
 // waitRows(8), …). Anywhere earlier it would shift all of them. It leaves the server booted with a
-// seconds-long claim timeout, which is why only (HD) may follow it — that section restarts the
-// server with a generous one as its first act, and every row count it makes is relative.
+// server booted with a generous claim timeout and NO grace key (its (K.7) section ends on the
+// default), which is why only (HD) may follow it — that section restarts the server with its own
+// env as its first act, and every row count it makes is relative.
 await helperPortal.run({ REPO, setAuditMode, killSrv, startSrv, auditRows, headOf });
 
 // ===== (HD) THE HELPER DAEMON — the other machine's half, as a real process ======================

@@ -23,11 +23,11 @@ nach Wecken des Rechners) — der Daemon-Deploy auf den second-host ist dein nä
 
 ## Was JETZT ansteht (S4, in dieser Reihenfolge)
 
-1. **ssh auf den second-host**: `ssh second-hostowner@100.64.0.2`. Der Rechner LÄUFT (per WoL
+1. **ssh auf den second-host**: `ssh <second-host-user>@<second-host-tailscale-ip>  # beide im privaten Setup-Report`. Der Rechner LÄUFT (per WoL
    geweckt 2026-08-29 früh). Blocker beim Übergabezeitpunkt: unser Key
    (`~/.ssh/id_ed25519.pub`, owner@owner-mac.local) war NICHT in dessen
    authorized_keys — der Owner wollte ihn eintragen. Erst testen, bei Ablehnung Owner erinnern.
-2. **Konnektivität second-host→Fleet**: von dort `curl http://100.64.0.1:8790/` — HTTP-Code egal,
+2. **Konnektivität second-host→Fleet**: von dort `curl http://<FLEET_HOST aus .env>:8790/` — HTTP-Code egal,
    Erreichbarkeit zählt (Tailnet-ACL-Frage aus dem Setup-Report offen).
 3. **Daemon-Deploy (G2, freigegeben)**: `helper-daemon/README.md` folgen — Verzeichnis kopieren,
    Config 0600 mit Helper-Token (`fleet.json` → `helperToken`), Unit-Vorlage

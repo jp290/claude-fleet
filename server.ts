@@ -1,5 +1,5 @@
 import { stat, rm, readdir, appendFile, mkdtemp } from "node:fs/promises";
-import { existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, unlinkSync, realpathSync } from "node:fs";
+import { appendFileSync, existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
@@ -4694,6 +4694,52 @@ function laneRulebookFor(repo: string, at: string): string | null {
   return body + renderBackref("lane", { repoRoot: repo, at, sourceHash });
 }
 
+// Tool scratch thrown into a lane's cwd by its own harness — Playwright-MCP writes
+// `.playwright-mcp/` next to wherever it was started — is UNTRACKED, and untracked is dirty
+// forever: `done-looking` requires dirty===0 (lane-signals.ts, DONE_LOOKING_RULES), so such a lane
+// never reaches ③, `selfLandTaskForMain` refuses it at its clean-tree step, and the owner's own
+// land path sees the same dirty tree. The lane is un-landable for the life of a directory that
+// holds none of its work. Seen live on a slot-3 game-maker lane holding exactly one such dir.
+//
+// MEASURED on git 2.50.1, not taken from the docs: a linked worktree does NOT read its own
+// `$GIT_DIR/info/exclude` — a pattern only bites from `$GIT_COMMON_DIR/info/exclude`, i.e. the
+// ROOT repo's copy, shared with the root and every sibling worktree. That sharing is the price,
+// and it is the cheaper mistake. The one genuinely lane-scoped alternative,
+// `git config --worktree core.excludesFile`, refuses outright unless `extensions.worktreeConfig`
+// is flipped on in the foreign root's config (measured: `fatal: --worktree cannot be used with
+// multiple working trees unless...`) — a repo-wide extension whose own documentation makes
+// hand-migrating `core.bare`/`core.worktree` the caller's job — and it would additionally override
+// the owner's global excludesFile for the whole lane. Here nothing TRACKED is touched in any repo,
+// the block is greppable and deletable by hand, and the worst case is that a tool's scratch dir
+// also stops showing up in the root's `git status`, which is what one wants there anyway.
+//
+// One code path covers both lane forms because the question is asked of the LANE: a worktree
+// answers the root's `.git`, a clone answers its own. `--path-format=absolute` is load-bearing
+// rather than decoration — a clone answers the bare relative `.git` without it (measured).
+const LANE_SCRATCH_IGNORES = [".playwright-mcp/"];
+const LANE_SCRATCH_MARK = "# fleet: harness tool scratch — ignored so a lane stays landable";
+
+// Best-effort by construction: a read-only or otherwise odd repo must cost at worst the dirty lane
+// this exists to prevent, never a failed spawn (same judgement as the rulebook copy below).
+// Idempotent — re-spawning into the same repo appends nothing a second time.
+async function excludeLaneScratch(lanePath: string): Promise<void> {
+  try {
+    const cd = await git(lanePath, "rev-parse", "--path-format=absolute", "--git-common-dir");
+    if (cd.code !== 0 || !cd.out) return;
+    const file = `${cd.out}/info/exclude`;
+    const prev = existsSync(file) ? readFileSync(file, "utf8") : "";
+    const have = new Set(prev.split("\n").map((l) => l.trim()));
+    const add = LANE_SCRATCH_IGNORES.filter((pat) => !have.has(pat));
+    if (!add.length) return;
+    mkdirSync(`${cd.out}/info`, { recursive: true });
+    // APPEND, not read-modify-write: two lanes spawning into the same root at once would otherwise
+    // race, and the loser's pattern would be silently dropped — leaving exactly the permanently
+    // dirty lane this exists to prevent. O_APPEND makes the small write atomic, so the worst a
+    // race can now cost is a duplicate line, which git reads the same as one.
+    appendFileSync(file, `${prev && !prev.endsWith("\n") ? "\n" : ""}${LANE_SCRATCH_MARK}\n${add.join("\n")}\n`);
+  } catch { /* see above: a dirty lane beats a spawn that throws */ }
+}
+
 // creates <repo-toplevel>.worktrees/<branch-slug> on a NEW branch off the repo's current
 // HEAD. Worktrees only materialize tracked files, so the two files agents predictably
 // need but repos predictably don't track (.env, CLAUDE.md) are copied in when present.
@@ -4737,6 +4783,7 @@ async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm
       : await git(root, "worktree", "add", "-b", branch, path);
     if (add.code !== 0) throw new Error(`worktree add failed: ${(add.err || add.out).slice(0, 300)}`);
   }
+  await excludeLaneScratch(path);
   // copy env scaffolding a fresh checkout lacks — but ONLY files git IGNORES in the source
   // (same rule as claude's .worktreeinclude). A copied *unignored* file shows as untracked
   // and would leave the lane permanently "dirty", blocking `land`. Gitignored copies stay

@@ -4,7 +4,7 @@
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname } from "node:path";
-import { BASE, IP, PORT, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
+import { BASE, IP, PORT, REPO, ROOT, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
 import { exists } from "./lane-helpers";
 import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 import { slotStats } from "../slotstats";
@@ -392,10 +392,6 @@ export async function run(): Promise<void> {
 
   // --- streaming + input ---
   await Bun.sleep(6000);
-  const wsUrl = (slot: number) => `ws://${IP}:${PORT}/ws/${slot}?token=${TOKEN}`;
-  // Bun's WebSocket client accepts { headers } as a second arg — the DOM lib types don't
-  const wsWithHeaders = (url: string, headers: Record<string, string>): WebSocket =>
-    new (WebSocket as unknown as new (u: string, opts: { headers: Record<string, string> }) => WebSocket)(url, { headers });
   // give the pane a line of its own to replay. The seed is a plain (un-escaped) capture of the
   // pane, so a bare shell prompt is a few dozen visible bytes — the byte count alone stopped
   // being the interesting assertion once the seed stopped being a slice of the raw stream and

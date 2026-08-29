@@ -208,13 +208,15 @@ machinery — is that severance in one form or another.
    `--git-common-dir`, the object store every worktree of one repo shares) catches it. An
    unreadable identity refuses too. **Dedicated is enforced continuously**: a synchronous lease
    reserves the requested tree before the first await and canonicalizes to git's toplevel after
-   preflight. Before pane creation, Fleet durably records one closed v1 `Program.founding` with a
-   server-created attempt, canonical root and exact `{slot, openedAt}` target. Every `openSlot`
-   variant checks live Game-Maker trees, leases and persisted founding roots before its first await;
-   only the exact internal attempt may cross its own reservation. A second live or in-flight session
-   in the same worktree therefore refuses in either request order and after a Fleet restart. A
-   succession's persisted predecessor remains its exact bound `{slot, openedAt}`; its live transfer
-   authority is the pre-await `{slot, openedAt, cwd, selfToken}` until the binding cut. Another linked worktree
+   preflight. Before pane creation, Fleet durably records one closed v2 `Program.founding` with
+   profile, server-created attempt, mode, target root and exact target generation; target and
+   predecessor identities contain `{slot, openedAt, selfTokenHash}`, never the raw token. The marker
+   is durable before `openSlot`, and its exact Slot row is durable before tmux. Every `openSlot`
+   variant checks live Game-Maker trees, leases and persisted Game-Maker roots before its first
+   mutation; only the exact internal attempt may cross its own reservation. A second live or
+   in-flight session in the same worktree therefore refuses in either request order and after a
+   Fleet restart. A succession's persisted predecessor remains its exact bound generation; its live
+   transfer authority is the pre-await `{slot, openedAt, cwd, selfToken}` until the binding cut. Another linked worktree
    sharing the repository remains a different tree. Game-Maker MAIN starts at the canonical git
    toplevel; Standard cwd handling stays byte-identical. Preflight refusals land before a slot,
    binding or receipt exists. While a founding is in flight a **real profile change**, `complete`
@@ -227,24 +229,31 @@ machinery — is that severance in one form or another.
    rolls back only its exact candidate. A receipt written before revocation remains evidence only.
 3. **Succession carries a checkpoint.** See the next section.
 
-**A restart never guesses authority.** A malformed or unknown-version `founding` marker stops
-startup rather than degrading to absence. A valid unfinished attempt is recovered after tmux
-adoption and before any self-heal or server listen: no candidate clears the stale marker; an exact
-candidate is killed and its tmux absence proved before Slot and marker are cleared; a different-tree
-occupant is preserved; an ambiguous occupant inside the protected tree stops startup with both pane
-and marker untouched. Succession recovery leaves the predecessor binding unchanged. Fleet never
-re-sends the brief and never binds from a Receipt. On success the Receipt is written first; then one
-durable state mutation installs the exact target as `main` and, for Game-Maker, removes `founding`.
-An orphan Receipt is evidence of an interrupted delivery, not authority. The same row after a
-revoked transfer is still evidence only.
+**A restart never guesses authority.** New Standard and Game-Maker attempts share the closed v2
+marker; v1 loads only as Game-Maker legacy. A null, malformed, profile-mismatched or unknown-version
+marker stops startup rather than degrading to absence. A valid unfinished attempt is recovered after
+tmux adoption and before any self-heal or server listen: no candidate clears the stale marker; an
+exact candidate is killed and its tmux absence proved before Slot and marker are cleared; a
+different-root occupant is preserved. For Standard, a recycled target in the same root with another
+token hash is ambiguous and stops startup, but other slots in that root do not participate. For
+Game-Maker, every other occupant in the protected tree remains a conflict. Succession recovery leaves
+the predecessor binding unchanged. Fleet never re-sends the brief and never binds from a Receipt. On
+success the Receipt is written first; then one durable state mutation installs the exact target as
+`main`, removes `founding`, and applies exact predecessor retirement when needed. An orphan Receipt is
+evidence of an interrupted delivery, not authority. The same row after a revoked transfer is still evidence only.
+
+A bounded `tmux new-session` failure returns 503 with `availability:"unknown"`,
+`affected:{attemptId,slot,openedAt}`, and either `recovery:"rolled-back"` after proven exact cleanup
+or `recovery:"pending"` while the marker remains authoritative. Retrying a pending marker opens no
+second slot. Public responses expose neither raw tokens nor their hashes.
 
 Tmux observation is explicitly `present | absent | unknown`. Only a successful session enumeration
 proves membership or absence; a failed probe or pane-path read is unknown, never HOME and never an
-absence claim. Before stale or foreign-marker cleanup, Fleet also scans every observed live/adopted
-slot root and every restored `Slot.cwd` row. A dormant row is a pending self-heal, not absence;
-another row in the protected root preserves marker and state and refuses startup. The exact bound
-succession predecessor is the only same-root exception, while a sibling linked-worktree path does
-not block cleanup.
+absence claim. For Game-Maker cleanup, Fleet also scans every observed live/adopted slot root and
+every restored `Slot.cwd` row. A dormant row is a pending self-heal, not absence; another row in the
+protected root preserves marker and state and refuses startup. The exact bound succession
+predecessor is the only same-root exception, while a sibling linked-worktree path does not block
+cleanup. Standard recovery stays target-specific and does not inherit this tree scan.
 
 Program `complete` is the owner act that releases Game-Maker tree exclusivity, valid only after the
 owner intentionally ends or retires product work. It still refuses a live Founding and does not

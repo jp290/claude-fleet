@@ -2288,7 +2288,7 @@ const isGameMaker = (p: Program | undefined | null): boolean => p?.profile?.kind
 
 type ProgramFoundingMode = "bootstrap" | "succession";
 interface ProgramFoundingOccupant { slot: number; openedAt: number }
-interface ProgramFounding {
+interface ProgramFoundingV1 {
   v: 1;
   attemptId: string;
   mode: ProgramFoundingMode;
@@ -2297,6 +2297,19 @@ interface ProgramFounding {
   predecessor: ProgramFoundingOccupant | null;
   startedAt: number;
 }
+type ProgramFoundingProfileKind = "standard" | ProgramProfileKind;
+interface ProgramFoundingIdentity extends ProgramFoundingOccupant { selfTokenHash: string }
+interface ProgramFoundingV2 {
+  v: 2;
+  profileKind: ProgramFoundingProfileKind;
+  attemptId: string;
+  mode: ProgramFoundingMode;
+  targetRoot: string;
+  target: ProgramFoundingIdentity;
+  predecessor: ProgramFoundingIdentity | null;
+  startedAt: number;
+}
+type ProgramFounding = ProgramFoundingV1 | ProgramFoundingV2;
 type ProgramFoundingRead = { ok: true; founding: ProgramFounding } | { ok: false; error: string };
 const foundingOccupantFrom = (value: unknown): ProgramFoundingOccupant | null => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -2306,6 +2319,24 @@ const foundingOccupantFrom = (value: unknown): ProgramFoundingOccupant | null =>
   if (typeof r.openedAt !== "number" || !Number.isFinite(r.openedAt) || r.openedAt <= 0) return null;
   return { slot: r.slot as number, openedAt: r.openedAt };
 };
+const foundingIdentityFrom = (value: unknown): ProgramFoundingIdentity | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !["slot", "openedAt", "selfTokenHash"].includes(k))
+    || Object.keys(r).length !== 3) return null;
+  const occupant = foundingOccupantFrom({ slot: r.slot, openedAt: r.openedAt });
+  if (!occupant || typeof r.selfTokenHash !== "string" || !/^[0-9a-f]{64}$/.test(r.selfTokenHash)) return null;
+  return { ...occupant, selfTokenHash: r.selfTokenHash };
+};
+const foundingRoot = (founding: ProgramFounding): string =>
+  founding.v === 1 ? founding.canonicalRoot : founding.targetRoot;
+const foundingProfileKind = (founding: ProgramFounding): ProgramFoundingProfileKind =>
+  founding.v === 1 ? "game-maker" : founding.profileKind;
+const isGameMakerFounding = (founding: ProgramFounding): boolean =>
+  foundingProfileKind(founding) === "game-maker";
+const isStandardFounding = (founding: ProgramFounding): founding is ProgramFoundingV2 =>
+  founding.v === 2 && founding.profileKind === "standard";
+const hashSelfToken = (token: string): string => createHash("sha256").update(token).digest("hex");
 // Unlike an unreadable optional preference, an unreadable safety marker cannot degrade to absent:
 // absence would unlock the very tree the marker may have been protecting. The caller turns this
 // precise parse error into a startup refusal after the state-file catch boundary.
@@ -2313,31 +2344,41 @@ const loadProgramFounding = (value: unknown): ProgramFoundingRead => {
   if (!value || typeof value !== "object" || Array.isArray(value))
     return { ok: false, error: "must be an object" };
   const r = value as Record<string, unknown>;
-  const keys = ["v", "attemptId", "mode", "canonicalRoot", "target", "predecessor", "startedAt"];
+  if (r.v !== 1 && r.v !== 2) return { ok: false, error: "v must be 1 or 2" };
+  const keys = r.v === 1
+    ? ["v", "attemptId", "mode", "canonicalRoot", "target", "predecessor", "startedAt"]
+    : ["v", "profileKind", "attemptId", "mode", "targetRoot", "target", "predecessor", "startedAt"];
   const extra = Object.keys(r).filter((k) => !keys.includes(k));
   if (extra.length || Object.keys(r).length !== keys.length)
     return { ok: false, error: `must contain exactly ${keys.join(", ")}` };
-  if (r.v !== 1) return { ok: false, error: "v must be 1" };
   if (typeof r.attemptId !== "string" || !/^[0-9a-f]{32}$/.test(r.attemptId))
     return { ok: false, error: "attemptId must be 32 lowercase hex characters" };
   if (r.mode !== "bootstrap" && r.mode !== "succession")
     return { ok: false, error: "mode must be bootstrap or succession" };
-  if (typeof r.canonicalRoot !== "string" || !isAbsolute(r.canonicalRoot) || r.canonicalRoot === "/"
-    || repoCanon(r.canonicalRoot) !== r.canonicalRoot)
-    return { ok: false, error: "canonicalRoot must be a canonical non-root absolute path" };
-  const target = foundingOccupantFrom(r.target);
-  if (!target) return { ok: false, error: "target must be exactly {slot, openedAt}" };
-  const predecessor = r.predecessor === null ? null : foundingOccupantFrom(r.predecessor);
+  const root = r.v === 1 ? r.canonicalRoot : r.targetRoot;
+  const rootKey = r.v === 1 ? "canonicalRoot" : "targetRoot";
+  if (typeof root !== "string" || !isAbsolute(root) || root === "/" || repoCanon(root) !== root)
+    return { ok: false, error: `${rootKey} must be a canonical non-root absolute path` };
+  if (r.v === 2 && r.profileKind !== "standard" && r.profileKind !== "game-maker")
+    return { ok: false, error: "profileKind must be standard or game-maker" };
+  const target = r.v === 1 ? foundingOccupantFrom(r.target) : foundingIdentityFrom(r.target);
+  if (!target) return { ok: false, error: `target must be exactly {slot, openedAt${r.v === 2 ? ", selfTokenHash" : ""}}` };
+  const predecessor = r.predecessor === null ? null
+    : r.v === 1 ? foundingOccupantFrom(r.predecessor) : foundingIdentityFrom(r.predecessor);
   if (r.predecessor !== null && !predecessor)
-    return { ok: false, error: "predecessor must be null or exactly {slot, openedAt}" };
+    return { ok: false, error: `predecessor must be null or exactly {slot, openedAt${r.v === 2 ? ", selfTokenHash" : ""}}` };
   if ((r.mode === "bootstrap" && predecessor !== null) || (r.mode === "succession" && predecessor === null))
     return { ok: false, error: `${r.mode} has an invalid predecessor shape` };
   if (predecessor && predecessor.slot === target.slot)
     return { ok: false, error: "succession target and predecessor must use different slots" };
   if (typeof r.startedAt !== "number" || !Number.isFinite(r.startedAt) || r.startedAt <= 0)
     return { ok: false, error: "startedAt must be a positive finite number" };
-  return { ok: true, founding: { v: 1, attemptId: r.attemptId, mode: r.mode,
-    canonicalRoot: r.canonicalRoot, target, predecessor, startedAt: r.startedAt } };
+  if (r.v === 1) return { ok: true, founding: { v: 1, attemptId: r.attemptId, mode: r.mode,
+    canonicalRoot: root as string, target, predecessor, startedAt: r.startedAt } };
+  return { ok: true, founding: { v: 2, profileKind: r.profileKind as ProgramFoundingProfileKind,
+    attemptId: r.attemptId, mode: r.mode, targetRoot: root as string,
+    target: target as ProgramFoundingIdentity, predecessor: predecessor as ProgramFoundingIdentity | null,
+    startedAt: r.startedAt } };
 };
 
 type ProgramContent = Pick<Program, "title" | "intent" | "successCriterion" | "nonGoals"
@@ -2422,6 +2463,25 @@ function capPrograms(list: Program[]): Program[] {
 type ProgramDigest = Pick<Program, "id" | "status" | "title" | "createdAt">;
 const programDigest = (p: Program): ProgramDigest => ({ id: p.id, status: p.status,
   title: p.title, createdAt: p.createdAt });
+const publicProgramFounding = (founding: ProgramFounding): Record<string, unknown> => founding.v === 1
+  ? { ...founding }
+  : {
+      v: founding.v, profileKind: founding.profileKind, attemptId: founding.attemptId,
+      mode: founding.mode, targetRoot: founding.targetRoot,
+      target: { slot: founding.target.slot, openedAt: founding.target.openedAt },
+      predecessor: founding.predecessor
+        ? { slot: founding.predecessor.slot, openedAt: founding.predecessor.openedAt } : null,
+      startedAt: founding.startedAt,
+    };
+const publicProgram = (program: Program): Record<string, unknown> => ({ ...program,
+  ...(program.founding ? { founding: publicProgramFounding(program.founding) } : {}) });
+const foundingAffected = (founding: ProgramFounding): { attemptId: string; slot: number; openedAt: number } => ({
+  attemptId: founding.attemptId, slot: founding.target.slot, openedAt: founding.target.openedAt,
+});
+const foundingUnavailableResponse = (founding: ProgramFounding,
+  recovery: "rolled-back" | "pending", error: string): Response => json({
+    error, availability: "unknown", recovery, affected: foundingAffected(founding),
+  }, 503);
 
 // --- the ONE assembly point for the phase reducer's inputs (program-phase.ts, brief §2 I1–I6).
 // Both readers of `phase` go through this, so the Program view and the Supervisor rollup can never
@@ -4954,18 +5014,19 @@ const laneSpawn = new Set<number>();
 // A singleton adapter is reserved synchronously before openSlot's first await. Active-slot state
 // alone has a gap: two owner tabs can both pass it while the first is still tearing down its slot.
 const singletonSpawn = new Set<string>();
-// A Game-Maker tree is a resource for the whole founding, not only for its preflight. The lease is
-// process-local because it bridges the early awaits; after preflight Program.founding carries the
-// same reservation across a process restart, and after success Program.main plus the live slot is
-// the durable truth. `canonicalRoot` begins unknown so the request can reserve synchronously, then
-// becomes git's toplevel after preflight. Object identity is the release token: one request can
-// never delete another request's lease just because both named the same path.
+// Every founding owns one process-local exact-target permit across its early awaits. A Game-Maker
+// permit additionally enters gameMakerTreeLeases because its tree, not just its slot, is exclusive.
+// Program.founding carries the exact target across restart; after success Program.main plus the live
+// slot is the durable truth. `canonicalRoot` begins unknown and becomes the profile-specific target
+// root after preflight. Object identity is the release token: one request cannot release another.
 interface GameMakerTreeLease {
   readonly programId: string;
+  readonly profileKind: ProgramFoundingProfileKind;
   readonly requestedRoot: string;
   canonicalRoot: string | null;
-  readonly predecessor: { readonly slot: number; readonly openedAt: number } | null;
-  founding: ProgramFounding | null;
+  readonly predecessor: ProgramFoundingIdentity | null;
+  readonly targetSelfToken: string;
+  founding: ProgramFoundingV2 | null;
 }
 const gameMakerTreeLeases = new Set<GameMakerTreeLease>();
 
@@ -4992,30 +5053,40 @@ const treePathsOverlap = (a: string, b: string): boolean =>
 const exactGameMakerPredecessor = (lease: GameMakerTreeLease | null, program: Program,
   slot: Slot): boolean => lease?.programId === program.id
     && lease.predecessor?.slot === slot.id && lease.predecessor.openedAt === slot.openedAt
+    && hashSelfToken(slot.selfToken) === lease.predecessor.selfTokenHash
     && program.main?.slot === slot.id && program.main.openedAt === slot.openedAt;
 
 const sameProgramFounding = (a: ProgramFounding | undefined, b: ProgramFounding): boolean =>
   a?.v === b.v && a.attemptId === b.attemptId && a.mode === b.mode
-  && a.canonicalRoot === b.canonicalRoot && a.startedAt === b.startedAt
+  && foundingRoot(a) === foundingRoot(b) && a.startedAt === b.startedAt
+  && foundingProfileKind(a) === foundingProfileKind(b)
   && a.target.slot === b.target.slot && a.target.openedAt === b.target.openedAt
+  && (a.v === 1 && b.v === 1 || a.v === 2 && b.v === 2
+    && a.target.selfTokenHash === b.target.selfTokenHash)
   && (a.predecessor === null
     ? b.predecessor === null
     : b.predecessor !== null && a.predecessor.slot === b.predecessor.slot
-      && a.predecessor.openedAt === b.predecessor.openedAt);
+      && a.predecessor.openedAt === b.predecessor.openedAt
+      && (a.v === 1 && b.v === 1 || a.v === 2 && b.v === 2
+        && a.predecessor.selfTokenHash === b.predecessor.selfTokenHash));
+
+const exactProgramFoundingPermit = (permit: GameMakerTreeLease | null, program: Program): boolean =>
+  program.status === "active" && !!permit?.founding && permit.programId === program.id
+  && sameProgramFounding(program.founding, permit.founding)
+  && hashSelfToken(permit.targetSelfToken) === permit.founding.target.selfTokenHash;
 
 const exactGameMakerFoundingPermit = (lease: GameMakerTreeLease | null, program: Program): boolean =>
-  program.status === "active" && isGameMaker(program)
-  && !!lease?.founding && lease.programId === program.id
-  && sameProgramFounding(program.founding, lease.founding);
+  isGameMaker(program) && lease?.profileKind === "game-maker"
+  && exactProgramFoundingPermit(lease, program);
 
-function assertGameMakerFoundingTargetOpen(s: Slot, permit: GameMakerTreeLease | null): void {
+function assertProgramFoundingTargetOpen(s: Slot, permit: GameMakerTreeLease | null): void {
   if (permit && (!permit.founding
     || permit.founding.target.slot !== s.id
-    || !programs.some((program) => exactGameMakerFoundingPermit(permit, program))))
-    throw new GameMakerTreeConflict("game-maker target open does not match its durable founding marker");
+    || !programs.some((program) => exactProgramFoundingPermit(permit, program))))
+    throw new GameMakerTreeConflict("Program-MAIN target open does not match its durable founding marker");
   for (const program of programs) {
-    if (program.founding?.target.slot === s.id && !exactGameMakerFoundingPermit(permit, program))
-      throw new GameMakerTreeConflict(`slot ${s.id} is reserved by game-maker Program ${program.id}'s durable founding`);
+    if (program.founding?.target.slot === s.id && !exactProgramFoundingPermit(permit, program))
+      throw new GameMakerTreeConflict(`slot ${s.id} is reserved by Program ${program.id}'s durable founding`);
   }
 }
 
@@ -5030,9 +5101,10 @@ function assertGameMakerTreeOpen(root: string, permit: GameMakerTreeLease | null
       throw new GameMakerTreeConflict(`game-maker tree is reserved by Program ${lease.programId} while its MAIN founding is in flight`);
   }
   for (const program of programs) {
-    if (!program.founding || !treePathsOverlap(root, program.founding.canonicalRoot)) continue;
+    if (!program.founding || !isGameMakerFounding(program.founding)
+      || !treePathsOverlap(root, foundingRoot(program.founding))) continue;
     if (!exactGameMakerFoundingPermit(permit, program))
-      throw new GameMakerTreeConflict(`game-maker Program ${program.id} has a durable MAIN founding in flight for ${program.founding.canonicalRoot}`);
+      throw new GameMakerTreeConflict(`game-maker Program ${program.id} has a durable MAIN founding in flight for ${foundingRoot(program.founding)}`);
   }
   for (const program of programs) {
     if (program.status !== "active" || !isGameMaker(program) || !program.main) continue;
@@ -5055,8 +5127,9 @@ function assertGameMakerLeaseAvailable(lease: GameMakerTreeLease, includeLiveSlo
       throw new GameMakerTreeConflict("game-maker tree has another slot open in flight");
   }
   for (const program of programs) {
-    if (!program.founding || exactGameMakerFoundingPermit(lease, program)) continue;
-    if (treePathsOverlap(root, program.founding.canonicalRoot))
+    if (!program.founding || !isGameMakerFounding(program.founding)
+      || exactGameMakerFoundingPermit(lease, program)) continue;
+    if (treePathsOverlap(root, foundingRoot(program.founding)))
       throw new GameMakerTreeConflict(`game-maker tree has a durable founding owned by Program ${program.id}`);
   }
   if (includeLiveSlots) {
@@ -5070,52 +5143,59 @@ function assertGameMakerLeaseAvailable(lease: GameMakerTreeLease, includeLiveSlo
   }
 }
 
-function reserveGameMakerTree(program: Program, cwd: string,
-  predecessor: SuccessionPredecessorIdentity | null): GameMakerTreeLease | null {
-  if (!isGameMaker(program)) return null;
+function reserveProgramFounding(program: Program, cwd: string,
+  predecessor: SuccessionPredecessorIdentity | null): GameMakerTreeLease {
   const occupant = predecessor === null ? null : slotFrom(predecessor.slot);
   const expected = predecessor !== null && occupant && program.main?.slot === predecessor.slot
     && program.main.openedAt === predecessor.openedAt && sameSuccessionOccupant(occupant, predecessor)
-    ? { slot: predecessor.slot, openedAt: predecessor.openedAt } : null;
+    ? { slot: predecessor.slot, openedAt: predecessor.openedAt,
+      selfTokenHash: hashSelfToken(predecessor.selfToken) } : null;
   if (predecessor !== null && expected === null)
-    throw new GameMakerTreeConflict("game-maker succession permit does not match the bound predecessor");
+    throw new GameMakerTreeConflict("Program succession permit does not match the bound predecessor");
   const lease: GameMakerTreeLease = {
     programId: program.id,
+    profileKind: isGameMaker(program) ? "game-maker" : "standard",
     requestedRoot: repoCanon(resolve(expandCwd(cwd))),
     canonicalRoot: null,
     predecessor: expected,
+    targetSelfToken: randomBytes(16).toString("hex"),
     founding: null,
   };
-  assertGameMakerLeaseAvailable(lease, false);
-  gameMakerTreeLeases.add(lease);
+  if (lease.profileKind === "game-maker") {
+    assertGameMakerLeaseAvailable(lease, false);
+    gameMakerTreeLeases.add(lease);
+  }
   return lease;
 }
 
 function canonicalizeGameMakerTreeLease(lease: GameMakerTreeLease | null, repoRoot: string): void {
   if (!lease) return;
-  lease.canonicalRoot = repoCanon(repoRoot);
-  assertGameMakerLeaseAvailable(lease, true);
+  lease.canonicalRoot = lease.profileKind === "game-maker"
+    ? repoCanon(repoRoot) : lease.requestedRoot;
+  if (lease.profileKind === "game-maker") assertGameMakerLeaseAvailable(lease, true);
 }
 
 function releaseGameMakerTreeLease(lease: GameMakerTreeLease | null): void {
   if (lease) gameMakerTreeLeases.delete(lease);
 }
 
-async function persistGameMakerFounding(program: Program, lease: GameMakerTreeLease,
+async function persistProgramFounding(program: Program, lease: GameMakerTreeLease,
   mode: ProgramFoundingMode, targetSlot: number): Promise<ProgramFounding> {
-  if (program.status !== "active" || !isGameMaker(program) || program.founding)
-    throw new GameMakerTreeConflict("game-maker Program is not eligible for a new MAIN founding");
+  if (program.status !== "active" || program.founding)
+    throw new GameMakerTreeConflict("Program is not eligible for a new MAIN founding");
   if (lease.canonicalRoot === null)
-    throw new Error("game-maker tree was not canonicalized before founding persistence");
+    throw new Error("Program target was not canonicalized before founding persistence");
   if ((mode === "bootstrap") !== (lease.predecessor === null))
-    throw new Error(`game-maker ${mode} founding has an inconsistent predecessor`);
+    throw new Error(`Program ${mode} founding has an inconsistent predecessor`);
   const startedAt = Date.now();
-  const founding: ProgramFounding = {
-    v: 1,
+  const founding: ProgramFoundingV2 = {
+    v: 2,
+    profileKind: lease.profileKind,
     attemptId: randomBytes(16).toString("hex"),
     mode,
-    canonicalRoot: lease.canonicalRoot,
-    target: { slot: targetSlot, openedAt: startedAt },
+    targetRoot: lease.canonicalRoot,
+    target: { slot: targetSlot, openedAt: startedAt,
+      selfTokenHash: hashSelfToken(lease.targetSelfToken) },
     predecessor: lease.predecessor,
     startedAt,
   };
@@ -5395,7 +5475,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"):
       if (!target) {
         const detail = created.timedOut
           ? `timed out after ${TMUX_NEW_SESSION_TIMEOUT_MS}ms`
-          : `exited ${created.code ?? "unknown"}: ${created.err || created.out || "no diagnostic"}`;
+          : `exited ${created.code ?? "unknown"}`;
         const unavailable = new TmuxNewSessionUnavailable(`tmux new-session unavailable (${detail})`);
         if (cause === "heal") {
           logError("ensureSlot:new-session", unavailable);
@@ -5518,9 +5598,10 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
   await waitForSlotTeardown(s.id);
   await waitForSlotSpawn(s.id);
-  assertGameMakerFoundingTargetOpen(s, treeLease);
-  const openIntent: OpenSlotIntent = { root: repoCanon(cwd), lease: treeLease };
-  assertGameMakerTreeOpen(openIntent.root, treeLease);
+  assertProgramFoundingTargetOpen(s, treeLease);
+  const gameMakerLease = treeLease?.profileKind === "game-maker" ? treeLease : null;
+  const openIntent: OpenSlotIntent = { root: repoCanon(cwd), lease: gameMakerLease };
+  assertGameMakerTreeOpen(openIntent.root, gameMakerLease);
   openSlotIntents.add(openIntent);
   try {
   const h = harnessOf(harness);
@@ -5566,7 +5647,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
     // The awaits above are an owner-kill window: an exact pre-open kill may have durably removed
     // the marker after orphan teardown. Recheck before publishing
     // even one byte of the new occupant; the process-local lease alone is not durable authority.
-    assertGameMakerFoundingTargetOpen(s, treeLease);
+    assertProgramFoundingTargetOpen(s, treeLease);
   } catch (e) {
     if (h.singleton) singletonSpawn.delete(h.id);
     throw e;
@@ -5584,7 +5665,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // only moment a label-keyed env export (FLEET_STEWARD_TOKEN, see ensureSlot) can be baked in;
   // open-then-rename always arrives after the pane's env is fixed
   s.label = label;
-  s.openedAt = treeLease?.founding?.target.openedAt ?? Date.now(); // a Game-Maker target identity
+  s.openedAt = treeLease?.founding?.target.openedAt ?? Date.now(); // a Program founding target identity
   // is chosen before its durable marker; every other open retains the exact legacy clock read here.
   s.successionRetirement = null; // a delayed retirement belongs only to the occupant that requested it
   s.mission = null; // a re-opened slot is a NEW session: the previous occupant's standing
@@ -5607,7 +5688,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.releasedBy = null; // ...and the previous occupant's release must never be attributed to this
   // session's outcome row. The dispatcher stamps it back immediately after this call for the one
   // case that has an answer; every other open (hand-opened lane, plain checkout) genuinely has none
-  s.selfToken = randomBytes(16).toString("hex"); // rotate: a recycled slot must not honor
+  s.selfToken = treeLease?.targetSelfToken ?? randomBytes(16).toString("hex"); // rotate: a recycled slot must not honor
   // whatever session used to hold it
   s.sessionId = null; // ensureSlot pins a new uuid when it creates the pane
   s.codexPaneSpawnedAt = null;
@@ -5644,7 +5725,19 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   await rm(historyPath(s.id), { force: true });
   recents = [cwd, ...recents.filter((r) => r !== cwd)].slice(0, MAX_RECENTS);
   audit("slot_open", s.id, cwd);
-  saveState();
+  if (treeLease?.founding) {
+    assertProgramFoundingTargetOpen(s, treeLease);
+    if (s.openedAt !== treeLease.founding.target.openedAt
+      || hashSelfToken(s.selfToken) !== treeLease.founding.target.selfTokenHash)
+      throw new GameMakerTreeConflict("Program-MAIN target identity changed before candidate persistence");
+    // The marker was durable before open. This second barrier publishes the matching Slot row
+    // before ensureSlot can create a pane, so restart sees either no candidate or one exact candidate.
+    await saveStateNow();
+    assertProgramFoundingTargetOpen(s, treeLease);
+    if (s.openedAt !== treeLease.founding.target.openedAt
+      || hashSelfToken(s.selfToken) !== treeLease.founding.target.selfTokenHash)
+      throw new GameMakerTreeConflict("Program-MAIN target identity changed during candidate persistence");
+  } else saveState();
   await ensureSlot(s, "open");
   } finally {
     openSlotIntents.delete(openIntent);
@@ -5763,15 +5856,18 @@ async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<v
 
 const exactFoundingCandidate = (s: Slot, founding: ProgramFounding): boolean =>
   !!s.cwd && s.id === founding.target.slot && s.openedAt === founding.target.openedAt
-  && repoCanon(s.cwd) === founding.canonicalRoot
+  && repoCanon(s.cwd) === foundingRoot(founding)
+  && (founding.v === 1 || hashSelfToken(s.selfToken) === founding.target.selfTokenHash)
   && s.worktree === null && s.taskId === null && s.originId === null && s.programId === null;
 
-const currentGameMakerFounding = (program: Program, founding: ProgramFounding, s: Slot): boolean =>
-  program.status === "active" && isGameMaker(program)
+const currentProgramFounding = (program: Program, founding: ProgramFounding, s: Slot): boolean =>
+  program.status === "active"
+  && (isGameMaker(program) ? "game-maker" : "standard") === foundingProfileKind(founding)
   && sameProgramFounding(program.founding, founding) && exactFoundingCandidate(s, founding)
   && (founding.mode === "bootstrap"
     ? program.main === undefined
-    : !!founding.predecessor && program.main?.slot === founding.predecessor.slot
+    : !!founding.predecessor && !!program.main
+      && program.main.slot === founding.predecessor.slot
       && program.main.openedAt === founding.predecessor.openedAt);
 
 async function proveFoundingCandidateStopped(s: Slot, founding: ProgramFounding): Promise<TmuxSlotObservations> {
@@ -5781,8 +5877,9 @@ async function proveFoundingCandidateStopped(s: Slot, founding: ProgramFounding)
   const candidate = tmuxSlotObservation(before, s.id);
   if (candidate.presence === "unknown")
     throw new Error(`could not observe tmux session ${sess(s.id)} for founding ${founding.attemptId}: ${before.detail}`);
-  if (candidate.presence === "present" && candidate.root !== founding.canonicalRoot
-    && !candidate.root?.startsWith(`${founding.canonicalRoot}/`))
+  const root = foundingRoot(founding);
+  if (candidate.presence === "present" && candidate.root !== root
+    && !candidate.root?.startsWith(`${root}/`))
     throw new Error(`refusing to kill tmux session ${sess(s.id)} for founding ${founding.attemptId}: its live root is ${candidate.root}`);
   await killSlot(s, "reopen");
   const after = await observeTmuxSlots();
@@ -5795,14 +5892,16 @@ async function proveFoundingCandidateStopped(s: Slot, founding: ProgramFounding)
 const exactFoundingPredecessor = (program: Program, founding: ProgramFounding, slot: Slot): boolean =>
   founding.mode === "succession" && !!founding.predecessor
   && slot.id === founding.predecessor.slot && slot.openedAt === founding.predecessor.openedAt
+  && (founding.v === 1 || hashSelfToken(slot.selfToken) === founding.predecessor.selfTokenHash)
   && program.main?.slot === founding.predecessor.slot
   && program.main.openedAt === founding.predecessor.openedAt;
 
 function assertNoFoundingSlotOccupant(program: Program, founding: ProgramFounding): void {
+  const root = foundingRoot(founding);
   for (const slot of slots) {
-    if (!slot.cwd || !treePathsOverlap(repoCanon(slot.cwd), founding.canonicalRoot)) continue;
+    if (!slot.cwd || !treePathsOverlap(repoCanon(slot.cwd), root)) continue;
     if (!exactFoundingPredecessor(program, founding, slot))
-      throw new Error(`REFUSING TO START: Program ${program.id} founding ${founding.attemptId} cannot unlock ${founding.canonicalRoot}; restored slot ${slot.id} also occupies ${repoCanon(slot.cwd)}`);
+      throw new Error(`REFUSING TO START: Program ${program.id} founding ${founding.attemptId} cannot unlock ${root}; restored slot ${slot.id} also occupies ${repoCanon(slot.cwd)}`);
   }
 }
 
@@ -5813,12 +5912,13 @@ function assertNoFoundingTreeOccupant(program: Program, founding: ProgramFoundin
   // A restored cwd row is a pending self-heal even with no pane today. Clear the marker only when
   // neither the observed tmux world nor the persisted world can create a second writer.
   assertNoFoundingSlotOccupant(program, founding);
+  const foundingTargetRoot = foundingRoot(founding);
   for (const [name, root] of observed.sessions) {
     const match = /^s(\d+)$/.exec(name);
-    if (!match || !treePathsOverlap(root, founding.canonicalRoot)) continue;
+    if (!match || !treePathsOverlap(root, foundingTargetRoot)) continue;
     const slot = slotFrom(match[1]);
     if (!slot || !exactFoundingPredecessor(program, founding, slot))
-      throw new Error(`REFUSING TO START: Program ${program.id} founding ${founding.attemptId} cannot unlock ${founding.canonicalRoot}; live session ${name} also occupies ${root}`);
+      throw new Error(`REFUSING TO START: Program ${program.id} founding ${founding.attemptId} cannot unlock ${foundingTargetRoot}; live session ${name} also occupies ${root}`);
   }
 }
 
@@ -5845,13 +5945,28 @@ async function rollbackProgramFounding(program: Program, founding: ProgramFoundi
     const observed = await observeTmuxSlots();
     if (tmuxSlotObservation(observed, founding.target.slot).presence !== "absent")
       throw new Error(`refusing to clear founding ${founding.attemptId}: target tmux state is not explicitly absent (${observed.detail})`);
-    assertNoFoundingTreeOccupant(program, founding, observed);
+    if (isGameMakerFounding(founding)) assertNoFoundingTreeOccupant(program, founding, observed);
     return clearProgramFounding(program, founding, `${detail}:no-candidate`);
   }
   if (!exactFoundingCandidate(target, founding))
     throw new Error(`refusing to clear founding ${founding.attemptId}: target slot ${founding.target.slot} is occupied by a different session`);
   await proveFoundingCandidateStopped(target, founding);
   return clearProgramFounding(program, founding, `${detail}:candidate-stopped`);
+}
+
+async function unavailableFoundingResponse(program: Program, founding: ProgramFounding,
+  _error: TmuxNewSessionUnavailable): Promise<Response> {
+  // tmux stderr is not an API-safe diagnostic: the failed new-session argv contains the pane's raw
+  // FLEET_SELF_TOKEN. Only the typed availability and the redacted durable identity cross this door.
+  const safeError = "Program-MAIN target session availability is unknown";
+  try {
+    if (await rollbackProgramFounding(program, founding, "tmux-new-session-unavailable"))
+      return foundingUnavailableResponse(founding, "rolled-back", safeError);
+  } catch {
+    // Unknown absence is not rollback authority. The exact marker and candidate remain the only
+    // recovery description; a retry returns this same affected identity and opens no new slot.
+  }
+  return foundingUnavailableResponse(founding, "pending", safeError);
 }
 
 async function recoverInterruptedProgramFoundings(bootTmux: TmuxSlotObservations): Promise<void> {
@@ -5863,13 +5978,13 @@ async function recoverInterruptedProgramFoundings(bootTmux: TmuxSlotObservations
       const targetObservation = tmuxSlotObservation(bootTmux, founding.target.slot);
       if (targetObservation.presence !== "absent")
         throw new Error(`REFUSING TO START: Program ${program.id} founding ${founding.attemptId} cannot clear its pre-open marker because target tmux state is ${targetObservation.presence}: ${bootTmux.detail}`);
-      assertNoFoundingTreeOccupant(program, founding, bootTmux);
+      if (isGameMakerFounding(founding)) assertNoFoundingTreeOccupant(program, founding, bootTmux);
       await clearProgramFounding(program, founding, "boot-stale-before-open");
       continue;
     }
     if (exactFoundingCandidate(target, founding)) {
       const after = await proveFoundingCandidateStopped(target, founding);
-      assertNoFoundingTreeOccupant(program, founding, after);
+      if (isGameMakerFounding(founding)) assertNoFoundingTreeOccupant(program, founding, after);
       await clearProgramFounding(program, founding, "boot-rollback");
       continue;
     }
@@ -5880,14 +5995,17 @@ async function recoverInterruptedProgramFoundings(bootTmux: TmuxSlotObservations
     const targetObservation = tmuxSlotObservation(bootTmux, target.id);
     if (targetObservation.presence === "unknown")
       throw new Error(`REFUSING TO START: Program ${program.id} founding ${founding.attemptId} cannot classify target slot ${target.id}: ${bootTmux.detail}`);
-    const targetRoot = targetObservation.presence === "present" ? targetObservation.root : null;
-    if (targetRoot === null || !treePathsOverlap(targetRoot, founding.canonicalRoot)) {
-      assertNoFoundingTreeOccupant(program, founding, bootTmux);
+    const targetRoot = targetObservation.presence === "present" ? targetObservation.root : repoCanon(target.cwd);
+    const markerRoot = foundingRoot(founding);
+    if (targetRoot === null || !treePathsOverlap(targetRoot, markerRoot)) {
+      if (isGameMakerFounding(founding)) assertNoFoundingTreeOccupant(program, founding, bootTmux);
       await clearProgramFounding(program, founding, "boot-stale-foreign-target-preserved");
       continue;
     }
+    if (isStandardFounding(founding))
+      throw new Error(`REFUSING TO START: Program ${program.id} founding ${founding.attemptId} has a same-root token mismatch in slot ${target.id}; the marker and occupant were left untouched`);
     throw new Error(`REFUSING TO START: Program ${program.id} founding ${founding.attemptId} names slot ${target.id},`
-      + ` but that slot has a different occupant inside ${founding.canonicalRoot}; the marker and pane were left untouched`);
+      + ` but that slot has a different occupant inside ${markerRoot}; the marker and pane were left untouched`);
   }
 }
 
@@ -11939,7 +12057,8 @@ const LAND_PAUSE_MS = Math.max(0, Number(process.env.FLEET_TEST_LAND_PAUSE_MS ??
 // files form one bounded latch, not runtime state or an API.
 const GAME_MAKER_OPEN_LATCH = process.env.FLEET_TEST_GAME_MAKER_OPEN_LATCH ?? null;
 async function waitForGameMakerOpenTestLatch(permit: GameMakerTreeLease | null): Promise<void> {
-  if (!permit || GAME_MAKER_OPEN_LATCH === null || !existsSync(GAME_MAKER_OPEN_LATCH)) return;
+  if (!permit || permit.profileKind !== "game-maker"
+    || GAME_MAKER_OPEN_LATCH === null || !existsSync(GAME_MAKER_OPEN_LATCH)) return;
   writeFileSync(`${GAME_MAKER_OPEN_LATCH}.reached`, `${permit.programId}\n`, { mode: 0o600 });
   for (let waited = 0; waited < 10_000; waited += 10) {
     if (existsSync(`${GAME_MAKER_OPEN_LATCH}.release`)) return;
@@ -17996,8 +18115,11 @@ async function completeTransitionWatch(s: Slot, id: string, body: Record<string,
 
 async function succeedProgramMain(program: Program, s: Slot, label: string | null, carry: string | null,
   predecessor: SuccessionPredecessorIdentity): Promise<Response> {
-  if (programBootstrapInflight.has(program.id) || program.founding)
+  if (programBootstrapInflight.has(program.id))
     return json({ error: "Program-MAIN founding already in flight" }, 409);
+  if (program.founding)
+    return foundingUnavailableResponse(program.founding, "pending",
+      "Program-MAIN founding recovery is pending; retry did not open another slot");
   const predecessorCurrent = (): boolean => program.status === "active"
     && program.main?.slot === predecessor.slot && program.main.openedAt === predecessor.openedAt
     && sameSuccessionOccupant(s, predecessor);
@@ -18007,7 +18129,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
   let treeLease: GameMakerTreeLease | null = null;
   try {
     try {
-      treeLease = reserveGameMakerTree(program, predecessor.cwd, predecessor);
+      treeLease = reserveProgramFounding(program, predecessor.cwd, predecessor);
     } catch (e) {
       if (e instanceof GameMakerTreeConflict) return json({ error: e.message }, 409);
       throw e;
@@ -18031,17 +18153,15 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
     if (!free) return json({ error: "no free slot" }, 409);
     laneSpawn.add(free.id);
     try {
-      let founding: ProgramFounding | null = null;
-      if (treeLease) {
-        try {
-          founding = await persistGameMakerFounding(program, treeLease, "succession", free.id);
-        } catch (e) {
-          return json({ error: `Program-MAIN successor intent failed: ${e instanceof Error ? e.message : e}` },
-            e instanceof GameMakerTreeConflict ? 409 : 500);
-        }
+      let founding: ProgramFounding;
+      try {
+        founding = await persistProgramFounding(program, treeLease, "succession", free.id);
+      } catch (e) {
+        return json({ error: `Program-MAIN successor intent failed: ${e instanceof Error ? e.message : e}` },
+          e instanceof GameMakerTreeConflict ? 409 : 500);
       }
       if (!predecessorCurrent()) {
-        if (founding) await rollbackProgramFounding(program, founding, "predecessor-revoked-before-open");
+        await rollbackProgramFounding(program, founding, "predecessor-revoked-before-open");
         return json({ error: "Program-MAIN predecessor authority changed before successor open" }, 409);
       }
       try {
@@ -18049,8 +18169,9 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
           null, s.model, label, s.harness, s.effort,
           { container: s.container, containerContext: s.containerContext }, treeLease);
       } catch (e) {
-        if (founding) await rollbackProgramFounding(program, founding, "successor-open-failed");
-        else if (free.cwd) await killSlot(free, "reopen");
+        if (e instanceof TmuxNewSessionUnavailable)
+          return unavailableFoundingResponse(program, founding, e);
+        await rollbackProgramFounding(program, founding, "successor-open-failed");
         return json({ error: `Program-MAIN successor open failed: ${e instanceof Error ? e.message : e}` },
           e instanceof GameMakerTreeConflict ? 409 : 500);
       }
@@ -18059,18 +18180,16 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         slot: free.id, openedAt: free.openedAt, cwd: free.cwd!, selfToken: free.selfToken,
       };
       const candidateCurrent = (): boolean => sameSuccessionOccupant(free, candidateIdentity)
-        && (!founding || sameProgramFounding(program.founding, founding)
-          && exactFoundingCandidate(free, founding));
+        && sameProgramFounding(program.founding, founding)
+        && exactFoundingCandidate(free, founding);
       const transferCurrent = (): boolean => candidateCurrent() && predecessorCurrent();
       const cleanup = async (): Promise<void> => {
-        if (founding) {
-          if (!sameProgramFounding(program.founding, founding)) return;
-          const target = slotFrom(founding.target.slot);
-          // A recycled target is a new owner. Preserve it and the fail-closed marker; only the
-          // exact candidate, or an explicitly absent target, belongs to this request's rollback.
-          if (candidateCurrent() || !target?.cwd)
-            await rollbackProgramFounding(program, founding, "successor-failed");
-        } else if (candidateCurrent()) await killSlot(free, "reopen");
+        if (!sameProgramFounding(program.founding, founding)) return;
+        const target = slotFrom(founding.target.slot);
+        // A recycled target is a new owner. Preserve it and the fail-closed marker; only the
+        // exact candidate, or an explicitly absent target, belongs to this request's rollback.
+        if (candidateCurrent() || !target?.cwd)
+          await rollbackProgramFounding(program, founding, "successor-failed");
       };
       const revoked = async (phase: string): Promise<Response> => {
         await cleanup();
@@ -18087,21 +18206,6 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         return json({ error: "Program-MAIN successor slot changed after open" }, 500);
       }
       if (!transferCurrent()) return await revoked("after successor open");
-      if (founding) {
-        try {
-          // openSlot's queued save is not the barrier: this awaited snapshot proves the exact
-          // candidate identity is durable before boot/readiness or any prompt delivery begins.
-          await saveStateNow();
-        } catch (e) {
-          await cleanup();
-          return json({ error: `Program-MAIN successor candidate persistence failed: ${e instanceof Error ? e.message : e}` }, 500);
-        }
-      }
-      if (!candidateCurrent()) {
-        await cleanup();
-        return json({ error: "Program-MAIN successor slot changed during candidate persistence" }, 500);
-      }
-      if (!transferCurrent()) return await revoked("during candidate persistence");
       await Bun.sleep(4000);
       if (!candidateCurrent()) {
         await cleanup();
@@ -18172,7 +18276,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         planFacts: { harness: free.harness, mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted },
       })).digest("hex");
       try {
-        await (founding ? appendEventStrict : appendEvent)(CONTEXT_RECEIPT_FILE, {
+        await appendEventStrict(CONTEXT_RECEIPT_FILE, {
           id: randomBytes(16).toString("hex"), hash, at, repo, head: preflight.value.head,
           taskId: null, originId: null, programId: program.id, slot: free.id, branch: preflight.value.branch,
           harness: free.harness, model: free.model, effort: free.effort,
@@ -18189,13 +18293,11 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         await cleanup();
         return json({ error: "Program-MAIN successor slot changed during receipt persistence" }, 500);
       }
-      if (founding) {
-        try {
-          await waitForSuccessionTestLatch(SUCCESSION_AFTER_RECEIPT_LATCH, program.id);
-        } catch (e) {
-          await cleanup();
-          return json({ error: `Program-MAIN successor post-receipt latch failed: ${e instanceof Error ? e.message : e}` }, 500);
-        }
+      try {
+        await waitForSuccessionTestLatch(SUCCESSION_AFTER_RECEIPT_LATCH, program.id);
+      } catch (e) {
+        await cleanup();
+        return json({ error: `Program-MAIN successor post-receipt latch failed: ${e instanceof Error ? e.message : e}` }, 500);
       }
       if (!candidateCurrent()) {
         await cleanup();
@@ -18212,7 +18314,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
       const oldStarted = successionStarted.get(s.id);
       program.main = { slot: free.id, openedAt: free.openedAt,
         sessionId: free.sessionId ?? null, boundAt: at };
-      if (founding) delete program.founding;
+      delete program.founding;
       s.successionRetirement = retirement;
       successionStarted.set(s.id, predecessor.selfToken);
       try {
@@ -18221,7 +18323,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         await saveStateNow();
       } catch (e) {
         if (oldMain) program.main = oldMain; else delete program.main;
-        if (founding) program.founding = founding;
+        program.founding = founding;
         if (sameSuccessionOccupant(s, predecessor)) {
           s.successionRetirement = oldRetirement;
           if (oldStarted === undefined) successionStarted.delete(s.id);
@@ -18251,12 +18353,13 @@ async function bootstrapProgramMain(program: Program, req: Request): Promise<Res
   // against a terminal Program. The first caller owns the reservation across that await. A caller
   // arriving during succession still validates its request, then may observe the exact live MAIN;
   // it does not acquire or release the succession caller's reservation.
-  const alreadyInflight = programBootstrapInflight.has(program.id) || program.founding !== undefined;
-  if (!alreadyInflight) programBootstrapInflight.add(program.id);
+  const alreadyInflight = programBootstrapInflight.has(program.id);
+  const ownsReservation = !alreadyInflight && program.founding === undefined;
+  if (ownsReservation) programBootstrapInflight.add(program.id);
   try {
     return await bootstrapProgramMainReserved(program, await readJson(req) ?? {}, alreadyInflight);
   } finally {
-    if (!alreadyInflight) programBootstrapInflight.delete(program.id);
+    if (ownsReservation) programBootstrapInflight.delete(program.id);
   }
 }
 
@@ -18286,15 +18389,18 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
   if (program.main) {
     const occupant = slotFrom(program.main.slot);
     if (occupant?.cwd && occupant.openedAt === program.main.openedAt)
-      return json({ ok: true, existing: true, program });
+      return json({ ok: true, existing: true, program: publicProgram(program) });
   }
   if (alreadyInflight || program.founding)
-    return json({ error: "Program-MAIN founding already in flight" }, 409);
+    return program.founding && !alreadyInflight
+      ? foundingUnavailableResponse(program.founding, "pending",
+        "Program-MAIN founding recovery is pending; retry did not open another slot")
+      : json({ error: "Program-MAIN founding already in flight" }, 409);
   if (program.main) replaced = { ...program.main };
   let treeLease: GameMakerTreeLease | null = null;
   try {
     try {
-      treeLease = reserveGameMakerTree(program, body.cwd, null);
+      treeLease = reserveProgramFounding(program, body.cwd, null);
     } catch (e) {
       if (e instanceof GameMakerTreeConflict) return json({ error: e.message }, 409);
       throw e;
@@ -18315,14 +18421,12 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
     if (!free) return json({ error: "no free slot" }, 409);
     laneSpawn.add(free.id);
     try {
-      let founding: ProgramFounding | null = null;
-      if (treeLease) {
-        try {
-          founding = await persistGameMakerFounding(program, treeLease, "bootstrap", free.id);
-        } catch (e) {
-          return json({ error: `Program-MAIN intent failed: ${e instanceof Error ? e.message : e}` },
-            e instanceof GameMakerTreeConflict ? 409 : 500);
-        }
+      let founding: ProgramFounding;
+      try {
+        founding = await persistProgramFounding(program, treeLease, "bootstrap", free.id);
+      } catch (e) {
+        return json({ error: `Program-MAIN intent failed: ${e instanceof Error ? e.message : e}` },
+          e instanceof GameMakerTreeConflict ? 409 : 500);
       }
       const label = typeof body.label === "string"
         ? body.label.trim() || null
@@ -18331,7 +18435,9 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
         await openSlot(free, isGameMaker(program) ? preflight.value.repoRoot : body.cwd,
           null, mo.model, label, ho.harness, eo.effort, NO_BOX, treeLease);
       } catch (e) {
-        if (founding) await rollbackProgramFounding(program, founding, "bootstrap-open-failed");
+        if (e instanceof TmuxNewSessionUnavailable)
+          return unavailableFoundingResponse(program, founding, e);
+        await rollbackProgramFounding(program, founding, "bootstrap-open-failed");
         return json({ error: `Program-MAIN open failed: ${e instanceof Error ? e.message : e}` },
           e instanceof GameMakerTreeConflict ? 409 : 500);
       }
@@ -18345,26 +18451,14 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
           && program.main.sessionId === expectedMain.sessionId && program.main.boundAt === expectedMain.boundAt
         : program.main === undefined;
       const stillCurrent = (): boolean => sameSuccessionOccupant(free, candidateIdentity)
-        && program.status === "active" && (founding
-          ? currentGameMakerFounding(program, founding, free)
-          : expectedMainCurrent());
+        && program.status === "active" && currentProgramFounding(program, founding, free)
+        && expectedMainCurrent();
       const cleanup = async (): Promise<void> => {
-        if (founding) {
-          if (!sameProgramFounding(program.founding, founding)) return;
-          const target = slotFrom(founding.target.slot);
-          if (stillCurrent() || !target?.cwd)
-            await rollbackProgramFounding(program, founding, "bootstrap-failed");
-        }
-        else if (stillCurrent()) await killSlot(free, "reopen");
+        if (!sameProgramFounding(program.founding, founding)) return;
+        const target = slotFrom(founding.target.slot);
+        if (stillCurrent() || !target?.cwd)
+          await rollbackProgramFounding(program, founding, "bootstrap-failed");
       };
-      if (founding) {
-        try {
-          await saveStateNow();
-        } catch (e) {
-          await cleanup();
-          return json({ error: `Program-MAIN candidate persistence failed: ${e instanceof Error ? e.message : e}` }, 500);
-        }
-      }
       await Bun.sleep(4000);
       if (!stillCurrent()) {
         await cleanup();
@@ -18413,7 +18507,7 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
         planFacts: { harness: free.harness, mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted },
       })).digest("hex");
       try {
-        await (founding ? appendEventStrict : appendEvent)(CONTEXT_RECEIPT_FILE, {
+        await appendEventStrict(CONTEXT_RECEIPT_FILE, {
           id: randomBytes(16).toString("hex"), hash, at, repo, head: preflight.value.head,
           taskId: null, originId: null, programId: program.id, slot: free.id, branch: preflight.value.branch,
           harness: free.harness, model: free.model, effort: free.effort,
@@ -18433,12 +18527,12 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
       const oldMain = program.main ? { ...program.main } : undefined;
       program.main = { slot: candidateIdentity.slot, openedAt: candidateIdentity.openedAt,
         sessionId: free.sessionId ?? null, boundAt: at };
-      if (founding) delete program.founding;
+      delete program.founding;
       try {
         await saveStateNow();
       } catch (e) {
         if (oldMain) program.main = oldMain; else delete program.main;
-        if (founding) program.founding = founding;
+        program.founding = founding;
         await cleanup();
         return json({ error: `Program-MAIN binding persistence failed: ${e instanceof Error ? e.message : e}` }, 500);
       }
@@ -18451,7 +18545,7 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
       free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
       saveHistory(free);
       logPrompt(free, deliveredBrief, "auto", at);
-      return json({ ok: true, slot: free.id, program, ...(replaced ? { replaced } : {}) });
+      return json({ ok: true, slot: free.id, program: publicProgram(program), ...(replaced ? { replaced } : {}) });
     } finally {
       laneSpawn.delete(free.id);
     }
@@ -18471,7 +18565,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
   // reader to answer the first and forget the second. The owner's own top-level `promotion` record
   // rides along in `...p` untouched — this cut adds no second rendering of it.
   if (url.pathname === "/api/programs" && req.method === "GET")
-    return json({ programs: programs.map((p) => ({ ...p, health: programHealth(p),
+    return json({ programs: programs.map((p) => ({ ...publicProgram(p), health: programHealth(p),
       ...programReturnPath(p) })), supervisor });
   if (url.pathname === "/api/programs" && req.method === "POST") {
     const valid = validateProgramContent(await readJson(req));
@@ -18535,7 +18629,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     // row and performs no save. Only a REAL change reaches the locks below.
     const current = program.profile;
     if (desired === null ? current === undefined : current?.kind === desired.kind && current.v === 1)
-      return json({ ok: true, program });
+      return json({ ok: true, program: publicProgram(program) });
     // THE RACE, CLOSED AT THE ONE WRITER. A founding reads this record twice — once at the machine
     // preflight and once when the brief is built — and between those two reads it awaits a slot
     // open, a boot grace and a readiness wait, several seconds in which a profile write would land.
@@ -18560,7 +18654,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
       audit("program_profile", undefined, `${program.id} kind=${program.profile.kind}`);
     }
     await saveStateNow();
-    return json({ ok: true, program });
+    return json({ ok: true, program: publicProgram(program) });
   }
   // THE PROMOTION DOOR — the only writer of `program.promotion`, and its own route rather than a
   // fifth verb on the action router because it is the only one of them that reads a BODY carrying a
@@ -18593,7 +18687,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
       delete program.promotion;
       if (had) audit("program_promotion", undefined, `${program.id} revoked`);
       await saveStateNow();
-      return json({ ok: true, program });
+      return json({ ok: true, program: publicProgram(program) });
     }
     const raw = body.policy;
     if (!raw || typeof raw !== "object" || Array.isArray(raw))
@@ -18608,7 +18702,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     program.promotion = { v: 1, selfLand: fields.selfLand as PromotionSelfLand, confirmedAt: Date.now() };
     audit("program_promotion", undefined, `${program.id} selfLand=${program.promotion.selfLand}`);
     await saveStateNow();
-    return json({ ok: true, program });
+    return json({ ok: true, program: publicProgram(program) });
   }
   const action = /^\/api\/programs\/([^/]+)\/(confirm|activate|complete|discard|bootstrap-main)$/.exec(url.pathname);
   if (!action || req.method !== "POST") return json({ error: "bad request" }, 400);
@@ -18640,7 +18734,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     return json({ ok: true, program });
   }
   if (action[2] === "activate") {
-    if (program.status === "active") return json({ ok: true, existing: true, program });
+    if (program.status === "active") return json({ ok: true, existing: true, program: publicProgram(program) });
     if (program.status !== "confirmed")
       return json({ error: `illegal transition: cannot activate a ${program.status} program` }, 409);
     program.status = "active";
@@ -19039,8 +19133,14 @@ if (existsSync(STATE_FILE)) {
         const profile = loadProgramProfile(x.profile);
         let founding: ProgramFounding | undefined;
         if (foundingRead?.ok) {
-          if (status !== "active" || profile?.kind !== "game-maker") {
-            startupStateRefusal ??= `Program ${x.id} has a founding marker but is not an active game-maker Program`;
+          const markerProfile = foundingProfileKind(foundingRead.founding);
+          const programProfile: ProgramFoundingProfileKind = profile?.kind === "game-maker" ? "game-maker" : "standard";
+          if (status !== "active") {
+            startupStateRefusal ??= `Program ${x.id} has a founding marker but is not active`;
+          } else if (foundingRead.founding.v === 1 && programProfile !== "game-maker") {
+            startupStateRefusal ??= `Program ${x.id} has a legacy v1 founding marker on a Standard Program`;
+          } else if (markerProfile !== programProfile) {
+            startupStateRefusal ??= `Program ${x.id} founding profileKind ${markerProfile} does not match Program profile ${programProfile}`;
           } else if (foundingRead.founding.mode === "bootstrap" && main !== undefined) {
             startupStateRefusal ??= `Program ${x.id} has a bootstrap founding marker but is not unbound`;
           } else if (foundingRead.founding.mode === "succession"
@@ -19060,6 +19160,14 @@ if (existsSync(STATE_FILE)) {
           ...(status !== "proposed" ? { confirmedAt: confirmedAt! } : {}),
           ...(status === "active" || status === "complete" ? { activatedAt: activatedAt! } : {}),
           ...(status === "complete" ? { completedAt: completedAt! } : {}) });
+      }
+      const foundingTargets = new Map<number, string>();
+      for (const program of loaded) {
+        if (!program.founding) continue;
+        const prior = foundingTargets.get(program.founding.target.slot);
+        if (prior)
+          startupStateRefusal ??= `Programs ${prior} and ${program.id} have duplicate founding target slot ${program.founding.target.slot}`;
+        else foundingTargets.set(program.founding.target.slot, program.id);
       }
       programs = capPrograms(loaded);
     }
@@ -21639,7 +21747,8 @@ Bun.serve<WSData>({
       // disjunct is the SAME occupancy-derived predicate the Supervisor's other senses use, so this
       // reach follows the binding through succession instead of clinging to a proposer identity.
       if (req.method === "GET") return json({ programs: programs.filter((p) => sameProgramSession(p, s)
-        || (p.main?.slot === s.id && p.main.openedAt === s.openedAt) || isBoundSupervisor(s)) });
+        || (p.main?.slot === s.id && p.main.openedAt === s.openedAt) || isBoundSupervisor(s))
+        .map(publicProgram) });
       const valid = validateProgramContent(await readJson(req));
       if (!valid.ok) return json({ error: valid.error }, 400);
       const existing = programs.find((p) => p.status === "proposed" && sameProgramSession(p, s)

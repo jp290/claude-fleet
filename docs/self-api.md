@@ -774,54 +774,69 @@ die erlaubende Antwort liest, ist keins.
 `gameMakerTreeLeases` reserviert den angefragten Baum synchron und kanonisiert ihn nach dem git-
 Preflight; jede `openSlot`-Variante meldet davor ein `OpenSlotIntent` und prüft dieselbe Grenze. Nach
 Preflight und Slot-Auswahl trägt das Program zusätzlich den server-erzeugten, geschlossenen
-Sicherheitsmarker `founding?: {v:1, attemptId, mode:"bootstrap"|"succession", canonicalRoot,
-target:{slot,openedAt}, predecessor:{slot,openedAt}|null, startedAt}`. Er wird durabel geschrieben,
-**bevor** `openSlot` oder der Pane-Spawn beginnt; kein Request-Body darf `attemptId` oder
-`openedAt` wählen. Der gemeinsame Tree-Gate schützt Live-Bindungen, synchrone Leases und persistierte
-`founding.canonicalRoot`s. Nur der interne Versuch mit genau derselben Attempt-/Target-Identität
-darf seinen reservierten Slot öffnen.
+Sicherheitsmarker `founding` v2. Er nennt Profil, Versuch, Modus, Target-Root, Startzeit sowie Target
+und gegebenenfalls Vorgänger jeweils mit `{slot, openedAt, selfTokenHash}`. Der Hash ist der
+kleingeschriebene SHA-256 des rohen Slot-Tokens; das Token selbst steht nie im Marker. Marker und
+Bootstrap-Fallback werden durabel geschrieben, **bevor** `openSlot` beginnt; die exakt passende
+Slot-Zeile wird danach durabel, bevor der Pane-Spawn beginnt. Kein Request-Body darf Attempt,
+`openedAt`, Token oder Hash wählen. Der gemeinsame Tree-Gate schützt Game-Maker-Live-Bindungen,
+synchrone Leases und persistierte Game-Maker-Foundings. Nur der interne Versuch mit exakt demselben
+Marker und dem prozesslokalen rohen Target-Token darf seinen reservierten Slot öffnen.
 
 Damit schließen beide Reihenfolgen — Game-Maker zuerst oder generischer Open zuerst — bevor zwei
 Sessions denselben Baum betreten, auch über einen Server-Neustart hinweg. Eine laufende Game-Maker-
 MAIN hält ihren konkreten linked worktree bis Kill oder Program-Abschluss exklusiv. Ein sibling
 linked worktree desselben Repositories bleibt erlaubt; Standard gegen Standard bleibt unverändert.
-Die Nachfolge besitzt als einzigen Permit exakt `{slot, openedAt}` ihrer gebundenen Vorgängerin und
-lehnt jede weitere Besetzung ab. Als laufende Autorität reicht dieser persistierte Permit nicht:
+Die Nachfolge besitzt als einzigen durablen Permit exakt `{slot, openedAt, selfTokenHash}` ihrer
+gebundenen Vorgängerin und lehnt jede weitere Besetzung ab. Als laufende Autorität reicht dieser
+persistierte Permit nicht:
 bis zum Bindungsschnitt muss zusätzlich die vor dem ersten Await erfasste Live-Identität
 `{slot, openedAt, cwd, selfToken}` unverändert im Vorgänger-Slot stehen.
 
 Preflight-Ablehnungen gelten für Bootstrap UND Nachfolge und kommen, BEVOR ein Slot geöffnet, eine
 Bindung bewegt oder ein Context-Receipt geschrieben wurde. Sobald der Sicherheitsmarker existiert,
-ist er selbst die beabsichtigte Crash-Barriere. Standard-Programs tragen ihn nie; Shape,
-Prompt-Bytes und Tree-Regeln bleiben unverändert. Den Live-Identitätscheck bis zum Bindungsschnitt
-teilen Standard- und Game-Maker-Succession, weil Owner-Kill dieselbe Autorität in beiden beendet.
+ist er selbst die Crash-Barriere. Neue Standard- und Game-Maker-Versuche schreiben beide v2;
+Standard erhält dadurch keine Baum-Exklusivität, sondern nur Schutz für seinen exakten Target-Slot.
+Den Live-Identitätscheck bis zum Bindungsschnitt teilen Standard- und Game-Maker-Succession, weil
+Owner-Kill dieselbe Autorität in beiden beendet.
 
-**Restart und der eine Erfolgsschnitt.** Der Loader akzeptiert `founding` nur als den exakten v1-
-Satz oben und nur an einem aktiven `game-maker`-Program. Ein vorhandener unbekannter oder
-missgebildeter Marker verweigert den Serverstart; nur Legacy-Abwesenheit bleibt Abwesenheit. Nach
-State-/Slot-Load und tmux-Adoption, aber vor Self-Heal und `Bun.serve`, wird ein valider offener
-Versuch deterministisch zurückgerollt: ohne Kandidat wird nur der stale Marker gelöscht; der exakt
-passende Kandidat wird zuerst beendet, seine tmux-Abwesenheit bewiesen und erst dann werden Slot und
-Marker gelöscht. Ein recycelter Target-Slot in einem anderen Baum bleibt unangetastet und nur der
-Marker fällt; eine widersprüchliche Belegung im geschützten Baum verweigert den Start und lässt
-Marker und Pane stehen. Eine Succession behält dabei ihre alte `Program.main`-Bindung. Es gibt weder
+**Restart und der eine Erfolgsschnitt.** Der Loader akzeptiert den geschlossenen v2-Satz für
+Standard und Game-Maker sowie v1 ausschließlich als Game-Maker-Legacy. Null, unbekannte Versionen
+oder Felder, falsche Hash-/Profilformen, unmögliche Modus-Bindungen und doppelt belegte Target-Slots
+verweigern den Serverstart; die State-Datei bleibt dabei unverändert. Nach State-/Slot-Load und
+tmux-Adoption, aber vor Self-Heal und `Bun.serve`, wird ein valider offener Versuch deterministisch
+zurückgerollt: ohne Kandidat wird nur der stale Marker gelöscht; der exakt passende Kandidat wird
+zuerst beendet, seine tmux-Abwesenheit bewiesen und erst dann werden Slot und Marker gelöscht. Ein
+recycelter Target-Slot in einem anderen Root bleibt unangetastet und nur der Marker fällt. Beim
+Standard-Founding verweigert ein recycelter Target-Slot im selben Root mit anderem Token-Hash den
+Start; andere Slots im selben Root sind kein Konflikt. Beim Game-Maker verweigert jede
+widersprüchliche Belegung im geschützten Baum den Start und lässt Marker und Pane stehen. Eine
+Succession behält dabei ihre alte `Program.main`-Bindung. Es gibt weder
 Brief-Replay noch Auto-Bind; ein bereits geschriebenes Receipt darf verwaisen und ist nie
 Bindungsquelle. Nach Target-Open, nach Brief-Send vor dem Receipt und nach dem Receipt unmittelbar
 vor dem Bindungsschnitt wird die vollständige Live-Identität erneut geprüft. Owner-Kill oder Recycle
 der Vorgängerin ergibt 409 und räumt nur den exakten Kandidaten auf; ein bereits geschriebenes
 Receipt bleibt dabei als verwaiste Evidenz stehen. Erfolg schreibt zuerst das Receipt und verschiebt
-dann in genau einem durablen Program-State-Cut die Bindung; Game-Maker entfernt darin zusätzlich
-`founding`. Owner-Kill eines exakten Founding-Targets benutzt denselben
+danach in genau einem durablen Program-State-Cut die Bindung, entfernt `founding` und pensioniert bei
+Nachfolge exakt den Vorgänger. Owner-Kill eines exakten Founding-Targets benutzt denselben
 kill→Abwesenheitsbeweis→Slot-/Marker-Cleanup-Pfad.
+
+Kann `tmux new-session` den Pane-Start nicht innerhalb seiner eigenen Frist belegen, antwortet das
+Founding mit 503, `availability:"unknown"` und nur `{attemptId, slot, openedAt}` unter `affected`.
+Ist die exakte Abwesenheit beweisbar, lautet `recovery:"rolled-back"`; andernfalls bleibt Marker samt
+Kandidat erhalten und `recovery:"pending"`. Ein Retry eines pending Markers öffnet keinen weiteren
+Slot und nennt dieselbe `affected`-Identität. Rohe Tokens und ihre Hashes verlassen die State-Grenze
+nicht über diese oder die Program-API.
 
 Die tmux-Grenze ist dabei dreiwertig: `present`, `absent`, `unknown`. Nur eine erfolgreiche
 Session-Aufzählung beweist Zugehörigkeit oder Abwesenheit; ein fehlgeschlagener Probe- oder
-Pfad-Read ist `unknown`, nie HOME und nie Abwesenheit. Vor dem Löschen eines stale oder fremd
-recycelten Markers wird zusätzlich jeder live beobachtete Slot-Root **und jeder geladene `Slot.cwd`-
-Root** gegen `canonicalRoot` geprüft: eine persistierte Zeile ohne Pane ist ein bevorstehender Self-Heal,
-nicht Abwesenheit. Nur die exakt gebundene Succession-Vorgängerin `{slot, openedAt}` ist ausgenommen.
-Eine andere Session oder dormant Slot-Zeile im selben Baum lässt den Start mit Marker und Zeile/Persistenz
-unangetastet verweigern; ein sibling linked worktree bleibt ein anderer Baum.
+Pfad-Read ist `unknown`, nie HOME und nie Abwesenheit. Beim Game-Maker wird vor dem Löschen eines
+stale oder fremd recycelten Markers zusätzlich jeder live beobachtete Slot-Root **und jeder geladene
+`Slot.cwd`-Root** gegen den geschützten Target-Root geprüft: eine persistierte Zeile ohne Pane ist
+ein bevorstehender Self-Heal, nicht Abwesenheit. Nur die exakt gebundene Succession-Vorgängerin samt
+Token-Hash ist ausgenommen. Eine andere Session oder dormant Slot-Zeile im selben Baum lässt den
+Start mit Marker und Zeile/Persistenz unangetastet verweigern; ein sibling linked worktree bleibt ein
+anderer Baum. Standard scannt diese anderen Slots bewusst nicht.
 
 **Lifecycle-Schreiber sind während der Gründung gesperrt.** Solange ein Program-MAIN-Founding dieses
 Programs läuft — synchron in `programBootstrapInflight` oder durabel in `Program.founding` —
@@ -865,10 +880,11 @@ versiegelten Build, Launch, Real-Input und die Captures — keine Game Card, kei
 Hypothesen oder Rationale. `Experience`, `Open defect`, `Next` und frühere `Critic`-Urteile bleiben
 damit predecessor→successor-/Owner-Evidenz statt Vorprägung des frischen Blicks.
 
-**Projektion:** `GET /api/programs` trägt den Record im vollen Row mit; `GET
-/api/self/program-execution` trägt ihn als `program.profile` (`null` = Standard-MAIN), damit die
-gebundene MAIN einen typisierten Sensor hat statt ihre eigene Prosa zu lesen. Der heiße
-`ProgramDigest` der 2-s-Sessions-Poll bleibt unverändert bei vier Feldern.
+**Projektion:** `GET /api/programs` trägt Profil und einen laufenden `founding`-Marker im Program-Row,
+entfernt aus v2 aber beide `selfTokenHash`-Felder. `GET /api/self/program-execution` trägt das Profil
+als `program.profile` (`null` = Standard-MAIN), damit die gebundene MAIN einen typisierten Sensor hat
+statt ihre eigene Prosa zu lesen. Der heiße `ProgramDigest` der 2-s-Sessions-Poll bleibt unverändert
+bei vier Feldern.
 
 **Trail:** jede Erteilung und jede echte Löschung schreibt `program_profile`.
 

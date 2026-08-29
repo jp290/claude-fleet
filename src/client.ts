@@ -7054,19 +7054,22 @@ function renderProgramDetail(shell: Shell, id: string): void {
     return;
   }
 
-  if (mark === "stale" || mark === "unknown") {
+  if (mark === "unknown") {
     const st = qDetailSection(shell.detail, "Binding");
-    st.appendChild(el("div", "shellhint", mark === "stale"
-      ? "No button here on purpose: this server has neither an unbind nor a rebind, and"
-        + " bootstrap-main answers 409 for a program that already carries a binding. A stale MAIN"
-        + " can only be cleared where it was written."
-      : programsRead === "fail"
+    st.appendChild(el("div", "shellhint", programsRead === "fail"
         ? "No button here: the last GET /api/programs did not answer, so this row is cached context"
           + " and its binding is unknown. Founding resumes when a fresh read succeeds — an unknown"
           + " binding is not an absent one, and bootstrap-main would 409 on one that still stands."
         : "No button here: nothing can be founded while the binding cannot even be read. Fix the"
           + " missing fact first — an unknown binding is not an absent one."));
     return;
+  }
+  if (mark === "stale") {
+    const st = qDetailSection(shell.detail, "Binding");
+    st.appendChild(el("div", "shellhint",
+      "The recorded MAIN occupant is gone. The founding form below may replace the stale binding;"
+        + " the server rechecks that no live occupant still owns it before opening a new session and"
+        + " names the replaced binding in its success response."));
   }
   // PROMOTION LIVED IN A TERMINAL. This pane could say "the server will answer 409 until it is
   // active" and nothing more, so the two owner transitions the server already gates were reachable

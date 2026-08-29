@@ -3957,17 +3957,27 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   const detailTailAt = detailAt < 0 ? -1 : client.indexOf("\n}\n", detailAt);
   const detail = detailAt < 0 || detailTailAt < detailAt ? "" : client.slice(detailAt, detailTailAt + 3);
   const pendingAt = detail.indexOf('if (mark === "founding") {');
-  const staleAt = detail.indexOf('if (mark === "stale" || mark === "unknown") {');
+  const staleAt = detail.indexOf('if (mark === "stale") {');
+  const unknownAt = detail.indexOf('if (mark === "unknown") {');
   const bootstrapAt = detail.indexOf('const bs = qDetailSection(shell.detail, "Found a Program-MAIN")');
-  const pendingBlock = pendingAt < 0 || staleAt < pendingAt ? "" : detail.slice(pendingAt, staleAt);
+  const pendingBlock = pendingAt < 0 || unknownAt < pendingAt ? "" : detail.slice(pendingAt, unknownAt);
   // Mutation caught: deleting the pending return or moving the bootstrap section above it makes one
   // durable attempt render cwd/label inputs and the "found Program-MAIN" button again.
   pin(`${RULE_FOUNDING_BOARD} — pending Board copy names mode, attempt and affected slot, says availability/recovery, and returns before every bootstrap control`,
     pendingBlock !== "" && /record\.mode/.test(pendingBlock) && /record\.attemptId/.test(pendingBlock)
       && /record\.target\.slot/.test(pendingBlock) && pendingBlock.includes("availability unknown")
       && pendingBlock.includes("recovery pending") && /\n\s*return;/.test(pendingBlock)
-      && staleAt > pendingAt && bootstrapAt > staleAt,
-    `pending=${pendingAt} stale=${staleAt} bootstrap=${bootstrapAt}`);
+      && unknownAt > pendingAt && bootstrapAt > unknownAt,
+    `pending=${pendingAt} unknown=${unknownAt} bootstrap=${bootstrapAt}`);
+  const staleBlock = staleAt < 0 || bootstrapAt < staleAt ? "" : detail.slice(staleAt, bootstrapAt);
+  // Mutation caught: merging stale back into the fail-closed unknown return removes the only Board
+  // entry point for a Program whose recorded MAIN occupant is gone, although the server deliberately
+  // replaces that exact stale binding during bootstrap.
+  pin(`${RULE_FOUNDING_BOARD} — a stale MAIN exposes replacement founding while unknown still returns fail-closed`,
+    staleAt > unknownAt && staleBlock.includes("replace the stale binding")
+      && !/if \(mark === "stale"\)[\s\S]*?\n\s*return;/.test(staleBlock)
+      && /if \(mark === "unknown"\)[\s\S]*?\n\s*return;/.test(detail.slice(unknownAt, staleAt)),
+    `unknown=${unknownAt} stale=${staleAt} bootstrap=${bootstrapAt}`);
 
   const responseAt = detail.indexOf("const j = (await r.json().catch(() => null)) as unknown;");
   const response = responseAt < 0 ? "" : detail.slice(responseAt, detail.indexOf("acts.appendChild(go);", responseAt));
@@ -4180,30 +4190,30 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   // an anchor on the next declaration would swallow a promotion door pasted in between.
   const detail = from < 0 ? "" : client.slice(from, client.indexOf("\n}\n", from) + 3);
   const pmAt = detail.indexOf("if (qPmFor !== p.id) {");
-  const staleAt = detail.indexOf('if (mark === "stale" || mark === "unknown") {');
-  const pm = pmAt < 0 || staleAt < 0 || staleAt < pmAt ? "" : detail.slice(pmAt, staleAt);
+  const unknownAt = detail.indexOf('if (mark === "unknown") {');
+  const pm = pmAt < 0 || unknownAt < 0 || unknownAt < pmAt ? "" : detail.slice(pmAt, unknownAt);
 
   // (1) ONE DOOR. Every promotion POST the client makes is collected across the WHOLE file: a
   // second surface onto an owner-only permission rail fails this row instead of quietly existing.
   const pmPostsAll = [...client.matchAll(/post\(`\/api\/programs\/\$\{[^}]+\}\/promotion`/g)];
   const pmOutside = pmPostsAll.filter((m) => {
     const i = m.index ?? -1;
-    return i < from || i >= from + detail.length || i - from < pmAt || i - from >= staleAt;
+    return i < from || i >= from + detail.length || i - from < pmAt || i - from >= unknownAt;
   });
   pin(`${RULE_PROMOTION_UI} — exactly one promotion POST exists in the client and it is inside renderProgramDetail's promotion section`,
     detail !== "" && pm !== "" && pmPostsAll.length === 1 && pmOutside.length === 0,
     detail === "" ? "renderProgramDetail not found in src/client.ts"
-      : pm === "" ? `the promotion section was not found (pmAt=${pmAt} staleAt=${staleAt})`
+      : pm === "" ? `the promotion section was not found (pmAt=${pmAt} unknownAt=${unknownAt})`
         : `posts=${pmPostsAll.length} outside=${pmOutside.length}`);
 
-  // (2) PLACEMENT IS LOAD-BEARING, not taste. Above the stale/unknown early return, because that
-  // return fires for exactly the program whose standing permission an owner most wants back; and
+  // (2) PLACEMENT IS LOAD-BEARING, not taste. Above the unknown early return, because that return
+  // fires for exactly the program whose standing permission an owner may need to inspect; and
   // clear of RULE_PROMOTE's own span, which is sliced by text and would otherwise swallow this.
   const frameAt = detail.indexOf('qDetailSection(shell.detail, "Frame"');
   const promoteAt = detail.indexOf('if (p.status === "proposed" || p.status === "confirmed") {');
-  pin(`${RULE_PROMOTION_UI} — the section sits after Frame, before the stale/unknown return, and outside the promote block`,
-    frameAt >= 0 && promoteAt >= 0 && frameAt < pmAt && pmAt < staleAt && staleAt < promoteAt,
-    `frame=${frameAt} pm=${pmAt} stale=${staleAt} promote=${promoteAt}`);
+  pin(`${RULE_PROMOTION_UI} — the section sits after Frame, before the unknown return, and outside the promote block`,
+    frameAt >= 0 && promoteAt >= 0 && frameAt < pmAt && pmAt < unknownAt && unknownAt < promoteAt,
+    `frame=${frameAt} pm=${pmAt} unknown=${unknownAt} promote=${promoteAt}`);
 
   // (3) THE FOUR BODIES, AND NO FIFTH. The server refuses an extra top-level key and an unknown key
   // inside the policy, so the client must not be able to assemble one: the shapes are DATA, stated

@@ -1,7 +1,7 @@
 // Worktree lanes, the base layer: create/diff/land, the one-click /api/lanes route, the worktrees
 // map, the land gate against a busy pane, and the integration-branch config.
 import { spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { ROOT, REPO, check, get, post, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { MERGE_IDLE_MS, exists, settleForMerge } from "./lane-helpers";
@@ -131,6 +131,32 @@ export async function run(lc: LaneCtx): Promise<void> {
   // lane has to be clean, or `land` would be permanently blocked by scaffolding files
   const freshDiff = (await (await get("/api/slots/5/diff")).json()) as { status: string[] };
   check("fresh lane is clean (gitignored .env copy not counted dirty)", freshDiff.status.length === 0, JSON.stringify(freshDiff.status));
+
+  // ...and the same must hold for scratch a HARNESS throws into the lane's cwd: Playwright-MCP
+  // writes `.playwright-mcp/` wherever it was started, and one untracked directory is enough to
+  // pin dirty>0 forever — which is `done-looking`'s clean-tree clause (lane-signals.ts), the
+  // clean-tree step of `selfLandTaskForMain`, and the owner's land path, all three. So createWorktree
+  // excludes the known patterns at spawn. Written as a DIRECTORY with a file in it, because that is
+  // the live shape and because `git status` never reports an empty directory at all — asserting on
+  // an empty one would pass with the mechanism ripped out.
+  mkdirSync(`${wtDir}/.playwright-mcp`, { recursive: true });
+  await Bun.write(`${wtDir}/.playwright-mcp/trace.json`, "{}\n");
+  const scratchDiff = (await (await get("/api/slots/5/diff")).json()) as { status: string[] };
+  check("harness tool scratch thrown into a lane does not make it dirty",
+    scratchDiff.status.length === 0, JSON.stringify(scratchDiff.status));
+  // the counter-probe, and it is the half that keeps the check honest: an exclude wide enough to
+  // swallow real work would pass the line above just as well. A plain untracked file must still
+  // count, or the lane would land with work it never committed.
+  await Bun.write(`${wtDir}/real-work.txt`, "uncommitted\n");
+  const realDirty = (await (await get("/api/slots/5/diff")).json()) as { status: string[] };
+  check("a real untracked working file still counts as dirty",
+    realDirty.status.some((l) => l.includes("real-work.txt")), JSON.stringify(realDirty.status));
+  rmSync(`${wtDir}/real-work.txt`, { force: true });
+  // done-looking's clean-tree clause reads the same git the diff route does — assert it on the
+  // predicate's own input, with the scratch dir still on disk, so the fix is proven where it failed.
+  const scratchGit = spawnSync("git", ["-C", wtDir, "status", "--porcelain"], { encoding: "utf8" });
+  check("done-looking's clean-tree clause can fire with tool scratch present",
+    scratchGit.status === 0 && scratchGit.stdout === "", JSON.stringify(scratchGit.stdout));
 
   // diff endpoint: make a tracked change in the lane, expect it in the diff
   await Bun.write(`${wtDir}/code.txt`, "root\nlane-edit\n");

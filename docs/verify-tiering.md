@@ -1683,3 +1683,47 @@ etwas beansprucht werden könnte. Die Fixtur, ohne die keine dieser Prüfungen e
 ZWEITES Repo: eine wartende Zeile bei leerlaufendem Drain gibt es nicht — der Drain startet auf dem
 Land, das sie einreiht —, ein beanspruchbarer Job braucht also einen Drain, der anderswo beschäftigt
 ist.
+
+### 14.1 Ein remote `unknown` mit exit 127 ist zuerst ein leerer Klon, nicht ein fehlendes Kommando (2026-08-29)
+
+**Der Mechanismus.** `server.ts#buildHelperBundle` baut das Transport-Bundle mit `git bundle create
+<file> <main>`. Das Bundle trägt genau eine Referenz (`refs/heads/main`) und **kein HEAD**. Ein
+einfacher `git clone` eines solchen Bundles checkt nur dann etwas aus, wenn git den einzigen Branch
+als HEAD RATEN kann — und es rät mit `init.defaultBranch`. Steht der auf `master` (Debian-Default,
+und der Wert eines ungesetzten), geht das Raten daneben: der Klon endet trotzdem mit exit 0, meldet
+`warning: remote HEAD refers to nonexistent ref, unable to checkout`, und der Baum ist LEER. Danach
+findet `bun install --frozen-lockfile` keine `package.json`, scheitert, und der Daemon meldet exit
+127 — die Ledger-Zeile wird `unknown` mit dem Grund „the audit command could not be started (exit
+127)". Korrekt insofern, als nie ein erfundenes Rot entsteht; die Meldung beschuldigt aber den
+Install für einen Klon, der nie etwas ausgecheckt hat.
+
+Gegenprobe auf dem Mac, beide Richtungen, gegen dasselbe Bundle:
+
+```
+git -c init.defaultBranch=master clone -q      <bundle> t   ->  0 Dateien + genau diese Warnung
+git -c init.defaultBranch=master clone -q -b main <bundle> t ->  73 Dateien
+```
+
+**Die Adjudikationsregel.** Ein remote `unknown` mit exit 127 darf nicht mehr als „Kommando fehlt /
+PATH kaputt" gelesen werden, bevor der Klon ausgeschlossen ist. Zwei Erkennungsmerkmale im Tail,
+beide am aufbewahrten Log der Helfer-Maschine ablesbar: die Zeile `warning: remote HEAD refers to
+nonexistent ref, unable to checkout`, und — auch ohne sie — ein Tail, in dem eine Install-Meldung
+steht, **ohne dass davor Dateien ausgecheckt wurden**. Erst wenn beides fehlt, ist PATH der nächste
+Verdächtige. Repariert in `5707b76` (`helper-daemon/daemon.ts`: `const ref = j.branch ?? j.main`,
+der Klon nennt seinen Branch also; plus eine Prüfung, die einen leeren Klon als SICH SELBST meldet —
+seither sagt die 127er-Zeile `the clone of <ref> left an EMPTY working tree`, und das ist der
+schnellste Weg, diese Ursache zu bestätigen oder auszuschließen).
+
+**Die verallgemeinerte Lehre, und sie ist der Grund für diesen Eintrag.** `e2e/helper-daemon.ts` war
+grün, während der Pfad auf der zweiten Maschine strukturell nicht funktionierte — die Fixture läuft
+nur auf dem Mac, und dort steht `init.defaultBranch` auf `main`. **Eine Sonde, die eine
+Umgebungs-Voraussetzung ihrer eigenen Maschine erbt, kann den Fehler nicht sehen, den genau diese
+Voraussetzung verdeckt.** Was der Klon braucht, ist keine Eigenschaft des Codes, sondern eine
+Konfiguration daneben — und die reist nicht mit dem Bundle. Das ist die Kehrseite der bestehenden
+Regel „eine Sonde, die nicht laufen konnte, muss als SIE SELBST scheitern" (`CLAUDE.md`, dort im
+Lane-Teil): dort scheitert eine Sonde falsch benannt, hier gelingt sie aus einem Grund, den sie
+nicht misst. Beide Male ist die Reparatur dieselbe Bewegung — die Voraussetzung explizit machen,
+statt sie zu erben.
+
+**Belege:** `docs/messungen/second-host-baseline-2026-08-29.md`, Commit `5707b76` (Body trägt Messung
+und Bestandteile).

@@ -1706,9 +1706,15 @@ export async function run(): Promise<void> {
     const survivedAdversarial = adversarial.filter((row) =>
       allAfterHydration.some((e) => e.id === row.id)).map((row) => row.id);
     const loadedFiller = (await fleetReportEventRows()).filter((e) => e.id.startsWith("b4cap"));
+    // STATUS, not merely presence. Hydrating a row and then turning it terminal on the same boot
+    // is indistinguishable from "it survived" if the probe only counts ids — and that is exactly
+    // how the boot reconciliation loop slipped past this check once: 25 rows loaded, all 25 were
+    // flipped to `receiver-gone`, ownerInboxDebts() read 0, and the ceiling silently opened.
+    const openFiller = loadedFiller.filter((e) => e.status === "inbox");
     check("B4 reverse-state is fail-closed: foreign kind, pane-owner, session-inbox and both payload-basis lies are refused",
-      survivedAdversarial.length === 0 && loadedFiller.length === 25,
-      `survived=[${survivedAdversarial.join(",")}] legitimateFiller=${loadedFiller.length}`);
+      survivedAdversarial.length === 0 && loadedFiller.length === 25 && openFiller.length === 25,
+      `survived=[${survivedAdversarial.join(",")}] legitimateFiller=${loadedFiller.length}`
+        + ` stillOpen=${openFiller.length} statuses=${[...new Set(loadedFiller.map((e) => e.status))].join("/")}`);
     const capRefused = await selfFleetReport(b4Tok.get(capLane.slot) ?? "",
       { status: "complete", text: "the inbox is full" });
     const capRefusedText = await capRefused.text();

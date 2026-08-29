@@ -3240,6 +3240,25 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && footer.includes("FLEET_REPORT_STATUSES.join")
       && statuses.every((status) => reportSection.includes(status)),
     `declared=[${declared.join(",")}]`);
+  // …and the BOOT clause, pinned separately because it is the one rule that lives nowhere near
+  // the parser and is therefore the one a future parser fix will forget. The reconciliation asks
+  // "did this event's endpoint survive the restart"; `fleetEventReceiver` answers null for an
+  // owner row BY CONSTRUCTION, so without an explicit skip the boot buries every unread owner
+  // report and zeroes the inbox ceiling with it. Measured once, exactly that way (B4 survival:
+  // inbox -> receiver-gone across this loop). The ORDER is pinned too: the skip must come before
+  // the call, or the null answer is consumed before anyone can distinguish it from a loss.
+  const bootReconcile = server.slice(
+    server.indexOf("// An event does not disappear merely because its transport endpoint did."),
+    server.indexOf("for (const id of new Set(fleetEvents.map((e) => e.receiverSlot)))"));
+  const ownerSkip = bootReconcile.indexOf("e.receiverSlot === null");
+  const receiverCall = bootReconcile.indexOf("fleetEventReceiver(e)");
+  const goneAssign = bootReconcile.indexOf('e.status = "receiver-gone";');
+  pin(`${RULE_RECEIVER} — boot reconciliation leaves the owner principal's rows untouched (B4)`,
+    bootReconcile !== "" && ownerSkip >= 0 && receiverCall >= 0 && goneAssign >= 0
+      && ownerSkip < receiverCall && receiverCall < goneAssign,
+    bootReconcile === "" ? "boot reconciliation loop not found in server.ts"
+      : `ownerSkip@${ownerSkip} receiverCall@${receiverCall} goneAssign@${goneAssign}`);
+
   // B4, THE OWNER-INBOX FALLBACK, pinned at its three edges because each one fails silently and
   // in a different direction: a widened trigger routes a bound lane's result past its MAIN, a
   // copied literal drifts from the refusal it is supposed to mirror, and a clarification that

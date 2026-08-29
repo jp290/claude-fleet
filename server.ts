@@ -19818,8 +19818,16 @@ watches = watches.filter((w) => {
 });
 // An event does not disappear merely because its transport endpoint did. Bind it to the exact
 // restored occupant; an absent/recycled receiver is a durable terminal fact visible to the owner.
+//
+// AN OWNER ROW HAS NO ENDPOINT TO LOSE, and that is why it is skipped rather than tested here.
+// `fleetEventReceiver` answers null for it BY CONSTRUCTION — there is no session, no generation,
+// nothing that could have been replaced — so running the test would read "the receiver is gone"
+// off a row that never had one and quietly bury the owner's unread report at the next restart.
+// Measured: B4 survival went `inbox` -> `receiver-gone` across exactly this loop, which then
+// zeroed ownerInboxDebts() and let the ceiling accept a 26th row.
 for (const e of fleetEvents) {
-  if (e.status === "acknowledged" || e.status === "receiver-gone" || fleetEventReceiver(e)) continue;
+  if (e.status === "acknowledged" || e.status === "receiver-gone") continue;
+  if (e.receiverSlot === null || fleetEventReceiver(e)) continue;
   e.status = "receiver-gone";
 }
 for (const id of new Set(fleetEvents.map((e) => e.receiverSlot))) pruneFleetEvents(id);

@@ -5640,6 +5640,8 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
     else {
       const observed = await observeTmuxSlots();
       const priorPane = tmuxSlotObservation(observed, s.id);
+      if (priorPane.presence === "unknown")
+        throw new TmuxNewSessionUnavailable(`slot ${s.id} pane availability is unknown`);
       if (priorPane.presence !== "absent")
         throw new Error(`slot ${s.id} pane unavailable for open: ${observed.detail}`);
     }

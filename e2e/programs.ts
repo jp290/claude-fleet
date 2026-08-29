@@ -2306,7 +2306,8 @@ export async function run(ctx: Ctx): Promise<void> {
 
   // Standard founding owns the same typed new-session failure as Game-Maker. One shim leaves tmux
   // observation available, so exact rollback is provable; the other makes observation unknown, so
-  // the marker and candidate must stay pending and an identical retry must name the same attempt.
+  // the pre-open marker must stay pending and an identical retry must name the same attempt without
+  // publishing a Slot row before prior-pane absence is known.
   {
     const realTmux = Bun.which("tmux") ?? "";
     const safeBin = `${ROOT}/program-founding-timeout-safe-bin`;
@@ -2356,19 +2357,18 @@ export async function run(ctx: Ctx): Promise<void> {
     const pendingMarker = readState().programs?.find((p) => p.id === pendingProgram.id)?.founding;
     const pendingSlot = typeof pendingBody.affected?.slot === "number"
       ? readState().slots?.[String(pendingBody.affected.slot)] : undefined;
-    check("Standard founding timeout: unknown absence keeps one exact marker/candidate and retry returns the same affected without slot growth",
+    check("Standard founding timeout: unknown pre-open absence keeps one exact marker and retry returns the same affected without slot growth",
       pendingUnavailable.status === 503 && pendingBody.availability === "unknown" && pendingBody.recovery === "pending"
         && retry.status === 503 && retryBody.recovery === "pending"
         && JSON.stringify(retryBody.affected) === JSON.stringify(pendingBody.affected)
-        && pendingAfterFirst.size === pendingBefore.size + 1
+        && pendingAfterFirst.size === pendingBefore.size
         && (await occupiedIds()).size === pendingAfterFirst.size
         && pendingMarker?.v === 2 && pendingMarker.attemptId === pendingBody.affected?.attemptId
         && pendingMarker.target.slot === pendingBody.affected?.slot
         && pendingMarker.target.openedAt === pendingBody.affected?.openedAt
-        && pendingSlot?.openedAt === pendingBody.affected?.openedAt
+        && pendingSlot === undefined
         && !pendingText.includes("selfToken") && !retryText.includes("selfToken")
         && !pendingText.includes("FLEET_SELF_TOKEN") && !retryText.includes("FLEET_SELF_TOKEN")
-        && (typeof pendingSlot?.selfToken !== "string" || !pendingText.includes(pendingSlot.selfToken))
         && (typeof pendingMarker?.target.selfTokenHash !== "string"
           || !pendingText.includes(pendingMarker.target.selfTokenHash)),
       JSON.stringify({ first: [pendingUnavailable.status, pendingBody], retry: [retry.status, retryBody],
@@ -2376,7 +2376,7 @@ export async function run(ctx: Ctx): Promise<void> {
     await restartSrv();
     rmSync(pendingBin, { recursive: true, force: true });
     const pendingRecovered = (await ownerPrograms()).find((p) => p.id === pendingProgram.id);
-    check("Standard founding timeout: restart rolls back the exact pending candidate before serving",
+    check("Standard founding timeout: restart clears the exact pending pre-open marker before serving",
       pendingRecovered !== undefined && pendingRecovered.founding === undefined && pendingRecovered.main === undefined
         && (typeof pendingBody.affected?.slot !== "number"
           || !(await sessions()).slots.find((slot) => slot.id === pendingBody.affected?.slot)?.cwd),
@@ -2426,13 +2426,22 @@ export async function run(ctx: Ctx): Promise<void> {
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(standardRecoveryState, null, 2), { mode: 0o600 });
     await restartSrv();
     const recoveredRows = await ownerPrograms();
+    const recoveredSlots = (await sessions()).slots;
+    const recoveredDifferent = recoveredSlots.find((slot) => slot.id === differentSlot);
+    const recoveredSameRoot = recoveredSlots.find((slot) => slot.id === sameRootSlot);
+    const differentPane = await tmuxOut("has-session", "-t", `s${differentSlot}`);
+    const sameRootPane = await tmuxOut("has-session", "-t", `s${sameRootSlot}`);
     check("Standard recovery: a recycled different-root target and an unrelated same-root slot survive while both stale markers clear",
       recoveredRows.find((p) => p.id === differentRootProgram.id)?.founding === undefined
         && recoveredRows.find((p) => p.id === otherSlotProgram.id)?.founding === undefined
-        && (await sessions()).slots.find((slot) => slot.id === differentSlot)?.cwd === realpathSync(REPO2)
-        && (await sessions()).slots.find((slot) => slot.id === sameRootSlot)?.cwd === realpathSync(REPO),
+        && typeof recoveredDifferent?.cwd === "string"
+        && realpathSync(recoveredDifferent.cwd) === realpathSync(REPO2)
+        && typeof recoveredSameRoot?.cwd === "string"
+        && realpathSync(recoveredSameRoot.cwd) === realpathSync(REPO)
+        && differentPane.code === 0 && sameRootPane.code === 0,
       JSON.stringify({ different: recoveredRows.find((p) => p.id === differentRootProgram.id),
-        other: recoveredRows.find((p) => p.id === otherSlotProgram.id) }));
+        other: recoveredRows.find((p) => p.id === otherSlotProgram.id),
+        slots: [recoveredDifferent, recoveredSameRoot], panes: [differentPane.code, sameRootPane.code] }));
 
     await expectFoundingStartupRefusal(
       "Standard recovery: a same-root target with a different token hash is ambiguous and remains untouched",
@@ -2441,10 +2450,13 @@ export async function run(ctx: Ctx): Promise<void> {
         if (row) row.founding = plantedV2Bootstrap(sameRootSlot, "1", REPO,
           "1".repeat(32), sameRootDurable.openedAt);
       }, "same-root token mismatch");
+    const sameRootAfterRefusal = (await sessions()).slots.find((slot) => slot.id === sameRootSlot);
+    const sameRootPaneAfterRefusal = await tmuxOut("has-session", "-t", `s${sameRootSlot}`);
     check("Standard recovery: the refused same-root replacement occupant survives fixture repair",
-      (await sessions()).slots.find((slot) => slot.id === sameRootSlot)?.cwd === realpathSync(REPO)
-        && (await tmuxOut("has-session", "-t", `s${sameRootSlot}`)).code === 0,
-      JSON.stringify((await sessions()).slots.find((slot) => slot.id === sameRootSlot)));
+      typeof sameRootAfterRefusal?.cwd === "string"
+        && realpathSync(sameRootAfterRefusal.cwd) === realpathSync(REPO)
+        && sameRootPaneAfterRefusal.code === 0,
+      JSON.stringify({ slot: sameRootAfterRefusal, pane: sameRootPaneAfterRefusal.code }));
     await post(`/api/slots/${differentSlot}/kill`, {});
     await post(`/api/slots/${sameRootSlot}/kill`, {});
     await programPost(differentRootProgram.id, "complete");

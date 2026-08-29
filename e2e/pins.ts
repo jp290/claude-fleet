@@ -389,6 +389,31 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
 }
 
 {
+  // ONE verify-entry lookup, asked by both doors. The self-land route's step 7 decides whether a
+  // repo can be measured at all and `verifyCmdFor` decides which command that is — if those two
+  // resolve the map differently, a MAIN is refused for a repo the gate would happily have measured
+  // (the 2026-08-29 linked-worktree miss, where the map carried the primary path and the checkout
+  // reported the worktree's own toplevel). The pin is structural because the disagreement is: no
+  // test of one door can see the other door's spelling.
+  const region = /const verifyRepoKeyCache[\s\S]*?const verifyCmdFor = /.exec(server);
+  const usages = [...server.matchAll(/VERIFY_CMD_REPOS\.(get|has)\(/g)].map((m) => m.index ?? -1);
+  const outside = region === null ? usages
+    : usages.filter((i) => i < (region.index ?? 0) || i >= (region.index ?? 0) + region[0].length);
+  pin("server.ts reads VERIFY_CMD_REPOS in exactly one place — the shared entry resolver",
+    region !== null && usages.length > 0 && outside.length === 0,
+    region === null ? "no verifyRepoKeyCache…verifyCmdFor region" : `usages=${usages.length} outside=${outside.length}`);
+  pin("the self-land door and the gate resolver both go through verifyEntryFor",
+    /if \(!\(await verifyEntryFor\(lane\.worktree\.repo\)\)\)/.test(server)
+      && /const verifyCmdFor = async \(repo: string\): Promise<string \| null> => \(await verifyEntryFor\(repo\)\)/.test(server),
+    `step7=${/await verifyEntryFor\(lane\.worktree\.repo\)/.test(server)} resolver=${/verifyCmdFor = async/.test(server)}`);
+  // …and the resolver must stay off the synchronous path: it is reached from a route, so its git
+  // read is awaited, never spawned in-line the way repoRunsShortChain's existsSync can be.
+  pin("the verify-entry resolver spawns no synchronous git",
+    region !== null && !/spawnSync|execSync/.test(region[0]) && /await gitCommonDirOf\(/.test(region[0]),
+    region === null ? "no region" : `sync=${/spawnSync|execSync/.test(region[0])}`);
+}
+
+{
   // the legacy half of the same contract: a server deployed without a kickstart still runs an older
   // VERIFY_CMD string, so server.ts also honours the printed marker line on exit 0
   const src = /const VERIFY_SKIP_MARK = \/(.+?)\/([a-z]*);/.exec(server);

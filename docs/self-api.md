@@ -329,9 +329,12 @@ ein `task_release`-Audit-Event, weil ein späterer beaufsichtigter ▸ start das
     Ziel-Repo und isst dessen `DISPATCH_MAX_LANES`-Budget.
   - **nicht automatisierbare Harness** (409): `harness <id> is not automatable — no unattended path
     may drive it (FLEET_HARNESS_AUTOMATION off)`. Geprüft wird die Harness, auf der die Zeile
-    tatsächlich landen würde (`harnessOf(DEFAULT_SPAWN.harness)`, denn `tickDispatch` ruft
-    `dispatchTask` ohne `spawn`). Heute ist das der Default-Adapter, diese Prüfung kann also nie
-    die sein, die ablehnt — gesagt statt zum Entdecken übriggelassen.
+    tatsächlich landen würde, und das ist die EIGENE persistierte Spawn-Wahl des Rows:
+    `releaseTaskForMain` fragt `harnessAutomatableFor(harnessOf(taskSpawnOf(t).harness))` — genau
+    den Adapter, den `tickDispatch` dieser Zeile mitgäbe. Eine Zeile ohne eigene Wahl fällt auf
+    `DEFAULT_SPAWN` zurück, und dort lehnt diese Prüfung nie ab; eine Zeile mit gespeicherter
+    fremder Wahl wird HIER abgelehnt, statt freigegeben ewig zu warten (real gesehen an einer
+    pi-zai-Zeile).
   - **Deckel** (409): `program release cap reached (N/M released rows not yet started) — let the
     tick start one first`.
 

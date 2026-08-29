@@ -1706,7 +1706,7 @@ function deviceCard(d: HelperDeviceInfo): HTMLElement {
       // never wrong.
       d.desiredMode = m;
       d.desiredSet = true;
-      void renderBoard();
+      repaintDevices();
     };
     btns.push(b);
     row.appendChild(b);
@@ -1737,6 +1737,77 @@ function deviceCard(d: HelperDeviceInfo): HTMLElement {
   }
   return box;
 }
+
+// --- ...AND THE WAY IN: the 💻 button and its overlay -------------------------------------------
+// The section above lives inside the SESSION BRIEF board, which is opened per pane and is
+// desktop-only (renderBoard bails at isMobile()). That made the register something you could only
+// see while looking at a lane, and never from the phone — for the one surface whose whole point is
+// "both machines in ONE UI", that is the wrong front door. So the same cards get a door of their
+// own beside 📣/📥, built from the SAME deviceCard(): two renderers of one row would be two
+// chances to disagree about what a device is doing.
+const devdlg = $("devdlg"), devpanel = $("devpanel"), devbtn = $("devbtn");
+const devIsOpen = (): boolean => devdlg.style.display === "flex";
+// A device that is not beating while it HOLDS work is the one state on this panel that wants the
+// owner's eye: the claim is still the helper's until it expires, so this box is not auditing that
+// tree and the other one may or may not be. It is a LOOKING GLASS like the ops inbox — nothing
+// here reaps, requeues or fails anything; the claim's own deadline does that, on its own clock.
+const devStale = (): HelperDeviceInfo[] =>
+  helperDevicesInfo.filter((d) => Date.now() - d.lastSeen >= DEVICE_ONLINE_MS && (d.claims?.length ?? 0) > 0);
+function renderDevBtn() {
+  const n = helperDevicesInfo.length;
+  const m = devStale().length;
+  devbtn.textContent = `💻${n > 0 ? n : ""}${m > 0 ? ` ⚠${m}` : ""}`;
+  devbtn.classList.toggle("hot", m > 0);
+  devbtn.title = n === 0
+    ? "helper devices — no machine has ever registered here"
+    : `${n} helper device${n === 1 ? "" : "s"}`
+      + (m > 0 ? ` · ${m} holding work while not beating` : "")
+      + " — the machines that take suite and audit work off this box";
+  // same rule as 📣 and 📥: no affordance while there is nothing behind it, so the icon means
+  // something the moment it appears. It stays while the dialog is open, or closing it would
+  // remove the button under the owner's cursor.
+  devbtn.style.display = n > 0 || devIsOpen() ? "" : "none";
+}
+// ONE entry point for "the register moved": the poll calls it, and so does the wish-mode button,
+// which is why deviceCard can repaint both surfaces without knowing which one it is drawn in.
+function repaintDevices() {
+  renderDevBtn();
+  if (devIsOpen()) renderDevDlg();
+  void renderBoard();
+}
+function closeDevDlg() {
+  devdlg.style.display = "none";
+  renderDevBtn();
+}
+devdlg.addEventListener("click", (e) => {
+  if (e.target === devdlg) closeDevDlg();
+});
+function renderDevDlg() {
+  devpanel.replaceChildren();
+  devpanel.appendChild(el("h2", "", "Helper devices — the machines that take work off this box"));
+  if (!helperDevicesInfo.length) {
+    // reachable only with the dialog already open when the last device is evicted
+    devpanel.appendChild(el("div", "shrhint", "No device has ever registered here."));
+  } else {
+    devpanel.appendChild(el("div", "shrhint",
+      "Online/offline is DERIVED from the last heartbeat, never reported: a machine that stops "
+      + "beating simply goes quiet, and anything it holds falls back to this box when its claim "
+      + "expires. The mode you pick is a WISH — it is stored here and the device reads it on its "
+      + "own next heartbeat; nothing on this box ever calls out to that machine."));
+    for (const d of helperDevicesInfo) devpanel.appendChild(deviceCard(d));
+  }
+  const btns = el("div", "shrbtns");
+  const close = el("button", "shrbtn", "close") as HTMLButtonElement;
+  close.onclick = closeDevDlg;
+  btns.appendChild(close);
+  devpanel.appendChild(btns);
+}
+devbtn.onclick = () => {
+  setDrawer(false);
+  devdlg.style.display = "flex";
+  renderDevDlg();
+};
+renderDevBtn();
 
 // --- is a deploy due? ------------------------------------------------------------------------
 // Landing is not deploying, and building is not landing. Both facts existed already but were
@@ -5263,8 +5334,12 @@ async function refresh() {
     postLandLive = data.postLandAuditLive ?? null;
     errorsInfo = data.errors ?? null;
     // same rail as the gate line: read on the 2 s poll, painted by the board's own timer, because
-    // the panel lives inside a board that is closed most of the time
+    // the panel lives inside a board that is closed most of the time. The 💻 button and an OPEN
+    // device dialog are painted from here instead — they have no timer of their own, and a badge
+    // that only moved when the board happened to repaint would be a stale count.
     helperDevicesInfo = data.helperDevices ?? [];
+    renderDevBtn();
+    if (devIsOpen()) renderDevDlg();
     // the attention inbox's whole share of the 2s poll: one number. It paints the badge, and while
     // the panel is open a CHANGE in it is what re-fetches the rows — the panel never polls itself.
     setAttentionOpen(data.attentionOpen ?? 0);

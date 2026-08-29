@@ -75,3 +75,20 @@ Reihenfolge), und alles hinter Check ~1722, das nie lief.
 - „Leiser gewinnt" live bewiesen (Owner-Wunsch `quiet` überstimmt lokal-aktiv abwärts,
   Journal-Zeile `mode quiet (local active — owner wishes quiet)`); die Aufwärts-Hälfte (lokale
   Quiet Hours schlagen Owner-`active`) beweist `e2e/helper-daemon.ts`.
+
+## Nachtrag (später am 2026-08-29)
+
+- **Aktivierung vollzogen:** `FLEET_AUDIT_HELPER_GRACE_MS` steht live auf `60000`
+  (Config-Sensor: `live=60000 | .env='60000'`), Server-`bootHead` == HEAD == `050f96c`,
+  `bundleStale` false. Ohne diese Grace kickt ein Land den lokalen Audit-Drain synchron und der
+  15-s-Poll des Daemons sieht den Job nie — Mechanismus und die Claim-Fähigkeits-Regel stehen in
+  `docs/linux-second-host-programm-2026-08-28.md` §„S4 — was der Erstbetrieb geändert hat".
+- **Die Vergleichszahl für die Adjudikation, gleicher Tag, gleiche Suite:** der Mac auditierte
+  `050f96c` grün mit `checks{ran:3133,failed:0}` in 1273566 ms. Der second-host kam auf
+  1655 PASS / 67 FAIL mit Abbruch bei Check ~1722 (die drei Läufe oben, Baum `0d4dca8`; die
+  Commits dazwischen fassen die gefallenen Familien nicht an). Diese beiden Zahlen nebeneinander
+  sind der eigentliche Wert dieser Notiz: **ein Remote-Rot mit GENAU dieser Signatur ist
+  Plattform, kein Regress — jede ANDERE Signatur ist ein echter Befund.**
+- **Erwartung für den ersten echten Remote-Job, vorab hingeschrieben, damit sie später nicht
+  umgedeutet wird:** er wird ROT sein. Solange die Signatur die bekannte ist, ist genau das der
+  bestandene Beweis für S4-(5) — nicht sein Fehlschlag.

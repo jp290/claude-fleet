@@ -91,6 +91,44 @@ spätere Remote-Rot. Ergebnis als Mess-Notiz unter `docs/messungen/`.
   committet vor; mindestens ein echter Portal-Job wurde vom Daemon remote gemessen und steht im
   Ledger.
 
+### S4 — was der Erstbetrieb geändert hat
+
+Der Erstbetrieb hat einen Gate freigelegt, der S4-Kriterium (5) — „mindestens ein echter
+Portal-Job wurde vom Daemon remote gemessen" — fast unerreichbar machte, und eine Auflösung
+dafür gelandet.
+
+**Der Gate.** Ein Land kickt den lokalen Audit-Drain SYNCHRON
+(`server.ts#schedulePostLandAudit`); `helperClaim` weist mit 409 ab, solange
+`auditRunningRepo === repo`. Der Helper-Daemon pollt alle 15 s — er sah einen Fleet-Audit-Job
+also nie, bevor der lokale Drain ihn hatte. Selbst `e2e/helper-daemon.ts` braucht deshalb ein
+Decoy-Land, damit überhaupt ein claimbarer Job existiert. Eine Owner-Route, die ein Audit
+gezielt ans Portal übergibt, gibt es nicht.
+
+**Die Auflösung** (Owner-Freigabe 2026-08-29; gelandet als `050f96c`, Land-Gate grün,
+Post-Land-Audit grün 3133/0; deployt als `ef4cae9b`, live auf 60000):
+`FLEET_AUDIT_HELPER_GRACE_MS`. Default `0` ist byte-genau das alte Verhalten. Bei `>0` lässt
+der Drain einen frischen Eintrag so lange liegen, solange ein claim-fähiges Helper-Gerät
+existiert; ein Skip bewaffnet genau EINEN Re-Kick-Timer, damit nichts verhungert. Claim-fähig
+heißt: Owner-Wunsch `active` (unset zählt als active) UND Selbstmeldung `active` (`quiet`
+claimt nie; KEIN gemeldeter `mode` == alter Daemon, der claimt) UND `lastSeen` frisch
+(`HELPER_FRESH_MS = 3 * HELPER_SWEEP_MS`). Die Fehlerrichtung ist damit immer „lokal läuft es
+doch", nie „niemand auditiert".
+
+**Bekannte Kopplung, laut notiert:** `HELPER_FRESH_MS` hängt an `HELPER_SWEEP_MS` — wer den
+Sweep sehr klein setzt, macht die Grace still wirkungslos.
+
+**Offener Punkt, S5-Kandidat (heute gefunden, in diesem Programm NICHT zu lösen):**
+`helper-daemon/daemon.ts` führt EINEN `suiteCmd` für BEIDE Job-Arten aus — `kind` wird dort nur
+geloggt, nicht verzweigt. Der auf dem second-host konfigurierte `suiteCmd` spiegelt den
+`AUDIT_CMD` des Watchdogs und trägt dessen Fleet-Repo-Wache `[ -f fleet-e2e.ts ] || exit 42`.
+Für einen AUDIT ist das richtig: remote-Skip bedeutet dasselbe wie lokal-Skip. Für eine
+lane-suite-VORSCHAU aus einem echt fremden Repo würde dieselbe Wache still zu `unknown` führen
+— die Lane bekäme „nichts gemessen" statt eines Laufs. Kein Fehler im gelandeten Code, sondern
+eine Verzweigung, die es noch nicht gibt.
+
+**Neustartfest:** der Daemon kam nach einem Maschinen-Neustart als systemd-Unit von allein
+zurück (heute beobachtet).
+
 ### S5 — bewusst NICHT in diesem Programm
 
 Instanz-Link B1 (erst wenn eine zweite Fleet-Instanz real existiert) · B2 Server-Proxy

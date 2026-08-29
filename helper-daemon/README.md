@@ -38,6 +38,15 @@ the helper machine; everything this daemon does is a pull.
 - **The quieter of the two modes wins.** The owner's `desiredMode`, pulled in the reply to this
   machine's heartbeat, always wins downwards; it never overrides quiet hours or the load threshold
   upwards, because the person who set those is standing next to the machine.
+- **The clone always NAMES its ref.** A helper bundle carries exactly the refs it was built from
+  and no HEAD, so a plain `git clone` of one checks a tree out only if git can *guess* the ref —
+  and it guesses with `init.defaultBranch`. Where that is `master` (Debian's default, and the value
+  of an unset one) the guess misses: the clone exits 0, warns `remote HEAD refers to nonexistent
+  ref`, and leaves an EMPTY tree. So both kinds are cloned with `-b`: a lane-suite claim names that
+  ref `branch`, an audit claim names it `main`. Measured live on the work-horse 2026-08-29 — before
+  the fix an audit clone came back empty, `bun install --frozen-lockfile` found no `package.json`,
+  and the ledger row read `unknown` for a suite that was never started. A clone that leaves no
+  working tree now fails as ITSELF rather than as a failed install.
 - **One suite at a time.** Enforced in-process; the machine-wide lock (`/tmp/fleet-e2e.lock`, taken
   by `e2e-stage.sh` inside the clone) is deliberately not duplicated.
 - **A tree that could not be prepared reports `unknown`, never `red`.** A failed clone or install

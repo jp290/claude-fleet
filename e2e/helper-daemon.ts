@@ -13,7 +13,7 @@
 // here first asserts its own precondition — that the counter was moving, that the daemon was alive
 // and had read the wish — so a probe that could not measure fails as ITSELF rather than as the
 // property it was aiming at.
-import { chmodSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { BASE, ROOT, check, get, post } from "./harness";
@@ -174,13 +174,28 @@ export async function run(h: {
   };
   const DLOG = `${ROOT}/daemon.log`;
   let logSeq = 0;
+  // THE DAEMON RUNS UNDER `init.defaultBranch=master`, and that is the point of this constant. A
+  // helper bundle carries its refs and NO HEAD, so a clone that does not name a ref only checks
+  // anything out when git can GUESS one — and it guesses with `init.defaultBranch`. This box has it
+  // on `main`, which is exactly the setting under which the bug of 2026-08-29 (an audit job cloned
+  // without `-b`, empty tree, `install failed`, ledger row `unknown`) is INVISIBLE. Debian's
+  // default is `master`, and so is an unset one.
+  // GIT_CONFIG_* is the way in that touches the DAEMON's environment only: `~/.gitconfig` on this
+  // machine is shared reality outside this repo and is never written by a suite.
+  const MASTER_DEFAULT: Record<string, string> = {
+    GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "init.defaultBranch", GIT_CONFIG_VALUE_0: "master",
+  };
   const startDaemon = (): { proc: ReturnType<typeof Bun.spawn>; log: string } => {
     const log = `${DLOG}.${++logSeq}`;
     rmSync(log, { force: true });
     // ONE fd for both streams, opened here and closed by the OS when this process ends: passing a
     // BunFile twice gives the two streams independent write positions and they overwrite each other.
     const fd = openSync(log, "a");
-    return { proc: Bun.spawn(["bun", DAEMON, CFG], { cwd: ROOT, stdin: "ignore", stdout: fd, stderr: fd }), log };
+    return {
+      proc: Bun.spawn(["bun", DAEMON, CFG],
+        { cwd: ROOT, stdin: "ignore", stdout: fd, stderr: fd, env: { ...process.env, ...MASTER_DEFAULT } }),
+      log,
+    };
   };
   const logText = (p: string): string => { try { return readFileSync(p, "utf8"); } catch { return ""; } };
   const waitLog = async (p: string, needle: string, timeoutMs = 20_000): Promise<boolean> => {
@@ -241,6 +256,30 @@ export async function run(h: {
     landed.gone && queued?.claim === null && queued.localRunning === false,
     `${landed.gone} ${JSON.stringify(queued)}`);
 
+  // THE FIXTURE MUST BE ABLE TO SEE THE BUG BEFORE IT CLAIMS THE FIX. `MASTER_DEFAULT` is only a
+  // pair of environment variables until something shows what they do, so the two clones below are
+  // driven by hand under exactly the environment the daemon is about to get: a plain clone of a
+  // HEAD-less bundle must come back EMPTY, and the same clone with `-b main` must come back full.
+  // Without this pair, the green ledger row further down would be a statement about this machine's
+  // ~/.gitconfig rather than about the daemon.
+  const BUNDLE = `${ROOT}/headless.bundle`;
+  rmSync(BUNDLE, { force: true });
+  const bundled = spawnSync("git", ["-C", REPO, "bundle", "create", BUNDLE, "main"]);
+  const cloneFiles = (name: string, extra: string[]): number => {
+    const dir = `${ROOT}/${name}`;
+    rmSync(dir, { recursive: true, force: true });
+    spawnSync("git", ["clone", "-q", ...extra, BUNDLE, dir], { env: { ...process.env, ...MASTER_DEFAULT } });
+    try { return readdirSync(dir).filter((n) => n !== ".git").length; } catch { return -1; }
+  };
+  const plainClone = cloneFiles("headlessplain", []);
+  const refClone = cloneFiles("headlessref", ["-b", "main"]);
+  rmSync(`${ROOT}/headlessplain`, { recursive: true, force: true });
+  rmSync(`${ROOT}/headlessref`, { recursive: true, force: true });
+  rmSync(BUNDLE, { force: true });
+  check("(HD) precondition: under init.defaultBranch=master a PLAIN clone of a HEAD-less bundle really is EMPTY — this fixture can see the bug",
+    bundled.status === 0 && plainClone === 0 && refClone > 0,
+    `bundle=${bundled.status} plain=${plainClone} file(s), -b main=${refClone} file(s)`);
+
   await writeConfig();
   const daemon = startDaemon();
   check("(HD) the daemon starts and reads its config", await waitLog(daemon.log, "helper-daemon up"),
@@ -270,6 +309,12 @@ export async function run(h: {
     remoteRow?.result === "green" && remoteRow.mainSha === jobSha && remoteRow.exitCode === 0
       && remoteRow.covers.some((c) => c.branch === job.branch),
     JSON.stringify(remoteRow).slice(0, 280));
+  // THE DONE-CRITERION OF THE 2026-08-29 FIX, stated as its own check so a regression reads as what
+  // it is: the whole empty-clone class ends as `unknown` with a reason, never as a red — honest,
+  // and worth nothing, because nothing was measured.
+  check("(HD) …and it is a MEASURED row under init.defaultBranch=master — not the `unknown` an empty clone produces",
+    remoteRow?.result !== "unknown" && (remoteRow?.checks?.ran ?? 0) > 0,
+    `result=${remoteRow?.result} reason=${remoteRow?.reason ?? "-"} checks=${JSON.stringify(remoteRow?.checks)}`);
   check("(HD) …and it is MARKED REMOTE with this machine's name and the trail id the daemon read out of the log",
     remoteRow?.remote?.name === DEVICE_NAME && remoteRow.remote.trail === TRAIL
       && remoteRow.remote.reportedAt >= remoteRow.remote.claimedAt,

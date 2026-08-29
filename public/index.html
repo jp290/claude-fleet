@@ -1127,6 +1127,13 @@
      everything else in here is an ordinary block and wraps on its own. */
   .bdev { padding-top: 8px; }
   .bdev .bidhead { word-break: break-word; }
+  /* the same card in the 💻 overlay, which is far wider than the 264px board and uses a bigger base
+     font: .bstate has no size of its own and would inherit it, leaving the state line towering over
+     the 10.5px meta lines under it. Sizes here, not on the classes, so the board card is untouched. */
+  #devpanel .bdev { padding: 10px 0 2px; border-top: 1px solid #242424; }
+  #devpanel .bdev:first-of-type { border-top: none; }
+  #devpanel .bstate { font-size: 12px; }
+  #devpanel .bidmeta { font-size: 11px; }
   /* AGENTS group: make the advisory / read-only nature legible */
   .bagenthint { color: var(--faint); font-size: 10px; margin-bottom: 2px; }
   /* a commit row is a <button>: both lists are clickable, and Enter/Space + the focus ring come
@@ -1383,6 +1390,7 @@
       <button id="opsbtn" title="operations inbox — completions a subscription asked to be filed here instead of typed into a pane (merge / audit / deploy / lane)" style="display:none">📥</button>
       <button id="auditbtn" title="audit trail — what Fleet did to each slot (killed / shelved / self-healed)">🛡</button>
       <button id="outcomebtn" title="outcome feed — what each lane landed, how, and what ③ review said about it">🧾</button>
+      <button id="devbtn" title="helper devices — the machines that take suite and audit work off this box" style="display:none">💻</button>
       <!-- lives in the sidebar on purpose: #sidetools is NOT hidden by the mobile media
            query, so the ☰ drawer makes this reachable on the phone, which is the only
            device the switch is for. The live title is written by applySaver(). -->
@@ -1438,6 +1446,10 @@
 
 <div id="opsdlg" class="overlay">
   <div class="panel" id="opspanel"></div>
+</div>
+
+<div id="devdlg" class="overlay">
+  <div class="panel" id="devpanel"></div>
 </div>
 
 <div id="autodlg" class="overlay">

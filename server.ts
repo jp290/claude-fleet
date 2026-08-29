@@ -22322,6 +22322,15 @@ Bun.serve<WSData>({
       const s = slotFrom(wsMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 404);
       if (slotTeardownInflight.has(s.id)) return json({ error: "slot is stopping" }, 409);
+      // Bind owner input before the upgrade becomes visible to the client. A browser may send from
+      // its `open` callback before Bun's async websocket.open hook finishes; resolving there left a
+      // real interval where valid first keystrokes saw no binding and were silently dropped. The
+      // immutable pane id and occupant are still rechecked by every queued message below.
+      const occupant = slotStreamOccupant(s);
+      if (!occupant) return json({ error: "slot not active" }, 409);
+      const inputTarget = await existingTmuxTarget(sess(occupant.slot));
+      if (!inputTarget || !sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
+        return json({ error: "slot pane unavailable or changed during websocket connect" }, 409);
       // cols/rows are the connecting client's real terminal size, known synchronously
       // at connect time — unlike the client's separate /resize POST (fired onopen),
       // this avoids a race between the initial replay and the first resize
@@ -22340,7 +22349,8 @@ Bun.serve<WSData>({
       // client can only ever ask for LESS than the server already sends, never more.
       const seedParam = Number(url.searchParams.get("seed") ?? 0) | 0;
       const seed = seedParam > 0 ? Math.min(SEED_LINES, Math.max(50, seedParam)) : 0;
-      if (server.upgrade(req, { data: { slot: s.id, queue: [], ready: false, seedUntil: 0, cols, rows, force, seed } })) return;
+      if (server.upgrade(req, { data: { slot: s.id, queue: [], ready: false, seedUntil: 0,
+        cols, rows, force, seed, ownerInput: { occupant, paneId: inputTarget.paneId } } })) return;
       return new Response("upgrade failed", { status: 400 });
     }
     if (url.pathname === "/api/sessions") {
@@ -24477,7 +24487,8 @@ Bun.serve<WSData>({
     async open(ws) {
       transportWs(ws); // wraps ws.send: per-message deflate + the byte ledger (TRANSPORT region)
       const s = slots[ws.data.slot - 1];
-      const occupant = slotStreamOccupant(s);
+      const inputBinding = ws.data.share ? undefined : ws.data.ownerInput;
+      const occupant = inputBinding?.occupant ?? slotStreamOccupant(s);
       if (!occupant || slotTeardownInflight.has(s.id)) { ws.close(4001, "slot gone"); return; }
       const streamFile = occupantStreamPath(occupant);
       s.clients.add(ws);
@@ -24489,12 +24500,12 @@ Bun.serve<WSData>({
       const seedLines = ws.data.seed || SEED_LINES;
       const name = sess(s.id);
       const target = await existingTmuxTarget(name);
-      if (!target || !sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id)) {
+      if (!target || (inputBinding && target.paneId !== inputBinding.paneId)
+        || !sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id)) {
         s.clients.delete(ws);
         ws.close(4001, "slot changed during connect");
         return;
       }
-      if (!ws.data.share) ws.data.ownerInput = { occupant, paneId: target.paneId };
       if (cols && rows && (force || cols !== s.cols || rows !== s.rows)) {
         // this client's width doesn't match the pane's current width (or the client
         // explicitly asked for a reseed regardless — see the `force` comment above).

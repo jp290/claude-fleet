@@ -3548,6 +3548,9 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   const sendBody = sendAt < 0 ? "" : server.slice(sendAt, server.indexOf("\n}\n", sendAt) + 3);
   const wsAt = server.indexOf("websocket: {");
   const wsBody = wsAt < 0 ? "" : server.slice(wsAt, server.indexOf("\n  },\n});", wsAt));
+  const ownerWsUpgradeAt = server.indexOf("const wsMatch = /^\\/ws\\/(\\d+)$/");
+  const ownerWsUpgradeBody = ownerWsUpgradeAt < 0 ? ""
+    : server.slice(ownerWsUpgradeAt, server.indexOf('if (url.pathname === "/api/sessions")', ownerWsUpgradeAt));
   const occupantCaptureAt = sendBody.indexOf("const occupant = slotStreamOccupant(s)");
   const enqueueAt = sendBody.indexOf("s.inputChain.then");
   const targetAt = sendBody.indexOf("await existingTmuxTarget(sess(occupant.slot))", enqueueAt);
@@ -3584,7 +3587,11 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     `register=${teardownRegisterAt}/${teardownAwaitAt} cwdNull=${cwdNullAt} save=${teardownSaveAt}`);
   pin(`${RULE_GM_TREE} — owner WebSocket input stores and rechecks an occupant-bound immutable pane`,
     /ownerInput\?: \{ occupant: SlotStreamOccupant; paneId: string \}/.test(server)
-      && wsBody.includes("ws.data.ownerInput = { occupant, paneId: target.paneId }")
+      && ownerWsUpgradeBody.indexOf("await existingTmuxTarget(sess(occupant.slot))")
+        < ownerWsUpgradeBody.indexOf("server.upgrade(req")
+      && ownerWsUpgradeBody.includes("sameSlotStreamOccupant(s, occupant)")
+      && ownerWsUpgradeBody.includes("ownerInput: { occupant, paneId: inputTarget.paneId }")
+      && wsBody.includes("const inputBinding = ws.data.share ? undefined : ws.data.ownerInput")
       && wsBody.includes("const binding = ws.data.ownerInput")
       && wsBody.includes('tmux("send-keys", "-t", binding.paneId')
       && wsBody.includes("sameSlotStreamOccupant(s, binding.occupant)")

@@ -353,12 +353,12 @@ export async function run(): Promise<void> {
     const eraseAt = rollbackSource.indexOf('"BSpace"');
     const beforeErase = rollbackSource.slice(0, eraseAt);
     check("rollback boundary: event-only opt-in, fresh read + repeated exact identity checks precede exact-count BSpace",
-      eventSendAt >= 0 && rollbackSource.includes("readExactComposer(s)") && eraseAt > 0
-      && beforeErase.indexOf("readExactComposer(s)") < beforeErase.lastIndexOf("sameComposerOccupant(s, occupant)")
-      && (beforeErase.match(/sameComposerOccupant\(s, occupant\)/g)?.length ?? 0) >= 3
+      eventSendAt >= 0 && rollbackSource.includes("readExactComposer(s, bound)") && eraseAt > 0
+      && beforeErase.indexOf("readExactComposer(s, bound)") < beforeErase.lastIndexOf("sameBoundPane(s, bound)")
+      && (beforeErase.match(/sameBoundPane\(s, bound\)/g)?.length ?? 0) >= 3
       && beforeErase.includes('read.kind === "failed"') && beforeErase.includes('read.kind === "unobservable"')
       && serverSource.indexOf('if (after === null) return { acceptance: "unobservable" as const };')
-        < serverSource.indexOf("rollbackOwnComposerPayload(s, text, occupant)"),
+        < serverSource.indexOf("rollbackOwnComposerPayload(s, bound, text)"),
       `${eventSendAt}:${rollbackSource.length}`);
     check("rollback boundary: no Ctrl-C/Ctrl-U/broad clear/second Enter, and uncertain events cannot acquire deliveredAt",
       !rollbackSource.includes("C-c") && !rollbackSource.includes("C-u") && !rollbackSource.includes("Enter")

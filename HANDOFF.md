@@ -1,106 +1,83 @@
-# HANDOFF — Programm „Linux-Work-Horse" ABGESCHLOSSEN (Slot 1), 2026-08-29 mittags
+# HANDOFF — Themen-Session „hugFaceInci" (Slot 9), Abschluss 2026-08-29
 
-Zustand wird ABGELEITET: `./state.sh` · `./register.sh` · Live-Queue. Vorgänger-Handoff: `0d4dca8`
-(dessen S4-Fahrplan ist unten abgearbeitet; die dortige Stash-Warnung gilt WEITER).
+Zustand wird ABGELEITET: `./state.sh` · `./register.sh` · Live-Queue. Vorgänger dieser Session:
+`3c209d7` (Fassung 2 vom 08-27, dort das Schwarm-Programm im Detail).
 
-## Rolle und Programm
+Diese Session hatte zwei Leben: am **08-27** das Schwarm-Programm aus dem OpenAI/Hugging-Face-
+Vorfall (abgeschlossen), am **08-29** eine einzelne Audit-Adjudikation (offen). Für die Nachfolge
+zählt fast nur §1.
 
-Programm **fcf3fec9c9e88bd33749e7d5** „Linux-Work-Horse-Anbindung", Status **complete**
-(12:33, alle fünf S4-Kriterien belegt), Plan:
-`docs/linux-second-host-programm-2026-08-28.md` (mit neuem Abschnitt „S4 — was der Erstbetrieb
-geändert hat"). Stop-Linien unverändert: kein Auto-Dispatch, kein ssh-Runner (Mac←Linux), kein
-Push, kein B2-Proxy. G0/G1/G2 alle erteilt. **Neu am 2026-08-29: der Owner hat Option B des
-S4-Gates freigegeben** (der Grace-Knopf, siehe unten) — das ist eine Erweiterung über „Programm
-endet mit S4" hinaus und steht als solche im Plan.
+## 1. DER OFFENE PUNKT: ein Remote-Rot, das ich zweimal beurteilt habe
 
-## S4 — ALLE FÜNF FERTIG. Programm steht auf `complete` (12:33)
+`post-land-audits.jsonl`, Zeile `at=1787999568052`, `remote=second-host`, rot, `748ec97`.
+**Zwei Adjudikationen im Ledger, das jüngere korrigiert das ältere:** erst `stale-test`, dann
+`unknowable`. Herleitung und mein Fehler: `docs/messungen/2026-08-29-adjudikation-second-host-401.md`
+(`40f62f7`).
 
-- **(1) Zugang**: `ssh` auf den second-host geht mit dem Key dieses Macs. Der Setup-Report behauptete
-  das schon am 28.08., es stimmte NICHT — eine Peer-Session hatte mit ihrem eigenen Schlüsselpaar
-  getestet. Erst nach Owner-Freigabe wurde unser Key wirklich eingetragen. Lehre: eine
-  Zugangs-Behauptung gilt erst, wenn SIE von der Maschine aus geprüft wurde, die den Zugang braucht.
-- **(2) Konnektivität**: vom second-host `http=200` gegen den Fleet, connect 11 ms, Tailscale-Direkt.
-  Die im Setup-Report offene Tailnet-ACL-Frage ist damit beantwortet.
-- **(3) Deploy (G2)**: Helper-Daemon läuft als systemd-Unit, Gerät `second-host` (`secondhostlinux1`)
-  im Register, `mode active`. Token nur in `/etc/fleet-helper/config.json` (0600), nicht in der
-  Unit — gegengeprüft. „Leiser gewinnt" live bewiesen (Owner-Wunsch `quiet` überstimmt
-  lokal-aktiv). **Neustartfest**: nach einem Maschinen-Neustart kam der Daemon von allein zurück.
-- **(4) Baseline**: `docs/messungen/second-host-baseline-2026-08-29.md`, committet. 3×
-  `./e2e-isolated.sh`, deterministisch 1655 PASS / 67 FAIL, Abbruch bei `programs.ts:2250`,
-  byte-identisch über alle drei Läufe. Das ist die Adjudikationsgrundlage: **diese Signatur ist
-  Plattform, jede andere ein echter Befund.**
-- **(5) Portal-Job remote im Ledger**: ERFÜLLT um 12:32:48. Ledger-Zeile für `748ec97`:
-  `result: red · ms: 596841 · exitCode: 1 · checks{ran:12,failed:9} · remote{name:"second-host"}`,
-  Abbruch an `programs.ts:2250`. **Rot war die vorab hingeschriebene Erwartung** — 597 s liegen
-  exakt im Baseline-Korridor (598/611/604 s) und die Signatur ist die bekannte. Es ist eine
-  MESSUNG, kein `unknown`, und damit der Beweis, den das Kriterium verlangt.
+**Was du wissen musst, bevor du das anfasst:**
 
-## Was heute gelandet ist (Bodies lesen: `git log 0d4dca8..HEAD`)
+- **`mainSha` in einer Audit-Zeile ist eine Behauptung des Servers, keine Messung des Helfers.**
+  `server.ts#buildHelperBundle` baut das Bundle aus `refs/heads/main` **zum Bau-Zeitpunkt**. Wandert
+  main zwischen Land und Claim, auditiert der Helfer einen anderen Baum als die Zeile sagt. Genau
+  das ist hier nicht auszuschließen: am 08-29 lief eine zweite Session schwer auf `server.ts` und
+  `e2e/programs.ts` (`0cd5e23` allein +453/+320; `972dd48` um 12:24 **mitten im Lauf** 12:22–12:32).
+- **Mein Fehler, damit du ihn nicht wiederholst:** ich habe `050f96c..748ec97` geprüft (nur Doku +
+  helper-daemon) und daraus geschlossen, der Second-host habe diesen Baum gesehen. Das folgt nicht —
+  es zeigt nur, dass der auditierte **SHA** unschuldig ist, nicht der auditierte **Baum**.
+- **Was weiterhin steht:** der `task-spawn`-Block stammt vom 08-22 (`096c577`) und war in beiden
+  Bäumen — grün bei `050f96c` (3133 Checks, 0 Fails, Mac), rot bei `748ec97` (Linux, erster
+  Remote-Lauf, der überhaupt Checks erreichte). Die Owner-Tür `(1d)` ist PASS; rot sind nur die vier
+  Filings über den **Self-Token**. `ran: 12` ist ein Tail-Artefakt, kein Deckungsmaß.
 
-- `d522200` PATH-Zeile ins Unit-Template (Direkt-Commit) · `a1216ab` Leak-Redaktion in HANDOFF.md
-  (Direkt-Commit) — **beide von Hand vollverifiziert**: Gate-Kette grün + `./e2e-isolated.sh`
-  ALL PASS 3393/0. Für die Land-Ledger sind sie unsichtbar; `./state.sh`s Zahlen untertreiben
-  darum für heute.
-- `050f96c` `FLEET_AUDIT_HELPER_GRACE_MS` (Lane) — Post-Land-Audit grün 3133/0, deployt `ef4cae9b`.
-- `1395962` S4-Nachtrag in Plan + Baseline-Notiz (Lane).
-- `5707b76` Klon-Fix `-b` für Audit-Jobs (Lane) — Gate grün, volle Kette; deployt `0d607b3d`.
-- `6e6f450` dieser Handoff (Direkt-Commit, docs-only, pins ALL PASS).
-- `748ec97` `docs/verify-tiering.md` §14.1, der Adjudikationseintrag (Lane) — und zugleich das
-  Auslöser-Land, dessen Audit der second-host remote gemessen hat.
+**Die drei Aufträge, in dieser Reihenfolge:**
 
-## DER FUND, der den Zweitrechner gerechtfertigt hat
+0. **Den Klon-Stand feststellbar machen** — der Helfer meldet den SHA, den er tatsächlich
+   ausgecheckt hat, die Ledger-Zeile führt ihn neben `mainSha`. Solange das fehlt, ist **jedes**
+   Remote-Rot über einem parallel bearbeiteten Repo prinzipiell unentscheidbar. Das ist der
+   eigentliche Befund und der einzige, der die Klasse schließt.
+1. `e2e/programs.ts`: `successorToken = … ?? ""` durch einen eigenen `check()` auf die Voraussetzung
+   ersetzen, damit ein fehlender Token als **Harness-Fehler** fällt und nicht als 401 des Produkts.
+2. Den Audit auf demselben Tip auf dem Second-host **wiederholen** — erst dann ist die Ursache
+   gemessen statt geschlossen.
 
-`buildHelperBundle` erzeugt ein Bundle mit genau einer Ref (`refs/heads/main`) und **ohne HEAD**.
-Ein einfacher Klon davon checkt nur aus, wenn git den einzigen Branch als HEAD raten kann. Steht
-`init.defaultBranch` auf `master` (Debian-Default; auf dem second-host unset, auf diesem Mac
-explizit `main`), scheitert das: leerer Baum → keine `package.json` → `bun install` exit 1 → der
-Daemon meldet 127 ⇒ `unknown`. Auf dem Mac reproduziert, beide Richtungen:
-`git -c init.defaultBranch=master clone -q <bundle> t` → 0 Dateien; mit `-b main` → 73.
+## 2. Abgeschlossen am 08-27: das Schwarm-Programm
 
-**Der eigentliche Befund ist nicht die fehlende `-b`-Option, sondern dass die Fixture den Fehler
-strukturell nicht sehen konnte** — `e2e/helper-daemon.ts` lief nur auf einer Maschine, deren
-`init.defaultBranch` ihn verdeckt. Genau dafür war der Zweitrechner da.
+Alles gelandet: **P0** (`c098d87`, Skill-Template mit sechs Front-Matter-Feldern + `INDEX.md`) ·
+**P0b** (`2d88521`, 31 Notizen retrofittet) · **C** (`6ee13a3`, `docs/schwarm-praxis.md`) ·
+**§11.2i** (`dda507d`, elfte Flake-Familie, Fix vorgeschlagen nicht gebaut). **B gestrichen** nach
+Messung (4/211 originIds = 1,9 % Wiederholer). Programm: `docs/schwarm-programm-2026-08-27.md`,
+Aufträge: `briefs/schwarm-programm-auftraege-2026-08-27.md`.
 
-`baf2a3a` repariert es (`ref = j.branch ?? j.main`, plus ein Gurt: ein leerer Klon scheitert als
-ER SELBST statt sich als Install-Fehler zu tarnen) und macht die Fixture fähig, es zu sehen
-(`GIT_CONFIG_*` auf den Daemon-Prozess, NICHT auf `~/.gitconfig`). Die Lane hat die Mutation
-gefahren: zurückgedreht → 6 FAILs mit exakt der Live-Signatur.
+**A und D1 sind ungeklärt.** Beide waren am 08-27 fertig und nicht gelandet (A: Context-Pack, Rot
+war dreimal §11.2i unter Kontention; D1: Stuck-Sensor, geblockt hinter fremder uncommitteter
+`server.ts`-Arbeit). Ihre Worktrees existieren heute nicht mehr in der Slot-Liste — **prüf
+`git branch --list 'fleet/2608270*'` und `lane-outcomes.jsonl`, bevor du sie für verloren hältst
+oder neu baust.** Das habe ich nicht nachgezogen.
 
-## OFFEN — für die Nachfolge, nach Dringlichkeit
+## 3. Operative Lehren dieser Session (jede mehrfach gesehen)
 
-1. **Owner-Entscheidung, von zwei Lanes sauber liegengelassen**: der MENSCHLICHE Pfad hat dasselbe
-   Loch. `src/helper.ts#bootstrapText` gibt für einen Audit-Job `git clone <file> fleet-audit`
-   ohne `-b` aus, und `e2e/pins.ts` RULE_CLONE pinnt das AKTIV fest („the AUDIT arm must NOT grow
-   a `-b`"). Der Pin kodiert einen heute widerlegten Satz — der Daemon ist repariert, die von
-   Hand kopierbare Anleitung im Portal führt einen Menschen weiter in denselben leeren Baum.
-   Ein-Zeilen-Fix plus Umdrehen des Pins — aber ein Pin umzudrehen ist eine Regeländerung.
-2. **Die 67 Linux-FAILs** (`docs/messungen/second-host-baseline-2026-08-29.md`): EINE Wurzel in der
-   Codex-Stand-in-Fixture von `e2e/programs.ts`, plus die dash-Kill-Familie. Solange sie steht,
-   kann der second-host für den Fleet-Baum kein Grün liefern — jedes Remote-Verdikt ist „rot mit
-   bekannter Signatur". Das ist die erste Wurzel für jedes Folge-Programm.
-3. **S5-Kandidat**: `daemon.ts` fährt EINEN `suiteCmd` für BEIDE Job-Arten (`kind` wird nur
-   geloggt); für eine lane-suite-Vorschau aus einem echt fremden Repo würde die Fleet-Repo-Wache
-   still zu `unknown`.
-4. **Owner-Interesse, notiert 2026-08-29**: den second-host als VOLLE Fleet-Instanz nutzen, nicht
-   nur als Suite-Helfer. Zwei Varianten (eigener Server dort mit systemd statt launchd · oder der
-   Mac-Fleet spawnt Lanes per ssh — das wäre der in G0 ausgeschlossene ssh-Runner). Braucht ein
-   eigenes Programm und eine Owner-Entscheidung; 7,6 GiB RAM sind die reale Grenze.
+1. **`acceptance: "unobservable"` nach `POST /send` auf eine frische Lane = in die Pane schauen.**
+   Dreimal passiert. Der Brief liegt im Composer, der Enter verpuffte im Boot. Fix von Hand:
+   `tmux -L claudefleet send-keys -t s<N> Enter`, dann ctx-% prüfen. Panes heißen **`s<N>`**, nicht
+   `claude-<N>`. Ein Auto-Nachschieben im `sendText`-Pfad wäre ein eigener kleiner Auftrag.
+2. **Ein Direkt-Commit auf main während eines laufenden Lands killt den Fast-Forward** — auch ohne
+   gemeinsame Datei. Reihenfolge: erst main-Commits, dann landen, nie beides.
+   `.claude/skills/…` ist bei `ruleFor` **`conservative-default`**, nicht Doku — daher 253 s
+   Land-Fenster statt 0,5 s.
+3. **`last.status:"interrupted"` + `running:true` = Startmarker ohne Verdikt**, kein Abbruch.
+4. **Adjudikations-Notizen sind auf 300 Zeichen gedeckelt** (`MAX_ADJUDICATION_NOTE`). Die
+   Herleitung gehört in eine Messnotiz, die Note trägt den Zeiger.
 
-## Fakten, die nur hier stehen
+## 4. Regelbuch-Drift, gemessen und NICHT nachgezogen
 
-- **Setup-Report privat**: `~/claude-fleet-private/docs/second-host-setup-report-2026-08-28.md`
-  (IPs, User, MAC, WoL). Nie ins public Repo. Sein Satz „SSH-Key … in authorized_keys" war falsch.
-- **`0d4dca8` trägt Fleet-IP und second-host-Adresse in der HISTORIE** — `a1216ab` hat nur den
-  Arbeitsbaum redigiert. Vor einem Push von der Hauptmaschine gilt die Umschreib-Disziplin.
-- **Stash@{0} im Haupt-Checkout** (unverändert aus `0d4dca8`): verwaiste Slot-16-Sol-Arbeit vom
-  27.08. NICHT droppen, Owner hat nie entschieden.
-- **`FLEET_AUDIT_HELPER_GRACE_MS='60000'` steht in `.env`** (Backup der Vorfassung lag im
-  Scratchpad der Session und ist mit ihr weg — die Zeile ist die einzige Änderung, sie zu
-  entfernen ist der Rückweg). Bekannte Kopplung: `HELPER_FRESH_MS = 3 × HELPER_SWEEP_MS` — wer den
-  Sweep sehr klein setzt, macht die Grace still wirkungslos.
-- **`suiteCmd` auf dem second-host spiegelt den `AUDIT_CMD` des Watchdogs** (Skip-Wache + install +
-  Suite), damit remote-Verdikt und lokales dasselbe bedeuten. S5-Kandidat: `daemon.ts` fährt EINEN
-  `suiteCmd` für BEIDE Job-Arten (`kind` wird nur geloggt) — für eine lane-suite-Vorschau aus
-  einem echt fremden Repo würde die Fleet-Repo-Wache still zu `unknown`.
-- **Watch-Naht**: `{kind:"merge"}` immer auf `armed:true` prüfen. Und ein Land direkt nach einem
-  Lane-Report wird mit „the session is actively working" abgelehnt — kurz warten, wiederholen.
+`rulebook.ts` ist getrackt → volle Kette; sammeln und in EINEM Land nachziehen:
+„Zehn Flake-Familien" → elf (§11.2i) · `POST /api/self/watch` kennt fünf Arten
+(`lane|merge|audit|deploy|transition`), die Slot-Art heißt `lane` nicht `slot` · Panes heißen
+`s<N>` · die Verify-Zeile in `CLAUDE.md` ist eine Vereinfachung von `watchdog.sh:91` (dort
+zusätzlich Sentinel-Guard und expliziter install-Fehlerzweig).
+
+## 5. Grundlinien (Schnappschüsse — vor Wiederverwendung neu ziehen)
+
+`lane-outcomes.jsonl` am 08-27: 567 Ausgänge, 123 `killed-empty` (21,7 %), 371 `landed` (65,4 %) —
+das Erfolgsmaß des Schwarm-Programms. Wiederholer: 4/211 originIds (1,9 %).
+`docs/messungen/INDEX.md` steht bei 34 Zeilen; das Format ist in Gebrauch.

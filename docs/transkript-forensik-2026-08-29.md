@@ -6,6 +6,8 @@ zurückgeholt in fünf weiteren. Dieses Dokument hält beide Hälften fest: den 
 Abkürzung, die ich erst hinterher gemessen habe) und den **Rückholweg** (samt der Fleet-Lücke, um
 die er herumbaut). Zwei Messungen am Rand korrigieren eine stehende Regelbuchzeile.
 
+**Gegengelesen** von einer GLM-Lane (`465130b`): `docs/messungen/2026-08-29-glm-review-transkript-forensik.md`. Ihre drei Korrekturen stehen als Zitatblöcke an Ort und Stelle (§3, §4, §6) — dieses Dokument ist damit an drei Stellen revidiert, nicht bestätigt.
+
 ---
 
 ## 1. Das Ergebnis, damit es nicht in der Methode untergeht
@@ -69,7 +71,7 @@ die `<task-notification>`-Zeilen.
 | # | Aufruf | Ertrag | Urteil |
 |---|---|---|---|
 | 1 | `ls ~/.claude/projects/ \| head -50` + `du -sh` | 436 Namen, 1,4 G | **fast wertlos.** Verzeichnisnamen sind cwd-Slugs; „huggingface" steht in keinem |
-| 2 | `grep -ril 'hugging ?face' --include='*.jsonl'` | 44 Dateien | zu viele zum Lesen, ohne Rang |
+| 2 | `grep -rilE 'hugging ?face' --include='*.jsonl'` | 44 Dateien | zu viele zum Lesen, ohne Rang. **Das `-E` ist nicht kosmetisch** — ohne es gilt BRE, `?` ist dort ein LITERAL, und derselbe Aufruf liefert genau **1** Datei (nachgemessen, Shim wie echtes Binary). Eine Zeile, die sich wie ein Ergebnis liest und keines ist |
 | 3 | `for f in …; do grep -ioc …` | **leer** | **Fehlschlag:** `-o` und `-c` schließen sich aus, jede Zeile kam ohne Zahl. Eine ganze Runde verbrannt |
 | 4 | Python-Pass: nur `type=="user"`, Muster im Textblock | 11 Zeilen, Antwort auf einen Blick | **das war der Schritt, der es tat** |
 | 5 | zweiter Python-Pass auf die Gewinnerdatei | Agenten, Dateien, Zeitspanne | Verifikation, nicht Suche |
@@ -121,6 +123,14 @@ Instrumentiert: der Vorfilter selbst kostet **20,69 s**, das Lesen der 44 Kandid
 **0,17 s**. Der `grep` im Subprozess ist also 100–500× langsamer als derselbe Aufruf aus der Shell
 (dort 0,04–0,24 s). Locale ist es nicht (`LC_ALL=C` ändert nichts: 20,18 s). Die Ursache steht im
 nächsten Abschnitt und ist der eigentliche Fund des Tages.
+
+> **KORREKTUR (Review-Lane, `docs/messungen/2026-08-29-glm-review-transkript-forensik.md`, und von
+> mir nachgemessen):** die Rangfolge oben gilt **nur im Python-Subprozess**, und der Satz „der
+> Vorfilter ist langsamer" darf nicht ohne diesen Zusatz zitiert werden. **Aus der Shell ist der
+> Vorfilter der schnellste Weg von allen**, weil dort der Shim greift:
+> `grep -rilE … | python3 <schema-schnitt>` läuft in **0,75–1,28 s** gegen 10,7 s Vollpass. Die
+> ursprüngliche Messung war richtig und ihre Verallgemeinerung falsch — der Unterschied ist nicht
+> „grep vs. Python", sondern **wer den `grep` startet**.
 
 ---
 
@@ -197,7 +207,16 @@ Gemacht habe ich darum dies, und es ist ein Workaround, kein Verb:
                           --prompt-suggestions false"
 ```
 
-**Warum der Hardlink und nicht einfach `--resume 665ac9d3…`:** `transcriptFile()` liefert bei
+> **KORREKTUR (Review-Lane, ebd.): der Hardlink war der falsche Zug.** Gemessen an
+> Wegwerf-Sessions leistet
+> `claude --resume <orig> --fork-session --session-id <pin>` dasselbe ohne ihn: die Fork-Datei trägt
+> Historie **und** neuen Turn, das Original blieb **bytegleich**. Damit fallen die Kosten (1) und
+> (3) unten komplett weg, und (2) ebenfalls — die Fork-Datei trägt von Anfang an die gepinnte Id.
+> Wer diesen Zug das nächste Mal braucht, nimmt `--fork-session`; der Absatz darunter erklärt nur
+> noch, WARUM irgendein Zug nötig ist. Nicht gemessen: das Fork-Verhalten unter `/compact` und mit
+> Subagenten-Verzeichnissen.
+
+**Warum überhaupt ein Zug und nicht einfach `--resume 665ac9d3…`:** `transcriptFile()` liefert bei
 gesetzter `s.sessionId` **ausschließlich** `<pin>.jsonl` und fällt NICHT auf „neueste Datei" zurück
 (der mtime-Fallback gilt nur für Slots ganz ohne Pin). Ohne den Link hätte die Pane die richtige
 Konversation gefahren, während das Board den 2,4-KB-Stub als „die Konversation dieses Slots"

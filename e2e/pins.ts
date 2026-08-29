@@ -298,7 +298,7 @@ const server = read("server.ts");
   const watchlessKinds = 'const watchless = e.kind === "clarification-request" || e.kind === "fleet-report";';
   const watchlessEquivalence = parser.includes(watchlessKinds)
     && parser.includes('    || (watchless !== (e.watchId === null))\n'
-      + "    || !Number.isInteger(e.receiverSlot)");
+      + "    || !(ownerReceiver || (Number.isInteger(e.receiverSlot)");
   const nullMints = (mint.match(/watchId: null/g) ?? []).length;
   pin("FleetEvent watchId is null exactly for clarification-request and fleet-report, and a string for every Watch event",
     /watchId: string \| null/.test(server)
@@ -3240,6 +3240,33 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && footer.includes("FLEET_REPORT_STATUSES.join")
       && statuses.every((status) => reportSection.includes(status)),
     `declared=[${declared.join(",")}]`);
+  // B4, THE OWNER-INBOX FALLBACK, pinned at its three edges because each one fails silently and
+  // in a different direction: a widened trigger routes a bound lane's result past its MAIN, a
+  // copied literal drifts from the refusal it is supposed to mirror, and a clarification that
+  // learned the same fallback would wait forever on an inbox that cannot answer.
+  const eventParser = server.slice(server.indexOf("function fleetEventFrom("),
+    server.indexOf("function clarificationFrom("));
+  const reportDoor = server.match(/async function openFleetReport\([\s\S]*?\n\}/)?.[0] ?? "";
+  const clarifyDoor = server.match(/async function openClarification\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_RECEIVER} — the report door falls through on the ONE named refusal, for a task-bearing lane with no program (B4)`,
+    reportDoor !== "" && /const NO_RECEIVER_EVIDENCE = "no exact clarification receiver evidence";/.test(server)
+      && reportDoor.includes("reason !== NO_RECEIVER_EVIDENCE || s.programId || !s.taskId")
+      && !reportDoor.includes('"no exact clarification receiver evidence"'),
+    reportDoor === "" ? "openFleetReport not found in server.ts"
+      : `gate=${reportDoor.includes("reason !== NO_RECEIVER_EVIDENCE || s.programId || !s.taskId")}`);
+  pin(`${RULE_RECEIVER} — a clarification never reaches the inbox: an inbox cannot answer (B4)`,
+    clarifyDoor !== "" && clarifyDoor.includes('if ("error" in resolved) return json({ error: resolved.error }, 409);')
+      && !clarifyDoor.includes("inbox"),
+    clarifyDoor === "" ? "openClarification not found in server.ts"
+      : `mentionsInbox=${clarifyDoor.includes("inbox")}`);
+  // The equivalence, in the reverse-state parser rather than the door: a row that survives a
+  // restart must still be unable to claim inbox transport with a session receiver, or a slot
+  // recycle would mark the owner's unread report `receiver-gone`.
+  pin(`${RULE_RECEIVER} — a persisted fleet-report is an inbox row exactly when its receiver is the owner (B4)`,
+    eventParser.includes('|| (e.kind === "fleet-report" && (e.delivery === "inbox") !== ownerReceiver)')
+      && eventParser.includes('|| (e.kind === "clarification-request" && e.delivery === "inbox")')
+      && eventParser.includes('|| (ownerReceiver && e.status !== "inbox" && e.status !== "acknowledged")'),
+    `equivalence=${eventParser.includes('(e.delivery === "inbox") !== ownerReceiver')}`);
   // The footer is a LIFECYCLE instruction, and a clarify lane has a different lifecycle: it stops
   // for the owner. Appending it there would tell a lane to finish work it was told not to start.
   pin(`${RULE_RECEIVER} — the exit footer is appended to mutating briefs only, clarify exempted at the seam`,

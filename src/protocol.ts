@@ -39,7 +39,10 @@ export interface FleetReportEventPayload {
   taskId: string | null;
   originId: string | null;
   programId: string | null;
-  basis: "program-main" | "lane-watch" | "program-main+lane-watch";
+  // "owner-inbox" is the OWNER PRINCIPAL as receiver, and it exists on THIS payload only. A
+  // clarification can never carry it: an inbox cannot answer a question, so a worker that asked one
+  // would wait forever. A report is terminal — it needs somewhere to land, not somewhere to reply.
+  basis: "program-main" | "lane-watch" | "program-main+lane-watch" | "owner-inbox";
 }
 
 // --- stable lane ownership ----------------------------------------------------------------------

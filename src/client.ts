@@ -9949,14 +9949,16 @@ renderAttnBtn();
 // view of a receiver-gone event), so this panel reads what the 2 s poll already carries.
 interface FleetEventRow {
   id: string; watchId: string | null;
-  receiverSlot: number; receiverOpenedAt: number; receiverSessionId: string | null;
+  // null on all three is the OWNER PRINCIPAL as receiver — a row filed here because no session
+  // could receive it. It is not a missing value: there is no occupant to name.
+  receiverSlot: number | null; receiverOpenedAt: number | null; receiverSessionId: string | null;
   createdAt: number;
   // the SERVER's union, copied whole. A local interface is a claim about a foreign surface, so an
   // omitted word here would silently make its rows unmatched rather than mis-typed.
   status: "pending" | "send-uncertain" | "delivered" | "acknowledged" | "receiver-gone" | "inbox";
   delivery?: "pane" | "inbox";
   kind: "lane-ready" | "host-commit-ready" | "merge-terminal" | "post-land-audit"
-    | "deploy-terminal" | "clarification-request";
+    | "deploy-terminal" | "clarification-request" | "fleet-report" | "supervisor-transition";
   subjectSlot?: number; subjectBranch?: string; subjectCwd?: string;
   subjectRepo?: string; subjectMainAfter?: string; subjectDeployId?: string;
   payload?: Record<string, unknown>;
@@ -10020,6 +10022,12 @@ opsdlg.addEventListener("click", (e) => {
   if (e.target === opsdlg) closeOpsDlg();
 });
 
+// who this row is FOR. Slot-bound rows name their receiver occupant; an owner row names nobody,
+// because nobody is what it has — saying "receiver slot null" would read as a lost binding.
+function opsReceiver(e: FleetEventRow): string {
+  return e.receiverSlot === null ? "filed for you" : `receiver slot ${e.receiverSlot}`;
+}
+
 // what this row is ABOUT — the join key the owner would otherwise have to reconstruct by hand
 function opsSubject(e: FleetEventRow): string {
   if (e.kind === "post-land-audit") return `${e.subjectRepo ?? "?"} @ ${(e.subjectMainAfter ?? "").slice(0, 8)}`;
@@ -10035,6 +10043,10 @@ function opsSummary(e: FleetEventRow): string {
     return `${String(p.status)} · landed=${p.landed === true ? "YES" : "NO"}`
       + (verify ? ` · verify=${verify.ok === true ? "ok" : verify.ok === false ? "FAILED" : "unverified"}` : "");
   if (e.kind === "post-land-audit") return `result=${String(p.result)}`;
+  // the join key, not the prose: the report TEXT is rendered whole below, because for this one
+  // kind the text IS the delivery — a summary the owner has to look past would be a half-delivery.
+  if (e.kind === "fleet-report")
+    return `${String(p.status)} · task ${typeof p.taskId === "string" ? p.taskId.slice(0, 8) : "—"}`;
   if (e.kind === "deploy-terminal")
     return `ok=${p.ok === true ? "YES" : p.ok === false ? "NO" : "UNVERIFIED"} · stage=${String(p.stage)}`;
   return `${p.ahead ?? "?"} ahead / ${p.dirty ?? "?"} dirty`;
@@ -10043,11 +10055,21 @@ function opsSummary(e: FleetEventRow): string {
 function opsRow(e: FleetEventRow): HTMLElement {
   const row = el("div", "attnrow open");
   const head = el("div", "attnhead");
-  head.appendChild(el("span", "attnkind k-review-ready", e.kind));
+  // a worker report carries its own verdict, so the chip shows it: a `failed` and a `complete`
+  // must not look alike in a list the owner scans.
+  const status = String((e.payload ?? {}).status ?? "");
+  const chip = e.kind !== "fleet-report" ? "k-review-ready"
+    : status === "failed" ? "k-blocked" : status === "needs-main" ? "k-decision" : "k-review-ready";
+  head.appendChild(el("span", `attnkind ${chip}`, e.kind));
   head.appendChild(el("span", "attnprog", opsSubject(e)));
-  head.appendChild(el("span", "attnmeta", `receiver slot ${e.receiverSlot} · ${fmtSince(e.createdAt)}`));
+  head.appendChild(el("span", "attnmeta", `${opsReceiver(e)} · ${fmtSince(e.createdAt)}`));
   row.appendChild(head);
   row.appendChild(el("div", "attntext", opsSummary(e)));
+  // The one kind whose payload is prose for a human. Rendered in full and never truncated here:
+  // the server already caps it at MAX_FLEET_REPORT_TEXT, and this panel is the only place the
+  // owner sees it — there is no pane it was also typed into.
+  if (e.kind === "fleet-report" && typeof (e.payload ?? {}).text === "string")
+    row.appendChild(el("div", "attntext", String((e.payload ?? {}).text)));
   const btns = el("div", "shrbtns");
   const ack = el("button", "shrbtn primary", "acknowledge") as HTMLButtonElement;
   ack.title = "a receipt that you saw this — it starts nothing and changes no lane";
@@ -10076,8 +10098,7 @@ function opsUnackedRow(e: FleetEventRow, now: number): HTMLElement {
   head.appendChild(el("span", "attnkind", e.kind));
   head.appendChild(el("span", "attnprog", opsSubject(e)));
   const since = e.deliveredAt ?? e.createdAt;
-  head.appendChild(el("span", "attnmeta",
-    `receiver slot ${e.receiverSlot} · ${fmtSince(since)} without an ack`));
+  head.appendChild(el("span", "attnmeta", `${opsReceiver(e)} · ${fmtSince(since)} without an ack`));
   row.appendChild(head);
   // THE TWO STATES KNOW DIFFERENT AMOUNTS, so both lines branch, headline and detail alike. A
   // `delivered` row knows tmux took the keystrokes and nothing beyond that. A `send-uncertain` row

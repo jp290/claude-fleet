@@ -86,14 +86,16 @@ interface FleetReportRow {
   id: string; reportedAt: number; status: FleetReportStatus; text: string;
   worker: { slot: number; openedAt: number; sessionId: string | null; cwd: string; branch: string };
   provenance: { taskId: string | null; originId: string | null; programId: string | null };
-  receiver: { slot: number; openedAt: number; sessionId: string | null };
-  basis: "program-main" | "lane-watch" | "program-main+lane-watch"; eventId: string;
+  // null exactly when basis is "owner-inbox" — the owner is a principal, not an occupant
+  receiver: { slot: number; openedAt: number; sessionId: string | null } | null;
+  basis: "program-main" | "lane-watch" | "program-main+lane-watch" | "owner-inbox"; eventId: string;
 }
 interface FleetReportEventRow {
-  id: string; watchId: null; receiverSlot: number; receiverOpenedAt: number;
+  id: string; watchId: null; receiverSlot: number | null; receiverOpenedAt: number | null;
   receiverSessionId: string | null; receiverIdleSec: number; subjectSlot: number; subjectBranch: string;
   kind: "fleet-report"; payload: FleetReportEventPayload; createdAt: number;
   status: FleetEventStatus; attempts: number; deliveredAt: number | null; acknowledgedAt: number | null;
+  delivery?: "pane" | "inbox";
 }
 const watchRows = async (): Promise<WatchRow[]> =>
   ((await (await get("/api/sessions")).json()) as { watches: WatchRow[] }).watches;
@@ -1306,7 +1308,7 @@ export async function run(): Promise<void> {
         && completeReport?.worker.slot === completeLane.slot && completeReport.worker.branch === completeLane.branch
         && completeReport.provenance.taskId === "task-server-report"
         && completeReport.provenance.originId === "origin-server-report"
-        && completeReport.provenance.programId === programId && completeReport.receiver.slot === main
+        && completeReport.provenance.programId === programId && completeReport.receiver?.slot === main
         && completeEvent?.watchId === null && completeEvent.receiverSlot === main
         && completeEvent.payload.reportId === completeReport.id,
       JSON.stringify({ completeReport, completeEvent }));
@@ -1332,7 +1334,7 @@ export async function run(): Promise<void> {
     ]);
     check("Q3 fleet-report scope: the bound MAIN inbox gets all events, the worker gets its row, and a foreign MAIN gets neither",
       workerScope.reports.length === 1 && workerScope.reports[0]?.id === completeReport?.id
-        && mainScope.reports.length === 3 && mainScope.reports.every((r) => r.receiver.slot === main)
+        && mainScope.reports.length === 3 && mainScope.reports.every((r) => r.receiver?.slot === main)
         && foreignScope.reports.length === 0
         && (mainInbox.events ?? []).filter((e) => e.kind === "fleet-report").length === 3
         && !(foreignInbox.events ?? []).some((e) => e.kind === "fleet-report"),
@@ -1423,6 +1425,256 @@ export async function run(): Promise<void> {
     cleaned.fleetReports = [];
     cleaned.programs = (cleaned.programs ?? []).filter((p) => p.id !== programId);
     writeFileSync(reportStatePath, JSON.stringify(cleaned, null, 2), { mode: 0o600 });
+    await restartSrv();
+  }
+
+  // === RESULT-RAIL B4 · THE OWNER-INBOX FALLBACK ==============================================
+  // A report is a TERMINAL fact and needs somewhere to LAND; a clarification is a question and
+  // needs someone to ANSWER. The two doors shared one receiver rule, so an owner-dispatched task
+  // lane with no Program binding and no exact lane watch could not file the report its own
+  // founding brief obliges it to file — measured twice live (slot 7 / probe task 3e744cb3, slot 3
+  // / task 2b2e380f). This block proves the fallback and, just as importantly, its four edges:
+  // the report lands in the OWNER's operations inbox and nowhere else, the same lane's
+  // clarification still gets the identical 409, contradictory evidence is still refused, and the
+  // row survives the death of the worker that filed it.
+  {
+    const inboxMain = await freeSlot();
+    const inboxMainOpen = inboxMain ? await post(`/api/slots/${inboxMain}/open`, { cwd: REPO, label: "inbox-main" }) : null;
+    const inboxMain2 = await freeSlot();
+    const inboxMain2Open = inboxMain2 ? await post(`/api/slots/${inboxMain2}/open`, { cwd: REPO, label: "inbox-main2" }) : null;
+    const newLane = async () => (await (await post("/api/lanes", { repo: REPO })).json()) as
+      { slot: number; cwd: string; branch: string };
+    const taskLane = await newLane();       // owner-dispatched: taskId, no program, no watch
+    const noTaskLane = await newLane();     // nothing dispatched it — the boundary that stays 409
+    const twoWatchLane = await newLane();   // a task AND two contradictory watchers
+    const legacyLane = await newLane();     // a task AND legacy-only watch evidence
+    const capLane = await newLane();        // drives the owner inbox ceiling
+    check("B4 fixtures: two MAIN occupants and five distinct lanes exist",
+      !!inboxMainOpen?.ok && !!inboxMain2Open?.ok
+        && new Set([inboxMain, inboxMain2, taskLane.slot, noTaskLane.slot, twoWatchLane.slot,
+          legacyLane.slot, capLane.slot]).size === 7,
+      JSON.stringify({ inboxMain, inboxMain2, lanes: [taskLane.slot, noTaskLane.slot,
+        twoWatchLane.slot, legacyLane.slot, capLane.slot] }));
+
+    const b4Tok = new Map<number, string>();
+    for (const slot of [taskLane.slot, noTaskLane.slot, twoWatchLane.slot, legacyLane.slot, capLane.slot])
+      b4Tok.set(slot, await paneEnv(`s${slot}`, "FLEET_SELF_TOKEN") ?? "");
+    check("B4 fixtures: every lane has an exact, distinct scoped credential",
+      [...b4Tok.values()].every((t) => /^[0-9a-f]{32}$/.test(t)) && new Set(b4Tok.values()).size === 5,
+      `${b4Tok.size} credentials`);
+
+    const w1 = await post(`/api/slots/${inboxMain}/watch`, { target: twoWatchLane.slot, idleSec: 3600 });
+    const w2 = await post(`/api/slots/${inboxMain2}/watch`, { target: twoWatchLane.slot, idleSec: 3600 });
+    check("B4 fixtures: two distinct receiver occupants watch the same lane", w1.ok && w2.ok,
+      `${w1.status}/${w2.status}`);
+
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const b4Path = `${ROOT}/fleet.json`;
+    const b4Planted = JSON.parse(readFileSync(b4Path, "utf8")) as {
+      slots: Record<string, Record<string, unknown>>; watches?: Record<string, unknown>[];
+    };
+    // A dispatched task stamps taskId/originId on the SLOT (server.ts, the dispatcher). Planting
+    // exactly those two fields is the whole difference between "the owner sent this lane out" and
+    // "someone opened a lane by hand" — the fallback reads no other signal.
+    for (const lane of [taskLane, twoWatchLane, legacyLane, capLane]) {
+      b4Planted.slots[String(lane.slot)].taskId = `task-${lane.slot}`;
+      b4Planted.slots[String(lane.slot)].originId = `origin-${lane.slot}`;
+    }
+    b4Planted.watches = [...(b4Planted.watches ?? []), {
+      id: "b4legacywatch", slot: inboxMain, idleSec: 0, armed: false,
+      created: Date.now(), firedAt: Date.now(), lastResult: "sent", kind: "lane",
+      target: legacyLane.slot, targetCwd: legacyLane.cwd, targetBranch: legacyLane.branch,
+    }];
+    writeFileSync(b4Path, JSON.stringify(b4Planted, null, 2), { mode: 0o600 });
+    await restartSrv();
+
+    const b4AuditStart = auditRows().length;
+    const plogBefore = (await plogRead()).length;
+    const eventsBefore = (await fleetReportEventRows()).length;
+
+    // --- the fallback itself -----------------------------------------------------------------
+    const inboxText = "Owner-inbox slice complete; ALL PASS quoted in the commit body.";
+    const inboxRes = await selfFleetReport(b4Tok.get(taskLane.slot) ?? "",
+      { status: "complete", text: inboxText });
+    const inboxReport = (await inboxRes.json() as { report?: FleetReportRow }).report;
+    const inboxRows = (await fleetReportEventRows()).filter((e) => e.subjectSlot === taskLane.slot);
+    const inboxEvent = inboxRows[0];
+    check("B4 owner-inbox: a dispatched task lane with no program and no watch files exactly one inbox row",
+      inboxRes.ok && inboxRows.length === 1 && inboxReport?.basis === "owner-inbox"
+        && inboxReport.receiver === null
+        && inboxReport.provenance.taskId === `task-${taskLane.slot}`
+        && inboxReport.provenance.programId === null
+        && inboxEvent?.receiverSlot === null && inboxEvent.receiverOpenedAt === null
+        && inboxEvent.receiverSessionId === null && inboxEvent.watchId === null
+        && inboxEvent.status === "inbox" && inboxEvent.delivery === "inbox"
+        && inboxEvent.payload.basis === "owner-inbox" && inboxEvent.payload.text === inboxText,
+      JSON.stringify({ status: inboxRes.status, report: inboxReport, event: inboxEvent }));
+
+    // The owner's sight of it is the SAME payload the board already polls — the panel reads
+    // /api/sessions `events`, which is where fleetReportEventRows() just read it from. What must
+    // also hold is that no SESSION sees it: fleetReportsFor binds worker OR receiver, and an
+    // owner row has no receiver at all.
+    const inboxScope = await selfFleetReports(b4Tok.get(taskLane.slot) ?? "");
+    const strangerScope = await selfFleetReports(b4Tok.get(noTaskLane.slot) ?? "");
+    const mainInboxScope = await selfGet(await paneEnv(`s${inboxMain}`, "FLEET_SELF_TOKEN") ?? "")
+      .then((r) => r.json() as Promise<{ events?: FleetReportEventRow[] }>);
+    check("B4 owner-inbox scope: the filing lane reads its own row back, and no other session sees it",
+      inboxScope.reports.length === 1 && inboxScope.reports[0]?.id === inboxReport?.id
+        && strangerScope.reports.length === 0
+        && !(mainInboxScope.events ?? []).some((e) => e.id === inboxEvent?.id),
+      JSON.stringify({ worker: inboxScope.reports.map((r) => r.id),
+        stranger: strangerScope.reports.length, main: (mainInboxScope.events ?? []).map((e) => e.id) }));
+
+    // --- it is filed, never typed ------------------------------------------------------------
+    // `inbox` is not a pending state, so FACT 2 never selects the row. That is a property of the
+    // state machine and is asserted as one: no transport clock, no attempt, and neither the audit
+    // trail nor the prompt journal records a send for this event id.
+    await Bun.sleep(Math.max(600, AUTOS_TICK_MS * 3));
+    const stillFiled = (await fleetReportEventRows()).find((e) => e.id === inboxEvent?.id);
+    const sendAudits = auditRows().slice(b4AuditStart).filter((row) =>
+      row.detail?.includes(inboxEvent?.id ?? "no-event")
+      && ["fleet_event_delivered", "fleet_event_send_uncertain", "fleet_event_held",
+        "fleet_event_receiver_gone"].includes(row.event ?? ""));
+    const plogAfter = await plogRead();
+    check("B4 owner-inbox: an inbox row is filed, never typed — no attempt, no clock, no journal entry",
+      stillFiled?.status === "inbox" && stillFiled.attempts === 0 && stillFiled.deliveredAt === null
+        && stillFiled.acknowledgedAt === null && sendAudits.length === 0
+        && plogAfter.length === plogBefore
+        && !plogAfter.some((entry) => JSON.stringify(entry).includes(inboxEvent?.id ?? "no-event")),
+      JSON.stringify({ status: stillFiled?.status, attempts: stillFiled?.attempts,
+        audits: sendAudits.map((r) => r.event), plog: `${plogBefore}->${plogAfter.length}` }));
+
+    const openAudit = auditRows().slice(b4AuditStart).filter((row) => row.event === "fleet_report_open");
+    check("B4 audit: the accepted open names the owner inbox as receiver and copies no report text",
+      openAudit.length === 1 && openAudit[0]?.slot === taskLane.slot
+        && openAudit[0]?.detail === `${inboxReport?.id} receiver=owner-inbox status=complete basis=owner-inbox`,
+      JSON.stringify(openAudit));
+
+    // --- the same lane's QUESTION is still refused -------------------------------------------
+    // The divergence is the whole abstraction judgment: an inbox cannot answer, so routing a
+    // clarification here would replace a visible 409 with an invisible forever-wait.
+    const sameLaneQuestion = await selfClarify(b4Tok.get(taskLane.slot) ?? "",
+      { question: "Same lane, same absent receiver — who answers?" });
+    const sameLaneText = await sameLaneQuestion.text();
+    check("B4 divergence: the lane that just filed a report keeps the identical clarification 409",
+      sameLaneQuestion.status === 409
+        && sameLaneText.includes("no exact clarification receiver evidence")
+        && (await clarificationEventRows()).filter((e) => e.subjectSlot === taskLane.slot).length === 0,
+      `${sameLaneQuestion.status} ${sameLaneText}`);
+
+    // --- the three refusals that must NOT have been widened ----------------------------------
+    const noTask = await selfFleetReport(b4Tok.get(noTaskLane.slot) ?? "",
+      { status: "complete", text: "nothing dispatched me" });
+    const noTaskText = await noTask.text();
+    const twoWatch = await selfFleetReport(b4Tok.get(twoWatchLane.slot) ?? "",
+      { status: "complete", text: "two watchers name two occupants" });
+    const twoWatchText = await twoWatch.text();
+    const legacyOnly = await selfFleetReport(b4Tok.get(legacyLane.slot) ?? "",
+      { status: "complete", text: "legacy evidence only" });
+    const legacyOnlyText = await legacyOnly.text();
+    check("B4 boundary: no task, contradictory watchers and legacy-only evidence all keep their exact 409",
+      noTask.status === 409 && noTaskText.includes("no exact clarification receiver evidence")
+        && twoWatch.status === 409 && twoWatchText.includes("lane-watch evidence names multiple receiver occupants")
+        && legacyOnly.status === 409 && legacyOnlyText.includes("only legacy lane-watch evidence exists without slotOpenedAt")
+        && (await fleetReportEventRows()).length === eventsBefore + 1,
+      `${noTask.status}:${noTaskText} / ${twoWatch.status}:${twoWatchText} / ${legacyOnly.status}:${legacyOnlyText}`);
+
+    // --- acknowledgement belongs to exactly one principal -------------------------------------
+    const selfAck = await ackEvent(b4Tok.get(taskLane.slot) ?? "", inboxEvent?.id ?? "x");
+    const selfAckText = await selfAck.text();
+    const strangerAck = await ackEvent(b4Tok.get(noTaskLane.slot) ?? "", inboxEvent?.id ?? "x");
+    const strangerAckText = await strangerAck.text();
+    check("B4 ack split: neither the filing lane nor a stranger can self-ack an inbox row, and both hear why",
+      selfAck.status === 409 && selfAckText.includes("acknowledgement belongs to the owner")
+        && strangerAck.status === 409 && strangerAckText.includes("acknowledgement belongs to the owner")
+        && (await fleetReportEventRows()).find((e) => e.id === inboxEvent?.id)?.status === "inbox",
+      `${selfAck.status}:${selfAckText} / ${strangerAck.status}:${strangerAckText}`);
+
+    // --- the row outlives the worker that filed it --------------------------------------------
+    // THE POINT OF A NULL RECEIVER, stated as a test. Had the row been bound to the worker's own
+    // slot, dropWatchesFor -> markFleetEventReceiverGone would turn it terminal the moment the
+    // lane is killed or recycled — and the owner's unread result would read as "receiver-gone"
+    // while nobody had read anything. BREAKS IF the mint stamps `?? s.id` instead of `?? null`.
+    await post(`/api/slots/${taskLane.slot}/kill`, {});
+    await Bun.sleep(500);
+    const afterKill = (await fleetReportEventRows()).find((e) => e.id === inboxEvent?.id);
+    await restartSrv();
+    const afterRestart = (await fleetReportEventRows()).find((e) => e.id === inboxEvent?.id);
+    const reportAfterRestart = (JSON.parse(readFileSync(b4Path, "utf8")) as
+      { fleetReports?: FleetReportRow[] }).fleetReports?.find((r) => r.id === inboxReport?.id);
+    check("B4 survival: killing the worker occupant and restarting leaves the inbox row untouched",
+      afterKill?.status === "inbox" && afterKill.receiverSlot === null
+        && afterRestart?.status === "inbox" && afterRestart.delivery === "inbox"
+        && afterRestart.receiverSlot === null && afterRestart.receiverOpenedAt === null
+        && reportAfterRestart?.basis === "owner-inbox" && reportAfterRestart.receiver === null
+        && reportAfterRestart.text === inboxText,
+      JSON.stringify({ afterKill: afterKill?.status, afterRestart: afterRestart?.status,
+        report: reportAfterRestart?.basis }));
+
+    const ownerAck = await post(`/api/events/${inboxEvent?.id}/ack`, {});
+    const ownerAckBody = await ownerAck.json() as { ok?: boolean; existing?: boolean;
+      event?: { status?: string; acknowledgedAt?: number | null } };
+    const ownerReAck = await post(`/api/events/${inboxEvent?.id}/ack`, {});
+    const ownerReAckBody = await ownerReAck.json() as { existing?: boolean };
+    const ackAudit = auditRows().filter((row) => row.event === "fleet_event_owner_ack"
+      && row.detail === inboxEvent?.id);
+    check("B4 owner ack: the owner closes the row he was filed to, idempotently, and it is his receipt alone",
+      ownerAck.ok && ownerAckBody.event?.status === "acknowledged"
+        && (ownerAckBody.event?.acknowledgedAt ?? 0) > 0 && ownerAckBody.existing === false
+        && ownerReAck.ok && ownerReAckBody.existing === true
+        && ackAudit.length === 1 && ackAudit[0]?.slot === undefined,
+      JSON.stringify({ ack: ownerAck.status, body: ownerAckBody, reAck: ownerReAckBody, audit: ackAudit }));
+
+    // --- the ceiling is hard, and refuses loudly ---------------------------------------------
+    // The owner inbox has no session death to turn its rows terminal — only his own ack. Without
+    // a ceiling this array is the unbounded fleet.json the whole delivery budget exists to stop.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const capState = JSON.parse(readFileSync(b4Path, "utf8")) as { events?: Record<string, unknown>[] };
+    const filler = Array.from({ length: 25 }, (_, i) => ({
+      id: `b4cap${String(i).padStart(8, "0")}`, watchId: null,
+      receiverSlot: null, receiverOpenedAt: null, receiverSessionId: null, receiverIdleSec: 0,
+      subjectSlot: capLane.slot, subjectBranch: capLane.branch, kind: "fleet-report",
+      payload: { reportId: `${"a".repeat(16)}${String(i).padStart(8, "0")}`, status: "complete",
+        text: `filler ${i}`, taskId: null, originId: null, programId: null, basis: "owner-inbox" },
+      createdAt: Date.now() - 1000 + i, status: "inbox", delivery: "inbox",
+      attempts: 0, deliveredAt: null, acknowledgedAt: null,
+    }));
+    capState.events = [...(capState.events ?? []), ...filler];
+    writeFileSync(b4Path, JSON.stringify(capState, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const loadedFiller = (await fleetReportEventRows()).filter((e) => e.id.startsWith("b4cap"));
+    const capRefused = await selfFleetReport(b4Tok.get(capLane.slot) ?? "",
+      { status: "complete", text: "the inbox is full" });
+    const capRefusedText = await capRefused.text();
+    check("B4 ceiling: 25 unacknowledged owner rows survive reverse-state and refuse the 26th by name",
+      loadedFiller.length === 25 && capRefused.status === 409
+        && capRefusedText.includes("owner operations inbox has no FleetEvent delivery budget")
+        && (await fleetReportEventRows()).filter((e) => e.subjectSlot === capLane.slot
+          && !e.id.startsWith("b4cap")).length === 0,
+      `${loadedFiller.length} filler / ${capRefused.status} ${capRefusedText}`);
+
+    // …and the ceiling is a BUDGET, not a wall: one owner ack returns exactly one place.
+    const freed = await post(`/api/events/${filler[0]?.id}/ack`, {});
+    const capAccepted = await selfFleetReport(b4Tok.get(capLane.slot) ?? "",
+      { status: "needs-main", text: "one place came back" });
+    check("B4 ceiling: acknowledging one row returns exactly one place to the next report",
+      freed.ok && capAccepted.ok
+        && (await fleetReportEventRows()).filter((e) => e.subjectSlot === capLane.slot
+          && !e.id.startsWith("b4cap")).length === 1,
+      `${freed.status}/${capAccepted.status}`);
+
+    for (const slot of [noTaskLane.slot, twoWatchLane.slot, legacyLane.slot, capLane.slot,
+      inboxMain, inboxMain2]) await post(`/api/slots/${slot}/kill`, {});
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const b4Cleaned = JSON.parse(readFileSync(b4Path, "utf8")) as {
+      events?: { kind?: string }[]; fleetReports?: unknown[];
+    };
+    b4Cleaned.events = (b4Cleaned.events ?? []).filter((e) => e.kind !== "fleet-report");
+    b4Cleaned.fleetReports = [];
+    writeFileSync(b4Path, JSON.stringify(b4Cleaned, null, 2), { mode: 0o600 });
     await restartSrv();
   }
 

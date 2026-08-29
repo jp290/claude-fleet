@@ -472,12 +472,61 @@ die Watch-Zeilen gelesen, und dort bleibt die Ablehnung exakt wie sie war:
 - `lane-watch evidence names multiple receiver occupants` — zwei verschiedene Watch-Occupants sind
   kein Empfänger, sondern ein Münzwurf. Bleibt wortgleich (`e2e/pins.ts`, B2).
 - `only legacy lane-watch evidence exists without slotOpenedAt` · `no exact clarification receiver
-  evidence` — unverändert.
+  evidence` — unverändert **als Sätze**; die zweite ist für den Report seit B4 kein Endpunkt mehr,
+  siehe unten.
 
 `basis` steht danach auf `"program-main"` (gebunden) oder `"lane-watch"` (ungebunden) und reitet in
 die `fleet_report_open`-Audit-Zeile. `"program-main+lane-watch"` bleibt im `ClarificationBasis`-Typ,
 weil vor dem Schnitt persistierte Zeilen ihn tragen und `loadState` gegen diese Liste validiert —
 neu vergeben wird er nicht mehr.
+
+### B4 — der Owner-Inbox-Rückfall: ein Report muss LANDEN können
+
+**Ein Report ist ein terminaler Fakt, eine Clarification eine Frage.** Beide Türen teilten sich
+`clarificationReceiverFor`, und genau daran fiel eine owner-dispatchte Task-Lane ohne
+Program-Bindung und ohne exakten Lane-Watch durch: 409 `no exact clarification receiver evidence`,
+von innen weder sichtbar noch reparierbar, obwohl ihr eigener Gründungsbrief den Report VERLANGT.
+Zweimal live belegt (Slot 7 / Probe-Task `3e744cb3`, Slot 3 / Task `2b2e380f`). Der damalige
+Workaround war schlimmer als das Loch: ein `{kind:"lane"}`-Watch, nur armed um Empfänger-Evidenz zu
+FABRIZIEREN — `b6956c9` lehnt ihn inzwischen korrekt ab.
+
+Fehlt beides, geht der Report daher in die **bestehende Owner-Operations-Inbox (📥)**:
+
+- **`basis: "owner-inbox"`, `receiver: null`.** Der Owner ist ein PRINZIPAL, kein Occupant. Es
+  wird kein `slot/openedAt/sessionId` erfunden — die drei Felder sind auf der `FleetReport`-Zeile
+  wie auf dem `FleetEvent` gemeinsam `null`, und `fleetEventFrom`/`fleetReportFrom` prüfen beide
+  Hälften als EINE Äquivalenz (halb-null ist malformed, nicht „Transportwahl").
+- **`status: "inbox"`, `delivery: "inbox"`.** `inbox` ist kein pending-Zustand, und FACT 2 wählt
+  ausschließlich `pending` — der Zeile kann strukturell kein `sendText`, kein History-Append und
+  kein Prompt-Journal-Eintrag zustoßen. Kein Guard, ein Zustandsautomat.
+- **Sie überlebt ihren Worker.** `markFleetEventReceiverGone` filtert auf `receiverSlot === slotId`;
+  `null` trifft das nie. Kill oder Recycle der Lane, die den Report gefilet hat, lässt die Zeile
+  unberührt — terminal wird sie nur durch `POST /api/events/:id/ack` des Owners. Ein
+  Self-Ack bleibt 409 (`inbox event — acknowledgement belongs to the owner`), und diese Prüfung
+  steht jetzt VOR dem Occupant-Vergleich: eine Owner-Zeile hat keinen Occupant, und
+  „belongs to another slot" wäre der falsche Grund.
+
+**Was der Rückfall NICHT weitet** — jede Grenze ist ein eigener Check in `e2e/watch.ts` §B4:
+
+| Fall | Verhalten | Warum |
+|---|---|---|
+| Lane MIT `programId` | unverändert 409 | ihr Ergebnis gehört der MAIN, die sie geschickt hat; ein geschlossener Rückweg dort ist ein Program-Fakt (`programReturnPath`), kein Grund, den Koordinator zu umgehen |
+| zwei widersprüchliche Watch-Occupants | unverändert 409 | ABWESENDE und MEHRDEUTIGE Evidenz sind Gegenteile |
+| nur Legacy-Watch ohne `slotOpenedAt` | unverändert 409 | dito |
+| Lane ohne `taskId` | unverändert 409 | nichts hat sie dispatcht, also schuldet sie kein terminales Ergebnis — und es gäbe keinen Join-Key |
+| `POST /api/self/clarifications` | unverändert 409 | **eine Inbox kann nicht antworten.** Ein dorthin geleiteter Worker würde ewig warten statt ein sichtbares 409 zu bekommen |
+
+**Die Inbox-Schuld ist hart gedeckelt.** `FLEET_EVENT_MAX_OPEN_OWNER_INBOX = 25` nicht-terminale
+Owner-Zeilen; die 26. wird laut abgelehnt (409 `owner operations inbox has no FleetEvent delivery
+budget`). Eigener Deckel statt der Fünf pro Slot, weil der Owner EIN Leser für die ganze Flotte ist:
+fünf offene Zeilen wären von fünf Lanes einer Stunde verbraucht, und die sechste Lane stünde wieder
+ohne Rückweg da. Retention: `FLEET_EVENT_KEEP_TERMINAL_OWNER_INBOX = 25` acked Zeilen —
+`pruneFleetEvents(null)` ist derselbe Mechanismus mit dem Owner als Schlüssel.
+
+Im Board erscheint die Zeile in `📥` wie jede andere Inbox-Zeile — ohne Zusatz-Payload, weil die
+Rows ohnehin als `events` auf `/api/sessions` reiten. Zwei Unterschiede in der Darstellung: der
+Empfänger heißt „filed for you" statt `receiver slot N` (es gibt keinen), und der Report-TEXT wird
+vollständig gerendert statt zusammengefasst — für diese eine Art IST der Text die Zustellung.
 
 **Weitere Ablehnungen:** MAIN und `⚙ steward` sind 409 (`not a worker lane — MAIN and the steward
 cannot file a fleet report`) — es berichtet, wer ARBEITET. Hat der Empfänger kein

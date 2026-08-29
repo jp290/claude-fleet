@@ -1444,10 +1444,16 @@ type FleetEventStatus = "pending" | "send-uncertain" | "delivered" | "acknowledg
 interface FleetEventBase {
   id: string;
   watchId: string | null;
-  receiverSlot: number;
-  // Slot ids are reusable. This is the same occupant binding used by MAIN-direct provenance:
-  // the slot number identifies the row, openedAt + sessionId identify the session in that row.
-  receiverOpenedAt: number;
+  // NULL IS THE OWNER PRINCIPAL — the whole triple or none of it. Every other row names a
+  // SESSION: slot ids are reusable, so the slot number identifies the row and openedAt +
+  // sessionId identify the session in it (the same binding MAIN-direct provenance uses). The
+  // owner is not a session. There is no pane to type into, no generation to compare, and nothing
+  // that can be "replaced" — inventing an occupant for him would make three fields lie, and the
+  // first slot teardown that reused that number would turn his row `receiver-gone` while it was
+  // still unread. `null` therefore means exactly one transport: delivery "inbox", read and
+  // acknowledged by the owner, and structurally unreachable for every slot-keyed filter here.
+  receiverSlot: number | null;
+  receiverOpenedAt: number | null;
   receiverSessionId: string | null;
   receiverIdleSec: number;
   createdAt: number;
@@ -1546,8 +1552,10 @@ interface FleetReport {
   text: string;
   worker: { slot: number; openedAt: number; sessionId: string | null; cwd: string; branch: string };
   provenance: { taskId: string | null; originId: string | null; programId: string | null };
-  receiver: { slot: number; openedAt: number; sessionId: string | null };
-  basis: ClarificationBasis;
+  // null exactly when `basis` is "owner-inbox": the report was filed to the owner principal, who
+  // has no occupant triple. The two fields are one fact and fleetReportFrom checks them together.
+  receiver: { slot: number; openedAt: number; sessionId: string | null } | null;
+  basis: FleetReportEventPayload["basis"];
   eventId: string;
 }
 
@@ -1581,26 +1589,41 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
   if (!raw || typeof raw !== "object") return null;
   const e = raw as Partial<FleetEvent> & Record<string, unknown>;
   const watchless = e.kind === "clarification-request" || e.kind === "fleet-report";
+  // The owner-principal receiver, all three fields or none: a half-null triple is malformed, not a
+  // transport choice — exactly as an unknown `delivery` is.
+  const ownerReceiver = e.receiverSlot === null && e.receiverOpenedAt === null
+    && e.receiverSessionId === null;
   if (typeof e.id !== "string" || !/^[a-z0-9]+$/.test(e.id)
     || !(e.watchId === null || (typeof e.watchId === "string" && /^[a-z0-9]+$/.test(e.watchId)))
     || (watchless !== (e.watchId === null))
-    || !Number.isInteger(e.receiverSlot) || (e.receiverSlot ?? 0) <= 0
-    || typeof e.receiverOpenedAt !== "number" || !Number.isFinite(e.receiverOpenedAt) || e.receiverOpenedAt <= 0
-    || !(typeof e.receiverSessionId === "string" || e.receiverSessionId === null)
+    || !(ownerReceiver || (Number.isInteger(e.receiverSlot) && (e.receiverSlot ?? 0) > 0
+      && typeof e.receiverOpenedAt === "number" && Number.isFinite(e.receiverOpenedAt)
+      && e.receiverOpenedAt > 0
+      && (typeof e.receiverSessionId === "string" || e.receiverSessionId === null)))
     || !Number.isInteger(e.receiverIdleSec) || (e.receiverIdleSec ?? -1) < 0
     || !["pending", "send-uncertain", "delivered", "acknowledged", "receiver-gone", "inbox"]
       .includes(String(e.status))
-    // absent = legacy pane; an unknown value is fail-closed exactly as it is on the Watch. The two
-    // watch-less lane→MAIN variants are pane-only by construction, so neither can be an inbox row.
+    // absent = legacy pane; an unknown value is fail-closed exactly as it is on the Watch.
     || (e.delivery !== undefined && e.delivery !== "pane" && e.delivery !== "inbox")
-    || (e.delivery === "inbox" && watchless)
+    // A clarification is NEVER an inbox row — an inbox cannot answer, so such a row would be a
+    // question nobody could close. A fleet-report is an inbox row EXACTLY when its receiver is the
+    // owner principal: the two facts are one fact, checked as an equivalence so neither half can
+    // be persisted without the other (a slot-bound inbox report would be typed at nobody; an
+    // owner-receiver pane report would be typed at a pane that does not exist).
+    || (e.kind === "clarification-request" && e.delivery === "inbox")
+    || (e.kind === "fleet-report" && (e.delivery === "inbox") !== ownerReceiver)
+    // FACT 2 selects `pending` alone, so an owner row can never be sent and can never go
+    // receiver-gone: `inbox` until the owner acks it, `acknowledged` after. Anything else on such
+    // a row is a state no code path can produce and is refused rather than repaired.
+    || (ownerReceiver && e.status !== "inbox" && e.status !== "acknowledged")
     || typeof e.createdAt !== "number" || !Number.isFinite(e.createdAt) || e.createdAt <= 0
     || !Number.isInteger(e.attempts) || (e.attempts ?? -1) < 0
     || !(typeof e.deliveredAt === "number" || e.deliveredAt === null)
     || !(typeof e.acknowledgedAt === "number" || e.acknowledgedAt === null)) return null;
   const base: FleetEventBase = {
-    id: e.id, watchId: e.watchId, receiverSlot: e.receiverSlot!, receiverOpenedAt: e.receiverOpenedAt,
-    receiverSessionId: e.receiverSessionId, receiverIdleSec: e.receiverIdleSec!,
+    id: e.id, watchId: e.watchId, receiverSlot: e.receiverSlot ?? null,
+    receiverOpenedAt: e.receiverOpenedAt ?? null,
+    receiverSessionId: e.receiverSessionId ?? null, receiverIdleSec: e.receiverIdleSec!,
     createdAt: e.createdAt, status: e.status as FleetEventStatus, attempts: e.attempts!,
     deliveredAt: e.deliveredAt, acknowledgedAt: e.acknowledgedAt,
     ...(e.delivery !== undefined ? { delivery: e.delivery as "pane" | "inbox" } : {}),
@@ -1789,10 +1812,13 @@ function fleetReportFrom(raw: unknown): FleetReport | null {
     || typeof r.reportedAt !== "number" || !Number.isFinite(r.reportedAt) || r.reportedAt <= 0
     || !FLEET_REPORT_STATUSES.includes(r.status as FleetReportStatus)
     || typeof r.text !== "string" || !r.text.trim() || r.text.length > MAX_FLEET_REPORT_TEXT
-    || !occupant(r.worker, true) || !occupant(r.receiver, false)
+    || !occupant(r.worker, true)
+    // The receiver half and the basis half are checked TOGETHER, so a row can never claim a
+    // principal it was not filed to: owner-inbox means no occupant, every other basis means one.
+    || (r.basis === "owner-inbox" ? r.receiver !== null : !occupant(r.receiver, false))
     || !provenance || !nullableString(provenance.taskId) || !nullableString(provenance.originId)
     || !nullableString(provenance.programId)
-    || !["program-main", "lane-watch", "program-main+lane-watch"].includes(String(r.basis))
+    || !["program-main", "lane-watch", "program-main+lane-watch", "owner-inbox"].includes(String(r.basis))
     || typeof r.eventId !== "string" || !/^[0-9a-f]{24}$/.test(r.eventId)) return null;
   return raw as FleetReport;
 }
@@ -3156,6 +3182,14 @@ const WATCH_KEEP_SPENT = 5; // fired/disarmed watches kept per slot before the o
 // delivered-but-unacknowledged facts. A full debt budget refuses the next subscription loudly.
 const FLEET_EVENT_MAX_OPEN_PER_SLOT = WATCH_MAX_PER_SLOT;
 const FLEET_EVENT_KEEP_TERMINAL = WATCH_KEEP_SPENT;
+// THE OWNER OPERATIONS INBOX IS A RECEIVER TOO, and an unbounded one would be the same unbounded
+// fleet.json this budget exists to prevent — with a worse failure mode, because no session death
+// ever turns its rows terminal: only the owner's own ack does. It gets its OWN ceiling instead of
+// the per-slot five, because the owner is ONE reader for the whole fleet: five open rows would be
+// spent by five lanes finishing in the same hour, and the sixth lane's terminal result would be
+// refused with nowhere left to go. Twenty-five is a day of unread completions, not an archive.
+const FLEET_EVENT_MAX_OPEN_OWNER_INBOX = 25;
+const FLEET_EVENT_KEEP_TERMINAL_OWNER_INBOX = 25;
 const MAX_CLARIFICATION_QUESTION = 2000;
 const MAX_CLARIFICATION_ANSWER = 4000;
 const CLARIFICATION_KEEP_TERMINAL = 20;
@@ -6545,6 +6579,14 @@ interface DeliveryBudgetKnown {
 }
 type DeliveryBudget = DeliveryBudgetKnown | { state: "unknown"; reason: string };
 
+// The owner inbox half of the same arithmetic, and deliberately smaller: he holds no watches, so
+// there is nothing to reserve — only rows he has not yet acknowledged. `>= cap` is EXACTLY the
+// refusal condition of the fleet-report door, for the same reason `free === 0` is over there.
+function ownerInboxDebts(): number {
+  return fleetEvents.filter((e) => e.receiverSlot === null
+    && !["acknowledged", "receiver-gone"].includes(e.status)).length;
+}
+
 function slotDeliveryBudget(slotId: number): DeliveryBudgetKnown {
   const deliveryDebts = fleetEvents.filter((e) => e.receiverSlot === slotId
     && !["acknowledged", "receiver-gone"].includes(e.status)).length;
@@ -7170,13 +7212,16 @@ function pruneSpentWatches(slotId: number): void {
   watches = watches.filter((w) => !drop.has(w.id));
 }
 
-function pruneFleetEvents(slotId: number): void {
+// Retention is per RECEIVER, and the owner is one receiver like any slot — `null` selects his
+// inbox tail. Same rule, same audit word, only the key and the ceiling differ.
+function pruneFleetEvents(slotId: number | null): void {
   const terminal = fleetEvents.filter((e) => e.receiverSlot === slotId
     && (e.status === "acknowledged" || e.status === "receiver-gone"))
     .sort((a, b) => (a.acknowledgedAt ?? a.createdAt) - (b.acknowledgedAt ?? b.createdAt));
-  if (terminal.length <= FLEET_EVENT_KEEP_TERMINAL) return;
-  const drop = new Set(terminal.slice(0, terminal.length - FLEET_EVENT_KEEP_TERMINAL).map((e) => e.id));
-  for (const id of drop) audit("fleet_event_prune", slotId, id);
+  const keep = slotId === null ? FLEET_EVENT_KEEP_TERMINAL_OWNER_INBOX : FLEET_EVENT_KEEP_TERMINAL;
+  if (terminal.length <= keep) return;
+  const drop = new Set(terminal.slice(0, terminal.length - keep).map((e) => e.id));
+  for (const id of drop) audit("fleet_event_prune", slotId ?? undefined, id);
   fleetEvents = fleetEvents.filter((e) => !drop.has(e.id));
 }
 
@@ -7194,6 +7239,12 @@ function pruneClarifications(): void {
 
 const sameOccupant = (a: { slot: number; openedAt: number }, b: { slot: number; openedAt: number }): boolean =>
   a.slot === b.slot && a.openedAt === b.openedAt;
+
+// THE ONE REFUSAL THE REPORT DOOR IS ALLOWED TO FALL THROUGH, named so the two sides cannot
+// drift apart by a typo. Its siblings stay hard refusals on both doors: "multiple receiver
+// occupants" and legacy-only evidence are CONTRADICTORY evidence, not absent evidence, and a
+// fallback that swallowed them would file a report to the owner while a session was still owed it.
+const NO_RECEIVER_EVIDENCE = "no exact clarification receiver evidence";
 
 type ClarificationReceiver = {
   receiver: { slot: number; openedAt: number; sessionId: string | null };
@@ -7242,7 +7293,7 @@ function clarificationReceiverFor(lane: Slot): ClarificationReceiver | { error: 
   if (watchReceiver) return { receiver: watchReceiver, basis: "lane-watch" };
   if (legacyMatches.length > 0)
     return { error: "only legacy lane-watch evidence exists without slotOpenedAt" };
-  return { error: "no exact clarification receiver evidence" };
+  return { error: NO_RECEIVER_EVIDENCE };
 }
 
 function refuseClarification(c: ClarificationRequest, reason: string, at = Date.now()): void {
@@ -7280,6 +7331,8 @@ function reconcileClarifications(teardownSlotId?: number): boolean {
 }
 
 function fleetEventReceiver(e: FleetEvent): Slot | null {
+  // an owner row has no session receiver by construction, and never claims to have lost one
+  if (e.receiverSlot === null) return null;
   const s = slotFrom(e.receiverSlot);
   return s?.cwd && s.openedAt === e.receiverOpenedAt && s.sessionId === e.receiverSessionId ? s : null;
 }
@@ -7357,8 +7410,10 @@ function clarificationsFor(s: Slot): ClarificationRequest[] {
 }
 
 function fleetReportsFor(s: Slot): FleetReport[] {
-  const bound = (b: { slot: number; openedAt: number; sessionId: string | null }): boolean =>
-    b.slot === s.id && b.openedAt === s.openedAt && b.sessionId === s.sessionId;
+  const bound = (b: { slot: number; openedAt: number; sessionId: string | null } | null): boolean =>
+    !!b && b.slot === s.id && b.openedAt === s.openedAt && b.sessionId === s.sessionId;
+  // An owner-inbox row still reaches its WORKER through the first arm — the lane can read back
+  // what it filed — and reaches no session at all through the second, which is the point.
   return fleetReports.filter((r) => bound(r.worker) || bound(r.receiver));
 }
 
@@ -7404,10 +7459,36 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
   if (text.length > MAX_FLEET_REPORT_TEXT)
     return json({ error: `text must be at most ${MAX_FLEET_REPORT_TEXT} chars` }, 400);
 
+  // THE OWNER-INBOX FALLBACK, and it is the narrowest one that closes the hole it was cut for.
+  //
+  // A report is a TERMINAL worker fact: unlike a question it needs somewhere to land, not someone
+  // to answer. Measured twice live (slot 7 / probe task 3e744cb3, slot 3 / task 2b2e380f): an
+  // owner-dispatched task lane with no Program binding and no exact lane watch could not file the
+  // report its own founding brief obliges it to file — 409, from inside, with no act available to
+  // the lane that would fix it. The workaround was worse than the hole: a {kind:"lane"} watch
+  // armed only to manufacture receiver evidence, which b6956c9 now correctly refuses.
+  //
+  // WHAT THIS DOES NOT WIDEN, on purpose:
+  //  · a lane WITH a programId keeps its binding and its 409 — its result belongs to the MAIN
+  //    that dispatched it, and a closed return path there is a program fact the owner already
+  //    sees on `programReturnPath`, not a reason to route around the coordinator.
+  //  · a lane with contradictory or legacy-only watch evidence keeps its loud refusal. Absent
+  //    evidence and ambiguous evidence are opposite facts.
+  //  · a lane with no task at all keeps its 409: nothing dispatched it, so nothing is owed a
+  //    terminal result, and there would be no taskId for the owner to join the row against.
+  //  · clarifications are untouched. An inbox cannot answer, so `/api/self/clarifications` keeps
+  //    this exact 409 — a worker routed there would wait on a receiver that cannot speak.
   const resolved = clarificationReceiverFor(s);
-  if ("error" in resolved) return json({ error: resolved.error }, 409);
-  if (slotDeliveryBudget(resolved.receiver.slot).free === 0)
+  const bound = "error" in resolved ? null : resolved;
+  if (!bound) {
+    const reason = (resolved as { error: string }).error;
+    if (reason !== NO_RECEIVER_EVIDENCE || s.programId || !s.taskId)
+      return json({ error: reason }, 409);
+    if (ownerInboxDebts() >= FLEET_EVENT_MAX_OPEN_OWNER_INBOX)
+      return json({ error: "owner operations inbox has no FleetEvent delivery budget" }, 409);
+  } else if (slotDeliveryBudget(bound.receiver.slot).free === 0) {
     return json({ error: "fleet-report receiver has no FleetEvent delivery budget" }, 409);
+  }
 
   const reportedAt = Date.now();
   const id = randomBytes(12).toString("hex");
@@ -7418,22 +7499,30 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
     worker: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId,
       cwd: s.cwd!, branch: s.worktree!.branch },
     provenance: { taskId: s.taskId, originId: s.originId, programId: s.programId },
-    receiver: resolved.receiver, basis: resolved.basis, eventId,
+    receiver: bound?.receiver ?? null, basis: bound?.basis ?? "owner-inbox", eventId,
   };
   const event: FleetReportFleetEvent = {
     id: eventId, watchId: null,
-    receiverSlot: resolved.receiver.slot, receiverOpenedAt: resolved.receiver.openedAt,
-    receiverSessionId: resolved.receiver.sessionId, receiverIdleSec: 60,
+    receiverSlot: bound?.receiver.slot ?? null, receiverOpenedAt: bound?.receiver.openedAt ?? null,
+    receiverSessionId: bound?.receiver.sessionId ?? null,
+    // no idle gate on an owner row: `receiverIdleSec` is the pane-quiet precondition FACT 2 reads
+    // before typing, and nothing is ever typed for this one.
+    receiverIdleSec: bound ? 60 : 0,
     subjectSlot: s.id, subjectBranch: s.worktree!.branch,
     kind: "fleet-report",
     payload: { reportId: id, status, text, taskId: s.taskId, originId: s.originId,
-      programId: s.programId, basis: resolved.basis },
-    createdAt: reportedAt, status: "pending", attempts: 0, deliveredAt: null, acknowledgedAt: null,
+      programId: s.programId, basis: report.basis },
+    createdAt: reportedAt,
+    // A bound row keeps its historical shape byte-for-byte. The owner row is `inbox` from birth —
+    // not a pending state, so FACT 2 never selects it and no tmux send, history append or prompt
+    // journal entry can exist for it. That is a property of the state machine, not of a guard.
+    ...(bound ? { status: "pending" as const } : { status: "inbox" as const, delivery: "inbox" as const }),
+    attempts: 0, deliveredAt: null, acknowledgedAt: null,
   };
   fleetReports = [...fleetReports, report];
   fleetEvents = [...fleetEvents, event];
   audit("fleet_report_open", s.id,
-    `${id} receiver=${resolved.receiver.slot} status=${status} basis=${resolved.basis}`);
+    `${id} receiver=${bound ? bound.receiver.slot : "owner-inbox"} status=${status} basis=${report.basis}`);
   pruneFleetReports();
   await saveStateNow();
   return json({ ok: true, report });
@@ -7526,15 +7615,19 @@ async function replyClarification(s: Slot, id: string, body: Record<string, unkn
 async function acknowledgeFleetEvent(s: Slot, id: string): Promise<Response> {
   const event = fleetEvents.find((e) => e.id === id);
   if (!event) return json({ error: "unknown event" }, 404);
-  if (event.receiverSlot !== s.id) return json({ error: "event belongs to another slot" }, 409);
-  if (event.receiverOpenedAt !== s.openedAt || event.receiverSessionId !== s.sessionId)
-    return json({ error: "event belongs to a replaced session" }, 409);
   // VISIBILITY AND CONSUMPTION ARE SEPARATE FACTS. An inbox event was never offered to this
   // session — it exists precisely because typing it into an owner-attended pane is the failure
   // being removed — so a self-ack on it would record model consumption that never happened. It is
   // refused for every status, including acknowledged: only the owner's own twin route closes it.
+  //
+  // FIRST, ahead of the occupant checks, because an owner row has no receiver occupant: matching
+  // it against this session would answer "belongs to another slot", which names the wrong reason
+  // and would send a lane looking for the slot that supposedly holds its own report.
   if (event.delivery === "inbox")
     return json({ error: "inbox event — acknowledgement belongs to the owner" }, 409);
+  if (event.receiverSlot !== s.id) return json({ error: "event belongs to another slot" }, 409);
+  if (event.receiverOpenedAt !== s.openedAt || event.receiverSessionId !== s.sessionId)
+    return json({ error: "event belongs to a replaced session" }, 409);
   if (event.status === "acknowledged") return json({ ok: true, existing: true, event });
   // Ack is transport receipt for every event kind. For clarification-request it expressly does
   // NOT answer or close the ClarificationRequest; only a successful reply send does that.
@@ -7568,7 +7661,7 @@ async function ownerAcknowledgeFleetEvent(id: string): Promise<Response> {
     return json({ error: "event is not acknowledgeable", status: event.status }, 409);
   event.status = "acknowledged";
   event.acknowledgedAt = Date.now();
-  audit("fleet_event_owner_ack", event.receiverSlot, event.id);
+  audit("fleet_event_owner_ack", event.receiverSlot ?? undefined, event.id);
   pruneFleetEvents(event.receiverSlot);
   await saveStateNow();
   return json({ ok: true, existing: false, event });
@@ -11656,7 +11749,7 @@ async function tickWatches(): Promise<void> {
       const s = fleetEventReceiver(event);
       if (!s) {
         event.status = "receiver-gone";
-        audit("fleet_event_receiver_gone", event.receiverSlot, event.id);
+        audit("fleet_event_receiver_gone", event.receiverSlot ?? undefined, event.id);
         pruneFleetEvents(event.receiverSlot);
         dirty = true;
         continue;
@@ -11677,7 +11770,7 @@ async function tickWatches(): Promise<void> {
         // busy/kill-switch keep the event pending. Only a dead endpoint is terminal.
         if (verdict.gate !== "not-alive") continue;
         event.status = "receiver-gone";
-        audit("fleet_event_receiver_gone", event.receiverSlot, `${event.id} no agent running in pane`);
+        audit("fleet_event_receiver_gone", event.receiverSlot ?? undefined, `${event.id} no agent running in pane`);
         pruneFleetEvents(event.receiverSlot);
         dirty = true;
         continue;
@@ -11706,7 +11799,7 @@ async function tickWatches(): Promise<void> {
           // nothing was typed (an occupied composer, i.e. an owner draft): the event is still
           // pending and will be offered again once the composer is clear — never appended to it.
           event.status = "pending";
-          audit("fleet_event_held", event.receiverSlot, `${event.id} ${e.message.slice(0, 120)}`);
+          audit("fleet_event_held", event.receiverSlot ?? undefined, `${event.id} ${e.message.slice(0, 120)}`);
           continue;
         }
         // tmux may have accepted some or all of the operation before reporting failure, or the
@@ -11714,14 +11807,14 @@ async function tickWatches(): Promise<void> {
         // exactly; neither "failed" nor "delivered" is an observed fact, and send-uncertain is
         // never replayed.
         const rollback = e instanceof SendNotAccepted && e.rollback ? ` rollback=${e.rollback}` : "";
-        audit("fleet_event_send_uncertain", event.receiverSlot,
+        audit("fleet_event_send_uncertain", event.receiverSlot ?? undefined,
           `${event.id}${rollback} ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
         continue;
       }
       if (acceptance === "unobservable") {
         // typed, but no composer could be located to confirm the turn — the honest marker is the
         // one already persisted. Not "delivered": that word now means observed (ACP-25 DONE 4).
-        audit("fleet_event_send_uncertain", event.receiverSlot, `${event.id} acceptance unobservable`);
+        audit("fleet_event_send_uncertain", event.receiverSlot ?? undefined, `${event.id} acceptance unobservable`);
         continue;
       }
       const deliveredAt = Date.now();
@@ -11736,7 +11829,7 @@ async function tickWatches(): Promise<void> {
       event.deliveredAt = deliveredAt;
       const watch = watches.find((w) => w.id === event.watchId);
       if (watch) watch.lastResult = "sent"; // legacy Watch surface; the event remains the authority
-      audit("fleet_event_delivered", event.receiverSlot, event.id);
+      audit("fleet_event_delivered", event.receiverSlot ?? undefined, event.id);
       await saveStateNow();
       console.log(`event ${event.id}: delivered ${event.kind} to slot ${event.receiverSlot}`);
     }

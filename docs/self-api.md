@@ -46,7 +46,12 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
 - Ablehnungen, jede sagt „dieser Watch könnte nie feuern": `bad target` (400) ·
   `a session cannot watch itself` (400) · `target slot not active` (400) ·
   `target is not a lane — done-looking only classifies lanes` (409) ·
-  `the ⚙ steward is never classified done-looking` (409) · `max 5 active watches per slot` (400). Dazu die
+  `the ⚙ steward is never classified done-looking` (409) ·
+  `harness <id> is not automatable — its slot never reads as alive to the done-looking predicate, so
+  this watch could never fire` (409, nur `{kind:"lane"}`: `aliveInfo` faltet `harnessAutomatable` in
+  `alive`, beide Looking-Prädikate verlangen `alive === true` — ein abgelehnter Harness kann nie
+  klassifizieren; `{kind:"merge"}` liest den Merge-Terminalfaktor, nicht `laneSignalView`, und bleibt
+  erlaubt) · `max 5 active watches per slot` (400). Dazu die
   Prinzipal-Ablehnung: als LANE 409 (oben).
 - **Was die Nachricht ist und was nicht:** sie nennt Slot, Branch und die Fakten (`N ahead / M dirty`) und
   sagt ausdrücklich, dass „LOOKS done" ein Server-Prädikat ist und kein Bericht der Lane — die vier

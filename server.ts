@@ -6609,6 +6609,15 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
     if (t.label === STEWARD_LABEL) return json({ error: kind === "lane"
       ? "the ⚙ steward is never classified done-looking"
       : "the ⚙ steward has no merge operation to subscribe to" }, 409);
+    // Measured live 2026-08-29: a finished GLM lane on pi-zai held an armed {kind:"lane"} watch
+    // FOREVER. aliveInfo folds harnessAutomatable into `alive`, and BOTH looking predicates
+    // require alive === true — so a lane whose harness the automation policy declines can never
+    // be classified, whatever its pane does, and the tick's `stay armed, ask again` is a silent
+    // forever-wait. The door refuses instead, in this family's one question. lane ONLY: a merge
+    // watch reads the merge terminal factor below, not laneSignalView, and demonstrably fires on
+    // exactly such a lane (2026-08-29) — rejecting it there would forbid a working watch.
+    if (kind === "lane" && !harnessAutomatable(t))
+      return json({ error: `harness ${harnessOf(t.harness).id} is not automatable — its slot never reads as alive to the done-looking predicate, so this watch could never fire (${HARNESS_AUTOMATION ? "FLEET_HARNESS_AUTOMATION is set; the adapter declines" : "FLEET_HARNESS_AUTOMATION is off; no named harness is automatable without it"})` }, 409);
     const terminal = kind === "merge" ? mergeTerminalFor(t.id, t.cwd, t.worktree.branch) : null;
     if (kind === "merge" && !terminal && !mergeInflight.has(t.id) && !mergeStart.has(t.id))
       return json({ error: "no running or persisted terminal merge exists for this lane identity" }, 409);

@@ -20,6 +20,13 @@ Group=GROUP
 WorkingDirectory=CHECKOUT-DIR
 ExecStart=BUN-PATH CHECKOUT-DIR/helper-daemon/daemon.ts /etc/fleet-helper/config.json
 
+# systemd's default PATH does not contain the bun install prefix, and `childEnv()` in daemon.ts
+# hands this process's own environment to `installCmd` and `suiteCmd`. Without this line both die
+# as exit 127 — which the fleet correctly classifies as "nothing was measured", so the failure
+# would be SILENT (an unknown, never a red). Found live on the first deploy, 2026-08-29. This is
+# a PATH, not a credential; the token rule below is untouched by it.
+Environment=PATH=BUN-DIR:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
 # THE TOKEN IS NOT HERE, AND MUST NEVER BE. An `Environment=` line is readable by any account on
 # the box through `systemctl show`, `systemd-analyze` and /proc/<pid>/environ. The daemon reads the
 # credential from the 0600 config file named above and sends it only as a request header; it also

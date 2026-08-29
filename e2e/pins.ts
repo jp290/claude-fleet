@@ -1422,7 +1422,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // date — so one writer omitting it would forever read as an old row instead of a gap. The two
   // values are a PAIR by construction: briefHash without briefSource cannot say by which route the
   // bytes were authored, and briefSource without briefHash joins nothing.
-  const receiptWrites = [...server.matchAll(/(?:appendEvent|\(founding \? appendEventStrict : appendEvent\))\(CONTEXT_RECEIPT_FILE, \{[\s\S]*?\n\s*\}\);/g)]
+  const receiptWrites = [...server.matchAll(/appendEvent(?:Strict)?\(CONTEXT_RECEIPT_FILE, \{[\s\S]*?\n\s*\}\);/g)]
     .map((m) => m[0]);
   pin("every context-receipt writer carries briefHash AND briefSource — the ledger has one row shape, not two",
     receiptWrites.length === 5
@@ -3448,13 +3448,13 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && /const openSlotIntents = new Set<OpenSlotIntent>\(\)/.test(server),
     "lease/open-intent declarations are missing or incomplete");
   pin(`${RULE_GM_TREE} — bootstrap and succession reserve before preflight, canonicalize after it, permit only their exact lease, and release by object identity`,
-    bootstrapBody.indexOf("reserveGameMakerTree") >= 0
-      && bootstrapBody.indexOf("reserveGameMakerTree") < bootstrapBody.indexOf("await preflightProgramMain")
+    bootstrapBody.indexOf("reserveProgramFounding") >= 0
+      && bootstrapBody.indexOf("reserveProgramFounding") < bootstrapBody.indexOf("await preflightProgramMain")
       && bootstrapBody.indexOf("canonicalizeGameMakerTreeLease") > bootstrapBody.indexOf("await preflightProgramMain")
       && /openSlot\([\s\S]*?treeLease\)/.test(bootstrapBody)
       && /releaseGameMakerTreeLease\(treeLease\)/.test(bootstrapBody)
-      && succeedBody.indexOf("reserveGameMakerTree") >= 0
-      && succeedBody.indexOf("reserveGameMakerTree") < succeedBody.indexOf("await preflightProgramMain")
+      && succeedBody.indexOf("reserveProgramFounding") >= 0
+      && succeedBody.indexOf("reserveProgramFounding") < succeedBody.indexOf("await preflightProgramMain")
       && succeedBody.indexOf("canonicalizeGameMakerTreeLease") > succeedBody.indexOf("await preflightProgramMain")
       && /openSlot\([\s\S]*?treeLease\)/.test(succeedBody)
       && /releaseGameMakerTreeLease\(treeLease\)/.test(succeedBody),
@@ -3465,8 +3465,8 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && openBody.includes("openSlotIntents.delete(openIntent)")
       && openBody.includes("finally"),
     `openSlot=${openBody.length}`);
-  const firstFoundingPermit = openBody.indexOf("assertGameMakerFoundingTargetOpen");
-  const secondFoundingPermit = openBody.indexOf("assertGameMakerFoundingTargetOpen", firstFoundingPermit + 1);
+  const firstFoundingPermit = openBody.indexOf("assertProgramFoundingTargetOpen");
+  const secondFoundingPermit = openBody.indexOf("assertProgramFoundingTargetOpen", firstFoundingPermit + 1);
   const orphanTeardown = openBody.indexOf('await killSlot(s, "reopen")');
   const testLatch = openBody.indexOf("await waitForGameMakerOpenTestLatch(treeLease)");
   pin(`${RULE_GM_TREE} — openSlot revalidates its exact founding permit after tmux teardown and before Slot mutation`,
@@ -3536,6 +3536,11 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && ensureBody.includes("await tmuxNewSession(")
       && read("e2e/slots.ts").includes('FLEET_TMUX_NEW_SESSION_TIMEOUT_MS: "150"'),
     "new-session bypass, timeout escalation, invalid-env fallback, or runtime arm is missing");
+  pin(`${RULE_GM_TREE} — new-session errors never reflect child output because its argv contains raw pane credentials`,
+    !ensureBody.includes('created.err || created.out || "no diagnostic"')
+      && read("e2e/programs.ts").includes('!safeText.includes("FLEET_SELF_TOKEN")')
+      && read("e2e/programs.ts").includes("printf '%s\\\\n' \"$*\" >&2"),
+    "tmux child output can still cross an API error or the adversarial diagnostic probe is missing");
   pin(`${RULE_GM_TREE} — teardown removes only its captured occupant stream and the legacy sN.raw name is migration-only`,
     killBody.includes("const streamOccupant = slotStreamOccupant(s)")
       && teardownBody.includes("sameSlotStreamOccupant(s, streamOccupant)")
@@ -3615,6 +3620,69 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     "gameMakerMachineError does not reject an unreadable Fleet or candidate common-dir");
 }
 
+// Standard and Game-Maker founding share one durable v2 transition. These rules pin the three
+// boundaries a happy-path bootstrap cannot prove: closed marker identity, marker/Slot publication
+// before pane creation, and the typed unknown response that preserves a pending recovery marker.
+{
+  const RULE_FOUNDING_V2 = "Program.founding v2 owns every Program-MAIN attempt without becoming a second lifecycle";
+  const openAt = server.indexOf("async function openSlot(");
+  const openBody = openAt < 0 ? "" : server.slice(openAt, server.indexOf("\n}\n", openAt) + 3);
+  const persistAt = server.indexOf("async function persistProgramFounding(");
+  const persistBody = persistAt < 0 ? "" : server.slice(persistAt, server.indexOf("\n}\n", persistAt) + 3);
+  const bootstrapAt = server.indexOf("async function bootstrapProgramMainReserved(");
+  const bootstrapBody = bootstrapAt < 0 ? "" : server.slice(bootstrapAt,
+    server.indexOf("async function handleOwnerProgramRoute", bootstrapAt));
+  const succeedAt = server.indexOf("async function succeedProgramMain(");
+  const succeedBody = succeedAt < 0 ? "" : server.slice(succeedAt, bootstrapAt);
+  const recoveryAt = server.indexOf("async function recoverInterruptedProgramFoundings(");
+  const recoveryBody = recoveryAt < 0 ? "" : server.slice(recoveryAt,
+    server.indexOf("// These answer different questions", recoveryAt));
+  const unavailableAt = server.indexOf("async function unavailableFoundingResponse(");
+  const unavailableBody = unavailableAt < 0 ? "" : server.slice(unavailableAt, recoveryAt);
+  const unavailableResultAt = server.indexOf("const foundingUnavailableResponse =");
+  const unavailableResultBody = unavailableResultAt < 0 ? "" : server.slice(unavailableResultAt,
+    server.indexOf("// --- the ONE assembly point", unavailableResultAt));
+
+  pin(`${RULE_FOUNDING_V2} — the closed marker binds profile, root, both occupant generations and no raw token`,
+    /interface ProgramFoundingV2[\s\S]*?v: 2[\s\S]*?profileKind: ProgramFoundingProfileKind[\s\S]*?targetRoot: string[\s\S]*?target: ProgramFoundingIdentity[\s\S]*?predecessor: ProgramFoundingIdentity \| null/.test(server)
+      && /interface ProgramFoundingOccupant \{ slot: number; openedAt: number \}/.test(server)
+      && /interface ProgramFoundingIdentity extends ProgramFoundingOccupant \{ selfTokenHash: string \}/.test(server)
+      && server.includes('/^[0-9a-f]{64}$/')
+      && !persistBody.includes("selfToken:"),
+    "v2 profile/root/hashed occupant schema or raw-token exclusion is missing");
+  const markerSaveAt = persistBody.indexOf("await saveStateNow()");
+  const slotSaveAt = openBody.indexOf("await saveStateNow()");
+  const ensureAt = openBody.indexOf('await ensureSlot(s, "open")');
+  pin(`${RULE_FOUNDING_V2} — marker save precedes open and the exact Slot row is durable before tmux`,
+    markerSaveAt >= 0
+      && bootstrapBody.indexOf("await persistProgramFounding") < bootstrapBody.indexOf("await openSlot")
+      && succeedBody.indexOf("await persistProgramFounding") < succeedBody.indexOf("await openSlot")
+      && openBody.includes("treeLease?.founding?.target.openedAt")
+      && openBody.includes("treeLease?.targetSelfToken")
+      && slotSaveAt >= 0 && slotSaveAt < ensureAt,
+    `markerSave=${markerSaveAt} slotSave=${slotSaveAt} ensure=${ensureAt}`);
+  pin(`${RULE_FOUNDING_V2} — Standard preserves the exact requested cwd while Game-Maker canonicalizes the protected repository tree`,
+    /lease\.canonicalRoot = lease\.profileKind === "game-maker"\s*\? repoCanon\(repoRoot\) : lease\.requestedRoot/.test(server),
+    "profile-specific targetRoot canonicalization is missing");
+  pin(`${RULE_FOUNDING_V2} — timeout is a 503 unknown result, exact rollback decides rolled-back versus pending, and retry reuses affected`,
+    bootstrapBody.includes("e instanceof TmuxNewSessionUnavailable")
+      && succeedBody.includes("e instanceof TmuxNewSessionUnavailable")
+      && unavailableResultBody.includes('availability: "unknown"')
+      && unavailableResultBody.includes("foundingAffected(founding)")
+      && unavailableResultBody.includes("}, 503)")
+      && unavailableBody.includes('foundingUnavailableResponse(founding, "rolled-back"')
+      && unavailableBody.includes('foundingUnavailableResponse(founding, "pending"')
+      && unavailableBody.indexOf("await rollbackProgramFounding")
+        < unavailableBody.indexOf('foundingUnavailableResponse(founding, "rolled-back"')
+      && unavailableBody.includes("const safeError =")
+      && !unavailableBody.includes("error.message")
+      && bootstrapBody.includes("foundingUnavailableResponse")
+      && succeedBody.includes("foundingUnavailableResponse")
+      && recoveryBody.includes("isStandardFounding(founding)")
+      && recoveryBody.includes("same-root token mismatch"),
+    "typed timeout rollback/pending response, retry reuse, or Standard recovery branch is missing");
+}
+
 // A Game-Maker founding is a persisted transition, not a process-local promise. Runtime exercises
 // the crash cuts; these rules hold the ordering and fail-closed loader/IO seams that a graceful
 // single-process run cannot manufacture without killing its own server.
@@ -3643,25 +3711,28 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   const bootObserveAt = server.indexOf("const bootTmux = await observeTmuxSlots();");
   const bootAdoptAt = server.indexOf("if (bootTmux.known)", bootObserveAt);
   const ensureBootAt = server.indexOf("for (const s of slots) {", bootRecoverAt);
-  pin(`${RULE_GM_FOUNDING} — the closed v1 parser rejects malformed/unknown markers into a startup refusal, never absent`,
-    /interface ProgramFounding[\s\S]*?v: 1[\s\S]*?attemptId[\s\S]*?mode[\s\S]*?canonicalRoot[\s\S]*?target[\s\S]*?predecessor[\s\S]*?startedAt/.test(server)
+  pin(`${RULE_GM_FOUNDING} — the closed v1/v2 parser rejects malformed/unknown markers into a startup refusal, never absent`,
+    /interface ProgramFoundingV1[\s\S]*?v: 1[\s\S]*?attemptId[\s\S]*?mode[\s\S]*?canonicalRoot[\s\S]*?target[\s\S]*?predecessor[\s\S]*?startedAt/.test(server)
+      && /type ProgramFounding = ProgramFoundingV1 \| ProgramFoundingV2/.test(server)
       && server.includes("const loadProgramFounding =")
-      && server.includes("repoCanon(r.canonicalRoot) !== r.canonicalRoot")
+      && server.includes('if (r.v !== 1 && r.v !== 2) return { ok: false, error: "v must be 1 or 2" }')
+      && server.includes("repoCanon(root) !== root")
       && server.includes("predecessor.slot === target.slot")
       && server.includes("startupStateRefusal")
       && server.includes("REFUSING TO START")
       && server.includes("The safety marker was left on disk for owner inspection")
       && programLoadBody.indexOf("const foundingRead =") >= 0
       && programLoadBody.indexOf("const foundingRead =") < programLoadBody.indexOf("validateProgramContent(x)")
+      && programLoadBody.includes("has a legacy v1 founding marker on a Standard Program")
       && programLoadBody.includes("has a succession founding marker that does not name its current MAIN")
       && programLoadBody.includes("has a bootstrap founding marker but is not unbound"),
     "closed parser or startup refusal missing");
   pin(`${RULE_GM_FOUNDING} — marker save rejects to its caller, precedes openSlot, and exact openedAt comes from that marker`,
     server.includes("const raw = saveChain") && server.includes("return raw;")
-      && bootstrapBody.indexOf("await persistGameMakerFounding") >= 0
-      && bootstrapBody.indexOf("await persistGameMakerFounding") < bootstrapBody.indexOf("await openSlot")
-      && succeedBody.indexOf("await persistGameMakerFounding") >= 0
-      && succeedBody.indexOf("await persistGameMakerFounding") < succeedBody.indexOf("await openSlot")
+      && bootstrapBody.indexOf("await persistProgramFounding") >= 0
+      && bootstrapBody.indexOf("await persistProgramFounding") < bootstrapBody.indexOf("await openSlot")
+      && succeedBody.indexOf("await persistProgramFounding") >= 0
+      && succeedBody.indexOf("await persistProgramFounding") < succeedBody.indexOf("await openSlot")
       && server.includes("treeLease?.founding?.target.openedAt ?? Date.now()"),
     `bootstrap=${bootstrapBody.length} succession=${succeedBody.length}`);
   pin(`${RULE_GM_FOUNDING} — bootstrap persists marker plus unbound fallback, while succession retains its exact predecessor`,
@@ -3673,7 +3744,7 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   const bootstrapCandidateAt = bootstrapBody.indexOf("const candidateIdentity: SuccessionPredecessorIdentity");
   const bootstrapSendAt = bootstrapBody.indexOf("await sendText(free, deliveredBrief, true)", bootstrapCandidateAt);
   const bootstrapAfterSendAt = bootstrapBody.indexOf("if (!stillCurrent())", bootstrapSendAt);
-  const bootstrapReceiptAt = bootstrapBody.indexOf("await (founding ? appendEventStrict : appendEvent)", bootstrapAfterSendAt);
+  const bootstrapReceiptAt = bootstrapBody.indexOf("await appendEventStrict(CONTEXT_RECEIPT_FILE", bootstrapAfterSendAt);
   const bootstrapPreBindAt = bootstrapBody.indexOf("if (!stillCurrent())", bootstrapReceiptAt);
   const bootstrapBindAt = bootstrapBody.indexOf("program.main = { slot: candidateIdentity.slot", bootstrapPreBindAt);
   pin(`${RULE_GM_FOUNDING} — Standard and Game-Maker bootstrap bind only the full live candidate after send and receipt`,
@@ -3731,20 +3802,20 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && read("e2e/programs.ts").includes("a dormant sibling-root Slot row does not block stale-marker cleanup"),
     "persisted Slot root scan, exact predecessor exception or planted restart arms missing");
   pin(`${RULE_GM_FOUNDING} — a wrong occupant outside the tree survives; one inside the protected tree stops startup`,
-    recoveryBody.indexOf("!treePathsOverlap(targetRoot, founding.canonicalRoot)") >= 0
+    recoveryBody.indexOf("!treePathsOverlap(targetRoot, markerRoot)") >= 0
       && recoveryBody.indexOf("assertNoFoundingTreeOccupant(program, founding, bootTmux)") >= 0
       && recoveryBody.indexOf('clearProgramFounding(program, founding, "boot-stale-foreign-target-preserved")') >= 0
       && recoveryBody.indexOf("throw new Error(`REFUSING TO START:",
-        recoveryBody.indexOf("!treePathsOverlap(targetRoot, founding.canonicalRoot)"))
-        > recoveryBody.indexOf("!treePathsOverlap(targetRoot, founding.canonicalRoot)"),
+        recoveryBody.indexOf("!treePathsOverlap(targetRoot, markerRoot)"))
+        > recoveryBody.indexOf("!treePathsOverlap(targetRoot, markerRoot)"),
     recoveryBody);
   pin(`${RULE_GM_FOUNDING} — receipt precedes the one durable marker-to-binding state cut in both founding modes`,
     server.includes("function appendEventStrict")
-      && bootstrapBody.indexOf("await (founding ? appendEventStrict : appendEvent)(CONTEXT_RECEIPT_FILE") >= 0
-      && bootstrapBody.indexOf("await (founding ? appendEventStrict : appendEvent)(CONTEXT_RECEIPT_FILE") < bootstrapBody.indexOf("delete program.founding")
+      && bootstrapBody.indexOf("await appendEventStrict(CONTEXT_RECEIPT_FILE") >= 0
+      && bootstrapBody.indexOf("await appendEventStrict(CONTEXT_RECEIPT_FILE") < bootstrapBody.indexOf("delete program.founding")
       && bootstrapBody.indexOf("delete program.founding") < bootstrapBody.indexOf("await saveStateNow()", bootstrapBody.indexOf("delete program.founding"))
-      && succeedBody.indexOf("await (founding ? appendEventStrict : appendEvent)(CONTEXT_RECEIPT_FILE") >= 0
-      && succeedBody.indexOf("await (founding ? appendEventStrict : appendEvent)(CONTEXT_RECEIPT_FILE") < succeedBody.indexOf("delete program.founding")
+      && succeedBody.indexOf("await appendEventStrict(CONTEXT_RECEIPT_FILE") >= 0
+      && succeedBody.indexOf("await appendEventStrict(CONTEXT_RECEIPT_FILE") < succeedBody.indexOf("delete program.founding")
       && succeedBody.indexOf("delete program.founding") < succeedBody.indexOf("await saveStateNow()", succeedBody.indexOf("delete program.founding")),
     `bootstrap=${bootstrapBody.length} succession=${succeedBody.length}`);
   const candidateCurrentAt = succeedBody.indexOf("const candidateCurrent =");
@@ -3753,19 +3824,20 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   const afterOpenRecheckAt = succeedBody.indexOf("if (!transferCurrent())", afterOpenLatchAt);
   const sendAt = succeedBody.indexOf("await sendText(free, deliveredBrief, true)");
   const afterSendRecheckAt = succeedBody.indexOf("if (!transferCurrent())", sendAt);
-  const receiptAt = succeedBody.indexOf("await (founding ? appendEventStrict : appendEvent)(CONTEXT_RECEIPT_FILE");
+  const receiptAt = succeedBody.indexOf("await appendEventStrict(CONTEXT_RECEIPT_FILE");
   const afterReceiptLatchAt = succeedBody.indexOf("SUCCESSION_AFTER_RECEIPT_LATCH", receiptAt);
   const afterReceiptRecheckAt = succeedBody.indexOf("if (!transferCurrent())", afterReceiptLatchAt);
   const bindingCutAt = succeedBody.indexOf("program.main = { slot: free.id", afterReceiptRecheckAt);
   pin(`${RULE_GM_FOUNDING} — succession keeps candidate identity separate from live predecessor authority and rechecks both around delivery evidence`,
     /interface SuccessionPredecessorIdentity\s*{\s*readonly slot:[\s\S]*?readonly openedAt:[\s\S]*?readonly cwd:[\s\S]*?readonly selfToken:/.test(server)
-      && server.includes("predecessor: SuccessionPredecessorIdentity | null")
+      && /readonly predecessor: ProgramFoundingIdentity \| null/.test(server)
+      && server.includes("selfTokenHash: hashSelfToken(predecessor.selfToken)")
       && succeedBody.includes("predecessor: SuccessionPredecessorIdentity")
       && candidateCurrentAt >= 0 && transferCurrentAt > candidateCurrentAt
       && succeedBody.includes("sameSuccessionOccupant(free, candidateIdentity)")
       && succeedBody.includes("sameSuccessionOccupant(s, predecessor)")
       && succeedBody.includes("const transferCurrent = (): boolean => candidateCurrent() && predecessorCurrent()")
-      && succeedBody.includes("else if (candidateCurrent()) await killSlot(free, \"reopen\")")
+      && /if \(candidateCurrent\(\) \|\| !target\?\.cwd\)\s*await rollbackProgramFounding\(program, founding, "successor-failed"\)/.test(succeedBody)
       && afterOpenLatchAt > transferCurrentAt && afterOpenRecheckAt > afterOpenLatchAt
       && sendAt > afterOpenRecheckAt && afterSendRecheckAt > sendAt && afterSendRecheckAt < receiptAt
       && afterReceiptLatchAt > receiptAt && afterReceiptRecheckAt > afterReceiptLatchAt
@@ -3852,7 +3924,7 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   const noOpReturn = noOpAt < 0 ? "" : serverProfile.slice(noOpAt, inflightAt);
   pin(`${RULE_PROFILE_ACTOR} — identical grants and clears return before inflight/LIVE/complete without audit, timestamp or save`,
     noOpAt >= 0 && inflightAt > noOpAt && completeAt > inflightAt && liveAt > completeAt
-      && noOpReturn.includes("return json({ ok: true, program })")
+      && noOpReturn.includes("return json({ ok: true, program: publicProgram(program) })")
       && !/confirmedAt: Date\.now|\baudit\(|saveState/.test(noOpReturn),
     `noOp=${noOpAt} inflight=${inflightAt} complete=${completeAt} live=${liveAt}`);
 }

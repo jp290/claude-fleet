@@ -33,9 +33,10 @@ interface Program extends ProgramContent {
   // the owner's EXECUTION ENVIRONMENT for this program's MAIN — absent on every Program until the
   // owner grants it, and absent is the exact legacy Standard MAIN every assertion here reads as.
   profile?: { v: number; kind: string; confirmedAt: number };
-  founding?: { v: number; attemptId: string; mode: "bootstrap" | "succession";
-    canonicalRoot: string; target: { slot: number; openedAt: number };
-    predecessor: { slot: number; openedAt: number } | null; startedAt: number };
+  founding?: { v: number; profileKind?: "standard" | "game-maker"; attemptId: string;
+    mode: "bootstrap" | "succession"; canonicalRoot?: string; targetRoot?: string;
+    target: { slot: number; openedAt: number; selfTokenHash?: string };
+    predecessor: { slot: number; openedAt: number; selfTokenHash?: string } | null; startedAt: number };
   // V1b — the return path into this program's MAIN. Derived per request exactly like `occupancy`
   // and persisted nowhere, so it is read off the ROUTE and never off fleet.json.
   deliveryBudget?: { state?: string; deliveryDebts?: number; armedReservations?: number;
@@ -1690,6 +1691,13 @@ export async function run(ctx: Ctx): Promise<void> {
     v: 1, attemptId: attempt.repeat(32), mode: "bootstrap", canonicalRoot: realpathSync(gameWt),
     target: { slot, openedAt: at }, predecessor: null, startedAt: at,
   });
+  const tokenHash = (token: string): string => createHash("sha256").update(token).digest("hex");
+  const plantedV2Bootstrap = (slot: number, attempt: string, root: string,
+    token = attempt.repeat(32), at = Date.now()): NonNullable<Program["founding"]> => ({
+    v: 2, profileKind: "standard", attemptId: attempt.repeat(32), mode: "bootstrap",
+    targetRoot: realpathSync(root), target: { slot, openedAt: at, selfTokenHash: tokenHash(token) },
+    predecessor: null, startedAt: at,
+  });
 
   const gmProgram = await activateNewProgram("Game-Maker founding rail");
   const gmGrant = await setProfile(gmProgram.id, GAME_MAKER);
@@ -2084,9 +2092,9 @@ export async function run(ctx: Ctx): Promise<void> {
     (state) => {
       const row = state.programs?.find((p) => p.id === gmRefusalProgram.id);
       if (row) (row as unknown as Record<string, unknown>).founding = {
-        ...plantedBootstrap(gmRefusalTarget, "c"), v: 2,
+        ...plantedBootstrap(gmRefusalTarget, "c"), v: 3,
       };
-    }, "v must be 1");
+    }, "v must be 1 or 2");
   await expectFoundingStartupRefusal(
     "game-maker founding loader: a bootstrap marker plus an existing main refuses startup",
     (state) => {
@@ -2132,6 +2140,73 @@ export async function run(ctx: Ctx): Promise<void> {
       const row = state.programs?.find((p) => p.id === gmRefusalProgram.id);
       if (row) row.founding = plantedBootstrap(gmRefusalTarget, "2");
     }, "tmux state is unknown", "x".repeat(200));
+
+  const standardRefusalProgram = await activateNewProgram("Standard founding startup refusals");
+  const duplicateRefusalProgram = await activateNewProgram("Duplicate founding target refusal");
+  await expectFoundingStartupRefusal(
+    "founding loader: legacy v1 is accepted only for Game-Maker and refuses a Standard Program byte-for-byte",
+    (state) => {
+      const row = state.programs?.find((p) => p.id === standardRefusalProgram.id);
+      if (row) row.founding = plantedBootstrap(gmRefusalTarget, "6");
+    }, "legacy v1 founding marker on a Standard Program");
+  await expectFoundingStartupRefusal(
+    "founding loader: a null marker refuses startup and preserves the state bytes",
+    (state) => {
+      const row = state.programs?.find((p) => p.id === standardRefusalProgram.id) as unknown as Record<string, unknown>;
+      if (row) row.founding = null;
+    }, "founding marker: must be an object");
+  await expectFoundingStartupRefusal(
+    "founding loader: an additional v2 key refuses startup and preserves the state bytes",
+    (state) => {
+      const row = state.programs?.find((p) => p.id === standardRefusalProgram.id) as unknown as Record<string, unknown>;
+      if (row) row.founding = { ...plantedV2Bootstrap(gmRefusalTarget, "7", REPO), surprise: true };
+    }, "must contain exactly");
+  await expectFoundingStartupRefusal(
+    "founding loader: a missing v2 key refuses startup and preserves the state bytes",
+    (state) => {
+      const row = state.programs?.find((p) => p.id === standardRefusalProgram.id) as unknown as Record<string, unknown>;
+      if (row) {
+        const marker = { ...plantedV2Bootstrap(gmRefusalTarget, "8", REPO) } as Record<string, unknown>;
+        delete marker.targetRoot;
+        row.founding = marker;
+      }
+    }, "must contain exactly");
+  await expectFoundingStartupRefusal(
+    "founding loader: a malformed v2 target hash refuses startup and preserves the state bytes",
+    (state) => {
+      const row = state.programs?.find((p) => p.id === standardRefusalProgram.id) as unknown as Record<string, unknown>;
+      if (row) {
+        const marker = plantedV2Bootstrap(gmRefusalTarget, "9", REPO);
+        row.founding = { ...marker, target: { ...marker.target, selfTokenHash: "A".repeat(64) } };
+      }
+    }, "target must be exactly {slot, openedAt, selfTokenHash}");
+  await expectFoundingStartupRefusal(
+    "founding loader: a v2 profile mismatch refuses startup and preserves the state bytes",
+    (state) => {
+      const row = state.programs?.find((p) => p.id === standardRefusalProgram.id);
+      if (row) row.founding = { ...plantedV2Bootstrap(gmRefusalTarget, "a", REPO), profileKind: "game-maker" };
+    }, "does not match Program profile standard");
+  await expectFoundingStartupRefusal(
+    "founding loader: bootstrap with a predecessor refuses startup and preserves the state bytes",
+    (state) => {
+      const row = state.programs?.find((p) => p.id === standardRefusalProgram.id);
+      const marker = plantedV2Bootstrap(gmRefusalTarget, "b", REPO);
+      if (row) row.founding = { ...marker, predecessor: {
+        slot: gmRefusalMainSlot, openedAt: marker.startedAt - 1,
+        selfTokenHash: tokenHash("b".repeat(32)),
+      } };
+    }, "bootstrap has an invalid predecessor shape");
+  await expectFoundingStartupRefusal(
+    "founding loader: duplicate v2 targets refuse startup independent of Program order",
+    (state) => {
+      const first = state.programs?.find((p) => p.id === standardRefusalProgram.id);
+      const second = state.programs?.find((p) => p.id === duplicateRefusalProgram.id);
+      if (first) first.founding = plantedV2Bootstrap(gmRefusalTarget, "c", REPO);
+      if (second) second.founding = plantedV2Bootstrap(gmRefusalTarget, "d", REPO, "d".repeat(32));
+      if (state.programs) state.programs.reverse();
+    }, "duplicate founding target slot");
+  await programPost(standardRefusalProgram.id, "complete");
+  await programPost(duplicateRefusalProgram.id, "complete");
 
   // A numeric tmux session outside Fleet's 1..16 Slot domain cannot be adopted into restored state.
   // It therefore isolates the independent live-root scan: deleting that scan clears the marker and
@@ -2229,6 +2304,154 @@ export async function run(ctx: Ctx): Promise<void> {
   if (gmDormantSiblingSlot > 0) await post(`/api/slots/${gmDormantSiblingSlot}/kill`, {});
   await programPost(gmRefusalProgram.id, "complete");
 
+  // Standard founding owns the same typed new-session failure as Game-Maker. One shim leaves tmux
+  // observation available, so exact rollback is provable; the other makes observation unknown, so
+  // the marker and candidate must stay pending and an identical retry must name the same attempt.
+  {
+    const realTmux = Bun.which("tmux") ?? "";
+    const safeBin = `${ROOT}/program-founding-timeout-safe-bin`;
+    const safeOnce = `${ROOT}/program-founding-timeout-safe.once`;
+    rmSync(safeBin, { recursive: true, force: true });
+    rmSync(safeOnce, { force: true });
+    mkdirSync(safeBin, { recursive: true });
+    writeFileSync(`${safeBin}/tmux`, `#!/bin/sh\ncase " $* " in\n  *" new-session "*)\n    if [ ! -e '${safeOnce}' ]; then\n      : > '${safeOnce}'\n      printf '%s\\n' "$*" >&2\n      exec sleep 60\n    fi\n    ;;\nesac\nexec '${realTmux}' "$@"\n`, { mode: 0o700 });
+    const safeProgram = await activateNewProgram("Standard founding timeout exact rollback");
+    await restartSrv({ PATH: `${safeBin}:${process.env.PATH ?? ""}`, FLEET_TMUX_NEW_SESSION_TIMEOUT_MS: "150" });
+    const safeUnavailable = await beginBootstrap(safeProgram.id, { cwd: REPO, label: "standard-timeout-rolled-back" });
+    const safeText = await safeUnavailable.text();
+    let safeBody: { availability?: unknown; recovery?: unknown;
+      affected?: { attemptId?: unknown; slot?: unknown; openedAt?: unknown } } = {};
+    try { safeBody = JSON.parse(safeText) as typeof safeBody; } catch { /* asserted below */ }
+    const safeAffected = safeBody.affected;
+    check("Standard founding timeout: provable absence returns 503 unknown/rolled-back without token or hash and clears the exact marker plus Slot",
+      safeUnavailable.status === 503 && safeBody.availability === "unknown" && safeBody.recovery === "rolled-back"
+        && typeof safeAffected?.attemptId === "string" && typeof safeAffected.slot === "number"
+        && typeof safeAffected.openedAt === "number" && !safeText.includes("selfToken") && !safeText.includes("Hash")
+        && readState().programs?.find((p) => p.id === safeProgram.id)?.founding === undefined
+        && readState().slots?.[String(safeAffected.slot)] === undefined
+        && !safeText.includes("FLEET_SELF_TOKEN"),
+      `${safeUnavailable.status} ${safeText.slice(0, 300)}`);
+    await restartSrv();
+    rmSync(safeBin, { recursive: true, force: true });
+    rmSync(safeOnce, { force: true });
+    await programPost(safeProgram.id, "complete");
+
+    const pendingBin = `${ROOT}/program-founding-timeout-pending-bin`;
+    rmSync(pendingBin, { recursive: true, force: true });
+    mkdirSync(pendingBin, { recursive: true });
+    writeFileSync(`${pendingBin}/tmux`, `#!/bin/sh\ncase " $* " in\n  *" list-sessions "*) exit 1 ;;\n  *" new-session "*) printf '%s\\n' "$*" >&2; exec sleep 60 ;;\nesac\nexec '${realTmux}' "$@"\n`, { mode: 0o700 });
+    const pendingProgram = await activateNewProgram("Standard founding timeout pending recovery");
+    await restartSrv({ PATH: `${pendingBin}:${process.env.PATH ?? ""}`, FLEET_TMUX_NEW_SESSION_TIMEOUT_MS: "150" });
+    const pendingBefore = await occupiedIds();
+    const pendingUnavailable = await beginBootstrap(pendingProgram.id, { cwd: REPO, label: "standard-timeout-pending" });
+    const pendingText = await pendingUnavailable.text();
+    let pendingBody: { availability?: unknown; recovery?: unknown;
+      affected?: { attemptId?: unknown; slot?: unknown; openedAt?: unknown } } = {};
+    try { pendingBody = JSON.parse(pendingText) as typeof pendingBody; } catch { /* asserted below */ }
+    const pendingAfterFirst = await occupiedIds();
+    const retry = await beginBootstrap(pendingProgram.id, { cwd: REPO, label: "must-not-open" });
+    const retryText = await retry.text();
+    let retryBody: typeof pendingBody = {};
+    try { retryBody = JSON.parse(retryText) as typeof retryBody; } catch { /* asserted below */ }
+    const pendingMarker = readState().programs?.find((p) => p.id === pendingProgram.id)?.founding;
+    const pendingSlot = typeof pendingBody.affected?.slot === "number"
+      ? readState().slots?.[String(pendingBody.affected.slot)] : undefined;
+    check("Standard founding timeout: unknown absence keeps one exact marker/candidate and retry returns the same affected without slot growth",
+      pendingUnavailable.status === 503 && pendingBody.availability === "unknown" && pendingBody.recovery === "pending"
+        && retry.status === 503 && retryBody.recovery === "pending"
+        && JSON.stringify(retryBody.affected) === JSON.stringify(pendingBody.affected)
+        && pendingAfterFirst.size === pendingBefore.size + 1
+        && (await occupiedIds()).size === pendingAfterFirst.size
+        && pendingMarker?.v === 2 && pendingMarker.attemptId === pendingBody.affected?.attemptId
+        && pendingMarker.target.slot === pendingBody.affected?.slot
+        && pendingMarker.target.openedAt === pendingBody.affected?.openedAt
+        && pendingSlot?.openedAt === pendingBody.affected?.openedAt
+        && !pendingText.includes("selfToken") && !retryText.includes("selfToken")
+        && !pendingText.includes("FLEET_SELF_TOKEN") && !retryText.includes("FLEET_SELF_TOKEN")
+        && (typeof pendingSlot?.selfToken !== "string" || !pendingText.includes(pendingSlot.selfToken))
+        && (typeof pendingMarker?.target.selfTokenHash !== "string"
+          || !pendingText.includes(pendingMarker.target.selfTokenHash)),
+      JSON.stringify({ first: [pendingUnavailable.status, pendingBody], retry: [retry.status, retryBody],
+        occupied: [pendingBefore.size, pendingAfterFirst.size, (await occupiedIds()).size] }));
+    await restartSrv();
+    rmSync(pendingBin, { recursive: true, force: true });
+    const pendingRecovered = (await ownerPrograms()).find((p) => p.id === pendingProgram.id);
+    check("Standard founding timeout: restart rolls back the exact pending candidate before serving",
+      pendingRecovered !== undefined && pendingRecovered.founding === undefined && pendingRecovered.main === undefined
+        && (typeof pendingBody.affected?.slot !== "number"
+          || !(await sessions()).slots.find((slot) => slot.id === pendingBody.affected?.slot)?.cwd),
+      JSON.stringify(pendingRecovered));
+    await programPost(pendingProgram.id, "complete");
+  }
+
+  {
+    const differentRootProgram = await activateNewProgram("Standard recycled different-root recovery");
+    const otherSlotProgram = await activateNewProgram("Standard recovery ignores other slots in its tree");
+    const mismatchProgram = await activateNewProgram("Standard same-root generation mismatch refusal");
+    const freeIds = (await sessions()).slots.filter((slot) => !slot.cwd).map((slot) => slot.id);
+    const differentSlot = freeIds[0] ?? 0;
+    const sameRootSlot = freeIds[1] ?? 0;
+    const otherTarget = freeIds[2] ?? 0;
+    const differentOpen = differentSlot > 0
+      ? await post(`/api/slots/${differentSlot}/open`, { cwd: REPO2, label: "standard-different-root-recycle" }) : null;
+    const sameRootOpen = sameRootSlot > 0
+      ? await post(`/api/slots/${sameRootSlot}/open`, { cwd: REPO, label: "standard-same-root-recycle" }) : null;
+    let differentDurable = readState().slots?.[String(differentSlot)];
+    let sameRootDurable = readState().slots?.[String(sameRootSlot)];
+    for (let i = 0; i < 100 && (!differentDurable?.openedAt || !sameRootDurable?.openedAt); i++) {
+      await Bun.sleep(20);
+      differentDurable = readState().slots?.[String(differentSlot)];
+      sameRootDurable = readState().slots?.[String(sameRootSlot)];
+    }
+    check("Standard recovery fixtures: different-root and same-root replacement generations are durably observable",
+      differentOpen?.ok === true && sameRootOpen?.ok === true
+        && typeof differentDurable?.openedAt === "number" && typeof sameRootDurable?.openedAt === "number"
+        && typeof differentDurable.selfToken === "string" && typeof sameRootDurable.selfToken === "string"
+        && otherTarget > 0,
+      JSON.stringify({ different: [differentOpen?.status, differentDurable?.openedAt],
+        same: [sameRootOpen?.status, sameRootDurable?.openedAt], otherTarget }));
+    if (!differentDurable?.openedAt || !sameRootDurable?.openedAt || !differentDurable.selfToken
+      || !sameRootDurable.selfToken || otherTarget < 1)
+      throw new Error("Standard recovery fixtures never reached durable exact identities");
+
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const standardRecoveryState = readState();
+    const differentRow = standardRecoveryState.programs?.find((p) => p.id === differentRootProgram.id);
+    const otherRow = standardRecoveryState.programs?.find((p) => p.id === otherSlotProgram.id);
+    if (differentRow) differentRow.founding = plantedV2Bootstrap(differentSlot, "e", REPO,
+      "e".repeat(32), differentDurable.openedAt);
+    if (otherRow) otherRow.founding = plantedV2Bootstrap(otherTarget, "f", REPO,
+      "f".repeat(32), Date.now());
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(standardRecoveryState, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const recoveredRows = await ownerPrograms();
+    check("Standard recovery: a recycled different-root target and an unrelated same-root slot survive while both stale markers clear",
+      recoveredRows.find((p) => p.id === differentRootProgram.id)?.founding === undefined
+        && recoveredRows.find((p) => p.id === otherSlotProgram.id)?.founding === undefined
+        && (await sessions()).slots.find((slot) => slot.id === differentSlot)?.cwd === realpathSync(REPO2)
+        && (await sessions()).slots.find((slot) => slot.id === sameRootSlot)?.cwd === realpathSync(REPO),
+      JSON.stringify({ different: recoveredRows.find((p) => p.id === differentRootProgram.id),
+        other: recoveredRows.find((p) => p.id === otherSlotProgram.id) }));
+
+    await expectFoundingStartupRefusal(
+      "Standard recovery: a same-root target with a different token hash is ambiguous and remains untouched",
+      (state) => {
+        const row = state.programs?.find((p) => p.id === mismatchProgram.id);
+        if (row) row.founding = plantedV2Bootstrap(sameRootSlot, "1", REPO,
+          "1".repeat(32), sameRootDurable.openedAt);
+      }, "same-root token mismatch");
+    check("Standard recovery: the refused same-root replacement occupant survives fixture repair",
+      (await sessions()).slots.find((slot) => slot.id === sameRootSlot)?.cwd === realpathSync(REPO)
+        && (await tmuxOut("has-session", "-t", `s${sameRootSlot}`)).code === 0,
+      JSON.stringify((await sessions()).slots.find((slot) => slot.id === sameRootSlot)));
+    await post(`/api/slots/${differentSlot}/kill`, {});
+    await post(`/api/slots/${sameRootSlot}/kill`, {});
+    await programPost(differentRootProgram.id, "complete");
+    await programPost(otherSlotProgram.id, "complete");
+    await programPost(mismatchProgram.id, "complete");
+  }
+
   // (2) THE LINKED WORKTREE FOUNDING SUCCEEDS, and the delivered text is the whole deliverable.
   const gmLabel = "program-main-game-maker";
   const gmReceiptsBefore = await contextReceipts();
@@ -2240,6 +2463,8 @@ export async function run(ctx: Ctx): Promise<void> {
     gmSlot !== null, String(gmSlot));
   const gmProfileBeforeInflightRetry = (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.profile;
   const gmFoundingDuringBootstrap = (await ownerPrograms()).find((p) => p.id === gmProgram.id)?.founding;
+  const gmFoundingDurable = readState().programs?.find((p) => p.id === gmProgram.id)?.founding;
+  const gmTargetDurable = gmSlot === null ? undefined : readState().slots?.[String(gmSlot)];
   const gmCompleteDuringBootstrap = await programPost(gmProgram.id, "complete");
   const gmCompleteDuringBootstrapText = await gmCompleteDuringBootstrap.text();
   const gmPendingOpenSlot = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? 0;
@@ -2248,11 +2473,14 @@ export async function run(ctx: Ctx): Promise<void> {
   }) : null;
   const gmPendingGenericText = gmPendingGenericOpen ? await gmPendingGenericOpen.text() : "no free slot";
   check("game-maker founding marker: bootstrap persists the exact target before delivery, blocks complete, and protects the tree from generic open",
-    gmSlot !== null && gmFoundingDuringBootstrap?.v === 1
+    gmSlot !== null && gmFoundingDuringBootstrap?.v === 2
+      && gmFoundingDuringBootstrap.profileKind === "game-maker"
       && gmFoundingDuringBootstrap.mode === "bootstrap"
-      && gmFoundingDuringBootstrap.canonicalRoot === realpathSync(gameWt)
+      && gmFoundingDuringBootstrap.targetRoot === realpathSync(gameWt)
       && gmFoundingDuringBootstrap.target.slot === gmSlot
-      && gmFoundingDuringBootstrap.target.openedAt === readState().slots?.[String(gmSlot)]?.openedAt
+      && gmFoundingDuringBootstrap.target.openedAt === gmTargetDurable?.openedAt
+      && gmFoundingDuringBootstrap.target.selfTokenHash === undefined
+      && gmFoundingDurable?.target.selfTokenHash === tokenHash(gmTargetDurable?.selfToken ?? "")
       && gmFoundingDuringBootstrap.predecessor === null
       && gmCompleteDuringBootstrap.status === 409 && gmCompleteDuringBootstrapText.includes("founding")
       && gmPendingOpenSlot > 0 && gmPendingGenericOpen?.status === 409
@@ -2803,6 +3031,18 @@ export async function run(ctx: Ctx): Promise<void> {
   const raceSlot = await waitForLabel(raceLabel);
   check("profile race precondition: the Standard founding occupant became observable while its bootstrap is still in flight",
     raceSlot !== null, String(raceSlot));
+  const standardMarkerPublic = (await ownerPrograms()).find((p) => p.id === raceProgram.id)?.founding;
+  const standardMarkerDurable = readState().programs?.find((p) => p.id === raceProgram.id)?.founding;
+  const standardTargetDurable = raceSlot === null ? undefined : readState().slots?.[String(raceSlot)];
+  check("Standard founding v2: marker and exact Slot generation are durable before delivery while the public view omits the token hash",
+    raceSlot !== null && standardMarkerPublic?.v === 2 && standardMarkerPublic.profileKind === "standard"
+      && standardMarkerPublic.targetRoot === realpathSync(gameRepo)
+      && standardMarkerPublic.target.slot === raceSlot
+      && standardMarkerPublic.target.openedAt === standardTargetDurable?.openedAt
+      && standardMarkerPublic.target.selfTokenHash === undefined
+      && standardMarkerDurable?.target.selfTokenHash === tokenHash(standardTargetDurable?.selfToken ?? ""),
+    JSON.stringify({ public: standardMarkerPublic, durable: standardMarkerDurable,
+      target: standardTargetDurable && { openedAt: standardTargetDurable.openedAt } }));
   const raceClearRetry = await setProfile(raceProgram.id, null);
   const raceFlip = await setProfile(raceProgram.id, GAME_MAKER);
   const raceFlipText = await raceFlip.text();
@@ -2909,6 +3149,23 @@ export async function run(ctx: Ctx): Promise<void> {
   const standardCandidateSlot = await waitForLabel(standardSuccessorLabel);
   const afterOpenReached = await waitForSuccessionLatch(`${afterOpenLatch}.reached`,
     "succession revocation fixture: the Standard candidate reaches the post-open authority cut");
+  const standardSuccessionPublic = (await ownerPrograms())
+    .find((p) => p.id === standardRevocationProgram.id)?.founding;
+  const standardSuccessionDurable = readState().programs
+    ?.find((p) => p.id === standardRevocationProgram.id)?.founding;
+  const standardCandidateDurable = standardCandidateSlot === null ? undefined
+    : readState().slots?.[String(standardCandidateSlot)];
+  check("Standard succession v2: durable marker binds exact predecessor and candidate hashes while the API omits both",
+    afterOpenReached && standardCandidateSlot !== null
+      && standardSuccessionPublic?.v === 2 && standardSuccessionPublic.profileKind === "standard"
+      && standardSuccessionPublic.mode === "succession"
+      && standardSuccessionPublic.predecessor?.slot === standardPredecessor.slot
+      && standardSuccessionPublic.predecessor.openedAt === standardPredecessor.openedAt
+      && standardSuccessionPublic.predecessor.selfTokenHash === undefined
+      && standardSuccessionPublic.target.selfTokenHash === undefined
+      && standardSuccessionDurable?.predecessor?.selfTokenHash === tokenHash(standardPredecessor.token)
+      && standardSuccessionDurable.target.selfTokenHash === tokenHash(standardCandidateDurable?.selfToken ?? ""),
+    JSON.stringify({ public: standardSuccessionPublic, durable: standardSuccessionDurable }));
   const standardOwnerKill = afterOpenReached
     ? await post(`/api/slots/${standardPredecessor.slot}/kill`, {}) : null;
   const standardRecycle = standardOwnerKill?.ok
@@ -3010,6 +3267,53 @@ export async function run(ctx: Ctx): Promise<void> {
   await programPost(gmRevocationProgram.id, "complete");
   clearSuccessionLatch(afterReceiptLatch);
   await restartSrv();
+
+  const postReceiptCrashLatch = `${ROOT}/succession-post-receipt-crash-latch`;
+  clearSuccessionLatch(postReceiptCrashLatch);
+  await restartSrv({ FLEET_TEST_SUCCESSION_AFTER_RECEIPT_LATCH: postReceiptCrashLatch });
+  const postReceiptCrashProgram = await activateNewProgram("Standard succession post-receipt crash recovery");
+  const postReceiptCrashPredecessor = await bootstrapRevocationMain(
+    postReceiptCrashProgram, gameWt, "standard-post-receipt-crash-predecessor",
+    "post-receipt crash fixture: the Standard predecessor is bound with an exact live identity");
+  const postReceiptCrashHandoff = await commitRevocationHandoff(gameWt, postReceiptCrashPredecessor.openedAt,
+    `## Program succession\ncontinue ${postReceiptCrashProgram.title}\n`,
+    "succession fixture: Standard post-receipt crash");
+  const postReceiptCrashBinding = (await ownerPrograms())
+    .find((p) => p.id === postReceiptCrashProgram.id)?.main;
+  const postReceiptCrashReceiptsBefore = (await contextReceipts()).receipts
+    .filter((row) => row.programId === postReceiptCrashProgram.id).length;
+  writeFileSync(postReceiptCrashLatch, "armed\n", { mode: 0o600 });
+  const postReceiptCrashLabel = "standard-post-receipt-crash-candidate";
+  const postReceiptCrashPending = selfSucceed(postReceiptCrashPredecessor.token,
+    { label: postReceiptCrashLabel, carry: "receipt remains evidence only" }).catch(() => null);
+  const postReceiptCrashSlot = await waitForLabel(postReceiptCrashLabel);
+  if (postReceiptCrashSlot !== null) {
+    await Bun.sleep(250);
+    await respawnScreen(postReceiptCrashSlot, ">_ OpenAI Codex (v0.147.0)");
+  }
+  const postReceiptCrashReached = await waitForSuccessionLatch(`${postReceiptCrashLatch}.reached`,
+    "post-receipt crash fixture: the Standard receipt is durable before server death");
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  clearSuccessionLatch(postReceiptCrashLatch);
+  await restartSrv();
+  await postReceiptCrashPending;
+  const postReceiptCrashAfter = (await ownerPrograms()).find((p) => p.id === postReceiptCrashProgram.id);
+  const postReceiptCrashReceiptsAfter = (await contextReceipts()).receipts
+    .filter((row) => row.programId === postReceiptCrashProgram.id);
+  check("Standard succession restart after receipt rolls back the exact candidate and leaves one orphan receipt as evidence without moving authority",
+    postReceiptCrashHandoff === 0 && postReceiptCrashReached && postReceiptCrashSlot !== null
+      && JSON.stringify(postReceiptCrashAfter?.main) === JSON.stringify(postReceiptCrashBinding)
+      && postReceiptCrashAfter?.founding === undefined
+      && !(await sessions()).slots.find((slot) => slot.id === postReceiptCrashSlot)?.cwd
+      && (await tmuxOut("has-session", "-t", `s${postReceiptCrashSlot}`)).code !== 0
+      && postReceiptCrashReceiptsAfter.length === postReceiptCrashReceiptsBefore + 1,
+    JSON.stringify({ handoff: postReceiptCrashHandoff, reached: postReceiptCrashReached,
+      binding: [postReceiptCrashBinding, postReceiptCrashAfter?.main],
+      receipts: [postReceiptCrashReceiptsBefore, postReceiptCrashReceiptsAfter.length],
+      candidate: postReceiptCrashSlot }));
+  await post(`/api/slots/${postReceiptCrashPredecessor.slot}/kill`, {});
+  await programPost(postReceiptCrashProgram.id, "complete");
 
   // A composed founding send owns the candidate observed before it enters inputChain. This first
   // arm pauses before Paste, recycles the candidate, then proves the stale closure cannot resolve

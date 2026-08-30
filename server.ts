@@ -12524,8 +12524,16 @@ async function descendantPids(root: number): Promise<number[]> {
   }
   return found;
 }
-async function killProcessTree(p: { pid: number; kill(sig?: number): void }, sig: number): Promise<void> {
-  const kids = p.pid > 0 ? await descendantPids(p.pid) : [];
+// The pid list a staffel signals is taken ONCE, by its FIRST stage, and both stages then signal
+// that same list. Re-walking at the SIGKILL stage finds nothing: the parent is already gone by
+// then and its children have reparented to init, where `pgrep -P <dead parent>` can no longer name
+// them. That is not hypothetical — a chain that IGNORES the term (`trap '' TERM`, the shape a real
+// gate has while blocked in `wait`) survived the whole staffel that way, which is the very case
+// the escalation exists for.
+async function killProcessTree(
+  p: { pid: number; kill(sig?: number): void }, sig: number, tree: Promise<number[]>,
+): Promise<void> {
+  const kids = await tree;
   try { p.kill(sig); } catch { /* already gone */ }
   for (const kid of kids) { try { process.kill(kid, sig); } catch { /* already gone */ } }
 }
@@ -12548,6 +12556,9 @@ async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null):
   // pending timer behind — and never cleared before then, because the whole point is to outlive
   // a child that is refusing to die on the term.
   let killTimer: ReturnType<typeof setTimeout> | null = null;
+  // the descendants as they stood when the FIRST signal went out; see killProcessTree on why the
+  // escalation must reuse this list rather than take its own
+  let tree: Promise<number[]> | null = null;
   const fire = (kind: "work" | "wait"): void => {
     if (timedOut || waitedOut) return; // whichever clock got here first owns the kill
     if (kind === "work") timedOut = true; else waitedOut = true;
@@ -12563,9 +12574,11 @@ async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null):
     // waiting here, on both platforms (killProcessTree above).
     // This changes no verdict: `timedOut`/`waitedOut` are already set above, so `verify.ok` stays
     // `null` on this path whichever signal ends the process (a killed run is not a verdict).
-    void killProcessTree(p, 15);
+    tree ??= p.pid > 0 ? descendantPids(p.pid) : Promise.resolve([]);
+    const doomed = tree;
+    void killProcessTree(p, 15, doomed);
     if (killTimer) clearTimeout(killTimer);
-    killTimer = setTimeout(() => { void killProcessTree(p, 9); }, VERIFY_KILL_GRACE_MS);
+    killTimer = setTimeout(() => { void killProcessTree(p, 9, doomed); }, VERIFY_KILL_GRACE_MS);
   };
   const arm = (): void => {
     if (timer) clearTimeout(timer);

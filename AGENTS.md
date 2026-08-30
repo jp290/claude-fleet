@@ -134,6 +134,17 @@ Unless the request says otherwise: take one narrow landable slice, reuse an exis
 avoid new files and parallel mutation, stop after the requested act, and keep context and output
 small. An explicit override must name its scope and reason; it cannot override a hard invariant.
 
+### Context self-management
+
+Managing your own context is your job, not your caller's. Measured on this fleet (owner,
+2026-08-30): response quality degrades noticeably from ~25 % of the window — far below the ~83 %
+compaction cliff, which is a loss boundary, not a quality boundary. So know your fill: measure it
+when you have a sensor, and report it honestly when you don't ("about half full" in your report
+beats silence). The decision is dynamic, per assignment, never a timer: a short, bounded,
+already-running act may finish past the band; new deep or open-ended work past ~25–30 % belongs in
+a fresh agent, a handover, or back to your caller with what you have. Name the call in your
+visible output ("at ~28 %, finishing this slice, then reporting") so the decision is inspectable.
+
 ### Collaboration preferences
 
 Prefer simple mechanisms, ambitious but grounded proposals, ceremony proportional to risk, and

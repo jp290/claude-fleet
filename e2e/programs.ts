@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rena
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
-import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, post, restartSrv, tmuxOut } from "./harness";
+import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, post, restartSrv, tmuxOut } from "./harness";
 import { phaseOf, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import type { LaneSignalView } from "../lane-signals";
 import { setMergeMode } from "./lane-helpers";
@@ -504,23 +504,10 @@ export async function run(ctx: Ctx): Promise<void> {
   for (const slot of filled) await post(`/api/slots/${slot}/kill`, {});
   await programPost(capacityProgram.id, "complete");
 
-  const NODE = Bun.which("node") ?? "node";
-  // The exit code is never discarded again. respawn-pane answers non-zero for a pane that does not
-  // exist yet, and that swallowed "can't find pane: sN" is what made the founding read as a product
-  // regression (see waitForLabel above). Retry inside the server's boot grace, then fail as
-  // OURSELVES — a probe that could not run must never be reported as the thing it was measuring.
-  const respawnScreen = async (slot: number, screen: string): Promise<{ out: string; code: number }> => {
-    let last: { out: string; code: number } = { out: "", code: -1 };
-    for (let i = 0; i < 60; i++) {
-      last = await tmuxOut("respawn-pane", "-k", "-t", `s${slot}`,
-        `${NODE} -e 'console.log(process.argv[1]); setInterval(() => {}, 1e9)' ${JSON.stringify(screen)}`);
-      if (last.code === 0) return last;
-      await Bun.sleep(50);
-    }
-    check(`founding fixture: pane s${slot} accepted the harness screen`, false,
-      `respawn-pane exited ${last.code}`);
-    return last;
-  };
+  // The retry inside the boot grace, the read-back of the planted screen, and both of the ways
+  // this fixture can fail as ITSELF now live in one place the readiness family shares — see
+  // plantScreen in e2e/harness.ts.
+  const respawnScreen = (slot: number, screen: string): Promise<boolean> => plantScreen(slot, screen);
   const groundingSteps = [
     "1. Run ./state.sh.",
     "2. Run ./register.sh.",

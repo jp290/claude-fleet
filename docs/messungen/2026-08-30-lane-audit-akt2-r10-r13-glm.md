@@ -1,5 +1,3 @@
-# Akt-2-Worker R10–R13 — Ineffizienz, fehlende Werkzeuge, Kontext-Packs (GLM-Lane-Audit)
-
 ---
 frage: Wo verbrannten die vier Akt-2-Lanes R10–R13 (Private-repo-o, 2026-08-30) Minuten, Calls und Kontext ohne Nutzen; welche Löcher hatten Brief bzw. Environment; und — Sonderfrage R11 — hat die R11-Session je ein gerendertes Bild ihres Ergebnisses angesehen, konnte sie es, und war ihre Wirkungslosigkeit aus der Session heraus erkennbar?
 urteil: Die vier Lanes waren diszipliniert und berichtsehrlich, aber JEDE bezahlte dieselben vier Env-Sonderkosten (fehlendes node_modules, Report-Limit 4000, Shell-/Hook-Stolperer, Scratchpad-Modulpfade) mit zusammen ~20 Calls und ~6 Minuten; der teuerste Einzelbefund des Tages ist kein Session-Fehler, sondern ein Brief-Loch: R11 hat ihr Ergebnis nie im Bild gesehen und konnte die Wirkungslosigkeit doch rechnerisch erkennen — die Bezugsflächen-Anweisung „Zahlen aus der Spielkamera" gehört als Pflichtfeld in jeden Render-Brief UND als stehendes Capture-Werkzeug ins Spiel-Repo.
@@ -8,6 +6,8 @@ belege: Transcripts ~/.claude/projects/-Users-owner-private-repo-o-worktrees-gam
 nicht-gemessen: Ob das Playwright-MCP der R11-Session zur Verfügung stand, ist ABGELEITET (in R10s Session 20 min vorher per ToolSearch gefunden, gleiche Maschine/Harness/Tag; R11 rief nie ToolSearch). Modellmix (R10-Commit nennt Opus 4.6, R12-Commit Opus 5) nicht bewertet. Kontext-Füllstand der Lanes: keine Sensoren in Transcripts, nur Result-Bytes als Proxy. apiDur≈Wall-Time in R12 als „Denkzeit" gedeutet, nicht pro Call gemessen. Die SHA-Umschreibungen beim Land (df076fc→b300caf, 5f0a04c→b020fd1, 72b3bea→53c92b9) nur an Endpunkten verglichen, Server-Log nicht gelesen. Spiel-Repo-Quellcodes (pose.ts, camera.ts, tools/serve.ts) nicht direkt gelesen — alle Code-Aussagen stammen aus Transcript-Belegen oder Briefen/Checkpoints.
 stand: 2026-08-30
 ---
+
+# Akt-2-Worker R10–R13 — Ineffizienz, fehlende Werkzeuge, Kontext-Packs (GLM-Lane-Audit)
 
 Coverage-Plan: Ich lese die vier Briefe, die fünf relevanten Commits samt Checkpoint 89ec073, und indexiere alle vier Worker-Transcripts per Skript (Tool-Sequenz, Result-Bytes, Zeitachse); gesucht sind Umwege/Retries ohne vorab formuliertes Kriterium, ad-hoc gebaute Mess- und Sichtwege, und Selbstbeschaffung in den ersten ~25 Calls je Session als Brief-/Env-Löcher; gut heißt: je Session ein gerankter, quellenbelegter Befundkasten plus Kontext-Pack-Vorschlag.
 

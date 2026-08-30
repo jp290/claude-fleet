@@ -251,3 +251,17 @@ den leeren `successorToken` im roten Second-host-Audit.
 - Ein Sweep über weitere `?? ""`-Credentials in Fixtures steht weiterhin aus.
 - `docs/messungen/2026-08-29-main-lane-lifecycle-gaps.md` tauchte während dieser Session untracked
   auf und ist **nicht meins** — eine parallele Session arbeitet. Nicht angefasst, nicht committet.
+
+---
+
+## Controller-Session Workflow-Audit (Slot 11, 2026-08-30 vormittags) — abgeschlossen, nur Zeiger
+
+Kette komplett, alles Dauerhafte liegt getrackt: Synthese
+`docs/messungen/2026-08-30-game-maker-workflow-audit-synthese.md` (V1–V7) · GLM-Instrumentenkritik
+`…-game-maker-instrument-audit-glm.md` · Stufe 2 `…-worktrail-audit-stufe2-kontext-modellmix.md` ·
+Regeln promotet: game-maker V1–V3 (`75b2110`), AGENTS.md §Context self-management (`6e08514`).
+In Flug, gehört nicht mir: die Game-Maker-MAIN (Slot 5) fährt R7 (Lenk-Vorzeichen+Konventions-Pin)
+und R8 (Kantenlinie), danach blinder Critic, dann Owner-Taste — Attention e98c0c91 ist beantwortet.
+Beim Owner offen: V4/V5 (selfLand-Default, Quiet-Hours-Ausnahme), Lifecycle-Program (Prompt in der
+Notiz vom 29.08.), Sensor-Task 051cc1c2, A/B-Paar Opus/Sonnet im nächsten Lauf. Diese Session war
+bei 30,9 % gemessen; Nachfolge nur nötig, wenn neue Tiefenarbeit ansteht.

@@ -92,3 +92,37 @@ Reihenfolge), und alles hinter Check ~1722, das nie lief.
 - **Erwartung für den ersten echten Remote-Job, vorab hingeschrieben, damit sie später nicht
   umgedeutet wird:** er wird ROT sein. Solange die Signatur die bekannte ist, ist genau das der
   bestandene Beweis für S4-(5) — nicht sein Fehlschlag.
+
+## Nachtrag (2026-08-30): die Wurzeln, gemessen — und der Lauf ist nicht mehr enthauptet
+
+Diese Notiz sagte oben „Ungeprüft blieb: die Wurzel von Familie 1 im Detail (tmux 3.5a-Verhalten,
+dash, oder ein `ps`-Format sind die Kandidaten in dieser Reihenfolge)". **Keiner der drei war es.**
+Die Kandidatenliste wird hier korrigiert, weil sie sonst die nächste Sitzung in die falsche
+Richtung schickt. Alle Messungen unten stammen von derselben Maschine, gegen `run1.log`.
+
+| Familie | Wurzel | Was sie wirklich war |
+|---|---|---|
+| 1 (~55 Zeilen + Abbruch) | **`node` ist auf dem second-host nicht installiert** | `respawnScreen`/`screenLane` pflanzten ihre Pane-Bildschirme als `node -e …`. `tmux respawn-pane` reicht das Kommando nur an eine Shell weiter und antwortet **0**; das Kommando stirbt, die Pane stirbt, die tmux-Session `sN` stirbt — und jeder Delivery-Gate liest danach `not-alive`. Die Fixture meldete Erfolg, während sie den Slot zerstörte. |
+| 2 (2 Zeilen) | **`sh -c "<ein Kommando>"` wird von dash GEFORKT, von bash EXECT** | Die Kill-Staffel signalisierte damit eine Shell, unter der nichts mehr hing, während die Kette samt Kindern weiterlief und die stdout-Pipe offen hielt (`ms:30015` = der EIGENE Exit des Stand-ins). Die Vermutung dieser Notiz („wo dash resident bleibt statt zu exec-en") war richtig — hier ist die Messung dazu. |
+| 3 (1 Zeile) | **Die Zeile hatte gar keine Fixture** | Sie las Slot 1 (`~/claude-fleet`) und behauptete damit über die echten claude-Chatverläufe der ausführenden Maschine. Auf dem second-host hat dort nie jemand claude laufen lassen, also antwortete die Route korrekt `total=0`. Kein Mechanismus, eine unausgesprochene Vorbedingung. |
+| 4 (~9 Zeilen) | Folge von 1 | bestätigt. |
+
+**Zwei Dinge, die diese Notiz noch nicht sehen konnte, weil der Lauf enthauptet war:**
+
+- **`ast-grep` fehlt auf dem Gerät** (auf dem Mac `~/.local/bin/ast-grep`, 0.45.1). Zehn
+  `sweep`-Zeilen werden dadurch rot — korrekt, `review-sweep.ts` meldet exit 2 und
+  `checksThatCouldNotRun:["cast"]`, es misst dann eben nichts. **Der Daemon-PATH
+  (`fleet-helper.service`, `Environment=PATH=…/.bun/bin:/usr/local/sbin:/usr/local/bin:
+  /usr/sbin:/usr/bin:/sbin:/bin`) enthält `~/.local/bin` nicht** — eine Installation dorthin
+  würde der Daemon also nicht sehen. Owner-Akt, ein statisches Binary.
+- **Ein zweiter Enthauptungspunkt**, hinter dem ersten versteckt: `e2e/sweep.ts` warf
+  `TypeError: undefined is not an object (evaluating 'closed.id')`, weil eine Fixture (eine zuvor
+  gemintete Zeile) fehlte, die ohne ast-grep nicht entstehen kann. Behoben; die Familie fällt
+  jetzt als sie selbst und lässt den Rest der Suite laufen.
+
+**Stand nach den Reparaturen** (Lane `fleet/260830005056-09e6`, gleiche Maschine, task-eigener
+Scratch-Klon, ast-grep task-lokal bereitgestellt): die Familien 1–4 sind weg, der Lauf ist
+vollständig statt enthauptet. Die Zahlen stehen im Lane-Report und in den Commit-Bodies dieser
+Lane; die adjudikatorische Aussage dieser Notiz kehrt sich damit um: **ein Remote-Rot vom
+second-host ist ab jetzt wieder ein Befund, nicht Plattform** — mit der einen benannten Ausnahme
+`ast-grep`, solange es dem Daemon fehlt.

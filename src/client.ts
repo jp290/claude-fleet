@@ -9955,7 +9955,8 @@ interface FleetEventRow {
   createdAt: number;
   // the SERVER's union, copied whole. A local interface is a claim about a foreign surface, so an
   // omitted word here would silently make its rows unmatched rather than mis-typed.
-  status: "pending" | "send-uncertain" | "delivered" | "acknowledged" | "receiver-gone" | "inbox";
+  status: "pending" | "send-uncertain" | "delivered" | "acknowledged" | "receiver-gone"
+    | "subject-gone" | "inbox";
   delivery?: "pane" | "inbox";
   kind: "lane-ready" | "host-commit-ready" | "merge-terminal" | "post-land-audit"
     | "deploy-terminal" | "clarification-request" | "fleet-report" | "supervisor-transition";

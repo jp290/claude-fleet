@@ -6,7 +6,7 @@
 // green), a burst of lands never spawns two concurrent suites, and — sections E–G, which restart the
 // server and therefore run last — a pending audit survives the death of the process that owed it.
 // Run via ./e2e-postland-audit.sh — never against a live fleet.
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, unlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 // Plumbing — IP/PORT/SOCK/BASE, the owner token read out of the instance's fleet.json, get/check,
 // and the live-fleet refusal this file used to carry as its own copied line — is e2e/harness.ts;
@@ -425,6 +425,66 @@ check("(I) a run that was KILLED is still recorded red — the exit code decides
   killedRow.result === "red" && killedRow.exitCode === 143
     && killedRow.covers[0]?.branch === mike.branch, JSON.stringify(killedRow).slice(0, 300));
 
+// (I.0b) THE PROCESS TREE, not just the process. The timeout path used to signal ONLY the child this
+// server spawned — and that child is `sh -c`, which on Linux/dash FORKS the audit chain instead of
+// exec'ing it, so the suite underneath survived both signals: it kept the suite mutex and its own
+// scratch tmux socket while fleet had already written the row and was free to start the next audit
+// against the same machine. runVerify was repaired for exactly this in 9e347f5 (descendantPids +
+// killProcessTree, pid list taken BEFORE the first signal); this is the second path, which that
+// lane's report left open.
+//
+// `hang` above cannot measure it. Its `sleep` dies of the SIGTERM its parent shell passes on, so a
+// server with no tree staffel at all still looks tidy from the outside. `nokill` removes that
+// accident: the stand-in shell AND its child ignore the term (the shape a real chain has while
+// blocked in `wait`), and the stand-in publishes both pids. The question then has one answer and no
+// inference in it — are those two processes still alive? Placed HERE, in the relative-snapshot half
+// of the file, because it adds a row and every section above counts rows by absolute number.
+await setAuditMode("nokill");
+const nkPidFile = `${import.meta.dir}/auditpids`;
+try { unlinkSync(nkPidFile); } catch { /* first run in this instance */ }
+const november = await makeLane("november");
+const rowsBeforeNokill = (await auditRows()).length;
+await landLane(november);
+const nkRow = newest(await waitRows(rowsBeforeNokill + 1, 90_000));
+check("(I.0b) an audit whose whole tree ignores the term is still recorded unknown/timed-out — never a fabricated red or green",
+  nkRow.result === "unknown" && (nkRow.reason ?? "").includes("timed out") && nkRow.exitCode === null
+    && nkRow.checks === null && nkRow.covers[0]?.branch === november.branch,
+  JSON.stringify(nkRow).slice(0, 300));
+const nkPids = (() => {
+  try { return readFileSync(nkPidFile, "utf8").split("\n").map(Number).filter((n) => n > 0); }
+  catch { return []; }
+})();
+// this block's own precondition, failing as ITSELF rather than as the thing it measures: with no
+// pids on file nothing below was measured, and a silent zero would read as "the tree is gone"
+check("(I.0b) setup: the stand-in published its own pid and its term-ignoring child's (precondition — no pids, no measurement)",
+  nkPids.length === 2 && nkPids[0] !== nkPids[1], JSON.stringify(nkPids));
+const nkAlive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+// THE MEASUREMENT, and the separation IS it: the row is written ~1s after the 10s deadline, the
+// SIGKILL stage lands 5s (POSTLAND_AUDIT_KILL_GRACE_MS) after the term that preceded it, and the
+// stand-in's own exit is ~19s past the row. A 12s window therefore cannot be satisfied by a tree
+// that merely finished — only by one that was killed. Polled rather than slept so a passing run
+// costs the ~4s it takes, not the whole window.
+const nkDeadline = (nkRow.at || Date.now()) + 12_000;
+let nkLeft = nkPids;
+while (nkPids.length > 0 && Date.now() < nkDeadline && (nkLeft = nkPids.filter(nkAlive)).length > 0)
+  await Bun.sleep(150);
+check("(I.0b) the WHOLE frozen tree is gone near timeout+grace — the shell that ignored the term and the child under it",
+  nkPids.length === 2 && nkLeft.length === 0,
+  JSON.stringify({ pids: nkPids, stillAlive: nkLeft, waitedMs: Date.now() - (nkRow.at || Date.now()), standInExitsAt: "~row+19s" }));
+// …and the next audit measures its own tree rather than colliding with the last one's leftovers.
+// The ordering is the claim: the check above ran BEFORE this land, so the old tree was already gone
+// when this run started. A row that says green with real check lines is what proves the machine
+// underneath it was free.
+await setAuditMode("green");
+const oscar = await makeLane("oscar");
+const rowsBeforeOscar = (await auditRows()).length;
+await landLane(oscar);
+const oscarRow = newest(await waitRows(rowsBeforeOscar + 1, 60_000));
+check("(I.0b) the audit AFTER a killed one runs clean — no overlap with the old child tree",
+  oscarRow.result === "green" && oscarRow.exitCode === 0 && (oscarRow.checks?.ran ?? 0) > 0
+    && oscarRow.checks?.failed === 0 && oscarRow.covers[0]?.branch === oscar.branch,
+  JSON.stringify(oscarRow).slice(0, 300));
+
 // (I.1) the in-flight view itself. `long` (12s) is roomy enough that a whole second land fits inside
 // the window — settle is paid up front for both lanes, as in (D).
 await setAuditMode("long");
@@ -468,8 +528,8 @@ check("(I) ...and the refusal costs nothing — the audit still runs and srv was
     && (await get("/api/sessions")).ok, JSON.stringify(stillRunning?.running));
 
 // (I.2) the distribution that makes the elapsed number answerable. The filter is the assertion: the
-// trail at this moment holds 3 green + 2 red + 3 unknown, and exactly ONE of those reds is the
-// killed run from (I.0). So the sample must be 4 — not 8 (everything), not 5 (unknowns excluded but
+// trail at this moment holds 4 green + 2 red + 4 unknown, and exactly ONE of those reds is the
+// killed run from (I.0). So the sample must be 5 — not 10 (everything), not 6 (unknowns excluded but
 // the killed run kept). Anything else and the numbers are being drawn from non-measurements.
 const trailNow = await auditRows();
 const verdicts = trailNow.filter((r) => r.result === "green" || r.result === "red").length;

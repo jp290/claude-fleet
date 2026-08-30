@@ -13771,13 +13771,24 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
         try {
           const settled = await Promise.race([p.exited, deadline]);
           if (settled === "timeout") {
-            // SIGTERM, then SIGKILL after a grace period: a shell blocked in `wait` acts on the term
-            // only once its foreground child returns. Residual, stated honestly: grandchildren can
-            // still outlive both signals, so a timed-out audit may leave its own throwaway tmux
-            // socket behind — a scratch resource on the owner's box, and the reason the ceiling is
-            // generous rather than tight. What is NOT residual is the server: it stops waiting here.
-            try { p.kill(); } catch { /* already gone */ }
-            setTimeout(() => { try { p.kill(9); } catch { /* already gone */ } }, POSTLAND_AUDIT_KILL_GRACE_MS);
+            // SIGTERM, then SIGKILL after a grace period, and BOTH over the whole process tree —
+            // the same staffel runVerify runs, through the same two helpers, because this path has
+            // the identical shape: a signal sent to the process this server spawned reaches THAT
+            // process and nothing under it, and on Linux that process is `sh -c`'s fork rather than
+            // the audit chain. The direct-child form left the real suite running after the timeout,
+            // holding the suite mutex and its scratch tmux socket while fleet had already declared
+            // the run over and was free to start the next audit against the same machine.
+            // The pid list is taken ONCE, BEFORE the first signal: an orphan reparents to init and
+            // `pgrep -P` can no longer name it, so the SIGKILL stage must reuse this snapshot rather
+            // than re-walk a tree whose root is already gone (killProcessTree says why in full).
+            // Residual, unchanged and stated rather than defined away: a process the chain forks
+            // between the walk and the signal still outlives both. What is NOT residual any more is
+            // the tree that existed when the deadline fired — nor the server, which stops waiting here.
+            // This changes no verdict: `timedOut` is already set, so the row below stays
+            // unknown/timed-out whichever signal ends the process. A killed run is not a measurement.
+            const doomed = p.pid > 0 ? descendantPids(p.pid) : Promise.resolve([]);
+            void killProcessTree(p, 15, doomed);
+            setTimeout(() => { void killProcessTree(p, 9, doomed); }, POSTLAND_AUDIT_KILL_GRACE_MS);
           } else {
             exitCode = settled;
           }

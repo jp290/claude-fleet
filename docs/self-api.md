@@ -59,6 +59,16 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
 - Stirbt das Ziel, während du wartest, wird der Watch entwaffnet statt gelöscht, mit Grund
   (`target session ended — no notification will come`) — sichtbar in `GET /api/self`. In die Pane kommt dabei
   NICHTS.
+- **Stirbt das Ziel, NACHDEM der Watch gefeuert hat, das Event aber noch nicht zugestellt ist**
+  (deine Pane war beschäftigt, ein Owner-Draft stand im Composer), wird das Event terminal als
+  `subject-gone`: nie gepastet, nie ackbar (409), und es belegt kein Zustellbudget mehr. Es ist
+  ausdrücklich NICHT `receiver-gone` (du lebst) und NICHT `acknowledged` (du hast nichts gelesen).
+  Grund, gemessen am 2026-08-30 (Event `e1ff06ac9911f854e752d71a`): ein lane-ready-Event hielt sich
+  2005 Ticks lang, während seine Lane landete und ihr Slot recycelt wurde — und tippte sich Stunden
+  später über eine Lane in die Pane, die es nicht mehr gab. Ein Event, dessen Subjekt noch LEBT und
+  identisch gebunden ist, bleibt dagegen `pending` und wird zugestellt, sobald dein Composer frei
+  ist. Ein Halt am belegten Composer zählt dabei NICHT als Zustellversuch (`attempts` bleibt stehen;
+  gezählt werden Holds als `fleet_event_held` im Audit-Trail).
 - **Ein Abo, das du nicht selbst gemacht hast: der terminale Land einer Lane deines Programs.** Landet
   irgendwer — Owner ⏏, Owner ⏫, ein Confirm — eine Lane, deren Task zu einem aktiven Program mit
   GEBUNDENER, lebender MAIN gehört, armt der Server dieser MAIN im letzten Moment vor dem Teardown
@@ -99,8 +109,9 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
   (+ Audit `watch_expire`) — **ohne Pane-Text**. Ein Watch trägt höchstens EINE Notification, und die
   ist der Übergang. Den Ablauf liest du in `GET /api/self` (`watches`).
 - Der Transport ist unverändert: `pending → send-uncertain (vor tmux persistiert) → delivered` nur
-  bei beobachteter Annahme; Kill-Switch/Alive-Gates; toter Empfänger → `receiver-gone`; Ack über
-  `POST /api/self/events/:id/ack`.
+  bei beobachteter Annahme; Kill-Switch/Alive-Gates; toter Empfänger → `receiver-gone`; toter
+  SUBJEKT-Lifecycle → `subject-gone` (terminal, nie gepastet, nie ackbar, kostet kein Budget); Ack
+  über `POST /api/self/events/:id/ack`.
 
 ## supervisor-watch complete — `POST /api/self/supervisor-watch/:id/complete`
 

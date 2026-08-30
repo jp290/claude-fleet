@@ -150,22 +150,60 @@ export FLEET_E2E_REPO4="$REPO4"
 # consumes delivered text like a TUI. PATH is prepended only on the INITIAL srv spawn below;
 # restartSrv() later reconstructs the normal test PATH from the harness process.
 cat > "$DIR/fake-pi.c" <<'EOF'
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 #include <termios.h>
 #include <unistd.h>
 /* ACP-25 paints Pi's measured rule-bounded composer. ACP-26 gives the stand-in a real raw-mode
    input buffer: Enter normally consumes it, while a suite-owned mode file can swallow one Enter,
    append/edit owner bytes, paint a placeholder, or hide the composer. BSpace removes one UTF-8
    code point. A state file exposes the stand-in's INTERNAL buffer to the probe; pane rendering is
-   deliberately not allowed to prove that an unobservable composer survived. */
+   deliberately not allowed to prove that an unobservable composer survived.
+   ACP-27 adds the SLOW PASTE: in mode "prefix" only the first PREFIX_VISIBLE bytes of an arriving
+   paste enter the composer; the rest waits PREFIX_HOLD_MS in a hold buffer and then joins it. That
+   makes "the payload is still arriving" a deterministic, observable state — an Enter that lands
+   inside that window submits the truncated prefix and leaves the tail behind, which is exactly the
+   measured 2026-08-30 shape. Input is read one byte at a time through poll(), never getchar(), so
+   the release timer can fire while no key arrives (stdio buffering would hide bytes from poll). */
+/* 24 visible bytes and 500 ms of hold: measured against BOTH sides of the window this fixture has
+   to separate. Without the fix Enter follows the paste after ~150 ms plus one capture-pane
+   roundtrip (~250 ms observed under suite load) and must land INSIDE the hold; with it the arrival
+   poll must still see the released text inside FLEET_ACCEPT_WAIT_MS (800 ms in this wrapper,
+   counted from the same 150 ms mark). A first attempt at 250 ms lost the race on a loaded machine
+   and rendered the whole paste before Enter — the fixture proved nothing that run. */
+#define PREFIX_VISIBLE 24
+#define PREFIX_HOLD_MS 500
 static char buf[16384];
 static size_t len = 0;
+static char hold[16384];
+static size_t hold_len = 0;
+static long long release_at = 0;
 static char display_mode[32] = "normal";
 static char turn_id[25] = "none";
 static const char *mode_path(void) { return getenv("FLEET_E2E_COMPOSER_MODE"); }
 static const char *state_path(void) { return getenv("FLEET_E2E_COMPOSER_STATE"); }
+static long long now_ms(void) {
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  return (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+}
+/* Every SUBMITTED turn, appended verbatim behind a marker. The state file shows what the composer
+   still HOLDS; only this shows what was actually sent — which is where a truncated turn is visible
+   as itself instead of as a shorter residue. */
+static void record_turn(void) {
+  FILE *f;
+  char path[4096];
+  if (!state_path()) return;
+  snprintf(path, sizeof path, "%s.turns", state_path());
+  f = fopen(path, "a");
+  if (!f) return;
+  fprintf(f, "\n===TURN %zu===\n", len);
+  fwrite(buf, 1, len, f);
+  fclose(f);
+}
 static void read_mode(void) {
   FILE *f;
   display_mode[0] = '\0';
@@ -238,7 +276,27 @@ int main(int argc, char **argv) {
   read_mode();
   save_state("ready");
   composer();
-  while ((c = getchar()) != EOF) {
+  for (;;) {
+    struct pollfd pfd;
+    unsigned char ch;
+    int ready;
+    pfd.fd = STDIN_FILENO;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    /* only a pending slow-paste tail needs a timeout; otherwise this waits like the old loop did */
+    ready = poll(&pfd, 1, hold_len > 0 ? 20 : -1);
+    if (ready == 0) {
+      if (hold_len > 0 && now_ms() >= release_at) {
+        if (len + hold_len < sizeof buf) { memcpy(buf + len, hold, hold_len); len += hold_len; }
+        hold_len = 0;
+        save_state("released");
+        composer();
+      }
+      continue;
+    }
+    if (ready < 0) continue;
+    if (read(STDIN_FILENO, &ch, 1) != 1) break;
+    c = (int)ch;
     // Mode changes are visible while a paste is arriving, not only after Enter. This makes the
     // unobservable falsifier remove the composer before sendText's post-paste read can authorize
     // rollback from a stale visible frame.
@@ -256,13 +314,21 @@ int main(int argc, char **argv) {
         if (len + strlen(owner) < sizeof buf) { memcpy(buf + len, owner, strlen(owner)); len += strlen(owner); }
       } else if (!strcmp(display_mode, "edit") && len > 1) {
         buf[1] = buf[1] == 'f' ? 'F' : 'X';
-      } else if (!strcmp(display_mode, "normal")) {
+      } else if (!strcmp(display_mode, "normal") || !strcmp(display_mode, "prefix")) {
+        /* recorded BEFORE the buffer is cleared: a prefix submitted while the tail is still held is
+           exactly what this file has to be able to show */
+        record_turn();
         consume();
       }
       save_state("entered");
     } else if (c == 0x7f || c == 0x08) {
       if (len > 0) { len--; while (len > 0 && (((unsigned char)buf[len]) & 0xc0) == 0x80) len--; }
       save_state("backspace");
+    } else if (!strcmp(display_mode, "prefix")
+               && (hold_len > 0 || len >= PREFIX_VISIBLE) && hold_len < sizeof hold - 1) {
+      if (hold_len == 0) release_at = now_ms() + PREFIX_HOLD_MS;
+      hold[hold_len++] = (char)c;
+      save_state("typing");
     } else if (len < sizeof buf - 1) {
       buf[len++] = (char)c;
       save_state("typing");

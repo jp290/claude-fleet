@@ -36,7 +36,8 @@ import {
   type ContextPackMode,
   type ContextPackTrigger,
 } from "./context-packs";
-import { composerHoldsExactly, composerRows, composerResidue, type ComposerForm } from "./composer";
+import { composerArrival, composerHoldsExactly, composerRows, composerResidue,
+  type ComposerArrival, type ComposerForm } from "./composer";
 import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from "./continuity";
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
 import { trailStats, type TrailRecord, type TrailSummary } from "./trailstats";
@@ -1439,8 +1440,20 @@ function watchFrom(raw: unknown): Watch | null {
 // inbox and waits for the OWNER's acknowledgement. It is not a transport state — FACT 2 selects
 // `pending` alone, so an inbox row can never be sent, and `deliveredAt` therefore stays null on it
 // forever. Terminal remains acknowledged|receiver-gone for both delivery modes.
+// "subject-gone" is the SUBJECT-side twin of "receiver-gone", and it exists because the two losses
+// are not the same loss. Measured 2026-08-30 (event e1ff06ac9911f854e752d71a): a lane-ready row for
+// slot 2 / fleet/260830005056-09e6 stayed `pending` through 2005 held ticks while that lane landed,
+// was torn down and its slot recycled — then typed itself into a MAIN composer hours later, about a
+// lane that no longer existed. The receiver was alive the whole time, so `receiver-gone` would have
+// been a lie about the wrong endpoint, and `acknowledged` a receipt nobody gave. Terminal, never
+// delivered, never acknowledgeable, and it spends no delivery budget.
 type FleetEventStatus = "pending" | "send-uncertain" | "delivered" | "acknowledged" | "receiver-gone"
-  | "inbox";
+  | "subject-gone" | "inbox";
+// The three words that mean "this row is finished, whatever happened to it" — read by retention,
+// by both budget sums, by the boot reconciliation and by every teardown sweep. One list, because a
+// word added to the union and forgotten in one of those five places is a silent debt or a silent
+// resurrection, not a type error.
+const FLEET_EVENT_TERMINAL: readonly string[] = ["acknowledged", "receiver-gone", "subject-gone"];
 interface FleetEventBase {
   id: string;
   watchId: string | null;
@@ -1471,6 +1484,11 @@ interface LaneFleetEvent extends FleetEventBase {
   subjectBranch: string;
   kind: LaneWatchEventKind;
   payload: LaneWatchEventPayload;
+  // THE SUBJECT LIFECYCLE, not merely its slot number — the same fact the receiver triple carries
+  // for the other endpoint. Slot ids are reusable, so only the occupancy timestamp separates "the
+  // lane this row reports on" from "whoever holds that number now". Optional: a row minted before
+  // this existed hydrates without it and is then judged on slot+branch alone (laneEventSubject).
+  subjectOpenedAt?: number;
 }
 interface MergeFleetEvent extends FleetEventBase {
   subjectSlot: number;
@@ -1601,8 +1619,8 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
       && e.receiverOpenedAt > 0
       && (typeof e.receiverSessionId === "string" || e.receiverSessionId === null)))
     || !Number.isInteger(e.receiverIdleSec) || (e.receiverIdleSec ?? -1) < 0
-    || !["pending", "send-uncertain", "delivered", "acknowledged", "receiver-gone", "inbox"]
-      .includes(String(e.status))
+    || !["pending", "send-uncertain", "delivered", "acknowledged", "receiver-gone", "subject-gone",
+      "inbox"].includes(String(e.status))
     // absent = legacy pane; an unknown value is fail-closed exactly as it is on the Watch.
     || (e.delivery !== undefined && e.delivery !== "pane" && e.delivery !== "inbox")
     // A clarification is NEVER an inbox row — an inbox cannot answer, so such a row would be a
@@ -1703,6 +1721,10 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
       deliveredAt: base.deliveredAt, acknowledgedAt: base.acknowledgedAt,
       // last, and only when present: a legacy row without it must serialize byte-identically.
       ...(base.delivery !== undefined ? { delivery: base.delivery } : {}),
+      // …and the subject stamp after it, for the same reason: a row minted before it existed
+      // hydrates without the key and stays unstamped rather than acquiring a fabricated identity.
+      ...(typeof e.subjectOpenedAt === "number" && Number.isFinite(e.subjectOpenedAt)
+        && e.subjectOpenedAt > 0 ? { subjectOpenedAt: e.subjectOpenedAt } : {}),
     };
   }
   if (e.kind === "merge-terminal") {
@@ -2736,7 +2758,7 @@ async function programExecutionView(s: Slot): Promise<Response> {
             createdAt: e.createdAt, deliveredAt: e.deliveredAt, acknowledgedAt: e.acknowledgedAt,
           })),
           sessionMismatch,
-          openDebts: matchingEvents.filter((e) => !["acknowledged", "receiver-gone"].includes(e.status)).length,
+          openDebts: matchingEvents.filter((e) => !FLEET_EVENT_TERMINAL.includes(e.status)).length,
         },
         watches: {
           attributed: receiverWatches.filter((w) => w.slotOpenedAt === s.openedAt).map((w) => ({
@@ -3619,7 +3641,7 @@ type AuditEvent =
   // FleetEvent rows below record transport, acknowledgement and terminal receiver loss separately.
   | "watch_fire" | "watch_skip"
   | "fleet_event_delivered" | "fleet_event_send_uncertain" | "fleet_event_held" | "fleet_event_ack" | "fleet_event_owner_ack"
-  | "fleet_event_receiver_gone" | "fleet_event_prune"
+  | "fleet_event_receiver_gone" | "fleet_event_subject_gone" | "fleet_event_prune"
   | "clarification_open" | "clarification_answered" | "clarification_refused" | "clarification_prune"
   | "clarification_reply_send_uncertain"
   | "fleet_report_open" | "fleet_report_prune"
@@ -6240,6 +6262,21 @@ async function rollbackOwnComposerPayload(
   const after = await awaitComposer(s, bound, (r) => r === "");
   return sameBoundPane(s, bound) && after === "" ? "cleared" : "residue";
 }
+// Poll the composer until the whole payload is on screen, within the same window an acceptance
+// read gets. Returns the LAST answer, so "partial" means the paste was still a proper prefix of
+// Fleet's own text when the budget ran out — the one state that may block a submit.
+async function awaitArrival(s: Slot, bound: BoundSlotPane, payload: string): Promise<ComposerArrival> {
+  const started = Date.now();
+  let last: ComposerArrival = "differs";
+  for (;;) {
+    if (!sameBoundPane(s, bound)) return last;
+    const read = await readExactComposer(s, bound);
+    last = read.kind === "rows" ? composerArrival(read.rows, payload) : "differs";
+    if (last !== "partial") return last;
+    if (Date.now() - started >= ACCEPT_WAIT_MS) return last;
+    await Bun.sleep(100);
+  }
+}
 // Poll the composer until `until` holds, within the window. Returns the last residue read.
 async function awaitComposer(s: Slot, bound: BoundSlotPane,
   until: (r: string | null) => boolean): Promise<string | null> {
@@ -6372,7 +6409,22 @@ async function sendText(s: Slot, text: string, submit: boolean,
       if (!submit) return { acceptance: "not-applicable" as const };
       await Bun.sleep(150);
       if (!sameBoundPane(s, bound)) throw new Error("slot changed before submit");
-      if (observes) await awaitComposer(s, bound, (r) => r === null || r.length > 0);
+      // ENTER IS THE DESTRUCTIVE HALF OF A PASTE and it may not be pressed on a payload that is
+      // provably still arriving: the pre-2026-08-30 wait asked only for a NON-EMPTY composer, which
+      // a paste one byte in satisfies exactly as well as a finished one — and one measured event
+      // was submitted cut off at "… x-fleet-self-token from," mid-sentence. Only "partial" blocks
+      // here. "differs" (a collapsed-paste placeholder, a foreign rendering) leaves completeness
+      // UNPROVABLE, never disproven, so the send proceeds into the acceptance read it always had:
+      // no invented delivery, and never a second blind Enter.
+      if (observes) {
+        const arrival = await awaitArrival(s, bound, text);
+        // identity first, as every other probe here does: a slot that changed under the window
+        // must report THAT, not a verdict about a payload nobody can attribute any more.
+        if (!sameBoundPane(s, bound)) throw new Error("slot changed during arrival probe");
+        if (arrival === "partial") throw new SendNotAccepted(
+          `prompt not submitted — the composer still held only part of the ${[...text].length}-char `
+            + `payload after ${ACCEPT_WAIT_MS}ms; no Enter was sent`);
+      }
       if (!sameBoundPane(s, bound)) throw new Error("slot changed before Enter");
       const sk = await tmux("send-keys", "-t", bound.paneId, "Enter");
       if (sk.code !== 0) throw new Error("tmux send-keys failed — text pasted but not submitted");
@@ -6606,12 +6658,12 @@ type DeliveryBudget = DeliveryBudgetKnown | { state: "unknown"; reason: string }
 // refusal condition of the fleet-report door, for the same reason `free === 0` is over there.
 function ownerInboxDebts(): number {
   return fleetEvents.filter((e) => e.receiverSlot === null
-    && !["acknowledged", "receiver-gone"].includes(e.status)).length;
+    && !FLEET_EVENT_TERMINAL.includes(e.status)).length;
 }
 
 function slotDeliveryBudget(slotId: number): DeliveryBudgetKnown {
   const deliveryDebts = fleetEvents.filter((e) => e.receiverSlot === slotId
-    && !["acknowledged", "receiver-gone"].includes(e.status)).length;
+    && !FLEET_EVENT_TERMINAL.includes(e.status)).length;
   const armedReservations = watches.filter((w) => w.armed && w.slot === slotId).length;
   const cap = FLEET_EVENT_MAX_OPEN_PER_SLOT;
   return { state: "known", deliveryDebts, armedReservations, cap,
@@ -7238,7 +7290,7 @@ function pruneSpentWatches(slotId: number): void {
 // inbox tail. Same rule, same audit word, only the key and the ceiling differ.
 function pruneFleetEvents(slotId: number | null): void {
   const terminal = fleetEvents.filter((e) => e.receiverSlot === slotId
-    && (e.status === "acknowledged" || e.status === "receiver-gone"))
+    && FLEET_EVENT_TERMINAL.includes(e.status))
     .sort((a, b) => (a.acknowledgedAt ?? a.createdAt) - (b.acknowledgedAt ?? b.createdAt));
   const keep = slotId === null ? FLEET_EVENT_KEEP_TERMINAL_OWNER_INBOX : FLEET_EVENT_KEEP_TERMINAL;
   if (terminal.length <= keep) return;
@@ -7359,10 +7411,49 @@ function fleetEventReceiver(e: FleetEvent): Slot | null {
   return s?.cwd && s.openedAt === e.receiverOpenedAt && s.sessionId === e.receiverSessionId ? s : null;
 }
 
+// THE SUBJECT HALF of the same question fleetEventReceiver asks about the endpoint: is the lane
+// this row REPORTS ON still the one it was minted for? Only the lane kinds can be asked at all — a
+// merge/audit/deploy/report row names a finished FACT, not a live session, and "not-a-lane" is that
+// refusal to answer rather than a verdict.
+type LaneEventSubject = "present" | "gone" | "not-a-lane";
+const isLaneFleetEvent = (e: FleetEvent): e is LaneFleetEvent =>
+  e.kind === "lane-ready" || e.kind === "host-commit-ready";
+function laneEventSubject(e: FleetEvent): LaneEventSubject {
+  if (!isLaneFleetEvent(e)) return "not-a-lane";
+  const t = slotFrom(e.subjectSlot);
+  // THE BRANCH IS THE FLOOR, and it answers for legacy rows too: the same test the watch tick
+  // already applies to a target (`t.worktree?.branch !== w.targetBranch` disarms it) — an empty
+  // slot or a different branch on that number is not the lane this row reports on, whatever it
+  // used to be. A row minted before the stamp existed gets exactly this much and no more.
+  if (!t?.cwd || t.worktree?.branch !== e.subjectBranch) return "gone";
+  // …and openedAt on top of it, where it exists: branch names repeat far less often than slot
+  // numbers, but only the occupancy timestamp separates a relanded branch from the lifecycle the
+  // predicate actually fired on.
+  return e.subjectOpenedAt === undefined || t.openedAt === e.subjectOpenedAt ? "present" : "gone";
+}
+
+// Terminalize every PENDING row whose subject lifecycle ended. Pending only, and that boundary is
+// the whole care: a `send-uncertain` row may already be in the receiver's pane, and overwriting it
+// would erase the one record that says so; a delivered row was read by a session that can still
+// acknowledge it. Called from slot teardown (both directions) and from the transport tick, so a
+// recycle that never passes through teardown is caught on the next round either way.
+function markFleetEventsSubjectGone(): boolean {
+  const touched = new Set<number | null>();
+  for (const e of fleetEvents) {
+    if (!isLaneFleetEvent(e) || e.status !== "pending" || laneEventSubject(e) !== "gone") continue;
+    e.status = "subject-gone";
+    audit("fleet_event_subject_gone", e.receiverSlot ?? undefined,
+      `${e.id} subject slot ${e.subjectSlot} ${e.subjectBranch}`);
+    touched.add(e.receiverSlot);
+  }
+  for (const id of touched) pruneFleetEvents(id);
+  return touched.size > 0;
+}
+
 function markFleetEventReceiverGone(slotId: number): boolean {
   let dirty = false;
   for (const e of fleetEvents) {
-    if (e.receiverSlot !== slotId || e.status === "acknowledged" || e.status === "receiver-gone") continue;
+    if (e.receiverSlot !== slotId || FLEET_EVENT_TERMINAL.includes(e.status)) continue;
     e.status = "receiver-gone";
     audit("fleet_event_receiver_gone", slotId, e.id);
     dirty = true;
@@ -7442,7 +7533,7 @@ function fleetReportsFor(s: Slot): FleetReport[] {
 function pruneFleetReports(): void {
   const terminal = fleetReports.filter((report) => {
     const event = fleetEvents.find((e) => e.id === report.eventId);
-    return !event || event.status === "acknowledged" || event.status === "receiver-gone";
+    return !event || FLEET_EVENT_TERMINAL.includes(event.status);
   }).sort((a, b) => a.reportedAt - b.reportedAt);
   if (terminal.length <= FLEET_REPORT_KEEP) return;
   const drop = new Set(terminal.slice(0, terminal.length - FLEET_REPORT_KEEP).map((r) => r.id));
@@ -7713,6 +7804,10 @@ function dropWatchesFor(slotId: number): void {
   // Events are durable independently of their transport Watch. A dead/replaced receiver turns
   // every still-open delivery into an explicit terminal fact; it is never deleted with the Watch.
   markFleetEventReceiverGone(slotId);
+  // …and the other endpoint of the same teardown: an undelivered notification ABOUT this slot's
+  // lane can never become true again, so it turns terminal here instead of waiting in the queue
+  // for a composer to clear. Receiver first: a row that lost both ends is a row nobody can read.
+  markFleetEventsSubjectGone();
   reconcileClarifications(slotId);
   reconcileAttention(slotId);
   watches = watches.filter((w) => w.slot !== slotId);
@@ -11749,6 +11844,9 @@ async function tickWatches(): Promise<void> {
           kind: laneWatchEventKind(watchSignal), payload: laneWatchPayload(sig),
           createdAt: now, ...mintTransport(w), attempts: 0,
           deliveredAt: null, acknowledgedAt: null,
+          // stamped from the slot the predicate actually fired on, last so a legacy row without it
+          // keeps its byte order (same rule as `delivery`)
+          subjectOpenedAt: t.openedAt,
         };
         fleetEvents = [...fleetEvents, minted];
         event = minted;
@@ -11776,6 +11874,16 @@ async function tickWatches(): Promise<void> {
         dirty = true;
         continue;
       }
+      // …and the SUBJECT, before any gate that could merely delay this row. A held event is a
+      // promise about a live lane; once that lane is gone the promise cannot come true, and every
+      // further tick would only be waiting to type stale news into a pane. Teardown already sweeps
+      // this (dropWatchesFor); here is where a recycle that never passed through teardown, and
+      // every row restored from disk, is caught.
+      if (laneEventSubject(event) === "gone") {
+        markFleetEventsSubjectGone();
+        dirty = true;
+        continue;
+      }
       // THE UNOBSERVED-PANE HOLE belongs to transport now, not signal capture. lastOutput=0 is
       // unknown rather than epoch-idle; idleSec:0 remains the explicit opt-out.
       if (event.receiverIdleSec > 0 && s.lastOutput === 0) continue;
@@ -11797,6 +11905,11 @@ async function tickWatches(): Promise<void> {
         dirty = true;
         continue;
       }
+      // THE CRASH MARKER GOES DOWN FIRST and stays that way: persisted before tmux is touched, so
+      // a death anywhere after this line is visible after restart instead of leaving a paste that
+      // may or may not have landed. `attempts` is raised with it and rolled back ONLY by the one
+      // refusal that proves nothing was typed (below) — everything else keeps its count.
+      const attemptsBefore = event.attempts;
       event.status = "send-uncertain";
       event.attempts++;
       await saveStateNow();
@@ -11820,7 +11933,13 @@ async function tickWatches(): Promise<void> {
         if (e instanceof SendRefused) {
           // nothing was typed (an occupied composer, i.e. an owner draft): the event is still
           // pending and will be offered again once the composer is clear — never appended to it.
+          // AND THE COUNT GOES BACK WITH IT. A refusal happens BEFORE the paste, so it is not an
+          // attempt at all: the same measured row reached attempts=2006 against 2005 holds and one
+          // real send, which made the number read as 2005 failed deliveries into a live pane. The
+          // held audit line below is where a hold is counted, and it counts only holds.
           event.status = "pending";
+          event.attempts = attemptsBefore;
+          await saveStateNow();
           audit("fleet_event_held", event.receiverSlot ?? undefined, `${event.id} ${e.message.slice(0, 120)}`);
           continue;
         }
@@ -18228,7 +18347,7 @@ async function supervisorView(s: Slot): Promise<Response> {
   // and a Supervisor that could close them would be answering in the owner's stead.
   const outcomeRows = [...outcomeLedger.rows].sort((a, b) => num(b.ts) - num(a.ts));
   const openEvents = fleetEvents
-    .filter((e) => !["acknowledged", "receiver-gone"].includes(e.status))
+    .filter((e) => !FLEET_EVENT_TERMINAL.includes(e.status))
     .sort((a, b) => b.createdAt - a.createdAt);
   const operations = {
     outcomes: {
@@ -19887,7 +20006,7 @@ watches = watches.filter((w) => {
 // Measured: B4 survival went `inbox` -> `receiver-gone` across exactly this loop, which then
 // zeroed ownerInboxDebts() and let the ceiling accept a 26th row.
 for (const e of fleetEvents) {
-  if (e.status === "acknowledged" || e.status === "receiver-gone") continue;
+  if (FLEET_EVENT_TERMINAL.includes(e.status)) continue;
   if (e.receiverSlot === null || fleetEventReceiver(e)) continue;
   e.status = "receiver-gone";
 }

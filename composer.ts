@@ -120,3 +120,40 @@ export function composerHoldsExactly(rows: readonly string[], payload: string): 
   };
   return walk(0, 0);
 }
+
+// THE PRE-SUBMIT HALF, and it answers a different question than the two readers above: not "is this
+// exactly Fleet's payload" (rollback, which must be exact because it erases) but "has the whole
+// payload ARRIVED yet". Measured 2026-08-30 on event e1ff06ac9911f854e752d71a: the receiver pane
+// submitted a turn that ended mid-sentence ("… x-fleet-self-token from"), because the pre-Enter
+// wait only required the composer to be non-empty — a paste still streaming reads exactly like a
+// finished one. Three answers, and the middle one is the whole point:
+//   "complete"  every payload byte is rendered (a tail of pure whitespace is not evidence of a
+//               missing byte: capture-pane trims trailing blanks off every row).
+//   "partial"   what is on screen is a PROPER PREFIX of the payload — provably still arriving, so
+//               Enter would submit a truncated turn. The only state that may block a submit.
+//   "differs"   anything else — a collapsed-paste placeholder, owner bytes, a foreign rendering.
+//               Completeness is then unprovable, never disproven, and the caller must fall back to
+//               its existing post-Enter acceptance contract rather than invent either verdict.
+export type ComposerArrival = "complete" | "partial" | "differs";
+export function composerArrival(rows: readonly string[], payload: string): ComposerArrival {
+  if (payload.length === 0 || rows.length === 0) return "differs";
+  // same walk as composerHoldsExactly (one omitted separator per visual row boundary), but it
+  // keeps the FURTHEST position all rows can reach instead of demanding the end. Memoized on
+  // (row, position): without it the two-way branch is exponential in the row count.
+  const seen = new Set<string>();
+  let best = -1;
+  const walk = (i: number, pos: number): void => {
+    const key = `${i}:${pos}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    if (i === rows.length) { if (pos > best) best = pos; return; }
+    if (!payload.startsWith(rows[i], pos)) return;
+    const next = pos + rows[i].length;
+    walk(i + 1, next);
+    const separator = payload[next];
+    if (separator === " " || separator === "\n") walk(i + 1, next + 1);
+  };
+  walk(0, 0);
+  if (best < 0) return "differs";
+  return payload.slice(best).trim() === "" ? "complete" : "partial";
+}

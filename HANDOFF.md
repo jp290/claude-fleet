@@ -254,17 +254,37 @@ den leeren `successorToken` im roten Second-host-Audit.
 
 ---
 
-## Controller-Session Workflow-Audit (Slot 11, 2026-08-30 vormittags) — abgeschlossen, nur Zeiger
+## Controller-Session Workflow-Audit (Slot 11, 2026-08-30 vormittags) — Übergabe
 
-Kette komplett, alles Dauerhafte liegt getrackt: Synthese
-`docs/messungen/2026-08-30-game-maker-workflow-audit-synthese.md` (V1–V7) · GLM-Instrumentenkritik
-`…-game-maker-instrument-audit-glm.md` · Stufe 2 `…-worktrail-audit-stufe2-kontext-modellmix.md` ·
-Regeln promotet: game-maker V1–V3 (`75b2110`), AGENTS.md §Context self-management (`6e08514`).
-In Flug, gehört nicht mir: die Game-Maker-MAIN (Slot 5) fährt R7 (Lenk-Vorzeichen+Konventions-Pin)
-und R8 (Kantenlinie), danach blinder Critic, dann Owner-Taste — Attention e98c0c91 ist beantwortet.
-Beim Owner offen: V4/V5 (selfLand-Default, Quiet-Hours-Ausnahme), Lifecycle-Program (Prompt in der
-Notiz vom 29.08.), Sensor-Task 051cc1c2, A/B-Paar Opus/Sonnet im nächsten Lauf. Diese Session war
-bei 30,9 % gemessen; Nachfolge nur nötig, wenn neue Tiefenarbeit ansteht.
+**Was geschah (alles gelandet, nichts nur im Gespräch):** Der Owner spielte den Private-repo-o-Build
+`db6ed75` und urteilte „ändern"; ein dreisträngiger Workflow-Audit lief (Produkt-Forensik am Build,
+Prozess-Forensik über die Ledger, GLM-Instrumentenkritik) plus Stufe 2 (Kontext-Sättigung am
+25/30-Band, Modell-Mix). Lies in dieser Reihenfolge, Frontmatter zuerst:
+`docs/messungen/2026-08-30-game-maker-workflow-audit-synthese.md` (V1–V7) ·
+`…-worktrail-audit-stufe2-kontext-modellmix.md` · `…-game-maker-instrument-audit-glm.md` ·
+`…-private-repo-o-prozess-forensik-anhang.md` (Rohtabellen).
+**Promotet am 2026-08-30:** game-maker-Regeln V1–V3 (`75b2110`) · AGENTS.md §Context
+self-management (`6e08514`) — Füllstand kennen ist Agentenpflicht, Entscheidung dynamisch je
+Auftrag; der Owner hat die 25-%-Qualitätsgrenze ausdrücklich bestätigt (Memory
+`feedback-context-quality-degrades-at-25pct`).
+
+**In Flug, gehört der Game-Maker-MAIN (Slot 5), nicht dir:** R7 (Lenk-Vorzeichen + Konventions-Pin
+in einem Schnitt) und R8 (Kantenlinie oder Card-Zeile streichen), danach blinder sensory Critic auf
+dem gefixten Stand, dann Owner-Taste als neue Attention. Attention `e98c0c91` ist beantwortet
+(Antwort = Taste-Verdikt + Forensik, in der Attention nachlesbar). Nicht anstupsen — die MAIN
+meldet sich über Attention/Report.
+
+**Beim Owner offen (nur erinnern, wenn er fragt):** V4 (selfLand:"guarded" als Founding-Default) ·
+V5 (enge Quiet-Hours-Ausnahme für `releasedBy:"machine"`-Tasks gebundener MAINs) · Lifecycle-Program
+(fertiger Prompt in `docs/messungen/2026-08-29-main-lane-lifecycle-gaps.md`) · Sensor-Task
+`051cc1c2` (ctx auf GET /api/self; Done-Kriterium steht in der Zeile) · A/B-Paar Opus/Sonnet auf
+einer Renderer-Reparatur im nächsten Game-Maker-Lauf.
+
+**Warnungen:** (1) Parallel arbeitet eine Fleet-Recovery-Session mit eigenem HANDOFF-Top-Block —
+nichts dort überschreiben, Slots nicht anfassen. (2) Sättigungs-Urteile IMMER gegen 25/30 messen,
+nie gegen das 83-%-Kliff (der erste Verdict dieser Session war daran falsch). (3) Der
+Post-Land-Audit stempelt in Nicht-Fleet-Repos konstruktionsbedingt `unknown` (exit 42) — das ist
+kein Defekt-Signal; V6 wäre der Fix.
 
 ## Session „Transkript-Forensik + Rückkanal" (Slot 13, Abschluss 2026-08-29/30) — abgeschlossen, nur Zeiger
 

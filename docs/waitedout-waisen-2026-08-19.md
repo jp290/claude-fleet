@@ -1,7 +1,8 @@
 # Der `waitedOut`-Kill trifft den Prozess, nicht die Gruppe — und der Enkel haelt den Lauf offen — 2026-08-19
 
 **Was diese Datei ist:** ein Befund mit Mechanismus, Messung und Folge. Kein Schnitt, kein Code
-geändert.
+geändert. (§6 ist ein datierter Nachtrag vom 2026-08-30 und beschreibt sehr wohl einen Schnitt —
+alles davor ist der Stand vom 2026-08-19 und bleibt unangetastet.)
 
 **Wie er entstand, weil die Irrwege zum Befund gehören:** der ⚙ Supervisor sah einen
 `e2e-clean-review.sh` mit `ppid=1`, deutete ihn als Waise und empfahl den Kill. Ich habe
@@ -152,3 +153,41 @@ mit `ppid=1`, die P5-Klasse) — beides war hier NICHT der Fall, deshalb reichte
   (`POSTLAND_AUDIT_KILL_GRACE_MS`), auf die der Kommentar an `:9317` verweist; ob sie die Gruppe
   trifft, habe ich nicht nachgelesen. **NOT BUILT** — die Suche wäre `rg -n
   'POSTLAND_AUDIT_KILL_GRACE_MS' server.ts` und von dort die Kill-Stelle.
+
+## 6. Nachtrag 2026-08-30: die dritte offene Frage ist beantwortet — der Audit-Pfad hatte dieselbe Lücke
+
+§5 liess offen, „ob der Post-Land-Audit-Pfad dieselbe Lücke hat" und nannte die Suche. Sie ist
+gefahren, und die Antwort ist **ja**: `runPostLandAudit` spawnte ebenfalls `sh -c "<cmd>"` und
+signalisierte auf dem Timeout-Pfad nur `p` — erst `p.kill()`, dann nach
+`POSTLAND_AUDIT_KILL_GRACE_MS` `p.kill(9)`. Der Kommentar dort benannte die Restschuld mit
+denselben Worten wie der Verify-Pfad („grandchildren can still outlive both signals"), und genau
+diese Enkel überlebten.
+
+**Gemessen**, nicht gefolgert — die Sonde ist `(I.0b)` in `fleet-e2e-postland-audit.ts` mit dem
+neuen Stand-in-Modus `nokill` (`e2e-postland-audit.sh`), der seine eigene PID und die seines
+term-ignorierenden Kindes nach `auditpids` schreibt; die Frage wird dann per `kill -0` gestellt
+statt aus der Laufzeit erschlossen:
+
+| Baum | Ergebnis der Sonde |
+|---|---|
+| vor der Reparatur | `{"pids":[21036,21046],"stillAlive":[21046],"waitedMs":12020}` — das Kind lebte 12 s nach dem Timeout noch und wäre bis zu seinem eigenen 30-s-Ausgang gelaufen |
+| nach der Reparatur | `{"pids":[45133,45143],"stillAlive":[],"waitedMs":3051}` — der ganze Baum ist bei timeout+grace beendet |
+
+Das `hang`-Modus daneben kann das **nicht** messen: sein `sleep` stirbt an dem SIGTERM, das die
+Eltern-Shell weiterreicht, also sieht auch ein Server ohne jede Baum-Staffel von aussen sauber aus.
+Erst ein Baum, der den Term IGNORIERT (`trap '' TERM`, vor dem Fork gesetzt, also vom Kind als
+ignoriert geerbt — die Form, die eine echte Kette im `wait` hat), trennt die beiden Fälle.
+
+**Der Schnitt** ist der aus §4 Vorschlag 1, aber ohne zweite Implementierung: `runPostLandAudit`
+benutzt jetzt dieselben zwei Helfer wie `runVerify` (`descendantPids` + `killProcessTree`,
+`server.ts#runPostLandAudit`). Die PID-Liste wird EINMAL genommen, VOR dem ersten Signal — eine
+Waise reparentet nach init, und `pgrep -P <toter Elternprozess>` findet sie danach nicht mehr.
+
+**Was Restschuld bleibt und hier nicht wegdefiniert wird:** ein Prozess, den die Kette ZWISCHEN
+Lauf und Signal forkt, überlebt weiterhin beides. Und der zweite Bullet von §5 („wie viele Waisen
+insgesamt") bleibt **NOT BUILT** — daran ändert dieser Nachtrag nichts.
+
+**Und eine Klasse, die dieselbe Naht hat und hier NICHT angefasst wurde:** `runDeployBuild`
+(`server.ts#runDeployBuild`) spawnt ebenfalls `sh -c "<cmd>"` und tötet auf dem Timeout-Pfad nur
+`p`, ohne Eskalation. Nicht gemessen, nur gelesen — **INFERRED**, und ausserhalb des Auftrags
+dieser Lane.

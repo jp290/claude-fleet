@@ -59,6 +59,12 @@ chmod +x "$DIR/fakemerge"
 #   precheck — a stack-shaped crash before check() · garbled — contradictory lines/summary
 #   decline — the reserved skip exit (42) · notrunnable — exec a missing binary (exit 127)
 #   hang — 30s, longer than FLEET_POSTLAND_AUDIT_TIMEOUT_MS, so the server's kill path is exercised
+#   nokill — the same 30s ceiling, but the whole tree IGNORES the term (`trap '' TERM`, inherited as
+#          ignored by the child): the shape a real audit chain has while blocked in `wait`. It writes
+#          its own pid and its child's to $DIR/auditpids so the suite can ask the only question that
+#          separates a killed tree from a surviving one — are those pids still alive? Signalling only
+#          the direct child leaves both running to their own 30s exit; the tree staffel ends them at
+#          timeout+grace. It drops the busy lock immediately for the same reason `crash` does.
 #   long — 12s, for the IN-FLIGHT VIEW section. `slow`'s 6s is sized for the coalescing burst (three
 #          lands that already paid their idle gate); the in-flight case has to fit a full second
 #          land — settle, merge, land — inside the window and then still be running when it is read,
@@ -88,6 +94,15 @@ case "$mode" in
   slow)        sleep 6 ;;
   long)        sleep 12 ;;
   hang)        sleep 30 ;;
+  nokill)
+    rm -f "$d/auditbusy"
+    trap '' TERM
+    # the redirect keeps the sleep off the inherited stdout pipe (same reason as VERIFYNOKILL in
+    # e2e-isolated.sh); the trap is set BEFORE the fork, so the child inherits TERM as ignored too
+    sleep 30 </dev/null >/dev/null 2>&1 &
+    printf '%s\n%s\n' "$$" "$!" > "$d/auditpids"
+    wait
+    ;;
   crash)       rm -f "$d/auditbusy"; sleep 25 ;;
 esac
 rm -f "$d/auditbusy"

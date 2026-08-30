@@ -20,7 +20,7 @@ Was hier ohne Marke steht, ist am Baum `5262ed0` gemessen. Alles andere trägt *
 
 ## M1 — Host-Attribution heute: es gibt sie nicht, und ein Feld wäre additiv
 
-`server.ts#Slot` (L2113–2196) hat 30+ Felder — cwd, worktree, model, harness, container,
+`server.ts#Slot` (L2113–2190) hat 30+ Felder — cwd, worktree, model, harness, container,
 containerContext, effort, taskId, programId, selfToken — und **kein einziges nennt eine Maschine**.
 Die Projektion in `/api/sessions` (server.ts, L23048–23100) spiegelt genau diese Felder; auch dort
 kein Host. `hostname: HOST` an `Bun.serve` (server.ts L22090) ist die BIND-Adresse des Servers, kein
@@ -45,8 +45,8 @@ Instanz-Zeile pro Antwort** ist die billige und für Option A auch die richtige.
 
 | Kopplung | Beleg | Klasse |
 |---|---|---|
-| `tmux -L SOCK …`, 39 Aufrufstellen | `server.ts#tmux` L3769/3790 spawnt lokal `Bun.spawn(["tmux","-L",SOCK,…])` | (a) host-lokal per Konstruktion |
-| Klassen dieser 39: Lebenszyklus (new/has/kill-session, kill-pane) · Beobachtung (capture-pane, display-message, list-sessions) · Eingabe (send-keys, load/paste/delete-buffer) · Transkript (pipe-pane) · Geometrie (resize-window) · Server (start-server, set -g) | grep über `tmux(` | alle (a) — keine nimmt ein Ziel-Host-Argument |
+| `tmux -L SOCK …`, 41 Aufrufstellen (38 `tmux()` + 3 `tmuxNewSession()`) | `server.ts#tmux` L3769/3790 spawnt lokal `Bun.spawn(["tmux","-L",SOCK,…])` | (a) host-lokal per Konstruktion |
+| Klassen dieser 41: Lebenszyklus (new/has/kill-session, kill-pane) · Beobachtung (capture-pane, display-message, list-sessions) · Eingabe (send-keys, load/paste/delete-buffer) · Transkript (pipe-pane) · Geometrie (resize-window) · Server (start-server, set -g) | grep über `tmux(` | alle (a) — keine nimmt ein Ziel-Host-Argument |
 | Socket-Name | `SOCK = process.env.FLEET_SOCK ?? "claudefleet"` (L66) | (c) parametrisiert, aber nur INNERHALB einer Maschine |
 | Worktree-Erzeugung | `server.ts#createWorktree` — `git worktree add` / `git clone --no-hardlinks` gegen lokale Pfade, `worktreePathFor(root,branch)` | (a) |
 | Zustandsdatei + alle Ledger | `STATE_FILE`/`AUDIT_FILE`/`LANE_OUTCOME_FILE`/`POSTLAND_AUDIT_FILE`/`STREAM_DIR` = **`import.meta.dir`** (L76–123) | (a) — an das Verzeichnis des laufenden Servers, nicht an Port/Socket |
@@ -160,7 +160,7 @@ VOLLSTÄNDIG, weil sie denselben Code ist. Der Preis ist genau M3: zwei Namensr�
 eine UI, keine Föderation — bewusst.
 
 **B.** Der Optionsvergleich der Machbarkeits-Notiz nannte das „Architektur-Umbau, kein Feature";
-diese Messung schärft es: es sind nicht die 39 tmux-Stellen allein, sondern dass Zustand, Ledger,
+diese Messung schärft es: es sind nicht die 41 tmux-Stellen allein, sondern dass Zustand, Ledger,
 Self-Token und Slot-Vergabe an `import.meta.dir` und ein In-Memory-Array gebunden sind und der
 Server keinen HTTP-Client besitzt. Jede Teilmenge davon, halb gebaut, erzeugt genau das
 Fehlrouting, das M5 als ungelöst ausweist.
@@ -200,6 +200,10 @@ Option A sie voraussetzt (Baseline-Nachtrag 2026-08-30).
 Owner-Akt auf dem Gerät (G2). *Done:* eine Mess-Notiz unter `docs/messungen/` mit vollständigem
 seriellem Lauf, Exit, PASS/FAIL, den Signaturen der genannten Familien und der Aussage
 „Empfehlung A steht / fällt". *Verify:* die Notiz zitiert die Tail-Zeile des Laufs wörtlich.
+**Der Test ist asymmetrisch, und die Notiz muss das sagen:** ein ROT dieser Familien wirft A um,
+ein GRÜN beweist nur die Lebenszyklus-Maschinerie unter Stand-ins (`FLEET_CMD=true`) — nicht, dass
+eine echte claude-Session auf Linux gründet (Binary + Daemon-PATH). Grün beweist Maschinerie, nicht
+Harness-Installation.
 
 **Schnitt 2 — Instanz-Identität als EIN Feld.**
 `/api/sessions` trägt einmal pro Antwort `instance: { name }` (Name aus einer Env-Variablen, kein
@@ -223,10 +227,11 @@ Geräten, ein Umschalter im Kopf, ein Klick wechselt die Origin; kein Proxy, kei
 ## Owner-Gates
 
 1. **Topologie-Entscheid A/B/C** — diese Notiz empfiehlt A, entscheidet sie nicht.
-2. **Darf ein Fleet-Report eine Hostgrenze überqueren?** Die Alternative ist „jede Maschine hat ihre
-   eigene MAIN und ihre eigene Inbox". Ohne diesen Entscheid ist das Erfolgskriterium
-   „per Fleet-Report zurückführen" host-übergreifend nicht definiert — und jeder Code dazu wäre eine
-   erfundene Antwort auf eine ungestellte Frage.
+2. **ENTSCHIEDEN am 2026-08-30 (Owner, V1): NEIN.** Fleet-Reports überqueren keine Hostgrenze; jede
+   Maschine behält eigene Program-MAIN, Inbox, Tokens und Ledgers, und der gemeinsame Client macht
+   beide Instanzen erreichbar. Eine hostübergreifende Inbox/Event-Bridge ist vertagt und wäre ein
+   eigener Architekturentscheid. Damit ist Schnitt 4 bestätigt statt bedingt. (Der Absatz stand hier
+   als offene Frage; sie ist beantwortet, nicht weggefallen.)
 3. **Jeder Schreibakt auf second-host** (Installation, systemd, Start, Netz-Bind) bleibt Owner-Akt —
    G2 des laufenden Programms gilt unverändert weiter.
 4. **Aktivierung:** eine zweite netzerreichbare Instanz ist eine zweite Fläche, für die
@@ -245,5 +250,5 @@ Geräten, ein Umschalter im Kopf, ein Klick wechselt die Origin; kein Proxy, kei
   entsprechend eine Frage, keine Analyse.
 - **Ob `docker --context` auf einen entfernten Daemon zeigen kann und was der Bind-Mount dann
   bedeutet** — UNGEPRÜFT, deshalb trägt C in M7 seine Mount-Frage offen.
-- **Die 39 tmux-Aufrufstellen** habe ich klassifiziert, nicht einzeln gelesen (Klassen aus den
+- **Die 41 tmux-Aufrufstellen** habe ich klassifiziert, nicht einzeln gelesen (Klassen aus den
   Kommandonamen); **Aufwandsklassen (S/XL)** sind ABGELEITET, nicht hochgerechnet.

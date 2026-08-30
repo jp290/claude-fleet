@@ -316,6 +316,27 @@ checkpoint remain MAIN inputs, not sensory-Critic inputs. Context-pack vocabular
 unchanged. Hashes identify the sealed bytes only; they do not prove blindness or delivery. Critic
 blindness and delivery are operator-attested or unknown.
 
+**Three rules from the first full run** (owner decision 2026-08-30; evidence:
+`docs/messungen/2026-08-30-game-maker-workflow-audit-synthese.md`):
+
+1. **A control-convention pin is a mandatory breaker of every Game Card.** Self-play is
+   feedback-regulated: a MAIN adapts to any input mapping within one lap, so a mirrored
+   convention never surfaces from playing (measured: a full 42.48 s lap with drift on
+   screen-mirrored steering; the owner was the first to notice). Every Card names the expected
+   screen-space direction per control axis, and the first slice carries a headless test that
+   pins it (e.g. steer=+1 ⇒ the vehicle's screen-x delta is positive). Magnitude and
+   sim-space-symmetry tests do not satisfy this — the pin must measure in screen space.
+2. **An owner-taste attention requires a Critic verdict first.** The taste-gate attention may
+   only be filed when the checkpoint `Critic:` field names a verdict path. The Critic stays
+   post-play evidence, not authority; this rule fixes only the order — playable → fresh sensory
+   Critic → owner taste. In the first run the Critic never ran, so the owner's taste doubled as
+   the run's only independent perception.
+3. **An `unknown` in the checkpoint names its resolver.** Any sense reported `unknown` names,
+   in the same single line, the instrument and trigger that would resolve it ("audio → audible
+   capture at next land"). An `unknown` without a resolver does not justify `Next: hold` —
+   `unknown` is a queue, not a terminal state. The checkpoint shape stays the seven closed
+   single-line fields; this is a content rule, not a shape change.
+
 ## The Game-Maker succession checkpoint
 
 The generic succession gate is unchanged for Standard Programs: `HANDOFF.md` exists, is clean, and

@@ -1,76 +1,147 @@
-# HANDOFF — Fleet-Autonomie-Recovery (Slot 16), 2026-08-30 09:03 CEST
+# HANDOFF — Fleet wieder in einen belastbaren Betriebszustand bringen, 2026-08-30 10:38 CEST
 
-Owner-Ziel: den Fleet-Workflow von außen nach innen wieder zuverlässig und weitgehend autonom
-machen. Priorität ist der Transportpfad, weil Fleet-Nachrichten wiederholt in den Owner-Entwurf
-geschrieben wurden; zuletzt kam eine Nachricht nur teilweise an und blieb abgeschnitten im
-Eingabefeld. Keine weitere Komfortarbeit vor dem P0-Nachweis dieses Pfads.
+Owner-Ziel: zuerst den gemessenen FleetEvent-/Composer-Schaden schließen und den laufenden Stand
+wieder mit einem grünen Produktionsbeweis versehen; danach die operativen Schulden so ordnen, dass
+Board, Audits, Helper und Succession keine stillen Zustände mehr erzeugen. Mindestgrenze für
+„vernünftig laufend“: P0 exakt gelandet, neuester Post-Land-Audit grün, exakt dieser Tip deployed,
+Bundle nicht stale und keine unbelegte Behauptung über eine verschwundene Event-Zeile.
 
-## 1. Produktionsstand und Second-host-Beweis
+## 1. Als Erstes neu messen
 
-`main` und der laufende Server stehen auf `088d3a8b90de17cd42f648caf2640641edd77d77` (Deploy
-`416d7fa4`, `hitTarget:true`, `bundleStale:false`, `codeBehind:false`). Der Second-host-Portal-Audit
-dieses exakten Tips endete nach 1.274.049 ms mit Exit 0 und `ALL PASS`; sein Trail nennt
-`rows=3308 results=3308`, denselben Tree und `dirty=false`. Second-host ist weiter `active`, ohne
-Claim und ohne Lapse.
+Führe `./state.sh` und `./register.sh` aus, lies dann `/api/sessions`, `/api/deploys` und
+`/api/post-land-audits` mit dem Token aus `fleet.json`. Vor jedem Write den aktuellen Slot-Occupant
+erneut belegen. Keine Pane-Injection als Ersatz für einen Fleet-Rückkanal und keinen Prozess nach
+Namensmuster töten.
 
-Offene Proof-Surface: das strukturierte Ledger zählt wegen des auf 64 KB gekürzten Tails nur 23
-Checks, obwohl der Trail 3308 belegt. `remote.clonedSha` fehlt ebenfalls, weil der installierte
-Remote-Daemon älter als die aktuelle Helper-Implementierung ist. Ein Daemon-Rollout/Restart ist laut
-`helper-daemon/README.md:68` ein eigener Owner-Akt; nicht eigenmächtig durchführen.
+Stand dieser Übergabe:
 
-## 2. P0 läuft in Slot 2: FleetEvent-Zustellung und Composer-Commit
+- `main=75b21106feb1f66e11ca6f2b81341dadd0ea05f4`; der Server bootete Deploy `416d7fa4` auf
+  `088d3a8b90de17cd42f648caf2640641edd77d77`. Die vier neueren Main-Commits sind Doku, daher
+  `codeBehind:false`; `bundleStale:false`.
+- Der letzte Second-host-Audit ist **rot** auf `dbb2e09460a6c65251eb6e2b802814eea7727cb2`:
+  Exit 1 nach 1.261.823 ms und exakt `1 FAILURES`. Der auf 64 KB begrenzte API-Tail nennt den
+  fehlgeschlagenen Check nicht. Nicht als Flake bezeichnen; dazu wäre ein grüner Same-Tree-Rerun
+  nötig. Der unmittelbar ältere Audit auf `088d3a8` war grün mit `rows=3308 results=3308`.
+- Second-host ist `active`, ohne Claim und ohne neue Lapse. Das lokale P0-Isolated hält derzeit den
+  einzigen Suite-Lock; keine zweite Suite daneben starten.
 
-- Task `9912a68a`, Branch `fleet/260830063131-c091`, Basis `088d3a8`.
-- Exakter Occupant: `openedAt=1788071492008`,
-  `sessionId=6a6249e4-c2c8-430d-9ae8-05e5ad096e5a`.
-- Write set: `composer.ts`, `server.ts`, `src/client.ts`, `e2e/watch.ts`, `e2e-isolated.sh`,
-  `docs/self-api.md`. `AGENTS.md` wurde nach Owner-Korrektur wieder vollständig zurückgesetzt;
-  dort keine Regel aus diesem Task landen.
-- Vertrag: persistierte Events eines verschwundenen Subjects werden ausdrücklich `subject-gone`;
-  reine Owner-draft-Holds erhöhen `attempts` nicht; Enter erst nach Beweis des vollständigen
-  Payloads; `send-uncertain` bleibt nicht wiederholbar und quittierbar; Reverse-State, Client,
-  Supervisor, Budget, Pruning und Tests müssen mitgezogen werden.
-- Der erste RED-Lauf maß wegen einer fehlerhaften Fixture nichts und zählt nicht. Der reparierte
-  Basis-RED-Lauf #2 läuft als eigener Wrapper PID `31419`; Log:
-  `/private/tmp/claude-501/-Users-owner-claude-fleet-worktrees-fleet-260830063131-c091/6a6249e4-c2c8-430d-9ae8-05e5ad096e5a/scratchpad/red2.log`.
-  Beim Handoff hielt er seit rund 7 Minuten den Suite-Lock und hatte das Watch-Modul noch nicht
-  erreicht. Nicht nach Namen töten; höchstens diesen notierten PID.
-- Aktuell sind nur Probe/Docs/Composer-Dateien im Baum; die Produktionsänderungen liegen während
-  des Basis-RED als Scratch-Patch. Vor Landung verlangen: erwartetes Rot der neuen Checks auf der
-  Basis (kein Fixture-Fehler), anschließend finaler voller Gate-Tail `ALL PASS`, isolierter Tail
-  `ALL PASS`, sauberer Commit und HEAD-Abgleich mit dem Report.
+## 2. P0 fertigstellen — Task `9912a68a`, Slot 2
 
-Nach Slot-2-Erfolg: exakt den gemeldeten Commit serverseitig landen, den Second-host-Post-Land-Audit
-bis zum terminalen Urteil beobachten und erst danach deployen. Vor diesem Deploy in der lokalen
-`.env` ausschließlich `FLEET_MIGRATE_PCT=55` ergänzen (Host-Konfiguration, nicht committen), damit
-MAINs vor der projektweiten ~60%-Grenze eine semantische Succession anstoßen. Vor Aktivierung die
-Kontexte der MAINs erneut messen. Danach den alten persistierten Event
-`77d3aadb2df16f6246d790e6` prüfen: aktuell `pending`, Receiver ist dieser Slot-16-Occupant, Subject
-ist der alte Slot-2-Branch `fleet/260830005056-09e6`, `attempts=164`. Erwartung nach Fix/Teardown:
-terminal `subject-gone`, attempts unverändert, kein Teiltext und kein automatisches Enter im neuen
-Owner-Composer.
+Branch `fleet/260830063131-c091` steht sauber auf
+`3f64ed1446f6c21585d24838626bb44947e5638b`, `ahead=1/behind=1`. Der Commit ändert sechs Dateien
+mit 551 Einfügungen und 22 Löschungen. Sein Vertrag ist im Baum sichtbar: `subject-gone` ist ein
+eigener Terminalzustand (`server.ts:1443`), verschwundene Subjects werden so terminalisiert
+(`server.ts:7444`), und der Composer vergleicht Fleet nur gegen den vollständigen eigenen Payload
+(`composer.ts:57`). `AGENTS.md` ist unverändert.
 
-## 3. Danach, ohne destruktive Datenkosmetik
+Beweislage:
 
-Das Board hält exakt 200 Tasks: 128 pending, 1 queued, 1 sent, 66 done, 4 archived. Unter pending
-sind 93 Aufträge, 34 Notizen, 1 Richtung. Es gibt 64 Programme: 26 active, 26 complete, 12 proposed.
-Die Quelle rendert in der Statusansicht alle Programme und Taskgruppen ohne Collapse; die 200er
-Retention verdrängt nur alte terminale Zeilen. Nächster Slice: kompakte/collapsible operative Sicht,
-sichtbarer Retention-Hinweis und eigene Gruppe für stale/unbound Recovery. Keine Tasks oder Programme
-automatisch löschen oder als complete markieren. Eine Pixel-/Scroll-Prüfung war nicht möglich, weil
-kein In-App-Browser verbunden ist; Source/API-Diagnose ist belegt, visuelle UX bleibt `unknown`.
+- RED4 auf der Basis endete mit genau vier erwarteten Produktfehlern: Prefix wurde submitted;
+  100 Holds erhöhten `attempts`; das verschwundene Subject blieb pending; die tote Lane wurde
+  trotzdem zugestellt. Der Rest des Laufs lief weiter und der Tail endete `4 FAILURES`.
+- Die normale Gate-Kette ist grün: clean-review, Security und Claude-Gate enden jeweils
+  `ALL PASS`; die Exit-Zeilen sind `cr=0`, `sec=0`, `cg=0`.
+- `./e2e-isolated.sh` läuft seit 10:24 CEST unter dem allein notierten Wrapper-PID `98814`.
+  Scratch-Tail:
+  `/private/tmp/claude-501/-Users-owner-claude-fleet-worktrees-fleet-260830063131-c091/6a6249e4-c2c8-430d-9ae8-05e5ad096e5a/scratchpad/green-iso.log`.
+  Taskstatus ist noch `sent`; es gibt noch keinen Fleet-Report.
 
-Rollen-Audit: die globalen Codex-Rollenbriefe wurden zuletzt am 24.08., Claude-Rollen am 07.08. oder
-früher geändert. Standard-Lane-, Standard-Program-MAIN-, Supervisor- und Controller-Pflichten blieben
-inhaltlich gleich; die Änderungen vom 29./30.08. betreffen den GameMaker-Workflow und Runtime-
-Mechaniken (Binding/Succession/Reports), nicht die Standardrollen.
+Reihenfolge ohne Abkürzung:
 
-## 4. Schutzgeländer für die Fortsetzung
+1. Auf das terminale Isolated-Ergebnis warten. Nur ein Tail `ALL PASS` akzeptieren; bei Rot zuerst
+   Checkname und Signatur lesen. Eine zweite grüne Ausführung desselben Trees wäre erst dann der
+   Flake-Beleg.
+2. Slot 2 muss den aktuellen Docs-Commit konfliktfrei merge-forwarden, den nötigen Beweis auf dem
+   neuen HEAD erhalten und danach den Fleet-Report mit den wörtlichen Tails und sauberem Tree
+   senden. HEAD und Report gegeneinander prüfen; `3f64ed1` ist der P0-Commit, nicht mehr der finale
+   Branch-HEAD.
+3. Der Task hat kein `programId`; eine Program-MAIN-Self-Land-Tür existiert dafür nicht. Der
+   **Owner** landet exakt den gemeldeten Commit über den serverseitigen Landpfad.
+4. Den dadurch erzeugten Post-Land-Audit bis `green|red|unknown` beobachten. Bei `red` oder
+   `unknown` nicht deployen. Der alte rote `dbb2e09`-Audit bleibt `unknown`, bis sein eigener Check
+   oder ein Same-Tree-Rerun vorliegt; ein neuer grüner Tip darf ihn nicht rückwirkend zum Flake
+   umetikettieren.
+5. Nur nach grünem Audit darf der **Owner** exakt den neuen Main-Tip deployen. Danach
+   `hitTarget:true`, `bundleStale:false`, `bootHead=head=target` und keinen laufenden Deploy prüfen.
+6. Event `77d3aadb2df16f6246d790e6` ist heute weder in `/api/sessions` noch in den lokalen Ledgers
+   auffindbar. Die alte Anweisung, ausgerechnet diese Zeile nach dem Deploy zu prüfen, ist damit
+   nicht ausführbar. Kein Ergebnis erfinden: verwende den deterministischen Isolated-Test und bei
+   Bedarf eine neu erzeugte, kontrollierte Subject-Teardown-Gegenprobe; nie einen Owner-Composer als
+   Versuchsfeld.
 
-Im MAIN-Checkout liegen 28 vorbestehende ungetrackte Owner-Dateien: nicht anfassen oder löschen.
-Dieser Handoff-Commit bewegt `main` um einen Docs-Commit; Slot 2 ist danach einen Commit behind und
-muss den konfliktfreien Merge-Forward vor seinem finalen Beweis durchführen. Zuerst RED2 weiter
-beobachten, dann P0 beweisen/landen/auditieren/deployen; erst danach Board und Ledger-Proof-Surface.
+## 3. Danach: Betriebsbeweise schließen
+
+In dieser Reihenfolge, jeweils als eigener landbarer Slice:
+
+1. **Helper-Provenienz.** Audit-Ledger meldet für den grünen 3308er Trail nur `checks.ran=23`, weil
+   es aus dem gekürzten Tail zählt. Die vollständige Trail-Zahl und der fehlgeschlagene Check müssen
+   strukturiert übernommen werden; bis dahin ist der einzelne rote Check im neuesten Audit nicht
+   fernlesbar.
+2. **Second-host-Daemon.** Die gelandete Helper-Implementierung kann `remote.clonedSha` melden
+   (`helper-daemon/README.md:52`), der installierte Daemon tut es noch nicht. Installation/Restart
+   ist ein ausdrücklicher **Owner-Akt**; dieses Repo deployt ihn nicht
+   (`helper-daemon/README.md:66`). Nach Rollout muss der nächste echte Remote-Audit
+   `remote.clonedSha == mainSha` belegen oder die Abwesenheit ausdrücklich benennen.
+3. **Audit-Zustand.** Ziel ist nicht, historische rote Zeilen zu löschen, sondern dass der neueste
+   Produktions-Tip grün und seine Provenienz vollständig ist. Second-host bleibt Pull-only.
+
+## 4. Succession ist eine offene Richtungsentscheidung, kein `.env`-Handgriff
+
+`FLEET_MIGRATE_PCT` und alle zugehörigen Live-Schalter fehlen aktuell; Migration ist aus
+(`server.ts:11304`). Die frühere Anweisung „55 setzen“ ist nicht ausreichend begründet. Der aktuelle
+Rail nudged höchstens dreimal (`server.ts:11606`) und öffnet für Program-MAIN-Succession einen
+**freien anderen Slot** (`server.ts:18526`); Same-Slot-Succession ist nicht implementiert.
+
+Gemessen vor dieser Übergabe: Slot 1 `32,9%`, Slot 5/Game-MAIN `40,4%`, Slot 11 `26,8%`, Slot 13
+`29,3%`; diese Sitzung in Slot 4 lag zuletzt bei `39,6%`. Vor Aktivierung muss der Owner deshalb
+entscheiden:
+
+- cross-slot jetzt als begrenzten Canary aktivieren und Schwelle/Safe-Point benennen; oder
+- Same-Slot zuerst bauen und erst danach automatisch schalten.
+
+Keine `.env`-Änderung und keinen Server-Restart aus diesem Handoff ableiten. Host-Konfiguration,
+Restart und die gewählte Schwelle sind Owner-Akte. Bis dahin Übergaben manuell und in arbeitssicheren
+Momenten durchführen.
+
+## 5. Operative Sicht und alte Arbeit
+
+Die Ledgers halten exakt 200 Tasks: 128 pending, 1 queued, 1 sent, 66 done, 4 archived. Damit sind
+130 offen: 95 Aufträge, 34 Notizen, 1 Richtung. `register.sh` markiert 17 Zeilen seit 22 Tagen als
+`needs-you`. Von 64 Programmen sind 26 aktiv; nur sechs davon haben offene Tasks, 20 aktive Programme
+haben keine offene Task. Das ist Sicht- und Entscheidungsbedarf, kein Beweis, dass sie abgeschlossen
+sind.
+
+Nächster Board-Slice nach P0 und Produktionsbeweis:
+
+1. kompakte/collapsible operative Gruppen;
+2. sichtbarer Hinweis auf die 200er Retention, die nur terminale Rows verdrängt
+   (`server.ts:2844`);
+3. eigene stale/unbound-Recovery-Gruppe;
+4. die 17 `needs-you` und aktiven Programme ohne offene Task sichtbar triagierbar machen.
+
+Keine Task automatisch löschen/archivieren und kein Programm automatisch auf complete setzen.
+Task `d98fe812` ist als read-only Architekturreview queued, aber Pi/Z.ai ist nicht unattended
+automatisierbar; Owner entscheidet manuelles Starten, erlaubte Neubesetzung oder Rücknahme. Die eine
+offene Richtung `23eef33d` verlangt Merge-Train plus Staging-Dev-Instanz, aber ausdrücklich erst
+nach Lands/Tag-Messung, Bruchstellen-Inventar und Owner-Promotion. Vor belastbarem Auditrail nicht
+bauen.
+
+Von den alten Harvest-Kandidaten ist Context-Pack A (`716f53e`) bereits in `main`; nicht neu bauen.
+D1/Stuck-Sensor (`2954eff`, `fleet/260827083510-80fe`) ist noch ein Commit ahead, aber 89 Commits
+behind und überschneidet sich mit P0 in `server.ts`. Nach P0 neu gegen den aktuellen Vertrag prüfen,
+dann bewusst rebasen/reparieren oder als überholt stehen lassen; nicht blind landen.
+
+## 6. Grenzen und fremde Zustände
+
+- Slot 1 (`second-hostS4`) ist lebendig, aber ohne Task-/Programmbindung; diese Recovery wurde deshalb
+  von der gebundenen Nachfolgesitzung in Slot 4 geführt. Nicht nachträglich Besitz erfinden.
+- Eine offene Owner-Attention gehört Private-repo-o/Slot 5 und fragt nach einem Taste-Gate. Diese
+  Fleet-Recovery beantwortet oder übernimmt sie nicht.
+- Im Main-Checkout liegen 28 vorbestehende ungetrackte Owner-Dateien. Nicht anfassen, committen oder
+  löschen. Unbeteiligte Dateien dürfen einen Lane-Land nicht in einen Cleanup-Auftrag verwandeln.
+- Unaufgelöst beim Handoff: laufender P0-Isolated-Tail; unbekannter Check des roten `dbb2e09`-Audits;
+  fehlender Second-host-Daemon-Rollout; Owner-Entscheid über Succession-Modus und Schwelle; D1-
+  Adjudikation; visuelle Board-Prüfung.
 
 # HANDOFF — Session „🤗 hf-schwarm II" (Slot 5), Abschluss 2026-08-29
 

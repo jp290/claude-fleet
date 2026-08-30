@@ -231,12 +231,24 @@ export async function run(): Promise<void> {
 
   // A finding whose note the owner has closed is mintable again — the finding is still in the tree,
   // so re-reporting it is the honest behaviour, and the dedup must be over OPEN rows only.
-  const closed = mine[0]!;
-  await post(`/api/tasks/${closed.id}/done`, {});
-  const third = await cli(["--root", pos, "--queue", "--api", BASE, "--token", TOKEN]);
-  const remint = [...third.out.matchAll(/"kind":"minted","fingerprint":"([0-9a-f]+)","taskId":"([0-9a-z]+)"/g)];
-  check("sweep cli: a finding whose row was closed is reported again, not swallowed",
-    third.code === 0 && remint.length === 1, `${remint.length} re-minted, ${third.out.trim().split("\n").pop()}`);
+  // ITS FIXTURE IS THE ROW MINTED ABOVE, and it may not exist: on a machine without ast-grep the
+  // cast check cannot run, review-sweep.ts correctly exits 2 and mints nothing, and `mine` is
+  // empty. `mine[0]!` then threw on `closed.id` and BEHEADED THE RUNNER — every module after this
+  // one went unmeasured, and the run's last word was a TypeError about a task id instead of the
+  // tool that was missing (measured 2026-08-30 on the Linux second-host, where the log ended at
+  // e2e/sweep.ts:235 with ~500 checks never reached). A fixture that could not be arranged says
+  // so, under its own name, and lets the rest of the suite run.
+  const closed = mine[0];
+  if (!closed) {
+    check("sweep cli fixture: a minted row exists to close for the re-mint probe", false,
+      `nothing was minted (${mintedIds.length} mint lines) — the re-mint check was not measured`);
+  } else {
+    await post(`/api/tasks/${closed.id}/done`, {});
+    const third = await cli(["--root", pos, "--queue", "--api", BASE, "--token", TOKEN]);
+    const remint = [...third.out.matchAll(/"kind":"minted","fingerprint":"([0-9a-f]+)","taskId":"([0-9a-z]+)"/g)];
+    check("sweep cli: a finding whose row was closed is reported again, not swallowed",
+      third.code === 0 && remint.length === 1, `${remint.length} re-minted, ${third.out.trim().split("\n").pop()}`);
+  }
 
   // ── §6 leave the queue as we found it ────────────────────────────────────────────────────────
   for (const r of ((await (await get("/api/tasks")).json()) as { tasks: Row[] }).tasks)

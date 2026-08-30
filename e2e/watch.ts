@@ -1012,10 +1012,20 @@ export async function run(): Promise<void> {
     const reply = progRequest ? await replyClarification(main1Tok, progRequest.id, "Keep the implementation inside the named files.")
       : new Response(null, { status: 599 });
     const replyBody = await reply.json() as { request?: ClarificationRow; existing?: boolean };
-    const workerPane = await tmuxOut("capture-pane", "-t", `s${prog.slot}`, "-p");
+    // POLLED, not sampled once: the route answers when it has SENT, and the keystrokes still have
+    // to reach the pane and be rendered before capture-pane can see them. A single capture read
+    // that race as "the answer was never delivered" (measured red 2026-08-30 on the Linux
+    // second-host, where every other conjunct of this row held).
+    const answerMark = `CLARIFICATION ANSWER [request ${progRequest?.id}]`;
+    let workerPane = { out: "", code: -1 };
+    for (let i = 0; i < 60; i++) {
+      workerPane = await tmuxOut("capture-pane", "-t", `s${prog.slot}`, "-p", "-J");
+      if (workerPane.out.includes(answerMark)) break;
+      await Bun.sleep(100);
+    }
     check("clarification successful reply sends once before answered and only then clears awaiting",
       reply.ok && replyBody.request?.status === "answered" && replyBody.request.answer?.text.includes("named files") === true
-        && workerPane.out.includes(`CLARIFICATION ANSWER [request ${progRequest?.id}]`)
+        && workerPane.out.includes(answerMark)
         && ((await (await selfGet(progTok)).json()) as { awaiting?: string }).awaiting === null,
       `${reply.status} ${JSON.stringify(replyBody)}`);
     const sameReply = progRequest ? await replyClarification(main1Tok, progRequest.id, "Keep the implementation inside the named files.")

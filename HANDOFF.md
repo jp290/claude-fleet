@@ -1,4 +1,47 @@
-# HANDOFF — Fleet wieder in einen belastbaren Betriebszustand bringen, 2026-08-30 10:38 CEST
+# HANDOFF — Private-repo-o-Worktrail-Audit abgeschlossen, Blaupause wartet auf Promotion, 2026-08-30 15:20 CEST
+
+Controller-Session Slot 8 (Owner-Auftrag: tiefer Worktrail-Audit des Private-repo-o-Laufs). Kette ist
+GESCHLOSSEN — alles gelandet, nichts in Flug. Uebergabe wegen Band (gemessen 35,1 %).
+
+## Was diese Session getan hat (alles auf main, Bodies lesen)
+
+Sechs GLM-Audit-Lanes (pi-zai/glm-5.3, effort high, Owner-Dispatch waivt das automatable-Gate)
+gebrieft, geerntet, seriell gelandet: `4eaf365` (R7–R9) · `d487fdf` (R10–R13, R11-Sonderfrage
+beantwortet) · `068f8e7` (Critic+MAIN) · `bfc5fd1` (Kontext-Pack-Katalog) · `1daa00e`
+(Infra-Reichweite/Frische — graphify-Stale-Fenster, dangling Knowledge-Pointer, 402:9
+Nudge-Oekonomie) · **`43360f1` (Blaupause: gerankte Bau-Liste S1–S8, Verworfene, wortfertige
+Brief-Bloecke im Anhang — DIE Entscheidungsvorlage)**. INDEX-Zeilen nachgetragen als direkte
+docs-Commits `965d073`/`86cf406`/`070ddbc` (Beweis je: install+pins ALL PASS; kein Land-Ledger-
+Eintrag, konstruktionsbedingt). Board-Sweep AUF OWNER-ANWEISUNG: 127 stale pending archiviert,
+Voll-Snapshot `~/claude-fleet-private/fleet-tasks-snapshot-2026-08-30.json` (restore je Zeile
+moeglich; Retention verdraengt terminale Zeilen bei neuen Tasks endgueltig).
+
+## Offene Owner-Entscheidungen (nichts davon selbst starten)
+
+1. **Blaupause promoten + Slices freigeben** (`docs/werkzeug-integration-blaupause-2026-08-30.md`
+   §4): Schnittlinie = S1 (Briefprofil, docs-only, Bloecke liegen wortfertig in §5) · S2
+   (Report-Ist-Zahl) · S3 (capture.ts + seal.sh + Critic-KIT) · S4 (serve-pair + pixelcmp) VOR dem
+   naechsten Game-Maker-Lauf. Drei E-Nachtraege, die F nicht mehr sah (E landete spaeter):
+   Knowledge-Symlink `~/.Codex/knowledge -> ~/.claude/knowledge` (1 Zeile) · Land→Rebuild
+   (detached `graphify update .` im Land-Pfad, schliesst 2h14m/8h49m-Stale; NICHT das beerdigte
+   .git/hooks-Grab) · Nudge-Drossel (jetzt mit 402:9-Zahlen belegt).
+2. **Fahrgefuehl-Attention `69386d59`** (A nachsichtig / B anspruchsvoll / C selbst fahren) —
+   parkt weiter den kritischen Pfad des Spiels.
+3. Task `d98fe812` (Architekturreview) steht queued — Regel aus dem Vorgaenger-Handoff unten gilt.
+
+## Fuer die Nachfolgerin
+
+`./state.sh` + `./register.sh` zuerst. Die sechs Audit-Notizen sind der Kontext; die Blaupause ist
+die Arbeitsliste. GLM-Lane-Betrieb: Watch feuert fuer pi-zai nie (server.ts#6753 verweigert
+ehrlich) — Rueckweg ist ein Hintergrund-Watcher auf ahead/clean der Lane-Branch (Muster im
+Session-Scratchpad dieser Session, watch-glm-lanes.sh). Land blockt, solange die Lane aktiv
+arbeitet („let it settle") — Retry-Schleife, nicht Force. Der Abschnitt darunter (10:38,
+Betriebszustand/P0) ist der Handoff der VORHERIGEN Controller-Session; seine Punkte 3–6 sind
+unabhaengig von dieser Arbeit und ungeprueft weitergueltig.
+
+---
+
+# HANDOFF (Vorgaenger) — Fleet wieder in einen belastbaren Betriebszustand bringen, 2026-08-30 10:38 CEST
 
 Owner-Ziel: zuerst den gemessenen FleetEvent-/Composer-Schaden schließen und den laufenden Stand
 wieder mit einem grünen Produktionsbeweis versehen; danach die operativen Schulden so ordnen, dass

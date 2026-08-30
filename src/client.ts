@@ -5961,6 +5961,7 @@ let qPick: string | null = null;  // selected task id; null = the compose row
 let qQuery = "";
 type QView = "status" | "waves";
 let qView: QView = "status";      // owner-confirmed primary/default view; polls never reset it
+let qProgDone = false;            // show `complete` programs in the Programs section (default off)
 let qKey = "";                    // the data key the list was last built from
 let qDetailKey = "";              // the data key the DETAIL pane was last built from (see refresh)
 let qCompose: HTMLTextAreaElement | null = null; // created ONCE per open — never re-created by a poll
@@ -7844,7 +7845,7 @@ function renderQueue() {
   // REBUILD ONLY ON CHANGE. Without this the 2 s poll would rebuild the list under the cursor and
   // reset the selection every two seconds — the same class of defect as the compose box above.
   const now = Date.now();
-  const key = JSON.stringify([qView, qPick, qQuery, dispatch.on, dispatch.available, intakeOn,
+  const key = JSON.stringify([qView, qPick, qQuery, qProgDone, dispatch.on, dispatch.available, intakeOn,
     Math.floor(now / 60000), qView === "waves" ? qWaveProjectionKey() : null,
     // the MARK is derived from the slots, so it moves without any program field moving. Leaving
     // it out of the key would freeze a MAIN at `live` for as long as no task changed.
@@ -7913,6 +7914,7 @@ function renderQueue() {
     head.title = hint;
     shell.list.appendChild(head);
     if (visibleHint) shell.list.appendChild(el("div", "qwavehint", hint));
+    return head;
   };
 
   let visibleRows = 0;
@@ -7921,14 +7923,35 @@ function renderQueue() {
     // PROGRAMS above the task groups: they are the frames the rows below belong to, and the one
     // question this list has to answer about each — does it still have a living MAIN — is derived
     // from the same poll that paints the board.
-    const progShown = programsList.filter((p) => !qQuery
+    const progMatch = programsList.filter((p) => !qQuery
       || p.title.toLowerCase().includes(qQuery) || p.status.includes(qQuery)
       || programMark(p).mark.includes(qQuery));
-    if (progShown.length || programsRead === "fail") {
-      addSection("Programs", progShown.length,
+    // A COMPLETE PROGRAM IS HISTORY, NOT WORK — and on this board history outnumbers the living
+    // frames badly enough to bury them (51 complete rows measured 2026-08-30). So `complete` is
+    // folded away by default behind a labelled toggle. Nothing is deleted; the fold is a view.
+    // A SEARCH OVERRIDES THE FOLD: a query that names a complete program must find it, otherwise
+    // the box would answer "no match" about a row that plainly exists.
+    const progDone = progMatch.filter((p) => p.status === "complete");
+    const progFold = !qQuery && !qProgDone && progDone.length > 0;
+    const progShown = progFold ? progMatch.filter((p) => p.status !== "complete") : progMatch;
+    const progToggle = () => { qProgDone = !qProgDone; renderQueue(); };
+    if (progShown.length || progDone.length || programsRead === "fail") {
+      const head = addSection("Programs", progShown.length,
         "the owner's standing work frames. The MAIN mark is DERIVED on this poll — live only when"
         + " slot and openedAt both match a current occupant; stale when the binding is complete but"
-        + " nothing matches; unknown when it cannot be checked at all, which is never read as live.");
+        + " nothing matches; unknown when it cannot be checked at all, which is never read as live."
+        + " `complete` programs are folded out of this list by default; a search still finds them.");
+      // A COUNT THAT SHRANK MUST EXPLAIN ITSELF (the picker's ⎇ badge lesson, same vocabulary):
+      // the badge names the hidden rows and routes to the toggle below rather than owning a
+      // second copy of what hiding means.
+      const badge = head.querySelector<HTMLElement>(".shellsecn");
+      if (badge && progFold) {
+        badge.textContent = `${progShown.length} · ${progDone.length} hidden`;
+        badge.classList.add("reveal");
+        badge.title = `${progDone.length} complete program${progDone.length === 1 ? "" : "s"}`
+          + " hidden — click to show them";
+        badge.onclick = (ev: MouseEvent): void => { ev.stopPropagation(); progToggle(); };
+      }
       if (programsRead === "fail") shell.list.appendChild(el("div", "pknone",
         "GET /api/programs did not answer — these rows cannot be read right now"));
       for (const p of [...progShown].sort((a, b) => b.createdAt - a.createdAt)) {
@@ -7939,6 +7962,13 @@ function renderQueue() {
           facts: [`MAIN ${mark}`, p.status,
             p.main && typeof p.main.slot === "number" ? `slot ${p.main.slot}` : "", "program"],
         });
+      }
+      // the toggle is only a control while the search is not already deciding what is visible
+      if (!qQuery && progDone.length) {
+        const t = el("div", "qfold",
+          `${progFold ? "▸ show" : "▾ hide"} completed (${progDone.length})`);
+        t.onclick = progToggle;
+        shell.list.appendChild(t);
       }
     }
     for (const g of Q_GROUPS) {
@@ -8012,6 +8042,7 @@ function openQueue() {
   qPick = null;
   qQuery = "";
   qView = "status";
+  qProgDone = false;
   qKey = "";
   qCompose = null;
   qRepoIn = null;

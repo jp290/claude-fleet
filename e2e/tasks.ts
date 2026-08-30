@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { check, get, post, restartSrv, afterTick, paneEnv, plogRead, tmuxOut, BASE, DISPATCH_TICK_MS, REPO, REPO2, REPO3, ROOT } from "./harness";
+import { check, get, post, restartSrv, afterTick, paneEnv, plantScreen, plogRead, tmuxOut, BASE, DISPATCH_TICK_MS, REPO, REPO2, REPO3, ROOT } from "./harness";
 import { buildAnalysisPrompt } from "../analysis-prompt";
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
@@ -1450,35 +1450,24 @@ export async function run(ctx: Ctx): Promise<void> {
     await post(`/api/tasks/${xT.task.id}/delete`, {});
 
     // --- (f3) SCREEN READINESS on the dispatch tail — the counterprobes to the measured
-    // 2026-08-12 finding: both codex block screens keep the node wrapper ALIVE, so the process
+    // 2026-08-12 finding: both codex block screens keep the agent process ALIVE, so the process
     // probe passes and only the rendered pane can refuse. Each probe below dispatches a real codex
-    // lane and, inside the 4 s boot grace, replaces its pane with a `node -e` FIXTURE that renders
-    // one measured screen: node so the ["codex","node"] comms probe stays alive (a printf/sleep
-    // fixture would trip the not-alive gate first and prove nothing about screens), a fixture
-    // because the real trust screen cannot be arranged (the spawn prelude trusts the path) and the
-    // real ready composer would SUBMIT the brief to a live model. FLEET_READY_WAIT_MS=3000 in this
-    // suite's env owns the timeout window, same reason the scheduler ticks are env-owned. ---
+    // lane and, inside the 4 s boot grace, replaces its pane with the shared stand-in that renders
+    // one measured screen and then stays alive under the ["codex","node"] comms probe (plantScreen
+    // in e2e/harness.ts — a bare printf/sleep would trip the not-alive gate first and prove nothing
+    // about screens). A fixture, because the real trust screen cannot be arranged (the spawn
+    // prelude trusts the path) and the real ready composer would SUBMIT the brief to a live model.
+    // FLEET_READY_WAIT_MS=3000 in this suite's env owns the timeout window, same reason the
+    // scheduler ticks are env-owned. ---
     {
-      const NODE = Bun.which("node") ?? "node";
-      const screenLane = async (js: string): Promise<{ id: string; slot: number }> => {
+      const screenLane = async (screen: string): Promise<{ id: string; slot: number }> => {
         const t = (await (await post("/api/tasks", { text: "readiness-probe", queue: false })).json()) as { task: { id: string } };
         const d = (await (await post(`/api/tasks/${t.task.id}/dispatch`, { harness: "codex" })).json()) as { ok?: boolean; slot?: number };
         check("readiness probe: codex dispatch accepted (fixture setup)", d.ok === true && typeof d.slot === "number", JSON.stringify(d));
         // inside the boot grace: kill the real codex TUI before it can matter, render the fixture.
-        // Same failure form as e2e/programs.ts' respawnScreen, and for the same reason: the slot is
-        // published before openSlot's ensureSlot has created the pane (server.ts:4459/:4531), so
-        // respawn-pane can answer non-zero — retry, and if it never lands, fail as OURSELVES rather
-        // than as the screen verdict this section exists to measure
-        // (docs/messungen/acp18-fleet-frame-rot-2026-08-21.md).
-        let planted: { out: string; code: number } = { out: "", code: -1 };
-        for (let i = 0; i < 60; i++) {
-          planted = await tmuxOut("respawn-pane", "-k", "-t", `s${d.slot}`, `${NODE} -e 'console.log(process.argv[1]); setInterval(() => {}, 1e9)' ${js}`);
-          if (planted.code === 0) break;
-          await Bun.sleep(50);
-        }
-        if (planted.code !== 0)
-          check(`readiness probe: pane s${d.slot} accepted the screen fixture`, false,
-            `respawn-pane exited ${planted.code}`);
+        // plantScreen owns both failure forms and files them as ITSELF rather than as the screen
+        // verdict this section exists to measure (e2e/harness.ts).
+        if (typeof d.slot === "number") await plantScreen(d.slot, screen, "readiness probe");
         return { id: t.task.id, slot: d.slot ?? -1 };
       };
       const rowAfter = async (id: string, want: (r: FRow | undefined) => boolean): Promise<FRow | undefined> => {
@@ -1491,7 +1480,7 @@ export async function run(ctx: Ctx): Promise<void> {
         return r;
       };
       // trust screen: the paste that used to ANSWER the prompt and eat the brief is now withheld
-      const trust = await screenLane('"Do you trust the contents of this directory?"');
+      const trust = await screenLane("Do you trust the contents of this directory?");
       const trustRow = await rowAfter(trust.id, (r) => r?.status === "queued");
       // two legitimate refusal shapes, one contract: the boot gate (canDeliver's blocked-screen,
       // detail in the note) usually sees the screen first; the readiness loop's own message covers
@@ -1501,7 +1490,7 @@ export async function run(ctx: Ctx): Promise<void> {
         JSON.stringify(trustRow));
       await post(`/api/tasks/${trust.id}/delete`, {});
       // sign-in screen: the second measured paste-eater, same refusal shape, its own name
-      const login = await screenLane('"Sign in with ChatGPT to use Codex"');
+      const login = await screenLane("Sign in with ChatGPT to use Codex");
       const loginRow = await rowAfter(login.id, (r) => r?.status === "queued");
       check("a codex pane on its SIGN-IN SCREEN never receives the brief — requeued with the screen named",
         loginRow?.status === "queued" && !loginRow.slot && /codex sign-in screen/.test(loginRow.note ?? ""),
@@ -1509,7 +1498,7 @@ export async function run(ctx: Ctx): Promise<void> {
       await post(`/api/tasks/${login.id}/delete`, {});
       // neither marker: "pending" is not deliverable on a seconds-old pane — the bounded budget
       // (not a blind sleep) decides, and the timeout says how long it looked
-      const mute = await screenLane('"booting, no marker yet"');
+      const mute = await screenLane("booting, no marker yet");
       const muteRow = await rowAfter(mute.id, (r) => r?.status === "queued");
       check("a codex pane that never shows the ready marker requeues on the BOUNDED budget, reason named",
         muteRow?.status === "queued" && !muteRow.slot && /never showed its ready marker within 3s/.test(muteRow.note ?? ""),
@@ -1517,7 +1506,7 @@ export async function run(ctx: Ctx): Promise<void> {
       await post(`/api/tasks/${mute.id}/delete`, {});
       // the accept marker: the header box that is on every ready frame and on NEITHER block screen.
       // The fixture pane's pty just buffers the pasted brief — nothing executes or spends.
-      const ready = await screenLane('">_ OpenAI Codex (v0.147.0)"');
+      const ready = await screenLane(">_ OpenAI Codex (v0.147.0)");
       // the row reads "sent" from dispatch time (status precedes the tail by design), so the row
       // alone proves nothing here — the PASTE is the assertion, polled because the readiness wait
       // and the send sit behind the 4 s boot grace

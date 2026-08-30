@@ -1,7 +1,8 @@
 // Shared plumbing for the split e2e suite (fleet-e2e.ts is the runner; every check module
 // imports from here). Everything in this file is infrastructure — no checks live here.
 import { resolve } from "node:path";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { writeTrailRow } from "./trail-emit";
 
 export const IP = process.env.FLEET_E2E_HOST ?? "127.0.0.1";
@@ -195,4 +196,72 @@ export async function paneEnv(target: string, varName: string, timeoutMs = 20_00
     }
   }
   return null;
+}
+
+// --- the codex pane stand-in ------------------------------------------------------------------
+// A live process in a pane that renders ONE measured screen and then stays there, so the screen
+// families (Program-MAIN founding, the dispatch readiness tail) can drive a codex slot without a
+// real TUI. It has to survive the PROCESS probe as well as the screen one: server.ts's codex
+// adapter declares `comms: ["codex", "node"]`, and a pane whose process is not one of those reads
+// `not-alive` at every delivery gate before any screen is ever captured.
+//
+// It used to be `node -e '<print>; setInterval(…)'`, which made that whole family depend on a
+// runtime this repo declares nowhere. Measured 2026-08-30 on the Debian 13 second-host (no node
+// installed): `respawn-pane` still exits 0 — it only hands the command to a shell — the command
+// dies at once, the pane and its tmux session die with it, and every later gate answers
+// `Program-MAIN delivery held (not-alive)`. The founding fixture reported SUCCESS while it had
+// just destroyed the slot it was arranging; 80+ checks went red behind it and the run aborted in
+// the game-maker family. Two failures in one: an undeclared dependency, and a probe that could
+// not run reporting as the thing it was measuring.
+//
+// The stand-in is now `sleep` reached through a symlink NAMED codex — one path on both platforms,
+// no branch, and no weakening: the pane holds a real live process, and the name the probe finds
+// is the harness's own rather than node's borrowed one. `comm` is taken from the exec path on
+// both (measured: Linux answers `codex`, macOS answers the full symlink path, which
+// paneAgentAt's `split("/").pop()` reduces to the same word).
+let standInPath: string | null = null;
+export function standInBin(): string {
+  if (standInPath) return standInPath;
+  // outside ROOT on purpose: ROOT is a git repo the server reads head facts out of, and this is
+  // not the suite's business to leave in it
+  const dir = `${tmpdir()}/fleet-e2e-standin-${process.pid}`;
+  mkdirSync(dir, { recursive: true });
+  const bin = `${dir}/codex`;
+  const target = Bun.which("sleep");
+  if (!target) throw new Error("no `sleep` on PATH — the codex pane stand-in cannot be built");
+  try { symlinkSync(target, bin); } catch { /* an earlier call in this run built it */ }
+  standInPath = bin;
+  return bin;
+}
+
+// Replace slot `slot`'s pane with the stand-in and PROVE it took. Two separate failures, both
+// reported as THEMSELVES rather than as whatever the caller was about to measure:
+//   · respawn-pane answers non-zero for a pane that does not exist yet — the slot is published
+//     (cwd + label) before openSlot's ensureSlot has created it, so retry inside the boot grace
+//     (docs/messungen/acp18-fleet-frame-rot-2026-08-21.md);
+//   · respawn-pane answers ZERO for a command the shell then fails to run, which is how a missing
+//     interpreter used to pass for a planted screen. So the screen is read back off the pane.
+// Returns false when the fixture could not be arranged, having filed its own red row.
+export async function plantScreen(slot: number, screen: string, family = "founding fixture"): Promise<boolean> {
+  const cmd = `printf '%s\\n' '${screen.replaceAll("'", "'\\''")}'; exec '${standInBin()}' 100000`;
+  let last: { out: string; code: number } = { out: "", code: -1 };
+  for (let i = 0; i < 60; i++) {
+    last = await tmuxOut("respawn-pane", "-k", "-t", `s${slot}`, cmd);
+    if (last.code === 0) break;
+    await Bun.sleep(50);
+  }
+  if (last.code !== 0) {
+    check(`${family}: pane s${slot} accepted the harness screen`, false, `respawn-pane exited ${last.code}`);
+    return false;
+  }
+  const firstLine = screen.split("\n")[0] ?? screen;
+  for (let i = 0; i < 100; i++) {
+    const cap = await tmuxOut("capture-pane", "-t", `s${slot}`, "-p", "-J");
+    if (cap.code === 0 && cap.out.includes(firstLine)) return true;
+    await Bun.sleep(50);
+  }
+  const alive = (await tmuxOut("has-session", "-t", `s${slot}`)).code === 0;
+  check(`${family}: pane s${slot} rendered the harness screen`, false,
+    alive ? "pane alive but the screen never rendered" : "the pane died with the command");
+  return false;
 }

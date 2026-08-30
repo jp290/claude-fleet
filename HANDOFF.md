@@ -265,3 +265,33 @@ und R8 (Kantenlinie), danach blinder Critic, dann Owner-Taste — Attention e98c
 Beim Owner offen: V4/V5 (selfLand-Default, Quiet-Hours-Ausnahme), Lifecycle-Program (Prompt in der
 Notiz vom 29.08.), Sensor-Task 051cc1c2, A/B-Paar Opus/Sonnet im nächsten Lauf. Diese Session war
 bei 30,9 % gemessen; Nachfolge nur nötig, wenn neue Tiefenarbeit ansteht.
+
+## Session „Transkript-Forensik + Rückkanal" (Slot 13, Abschluss 2026-08-29/30) — abgeschlossen, nur Zeiger
+
+Anlass war eine Suchfrage („finde die Session zum HuggingFace-Vorfall"), aus der zwei Messungen und
+ein Rückkanal-Fix wurden. **Nichts ist in Flug, nichts wartet auf jemanden.**
+
+Gelandet, alle drei mit grünem Beweis:
+- `6e67a24` + `024f70c` (Direkt-Commits, Haupt-Checkout — für jedes land-seitige Ledger unsichtbar;
+  Verifikation von Hand gefahren: erstes volle Kette 7× ALL PASS, zweites proportional docs-only
+  install+pins ALL PASS): `docs/transkript-forensik-2026-08-29.md` + `find-conv.py`.
+- `465130b` GLM-Review dazu (`docs/messungen/2026-08-29-glm-review-transkript-forensik.md`), Land
+  über einen agent-aufgelösten `INDEX.md`-Konflikt, per `{"confirm":true}` nach Diff-Sicht bestätigt.
+- `b6956c9` der Fix: `POST /api/self/watch` (und die Owner-Route, gemeinsamer Schnitt in
+  `createWatchForSlot`) lehnt `{kind:"lane"}` auf einen nicht-automatablen Harness jetzt mit 409 ab.
+  **Post-Land-Audit GRÜN und echt gelaufen: 3294 Checks, 0 Fails, 23,6 min** (nicht die `ran:0`-Sorte).
+
+Der Befund dahinter, weil er wiederkommt: `aliveInfo` faltet `harnessAutomatable` in `alive`, und
+BEIDE Looking-Prädikate verlangen `alive === true`. Eine fertige Lane auf `pi-zai`/`pi-unfenced`/
+`container` konnte darum nie `done-looking` werden — der Watch blieb still für immer scharf. Wer auf
+so eine Lane wartet, nimmt einen Hintergrund-Watcher auf die git-Fakten; `{kind:"merge"}` war und
+bleibt unbetroffen (der Tick liest `mergeTerminalFor`, nicht `laneSignalView`).
+
+**Beim Owner offen — ein propose, kein Auftrag:** CLAUDE.md sagt für gitignorte Dateien
+„`rg -uu` (oder schlicht `grep`)". Der Klammerausdruck ist widerlegt: `grep` ist in einer
+Claude-Code-Bash-Zelle eine zsh-Funktion, die das claude-Binary als `ugrep` mit `--ignore-files`
+fährt und gitignorte Dateien still überspringt (Probe: Shim 2 Treffer, `command grep` 5 — Differenz
+`CLAUDE.md`, `rulebook/einstieg.md`, `streams/prompts.jsonl`). Ersatztext samt BRE-Halbsatz steht in
+`docs/transkript-forensik-2026-08-29.md` §5 und in der GLM-Notiz. `state.sh`/`register.sh` sind
+nicht betroffen (laufen als Skript). Nicht gepinnt: `find-conv.py` hat keine Sonde — Werkzeug, kein
+Sensor. Diese Session war bei 29,3 % gemessen.

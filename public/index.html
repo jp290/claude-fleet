@@ -293,6 +293,11 @@
   /* Visible rather than title-only: touch screens have no hover, and the evidence caveat is the
      difference between “no known collision” and a promise of safety. It is not a row fact. */
   .qwavehint { padding: 0 7px 6px; color: var(--faint); font-size: 10.5px; line-height: 1.4; }
+  /* the completed-programs fold. A control, not a row: it never enters the shell's row list, so
+     keyboard navigation still steps only over selectable programs and tasks. */
+  .qfold { padding: 3px 7px 4px; color: #6a6a6a; font-size: 10.5px; cursor: pointer;
+    user-select: none; letter-spacing: 0.02em; }
+  .qfold:hover { color: #ddd; }
   .qdtext { font-size: 13px; color: #ddd; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
     background: #161616; border: 1px solid var(--raised); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
   /* the proposed done-criterion, editable before you confirm it — same box as .qdtext so a

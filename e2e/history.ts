@@ -117,16 +117,43 @@ export async function run(): Promise<void> {
   const pdNone = (await (await get("/api/prompts?q=zz-no-such-prompt-zz")).json()) as { prompts: unknown[] };
   check("prompt directory q with no hits is empty", pdNone.prompts.length === 0);
 
-  // --- transcript view (slot 1 cwd is ~/claude-fleet, whose project dir has transcripts;
-  // FLEET_CMD=true means no pinned session id, so this exercises the mtime fallback) ---
-  const tr1 = await get("/api/slots/1/transcript");
-  const tr1j = (await tr1.json()) as { entries: { role: string; blocks: unknown[] }[]; total: number; source: string | null };
-  check("transcript endpoint returns entries", tr1.ok && tr1j.total > 0 && tr1j.entries.length > 0,
-    `total=${tr1j.total} entries=${tr1j.entries.length} source=${tr1j.source}`);
-  check("transcript entries are structured", tr1j.entries.every((e) => (e.role === "user" || e.role === "assistant") && e.blocks.length > 0));
-  const tr2 = await get(`/api/slots/1/transcript?after=${tr1j.total}`);
-  const tr2j = (await tr2.json()) as { entries: unknown[]; total: number };
-  check("transcript incremental fetch returns nothing new", tr2.ok && tr2j.entries.length === 0 && tr2j.total >= tr1j.total, `total=${tr2j.total}`);
+  // --- transcript view. FLEET_CMD=true means no pinned session id, so this exercises the mtime
+  // fallback. It used to read slot 1 (cwd ~/claude-fleet) and therefore asserted over WHATEVER
+  // conversations the person running the suite happened to have had in that checkout — an
+  // unstated precondition of the machine, not a fixture. On a box where nobody has ever run
+  // claude in ~/claude-fleet the endpoint correctly answers `total=0` and this read as a product
+  // regression (measured 2026-08-30 on the Linux second-host). The rows below now plant the two
+  // entries they assert on, in a throwaway cwd of this run's own, and clean up after themselves —
+  // the same shape as the background-mark fixture below, and for the same reason. ---
+  {
+    const trCwd = `${tmpdir()}/fleet-e2e-transcript-${process.pid}`;
+    const trProj = `${process.env.HOME}/.claude/projects/${trCwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+    mkdirSync(trCwd, { recursive: true });
+    mkdirSync(trProj, { recursive: true });
+    // `cwd` is what proves the file belongs to this slot — transcriptFile's fallback refuses a
+    // file that cannot show it (see the slug-collision block below)
+    const trLine = (role: "user" | "assistant", text: string) =>
+      `${JSON.stringify({ type: role, cwd: trCwd, timestamp: new Date(0).toISOString(), message: { content: [{ type: "text", text }] } })}\n`;
+    writeFileSync(`${trProj}/own.jsonl`, `${trLine("user", "what does this slot say")}${trLine("assistant", "a planted answer")}`);
+    const trFree = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+      .slots.filter((s) => s.cwd === null).map((s) => s.id).pop();
+    const trOpened = trFree !== undefined && (await post(`/api/slots/${trFree}/open`, { cwd: trCwd })).ok;
+    check("transcript fixture: a free slot opens on a throwaway cwd carrying two planted entries",
+      trOpened, `slot=${trFree}`);
+    if (trOpened) {
+      const tr1 = await get(`/api/slots/${trFree}/transcript`);
+      const tr1j = (await tr1.json()) as { entries: { role: string; blocks: unknown[] }[]; total: number; source: string | null };
+      check("transcript endpoint returns entries", tr1.ok && tr1j.total > 0 && tr1j.entries.length > 0,
+        `total=${tr1j.total} entries=${tr1j.entries.length} source=${tr1j.source}`);
+      check("transcript entries are structured", tr1j.entries.every((e) => (e.role === "user" || e.role === "assistant") && e.blocks.length > 0));
+      const tr2 = await get(`/api/slots/${trFree}/transcript?after=${tr1j.total}`);
+      const tr2j = (await tr2.json()) as { entries: unknown[]; total: number };
+      check("transcript incremental fetch returns nothing new", tr2.ok && tr2j.entries.length === 0 && tr2j.total >= tr1j.total, `total=${tr2j.total}`);
+      await post(`/api/slots/${trFree}/kill`, {});
+    }
+    rmSync(trProj, { recursive: true, force: true }); // it lives outside the repo — do not leave it
+    rmSync(trCwd, { recursive: true, force: true });
+  }
   check("transcript rejects inactive slot", (await get("/api/slots/4/transcript")).status === 400);
 
   // --- the CLASSIFICATION: a background worker's transcript is never served as a slot's own

@@ -12494,6 +12494,42 @@ async function verifyPlanFor(cwd: string, repo: string, mainSha: string): Promis
   return { cmd, proportional, steps };
 }
 
+// A signal sent to the process this server spawned reaches THAT process and nothing under it —
+// and on Linux that process is not the verify chain. `sh -c "<one simple command>"` is EXEC'd by
+// macOS's /bin/sh (bash's last-command optimisation) but FORKED by dash, so the staffel in fire()
+// below was terminating a shell with the whole chain still running underneath it, holding the
+// inherited stdout pipe open. Measured 2026-08-30 on the Debian 13 second-host: a gate whose wait
+// budget expired after 5 000 ms returned at 30 015 ms — the stand-in's own exit — which is exactly
+// the "server blocked on an answer it has promised never to use" that the staffel exists to end.
+//
+// The descendants are collected BEFORE the parent is signalled: an orphan reparents to init and
+// `pgrep -P` can no longer name it. Depth-bounded and pid-deduped — this walks the tree of a
+// process we have already decided to kill, never the machine.
+const KILL_TREE_MAX_DEPTH = 8;
+async function descendantPids(root: number): Promise<number[]> {
+  const found: number[] = [];
+  let level = [root];
+  for (let depth = 0; depth < KILL_TREE_MAX_DEPTH && level.length > 0; depth++) {
+    const next: number[] = [];
+    for (const pid of level) {
+      const g = Bun.spawn(["pgrep", "-P", String(pid)], { stdout: "pipe", stderr: "ignore" });
+      const out = await new Response(g.stdout).text();
+      await g.exited;
+      for (const line of out.split("\n")) {
+        const kid = Number(line.trim());
+        if (kid > 0 && kid !== root && !found.includes(kid)) { found.push(kid); next.push(kid); }
+      }
+    }
+    level = next;
+  }
+  return found;
+}
+async function killProcessTree(p: { pid: number; kill(sig?: number): void }, sig: number): Promise<void> {
+  const kids = p.pid > 0 ? await descendantPids(p.pid) : [];
+  try { p.kill(sig); } catch { /* already gone */ }
+  for (const kid of kids) { try { process.kill(kid, sig); } catch { /* already gone */ } }
+}
+
 async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null): Promise<MergeLast["verify"]> {
   if (!plan) return undefined;
   const { cmd, proportional, steps } = plan;
@@ -12521,14 +12557,15 @@ async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null):
     // returns. A gate whose chain ignores or defers the term used to hold this await open for as
     // long as it liked — the timeout had already been declared, so the server was waiting on a
     // process whose answer it had promised never to use.
-    // Residual, stated rather than defined away: grandchildren can still outlive both signals, so
-    // a killed gate may leave its own scratch tmux socket or suite lock behind. What is NOT
-    // residual is the server — it stops waiting here.
+    // Residual, stated rather than defined away: the walk is a snapshot, so a process the chain
+    // forks between the walk and the signal still outlives both — a killed gate may leave its own
+    // scratch tmux socket or suite lock behind. What is NOT residual is the server: it stops
+    // waiting here, on both platforms (killProcessTree above).
     // This changes no verdict: `timedOut`/`waitedOut` are already set above, so `verify.ok` stays
     // `null` on this path whichever signal ends the process (a killed run is not a verdict).
-    try { p.kill(); } catch {}
+    void killProcessTree(p, 15);
     if (killTimer) clearTimeout(killTimer);
-    killTimer = setTimeout(() => { try { p.kill(9); } catch { /* already gone */ } }, VERIFY_KILL_GRACE_MS);
+    killTimer = setTimeout(() => { void killProcessTree(p, 9); }, VERIFY_KILL_GRACE_MS);
   };
   const arm = (): void => {
     if (timer) clearTimeout(timer);

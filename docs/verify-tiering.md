@@ -1513,6 +1513,18 @@ that did NOT parse is persisted as raw:true`, state `none`, `e2e/outcomes.ts`) f
 tree with an idle controller and is not a member of this family. Whether it is its own family or a
 one-off is unmeasured.
 
+**Addendum 2026-09-01 — the mechanism, one level deeper, read from the kept instance of run 7
+(`fleet-e2e-instance-4110/server.log:135-142`):** the event is CREATED for its receiver
+(`watch 4817e6b3: created event ee1a8e8f… for slot 7`, line 139) and immediately afterwards the
+receiver's tmux session is RECREATED — twice (`slot 7: created tmux session 's7'`, lines 140/142).
+The heal replaces the occupant, and `server.ts#recoverFleetReportDelivery` then terminalizes the
+event with its own words: "receiver occupant ended or was replaced before recovery". The cascade
+is honest bookkeeping over a dead receiver; the open question is WHY the fixture's receiver pane
+dies. That is the §11.2f genus — a fixture asserting a live receiver it does not control — and the
+plausible repair is test-side: hold the receiver pane alive for the check's window, or make the
+probe fail AS ITSELF when the receiver pane died. Filed for a lane with its own criterion; until
+that lands, this family stays open.
+
 **Sixth member, seen first in run 7:** `subject fixture: both lane completions minted one pending
 event each on the busy receiver` — the fixture that establishes the family's own precondition,
 which makes the cascade read one step earlier than in runs 2–3.

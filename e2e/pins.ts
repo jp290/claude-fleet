@@ -454,6 +454,12 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
         && parsed.filter((k) => k === "waiting").length === parsed.length - 1,
       `parsed=${JSON.stringify(parsed)}`);
   }
+  pin("suite-lock contender proves a live holder by pid AND process birth before waiting",
+    stage.includes('$_st_birth_now" = "$_st_hb"') && stage.includes("ps -o lstart="),
+    "missing live-holder birth equality in e2e-stage.sh");
+  pin("suite-lock reaper re-checks pid AND process birth before removing a stale/recycled lock",
+    stage.includes('$_st_cur_pid" = "$_st_hp"') && stage.includes('$_st_cur_birth" = "$_st_hb"'),
+    "missing reap-time birth equality in e2e-stage.sh");
 }
 
 {
@@ -718,7 +724,7 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     const cited = [...new Set([...prose.matchAll(/`([^`]+)`/g)].map((m) => m[1].trim()))]
       .filter((t) => /^\.?\/?[A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:md|ts|sh|json)$/.test(t))
       .map((t) => t.replace(/^\.\//, ""))
-      .filter((t) => t !== "CLAUDE.md");
+      .filter((t) => t !== "CLAUDE.md" && t !== "graphify-out/graph.json");
     const dead = cited.filter((p) => !exists(p));
     pin(RULE_ANCHORS, cited.length > 0 && dead.length === 0, `${cited.length} cited, dead=[${dead}]`);
   }

@@ -1481,7 +1481,9 @@ async function pollOutline(slot: number): Promise<string[]> {
 // reason the whole shape is: a server from before 2026-08-19 sends neither, and a row without an
 // origin must then read as the only kind that server had — a lane's own word.
 interface GateInfo {
-  lock: { pid: number | null; alive: boolean | null; heldMs: number; state?: string } | null;
+  lock: { pid: number | null; alive: boolean | null; heldMs: number; ageMs?: number; acquiredAt?: number | null;
+    identityProven?: boolean | null; birth?: { stored: string | null; current: string | null; state: string };
+    nextAction?: string; reason?: string; effect?: string; state?: string } | null;
   reports: { slot: number | null; label: string | null; phase: string; suite: string; exitCode: number | null; at: number;
     origin?: string; branch?: string | null }[];
 }
@@ -1595,17 +1597,24 @@ function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
   // `pid null` is a lock file whose contents are not a pid — a lost holder either way, but
   // printing "pid null" would read as a bug in this line rather than as one on disk.
   const who = lk?.pid === null ? "unreadable pid file" : `pid ${lk?.pid}`;
+  const age = gateAge(lk?.ageMs ?? lk?.heldMs ?? 0);
+  const id = lk?.identityProven === true ? "identity proven"
+    : lk?.identityProven === false ? "identity mismatch"
+    : "identity unknown";
   // gateAge measures from the CLAIM (the pid file's mtime), not from the holder's death — which
   // nothing here knows. So a dead holder is "claimed 18m ago", never "ended 18m ago".
   const head = el("div", "bstate",
     !lk ? "· suite gate · lock free"
-      : state === "parked" ? `⏸ suite gate · parked by hand (no pid) · ${gateAge(lk.heldMs)}`
-      : state === "held" ? `⏳ suite gate · held by ${who} · ${gateAge(lk.heldMs)}`
-      : state === "overdue" ? `⚠ suite gate · ${who} has held for ${gateAge(lk.heldMs)} — longer than any suite here takes`
+      : state === "parked" ? `⏸ suite gate · parked by hand (no pid) · ${age}`
+      : state === "held" ? `⏳ suite gate · held by ${who} · ${id} · ${age}`
+      : state === "overdue" ? `⚠ suite gate · ${who} has held for ${age} · ${id} — longer than any suite here takes`
+      : state === "unknown" ? `? suite gate · holder identity unknown (${who}) · ${age}`
       // NEUTRAL on purpose: every finished suite leaves its dir behind (release is implicit), so
       // this is what an idle machine looks like — it was a ⚠ for one day and shouted constantly.
-      : `· suite gate · no suite running · stale lock (${who}, claimed ${gateAge(lk.heldMs)} ago)`);
+      : `· suite gate · no suite running · stale lock (${who}, ${id}, claimed ${age} ago)`);
   head.title = state === "free" ? "No suite is holding the machine-wide mutex right now."
+    : lk?.reason || lk?.effect
+      ? `reason: ${lk.reason ?? "unknown"}; next: ${lk.nextAction ?? "unknown"}; effect: ${lk.effect ?? "unknown"}`
     : state === "stale" ? "Nothing is running. A finished suite leaves its lock dir behind by design; the next suite clears it."
     : state === "overdue" ? "This holder is still alive but has held far longer than any suite on this machine takes — check whether it is wedged."
     : "The machine-wide suite mutex, read off disk. Fleet only reads it — reaping a dead holder belongs to the wrappers.";

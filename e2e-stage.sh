@@ -34,7 +34,7 @@
 # 2026-07-28 — three owner interventions in one afternoon because the serialization lived only in
 # CLAUDE.md prose). Sourcing this file IS starting a suite, so the lock is taken HERE — one place,
 # every wrapper inherits it, no per-wrapper trap surgery.
-#   - Lock = mkdir (atomic). The holder records its pid.
+#   - Lock = mkdir (atomic). The holder records its pid and process-birth fingerprint.
 #   - Release is IMPLICIT: no EXIT trap (the wrappers own theirs, and a sourced trap would collide).
 #     The next contender reaps a lock whose recorded pid is dead. A lock dir existing therefore
 #     does NOT mean a suite is running — the pid file decides.
@@ -74,18 +74,50 @@ FLEET_SUITE_LOCK="${FLEET_SUITE_LOCK:-/tmp/fleet-e2e.lock}"
 _st_who=$(basename "$0" 2>/dev/null || echo suite)
 _st_t0=$(date +%s)
 _st_say_at=0   # elapsed seconds at which the next line is due; 0 = the first block always speaks
+_st_birth_of() {
+  ps -o lstart= -p "$1" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/[[:space:]][[:space:]]*/ /g'
+}
+_st_valid_birth() {
+  printf '%s\n' "$1" | grep -Eq '^[A-Z][a-z]{2} [A-Z][a-z]{2} [0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2} [0-9]{4}$'
+}
+_st_self_birth=$(_st_birth_of "$$")
+if [ -z "$_st_self_birth" ]; then
+  printf '[suite-lock-error] %s cannot record process birth for pid %s; refusing to hold %s\n' "$_st_who" "$$" "$FLEET_SUITE_LOCK" >&2
+  return 3 2>/dev/null || exit 3
+fi
 while ! mkdir "$FLEET_SUITE_LOCK" 2>/dev/null; do
   # `|| true`: a missing pid file makes `cat` fail, and under a `set -e` caller (steward-arena.sh)
   # a failing command substitution in an assignment would abort the whole run — on the PARKED
   # state, i.e. exactly when it must instead be reported.
   _st_hp=$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)
+  _st_hb=$(cat "$FLEET_SUITE_LOCK/birth" 2>/dev/null || true)
   _st_dead=0
+  _st_reap=0
   if [ -z "$_st_hp" ]; then
-    _st_why="parked — the dir carries NO pid file, so nothing will ever reap it (rmdir it to release)"
+    if [ -z "$_st_hb" ]; then
+      _st_why="parked — the dir carries NO pid file, so nothing will ever reap it (rmdir it to release)"
+    else
+      _st_reap=1
+      _st_why="stale — lock has a process-birth fingerprint but NO pid; reaping the torn acquisition"
+    fi
   elif kill -0 "$_st_hp" 2>/dev/null; then
-    _st_why="held by live pid $_st_hp (up $(ps -o etime= -p "$_st_hp" 2>/dev/null | tr -d ' ')): $(ps -o command= -p "$_st_hp" 2>/dev/null | cut -c1-70)"
+    _st_birth_now=$(_st_birth_of "$_st_hp")
+    if [ -z "$_st_hb" ]; then
+      _st_why="unknown — recorded pid $_st_hp is alive, but the lock has no process-birth fingerprint; not reaping a possibly live legacy holder"
+    elif ! _st_valid_birth "$_st_hb"; then
+      _st_why="unknown — recorded pid $_st_hp is alive, but its process-birth fingerprint is malformed; not reaping a possibly live holder"
+    elif [ -z "$_st_birth_now" ]; then
+      _st_why="unknown — recorded pid $_st_hp is alive, but its current process-birth fingerprint is unmeasurable; not reaping a possibly live holder"
+    elif [ "$_st_birth_now" = "$_st_hb" ]; then
+      _st_why="held by live pid $_st_hp with proven identity (up $(ps -o etime= -p "$_st_hp" 2>/dev/null | tr -d ' ')): $(ps -o command= -p "$_st_hp" 2>/dev/null | cut -c1-70)"
+    else
+      _st_dead=1
+      _st_reap=1
+      _st_why="stale — recorded pid $_st_hp is alive but its process-birth fingerprint changed; reaping the recycled-pid lock"
+    fi
   else
     _st_dead=1
+    _st_reap=1
     _st_why="stale — recorded pid $_st_hp is gone, nothing is running; reaping it"
   fi
   _st_el=$(( $(date +%s) - _st_t0 ))
@@ -93,18 +125,21 @@ while ! mkdir "$FLEET_SUITE_LOCK" 2>/dev/null; do
     printf '[suite-lock] %s waiting %ss for %s — %s\n' "$_st_who" "$_st_el" "$FLEET_SUITE_LOCK" "$_st_why"
     _st_say_at=$(( _st_el + 60 ))
   fi
-  if [ "$_st_dead" = 1 ]; then
+  if [ "$_st_reap" = 1 ]; then
     # `if` rather than the old `[ … ] && rm && rmdir` AND-OR chain: under `set -e` that list exits
     # the caller whenever the pid changed under us or the rmdir loses the race — a normal outcome
     # of the reap, turned into an abort.
-    if [ "$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)" = "$_st_hp" ]; then
-      rm -f "$FLEET_SUITE_LOCK/pid" && rmdir "$FLEET_SUITE_LOCK" 2>/dev/null || true
+    _st_cur_pid=$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)
+    _st_cur_birth=$(cat "$FLEET_SUITE_LOCK/birth" 2>/dev/null || true)
+    if [ "$_st_cur_pid" = "$_st_hp" ] && [ "$_st_cur_birth" = "$_st_hb" ]; then
+      rm -f "$FLEET_SUITE_LOCK/pid" "$FLEET_SUITE_LOCK/birth" && rmdir "$FLEET_SUITE_LOCK" 2>/dev/null || true
     fi
     continue
   fi
   sleep 15
 done
 echo "$$" > "$FLEET_SUITE_LOCK/pid"
+printf '%s\n' "$_st_self_birth" > "$FLEET_SUITE_LOCK/birth"
 printf '[suite-lock] %s acquired after %ss (pid %s)\n' "$_st_who" "$(( $(date +%s) - _st_t0 ))" "$$"
 
 # Exit 3 means the suite's server prerequisite never came up; ordinary check failures use exit 1.

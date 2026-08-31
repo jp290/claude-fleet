@@ -16328,13 +16328,21 @@ const SUITE_HOLD_OVERDUE_MS = Math.max(60_000, Number(process.env.FLEET_SUITE_OV
 //             a warning, which made the common harmless case shout and left `overdue` — the case
 //             worth shouting about — wearing the same tone as a healthy 30-second hold.
 //   parked  — a pid-LESS dir: a human parked the machine on purpose, and nothing ever reaps it.
-type GateLockState = "held" | "overdue" | "stale" | "parked";
+type GateLockState = "held" | "overdue" | "stale" | "parked" | "unknown";
+type GateLockBirthState = "matched" | "mismatched" | "missing" | "empty" | "malformed" | "unreadable" | "unmeasurable" | "not-applicable";
 interface GateLock {
   pid: number | null;     // the recorded holder, or null when the dir carries no readable pid
   alive: boolean | null;  // null = a pid-LESS dir: a MANUAL park (a human parked the machine), and
                           // e2e-stage.sh never reaps one. false = the holder is gone; the next
                           // contender reaps this dir.
   heldMs: number;
+  ageMs: number;
+  acquiredAt: number | null;
+  identityProven: boolean | null;
+  birth: { stored: string | null; current: string | null; state: GateLockBirthState };
+  nextAction: string;
+  reason: string;
+  effect: string;
   state: GateLockState;   // the four facts above, named — see SUITE_HOLD_OVERDUE_MS
 }
 // `slot: number | null` — design question (4). `null` is a run with no session behind it, which
@@ -16348,6 +16356,43 @@ interface GateView { lock: GateLock | null; reports: GateReport[] }
 // mutex. Costs two stats, a small read and one signal-0 per call, which is why it is computed per
 // request rather than cached: a cached answer to "is a suite running right now" would be the one
 // kind of wrong this whole region exists to prevent.
+const PROCESS_BIRTH_RE = /^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/;
+function normalizeProcessBirth(raw: string): string {
+  return raw.trim().replace(/\s+/g, " ");
+}
+function processBirthFingerprint(pid: number): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  const p = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)]);
+  if (p.exitCode !== 0) return null;
+  const out = normalizeProcessBirth(new TextDecoder().decode(p.stdout));
+  return out && PROCESS_BIRTH_RE.test(out) ? out : null;
+}
+function readStoredLockBirth(path: string): { state: GateLockBirthState; value: string | null } {
+  let raw = "";
+  try { raw = readFileSync(path, "utf8"); }
+  catch (e: unknown) {
+    const code = (e as { code?: string }).code;
+    return { state: code === "ENOENT" ? "missing" : "unreadable", value: null };
+  }
+  const value = normalizeProcessBirth(raw);
+  if (value === "") return { state: "empty", value: null };
+  if (!PROCESS_BIRTH_RE.test(value)) return { state: "malformed", value };
+  return { state: "matched", value };
+}
+function gateLock(
+  pid: number | null,
+  alive: boolean | null,
+  heldMs: number,
+  acquiredAt: number | null,
+  identityProven: boolean | null,
+  birth: GateLock["birth"],
+  state: GateLockState,
+  nextAction: string,
+  reason: string,
+  effect: string,
+): GateLock {
+  return { pid, alive, heldMs, ageMs: heldMs, acquiredAt, identityProven, birth, state, nextAction, reason, effect };
+}
 function suiteLockView(): GateLock | null {
   let dir;
   try { dir = statSync(SUITE_LOCK); } catch { return null; }
@@ -16358,8 +16403,18 @@ function suiteLockView(): GateLock | null {
   // separately, so a stat that fails after the read succeeded costs the age and not the identity:
   // "we could not time it" must never come out as "nobody recorded a pid", which means manual park
   try { at = statSync(`${SUITE_LOCK}/pid`).mtimeMs; } catch { /* fall back to the dir's own mtime */ }
+  const acquiredAt = Number.isFinite(at) ? at : null;
   const heldMs = Math.max(0, Date.now() - at);
-  if (raw === null || raw === "") return { pid: null, alive: null, heldMs, state: "parked" };
+  if (raw === null || raw === "") {
+    const stored = readStoredLockBirth(`${SUITE_LOCK}/birth`);
+    if (stored.state !== "missing" && stored.state !== "empty") return gateLock(null, false, heldMs, acquiredAt, false,
+      { stored: stored.value, current: null, state: stored.state }, "stale", "reap on next contender",
+      "the lock dir carries a process-birth fingerprint but no pid",
+      "the next contender removes this torn acquisition before acquiring");
+    return gateLock(null, null, heldMs, acquiredAt, null,
+      { stored: null, current: null, state: "not-applicable" }, "parked", "manual release",
+      "the lock dir carries no pid file", "a human parked the suite mutex; no contender will auto-reap it");
+  }
   // `> 0` is not defensive noise: process.kill(0, sig) addresses the CALLER'S OWN process group,
   // so a lock file containing "0" would answer "alive" about this very server and report a lock
   // nobody holds as held. Zero is not a pid here, it is unreadable content.
@@ -16372,9 +16427,31 @@ function suiteLockView(): GateLock | null {
     try { process.kill(pid, 0); alive = true; }
     catch (e: unknown) { alive = (e as { code?: string }).code === "EPERM"; }
   }
-  // an unparseable pid is `alive:false` above and lands in `stale` with a dead holder — same
-  // meaning to a reader (nothing is running, the next suite clears it), different words in the UI
-  return { pid, alive, heldMs, state: !alive ? "stale" : heldMs > SUITE_HOLD_OVERDUE_MS ? "overdue" : "held" };
+  if (pid === null) return gateLock(null, false, heldMs, acquiredAt, false,
+    { stored: null, current: null, state: "not-applicable" }, "stale", "reap on next contender",
+    "the pid file does not contain a positive pid", "the next contender removes this stale lock before acquiring");
+  if (!alive) return gateLock(pid, false, heldMs, acquiredAt, false,
+    { stored: null, current: null, state: "not-applicable" }, "stale", "reap on next contender",
+    `recorded pid ${pid} is gone`, "the next contender removes this stale lock before acquiring");
+  const stored = readStoredLockBirth(`${SUITE_LOCK}/birth`);
+  const current = processBirthFingerprint(pid);
+  if (stored.state === "matched" && current !== null && stored.value === current) {
+    const state = heldMs > SUITE_HOLD_OVERDUE_MS ? "overdue" : "held";
+    return gateLock(pid, true, heldMs, acquiredAt, true,
+      { stored: stored.value, current, state: "matched" }, state, state === "overdue" ? "inspect holder" : "wait",
+      `recorded pid ${pid} is alive and its process-birth fingerprint matches`,
+      state === "overdue" ? "the holder is probably wedged; inspect before killing anything" : "a suite is holding the mutex");
+  }
+  if (stored.state === "matched" && current !== null && stored.value !== current)
+    return gateLock(pid, true, heldMs, acquiredAt, false,
+      { stored: stored.value, current, state: "mismatched" }, "stale", "reap on next contender",
+      `recorded pid ${pid} is alive but its process-birth fingerprint differs`,
+      "the live process is not the recorded holder; the next contender may safely reap this lock");
+  const birthState = stored.state === "matched" ? "unmeasurable" : stored.state;
+  return gateLock(pid, true, heldMs, acquiredAt, null,
+    { stored: stored.value, current, state: birthState }, "unknown", "inspect or wait",
+    `recorded pid ${pid} is alive, but holder identity is ${birthState}`,
+    "a possibly live legacy holder is preserved; contenders must not auto-reap it");
 }
 // One projection for /api/sessions. Returns null when there is nothing to say, so the 2s poll
 // carries four bytes rather than an empty shape (the payload is already the fleet's biggest, see

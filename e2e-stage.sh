@@ -3,13 +3,13 @@
 #
 # Sourced (never executed) by every script that stands up a copy of this repo to run a server in:
 #   e2e-isolated.sh · e2e-claude-gate.sh · e2e-clean-review.sh · e2e-security.sh
-#   e2e-postland-audit.sh · drills/drill-3.sh · steward-arena.sh
+#   e2e-postland-audit.sh · drills/drill-3.sh · attic/steward-arena.sh
 #
 # WHY. Each of those used to carry its OWN hand-written `cp -R` list of server.ts's local modules,
 # and two of them died of exactly that maintenance. e2e-postland-audit.sh stopped booting the day
 # continuity.ts landed (`Cannot find module './continuity'`) and stayed dead for weeks, because no
-# gate runs it and the symptom reads like anything else. steward-arena.sh:155 shipped with two of
-# the four modules missing. A list that must be edited in seven places when server.ts gains one
+# gate runs it and the symptom reads like anything else. attic/steward-arena.sh:155 shipped with
+# two of the four modules missing. A list that must be edited in seven places when server.ts gains one
 # import is a list that will be edited in six.
 #
 # THE RULE. An instance contains exactly:
@@ -86,7 +86,7 @@ if [ -z "$_st_self_birth" ]; then
   return 3 2>/dev/null || exit 3
 fi
 while ! mkdir "$FLEET_SUITE_LOCK" 2>/dev/null; do
-  # `|| true`: a missing pid file makes `cat` fail, and under a `set -e` caller (steward-arena.sh)
+  # `|| true`: a missing pid file makes `cat` fail, and under a `set -e` caller (attic/steward-arena.sh)
   # a failing command substitution in an assignment would abort the whole run — on the PARKED
   # state, i.e. exactly when it must instead be reported.
   _st_hp=$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)

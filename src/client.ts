@@ -8486,7 +8486,7 @@ const DISPO_WORD_UI: Record<DispositionVerdict, string> = {
   accepted: "✓ accepted", edited: "✎ edited", ignored: "· ignored", wrong: "✗ wrong",
 };
 
-// --- outcome feed (docs/perception-layer.md §6): the lane-outcome ledger rendered — what landed,
+// --- outcome feed (docs/attic/perception-layer.md §6): the lane-outcome ledger rendered — what landed,
 // how, and what ③ said about it. A read-only lens over GET /api/lane-outcomes, same access model as
 // the audit trail above (owner-token gated, structurally 404 on share hosts).
 // The point is MEASUREMENT, not UI: `knowledge-layers.md` §5 gap 3 argues a prompt land structurally
@@ -8816,7 +8816,7 @@ function reviewBody(r: OutcomeReviewRow): HTMLElement[] {
   return out;
 }
 
-// --- graduation-criteria progress (docs/graduation-criteria.md §1 + §2) -------------------------
+// --- graduation-criteria progress (docs/attic/graduation-criteria.md §1 + §2) -------------------------
 // The criteria are pre-registered numbers; this counts PROGRESS toward them and evaluates nothing.
 // Whether a criterion has been satisfied stays the owner's call, made by reading these numbers —
 // never a verdict the client draws.

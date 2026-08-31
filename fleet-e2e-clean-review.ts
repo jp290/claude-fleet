@@ -173,7 +173,7 @@ const B2 = await cleanLaneMerge("india");
 check("gate: a prose-wrapped ok verdict is rescued and lets the lane auto-land",
   B2.gone && mainLog().includes("india lane work"), JSON.stringify(B2));
 
-// (B3) THE ENRICHED PROMPT, END-TO-END (docs/mining-2026-07-26.md findings 3+4). e2e/prompts.ts proves
+// (B3) THE ENRICHED PROMPT, END-TO-END (docs/attic/mining-2026-07-26.md findings 3+4). e2e/prompts.ts proves
 // the builder RENDERS the three sections; only the server can prove it FILLS them from reality. Set up
 // so the non-degenerate case is the one under test: the reviewed lane forks FIRST, another lane lands
 // after it (so main genuinely moved since the fork), and a sibling lane stays open with work in flight.

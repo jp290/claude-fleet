@@ -10,7 +10,8 @@
 // the file modes + audit-log redaction. What lives HERE is what nothing covered: share-secret
 // brute force, the injection charsets that reach a pane command line, the self-token's
 // out-of-scope 403s, pending-never-dispatches, and the client's no-HTML-sink invariant.
-// docs/security-model.md carries the threat model these checks are derived from.
+// The threat-model note these checks were derived from is no longer in this repo; the check list
+// above is what survives of it.
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";

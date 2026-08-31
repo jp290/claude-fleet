@@ -634,7 +634,7 @@ const PI_HARNESS: Harness = {
     selfSchedule: false,
     container: false,
   },
-  // Pi ships no permission layer of its own (its docs/security.md: built-in tools read, write and
+  // Pi ships no permission layer of its own (its own bundled security doc: built-in tools read, write and
   // run shell with the permissions of the pi process), and since 2026-08-12 Fleet deliberately
   // adds none: full local access is the normal operating mode. The note says so at pick time.
   note: "full local access: edits, git/commit, Fleet, tmux and network run with the owner's own reach (owner decision 2026-08-12)",
@@ -2818,7 +2818,7 @@ async function programExecutionView(s: Slot): Promise<Response> {
 // The FLEET_*_CMD stand-ins are module constants read from the server's env, which makes each of
 // them FLEET-WIDE: pointing one at a third-party wrapper sends EVERY repo's diff to that vendor,
 // including repos whose contents the owner never meant to hand out. That is the whole reason a
-// built, measured commit-message wrapper (worker-deepseek.py) sat unused — there was no way to
+// built, measured commit-message wrapper (attic/worker-deepseek.py) sat unused — there was no way to
 // say "this repo, not that one".
 //
 // Two-layer, the same shape as the dispatcher's `dispatchOn` over FLEET_DISPATCH_REPO: the env
@@ -8469,7 +8469,8 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
 // queue, so a Program-MAIN that discovered a new piece of work had to reach for the OWNER token to
 // write it down — the one credential the whole self rail exists to keep out of a session's hands.
 // It was paid twice on one day: the MAIN that briefed this act filed its own predecessor row that
-// way, and a foreign program hit the same class three times (~/private-repo-e, docs/efficiency-pilot-result.md).
+// way, and a foreign program hit the same class three times (measured in an efficiency pilot whose
+// report was never kept in this repo).
 //
 // THE TWO ACTS STAY TWO, and that is the property the whole act rests on. This door writes
 // "pending" as a LITERAL: there is no `queue: true` shorthand like the owner's create route has,
@@ -12945,7 +12946,7 @@ async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null):
 // git commit -m 'repair: …'") and a profile that denies what the contract demands fails SILENTLY:
 // dontAsk auto-denies, the tree stays dirty, and mergeJob's `git reset --hard HEAD` + break turns
 // the whole repair round into a no-op that writes no red. Latent, never observed — repairRounds is
-// 0 in all 104 ledger rows, i.e. the loop was never entered (docs/agent-visibility-2026-08-06.md
+// 0 in all 104 ledger rows, i.e. the loop was never entered (docs/attic/agent-visibility-2026-08-06.md
 // rank 1). The reach it adds is ~nil: `Bash(git rebase:*)` is already granted and a resolver's
 // `git rebase --continue` writes commits anyway, so this grants no capability the merge worker on
 // the same profile did not already have — it only lets the repair worker say so directly.
@@ -13795,7 +13796,7 @@ function auditStats(repo: string): { n: number; p50: number; p90: number } | nul
   const at = (q: number): number => s[Math.min(s.length - 1, Math.max(0, Math.ceil(q * s.length) - 1))];
   return { n: s.length, p50: at(0.5), p90: at(0.9) };
 }
-// ...and its DURABLE mirror. Measured gap (docs/mining-2026-07-26.md finding 1): four lands
+// ...and its DURABLE mirror. Measured gap (docs/attic/mining-2026-07-26.md finding 1): four lands
 // between 18:31 and 18:37 on 2026-07-26 were followed by a watchdog respawn at 18:37:52, and every
 // pending audit died with the old process — no row, no `unknown` marker, nothing that could be
 // told apart from "nothing landed". The trigger is not exotic: the documented deploy ritual for
@@ -15011,7 +15012,7 @@ async function backfillUnknowableAudits(): Promise<void> {
 // weak model succeed): never attribute an outcome to the model alone.
 type LaneDisposition = "landed" | "reverted" | "shelved" | "killed-dirty" | "killed-empty";
 // what ③ said about this lane, AND whether it described the diff that reached the terminal event
-// (docs/perception-layer.md §5). The relation is CONTENT identity, not commit identity: the land
+// (docs/attic/perception-layer.md §5). The relation is CONTENT identity, not commit identity: the land
 // path rebases the lane onto main before the ff-merge, so on a clean land the reviewed commit is
 // never the landed commit even though the diff is byte-identical. Comparing shas/cache keys would
 // mark those reviews stale — chronically, and hardest under the parallelism this layer is for.
@@ -15776,7 +15777,7 @@ async function laneDossier(branch: string, repoHint: string | null): Promise<Lan
 }
 
 
-// --- DISPOSITION rail: the owner's label channel for advisory output (docs/graduation-criteria.md
+// --- DISPOSITION rail: the owner's label channel for advisory output (docs/attic/graduation-criteria.md
 // needs owner labels as ground truth, and Fleet's throwaway workers had none). One append-only
 // record per ruling, same discipline as the audit/outcome logs it sits beside: appendEvent's write
 // chain, mode 600, one JSON line, single-generation rotation.
@@ -16539,7 +16540,7 @@ async function runCleanReview(cwd: string, root: string, branch: string, main: s
   // THE MAIN SIDE ANCHORS ON THE FORK COMMIT, NOT ON `base`. `base` is a branch NAME that tracks the
   // tip (laneBaseRef) and the merge route's `main` is that same branch — so the old `${base}..${main}`
   // was `main..main`: EMPTY for every lane, always, no matter what main gained. That is why all 25
-  // recorded shadow verdicts argued "main gained zero commits since the fork" (docs/mining-2026-07-26.md
+  // recorded shadow verdicts argued "main gained zero commits since the fork" (docs/attic/mining-2026-07-26.md
   // finding 3 read that as degenerate traffic; it is the feed). `baseSha` is the immutable commit the
   // lane forked at, so `${forkSha}..${main}` is main's real new work. Without one (lanes forked before
   // baseSha existed, or an unresolvable fork) the main side is UNKNOWN and is rendered as unknown —
@@ -20452,7 +20453,7 @@ type StewardKind = "state_relay" | "lifecycle_op" | "continue_nudge" | "pulse";
 // "verification-suffix" item — not itself an intervention, just a constant line).
 const STEWARD_VERIFY_SUFFIX = " Verifiziere dein Ergebnis, bevor du fertig meldest.";
 
-// --- kind:"pulse" (docs/steward-pulse-v2.md phase A). The ONE steward kind that carries a
+// --- kind:"pulse" (docs/attic/steward-pulse-v2.md phase A). The ONE steward kind that carries a
 // composed text field — `question`. That is a deliberate exception to the free-text refusal, and
 // four properties keep it from re-opening the hole the typed kinds closed:
 //   1. the DATA block is rendered FROM the deterministic fact layer (briefPayload +
@@ -20690,7 +20691,7 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
 
 // steward reads are a reduced cut of the owner's views (never share passwords, never full
 // thinking/tool-result payloads — same capability-asymmetry stance as the guest cut below).
-// the steward's durable pulse ledger (docs/steward-intelligence.md §3 — the self-model's home),
+// the steward's durable pulse ledger (docs/attic/steward-intelligence.md §3 — the self-model's home),
 // written via the same appendEvent chain as audit. The FILE is a NARRATIVE log and MAY rotate;
 // readStewardJournal reads across the single .1 generation so the Rundgang's delta anchor (its
 // own last record) survives a rotation boundary.
@@ -20803,7 +20804,7 @@ function laneSignalView(s: Slot, now: number) {
   };
 }
 
-// --- context-size proxy (docs/steward-pulse-v2.md phase B): the steward can see that a session
+// --- context-size proxy (docs/attic/steward-pulse-v2.md phase B): the steward can see that a session
 // is running but not how full its context is. The deterministic stand-in is the session's own
 // transcript JSONL — it grows monotonically with the conversation, one stat per slot per read.
 // Two things this fact deliberately does NOT claim:
@@ -21819,7 +21820,7 @@ interface DigestResult { digest: StewardDigest | null; model: string; error?: st
 // What the `digest` field MEANS on this call. It could not say before, and that was the whole
 // cost: `digest:null` covered "a run is still going", "the run died" and "the worker had nothing
 // to say" with one indistinguishable value, so an advisory channel going quiet read exactly like
-// one with nothing to report (docs/autonomy-map-2026-08-06.md §6.1, the cost paragraph). Closed
+// one with nothing to report (docs/attic/autonomy-map-2026-08-06.md §6.1, the cost paragraph). Closed
 // over five states, computed in ONE place below, and `failed` always travels with `error`.
 type DigestStatus =
   | "fresh"    // a verdict, computed inside the TTL window
@@ -21832,7 +21833,7 @@ type DigestStatus =
 const DIGEST_PULSE_MS = 60 * 60 * 1000;
 // "fresh enough" window — a repeat GET inside it skips the worker. It was 2 minutes, i.e. far
 // BELOW the pulse interval, and that made the slow worker structurally invisible
-// (docs/autonomy-map-2026-08-06.md §6.1): every hourly pulse found the window cold, spawned a
+// (docs/attic/autonomy-map-2026-08-06.md §6.1): every hourly pulse found the window cold, spawned a
 // worker, and waited ?wait (30s) on a run whose own budget is SUMMARY_TIMEOUT_MS (180s). A worker
 // needing 30–180s was therefore delivered to nobody, ever — the caller had left, and its result
 // expired long before the next pulse could read it. Above the pulse interval the PREVIOUS run
@@ -22004,7 +22005,7 @@ function trailStatsFromQuery(url: URL): TrailStatsView {
   });
 }
 
-// --- the two ledgers the Rundgang was structurally blind to (docs/mining-2026-07-26.md finding 5:
+// --- the two ledgers the Rundgang was structurally blind to (docs/attic/mining-2026-07-26.md finding 5:
 // the only two RED post-land audits ever recorded were seen by nobody, because the pulse's single
 // gathering call carried no audit result, no outcome row and no shadow verdict). Both trails keep
 // their owner-only routes untouched; this is a WHITELIST projection for the steward principal —
@@ -22163,7 +22164,7 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
       // a comment declaring the blindness closed — but the pulse's ritual makes exactly ONE call,
       // and it is this one (`.claude/commands/rundgang.md`: "One call gathers everything: GET
       // /api/steward/digest"), so the closed hole was open at its only consumer
-      // (docs/agent-visibility-2026-08-06.md §4 rank 2). Same gateView() as the sessions route and
+      // (docs/attic/agent-visibility-2026-08-06.md §4 rank 2). Same gateView() as the sessions route and
       // the owner board: one computed answer, never a second hand-rolled one. Route-computed like
       // its neighbours above — the two judgments it feeds (is this pane finished or waiting on a
       // suite; is starting anything next safe) must not depend on the digest worker being alive.

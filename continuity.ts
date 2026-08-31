@@ -30,7 +30,7 @@ export const CONTINUITY_SOURCES: readonly ContinuitySource[] =
 // (3f70922, ec1ad26), so ~1573 of the file's records are a retroactive reconstruction written by
 // a script that is not in this repo, tagged with a `backfill` source logPrompt's type union does
 // not contain — and its reconstructed `owner` records are indistinguishable from native ones
-// (docs/steward-nudge.md §8). Everything before this instant is therefore hard-excluded by TIME,
+// (docs/attic/steward-nudge.md §8). Everything before this instant is therefore hard-excluded by TIME,
 // not just by source: trusting the tag alone would silently admit the mislabelled ones.
 export const CONTINUITY_REGIME_START = new Date(2026, 6, 19).getTime();
 export const CONTINUITY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;

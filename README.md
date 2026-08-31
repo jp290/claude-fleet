@@ -75,14 +75,14 @@ Below 700px viewport width (or a coarse-pointer device in short landscape) the s
 
 ### Bundled chips: /sharpen and /gosharp
 
-Two general-purpose Claude Code slash commands ship in [`commands/`](commands/) as a working chips demo (canonical home: [jp290/sharpen](https://github.com/jp290/sharpen)):
+Two general-purpose Claude Code slash commands ship in [`attic/commands/`](attic/commands/) as a working chips demo (canonical home: [jp290/sharpen](https://github.com/jp290/sharpen)):
 
 - **`/sharpen`** — prompt compiler: reshapes a rough prompt into the right context plus only the discipline the task needs; executes it only on clear "do this" intent
 - **`/gosharp`** — executor: does the work under sharpened discipline (visible restatement of intent, free self-checks, argue-against-your-own-conclusion before finalizing)
 
 Install them user-wide so every fleet session can invoke them, then surface them as chips:
 ```sh
-cp commands/*.md ~/.claude/commands/
+cp attic/commands/*.md ~/.claude/commands/
 FLEET_CHIPS='/sharpen,/gosharp' bun server.ts
 ```
 - Slot-row actions (hover): **⤴ share** (password-gated, view-only guest link — see [SHARING.md](SHARING.md)), **⇩ export** (full scrollback as a printable light page; `?format=txt` for raw), **✎ rename**, **✕ kill**.

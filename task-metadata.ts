@@ -93,11 +93,11 @@ function processesForPath(path: string): Exclude<TaskProcess, "cross-cutting">[]
   if (path.startsWith("docs/") || path.startsWith("briefs/") || path.endsWith(".md")
     || path === "LICENSE") return ["docs"];
   if (path === "Dockerfile" || path === ".dockerignore" || path === "container-firewall.sh"
-    || path === "docker-entrypoint.sh" || path === "worker-deepseek.py"
+    || path === "docker-entrypoint.sh" || path === "attic/worker-deepseek.py"
     || path.startsWith(".claude/")) return ["harness-adapter"];
   if (path.startsWith("public/") || path.startsWith("src/")) return ["client-ui"];
   if (path === "watchdog.sh" || path === "register.sh" || path === "state.sh"
-    || path === "atlas.sh" || path === "steward-arena.sh" || path.endsWith(".plist")
+    || path === "attic/atlas.sh" || path === "attic/steward-arena.sh" || path.endsWith(".plist")
     || path === "package.json" || path === "bun.lock" || path === ".gitignore"
     || path === "HANDOFF.md" || path === "INTAKE.md" || path === "SHARING.md") return ["betrieb"];
   if (path === "server.ts" || path === "task-metadata.ts" || path.endsWith("-prompt.ts")

@@ -5968,8 +5968,8 @@ let taskTextEpoch = 0;
 let qShell: Shell | null = null;
 let qPick: string | null = null;  // selected task id; null = the compose row
 let qQuery = "";
-type QView = "status" | "waves";
-let qView: QView = "status";      // owner-confirmed primary/default view; polls never reset it
+type QView = "work" | "programs" | "history" | "waves";
+let qView: QView = "work";        // the operational list is primary; polls never reset the view
 let qProgDone = false;            // show `complete` programs in the Programs section (default off)
 let qKey = "";                    // the data key the list was last built from
 let qDetailKey = "";              // the data key the DETAIL pane was last built from (see refresh)
@@ -6559,27 +6559,27 @@ let qProgSel: HTMLSelectElement | null = null;
 // "what needs me", "what did I release", "what is running", and everything else is backlog. So the
 // group is DERIVED from status + analysis + kind, in that priority order, and each group is a
 // standing answer. Nothing here is persisted: change the rule and every row re-sorts itself.
-type QGroup = "needs" | "released" | "running" | "backlog" | "notes" | "closed";
+type QGroup = "needs" | "released" | "running" | "backlog";
 const Q_GROUPS: { k: QGroup; head: string; hint: string }[] = [
   { k: "needs", head: "Needs you", hint: "flagged by the analyst, or waiting on a decision only you can make" },
   { k: "released", head: "Released — runs next", hint: "you promoted these; the dispatcher takes them in this order" },
   { k: "running", head: "Running", hint: "live in a lane" },
-  { k: "backlog", head: "Backlog — about to start", hint: "read and unobjected, or not yet read — yours to release" },
-  { k: "notes", head: "Observations", hint: "advisory rows, not dispatchable work. Change Kind to auftrag to refine or run one" },
-  { k: "closed", head: "Closed", hint: "done and archived" },
+  { k: "backlog", head: "Backlog — about to start", hint: "unreleased work and advisory rows; change an advisory Kind to auftrag before dispatch" },
 ];
 // ADVISORY = every kind the dispatcher refuses, i.e. everything that is not an `auftrag`. Phrased
 // as the negative on purpose: a kind added to the server later is advisory here until someone
 // decides otherwise, which is the safe direction — the alternative would silently offer ▸ release
 // on a row the server answers with 409.
 const qAdvisory = (t: TaskInfo): boolean => t.kind !== undefined && t.kind !== "auftrag";
-function qGroupOf(t: TaskInfo): QGroup {
+const qClosed = (t: TaskInfo): boolean => t.status === "done" || t.status === "archived";
+function qGroupOf(t: TaskInfo): QGroup | null {
+  if (qClosed(t)) return null;
   if (t.status === "sent") return "running";
-  if (t.status === "done" || t.status === "archived") return "closed";
   // an observation is an observation whatever its status says. The check sits ABOVE `queued` on
   // purpose: releasing a note is refused today, but rows promoted before that refusal existed are
   // still in the state file, and showing one under "runs next" would be a promise nothing keeps.
-  if (qAdvisory(t)) return "notes";
+  // It remains visible workbench input, but Backlog is the only honest one of the four work groups.
+  if (qAdvisory(t)) return "backlog";
   if (t.status === "queued") return "released";
   // an unconfirmed criterion is a lane parked on YOUR answer, which outranks any verdict
   if (t.criterion && t.criterion.confirmedAt === null) return "needs";
@@ -6630,6 +6630,29 @@ const qFirstLine = (text: string) => {
   return raw.slice(0, 160);
 };
 const qTag = (text: string) => QT_TAG.exec(text.split("\n")[0] ?? "")?.[1] ?? "";
+
+// SEARCH IS A TASK JOIN, not a text-box convenience. Program title is not carried on a task
+// digest, so the client must resolve the task's programId against the already-loaded Program read.
+// Every searchable dimension stays in this pure block because e2e/tasks.ts executes it against
+// identical task texts; deleting one field makes the corresponding SPEC probe fail.
+function qTaskMatches(t: TaskInfo, text: string,
+  programs: readonly Pick<ProgramInfo, "id" | "title">[], query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  const program = t.programId ? programs.find((candidate) => candidate.id === t.programId) : undefined;
+  return [text, t.id, t.status, t.note ?? "", t.repo ?? "", t.programId ?? "", program?.title ?? ""]
+    .some((field) => field.toLowerCase().includes(needle));
+}
+
+interface QTaskListModel { work: TaskInfo[]; history: TaskInfo[]; showHistoryInWork: boolean }
+function qTaskListModel(tasks: TaskInfo[], texts: ReadonlyMap<string, string>,
+  programs: readonly Pick<ProgramInfo, "id" | "title">[], query: string): QTaskListModel {
+  const needle = query.trim().toLowerCase();
+  const matched = tasks.filter((task) => qTaskMatches(task, texts.get(task.id) ?? "", programs, needle));
+  const work = matched.filter((task) => !qClosed(task));
+  const history = matched.filter(qClosed);
+  return { work, history, showHistoryInWork: needle.length > 0 && history.length > 0 };
+}
 
 // The row contract is deliberately a tuple, not another free-form middot chain: title plus four
 // facts, in the owner-confirmed order. Keeping placement DOM-free makes both completeness and
@@ -7331,6 +7354,17 @@ function renderQueueDetail() {
   };
   shell.detail.replaceChildren();
   if (qPick === null) {
+    if (qView !== "work") {
+      const emptyDetail = qView === "programs"
+        ? ["Programs", "Select a Program to inspect its binding, lifecycle and owner controls."]
+        : qView === "history"
+          ? ["History", "Select a done or archived task to inspect its record."]
+          : ["Waves", "Select a projected task to inspect its evidence and actions."];
+      shell.detail.appendChild(el("div", "rvhead", emptyDetail[0]));
+      shell.detail.appendChild(el("div", "shellhint", emptyDetail[1]));
+      restoreFocus();
+      return;
+    }
     shell.detail.appendChild(el("div", "rvhead", "New task"));
     shell.detail.appendChild(el("div", "shellhint",
       "Describe a feature or a fix. It lands as `pending` — only you move it to `queued`, and only"
@@ -7848,9 +7882,8 @@ function renderQueue() {
   if (!shell || !shell.isOpen()) return;
   void loadTaskTexts(); // no-op unless the visible task set changed
   void loadPrograms();  // no-op unless the poll's digest moved or the floor elapsed
-  const shown = tasksList.filter((t) => !qQuery
-    || qTaskText(t.id).toLowerCase().includes(qQuery)
-    || t.status.includes(qQuery) || (t.note ?? "").toLowerCase().includes(qQuery));
+  const model = qTaskListModel(tasksList, taskText, programsList, qQuery);
+  const shown = model.work;
   // REBUILD ONLY ON CHANGE. Without this the 2 s poll would rebuild the list under the cursor and
   // reset the selection every two seconds — the same class of defect as the compose box above.
   const now = Date.now();
@@ -7859,21 +7892,27 @@ function renderQueue() {
     // the MARK is derived from the slots, so it moves without any program field moving. Leaving
     // it out of the key would freeze a MAIN at `live` for as long as no task changed.
     programsRead, programsList.map((p) => [p.id, p.status, p.title, programMark(p).mark]),
-    shown.map((t) => [t.id, t.status, t.slot, t.note, t.kind, t.briefAt, t.analysis?.verdict,
+    [...model.work, ...model.history].map((t) => [t.id, t.status, t.slot, t.note, t.kind, t.briefAt, t.analysis?.verdict,
       t.analysis?.blockers.join(","), t.analysis?.stale, t.analysis?.retry?.attempts,
       t.criterion ? t.criterion.confirmedAt === null : null, taskText.has(t.id),
       t.refine?.at, t.refining, t.comments?.n])]);
   if (key === qKey) return;
   qKey = key;
 
-  // The status subtitle keeps its established owner-centric summary. Waves names its weaker,
-  // advisory claim and counts everything deliberately kept outside.
+  // Each primary view names only its own domain. Waves keeps its weaker advisory claim and counts
+  // everything deliberately kept outside; Work's counts stay global while a search narrows rows.
   const projection = qView === "waves" ? qWaveProjection() : null;
-  if (!projection) {
+  if (qView === "work") {
     const n = (g: QGroup) => tasksList.filter((t) => qGroupOf(t) === g).length;
     shell.setSubtitle([`${n("needs")} need you`, `${n("released")} released`, `${n("running")} running`,
       `${n("backlog")} backlog`, intakeOn ? "✉ intake on" : ""].filter(Boolean).join(" · "));
-  } else {
+  } else if (qView === "programs") {
+    shell.setSubtitle(programsRead === "fail" ? "Programs unavailable — the last read failed"
+      : `${programsList.length} program${programsList.length === 1 ? "" : "s"}`);
+  } else if (qView === "history") {
+    const count = tasksList.filter(qClosed).length;
+    shell.setSubtitle(`${count} done or archived task${count === 1 ? "" : "s"}`);
+  } else if (projection) {
     const placed = projection.repos.reduce((n, repo) =>
       n + repo.waves.reduce((m, wave) => m + wave.tasks.length, 0), 0);
     shell.setSubtitle(`${placed} with no known collision · ${projection.unresolved.length} unresolved outside`
@@ -7927,19 +7966,12 @@ function renderQueue() {
   };
 
   let visibleRows = 0;
-  if (!projection) {
-    add({ name: "＋ New task", cls: "qnew", id: null });
-    // PROGRAMS above the task groups: they are the frames the rows below belong to, and the one
-    // question this list has to answer about each — does it still have a living MAIN — is derived
-    // from the same poll that paints the board.
+  if (qView === "programs") {
     const progMatch = programsList.filter((p) => !qQuery
-      || p.title.toLowerCase().includes(qQuery) || p.status.includes(qQuery)
+      || p.id.toLowerCase().includes(qQuery) || p.title.toLowerCase().includes(qQuery) || p.status.includes(qQuery)
       || programMark(p).mark.includes(qQuery));
-    // A COMPLETE PROGRAM IS HISTORY, NOT WORK — and on this board history outnumbers the living
-    // frames badly enough to bury them (51 complete rows measured 2026-08-30). So `complete` is
-    // folded away by default behind a labelled toggle. Nothing is deleted; the fold is a view.
-    // A SEARCH OVERRIDES THE FOLD: a query that names a complete program must find it, otherwise
-    // the box would answer "no match" about a row that plainly exists.
+    // Complete programs stay in their own Program catalogue but begin folded; task History is a
+    // different view. A search overrides this fold so a named Program can always be found here.
     const progDone = progMatch.filter((p) => p.status === "complete");
     const progFold = !qQuery && !qProgDone && progDone.length > 0;
     const progShown = progFold ? progMatch.filter((p) => p.status !== "complete") : progMatch;
@@ -7971,17 +8003,31 @@ function renderQueue() {
           facts: [`MAIN ${mark}`, p.status,
             p.main && typeof p.main.slot === "number" ? `slot ${p.main.slot}` : "", "program"],
         });
+        visibleRows++;
       }
-      // the toggle is only a control while the search is not already deciding what is visible
       if (!qQuery && progDone.length) {
-        const t = el("div", "qfold",
-          `${progFold ? "▸ show" : "▾ hide"} completed (${progDone.length})`);
+        const t = el("button", "qfold",
+          `${progFold ? "▸ show" : "▾ hide"} completed (${progDone.length})`) as HTMLButtonElement;
+        t.type = "button";
         t.onclick = progToggle;
         shell.list.appendChild(t);
       }
     }
+    if (!visibleRows && !progDone.length && programsRead !== "fail") shell.list.appendChild(el("div", "pknone",
+      qQuery ? "no programs match this search" : "no programs yet"));
+  } else if (qView === "history") {
+    if (model.history.length) {
+      addSection("History", model.history.length, "done and archived tasks, newest first");
+      for (const task of [...model.history].sort((a, b) => b.created - a.created)) {
+        addTask(task);
+        visibleRows++;
+      }
+    } else shell.list.appendChild(el("div", "pknone",
+      qQuery ? "no historical tasks match this search" : "History is empty — no done or archived tasks"));
+  } else if (qView === "work") {
+    if (!qQuery) add({ name: "＋ New task", cls: "qnew", id: null });
     for (const g of Q_GROUPS) {
-      const group = shown.filter((t) => qGroupOf(t) === g.k);
+      const group = model.work.filter((t) => qGroupOf(t) === g.k);
       if (!group.length) continue;
       addSection(g.head, group.length, g.hint);
       // "Released" is the ONE group with a real order — it is the dispatcher's own pick order
@@ -7992,9 +8038,21 @@ function renderQueue() {
         : [...group].sort((a, b) => b.created - a.created);
       for (const t of sorted) { addTask(t); visibleRows++; }
     }
-    if (!shown.length) shell.list.appendChild(el("div", "pknone",
-      tasksList.length ? "no tasks match this search" : "no tasks yet"));
-  } else {
+    // Search is the sole exception to History's explicit view: a closed task that matches must be
+    // findable from the default Work surface, but an empty query never leaks one historical row.
+    if (model.showHistoryInWork) {
+      addSection("History", model.history.length, "search matches among done and archived tasks");
+      for (const task of [...model.history].sort((a, b) => b.created - a.created)) {
+        addTask(task);
+        visibleRows++;
+      }
+    }
+    if (!visibleRows) shell.list.appendChild(el("div", "pknone", qQuery
+      ? "no tasks match this search"
+      : `Work is clear — no open tasks.${model.history.length
+        ? ` Choose History to inspect ${model.history.length} done or archived task${model.history.length === 1 ? "" : "s"}.`
+        : ""}`));
+  } else if (projection) {
     const visibleIds = new Set(shown.map((t) => t.id));
     const taskById = new Map(tasksList.map((t) => [t.id, t]));
     for (const repo of projection.repos) for (const wave of repo.waves) {
@@ -8050,7 +8108,7 @@ function openQueue() {
   qShell?.close();
   qPick = null;
   qQuery = "";
-  qView = "status";
+  qView = "work";
   qProgDone = false;
   qKey = "";
   qCompose = null;
@@ -8087,33 +8145,44 @@ function openQueue() {
   qShell = shell;
 
   const view = el("div", "qview");
-  const statusView = el("button", "", "Status") as HTMLButtonElement;
-  const wavesView = el("button", "", "Waves") as HTMLButtonElement;
+  view.setAttribute("role", "group");
+  view.setAttribute("aria-label", "Task queue views");
+  const views = ([
+    ["work", "Work"], ["programs", "Programs"], ["history", "History"], ["waves", "Waves"],
+  ] as const).map(([id, label]) => {
+    const button = el("button", "", label) as HTMLButtonElement;
+    button.type = "button";
+    return { id, button };
+  });
   const paintView = () => {
-    statusView.classList.toggle("on", qView === "status");
-    wavesView.classList.toggle("on", qView === "waves");
-    statusView.setAttribute("aria-pressed", String(qView === "status"));
-    wavesView.setAttribute("aria-pressed", String(qView === "waves"));
+    for (const item of views) {
+      const selected = qView === item.id;
+      item.button.classList.toggle("on", selected);
+      item.button.setAttribute("aria-pressed", String(selected));
+    }
   };
   const chooseView = (next: QView) => {
     if (qView === next) return;
+    if (qPick !== null) qBsSeq++;
     qView = next;
+    qPick = null;
+    qRawAck = null;
     qKey = "";
     qDetailKey = "";
     paintView();
     renderQueue();
     renderQueueDetail();
   };
-  statusView.onclick = () => chooseView("status");
-  wavesView.onclick = () => chooseView("waves");
-  view.append(statusView, wavesView);
+  for (const item of views) item.button.onclick = () => chooseView(item.id);
+  view.append(...views.map((item) => item.button));
   paintView();
   shell.tools.appendChild(view);
 
   const search = el("input", "pkfilterin") as HTMLInputElement;
   search.type = "text";
   search.spellcheck = false;
-  search.placeholder = "search tasks — text, status or note";
+  search.placeholder = "search tasks — text, ID, status, repo or program";
+  search.setAttribute("aria-label", "Search tasks by text, ID, status, repository or program");
   search.addEventListener("input", () => { qQuery = search.value.trim().toLowerCase(); qKey = ""; renderQueue(); });
   shell.tools.appendChild(search);
 
@@ -8154,6 +8223,7 @@ function openQueue() {
 
   renderQueue();
   renderQueueDetail();
+  search.focus();
 }
 
 // --- audit trail overlay (Backlog #9): owner-only read-only lens over /api/audit ---

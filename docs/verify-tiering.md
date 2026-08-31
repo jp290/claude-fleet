@@ -1456,7 +1456,7 @@ conclusion ("not proven") from a wrong measurement. Two lanes were also reported
 suite without taking the lock; the lock is a convention carried in each brief, so any lane that is
 briefed without it silently breaks everyone else's serial proof.
 
-### 11.2j A twelfth family: the `pi-unfenced` watch-delivery quartet (2026-08-31, filed — NOT repaired, discriminator NOT isolated)
+### 11.2j A twelfth family: the `pi-unfenced` watch-delivery quartet (2026-08-31 filed; 2026-09-01 test-side repair cut 1 — preconditions MEASURED, discriminator still NOT isolated)
 
 **Status: open, and weaker than the entries above it** — non-determinism is proven, the CAUSE is
 not. Filed from the Generalsanierung P0 baseline, where it cost the baseline itself.
@@ -1575,13 +1575,103 @@ while the draft was still held, i.e. the receiver pane was replaced underneath t
 fresh occupant had an empty composer — the exact addendum mechanism, seen one block earlier.
 `ba4169a` is docs + comment lines only. loadavg 3.49 at run.
 
+**Correction to that reading, from the repair lane:** the stated mechanism contradicts the quoted
+detail. `draftBytes: 45` says the owner draft WAS in the composer at read time, and nothing in this
+fixture re-types it — a replaced pane would have shown a fresh stand-in's EMPTY buffer, 0 bytes, and
+the check's own `heldDraft.text === draft` conjunct would have failed too. It did not. What is left
+is that the two readings of "the composer is occupied" disagreed: transport's pre-paste refusal
+reads the RENDERED FRAME (`composerResidue`), while this fixture reads the stand-in's INTERNAL
+buffer, and only a frame that did not show the draft at that instant lets `sendText` past the
+refusal and raises `attempts`. Cut 1 therefore reads the FRAME here too, beside the buffer, and
+prints `frameBytes`/`frameIsDraft` — on the healthy path both carry the draft, and the next
+occurrence names which reading failed instead of blaming the pane.
+
+**Repair, cut 1 (2026-09-01, test-side only — server.ts and lane-signals.ts untouched).** The
+genus is §11.2f: every member asserts a precondition the fixture does not own. Seven checks in
+`e2e/watch.ts` sit on one receiver (the `pi-unfenced` stand-in, `uId`) — eight counting the `held:`
+member main filed while this lane was running — and not one of them ever
+established that it is still talking to the pane it opened on, or that the composer still holds
+what the fixture put there. Both are now MEASURED, per window, by `e2e/watch.ts#windowIntact` —
+tmux's own `pane_id` plus the server's occupant stamp (`openedAt`) plus `agent === "alive"`, and
+optionally the stand-in's internal buffer. Six windows are stamped: the owner-draft hold, the held
+refusals, the subject teardown, the counterprobe, the kill-switch release, and the one-shot-across-later-ticks
+read, plus the `held:` refusal read that §11.2j's eighth member sits on. When a window breaks, the fixture fails as ITSELF with the recreation named
+(`the receiver pane was REPLACED under this window … before=… after=…`) and the member it would have
+mis-accused is skipped — the same shape `54bae42` used for §11.2f, and no member predicate was
+weakened: every conjunct still stands, it just no longer runs against a pane that is not there.
+
+Two windows the fixture could actually CLOSE were closed. (a) The kill-switch group entered its
+window on one `BSpace` and a 100 ms sleep, i.e. on an assertion that the composer is empty. It is
+not the group's subject but its precondition: residue makes `sendText` refuse BEFORE the paste, and
+`tickWatches`' `SendRefused` arm puts the event back to `pending` and rolls `attempts` to 0 —
+exactly the shape the first member reports as "the release never delivered". It now drains to a
+window of CONFIRMED emptiness (the slow-paste teardown's own loop, extracted as `drainComposer`)
+and checks the result in BOTH readings transport uses, internal buffer and rendered frame.
+(b) `rollback live falsifier: recycled slot identity …` compared `successorOpenedAt !== oldOpenedAt`
+where `oldOpenedAt` came from an event row that may never have existed — `undefined`, so the
+identity conjunct passed WITHOUT ever comparing two identities. That precondition is now its own
+named check.
+
+**One mechanism the repair DID pin down, measured on the green runs: the `freed:400` conjunct sits
+one event from the cap by construction.** `server.ts#slotDeliveryBudget` refuses when
+`deliveryDebts + armedReservations >= cap`, and delivery debts include delivered-but-UNACKNOWLEDGED
+events, not just pending ones (`server.ts:6853`). On both green runs the new `budgetAtFree` detail
+read `armed: []` and four open debts — three `delivered`, one `pending` — against `WATCH_MAX_PER_SLOT`
+= 5. So the block fills to refusal, the doomed row going terminal frees exactly ONE, and
+`freedRes.ok` then has a margin of exactly one event. Any additional debt on that receiver inside
+that window — an unacked fill delivery landing a beat later — consumes the margin and produces the
+unexplained `400`. That is a hypothesis with a probe attached rather than a conclusion: it was
+measured on the green path, never yet on the failing one, and `budgetAtFree` now prints the exact
+debt list at the instant the door is knocked on, so the next occurrence either confirms it or kills
+it. The conjunct itself was deliberately NOT relaxed — a check that stopped asserting the budget is
+freed would stop proving the thing it exists for.
+
+The contradictory double reading (§11.2j's seventh member) is not resolved, but it is now
+self-resolving on the next occurrence: `subject-gone` and its counterprobe each print the id they
+ASKED for, the id of the row they GOT, how many rows currently carry that id, what the earlier read
+saw, and a `flippedBack` flag; the `freed:400` prints the receiver's armed watches and open debts
+at the instant the door was knocked on.
+
+**Verification of cut 1 (2026-09-01).** Full gate chain green on `c45b574`
+(`bun install --frozen-lockfile` · `bun e2e/pins.ts` ALL PASS · `tsc --strict` over the gate's file
+list exit 0 · `bun run build` exit 0 · `./e2e-clean-review.sh` exit 0 ALL PASS · `./e2e-security.sh`
+exit 0 ALL PASS · `./e2e-claude-gate.sh` exit 0 ALL PASS). Then THREE serial `./e2e-isolated.sh`
+runs, each **3373 PASS / 0 FAIL / ALL PASS**, loadavg at start 2.38 / 2.53 / 2.10 — never two suites
+at once (the `e2e-stage.sh` mutex serialized them against the live server's own post-land audits and
+another lane's run). A fourth run was launched first and is NOT counted: it was killed while still
+queued for the mutex, never acquired it, and produced no measurement — its log ends at
+`waiting 484s`.
+
+What the three runs also MEASURED, and it is the point of the repair: `pane_id` and `openedAt` were
+**identical across all five windows within each run** (`%76`, one `openedAt` per run). On a healthy
+run this receiver's pane is never recreated — so a future §11.2j red now separates cleanly into "the
+pane went away" (the precondition line, flake) and "the pane held and the delivery still went wrong"
+(ECHT).
+
+**Correction to the addendum above — the "the heal replaces the occupant" reading is UNPROVEN, not
+established.** Re-read at `fleet-e2e-instance-4110` on 2026-09-01: (1) `server.ts#ensureSlot` emits
+the identical `slot N: created tmux session 'sN' in <cwd>` line for a deliberate `openSlot` and for
+a self-heal, and audits BOTH as `self_heal_recreate` (only `cause === "restart"` differs) — so
+neither the log nor the audit event distinguishes them; (2) the two `slot 7: created` lines are
+fully accounted for by two KNOWN opens the fixture itself performs a few lines later — the identity
+falsifier's `kill`+`open` of `uId`, and the CLARIFICATION-CHANNEL section's `main2` opening on the
+freed slot (the `slot 6` line between them is its `main1`); (3) the kept instance's audit files
+cover 23:37:35–23:39:59 while the watch module ran at ~21:17–21:19, so its silence about a slot-7
+heal proves nothing either way. What survives from the addendum is the honest bookkeeping over a
+receiver that was gone by recovery time; what does NOT survive is the claim that a heal caused it.
+`pane_id` is the only external witness that separates the two, which is why cut 1 stamps it.
+
 **Post-mortem discriminator.** Unlike §11.2i this family fails as REAL failing checks, not as a
 silent no-measurement: the runs carry 3345/3344 PASS and named FAIL rows. Preserved instances from
 the two red runs are kept: `fleet-e2e-instance-80791` (run 2) and `fleet-e2e-instance-26770`
 (run 3) — neither has been dissected.
 
 **Consequence for the Generalsanierung.** A red on these lines is a flake candidate; a red anywhere
-else is still ECHT and still yours. But the P0 baseline demands three CONSECUTIVE green runs, and
+else is still ECHT and still yours. After cut 1 the shape of a red on these lines changed and that
+changes what you owe: a `receiver precondition (<window>)` FAIL is the fixture saying the pane went
+away under it — flake, and it names itself. A member failing while its precondition PASSED is no
+longer a §11.2j candidate at all: the pane and the composer were both proven intact, so that red is
+ECHT and yours. But the P0 baseline demands three CONSECUTIVE green runs, and
 until this family is either repaired or its discriminator isolated, that baseline is only
 obtainable under the stated conditions (clean tree, controller idle) — which is itself a finding
 about what this machine can prove while seven sessions share the checkout.

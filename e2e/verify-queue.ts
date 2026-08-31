@@ -36,7 +36,11 @@ const TMP = process.env.TMPDIR ?? "/tmp";
 const REAL_LOCK = process.env.FLEET_SUITE_LOCK ?? "/tmp/fleet-e2e.lock"; // what e2e-stage.sh took
 const OWN_LOCK = `${TMP}/fleet-e2e-gatelock-${process.pid}`; // never the real one — see the header
 
-interface GateLock { pid: number | null; alive: boolean | null; heldMs: number; state: string }
+interface GateLock {
+  pid: number | null; alive: boolean | null; heldMs: number; ageMs?: number; acquiredAt?: number | null;
+  identityProven?: boolean | null; birth?: { stored: string | null; current: string | null; state: string };
+  nextAction?: string; reason?: string; effect?: string; state: string;
+}
 interface GateReport { slot: number | null; label: string | null; phase: string; suite: string;
   exitCode: number | null; at: number; origin?: string; branch?: string | null }
 interface Gate { lock: GateLock | null; reports: GateReport[] }
@@ -70,6 +74,12 @@ const selfPost = (token: string | undefined, body: unknown): Promise<Response> =
     headers: { "content-type": "application/json", ...(token !== undefined ? { "x-fleet-self-token": token } : {}) },
     body: JSON.stringify(body),
   });
+const processBirthOf = (pid: number): string => {
+  const p = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" });
+  return p.status === 0 ? p.stdout.trim().replace(/\s+/g, " ") : "";
+};
+const differentValidBirth = (actual: string): string =>
+  actual === "Mon Jan 1 00:00:00 2001" ? "Tue Jan 2 00:00:00 2001" : "Mon Jan 1 00:00:00 2001";
 
 // same race as security.ts's selfTokenOf: openSlot mints the credential and queues saveState
 // BEFORE it awaits the pane spawn, so the route can answer a hair before the file carries it
@@ -86,6 +96,9 @@ async function selfTokenOf(slot: number): Promise<string> {
 }
 
 export async function run(): Promise<void> {
+  const thisBirth = processBirthOf(process.pid);
+  check("fixture: the host exposes a process-birth fingerprint for this harness",
+    /^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/.test(thisBirth), thisBirth);
   // ===== §1 the REAL mutex: does the projection agree with the disk? =====
   // This suite is holding it right now — e2e-stage.sh takes the lock when a wrapper sources it,
   // and records the wrapper's pid. The wrapper is this process's parent (the harness is launched
@@ -128,12 +141,22 @@ export async function run(): Promise<void> {
     // a holder that is unquestionably alive: this harness
     mkdirSync(OWN_LOCK, { recursive: true });
     writeFileSync(`${OWN_LOCK}/pid`, `${process.pid}\n`);
+    writeFileSync(`${OWN_LOCK}/birth`, `${thisBirth}\n`);
     await Bun.sleep(1100); // so the held-duration assertion below measures something real
     const live = (await gateOf())?.lock;
     check("§2 a live holder is named and reported alive",
       live?.pid === process.pid && live.alive === true, JSON.stringify(live));
+    check("§2 a live holder is held only when PID and process-birth identity match",
+      live?.identityProven === true && live.birth?.state === "matched" && live.nextAction === "wait"
+        && live.reason === `recorded pid ${process.pid} is alive and its process-birth fingerprint matches`
+        && live.effect === "a suite is holding the mutex",
+      JSON.stringify(live));
     check("§2 the hold duration is measured from the claim, not from the request",
       (live?.heldMs ?? 0) >= 1000, String(live?.heldMs));
+    check("§2 acquisition age names its semantics and stays tied to the claim timestamp",
+      live?.acquiredAt !== null && live?.acquiredAt !== undefined && (live.ageMs ?? 0) >= 1000
+        && Math.abs((live.ageMs ?? -1) - live.heldMs) < 100,
+      JSON.stringify(live));
     check("§2 a live holder inside the normal window is `held` — a suite is running",
       live?.state === "held", JSON.stringify(live));
 
@@ -145,11 +168,52 @@ export async function run(): Promise<void> {
     const over = (await gateOf())?.lock;
     check("§2 a live holder past the overdue cap is `overdue` — still alive, no longer normal",
       over?.state === "overdue" && over.alive === true && over.pid === process.pid, JSON.stringify(over));
+    check("§2 overdue still requires proven PID+birth identity, and its next act is inspection",
+      over?.identityProven === true && over.nextAction === "inspect holder"
+        && over.reason === `recorded pid ${process.pid} is alive and its process-birth fingerprint matches`,
+      JSON.stringify(over));
     check("§2 overdue is the ONLY warning state: it is reached by TIME, on a holder that is alive",
       over?.heldMs !== undefined && over.heldMs > 20 * 60_000, String(over?.heldMs));
     // and back, so the checks below start from an unaged claim
     const nowStamp = new Date();
     utimesSync(`${OWN_LOCK}/pid`, nowStamp, nowStamp);
+
+    writeFileSync(`${OWN_LOCK}/birth`, `${differentValidBirth(thisBirth)}\n`);
+    const recycled = (await gateOf())?.lock;
+    check("§2 a live recycled PID mismatch is NOT a holder: it is stale and reapable",
+      recycled?.pid === process.pid && recycled.alive === true && recycled.identityProven === false
+        && recycled.birth?.state === "mismatched" && recycled.state === "stale"
+        && recycled.nextAction === "reap on next contender"
+        && recycled.reason === `recorded pid ${process.pid} is alive but its process-birth fingerprint differs`
+        && recycled.effect === "the live process is not the recorded holder; the next contender may safely reap this lock",
+      JSON.stringify(recycled));
+    check("§2 recycled-PID classification is read-only on the server: the lock is not reaped by the projection",
+      readFileSync(`${OWN_LOCK}/pid`, "utf8").trim() === String(process.pid)
+        && readFileSync(`${OWN_LOCK}/birth`, "utf8").trim() === differentValidBirth(thisBirth),
+      `${readFileSync(`${OWN_LOCK}/pid`, "utf8").trim()} ${readFileSync(`${OWN_LOCK}/birth`, "utf8").trim()}`);
+
+    rmSync(`${OWN_LOCK}/birth`, { force: true });
+    const missingBirth = (await gateOf())?.lock;
+    check("§2 a live legacy holder with missing birth identity is UNKNOWN, not held or stale",
+      missingBirth?.pid === process.pid && missingBirth.alive === true && missingBirth.identityProven === null
+        && missingBirth.birth?.state === "missing" && missingBirth.state === "unknown"
+        && missingBirth.nextAction === "inspect or wait"
+        && missingBirth.effect === "a possibly live legacy holder is preserved; contenders must not auto-reap it",
+      JSON.stringify(missingBirth));
+    writeFileSync(`${OWN_LOCK}/birth`, "\n");
+    const emptyBirth = (await gateOf())?.lock;
+    check("§2 a live holder with empty birth identity is UNKNOWN and is not auto-reapable",
+      emptyBirth?.pid === process.pid && emptyBirth.identityProven === null && emptyBirth.birth?.state === "empty"
+        && emptyBirth.state === "unknown" && emptyBirth.nextAction === "inspect or wait",
+      JSON.stringify(emptyBirth));
+    writeFileSync(`${OWN_LOCK}/birth`, "not-a-birth\n");
+    const malformedBirth = (await gateOf())?.lock;
+    check("§2 a live holder with malformed birth identity is UNKNOWN and is not auto-reapable",
+      malformedBirth?.pid === process.pid && malformedBirth.identityProven === null
+        && malformedBirth.birth?.state === "malformed" && malformedBirth.state === "unknown"
+        && malformedBirth.reason === `recorded pid ${process.pid} is alive, but holder identity is malformed`,
+      JSON.stringify(malformedBirth));
+    writeFileSync(`${OWN_LOCK}/birth`, `${thisBirth}\n`);
 
     // a holder that is gone. spawnSync has already reaped this child, so the pid is dead by the
     // time it is written — asserted here rather than assumed, because a recycled pid would turn
@@ -159,6 +223,7 @@ export async function run(): Promise<void> {
     try { process.kill(gone, 0); } catch { goneIsDead = true; }
     check("§2 fixture: a pid that is genuinely no longer running", goneIsDead && gone > 0, String(gone));
     writeFileSync(`${OWN_LOCK}/pid`, `${gone}\n`);
+    writeFileSync(`${OWN_LOCK}/birth`, `${differentValidBirth(thisBirth)}\n`);
     const dead = (await gateOf())?.lock;
     check("§2 a dead holder is named AND flagged dead — the next suite reaps this dir",
       dead?.pid === gone && dead.alive === false, JSON.stringify(dead));
@@ -166,11 +231,15 @@ export async function run(): Promise<void> {
     // (e2e-stage.sh:38), so every finished suite leaves this behind. Measured 2026-08-04: 18 min
     // of it on a quiet machine. It must never be the same class as `overdue`, which is a fault.
     check("§2 a dead holder is `stale`, NOT a warning — nothing is running and nothing is wrong",
-      dead?.state === "stale", JSON.stringify(dead));
+      dead?.state === "stale" && dead.nextAction === "reap on next contender"
+        && dead.reason === `recorded pid ${gone} is gone`
+        && dead.effect === "the next contender removes this stale lock before acquiring",
+      JSON.stringify(dead));
 
     // pid 0 addresses the caller's own process group, so a naive liveness probe answers "alive"
     // about the server itself and reports a lock nobody holds as held
     writeFileSync(`${OWN_LOCK}/pid`, "0\n");
+    rmSync(`${OWN_LOCK}/birth`, { force: true });
     const zero = (await gateOf())?.lock;
     check("§2 a pid file containing 0 is unreadable content, never a live holder",
       zero?.pid === null && zero.alive === false, JSON.stringify(zero));
@@ -182,9 +251,21 @@ export async function run(): Promise<void> {
       zero?.state === "stale" && junk?.state === "stale",
       `zero=${JSON.stringify(zero)} junk=${JSON.stringify(junk)}`);
 
+    rmSync(`${OWN_LOCK}/pid`, { force: true });
+    writeFileSync(`${OWN_LOCK}/birth`, `${thisBirth}\n`);
+    const torn = (await gateOf())?.lock;
+    check("§2 a birth-only lock is a torn acquisition: stale and reapable, not a manual park",
+      torn?.pid === null && torn.alive === false && torn.identityProven === false
+        && torn.birth?.state === "matched" && torn.state === "stale"
+        && torn.nextAction === "reap on next contender"
+        && torn.reason === "the lock dir carries a process-birth fingerprint but no pid"
+        && torn.effect === "the next contender removes this torn acquisition before acquiring",
+      JSON.stringify(torn));
+
     // a pid-LESS dir is a human parking the machine, and e2e-stage.sh never reaps one — it must
     // therefore never be reported with the same `alive: false` that means "reapable"
     rmSync(`${OWN_LOCK}/pid`, { force: true });
+    rmSync(`${OWN_LOCK}/birth`, { force: true });
     const parked = (await gateOf())?.lock;
     check("§2 a pid-less lock dir is a manual park: no pid, and liveness is UNKNOWN, not false",
       parked?.pid === null && parked.alive === null, JSON.stringify(parked));
@@ -251,18 +332,44 @@ export async function run(): Promise<void> {
     rmSync(PROBE, { recursive: true, force: true });
     mkdirSync(PROBE, { recursive: true });
     writeFileSync(`${PROBE}/pid`, `${process.pid}\n`);
+    writeFileSync(`${PROBE}/birth`, `${thisBirth}\n`);
     const held = await stageSay(2500);
     check("§2b blocking on a LIVE holder speaks immediately, naming the pid it is waiting for",
-      /^\[suite-lock\][^\n]* waiting [01]s for [^\n]* — held by live pid \d+ \(up /m.test(held)
-        && held.includes(`held by live pid ${process.pid} `), JSON.stringify(held.slice(0, 400)));
+      /^\[suite-lock\][^\n]* waiting [01]s for [^\n]* — held by live pid \d+ with proven identity \(up /m.test(held)
+        && held.includes(`held by live pid ${process.pid} with proven identity `), JSON.stringify(held.slice(0, 400)));
     check("§2b it never claims to have acquired a lock it is still waiting for",
       !/ acquired after /.test(held), JSON.stringify(held.slice(0, 400)));
     check("§2b the blocked probe left the holder's pid file untouched",
       readFileSync(`${PROBE}/pid`, "utf8").trim() === String(process.pid), readFileSync(`${PROBE}/pid`, "utf8").trim());
+    check("§2b the blocked probe left the holder's birth fingerprint untouched",
+      readFileSync(`${PROBE}/birth`, "utf8").trim() === thisBirth, readFileSync(`${PROBE}/birth`, "utf8").trim());
+
+    writeFileSync(`${PROBE}/birth`, `${differentValidBirth(thisBirth)}\n`);
+    const recycledSay = await stageSay(5000);
+    check("§2b a live recycled PID is called stale because its birth fingerprint changed",
+      new RegExp(`waiting [01]s for [^\\n]* — stale — recorded pid ${process.pid} is alive but its process-birth fingerprint changed`).test(recycledSay)
+        && !recycledSay.includes("held by live pid"), JSON.stringify(recycledSay.slice(0, 400)));
+    check("§2b the recycled-PID lock is reaped and acquired without touching the live process",
+      / acquired after \d+s \(pid \d+\)$/m.test(recycledSay)
+        && readFileSync(`${PROBE}/pid`, "utf8").trim() !== String(process.pid)
+        && processBirthOf(process.pid) === thisBirth,
+      JSON.stringify(recycledSay.slice(0, 400)));
+
+    writeFileSync(`${PROBE}/birth`, `${thisBirth}\n`);
+    rmSync(`${PROBE}/pid`, { force: true });
+    const tornSay = await stageSay(5000);
+    check("§2b a birth-only torn acquisition is called stale, not parked",
+      /waiting [01]s for [^\n]* — stale — lock has a process-birth fingerprint but NO pid/.test(tornSay)
+        && !tornSay.includes("parked") && !tornSay.includes("held by live pid"),
+      JSON.stringify(tornSay.slice(0, 400)));
+    check("§2b the torn acquisition is reaped and the lock actually taken",
+      / acquired after \d+s \(pid \d+\)$/m.test(tornSay) && readFileSync(`${PROBE}/pid`, "utf8").trim() !== "",
+      JSON.stringify(tornSay.slice(0, 400)));
 
     // PARKED: a pid-LESS dir. Nothing reaps it, ever — the one state where "keep waiting" is the
     // wrong answer, so the line has to say so instead of looking like a busy machine.
     rmSync(`${PROBE}/pid`, { force: true });
+    rmSync(`${PROBE}/birth`, { force: true });
     const parkedSay = await stageSay(2500);
     check("§2b a hand-parked (pid-less) dir is called parked, and says nothing will ever reap it",
       /waiting [01]s for [^\n]* — parked — the dir carries NO pid file/.test(parkedSay)
@@ -274,11 +381,22 @@ export async function run(): Promise<void> {
     // the vocabulary is worthless if the third state is only ever described and never resolved.
     rmSync(PROBE, { recursive: true, force: true });
     mkdirSync(PROBE, { recursive: true });
+    writeFileSync(`${PROBE}/pid`, `${process.pid}\n`);
+    const missingSay = await stageSay(2500);
+    check("§2b a live legacy holder with missing birth identity is called unknown and is not reaped",
+      /waiting [01]s for [^\n]* — unknown — recorded pid \d+ is alive, but the lock has no process-birth fingerprint/.test(missingSay)
+        && !/ acquired after /.test(missingSay)
+        && readFileSync(`${PROBE}/pid`, "utf8").trim() === String(process.pid),
+      JSON.stringify(missingSay.slice(0, 400)));
+
+    rmSync(PROBE, { recursive: true, force: true });
+    mkdirSync(PROBE, { recursive: true });
     const goneP = spawnSync("/bin/sh", ["-c", "exit 0"]).pid ?? 0;
     let deadNow = false;
     try { process.kill(goneP, 0); } catch { deadNow = true; }
     check("§2b fixture: a pid that is genuinely no longer running", deadNow && goneP > 0, String(goneP));
     writeFileSync(`${PROBE}/pid`, `${goneP}\n`);
+    writeFileSync(`${PROBE}/birth`, `${differentValidBirth(thisBirth)}\n`);
     const stale = await stageSay(5000);
     check("§2b a dead holder is called stale, distinctly from parked and from held",
       new RegExp(`waiting [01]s for [^\\n]* — stale — recorded pid ${goneP} is gone`).test(stale)

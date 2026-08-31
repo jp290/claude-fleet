@@ -5,6 +5,16 @@ Prinzipal-/Scope-Regeln (wer welche Route bekommt, 409-Semantik) und die Diszipl
 `CLAUDE.md`; hier liegen Feldformen, Deckel, Ablehnungen und die curl-Beispiele. Bei Widerspruch
 gilt der Code.
 
+## gate — `GET /api/self/gate`
+
+Liefert die Gate-Konfiguration dieser Lane plus die aktuell gemessene Suite-Mutex-Sicht. `suiteLock`
+ist `null`, wenn kein Lock-Verzeichnis existiert; sonst trägt es `state`
+`held|overdue|stale|parked|unknown`, `pid`, `alive`, `identityProven`,
+`birth{stored,current,state}`, `acquiredAt`, `ageMs`/legacy `heldMs`, `nextAction`, `reason` und
+`effect`. `held`/`overdue` verlangen eine live PID und passenden Prozess-Geburtsabdruck; live PID
+mit anderem Abdruck ist `stale` und durch den nächsten Contender reapbar; live PID mit fehlendem,
+leerem, malformed oder unmessbarem Abdruck ist `unknown` und wird nicht automatisch gereapt.
+
 ## autos — `POST /api/self/autos`
 
 Use them to schedule a future check-in on yourself, e.g. right before you'd otherwise go idle waiting on
@@ -409,7 +419,11 @@ Dateien reisen NICHT mit**; ihre Zahl steht als `untracked` im Job, damit ein gr
 - `waitPolicy{freeMs,heldMs}` — die Wartezahlen aus `SUITE_OFFER_WAIT_FREE_MS` /
   `SUITE_OFFER_WAIT_HELD_MS`, damit die Lane sie nicht aus dem Gedächtnis zitiert.
 - `suiteLock` — dieselbe Sicht wie in `/api/self/gate`: `null` frei, sonst `state`
-  `held|overdue|stale|parked`. Sie entscheidet, wie lange Warten sich lohnt.
+  `held|overdue|stale|parked|unknown` plus `pid`, `alive`, `identityProven`,
+  `birth{stored,current,state}`, `acquiredAt`, `ageMs`/legacy `heldMs`, `nextAction`, `reason`
+  und `effect`. `held`/`overdue` setzen eine live PID und einen passenden Prozess-Geburtsabdruck
+  voraus; eine live PID mit abweichendem Abdruck ist `stale` und reapbar, eine live PID mit fehlendem
+  oder unmessbarem Abdruck ist `unknown` und wird nicht automatisch gereapt.
 
 **Die Ablehnungen von `withdraw`:**
 

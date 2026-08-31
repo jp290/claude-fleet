@@ -1,3 +1,50 @@
+# HANDOFF — Generalsanierung gestartet: Program b2a14b54 auf Slot 10, Freeze aktiv, 2026-08-31
+
+Owner-Entscheid 2026-08-31: das komplette Repo wird saniert. Dieser Abschnitt ist NEU und oben
+angesetzt; nichts darunter wurde angefasst. **Die einzige Programmquelle ist
+`docs/sanierung-2026-09/plan-2026-08-31.md`** (Commit `6f173d7`; Phasen P0–P7, Slice-Protokoll,
+Fenster-Checkliste, Messbasis mit Ableitungs-Kommandos, P0-Ernteprotokoll) — dieser
+Handoff-Abschnitt trägt nur, was git nicht trägt.
+
+## Zustand bei Übergabe
+
+- **Program „Generalsanierung 2026-09" `b2a14b545fd31fd71ba7b9e1` aktiv, MAIN gebunden auf
+  Slot 10** (`claude-opus-5[1m]`, `effort high` — beides IM Slot-Datensatz, Spawn-gesetzt;
+  Successions erben mechanisch korrekt). Ihre offenen Startaufgaben stehen im Gründungsbrief
+  (openQuestions): GLM-Befunde adjudizieren VOR P1 · d70d-Promotion beim Owner · Fenster-Env vor
+  erstem P4-Fenster.
+- **Feature-Freeze + Dispatcher-Master-Stop aktiv** (`dispatch: false`); die zwei offenen
+  Feature-Zeilen (`1b677e58`, `ff535524`) bleiben absichtlich pending bis P7.
+- **Rollback-Anker: Tag `vor-generalsanierung` = `49038af`.**
+- **P0b erledigt:** GLM-Gegenprüfung gelandet als `2cd464b`
+  (`docs/messungen/2026-09-01-sanierung-plan-glm-review.md`, 10 gerankte Befunde; B1: die
+  W2-Zahl 704 ist real ~1.936 → W2-Budget ~2,7×; B2: attic/→DOC_RULE muss aus P2 nach W1
+  vorgezogen werden; B5: auto-③-Punkt der Fenster-Checkliste gegen den Code klären).
+  Adjudikation = Program-MAIN, noch offen.
+- **Worktree-Ernte abgeschlossen:** 26 → 1 (nur Slot-2-Lane `fleet/260831133127-8d97` lebt,
+  Task `93fc5af2`, darf normal fertig landen). 11 Branches geshelvt (Liste im Plan-Dokument,
+  §P0-Ernteprotokoll) — **darunter `fleet/260822143207-d70d`: unpromovierter
+  AGENTS.md-Regelvorschlag „Waiting is event-driven", liegt dem Owner zur Promotion vor.**
+  Geshelvte Branches sind nach dem Split nicht mehr rebasebar; Wert = P6-Referenz.
+- **DIREKT-COMMITS dieser Session** (für Land-Ledger unsichtbar, Verifikation von Hand):
+  `49038af` (Ernte, 2 Doc-Dateien) und `6f173d7` (Plan) — beide docs-only, nach beiden
+  `bun e2e/pins.ts` = ALL PASS (DOC_RULE-Kette). `./state.sh`-Land-Zahlen untertreiben heute
+  entsprechend.
+- **P0-Baseline LÄUFT noch:** 3 serielle `./e2e-isolated.sh` (Start ~20:45, Lauf-Skript +
+  Logs im Session-Scratchpad `baseline/`); Ergebnis gehört als Messnotiz
+  `docs/messungen/2026-09-01-sanierung-baseline.md` committet. Main bewegte sich währenddessen
+  einmal docs-only (`6f173d7`→`2cd464b`) — staged Suite-Inhalt identisch, im Protokoll nennen.
+- **Betriebsbefund:** GLM läuft über Harness **`pi-zai`** (nicht `pi` — pi 0.84 kennt keine
+  glm-Modelle; zwei ehrliche not-alive-Requeues bezahlt). pi-zai ist `automatable:false` →
+  `/api/self/watch` lehnt ab; Rückweg = Hintergrund-Watcher auf clean+ahead.
+
+## Nächste Schritte (Reihenfolge, Warum im Plan)
+
+1. Baseline-Messnotiz committen (diese Session, sobald Läufe enden — sonst Program-MAIN).
+2. Program-MAIN: GLM-Befunde adjudizieren, Plan-Korrekturen (B1/B2/B5) als datierten Nachtrag
+   ins Plan-Dokument, dann W1 briefen.
+3. Owner-Entscheid einholen: d70d-Promotion ja/nein.
+
 # HANDOFF — Dual-Host Program cd110019: Canary bestanden, Dauerkanal ungeklärt, 2026-08-31
 
 Program **`cd1100193082db395c1387db`** („Dual-Host Fleet — Second-host Session Runtime") bleibt

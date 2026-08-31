@@ -36,7 +36,17 @@ gelöscht, `.codex/`/`*.bundle`/`/*.png` dauerhaft ignoriert. `git status` ist l
 **exit 0**, 261 PASS in den vier Suiten, 308 PASS in `pins`. `./state.sh`s Land-Health-Zahlen zählen
 nur Lanes und untertreiben diesen Tag um zwei Commits.
 
-**Offener Befund, NICHT von diesen Commits — die Rulebook-Drift aus `49e35f6`.** Zwei Pins bleiben
+**ERLEDIGT 2026-08-31 — die Rulebook-Drift aus `49e35f6` ist geschlossen.** Die fünf Zeilen liegen
+jetzt in der Quelle `rulebook/graphify.md`, `CLAUDE.md` ist daraus regeneriert (70937 B), der tote
+Anker heißt jetzt `AGENTS.md §Codex` und löst gegen `## If you are a Codex or Pi lane` auf.
+`bun e2e/pins.ts`: **310 PASS, 0 FAIL, exit 0.** Beide Dateien sind gitignored — kein Commit, kein
+Land; Sicherungen im Session-Scratchpad. Beim Nachlesen wurde die Lage übrigens kleiner als gedacht:
+`FRAGMENTS_FOR.lane` (`rulebook.ts:39`) enthält `graphify` NICHT, und `server.ts:4916` schreibt einer
+Lane die Lane-Rendering aus `rulebook/` statt einer Kopie des Monolithen — es war also nie eine Lane
+falsch informiert. Der Schaden war der blinde Sensor, nicht die Regel. Der ursprüngliche Befund, zur
+Nachvollziehbarkeit:
+
+**Befund, NICHT von diesen Commits — die Rulebook-Drift aus `49e35f6`.** Zwei Pins bleiben
 rot: `CLAUDE.md is renderRulebook("main", rulebook/) byte for byte` (70498 B gerendert vs 70949 B)
 und der Anker `CLAUDE.md:768 → AGENTS.md §Codex/Pi-Lane`. Gemessene Wurzel: `49e35f6` brachte die
 graphify-in-einer-Lane-Regel korrekt nach `AGENTS.md`, schrieb den Begleitabsatz aber in das

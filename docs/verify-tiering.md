@@ -1529,6 +1529,36 @@ that lands, this family stays open.
 event each on the busy receiver` — the fixture that establishes the family's own precondition,
 which makes the cascade read one step earlier than in runs 2–3.
 
+**Seventh member, and an instance that contradicts itself (post-land audit of `01459c9`,
+2026-09-01, 3366 checks / 2 FAIL, adjudicated `flake`):** the two failures were
+`subject-gone: the torn-down lane's undelivered event is terminal as itself, unackable, and frees
+its budget` (the registered intermittent member) and, new here, its own counterprobe
+`counterprobe: the live subject's held event is delivered on its FIRST attempt; the dead one is
+never typed` (`e2e/watch.ts#counterprobe`, the block immediately below it). Both read the SAME
+fact — the doomed event's terminality — and they read it DIFFERENTLY in the same run:
+
+| check | detail as recorded | failing conjunct |
+|---|---|---|
+| subject-gone | `{"gone":"subject-gone","deliveredAt":null,"attempts":0,"ack":409,"living":"pending","freed":400}` | `freedRes.ok` — the budget was NOT freed (400, still "max 5 active watches per slot") |
+| counterprobe | `{"living":"delivered","attempts":1,"doomed":"pending"}` | `finalGone?.status === "subject-gone"` — the same row reads `pending` again |
+
+A row cannot go `subject-gone` and then back to `pending`, so one of the two reads is not reading
+the row it thinks it is. That is a NEW handle on the mechanism and it is consistent with the
+addendum above (the receiver's pane recreated underneath the fixture), but it is unexplained, and
+nobody has looked at which id each read resolved. Whoever takes the test-side repair should start
+here rather than at the delivery timing.
+
+**Why `flake` and not `real` for that audit, stated so it can be checked:** the landed commit
+`01459c9` touches exactly `src/client.ts`, `public/index.html` and `e2e/tasks.ts`
+(`git show --stat 01459c9`). Neither failing check reads any of them: both exercise the
+server-side event-delivery and watch-budget path. No same-tree re-run was spent — Owner decision 6
+of 2026-09-01 forbids further suite time on this family's discriminator, and the structural
+argument does not need one. The counter-case, named honestly: `e2e/tasks.ts` gained 122 lines of
+new checks in that commit, and this suite shares slots and panes across families, so an upstream
+fixture CAN shift which receiver pane a later family gets. That is a timing coupling, not a
+behaviour change, and it is the reason this entry is filed as a seventh member rather than as a
+closure.
+
 **Post-mortem discriminator.** Unlike §11.2i this family fails as REAL failing checks, not as a
 silent no-measurement: the runs carry 3345/3344 PASS and named FAIL rows. Preserved instances from
 the two red runs are kept: `fleet-e2e-instance-80791` (run 2) and `fleet-e2e-instance-26770`
@@ -1541,8 +1571,10 @@ obtainable under the stated conditions (clean tree, controller idle) — which i
 about what this machine can prove while seven sessions share the checkout.
 
 **Bookkeeping:** twelfth family (three in §5b · §11.2 · §11.2b · §11.2c · §11.2e · §11.2f ·
-§11.2g · §11.2h · §11.2i — eleven before this). `CLAUDE.md`'s "Zehn bekannte Flake-Familien" is now
-TWO short; that line is a generat (`rulebook.ts`) and a docs-only commit does not update it.
+§11.2g · §11.2h · §11.2i — eleven before this). The count was pulled through on 2026-09-01: the
+fragment `rulebook/lane-discipline.md` says "Zwoelf bekannte Flake-Familien" and `CLAUDE.md` was
+re-rendered from it. Both are gitignored, so no commit carries that change — on a drift suspicion,
+re-render (the command is in the head of `rulebook.ts`).
 
 ### 11.5 What is script here, and what is judgment
 

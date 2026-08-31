@@ -1448,6 +1448,69 @@ conclusion ("not proven") from a wrong measurement. Two lanes were also reported
 suite without taking the lock; the lock is a convention carried in each brief, so any lane that is
 briefed without it silently breaks everyone else's serial proof.
 
+### 11.2j A twelfth family: the `pi-unfenced` watch-delivery quartet (2026-08-31, filed — NOT repaired, discriminator NOT isolated)
+
+**Status: open, and weaker than the entries above it** — non-determinism is proven, the CAUSE is
+not. Filed from the Generalsanierung P0 baseline, where it cost the baseline itself.
+
+**The members.** Four checks that fail together, plus one that joins intermittently:
+
+- `after kill-switch release the pending event reaches live pi-unfenced once as delivered, never
+  acked by tmux` — the event stays `send-uncertain`, `deliveredAt:null`, `attempts:0`
+- `the fixed completion notification has exactly one matching prompt-log row on pi-unfenced` — 0 rows
+- `the pi-unfenced event remains one-shot across later ticks and never records the old skip`
+- `rollback live falsifier: recycled slot identity leaves the successor owner's draft byte-for-byte`
+- intermittently: `subject-gone: the torn-down lane's undelivered event is terminal as itself,
+  unackable, and frees its budget`
+
+One delivery that never arrives drags its neighbours with it — the cascade shape of §11.2c and
+§11.2f. The last member is the same check that showed up in the red post-land audit of
+`bc9e7de3` (2026-08-31 handoff), so that audit is very likely this family too, not three separate
+defects.
+
+**The measurement: four serial `./e2e-isolated.sh` runs, CODE delta null across all four.** Only
+`docs/` and `AGENTS.md` moved between them; no `.ts`, no `.sh`.
+
+| Run | HEAD | tree dirty | Program-MAIN (slot 10) | PASS | Result |
+|---|---|---|---|---|---|
+| 1 | `6f173d7` | no | not yet active | 3349 | **ALL PASS** (1639 s) |
+| 2 | `00d9b58` | yes | working in the checkout | 3345 | 4 FAILURES (1583 s) |
+| 3 | `acf3614` | yes (untracked doc only) | working in the checkout | 3344 | 5 FAILURES (1584 s) |
+| 4 | `ce24b0d` | no | **deliberately idle** | 3349 | **ALL PASS** (1544 s) |
+
+**What this proves, and it is the §11.7 proof order satisfied:** identical code, two green and two
+red ⇒ **non-determinism is proven directly, and the family is NOT a code regress.** Both green runs
+land on the same 3349 PASS.
+
+**What this does NOT prove, and the entry must not be read as if it did:** the discriminator. Two
+variables co-vary perfectly across the four runs — the tree being dirty, and a Program-MAIN
+actively working in the main checkout while the suite ran. This data cannot separate them.
+
+The load reading is the more plausible of the two and is still only plausible: every member is a
+LIVE pane/tmux delivery assertion (`never acked by tmux`, an absent prompt-log row, a recycled slot
+identity), which is the same surface as the two registered pane-observation races, whereas an
+untracked markdown file in the staged copy has no path to tmux delivery at all. Plausible is not
+measured, and this section says so on purpose.
+
+**The cheap experiment that WOULD isolate it** (one run, ~26 min): dirty the tree with an untracked
+doc file and keep the Program-MAIN idle. Green ⇒ dirtiness is exonerated and the family is
+load-sensitive; red ⇒ the reverse. Nobody has run it.
+
+**Post-mortem discriminator.** Unlike §11.2i this family fails as REAL failing checks, not as a
+silent no-measurement: the runs carry 3345/3344 PASS and named FAIL rows. Preserved instances from
+the two red runs are kept: `fleet-e2e-instance-80791` (run 2) and `fleet-e2e-instance-26770`
+(run 3) — neither has been dissected.
+
+**Consequence for the Generalsanierung.** A red on these lines is a flake candidate; a red anywhere
+else is still ECHT and still yours. But the P0 baseline demands three CONSECUTIVE green runs, and
+until this family is either repaired or its discriminator isolated, that baseline is only
+obtainable under the stated conditions (clean tree, controller idle) — which is itself a finding
+about what this machine can prove while seven sessions share the checkout.
+
+**Bookkeeping:** twelfth family (three in §5b · §11.2 · §11.2b · §11.2c · §11.2e · §11.2f ·
+§11.2g · §11.2h · §11.2i — eleven before this). `CLAUDE.md`'s "Zehn bekannte Flake-Familien" is now
+TWO short; that line is a generat (`rulebook.ts`) and a docs-only commit does not update it.
+
 ### 11.5 What is script here, and what is judgment
 
 Of the four steps this triage took, three are mechanical and one is not: taking the mutex, deciding

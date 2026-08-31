@@ -55,3 +55,42 @@ dort NICHT**. Kein Freifahrtschein.
 2. Bis dahin gilt: **die P0-Baseline ist NICHT abgeschlossen** — kein P4/P5-Slice stützt sich
    auf ein Audit-Grün, solange diese Familie unerklärt ist. P1 (docs-only, DOC_RULE-Gate ohne
    Suite) ist davon nicht blockiert.
+
+---
+
+## Nachtrag 2026-08-31, Slot 10 (Program-MAIN) — Lauf 4 beantwortet das offene Verdikt zur Haelfte
+
+**Lauf 4: ALL PASS, 3349 PASS / 0 FAIL, 1544 s**, HEAD `ce24b0d`, Baum sauber vor UND nach dem
+Lauf, keine konkurrierende Suite, Last 1,53 beim Start, Slot 10 (diese Session) waehrend des
+gesamten Laufs **absichtlich untaetig**. Dieselbe Check-Zahl wie der gruene Lauf 1.
+
+| Lauf | HEAD | dirty | Slot 10 | PASS | Ergebnis |
+|---|---|---|---|---|---|
+| 1 | `6f173d7` | nein | noch nicht aktiv | 3349 | ALL PASS |
+| 2 | `00d9b58` | ja | arbeitet | 3345 | 4 FAILURES |
+| 3 | `acf3614` | ja (nur untracked Doc) | arbeitet | 3344 | 5 FAILURES |
+| 4 | `ce24b0d` | nein | **untaetig** | 3349 | ALL PASS |
+
+**Bewiesen:** Code-Delta ueber alle vier Laeufe null (nur `docs/`/`AGENTS.md`), zwei gruen und
+zwei rot ⇒ **Nicht-Determinismus ist nach der Beweisordnung §11.7 direkt bewiesen; die Familie ist
+KEIN Codregress.** Die Familie ist als **§11.2j** ins Register eingetragen (`docs/verify-tiering.md`),
+wo sie vorher fehlte.
+
+**NICHT bewiesen — und die Empfehlung von oben ist damit nur zur Haelfte eingeloest:** der
+Diskriminator. Ueber alle vier Laeufe ko-variieren ZWEI Variablen perfekt (Baum dirty ·
+Program-MAIN arbeitet im Haupt-Checkout). Lauf 4 hat beide gleichzeitig entfernt und kann sie
+deshalb nicht trennen. Die Last-These bleibt die plausiblere (alle Mitglieder sind Live-Pane-/
+tmux-Zustellungsaussagen; eine untrackte Markdown-Datei in der gestagten Kopie hat keinen Pfad zur
+tmux-Zustellung), **plausibel ist aber nicht gemessen**. Der isolierende Lauf waere: dirty machen,
+Controller untaetig lassen — ein Lauf, ~26 min, bisher nicht gefahren.
+
+**Ehrlich zur Fenster-Checkliste:** eine "stille Maschine" war nicht herstellbar und wurde nicht
+behauptet. Zum Startzeitpunkt waren 13 Agenten-Sessions lebendig, sieben davon in diesem Checkout.
+Herstellbar war: keine konkurrierende Suite, sauberer Baum, Controller untaetig. Genau das ist
+gemessen worden, und genau so ist die Bedingung zu zitieren.
+
+**Stand der P0-Baseline: weiterhin NICHT abgeschlossen.** Gruen sind Lauf 1 und Lauf 4, aber nicht
+DREI KONSEKUTIVE. Naechster Schritt dieser Session: zwei weitere Laeufe unter den Bedingungen von
+Lauf 4 (sauberer Baum, Controller untaetig, keine Nachbarsuite). Drei konsekutive gruene Laeufe
+schliessen P0; ein Rot darin faellt zurueck auf §11.2j und auf die Sektion der beiden aufbewahrten
+Instanzen. **P4/P5 bleiben bis dahin zu; P1 ist docs-only und davon frei.**

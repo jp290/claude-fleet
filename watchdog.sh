@@ -34,7 +34,7 @@ PATH_Q=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
 # V1-era honest form. NOTE: this string is baked into the srv-spawn line below and only reloads on
 # `launchctl kickstart -k gui/$(id -u)/com.claude-fleet.watchdog` — a plain srv restart keeps the
 # OLD string running, which is why server.ts also honours the legacy "verify skipped:" marker line.
-# TIERED land gate (docs/merge-review-autonomy.md §7, lane-autonomy-future.md component 4): tsc alone
+# TIERED land gate (docs/attic/merge-review-autonomy.md §7, lane-autonomy-future.md component 4): tsc alone
 # is type-total but behavior-partial — a rebase that drops a const together with its only use stays
 # type-consistent, so tsc passes and the regression reaches main (observed). e2e-claude-gate.sh is the
 # fast behavior tier: it boots the whole server.ts and drives real routes (open slot, autos, dispatch,
@@ -47,7 +47,7 @@ PATH_Q=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
 # NOT added: e2e-isolated.sh — it carries the known ~600ms pane-capture flake; a deterministic gate
 # cannot sit on a flaky suite, so it graduates in only once that flake is fixed.
 # The `bun install` prelude is the FIRST step, and it is what makes this gate deterministic (F9,
-# docs/discrepancy-audit.md): the tsc step needs @types/bun, which lives in gitignored node_modules,
+# docs/attic/discrepancy-audit.md): the tsc step needs @types/bun, which lives in gitignored node_modules,
 # and NOTHING in Fleet establishes it in a lane — createWorktree copies only .env/CLAUDE.md/settings,
 # `git worktree add` installs nothing, and bunx does not populate node_modules. Without the prelude
 # the gate's verdict depends on whether that lane's agent happened to install: it dies in ~2s on
@@ -98,7 +98,7 @@ VERIFY_Q=$(printf '%s' "$VERIFY_CMD" | sed "s/'/'\\\\''/g")
 # coalesced, result green/red/unknown on post-land-audits.jsonl (GET /api/post-land-audits) plus a
 # loud server.log line and /api/sessions. It GATES NOTHING and UNDOES NOTHING; ↩ undo-land stays the
 # rollback. Unset = the tier does not exist, which is today's behaviour.
-# TURNED ON 2026-07-25 (docs/autonomy-trial-1.md, Q3): the two lines below are live and the
+# TURNED ON 2026-07-25 (docs/attic/autonomy-trial-1.md, Q3): the two lines below are live and the
 # srv-spawn line carries FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q'. Takes effect only on
 # `launchctl kickstart -k gui/$(id -u)/com.claude-fleet.watchdog` — a plain srv restart
 # keeps the old spawn line, exactly as with VERIFY_CMD.
@@ -124,7 +124,7 @@ while true; do
     # FLEET_DISPATCH_REPO makes the dispatcher AVAILABLE, it does not switch it on: `dispatchOn`
     # (server.ts, grep `let dispatchOn`) is a separate persisted runtime flag, default false, and
     # the owner flips it with one API call. MAX_LANES=2 instead of the default 3 is deliberate —
-    # this is a watched first run (docs/autonomy-trial-1.md), not maximum throughput.
+    # this is a watched first run (docs/attic/autonomy-trial-1.md), not maximum throughput.
     #
     # The verify gate has TWO budgets and they are not interchangeable. FLEET_VERIFY_TIMEOUT_MS is
     # what the gate may spend WORKING; FLEET_VERIFY_WAIT_MS is what it may spend queued behind the

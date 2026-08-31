@@ -165,7 +165,7 @@ const SOURCE_DIR = ((): string | null => {
 // ================================================================================================
 // 1. Instance staging — the class of bug that killed two harnesses silently
 // ================================================================================================
-// e2e-postland-audit.sh died the day continuity.ts landed and stayed dead for weeks; steward-arena.sh
+// e2e-postland-audit.sh died the day continuity.ts landed and stayed dead for weeks; attic/steward-arena.sh
 // shipped missing two of four modules. Both were hand-written `cp` lists of server.ts's local
 // imports. e2e-stage.sh replaced every one of them with a derived closure. These two rules keep the
 // class extinct rather than re-listing the seven scripts that currently obey it.

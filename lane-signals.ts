@@ -1,4 +1,4 @@
-// --- `done-looking` as a DETERMINISTIC predicate (docs/perception-layer.md §3).
+// --- `done-looking` as a DETERMINISTIC predicate (docs/attic/perception-layer.md §3).
 //
 // The term existed only as an LLM label: DIGEST_CONDITIONS lists it, and the digest worker is
 // handed the rule in prose. An auto-trigger must not hang off a model output when every input is

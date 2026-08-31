@@ -62,7 +62,7 @@ Scope and sources, so the omissions are not silent:
 - `fleet-e2e-security.ts` — Security e2e: the perimeter properties that must not silently regress. This is a SEPARATE
 - `fleet-e2e.ts` — e2e for claude-fleet: run from the repo root with the server already up.
 - `land-candidate.ts` — land-candidate.ts — pure, read-only projection of merge facts for future PromotionPolicy work.
-- `lane-signals.ts` — --- `done-looking` as a DETERMINISTIC predicate (docs/perception-layer.md §3).
+- `lane-signals.ts` — --- `done-looking` as a DETERMINISTIC predicate (docs/attic/perception-layer.md §3).
 - `merge-prompt.ts` — The conflict-resolver agent's prompt, extracted as a PURE function so its INFORMATION
 - `program-phase.ts` — --- WHERE A PROGRAM ROW SITS ON THE RAIL, as a pure function over facts Fleet already holds.
 - `promote-program.sh` — Ein vorgeschlagenes Programm ansehen und (mit --go) bestaetigen + aktivieren.

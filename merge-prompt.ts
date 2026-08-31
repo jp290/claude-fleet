@@ -368,7 +368,7 @@ const LANE_BRIEF_MAX = 1200;
 // only bias, the strict-JSON contract) are unit-tested; the server treats a non-"ok" verdict as a
 // downgrade-to-review only (never as authority to land). The word REVIEWING leads so a stand-in can
 // distinguish this call.
-// ENRICHED 2026-07-26 (docs/mining-2026-07-26.md findings 3+4) with exactly three things: the
+// ENRICHED 2026-07-26 (docs/attic/mining-2026-07-26.md findings 3+4) with exactly three things: the
 // git-computed commit count (stated as fact, because every valid shadow verdict so far spent its
 // answer re-deriving it), the lane's brief, and the other lanes in flight on the same repo. The last
 // two are untrusted DATA like everything else in the block; the enrichment aims at the NON-degenerate
@@ -379,7 +379,7 @@ export function buildCleanReviewPrompt(i: CleanReviewInput): string {
   const others = i.otherLanes ?? [];
   // THE DEGENERATE CASE, STATED INSTEAD OF ASKED. "did main move since the fork" is deterministic and
   // the server already computed it; a model re-deriving it burns the whole answer on a settled question
-  // (all 25 production shadow verdicts did exactly that, docs/mining-2026-07-26.md finding 3 — and the
+  // (all 25 production shadow verdicts did exactly that, docs/attic/mining-2026-07-26.md finding 3 — and the
   // feed they read was itself always-empty, see runCleanReview's forkRef). n===0 closes the cross-change
   // question by construction and re-aims the one remaining reason to flag; n>0 is the case this seat
   // exists for; null is UNKNOWN and closes nothing.

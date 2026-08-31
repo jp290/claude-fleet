@@ -573,7 +573,7 @@ check("(I) both lands ended up on the ledger — the view is a window on the que
   JSON.stringify(inflightRows.slice(0, 2).map((r) => r.covers.map((c) => c.branch))));
 
 // ===== (E) THE PENDING QUEUE SURVIVES THE SERVER — the deploy ritual raced the audit ============
-// Measured incident (docs/mining-2026-07-26.md finding 1): four lands, then a srv restart seconds
+// Measured incident (docs/attic/mining-2026-07-26.md finding 1): four lands, then a srv restart seconds
 // later, then nothing — no rows, no unknowns, indistinguishable from "nothing landed". The queue
 // was in memory only, and land-then-deploy is the COMMON case for server-touching lanes. Everything
 // below runs LAST on purpose: it restarts the server, and the sections above assert exact row counts.

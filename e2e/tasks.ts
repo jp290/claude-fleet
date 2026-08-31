@@ -39,6 +39,128 @@ export async function run(ctx: Ctx): Promise<void> {
   const contextReceipts = async (): Promise<{ receipts: ContextReceipt[]; total: number; malformed: number }> =>
     (await (await get("/api/context-receipts")).json()) as { receipts: ContextReceipt[]; total: number; malformed: number };
 
+  // --- TASK WORKBENCH CLIENT CONTRACT. The suite has no browser DOM, so the search and partition
+  // rules are cut out of the REAL browser source, transpiled, and run against deliberately
+  // ambiguous fixtures. The surrounding source/CSS assertions are named as such: they prove the
+  // render wiring, mobile geometry and focus affordance, not pixels from a live authenticated UI.
+  let taskClientSource = "";
+  let taskPageSource = "";
+  let taskClientReadError = "";
+  try {
+    const checkout = resolve(realpathSync(`${ROOT}/node_modules`), "..");
+    taskClientSource = readFileSync(`${checkout}/src/client.ts`, "utf8");
+    taskPageSource = readFileSync(`${checkout}/public/index.html`, "utf8");
+  } catch (e) { taskClientReadError = e instanceof Error ? e.message : String(e); }
+  check("task workbench precondition: client source and page CSS are readable",
+    taskClientSource.length > 0 && taskPageSource.length > 0, taskClientReadError);
+  const taskModelStart = taskClientSource.indexOf("type QGroup =");
+  const taskModelEnd = taskClientSource.indexOf("function qWaveAnalysis", taskModelStart);
+  const taskModelSource = taskModelStart >= 0 && taskModelEnd > taskModelStart
+    ? taskClientSource.slice(taskModelStart, taskModelEnd) : "";
+  const taskModelReady = taskModelSource.includes("function qTaskListModel")
+    && taskModelSource.includes("function qTaskMatches");
+  check("task workbench exposes an executable search + Work/History partition model",
+    taskModelReady, taskModelSource.slice(0, 120) || "queue model block missing");
+  if (taskModelReady) {
+    type SearchTask = {
+      id: string; status: "pending" | "queued" | "sent" | "done" | "archived";
+      source: "owner"; created: number; repo?: string; programId?: string;
+      kind?: "auftrag" | "richtung" | "notiz" | "betrieb";
+      criterion?: { proposedAt: number; confirmedAt: number | null };
+    };
+    type SearchProgram = { id: string; title: string };
+    type TaskModel = { work: SearchTask[]; history: SearchTask[]; showHistoryInWork: boolean };
+    const modelFns = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(taskModelSource)
+      + "\nreturn { qGroupOf, qTaskListModel };")() as {
+        qGroupOf: (task: SearchTask) => string | null;
+        qTaskListModel: (tasks: SearchTask[], texts: Map<string, string>, programs: SearchProgram[], query: string) => TaskModel;
+      };
+    const programs: SearchProgram[] = [
+      { id: "program-orion-111", title: "Orion Ledger" },
+      { id: "program-nimbus-222", title: "Nimbus Console" },
+      { id: "program-cedar-333", title: "Cedar Relay" },
+      { id: "program-iris-444", title: "Iris Workshop" },
+    ];
+    const open: SearchTask[] = [
+      { id: "task-alpha-111", status: "pending", source: "owner", created: 1,
+        repo: "/repos/alpha-fleet", programId: programs[0].id },
+      { id: "task-bravo-222", status: "queued", source: "owner", created: 2,
+        repo: "/repos/bravo-console", programId: programs[1].id },
+      { id: "task-charlie-333", status: "sent", source: "owner", created: 3,
+        repo: "/repos/charlie-relay", programId: programs[2].id },
+      { id: "task-delta-444", status: "pending", source: "owner", created: 4,
+        repo: "/repos/delta-workshop", programId: programs[3].id,
+        criterion: { proposedAt: 4, confirmedAt: null } },
+    ];
+    const closed: SearchTask[] = Array.from({ length: 16 }, (_, i) => ({
+      id: `history-${String(i).padStart(2, "0")}`,
+      status: i % 2 ? "archived" as const : "done" as const,
+      source: "owner" as const, created: 100 + i, repo: `/repos/history-${i}`,
+    }));
+    const tasks = [...open, ...closed];
+    const texts = new Map(tasks.map((task) => [task.id,
+      task.id.startsWith("task-") ? "identical shared task request" : `historical request ${task.id}`]));
+    const ids = (query: string, part: "work" | "history" = "work") =>
+      modelFns.qTaskListModel(tasks, texts, programs, query)[part].map((task) => task.id);
+    check("task search: identical text returns exactly the four open fixtures",
+      JSON.stringify(ids("identical shared task request")) === JSON.stringify(open.map((task) => task.id)),
+      JSON.stringify(ids("identical shared task request")));
+    check("task search: Task ID selects exactly its task despite identical text",
+      JSON.stringify(ids("task-bravo-222")) === JSON.stringify(["task-bravo-222"]),
+      JSON.stringify(ids("task-bravo-222")));
+    check("task search: status selects exactly its task despite identical text",
+      JSON.stringify(ids("queued")) === JSON.stringify(["task-bravo-222"]), JSON.stringify(ids("queued")));
+    check("task search: repo selects exactly its task despite identical text",
+      JSON.stringify(ids("charlie-relay")) === JSON.stringify(["task-charlie-333"]),
+      JSON.stringify(ids("charlie-relay")));
+    check("task search: assigned Program title selects exactly its task despite identical text",
+      JSON.stringify(ids("Iris Workshop".toLowerCase())) === JSON.stringify(["task-delta-444"]),
+      JSON.stringify(ids("Iris Workshop".toLowerCase())));
+    check("task search: assigned Program ID selects exactly its task despite identical text",
+      JSON.stringify(ids("program-orion-111")) === JSON.stringify(["task-alpha-111"]),
+      JSON.stringify(ids("program-orion-111")));
+    check("task search: a negative query returns no open or historical task",
+      ids("no-such-task-dimension").length === 0 && ids("no-such-task-dimension", "history").length === 0);
+    const unfiltered = modelFns.qTaskListModel(tasks, texts, programs, "");
+    check("task search: an empty query preserves the unfiltered 4-open/16-history partition",
+      unfiltered.work.length === 4 && unfiltered.history.length === 16 && !unfiltered.showHistoryInWork,
+      JSON.stringify({ work: unfiltered.work.length, history: unfiltered.history.length,
+        showHistoryInWork: unfiltered.showHistoryInWork }));
+    const historyHit = modelFns.qTaskListModel(tasks, texts, programs, "history-07");
+    check("task workbench: History enters Work only for an explicit closed-task search hit",
+      historyHit.work.length === 0 && historyHit.history.length === 1
+        && historyHit.history[0]?.id === "history-07" && historyHit.showHistoryInWork,
+      JSON.stringify(historyHit));
+    const workGroups = open.map((task) => modelFns.qGroupOf(task));
+    check("task workbench: every open task enters exactly one of Needs-you/Released/Running/Backlog",
+      JSON.stringify(workGroups) === JSON.stringify(["backlog", "released", "running", "needs"])
+        && new Set(workGroups).size === 4
+        && closed.every((task) => modelFns.qGroupOf(task) === null), JSON.stringify(workGroups));
+  }
+  const openQueueSource = taskClientSource.slice(taskClientSource.indexOf("function openQueue"),
+    taskClientSource.indexOf("// --- audit trail overlay", taskClientSource.indexOf("function openQueue")));
+  check("task workbench source: Work is default and Programs + History are explicit selections",
+    /type QView = "work" \| "programs" \| "history" \| "waves"/.test(taskClientSource)
+      && /let qView: QView = "work"/.test(taskClientSource)
+      && ["Work", "Programs", "History", "Waves"].every((label) => openQueueSource.includes(`"${label}"`)),
+    openQueueSource.slice(0, 180));
+  check("task workbench source: zero open tasks has a named Work empty state, never a Closed work group",
+    taskClientSource.includes("Work is clear — no open tasks")
+      && !/Q_GROUPS[\s\S]{0,700}?head: "Closed"/.test(taskClientSource), "renderQueue/Q_GROUPS");
+  check("task workbench source: refresh-safe draft nodes and focused caret restoration remain wired",
+    /if \(!qCompose\)/.test(taskClientSource)
+      && /if \(!qCmBox \|\| qCmFor !== t\.id\)/.test(taskClientSource)
+      && /function qTextDraft/.test(taskClientSource)
+      && /focused\.focus\(\)/.test(taskClientSource), "queue draft lifecycle in src/client.ts");
+  check("task workbench source: opening the queue establishes a visible keyboard focus target",
+    /search\.focus\(\)/.test(openQueueSource)
+      && taskPageSource.includes("#shell-queue .qview button:focus-visible")
+      && taskPageSource.includes("#shell-queue .pkfilterin:focus-visible"), "openQueue + queue focus CSS");
+  check("task workbench source: 390px queue navigation gets full-width controls without horizontal overflow",
+    /@media \(max-width: 700px\)[\s\S]*?#shell-queue \.qview\s*\{[^}]*flex-basis:\s*100%/.test(taskPageSource)
+      && /#shell-queue \.pkfilterin\s*\{[^}]*max-width:\s*none/.test(taskPageSource),
+    "queue mobile CSS in public/index.html");
+
   // --- task queue (Phase D). Owner CRUD + dispatch availability ---
   const tCreate = await post("/api/tasks", { text: "e2e owner task", queue: false });
   const tJson = (await tCreate.json()) as { ok: boolean; task: { id: string; originId?: string; status: string; source: string; kind: string } };

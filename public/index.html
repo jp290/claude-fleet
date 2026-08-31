@@ -290,13 +290,17 @@
     color: var(--dim); font: inherit; font-size: 11.5px; cursor: pointer; }
   .qview button:hover { color: var(--text); }
   .qview button.on { color: #dbe6ff; background: var(--sel); box-shadow: inset 0 0 0 1px #3b4b70; }
+  #shell-queue .qview button:focus-visible, #shell-queue .pkfilterin:focus-visible,
+  .shellclose:focus-visible, .shellback:focus-visible, .qfold:focus-visible {
+    outline: 2px solid var(--focus); outline-offset: 2px;
+  }
   /* Visible rather than title-only: touch screens have no hover, and the evidence caveat is the
      difference between “no known collision” and a promise of safety. It is not a row fact. */
   .qwavehint { padding: 0 7px 6px; color: var(--faint); font-size: 10.5px; line-height: 1.4; }
   /* the completed-programs fold. A control, not a row: it never enters the shell's row list, so
      keyboard navigation still steps only over selectable programs and tasks. */
-  .qfold { padding: 3px 7px 4px; color: #6a6a6a; font-size: 10.5px; cursor: pointer;
-    user-select: none; letter-spacing: 0.02em; }
+  .qfold { width: 100%; padding: 3px 7px 4px; border: 0; background: transparent; text-align: left;
+    color: #6a6a6a; font: inherit; font-size: 10.5px; cursor: pointer; user-select: none; letter-spacing: 0.02em; }
   .qfold:hover { color: #ddd; }
   .qdtext { font-size: 13px; color: #ddd; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
     background: #161616; border: 1px solid var(--raised); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
@@ -500,8 +504,9 @@
     .shellrow .qfact:not(:first-child)::before { content: none; }
     .qkind { align-items: stretch; flex-direction: column; gap: 5px; }
     .qkind-select { min-height: 44px; font-size: 16px; }
-    .qview { flex: 1 1 auto; }
+    #shell-queue .qview { flex: 1 0 100%; flex-basis: 100%; }
     .qview button { flex: 1; min-height: 40px; }
+    #shell-queue .pkfilterin { flex: 1 0 100%; max-width: none; min-height: 40px; }
     .qwavehint { font-size: 11px; padding-bottom: 8px; }
   }
 

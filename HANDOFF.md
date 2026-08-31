@@ -1,3 +1,31 @@
+# HANDOFF — Task-Workbench-Slices pending; roter Audit vor Release klären, 2026-08-31
+
+Program `b9c1e0d9623aaeb7cabd0257` bleibt aktiv. Baseline-Task `eaa3ae1a` landete nach Reparatur
+als Main `bc9e7de35bc49776eedac6aa3ece2388ce1cade1`; die visuelle Browser-Baseline bleibt wegen
+fehlendem authentifiziertem Browser `UNKNOWN`.
+
+Post-Land-Audit-Watch `b42166f4` endete rot: 3333 Checks, 3 fehlgeschlagen. Der dauerhafte Trail
+`isolated-20260831T110235Z-25178` nennt:
+
+- `subject-gone: the torn-down lane's undelivered event is terminal as itself, unackable, and frees its budget`
+- `counterprobe: the live subject's held event is delivered on its FIRST attempt; the dead one is never typed`
+- `outcome: a reviewer answer that did NOT parse is persisted as raw:true carrying its text — not as a clean review`
+
+Kein Flake-Urteil: Ein Same-Tree-Rerun für `bc9e7de…` ist noch nicht belegt. Vor seinem Befund wird
+keiner der drei neuen, überlappenden UI-Tasks released.
+
+Pending, strikt seriell:
+
+1. `93fc5af2` — Work/Programs/History trennen und Suche über Text, ID, Status, Repo und Program.
+2. `ff535524` — aktive/Hintergrund-Lanes exakt ihrer Task zuordnen; running/done-looking/idle/dirty/unknown.
+3. `1b677e58` — harness/model/effort sowie Clarify-first vs. Start an der Task-Zeile.
+
+Alle drei sind Codex `gpt-5.6-sol`/high, haben harte Rot-Mutationen und teilen `src/client.ts`;
+deshalb niemals parallel releasen. Nächster Akt: roten Audit auf demselben Baum reproduzieren oder
+ehrlich als weiter `unknown` blockieren, dann nur `93fc5af2` releasen. Keine Host-Implementierung.
+
+---
+
 # HANDOFF — Red-Team-Controller wechselt; Live-Zustand vollständig neu messen, 2026-08-30
 
 Der Owner hat diese Session beendet, weil sie wiederholt ältere Pane-/Board-Stände mit dem aktuellen

@@ -525,6 +525,77 @@ export async function run(): Promise<void> {
       return state;
     };
     const setComposerMode = (mode: string) => writeFileSync(composerMode, `${mode}\n`);
+
+    // --- THE PRECONDITION EVERY DELIVERY READ BELOW STANDS ON, MEASURED INSTEAD OF ASSUMED.
+    // docs/verify-tiering.md §11.2j: this receiver's checks fail non-deterministically as if the
+    // transport were broken, and the one fact none of them ever established is that they are still
+    // talking to the pane they opened on. Two independent authorities answer that: tmux's own
+    // `pane_id`, which changes the moment server.ts#ensureSlot rebuilds a session whose pane died,
+    // and the server's occupant stamp (`openedAt` + `agent`). A rebuilt pane also brings
+    // a FRESH stand-in — phase "ready", empty buffer — which silently converts "the owner draft
+    // held the notification" into "the composer was clear", and the next tick then delivers what
+    // the fixture wanted held. Reading that as a delivery defect accuses server.ts of a regress it
+    // never committed, so the window reads fail as THEMSELVES and say what actually happened.
+    // `sessionId` is deliberately NOT part of this: /api/sessions carries it only inside
+    // `codexRecovery`, so reading it here would compare null with null and look like a conjunct.
+    // `openedAt` IS the server's occupant identity and it is on every row.
+    interface ReceiverId { paneId: string; openedAt: number; agent: string | null }
+    const receiverId = async (): Promise<ReceiverId> => {
+      const pane = (await tmuxOut("display-message", "-p", "-t", `s${uId}`, "#{pane_id}")).out.trim();
+      const row = ((await (await get("/api/sessions")).json()) as
+        { slots: { id: number; openedAt: number; agent: string | null }[] })
+        .slots.find((x) => x.id === uId);
+      return { paneId: pane, openedAt: row?.openedAt ?? 0, agent: row?.agent ?? null };
+    };
+    // `agent` is read with the ids on purpose: a stand-in that exited but whose session tmux has
+    // not rebuilt yet still answers with the OLD pane id, and only liveness separates that from a
+    // healthy pane. `wantComposer` is optional because only some windows own the composer's
+    // contents; where they do, "ready" in the phase is the fresh-process fingerprint.
+    const windowIntact = async (window: string, before: ReceiverId,
+      wantComposer?: string): Promise<boolean> => {
+      // POLLED, not sampled once. `agent` comes off the 10 s tickGit's ps/pgrep probe, and a single
+      // miss there is the §11.2c pane-observation race — a fixture that failed on the first read
+      // would be a new flake of exactly the kind this repair exists to remove. Nothing here can be
+      // masked by waiting: a recreated pane keeps its NEW id forever, and no line re-types a draft
+      // that is gone, so a retry only absorbs transient misreads.
+      let after = await receiverId();
+      let state = stateBuffer();
+      let samePane = false;
+      let sameComposer = false;
+      for (let i = 0; i < 12; i++) {
+        samePane = before.paneId !== "" && after.paneId === before.paneId
+          && after.openedAt === before.openedAt && after.agent === "alive";
+        sameComposer = wantComposer === undefined || state.text === wantComposer;
+        if (samePane && sameComposer) break;
+        await Bun.sleep(250);
+        after = await receiverId();
+        state = stateBuffer();
+      }
+      check(`receiver precondition (${window}): the same live pi-unfenced pane, still holding what the fixture put in it`,
+        samePane && sameComposer,
+        samePane && sameComposer
+          ? JSON.stringify({ pane: after.paneId, openedAt: after.openedAt, phase: state.phase,
+            composerBytes: state.text.length })
+          : !samePane
+          ? `the receiver pane was REPLACED under this window — tmux session recreated (server.ts#ensureSlot self-heal) or the slot recycled — so every delivery fact read here is about a pane that no longer exists: before=${JSON.stringify(before)} after=${JSON.stringify(after)}`
+          : `the pane held, but its composer no longer holds what the fixture left there — a restarted stand-in (phase "ready" = fresh process, empty buffer) or a foreign write: phase=${state.phase} got=${state.text.length}B want=${(wantComposer ?? "").length}B pane=${JSON.stringify(after)}`);
+      return samePane && sameComposer;
+    };
+    // Clear the receiver's composer and WAIT OUT a window of CONFIRMED emptiness. A single read
+    // taken the instant a turn goes terminal can see an empty buffer while held bytes are still on
+    // their way, and clearing "what is there now" then clears nothing. Returns the bytes removed.
+    const drainComposer = async (quietTicks: number): Promise<number> => {
+      let removed = 0;
+      for (let quiet = 0; quiet < quietTicks;) {
+        const now = stateBuffer().text;
+        if (now.length === 0) { quiet++; await Bun.sleep(50); continue; }
+        await tmuxOut("send-keys", "-t", `s${uId}`, "-N", String([...now].length), "BSpace");
+        removed += now.length;
+        quiet = 0;
+        await Bun.sleep(50);
+      }
+      return removed;
+    };
     const appendAudit = (mainAfter: string, mainSha: string, checks: { ran: number; failed: number }) => {
       const at = Date.now() + Number.parseInt(mainAfter.slice(0, 4), 16);
       appendFileSync(auditFile, `${JSON.stringify({ at, startedAt: at - 1, ms: 1, repo: REPO, main: "main",
@@ -629,6 +700,21 @@ export async function run(): Promise<void> {
         (await eventRows()).find((e) => e.id === id);
       const heldRows = (id: string): number =>
         auditRows().filter((r) => r.event === "fleet_event_held" && (r.detail ?? "").startsWith(id)).length;
+      // What the watch DOOR actually counts when it says "max 5 active watches per slot", read at
+      // the instant the door is knocked on. A `freed:400` says only "refused"; this says what the
+      // receiver still owed, so the next occurrence names its own cause instead of leaving the
+      // reader to guess (§11.2j, the seventh member's unexplained 400).
+      const receiverBudget = async (): Promise<{ armed: string[]; open: string[] }> => {
+        const sess = (await (await get("/api/sessions")).json()) as
+          { watches: { id: string; slot: number; armed: boolean }[] };
+        return { armed: sess.watches.filter((w) => w.slot === uId && w.armed).map((w) => w.id),
+          open: (await openDebts()).map((e) => `${e.id}:${e.status}`) };
+      };
+      // A row id must resolve to exactly ONE row. Two rows carrying it (a restore beside a live
+      // one) would let two reads of "the same event" answer differently — which is precisely the
+      // contradiction §11.2j records and nobody has yet ruled out.
+      const rowsWithId = async (id: string): Promise<number> =>
+        (await eventRows()).filter((e) => e.id === id).length;
 
       // --- (1) THE SLOW PASTE. The stand-in renders the first 24 bytes at once and the rest a
       // quarter second later, so "still arriving" is a state the probe controls rather than races.
@@ -691,15 +777,7 @@ export async function run(): Promise<void> {
       // submitted — so a single read taken when the event went terminal sees an empty buffer and
       // clears nothing. Wait out a full window of CONFIRMED emptiness instead, clearing exactly
       // what shows up and restarting the window after each clear.
-      let cleared = 0;
-      for (let quiet = 0; quiet < 60;) {
-        const now = stateBuffer().text;
-        if (now.length === 0) { quiet++; await Bun.sleep(50); continue; }
-        await tmuxOut("send-keys", "-t", `s${uId}`, "-N", String([...now].length), "BSpace");
-        cleared += now.length;
-        quiet = 0;
-        await Bun.sleep(50);
-      }
+      const cleared = await drainComposer(60);
       const preDraftFrame = (await tmuxOut("capture-pane", "-p", "-e", "-t", `s${uId}`)).out;
       check("arrival fixture: nothing of the slow paste is left behind, in the buffer or on screen",
         stateBuffer().text === "" && composerResidue({ kind: "rules" }, preDraftFrame) === "",
@@ -711,6 +789,10 @@ export async function run(): Promise<void> {
       // occupied. Every tick refuses BEFORE the paste; the measured row counted each of those as a
       // delivery attempt.
       const draft = "owner draft that must survive every held tick";
+      // The whole point of the next three fixtures is that the composer is OCCUPIED while events
+      // are minted and held. That is a state of a specific pane, so the pane is stamped here and
+      // re-read where the events are read (§11.2j).
+      const holdWindow = await receiverId();
       await tmuxOut("send-keys", "-t", `s${uId}`, "-l", draft);
       let drafted = stateBuffer();
       for (let i = 0; i < 100 && drafted.text !== draft; i++) {
@@ -760,10 +842,18 @@ export async function run(): Promise<void> {
       };
       const doomedEvent = await waitEventFor("doomed");
       const livingEvent = await waitEventFor("living");
-      check("subject fixture: both lane completions minted one pending event each on the busy receiver",
-        doomedEvent?.status === "pending" && livingEvent?.status === "pending"
-        && doomedEvent.subjectSlot === doomed.slot && livingEvent.subjectSlot === living.slot,
-        JSON.stringify({ doomed: doomedEvent?.status, living: livingEvent?.status }));
+      // "pending" is the right answer here ONLY because the composer stayed occupied throughout.
+      // Without this line a restarted stand-in (empty buffer) lets the very next tick deliver, and
+      // the check below reports a minting defect that never happened — the measured §11.2j shape,
+      // where `event ...: delivered lane-ready to slot 7` sits in the server log one line under
+      // the mint it was supposed to be held against.
+      const holdIntact = await windowIntact("owner-draft hold", holdWindow, draft);
+      if (holdIntact)
+        check("subject fixture: both lane completions minted one pending event each on the busy receiver",
+          doomedEvent?.status === "pending" && livingEvent?.status === "pending"
+          && doomedEvent.subjectSlot === doomed.slot && livingEvent.subjectSlot === living.slot,
+          JSON.stringify({ doomed: doomedEvent?.status, living: livingEvent?.status,
+            doomedId: doomedEvent?.id ?? null, livingId: livingEvent?.id ?? null }));
 
       // 100+ refusals, counted on the server's own held rows rather than on elapsed time
       const heldTarget = 100;
@@ -772,12 +862,25 @@ export async function run(): Promise<void> {
       const heldDoomed = await eventById(doomedEvent?.id ?? "x");
       const heldLiving = await eventById(livingEvent?.id ?? "x");
       const heldDraft = stateBuffer();
-      check("held: 100+ pre-paste refusals change neither `attempts` nor the owner's composer",
-        heldCount >= heldTarget && heldDoomed?.status === "pending" && heldDoomed.attempts === 0
-        && heldLiving?.status === "pending" && heldLiving.attempts === 0
-        && heldDraft.text === draft,
-        JSON.stringify({ held: heldCount, doomedAttempts: heldDoomed?.attempts,
-          livingAttempts: heldLiving?.attempts, draftBytes: heldDraft.text.length }));
+      // §11.2j's EIGHTH member is this check, and its recorded detail
+      // (`doomedAttempts:1` WITH `draftBytes:45`) is not explained by a replaced pane: nothing in
+      // this fixture re-types the draft, so a fresh occupant would have shown 0 bytes here, not 45.
+      // What remains is that the two readings of "the composer is occupied" disagreed — transport
+      // reads the RENDERED FRAME, this fixture reads the stand-in's INTERNAL buffer, and only a
+      // frame that did not show the draft at that instant lets `sendText` past its pre-paste
+      // refusal and raises `attempts`. So the frame is now read here beside the buffer: on the
+      // healthy path both carry the draft, and a future occurrence prints which one did not.
+      const heldFrameRaw = (await tmuxOut("capture-pane", "-p", "-e", "-t", `s${uId}`)).out;
+      const heldFrame = composerResidue({ kind: "rules" }, heldFrameRaw);
+      const heldIntact = await windowIntact("held refusals", holdWindow, draft);
+      if (heldIntact)
+        check("held: 100+ pre-paste refusals change neither `attempts` nor the owner's composer",
+          heldCount >= heldTarget && heldDoomed?.status === "pending" && heldDoomed.attempts === 0
+          && heldLiving?.status === "pending" && heldLiving.attempts === 0
+          && heldDraft.text === draft,
+          JSON.stringify({ held: heldCount, doomedAttempts: heldDoomed?.attempts,
+            livingAttempts: heldLiving?.attempts, draftBytes: heldDraft.text.length,
+            frameBytes: (heldFrame ?? "").length, frameIsDraft: heldFrame === draft }));
 
       // --- (3) THE BUDGET, READ THROUGH THE DOOR THAT SPENDS IT — and read RELATIVELY, never as an
       // absolute count. What has to be proven is one difference: the same subscription is refused
@@ -812,18 +915,30 @@ export async function run(): Promise<void> {
       const stillPending = await eventById(livingEvent?.id ?? "x");
       const goneAck = doomedEvent ? await ackEvent(uTok, doomedEvent.id) : new Response(null, { status: 599 });
       const goneAckBody = await goneAck.text();
+      const budgetBeforeFree = await receiverBudget();
       // the SAME request the door just refused, now that one row is terminal
       const freedRes = await post(`/api/slots/${uId}/watch`, {
         kind: "audit", repo: REPO, mainAfter: fillMainAfter(cappedFill), idleSec: 0,
       });
-      check("subject-gone: the torn-down lane's undelivered event is terminal as itself, unackable, and frees its budget",
-        goneRow?.status === "subject-gone" && goneRow.deliveredAt === null
-        && goneRow.acknowledgedAt === null && goneRow.attempts === 0
-        && goneAck.status === 409 && goneAckBody.includes("subject-gone")
-        && stillPending?.status === "pending" && freedRes.ok,
-        JSON.stringify({ gone: goneRow?.status, deliveredAt: goneRow?.deliveredAt,
-          attempts: goneRow?.attempts, ack: goneAck.status, living: stillPending?.status,
-          freed: freedRes.status }));
+      const freedBody = await freedRes.text();
+      // The living row is expected to be STILL PENDING here, which is a fact about a composer that
+      // is still occupied on a pane that is still the same one. Both are this fixture's to hold.
+      const goneIntact = await windowIntact("subject teardown", holdWindow, draft);
+      if (goneIntact)
+        check("subject-gone: the torn-down lane's undelivered event is terminal as itself, unackable, and frees its budget",
+          goneRow?.status === "subject-gone" && goneRow.deliveredAt === null
+          && goneRow.acknowledgedAt === null && goneRow.attempts === 0
+          && goneAck.status === 409 && goneAckBody.includes("subject-gone")
+          && stillPending?.status === "pending" && freedRes.ok,
+          JSON.stringify({ gone: goneRow?.status, deliveredAt: goneRow?.deliveredAt,
+            attempts: goneRow?.attempts, ack: goneAck.status, living: stillPending?.status,
+            freed: freedRes.status,
+            // the two ids this block resolved, so the counterprobe's reads can be compared to
+            // THESE and not to an assumption about which row each of them found
+            doomedId: doomedEvent?.id ?? null, goneRowId: goneRow?.id ?? null,
+            livingId: livingEvent?.id ?? null, livingRowId: stillPending?.id ?? null,
+            doomedRows: await rowsWithId(doomedEvent?.id ?? "x"),
+            budgetAtFree: budgetBeforeFree, freedBody: freedBody.slice(0, 80) }));
 
       // --- (5) THE COUNTERPROBE. The draft goes away; the LIVING subject's event is delivered on
       // its first real attempt, and nothing about the dead lane is ever typed into that pane.
@@ -835,15 +950,29 @@ export async function run(): Promise<void> {
       }
       const finalGone = await eventById(doomedEvent?.id ?? "x");
       const plog = await plogRead();
-      check("counterprobe: the live subject's held event is delivered on its FIRST attempt; the dead one is never typed",
-        deliveredLiving?.status === "delivered" && deliveredLiving.attempts === 1
-        && plog.filter((e) => e.slot === uId
-          && e.text.startsWith(`[fleet] slot ${living.slot} (${living.branch})`)).length === 1
-        && !plog.some((e) => e.slot === uId
-          && e.text.startsWith(`[fleet] slot ${doomed.slot} (${doomed.branch})`))
-        && finalGone?.status === "subject-gone",
-        JSON.stringify({ living: deliveredLiving?.status, attempts: deliveredLiving?.attempts,
-          doomed: finalGone?.status }));
+      // The composer is deliberately empty from here on, so only the PANE is this window's
+      // precondition. It matters: a delivery counted "on its FIRST attempt" is a statement about
+      // one occupant, and a replaced pane makes both halves of the sentence unmeasurable.
+      const counterIntact = await windowIntact("counterprobe", holdWindow);
+      if (counterIntact)
+        check("counterprobe: the live subject's held event is delivered on its FIRST attempt; the dead one is never typed",
+          deliveredLiving?.status === "delivered" && deliveredLiving.attempts === 1
+          && plog.filter((e) => e.slot === uId
+            && e.text.startsWith(`[fleet] slot ${living.slot} (${living.branch})`)).length === 1
+          && !plog.some((e) => e.slot === uId
+            && e.text.startsWith(`[fleet] slot ${doomed.slot} (${doomed.branch})`))
+          && finalGone?.status === "subject-gone",
+          JSON.stringify({ living: deliveredLiving?.status, attempts: deliveredLiving?.attempts,
+            doomed: finalGone?.status,
+            // §11.2j recorded this block reading `pending` for a row the block above had just read
+            // as `subject-gone`. Whichever way that resolves, it resolves HERE: the id each read
+            // asked for, the id of the row it got back, the status the block above saw, and how
+            // many rows currently carry that id.
+            doomedId: doomedEvent?.id ?? null, doomedRowId: finalGone?.id ?? null,
+            goneSawEarlier: goneRow?.status ?? null,
+            flippedBack: goneRow?.status === "subject-gone" && finalGone?.status !== "subject-gone",
+            doomedRows: await rowsWithId(doomedEvent?.id ?? "x"),
+            livingId: livingEvent?.id ?? null, livingRowId: deliveredLiving?.id ?? null }));
 
       // Hand the receiver back empty — later families read this slot's budget and its pane, and on
       // a tree WITHOUT the fix the dead lane's row is still pending and still deliverable, so this
@@ -871,8 +1000,23 @@ export async function run(): Promise<void> {
     if (auditFileExisted) writeFileSync(auditFile, auditFileBefore);
     else rmSync(auditFile, { force: true });
     setComposerMode("normal");
+    // AN EMPTY COMPOSER IS THE KILL-SWITCH FAMILY'S PRECONDITION, NOT ITS SUBJECT. Residue makes
+    // sendText refuse BEFORE the paste, and a refusal is not an attempt: server.ts puts the event
+    // back to `pending` and rolls `attempts` to 0 (the SendRefused arm of tickWatches) — which the
+    // three checks below then read as "the release never delivered". One BSpace and a 100 ms sleep
+    // asserted this; a drain to a window of CONFIRMED emptiness establishes it, and it is read in
+    // BOTH places transport looks: the stand-in's internal buffer and the rendered frame.
+    const killSwitchDrained = await drainComposer(40);
     await tmuxOut("send-keys", "-t", `s${uId}`, "BSpace"); // repaint the now-empty normal composer
     await Bun.sleep(100);
+    const killSwitchFrame = (await tmuxOut("capture-pane", "-p", "-e", "-t", `s${uId}`)).out;
+    const killSwitchWindow = await receiverId();
+    check("kill-switch fixture: the receiver opens the window with a composer empty in BOTH readings transport uses",
+      stateBuffer().text === "" && composerResidue({ kind: "rules" }, killSwitchFrame) === ""
+      && killSwitchWindow.paneId !== "" && killSwitchWindow.agent === "alive",
+      JSON.stringify({ drainedBytes: killSwitchDrained, internal: stateBuffer().text.length,
+        frame: (composerResidue({ kind: "rules" }, killSwitchFrame) ?? "?").slice(0, 40),
+        pane: killSwitchWindow.paneId, agent: killSwitchWindow.agent }));
     const catalog = (await (await get("/api/harnesses")).json()) as
       { harnesses: { id: string; automatable: boolean; allowsLanes: boolean; singleton: boolean }[] };
     const uHarness = catalog.harnesses.find((h) => h.id === "pi-unfenced");
@@ -918,22 +1062,33 @@ export async function run(): Promise<void> {
       delivered = subscribedJ.watch?.id ? await eventForWatch(subscribedJ.watch.id) : undefined;
     }
     const oldPolicySkip = "skipped — harness pi-unfenced is not automatable";
-    check("after kill-switch release the pending event reaches live pi-unfenced once as delivered, never acked by tmux",
-      delivered?.status === "delivered" && delivered.attempts === 1
-      && delivered.acknowledgedAt === null, JSON.stringify(delivered));
-    const uMessages = (await plogRead()).filter((e) => e.slot === uId
-      && e.text.startsWith(`[fleet] slot ${uTgt.slot} (${uTgt.branch})`));
-    check("the fixed completion notification has exactly one matching prompt-log row on pi-unfenced",
-      uMessages.length === 1, `${uMessages.length}: ${uMessages.map((m) => m.text.slice(0, 80)).join(" | ")}`);
-    await Bun.sleep(AUTOS_TICK_MS * 4 + 1500);
-    const uAfter = subscribedJ.watch?.id ? await watchRow(subscribedJ.watch.id) : undefined;
-    const uEventAfter = subscribedJ.watch?.id ? await eventForWatch(subscribedJ.watch.id) : undefined;
-    check("the pi-unfenced event remains one-shot across later ticks and never records the old skip",
-      uAfter?.armed === false && uAfter.lastResult === "sent" && uEventAfter?.status === "delivered"
-      && (await plogRead()).filter((e) => e.slot === uId
-        && e.text.startsWith(`[fleet] slot ${uTgt.slot} (${uTgt.branch})`)).length === 1
-      && !(await watchRows()).some((w) => w.slot === uId && (w.lastResult ?? "").includes(oldPolicySkip)),
-      JSON.stringify({ watch: uAfter, event: uEventAfter }));
+    // All three reads below are about ONE delivery into ONE pane: the event reached it once, the
+    // prompt log carries exactly one row for it, and no later tick adds a second. Every one of
+    // those sentences is false-by-construction if the pane was replaced mid-window — the prompt log
+    // is keyed on the slot, not the occupant, so a successor's row would be counted here as a
+    // duplicate delivery. Establish the occupant, then read (§11.2j).
+    const killIntact = await windowIntact("kill-switch release", killSwitchWindow);
+    if (killIntact) {
+      check("after kill-switch release the pending event reaches live pi-unfenced once as delivered, never acked by tmux",
+        delivered?.status === "delivered" && delivered.attempts === 1
+        && delivered.acknowledgedAt === null, JSON.stringify(delivered));
+      const uMessages = (await plogRead()).filter((e) => e.slot === uId
+        && e.text.startsWith(`[fleet] slot ${uTgt.slot} (${uTgt.branch})`));
+      check("the fixed completion notification has exactly one matching prompt-log row on pi-unfenced",
+        uMessages.length === 1, `${uMessages.length}: ${uMessages.map((m) => m.text.slice(0, 80)).join(" | ")}`);
+      await Bun.sleep(AUTOS_TICK_MS * 4 + 1500);
+      const uAfter = subscribedJ.watch?.id ? await watchRow(subscribedJ.watch.id) : undefined;
+      const uEventAfter = subscribedJ.watch?.id ? await eventForWatch(subscribedJ.watch.id) : undefined;
+      // the later ticks are part of THIS check's window too — it is the one that says "and no
+      // second row ever appeared", which a fresh occupant would satisfy or break by accident
+      if (await windowIntact("one-shot across later ticks", killSwitchWindow))
+        check("the pi-unfenced event remains one-shot across later ticks and never records the old skip",
+          uAfter?.armed === false && uAfter.lastResult === "sent" && uEventAfter?.status === "delivered"
+          && (await plogRead()).filter((e) => e.slot === uId
+            && e.text.startsWith(`[fleet] slot ${uTgt.slot} (${uTgt.branch})`)).length === 1
+          && !(await watchRows()).some((w) => w.slot === uId && (w.lastResult ?? "").includes(oldPolicySkip)),
+          JSON.stringify({ watch: uAfter, event: uEventAfter }));
+    }
 
     // Identity falsifier: recycle the numeric slot while an exact held payload is inside the
     // failure window, then type an owner draft into the successor. rollbackOwnComposerPayload must
@@ -950,6 +1105,19 @@ export async function run(): Promise<void> {
       ? await waitComposerState(identityEvent.id, (s) => s.phase.startsWith("entered:") && s.text.includes(identityEvent.id))
       : stateBuffer();
     const oldOpenedAt = identityEvent?.receiverOpenedAt;
+    // The falsifier can only falsify something that is actually there. Without this line an event
+    // that never reached the hold (waitAuditEvent timing out, a watch the door refused) leaves
+    // `oldOpenedAt` undefined — and `successorOpenedAt !== oldOpenedAt` is then trivially TRUE,
+    // i.e. the identity conjunct passes without ever having compared two identities. Named here so
+    // the fixture's own failure cannot be read as a rollback defect, and cannot pass by accident.
+    const identityIntact = identityWatchRes.ok && !!identityEvent
+      && typeof oldOpenedAt === "number" && oldOpenedAt > 0
+      && heldIdentity.text.includes(identityEvent.id);
+    check("rollback identity fixture: the exact payload is HELD in the pre-kill composer of a known occupant",
+      identityIntact, JSON.stringify({ watch: identityWatchRes.status, event: identityEvent?.status ?? null,
+        eventId: identityEvent?.id ?? null, oldOpenedAt: oldOpenedAt ?? null,
+        phase: heldIdentity.phase, heldBytes: heldIdentity.text.length,
+        carriesEventId: heldIdentity.text.includes(identityEvent?.id ?? "not-an-event") }));
     await post(`/api/slots/${uId}/kill`, {});
     setComposerMode("normal");
     const successorOpen = await post(`/api/slots/${uId}/open`, { cwd: REPO, harness: "pi-unfenced" });
@@ -971,13 +1139,14 @@ export async function run(): Promise<void> {
       await Bun.sleep(50);
       successorState = stateBuffer();
     }
-    check("rollback live falsifier: recycled slot identity leaves the successor owner's draft byte-for-byte",
-      identityWatchRes.ok && heldIdentity.text.includes(identityEvent?.id ?? "not-an-event")
-      && successorOpen.ok && successorAgent === "alive" && successorOpenedAt !== oldOpenedAt
-      && successorSend.ok && successorState.text === successorDraft,
-      JSON.stringify({ watch: identityWatchRes.status, heldBytes: heldIdentity.text.length,
-        open: successorOpen.status, agent: successorAgent, identityChanged: successorOpenedAt !== oldOpenedAt,
-        send: successorSend.status, draftBytes: successorState.text.length }));
+    if (identityIntact)
+      check("rollback live falsifier: recycled slot identity leaves the successor owner's draft byte-for-byte",
+        identityWatchRes.ok && heldIdentity.text.includes(identityEvent?.id ?? "not-an-event")
+        && successorOpen.ok && successorAgent === "alive" && successorOpenedAt !== oldOpenedAt
+        && successorSend.ok && successorState.text === successorDraft,
+        JSON.stringify({ watch: identityWatchRes.status, heldBytes: heldIdentity.text.length,
+          open: successorOpen.status, agent: successorAgent, identityChanged: successorOpenedAt !== oldOpenedAt,
+          send: successorSend.status, draftBytes: successorState.text.length }));
     if (auditFileExisted) writeFileSync(auditFile, auditFileBefore);
     else rmSync(auditFile, { force: true });
     await post(`/api/slots/${uTgt.slot}/kill`, {});

@@ -1,7 +1,7 @@
 # Review-Signale — woran dieses Repo schlechten Code direkt erkennt
 
 **Rolle dieser Datei:** Sie ist PROMPT-INHALT. Der Review-Anschluss (Plan:
-`docs/plan-review-layer-2026-08-16.md`, WP2′) stellt den passenden Abschnitt server-seitig
+`docs/attic/plan-review-layer-2026-08-16.md`, WP2′) stellt den passenden Abschnitt server-seitig
 inline in den Prompt des ③-Reviewers. Jede Zeile hier kostet also Reviewer-Aufmerksamkeit bei
 jedem Review — der Schnitt ist Absicht: sieben belegte Signale, keine Sammlung. Ein neues
 Signal kommt nur mit bezahltem Incident herein, nie aus einem Katalog.

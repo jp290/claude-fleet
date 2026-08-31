@@ -22,7 +22,7 @@
 // serialiser, because a phase that reads "READY" for a row nobody can account for is worse than no
 // phase at all: it looks like an answer.
 //
-// Inputs are the closed list in docs/program-state-implementation-brief-2026-08-23.md §2 (I1–I6)
+// Inputs are the closed list in docs/attic/program-state-implementation-brief-2026-08-23.md §2 (I1–I6)
 // and nothing else. In particular NOT: fleetReports (pruned to 20 terminal rows, so a projection
 // over them would change with age), pane text, transcript bytes, task brief/comment text, any
 // `lastResult` prose, or terminal attention rows (also pruned). A pruned or live-text input would

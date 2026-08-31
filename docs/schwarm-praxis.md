@@ -239,7 +239,7 @@ der Zeitpunkt für Mechanik.
 
 ## Provenienz
 
-Auftrag C aus `docs/schwarm-programm-2026-08-27.md`, Brief in
+Auftrag C aus `docs/attic/schwarm-programm-2026-08-27.md`, Brief in
 `briefs/schwarm-programm-auftraege-2026-08-27.md`. Die vier Fakten sind am Baum nachgelesen
 (Symbolverweise, keine Zeilennummern — diese Seite trägt kein Datum im Namen und altert mit dem
 Code); die 559-ms-Zahl stammt aus der `fleet/land`-Note von `e3e5d29`, die Harness-Tatsache aus dem

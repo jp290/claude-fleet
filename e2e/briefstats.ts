@@ -1,5 +1,5 @@
 // The brief-quality reader (briefstats.ts): the two rates §4 of
-// docs/brief-kompilierung-verbesserung-2026-08-18.md names, computed off the two ledgers that have
+// docs/attic/brief-kompilierung-verbesserung-2026-08-18.md names, computed off the two ledgers that have
 // carried them since 735aa45 — empty-lane rate per brief origin, and zero-owner-prompt rate per
 // landed lane per brief origin.
 //

@@ -1,6 +1,6 @@
 // The brief question — is a compiled brief worth more than the draft it replaced?
 //
-// The two numbers that answer it (docs/brief-kompilierung-verbesserung-2026-08-18.md §4) have been
+// The two numbers that answer it (docs/attic/brief-kompilierung-verbesserung-2026-08-18.md §4) have been
 // forward-computable since the receipt learned briefHash + briefSource (735aa45), and nothing read
 // them: a grep for `briefHash|ownerPrompts|disposition` across state.sh, register.sh, slotstats.ts
 // and trailstats.ts finds one hit, and it counts dispositions. This module is that reader.

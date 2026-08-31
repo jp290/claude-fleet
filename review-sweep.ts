@@ -1,4 +1,4 @@
-// review-sweep.ts — the deterministic half of the review layer (docs/plan-review-layer-2026-08-16.md
+// review-sweep.ts — the deterministic half of the review layer (docs/attic/plan-review-layer-2026-08-16.md
 // WP3/WP3′). Four checks over a git working tree, no model call, seconds. It is a SENSOR: it never
 // gates, never fixes, never writes into the tree it measures.
 //

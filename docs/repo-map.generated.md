@@ -14,32 +14,28 @@ Scope and sources, so the omissions are not silent:
 - A file's sentence is that file's own first comment line, read from the file.
 - Top-level files that are not `.ts` or `.sh` are out of scope by design: `README.md`, `AGENTS.md`,
   `SYSTEM.md`, `OWNER.md`, `INTAKE.md`, `SHARING.md`, `HANDOFF.md`, `Dockerfile`, `package.json`,
-  `bun.lock`, `launchd-example.plist`, `worker-deepseek.py`, `LICENSE`.
+  `bun.lock`, `launchd-example.plist`, `LICENSE`.
 - A row with no sentence available says so in the row. It is never dropped.
 
-## Directories (13)
+## Directories (10)
 
 - `.claude/` — Session-scoped Claude Code commands (`⚙ steward`'s five pulses) and the repo-local skills — `graphify`, `kriterium-grill`, `mess-notiz`, `unslop`.
 - `.fleet/` — This repo's own context manifest (`context-packs.json`) — the pointers a target repo publishes about itself, validated by e2e/pins.ts before every land.
-- `arbeitskreis-atlas/` — The working-circle atlas: a JSON model of Fleet's own roles and processes plus the single HTML page derived from it — refine the model, the page follows.
+- `attic/` — Retired material kept tracked rather than deleted: briefs whose lane is long gone, the working-circle atlas, the learning bench, the studio kit, the portable prompt-compiler commands, and the scripts nothing runs any more (`attic/atlas.sh`, `attic/steward-arena.sh`, `attic/worker-deepseek.py`, `attic/find-conv.py`).
 - `briefs/` — Founding and task briefs handed to lanes, kept as tracked prose so a dispatched instruction stays readable after its pane is gone.
-- `commands/` — Portable prompt-compiler commands (`sharpen`, `gosharp`) — the ones not bound to this checkout's steward role.
 - `docs/` — The knowledge shelf: how to brief a session, what a green gate attests, which failures are the machine's — including `docs/messungen/` for tracked measurement notes.
 - `drills/` — Fire drills — seeded-defect runs that point a real model at a real path, deliberately outside the deterministic suites.
 - `e2e/` — The check modules `fleet-e2e.ts` boots in order, plus `pins.ts`: the must-agree pairs whose other side is not TypeScript.
 - `helper-daemon/` — The other machine's half of the remote helper portal: a Bun daemon that claims a job, clones its bundle, runs the suite and reports back — plus its config format and a placeholder systemd unit.
-- `lerntisch/` — The learning bench — agent/information layers measured as data (`daten/`) against captured sources (`quellen/`), with its own HTML view.
 - `public/` — Static assets `server.ts` serves: the dashboard, share and landing pages, icons and manifest. The client bundles beside them are gitignored build output.
 - `src/` — Modules shared across the server, the browser bundle and the suites — protocol types, the client, share rendering, shell quoting, markdown, backoff.
-- `studio-kit/` — The mechanical invariants for setting up a working-circle studio: templates and checklists whose mitigation is a check, never product rules.
 
-## Top-level `.ts` and `.sh` files (51)
+## Top-level `.ts` and `.sh` files (49)
 
 - `acceptance-probe.sh` — ACP-25 REAL-TUI ACCEPTANCE PROBE — not a gate. It boots an isolated Fleet instance on its own
 - `acceptance-probe.ts` — ACP-25 real-TUI acceptance probe (driver: acceptance-probe.sh). Every check below is against the
 - `analysis-prompt.ts` — The queue analyst's prompt, extracted as a PURE function for the same reason as buildMergePrompt,
 - `analysis-staleness.ts` — WHEN A VERDICT EXPIRES — one rule, pure, so every case is decidable without a server.
-- `atlas.sh` — Projekt-Atlas: eine HTML-Seite aus NUR ableitbarem Zustand — die Ring-1.1-Idee als Ansicht.
 - `briefstats.ts` — The brief question — is a compiled brief worth more than the draft it replaced?
 - `capability-map.ts` — capability-map.ts — the executable source for Fleet's smallest capability vocabulary.
 - `clarify-prompt.ts` — The clarify lane's founding prompt, extracted as a PURE function for the same reason as the
@@ -79,7 +75,6 @@ Scope and sources, so the omissions are not silent:
 - `server.ts` — **no sentence** — this file opens with no header comment; add one as its first line so this row stops reading as empty.
 - `slotstats.ts` — The slot fact — whether a slot is the thing it claims to be.
 - `state.sh` — Fleet's derivable state, computed at read time — never written down, so it cannot rot.
-- `steward-arena.sh` — steward-arena.sh — launch/teardown a HERMETIC steward "study arena":
 - `task-analysis-warning.ts` — Pure queue warning classification for a disabled analyst.
 - `task-metadata.ts` — Deterministic, read-only task surface projection.
 - `task-waves.ts` — Deterministic, read-only queue wave projection.

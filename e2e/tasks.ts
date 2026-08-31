@@ -2832,7 +2832,7 @@ export async function run(ctx: Ctx): Promise<void> {
   {
     const tracked = new Set([
       "server.ts", "src/client.ts", "src/protocol.ts", "e2e/tasks.ts", "docs/guide.md",
-      "watchdog.sh", "worker-deepseek.py", ".gitignore",
+      "watchdog.sh", "attic/worker-deepseek.py", ".gitignore",
     ]);
     const derive = (text: string, confirmedFiles?: string[], brief?: string) =>
       deriveTaskMetadata({ text, brief, confirmedFiles }, { trackedPaths: tracked, project: "fleet" });
@@ -2853,7 +2853,7 @@ export async function run(ctx: Ctx): Promise<void> {
 
     const processCases: [string, string, string?][] = [
       ["server.ts", "server"], ["src/client.ts", "client-ui"], ["e2e/tasks.ts", "e2e-gates"],
-      ["docs/guide.md", "docs"], ["worker-deepseek.py", "harness-adapter"], ["watchdog.sh", "betrieb"],
+      ["docs/guide.md", "docs"], ["attic/worker-deepseek.py", "harness-adapter"], ["watchdog.sh", "betrieb"],
       ["server.ts src/client.ts", "cross-cutting", "client-ui+server"],
     ];
     const processResults = processCases.map(([text]) => derive(text).cluster);
@@ -2867,7 +2867,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // itself would report 55/60 rather than collapsing UNKNOWN into an empty success.
     const realisticPaths = [
       "server.ts", "src/client.ts", "e2e/tasks.ts", "docs/guide.md", "watchdog.sh",
-      "worker-deepseek.py", "src/protocol.ts", ".gitignore",
+      "attic/worker-deepseek.py", "src/protocol.ts", ".gitignore",
     ];
     const coverageFixture = Array.from({ length: 60 }, (_, i) => i < 55
       ? `auftrag ${i}: change ${realisticPaths[i % realisticPaths.length]} and verify the named surface`

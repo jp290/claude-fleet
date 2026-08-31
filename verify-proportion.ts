@@ -42,6 +42,7 @@ const DEFAULT_RULE: Rule = { label: "conservative-default", steps: LOCAL_PROOF_S
 
 function ruleFor(path: string): Rule {
   if (path.startsWith("docs/") || path.startsWith("briefs/") || path.startsWith("drops/")
+    || path.startsWith("attic/")
     || (!path.includes("/") && path.endsWith(".md")) || path === ".gitignore") return DOC_RULE;
 
   if (path.startsWith("src/") || path.startsWith("public/")) return SOURCE_RULE;

@@ -213,7 +213,7 @@ const SOURCE_DIR = ((): string | null => {
   // A stager that does not run a runner, or does not end by propagating its exit code, has stopped
   // being a suite while still looking like one — this is the only place that can say so.
   // Scoped to the root `e2e-*.sh` suite wrappers, which is the set whose ONLY product is a verdict.
-  // drills/drill-3.sh and steward-arena.sh stage an instance too and are deliberately out: a drill
+  // drills/drill-3.sh and attic/steward-arena.sh stage an instance too and are deliberately out: a drill
   // is a hand-driven rig and the arena is a long-lived fixture — neither returns a pass/fail, so
   // "ends by propagating its exit code" would be a rule about something they never claimed to be.
   const stagers = shellScripts.filter((f) =>

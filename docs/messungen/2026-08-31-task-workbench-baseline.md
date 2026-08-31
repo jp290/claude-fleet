@@ -25,7 +25,7 @@ Live-Oberfläche.
 
 - Der in-app Browser brach vor jeder Navigation mit `Browser is not available: iab` ab. Der
   URL-gebundene Browserzugang brach mit `No browser is available` ab.
-- Browser Computer Use öffnete `http://100.64.0.1:8790/`, zeigte aber ausschließlich den Dialog
+- Browser Computer Use öffnete die wegen des Leak-Pins abstrahierte Live-Adresse `http://<fleet-host>:<port>/`, zeigte aber ausschließlich den Dialog
   `Access token` mit dem Feld `token — Enter to save`. Die Task Workbench lag dahinter und war
   nicht lesbar. `http://127.0.0.1:8790/` antwortete in Chrome mit `ERR_CONNECTION_REFUSED`.
 - Es wurde kein Token eingegeben, kein Formular abgeschickt und keine Task- oder API-Zustandsänderung
@@ -63,7 +63,7 @@ Bundles und keine Browsermessung.
 
 1. Vor Implementierungslektüre wurden `AGENTS.md`, `docs/messungen/INDEX.md`,
    `.claude/skills/mess-notiz/SKILL.md` und `.claude/skills/unslop/SKILL.md` gelesen.
-2. In einem neuen Chrome-Tab wurde zuerst `http://100.64.0.1:8790/` geöffnet und der sichtbare
+2. In einem neuen Chrome-Tab wurde zuerst die wegen des Leak-Pins abstrahierte Live-Adresse `http://<fleet-host>:<port>/` geöffnet und der sichtbare
    Accessibility-Baum samt Bildschirmaufnahme geprüft. Die Aufnahme zeigte nur den Token-Dialog.
    Danach wurden der in-app Browser und der URL-gebundene Browserzugang geprüft; beide exakten
    Fehler stehen unter Beobachtet.

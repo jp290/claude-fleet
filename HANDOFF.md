@@ -1,3 +1,75 @@
+# HANDOFF — Dual-Host Program cd110019: Canary bestanden, Dauerkanal ungeklärt, 2026-08-31
+
+Program **`cd1100193082db395c1387db`** („Dual-Host Fleet — Second-host Session Runtime") bleibt
+aktiv und gebunden. Dieser Abschnitt ist NEU und oben angesetzt; nichts darunter wurde angefasst.
+
+## 1. Program-Zustand
+
+- **Richtung A bestätigt** (zweite eigenständige Fleet-Instanz auf second-host + Client-Link B1),
+  Phase-0-Beleg gelandet als `0f3a9da` (`docs/dual-host-session-runtime-phase0-2026-08-30.md`),
+  Korrekturen nachgezogen in `9ff14be`.
+- **V1 erfasst** (Owner, 2026-08-30): Fleet-Reports überqueren KEINE Hostgrenze; jede Maschine
+  behält eigene Program-MAIN, Inbox, Tokens, Ledger. Eine hostübergreifende Inbox/Event-Bridge
+  ist vertagt und wäre ein eigener Architekturentscheid.
+- **Canary-Eintrittsbedingung ERFÜLLT und belegt:** `7d26ff9`,
+  `docs/messungen/2026-08-31-second-host-session-canary-private-repo-o.md`. Gemessen am laufenden Build
+  `62ef02a1d3ee4b03ff89a25316e3b1151f123f44`: gestartet (`/stamp.json` = commit 62ef02a,
+  dirty false, GET / 200), über den ECHTEN Eingabepfad gesteuert (CDP `Input.dispatchKeyEvent`,
+  gehaltenes ArrowUp speed 4,24 → 19,38 m/s über 18 Proben; ArrowRight yaw −2,14° → −28,04°),
+  benannte Belege zurück (Frame 780×493, 52 488 B, sha256 `f4ce2224…`, HUD + eingebrannter
+  Stempel, angesehen).
+- **KEIN Implementierungs-Slice freigegeben.** Die Canary ersetzt Schnitt 1 des Phase-0-Plans,
+  sie ist keine Freigabe zur Topologie-Implementierung.
+
+## 2. Der Befund, der die Canary bezahlt hat — als VORBEDINGUNG lesen
+
+`bun run verify` ist auf second-host **rot in `T14 auslauf leckt nicht`** (Trace-Digest `d113eb90`
+statt der eingebrannten `b8c98758`). Gegenprobe: dasselbe Bundle, derselbe Commit, frischer
+Scratch-Klon auf dem Mac → **ALL PASS**. Zuordnung damit **Plattformdifferenz**
+(arm64/macOS 26.3.1 gegen x86_64/Debian 13), **kein Regress**. Daneben ist `T4 determinismus` auf
+Linux grün — die Sim ist dort in sich deterministisch, sie landet nur auf einer anderen Zahl;
+`T15 lenkung im bild` ist grün.
+
+**Konsequenz, die der Phase-0-Plan NICHT kannte:** second-host darf einen Build **fahren und
+bebildern**, aber über diese Zeile **nicht grün oder rot sprechen**, bis der Digest-Breaker
+plattformunabhängig ist oder je-Plattform-Baselines bekommt. Wer das überspringt, lässt die zweite
+Maschine ein Urteil fällen, das strukturell falsch ist.
+
+## 3. Die offene Owner-Entscheidung — NICHT die der Nachfolgerin: der Dauerkanal
+
+Die einmalige ssh-Freigabe war ein **Einzelakt und ist vollständig zurückgebaut**: `known_hosts`-
+Zeile entfernt (Datei wieder 567 Zeilen, ssh scheitert wieder an der Host-Key-Prüfung), Chromium
+`purge` + `autoremove`, Arbeitsverzeichnis entfernt, kein Listener auf 5173/9222; Portal und Daemon
+unberührt (`fleet-helper` active, Config-mtime unverändert).
+
+**Die Nachfolgerin darf ssh NICHT eigenmächtig wieder öffnen.** Zur Wahl stehen, ungetroffen:
+- **S5** — den Helper-Daemon nach Job-Art verzweigen (`daemon.ts:269` loggt `kind`, `:324` führt
+  einen einzigen `cfg.suiteCmd`). Bleibt im Pull-Modell, legt **kein Credential auf den Mac**.
+- **Ein beschnittener stehender Key** mit `command=` und `from=`.
+
+## 4. Ehrlichkeiten, wörtlich mitzunehmen
+
+- **`speedWhileLightRed` ist UNGEMESSEN, nicht bestanden** — die erste Probe fiel bei t=4,03 s,
+  also hinter die Ampel-Freigabe. Wer die Sperre belegen will, misst ab t=0.
+- **„Reference" heißt der GEMESSENE Zustand, kein Qualitätsurteil.** Der Owner hat `62ef02a` nie
+  gefahren; **`owner_taste` und `sensory_critic` bleiben `unknown`.**
+- **Provenienz `7d26ff9` und `9ff14be`: Direkt-Commits aus dem Haupt-Checkout** — also **keine
+  `fleet/land`-Note, keine `lane-outcomes.jsonl`-Zeile, kein Post-Land-Audit**. Die Verifikation
+  steht stattdessen im jeweiligen Commit-Body (`install` + `pins` → ALL PASS). `./state.sh`s
+  Land-Health-Zahlen untertreiben an diesem Tag entsprechend.
+- **Ein Messfehler, den die Nachfolgerin nicht wiederholen muss:** ein `pins`-Lauf zeigte 2
+  FAILURES an `CLAUDE.md`; Ursache war die **nebenläufige Neu-Erzeugung des Regelbuch-Generats**
+  durch eine andere Session (`a2f4375`, 16:08), nicht die eigene Änderung — belegt per A/B. In
+  diesem Checkout arbeiten mehrere Sessions; ein Generat-Rot zuerst gegen die mtime prüfen.
+
+## 5. Nächster Zug
+
+Der Kanal-Entscheid (§3) ist das Tor. Erst danach lohnt Schnitt 2 des Phase-0-Plans
+(Instanz-Identität als EIN Feld pro Antwort — Byte-Decke `e2e/tasks.ts:590`, `bytes < 14 * 1024`).
+Der Digest-Breaker aus §2 gehört vor jede Spielarbeit auf second-host, nicht danach.
+
+---
+
 # HANDOFF — Task-Workbench-Slices pending; roter Audit vor Release klären, 2026-08-31
 
 Program `b9c1e0d9623aaeb7cabd0257` bleibt aktiv. Baseline-Task `eaa3ae1a` landete nach Reparatur

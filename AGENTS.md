@@ -260,6 +260,15 @@ If a command is mechanically refused anyway, that is a real signal, not a waiver
 quote the error verbatim in your report. Never report a step you skipped as if it passed, and never
 soften a claim you did not verify.
 
+Graphify in a lane: `graphify-out/` is git-ignored and exists only in the main checkout, so a
+worktree never has its own graph — a missing `graphify-out/graph.json` in your tree is the normal
+state, never a stop. A brief line like "graphify query before raw search" means: query the main
+checkout's graph read-only via
+`graphify query "<question>" --graph "$(dirname "$(git rev-parse --git-common-dir)")/graphify-out/graph.json"`
+(the derivation works from any worktree). If that fails for any reason, fall back to
+`rg`/`ast-grep` and keep working — never file a needs-main report over a missing graph. Read-only:
+never run `graphify update`/`save-result` from a lane against the main graph.
+
 ## Reporting
 
 Summary, the quoted verification tails, and one line for anything left unresolved. Report only your

@@ -1576,6 +1576,39 @@ fragment `rulebook/lane-discipline.md` says "Zwoelf bekannte Flake-Familien" and
 re-rendered from it. Both are gitignored, so no commit carries that change — on a drift suspicion,
 re-render (the command is in the head of `rulebook.ts`).
 
+### 11.2k A thirteenth family: the raw-review persist race in `e2e/outcomes.ts` (2026-09-01, filed — 2 occurrences, cause not isolated)
+
+**The member, a singleton:** `outcome: a reviewer answer that did NOT parse is persisted as
+raw:true carrying its text — not as a clean review` (`e2e/outcomes.ts`, block 9b/F5). Failing
+detail both times: `{"state":"none"}` — the outcome row exists but carries no review coverage at
+all, while the check expects `covered` + `raw:true`.
+
+**The direct proof, no re-run spent (§11.7 satisfied from the record):** zero commits touched
+`server.ts`, `lane-signals.ts` or `e2e/outcomes.ts` between the four runs below — the review
+path and the probe were byte-identical throughout:
+
+| run | tree | this check |
+|---|---|---|
+| run 5 (§11.2j table) | `dc75c32`, clean, controller idle | **RED** — the run's only failure |
+| run 7 (§11.2j table) | `5cef1b7` | green (the run's reds were §11.2j) |
+| post-land audit of `01459c9` | `01459c9` | green (reds were §11.2j) |
+| post-land audit of `ff5b813` (W1) | `ff5b813` | **RED** — the run's only failure (1/3366) |
+
+Same bytes, twice red, twice green ⇒ non-determinism proven directly; neither `01459c9` (client
++ `e2e/tasks.ts` only) nor W1 (moves + path literals) touches the review/outcome path.
+
+**Mechanism hypothesis, unverified but shaped like §11.2f:** the fixture clicks
+`POST /api/slots/:id/review`, asserts only that the click RETURNED, and kills the lane
+immediately after; the outcome row is written at kill. If the review job is still writing its
+verdict when the kill lands, the row is minted with `review.state:"none"` — a completion the
+fixture never waited for. The neighbouring 9a check (superseded) commits between click and kill
+and has never fallen. Nobody has dissected a kept instance yet; whoever repairs this starts at
+whether the review result is persisted synchronously with the click or joined at kill time.
+
+**Bookkeeping:** thirteenth family. Both audits are adjudicated `flake` on the ledger with this
+section as the stated reason. A red on this line is now a flake candidate; a red anywhere else in
+`e2e/outcomes.ts` is still ECHT and still yours.
+
 ### 11.5 What is script here, and what is judgment
 
 Of the four steps this triage took, three are mechanical and one is not: taking the mutex, deciding

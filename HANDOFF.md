@@ -1,3 +1,72 @@
+# HANDOFF — Generalsanierung: Entscheide ausgefuehrt, 8d97 gelandet, W1-Brief liegt bereit, 2026-09-01
+
+Program **`b2a14b545fd31fd71ba7b9e1`** aktiv, gebunden. Dieser Abschnitt ersetzt inhaltlich den
+Abschnitt vom 2026-08-31 direkt darunter (dessen offener Entscheid ist GEFALLEN); die Mess-Tabelle
+und die Widerlegungen dort bleiben gueltig.
+
+## 1. Owner-Delegation 2026-09-01 und die sechs ausgefuehrten Entscheide
+
+Owner woertlich: "Bitte ueberleg hier selber gut was sinn macht und dann geh diese an" — auf die
+sechs vorgelegten Entscheide. Protokolliert als datierter Abschnitt im Plan-Nachtrag (`be3b21e`).
+Die Kurzform: **(1) Erfolgsmass 5 gilt jetzt auf CHECK-Ebene** (Lauf gruen, wenn jeder FAIL zu
+einer registrierten Familie gehoert; Baseline zu, wenn ueber 3 konsekutive Laeufe kein Check
+ZWEIMAL faellt; unregistrierter FAIL = Lauf rot) · (2) keine Ruhigstellung fremder Sessions fuer
+P1; stilles Fenster bleibt P4/P5-Vorbedingung · (3) 8d97 als begruendete Freeze-Ausnahme gelandet
+· (4) auto-③ fuer die Programmdauer aus · (5) Rulebook-Familienzahl nachgezogen · (6) keine
+weitere Suite-Zeit fuer den §11.2j-Diskriminator.
+
+## 2. Zustand, alles verifiziert (nicht behauptet)
+
+- **8d97 GELANDET: main = `01459c9`** (feat: separate task workbench views), `fleet/land`-Note
+  mit `verify.ok: true` ueber die volle Kette install→claude-gate. **ERSTER AKT DER NACHFOLGERIN:**
+  Audit-Watch armieren — `POST /api/self/watch` `{"kind":"audit","repo":"/Users/owner/claude-fleet","mainAfter":"01459c9ef81dfac06dc1a999ac13e7f11c6e1583"}` —
+  und ein Rot nach der NEUEN Check-Ebene-Regel beurteilen (§11.2j-Mitglieder einmal = Flake).
+  Meine Watches sind mit dem Slot gestorben; nichts davon uebertraegt sich.
+- **auto-③ aus, am Prozess gemessen**: Live-Server (die PID OHNE `FLEET_SOCK` in `ps eww`) traegt
+  `FLEET_AUTO_REVIEW_MS=0`; watchdog.sh-Zeile committed (`be3b21e`), kickstart + Verb-2-Deploy
+  gefahren, `deployGap` 0, `bundleStale` false. NIE an `./state.sh`s `live=`-Spalte pruefen,
+  solange eine Suite laeuft.
+- **Rulebook**: Fragment `rulebook/lane-discipline.md` sagt jetzt "Zwoelf bekannte
+  Flake-Familien" (+§11.2i/+§11.2j), `CLAUDE.md` daraus gerendert (71497 B), pins ALL PASS.
+  Beides gitignored — es gibt dazu KEINEN Commit; bei Drift-Verdacht neu rendern (Kommando im
+  Kopf von `rulebook.ts`).
+- **§11.2j-Mechanismus eine Ebene tiefer** (`43b389e`): Event erzeugt, unmittelbar danach wird
+  die Empfaenger-Pane ZWEIMAL neu erzeugt (`fleet-e2e-instance-4110/server.log:135-142`);
+  `recoverFleetReportDelivery` terminalisiert korrekt. Gattung §11.2f. Der plausible Fix ist
+  TEST-SEITIG und darf als Lane mit eigenem Kriterium vor P6 laufen (Entscheid 6).
+
+## 3. Naechste Zuege, in dieser Reihenfolge
+
+1. Audit-Watch fuer `01459c9` armieren (oben). Der Audit belegt den Suite-Mutex ~26 min.
+2. **W1 starten**: fertiger Brief liegt WOERTLICH in
+   `/private/tmp/claude-501/-Users-owner-claude-fleet/c05b5a9a-bc21-4de6-b9f8-cf274cc9413c/scratchpad/w1-brief.txt`
+   (lesbar; die Scratchpads der Vorgaenger bleiben auf Platte). Weg: `POST /api/self/tasks`
+   (kind auftrag, harness claude, model claude-opus-5[1m], effort high) → release →
+   **Hand-Dispatch `POST /api/tasks/<id>/dispatch`** (Master-Stop bleibt AN per Program-Intent;
+   der Hand-Knopf ist der vorgesehene Bypass). W1-Land NICHT parallel zum laufenden Audit-Gate
+   erzwingen — das Gate wartet ohnehin am Mutex (waitMs 2.700.000, ein waitedOut ist nie ok:false).
+3. Danach die **§11.2j-Fixture-Fix-Lane** (test-seitig, eigenes Kriterium: die vier
+   watch.ts-Mitglieder ueberleben 3 serielle gruene Laeufe bzw. die Sonde scheitert als sie
+   selbst, wenn die Empfaenger-Pane starb).
+4. **P0-Baseline unter der neuen Regel schliessen**: 3 serielle Laeufe, Urteil auf Check-Ebene.
+   KEINE weiteren Diskriminator-Experimente (Entscheid 6). loadavg je Lauf protokollieren.
+5. Nach W1-Land der HOST-Handschritt: die UNGETRACKTEN lerntisch-Symlinks im Live-Checkout
+   loeschen (einer zeigt auf `.env`) — Lane kann das nicht.
+
+## 4. Ehrlichkeiten
+
+- Heute/gestern liegen ACHT Direkt-Commits auf main (60dec47, ce24b0d, a1615be, dc75c32, 5cef1b7,
+  08689e1, be3b21e, 43b389e + Handoffs) — fuer land-seitige Ledger unsichtbar; `./state.sh`
+  untertreibt entsprechend. Verifikation je Commit steht im jeweiligen Body.
+- Die P0-Baseline ist NOCH NICHT geschlossen — erst Schritt 4 oben schliesst sie.
+- Attention `db4f7f08` steht formal noch offen am Board; inhaltlich ist sie durch die Delegation
+  entschieden (Weg A). Beim naechsten Owner-Kontakt schliessen/erwaehnen.
+- Slot-Datensatz dieser Session traegt model+effort korrekt; Succession erbt mechanisch
+  (`succeedSupervisor` reicht `s.model`/`s.effort` durch). Effort-Bestaetigungszeile trotzdem
+  im ersten Zug zitieren, wenn du sie setzt.
+
+---
+
 # HANDOFF — Generalsanierung: P0 gemessen, Erfolgsmass 5 als unerreichbar belegt, EIN Owner-Entscheid offen, 2026-08-31
 
 Program **`b2a14b545fd31fd71ba7b9e1`** („Generalsanierung 2026-09") aktiv, gebunden an Slot 10.

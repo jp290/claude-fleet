@@ -1,3 +1,85 @@
+# HANDOFF — Generalsanierung: P0 gemessen, Erfolgsmass 5 als unerreichbar belegt, EIN Owner-Entscheid offen, 2026-08-31
+
+Program **`b2a14b545fd31fd71ba7b9e1`** („Generalsanierung 2026-09") aktiv, gebunden an Slot 10.
+Dieser Abschnitt ist NEU und oben angesetzt; nichts darunter wurde angefasst.
+
+## 1. Was gelandet ist (alles Direkt-Commits, docs-only, fuer land-seitige Ledger unsichtbar)
+
+`2cd464b` GLM-Review (Lane) · `60dec47` P0b-Adjudikation · `ce24b0d` Plan-Nachtrag ·
+`a1615be` Baseline-Notiz (Gruendungs-Session) · `dc75c32` Flake-Familie §11.2j ·
+`5cef1b7` Erreichbarkeits-Messung · `08689e1` §11.2j-Korrektur.
+
+`./state.sh`s Land-Health untertreibt diesen Tag entsprechend um sechs Commits.
+
+## 2. Der EINE offene Entscheid — Attention `db4f7f08`, kind `decision`
+
+**Erfolgsmass 5 ("alle Suiten gruen, 3 serielle Beweislaeufe") ist an der gemessenen Rate nicht
+erreichbar.** Zahlen in `docs/messungen/2026-08-31-baseline-erreichbarkeit.md`: 306 entschiedene
+Post-Land-Audits (ein Audit IST ein Baseline-Lauf), 77,5 % gruen ueber alles, **57,5 % ueber die
+letzten 40**, Bruch ab 2026-08-26. Daraus P(3 konsekutiv gruen) = 19 %, ~16 Laeufe je Erfolg,
+~26 min exklusiver Suite-Mutex je Lauf ⇒ **~7 h serialisierte Maschinenzeit je Baseline**, zweimal
+gefordert. Kein einzelner Fix hilft: 24 von 45 gezaehlten Roten fielen mit genau EINEM Check,
+Signaturen gestreut.
+
+Drei Wege liegen dem Owner vor; Empfehlung **A** (Kriterium auf CHECK-Ebene, Baseline geschlossen
+wenn ueber 3 konsekutive Laeufe KEIN Check zweimal faellt — die Zweimal-Regel ist der
+Missbrauchsschutz). **B** wuerde P1 reordern, deshalb wurde W1 NICHT begonnen.
+
+## 3. P0-Messstand — sieben Laeufe, und was sie beweisen
+
+| Lauf | HEAD | dirty | Controller | loadavg | Ergebnis |
+|---|---|---|---|---|---|
+| 1 | `6f173d7` | nein | noch nicht aktiv | — | ALL PASS 3349 |
+| 2 | `00d9b58` | ja | arbeitet | — | RED 4 (Familie) |
+| 3 | `acf3614` | ja | arbeitet | — | RED 5 (Familie) |
+| 4 | `ce24b0d` | nein | untaetig | 1,53 | ALL PASS 3349 |
+| 5 | `dc75c32` | nein | untaetig | 2,15 | RED 1 (`e2e/outcomes.ts`, NICHT die Familie) |
+| 7 | `5cef1b7` | ja | untaetig | 2,39 | RED 5 (Familie) |
+
+**Bewiesen:** Code-Delta ueber alle Laeufe null ⇒ Nicht-Determinismus nach §11.7 direkt bewiesen,
+kein Regress. Neue Familie registriert als **`docs/verify-tiering.md` §11.2j** (sie fehlte dort).
+
+**Zweimal widerlegt, beide Male von mir selbst zuerst geglaubt — nicht erneut aufmachen:**
+- „Untaetiger Controller ergibt gruen": Lauf 7 feuerte die Familie bei untaetigem Controller.
+- „Dirty Baum ist die Ursache": strukturell unmoeglich. `e2e-stage.sh` kopiert nur die
+  Import-Huelle + `public/` + `package.json` + `$STAGE_EXTRA`; `e2e-isolated.sh:66-69` kopiert
+  exakt VIER benannte `docs/`-Dateien; danach `git init && git add -A && git commit` ⇒ immer
+  sauber beim Init. An der aufbewahrten Instanz `fleet-e2e-instance-4110` nachgeprueft.
+
+**Offen und einziger numerischer Griff:** loadavg beim Start (1,53 gruen; 2,15 / 2,39 rot) — drei
+Punkte, ein Hinweis, kein Ergebnis. Wer weitermisst, protokolliert loadavg je Lauf und argumentiert
+NICHT mehr ueber den Baum. Unseziert: `fleet-e2e-instance-80791`, `-26770`, `-43515`, `-4110`.
+
+## 4. Betriebszustand, gemessen (nicht aus state.sh's live=-Spalte!)
+
+`dispatch=false` (Master-Stop AN) · `autosOn=true` · Tag `vor-generalsanierung`=`49038af` ·
+echter Server = die PID **ohne** `FLEET_SOCK`; dort ist `FLEET_AUTO_REVIEW_MS` **ungesetzt**,
+auto-③ laeuft also auf Default 15 s und ist vor dem ersten P4-Fenster noch auf 0 zu setzen
+(+ `launchctl kickstart`). **`./state.sh`s `live=`-Spalte ist falsch, solange eine Suite laeuft**
+(Befund A1, im Plan-Nachtrag als Checklistenpunkt) — ein suite-gespawnter Server hat `cwd` =
+Haupt-Checkout und ueberschreibt die echten Werte.
+
+## 5. Naechste Zuege, in dieser Reihenfolge
+
+1. **Owner-Entscheid zu Erfolgsmass 5 abwarten** (Attention `db4f7f08`). P4/P5 bleiben bis dahin zu.
+2. Danach W1 als Lane briefen — die Planreparaturen in `docs/sanierung-2026-09/plan-2026-08-31.md`
+   §Nachtrag sind der verbindliche Text, NICHT die Tabelle darueber (704→1941, rulebook ≥15→4,
+   392→393, ~324→329; `attic/`-Praefixe aus P2 nach W1 vorgezogen).
+3. Nicht vergessen: `CLAUDE.md`s „Zehn bekannte Flake-Familien" ist jetzt ZWEI zu kurz (§11.2i war
+   schon offen, §11.2j kommt dazu). Das ist ein Generat aus `rulebook.ts` — Fragment editieren und
+   rendern, und es bleibt ein VORSCHLAG bis zur Owner-Promotion.
+
+## 6. Was ich NICHT getan habe, und warum
+
+- **W1 nicht begonnen** — Option B des offenen Entscheids wuerde genau das reordern.
+- **Lane `fleet/260831133127-8d97` nicht angefasst** (Slot 2, done-looking, 1 sauberer Commit,
+  3 Dateien inkl. `src/client.ts`). Sie gehoert Program `b9c1e0d9`, nicht diesem. Kosten des
+  Wartens sind benannt: nach P5 ist sie nicht mehr rebasebar.
+- **Keine „stille Maschine" behauptet.** Bei Lauf 4 waren 13 Agenten-Sessions lebendig, sieben in
+  diesem Checkout. Herstellbar war nur: keine Nachbarsuite, sauberer Baum, Controller untaetig.
+
+---
+
 # HANDOFF — Generalsanierung gestartet: Program b2a14b54 auf Slot 10, Freeze aktiv, 2026-08-31
 
 Owner-Entscheid 2026-08-31: das komplette Repo wird saniert. Dieser Abschnitt ist NEU und oben

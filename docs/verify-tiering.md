@@ -1482,19 +1482,40 @@ defects.
 red ⇒ **non-determinism is proven directly, and the family is NOT a code regress.** Both green runs
 land on the same 3349 PASS.
 
-**What this does NOT prove, and the entry must not be read as if it did:** the discriminator. Two
-variables co-vary perfectly across the four runs — the tree being dirty, and a Program-MAIN
-actively working in the main checkout while the suite ran. This data cannot separate them.
+**What this does NOT prove, and the entry must not be read as if it did:** the discriminator.
+Across runs 1–4 two variables co-varied perfectly — the tree being dirty, and a Program-MAIN
+actively working in the main checkout. **A fifth and a sixth run were then run to separate them,
+and BOTH readings that stood here first are now refuted:**
 
-The load reading is the more plausible of the two and is still only plausible: every member is a
-LIVE pane/tmux delivery assertion (`never acked by tmux`, an absent prompt-log row, a recycled slot
-identity), which is the same surface as the two registered pane-observation races, whereas an
-untracked markdown file in the staged copy has no path to tmux delivery at all. Plausible is not
-measured, and this section says so on purpose.
+| Run | HEAD | tree dirty | controller | loadavg at start | Result |
+|---|---|---|---|---|---|
+| 5 | `dc75c32` | no | idle | 2.15 | RED — **one** check, `e2e/outcomes.ts`, NOT this family |
+| 7 | `5cef1b7` | yes (one untracked `docs/` file) | idle | 2.39 | RED — this family, 5 members |
 
-**The cheap experiment that WOULD isolate it** (one run, ~26 min): dirty the tree with an untracked
-doc file and keep the Program-MAIN idle. Green ⇒ dirtiness is exonerated and the family is
-load-sensitive; red ⇒ the reverse. Nobody has run it.
+- **Refuted: "an idle controller yields green."** Run 7 fired the full family with the controller
+  deliberately idle and zero neighbouring suites. Controller quiet is NOT sufficient.
+- **Refuted, and structurally so: "a dirty source tree is the cause."** It cannot be. The staging
+  copies only the import closure plus `public/`, `package.json` and `$STAGE_EXTRA`
+  (`e2e-stage.sh`), `e2e-isolated.sh` copies exactly FOUR named `docs/` files by explicit `cp`,
+  and the staged directory is then `git init && git add -A && git commit` — **always clean at
+  init**. Verified at the kept instance of run 7: the untracked marker file is absent from it and
+  the staged `docs/` holds only the four closure files. The dirty/clean correlation over six runs
+  is coincidence with no mechanism, and is retracted.
+
+What survives is weaker and worth saying plainly: **the family fires non-deterministically under
+conditions nobody has yet distinguished.** The one numeric handle recorded so far is machine
+loadavg at run start — 1.53 on the green run 4, 2.15 and 2.39 on the two reds — which is three
+data points and therefore a hint, not a result. Anyone extending this section should record
+loadavg per run and stop reasoning about the tree.
+
+A separate observation that must not be folded in: run 5's single red (`outcome: a reviewer answer
+that did NOT parse is persisted as raw:true`, state `none`, `e2e/outcomes.ts`) fired on a CLEAN
+tree with an idle controller and is not a member of this family. Whether it is its own family or a
+one-off is unmeasured.
+
+**Sixth member, seen first in run 7:** `subject fixture: both lane completions minted one pending
+event each on the busy receiver` — the fixture that establishes the family's own precondition,
+which makes the cascade read one step earlier than in runs 2–3.
 
 **Post-mortem discriminator.** Unlike §11.2i this family fails as REAL failing checks, not as a
 silent no-measurement: the runs carry 3345/3344 PASS and named FAIL rows. Preserved instances from

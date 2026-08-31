@@ -1454,6 +1454,14 @@ type FleetEventStatus = "pending" | "send-uncertain" | "delivered" | "acknowledg
 // word added to the union and forgotten in one of those five places is a silent debt or a silent
 // resurrection, not a type error.
 const FLEET_EVENT_TERMINAL: readonly string[] = ["acknowledged", "receiver-gone", "subject-gone"];
+type FleetEventRecoveryState = "retryable" | "blocked" | "terminal";
+interface FleetEventRecovery {
+  state: FleetEventRecoveryState;
+  reason: string;
+  nextAction: string;
+  effect: string;
+  updatedAt: number;
+}
 interface FleetEventBase {
   id: string;
   watchId: string | null;
@@ -1478,6 +1486,7 @@ interface FleetEventBase {
   // rather than looked up through `watchId` because the Watch is prunable and the event is not:
   // the row must still say by itself which transport it was minted for.
   delivery?: "pane" | "inbox";
+  recovery?: FleetEventRecovery;
 }
 interface LaneFleetEvent extends FleetEventBase {
   subjectSlot: number;
@@ -1603,6 +1612,24 @@ interface AttentionRequest {
 }
 const ATTENTION_KINDS: AttentionKind[] = ["decision", "blocked", "review-ready"];
 
+function fleetEventRecoveryFrom(raw: unknown): FleetEventRecovery | undefined | null {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Partial<FleetEventRecovery>;
+  if (r.state !== "retryable" && r.state !== "blocked" && r.state !== "terminal") return null;
+  if (typeof r.reason !== "string" || !r.reason.trim() || r.reason.length > 300) return null;
+  if (typeof r.nextAction !== "string" || !r.nextAction.trim() || r.nextAction.length > 300) return null;
+  if (typeof r.effect !== "string" || !r.effect.trim() || r.effect.length > 300) return null;
+  if (typeof r.updatedAt !== "number" || !Number.isFinite(r.updatedAt) || r.updatedAt <= 0) return null;
+  return {
+    state: r.state,
+    reason: r.reason,
+    nextAction: r.nextAction,
+    effect: r.effect,
+    updatedAt: r.updatedAt,
+  };
+}
+
 function fleetEventFrom(raw: unknown): FleetEvent | null {
   if (!raw || typeof raw !== "object") return null;
   const e = raw as Partial<FleetEvent> & Record<string, unknown>;
@@ -1611,7 +1638,9 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
   // transport choice — exactly as an unknown `delivery` is.
   const ownerReceiver = e.receiverSlot === null && e.receiverOpenedAt === null
     && e.receiverSessionId === null;
-  if (typeof e.id !== "string" || !/^[a-z0-9]+$/.test(e.id)
+  const recovery = fleetEventRecoveryFrom(e.recovery);
+  if (recovery === null
+    || typeof e.id !== "string" || !/^[a-z0-9]+$/.test(e.id)
     || !(e.watchId === null || (typeof e.watchId === "string" && /^[a-z0-9]+$/.test(e.watchId)))
     || (watchless !== (e.watchId === null))
     || !(ownerReceiver || (Number.isInteger(e.receiverSlot) && (e.receiverSlot ?? 0) > 0
@@ -1652,6 +1681,7 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
     createdAt: e.createdAt, status: e.status as FleetEventStatus, attempts: e.attempts!,
     deliveredAt: e.deliveredAt, acknowledgedAt: e.acknowledgedAt,
     ...(e.delivery !== undefined ? { delivery: e.delivery as "pane" | "inbox" } : {}),
+    ...(recovery ? { recovery } : {}),
   };
   if (e.kind === "clarification-request") {
     if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0 || typeof e.subjectBranch !== "string") return null;
@@ -6293,6 +6323,7 @@ async function awaitComposer(s: Slot, bound: BoundSlotPane,
 
 const SEND_BEFORE_PASTE_TEST_LATCH = process.env.FLEET_TEST_SEND_BEFORE_PASTE_LATCH ?? null;
 const SEND_AFTER_PASTE_TEST_LATCH = process.env.FLEET_TEST_SEND_AFTER_PASTE_LATCH ?? null;
+const FLEET_REPORT_RECOVERY_TEST_LATCH = process.env.FLEET_TEST_FLEET_REPORT_RECOVERY_LATCH ?? null;
 let sendBeforePasteTestLatchUsed = false;
 let sendAfterPasteTestLatchUsed = false;
 async function waitForSendTestLatch(path: string | null, phase: "before-paste" | "after-paste",
@@ -6311,6 +6342,21 @@ async function waitForSendTestLatch(path: string | null, phase: "before-paste" |
     await Bun.sleep(10);
   }
   throw new Error(`send ${phase} E2E latch timed out before release`);
+}
+
+async function waitForFleetReportRecoveryTestLatch(event: FleetReportFleetEvent,
+  receiver: { slot: number; openedAt: number; sessionId: string | null }): Promise<void> {
+  if (!FLEET_REPORT_RECOVERY_TEST_LATCH || !existsSync(FLEET_REPORT_RECOVERY_TEST_LATCH)) return;
+  const expected = readFileSync(FLEET_REPORT_RECOVERY_TEST_LATCH, "utf8").trim();
+  if (expected && expected !== event.id) return;
+  writeFileSync(`${FLEET_REPORT_RECOVERY_TEST_LATCH}.reached`, JSON.stringify({
+    eventId: event.id, reportId: event.payload.reportId, receiver,
+  }), { mode: 0o600 });
+  for (let waited = 0; waited < 10_000; waited += 10) {
+    if (existsSync(`${FLEET_REPORT_RECOVERY_TEST_LATCH}.release`)) return;
+    await Bun.sleep(10);
+  }
+  throw new Error("fleet-report recovery E2E latch timed out before release");
 }
 
 const WS_INPUT_TEST_LATCH = process.env.FLEET_TEST_WS_INPUT_LATCH ?? null;
@@ -7411,6 +7457,26 @@ function fleetEventReceiver(e: FleetEvent): Slot | null {
   return s?.cwd && s.openedAt === e.receiverOpenedAt && s.sessionId === e.receiverSessionId ? s : null;
 }
 
+function setFleetReportRecovery(event: FleetReportFleetEvent, state: FleetEventRecoveryState,
+  reason: string, nextAction: string, effect: string): void {
+  event.recovery = { state, reason, nextAction, effect, updatedAt: Date.now() };
+}
+
+function receiverStillMatchesFleetEvent(event: FleetEvent, s: Slot,
+  expected: { slot: number; openedAt: number; sessionId: string | null }): boolean {
+  return !!s.cwd && event.receiverSlot === expected.slot && event.receiverOpenedAt === expected.openedAt
+    && event.receiverSessionId === expected.sessionId && s.id === expected.slot
+    && s.openedAt === expected.openedAt && s.sessionId === expected.sessionId;
+}
+
+function terminalizeFleetReportRecovery(event: FleetReportFleetEvent, reason: string): void {
+  event.status = "receiver-gone";
+  setFleetReportRecovery(event, "terminal", reason, "none",
+    "same FleetEvent and FleetReport stopped terminal; no replacement occupant received it");
+  audit("fleet_event_receiver_gone", event.receiverSlot ?? undefined, `${event.id} recovery ${reason}`);
+  pruneFleetEvents(event.receiverSlot);
+}
+
 // THE SUBJECT HALF of the same question fleetEventReceiver asks about the endpoint: is the lane
 // this row REPORTS ON still the one it was minted for? Only the lane kinds can be asked at all — a
 // merge/audit/deploy/report row names a finished FACT, not a live session, and "not-a-lane" is that
@@ -7454,6 +7520,11 @@ function markFleetEventReceiverGone(slotId: number): boolean {
   let dirty = false;
   for (const e of fleetEvents) {
     if (e.receiverSlot !== slotId || FLEET_EVENT_TERMINAL.includes(e.status)) continue;
+    if (e.kind === "fleet-report" && e.status === "send-uncertain" && e.recovery?.state === "retryable") {
+      terminalizeFleetReportRecovery(e, "receiver occupant ended or was replaced before recovery");
+      dirty = true;
+      continue;
+    }
     e.status = "receiver-gone";
     audit("fleet_event_receiver_gone", slotId, e.id);
     dirty = true;
@@ -11767,15 +11838,99 @@ async function tickMigrate(): Promise<void> {
 // speed, same choke-point (canDeliver), same master stop. FLEET_AUTO_REVIEW_MS=0 does not disable
 // it — it spawns no agent and costs nothing while no Watch is armed and no event is pending.
 let watchTickBusy = false;
+async function recoverFleetReportDelivery(event: FleetReportFleetEvent): Promise<boolean> {
+  if (event.status !== "send-uncertain" || event.recovery?.state !== "retryable") return false;
+  const receiver = fleetEventReceiver(event);
+  if (!receiver) {
+    terminalizeFleetReportRecovery(event, "receiver occupant ended or was replaced before recovery");
+    return true;
+  }
+  const expected = { slot: receiver.id, openedAt: receiver.openedAt, sessionId: receiver.sessionId };
+  if (event.receiverIdleSec > 0 && receiver.lastOutput === 0) {
+    setFleetReportRecovery(event, "retryable", "waiting for the exact receiver pane to be observed",
+      "retry delivery to the same live receiver occupant",
+      "same FleetEvent and FleetReport remain open; no ACK or land is implied");
+    return true;
+  }
+  const verdict = await canDeliver(receiver, {
+    now: Date.now(), harness: false, quietHours: false, idleMs: event.receiverIdleSec * 1000,
+  });
+  if (!verdict.ok) {
+    if (verdict.gate === "not-alive") {
+      terminalizeFleetReportRecovery(event, "receiver agent is no longer alive before recovery");
+      return true;
+    }
+    setFleetReportRecovery(event, "retryable", `recovery held by ${verdict.gate}`,
+      "retry delivery to the same live receiver occupant when the gate clears",
+      "same FleetEvent and FleetReport remain open; no ACK or land is implied");
+    return true;
+  }
+  await waitForFleetReportRecoveryTestLatch(event, expected);
+  if (!receiverStillMatchesFleetEvent(event, receiver, expected)) {
+    terminalizeFleetReportRecovery(event, "receiver occupant changed during recovery check");
+    return true;
+  }
+  const text = fleetReportMessage(event);
+  const attemptsBefore = event.attempts;
+  event.attempts++;
+  await saveStateNow();
+  try {
+    await sendText(receiver, text, true, { rollbackOwnPayload: true });
+  } catch (e) {
+    if (e instanceof SendRefused) {
+      event.attempts = attemptsBefore;
+      setFleetReportRecovery(event, "retryable", "recovery send was refused before Fleet typed its payload",
+        "retry delivery to the same live receiver occupant when the composer clears",
+        "same FleetEvent and FleetReport remain open; no ACK, report acceptance, self-land or land is implied");
+      audit("fleet_event_held", event.receiverSlot ?? undefined, `${event.id} recovery ${e.message.slice(0, 120)}`);
+      await saveStateNow();
+      return true;
+    }
+    const rollback = e instanceof SendNotAccepted ? e.rollback : null;
+    const retryable = e instanceof SendNotAccepted && rollback === "cleared";
+    setFleetReportRecovery(event, retryable ? "retryable" : "blocked",
+      retryable
+        ? "recovery send was not accepted, but Fleet rolled back its own payload again"
+        : `recovery send remains uncertain${rollback ? ` with rollback ${rollback}` : ""}`,
+      retryable
+        ? "retry delivery to the same live receiver occupant"
+        : "manual receiver acknowledgement if the pane text was read, or MAIN/owner intervention",
+      "same FleetEvent and FleetReport remain open; no ACK, report acceptance, self-land or land is implied");
+    audit("fleet_event_send_uncertain", event.receiverSlot ?? undefined,
+      `${event.id} recovery ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
+    await saveStateNow();
+    return true;
+  }
+  const deliveredAt = Date.now();
+  receiver.history = [...receiver.history, { text, ts: deliveredAt }].slice(-MAX_HISTORY);
+  saveHistory(receiver);
+  logPrompt(receiver, text, "auto", deliveredAt);
+  event.status = "delivered";
+  event.deliveredAt = deliveredAt;
+  setFleetReportRecovery(event, "terminal", "recovery delivered to the exact bound receiver occupant",
+    "receiver session must ACK after reading",
+    "same FleetEvent and FleetReport delivered once; no auto-ACK, report acceptance, self-land or land happened");
+  audit("fleet_event_delivered", event.receiverSlot ?? undefined, `${event.id} recovery`);
+  await saveStateNow();
+  return true;
+}
+
 async function tickWatches(): Promise<void> {
   const verdictsDue = verdictRetryDue();
   if (!verdictsDue.length && !watches.some((w) => w.armed)
-    && !fleetEvents.some((e) => e.status === "pending")) return;
+    && !fleetEvents.some((e) => e.status === "pending"
+      || (e.kind === "fleet-report" && e.status === "send-uncertain"
+        && e.recovery?.state === "retryable"))) return;
   if (watchTickBusy) return; // canDeliver shells out (ps/pgrep); a slow round must not overlap
   watchTickBusy = true;
   try {
     const now = Date.now();
     let dirty = false;
+
+    for (const event of fleetEvents) {
+      if (event.kind !== "fleet-report") continue;
+      dirty = await recoverFleetReportDelivery(event) || dirty;
+    }
 
     // FACT 1: a standing lane signal spends exactly one Watch by minting exactly one durable,
     // typed event. Persist the pair before considering transport; after a crash the Watch is
@@ -11946,8 +12101,21 @@ async function tickWatches(): Promise<void> {
         // tmux may have accepted some or all of the operation before reporting failure, or the
         // composer is observably still holding the text (ACP-25). Preserve the pre-send marker
         // exactly; neither "failed" nor "delivered" is an observed fact, and send-uncertain is
-        // never replayed.
+        // replayed only by the bounded fleet-report recovery when rollback proved Fleet's payload
+        // is absent from the exact receiver pane.
         const rollback = e instanceof SendNotAccepted && e.rollback ? ` rollback=${e.rollback}` : "";
+        if (event.kind === "fleet-report") {
+          const cleared = e instanceof SendNotAccepted && e.rollback === "cleared";
+          setFleetReportRecovery(event, cleared ? "retryable" : "blocked",
+            cleared
+              ? "transport was not accepted and Fleet rolled back its own payload"
+              : `transport remains uncertain${rollback}`,
+            cleared
+              ? "retry delivery to the same live receiver occupant"
+              : "manual receiver acknowledgement if the pane text was read, or MAIN/owner intervention",
+            "same FleetEvent and FleetReport remain open; no ACK, report acceptance, self-land or land is implied");
+          await saveStateNow();
+        }
         audit("fleet_event_send_uncertain", event.receiverSlot ?? undefined,
           `${event.id}${rollback} ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
         continue;
@@ -20008,6 +20176,10 @@ watches = watches.filter((w) => {
 for (const e of fleetEvents) {
   if (FLEET_EVENT_TERMINAL.includes(e.status)) continue;
   if (e.receiverSlot === null || fleetEventReceiver(e)) continue;
+  if (e.kind === "fleet-report" && e.status === "send-uncertain" && e.recovery?.state === "retryable") {
+    terminalizeFleetReportRecovery(e, "receiver occupant was absent or replaced before boot recovery");
+    continue;
+  }
   e.status = "receiver-gone";
 }
 for (const id of new Set(fleetEvents.map((e) => e.receiverSlot))) pruneFleetEvents(id);

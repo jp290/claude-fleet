@@ -33,7 +33,7 @@ Scope and sources, so the omissions are not silent:
 - `src/` — Modules shared across the server, the browser bundle and the suites — protocol types, the client, share rendering, shell quoting, markdown, backoff.
 - `studio-kit/` — The mechanical invariants for setting up a working-circle studio: templates and checklists whose mitigation is a check, never product rules.
 
-## Top-level `.ts` and `.sh` files (50)
+## Top-level `.ts` and `.sh` files (51)
 
 - `acceptance-probe.sh` — ACP-25 REAL-TUI ACCEPTANCE PROBE — not a gate. It boots an isolated Fleet instance on its own
 - `acceptance-probe.ts` — ACP-25 real-TUI acceptance probe (driver: acceptance-probe.sh). Every check below is against the
@@ -69,6 +69,7 @@ Scope and sources, so the omissions are not silent:
 - `lane-signals.ts` — --- `done-looking` as a DETERMINISTIC predicate (docs/perception-layer.md §3).
 - `merge-prompt.ts` — The conflict-resolver agent's prompt, extracted as a PURE function so its INFORMATION
 - `program-phase.ts` — --- WHERE A PROGRAM ROW SITS ON THE RAIL, as a pure function over facts Fleet already holds.
+- `promote-program.sh` — Ein vorgeschlagenes Programm ansehen und (mit --go) bestaetigen + aktivieren.
 - `refine-prompt.ts` — The task refiner's prompt — the brief-compiler on the queue, extracted as a PURE function for
 - `refine-validate.ts` — Deterministic acceptance on a ↻ refine PROPOSAL — what a machine can say about a compiled brief
 - `register.sh` — Fleet's open WORK, computed at read time — the counterpart to state.sh, which does the same for

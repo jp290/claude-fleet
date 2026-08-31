@@ -2957,6 +2957,39 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   pin("the client's FleetEventRow status union is the same SET of words as the server's FleetEventStatus",
     srvWords.length >= 6 && srvWords.join("|") === cliWords.join("|"),
     `server=[${srvWords.join(",")}] client=[${cliWords.join(",")}]`);
+
+  const recoveryBody = server.slice(server.indexOf("async function recoverFleetReportDelivery("),
+    server.indexOf("async function tickWatches("));
+  const receiverGuardBody = server.slice(server.indexOf("function receiverStillMatchesFleetEvent("),
+    server.indexOf("function terminalizeFleetReportRecovery("));
+  const recoveryLatch = recoveryBody.indexOf("await waitForFleetReportRecoveryTestLatch(event, expected);");
+  const recoveryGuard = recoveryBody.indexOf("receiverStillMatchesFleetEvent(event, receiver, expected)");
+  const recoverySend = recoveryBody.indexOf("await sendText(receiver, text, true, { rollbackOwnPayload: true })");
+  pin("fleet-report recovery is bounded to rollback-cleared rows and rechecks exact receiver identity before resend",
+    recoveryBody !== "" && /event\.status !== "send-uncertain" \|\| event\.recovery\?\.state !== "retryable"/.test(recoveryBody)
+      && recoveryBody.includes('e instanceof SendNotAccepted && rollback === "cleared"')
+      && receiverGuardBody.includes("event.receiverOpenedAt === expected.openedAt")
+      && receiverGuardBody.includes("event.receiverSessionId === expected.sessionId")
+      && receiverGuardBody.includes("s.openedAt === expected.openedAt")
+      && receiverGuardBody.includes("s.sessionId === expected.sessionId")
+      && recoveryLatch >= 0 && recoveryGuard > recoveryLatch && recoverySend > recoveryGuard
+      && recoveryBody.includes("terminalizeFleetReportRecovery(event,")
+      && server.includes('event.status = "receiver-gone";') && !recoveryBody.includes("selfLandTaskForMain("),
+    recoveryBody === "" ? "recoverFleetReportDelivery not found"
+      : JSON.stringify({ latch: recoveryLatch, guard: recoveryGuard, send: recoverySend }));
+
+  const selfApiForRecovery = read("docs/self-api.md");
+  pin("fleet-report send-uncertain records current recovery state for the Operations panel and docs",
+    selfApiForRecovery.includes('recovery.state:"retryable"') && selfApiForRecovery.includes("rollback=cleared")
+      && selfApiForRecovery.includes("dieselbe `FleetEvent.id`")
+      && client.includes("e.recovery?.state")
+      && client.includes("next: ${e.recovery.nextAction}")
+      && client.includes("reason: ${e.recovery.reason}")
+      && client.includes("effect: ${e.recovery.effect}"),
+    JSON.stringify({
+      docs: selfApiForRecovery.includes('recovery.state:"retryable"') && selfApiForRecovery.includes("rollback=cleared"),
+      clientRecovery: client.includes("e.recovery?.state"),
+    }));
 }
 
 // --- STALENESS IS ONE RULE, RENDERED BY TWO READERS. The server decides it in

@@ -9998,6 +9998,13 @@ interface FleetEventRow {
   // every event; nothing was added to the payload to read them.
   deliveredAt?: number | null;
   acknowledgedAt?: number | null;
+  recovery?: {
+    state: "retryable" | "blocked" | "terminal";
+    reason: string;
+    nextAction: string;
+    effect: string;
+    updatedAt: number;
+  };
 }
 const opsdlg = $("opsdlg"), opspanel = $("opspanel"), opsbtn = $("opsbtn");
 let opsRows: FleetEventRow[] = [];
@@ -10140,14 +10147,20 @@ function opsUnackedRow(e: FleetEventRow, now: number): HTMLElement {
   const uncertain = e.status === "send-uncertain";
   const secs = Math.round((now - since) / 1000);
   row.appendChild(el("div", "attntext", uncertain
-    ? "transport outcome uncertain; no session acknowledgement"
+    ? `transport outcome uncertain; recovery ${e.recovery?.state ?? "unavailable"}`
     : "transport reported sent; no session acknowledgement"));
-  row.appendChild(el("div", "shrhint", uncertain
-    ? `Recorded uncertain ${secs}s ago, before Fleet could prove whether tmux accepted anything. The `
-      + "text may or may not be in the pane, and no session acknowledgement has arrived either way. "
-      + "Nothing here retries it."
-    : `tmux took the keystrokes ${secs}s ago. Whether the session read them is not known — only its `
-      + "own acknowledgement can say so, and none has arrived."));
+  if (uncertain && e.recovery) {
+    row.appendChild(el("div", "shrhint", `state: ${e.recovery.state}`));
+    row.appendChild(el("div", "shrhint", `next: ${e.recovery.nextAction}`));
+    row.appendChild(el("div", "shrhint", `reason: ${e.recovery.reason}`));
+    row.appendChild(el("div", "shrhint", `effect: ${e.recovery.effect}`));
+  } else {
+    row.appendChild(el("div", "shrhint", uncertain
+      ? `Recorded uncertain ${secs}s ago, before Fleet could prove whether tmux accepted anything. The `
+        + "text may or may not be in the pane, and no session acknowledgement has arrived either way."
+      : `tmux took the keystrokes ${secs}s ago. Whether the session read them is not known — only its `
+        + "own acknowledgement can say so, and none has arrived."));
+  }
   return row;
 }
 
@@ -10164,7 +10177,7 @@ function renderOpsDlg() {
       "Pane transport without a session acknowledgement — a report, nothing to close"));
     opspanel.appendChild(el("div", "shrhint",
       `Sent into a pane over ${Math.round(PANE_ACK_STALE_MS / 1000)}s ago and still unacknowledged by `
-      + "the receiving session. These rows are read-only: nothing here retries, replays or expires."));
+      + "the receiving session. These rows are read-only here: the server-owned recovery state names any next action."));
     for (const e of unacked) opspanel.appendChild(opsUnackedRow(e, now));
   }
   const btns = el("div", "shrbtns");

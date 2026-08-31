@@ -97,6 +97,8 @@ interface FleetReportEventRow {
   kind: "fleet-report"; payload: FleetReportEventPayload; createdAt: number;
   status: FleetEventStatus; attempts: number; deliveredAt: number | null; acknowledgedAt: number | null;
   delivery?: "pane" | "inbox";
+  recovery?: { state: "retryable" | "blocked" | "terminal"; reason: string; nextAction: string;
+    effect: string; updatedAt: number };
 }
 const watchRows = async (): Promise<WatchRow[]> =>
   ((await (await get("/api/sessions")).json()) as { watches: WatchRow[] }).watches;
@@ -1509,7 +1511,8 @@ export async function run(): Promise<void> {
   // name a receiver, task, program, slot or branch.
   {
     const main = await freeSlot();
-    const mainOpen = main ? await post(`/api/slots/${main}/open`, { cwd: REPO, label: "report-main" }) : null;
+    const mainOpen = main ? await post(`/api/slots/${main}/open`, { cwd: REPO,
+      label: "report-main", harness: "pi-unfenced" }) : null;
     const foreignMain = await freeSlot();
     const foreignOpen = foreignMain
       ? await post(`/api/slots/${foreignMain}/open`, { cwd: REPO, label: "report-foreign-main" }) : null;
@@ -1534,10 +1537,13 @@ export async function run(): Promise<void> {
     const failedTok = await paneEnv(`s${failedLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
     const noReceiverTok = await paneEnv(`s${noReceiverLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
     const stewardTok = await paneEnv(`s${stewardLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const reportComposerMode = process.env.FLEET_E2E_COMPOSER_MODE ?? "";
+    const setReportComposerMode = (mode: string) => writeFileSync(reportComposerMode, `${mode}\n`);
     check("fleet-report fixtures: every participant has an exact, distinct scoped credential",
       [mainTok, foreignTok, completeTok, needsTok, failedTok, noReceiverTok, stewardTok]
         .every((t) => /^[0-9a-f]{32}$/.test(t))
-        && new Set([mainTok, foreignTok, completeTok, needsTok, failedTok, noReceiverTok, stewardTok]).size === 7);
+        && new Set([mainTok, foreignTok, completeTok, needsTok, failedTok, noReceiverTok, stewardTok]).size === 7
+        && reportComposerMode.length > 0 && existsSync(reportComposerMode));
 
     await tmuxOut("kill-session", "-t", "srv");
     await Bun.sleep(500);
@@ -1588,6 +1594,7 @@ export async function run(): Promise<void> {
       `${noReceiver.status} ${noReceiverText}`);
 
     const invalids = await Promise.all([
+      selfFleetReport(completeTok, {}),
       selfFleetReport(completeTok, { status: "unknown", text: "not closed" }),
       selfFleetReport(completeTok, { status: "complete", text: " " }),
       selfFleetReport(completeTok, { status: "complete", text: "x".repeat(4001) }),
@@ -1647,41 +1654,140 @@ export async function run(): Promise<void> {
         foreign: foreignScope.reports, mainEvents: (mainInbox.events ?? []).map((e) => e.id),
         foreignEvents: (foreignInbox.events ?? []).map((e) => e.id) }));
 
-    // Restart from an image where report delivery is immediately eligible. This proves the row and
-    // all three status values survive independently of transport, then lets the existing Ack route
-    // close one delivered report event without any report-specific acknowledgement path.
+    // Restart from an image where one report delivery is immediately eligible. This proves the row
+    // and all three status values survive independently of transport, then drives the eligible event
+    // through the measured composer-held/rollback-cleared recovery seam before Ack closes it.
     await tmuxOut("kill-session", "-t", "srv");
     await Bun.sleep(500);
     const restartImage = JSON.parse(readFileSync(reportStatePath, "utf8")) as {
-      events?: { kind?: string; receiverIdleSec?: number }[]; fleetReports?: unknown[];
+      events?: { id?: string; kind?: string; receiverIdleSec?: number }[]; fleetReports?: unknown[];
     };
     for (const event of restartImage.events ?? [])
-      if (event.kind === "fleet-report") event.receiverIdleSec = 0;
+      if (event.id === completeReport?.eventId) event.receiverIdleSec = 0;
     restartImage.fleetReports?.push({ id: "malformed", status: "complete" });
     writeFileSync(reportStatePath, JSON.stringify(restartImage, null, 2), { mode: 0o600 });
-    await restartSrv();
+    const recoveryLatch = `${ROOT}/fleet-report-recovery.latch`;
+    rmSync(recoveryLatch, { force: true });
+    rmSync(`${recoveryLatch}.reached`, { force: true });
+    rmSync(`${recoveryLatch}.release`, { force: true });
+    writeFileSync(recoveryLatch, completeReport?.eventId ?? "", { mode: 0o600 });
+    setReportComposerMode("hold");
+    const recoveryAuditStart = auditRows().length;
+    await restartSrv({ FLEET_TEST_FLEET_REPORT_RECOVERY_LATCH: recoveryLatch });
     const afterRestart = (await selfFleetReports(mainTok)).reports;
     check("Q4 fleet-report durability: complete, needs-main and failed remain distinct after server restart",
       afterRestart.find((r) => r.id === completeReport?.id)?.status === "complete"
         && afterRestart.find((r) => r.id === needsReport?.id)?.status === "needs-main"
         && afterRestart.find((r) => r.id === failedReport?.id)?.status === "failed"
         && !(JSON.parse(readFileSync(reportStatePath, "utf8")) as { fleetReports?: { id?: string }[] })
-          .fleetReports?.some((r) => r.id === "malformed"),
+        .fleetReports?.some((r) => r.id === "malformed"),
       JSON.stringify(afterRestart.map((r) => [r.id, r.status])));
 
+    for (let i = 0; i < 160 && !existsSync(`${recoveryLatch}.reached`); i++) await Bun.sleep(50);
+    const recovering = (await fleetReportEventRows()).find((e) => e.id === completeReport?.eventId);
+    const recoveringReports = (await selfFleetReports(mainTok)).reports;
+    check("Q5 fleet-report recovery: composer-held rollback leaves the same event/report retryable without Ack or land",
+      existsSync(`${recoveryLatch}.reached`)
+        && recovering?.status === "send-uncertain" && recovering.attempts === 1
+        && recovering.deliveredAt === null && recovering.acknowledgedAt === null
+        && recovering.recovery?.state === "retryable"
+        && recovering.recovery.nextAction.includes("same live receiver")
+        && recoveringReports.length === 3
+        && recoveringReports.find((r) => r.id === completeReport?.id)?.eventId === completeReport?.eventId
+        && !auditRows().slice(recoveryAuditStart).some((row) => row.event === "self_land_start"),
+      JSON.stringify({ event: recovering, reports: recoveringReports.map((r) => [r.id, r.eventId]) }));
+    setReportComposerMode("normal");
+    writeFileSync(`${recoveryLatch}.release`, "ok\n", { mode: 0o600 });
     let delivered: FleetReportEventRow | undefined;
-    for (let i = 0; i < 80 && delivered?.status !== "delivered"; i++) {
+    for (let i = 0; i < 160 && delivered?.status !== "delivered"; i++) {
       await Bun.sleep(250);
       delivered = (await fleetReportEventRows()).find((e) => e.id === completeReport?.eventId);
     }
     const reportPrompts = (await plogRead()).filter((p) => p.slot === main
       && p.text.includes(`report ${completeReport?.id}`));
+    const beforeAckReports = (await selfFleetReports(mainTok)).reports;
+    check("Q5 fleet-report recovery: the same event/report reaches the exact live receiver once, still unacked",
+      delivered?.id === completeReport?.eventId && delivered?.status === "delivered"
+        && delivered?.attempts === 2 && delivered?.acknowledgedAt === null
+        && delivered?.recovery?.state === "terminal"
+        && delivered?.recovery?.effect.includes("no auto-ACK") === true
+        && reportPrompts.length === 1
+        && beforeAckReports.length === 3
+        && beforeAckReports.find((r) => r.id === completeReport?.id)?.eventId === delivered?.id
+        && !auditRows().slice(recoveryAuditStart).some((row) => row.event === "self_land_start"),
+      JSON.stringify({ delivered, prompts: reportPrompts.length,
+        reports: beforeAckReports.map((r) => [r.id, r.eventId]) }));
     const ack = delivered ? await ackEvent(mainTok, delivered.id) : new Response(null, { status: 599 });
     const acknowledged = (await fleetReportEventRows()).find((e) => e.id === delivered?.id);
-    check("Q3 fleet-report transport and Ack: the persisted event delivers once and existing self Ack acknowledges it",
-      delivered?.status === "delivered" && delivered.attempts === 1 && reportPrompts.length === 1
+    check("Q3 fleet-report transport and Ack: recovery does not auto-Ack, and existing self Ack alone acknowledges it",
+      delivered?.status === "delivered" && delivered.attempts === 2 && reportPrompts.length === 1
         && ack.ok && acknowledged?.status === "acknowledged" && acknowledged.acknowledgedAt !== null,
       JSON.stringify({ delivered, prompts: reportPrompts.length, ack: ack.status, acknowledged }));
+
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const recycleImage = JSON.parse(readFileSync(reportStatePath, "utf8")) as {
+      events?: { id?: string; kind?: string; receiverIdleSec?: number }[];
+    };
+    for (const event of recycleImage.events ?? [])
+      if (event.id === needsReport?.eventId) event.receiverIdleSec = 0;
+    writeFileSync(reportStatePath, JSON.stringify(recycleImage, null, 2), { mode: 0o600 });
+    rmSync(recoveryLatch, { force: true });
+    rmSync(`${recoveryLatch}.reached`, { force: true });
+    rmSync(`${recoveryLatch}.release`, { force: true });
+    writeFileSync(recoveryLatch, needsReport?.eventId ?? "", { mode: 0o600 });
+    setReportComposerMode("hold");
+    await restartSrv({ FLEET_TEST_FLEET_REPORT_RECOVERY_LATCH: recoveryLatch });
+    for (let i = 0; i < 160 && !existsSync(`${recoveryLatch}.reached`); i++) await Bun.sleep(50);
+    const recycleHeld = (await fleetReportEventRows()).find((e) => e.id === needsReport?.eventId);
+    const oldReceiverOpenedAt = recycleHeld?.receiverOpenedAt;
+    await post(`/api/slots/${main}/kill`, {});
+    setReportComposerMode("normal");
+    const successorOpen = await post(`/api/slots/${main}/open`, { cwd: REPO,
+      label: "report-main-successor", harness: "pi-unfenced" });
+    let successorOpenedAt = 0;
+    let successorAgent: string | null = null;
+    for (let i = 0; i < 80 && successorAgent !== "alive"; i++) {
+      const row = ((await (await get("/api/sessions")).json()) as
+        { slots: { id: number; openedAt: number; agent: string | null }[] }).slots.find((s) => s.id === main);
+      successorOpenedAt = row?.openedAt ?? 0;
+      successorAgent = row?.agent ?? null;
+      if (successorAgent !== "alive") await Bun.sleep(50);
+    }
+    const successorPromptsBefore = (await plogRead()).filter((p) => p.slot === main).length;
+    writeFileSync(`${recoveryLatch}.release`, "ok\n", { mode: 0o600 });
+    let recycledTerminal: FleetReportEventRow | undefined;
+    for (let i = 0; i < 120 && recycledTerminal?.status !== "receiver-gone"; i++) {
+      await Bun.sleep(100);
+      recycledTerminal = (await fleetReportEventRows()).find((e) => e.id === needsReport?.eventId);
+    }
+    const successorPromptsAfter = (await plogRead()).filter((p) => p.slot === main);
+    const reportsAfterRecycle = (await selfFleetReports(needsTok)).reports;
+    const acknowledgedStill = (await fleetReportEventRows()).find((e) => e.id === completeReport?.eventId);
+    check("Q5 fleet-report recovery: recycled numeric receiver gets nothing and the same event ends receiver-gone",
+      existsSync(`${recoveryLatch}.reached`)
+        && recycleHeld?.status === "send-uncertain" && recycleHeld.recovery?.state === "retryable"
+        && successorOpen.ok && successorAgent === "alive" && successorOpenedAt !== oldReceiverOpenedAt
+        && recycledTerminal?.id === needsReport?.eventId && recycledTerminal?.status === "receiver-gone"
+        && recycledTerminal?.acknowledgedAt === null && recycledTerminal?.deliveredAt === null
+        && recycledTerminal?.recovery?.state === "terminal"
+        && recycledTerminal?.recovery?.effect.includes("no replacement occupant received it") === true
+        && successorPromptsAfter.length === successorPromptsBefore
+        && reportsAfterRecycle.length === 1 && reportsAfterRecycle[0]?.id === needsReport?.id
+        && reportsAfterRecycle[0]?.eventId === needsReport?.eventId,
+      JSON.stringify({ held: recycleHeld, terminal: recycledTerminal, successorOpen: successorOpen.status,
+        successorAgent, identityChanged: successorOpenedAt !== oldReceiverOpenedAt,
+        promptsBefore: successorPromptsBefore, promptsAfter: successorPromptsAfter.length,
+        reports: reportsAfterRecycle.map((r) => [r.id, r.eventId]) }));
+    check("Q5 fleet-report recovery: an already-acknowledged recovered event stays terminal and is not retried",
+      acknowledgedStill?.status === "acknowledged" && acknowledgedStill.attempts === 2
+        && acknowledgedStill.recovery?.state === "terminal"
+        && (await plogRead()).filter((p) => p.slot === main && p.text.includes(`report ${completeReport?.id}`)).length === 1,
+      JSON.stringify(acknowledgedStill));
+    await post(`/api/slots/${main}/kill`, {});
+    rmSync(recoveryLatch, { force: true });
+    rmSync(`${recoveryLatch}.reached`, { force: true });
+    rmSync(`${recoveryLatch}.release`, { force: true });
 
     // Cross the report retention threshold with valid old rows whose events are already absent.
     // This is deliberately a separate fixture check: if the planted rows cannot hydrate, the
@@ -1689,8 +1795,10 @@ export async function run(): Promise<void> {
     await tmuxOut("kill-session", "-t", "srv");
     await Bun.sleep(500);
     const pruneImage = JSON.parse(readFileSync(reportStatePath, "utf8")) as {
-      fleetReports?: FleetReportRow[];
+      fleetReports?: FleetReportRow[]; slots?: Record<string, { taskId?: string }>;
     };
+    if (pruneImage.slots?.[String(noReceiverLane.slot)])
+      pruneImage.slots[String(noReceiverLane.slot)].taskId = "task-report-prune-owner-inbox";
     const oldReports: FleetReportRow[] = completeReport ? Array.from({ length: 21 }, (_, index) => ({
       ...completeReport,
       id: (0xa000 + index).toString(16).padStart(24, "0"),
@@ -1702,19 +1810,19 @@ export async function run(): Promise<void> {
     writeFileSync(reportStatePath, JSON.stringify(pruneImage, null, 2), { mode: 0o600 });
     const pruneAuditStart = auditRows().length;
     await restartSrv();
-    const hydratedOld = (await selfFleetReports(mainTok)).reports.filter((r) =>
+    const hydratedOld = (await selfFleetReports(completeTok)).reports.filter((r) =>
       oldReports.some((old) => old.id === r.id));
     check("fleet-report prune audit fixture: 21 valid terminal rows hydrate before pruning",
       oldReports.length === 21 && hydratedOld.length === 21,
       `${oldReports.length}/${hydratedOld.length}`);
-    const pruneTrigger = await selfFleetReport(completeTok,
+    const pruneTrigger = await selfFleetReport(noReceiverTok,
       { status: "complete", text: "Trigger the bounded report retention pass." });
     await Bun.sleep(300);
-    const expectedPruned = oldReports.slice(0, 2).map((r) => r.id);
+    const expectedPruned = oldReports.slice(0, 3).map((r) => r.id);
     const pruneAudits = auditRows().slice(pruneAuditStart).filter((row) => row.event === "fleet_report_prune");
-    const afterPruneIds = (await selfFleetReports(mainTok)).reports.map((r) => r.id);
+    const afterPruneIds = (await selfFleetReports(completeTok)).reports.map((r) => r.id);
     check("fleet-report audit: retention records every removed report id and keeps those ids out of state",
-      pruneTrigger.ok && expectedPruned.length === 2
+      pruneTrigger.ok && expectedPruned.length === 3
         && expectedPruned.every((id) => pruneAudits.some((row) => row.detail === id)
           && !afterPruneIds.includes(id)),
       JSON.stringify({ trigger: pruneTrigger.status, expectedPruned, pruneAudits }));
@@ -2002,6 +2110,17 @@ export async function run(): Promise<void> {
           taskId: null, originId: null, programId: null, basis: "owner-inbox" },
         createdAt: Date.now(), status: "pending",
         attempts: 0, deliveredAt: null, acknowledgedAt: null },
+      // (f) malformed recovery metadata is not advisory text: the Operations panel would render it
+      // as the current state and next action, so the loader must fail closed instead of guessing.
+      { id: "b4advbadrecovery", watchId: null,
+        receiverSlot: capLane.slot, receiverOpenedAt: Date.now() - 1000, receiverSessionId: null,
+        receiverIdleSec: 60, subjectSlot: capLane.slot, subjectBranch: capLane.branch,
+        kind: "fleet-report",
+        payload: { reportId: `${"f".repeat(16)}00000001`, status: "complete", text: "bad recovery",
+          taskId: null, originId: null, programId: null, basis: "program-main" },
+        createdAt: Date.now(), status: "send-uncertain",
+        attempts: 1, deliveredAt: null, acknowledgedAt: null,
+        recovery: { state: "retryable", reason: "", nextAction: "retry", effect: "unknown", updatedAt: Date.now() } },
     ];
     capState.events = [...(capState.events ?? []), ...filler, ...adversarial];
     writeFileSync(b4Path, JSON.stringify(capState, null, 2), { mode: 0o600 });
@@ -2016,7 +2135,7 @@ export async function run(): Promise<void> {
     // how the boot reconciliation loop slipped past this check once: 25 rows loaded, all 25 were
     // flipped to `receiver-gone`, ownerInboxDebts() read 0, and the ceiling silently opened.
     const openFiller = loadedFiller.filter((e) => e.status === "inbox");
-    check("B4 reverse-state is fail-closed: foreign kind, pane-owner, session-inbox and both payload-basis lies are refused",
+    check("B4 reverse-state is fail-closed: foreign kind, pane-owner, session-inbox, payload-basis lies and malformed recovery are refused",
       survivedAdversarial.length === 0 && loadedFiller.length === 25 && openFiller.length === 25,
       `survived=[${survivedAdversarial.join(",")}] legitimateFiller=${loadedFiller.length}`
         + ` stillOpen=${openFiller.length} statuses=${[...new Set(loadedFiller.map((e) => e.status))].join("/")}`);
@@ -3260,7 +3379,9 @@ export async function run(): Promise<void> {
         .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
       check("client: the unacknowledged-pane row says transport reported sent, no session acknowledgement",
         /transport reported sent; no session acknowledgement/.test(unackedRow)
-          && /transport outcome uncertain; no session acknowledgement/.test(unackedRow),
+          && /transport outcome uncertain; recovery/.test(unackedRow)
+          && /state: \$\{e\.recovery\.state\}/.test(unackedRow)
+          && /effect: \$\{e\.recovery\.effect\}/.test(unackedRow),
         unackedRow.slice(0, 80));
       check("client: it never calls the send undelivered or failed, and every 'accept' is about tmux only",
         !/undelivered|failed/i.test(unackedRow)
@@ -3279,7 +3400,8 @@ export async function run(): Promise<void> {
           // positive form is part of the rule rather than a coincidence of how it is written
           && !/!\s*uncertain/.test(unackedRow)
           && uncertainArmAt > 0 && unackedRow.indexOf("tmux took the keystrokes") > uncertainArmAt
-          && /may or may not be in the pane/.test(unackedRow) && /Nothing here retries it/.test(unackedRow),
+          && /may or may not be in the pane/.test(unackedRow)
+          && /no session acknowledgement has arrived either way/.test(unackedRow),
         `branches=${(unackedRow.match(/\buncertain\s*\?/g) ?? []).length} took=${took} uncertainArmAt=${uncertainArmAt}`);
       check("client: the row carries no acknowledge affordance and posts nothing at all",
         !/\/ack\b/.test(unackedRow) && !/\bpost\(/.test(unackedRow) && !/onclick/.test(unackedRow),

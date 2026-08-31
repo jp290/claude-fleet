@@ -516,6 +516,17 @@ Fehlt beides, geht der Report daher in die **bestehende Owner-Operations-Inbox (
 - **`status: "inbox"`, `delivery: "inbox"`.** `inbox` ist kein pending-Zustand, und FACT 2 wählt
   ausschließlich `pending` — der Zeile kann strukturell kein `sendText`, kein History-Append und
   kein Prompt-Journal-Eintrag zustoßen. Kein Guard, ein Zustandsautomat.
+- **Gebundene Pane-Zeilen können genau eine benannte Recovery tragen.** Wenn der erste
+  `fleet-report`-Transport auf `send-uncertain` endet UND die Composer-Rollback-Messung
+  `rollback=cleared` beweist, dass Fleets eigener Payload wieder aus der exakt gebundenen Empfänger-
+  Pane entfernt wurde, bleibt dieselbe `FleetReport`-Zeile und dieselbe `FleetEvent.id` offen und
+  `recovery.state:"retryable"` nennt Grund, nächste Aktion und Effekt. Nur dieser Schnitt darf erneut
+  zustellen, und nur an denselben Empfänger-Occupant (`slot` + `openedAt` + `sessionId`) nach einer
+  frischen Gate-Prüfung. Ein toter, ersetzter oder recycelter Empfänger wird `receiver-gone` mit
+  `recovery.state:"terminal"`; der numerische Nachfolger bekommt nichts. Recovery acked nicht,
+  akzeptiert den Report semantisch nicht, startet kein Self-Land und landet nichts. Bleibt der zweite
+  Send unmessbar ohne `rollback=cleared`, bleibt die Zeile `send-uncertain` mit
+  `recovery.state:"blocked"` statt generisch weitergesendet zu werden.
 - **Sie überlebt ihren Worker.** `markFleetEventReceiverGone` filtert auf `receiverSlot === slotId`;
   `null` trifft das nie. Kill oder Recycle der Lane, die den Report gefilet hat, lässt die Zeile
   unberührt — terminal wird sie nur durch `POST /api/events/:id/ack` des Owners. Ein
@@ -543,7 +554,9 @@ ohne Rückweg da. Retention: `FLEET_EVENT_KEEP_TERMINAL_OWNER_INBOX = 25` acked 
 Im Board erscheint die Zeile in `📥` wie jede andere Inbox-Zeile — ohne Zusatz-Payload, weil die
 Rows ohnehin als `events` auf `/api/sessions` reiten. Zwei Unterschiede in der Darstellung: der
 Empfänger heißt „filed for you" statt `receiver slot N` (es gibt keinen), und der Report-TEXT wird
-vollständig gerendert statt zusammengefasst — für diese eine Art IST der Text die Zustellung.
+vollständig gerendert statt zusammengefasst — für diese eine Art IST der Text die Zustellung. Bei
+Pane-Transport ohne Session-Ack zeigt die Operations-Fläche zusätzlich `recovery.state`,
+`nextAction`, `reason` und `effect`, wenn der Server eine Recovery-Entscheidung gemessen hat.
 
 **Weitere Ablehnungen:** MAIN und `⚙ steward` sind 409 (`not a worker lane — MAIN and the steward
 cannot file a fleet report`) — es berichtet, wer ARBEITET. Hat der Empfänger kein

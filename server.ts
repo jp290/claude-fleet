@@ -19529,6 +19529,13 @@ async function claimInstanceLock(): Promise<void> {
   }
 }
 await claimInstanceLock();
+// A SIGKILL can strand the unique temp between open and rename. Once this process owns the
+// directory lock, no live peer can still be writing one, so stale credential-bearing temps are
+// neither recovery input nor safe to leave indefinitely.
+for (const name of readdirSync(import.meta.dir)) {
+  if (name !== "fleet.json.tmp" && !/^fleet\.json\.\d+\.\d+\.tmp$/.test(name)) continue;
+  unlinkSync(`${import.meta.dir}/${name}`);
+}
 // release only what is still OURS — a lock we lost must not be unlinked out from under its owner
 process.on("exit", () => {
   try { if (readPidFile() === process.pid) unlinkSync(PID_FILE); } catch { /* nothing left to release */ }

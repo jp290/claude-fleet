@@ -1,5 +1,7 @@
 # Das offene Register — alle Dokumente einmal durchgesehen, 2026-08-06
 
+> Datierter Schnappschuss (2026-08-06): Zeilenverweise zeigen auf den Baum dieses Datums.
+
 *Anlass: Owner-Auftrag „halt alle Fäden und trenn sie in sinnvolle Gruppen" und, unmittelbar
 danach, „ich will wirklich, dass du alle Dokumente hierin abarbeitest". Dieses Dokument ist die
 Antwort auf beides — und §5 ist die Antwort auf die Frage, die er im selben Atemzug gestellt hat:

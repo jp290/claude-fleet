@@ -81,7 +81,7 @@ gelöst hinschreibt, hat dieses Kapitel falsch fortgeschrieben.
    Framegröße nicht zurück (steht so im Typ, s. Lane B unten).
 2. **`countHttp` bekommt nur Body-Bytes.** Request- und Response-Header zählt niemand; bei
    ~90 req/min grob **45 KB/min ≈ 13 % oben drauf, unsichtbar**.
-3. **Nicht-Persistenz.** `const transportSince = Date.now()` (`server.ts:7753`) und die Maps
+3. **Nicht-Persistenz.** `const transportSince = Date.now()` (`server.ts#transportSince`) und die Maps
    daneben sind reiner Prozessspeicher; ein Schreiber auf Platte existiert nicht. Jeder
    `srv`-Neustart nullt den Zähler — das längste verfügbare Fenster war deshalb **53,8 min**.
    Für die nächste 500-MB-Frage bräuchte es einen Zähler, der einen Deploy überlebt.

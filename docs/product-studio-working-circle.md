@@ -590,7 +590,7 @@ waited 90 min on the owner with nothing telling the owner (`private-repo-g.md` �
 ### The communication rail this loop consumes
 
 This loop adds no channel and no control plane; it rides the transitions already under design
-(`docs/program-transitions-brief-2026-08-23.md`, T1–T4). The projection built there answers only
+(`docs/attic/program-transitions-brief-2026-08-23.md`, T1–T4). The projection built there answers only
 three questions — **where is the Program mechanically, what durable evidence exists, who must act
 next** — and never whether the creative work is good. This section names what each rail carries
 and keeps the semantic side in provenance-bearing prose:
@@ -602,7 +602,7 @@ and keeps the semantic side in provenance-bearing prose:
   line, the owner-playtest entry. `fleetReports` are prunable and their text is a pointer; a
   derivation that needs the report text to know the Program's state is wrong by construction.
 - **Steps 3 and 4 return as T1 worker reports:** `POST /api/self/fleet-report` with
-  `{status: complete|needs-main|failed, text}` (`src/protocol.ts:33`, `server.ts:5905`). The text
+  `{status: complete|needs-main|failed, text}` (`src/protocol.ts#FLEET_REPORT_STATUSES`, `server.ts#openFleetReport`). The text
   begins with the worker label and the lane HEAD sha, then the artifact path, the critic verdict
   path and the one named defect or `none`. Achievement, unknowns, falsifiers and the worker's own
   self-attack stay in the tracked critic/report artifact the text points at.
@@ -635,7 +635,7 @@ launch) or one of clause 7's seven boundaries. Not every 90 minutes, not for int
 those are the MAIN's own promoted anchors with a reopen trigger — and not through a resident
 controller reading panes. The Grok
 proposal "playable slice before parallel research", deferred on 2026-08-22 as a violation of
-Tower's founding order (`docs/product-studio-calibration-2026-08-22.md`, main-checkout working
+Tower's founding order (`docs/attic/product-studio-calibration-2026-08-22.md`, main-checkout working
 copy, Grok table row 5), is adopted here in its narrow form: the tiny playable precedes the second
 proof act, not the first model.
 

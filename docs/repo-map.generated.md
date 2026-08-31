@@ -70,7 +70,7 @@ Scope and sources, so the omissions are not silent:
 - `refine-validate.ts` — Deterministic acceptance on a ↻ refine PROPOSAL — what a machine can say about a compiled brief
 - `register.sh` — Fleet's open WORK, computed at read time — the counterpart to state.sh, which does the same for
 - `repo-map.ts` — repo-map.ts — the executable map of this repo's top level: every directory, every entry file.
-- `review-sweep.ts` — review-sweep.ts — the deterministic half of the review layer (docs/plan-review-layer-2026-08-16.md
+- `review-sweep.ts` — review-sweep.ts — the deterministic half of the review layer (docs/attic/plan-review-layer-2026-08-16.md
 - `rulebook.ts` — HOW TO CHANGE A RULE, now that CLAUDE.md is a GENERAT: edit the FRAGMENT, then re-render. A hand
 - `server.ts` — **no sentence** — this file opens with no header comment; add one as its first line so this row stops reading as empty.
 - `slotstats.ts` — The slot fact — whether a slot is the thing it claims to be.

@@ -103,6 +103,39 @@ One line per doc — its *purpose*, not its contents, so this index points witho
 - **`ungoverned-artifacts.md`** — `CLAUDE.md`, `OWNER.md` and the `.jsonl` trails are
   untracked and copied per-lane at spawn: why a lane cannot fulfil Wissenspflege for the
   rulebook, and the measured drift.
+- **`rulebook-inventar-2026-08-18.md`** — the inventory of `CLAUDE.md` by section, audience and
+  cost: step 1 of the context-load chain, and the reason the rulebook is a GENERAT you change by
+  editing a fragment. Dated, and indexed anyway because the `rulebook-generat` ContextPack in
+  `.fleet/context-packs.json` delivers it by path and anchor.
+
+**Roles a session can be handed**
+- **`controller.md`** — the standing role brief of the checkout's MAIN session: mandate
+  (*"the Controller discusses problems, AGENTS fix them"*), the harvest duty that belongs to
+  nobody else, and the step order a successor follows. Read it instead of re-deriving the
+  role from `HANDOFF.md` blocks.
+- **`supervisor-succession.md`** — the one question of how an owner-side Supervisor session is
+  created or handed over context-sparingly: what it mechanically receives, what that costs, and
+  the three evidence labels the document holds itself to. Not a work register.
+
+**The self-API and the channels on it**
+- **`self-api.md`** — the reference half of the rulebook's §Self-scheduling: field shapes, caps,
+  every refusal and the curl form for `/api/self/*`. The principal and scope rules stay in
+  `CLAUDE.md`; the depth is here, and on contradiction the code wins.
+- **`clarification-channel.md`** — how a worker's narrow question reaches Program-MAIN on the
+  existing `FleetEvent` transport, and why an Ack means *read* and never *answered*. Read
+  before adding a second message bus.
+
+**Harnesses**
+- **`harness-adapter.md`** — the look-up half of the rulebook's §Deploy: PATH under launchd,
+  land-path flags, adapter configuration. The danger sentences stay in `CLAUDE.md`.
+- **`codex-recovery.md`** — why Fleet cannot hand a fresh Codex TUI a session id, and the two
+  separate seams that follow: lazy identity discovery while the pane lives, exact-id resume only
+  after it dies. Read before making recovery guess a conversation.
+
+**The review layer**
+- **`review-signals.md`** — PROMPT CONTENT: the seven paid-for signals the server inlines into
+  the ③ reviewer's prompt. Every line costs reviewer attention on every review, so a new signal
+  enters only with an incident behind it, never from a catalogue.
 
 **The steward**
 - **`steward.md`** — the convention (optional, recognizable as `⚙ steward`, plans but never
@@ -115,6 +148,10 @@ One line per doc — its *purpose*, not its contents, so this index points witho
 - **`autonomy-bausteine-2026-08-06.md`** — the still-live decision basis for machine release:
   why `queued` has machine writers, which evidence must precede auto-promotion, and why the
   ordering of the autonomy verbs changed. Read before extending unattended dispatch.
+- **`plan-queue-refinement-2026-08-11.md`** — the refinement system behind the queue. Dated,
+  and indexed anyway because it is a *live* source: the `task-queue` ContextPack in
+  `.fleet/context-packs.json`/`context-packs.ts` delivers it by path and anchor, and
+  `e2e-isolated.sh` stages it. Moving it to the attic breaks the manifest, not just a link.
 
 **Running it somewhere else**
 - **`container.md`** — the `Dockerfile` and what `./docker-verify.sh` attests (the harness,
@@ -141,10 +178,16 @@ One line per doc — its *purpose*, not its contents, so this index points witho
 *(`docs/screenshot.png` and `docs/screenshot-mobile.png` are the images the top-level README
 embeds — not docs. How they were made is written up in the demo repository's `docs/fixtures.md`.)*
 
+*(`docs/repo-map.generated.md` and `docs/system-capabilities.generated.md` are GENERATED
+projections — `bun repo-map.ts` and `bun capability-map.ts` write them and `e2e/pins.ts` holds
+each byte-for-byte against its source. They are not knowledge documents and are deliberately not
+indexed above: you never edit them, you re-render them.)*
+
 ## The attic
 
-`docs/attic/` holds ~52 docs from the ideation layer: the autonomy/graduation program, the
-steward concept universe, dated analysis snapshots. **Nothing there is deleted** — it is
+`docs/attic/` holds ~139 docs: the ideation layer (autonomy/graduation program, the steward
+concept universe) and — since the 2026-09-01 triage — every dated snapshot the top-level shelf
+used to carry: programs, intakes, harvests, critiques, Aufstellungen, plan and analysis states. **Nothing there is deleted** — it is
 readable and reactivatable with `git mv`, and its own README names the decision. But
 nothing there demands maintenance, generates rules, or binds attention. A pointer into the
 attic is a pointer into history, and the commands that still cite one write

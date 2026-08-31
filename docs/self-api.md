@@ -382,7 +382,7 @@ ein `task_release`-Audit-Event, weil ein späterer beaufsichtigter ▸ start das
 Nicht-Lane bekommt 409 `not a lane — a suite offer hands over a lane's own working tree`, nie 401).
 Sie bietet den eigenen `./e2e-isolated.sh`-VORSCHAULAUF dem Remote-Helfer-Portal an, statt den
 einen Suite-Mutex dieser Maschine dafür zu halten. Anlass und Messungen:
-`docs/helper-lane-suiten-entwurf-2026-08-26.md`.
+`docs/attic/helper-lane-suiten-entwurf-2026-08-26.md`.
 
 ```
 curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \

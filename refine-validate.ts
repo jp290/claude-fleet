@@ -1,7 +1,7 @@
 // Deterministic acceptance on a ↻ refine PROPOSAL — what a machine can say about a compiled brief
 // before the owner confirms it, without a model and without reading the tree itself.
 //
-// WHY (docs/brief-kompilierung-verbesserung-2026-08-18.md §6). The refiner's prompt carries the
+// WHY (docs/attic/brief-kompilierung-verbesserung-2026-08-18.md §6). The refiner's prompt carries the
 // clause ONLY VERIFIED PATHS — "every path you name must come from your own ls, Read or Glob"
 // (refine-prompt.ts) — and a hallucinated path is the one MEASURED failure class the brief for
 // that worker names. Until now that clause was a self-commitment of the model and nothing else:

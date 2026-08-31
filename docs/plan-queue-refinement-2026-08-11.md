@@ -1,5 +1,7 @@
 # Plan: Queue-Refinement-System + Task-Dashboard (2026-08-11)
 
+> Datierter Schnappschuss (2026-08-11): Zeilenverweise zeigen auf den Baum dieses Datums.
+
 Owner-Auftrag (Session 2026-08-11, wörtlich sinngemäß): Die Task-Queue ist gebloatet (~60 offene
 Zeilen, viele ohne merkbaren Implementierungsnutzen). Gewünscht ist ein System aus: **loser
 Pool → Gruppierung nach Projekt/Prozess/Unterprozess → Refinement-Stufen** (simpel = direkt

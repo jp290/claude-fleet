@@ -1,5 +1,7 @@
 # Autonomie-Bausteine — was fehlt, und was davon sich lohnt. Stand 2026-08-06 ~20:15
 
+> Datierter Schnappschuss (2026-08-06): Zeilenverweise zeigen auf den Baum dieses Datums.
+
 *Owner-Vorgabe wörtlich, als Scope-Anker: „nach weiteren fehlenden oder sinnvollen autonomie
 Bausteinen schauen" — gemeint ist die Kette „Steward-Befund → Zeile → Lane → gelandeter Code, ohne
 Mensch dazwischen", mit zwei Teilfragen: **(a)** welcher Baustein fehlt, damit die Kette überhaupt

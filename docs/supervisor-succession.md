@@ -220,7 +220,7 @@ wissen kann; anzeigen, was sie sich holen kann; weglassen, was sie sich verdiene
 ### 3.1 In den Gründungsbrief (zugestellt, ~1,4 KB)
 
 - **Rolle und ihre Grenze** — nur, weil sie aus keinem Fakt ableitbar ist. Fleet hat keinen
-  Rollen-Typ (`docs/working-circle-analysis-2026-08-16.md` §1.1); die Rolle existiert nur als dieser
+  Rollen-Typ (`docs/attic/working-circle-analysis-2026-08-16.md` §1.1); die Rolle existiert nur als dieser
   Text.
 - **Die strukturellen Unfähigkeiten** — sie ersparen einen Versuch samt 409 und, teurer, das
   Nachdenken darüber.
@@ -389,7 +389,7 @@ Naht ist owner-promotet.
 ### 5.3 Die Rollen-Schicht hat keinen Träger
 
 `ContextPlanInput` (`context-plan.ts#ContextPlanInput`) kennt keine Rolle; `mode` ist eine Berechtigungsform,
-keine Disziplin (`docs/working-circle-analysis-2026-08-16.md` §2.2 Zeile 5, §4 G3). Die
+keine Disziplin (`docs/attic/working-circle-analysis-2026-08-16.md` §2.2 Zeile 5, §4 G3). Die
 Supervisor-Rolle existiert deshalb **ausschließlich** als Prosa in `supervisorBriefBody()` — nicht
 versioniert, nicht ausgewählt, nicht durch einen Receipt als geliefert beweisbar, während die
 Pack-Auswahl daneben beides rigoros ist. **Kosten:** jede spätere Verhaltens-Promotion ist eine
@@ -419,7 +419,7 @@ wartet auf einen Träger, den es noch nicht gibt.
   Sonde ihn verteidigt.
 - **Keine Suite über den doc-proportionalen lokalen Beweis hinaus gefahren**; keine Aussage über
   Laufzeitverhalten, die ich nicht in der Quelle gelesen habe.
-- **`context-packs.ts` nur über die Receipt-Zeilen und `docs/working-circle-analysis-2026-08-16.md`
+- **`context-packs.ts` nur über die Receipt-Zeilen und `docs/attic/working-circle-analysis-2026-08-16.md`
   §2.1** — die Pack-Definitionen selbst habe ich nicht gelesen.
 - **Verweise sind `datei#symbol`, nicht `datei:zeile`** (umgestellt 2026-08-25, s. Methode-Absatz
   oben); ein Symbolname überlebt jedes weitere `server.ts`-Land, eine Zeilennummer nicht.

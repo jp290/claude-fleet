@@ -3183,7 +3183,7 @@ function taskView(t: Task): Task {
     ...(t.refine ? { refine: { ...t.refine, ...refineValidationFor(t, snapshot) } } : {}) };
 }
 // The acceptance that stands between a compiled proposal and the owner's confirm (refine-validate
-// .ts, docs/brief-kompilierung-verbesserung-2026-08-18.md §6). Derived HERE rather than stored at
+// .ts, docs/attic/brief-kompilierung-verbesserung-2026-08-18.md §6). Derived HERE rather than stored at
 // compile time, for the reason the field comment on TaskRefine.validation gives: a finding about a
 // tree is only worth reading if it is about the tree as it stands now, and this projection already
 // holds the index-stamped snapshot every other surface reads — no second path cache, and no third
@@ -13517,7 +13517,7 @@ let auditGraceTimer: ReturnType<typeof setTimeout> | null = null;
 // What this is NOT (stage 1, owner's non-goals): no auto-dispatch — the server assigns nothing; no
 // ssh runner; no push. The transport is a git bundle over the same authenticated HTTP surface the
 // board already is.
-// REVISED 2026-08-28 (owner promotion G0, programme docs/linux-second-host-programm-2026-08-28.md):
+// REVISED 2026-08-28 (owner promotion G0, programme docs/attic/linux-second-host-programm-2026-08-28.md):
 // stage 1 also said "a human on the other machine clicks claim", and that sentence no longer holds
 // — a daemon on the owner's Linux box (helper-daemon/daemon.ts) may claim, run and report on its
 // own. Nothing on THIS side changed to allow it: the daemon is a client of the same five routes a
@@ -13583,7 +13583,7 @@ let helperLapses: HelperLapse[] = [];
 // helper's browser would vanish with a cleared cache, and every past ledger row would then point at
 // a machine nobody could name any more.
 //
-// STAGE A OF THE DEVICE REGISTER (docs/geraeteverwaltung-federation-entwurf-2026-08-27.md §2) adds
+// STAGE A OF THE DEVICE REGISTER (docs/attic/geraeteverwaltung-federation-entwurf-2026-08-27.md §2) adds
 // two kinds of field to that row, and keeping them apart is the whole design:
 //   · `mode`/`load`/`capabilities` are what the DEVICE says about itself — foreign data, validated
 //     against a closed set and size caps on the way in, never trusted and never interpolated.
@@ -13644,7 +13644,7 @@ function helperClaimCandidateExists(now = Date.now()): boolean {
 // --- THE SECOND JOB KIND: a LANE's preview suite -----------------------------------------------
 // The portal's job list used to be the tier-2 audit queue and nothing else, so the one suite run a
 // human on this box actually waits for — a lane's own `./e2e-isolated.sh` preview — could never be
-// handed to another machine. Measured 2026-08-26 (docs/helper-lane-suiten-entwurf-2026-08-26.md):
+// handed to another machine. Measured 2026-08-26 (docs/attic/helper-lane-suiten-entwurf-2026-08-26.md):
 // the local audit's own runtime distribution is p50 800 s / p90 1426 s over 271 measured rows, and
 // the ONE suite mutex on this box was held by exactly such a preview for the whole investigation.
 //
@@ -14351,7 +14351,7 @@ async function gitOut(cwd: string, ...args: string[]): Promise<{ out: string; er
 }
 // THE BUNDLE OF A LANE'S WORKING TREE, and the one function in this file where the plausible wrong
 // implementation is a SILENT one. Every step below was measured before it was written
-// (docs/helper-lane-suiten-entwurf-2026-08-26.md §3.1, M1–M10):
+// (docs/attic/helper-lane-suiten-entwurf-2026-08-26.md §3.1, M1–M10):
 //
 //   · `git stash create` (M3), NOT `HEAD`. A lane's tree is typically dirty, and a bundle of HEAD
 //     would hand the helper a tree that compiles, runs the suite, and answers a question nobody
@@ -22248,7 +22248,7 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     // every such row waited on the owner to read it. It is not the fleet's autonomy limit: under a
     // Program hull a Program-MAIN releases its own rows, so those rows never enter an owner review
     // buffer at all, and this number would still read 10 while binding nothing about them
-    // (docs/harvest-critic-J-2026-08-21.md:114-120, CONFIRMED). The resource that actually bounds
+    // (docs/attic/harvest-critic-J-2026-08-21.md:114-120, CONFIRMED). The resource that actually bounds
     // unattended execution is DISPATCH_MAX_LANES (live 2) — lanes, not rows.
     const open = tasks.filter((t) => t.source === "steward" && t.status === "pending").length;
     if (open >= STEWARD_MAX_PENDING) return json({ error: `steward pending cap reached (${STEWARD_MAX_PENDING})` }, 409);
@@ -22870,7 +22870,7 @@ Bun.serve<WSData>({
 
     // THE OFFER DOOR — the fifth lane-only route, and the one that lets a lane hand its OWN preview
     // suite to another machine instead of holding this box's single suite mutex for ~13 minutes
-    // (measured p50, docs/helper-lane-suiten-entwurf-2026-08-26.md §1.1).
+    // (measured p50, docs/attic/helper-lane-suiten-entwurf-2026-08-26.md §1.1).
     //
     // WHY LANE-ONLY, resolved against the family's two opposite scope rules rather than guessed:
     // the lane-only four (drift, gate, criterion, verify-intent) are narrow because their ANSWER is

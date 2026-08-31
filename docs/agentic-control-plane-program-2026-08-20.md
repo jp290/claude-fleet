@@ -23,7 +23,7 @@ Vollzugsstand 2026-08-21:
 **Aktueller Entscheidungs-Checkpoint, kein zusätzlicher Produkt-Act:** Die vorhandenen Game-
 Worktrails sind auf Zeit-, Token-, Stillstands-, Rework- und Ergebnisursachen normalisiert
 (`docs/worktrail-audit-II/`, `docs/worktrail-audit-III/` und
-`docs/private-repo-e-worktrail-audit-2026-08-17.md`). Eine frische Opus-5-High-Session hat daraus den
+`docs/attic/private-repo-e-worktrail-audit-2026-08-17.md`). Eine frische Opus-5-High-Session hat daraus den
 kleinsten heutigen Studioschnitt adjudiziert: zwei kleine Repo-Packs (`project-spine` und genau
 eine `quality-axis`), ein kurzer rollenbezogener Act-Brief statt eines dritten Packs, eine
 gebundene Program-MAIN und mindestens zwei echte Fleet-Lanes. Ein unabhängiger GLM-Transfer

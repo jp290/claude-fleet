@@ -1,5 +1,7 @@
 # Regelbuch-Inventar `CLAUDE.md` — Schritt 1 der Kontextlast-Kette
 
+> Datierter Schnappschuss (2026-08-18): Zeilenverweise zeigen auf den Baum dieses Datums.
+
 **Status:** Inventur, read-only. Nichts ist umgezogen; dieses Dokument schreibt auf, was wohin
 gehörte. Der Schnitt selbst ist Schritt 2 und passiert im Haupt-Checkout (`CLAUDE.md` ist gitignored
 — eine Lane kann ihre Kopie nicht landen).

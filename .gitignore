@@ -58,3 +58,13 @@ drops/
 # sat untracked in this PUBLIC repo carrying the real host, IP and share URLs (measured 2026-08-22).
 # One `git add -A` would have published them.
 .env.bak*
+
+# codex hook config: carries a machine-local absolute path (account name), exactly like
+# .claude/settings.json above. The hook stays local-only.
+.codex/
+
+# publish transfer artifacts and ad-hoc root screenshots. A bundle's tip is by construction
+# already in the history that produced it. And a root PNG is single-session UI evidence:
+# released-section.png painted the account path INTO the image, where no grep finds it.
+*.bundle
+/*.png

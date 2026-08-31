@@ -261,11 +261,15 @@ quote the error verbatim in your report. Never report a step you skipped as if i
 soften a claim you did not verify.
 
 Graphify in a lane: `graphify-out/` is git-ignored and exists only in the main checkout, so a
-worktree never has its own graph — a missing `graphify-out/graph.json` in your tree is the normal
+worktree never has its own graph — a missing graph under that ignored directory is the normal
 state, never a stop. A brief line like "graphify query before raw search" means: query the main
-checkout's graph read-only via
-`graphify query "<question>" --graph "$(dirname "$(git rev-parse --git-common-dir)")/graphify-out/graph.json"`
-(the derivation works from any worktree). If that fails for any reason, fall back to
+checkout's graph read-only via this command (the derivation works from any worktree):
+
+```sh
+graphify query "<question>" --graph "$(dirname "$(git rev-parse --git-common-dir)")/graphify-out/graph.json"
+```
+
+If that fails for any reason, fall back to
 `rg`/`ast-grep` and keep working — never file a needs-main report over a missing graph. Read-only:
 never run `graphify update`/`save-result` from a lane against the main graph.
 

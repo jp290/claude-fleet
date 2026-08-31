@@ -24,6 +24,28 @@ Alle drei sind Codex `gpt-5.6-sol`/high, haben harte Rot-Mutationen und teilen `
 deshalb niemals parallel releasen. Nächster Akt: roten Audit auf demselben Baum reproduzieren oder
 ehrlich als weiter `unknown` blockieren, dann nur `93fc5af2` releasen. Keine Host-Implementierung.
 
+## Nachtrag 2026-08-31 — zwei DIREKT-Commits aus dem Haupt-Checkout (`e0e0c70`, `de13c81`)
+
+Die 28 untracked Einträge des Haupt-Checkouts sind gesichtet: 23 getrackt (`briefs/` 10, `docs/` 6,
+`docs/attic/` 5 redigiert, `promote-program.sh`, `.gitignore`), `x.bundle` und drei Root-PNGs
+gelöscht, `.codex/`/`*.bundle`/`/*.png` dauerhaft ignoriert. `git status` ist leer.
+
+**Beide sind Direkt-Commits, also für jedes land-seitige Ledger unsichtbar** — keine
+`fleet/land`-Note, keine `lane-outcomes.jsonl`-Zeile, kein Post-Land-Audit. Die Kette lief deshalb
+**von Hand und vollständig**: install → pins → tsc → build → clean-review → security → claude-gate,
+**exit 0**, 261 PASS in den vier Suiten, 308 PASS in `pins`. `./state.sh`s Land-Health-Zahlen zählen
+nur Lanes und untertreiben diesen Tag um zwei Commits.
+
+**Offener Befund, NICHT von diesen Commits — die Rulebook-Drift aus `49e35f6`.** Zwei Pins bleiben
+rot: `CLAUDE.md is renderRulebook("main", rulebook/) byte for byte` (70498 B gerendert vs 70949 B)
+und der Anker `CLAUDE.md:768 → AGENTS.md §Codex/Pi-Lane`. Gemessene Wurzel: `49e35f6` brachte die
+graphify-in-einer-Lane-Regel korrekt nach `AGENTS.md`, schrieb den Begleitabsatz aber in das
+**generierte** `CLAUDE.md` statt in die Quelle `rulebook/graphify.md` — fünf Zeilen, die die nächste
+Regeneration still löscht. Der zitierte Anker heißt in `AGENTS.md` wörtlich
+`## If you are a Codex or Pi lane`. Reparatur ist eine Rulebook-Änderung und damit Owner-Promotion;
+der Diff liegt in `rendered-CLAUDE.md`/`rulebook-drift.diff` im Session-Scratchpad, ist aber in
+zwei Minuten neu erzeugt (`renderRulebook("main", rulebook/)` gegen `CLAUDE.md` diffen).
+
 ---
 
 # HANDOFF — Red-Team-Controller wechselt; Live-Zustand vollständig neu messen, 2026-08-30

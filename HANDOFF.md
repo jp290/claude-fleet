@@ -1,3 +1,99 @@
+# HANDOFF — Generalsanierung: P1 KOMPLETT (W1-W4), drei P6-vorgezogene Fixes, Codex-Update-Falle geloest, 2026-09-01 (nachmittags)
+
+Program **`b2a14b545fd31fd71ba7b9e1`** aktiv, gebunden. Ersetzt den Morgen-Abschnitt darunter.
+
+## 1. Autoritaet & Betrieb (neue Owner-Entscheide dieser Session)
+
+- **Owner-Sanktion (Chat, nachmittags): die drei operativen Issues "vernuenftig angehen und aufloesen",
+  ausdruecklich auch der Codex-Bug.** Operative Form: P6-VORGEZOGENE Fixes, je eigenes Kriterium +
+  eigener e2e-Check (die Form, die das Program fuer Verhaltensaenderungen vorsieht). Feature-Freeze
+  im Uebrigen unveraendert.
+- Self-Land-Promotion steht auf **green-only**; alle Lands dieser Session actor main, confirmed false.
+- Master-Stop bleibt AN; Weg unveraendert file -> release -> Hand-Dispatch (Body {} oder mit
+  {harness,model,effort}).
+- **Owner-Wunsch offen: Codex-UPDATE selbst (0.147->0.152)** — bewusst NICHT ausgefuehrt (npm install
+  -g ist Owner-Akt). Bis dahin gilt der persistierte Skip (unten).
+
+## 2. Gelandet & verifiziert (Kette seit b20e7e4)
+
+3058556(docs, DIREKT) -> 79fcb0c(docs, DIREKT) -> 86e704a(**W3** Pin-Haertung) -> 3c271f8+54964d1
+(**W4**, ein Land, zwei Commits) -> [Slot-10-Land, §NACHTRAG]. Jedes Land verify.ok true, volle Kette.
+Die zwei Direkt-Commits sind land-unsichtbar (kein Ledger); Verifikationsweg steht in ihren Bodies.
+- **P0-Baseline GESCHLOSSEN** (openQuestion 1): 3x seriell ALL PASS 3375/3375/0 FAIL auf 3058556,
+  neben acht lebenden Sessions. Messnotiz docs/messungen/p0-baseline-generalsanierung-2026-09-01.md.
+- **W3 (86e704a)**: tote-Doc-Pfad-Klasse als Pin (Erfolgsmass 3 mechanisch zu) · Kopier-Guard
+  rekursiv ueber git ls-files · Ein-Datei-Universen -> serverU/clientU-Modul-Mengen, "Anker nicht
+  gefunden" ist ueberall FAIL · Kreuz-Modul-Stolperdraht (liest die Anker-PAARE aus pins.ts selbst;
+  heute 0, nach dem ersten P4-Slice nennt er die umzuhaengenden Zeilen) · LC_ALL=C an allen
+  Harness-lstart-Lesern + Pin ueber die abgeleitete Menge. ICH habe 5 Mutationsbeweise unabhaengig
+  in einem Scratch-Worktree reproduziert, nicht der Lane geglaubt.
+- **W4 (3c271f8+54964d1)**: Kommentar-Commit mit BUILD-HASH-BEWEIS (von mir reproduziert:
+  main und 3c271f8 beide e479d1236a9b7058..., byte-identisch, bun 1.3.9) — das ist die Blaupause
+  fuer P3. Dann WorkerRoute + dossier-branch-Param entfernt (unused-tsc auf server.ts allein:
+  2 -> 0, von mir reproduziert). P1-W4-Punkt "Eval-Gate-Reste": abgeleitet, zwei stale
+  runWorker-Kommentare korrigiert; BEFUND der Lane, ungefixt: clarify-prompt.ts#buildClarifyBrief
+  nimmt evalReason, aber KEIN Aufrufer uebergibt ihn — toter Block, P6-Kandidat.
+
+## 3. Die drei Issues — Zustand JETZT
+
+- **(a) Codex-Update-Falle: DIAGNOSTIZIERT + operativ zu.** codex 0.147.0 blockiert beim Spawn auf
+  einem Update-Prompt (vorselektiert: "Update now" = npm install -g!); paneReadiness kennt den
+  Screen nicht -> generischer 20s-Requeue (2x an W4 bezahlt). Von mir mit "3 Skip until next
+  version" beantwortet (persistiert, per Respawn bewiesen: danach Banner NEBEN Ready-Marker);
+  Dispatch end-to-end wieder ok (Slot-10-Lane lief auf codex). READY_WAIT_MS ist NICHT die
+  Ursache — nicht hochdrehen. Haertung als Queue-Zeile **4908a900** (blocked-Screen mit Namen +
+  Recherche config-Unterdrueckung + e2e). NAECHSTE Codex-Version reisst das Loch sonst wieder auf.
+- **(b) Remote-Audit-Blindheit: FIX GELANDET als 3974883 und deployt** (§4.1): Daemon schickt FAIL-Namen
+  aus dem Trail (50x300 bounded), helperResult validiert fail-closed, postLandAuditChecks
+  korroboriert nur bei exakter Laenge, alter Body = alter Pfad. **OPS DANACH OFFEN: der
+  Second-host-Daemon selbst laeuft noch alt** — Update des Geraets ist ein Einzeiler (git pull +
+  systemctl restart fleet-helper), gehoert Owner oder Slot 9. Bis dahin bleiben Remote-Rots
+  namenlos. Semantik-Nebenton: auf korroborierten Remote-Zeilen heisst checks.ran "im Tail
+  verbuchte Zeilen", nicht "gefahrene Checks" — bewusst gelandet, P6-Politur falls es je verwirrt.
+  DREI heutige Remote-Rots (05f37f1, 3058556, 86e704a: 10/10/7 FAILURES) alle adjudiziert
+  unknowable; derselbe Baum lief lokal jedes Mal ALL PASS. Frage nach den 7 Namen liegt bei
+  Slot 9 (gesendet 3f3bef64, Antwort stand bei Uebergabe aus).
+- **(c) Filing-Cap: BRIEF GEFILED** (**8cd6deca**, queued): Deckel soll nur kind=auftrag zaehlen —
+  heute sperren 5 nie-releasebare notizen die Selbst-Tuer dauerhaft (409 an W4 gemessen; W4 lief
+  deshalb ueber die Owner-Tuer, source:owner, programId-Link haelt; /api/self/tasks/<id>/land
+  funktionierte darauf normal).
+
+## 4. Naechste Zuege, Reihenfolge
+
+1. NACHTRAG, alles erledigt: **Slot-10 IST GELANDET als 3974883** (Rebase auf 54964d1 sauber,
+   verify.ok true, actor main). **Deploy 2e614038 via Verb 2 GEFAHREN und vom naechsten Boot
+   bestaetigt**: ok:true, hitTarget:true, bootHead=head=3974883, bundleStale:false, deployGap 0 —
+   der Live-Server faehrt beide Lands. Audit-Watches c1d804f1 (54964d1) + 99af3f9a (3974883)
+   haben den srv-Neustart ARMIERT ueberlebt (an GET /api/self gemessen) — sie sterben erst mit
+   MEINEM Slot: die Nachfolgerin armiert beide neu und beurteilt die Audits nach Check-Ebene;
+   Remote-Rots koennen jetzt erstmals NAMEN tragen, aber nur wenn vorher §4.3 (Daemon-Update)
+   passiert ist — sonst weiter unknowable-Muster wie §3b.
+2. Die zwei queued Briefs dispatchen, wenn Lane-Deckel frei: **4908a900** (codex-Haertung),
+   **8cd6deca** (filing-cap). Beide owner-source, Hand-Dispatch noetig (Master-Stop).
+3. Second-host-Daemon-Update anstossen (Ops, siehe 3b) — danach liefert der NAECHSTE Remote-Audit
+   Namen, und die unknowable-Serie endet.
+4. **P2 Vor-Split-Haertung** (Plan §P2): frisches Fenster, voller Kontext. Davor Fenster-Checkliste
+   des Plans §Entscheide 4/5 pruefen (auto-③ ist seit be3b21e aus — nachpruefen, nicht glauben).
+5. P3 mit der W4-Blaupause (Build-Hash-Beweis) briefen; die ~11 Kommentar-Anker-Pins in den Brief.
+
+## 5. Ehrlichkeiten & Reste
+
+- Bei Uebergabe armiert: Audit-Watches c1d804f1 (54964d1) + 99af3f9a (3974883); beide Merge-
+  Watches sind gefeuert (dead/sent). Watches sind slot-gebunden und sterben mit meinem Slot —
+  die Nachfolgerin armiert die zwei Audit-Watches NEU (§4.1).
+- Queue-Stand: 4908a900 + 8cd6deca queued (arbeit) · 5 notizen pending (5e79be26 Locale in W3
+  MITerledigt — die Zeile kann der Owner schliessen · af8dd29c reviewInflight-P6 · d07646bc
+  Second-host-Ausbau · d2335500 durch Slot-10-Land ERLEDIGT sobald gelandet — schliessbar ·
+  39fbbd1f server-lstart-P6) · 1b677e58/ff535524 Feature-Freeze-geparkt · b0ad8a79 fremdes Program.
+- Rulebook-Nachzug dieser Session (gitignored, committet nur als Fragment-Text im
+  rulebook/-Verzeichnis): lane-discipline §11.2j/k auf REPARIERT. CLAUDE.md re-rendert, pins gruen.
+- Owner hat /model auf Fable 5 gestellt (Terminal-Kommando, betrifft NEUE Sessions — die
+  Supervisor-Regel "Opus 5 high" fuer die 🧿-Rolle ist davon unberuehrt, mein Slot lief auf Opus).
+- ctx bei Uebergabe: siehe succeed-Report; Band eingehalten (26,4 % gemessen beim Entscheid,
+  Restkette = 2 Lands + Deploy + Handoff, vorher angekuendigt).
+
+---
+
 # HANDOFF — Generalsanierung: P1 W1+W2 gelandet, beide Flake-Reparaturen gelandet/im Land, Autonomie + Remote-Audit live, 2026-09-01
 
 Program **`b2a14b545fd31fd71ba7b9e1`** aktiv, gebunden. Ersetzt den 2026-09-01-Abschnitt darunter.

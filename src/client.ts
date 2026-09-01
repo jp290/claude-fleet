@@ -5,6 +5,11 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import qrcode from "qrcode-generator";
 import { mdInto } from "./md";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
+import { pollPlan } from "./pollplan";
+import { gitUnquote, porcelainPath } from "./gitpath";
+import { matchTree, treeOf, type TreeNode } from "./filetree";
+import { PLA_ACK_KEY, postLandAlarm } from "./plaudit";
+import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, type FleetEventRow } from "./opsevents";
 import {
   matchTaskWaveAnalysis, projectTaskWaves,
   type ProjectedWaveTask, type TaskWaveProjection, type TaskWaveRunningBlock, type TaskWaveUnresolved,
@@ -34,73 +39,6 @@ const LAYOUTS: Record<string, number> = { "1": 1, "2": 2, "4": 4 };
 // must match the mobile media query in index.html
 const MOBILE_MQ = matchMedia("(max-width: 700px), ((pointer: coarse) and (max-height: 500px))");
 const isMobile = () => MOBILE_MQ.matches;
-
-// --- data saver: ONE per-device switch, and the only thing in Fleet that trades freshness
-// for bytes. What it does NOT touch is the terminal: live output and typing ride the
-// WebSocket, so they stay exactly as fast either way. What it slows are the metadata polls
-// (sidebar/queue, chat, session brief) and what it shrinks is the scrollback the server
-// seeds on reconnect. Per-number cost/gain is measured in the commit that added this.
-const SAVER = { pollMs: 10_000, chatMs: 3_000, boardMs: 10_000, seed: 500 };
-const NORMAL = { pollMs: 2_000, chatMs: 1_000, boardMs: 3_000, seed: 0 }; // seed 0 = server's SEED_LINES
-// pure on purpose, and kept clear of the DOM/localStorage lines below it: the e2e suite has
-// no DOM harness, so it cuts this function out and runs it for real. pollMs/chatMs/boardMs
-// === 0 means "no timer at all" — a hidden tab polls NOTHING, in either mode. seed is
-// deliberately unaffected by hidden: it is read at connect time, which only happens visible.
-function pollPlan(hidden: boolean, saver: boolean): { pollMs: number; chatMs: number; boardMs: number; seed: number } {
-  const t = saver ? SAVER : NORMAL;
-  return hidden ? { pollMs: 0, chatMs: 0, boardMs: 0, seed: t.seed } : { ...t };
-}
-
-// --- GITPATH: git's two path shapes, decoded once, at the one boundary that matters -----------
-//
-// Git hands this client paths in two shapes and the difference is invisible until a click misses.
-// `git status --porcelain`, `git diff --name-status` and the `diff --git` header all QUOTE a path
-// the moment it holds a space or a byte above ASCII; `git ls-files -z` (the explorer tree) never
-// does. Measured on 2026-08-20:
-//     ?? "untracked file.txt"                          ← a SPACE is enough
-//      M "umlaut-\303\244\303\266\303\274.txt"         ← \NNN is an octal BYTE, not a character
-//     R  "old name.txt" -> "new name.txt"              ← a rename names both sides
-//     diff --git "a/umlaut-\303\244….txt" "b/umlaut-\303\244….txt"   ← prefix INSIDE the quotes
-// Every file row here turns such a line into a REQUEST PATH, so the decode belongs at that
-// boundary, once: an undecoded `"untracked file.txt"` asks the server for a file whose name really
-// does begin with a quote, and gets "no such file" — which reads to the owner as "that file is
-// gone". Both producers (porcelain rows, diff headers) go through this ONE decoder on purpose:
-// a file pick matches a diff file by string equality, so two half-decodes would miss each other.
-//
-// Pure, and kept clear of the DOM/localStorage lines below it: the e2e suite has no DOM harness,
-// so it cuts this block out and runs it for real (e2e/explorer.ts) — same method as pollPlan above.
-const GITPATH_ESCAPES: Record<string, number> = {
-  a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92,
-};
-function gitUnquote(s: string): string {
-  if (s.length < 2 || !s.startsWith('"') || !s.endsWith('"')) return s;
-  const body = s.slice(1, -1);
-  const enc = new TextEncoder();
-  const bytes: number[] = [];
-  for (let i = 0; i < body.length; i++) {
-    const c = body[i];
-    if (c !== "\\") { for (const b of enc.encode(c)) bytes.push(b); continue; }
-    const n = body[++i];
-    if (n === undefined) break;
-    if (n >= "0" && n <= "7") { bytes.push(parseInt(body.slice(i, i + 3), 8) & 0xff); i += 2; continue; }
-    const known = GITPATH_ESCAPES[n];
-    if (known !== undefined) bytes.push(known);
-    else for (const b of enc.encode(n)) bytes.push(b);
-  }
-  return new TextDecoder().decode(new Uint8Array(bytes));
-}
-// One porcelain-shaped row → the path the reader means. The rename ARROW is only read when the
-// status code actually says rename/copy: a file may legitimately be NAMED `a -> b`, and git does
-// not quote it for that, so splitting on the arrow unconditionally would invent a path.
-function porcelainPath(line: string): string {
-  const rest = line.slice(3);
-  if (line[0] === "R" || line[0] === "C") {
-    const arrow = rest.indexOf(" -> ");
-    // a rename means the file that EXISTS now — the old name is history, and nothing can open it
-    if (arrow >= 0) return gitUnquote(rest.slice(arrow + 4));
-  }
-  return gitUnquote(rest);
-}
 
 let dataSaver = localStorage.getItem("fleet.datasaver") === "1";
 const plan = () => pollPlan(document.hidden, dataSaver);
@@ -1966,41 +1904,6 @@ const fxOpenSet = (cwd: string): Set<string> => {
   if (!set) { set = new Set(); fxOpen.set(cwd, set); }
   return set;
 };
-
-// the tree as a nested map, derived from the flat path list on every paint. Cheap (a few thousand
-// strings at most, capped server-side) and it keeps ONE source of truth — the flat list the server
-// sent — instead of a parallel structure that could disagree with it.
-interface TreeNode { dirs: Map<string, TreeNode>; files: string[] }
-function treeOf(paths: string[]): TreeNode {
-  const root: TreeNode = { dirs: new Map(), files: [] };
-  for (const p of paths) {
-    const parts = p.split("/");
-    let node = root;
-    for (const seg of parts.slice(0, -1)) {
-      let next = node.dirs.get(seg);
-      if (!next) { next = { dirs: new Map(), files: [] }; node.dirs.set(seg, next); }
-      node = next;
-    }
-    node.files.push(parts[parts.length - 1]);
-  }
-  return root;
-}
-
-// The search. It matches the WHOLE relative path, not the basename, because the question the
-// explorer could not answer was "where is the file whose path contains …" — `e2e/pins`, `docs/ver`
-// and `client.ts` all have to find something. Space-separated terms are ANDed in any order, so
-// `pins e2e` and `e2e pins` are the same query; case is ignored.
-//
-// A hit list is FLAT and deliberately so: a filtered tree still has to be walked open folder by
-// open folder, which is the work the search exists to remove. Sorted shortest-path-first so the
-// closest match to a short query is the first row rather than the alphabetically luckiest one.
-function matchTree(paths: string[], query: string): string[] {
-  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-  if (!terms.length) return [];
-  return paths
-    .filter((p) => { const lc = p.toLowerCase(); return terms.every((t) => lc.includes(t)); })
-    .sort((a, b) => a.length - b.length || a.localeCompare(b));
-}
 
 // One renderer, two homes: the board card and the explorer window's list pane. `onPick` is what a
 // FILE row does — the only thing the two callers disagree about. Folding a directory repaints
@@ -5238,38 +5141,6 @@ function armReload() {
 // (server.ts, runPostLandAudit). Rendering it is therefore the entire safety net — an audit nobody
 // reads is an audit that never ran. The result rode the 2s poll payload for a client that had no
 // reader at all, and two RED audits on 2026-07-26 went unread as the direct consequence.
-//
-// Three rules, which is why this is a pure classifier rather than a branch inside refresh():
-//  · GREEN says nothing. The expected case earns no chrome.
-//  · RED and UNKNOWN are both alarms and stay DISTINCT. Red is a measured failure; unknown is a
-//    measurement that never happened (timed out / could not start / declined to run). Folding
-//    unknown into green would fabricate a pass; folding it into red would fabricate a defect.
-//  · The alarm NAMES the land(s) it followed — "something is red" without "after which land" is not
-//    actionable — and survives until the owner acknowledges THAT audit (the ack is keyed to its
-//    `at`) or the server's newest audit comes back green, which is what supersedes it here: this
-//    payload carries the newest row only.
-const PLA_ACK_KEY = "fleet.plaudit.ack";
-// the compact projection postLandAuditSummary() ships. Tolerant on the wire by design: an older
-// server, or a row written before a field existed, must degrade to "not recorded" — never to a claim.
-interface PlaAlarm { tone: "red" | "unknown"; headline: string; where: string; note: string }
-function postLandAlarm(a: PostLandAuditInfo | null, ackedAt: number): PlaAlarm | null {
-  if (!a || a.result === "green") return null;
-  if (a.at === ackedAt) return null;
-  // anything that is neither of the two known non-green states is still an alarm, and it is NOT
-  // called red: from here an unrecognised result is a measurement this client cannot read.
-  const tone: PlaAlarm["tone"] = a.result === "red" ? "red" : "unknown";
-  const covered = a.covers ?? [];
-  const where = [
-    `${a.repo ?? "(repo not recorded)"} ${a.main ?? "?"}@${(a.mainSha ?? "").slice(0, 8) || "????????"}`,
-    covered.length ? `after landing ${covered.join(", ")}` : "which land it followed is NOT recorded on this audit",
-    ...(a.reason ? [a.reason] : []),
-  ].join(" · ");
-  return tone === "red"
-    ? { tone, where, headline: "POST-LAND AUDIT FAILED — the full suite is failing on the integration tip",
-        note: "This audit gates nothing and nothing was rolled back. ↩ undo-land reverses the newest lands, one press per land, at most 3 deep — and which of them broke it is still yours to find." }
-    : { tone, where, headline: "POST-LAND AUDIT DID NOT MEASURE — no verdict exists for this land",
-        note: "A measurement that did not happen is not a pass. Nothing about the integration tip has been checked." };
-}
 let postLandAudit: PostLandAuditInfo | null = null;
 function renderPostLandAudit() {
   const bar = $("plaudit");
@@ -10065,62 +9936,9 @@ renderAttnBtn();
 //
 // Zero payload cost: the rows already ride /api/sessions as `events` (they are the owner's only
 // view of a receiver-gone event), so this panel reads what the 2 s poll already carries.
-interface FleetEventRow {
-  id: string; watchId: string | null;
-  // null on all three is the OWNER PRINCIPAL as receiver — a row filed here because no session
-  // could receive it. It is not a missing value: there is no occupant to name.
-  receiverSlot: number | null; receiverOpenedAt: number | null; receiverSessionId: string | null;
-  createdAt: number;
-  // the SERVER's union, copied whole. A local interface is a claim about a foreign surface, so an
-  // omitted word here would silently make its rows unmatched rather than mis-typed.
-  status: "pending" | "send-uncertain" | "delivered" | "acknowledged" | "receiver-gone"
-    | "subject-gone" | "inbox";
-  delivery?: "pane" | "inbox";
-  kind: "lane-ready" | "host-commit-ready" | "merge-terminal" | "post-land-audit"
-    | "deploy-terminal" | "clarification-request" | "fleet-report" | "supervisor-transition";
-  subjectSlot?: number; subjectBranch?: string; subjectCwd?: string;
-  subjectRepo?: string; subjectMainAfter?: string; subjectDeployId?: string;
-  payload?: Record<string, unknown>;
-  // the two transport clocks, carried for the derivation below. They already ride /api/sessions on
-  // every event; nothing was added to the payload to read them.
-  deliveredAt?: number | null;
-  acknowledgedAt?: number | null;
-  recovery?: {
-    state: "retryable" | "blocked" | "terminal";
-    reason: string;
-    nextAction: string;
-    effect: string;
-    updatedAt: number;
-  };
-}
 const opsdlg = $("opsdlg"), opspanel = $("opspanel"), opsbtn = $("opsbtn");
 let opsRows: FleetEventRow[] = [];
 let opsBusy = false;
-
-const opsOpen = (rows: FleetEventRow[]): FleetEventRow[] =>
-  rows.filter((e) => e.delivery === "inbox" && e.status === "inbox");
-
-// PANE TRANSPORT WITHOUT A SESSION ACKNOWLEDGEMENT — a SECOND class, derived here and shown apart.
-//
-// `delivered` records one fact only: tmux accepted paste+Enter. Nothing in the conversation on the
-// other side has said it read the text. The gap is measured: one event was delivered 3s after fire
-// and acknowledged 368s later, when the owner noticed it sitting unsent in the composer. Until then
-// the row was invisible debt — `delivered` is written once and otherwise read only as the receiver
-// ack precondition, so nothing surfaced it and nothing ever will on its own.
-//
-// This is a LOOKING GLASS, not a mechanism: no retry, no replay, no timeout, no state change. It
-// says exactly what is known — transport reported sent, no session acknowledgement — and never
-// "undelivered", "failed" or "accepted", none of which this data can support. The owner cannot
-// acknowledge these rows: seeing is not consuming, and the server's receiver-ack route is the only
-// thing that may close them (its owner twin 409s a pane row by construction).
-const PANE_ACK_STALE_MS = 120_000;
-const opsUnacked = (rows: FleetEventRow[], now: number): FleetEventRow[] =>
-  rows.filter((e) => e.delivery !== "inbox"
-    && (e.status === "delivered" || e.status === "send-uncertain")
-    && !e.acknowledgedAt
-    // send-uncertain is persisted BEFORE tmux is touched, so it has no delivery clock at all;
-    // createdAt is then the only honest origin, and it is never later than a delivery would be
-    && now - (e.deliveredAt ?? e.createdAt) >= PANE_ACK_STALE_MS);
 
 function renderOpsBtn() {
   const n = opsOpen(opsRows).length;

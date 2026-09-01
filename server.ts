@@ -21302,7 +21302,8 @@ const REPO_DIR = process.env.FLEET_REPO_DIR || import.meta.dir;
 // a land whose whole diff was one of them read codeBehind:true — the exact false gap the 2026-08-02
 // measurement above is a record of paying for, for work that had already shipped through the build.
 const CLIENT_ONLY_FILES = ["src/client.ts", "src/share.ts", "src/helper.ts", "src/shell.ts",
-  "src/md.ts", "src/backoff.ts"];
+  "src/md.ts", "src/backoff.ts", "src/pollplan.ts", "src/gitpath.ts", "src/filetree.ts", "src/plaudit.ts",
+  "src/opsevents.ts"];
 // the five single-file harnesses the e2e-*.sh wrappers boot; e2e/** below is the runner's modules
 const HARNESS_ONLY_FILES = ["fleet-e2e.ts", "fleet-e2e-claude-gate.ts", "fleet-e2e-clean-review.ts",
   "fleet-e2e-security.ts", "fleet-e2e-postland-audit.ts"];

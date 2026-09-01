@@ -7,6 +7,7 @@ import { dirname } from "node:path";
 import { BASE, IP, PORT, REPO, ROOT, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
 import { exists } from "./lane-helpers";
 import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
+import { pollPlan } from "../src/pollplan";
 import { slotStats } from "../slotstats";
 import { normalizeLaneAnchor, type LaneAnchor } from "../src/protocol";
 
@@ -621,8 +622,8 @@ export async function run(): Promise<void> {
     seedFloor > 100 && seedFloor < seedSmall, `${seedFloor} bytes`);
 
   // --- the client half of the data-saver switch. Same method and same limits as the client
-  // checks in e2e/outcomes.ts: this suite has no DOM harness, so the DECISION is cut out of
-  // src/client.ts and run for real, while the WIRING around it is asserted by shape. What
+  // checks in e2e/outcomes.ts: this suite has no DOM harness, so the DECISION is imported from
+  // src/pollplan.ts and run for real, while the WIRING around it is asserted by shape. What
   // stays unproved here is that the browser honours the plan — that was verified by hand
   // against a throwaway server (see the commit); what these checks defend is the contract.
   // The scratch copy carries server.ts + public/ but not src/ — the link back to the checkout
@@ -642,13 +643,11 @@ export async function run(): Promise<void> {
   check("precondition: node_modules exposes public/index.html for slot presentation checks",
     indexSrc !== null, indexSrcError);
   if (cliSrc === null || indexSrc === null) return;
-  const planSrc = cliSrc.slice(cliSrc.indexOf("const SAVER = {"), cliSrc.indexOf("let dataSaver"));
-  check("client: the data-saver plan is extractable as a pure function (no DOM in pollPlan)",
-    planSrc.includes("function pollPlan") && !/document|localStorage|el\(/.test(planSrc.replace(/^\s*\/\/.*$/gm, "")),
-    planSrc.slice(0, 60));
-  const pollPlan = new Function(
-    new Bun.Transpiler({ loader: "ts" }).transformSync(planSrc) + "\nreturn pollPlan;")() as
-      (hidden: boolean, saver: boolean) => { pollMs: number; chatMs: number; boardMs: number; seed: number };
+  // what is asserted about client.ts is that it SHIPS the module under test — a plan re-inlined
+  // there would leave the checks below measuring code the bundle never runs
+  check("client: the poll pump takes pollPlan from src/pollplan.ts, the module under test",
+    /import \{ pollPlan \} from "\.\/pollplan"/.test(cliSrc) && /const plan = \(\) => pollPlan\(document\.hidden, dataSaver\)/.test(cliSrc),
+    "the pollplan import + plan() in src/client.ts");
   const visible = pollPlan(false, false), saver = pollPlan(false, true);
   check("data saver off = today's behaviour, unchanged (2s poll, 1s chat, 3s brief, server-default seed)",
     visible.pollMs === 2000 && visible.chatMs === 1000 && visible.boardMs === 3000 && visible.seed === 0,

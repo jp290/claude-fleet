@@ -497,12 +497,10 @@ const CLAUDE_HARNESS: Harness = {
   role: "agent",
 };
 
-// --- The write fence that used to live here (sandbox-exec around pi; ~/.claude, off-worktree and
-// lane .git denied) is RETIRED by owner decision 2026-08-12: normal local agent harnesses run with
-// the owner's full local access — they edit, use git and commit, reach Fleet/tmux and the network
-// themselves. The host-commit route (POST /api/slots/:id/commit) stays as a recovery path, not as
-// the normal lifecycle; the explicitly isolated place is `container`, never a default. What the
-// fence granted and why is preserved in this file's 2026-08-08..11 revisions, not re-argued here.
+// --- Full local access is the normal state for a local agent harness (owner decision 2026-08-12):
+// it edits, uses git and commits itself. POST /api/slots/:id/commit is a recovery path, not the
+// lifecycle; `container` is the one explicitly isolated place. The write fence that used to stand
+// here, what it granted and why it went: this file's 2026-08-08..11 revisions.
 //
 // One charset survives the fence, because the hazard it guarded is spawn-time interpolation, not
 // sandboxing: a path that lands inside a single-quoted shell word AND (for codex) inside a TOML
@@ -1296,7 +1294,7 @@ type WSData = {
 // owner's session, i.e. their prompts billed as the owner's Inputs on the owner's account.
 interface Share { id: string; slot: number; secret: string; created: number }
 
-// a guest comment on a share — allowed in BOTH modes (it types nothing into the pty).
+// a guest comment on a share — reachable by a guest because it types nothing into the pty.
 // Freeform name is display-only, never trusted; keyed by share id so revoking the share
 // drops its thread (pruned in saveState).
 interface ShareComment { id: string; ts: number; name: string; text: string; from?: "owner" }
@@ -10878,10 +10876,10 @@ async function summaryViaSession(prompt: string, cwd: string, doneMark: string,
   // The spawn line comes from the WORKER_HARNESS adapter — this function no longer names an agent
   // binary, a session flag or a model flag of its own, which is the point: there were two spawn
   // implementations in this file and the harness registry covered one.
-  // opts.model: a MODEL_RE-validated override for the one worker whose judgment the owner priced
-  // above the summary tier (eval gate → EVAL_MODEL). It is single-quoted inside the adapter, like
-  // every model interpolation (the [1m] variants glob under zsh) — MODEL_RE forbids `'`, so the
-  // quote wrap stays closed.
+  // opts.model: a MODEL_RE-validated override for the workers whose judgment the owner priced
+  // above the summary tier (today: analysis → ANALYSIS_MODEL, refine → REFINE_MODEL). It is
+  // single-quoted inside the adapter, like every model interpolation (the [1m] variants glob
+  // under zsh) — MODEL_RE forbids `'`, so the quote wrap stays closed.
   const w = WORKER_HARNESS.worker({ sessionId: sid, model: opts.model ?? SUMMARY_MODEL, tools: opts.tools });
   // A refusal, not a timeout, and it must stay that way: the alternative is spawning a real agent
   // (a real spend) and then polling for a transcript that cannot appear until SUMMARY_TIMEOUT_MS.
@@ -10948,7 +10946,7 @@ async function summaryViaSession(prompt: string, cwd: string, doneMark: string,
 
 // Every throwaway agent in this file is spawned through here. The call sites (summary, 🔍 review,
 // commit message, ✨ enhance, ⏫ merge resolver, its repair round, ② clean review, 🧭 steward
-// digest, the eval gate, ↻ refine — deliberately unnumbered here, the count decayed twice)
+// digest, the queue analyst, ↻ refine — deliberately unnumbered here, the count decayed twice)
 // differ in exactly four things — the FLEET_*_CMD stand-in, the tool profile,
 // the done-mark and the timeout — and shared the same four lines otherwise, which had already
 // drifted apart (one site passed no explicit timeout where its sibling did). Collapsed so a fix
@@ -23098,8 +23096,8 @@ Bun.serve<WSData>({
         });
       }
       if (shareApi[2] === "diff") {
-        // read-only "what did this session change" for guests — allowed in BOTH modes
-        // (it types nothing into the pty), PR-review feel without repo access
+        // read-only "what did this session change" for guests — reachable by a guest
+        // because it types nothing into the pty, PR-review feel without repo access
         if (!s.cwd) return json({ error: "session gone" }, 404);
         const p = await diffPayload(s.cwd, await slotBase(s));
         if (!p) return json({ error: "not a git repository" }, 400);
@@ -23143,7 +23141,7 @@ Bun.serve<WSData>({
         return summaryResponse(s, req.method === "POST");
       }
       if (shareApi[2] === "comments") {
-        // guest thread on this share — allowed in BOTH modes, it types nothing into the pty
+        // guest thread on this share — reachable by a guest, it types nothing into the pty
         if (req.method === "GET") return json({ comments: shareComments[sh.id] ?? [] });
         if (req.method === "POST") {
           if (commentStrike(sh.id)) return json({ error: "slow down — try again in a minute" }, 429);

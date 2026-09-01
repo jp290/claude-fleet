@@ -47,13 +47,16 @@ rm -rf "$DIR"
 mkdir -p "$DIR"
 # What the instance contains is DERIVED from the entry files' imports, not listed here —
 # e2e-stage.sh carries the rule and the two dead harnesses that motivated it.
-# Entries: server.ts (the app) + fleet-e2e.ts (the runner). All 31 e2e/*.ts ride in as the
-# runner's transitive imports, so a new check module still needs no change to this wrapper —
-# and now neither does a new top-level directory, which used to need one.
-# No STAGE_EXTRA: the one src/ file the suite actually imports (src/backoff.ts, via
-# e2e/slots.ts) comes with the closure, and the only check that reads client SOURCE resolves
-# it through the node_modules symlink on purpose (e2e/outcomes.ts:278-283) — whose comment
-# "carries server.ts + public/ but NOT src/" is true again now that the wholesale copy is gone.
+# Entries: server.ts (the app) + fleet-e2e.ts (the runner). 46 of the 49 e2e/*.ts ride in as the
+# runner's transitive imports (measured 2026-09-01), so a new check module still needs no change
+# to this wrapper — and now neither does a new top-level directory, which used to need one. The
+# other three are not this runner's: e2e/pins.ts is the land gate's own first stage, and
+# e2e/helper-daemon.ts + e2e/helper-portal.ts belong to fleet-e2e-postland-audit.ts.
+# No STAGE_EXTRA: the two src/ files the suite imports (src/backoff.ts via e2e/slots.ts,
+# src/protocol.ts via six check modules) come with the closure, and every check that reads client
+# SOURCE — six of them, e2e/outcomes.ts's "precondition: node_modules exposes src/client.ts" among
+# them — resolves it through the node_modules symlink on purpose, because src/client.ts itself is
+# NOT staged.
 . "$SRC/e2e-stage.sh"
 stage_instance "$SRC" "$DIR" server.ts fleet-e2e.ts || exit 1
 

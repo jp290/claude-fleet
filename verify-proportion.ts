@@ -50,7 +50,11 @@ function ruleFor(path: string): Rule {
   if (path.startsWith("e2e/") || /^e2e-.*\.sh$/.test(path) || /^fleet-e2e.*\.ts$/.test(path)
     || path === "merge-prompt.ts" || path === "clarify-prompt.ts") return E2E_RULE;
 
-  if (path === "server.ts" || path === "watchdog.sh" || path === "Dockerfile"
+  // `server/` is where the split puts server modules, and it is read as SERVER everywhere in this
+  // repo (plan-2026-08-31 §Randbedingung 2) — the prefix lives here BEFORE the first module moves,
+  // because an unlisted one would silently fall to DEFAULT_RULE and shift the gate's burden of
+  // proof without anything saying so. The docs block above still wins for a future `server/*.md`.
+  if (path === "server.ts" || path.startsWith("server/") || path === "watchdog.sh" || path === "Dockerfile"
     || /^docker-.*\.sh$/.test(path) || path === "container-firewall.sh"
     || path === "state.sh" || path === "register.sh") return SERVER_RULE;
 

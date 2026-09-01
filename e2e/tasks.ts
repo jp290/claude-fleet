@@ -2866,8 +2866,8 @@ export async function run(ctx: Ctx): Promise<void> {
   // beside refine because refine-confirm is the stronger origin whose precedence it must preserve.
   {
     const tracked = new Set([
-      "server.ts", "src/client.ts", "src/protocol.ts", "e2e/tasks.ts", "docs/guide.md",
-      "watchdog.sh", "attic/worker-deepseek.py", ".gitignore",
+      "server.ts", "server/persist.ts", "src/client.ts", "src/protocol.ts", "e2e/tasks.ts",
+      "docs/guide.md", "watchdog.sh", "attic/worker-deepseek.py", ".gitignore",
     ]);
     const derive = (text: string, confirmedFiles?: string[], brief?: string) =>
       deriveTaskMetadata({ text, brief, confirmedFiles }, { trackedPaths: tracked, project: "fleet" });
@@ -2896,6 +2896,20 @@ export async function run(ctx: Ctx): Promise<void> {
       processResults.every((cluster, i) => cluster?.prozess === processCases[i][1]
         && (processCases[i][2] === undefined || cluster.unterprozess === processCases[i][2])),
       JSON.stringify(processResults));
+
+    // `server/` is mapped BEFORE the directory exists (plan-2026-08-31 §P2), because the failure is
+    // not local to the unmapped path: processesForPath returns null for it, and clusterForFiles
+    // turns ONE null into `undefined` for the whole task — a row naming a P4 module beside
+    // server.ts would lose its cluster entirely rather than degrade on that one path.
+    const serverModule = derive("move the persistence writer into server/persist.ts");
+    check("task metadata: a server/ module clusters as server rather than blanking the cluster",
+      serverModule.files?.join(" ") === "server/persist.ts"
+      && serverModule.cluster?.prozess === "server" && serverModule.cluster.unterprozess === undefined,
+      JSON.stringify(serverModule));
+    const serverModuleMix = derive("server.ts and server/persist.ts move together");
+    check("task metadata: server.ts plus a server/ module stay ONE leaf, not a cross-cutting pair",
+      serverModuleMix.files?.join(" ") === "server.ts server/persist.ts"
+      && serverModuleMix.cluster?.prozess === "server", JSON.stringify(serverModuleMix));
 
     // Same population shape as the measured live register (60 open auftrag rows, 55 naming at
     // least one exact tracked path). This does not copy fleet.json; it proves the coverage probe

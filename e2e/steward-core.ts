@@ -72,19 +72,32 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   check("deploy-gap: a CLIENT-only commit counts as behind but NOT code-behind (bundleStale's job)",
     gapC?.behindCount === 2 && gapC.codeBehind === false && gapC.head !== gapC.bootHead,
     JSON.stringify(gapC));
+  // The two the allowlist was MISSING until 2026-09-01, in their own commit so the claim is about
+  // them and not carried by client.ts: src/helper.ts is the third bundle entry (package.json
+  // builds public/helper.js from it) and src/backoff.ts rides into app.js through src/client.ts:7.
+  // server.ts imports neither — its only src/ import is ./src/protocol — so a land of either read
+  // codeBehind:true and asked for a restart that would have changed nothing.
+  writeFileSync(`${ctx.gapRepo}/src/helper.ts`, "// the portal bundle's own entry\n");
+  writeFileSync(`${ctx.gapRepo}/src/backoff.ts`, "// bundled into app.js through src/client.ts\n");
+  gapGit("add", "-A");
+  gapGit("commit", "-qm", "feat(client): the other two bundle sources");
+  const gapH = await readGap("/api/steward/sessions");
+  check("deploy-gap: src/helper.ts and src/backoff.ts are CLIENT sources too, not a server restart",
+    gapH?.behindCount === 3 && gapH.codeBehind === false && gapH.head !== gapH.bootHead,
+    JSON.stringify(gapH));
   // …and the allowlist is an allowlist: an unrecognized src/ file is code until someone says so
   writeFileSync(`${ctx.gapRepo}/src/protocol.ts`, "// shared with the server\n");
   gapGit("add", "-A");
   gapGit("commit", "-qm", "feat: a src file the server imports");
   const gapP = await readGap("/api/steward/sessions");
   check("deploy-gap: a src/ file that is NOT on the client allowlist still flags code-behind",
-    gapP?.behindCount === 3 && gapP.codeBehind === true, JSON.stringify(gapP));
+    gapP?.behindCount === 4 && gapP.codeBehind === true, JSON.stringify(gapP));
   writeFileSync(`${ctx.gapRepo}/server.ts`, "// changed after the server booted\n");
   gapGit("add", "-A");
   gapGit("commit", "-qm", "feat: touch server.ts");
   const gap2 = await readGap("/api/steward/sessions");
   check("deploy-gap: a commit touching code flips codeBehind (bootHead stays pinned to boot)",
-    gap2?.behindCount === 4 && gap2.codeBehind === true && gap2.bootHead === gap0?.bootHead,
+    gap2?.behindCount === 5 && gap2.codeBehind === true && gap2.bootHead === gap0?.bootHead,
     JSON.stringify(gap2));
   // Hand ctx.gapRepo back BARE. The bundle-staleness section below is this fact's twin, owns the
   // same repo, and its first check asserts the cannot-tell state — "starts with neither a public/
@@ -97,7 +110,7 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   // this is the last commit this repo takes, so it is the head every later read must agree with
   const gapBare = await readGap("/api/steward/sessions");
   check("deploy-gap: removing the planted client files is still not code-behind on its own account",
-    gapBare?.behindCount === 5 && gapBare.codeBehind === true, JSON.stringify(gapBare));
+    gapBare?.behindCount === 6 && gapBare.codeBehind === true, JSON.stringify(gapBare));
   // --- context-size proxy (docs/steward-pulse-v2.md phase B): how full is a session? The
   //     deterministic stand-in is its transcript JSONL's size. Slot 2 carries the uuid planted
   //     through the state file at the restart above plus a transcript of a known size; the fresh
@@ -180,7 +193,8 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   //     landed client code stays invisible in the UI until `bun run build` runs (it cost an hour
   //     on 2026-07-25). Exercised against ctx.gapRepo (FLEET_REPO_DIR), which starts with neither a
   //     public/ nor a src/ — i.e. in the cannot-tell state. ---
-  type Bundle = { appJsMtime: number | null; shareJsMtime: number | null; srcNewestMtime: number | null; stale: boolean | null };
+  type Bundle = { appJsMtime: number | null; shareJsMtime: number | null; helperJsMtime: number | null;
+    srcNewestMtime: number | null; stale: boolean | null };
   const readBundle = async (path: string) =>
     ((await (await stewGet(path)).json()) as { bundleStale?: Bundle }).bundleStale;
   const bSet = (rel: string, secs: number) => utimesSync(`${ctx.gapRepo}/${rel}`, secs, secs);
@@ -194,12 +208,15 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   writeFileSync(`${ctx.gapRepo}/src/client.ts`, "// source\n");
   writeFileSync(`${ctx.gapRepo}/public/app.js`, "// bundle\n");
   writeFileSync(`${ctx.gapRepo}/public/share.js`, "// bundle\n");
+  writeFileSync(`${ctx.gapRepo}/public/helper.js`, "// bundle\n");
   bSet("src/client.ts", T - 100);
   bSet("public/app.js", T - 50);
   bSet("public/share.js", T - 50);
+  bSet("public/helper.js", T - 50);
   const bs1 = await readBundle("/api/steward/sessions");
   check("bundle-staleness: bundles built AFTER the newest source read fresh (stale=false)",
     bs1?.stale === false && bs1.appJsMtime === (T - 50) * 1000 && bs1.shareJsMtime === (T - 50) * 1000
+      && bs1.helperJsMtime === (T - 50) * 1000
       && bs1.srcNewestMtime === (T - 100) * 1000, JSON.stringify(bs1));
   // a NESTED source file flips it — the walk is recursive, so a change in src/<subdir>/ cannot
   // hide behind an untouched top level (the whole point: a false 'fresh' costs another blind hour)
@@ -213,8 +230,9 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   // one bundle it can see and call the answer complete
   rmSync(`${ctx.gapRepo}/public/app.js`, { force: true });
   const bs3 = await readBundle("/api/steward/sessions");
-  check("bundle-staleness: an absent bundle yields nulls, never a verdict from the other bundle",
+  check("bundle-staleness: an absent bundle yields nulls, never a verdict from the other bundles",
     bs3?.appJsMtime === null && bs3.stale === null && bs3.shareJsMtime === (T - 50) * 1000
+      && bs3.helperJsMtime === (T - 50) * 1000
       && bs3.srcNewestMtime === (T - 10) * 1000, JSON.stringify(bs3));
   writeFileSync(`${ctx.gapRepo}/public/app.js`, "// bundle\n");
   bSet("public/app.js", T - 50); // leave it STALE for the digest-mirror check below
@@ -522,7 +540,7 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   // must be the same fact the sessions route served, not something the worker could shape.
   const gapDigest = await readGap("/api/steward/digest?wait=0");
   check("steward digest serves the same route-computed deploy-gap as the sessions route",
-    gapDigest?.behindCount === 5 && gapDigest.codeBehind === true
+    gapDigest?.behindCount === 6 && gapDigest.codeBehind === true
     && gapDigest.head === gapBare?.head && gapDigest.bootHead === gap0?.bootHead,
     JSON.stringify(gapDigest));
   // same for the bundle-staleness twin: route-computed, so the digest serves the identical fact

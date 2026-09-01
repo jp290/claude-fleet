@@ -3742,30 +3742,70 @@ export async function run(ctx: Ctx): Promise<void> {
         && mAuftragReloaded.kind === "auftrag" && mAuftragReloaded.status === "pending",
       `notiz=${JSON.stringify(mOkReloaded)} auftrag=${JSON.stringify(mAuftragReloaded)}`);
 
-    // (8) THE CAP, per Program, over rows this door filed that nobody has released. Non-tautological
-    // in both directions: the fill must actually CROSS the cap (so the guard below could fail), and
-    // the rows that got through must still be there when the refusal comes. The token survives the
-    // reload above — a fresh read would hide a regression in exactly that.
+    // (8) THE TWO CAPS, per Program, over rows this door filed that still stand pending. Work and
+    // advisory rows must not spend each other's budget: only an `auftrag` can leave through the
+    // release door, while notiz/richtung/betrieb wait for owner disposition. Each cap is crossed in
+    // its own fixture, and each sibling kind remains writable while the other bucket is full.
     const mFileToken = mState().slots?.[String(mSlot)]?.selfToken ?? "";
-    const mFiledCount = async (): Promise<number> =>
+    const mFiledCount = async (kinds: string[]): Promise<number> =>
       (await mAll()).filter((t) => t.source === "main" && t.programId === mMainProgram
-        && t.status === "pending").length;
-    const FILE_CAP = 5; // PROGRAM_MAX_PENDING's default; the suite sets no FLEET_PROGRAM_MAX_PENDING
-    const mBeforeCap = await mFiledCount();
-    const mCapStatuses: number[] = [];
-    let mCapLast = "";
-    for (let i = 0; i <= FILE_CAP - mBeforeCap; i++) {
-      const res = await mFile(mFileToken, { text: `acp23 cap filler ${i}` });
-      mCapStatuses.push(res.status);
-      mCapLast = await res.text();
+        && t.status === "pending" && kinds.includes(t.kind)).length;
+    const accepted = (status: number): boolean => status === 200 || status === 201;
+    const WORK_CAP = 5; // PROGRAM_MAX_PENDING's default; the suite overrides neither filing cap
+    const ADVISORY_CAP = 10; // PROGRAM_MAX_PENDING_ADVISORY's default
+
+    for (const t of await mAll()) if (t.source === "main") await post(`/api/tasks/${t.id}/delete`, {});
+    const mNoteStatuses: number[] = [];
+    for (let i = 0; i < WORK_CAP; i++) {
+      const res = await mFile(mFileToken, { text: `acp23 note beside work cap ${i}`, kind: "notiz" });
+      mNoteStatuses.push(res.status);
     }
-    check("ACP-23 (8): a Program-MAIN holds at most PROGRAM_MAX_PENDING filed-but-unreleased rows, and the refusal names the number",
-      mFileToken === mToken && mBeforeCap > 0 && mBeforeCap < FILE_CAP
-        && mCapStatuses.length === FILE_CAP - mBeforeCap + 1
-        && mCapStatuses.slice(0, -1).every((s) => s === 200) && mCapStatuses.at(-1) === 409
-        && mCapLast.includes(`filing cap reached (${FILE_CAP}/${FILE_CAP} filed rows not yet released)`)
-        && (await mFiledCount()) === FILE_CAP,
-      `before=${mBeforeCap} statuses=${mCapStatuses.join(",")} last=${mCapLast}`);
+    const mWorkBesideNotes = await mFile(mFileToken,
+      { text: "acp23 work beside five notes", kind: "auftrag" });
+    const mWorkBesideNotesText = await mWorkBesideNotes.text();
+    check("ACP-23 (8a): five pending MAIN notizen do not spend the auftrag filing cap",
+      mFileToken === mToken && mNoteStatuses.every(accepted)
+        && (await mFiledCount(["notiz"])) === WORK_CAP
+        && accepted(mWorkBesideNotes.status) && (await mFiledCount(["auftrag"])) === 1,
+      `notes=${mNoteStatuses.join(",")} work=${mWorkBesideNotes.status}:${mWorkBesideNotesText}`);
+
+    for (const t of await mAll()) if (t.source === "main") await post(`/api/tasks/${t.id}/delete`, {});
+    const mWorkStatuses: number[] = [];
+    for (let i = 0; i < WORK_CAP; i++) {
+      const res = await mFile(mFileToken, { text: `acp23 work cap filler ${i}`, kind: "auftrag" });
+      mWorkStatuses.push(res.status);
+    }
+    const mWorkOverflow = await mFile(mFileToken,
+      { text: "acp23 sixth work filing", kind: "auftrag" });
+    const mWorkOverflowText = await mWorkOverflow.text();
+    check("ACP-23 (8b): five pending MAIN auftraege block the sixth and name the auftrag cap number",
+      mWorkStatuses.every(accepted) && mWorkOverflow.status === 409
+        && mWorkOverflowText.includes(`auftrag filing cap reached (${WORK_CAP}/${WORK_CAP}`)
+        && (await mFiledCount(["auftrag"])) === WORK_CAP,
+      `fill=${mWorkStatuses.join(",")} overflow=${mWorkOverflow.status}:${mWorkOverflowText}`);
+
+    for (const t of await mAll()) if (t.source === "main") await post(`/api/tasks/${t.id}/delete`, {});
+    const advisoryKinds = ["notiz", "richtung", "betrieb"];
+    const mAdvisoryStatuses: number[] = [];
+    for (let i = 0; i < ADVISORY_CAP; i++) {
+      const res = await mFile(mFileToken,
+        { text: `acp23 advisory cap filler ${i}`, kind: advisoryKinds[i % advisoryKinds.length] });
+      mAdvisoryStatuses.push(res.status);
+    }
+    const mAdvisoryOverflow = await mFile(mFileToken,
+      { text: "acp23 eleventh advisory filing", kind: "notiz" });
+    const mAdvisoryOverflowText = await mAdvisoryOverflow.text();
+    const mWorkBesideAdvisory = await mFile(mFileToken,
+      { text: "acp23 work beside full advisory cap", kind: "auftrag" });
+    const mWorkBesideAdvisoryText = await mWorkBesideAdvisory.text();
+    check("ACP-23 (8c): a full advisory cap blocks another notiz in its own words while an auftrag still files",
+      mAdvisoryStatuses.every(accepted) && mAdvisoryOverflow.status === 409
+        && mAdvisoryOverflowText.includes(`advisory filing cap reached (${ADVISORY_CAP}/${ADVISORY_CAP}`)
+        && mAdvisoryOverflowText.includes("owner disposition")
+        && (await mFiledCount(advisoryKinds)) === ADVISORY_CAP
+        && accepted(mWorkBesideAdvisory.status) && (await mFiledCount(["auftrag"])) === 1,
+      `fill=${mAdvisoryStatuses.join(",")} overflow=${mAdvisoryOverflow.status}:${mAdvisoryOverflowText}`
+        + ` work=${mWorkBesideAdvisory.status}:${mWorkBesideAdvisoryText}`);
 
     // Leave the queue and the board as this section found them: every row it filed is deleted (none
     // of them is `sent`, so none is a running lane's founding row), the planted MAIN's slot is

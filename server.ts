@@ -3118,20 +3118,25 @@ const DISPATCH_MAX_LANES_PER_PROGRAM = Math.max(1,
 // how deep the queue is. 80 is below MAX_TASKS (200), so this door alone cannot outgrow the list
 // it lives in. The cap bounds QUEUE DEPTH, and it is honest about bounding nothing else.
 const PROGRAM_MAX_RELEASED = Math.max(1, Number(process.env.FLEET_PROGRAM_MAX_RELEASED ?? 5) | 0);
-// ACP-23: how many rows ONE Program-MAIN may hold FILED-but-not-yet-released through its own
-// create door. Same per-object shape as the cap above, so it owes the same product, and it is
-// counted the same way: only rows this door wrote (source "main") for THIS program that nobody has
-// released yet. A released row leaves this count and enters PROGRAM_MAX_RELEASED's, so the two
-// compose instead of double-counting — one MAIN can hold 5 unreleased drafts plus 5 released ones.
-// THE PRODUCT: filing needs a LIVE bound Program-MAIN, i.e. an occupied slot, so at most MAX_SLOTS
-// (16) programs can be filing at any moment → 16 × 5 = 80 rows. Together the two per-program caps
-// can hold 160 live rows. At the 28-slot board that sum was 280 and OVERRAN nominal MAX_TASKS
-// (200); at 16 it fits under it. That is a margin, not a new guarantee — capTasks deliberately
-// retains every non-terminal row, so the list never held these caps back in either arithmetic.
-// What this bounds is QUEUE DEPTH and nothing else — a filed row is PENDING, so it is not even a
-// candidate for the tick; what bounds unattended EXECUTION remains
-// lane-shaped and untouched (DISPATCH_MAX_LANES per repo, narrowed by DISPATCH_MAX_LANES_PER_PROGRAM).
+// ACP-23: how many WORK rows ONE Program-MAIN may hold FILED-but-not-yet-released through its own
+// create door. Only `auftrag` rows spend this budget because only those rows can leave through the
+// release door. A released auftrag leaves this count and enters PROGRAM_MAX_RELEASED's, so the two
+// compose instead of double-counting — one MAIN can hold 5 unreleased work drafts plus 5 released
+// ones. Advisory rows have their own larger budget below: they await owner disposition and must
+// never consume the work door they cannot use.
 const PROGRAM_MAX_PENDING = Math.max(1, Number(process.env.FLEET_PROGRAM_MAX_PENDING ?? 5) | 0);
+// The sibling budget for the three advisory kinds: notiz, richtung and betrieb. Ten preserves room
+// for observation without letting advisory rows displace work or grow without a per-Program bound.
+// THE PRODUCT, using both defaults honestly: filing needs a LIVE bound Program-MAIN, i.e. an
+// occupied slot, so at most MAX_SLOTS (16) programs can file at once → 16 × (5 + 10) = 240
+// filed-pending rows, plus PROGRAM_MAX_RELEASED's 16 × 5 = 80 released rows, for 320 non-terminal
+// rows. That exceeds nominal MAX_TASKS (200). The old 160-row comparison was already a reserve,
+// not a guarantee: capTasks deliberately retains every non-terminal row, so MAX_TASKS never
+// evicted pending or released rows. These two caps bound per-Program queue depth; what bounds
+// unattended EXECUTION remains lane-shaped and untouched (DISPATCH_MAX_LANES per repo, narrowed by
+// DISPATCH_MAX_LANES_PER_PROGRAM).
+const PROGRAM_MAX_PENDING_ADVISORY = Math.max(1,
+  Number(process.env.FLEET_PROGRAM_MAX_PENDING_ADVISORY ?? 10) | 0);
 // createWorktree stores the git TOPLEVEL (symlink-resolved: /tmp → /private/tmp) as a lane's
 // repo, so comparing lanes against a raw configured path would silently match nothing — and a
 // cap that matches nothing is no cap. Canonicalize once per repo (cached — realpaths of repo
@@ -8537,14 +8542,21 @@ async function createTaskForMain(s: Slot, body: Record<string, unknown> | null):
   const mainRepo = await repoKeyOf(s);
   if (!mainRepo)
     return json({ error: "this session's checkout is not a git repository — the row's target repo cannot be derived" }, 409);
-  // (5) THE CAP, per Program, over the rows this door has filed that nobody has released yet. It
-  // counts only `source: "main"` rows, so the owner's own drafts in the same bracket are not
-  // charged to the MAIN's budget and the MAIN cannot be locked out by them. An exceeded cap is a
-  // 409 that NAMES THE NUMBER — a filing quietly dropped would be indistinguishable from one made.
-  const openPending = tasks.filter((x) => x.source === "main" && x.programId === program.id
-    && x.status === "pending").length;
-  if (openPending >= PROGRAM_MAX_PENDING)
-    return json({ error: `program filing cap reached (${openPending}/${PROGRAM_MAX_PENDING} filed rows not yet released) — release or drop one first` }, 409);
+  // (5) TWO CAPS, per Program, because only `auftrag` is releaseable. Both count only rows this
+  // door filed (`source: "main"`) for this Program, so owner drafts cannot lock its MAIN out. A
+  // full advisory bucket never closes the work door; a full work bucket never closes observation.
+  // Each refusal names its kind and number — a caller must know which disposition can make room.
+  if (kind === "auftrag") {
+    const openPending = tasks.filter((x) => x.source === "main" && x.programId === program.id
+      && x.status === "pending" && x.kind === "auftrag").length;
+    if (openPending >= PROGRAM_MAX_PENDING)
+      return json({ error: `program auftrag filing cap reached (${openPending}/${PROGRAM_MAX_PENDING} pending auftrag rows not yet released) — release or drop one first` }, 409);
+  } else {
+    const openPendingAdvisory = tasks.filter((x) => x.source === "main" && x.programId === program.id
+      && x.status === "pending" && x.kind !== "auftrag").length;
+    if (openPendingAdvisory >= PROGRAM_MAX_PENDING_ADVISORY)
+      return json({ error: `program advisory filing cap reached (${openPendingAdvisory}/${PROGRAM_MAX_PENDING_ADVISORY} pending advisory rows awaiting owner disposition) — ask the owner to dispose or drop one first` }, 409);
+  }
   const id = randomBytes(4).toString("hex");
   const t: Task = {
     id, originId: id, text: body.text.slice(0, MAX_TASK_TEXT).trim(),

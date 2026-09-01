@@ -1458,8 +1458,12 @@ briefed without it silently breaks everyone else's serial proof.
 
 ### 11.2j A twelfth family: the `pi-unfenced` watch-delivery quartet (2026-08-31 filed; 2026-09-01 MECHANISM ISOLATED and repaired test-side — the fixture sampled a by-design transient)
 
-**Status: open, and weaker than the entries above it** — non-determinism is proven, the CAUSE is
-not. Filed from the Generalsanierung P0 baseline, where it cost the baseline itself.
+**Status (2026-09-01, corrected — this paragraph read "open, CAUSE not proven" until the repair
+landed): MECHANISM ISOLATED and repaired test-side in `b20e7e4`.** The two cuts are further down
+in this section; everything between here and them is the FILING as it stood, kept because the
+measurement series is what made the mechanism findable. Filed from the Generalsanierung P0
+baseline, where it cost the baseline itself. What is still open is named at the end: the seventh
+member's contradictory double reading, now self-resolving on its next occurrence.
 
 **The members.** Four checks that fail together, plus one that joins intermittently:
 
@@ -1720,15 +1724,17 @@ away under it — flake, and it names itself. A member failing while its precond
 automatically yours either — that is how cut 2's mechanism was caught, and the honest rule after it
 is narrower: read the printed `settleWaits`, `frameIsDraft` and the id fields, and say which of the
 three known shapes it is (pane replaced · row read mid-transient · both composer readings
-disagreeing) before calling it a regress. But the P0 baseline demands three CONSECUTIVE green runs, and
-until this family is either repaired or its discriminator isolated, that baseline is only
-obtainable under the stated conditions (clean tree, controller idle) — which is itself a finding
-about what this machine can prove while seven sessions share the checkout.
+disagreeing) before calling it a regress. The P0 baseline demands three CONSECUTIVE green runs; with both cuts
+landed this family no longer blocks it (all eight members and all six preconditions held in the
+three verification runs, including the one where the transient fired). The stated conditions —
+clean tree, controller idle, never two suites at once — still hold as a finding about what this
+machine can prove while several sessions share the checkout.
 
 **Bookkeeping:** twelfth family (three in §5b · §11.2 · §11.2b · §11.2c · §11.2e · §11.2f ·
 §11.2g · §11.2h · §11.2i — eleven before this). The count was pulled through on 2026-09-01: the
-fragment `rulebook/lane-discipline.md` says "Zwoelf bekannte Flake-Familien" and `CLAUDE.md` was
-re-rendered from it. Both are gitignored, so no commit carries that change — on a drift suspicion,
+fragment `rulebook/lane-discipline.md` said "Zwoelf bekannte Flake-Familien" and `CLAUDE.md` was
+re-rendered from it; §11.2k took it to "Dreizehn" the same day, and on 2026-09-01 the fragment's
+§11.2j/§11.2k entries were pulled through to REPARIERT (`b20e7e4` / `05f37f1`). Both are gitignored, so no commit carries that change — on a drift suspicion,
 re-render (the command is in the head of `rulebook.ts`).
 
 ### 11.2k A thirteenth family: the raw-review persist race in `e2e/outcomes.ts` (2026-09-01 — REPARIERT, mechanism read out of the code)

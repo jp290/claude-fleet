@@ -3399,6 +3399,15 @@ const SITE_URL = process.env.FLEET_SITE_URL ?? "";
 const SHARE_HOSTS = new Set((process.env.FLEET_SHARE_HOSTS ?? "").split(",").map((h) => h.trim()).filter(Boolean));
 
 const sess = (id: number) => `s${id}`;
+// tmux resolves a bare `-t name` by exact match FIRST and by PREFIX second (tmux 3.6a, man tmux
+// "COMMANDS"): the moment `s1` is gone, `-t s1` silently lands on `s10`. Measured 2026-09-01 —
+// a founding brief for slot 1 was pasted into the controller in slot 10, and a kill of slot 1 would
+// have killed it. `=` pins the match to the exact name; session-target verbs (has-session,
+// kill-session) take `=name`, pane/window-target verbs need the trailing `:` (`=name:`) or the
+// lookup fails. Pane ids (%N) and window ids (@N) are exact by construction and never go through
+// these. NO tmux call may pass a bare session name as `-t` again (pinned in e2e/pins.ts).
+const sessTarget = (name: string): string => `=${name}`;
+const paneTarget = (name: string): string => `=${name}:`;
 interface SlotStreamOccupant { slot: number; openedAt: number; selfToken: string }
 const slotStreamOccupant = (s: Slot): SlotStreamOccupant | null => s.cwd
   ? { slot: s.id, openedAt: s.openedAt, selfToken: s.selfToken }
@@ -3906,7 +3915,7 @@ async function observeTmuxSlots(): Promise<TmuxSlotObservations> {
   if (started.code !== 0)
     return { known: false, sessions: new Map(), detail: `probe create exited ${started.code}: ${started.err || started.out}` };
   const listed = await tmux("list-sessions", "-F", "#{session_name}\t#{pane_current_path}");
-  const stopped = await tmux("kill-session", "-t", probe);
+  const stopped = await tmux("kill-session", "-t", sessTarget(probe));
   if (listed.code !== 0 || stopped.code !== 0)
     return { known: false, sessions: new Map(),
       detail: `enumeration exited ${listed.code}, probe cleanup exited ${stopped.code}: ${listed.err || stopped.err || listed.out}` };
@@ -4584,7 +4593,7 @@ async function codexAttendedCandidates(s: Slot): Promise<{
 async function tickCodexRecovery(s: Slot): Promise<void> {
   if (!s.cwd || harnessOf(s.harness).id !== "codex") return;
   let dirty = false;
-  const cap = await tmux("capture-pane", "-p", "-t", sess(s.id));
+  const cap = await tmux("capture-pane", "-p", "-t", paneTarget(sess(s.id)));
   if (cap.code === 0 && s.codexDisconnectSeenAt === null
     && /stream disconnected before completion/i.test(cap.out)) {
     s.codexDisconnectSeenAt = Date.now();
@@ -5435,7 +5444,7 @@ const parseTmuxTarget = (out: string): TmuxTarget | null => {
   return match ? { paneId: match[1], windowId: match[2] } : null;
 };
 async function existingTmuxTarget(name: string): Promise<TmuxTarget | null> {
-  const shown = await tmux("display-message", "-p", "-t", name, "#{pane_id}\t#{window_id}");
+  const shown = await tmux("display-message", "-p", "-t", paneTarget(name), "#{pane_id}\t#{window_id}");
   return shown.code === 0 ? parseTmuxTarget(shown.out) : null;
 }
 
@@ -5546,7 +5555,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"):
   const entrySpawn = slotSpawnInflight.get(s.id);
   if (entrySpawn) { await entrySpawn; return; }
   const name = sess(s.id);
-  const has = await tmux("has-session", "-t", name);
+  const has = await tmux("has-session", "-t", sessTarget(name));
   if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
   let target: TmuxTarget | null = null;
   if (has.code === 0) {
@@ -6569,7 +6578,10 @@ async function claudeAlive(s: Slot): Promise<boolean> {
 type AgentState = "alive" | "no-agent" | "no-pane" | "unprobed";
 async function paneAgentAt(target: string, comms: string[]): Promise<AgentState> {
   if (!comms.length) return "unprobed";
-  const p = await tmux("display-message", "-p", "-t", target, "#{pane_pid}");
+  // callers hand either an exact pane id (%N) or a session NAME — the name is made exact here so
+  // no caller can reintroduce the prefix match (a bare `s1` probed the agent of `s10`, 2026-09-01)
+  const exact = target.startsWith("%") ? target : paneTarget(target);
+  const p = await tmux("display-message", "-p", "-t", exact, "#{pane_pid}");
   const panePid = Number(p.out);
   if (!panePid) return "no-pane";
   const commOf = async (pid: string): Promise<string> => {
@@ -6599,7 +6611,7 @@ async function paneAgentAt(target: string, comms: string[]): Promise<AgentState>
 async function paneReadiness(s: Slot): Promise<{ state: "ready" | "blocked" | "pending"; why?: string } | null> {
   const r = harnessOf(s.harness).readiness;
   if (!r) return null;
-  const cap = await tmux("capture-pane", "-p", "-t", sess(s.id));
+  const cap = await tmux("capture-pane", "-p", "-t", paneTarget(sess(s.id)));
   if (cap.code !== 0) return { state: "pending" };
   for (const b of r.blocks) if (b.re.test(cap.out)) return { state: "blocked", why: b.why };
   return r.accept.test(cap.out) ? { state: "ready" } : { state: "pending" };
@@ -10925,9 +10937,9 @@ async function summaryViaSession(prompt: string, cwd: string, doneMark: string,
     lb.stdin.write(prompt);
     await lb.stdin.end();
     await lb.exited;
-    await tmux("paste-buffer", "-p", "-d", "-b", buf, "-t", name);
+    await tmux("paste-buffer", "-p", "-d", "-b", buf, "-t", paneTarget(name));
     await Bun.sleep(400);
-    await tmux("send-keys", "-t", name, "Enter");
+    await tmux("send-keys", "-t", paneTarget(name), "Enter");
     // poll the transcript for the newest assistant text block; done as soon as it
     // carries the JSON contract (a non-conforming answer degrades to raw upstream)
     let lastText = "";
@@ -10951,7 +10963,7 @@ async function summaryViaSession(prompt: string, cwd: string, doneMark: string,
     if (lastText) return lastText;
     throw new Error("summarizer timed out without an answer");
   } finally {
-    await tmux("kill-session", "-t", name); // never leave an unattended claude behind
+    await tmux("kill-session", "-t", sessTarget(name)); // never leave an unattended claude behind
     // the transcript is throwaway — leaving it would make it the newest .jsonl in the
     // slot's project dir, and the transcript view's mtime fallback would show the
     // summarizer's prompt as the session's own conversation
@@ -20243,7 +20255,7 @@ if (bootTmux.known) {
     // write-capable agent running invisibly (it matches no slot regex, shows nowhere).
     // Boot is the safe reaping point: any survivor here is by definition orphaned.
     if (name.startsWith("sum-")) {
-      void tmux("kill-session", "-t", name);
+      void tmux("kill-session", "-t", sessTarget(name));
       console.log(`reaped orphaned background-agent session '${name}' (deploy interrupted its cleanup)`);
       continue;
     }
@@ -23114,7 +23126,7 @@ Bun.serve<WSData>({
         // grid from this answer — cache fallback only if the pane is briefly gone
         let { cols, rows } = s;
         if (s.cwd) {
-          const sz = await tmux("display-message", "-p", "-t", sess(s.id), "#{window_width} #{window_height}");
+          const sz = await tmux("display-message", "-p", "-t", paneTarget(sess(s.id)), "#{window_width} #{window_height}");
           const m = /^(\d+) (\d+)$/.exec(sz.out);
           if (m) { cols = Number(m[1]); rows = Number(m[2]); }
         }
@@ -23457,7 +23469,7 @@ Bun.serve<WSData>({
     if (req.method === "GET" && exportMatch) {
       const s = slotFrom(exportMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
-      const cap = await tmux("capture-pane", "-t", sess(s.id), "-p", "-S", "-");
+      const cap = await tmux("capture-pane", "-t", paneTarget(sess(s.id)), "-p", "-S", "-");
       if (cap.code !== 0) return json({ error: "capture failed — session gone?" }, 500);
       const name = s.label ?? s.cwd.split("/").pop() ?? s.cwd;
       if (url.searchParams.get("format") === "txt")

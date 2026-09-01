@@ -272,6 +272,15 @@ Netzwerkkosten werden nicht als null behauptet.
   nichts benennen konnte: Pane lebt, nimmt Tasten an, kein Agent dahinter — was ein unauflösbares Modell
   hinterlässt. Cache (git-Tick), also Bericht, nie Gate; jedes Gate behält seine eigene frische Probe. `null`
   = Tick war noch nicht da, das ist KEINE Antwort. Ein Board-Knopf existiert dafür noch nicht.
+- **tmux-Ziele sind seit 2026-09-01 EXAKT (`server.ts#sessTarget` → `=sN`, `server.ts#paneTarget` →
+  `=sN:`; `server.ts#existingTmuxTarget` und `server.ts#paneAgentAt` formen intern).** Mechanismus: tmux
+  3.6a löst ein nacktes `-t s1` erst exakt, dann als PRÄFIX auf — ist `s1` weg, trifft `has-session -t s1`
+  still `s10`. Gemessen 2026-09-01 (Controller Slot 10): `ensureSlot` hielt Slot 1 für lebend, adoptierte
+  s10s Pane, erzeugte NIE ein `s1`, und der Gründungsbrief für Slot 1 landete in der Controller-Pane;
+  ein `kill` von Slot 1 hätte über `kill-pane` den Controller getötet. Session-Verben (`has-session`,
+  `kill-session`) nehmen `=name`, Pane-/Window-Verben brauchen `=name:` — `=name` ohne Doppelpunkt findet
+  dort keine Pane. `%`-/`@`-IDs sind ohnehin exakt. Gepinnt in `e2e/pins.ts` (kein `tmux()`-Aufruf mit
+  nacktem Namen als `-t`), live bewiesen in `e2e/slots.ts` (Köder `s10`, Slot 1 öffnen → exaktes `s1`).
 
 **Land-Historie ACP-26R (2026-08-24):** der erste Land-Versuch des Kandidaten `d0fa215` endete
 `verify RED, exit 127, 936 ms` — nicht der Baum, sondern der frisch eingetragene

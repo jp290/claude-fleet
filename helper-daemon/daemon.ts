@@ -2,7 +2,7 @@
 // helper-daemon/daemon.ts — the OTHER MACHINE's half of THE REMOTE HELPER PORTAL (server.ts, grep
 // `handleHelperRoute`). It automates, unchanged, the ritual src/helper.ts#bootstrapText spells out
 // for a human: claim a job · download its bundle · clone it · `bun install --frozen-lockfile` ·
-// run the suite · POST the exit code, the log tail and the trail id back.
+// run the suite · POST the exit code, the log tail, failed check names and the trail id back.
 //
 // WHAT IT DOES NOT CHANGE, and this is the whole safety model: the fleet never opens a connection
 // towards this machine. Every line below is a PULL. The three Stage-1 non-goals the owner set stay
@@ -32,6 +32,7 @@
 // `off` has been read, it is honoured for `offRecheckSec` before a single heartbeat asks again.
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, rmSync, statSync } from "node:fs";
 import { loadavg } from "node:os";
+import { dirname, join } from "node:path";
 
 // --- config ------------------------------------------------------------------------------------
 export interface HelperConfig {
@@ -237,6 +238,38 @@ export function tailOf(text: string, lines = 40): string {
 export function trailIdOf(text: string): string | undefined {
   return /isolated-[0-9TZ]+-[0-9]+/.exec(text)?.[0];
 }
+const FAILS_KEEP = 50;
+const FAIL_NAME_MAX = 300;
+const failName = (raw: string): string =>
+  [...raw.trim()].filter((ch) => ch >= " " && ch !== "\u007f").slice(0, FAIL_NAME_MAX).join("").trim();
+const boundedFailNames = (names: string[]): string[] =>
+  names.map(failName).filter(Boolean).slice(0, FAILS_KEEP);
+
+export async function failNamesOf(logPath: string, trail: string | undefined): Promise<string[]> {
+  if (trail) {
+    const trailPath = join(dirname(logPath), "tree", "e2e-trail", `${trail}.jsonl`);
+    try {
+      const names: string[] = [];
+      for (const line of (await Bun.file(trailPath).text()).split("\n")) {
+        if (!line) continue;
+        try {
+          const row = JSON.parse(line) as { ok?: unknown; check?: unknown };
+          if (row.ok === false && typeof row.check === "string") names.push(row.check);
+        } catch { /* a torn row does not erase intact observations before it */ }
+      }
+      if (names.length) return boundedFailNames(names);
+    } catch { /* a missing/unreadable trail falls through to the log */ }
+  }
+  try {
+    const p = Bun.spawn(["grep", "^FAIL ", logPath],
+      { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: childEnv() });
+    const text = await new Response(p.stdout).text();
+    const code = await p.exited;
+    if (code !== 0 && code !== 1) return [];
+    return boundedFailNames(text.split("\n").filter(Boolean)
+      .map((line) => line.replace(/^FAIL\s+/, "").replace(/\s{2}\(.*$/, "")));
+  } catch { return []; }
+}
 const readSlice = async (path: string, from: number, to: number): Promise<string> => {
   try { return await Bun.file(path).slice(from, to).text(); } catch { return ""; }
 };
@@ -342,12 +375,13 @@ async function report(cfg: HelperConfig, j: ClaimedJob, exitCode: number | null,
   const end = logPath ? await readSlice(logPath, Math.max(0, size - 65_536), size) : "";
   const tail = [note, tailOf(end)].filter(Boolean).join("\n");
   const trail = trailIdOf(head);
+  const fails = logPath ? await failNamesOf(logPath, trail) : [];
   const res = await api(cfg, "/api/helper/result", {
     method: "POST",
     // `clonedSha` is SPREAD, so a report from before the clone (or after a rev-parse that failed)
     // carries no such key at all. An absent field is the honest shape for "not measured"; a null
     // one would be a claim this daemon is not in a position to make.
-    body: JSON.stringify({ jobId: j.id, exitCode, tail, ...(trail ? { trail } : {}),
+    body: JSON.stringify({ jobId: j.id, exitCode, tail, fails, ...(trail ? { trail } : {}),
       ...(clonedSha ? { clonedSha } : {}) }),
   });
   const body = await bodyOf<{ result?: string }>(res);

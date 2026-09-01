@@ -13452,7 +13452,8 @@ interface PostLandAuditRow {
   reason?: string;     // present on `unknown` only: WHY no measurement happened
   cmd: string;
   exitCode: number | null;
-  out: string;         // byte-capped TAIL of stdout+stderr (the failing lines of a suite are at its end)
+  out: string;         // byte-capped TAIL of stdout+stderr
+  fails?: string[];    // remote-only, validated and capped names; absent on local and historical rows
   checks: PostLandAuditChecks | null; // null = output was incomplete/inconsistent, NEVER an invented zero
   covers: AuditCover[];
   // Present ONLY on a row a remote helper produced (see THE REMOTE HELPER PORTAL). Its absence is
@@ -13546,6 +13547,8 @@ const HELPER_FRESH_MS = 3 * HELPER_SWEEP_MS;
 const HELPER_LAPSE_KEEP = 20;      // enough to see a flaky helper as a pattern, not a history
 const HELPER_DEVICE_KEEP = 20;     // ...and the same for the names devices gave themselves
 const HELPER_TAIL_CAP = 4096;      // same byte budget the local audit's `out` gets
+const HELPER_FAILS_KEEP = 50;
+const HELPER_FAIL_NAME_MAX = 300;
 const HELPER_BUNDLE_DIR = `${tmpdir()}/fleet-helper-bundles`;
 // The bundle is built ONCE, AT CLAIM TIME, and the sha the claim records is parsed out of the
 // bundle's own header — not from a separate `rev-parse`. A second resolution would be a second
@@ -13615,6 +13618,11 @@ type HelperHeartbeat = { mode?: DeviceMode; load?: number; capabilities?: string
 // device name already gets: printable only, and short.
 function printableShort(raw: string, cap: number): string {
   return [...raw.trim()].filter((ch) => ch >= " " && ch !== "\u007f").join("").slice(0, cap).trim();
+}
+function helperFailNames(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw) || raw.some((name) => typeof name !== "string")) return undefined;
+  return raw.slice(0, HELPER_FAILS_KEEP)
+    .map((name) => printableShort(name as string, HELPER_FAIL_NAME_MAX)).filter(Boolean);
 }
 // IS THERE A MACHINE THAT COULD ACTUALLY TAKE A JOB RIGHT NOW? The one question the grace above
 // hangs on, and three different parties answer it — all three must say yes, because a grace granted
@@ -13986,7 +13994,7 @@ function auditChildEnv(): Record<string, string> {
 // null is reserved for output whose own summary contradicts its lines, or for an incomplete run
 // whose caller never invokes this helper. Several ALL PASS summaries are valid: the production
 // command is a chain of suites, each with its own terminal line.
-function postLandAuditChecks(text: string, exitCode: number): PostLandAuditChecks | null {
+function postLandAuditChecks(text: string, exitCode: number, fails?: string[]): PostLandAuditChecks | null {
   const lines = text.replaceAll("\r", "").split("\n");
   let ran = 0;
   let failed = 0;
@@ -14000,7 +14008,11 @@ function postLandAuditChecks(text: string, exitCode: number): PostLandAuditCheck
     const m = /^(\d+) FAILURES?$/.exec(line.trim());
     if (m) { failureSummaries++; summarizedFailures += Number(m[1]); }
   }
-  if (failureSummaries && summarizedFailures !== failed) return null;
+  if (failureSummaries && summarizedFailures !== failed) {
+    if (fails === undefined || fails.length !== summarizedFailures || failed > summarizedFailures) return null;
+    ran += summarizedFailures - failed;
+    failed = summarizedFailures;
+  }
   if (!failureSummaries && allPass && failed !== 0) return null;
   if (exitCode === 0 && (failed !== 0 || summarizedFailures !== 0)) return null;
   return { ran, failed };
@@ -14653,6 +14665,7 @@ async function reportLaneSuite(j: LaneSuiteJob, body: Record<string, unknown> | 
   const rawExit = body?.exitCode;
   const exitCode = typeof rawExit === "number" && Number.isFinite(rawExit) ? Math.trunc(rawExit) : null;
   const tail = retainRunOutput(typeof body?.tail === "string" ? body.tail : "", "", HELPER_TAIL_CAP).trim();
+  const fails = helperFailNames(body?.fails);
   const trail = typeof body?.trail === "string" && body.trail.trim() ? body.trail.trim().slice(0, 120) : undefined;
   const { result, reason } = remoteVerdictOf(exitCode);
   const measured = result !== "unknown";
@@ -14665,7 +14678,7 @@ async function reportLaneSuite(j: LaneSuiteJob, body: Record<string, unknown> | 
     ? body.clonedSha : undefined;
   j.result = {
     exitCode, result, ...(reason ? { reason } : {}), tail, ...(trail ? { trail } : {}),
-    checks: measured ? postLandAuditChecks(tail, exitCode as number) : null,
+    checks: measured ? postLandAuditChecks(tail, exitCode as number, fails) : null,
     remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now,
       ...(clonedSha ? { clonedSha } : {}) },
     treeSha: j.treeSha ?? "", ms: now - claim.claimedAt,
@@ -14706,6 +14719,7 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
   const rawExit = body?.exitCode;
   const exitCode = typeof rawExit === "number" && Number.isFinite(rawExit) ? Math.trunc(rawExit) : null;
   const tail = retainRunOutput(typeof body?.tail === "string" ? body.tail : "", "", HELPER_TAIL_CAP).trim();
+  const fails = helperFailNames(body?.fails);
   const trail = typeof body?.trail === "string" && body.trail.trim() ? body.trail.trim().slice(0, 120) : undefined;
   // VALIDATED, never trusted: this comes off the network from a machine the owner enrolled, and a
   // malformed sha stored as though it were one would be worse than the absence it replaced.
@@ -14723,7 +14737,8 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
     // `measured` is derived from the shared classifier, which the compiler cannot use to narrow
     // exitCode — the cast is safe by that classifier's own definition: only a non-null, non-skip,
     // non-126/127 code yields anything but `unknown`.
-    exitCode, out: tail, checks: measured ? postLandAuditChecks(tail, exitCode as number) : null,
+    exitCode, out: tail, ...(fails !== undefined ? { fails } : {}),
+    checks: measured ? postLandAuditChecks(tail, exitCode as number, fails) : null,
     covers: claim.covers,
     remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now, ...(trail ? { trail } : {}),
       ...(clonedSha ? { clonedSha } : {}) },
@@ -15592,7 +15607,7 @@ interface DossierTask { id: string; text: string; kind: Task["kind"]; source: Ta
   files?: string[]; brief?: TaskBrief; criterion?: TaskCriterion; analysis?: TaskAnalysis;
   match: TaskMatch }
 interface DossierAudit { at: number; result: string; mainSha: string; covers: string[];
-  reason?: string; exitCode: number | null; out: string; cmd: string;
+  reason?: string; exitCode: number | null; out: string; cmd: string; fails?: string[];
   adjudication?: AuditAdjudication }
 interface LaneDossier {
   branch: string;
@@ -15744,6 +15759,7 @@ async function laneDossier(branch: string, repoHint: string | null): Promise<Lan
     .sort((a, b) => (typeof b.at === "number" ? b.at : 0) - (typeof a.at === "number" ? a.at : 0))
     .map((r): DossierAudit => {
       const adj = typeof r.at === "number" ? judged.get(r.at) : undefined;
+      const fails = helperFailNames(r.fails);
       return {
         at: typeof r.at === "number" ? r.at : 0,
         result: typeof r.result === "string" ? r.result : "unknown",
@@ -15753,6 +15769,7 @@ async function laneDossier(branch: string, repoHint: string | null): Promise<Lan
         exitCode: typeof r.exitCode === "number" ? r.exitCode : null,
         out: typeof r.out === "string" ? r.out : "",
         cmd: typeof r.cmd === "string" ? r.cmd : "",
+        ...(fails !== undefined ? { fails } : {}),
         ...(adj ? { adjudication: adj } : {}),
       };
     });

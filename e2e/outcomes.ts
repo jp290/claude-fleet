@@ -778,6 +778,12 @@ export async function run(): Promise<void> {
     check("client: the dossier flags an un-adjudicated red tier-2 audit as un-ruled, not as merely red",
       /a\.result === "red"[\s\S]{0,160}?un-adjudicated — nobody has ruled on this red yet/.test(cliSrc),
       "renderAkteDetail in src/client.ts");
+    const auditRender = cliSrc.slice(cliSrc.indexOf("for (const a of (audits as Capped<DossierAudit>"),
+      cliSrc.indexOf("// --- the activity window"));
+    check("client: the dossier renders remote FAIL names with the same 50×300 bounds as the wire",
+      auditRender.includes(".slice(0, 50)") && auditRender.includes(".slice(0, 300)")
+        && auditRender.includes("fails.map((name) => `FAIL  ${name}`)"),
+      auditRender.slice(0, 240) || "no DossierAudit render block in src/client.ts");
 
     // (9e) THE DISPOSITION RAIL, CLIENT HALF. Same method and same limits as (9d): asserted over
     // the client SOURCE because this suite has no DOM harness — weaker than a render test, named

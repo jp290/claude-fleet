@@ -1492,9 +1492,10 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     && xcmdFlat.includes('trust_level = "trusted"'), xcmdFlat.slice(-200));
   // ...and it spawns codex, not the fleet's FLEET_CMD (`true` in this suite)
   check("§6e ...and it spawns codex, not the fleet's FLEET_CMD", /(^|\s|;)codex --dangerously/.test(xcmdFlat), xcmdFlat.slice(-160));
-  check("§6e the codex spawn line passes only the fixed effort key, with its value single-quoted",
-    xcmd.includes(" -c model_reasoning_effort='ultra'")
-    && (xcmd.match(/(?:^|\s)-c(?:\s|$)/g) ?? []).length === 1, xcmd.slice(-180));
+  check("§6e the codex spawn line passes only the fixed update and effort config keys",
+    xcmd.includes(" -c check_for_update_on_startup=false")
+    && xcmd.includes(" -c model_reasoning_effort='ultra'")
+    && (xcmd.match(/(?:^|\s)-c(?:\s|$)/g) ?? []).length === 2, xcmd.slice(-220));
   // no session id anywhere: pinsSession is false, and a pinned-but-unpassed id is the shape that
   // makes a respawn silently resume nothing while the state file claims a conversation
   check("§6e the codex spawn line pins NO session id (`--last` cannot identify this pane)",

@@ -70,8 +70,10 @@ export async function run(lc: LaneCtx): Promise<void> {
   if (lnJson.slot) {
     const lnCmd = (await tmuxOut("display-message", "-p", "-t", `s${lnJson.slot}`, "#{pane_start_command}")).out;
     const lnFlat = lnCmd.replaceAll("\\", "");
-    check("a lane spawned with harness=codex runs codex full-access, with --model in the measured form",
-      /(^|\s|;)codex --dangerously-bypass-approvals-and-sandbox --model 'gpt-5-codex'/.test(lnFlat), lnFlat.slice(-160));
+    check("a lane spawned with harness=codex runs codex full-access, disables startup update checks, and passes --model",
+      /(^|\s|;)codex --dangerously-bypass-approvals-and-sandbox/.test(lnFlat)
+      && lnFlat.includes("-c check_for_update_on_startup=false")
+      && lnFlat.includes("--model 'gpt-5-codex'"), lnFlat.slice(-220));
     // the trust prelude rides the same line: without the persisted per-path entry codex blocks on
     // its own "Do you trust this directory?" prompt (measured 2026-08-12 — the bypass flag does
     // NOT cover it) and an unattended brief lands in a dead prompt instead of an agent

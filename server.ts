@@ -975,8 +975,8 @@ const CODEX_HARNESS: Harness = {
   // by POLICY next to it, not by a sandbox: what an unattended path may do to this pane is still
   // gated by `automatable` below and canDeliver's alive gate.
   //
-  // The grep/printf prelude is the TRUST handshake, and it exists because the flag does NOT cover
-  // it (measured 2026-08-12): codex persists per-path trust in ~/.codex/config.toml, its TUI
+  // The grep/printf prelude is the TRUST handshake, and it exists because the bypass flag does NOT
+  // cover it (measured 2026-08-12): codex persists per-path trust in ~/.codex/config.toml, its TUI
   // blocks on "Do you trust the contents of this directory?" for any cwd not listed there, and
   // neither the bypass flag nor a `-c projects...` override suppresses that prompt — only the
   // persisted entry does. The prelude appends exactly the entry codex itself writes when the owner
@@ -984,14 +984,15 @@ const CODEX_HARNESS: Harness = {
   // SPAWN_PATH_RE — the path lands inside a single-quoted shell word and a TOML double-quoted key,
   // and the charset admits neither quote nor backslash. A cwd that fails the charset gets no
   // prelude and codex asks its own question in the pane: attended fallback, never a mangled
-  // config line.
+  // config line. The adjacent config override disables the startup update check on fresh and
+  // resumed panes: preselected "Update now" must never turn a brief into a global install.
   spawnCmd: (o) => {
     // SINGLE WRITER: the resume form is reachable only through ensureSlot after that function's
     // has-session miss. A live pane is never resumed beside itself; the owner restart route kills
     // its pane before entering the same seam. Discovery supplies the exact, UUID-validated id.
     let cmd = o.resume && o.sessionId
-      ? `codex resume '${o.sessionId}' --dangerously-bypass-approvals-and-sandbox`
-      : "codex --dangerously-bypass-approvals-and-sandbox";
+      ? `codex resume '${o.sessionId}' --dangerously-bypass-approvals-and-sandbox -c check_for_update_on_startup=false`
+      : "codex --dangerously-bypass-approvals-and-sandbox -c check_for_update_on_startup=false";
     // single-quoted under the same rule as slotCmd and PI_HARNESS: HARNESS_MODEL_RE admits `*` and
     // the `[1m]` suffix, and tmux's default-shell here is zsh, which ABORTS the whole line on an
     // unmatched glob ("no matches found") and takes the pane with it. No DEFAULT_MODEL fallback:
@@ -1045,15 +1046,18 @@ const CODEX_HARNESS: Harness = {
   // MEASURED from rendered frames (2026-08-12 probe, codex-cli 0.147.0), not from `strings` on the
   // binary — the composer's placeholder line rotates ("Use /skills…", "Summarize recent commits")
   // and is useless as a marker, while the header box `>_ OpenAI Codex (v…)` is on every ready
-  // frame and on NEITHER blocking screen. The two blocks are the two screens that provably eat a
+  // frame and on no blocking screen. The blocks are the screens that provably eat a
   // paste: the per-path trust prompt (paste+Enter answers "Yes, continue" and boots an EMPTY
   // composer — the 2026-08-10 dispatch race, mechanism now known) and the sign-in screen
-  // ("Welcome to Codex" / "Sign in with ChatGPT", rendered via a throwaway CODEX_HOME).
+  // ("Welcome to Codex" / "Sign in with ChatGPT", rendered via a throwaway CODEX_HOME), plus the
+  // 0.147.0/0.152.0 update menu whose preselected first option runs the global package installer.
   readiness: {
     accept: />_ OpenAI Codex \(v/,
     blocks: [
       { re: /Do you trust the contents of this directory\?/, why: "codex trust prompt" },
       { re: /Sign in with ChatGPT|Welcome to Codex/, why: "codex sign-in screen" },
+      { re: /Update available![\s\S]*Update now \(runs [\s\S]*Skip until next version/,
+        why: "codex update prompt" },
     ],
   },
   // Measured 2026-08-22 (codex-cli 0.147.0): composer = last `›` line; the transcript echo of a
@@ -6578,7 +6582,7 @@ async function paneAgentAt(target: string, comms: string[]): Promise<AgentState>
   return "no-agent";
 }
 
-// SCREEN readiness, the layer paneAgentAt cannot see: both measured codex block screens keep the
+// SCREEN readiness, the layer paneAgentAt cannot see: Codex block screens keep the
 // node wrapper alive, so the process probe answers `alive` while a paste would be silently eaten
 // (rendered-frame measurement, 2026-08-12 — see the adapter's `readiness` comment). null = this
 // harness declares no readiness and keeps today's behaviour: every adapter but codex, including
@@ -6592,8 +6596,11 @@ async function paneReadiness(s: Slot): Promise<{ state: "ready" | "blocked" | "p
   if (!r) return null;
   const cap = await tmux("capture-pane", "-p", "-t", sess(s.id));
   if (cap.code !== 0) return { state: "pending" };
+  // The ready marker is authoritative. Codex keeps a non-blocking update banner in the ready frame
+  // after a skip; no banner wording may override positive composer readiness.
+  if (r.accept.test(cap.out)) return { state: "ready" };
   for (const b of r.blocks) if (b.re.test(cap.out)) return { state: "blocked", why: b.why };
-  return r.accept.test(cap.out) ? { state: "ready" } : { state: "pending" };
+  return { state: "pending" };
 }
 
 // Fresh founding prompts have a stricter readiness contract than established-pane deliveries:

@@ -734,7 +734,7 @@ export async function run(): Promise<void> {
     // has an "unmeasured" case distinct from "none" and that raw:true is worded as not-a-review.
     // Weaker than a render test and named so — it catches the regression that matters (someone
     // collapsing the missing-key case into "none", or calling zero findings clean).
-    // the suite runs from a scratch copy that carries server.ts + public/ but NOT src/ — the only
+    // the suite runs from a scratch copy that carries server.ts + public/ but NOT src/client.ts — the only
     // link back to the checkout is the node_modules symlink e2e-isolated.sh makes, so the real
     // source is its realpath's parent. Read the SOURCE rather than public/app.js on purpose: the
     // bundle is minified, so a regex over it would assert about the minifier as much as the code.

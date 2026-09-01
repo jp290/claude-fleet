@@ -74,8 +74,14 @@ const selfPost = (token: string | undefined, body: unknown): Promise<Response> =
     headers: { "content-type": "application/json", ...(token !== undefined ? { "x-fleet-self-token": token } : {}) },
     body: JSON.stringify(body),
   });
+// LC_ALL=C: `ps -o lstart=` is locale-formatted, and every consumer of this string — the fixture
+// regex below, e2e-stage.sh#_st_valid_birth, server.ts#PROCESS_BIRTH_RE — requires English
+// month/day names. Without it the Debian/de_DE helper yields "Di Sep  1 ...", the fixture fails as
+// itself and the family behind it falls closed (measured 2026-09-01;
+// docs/messungen/second-host-baseline-2026-08-29.md §Plattform-Signatur).
 const processBirthOf = (pid: number): string => {
-  const p = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" });
+  const p = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)],
+    { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
   return p.status === 0 ? p.stdout.trim().replace(/\s+/g, " ") : "";
 };
 const differentValidBirth = (actual: string): string =>

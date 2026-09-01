@@ -126,3 +126,40 @@ vollständig statt enthauptet. Die Zahlen stehen im Lane-Report und in den Commi
 Lane; die adjudikatorische Aussage dieser Notiz kehrt sich damit um: **ein Remote-Rot vom
 second-host ist ab jetzt wieder ein Befund, nicht Plattform** — mit der einen benannten Ausnahme
 `ast-grep`, solange es dem Daemon fehlt.
+
+## Plattform-Signatur (2026-09-01): die Locale-Falle in der Geburtsidentität des Suite-Locks
+
+**Symptom.** `ps -o lstart=` ist locale-formatiert. Auf dem second-host (Debian 13, `de_DE`)
+liefert es `Di Sep  1 ...`; `e2e-stage.sh#_st_valid_birth` verlangt englische Monats- und
+Tagesnamen (`^[A-Z][a-z]{2} [A-Z][a-z]{2} ...`) und weist die Zeile ab. Der Lock trägt dann keine
+gültige Geburt, `identityProven` bleibt `null`, und die Checks der Lock-Familie fallen
+**geschlossen** — sie melden nicht „die Identität stimmt nicht", sondern „nie gemessen", was sich
+in der Zeile wie ein Regress liest.
+
+Dieselbe englische Erwartung steht an drei weiteren Stellen: `e2e/verify-queue.ts#processBirthOf`
+(schreibt die Geburt in die Sonden-Locks), `server.ts#PROCESS_BIRTH_RE` (liest sie zurück) und
+`state.sh` (nur Anzeige).
+
+**Datum und Anlass.** Gemessen am 2026-09-01 am Gerät. Der auslösende Lauf ist der erste
+Remote-Audit des Programms Generalsanierung (Tip `3058556`, `post-land-audits.jsonl` `at`
+1788249040866, 3366 Checks, „10 FAILURES", exit 1). Er ist als **`unknowable`** adjudiziert —
+nicht als Plattform-Signatur: `server.ts#helperResult` speichert nur eine Tail-Kappe, in der
+keine einzige `FAIL`-Zeile steht, also gibt es keine Namen zu vergleichen
+(`docs/messungen/p0-baseline-generalsanierung-2026-09-01.md` §Tip `3058556`). Die **Zahl** 10
+deckt sich mit der Lock-Familie; das ist eine Übereinstimmung, kein Beweis. Was gemessen ist:
+die deutsche `lstart`-Ausgabe und ihre Abweisung durch den Validator.
+
+**Fix** (Queue-Zeile `5e79be26`, W3 Schnitt 4 der Zeile `e4fe3d88`): `LC_ALL=C` an jeder Stelle,
+an der eine `lstart`-Ausgabe gegen ein Regex oder einen gespeicherten Wert gelesen wird —
+`e2e-stage.sh#_st_birth_of`, `e2e/verify-queue.ts#processBirthOf`, `state.sh`. Festgehalten von
+zwei Pin-Zeilen in `e2e/pins.ts`: die bestehende Zeile „suite-lock contender proves a live holder
+by pid AND process birth" verlangt jetzt wörtlich `LC_ALL=C ps -o lstart=`, und eine neue Regel
+über eine ABGELEITETE Menge (alle `lstart`-Aufrufe in den Shell-Skripten und den `e2e/`-Modulen)
+fängt einen vierten, morgen hinzugefügten Leser.
+
+**Offen, benannt statt still zugedeckt:** `server.ts#processBirthFingerprint` liest `lstart`
+genauso und prüft gegen `PROCESS_BIRTH_RE` — **ohne** `LC_ALL=C`. Der Schnitt durfte `server.ts`
+nicht anfassen (Feature-Freeze P1). Konsequenz auf einem Nicht-C-Locale-Host: der Validator der
+Shell akzeptiert die Geburt jetzt, die Sonde des Servers liefert weiter `null`, und beide Werte
+können sich unterscheiden statt nur zu fehlen. Auf dieser Maschine (macOS, launchd-PATH, C-Locale)
+ändert sich nichts. Die Zeile gehört in die erste `server.ts`-berührende Runde nach dem Freeze.

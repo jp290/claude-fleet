@@ -75,7 +75,12 @@ _st_who=$(basename "$0" 2>/dev/null || echo suite)
 _st_t0=$(date +%s)
 _st_say_at=0   # elapsed seconds at which the next line is due; 0 = the first block always speaks
 _st_birth_of() {
-  ps -o lstart= -p "$1" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/[[:space:]][[:space:]]*/ /g'
+  # LC_ALL=C IS THE VALIDATOR'S OTHER HALF, not a nicety. `ps -o lstart=` is locale-formatted:
+  # measured 2026-09-01 on the Debian/de_DE helper it prints "Di Sep  1 ...", and _st_valid_birth
+  # — which requires English month/day names — rejects it, so identityProven stays null and the
+  # suite-lock family falls closed. Mechanism and its limits:
+  # docs/messungen/second-host-baseline-2026-08-29.md §Plattform-Signatur.
+  LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/[[:space:]][[:space:]]*/ /g'
 }
 _st_valid_birth() {
   printf '%s\n' "$1" | grep -Eq '^[A-Z][a-z]{2} [A-Z][a-z]{2} [0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2} [0-9]{4}$'

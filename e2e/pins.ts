@@ -45,6 +45,72 @@ const ROOT = resolve(import.meta.dir, "..");
 const read = (rel: string): string => readFileSync(`${ROOT}/${rel}`, "utf8");
 const exists = (rel: string): boolean => { try { statSync(`${ROOT}/${rel}`); return true; } catch { return false; } };
 
+// ================================================================================================
+// UNIVERSES — a pin's subject is a MODULE SET, never one file name
+// ================================================================================================
+// The bug this exists to prevent has a name and a date: VACUUM-GREEN AFTER A SPLIT (Generalsanierung
+// plan §Randbedingung 1). A pin of the shape "X occurs in server.ts and NOWHERE ELSE" reads exactly
+// one file. Move the subject into `server/foo.ts` and the pin keeps passing — it has stopped
+// measuring anything and says so with the same word it used when it did. That is the most expensive
+// failure class in this repository, because it survives review: the row is green.
+//
+// So the searchable subject is a UNIVERSE: an ordered, DERIVED module set. `server.ts` plus
+// `server/*.ts` when that directory exists; `src/*.ts` with the bundle entry first. Derived, never
+// typed as a list — a list would need editing by the same commit that splits the file, which is the
+// edit nobody remembers to make.
+//
+// `.text` is every module joined, which is what `includes`/`matchAll`/`split` want: a second
+// promote door in a NEW client module fails the "and nowhere else" row instead of quietly existing.
+// `span()` is the other half: an anchored body must not cross a module boundary, so it finds the
+// anchor's OWN module and slices inside it. It returns null when either anchor is missing anywhere
+// in the universe, and null is never a pass — every caller renders it as "anchor not found".
+type UniverseFile = { file: string; text: string };
+type Span = { file: string; at: number; text: string };
+interface Universe {
+  readonly name: string;
+  readonly files: readonly UniverseFile[];
+  readonly text: string;
+  span(from: string, to: string, tail?: number): Span | null;
+  /** one module's own text — for the bodies whose head and tail anchors are different symbols */
+  module(file: string): string;
+}
+function universe(name: string, rels: readonly string[]): Universe {
+  const files: UniverseFile[] = rels.map((file) => ({ file, text: read(file) }));
+  // `at` is an offset into the JOINED text, so the index arithmetic pins already do (is this match
+  // inside that body?) keeps meaning what it meant when the universe was one file.
+  const offsets: number[] = [];
+  let acc = 0;
+  for (const f of files) { offsets.push(acc); acc += f.text.length + 1; }
+  const text = files.map((f) => f.text).join("\n");
+  return {
+    name, files, text,
+    module(file: string): string { return files.find((f) => f.file === file)?.text ?? ""; },
+    span(from: string, to: string, tail = 0): Span | null {
+      for (let i = 0; i < files.length; i++) {
+        const local = files[i]!.text.indexOf(from);
+        if (local < 0) continue;
+        const end = files[i]!.text.indexOf(to, local);
+        if (end < 0) return null;   // the body's own terminator is missing: not a body, not a pass
+        return { file: files[i]!.file, at: offsets[i]! + local, text: files[i]!.text.slice(local, end + tail) };
+      }
+      return null;
+    },
+  };
+}
+const isDir = (rel: string): boolean => { try { return statSync(`${ROOT}/${rel}`).isDirectory(); } catch { return false; } };
+// server.ts stays the ENTRY name (plan §Randbedingung 2: stage sentinel, Dockerfile, watchdog.sh,
+// state.sh pgrep all read it), so it leads; `server/` is where the split puts its modules.
+const serverU = universe("server", ["server.ts",
+  ...(isDir("server") ? readdirSync(`${ROOT}/server`).filter((f) => f.endsWith(".ts")).sort().map((f) => `server/${f}`) : [])]);
+// the bundle entry leads, the rest alphabetically. `src/` is read as CLIENT everywhere in this repo
+// (bundleStale, verify-proportion.ts#ruleFor, task-metadata.ts#processesForPath), so the whole
+// directory is the universe — a program transition posted from src/share.ts is a finding, not an
+// exemption.
+const clientU = universe("client", (() => {
+  const all = readdirSync(`${ROOT}/src`).filter((f) => f.endsWith(".ts")).sort();
+  return ["client.ts", ...all.filter((f) => f !== "client.ts")].map((f) => `src/${f}`);
+})());
+
 const rows: string[] = [];
 let failed = 0;
 // `soft` is for a rule that RAN but whose subject cannot be held against this tree — section 6's
@@ -58,6 +124,55 @@ function pin(name: string, ok: boolean, detail = "", soft = false): void {
 // a rule that could not be evaluated at all must say SO, under its own name. A skipped rule that
 // prints PASS is vacuum-green: the same word for "measured, fine" and "never measured".
 function skip(name: string, why: string): void { rows.push(`SKIP  ${name}  (${why})`); }
+
+// The universes must fail as THEMSELVES. An empty or one-sided module set makes every "and nowhere
+// else" row below trivially true — the same green, measured over nothing.
+pin("the server universe is derived and holds its entry module",
+  serverU.files.length > 0 && serverU.files[0]!.file === "server.ts" && serverU.text.length > 0,
+  `${serverU.files.length} module(s): [${serverU.files.map((f) => f.file).join(", ")}]`);
+pin("the client universe is derived and holds its bundle entry",
+  clientU.files.length > 0 && clientU.files[0]!.file === "src/client.ts" && clientU.text.length > 0,
+  `${clientU.files.length} module(s): [${clientU.files.map((f) => f.file).join(", ")}]`);
+
+// THE CROSS-MODULE SLICE TRIPWIRE, and it is the other half of `span()`. ~95 rows below still cut
+// a server body with two bare indexOf calls — the shape that was correct while the universe was one
+// file. After the split those two anchors can land in DIFFERENT modules, and a raw slice between
+// them over the joined text returns everything in between: a body big enough that every `includes`
+// against it is true. That is vacuum-green with extra steps.
+//
+// Converting all ~95 during a feature freeze would be a large blind edit; converting the ones a
+// P4 slice actually moves is the right size, and this row is what tells that slice WHICH. It reads
+// the anchor pairs out of this file's own source and fails only on a pair whose two anchors are in
+// different modules — zero today, exactly the broken ones tomorrow. The plan's slice protocol asks
+// step (c) to look for vacuum-green pins by hand; this makes that half mechanical.
+{
+  const RULE_SPAN = "no pin cuts a server body ACROSS two modules (a raw slice between anchors in different modules returns everything between them, and everything contains anything)";
+  const pinsSrc = read("e2e/pins.ts");
+  // regex literals, so the patterns carry no literal `server.slice(` and this file's own scan
+  // cannot report itself. `LIT` is a double-quoted JS string with its escapes intact — JSON.parse
+  // turns it back into the anchor the pin actually searches for.
+  const STARTS = /const (\w+) = server\.indexOf\(("(?:[^"\\]|\\.)*")\)/g;
+  const CUTS = /server\.slice\(\s*(?:server\.indexOf\(("(?:[^"\\]|\\.)*")\)|(\w+))\s*,\s*server\.indexOf\(("(?:[^"\\]|\\.)*")/g;
+  const starts = new Map<string, string>();
+  for (const m of pinsSrc.matchAll(STARTS)) starts.set(m[1]!, JSON.parse(m[2]!) as string);
+  const pairs: { from: string; to: string }[] = [];
+  for (const m of pinsSrc.matchAll(CUTS)) {
+    const from = m[1] !== undefined ? JSON.parse(m[1]) as string : starts.get(m[2]!);
+    if (from === undefined) continue;   // a computed offset, not an anchor pair — not this class
+    pairs.push({ from, to: JSON.parse(m[3]!) as string });
+  }
+  const moduleOf = (needle: string): string | null =>
+    serverU.files.find((f) => f.text.includes(needle))?.file ?? null;
+  const crossing = pairs
+    .map((x) => ({ ...x, a: moduleOf(x.from), b: moduleOf(x.to) }))
+    .filter((x) => x.a !== null && x.b !== null && x.a !== x.b);
+  pin(`${RULE_SPAN} — the anchor pairs are derived from this file's own source`,
+    pairs.length > 0, `${pairs.length} anchored server body cut(s)`);
+  pin(RULE_SPAN, pairs.length > 0 && crossing.length === 0,
+    crossing.length > 0
+      ? crossing.map((x) => `${JSON.stringify(x.from)} in ${x.a} → ${JSON.stringify(x.to)} in ${x.b}`).join("; ")
+      : `${pairs.length} cut(s), each inside one module`);
+}
 
 const shellScripts = [
   ...readdirSync(ROOT).filter((f) => f.endsWith(".sh")),
@@ -171,15 +286,34 @@ const SOURCE_DIR = ((): string | null => {
 // class extinct rather than re-listing the seven scripts that currently obey it.
 
 {
-  // a `cp` naming a MODULE — a .ts file at the repo root or under src/, which is exactly what the
-  // import closure already stages. e2e-stage.sh's own copy loop passes a variable, which is the
-  // whole difference between a derived closure and a list. A fixture that no entry imports
-  // (drills/drill-3-clean-review.ts) is NOT this class: nothing derives it, so a hand copy is the
-  // only way it can get there.
-  const modules = new Set([
-    ...readdirSync(ROOT).filter((f) => f.endsWith(".ts")),
-    ...readdirSync(`${ROOT}/src`).filter((f) => f.endsWith(".ts")),
-  ]);
+  // a `cp` naming a MODULE — ANY tracked .ts file in this tree, which is what the import closure
+  // already stages. e2e-stage.sh's own copy loop passes a variable, which is the whole difference
+  // between a derived closure and a list.
+  //
+  // THE SET IS THE WHOLE TREE, not root+src/ (W3, 2026-09-01). It was root+src/ until the server
+  // split put modules under `server/` and the harness modules under `e2e/`: a `cp e2e/harness.ts`
+  // or a `cp server/persist.ts` is exactly this bug and walked straight past a two-directory set.
+  // Derived from git, so a new directory needs no edit here.
+  //
+  // THE ONE EXEMPTION, and it survives the widening on purpose: a fixture that NO entry imports
+  // (drills/drill-3-clean-review.ts, copied by drills/drill-3.sh) is NOT this class — nothing
+  // derives it, so a hand copy is the only way it can get there. Under root+src/ it was out of the
+  // set by accident of its directory; over the whole tree it has to be named, or the widening
+  // would fail the one honest hand-copy in the repo.
+  const HAND_COPIED = new Set(["drill-3-clean-review.ts"]);
+  const trackedTs = spawnSync("git", ["-C", ROOT, "ls-files", "-z", "--", "*.ts"],
+    { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, maxBuffer: 16 * 1024 * 1024 });
+  const trackedPaths = trackedTs.status === 0
+    ? trackedTs.stdout.split("\0").filter(Boolean) : [];
+  // the derivation must fail as ITSELF. A `git ls-files` that could not run yields an empty set,
+  // and an empty set makes every `cp` innocent — vacuum-green for the exact class this guards.
+  pin("the module set for the copy guard is derived from tracked files, and the derivation ran",
+    trackedTs.status === 0 && trackedPaths.length > 0,
+    trackedTs.status === 0 ? `${trackedPaths.length} tracked .ts file(s)`
+      : (trackedTs.error?.message || trackedTs.stderr || `git ls-files exited ${String(trackedTs.status)}`).trim().slice(0, 160));
+  const modules = new Set(trackedPaths
+    .map((f) => f.slice(f.lastIndexOf("/") + 1))
+    .filter((b) => !HAND_COPIED.has(b)));
   const offenders: string[] = [];
   for (const f of shellScripts)
     for (const l of read(f).split("\n")) {
@@ -187,7 +321,8 @@ const SOURCE_DIR = ((): string | null => {
       for (const m of l.matchAll(/([A-Za-z0-9_.-]+\.ts)\b/g)) if (modules.has(m[1])) offenders.push(`${f}: ${m[1]}`);
     }
   pin("no shell script copies a module by name (staging is derived, never listed)",
-    offenders.length === 0, offenders.join(", "));
+    modules.size > 0 && offenders.length === 0,
+    offenders.length ? offenders.join(", ") : `${modules.size} module name(s) guarded`);
 }
 
 {
@@ -285,29 +420,41 @@ const SOURCE_DIR = ((): string | null => {
 // server.ts parses what it says; these rows pin the two ends of that conversation.
 
 const watchdog = read("watchdog.sh");
-const server = read("server.ts");
+// THE SERVER UNIVERSE, not the entry file. Every `server.includes(...)`, `matchAll` and `split`
+// below now searches and counts across `server.ts` + `server/*.ts`, so an "and nowhere else" row
+// keeps its meaning after the split instead of going vacuum-green on a moved subject.
+const server = serverU.text;
 
 {
   // Clarifications and fleet reports are the only FleetEvent kinds without a Watch. Keep both
   // directions of that persisted discriminant coupled: accepting null on any Watch-backed kind
   // loses provenance, while requiring a string on either sibling invents a Watch that does not exist.
-  const parser = server.slice(server.indexOf("function fleetEventFrom("),
-    server.indexOf("function clarificationFrom("));
-  const mint = server.slice(server.indexOf("async function openClarification("),
-    server.indexOf("async function replyClarification("));
+  // CUT THROUGH THE UNIVERSE'S span(), not through two bare indexOf calls on the joined text:
+  // once the parser lives in `server/persist.ts` and its terminator in the core, a raw slice
+  // between them would hand this rule a body spanning half the server — and a body that big makes
+  // every `includes` below true. `null` is the honest answer to a missing anchor, and it FAILS.
+  const parserSpan = serverU.span("function fleetEventFrom(", "function clarificationFrom(");
+  const mintSpan = serverU.span("async function openClarification(", "async function replyClarification(");
+  const parser = parserSpan?.text ?? "";
+  const mint = mintSpan?.text ?? "";
   const watchlessKinds = 'const watchless = e.kind === "clarification-request" || e.kind === "fleet-report";';
   const watchlessEquivalence = parser.includes(watchlessKinds)
     && parser.includes('    || (watchless !== (e.watchId === null))\n'
       + "    || !(ownerReceiver || (Number.isInteger(e.receiverSlot)");
   const nullMints = (mint.match(/watchId: null/g) ?? []).length;
+  const missingAnchor = [parserSpan === null ? "fleetEventFrom" : "", mintSpan === null ? "openClarification" : ""]
+    .filter(Boolean);
   pin("FleetEvent watchId is null exactly for clarification-request and fleet-report, and a string for every Watch event",
-    /watchId: string \| null/.test(server)
+    missingAnchor.length === 0
+      && /watchId: string \| null/.test(server)
       && watchlessEquivalence
       && mint.includes("const event: ClarificationFleetEvent")
       && mint.includes("const event: FleetReportFleetEvent")
       && nullMints === 2
       && (server.match(/watchId: w\.id/g) ?? []).length >= 4,
-    `equivalence=${watchlessEquivalence} nullMints=${nullMints}`);
+    missingAnchor.length > 0
+      ? `anchor not found in the server universe: ${missingAnchor.join(", ")}`
+      : `equivalence=${watchlessEquivalence} nullMints=${nullMints} in=${parserSpan!.file}/${mintSpan!.file}`);
 
   // The reply's truth boundary is tmux acceptance. Any answered assignment before sendText would
   // recreate the original bug: an API success/terminal row while the worker never got the text.
@@ -454,12 +601,55 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
         && parsed.filter((k) => k === "waiting").length === parsed.length - 1,
       `parsed=${JSON.stringify(parsed)}`);
   }
+  // `LC_ALL=C` is part of the probe, not decoration: `ps -o lstart=` is locale-formatted and
+  // _st_valid_birth requires English month/day names. On the Debian/de_DE helper the unfenced
+  // command yields "Di Sep  1 ..." (measured 2026-09-01), the validator rejects it, identityProven
+  // stays null and the suite-lock family falls closed. A probe that cannot produce a valid reading
+  // proves nothing, so the fence is pinned WITH the equality it feeds.
+  // docs/messungen/second-host-baseline-2026-08-29.md §Plattform-Signatur.
   pin("suite-lock contender proves a live holder by pid AND process birth before waiting",
-    stage.includes('$_st_birth_now" = "$_st_hb"') && stage.includes("ps -o lstart="),
-    "missing live-holder birth equality in e2e-stage.sh");
+    stage.includes('$_st_birth_now" = "$_st_hb"') && stage.includes("LC_ALL=C ps -o lstart="),
+    `birthEquality=${stage.includes('$_st_birth_now" = "$_st_hb"')} localeFencedProbe=${stage.includes("LC_ALL=C ps -o lstart=")}`);
   pin("suite-lock reaper re-checks pid AND process birth before removing a stale/recycled lock",
     stage.includes('$_st_cur_pid" = "$_st_hp"') && stage.includes('$_st_cur_birth" = "$_st_hb"'),
     "missing reap-time birth equality in e2e-stage.sh");
+
+  // AND THE SAME FENCE EVERYWHERE THE HARNESS READS A BIRTH, as a rule over a derived set rather
+  // than as three remembered file names: every `lstart=` reader in the shell scripts and in the
+  // e2e modules must carry LC_ALL at its call site. Three sites today (e2e-stage.sh#_st_birth_of,
+  // e2e/verify-queue.ts#processBirthOf, state.sh's LIVE line); a fourth added tomorrow without the
+  // fence is caught here instead of on a foreign host nine minutes after a land.
+  //
+  // DELIBERATELY OUT OF THE SET, and it is a hole with a name: server.ts#processBirthFingerprint
+  // reads lstart the same way and matches it against PROCESS_BIRTH_RE, which is equally English.
+  // It is not fenced, because this slice may not change server.ts (feature freeze, W3) — so on a
+  // non-C-locale host the server's own identity probe still returns null. Reported, not silently
+  // covered: a pin that pretended the class were closed would be the more expensive lie.
+  {
+    const RULE_LOCALE = "every harness reader of `ps -o lstart=` fences the locale (a localised birth reads as NO identity, not as a mismatch)";
+    const WINDOW = 3;
+    // an INVOCATION, not a mention: `ps ... lstart=` in a shell line, or "lstart=" as an argv
+    // element in a spawn call. Comment lines are out, and so is this file — a linter that quotes
+    // the strings it pins would otherwise report itself as the offender it is looking for.
+    const INVOKES = /(?:(?:^|[^A-Za-z_])ps[^A-Za-z_][^\n]*lstart=)|(?:"lstart=")/;
+    const readers: { where: string; fenced: boolean }[] = [];
+    const corpus = [...shellScripts, ...readdirSync(`${ROOT}/e2e`).filter((x) => x.endsWith(".ts")).map((x) => `e2e/${x}`)]
+      .filter((f) => f !== "e2e/pins.ts");
+    for (const f of corpus) {
+      const lines = read(f).split("\n");
+      lines.forEach((l, i) => {
+        if (/^\s*(#|\/\/|\*)/.test(l) || !INVOKES.test(l)) return;
+        const near = lines.slice(Math.max(0, i - WINDOW), i + WINDOW + 1).join("\n");
+        readers.push({ where: `${f}:${i + 1}`, fenced: /LC_ALL/.test(near) });
+      });
+    }
+    const unfenced = readers.filter((r) => !r.fenced).map((r) => r.where);
+    // the derivation fails as itself: no readers found means the scan, not the tree, changed
+    pin(`${RULE_LOCALE} — the reader set is derived and not empty`,
+      readers.length > 0, `${readers.length} lstart reader(s)`);
+    pin(RULE_LOCALE, readers.length > 0 && unfenced.length === 0,
+      unfenced.length ? `unfenced=[${unfenced.join(", ")}]` : `${readers.length} reader(s) fenced`);
+  }
 }
 
 {
@@ -1050,7 +1240,7 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   // so every server consumer must read ANALYSIS_ON, the poll must transport that exact fact, and
   // the client warning must consume the transported value. This is a wiring rule, not a pin of
   // warning prose or cadence: ANALYSIS_TICK_MS remains free to carry the interval itself.
-  const client = read("src/client.ts");
+  const client = clientU.text;
   const warning = read("task-analysis-warning.ts");
   const executableServer = server.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   const factDefs = [...executableServer.matchAll(/const ANALYSIS_ON = ANALYSIS_TICK_MS > 0;/g)];
@@ -2511,6 +2701,52 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   }
 }
 
+{
+  // 5c. NO docs/ PATH CITED FROM LIVE CODE IS DEAD — the third success measure of the
+  // Generalsanierung, held as a class instead of counted by hand.
+  //
+  // W2 rewrote 14 dead citations to 0 (docs/sanierung-2026-09/w2-filter.md). A number reached by
+  // hand rots the day after it is written: the attic move alone produced 11 of those 14, and the
+  // next move produces the next batch. A reader sent at a path that does not exist learns nothing
+  // and — worse — reads the absence as "this was never written down".
+  //
+  // THE FILTER IS THE ONE W2 NOTED BEFORE COUNTING, verbatim (w2-filter.md §"Das Kommando"), and
+  // that matters: "12 dead paths" was not derivable because every filter gave a different number
+  // (11-16, and 56 with the e2e fixtures). Source set = tracked *.ts and *.sh across the WHOLE
+  // tree, minus `e2e/` (fixtures and test texts name non-existent paths ON PURPOSE) and minus
+  // `attic/` (archived code keeps its historical state). Same filter here as there, or the
+  // success measure would be measuring something else than the thing it closed.
+  //
+  // Two rows, not one: a scan that could not run must fail as ITSELF. `git grep` exits 1 on "no
+  // matches", which is indistinguishable from "the pathspec found no files" — and an empty corpus
+  // yields zero dead paths, i.e. green, having measured nothing.
+  const RULE_DOCPATH = "no docs/ path cited from live code is dead";
+  const CITED = /docs\/[A-Za-z0-9._/-]+\.md/g;
+  const grep = spawnSync("git",
+    ["-C", ROOT, "grep", "-nIE", "--", CITED.source, "*.ts", "*.sh", ":!e2e/*", ":!attic/*"],
+    { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, maxBuffer: 16 * 1024 * 1024 });
+  const scanned = grep.error || grep.status === null || grep.status > 1
+    ? null : grep.stdout.split("\n").filter(Boolean);
+  // first sighting wins: the detail names ONE place to go, not every echo of the same path
+  const sightings = new Map<string, string>();
+  for (const line of scanned ?? []) {
+    const where = /^(.+?:\d+):/.exec(line)?.[1];
+    if (!where) continue;
+    for (const m of line.matchAll(CITED)) if (!sightings.has(m[0])) sightings.set(m[0], where);
+  }
+  pin(`${RULE_DOCPATH} — the citation scan ran and its source set is not empty`,
+    scanned !== null && sightings.size > 0,
+    scanned === null
+      ? (grep.error?.message || grep.stderr || `git grep exited ${String(grep.status)}`).trim().slice(0, 160)
+      : `${sightings.size} distinct docs/ path(s) cited in ${new Set([...sightings.values()].map((w) => w.split(":")[0])).size} file(s)`);
+  const dead = [...sightings].filter(([path]) => !exists(path));
+  pin(RULE_DOCPATH,
+    scanned !== null && sightings.size > 0 && dead.length === 0,
+    dead.length > 0
+      ? `${dead.length} dead: ${dead.map(([path, where]) => `${path} (${where})`).join(", ")}`
+      : `${sightings.size} citation(s) checked, all resolve`);
+}
+
 // ================================================================================================
 // 6. CLAUDE.md — the one steering document with no drift pin at all
 // ================================================================================================
@@ -2956,13 +3192,18 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     [...s.matchAll(/"([a-z-]+)"/g)].map((m) => m[1]).sort();
   const srvUnion = server.slice(server.indexOf("type FleetEventStatus ="));
   const srvWords = words(srvUnion.slice(0, srvUnion.indexOf(";")));
-  const client = read("src/client.ts");
-  const cliFrom = client.indexOf("interface FleetEventRow {");
-  const cliStatus = cliFrom > 0 ? client.indexOf("status:", cliFrom) : -1;
-  const cliWords = cliStatus > 0 ? words(client.slice(cliStatus, client.indexOf(";", cliStatus))) : [];
+  const client = clientU.text;
+  // bounded to the declaration's OWN module and its OWN braces: a `status:` found further down a
+  // joined universe would be some other row's field, read as this one's union.
+  const cliRow = clientU.span("interface FleetEventRow {", "\n}", 2);
+  const cliBody = cliRow?.text ?? "";
+  const cliStatus = cliBody.indexOf("status:");
+  const cliWords = cliStatus >= 0 ? words(cliBody.slice(cliStatus, cliBody.indexOf(";", cliStatus))) : [];
   pin("the client's FleetEventRow status union is the same SET of words as the server's FleetEventStatus",
-    srvWords.length >= 6 && srvWords.join("|") === cliWords.join("|"),
-    `server=[${srvWords.join(",")}] client=[${cliWords.join(",")}]`);
+    cliRow !== null && cliStatus >= 0 && srvWords.length >= 6 && srvWords.join("|") === cliWords.join("|"),
+    cliRow === null ? "anchor not found in the client universe: interface FleetEventRow"
+      : cliStatus < 0 ? `no status field in FleetEventRow (${cliRow.file})`
+        : `server=[${srvWords.join(",")}] client=[${cliWords.join(",")}]`);
 
   const recoveryBody = server.slice(server.indexOf("async function recoverFleetReportDelivery("),
     server.indexOf("async function tickWatches("));
@@ -3501,16 +3742,15 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   pin(`${RULE_RAIL} — Preflight names its role authority, manual receipt and hash limits without inventing machine enforcement`,
     missingRailTruth.length === 0 && missingDocTruth.length === 0,
     `railMissing=[${missingRailTruth.join(" | ")}] docsMissing=${JSON.stringify(missingDocTruth)}`);
-  const client = read("src/client.ts");
-  const profileAt = client.indexOf("function profileState(");
-  const profileSummary = profileAt < 0 ? "" : client.slice(profileAt,
-    client.indexOf("// --- V1a", profileAt));
+  const client = clientU.text;
+  const profileSpan = clientU.span("function profileState(", "// --- V1a");
+  const profileSummary = profileSpan?.text ?? "";
   pin(`${RULE_RAIL} — the Board profile summary names re-Preflight and the operator-run post-play Critic`,
     profileSummary.includes("new game or owner-confirmed core pivot")
       && profileSummary.includes("Preflight")
       && profileSummary.includes("Sensory Critic is an operator-run post-play act")
       && !profileSummary.includes("fresh-critic work still goes"),
-    `profileFound=${profileAt >= 0} pivot=${profileSummary.includes("new game or owner-confirmed core pivot")} preflight=${profileSummary.includes("Preflight")} postPlay=${profileSummary.includes("Sensory Critic is an operator-run post-play act")} stale=${profileSummary.includes("fresh-critic work still goes")}`);
+    `profileFound=${profileSpan !== null} pivot=${profileSummary.includes("new game or owner-confirmed core pivot")} preflight=${profileSummary.includes("Preflight")} postPlay=${profileSummary.includes("Sensory Critic is an operator-run post-play act")} stale=${profileSummary.includes("fresh-critic work still goes")}`);
   pin(`${RULE_RAIL} — the Game-Maker rail, machine gate and both operator contracts share one ordered checkpoint vocabulary`,
     checkpointFields.length === 7
       && JSON.stringify(selfApiCheckpointFields) === JSON.stringify(checkpointFields)
@@ -4015,12 +4255,16 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
 // client's wire decoder/classifier and fasten the DOM/response wiring that no TypeScript type can see.
 {
   const RULE_FOUNDING_BOARD = "the Board treats a public durable founding marker as pending recovery, never bootstrap room";
-  const client = read("src/client.ts");
-  const stateHeadAt = client.indexOf("type PublicProgramFoundingMode");
-  const stateFnAt = client.indexOf("\nfunction programFoundingState(");
-  const stateTailAt = stateFnAt < 0 ? -1 : client.indexOf("\n}\n", stateFnAt);
+  const client = clientU.text;
+  // head and tail are DIFFERENT symbols, so the body is cut inside the module the function lives
+  // in — never from a type in one module to a brace in the next.
+  const stateFnSpan = clientU.span("\nfunction programFoundingState(", "\n}\n", 3);
+  const stateMod = stateFnSpan ? clientU.module(stateFnSpan.file) : "";
+  const stateHeadAt = stateMod.indexOf("type PublicProgramFoundingMode");
+  const stateFnAt = stateMod.indexOf("\nfunction programFoundingState(");
+  const stateTailAt = stateFnAt < 0 ? -1 : stateMod.indexOf("\n}\n", stateFnAt);
   const stateSource = stateHeadAt < 0 || stateFnAt < stateHeadAt || stateTailAt < stateFnAt ? ""
-    : client.slice(stateHeadAt, stateTailAt + 3);
+    : stateMod.slice(stateHeadAt, stateTailAt + 3);
 
   type FoundingView = { state: string; record?: { v?: number; mode?: string;
     attemptId?: string; target?: { slot?: number; openedAt?: number } } };
@@ -4057,9 +4301,7 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && views.leaked.state === "unreadable",
     JSON.stringify(views));
 
-  const markAt = client.indexOf("\nfunction programMark(p: ProgramInfo)");
-  const markTailAt = markAt < 0 ? -1 : client.indexOf("\n}\n", markAt);
-  const markSource = markAt < 0 || markTailAt < markAt ? "" : client.slice(markAt, markTailAt + 3);
+  const markSource = clientU.span("\nfunction programMark(p: ProgramInfo)", "\n}\n", 3)?.text ?? "";
   let mark: ((p: Record<string, unknown>) => { mark: string; why: string }) | null = null;
   let markErr = "";
   if (stateSource !== "" && markSource !== "") {
@@ -4077,9 +4319,7 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && marks.malformed.mark === "unknown" && /recovery pending/.test(marks.pending.why),
     markErr || JSON.stringify(marks));
 
-  const detailAt = client.indexOf("function renderProgramDetail(");
-  const detailTailAt = detailAt < 0 ? -1 : client.indexOf("\n}\n", detailAt);
-  const detail = detailAt < 0 || detailTailAt < detailAt ? "" : client.slice(detailAt, detailTailAt + 3);
+  const detail = clientU.span("function renderProgramDetail(", "\n}\n", 3)?.text ?? "";
   const pendingAt = detail.indexOf('if (mark === "founding") {');
   const staleAt = detail.indexOf('if (mark === "stale") {');
   const unknownAt = detail.indexOf('if (mark === "unknown") {');
@@ -4115,11 +4355,13 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && response.split("await loadPrograms(true);").length - 1 === 1,
     response === "" ? "bootstrap response path not found" : `refresh=${refreshAt} failure=${failureAt}`);
 
-  const failureHeadAt = client.indexOf("interface BootstrapUnavailable");
-  const failureFnAt = client.indexOf("\nfunction bootstrapFailureMessage(");
-  const failureTailAt = failureFnAt < 0 ? -1 : client.indexOf("\n}\n", failureFnAt);
+  const failureFnSpan = clientU.span("\nfunction bootstrapFailureMessage(", "\n}\n", 3);
+  const failureMod = failureFnSpan ? clientU.module(failureFnSpan.file) : "";
+  const failureHeadAt = failureMod.indexOf("interface BootstrapUnavailable");
+  const failureFnAt = failureMod.indexOf("\nfunction bootstrapFailureMessage(");
+  const failureTailAt = failureFnAt < 0 ? -1 : failureMod.indexOf("\n}\n", failureFnAt);
   const failureSource = failureHeadAt < 0 || failureFnAt < failureHeadAt || failureTailAt < failureFnAt ? ""
-    : client.slice(failureHeadAt, failureTailAt + 3);
+    : failureMod.slice(failureHeadAt, failureTailAt + 3);
   let failureMessage: ((status: number, value: unknown) => string) | null = null;
   let failureErr = "";
   if (stateSource !== "" && failureSource !== "") {
@@ -4152,11 +4394,9 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
 // busy/generation/finally discipline.
 {
   const RULE_PROFILE_ACTOR = "the Board's profile buttons execute one pure, closed request builder";
-  const client = read("src/client.ts");
-  const actorAt = client.indexOf("function profileRequestOf(");
-  const actor = actorAt < 0 ? "" : client.slice(actorAt, client.indexOf("\n}\n", actorAt) + 3);
-  const runAt = client.indexOf("const prRun = async");
-  const run = runAt < 0 ? "" : client.slice(runAt, client.indexOf("\n    };", runAt) + 7);
+  const client = clientU.text;
+  const actor = clientU.span("function profileRequestOf(", "\n}\n", 3)?.text ?? "";
+  const run = clientU.span("const prRun = async", "\n    };", 7)?.text ?? "";
   pin(`${RULE_PROFILE_ACTOR} — the pure builder is closed over exactly grant and clear`,
     client.includes('type ProfileAct = "game-maker" | "clear"')
       && actor.includes("/api/programs/${programId}/profile")
@@ -4200,12 +4440,13 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
 // confirm as a repair. The route half is measured live in e2e/programs.ts ("promote button: …").
 {
   const RULE_PROMOTE = "the Board's promote door is the two owner-gated transitions, in order, and nowhere else";
-  const client = read("src/client.ts");
-  const from = client.indexOf("function renderProgramDetail(");
+  const client = clientU.text;
+  const detailSpan = clientU.span("function renderProgramDetail(", "\n}\n", 3);
+  const from = detailSpan?.at ?? -1;
   // bounded by the function's OWN closing brace (column 0), not by whatever function follows it:
   // an anchor on the next declaration would swallow a promote door pasted in between and call it
   // "inside the pane" — which is precisely the edit the outside-count below exists to catch.
-  const detail = from < 0 ? "" : client.slice(from, client.indexOf("\n}\n", from) + 3);
+  const detail = detailSpan?.text ?? "";
   const blockAt = detail.indexOf('if (p.status === "proposed" || p.status === "confirmed") {');
   const block = blockAt < 0 ? "" : detail.slice(blockAt, detail.indexOf("const bs = qDetailSection", blockAt));
   // BOTH transitions, and only from here. Every POST the client aims at a program route is
@@ -4218,7 +4459,7 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && /action: "confirm" \| "activate"/.test(block)
       && /post\(`\/api\/programs\/\$\{forId\}\/\$\{action\}`, \{\}\)/.test(block)
       && /step\("confirm"\)/.test(block) && /step\("activate"\)/.test(block),
-    detail === "" ? "renderProgramDetail not found in src/client.ts"
+    detail === "" ? "renderProgramDetail not found anywhere in the client universe"
       : block === "" ? "the promote section was not found in renderProgramDetail"
         : `postsOutsideThePane=${outside.length}`);
   // ORDER, and the guard on it. An unconditional activate would turn a refused confirm into a
@@ -4308,11 +4549,12 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
 // nobody clicked for — and none of the three is visible to a compiler.
 {
   const RULE_PROMOTION_UI = "the Board's self-land promotion door is four explicit owner acts in one pane, and nowhere else";
-  const client = read("src/client.ts");
-  const from = client.indexOf("function renderProgramDetail(");
+  const client = clientU.text;
+  const detailSpan = clientU.span("function renderProgramDetail(", "\n}\n", 3);
+  const from = detailSpan?.at ?? -1;
   // the function's OWN closing brace, exactly as RULE_PROMOTE bounds it, and for the same reason:
   // an anchor on the next declaration would swallow a promotion door pasted in between.
-  const detail = from < 0 ? "" : client.slice(from, client.indexOf("\n}\n", from) + 3);
+  const detail = detailSpan?.text ?? "";
   const pmAt = detail.indexOf("if (qPmFor !== p.id) {");
   const unknownAt = detail.indexOf('if (mark === "unknown") {');
   const pm = pmAt < 0 || unknownAt < 0 || unknownAt < pmAt ? "" : detail.slice(pmAt, unknownAt);
@@ -4326,7 +4568,7 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   });
   pin(`${RULE_PROMOTION_UI} — exactly one promotion POST exists in the client and it is inside renderProgramDetail's promotion section`,
     detail !== "" && pm !== "" && pmPostsAll.length === 1 && pmOutside.length === 0,
-    detail === "" ? "renderProgramDetail not found in src/client.ts"
+    detail === "" ? "renderProgramDetail not found anywhere in the client universe"
       : pm === "" ? `the promotion section was not found (pmAt=${pmAt} unknownAt=${unknownAt})`
         : `posts=${pmPostsAll.length} outside=${pmOutside.length}`);
 
@@ -4418,15 +4660,14 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   // and RUN it over all five states. A DOM reference or a clock inside it would make that probe
   // impossible and would also let the pane date the owner's act for them: the stamp is the
   // SERVER's confirmedAt through fmtTs and nothing else.
-  const psAt = client.indexOf("\nfunction promotionState(p: ProgramInfo)");
-  const ps = psAt < 0 ? "" : client.slice(psAt, client.indexOf("\n}\n", psAt) + 3);
+  const ps = clientU.span("\nfunction promotionState(p: ProgramInfo)", "\n}\n", 3)?.text ?? "";
   const states = ["absent", "off", "green-only", "guarded", "unreadable"];
   pin(`${RULE_PROMOTION_UI} — promotionState is top-level, DOM-free and clock-free, and names all five displayed states`,
     ps !== "" && !/document|\bel\(|chip\(|Date\.now\(|new Date\(/.test(ps)
       && states.every((st) => ps.includes(`state: "${st}"`))
       && /const stamped = fmtTs\(rec\.confirmedAt\);/.test(ps)
       && ps.split("stamped: null").length - 1 === 2,
-    ps === "" ? "promotionState not found in src/client.ts" : `${ps.split("\n").length} lines`);
+    ps === "" ? "promotionState not found anywhere in the client universe" : `${ps.split("\n").length} lines`);
 
   // (10) ABSENT AND OFF MUST NOT READ ALIKE. The server keeps them apart on purpose — "the owner
   // never said" vs "the owner said no" — and a pane that collapsed them would make a revocation
@@ -4448,7 +4689,7 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
 // another machine, and into a rulebook fragment that is not even in this tree.
 {
   const helperSrc = ((): string => { try { return read("src/helper.ts"); } catch { return ""; } })();
-  const serverSrc = ((): string => { try { return read("server.ts"); } catch { return ""; } })();
+  const serverSrc = serverU.text;
 
   // --- S8. THE `-b` IN THE BOOTSTRAP, and it is the whole difference between a helper who can work
   // and one who cannot. An audit bundle names the integration branch and a plain `git clone` checks

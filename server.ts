@@ -1043,14 +1043,14 @@ const CODEX_HARNESS: Harness = {
   // binary is the supported entry point; going around it to make a probe prettier is the wrong
   // trade.
   comms: ["codex", "node"],
-  // MEASURED from rendered frames (2026-08-12 probe, codex-cli 0.147.0), not from `strings` on the
-  // binary — the composer's placeholder line rotates ("Use /skills…", "Summarize recent commits")
-  // and is useless as a marker, while the header box `>_ OpenAI Codex (v…)` is on every ready
-  // frame and on no blocking screen. The blocks are the screens that provably eat a
-  // paste: the per-path trust prompt (paste+Enter answers "Yes, continue" and boots an EMPTY
-  // composer — the 2026-08-10 dispatch race, mechanism now known) and the sign-in screen
-  // ("Welcome to Codex" / "Sign in with ChatGPT", rendered via a throwaway CODEX_HOME), plus the
-  // 0.147.0/0.152.0 update menu whose preselected first option runs the global package installer.
+  // MEASURED in rendered frames (2026-08-12, codex-cli 0.147.0): trust and sign-in omit the header
+  // `>_ OpenAI Codex (v…)`, present on every measured ready frame. The 2026-09-01 update incident
+  // establishes the third omission by exclusion: with blocks-first, its generic `pending` meant
+  // neither an existing block nor the ready marker matched. The blocks are screens that eat
+  // a paste: the per-path trust prompt (paste+Enter answers "Yes, continue" and boots an EMPTY
+  // composer — the 2026-08-10 dispatch race, mechanism now known), the sign-in screen ("Welcome to
+  // Codex" / "Sign in with ChatGPT", rendered via a throwaway CODEX_HOME), and the 0.147.0/0.152.0
+  // update menu whose preselected first option runs the global package installer.
   readiness: {
     accept: />_ OpenAI Codex \(v/,
     blocks: [
@@ -6584,7 +6584,7 @@ async function paneAgentAt(target: string, comms: string[]): Promise<AgentState>
 
 // SCREEN readiness, the layer paneAgentAt cannot see: Codex block screens keep the
 // node wrapper alive, so the process probe answers `alive` while a paste would be silently eaten
-// (rendered-frame measurement, 2026-08-12 — see the adapter's `readiness` comment). null = this
+// (measurement and incident inference are separated in the adapter's `readiness` comment). null = this
 // harness declares no readiness and keeps today's behaviour: every adapter but codex, including
 // the default one, takes that branch and no gate below it may fire. "pending" is neither marker on
 // screen — a booting TUI, a redraw, a working agent whose header scrolled off — and is deliberately
@@ -6596,11 +6596,8 @@ async function paneReadiness(s: Slot): Promise<{ state: "ready" | "blocked" | "p
   if (!r) return null;
   const cap = await tmux("capture-pane", "-p", "-t", sess(s.id));
   if (cap.code !== 0) return { state: "pending" };
-  // The ready marker is authoritative. Codex keeps a non-blocking update banner in the ready frame
-  // after a skip; no banner wording may override positive composer readiness.
-  if (r.accept.test(cap.out)) return { state: "ready" };
   for (const b of r.blocks) if (b.re.test(cap.out)) return { state: "blocked", why: b.why };
-  return { state: "pending" };
+  return r.accept.test(cap.out) ? { state: "ready" } : { state: "pending" };
 }
 
 // Fresh founding prompts have a stricter readiness contract than established-pane deliveries:

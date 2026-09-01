@@ -1,3 +1,109 @@
+# HANDOFF — Fleet Controller (Slot 10, Fable 5.1 high): tmux-Praefix-Bug gefunden und Hotfix in Flug, Stream-Steal repariert, Second-host/Freunde-Bewertung geschrieben, 2026-09-01 (Nacht)
+
+Rolle: **🎛 Fleet Controller**, nicht Program-MAIN. Gegruendet per /open+/send (Nachfolge-Route
+scheiterte deterministisch, Notiz `9c7d6e02`); Slot-Datensatz traegt `claude-fable-5-1[1m]`/`high`
+korrekt. Owner-Vorgabe des Abends: alle Sessions/Lanes Fable 5.1 high, Usage bis morgen praktisch
+unbegrenzt, „sauber nach der Reihe". ctx bei Uebergabe-Entscheid: **27,3 % gemessen**.
+
+## 1. Was steht (verifiziert)
+
+- **main = `6404c8d`** (mein Docs-Direktcommit, s. §4) ueber `fec5b23`. Live-Server seit 21:42 auf
+  `24be084` — `codeBehind:true`, alles docs; `bundleStale:false`. Deploy bewusst NICHT gefahren
+  (Suite-Ketten am Mutex, Quiet Hours).
+- **Slot 1 ist ein PHANTOM mit Platzhalter.** Datensatz: Lane `fleet/260901201722-fda8`
+  (Worktree `~/private-repo-p.worktrees/fleet-260901201722-fda8`), Task `dac21cc7` (Brief 1 AI
+  Consulting) `sent slot=1`, `agent: no-agent`. tmux-Session `s1` = von mir per Hand erzeugter
+  Platzhalter (`sleep 100000`, kein Shell). **Nicht anfassen, nichts in Slot 1 oeffnen, bis der
+  Hotfix (§2a) deployed ist** — vorher trifft jedes `-t s1` des Servers ohne Platzhalter MEINE
+  Pane `s10`.
+- **Hotfix-Lane Slot 11** (`642b3b5a`, `fleet/260901202202-8467`, Commit `46f80c5`: `sessTarget`
+  `=sN` + `paneTarget` `=sN:`, alle 33 `-t`-Stellen exakt und gepinnt, Regressions-Check in
+  `e2e/slots.ts` gruen/mutiert rot, Doc-Satz in `docs/harness-adapter.md`). tsc/pins/build/Drift
+  gruen; wartet auf die drei Gate-Wrapper am Suite-Mutex, dann Fleet-Report an mich (Slot 10).
+  Watch `54c0e350` (lane 11) armed.
+- **P2a (Slot 8, `9825cfd9`, `8de12be`→`e353bdc` rebased) hat um 23:01 an Slot 2 berichtet
+  (`complete`)** — Vorschau `ALL PASS` 3387 Checks, rebasierte Gate-Kette gruen. **Slot 2 landet
+  selbst** (wie bei Lane 10). Danach sind DEINE Hand-Dispatches faellig: `ff535524` (Slot 7s
+  Release) und `63a32ac2` (P2b, Slot 2s Release), beide mit
+  `{harness:"claude",model:"claude-fable-5-1[1m]",effort:"high",acknowledged:true}` auf
+  `POST /api/tasks/:id/dispatch`.
+- **Lane A (Slot 5, `3c72fe3a`, `4ea2a17` rebased)**: cheap steps gruen, wartet auf ihre Kette
+  am Mutex; berichtet an Slot 4 (Program-MAIN 66499a03). Landen ist Controller-Sache; danach
+  `b0c15ca5` (Lineage, Fable-Fassung) dispatchen — `b92e9cc9` ist ARCHIVIERT (Slot 4s Bitte).
+- **Slot 2s serieller `./e2e-isolated.sh` auf `fec5b23` (= Code `d4f2bfc`): ALL PASS, 0 FAIL.**
+  Das Remote-Rot 9/9 war Umgebung, nicht Regress. Serie bleibt 10/10/7/7/9 `unknowable`.
+- Queue-Hygiene heute: `55f9637d` archiviert (Codex-Fassung, von `dac21cc7` ersetzt),
+  `b92e9cc9` archiviert, Notiz `fee71e3d` done. Slot 7 gestupst (Watcher abgelaufen), Slot 3
+  informiert (Brief 1 verspaetet).
+- Suite-Mutex-Lage bei Uebergabe: eine `claude-gate`-Kette haelt, eine frische `e2e-isolated`
+  (Slot 5 oder 8, nicht zugeordnet) wartet. **Nichts danebenstellen.**
+
+## 2. Drei gemessene Bugs, einer im Hotfix, einer repariert, einer als Notiz
+
+- **(a) tmux loest ein nicht existentes `s1` per PRAEFIX auf `s10` auf** (tmux 3.6a; man-Reihenfolge
+  $id → exakt → Praefix → fnmatch). Nach dem Kill von Slot 1 dispatchte ich `dac21cc7` → freier
+  Slot 1 → `has-session -t s1` traf `s10`, es wurde keine Session erzeugt, der ganze
+  Gruendungsbrief landete in meiner Pane, Slot 1 meldete `agent: alive` an meiner Pane, und ein
+  Kill von Slot 1 haette mich per `kill-pane` getoetet. Reproduziert mit Wegwerf-Sessions
+  (`sX9` vorhanden → `has-session -t sX` exit 0). Exakte Form gemessen: `=sN` fuer
+  Session-Befehle, `=sN:` fuer Pane-Befehle (`=sN` ohne Doppelpunkt schlaegt bei capture-pane/
+  display-message FEHL). Hotfix = Slot 11. Latent seit es Slot 10 gibt; bricht nur, wenn `s1`
+  fehlt und `s10` lebt.
+- **(b) Stream-Steal (Folge von a), repariert von Hand:** der Stream-Attach fuer das Phantom-
+  Slot 1 lief auf meiner Pane (`pipe-pane` schliessen + neu auf die Slot-1-Datei), danach
+  legte der Re-Attach an den Platzhalter die Datei per `rename` neu an → meine Pipe schrieb in
+  einen geloeschten Inode, mein Panel stand ab 22:17 still (Owner hat es gemeldet). `tmux
+  pipe-pane -t %226` (schliessen) → der Tick oeffnete neu, geseedet. Alle anderen Live-Pipes
+  gegen ihre Zieldatei geprueft (lsof fd 1): korrekt.
+- **(c) Notiz gefilet (P6):** `server.ts#ensureSlot` Stream-Attach prueft nur `pipeOpen &&
+  existsSync(finalPath)` — eine Pipe, die auf eine ANDERE Datei zeigt, gilt als gesund. Sensor
+  fehlt (z. B. `cat`-Prozess der Pane → fd 1 == finalPath). Ohne (a) selten, aber die Klasse
+  bleibt.
+
+## 3. Reihenfolge fuer dich
+
+1. **Lane 11 fertig** (Fleet-Report kommt in deine Pane; Watch feuert) → Pane lesen → `POST
+   /api/slots/11/land` → `{kind:"audit",repo,mainAfter}` abonnieren → **Deploy per Verb 2**
+   (`POST /api/deploy`; 409 waehrend des Audits — dann warten, nicht kill-session) → prueften:
+   `bundleStale`, `deploys.jsonl` `ok:true`.
+2. **Dann Slot 1 raeumen:** `POST /api/slots/1/kill` (trifft jetzt den Platzhalter `s1`,
+   nach dem Deploy ohnehin exakt). Pruefen, dass der private-repo-p-Worktree weg ist und
+   `dac21cc7` wieder `queued`/`pending` steht (Kill-Requeue-Verhalten nicht gemessen — nachsehen,
+   ggf. per `queue` zurueckstellen). Dann `dac21cc7` mit dem Fable-Tripel dispatchen und Slot 3
+   per `POST /send {slot:3,...}` den neuen Slot nennen.
+3. **Main-Watcher** (Hintergrund, Basis `6404c8d`) feuert beim P2a-Land durch Slot 2 → dann
+   `ff535524` und `63a32ac2` dispatchen. Fleet-Report-Watcher (Hintergrund auf `audit.jsonl`)
+   feuert beim A-Report (Slot 5 → Slot 4) → A landen → `b0c15ca5` dispatchen. Beide Watcher
+   sterben mit meiner Session — als Mechanismus neu legen, nie als Vorsatz.
+4. **Kein vierter Suite-Lauf, kein Deploy neben einer laufenden Kette.**
+5. **Lane-Watch-Beobachtung:** `{kind:"lane"}` feuert bei einer Lane, die auf eine Suite
+   wartet, bei JEDEM Re-Arm erneut auf dasselbe Bild (3× Slot 8, 1× Slot 5) — das Praedikat
+   unterscheidet „wartet" nicht von „fertig". Fuer Warte-Lanes ist der Fleet-Report-Watcher auf
+   `audit.jsonl` das praezisere Mittel.
+
+## 4. Die Second-host-/Freunde-/Auftragsmarkt-Bewertung (Owner-Auftrag des Abends)
+
+`docs/ideen/2026-09-01-second-host-job-vertrag-instanz-freunde.md` (Commit `6404c8d`, **Direkt-
+commit auf main, docs-only; `bun e2e/pins.ts` ALL PASS von Hand, kein Land-Ledger-Eintrag**).
+Grundlage: drei read-only Opus-Erhebungen (Lagebericht · Second-host-Lebenszyklus+Luecken ·
+Auftragsmarkt-Landkarte). Kern: Job+Quittung als EIN Vertrag (R1–R5); zweite Instanz nur fuer
+Fable-Lanes auf Linux (B1); Freunde als Jobs im Container ja, als Agenten-Briefe nein.
+**Owner-Entscheidungen (§6 dort):** `db2d6c85` (a)/(b) — Empfehlung (a)+`daemon-update`-Job;
+Freunde-Jobs ja/nein; zweite Instanz ja/nein. Nichts daraus ist gefilet — erst nach Owner-Blick
+werden R1–R5 zu `auftrag`-Zeilen.
+
+## 5. Ehrlichkeiten
+
+- Keine Suite von mir gefahren; einziger Code-Eingriff: der Docs-Commit `6404c8d`.
+- Der Brief-Text von `dac21cc7` steht in meinem Kontext (Fehlzustellung) — ich habe ihn NICHT
+  ausgefuehrt.
+- Offene Owner-Punkte ausser §4: Slot 6 Canary-Tor (nur in der Pane, keine Attention-Zeile);
+  Slots 6 und 9 zeigen „Restart to update" (Kontextverlust, Owner-Sache).
+- Slot 8s Lane-Watch habe ich dreimal neu armiert, bevor ich das Praedikat-Verhalten (§3.5)
+  verstanden hatte.
+
+---
+
 # HANDOFF — Fleet Controller (Slot 1): Lagebericht aller Slots, Codex-MAINs auf Fable neu gegruendet, Event-Zustell-Sturm beendet, .env-Gate korrigiert, 2026-09-01 (spaet abends)
 
 Rolle: **🎛 Fleet Controller**, nicht Program-MAIN. Die Sanierung fuehrt Slot 2 (Program `b2a14b54`), eigenstaendig.

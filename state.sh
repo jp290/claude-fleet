@@ -177,7 +177,7 @@ echo "=== is the running server the code on disk?  (main checkout: $MAIN_CHECKOU
 for p in $(pgrep -f 'bun server.ts' 2>/dev/null); do
   cwd=$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | grep '^n' | cut -c2-)
   if [ "$(rp "$cwd")" = "$MAIN_CHECKOUT" ]; then
-    echo "  LIVE  pid $p  up since $(ps -o lstart= -p "$p" | xargs)"
+    echo "  LIVE  pid $p  up since $(LC_ALL=C ps -o lstart= -p "$p" | xargs)"
   else
     echo "  stray pid $p  cwd $cwd   <- not the fleet; a leaked e2e server if it is in TMPDIR"
   fi

@@ -1409,6 +1409,14 @@ none: non-determinism proven directly. Contention raises the hit rate (run (1) s
 waiting on `/tmp/fleet-e2e.lock`; a foreign `e2e-isolated.sh` was live), but the race exists
 without it.
 
+**A fourth sighting, mouth (a), same proof order** (2026-09-01, lane `fleet/260901000515-51a3`,
+tree `ba4169a` + the §11.2k test patch — `e2e/outcomes.ts` and this file, nothing any suite server
+reads): the full gate chain died at claude-gate phase 3 with `server exited unexpectedly`, zero
+FAIL lines and six `ALL PASS` before it, and the kept instance
+(`fleet-e2e-unprobed-instance-80702`) carried **no `server.log`**. Immediate re-run of the same
+chain on the identical tree: `GATE_EXIT=0`, 0 FAILs. The family's hit rate is not negligible — this
+was one of two chain runs.
+
 **Proposed fix (not built; suite edits were out of the finding lane's mandate):** before each
 `new-session` that follows a kill on the same socket, wait for `tmux has-session` to report the old
 server actually gone (bounded), instead of racing the death. Two call sites, one guard.
@@ -1584,7 +1592,7 @@ fragment `rulebook/lane-discipline.md` says "Zwoelf bekannte Flake-Familien" and
 re-rendered from it. Both are gitignored, so no commit carries that change — on a drift suspicion,
 re-render (the command is in the head of `rulebook.ts`).
 
-### 11.2k A thirteenth family: the raw-review persist race in `e2e/outcomes.ts` (2026-09-01, filed — 2 occurrences, cause not isolated)
+### 11.2k A thirteenth family: the raw-review persist race in `e2e/outcomes.ts` (2026-09-01 — REPARIERT, mechanism read out of the code)
 
 **The member, a singleton:** `outcome: a reviewer answer that did NOT parse is persisted as
 raw:true carrying its text — not as a clean review` (`e2e/outcomes.ts`, block 9b/F5). Failing
@@ -1605,17 +1613,67 @@ path and the probe were byte-identical throughout:
 Same bytes, twice red, twice green ⇒ non-determinism proven directly; neither `01459c9` (client
 + `e2e/tasks.ts` only) nor W1 (moves + path literals) touches the review/outcome path.
 
-**Mechanism hypothesis, unverified but shaped like §11.2f:** the fixture clicks
-`POST /api/slots/:id/review`, asserts only that the click RETURNED, and kills the lane
-immediately after; the outcome row is written at kill. If the review job is still writing its
-verdict when the kill lands, the row is minted with `review.state:"none"` — a completion the
-fixture never waited for. The neighbouring 9a check (superseded) commits between click and kill
-and has never fallen. Nobody has dissected a kept instance yet; whoever repairs this starts at
-whether the review result is persisted synchronously with the click or joined at kill time.
+**The mechanism, read out of `server.ts` (no server change; §11.2f's shape, different joint).**
+The question the filing left open was whether the verdict is persisted synchronously with the
+click. The answer is *both*, and which one you get is the race:
 
-**Bookkeeping:** thirteenth family. Both audits are adjudicated `flake` on the ledger with this
-section as the stated reason. A red on this line is now a flake candidate; a red anywhere else in
-`e2e/outcomes.ts` is still ECHT and still yours.
+- For a job the click STARTED, persistence IS synchronous with the response:
+  `server.ts#startReview` chains the `reviewCache.set` onto the very promise
+  `server.ts#reviewResponse` awaits. Return implies written.
+- For a job the click JOINS, it is not. `reviewResponse` does
+  `reviewInflight.get(s.id) ?? startReview(…)`, and **`reviewInflight` is never cleared when a slot
+  is torn down**: `server.ts#teardownSlotOccupant` deletes `reviewCache`, `reviewAutoTried`,
+  `mergeInflight`, `summaryCache` and a dozen more — not `reviewInflight`, whose only delete is the
+  job's own `.finally`. So a review the slot's PREVIOUS occupant left running is joined by the new
+  lane's click, and that job's cache write is then dropped by `startReview`'s identity re-check
+  (`s.cwd === job.cwd && branch === job.branch`) — correctly, those findings describe a tree nobody
+  is looking at. The caller's await resolves `ok` all the same, saying `stale: true`, having
+  written nothing.
+
+auto-③ supplies the orphans: `e2e-isolated.sh` runs it hot (`FLEET_AUTO_REVIEW_MS=1000`,
+`FLEET_AUTO_REVIEW_IDLE_MS=1500`), so every lane the suite kills with a review inflight poisons
+that slot for its next occupant. The next occupant here is the raw-review lane, whose click
+therefore returns without persisting; `server.ts#outcomeReview` then finds an empty cache with
+nothing inflight and mints `state:"none"` — the observed detail exactly.
+
+**The repair (test-side, `e2e/outcomes.ts` block 9b).** The setup check keeps its assertion and now
+carries the click's body as detail; a new check —
+`raw-review precondition: the review verdict persisted before the kill` — polls
+`GET /api/slots/:id/review` (run=false: a pure cache lookup that never spawns) until it answers
+`cached:true, stale:false`, re-clicking while it is absent (≤6 clicks, 30 s deadline), BEFORE the
+kill. It asserts the same cache entry `outcomeReview` reads, so it is robust to any route to an
+unwritten cache, not only the orphan-job one. When the precondition cannot be established it fails
+AS ITSELF, so the F5 proof check is never asked to carry it; that check is unchanged and still
+proves `covered` + `raw:true` + `findings 0` + the notes text. `clicks=N` rides in the detail on
+PASS, so a run that actually hit the race says so.
+
+**The proof runs** (2026-09-01, lane `fleet/260901000515-51a3`, tree `ba4169a` + the patch, serial,
+one suite on the box each time):
+
+| run | loadavg at start | result | block 9b |
+|---|---|---|---|
+| 1 | 1.58 | 1 FAILURE — `subject-gone` (§11.2j, `e2e/watch.ts`) | both checks PASS, `clicks=1` |
+| 2 | 1.53 | 2 FAILURES — `subject-gone` + `counterprobe` (§11.2j) | both checks PASS, `clicks=1` |
+| 3 | 1.94 | **ALL PASS** (3367 checks) | both checks PASS, `clicks=1` |
+
+Stated honestly: `clicks=1` in all three means the race did not fire during them, so the runs show
+the repair costs nothing and breaks nothing — they do not themselves demonstrate it absorbing a
+hit. What carries the repair is the code above, and the fact that the new precondition asserts the
+exact datum the outcome row is built from.
+
+**Still open — the same window sits on two neighbours, deliberately not touched here.** The brief
+cut at block 9b. But `outcome: a review of the exact content that ended up shelved is recorded as
+covered` (lane `ocRv`) and `outcome: a review computed for an EARLIER git state is recorded as
+superseded` (lane `ocSup`) both click ③ and reach a terminal event without asserting the persisted
+effect, so an orphaned `reviewInflight` job on THEIR slot mints `{"state":"none"}` there just the
+same. §11.2k's singleton is which check got hit, not which checks are exposed. Same repair shape
+applies to both, ~6 lines each. And the server-side option nobody has taken: deleting
+`reviewInflight` in `teardownSlotOccupant` alongside `reviewCache` would close the joint at the
+source for every caller — an owner decision, not a lane's.
+
+**Bookkeeping:** thirteenth family, repaired test-side. The two audits stay adjudicated `flake` on
+the ledger with this section as the stated reason. A red on this line AFTER this repair is ECHT
+again and yours — as is a red anywhere else in `e2e/outcomes.ts`, which it always was.
 
 ### 11.5 What is script here, and what is judgment
 

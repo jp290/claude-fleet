@@ -1,3 +1,84 @@
+# HANDOFF — Generalsanierung: P2a GELANDET (e319388), Gate-Env-Regress gefunden+gefixt, P2b auf Slot 10, Deploy ausstehend, 2026-09-02 (Nacht)
+
+Program **`b2a14b545fd31fd71ba7b9e1`** aktiv, gebunden an Slot 11 (diese Session; Fable 5.1 per
+`/model` in der Pane, Slot-Datensatz sagt weiter `claude-opus-5[1m]` — die bekannte Falle, die
+Nachfolge-Route reicht das Modell wörtlich durch). Ersetzt den Abschnitt „P2a reviewt und Land in
+Flug" darunter; die Controller-Abschnitte dazwischen sind fremd und bleiben.
+
+## 1. Gelandet, verifiziert
+
+- **P2a `9825cfd9` → main `e319388`** (= P2a `ec5b6be` + mein Gate-Fix obendrauf). Land-Note:
+  `verify.ok true`, 7 Schritte, 131 983 ms, `waitMs 0`, `actor {kind:main, slot:11}`.
+  Lane 8s eigene volle Kette auf demselben Baum: 7× ALL PASS, exit 0 (Fleet-Report `7ba40c9b`).
+  Inhalt unverändert wie im Vorgänger-Review: S1 `verify-proportion.ts#ruleFor` server/ →
+  SERVER_RULE · S2 `task-metadata.ts#processesForPath` · S3 begründet weggelassen · S4
+  `CLIENT_ONLY_FILES` += src/helper.ts + src/backoff.ts, `BUNDLES` += helper.js, `BundleStale.helperJsMtime`.
+- **`bundleStale:false`** nach `bun run build` im Haupt-Checkout (das Land berührt src/client.ts).
+- **Demo gebaut** (Erfolgsmass 5): `~/claude-fleet-demo` `bun run typecheck` exit 0,
+  `bun run build:live` exit 0. Das schlichte `bun run build` lehnt ohne `FLEET_SITE_URL` ab — by
+  design (Way-back-Link), kein Defekt; `build:live` liest die `.env` dieses Checkouts.
+- `graphify update .` gelaufen (exit 0).
+
+## 2. Der Gate-Env-Regress (gemessen, gefixt, Klasse benannt)
+
+Land 3 (Kandidat 2cd51cf) wurde vom Controller-Deploy `b741d9de` (23:56, tmux-Hotfix) **mitten im
+Gate getötet** → `interrupted` (kein Verdikt; Notiz `4e29e778` vom Controller: Deploy-Preflight
+prüft nur den Audit, nicht laufende Merges). Land 4 (Kandidat ec5b6be) **rot**: 2 FAILs in
+claude-gate, beide `--model 'claude-fable-5-1[1m]'` statt des kompilierten
+`FLEET_DEFAULT_MODEL`. Kette: `.env:18 FLEET_MODEL` seit 21:50 · der 23:56-srv ist der erste,
+der es exportiert · ein Land-Gate ist srv-Kind · die Wrapper pinnten FLEET_CMD/HOST/PORT/SOCK,
+nie FLEET_MODEL · `server.ts#DEFAULT_MODEL` nimmt env vor Konstante. Gegen-Zeitachse: Hotfix-Land
+93d6cfa lief 23:37 unter dem ALTEN srv grün. **Fix `e319388`:** `FLEET_MODEL=` auf den drei
+claude-gate-Spawnzeilen + `e2e-isolated.sh` SRV_ENV (gleiche Klasse, Audit ist srv-Kind), Kommentar
+`fleet-e2e-claude-gate.ts:359` korrigiert. Beweis LOKAL: `FLEET_MODEL='claude-fable-5-1[1m]'
+./e2e-claude-gate.sh` im Lane-Worktree → 137 PASS / 0 FAIL. Kein `FLEET_EFFORT`-Knopf in server.ts.
+**Die Klasse** (Lane 8s Formulierung): eine Sonde, die eine Vorbedingung BEHAUPTET statt sie zu
+erzwingen — dieselbe wie „e2e/pins.ts liest package.json nicht" (helper.js-Drift). P6.
+
+## 3. In Flug — das Erste, was du tust
+
+1. **Audit-Watch `b1388b63`** auf `e319388` ist armiert (kind:audit) — Ergebnis kommt in die
+   Pane. Rot ⇒ Beweisordnung wie immer (erst denselben Baum seriell erneut), dann adjudizieren.
+2. **P2b `63a32ac2` läuft auf Slot 10** (`fleet/260901224739-b12c`, Fable 5.1 high — Datensatz
+   verifiziert). Brief ist vollständig (Ring 3.4, Blaupause src/backoff.ts, 13 Anker-Stellen);
+   Report kommt an die Program-MAIN. Landen: **`POST /api/self/tasks/63a32ac2/land`** — vorher
+   Pane lesen, Diff lesen, Verify-Tail zitiert sehen. **Merge-Watch-Falle:** siehe §4.1 — für ein
+   ZWEITES Land derselben Lane den Hintergrund-Watcher auf `fleet.json merges[<slot>].status`
+   nehmen (Muster: `scratchpad`-Loop dieser Session; terminal = merged|blocked|error|resolved|awaiting-author).
+3. **Deploy ausstehend:** `deployGap.codeBehind:true, behindCount 3` (P2a fasst server.ts an).
+   Abgesprochen mit dem 🎛 Controller (jetzt **Slot 2**): ICH deploye per Verb 2
+   (`POST /api/deploy`), sobald (a) mein Audit terminal ist UND (b) in dem Moment
+   `ps -eo command | grep -c '^/bin/sh ./e2e-'` = 0 — eine Zeile an Slot 2 ~1 min vorher; startet
+   sein Lane-A-Land vorher, dessen Verdikt abwarten. Er deployt nicht. Boot-Verdikt auf
+   `GET /api/deploys` lesen (`ok:null` ist NIE ein Pass).
+4. Danach nach Plan: P3 (Kommentar-Exkavation Kern, Build-Hash-Beweis) — erst Plan §P3 lesen,
+   Brief mit Dateien+Zeilenbereichen, Fable-Tripel.
+
+## 4. Befunde als Queue-Zeilen (kind notiz, P6)
+
+1. **`372b3cef`** — spent merge-Watch blockiert Re-Subscription derselben Lane
+   (`server.ts#handleSelfWatch`, Dup-Prädikat `(kind === "lane" ? w.armed : true)`); die von der
+   Land-Antwort empfohlene `watch {kind:merge}` ist für jede Wiederholung tot.
+2. **`563ec115`** — program-execution kennt den No-Progress-Guard der Self-Land-Tür nicht
+   (nennt die Land-Tür nach waitedOut, Route sagt 409).
+3. Controller: **`4e29e778`** — Deploy-Preflight sieht laufende Merges nicht.
+4. Nicht gefilet, im Commit-Body von e319388: die Gate-Env-Klasse (§2).
+
+## 5. Ehrlichkeiten
+
+- Flake-Sichtung (Lane 8, 1 von 3 Läufen, Phase 2 claude-gate): `FAIL dead foreign agent:
+  lastResult reports the skip (missing)` — auf identischem Baum zweimal grün ⇒ nicht-deterministisch,
+  keine registrierte Familie. Nur Datenpunkt.
+- Das Land lief GEGEN die done-looking-Regel dreimal ins Leere, weil Lane 8 nach dem roten
+  Verdikt selbst zu messen begann (Pane nicht 3 s still); Lösung war ein `/send` („Fix ist meiner,
+  Report, dann idle") + Retry-Loop. Eine Lane, die ein rotes Verdikt bekommt, fängt an zu reparieren
+  — das ist Design, kostet aber die MAIN ein Fenster.
+- Ich habe zwischendurch „srv-Tod" geschrieben — falsch, beide Restarts (21:42, 23:56) waren Deploys.
+- Watches sterben mit meinem Slot: armiert nur `b1388b63` (Audit). Neu armieren.
+- ctx bei Handoff-Entwurf: **20,7 % gemessen** (206 755/1 000 000).
+
+---
+
 # HANDOFF — Generalsanierung: e9c10ee deployt, 8cd6deca gelandet (d4f2bfc), P2a gebaut+reviewt, Land am Mutex verhungert, Remote-Rot #5 adjudiziert, 2026-09-01 (Nacht)
 
 Program **`b2a14b545fd31fd71ba7b9e1`** aktiv, gebunden. Ersetzt den Abend-Abschnitt weiter unten

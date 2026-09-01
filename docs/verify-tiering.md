@@ -1456,7 +1456,7 @@ conclusion ("not proven") from a wrong measurement. Two lanes were also reported
 suite without taking the lock; the lock is a convention carried in each brief, so any lane that is
 briefed without it silently breaks everyone else's serial proof.
 
-### 11.2j A twelfth family: the `pi-unfenced` watch-delivery quartet (2026-08-31 filed; 2026-09-01 test-side repair cut 1 — preconditions MEASURED, discriminator still NOT isolated)
+### 11.2j A twelfth family: the `pi-unfenced` watch-delivery quartet (2026-08-31 filed; 2026-09-01 MECHANISM ISOLATED and repaired test-side — the fixture sampled a by-design transient)
 
 **Status: open, and weaker than the entries above it** — non-determinism is proven, the CAUSE is
 not. Filed from the Generalsanierung P0 baseline, where it cost the baseline itself.
@@ -1586,6 +1586,39 @@ refusal and raises `attempts`. Cut 1 therefore reads the FRAME here too, beside 
 prints `frameBytes`/`frameIsDraft` — on the healthy path both carry the draft, and the next
 occurrence names which reading failed instead of blaming the pane.
 
+**THE MECHANISM, isolated 2026-09-01 — and it is neither a pane heal nor machine load as such.**
+`server.ts#tickWatches` (the `attemptsBefore` block, `server.ts:12066`ff) writes
+`event.status = "send-uncertain"` AND `event.attempts++` and **persists them with
+`await saveStateNow()` BEFORE it touches tmux**. Only after `sendText` throws `SendRefused` — the
+pre-paste "the composer is occupied" refusal — does it roll BOTH back to `pending` /
+`attemptsBefore`. Between those two writes sits an entire tmux round-trip. This fixture holds an
+owner draft through **100+ consecutive refusals** while polling the event row every 250 ms, so
+catching one mid-flight is not a rare accident, and it gets likelier the slower tmux answers —
+which is exactly the loadavg correlation this entry recorded as "a hint" and could not explain.
+
+**The measurement that settles it** (run `final-b` of the repair lane's verification, tree
+`2e7c846`): `subject fixture: both lane completions minted one pending event each on the busy
+receiver` FAILED with `living: "send-uncertain"` — while, in the same run and the same window, the
+new instrumentation proved the receiver pane was **unchanged** (`pane %76`, one `openedAt`), the
+`hold fixture` read 45 of 45 draft bytes, and the very next check read the same row as `pending`
+with `attempts: 0` and BOTH composer readings agreeing (`draftBytes: 45, frameBytes: 45,
+frameIsDraft: true`). A replaced pane cannot produce that, and does not have to: the row was simply
+read inside the server's own pre-tmux marker window. `send-uncertain` on the refusal path is a
+marker the server puts down before it knows, not a fact about delivery.
+
+This also explains the **eighth member** directly — `doomedAttempts: 1` with the draft intact is the
+inflated `attempts` of the same transient, read before the rollback — and it is why that member's
+"the pane was replaced" reading was wrong. Not explained by it: the seventh member's
+`subject-gone` → `pending` contradiction, which is the same GENUS (a row read across a transition)
+but has not been caught in the act. Its instrumentation stays armed.
+
+**Repair, cut 2 (2026-09-01): the fixture reads SETTLED rows.** `e2e/watch.ts#settleEvent` waits,
+bounded (40 × 250 ms), for a `send-uncertain` row to leave that state before the check reads it, and
+is applied to every read of a HELD row: both subject events, both `held:` reads, `stillPending`,
+`finalGone`, and the kill-switch `pausedEvent`. Nothing is hidden — a row that never settles is
+still returned as `send-uncertain` and still fails its check; only the by-design transient is waited
+out. `settleWaits` is printed so the frequency stays visible. No member predicate changed.
+
 **Repair, cut 1 (2026-09-01, test-side only — server.ts and lane-signals.ts untouched).** The
 genus is §11.2f: every member asserts a precondition the fixture does not own. Seven checks in
 `e2e/watch.ts` sit on one receiver (the `pi-unfenced` stand-in, `uId`) — eight counting the `held:`
@@ -1669,9 +1702,11 @@ the two red runs are kept: `fleet-e2e-instance-80791` (run 2) and `fleet-e2e-ins
 **Consequence for the Generalsanierung.** A red on these lines is a flake candidate; a red anywhere
 else is still ECHT and still yours. After cut 1 the shape of a red on these lines changed and that
 changes what you owe: a `receiver precondition (<window>)` FAIL is the fixture saying the pane went
-away under it — flake, and it names itself. A member failing while its precondition PASSED is no
-longer a §11.2j candidate at all: the pane and the composer were both proven intact, so that red is
-ECHT and yours. But the P0 baseline demands three CONSECUTIVE green runs, and
+away under it — flake, and it names itself. A member failing while its precondition PASSED is not
+automatically yours either — that is how cut 2's mechanism was caught, and the honest rule after it
+is narrower: read the printed `settleWaits`, `frameIsDraft` and the id fields, and say which of the
+three known shapes it is (pane replaced · row read mid-transient · both composer readings
+disagreeing) before calling it a regress. But the P0 baseline demands three CONSECUTIVE green runs, and
 until this family is either repaired or its discriminator isolated, that baseline is only
 obtainable under the stated conditions (clean tree, controller idle) — which is itself a finding
 about what this machine can prove while seven sessions share the checkout.

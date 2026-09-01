@@ -581,6 +581,29 @@ export async function run(): Promise<void> {
           : `the pane held, but its composer no longer holds what the fixture left there — a restarted stand-in (phase "ready" = fresh process, empty buffer) or a foreign write: phase=${state.phase} got=${state.text.length}B want=${(wantComposer ?? "").length}B pane=${JSON.stringify(after)}`);
       return samePane && sameComposer;
     };
+    // --- `send-uncertain` IS A TRANSIENT ON THE REFUSAL PATH, NOT A FACT ABOUT DELIVERY, and it is
+    // §11.2j's actual mechanism. `server.ts#tickWatches` writes `send-uncertain` AND `attempts++`
+    // and persists them BEFORE it touches tmux; only after `sendText` throws `SendRefused` (the
+    // pre-paste "composer occupied" refusal) does it roll BOTH back to `pending`/`attemptsBefore`.
+    // Between those two writes sits a whole tmux round-trip — and this fixture holds a draft
+    // through 100+ refusals while polling the row every 250 ms, so sampling one mid-flight is not
+    // unlikely, and gets likelier the slower tmux answers. That is the loadavg correlation §11.2j
+    // recorded as "a hint". MEASURED 2026-09-01 on a run where the receiver pane was PROVEN
+    // unchanged (`%76`, same `openedAt`) and the internal buffer held all 45 draft bytes, while
+    // `living` still read `send-uncertain` — a pane replacement cannot explain that, and does not
+    // have to. So a read of a HELD row settles first, bounded. Nothing is hidden: a row that never
+    // settles is still returned as `send-uncertain` and still fails its check.
+    let settleWaits = 0;
+    const settleEvent = async (row: FleetEventRow | undefined): Promise<FleetEventRow | undefined> => {
+      let cur = row;
+      for (let i = 0; i < 40 && cur?.status === "send-uncertain"; i++) {
+        if (i === 0) settleWaits++;
+        await Bun.sleep(250);
+        const id = cur.id;
+        cur = (await eventRows()).find((e) => e.id === id) ?? cur;
+      }
+      return cur;
+    };
     // Clear the receiver's composer and WAIT OUT a window of CONFIRMED emptiness. A single read
     // taken the instant a turn goes terminal can see an empty buffer while held bytes are still on
     // their way, and clearing "what is there now" then clears nothing. Returns the bytes removed.
@@ -840,8 +863,8 @@ export async function run(): Promise<void> {
         }
         return row;
       };
-      const doomedEvent = await waitEventFor("doomed");
-      const livingEvent = await waitEventFor("living");
+      const doomedEvent = await settleEvent(await waitEventFor("doomed"));
+      const livingEvent = await settleEvent(await waitEventFor("living"));
       // "pending" is the right answer here ONLY because the composer stayed occupied throughout.
       // Without this line a restarted stand-in (empty buffer) lets the very next tick deliver, and
       // the check below reports a minting defect that never happened — the measured §11.2j shape,
@@ -853,14 +876,15 @@ export async function run(): Promise<void> {
           doomedEvent?.status === "pending" && livingEvent?.status === "pending"
           && doomedEvent.subjectSlot === doomed.slot && livingEvent.subjectSlot === living.slot,
           JSON.stringify({ doomed: doomedEvent?.status, living: livingEvent?.status,
-            doomedId: doomedEvent?.id ?? null, livingId: livingEvent?.id ?? null }));
+            doomedId: doomedEvent?.id ?? null, livingId: livingEvent?.id ?? null,
+            settleWaits }));
 
       // 100+ refusals, counted on the server's own held rows rather than on elapsed time
       const heldTarget = 100;
       for (let i = 0; i < 400 && heldRows(livingEvent?.id ?? "x") < heldTarget; i++) await Bun.sleep(250);
       const heldCount = heldRows(livingEvent?.id ?? "x");
-      const heldDoomed = await eventById(doomedEvent?.id ?? "x");
-      const heldLiving = await eventById(livingEvent?.id ?? "x");
+      const heldDoomed = await settleEvent(await eventById(doomedEvent?.id ?? "x"));
+      const heldLiving = await settleEvent(await eventById(livingEvent?.id ?? "x"));
       const heldDraft = stateBuffer();
       // §11.2j's EIGHTH member is this check, and its recorded detail
       // (`doomedAttempts:1` WITH `draftBytes:45`) is not explained by a replaced pane: nothing in
@@ -880,7 +904,8 @@ export async function run(): Promise<void> {
           && heldDraft.text === draft,
           JSON.stringify({ held: heldCount, doomedAttempts: heldDoomed?.attempts,
             livingAttempts: heldLiving?.attempts, draftBytes: heldDraft.text.length,
-            frameBytes: (heldFrame ?? "").length, frameIsDraft: heldFrame === draft }));
+            frameBytes: (heldFrame ?? "").length, frameIsDraft: heldFrame === draft,
+            settleWaits }));
 
       // --- (3) THE BUDGET, READ THROUGH THE DOOR THAT SPENDS IT — and read RELATIVELY, never as an
       // absolute count. What has to be proven is one difference: the same subscription is refused
@@ -912,7 +937,7 @@ export async function run(): Promise<void> {
         goneRow = await eventById(doomedEvent?.id ?? "x");
         if (goneRow?.status !== "subject-gone") await Bun.sleep(250);
       }
-      const stillPending = await eventById(livingEvent?.id ?? "x");
+      const stillPending = await settleEvent(await eventById(livingEvent?.id ?? "x"));
       const goneAck = doomedEvent ? await ackEvent(uTok, doomedEvent.id) : new Response(null, { status: 599 });
       const goneAckBody = await goneAck.text();
       const budgetBeforeFree = await receiverBudget();
@@ -948,7 +973,7 @@ export async function run(): Promise<void> {
         deliveredLiving = await eventById(livingEvent?.id ?? "x");
         if (deliveredLiving?.status !== "delivered") await Bun.sleep(250);
       }
-      const finalGone = await eventById(doomedEvent?.id ?? "x");
+      const finalGone = await settleEvent(await eventById(doomedEvent?.id ?? "x"));
       const plog = await plogRead();
       // The composer is deliberately empty from here on, so only the PANE is this window's
       // precondition. It matters: a delivery counted "on its FIRST attempt" is a statement about
@@ -1046,7 +1071,8 @@ export async function run(): Promise<void> {
       targetReady, String(targetReady));
     await Bun.sleep(AUTOS_TICK_MS * 4 + 500);
     const paused = subscribedJ.watch?.id ? await watchRow(subscribedJ.watch.id) : undefined;
-    const pausedEvent = subscribedJ.watch?.id ? await eventForWatch(subscribedJ.watch.id) : undefined;
+    const pausedEvent = await settleEvent(
+      subscribedJ.watch?.id ? await eventForWatch(subscribedJ.watch.id) : undefined);
     check("signal capture spends the pi-unfenced Watch and persists exactly one event even while transport is paused",
       paused?.armed === false && pausedEvent?.status === "pending"
       && (await eventRows()).filter((e) => e.watchId === subscribedJ.watch?.id).length === 1

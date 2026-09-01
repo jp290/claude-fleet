@@ -16,6 +16,40 @@ export async function run(): Promise<void> {
   check("the sidebar API exposes all 16 fixed slots in order",
     fixed.slots.length === 16 && fixed.slots.every((s, i) => s.id === i + 1),
     JSON.stringify(fixed.slots.map((s) => s.id)));
+
+  // --- regression (2026-09-01): tmux resolves a bare `-t s1` by PREFIX once no exact `s1` exists,
+  // so with `s10` alive and slot 1 free, ensureSlot's has-session answered 0 for a session that was
+  // not there, existingTmuxTarget returned s10's pane, no s1 was ever created, and the founding
+  // brief for slot 1 was pasted into the controller in slot 10 (a kill of slot 1 would have killed
+  // it). Every name-based `-t` now goes through server.ts#sessTarget / #paneTarget (`=name`,
+  // `=name:`). The decoy lives on the suite socket only; the precondition is measured first so a
+  // probe that could not run fails as ITSELF. Mutation caught: dropping the `=` from sessTarget
+  // (has-session hits s10 again, no s1 appears). ---
+  {
+    const decoy = await tmuxOut("new-session", "-d", "-s", "s10", "sleep 300");
+    const exactDecoy = await tmuxOut("has-session", "-t", "=s10");
+    const exactVictim = await tmuxOut("has-session", "-t", "=s1");
+    const bareVictim = await tmuxOut("has-session", "-t", "s1");
+    check("exact-target fixture: decoy s10 exists, no s1 exists, and a bare `-t s1` prefix-matches the decoy",
+      decoy.code === 0 && exactDecoy.code === 0 && exactVictim.code !== 0 && bareVictim.code === 0,
+      `new-session=${decoy.code} =s10=${exactDecoy.code} =s1=${exactVictim.code} bare-s1=${bareVictim.code}`);
+    const decoyPaneBefore = (await tmuxOut("display-message", "-p", "-t", "=s10:", "#{pane_id}")).out.trim();
+    const opened = await post("/api/slots/1/open", { cwd: "~" });
+    const names = (await tmuxOut("list-sessions", "-F", "#{session_name}")).out.split("\n").filter(Boolean);
+    const decoyState = (await tmuxOut("display-message", "-p", "-t", "=s10:",
+      "#{pane_id}\t#{pane_current_command}\t#{pane_pipe}")).out.trim().split("\t");
+    const victimPane = (await tmuxOut("display-message", "-p", "-t", "=s1:", "#{pane_id}")).out.trim();
+    check("opening free slot 1 next to a live s10 creates an exact `s1` and never adopts the decoy's pane",
+      opened.ok && names.includes("s1") && names.includes("s10")
+        && /^%\d+$/.test(victimPane) && victimPane !== decoyPaneBefore
+        && decoyState[0] === decoyPaneBefore && decoyState[1] === "sleep" && decoyState[2] === "0",
+      `open=${opened.status} sessions=[${names}] s1=${victimPane || "?"} s10=${decoyState.join("|")}`);
+    await post("/api/slots/1/kill", {});
+    await tmuxOut("kill-session", "-t", "=s10");
+    const cleaned = await tmuxOut("has-session", "-t", "=s10");
+    check("exact-target fixture: decoy s10 removed again", cleaned.code !== 0, `has-session=${cleaned.code}`);
+  }
+
   const o1 = await post("/api/slots/1/open", { cwd: "~/claude-fleet" });
   const o2 = await post("/api/slots/2/open", { cwd: "~" });
   check("open slot 1", o1.ok, JSON.stringify(await o1.json()));

@@ -3896,6 +3896,20 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && exactPipeAt >= 0 && exactRepaintAt > exactPipeAt
       && !/tmux\("(?:capture-pane|pipe-pane)"[\s\S]*?"-t", name/.test(ensureBody),
     `pipe=${exactPipeAt} repaint=${exactRepaintAt}`);
+  // tmux resolves a bare `-t name` exact-first and PREFIX second: with `s1` gone, `-t s1` lands on
+  // `s10` (measured 2026-09-01 — a founding brief for slot 1 was pasted into the controller's pane in
+  // slot 10, and a kill of slot 1 would have killed it). Every tmux() call that targets by NAME goes
+  // through sessTarget (`=name`, session verbs) or paneTarget (`=name:`, pane/window verbs); the
+  // immutable %pane/@window ids are exact by construction. e2e/slots.ts proves the has-session path
+  // live; this pin closes the class for every other verb without booting a server.
+  const RULE_EXACT_TARGET = "no tmux() call passes a bare session name as -t (only sessTarget/paneTarget or an immutable pane/window id)";
+  const targetArgs = [...server.matchAll(/\btmux\("[a-z-]+"[^\n]*?"-t", ([^,)]+)/g)].map((m) => m[1]);
+  const looseTargets = targetArgs.filter((a) => !/^(?:sessTarget\(|paneTarget\(|exact$|windowId$|\w+\.(?:paneId|windowId)$)/.test(a));
+  pin(`${RULE_EXACT_TARGET} — the -t argument set is derived from server.ts and not empty`,
+    targetArgs.length >= 20 && server.includes("const sessTarget = (name: string): string => `=${name}`")
+      && server.includes("const paneTarget = (name: string): string => `=${name}:`"),
+    `${targetArgs.length} -t sites`);
+  pin(RULE_EXACT_TARGET, looseTargets.length === 0, looseTargets.length ? looseTargets.join(" | ") : `${targetArgs.length} sites, all exact`);
   pin(`${RULE_GM_TREE} — only tmuxNewSession owns new-session, with bounded TERM/KILL and honest invalid-env fallback`,
     !server.includes('tmux("new-session"')
       && server.includes("async function tmuxNewSession(")

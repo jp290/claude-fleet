@@ -58,7 +58,18 @@ export async function run(ctx: Ctx): Promise<void> {
   const taskModelSource = taskModelStart >= 0 && taskModelEnd > taskModelStart
     ? taskClientSource.slice(taskModelStart, taskModelEnd) : "";
   const taskModelReady = taskModelSource.includes("function qTaskListModel")
-    && taskModelSource.includes("function qTaskMatches");
+    && taskModelSource.includes("function qTaskMatches") && taskModelSource.includes("function qLaneJoins");
+  // the lane ↔ task join, hoisted so the (e3) dispatch probe below can run it over a LIVE poll
+  type LaneSlot = { id: number; cwd: string | null; openedAt?: number; lastOutput: number;
+    git?: { dirty: number; ahead: number } | null; worktree?: { repo: string; branch: string } | null };
+  type LaneTask = { id: string; status: string; created: number; slot?: number; repo?: string; programId?: string };
+  type LaneView = { slot: number; branch: string; state: string; quietMs: number | null; dirty: number | null;
+    ahead: number | null; repo: string; program: string };
+  type LaneJoin = { kind: "lane"; lane: LaneView } | { kind: "none" } | { kind: "refused"; slot: number; why: string };
+  type LaneJoinFn = (tasks: LaneTask[], slots: LaneSlot[], dispatchRepo: string, now: number) => Map<string, LaneJoin>;
+  let laneJoinFn: LaneJoinFn | null = null;
+  const laneSlotsOf = (joins: Map<string, LaneJoin>): number[] =>
+    [...joins.values()].flatMap((j) => j.kind === "lane" ? [j.lane.slot] : []);
   check("task workbench exposes an executable search + Work/History partition model",
     taskModelReady, taskModelSource.slice(0, 120) || "queue model block missing");
   if (taskModelReady) {
@@ -71,10 +82,14 @@ export async function run(ctx: Ctx): Promise<void> {
     type SearchProgram = { id: string; title: string };
     type TaskModel = { work: SearchTask[]; history: SearchTask[]; showHistoryInWork: boolean };
     const modelFns = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(taskModelSource)
-      + "\nreturn { qGroupOf, qTaskListModel };")() as {
+      + "\nreturn { qGroupOf, qTaskListModel, qLaneJoins, qLaneState, qRepoRelation };")() as {
         qGroupOf: (task: SearchTask) => string | null;
         qTaskListModel: (tasks: SearchTask[], texts: Map<string, string>, programs: SearchProgram[], query: string) => TaskModel;
+        qLaneJoins: LaneJoinFn;
+        qLaneState: (slot: LaneSlot, now: number) => { state: string; quietMs: number | null; dirty: number | null; ahead: number | null };
+        qRepoRelation: (taskRepo: string | null, laneRepo: string) => string;
       };
+    laneJoinFn = modelFns.qLaneJoins;
     const programs: SearchProgram[] = [
       { id: "program-orion-111", title: "Orion Ledger" },
       { id: "program-nimbus-222", title: "Nimbus Console" },
@@ -136,6 +151,104 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(workGroups) === JSON.stringify(["backlog", "released", "running", "needs"])
         && new Set(workGroups).size === 4
         && closed.every((task) => modelFns.qGroupOf(task) === null), JSON.stringify(workGroups));
+
+    // --- LANE ↔ TASK JOIN (qLaneJoins). The 2 s poll carries the dispatcher's pointer on the TASK
+    // side only (task.slot; no taskId/originId/programId per slot), so the fixtures below are the
+    // shapes that pointer can take once the slots move under it. Every guard is exercised by a
+    // fixture whose ONLY difference from the attached case is the guarded fact — delete the
+    // openedAt clause or the repo clause in qLaneJoins and the matching check goes red.
+    const NOW = 10_000_000;
+    const lane = (id: number, repo: string, over: Partial<LaneSlot> = {}): LaneSlot => ({
+      id, cwd: `/lanes/${id}`, openedAt: 5000, lastOutput: NOW - 1000,
+      git: { dirty: 0, ahead: 1 }, worktree: { repo, branch: `fleet/lane-${id}` }, ...over });
+    const sent = (id: string, slot: number | undefined, over: Partial<LaneTask> = {}): LaneTask =>
+      ({ id, status: "sent", created: 1000, slot, repo: "/repos/alpha", ...over });
+    const slots: LaneSlot[] = [
+      lane(3, "/repos/alpha"),                                            // exact pointer, repo match
+      lane(4, "/repos/other"),                                            // foreign repo in the named slot
+      lane(5, "/repos/alpha", { openedAt: 900 }),                         // session older than the row
+      { id: 6, cwd: null, lastOutput: 0, git: null, worktree: null },     // pointer into an empty slot
+      lane(7, "/repos/alpha", { worktree: null }),                        // recycled into a plain checkout
+      lane(8, "/repos/alpha"),                                            // a lane a PENDING row points at
+      lane(9, "/private/var/f/repo"),                                     // resolved toplevel vs as-written path
+      lane(10, "/repos/alpha"),                                           // two rows name it
+      lane(11, "/repos/alpha", { lastOutput: NOW - 120_000, git: { dirty: 2, ahead: 0 } }), // idle + dirty
+      lane(12, "/repos/alpha", { lastOutput: NOW - 120_000, git: { dirty: 0, ahead: 2 } }), // done-looking
+      lane(13, "/repos/alpha", { git: null }),                            // git not read yet
+      lane(14, "/repos/alpha", { lastOutput: 0 }),                        // never observed
+      lane(15, "/repos/alpha"),                                           // a lane a DONE row points at
+      lane(16, "/repos/alpha", { openedAt: undefined }),                  // older server: no openedAt
+      lane(17, "/repos/alpha/sub"),                                       // (never named by a row)
+    ];
+    const tasks2: LaneTask[] = [
+      sent("t-exact", 3, { programId: "program-orion-111" }),
+      sent("t-foreign", 4, { repo: "/repos/bravo" }),
+      sent("t-older", 5),
+      sent("t-empty", 6),
+      sent("t-plain", 7),
+      { id: "t-pending", status: "pending", created: 1000, slot: 8, repo: "/repos/alpha" },
+      sent("t-alias", 9, { repo: "/var/f/repo" }),
+      sent("t-twin-a", 10), sent("t-twin-b", 10),
+      sent("t-dirty", 11),
+      sent("t-done-looking", 12),
+      sent("t-nogit", 13),
+      sent("t-unseen", 14),
+      { id: "t-closed", status: "done", created: 1000, slot: 15, repo: "/repos/alpha" },
+      sent("t-noopened", 16),
+      sent("t-noslot", undefined),
+      sent("t-subdir", 3, { repo: "/repos/alpha/deep/dir", status: "queued" }), // queued: pointer ignored
+    ];
+    const joins = modelFns.qLaneJoins(tasks2, slots, "/repos/alpha", NOW);
+    const j = (id: string): LaneJoin => joins.get(id) ?? { kind: "none" };
+    const laneOf = (id: string): LaneView | null => { const x = j(id); return x.kind === "lane" ? x.lane : null; };
+    const refusedWhy = (id: string): string => { const x = j(id); return x.kind === "refused" ? x.why : `<${x.kind}>`; };
+    check("lane join: an exact task.slot pointer attaches the lane with branch, slot and a program-unchecked note",
+      laneOf("t-exact")?.slot === 3 && laneOf("t-exact")?.branch === "fleet/lane-3"
+        && laneOf("t-exact")?.repo === "match" && laneOf("t-exact")?.program === "unchecked",
+      JSON.stringify(j("t-exact")));
+    check("lane join: a lane in a FOREIGN repo is refused even though the row's pointer names its slot",
+      j("t-foreign").kind === "refused" && refusedWhy("t-foreign").includes("/repos/other")
+        && refusedWhy("t-foreign").includes("/repos/bravo"), JSON.stringify(j("t-foreign")));
+    check("lane join: a session opened BEFORE the row existed is a recycled pointer and is refused",
+      j("t-older").kind === "refused" && refusedWhy("t-older").includes("before this row existed"),
+      JSON.stringify(j("t-older")));
+    check("lane join: a pointer into an empty slot or a plain-checkout slot attaches nothing and says which",
+      refusedWhy("t-empty").includes("empty") && refusedWhy("t-plain").includes("plain checkout"),
+      JSON.stringify([j("t-empty"), j("t-plain")]));
+    check("lane join: a pointer on a non-sent row is ignored — pending and queued rows never attach a lane",
+      j("t-pending").kind === "none" && j("t-subdir").kind === "none",
+      JSON.stringify([j("t-pending"), j("t-subdir")]));
+    check("lane join: as-written vs resolved toplevel (/var → /private/var) attaches as an ALIAS, never as a proven match",
+      laneOf("t-alias")?.slot === 9 && laneOf("t-alias")?.repo === "alias", JSON.stringify(j("t-alias")));
+    check("lane join: two open rows naming one slot attach to neither",
+      j("t-twin-a").kind === "refused" && j("t-twin-b").kind === "refused"
+        && refusedWhy("t-twin-a").includes("two open rows"), JSON.stringify([j("t-twin-a"), j("t-twin-b")]));
+    check("lane join: idle + dirty is said as BOTH facts and is not done-looking",
+      laneOf("t-dirty")?.state === "idle" && laneOf("t-dirty")?.dirty === 2 && laneOf("t-dirty")?.ahead === 0
+        && laneOf("t-dirty")?.quietMs === 120_000, JSON.stringify(j("t-dirty")));
+    check("lane join: idle + clean + ahead>0 reads done-looking; recent output reads running",
+      laneOf("t-done-looking")?.state === "done-looking" && laneOf("t-exact")?.state === "running",
+      JSON.stringify([j("t-done-looking"), j("t-exact")]));
+    check("lane join: unread git or an unobserved pane is state UNKNOWN, with the missing fact null",
+      laneOf("t-nogit")?.state === "unknown" && laneOf("t-nogit")?.dirty === null
+        && laneOf("t-unseen")?.state === "unknown" && laneOf("t-unseen")?.quietMs === null,
+      JSON.stringify([j("t-nogit"), j("t-unseen")]));
+    check("lane join: a closed row never attaches a lane — History stays history",
+      j("t-closed").kind === "none", JSON.stringify(j("t-closed")));
+    check("lane join: a slot without openedAt is refused as unknowable, and a row without a pointer is none",
+      refusedWhy("t-noopened").includes("no openedAt") && j("t-noslot").kind === "none",
+      JSON.stringify([j("t-noopened"), j("t-noslot")]));
+    const attached = laneSlotsOf(joins);
+    check("lane join: every lane appears zero or one times across all rows",
+      new Set(attached).size === attached.length
+        && JSON.stringify([...attached].sort((a, b) => a - b)) === JSON.stringify([3, 9, 11, 12, 13, 14]),
+      JSON.stringify(attached));
+    check("lane join: a row targeting a SUBDIRECTORY of the lane's toplevel is a match; unrelated paths are foreign",
+      modelFns.qRepoRelation("/repos/alpha/deep/dir", "/repos/alpha") === "match"
+        && modelFns.qRepoRelation("/repos/alpha", "/repos/alpha/") === "match"
+        && modelFns.qRepoRelation("/repos/alphabet", "/repos/alpha") === "foreign"
+        && modelFns.qRepoRelation("/x/app", "/y/app") === "foreign"
+        && modelFns.qRepoRelation(null, "/repos/alpha") === "unknown");
   }
   const openQueueSource = taskClientSource.slice(taskClientSource.indexOf("function openQueue"),
     taskClientSource.indexOf("// --- audit trail overlay", taskClientSource.indexOf("function openQueue")));
@@ -1243,6 +1356,26 @@ export async function run(ctx: Ctx): Promise<void> {
       eYoungRow?.status === "sent" && typeof eYoungRow?.slot === "number"
       && (await eLanesIn(REPO2)) === 1,
       JSON.stringify({ status: eYoungRow?.status, slot: eYoungRow?.slot, inB: await eLanesIn(REPO2) }));
+    // ...and the workbench's lane ↔ task join, run over THIS live poll rather than a fixture: the
+    // dispatched row attaches exactly its lane, the hand-opened lane in repo A hangs on no row
+    // (it carries no pointer, however same-repo it is), and no lane appears twice.
+    {
+      const live = (await (await get("/api/sessions")).json()) as
+        { now: number; dispatch: { repo: string }; slots: LaneSlot[]; tasks: LaneTask[] };
+      const joins = laneJoinFn ? laneJoinFn(live.tasks, live.slots, live.dispatch.repo, live.now) : null;
+      const young = joins?.get(eYoung.task.id) ?? { kind: "none" as const };
+      const attached = joins ? laneSlotsOf(joins) : [];
+      check("(e3)(a′) live poll: the dispatched row attaches exactly the lane the dispatcher gave it",
+        !!joins && young.kind === "lane" && young.lane.slot === eYoungRow?.slot
+          && ["running", "idle", "done-looking", "unknown"].includes(young.lane.state)
+          && (young.lane.repo === "match" || young.lane.repo === "alias"),
+        JSON.stringify({ young, slot: eYoungRow?.slot, joinReady: !!joins }));
+      check("(e3)(a″) live poll: the hand-opened lane attaches to no row, the queued row has none, and no lane appears twice",
+        !!joins && typeof eLaneA.slot === "number" && !attached.includes(eLaneA.slot)
+          && (joins.get(eOld.task.id)?.kind ?? "none") === "none"
+          && new Set(attached).size === attached.length,
+        JSON.stringify({ attached, laneA: eLaneA.slot, old: joins?.get(eOld.task.id) ?? null }));
+    }
     // ...and in that same window the blocked row did not move, and its note is the REPO cap's own
     // sentence naming repo A — not the program cap's, and not silence.
     const eOldRow = await eRow(eOld.task.id);

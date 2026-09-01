@@ -5298,6 +5298,8 @@ async function refresh() {
         // spends minutes in `refining` before it — both have to move the key or the pane lies.
         // In Waves, another row or active branch can move this row's advisory placement too.
         t.refine?.at, t.refining, t.comments?.n, t.comments?.at, analysisOn, briefCompilerOn,
+        // the lane line moves with the SLOTS (state, dirty, a recycled pointer), not with the row
+        qLaneKey(new Map([[t.id, qLaneJoinOf(t.id)]])),
         qView === "waves" ? qWaveProjectionKey() : null]) : "gone";
       if (dk !== qDetailKey) { qDetailKey = dk; renderQueueDetail(); }
     }
@@ -6547,6 +6549,90 @@ function qTaskSummary(t: TaskInfo, text: string, now: number): { title: string; 
   };
 }
 
+// --- LANE ↔ TASK JOIN — which live lane belongs to which open task row, from the 2 s poll alone.
+// The key is the dispatcher's own pointer: the dispatch core writes `task.slot = free.id` in the
+// same tick as `slot.taskId = task.id`, and every teardown clears both (server.ts#detachSlotTasks,
+// the boot reconciliation of `sent` rows). The poll carries only the TASK-side half — no
+// `taskId`/`originId`/`programId`/`sessionId` per slot — so the pointer is the one join this client
+// can make, and the guards below are what keep a stale pointer from painting a foreign lane on a row:
+//   · status `sent` — the pointer means nothing on any other status (a detached row is `pending`)
+//   · slot occupied AND a worktree — a recycled slot holding a plain checkout is not a lane
+//   · openedAt ≥ task.created — a session opened before the row existed cannot be its lane
+//   · repo — the row's target (or the dispatch default) against the lane's canonical toplevel. The
+//     digest carries the path AS WRITTEN and the slot the RESOLVED one, so equality (or a
+//     subdirectory of the toplevel) is a match, a segment-aligned suffix (/var/x vs /private/var/x)
+//     is an ALIAS this client cannot resolve and says so, and anything else is FOREIGN — refused.
+//   · program — UNCHECKED HERE: the poll carries no programId per slot. Said on the line, never
+//     read as a match. (The originId fallback is not derivable either, for the same reason.)
+// Each slot attaches to at most one row: two `sent` rows naming one slot attach to neither, so a
+// lane appears on the workbench zero or one times, never twice.
+interface QLaneSlot { id: number; cwd: string | null; openedAt?: number; lastOutput: number;
+  git?: { dirty: number; ahead: number } | null; worktree?: { repo: string; branch: string } | null }
+interface QLaneTask { id: string; status: TaskInfo["status"]; created: number; slot?: number;
+  repo?: string; programId?: string }
+// `state` is the activity word; `dirty` rides beside it so "idle with uncommitted work" is said as
+// both facts, not folded into one. done-looking is the GIT half of lane-signals' predicate (idle,
+// clean, ahead>0) — alive, git-op and merge status are not on this poll and stay unchecked.
+type QLaneState = "running" | "idle" | "done-looking" | "unknown";
+interface QLaneFacts { state: QLaneState; quietMs: number | null; dirty: number | null; ahead: number | null }
+interface QLaneView extends QLaneFacts { slot: number; branch: string; repo: "match" | "alias";
+  program: "unchecked" | "none" }
+type QLaneJoin = { kind: "lane"; lane: QLaneView } | { kind: "none" }
+  | { kind: "refused"; slot: number; why: string };
+// mirrors the server's FLEET_AUTO_REVIEW_IDLE_MS default — a claim about a foreign surface, which
+// is why the line prints the quiet time itself and never only the word derived from it
+const Q_LANE_IDLE_MS = 60_000;
+function qLaneState(s: QLaneSlot, now: number): QLaneFacts {
+  // lastOutput 0 = the pane was never observed; now 0 = no poll has stamped a clock yet. Either
+  // is UNKNOWN — a quiet time computed from it would be a number, and a wrong one.
+  const quietMs = s.lastOutput > 0 && now > 0 ? Math.max(0, now - s.lastOutput) : null;
+  const git = s.git ?? null;
+  const dirty = git ? git.dirty : null;
+  const ahead = git ? git.ahead : null;
+  if (quietMs === null || git === null) return { state: "unknown", quietMs, dirty, ahead };
+  const idle = quietMs >= Q_LANE_IDLE_MS;
+  if (!idle) return { state: "running", quietMs, dirty, ahead };
+  return { state: git.dirty === 0 && git.ahead > 0 ? "done-looking" : "idle", quietMs, dirty, ahead };
+}
+const qPathNorm = (p: string): string => p.replace(/\/+$/, "");
+function qRepoRelation(taskRepo: string | null, laneRepo: string): "match" | "alias" | "foreign" | "unknown" {
+  if (!taskRepo) return "unknown";
+  const a = qPathNorm(taskRepo);
+  const b = qPathNorm(laneRepo);
+  if (a === b || a.startsWith(`${b}/`)) return "match";
+  // both are absolute, so a suffix match is segment-aligned by construction (/var/x ⊂ /private/var/x)
+  if (a.endsWith(b) || b.endsWith(a)) return "alias";
+  return "foreign";
+}
+function qLaneJoins(tasks: readonly QLaneTask[], slots: readonly QLaneSlot[],
+  dispatchRepo: string, now: number): Map<string, QLaneJoin> {
+  const claims = new Map<number, number>();
+  for (const t of tasks) if (t.status === "sent" && typeof t.slot === "number")
+    claims.set(t.slot, (claims.get(t.slot) ?? 0) + 1);
+  const out = new Map<string, QLaneJoin>();
+  for (const t of tasks) {
+    if (t.status !== "sent" || typeof t.slot !== "number") { out.set(t.id, { kind: "none" }); continue; }
+    const slot = t.slot;
+    const refuse = (why: string): void => { out.set(t.id, { kind: "refused", slot, why }); };
+    const s = slots.find((x) => x.id === slot);
+    if (!s || !s.cwd) { refuse("the slot is empty — its lane is gone"); continue; }
+    if (!s.worktree) { refuse("the slot now holds a plain checkout, not a lane — recycled"); continue; }
+    if ((claims.get(slot) ?? 0) > 1) { refuse("two open rows name this slot — attached to neither"); continue; }
+    if (typeof s.openedAt !== "number" || !(s.openedAt > 0)) {
+      refuse("the poll carries no openedAt for this slot — cannot tell whether its session is older than this row");
+      continue;
+    }
+    if (s.openedAt < t.created) { refuse("the slot's session was opened before this row existed — a recycled pointer"); continue; }
+    const target = t.repo ?? (dispatchRepo || null);
+    const rel = qRepoRelation(target, s.worktree.repo);
+    if (rel === "foreign") { refuse(`the lane is in ${s.worktree.repo}, foreign to this row's target ${target}`); continue; }
+    if (rel === "unknown") { refuse("this row names no target repo and no dispatch default is known"); continue; }
+    out.set(t.id, { kind: "lane", lane: { slot, branch: s.worktree.branch, repo: rel,
+      program: t.programId ? "unchecked" : "none", ...qLaneState(s, now) } });
+  }
+  return out;
+}
+
 function qWaveAnalysis(t: TaskInfo) {
   const digest = t.analysis;
   return matchTaskWaveAnalysis(digest ? {
@@ -7205,6 +7291,48 @@ function renderProgramDetail(shell: Shell, id: string): void {
   bs.appendChild(acts);
 }
 
+// The lane line under a task row and at the top of its detail (qLaneJoins). `null` for a row
+// with no pointer: nothing is drawn, because "no lane" on a pending row is not information. A
+// `sent` row whose pointer was REFUSED does draw — that row claims to be running, and the line
+// is where the owner sees that nothing attachable is.
+function qLaneLine(join: QLaneJoin): HTMLElement | null {
+  if (join.kind === "none") return null;
+  if (join.kind === "refused") {
+    const off = el("div", "shrsub qlane qlane-off", `slot ${join.slot} · no lane attached`);
+    off.title = join.why;
+    return off;
+  }
+  const l = join.lane;
+  const facts = [l.state === "unknown" ? "state unknown" : l.state,
+    l.dirty !== null && l.dirty > 0 ? `dirty ${l.dirty}` : "",
+    l.quietMs !== null ? `quiet ${fmtDur(l.quietMs)}` : ""].filter(Boolean).join(" · ");
+  const line = el("div", `shrsub qlane qlane-${l.state}`,
+    `⎇ ${l.branch.replace(/^fleet\//, "")} · slot ${l.slot} · ${facts}`);
+  line.title = [
+    `branch ${l.branch} in slot ${l.slot}`,
+    l.state === "unknown"
+      ? (l.quietMs === null ? "no output observed yet — running/idle cannot be told"
+        : "git facts not read yet — dirty/ahead unknown")
+      : `${l.state}: quiet ${fmtDur(l.quietMs ?? 0)} (idle from ${Q_LANE_IDLE_MS / 60000} min), dirty ${l.dirty}, ahead ${l.ahead}`,
+    l.state === "done-looking"
+      ? "done-looking checks idle + clean tree + ahead>0 only — alive, git-op and merge state are not on this poll" : "",
+    l.repo === "alias"
+      ? "target repo and lane toplevel differ by a path prefix (alias) — this client cannot resolve symlinks, so the repo match is unproven"
+      : "target repo matches the lane's toplevel",
+    l.program === "unchecked" ? "program membership unchecked — the poll carries no programId per slot" : "",
+  ].filter(Boolean).join("\n");
+  return line;
+}
+// what a repaint key needs of the joins: everything the line PAINTS except the quiet time, whose
+// minute already rides the list key — keying on the raw ms would rebuild the list on every poll
+function qLaneKey(joins: ReadonlyMap<string, QLaneJoin>): unknown[] {
+  return [...joins].map(([id, j]) => j.kind === "lane"
+    ? [id, j.lane.slot, j.lane.branch, j.lane.state, j.lane.dirty, j.lane.ahead, j.lane.repo, j.lane.program]
+    : j.kind === "refused" ? [id, j.slot, j.why] : null).filter(Boolean);
+}
+const qLaneJoinOf = (id: string): QLaneJoin =>
+  qLaneJoins(tasksList, fleet, dispatch.repo, serverNow).get(id) ?? { kind: "none" };
+
 function renderQueueDetail() {
   const shell = qShell;
   if (!shell) return;
@@ -7341,6 +7469,17 @@ function renderQueueDetail() {
   const crit = taskCriterionFull.get(t.id) ?? t.criterion;
   const ref = taskRefineFull.get(t.id);
   shell.detail.appendChild(el("div", "rvhead", `${t.status}${t.slot ? ` · slot ${t.slot}` : ""}`));
+  // the lane this row is running in, or why none attaches — the same line the list draws. The
+  // refusal reason is spelled out in full (a `sent` row with nothing attached is the state the
+  // owner must be able to read); an attached lane keeps its facts in the title, so the row's
+  // Actions stay inside the first 1440×900 view (measured 2026-09-02: a visible paragraph here
+  // pushed `done` to the pane's bottom edge).
+  const laneJoin = qLaneJoinOf(t.id);
+  const laneLine = qLaneLine(laneJoin);
+  if (laneLine) {
+    shell.detail.appendChild(laneLine);
+    if (laneJoin.kind === "refused") shell.detail.appendChild(el("div", "shellhint", laneJoin.why));
+  }
   const overview = qDetailSection(shell.detail, "Overview & discussion");
   const hasRefinement = (!qAdvisory(t) && (t.status === "pending" || t.status === "queued"))
     || brief !== undefined || crit !== undefined || ref !== undefined;
@@ -7758,11 +7897,14 @@ function renderQueue() {
   void loadPrograms();  // no-op unless the poll's digest moved or the floor elapsed
   const model = qTaskListModel(tasksList, taskText, programsList, qQuery);
   const shown = model.work;
+  const laneJoins = qLaneJoins(tasksList, fleet, dispatch.repo, serverNow);
   // REBUILD ONLY ON CHANGE. Without this the 2 s poll would rebuild the list under the cursor and
   // reset the selection every two seconds — the same class of defect as the compose box above.
   const now = Date.now();
   const key = JSON.stringify([qView, qPick, qQuery, qProgDone, dispatch.on, dispatch.available, intakeOn,
     Math.floor(now / 60000), qView === "waves" ? qWaveProjectionKey() : null,
+    // the lane line is derived from the slots too — a lane going idle or dirty moves no task field
+    qLaneKey(laneJoins),
     // the MARK is derived from the slots, so it moves without any program field moving. Leaving
     // it out of the key would freeze a MAIN at `live` for as long as no task changed.
     programsRead, programsList.map((p) => [p.id, p.status, p.title, programMark(p).mark]),
@@ -7797,7 +7939,7 @@ function renderQueue() {
   const rows: ShellRow[] = [];
   let selIdx = -1;
   qRowId = new Map();
-  const add = (o: { name: string; facts?: QRowFacts; cls?: string; id: string | null }) => {
+  const add = (o: { name: string; facts?: QRowFacts; cls?: string; id: string | null; sub?: HTMLElement | null }) => {
     const r = el("div", `shellrow${o.cls ? ` ${o.cls}` : ""}`);
     qRowId.set(r, o.id);
     const m = el("div", "shrmain");
@@ -7813,6 +7955,7 @@ function renderQueue() {
       });
       m.appendChild(facts);
     }
+    if (o.sub) m.appendChild(o.sub);
     r.appendChild(m);
     const act = () => qSelect(o.id);
     r.onclick = act;
@@ -7825,6 +7968,7 @@ function renderQueue() {
     const summary = qTaskSummary(t, qTaskText(t.id), now);
     add({
       name: summary.title, facts: summary.facts, id: t.id,
+      sub: qLaneLine(laneJoins.get(t.id) ?? { kind: "none" }),
       cls: [`q-${t.status}`, qAdvisory(t) ? "q-obs" : "",
         t.analysis && t.analysis.verdict !== "ready" ? "q-flag" : ""].filter(Boolean).join(" "),
     });

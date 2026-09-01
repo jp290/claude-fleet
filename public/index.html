@@ -473,6 +473,12 @@
   .shellrow .shrsub { font-size: 10.5px; color: #6f6f6f; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; margin-top: 1px; }
   .shellrow.sel .shrsub { color: #9aa7c7; }
+  /* the lane line under a task row: the dispatcher's slot pointer resolved client-side
+     (src/client.ts qLaneJoins) — one line, ellipsised, so the row never grows past it */
+  .qlane { font-family: ui-monospace, Menlo, Consolas, monospace; margin-top: 2px; }
+  .qlane-off { color: var(--amber); }
+  .qlane-done-looking { color: var(--add); }
+  .shelldetail .qlane { white-space: normal; font-size: 11.5px; margin: 2px 0 4px; }
 
   /* review window: per-row +/− counts, and the diff filling the detail pane instead of sitting
      in its own 60vh scroller (the pane already scrolls — two nested scrollers is the bug that

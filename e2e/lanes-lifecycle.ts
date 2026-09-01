@@ -3,6 +3,7 @@
 // the CLONE lane form — same lifecycle, a working copy that is its own repository.
 import { spawnSync } from "node:child_process";
 import { lstatSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { laneDoneLooking, laneHostCommitLooking, type LaneSignalView } from "../lane-signals";
 import { BASE, REPO, ROOT, check, get, post, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
@@ -53,6 +54,46 @@ export async function run(lc: LaneCtx): Promise<void> {
       if (readerReady) {
         check("hostCommitLooking is served false for Claude dirt (that state stays stalled-dirty)",
           clV?.hostCommitLooking === false && clV.doneLooking === false, JSON.stringify(clV));
+      }
+      // --- the workbench's lane ↔ task join (src/client.ts qLaneJoins) over this same lane, from the
+      // OWNER poll it actually reads. Two facts, both about a lane no task row ever named: it hangs
+      // on no row however same-repo it is (the join is the dispatcher's pointer, never a repo
+      // guess), and its state line carries the dirty count the steward view just confirmed, with
+      // running/idle said only where output was observed and UNKNOWN where it was not.
+      {
+        type PollSlot = { id: number; cwd: string | null; openedAt?: number; lastOutput: number;
+          git?: { dirty: number; ahead: number } | null; worktree?: { repo: string; branch: string } | null };
+        type PollTask = { id: string; status: string; created: number; slot?: number; repo?: string };
+        type Join = { kind: "lane"; lane: { slot: number; state: string; dirty: number | null; quietMs: number | null } }
+          | { kind: "none" } | { kind: "refused"; slot: number; why: string };
+        type JoinFns = { qLaneJoins: (t: PollTask[], s: PollSlot[], repo: string, now: number) => Map<string, Join>;
+          qLaneState: (s: PollSlot, now: number) => { state: string; dirty: number | null; quietMs: number | null } };
+        let joinFns: JoinFns | null = null;
+        let joinErr = "";
+        try {
+          const src = readFileSync(`${resolve(realpathSync(`${ROOT}/node_modules`), "..")}/src/client.ts`, "utf8");
+          const a = src.indexOf("type QGroup =");
+          const b = src.indexOf("function qWaveAnalysis", a);
+          joinFns = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(src.slice(a, b))
+            + "\nreturn { qLaneJoins, qLaneState };")() as JoinFns;
+        } catch (e) { joinErr = e instanceof Error ? e.message : String(e); }
+        check("lane join precondition: the workbench join block is cut out of the real client source",
+          joinFns !== null && typeof joinFns.qLaneJoins === "function", joinErr);
+        const live = (await (await get("/api/sessions")).json()) as
+          { now: number; dispatch: { repo: string }; slots: PollSlot[]; tasks: PollTask[] };
+        const mine = live.slots.find((x) => x.id === cl.slot);
+        const joins = joinFns?.qLaneJoins(live.tasks, live.slots, live.dispatch.repo, live.now) ?? new Map<string, Join>();
+        const hung = [...joins.values()].filter((x) => x.kind === "lane" && x.lane.slot === cl.slot);
+        check("lane join: a hand-opened lane with no task pointer hangs on no task row, same repo or not",
+          !!joinFns && !!mine?.worktree && hung.length === 0,
+          JSON.stringify({ slot: cl.slot, worktree: mine?.worktree ?? null, hung, rows: live.tasks.length }));
+        const st = mine && joinFns ? joinFns.qLaneState(mine, live.now) : null;
+        const observed = (mine?.lastOutput ?? 0) > 0;
+        check("lane join: the state line carries the dirty count the poll serves, and says running/idle only for an observed pane",
+          !!st && st.dirty === 1
+            && (observed ? (st.state === "running" || st.state === "idle") && st.quietMs !== null
+              : st.state === "unknown" && st.quietMs === null),
+          JSON.stringify({ st, observed, lastOutput: mine?.lastOutput, git: mine?.git ?? null }));
       }
     }
     if (cl.slot) await post(`/api/slots/${cl.slot}/kill`, {});

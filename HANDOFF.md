@@ -1,3 +1,138 @@
+# HANDOFF — Generalsanierung: Codex-Haertung gelandet, P2 gebrieft und queued, drei neue P6-Befunde, 2026-09-01 (abends)
+
+Program **`b2a14b545fd31fd71ba7b9e1`** aktiv, gebunden. Ersetzt den Nachmittags-Abschnitt darunter.
+
+## 1. Autoritaet & Betrieb (unveraendert uebernommen, nichts Neues entschieden)
+
+- Self-Land-Promotion **green-only**; mein Land lief `actor.kind=main`, `confirmedByHuman:false`.
+- Master-Stop bleibt AN. Weg unveraendert: file -> release -> **Hand-Dispatch**
+  `POST /api/tasks/<id>/dispatch` (Body `{}` oder `{harness,model,effort}`).
+- **Die Selbst-Tuer ist weiterhin zu**: `POST /api/self/tasks` antwortete mir woertlich
+  `program filing cap reached (5/5 filed rows not yet released)`. Ich habe deshalb ALLES ueber die
+  Owner-Tuer `POST /api/tasks` mit `programId` gefiled — der Program-Link haelt, die Zeile bekommt
+  `source:"owner"` und braucht darum Hand-Dispatch. Das ist genau der Mangel, den `8cd6deca` behebt.
+- auto-③ ist AUS nachgeprueft (`FLEET_AUTO_REVIEW_MS live=0`, und `suites running now: 0` beim
+  Ablesen — der `live=`-Sensor luegt nur, WAEHREND eine Suite laeuft).
+- Claude Code steht auf **2.1.257** (Native-Install, Auto-Updater lief 2026-09-01 19:58). `claude
+  update` sagt "up to date". **Es gibt kein Opus 5.1** — die installierte Binary kennt als neuestes
+  `claude-opus-5` / `claude-opus-5[1m]`. Owner hat danach gefragt; Antwort steht, kein offener Punkt.
+
+## 2. Gelandet & selbst verifiziert
+
+**`e9c10ee` (Task 4908a900, Codex-Update-Prompt)** — zwei Commits, ein Land:
+`c83969d` (Erkennung) + `e9c10ee` (Review-Rueckbau). Land-Note: `verify.ok true`, volle Kette,
+7 Schritte, 96 s, `waitMs 0`, `exitCode 0`.
+- Inhalt: der blockierende Codex-Update-Schirm ist ein BENANNTER blocked-Screen ("codex update
+  prompt"); `-c check_for_update_on_startup=false` auf frischer UND resume-Spawnform; zwei neue
+  e2e-Checks (Menue -> named requeue, Banner+Marker -> zugestellt) plus zwei Pins.
+- **Was ICH nachgeprueft habe statt zu glauben:** (a) den Recherche-Beleg nicht in Release Notes,
+  sondern in der INSTALLIERTEN Binary — `strings .../codex-darwin-arm64/.../bin/codex` findet
+  `check_for_update_on_startup` 19x in der serde-Feldliste von `struct ConfigToml with 96 elements`;
+  (b) `bun e2e/pins.ts` ALL PASS und die Gate-tsc exit 0, von mir im Lane-Worktree gefahren;
+  (c) die Readiness-Klassifikation mit den LIVE aus server.ts gelesenen Regexes gegen drei Schirme.
+- **Der Review-Befund, der den zweiten Commit ausgeloest hat:** die Lane hatte `paneReadiness` global
+  auf accept-first gedreht (Marker schlaegt Blocks). Das kippt die Fehlrichtung von fail-safe auf
+  **fail-open** — ein kuenftiger Blockschirm, der den Header mitrendert, bekaeme den Brief gepastet.
+  Und die Drehung kauft NICHTS: die Block-Regex verlangt `Update now \(runs` UND `Skip until next
+  version`, der Banner-Text hat beides nicht, also klassifiziert blocks-first ihn ohnehin als ready.
+  Mein Beleg, den die Lane nicht hatte — ein selbstgebauter Trust-Schirm MIT Header:
+  `{"prompt":"blocked:codex update prompt","banner":"ready","trustWithHeader":"blocked:codex trust prompt"}`.
+  Unter accept-first waere die dritte Zeile `ready` gewesen.
+
+## 3. In Flug — das Erste, was du tust
+
+1. **Audit-Watch NEU ARMIEREN** (Watches sterben mit meinem Slot): `e9c10ee`, also
+   `POST /api/self/watch {"kind":"audit","repo":"/Users/owner/claude-fleet","mainAfter":"e9c10ee4facff2a64dd8ce1bfe0a2065ac9463aa"}`.
+   Meiner (`d1efc8c6`) war beim Schreiben armed und ungefeuert.
+2. **Slot 10 / `8cd6deca` laeuft und hat einen ENTSCHEID von mir schriftlich.** Die Lane kam mit
+   `needs-main` zurueck (Brief-STOPP korrekt ausgeloest) und ich habe entschieden statt zu
+   eskalieren — der Brief hatte das Alternativ-Design vorautorisiert. Der Entscheid, den sie baut:
+   `PROGRAM_MAX_PENDING` (5) zaehlt nur noch `kind==="auftrag"`, PLUS ein NEUER Deckel
+   `PROGRAM_MAX_PENDING_ADVISORY` (Default 10) ueber notiz/richtung/betrieb; beide 409 nennen Zahl
+   UND Art; der Rechnungs-Absatz `server.ts:3117-3128` wird EHRLICH neu geschrieben (16x15=240,
+   und warum die MAX_TASKS-Gegenueberstellung schon vorher eine Reserve war); Lockstep
+   `e2e/security.ts` + `docs/self-api.md`; drei Fixtures inkl. einer, die den neuen Deckel als SICH
+   SELBST beweist; ZWEI getrennte Mutationsbeweise.
+   - **Die Lesekorrektur, die den Entscheid traegt** (sie stand einen Satz zu kurz): die Lane hielt
+     die 16x5-Rechnung fuer eine Garantie. Der Kommentar sagt zwei Zeilen darueber selbst
+     *"That is a margin, not a new guarantee"*, und `capTasks` (`server.ts:2899-2902`) evictet
+     AUSSCHLIESSLICH terminale Rows — `MAX_TASKS` hat pending Rows nie begrenzt.
+3. **Slot 9 rettet die Trail-Namen** (siehe §4b). Antwort stand bei Uebergabe aus.
+4. **Dann P2 dispatchen, SERIELL, nicht beide:** `9825cfd9` (Teil A) zuerst, `63a32ac2` (Teil B)
+   erst DANACH — Teil B's Brief traegt eine harte Reihenfolge-Vorbedingung auf A (beide fassen
+   `CLIENT_ONLY_FILES` an). Beide `queued`, beide `source:owner`, beide brauchen Hand-Dispatch.
+   Vorschlag `claude` / `claude-opus-5[1m]` / `high` (Urteilsanteil hoch, siehe Briefe).
+   **UND: nicht dispatchen, solange ein Post-Land-Audit laeuft** — Begruendung in §4a.
+
+## 4. Drei neue P6-Befunde, alle gemessen, alle als Queue-Zeile abgelegt
+
+- **(a) `0ac22a00` — Stufe 2 hat EIN Budget fuer Warten UND Arbeiten, der Land-Gate hat zwei.**
+  Gemessen am Audit von `3974883`: `unknown`, `ms=1800251`, `exitCode null`, und in der out-Spur
+  *"[suite-lock] waiting 849s ... acquired after 879s"*. Nach 879 s Mutex blieben 921 s von 1800 s;
+  ein echter Lauf braucht ~680-700 s, unter Doppellast mehr. `POSTLAND_AUDIT_TIMEOUT_MS` ist bei
+  `server.ts:14066` EIN setTimeout um den ganzen Spawn, und der Mutex-Wait liegt darin.
+  Der Gate trennt das seit `08dc17a` (`FLEET_VERIFY_TIMEOUT_MS` / `FLEET_VERIFY_WAIT_MS`).
+  **Eigener Anteil, damit die Zeile nicht wie hoehere Gewalt liest:** die Kontention war meine —
+  zwei Lanes parallel, beide mit "Tier-2-Vorschau ist Pflicht" gebrieft. Daraus die Betriebsregel
+  oben: keinen Lane-Dispatch neben einen laufenden Audit stellen.
+  **Konsequenz: `3974883` und `4243394` haben KEIN Stufe-2-Verdikt.** Ich habe bewusst keinen
+  Nachlauf gestartet (das waere derselbe Fehler nochmal).
+- **(b) `6d2a4d4b` — der Land-Gate, der wirklich laeuft, ist nicht der, den die Pins vergleichen.**
+  `watchdog.sh:91`, `AGENTS.md` und `CLAUDE.md` haben `src/helper.ts` in der tsc-Liste, `RULE_VERIFY`
+  vergleicht genau diese Quellen, Pin gruen. Die Land-Note von `e9c10ee` zeigt eine Liste OHNE
+  `src/helper.ts`. Aufloesung: `.env` traegt `FLEET_VERIFY_CMD_REPOS` mit einem Eintrag fuer
+  `/Users/owner/claude-fleet` SELBST, und der gewinnt ueber die globale Kette. Live-vs-Note-Diff:
+  **genau ein Token**. Der srv-Env HAT `src/helper.ts` — watchdog.sh ist also aktuell, das Land
+  faehrt trotzdem den Repo-Eintrag. `.env` ist gitignored, `rg` findet ihn nie; `./state.sh` zeigt
+  `FLEET_VERIFY_CMD live=[` abgeschnitten. **Nicht eigenmaechtig gefixt** — die `.env`-Korrektur
+  aendert das Live-Gate fuer JEDES Repo und braucht einen srv-Neustart: Owner-Entscheid. Der
+  zweite Teil ist der wichtigere: ohne einen Pin ueber den EFFEKTIVEN Befehl
+  (`GET /api/self/gate` liefert ihn) faellt es beim naechsten Ketten-Edit wieder auseinander.
+- **(c) Das Muster hinter (b):** `src/helper.ts` kam als DRITTES Bundle dazu, und drei Stellen haben
+  es nie gelernt — die Gate-Liste (b), `server.ts#CLIENT_ONLY_FILES` (:21272, fehlt -> `deployGap`
+  meldet `codeBehind:true` fuer ein reines helper-Land) und `server.ts#BUNDLES` (:21320, fehlt ->
+  `bundleStale` stat't `public/helper.js` nie, also ein FALSE FRESH). Die letzten beiden sind in
+  **P2a (`9825cfd9`) schon ausgeschrieben gebrieft**, mit Belegen.
+
+## 5. Die Remote-Audit-Front
+
+- Vierter namenloser Remote-Rot: `54964d1`, 7 FAILURES, `checks:null`, adjudiziert `unknowable`.
+  Serie in zeitlicher Ordnung: **05f37f1:10 · 3058556:10 · 86e704a:7 · 54964d1:7**. Das sieht nach
+  zwei stabilen Mengen aus, nicht nach Zufall — **Hypothese, kein Befund**, ohne Namen nicht
+  entscheidbar. Gegen einen Regress spricht: jedes Land `verify.ok true`, jeder Baum lokal ALL PASS.
+- **Der Ausweg, den ich gefunden habe: die Namen existieren HEUTE, ohne Daemon-Update.** Jede rote
+  Zeile traegt eine `trail:`-PASS-Zeile mit dem ABSOLUTEN Pfad der Trail-Datei auf dem Geraet:
+  `/var/lib/fleet-helper/work/run-26ea1a205005-<ts>/tree/e2e-trail/isolated-<stamp>.jsonl`
+  (1788242397347 · 1788247717610 · 1788256153717 · **1788277962460**, je 3358-3366 rows).
+  An Slot 9 geschickt mit der Bitte, ZUERST die Retention zu pruefen — das ist das Einzige mit
+  Zeitdruck, die `run-*`-Verzeichnisse verfallen von selbst. Wenn nur eine zu retten ist: die letzte.
+- Der Daemon-Update (git pull + systemctl restart fleet-helper auf >= `3974883`) bleibt sinnvoll,
+  ist aber nicht mehr die Voraussetzung fuer die Antwort.
+
+## 6. Ehrlichkeiten & Reste
+
+- **Watches sterben mit meinem Slot.** Bei Uebergabe armed: nur `d1efc8c6` (Audit auf `e9c10ee`).
+  Vier andere sind gefeuert. Neu armieren, siehe §3.1.
+- **Slot 10s Report ist an MEINEN Slot adressiert** (`receiver.slot 1`). Kommt er nach der
+  Nachfolge, pruefe `GET /api/self/fleet-report` und die Events der Nachfolgerin — ich habe NICHT
+  verifiziert, wie ein Report auf einen retirten Receiver reconciled wird. Das ist eine offene
+  Unbekannte, keine Behauptung.
+- Queue-Stand: 2 auftrag queued (P2a/P2b) · 1 auftrag sent (8cd6deca, Slot 10) · 7 notizen pending
+  (davon **5e79be26** in W3 miterledigt und **d2335500** durch `3974883` erledigt — beide vom Owner
+  schliessbar; af8dd29c, 39fbbd1f, d07646bc, 0ac22a00, 6d2a4d4b offen) · 1b677e58/ff535524
+  Feature-Freeze-geparkt · b0ad8a79 fremdes Program (Slot 5, nicht anfassen).
+- Kein Deploy noetig/gefahren: das Land ist server.ts-beruehrend, aber ich habe **nicht** deployt —
+  der Live-Server faehrt weiter `3974883`. **Das ist eine offene Entscheidung fuer dich**: `e9c10ee`
+  aendert `paneReadiness` und die Codex-Spawnzeile, wirkt also erst nach einem Deploy (Verb 2,
+  `POST /api/deploy`). Vorher pruefen, dass kein Audit laeuft — Verb 2 lehnt dann mit 409 ab.
+- `bundleStale.stale:false` und `deployGap.codeBehind:false` beim letzten Ablesen (vor dem Land).
+- Maschinen-Hygiene unberuehrt gelassen: 2 leaked e2e-Sockets, 1,4 G TMPDIR-Scratch. Reapen waehrend
+  laufender Suiten ist der gefaehrliche Zug, nicht der ordentliche.
+- ctx bei der Uebergabe-Entscheidung: **27 % gemessen** (269666/1000000) am eigenen Slot im
+  Owner-Poll. Restkette danach: Handoff schreiben + committen + succeed.
+
+---
+
 # HANDOFF — Generalsanierung: P1 KOMPLETT (W1-W4), drei P6-vorgezogene Fixes, Codex-Update-Falle geloest, 2026-09-01 (nachmittags)
 
 Program **`b2a14b545fd31fd71ba7b9e1`** aktiv, gebunden. Ersetzt den Morgen-Abschnitt darunter.

@@ -97,6 +97,43 @@ scheiterte deterministisch, Notiz `9c7d6e02`); Slot-Datensatz traegt `claude-fab
 korrekt. Owner-Vorgabe des Abends: alle Sessions/Lanes Fable 5.1 high, Usage bis morgen praktisch
 unbegrenzt, „sauber nach der Reihe". ctx bei Uebergabe-Entscheid: **27,3 % gemessen**.
 
+## 0. Nachtrag 2026-09-02 00:05 (vor der Uebergabe, ctx 31,6 % gemessen) — was seit §1 passiert ist
+
+- **Hotfix GELANDET und DEPLOYED:** main `93d6cfa` (Land-Note `verify.ok true`, 7 Schritte, actor
+  Controller), Post-Land-Audit **green, 3385 Checks, 0 failed, 1553 s**. Deploy `b741d9de ok:true`,
+  Server bootet auf `0f51abc`, `codeBehind:false`, `bundleStale:false`. **Der Bug ist zu:** der
+  Re-Dispatch von `dac21cc7` erzeugte `s1` exakt (`self_heal_recreate created:no-session`) neben
+  lebendem `s10`.
+- **Slot 1 = Brief 1 (Private-repo-y), ECHT:** Lane `fleet/260901215805-c384` im Repo private-repo-p,
+  Fable 5.1 high, Brief zugestellt (kein Trust-Dialog). Platzhalter `s1` weg, Phantom-Worktree
+  `fleet-260901201722-fda8` entfernt (0 ahead, clean), Branch geloescht. Slot 3 informiert; der
+  Worker-Report geht an Slot 3 (Program-MAIN), Land ist dort Sache von Slot 3 (wie `b0ad8a79`).
+- **MEIN DEPLOY HAT SLOT 2s P2a-LAND UNTERBROCHEN** (`self_land_start` 23:52:39, Restart 23:56):
+  `GET /api/slots/8/merge` → `last.status:"interrupted"`, `landed:false`. Kein Schaden (Lane 8
+  sauber auf `2cd51cf`, 1 ahead, rebased). Preflight prueft nur den Audit, nicht laufende Merges
+  — **Notiz `4e29e778`** (P6). Slot 2 hat sich in **Slot 11** nachgefolgt (Sanierungs-MAIN, Program
+  `b2a14b54`; Footer Opus 5 — per `/send` gebeten, `/model claude-fable-5-1[1m]` zu setzen) und
+  untersucht den interrupted-Merge selbst; ich habe ihr die Ursache geschickt und Lane 8 NICHT
+  angefasst. **Sie landet P2a erneut (self-land, green-only).**
+- **Slot 16** ist neu, ohne Label, zeigt einen `/usage`-Screen — nicht von mir, vermutlich Owner.
+- Notiz `dde33a1d` (Stream-Attach ohne Ziel-Sensor, §2c) gefilet.
+- Suite-Lage 00:05: Lane A (Slot 5) faehrt ihre Kette nach einem „repaired tree" erneut; Mutex-
+  Schlange unbekannt lang. Slot 8 bestaetigt: seine vier Schnitte sind byte-identisch zum
+  vermessenen Baum.
+
+**Reihenfolge fuer dich (ersetzt §3.1–3.2, die sind erledigt):**
+1. Main-Watcher legen (Basis = aktueller main). Feuert er mit dem P2a-Land (`2cd51cf`-Commit
+   „fix: classify server/ and count all three client bundles" auf main): `ff535524` (Slot 7) und
+   `63a32ac2` (P2b) mit dem Fable-Tripel dispatchen (`POST /api/tasks/:id/dispatch`,
+   `{"harness":"claude","model":"claude-fable-5-1[1m]","effort":"high","acknowledged":true}`).
+2. Fleet-Report-Watcher auf `audit.jsonl` (`fleet_report_open`) legen. Kommt Lane As Report
+   (Slot 5 → Slot 4): Pane lesen, `POST /api/slots/5/merge`, `{kind:"merge",target:5}`
+   abonnieren, dann `b0c15ca5` dispatchen.
+3. **Kein Deploy, solange `GET /api/slots/:id/merge` irgendwo `running:true` sagt** — der
+   Preflight tut das nicht fuer dich.
+4. Owner-Entscheidungen unveraendert: `db2d6c85` · Freunde-Jobs · zweite Instanz (§4) · Slot 6
+   Canary · Restart-Updates Slots 6/9.
+
 ## 1. Was steht (verifiziert)
 
 - **main = `6404c8d`** (mein Docs-Direktcommit, s. §4) ueber `fec5b23`. Live-Server seit 21:42 auf

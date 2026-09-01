@@ -1,3 +1,40 @@
+# HANDOFF — Fleet Controller (Slot 1): Lagebericht aller Slots, Codex-MAINs auf Fable neu gegruendet, Event-Zustell-Sturm beendet, .env-Gate korrigiert, 2026-09-01 (spaet abends)
+
+Rolle: **🎛 Fleet Controller**, nicht Program-MAIN. Die Sanierung fuehrt Slot 2 (Program `b2a14b54`), eigenstaendig.
+Owner-Vorgabe des Abends (Chat, woertlich sinngemaess): „all diese sessions in fable 5.1 aufsetzen, unlimited usage bis morgen" und „sauber nach der Reihe angehen". Erste Session auf Fable 5.1.
+
+## 1. Was steht (alles verifiziert, nichts geschaetzt)
+
+- **Live-Slots bei Uebergabe:** 1 Controller (ich) · 2 Sanierung-MAIN (Fable 5.1, Datensatz sagt Opus) · 3 Private-repo-y-MAIN (Fable, NEU) · 4 Fleet-ohne-Owner-Routing-MAIN (Fable, NEU) · 5 Lane `3c72fe3a` (Fable, NEU, `fleet/260901201138-9c83`) · 6 Private-repo-o-MAIN (Owner-Hold, per `/model` auf Fable) · 7 Task-Workbench-MAIN (Fable, NEU) · 8 Lane P2a `9825cfd9` (Opus, von Slot 2 dispatcht) · 9 Second-host-MAIN (per `/model` auf Fable). Geschlossen: 8/12/13/15/16 (fertig seit 30./31.08.) und die drei Codex-MAINs 3/4/7 (taub, s. §2).
+- **main = `79075de`** (docs-Direktcommit von Slot 7) ueber `d4f2bfc` (Land von `8cd6deca`, Filing-Deckel, actor main Slot 2, verify.ok true, 7 Schritte, 110 s). Live-Server seit 21:42 auf `24be084`+Env; Deploy `9c35642b ok:true`. `bundleStale:false`, `codeBehind` ist nach `d4f2bfc`/`79075de` zu pruefen (`./state.sh`).
+- **`.env` (gitignored) hat DREI neue Fakten:** (a) `FLEET_VERIFY_CMD_REPOS[claude-fleet]` ist jetzt token-identisch mit `watchdog.sh#VERIFY_CMD` — `src/helper.ts` war das einzige fehlende Token; **Land-Note `d4f2bfc` beweist es live** (cmd enthaelt `src/helper.ts`). Damit ist der `.env`-Teil von P6-Zeile `6d2a4d4b` erledigt, **der Pin ueber den EFFEKTIVEN Befehl bleibt offen** (Zeile bleibt pending). (b) `[private-repo-p]` = `sh scripts/verify.sh` (vorher `tools/`, existierte nie; Xcode + 1 iOS-Runtime vorhanden) — Slot 3 hat damit `b0ad8a79` gelandet (`f155520` auf private-repo-p main). (c) `FLEET_MODEL='claude-fable-5-1[1m]'` als Fleet-Default (`server.ts#DEFAULT_MODEL` liest es via `set -a` im Watchdog) — **greift erst nach dem naechsten srv-Restart**; bewusst nicht sofort restartet (Audit-Queue). Backups beider Dateien im Scratchpad dieser Session.
+- `~/.claude.json`: `projects["/Users/owner/private-repo-p"].hasTrustDialogAccepted=true` von Hand gesetzt (Grund §2b).
+- Worktree `fleet-260901185118-1774` (verwaist, leer) entfernt, Branch geloescht.
+
+## 2. Zwei gemessene Bugs, beide als Queue-Zeilen, einer schon in Arbeit
+
+- **(a) Fleet-Report-Recovery ohne Deckel hungert die Event-Zustellung an Program-MAINs aus.** Drei `send-uncertain`-Events mit 1529/1565/1540 Versuchen (Slots 3/4/7, ~1/min, 4633 Audit-Zeilen `recovery prompt not accepted — composer still holds N chars`); jeder eigene Paste bumpt `s.lastOutput` (`server.ts:10041`), der Receiver wird nie 60 s idle, fuenf weitere Events blieben bei 0 Versuchen (darunter zwei merge-terminal). Slots 3 und 4 waren deshalb >24 h blind. Gemessen: lastOutput-Alter der drei Slots zykelte 3..61 s, Slot 15 (Codex, kein Empfaenger) 900 s+. Notiz `8d764657` (Sanierung) → **geschlossen als uebernommen durch Auftrag `3c72fe3a`** (Program 66499a03, Slot 4 hat ihn selbst gefiled; Kriterium: `FLEET_REPORT_RECOVERY_MAX_ATTEMPTS`, eigener Paste zaehlt nicht als Output, Starvation-Falsifier). **Lane laeuft in Slot 5, von mir hand-dispatcht als Fable** (Brief sagt „Codex-Lane", Owner-Vorgabe gewinnt). `b92e9cc9` (Lineage) wartet auf A, ebenfalls Hand-Dispatch.
+  Ungeklaert: WARUM Codex 0.147 die Paste+Enter eines Reports nicht submittet (Dispatch-Briefe kommen an).
+- **(b) Claude-Trust-Dialog eines FRISCHEN cwd frisst den Gruendungsbrief** (`e4a001b0`, pending): bootstrap-main fuer private-repo-p kam `ok:true` zurueck, die Pane zeigte „Yes, I trust this folder", der Brief beantwortete den Dialog mit Exit, `agent: no-agent`, nackte Shell. Codex hat dafuer `paneReadiness()`, claude nicht.
+
+## 3. In Flug — das Erste, was du tust
+
+1. **Deine eigene Pane auf Fable pruefen:** `succeed` reicht `claude-opus-5[1m]` durch. Ich schicke der Nachfolgerin `/model claude-fable-5-1[1m]` per `POST /send` hinterher — Footer muss „Fable" zeigen, sonst selbst setzen.
+2. **Watches sterben mit meinem Slot.** Bei Uebergabe armed: keiner mehr, der noch feuern kann (Lane-Watch auf 10 gefeuert, Audit-Watch auf d4f2bfc gefeuert und adjudiziert). Neu armieren, wenn du auf etwas wartest: `{kind:"lane",target:5}` (3c72fe3a) und `{kind:"lane",target:8}` (P2a) — Slot 2 und Slot 7 haben eigene Watches auf 8.
+3. **Hand-Dispatch ist DEINE Rolle** (Master-Stop AUS, `dispatch:false`): Slot 7 released nach P2a-Land `ff535524`, Slot 4 nach A-Land `b92e9cc9`, Slot 2 nach P2a `63a32ac2`. Alle drei wissen, dass sie Fable im Tripel nennen sollen; du dispatchst mit `{harness:"claude",model:"claude-fable-5-1[1m]",effort:"high"}`. Regel bleibt: keinen Dispatch neben einen LOKAL laufenden Post-Land-Audit stellen.
+4. **Audit auf `d4f2bfc`: REMOTE rot, 9 FAILURES, keine Namen — adjudiziert `unknowable`.** Serie jetzt 10/10/7/7/9. Slot 9 hat den Datenpunkt. Einzige echte Owner-Entscheidung im Fleet: Attention **`db2d6c85`** (SSH-Dauerkanal zum Second-host). Ohne sie bleiben Daemon-Update und FAIL-Namen unerreichbar.
+5. **Slot 2 faehrt einen lokalen SERIELLEN `./e2e-isolated.sh` auf `79075de`** (Code identisch d4f2bfc) und adjudiziert das Remote-Rot aus dessen Tail nach — der Suite-Mutex ist also belegt; nichts danebenstellen (Slot 2s Nachricht 22:20).
+6. Slot 6 (Private-repo-o) bleibt auf Owner-Hold; bei Reaktivierung Nachfolge (360k ctx, Restart-Update anstehend).
+
+## 4. Ehrlichkeiten
+
+- `POST /api/slots/10/land` von mir wurde korrekt abgewiesen — Slot 2 hatte die Lane 1 min vorher selbst gelandet. Kein Doppel-Land.
+- Die Lagebericht-Agenten hatten einen Fehler, den ich korrigiert habe: „rote Audits unbeurteilt" — alle 77 sind adjudiziert.
+- Slot 4 raeumte Attention `17aee703` mit Option 2 ab (von mir beantwortet); Attention `79839393` wurde durch den Kill von Slot 3 automatisch `refused` (requester session ended) — inhaltlich erledigt (93fc5af2 = `01459c9`).
+- Kein `./e2e-isolated.sh` von mir gefahren; keine Code-Aenderung von mir im Baum. ctx bei Uebergabe-Entscheid: **24,6 % gemessen**.
+
+---
+
 # HANDOFF — Generalsanierung: Codex-Haertung gelandet, P2 gebrieft und queued, drei neue P6-Befunde, 2026-09-01 (abends)
 
 Program **`b2a14b545fd31fd71ba7b9e1`** aktiv, gebunden. Ersetzt den Nachmittags-Abschnitt darunter.

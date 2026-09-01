@@ -673,8 +673,33 @@ export async function run(): Promise<void> {
     await Bun.write(`${ocRaw.cwd}/unparsed.txt`, "the reviewer will answer prose about this\n");
     spawnSync("git", ["-C", ocRaw.cwd, "add", "unparsed.txt"]);
     spawnSync("git", ["-C", ocRaw.cwd, "commit", "-qm", "work the reviewer fails to parse"]);
+    const rawClick = await post(`/api/slots/${ocRaw.slot}/review`, {});
+    const rawClickBody = (await rawClick.text()).slice(0, 200);
     check("raw-review setup: the ③ click returns, off-contract answer and all (fail-soft, never a 500)",
-      (await post(`/api/slots/${ocRaw.slot}/review`, {})).ok);
+      rawClick.ok, rawClickBody);
+    // … but a click that RETURNED has not necessarily WRITTEN anything, and that gap is the
+    // §11.2k flake. `server.ts#reviewResponse` joins whatever job `reviewInflight` holds for the
+    // slot, and that map is never cleared when a slot is recycled (server.ts#teardownSlotOccupant
+    // clears reviewCache, not reviewInflight) — so a review left running by the slot's PREVIOUS
+    // occupant is joined here, and its cache write is then dropped by server.ts#startReview's
+    // identity re-check (`s.cwd === job.cwd`). The caller's await resolves all the same, saying
+    // `stale: true`. Killing at that moment mints review.state:"none" and the proof check below
+    // reads a race as a regression. So wait for the PERSISTED effect — the cache entry keyed on
+    // THIS tree, which is exactly what server.ts#outcomeReview reads at kill — and re-click while
+    // it is absent (GET is a pure cache lookup and never spawns). The precondition fails AS
+    // ITSELF when it cannot be established, so the proof below is never asked to carry it.
+    let rawSeen: { cached?: boolean; stale?: boolean } | null = null;
+    let rawClicks = 1;
+    const rawDeadline = Date.now() + 30_000;
+    while (Date.now() < rawDeadline) {
+      rawSeen = (await (await get(`/api/slots/${ocRaw.slot}/review`)).json()) as { cached?: boolean; stale?: boolean };
+      if (rawSeen?.cached === true && rawSeen?.stale === false) break;
+      if (rawClicks < 6) { rawClicks++; await post(`/api/slots/${ocRaw.slot}/review`, {}); }
+      else await new Promise((r) => setTimeout(r, 250));
+    }
+    check("raw-review precondition: the review verdict persisted before the kill",
+      rawSeen?.cached === true && rawSeen?.stale === false,
+      `clicks=${rawClicks} firstClick=${rawClickBody.slice(0, 120)} lastGet=${JSON.stringify(rawSeen).slice(0, 160)}`);
     await post(`/api/slots/${ocRaw.slot}/kill`, {});
     const recRaw = forBranch(await readOutcomes(), ocRaw.branch);
     check("outcome: a reviewer answer that did NOT parse is persisted as raw:true carrying its text — not as a clean review",

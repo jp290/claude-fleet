@@ -1,3 +1,95 @@
+# HANDOFF — Generalsanierung: e9c10ee deployt, 8cd6deca gelandet (d4f2bfc), P2a gebaut+reviewt, Land am Mutex verhungert, Remote-Rot #5 adjudiziert, 2026-09-01 (Nacht)
+
+Program **`b2a14b545fd31fd71ba7b9e1`** aktiv, gebunden. Ersetzt den Abend-Abschnitt weiter unten
+(die zwei Fleet-Controller-Abschnitte dazwischen gehoeren dem Controller, nicht diesem Program).
+
+## 1. Autoritaet & Betrieb
+
+- Self-Land **green-only**, `actor.kind=main`; Master-Stop AN (`fleet.json dispatch:false`) —
+  Queue-Zeilen brauchen Hand-Dispatch `POST /api/tasks/<id>/dispatch`.
+- **Owner-Vorgabe 2026-09-01 (abends, via Controller):** jeder neue Dispatch mit
+  `{harness:claude, model:claude-fable-5-1[1m], effort:high}` — `MODEL_RE` nimmt den Namen
+  (server.ts:194, geprueft). Memory `feedback-fable-for-all-sessions-and-lanes` traegt es.
+- Ein **🎛 Fleet Controller** existiert seit heute (Owner-Wunsch; von mir per `/api/slots/1/open`
+  gespawnt, spaeter vom Owner selbst gebrieft; laut seinem Handoff inzwischen Slot 10). Er haelt das
+  Portfolio; Fragen zu fremden Programmen/Second-host gehen an IHN, nicht an Slot 9.
+- **Feature-Freeze-Kollision, an den Controller gemeldet, nicht blockiert:** Lane
+  `fleet/260901201138-9c83` (Task 3c72fe3a, Program 66499a03) baut einen Transport-Slice in diesem
+  Repo. Sein Entscheid.
+
+## 2. Gelandet, deployt, verifiziert
+
+- **`e9c10ee`**: Tier-2 LOKAL green — `ms 1557047`, `checks {ran:3380, failed:0}`, `exitCode 0`,
+  Tail ALL PASS. **Deployt** per Verb 2: Deploy `c88c9662`, `stage:boot ok:true hitTarget:true`,
+  13 Agenten ueberlebten. Datum fuer 0ac22a00: 1557 s von 1800 s Budget bei `waitMs 0` — die
+  ARBEIT allein streift das Ein-Budget-Timeout, nicht nur die Wartezeit.
+- **`8cd6deca` → `d4f2bfc`** (Zwei-Deckel-Entscheid; Diff selbst gelesen, Fixtures 8a/8b/8c
+  nicht-tautologisch, Lane-Tier-2 3378/0). Land-Note `verify.ok true`, 7 Schritte, 110 s, `waitMs 0`.
+  Post-Land-Audit lief auf dem **second-host**: red, 9 FAILURES, `checks:null`, keine Namen —
+  Daemon dort < `3974883`. **Adjudiziert `unknowable`** (Note traegt den Beweis): lokaler
+  serieller `./e2e-isolated.sh` auf `fec5b23` (= d4f2bfc + 2 docs-Commits, 102 Insertions,
+  `git diff --stat d4f2bfc fec5b23`) → run `isolated-20260901T203126Z-97615`, **3382 PASS, 0 FAIL,
+  ALL PASS**. Remote-Serie jetzt 05f37f1:10 · 3058556:10 · 86e704a:7 · 54964d1:7 · d4f2bfc:9;
+  Remote-Ledger gesamt 1 green / 9 red / 5 unknown. Trail-Pfad auf dem Geraet an den Controller
+  gemeldet (`/var/lib/fleet-helper/work/run-26ea1a205005-1788291935608/tree/e2e-trail/isolated-20260901T194541Z-716215.jsonl`).
+- **6d2a4d4b halb erledigt:** die `.env`-Kette traegt `src/helper.ts` (Land-Note d4f2bfc beweist es,
+  Controller hat `.env` korrigiert). Der PIN-Teil (effektiver `GET /api/self/gate`-Befehl gegen die
+  drei Prosa-Quellen) bleibt offen.
+
+## 3. In Flug — das Erste, was du tust
+
+1. **P2a `9825cfd9`, Lane `fleet/260901194551-8f9e` auf Slot 8 — GEBAUT, VON MIR REVIEWT, LAND IN FLUG.**
+   Diff = exakt die vier Schnitte (S3 gemessen weggelassen: `DIRECTORY_NOTES["server"]` ist toter
+   Ballast, byte-identische repo-map; backoff.ts JA mit Beleg; `BundleStale` bekam benanntes
+   `helperJsMtime`, Spiegel in src/client.ts nur Interface). Vier Checks mit zitierten
+   Mutations-FAILs. Lane-Tier-2 auf `8de12be` 3387/0; danach nur Rebase (Delta = fremder Code aus main).
+   Geschichte: Land 1 (`e353bdc`) **waitedOut** — 2667 s von 2703 s hinter dem Mutex, Baum nie
+   gesehen (`verify.ok null`); Land 2 abgelehnt „no progress since the last verdict — repair or
+   escalate"; Lane hat auf mein `/send` hin sauber auf `93d6cfa` rebased (`2cd51cf`, behind 0,
+   wouldConflict false, pins ALL PASS, tsc exit 0). **Land 3 laeuft bei Uebergabe:** Kandidat
+   `2cd51cf18ab7ac4673f9d49dba4191df8f4d4439`, Mutex bei Start noch fremd belegt (Wartebudget 45 min).
+   **Dein erster Akt:** `POST /api/self/watch {"kind":"merge","target":8}` — level-getriggert,
+   feuert sofort aus dem persistierten Fakt, falls schon terminal. Bei `landed=YES`: Audit-Watch auf
+   den Kandidaten. Bei erneutem waitedOut: die Tuer verlangt wieder PROGRESS (irgendein neuer
+   Commit/Rebase auf der Lane), dann `POST /api/self/tasks/9825cfd9/land` — im STILLEN Fenster.
+   Der Lane-Report kommt zur Program-MAIN (Receiver zur Reportzeit aus `program.main`,
+   `server.ts#clarificationReceiverFor`), also zu DIR.
+2. **Danach `bundleStale` auf `/api/sessions` pruefen** (das Land beruehrt src/client.ts; bei
+   `stale:true` → `bun run build`) **und die Demo bauen:** `cd ~/claude-fleet-demo && bun run
+   typecheck && bun run build` — Erfolgsmass 5, kein Gate hier sagt es, die Lane hat es nicht getan.
+3. **Dann P2b `63a32ac2` hand-dispatchen** — ERST nach dem P2a-Land (harte Vorbedingung im Brief,
+   beide fassen `CLIENT_ONLY_FILES` an) — mit `{"harness":"claude","model":"claude-fable-5-1[1m]","effort":"high"}`.
+4. **Deploy steht aus:** Live faehrt `24be084`; main hat d4f2bfc (Filing-Deckel) + 93d6cfa
+   (tmux-Target-Hotfix des Controllers) + Docs; `deployGap.behindCount 6, codeBehind:true`.
+   Ich habe NICHT deployt: Verb 2 lehnt nur waehrend eines Audits ab, aber fremde Land-Gates sind
+   Kinder von srv — ein Restart mitten in deren Verify erzeugt ein falsches Rot. Deploy im stillen
+   Fenster (`ps -eo command | grep -c '^/bin/sh ./e2e-'` = 0), Boot-Verdikt auf `/api/deploys` lesen.
+
+## 4. Befunde (gemessen, noch nicht als Queue-Zeile — Live-Server hat den alten 5-Deckel, `/api/self/tasks` waere 409)
+
+- **Projektion vs. Tuer:** `program-execution` nennt fuer 9825cfd9 nach dem waitedOut
+  `REVIEWABLE → land it yourself`, die Route antwortet „no progress … repair or escalate". Die
+  Projektion kennt den No-Progress-Guard nicht. P6-Zeile.
+- **Mutex-Saturation durch fremde Programme:** ab ~22:10 liefen bis zu DREI Suiten parallel
+  (Gate-Instanz + zwei Lane-Ketten anderer Programme), mein Land-Gate wartete 45 min aus. Die
+  Betriebsregel „nie neben einen Audit dispatchen" schuetzt nur MEINE Lanes; gegen fremde
+  Programme hilft nur der Controller (informiert) oder eine Owner-Regel.
+- Ein `POST /send` an eine Pane, deren Composer der Owner selbst befuellt, wird mit
+  `composer occupied … nothing typed` abgelehnt — das Alive/Composer-Gate hat heute genau richtig
+  verhindert, dass mein Gruendungsbrief den Owner-Text ueberschreibt.
+
+## 5. Ehrlichkeiten
+
+- Watches sterben mit meinem Slot: bei Uebergabe armed nur Merge-Watch `471e2cc2` (Land 3 von
+  P2a). Neu armieren, siehe §3.1.
+- Slot 10 (Lane 6e5d) wurde nach dem Land regulaer abgeraeumt; Slot 8 lebt (ctx 23,7 %).
+- Maschinen-Hygiene unberuehrt (leaked Sockets, TMPDIR-Scratch).
+- ctx bei der Uebergabe-Entscheidung: **23,0 % gemessen** (229 754/1 000 000); Restkette:
+  Handoff committen + succeed. Dieser Handoff ist ein DIREKT-COMMIT (docs-only), Hand-Verify
+  `bun e2e/pins.ts` ALL PASS (Tail im Commit-Body). Die zwei Controller-Abschnitte unter diesem sind fremd und bleiben.
+
+---
+
 # HANDOFF — Fleet Controller (Slot 10, Fable 5.1 high): tmux-Praefix-Bug gefunden und Hotfix in Flug, Stream-Steal repariert, Second-host/Freunde-Bewertung geschrieben, 2026-09-01 (Nacht)
 
 Rolle: **🎛 Fleet Controller**, nicht Program-MAIN. Gegruendet per /open+/send (Nachfolge-Route

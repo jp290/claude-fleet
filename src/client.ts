@@ -9192,7 +9192,7 @@ type DossierTask = { id: string; text: string; kind: string; source: string; sta
   analysis?: { verdict: string; reason: string; blockers: string[]; collides: string[]; at: number };
   match: string };
 type DossierAudit = { at: number; result: string; mainSha: string; covers: string[]; reason?: string;
-  exitCode: number | null; out: string; cmd: string;
+  exitCode: number | null; out: string; cmd: string; fails?: string[];
   adjudication?: { verdict: string; at: number; by: string; note?: string } };
 interface Dossier {
   branch: string; repo: string | null; worktree: string | null;
@@ -9429,6 +9429,11 @@ function renderAkteDetail(d: Dossier) {
       `${a.mainSha.slice(0, 8)} · covers ${a.covers.join(", ")}`
       + `${a.reason ? ` · ${a.reason}` : ""}${a.exitCode !== null ? ` · exit ${a.exitCode}` : ""}`);
     r.title = a.cmd;
+    const fails = Array.isArray(a.fails)
+      ? a.fails.filter((name): name is string => typeof name === "string").slice(0, 50)
+        .map((name) => [...name].slice(0, 300).join(""))
+      : [];
+    if (fails.length) host.appendChild(el("div", "aktepre akteout", fails.map((name) => `FAIL  ${name}`).join("\n")));
     // an un-adjudicated red is the state the whole adjudication rail exists to make visible:
     // "nobody has looked at this yet" is different from "someone looked and called it noise"
     if (a.adjudication)

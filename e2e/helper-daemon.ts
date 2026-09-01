@@ -22,12 +22,13 @@ import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
 // STAGE helper-daemon/ into the throwaway instance. The copy list is derived from the entry files'
 // transitive relative imports, so a daemon reached by an import rides along with no wrapper edit
 // and no hand-kept list — the failure mode that killed two harnesses in this repo.
-import { inQuietHours, localMode, stricter, tailOf, trailIdOf, EXIT_CONFIG,
+import { failNamesOf, inQuietHours, localMode, stricter, tailOf, trailIdOf, EXIT_CONFIG,
   type HelperConfig } from "../helper-daemon/daemon";
 
 interface Row {
   at: number; ms: number; repo: string; main: string; mainSha: string; result: string; reason?: string;
-  cmd: string; exitCode: number | null; out: string; checks?: { ran: number; failed: number } | null;
+  cmd: string; exitCode: number | null; out: string; fails?: string[];
+  checks?: { ran: number; failed: number } | null;
   covers: { branch: string; mainAfter: string }[];
   remote?: { name: string; claimedAt: number; reportedAt: number; trail?: string; clonedSha?: string };
 }
@@ -82,6 +83,27 @@ export async function run(h: {
       && trailIdOf("no trail here") === undefined,
     `${JSON.stringify(tailOf("a\nb\nc\nd", 2))} ${trailIdOf(`x ${TRAIL}`)}`);
 
+  const failFixture = `${ROOT}/daemon-fail-fixture`;
+  const failLog = `${failFixture}/suite.log`;
+  rmSync(failFixture, { recursive: true, force: true });
+  mkdirSync(`${failFixture}/tree/e2e-trail`, { recursive: true });
+  await Bun.write(failLog, "FAIL  log decoy\n2 FAILURES\n");
+  await Bun.write(`${failFixture}/tree/e2e-trail/${TRAIL}.jsonl`, [
+    JSON.stringify({ ok: true, check: "passing decoy" }),
+    JSON.stringify({ ok: false, check: "trail failure alpha" }),
+    JSON.stringify({ ok: false, check: "trail failure beta" }),
+  ].join("\n") + "\n");
+  const trailFails = await failNamesOf(failLog, TRAIL);
+  check("(HD) a synthetic run with log+trail reports the exact ok:false check names from the trail",
+    JSON.stringify(trailFails) === '["trail failure alpha","trail failure beta"]',
+    JSON.stringify(trailFails));
+  await Bun.write(failLog, "FAIL  fallback failure alpha  (detail)\nPASS  decoy\nFAIL  fallback failure beta\n2 FAILURES\n");
+  const fallbackFails = await failNamesOf(failLog, undefined);
+  check("(HD) a synthetic run WITHOUT a trail falls back to the log's ^FAIL lines",
+    JSON.stringify(fallbackFails) === '["fallback failure alpha","fallback failure beta"]',
+    JSON.stringify(fallbackFails));
+  rmSync(failFixture, { recursive: true, force: true });
+
   // ===== (HD.2) THE SCRATCH FLEET, THE COUNTING PROXY, AND THE STAND-IN SUITE ====================
   // e2e/helper-portal.ts leaves the server on a seconds-long claim timeout — right for a lapse
   // check, fatal for a daemon that clones, installs and runs before it reports. Restarted here.
@@ -97,6 +119,8 @@ export async function run(h: {
   const helperToken = ((await (await get("/api/helper/token")).json()) as { token?: string }).token ?? "";
   const HH = { "x-fleet-helper-token": helperToken };
   const hget = (path: string): Promise<Response> => fetch(BASE + path, { headers: HH });
+  const hpost = (path: string, body: unknown): Promise<Response> =>
+    post(path, body, { ...HH, "content-type": "application/json" });
   const jobsOf = async (): Promise<HelperJob[]> =>
     ((await (await hget(`/api/helper/jobs?deviceId=${DEVICE}`)).json()) as { jobs: HelperJob[] }).jobs;
   const jobFor = async (repo: string): Promise<HelperJob | undefined> =>
@@ -125,6 +149,7 @@ export async function run(h: {
   // also how the "never in the URL" half of the token rule is measured rather than asserted. Port 0
   // so the OS picks a free one — the harness's own port bands say nothing about a proxy.
   const seen: string[] = [];
+  const reportedBodies: Record<string, unknown>[] = [];
   const proxy = Bun.serve({
     port: 0, hostname: "127.0.0.1",
     fetch: async (req: Request): Promise<Response> => {
@@ -133,6 +158,10 @@ export async function run(h: {
       const headers = new Headers(req.headers);
       headers.delete("host");
       const body = req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer();
+      if (u.pathname === "/api/helper/result" && body) {
+        try { reportedBodies.push(JSON.parse(new TextDecoder().decode(body)) as Record<string, unknown>); }
+        catch { /* the server remains the authority on malformed JSON */ }
+      }
       const res = await fetch(BASE + u.pathname + u.search, { method: req.method, headers, body });
       const out = new Headers();
       const ct = res.headers.get("content-type");
@@ -145,17 +174,22 @@ export async function run(h: {
   const PROXY = `http://127.0.0.1:${proxy.port}`;
 
   // The stand-in for ./e2e-isolated.sh — same currency (exit code, tail, trail id) in milliseconds.
-  // It prints its cwd, the files around it and the FLEET_* it inherited, so three facts the daemon
-  // is responsible for become assertions on the ledger row instead of hopes.
+  // It prints its cwd, the files around it and the FLEET_* it inherited, then places two failures
+  // before enough filler to push both FAIL lines out of the daemon's 40-line tail. The matching
+  // trail remains beside the clone, so the report can still carry their exact names.
   const SUITE = `${ROOT}/fakedaemonsuite`;
   await Bun.write(SUITE, [
     "#!/bin/sh",
     `echo "run pwd=$(pwd) files=$(ls | tr '\\n' ',') recur=[\${FLEET_POSTLAND_AUDIT_CMD:-}] token=[\${FLEET_TOKEN:-}]"`,
     `echo "${TRAIL} stand-in trail marker"`,
-    'echo "PASS  remote stand-in check one"',
-    'echo "PASS  remote stand-in check two"',
-    'echo "ALL PASS"',
-    "exit 0",
+    'mkdir -p "$PWD/e2e-trail"',
+    `printf '%s\\n' '${JSON.stringify({ ok: false, check: "remote trail failure alpha" })}' '${JSON.stringify({ ok: false, check: "remote trail failure beta" })}' > "$PWD/e2e-trail/${TRAIL}.jsonl"`,
+    'echo "FAIL  remote trail failure alpha"',
+    'echo "FAIL  remote trail failure beta"',
+    'i=0; while [ "$i" -lt 60 ]; do echo "trailing filler $i"; i=$((i + 1)); done',
+    `echo "run pwd=$(pwd) files=$(ls | tr '\\n' ',') recur=[\${FLEET_POSTLAND_AUDIT_CMD:-}] token=[\${FLEET_TOKEN:-}]"`,
+    'echo "2 FAILURES"',
+    "exit 1",
   ].join("\n"));
   chmodSync(SUITE, 0o755);
 
@@ -205,6 +239,35 @@ export async function run(h: {
       await Bun.sleep(100);
     }
     return false;
+  };
+  const selfTokenOf = async (slot: number): Promise<string> => {
+    let token = "";
+    for (let i = 0; i < 60; i++) {
+      try {
+        token = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+          { slots?: Record<string, { selfToken?: string }> }).slots?.[String(slot)]?.selfToken ?? "";
+      } catch { /* state file mid-write */ }
+      if (/^[0-9a-f]{32}$/.test(token)) return token;
+      await Bun.sleep(50);
+    }
+    return token;
+  };
+  const previewReport = async (name: string, result: Record<string, unknown>): Promise<{
+    status: number; body: { offer?: { state?: string; result?: { checks?: { ran: number; failed: number } | null } } };
+  }> => {
+    const lane = await openLane(REPO, name);
+    const token = await selfTokenOf(lane.slot);
+    const headers = { "x-fleet-self-token": token, "content-type": "application/json" };
+    const offerRes = await fetch(BASE + "/api/self/suite-offer",
+      { method: "POST", headers, body: "{}" });
+    const offer = (await offerRes.json()) as { offer?: { id?: string } };
+    const jobId = offer.offer?.id ?? "";
+    await hpost("/api/helper/claim", { jobId, deviceId: DEVICE });
+    const resultRes = await hpost("/api/helper/result", { jobId, ...result });
+    const read = await fetch(BASE + "/api/self/suite-offer", { headers: { "x-fleet-self-token": token } });
+    const body = await read.json() as { offer?: { state?: string; result?: { checks?: { ran: number; failed: number } | null } } };
+    await post(`/api/slots/${lane.slot}/kill`, {});
+    return { status: resultRes.status, body };
   };
 
   // ===== (HD.3) THE TWO CONFIG REFUSALS — a wrong credential costs ONE request, ever =============
@@ -305,14 +368,14 @@ export async function run(h: {
       await Bun.sleep(300);
     }
   })();
-  check("(HD) THE LEDGER ROW CAME BACK, green, against the exact tree that was handed over",
-    remoteRow?.result === "green" && remoteRow.mainSha === jobSha && remoteRow.exitCode === 0
+  check("(HD) THE LEDGER ROW CAME BACK red, against the exact tree that was handed over",
+    remoteRow?.result === "red" && remoteRow.mainSha === jobSha && remoteRow.exitCode === 1
       && remoteRow.covers.some((c) => c.branch === job.branch),
     JSON.stringify(remoteRow).slice(0, 280));
   // THE DONE-CRITERION OF THE 2026-08-29 FIX, stated as its own check so a regression reads as what
   // it is: the whole empty-clone class ends as `unknown` with a reason, never as a red — honest,
   // and worth nothing, because nothing was measured.
-  check("(HD) …and it is a MEASURED row under init.defaultBranch=master — not the `unknown` an empty clone produces",
+  check("(HD) …and it is a MEASURED red under init.defaultBranch=master — not the `unknown` an empty clone produces",
     remoteRow?.result !== "unknown" && (remoteRow?.checks?.ran ?? 0) > 0,
     `result=${remoteRow?.result} reason=${remoteRow?.reason ?? "-"} checks=${JSON.stringify(remoteRow?.checks)}`);
   check("(HD) …and it is MARKED REMOTE with this machine's name and the trail id the daemon read out of the log",
@@ -331,10 +394,22 @@ export async function run(h: {
     !!remoteRow?.remote?.clonedSha && remoteRow.remote.clonedSha === jobSha
       && remoteRow.mainSha === jobSha,
     `cloned=${remoteRow?.remote?.clonedSha ?? "ABSENT"} mainSha=${remoteRow?.mainSha} handedOver=${jobSha}`);
-  check("(HD) the row's checks are counted from the tail the DAEMON sent, and name the remote command",
-    remoteRow?.checks?.ran === 2 && remoteRow.checks.failed === 0
+  const reported = reportedBodies.find((b) => b.jobId === claimedByDaemon?.id);
+  check("(HD) the daemon's real result POST carries the exact fail names from its synthetic trail",
+    JSON.stringify(reported?.fails) === '["remote trail failure alpha","remote trail failure beta"]',
+    JSON.stringify(reported));
+  check("(HD) the row stores those bounded names and corroborates a summary whose FAIL lines fell outside the tail",
+    JSON.stringify(remoteRow?.fails) === '["remote trail failure alpha","remote trail failure beta"]'
+      && remoteRow?.checks?.ran === 2 && remoteRow.checks.failed === 2
       && remoteRow.cmd.includes("remote helper") && remoteRow.cmd.includes(DEVICE_NAME),
-    `${JSON.stringify(remoteRow?.checks)} ${remoteRow?.cmd}`);
+    `${JSON.stringify(remoteRow?.fails)} ${JSON.stringify(remoteRow?.checks)} ${remoteRow?.cmd}`);
+  const dossier = await (await get(`/api/lane?branch=${encodeURIComponent(job.branch)}`)).json() as {
+    audits?: { state?: string; value?: { rows?: { fails?: string[] }[] } };
+  };
+  check("(HD) the lane's Audit/Ledger projection carries the same bounded fail names to its reader",
+    dossier.audits?.state === "read"
+      && JSON.stringify(dossier.audits.value?.rows?.[0]?.fails) === '["remote trail failure alpha","remote trail failure beta"]',
+    JSON.stringify(dossier.audits));
   // THE CLONE IS REAL, and the tail proves it three ways at once: the suite ran in a scratch
   // directory (never the fleet's own tree), that directory carried the landed lane's file AND the
   // node_modules `bun install --frozen-lockfile` just produced, and it inherited NO FLEET_* — the
@@ -375,7 +450,35 @@ export async function run(h: {
     learned && alive && during === 0,
     `alive=${alive} requests=${during} ${JSON.stringify(seen.slice(quietFrom).slice(0, 4))}`);
 
-  // ===== (HD.6) THE TOKEN NEVER LEFT ITS HEADER =================================================
+  // ===== (HD.6) THE RESULT BODY'S NETWORK BOUNDARY ===============================================
+  // Preview jobs make the validator observable without writing synthetic audit rows: they traverse
+  // the same /api/helper/result fork, then expose the derived checks back to their own lane.
+  const legacy = await previewReport("daemonlegacy", {
+    exitCode: 1, tail: "FAIL  legacy visible failure\n1 FAILURES",
+  });
+  check("(HD) an OLD result body without fails is still accepted with exactly the prior check count",
+    legacy.status === 200 && legacy.body.offer?.state === "reported"
+      && legacy.body.offer.result?.checks?.ran === 1 && legacy.body.offer.result.checks.failed === 1,
+    JSON.stringify(legacy));
+
+  const fiftyOne = Array.from({ length: 51 }, (_, i) => `bounded failure ${i + 1}`);
+  const capped = await previewReport("daemoncap", {
+    exitCode: 1, tail: "50 FAILURES", fails: fiftyOne,
+  });
+  check("(HD) mutation guard: a 51-name network array is capped to 50 before corroboration",
+    capped.status === 200 && capped.body.offer?.result?.checks?.ran === 50
+      && capped.body.offer.result.checks.failed === 50,
+    JSON.stringify(capped));
+
+  const rejected = await previewReport("daemonbadfails", {
+    exitCode: 1, tail: "1 FAILURES", fails: ["plausible name", 7],
+  });
+  check("(HD) mutation guard: one non-string rejects the whole fails field instead of corroborating it",
+    rejected.status === 200 && rejected.body.offer?.state === "reported"
+      && rejected.body.offer.result?.checks === null,
+    JSON.stringify(rejected));
+
+  // ===== (HD.7) THE TOKEN NEVER LEFT ITS HEADER =================================================
   // Measured on both surfaces the portal's own page uses the other way round: the browser bootstrap
   // passes `?token=`, which is fine for a URL bar and wrong for a machine whose shell history,
   // process list and journal outlive it.

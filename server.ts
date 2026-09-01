@@ -10965,7 +10965,6 @@ interface WorkerSpec {
   model?: string;          // omitted → SUMMARY_MODEL; MODEL_RE-validated at the const it comes from
   observe?: (run: WorkerRunObservation) => void; // additive response facts; only summary exposes them
 }
-type WorkerRoute = "claude" | "codex-exec";
 type WorkerRouteConfig = { route: "claude" } | { route: "codex-exec"; model: string };
 interface WorkerRunObservation {
   model: string;
@@ -15619,7 +15618,7 @@ interface LaneDossier {
 // null is a MEASUREMENT ("no row in the live list matches"), not a failure — but it is not proof
 // that none existed: capTasks evicts terminal rows past MAX_TASKS, so an old lane's row may simply
 // be gone. That caveat belongs to the reader, which is why it is stated here and rendered there.
-function dossierTaskFor(branch: string, liveSlot: number | null, outcomeTaskId: string | null,
+function dossierTaskFor(liveSlot: number | null, outcomeTaskId: string | null,
   briefHash: string | null): DossierTask | null {
   const facet = (t: Task, match: TaskMatch): DossierTask => ({
     id: t.id, text: t.text, kind: t.kind, source: t.source, status: t.status,
@@ -15761,7 +15760,7 @@ async function laneDossier(branch: string, repoHint: string | null): Promise<Lan
   return {
     branch, repo, worktree,
     slot, liveSlot: live?.id ?? null,
-    task: measured(dossierTaskFor(branch, live?.id ?? null, outcomeTaskId, briefHash)),
+    task: measured(dossierTaskFor(live?.id ?? null, outcomeTaskId, briefHash)),
     prompts, events, commits,
     outcomes: measured(capped(mine, DOSSIER_MAX_ROWS)),
     landNotes,

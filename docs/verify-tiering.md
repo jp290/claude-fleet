@@ -1665,21 +1665,35 @@ ASKED for, the id of the row they GOT, how many rows currently carry that id, wh
 saw, and a `flippedBack` flag; the `freed:400` prints the receiver's armed watches and open debts
 at the instant the door was knocked on.
 
-**Verification of cut 1 (2026-09-01).** Full gate chain green on `c45b574`
-(`bun install --frozen-lockfile` · `bun e2e/pins.ts` ALL PASS · `tsc --strict` over the gate's file
-list exit 0 · `bun run build` exit 0 · `./e2e-clean-review.sh` exit 0 ALL PASS · `./e2e-security.sh`
-exit 0 ALL PASS · `./e2e-claude-gate.sh` exit 0 ALL PASS). Then THREE serial `./e2e-isolated.sh`
-runs, each **3373 PASS / 0 FAIL / ALL PASS**, loadavg at start 2.38 / 2.53 / 2.10 — never two suites
-at once (the `e2e-stage.sh` mutex serialized them against the live server's own post-land audits and
-another lane's run). A fourth run was launched first and is NOT counted: it was killed while still
-queued for the mutex, never acquired it, and produced no measurement — its log ends at
-`waiting 484s`.
+**Verification (2026-09-01, tree `ac90244`).** Full gate chain green: `bun install --frozen-lockfile` ·
+`bun e2e/pins.ts` ALL PASS · `tsc --strict` over the gate's file list exit 0 · `bun run build` exit 0 ·
+`./e2e-clean-review.sh` exit 0 (32/0) · `./e2e-security.sh` exit 0 (92/0) · `./e2e-claude-gate.sh`
+exit 0 (137/0). Then three serial `./e2e-isolated.sh`, never two suites at once (the `e2e-stage.sh`
+mutex serialized them against the live server's own post-land audits and another lane's run):
 
-What the three runs also MEASURED, and it is the point of the repair: `pane_id` and `openedAt` were
-**identical across all five windows within each run** (`%76`, one `openedAt` per run). On a healthy
-run this receiver's pane is never recreated — so a future §11.2j red now separates cleanly into "the
-pane went away" (the precondition line, flake) and "the pane held and the delivery still went wrong"
-(ECHT).
+| run | loadavg at start | result | preconditions | members | `settleWaits` |
+|---|---|---|---|---|---|
+| cut2-1 | 2.49 | 3373 PASS / 1 FAIL — the FAIL is §11.2k, `e2e/outcomes.ts` | 6/6 | 8/8 | 0 |
+| cut2-2 | 4.44 | **3374 PASS / 0 FAIL, ALL PASS** | 6/6 | 8/8 | **1** |
+| cut2-3 | 2.49 | 3373 PASS / 1 FAIL — §11.2k again, byte-identical detail | 6/6 | 8/8 | 0 |
+
+**Stated plainly: the letter of the lane's criterion ("three green runs") was NOT met — two of the
+three carry one red each. Both reds are §11.2k** (`outcome: a reviewer answer that did NOT parse is
+persisted as raw:true …`, singleton `{"state":"none"}`, same log line), a different family in
+`e2e/outcomes.ts`, which this lane does not touch at all — its diff is `e2e/watch.ts` and this file.
+What the criterion was ABOUT held in all three: every one of the eight §11.2j members and all six
+window preconditions passed in every run.
+
+**The load-bearing row is cut2-2.** It ran at the highest load of the three (4.44), the transient
+FIRED (`settleWaits: 1`), and the run was ALL PASS — the exact condition that turned `final-b` red
+on the pre-cut-2 tree was absorbed by `settleEvent` instead of being read as a defect. The
+pre-cut-2 tree for comparison, same three-run shape: green / **1 FAIL (`subject fixture`,
+`living: "send-uncertain"`)** / green.
+
+**What the runs also MEASURED, and it is what made the mechanism findable:** `pane_id` and
+`openedAt` were **identical across all six windows within each run** (`%76`, one `openedAt` per
+run), on the green runs and on the red one alike. The receiver pane is never recreated here — which
+is what left `send-uncertain` with nowhere to hide.
 
 **Correction to the addendum above — the "the heal replaces the occupant" reading is UNPROVEN, not
 established.** Re-read at `fleet-e2e-instance-4110` on 2026-09-01: (1) `server.ts#ensureSlot` emits
@@ -1734,6 +1748,9 @@ path and the probe were byte-identical throughout:
 | run 7 (§11.2j table) | `5cef1b7` | green (the run's reds were §11.2j) |
 | post-land audit of `01459c9` | `01459c9` | green (reds were §11.2j) |
 | post-land audit of `ff5b813` (W1) | `ff5b813` | **RED** — the run's only failure (1/3366) |
+| §11.2j repair lane, cut2-1 | `ac90244` | **RED** — the run's only failure (1/3374) |
+| §11.2j repair lane, cut2-2 | `ac90244` | green |
+| §11.2j repair lane, cut2-3 | `ac90244` | **RED** — the run's only failure (1/3374), byte-identical detail to cut2-1 |
 
 Same bytes, twice red, twice green ⇒ non-determinism proven directly; neither `01459c9` (client
 + `e2e/tasks.ts` only) nor W1 (moves + path literals) touches the review/outcome path.
@@ -1795,6 +1812,15 @@ same. §11.2k's singleton is which check got hit, not which checks are exposed. 
 applies to both, ~6 lines each. And the server-side option nobody has taken: deleting
 `reviewInflight` in `teardownSlotOccupant` alongside `reviewCache` would close the joint at the
 source for every caller — an owner decision, not a lane's.
+
+**Two pre-repair sightings from the §11.2j lane, and they are the rate datum this section otherwise
+lacks** (2026-09-01, tree `ac90244` — that lane forked BEFORE this repair, so its tree still carries
+the unfixed block 9b; its diff is `e2e/watch.ts` + this file, so it cannot reach `e2e/outcomes.ts` or
+the review path): three serial runs on ONE unchanged tree went RED / green / RED, both reds carrying
+the byte-identical singleton `{"state":"none"}` at the same log line. Non-determinism proven a second
+time on identical bytes — and, unlike the three proof runs above where `clicks=1` says the race never
+fired, it puts the observed hit rate on this machine near two runs in three. The proof runs show the
+repair costs nothing; these show what it is for.
 
 **Bookkeeping:** thirteenth family, repaired test-side. The two audits stay adjudicated `flake` on
 the ledger with this section as the stated reason. A red on this line AFTER this repair is ECHT

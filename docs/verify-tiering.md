@@ -1559,6 +1559,14 @@ fixture CAN shift which receiver pane a later family gets. That is a timing coup
 behaviour change, and it is the reason this entry is filed as a seventh member rather than as a
 closure.
 
+**Eighth member (post-land audit of `ba4169a`, 2026-09-01, 1/3366, adjudicated `flake`):**
+`held: 100+ pre-paste refusals change neither `attempts` nor the owner's composer` — the check
+directly upstream of the budget/subject-gone/counterprobe blocks, same fixture complex. Detail
+`{"held":100,"doomedAttempts":1,"livingAttempts":0,"draftBytes":45}`: a delivery attempt fired
+while the draft was still held, i.e. the receiver pane was replaced underneath the fixture and the
+fresh occupant had an empty composer — the exact addendum mechanism, seen one block earlier.
+`ba4169a` is docs + comment lines only. loadavg 3.49 at run.
+
 **Post-mortem discriminator.** Unlike §11.2i this family fails as REAL failing checks, not as a
 silent no-measurement: the runs carry 3345/3344 PASS and named FAIL rows. Preserved instances from
 the two red runs are kept: `fleet-e2e-instance-80791` (run 2) and `fleet-e2e-instance-26770`

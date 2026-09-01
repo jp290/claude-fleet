@@ -131,9 +131,10 @@ const PRE_AUTH_ROUTES = [
   // the caller's MAIN binding and the target repo from the caller's own checkout; the body may
   // carry `text` and `kind` and NOTHING else (a closed set — `programId`, `repo`, `status`,
   // `queue`, `releasedBy` are refused 400, never dropped), `kind` runs through the same four-value
-  // validator as the owner and steward create routes and defaults to the advisory `notiz`, and
-  // PROGRAM_MAX_PENDING caps how many unreleased rows one Program's MAIN may hold. It writes into
-  // no pane, starts nothing and reaches no foreign slot.
+  // validator as the owner and steward create routes and defaults to the advisory `notiz`.
+  // PROGRAM_MAX_PENDING caps pending `auftrag` rows; PROGRAM_MAX_PENDING_ADVISORY separately caps
+  // pending notiz/richtung/betrieb rows awaiting owner disposition, so neither kind can close the
+  // other's filing door. It writes into no pane, starts nothing and reaches no foreign slot.
   '= /api/self/tasks',
   String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/release$/`,
   // ACP · THE LAND DOOR, and it is by a distance the most consequential entry on this list: it is

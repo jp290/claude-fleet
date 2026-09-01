@@ -541,6 +541,22 @@ Fehlt beides, geht der Report daher in die **bestehende Owner-Operations-Inbox (
   akzeptiert den Report semantisch nicht, startet kein Self-Land und landet nichts. Bleibt der zweite
   Send unmessbar ohne `rollback=cleared`, bleibt die Zeile `send-uncertain` mit
   `recovery.state:"blocked"` statt generisch weitergesendet zu werden.
+- **Und der Retry ist gedeckelt.** `FLEET_REPORT_RECOVERY_MAX_ATTEMPTS` (Default 5, ganze Zahl ≥ 1;
+  0, negativ oder nicht-numerisch fällt auf den Default) zählt die `attempts` der Zeile, den ersten
+  Transport-Paste eingeschlossen. Erreicht ein `rollback=cleared`-Fehlschlag den Deckel, wird
+  dieselbe Zeile `recovery.state:"blocked"` — `reason` nennt Versuch und Deckel, `nextAction` ist
+  „manual receiver acknowledgement if the pane text was read, or MAIN/owner intervention" — und sie
+  wird NIE wieder gepastet; `status` bleibt `send-uncertain`, also schließt sie weiterhin nur der
+  bestehende Self-ACK. Eine Zeile, die den Deckel schon trägt (Restore, älterer Server), wird VOR dem
+  nächsten Paste geblockt. Gemessen an FleetEvent `8ca8c38e7af3433051ac78e5` (Report
+  `ad4b19f375d44e075ee3f5cf`, Empfänger Slot 7): 1549 Versuche in ~28 h, weil nichts zählte.
+- **Fleets eigener Paste ist keine Empfänger-Aktivität.** Ein Event-Transport-Send (Paste, Enter,
+  Acceptance-Lesung, Rollback) läuft unter demselben `quietUntil`-Fenster wie der Resize-Repaint:
+  die Bytes, die die Pane dabei malt, stempeln `lastOutput` nicht. Vorher hielt jeder
+  Recovery-Paste den `receiverIdleSec`-Gate ALLER anderen pending Events desselben Empfängers zu
+  (dieselbe Messung: lane-ready `a6462f2b` und merge-terminal `6b03f283` blieben bei attempts 0).
+  Beide Fakten stehen in `e2e/watch.ts` §Q6 auf dem Live-Transport; der Deckel-Default und der
+  Zustandsname sind in `e2e/pins.ts` gegen diese Datei gepinnt.
 - **Sie überlebt ihren Worker.** `markFleetEventReceiverGone` filtert auf `receiverSlot === slotId`;
   `null` trifft das nie. Kill oder Recycle der Lane, die den Report gefilet hat, lässt die Zeile
   unberührt — terminal wird sie nur durch `POST /api/events/:id/ack` des Owners. Ein

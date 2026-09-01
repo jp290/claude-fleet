@@ -3218,9 +3218,13 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const recoveryLatch = recoveryBody.indexOf("await waitForFleetReportRecoveryTestLatch(event, expected);");
   const recoveryGuard = recoveryBody.indexOf("receiverStillMatchesFleetEvent(event, receiver, expected)");
   const recoverySend = recoveryBody.indexOf("await sendText(receiver, text, true, { rollbackOwnPayload: true })");
+  const nonAcceptanceBody = server.slice(server.indexOf("function recordFleetReportNonAcceptance("),
+    server.indexOf("function receiverStillMatchesFleetEvent("));
   pin("fleet-report recovery is bounded to rollback-cleared rows and rechecks exact receiver identity before resend",
     recoveryBody !== "" && /event\.status !== "send-uncertain" \|\| event\.recovery\?\.state !== "retryable"/.test(recoveryBody)
-      && recoveryBody.includes('e instanceof SendNotAccepted && rollback === "cleared"')
+      && nonAcceptanceBody.includes('if (rollback !== "cleared") {')
+      && nonAcceptanceBody.includes("if (fleetReportRecoveryExhausted(event)) {")
+      && recoveryBody.includes('recordFleetReportNonAcceptance(event, e instanceof SendNotAccepted ? e.rollback : null, "recovery")')
       && receiverGuardBody.includes("event.receiverOpenedAt === expected.openedAt")
       && receiverGuardBody.includes("event.receiverSessionId === expected.sessionId")
       && receiverGuardBody.includes("s.openedAt === expected.openedAt")
@@ -3230,6 +3234,45 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       && server.includes('event.status = "receiver-gone";') && !recoveryBody.includes("selfLandTaskForMain("),
     recoveryBody === "" ? "recoverFleetReportDelivery not found"
       : JSON.stringify({ latch: recoveryLatch, guard: recoveryGuard, send: recoverySend }));
+
+  // THE CAP AND ITS STATE WORD live in three places with no compiler between them: the env default
+  // in server.ts, the documented default and state name in docs/self-api.md, and the recovery union
+  // the client renders. Measured 2026-09-01 (FleetEvent 8ca8c38e…): unbounded because nothing
+  // compared `attempts` to anything; the comparison is one expression, and this pins that it exists,
+  // that the docs name the same default, and that the tickWatches first-attempt path and the
+  // recovery path write through the same recorder (a second writer would be a second, uncapped loop).
+  const capDefault = server.match(/const raw = Number\(process\.env\.FLEET_REPORT_RECOVERY_MAX_ATTEMPTS \?\? (\d+)\);/)?.[1] ?? "";
+  const capFallback = server.match(/return Number\.isInteger\(raw\) && raw >= 1 \? raw : (\d+);/)?.[1] ?? "";
+  const selfApiCap = read("docs/self-api.md");
+  const docsCapDefault = selfApiCap.match(/`FLEET_REPORT_RECOVERY_MAX_ATTEMPTS` \(Default (\d+),/)?.[1] ?? "";
+  const tickBody = server.slice(server.indexOf("async function tickWatches("), server.indexOf("async function tickWatches(") + 20000);
+  pin("fleet-report recovery cap: FLEET_REPORT_RECOVERY_MAX_ATTEMPTS defaults to 5 in server.ts and docs/self-api.md, blocks by name, and both non-acceptance paths share one recorder",
+    capDefault === "5" && capFallback === "5" && docsCapDefault === "5"
+      && server.includes("const fleetReportRecoveryExhausted = (event: FleetReportFleetEvent): boolean =>\n  event.attempts >= FLEET_REPORT_RECOVERY_MAX_ATTEMPTS;")
+      && selfApiCap.includes('recovery.state:"blocked"') && selfApiCap.includes("NIE wieder gepastet")
+      && selfApiCap.includes("manual receiver acknowledgement if the pane text was read, or MAIN/owner intervention")
+      && server.includes('"manual receiver acknowledgement if the pane text was read, or MAIN/owner intervention"')
+      && tickBody.includes('recordFleetReportNonAcceptance(event, e instanceof SendNotAccepted ? e.rollback : null, "transport")')
+      && recoveryBody.includes("if (fleetReportRecoveryExhausted(event)) {")
+      // after the send, only the recorder decides a NON-acceptance: the one direct `retryable`
+      // write left there is the pre-paste refusal (nothing typed, count rolled back), never a paste
+      && (recoveryBody.slice(recoverySend).match(/setFleetReportRecovery\(event, "retryable"/g)?.length ?? 0) === 1
+      && recoveryBody.slice(recoverySend).includes('"recovery send was refused before Fleet typed its payload"')
+      && !tickBody.includes('setFleetReportRecovery(event, "retryable"'),
+    JSON.stringify({ capDefault, capFallback, docsCapDefault }));
+  // THE OWN-PASTE WINDOW: an event-transport send opens quietUntil at the paste and closes it to a
+  // tail when the send resolves, so neither the paste, the acceptance read nor the rollback repaint
+  // stamps lastOutput. Without it every recovery paste re-armed the receiver's idle gate for every
+  // other pending event of that pane (the starvation half of the same measurement).
+  const sendBodyForQuiet = server.slice(server.indexOf("async function sendText("), server.indexOf("function commsFor("));
+  pin("fleet-report transport: an own-payload send covers its paste, acceptance read and rollback with quietUntil and cuts it to a tail on resolve",
+    sendBodyForQuiet.indexOf("s.quietUntil = Date.now() + OWN_PASTE_QUIET_MS;") > 0
+      && sendBodyForQuiet.indexOf("s.quietUntil = Date.now() + OWN_PASTE_QUIET_MS;")
+        < sendBodyForQuiet.indexOf('const pb = await tmux("paste-buffer"')
+      && sendBodyForQuiet.includes("if (ownPasteQuiet) s.quietUntil = Date.now() + OWN_PASTE_QUIET_TAIL_MS;")
+      && sendBodyForQuiet.indexOf("if (ownPasteQuiet) s.quietUntil") > sendBodyForQuiet.indexOf("} finally {")
+      && server.includes("if (Date.now() > s.quietUntil) s.lastOutput = Date.now();"),
+    JSON.stringify({ open: sendBodyForQuiet.indexOf("OWN_PASTE_QUIET_MS"), tail: sendBodyForQuiet.indexOf("OWN_PASTE_QUIET_TAIL_MS") }));
 
   const selfApiForRecovery = read("docs/self-api.md");
   pin("fleet-report send-uncertain records current recovery state for the Operations panel and docs",

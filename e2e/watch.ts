@@ -1920,6 +1920,214 @@ export async function run(): Promise<void> {
         && ack.ok && acknowledged?.status === "acknowledged" && acknowledged.acknowledgedAt !== null,
       JSON.stringify({ delivered, prompts: reportPrompts.length, ack: ack.status, acknowledged }));
 
+    // === Q6 · THE RECOVERY CAP AND THE INBOX IT STARVED. Measured on FleetEvent
+    // 8ca8c38e7af3433051ac78e5 (FleetReport ad4b19f375d44e075ee3f5cf, receiver slot 7): every
+    // rollback-cleared non-acceptance re-armed `retryable`, the row reached attempts=1549 over ~28 h,
+    // and every paste refreshed the receiver's lastOutput — so lane-ready a6462f2b and merge-terminal
+    // 6b03f283 for the same pane stayed at attempts 0 the whole time. Two falsifiers, on the live
+    // transport: (1) the third rollback-cleared non-acceptance under FLEET_REPORT_RECOVERY_MAX_ATTEMPTS=3
+    // moves the SAME row to recovery `blocked` and it is never pasted again; (2) while the report is
+    // still below the cap, the OTHER pending event for the same receiver clears its idle gate and is
+    // delivered on its first accepted attempt. The recovery latch parks each report attempt and the
+    // before-paste latch parks the other event after its gate cleared, so the two are separated by
+    // server facts, not by timing. The composer stand-in holds report pastes ("hold") and accepts
+    // the other event ("normal") only because the fixture flips the mode between the two latches.
+    {
+      const auditLedger = `${ROOT}/post-land-audits.jsonl`;
+      const beforePasteLatch = `${ROOT}/fleet-report-starvation.before-paste.latch`;
+      const clearLatch = (path: string): void => {
+        for (const suffix of ["", ".reached", ".release"]) rmSync(`${path}${suffix}`, { force: true });
+      };
+      const hex24 = (): string => crypto.randomUUID().replaceAll("-", "").slice(0, 24);
+      interface PlantedImage {
+        events?: (Record<string, unknown> & { id?: string; payload?: Record<string, unknown> })[];
+        fleetReports?: (Record<string, unknown> & { id?: string })[];
+      }
+      // A retryable report row bound to the live MAIN occupant, cloned from the one the transport
+      // itself minted and delivered above — receiver triple, subject and provenance stay the
+      // server's own facts; only ids, text, count and the recovery marker are the fixture's.
+      const plantRetryableClone = (image: PlantedImage, sourceEventId: string, attempts: number,
+        label: string): { eventId: string; reportId: string } | null => {
+        const source = image.events?.find((e) => e.id === sourceEventId);
+        const sourceReport = image.fleetReports?.find((r) => r.id === source?.payload?.reportId);
+        if (!source || !sourceReport) return null;
+        const eventId = hex24();
+        const reportId = hex24();
+        const text = `${label} ${eventId}`;
+        image.events!.push({ ...source, id: eventId, status: "send-uncertain", attempts,
+          deliveredAt: null, acknowledgedAt: null, receiverIdleSec: 0,
+          payload: { ...source.payload, reportId, text },
+          recovery: { state: "retryable", reason: "planted by the Q6 fixture",
+            nextAction: "retry delivery to the same live receiver occupant",
+            effect: "fixture row; no ACK or land is implied", updatedAt: Date.now() } });
+        image.fleetReports!.push({ ...sourceReport, id: reportId, eventId, text });
+        return { eventId, reportId };
+      };
+      const reachedLatch = async (path: string): Promise<boolean> => {
+        for (let i = 0; i < 200 && !existsSync(`${path}.reached`); i++) await Bun.sleep(50);
+        return existsSync(`${path}.reached`);
+      };
+      const reportRow = async (id: string): Promise<FleetReportEventRow | undefined> =>
+        (await fleetReportEventRows()).find((e) => e.id === id);
+      const waitReportRow = async (id: string,
+        accepts: (row: FleetReportEventRow) => boolean): Promise<FleetReportEventRow | undefined> => {
+        let row: FleetReportEventRow | undefined;
+        for (let i = 0; i < 200; i++) {
+          row = await reportRow(id);
+          if (row && accepts(row)) return row;
+          await Bun.sleep(50);
+        }
+        return row;
+      };
+      const waitWatchEvent = async (watchId: string,
+        accepts: (row: FleetEventRow) => boolean): Promise<FleetEventRow | undefined> => {
+        let row: FleetEventRow | undefined;
+        for (let i = 0; i < 200; i++) {
+          row = (await eventRows()).find((e) => e.watchId === watchId);
+          if (row && accepts(row)) return row;
+          await Bun.sleep(50);
+        }
+        return row;
+      };
+      const executionRow = async (eventId: string): Promise<{ row: unknown; openDebts: number | null }> => {
+        const view = await (await fetch(`${BASE}/api/self/program-execution`,
+          { headers: { "x-fleet-self-token": mainTok } })).json() as {
+            programs?: { operations: { events: { rows: { id: string }[]; openDebts: number } } }[] };
+        const ops = view.programs?.[0]?.operations.events;
+        return { row: ops?.rows.find((r) => r.id === eventId) ?? null, openDebts: ops?.openDebts ?? null };
+      };
+
+      await tmuxOut("kill-session", "-t", "srv");
+      await Bun.sleep(500);
+      const capImage = JSON.parse(readFileSync(reportStatePath, "utf8")) as PlantedImage;
+      const capped = plantRetryableClone(capImage, completeReport?.eventId ?? "", 1, "Q6 capped report");
+      writeFileSync(reportStatePath, JSON.stringify(capImage, null, 2), { mode: 0o600 });
+      clearLatch(recoveryLatch);
+      writeFileSync(recoveryLatch, capped?.eventId ?? "", { mode: 0o600 });
+      clearLatch(beforePasteLatch);
+      writeFileSync(beforePasteLatch, "post-land audit [event", { mode: 0o600 });
+      setReportComposerMode("hold");
+      const capAuditStart = auditRows().length;
+      await restartSrv({ FLEET_TEST_FLEET_REPORT_RECOVERY_LATCH: recoveryLatch,
+        FLEET_TEST_SEND_BEFORE_PASTE_LATCH: beforePasteLatch, FLEET_REPORT_RECOVERY_MAX_ATTEMPTS: "3" });
+      check("Q6 fixture: the planted retryable report row hydrates bound to the live MAIN and parks its second attempt at the recovery latch",
+        capped !== null && await reachedLatch(recoveryLatch)
+          && (await reportRow(capped?.eventId ?? ""))?.attempts === 1,
+        JSON.stringify({ capped, row: capped ? await reportRow(capped.eventId) : null }));
+
+      // While attempt 2 is parked, the same receiver gets a second pending event of another kind
+      // with a real idle gate. Minted by the audit watch on the tick that resumes, i.e. AFTER the
+      // report's paste and rollback in that same tick — the exact ordering that starved the inbox.
+      const starvedMainAfter = `5a4e0001${"0".repeat(32)}`;
+      const ledgerAt = Date.now();
+      appendFileSync(auditLedger, `${JSON.stringify({ at: ledgerAt, startedAt: ledgerAt - 1, ms: 1, repo: REPO,
+        main: "main", mainSha: starvedMainAfter, result: "green", cmd: "q6-fixture", exitCode: 0, out: "ALL PASS",
+        checks: { ran: 1, failed: 0 }, covers: [{ branch: "fleet/q6-starved", mainAfter: starvedMainAfter, at: ledgerAt - 2 }] })}\n`);
+      const starvedWatch = await post(`/api/slots/${main}/watch`,
+        { kind: "audit", repo: REPO, mainAfter: starvedMainAfter, idleSec: 1 });
+      const starvedWatchId = ((await starvedWatch.json()) as { watch?: { id: string } }).watch?.id ?? "";
+      // the receiver's lastOutput is its boot stamp; let the other event's 1 s idle gate be
+      // satisfiable on its own terms before the report's paste is allowed to happen
+      await Bun.sleep(1200);
+      writeFileSync(`${recoveryLatch}.release`, "ok\n", { mode: 0o600 });
+      const starvedOffered = await reachedLatch(beforePasteLatch);
+      const cappedAt2 = capped ? await reportRow(capped.eventId) : undefined;
+      const starvedHeld = (await eventRows()).find((e) => e.watchId === starvedWatchId);
+      check("Q6 fleet-report starvation: the other pending event for the same receiver clears its idle gate while the held report is still below the cap",
+        starvedWatch.ok && starvedOffered
+          && cappedAt2?.status === "send-uncertain" && cappedAt2.attempts === 2
+          && cappedAt2.recovery?.state === "retryable" && cappedAt2.recovery.reason.includes("attempt 2 of 3")
+          && starvedHeld?.status === "send-uncertain" && starvedHeld.attempts === 1 && starvedHeld.deliveredAt === null,
+        JSON.stringify({ watch: starvedWatch.status, offered: starvedOffered, report: cappedAt2, other: starvedHeld }));
+
+      // attempt 3 must park again; the other event is released into an accepting composer
+      rmSync(`${recoveryLatch}.reached`, { force: true });
+      rmSync(`${recoveryLatch}.release`, { force: true });
+      setReportComposerMode("normal");
+      writeFileSync(`${beforePasteLatch}.release`, "ok\n", { mode: 0o600 });
+      const starvedDelivered = await waitWatchEvent(starvedWatchId, (row) => row.status === "delivered");
+      const parked3 = await reachedLatch(recoveryLatch);
+      const cappedBefore3 = capped ? await reportRow(capped.eventId) : undefined;
+      check("Q6 fleet-report starvation: the other event is delivered on its first accepted attempt while the report row still waits below the cap",
+        starvedDelivered?.status === "delivered" && starvedDelivered.attempts === 1
+          && starvedDelivered.deliveredAt !== null && parked3
+          && cappedBefore3?.attempts === 2 && cappedBefore3.recovery?.state === "retryable",
+        JSON.stringify({ other: starvedDelivered, parked3, report: cappedBefore3 }));
+
+      setReportComposerMode("hold");
+      writeFileSync(`${recoveryLatch}.release`, "ok\n", { mode: 0o600 });
+      const blocked = capped ? await waitReportRow(capped.eventId, (row) => row.recovery?.state === "blocked") : undefined;
+      rmSync(`${recoveryLatch}.reached`, { force: true });
+      await Bun.sleep(AUTOS_TICK_MS * 6);
+      const blockedStill = capped ? await reportRow(capped.eventId) : undefined;
+      const pastedAgain = existsSync(`${recoveryLatch}.reached`);
+      const cappedPrompts = (await plogRead()).filter((p) => p.slot === main
+        && p.text.includes(`report ${capped?.reportId}`)).length;
+      check("Q6 fleet-report cap: the third rollback-cleared non-acceptance blocks the same row at FLEET_REPORT_RECOVERY_MAX_ATTEMPTS and it is never pasted again",
+        blocked?.id === capped?.eventId && blocked?.status === "send-uncertain" && blocked.attempts === 3
+          && blocked.recovery?.state === "blocked"
+          && blocked.recovery.reason.includes("attempt 3 reached the cap of 3")
+          && blocked.recovery.nextAction === "manual receiver acknowledgement if the pane text was read, or MAIN/owner intervention"
+          && blocked.recovery.effect.includes("never pasted again")
+          && blocked.deliveredAt === null && blocked.acknowledgedAt === null
+          && !pastedAgain && blockedStill?.attempts === 3 && blockedStill.recovery?.state === "blocked"
+          && cappedPrompts === 0
+          && !auditRows().slice(capAuditStart).some((row) => row.event === "self_land_start"
+            || (row.event === "fleet_event_delivered" && (row.detail ?? "").startsWith(capped?.eventId ?? "-"))),
+        JSON.stringify({ blocked, pastedAgain, still: blockedStill, prompts: cappedPrompts }));
+      const execution = capped ? await executionRow(capped.eventId) : { row: null, openDebts: null };
+      const executionRecovery = (execution.row as { status?: string; recovery?: { state?: string; nextAction?: string } } | null);
+      check("Q6 fleet-report cap: the blocked row is visible on GET /api/self/program-execution operations.events with its recovery and counts as an open debt",
+        executionRecovery?.status === "send-uncertain" && executionRecovery.recovery?.state === "blocked"
+          && executionRecovery.recovery.nextAction?.includes("MAIN/owner intervention") === true
+          && (execution.openDebts ?? 0) >= 1,
+        JSON.stringify(execution));
+      const blockedAck = capped ? await ackEvent(mainTok, capped.eventId) : new Response(null, { status: 599 });
+      const blockedAcked = capped ? await reportRow(capped.eventId) : undefined;
+      check("Q6 fleet-report cap: the existing self ACK alone closes a blocked row, with its attempt count untouched",
+        blockedAck.ok && blockedAcked?.status === "acknowledged" && blockedAcked.attempts === 3
+          && blockedAcked.acknowledgedAt !== null && blockedAcked.deliveredAt === null,
+        JSON.stringify({ ack: blockedAck.status, row: blockedAcked }));
+      if (starvedDelivered) await ackEvent(mainTok, starvedDelivered.id);
+      clearLatch(beforePasteLatch);
+
+      // The knob's fallback, measured on the live parser: zero, negative and non-numeric values
+      // leave the default of 5 in force, read off the reason the next retryable attempt records.
+      // One planted row rides all three restarts, so its count also proves attempts persist and an
+      // acknowledged row is never re-counted.
+      const knobRounds: { value: string; attempts: number; row?: FleetReportEventRow }[] = [
+        { value: "0", attempts: 2 }, { value: "-2", attempts: 3 }, { value: "abc", attempts: 4 },
+      ];
+      let knob: { eventId: string; reportId: string } | null = null;
+      for (const round of knobRounds) {
+        await tmuxOut("kill-session", "-t", "srv");
+        await Bun.sleep(500);
+        const knobImage = JSON.parse(readFileSync(reportStatePath, "utf8")) as PlantedImage;
+        if (!knob) knob = plantRetryableClone(knobImage, completeReport?.eventId ?? "", 1, "Q6 knob report");
+        writeFileSync(reportStatePath, JSON.stringify(knobImage, null, 2), { mode: 0o600 });
+        clearLatch(recoveryLatch);
+        writeFileSync(recoveryLatch, knob?.eventId ?? "", { mode: 0o600 });
+        setReportComposerMode("hold");
+        await restartSrv({ FLEET_TEST_FLEET_REPORT_RECOVERY_LATCH: recoveryLatch,
+          FLEET_REPORT_RECOVERY_MAX_ATTEMPTS: round.value });
+        if (!await reachedLatch(recoveryLatch)) break;
+        writeFileSync(`${recoveryLatch}.release`, "ok\n", { mode: 0o600 });
+        round.row = knob ? await waitReportRow(knob.eventId, (row) => row.attempts === round.attempts
+          && row.recovery?.updatedAt !== undefined && row.recovery.reason.includes(`attempt ${round.attempts} of`)) : undefined;
+      }
+      const cappedAfterKnobs = capped ? await reportRow(capped.eventId) : undefined;
+      check("Q6 fleet-report cap: zero, negative and non-numeric FLEET_REPORT_RECOVERY_MAX_ATTEMPTS fall back to the default of 5, and an acknowledged row is never re-counted",
+        knob !== null && knobRounds.every((round) => round.row?.status === "send-uncertain"
+          && round.row.attempts === round.attempts && round.row.recovery?.state === "retryable"
+          && round.row.recovery.reason.includes(`attempt ${round.attempts} of 5`))
+          && cappedAfterKnobs?.status === "acknowledged" && cappedAfterKnobs.attempts === 3,
+        JSON.stringify({ rounds: knobRounds.map((r) => [r.value, r.row?.attempts, r.row?.recovery?.reason]),
+          capped: cappedAfterKnobs }));
+      if (knob) await ackEvent(mainTok, knob.eventId);
+      setReportComposerMode("normal");
+      clearLatch(recoveryLatch);
+    }
+
     await tmuxOut("kill-session", "-t", "srv");
     await Bun.sleep(500);
     const recycleImage = JSON.parse(readFileSync(reportStatePath, "utf8")) as {

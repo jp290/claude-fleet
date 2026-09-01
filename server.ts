@@ -2788,6 +2788,8 @@ async function programExecutionView(s: Slot): Promise<Response> {
           rows: matchingEvents.map((e) => ({
             id: e.id, watchId: e.watchId, kind: e.kind, status: e.status,
             createdAt: e.createdAt, deliveredAt: e.deliveredAt, acknowledgedAt: e.acknowledgedAt,
+            // a `blocked` recovery is the one fact this view must show without a pane read
+            recovery: e.recovery ?? null,
           })),
           sessionMismatch,
           openDebts: matchingEvents.filter((e) => !FLEET_EVENT_TERMINAL.includes(e.status)).length,
@@ -3263,6 +3265,19 @@ const WATCH_KEEP_SPENT = 5; // fired/disarmed watches kept per slot before the o
 // delivered-but-unacknowledged facts. A full debt budget refuses the next subscription loudly.
 const FLEET_EVENT_MAX_OPEN_PER_SLOT = WATCH_MAX_PER_SLOT;
 const FLEET_EVENT_KEEP_TERMINAL = WATCH_KEEP_SPENT;
+// HOW MANY TIMES FLEET MAY PASTE ONE REPORT INTO A RECEIVER THAT NEVER SUBMITS IT. Measured on
+// FleetEvent 8ca8c38e7af3433051ac78e5 (FleetReport ad4b19f375d44e075ee3f5cf, receiver slot 7,
+// 2026-08-31..09-01): every rollback-cleared non-acceptance re-armed `retryable`, nothing compared
+// `attempts` with anything, and the row reached attempts=1549 over ~28 h — one paste per minute,
+// each refreshing the receiver's lastOutput, so the OTHER pending rows for the same pane (lane-ready
+// a6462f2b, merge-terminal 6b03f283) never saw an idle gate and stayed at attempts 0 until the
+// occupant was replaced. The cap counts the row's `attempts` (first transport paste included), so a
+// row restored past it is blocked BEFORE it is pasted again. Integer >= 1; anything else is the
+// default — never zero, which would block every report before its first paste.
+const FLEET_REPORT_RECOVERY_MAX_ATTEMPTS = (() => {
+  const raw = Number(process.env.FLEET_REPORT_RECOVERY_MAX_ATTEMPTS ?? 5);
+  return Number.isInteger(raw) && raw >= 1 ? raw : 5;
+})();
 // THE OWNER OPERATIONS INBOX IS A RECEIVER TOO, and an unbounded one would be the same unbounded
 // fleet.json this budget exists to prevent — with a worse failure mode, because no session death
 // ever turns its rows terminal: only the owner's own ack does. It gets its OWN ceiling instead of
@@ -6249,6 +6264,16 @@ class SendNotAccepted extends Error {
 // Env-tunable for the suites only (same reason as READY_WAIT_MS): a stand-in that renders no composer
 // must not pay the full window on every send. Floor 200 ms — below one redraw the answer is noise.
 const ACCEPT_WAIT_MS = Math.max(200, Number(process.env.FLEET_ACCEPT_WAIT_MS ?? 3000) | 0);
+// FLEET'S OWN EVENT PASTE IS NOT RECEIVER ACTIVITY. An event-transport send (rollbackOwnPayload)
+// pastes, waits for arrival, presses Enter, waits for acceptance and may erase its own text again —
+// every byte the pane paints meanwhile is a repaint Fleet caused, exactly like the resize jiggle
+// `quietUntil` already covers. Counted as output it refreshed the receiver's lastOutput once per
+// recovery paste and kept every other pending event for that pane behind the idle gate (the
+// starvation half of the 8ca8c38e incident). The window opens at the paste for the longest a send
+// can take and is cut back to a short tail the moment the send resolves, so a receiver that
+// genuinely starts working after an accepted paste is seen again within that tail.
+const OWN_PASTE_QUIET_MS = 150 + 3 * ACCEPT_WAIT_MS + 2000;
+const OWN_PASTE_QUIET_TAIL_MS = 500;
 interface BoundSlotPane {
   occupant: SlotStreamOccupant;
   paneId: string;
@@ -6456,6 +6481,7 @@ async function sendText(s: Slot, text: string, submit: boolean,
       }
     }
     const buf = `fleetbuf${occupant.slot}-${occupant.openedAt}-${randomBytes(8).toString("hex")}`;
+    let ownPasteQuiet = false;
     try {
       if (!sameBoundPane(s, bound)) throw new Error("slot changed before buffer load");
       const p = Bun.spawn(["tmux", "-L", SOCK, "load-buffer", "-b", buf, "-"], { stdin: "pipe" });
@@ -6464,6 +6490,10 @@ async function sendText(s: Slot, text: string, submit: boolean,
       if ((await p.exited) !== 0) throw new Error("tmux load-buffer failed — session gone?");
       await waitForSendTestLatch(SEND_BEFORE_PASTE_TEST_LATCH, "before-paste", bound, text);
       if (!sameBoundPane(s, bound)) throw new Error("slot changed before paste");
+      if (options.rollbackOwnPayload) {
+        s.quietUntil = Date.now() + OWN_PASTE_QUIET_MS;
+        ownPasteQuiet = true;
+      }
       const pb = await tmux("paste-buffer", "-p", "-b", buf, "-t", bound.paneId);
       if (pb.code !== 0) throw new Error("tmux paste-buffer failed — session gone?");
       await waitForSendTestLatch(SEND_AFTER_PASTE_TEST_LATCH, "after-paste", bound, text);
@@ -6507,6 +6537,7 @@ async function sendText(s: Slot, text: string, submit: boolean,
           + (rollback ? `; Fleet payload rollback ${rollback}` : ""),
         rollback);
     } finally {
+      if (ownPasteQuiet) s.quietUntil = Date.now() + OWN_PASTE_QUIET_TAIL_MS;
       await tmux("delete-buffer", "-b", buf);
     }
   });
@@ -7481,6 +7512,47 @@ function setFleetReportRecovery(event: FleetReportFleetEvent, state: FleetEventR
   event.recovery = { state, reason, nextAction, effect, updatedAt: Date.now() };
 }
 
+// THE ONE COMPARISON that bounds recovery. Both writers below and the pre-paste guard in
+// recoverFleetReportDelivery ask it, so removing it here removes the bound everywhere at once.
+const fleetReportRecoveryExhausted = (event: FleetReportFleetEvent): boolean =>
+  event.attempts >= FLEET_REPORT_RECOVERY_MAX_ATTEMPTS;
+const FLEET_REPORT_RECOVERY_MANUAL =
+  "manual receiver acknowledgement if the pane text was read, or MAIN/owner intervention";
+const FLEET_REPORT_RECOVERY_OPEN =
+  "same FleetEvent and FleetReport remain open; no ACK, report acceptance, self-land or land is implied";
+const FLEET_REPORT_RECOVERY_CAPPED =
+  "same FleetEvent and FleetReport remain open and are never pasted again; no ACK, report acceptance, self-land or land is implied";
+
+// `blocked` at the cap: the row stays send-uncertain (the self ACK path still closes it), it is
+// simply never offered to the pane again. `what` names the observation that led here.
+function blockFleetReportRecoveryAtCap(event: FleetReportFleetEvent, what: string): void {
+  setFleetReportRecovery(event, "blocked",
+    `${what}; attempt ${event.attempts} reached the cap of ${FLEET_REPORT_RECOVERY_MAX_ATTEMPTS} `
+      + "(FLEET_REPORT_RECOVERY_MAX_ATTEMPTS) — Fleet will not paste this row again",
+    FLEET_REPORT_RECOVERY_MANUAL, FLEET_REPORT_RECOVERY_CAPPED);
+}
+
+// ONE writer for what a non-accepted paste leaves on the row — the first transport attempt
+// (tickWatches) and every recovery attempt alike. Only a proven rollback (`cleared`: Fleet's own
+// text is gone from the exact receiver pane) may re-arm a retry, and only below the cap.
+function recordFleetReportNonAcceptance(event: FleetReportFleetEvent, rollback: ComposerRollback | null,
+  phase: "transport" | "recovery"): void {
+  if (rollback !== "cleared") {
+    setFleetReportRecovery(event, "blocked",
+      `${phase} send remains uncertain${rollback ? ` with rollback ${rollback}` : ""}`,
+      FLEET_REPORT_RECOVERY_MANUAL, FLEET_REPORT_RECOVERY_OPEN);
+    return;
+  }
+  if (fleetReportRecoveryExhausted(event)) {
+    blockFleetReportRecoveryAtCap(event, `${phase} send was not accepted and Fleet rolled back its own payload again`);
+    return;
+  }
+  setFleetReportRecovery(event, "retryable",
+    `${phase} send was not accepted, but Fleet rolled back its own payload `
+      + `(attempt ${event.attempts} of ${FLEET_REPORT_RECOVERY_MAX_ATTEMPTS})`,
+    "retry delivery to the same live receiver occupant", FLEET_REPORT_RECOVERY_OPEN);
+}
+
 function receiverStillMatchesFleetEvent(event: FleetEvent, s: Slot,
   expected: { slot: number; openedAt: number; sessionId: string | null }): boolean {
   return !!s.cwd && event.receiverSlot === expected.slot && event.receiverOpenedAt === expected.openedAt
@@ -7539,7 +7611,8 @@ function markFleetEventReceiverGone(slotId: number): boolean {
   let dirty = false;
   for (const e of fleetEvents) {
     if (e.receiverSlot !== slotId || FLEET_EVENT_TERMINAL.includes(e.status)) continue;
-    if (e.kind === "fleet-report" && e.status === "send-uncertain" && e.recovery?.state === "retryable") {
+    if (e.kind === "fleet-report" && e.status === "send-uncertain"
+      && (e.recovery?.state === "retryable" || e.recovery?.state === "blocked")) {
       terminalizeFleetReportRecovery(e, "receiver occupant ended or was replaced before recovery");
       dirty = true;
       continue;
@@ -11872,6 +11945,15 @@ async function recoverFleetReportDelivery(event: FleetReportFleetEvent): Promise
     return true;
   }
   const expected = { slot: receiver.id, openedAt: receiver.openedAt, sessionId: receiver.sessionId };
+  // BEFORE any probe or paste: a row that already carries the capped count (restored from disk, or
+  // left retryable by an older server) is blocked here and never typed again.
+  if (fleetReportRecoveryExhausted(event)) {
+    blockFleetReportRecoveryAtCap(event, "recovery row already carries the capped attempt count");
+    audit("fleet_event_send_uncertain", event.receiverSlot ?? undefined,
+      `${event.id} recovery blocked at cap attempts=${event.attempts}`);
+    await saveStateNow();
+    return true;
+  }
   if (event.receiverIdleSec > 0 && receiver.lastOutput === 0) {
     setFleetReportRecovery(event, "retryable", "waiting for the exact receiver pane to be observed",
       "retry delivery to the same live receiver occupant",
@@ -11912,18 +11994,9 @@ async function recoverFleetReportDelivery(event: FleetReportFleetEvent): Promise
       await saveStateNow();
       return true;
     }
-    const rollback = e instanceof SendNotAccepted ? e.rollback : null;
-    const retryable = e instanceof SendNotAccepted && rollback === "cleared";
-    setFleetReportRecovery(event, retryable ? "retryable" : "blocked",
-      retryable
-        ? "recovery send was not accepted, but Fleet rolled back its own payload again"
-        : `recovery send remains uncertain${rollback ? ` with rollback ${rollback}` : ""}`,
-      retryable
-        ? "retry delivery to the same live receiver occupant"
-        : "manual receiver acknowledgement if the pane text was read, or MAIN/owner intervention",
-      "same FleetEvent and FleetReport remain open; no ACK, report acceptance, self-land or land is implied");
+    recordFleetReportNonAcceptance(event, e instanceof SendNotAccepted ? e.rollback : null, "recovery");
     audit("fleet_event_send_uncertain", event.receiverSlot ?? undefined,
-      `${event.id} recovery ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
+      `${event.id} recovery ${event.recovery?.state} ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
     await saveStateNow();
     return true;
   }
@@ -12131,15 +12204,7 @@ async function tickWatches(): Promise<void> {
         // is absent from the exact receiver pane.
         const rollback = e instanceof SendNotAccepted && e.rollback ? ` rollback=${e.rollback}` : "";
         if (event.kind === "fleet-report") {
-          const cleared = e instanceof SendNotAccepted && e.rollback === "cleared";
-          setFleetReportRecovery(event, cleared ? "retryable" : "blocked",
-            cleared
-              ? "transport was not accepted and Fleet rolled back its own payload"
-              : `transport remains uncertain${rollback}`,
-            cleared
-              ? "retry delivery to the same live receiver occupant"
-              : "manual receiver acknowledgement if the pane text was read, or MAIN/owner intervention",
-            "same FleetEvent and FleetReport remain open; no ACK, report acceptance, self-land or land is implied");
+          recordFleetReportNonAcceptance(event, e instanceof SendNotAccepted ? e.rollback : null, "transport");
           await saveStateNow();
         }
         audit("fleet_event_send_uncertain", event.receiverSlot ?? undefined,

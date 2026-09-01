@@ -1,3 +1,88 @@
+# HANDOFF — Generalsanierung: P1 W1+W2 gelandet, beide Flake-Reparaturen gelandet/im Land, Autonomie + Remote-Audit live, 2026-09-01
+
+Program **`b2a14b545fd31fd71ba7b9e1`** aktiv, gebunden. Ersetzt den 2026-09-01-Abschnitt darunter.
+
+## 1. Autoritaet & Betrieb (Owner-Entscheide dieser Session, alle ausgefuehrt)
+
+- **Volle Autonomie**: Owner woertlich "bitte geh dies nun an und fixe auch solche berechtigungsprobleme.
+  Der gesamte plan sollte am besten komplett autonom laufen soweit." → self-land promotion am Program
+  (Stufe siehe §3-Nachtrag unten), Lands laufen ueber POST /api/self/tasks/<id>/land, actor.kind=main.
+- **suite-offer PROMOVIERT** (unter derselben Delegation, Rueckfalltuer = Zeile zurueckdrehen):
+  rulebook/lane-discipline.md traegt die Regel (180 s frei / 800 s gehalten, Pin ist von SKIP auf PASS
+  geflippt). Ab jetzt in jedem Brief mit isolated-Vorschaulauf: Portal-Offer statt lokal; AUSNAHME
+  Flake-Beweislaeufe (bleiben lokal).
+- **Second-host ist als Helfer LIVE**: fleet-helper.service enabled+active (Setup 29.08. ueberlebt Boots),
+  Device secondhostlinux1 active/active, Grace 60 s. ERSTER Remote-Audit gelaufen (05f37f1, 22 min,
+  echter Lauf mit remote.clonedSha). Owner-Wuensche festgehalten: Suite-Lauf-Anzeige prominenter +
+  Second-host vollwertig (notiz d07646bc; vollwertig = Dual-Host-Program, nicht wir). MacBook-Helfer:
+  Rezept an Owner geliefert, Entscheid offen — Second-host-Anlassen reicht.
+- Master-Stop bleibt AN; Weg: file → release → Hand-Dispatch POST /api/tasks/<id>/dispatch (Body {}).
+- Quiet-Hours blockieren Attention-ANTWORTEN. Attention 7ccd9557 inhaltlich erledigt (Promotion), formal
+  offen; fremde offene (79839393, db2d6c85) nicht anfassen.
+
+## 2. Gelandet, alles selbst verifiziert
+
+main-Kette seit b43b5ad: bbd2cc5(docs) → ff5b813(**W1**) → 61155ae(docs) → 70dfc53(**W2a**) →
+ba4169a(**W2b**) → ece76e2(docs) → 05f37f1(**§11.2k-Fix**) → [Slot-10-Land, §3]. Alle Lands verify.ok
+true, volle Kette. Docs top-level 105→31, attic traegt ~150+ Dateien, tote Doc-Pfade 17→0 (Filter als
+Kommando in docs/sanierung-2026-09/w2-filter.md — Erfolgsmass 3 misst mit GENAU dem). Deploys nach jedem
+server-beruehrenden Land, je am Owner-Poll verifiziert; NACH DEM SLOT-10-LAND KEIN Deploy noetig (e2e+docs).
+Host-Schritte: 7 Secret-Symlinks weg; rulebook 4× nachgezogen (steward-arena-Pfad, 3 Zeilenrefs→Symbol,
+core-program→attic-Pfad, suite-offer-Regel, Familienzahl "Dreizehn") — alles gitignored, kein Commit.
+
+## 3. Die Flake-Front — der eigentliche Ertrag der Nacht
+
+- **§11.2j MECHANISMUS ISOLIERT** (war "Diskriminator nicht isoliert"): server.ts#tickWatches persistiert
+  status=send-uncertain + attempts++ VOR dem tmux-Roundtrip und rollt erst nach SendRefused zurueck —
+  die Fixtures sampelten den Transienten. Acht Mitglieder. Lane ed248c15 (Schnitt 1: sechs Fenster messen
+  ihre Vorbedingung; Schnitt 2: settleEvent wartet Transienten bounded aus). Beweis: 3 serielle Laeufe,
+  alle 8 Mitglieder gruen, Transient feuerte bei load 4.44 und wurde absorbiert; die 2 Rots der Serie
+  waren §11.2k auf dem VOR-Fix-Baum. needs-main von mir adjudiziert: Substanz akzeptiert.
+  **Slot-10-Land-Stand: Rebase-Konflikt docs/verify-tiering.md → Author-Pfad hat aufgeloest (Pane
+  gelesen, sauber), guarded-Confirm von mir genommen (Non-Goal verbietet Confirm nur fuer SPLIT-Slices).
+  Ausgang siehe Nachtrag unten. DANACH PROMOTION ZURUECK AUF green-only** (war beim Schreiben guarded).
+- **§11.2k REPARIERT, test-seitig** (05f37f1): outcomes 9b wartet auf die PERSISTIERTE Review-Wirkung.
+  Echter Server-Bug dahinter als P6-Prio-notiz af8dd29c: teardownSlotOccupant loescht reviewInflight
+  nicht → Klick joint Waisen-Job, schreibt nichts. Ein-Zeilen-Fix, Verhaltensaenderung = P6.
+  Ein 9b-Rot ist ab jetzt wieder ECHT (oder die Vorbedingungs-Sonde benennt sich selbst).
+- **NEUE Plattform-Familie Second-host**: Suite-Lock-Geburtsidentitaets-Sonde ist LOCALE-abhaengig
+  (de_DE-Debian, 'Di Sep 1', identityProven:null, 10 Checks geschlossen). Audit 05f37f1 = stale-test.
+  Fix-notiz 5e79be26 (LC_ALL=C + Baseline-Doc nachtragen). Bis dahin: Second-host-Rot dieser Signatur =
+  Plattform, kein Befund.
+- **Adjudikationen**: 01459c9 flake (§11.2j, 7. Mitglied registriert) · ff5b813 flake (§11.2k als 13.
+  Familie, Direktbeweis) · 70dfc53 flake (4×§11.2j+§11.2k) · ba4169a flake (8. Mitglied held/pre-paste)
+  · 05f37f1 stale-test (Locale). §11.2i viermal gesichtet (unveraendert offen).
+- **P0-Baseline: OFFEN.** §11.2k fiel 2× binnen 3 konsekutiven Laeufen (vor dem Fix). Jetzt, wo BEIDE
+  Reparaturen gelandet sind: die naechsten 3 konsekutiven seriellen Laeufe (Audits zaehlen; loadavg je
+  Lauf protokollieren) auf Check-Ebene beurteilen → Messnotiz docs/messungen/ → openQuestion 1 zu.
+
+## 4. Naechste Zuege, Reihenfolge
+
+1. NACHTRAG, alles erledigt: **Slot-10-Land IST GELANDET — main = b20e7e4** (verify.ok true, actor
+   main, guarded-Confirm auf die Author-Aufloesung; Note traegt die Resolution). **Promotion steht
+   wieder auf green-only** (geprueft). Audit-Watch 919cc3e7 war armiert, STIRBT mit meinem Slot —
+   NEU armieren ({"kind":"audit","mainAfter":"<b20e7e4 voll>"}) und den Audit nach Check-Ebene
+   beurteilen; kann Second-host-claimed sein: erst remote/Locale-Signatur pruefen (§3).
+2. Rulebook-Nachzuege NACH dem Land (Fragment lane-discipline): §11.2j "isoliert, acht Mitglieder,
+   repariert in <land-sha>" · §11.2k "repariert in 05f37f1, 9b-Rot wieder ECHT". Re-Render + pins.
+3. Baseline schliessen (§3 letzter Punkt).
+4. **W3** (Plan §W3 + Reparatur 4: "alle stage_instance-Aufrufer"; + notiz 5e79be26 Locale-Pin passt
+   thematisch dazu) → **W4** (Reparatur 3: --noUnusedLocals auf server.ts allein) → P2.
+5. P4/P5-Briefs: suite-offer-Regel steht im Rulebook; Fenster-Checkliste (auto-③ ist AUS seit be3b21e).
+
+## 5. Ehrlichkeiten
+
+- Slot-10-Land ist gelandet (b20e7e4, Nachtrag in §4); alle meine Watches sterben mit dem Slot —
+  nur der b20e7e4-Audit-Watch muss neu armiert werden, sonst ist nichts in Flug.
+- Direkt-Commits dieser Session (land-unsichtbar, Body = Beleg): bbd2cc5, 61155ae, ece76e2.
+- W2b-Lane-Report enthielt einen Irrtum (rulebook nenne core-program nicht) — von mir korrigiert; die
+  §11.2j-Lane korrigierte MEINE 8.-Mitglied-Deutung (Transient, kein Pane-Ersatz). Beides eingearbeitet.
+- Owner-Fragen dieser Nacht beantwortet: GitHub-CI (abgelehnt, Begruendung im Transkript), Zeitplan
+  (~22–30 h Restplan), MacBook-Helfer (+2–4 h, Rezept geliefert).
+- ctx bei Uebergabe: ~37–39 % gemessen. Kontextband eingehalten (25 % Vorbereitung, danach nur Restkette
+  + Owner-Antworten).
+
+---
 # HANDOFF — Generalsanierung: Entscheide ausgefuehrt, 8d97 gelandet, W1-Brief liegt bereit, 2026-09-01
 
 Program **`b2a14b545fd31fd71ba7b9e1`** aktiv, gebunden. Dieser Abschnitt ersetzt inhaltlich den

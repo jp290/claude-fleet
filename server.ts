@@ -21296,8 +21296,13 @@ function stewardSlotsView(now: number) {
 // FLEET_REPO_DIR exists because the server's own dir is the repo in production but not in a
 // throwaway test copy; unset it and the fact is about the code actually running.
 const REPO_DIR = process.env.FLEET_REPO_DIR || import.meta.dir;
-// the two sources that become public/app.js and public/share.js, and nothing server.ts imports
-const CLIENT_ONLY_FILES = ["src/client.ts", "src/share.ts", "src/shell.ts", "src/md.ts"];
+// the sources that become public/app.js, public/share.js and public/helper.js, and nothing
+// server.ts imports (its only src/ import is `./src/protocol`, which is deliberately absent above).
+// src/helper.ts and src/backoff.ts were MISSING until 2026-09-01, and each cost the same way round:
+// a land whose whole diff was one of them read codeBehind:true — the exact false gap the 2026-08-02
+// measurement above is a record of paying for, for work that had already shipped through the build.
+const CLIENT_ONLY_FILES = ["src/client.ts", "src/share.ts", "src/helper.ts", "src/shell.ts",
+  "src/md.ts", "src/backoff.ts"];
 // the five single-file harnesses the e2e-*.sh wrappers boot; e2e/** below is the runner's modules
 const HARNESS_ONLY_FILES = ["fleet-e2e.ts", "fleet-e2e-claude-gate.ts", "fleet-e2e-clean-review.ts",
   "fleet-e2e-security.ts", "fleet-e2e-postland-audit.ts"];
@@ -21345,8 +21350,17 @@ async function deployGap(): Promise<DeployGap> {
 // (a false stale is a cheap rebuild; a false fresh is another invisible hour). Same dir as the
 // deploy-gap fact — in production the repo the server serves public/ from IS the repo it
 // stamped its HEAD from.
-const BUNDLES = ["app.js", "share.js"] as const;
-interface BundleStale { appJsMtime: number | null; shareJsMtime: number | null; srcNewestMtime: number | null; stale: boolean | null }
+// ALL THREE bundles `bun run build` produces (package.json#scripts.build). helper.js was missing
+// here until 2026-09-01, which made this fact answer FALSE FRESH: a changed src/helper.ts left the
+// served public/helper.js old while `stale:false` said the bytes were current — and by this fact's
+// own accounting a false fresh is the expensive direction (a false stale costs one rebuild; the
+// 2026-07-25 false fresh cost an invisible hour). A new bundle belongs in this list and in the
+// named mtimes below, so a `stale:null` can still say WHICH side could not be stat'd.
+const BUNDLES = ["app.js", "share.js", "helper.js"] as const;
+interface BundleStale {
+  appJsMtime: number | null; shareJsMtime: number | null; helperJsMtime: number | null;
+  srcNewestMtime: number | null; stale: boolean | null;
+}
 function newestMtime(dir: string): number | null {
   let newest: number | null = null;
   let entries;
@@ -21404,13 +21418,14 @@ function bundleMtime(file: string): number | null {
 function bundleStale(): BundleStale {
   const appJsMtime = bundleMtime(BUNDLES[0]);
   const shareJsMtime = bundleMtime(BUNDLES[1]);
+  const helperJsMtime = bundleMtime(BUNDLES[2]);
   const srcRaw = newestMtime(`${REPO_DIR}/src`);
   const srcNewestMtime = srcRaw === null ? null : Math.round(srcRaw);
-  const bundles = [appJsMtime, shareJsMtime].filter((m): m is number => m !== null);
+  const bundles = [appJsMtime, shareJsMtime, helperJsMtime].filter((m): m is number => m !== null);
   const stale = srcNewestMtime === null || bundles.length !== BUNDLES.length
     ? null
     : !bundles.every((m) => m >= srcNewestMtime);
-  return { appJsMtime, shareJsMtime, srcNewestMtime, stale };
+  return { appJsMtime, shareJsMtime, helperJsMtime, srcNewestMtime, stale };
 }
 
 // --- VERB 2, DEPLOY: the two facts above, given a hand ------------------------------------------

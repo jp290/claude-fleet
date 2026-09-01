@@ -17,7 +17,10 @@ const TMP = process.env.TMPDIR ?? "/tmp";
 const FIX = `${TMP}/fleet-e2e-deploy-${process.pid}`;
 
 interface Gap { bootHead: string | null; head: string | null; behindCount: number | null; codeBehind: boolean | null }
-interface Bundle { appJsMtime: number | null; shareJsMtime: number | null; srcNewestMtime: number | null; stale: boolean | null }
+interface Bundle {
+  appJsMtime: number | null; shareJsMtime: number | null; helperJsMtime: number | null;
+  srcNewestMtime: number | null; stale: boolean | null;
+}
 interface Facts { deployGap?: Gap | null; bundleStale?: Bundle | null }
 interface DeployWatchRow { id: string; kind: "deploy"; deployId: string; armed: boolean }
 interface DeployEventRow {
@@ -64,6 +67,7 @@ export async function run(): Promise<void> {
   mkdirSync(`${FIX}/e2e`, { recursive: true });
   writeFileSync(`${FIX}/public/app.js`, "// bundle");
   writeFileSync(`${FIX}/public/share.js`, "// bundle");
+  writeFileSync(`${FIX}/public/helper.js`, "// bundle");
   writeFileSync(`${FIX}/src/client.ts`, "// source");
   git("init", "-q");
   commit("server.ts", "// v1");
@@ -125,18 +129,30 @@ export async function run(): Promise<void> {
   // Re-timed rather than rewritten: the fact is a comparison of mtimes, so driving the mtimes IS
   // driving the fact, and it needs no sleep to make one side older than the other.
   {
+    const stamp = (when: Date, ...files: string[]): void => {
+      for (const file of files) utimesSync(`${FIX}/public/${file}`, when, when);
+    };
     const old = new Date(Date.now() - 60 * 60_000);
-    utimesSync(`${FIX}/public/app.js`, old, old);
-    utimesSync(`${FIX}/public/share.js`, old, old);
+    stamp(old, "app.js", "share.js", "helper.js");
     const f = await settle((x) => x.bundleStale?.stale === true);
     check("§3 a bundle older than src/ is stale — landed client code invisible in the browser",
       f.bundleStale?.stale === true, JSON.stringify(f.bundleStale));
     const now = new Date();
-    utimesSync(`${FIX}/public/app.js`, now, now);
-    utimesSync(`${FIX}/public/share.js`, now, now);
+    stamp(now, "app.js", "share.js", "helper.js");
     const g = await settle((x) => x.bundleStale?.stale === false);
     check("§3 rebuilding clears it — the fact follows the filesystem, it is not sticky",
       g.bundleStale?.stale === false, JSON.stringify(g.bundleStale));
+    // helper.js is the THIRD bundle `bun run build` produces, and it was absent from BUNDLES until
+    // 2026-09-01. Aged ALONE on purpose — app.js and share.js stay fresh, so a fact that does not
+    // stat helper.js has nothing to answer true with, and this reads false: the FALSE FRESH the
+    // BUNDLES comment names as the expensive direction.
+    stamp(old, "helper.js");
+    const h = await settle((x) => x.bundleStale?.stale === true);
+    const hb = h.bundleStale;
+    check("§3 helper.js alone, older than src/, is stale too — the portal bundle is not exempt",
+      hb?.stale === true && hb.helperJsMtime !== null && hb.appJsMtime !== null
+      && hb.helperJsMtime < hb.appJsMtime, JSON.stringify(hb));
+    stamp(now, "helper.js");
   }
 
   // ===== §4 what it does NOT know is null, never false =====
@@ -182,7 +198,7 @@ export async function run(): Promise<void> {
     };
     // the stand-in build: relative paths on purpose — it only works if the verb runs it in
     // REPO_DIR, and touching the bundles is exactly what a real `bun run build` does to the fact.
-    const BUILD_OK = "printf 'run\\n' >> buildruns; touch public/app.js public/share.js";
+    const BUILD_OK = "printf 'run\\n' >> buildruns; touch public/app.js public/share.js public/helper.js";
     // Planted in THIS process's env so every restartSrv below carries them (the harness whitelist
     // is "every FLEET_* we did not compute ourselves" — a server-only variable would be dropped).
     // RESTORED, never deleted, at the end of the section: an earlier module (restart.ts) plants
@@ -196,6 +212,7 @@ export async function run(): Promise<void> {
       const old = new Date(Date.now() - 60 * 60_000);
       utimesSync(`${FIX}/public/app.js`, old, old);
       utimesSync(`${FIX}/public/share.js`, old, old);
+      utimesSync(`${FIX}/public/helper.js`, old, old);
     };
     // open a gap the deploy has to close, and assert it is really open before asking for a deploy
     const openGap = async (body: string, label: string): Promise<boolean> => {

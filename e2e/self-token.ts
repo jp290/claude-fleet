@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:f
 import { spawnSync } from "node:child_process";
 import { BASE, REPO, REPO2, REPO3, ROOT, TOKEN, check, get, paneEnv, plogRead, post } from "./harness";
 import type { Ctx } from "./ctx";
-import { LOCAL_PROOF_STEPS, localProofFor } from "../verify-proportion";
+import { LOCAL_PROOF_STEPS, localProofFor, verificationProportionFor } from "../verify-proportion";
 import {
   FRAGMENTS_FOR, FRAGMENT_TITLES, RULEBOOK_BACKREF_HEADING, RULEBOOK_DIR, RULEBOOK_FRAGMENTS,
   fragmentFileName, renderRulebook, rulebookBody, type RulebookFragment,
@@ -307,6 +307,20 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify(localProofFor([])) === JSON.stringify({
       steps: LOCAL_PROOF_STEPS, isolatedPreview: "self-assess", classifiedAs: {},
     }));
+  // `server/` is classified BEFORE the first module moves there (plan-2026-08-31 §P2). Without the
+  // prefix a P4 module falls to DEFAULT_RULE: the same seven steps, but labelled
+  // "conservative-default" — "we have never seen this path" said about a file the plan named, and
+  // the lane's proof would be right for the wrong reason. The docs path rides in the SAME call as
+  // the counter-probe: this must be a new branch, not a widened one, and one server/ file must
+  // still take `proportional` off an otherwise docs-only diff.
+  const serverModuleProof = verificationProportionFor(["server/persist.ts", "docs/x.md"]);
+  check("local proof: a server/ module is server-or-host-runtime — and the docs path beside it is untouched",
+    serverModuleProof.classifiedAs["server/persist.ts"] === "server-or-host-runtime"
+      && serverModuleProof.classifiedAs["docs/x.md"] === "docs-or-prose"
+      && serverModuleProof.proportional === false
+      && serverModuleProof.isolatedPreview === "self-assess"
+      && JSON.stringify(serverModuleProof.steps) === JSON.stringify(LOCAL_PROOF_STEPS),
+    JSON.stringify(serverModuleProof));
   const conservativeProof = localProofFor(["docs/guide.md", "new-top-level.unknown"]);
   check("local proof: one unknown file flips an otherwise docs-only diff to the conservative full default",
     JSON.stringify(conservativeProof.steps) === JSON.stringify(LOCAL_PROOF_STEPS)

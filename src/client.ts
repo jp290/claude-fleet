@@ -1825,7 +1825,10 @@ renderDevBtn();
 // row at all, and an UNKNOWN (null) draws nothing either, because a permanent "can't tell" line
 // is the same noise the suite-gate line just had removed.
 interface DeployGapInfo { bootHead: string | null; head: string | null; behindCount: number | null; codeBehind: boolean | null }
-interface BundleStaleInfo { appJsMtime: number | null; shareJsMtime: number | null; srcNewestMtime: number | null; stale: boolean | null }
+interface BundleStaleInfo {
+  appJsMtime: number | null; shareJsMtime: number | null; helperJsMtime: number | null;
+  srcNewestMtime: number | null; stale: boolean | null;
+}
 let deployGapInfo: DeployGapInfo | null = null;
 let bundleStaleInfo: BundleStaleInfo | null = null;
 function deploySection(): HTMLElement | null {

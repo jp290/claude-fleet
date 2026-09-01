@@ -100,7 +100,12 @@ function processesForPath(path: string): Exclude<TaskProcess, "cross-cutting">[]
     || path === "attic/atlas.sh" || path === "attic/steward-arena.sh" || path.endsWith(".plist")
     || path === "package.json" || path === "bun.lock" || path === ".gitignore"
     || path === "HANDOFF.md" || path === "INTAKE.md" || path === "SHARING.md") return ["betrieb"];
-  if (path === "server.ts" || path === "task-metadata.ts" || path.endsWith("-prompt.ts")
+  // `server/` is the split's destination for server modules (plan-2026-08-31 §Randbedingung 2).
+  // The prefix is listed BEFORE the first module moves: an unlisted path returns null, and null
+  // leaves the whole cluster undefined — a task naming one new module would lose its cluster
+  // entirely, not just that one path. The `.md` block above still wins for a future `server/*.md`.
+  if (path === "server.ts" || path.startsWith("server/") || path === "task-metadata.ts"
+    || path.endsWith("-prompt.ts")
     || path === "continuity.ts" || path === "lane-signals.ts" || path === "slotstats.ts"
     || path === "trailstats.ts") return ["server"];
   return null;

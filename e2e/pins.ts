@@ -1959,8 +1959,10 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     xStart > 0 && xBody.length > 500 && xBody.length < 12_000, `${xBody.length} bytes`);
   const xCode = xBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   // automation-eligibility FLIPPED 2026-08-12, and the pin flips WITH its condition: the flip is
-  // only sound alongside the declared readiness seam (the measured block screens keep the node
-  // wrapper alive, so no process probe can refuse them — only the rendered pane can). An
+  // only sound alongside the declared readiness seam (trust and sign-in were measured in rendered
+  // frames on 2026-08-12; the update screen's missing ready marker follows from its `pending`
+  // result under the blocks-first order in the 2026-09-01 incident). These screens keep the node
+  // wrapper alive, so no process probe can refuse them — only the rendered pane can. An
   // automatable:true WITHOUT the readiness declaration would re-open the silent brief-eat this
   // seam closed, and on a suite fleet (FLEET_HARNESS_AUTOMATION=0) that regression is invisible
   // at runtime — hence a rule over the source, coupling the two fields as one decision.

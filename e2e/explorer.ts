@@ -11,16 +11,19 @@
 //
 //   PART B — the CLICK ITSELF. Everything the owner does with these surfaces is an interaction,
 //     and a regex over src/client.ts proves neither where a click goes nor what survives the 3s
-//     board repaint. So the real explorer block is cut out of src/client.ts, transpiled, and RUN
-//     against a small DOM stand-in built here — same method as e2e/outcomes.ts's kProgress and
-//     postLandAlarm, extended with just enough `document` for a row to be built and clicked.
-//     Every precondition of that method (node_modules exposes the source, the block is
-//     extractable, it evaluates) is its OWN check, so a probe that could not be set up fails as
-//     itself rather than as the thing it was supposed to measure.
+//     board repaint. The path decoder and the tree/search are imported from src/gitpath.ts and
+//     src/filetree.ts and called directly; the real PAINT block is cut out of src/client.ts,
+//     transpiled, and RUN against a small DOM stand-in built here — same method as
+//     e2e/outcomes.ts's kProgress, extended with just enough `document` for a row to be built
+//     and clicked. Every precondition of that method (node_modules exposes the source, the block
+//     is extractable, it evaluates) is its OWN check, so a probe that could not be set up fails
+//     as itself rather than as the thing it was supposed to measure.
 import { spawnSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { REPO, ROOT, check, get, post } from "./harness";
+import { gitUnquote, porcelainPath } from "../src/gitpath";
+import { matchTree, treeOf } from "../src/filetree";
 
 // --- the DOM stand-in -------------------------------------------------------------------------
 // Only what the explorer block touches. It is a stand-in, not an emulation: no layout, no event
@@ -156,16 +159,18 @@ export async function run(): Promise<void> {
   check("explorer precondition: node_modules exposes src/client.ts for the interaction probes",
     cliSrc.length > 1000, `${cliSrc.length} bytes`);
 
-  const gpSrc = cliSrc.slice(cliSrc.indexOf("const GITPATH_ESCAPES"), cliSrc.indexOf("let dataSaver"));
-  const fxSrc = cliSrc.slice(cliSrc.indexOf("interface TreeNode"), cliSrc.indexOf("async function loadTree"));
-  check("explorer precondition: the path decoder and the tree/paint block are both extractable",
-    gpSrc.includes("function gitUnquote") && gpSrc.includes("function porcelainPath")
-    && fxSrc.includes("function treeOf") && fxSrc.includes("function matchTree")
-    && fxSrc.includes("function paintTree"),
-    JSON.stringify({ gitpath: gpSrc.length, explorer: fxSrc.length }));
+  const fxSrc = cliSrc.slice(cliSrc.indexOf("interface PaintOpts"), cliSrc.indexOf("async function loadTree"));
+  // the decoder and the tree are the imports above; what is asserted about client.ts is that it
+  // SHIPS those same modules — a copy re-inlined there would leave the suite measuring dead code
+  check("explorer precondition: the paint block is extractable, and client.ts takes the decoder and the tree from the modules under test",
+    fxSrc.includes("function paintTree")
+    && /import \{[^}]*\bporcelainPath\b[^}]*\} from "\.\/gitpath"/.test(cliSrc)
+    && /import \{[^}]*\bmatchTree\b[^}]*\} from "\.\/filetree"/.test(cliSrc),
+    JSON.stringify({ explorer: fxSrc.length }));
 
   // What the cut-out block needs from the rest of client.ts, supplied here so the REAL code runs
-  // unchanged. `el` is client.ts's own builder, re-stated against the stand-in above.
+  // unchanged. `el` is client.ts's own builder, re-stated against the stand-in above; `matchTree`
+  // is the imported module itself, handed in as the free identifier the paint reads it by.
   const PRELUDE = `
     const document = { createElement: (t) => makeNode(t) };
     function el(tag, className, text) {
@@ -187,9 +192,10 @@ export async function run(): Promise<void> {
   let cutErr = "";
   try {
     const ts = new Bun.Transpiler({ loader: "ts" });
-    cut = new Function("makeNode",
-      `${PRELUDE}\n${ts.transformSync(gpSrc)}\n${ts.transformSync(fxSrc)}\n`
-      + "return { gitUnquote, porcelainPath, treeOf, matchTree, paintTree };")(makeNode) as Cut;
+    const painted = new Function("makeNode", "matchTree",
+      `${PRELUDE}\n${ts.transformSync(fxSrc)}\n` + "return { paintTree };")(makeNode, matchTree) as
+      { paintTree: Painter };
+    cut = { gitUnquote, porcelainPath, treeOf, matchTree, paintTree: painted.paintTree };
   } catch (e) { cutErr = e instanceof Error ? e.message : String(e); }
   check("explorer precondition: the extracted block evaluates against the DOM stand-in",
     !!cut, cutErr || "ok");

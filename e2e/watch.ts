@@ -21,6 +21,7 @@ import { auditWatchMessage, laneHostCommitLooking, laneStalled, laneWatchEventKi
 import { composerArrival, composerHoldsExactly, composerResidue, composerRows,
   type ComposerArrival } from "../composer";
 import { FLEET_REPORT_STATUSES, type FleetReportEventPayload, type FleetReportStatus } from "../src/protocol";
+import { PANE_ACK_STALE_MS, opsOpen, opsUnacked } from "../src/opsevents";
 import { AUTOS_TICK_MS, BASE, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut } from "./harness";
 
 interface WatchRow {
@@ -3491,10 +3492,10 @@ export async function run(): Promise<void> {
   // to see the text sitting in the composer. The server writes `delivered` once and otherwise reads
   // it only as the receiver-ack precondition, so an unacknowledged row is invisible debt.
   //
-  // The classification rules ARE the feature, so the real `opsOpen`/`opsUnacked` are cut out of
-  // src/client.ts and RUN — the same method as e2e/outcomes.ts (9f). What stays unproved and is
-  // named: the rendering around them (this suite has no DOM harness), asserted by regex right
-  // after. Nothing here mutates anything; the derivation is read-only by construction.
+  // The classification rules ARE the feature, so the real `opsOpen`/`opsUnacked` are imported
+  // from src/opsevents.ts and RUN — the same method as e2e/outcomes.ts (9h). What stays unproved
+  // and is named: the rendering around them (this suite has no DOM harness), asserted by regex
+  // right after. Nothing here mutates anything; the derivation is read-only by construction.
   {
     let cliSrc: string | null = null;
     let cliSrcError = "";
@@ -3504,12 +3505,15 @@ export async function run(): Promise<void> {
     check("precondition: node_modules exposes src/client.ts for the pane-ack visibility checks",
       cliSrc !== null, cliSrcError);
     if (cliSrc !== null) {
-      const opsSrc = cliSrc.slice(cliSrc.indexOf("const opsOpen ="), cliSrc.indexOf("function renderOpsBtn"));
-      check("client: the two event classes are extractable as pure functions (no DOM in either)",
-        opsSrc.includes("const opsUnacked") && opsSrc.includes("PANE_ACK_STALE_MS")
-          && !/document|el\(|opsbtn|opspanel/.test(opsSrc), opsSrc.slice(0, 80));
-      const ops = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(opsSrc)
-        + "\nreturn { opsOpen, opsUnacked, PANE_ACK_STALE_MS };")() as {
+      // what is asserted about client.ts is that it SHIPS the module under test — classes
+      // re-inlined there would leave every check below measuring code the bundle never runs
+      check("client: the ops panel takes both event classes from src/opsevents.ts, the module under test",
+        /import \{[^}]*\bopsUnacked\b[^}]*\} from "\.\/opsevents"/.test(cliSrc)
+          && /import \{[^}]*\bopsOpen\b[^}]*\} from "\.\/opsevents"/.test(cliSrc),
+        "the opsevents import in src/client.ts");
+      // the rows below are shaped by hand, so the imports are widened to the loose signatures the
+      // fixtures were written against — the functions themselves are the module's own
+      const ops = { opsOpen, opsUnacked, PANE_ACK_STALE_MS } as unknown as {
           opsOpen: (rows: unknown[]) => unknown[];
           opsUnacked: (rows: unknown[], now: number) => { id: string }[];
           PANE_ACK_STALE_MS: number;

@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { BASE, REPO, ROOT, check, get, post, restartSrv } from "./harness";
 import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
+import { postLandAlarm } from "../src/plaudit";
 
 export async function run(): Promise<void> {
   // --- per-lane attributed-outcome RECORDER: drive a lane through each terminal event and
@@ -944,28 +945,25 @@ export async function run(): Promise<void> {
     // (9h) THE POST-LAND AUDIT ALARM, CLIENT HALF. Tier 2 gates nothing, so RENDERING its result is
     // the entire safety net — a red audit nobody sees is a red audit that never happened (two went
     // unread on 2026-07-26, when the field was shipped 30×/minute to a client with no reader at
-    // all). The classifier is cut out of src/client.ts and RUN, like kProgress above: the rules
-    // (green is silent, red ≠ unknown, an ack is keyed to one audit) are the whole point and a
-    // regex would only prove the words are present. The rendering around it stays regex-asserted —
-    // no DOM harness here — and the ON-path server behaviour lives in ./e2e-postland-audit.sh.
-    const plaSrc = cliSrc.slice(cliSrc.indexOf("const PLA_ACK_KEY"), cliSrc.indexOf("function renderPostLandAudit"));
+    // all). The classifier is imported from src/plaudit.ts and RUN (kProgress above is still cut
+    // out of client.ts): the rules (green is silent, red ≠ unknown, an ack is keyed to one audit)
+    // are the whole point and a regex would only prove the words are present. The rendering
+    // around it stays regex-asserted — no DOM harness here — and the ON-path server behaviour
+    // lives in ./e2e-postland-audit.sh.
     type PlaAudit = { at: number; result: string; repo: string; main: string; mainSha: string;
       covers: string[]; reason?: string };
     type PlaAlarm = { tone: string; headline: string; where: string; note: string } | null;
-    let postLandAlarm: ((a: PlaAudit | null, ackedAt: number) => PlaAlarm) | null = null;
-    try {
-      postLandAlarm = new Function(
-        new Bun.Transpiler({ loader: "ts" }).transformSync(plaSrc) + "\nreturn postLandAlarm;")() as
-        (a: PlaAudit | null, ackedAt: number) => PlaAlarm;
-    } catch { postLandAlarm = null; } // absent/unextractable → every check below fails, loudly
-    check("client: the post-land audit alarm is extractable as a pure classifier (no DOM in postLandAlarm)",
-      !!postLandAlarm && plaSrc.includes("function postLandAlarm") && !/document|el\(|chip\(/.test(plaSrc),
-      plaSrc.slice(0, 80) || "no PLA_ACK_KEY…renderPostLandAudit block in src/client.ts");
+    // what is asserted about client.ts is that it SHIPS the module under test — a classifier
+    // re-inlined there would leave every alarm check below measuring code the bundle never runs
+    check("client: renderPostLandAudit takes postLandAlarm and its ack key from src/plaudit.ts, the module under test",
+      /import \{[^}]*\bpostLandAlarm\b[^}]*\} from "\.\/plaudit"/.test(cliSrc)
+      && /import \{[^}]*\bPLA_ACK_KEY\b[^}]*\} from "\.\/plaudit"/.test(cliSrc),
+      "the plaudit import in src/client.ts");
     const plaRow = (o: Partial<PlaAudit>): PlaAudit =>
       ({ at: 1000, result: "red", repo: "claude-fleet", main: "main",
         mainSha: "abcdef0123456789", covers: ["fleet/lane-a"], ...o });
     const plaCall = (a: PlaAudit | null, acked = 0): PlaAlarm => {
-      try { return postLandAlarm ? postLandAlarm(a, acked) : null; } catch { return null; }
+      try { return postLandAlarm(a, acked); } catch { return null; }
     };
     check("alarm: a GREEN audit raises nothing — a passing suite is the expected case",
       plaCall(plaRow({ result: "green" })) === null && plaCall(null) === null,

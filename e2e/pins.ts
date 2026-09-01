@@ -1959,7 +1959,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     xStart > 0 && xBody.length > 500 && xBody.length < 12_000, `${xBody.length} bytes`);
   const xCode = xBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   // automation-eligibility FLIPPED 2026-08-12, and the pin flips WITH its condition: the flip is
-  // only sound alongside the declared readiness seam (both measured block screens keep the node
+  // only sound alongside the declared readiness seam (the measured block screens keep the node
   // wrapper alive, so no process probe can refuse them — only the rendered pane can). An
   // automatable:true WITHOUT the readiness declaration would re-open the silent brief-eat this
   // seam closed, and on a suite fleet (FLEET_HARNESS_AUTOMATION=0) that regression is invisible
@@ -1968,6 +1968,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     /\n  automatable: true,/.test(xBody) && /\n  readiness: \{/.test(xBody)
     && /Do you trust the contents of this directory/.test(xBody)
     && /Sign in with ChatGPT\|Welcome to Codex/.test(xBody)
+    && /Update available![^\n]*\\s\\S[^\n]*Update now/.test(xBody)
     && />_ OpenAI Codex \\\(v/.test(xBody),
     xBody.match(/automatable: \w+/)?.[0] ?? "no automatable field");
   // Resume is the same paired-decision shape. `pinsSession` MUST remain false (fresh Codex accepts
@@ -2183,6 +2184,9 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     /\n  comms: \["codex", "node"\],/.test(xBody), xBody.match(/\n  comms: [^\n]*/)?.[0]?.trim() ?? "no comms field");
   pin("the codex spawn line runs full access — approvals and sandbox bypassed by owner decision 2026-08-12",
     /codex --dangerously-bypass-approvals-and-sandbox/.test(xCode) && !/--sandbox workspace-write/.test(xCode),
+    xBody.match(/let cmd = [^\n]*/)?.[0] ?? "no spawn line");
+  pin("the codex spawn disables startup update checks through the documented config override",
+    (xCode.match(/-c check_for_update_on_startup=false/g) ?? []).length === 2,
     xBody.match(/let cmd = [^\n]*/)?.[0] ?? "no spawn line");
   // The trust prelude is what keeps that spawn UNATTENDED-bootable: codex blocks on its per-path
   // trust prompt for any cwd absent from ~/.codex/config.toml, and the bypass flag does NOT skip

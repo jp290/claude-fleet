@@ -1525,9 +1525,12 @@ export async function run(ctx: Ctx): Promise<void> {
     // below asserts exactly that), and the teardown takes the pane with it
     const xCmd = typeof xdJ.slot === "number"
       ? (await tmuxOut("display-message", "-p", "-t", `s${xdJ.slot}`, "#{pane_start_command}")).out : "";
-    check("a DISPATCHED lane spawns the named harness — the pane runs codex full-access with the model it was given",
-      /(^|\s|;)codex --dangerously-bypass-approvals-and-sandbox --model 'openai\/gpt-5-codex'/.test(xCmd.replaceAll("\\", "")),
-      xCmd.slice(-160));
+    const xCmdFlat = xCmd.replaceAll("\\", "");
+    check("a DISPATCHED lane spawns the named harness — codex runs full-access, update-disabled, with the given model",
+      /(^|\s|;)codex --dangerously-bypass-approvals-and-sandbox/.test(xCmdFlat)
+      && xCmdFlat.includes("-c check_for_update_on_startup=false")
+      && xCmdFlat.includes("--model 'openai/gpt-5-codex'"),
+      xCmd.slice(-220));
     // ...and the WORKING-COPY FORM travels this road too, which is the road the owner actually
     // uses. The dispatch path has no request body to carry a `form`, so it is the pure absence
     // case — and since the 2026-08-12 full-access spawn no adapter prefers a clone, so the answer
@@ -1572,7 +1575,7 @@ export async function run(ctx: Ctx): Promise<void> {
     await post(`/api/tasks/${xT.task.id}/delete`, {});
 
     // --- (f3) SCREEN READINESS on the dispatch tail — the counterprobes to the measured
-    // 2026-08-12 finding: both codex block screens keep the agent process ALIVE, so the process
+    // 2026-08-12/09-01 findings: codex block screens keep the agent process ALIVE, so the process
     // probe passes and only the rendered pane can refuse. Each probe below dispatches a real codex
     // lane and, inside the 4 s boot grace, replaces its pane with the shared stand-in that renders
     // one measured screen and then stays alive under the ["codex","node"] comms probe (plantScreen
@@ -1618,6 +1621,19 @@ export async function run(ctx: Ctx): Promise<void> {
         loginRow?.status === "queued" && !loginRow.slot && /codex sign-in screen/.test(loginRow.note ?? ""),
         JSON.stringify(loginRow));
       await post(`/api/tasks/${login.id}/delete`, {});
+      // Codex 0.147.0 and 0.152.0 render this startup menu before the ready composer. Option 1 is
+      // preselected, so any paste+Enter here would run the updater instead of delivering the brief.
+      const update = await screenLane([
+        "Update available! 0.147.0 -> 0.152.0",
+        "1. Update now (runs `npm install -g @openai/codex`)",
+        "2. Skip",
+        "3. Skip until next version",
+      ].join("\n"));
+      const updateRow = await rowAfter(update.id, (r) => r?.status === "queued");
+      check("a codex pane on its UPDATE PROMPT never receives the brief — requeued with the screen named",
+        updateRow?.status === "queued" && !updateRow.slot && /codex update prompt/.test(updateRow.note ?? ""),
+        JSON.stringify(updateRow));
+      await post(`/api/tasks/${update.id}/delete`, {});
       // neither marker: "pending" is not deliverable on a seconds-old pane — the bounded budget
       // (not a blind sleep) decides, and the timeout says how long it looked
       const mute = await screenLane("booting, no marker yet");
@@ -1644,6 +1660,25 @@ export async function run(ctx: Ctx): Promise<void> {
         readyCap.out.includes("readiness-probe"), readyCap.out.slice(-160));
       if (ready.slot > 0) await post(`/api/slots/${ready.slot}/kill`, {});
       await post(`/api/tasks/${ready.id}/delete`, {});
+      // After "Skip until next version", Codex keeps a non-blocking update banner beside the ready
+      // header. The marker is authoritative: banner text must never turn this back into a block.
+      const banner = await screenLane([
+        "Update available! 0.147.0 -> 0.152.0",
+        "Run npm install -g @openai/codex to update.",
+        ">_ OpenAI Codex (v0.147.0)",
+      ].join("\n"));
+      let bannerCap = { out: "" };
+      for (let i = 0; i < 30 && !bannerCap.out.includes("readiness-probe"); i++) {
+        await Bun.sleep(500);
+        bannerCap = await tmuxOut("capture-pane", "-t", `s${banner.slot}`, "-p");
+      }
+      const bannerRow = await f2Row(banner.id);
+      check("a codex UPDATE BANNER beside the ready marker stays ready and receives the brief",
+        bannerRow?.status === "sent" && bannerRow.slot === banner.slot
+        && bannerCap.out.includes("readiness-probe"),
+        `${JSON.stringify(bannerRow)} pane=${bannerCap.out.slice(-160)}`);
+      if (banner.slot > 0) await post(`/api/slots/${banner.slot}/kill`, {});
+      await post(`/api/tasks/${banner.id}/delete`, {});
     }
 
     // ...and the OTHER failure shape, the one that never reaches a pane: a spawn that throws must

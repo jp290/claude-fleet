@@ -1,3 +1,121 @@
+# HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 3 → Nachfolge): P4 Slice 3 GELANDET (4846d83, Gate gruen 103 s), vier Land-Versuche und was jeder gekostet hat, Slice 4 vom Compiler vorvermessen; 2026-09-03 (00:0x), ctx GEMESSEN 31,2 %
+
+Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,
+`GET /api/self/program-execution`. Hier steht nur, was git und die Sensoren NICHT tragen.
+
+## 1. Das Erste, was du tust
+
+**Nichts ist in Flug. Der Audit-Watch `3d1c7cc0` ist ARMED auf `4846d831…`** — er meldet sich von
+selbst mit gruen/rot/unknown. Warte ihn ab, BEVOR du deployst oder den naechsten Slice startest.
+Danach: **P4 Slice 4 = audit-log**, vorvermessen in
+`docs/sanierung-2026-09/p4-slice4-vorbereitung.md` — die Datei ist der Brief-Rohstoff, lies sie
+zuerst.
+
+## 2. Gelandet, verifiziert
+
+**P4 Slice 3 (`c74706b0`) ist auf main:** `14a3ab6` (der Move) + `4846d83` (die vier
+Kommentar-Zeiger). Von mir am Baum nachgeprueft, nicht der Benachrichtigung geglaubt:
+`server/transport.ts` + `server/dir-explorer.ts` existieren, **`server.ts` 24313 → 23962 (−351)**,
+exakt die Zahl der Vorgaengerin. Land-Note: `verify.ok true`, `exitCode 0`, alle sieben Stufen,
+**103 s Arbeit, `waitMs 0`**. `bun e2e/pins.ts` im Haupt-Checkout danach: ALL PASS.
+
+Ausserdem gelandet (Direkt-Commits, docs-only, je mit `bun e2e/pins.ts` verifiziert, KEIN
+Post-Land-Audit deckt sie): `847c17a` `c98b1ec` `5971cc5` `84f735e` `299ac65` `0a94bd0`.
+
+## 3. VIER Land-Versuche — die Kosten-Aufschluesselung ist die eigentliche Uebergabe
+
+| # | Kandidat | Ergebnis | Ursache | vermeidbar? |
+|---|---|---|---|---|
+| 1 | `3dd84d1`→`ee020be` | verify ROT, exit 3 | §11.2i-Flake in `claude-gate` Phase 3 | nein |
+| 2 | `ee020be` | 409 no-progress | Guard arbeitet korrekt | ja (siehe unten) |
+| 3 | `a2e77c8`→`a5fea1c` | `interrupted` | **fremder Deploy hat srv gekillt** (B-06) | ja |
+| 4 | `a5fea1c` | **gruen, gelandet** | — | — |
+
+**Zu (1):** die Beweisordnung §11.7 hat funktioniert — gleicher Baum zuerst, kein HEAD-Ausflug.
+Mein Lauf (nur `e2e-claude-gate.sh`, 23:38:21 fertig) war sauber auf `ee020be`; **der staerkere
+Beweis ist der der Lane**: voller Gate-Lauf, sha-geklammert (`before == after == a2e77c8`,
+`dirty []`), 599 PASS / 0 FAIL. Die Lane hat dabei ihren EIGENEN ersten Lauf verworfen, weil mein
+Commit `a2e77c8` mitten hinein fiel und er damit zwischen zwei Baeumen stand — und sie hat vorher
+ausgeschlossen, dass ein nicht-gestagtes Modul (also ihr Fehler) den Boot-Tod erklaert. Das ist die
+Reihenfolge, die man von einem Report will.
+
+**Zu (2), und das ist die Lehre fuer dich:** der no-progress-Guard verlangt einen NEUEN Commit.
+Ich habe ihn NICHT mit einem Leer-Commit umgangen, sondern mit echter Restarbeit des Slices (die
+vier `TRANSPORT region`-Zeiger, die dieser Move erst tot gemacht hat). **Vermeidbar war er, weil
+diese Arbeit von Anfang in den Slice gehoert haette** — der Brief hatte Kommentar-Umformulierung
+verboten, die Lane hat korrekt gemeldet statt still zu aendern, und niemand hat den Rest
+eingeplant. Es waren uebrigens VIER, nicht die drei aus dem alten Handoff (`server.ts:22252`
+fehlte).
+
+## 4. Zwei neue Befunde, beide im Register (`docs/sanierung-2026-09/p6-befundregister.md`)
+
+- **B-06: ein Deploy toetet einen laufenden LAND.** Er sperrt (409) gegen einen laufenden
+  Post-Land-AUDIT, aber nicht gegen einen Land. Geschuetzt ist die billigere Haelfte. Hier lag der
+  Abbruch guenstig VOR der main-Bewegung; danach waere ein Commit ohne Provenienz-Note geblieben.
+- **B-07: der SPENT merge-Watch ist PERSISTIERT.** Re-Subscription gibt `ok:true` + denselben Watch
+  mit `armed:false` und `firedAt` vom ersten Land; ueberlebt einen Server-Neustart. **Operativ,
+  sofort anwendbar: nach jedem `POST /api/self/watch` `armed` lesen, nie `ok`.** Sonst wartest du
+  auf dem vom Gruendungsbrief vorgeschriebenen Pfad unbegrenzt. Ich musste beide Male auf
+  `GET /api/slots/2/merge` pollen.
+
+## 5. Das Register ist neu und du solltest es kennen
+
+`docs/sanierung-2026-09/p6-befundregister.md` — entstanden, weil der Advisory-Deckel auf 10/10
+steht und ein Befund sonst im Scratchpad einer sterbenden Session stirbt (genau das war am 02.09.
+passiert). Enthaelt B-01…B-07 plus einen **Methodensatz**, den du beim naechsten Vergleich
+brauchst: *ein Vergleich zweier Populationen mit unterschiedlicher Zeitspanne misst die Zeit, nicht
+den Unterschied.* Der Controller und ich haben das an der Helfer-Messung beide falsch gemacht und
+korrigiert — remote ist im gemeinsamen Fenster **15 % SCHNELLER** als lokal, nicht langsamer.
+
+**Deckel-Entscheid (Owner → Controller, 02.09.):** bleibt bei 10. `16 x (5+10) + 80 = 320`
+nicht-terminale Zeilen gegen `MAX_TASKS 200` — er laeuft schon ueber. Rueckfalltuer
+`FLEET_PROGRAM_MAX_PENDING_ADVISORY` in `.env`. **Ein Platz ist frei** (`d2e4f219` wurde zu
+`auftrag` konvertiert).
+
+## 6. P4 Slice 4 — schon vermessen, NICHT gegrept
+
+`docs/sanierung-2026-09/p4-slice4-vorbereitung.md`. Kurzform:
+- **audit-log (`server.ts:2439-2624`, 186 Z.) = der naechste Slice.** Zwei freie Bezeichner:
+  `appendEvent` liegt schon exportiert in `server/persist.ts`, bleibt `AUDIT_FILE` — und das ist
+  woertlich die Slice-3-Falle: `${import.meta.dir}/audit.jsonl` wandert beim Move lautlos nach
+  `<repo>/server/audit.jsonl`. PUB-Anker, und den Pfadvergleich **ausfuehren**, nicht lesen.
+- **auth ist heute KEIN reiner Move** — vier Nicht-Typ-Bindungen in den Kern (`json` 5x, `PORT` 3x,
+  `secretEq`, `HOST`). Erst audit-log, dann ein Fundament fuer diese vier, dann auth.
+- Die Sonde selbst ist heute DREIMAL still gescheitert (TS2688 ausserhalb des Repos, TS1005 bei
+  Schnitt mitten in eine Funktion) — beide erzeugen ein LEERES Namensergebnis, das wie „null
+  Abhaengigkeiten" liest. **Erst Syntaxfehler zaehlen, dann Namen lesen.**
+
+## 7. Offen, und wem es gehoert
+
+- **Der Owner hat meine Attention `5954d4da3118c86745d63765` noch nicht beantwortet** (Tor 1:
+  Advisory-Disposition; Tor 2: der Feature-Freeze). Sie ist `open`, nicht getoetet — die
+  Vorgaengerin hatte ihre durch die Nachfolge verloren (`requester session ended`), meine haelt.
+- **Tor 2 ist die wichtigere Zahl und steht noch:** seit Tag `vor-generalsanierung` hat die
+  Sanierung **−2259** Zeilen aus `server.ts` geschnitten, fremde Arbeit **+1050** wieder
+  hineingelandet — 46 % der Arbeit zugeschuettet, waehrend der Freeze formal steht. Erfolgsmass 1
+  will ≤8000; von 23962 sind das noch ~16000. Das ist eine Owner-Entscheidung, keine Lane-Arbeit.
+- **Der Rot-Befund auf `main` gehoert NICHT uns.** Slot 9s Kontrolllauf auf `fda6fda`: 3455/10, der
+  Check `restart keeps the busy pending event…` faellt schon VOR seinem Land — vorbestehend, die
+  ops-event-/fleet-report-Familie. Der Controller nimmt die Adjudikation mit.
+- **`server.ts` ist frei.** Der Controller dispatcht `860cecdf` (Slot 16, wartet >12 h) und danach
+  `d2e4f219`. Alle offenen Auftragszeilen des Fleets fassen `server.ts` an — der naechste Slice
+  konkurriert mit ihnen, plan das ein.
+
+## 8. Ehrlichkeiten
+
+- Diese Session laeuft auf `claude-opus-5[1m]`, nicht Fable — geerbt, wie die Vorgaengerin. Die
+  Modellpolitik vom 02.09. will Fable 5.1 fuer eine Program-MAIN. Behoben wird das nur durch
+  `POST /api/slots/:id/model` UND `/model` in der Pane; ich habe es NICHT angefasst.
+- Alle meine Commits sind Direkt-Commits aus dem Haupt-Checkout, docs-only, mit `bun e2e/pins.ts`
+  verifiziert — **nicht** mit der vollen Suite. Kein Post-Land-Audit deckt sie.
+- Der Dispatch lief ueber `POST /api/self/tasks/:id/land` (Self-Route), nicht ueber Owner-Token.
+- Ich habe **keine** Queue-Zeile gefilt — der Deckel war voll; alles ging ins Register.
+- Zwei Messtabellen von mir waren zwischenzeitlich frei erfunden (zsh-`$var:`-Falle, s.
+  `~/.claude/knowledge/stacks/fugen.md`). Die Zahlen in DIESEM Dokument sind alle mit `${c}`
+  geklammert nachgerechnet.
+
+---
+
 # HANDOFF — Fleet Controller (Slot 1, Opus 5 high): Ueberblick MIT AGENTEN gefahren, sieben Sessions entsperrt, Helfer-Auslagerung VERMESSEN (die Zahl ist nicht die, die alle dachten) und als Drei-Schnitt-Slice gebrieft; 2026-09-02 (22:50)
 
 Rolle: 🎛 Fleet Controller, Nachfolge von Slot 7 ueber die Owner-Route. Owner-Delegation (Landen,

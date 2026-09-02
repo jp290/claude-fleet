@@ -945,6 +945,64 @@ curl -X POST http://<fleet-host>:<port>/api/slots/<id>/model \
   den Datensatz. Beweis der Pane-Hälfte: `./e2e-claude-gate.sh` (Rewrite, dann `↻ restart`, Spawn-Zeile trägt
   `--model '<neu>'` und `--effort '<neu>'`, gleicher `--resume`-Pin).
 
+## dispatch — `POST /api/tasks/:id/dispatch` (OWNER-Route, nicht `/api/self/*`)
+
+Sie steht hier, weil sie die eine Tür ist, durch die eine Zeile aus dem Queue-Rail in eine Lane
+tritt und dabei ihr **Spawn-Triple** (`harness`/`model`/`effort`) trägt — dasselbe Triple, das
+`POST /api/self/tasks` (§tasks) an der Filing-Tür SET-Zeit-validiert und als `Task.spawn`
+persistiert. Owner-Route hinter `tokenGate`; der `▸ start lane`- und der `▸ clarify first`-Knopf
+der Task-Workbench sind ihre beiden Aufrufer (`src/client.ts#qDispatchBody`).
+
+**Per-Feld-Vorrang, serverseitig** (`server.ts`, Route `taskDispatch`): ein im Body genanntes Feld
+gewinnt; ein fehlendes Feld (abwesend, `null` oder `""`) fällt auf die **eigene persistierte Wahl
+der Zeile** (`taskSpawnOf(t)`, `Task.spawn`); fehlt beides, läuft der Default-Adapter. Die
+kombinierte Wahl wird als GANZES gegen die effektive Harness geprüft — Harness zuerst, dann Modell
+und Effort gegen genau diesen Adapter — und zwar VOR der Suche nach einem freien Slot: eine
+ungültige Kombination bekommt ihre 400 und keine 409 über Kapazität, und es wird nichts gespawnt.
+Die drei Ablehnungen, wörtlich (und wortgleich mit der Blockade, die der Client VOR dem Klick
+zeigt — `e2e/tasks.ts` hält beide Texte gegen den Live-Server gleich):
+
+- `unknown harness (one of: claude, pi, …)` (400)
+- `harness <id> takes no model` · `bad model (must match …)` (400)
+- `harness <id> takes no effort` · `bad effort (one of: low, medium, …)` (400)
+
+**Was der Client sendet — zwei Akte, zwei Handler, zwei Bodies:**
+
+```
+# ▸ start lane: GENAU die vom Owner gewählten Felder des Triples, ungewählte sind ABWESEND
+#   (so bleibt der Vorrang oben die Semantik: Zeile, dann Default). Auf einer rohen Zeile —
+#   keine Analyse oder ein Verdikt, das den Owner wollte — reitet zusätzlich `acknowledged:true`
+#   (der bestehende Raw-Start-Vertrag; die Audit-Zeile trägt dann `raw-acknowledged`).
+POST /api/tasks/<id>/dispatch  {}                                          # alles Default
+POST /api/tasks/<id>/dispatch  {"harness":"codex","model":"openai/gpt-5-codex","effort":"high"}
+POST /api/tasks/<id>/dispatch  {"effort":"max","acknowledged":true}         # roh, bestätigt
+
+# ▸ clarify first: dasselbe gewählte Triple unter `clarify:true`, NIE `acknowledged`
+POST /api/tasks/<id>/dispatch  {"clarify":true}
+POST /api/tasks/<id>/dispatch  {"clarify":true,"harness":"codex","effort":"high"}
+```
+
+Keiner der beiden Bodies trägt einen Status: die Zeile bewegt der Server. **Und er bewegt sie in
+beiden Akten** — auch `clarify:true` öffnet eine Lane (die Clarify-Lane, `clarify-prompt.ts`),
+setzt die Zeile auf `sent`, bindet sie an den Slot und parkt den Slot mit `awaiting:"owner"`;
+die Note lautet `clarify lane <branch> — settling the done-criterion with you`. Ein Clarify-Start
+ist also KEIN statusneutraler Akt, sondern eine Lane mit anderem Gründungsbrief und ohne
+Exit-Footer (`e2e/tasks.ts` §(i) pinnt genau das). Was ihn vom Start trennt, ist der Brief und
+das Warten, nicht die Zeile.
+
+**Was die Zeile VOR dem Klick zeigt** (`src/client.ts#qSpawnRow`): die drei Picker aus dem
+servergelieferten Katalog (`GET /api/harnesses`; Modell-Feld und Effort-Liste folgen der
+EFFEKTIVEN Harness und fehlen, wo der Adapter das Konzept nicht hat), darunter die effektive
+Wahl je Feld mit Herkunft — `picked` (im Body), `row` (persistierte Wahl der Zeile, aus
+`GET /api/tasks`, nie aus dem Poll-Digest) oder `default` (abwesend; DEFAULT_SPAWN) — und, falls
+die Kombination die 400 oben bekäme, die Ablehnung als Blockzeile: beide Knöpfe sind dann
+deaktiviert. Ein leerer Katalog (Fetch nicht angekommen) blockiert nichts; der Server urteilt
+weiter. Die Wahl lebt je Task-ID über den 2-s-Repaint hinweg und wird beim Schließen des
+Fensters und beim Start verworfen. Eine Grenze, die der Client NICHT auflöst: die Route kennt
+kein „Effort der Zeile löschen" — `""` ist dort abwesend, also fällt die Zeile auf ihren
+gespeicherten Wert zurück; wer eine Zeile mit gespeichertem Effort auf eine Harness ohne Effort
+setzt, sieht die Blockade und kann nur eine Harness mit Effort wählen oder die Zeile neu anlegen.
+
 ## profile — `POST /api/programs/:id/profile` (OWNER-Route, nicht `/api/self/*`)
 
 Sie steht hier aus demselben Grund wie §promotion: sie schreibt einen Record, den eine Session an

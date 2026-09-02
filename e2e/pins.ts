@@ -1891,8 +1891,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // …and the OTHER load-time reader of the same field, which decides what a MALFORMED row's kind
   // degrades to. A main row falling to `auftrag` would promote an advisory filing into the one
   // executable category across a reload — the safe default has to name this producer too.
-  const loadKindStart = server.indexOf("const loadTaskKind = (");
-  const loadKindBody = loadKindStart < 0 ? "" : server.slice(loadKindStart, server.indexOf("\n};\n", loadKindStart));
+  const loadKindBody = serverU.span("const loadTaskKind = (", "\n};\n")?.text ?? "";
   pin("loadTaskKind's safe default is advisory for BOTH producers whose door defaults to notiz",
     loadKindBody.length > 0
       && /return source === "steward" \|\| source === "main" \? "notiz" : "auftrag";/.test(loadKindBody),
@@ -2519,8 +2518,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // ...and the loader degrades a malformed record to ABSENT rather than repairing it field-wise.
   // The dangerous direction is planted at runtime in e2e/programs.ts; this is the structural half,
   // because a field-wise repair added later would still pass that probe for the one field it kept.
-  const promoLoader = server.slice(server.indexOf("const loadPromotion = "),
-    server.indexOf("\n};", server.indexOf("const loadPromotion = ")));
+  const promoLoader = serverU.span("const loadPromotion = ", "\n};")?.text ?? "";
   pin("loadPromotion returns undefined on every malformed shape — no field-wise repair of a permission",
     promoLoader.length > 0 && (promoLoader.match(/return undefined;/g) ?? []).length === 5
     && (promoLoader.match(/return \{ v: 1,/g) ?? []).length === 1,

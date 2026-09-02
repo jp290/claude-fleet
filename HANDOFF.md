@@ -1,78 +1,135 @@
-# HANDOFF — Fleet Controller (Slot 13, Fable 5.1 high): Modellpolitik umgestellt (MAINs Fable, Lanes Opus), Lane 1 gelandet (79acd2e), Audit ROT 10/3443 mit Rerun in Flug, Brief 3b+4 von Slot 3 selbst gelandet, 2026-09-02 (12:20)
+# HANDOFF — Fleet Controller (Slot 13, Fable 5.1 high): DENKSESSION vorbereitet — (A) Second-host-Fix als Durchsatz-Hebel, (B) Zusammenarbeit der Sessions (Erfassung, Kommunikation); Watches an die MAINs abgegeben; Modellpolitik MAINs Fable / Lanes Opus; 2026-09-02 (12:35)
 
-Rolle: **🎛 Fleet Controller**, Nachfolge von Slot 14 via `/api/self/succeed`. Owner-Delegation 10:05 gilt weiter
-(operativ selbst entscheiden, dem Owner nur Handgriffe vorlegen). **Neue Owner-Entscheide heute:** (1) 10:35/10:45
-**Modellpolitik**: Fable 5.1 nur fuer Orchestrierendes (Controller, Program-MAINs, Steward), JEDE Lane
-`claude / claude-opus-5[1m] / high` — Grund: 80 % des Fable-Limits in 14 h verbraucht; Regel steht in
-`rulebook/einstieg.md` (gerendert in CLAUDE.md) und in der Memory. (2) Owner will die Hostlast im Blick
-(8 GB RAM, Swap 6,5/7 GB, Lag im Eingabefeld) — RAM ist der Engpass, nicht CPU.
+Rolle: **🎛 Fleet Controller**, Nachfolge von Slot 14. Owner-Delegation 10:05 gilt weiter. **Owner-Auftrag
+12:25 an DICH** (woertlich, gekuerzt): „Watches abstellen und die Verantwortung an die MAINs oder den
+Supervisor/Steward abgeben. Zu allererst will ich wissen, wie es mit dem aktuellen Second-host-Fix aussieht,
+damit koennten wir das Arbeitspensum direkt in vernuenftiger Art erhoehen. Daneben nochmal nach
+architekturellen Verbesserungen von Claude Fleet gucken, insbesondere Informationserfassung zur
+Sessions-Uebersicht, Kommunikation — wie die Sessions innerhalb Claude Fleets zusammenarbeiten. Erst
+Gedanken machen, worauf es ankommt und wie man beides im komplementaeren Kontext zueinander angeht." Und:
+„statt direkt drueber nachzudenken, die naechste Session moeglichst gut auf ihre Denksession vorbereiten."
+Also: **du bist die Denksession, mit frischem Kontext.** Ich habe NICHT vorgedacht, nur Fakten und
+Lesestoff sortiert. Owner-Entscheide von heute, die den Rahmen setzen: Modellpolitik (Fable nur
+orchestrierend, Lanes Opus — 80 % Fable-Limit in 14 h; `rulebook/einstieg.md`) · Hostlast im Blick
+behalten (8 GB RAM, Swap 6,5/7 GB, Lag im Eingabefeld).
 
 ## 0. Reihenfolge fuer dich
 
-1. **Erdung** wie immer; Rueckwege neu legen (die Skripte in meinem Scratchpad sterben mit mir): Main-Watcher,
-   Attention-Watcher auf OFFENE Zeilen, ctx-Watcher auf dich, und **einen Waiter auf den Rerun (Punkt 2)**.
-   Merke: `POST /api/self/watch {kind:"merge"}` gibt nach einem gefeuerten Watch auf dasselbe Ziel den
-   VERBRAUCHTEN Watch zurueck (`armed:false`, Notiz `372b3cef`) — fuer ein zweites Land auf demselben Slot
-   brauchst du einen eigenen Waiter auf `GET /api/slots/:id/merge running:false`.
-2. **Audit von 79acd2e ist ROT (10/3443, lokal, 2340 s).** Zehn Namen, alle aus der Composer-/Zustellungs-
-   Familie (`rollback live …`, `arrival …`, `held …`, `subject fixture`, `subject-gone`, `counterprobe`),
-   Signatur ueberall `send-uncertain, deliveredAt:null`. Beweislage fuer Flake: der Diff von 79acd2e beruehrt
-   in `server.ts` NUR Helper-Regionen (12355–13503), null Treffer auf composer/sendText/event; zwei der zehn
-   Namen fielen heute 02:29 auf einem Baum OHNE dieses Land. **Rerun desselben Baums laeuft** (Regel §11.7,
-   seriell): Wrapper-PID in `<mein Scratchpad>/rerun.pid`, Log `rerun-79acd2e.log` dort — der Prozess ist ein
-   Kind meiner Pane; ist er nach meinem Retire tot, im Haupt-Checkout neu starten
-   (`nohup ./e2e-isolated.sh > <log> 2>&1 &`; er wartet selbst auf den Mutex). Gruen ⇒
-   `POST /api/post-land-audits/adjudicate` als Flake mit dieser Beweislage; identisch rot ⇒ echter Befund,
-   dann Slot 9 (Second-host-MAIN) einschalten, er hat den Audit-Watch und kennt den Code.
-3. **Danach S2 `8228ae65` dispatchen** — Slot 9 hat 11:36 ausdruecklich gebeten, das Audit-Ergebnis abzuwarten
-   (keine S2-Suite neben dem Audit). Tripel: `{"harness":"claude","model":"claude-opus-5[1m]","effort":"high","acknowledged":true}`
-   auf `POST /api/tasks/8228ae65/dispatch`. Dann S3 `60d07416`, S4 `c3f91ce1` je nach Land des Vorgaengers.
-4. **Land-Reihe:** Lane 2 / Slot 2 (`1b677e58`, Report → Slot 7) und Lane 8 / Slot 8 (`516b70a9`, Report →
-   Attention an dich) haben noch nicht berichtet. Landen ueber `POST /api/slots/:id/merge` `{}` — mit
-   konfiguriertem Verify landet der Job bei gruenem Verify SELBST (79acd2e: `by:null`, kein confirm noetig);
-   `confirm:true` nur, wenn `verify.ok===true` am resolved-Datensatz steht (Vorgaengerin, Notiz `36960138`).
-5. **Slot 5 (P4 Slice 2, Lane c509, Slot 12s Program) faehrt seit 10:05 seinen DRITTEN `e2e-isolated`-Lauf in
-   Folge** (`isolated3.log` in seinem Scratchpad, Mutex seit 11:35) — er beweist vermutlich einen Flake fuer
-   den server.ts-Refactor. Slot 12 wartet auf seinen Report und meldet dann FREEZE-START/-ENDE an dich;
-   dazwischen landest du nichts. Bei einem VIERTEN Lauf: Slot 12 auf die 5×-Regel hinweisen (ein Satz).
-6. **private-repo-p (Slot 3, Program 07ee8a6d) laeuft von selbst:** Brief 3b (a4f8f08) und Brief 4 (`5b822ccc`,
-   466f318f) hat Slot 3 ueber seine Self-Land-Tuer (policy green-only) gelandet. Es meldet sich per
-   Attention, wenn es einen Hand-Dispatch braucht — dann Opus-Tripel.
-7. **Second-host bleibt abgeklemmt** (`FLEET_AUDIT_HELPER_GRACE_MS='0'`), Owner-Nutzername weiter offen; Schritte
-   stehen im Abschnitt von Slot 14 (§0.5 dort, jetzt der zweite Abschnitt dieser Datei).
-8. **Hostlast:** Hebel bleibt Lanes landen; die drei idle Sessions (Slot 4 seit 08:18, Slot 6 Private-repo-o, Slot 11
-   Steward seit 08:01) sind dem Owner vorgelegt, Antwort offen — nie selbst killen.
-9. **Sparsam senden:** jede Nachricht an eine MAIN kostet deren vollen Kontext (250–350k). Keine Kenntnisnahme-
-   Broadcasts, keine Duplikate; MAINs sehen Land/Audit ueber ihre eigenen Watches.
+1. Erdung (`./state.sh`, `./register.sh`, dieser Abschnitt). **Keine Watcher legen** — der Owner hat die
+   Beobachtungspflicht den MAINs uebertragen; du bist Denk- und Entscheidungsinstanz, nicht Poller.
+2. **Thema A zuerst** (§1): Owner will den Stand wissen und dann Durchsatz erhoehen. Fakten stehen da; was
+   fehlt, ist EIN Handgriff des Owners (Nutzername) und danach ~10 min Deploy-Arbeit.
+3. **Thema B** (§2): erst „worauf kommt es an", dann Lesestoff, dann die heutigen Datenpunkte als Rohmaterial.
+   Ergebnis der Denksession gehoert als datierte Notiz nach `docs/messungen/` (Skill `mess-notiz`), nicht in
+   Prosa hier.
+4. Betrieb laeuft nebenher weiter (§3) — reagiere auf Attention, nicht auf Panes.
 
-## 1. Was heute passierte (verifiziert)
+## 1. Thema A — Second-host-Fix: Stand, gemessen 12:30
 
-- **Modellwechsel live:** Datensaetze per `POST /api/slots/:id/model`; Panes per `/model <id>` ueber `POST /send`
-  (kostet keinen Turn). Claude Code fragt bei warmem Cache **„Switch model?"** — der bestaetigende Enter muss
-  nach (`tmux send-keys -t sN Enter`, vorher `Switch model?` in der Pane pruefen), und der letzte `/model`
-  wird als NUTZER-Default fuer neue Sessions gespeichert (zuletzt Fable ⇒ passt). Stand: Lanes 1/2/5/8/10 Opus,
-  MAINs 3/4/6/7/9/12 + Steward 11 + ich Fable, alle Footer geprueft. `.env` `FLEET_MODEL='claude-opus-5[1m]'`,
-  Verb 2 `80b13da5` ok:true hitTarget.
-- **Land 79acd2e** (Lane 1, `dabd4da9` S1 daemon-update): Verify ok, 141 s Arbeit, 2313 s Warten am Mutex.
-  Erster Anlauf fiel in 3,8 s an `e2e/pins.ts` — MEIN Fehler: ich hatte CLAUDE.md direkt editiert, sie ist
-  GENERIERT (`rulebook.ts` Kopf: Fragment editieren, Render-Einzeiler, `bun e2e/pins.ts`). Zweiter Anlauf rot
-  mit §11.2i-Fingerabdruck (Phase 2 claude-gate „server did not come up", keine server.log, Load 13–19).
-  Dritter Anlauf gruen.
-- **Notizen gefilt:** `6c7d98ff` (Succeed-Gruendungsbrief lag 6 min 36 s ungesendet im Composer, Sonde sagte
-  „observed") und `ca085489` (dieselbe Sonde meldet unter Last 9/11 falsch „uncertain") — beide Richtungen,
-  eine Wurzel: `readComposer` misst Render-Latenz, `ACCEPT_WAIT_MS` 3000 ist unter Last zu kurz.
-- **Brief 4 dispatcht** (Slot 10, Opus) 11:12 → Slot 3 hat es 12:14 selbst gelandet; Slot 10 frei.
+- **Geraet online:** `secondhostlinux1`, mode active, load 0,07, lastSeen 3 s, capabilities bun/tmux/git/zsh.
+  **`daemonSha: null`** = der Daemon auf dem Geraet ist die ALTE Fassung; die neue (79acd2e, S1) meldet den
+  SHA im Heartbeat.
+- **Abgeklemmt:** `.env` `FLEET_AUDIT_HELPER_GRACE_MS='0'` (Slot 14, 09:48) — jeder Post-Land-Audit laeuft
+  seit heute morgen LOKAL und belegt den Suite-Mutex 1400–2400 s. Heute 5 lokale Audits ≈ 2,5 h Mutex; jedes
+  Land-Gate dahinter wartete (79acd2e: 2313 s Warten fuer 141 s Arbeit). **Das ist der Durchsatz-Hebel:**
+  Audits zurueck aufs Geraet, und der Mutex hier ist wieder fuer Gates und Lane-Vorschauen frei.
+- **Warum abgeklemmt:** 8 Remote-Audits in Folge rot OHNE Check-Namen (letztes e03d44c, 9 FAILURES,
+  „unnamed"); lokal war derselbe Baum gruen (3443/0). Server-Seite ist repariert (`3974883` „carry remote
+  audit failure names", `b3f4230` „Helfer meldet den SHA, den er wirklich ausgecheckt hat") — greift erst mit
+  dem NEUEN Daemon. Ob die Remote-Reds ein Plattform-Problem sind (Linux-Signatur, `docs/messungen/
+  second-host-baseline-2026-08-29.md` §Plattform-Signatur) oder Alt-Daemon-Artefakte, ist UNENTSCHIEDEN — erst
+  mit Namen beurteilbar.
+- **Was S1 (79acd2e) geliefert hat:** daemon-update als JOB (clone → parse-check → symlink-swap → exit 75,
+  Unit restartet), `daemonSha` im Heartbeat, Owner-Route `POST /api/helper/devices/secondhostlinux1/update`,
+  Board-Karte zeigt daemonSha. **Henne-Ei:** der ALTE Daemon kennt den Job nicht — EINMAL Bootstrap per ssh
+  noetig, danach jeder Update vom Board.
+- **Der Handgriff, der fehlt: der ssh-NUTZERNAME** (Owner hat den Key dieser Maschine 10:05 eingetragen, Host
+  `100.64.0.2`). Danach, als Service-User (Slot 9s Rezept, Pane Slot 9 10:03, und
+  `helper-daemon/README.md`): `git clone <fleet-repo> WORK-DIR/tree-bootstrap` · `ln -sfn … WORK-DIR/current`
+  · Unit-Template einspielen (USER/GROUP/WORK-DIR/BUN-PATH ersetzen, ast-grep in PATH) · `daemon-reload` +
+  `restart fleet-helper` · `journalctl -u fleet-helper -n 3` erwartet `running <sha8>` = main. Vorher die alten
+  Fail-Namen sichern: `/var/lib/fleet-helper/work/**/tree/e2e-trail/*.jsonl` (`"ok":false`). Beweis: Karte
+  zeigt daemonSha = main. Dann `.env` Grace zurueck auf `'60000'` + Verb 2 (`POST /api/deploy`, lehnt bei
+  laufendem Audit 409 ab). **Nicht waehrend eines laufenden Audits restarten** (ein namenloses Rot mehr).
+- **Danach S2–S4 der Dual-Host-Reihe** (`8228ae65` Job v1 `command` · `60d07416` Wake-on-LAN · `c3f91ce1`
+  Presence) sind genau der Ausbau „Arbeitspensum erhoehen": Slot 9 (Second-host-MAIN) fuehrt, Hand-Dispatch mit
+  Opus-Tripel, seriell nach Land des Vorgaengers. Slot 9 wollte S2 erst nach dem Audit-Ergebnis von 79acd2e.
+  Owner-Wunsch `d07646bc` (Second-host-Ausbau, zwei Stufen) liegt als Notiz im Register.
+- Zweites Geraet `mainMacbook` ist `desiredMode: off`, seit 6 Tagen nicht gesehen — kein Faktor.
 
-## 2. Fallen, die ich bezahlt habe
+## 2. Thema B — Zusammenarbeit der Sessions: Vorbereitung, KEIN Vordenken
 
-- zsh: `for id in $LISTE` splittet nicht — Listen literal ausschreiben.
-- `timeout` gibt es auf macOS nicht.
-- Vier Hintergrund-Waiter wurden 11:50 von aussen gestoppt (Kill-all-Geste?); die `nohup`-Skripte liefen weiter.
-  Ein Sammel-Waiter auf mehrere `.out`-Dateien ist robuster als vier einzelne.
+**Worauf es nach heutiger Beobachtung ankommt (Rohmaterial, ungewichtet):**
+- **Kosten der Kommunikation sind unsichtbar und asymmetrisch.** Jede Pane-Nachricht an eine MAIN kostet
+  deren gesamten Kontext als Input (250–350k). Slot 14 hat Slot 12 dieselbe Meldung zweimal geschickt
+  (≈ 400k). Es gibt keinen Sensor, kein Budget, keine Warnung — der Owner hat das Limit auf `/usage` gesehen.
+- **Zustellung ist unzuverlaessig gemessen:** Gruendungsbrief 6 min 36 s ungesendet bei „observed"
+  (`6c7d98ff`); 9/11 `/model`-Sends „uncertain", obwohl ausgefuehrt (`ca085489`); heute zwei
+  `fleet_event_send_uncertain` an Slot 9 (Composer belegt). `readComposer` misst Render-Latenz. Frage: soll
+  Zustellung ueberhaupt ueber die Pane laufen, oder ist die Pane nur EIN Kanal von mehreren?
+- **Beobachtung statt Erfassung:** Vier Idle-Zustaende sehen gleich aus (CLAUDE.md „Idle heisst nicht
+  fertig"); der Controller liest Panes, um zu wissen, was eine Session tut. `GET /api/self/program-execution`
+  (phase/nextAction) ist der erste typisierte Zustand — nur fuer Program-MAINs. Kein Slot traegt heute
+  „was ich gerade warte" maschinenlesbar; `ctx` ist bei GPT-Slots null; Modell im Datensatz vs. Pane
+  divergierte bis c09d5f1.
+- **Der Controller ist ein menschlicher Router:** Dispatcher master-stopped ⇒ jeder Program-Schritt braucht
+  einen Hand-Dispatch; MAINs koennen nicht dispatchen (Owner-Route), also Attention → Controller → Route.
+  Slot 3 hat dagegen Self-Land (policy green-only) und lief heute zwei Briefs ohne mich durch — der
+  Unterschied zwischen Slot 3 und Slot 9 ist eine Promotion, nicht Faehigkeit.
+- **Rueckkanaele sind Einmal-Watches mit Luecken:** `kind:merge` liefert nach dem Feuern den VERBRAUCHTEN
+  Watch zurueck (`372b3cef`), Attention hat keinen Watch (ich habe gepollt), Lane-Report → MAIN geht ueber
+  `fleet_report_open` + Event-Zustellung in die Pane (wieder ein Pane-Send).
+- **Hostlast als Fleet-Zustand fehlt:** RAM/Swap/Load stehen nirgends auf dem Board; 14 claude-Prozesse
+  auf 8 GB; der Owner hat den Lag gemerkt, nicht das Fleet. Gleiches fuer den Suite-Mutex (nur `gate.lock`).
+- **Was heute FUNKTIONIERT hat** (nicht wegoptimieren): Self-Land mit Promotion (Slot 3) · Event+Ack-Kette
+  (`/api/self/events/:id/ack`) · Fleet-Report typisiert (`/api/self/fleet-report`) · `program-execution`-
+  Projektion · Land-Notes/Ledger als Wahrheit · `/model` per Send kostenlos.
 
-## 3. Offene Owner-Punkte
+**Lesestoff, in dieser Reihenfolge** (Symbole, nicht Zeilen): `AGENTS.md` §Portable operating contract
+(Rollen-Tabelle Project MAIN/Lane/Steward — die Autoritaetsmatrix) · `docs/self-api.md` (1158 Z.: watch,
+events, attention, fleet-report, program-execution, release, succeed, model) · `lane-signals.ts`
+(`laneWatchSignal`, done-looking/host-commit-looking — die einzige typisierte Lane-Semantik) ·
+`docs/queue-analyst.md` §7 (Dispatcher-Vertrauensgrenzen, kinds) · `docs/steward.md` + `docs/attic/steward-
+pulse-v2.md` (der stehende Beobachter, heute idle seit 08:01) · `docs/agentic-control-plane-program-2026-08-20.md`
+(ACP-Programm: was schon geplant/gelandet ist — nicht neu erfinden) · `docs/messungen/system-analyse-2026-08-25.md`
++ `…-review-2026-08-25.md` (letzte Gesamtanalyse) · `docs/attic/core-program-2026-08-12.md` · Register-Notizen
+`6c7d98ff` `ca085489` `372b3cef` `56056efe` `61a0fac1` `9c7d6e02` `36960138` (heutige Befunde an der Naht).
 
-1. Second-host-Nutzername. 2. Idle-Sessions 4/6/11 schliessen? 3. GitHub 12 Tage hinter main.
+**Leitfragen fuer die Denksession** (offen, ohne Antwortvorschlag): Welche Information braucht wer, in
+welcher Frist, in welcher Form — und was davon geht heute durch eine Pane? · Was ist die Einheit der
+Zusammenarbeit: Program, Task, Land, oder Nachricht? · Wo ist der Controller Router, wo Richter — und was
+davon darf eine Promotion an die MAIN geben (Muster Slot 3)? · Welche Zustaende muessen typisiert am Slot
+haengen, damit niemand Panes liest? · Was kostet eine Nachricht, und wer sieht das?
+
+**Komplementaritaet A↔B, als Hypothese zum Pruefen:** A schafft Kapazitaet (Mutex, RAM, Verify-Zeit auf dem
+Geraet); B senkt Koordinationskosten (weniger Broadcasts, weniger Controller-Handgriffe). Mehr Kapazitaet
+ohne B heisst mehr Lanes, die alle ueber denselben Controller laufen; B ohne A heisst gut koordinierte
+Sessions, die am Mutex stehen. Reihenfolge und Schnitt sind deine Frage.
+
+## 3. Betriebsstand (12:35)
+
+- **Watches abgegeben** (Owner-Entscheid): meine Skripte gekillt, Server-Watches verbraucht. Audit 79acd2e
+  ROT 10/3443 (Composer-Familie; Diff beruehrt nur Helper-Regionen; 2/10 Namen 02:29 vorbelegt) **gehoert
+  Slot 9** — per Send uebergeben, inkl. Rerun (Wrapper 95601 in meiner Pane, stirbt mit mir; Slot 9 weiss es).
+- Land-Reihe: Lane 2/Slot 2 (`1b677e58` → Slot 7) und Lane 8/Slot 8 (`516b70a9` → Attention) offen. Slot 5
+  faehrt seinen DRITTEN isolated-Lauf (seit 11:35 am Mutex), Slot 12 wartet und meldet FREEZE. private-repo-p
+  laeuft selbst (a4f8f08, 466f318f gelandet). Modelle: Lanes Opus, MAINs/Steward Fable, Datensaetze = Panes.
+  `.env` `FLEET_MODEL='claude-opus-5[1m]'`, Verb 2 `80b13da5` ok.
+- Mit Verify konfiguriert landet `POST /api/slots/:id/merge {}` bei gruenem Gate SELBST (79acd2e `by:null`).
+
+## 4. Fallen, die ich bezahlt habe
+
+- **CLAUDE.md ist GENERIERT** (`rulebook.ts` Kopf): Fragment editieren, Render-Einzeiler, `bun e2e/pins.ts`.
+  Mein Direkt-Edit hat ein Land-Gate in 3,8 s rot gemacht.
+- `/model` per Send: Claude Code fragt bei warmem Cache „Switch model?" (Enter noetig) und speichert den
+  letzten Wert als NUTZER-Default fuer neue Sessions.
+- zsh splittet `for id in $LISTE` nicht · `timeout` fehlt auf macOS · Hintergrund-Waiter koennen von aussen
+  gestoppt werden (11:50, alle vier) — Sammel-Waiter statt vier einzelne.
+
+## 5. Offene Owner-Punkte
+
+1. **Second-host-Nutzername** (Thema A haengt daran). 2. Idle-Sessions 4/6/11 schliessen? 3. GitHub 12 Tage
+hinter main.
 
 ---
 

@@ -274,6 +274,255 @@ export async function run(ctx: Ctx): Promise<void> {
       && /#shell-queue \.pkfilterin\s*\{[^}]*max-width:\s*none/.test(taskPageSource),
     "queue mobile CSS in public/index.html");
 
+  // --- TASK DETAIL HEAD (src/client.ts, between "// --- TASK DETAIL HEAD" and its closing
+  // marker) — the pane's first screen. What is proven here: the lifecycle station a status maps
+  // to, EXACTLY ONE main action per status wired to an act that already existed, and that the
+  // head fits the 1440x900 detail viewport computed from the shell's own CSS. Mutations this
+  // section must catch: the lifecycle dropped out of the head, a second action node placed in it,
+  // ✕ delete moved beside the main action, a new door opened in the head, and the head growing
+  // past the fold. What it deliberately does NOT claim: pixels from a live authenticated browser
+  // — there is no DOM here, so the geometry is a computation over the declared boxes and the node
+  // plan, and it is named as one.
+  {
+    const headStart = taskClientSource.indexOf("// --- TASK DETAIL HEAD");
+    const headEnd = taskClientSource.indexOf("// --- end TASK DETAIL HEAD ---", headStart);
+    const headSource = headStart >= 0 && headEnd > headStart ? taskClientSource.slice(headStart, headEnd) : "";
+    check("task detail head: the executable block is cut out of src/client.ts",
+      headSource.includes("function qHeadPlan") && headSource.includes("function qMainActionOf")
+        && headSource.includes("function qLifecycleOf"), headSource.slice(0, 140) || "block missing");
+    type HeadRow = { status: string; kind?: string; slot?: number; repo?: string; programId?: string;
+      analysisVerdict?: string; blockers?: string[]; hasCriterion: boolean };
+    type HeadLane = { kind: "lane" | "refused" | "none"; slot?: number };
+    type MainSlot = { act: string; label: string | null; why: string; slot: number | null };
+    type Life = { stations: string[]; current: string; reached: number };
+    type HeadPlan = { status: string; program: string; repo: string; life: Life; main: MainSlot };
+    const headFns = headSource ? new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(headSource)
+      + "\nreturn { qHeadPlan, qLifecycleOf, qMainActionOf, qHeadAdvisory, Q_LIFE_STATIONS };")() as {
+        qHeadPlan: (row: HeadRow, programTitle: string | null, lane: HeadLane) => HeadPlan;
+        qLifecycleOf: (status: string, kind: string | undefined) => Life;
+        qMainActionOf: (row: HeadRow, lane: HeadLane) => MainSlot;
+        qHeadAdvisory: (kind: string | undefined) => boolean;
+        Q_LIFE_STATIONS: string[];
+      } : null;
+    if (headFns) {
+      const row = (over: Partial<HeadRow> = {}): HeadRow => ({ status: "pending", hasCriterion: false, ...over });
+      const noLane: HeadLane = { kind: "none" };
+      const life = (status: string, kind?: string) => headFns.qLifecycleOf(status, kind);
+      const station = (status: string, kind?: string) => `${life(status, kind).current}:${life(status, kind).reached}`;
+      check("lifecycle: the rail is pending → queued → sent → done, in that order",
+        JSON.stringify(headFns.Q_LIFE_STATIONS) === JSON.stringify(["pending", "queued", "sent", "done"]),
+        JSON.stringify(headFns.Q_LIFE_STATIONS));
+      check("lifecycle: each of the four statuses marks its own station, with the walked ones behind it",
+        JSON.stringify(["pending", "queued", "sent", "done"].map((s) => station(s)))
+          === JSON.stringify(["pending:1", "queued:2", "sent:3", "done:4"]),
+        JSON.stringify(["pending", "queued", "sent", "done"].map((s) => station(s))));
+      check("lifecycle: archived and advisory are ENDS of their own and mark NO station; archived outranks advisory",
+        station("archived") === "archived:0" && station("pending", "notiz") === "advisory:0"
+          && station("archived", "notiz") === "archived:0" && station("queued", "richtung") === "advisory:0",
+        [station("archived"), station("pending", "notiz"), station("archived", "notiz")].join(" "));
+      check("lifecycle: a status this build has never heard of is UNKNOWN, never a pending row",
+        station("wat") === "unknown:0" && station("") === "unknown:0", station("wat"));
+      check("task detail head: the block's advisory rule is the same one the list groups by",
+        [undefined, "auftrag", "notiz", "richtung", "betrieb", "kuenftig"].every((kind) =>
+          headFns.qHeadAdvisory(kind) === (kind !== undefined && kind !== "auftrag")),
+        "qHeadAdvisory vs qAdvisory over the whole kind set");
+
+      // ONE main action per status — the case list of the brief, plus what each says
+      const mainCases: [string, HeadRow, HeadLane, string][] = [
+        ["pending", row(), noLane, "release"],
+        ["queued", row({ status: "queued" }), noLane, "start"],
+        ["sent", row({ status: "sent", slot: 8 }), { kind: "lane", slot: 8 }, "open-lane"],
+        ["done", row({ status: "done" }), noLane, "none"],
+        ["archived", row({ status: "archived" }), noLane, "none"],
+        ["notiz", row({ kind: "notiz" }), noLane, "adopt"],
+      ];
+      const mainOf = mainCases.map(([name, r, l, want]) => {
+        const got = headFns.qMainActionOf(r, l);
+        return { name, want, act: got.act, label: got.label, why: got.why };
+      });
+      check("main action: exactly one act per status — pending release · queued start · sent open-lane · done/archived none · notiz adopt",
+        mainOf.every((m) => m.act === m.want), JSON.stringify(mainOf.map((m) => `${m.name}=${m.act}`)));
+      check("main action: every case says WHY in its own words, and only an offered act carries a label",
+        mainOf.every((m) => m.why.length > 20 && (m.act === "none" ? m.label === null : (m.label ?? "").length > 0)),
+        JSON.stringify(mainOf.map((m) => [m.name, m.label, m.why.length])));
+      // NEGATIVE: an advisory row is never offered a start of any shape
+      const advisoryActs = ["notiz", "richtung", "betrieb"].flatMap((kind) =>
+        ["pending", "queued", "sent"].map((status) => `${kind}/${status}=${headFns.qMainActionOf(row({ status, kind }), { kind: "lane", slot: 3 }).act}`));
+      check("main action NEGATIVE: no advisory row is ever offered a start, a release or a lane — only pending notiz gets adopt",
+        advisoryActs.every((a) => a.endsWith("=none") || a === "notiz/pending=adopt")
+          && advisoryActs.includes("notiz/pending=adopt"), advisoryActs.join(" "));
+      check("main action: clarify-first is the standing answer to a MISSING done-criterion, and steps aside once one is proposed",
+        headFns.qMainActionOf(row({ blockers: ["criterion"] }), noLane).act === "clarify"
+          && headFns.qMainActionOf(row({ blockers: ["criterion"], hasCriterion: true }), noLane).act === "release",
+        JSON.stringify([headFns.qMainActionOf(row({ blockers: ["criterion"] }), noLane).act,
+          headFns.qMainActionOf(row({ blockers: ["criterion"], hasCriterion: true }), noLane).act]));
+      check("main action: a flagged pending row renames its release to the override it is",
+        headFns.qMainActionOf(row({ analysisVerdict: "needs-you", blockers: ["reach"] }), noLane).label === "release anyway ▸"
+          && headFns.qMainActionOf(row({ analysisVerdict: "ready" }), noLane).label === "release ▸",
+        String(headFns.qMainActionOf(row({ analysisVerdict: "needs-you", blockers: ["reach"] }), noLane).label));
+      check("main action NEGATIVE: a sent row whose pointer attaches nothing offers NO button — never a foreign slot",
+        headFns.qMainActionOf(row({ status: "sent", slot: 4 }), { kind: "refused", slot: 4 }).act === "none"
+          && headFns.qMainActionOf(row({ status: "sent" }), { kind: "none" }).why.includes("no lane is attached"),
+        JSON.stringify(headFns.qMainActionOf(row({ status: "sent", slot: 4 }), { kind: "refused", slot: 4 })));
+      check("main action: ▸ open lane names the slot the join attached, and carries it as a number",
+        headFns.qMainActionOf(row({ status: "sent", slot: 8 }), { kind: "lane", slot: 8 }).label === "▸ open lane — slot 8"
+          && headFns.qMainActionOf(row({ status: "sent", slot: 8 }), { kind: "lane", slot: 8 }).slot === 8);
+
+      // the head's own facts, from poll fields alone
+      const sentPlan = headFns.qHeadPlan(row({ status: "sent", slot: 8, repo: "/repos/alpha-fleet/",
+        programId: "program-orion-111" }), "Orion Ledger", { kind: "lane", slot: 8 });
+      check("head plan: status with slot, program title, repo basename and the station, from poll facts alone",
+        sentPlan.status === "sent · slot 8" && sentPlan.program === "Orion Ledger"
+          && sentPlan.repo === "alpha-fleet" && sentPlan.life.current === "sent" && sentPlan.main.act === "open-lane",
+        JSON.stringify(sentPlan));
+      check("head plan: a bound program that cannot be resolved is UNKNOWN — never `no program`; an absent repo is unknown too",
+        headFns.qHeadPlan(row({ programId: "program-gone-999" }), null, noLane).program === "program unknown"
+          && headFns.qHeadPlan(row(), null, noLane).program === "no program"
+          && headFns.qHeadPlan(row(), null, noLane).repo === "repo unknown"
+          && headFns.qHeadPlan(row({ status: "queued" }), null, noLane).status === "queued",
+        JSON.stringify([headFns.qHeadPlan(row({ programId: "program-gone-999" }), null, noLane).program,
+          headFns.qHeadPlan(row(), null, noLane).program, headFns.qHeadPlan(row(), null, noLane).repo]));
+    }
+
+    // --- WHAT THE RENDERER DOES WITH THAT PLAN. Source assertions over renderQueueDetail: the
+    // head is painted before any section, it holds exactly one action node, and ✕ delete is not
+    // in it. Named as source probes, not as a rendered screen.
+    const detailStart = taskClientSource.indexOf("function renderQueueDetail()");
+    const detailEnd = taskClientSource.indexOf("function qSelect(", detailStart);
+    const detailSource = detailStart >= 0 && detailEnd > detailStart
+      ? taskClientSource.slice(detailStart, detailEnd) : "";
+    const paintStart = detailSource.indexOf("// --- DETAIL HEAD (paint)");
+    const firstSection = detailSource.indexOf("qDetailSection(shell.detail,", paintStart);
+    const headPaint = paintStart >= 0 && firstSection > paintStart
+      ? detailSource.slice(paintStart, firstSection) : "";
+    // the five nodes of the head, each one actually APPENDED into the detail pane and in this
+    // order — status, facts, the lifecycle rail, the one action, the line that says what it does.
+    // Building a node and never appending it is the mutation this catches: it leaves every other
+    // marker in place while the rail silently stops reaching the screen.
+    const painted = ['el("div", "rvhead qdhead-status", head.status)', "headFacts",
+      "life", "mainBox", 'el("div", "qdmain-why", head.main.why)']
+      .map((node) => headPaint.indexOf(`shell.detail.appendChild(${node}`));
+    check("task detail head render: status, program/repo facts, the lifecycle rail and the one action are painted in that order, before any section",
+      headPaint.includes("qHeadPlan(") && headPaint.includes('"ocfacts qdhead-facts"')
+        && headPaint.includes("head.life.stations.forEach") && headPaint.includes('el("div", "qlife")')
+        && painted.every((at, i) => at >= 0 && (i === 0 || at > painted[i - 1])),
+      JSON.stringify(painted));
+    check("task detail head render: the head opens no door of its own — no request, no task act inside it",
+      !/\bqAct\(/.test(headPaint) && !/\bpost\(/.test(headPaint) && !/"delete"/.test(headPaint),
+      headPaint.slice(0, 120));
+    check("task detail head render: exactly ONE action node reaches the head — the placement ternary plus ▸ open lane",
+      (detailSource.match(/mainBox\.appendChild\(/g) ?? []).length === 1
+        && detailSource.includes("(isMain(act) ? mainBox : acts).appendChild(node)")
+        && /head\.main\.act === "open-lane"[\s\S]{0,400}?mainBox\.appendChild\(ob\)/.test(detailSource),
+        String((detailSource.match(/mainBox\.appendChild\(/g) ?? []).length));
+    check("task detail: ✕ delete sits in a folded Danger zone of its own, never in the action row or the head",
+      detailSource.includes('const danger = qDetailSection(shell.detail, "Danger zone", true, false)')
+        && detailSource.includes('dangerActs.appendChild(mk("✕ delete", "delete", "shrbtn danger"))')
+        && !detailSource.includes('acts.appendChild(mk("✕ delete"'), "Danger zone wiring");
+    const sectionAt = (title: string) => detailSource.indexOf(`qDetailSection(shell.detail, "${title}`);
+    check("task detail: Actions come before the discussion and the request; Evidence and Danger zone stay reachable below",
+      sectionAt("Actions") > 0 && sectionAt("Actions") < sectionAt("Overview & discussion")
+        && sectionAt("Overview & discussion") < sectionAt("Request")
+        && sectionAt("Request") < sectionAt("Evidence") && sectionAt("Evidence") < sectionAt("Danger zone"),
+      JSON.stringify(["Actions", "Overview & discussion", "Refinement", "Request", "Evidence", "Danger zone"]
+        .map((s) => `${s}@${sectionAt(s)}`)));
+    check("task detail: the lane facts and the absent verify facts are said under Evidence, and absence is not green",
+      /const evidence = qDetailSection[\s\S]{0,900}?verify and land facts are not on this poll — unknown here, not green/.test(detailSource)
+        && /evidence\.appendChild\(laneLine\)/.test(detailSource), "Evidence section wiring");
+    check("task detail: a section that holds a refresh-safe draft is never a fold — a repaint would close it over a started comment",
+      detailSource.includes('qDetailSection(shell.detail, "Overview & discussion")')
+        && detailSource.includes('qDetailSection(shell.detail, "Refinement")')
+        && detailSource.includes('const mainBox = el("div", "qdmain")'), "draft-bearing sections");
+    // the acts the head hosts are the EXISTING handlers, byte for byte — the head is a placement,
+    // never a second door. A new API call or a new body field here fails this line.
+    const keptHandlers = [
+      'b.onclick = () => void qAct(t.id, action, body ?? {});',
+      'qDispatchBody("start", qSpawnPick.get(t.id) ?? Q_SPAWN_EMPTY, raw));',
+      'qDispatchBody("clarify", qSpawnPick.get(t.id) ?? Q_SPAWN_EMPTY, false));',
+      'void qAct(t.id, "queue");',
+      'ob.onclick = () => { qShell?.close(); showSlot(slot); };',
+    ];
+    check("task detail head: it hosts the EXISTING act handlers unchanged — no new API call, no new body field",
+      keptHandlers.every((h) => detailSource.includes(h)),
+      JSON.stringify(keptHandlers.filter((h) => !detailSource.includes(h))));
+
+    // --- THE FOLD, computed. No DOM here, so this is arithmetic over (a) the shell's own CSS and
+    // (b) the head's node plan — every box below declares its line-height, padding and margin in
+    // public/index.html for exactly this reason. A rule this cannot find fails the probe as
+    // ITSELF, so a missing measurement never reads as a passing budget.
+    const missing: string[] = [];
+    // …and it is a DESKTOP measurement, so every @media block comes out first. Measured while
+    // writing this: dropping the desktop `.qlife-st` line-height left the check green, because the
+    // 700px override of the same selector answered for it. A budget read off the wrong rule is
+    // worse than no budget.
+    const desktopCss = ((): string => {
+      let out = "";
+      let i = 0;
+      while (i < taskPageSource.length) {
+        const at = taskPageSource.indexOf("@media", i);
+        if (at < 0) { out += taskPageSource.slice(i); break; }
+        out += taskPageSource.slice(i, at);
+        let j = taskPageSource.indexOf("{", at);
+        if (j < 0) break;
+        for (let depth = 0; j < taskPageSource.length; j++) {
+          if (taskPageSource[j] === "{") depth++;
+          else if (taskPageSource[j] === "}" && --depth === 0) { j++; break; }
+        }
+        i = j;
+      }
+      return out;
+    })();
+    const cssNum = (re: RegExp, what: string): number => {
+      const m = re.exec(desktopCss);
+      if (!m) { missing.push(what); return NaN; }
+      return Number(m[1]);
+    };
+    const shellH = cssNum(/\.shellwin \{[^}]*?height: min\((\d+)px, 92vh\)/, ".shellwin height");
+    const headPad = cssNum(/\.shellhead \{[^}]*?padding: (\d+)px/, ".shellhead padding");
+    const toolsPad = cssNum(/\.shelltools \{[^}]*?padding: (\d+)px/, ".shelltools padding");
+    const footPad = cssNum(/\.shellfoot \{[^}]*?padding: (\d+)px/, ".shellfoot padding");
+    const detailPad = cssNum(/\.shelldetail \{[^}]*?padding: (\d+)px/, ".shelldetail padding");
+    const statusLh = cssNum(/\.qdhead-status \{ line-height: (\d+)px/, ".qdhead-status line-height");
+    const factsMt = cssNum(/\.qdhead-facts \{ margin-top: (\d+)px/, ".qdhead-facts margin-top");
+    const chipLh = cssNum(/\.qdhead-facts \.occhip \{ line-height: (\d+)px/, ".qdhead-facts .occhip line-height");
+    const chipPad = cssNum(/\.occhip \{[^}]*?padding: (\d+)px/, ".occhip padding");
+    const lifeMt = cssNum(/\.qlife \{[^}]*?margin-top: (\d+)px/, ".qlife margin-top");
+    const lifeGap = cssNum(/\.qlife \{[^}]*?gap: (\d+)px/, ".qlife gap");
+    const stationLh = cssNum(/\.qlife-st \{[^}]*?line-height: (\d+)px/, ".qlife-st line-height");
+    const mainMt = cssNum(/\.qdmain \{[^}]*?margin-top: (\d+)px/, ".qdmain margin-top");
+    const btnLh = cssNum(/\.qdmain \.shrbtn \{ line-height: (\d+)px/, ".qdmain .shrbtn line-height");
+    const btnPad = cssNum(/\.shrbtn \{ padding: (\d+)px/, ".shrbtn padding");
+    const whyLh = cssNum(/\.qdmain-why \{[^}]*?line-height: (\d+)px/, ".qdmain-why line-height");
+    const whyMt = cssNum(/\.qdmain-why \{[^}]*?margin: (\d+)px/, ".qdmain-why margin");
+    check("task detail head geometry: every box the fold budget reads is declared in public/index.html",
+      missing.length === 0, missing.join(" · ") || "all present");
+    if (missing.length === 0) {
+      const BORDER = 2; // 1px top + 1px bottom on the chips, stations and the button
+      // the window at 1440x900: 92vh = 828px, and the head/tools/foot chrome eats into it. Those
+      // three contents are not fixed in CSS, so they take a DELIBERATELY GENEROUS allowance —
+      // a two-line title, three wrapped tool rows and a four-line footer, all at once.
+      const winH = Math.min(shellH, Math.round(0.92 * 900));
+      const chrome = (2 * headPad + 40 + 1) + (2 * toolsPad + 120 + 1) + (2 * footPad + 68 + 1);
+      const viewport = winH - chrome - 2 * detailPad;
+      // the head's own plan, each node at its worst case: the chips wrapped to two rows, the rail
+      // wrapped to two rows, and the one-line WHY wrapped to three.
+      const chipH = chipLh + 2 * chipPad + BORDER;
+      const stationH = stationLh + BORDER;
+      const headH = statusLh
+        + factsMt + 2 * chipH + lifeGap
+        + lifeMt + 2 * stationH + lifeGap
+        + mainMt + (btnLh + 2 * btnPad + BORDER)
+        + whyMt + 3 * whyLh;
+      check(`task detail head geometry: head + main action is ${headH}px inside a ${viewport}px detail viewport at 1440x900 — above the fold, computed from the CSS`,
+        headH > 0 && viewport > 0 && headH <= viewport,
+        `head=${headH} viewport=${viewport} window=${winH} chrome=${chrome}`);
+    }
+    check("task detail head: 390x844 gets the one action full-width at a touch height, and a rail that wraps",
+      /@media \(max-width: 700px\)[\s\S]*?\.qdmain \.shrbtn \{[^}]*min-height: 44px[^}]*width: 100%/.test(taskPageSource)
+        && /\.qlife \{[^}]*flex-wrap: wrap/.test(taskPageSource)
+        && /\.qdmain \{[^}]*flex-wrap: wrap/.test(taskPageSource), "queue head mobile CSS");
+  }
+
   // --- task queue (Phase D). Owner CRUD + dispatch availability ---
   const tCreate = await post("/api/tasks", { text: "e2e owner task", queue: false });
   const tJson = (await tCreate.json()) as { ok: boolean; task: { id: string; originId?: string; status: string; source: string; kind: string } };

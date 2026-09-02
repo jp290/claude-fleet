@@ -5891,6 +5891,158 @@ let qCriterionDraft: QTextDraft | null = null;
 // never carry over to the row you look at next. Dropped when the window closes: it is a decision
 // made in one sitting, not a setting.
 let qRawAck: string | null = null;
+
+// --- TASK SPAWN CHOICE: the executable contract of the ▸ start / ▸ clarify acts. e2e/tasks.ts
+// cuts this block out of the real source (between this marker and the closing one), transpiles it
+// and runs it against fixtures — so the exact request bodies and the pre-start block are PROVEN,
+// not read off a screenshot. Keep it free of DOM and of every other symbol in this file. ---
+type QSpawnPick = { harness: string; model: string; effort: string }; // "" = not chosen here
+type QSpawnRow = { harness: string | null; model: string | null; effort: string | null } | undefined;
+type QSpawnHarness = { id: string; default: boolean; role?: "agent" | "place";
+  supports: { model: boolean; effort: boolean }; effortLevels: string[] };
+type QSpawnOrigin = "picked" | "row" | "default";
+type QSpawnField = { value: string | null; origin: QSpawnOrigin };
+type QSpawnEffective = { harness: QSpawnField; model: QSpawnField; effort: QSpawnField };
+const Q_SPAWN_EMPTY: QSpawnPick = { harness: "", model: "", effort: "" };
+// Mirrors the server's per-field precedence at POST /api/tasks/:id/dispatch: an explicit body
+// field wins, an absent one falls to the ROW's own persisted choice (Task.spawn), absence on both
+// sides is the default adapter. `value: null` with origin "default" is that absence — the server's
+// DEFAULT_SPAWN — and never a claim about which concrete model or level the adapter then runs.
+function qEffectiveSpawn(pick: QSpawnPick, row: QSpawnRow): QSpawnEffective {
+  const field = (picked: string, stored: string | null | undefined): QSpawnField =>
+    picked ? { value: picked, origin: "picked" }
+      : stored ? { value: stored, origin: "row" } : { value: null, origin: "default" };
+  return { harness: field(pick.harness, row?.harness), model: field(pick.model, row?.model),
+    effort: field(pick.effort, row?.effort) };
+}
+// What would stop the start BEFORE the request: the refusals the route answers with 400, judged
+// against the EFFECTIVE harness, in the route's order and in the route's own words (e2e/tasks.ts
+// holds the two texts equal against the live server). null = nothing blocks. An empty catalogue
+// cannot judge and blocks nothing — the server validates regardless; this only makes a refusal
+// it would give visible on the row, before the click. The model's charset is NOT judged here
+// (the catalogue does not publish it), so a bad model stays the server's 400.
+function qSpawnProblem(eff: QSpawnEffective, catalogue: QSpawnHarness[]): string | null {
+  if (!catalogue.length) return null;
+  const h = eff.harness.value === null ? catalogue.find((x) => x.default)
+    : catalogue.find((x) => x.id === eff.harness.value);
+  if (!h) return `unknown harness (one of: ${catalogue.map((x) => x.id).join(", ")})`;
+  if (eff.model.value !== null && !h.supports.model) return `harness ${h.id} takes no model`;
+  if (eff.effort.value !== null) {
+    if (!h.supports.effort) return `harness ${h.id} takes no effort`;
+    if (!h.effortLevels.includes(eff.effort.value)) return `bad effort (one of: ${h.effortLevels.join(", ")})`;
+  }
+  return null;
+}
+// The request body of each act — and nothing else. ▸ start carries exactly the PICKED fields of
+// the triple (an unpicked one is absent, so the server's own fallback to the row and then to the
+// default stays the semantics) plus the raw acknowledgment when the row is raw. ▸ clarify first
+// carries the same picked triple under `clarify: true` — it opens a lane too, on the chosen
+// harness — and never the acknowledgment: a clarify lane commits nothing, so nothing raw is
+// vouched for. Neither act carries a status: the row's status is the server's to move.
+function qDispatchBody(act: "start" | "clarify", pick: QSpawnPick, rawAck: boolean): Record<string, unknown> {
+  const triple = {
+    ...(pick.harness ? { harness: pick.harness } : {}),
+    ...(pick.model ? { model: pick.model } : {}),
+    ...(pick.effort ? { effort: pick.effort } : {}),
+  };
+  return act === "clarify" ? { clarify: true, ...triple } : { ...triple, ...(rawAck ? { acknowledged: true } : {}) };
+}
+// --- end TASK SPAWN CHOICE ---
+
+// the owner's spawn pick per task row — harness/model/effort chosen for THIS row's start. Keyed by
+// task id and kept across the 2 s repaint like qRawAck: a pick begun on one row never rides into
+// the next, and a poll never resets it. Dropped when the window closes or the row starts.
+const qSpawnPick = new Map<string, QSpawnPick>();
+// the row's own persisted choice (Task.spawn), from GET /api/tasks like every other full field —
+// the poll's digest does not carry it. Absent = the row never stored one (DEFAULT_SPAWN).
+const taskSpawnFull = new Map<string, NonNullable<QSpawnRow>>();
+// one kept node per task id, so a poll repaint re-syncs the pickers IN PLACE: an open dropdown or
+// a half-typed model keeps its focus and caret (restoreFocus needs the focused node to survive).
+let qSpawnUi: { for: string; box: HTMLElement; sync: () => void } | null = null;
+const qSpawnStateOf = (id: string) => {
+  const pick = qSpawnPick.get(id) ?? Q_SPAWN_EMPTY;
+  const row = taskSpawnFull.get(id);
+  const eff = qEffectiveSpawn(pick, row);
+  return { pick, row, eff, problem: qSpawnProblem(eff, harnesses) };
+};
+// the spawn row of a startable task: the three pickers fed by the server's catalogue, the
+// EFFECTIVE triple the start would run (each value with where it comes from), and the refusal
+// the server would answer — shown before the click; the two acts stay disabled while it stands.
+function qSpawnRow(id: string): HTMLElement {
+  if (!qSpawnUi || qSpawnUi.for !== id) {
+    const box = el("div", "qspawn");
+    const opts = el("div", "pkdopts qspawnopts");
+    const hSel = el("select", "pkdsel") as HTMLSelectElement;
+    const mIn = el("input", "pkdin") as HTMLInputElement;
+    mIn.type = "text";
+    const eSel = el("select", "pkdsel") as HTMLSelectElement;
+    const mWrap = labelled("model", mIn);
+    const eWrap = labelled("effort", eSel);
+    opts.append(labelled("harness", hSel), mWrap, eWrap);
+    const fx = el("div", "qspawnfx");
+    const block = el("div", "qspawnblock");
+    box.append(opts, fx, block);
+    const cur = () => qSpawnPick.get(id) ?? Q_SPAWN_EMPTY;
+    const option = (value: string, label: string, selected: boolean): HTMLOptionElement => {
+      const o = el("option", "", label) as HTMLOptionElement;
+      o.value = value;
+      o.selected = selected;
+      return o;
+    };
+    hSel.onchange = () => {
+      // a level or a model from the harness being left behind must not ride along — same rule as
+      // the directory pane's picker. The ROW's stored values are not touched: they are the
+      // server's to judge, and the block line says so when they do not fit the new harness.
+      const stored = taskSpawnFull.get(id)?.harness;
+      const next = hSel.value ? harnesses.find((h) => h.id === hSel.value)
+        : stored ? harnesses.find((h) => h.id === stored) : harnesses.find((h) => h.default);
+      const c = cur();
+      qSpawnPick.set(id, { harness: hSel.value,
+        model: next?.supports.model ?? true ? c.model : "",
+        effort: !next || (next.supports.effort && next.effortLevels.includes(c.effort)) ? c.effort : "" });
+      renderQueueDetail();
+    };
+    eSel.onchange = () => { qSpawnPick.set(id, { ...cur(), effort: eSel.value }); renderQueueDetail(); };
+    // free text: the block line does not depend on it (the server judges the charset), so no
+    // repaint per keystroke — only the effective line follows the typing
+    mIn.oninput = () => { qSpawnPick.set(id, { ...cur(), model: mIn.value.trim() }); syncFx(); };
+    const syncFx = () => {
+      const { eff, problem } = qSpawnStateOf(id);
+      const dflt = harnesses.find((h) => h.default)?.id;
+      const show = (f: QSpawnField, fallback: string) =>
+        `${f.value ?? fallback} (${f.origin})`;
+      fx.textContent = harnesses.length
+        ? `starts as · harness ${show(eff.harness, dflt ? `default ${dflt}` : "default")}`
+          + ` · model ${show(eff.model, "default")} · effort ${show(eff.effort, "default")}`
+        : "harness catalogue not loaded — the start runs the server's default or the row's own stored choice";
+      block.textContent = problem ? `blocked before start: ${problem}` : "";
+      block.hidden = !problem;
+    };
+    const sync = () => {
+      const { pick, row, eff } = qSpawnStateOf(id);
+      const agents = agentHarnesses();
+      opts.hidden = !harnesses.length;
+      const dflt = harnesses.find((h) => h.default)?.id;
+      hSel.replaceChildren(option("", row?.harness ? `row: ${row.harness}` : `default${dflt ? ` (${dflt})` : ""}`, !pick.harness));
+      for (const h of agents) hSel.appendChild(option(h.id, h.id, pick.harness === h.id));
+      // the controls follow the EFFECTIVE harness: no model box for an adapter that takes none,
+      // no effort list for one without the concept — the visible degradation, never a dead control
+      const effH = eff.harness.value === null ? harnesses.find((h) => h.default)
+        : harnesses.find((h) => h.id === eff.harness.value);
+      mWrap.hidden = !(effH?.supports.model ?? true);
+      mIn.placeholder = row?.model ? `row: ${row.model}` : effH?.default && defaultModel ? defaultModel : "default";
+      if (mIn.value !== pick.model) mIn.value = pick.model;
+      const levels = effH?.supports.effort ? effH.effortLevels : [];
+      eWrap.hidden = !levels.length;
+      eSel.replaceChildren(option("", row?.effort ? `row: ${row.effort}` : "default", !pick.effort));
+      for (const lv of levels) eSel.appendChild(option(lv, lv, pick.effort === lv));
+      syncFx();
+    };
+    qSpawnUi = { for: id, box, sync };
+  }
+  qSpawnUi.sync();
+  return qSpawnUi.box;
+}
 // the task each row stands for, so keyboard nav selects directly instead of via a synthetic click
 let qRowId = new Map<HTMLElement, string | null>();
 
@@ -5918,7 +6070,7 @@ async function loadTaskTexts() {
     if (res.ok) {
       const data = (await res.json()) as { tasks: { id: string; text: string; analysis?: FullAnalysis;
         brief?: FullBrief; criterion?: NonNullable<TaskInfo["criterion"]>;
-        refine?: TaskRefineFull; comments?: TaskCommentView[] }[] };
+        refine?: TaskRefineFull; comments?: TaskCommentView[]; spawn?: NonNullable<QSpawnRow> }[] };
       // A brief save can complete while this GET (started before it) is in flight. Never publish
       // that older response under the post-save generation; the retry below fetches the new truth.
       if (epoch === taskTextEpoch) {
@@ -5928,8 +6080,10 @@ async function loadTaskTexts() {
         taskCriterionFull.clear();
         taskRefineFull.clear();
         taskCommentsFull.clear();
+        taskSpawnFull.clear();
         for (const t of data.tasks) {
           taskText.set(t.id, t.text);
+          if (t.spawn) taskSpawnFull.set(t.id, t.spawn);
           if (t.analysis) taskAnalysisFull.set(t.id, t.analysis);
           if (t.brief) taskBriefFull.set(t.id, t.brief);
           if (t.criterion) taskCriterionFull.set(t.id, t.criterion);
@@ -6749,6 +6903,8 @@ async function qAct(id: string, action: string, body: Record<string, unknown> = 
     return false;
   }
   if (action === "delete" && qPick === id) qPick = null;
+  // a started row is no longer startable: its pick has been sent and must not resurface later
+  if (action === "dispatch") qSpawnPick.delete(id);
   // applying or discarding consumes the proposal server-side; drop the local copy in the same
   // beat, or the detail paints one stale frame of a proposal that no longer exists (the /api/tasks
   // refetch that would correct it is a poll behind)
@@ -7812,6 +7968,11 @@ function renderQueueDetail() {
     // second, deliberate gesture — and the two paths that FIX the state (clarify, refine) stay in
     // the same row, readable while you decide. The verdict is read from the digest like the
     // release button's override below, that being the fresher of the two copies.
+    // WHAT the lane would start AS, before either act below: the harness/model/effort pickers, the
+    // effective triple with its origins, and the server's refusal if the combination cannot run.
+    // Both acts read the same pick (qSpawnPick) at click time and stay disabled while it is blocked.
+    const spawnProblem = startable ? qSpawnStateOf(t.id).problem : null;
+    if (startable) acts.appendChild(qSpawnRow(t.id));
     if (startable) {
       const raw = !t.analysis || t.analysis.verdict !== "ready";
       const blockers = (t.analysis?.blockers ?? []).map((b) => Q_BLOCKER_LABEL[b] ?? b).join(" · ");
@@ -7824,12 +7985,19 @@ function renderQueueDetail() {
         : t.analysis.blockers.includes("criterion")
           ? "start it without a done-criterion — the lane gets your draft unsharpened, and nothing says what done means"
           : `start it flagged (${blockers || "the analyst wants you to look"}) — the lane gets your draft as it stands`;
-      const sb = mk(raw ? `▸ start lane — ${rawWhat}` : "▸ start lane", "dispatch",
-        raw ? "shrbtn qraw" : "shrbtn primary", raw ? { acknowledged: true } : {},
-        raw ? "a raw start — tick the line below to confirm it; clarify or refine fix the state instead" : undefined);
+      // ▸ START: the body is built at CLICK time from the row's pick (qDispatchBody "start") — the
+      // picked triple, plus the acknowledgment only when the row is raw. Nothing else rides along.
+      const sb = el("button", raw ? "shrbtn qraw" : "shrbtn primary",
+        raw ? `▸ start lane — ${rawWhat}` : "▸ start lane") as HTMLButtonElement;
+      sb.title = spawnProblem ? `blocked: ${spawnProblem}`
+        : raw ? "a raw start — tick the line below to confirm it; clarify or refine fix the state instead"
+          : "opens a lane on the triple shown above and hands it the brief";
+      sb.onclick = () => void qAct(t.id, "dispatch",
+        qDispatchBody("start", qSpawnPick.get(t.id) ?? Q_SPAWN_EMPTY, raw));
       acts.appendChild(sb);
+      if (spawnProblem) sb.disabled = true;
       if (raw) {
-        sb.disabled = qRawAck !== t.id;
+        sb.disabled = sb.disabled || qRawAck !== t.id;
         // its own line INSIDE the action row (flex-basis: 100%), directly under the button it
         // unlocks — the alternatives stay one line below, where they are read as alternatives
         const g = el("label", "qrawack");
@@ -7844,8 +8012,18 @@ function renderQueueDetail() {
     }
     // the same spawn with a different founding prompt: settle the done-criterion with the owner
     // before writing code. The standing answer to a "no done-criterion" blocker.
-    if (startable) acts.appendChild(mk("▸ clarify first", "dispatch", "shrbtn", { clarify: true },
-      "opens a lane that works out the done-criterion WITH you and waits — no code until you confirm"));
+    // ▸ CLARIFY FIRST is the OTHER act, on its own handler: the same picked triple under
+    // `clarify: true` (qDispatchBody "clarify"), never the raw acknowledgment. It does open a lane —
+    // one that settles the done-criterion with you and waits — so the same block applies.
+    if (startable) {
+      const cb = el("button", "shrbtn", "▸ clarify first") as HTMLButtonElement;
+      cb.title = spawnProblem ? `blocked: ${spawnProblem}`
+        : "opens a lane that works out the done-criterion WITH you and waits — no code until you confirm";
+      cb.disabled = spawnProblem !== null;
+      cb.onclick = () => void qAct(t.id, "dispatch",
+        qDispatchBody("clarify", qSpawnPick.get(t.id) ?? Q_SPAWN_EMPTY, false));
+      acts.appendChild(cb);
+    }
     // ↻ refine: rewrite the REQUEST itself — compile it into a work brief, or into the several
     // tasks it really is — before any lane sees it. Attended only; nothing on the server calls it.
     // Distinct from the brief editor above, and the difference is worth holding on to: refine
@@ -8161,13 +8339,15 @@ function openQueue() {
   qBriefDraft = null;
   qCriterionDraft = null;
   qRawAck = null;
+  qSpawnPick.clear(); qSpawnUi = null;
   qBsFor = null; qBsCwd = null; qBsLabel = null; qBsErr = null; qBsBusy = false; qBsSeq++;
   qBsHarness = null; qBsModel = ""; qBsEffort = "";
-  // (4) the founding flow's harness/model/effort row reads this catalogue. It is fetched once per
-  // app life, so it can land AFTER a program pane is already open — repaint that pane exactly
-  // once when it does, instead of leaving the row missing until the owner comes back to it.
+  // (4) the founding flow's harness/model/effort row AND a task row's spawn pickers read this
+  // catalogue. It is fetched once per app life, so it can land AFTER a pane is already open —
+  // repaint that pane exactly once when it does, instead of leaving the row missing until the
+  // owner comes back to it.
   void loadHarnesses().then(() => {
-    if (qShell?.isOpen() && qPick !== null && qPick.startsWith("prog:")) {
+    if (qShell?.isOpen() && qPick !== null) {
       qDetailKey = "";
       renderQueueDetail();
     }
@@ -8181,6 +8361,7 @@ function openQueue() {
     onClose: () => {
       qShell = null; qCompose = null; qRepoIn = null; qProgSel = null; qCmBox = null; qCmFor = null;
       qBriefDraft = null; qCriterionDraft = null; qRawAck = null; qRowId = new Map();
+      qSpawnPick.clear(); qSpawnUi = null;
       qBsFor = null; qBsCwd = null; qBsLabel = null; qBsErr = null; qBsBusy = false; qBsSeq++;
     },
   });

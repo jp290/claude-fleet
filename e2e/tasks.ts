@@ -288,6 +288,161 @@ export async function run(ctx: Ctx): Promise<void> {
   check("dispatch reports available when repo set", sessT.dispatch.available === true);
   check("unqueue a task", (await post(`/api/tasks/${tJson.task.id}/unqueue`, {})).ok);
   check("delete a task", (await post(`/api/tasks/${tJson.task.id}/delete`, {})).ok);
+
+  // --- TASK SPAWN CHOICE (src/client.ts, the block between "// --- TASK SPAWN CHOICE" and its
+  // closing marker). A startable row's two acts, ▸ start lane and ▸ clarify first: what each SENDS,
+  // what the row SHOWS before the click (the effective harness/model/effort with where each value
+  // comes from), and what BLOCKS both before any request. The block is transpiled out of the REAL
+  // browser source and run against the LIVE catalogue, so a dropped field in a body is a red line
+  // here and not a lane that silently ran the wrong adapter. Mutations this section must catch:
+  // effort removed from the start body; clarify wired onto the start handler; the block text
+  // drifting from the server's 400. What it deliberately does NOT claim: that a clarify start leaves
+  // the row's status alone — it does not (server.ts dispatchTask sets `sent` and parks the slot on
+  // the owner; (i) below pins exactly that), and the client neither sends nor moves a status. ---
+  {
+    const spawnStart = taskClientSource.indexOf("// --- TASK SPAWN CHOICE");
+    const spawnEnd = taskClientSource.indexOf("// --- end TASK SPAWN CHOICE ---", spawnStart);
+    const spawnSource = spawnStart >= 0 && spawnEnd > spawnStart ? taskClientSource.slice(spawnStart, spawnEnd) : "";
+    check("task spawn choice: the executable block is cut out of src/client.ts",
+      spawnSource.includes("function qEffectiveSpawn") && spawnSource.includes("function qSpawnProblem")
+        && spawnSource.includes("function qDispatchBody"), spawnSource.slice(0, 120) || "block missing");
+    type SpPick = { harness: string; model: string; effort: string };
+    type SpRowChoice = { harness: string | null; model: string | null; effort: string | null } | undefined;
+    type SpCat = { id: string; default: boolean; role?: string; supports: { model: boolean; effort: boolean }; effortLevels: string[] };
+    type SpField = { value: string | null; origin: "picked" | "row" | "default" };
+    type SpEff = { harness: SpField; model: SpField; effort: SpField };
+    const spawnFns = spawnSource ? new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(spawnSource)
+      + "\nreturn { qEffectiveSpawn, qSpawnProblem, qDispatchBody, Q_SPAWN_EMPTY };")() as {
+        qEffectiveSpawn: (pick: SpPick, row: SpRowChoice) => SpEff;
+        qSpawnProblem: (eff: SpEff, catalogue: SpCat[]) => string | null;
+        qDispatchBody: (act: "start" | "clarify", pick: SpPick, rawAck: boolean) => Record<string, unknown>;
+        Q_SPAWN_EMPTY: SpPick;
+      } : null;
+    if (spawnFns) {
+      // the LIVE catalogue, exactly as the client fetches it: the fixtures are drawn from it, so a
+      // harness renamed or re-scoped on the server fails here instead of in a picker nobody opened
+      const cat = ((await (await get("/api/harnesses")).json()) as { harnesses: SpCat[] }).harnesses;
+      const dflt = cat.find((h) => h.default);
+      const codex = cat.find((h) => h.id === "codex");
+      const noEffort = cat.find((h) => (h.role ?? "agent") === "agent" && !h.supports.effort);
+      check("task spawn choice precondition: the catalogue has a default with effort levels, codex with effort, and an agent without effort",
+        !!dflt && dflt.supports.effort && dflt.effortLevels.length > 0
+          && !!codex && codex.supports.effort && codex.effortLevels.length > 0 && !!noEffort,
+        cat.map((h) => `${h.id}:${h.role ?? "agent"}:effort=${h.supports.effort}`).join(" "));
+      const NONE = spawnFns.Q_SPAWN_EMPTY;
+      const same = (b: Record<string, unknown>, want: Record<string, unknown>) =>
+        JSON.stringify(Object.entries(b).sort()) === JSON.stringify(Object.entries(want).sort());
+      const origins = (e: SpEff) => `${e.harness.origin}/${e.model.origin}/${e.effort.origin}`;
+      const values = (e: SpEff) => `${e.harness.value}/${e.model.value}/${e.effort.value}`;
+
+      // (1) DEFAULT: nothing picked, nothing stored on the row
+      const eDefault = spawnFns.qEffectiveSpawn(NONE, undefined);
+      check("matrix/default: ▸ start sends {} and ▸ clarify first sends exactly {clarify:true}",
+        same(spawnFns.qDispatchBody("start", NONE, false), {})
+          && same(spawnFns.qDispatchBody("clarify", NONE, false), { clarify: true }),
+        JSON.stringify([spawnFns.qDispatchBody("start", NONE, false), spawnFns.qDispatchBody("clarify", NONE, false)]));
+      check("matrix/default: the row shows default/default/default with no value claimed, and nothing blocks",
+        origins(eDefault) === "default/default/default" && values(eDefault) === "null/null/null"
+          && spawnFns.qSpawnProblem(eDefault, cat) === null, `${origins(eDefault)} ${values(eDefault)}`);
+
+      // (2) CODEX with model + effort: the closed triple, every field picked
+      const codexEffort = codex?.effortLevels[codex.effortLevels.length - 1] ?? "high";
+      const codexPick: SpPick = { harness: "codex", model: "openai/gpt-5-codex", effort: codexEffort };
+      const codexStart = spawnFns.qDispatchBody("start", codexPick, false);
+      const codexClarify = spawnFns.qDispatchBody("clarify", codexPick, false);
+      check("matrix/codex: ▸ start sends exactly the picked closed triple — harness, model, effort — and no other field",
+        same(codexStart, { harness: "codex", model: "openai/gpt-5-codex", effort: codexEffort }), JSON.stringify(codexStart));
+      check("matrix/codex: ▸ clarify first sends the same triple under clarify:true — and never the acknowledgment",
+        same(codexClarify, { clarify: true, harness: "codex", model: "openai/gpt-5-codex", effort: codexEffort })
+          && !("acknowledged" in codexClarify), JSON.stringify(codexClarify));
+      const eCodex = spawnFns.qEffectiveSpawn(codexPick, undefined);
+      check("matrix/codex: the row shows picked/picked/picked and nothing blocks",
+        origins(eCodex) === "picked/picked/picked" && values(eCodex) === `codex/openai/gpt-5-codex/${codexEffort}`
+          && spawnFns.qSpawnProblem(eCodex, cat) === null, `${origins(eCodex)} ${values(eCodex)}`);
+
+      // (3) a HARNESS WITHOUT EFFORT, with an effort picked anyway: blocked before start, in the
+      // route's own words — and the live server answers the identical text, 400, spawning nothing
+      const noEffortPick: SpPick = { harness: noEffort?.id ?? "", model: "", effort: "high" };
+      const noEffortProblem = spawnFns.qSpawnProblem(spawnFns.qEffectiveSpawn(noEffortPick, undefined), cat);
+      check(`matrix/no-effort: an effort on ${noEffort?.id} is blocked before start with the server's refusal`,
+        noEffortProblem === `harness ${noEffort?.id} takes no effort`, String(noEffortProblem));
+
+      // (4) NEGATIVE: an effort the default harness does not have
+      const badPick: SpPick = { harness: "", model: "", effort: "ultra-nope" };
+      const badProblem = spawnFns.qSpawnProblem(spawnFns.qEffectiveSpawn(badPick, undefined), cat);
+      check("negative/unsupported effort: blocked before start, naming the closed set",
+        badProblem === `bad effort (one of: ${dflt?.effortLevels.join(", ")})`, String(badProblem));
+      // …and the harness dropdown cannot even reach an unknown id, but the block still names one
+      const unknownProblem = spawnFns.qSpawnProblem(spawnFns.qEffectiveSpawn({ harness: "no-such-harness", model: "", effort: "" }, undefined), cat);
+      check("negative/unknown harness: blocked before start with the catalogue's id list",
+        unknownProblem === `unknown harness (one of: ${cat.map((h) => h.id).join(", ")})`, String(unknownProblem));
+      // an empty catalogue (fetch failed) judges nothing: the server still does
+      check("no catalogue: nothing is blocked client-side — the server's 400 stays the judge",
+        spawnFns.qSpawnProblem(spawnFns.qEffectiveSpawn(badPick, undefined), []) === null);
+
+      // (5) ROW PRECEDENCE: a stored choice is the EFFECTIVE triple while the body stays absent —
+      // the server's own per-field fallback (body → row → default) is the semantics, not a copy
+      const row: NonNullable<SpRowChoice> = { harness: "codex", model: null, effort: codexEffort };
+      const eRow = spawnFns.qEffectiveSpawn(NONE, row);
+      check("row precedence: a stored row choice shows as the effective triple (origin row) while ▸ start still sends {}",
+        origins(eRow) === "row/default/row" && values(eRow) === `codex/null/${codexEffort}`
+          && spawnFns.qSpawnProblem(eRow, cat) === null && same(spawnFns.qDispatchBody("start", NONE, false), {}),
+        `${origins(eRow)} ${values(eRow)}`);
+      const eRowOverride = spawnFns.qEffectiveSpawn({ harness: noEffort?.id ?? "", model: "", effort: "" }, row);
+      check("row precedence: a picked harness without effort against a row-stored effort is blocked — the row's value would ride into a 400",
+        origins(eRowOverride) === "picked/default/row"
+          && spawnFns.qSpawnProblem(eRowOverride, cat) === `harness ${noEffort?.id} takes no effort`,
+        `${origins(eRowOverride)} ${spawnFns.qSpawnProblem(eRowOverride, cat)}`);
+      const eRowFix = spawnFns.qEffectiveSpawn({ harness: "", model: "", effort: dflt?.effortLevels[0] ?? "" }, { harness: null, model: null, effort: "ultra-nope" });
+      check("row precedence: a picked effort outranks a row-stored one the harness lacks, so the block lifts",
+        eRowFix.effort.origin === "picked" && spawnFns.qSpawnProblem(eRowFix, cat) === null);
+
+      // (6) the RAW acknowledgment rides on ▸ start alone
+      check("raw start: the acknowledgment rides on ▸ start alone — clarify with rawAck true still sends none",
+        same(spawnFns.qDispatchBody("start", NONE, true), { acknowledged: true })
+          && same(spawnFns.qDispatchBody("clarify", NONE, true), { clarify: true }));
+
+      // (7) the DOM wiring, on the real source: two acts, two handlers, two bodies — and the pick
+      // survives the 2 s repaint as a kept node keyed by task id
+      const actsAt = taskClientSource.indexOf("const spawnProblem = startable ?");
+      const actsSrc = actsAt >= 0 ? taskClientSource.slice(actsAt, taskClientSource.indexOf("↻ refine: rewrite the REQUEST", actsAt)) : "";
+      check("task spawn choice source: ▸ start and ▸ clarify first are two handlers on two bodies, neither through mk()",
+        /sb\.onclick = \(\) => void qAct\(t\.id, "dispatch",\s*qDispatchBody\("start", qSpawnPick\.get\(t\.id\) \?\? Q_SPAWN_EMPTY, raw\)\)/.test(actsSrc)
+          && /cb\.onclick = \(\) => void qAct\(t\.id, "dispatch",\s*qDispatchBody\("clarify", qSpawnPick\.get\(t\.id\) \?\? Q_SPAWN_EMPTY, false\)\)/.test(actsSrc)
+          && !/mk\("▸ clarify first"/.test(actsSrc) && !/mk\(raw \? `▸ start lane/.test(actsSrc),
+        actsSrc.slice(0, 200) || "action block missing");
+      check("task spawn choice source: both acts are disabled while the block stands, and the row is painted above them",
+        /if \(spawnProblem\) sb\.disabled = true;/.test(actsSrc) && /cb\.disabled = spawnProblem !== null;/.test(actsSrc)
+          && /if \(startable\) acts\.appendChild\(qSpawnRow\(t\.id\)\);/.test(actsSrc));
+      check("task spawn choice source: the pick is keyed by task id, re-synced in place across repaints, dropped on close and on start",
+        /const qSpawnPick = new Map<string, QSpawnPick>\(\);/.test(taskClientSource)
+          && /if \(!qSpawnUi \|\| qSpawnUi\.for !== id\) \{/.test(taskClientSource)
+          && (taskClientSource.match(/qSpawnPick\.clear\(\); qSpawnUi = null;/g)?.length ?? 0) >= 2
+          && /if \(action === "dispatch"\) qSpawnPick\.delete\(id\);/.test(taskClientSource));
+      check("task spawn choice source: the row's stored choice rides the /api/tasks fetch, never the poll digest",
+        /if \(t\.spawn\) taskSpawnFull\.set\(t\.id, t\.spawn\);/.test(taskClientSource)
+          && /spawn\?: NonNullable<QSpawnRow>/.test(taskClientSource)
+          && taskPageSource.includes(".qspawnblock {") && taskPageSource.includes(".qspawnfx {"));
+
+      // (8) LIVE PARITY: the isolated server answers the client's block text for the same body —
+      // 400, before the free-slot lookup, so nothing is spawned and the row keeps its status
+      const pT = (await (await post("/api/tasks", { text: "spawn-choice parity probe", queue: false })).json()) as { task: { id: string } };
+      const pRow = async () => ((await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string; slot?: number }[] })
+        .tasks.find((t) => t.id === pT.task.id);
+      const pBad = await post(`/api/tasks/${pT.task.id}/dispatch`, spawnFns.qDispatchBody("start", badPick, false));
+      const pBadJ = (await pBad.json()) as { error?: string };
+      check("live parity: the server's 400 for an unsupported effort is the client's block text, verbatim",
+        pBad.status === 400 && pBadJ.error === badProblem, `${pBad.status} ${JSON.stringify(pBadJ)} vs ${badProblem}`);
+      const pNo = await post(`/api/tasks/${pT.task.id}/dispatch`, spawnFns.qDispatchBody("clarify", noEffortPick, false));
+      const pNoJ = (await pNo.json()) as { error?: string };
+      check("live parity: a clarify start on a harness without effort is refused with the same text, so the client block matches both acts",
+        pNo.status === 400 && pNoJ.error === noEffortProblem, `${pNo.status} ${JSON.stringify(pNoJ)} vs ${noEffortProblem}`);
+      const pAfter = await pRow();
+      check("live parity: a blocked start spawns nothing — the row is still pending with no slot",
+        pAfter?.status === "pending" && pAfter.slot == null, JSON.stringify(pAfter));
+      await post(`/api/tasks/${pT.task.id}/delete`, {});
+    }
+  }
   check("deleted task gone", !(await (await get("/api/sessions")).json() as { tasks: { id: string }[] }).tasks.some((t) => t.id === tJson.task.id));
 
   // --- Task.programId: owner-only Program membership, loud status/id validation, honest absence. ---

@@ -698,6 +698,13 @@
   .qrawack { flex-basis: 100%; display: flex; align-items: flex-start; gap: 7px; cursor: pointer;
     font-size: 12px; line-height: 1.45; color: var(--amber); margin: -2px 0 1px; }
   .qrawack input { accent-color: var(--amber); margin: 2px 0 0; flex: none; }
+  /* the spawn row of a startable task: pickers, the effective triple with origins, and the
+     server's refusal before the click. A full flex row of its own ABOVE the two acts it feeds. */
+  .qspawn { flex-basis: 100%; display: flex; flex-direction: column; gap: 4px; margin: 0 0 4px; }
+  .qspawn .qspawnopts { margin: 0; }
+  .qspawnfx { font: 11.5px ui-monospace, Menlo, Consolas, monospace; color: var(--dim); line-height: 1.45; }
+  .qspawnblock { font-size: 12px; color: var(--amber); background: #2a2320; border: 1px solid #5a4a2a;
+    border-radius: 7px; padding: 6px 9px; line-height: 1.45; }
   .pkdlast { font-size: 12.5px; color: #ddd; margin-top: 4px; }
   .pkdcommit { padding: 5px 0; border-bottom: 1px solid #1e1e1e; }
   .pkdcommit:last-of-type { border-bottom: 0; }

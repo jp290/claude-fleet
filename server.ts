@@ -131,66 +131,41 @@ const SHELL = process.env.SHELL ?? "/bin/sh";
 // Bake our PATH into the command so `claude` resolves no matter who started tmux.
 const PATH_EXPORT = process.env.PATH ? `export PATH='${process.env.PATH.replaceAll("'", "'\\''")}'; ` : "";
 const BASE_CMD = process.env.FLEET_CMD ?? "claude";
-// when the slot actually runs claude, pin its session id so the transcript path
-// (~/.claude/projects/<cwd-slug>/<uuid>.jsonl) is known instead of guessed by mtime
 // model names are validated at SET time (MODEL_RE, the open/lane routes) — this string is
-// baked into a shell line, so nothing unvalidated may ever reach it
-//
-// This is ALSO the claude adapter's spawnCmd (see HARNESSES below, which calls this very
-// function rather than restating it): a slot that chose no harness is spawned by exactly the
-// code that spawned every slot before harnesses existed, so "byte-identical" is a property of
-// the call graph here, not a claim someone has to re-check by reading two implementations.
+// baked into a shell line, so nothing unvalidated may ever reach it. This is ALSO the claude
+// adapter's spawnCmd (HARNESSES calls this function rather than restating it).
+// Why the session id is pinned: docs/sanierung-2026-09/server-narrativ-archiv.md#slotcmd
 function slotCmd(sessionId: string | null, resume: boolean, model: string | null = null,
   effort: string | null = null): string {
   return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort)}; exec ${SHELL}`;
 }
 // the AGENT invocation alone — no PATH export, no `; exec $SHELL` fallback. Split out of slotCmd
-// for exactly one caller: the container adapter wraps THIS line in a `docker exec` rather than
-// restating the flag rules, so "the sandboxed slot runs the same agent the fleet runs" is a
-// property of the call graph instead of two implementations someone has to diff.
+// for exactly one caller: the container adapter wraps THIS line in a `docker exec`.
 function agentCmd(sessionId: string | null, resume: boolean, model: string | null,
   effort: string | null): string {
   const claude = /^claude(\s|$)/.test(BASE_CMD);
   let cmd = sessionId && claude
     ? `${BASE_CMD} ${resume ? "--resume" : "--session-id"} ${sessionId}`
     : BASE_CMD;
-  // pin the fleet's base model whenever the slot has none of its own — otherwise claude
-  // inherits the owner's ambient /model default (how a lane once span up on the wrong model).
-  // single-quoted: the 1M context variants are spelled `claude-opus-5[1m]`, and tmux runs this
-  // string through default-shell — /bin/zsh here, which ABORTS on an unmatched glob ("no matches
-  // found"), so an unquoted [1m] would kill every new pane at spawn. MODEL_RE forbids `'`, so a
-  // plain single-quote wrap is closed, not merely escaped.
+  // pin the fleet's base model whenever the slot has none of its own — otherwise claude inherits
+  // the owner's ambient /model default. Single-quoted: `claude-opus-5[1m]` is an unmatched glob
+  // and zsh (tmux default-shell) aborts the pane on it; MODEL_RE forbids `'`, so the wrap is closed.
   if (claude) {
     cmd += ` --model '${model ?? DEFAULT_MODEL}'`;
-    // `claude --help`: `--effort <level>  Effort level for the current session (low, medium, high,
-    // xhigh, max)`. Only when the slot pins one — with no flag claude keeps its own session default,
-    // and that absence is what every claude pane spawned before this looked like, byte for byte.
-    //
-    // Single-quoted for the SAME DISCIPLINE as the model above, NOT for the same necessity, and the
-    // difference is worth stating because copying the reason would hide where the guarantee really
-    // sits. The model needs its quotes: `claude-opus-5[1m]` is an unmatched glob and zsh aborts the
-    // pane on it. The five effort levels are bare lowercase words with no metacharacter in them, so
-    // an unquoted one would survive. What makes that safe is UPSTREAM and is the actual boundary:
-    // effortOf() admits only a member of THIS adapter's effortLevels — a closed literal list, not a
-    // charset — and the state-file rehydration re-judges a stored value against the same list, so
-    // nothing else can reach this line. The quotes are what keeps that argument from depending on
-    // the list never gaining a word with a metacharacter in it (e2e/pins.ts pins both halves).
+    // `--effort <level>` only when the slot pins one — with no flag claude keeps its own default.
+    // Single-quoted for the same discipline as the model; the real boundary is upstream (effortOf
+    // admits only effortLevels). Both halves pinned in e2e/pins.ts. Narrativ: server-narrativ-archiv.md#agentcmd
     if (effort) cmd += ` --effort '${effort}'`;
     cmd += " --prompt-suggestions false";
   }
-  // A declared foreign harness gets its model the same way, and under the same quoting rule — the
-  // charset it was validated against (HARNESS_MODEL_RE) admits `*`, so the single quotes carry more
-  // weight here than they do above, not less. No DEFAULT_MODEL fallback on this branch on purpose:
-  // that constant is a claude model id, and pinning it onto a foreign harness would name a model
-  // that harness has never heard of. A foreign slot with no model of its own passes no flag at all.
+  // A declared foreign harness: same quoting rule (HARNESS_MODEL_RE admits `*`, so the quotes carry
+  // more weight here). No DEFAULT_MODEL fallback on purpose — that constant is a claude model id.
   else if (HARNESS_MODEL_FLAG && model) cmd += ` ${HARNESS_MODEL_FLAG} '${model}'`;
   return cmd;
 }
-// per-slot model (synergy-findings Tier-2): strict charset because the value lands in a
-// tmux shell command — never widen without revisiting slotCmd
-// the optional bracket suffix is the context-window variant (`claude-opus-5[1m]`) and is the ONLY
-// reason a shell metacharacter may appear here — it is anchored to the end, bounded, and alnum-only,
-// and every shell interpolation of a model string is single-quoted (slotCmd, summaryViaSession).
+// per-slot model: strict charset because the value lands in a tmux shell command — never widen
+// without revisiting slotCmd. The bracket suffix (`claude-opus-5[1m]`) is the ONLY shell
+// metacharacter admitted, and every interpolation is single-quoted (slotCmd, summaryViaSession).
 const MODEL_RE = /^[A-Za-z0-9._-]{1,64}(?:\[[A-Za-z0-9]{1,8}\])?$/;
 
 // --- harness adapters ---------------------------------------------------------------------------
@@ -5584,17 +5559,9 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"):
     await tmux("set", "-g", "history-limit", "50000");
     if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
     const h = harnessOf(occupant.harness);
-    // pane died but we know its harness-specific conversation evidence still exists →
-    // self-heal RESUMES the conversation instead of starting a blank one.
-    // Otherwise: fresh harness, fresh candidate uuid — only if WE win the has-session/
-    // new-session race below (the 2s self-heal loop and a fresh openSlot() can race)
-    //
-    // The EVIDENCE that a conversation is still there is harness-specific, and asking claude's
-    // question of another harness gets the wrong answer in the direction that loses work. For a
-    // transcript harness it is the .jsonl on disk (unchanged, and still the whole test for every
-    // slot that names no harness). Pi's `--session-id` is itself create-or-attach evidence
-    // (measured). Codex is stricter: its discovered id is necessary but not sufficient, so the
-    // exact rollout filename carrying that id must still exist before every resume.
+    // RESUME when the harness's own conversation evidence still exists (transcript .jsonl, pi's
+    // create-or-attach id, codex's exact rollout file) — asking claude's question of another
+    // harness loses work. Narrativ: server-narrativ-archiv.md#ensureslot
     const codex = h.id === "codex";
     const priorSessionId = occupant.sessionId;
     const priorCodexState = s.codexRecoveryState;
@@ -5613,48 +5580,17 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"):
       saveState();
       audit("codex_resume_lost", s.id, `session=${priorSessionId}`);
     }
-    // WHY a heal could not resume, not just THAT it could not — the two causes are different
-    // bugs: no-session = nothing was ever pinned (a non-claude BASE_CMD, or the openSlot race
-    // this function's spawn-block comment predicts); no-transcript = a pin exists but its .jsonl
-    // is gone, the one that would mean the durability promise is broken (slotstats.ts).
-    // Classified HERE, before the spawn: the spawn block below REASSIGNS s.sessionId to the
-    // always-truthy candidate, and reading it there collapsed the formula to "which BASE_CMD" —
-    // no-session became unreachable and every race heal read as a broken promise (b7d449a0,
-    // found by the inspection pulse on the first day of the measurement it poisoned).
+    // no-session vs no-transcript are different bugs (slotstats.ts). Classified HERE, before the
+    // spawn block REASSIGNS s.sessionId to the always-truthy candidate — reading it there collapsed
+    // no-session into a broken-promise reading (b7d449a0). Narrativ: server-narrativ-archiv.md#ensureslot
     const healDetail = resume ? "resumed" : priorSessionId ? "created:no-transcript" : "created:no-session";
     const candidate = resume ? priorSessionId! : crypto.randomUUID();
-    // self-scheduling credential: EVERY session with a cwd gets it, lane or not. It can check in
-    // on itself later and read its own row, scoped to exactly this slot, without ever touching the
-    // owner token. This used to be keyed on `s.worktree`, and that carve-out was never a security
-    // boundary — `selfToken` is minted for every slot (openSlot) and persisted for every slot
-    // (saveState), and the routes below already AUTHENTICATE a plain session's token: measured
-    // 2026-08-07 against the live server, a plain slot's credential answers /api/self/gate 409
-    // "not a lane", where an unknown one answers 401. The server recognized the principal all
-    // along and simply never handed it to the pane, so what the widening adds is one export line,
-    // not a new credential class. What it grants is the self-PLANNING family — /api/self/autos
-    // (which has no lane check at all) and /api/self (its own row). The two lane-only questions
-    // keep their 409s and MUST: a plain session has no integration branch to be measured against
-    // (drift) and no land for a gate to judge, so answering them would be answering nonsense.
-    //
-    // The real widening, named honestly: a plain session in a FOREIGN repo now holds a Fleet
-    // credential it did not hold before. Its entire reach is scheduling prompts into its OWN pane
-    // (AUTO_MAX_PER_SLOT, AUTO_MIN_EVERY_SEC, the mandatory run cap, and the perpetual-403 all
-    // still apply) — and it is smaller than the status quo it replaces, in which a session whose
-    // cwd is the install directory simply reads the owner token out of fleet.json. This closes no
-    // hole (same uid, same file); it removes the reason to walk through it.
-    //
-    // The ⚙ steward is included deliberately (it lands here because its cwd is set and its
-    // `s.worktree` is null — a physical git worktree Fleet did not create). Its pane already
-    // carries FLEET_STEWARD_TOKEN, which is strictly broader: it reads every session and sends
-    // into other slots. Withholding the NARROWER credential from that one pane protects nothing
-    // and would only deny the longest-lived session on the board the ability to schedule its own
-    // next look — which is precisely what a watching role needs most.
+    // self-scheduling credential: EVERY session with a cwd gets it, lane or not, ⚙ steward
+    // included — it reaches only this slot's own row and its /api/self planning family; the two
+    // lane-only questions keep their 409s. Why the widening is safe: server-narrativ-archiv.md#ensureslot
     const selfExport = `export FLEET_SELF_TOKEN='${occupant.selfToken}'; export FLEET_SELF_SLOT='${occupant.slot}'; `;
-    // the steward principal's scoped token, baked with the same exposure as FLEET_SELF_TOKEN
-    // above but keyed on the steward LABEL (not the worktree flag): the pane that is currently
-    // the ⚙ steward can then self-serve /api/steward/* (the Rundgang) without the owner token.
-    // Env is only injectable at spawn, so a live relabel takes effect on the pane's next
-    // (re)spawn — identical semantics to FLEET_SELF_TOKEN, never patched into a running pane.
+    // the steward token is keyed on the steward LABEL, not the worktree flag. Env is only injectable
+    // at spawn, so a live relabel takes effect on the pane's next (re)spawn, never patched in.
     const stewardExport = occupant.label === STEWARD_LABEL && stewardToken
       ? `export FLEET_STEWARD_TOKEN='${stewardToken}'; ` : "";
     // A second ensure may have reached the same absent pane while the probes above ran. Join its
@@ -5689,19 +5625,13 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"):
       if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
       s.cols = 200;
       s.rows = 50;
-      // record the pin only if the adapter actually PASSED it. For the default adapter this is
-      // still exactly `is FLEET_CMD claude` (CLAUDE_HARNESS.pinsSession), so a stand-in command
-      // keeps recording none; a harness that takes a session id records one and can resume.
-      // A Codex resume id was discovered after fresh spawn rather than passed at fresh spawn.
-      // Preserve it across this heal even though pinsSession correctly remains false. Only a
-      // deliberate openSlot recycle clears it before reaching here.
+      // record the pin only if the adapter actually PASSED it (pinsSession). A discovered Codex id
+      // is preserved across the heal although pinsSession stays false; only openSlot's recycle clears it.
       s.sessionId = h.pinsSession ? candidate : codex && priorSessionId ? priorSessionId : null;
       // This is ensureSlot's own identity refinement, not a recycle. Advance the local snapshot so
       // the post-spawn checks accept exactly this new pin and still reject every external change.
       occupant = { ...occupant, sessionId: s.sessionId };
-      // the same learn-site backfill as tickCodexRecovery's: a heal that carries a discovered
-      // Codex id across a respawn is the third way a recorded `null` becomes knowable, and the
-      // helper is a no-op for every other shape (still null, or already recorded).
+      // the same learn-site backfill as tickCodexRecovery's; a no-op for every other shape.
       backfillProgramMainSessionId(s);
       if (codex) {
         s.codexPaneSpawnedAt = Date.now();
@@ -5724,10 +5654,8 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"):
     if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
   }
   if (!target) return;
-  // the size cache follows TMUX TRUTH, not the other way round: the in-memory cols/rows
-  // die with every server restart (deploys!) while the pane keeps whatever the last
-  // owner client set — a guest reading the stale 200×50 default then renders a terminal
-  // that has nothing to do with the actual pane. Re-sync on every ensure.
+  // the size cache follows TMUX TRUTH: in-memory cols/rows die with every restart while the pane
+  // keeps whatever the last client set. Re-sync on every ensure.
   const size = await tmux("display-message", "-p", "-t", target.paneId, "#{window_width} #{window_height}");
   if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
   const sm = /^(\d+) (\d+)$/.exec(size.out);
@@ -5749,9 +5677,8 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" = "heal"):
     await tmux("pipe-pane", "-t", target.paneId); // close a legacy/deleted stream pipe on this exact pane
     if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
   }
-  // A live pre-migration pipe wrote sN.raw. Once its exact pane pipe is closed, the capture below
-  // contains that pane's whole history, so deleting the ambiguous compatibility file loses no
-  // rendered terminal state and prevents a later occupant from ever inheriting it.
+  // the pre-migration sN.raw is safe to delete once its pipe is closed: the capture below holds
+  // the whole history, and a later occupant must never inherit it.
   if (existsSync(legacyPath)) rmSync(legacyPath, { force: true });
   rmSync(stagePath, { force: true });
   // seed stream with full pane history, then start piping raw output
@@ -5778,24 +5705,14 @@ function expandCwd(raw: string): string {
   return t;
 }
 
-// `harness`/`effort` default to null — i.e. the claude adapter — and that default is the
-// DISPATCHER'S BOLT, not a convenience. Pi has no permission layer (see PI_HARNESS.note), and
-// whether an autonomous lane may run without one is an owner decision that has not been made — so
-// this fails closed by construction rather than by a check that a later caller could forget.
-// WHERE THE BOLT NOW SITS, corrected: dispatchTask does hand a harness through, because the
-// attended ▸ start button may name one (a task started the /api/lanes way keeps no queue link,
-// which is the whole reason that plumbing exists). What is unattended is not the FUNCTION but the
-// CALL: tickDispatch passes no `spawn`, so the tick still reaches only this default — and
-// dispatchTask now carries the same two-condition refusal every other unattended path uses, so
-// the guarantee no longer rests on an absence alone. An attended dispatch may carry effort too;
-// the tick's DEFAULT_SPAWN keeps that choice null, alongside harness and model.
+// `harness`/`effort` default to null — the claude adapter — and that default is the DISPATCHER'S
+// BOLT: pi has no permission layer (PI_HARNESS.note), and whether an unattended lane may run
+// without one is an owner decision not yet made. tickDispatch passes no `spawn`, and dispatchTask
+// carries the two-condition refusal (e2e/pins.ts). Narrativ: server-narrativ-archiv.md#openslot
 async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null,
   model: string | null = null, label: string | null = null,
   harness: string | null = null, effort: string | null = null,
-  // one trailing parameter rather than two, because the pair is never chosen apart: a container and
-  // the daemon it lives on are one decision, and a positional list where the caller can pass the
-  // second and forget the first is the argument-order bug this shape cannot have. Defaulted, so the
-  // three callers that spawn no container (attach, the dispatcher, a plain open) say nothing at all.
+  // one parameter for the pair: a container and its daemon are one decision, never chosen apart.
   box: BoxPin = NO_BOX, treeLease: GameMakerTreeLease | null = null): Promise<void> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
@@ -5820,23 +5737,15 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // killSlot's own detach would otherwise get there first and file the abort under
   // "lane closed before landing".
   detachSlotTasks(s.id, "slot recycled before landing"); // recycling an active slot is a teardown too
-  // a share must not outlive its session (same invariant killSlot enforces) — recycling
-  // an active slot onto a different cwd must not leave an old guest link/password
-  // pointed at whatever the slot becomes next. Also BEFORE the teardown below, and for the
-  // same reason as the detach: killSlot closes guest sockets with its default 4001, which the
-  // guest UI renders as "this share was revoked" (src/share.ts). A recycle is a session END —
-  // close them here with 4000 so the guest is told the truth.
+  // a share must not outlive its session. Also BEFORE the teardown below: killSlot closes guest
+  // sockets with 4001 ("revoked" in src/share.ts); a recycle is a session END, so 4000 here.
   const oldShare = shares.find((x) => x.slot === s.id);
   if (oldShare) closeShareClients(s, oldShare.id, 4000, "session ended");
   shares = shares.filter((x) => x.slot !== s.id);
-  // Recycling an ACTIVE slot: ensureSlot below only builds a pane when none exists, so without
-  // this teardown every write in this function (cwd, model, the rotated selfToken, the cleared
-  // history) would be state-only fiction laid over a pane that keeps running in the OLD directory
-  // with the OLD env baked in. Observed live 2026-07-25: the board reported the new cwd while
-  // `pane_current_path` was still the old one, and the session's self-scheduling route 401'd
-  // against its stale FLEET_SELF_TOKEN. The pane is the ground truth, so PROBE THE PANE rather
-  // than s.cwd — state and tmux can disagree (an adopted pane, a kill that failed). Deliberately
-  // placed after the cwd validation: a bad path must never destroy a running session.
+  // Recycling an ACTIVE slot: ensureSlot only builds a pane when none exists, so without this
+  // teardown every write below would be fiction over a pane still running the OLD cwd and env.
+  // PROBE THE PANE, not s.cwd. Deliberately after the cwd validation: a bad path must never
+  // destroy a running session. Incident 2026-07-25: server-narrativ-archiv.md#openslot
   try {
     const priorStreamOccupant = slotStreamOccupant(s);
     if (priorStreamOccupant) await killSlot(s, "reopen");
@@ -5861,25 +5770,18 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // From here the persisted active-slot check carries singleton ownership; the short reservation
   // only bridged the await before this assignment.
   if (h.singleton) singletonSpawn.delete(h.id);
-  // a stale wait must not outlive the session it was about. killSlot clears it, but the branch
-  // above only runs when a pane still EXISTS — a slot whose pane already died would otherwise
-  // hand its "waiting on the owner" to the next occupant, silently muting the steward there.
-  // Same lifetime and same reason as the mission below.
+  // a stale wait must not outlive its session: the killSlot branch above only runs when a pane
+  // still EXISTS, so a dead pane would otherwise hand its wait to the next occupant.
   s.awaiting = null;
-  // a fresh session gets a fresh identity — but the caller may name it AT SPAWN, which is the
-  // only moment a label-keyed env export (FLEET_STEWARD_TOKEN, see ensureSlot) can be baked in;
-  // open-then-rename always arrives after the pane's env is fixed
+  // the caller may name the session AT SPAWN — the only moment a label-keyed env export
+  // (FLEET_STEWARD_TOKEN, see ensureSlot) can be baked in.
   s.label = label;
   s.openedAt = treeLease?.founding?.target.openedAt ?? Date.now(); // a Program founding target identity
   // is chosen before its durable marker; every other open retains the exact legacy clock read here.
   s.successionRetirement = null; // a delayed retirement belongs only to the occupant that requested it
   s.mission = null; // a re-opened slot is a NEW session: the previous occupant's standing
   // intention must never read as this one's (it is the anchor staleness is judged against)
-  // worktree is set BEFORE ensureSlot spawns the pane below. The coupling that once made this
-  // ordering load-bearing is GONE — the pane's FLEET_SELF_TOKEN export used to key on this very
-  // flag and no longer does (see selfExport in ensureSlot), so a later patch-up would no longer
-  // cost the lane its credential. Kept in this order anyway: the slot's row must be whole before
-  // the session that lives in it starts, and nothing below should have to ask which half is set.
+  // set BEFORE ensureSlot spawns the pane: the slot's row must be whole before the session starts.
   s.worktree = worktree;
   s.model = model; // same reason — slotCmd bakes it at spawn; a recycled slot never inherits one
   s.harness = harness; // ...and this one decides WHICH BINARY the pane runs, so inheriting it
@@ -5902,25 +5804,18 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.history = []; // ...including a fresh prompt history
   harvest.set(s.id, { file: "", offset: 0, rest: Buffer.alloc(0) }); // sentinel: harvest the NEW transcript from byte 0
   startCache.delete(s.id); // the fresh session gets a fresh start anchor
-  // a recycled slot must never show a previous lane's merge verdict — but a reviewable verdict
-  // follows its BRANCH into the park (see parkMergeVerdict), and comes back the moment this
-  // open IS that branch's reattach. Park before restore, so reattaching the same lane into the
-  // same slot round-trips instead of deleting.
+  // a recycled slot must never show a previous lane's verdict, but a reviewable one follows its
+  // BRANCH into the park (parkMergeVerdict). Park before restore, so a reattach round-trips.
   parkMergeVerdict(s.id, true);
   const parkedVerdict = worktree ? mergeParked.get(worktree.branch) : undefined;
   if (parkedVerdict) { mergeLast.set(s.id, parkedVerdict); mergeParked.delete(parkedVerdict.branch); }
   mergeInflight.delete(s.id); mergeStart.delete(s.id); // ...nor report the prior lane's merge JOB as running:true and 409 the new lane (the old job's finally self-checks identity, so dropping the entry here is safe)
   aliveInfo.delete(s.id); // ...nor its liveness/wedge readings until the next tick recomputes
   gitOpInfo.delete(s.id);
-  // ...nor its GIT facts. killSlot leaves gitInfo behind for tickGit's `if (!s.cwd)` branch to
-  // reap (≤10s later), so a slot recycled inside that window would otherwise serve the PREVIOUS
-  // lane's {dirty:0, ahead:N} for the new one. That is not cosmetic: `done-looking` is computed
-  // from exactly these facts (laneSignalView), killSlot resets lastOutput to 0 so the idle clause
-  // reads "quiet forever", and aliveInfo/gitOpInfo are refreshed BEFORE gitInfo inside a single
-  // tickGit pass — so a brand-new, empty lane could read done-looking and auto-③ would file a
-  // review of a diff that does not exist yet ("no code changes in scope") against it. Dropping
-  // the entry makes the fact UNKNOWN until the tick computes it for this cwd, and an unknown is
-  // never permission to act (lane-signals.ts: null git → not done-looking).
+  // ...nor its GIT facts: killSlot leaves gitInfo for tickGit to reap (≤10 s), and a slot recycled
+  // inside that window would serve the PREVIOUS lane's facts — from which `done-looking` is
+  // computed (laneSignalView), so auto-③ could review an empty lane. Unknown is never permission
+  // to act (lane-signals.ts). Narrativ: server-narrativ-archiv.md#openslot
   gitInfo.delete(s.id);
   repoInfo.delete(s.id); // canonical repo belongs to this occupant/cwd just as much as gitInfo does
   backlogNudgeTried.delete(s.id); // a dead pane reopened in place is still a new main session
@@ -5949,10 +5844,8 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   }
 }
 
-// a task's `sent` state is only meaningful while ITS lane lives in that slot. On any
-// teardown/recycle the link must be resolved, or the task re-runs after a restart
-// (duplicate work) or silently attaches to whatever lane occupies the slot next.
-// Landing marks the task done BEFORE killSlot runs, so this only catches real aborts.
+// a task's `sent` state is only meaningful while ITS lane lives in that slot; unresolved, it
+// re-runs after a restart or attaches to the next lane. Landing marks done BEFORE killSlot.
 function detachSlotTasks(slotId: number, note: string): void {
   for (const t of tasks) {
     if (t.slot === slotId && t.status === "sent") {
@@ -5963,9 +5856,7 @@ function detachSlotTasks(slotId: number, note: string): void {
   }
 }
 
-// `why` is mandatory: a session's lifetime is uninterpretable without it — a median of minutes
-// means slot recycling if the kills are `reopen`, and abandoned work if they are `owner`. Every
-// call site knows its own reason; none of them may pass it as an afterthought (slotstats.ts).
+// `why` is mandatory: a session's lifetime is uninterpretable without it (slotstats.ts).
 async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   why: Exclude<SlotEnding, "unknown">): Promise<void> {
   await waitForSlotSpawn(streamOccupant.slot);
@@ -6214,41 +6105,27 @@ async function recoverInterruptedProgramFoundings(bootTmux: TmuxSlotObservations
   }
 }
 
-// These answer different questions. Fifteen seconds says how long after openSlot a pane may still
-// plausibly be booting on a loaded machine; three seconds says how long an interactive send may
-// WAIT once that fresh pane fails its first probe. The price is explicit and bounded: during the
-// freshness window a send to a dead agent may still wait up to SEND_BOOT_WAIT_MS and write one
-// send_boot_timeout row. That exposure ends after each slot opening instead of taxing every later
-// owner send forever. Timeout deliberately falls through to delivery: the owner may be typing into
-// a pane whose agent died, and that capability must not be turned into an alive gate.
+// These answer different questions: how long after openSlot a pane may still be booting (15 s),
+// and how long a send may WAIT once a fresh pane fails its first probe (3 s). Timeout falls
+// through to delivery on purpose — typing into a dead pane is an owner capability, not an alive
+// gate. Narrativ: server-narrativ-archiv.md#sendtext
 const SEND_BOOT_FRESH_MS = 15_000;
 const SEND_BOOT_WAIT_MS = 3000;
-// Unknown adapters get one short terminal/redraw beat, not Claude's estimate by accident. 250 ms
-// is deliberately low because no readiness measurement exists for them; Claude declares the only
-// measured anchor (2500 ms) on its adapter above.
+// Unknown adapters get one short redraw beat, not Claude's measured 2500 ms by accident.
 const DEFAULT_BOOT_SETTLE_MS = 250;
-// The dispatch tail's budget for a readiness-declaring harness to show its accept marker (codex
-// renders its header box in ~0.3–0.7 s, measured 2026-08-12 — 20 s is machine-load headroom, not
-// an estimate of the boot). Env-tunable for the suites only, same reason the scheduler ticks are:
-// a timeout counterprobe cannot poll for a non-event without owning the window's width.
+// The dispatch tail's budget for a readiness-declaring harness to show its accept marker; 20 s is
+// machine-load headroom (codex renders in ~0.3–0.7 s). Env-tunable for the suites only.
 const READY_WAIT_MS = Math.max(1000, Number(process.env.FLEET_READY_WAIT_MS ?? 20_000) | 0);
 
 // --- ACP-25: acceptance is OBSERVED, never echoed -------------------------------------------------
-// ACP-21 (docs/messungen/acp21-prompt-annahme-2026-08-22.md) reproduced on the real claude TUI that
-// the one Enter after a collapsed multi-line paste is intermittently lost (2/7): the text stays whole
-// in the composer and the receipt still said submitted:true. On 2026-08-22 the same family hit an
-// established Codex pane (event 461e14d65a57722aaa496564, the whole message left in the input).
 // Process-alive, header readiness and lastOutput-idle prove nothing about prompt acceptance; the
-// only rendered fact is whether the composer DRAINED. So sendText reads the pane, before and after:
-//   "observed"        the composer was on screen and empty after Enter — the TUI took the turn.
-//   "not-observed"    the composer is still holding text after the window: THROWN, so every caller
-//                     lands in the uncertain branch it already has. No replay and no second Enter —
-//                     both could mix owner text, start an empty turn, or fire twice.
-//   "unobservable"    no composer line could be located in the window (a dialog, a stand-in binary
-//                     that renders none): typed, not contradicted, and never claimed as observed.
+// only rendered fact is whether the composer DRAINED, so sendText reads the pane before and after:
+//   "observed"        composer on screen and empty after Enter — the TUI took the turn.
+//   "not-observed"    composer still holding text after the window: THROWN. No replay, no second Enter.
+//   "unobservable"    no composer line in the window: typed, not contradicted, never claimed.
 //   "not-applicable"  the adapter declares no composer, or submit was not requested.
-// Pre-paste the same read refuses an OCCUPIED composer — an owner draft that a paste would append
-// to and Enter would send as one turn. Thrown before anything is typed, so it is plainly retryable.
+// Pre-paste the same read refuses an OCCUPIED composer (an owner draft), before anything is typed.
+// The ACP-21 measurement behind this: server-narrativ-archiv.md#sendtext
 type Acceptance = "observed" | "not-observed" | "unobservable" | "not-applicable";
 class SendRefused extends Error { readonly refused = true; }
 // The result of the one conservative ACP-26 action. "cleared" is still an uncertain SUBMIT — it
@@ -6264,14 +6141,10 @@ class SendNotAccepted extends Error {
 // Env-tunable for the suites only (same reason as READY_WAIT_MS): a stand-in that renders no composer
 // must not pay the full window on every send. Floor 200 ms — below one redraw the answer is noise.
 const ACCEPT_WAIT_MS = Math.max(200, Number(process.env.FLEET_ACCEPT_WAIT_MS ?? 3000) | 0);
-// FLEET'S OWN EVENT PASTE IS NOT RECEIVER ACTIVITY. An event-transport send (rollbackOwnPayload)
-// pastes, waits for arrival, presses Enter, waits for acceptance and may erase its own text again —
-// every byte the pane paints meanwhile is a repaint Fleet caused, exactly like the resize jiggle
-// `quietUntil` already covers. Counted as output it refreshed the receiver's lastOutput once per
-// recovery paste and kept every other pending event for that pane behind the idle gate (the
-// starvation half of the 8ca8c38e incident). The window opens at the paste for the longest a send
-// can take and is cut back to a short tail the moment the send resolves, so a receiver that
-// genuinely starts working after an accepted paste is seen again within that tail.
+// FLEET'S OWN EVENT PASTE IS NOT RECEIVER ACTIVITY: every byte the pane paints during a
+// rollbackOwnPayload send is a repaint Fleet caused; counted as output it starved every other
+// pending event behind the idle gate (8ca8c38e). Opened at the paste for the longest a send can
+// take, cut back to a short tail when the send resolves.
 const OWN_PASTE_QUIET_MS = 150 + 3 * ACCEPT_WAIT_MS + 2000;
 const OWN_PASTE_QUIET_TAIL_MS = 500;
 interface BoundSlotPane {
@@ -6307,12 +6180,9 @@ async function readExactComposer(s: Slot, bound: BoundSlotPane): Promise<ExactCo
   }
 }
 
-// Rollback belongs only to a caller that marks the text as Fleet-owned. It is deliberately not the
-// default for /send or any owner draft. The fresh read is the authorization for exactly N BSpaces,
-// where N is Fleet's payload code-point count — never Ctrl-C, Ctrl-U, a broad clear, or another
-// Enter. Identity is checked before and after that read, and liveness must be observable. Any
-// appended/prepended/edited byte, collapsed-paste placeholder, missing composer or read failure
-// therefore leaves the pane untouched and returns an explicit uncertainty.
+// Rollback only for Fleet-owned text, never for /send or an owner draft. The fresh read authorizes
+// exactly N BSpaces (N = payload code points) — never Ctrl-C, Ctrl-U, a broad clear or another
+// Enter; any deviation from the exact payload leaves the pane untouched.
 async function rollbackOwnComposerPayload(
   s: Slot, bound: BoundSlotPane, payload: string,
 ): Promise<ComposerRollback> {
@@ -6333,9 +6203,8 @@ async function rollbackOwnComposerPayload(
   const after = await awaitComposer(s, bound, (r) => r === "");
   return sameBoundPane(s, bound) && after === "" ? "cleared" : "residue";
 }
-// Poll the composer until the whole payload is on screen, within the same window an acceptance
-// read gets. Returns the LAST answer, so "partial" means the paste was still a proper prefix of
-// Fleet's own text when the budget ran out — the one state that may block a submit.
+// Poll until the whole payload is on screen. Returns the LAST answer: "partial" means the paste
+// was still a proper prefix when the budget ran out — the one state that may block a submit.
 async function awaitArrival(s: Slot, bound: BoundSlotPane, payload: string): Promise<ComposerArrival> {
   const started = Date.now();
   let last: ComposerArrival = "differs";
@@ -6427,8 +6296,7 @@ async function sendText(s: Slot, text: string, submit: boolean,
   const comms = commsFor(s);
   const bootSettleMs = form.bootSettleMs ?? DEFAULT_BOOT_SETTLE_MS;
   // route through inputChain like raw keystrokes do — otherwise a compose-box send racing
-  // concurrent WS keystrokes (mobile key row, live typing, direct terminal typing) can
-  // interleave paste-buffer/send-keys with a concurrent send-keys, reordering pty input
+  // concurrent WS keystrokes can interleave with them and reorder pty input
   const task = s.inputChain.then(async () => {
     if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
       throw new Error("slot changed before send");
@@ -6438,26 +6306,21 @@ async function sendText(s: Slot, text: string, submit: boolean,
     const bound: BoundSlotPane = { occupant, paneId: target.paneId, composer, comms, bootSettleMs };
     const observes = !!bound.composer;
     if (observes) {
-      // one frame, before anything is typed: an occupied composer is an owner draft (the dim
-      // placeholder is stripped, so only typed content counts). Refusing here is the only honest
-      // answer — pasting would append to the draft and Enter would send both as one turn. Read
-      // BEFORE the boot block: a draft is a draft whatever the pane's age.
+      // an occupied composer is an owner draft: pasting would append to it and Enter would send
+      // both as one turn. Read BEFORE the boot block — a draft is a draft whatever the pane's age.
       const before = await readComposer(s, bound);
       if (!sameBoundPane(s, bound)) throw new Error("slot changed during composer probe");
       if (before) throw new SendRefused(`composer occupied (${before.length} chars) — nothing typed`);
     }
-    // Readiness is a process fact, not an output fact: tmux may repaint before the agent emits a
-    // byte, and an agent's startup banner may arrive before its TUI accepts input. `openedAt`
-    // answers the separate question "could this pane still be booting?" without misclassifying an
-    // established dead agent as a boot. Empty comms remains the intentional fast-path waiver.
+    // Readiness is a process fact, not an output fact. `openedAt` asks "could this pane still be
+    // booting?" without misclassifying an established dead agent. Empty comms = fast-path waiver.
     const mayStillBeBooting = Date.now() - occupant.openedAt < SEND_BOOT_FRESH_MS;
     if (mayStillBeBooting) {
       if (bound.comms.length > 0) {
         const started = Date.now();
         let state = await paneAgentAt(bound.paneId, bound.comms);
-        // The FIRST probe is the boot discriminator: already alive means established and takes the
-        // old send path with no settle. Settle belongs only to the transition this race is about —
-        // not alive at first, then alive within the bounded wait.
+        // The FIRST probe is the boot discriminator: already alive = established, no settle. Settle
+        // belongs only to the not-alive → alive transition within the bounded wait.
         const waitedForAlive = state !== "alive";
         while (waitedForAlive && state !== "alive"
           && Date.now() - started < SEND_BOOT_WAIT_MS) {
@@ -6473,8 +6336,7 @@ async function sendText(s: Slot, text: string, submit: boolean,
         if (becameAlive) {
           await Bun.sleep(bound.bootSettleMs);
         } else if (waitedForAlive && !becameAlive) {
-          // No prompt text in the trail. This row says exactly what could have happened: delivery
-          // proceeds (owner capability preserved), but the pane never became observably ready.
+          // No prompt text in the trail: delivery proceeds, the pane never became observably ready.
           audit("send_boot_timeout", s.id,
             `harness=${harnessName} budget=${SEND_BOOT_WAIT_MS}ms`);
         }
@@ -6501,17 +6363,13 @@ async function sendText(s: Slot, text: string, submit: boolean,
       if (!submit) return { acceptance: "not-applicable" as const };
       await Bun.sleep(150);
       if (!sameBoundPane(s, bound)) throw new Error("slot changed before submit");
-      // ENTER IS THE DESTRUCTIVE HALF OF A PASTE and it may not be pressed on a payload that is
-      // provably still arriving: the pre-2026-08-30 wait asked only for a NON-EMPTY composer, which
-      // a paste one byte in satisfies exactly as well as a finished one — and one measured event
-      // was submitted cut off at "… x-fleet-self-token from," mid-sentence. Only "partial" blocks
-      // here. "differs" (a collapsed-paste placeholder, a foreign rendering) leaves completeness
-      // UNPROVABLE, never disproven, so the send proceeds into the acceptance read it always had:
-      // no invented delivery, and never a second blind Enter.
+      // ENTER IS THE DESTRUCTIVE HALF OF A PASTE: only "partial" (payload provably still arriving)
+      // blocks it. "differs" leaves completeness UNPROVABLE, never disproven, so the send proceeds
+      // into the acceptance read — no invented delivery, never a second blind Enter.
+      // The cut-off event that forced this: server-narrativ-archiv.md#sendtext
       if (observes) {
         const arrival = await awaitArrival(s, bound, text);
-        // identity first, as every other probe here does: a slot that changed under the window
-        // must report THAT, not a verdict about a payload nobody can attribute any more.
+        // identity first: a slot that changed under the window must report THAT, not a verdict.
         if (!sameBoundPane(s, bound)) throw new Error("slot changed during arrival probe");
         if (arrival === "partial") throw new SendNotAccepted(
           `prompt not submitted — the composer still held only part of the ${[...text].length}-char `
@@ -19653,28 +19511,11 @@ async function handleIntake(req: Request): Promise<Response> {
 
 // --- startup: claim the directory, restore persisted state, adopt stray sessions, seed offsets ---
 
-// A second server over the same import.meta.dir is the corruption case data-audit-2026-07-27 item 9
-// names. STATE_FILE and every ledger derive from the DIRECTORY, not from FLEET_PORT/FLEET_SOCK, so
-// "I gave it its own port" isolates nothing: both processes write fleet.json, and CLAUDE.md records
-// a 2026-07-19 incident where an instance started in the main checkout adopted the live state and
-// respawned real sessions as duplicates.
-//
-// The failure mode to design AGAINST is the opposite one: a pidfile left behind by a killed server
-// must never wedge a legitimate start. Every deploy restarts srv with `tmux kill-session`, and the
-// watchdog respawns blind — a fleet that will not come back up is worse than the problem being
-// fixed. So the lock is deliberately weak in the safe direction and only ever refuses when it can
-// SEE a live server:
-//   pid dead                        → stale, taken over, logged
-//   pid alive but not a `server.ts` → the pid was recycled; taken over, logged. `ps -o command=`
-//                                     is what makes that decidable — without it a recycled pid
-//                                     locks the fleet out permanently
-//   pid alive AND a `server.ts`     → wait REFUSE_GRACE_MS (kill-session immediately followed by a
-//                                     respawn means the predecessor is often still exiting), then
-//                                     refuse and exit non-zero
-// Residual, stated rather than hidden: two servers cold-starting on the SAME stale file can both
-// take it over. The read-back below makes the loser stand down in the common interleaving, but
-// O_EXCL cannot exclude against a file that is being removed. Nothing in Fleet starts two servers
-// in one directory (the watchdog is a single loop; each e2e wrapper uses its own $$ scratch dir).
+// A second server over the same import.meta.dir corrupts fleet.json: STATE_FILE and every ledger
+// follow the DIRECTORY, not FLEET_PORT/FLEET_SOCK. The lock is deliberately weak in the safe
+// direction — a stale pidfile must never wedge a watchdog respawn — and refuses only when it can
+// SEE a live `server.ts` (`ps -o command=` makes a recycled pid decidable). Design table, residual
+// cold-start race and the 2026-07-19 incident: server-narrativ-archiv.md#claiminstancelock
 function pidIsLiveFleetServer(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
   const p = Bun.spawnSync(["ps", "-p", String(pid), "-o", "command="]);
@@ -19714,9 +19555,8 @@ async function claimInstanceLock(): Promise<void> {
   }
 }
 await claimInstanceLock();
-// A SIGKILL can strand the unique temp between open and rename. Once this process owns the
-// directory lock, no live peer can still be writing one, so stale credential-bearing temps are
-// neither recovery input nor safe to leave indefinitely.
+// A SIGKILL can strand the unique temp between open and rename; with the directory lock held no
+// live peer can be writing one, and a credential-bearing temp must not be left lying around.
 for (const name of readdirSync(import.meta.dir)) {
   if (name !== "fleet.json.tmp" && !/^fleet\.json\.\d+\.\d+\.tmp$/.test(name)) continue;
   unlinkSync(`${import.meta.dir}/${name}`);
@@ -19739,21 +19579,16 @@ if (existsSync(STATE_FILE)) {
       stewardToken = (persisted as { stewardToken: string }).stewardToken;
     if (typeof (persisted as { helperToken?: unknown }).helperToken === "string")
       helperToken = (persisted as { helperToken: string }).helperToken;
-    // A CLAIM MUST SURVIVE A RESTART, and this is the load-bearing half of the whole rail. The
-    // deploy ritual here is land-then-`kill-session -t srv`, ~10× a day: a claim that lived only in
-    // memory would be erased by the most routine thing this machine does, the local drain would
-    // pick the tree up at boot, and a helper that is still running the suite would report into a
-    // fleet that had already audited it — a duplicate run, which is the one thing the owner named.
-    // An EXPIRED row restored here is harmless: helperClaimOf reads it as absent and the sweep books
-    // it at the next tick.
+    // A CLAIM MUST SURVIVE A RESTART (the deploy ritual restarts srv ~10×/day): a helper still
+    // running the suite would otherwise report into a fleet that had already audited the tree —
+    // a duplicate run. An EXPIRED row is harmless (helperClaimOf reads it as absent).
     const persistedClaims = (persisted as { helperClaims?: unknown }).helperClaims;
     if (persistedClaims && typeof persistedClaims === "object")
       for (const [repo, c] of Object.entries(persistedClaims as Record<string, HelperClaim>))
         if (c && typeof c.id === "string" && typeof c.expiresAt === "number" && Array.isArray(c.covers))
           helperClaims.set(repo, c);
-    // An offer restored here may be stale in three ways, and all three are handled by the ordinary
-    // sweep rather than by a filter: an EXPIRED claim reads as absent (laneSuiteClaimOf), a lane
-    // whose slot did not come back is reaped, and a settled row is evicted past LANE_SUITE_KEEP.
+    // A stale restored offer is handled by the ordinary sweep, not filtered here (laneSuiteClaimOf,
+    // the reap of a lane whose slot did not come back, LANE_SUITE_KEEP eviction).
     if (Array.isArray((persisted as { laneSuiteJobs?: unknown }).laneSuiteJobs))
       for (const j of (persisted as { laneSuiteJobs: LaneSuiteJob[] }).laneSuiteJobs)
         if (j && typeof j.id === "string" && typeof j.slot === "number" && typeof j.slotOpenedAt === "number"
@@ -19761,10 +19596,8 @@ if (existsSync(STATE_FILE)) {
     if (Array.isArray((persisted as { helperLapses?: unknown }).helperLapses))
       helperLapses = ((persisted as { helperLapses: HelperLapse[] }).helperLapses)
         .filter((l) => l && typeof l.id === "string" && typeof l.expiredAt === "number").slice(0, HELPER_LAPSE_KEEP);
-    // A row written before stage A has none of the four new fields and is restored unchanged —
-    // they are all optional. The three foreign ones are re-validated rather than trusted: this file
-    // is on disk, and a mode that is not in the closed set must not enter the map through the back
-    // door just because it once got past a different version of the route.
+    // the optional fields are re-validated rather than trusted: this file is on disk, and a mode
+    // outside the closed set must not enter the map through the back door.
     if (Array.isArray((persisted as { helperDevices?: unknown }).helperDevices))
       for (const d of (persisted as { helperDevices: HelperDevice[] }).helperDevices)
         if (d && typeof d.id === "string" && typeof d.name === "string")
@@ -19783,15 +19616,12 @@ if (existsSync(STATE_FILE)) {
         && typeof (x as Auto).id === "string" && typeof (x as Auto).slot === "number"
         && typeof (x as Auto).text === "string" && typeof (x as Auto).nextAt === "number"
         && typeof (x as Auto).runsLeft === "number" && typeof (x as Auto).enabled === "boolean");
-    // an armed watch MUST survive a restart — the deploy ritual is `kill-session -t srv` ~10×/day
-    // (see STALLED_IDLE_MS's note), and a subscription that died with the process would be a
-    // promise broken by the most routine thing this machine does.
+    // an armed watch MUST survive a restart — the deploy ritual restarts srv ~10×/day.
     if (Array.isArray((persisted as { watches?: unknown }).watches))
       watches = ((persisted as { watches: unknown[] }).watches)
         .map(watchFrom).filter((w): w is Watch => w !== null);
-    // Legacy state has no `events` member and therefore loads as an empty event trail. In
-    // particular, an old spent Watch whose lastResult says "sent" is not upgraded into a
-    // delivery claim: Fleet did not observe the typed event, delivery or acknowledgement.
+    // Legacy state has no `events` member and loads as an empty trail; an old spent Watch's "sent"
+    // lastResult is never upgraded into a delivery claim Fleet did not observe.
     if (Array.isArray((persisted as { events?: unknown }).events))
       fleetEvents = ((persisted as { events: unknown[] }).events)
         .map(fleetEventFrom).filter((e): e is FleetEvent => e !== null);
@@ -19847,16 +19677,13 @@ if (existsSync(STATE_FILE)) {
         && typeof (x as Task).id === "string" && typeof (x as Task).text === "string"
         && ["owner", "intake", "steward", "main"].includes((x as Task).source)
         && ["pending", "queued", "sent", "done", "archived"].includes((x as Task).status))
-        // The 2026-08-10 kind migration is deliberately a load normalisation: legacy lane/note
-        // rows become auftrag/notiz, already-migrated rows remain byte-stable on every reload,
-        // and malformed/pre-field rows retain the old source-based safe default. The spread keeps
-        // every unrelated field intact.
+        // kind migration as load normalisation: legacy lane/note rows become auftrag/notiz,
+        // migrated rows stay byte-stable on reload, malformed rows keep the source-based default.
         .map((t) => ({ ...t,
           kind: loadTaskKind((t as { kind?: unknown }).kind, t.source),
           repo: typeof t.repo === "string" ? t.repo : null,
-          // the persisted agent choice comes back through the slot loader's discipline
-          // (loadTaskSpawn): registered harness only, model/effort re-judged against it,
-          // malformed degrades field-wise to null and all-null to ABSENT — never to a pass.
+          // the persisted agent choice comes back through loadTaskSpawn: registered harness only,
+          // malformed degrades to null/ABSENT — never to a pass.
           spawn: loadTaskSpawn((t as { spawn?: unknown }).spawn),
           // Stable request provenance is captured only while a task is alive. A pre-field row
           // stays absent on load — assigning its own id here would be a backfill, not observation.
@@ -19864,24 +19691,16 @@ if (existsSync(STATE_FILE)) {
           // Program membership is owner-authored provenance. Preserve a valid persisted string,
           // but never infer one from the Program registry or strip one because that registry moved.
           programId: typeof t.programId === "string" && t.programId ? t.programId : undefined,
-          // rows released before this field existed stay ABSENT, and a malformed value degrades to
-          // absent too — never to "owner". The whole point of the field is that a released row can
-          // be told apart from one nobody recorded; a default would erase exactly that distinction
-          // on the 89 rows already on disk, and a hand-edit must not be able to mint either verdict.
+          // pre-field and malformed rows stay ABSENT — never "owner": the field exists so a released
+          // row can be told apart from one nobody recorded, and a hand-edit must not mint either.
           releasedBy: t.releasedBy === "owner" || t.releasedBy === "machine" ? t.releasedBy : undefined,
-          // the declared file surface degrades to ABSENT, never to an empty list: this feeds a
-          // collision check, and "[]" there would read as "touches nothing" — a claim a malformed
-          // state file must not be able to make on a row's behalf. Pre-origin rows keep the field's
-          // old refine-confirm meaning. A persisted `derived` value is dropped and recomputed from
-          // prose instead of being promoted to the stronger source on reload.
+          // the file surface degrades to ABSENT, never to []: "[]" reads as "touches nothing" in the
+          // collision check. A persisted `derived` value is recomputed, never promoted to "confirmed".
           files: t.filesOrigin === "derived" ? undefined : normFileList(t.files),
           filesOrigin: t.filesOrigin === "derived" || !normFileList(t.files) ? undefined : "confirmed",
           cluster: undefined, // always projected from the current repo index; never trusted off disk
-          // a hand-edited state file must not smuggle a "ready" verdict the sweep never wrote —
-          // anything malformed degrades to "not yet analysed", never to a pass. The predecessor
-          // field (`eval`, verdicts "auto"/"review") is deliberately NOT migrated: its criteria
-          // were judged against the raw draft under a different contract, and re-deriving costs
-          // one sweep. Dropping it is how the rewrite avoids inheriting a claim it cannot honour.
+          // malformed degrades to "not yet analysed", never to a "ready" pass. The predecessor
+          // `eval` field is deliberately NOT migrated — its criteria were judged under a different contract.
           brief: t.brief && typeof t.brief.text === "string" && t.brief.text
             ? { text: t.brief.text.slice(0, MAX_TASK_TEXT), at: Number(t.brief.at) || 0,
               model: typeof t.brief.model === "string" ? t.brief.model : "", edited: t.brief.edited === true }
@@ -19896,8 +19715,7 @@ if (existsSync(STATE_FILE)) {
               at: Number(t.analysis.at) || 0, model: typeof t.analysis.model === "string" ? t.analysis.model : "",
               head: typeof t.analysis.head === "string" ? t.analysis.head : null,
               briefAt: Number(t.analysis.briefAt) || null, attempts: Number(t.analysis.attempts) || 0,
-              // the failure record degrades to absent, like every other malformed field here. It
-              // only ever ADDS a warning to a row, so a dropped one costs a label, never a pass.
+              // the failure record only ever ADDS a warning, so a dropped one costs a label, never a pass.
               ...(t.analysis.retry && typeof t.analysis.retry.reason === "string"
                 ? { retry: { at: Number(t.analysis.retry.at) || 0, reason: t.analysis.retry.reason.slice(0, 2000) } } : {}) }
             : undefined,
@@ -19910,14 +19728,10 @@ if (existsSync(STATE_FILE)) {
           // a hand-edited ref that no longer parses as a slug is dropped, not repaired — dedup
           // against a mangled key would silently stop matching the pulse's next filing anyway
           ref: typeof t.ref === "string" && STEWARD_REF_RE.test(t.ref) ? t.ref : undefined,
-          // a malformed proposal degrades to "none proposed": confirming one mints new task rows,
-          // so the same rule as the criterion applies — the state file must not be able to smuggle
-          // in a shape the worker never produced
+          // a malformed proposal degrades to "none proposed": confirming one mints new task rows
           refine: normRefine(t.refine),
-          // comments carry no authority — they are read by people, never executed — so a malformed
-          // entry is simply dropped rather than degraded to something. Capped on the way back IN
-          // for the same reason `mission` is: the state file is on disk and a hand-edit must not
-          // widen a field past what the route would have accepted.
+          // comments carry no authority, so a malformed entry is dropped. Capped on the way back
+          // IN: a hand-edit must not widen a field past what the route would have accepted.
           comments: Array.isArray(t.comments)
             ? t.comments.filter((c): c is TaskComment => typeof c === "object" && c !== null
               && typeof c.id === "string" && typeof c.text === "string" && !!c.text)
@@ -19925,9 +19739,8 @@ if (existsSync(STATE_FILE)) {
               .slice(-MAX_COMMENTS_PER_TASK)
             : undefined }));
       tasks = capTasks(tasks);
-    // Programs are a durable owner bracket, but old state has no such member. Absence therefore
-    // stays the initialized [], with no provenance inferred from slots or tasks. Valid rows are
-    // reconstructed from their declared fields so extra hand-written keys are never persisted.
+    // absent Programs stay []; no provenance is inferred from slots or tasks, and rows are rebuilt
+    // from declared fields so hand-written keys are never persisted.
     if (Array.isArray((persisted as { programs?: unknown }).programs)) {
       const loaded: Program[] = [];
       for (const raw of (persisted as { programs: unknown[] }).programs) {
@@ -20024,10 +19837,8 @@ if (existsSync(STATE_FILE)) {
       }
       programs = capPrograms(loaded);
     }
-    // The Supervisor binding gets the same tolerance every other state member gets: absent OR
-    // malformed loads as null, never as a half-binding. A partial row would name a slot without a
-    // session identity, and every consumer joins on slot+openedAt — so half of it is not a weaker
-    // fact, it is a different one.
+    // The Supervisor binding: absent OR malformed loads as null, never as a half-binding — every
+    // consumer joins on slot+openedAt, so half of it is a different fact, not a weaker one.
     const sv = (persisted as { supervisor?: unknown }).supervisor;
     if (sv && typeof sv === "object" && !Array.isArray(sv)) {
       const b = sv as Record<string, unknown>;
@@ -20062,19 +19873,15 @@ if (existsSync(STATE_FILE)) {
           && (psr as { at: number }).at > 0 && (psr as { cwd?: unknown }).cwd === s.cwd
           && (psr as { token?: unknown }).token === s.selfToken)
           s.successionRetirement = psr as SuccessionRetirement;
-        // the harness comes back BEFORE the model, because it is what the model is judged by:
-        // restoring them the other way round would validate a Pi slot's `provider/id` against
-        // claude's charset and silently drop it, leaving the pane to respawn with no model.
-        // Only a REGISTERED id survives a reload — a hand-edited state file must not be able to
-        // name a harness the server has no adapter for (harnessOf would fall back to claude and
-        // the slot would quietly respawn as a different agent than the row claims).
+        // the harness comes back BEFORE the model, because the model is judged by it (a Pi
+        // `provider/id` fails claude's charset). Only a REGISTERED id survives a reload — harnessOf
+        // would otherwise fall back to claude and respawn a different agent than the row claims.
         const ph = (v as { harness?: unknown }).harness;
         if (typeof ph === "string" && HARNESSES.some((x) => x.id === ph && x !== CLAUDE_HARNESS)) s.harness = ph;
         const hOf = harnessOf(s.harness);
         if (hOf.id === "codex") {
-          // A discovered id is the only Codex value that may ever reach a shell line. Old or
-          // hand-edited state is data, not authority: malformed UUIDs are discarded here and
-          // again refused by the resume formula.
+          // A discovered id is the only Codex value that may ever reach a shell line; malformed
+          // UUIDs are discarded here and again refused by the resume formula.
           if (s.sessionId !== null && !CODEX_UUID_RE.test(s.sessionId)) s.sessionId = null;
           const psa = (v as { codexPaneSpawnedAt?: unknown }).codexPaneSpawnedAt;
           s.codexPaneSpawnedAt = typeof psa === "number" && Number.isFinite(psa) && psa > 0 ? psa : null;
@@ -20103,18 +19910,14 @@ if (existsSync(STATE_FILE)) {
         if (typeof poi === "string" && poi) s.originId = poi;
         const ppi = (v as { programId?: unknown }).programId;
         if (typeof ppi === "string" && ppi) s.programId = ppi;
-        // ...and the box, judged by the harness AND the charset on the way back in, for the reason
-        // the model above is: the state file is on disk, and a hand-edit must not be able to put a
-        // value into a tmux line that a request could never have put there. A rejected value stays
-        // absent, which is the default box — never a half-restored one.
+        // ...and the box, judged by the harness AND the charset: a hand-edit must not put a value
+        // into a tmux line that a request could never have put there. Rejected = absent, never half.
         const pc = (v as { container?: unknown }).container;
         if (typeof pc === "string" && hOf.supports.container && CONTAINER_NAME_RE.test(pc)) s.container = pc;
         const px = (v as { containerContext?: unknown }).containerContext;
         if (typeof px === "string" && hOf.supports.container && CONTAINER_CONTEXT_RE.test(px)) s.containerContext = px;
-        // the release survives a restart with the lane it started — a deploy in the middle of a
-        // lane's life must not turn its outcome row into "cannot say". Only the two recognised
-        // values come back, same stance as `awaiting` above: a hand-edited state file must not be
-        // able to book a lane as machine-released after the fact.
+        // the release survives a restart with its lane (else a deploy turns the outcome row into
+        // "cannot say"); only the two recognised values come back, same stance as `awaiting`.
         const prl = (v as { releasedBy?: unknown }).releasedBy;
         if (prl === "owner" || prl === "machine") s.releasedBy = prl;
         const wt = (v as { worktree?: unknown }).worktree;
@@ -20128,17 +19931,11 @@ if (existsSync(STATE_FILE)) {
         }
       }
     }
-    // THE FOURTH LEARN SITE, and the only one that heals a binding that is ALREADY stuck. The
-    // three live ones fire the moment a pane discovers its id; a fleet whose pane learned before
-    // this code existed has that moment behind it forever, and its `null` was persisted. Here both
-    // halves are in memory for the first time — programs load above, slots load in the loop just
-    // closed (including the codex normalization that can put `sessionId` BACK to null, which is why
-    // this runs after the loop and not inside it). Same helper, same three refusals, so a boot can
-    // no more overwrite a recorded identity than a live learn can. No save: the value is now what
-    // every ordinary saveState will write, and a boot that dies before one simply does this again.
+    // THE FOURTH LEARN SITE: heals a MAIN sessionId that was persisted as null. Runs AFTER the slot
+    // loop, not inside it — the codex normalization above can put `sessionId` BACK to null. Same
+    // helper, same three refusals; no save needed. Narrativ: server-narrativ-archiv.md#boot-state-restore
     for (const s of slots) backfillProgramMainSessionId(s);
-    // dispatcher toggle survives deploys — queued tasks persist, so the thing that
-    // drains them must too (the silent off-after-restart was the cols/rows bug's twin)
+    // dispatcher toggle survives deploys — queued tasks persist, so the thing that drains them must too
     const prb = (persisted as { repoBases?: unknown }).repoBases;
     if (typeof prb === "object" && prb !== null && !Array.isArray(prb))
       for (const [k, v] of Object.entries(prb as Record<string, unknown>))
@@ -20154,13 +19951,9 @@ if (existsSync(STATE_FILE)) {
         mainDirectPreflights[id] = v as MainDirectPreflight;
       }
     }
-    // Per-repo worker overrides, RE-VALIDATED on the way in rather than trusted. The route
-    // already checks, but this file is hand-editable and the value gets SPAWNED, so the same
-    // stance as `awaiting`/`harness` above applies with more at stake: a state file must not be
-    // able to name a worker nothing reads, nor a path that has since been deleted or lost its
-    // +x. A rejected entry is LOUD and then inert — the repo falls back to the env default,
-    // which is the previous behavior, but the owner configured this expecting a different model
-    // and a silent revert is exactly the surprise the log line exists to prevent.
+    // Per-repo worker overrides, RE-VALIDATED on the way in: the value gets SPAWNED, so a state
+    // file must not name a worker nothing reads or a path that lost its +x. A rejected entry is
+    // LOUD and then inert — the owner configured a different model and must not get a silent revert.
     const prw = (persisted as { repoWorkers?: unknown }).repoWorkers;
     if (typeof prw === "object" && prw !== null && !Array.isArray(prw))
       for (const [repo, v] of Object.entries(prw as Record<string, unknown>)) {
@@ -20204,9 +19997,8 @@ if (existsSync(STATE_FILE)) {
           mergeLast.set(s.id, identityComplete ? row : legacy as MergeLast);
         }
       }
-    // ...and the branch-keyed park (see parkMergeVerdict): verdicts whose slot let go before a
-    // reattach. Only the reviewable shapes are ever parked, and the key must equal the row's own
-    // branch — anything else is a torn write and is dropped.
+    // ...and the branch-keyed park (parkMergeVerdict): only reviewable shapes, and the key must
+    // equal the row's own branch — anything else is a torn write and is dropped.
     const pp = (persisted as { mergeParked?: unknown }).mergeParked;
     if (typeof pp === "object" && pp !== null && !Array.isArray(pp))
       for (const [b, v] of Object.entries(pp as Record<string, unknown>))
@@ -20226,13 +20018,9 @@ if (existsSync(STATE_FILE)) {
         if (typeof k === "string" && typeof v === "object" && v !== null
           && typeof (v as { note?: unknown }).note === "string" && typeof (v as { at?: unknown }).at === "number")
           shelved[k] = { at: (v as { at: number }).at, note: (v as { note: string }).note };
-    // undoable lands survive deploys — the reversibility pointer must outlast a restart, or a
-    // deploy right after a land would silently strip the owner's one chance to undo it
-    // MIGRATION, and it is load-bearing rather than cosmetic: the pre-stack shape was ONE record
-    // per repo (`undoLands: { "<repo>": {…} }`), and the deploy ritual restarts this server ~10×
-    // a day. A boot that only understood the array would read every land recorded before the
-    // upgrade as "no land", silently deleting the owner's undo at exactly the moment the upgrade
-    // was meant to widen it. A bare object is therefore read as a one-element stack.
+    // undoable lands survive deploys. MIGRATION, load-bearing: the pre-stack shape was ONE record per
+    // repo, and a boot that only understood the array would read every pre-upgrade land as "no
+    // land" — so a bare object is read as a one-element stack.
     const pul = (persisted as { undoLands?: unknown }).undoLands;
     const landRecordFrom = (k: string, v: unknown): LandRecord | null =>
       typeof v === "object" && v !== null
@@ -20268,20 +20056,15 @@ if (existsSync(STATE_FILE)) {
           landPending.set(k, { repo: k, main: (v as LandPending).main, branch: (v as LandPending).branch,
             mainBefore: (v as LandPending).mainBefore, laneTip: (v as LandPending).laneTip,
             at: (v as LandPending).at,
-            // the marker's provenance rides back as it was written, EXCEPT the actor, which is
-            // JUDGED: a marker from a binary that predates the field would otherwise finish its
+            // the actor is JUDGED on the way back: a pre-field marker would otherwise finish its
             // land at boot with an `undefined` where the note promises an attribution.
             prov: { ...(v as LandPending).prov,
               actor: loadLandActor(((v as LandPending).prov as Partial<LandProvenance>).actor) } });
   } catch {
-    // Keep the evidence — but under its OWN name. `.bak` is now written by saveState from the
-    // last file that PARSED, so it is the recovery source; copying the damaged file over it here
-    // (as this did) destroyed the only good copy at exactly the moment it was needed. Empty state
-    // means the token below is minted fresh: every bookmarked URL, share link and lane selfToken
-    // dies at once, so the log line has to name the file that gets them back.
-    // MOVE, not copy: the next saveState copies whatever is at STATE_FILE into .bak, so leaving the
-    // damaged file in place for even one save would overwrite the good .bak with it — the very
-    // regression being fixed. Gone from STATE_FILE, that copy fails harmlessly and .bak survives.
+    // MOVE the damaged file under its OWN name, never copy it over .bak: saveState writes .bak from
+    // the last file that PARSED, so one save with the damaged file still at STATE_FILE would destroy
+    // the only good copy. The log line names the recovery file because a fresh token kills every
+    // bookmark, share link and lane selfToken at once. Narrativ: server-narrativ-archiv.md#boot-state-restore
     try { renameSync(STATE_FILE, `${STATE_FILE}.corrupt`); } catch { /* fleet.json gone entirely */ }
     console.log(`fleet.json unreadable — starting with empty state and a NEW owner token.`
       + ` The damaged file is kept as ${STATE_FILE}.corrupt; the last state that parsed is ${STATE_FILE}.bak —`
@@ -20292,9 +20075,8 @@ if (startupStateRefusal !== null) {
   console.log(`REFUSING TO START: ${startupStateRefusal}. The safety marker was left on disk for owner inspection.`);
   throw new Error(startupStateRefusal);
 }
-// a deploy that killed srv between "main moved" and "the land is recorded" owes a note, an undo
-// record and a tier-2 audit for a commit already on the integration branch. Settle that before
-// anything else can move main again.
+// a deploy that killed srv between "main moved" and "the land is recorded" owes note, undo record
+// and tier-2 audit. Settle that before anything else can move main again.
 await finishLandsInFlight();
 // a deploy that killed srv mid-land can strand a lane in rebase/merge state. We do NOT
 // auto-abort — the session's OWN in-progress rebase is indistinguishable from a strayed Fleet
@@ -20315,10 +20097,8 @@ if (!helperToken) helperToken = randomBytes(16).toString("hex"); // same width, 
 const bootTmux = await observeTmuxSlots();
 if (bootTmux.known) {
   for (const [name, root] of bootTmux.sessions) {
-    // background-claude sessions (summarizer/enhancer/merge agent) are throwaways whose
-    // cleanup lives in a process-memory finally — a deploy mid-run skips it and leaves a
-    // write-capable agent running invisibly (it matches no slot regex, shows nowhere).
-    // Boot is the safe reaping point: any survivor here is by definition orphaned.
+    // background-agent sessions clean up in a process-memory finally, which a deploy mid-run skips
+    // — a write-capable agent then runs invisibly. Any survivor at boot is by definition orphaned.
     if (name.startsWith("sum-")) {
       void tmux("kill-session", "-t", sessTarget(name));
       console.log(`reaped orphaned background-agent session '${name}' (deploy interrupted its cleanup)`);
@@ -20339,10 +20119,8 @@ await recoverInterruptedProgramFoundings(bootTmux);
 // a share whose session didn't survive the downtime must not come back — same for schedules
 shares = shares.filter((sh) => slotFrom(sh.slot)?.cwd);
 autos = autos.filter((a) => slotFrom(a.slot)?.cwd);
-// same rule for a watch, on BOTH of its slots: a receiver that didn't come back has nobody to tell,
-// and a target that didn't come back has no news to give. The identity re-check (cwd + branch) is
-// the one that matters across a restart — a slot id that came back holding a DIFFERENT lane must
-// not inherit the subscription.
+// same rule for a watch, on BOTH of its slots. The identity re-check (cwd + branch) is the one that
+// matters: a slot id that came back holding a DIFFERENT lane must not inherit the subscription.
 watches = watches.filter((w) => {
   const s = slotFrom(w.slot);
   if (!s?.cwd) return false;
@@ -20351,20 +20129,14 @@ watches = watches.filter((w) => {
   if (watchKind(w) === "audit" || watchKind(w) === "deploy" || watchKind(w) === "transition") return true;
   if (!("target" in w)) return false;
   const t = slotFrom(w.target);
-  // Preserve the legacy lane-watch boot rule exactly. Merge subscriptions stay visible when the
-  // target vanished: the land site should already have minted their durable event, and if it did
-  // not, the first watch tick disarms the row loudly instead of deleting the evidence.
+  // Merge subscriptions stay when the target vanished: the land site minted their durable event,
+  // and if not, the first watch tick disarms the row loudly instead of deleting the evidence.
   return watchKind(w) === "merge" || (!!t?.cwd && t.cwd === w.targetCwd && t.worktree?.branch === w.targetBranch);
 });
 // An event does not disappear merely because its transport endpoint did. Bind it to the exact
-// restored occupant; an absent/recycled receiver is a durable terminal fact visible to the owner.
-//
-// AN OWNER ROW HAS NO ENDPOINT TO LOSE, and that is why it is skipped rather than tested here.
-// `fleetEventReceiver` answers null for it BY CONSTRUCTION — there is no session, no generation,
-// nothing that could have been replaced — so running the test would read "the receiver is gone"
-// off a row that never had one and quietly bury the owner's unread report at the next restart.
-// Measured: B4 survival went `inbox` -> `receiver-gone` across exactly this loop, which then
-// zeroed ownerInboxDebts() and let the ceiling accept a 26th row.
+// restored occupant. AN OWNER ROW HAS NO ENDPOINT TO LOSE and is skipped, not tested:
+// fleetEventReceiver answers null for it BY CONSTRUCTION, so the test would bury the owner's unread
+// report. The skip stays BEFORE the call (pinned, e2e/pins.ts B4). Narrativ: server-narrativ-archiv.md#boot-tmux-adoption-and-reconciliation
 for (const e of fleetEvents) {
   if (FLEET_EVENT_TERMINAL.includes(e.status)) continue;
   if (e.receiverSlot === null || fleetEventReceiver(e)) continue;
@@ -20410,16 +20182,9 @@ for (const s of slots) {
   if (!sameSlotStreamOccupant(s, streamOccupant)) continue;
   const file = occupantStreamPath(streamOccupant);
   s.offset = existsSync(file) ? (await stat(file)).size : 0;
-  // ...and the same restart must not leave the pane looking IDLE SINCE THE EPOCH. `offset` is
-  // stamped so that everything written before now is not replayed as new output — but `lastOutput`
-  // stayed 0, so `now - s.lastOutput` read as ~1.79e12 ms for every restored lane until its next
-  // byte. Two consumers ACT on that number, and both were therefore disarmed by every deploy:
-  // canDeliver's busy gate (the one guard that keeps an auto, the merge author wake and a steward
-  // nudge from pasting into a WORKING pane) and the idle clause behind auto-③ (lane-signals.ts).
-  // A pane blocked on a long tool call is exactly the case that stays quiet AND must not be typed
-  // into. Boot time is the honest reading — this process has observed nothing yet, so idle is
-  // counted from when it started looking, the same "unknown is never permission" rule the pulse
-  // text already follows for lastOutput 0 (see pulseLastOutput's idle line).
+  // ...and the restart must not leave the pane looking IDLE SINCE THE EPOCH: lastOutput 0 disarmed
+  // canDeliver's busy gate and auto-③'s idle clause on every deploy. Boot time is the honest
+  // reading — unknown is never permission (pulseLastOutput). Narrativ: server-narrativ-archiv.md#boot-slot-rehydration
   s.lastOutput = Date.now();
   if (existsSync(historyPath(s.id))) {
     try {
@@ -20435,14 +20200,9 @@ for (const s of slots) {
   if (s.successionRetirement) scheduleSuccessionRetirement(s, s.successionRetirement);
 }
 
-// rehydrate the newest post-land audit row (tier 2). A red audit is typically followed within
-// minutes by the deploy that restarts srv — an alarm a restart erases is not an alarm. The TRAIL
-// is the durable record either way; this only restores what the board polls.
-// NOTE (2026-07-27): this is the one remaining single-generation ledger read. It belongs on
-// readEventLog like every other — a boot landing just after a rotation finds the live file empty
-// and shows the board no alarm at all — but the lines it would rewrite sit inside the boot hunk
-// lane b5e6 owns and has not landed yet, so it is left alone deliberately rather than merged
-// blind. Bounded blast: the TRAIL is unaffected, only what the board rehydrates.
+// rehydrate the newest tier-2 row for the board; the TRAIL is the durable record. Still a
+// single-generation read (a boot just after a rotation shows no alarm) — belongs on readEventLog,
+// history in server-narrativ-archiv.md#boot-audit-rehydration.
 if (existsSync(POSTLAND_AUDIT_FILE)) {
   try {
     const lines = (await Bun.file(POSTLAND_AUDIT_FILE).text()).split("\n").filter(Boolean);
@@ -20452,12 +20212,8 @@ if (existsSync(POSTLAND_AUDIT_FILE)) {
     console.log("post-land audit trail: last row unreadable — the board starts without it");
   }
 }
-// ...and seed the RUNTIME DISTRIBUTION from the same trail. Rotation-safe (readLedger reads both
-// generations), unlike the single-generation read above — this one has no half-landed hunk in its
-// way. Without it the first audit after every restart would show an elapsed clock with nothing to
-// read it against, which is the state this whole surface exists to end: srv is restarted by the
-// deploy ritual precisely when lands are frequent, so "just after a restart" is the common case,
-// not the rare one.
+// ...and seed the RUNTIME DISTRIBUTION from the same trail (rotation-safe: readLedger reads both
+// generations) — a restart right after a land is the common case, not the rare one.
 try {
   const { rows } = await readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE);
   for (const raw of rows) {
@@ -20468,16 +20224,10 @@ try {
   console.log(`post-land audit trail: runtime distribution not seeded (${e instanceof Error ? e.message : e})`
     + " — the board shows an elapsed clock with no comparison until three audits have run.");
 }
-// the one-shot migration that retires the reds nobody can ever answer (see backfillUnknowableAudits).
-// Fire-and-forget: it reads two ledgers and appends at most a handful of rows, and nothing at boot
-// waits on the result — an un-backfilled red is simply an un-adjudicated one.
+// fire-and-forget (backfillUnknowableAudits): nothing at boot waits on it.
 void backfillUnknowableAudits();
-// ...and resume the PENDING side of it. Everything still on the queue file is a land whose audit
-// never produced a row: queued behind a running suite, or in flight when the process died. Both
-// re-enter the drain here, against the CURRENT integration tip — which is not a compromise but the
-// coalescing rule already stated above: the suite measures a TREE, not a diff, so auditing the
-// newest tip subsumes every land folded into it, and `covers` still names them all. A restart is
-// just a longer fold-up.
+// ...and resume the PENDING side against the CURRENT integration tip: the suite measures a TREE,
+// so auditing the newest tip subsumes every land folded into it, and `covers` still names them all.
 if (existsSync(POSTLAND_AUDIT_QUEUE_FILE)) {
   try {
     const parsed: unknown = JSON.parse(await Bun.file(POSTLAND_AUDIT_QUEUE_FILE).text());
@@ -20494,10 +20244,8 @@ if (existsSync(POSTLAND_AUDIT_QUEUE_FILE)) {
     }
     const pending = resumed.reduce((n, [, q]) => n + q.covers.length, 0);
     if (pending && !POSTLAND_AUDIT_CMD) {
-      // UNCONFIGURED ≠ SKIPPED, the verify gate's three-valued stance: a server booted without a
-      // tier-2 command has not decided these lands are fine, it simply cannot measure them. So the
-      // file is left byte-for-byte alone (nothing above loaded it into `auditQueue`, and nothing
-      // can mutate it while the command is unset) — configure the command, restart, and it drains.
+      // UNCONFIGURED ≠ SKIPPED: the file is left byte-for-byte alone (nothing loaded it into
+      // `auditQueue`) — configure the command, restart, and it drains.
       console.log(`post-land audit queue: ${pending} pending land(s) across ${resumed.length} repo(s), but`
         + " FLEET_POSTLAND_AUDIT_CMD is unset — left on disk, unaudited (unconfigured is not skipped).");
     } else if (pending) {
@@ -20512,11 +20260,8 @@ if (existsSync(POSTLAND_AUDIT_QUEUE_FILE)) {
   }
 }
 
-// THE SCHEDULER TICKS, and the reason every one of them now names itself to logError: a tick that
-// throws has skipped its whole round — no auto fired, no task dispatched, no draft analysed — and
-// until now the `.catch(() => {})` here made that indistinguishable from a round with nothing to
-// do. These are the empty catches where silence hid a decision (see THE ERROR CHANNEL); the
-// `p.kill()` and pty-chain ones are left exactly as they are, on purpose.
+// THE SCHEDULER TICKS: every one names itself to logError, because a tick that throws has skipped
+// its whole round and an empty catch hid that. The `p.kill()` and pty-chain catches stay empty on purpose.
 setInterval(() => void poll(), 100);
 setInterval(() => void tickAutos().catch((e: unknown) => logError("tickAutos", e)), AUTOS_TICK_MS);
 // the event-triggered delivery next to the time-triggered one — same cadence, same choke-point
@@ -20527,15 +20272,12 @@ setInterval(() => void tickDispatch().catch((e: unknown) => logError("tickDispat
 // FLEET_ANALYSIS_MS=0 switches the analyst off entirely (same shape as FLEET_AUTO_REVIEW_MS) — a
 // harness without a FLEET_ANALYSIS_CMD stand-in MUST set it, or the suite spawns a real agent.
 if (ANALYSIS_ON) setInterval(() => void tickAnalysisSweep().catch((e: unknown) => logError("tickAnalysisSweep", e)), ANALYSIS_TICK_MS);
-// …and the brief compiler on its OWN cadence, off by default. Same stand-in warning as above and
-// it bites harder here, because this tick exists to run the enhancer: a harness without a
-// FLEET_ENHANCE_CMD stand-in MUST leave FLEET_BRIEF_MS at 0, or the suite spawns a real agent.
+// …and the brief compiler on its OWN cadence, off by default: a harness without a FLEET_ENHANCE_CMD
+// stand-in MUST leave FLEET_BRIEF_MS at 0, or the suite spawns a real agent.
 if (BRIEF_ON) setInterval(() => void tickBriefSweep().catch((e: unknown) => logError("tickBriefSweep", e)), BRIEF_TICK_MS);
 setInterval(() => void tickHarvest().catch((e: unknown) => logError("tickHarvest", e)), 5000);
-// the helper-claim lapse sweep. Not on the 100 ms poll: a claim's granularity is 45 minutes, and
-// the DECISION whether a claim is live is already made by the clock (helperClaimOf) — this tick only
-// books the lapse, frees the bundle and restarts the drain, so being a few seconds late costs
-// nothing that matters.
+// the helper-claim lapse sweep, not on the 100 ms poll: liveness is decided by the clock
+// (helperClaimOf); this tick only books the lapse, so seconds of lateness cost nothing.
 setInterval(() => {
   if (!expireHelperClaims()) return;
   void saveStateNow().catch((e: unknown) => logError("helperClaimSweep", e));

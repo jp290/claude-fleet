@@ -5949,6 +5949,116 @@ function qDispatchBody(act: "start" | "clarify", pick: QSpawnPick, rawAck: boole
 }
 // --- end TASK SPAWN CHOICE ---
 
+// --- TASK DETAIL HEAD: what a task row says about itself and what it offers NEXT, as a pure
+// plan. The head is the first thing in the detail pane, above every section, because the pane's
+// job is a decision and the decision was below the fold: measured 2026-09-01, the Actions of a
+// running row sat under the full request text and were unreachable without scrolling
+// (docs/messungen/2026-09-01-task-workbench-visual-baseline.md).
+//
+// EXACTLY ONE main action lives here. Everything else — the other acts, the Kind selector, the
+// spawn pickers — stays in Actions below, and ✕ delete lives in its own Danger zone, never beside
+// the one action. e2e/tasks.ts cuts this block out of the real source, transpiles it and runs it,
+// so the station and the one action per status are proven rather than read off a screenshot.
+// Keep it free of DOM and of every other symbol in this file. ---
+// The rail an ordinary auftrag walks, in order. `done` is its landed/done end.
+type QLifeStation = "pending" | "queued" | "sent" | "done";
+const Q_LIFE_STATIONS: readonly QLifeStation[] = ["pending", "queued", "sent", "done"];
+// Where the row stands. Two ends are NOT stations on that rail and are said as themselves:
+// `archived` (taken out of the rail) and `advisory` (a row that never assigns work at all). A
+// status this build has never heard of is `unknown` — the poll is a foreign surface, and an
+// unreadable status is not a pending row.
+type QLifeMark = QLifeStation | "archived" | "advisory" | "unknown";
+// `reached` = how many stations of the rail are behind or at the current one, so the bar marks the
+// past without a second rule. It is 0 for every mark that is not ON the rail — including
+// `archived`, whose earlier walk the poll does not carry: absence of the history is not a claim
+// that it never happened, so nothing is marked.
+interface QLifecycle { stations: readonly QLifeStation[]; current: QLifeMark; reached: number }
+// The one act offered in the head. `none` is a state, not a missing field: a closed row and a
+// `sent` row with no attachable lane both have nothing to offer, and each says why in its own
+// words rather than showing an empty slot.
+type QMainAct = "adopt" | "clarify" | "release" | "start" | "open-lane" | "none";
+interface QMainSlot { act: QMainAct; label: string | null; why: string; slot: number | null }
+interface QHeadRow { status: string; kind?: string; slot?: number; repo?: string; programId?: string;
+  analysisVerdict?: string; blockers?: readonly string[]; hasCriterion: boolean }
+// the lane join, reduced to what the head needs: `lane` carries the slot its ▸ open lane names.
+interface QHeadLane { kind: "lane" | "refused" | "none"; slot?: number }
+interface QHeadPlan { status: string; program: string; repo: string; life: QLifecycle; main: QMainSlot }
+
+// ADVISORY is every kind the dispatcher refuses, phrased as the negative — the same rule as
+// qAdvisory below, restated here because this block must stay standalone; e2e/tasks.ts holds the
+// two equal over the whole kind set, so a fifth kind cannot mean two different things.
+const qHeadAdvisory = (kind: string | undefined): boolean => kind !== undefined && kind !== "auftrag";
+const qShortRepo = (repo: string | undefined): string => {
+  if (!repo) return "repo unknown";
+  const parts = repo.replace(/\/+$/, "").split("/");
+  return parts[parts.length - 1] || "/";
+};
+// A bound program that the Program read cannot resolve is UNKNOWN, never "no program": the read
+// fails, a row is discarded, an id outlives its program — and every one of those would otherwise
+// render as the row belonging to nothing.
+const qHeadProgram = (programId: string | undefined, title: string | null): string =>
+  !programId ? "no program" : title ?? "program unknown";
+function qLifecycleOf(status: string, kind: string | undefined): QLifecycle {
+  const idx = Q_LIFE_STATIONS.indexOf(status as QLifeStation);
+  // archived first: an archived advisory row is out of the rail either way, and "archived" is the
+  // fact the owner acts on (restore), while advisory is what it was.
+  const current: QLifeMark = status === "archived" ? "archived"
+    : qHeadAdvisory(kind) ? "advisory"
+      : idx >= 0 ? Q_LIFE_STATIONS[idx] : "unknown";
+  return { stations: Q_LIFE_STATIONS, current, reached: idx >= 0 && current === Q_LIFE_STATIONS[idx] ? idx + 1 : 0 };
+}
+// THE ONE NEXT ACTION, by status. Each `act` names an act that already exists in the Actions
+// section and is wired to that same handler — this reorders the surface, it does not add a door.
+// `open-lane` is the exception and is not an API call at all: it focuses the pane the row is
+// already running in.
+function qMainActionOf(row: QHeadRow, lane: QHeadLane): QMainSlot {
+  const none = (why: string): QMainSlot => ({ act: "none", label: null, why, slot: null });
+  if (row.status === "done") return none("this row is closed — nothing here is waiting on you");
+  if (row.status === "archived") return none("archived — restore it in Actions below to work on it again");
+  if (qHeadAdvisory(row.kind)) {
+    // the one narrow door out of advisory: the compatibility alias for a pending notiz. Every
+    // other advisory row changes its Kind in Actions first; adopting is never a START.
+    return row.status === "pending" && row.kind === "notiz"
+      ? { act: "adopt", label: "→ adopt as a task", slot: null,
+        why: "an observation assigns no work — adopting turns it into a brief, which you then release" }
+      : none("an advisory row assigns no work — change its Kind in Actions below to enter the workflow");
+  }
+  if (row.status === "pending") {
+    // CLARIFY FIRST is the standing answer to a "no done-criterion" blocker, and only while no
+    // criterion exists yet: once one has been proposed, a second clarify lane would settle a
+    // question that is already on this pane, waiting for your confirmation.
+    if ((row.blockers ?? []).includes("criterion") && !row.hasCriterion)
+      return { act: "clarify", label: "▸ clarify first", slot: null,
+        why: "the analyst found no done-criterion — this lane settles it WITH you and waits; no code until you confirm" };
+    const over = row.analysisVerdict !== undefined && row.analysisVerdict !== "ready";
+    return { act: "release", label: over ? "release anyway ▸" : "release ▸", slot: null,
+      why: over ? "the analyst flagged this — releasing it is recorded as your override"
+        : "hands it to the dispatcher, which runs released tasks in order" };
+  }
+  if (row.status === "queued")
+    return { act: "start", label: "▸ start by hand", slot: null,
+      why: "released — the dispatcher takes released tasks in order; this starts it now, whether it is on or off" };
+  if (row.status === "sent") {
+    // a `sent` row whose pointer attaches nothing gets NO button: the alternative offers a slot
+    // that is empty, recycled or foreign. The refusal itself is spelled out under Evidence.
+    return lane.kind === "lane" && typeof lane.slot === "number"
+      ? { act: "open-lane", label: `▸ open lane — slot ${lane.slot}`, slot: lane.slot,
+        why: "this row is running in that pane — opening it closes the queue window" }
+      : none("no lane is attached to this row — Evidence below says why");
+  }
+  return none(`status ${row.status} is not one this build knows — nothing is offered on it`);
+}
+function qHeadPlan(row: QHeadRow, programTitle: string | null, lane: QHeadLane): QHeadPlan {
+  return {
+    status: `${row.status}${typeof row.slot === "number" ? ` · slot ${row.slot}` : ""}`,
+    program: qHeadProgram(row.programId, programTitle),
+    repo: qShortRepo(row.repo),
+    life: qLifecycleOf(row.status, row.kind),
+    main: qMainActionOf(row, lane),
+  };
+}
+// --- end TASK DETAIL HEAD ---
+
 // the owner's spawn pick per task row — harness/model/effort chosen for THIS row's start. Keyed by
 // task id and kept across the 2 s repaint like qRawAck: a pick begun on one row never rides into
 // the next, and a poll never resets it. Dropped when the window closes or the row starts.
@@ -7648,18 +7758,49 @@ function renderQueueDetail() {
   const brief = taskBriefFull.get(t.id);
   const crit = taskCriterionFull.get(t.id) ?? t.criterion;
   const ref = taskRefineFull.get(t.id);
-  shell.detail.appendChild(el("div", "rvhead", `${t.status}${t.slot ? ` · slot ${t.slot}` : ""}`));
-  // the lane this row is running in, or why none attaches — the same line the list draws. The
-  // refusal reason is spelled out in full (a `sent` row with nothing attached is the state the
-  // owner must be able to read); an attached lane keeps its facts in the title, so the row's
-  // Actions stay inside the first 1440×900 view (measured 2026-09-02: a visible paragraph here
-  // pushed `done` to the pane's bottom edge).
+  // --- DETAIL HEAD (paint): the plan from qHeadPlan, painted ABOVE every section — status,
+  // program, target repo, the lifecycle rail, and the ONE main action with the single line that
+  // says what it does. Nothing else may be appended between here and the first section: the whole
+  // point is that the next decision is readable without scrolling at 1440×900.
   const laneJoin = qLaneJoinOf(t.id);
-  const laneLine = qLaneLine(laneJoin);
-  if (laneLine) {
-    shell.detail.appendChild(laneLine);
-    if (laneJoin.kind === "refused") shell.detail.appendChild(el("div", "shellhint", laneJoin.why));
-  }
+  const head = qHeadPlan({
+    status: t.status, kind: t.kind, slot: t.slot, repo: t.repo, programId: t.programId,
+    analysisVerdict: t.analysis?.verdict, blockers: t.analysis?.blockers, hasCriterion: crit !== undefined,
+  }, programsList.find((x) => x.id === t.programId)?.title ?? null,
+  laneJoin.kind === "lane" ? { kind: "lane", slot: laneJoin.lane.slot } : { kind: laneJoin.kind });
+  shell.detail.appendChild(el("div", "rvhead qdhead-status", head.status));
+  const headFacts = el("div", "ocfacts qdhead-facts");
+  headFacts.appendChild(chip(head.program, "dim", t.programId
+    ? `this row is bound to program ${t.programId}`
+    : "this row belongs to no program — it is loose queue work"));
+  headFacts.appendChild(chip(head.repo, "dim", t.repo
+    ? `target repo: ${t.repo} — this task's lane spawns there`
+    : "this row names no target repo — a dispatch would fall back to the server's default"));
+  shell.detail.appendChild(headFacts);
+  // THE LIFECYCLE RAIL. Four stations plus, when the row is off them, the end it is in. Only
+  // facts from this poll: a station is `on`, an earlier one `past`, everything else plain — and an
+  // archived row marks NO station, because the poll does not carry the walk it once made.
+  const life = el("div", "qlife");
+  life.title = "pending → queued → sent → landed/done, as this poll reads it."
+    + " archived and advisory are ends of their own, not stations on that rail";
+  head.life.stations.forEach((station, i) => {
+    const on = head.life.current === station;
+    const past = head.life.reached > i && !on;
+    life.appendChild(el("span", `qlife-st${on ? " on" : past ? " past" : ""}`,
+      station === "done" ? "landed/done" : station));
+  });
+  if (head.life.current === "archived" || head.life.current === "advisory"
+    || head.life.current === "unknown")
+    life.appendChild(el("span", "qlife-st end on", head.life.current));
+  shell.detail.appendChild(life);
+  // the one action's own row. Filled from the act placement below (`place`), so the button that
+  // lands here is the very same node, with the very same handler, that Actions would have held.
+  const mainBox = el("div", "qdmain");
+  shell.detail.appendChild(mainBox);
+  shell.detail.appendChild(el("div", "qdmain-why", head.main.why));
+  // ACTIONS FIRST, discussion after: the request text and the comment thread used to sit between
+  // the head and the acts, which is exactly how the decision ended up below the fold.
+  const actionSection = qDetailSection(shell.detail, "Actions");
   const overview = qDetailSection(shell.detail, "Overview & discussion");
   const hasRefinement = (!qAdvisory(t) && (t.status === "pending" || t.status === "queued"))
     || brief !== undefined || crit !== undefined || ref !== undefined;
@@ -7667,7 +7808,22 @@ function renderQueueDetail() {
   // Once a compiled brief exists, the original request is supporting evidence rather than the
   // primary working text. Keep it one click away; raw tasks stay open because it is all they have.
   const request = qDetailSection(shell.detail, "Request", true, brief === undefined);
-  const actionSection = qDetailSection(shell.detail, "Actions");
+  // EVIDENCE: the lane this row is running in, or why none attaches (a `sent` row with nothing
+  // attached is the state the owner must be able to read). Verify facts are NOT on the owner
+  // poll, and the section says that rather than leaving the absence to be read as a green run.
+  const evidence = qDetailSection(shell.detail, "Evidence — lane & verify facts");
+  const laneLine = qLaneLine(laneJoin);
+  if (laneLine) {
+    evidence.appendChild(laneLine);
+    if (laneJoin.kind === "refused") evidence.appendChild(el("div", "shellhint", laneJoin.why));
+  } else {
+    evidence.appendChild(el("div", "shellhint", "no lane pointer on this row"));
+  }
+  evidence.appendChild(el("div", "shellhint",
+    "verify and land facts are not on this poll — unknown here, not green"));
+  // DANGER ZONE: the one irreversible act on this pane, folded and last, so it is never a
+  // neighbour of the main action above.
+  const danger = qDetailSection(shell.detail, "Danger zone", true, false);
   const meta = el("div", "ocfacts");
   meta.appendChild(chip(t.source === "intake" ? `✉ ${t.from ?? "intake"}`
     : t.source === "steward" ? "⚙ steward" : "owner"));
@@ -7923,6 +8079,12 @@ function renderQueueDetail() {
     b.onclick = () => void qAct(t.id, action, body ?? {});
     return b;
   };
+  // WHERE AN ACT LANDS. The head hosts exactly the one act qMainActionOf named for this status;
+  // every other act stays here. The node is built once either way — same label rules, same
+  // handler, same body — so the head is a placement, never a second copy of a door.
+  const isMain = (act: QMainAct): boolean => head.main.act === act;
+  const place = (node: HTMLElement, act: QMainAct): void => { (isMain(act) ? mainBox : acts).appendChild(node); };
+  const mainCls = (act: QMainAct): string => isMain(act) ? "shrbtn primary" : "shrbtn";
   const kindRow = el("label", "qkind");
   kindRow.appendChild(el("span", "qkind-label", "Kind"));
   const kindSelect = el("select", "qkind-select") as HTMLSelectElement;
@@ -7955,8 +8117,9 @@ function renderQueueDetail() {
   // `adopt` remains the deliberately narrow compatibility alias for pending notiz→auftrag.
   if (qAdvisory(t)) {
     if (t.status === "pending" && t.kind === "notiz")
-      acts.appendChild(mk("→ adopt as a task", "adopt", "shrbtn primary",
-        {}, "turns this observation into a work brief — it gets analysed, and you still release it"));
+      place(mk(isMain("adopt") ? head.main.label ?? "→ adopt as a task" : "→ adopt as a task",
+        "adopt", mainCls("adopt"),
+        {}, "turns this observation into a work brief — it gets analysed, and you still release it"), "adopt");
   } else {
     // "▸ start lane" spawns the lane NOW — independent of the auto dispatcher, which may be off
     const startable = t.status === "pending" || t.status === "queued";
@@ -7987,14 +8150,17 @@ function renderQueueDetail() {
           : `start it flagged (${blockers || "the analyst wants you to look"}) — the lane gets your draft as it stands`;
       // ▸ START: the body is built at CLICK time from the row's pick (qDispatchBody "start") — the
       // picked triple, plus the acknowledgment only when the row is raw. Nothing else rides along.
-      const sb = el("button", raw ? "shrbtn qraw" : "shrbtn primary",
-        raw ? `▸ start lane — ${rawWhat}` : "▸ start lane") as HTMLButtonElement;
+      // the head calls this act "▸ start by hand" (a released row the owner starts now); in the
+      // Actions row it keeps its own name. The raw suffix rides on both.
+      const startName = isMain("start") ? head.main.label ?? "▸ start lane" : "▸ start lane";
+      const sb = el("button", raw ? "shrbtn qraw" : mainCls("start"),
+        raw ? `${startName} — ${rawWhat}` : startName) as HTMLButtonElement;
       sb.title = spawnProblem ? `blocked: ${spawnProblem}`
         : raw ? "a raw start — tick the line below to confirm it; clarify or refine fix the state instead"
           : "opens a lane on the triple shown above and hands it the brief";
       sb.onclick = () => void qAct(t.id, "dispatch",
         qDispatchBody("start", qSpawnPick.get(t.id) ?? Q_SPAWN_EMPTY, raw));
-      acts.appendChild(sb);
+      place(sb, "start");
       if (spawnProblem) sb.disabled = true;
       if (raw) {
         sb.disabled = sb.disabled || qRawAck !== t.id;
@@ -8007,7 +8173,7 @@ function renderQueueDetail() {
         box.onchange = () => { qRawAck = box.checked ? t.id : null; renderQueueDetail(); };
         g.appendChild(box);
         g.appendChild(el("span", "", rawWhy));
-        acts.appendChild(g);
+        place(g, "start");
       }
     }
     // the same spawn with a different founding prompt: settle the done-criterion with the owner
@@ -8016,13 +8182,13 @@ function renderQueueDetail() {
     // `clarify: true` (qDispatchBody "clarify"), never the raw acknowledgment. It does open a lane —
     // one that settles the done-criterion with you and waits — so the same block applies.
     if (startable) {
-      const cb = el("button", "shrbtn", "▸ clarify first") as HTMLButtonElement;
+      const cb = el("button", mainCls("clarify"), "▸ clarify first") as HTMLButtonElement;
       cb.title = spawnProblem ? `blocked: ${spawnProblem}`
         : "opens a lane that works out the done-criterion WITH you and waits — no code until you confirm";
       cb.disabled = spawnProblem !== null;
       cb.onclick = () => void qAct(t.id, "dispatch",
         qDispatchBody("clarify", qSpawnPick.get(t.id) ?? Q_SPAWN_EMPTY, false));
-      acts.appendChild(cb);
+      place(cb, "clarify");
     }
     // ↻ refine: rewrite the REQUEST itself — compile it into a work brief, or into the several
     // tasks it really is — before any lane sees it. Attended only; nothing on the server calls it.
@@ -8041,7 +8207,7 @@ function renderQueueDetail() {
     // and no silent override for the flagged one.
     if (t.status === "pending") {
       const over = !!t.analysis && t.analysis.verdict !== "ready";
-      const b = el("button", startable ? "shrbtn" : "shrbtn primary",
+      const b = el("button", mainCls("release"),
         over ? "release anyway ▸" : "release ▸") as HTMLButtonElement;
       b.title = over
         ? "the analyst flagged this — releasing it is recorded as your override"
@@ -8061,11 +8227,11 @@ function renderQueueDetail() {
       if (warning) {
         release.appendChild(el("div", "qanalysiswarn", warning.text));
         release.appendChild(b);
-        acts.appendChild(release);
+        place(release, "release");
       } else {
         // ON/unknown keeps the established action row byte-for-byte: only the disabled warning's
         // presence introduces its release-adjacent wrapper.
-        acts.appendChild(b);
+        place(b, "release");
       }
     }
     if ((t.status === "pending" || t.status === "queued") && t.analysis)
@@ -8076,8 +8242,22 @@ function renderQueueDetail() {
   if (t.status === "archived") acts.appendChild(mk("restore", "unarchive"));
   if (t.status !== "done" && t.status !== "archived") acts.appendChild(mk("done", "done"));
   if (t.status !== "sent" && t.status !== "archived") acts.appendChild(mk("🗄 archive", "archive"));
-  acts.appendChild(mk("✕ delete", "delete", "shrbtn danger"));
   actionSection.appendChild(acts);
+  // ▸ OPEN LANE is the only main action that is not a queue act: it makes no request at all, it
+  // focuses the pane this row is already running in. Built here, beside the acts it replaces in
+  // the head, so the head keeps exactly one action node whatever the status.
+  if (head.main.act === "open-lane" && typeof head.main.slot === "number") {
+    const slot = head.main.slot;
+    const ob = el("button", "shrbtn primary", head.main.label ?? `▸ open lane — slot ${slot}`) as HTMLButtonElement;
+    ob.title = `focuses slot ${slot} and closes this window — the queue is an overlay over the panes`;
+    ob.onclick = () => { qShell?.close(); showSlot(slot); };
+    mainBox.appendChild(ob);
+  }
+  const dangerActs = el("div", "pkdacts");
+  dangerActs.appendChild(mk("✕ delete", "delete", "shrbtn danger"));
+  danger.appendChild(el("div", "shellhint",
+    "deleting drops the row and its thread for good — there is no restore. 🗄 archive above keeps it."));
+  danger.appendChild(dangerActs);
   restoreFocus();
 }
 

@@ -323,6 +323,28 @@
   details.qdsection:not([open]) { padding-bottom: 10px; }
   details.qdsection:not([open]) > summary.qdsection-title { margin-bottom: 0; }
   .qdsection-body > .rvhead:not(:first-child) { margin-top: 14px; }
+  /* --- THE TASK DETAIL HEAD: status, program, repo, the lifecycle rail and the ONE main action,
+     above every section. Every box here declares its own line-height, padding and margin so the
+     fold budget in e2e/tasks.ts is READ OUT of this file instead of estimated: at 1440x900 the
+     shell is min(880px, 92vh) = 828px high and the head has to fit the detail pane's first
+     screen. Change a number here and that check recomputes; delete one and it fails as itself. */
+  .qdhead-status { line-height: 18px; }
+  .qdhead-facts { margin-top: 6px; }
+  .qdhead-facts .occhip { line-height: 15px; }
+  /* pending → queued → sent → landed/done. `past` is walked, `on` is where the row stands, and
+     `end` is a state that is not on the rail at all (archived, advisory, unknown). */
+  .qlife { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+  .qlife-st { flex: none; font-size: 10.5px; line-height: 18px; padding: 0 8px; border-radius: 20px;
+    background: #1c1c1c; border: 1px solid #2e2e2e; color: #6a6a6a; }
+  .qlife-st.past { color: #9aa7c7; }
+  .qlife-st.on { color: #dbe6ff; background: var(--sel); border-color: #3b4b70; font-weight: 700; }
+  .qlife-st.end { color: var(--amber); border-color: #3a3020; background: #241f18; }
+  /* the one action, and the one line that says what it does. Empty when the row has nothing to
+     decide — a closed row and a `sent` row with no attachable lane both say so in .qdmain-why. */
+  .qdmain { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 11px; }
+  .qdmain:empty { display: none; }
+  .qdmain .shrbtn { line-height: 18px; }
+  .qdmain-why { font-size: 11.5px; line-height: 17px; color: var(--faint); margin: 7px 0 2px; }
   .qkind { display: flex; align-items: center; gap: 9px; margin: 1px 0 12px; }
   .qkind-label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
   .qkind-select { color: var(--text); background: var(--raised); border: 1px solid var(--line);
@@ -509,6 +531,11 @@
     .shellrow .qfacts { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 2px 12px; }
     .shellrow .qfact:not(:first-child)::before { content: none; }
     .qkind { align-items: stretch; flex-direction: column; gap: 5px; }
+    /* the head must be usable after a row selection without any horizontal scrolling: the one
+       action takes the full width at a touch height, and the rail wraps instead of overflowing. */
+    .qdmain { flex-direction: column; align-items: stretch; }
+    .qdmain .shrbtn { min-height: 44px; width: 100%; }
+    .qlife-st { font-size: 11px; line-height: 22px; }
     .qkind-select { min-height: 44px; font-size: 16px; }
     #shell-queue .qview { flex: 1 0 100%; flex-basis: 100%; }
     .qview button { flex: 1; min-height: 40px; }

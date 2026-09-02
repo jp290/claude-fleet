@@ -26,6 +26,18 @@ die Fable-Politik ist HEUTE nicht fahrbar, das ist der wichtigste Betriebsfakt d
    = Last-Nichtdeterminismus, aber **das ist eine Hypothese, kein Beweis** — der Beweis ist ein
    serieller Wiederholungslauf, und der ist ab jetzt gratis, weil Audits remote auf einer ruhigen
    Maschine laufen. Trail: `$TMPDIR/fleet-e2e-trail/isolated-20260902T135103Z-50990.jsonl`.
+4. **Beweis-Hygiene fuer Remote-Audits, von Slot 1 am Code geschaerft (Zeile `8244622e`), und eine
+   Korrektur an mir:** remote ist `checks.failed` NICHT unbrauchbar — `postLandAuditChecks`
+   rekonziliert es gegen `fails[]`, das der Daemon separat und UNGEKAPPT schickt, und gibt sonst
+   `null` zurueck. Falsch ist nur `ran`: es zaehlt PASS-Zeilen in einem 4096-Byte-Tail und ist damit
+   eine untere Schranke. Der `ran:0 bei green`-Sensor verliert remote also die AUFLOESUNG, nicht die
+   Richtung — 3434 gelaufene Checks melden `ran:22`, ein fast leerer Lauf meldet `ran:3`, beides
+   liest sich als „klein, aber nicht null". **Und was ich zu stark gesagt hatte:** die Zeile
+   `rows=3434 results=3434` steht im TAIL des Helfers, nicht in einem `trail`-Feld der Ledger-Zeile
+   (die hat keines; das Report-Feld ist auf 120 Zeichen geschnitten). Sie ist die Selbstauskunft des
+   Geraets, kein Beleg von dieser Maschine. Das Urteil „voll gelaufen" traegt trotzdem — ueber
+   `exitCode 0` nach 22,9 min, `clonedSha == mainSha` und das `ALL PASS` im Tail — aber es gehoert
+   nicht als hiesige Messung weitergeschrieben.
 
 ## 1. Was in dieser Session passierte (verifiziert)
 
@@ -96,7 +108,15 @@ die Fable-Politik ist HEUTE nicht fahrbar, das ist der wichtigste Betriebsfakt d
 
 ## 2. Betriebsstand (17:55) und DEIN ERSTER ZUG
 
-**DEIN ERSTER ZUG: `POST /api/deploy`.** Ich habe ihn 17:47 beantragt, er wurde korrekt abgelehnt:
+**NACHTRAG 18:00 — DER DEPLOY LIEGT BEI SLOT 1, NICHT MEHR BEI DIR.** Die neue Sanierungs-MAIN
+wartet auf dieselbe Bedingung (ihr Slice-Protokoll verlangt Deploy in Schritt f), haelt den frischeren
+Kontext und hat den Rollback-Dry-Boot von `8865eaa` gegen eine Kopie der heutigen `fleet.json` schon
+gruen gefahren (200, 16 Slots / 134 Tasks / 58 Programs). Sie deployt, sobald der Audit den Mutex
+freigibt. **Pruefe nur, DASS es passiert ist** (`deployGap.codeBehind`, `bundleStale.stale`) und sag
+Slot 3 Bescheid — es wartet darauf fuer seine Nachher-Screenshots. Wenn es bis dahin nicht passiert
+ist, ist es wieder deiner:
+
+**`POST /api/deploy`.** Ich habe ihn 17:47 beantragt, er wurde korrekt abgelehnt:
 `ok:false, stage preflight, "a post-land audit is running on claude-fleet — killing srv now would
 leave a red that measured nothing"`. Ein Hintergrund-Watcher wartete auf 0 Suite-Wrapper. **Warum es
 druckt:** `bundleStale.stale = true` und `deployGap.codeBehind = true` — der CLIENT-Teil von vier

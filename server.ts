@@ -2633,6 +2633,7 @@ type AuditEvent =
   // stage A of the device register: the owner set a device's WISH-mode. It is a config write with
   // no dispatch behind it, so this row is the only place the change is ever visible from outside.
   | "helper_device_mode"
+  | "helper_update_queued" | "helper_update"
   // the deploy verb (Verb 2): one row when a build fails, one when a restart is launched, one when
   // the NEXT BOOT judges it. The trio is what makes "was the deploy verified?" answerable at all —
   // the verb kills the process that would otherwise report its own result.
@@ -2912,6 +2913,7 @@ function queueStateSave(): Promise<void> {
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, helperToken,
     helperClaims: Object.fromEntries(helperClaims), helperLapses, helperDevices: [...helperDevices.values()],
+    helperUpdates: [...helperUpdates.values()],
     // …and the lane-suite offers, for the SAME reason the claims are persisted: the deploy ritual
     // here is land-then-`kill-session -t srv`, ~10× a day, and an offer that lived only in memory
     // would be erased by the most routine thing this machine does — the helper would still be
@@ -12355,6 +12357,56 @@ const helperClaims = new Map<string, HelperClaim>(); // repo toplevel -> the liv
 interface HelperLapse { id: string; repo: string; name: string; claimedAt: number; expiredAt: number; covers: number;
   deviceId?: string }
 let helperLapses: HelperLapse[] = [];
+// --- THE THIRD JOB KIND: `daemon-update` — the daemon on the other machine updating ITSELF -------
+// One row per device, queued by the OWNER (POST /api/helper/devices/:id/update), offered to that
+// device alone, claimed and reported through the same three helper routes the other two kinds use.
+// The tree it hands over is this fleet's own checkout at its integration branch — the same bundle
+// mechanism an audit uses, pointed at the repository the daemon is written in. The daemon clones
+// it, parses the new daemon.ts, moves its own symlink and exits 75; systemd restarts it from the
+// link, and the next heartbeat's `daemonSha` is the proof the update took. This server never opens a
+// connection towards the device and never restarts anything: the row is a WISH like desiredMode,
+// pulled on the device's own poll.
+//
+// `FLEET_HELPER_UPDATE_REPO` overrides the source checkout (the e2e points it at a seeded repo);
+// unset, the fleet's own checkout is the source, and a server that runs from no git checkout has
+// nothing to offer — the owner route says so with a 503 rather than bundling nothing.
+interface HelperUpdateClaim { name: string; deviceId: string; claimedAt: number; expiresAt: number; bundle: string; mainSha: string }
+interface HelperUpdateJob {
+  id: string;            // sha256("daemon-update:" + deviceId) — stable per device, 12 hex like the others
+  deviceId: string;
+  repo: string;          // git toplevel of the source checkout (never sent: the wire carries basename)
+  main: string;          // the ref the bundle carries, resolved when the row was queued
+  requestedAt: number;
+  state: "open" | "claimed" | "reported";
+  claim: HelperUpdateClaim | null;
+  result?: { exitCode: number | null; ok: boolean; tail: string; reportedAt: number; mainSha: string };
+}
+const helperUpdates = new Map<string, HelperUpdateJob>(); // deviceId -> its one update row
+const HELPER_UPDATE_REPO: string | null = process.env.FLEET_HELPER_UPDATE_REPO?.trim() || FLEET_REPO_ROOT;
+const helperUpdateJobId = (deviceId: string): string =>
+  createHash("sha256").update(`daemon-update:${deviceId}`).digest("hex").slice(0, 12);
+const helperUpdateById = (jobId: string): HelperUpdateJob | undefined =>
+  [...helperUpdates.values()].find((u) => u.id === jobId);
+// expired counts as absent, the same reading helperClaimOf / laneSuiteClaimOf give
+const helperUpdateClaimOf = (u: HelperUpdateJob): HelperUpdateClaim | null =>
+  u.claim && Date.now() < u.claim.expiresAt ? u.claim : null;
+// the owner's projection of the row; `null` when the device was never asked to update
+interface HelperUpdateView {
+  id: string; state: HelperUpdateJob["state"]; requestedAt: number; main: string;
+  mainSha?: string; claimedAt?: number; expiresAt?: number;
+  result?: { ok: boolean; exitCode: number | null; reportedAt: number; mainSha: string; note: string };
+}
+function helperUpdateView(deviceId: string): HelperUpdateView | null {
+  const u = helperUpdates.get(deviceId);
+  if (!u) return null;
+  const c = helperUpdateClaimOf(u);
+  return {
+    id: u.id, state: u.state, requestedAt: u.requestedAt, main: u.main,
+    ...(c ? { mainSha: c.mainSha, claimedAt: c.claimedAt, expiresAt: c.expiresAt } : {}),
+    ...(u.result ? { result: { ok: u.result.ok, exitCode: u.result.exitCode, reportedAt: u.result.reportedAt,
+      mainSha: u.result.mainSha, note: u.result.tail.split("\n")[0]?.slice(0, 160) ?? "" } } : {}),
+  };
+}
 // The device name is stored SERVER-SIDE on the owner's instruction: a name that lived only in the
 // helper's browser would vanish with a cleared cache, and every past ledger row would then point at
 // a machine nobody could name any more.
@@ -12384,12 +12436,13 @@ interface HelperDevice {
   load?: number;             // ...and its own load figure. A hint for the owner's eye, nothing reads it
   capabilities?: string[];   // ...and what it says it can run
   desiredMode?: DeviceMode;  // the OWNER's wish. Never written by the helper principal
+  daemonSha?: string;        // the commit the daemon says it RUNS FROM (40 hex) — measured there, or absent
 }
 const helperDevices = new Map<string, HelperDevice>();
 // What a heartbeat is allowed to carry. Keys are present only when the device actually sent them,
 // so a plain lastSeen touch (the claim paths) can spread this over the stored row without erasing
 // the last real report.
-type HelperHeartbeat = { mode?: DeviceMode; load?: number; capabilities?: string[] };
+type HelperHeartbeat = { mode?: DeviceMode; load?: number; capabilities?: string[]; daemonSha?: string };
 // Foreign strings land in a ledger row, a console line and an audit detail — same treatment the
 // device name already gets: printable only, and short.
 function printableShort(raw: string, cap: number): string {
@@ -13022,6 +13075,23 @@ function expireHelperClaims(): boolean {
       changed = true;
     }
   }
+  // …and the third kind, in the same sweep for the same reason. A lapsed update goes back to OPEN
+  // rather than closing: the row is the owner's standing wish, and a daemon that died mid-update
+  // (or a restart that lost the result POST) should find it again on its next poll. The lapse is
+  // still booked — a device that keeps taking its own update and not finishing it is a fact.
+  for (const u of helperUpdates.values()) {
+    const c = u.claim;
+    if (!c || now < c.expiresAt) continue;
+    try { rmSync(c.bundle, { force: true }); } catch { /* already gone */ }
+    u.claim = null;
+    u.state = "open";
+    helperLapses = [{ id: u.id, repo: u.repo, name: c.name, deviceId: c.deviceId,
+      claimedAt: c.claimedAt, expiredAt: now, covers: 0 }, ...helperLapses].slice(0, HELPER_LAPSE_KEEP);
+    audit("helper_claim_expired", undefined,
+      `${c.name} held its own daemon-update to ${c.mainSha.slice(0, 8)} for ${Math.round((now - c.claimedAt) / 1000)}s`
+      + " without a result — offered again");
+    changed = true;
+  }
   // bounded, and only over SETTLED offers: an open or claimed one is somebody's live work
   const settled = [...laneSuiteJobs.values()].filter((j) => j.state !== "open" && j.state !== "claimed");
   for (const j of settled.slice(0, Math.max(0, settled.length - LANE_SUITE_KEEP))) {
@@ -13205,7 +13275,7 @@ async function buildLaneSuiteBundle(job: LaneSuiteJob, file: string):
 // where the verdict goes.
 interface HelperJobView {
   id: string;
-  kind: "audit" | "lane-suite";
+  kind: "audit" | "lane-suite" | "daemon-update";
   repo: string;
   // audit: the integration branch. lane-suite: the LANE's own branch — a preview has no main to
   // speak of, and the card's first line is what tells the human which tree they are about to run.
@@ -13218,11 +13288,24 @@ interface HelperJobView {
   localRunning: boolean;
   untracked?: number;  // lane-suite only, and only once the tree has been taken (i.e. after a claim)
 }
-function helperJobsView(): {
+// `forDevice` is the asking device's id, when it gave one: a daemon-update is offered to the ONE
+// device it is addressed to and appears in nobody else's list — a browser on the portal page, or
+// a second helper, must never be handed another machine's self-update.
+function helperJobsView(forDevice?: string): {
   claimTimeoutMs: number; configured: boolean; jobs: HelperJobView[];
   lapsed: HelperLapse[];
 } {
   const jobs: HelperJobView[] = [];
+  const upd = forDevice ? helperUpdates.get(forDevice) : undefined;
+  if (upd && upd.state !== "reported") {
+    const c = helperUpdateClaimOf(upd);
+    if (c || upd.state === "open") jobs.push({
+      id: upd.id, kind: "daemon-update", repo: basename(upd.repo), main: upd.main,
+      branches: [upd.main], covers: 0, oldestAt: upd.requestedAt,
+      claim: c ? { name: c.name, claimedAt: c.claimedAt, expiresAt: c.expiresAt } : null,
+      localRunning: false,
+    });
+  }
   for (const [repo, q] of auditQueue) {
     if (!q.covers.length) continue;
     const c = helperClaimOf(repo);
@@ -13275,13 +13358,15 @@ function helperJobsView(): {
 //     bookkeeping lag.
 //   · `repo` is a basename, exactly like on the portal. A git toplevel is a path on this box and
 //     the panel has no use for one.
-interface HelperDeviceClaimView { kind: "audit" | "lane-suite"; repo: string; ref: string; expiresAt: number }
+interface HelperDeviceClaimView { kind: "audit" | "lane-suite" | "daemon-update"; repo: string; ref: string; expiresAt: number }
 interface HelperDeviceView {
   id: string; name: string; lastSeen: number;
   mode?: DeviceMode; load?: number; capabilities?: string[];
   desiredMode: DeviceMode; desiredSet: boolean;
   claims: HelperDeviceClaimView[];
   lapses: number;
+  daemonSha?: string;              // what the daemon says it runs — absent until a daemon that measures it beats
+  update: HelperUpdateView | null; // the owner's standing update wish for it, and how it went
 }
 function helperDevicesView(): HelperDeviceView[] {
   const held = new Map<string, HelperDeviceClaimView[]>();
@@ -13299,6 +13384,10 @@ function helperDevicesView(): HelperDeviceView[] {
     const c = laneSuiteClaimOf(j);
     if (c) push(c.deviceId, { kind: "lane-suite", repo: basename(j.repo), ref: j.branch, expiresAt: c.expiresAt });
   }
+  for (const u of helperUpdates.values()) {
+    const c = helperUpdateClaimOf(u);
+    if (c) push(u.deviceId, { kind: "daemon-update", repo: basename(u.repo), ref: u.main, expiresAt: c.expiresAt });
+  }
   // newest heartbeat first: the map's own order is oldest-first (it is an eviction order, not a
   // reading order), and the machine that just spoke is the one the owner is looking for.
   return [...helperDevices.values()].sort((a, b) => b.lastSeen - a.lastSeen).map((d) => ({
@@ -13312,6 +13401,8 @@ function helperDevicesView(): HelperDeviceView[] {
     claims: held.get(d.id) ?? [],
     // identity first, name only for rows written before deviceId was booked (see HelperLapse)
     lapses: helperLapses.filter((l) => (l.deviceId ? l.deviceId === d.id : l.name === d.name)).length,
+    ...(d.daemonSha ? { daemonSha: d.daemonSha } : {}),
+    update: helperUpdateView(d.id),
   }));
 }
 // The lane-suite half of the claim. Same shape as its audit sibling and the same rule behind every
@@ -13368,6 +13459,37 @@ async function claimLaneSuite(j: LaneSuiteJob, deviceId: string): Promise<Respon
     branches: [j.branch], covers: 0,
     claimedAt: now, expiresAt: j.claim.expiresAt, name: j.claim.name } });
 }
+// The daemon-update half of the claim. The one refusal the other two kinds do not have: the row
+// is ADDRESSED — a device may only take its own update, because the thing being handed over is
+// "restart yourself from this tree", and that sentence has exactly one valid listener.
+async function claimDaemonUpdate(u: HelperUpdateJob, deviceId: string): Promise<Response> {
+  if (u.deviceId !== deviceId) return json({ error: "this daemon-update is addressed to another device" }, 409);
+  if (u.state === "reported") return json({ error: "this daemon-update was already reported — queue a new one" }, 404);
+  const held = helperUpdateClaimOf(u);
+  if (held) return json({ error: `already claimed by ${held.name} — it expires ${new Date(held.expiresAt).toISOString()}` }, 409);
+  const file = `${HELPER_BUNDLE_DIR}/${u.id}-${randomBytes(4).toString("hex")}.bundle`;
+  const built = await buildHelperBundle(u.repo, u.main, file);
+  if ("error" in built) {
+    try { rmSync(file, { force: true }); } catch { /* never written */ }
+    return json({ error: built.error }, 500);
+  }
+  if (helperUpdateClaimOf(u) || u.state !== "open") {
+    try { rmSync(file, { force: true }); } catch { /* nothing to clean */ }
+    return json({ error: "the update changed while the bundle was being built — try again" }, 409);
+  }
+  const now = Date.now();
+  u.state = "claimed";
+  u.claim = { name: helperDeviceName(deviceId), deviceId, claimedAt: now,
+    expiresAt: now + HELPER_CLAIM_TIMEOUT_MS, bundle: file, mainSha: built.sha };
+  if (helperDevices.has(deviceId)) setHelperDevice(deviceId, u.claim.name); // touch lastSeen
+  audit("helper_claim", undefined,
+    `${u.claim.name} claimed its own daemon-update: ${basename(u.repo)} ${u.main}@${built.sha.slice(0, 8)}`);
+  await saveStateNow();
+  return json({ job: { id: u.id, kind: "daemon-update", repo: basename(u.repo), main: u.main, mainSha: built.sha,
+    // the ref the daemon must clone with `-b`, served for the same reason the lane-suite serves it
+    branch: u.main, branches: [u.main], covers: 0,
+    claimedAt: now, expiresAt: u.claim.expiresAt, name: u.claim.name } });
+}
 // The claim. Every refusal below is a REFUSAL TO DUPLICATE WORK — that is the whole function, and
 // the 409s are the feature the owner asked for, not error handling around it.
 async function helperClaim(body: Record<string, unknown> | null): Promise<Response> {
@@ -13381,6 +13503,8 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
   // branch is the audit path, byte for byte as it was.
   const lane = laneSuiteJobs.get(jobId);
   if (lane) return await claimLaneSuite(lane, deviceId);
+  const upd = helperUpdateById(jobId);
+  if (upd) return await claimDaemonUpdate(upd, deviceId);
   const hit = [...auditQueue.entries()].find(([r, q]) => helperJobId(r) === jobId && q.covers.length);
   if (!hit) return json({ error: "no such open audit job — it may already have been audited" }, 404);
   const [repo, q] = hit;
@@ -13471,6 +13595,29 @@ async function reportLaneSuite(j: LaneSuiteJob, body: Record<string, unknown> | 
   await saveStateNow();
   return json({ ok: true, kind: "lane-suite", result, ...(reason ? { reason } : {}) });
 }
+// The daemon-update result. No ledger row, no verdict classifier: the currency here is "did the
+// link move" (exit 0) or not (anything else, with the daemon's own sentence in the tail), and the
+// proof that a moved link became a running daemon is not this POST at all but the `daemonSha` on
+// the heartbeat that follows the restart — the board compares the two.
+async function reportDaemonUpdate(u: HelperUpdateJob, body: Record<string, unknown> | null): Promise<Response> {
+  const claim = helperUpdateClaimOf(u);
+  if (!claim) return json({ error: "no live claim for this daemon-update — it lapsed or was already reported" }, 409);
+  const rawExit = body?.exitCode;
+  const exitCode = typeof rawExit === "number" && Number.isFinite(rawExit) ? Math.trunc(rawExit) : null;
+  const tail = retainRunOutput(typeof body?.tail === "string" ? body.tail : "", "", HELPER_TAIL_CAP).trim();
+  const now = Date.now();
+  const ok = exitCode === 0;
+  u.result = { exitCode, ok, tail, reportedAt: now, mainSha: claim.mainSha };
+  u.state = "reported";
+  u.claim = null;
+  try { rmSync(claim.bundle, { force: true }); } catch { /* the daemon has its copy */ }
+  audit("helper_update", undefined,
+    `${ok ? "swapped" : "failed"} daemon-update of ${claim.name} to ${claim.mainSha.slice(0, 8)}`
+    + `${exitCode === null ? " (no exit code)" : ` (exit ${exitCode})`}`
+    + `${tail ? ` — ${tail.split("\n")[0]?.slice(0, 120) ?? ""}` : ""}`.slice(0, 240));
+  await saveStateNow();
+  return json({ ok: true, kind: "daemon-update", result: ok ? "swapped" : "failed" });
+}
 // The result. Same classification as the local run's (runPostLandAudit), on purpose: a remote green
 // and a local green must mean the same thing, or the ledger's joins stop being answerable. The one
 // added `unknown` is "the helper sent no exit code at all", which is the same class of fact as a
@@ -13479,6 +13626,8 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
   const jobId = typeof body?.jobId === "string" ? body.jobId : "";
   if (!/^[a-f0-9]{12}$/.test(jobId)) return json({ error: "expected jobId" }, 400);
   expireHelperClaims();
+  const upd = helperUpdateById(jobId);
+  if (upd) return await reportDaemonUpdate(upd, body);
   // THE FORK. A lane-suite verdict is NOT a ledger row and must never become one: `newestAuditFor`
   // and `auditRowMatches` join over `mainSha`/`covers[].mainAfter`, and a preview has neither — a
   // row without them does not fail those joins, it answers them WRONG. So the two kinds part here,
@@ -13592,7 +13741,7 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
     expireHelperClaims();
     const deviceId = url.searchParams.get("deviceId") ?? "";
     const device = /^[a-z0-9]{8,32}$/.test(deviceId) ? helperDevices.get(deviceId) ?? null : null;
-    return json({ ...helperJobsView(), device });
+    return json({ ...helperJobsView(device ? deviceId : undefined), device });
   }
   if (url.pathname === "/api/helper/device" && req.method === "POST") {
     const body = await readJson(req);
@@ -13624,6 +13773,13 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
       reported.capabilities = (body.capabilities as string[])
         .map((c) => printableShort(c, DEVICE_CAP_LEN)).filter(Boolean).slice(0, DEVICE_CAPS_KEEP);
     }
+    // 40 hex or a 400 — the board compares this against the sha it bundled, and a value that is
+    // not a commit stored as though it were one would make that comparison lie in both directions
+    if (body?.daemonSha !== undefined) {
+      if (typeof body.daemonSha !== "string" || !/^[0-9a-f]{40}$/.test(body.daemonSha))
+        return json({ error: "daemonSha must be 40 hex digits" }, 400);
+      reported.daemonSha = body.daemonSha;
+    }
     const d = setHelperDevice(deviceId, name, reported);
     await saveStateNow();
     // `device` keeps its exact old shape plus optional fields, so a pre-stage-A client reads it
@@ -13649,6 +13805,16 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
       return new Response(Bun.file(lc.bundle), {
         headers: { "content-type": "application/octet-stream", "cache-control": "no-store",
           "content-disposition": `attachment; filename="${laneJob.id}-${(laneJob.commitSha ?? "").slice(0, 8)}.bundle"` },
+      });
+    }
+    const upd = helperUpdateById(bundle[1]!);
+    if (upd) {
+      const uc = helperUpdateClaimOf(upd);
+      if (!uc) return json({ error: "no live claim for this job" }, 409);
+      if (!existsSync(uc.bundle)) return json({ error: "the bundle is gone — let the claim lapse and take it again" }, 410);
+      return new Response(Bun.file(uc.bundle), {
+        headers: { "content-type": "application/octet-stream", "cache-control": "no-store",
+          "content-disposition": `attachment; filename="${upd.id}-${uc.mainSha.slice(0, 8)}.bundle"` },
       });
     }
     const claim = [...helperClaims.entries()].find(([r, c]) => c.id === bundle[1] && helperClaimOf(r))?.[1];
@@ -18447,7 +18613,15 @@ if (existsSync(STATE_FILE)) {
               ? { capabilities: d.capabilities.filter((c): c is string => typeof c === "string").slice(0, DEVICE_CAPS_KEEP) }
               : {}),
             ...(isDeviceMode(d.desiredMode) ? { desiredMode: d.desiredMode } : {}),
+            ...(typeof d.daemonSha === "string" && /^[0-9a-f]{40}$/.test(d.daemonSha) ? { daemonSha: d.daemonSha } : {}),
           });
+    // the update rows, for the same reason the claims are: a deploy here is land-then-restart, and
+    // a queued update that vanished with the restart would be a wish the owner made and nobody kept
+    if (Array.isArray((persisted as { helperUpdates?: unknown }).helperUpdates))
+      for (const u of (persisted as { helperUpdates: HelperUpdateJob[] }).helperUpdates)
+        if (u && typeof u.id === "string" && typeof u.deviceId === "string" && typeof u.repo === "string"
+          && typeof u.main === "string" && (u.state === "open" || u.state === "claimed" || u.state === "reported"))
+          helperUpdates.set(u.deviceId, { ...u, claim: u.claim && typeof u.claim.expiresAt === "number" ? u.claim : null });
     if (Array.isArray((persisted as { autos?: unknown }).autos))
       autos = ((persisted as { autos: unknown[] }).autos).filter((x): x is Auto =>
         typeof x === "object" && x !== null
@@ -22182,6 +22356,30 @@ Bun.serve<WSData>({
       await saveStateNow();
       audit("helper_device_mode", undefined, `${d.name} -> ${d.desiredMode}`);
       return json({ device: d });
+    }
+    // …and the owner's door for a daemon-update. Same placement, same reasoning, same nature: it
+    // QUEUES A ROW AND NOTHING ELSE. No connection to the device, no restart, no bundle yet — the
+    // daemon claims the row on its own next poll, and the bundle is built at that claim like every
+    // other kind's. A device that has stopped polling never sees it, which is the same silence a
+    // dead daemon produces today.
+    const devUpdate = /^\/api\/helper\/devices\/([a-z0-9]{8,32})\/update$/.exec(url.pathname);
+    if (devUpdate && req.method === "POST") {
+      const d = helperDevices.get(devUpdate[1]!);
+      if (!d) return json({ error: "no such device" }, 404);
+      if (!HELPER_UPDATE_REPO)
+        return json({ error: "this fleet runs from no git checkout and FLEET_HELPER_UPDATE_REPO is unset — nothing to update from" }, 503);
+      const existing = helperUpdates.get(d.id);
+      if (existing && existing.state === "open")
+        return json({ error: "an update is already queued for this device — it takes it on its next poll" }, 409);
+      if (existing && helperUpdateClaimOf(existing))
+        return json({ error: `the device is already applying an update to ${existing.claim?.mainSha.slice(0, 8)}` }, 409);
+      const main = await integrationBranch(HELPER_UPDATE_REPO);
+      if (!main) return json({ error: `could not resolve the integration branch of ${basename(HELPER_UPDATE_REPO)}` }, 503);
+      helperUpdates.set(d.id, { id: helperUpdateJobId(d.id), deviceId: d.id, repo: HELPER_UPDATE_REPO, main,
+        requestedAt: Date.now(), state: "open", claim: null });
+      await saveStateNow();
+      audit("helper_update_queued", undefined, `${d.name} <- daemon-update from ${basename(HELPER_UPDATE_REPO)} ${main}`);
+      return json({ update: helperUpdateView(d.id) });
     }
     // ✨ rework a compose-box draft in the focused slot's cwd; the result replaces the box, never
     // auto-sends. The slot's git state rides along as a DATA block (briefPayload) — facts only, the

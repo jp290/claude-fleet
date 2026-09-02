@@ -30,7 +30,16 @@
 // nothing, and the portal's own design (a claim that expires falls back to the local drain) is what
 // makes that safe — so silence is a complete and correct way to be unavailable. Once the owner's
 // `off` has been read, it is honoured for `offRecheckSec` before a single heartbeat asks again.
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, rmSync, statSync } from "node:fs";
+//
+// SELF-UPDATE (`daemon-update`, 2026-09-02). The owner queues one update per device on the board;
+// this daemon claims it like any job, clones the fleet's main out of the bundle into
+// `<workDir>/tree-<sha>`, PARSES the new daemon there, and only then moves the `checkoutLink`
+// symlink onto the new tree and exits 75 (EX_TEMPFAIL) — the unit template pairs that code with
+// `RestartForceExitStatus=75`, so systemd starts the next daemon from the link. The old tree is
+// left in place: pointing the link back at it by hand is the whole rollback. A tree that fails the
+// parse never becomes the link's target — check first, swap second, and the daemon keeps running.
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readlinkSync, renameSync, rmSync,
+  statSync, symlinkSync } from "node:fs";
 import { loadavg } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -41,6 +50,7 @@ export interface HelperConfig {
   deviceId: string;      // /^[a-z0-9]{8,32}$/ — the shape the portal's routes validate
   name: string;          // what the ledger row will say produced the verdict
   workDir: string;
+  checkoutLink: string;  // the symlink the unit's ExecStart runs through; a daemon-update moves it
   pollSec: number;
   offRecheckSec: number;
   quietHours: { from: string; to: string } | null;
@@ -58,6 +68,10 @@ export interface HelperConfig {
 // with `RestartPreventExitStatus=78` so systemd stops instead of restarting into the same wall.
 // That pairing IS the "no retry storm" property — a wrong token costs exactly one request, ever.
 export const EXIT_CONFIG = 78; // sysexits EX_CONFIG
+// The exit a SUCCESSFUL self-update ends in. Deliberately not 0 (Restart=on-failure would leave the
+// unit stopped) and not 78 (that one is pinned to "do not restart"): EX_TEMPFAIL says exactly what
+// happened — try again, and the retry is the new tree.
+export const EXIT_UPDATED = 75; // sysexits EX_TEMPFAIL
 class ConfigFault extends Error {}
 class AuthFault extends Error {}
 
@@ -98,9 +112,11 @@ export function loadConfig(path: string, raw: unknown, mode: number): HelperConf
       if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(v)) throw new ConfigFault(`quietHours.${k} must be HH:MM`);
     return { from, to };
   })();
+  const workDir = str(c.workDir, "workDir");
   return {
     fleetUrl, token: str(c.token, "token"), deviceId, name: str(c.name, "name"),
-    workDir: str(c.workDir, "workDir"),
+    workDir,
+    checkoutLink: typeof c.checkoutLink === "string" && c.checkoutLink ? c.checkoutLink : `${workDir}/current`,
     // the floors are TYPO GUARDS (a 0 or a NaN would spin this loop), not policy — the same
     // reading server.ts gives its own HELPER_CLAIM_TIMEOUT_MS floor. The e2e drives 2 s polls.
     pollSec: Math.max(1, num(c.pollSec, "pollSec", 15)),
@@ -227,6 +243,12 @@ async function clonedHeadOf(dir: string): Promise<string | undefined> {
     return (await p.exited) === 0 && /^[0-9a-f]{40}$/.test(out) ? out : undefined;
   } catch { return undefined; }
 }
+// THE SAME MEASUREMENT TURNED ON THIS PROCESS: the commit the tree this daemon is RUNNING FROM is
+// at, read once at boot with the rev-parse above and sent on every heartbeat as `daemonSha`. It is
+// what makes "did the update take?" answerable from the board rather than from a journal on the
+// other machine — and, like `clonedSha`, it is measured or absent: a daemon started from a plain
+// copy outside any git checkout sends no field rather than a guess.
+let daemonSha: string | undefined;
 
 // the last N lines, read out of the tail of the file rather than the whole of it: a real
 // ./e2e-isolated.sh log is hundreds of kilobytes and only its end is ever sent.
@@ -295,6 +317,10 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
     return;
   }
   const j = claimed.job;
+  // THE ONE KIND THAT IS ABOUT THIS PROCESS rather than about a tree to measure. It parts here,
+  // before a run directory exists: an update leaves a TREE behind on purpose (it is the thing the
+  // link will point at), and the run-dir belt below is built to throw its clone away.
+  if (j.kind === "daemon-update") { await selfUpdate(cfg, j); return; }
   const runDir = `${cfg.workDir}/run-${j.id}-${Date.now()}`;
   const clone = `${runDir}/tree`;
   const logPath = `${runDir}/suite.log`;
@@ -388,6 +414,117 @@ async function report(cfg: HelperConfig, j: ClaimedJob, exitCode: number | null,
   log(`reported ${j.id} exit=${exitCode} → ${res.status} ${body.result ?? body.error ?? ""}`);
 }
 
+// --- the self-update ---------------------------------------------------------------------------
+// FOUR STEPS, IN THIS ORDER AND NO OTHER: clone → check → symlink-swap → exit 75. Every step that
+// can fail reports and RETURNS — the daemon that could not update is still a working daemon, and
+// the link it runs through still points at a tree that was checked when IT was swapped in. The
+// only path that ends the process is the one where the link already moved.
+//
+// THE CHECK IS `bun build --target=bun`, not `bun --check`: measured on Bun 1.3.9, `bun --check
+// <file>` is not a flag at all — it RUNS the file (the daemon printed its usage line and exited
+// 78). `bun build` parses the entry and resolves every import without executing anything, and a
+// syntax error or a missing module is exit 1. Its output goes to a scratch directory that is
+// deleted right after; the artefact is not the point, the exit code is.
+async function selfUpdate(cfg: HelperConfig, j: ClaimedJob): Promise<void> {
+  const sha = j.mainSha;
+  const short = sha.slice(0, 8);
+  const ref = j.branch ?? j.main;
+  if (!ref || !/^[0-9a-f]{40}$/.test(sha)) {
+    await report(cfg, j, 127, "the update claim named no ref or no 40-hex sha — this daemon cannot apply it");
+    return;
+  }
+  // ALREADY THERE: the same sha this process runs from is not an update, and swapping onto it
+  // would exit 75 into a restart that changes nothing — the shape of a loop, if a result POST is
+  // ever lost and the claim re-offers. Reported as done, nothing moved.
+  if (daemonSha === sha) {
+    log(`update ${short}: this daemon already runs ${short} — nothing to do`);
+    await report(cfg, j, 0, `already running ${sha} — no clone, no swap`, undefined, daemonSha);
+    return;
+  }
+  const tree = `${cfg.workDir}/tree-${sha.slice(0, 12)}`;
+  const logPath = `${cfg.workDir}/update-${sha.slice(0, 12)}.log`;
+  const bundlePath = `${cfg.workDir}/update-${sha.slice(0, 12)}.bundle`;
+  const checkOut = `${tree}.check`;
+  suiteBusy = true;
+  try {
+    log(`update ${short}: clone ${ref} → ${tree}`);
+    const bundleRes = await api(cfg, `/api/helper/bundle/${j.id}`);
+    if (!bundleRes.ok) { await report(cfg, j, 127, `the bundle download answered HTTP ${bundleRes.status}`); return; }
+    await Bun.write(bundlePath, await bundleRes.arrayBuffer());
+    // a half-cloned tree from an earlier attempt at this same sha must not be the thing we check
+    try { rmSync(tree, { recursive: true, force: true }); } catch { /* not there */ }
+    const cloned = await runCmd(`git clone -q -b ${sh(ref)} ${sh(bundlePath)} ${sh(tree)}`, cfg.workDir, logPath, 300_000);
+    if (cloned.code !== 0) {
+      log(`update ${short}: clone-failed (exit ${cloned.code}) — nothing was swapped`);
+      await report(cfg, j, 127, `the clone failed (exit ${cloned.code})`, logPath);
+      return;
+    }
+    const clonedSha = await clonedHeadOf(tree);
+    if (clonedSha !== sha) {
+      // the tree on disk is not the one the fleet says it handed over — that is a fact about the
+      // bundle, not a tree to run a daemon from
+      log(`update ${short}: clone-mismatch (${clonedSha ?? "no sha"}) — nothing was swapped`);
+      await report(cfg, j, 127, `the clone is at ${clonedSha ?? "no readable sha"}, not the ${sha} handed over`, logPath, clonedSha);
+      return;
+    }
+    log(`update ${short}: bun build --target=bun helper-daemon/daemon.ts (parse + resolve, no execution)`);
+    try { rmSync(checkOut, { recursive: true, force: true }); } catch { /* not there */ }
+    const checked = await runCmd(
+      `${sh(process.execPath)} build --target=bun --outdir=${sh(checkOut)} helper-daemon/daemon.ts`, tree, logPath, 120_000);
+    try { rmSync(checkOut, { recursive: true, force: true }); } catch { /* the exit code is what mattered */ }
+    if (checked.code !== 0) {
+      log(`update ${short}: check-failed (exit ${checked.code}) — the link was NOT moved, this daemon keeps running`);
+      await report(cfg, j, 1, `check-failed: the new daemon.ts does not parse (exit ${checked.code}) — no swap`, logPath, clonedSha);
+      return;
+    }
+    log(`update ${short}: symlink-swap ${cfg.checkoutLink} → ${tree}`);
+    const swapped = swapLink(cfg.checkoutLink, tree);
+    if (swapped !== null) {
+      log(`update ${short}: swap-failed (${swapped}) — this daemon keeps running`);
+      await report(cfg, j, 1, `the symlink swap failed: ${swapped}`, logPath, clonedSha);
+      return;
+    }
+    await report(cfg, j, 0, `swapped ${cfg.checkoutLink} → ${tree}`, logPath, clonedSha);
+    pruneTrees(cfg);
+    // the `finally` below never runs past an exit — the bundle goes here, on the one path that ends
+    try { rmSync(bundlePath, { force: true }); } catch { /* the tree is what mattered */ }
+    log(`update ${short}: exit ${EXIT_UPDATED} — the unit restarts this daemon from ${cfg.checkoutLink}`);
+    process.exit(EXIT_UPDATED);
+  } finally {
+    suiteBusy = false;
+    try { rmSync(bundlePath, { force: true }); } catch { /* idem */ }
+  }
+}
+// ATOMIC on POSIX: the new link is created beside the old one and RENAMED over it, so at no
+// instant is there no link, and no instant where it points at a tree that was not checked. A path
+// that is a real directory rather than a symlink is refused, not replaced — that is somebody's
+// checkout, and moving it aside is an owner act.
+function swapLink(link: string, target: string): string | null {
+  try {
+    try { if (!lstatSync(link).isSymbolicLink()) return `${link} exists and is not a symlink`; }
+    catch { /* absent — the first swap creates it */ }
+    mkdirSync(dirname(link), { recursive: true });
+    const fresh = `${link}.new`;
+    try { rmSync(fresh, { force: true }); } catch { /* not there */ }
+    symlinkSync(target, fresh);
+    renameSync(fresh, link);
+    return null;
+  } catch (e) { return e instanceof Error ? e.message : String(e); }
+}
+// The trees are the rollback, so they are kept — but not forever: the link's target and the two
+// newest others survive. Two, because one of them is the tree THIS process is still running from
+// while the exit below is on its way.
+function pruneTrees(cfg: HelperConfig): void {
+  try {
+    let current = "";
+    try { current = readlinkSync(cfg.checkoutLink); } catch { /* no link yet */ }
+    const trees = readdirSync(cfg.workDir).filter((d) => /^tree-[a-f0-9]{12}$/.test(d))
+      .map((d) => `${cfg.workDir}/${d}`).filter((p) => p !== current)
+      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+    for (const p of trees.slice(2)) rmSync(p, { recursive: true, force: true });
+  } catch { /* an unlistable workDir is reported by the next mkdir, not here */ }
+}
+
 // keep the last N run directories: a daemon that never prunes fills the disk of a machine nobody
 // logs into, which is the failure mode of every long-lived helper.
 function pruneRuns(cfg: HelperConfig): void {
@@ -422,6 +559,7 @@ export async function tick(cfg: HelperConfig, st: LoopState): Promise<void> {
     body: JSON.stringify({
       deviceId: cfg.deviceId, name: cfg.name, mode: local.mode,
       load: Math.round(load1 * 100) / 100, capabilities: cfg.capabilities,
+      ...(daemonSha ? { daemonSha } : {}),
     }),
   });
   const wish = (await bodyOf<{ desiredMode?: string }>(beat)).desiredMode;
@@ -453,7 +591,9 @@ async function main(): Promise<never> {
   }
   secret = cfg.token;
   mkdirSync(cfg.workDir, { recursive: true });
-  log(`helper-daemon up: ${cfg.name} (${cfg.deviceId}) → ${cfg.fleetUrl}, poll ${cfg.pollSec}s, work ${cfg.workDir}`);
+  daemonSha = await clonedHeadOf(import.meta.dir);
+  log(`helper-daemon up: ${cfg.name} (${cfg.deviceId}) → ${cfg.fleetUrl}, poll ${cfg.pollSec}s, work ${cfg.workDir}`
+    + `, running ${daemonSha ? daemonSha.slice(0, 8) : "an unversioned copy (no git checkout around this file)"} from ${import.meta.dir}`);
   const st: LoopState = { offUntil: 0, lastMode: "" };
   for (;;) {
     try {

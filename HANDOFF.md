@@ -1,3 +1,103 @@
+# HANDOFF — Program 66499a03 „Fleet-Betrieb ohne manuelles Owner-Routing": Phase 3 A+B gelandet und Stufe-2-gruen, C queued, zwei Lifecycle-Loecher gemessen, 2026-09-02 (frueh)
+
+Program **`66499a038db3393f8a2228e1`** aktiv, gebunden an Slot 4 (diese Session, Fable 5.1). Erster
+HANDOFF-Abschnitt dieses Programs — die Vorgaenger-MAINs (Slot 13 Proposer, Slot 7 Codex-MAIN) haben
+keinen hinterlassen; ihre Geschichte steht seit `87c5be6` als `authority.lineage` in
+`GET /api/self/program-execution` (erster Eintrag `backfill-unknown`).
+
+## 1. Autoritaet & Betrieb
+
+- **Owner-Vorgabe 2026-09-01 abends: ALLE Sessions und Lanes auf `claude / claude-fable-5-1[1m] / high`.**
+  Ersetzt die GPT-fuer-alles-Zeile (2026-08-08, steht noch in CLAUDE.md) und die Program-Entscheidung
+  „nur Codex-Worker". Memory: `feedback-fable-for-all-sessions-and-lanes`.
+- **Master-Stop bleibt AUS** (`dispatch:false` seit 2026-08-31). Weg: `POST /api/self/tasks` (kind
+  `auftrag` + Spawn-Tripel) -> `POST /api/self/tasks/:id/release` -> **Hand-Dispatch durch den Fleet
+  Controller** (Slot wechselt: 1 -> 2 -> 12 -> 14 heute Nacht; Attentions gehen ans Board, nicht an
+  einen Slot). Damit ist Schritt 11 des Erfolgsmasses („kein Owner-Management") STRUKTURELL unerfuellbar,
+  solange der Master-Stop aus ist — Owner-Entscheid, per Attention 17aee703 gestellt und mit Option 2
+  (Hand-Dispatch) beantwortet.
+- Self-Land-Promotion `guarded`. Owner-Token, tmux, Pane-Lesen: nie benutzt. Kommunikation mit dem
+  Controller ausschliesslich ueber `POST /api/self/attention` (kind decision/review-ready) — `/send`
+  ist eine Owner-Route.
+- **Betriebsregel des Controllers seit heute Nacht:** keine Lane-Beweiskette neben einem laufenden
+  Post-Land-Audit; Audit-Budget seit Deploy `64c05bf` 45 min (vorher 30). Grund: zwei `unknown`-Audits
+  (67b2265, 8990fcb), beide GEARBEITET statt gewartet (Mutex nach 0 s / 50 s), 3010 bzw. 2508 Trail-Zeilen
+  bei Load 32 auf 8 Kernen, von der Wand getoetet. Meine Korrektur der Controller-Notiz: Attention
+  54dcf64b, angenommen (Notiz 673d5224 archiviert, aecd5f89 gefilet).
+
+## 2. Gelandet & selbst verifiziert
+
+- **Worker A `3c72fe3a` -> `4b14096`+`67b2265`** (Fable-Lane Slot 5, Branch fleet/260901201138-9c83):
+  `FLEET_REPORT_RECOVERY_MAX_ATTEMPTS` (Default 5) deckelt die Fleet-Report-Recovery (ein Vergleich
+  `fleetReportRecoveryExhausted`, ein Schreiber `recordFleetReportNonAcceptance` fuer Transport UND
+  Recovery, Pre-Paste-Guard fuer restaurierte Zeilen ueber dem Deckel); eigener Paste zaehlt nicht mehr
+  als Receiver-Output (`quietUntil` am Paste, Tail 500 ms). Das ist der Mechanismus, an dem der letzte
+  Program-Lauf starb (Event 8ca8c38e, 1549 Versuche, receiver-gone). Land durch den Controller
+  (Owner-Bearer, Note `suspect: owner-token-outside-board`), verify.ok true, 7 Schritte, 101 s.
+  Worker-Isolated-Lauf: 1 FAIL (`§2 a commit after boot is counted`, Basisrate 1/494, Modul unberuehrt,
+  Diff disjunkt) — von mir als nicht A zurechenbar adjudiziert, KEIN Same-Tree-Rerun. Stufe 2: zweimal
+  `unknown` (Last), dann indirekt gruen ueber das Audit von 87c5be6 (Ancestor).
+- **Worker B `b0c15ca5` -> `87c5be6`** (Fable-Lane Slot 8, fleet/260902022518-0bf1): `Program.lineage`
+  als vierter Record (v1, Deckel 50 + `dropped`, Loader default-deny, Close+Append im selben Save wie
+  `program.main`, „first close wins": ein beobachteter `retire` bleibt, der Rebound traegt sich nur als
+  `via`), `authority.lineage` in program-execution, ehrliche `unknown`-Saetze. Worker-Isolated-Lauf
+  wortwoertlich ALL PASS (Trail `isolated-20260902T033019Z-5569`, 3423/0). **Post-Land-Audit GRUEN**:
+  3423/0, 2425 s, Trail `isolated-20260902T054820Z-28175`. Land durch den Controller (Owner-Route,
+  `confirm:true`; die Note traegt das Verify-Verdikt von Land 1 auf Basis 5c9f661 — der Audit misst den
+  echten Baum). B von mir gefiled als b92e9cc9 (Codex-Fassung, archiviert) und b0c15ca5 (Fable).
+- Beide Diffs habe ich SELBST gelesen (server.ts-Hunks, Trail-Dateien, Docs), nicht den Reports geglaubt.
+
+## 3. In Flug — das Erste, was du tust
+
+1. **Worker C `860cecdf` ist `queued`** (Fable-Tripel), braucht Hand-Dispatch durch den Controller. Inhalt:
+   typisierter `MergeLast`-Fakt fuer „rebase ok, verify gruen, Fast-Forward verloren", der genau diesen
+   Fall wieder done-looking und selbst relandbar macht. Wenn C beim Lesen laeuft: Report kommt in diese
+   Pane; Diff selbst lesen; landen NUR, wenn `nextAction` die Self-Land-Tuer nennt; sonst Controller.
+2. **Watches sterben mit dem Slot.** Bei Uebergabe alle gefeuert; nichts neu zu armieren, bis C landet.
+3. Danach Worker D (noch nicht gefiled): typisierte Report-Annahme-Tuer
+   (`POST /api/self/fleet-report/:id/accept|reject`) — heute gibt es nur den Event-ACK, der laut
+   A-Vertrag ausdruecklich Transport-Quittung ist; Schritt 7 des Erfolgsmasses ist ohne sie nicht
+   mechanisch belegbar. Dazu, falls nicht vorhanden, das automatische Cleanup einer clean+ahead0-Lane
+   ohne Kandidat (Schritt 8).
+4. Offene Owner-Frage 4 (read-only Portfolioansicht fuer den Controller): erst NACH C als eine Attention
+   stellen — Geschmacks-/Scope-Frage.
+
+## 4. Zwei Lifecycle-Loecher, gemessen, beide als Zeile abgelegt
+
+- **(a) Self-Land nach verlorenem Fast-Forward ist strukturell unmoeglich** (Notiz `61a0fac1`, Fix =
+  `860cecdf`). Land 1 von B: rebase ok, verify GRUEN, ff an ca52fc9 gebrochen -> `mergeLast.status=error`.
+  `lane-signals.ts#MERGE_BLOCKING = ["blocked","error"]` -> nie done-looking ->
+  `server.ts#selfLandTaskForMain` Klausel (11) lehnt ab (vier Versuche, 409 „no signal", nach echter
+  main-Bewegung). Die einzige Self-Tuer, die den Zustand aendern koennte, ist die, die ablehnt. Der
+  No-Progress-Guard ist NICHT die Ursache (greift erst dahinter). Folge: Schritt 5 degradiert bei jedem
+  Land-Rennen still zum Owner-Land.
+- **(b) Ein Hand-Dispatch-Override schreibt die Task-Zeile nicht um:** `3c72fe3a` traegt weiter
+  `spawn: codex/gpt-5.5`, die Lane-Zeile sagt `claude-fable-5-1[1m]`. Die Lane-Zeile ist die Wahrheit;
+  wer aus der Task-Zeile liest, liest den Filing-Wunsch. Nicht gefiled — beim naechsten Brief mitnehmen.
+
+## 5. Erfolgsmass — Stand nach dieser Session, ehrlich
+
+Belegt: Task-Erstellung/Release ueber Self-Tueren (A, B, C) · Report mit Commit und exakten Prueftails
+(A, B) · Reportzustellung ohne Owner-Routing an eine Claude-MAIN (alle Reports kamen, jeder ACKed) ·
+Self-Land ueber Promotion (`b65fedc`, Vorgaenger; fuer B strukturell blockiert, siehe §4a) · Merge- und
+Audit-Event je genau einmal (B: `f6064dfb`, `a4d9dd0e`) · roter/unknown Audit erreicht die aktive MAIN
+(zweimal `unknown`, einmal Remote-Rot per Ping, jeweils mit benanntem unmessbarem Zustand) ·
+Rekonstruktion ohne Pane-Lesen (diese Session, aus Ledgern und Projektion; die Lineage-Luecke war die
+benannte Unbekannte und ist seit B geschlossen). NICHT belegt: ausdrueckliche Report-Annahme (keine Tuer,
+Worker D) · automatisches Cleanup einer no-candidate-Lane (nicht beobachtet) · dokumentierte
+Self-Succession (diese Uebergabe ist der erste Versuch) · kein Owner-Management (Master-Stop AUS).
+
+## 6. Ehrlichkeiten & Reste
+
+- Kein Direkt-Commit ausser diesem HANDOFF (docs-only, kein Land-Gate, kein Audit — per Regelbuch gesagt).
+- Kein Deploy gefahren; A und B wirken erst nach Deploy (Verb 2, Owner-Akt). Der Live-Server (64c05bf)
+  hat A und B NICHT — die lebende 1549er-Zeile wird erst nach dem Deploy blockiert.
+- Der Remote-Rot auf d4f2bfc (sechster namenloser Second-host-Rot) ist fremdes Land, nicht adjudiziert.
+- Composer-/Queue-Text wurde nie als Nachricht gelesen; ein GO gilt nur mit `rev-parse main`-Beweis.
+- ctx: nicht messbar ohne Owner-Token (Program-Verbot); geschaetzt ~20 % bei Uebergabe-Vorbereitung.
+
+---
+
 # HANDOFF — Fleet Controller (Slot 12, Fable 5.1 high): Audit-Rot als Flake mit Mechanismus, sechs serielle Lands, Steward-Punkte umgesetzt, Second-host zurueck, Nachfolge wegen ctx 36 %, 2026-09-02 (07:50)
 
 Rolle: **🎛 Fleet Controller**, nicht Program-MAIN. Gegruendet per /open+/send (succeed-Route scheitert

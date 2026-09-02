@@ -74,20 +74,32 @@ Schnittlinie nach Zug 4; alles darunter ist Beobachtung.
 1. **A1 landen, Grace 60000, ein Tag messen.** Verlagert bis ~280 min/Tag Audit auf den Helfer
    und damit den groessten Teil der 200 min Gate-Warten. Falsifizierbarer Erfolgstest: in den
    `fleet/land`-Notes des naechsten vollen Tages faellt `verify.waitMs` fuer die Mehrzahl der
-   Lands auf nahe 0. Faellt es nicht, war der Mutex nicht der Engpass. Kosten: eine Zeile
+   Lands auf nahe 0. Faellt es nicht, war der Mutex nicht der Engpass. Zweiter Teil des Tests
+   (GLM): die erste Remote-Audit-Zeile nach dem Daemon-Bootstrap traegt `fails[]` und ein
+   `checks.ran` in lokaler Groessenordnung (~3400), nicht `ran:23` aus dem Tail. Und: den Filter
+   aus Zug 2 NICHT am selben Mess-Tag einfuehren, sonst ist die Attribution weg. Kosten: eine Zeile
    (`3bb5a5c9`, Slot 1, fertig) + `.env` + Verb 2. **Kein Plan-Eingriff.**
 2. **Vorschau (Schritt d) bedingt statt pauschal — als Zeile im Slice-Brief, nicht als Regel.**
    Vor dem Land: fuer jedes Symbol, das die Lane aus `server.ts`/`src/client.ts` herausbewegt,
    `rg -n '<symbol>' e2e/` ausserhalb `e2e/pins.ts`. Null Treffer → Vorschau entfaellt
-   (−26 min Mutex, ~0 Risiko: `RULE_SPAN` im Gate faengt Rohschnitte ueber Modulgrenzen). Ein
+   (−26 min Mutex). Restrisiko, das der Filter NICHT faengt (GLM §4): `RULE_SPAN` liest nur
+   `e2e/pins.ts` selbst, nie die 12 Leser; und die Leser fuehren geschnittene Bloecke AUS
+   (`e2e/explorer.ts` baut `new Function(ts.transformSync(fxSrc))`) — eine Laufzeit-Abhaengigkeit,
+   deren Name nicht in `e2e/` steht, sieht `rg` nicht. Verstaerkung: ALLE im Hunk definierten
+   Bezeichner rg-en, nicht nur das Zielsymbol. Ein
    Treffer → Leser in derselben Lane auf `serverU.span()`/`clientU.span()` umhaengen, dann
    Vorschau fahren. Fuer P4 Slice 1 haette der Filter „entfaellt" gesagt und recht gehabt.
    Widerspruch, benannt: `verify-proportion.ts` empfiehlt bei jeder `e2e/`-Beruehrung
    `isolatedPreview:true` — advisory, kein Gate; keine Code-Aenderung noetig.
-3. **Betriebsteil von Schritt f buendeln:** Dry-Boot/Deploy/Health/pins/graphify nicht je Slice,
+3. **(nach GLM §4 unter die Schnittlinie verschoben — kleinster Ertrag, frisst die Rollback-Marge)**
+   Betriebsteil von Schritt f buendeln: Dry-Boot/Deploy/Health/pins/graphify nicht je Slice,
    sondern je 2–3 Slices — Deckel drei, weil `undo-land` nur drei tief reicht. Faktisch lief es fuer
    Slice 1 schon so (kein Dry-Boot, kein Deploy). ~10 min je Slice.
-4. **P5 als zweite Spur parallel produzieren, seriell landen.** Reihenfolge innerhalb P5 drehen:
+4. **Zweites Helfergeraet — Owner-Entscheid, 0 Code** (nach GLM §4 ueber die Schnittlinie gehoben):
+   der einzige Fix fuer den groessten Posten (Vorschau 52,5 %), sobald die Audits die eine
+   Helfer-Nadel belegen; `helperDevices` ist eine Map, `mainMacbook` war am 09-01 23:17 kurz
+   registriert.
+5. **P5 als zweite Spur parallel produzieren, seriell landen — erst NACH dem Mess-Tag von Zug 1.** Reihenfolge innerhalb P5 drehen:
    `ui.ts`, Pane, Picker, Klein-Dialoge zuerst (billig, beweisen die Spur ohne Mutex); Explorer,
    Programs, Review/Outcomes, Watch zuletzt (die vier teuren Leser der 79-Stellen-Klasse).
    P6 vorerst nur LESEND auf `server/types.ts` (Befunde als Zeilen, Umsetzung nach P4).
@@ -129,3 +141,29 @@ nicht zu Handarbeit macht.
 - 69 von 96 main-Commits seit 08-31 sind Direkt-Commits ohne Land-Note; deren Verifikation ist in
   keiner Zahl. Staging/Boot/Teardown je Wrapper (~20–60 s) fehlt in jeder Spanne — die
   Mutex-Zahlen sind Untergrenzen.
+
+## 4. Zweitmeinung GLM-5.3 (pi-zai-Lane Slot 7, 15:05; Datei-Pointer, fuenf Fragen) — eingearbeitet
+
+Was sie trifft (verifiziert an `e2e/pins.ts:152`, `e2e/explorer.ts:160-195`, `server.ts` Wand-Default
+und Tail-Zaehlung), und was daraus oben geaendert ist:
+
+- **Zug 2 war falsch begruendet:** „~0 Risiko, weil `RULE_SPAN` im Gate" — `RULE_SPAN` scannt nur
+  `read("e2e/pins.ts")`, die 12 Pfad-Leser sieht er strukturell nicht. Das Risiko ruht allein auf dem
+  `rg`-Filter, und der ist kein vollstaendiges Orakel: (a) Abhaengigkeitshuelle ausgefuehrter Bloecke,
+  (b) Moves INNERHALB eines Anker-Paars (`PaintOpts`…`loadTree`), (c) Renames/Umsortierungen. Belegbasis
+  n=1. → Zug 2 traegt jetzt das Restrisiko und die Verstaerkung (alle Hunk-Bezeichner rg-en).
+- **Zug 1 misst Tempo, nicht Beweisqualitaet:** Remote-GRUEN ist schwach bewiesen (`checks.ran` aus
+  dem 40-Zeilen-Tail; einziges Remote-Gruen trug `ran:23`), `fails[]` des neuen Daemons ist ungemessen.
+  Wer den Beweiskanal auf eine ungepruefte Pipe verlagert, muss sie am ersten Tag pruefen. → Erfolgstest
+  erweitert. **Das ist auch die Annahme, die die Dauer-Schaetzung zuerst kippt:** bleiben Remote-Rots
+  ohne Check-Namen, ist jedes Rot Handarbeit plus lokaler 26-min-Rerun, und aus ~4 werden ~2–3
+  Slices/Tag. Zweite Kante: Lane-Arbeit n=1 (130 min).
+- **Zug 3 streichen** (jetzt unter der Linie): ~10 min/Slice, frisst die `undo-land`-Marge genau dann,
+  wenn ein unbemerkter Leser-Bruch aus Zug 2 den Bisect braucht; gebuendeltes `graphify update` laesst
+  Schritt a gegen einen 2–3 Slices alten Graphen schneiden (Praezedenz `e03d44c`: drei Symbole
+  zurueckgewiesen).
+- **Zweites Geraet gehoert ueber die Linie** (jetzt Zug 4): einziger Fix fuer den groessten Posten,
+  0 Code, Owner-Akt. **Zug 5 (P5 parallel) erst nach dem Mess-Tag.**
+- **Unbehandelt und benannt:** die Suite-Drift (453 → 675 ms/Check) adressiert kein Zug; lokale
+  Rueckfaelle sterben weiter an der Wand (`server.ts` Default 30 min, `.env`/watchdog 45 min nur nach
+  Restart); 69/96 Direkt-Commits ohne Land-Note machen alle Zahlen zu Untergrenzen.

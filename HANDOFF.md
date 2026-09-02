@@ -58,6 +58,64 @@ Watches gehoeren den MAINs. Owner-Delegation 10:05 gilt weiter. Modelle: MAINs F
 - Der Live-Server war 4 Commits hinter HEAD, `state.sh` sagt es (`deploy gap`) — vor jedem „das Feld fehlt
   auf dem Board" erst `deployGap.codeBehind` pruefen.
 
+## 5. DER AUFTRAG AN DICH (Owner 13:30): die Sanierung beschleunigen — sauber, mit Agenten
+
+**Owner woertlich:** „das waeren ja zwei Wochen... Oder wuerde der second-host split das ganze nochmal
+potenziell stark beschleunigen? Ich glaube tatsaechlich auch das die Hauptdauer heute von einer reihe an
+fehlerhaften suites produziert wurde.. Vllt muessten wir hier nochmal gut nachdenken ob wir den Plan-
+ablauf oder sonstwas nicht vielleicht besser strukturieren/optimieren koennen." Kontext: meine
+Schaetzung (Denksession-Notiz, Chat 13:25) war 2–3 Wochen bis P7 bei 2 Slices/Tag; B-Fixes sollen
+in P6 laufen (Owner-Entscheid: warten bis Freeze-Ende, Entwuerfe vorher).
+
+**Was ich schon gemessen habe (post-land-audits.jsonl, heute):** 16 Audits, ALLE lokal, 326 min
+Mutex = 5,4 h. Davon 5 gruen (je ~28 min), 4 rot (2 mit gezaehlten Fails 2 und 10 — Composer-
+Familie —, 2 ohne), 2 `unknown` an der 30-min-Wand (Last: Vorschau neben Audit, `aecd5f89`), 5 `unknown`
+mit ~0 ms (nie gelaufen). Rechnung: ~3 h des Tages waren rote/gestorbene Audits plus deren Reruns —
+die Owner-Hypothese traegt zur Haelfte; die andere Haelfte ist, dass ALLES lokal lief (Grace 0).
+Das Slice-Protokoll (Plan §P4 d–g) faehrt je Slice DREI volle Suiten seriell auf demselben Lock:
+Vorschau in der Lane, Gate, Audit — bei ~28 min je Lauf hier.
+
+**Hypothesen, die du pruefen sollst (nicht glauben):**
+- H1 Second-host-Split = groesster Hebel: mit `3bb5a5c9` gelandet laufen Audits remote → 5,4 h/Tag
+  Mutex frei; Dual-Host S2–S4 wuerde auch Vorschau/Lanes verlagern. Frage: was davon braucht S2–S4
+  wirklich, was reicht mit A1 allein?
+- H2 Die Vorschau (Protokoll d) ist bei reinen Move-Slices redundant: P3 beweist Verhaltens-
+  Gleichheit per `bun build`-SHA-Vergleich; die Vorschau wiederholt den Audit. Streichen = −28 min
+  und −1 Mutex-Halter je Slice. Regelbuch sagt ohnehin: Tier-2 ist Vorschau, kein Gate.
+- H3 Flake-Familien mit NAMEN → maschinelle Adjudikation: ein Rot, dessen `fails[]` vollstaendig in
+  einer bekannten Familie (`docs/verify-tiering.md` §11.x) liegt, wird `flake-known` ohne Rerun.
+  Voraussetzung: Namen auf jeder roten Zeile (B7 + `df22cf14`), Familien als Daten statt Prosa.
+- H4 P5 und P6 muessen nicht auf P4-Ende warten: P5-Verify ist `bun run build` + Demo-Typecheck
+  (leicht, kein Suite-Mutex); P6-Sweeps koennen auf schon geschnittenen Modulen (`server/types.ts`,
+  `server/persist.ts`) beginnen. Wo kollidiert das mit `e2e/pins.ts` (serialisiert P4/P5)?
+- H5 Die 5 „unknown ~0 ms" sind ein eigener Fehler (Audit nie gestartet) — Ursache?
+
+**So durchdenken (Agenten, Opus, read-only, je mit Dateien+Done im Brief; Ergebnis als
+datierte Notiz `docs/messungen/sanierung-beschleunigung-2026-09-0x.md` + Queue-Zeilen; GLM-
+Zweitmeinung ueber die pi-zai-Lane per Datei-Pointer, so lief es heute fehlerfrei):**
+1. **Zeitbudget-Agent:** Skript ueber `post-land-audits.jsonl`, `lane-outcomes.jsonl` (Land-Notes:
+   `verify.waitMs`/`ms` — Feldnamen erst pruefen, mein Versuch fand 0 Zeilen fuer heute),
+   `audit.jsonl` (`postland_audit`, `land_actor`) seit 2026-08-31: Minuten je Kategorie (Gate-Arbeit,
+   Gate-Warten, Audit gruen/rot/unknown, Reruns, Vorschau in Lanes) je Tag. Done = eine Tabelle
+   Tag × Kategorie mit Ableitungskommando.
+2. **Protokoll-Agent:** `docs/sanierung-2026-09/plan-2026-08-31.md` §Phasen + §Slice-Protokoll +
+   §Nachtrag, `docs/verify-tiering.md` §5b/§11, `docs/messungen/p0-baseline-generalsanierung-2026-09-01.md`,
+   `AGENTS.md` §Verify, `verify-proportion.ts`: welche Protokollschritte sind durch einen anderen
+   Beweis abgedeckt (H2), welche Reihenfolgen sind echte Abhaengigkeiten vs. Vorsicht (H4). Done =
+   je Schritt „noetig weil <Beweis>" oder „streichbar, ersetzt durch <Beweis>".
+3. **Second-host-Agent:** `docs/dual-host-session-runtime-phase0-2026-08-30.md`,
+   `docs/messungen/second-host-baseline-2026-08-29.md`, `helper-daemon/README.md`, Queue `8228ae65`
+   `60d07416` `c3f91ce1`, Slot 9s HANDOFF-Abschnitt: was koennen S2–S4 verlagern, was kostet jeder
+   Schritt, was davon ist fuer H1 noetig. Done = Tabelle Schritt × verlagert × Kosten × Reihenfolge.
+   Dann: eigene Synthese, GLM-Kritik, Plan-Aenderung als Vorschlag an Slot 12 (die Sanierungs-MAIN
+   BESITZT den Plan — nichts dort ohne sie umschreiben) und an den Owner.
+
+**Randbedingungen:** `server.ts` bleibt Freeze; `3bb5a5c9` ist unabhaengig davon der erste Zug
+(Freeze-Ausnahme, die dem Freeze dient — Owner fragen, nicht annehmen). Keine Watcher (MAINs
+beobachten). Modelle: MAINs Fable, Lanes Opus, GLM nur ueber pi-zai. Lange Texte an Sessions als
+Datei + Einzeiler. Und miss deinen ctx, bevor du Agenten startest — drei Extraktionen kosteten mich
+heute ~12 Punkte, die Synthese danach ~8.
+
 ## 4. Offene Owner-Punkte
 
 1. `3bb5a5c9` freigeben (Freeze-Ausnahme?) → Grace zurueck. 2. **Owner-Richtung 13:05 (Zeile `98979607`):**

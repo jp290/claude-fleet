@@ -87,6 +87,10 @@ import {
 import { ERROR_KEEP, SERVER_BOOT_AT, serverErrors, errorTotal, logError, errorsView } from "./server/errors";
 import { appendEvent, appendEventStrict, readLedger, readEventLog } from "./server/persist";
 import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
+import { STATIC, bundleV, staticResponse, finishHttp, transportWs, transportSince, transportPeers, transportPaths } from "./server/transport";
+import { DIRS_CAP, FIND_MAX_DEPTH, FIND_MAX_VISIT, FIND_MAX_HITS, FIND_MAX_MS, FIND_FANOUT, FIND_MAX_SLOW,
+  findSlow, knownSlow, readdirSoon, gitKind, subdirNames, DIRINFO_COMMITS, FILE_CAP, fileBody, editability,
+  TREE_CAP, FILE_WRITE_DENY, dirEntries, type DirEntry } from "./server/dir-explorer";
 
 // Defaults to localhost — nothing is network-reachable until you explicitly set FLEET_HOST
 // (e.g. your Tailscale IP via `tailscale ip -4`). Even then, every request needs the access
@@ -8680,77 +8684,6 @@ async function poll(): Promise<void> {
   );
 }
 
-// How many folder names one listing serves. The number is unchanged; what is new is that the
-// payload SAYS when it bit — `total` and `capped` are what let the tree draw "200 of 1284 — refine"
-// instead of quietly presenting a truncated directory as the whole directory.
-const DIRS_CAP = 200;
-// what a search from a root is allowed to cost. Every one of these is reported through `truncated`
-// rather than silently applied, for the same reason.
-const FIND_MAX_DEPTH = 6;    // levels below the root
-const FIND_MAX_VISIT = 4000; // directories read
-const FIND_MAX_HITS = 200;   // matches returned
-// A COUNT OF DIRECTORIES IS NOT A BOUND ON TIME, and this is not theoretical: measured on this
-// machine, 119 of the 120 folders in the home directory answer readdir in under 10ms and ~/Desktop
-// — an iCloud-synced folder — does not answer within 8 SECONDS, reproducibly. A visit cap cannot
-// bound that, because the cost is not in the number of reads. So one read races a short timeout and
-// the walk as a whole races a deadline; a search is a keystroke away from the next one and has to
-// come back on a human scale or not at all.
-const FIND_MAX_MS = 2500;    // wall clock for the whole walk
-const FIND_DIR_MS = 400;     // one directory's readdir
-const FIND_FANOUT = 32;      // directories read at once — the deadline buys far more ground in parallel
-// A read that times out is not cancelled, only abandoned: it goes on occupying the filesystem thread
-// pool, and the next search queues behind it. Measured: a full walk of this home directory abandons
-// 4 reads, and back-to-back walks that abandon many more make the FOLLOWING search time out on its
-// own root — 0 hits, one directory visited. So the tail a search may leave behind is bounded too,
-// well above what a healthy walk needs.
-const FIND_MAX_SLOW = 8;
-
-// Folders that did not answer in time, and when. A timed-out read is not CANCELLED, only abandoned:
-// it goes on occupying libuv's filesystem thread pool — four threads, shared with everything else
-// this server does — so abandoning reads is the expensive part, not waiting for them. Measured: five
-// home searches in a row abandoned 100+ reads and every search after them timed out on its own root
-// (0 hits, one directory visited), and the picker stayed that way. Remembering the offenders means
-// the SECOND search does not pay for them at all. The entry expires, because "slow" can also mean
-// "the machine was busy for a moment", and a permanent verdict on that would quietly blind the
-// search to a real folder forever.
-const findSlow = new Map<string, number>();
-const FIND_SLOW_TTL_MS = 5 * 60_000;
-function knownSlow(dir: string): boolean {
-  const at = findSlow.get(dir);
-  if (at === undefined) return false;
-  if (Date.now() - at < FIND_SLOW_TTL_MS) return true;
-  findSlow.delete(dir);
-  return false;
-}
-
-// null = unreadable (permissions, or it vanished). "slow" = it did not answer in time, which is a
-// different fact and one the caller must report rather than treat as an empty folder.
-async function readdirSoon(dir: string) {
-  return await Promise.race([
-    readdir(dir, { withFileTypes: true }).catch(() => null),
-    new Promise<"slow">((r) => setTimeout(() => r("slow"), FIND_DIR_MS)),
-  ]);
-}
-
-// one statSync probe classifies a folder: .git-as-dir = a real repo (badge it, you can start a lane
-// here); .git-as-file = a git worktree (a lane already — the picker's "hide worktrees" toggle
-// filters these). Same syscall budget as a plain existsSync.
-function gitKind(path: string): { repo: boolean; wt: boolean } {
-  try { return { repo: true, wt: statSync(`${path}/.git`).isFile() }; }
-  catch { return { repo: false, wt: false }; }
-}
-
-// the subfolders of one directory, sorted. `hidden` is the picker's dotfolder toggle: .claude and
-// .github are real places to open a session in, and the filter that hid them was unconditional.
-async function subdirNames(dir: string, hidden: boolean): Promise<string[]> {
-  const entries = await readdir(dir, { withFileTypes: true });
-  return entries
-    .filter((e) => (e.isDirectory() || e.isSymbolicLink()) && (hidden || !e.name.startsWith(".")))
-    .filter((e) => { try { return statSync(`${dir}/${e.name}`).isDirectory(); } catch { return false; } })
-    .map((e) => e.name)
-    .sort((a, b) => a.localeCompare(b));
-}
-
 async function listDirs(raw: string, hidden: boolean) {
   const dir = resolve(expandCwd(raw));
   if (!existsSync(dir) || !statSync(dir).isDirectory()) throw new Error(`not a directory: ${dir}`);
@@ -8846,7 +8779,6 @@ async function findDirs(raw: string, q: string, hidden: boolean) {
 // choosing between two similarly-named directories meant opening a session in one to find out.
 // Every field here is absent rather than guessed when git cannot answer: a branch with no upstream
 // has no ahead/behind, and reporting 0/0 for it would be a measurement nobody made.
-interface DirEntry { name: string; dir: boolean }
 interface DirInfo {
   path: string;
   exists: boolean;
@@ -8863,54 +8795,6 @@ interface DirInfo {
   hidden?: number;                  // dot-entries not listed — a repo whose visible children are none is not "empty"
   lanes?: number;                   // Fleet lanes forked from this repo (<path>.worktrees/*)
 }
-// The detail pane and the folder tree describe the SAME directory, side by side, and stopped at
-// different places: the tree listed up to DIRS_CAP (200) while this pane stopped at 40, so the
-// right-hand surface contradicted its own neighbour about what is in there. Owner-observed
-// 2026-08-04, on a home directory of 153 folders: "auf der grossen Fläche rechts werden nicht alle
-// Ordner angezeigt". Tied to DIRS_CAP rather than re-typed, so the two cannot drift apart again.
-// The cap itself stays — with entryTotal it is a stated one — and folders sort before files, so
-// what a cap removes is always files first.
-const DIRINFO_ENTRIES = DIRS_CAP;
-const DIRINFO_COMMITS = 5;
-// what one file's body is allowed to be. The cap is on the SERVED text, and `truncated` says so —
-// a viewer that silently shows the first half of a file is worse than one that refuses.
-const FILE_CAP = 512 * 1024;
-function fileBody(text: string): { text: string; binary: boolean; truncated: boolean } {
-  // a NUL anywhere in the first 8 KB is the practical binary test (git uses the same idea). Decoding
-  // a PNG as UTF-8 produces replacement characters, not an error, so "did it decode" proves nothing.
-  if (text.slice(0, 8192).includes("\u0000")) return { text: "", binary: true, truncated: false };
-  return text.length > FILE_CAP
-    ? { text: text.slice(0, FILE_CAP), binary: false, truncated: true }
-    : { text, binary: false, truncated: false };
-}
-// Whether this file may be EDITED, decided where the bytes are rather than in the client. Three
-// files must never reach a textarea, and each for a reason only the reader of the bytes knows:
-//   · binary — there is no text to edit, and the viewer already says so
-//   · truncated — the client holds the first FILE_CAP of it, and saving that back would delete the
-//     tail. This is the one failure mode an editor bolted onto a capped viewer creates for free.
-//   · not byte-identical when re-encoded — a latin-1 line inside an otherwise clean source file
-//     decodes to replacement characters, and saving would rewrite bytes the viewer had to guess at
-// `hash` is the whole conflict story and is ABSENT in exactly those three cases: the client offers
-// ✎ if and only if the server sent one, so "is this editable" is never a client-side opinion. It
-// is over the bytes ON DISK, so an agent writing the same file in the same lane invalidates it.
-function editability(bytes: Uint8Array, text: string, body: { binary: boolean; truncated: boolean }):
-  { hash?: string; noEdit?: string } {
-  if (body.binary) return {};
-  if (body.truncated) return { noEdit: "longer than the viewer serves — editing here would save only the part you can see" };
-  if (Buffer.compare(Buffer.from(text, "utf8"), Buffer.from(bytes)) !== 0)
-    return { noEdit: "not valid UTF-8 — saving it back would rewrite bytes this viewer had to guess at" };
-  return { hash: createHash("sha256").update(bytes).digest("hex") };
-}
-// How many tracked paths the explorer tree serves. `git ls-files` on this repo returns ~130; the
-// cap is for the checkout that is two orders larger, and `capped` says so rather than pretending
-// the tree is the repo.
-const TREE_CAP = 4000;
-// Never editable through the board, wherever in the tree they sit. The first two hold this
-// server's own secrets — .env is where the deploy identity lives and fleet.json holds the owner
-// token, every share secret and every lane's scoped credential — and .git is the repository's
-// integrity, which is not text a textarea should be able to touch. Matched against the path
-// RELATIVE to the working directory, so it cannot be sidestepped by depth.
-const FILE_WRITE_DENY = /(^|\/)(\.env(\.[^/]*)?|fleet\.json|\.git)(\/|$)/;
 
 // --- drops: a file the owner hands to a session --------------------------------------------
 // WHERE the bytes land was the decision here, and it is the owner's (2026-08-06): "lane-lokal
@@ -8965,28 +8849,6 @@ async function drainBody(req: Request): Promise<void> {
   try {
     for (;;) if ((await reader.read()).done) return;
   } catch { /* the client hung up mid-send: nothing left to discard */ }
-}
-// What the folder CONTAINS — the question "which of these two checkouts is it" is answered by the
-// files, not by the branch name. Returns null rather than an empty list when the directory cannot be
-// read: "nothing is in here" and "I was not allowed to look" are different facts and the pane says so.
-async function dirEntries(path: string): Promise<{ entries: DirEntry[]; entryTotal: number; hidden: number } | null> {
-  let all;
-  try {
-    all = await readdir(path, { withFileTypes: true });
-  } catch {
-    return null;
-  }
-  const hidden = all.filter((e) => e.name.startsWith(".")).length;
-  const rows: DirEntry[] = all.filter((e) => !e.name.startsWith(".")).map((e) => {
-    // a symlink to a directory is a directory here: the picker's tree treats it as one (listDirs
-    // resolves it the same way), and the two views must not disagree about what a name is
-    let dir = e.isDirectory();
-    if (!dir && e.isSymbolicLink()) {
-      try { dir = statSync(`${path}/${e.name}`).isDirectory(); } catch { dir = false; }
-    }
-    return { name: e.name, dir };
-  }).sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1));
-  return { entries: rows.slice(0, DIRINFO_ENTRIES), entryTotal: rows.length, hidden };
 }
 async function dirInfo(raw: string): Promise<DirInfo> {
   const path = resolve(expandCwd(raw));
@@ -16666,116 +16528,8 @@ function guard(req: Request): Response | null {
   return null;
 }
 
-const STATIC: Record<string, { path: string; type: string }> = {
-  "/": { path: `${import.meta.dir}/public/index.html`, type: "text/html; charset=utf-8" },
-  "/app.js": { path: `${import.meta.dir}/public/app.js`, type: "text/javascript" },
-  "/share.js": { path: `${import.meta.dir}/public/share.js`, type: "text/javascript" },
-  "/helper.js": { path: `${import.meta.dir}/public/helper.js`, type: "text/javascript" },
-  "/xterm.css": { path: `${import.meta.dir}/node_modules/@xterm/xterm/css/xterm.css`, type: "text/css" },
-  "/manifest.webmanifest": { path: `${import.meta.dir}/public/manifest.webmanifest`, type: "application/manifest+json" },
-  "/icon.svg": { path: `${import.meta.dir}/public/icon.svg`, type: "image/svg+xml" },
-  "/icon-180.png": { path: `${import.meta.dir}/public/icon-180.png`, type: "image/png" },
-};
-
-function bundleV(): number {
-  try {
-    return Math.trunc(statSync(`${import.meta.dir}/public/app.js`).mtimeMs);
-  } catch {
-    return 0;
-  }
-}
-
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-
-// --- TRANSPORT: compression and the byte ledger. ---------------------------------------------
-// Both live here because both wrap the SAME three places that actually put bytes on the wire —
-// every JSON answer, the static assets, and ws.send. Split apart they would touch each of those
-// three paths twice, for one effect each.
-//
-// The ledger answers exactly one question: since boot, which peer received how many bytes over
-// which path. It attributes nothing and explains nothing — a row is what was sent, never why.
-// Read it through GET /api/transport, deliberately its own route (see there).
-interface TransportPeer {
-  addr: string;
-  httpBytes: number;      // response bodies as actually written, i.e. gzipped size where gzipped
-  httpRequests: number;
-  gzipSaved: number;      // identity size minus wire size, on the responses that were gzipped
-  // ws.send payload bytes BEFORE per-message deflate. The wire figure is smaller by whatever
-  // deflate achieved on that socket, and Bun does not report that back — so this number is a
-  // ceiling for WS traffic, never "bytes on the wire".
-  wsBytes: number;
-  wsMessages: number;
-  wsConnections: number;
-  first: number;
-  last: number;
-}
-const MAX_TRANSPORT_PEERS = 64;  // bounded: a peer map is keyed by remote address, i.e. by input
-const MAX_TRANSPORT_PATHS = 120; // bounded the same way — anything past the cap lands in "other"
-const transportSince = Date.now();
-const transportPeers = new Map<string, TransportPeer>();
-const transportPaths = new Map<string, { requests: number; bytes: number }>();
-
-function transportPeer(addr: string): TransportPeer {
-  const key = addr || "unknown";
-  const hit = transportPeers.get(key);
-  if (hit) return hit;
-  if (transportPeers.size >= MAX_TRANSPORT_PEERS) {
-    // evict the least recently seen — a live socket's closure keeps counting into the dropped
-    // row, so its bytes simply stop showing up. Bounded memory beats a complete ledger here.
-    let oldest: TransportPeer | null = null;
-    for (const p of transportPeers.values()) if (!oldest || p.last < oldest.last) oldest = p;
-    if (oldest) transportPeers.delete(oldest.addr);
-  }
-  const now = Date.now();
-  const fresh: TransportPeer = {
-    addr: key, httpBytes: 0, httpRequests: 0, gzipSaved: 0,
-    wsBytes: 0, wsMessages: 0, wsConnections: 0, first: now, last: now,
-  };
-  transportPeers.set(key, fresh);
-  return fresh;
-}
-
-// slot ids, share ids and worktree names would make the path map unbounded — bucket them
-const transportPathKey = (p: string): string =>
-  p.replace(/\/\d+(?=\/|$)/g, "/:n").replace(/\/(s|ws-share)\/[a-z0-9]+/g, "/$1/:id").slice(0, 80);
-
-function countHttp(addr: string, path: string, bytes: number, saved: number): void {
-  const p = transportPeer(addr);
-  p.httpRequests++;
-  p.httpBytes += bytes;
-  p.gzipSaved += saved;
-  p.last = Date.now();
-  const seen = transportPathKey(path);
-  const key = transportPaths.has(seen) || transportPaths.size < MAX_TRANSPORT_PATHS ? seen : "other";
-  const row = transportPaths.get(key) ?? { requests: 0, bytes: 0 };
-  row.requests++;
-  row.bytes += bytes;
-  transportPaths.set(key, row);
-}
-
-// Wrapping send per socket is the only place that sees BOTH halves of what a client gets: the
-// reconnect seed (up to REPLAY_TAIL bytes, sent from the open handler) and the live broadcast.
-// It is also where per-message deflate is actually switched ON: `perMessageDeflate: true` in the
-// websocket config only NEGOTIATES the extension — Bun's send() defaults `compress` to false, so
-// without this the handshake advertises deflate and every frame still goes out raw: the same
-// 27 314 payload bytes measured 27 656 wire bytes before this line and 1 546 after.
-// No size threshold: frames here are never keystroke-sized, because poll() batches a pane's
-// output per tick. The smallest real traffic measured (5 frames, 287 B total, one `printf x` per
-// second) still went 299 → 114 wire bytes compressed, so a floor would only forfeit that win.
-function transportWs(ws: ServerWebSocket<WSData>): void {
-  const p = transportPeer(ws.remoteAddress);
-  p.wsConnections++;
-  p.last = Date.now();
-  const send = ws.send.bind(ws);
-  ws.send = ((data: string | ArrayBufferView | ArrayBuffer, compress?: boolean) => {
-    const n = typeof data === "string" ? Buffer.byteLength(data) : data.byteLength;
-    p.wsBytes += n;
-    p.wsMessages++;
-    p.last = Date.now();
-    return send(data as Parameters<typeof send>[0], compress ?? true);
-  }) as ServerWebSocket<WSData>["send"];
-}
 
 function transportReport(): Record<string, unknown> {
   // open sockets are counted from the live client sets rather than tracked on close — the
@@ -16801,111 +16555,6 @@ function transportReport(): Record<string, unknown> {
     .map(([path, v]) => ({ path, ...v }))
     .sort((a, b) => b.bytes - a.bytes);
   return { since: transportSince, now: Date.now(), peerCount: peers.length, totals, byPeer: peers, byPath: paths };
-}
-
-const COMPRESSIBLE = /^(?:text\/|application\/(?:json|javascript|manifest\+json)|image\/svg\+xml)/;
-// below this the saving is a few dozen bytes — not worth compressing on every small answer
-const GZIP_MIN_BYTES = 1024;
-
-function wantsGzip(req: Request): boolean {
-  for (const part of (req.headers.get("accept-encoding") ?? "").split(",")) {
-    const [tok, ...params] = part.trim().toLowerCase().split(";");
-    if (tok !== "gzip" && tok !== "*") continue;
-    return !params.some((q) => q.replaceAll(" ", "") === "q=0");
-  }
-  return false;
-}
-
-// The single exit every HTTP response passes through (see the fetch handler): it compresses what
-// is worth compressing and records what went out. It never sees a WebSocket upgrade — that path
-// returns undefined and is handed straight back.
-async function finishHttp(req: Request, addr: string, res: Response | undefined): Promise<Response | undefined> {
-  if (!res) return res;
-  const path = new URL(req.url).pathname;
-  // Two kinds of response are already settled: one that carries its own encoding or its own
-  // content-length has been accounted for by the handler that built it (the bundle path below
-  // serves a pre-gzipped, pre-measured buffer), and one without a body has nothing to count.
-  const declared = res.headers.get("content-length");
-  if (res.headers.get("content-encoding") || declared !== null || !res.body) {
-    countHttp(addr, path, Number(declared ?? 0), 0);
-    return res;
-  }
-  const type = res.headers.get("content-type") ?? "";
-  const raw: Uint8Array<ArrayBuffer> = new Uint8Array(await res.arrayBuffer());
-  const headers = new Headers(res.headers);
-  if (!COMPRESSIBLE.test(type)) {
-    countHttp(addr, path, raw.byteLength, 0);
-    return new Response(raw, { status: res.status, statusText: res.statusText, headers });
-  }
-  headers.set("vary", "accept-encoding"); // set whether or not we compress: a cache must not
-                                          // hand one client's variant to the other kind
-  if (raw.byteLength < GZIP_MIN_BYTES || !wantsGzip(req)) {
-    countHttp(addr, path, raw.byteLength, 0);
-    return new Response(raw, { status: res.status, statusText: res.statusText, headers });
-  }
-  const gz = Bun.gzipSync(raw);
-  headers.set("content-encoding", "gzip");
-  countHttp(addr, path, gz.byteLength, raw.byteLength - gz.byteLength);
-  return new Response(gz, { status: res.status, statusText: res.statusText, headers });
-}
-
-// app.js is ~590 KB and was served `no-store`, i.e. paid in full on every single page load. It
-// can be cached forever instead — but only because a new bundle is GUARANTEED to be fetched:
-// index.html stays `no-store`, and the <script src> it hands out carries ?v=<the bundle's mtime>,
-// the same number /api/sessions reports as `v` and the client already reloads itself on. New
-// bundle → new mtime → new URL → cache miss. A request whose ?v does not match the bundle on disk
-// gets the current bytes with `no-store`, so a stale URL can never pin a client to a stale bundle.
-const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
-interface BundleBytes { mtime: number; raw: Uint8Array<ArrayBuffer>; gz: Uint8Array<ArrayBuffer> }
-const bundleCache = new Map<string, BundleBytes>();
-
-async function bundleBytes(path: string): Promise<BundleBytes | null> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    let mtime: number;
-    try {
-      mtime = Math.trunc(statSync(path).mtimeMs);
-    } catch {
-      return null; // never built
-    }
-    const hit = bundleCache.get(path);
-    if (hit && hit.mtime === mtime) return hit;
-    const raw = new Uint8Array(await Bun.file(path).arrayBuffer());
-    // a build writing this file WHILE we read it would otherwise get a truncated bundle cached
-    // until the next build — the one failure mode that is worse than the traffic being saved
-    if (Math.trunc(statSync(path).mtimeMs) !== mtime) continue;
-    const entry: BundleBytes = { mtime, raw, gz: Bun.gzipSync(raw) };
-    bundleCache.set(path, entry);
-    return entry;
-  }
-  return null;
-}
-
-async function staticResponse(req: Request, url: URL, st: { path: string; type: string }): Promise<Response> {
-  if (url.pathname === "/") {
-    const html = (await Bun.file(st.path).text()).replace('src="/app.js"', `src="/app.js?v=${bundleV()}"`);
-    return new Response(html, { headers: { "content-type": st.type, "cache-control": "no-store" } });
-  }
-  if (url.pathname === "/app.js" || url.pathname === "/share.js" || url.pathname === "/helper.js") {
-    const b = await bundleBytes(st.path);
-    if (!b) return new Response("bundle not built", { status: 404 });
-    // only app.js gets the immutable cache: index.html is the only page whose script URL we
-    // version. share.html is the public surface and helper.html is opened by hand on another
-    // machine — both keep the unchanged no-store behaviour, so a redeploy is never one stale
-    // bundle away from a portal that cannot claim
-    const versioned = url.pathname === "/app.js" && url.searchParams.get("v") === String(b.mtime);
-    const gz = wantsGzip(req);
-    const body = gz ? b.gz : b.raw;
-    return new Response(body, {
-      headers: {
-        "content-type": st.type,
-        "cache-control": versioned ? IMMUTABLE_CACHE : "no-store",
-        "content-length": String(body.byteLength),
-        vary: "accept-encoding",
-        ...(gz ? { "content-encoding": "gzip" } : {}),
-      },
-    });
-  }
-  return new Response(Bun.file(st.path), { headers: { "content-type": st.type, "cache-control": "no-store" } });
 }
 
 function slotFrom(raw: unknown): Slot | null {

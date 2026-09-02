@@ -413,7 +413,15 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   check("§1 the pre-auth route set equals the reviewed allowlist",
     found.join("\n") === [...PRE_AUTH_ROUTES].sort().join("\n"),
     `unexpected: [${found.filter((r) => !PRE_AUTH_ROUTES.includes(r)).join(", ")}] missing: [${PRE_AUTH_ROUTES.filter((r) => !found.includes(r)).join(", ")}]`);
-  const statics = [...src.slice(src.indexOf("const STATIC"), src.indexOf("function bundleV")).matchAll(/^\s*"([^"]+)": \{ path/gm)].map((m) => m[1]);
+  // the static map and bundleV live in server/transport.ts since the P4 split, so the anchors are
+  // read where they now are. The anchor probe is its OWN check: a slice between two missing anchors
+  // is the empty string, and an empty static map would read as "nothing is served without a token".
+  const transportSrc = await readText(`${ROOT}/server/transport.ts`);
+  const staticAt = transportSrc.indexOf("const STATIC");
+  const staticEnd = transportSrc.indexOf("function bundleV");
+  check("§1 the static map's own anchors are found in server/transport.ts (else the map check below is vacuous)",
+    staticAt >= 0 && staticEnd > staticAt, `STATIC@${staticAt} bundleV@${staticEnd}`);
+  const statics = [...transportSrc.slice(staticAt, staticEnd).matchAll(/^\s*"([^"]+)": \{ path/gm)].map((m) => m[1]);
   check("§1 the unauthenticated static map equals the reviewed set (no new file served without a token)",
     [...statics].sort().join(" ") === [...STATIC_ROUTES].sort().join(" "), statics.join(" "));
   const stewSrc = src.slice(src.indexOf("async function handleStewardRoute"), src.indexOf("Bun.serve<WSData>"));

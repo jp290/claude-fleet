@@ -1,6 +1,8 @@
 # server.ts — Narrativ-Archiv (Generalsanierung 2026-09, P3)
 
-Ausgehobene Kommentare aus `server.ts`, **im Original-Wortlaut** (nur das `//`-Praefix ist
+Ausgehobene Kommentare aus `server.ts` (seit P4 Slice 1 auch aus `server/types.ts`, wohin die
+Domain-Typen und `*From`-Parser gewandert sind — die Ueberschrift heisst weiter wie das Symbol),
+**im Original-Wortlaut** (nur das `//`-Praefix ist
 entfernt; Zeilenumbrueche und Einrueckung sind die des Baums, aus dem sie kamen). Dies ist ein
 Archiv, keine Nacherzaehlung: hier steht die Historie, die Herleitung und die Messgeschichte, die
 am Code nur noch als Ein-Satz-Invariante plus Verweis hierher stehen.
@@ -21,6 +23,9 @@ Die Datei waechst ueber die P3-Slices weiter — jeder Slice haengt seine Symbol
 - **Slice 3** (die fetch-Kette: `Bun.serve#fetch` ab `async fetch(req, server) {` bis Dateiende —
   Auth-Vorpruefung, der Routen-Baum, WS-Handler; Ueberschriften heissen `fetch: <Routenpfad>` und
   `websocket: <handler>`) — Basis HEAD `bd0aaae`, Lane `fleet/260902033037-5144`.
+- **Slice 4 = P4 Slice 1** (Domain-Typen + `*From`-Parser, beim Move nach `server/types.ts`
+  exkaviert: `FleetEventStatus`, `fleetEventFrom`, `Task`, `TaskAnalysis`) — Basis HEAD `87c5be6`,
+  Lane `fleet/260902051742-41fb`.
 
 ## slotCmd
 
@@ -3063,4 +3068,81 @@ reading it after would risk skipping bytes the capture does NOT show, and a gap 
 worse than an overlap (a dropped line never comes back). Bytes written during the
 capture itself may be in it and get resent: that residual window is one capture-pane
 spawn wide instead of a poll tick, and it is inherent to every capture-based seed here.
+```
+
+## FleetEventStatus
+
+### subject-gone — die Messung, die das Wort gepraegt hat
+
+```text
+"subject-gone" is the SUBJECT-side twin of "receiver-gone", and it exists because the two losses
+are not the same loss. Measured 2026-08-30 (event e1ff06ac9911f854e752d71a): a lane-ready row for
+slot 2 / fleet/260830005056-09e6 stayed `pending` through 2005 held ticks while that lane landed,
+was torn down and its slot recycled — then typed itself into a MAIN composer hours later, about a
+lane that no longer existed. The receiver was alive the whole time, so `receiver-gone` would have
+been a lie about the wrong endpoint, and `acknowledged` a receipt nobody gave. Terminal, never
+delivered, never acknowledgeable, and it spends no delivery budget.
+```
+
+## fleetEventFrom
+
+### owner-inbox — der vierte Basis-Wert im fleet-report-Zweig
+
+```text
+FOUR values here, three in the clarification branch above, and the difference is the
+point: only a REPORT can be filed to the owner principal. Missing "owner-inbox" made the
+door and the parser disagree — the row minted fine and was silently dropped on the way
+back in, so an unread owner report died at the next restart with nothing said.
+```
+
+## Task
+
+### releasedBy — warum es kein Synonym fuer confirmedByHuman ist
+
+```text
+WHO handed this draft to the machine — written at the
+RELEASE (see releaseTask) and by nothing else. NOT a synonym for the outcome row's
+`confirmedByHuman`, which answers the LAND art ("did the owner press ⏫, or did it auto-land
+clean+green"): 77 of the 89 landed rows on the live trail carry `false` there although a human
+released every single one, so the moment an unattended land writes the same value the two
+populations are no longer separable.
+```
+
+### brief — warum gespeichert statt beim Spawn kompiliert
+
+```text
+the compiled work brief — the EXACT bytes a lane will receive. It used
+to be compiled at spawn time and thrown straight at the pane, which made it unreadable before
+the fact and, worse, meant the eval gate had approved a different string than the one that ran.
+Compiled once per draft in the analysis sweep, from then on stored, shown and editable.
+```
+
+### comments — die Luecke, die das Feld geschlossen hat
+
+```text
+the owner's own words ON this row, addressed to whoever picks it up.
+The queue had five texts written BY machines about a task (brief, verdict, refine, criterion,
+note) and no way for the owner to write one back — every remark had to be typed into a pane,
+where it died at the next /clear.
+```
+
+### analysis — der Eval-Gate-Vorgaenger (Owner-Entscheid 2026-08-05, Runde 2)
+
+```text
+what the queue analyst found ABOUT that brief (owner decision
+2026-08-05, round 2). ADVISORY: it gates nothing. Its predecessor, the eval gate, let a positive
+verdict start a PENDING task with no owner promote — which meant the machine picked work out of
+the owner's own un-promoted drafts. Now the owner's promote is the decision and this is the
+evidence he decides on. Written only by tickAnalysisSweep.
+```
+
+## TaskAnalysis
+
+### Das alte Gate — zweiwertig und unheilbar
+
+```text
+Three-valued on purpose: "unknown" is the analyst failing to ANSWER, which is an absence and must
+never be able to read as either judgement. The old gate collapsed a timed-out worker into a
+permanent "review" verdict for its whole batch — fail-closed in direction, but indistinguishable
+from a real finding and unrecoverable without a per-task reset.
 ```

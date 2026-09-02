@@ -8,8 +8,8 @@ import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAutho
 import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessage,
   mergeWatchMessage, auditWatchMessage, deployWatchMessage, laneWatchEventKind, laneWatchPayload,
   clarificationWatchMessage, clarificationReplyMessage, attentionAnswerMessage,
-  type LaneWatchEventKind, type LaneWatchEventPayload, type MergeWatchEventPayload,
-  type AuditWatchEventPayload, type DeployWatchEventPayload, type ClarificationEventPayload,
+  type MergeWatchEventPayload,
+  type AuditWatchEventPayload, type DeployWatchEventPayload,
   type ClarificationBasis,
   laneQuietSince, DONE_LOOKING_PROSE, laneStalled, laneStalledSince, STALLED_PROSE } from "./lane-signals";
 import { phaseOf, type Phase, type PhaseInput, type PhaseOutcomeFacts } from "./program-phase";
@@ -43,7 +43,7 @@ import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary
 import { trailStats, type TrailRecord, type TrailSummary } from "./trailstats";
 import {
   deriveTaskMetadata, readTrackedSnapshot, trackedIndexStamp,
-  type TaskCluster, type TaskFilesOrigin, type TrackedSnapshot,
+  type TaskFilesOrigin, type TrackedSnapshot,
 } from "./task-metadata";
 // the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
 // for what belongs there. tsc gates every land, so a drift in any of them is a compile error.
@@ -52,9 +52,35 @@ import {
   DISPOSITION_WORKERS, DISPOSITION_VERDICTS,
   FLEET_REPORT_STATUSES, normalizeLaneAnchor,
   type GitInfo, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo, type WorkerName,
-  type DispositionWorker, type DispositionVerdict, type FleetReportEventPayload,
+  type DispositionWorker, type DispositionVerdict,
   type FleetReportStatus,
 } from "./src/protocol";
+// the persisted domain model and its parsers — P4 Slice 1 moved them out whole; see server/types.ts
+import {
+  MAX_SLOTS, watchKind, TRANSITION_AWAITING_MAX, TRANSITION_DEADLINE_MIN_SEC,
+  TRANSITION_DEADLINE_MAX_SEC, TRANSITION_DEADLINE_DEFAULT_SEC, watchFrom, FLEET_EVENT_TERMINAL,
+  ATTENTION_KINDS, fleetEventFrom, clarificationFrom, fleetReportFrom, attentionFrom,
+  MAX_CLARIFICATION_QUESTION, MAX_CLARIFICATION_ANSWER, MAX_FLEET_REPORT_TEXT, MAX_ATTENTION_TEXT,
+  MAX_ATTENTION_ANSWER, MAX_ATTENTION_PROVENANCE_TEXT, ATTENTION_CANDIDATE_SHA_RE,
+  validAttentionBranch, MAX_SUPERVISOR_NUDGE_TEXT, TASK_KINDS, isTaskKind, loadTaskKind,
+  PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion, PROGRAM_PROFILE_KINDS, loadProgramProfile,
+  PROGRAM_LINEAGE_MAX, loadProgramLineage, foundingOccupantFrom, foundingIdentityFrom,
+  type BoxPin, type WSData, type Share, type ShareComment, type Auto, type WatchBase, type MergeWatch,
+  type TransitionWatch, type Watch, type FleetEventStatus, type FleetEventRecoveryState,
+  type LaneFleetEvent, type MergeFleetEvent, type AuditFleetEvent, type DeployFleetEvent,
+  type ClarificationFleetEvent, type FleetReportFleetEvent, type SupervisorTransitionFleetEvent,
+  type FleetEvent, type ClarificationRequest, type FleetReport, type AttentionKind,
+  type AttentionRequest, type TaskKind, type Task, type TaskBrief, type TaskComment,
+  type TaskAnalysis, type AnalysisBlocker, type TaskCriterion, type RefineChild, type RefineProposal,
+  type TaskRefine, type LaneForm, type LaneRef, type SuccessionRetirement, type CodexRecoveryState,
+  type Slot, type MainDirectPreflight, type MainDirectOutcome, type ProgramStatus, type Program,
+  type PromotionSelfLand, type PromotionPolicy, type ProgramProfileKind, type ProgramProfile,
+  type ProgramLineageVia, type ProgramLineageEndedBy, type ProgramLineageEntry, type ProgramLineage,
+  type ProgramFoundingMode, type ProgramFoundingProfileKind, type ProgramFoundingIdentity,
+  type ProgramFoundingV2, type ProgramFounding, type ProgramFoundingRead, type ProgramContent,
+  type ProgramValidation, type SupervisorBinding, type ProgramDigest, type DispatchSpawn,
+  type SlotStreamOccupant,
+} from "./server/types";
 
 // Defaults to localhost — nothing is network-reachable until you explicitly set FLEET_HOST
 // (e.g. your Tailscale IP via `tailscale ip -4`). Even then, every request needs the access
@@ -64,7 +90,6 @@ const PORT = Number(process.env.FLEET_PORT ?? 8790);
 // separate tmux socket per instance — lets a test instance (FLEET_SOCK=fleettest)
 // run its own s1..sN sessions without touching the live fleet's
 const SOCK = process.env.FLEET_SOCK ?? "claudefleet";
-const MAX_SLOTS = 16; // fixed places — the sidebar always shows all of them
 // lines of scrollback every WS connect is seeded with, from a fresh capture-pane. Capture
 // output is line-aligned and already reflowed to the pane's width, so it can neither begin
 // mid-escape-sequence nor replay the raw stream's stale wrapping — and it costs a few KB
@@ -1227,7 +1252,6 @@ function taskSpawnFromBody(body: Record<string, unknown> | null):
 // reason the env default exists at all (an ambient `docker` here would have resolved to the VM
 // holding the guest containers), and a per-slot field must not be able to lose it — so a missing
 // field falls back through boxFor and nothing on this path ever reads the active context.
-interface BoxPin { container: string | null; containerContext: string | null }
 const NO_BOX: BoxPin = { container: null, containerContext: null };
 function boxOf(body: Record<string, unknown> | null, h: Harness):
   { ok: true; box: BoxPin } | { ok: false; why: string } {
@@ -1252,672 +1276,11 @@ const MAX_LABEL = 40;
 const MAX_MISSION = 300; // one sentence of standing intent, not a brief — see Slot.mission
 const CLEAR = new TextEncoder().encode("\x1b[3J\x1b[2J\x1b[H");
 
-type WSData = {
-  slot: number; ready: boolean; cols: number; rows: number; force: boolean;
-  // buffered until the seed has been sent (ready). `from` is each chunk's absolute offset in
-  // the slot's stream file, carried so afterSeed can tell seed-overlap from new output.
-  queue: { from: number; chunk: Uint8Array }[];
-  // stream position this socket's capture-pane seed already covers: anything before it must
-  // not be sent again (websocket.open sets it; afterSeed consumes it). 0 = nothing to skip.
-  seedUntil: number;
-  seed?: number; // client's scrollback budget for the connect seed; 0/absent = SEED_LINES
-  share?: string; // set on guest connections: the share id this socket belongs to
-  ownerInput?: { occupant: SlotStreamOccupant; paneId: string };
-};
-
-// a share exposes exactly ONE slot to a guest behind its own password — the owner
-// token never leaves this machine. A share is a WINDOW and never a hand: it streams the pane
-// out, and nothing a guest sends can reach the pty (dropped in the WS message handler, and
-// there is no send route to drop it in). That is not a setting — removing the mode is what
-// makes it a property. An interactive share would put a third party's keystrokes into the
-// owner's session, i.e. their prompts billed as the owner's Inputs on the owner's account.
-interface Share { id: string; slot: number; secret: string; created: number }
-
-// a guest comment on a share — reachable by a guest because it types nothing into the pty.
-// Freeform name is display-only, never trusted; keyed by share id so revoking the share
-// drops its thread (pruned in saveState).
-interface ShareComment { id: string; ts: number; name: string; text: string; from?: "owner" }
 const MAX_COMMENT_TEXT = 2000;
 const MAX_COMMENT_NAME = 40;
 const MAX_COMMENTS_PER_SHARE = 300;
 
-// a scheduled prompt: one-shot (everySec null) or recurring with a MANDATORY runs cap.
-// Guard rails are the point — see tickAutos() for the idle gate and the claude-alive gate.
-interface Auto {
-  id: string;
-  slot: number;
-  text: string;
-  everySec: number | null;
-  nextAt: number;
-  runsLeft: number;
-  perpetual?: boolean; // owner-only: a recurring auto that re-arms instead of expiring at the runs cap
-  idleSec: number; // only fire when the session produced no output for this long (0 = always)
-  enabled: boolean;
-  created: number;
-  lastRun: number;
-  lastResult: string | null;
-}
 
-// --- a WATCH: the event-triggered sibling of an Auto. Same delivery (one prompt typed into one
-// pane, through canDeliver), different trigger — a fact about ANOTHER slot instead of a clock.
-// Armed on the server and survives a restart, because a watcher the RECEIVER has to re-arm fails
-// exactly when the receiver is busy. It delivers TEXT and nothing else — no commit, land, review
-// or kill; both predicates remove a WAIT, never a CHECK. The trigger is LEVEL, not edge
-// (tickWatches), and firing spends the watch (`armed:false`): an armed-forever watch would be a
-// repeating nudge on a cadence nobody chose. Why it exists (measured 2026-08-07):
-// server-narrativ-archiv.md#watch
-interface WatchBase {
-  id: string;
-  slot: number;    // who gets typed into. Same meaning `slot` has on an Auto, so the delivery
-  // path, the per-slot cap and the teardown rules all read the same field.
-  slotOpenedAt?: number; // the receiver occupant at subscribe time. Absent is an honest legacy
-  // row: slot ids are recycled, so the current occupant must never be backfilled onto old Watches.
-  idleSec: number; // the WATCHER's idle gate, same field and same default as an Auto. Not a
-  // limitation but the point: the message should arrive when the receiving session comes to rest,
-  // which is the exact moment it would otherwise turn away without knowing.
-  armed: boolean;
-  created: number;
-  firedAt: number | null;
-  lastResult: string | null;
-  // WHERE THE COMPLETION GOES, decided by the SUBSCRIBER and nobody else. Absent is the legacy pane
-  // default and is kept absent on load, byte-for-byte. "inbox" mints the event straight into the
-  // owner operations inbox and no transport ever touches it (typing into an owner-attended TUI
-  // would land in the owner's composer).
-  delivery?: "pane" | "inbox";
-}
-interface LaneWatch extends WatchBase {
-  // Absent on legacy persisted rows and kept absent after load; `watchKind` supplies the discriminator.
-  kind?: "lane";
-  target: number;  // the slot being watched. Never the same as `slot` (a session watching itself
-  // learns nothing) and never a slot the predicate cannot classify — see createWatchForSlot.
-  // the target's IDENTITY at subscribe time: slot ids are recycled, so an id-only watch would
-  // survive its subject and fire about whatever lane moved in next. Second lock after
-  // dropWatchesFor; the tick refuses a target whose cwd or branch changed underneath it.
-  targetCwd: string;
-  targetBranch: string;
-}
-interface MergeWatch extends WatchBase {
-  kind: "merge";
-  target: number;
-  targetCwd: string;
-  targetBranch: string;
-}
-interface AuditWatch extends WatchBase {
-  kind: "audit";
-  repo: string;
-  mainAfter: string;
-}
-interface DeployWatch extends WatchBase {
-  kind: "deploy";
-  deployId: string;
-}
-// STN-1: the Supervisor→Controller transition rail. The ONLY Watch kind triggered by a principal's
-// act (the bound Supervisor completing it) rather than a level the tick computes, and the only one
-// with a deadline, so a Controller can read "X never came" from its own row instead of waiting forever.
-interface TransitionWatch extends WatchBase {
-  kind: "transition";
-  awaiting: string;     // the Controller's bounded statement of WHAT transition it expects
-  deadlineAt: number;   // absolute ms; the tick disarms past it with lastResult "expired"
-}
-type Watch = LaneWatch | MergeWatch | AuditWatch | DeployWatch | TransitionWatch;
-const watchKind = (w: Watch): "lane" | "merge" | "audit" | "deploy" | "transition" => w.kind ?? "lane";
-const TRANSITION_AWAITING_MAX = 500;
-const TRANSITION_DEADLINE_MIN_SEC = 60;
-const TRANSITION_DEADLINE_MAX_SEC = 86_400;
-const TRANSITION_DEADLINE_DEFAULT_SEC = 3_600;
-function watchFrom(raw: unknown): Watch | null {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const w = raw as Partial<Watch> & Record<string, unknown>;
-  if (typeof w.id !== "string" || typeof w.slot !== "number" || typeof w.idleSec !== "number"
-    || typeof w.armed !== "boolean") return null;
-  if (w.slotOpenedAt !== undefined && (typeof w.slotOpenedAt !== "number"
-    || !Number.isFinite(w.slotOpenedAt) || w.slotOpenedAt <= 0)) return null;
-  // absent = legacy pane. A present-but-unknown value is fail-closed, never coerced to a default:
-  // guessing here would silently give a subscription a transport its subscriber did not ask for.
-  if (w.delivery !== undefined && w.delivery !== "pane" && w.delivery !== "inbox") return null;
-  if (w.kind === "audit") {
-    return typeof w.repo === "string" && typeof w.mainAfter === "string" ? raw as AuditWatch : null;
-  }
-  if (w.kind === "deploy") {
-    return typeof w.deployId === "string" && /^[0-9a-f]{8}$/.test(w.deployId) ? raw as DeployWatch : null;
-  }
-  if (w.kind === "transition") {
-    // pane-only by construction (the inbox is the owner's, not a Controller's): a persisted row
-    // claiming inbox delivery is malformed, not a transport choice.
-    return typeof w.awaiting === "string" && w.awaiting.trim().length > 0
-      && w.awaiting.length <= TRANSITION_AWAITING_MAX
-      && typeof w.deadlineAt === "number" && Number.isFinite(w.deadlineAt) && w.deadlineAt > 0
-      && w.delivery !== "inbox" ? raw as TransitionWatch : null;
-  }
-  if (w.kind !== undefined && w.kind !== "lane" && w.kind !== "merge") return null;
-  return typeof w.target === "number" && typeof w.targetCwd === "string" && typeof w.targetBranch === "string"
-    ? raw as LaneWatch | MergeWatch : null;
-}
-
-// "inbox" is the ONE word the transport split adds: the event is visible to the owner operations
-// inbox and waits for the OWNER's acknowledgement. It is not a transport state — FACT 2 selects
-// `pending` alone, so an inbox row can never be sent, and `deliveredAt` therefore stays null on it
-// forever. Terminal remains acknowledged|receiver-gone for both delivery modes.
-// "subject-gone" is the SUBJECT-side twin of "receiver-gone", and it exists because the two losses
-// are not the same loss. Measured 2026-08-30 (event e1ff06ac9911f854e752d71a): a lane-ready row for
-// slot 2 / fleet/260830005056-09e6 stayed `pending` through 2005 held ticks while that lane landed,
-// was torn down and its slot recycled — then typed itself into a MAIN composer hours later, about a
-// lane that no longer existed. The receiver was alive the whole time, so `receiver-gone` would have
-// been a lie about the wrong endpoint, and `acknowledged` a receipt nobody gave. Terminal, never
-// delivered, never acknowledgeable, and it spends no delivery budget.
-type FleetEventStatus = "pending" | "send-uncertain" | "delivered" | "acknowledged" | "receiver-gone"
-  | "subject-gone" | "inbox";
-// The three words that mean "this row is finished, whatever happened to it" — read by retention,
-// by both budget sums, by the boot reconciliation and by every teardown sweep. One list, because a
-// word added to the union and forgotten in one of those five places is a silent debt or a silent
-// resurrection, not a type error.
-const FLEET_EVENT_TERMINAL: readonly string[] = ["acknowledged", "receiver-gone", "subject-gone"];
-type FleetEventRecoveryState = "retryable" | "blocked" | "terminal";
-interface FleetEventRecovery {
-  state: FleetEventRecoveryState;
-  reason: string;
-  nextAction: string;
-  effect: string;
-  updatedAt: number;
-}
-interface FleetEventBase {
-  id: string;
-  watchId: string | null;
-  // NULL IS THE OWNER PRINCIPAL — the whole triple or none of it. Every other row names a
-  // SESSION: slot ids are reusable, so the slot number identifies the row and openedAt +
-  // sessionId identify the session in it (the same binding MAIN-direct provenance uses). The
-  // owner is not a session. There is no pane to type into, no generation to compare, and nothing
-  // that can be "replaced" — inventing an occupant for him would make three fields lie, and the
-  // first slot teardown that reused that number would turn his row `receiver-gone` while it was
-  // still unread. `null` therefore means exactly one transport: delivery "inbox", read and
-  // acknowledged by the owner, and structurally unreachable for every slot-keyed filter here.
-  receiverSlot: number | null;
-  receiverOpenedAt: number | null;
-  receiverSessionId: string | null;
-  receiverIdleSec: number;
-  createdAt: number;
-  status: FleetEventStatus;
-  attempts: number;
-  deliveredAt: number | null;
-  acknowledgedAt: number | null;
-  // inherited from the Watch that minted it, absent = legacy pane. It is copied onto the event
-  // rather than looked up through `watchId` because the Watch is prunable and the event is not:
-  // the row must still say by itself which transport it was minted for.
-  delivery?: "pane" | "inbox";
-  recovery?: FleetEventRecovery;
-}
-interface LaneFleetEvent extends FleetEventBase {
-  subjectSlot: number;
-  subjectBranch: string;
-  kind: LaneWatchEventKind;
-  payload: LaneWatchEventPayload;
-  // THE SUBJECT LIFECYCLE, not merely its slot number — the same fact the receiver triple carries
-  // for the other endpoint. Slot ids are reusable, so only the occupancy timestamp separates "the
-  // lane this row reports on" from "whoever holds that number now". Optional: a row minted before
-  // this existed hydrates without it and is then judged on slot+branch alone (laneEventSubject).
-  subjectOpenedAt?: number;
-}
-interface MergeFleetEvent extends FleetEventBase {
-  subjectSlot: number;
-  subjectCwd: string;
-  subjectBranch: string;
-  kind: "merge-terminal";
-  payload: MergeWatchEventPayload;
-}
-interface AuditFleetEvent extends FleetEventBase {
-  subjectRepo: string;
-  subjectMainAfter: string;
-  kind: "post-land-audit";
-  payload: AuditWatchEventPayload;
-}
-interface DeployFleetEvent extends FleetEventBase {
-  subjectDeployId: string;
-  kind: "deploy-terminal";
-  payload: DeployWatchEventPayload;
-}
-interface ClarificationFleetEvent extends FleetEventBase {
-  subjectSlot: number;
-  subjectBranch: string;
-  kind: "clarification-request";
-  payload: ClarificationEventPayload;
-}
-interface FleetReportFleetEvent extends FleetEventBase {
-  subjectSlot: number;
-  subjectBranch: string;
-  kind: "fleet-report";
-  payload: FleetReportEventPayload;
-}
-// STN-1. The subject is the Supervisor occupant that completed the Watch — stamped, never claimed —
-// and the payload carries the Controller's own `awaiting` back beside the Supervisor's text, so
-// the receiver can match the notification to the question it asked without a second read.
-interface SupervisorTransitionEventPayload {
-  watchId: string;
-  awaiting: string;
-  text: string;
-  completedAt: number;
-}
-interface SupervisorTransitionFleetEvent extends FleetEventBase {
-  subjectSlot: number;
-  subjectOpenedAt: number;
-  kind: "supervisor-transition";
-  payload: SupervisorTransitionEventPayload;
-}
-type FleetEvent = LaneFleetEvent | MergeFleetEvent | AuditFleetEvent | DeployFleetEvent
-  | ClarificationFleetEvent | FleetReportFleetEvent | SupervisorTransitionFleetEvent;
-
-// `send-uncertain` mirrors the FleetEvent transport state exactly (see FACT 2 in tickWatches): it is
-// persisted BEFORE tmux is touched, so a process death anywhere after that point is visible after
-// restart instead of leaving a reply that may or may not have reached the worker's pane. It is NOT
-// terminal — terminal is answered|refused only — and it is never replayed by any tick: the one
-// principal that could have seen the pane must drive the retry, byte-identically.
-type ClarificationStatus = "open" | "send-uncertain" | "answered" | "refused";
-interface ClarificationRequest {
-  id: string;
-  askedAt: number;
-  question: string;
-  worker: { slot: number; openedAt: number; sessionId: string | null; cwd: string; branch: string };
-  provenance: { taskId: string | null; originId: string | null; programId: string | null };
-  receiver: { slot: number; openedAt: number; sessionId: string | null };
-  basis: ClarificationBasis;
-  eventId: string;
-  status: ClarificationStatus;
-  answer: { text: string; at: number;
-    by: { slot: number; openedAt: number; sessionId: string | null } } | null;
-  refusedReason: string | null;
-  closedAt: number | null;
-}
-
-// A report is the immutable result sibling of a ClarificationRequest. Transport state belongs to
-// its FleetEvent; this row carries only the lane-stamped report and the exact two endpoint
-// occupants. In particular there is no attempt/task lifecycle identity here.
-interface FleetReport {
-  id: string;
-  reportedAt: number;
-  status: FleetReportStatus;
-  text: string;
-  worker: { slot: number; openedAt: number; sessionId: string | null; cwd: string; branch: string };
-  provenance: { taskId: string | null; originId: string | null; programId: string | null };
-  // null exactly when `basis` is "owner-inbox": the report was filed to the owner principal, who
-  // has no occupant triple. The two fields are one fact and fleetReportFrom checks them together.
-  receiver: { slot: number; openedAt: number; sessionId: string | null } | null;
-  basis: FleetReportEventPayload["basis"];
-  eventId: string;
-}
-
-// THE OWNER-FACING TWIN of ClarificationRequest, with the roles flipped: there a worker asks its
-// bound Program-MAIN, here the bound Program-MAIN asks the OWNER. The owner is a PRINCIPAL, not a
-// slot — there is no occupant triple to bind an answer to and none is invented, which is why
-// `answer.by` is the literal "owner" rather than the receiver occupant a clarification carries.
-// Everything else is deliberately the same shape, including `send-uncertain`: the answer travels
-// into the requester's pane over the same transport, so it inherits the same crash boundary.
-type AttentionKind = "decision" | "blocked" | "review-ready";
-type AttentionStatus = "open" | "send-uncertain" | "answered" | "refused";
-interface AttentionRequest {
-  id: string;
-  raisedAt: number;
-  kind: AttentionKind;
-  text: string;
-  requester: { slot: number; openedAt: number; sessionId: string | null };
-  programId: string;
-  // Absent means a pre-provenance persisted row and stays observably absent. New rows always carry
-  // all five keys; null means the caller explicitly had no fact for that key.
-  provenance?: { taskId: string | null; originId: string | null; programId: string | null;
-    branch: string | null; candidateSha: string | null };
-  status: AttentionStatus;
-  answer: { text: string; at: number; by: "owner" } | null;
-  refusedReason: string | null;
-  closedAt: number | null;
-}
-const ATTENTION_KINDS: AttentionKind[] = ["decision", "blocked", "review-ready"];
-
-function fleetEventRecoveryFrom(raw: unknown): FleetEventRecovery | undefined | null {
-  if (raw === undefined) return undefined;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const r = raw as Partial<FleetEventRecovery>;
-  if (r.state !== "retryable" && r.state !== "blocked" && r.state !== "terminal") return null;
-  if (typeof r.reason !== "string" || !r.reason.trim() || r.reason.length > 300) return null;
-  if (typeof r.nextAction !== "string" || !r.nextAction.trim() || r.nextAction.length > 300) return null;
-  if (typeof r.effect !== "string" || !r.effect.trim() || r.effect.length > 300) return null;
-  if (typeof r.updatedAt !== "number" || !Number.isFinite(r.updatedAt) || r.updatedAt <= 0) return null;
-  return {
-    state: r.state,
-    reason: r.reason,
-    nextAction: r.nextAction,
-    effect: r.effect,
-    updatedAt: r.updatedAt,
-  };
-}
-
-function fleetEventFrom(raw: unknown): FleetEvent | null {
-  if (!raw || typeof raw !== "object") return null;
-  const e = raw as Partial<FleetEvent> & Record<string, unknown>;
-  const watchless = e.kind === "clarification-request" || e.kind === "fleet-report";
-  // The owner-principal receiver, all three fields or none: a half-null triple is malformed, not a
-  // transport choice — exactly as an unknown `delivery` is.
-  const ownerReceiver = e.receiverSlot === null && e.receiverOpenedAt === null
-    && e.receiverSessionId === null;
-  const recovery = fleetEventRecoveryFrom(e.recovery);
-  if (recovery === null
-    || typeof e.id !== "string" || !/^[a-z0-9]+$/.test(e.id)
-    || !(e.watchId === null || (typeof e.watchId === "string" && /^[a-z0-9]+$/.test(e.watchId)))
-    || (watchless !== (e.watchId === null))
-    || !(ownerReceiver || (Number.isInteger(e.receiverSlot) && (e.receiverSlot ?? 0) > 0
-      && typeof e.receiverOpenedAt === "number" && Number.isFinite(e.receiverOpenedAt)
-      && e.receiverOpenedAt > 0
-      && (typeof e.receiverSessionId === "string" || e.receiverSessionId === null)))
-    || !Number.isInteger(e.receiverIdleSec) || (e.receiverIdleSec ?? -1) < 0
-    || !["pending", "send-uncertain", "delivered", "acknowledged", "receiver-gone", "subject-gone",
-      "inbox"].includes(String(e.status))
-    // absent = legacy pane; an unknown value is fail-closed exactly as it is on the Watch.
-    || (e.delivery !== undefined && e.delivery !== "pane" && e.delivery !== "inbox")
-    // A clarification is NEVER an inbox row — an inbox cannot answer, so such a row would be a
-    // question nobody could close. A fleet-report is an inbox row EXACTLY when its receiver is the
-    // owner principal: the two facts are one fact, checked as an equivalence so neither half can
-    // be persisted without the other (a slot-bound inbox report would be typed at nobody; an
-    // owner-receiver pane report would be typed at a pane that does not exist).
-    || (e.kind === "clarification-request" && e.delivery === "inbox")
-    // THE OWNER PRINCIPAL EXISTS FOR EXACTLY ONE KIND. Every other event is a Watch completion
-    // addressed to the session that subscribed, and a null triple there names nobody at all: it
-    // could never be delivered, never go receiver-gone, and never be acked by the session it was
-    // minted for — but it WOULD count as an owner debt and squat a place at the inbox ceiling
-    // until someone acked a row they never asked for. Fail-closed, at the base, before any
-    // per-kind branch can be reasoned about separately.
-    || (ownerReceiver && e.kind !== "fleet-report")
-    || (e.kind === "fleet-report" && (e.delivery === "inbox") !== ownerReceiver)
-    // FACT 2 selects `pending` alone, so an owner row can never be sent and can never go
-    // receiver-gone: `inbox` until the owner acks it, `acknowledged` after. Anything else on such
-    // a row is a state no code path can produce and is refused rather than repaired.
-    || (ownerReceiver && e.status !== "inbox" && e.status !== "acknowledged")
-    || typeof e.createdAt !== "number" || !Number.isFinite(e.createdAt) || e.createdAt <= 0
-    || !Number.isInteger(e.attempts) || (e.attempts ?? -1) < 0
-    || !(typeof e.deliveredAt === "number" || e.deliveredAt === null)
-    || !(typeof e.acknowledgedAt === "number" || e.acknowledgedAt === null)) return null;
-  const base: FleetEventBase = {
-    id: e.id, watchId: e.watchId, receiverSlot: e.receiverSlot ?? null,
-    receiverOpenedAt: e.receiverOpenedAt ?? null,
-    receiverSessionId: e.receiverSessionId ?? null, receiverIdleSec: e.receiverIdleSec!,
-    createdAt: e.createdAt, status: e.status as FleetEventStatus, attempts: e.attempts!,
-    deliveredAt: e.deliveredAt, acknowledgedAt: e.acknowledgedAt,
-    ...(e.delivery !== undefined ? { delivery: e.delivery as "pane" | "inbox" } : {}),
-    ...(recovery ? { recovery } : {}),
-  };
-  if (e.kind === "clarification-request") {
-    if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0 || typeof e.subjectBranch !== "string") return null;
-    const p = e.payload as Partial<ClarificationEventPayload> | undefined;
-    if (!p || typeof p.requestId !== "string" || !/^[0-9a-f]{24}$/.test(p.requestId)
-      || typeof p.question !== "string" || !p.question.trim() || p.question.length > MAX_CLARIFICATION_QUESTION
-      || !(p.taskId === null || typeof p.taskId === "string")
-      || !(p.originId === null || typeof p.originId === "string")
-      || !(p.programId === null || typeof p.programId === "string")
-      || !["program-main", "lane-watch", "program-main+lane-watch"].includes(String(p.basis))) return null;
-    return { ...base, subjectSlot: Number(e.subjectSlot), subjectBranch: e.subjectBranch,
-      kind: e.kind, payload: { requestId: p.requestId, question: p.question,
-        taskId: p.taskId, originId: p.originId, programId: p.programId,
-        basis: p.basis as ClarificationBasis } };
-  }
-  if (e.kind === "fleet-report") {
-    if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0
-      || typeof e.subjectBranch !== "string" || !e.subjectBranch) return null;
-    const p = e.payload as Partial<FleetReportEventPayload> | undefined;
-    if (!p || typeof p.reportId !== "string" || !/^[0-9a-f]{24}$/.test(p.reportId)
-      || !FLEET_REPORT_STATUSES.includes(p.status as FleetReportStatus)
-      || typeof p.text !== "string" || !p.text.trim() || p.text.length > MAX_FLEET_REPORT_TEXT
-      || !(p.taskId === null || typeof p.taskId === "string")
-      || !(p.originId === null || typeof p.originId === "string")
-      || !(p.programId === null || typeof p.programId === "string")
-      // FOUR values here, three in the clarification branch above, and the difference is the
-      // point: only a REPORT can be filed to the owner principal. Missing "owner-inbox" made the
-      // door and the parser disagree — the row minted fine and was silently dropped on the way
-      // back in, so an unread owner report died at the next restart with nothing said.
-      || !["program-main", "lane-watch", "program-main+lane-watch", "owner-inbox"]
-        .includes(String(p.basis))
-      // THE THIRD CARRIER OF THE SAME FACT, tied to the receiver like the other two. `delivery`
-      // says how the row travels and the base rule binds it; `FleetReport.basis` says who the
-      // ROW was filed to and fleetReportFrom binds it; this one says who the EVENT was filed to,
-      // and it is what the board and the Supervisor projection actually read. Unbound, a row
-      // could hydrate with a null receiver while its payload claimed "program-main" — the owner
-      // would see a report addressed to a MAIN that was never told — or with a session receiver
-      // while claiming "owner-inbox". Both are lies about the one thing the row exists to say.
-      || ((p.basis === "owner-inbox") !== ownerReceiver)) return null;
-    return { ...base, subjectSlot: Number(e.subjectSlot), subjectBranch: e.subjectBranch,
-      kind: e.kind, payload: { reportId: p.reportId, status: p.status as FleetReportStatus,
-        text: p.text, taskId: p.taskId, originId: p.originId, programId: p.programId,
-        // the report payload's own union, NOT ClarificationBasis: the two vocabularies differ by
-        // exactly this value, and casting to the narrower one would re-hide the mismatch above.
-        basis: p.basis as FleetReportEventPayload["basis"] } };
-  }
-  if (e.kind === "lane-ready" || e.kind === "host-commit-ready") {
-    if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0 || typeof e.subjectBranch !== "string") return null;
-    const p = e.payload as Partial<LaneWatchEventPayload> | undefined;
-    if (!p || typeof p.ahead !== "number" || !Number.isFinite(p.ahead)
-      || typeof p.dirty !== "number" || !Number.isFinite(p.dirty)
-      || typeof p.idleMs !== "number" || !Number.isFinite(p.idleMs) || p.idleMs < 0
-      || typeof p.observed !== "boolean" || !(typeof p.gitOp === "boolean" || p.gitOp === null)
-      || !(p.awaiting === "owner" || p.awaiting === "main" || p.awaiting === null)
-      || typeof p.hostCommits !== "boolean") return null;
-    // Preserve the legacy row's historical field order as well as its values. State is serialized
-    // as JSON, so spreading the new common base here would move created/status ahead of the
-    // subject and payload and violate the byte-stable legacy-load contract.
-    return {
-      id: base.id, watchId: base.watchId,
-      receiverSlot: base.receiverSlot, receiverOpenedAt: base.receiverOpenedAt,
-      receiverSessionId: base.receiverSessionId, receiverIdleSec: base.receiverIdleSec,
-      subjectSlot: Number(e.subjectSlot), subjectBranch: e.subjectBranch,
-      kind: e.kind, payload: { ahead: p.ahead, dirty: p.dirty, idleMs: p.idleMs, observed: p.observed,
-        gitOp: p.gitOp, awaiting: p.awaiting, hostCommits: p.hostCommits },
-      createdAt: base.createdAt, status: base.status, attempts: base.attempts,
-      deliveredAt: base.deliveredAt, acknowledgedAt: base.acknowledgedAt,
-      // last, and only when present: a legacy row without it must serialize byte-identically.
-      ...(base.delivery !== undefined ? { delivery: base.delivery } : {}),
-      // …and the subject stamp after it, for the same reason: a row minted before it existed
-      // hydrates without the key and stays unstamped rather than acquiring a fabricated identity.
-      ...(typeof e.subjectOpenedAt === "number" && Number.isFinite(e.subjectOpenedAt)
-        && e.subjectOpenedAt > 0 ? { subjectOpenedAt: e.subjectOpenedAt } : {}),
-    };
-  }
-  if (e.kind === "merge-terminal") {
-    if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0
-      || typeof e.subjectCwd !== "string" || typeof e.subjectBranch !== "string") return null;
-    const p = e.payload as Partial<MergeWatchEventPayload> | undefined;
-    const statuses = ["merged", "blocked", "error", "resolved", "interrupted", "awaiting-author"];
-    const v = p?.verify;
-    if (!p || !statuses.includes(String(p.status)) || typeof p.landed !== "boolean"
-      || typeof p.branch !== "string" || typeof p.at !== "number" || !Number.isFinite(p.at)
-      || (v !== undefined && (!v || typeof v !== "object" || Array.isArray(v)
-        || !(v.ok === true || v.ok === false || v.ok === null)
-        || !(v.timedOut === undefined || v.timedOut === true)
-        || !(v.waitedOut === undefined || v.waitedOut === true)
-        || !(v.stale === undefined || v.stale === true)))
-      || (p.conflicted !== undefined && (!Array.isArray(p.conflicted) || p.conflicted.length > 50
-        || p.conflicted.some((x) => typeof x !== "string" || x.length > 200)))
-      || !(p.resolvedBy === undefined || p.resolvedBy === "agent" || p.resolvedBy === "author")) return null;
-    const payload: MergeWatchEventPayload = { status: p.status!, landed: p.landed, branch: p.branch, at: p.at,
-      ...(v ? { verify: { ok: v.ok, ...(v.timedOut ? { timedOut: true as const } : {}),
-        ...(v.waitedOut ? { waitedOut: true as const } : {}), ...(v.stale ? { stale: true as const } : {}) } } : {}),
-      ...(p.conflicted ? { conflicted: [...p.conflicted] } : {}), ...(p.resolvedBy ? { resolvedBy: p.resolvedBy } : {}) };
-    return { ...base, subjectSlot: Number(e.subjectSlot), subjectCwd: e.subjectCwd,
-      subjectBranch: e.subjectBranch, kind: e.kind, payload };
-  }
-  if (e.kind === "post-land-audit") {
-    if (typeof e.subjectRepo !== "string" || typeof e.subjectMainAfter !== "string") return null;
-    const p = e.payload as Partial<AuditWatchEventPayload> | undefined;
-    if (!p || !["green", "red", "unknown"].includes(String(p.result)) || typeof p.mainSha !== "string"
-      || !Array.isArray(p.covers) || p.covers.length > 50
-      || p.covers.some((c) => !c || typeof c.branch !== "string" || typeof c.mainAfter !== "string")
-      || !(p.checks === null || (typeof p.checks === "object" && p.checks !== null
-        && Number.isInteger(p.checks.ran) && p.checks.ran >= 0
-        && Number.isInteger(p.checks.failed) && p.checks.failed >= 0))
-      || !(p.reason === undefined || (typeof p.reason === "string" && p.reason.length <= 200))) return null;
-    return { ...base, subjectRepo: e.subjectRepo, subjectMainAfter: e.subjectMainAfter,
-      kind: e.kind, payload: { result: p.result as AuditWatchEventPayload["result"], mainSha: p.mainSha,
-        covers: p.covers.map((c) => ({ branch: c.branch, mainAfter: c.mainAfter })), checks: p.checks,
-      ...(p.reason !== undefined ? { reason: p.reason } : {}) } };
-  }
-  if (e.kind === "deploy-terminal") {
-    if (typeof e.subjectDeployId !== "string" || !/^[0-9a-f]{8}$/.test(e.subjectDeployId)) return null;
-    const p = e.payload as Partial<DeployWatchEventPayload> | undefined;
-    if (!p || !(p.ok === true || p.ok === false || p.ok === null)
-      || !["build", "restart", "boot"].includes(String(p.stage))
-      || !(typeof p.target === "string" || p.target === null)
-      || !(typeof p.bootHead === "string" || p.bootHead === null)
-      || !(p.hitTarget === true || p.hitTarget === false || p.hitTarget === null)
-      || !(p.bundleStale === true || p.bundleStale === false || p.bundleStale === null)
-      || typeof p.at !== "number" || !Number.isFinite(p.at) || p.at <= 0
-      || !(p.reason === undefined || (typeof p.reason === "string" && p.reason.length <= 200))) return null;
-    return { ...base, subjectDeployId: e.subjectDeployId, kind: e.kind,
-      payload: { ok: p.ok, stage: p.stage as DeployWatchEventPayload["stage"], target: p.target,
-        bootHead: p.bootHead, hitTarget: p.hitTarget, bundleStale: p.bundleStale, at: p.at,
-        ...(p.reason !== undefined ? { reason: p.reason } : {}) } };
-  }
-  if (e.kind === "supervisor-transition") {
-    if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0
-      || typeof e.subjectOpenedAt !== "number" || !Number.isFinite(e.subjectOpenedAt) || e.subjectOpenedAt <= 0
-      || e.delivery === "inbox") return null;
-    const p = e.payload as Partial<SupervisorTransitionEventPayload> | undefined;
-    if (!p || typeof p.watchId !== "string" || !/^[a-z0-9]+$/.test(p.watchId) || p.watchId !== base.watchId
-      || typeof p.awaiting !== "string" || !p.awaiting.trim() || p.awaiting.length > TRANSITION_AWAITING_MAX
-      || typeof p.text !== "string" || !p.text.trim() || p.text.length > MAX_SUPERVISOR_NUDGE_TEXT
-      || typeof p.completedAt !== "number" || !Number.isFinite(p.completedAt) || p.completedAt <= 0) return null;
-    return { ...base, subjectSlot: Number(e.subjectSlot), subjectOpenedAt: e.subjectOpenedAt, kind: e.kind,
-      payload: { watchId: p.watchId, awaiting: p.awaiting, text: p.text, completedAt: p.completedAt } };
-  }
-  return null;
-}
-
-function clarificationFrom(raw: unknown): ClarificationRequest | null {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const c = raw as Partial<ClarificationRequest>;
-  const occupant = (v: unknown, withLane: boolean): boolean => {
-    if (!v || typeof v !== "object" || Array.isArray(v)) return false;
-    const x = v as Record<string, unknown>;
-    return Number.isInteger(x.slot) && Number(x.slot) > 0
-      && typeof x.openedAt === "number" && Number.isFinite(x.openedAt) && x.openedAt > 0
-      && (x.sessionId === null || typeof x.sessionId === "string")
-      && (!withLane || (typeof x.cwd === "string" && x.cwd.length > 0
-        && typeof x.branch === "string" && x.branch.length > 0));
-  };
-  const provenance = c.provenance as Record<string, unknown> | undefined;
-  const nullableString = (v: unknown): boolean => v === null || typeof v === "string";
-  const answer = c.answer as ClarificationRequest["answer"] | undefined;
-  if (typeof c.id !== "string" || !/^[0-9a-f]{24}$/.test(c.id)
-    || typeof c.askedAt !== "number" || !Number.isFinite(c.askedAt) || c.askedAt <= 0
-    || typeof c.question !== "string" || !c.question.trim() || c.question.length > MAX_CLARIFICATION_QUESTION
-    || !occupant(c.worker, true) || !occupant(c.receiver, false)
-    || !provenance || !nullableString(provenance.taskId) || !nullableString(provenance.originId)
-    || !nullableString(provenance.programId)
-    || !["program-main", "lane-watch", "program-main+lane-watch"].includes(String(c.basis))
-    || typeof c.eventId !== "string" || !/^[0-9a-f]{24}$/.test(c.eventId)
-    || !["open", "send-uncertain", "answered", "refused"].includes(String(c.status))
-    || !(c.closedAt === null || (typeof c.closedAt === "number" && Number.isFinite(c.closedAt) && c.closedAt > 0))
-    || !(c.refusedReason === null || typeof c.refusedReason === "string")) return null;
-  if (c.status === "open" && (answer !== null || c.refusedReason !== null || c.closedAt !== null)) return null;
-  const answerShaped = (): boolean => !!answer && typeof answer.text === "string" && !!answer.text.trim()
-    && answer.text.length <= MAX_CLARIFICATION_ANSWER && typeof answer.at === "number"
-    && Number.isFinite(answer.at) && answer.at > 0 && occupant(answer.by, false);
-  if (c.status === "answered") {
-    if (!answerShaped() || c.refusedReason !== null || c.closedAt === null) return null;
-  } else if (c.status === "send-uncertain") {
-    // the PENDING answer rides in the same field: it is what a retry must match byte-identically,
-    // and it is the only record that this text may already be sitting in the worker's pane.
-    // Not closed and not refused — an unresolved send is still an open debt.
-    if (!answerShaped() || c.refusedReason !== null || c.closedAt !== null) return null;
-  } else if (answer !== null) return null;
-  if (c.status === "refused" && (!(c.refusedReason ?? "").trim() || c.closedAt === null)) return null;
-  return raw as ClarificationRequest;
-}
-
-function fleetReportFrom(raw: unknown): FleetReport | null {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const r = raw as Partial<FleetReport>;
-  const occupant = (v: unknown, withLane: boolean): boolean => {
-    if (!v || typeof v !== "object" || Array.isArray(v)) return false;
-    const x = v as Record<string, unknown>;
-    return Number.isInteger(x.slot) && Number(x.slot) > 0
-      && typeof x.openedAt === "number" && Number.isFinite(x.openedAt) && x.openedAt > 0
-      && (x.sessionId === null || typeof x.sessionId === "string")
-      && (!withLane || (typeof x.cwd === "string" && x.cwd.length > 0
-        && typeof x.branch === "string" && x.branch.length > 0));
-  };
-  const provenance = r.provenance as Record<string, unknown> | undefined;
-  const nullableString = (v: unknown): boolean => v === null || typeof v === "string";
-  if (typeof r.id !== "string" || !/^[0-9a-f]{24}$/.test(r.id)
-    || typeof r.reportedAt !== "number" || !Number.isFinite(r.reportedAt) || r.reportedAt <= 0
-    || !FLEET_REPORT_STATUSES.includes(r.status as FleetReportStatus)
-    || typeof r.text !== "string" || !r.text.trim() || r.text.length > MAX_FLEET_REPORT_TEXT
-    || !occupant(r.worker, true)
-    // The receiver half and the basis half are checked TOGETHER, so a row can never claim a
-    // principal it was not filed to: owner-inbox means no occupant, every other basis means one.
-    || (r.basis === "owner-inbox" ? r.receiver !== null : !occupant(r.receiver, false))
-    || !provenance || !nullableString(provenance.taskId) || !nullableString(provenance.originId)
-    || !nullableString(provenance.programId)
-    || !["program-main", "lane-watch", "program-main+lane-watch", "owner-inbox"].includes(String(r.basis))
-    || typeof r.eventId !== "string" || !/^[0-9a-f]{24}$/.test(r.eventId)) return null;
-  return raw as FleetReport;
-}
-
-// Same discipline as clarificationFrom, same reason: requester identity and programId are
-// server-observed facts, so a row that does not carry them exactly is DISCARDED, never repaired.
-// The per-status invariants are the clarification ones with the owner-shaped answer substituted —
-// in particular send-uncertain carries the pending answer, is not closed and is not refused.
-function attentionFrom(raw: unknown): AttentionRequest | null {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const a = raw as Partial<AttentionRequest>;
-  const r = a.requester as Record<string, unknown> | undefined;
-  const provenance = a.provenance as Record<string, unknown> | undefined;
-  const answer = a.answer as AttentionRequest["answer"] | undefined;
-  const nullableBounded = (v: unknown): boolean => v === null
-    || (typeof v === "string" && v.length > 0 && v.length <= MAX_ATTENTION_PROVENANCE_TEXT);
-  const provenanceShaped = provenance === undefined || (
-    nullableBounded(provenance.taskId) && nullableBounded(provenance.originId)
-    && (provenance.programId === null || provenance.programId === a.programId)
-    && (provenance.branch === null || (typeof provenance.branch === "string"
-      && validAttentionBranch(provenance.branch)))
-    && (provenance.candidateSha === null || (typeof provenance.candidateSha === "string"
-      && ATTENTION_CANDIDATE_SHA_RE.test(provenance.candidateSha)))
-  );
-  if (typeof a.id !== "string" || !/^[0-9a-f]{24}$/.test(a.id)
-    || typeof a.raisedAt !== "number" || !Number.isFinite(a.raisedAt) || a.raisedAt <= 0
-    || !ATTENTION_KINDS.includes(a.kind as AttentionKind)
-    || typeof a.text !== "string" || !a.text.trim() || a.text.length > MAX_ATTENTION_TEXT
-    || !r || !Number.isInteger(r.slot) || Number(r.slot) <= 0
-    || typeof r.openedAt !== "number" || !Number.isFinite(r.openedAt) || Number(r.openedAt) <= 0
-    || !(r.sessionId === null || typeof r.sessionId === "string")
-    || typeof a.programId !== "string" || !a.programId
-    || !provenanceShaped
-    || !["open", "send-uncertain", "answered", "refused"].includes(String(a.status))
-    || !(a.closedAt === null || (typeof a.closedAt === "number" && Number.isFinite(a.closedAt) && a.closedAt > 0))
-    || !(a.refusedReason === null || typeof a.refusedReason === "string")) return null;
-  const answerShaped = (): boolean => !!answer && typeof answer.text === "string" && !!answer.text.trim()
-    && answer.text.length <= MAX_ATTENTION_ANSWER && typeof answer.at === "number"
-    && Number.isFinite(answer.at) && answer.at > 0 && answer.by === "owner";
-  if (a.status === "open" && (answer !== null || a.refusedReason !== null || a.closedAt !== null)) return null;
-  if (a.status === "answered") {
-    if (!answerShaped() || a.refusedReason !== null || a.closedAt === null) return null;
-  } else if (a.status === "send-uncertain") {
-    if (!answerShaped() || a.refusedReason !== null || a.closedAt !== null) return null;
-  } else if (answer !== null) return null;
-  if (a.status === "refused" && (!(a.refusedReason ?? "").trim() || a.closedAt === null)) return null;
-  return raw as AttentionRequest;
-}
-
-// a queued feature request. Owner-created or submitted via the public /intake address
-// (e.g. a CEO emailing features in). NEVER auto-sent: a task only leaves `pending` when
-// the OWNER promotes it to `queued`; the idle dispatcher then assigns queued tasks to
-// free lanes. External text is data, never a command until the owner opts it in.
-const TASK_KINDS = ["auftrag", "richtung", "notiz", "betrieb"] as const;
-type TaskKind = typeof TASK_KINDS[number];
-const isTaskKind = (value: unknown): value is TaskKind =>
-  typeof value === "string" && (TASK_KINDS as readonly string[]).includes(value);
-const loadTaskKind = (value: unknown, source: Task["source"]): TaskKind => {
-  if (value === "lane") return "auftrag";
-  if (value === "note") return "notiz";
-  if (isTaskKind(value)) return value;
-  // The safe default is the DOOR's default, per producer. A main row reaching this line is already
-  // malformed (POST /api/self/tasks always writes a validated kind), and the only question left is
-  // which way a malformed row should fall: "auftrag" would promote an advisory filing into the one
-  // executable category across a reload, i.e. hand the dispatcher a row nobody ever wrote as work.
-  return source === "steward" || source === "main" ? "notiz" : "auftrag";
-};
 const taskKindNote = (kind: TaskKind): string | null =>
   kind === "auftrag" ? null : `${kind} — the dispatcher never runs this`;
 // The load-time reader of a row's persisted agent choice, in the SLOT loader's exact discipline
@@ -1938,244 +1301,13 @@ const loadTaskSpawn = (value: unknown): DispatchSpawn | undefined => {
   return harness === null && model === null && effort === null ? undefined : { harness, model, effort };
 };
 
-interface Task {
-  id: string;
-  originId?: string; // stable bracket around tasks minted from one request. Root tasks use their
-  // own id; refine children inherit it. Absent is the honest shape for a pre-field row, never an
-  // empty bracket and never backfilled while loading old state.
-  programId?: string; // owner-attached Program bracket. Absent means this task belongs to no
-  // Program (or predates the field); refine children inherit it, but no load-time backfill occurs.
-  text: string;
-  // ACP-23 added "main": a row a bound Program-MAIN filed through POST /api/self/tasks. It is a
-  // PRODUCER name like the other three, not a permission — what a main row may be is bounded at
-  // its door (always pending, notiz unless the caller names a kind), and every reader that already
-  // asked "is this steward" keeps its answer. The load allowlist in loadState carries the same
-  // four values: a source it does not list is dropped on the next boot, silently and greenly.
-  source: "owner" | "intake" | "steward" | "main";
-  from: string | null; // intake sender label (freeform, for display only — never trusted)
-  kind: TaskKind; // auftrag is the one executable category. richtung, notiz and betrieb are
-  // advisory categories without their own motor (owner decision 2026-08-10); promoting one is
-  // still a valid propose-outcome signal, but every dispatch path skips it and leaves that fact
-  // standing on the row.
-  repo: string | null; // the task's TARGET repo — where its lane spawns. OWNER-only: intake and
-  // steward can never choose where external text materializes as a working session. null =
-  // the dispatcher default (FLEET_DISPATCH_REPO), which is also every pre-field row's meaning.
-  spawn?: DispatchSpawn; // the row's persisted agent choice — WHICH harness/model/effort its lane
-  // runs, in exactly the shape the attended ▸ start button already sends. Validated at SET time
-  // (taskSpawnFromBody: the same three adapter validators as the attended route, harness first),
-  // written only by the owner create route and the Program-MAIN filing door. ABSENT is the honest
-  // legacy shape and resolves to DEFAULT_SPAWN at every consumer (taskSpawnOf) — never backfilled,
-  // and never stored as an all-null object. The release door and the tick judge THIS field's
-  // harness for automatability, so an invalid or non-automatable stored choice is refused loudly
-  // instead of silently falling back to the default adapter.
-  files?: string[]; // the task's file surface. In persisted state this is written ONLY when a ↻
-  // refine proposal is confirmed (from RefineChild.files): the refiner verified it against the
-  // tree and the owner promoted it. API views may instead PROJECT exact tracked paths named in the
-  // task/brief, but that weaker derivation is never written back over the owner-confirmed field.
-  // Absent means UNKNOWN, never "touches nothing"; loadState and the projector both preserve that.
-  filesOrigin?: TaskFilesOrigin; // confirmed = persisted refine-confirm fact; derived = read-only
-  // server projection from exact path tokens. A legacy persisted `files` field is confirmed by the
-  // old field's contract. The two values must never collapse: dispatch/model consumers prefer the
-  // confirmed surface, and derived metadata is recomputed from the current tracked tree.
-  cluster?: TaskCluster; // read-only projection from the known file surface. Not persisted: its
-  // process map and the repository index can move while the task text remains unchanged.
-  status: "pending" | "queued" | "sent" | "done" | "archived";
-  releasedBy?: "owner" | "machine"; // WHO handed this draft to the machine — written at the
-  // RELEASE (see releaseTask) and by nothing else. NOT a synonym for the outcome row's
-  // `confirmedByHuman`, which answers the LAND art ("did the owner press ⏫, or did it auto-land
-  // clean+green"): 77 of the 89 landed rows on the live trail carry `false` there although a human
-  // released every single one, so the moment an unattended land writes the same value the two
-  // populations are no longer separable. Absent means never released, or released before this
-  // field existed — never defaulted to "owner", because a guess here is precisely what the field
-  // exists to prevent (the same bargain `resolvedBy` documents: it cannot be recovered from rows
-  // that never recorded it). It records the LAST release, not the row's current state: an unqueue
-  // withdraws the release and leaves the stamp standing until the next one overwrites it, which is
-  // sound because the only consumer reads it at the dispatch that a release always precedes.
-  created: number;
-  slot: number | null; // set once dispatched
-  note: string | null;
-  criterion?: TaskCriterion; // what "done" means for this task, settled in a clarify lane. The
-  // lane PROPOSES it (POST /api/self/criterion, confirmedAt null); only the owner confirms —
-  // the same propose/promote boundary that keeps a producer from authoring the anchor it is
-  // later judged against (see Slot.mission). Durable on purpose: before this field the settled
-  // criterion lived only in pane scrollback and died at /clear, so nothing could later say what
-  // the work was measured against.
-  ref?: string; // steward filings only: the pulse's stable condition slug (rundgang bound 1 /
-  // the Inspektion's register `key`). One live proposal per ref — the server answers a repeat
-  // filing with the existing row instead of a duplicate, so a persisting condition survives
-  // as ONE queue item across an hourly pulse. Absent on ad-hoc filings and non-steward rows.
-  refine?: TaskRefine; // the brief compiler's PROPOSAL (briefs/task-refine.md). A refine run never
-  // touches this row's text — it only parks what it would become here, and the owner's confirm is
-  // what mints the children. Propose/promote like `criterion`, for the same reason: the producer
-  // must not be the one who rewrites the work order it was measured against.
-  brief?: TaskBrief;       // the compiled work brief — the EXACT bytes a lane will receive. It used
-  // to be compiled at spawn time and thrown straight at the pane, which made it unreadable before
-  // the fact and, worse, meant the eval gate had approved a different string than the one that ran.
-  // Compiled once per draft in the analysis sweep, from then on stored, shown and editable.
-  // NOT the same object as `refine`, and the difference is the point: ↻ refine proposes a new
-  // REQUEST (attended, all-or-nothing, may split one row into several), while this is the prompt
-  // the request compiles down to. Refine rewrites what you asked for; the brief is how it is said.
-  comments?: TaskComment[]; // the owner's own words ON this row, addressed to whoever picks it up.
-  // The queue had five texts written BY machines about a task (brief, verdict, refine, criterion,
-  // note) and no way for the owner to write one back — every remark had to be typed into a pane,
-  // where it died at the next /clear. Deliberately NOT folded into the brief: the brief is the
-  // exact bytes a lane receives and is approved as such, so appending to it behind the owner's
-  // back would break the one contract that makes it reviewable. A comment is read, not executed.
-  analysis?: TaskAnalysis; // what the queue analyst found ABOUT that brief (owner decision
-  // 2026-08-05, round 2). ADVISORY: it gates nothing. Its predecessor, the eval gate, let a positive
-  // verdict start a PENDING task with no owner promote — which meant the machine picked work out of
-  // the owner's own un-promoted drafts. Now the owner's promote is the decision and this is the
-  // evidence he decides on. Written only by tickAnalysisSweep.
-}
-// The brief and the verdict are deliberately SEPARATE records with separate lifetimes: a brief is
-// compiled once per draft (a fresh lane's git-fact block is empty by construction, so nothing about
-// it improves by recompiling), while its analysis is re-run whenever the tree moves under it.
-interface TaskBrief { text: string; at: number; model: string; edited: boolean }
-// One remark, timestamped and individually deletable. `id` exists for the delete: an index would
-// name a different comment the moment an earlier one goes.
-interface TaskComment { id: string; ts: number; text: string }
 const MAX_COMMENTS_PER_TASK = 50;
-// Three-valued on purpose: "unknown" is the analyst failing to ANSWER, which is an absence and must
-// never be able to read as either judgement. The old gate collapsed a timed-out worker into a
-// permanent "review" verdict for its whole batch — fail-closed in direction, but indistinguishable
-// from a real finding and unrecoverable without a per-task reset.
-interface TaskAnalysis {
-  verdict: "ready" | "needs-you" | "unknown";
-  reason: string;                  // decisive factor first; for "unknown" it is the failure
-  blockers: AnalysisBlocker[];     // which criterion failed — the row tags; empty when ready
-  collides: string[];              // other task ids / open lane branches touching the same files
-  at: number;
-  model: string;
-  head: string | null;             // integration tip this was judged against; a moved tip = stale
-  briefAt: number | null;          // the brief revision this judged; the owner editing it = stale
-  attempts: number;                // consecutive analyst failures, for the backoff (0 once answered)
-  retry?: { at: number; reason: string }; // the last re-reading that FAILED, recorded beside the
-  // verdict instead of over it (analysisFailed). Absent is the normal state and means "the verdict
-  // above is the last thing that happened to this row". Written on every `attempts` bump, but not
-  // guaranteed to accompany the counter — a hand-edited state file can carry one without the
-  // other, which is why analysisDue falls back to `at` for the backoff clock rather than assuming.
-}
-type AnalysisBlocker = (typeof ANALYSIS_BLOCKERS)[number];
-interface TaskCriterion { text: string; proposedAt: number; confirmedAt: number | null }
 const MAX_CRITERION = 4000; // a done-criterion is a short contract, not a design document
-// One compiled child. `text` is the request in its own words; the other three are what a hand-
-// written brief carries and a raw task usually does not. They are stored SEPARATELY rather than
-// pre-joined so the proposal stays reviewable field by field in the queue detail — the row text
-// the owner promotes is composed from them deterministically (refineChildText).
-interface RefineChild { text: string; doneCriterion: string; verify: string; files: string[] }
-// The two answer shapes, as a discriminated union: either the task was already brief-shaped
-// (triage — the anti-overthink clause) or it compiles into 1..MAX_REFINE_CHILDREN children.
-type RefineProposal = { unchanged: true; reason: string } | { unchanged: false; tasks: RefineChild[] };
-interface TaskRefine { at: number; model: string; proposal: RefineProposal;
-  // The deterministic acceptance on that proposal (refine-validate.ts): which declared paths are
-  // tracked in the target repo, and whether each child's verify field names a step of this repo's
-  // local proof chain. READ-ONLY PROJECTION, like `cluster` on the row above it — written by
-  // taskView from the CURRENT tracked tree and never by the worker, so it is always a statement
-  // about today rather than about the minute the compile finished, and it needs no staleness
-  // anchor the way `analysis.head` does. Never persisted: normRefine rebuilds this record field by
-  // field, so a hand-edited state file cannot smuggle a verdict in either direction.
-  validation?: RefineValidation }
 const MAX_REFINE_CHILDREN = 4; // the split cap lives HERE, not in the model's judgment: an answer
 // over it is a worker that ignored its contract, and that fails closed like any other (runRefineJob)
 const MAX_REFINE_FIELD = 2000; // doneCriterion/verify/reason are sentences, not documents
 const MAX_REFINE_FILES = 20;
 
-// HOW a lane's working copy relates to the repo it came from. Absent/"worktree" is every lane
-// Fleet ever made: `git worktree add`, sharing the primary's object database. "clone" is a full
-// `git clone --no-hardlinks` — its own .git, its own hooks, its own config, one self-contained
-// directory. The distinction exists for ISOLATION, and it is not cosmetic: a worktree's `.git` is
-// a FILE pointing at the primary's common dir, so a worktree handed to a sandbox is a directory
-// git cannot work in at all — and mounting the common dir alongside it hands the sandbox
-// `.git/hooks`, whose contents run on the HOST under the owner's uid on his next commit.
-// `.git/config` (aliases, core.pager, fsmonitor) is the same vector. A clone has neither.
-type LaneForm = "worktree" | "clone";
-interface LaneRef {
-  repo: string; branch: string; base?: string; baseSha?: string; form?: LaneForm;
-  // The one main-session occupant this lane was born under. Optional only for old/adopted lanes
-  // and fresh lanes spawned while this repo had no eligible main session.
-  anchor?: LaneAnchor;
-}
-interface SuccessionRetirement { at: number; cwd: string; token: string }
-type CodexRecoveryState = "pending" | "bound" | "ambiguous" | "lost";
-
-interface Slot {
-  id: number;
-  cwd: string | null; // null = slot not activated; self-heal only touches activated slots
-  label: string | null; // user-chosen session name; falls back to cwd basename in the UI
-  openedAt: number; // when THIS occupant was opened. The HANDOFF gate compares its commit against
-  // this session boundary, so a recycled slot can never present the previous occupant's handoff.
-  // The retirement intent belongs on the slot (and therefore in fleet.json), rather than in a
-  // process-only timer: cwd + token bind it to this occupant across a boot and reject a recycled one.
-  successionRetirement: SuccessionRetirement | null;
-  mission: string | null; // the OWNER's standing intention for this session, externalized. A lane
-  // has one already — its founding task rides stewardTaskView, and every drift/nudge read anchors
-  // on it; a plain checkout slot has nothing equivalent, because its running intent lives in pane
-  // scrollback and dies at /clear. Owner-written only (the steward gate never reaches the route:
-  // a producer must not author the anchor it is later judged against), and per SESSION, not per
-  // slot — openSlot/killSlot clear it with the label.
-  awaiting: "owner" | "main" | null; // "owner" still means literally that a Clarify Lane waits
-  // for OWNER confirmation and handleStewardSend reads it that way. A worker awaiting the routed
-  // Program-MAIN answer would be dishonest under that label, so "main" is the smallest precise
-  // additive state. Both make the existing lane predicates decline to call the lane ready/stalled.
-  // Cleared only by the matching lifecycle: owner send/criterion for "owner"; successful reply,
-  // refusal, or occupant teardown for "main". Persisted: restart must not reopen either wait.
-  worktree: LaneRef | null; // set when Fleet created this slot's
-  // cwd as a git worktree ("lane") — land/cleanup only ever touches tagged slots. `base` is a
-  // branch NAME (it must track the tip); `baseSha` is the immutable fork COMMIT captured at
-  // create/attach time — optional, because lanes forked before it existed have none.
-  model: string | null; // per-slot claude model (--model at spawn); null = FLEET_CMD default
-  harness: string | null; // which agent this session runs (HARNESSES). null = the default adapter,
-  // i.e. FLEET_CMD — which is what every slot predating this field is, so null must never be
-  // migrated to "claude": the two are the same state and one representation of it is enough.
-  // Same lifetime and same honesty rule as `model`: chosen at spawn (it decides the pane's very
-  // command line), cleared on open/kill so a recycled slot never inherits the previous occupant's.
-  container: string | null; // WHICH BOX this session's agent runs in, and on WHICH docker-daemon
-  // context — the pin over this file forbids a bare `docker ` outside `docker --context`, prose included.
-  containerContext: string | null; // Only meaningful for a harness whose supports.container is true
-  // (the routes refuse them for any other). NULL IS NOT "none" — it is "this fleet's default", and
-  // it resolves through boxFor, never through docker's ambient context: the active context on this
-  // machine is the VM holding the guest containers, so an unpinned value would not have picked
-  // "some" daemon but exactly that one. Same lifetime and same honesty rule as `model`: baked into
-  // the pane's command line at spawn, cleared on open/kill so a recycled slot never inherits the
-  // previous occupant's box. Persisted, so a respawn re-enters the SAME container rather than
-  // silently falling back to the default one.
-  effort: string | null; // per-slot reasoning level for harnesses that have one (Pi's --thinking);
-  // null = pass no flag. Validated against the HARNESS's own closed set, never a charset.
-  taskId: string | null; // the queue row that spawned this lane. Carried because the outcome
-  // recorder runs at TEARDOWN — by then the slot is the only object that still names the run.
-  // null for a hand-opened lane and cleared with the occupant, exactly like releasedBy below.
-  originId: string | null; // the stable request bracket of that task, with the same teardown
-  // lifetime. null is honest for manual lanes and dispatched legacy tasks whose row cannot say.
-  programId: string | null; // the owner-confirmed Program bracket of that task, with exactly the
-  // same lifetime and honest-null semantics as taskId/originId.
-  releasedBy: "owner" | "machine" | null; // how the TASK that spawned this lane was released
-  // (Task.releasedBy), carried here because the outcome recorder runs at TEARDOWN — by then the
-  // task row has moved to `done`/`pending` and the slot is the only thing that still remembers.
-  // Same lifetime and same honesty rule as `model`: set at spawn, cleared on open/kill so a
-  // recycled slot never inherits it, null when this lane came from no queue row at all (a
-  // hand-opened lane) or from one released before the field existed.
-  selfToken: string; // scoped credential for POST /api/self/autos — NEVER the owner token.
-  // Minted fresh in openSlot every time the slot is (re)activated, so a recycled slot can't
-  // be self-scheduled against by a session that was talking to whatever used to live here.
-  offset: number;
-  lastOutput: number;
-  quietUntil: number; // resize/repaint make the TUI redraw — don't count that as activity
-  cols: number; // last tmux window size we applied — lets a same-size reconnect skip reseeding
-  rows: number;
-  sessionId: string | null; // exact conversation identity: usually pinned at pane creation;
-  // Codex discovers it lazily. null also covers adopted/pre-pinning transcript sessions.
-  codexPaneSpawnedAt: number | null; // current Codex pane life's discovery-window anchor
-  codexRecoveryState: CodexRecoveryState | null; // null for every non-Codex occupant
-  codexDisconnectSeenAt: number | null; // advisory only; a live TUI owns its own retry
-  history: { text: string; ts: number }[]; // the durable "what did I prompt" record,
-  // newest last: composed sends, plus terminal-typed prompts harvested from the
-  // transcript (tickHarvest) — raw keystrokes themselves are deliberately not captured
-  clients: Set<ServerWebSocket<WSData>>;
-  inputChain: Promise<unknown>;
-  resizeChain: Promise<unknown>; // serializes resize-window+capture-pane so two concurrent
-  // triggers (e.g. two clients connecting at different widths) can't interleave their
-  // tmux calls and hand one client a seed reflowed to the other's width
-}
 
 const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   id: i + 1,
@@ -2217,220 +1349,9 @@ let pins: string[] = []; // owner-pinned project roots, surfaced first in the pi
 // sits on the integration branch. Setting it lets the owner park the primary on a working
 // branch (e.g. `desk`) while lanes still land onto `main` without touching that dirty tree.
 let repoBases: Record<string, string> = {};
-type MainDirectResult = "landed" | "abandoned" | "expired";
-interface MainDirectPreflight {
-  id: string;
-  createdAt: number;
-  slot: number;
-  sessionId: string | null;
-  openedAt: number;
-  taskId: string | null;
-  repo: string;
-  integrationBranch: string;
-  mainBefore: string;
-}
-interface MainDirectOutcome extends MainDirectPreflight {
-  origin: "main-direct";
-  ts: number;
-  result: MainDirectResult;
-  mainAfter: string;
-  verify: string | Record<string, unknown> | "unknown";
-  reason?: string;
-}
 let mainDirectPreflights: Record<string, MainDirectPreflight> = {};
-const PROGRAM_STATUSES = ["proposed", "confirmed", "active", "complete"] as const;
-type ProgramStatus = typeof PROGRAM_STATUSES[number];
-interface Program {
-  id: string;
-  title: string;
-  intent: string;
-  successCriterion: string;
-  nonGoals: string[];
-  decisions: string[];
-  evidence: string[];
-  openQuestions: string[];
-  status: ProgramStatus;
-  createdAt: number;
-  proposedBy: { kind: "session"; slot: number; openedAt: number; sessionId: string | null }
-    | { kind: "owner" };
-  main?: { slot: number; openedAt: number; sessionId: string | null; boundAt: number };
-  // THE OWNER'S PROMOTION RECORD, and it is deliberately NOT part of ProgramContent: content is
-  // what a session may PROPOSE and the owner only corrects, this is a permission the owner grants
-  // and nothing else may write. Absent = owner-only land, which is the honest legacy shape and the
-  // shape every Program has until the owner says otherwise. Written by exactly one route
-  // (POST /api/programs/:id/promotion), revoked by the same one with {"policy": null}, never
-  // backfilled at load and never written by a self route.
-  promotion?: PromotionPolicy;
-  // THE OWNER'S CHOICE OF EXECUTION ENVIRONMENT for this Program's MAIN, and it is deliberately
-  // neither ProgramContent nor part of `promotion`. Content is what a session may PROPOSE;
-  // `promotion` is a permission a MAIN SPENDS; this is the environment a MAIN is FOUNDED into and
-  // then judged in — three different acts, so three different records. Absent means the exact
-  // legacy Standard MAIN, byte for byte, and that is the shape every Program has until the owner
-  // says otherwise. Written by exactly one route (POST /api/programs/:id/profile), cleared by the
-  // same one with {"profile": null}, never backfilled at load and never written by a self route.
-  profile?: ProgramProfile;
-  // A Game-Maker founding crosses pane creation, prompt delivery and a durable authority move.
-  // This intent is the crash boundary between those acts: it names exactly the candidate Fleet
-  // may roll back after a restart, without overloading Slot.programId (task/lane provenance).
-  // Absent is every Standard Program and every Game-Maker Program outside that short transition.
-  founding?: ProgramFounding;
-  // THE PERSISTED AUTHORITY LINEAGE — who held this Program's MAIN authority when, and how each
-  // holding ended. Deliberately the FOURTH record and none of the other three: content is what a
-  // session may PROPOSE, `promotion` is a permission the owner GRANTS, `founding` is a crash marker
-  // that lives for one transition — this is a HISTORY that only authority moves append to and
-  // nothing rewrites. It is not derived from audit.jsonl on purpose: that ledger is prose, unbounded,
-  // rotated by nobody and never loaded as state, so a successor reading it would parse sentences
-  // to learn facts the server already knew at write time. Every authority move writes this in the
-  // SAME save as `main` (bootstrap, rebound, succession); a teardown of the bound occupant closes
-  // the open entry without appending; a Program that already had `main` before this record
-  // existed gets exactly one `backfill-unknown` entry at load, with `boundAt` copied from `main` —
-  // never an invented earlier history. Absent = no lineage is known, and the execution view says so.
-  lineage?: ProgramLineage;
-  confirmedAt?: number;
-  activatedAt?: number;
-  completedAt?: number;
-}
-// CLOSED, VERSIONED, DEFAULT-DENY. `v` exists so a v2 shape can never be read as a v1 permission:
-// the loader below refuses anything but 1, so an unknown version degrades to ABSENT (owner-only)
-// rather than to its nearest v1 reading. There is no `verify` field, because "the repo must have
-// its own FLEET_VERIFY_CMD_REPOS entry" is the ONLY v1 behaviour — a field with one legal value is
-// a decision nobody makes, and the land route simply refuses a repo without an entry.
-// `confirmedAt` is stamped server-side: a wire value there would let a caller date the owner's act.
-//
-// THE THREE VALUES ARE A LADDER, and each rung is the owner policy of 2026-08-23 in one word:
-//   "off"        — the record exists and grants nothing. Distinct from ABSENT on purpose: absent is
-//                  "the owner never said", off is "the owner said no", and a ledger that could not
-//                  tell them apart would make a revocation look like a program nobody ever reached.
-//   "green-only" — an ordinary clean/green in-program land is the owning MAIN's to make. This is the
-//                  rung that ends the routine `review-ready` attention for a clean land.
-//   "guarded"    — additionally: a lane sitting on an agent-RESOLVED conflict may be confirmed by
-//                  that MAIN, with the server re-running the authoritative verification FRESH on the
-//                  resolved candidate and landing only on ok:true. Conflict inside the confirmed
-//                  scope is MAIN work; `conflicted:true` alone never blocks promotion.
-type PromotionSelfLand = "off" | "green-only" | "guarded";
-interface PromotionPolicy { v: 1; selfLand: PromotionSelfLand; confirmedAt: number }
-const PROMOTION_SELF_LAND: PromotionSelfLand[] = ["off", "green-only", "guarded"];
-// The load-time reader, in loadTaskSpawn's exact discipline and for the same reason: this record is
-// a PERMISSION, so its degradation direction is the whole design. Anything that is not exactly a
-// well-formed v1 record — unknown key, wrong version, unknown value, missing or absurd stamp —
-// loads as ABSENT, i.e. owner-only. There is no field-wise repair here (unlike a spawn choice,
-// where a half-valid row still names a real adapter): half a permission is not a weaker
-// permission, it is a different one, and the only safe reading of a record nobody can parse is
-// "the owner granted nothing".
-const loadPromotion = (value: unknown): PromotionPolicy | undefined => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const r = value as Record<string, unknown>;
-  if (Object.keys(r).some((k) => !["v", "selfLand", "confirmedAt"].includes(k))) return undefined;
-  if (r.v !== 1) return undefined;
-  if (typeof r.selfLand !== "string" || !PROMOTION_SELF_LAND.includes(r.selfLand as PromotionSelfLand)) return undefined;
-  if (typeof r.confirmedAt !== "number" || !Number.isFinite(r.confirmedAt) || r.confirmedAt <= 0) return undefined;
-  return { v: 1, selfLand: r.selfLand as PromotionSelfLand, confirmedAt: r.confirmedAt };
-};
-
-// CLOSED, VERSIONED, DEFAULT-ABSENT — the same three properties `PromotionPolicy` has, for the same
-// reason: a v2 shape must never be readable as a v1 environment, and an unknown `kind` must never
-// degrade to its nearest known one. `confirmedAt` is stamped server-side, because a wire value
-// there would let a caller date the owner's decision.
-//
-// THERE IS EXACTLY ONE KIND TODAY, and it is not a category slot waiting to be filled.
-//   "game-maker" — the owner has said, of THIS program, that implementation, launch, actual
-//                  control, perception, repair and replay are one causally coupled product act.
-//                  The consequence is a different founding text and a narrower machine (a
-//                  dedicated linked worktree of a target repository), NOT a different lifecycle,
-//                  a new role, a new subsystem or a second authority. Absence is the Standard MAIN.
-type ProgramProfileKind = "game-maker";
-interface ProgramProfile { v: 1; kind: ProgramProfileKind; confirmedAt: number }
-const PROGRAM_PROFILE_KINDS: ProgramProfileKind[] = ["game-maker"];
-// loadPromotion's discipline, one record over. A profile that cannot be parsed loads as ABSENT,
-// i.e. as the Standard MAIN — never field-wise repaired, and never allowed to take the Program down
-// with it: the owner's confirmed intent is worth more than a preference nobody can read, so an
-// unreadable profile costs the record and nothing else.
-const loadProgramProfile = (value: unknown): ProgramProfile | undefined => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const r = value as Record<string, unknown>;
-  if (Object.keys(r).some((k) => !["v", "kind", "confirmedAt"].includes(k))) return undefined;
-  if (r.v !== 1) return undefined;
-  if (typeof r.kind !== "string" || !PROGRAM_PROFILE_KINDS.includes(r.kind as ProgramProfileKind)) return undefined;
-  if (typeof r.confirmedAt !== "number" || !Number.isFinite(r.confirmedAt) || r.confirmedAt <= 0) return undefined;
-  return { v: 1, kind: r.kind as ProgramProfileKind, confirmedAt: r.confirmedAt };
-};
 const isGameMaker = (p: Program | undefined | null): boolean => p?.profile?.kind === "game-maker";
 
-// CLOSED, VERSIONED, DEFAULT-DENY — loadPromotion's discipline for a record that is a HISTORY
-// rather than a permission, and the degradation direction is the same for the same reason: a
-// lineage nobody can parse is not a shorter lineage, it is no lineage, and the execution view then
-// says "not reconstructible" instead of rendering half a history as the whole one. Unlike the
-// promotion, an unreadable record is REPORTED (one audit row, one log line), because silently
-// losing a history is exactly the failure this record exists to end.
-//
-// `via` names how an entry CAME to hold authority, `endedBy` how the holding ENDED. The first close
-// wins and is never overwritten: a MAIN whose pane was torn down keeps `retire` with the observed
-// time even when a later bootstrap rebinds over the stale binding — that rebound is on the NEW
-// entry's `via`. `endedBy:"rebound"` on an entry therefore means precisely "its death was never
-// observed; the binding was found stale at rebind time". `replaced` is the one exit without a
-// successor: a bootstrap over a stale binding dropped it with its founding marker and then failed,
-// so the Program stands active and unbound.
-type ProgramLineageVia = "bootstrap" | "rebound" | "succeed" | "backfill-unknown";
-type ProgramLineageEndedBy = "rebound" | "succeed" | "retire" | "replaced";
-interface ProgramLineageEntry {
-  slot: number; openedAt: number; sessionId: string | null; boundAt: number;
-  via: ProgramLineageVia; endedAt: number | null; endedBy: ProgramLineageEndedBy | null;
-}
-interface ProgramLineage { v: 1; entries: ProgramLineageEntry[]; dropped: number }
-// the oldest entries fall off first and are COUNTED, so a capped record still says how much of the
-// history it no longer carries
-const PROGRAM_LINEAGE_MAX = 50;
-const PROGRAM_LINEAGE_VIA: ProgramLineageVia[] = ["bootstrap", "rebound", "succeed", "backfill-unknown"];
-const PROGRAM_LINEAGE_ENDED_BY: ProgramLineageEndedBy[] = ["rebound", "succeed", "retire", "replaced"];
-const PROGRAM_LINEAGE_ENTRY_KEYS = ["slot", "openedAt", "sessionId", "boundAt", "via", "endedAt", "endedBy"];
-type ProgramLineageRead = { ok: true; lineage: ProgramLineage } | { ok: false; error: string };
-const loadProgramLineageEntry = (value: unknown, index: number): ProgramLineageEntry | string => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return `entry ${index} must be an object`;
-  const r = value as Record<string, unknown>;
-  if (Object.keys(r).some((k) => !PROGRAM_LINEAGE_ENTRY_KEYS.includes(k))
-    || Object.keys(r).length !== PROGRAM_LINEAGE_ENTRY_KEYS.length)
-    return `entry ${index} must contain exactly ${PROGRAM_LINEAGE_ENTRY_KEYS.join(", ")}`;
-  if (!Number.isInteger(r.slot) || (r.slot as number) < 1 || (r.slot as number) > MAX_SLOTS)
-    return `entry ${index} slot must be an integer in 1..${MAX_SLOTS}`;
-  if (typeof r.openedAt !== "number" || !Number.isFinite(r.openedAt) || r.openedAt <= 0)
-    return `entry ${index} openedAt must be a positive number`;
-  if (r.sessionId !== null && typeof r.sessionId !== "string") return `entry ${index} sessionId must be a string or null`;
-  if (typeof r.boundAt !== "number" || !Number.isFinite(r.boundAt) || r.boundAt <= 0)
-    return `entry ${index} boundAt must be a positive number`;
-  if (typeof r.via !== "string" || !PROGRAM_LINEAGE_VIA.includes(r.via as ProgramLineageVia))
-    return `entry ${index} via must be one of ${PROGRAM_LINEAGE_VIA.join(", ")}`;
-  if (r.endedAt !== null && (typeof r.endedAt !== "number" || !Number.isFinite(r.endedAt) || r.endedAt <= 0))
-    return `entry ${index} endedAt must be a positive number or null`;
-  if (r.endedBy !== null && (typeof r.endedBy !== "string"
-    || !PROGRAM_LINEAGE_ENDED_BY.includes(r.endedBy as ProgramLineageEndedBy)))
-    return `entry ${index} endedBy must be one of ${PROGRAM_LINEAGE_ENDED_BY.join(", ")} or null`;
-  if ((r.endedAt === null) !== (r.endedBy === null)) return `entry ${index} endedAt and endedBy must be null together`;
-  return { slot: r.slot as number, openedAt: r.openedAt, sessionId: r.sessionId as string | null,
-    boundAt: r.boundAt, via: r.via as ProgramLineageVia, endedAt: r.endedAt as number | null,
-    endedBy: r.endedBy as ProgramLineageEndedBy | null };
-};
-const loadProgramLineage = (value: unknown): ProgramLineageRead => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "must be an object" };
-  const r = value as Record<string, unknown>;
-  if (Object.keys(r).some((k) => !["v", "entries", "dropped"].includes(k)) || Object.keys(r).length !== 3)
-    return { ok: false, error: "must contain exactly v, entries, dropped" };
-  if (r.v !== 1) return { ok: false, error: "v must be 1" };
-  if (!Array.isArray(r.entries)) return { ok: false, error: "entries must be an array" };
-  if (r.entries.length > PROGRAM_LINEAGE_MAX)
-    return { ok: false, error: `entries must hold at most ${PROGRAM_LINEAGE_MAX} rows` };
-  if (!Number.isInteger(r.dropped) || (r.dropped as number) < 0)
-    return { ok: false, error: "dropped must be a non-negative integer" };
-  const entries: ProgramLineageEntry[] = [];
-  for (const [index, raw] of r.entries.entries()) {
-    const entry = loadProgramLineageEntry(raw, index);
-    if (typeof entry === "string") return { ok: false, error: entry };
-    // append-only with close-before-append: only the newest holding can still be open
-    if (entry.endedAt === null && index !== r.entries.length - 1)
-      return { ok: false, error: `entry ${index} is open but is not the newest entry` };
-    entries.push(entry);
-  }
-  return { ok: true, lineage: { v: 1, entries, dropped: r.dropped as number } };
-};
 const lineageEntryFromMain = (main: NonNullable<Program["main"]>, via: ProgramLineageVia): ProgramLineageEntry =>
   ({ slot: main.slot, openedAt: main.openedAt, sessionId: main.sessionId, boundAt: main.boundAt,
     via, endedAt: null, endedBy: null });
@@ -2467,48 +1388,6 @@ const closeProgramLineageForOccupant = (slot: number, openedAt: number, at: numb
   }
 };
 
-type ProgramFoundingMode = "bootstrap" | "succession";
-interface ProgramFoundingOccupant { slot: number; openedAt: number }
-interface ProgramFoundingV1 {
-  v: 1;
-  attemptId: string;
-  mode: ProgramFoundingMode;
-  canonicalRoot: string;
-  target: ProgramFoundingOccupant;
-  predecessor: ProgramFoundingOccupant | null;
-  startedAt: number;
-}
-type ProgramFoundingProfileKind = "standard" | ProgramProfileKind;
-interface ProgramFoundingIdentity extends ProgramFoundingOccupant { selfTokenHash: string }
-interface ProgramFoundingV2 {
-  v: 2;
-  profileKind: ProgramFoundingProfileKind;
-  attemptId: string;
-  mode: ProgramFoundingMode;
-  targetRoot: string;
-  target: ProgramFoundingIdentity;
-  predecessor: ProgramFoundingIdentity | null;
-  startedAt: number;
-}
-type ProgramFounding = ProgramFoundingV1 | ProgramFoundingV2;
-type ProgramFoundingRead = { ok: true; founding: ProgramFounding } | { ok: false; error: string };
-const foundingOccupantFrom = (value: unknown): ProgramFoundingOccupant | null => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const r = value as Record<string, unknown>;
-  if (Object.keys(r).some((k) => !["slot", "openedAt"].includes(k))) return null;
-  if (!Number.isInteger(r.slot) || (r.slot as number) < 1 || (r.slot as number) > MAX_SLOTS) return null;
-  if (typeof r.openedAt !== "number" || !Number.isFinite(r.openedAt) || r.openedAt <= 0) return null;
-  return { slot: r.slot as number, openedAt: r.openedAt };
-};
-const foundingIdentityFrom = (value: unknown): ProgramFoundingIdentity | null => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const r = value as Record<string, unknown>;
-  if (Object.keys(r).some((k) => !["slot", "openedAt", "selfTokenHash"].includes(k))
-    || Object.keys(r).length !== 3) return null;
-  const occupant = foundingOccupantFrom({ slot: r.slot, openedAt: r.openedAt });
-  if (!occupant || typeof r.selfTokenHash !== "string" || !/^[0-9a-f]{64}$/.test(r.selfTokenHash)) return null;
-  return { ...occupant, selfTokenHash: r.selfTokenHash };
-};
 const foundingRoot = (founding: ProgramFounding): string =>
   founding.v === 1 ? founding.canonicalRoot : founding.targetRoot;
 const foundingProfileKind = (founding: ProgramFounding): ProgramFoundingProfileKind =>
@@ -2562,10 +1441,6 @@ const loadProgramFounding = (value: unknown): ProgramFoundingRead => {
     startedAt: r.startedAt } };
 };
 
-type ProgramContent = Pick<Program, "title" | "intent" | "successCriterion" | "nonGoals"
-  | "decisions" | "evidence" | "openQuestions">;
-type ProgramValidation = { ok: true; content: ProgramContent } | { ok: false; error: string };
-
 // The one content boundary for both proposal and owner confirmation. Confirm first overlays its
 // corrections on the proposal and then comes through here, so an owner cannot accidentally store
 // a shape the proposing session could not have stored. Unknown keys never enter the returned
@@ -2618,17 +1493,6 @@ let programs: Program[] = [];
 const programBootstrapInflight = new Set<string>();
 let startupStateRefusal: string | null = null;
 
-// The cross-program Supervisor is a SINGLETON above every Program bracket, so its binding lives
-// beside `programs` rather than inside one of them. Identical shape to Program.main on purpose:
-// slot+openedAt is the only occupant identity Fleet ever trusts, and a recycled slot must never
-// inherit an authority its predecessor held. The binding grants no capability by itself — it names
-// who the Supervisor is, and nothing reads it as permission to write.
-interface SupervisorBinding {
-  slot: number;
-  openedAt: number;
-  sessionId: string | null;
-  boundAt: number;
-}
 let supervisor: SupervisorBinding | null = null;
 let supervisorBootstrapInflight = false;
 const SUPERVISOR_LABEL = "🧿 Supervisor";
@@ -2641,7 +1505,6 @@ function capPrograms(list: Program[]): Program[] {
   const keptComplete = new Set(keepComplete > 0 ? complete.slice(-keepComplete) : []);
   return list.filter((p) => live.has(p) || keptComplete.has(p));
 }
-type ProgramDigest = Pick<Program, "id" | "status" | "title" | "createdAt">;
 const programDigest = (p: Program): ProgramDigest => ({ id: p.id, status: p.status,
   title: p.title, createdAt: p.createdAt });
 const publicProgramFounding = (founding: ProgramFounding): Record<string, unknown> => founding.v === 1
@@ -3375,24 +2238,9 @@ const FLEET_REPORT_RECOVERY_MAX_ATTEMPTS = (() => {
 // refused with nowhere left to go. Twenty-five is a day of unread completions, not an archive.
 const FLEET_EVENT_MAX_OPEN_OWNER_INBOX = 25;
 const FLEET_EVENT_KEEP_TERMINAL_OWNER_INBOX = 25;
-const MAX_CLARIFICATION_QUESTION = 2000;
-const MAX_CLARIFICATION_ANSWER = 4000;
 const CLARIFICATION_KEEP_TERMINAL = 20;
-const MAX_FLEET_REPORT_TEXT = 4000;
 const FLEET_REPORT_KEEP = 20;
-// Its own constants, copied from the clarification values rather than aliased: the two channels
-// answer to different principals and one may be retuned without silently retuning the other.
-const MAX_ATTENTION_TEXT = 2000;
-const MAX_ATTENTION_ANSWER = 4000;
 const ATTENTION_KEEP_TERMINAL = 20;
-const MAX_ATTENTION_PROVENANCE_TEXT = 200;
-const ATTENTION_CANDIDATE_SHA_RE = /^[0-9a-f]{40,64}$/;
-const ATTENTION_BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
-function validAttentionBranch(branch: string): boolean {
-  return branch.length <= MAX_ATTENTION_PROVENANCE_TEXT && ATTENTION_BRANCH_RE.test(branch)
-    && !branch.includes("..") && !branch.includes("//") && !branch.includes("@{")
-    && !branch.endsWith("/") && !branch.endsWith(".") && !branch.endsWith(".lock");
-}
 // An unanswered pile is an attention FAILURE, not a queue: past this the MAIN must resolve what it
 // already raised instead of adding to a list nobody can act on.
 const ATTENTION_MAX_OPEN_PER_REQUESTER = 5;
@@ -3512,7 +2360,6 @@ const sess = (id: number) => `s${id}`;
 // these. NO tmux call may pass a bare session name as `-t` again (pinned in e2e/pins.ts).
 const sessTarget = (name: string): string => `=${name}`;
 const paneTarget = (name: string): string => `=${name}:`;
-interface SlotStreamOccupant { slot: number; openedAt: number; selfToken: string }
 const slotStreamOccupant = (s: Slot): SlotStreamOccupant | null => s.cwd
   ? { slot: s.id, openedAt: s.openedAt, selfToken: s.selfToken }
   : null;
@@ -8974,7 +7821,6 @@ const dispatchingTasks = new Set<string>();
 // (clarify-prompt.ts). Owner-only by construction: no tick passes it, only the attended button does.
 // `spawn` is the same choice /api/lanes takes — WHICH AGENT runs the lane — carried here so the
 // queue row stays linked (requeue on failed spawn, outcome row). The default is the tick's shape.
-type DispatchSpawn = { harness: string | null; model: string | null; effort: string | null };
 const DEFAULT_SPAWN: DispatchSpawn = { harness: null, model: null, effort: null };
 // THE ONE BRIDGE from a queue row to a spawn choice: the row's own persisted, SET-time-validated
 // field, DEFAULT_SPAWN on absence. Every unattended reader goes through this accessor — never a
@@ -18452,7 +17298,6 @@ const SUPERVISOR_VIEW_PROGRAMS = 50;
 const SUPERVISOR_VIEW_ROWS = 20;
 const SUPERVISOR_VIEW_INTEGRATION_ROWS = 5;
 const SUPERVISOR_VIEW_TEXT = 200;
-const MAX_SUPERVISOR_NUDGE_TEXT = 2000;
 
 // SupervisorExecutionView v0: a READ-ONLY cross-program projection, never a second lifecycle model
 // and never a pane capture. It joins facts that already exist — the Program brackets, the lane

@@ -521,6 +521,30 @@ HANDOFF-Abschnitt dieses Programs — die Vorgaenger-MAINs (Slot 13 Proposer, Sl
 keinen hinterlassen; ihre Geschichte steht seit `87c5be6` als `authority.lineage` in
 `GET /api/self/program-execution` (erster Eintrag `backfill-unknown`).
 
+## 0. Nachtrag bei der Uebergabe (2026-09-02 ~13:00, ctx 32,7 % laut Controller-Messung)
+
+- **Audit auf `87c5be6` GRUEN, selbst verifiziert:** 3423/0 in 2425 s, Trail `isolated-20260902T054820Z-28175`,
+  deploy-facts-Check gruen, 8 Lineage-Checks gelaufen. Deckt `67b2265` (A) als Ancestor mit — A und B
+  sind Stufe-2-gruen.
+- **Rotes Audit auf `79acd2e`** (fremdes Land, Lane f92c, 10 FAILURES): alle zehn in `e2e/watch.ts`
+  Transport/Rollback, exakt diese Checks im 87c5be6-Audit gruen, Cluster fiel schon im August 4x gemeinsam
+  (Basisraten 3-18 %). Owner-Entscheid via Attention 6e356071: KEIN undo auf A, adjudiziert `flake`,
+  Rerun 3443/0.
+- **C `860cecdf` weiter `queued`.** Controller (jetzt Slot 15) dispatcht, sobald der Suite-Mutex frei ist
+  und kein Audit laeuft (Cs Brief verlangt `suites=0` vor seinem Beweislauf). Report kommt an die
+  Nachfolgerin dieses Slots — Diff selbst lesen; landen nur, wenn `nextAction` die Self-Land-Tuer nennt.
+- **Selbstbefund** (Owner-Auftrag an alle MAINs) als Notiz `1a37966b` abgelegt: 10 von 20 letzten
+  Tool-Turns waren Wiederlesen/Pollen; 9 von 22 eingehenden Nachrichten ohne Entscheidungsgehalt;
+  Schnittvorschlag `lane-signals.ts#attentionAnswerMessage` (Owner-Antwort zitiert den eigenen
+  Attention-Text komplett zurueck, ~2,3 k Zeichen je Antwort).
+- Seit `4880d15` auf main gelandet (fremd): P4 Slice 1 (`e03d44c`, server.ts -> server/types.ts, reiner
+  Move), Slot-Model-Route `c09d5f1` (`POST /api/slots/:id/model`; `succeed` nimmt dasselbe Paar als
+  Override), Verify-Arbeitsbudget 480 s (`fc389a1`), Helper-Daemon-Job (`79acd2e`).
+- Diese Uebergabe ist die erste dokumentierte Self-Succession dieses Programs (Schritt 9): HANDOFF
+  committet, `POST /api/self/succeed` mit `carry`, danach `retire`. Ob `authority.lineage` den Wechsel
+  als `succeed`-Eintrag traegt, pruefst DU zuerst in `GET /api/self/program-execution` — das ist der
+  Live-Beweis fuer B.
+
 ## 1. Autoritaet & Betrieb
 
 - **Owner-Vorgabe 2026-09-01 abends: ALLE Sessions und Lanes auf `claude / claude-fable-5-1[1m] / high`.**

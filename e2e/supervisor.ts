@@ -23,7 +23,7 @@ interface FleetState {
   supervisor?: SupervisorBinding | null;
   programs?: Record<string, unknown>[];
   slots?: Record<string, { cwd?: string; selfToken?: string; openedAt?: number; sessionId?: string | null;
-    label?: string | null; worktree?: string | null }>;
+    label?: string | null; worktree?: string | null; model?: string | null; effort?: string | null }>;
   stewardToken?: string;
 }
 interface ContextReceipt {
@@ -263,11 +263,20 @@ export async function run(): Promise<void> {
   const receiptsBeforeSuccession = await receipts();
   const carry = "Continue the cross-program portfolio read.";
   const successionLabel = "supervisor-successor";
-  const succession = await succeed(supervisorToken, { label: successionLabel, carry });
+  // the succession carries a model/effort OVERRIDE on purpose: the Supervisor path has its own
+  // openSlot call, and "absent = inherit" proven on the generic path (e2e/self-token.ts) says
+  // nothing about whether THIS path reads the resolved pair or still the predecessor's record.
+  const predecessorState = readState().slots?.[String(bound?.slot ?? 0)];
+  const successionSpawn = { model: "claude-opus-5[1m]", effort: "max" };
+  const succession = await succeed(supervisorToken, { label: successionLabel, carry, ...successionSpawn });
   const successionBody = await succession.json() as { ok?: boolean; slot?: number; supervisor?: SupervisorBinding };
   const successorSlot = successionBody.slot ?? 0;
   const transferred = (await ownerRead()).supervisor;
   const successorState = readState().slots?.[String(successorSlot)];
+  check("supervisor succession: the successor's record carries the {model, effort} override, not the predecessor's pair",
+    successorState?.model === successionSpawn.model && successorState.effort === successionSpawn.effort
+      && (predecessorState?.model ?? null) !== successionSpawn.model,
+    `pred=${JSON.stringify({ model: predecessorState?.model, effort: predecessorState?.effort })} succ=${JSON.stringify({ model: successorState?.model, effort: successorState?.effort })}`);
   check("supervisor succession: the binding moves to the successor and names its persisted identity exactly",
     succession.ok && successorSlot > 0 && successorSlot !== bound?.slot && !!transferred
       && transferred.slot === successorSlot && transferred.openedAt === successorState?.openedAt

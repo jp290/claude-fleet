@@ -165,7 +165,14 @@ curl -X POST http://<fleet-host>:<port>/api/self/succeed \
 
 Fleet öffnet einen freien Slot im selben cwd mit Modell/Harness der Vorgängerin, schickt den servergebauten
 Gründungsbrief und räumt den alten Slot nach der Grace-Frist. `carry` ist optional und auf 500 Zeichen
-begrenzt; der echte Transfer ist `HANDOFF.md`. Nach dem Schlussbericht räumt `POST /api/self/retire` denselben
+begrenzt; der echte Transfer ist `HANDOFF.md`. **`model` und `effort` sind optional (seit 2026-09-02):**
+abwesend = wörtliche Vererbung aus dem Datensatz der Vorgängerin; vorhanden = der Nachfolger wird darauf
+geöffnet, validiert exakt wie `open`/`dispatch` gegen die geerbte Harness (`MODEL_RE` bzw.
+`HARNESS_MODEL_RE`, Effort aus `effortLevels` des Adapters), ungültig = 400 und KEIN Slot geöffnet;
+ein vorhandenes `null`/`""` löscht (Modell → Fleet-Default, Effort → kein Flag). Die Harness selbst ist
+nicht überschreibbar. Gilt für alle drei Nachfolge-Pfade (generisch, Supervisor, Program-MAIN). Der Anlass:
+eine MAIN, die per `/model` in der Pane gewechselt hat, bekam ihren Nachfolger auf dem Spawn-Wert des
+Datensatzes — den korrigiert für einen LEBENDEN Slot die Owner-Route unten (§model). Nach dem Schlussbericht räumt `POST /api/self/retire` denselben
 Slot sofort. Während `succeed` läuft, antwortet `retire` für exakt diese Session 409. `succeed` hält ab
 Request-Eintritt `{slot, openedAt, cwd, selfToken}` fest und prüft diese Identität nach dem Git-Handoff-
 Await erneut; Owner-Kill/Recycling bleibt erlaubt, kann den alten Request aber nicht auf die generische
@@ -908,6 +915,35 @@ Eintrag). Der Backfill gilt nur für Zeilen, die den Key nie hatten.
 
 `sessionIdMatch` und der Rest von `authority` sind unverändert. `GET /api/programs` trägt den Record
 im Program-Row mit (`publicProgram` spreizt das Program); der 4-Feld-`ProgramDigest` bleibt.
+
+## model — `POST /api/slots/:id/model` (OWNER-Route, nicht `/api/self/*`)
+
+Schreibt Modell und/oder Effort eines LEBENDEN Slots **in den Datensatz** — ohne Respawn. Der Datensatz
+ist, was der 2-s-Heal, `↻ restart` und die Nachfolge lesen; bis 2026-09-02 fielen alle drei still auf den
+Spawn-Wert zurück, auch wenn die Pane längst per `/model` woanders lief (gemessen: Slots 1/5/6/9 auf
+`claude-opus-5[1m]` im Datensatz, Fable 5.1 in der Pane).
+
+```
+curl -X POST http://<fleet-host>:<port>/api/slots/<id>/model \
+  -H "authorization: Bearer $FLEET_TOKEN" -H "content-type: application/json" \
+  -d '{"model":"claude-fable-5-1[1m]","effort":"high"}'
+```
+
+- Body `{model?, effort?}`; mindestens ein Feld, sonst 400. Abwesendes Feld = unverändert; `null`/`""`
+  löscht (Modell → Fleet-Default `DEFAULT_MODEL`, Effort → kein Flag).
+- Validierung byte-gleich mit `open`/`dispatch`, beurteilt nach der Harness des Slots (`modelOf`/`effortOf`
+  in `server.ts`): claude → `MODEL_RE`, deklarierte Fremd-Harness → `HARNESS_MODEL_RE`, Effort nur aus
+  `effortLevels` des Adapters (codex etwa `low…ultra`, Adapter ohne Effort-Begriff lehnen jeden Wert ab).
+  Ungültig = 400, Datensatz unverändert. Das `[1m]`-Suffix bleibt in der Spawn-Zeile single-quoted
+  (`agentCmd`), die Route weitet nichts auf.
+- Antwort `{ok, model, effort}`; persistiert (`saveState`), Trail-Zeile `slot_model` mit dem
+  resultierenden Paar. `GET /api/sessions` (Effort weggelassen, wenn null) und `GET /api/steward/sessions`
+  (seit 2026-09-02 mit `effort`) zeigen den neuen Stand sofort.
+- Owner-only: Steward-Token 403 (out of scope), Self-Token 401. Kein Board-Knopf, API-only wie `open`+`label`.
+- **Kein Sensor für das Laufzeit-Modell der Pane** — was `/model` dort eingestellt hat, weiß der Server
+  nicht; die Route macht den Datensatz zur Wahrheit für den NÄCHSTEN Spawn, nicht die Pane zur Wahrheit für
+  den Datensatz. Beweis der Pane-Hälfte: `./e2e-claude-gate.sh` (Rewrite, dann `↻ restart`, Spawn-Zeile trägt
+  `--model '<neu>'` und `--effort '<neu>'`, gleicher `--resume`-Pin).
 
 ## profile — `POST /api/programs/:id/profile` (OWNER-Route, nicht `/api/self/*`)
 

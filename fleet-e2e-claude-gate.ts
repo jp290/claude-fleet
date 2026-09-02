@@ -678,6 +678,25 @@ for (const s of (await dispSess()).slots) if (s.worktree && !lanesBefore.has(s.i
   check("↻ restart trails BOTH outcomes under slot_restart, with the reason the heal path uses",
     rsRows.length === 2 && rsRows[0] === "created:no-transcript" && rsRows[1] === "resumed", JSON.stringify(rsRows));
 
+  // (c) the record is what a restart spawns from — so rewriting it (POST /api/slots/:id/model)
+  // must change the NEXT spawn line and nothing before it. This is the only suite that can see
+  // it: both flags are claude-gated in agentCmd. The bracket suffix rides along so the rewritten
+  // model is proven in its shell-quoted form, same reason as the model-pin checks above; the
+  // pane is otherwise untouched (same pin, still `--resume`), because the route promises no respawn.
+  const cmdBeforeRewrite = await startCmdOf();
+  const rw = await post(`/api/slots/${RS_SLOT}/model`, { model: "gate-remodel[1m]", effort: "xhigh" });
+  check("POST /api/slots/:id/model rewrites a live slot's record (200)", rw.ok, String(rw.status));
+  check("...and touches no pane: the running command line is byte-identical after the rewrite",
+    (await startCmdOf()) === cmdBeforeRewrite, cmdBeforeRewrite.slice(-160));
+  const rC = await post(`/api/slots/${RS_SLOT}/restart`, {});
+  const rCJ = (await rC.json()) as { ok?: boolean; resumed?: boolean };
+  const cmdC = await startCmdOf();
+  check("↻ restart after the rewrite spawns with the NEW model, shell-quoted, and the new --effort",
+    rC.ok && cmdC.includes("--model 'gate-remodel[1m]'") && cmdC.includes("--effort 'xhigh'")
+      && !cmdC.includes(`--model '${FLEET_DEFAULT_MODEL}'`), `${JSON.stringify(rCJ)} ${cmdC.slice(-160)}`);
+  check("↻ restart after the rewrite still resumes the same pinned conversation — model changed, transcript did not",
+    rCJ.resumed === true && cmdC.includes(`--resume ${pinA}`) && pinOf() === pinA, `${JSON.stringify(rCJ)} ${cmdC.slice(-160)}`);
+
   await post(`/api/slots/${RS_SLOT}/kill`, {});
   // clean up after ourselves in the one place this suite writes OUTSIDE its instance dir. rmdir,
   // never a recursive rm: it refuses a non-empty directory, so this can only ever remove the

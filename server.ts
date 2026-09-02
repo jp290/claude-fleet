@@ -3762,6 +3762,10 @@ type AuditEvent =
   // resumes by construction whenever a transcript exists, so booking it as a heal would inflate
   // exactly the rate it is not evidence for. Same detail vocabulary, different question.
   | "slot_restart"
+  // the owner rewrote a LIVE slot's model/effort in the record (POST /api/slots/:id/model). No
+  // pane is touched; the row is what the next heal, ↻ restart or succession spawns from. Detail
+  // carries the resulting pair so the trail says what the next spawn line will say.
+  | "slot_model"
   // the owner chose which executable a repo's throwaway worker runs as. On the trail because the
   // value decides where that repo's DIFF is sent — the one setting here whose blast radius is
   // another party's servers rather than this machine. Detail names the repo, worker and path.
@@ -7044,6 +7048,10 @@ interface SuccessionPredecessorIdentity {
   readonly cwd: string;
   readonly selfToken: string;
 }
+// what the successor is SPAWNED as. Resolved once in handleSelfSucceed (body override, else the
+// predecessor's record) and handed to all three succession paths, so none of them can quietly go
+// on reading s.model/s.effort and reintroduce the inheritance-only behaviour for one path.
+interface SuccessionSpawn { readonly model: string | null; readonly effort: string | null }
 
 const sameSuccessionOccupant = (s: Slot, expected: SuccessionPredecessorIdentity): boolean =>
   !!s.cwd && s.id === expected.slot && s.openedAt === expected.openedAt
@@ -7197,6 +7205,20 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
     const carry = typeof body?.carry === "string"
       ? body.carry.slice(0, MAX_SUCCESSION_CARRY).trim() || null
       : null;
+    // the successor's model/effort: absent = verbatim inheritance (the only behaviour until
+    // 2026-09-02, when a MAIN that had moved to Fable via /model watched its successor come back
+    // on the record's spawn-time model). Present = validated exactly as open/dispatch, against the
+    // harness the successor inherits — that harness is not overridable here, so the pair is judged
+    // by the adapter that will actually read it. A present null/"" clears, same as the owner route.
+    const hh = harnessOf(s.harness);
+    const mo = modelOf(body, hh);
+    if (!mo.ok) return json({ error: modelErrFor(hh) }, 400);
+    const eo = effortOf(body, hh);
+    if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
+    const spawn: SuccessionSpawn = {
+      model: body?.model !== undefined ? mo.model : s.model,
+      effort: body?.effort !== undefined ? eo.effort : s.effort,
+    };
     const predecessor = { cwd: predecessorIdentity.cwd, token: identity };
 
     const handoffReady = await handoffCommittedAfterOpen(s);
@@ -7233,16 +7255,16 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
         return json({ error: "game-maker succession takes no carry — the committed \"## Current game checkpoint\" section is the one handover channel, and its Next: line is where the first act belongs. Put it there and succeed without a carry" }, 409);
       const checkpoint = await gameMakerCheckpointError(bound[0]!, s);
       if (checkpoint) return json({ error: checkpoint }, 409);
-      return await succeedProgramMain(bound[0]!, s, label, carry, predecessorIdentity);
+      return await succeedProgramMain(bound[0]!, s, label, carry, spawn, predecessorIdentity);
     }
-    if (isSupervisor) return await succeedSupervisor(s, label, carry, predecessor);
+    if (isSupervisor) return await succeedSupervisor(s, label, carry, spawn, predecessor);
 
     const free = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
     if (!free) return json({ error: "no free slot" }, 409);
     laneSpawn.add(free.id); // reserve before the first await — see laneSpawn
     try {
       try {
-        await openSlot(free, predecessor.cwd, null, s.model, label, s.harness, s.effort,
+        await openSlot(free, predecessor.cwd, null, spawn.model, label, s.harness, spawn.effort,
           { container: s.container, containerContext: s.containerContext });
       } catch (e) {
         return json({ error: `successor open failed: ${e instanceof Error ? e.message : e}` },
@@ -18204,7 +18226,7 @@ function buildSupervisorSuccessionBrief(carry: string | null, anchorBlock: strin
 }
 
 async function succeedSupervisor(s: Slot, label: string | null, carry: string | null,
-  predecessor: { cwd: string; token: string }): Promise<Response> {
+  spawn: SuccessionSpawn, predecessor: { cwd: string; token: string }): Promise<Response> {
   if (supervisorBootstrapInflight) return json({ error: "Supervisor bootstrap already in flight" }, 409);
   supervisorBootstrapInflight = true; // synchronous reservation before any transfer await
   try {
@@ -18215,7 +18237,7 @@ async function succeedSupervisor(s: Slot, label: string | null, carry: string | 
     laneSpawn.add(free.id);
     try {
       try {
-        await openSlot(free, predecessor.cwd, null, s.model, label, s.harness, s.effort,
+        await openSlot(free, predecessor.cwd, null, spawn.model, label, s.harness, spawn.effort,
           { container: s.container, containerContext: s.containerContext });
       } catch (e) {
         if (free.cwd) await killSlot(free, "reopen");
@@ -18775,7 +18797,7 @@ async function completeTransitionWatch(s: Slot, id: string, body: Record<string,
 }
 
 async function succeedProgramMain(program: Program, s: Slot, label: string | null, carry: string | null,
-  predecessor: SuccessionPredecessorIdentity): Promise<Response> {
+  spawn: SuccessionSpawn, predecessor: SuccessionPredecessorIdentity): Promise<Response> {
   if (programBootstrapInflight.has(program.id))
     return json({ error: "Program-MAIN founding already in flight" }, 409);
   if (program.founding)
@@ -18827,7 +18849,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
       }
       try {
         await openSlot(free, isGameMaker(program) ? preflight.value.repoRoot : predecessor.cwd,
-          null, s.model, label, s.harness, s.effort,
+          null, spawn.model, label, s.harness, spawn.effort,
           { container: s.container, containerContext: s.containerContext }, treeLease);
       } catch (e) {
         if (e instanceof TmuxNewSessionUnavailable)
@@ -21014,6 +21036,9 @@ function stewardSlotsView(now: number) {
     return {
       id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput,
       ...sig, worktree: s.worktree, model: s.model,
+      // beside the model it belongs to: the record's effort is what the next spawn reads, and the
+      // steward could not see it at all before 2026-09-02 (the owner poll omits it only when null)
+      effort: s.effort,
       task: stewardTaskView(s.id),
       // the owner's standing intention for this session, verbatim — the non-lane counterpart of
       // `task` above. Served as written (never trimmed or summarized) so a reader can judge it
@@ -24552,7 +24577,7 @@ Bun.serve<WSData>({
       saveState();
       return json({ ok: true });
     }
-    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|mission|share|unshare|land|shelve|restart)$/.exec(url.pathname);
+    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|mission|model|share|unshare|land|shelve|restart)$/.exec(url.pathname);
     if (req.method === "POST" && slotMatch) {
       const s = slotFrom(slotMatch[1]);
       if (!s) return json({ error: "bad slot" }, 400);
@@ -24589,6 +24614,31 @@ Bun.serve<WSData>({
         s.label = body.label.trim() || null; // empty clears back to the cwd-basename default
         saveState();
         return json({ ok: true, label: s.label });
+      }
+      // the owner rewrites a LIVE slot's model and/or effort IN THE RECORD. Deliberately no
+      // respawn: the pane keeps running whatever it runs (the owner may already have switched it
+      // with /model), and the record is what every later spawn of this slot reads — the 2s heal,
+      // ↻ restart and succession all fell back to the spawn-time value before this route existed
+      // (measured 2026-09-02: four slots on claude-opus-5[1m] in the record, Fable in the pane).
+      // Validation is byte-identical to open/dispatch — judged by the SLOT's harness, and the
+      // value lands in a single-quoted shell word on the next spawn (agentCmd), so nothing
+      // unvalidated may be written here either. A field ABSENT from the body keeps the stored
+      // value; a present null/"" clears it (model → the fleet default, effort → no flag).
+      if (slotMatch[2] === "model") {
+        if (!s.cwd) return json({ error: "slot not active" }, 400);
+        const body = await readJson(req);
+        if (!body || (body.model === undefined && body.effort === undefined))
+          return json({ error: "expected { model?, effort? }" }, 400);
+        const hh = harnessOf(s.harness);
+        const mo = modelOf(body, hh);
+        if (!mo.ok) return json({ error: modelErrFor(hh) }, 400);
+        const eo = effortOf(body, hh);
+        if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
+        if (body.model !== undefined) s.model = mo.model;
+        if (body.effort !== undefined) s.effort = eo.effort;
+        audit("slot_model", s.id, `model=${s.model ?? "-"} effort=${s.effort ?? "-"}`);
+        saveState();
+        return json({ ok: true, model: s.model, effort: s.effort });
       }
       // the owner writes this slot's standing intention (Slot.mission). Owner-only by CONSTRUCTION: the
       // steward gate above default-denies, and it must stay that way — a producer that can write the

@@ -282,6 +282,10 @@ const dangerous = (slot: number): Probe[] => [
   { path: `/api/slots/${slot}/unshare`, method: "POST", body: {}, ownerSafe: true },
   { path: `/api/slots/${slot}/rename`, method: "POST", body: { label: "sec" }, ownerSafe: true },
   { path: `/api/slots/${slot}/mission`, method: "POST", body: { mission: "sec" }, ownerSafe: true },
+  // the record a slot is next SPAWNED from — its value lands in a shell word on the next heal or
+  // restart, so the route is dangerous in the same way `open` is. An invalid model answers the
+  // owner a side-effect-free 400 (record untouched), which is what carries the positive control.
+  { path: `/api/slots/${slot}/model`, method: "POST", body: { model: "not a model!" }, ownerSafe: true },
   { path: `/api/slots/${slot}/land`, method: "POST", body: {}, ownerSafe: true },
   { path: `/api/slots/${slot}/merge`, method: "POST", body: {}, ownerSafe: true },
   { path: `/api/slots/${slot}/shelve`, method: "POST", body: {}, ownerSafe: true },

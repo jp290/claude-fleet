@@ -140,12 +140,22 @@ Zeile. Es deployt NICHT selbst (Non-Goal seines Programs), das ist deine Entsche
 Gelandet seit dem Deploy, alle drei voll gemessen: `ffdcece` (P4 Slice 2) · `497873f` (Task
 Workbench) · `b8ea448` (Repo-Worker `audit`, Slot 8s 2,7 h alte Arbeit). Dazu `51246b0` (Handoff).
 
-Slots: 1 Sanierungs-MAIN (frisch, Nachfolge von 12), 3 Task Workbench, 4 Private-repo-y, 6
-Private-repo-o, 9 Second-host, 11 Steward, 16 Fleet-ohne-Owner-Routing. Lanes: 2 (neu,
-`260902154623-7fa9`), 10 (`260902113526-4811`, 40 % ctx, haelt `src/client.ts` — solange sie lebt,
-wartet Slot 3s naechster Slice `15a3e38b`). Dispatcher `on:false`, maxLanes 2. **Slot 3 hat eine
-offene Bitte an dich:** wenn Slot 10 gelandet ist, Hand-Dispatch von `15a3e38b` mit dem Tripel
-`claude / claude-opus-5[1m] / high` — die Zeile traegt noch das codex-Tripel vom Filing.
+**NACHTRAG 18:26 — BEIDE Restpunkte sind ERLEDIGT, hier steht der Endstand.** Slot 10 ist gelandet
+(`d4bb687`, Note `verify.ok true`, exit 0, **104 s Arbeit, waitMs 0**, alle sieben Stufen; vorher
+`git merge-tree` konfliktfrei geprueft, obwohl ihre Basis `09b577e9` von VOR dem Server-Split
+stammt). Damit war `src/client.ts` frei, und ich habe `15a3e38b` von Hand dispatcht mit dem
+Owner-Tripel `claude / claude-opus-5[1m] / high` — laeuft als Lane `fleet/260902162622-dbae` auf
+Slot 5, Datensatz gemessen `model claude-opus-5[1m]`, `effort high`, `agent alive`. Das im Task
+gespeicherte codex-Tripel vom Filing ist dabei ueberschrieben, nicht geerbt.
+**Mitnehmen aus Slot 10s Diff:** `8ab2de9` „job-Watch dedupt nur ARMED — ein SPENT Watch ist keine
+Antwort auf ein neues Ereignis" repariert GENAU die Klasse, die mich und Slot 3 heute dreimal
+gekostet hat, aber nur fuer `kind:"job"`. Der `merge`-Zweig ist weiterhin offen (Slot 3s Zeile
+`be20f4b4`, Slot 12s `372b3cef`) — es gibt jetzt aber einen Praezedenzfall im Baum.
+
+Slots am Ende: 1 Sanierungs-MAIN (frisch, Nachfolge von 12), 3 Task Workbench, 4 Private-repo-y, 6
+Private-repo-o, 9 Second-host, 11 Steward, 16 Fleet-ohne-Owner-Routing. Lanes: 2
+(`260902154623-7fa9`, P4 Slice 3) und 5 (`260902162622-dbae`, `15a3e38b`). Dispatcher `on:false`,
+maxLanes 2 — beide Plaetze belegt.
 
 ## 3. Fallen, die ich bezahlt habe
 

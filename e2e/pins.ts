@@ -3556,6 +3556,65 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     `[${union.join(",")}]`);
 }
 
+// --- THE LOST FAST-FORWARD IS A TYPED FACT, NOT A SENTENCE. `errorReason` is the ONE field on a
+// merge verdict that can make a lane done-looking again, and its whole value is that it does NOT
+// live in prose: the day somebody rewords `detail` ("rebase ok, but fast-forwarding main failed"),
+// a predicate that had parsed it would silently re-block every Program-MAIN's re-land — exactly
+// the failure this fastens against. Three directions, because each drifts on its own.
+{
+  const RULE_FF = "the lost fast-forward is a closed typed fact";
+  const signals = read("lane-signals.ts");
+  const selfApiFf = read("docs/self-api.md");
+  const reasons = (signals.match(/export type MergeErrorReason =([^;\n]+)/)?.[1] ?? "")
+    .split("|").map((w) => w.trim().replace(/"/g, "")).filter(Boolean);
+  // both directions: every name in the code is documented, and the doc invents none. The doc's
+  // side is read out of its own fenced/inline `errorReason` mentions rather than a prose scan, so
+  // a paragraph that merely says the words cannot stand in for naming the value.
+  const documented = [...selfApiFf.matchAll(/errorReason"?\s*:\s*"([a-z-]+)"/g)].map((m) => m[1] ?? "");
+  pin(`${RULE_FF} — every MergeErrorReason is named in docs/self-api.md §land, and the doc invents none`,
+    reasons.length > 0 && reasons.every((r) => documented.includes(r))
+      && documented.every((d) => reasons.includes(d)),
+    `code=[${reasons.join(",")}] doc=[${[...new Set(documented)].join(",")}]`);
+  // the enum's runtime twin must list exactly the type's members — a loader validating against a
+  // shorter list would silently drop a reason the writer is still minting
+  const listed = (signals.match(/MERGE_ERROR_REASONS: readonly MergeErrorReason\[\] = \[([^\]]*)\]/)?.[1] ?? "")
+    .split(",").map((w) => w.trim().replace(/"/g, "")).filter(Boolean);
+  pin(`${RULE_FF} — MERGE_ERROR_REASONS lists exactly the members of the type the loader validates against`,
+    listed.length === reasons.length && reasons.every((r) => listed.includes(r)),
+    `type=[${reasons.join(",")}] const=[${listed.join(",")}]`);
+  // the predicate reads the FIELD and never the prose: no `detail` anywhere in the exemption, and
+  // the three clause lists go through the one helper rather than the raw list
+  const blocksAt = signals.indexOf("export function mergeBlocksLane(");
+  const blocksBody = blocksAt < 0 ? "" : signals.slice(blocksAt, signals.indexOf("\n}", blocksAt) + 2);
+  pin(`${RULE_FF} — mergeBlocksLane tests the closed STATUS+field pair and never parses \`detail\``,
+    blocksBody.includes('m?.status === "error" && m.errorReason === "ff-lost"')
+      && !/detail/.test(blocksBody)
+      && (signals.match(/!mergeBlocksLane\(v\.merge\)/g) ?? []).length === 3
+      && (signals.match(/MERGE_BLOCKING\.includes/g) ?? []).length === 1,
+    `body=${blocksBody.replace(/\s+/g, " ").slice(0, 120)}`);
+  // ONE writer, and it sits on the clean path AFTER the land was declared — a second site would
+  // mean some other failure could mint the exemption
+  pin(`${RULE_FF} — server.ts mints "ff-lost" at exactly one site, on the clean land path`,
+    (server.match(/errorReason: "ff-lost"/g) ?? []).length === 1
+      && server.indexOf('errorReason: "ff-lost"') > server.indexOf("await advanceIntegration(root, main, branch)")
+      && /function withValidErrorReason\(row: MergeLast\): MergeLast \{/.test(server)
+      && server.includes("MERGE_ERROR_REASONS.includes(row.errorReason)")
+      && (server.match(/withValidErrorReason\(identityComplete/g) ?? []).length === 2,
+    `writes=${(server.match(/errorReason: "ff-lost"/g) ?? []).length} loaders=${(server.match(/withValidErrorReason\(identityComplete/g) ?? []).length}`);
+  // the default-off latch that lets a suite hit the race, and the fixture that arms it — same
+  // shape and same reason as the Game-Maker open latch pinned further down
+  const ffLatch = server.indexOf("await waitForLandFfTestLatch();");
+  const ffIntent = server.indexOf("await markLandIntent(root, main, branch, mainBefore,");
+  const ffAdvance = server.indexOf("const adv = await advanceIntegration(root, main, branch);");
+  pin(`${RULE_FF} — the default-off E2E latch sits between the land declaration and the fast-forward, and a fixture arms it`,
+    server.includes("process.env.FLEET_TEST_LAND_FF_LATCH ?? null")
+      && ffIntent >= 0 && ffLatch > ffIntent && ffAdvance > ffLatch
+      && read("e2e/programs.ts").includes("FLEET_TEST_LAND_FF_LATCH: ffLatch")
+      && read("e2e/programs.ts").includes("ffLatchReached")
+      && read("e2e/programs.ts").includes("ffLatchRelease"),
+    `intent=${ffIntent} latch=${ffLatch} advance=${ffAdvance}`);
+}
+
 // --- SLICE B: THE RETURN PATH. Two halves of one rule, and they fail in opposite directions.
 // clarificationReceiverFor answers "who coordinates this lane" for both self-routes. For a lane
 // with a Program the answer is the binding and nothing else may outrank it — an outsider's stale

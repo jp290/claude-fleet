@@ -392,3 +392,10 @@ Berechtigung kommt spaeter als zusammenhaengende Schicht, nicht Route fuer Route
 der eigenen Maschine des Owners — die Vertrauensgrenze ist der Provider, nicht die Nachbar-Session
 (CLAUDE.md §Lese-Reichweite). Diese Richtung ist ein Owner-Entscheid dieser Session; sie ersetzt keine
 harte Invariante in AGENTS.md, aber sie entscheidet jede Abwaegung „Deckel oder Reichweite" in B.
+
+Nachtrag 14:05 (Owner): dass der Controller den Owner-Token hat, „sollte spaeter auch nicht sein" —
+einverstanden, und es ist der erste Eintrag der spaeteren Sicherheitsschicht. Heute ist der Controller
+im Code keine Rolle (`tokenGate` unterscheidet nicht; §2.3), also gibt es nichts, dem ein eigenes
+Credential gehoeren koennte. Der Controller-Bindungsfakt (§5, GLM) ist die Vorbedingung fuer beides:
+typisierte Zustellung an den Controller JETZT, ein gescopetes Controller-Credential SPAETER. Reihenfolge
+bleibt: erst laeuft es rund, dann kommt die Schicht — als eine, nicht als Einzel-Gates.

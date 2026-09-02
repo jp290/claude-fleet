@@ -1,208 +1,3 @@
-# HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 1 → Nachfolge): Deploy gefahren, P4 Slice 3 FERTIG und GRUEN aber ABSICHTLICH NICHT GELANDET, main ist fremd-rot, 2026-09-02 (19:20), ctx GEMESSEN 28,5 %
-
-Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,
-`GET /api/self/program-execution`. Was hier steht, ist nur das, was git und die Sensoren
-NICHT tragen koennen.
-
-## 1. Das Erste, was du tust
-
-**Pruefe, ob main gruen ist. Wenn ja: lande Slice 3.** Die Lane `fleet/260902154623-7fa9`
-(Slot 2, Commit `3dd84d1`) ist fertig, verifiziert und wartet — sie ist NICHT kaputt.
-Der Grund fuers Warten steht in §3 und ist ein Attributionsgrund, kein Qualitaetsgrund.
-
-## 2. Gelandet / gefahren, verifiziert
-
-- **Deploy `b21b6749` (Owner-Auftrag von Slot 7, Anspruch dort ausdruecklich zurueckgezogen):**
-  `ok:true`, `bootHead == head == target 3afb3f09`, `hitTarget:true`, Boot 2289 ms, buildMs 102.
-  Health danach: `deployGap.codeBehind` FALSE (behindCount 0), `bundleStale.stale` FALSE,
-  `errors:null`, `bun e2e/pins.ts` ALL PASS. Live gingen damit `ffdcece` (P4 Slice 2),
-  `497873f` (Slot 3s Client-Slice), `b8ea448` + drei Handoff-Commits. Slot 3 unterrichtet
-  (`99fac4ce`) samt dem Hinweis, seinen Vorher-Stand in der Messnotiz zu benennen.
-- **Rollback-Dry-Boot (Schritt f, stand aus):** `8865eaa` aus `git archive` in den Scratchpad,
-  eigener Socket/Port (`fleetdry71`/8871, `FLEET_CMD=true`), gegen eine KOPIE der heutigen
-  `fleet.json`. Antwortete 200, las 16 Slots / 134 Tasks / 58 Programs, keine Boot-Verweigerung.
-  Per PID beendet + `tmux -L fleetdry71 kill-server`; Live-Server danach 200.
-- **`graphify update .`** gelaufen (der Graph war auf einem Stand VOR Slice 2): 8798 Knoten,
-  13016 Kanten. Schritt f fuer Slice 2 ist damit vollstaendig.
-
-## 3. P4 Slice 3 — FERTIG, GRUEN, GEHALTEN. Das ist der Kern dieser Uebergabe.
-
-Lane `fleet/260902154623-7fa9`, Slot 2, Commit `3dd84d1`, Worktree sauber, 1 ahead.
-`server.ts` 23869 → 23518 (−351); `server/transport.ts` 221 Z., `server/dir-explorer.ts` 147 Z.
-
-**Von mir unabhaengig nachgerechnet, nicht dem Report geglaubt:**
-- Move-Multiset: jede unpaarige Zeile erklaert (export-Praefixe, Import-Zeilen, der PUB-Anker,
-  8 STATIC-Pfade + bundleV). Der einzige verdaechtige Rest, ein unpaariges
-  `import {createHash}`, geht auf `editability` (main:server.ts:8845) zurueck, das mitwandert;
-  server.ts behaelt seine eigenen 15 Verwendungen.
-- **Pfad-Anker AUSGEFUEHRT, nicht gelesen** (die eine Stelle, die still haette brechen koennen):
-  alle 8 `STATIC`-Pfade byte-identisch, `bundleV()` = 1788364731868 = direktes `statSync`,
-  **und nicht null** — also nicht der `catch → 0`-Pfad, der einen kaputten Pfad maskiert haette.
-- Kein `server/`-Modul importiert `server.ts`. Kein modul-weites `let` in beiden Modulen.
-  `bun e2e/pins.ts` aus dem Lane-Baum: ALL PASS.
-- **Lokaler `./e2e-isolated.sh`: 3466 PASS / 0 FAIL / `ISOLATED_EXIT=0`.** Die Zahl ist der
-  Beweis: `b8ea448` lief lokal 3465/0, der Slice fuegt GENAU EINEN Check hinzu (den Anker-Check,
-  den die Lane selbst eingezogen hat), also 3466. Gate-Kette 592 PASS / 0 FAIL / 1 SKIP.
-
-**WARUM ES TROTZDEM NICHT GELANDET IST:** `main` ist rot — fremd (§4). Auf ein rotes main
-gelandet, nennt der naechste Post-Land-Audit MEINE Lane in `covers` fuer fremde Fehler, und der
-Bisect gehoert dann uns. **Freigabebedingung: main gruen ODER Slot 9 hat die zwei Checks
-adjudiziert.** Dann sofort landen — Drift ist gemessen: `behind 11, wouldConflict FALSE,
-conflictFiles [], overlap [e2e/security.ts, server.ts]`. Vor dem Land NEU messen, die Zahl ist
-von 19:12.
-
-**Zwei Dinge aus dem Lane-Report, die du brauchst:**
-- **Der REMOTE-Lauf desselben Commits kam ROT** (exit 1, 4 Fails bei 3457 Trail-Zeilen;
-  `checks.ran=25` zaehlt nur den 4-KB-Tail). Die Namen sind nicht beschaffbar (§5). Derselbe Baum
-  ist hier gruen. Das ist NICHT als Flake bewiesen und darf nicht so berichtet werden.
-- **RESIDUUM:** 3 Kommentare zeigen weiter auf „die TRANSPORT region" in `server.ts`
-  (2× server.ts, 1× e2e/transport.ts). Der Brief verbot Kommentar-Umformulierung, die Lane hat
-  es korrekt GEMELDET statt still geaendert. Naechster Slice raeumt es mit.
-
-## 4. main ist ROT, und es ist Program cd110019 (Dual-Host), nicht wir
-
-Audit `d4bb687a`: **LOKAL** gefahren, `checks` daher voll belastbar — red, exit 1,
-`ran 3481, failed 2`, `covers fleet/260902113526-4811` = Task `8228ae65`.
-Der Lauf davor (`b8ea448`, lokal) war gruen 3465/0. `d4bb687a` aendert AUSSCHLIESSLICH
-`e2e/watch.ts` (+24/−7), Hunks bei 3215–3279 — **die beiden fallenden Checks sind nicht direkt
-editiert**: `e2e/watch.ts:954` „subject-gone: the torn-down lane's undelivered event …" und
-`e2e/watch.ts:3364` „restart keeps the busy pending event with the same id and no invented
-attempt". Drei Lesarten offen (Fixture-/Timing-Perturbation durch die ent-vakuumierten Sonden ·
-echter Defekt, den eine ent-vakuumierte Sonde jetzt zeigt · §11.2j-Flake, wo das Regelbuch aber
-sagt: nach `b20e7e4` wieder ECHT). Slot 9 unterrichtet (`c8c3aac9`), Owner-Attention
-`d11d1071`. **Nicht selbst reparieren — fremde gelandete Arbeit.**
-
-## 5. WIE MAN FEHLERNAMEN BEKOMMT, DIE EINE LEDGER-ZEILE ELIDIERT HAT (das hier ist der Trick)
-
-Weder die Audit-Zeile noch der Tail enthalten die FAIL-Namen; beide sind auf 4096 B gekappt und
-zeigen nur „N FAILURES" plus Elisionsmarker. **Der Per-Check-Trail hat sie:**
-
-    ls -t "${TMPDIR}/fleet-e2e-trail" | head -3
-    python3 -c "import json;rows=[json.loads(l) for l in open('<trailfile>')];print([r['name'] for r in rows if r.get('ok') is False])"
-
-Die Datei mit `rows == checks.ran` ist der gesuchte Lauf (hier: 3481 Zeilen ↔ `ran 3481`).
-**Das geht nur fuer LOKAL gefahrene Laeufe** — ein Remote-Lauf laesst seinen Trail auf dem
-Helfergeraet. Genau deshalb ist §6 teuer.
-
-## 6. Befund, der NICHT abgelegt werden konnte — Advisory-Deckel 10/10
-
-`POST /api/self/tasks` lehnt ab: `program advisory filing cap reached (10/10 pending advisory
-rows awaiting owner disposition)`. Der Text liegt in meinem Scratchpad (stirbt mit der Session),
-darum hier vollstaendig genug zum Wiederablegen, sobald der Owner disponiert hat:
-
-> **Der Vorschau-Pfad wirft die Fehlernamen weg.** Der Daemon schickt `fails` auf BEIDEN Pfaden
-> (`helper-daemon/daemon.ts#report`: `failNamesOf(logPath, trail)` aus der VOLLEN Logdatei,
-> Deckel `FAILS_KEEP` 50). Der AUDIT-Pfad persistiert es (die `ffdcece`-Ledger-Zeile traegt
-> `"fails": []` als eigenes Feld). `server.ts#reportLaneSuite` benutzt `fails` NUR als drittes
-> Argument von `postLandAuditChecks` und legt es nicht auf `j.result`; gespeichert wird
-> `{exitCode, result, reason?, tail, trail?, checks, remote, treeSha, ms}` — von der Lane
-> gegengeprueft, exakt diese Schluessel. Folge: ein rotes Remote-Vorschau-Verdikt kann nicht
-> sagen, WELCHE Checks fielen, also muss die Lane den Lauf lokal wiederholen — genau die
-> Ersparnis, fuer die das Angebot existiert. **Reparatur: ein Feld.** Gegenprobe gehoert in
-> `e2e/helper-portal.ts`: ein rot gemeldetes lane-suite-Ergebnis MUSS seine Fehlernamen fuehren.
-> Der eigentliche Verlust passiert uebrigens auf der DAEMON-Seite: `tailOf(end, 40)` ist ein
-> dummer Letzte-40-Zeilen-Schnitt, nicht signal-first — Fails aus der Mitte eines 3457-Check-Laufs
-> erreichen den Server nie. `fails` ist die Reparatur dafuer, und sie wird fallengelassen.
-
-Ebenfalls heute abgelegt und noch offen: `8244622e` (remote `failed` traegt, `ran` ist untere
-Schranke), `76e6aa3b` (die Voraussetzung dazu, angestossen von Slot 3), `d2e4f219`
-(**`SUITE_OFFER_WAIT_HELD_MS = 800_000` ist falsch dimensioniert**: remote p50 1323 s, nur 3/13
-Laeufe unter Budget — und alle drei ROT, weil `e2e-isolated.sh` beim ersten FAIL exitet; das
-Budget selektiert auf rot. Vorschlag: an die Lebendigkeit des Claims binden statt an eine feste
-Frist. NICHT promoviert.)
-
-## 7. MEIN FEHLER, damit du ihn nicht wiederholst
-
-**Die Voraussetzung in meinem Slice-3-Brief fuer Teil B war FALSCH.** Ich schrieb „der Bereich
-8629-8857 hat NULL freie Bezeichner aus dem Kern". Es sind FUENF: `HOME`, `expandCwd`,
-`recents`/`pins` (vom Kern reassignte `let`), `CommitRow`. Die Lane hat es gemessen, nach Regel 2
-drei Symbole (`listDirs`, `findDirs`, `dirInfo`) korrekt im Kern gelassen und es gemeldet —
-daher −351 statt der geschaetzten −470.
-**Wie der Fehler entstand, und das ist die uebertragbare Lehre:** meine erste Sonde
-(`grep -oE … | sort | uniq -c`) meldete `4 HOME`. Meine zweite, verfeinerte Sonde meldete LEER.
-**Ich habe der zweiten geglaubt, weil sie das bequemere Ergebnis hatte, statt den Widerspruch
-aufzuloesen.** Genau das Muster, das das Regelbuch als „derselbe Wert in der Zeile UND ihrer
-Gegenprobe heisst nie gemessen" fuehrt. Regel fuer den naechsten Brief: **eine
-Freie-Variablen-Behauptung wird nicht gegrept, sondern vom Compiler beantwortet** — Block
-probeweise in eine Datei ziehen und `tsc` die ungeloesten Namen nennen lassen.
-
-## 8. Ehrlichkeiten
-
-- Der Hand-Dispatch von Slice 3 lief mit dem OWNER-Token (`POST /api/tasks/:id/dispatch`), weil
-  der Dispatcher-Master-Stop laut Program bis P7 steht und der Tick eine `queued`-Zeile daher nie
-  startet. Dieselbe Tuer wie bei Slice 1/2. `/send` an Slot 3, 7, 9 ebenso Owner-Token.
-- Diese Session hat `claude-opus-5[1m]` von Slot 12 geerbt, nicht Fable — die Modellpolitik vom
-  2026-09-02 will fuer eine Program-MAIN Fable 5.1. Die Nachfolge erbt es weiter, bis jemand
-  `POST /api/slots/:id/model` UND `/model` in der Pane setzt (beides noetig, §Supervisor-Rolle).
-- Kein Post-Land-Audit deckt diesen Handoff-Commit (Direkt-Commit, kein Land).
-- Slice 3s REMOTE-Rot ist offen und wird von mir NICHT als Flake behauptet.
-- ctx bei der Uebergabe-Entscheidung: **28,5 % gemessen**.
-
----
-
-# HANDOFF — Program-MAIN „Fleet Task Workbench" (Program `b9c1e0d9`, Slot 3 → Nachfolge), 2026-09-02 18:35, ctx GEMESSEN 24,8 %
-
-Zustand ableiten, nicht aus dieser Prosa lesen: `GET /api/self/program-execution` (Self-Token).
-Der Controller-Abschnitt darunter gehoert einer anderen Rolle.
-
-## Stand der Zeilen
-
-- **done, gelandet:** `eaa3ae1a` (bc9e7de) · `93fc5af2` (01459c9) · `ff535524` (8990fcb) ·
-  **`1b677e58` (497873f, von mir gelandet)** — Gate gruen ueber alle sieben Stufen in 111 s,
-  waitMs 0; Post-Land-Audit GRUEN mit 3465 Checks / 0 failed (Sammel-Audit auf tip b8ea448,
-  covers auch Slot 8s Land).
-- **IN FLUG: `15a3e38b`** (Detail-Kopf: Status/Program/Repo + Lifecycle-Leiste + GENAU EINE
-  Hauptaktion ohne Scrollen bei 1440x900) — vom Controller von Hand dispatcht mit dem
-  Owner-Tripel claude / claude-opus-5[1m] / high, Lane `fleet/260902162622-dbae`, **Slot 5**.
-  Dein Zug: den Report als BEHAUPTUNG lesen, Diff und zitierten Verify-Tail selbst pruefen, dann
-  landen (die Projektion nennt die Tuer). Danach `{"kind":"merge","target":5}` abonnieren — und
-  siehe die Watch-Falle unten.
-- **pending `07c061fa`** (unabhaengiger read-only Review, Ergebnis ist eine Messnotiz) — strikt
-  NACH 15a3e38b, so entschieden im Program (serielle Reihenfolge).
-
-## Beweislage (vollstaendig bis auf den Review-Slice)
-
-- **Nachher-Baseline committet: `fda6fda`**, `docs/messungen/2026-09-02-task-workbench-visual-after.md`.
-  Direkt-Commit im Haupt-Checkout, also fuer die Land-Ledger unsichtbar; Beweis im Body genannt
-  (install + `bun e2e/pins.ts`, Tail ALL PASS).
-  - BELEGT live: View-Split ohne Closed-Gruppe (Gruppenkoepfe mechanisch abgefragt) · Lane-Zeile
-    mit Branch+Zustand · Spawn-Tripel mit Herkunft je Feld.
-  - VERFEHLT mit Zahlen (= der Auftrag von 15a3e38b): Detail-Pane 634 px sichtbar bei 2240 px
-    Scrollhoehe, `▸ start lane` bei 2297 px, Kopf ist genau EIN Wort.
-  - Bilder ungetrackt im Wurzelverzeichnis (`workbench-after-*.png`), weil sie Account-Pfade zeigen.
-- **Browser ohne Token im Kontext:** lokaler Redirect auf 127.0.0.1:8913 baut die `/?token=…`-URL
-  in der Shell, der 302 des Servers laesst den Browser auf einer sauberen Adresse landen. Helfer
-  ist gestoppt. Playwright-MCP schreibt die PNGs in den Haupt-Checkout; mit `Read` ansehen.
-
-## Fallen, die ich bezahlt habe (alle als Queue-Zeile mit Done-Kriterium abgelegt)
-
-- **`789d9034` + `c3bf1e7c`:** die Self-Land-Tuer lehnt denselben Candidate nach einem waitedOut
-  UND nach einem adjudizierten roten Verdikt ab; sie liest den Candidate als Lane-HEAD, eine
-  Bewegung von main sieht sie NICHT. **Praktische Folge fuer dich: vor jedem Wiederholungs-Land
-  `git rebase main` im Lane-Worktree** — das bewegt den Candidate und oeffnet die Tuer ehrlich.
-- **`be20f4b4` + `c7a5e061`:** `POST /api/self/watch {kind:"merge"}` gibt nach einem zweiten Land
-  auf dieselbe Lane den GESPENTEN Watch zurueck (`existing:true, armed:false`) — du haettest dann
-  keinen Rueckkanal und merkst es nur an `armed`. `8ab2de9` hat genau das fuer `kind:"job"`
-  repariert, der merge-Zweig ist offen. **Ersatz: Hintergrund-Watcher auf
-  `GET /api/slots/<n>/merge` bis `running:false`** (mit `json.loads(..., strict=False)` lesen, der
-  Verify-Tail enthaelt Steuerzeichen).
-- **`f9db018e` + `abb81258`:** `checks.ran` einer REMOTE-Audit-Zeile wird aus dem 4-KB-Tail
-  gezaehlt (ffdcece: 22 statt ~3443). Ein Remote-Gruen beurteilst du an `ms` und am `ALL PASS`,
-  nie an `ran`; `failed` traegt (Rekonziliation gegen das ungekappte `fails[]`).
-- Fuenf Land-Versuche fuer EINE Zeile, drei davon `waitedOut` ohne den Baum je anzusehen. Was das
-  behoben hat, war nicht Geduld, sondern `FLEET_AUDIT_HELPER_GRACE_MS=60000` + Deploy: der erste
-  Lauf danach war in 111 s gruen bei 0 s Mutex-Wartezeit.
-
-## Betriebsstand
-
-- main `d4bb687`. Live-Server aktuell (Deploy `b21b6749` auf 3afb3f0 + Slot 10s Land danach —
-  `deployGap`/`bundleStale` vor jeder Aussage ueber die Oberflaeche neu pruefen).
-- Controller ist Slot 7 (~30 %, Nachfolge angekuendigt; sein Handoff-Nachtrag `274e91f`).
-- `notiz 56056efe` (per-Slot taskId/originId/programId fehlen im Poll) bleibt bewusst LIEGEN:
-  kein `server.ts`-Schnitt in diesem Program (Non-Goal).
-
----
-
 # HANDOFF — Fleet Controller (Slot 7, Fable→Opus 5 high): Deploy 2eebe03a GELANDET (Audits laufen ab jetzt REMOTE), Fable-Kontolimit umgangen (sieben Panes auf Opus), CLAUDE.md-Handedit als Land-Killer GEMESSEN und repariert, zwei Lands in Kette; 2026-09-02 (17:15)
 
 Rolle: 🎛 Fleet Controller. Owner-Delegation (Landen, autonomer Betrieb) gilt fort. Modelle: siehe §2 —
@@ -451,6 +246,211 @@ maxLanes 2 — beide Plaetze belegt.
    Regelbuch-Sensor gegen ein Schein-Gruen auf JEDER Remote-Zeile blind. Vorschlag in der Notiz: der
    Helfer meldet `ran`/`failed` als eigene Felder, Tail-Zaehlung wird als `checksFrom: tail` markiert.
 5. B-Zeilen-Promotion und GitHub-Rueckstand stehen unveraendert aus Slot 15s Handoff offen.
+
+---
+
+# HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 1 → Nachfolge): Deploy gefahren, P4 Slice 3 FERTIG und GRUEN aber ABSICHTLICH NICHT GELANDET, main ist fremd-rot, 2026-09-02 (19:20), ctx GEMESSEN 28,5 %
+
+Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,
+`GET /api/self/program-execution`. Was hier steht, ist nur das, was git und die Sensoren
+NICHT tragen koennen.
+
+## 1. Das Erste, was du tust
+
+**Pruefe, ob main gruen ist. Wenn ja: lande Slice 3.** Die Lane `fleet/260902154623-7fa9`
+(Slot 2, Commit `3dd84d1`) ist fertig, verifiziert und wartet — sie ist NICHT kaputt.
+Der Grund fuers Warten steht in §3 und ist ein Attributionsgrund, kein Qualitaetsgrund.
+
+## 2. Gelandet / gefahren, verifiziert
+
+- **Deploy `b21b6749` (Owner-Auftrag von Slot 7, Anspruch dort ausdruecklich zurueckgezogen):**
+  `ok:true`, `bootHead == head == target 3afb3f09`, `hitTarget:true`, Boot 2289 ms, buildMs 102.
+  Health danach: `deployGap.codeBehind` FALSE (behindCount 0), `bundleStale.stale` FALSE,
+  `errors:null`, `bun e2e/pins.ts` ALL PASS. Live gingen damit `ffdcece` (P4 Slice 2),
+  `497873f` (Slot 3s Client-Slice), `b8ea448` + drei Handoff-Commits. Slot 3 unterrichtet
+  (`99fac4ce`) samt dem Hinweis, seinen Vorher-Stand in der Messnotiz zu benennen.
+- **Rollback-Dry-Boot (Schritt f, stand aus):** `8865eaa` aus `git archive` in den Scratchpad,
+  eigener Socket/Port (`fleetdry71`/8871, `FLEET_CMD=true`), gegen eine KOPIE der heutigen
+  `fleet.json`. Antwortete 200, las 16 Slots / 134 Tasks / 58 Programs, keine Boot-Verweigerung.
+  Per PID beendet + `tmux -L fleetdry71 kill-server`; Live-Server danach 200.
+- **`graphify update .`** gelaufen (der Graph war auf einem Stand VOR Slice 2): 8798 Knoten,
+  13016 Kanten. Schritt f fuer Slice 2 ist damit vollstaendig.
+
+## 3. P4 Slice 3 — FERTIG, GRUEN, GEHALTEN. Das ist der Kern dieser Uebergabe.
+
+Lane `fleet/260902154623-7fa9`, Slot 2, Commit `3dd84d1`, Worktree sauber, 1 ahead.
+`server.ts` 23869 → 23518 (−351); `server/transport.ts` 221 Z., `server/dir-explorer.ts` 147 Z.
+
+**Von mir unabhaengig nachgerechnet, nicht dem Report geglaubt:**
+- Move-Multiset: jede unpaarige Zeile erklaert (export-Praefixe, Import-Zeilen, der PUB-Anker,
+  8 STATIC-Pfade + bundleV). Der einzige verdaechtige Rest, ein unpaariges
+  `import {createHash}`, geht auf `editability` (main:server.ts:8845) zurueck, das mitwandert;
+  server.ts behaelt seine eigenen 15 Verwendungen.
+- **Pfad-Anker AUSGEFUEHRT, nicht gelesen** (die eine Stelle, die still haette brechen koennen):
+  alle 8 `STATIC`-Pfade byte-identisch, `bundleV()` = 1788364731868 = direktes `statSync`,
+  **und nicht null** — also nicht der `catch → 0`-Pfad, der einen kaputten Pfad maskiert haette.
+- Kein `server/`-Modul importiert `server.ts`. Kein modul-weites `let` in beiden Modulen.
+  `bun e2e/pins.ts` aus dem Lane-Baum: ALL PASS.
+- **Lokaler `./e2e-isolated.sh`: 3466 PASS / 0 FAIL / `ISOLATED_EXIT=0`.** Die Zahl ist der
+  Beweis: `b8ea448` lief lokal 3465/0, der Slice fuegt GENAU EINEN Check hinzu (den Anker-Check,
+  den die Lane selbst eingezogen hat), also 3466. Gate-Kette 592 PASS / 0 FAIL / 1 SKIP.
+
+**WARUM ES TROTZDEM NICHT GELANDET IST:** `main` ist rot — fremd (§4). Auf ein rotes main
+gelandet, nennt der naechste Post-Land-Audit MEINE Lane in `covers` fuer fremde Fehler, und der
+Bisect gehoert dann uns. **Freigabebedingung: main gruen ODER Slot 9 hat die zwei Checks
+adjudiziert.** Dann sofort landen — Drift ist gemessen: `behind 11, wouldConflict FALSE,
+conflictFiles [], overlap [e2e/security.ts, server.ts]`. Vor dem Land NEU messen, die Zahl ist
+von 19:12.
+
+**Zwei Dinge aus dem Lane-Report, die du brauchst:**
+- **Der REMOTE-Lauf desselben Commits kam ROT** (exit 1, 4 Fails bei 3457 Trail-Zeilen;
+  `checks.ran=25` zaehlt nur den 4-KB-Tail). Die Namen sind nicht beschaffbar (§5). Derselbe Baum
+  ist hier gruen. Das ist NICHT als Flake bewiesen und darf nicht so berichtet werden.
+- **RESIDUUM:** 3 Kommentare zeigen weiter auf „die TRANSPORT region" in `server.ts`
+  (2× server.ts, 1× e2e/transport.ts). Der Brief verbot Kommentar-Umformulierung, die Lane hat
+  es korrekt GEMELDET statt still geaendert. Naechster Slice raeumt es mit.
+
+## 4. main ist ROT, und es ist Program cd110019 (Dual-Host), nicht wir
+
+Audit `d4bb687a`: **LOKAL** gefahren, `checks` daher voll belastbar — red, exit 1,
+`ran 3481, failed 2`, `covers fleet/260902113526-4811` = Task `8228ae65`.
+Der Lauf davor (`b8ea448`, lokal) war gruen 3465/0. `d4bb687a` aendert AUSSCHLIESSLICH
+`e2e/watch.ts` (+24/−7), Hunks bei 3215–3279 — **die beiden fallenden Checks sind nicht direkt
+editiert**: `e2e/watch.ts:954` „subject-gone: the torn-down lane's undelivered event …" und
+`e2e/watch.ts:3364` „restart keeps the busy pending event with the same id and no invented
+attempt". Drei Lesarten offen (Fixture-/Timing-Perturbation durch die ent-vakuumierten Sonden ·
+echter Defekt, den eine ent-vakuumierte Sonde jetzt zeigt · §11.2j-Flake, wo das Regelbuch aber
+sagt: nach `b20e7e4` wieder ECHT). Slot 9 unterrichtet (`c8c3aac9`), Owner-Attention
+`d11d1071`. **Nicht selbst reparieren — fremde gelandete Arbeit.**
+
+## 5. WIE MAN FEHLERNAMEN BEKOMMT, DIE EINE LEDGER-ZEILE ELIDIERT HAT (das hier ist der Trick)
+
+Weder die Audit-Zeile noch der Tail enthalten die FAIL-Namen; beide sind auf 4096 B gekappt und
+zeigen nur „N FAILURES" plus Elisionsmarker. **Der Per-Check-Trail hat sie:**
+
+    ls -t "${TMPDIR}/fleet-e2e-trail" | head -3
+    python3 -c "import json;rows=[json.loads(l) for l in open('<trailfile>')];print([r['name'] for r in rows if r.get('ok') is False])"
+
+Die Datei mit `rows == checks.ran` ist der gesuchte Lauf (hier: 3481 Zeilen ↔ `ran 3481`).
+**Das geht nur fuer LOKAL gefahrene Laeufe** — ein Remote-Lauf laesst seinen Trail auf dem
+Helfergeraet. Genau deshalb ist §6 teuer.
+
+## 6. Befund, der NICHT abgelegt werden konnte — Advisory-Deckel 10/10
+
+`POST /api/self/tasks` lehnt ab: `program advisory filing cap reached (10/10 pending advisory
+rows awaiting owner disposition)`. Der Text liegt in meinem Scratchpad (stirbt mit der Session),
+darum hier vollstaendig genug zum Wiederablegen, sobald der Owner disponiert hat:
+
+> **Der Vorschau-Pfad wirft die Fehlernamen weg.** Der Daemon schickt `fails` auf BEIDEN Pfaden
+> (`helper-daemon/daemon.ts#report`: `failNamesOf(logPath, trail)` aus der VOLLEN Logdatei,
+> Deckel `FAILS_KEEP` 50). Der AUDIT-Pfad persistiert es (die `ffdcece`-Ledger-Zeile traegt
+> `"fails": []` als eigenes Feld). `server.ts#reportLaneSuite` benutzt `fails` NUR als drittes
+> Argument von `postLandAuditChecks` und legt es nicht auf `j.result`; gespeichert wird
+> `{exitCode, result, reason?, tail, trail?, checks, remote, treeSha, ms}` — von der Lane
+> gegengeprueft, exakt diese Schluessel. Folge: ein rotes Remote-Vorschau-Verdikt kann nicht
+> sagen, WELCHE Checks fielen, also muss die Lane den Lauf lokal wiederholen — genau die
+> Ersparnis, fuer die das Angebot existiert. **Reparatur: ein Feld.** Gegenprobe gehoert in
+> `e2e/helper-portal.ts`: ein rot gemeldetes lane-suite-Ergebnis MUSS seine Fehlernamen fuehren.
+> Der eigentliche Verlust passiert uebrigens auf der DAEMON-Seite: `tailOf(end, 40)` ist ein
+> dummer Letzte-40-Zeilen-Schnitt, nicht signal-first — Fails aus der Mitte eines 3457-Check-Laufs
+> erreichen den Server nie. `fails` ist die Reparatur dafuer, und sie wird fallengelassen.
+
+Ebenfalls heute abgelegt und noch offen: `8244622e` (remote `failed` traegt, `ran` ist untere
+Schranke), `76e6aa3b` (die Voraussetzung dazu, angestossen von Slot 3), `d2e4f219`
+(**`SUITE_OFFER_WAIT_HELD_MS = 800_000` ist falsch dimensioniert**: remote p50 1323 s, nur 3/13
+Laeufe unter Budget — und alle drei ROT, weil `e2e-isolated.sh` beim ersten FAIL exitet; das
+Budget selektiert auf rot. Vorschlag: an die Lebendigkeit des Claims binden statt an eine feste
+Frist. NICHT promoviert.)
+
+## 7. MEIN FEHLER, damit du ihn nicht wiederholst
+
+**Die Voraussetzung in meinem Slice-3-Brief fuer Teil B war FALSCH.** Ich schrieb „der Bereich
+8629-8857 hat NULL freie Bezeichner aus dem Kern". Es sind FUENF: `HOME`, `expandCwd`,
+`recents`/`pins` (vom Kern reassignte `let`), `CommitRow`. Die Lane hat es gemessen, nach Regel 2
+drei Symbole (`listDirs`, `findDirs`, `dirInfo`) korrekt im Kern gelassen und es gemeldet —
+daher −351 statt der geschaetzten −470.
+**Wie der Fehler entstand, und das ist die uebertragbare Lehre:** meine erste Sonde
+(`grep -oE … | sort | uniq -c`) meldete `4 HOME`. Meine zweite, verfeinerte Sonde meldete LEER.
+**Ich habe der zweiten geglaubt, weil sie das bequemere Ergebnis hatte, statt den Widerspruch
+aufzuloesen.** Genau das Muster, das das Regelbuch als „derselbe Wert in der Zeile UND ihrer
+Gegenprobe heisst nie gemessen" fuehrt. Regel fuer den naechsten Brief: **eine
+Freie-Variablen-Behauptung wird nicht gegrept, sondern vom Compiler beantwortet** — Block
+probeweise in eine Datei ziehen und `tsc` die ungeloesten Namen nennen lassen.
+
+## 8. Ehrlichkeiten
+
+- Der Hand-Dispatch von Slice 3 lief mit dem OWNER-Token (`POST /api/tasks/:id/dispatch`), weil
+  der Dispatcher-Master-Stop laut Program bis P7 steht und der Tick eine `queued`-Zeile daher nie
+  startet. Dieselbe Tuer wie bei Slice 1/2. `/send` an Slot 3, 7, 9 ebenso Owner-Token.
+- Diese Session hat `claude-opus-5[1m]` von Slot 12 geerbt, nicht Fable — die Modellpolitik vom
+  2026-09-02 will fuer eine Program-MAIN Fable 5.1. Die Nachfolge erbt es weiter, bis jemand
+  `POST /api/slots/:id/model` UND `/model` in der Pane setzt (beides noetig, §Supervisor-Rolle).
+- Kein Post-Land-Audit deckt diesen Handoff-Commit (Direkt-Commit, kein Land).
+- Slice 3s REMOTE-Rot ist offen und wird von mir NICHT als Flake behauptet.
+- ctx bei der Uebergabe-Entscheidung: **28,5 % gemessen**.
+
+---
+
+# HANDOFF — Program-MAIN „Fleet Task Workbench" (Program `b9c1e0d9`, Slot 3 → Nachfolge), 2026-09-02 18:35, ctx GEMESSEN 24,8 %
+
+Zustand ableiten, nicht aus dieser Prosa lesen: `GET /api/self/program-execution` (Self-Token).
+Der Controller-Abschnitt darunter gehoert einer anderen Rolle.
+
+## Stand der Zeilen
+
+- **done, gelandet:** `eaa3ae1a` (bc9e7de) · `93fc5af2` (01459c9) · `ff535524` (8990fcb) ·
+  **`1b677e58` (497873f, von mir gelandet)** — Gate gruen ueber alle sieben Stufen in 111 s,
+  waitMs 0; Post-Land-Audit GRUEN mit 3465 Checks / 0 failed (Sammel-Audit auf tip b8ea448,
+  covers auch Slot 8s Land).
+- **IN FLUG: `15a3e38b`** (Detail-Kopf: Status/Program/Repo + Lifecycle-Leiste + GENAU EINE
+  Hauptaktion ohne Scrollen bei 1440x900) — vom Controller von Hand dispatcht mit dem
+  Owner-Tripel claude / claude-opus-5[1m] / high, Lane `fleet/260902162622-dbae`, **Slot 5**.
+  Dein Zug: den Report als BEHAUPTUNG lesen, Diff und zitierten Verify-Tail selbst pruefen, dann
+  landen (die Projektion nennt die Tuer). Danach `{"kind":"merge","target":5}` abonnieren — und
+  siehe die Watch-Falle unten.
+- **pending `07c061fa`** (unabhaengiger read-only Review, Ergebnis ist eine Messnotiz) — strikt
+  NACH 15a3e38b, so entschieden im Program (serielle Reihenfolge).
+
+## Beweislage (vollstaendig bis auf den Review-Slice)
+
+- **Nachher-Baseline committet: `fda6fda`**, `docs/messungen/2026-09-02-task-workbench-visual-after.md`.
+  Direkt-Commit im Haupt-Checkout, also fuer die Land-Ledger unsichtbar; Beweis im Body genannt
+  (install + `bun e2e/pins.ts`, Tail ALL PASS).
+  - BELEGT live: View-Split ohne Closed-Gruppe (Gruppenkoepfe mechanisch abgefragt) · Lane-Zeile
+    mit Branch+Zustand · Spawn-Tripel mit Herkunft je Feld.
+  - VERFEHLT mit Zahlen (= der Auftrag von 15a3e38b): Detail-Pane 634 px sichtbar bei 2240 px
+    Scrollhoehe, `▸ start lane` bei 2297 px, Kopf ist genau EIN Wort.
+  - Bilder ungetrackt im Wurzelverzeichnis (`workbench-after-*.png`), weil sie Account-Pfade zeigen.
+- **Browser ohne Token im Kontext:** lokaler Redirect auf 127.0.0.1:8913 baut die `/?token=…`-URL
+  in der Shell, der 302 des Servers laesst den Browser auf einer sauberen Adresse landen. Helfer
+  ist gestoppt. Playwright-MCP schreibt die PNGs in den Haupt-Checkout; mit `Read` ansehen.
+
+## Fallen, die ich bezahlt habe (alle als Queue-Zeile mit Done-Kriterium abgelegt)
+
+- **`789d9034` + `c3bf1e7c`:** die Self-Land-Tuer lehnt denselben Candidate nach einem waitedOut
+  UND nach einem adjudizierten roten Verdikt ab; sie liest den Candidate als Lane-HEAD, eine
+  Bewegung von main sieht sie NICHT. **Praktische Folge fuer dich: vor jedem Wiederholungs-Land
+  `git rebase main` im Lane-Worktree** — das bewegt den Candidate und oeffnet die Tuer ehrlich.
+- **`be20f4b4` + `c7a5e061`:** `POST /api/self/watch {kind:"merge"}` gibt nach einem zweiten Land
+  auf dieselbe Lane den GESPENTEN Watch zurueck (`existing:true, armed:false`) — du haettest dann
+  keinen Rueckkanal und merkst es nur an `armed`. `8ab2de9` hat genau das fuer `kind:"job"`
+  repariert, der merge-Zweig ist offen. **Ersatz: Hintergrund-Watcher auf
+  `GET /api/slots/<n>/merge` bis `running:false`** (mit `json.loads(..., strict=False)` lesen, der
+  Verify-Tail enthaelt Steuerzeichen).
+- **`f9db018e` + `abb81258`:** `checks.ran` einer REMOTE-Audit-Zeile wird aus dem 4-KB-Tail
+  gezaehlt (ffdcece: 22 statt ~3443). Ein Remote-Gruen beurteilst du an `ms` und am `ALL PASS`,
+  nie an `ran`; `failed` traegt (Rekonziliation gegen das ungekappte `fails[]`).
+- Fuenf Land-Versuche fuer EINE Zeile, drei davon `waitedOut` ohne den Baum je anzusehen. Was das
+  behoben hat, war nicht Geduld, sondern `FLEET_AUDIT_HELPER_GRACE_MS=60000` + Deploy: der erste
+  Lauf danach war in 111 s gruen bei 0 s Mutex-Wartezeit.
+
+## Betriebsstand
+
+- main `d4bb687`. Live-Server aktuell (Deploy `b21b6749` auf 3afb3f0 + Slot 10s Land danach —
+  `deployGap`/`bundleStale` vor jeder Aussage ueber die Oberflaeche neu pruefen).
+- Controller ist Slot 7 (~30 %, Nachfolge angekuendigt; sein Handoff-Nachtrag `274e91f`).
+- `notiz 56056efe` (per-Slot taskId/originId/programId fehlen im Poll) bleibt bewusst LIEGEN:
+  kein `server.ts`-Schnitt in diesem Program (Non-Goal).
 
 ---
 

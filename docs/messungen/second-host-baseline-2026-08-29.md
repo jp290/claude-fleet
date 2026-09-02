@@ -163,3 +163,42 @@ nicht anfassen (Feature-Freeze P1). Konsequenz auf einem Nicht-C-Locale-Host: de
 Shell akzeptiert die Geburt jetzt, die Sonde des Servers liefert weiter `null`, und beide Werte
 können sich unterscheiden statt nur zu fehlen. Auf dieser Maschine (macOS, launchd-PATH, C-Locale)
 ändert sich nichts. Die Zeile gehört in die erste `server.ts`-berührende Runde nach dem Freeze.
+
+### Nachtrag 2026-09-02 — geschlossen (Queue-Zeile `39fbbd1f`, Freeze-Ausnahme `3bb5a5c9`)
+
+`server.ts#processBirthFingerprint` trägt jetzt `env: { ...process.env, LC_ALL: "C" }`. Damit ist
+der letzte ungefenzte `lstart`-Leser im Baum zu; das Korpus der abgeleiteten Pin-Regel in
+`e2e/pins.ts` (jetzt „every reader of `ps -o lstart=` fences the locale") schließt `server.ts` ein
+statt aus und zählt **vier** Leser statt drei.
+
+**Was der offene Absatz oben vorhergesagt hat, ist zwischen dem 2026-08-29 und heute eingetreten:**
+die Remote-Audits auf `second-hostowner` (`LANG=de_DE.UTF-8`, procps 4.0.4) waren deterministisch
+rot in der Lock-Identitäts-Familie, weil `birth.state` dort `unmeasurable` blieb. Betroffen sind
+**sechs** Checks, nicht fünf — „overdue" hat zwei:
+
+| Check | warum er kippte |
+|---|---|
+| `e2e/verify-queue.ts` §2 „held only when PID and process-birth identity match" | `identityProven` `null` statt `true` |
+| `e2e/verify-queue.ts` §2 „a live holder inside the normal window is `held`" | `state` `unknown` |
+| `e2e/verify-queue.ts` §2 „past the overdue cap is `overdue`" | `state` `unknown` |
+| `e2e/verify-queue.ts` §2 „overdue still requires proven PID+birth identity" | `identityProven` `null` |
+| `e2e/verify-queue.ts` §2 „a live recycled PID mismatch is NOT a holder" | `current` `null` ⇒ nie `mismatched` |
+| `e2e/steward-outcomes.ts` „steward sessions carries the gate fact" | verlangt `held\|overdue`, bekam `unknown` |
+
+Nicht betroffen, geprüft: die `missing`/`empty`/`malformed`-Trias derselben Sektion (sie braucht
+den gemessenen Wert gar nicht) und der ganze §2b-Block — das ist die **Shell**-Seite, und die war
+seit dem 2026-09-01 gefenzt. Genau diese Trennlinie datiert den Mechanismus.
+
+**Zweitmessung am 2026-09-02 auf DIESER Maschine** (macOS 25.3, BSD `ps`) — der Mechanismus ist
+nicht procps-spezifisch, und `LANG` allein genügt, ein `LC_ALL` im Env braucht es nicht:
+
+```
+LC_ALL=C          ps -o lstart= -p $$  →  Wed Sep  2 14:17:14 2026
+LANG=de_DE.UTF-8  ps -o lstart= -p $$  →  Mi.  2 Sep. 14:18:41 2026
+```
+
+Eine tmux-Pane, gestartet wie `e2e-isolated.sh` es tut, erbt `LANG` — ein lokaler
+`LANG=de_DE.UTF-8 ./e2e-isolated.sh` reproduziert den Remote-Zustand also, falls jemand ihn je
+wieder braucht. Für dieses Land war er nicht nötig: der Pin fällt mutationsbewiesen
+(`unfenced=[server.ts:15330]`, wenn man die Fence entfernt), und der Post-Land-Audit auf dem Gerät
+ist der eigentliche Beweis.

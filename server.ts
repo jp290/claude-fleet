@@ -15319,7 +15319,15 @@ function normalizeProcessBirth(raw: string): string {
 }
 function processBirthFingerprint(pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
-  const p = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)]);
+  // LC_ALL=C is the other half of PROCESS_BIRTH_RE, not a nicety: `ps -o lstart=` is
+  // locale-formatted, and the regex above requires English month/day names. Under LANG=de_DE.UTF-8
+  // procps prints "Di Sep  1 07:00:05 2026" and BSD ps "Mi.  2 Sep. 14:18:41 2026" — both fall
+  // through the regex to null, so birth.state reads `unmeasurable` and the whole lock-identity
+  // family falls CLOSED on a non-C-locale host. Measured on the second-host 2026-09-01 and again
+  // locally 2026-09-02; the writers (e2e-stage.sh#_st_birth_of, e2e/verify-queue.ts#processBirthOf)
+  // have always been fenced, this reader was the one that was not.
+  // docs/messungen/second-host-baseline-2026-08-29.md §Plattform-Signatur.
+  const p = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)], { env: { ...process.env, LC_ALL: "C" } });
   if (p.exitCode !== 0) return null;
   const out = normalizeProcessBirth(new TextDecoder().decode(p.stdout));
   return out && PROCESS_BIRTH_RE.test(out) ? out : null;

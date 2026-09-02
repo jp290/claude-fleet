@@ -614,26 +614,28 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
     stage.includes('$_st_cur_pid" = "$_st_hp"') && stage.includes('$_st_cur_birth" = "$_st_hb"'),
     "missing reap-time birth equality in e2e-stage.sh");
 
-  // AND THE SAME FENCE EVERYWHERE THE HARNESS READS A BIRTH, as a rule over a derived set rather
-  // than as three remembered file names: every `lstart=` reader in the shell scripts and in the
-  // e2e modules must carry LC_ALL at its call site. Three sites today (e2e-stage.sh#_st_birth_of,
-  // e2e/verify-queue.ts#processBirthOf, state.sh's LIVE line); a fourth added tomorrow without the
-  // fence is caught here instead of on a foreign host nine minutes after a land.
+  // AND THE SAME FENCE EVERYWHERE A BIRTH IS READ, as a rule over a derived set rather than as
+  // four remembered file names: every `lstart=` reader — in the shell scripts, in the e2e modules
+  // AND in server.ts — must carry LC_ALL at its call site. Four sites today
+  // (e2e-stage.sh#_st_birth_of, e2e/verify-queue.ts#processBirthOf, state.sh's LIVE line,
+  // server.ts#processBirthFingerprint); a fifth added tomorrow without the fence is caught here
+  // instead of on a foreign host nine minutes after a land.
   //
-  // DELIBERATELY OUT OF THE SET, and it is a hole with a name: server.ts#processBirthFingerprint
-  // reads lstart the same way and matches it against PROCESS_BIRTH_RE, which is equally English.
-  // It is not fenced, because this slice may not change server.ts (feature freeze, W3) — so on a
-  // non-C-locale host the server's own identity probe still returns null. Reported, not silently
-  // covered: a pin that pretended the class were closed would be the more expensive lie.
+  // server.ts JOINED THE SET on 2026-09-02, and that is the whole point of the widening: it was
+  // the one reader left unfenced, so on the de_DE second-host the shell validator accepted a birth
+  // the server's own probe still read as null — birth.state `unmeasurable`, and six checks of the
+  // lock-identity family (e2e/verify-queue.ts §2 held/overdue/PID+birth/recycled-PID,
+  // e2e/steward-outcomes.ts's gate fact) fell CLOSED on every remote audit. Deterministic, and it
+  // read like a regress. Set the fence, and the class is shut for both halves at once.
   {
-    const RULE_LOCALE = "every harness reader of `ps -o lstart=` fences the locale (a localised birth reads as NO identity, not as a mismatch)";
+    const RULE_LOCALE = "every reader of `ps -o lstart=` fences the locale (a localised birth reads as NO identity, not as a mismatch)";
     const WINDOW = 3;
     // an INVOCATION, not a mention: `ps ... lstart=` in a shell line, or "lstart=" as an argv
     // element in a spawn call. Comment lines are out, and so is this file — a linter that quotes
     // the strings it pins would otherwise report itself as the offender it is looking for.
     const INVOKES = /(?:(?:^|[^A-Za-z_])ps[^A-Za-z_][^\n]*lstart=)|(?:"lstart=")/;
     const readers: { where: string; fenced: boolean }[] = [];
-    const corpus = [...shellScripts, ...readdirSync(`${ROOT}/e2e`).filter((x) => x.endsWith(".ts")).map((x) => `e2e/${x}`)]
+    const corpus = ["server.ts", ...shellScripts, ...readdirSync(`${ROOT}/e2e`).filter((x) => x.endsWith(".ts")).map((x) => `e2e/${x}`)]
       .filter((f) => f !== "e2e/pins.ts");
     for (const f of corpus) {
       const lines = read(f).split("\n");

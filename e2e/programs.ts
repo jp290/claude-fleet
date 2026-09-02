@@ -20,6 +20,12 @@ interface ProgramContent {
   evidence: string[];
   openQuestions: string[];
 }
+// the persisted authority lineage (server.ts#ProgramLineage): one entry per holding of a Program's
+// MAIN authority, written in the same save as `main`; only the newest entry may be open
+interface ProgramLineageEntry { slot: number; openedAt: number; sessionId: string | null; boundAt: number;
+  via: "bootstrap" | "rebound" | "succeed" | "backfill-unknown"; endedAt: number | null;
+  endedBy: "rebound" | "succeed" | "retire" | "replaced" | null }
+interface ProgramLineage { v: number; entries: ProgramLineageEntry[]; dropped: number }
 interface Program extends ProgramContent {
   id: string;
   status: ProgramStatus;
@@ -27,6 +33,7 @@ interface Program extends ProgramContent {
   proposedBy: { kind: "session"; slot: number; openedAt: number; sessionId: string | null }
     | { kind: "owner" };
   main?: { slot: number; openedAt: number; sessionId: string | null; boundAt: number };
+  lineage?: ProgramLineage;
   // the owner's self-land permission — absent on every Program until the owner grants it, which is
   // the shape every assertion here reads as "owner-only land".
   promotion?: { v: number; selfLand: string; confirmedAt: number };
@@ -67,7 +74,9 @@ interface ProgramExecutionRow {
     confirmedAt: number | null; activatedAt: number | null; completedAt: number | null;
     profile: { v: number; kind: string; confirmedAt: number } | null };
   authority: { boundSlot: number; boundOpenedAt: number; boundSessionId: string | null; boundAt: number;
-    sessionIdMatch: "exact" | "divergent" | "unknown"; executionState: "active" | "not-executing" };
+    sessionIdMatch: "exact" | "divergent" | "unknown"; executionState: "active" | "not-executing";
+    // the persisted lineage verbatim, or null when no record exists (the unknown list then says so)
+    lineage: { entries: ProgramLineageEntry[]; dropped: number } | null };
   tasks: { rows: { id: string; kind: string; status: string; releasedBy: string | null;
     slot: number | null; originId: string | null; text: string;
     // derived per request, stored nowhere (program-phase.ts)
@@ -820,6 +829,18 @@ export async function run(ctx: Ctx): Promise<void> {
       && bound.slot === mainSlot && bound.openedAt === boundState?.openedAt
       && bound.sessionId === (boundState?.sessionId ?? null) && typeof bound.boundAt === "number",
     JSON.stringify(mainBody));
+  // THE LINEAGE RECORD, read off the PERSISTED state: the bind used saveStateNow, so the file is the
+  // fact and the route is only its echo. Field by field, not by JSON equality, so a key-order
+  // change can never pass off as a record change or hide one.
+  const bootstrapLineage = readState().programs?.find((p) => p.id === mainProgram.id)?.lineage;
+  const bootstrapEntry = bootstrapLineage?.entries[0];
+  check("Program-MAIN lineage: the first bootstrap bind persists exactly one OPEN entry via bootstrap naming the bound occupant, nothing dropped",
+    bootstrapLineage?.v === 1 && bootstrapLineage.dropped === 0 && bootstrapLineage.entries.length === 1
+      && !!bound && bootstrapEntry?.slot === bound.slot && bootstrapEntry.openedAt === bound.openedAt
+      && bootstrapEntry.sessionId === bound.sessionId && bootstrapEntry.sessionId === (boundState?.sessionId ?? null)
+      && bootstrapEntry.boundAt === bound.boundAt && bootstrapEntry.via === "bootstrap"
+      && bootstrapEntry.endedAt === null && bootstrapEntry.endedBy === null,
+    JSON.stringify(bootstrapLineage ?? null));
   check("Program-MAIN target frame: delivered history carries the executable repo contract and owner Program JSON only",
     targetContractPresent(deliveredPrompt, mainProgram.title) && targetContractClean(deliveredPrompt)
       && !deliveredPrompt.includes("ContextPlan v2 anchors"),
@@ -1040,9 +1061,18 @@ export async function run(ctx: Ctx): Promise<void> {
   check("ProgramExecutionView auth: missing and wrong self credentials are flat-cost 401s",
     executionMissing.response.status === 401 && executionWrong.response.status === 401,
     `${executionMissing.response.status}/${executionWrong.response.status}`);
-  check("ProgramExecutionView MAIN lineage: even the otherwise complete active view always names the persisted-lineage gap",
-    activeExecutionRow?.unknown.some((line) => line.includes("no persisted Program-MAIN lineage exists") && /\d/.test(line)) === true,
-    JSON.stringify(activeExecutionRow?.unknown));
+  // THE CONTRACT SINCE THE LINEAGE RECORD EXISTS: the view carries the persisted record verbatim
+  // under authority.lineage, and the unknown list names a lineage gap ONLY where one exists — a
+  // record that begins with the bootstrap of this very Program has none, so no lineage line at all.
+  const persistedLineageAtView = readState().programs?.find((p) => p.id === mainProgram.id)?.lineage ?? null;
+  check("ProgramExecutionView MAIN lineage: a complete persisted lineage rides verbatim in authority.lineage and the unknown list carries no lineage line",
+    !!activeExecutionRow?.authority.lineage && persistedLineageAtView !== null
+      && JSON.stringify(activeExecutionRow.authority.lineage)
+        === JSON.stringify({ entries: persistedLineageAtView.entries, dropped: persistedLineageAtView.dropped })
+      && activeExecutionRow.authority.lineage.entries[0]?.via === "bootstrap"
+      && activeExecutionRow.authority.lineage.entries.length === 1
+      && !activeExecutionRow.unknown.some((line) => /lineage/i.test(line)),
+    JSON.stringify({ lineage: activeExecutionRow?.authority.lineage ?? null, unknown: activeExecutionRow?.unknown ?? null }));
 
   const executionLaneOpen = await post("/api/lanes", { repo: REPO });
   const executionLaneBody = await executionLaneOpen.json() as { slot?: number; cwd?: string; branch?: string };
@@ -1471,6 +1501,23 @@ export async function run(ctx: Ctx): Promise<void> {
       && transferredBinding.sessionId === null && successorState?.sessionId === null
       && typeof transferredBinding.boundAt === "number" && transferredBinding.boundAt > (bound?.boundAt ?? 0),
     `response=${JSON.stringify(successionBody)} binding=${JSON.stringify(transferredBinding)}`);
+  // the lineage survived the restart above (it is persisted, not recomputed) and the succession
+  // wrote both halves of the move in the bind's own save: the predecessor's entry closed by
+  // `succeed` at the successor's boundAt, the successor appended via `succeed` — and its sessionId
+  // is exactly what the successor slot had at the bind (null for a codex pane), never invented
+  const successionLineage = readState().programs?.find((p) => p.id === mainProgram.id)?.lineage;
+  const successionPredecessorEntry = successionLineage?.entries.at(-2);
+  const successionEntry = successionLineage?.entries.at(-1);
+  check("Program-MAIN lineage: succession closes the predecessor's entry by succeed at the bind and appends the successor via succeed naming exactly program.main",
+    successionLineage?.v === 1 && successionLineage.entries.length === 2 && successionLineage.dropped === 0
+      && !!successionPredecessorEntry && successionPredecessorEntry.slot === bound?.slot && successionPredecessorEntry.openedAt === bound?.openedAt
+      && successionPredecessorEntry.via === "bootstrap" && successionPredecessorEntry.endedBy === "succeed"
+      && successionPredecessorEntry.endedAt === transferredBinding?.boundAt
+      && successionEntry?.slot === transferredBinding?.slot && successionEntry.openedAt === transferredBinding.openedAt
+      && successionEntry.sessionId === (successorState?.sessionId ?? null)
+      && successionEntry.boundAt === transferredBinding.boundAt && successionEntry.via === "succeed"
+      && successionEntry.endedAt === null && successionEntry.endedBy === null,
+    JSON.stringify(successionLineage ?? null));
   check("Program-MAIN target succession: delivered history keeps the target contract without repeating Fleet founding",
     successionPrompt.startsWith("[fleet Program-MAIN succession]")
       && targetContractPresent(successionPrompt, mainProgram.title) && targetContractClean(successionPrompt)
@@ -4236,6 +4283,18 @@ export async function run(ctx: Ctx): Promise<void> {
   // describe ONE occupant.
   check("V1a: a stale occupancy carries an unknown identity — a gone occupant is not compared to its successor",
     killedHealth?.sessionIdMatch === "unknown", JSON.stringify(killedHealth));
+  // the teardown of the bound occupant is an OBSERVED ending: the open entry closes by `retire`
+  // with the kill's time, nothing is appended, and the binding itself stays (that is what stale
+  // means). Read off the route: teardown saves debounced, the route is the live fact.
+  const killedLineage = (await ownerPrograms()).find((p) => p.id === mainProgram.id)?.lineage;
+  const killedEntry = killedLineage?.entries.at(-1);
+  check("Program-MAIN lineage: tearing down the bound occupant closes its entry by retire with the observed time, appends nothing and leaves the stale binding in place",
+    killedLineage?.entries.length === 2 && killedLineage.dropped === 0
+      && !!killedEntry && killedEntry.slot === transferredBinding?.slot && killedEntry.openedAt === transferredBinding?.openedAt
+      && killedEntry.via === "succeed" && killedEntry.endedBy === "retire"
+      && typeof killedEntry.endedAt === "number" && killedEntry.endedAt >= killedEntry.boundAt
+      && JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main) === JSON.stringify(transferredBinding),
+    JSON.stringify(killedLineage ?? null));
 
   // THE CUT: a stale binding is overwritable, because the alternative was a permanently orphaned
   // Program. The bootstrap runs its whole founding path — so the probe plants the harness screen
@@ -4272,6 +4331,22 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify(rebindTrail));
   check("GET /api/programs occupancy: the rebound program reads live again",
     (await occupancyOf(mainProgram.id)) === "live", String(await occupancyOf(mainProgram.id)));
+  // THE REBOUND, in the record: the first close wins — the predecessor keeps its observed `retire`
+  // close untouched (a rebound over it is not a second ending), and the new holding is appended
+  // via `rebound` naming exactly program.main. Persisted by the bind's own saveStateNow.
+  const reboundLineage = readState().programs?.find((p) => p.id === mainProgram.id)?.lineage;
+  const reboundPrevious = reboundLineage?.entries.at(-2);
+  const reboundEntry = reboundLineage?.entries.at(-1);
+  check("Program-MAIN lineage: the rebound keeps the predecessor's observed retire close untouched and appends the new holding via rebound naming exactly program.main",
+    reboundLineage?.v === 1 && reboundLineage.entries.length === 3 && reboundLineage.dropped === 0
+      && !!reboundPrevious && reboundPrevious.slot === transferredBinding?.slot && reboundPrevious.openedAt === transferredBinding?.openedAt
+      && reboundPrevious.endedBy === "retire" && reboundPrevious.endedAt === killedEntry?.endedAt
+      && !!rebindBody.program?.main && reboundEntry?.slot === rebindBody.program.main.slot
+      && reboundEntry.openedAt === rebindBody.program.main.openedAt && reboundEntry.slot === rebindSlot
+      && reboundEntry.sessionId === (rebindState?.sessionId ?? null)
+      && reboundEntry.boundAt === rebindBody.program.main.boundAt && reboundEntry.via === "rebound"
+      && reboundEntry.endedAt === null && reboundEntry.endedBy === null,
+    JSON.stringify(reboundLineage ?? null));
   if (rebindSlot !== null) await post(`/api/slots/${rebindSlot}/kill`, {});
 
   // Recycle the same slot and bind only a COMPLETE Program to its new occupant. The active Program
@@ -4280,16 +4355,74 @@ export async function run(ctx: Ctx): Promise<void> {
     : await post(`/api/slots/${successorSlot}/open`, { cwd: REPO, label: "ordinary-stale-succession" });
   const recycledState = readState().slots?.[String(successorSlot)];
   const completeBoundProgram = await activateNewProgram("Complete Program does not capture succession");
+  // two lineage plants ride the same restart: a record that cannot be read (on the program bound to
+  // the recycled occupant, so a bound MAIN can read the view), and a FULL record of 50 on a program
+  // whose binding is stale, so the next bootstrap is the 51st move
+  const lineageCapProgram = await activateNewProgram("Lineage cap");
+  const lineageCapStaleMain = { slot: successorSlot ?? 1, openedAt: 1049, sessionId: null, boundAt: 2049 };
+  const plantedLineageEntries: ProgramLineageEntry[] = Array.from({ length: 50 }, (_, i): ProgramLineageEntry => i === 49
+    ? { ...lineageCapStaleMain, via: "succeed", endedAt: null, endedBy: null }
+    : { slot: 1 + (i % 16), openedAt: 1000 + i, sessionId: null, boundAt: 2000 + i,
+      via: i === 0 ? "bootstrap" : "succeed", endedAt: 2001 + i, endedBy: "succeed" });
   await tmuxOut("kill-session", "-t", "srv");
   await Bun.sleep(500);
   const completeBoundState = readState();
   const completeBoundRow = completeBoundState.programs?.find((p) => p.id === completeBoundProgram.id);
-  if (completeBoundRow && successorSlot !== null && recycledState?.openedAt)
+  if (completeBoundRow && successorSlot !== null && recycledState?.openedAt) {
     completeBoundRow.main = { slot: successorSlot, openedAt: recycledState.openedAt,
       sessionId: recycledState.sessionId ?? null, boundAt: Date.now() };
+    completeBoundRow.lineage = { v: 1, entries: "not-an-array", dropped: 0 } as unknown as ProgramLineage;
+  }
+  const lineageCapRow = completeBoundState.programs?.find((p) => p.id === lineageCapProgram.id);
+  if (lineageCapRow) {
+    lineageCapRow.main = lineageCapStaleMain;
+    lineageCapRow.lineage = { v: 1, entries: plantedLineageEntries, dropped: 0 };
+  }
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(completeBoundState, null, 2), { mode: 0o600 });
   await restartSrv();
+  const recycledTokenAtBoot = readState().slots?.[String(successorSlot)]?.selfToken ?? "";
+  const malformedLineageExecution = await selfExecution(recycledTokenAtBoot);
+  const malformedLineageRow = malformedLineageExecution.view?.programs.find((row) => row.program.id === completeBoundProgram.id);
+  const lineageUnreadableTrail = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+    .map((line) => JSON.parse(line) as { event?: string; detail?: string })
+    .filter((row) => row.event === "program_lineage_unreadable" && row.detail?.startsWith(completeBoundProgram.id) === true);
+  check("Program-MAIN lineage loader: a persisted lineage that cannot be read loads as ABSENT — null in the view, the no-persisted-lineage line back in unknown, no backfill over it, and one audit row naming the program and the parse error",
+    malformedLineageExecution.response.ok && malformedLineageRow?.authority.lineage === null
+      && malformedLineageRow.unknown.some((line) => line.includes("no persisted Program-MAIN lineage exists"))
+      && (await ownerPrograms()).find((p) => p.id === completeBoundProgram.id)?.lineage === undefined
+      && lineageUnreadableTrail.length === 1 && lineageUnreadableTrail[0]?.detail?.includes("entries must be an array") === true,
+    `${malformedLineageExecution.response.status} ${JSON.stringify({ row: malformedLineageRow?.authority ?? null, unknown: malformedLineageRow?.unknown ?? null, trail: lineageUnreadableTrail })}`);
   await programPost(completeBoundProgram.id, "complete");
+  // the 51st move: a bootstrap over the planted stale binding. The planted newest entry was never
+  // observed ending, so THIS is the case where the rebound itself closes it — by `rebound`, at the
+  // new boundAt — and the cap drops the oldest planted entry, counted once.
+  const lineageCapLabel = "program-lineage-cap";
+  const lineageCapPending = beginBootstrap(lineageCapProgram.id, {
+    cwd: REPO, label: lineageCapLabel, harness: "codex", model: "gpt-5.5", effort: "high",
+  });
+  const lineageCapSlot = await waitForLabel(lineageCapLabel);
+  check("Program-MAIN lineage cap precondition: the rebind occupant became observable",
+    lineageCapSlot !== null, String(lineageCapSlot));
+  if (lineageCapSlot !== null) await respawnScreen(lineageCapSlot, ">_ OpenAI Codex (v0.147.0)");
+  const lineageCapResponse = await lineageCapPending;
+  const lineageCapBody = await lineageCapResponse.json() as { ok?: boolean; slot?: number; program?: Program };
+  const lineageCapLineage = readState().programs?.find((p) => p.id === lineageCapProgram.id)?.lineage;
+  const lineageCapPrevious = lineageCapLineage?.entries.at(-2);
+  const lineageCapEntry = lineageCapLineage?.entries.at(-1);
+  check("Program-MAIN lineage cap: the 51st move leaves 50 entries and dropped 1, the oldest planted entry gone, the never-observed predecessor closed by rebound at the new boundAt, and the new holding via rebound naming program.main",
+    lineageCapResponse.ok && lineageCapBody.ok === true && !!lineageCapBody.program?.main
+      && lineageCapLineage?.v === 1 && lineageCapLineage.entries.length === 50 && lineageCapLineage.dropped === 1
+      && lineageCapLineage.entries[0]?.openedAt === plantedLineageEntries[1]?.openedAt
+      && lineageCapPrevious?.slot === lineageCapStaleMain.slot && lineageCapPrevious.openedAt === lineageCapStaleMain.openedAt
+      && lineageCapPrevious.endedBy === "rebound" && lineageCapPrevious.endedAt === lineageCapBody.program.main.boundAt
+      && lineageCapEntry?.slot === lineageCapBody.program.main.slot && lineageCapEntry.slot === lineageCapSlot
+      && lineageCapEntry.openedAt === lineageCapBody.program.main.openedAt
+      && lineageCapEntry.sessionId === (readState().slots?.[String(lineageCapSlot)]?.sessionId ?? null)
+      && lineageCapEntry.boundAt === lineageCapBody.program.main.boundAt && lineageCapEntry.via === "rebound"
+      && lineageCapEntry.endedAt === null && lineageCapEntry.endedBy === null,
+    `${lineageCapResponse.status} ${JSON.stringify({ body: lineageCapBody, length: lineageCapLineage?.entries.length, dropped: lineageCapLineage?.dropped, previous: lineageCapPrevious ?? null, entry: lineageCapEntry ?? null })}`);
+  if (lineageCapSlot !== null) await post(`/api/slots/${lineageCapSlot}/kill`, {});
+  await programPost(lineageCapProgram.id, "complete");
   const recycledToken = readState().slots?.[String(successorSlot)]?.selfToken ?? "";
   const recycledOpenedAt = readState().slots?.[String(successorSlot)]?.openedAt ?? Date.now();
   await Bun.sleep(Math.max(0, (Math.floor(recycledOpenedAt / 1000) + 2) * 1000 - Date.now()));

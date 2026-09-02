@@ -3286,6 +3286,33 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       docs: selfApiForRecovery.includes('recovery.state:"retryable"') && selfApiForRecovery.includes("rollback=cleared"),
       clientRecovery: client.includes("e.recovery?.state"),
     }));
+
+  // THE PERSISTED PROGRAM-MAIN LINEAGE (2026-09-02): its cap and its state names are typed once in
+  // server.ts and documented once in docs/self-api.md §authority.lineage, and a successor reads the
+  // docs to interpret the record — so the two must agree on the number, on every `via`/`endedBy`
+  // name, and on the two unknown sentences the view renders. A renamed state or a moved cap that
+  // the docs did not follow would make the documented reading of a persisted history wrong.
+  {
+    const selfApiLineage = read("docs/self-api.md");
+    const lineageDoc = selfApiLineage.slice(selfApiLineage.indexOf("### `authority.lineage`"));
+    const lineageCap = server.match(/^const PROGRAM_LINEAGE_MAX = (\d+);/m)?.[1] ?? "";
+    const docsLineageCap = lineageDoc.match(/`PROGRAM_LINEAGE_MAX` \((\d+)\)/)?.[1] ?? "";
+    const unionNames = (line: RegExp): string[] =>
+      [...(server.match(line)?.[1] ?? "").matchAll(/"([a-z-]+)"/g)].map((m) => m[1] ?? "");
+    const via = unionNames(/^type ProgramLineageVia = (.+);$/m);
+    const endedBy = unionNames(/^type ProgramLineageEndedBy = (.+);$/m);
+    const absentLine = "1 lineage gap: no persisted Program-MAIN lineage exists; earlier bound sessions of this program are not reconstructible.";
+    pin("Program-MAIN lineage: the cap (50) and every via/endedBy state name in server.ts are the ones docs/self-api.md §authority.lineage documents, and the unknown sentences match",
+      lineageCap === "50" && docsLineageCap === "50"
+        && via.length === 4 && endedBy.length === 4
+        && [...via, ...endedBy].every((name) => lineageDoc.includes(`| \`${name}\` |`))
+        && server.includes(`"${absentLine}"`) && lineageDoc.includes(absentLine)
+        && server.includes("`1 lineage gap: lineage begins at ${p.lineage.entries[0].boundAt}; earlier bound sessions are not reconstructible.`")
+        && lineageDoc.includes("1 lineage gap: lineage begins at <boundAt>; earlier bound sessions are not reconstructible.")
+        && server.includes("oldest lineage entries were dropped at the cap of ${PROGRAM_LINEAGE_MAX}; those bound sessions are not reconstructible.")
+        && lineageDoc.includes("oldest lineage entries were dropped at the cap of 50; those bound sessions are not reconstructible."),
+      JSON.stringify({ lineageCap, docsLineageCap, via, endedBy, docFound: lineageDoc.length > 0 }));
+  }
 }
 
 // --- STALENESS IS ONE RULE, RENDERED BY TWO READERS. The server decides it in

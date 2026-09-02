@@ -849,6 +849,66 @@ dieser Zeile gehört gerade keine Tür".
 | OWNER_GATE | eine offene Frage wartet auf den Owner |
 | RUNNING · CONTINUE · UNKNOWN | `null` |
 
+### `authority.lineage` — die persistierte Program-MAIN-Lineage
+
+Seit 2026-09-02 trägt jedes Program einen vierten Record, `lineage` (`server.ts#ProgramLineage`),
+und `GET /api/self/program-execution` rendert ihn wörtlich unter `authority.lineage` als
+`{entries, dropped}` — `null`, wenn kein Record existiert. Er ist **weder Content noch Promotion
+noch Founding**: Content darf eine Session VORSCHLAGEN, die Promotion ERTEILT der Owner, der
+Founding-Marker lebt für eine Transition — die Lineage ist eine GESCHICHTE, an die nur
+Autoritätsbewegungen anhängen und die nichts umschreibt. Aus `audit.jsonl` abgeleitet wird sie
+absichtlich nicht: das Ledger ist Prosa, unbegrenzt, wird nie als State geladen. Vorher stand die
+Herkunft einer MAIN-Bindung nur dort (`program_main_rebound … replaced slot:7`) und eine
+Nachfolgerin konnte nicht rekonstruieren, wer wann die Autorität hielt.
+
+**Eintrag:** `{slot, openedAt, sessionId, boundAt, via, endedAt, endedBy}`. `via` sagt, WIE der
+Eintrag die Autorität bekam, `endedBy`, WIE das Halten endete; `endedAt`/`endedBy` sind gemeinsam
+`null` (offen) oder gemeinsam gesetzt. Nur der neueste Eintrag darf offen sein.
+
+| `via` | geschrieben von |
+| --- | --- |
+| `bootstrap` | der erste Bootstrap-Bind eines Programs (`bootstrapProgramMainReserved`) |
+| `rebound` | ein Bootstrap über eine STALE Bindung — derselbe Moment wie die Trail-Zeile `program_main_rebound` |
+| `succeed` | die Nachfolge (`succeedProgramMain`), der Eintrag der Nachfolgerin |
+| `backfill-unknown` | genau EIN Eintrag beim Laden eines Programs, das `main` hatte, bevor der Record existierte — `boundAt` aus `main` kopiert, nie eine erfundene frühere Geschichte |
+
+| `endedBy` | Moment |
+| --- | --- |
+| `succeed` | am Bind der Nachfolgerin, im selben Save wie `main` |
+| `retire` | der gebundene Occupant wurde abgebaut (`teardownSlotOccupant`, beobachtete Zeit); die Bindung selbst bleibt stehen — das IST „stale" |
+| `rebound` | die Bindung wurde beim Rebind stale VORGEFUNDEN und ihr Ende nie beobachtet |
+| `replaced` | ein Bootstrap über eine stale Bindung hat sie mit seinem Founding-Marker fallen gelassen und ist dann gescheitert — das Program steht aktiv und ungebunden, ohne Nachfolgerin |
+
+**Der erste Close gewinnt.** Ein Rebind über eine Bindung, deren Abbau beobachtet wurde, lässt
+`retire` samt Zeit stehen und trägt den Rebound nur als `via` des NEUEN Eintrags — sonst läse sich
+ein toter Occupant, als hätte er bis zum Rebind gehalten. Jede Bewegung schreibt Close und Append
+**im selben Save wie `program.main`** und rollt beide zurück, wenn der Save scheitert.
+`backfillProgramMainSessionId` trägt eine nachträglich bekannte Session-Id auch in den Eintrag
+derselben Belegung — ein Eintrag trägt nie eine Session-Id, die sein Slot nicht hatte.
+
+**Deckel:** höchstens `PROGRAM_LINEAGE_MAX` (50) Einträge; der älteste fällt zuerst und wird in
+`dropped` gezählt (Pin in `e2e/pins.ts` gegen diese Zahl und die Zustandsnamen oben).
+
+**Loader, versioniert, default-deny** (`loadProgramLineage`, dieselbe Disziplin wie
+`PromotionPolicy`): ein Record, der nicht exakt ein wohlgeformtes v1 ist (fremder Key, falsche
+Version, unbekannter Zustandsname, mehr als 50 Einträge, ein offener Eintrag, der nicht der
+neueste ist), lädt als ABSENT — nie feldweise repariert, nie mit einem Backfill überdeckt (das
+sähe aus wie eine Legacy-Zeile und verstecke den Verlust) — und wird GEMELDET: eine `server.log`-
+Zeile und die Trail-Zeile `program_lineage_unreadable` (Program-Id + Parse-Fehler, nie ein
+Eintrag). Der Backfill gilt nur für Zeilen, die den Key nie hatten.
+
+**Der `unknown[]`-Satz nennt die Lücke nur, wo eine ist:**
+
+| Record | Satz |
+| --- | --- |
+| absent | `1 lineage gap: no persisted Program-MAIN lineage exists; earlier bound sessions of this program are not reconstructible.` |
+| erster Eintrag `backfill-unknown` | `1 lineage gap: lineage begins at <boundAt>; earlier bound sessions are not reconstructible.` |
+| `dropped > 0` | `<n> oldest lineage entries were dropped at the cap of 50; those bound sessions are not reconstructible.` |
+| vollständig | keine Lineage-Zeile |
+
+`sessionIdMatch` und der Rest von `authority` sind unverändert. `GET /api/programs` trägt den Record
+im Program-Row mit (`publicProgram` spreizt das Program); der 4-Feld-`ProgramDigest` bleibt.
+
 ## profile — `POST /api/programs/:id/profile` (OWNER-Route, nicht `/api/self/*`)
 
 Sie steht hier aus demselben Grund wie §promotion: sie schreibt einen Record, den eine Session an

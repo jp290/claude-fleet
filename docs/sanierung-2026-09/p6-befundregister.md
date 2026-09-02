@@ -11,6 +11,16 @@ hat ein Befund **kein Zuhause**, und am 2026-09-02 ist genau deshalb einer im Sc
 sterbenden Session gelandet. Diese Datei ist das getrackte Zwischenlager, nicht ein zweites
 Register: Zeilen, die als Queue-Zeile existieren, stehen hier nur als Verweis auf ihre ID.
 
+**Der Deckel bleibt bei 10 — Entscheid des Owners, an den Fleet Controller delegiert, 2026-09-02.**
+Nicht aus Sparsamkeit, sondern weil ein Anheben das falsche Problem loest: `server.ts:2093-2098`
+rechnet die Gesamtsumme selbst vor und nachgeprueft stimmt sie — 16 Slots x (5 Arbeits- + 10
+Advisory-Zeilen) = 240 gefilete plus 16 x 5 = 80 freigegebene ergeben **320 nicht-terminale Zeilen
+gegen nominal `MAX_TASKS = 200`** (`server.ts:1861`). Der Deckel laeuft also SCHON ueber; ihn
+global anzuheben verdoppelt den Ueberhang fuer alle Programme, um das lokale Problem eines
+einzigen zu loesen. Und der Druck hat gewirkt: er hat genau diese Datei erzeugt — ein
+git-getracktes Zuhause, das eine sterbende Session ueberlebt. **Rueckfalltuer**, falls Disponieren
+zur wiederkehrenden Steuer wird: `FLEET_PROGRAM_MAX_PENDING_ADVISORY` in `.env`.
+
 Ein Eintrag hier ist **kein** Auftrag. Er wird zur Arbeit erst durch eine Queue-Zeile oder einen
 Owner-Entscheid.
 
@@ -74,6 +84,11 @@ zeigt, dass genau diese Luecke beim Schwesterfix `3974883` heute offen ist.
 **Status:** offen, nicht disponiert. Kein Fix ohne Owner-Freigabe — P6 beginnt laut Plan nach P5,
 und der Feature-Freeze steht bis P7.
 
+**Rang:** hoechster der Liste. **B-05** zeigt, dass das Helfergeraet heute eine Rot-Quote von 85 %
+gegen 22 % lokal faehrt — und ohne die Fehlernamen aus B-01 ist nicht entscheidbar, ob das Geraet,
+die Umgebung oder der Baum schuld ist. B-01 ist damit die Vorbedingung fuer jede Ausweitung der
+Auslagerung, nicht eine Bequemlichkeit.
+
 ---
 
 ## B-02 — Ein rotes LOKALES Audit nennt seine Fehlernamen nur im Check-Trail, und das weiss niemand
@@ -107,13 +122,113 @@ kann, ist ungeprueft.
 
 ---
 
+## B-03 — Auf einer REMOTEN Audit-Zeile ist `checks.failed` belastbar, `checks.ran` nur eine untere Schranke
+
+*Queue-Zeile `8244622e`, gemessen 2026-09-02 von der Sanierungs-MAIN Slot 1. Hier als Volleintrag
+uebernommen, damit die Zeile archiviert werden kann, ohne dass der Befund verschwindet.*
+
+Korrigiert die aeltere, zu starke Lesart von `f9db018e`/`df22cf14` („`checks` ist auf dem
+Remote-Pfad unbrauchbar"). Das stimmt fuer `ran` und ist fuer `failed` zu grob — und der
+Unterschied entscheidet, wie man ein remotes ROT liest.
+
+**Mechanismus** (an `server.ts#postLandAuditChecks` gelesen): findet die Funktion eine Zeile
+`N FAILURES` und weicht N von der Zahl der im Tail sichtbaren FAIL-Zeilen ab, rekonziliert sie
+gegen `fails[]` — das Array, das der Daemon SEPARAT und UNGEKAPPT schickt. Passt es nicht (`fails`
+fehlt, Laenge != N, oder mehr sichtbare FAILs als N), gibt sie `null` zurueck statt einer Zahl.
+`exitCode 0` zusammen mit irgendeinem Fehlerbeleg gibt ebenfalls `null`.
+
+**Folge, dreiteilig:**
+1. `checks.failed` auf einer remoten Zeile ist entweder RICHTIG oder `null` — nie still falsch
+   (Einschraenkung: B-04).
+2. `checks.ran` ist eine UNTERE SCHRANKE, gedeckelt durch `HELPER_TAIL_CAP` = 4096 B (~31 Zeilen).
+   Es kann einen vollen Lauf nicht bestaetigen und, bei jedem Wert > 0, einen leeren nicht
+   ausschliessen.
+3. Der Regelbuch-Sensor „`ran:0` bei `green`" verliert remote nicht seine Richtung, sondern seine
+   AUFLOESUNG: ein voller 3434-Check-Lauf meldet `ran:22` (Beleg: die Ledger-Zeile fuer `ffdcece` —
+   `out` 3990 B, genau 22 PASS-Zeilen darin, `checks.ran` 22, `ms` 1373734, `exitCode` 0), ein fast
+   leerer Lauf meldete `ran:3`. Beides sieht „klein aber nicht null" aus.
+
+**Belegbar auf einer remoten GRUENEN Zeile:** `exitCode`, `ms` gegen das Laufzeitband,
+`clonedSha == mainSha`, und `ALL PASS` im Tail. **Nicht von dieser Maschine nachpruefbar:** die
+Trail-Zahlen eines remoten Laufs — die `ffdcece`-Zeile traegt gar kein `trail`-Feld, und das
+Report-Feld ist ohnehin auf 120 Zeichen geschnitten (`server.ts#reportLaneSuite`). Wer eine remote
+Trail-Zahl zitiert, zitiert die Selbstauskunft des Helfers.
+
+---
+
+## B-04 — Die eine Bedingung, unter der remote `failed` doch still unterzaehlt
+
+*Queue-Zeile `76e6aa3b`, Korrektur zu B-03, gemessen 2026-09-02.*
+
+B-03s Satz „entweder richtig oder `null`, nie still falsch" gilt nur, WENN die `N FAILURES`-
+Summenzeile im 4-KB-Tail steht. Fehlt sie, ist `failureSummaries` 0, es wird nichts rekonziliert,
+und auf einem ROTEN Lauf greift weder die allPass- noch die `exitCode`-0-Schranke: `failed` waere
+dann die Zahl der im Tail sichtbaren FAIL-Zeilen — eine stille **Unterzaehlung**. Das ist der
+einzige bekannte Pfad dorthin.
+
+**Drei unabhaengige Lagen stehen heute dagegen, alle am Code gelesen:**
+1. `helper-daemon/daemon.ts#report` schickt `tailOf(end, 40)` — die letzten 40 nicht-leeren Zeilen
+   der letzten 64 KB; `N FAILURES` ist die letzte Zeile von `./e2e-isolated.sh`.
+2. `server.ts#retainSection` nimmt Signalzeilen RUECKWAERTS vom Ende
+   (`for (let i = lines.length - 1; ...) if (FAIL_LINE.test(...))`), und `FAIL_LINE` matcht
+   `FAILURES?` — die Summenzeile wird also ZUERST genommen, nicht zuletzt.
+3. `fails` stammt aus `failNamesOf` auf der VOLLEN Logdatei, Deckel `FAILS_KEEP = 50`; bei mehr als
+   50 Fehlern weicht `fails.length` von N ab und `postLandAuditChecks` gibt `null` — es faellt nach
+   ehrlich, nicht nach falsch.
+
+**Ausloesebedingung, falls sie je jemand sieht:** ein Suite-Wrapper, der NACH seiner Summenzeile
+noch mehr als 40 Zeilen druckt. Wer einen solchen Wrapper baut, macht `failed` remote still falsch.
+Das ist die eigentliche Nutzung dieses Eintrags — er ist eine Warnung an kuenftige Wrapper-Autoren,
+kein offener Defekt.
+
+**Nebenbefund, der hier festgehalten gehoert:** eine Task-Zeile ist nicht editierbar (es gibt kein
+`PATCH` auf `/api/tasks`). Genau deshalb musste die Korrektur zu `8244622e` eine ZWEITE Zeile
+werden und hat einen zweiten Advisory-Platz verbraucht. Im Register kostet dieselbe Korrektur
+einen Absatz.
+
+---
+
+## B-05 — Das Helfergeraet ist als VERDIKT-Quelle heute unbrauchbar, als Mutex-Entlaster wertvoll
+
+*Messung des Fleet Controller (Slot 1), erhoben 2026-09-02 ~20:05 an `post-land-audits.jsonl`;
+von der Sanierungs-MAIN unabhaengig nachgerechnet und in allen Zahlen reproduziert.
+Filter `ms >= 300000`, damit Nicht-Laeufe herausfallen.*
+
+| | n | p50 | p90 | green | red | unknown | Rot-Quote |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **lokal** | 324 | 963 s | 1557 s | 242 | 70 | 12 | **22 %** |
+| **remote** | 13 | 1323 s | 1419 s | 2 | 11 | 0 | **85 %** |
+
+**(1) Remote ist LANGSAMER als lokal, nicht schneller** — p50 1323 s gegen 963 s. Der Gewinn der
+Auslagerung ist also NICHT die Laufzeit, sondern dass der lokale Suite-Mutex frei bleibt. Wer das
+Angebot mit Geschwindigkeit begruendet, begruendet es falsch.
+
+**(2) Die Rot-Quote klafft um Faktor ~4.** `n = 13` ist klein, und drei der elf Rots sind
+abgebrochene Kurzlaeufe (597 / 656 / 660 s — `./e2e-isolated.sh` exitet auf dem ersten FAIL, ein
+schneller Lauf ist ein abgebrochener). Aber selbst ohne diese drei bleiben **8 von 10 rot** gegen
+22 % lokal. Dazu der Einzelfall vom selben Tag: P4 Slice 3, derselbe Baum, remote ROT mit 4 Fails —
+lokal GRUEN 3466/0.
+
+**Rangordnung, die daraus folgt, und sie ist eine Ordnung, keine Meinung:** solange ein remotes Rot
+weder seine Fehlernamen traegt (B-01) noch seine Quote erklaert ist, taugt das Helfergeraet nicht
+als Quelle eines VERDIKTS. Als Entlaster des lokalen Suite-Mutex bleibt es wertvoll und soll
+weiterlaufen. **Damit ist B-01 kein Komfortmangel, sondern die Vorbedingung dafuer, dem Geraet
+ueberhaupt mehr Arbeit zu geben.**
+
+**Ehrlich zur Belegstaerke:** `n = 13` traegt die Perzentil-Aussage; die Rot-Quoten-Aussage ist ein
+starkes Indiz, keine gesicherte Rate. Was sie NICHT sagt: worin die Ursache liegt — Geraet, Umgebung,
+Nichtdeterminismus unter fremder Last oder echte Defekte, die nur dort sichtbar werden. Genau diese
+Frage ist ohne B-01 nicht beantwortbar, und das ist der Punkt.
+
+---
+
 ## Bereits als Queue-Zeile abgelegte P6-Befunde (nur Verweis, Inhalt lebt an der Zeile)
 
 | ID | Kurz |
 | --- | --- |
-| `8244622e` | remote `failed` traegt, `ran` ist nur eine untere Schranke |
-| `76e6aa3b` | Korrektur/Voraussetzung zu `8244622e` |
-| `d2e4f219` | `SUITE_OFFER_WAIT_HELD_MS = 800_000` ist falsch dimensioniert (remote p50 1323 s; 3/13 Laeufe unter Budget, alle drei ROT — das Budget selektiert auf rot) |
+| ~~`8244622e`~~ | **als B-03 uebernommen** — Zeile darf archiviert werden |
+| ~~`76e6aa3b`~~ | **als B-04 uebernommen** — Zeile darf archiviert werden |
+| `d2e4f219` | **2026-09-02 vom Controller per `/adopt` zu `kind: auftrag` konvertiert** — `SUITE_OFFER_WAIT_HELD_MS = 800_000` falsch dimensioniert (remote p50 1323 s; 3/13 unter Budget, alle drei ROT — das Budget selektiert auf rot). Bleibt `pending`: der Freeze gilt. Kein Registereintrag noetig, sie ist jetzt Arbeit. |
 | `df22cf14` | ein vom Remote-Helfer gemeldeter Audit ... (s. Zeile) |
 | `f0c28e8f` | No-Progress-Pfad am Land von `d7b89fd6` |
 | `0ac22a00` | Post-Land-Audit hat EIN Budget fuer Warten UND Arbeit |

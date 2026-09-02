@@ -18,6 +18,9 @@ Die Datei waechst ueber die P3-Slices weiter — jeder Slice haengt seine Symbol
 - **Slice 2** (Watch-Typblock, `commsFor` → `createWatchForSlot` → `armProgramMainLandWatch`,
   `tickAutos` → `dispatchTask` → `briefAndSend`, `tickWatches`) — Basis HEAD `bd0aaae`, Lane
   `fleet/260902023103-a878`.
+- **Slice 3** (die fetch-Kette: `Bun.serve#fetch` ab `async fetch(req, server) {` bis Dateiende —
+  Auth-Vorpruefung, der Routen-Baum, WS-Handler; Ueberschriften heissen `fetch: <Routenpfad>` und
+  `websocket: <handler>`) — Basis HEAD `bd0aaae`, Lane `fleet/260902033037-5144`.
 
 ## slotCmd
 
@@ -1674,4 +1677,1390 @@ the composer. A second refusal is FINAL: the marker stays on the merge status, w
 owner can read it, and nothing asks again. Recomputed here rather than reusing the list from
 the top of the tick, because the loops above spend seconds in tmux and a lane can land, be
 recycled or start a fresh merge run inside that window.
+```
+
+## fetch: entry
+
+### Kopfkommentar — finishHttp und die geschachtelte Deklaration
+
+```text
+Every response leaves through finishHttp (see the TRANSPORT region): it is the only place
+that sees the finished body AND the request's accept-encoding — json(), which builds most
+of them, sees neither. Written as a nested declaration on purpose: extracting the body to a
+top-level function would reindent ~1200 lines and turn every concurrent lane's server.ts
+diff into a conflict, for no behavioural difference. A WebSocket upgrade returns undefined
+from here exactly as before — finishHttp hands that straight back untouched.
+```
+
+## fetch: GET /api/self
+
+### Warum die eigene Zeile nicht auf /api/self/gate haengt
+
+```text
+the session's own row — the read half of the self family, and the one that belongs to EVERY
+session rather than to a lane. It exists because /api/self/gate is the wrong carrier for it:
+that route's payload (verify, cleanReview, mergeRepairRounds, rulebookDrifted) is land-gate
+knowledge, meaningless to a session that will never land, which is why it answers a non-lane
+409 and keeps doing so. What a plain session actually lacks is duller and more useful — who
+am I on this board, and what have I already scheduled for myself.
+
+The cut is deliberately narrow: every field here is THIS slot's own row, nothing global and
+nothing about another slot. `lane` is null for a plain session, and that is the field that
+makes its siblings' 409s predictable instead of surprising — a session can ask once whether
+the lane-only routes will answer it at all. The autos are served verbatim because
+createAutoForSlot already hands this same principal a full Auto object back on every mint,
+so no field here is a class of information the credential could not already see.
+
+The watches pass that same test and are served the same way: createWatchForSlot returns a
+full Watch row on every mint AND on every re-subscribe (the idempotent path returns the
+existing row verbatim), so a session can already read back any watch of its own by asking
+for it again. SPENT rows are included, not just armed ones, and that is the load-bearing
+half: a watch disarmed because its target died delivers NOTHING into the pane — only
+`lastResult` records it. Serving armed rows alone would make "still waiting" and "will never
+come" look identical from inside the session, which is the one belief this whole surface
+exists to make impossible (see dropWatchesFor). Bounded by WATCH_KEEP_SPENT, like the autos.
+
+Same principal, same flat-cost auth and the same share-host unreachability as its siblings
+below. Read-only, and it grants no capability at all.
+```
+
+## fetch: GET /api/self/flakes
+
+### Welcher Tier, und warum nicht einer der Nachbarn
+
+```text
+the flake question, asked from inside a session — /api/flakes with the scoped credential.
+
+IT HAS TO BE REACHABLE FROM A LANE OR IT SOLVES NOTHING: the proof order it replaces
+("run the same tree again", ~425 s median plus the suite mutex) is an obligation CLAUDE.md
+puts on LANES, at the moment a lane sees a red check. An owner-only route would answer the
+question for the one principal who was not asked it.
+
+WHICH TIER, and why not one of its neighbours. The self family has three, not two, and this
+route joins the widest: /api/self and /api/self/autos answer EVERY session, the lane-only operations
+below are lane-only, /api/self/watch is non-lane-only. The two narrow tiers are narrow
+because their content is meaningless to the other principal — land-gate knowledge to a
+session that will never land, a lane-waits-on-lane coupling nobody can see. Neither reason
+applies here: a lane adjudicating its own red and the owner adjudicating a post-land audit
+ask the identical question of the identical rows. Hanging it off /api/self/gate instead was
+the alternative and is wrong twice — it would make the answer lane-ONLY (re-introducing the
+gap above for the owner-side session), and gate is a parameterless read of this process's
+env, while this is a parameterised query over a ledger.
+
+It also grants no capability. The trail lives in the main checkout's `e2e-trail/`, which a
+lane can already reach through the shared common dir (docs/e2e-trail.md §3) — this route
+saves it a directory walk, it does not show it a file it could not open. Read-only, and the
+payload is aggregate: check names, tree shas and run ids, no `detail` and no prose.
+```
+
+## fetch: POST /api/self/autos
+
+### Kopfkommentar
+
+```text
+self-scheduling: a session schedules its own future check-in, authenticated by its scoped
+FLEET_SELF_TOKEN (baked into the pane env — see ensureSlot) instead of the owner token.
+Deliberately unreachable on the public share host (this sits AFTER that gate, unlike
+/intake) — it's a local-machine credential, not a public one. The target slot is
+HARD-DERIVED from which slot's token matches — any `slot` field in the body is structurally
+never read (createAutoForSlot takes `s` directly), so this route cannot be pointed at any
+slot but the token's own. No lane check, and never had one: this is the capability the
+widened export exists to hand a plain session.
+```
+
+## fetch: /api/self/programs
+
+### Die Supervisor-Lesung
+
+```text
+The bound Supervisor reads every Program's CONTENT, not just the ones it authored: it holds
+the cross-program portfolio together, and intent/successCriterion/nonGoals/openQuestions are
+exactly what a portfolio is made of — a title is a label, not a thing to reason about. The
+disjunct is the SAME occupancy-derived predicate the Supervisor's other senses use, so this
+reach follows the binding through succession instead of clinging to a proposer identity.
+```
+
+## fetch: supervisor self routes
+
+### Kopfkommentar der zwei Cut-2-Kanaele
+
+```text
+The Supervisor's two Cut-2 channels, on the same every-session rail and behind the same
+flat-cost 401, because the credential question ("is this a live session's own token") is
+identical. What separates them from their neighbours is the OCCUPANCY gate below: they answer
+only the session the owner bound as Supervisor, and a stale binding answers nobody. A lane
+needs no clause of its own — a lane is never the Supervisor, so the same check covers it.
+```
+
+## fetch: POST /api/self/watch
+
+### Der ausgehende Zwilling und der Spiegel der Lane-only-Routen
+
+```text
+the OUTBOUND twin of /autos, and the second capability a plain session gets: instead of
+guessing a delay and re-checking, it subscribes to another slot's done-looking and is told
+ONCE, into its own pane, when the predicate turns true. Same principal, same flat-cost auth,
+same hard binding — the RECEIVER is the token's slot and `createWatchForSlot` never reads a
+`slot` field from the body, so a spoofed one changes nothing. That binding is what makes
+this safe to hand out at all: the route types into a pane, and it can only ever type into
+the caller's own.
+
+AND IT IS THE MIRROR OF THE ORIGINAL LANE-ONLY ROUTES BELOW, not a copy of them. They are LANE-only and
+answer a plain session 409; this one is NON-LANE-only and answers a lane 409. Same reason
+read in both directions — the question is meaningless for the other principal — but the
+asymmetry is the design, so it is spelled out rather than left to be re-derived. A lane
+waiting on a lane is a coupling Fleet does not have today, and it would be invisible: it
+would live inside a pane, on no board, in no ledger, while the owner still believes the two
+are independent. Widening this later costs an `if`; taking it back after sessions have been
+written against it does not. The predicate `s.worktree && s.label !== STEWARD_LABEL` is
+deliberately the SAME one done-looking classifies by (see laneSignalView) — so the rule
+reads exactly as "whoever can BE watched cannot watch", and the ⚙ steward, which that
+predicate excludes by name, may subscribe like any other planning session.
+```
+
+## fetch: GET /api/self/drift
+
+### Kopfkommentar
+
+```text
+the lane's own drift view — same principal, same flat-cost auth as /api/self/autos above.
+Read-only by construction (laneDrift never touches a working tree), and it grants no new
+capability: everything in the payload is committed state a lane could derive itself through
+the shared refs (`git diff base...otherBranch`) — the route exists so the session, the board
+and the sync path read ONE server-computed answer, not so a lane learns something new.
+```
+
+### Instrumentierung (autonomy map §11.3 Schritt A)
+
+```text
+Instrumentation, autonomy map §11.3 step A. Until now this route wrote nothing, so
+"do lanes check their drift, and WHEN in their life?" was unanswerable — the instruction
+that produces the call lives once, in a gitignored spawn-time copy of CLAUDE.md, and
+whether it is ever followed was pure belief. The BRANCH is the key, never the slot id
+(slots get recycled): with lane-outcomes' `ts` and `sessionMs` giving land time and
+lifetime, the event's position in that lifetime is computable from the two ledgers alone.
+Only a FRESH answer is booked. laneDrift caches per slot on (branch tip, main tip), so a
+lane re-asking with nothing moved is a cache hit and writes nothing: the stream is bounded
+by real ref movement instead of by caller politeness, which keeps a polling loop from
+rotating this very log's history off the end (the AUDIT_ROTATE_BYTES hazard spelled out
+at STEWARD_JOURNAL_PER_HOUR). The first call of any lane always misses, and that is the
+one event §11.2's metric needs. Read the absence accordingly: no event means no fresh
+answer was served, NOT that the lane never asked.
+```
+
+## fetch: GET /api/self/gate
+
+### Kopfkommentar
+
+```text
+the lane's own view of THE GATE — the one fact family no file in its worktree can carry:
+the live land gate is this process's env (VERIFY_CMD…), a lane's CLAUDE.md is a spawn-time
+COPY, and watchdog.sh on disk can differ from the running watchdog until kickstart
+(docs/attic/lane-context.md §2, the verified defect this route closes). Same principal,
+same flat-cost auth, same one-scope-rule 409 as its siblings. Read-only, and it grants no
+capability: knowing the judge changes which suites a lane runs, never the verdict.
+```
+
+### rulebookDrifted — Vergleich gegen das Lane-Rendering
+
+```text
+rulebook: does the lane's CLAUDE.md still hold what the source repo would give it TODAY?
+Since the fragment split that is no longer the source file itself — a lane is written the
+LANE rendering (3 of 7 fragments), so a byte compare against the monolith would be
+permanently true and would send every lane to load the very bytes the split just saved.
+So the expected side is `laneRulebookFor`, the SAME function the spawn seam wrote with;
+where that is null (no readable `rulebook/`, the ordinary state of a foreign task.repo)
+the spawn copied the monolith and the compare falls back to it, in lockstep.
+Compared BODY-ONLY: the back-reference block carries the generation timestamp, so
+including it would report drift on every single call.
+null = not comparable (either side unreadable) — served as absent, NEVER as "no drift".
+```
+
+### verify — zwei Budgets, Repo-aufgeloester cmd
+
+```text
+`timeoutMs` is the WORK budget and `waitMs` the queueing one — two numbers because a
+single one is what let a land be killed by somebody else's suite (VERIFY_WAIT_MS).
+The cmd is resolved for THIS LANE'S REPO, not read off the global: since P-7c the two
+can differ, and a self-report that showed the global would tell a lane in a repo with
+its own command about a gate it will never meet.
+```
+
+### suiteLock — die Maschinen-belegt-Tatsache
+
+```text
+the machine-busy fact (autonomy verbs, Verb 1): the suite mutex is the one wait a
+lane's verify will actually hang on (FLEET_VERIFY_TIMEOUT_MS is wall-clock, and a
+queued isolated run inside it cost a land 300s of silence — docs/suite-contention.md).
+Until now this route named the judge but not the queue in front of the courtroom.
+null = free; states mirror e2e-stage.sh exactly (held/overdue/stale/parked).
+```
+
+## fetch: POST /api/self/criterion
+
+### Kopfkommentar
+
+```text
+the clarify lane's PROPOSED done-criterion, written back onto its own founding task so it
+outlives the pane (before this it lived in scrollback and died at /clear). Same principal
+and flat-cost auth as its siblings, and the same authority: none. It lands as a proposal —
+`confirmedAt` stays null until the OWNER confirms, so a producer can still not author the
+anchor it is judged against; it can only write down what it is asking for.
+```
+
+## fetch: /api/self/suite-offer
+
+### DIE ANGEBOTS-TUER — warum lane-only, geschlossener Body, startet nichts
+
+```text
+THE OFFER DOOR — the fifth lane-only route, and the one that lets a lane hand its OWN preview
+suite to another machine instead of holding this box's single suite mutex for ~13 minutes
+(measured p50, docs/attic/helper-lane-suiten-entwurf-2026-08-26.md §1.1).
+
+WHY LANE-ONLY, resolved against the family's two opposite scope rules rather than guessed:
+the lane-only four (drift, gate, criterion, verify-intent) are narrow because their ANSWER is
+only defined for a lane; the non-lane-only four (watch, tasks/:id/release, succeed, retire)
+are narrow because they would let a lane enter a COUPLING only the owner may make visible.
+An offer is the first kind and not the second: it is a statement about one lane's own tree,
+meaningless to a session that will never run a preview, and it couples the lane to a machine
+that holds no slot at all — never to another lane.
+
+THE BODY IS CLOSED, exactly as at POST /api/self/tasks/:id/release: the repo, the branch, the
+cwd and the slot all come from the token's own row, and the command is `./e2e-isolated.sh`
+fixed. No field can nominate WHICH tree gets bundled, so this route cannot be pointed at
+anything but the caller's own worktree.
+
+AND IT STARTS NOTHING. Offering is not running: no suite is spawned here, no queue is filled,
+the land gate is untouched, and a red remote verdict gates nothing (tier 2 gates nothing —
+docs/verify-tiering.md §6). What the offer DOES do is bind the lane: while its own offer is
+open or claimed it must not run the suite locally, and the withdraw door below is where that
+permission comes back. That makes "I am running it myself" a state transition the server
+witnessed instead of an intention in a pane.
+```
+
+### Die Lesehaelfte
+
+```text
+THE READ HALF: state, and on a settled offer the verdict WITH its provenance. `waitPolicy`
+and `suiteLock` travel with it because the lane's wait is its own foreground loop and those
+two numbers are what decides how long waiting is worth it (§5.2): free mutex ⇒ every waiting
+second is pure loss, held mutex ⇒ a local run would queue anyway and waiting costs nothing.
+```
+
+## fetch: POST /api/self/suite-offer/withdraw
+
+### Zwei Antworten, und der Unterschied ist der ganze Mutex
+
+```text
+…and the way back out of it. Two answers, and the difference between them is the whole mutex:
+  · an OPEN offer withdraws with 200, and that 200 is the lane's permission to run the suite
+    locally. Nothing else grants it.
+  · a LIVE-CLAIMED offer answers 409 by default, because somebody is running that tree right
+    now and the owner's invariant for this portal is that work is taken over, never doubled.
+    `{"abandon": true}` overrides it deliberately — a lane must be able to stop waiting on a
+    helper that took the job and went quiet (§5.3). The cost of abandoning is the helper's
+    time, and it is not a correctness violation because nothing here gates: the job is marked
+    `abandoned` and a verdict arriving afterwards is refused, exactly as a lapsed one is.
+An EXPIRED claim is absent everywhere, here included: it can never hold a lane for 45 minutes.
+```
+
+## fetch: POST /api/self/verify-intent
+
+### Kopfkommentar
+
+```text
+the lane's own account of a verify-suite run — same principal and same flat-cost auth as the
+two routes above. It grants no capability at all: nothing is started, stopped or queued, and
+the report only ever reaches the board and the audit log. The 409 for a non-lane keeps this
+family's one scope rule (these three routes answer FOR A LANE), not because a plain session's
+report would be dangerous — no plain session is ever handed a self token to send one with.
+```
+
+## fetch: /api/dispositions self-token rule
+
+### Die harte Regel der Dispositions-Schiene
+
+```text
+the disposition rail's hard rule, enforced HERE because the owner gate below would answer a
+lane's credential with a generic 401 and hide WHY. A lane must never label its own work: a
+recognized per-slot FLEET_SELF_TOKEN on this path — sent either as its own header or offered
+as if it were the owner token — is a valid credential with the wrong scope, so 403, the same
+distinction the steward gate draws below. Scoped to this one path on purpose: every other
+route keeps its existing self-token behaviour untouched.
+```
+
+## fetch: /api/supervisor/bootstrap
+
+### Kopfkommentar
+
+```text
+The Supervisor is an owner bracket above the Programs, and it takes exactly the same owner
+gate for exactly the same reason: a self token uses its own scoped header and is therefore
+not a credential here at all (401), and a steward token is a plain owner-auth failure rather
+than a second authority over who supervises the fleet.
+```
+
+## fetch: steward and helper principals
+
+### Steward-Prinzipal — Platzierung
+
+```text
+steward principal: same placement rationale as self/autos above — sits AFTER the
+SHARE_HOSTS gate, so a valid steward token is structurally unreachable from the public
+tunnel. Any request carrying the steward token is intercepted HERE, before the owner
+gate below: hitting an out-of-scope path (kill/land/share/open, or any owner route)
+with a valid-but-wrong-scope credential is a 403 (told apart from tokenGate's 401,
+which means "not a credential we recognize at all" and carries its throttle/audit).
+```
+
+### Helper-Prinzipal — Platzierung
+
+```text
+helper principal (THE REMOTE HELPER PORTAL): same placement rationale as the steward block
+above — after the SHARE_HOSTS gate, so the portal is structurally unreachable from the public
+tunnel, and before the owner gate, so a helper token never falls through to it. Unlike the
+steward block this dispatches on the PATH first and only then checks the credential: the
+owner's own cookie must open /helper from the board, and a path-blind interception would have
+made every owner request pay this handler's auth.
+```
+
+## fetch: share routes
+
+### Kein Send-Route fuer Gaeste
+
+```text
+NO send route, deliberately: a guest has no way to put text into the pane. It was
+removed with the interactive mode rather than gated, so there is no branch left that a
+later change could flip back open. logPrompt's "share" source stays — it labels prompts
+already written to the log by the mode that used to exist.
+```
+
+## fetch: GET /ws/:id
+
+### force — der explizite Reload
+
+```text
+set by the client's explicit reload/refresh action — a plain reconnect (auto-retry
+after a drop, or a fresh slot assignment) only reseeds on an actual width mismatch,
+which does nothing if the client's width already happens to match; force skips that
+check so "reload" reliably re-derives from tmux's current state either way
+```
+
+## fetch: GET /api/sessions
+
+### watches im Poll
+
+```text
+the event-triggered siblings, served next to them: who is waiting to be told what, and
+what became of the ones that are spent. There is no board button yet — the surface is
+the route — but an armed subscription nobody can SEE is the same silent state this
+feature exists to remove, so it rides the owner poll from the first commit.
+```
+
+### attentionOpen — EINE Zahl, bei Null weggelassen
+
+```text
+ONE NUMBER, on purpose. This is the app's most expensive path, so the attention inbox
+rides it as the count of rows that still want the owner (open + send-uncertain) and
+nothing else; the row bodies are behind GET /api/attention, fetched when the panel opens
+and re-fetched when this count moves while it is open.
+
+OMITTED AT ZERO, like the per-slot harness/effort fields above and for the same reason:
+nothing waiting is the overwhelmingly common case, and this payload is measured against a
+12 KiB budget (e2e/tasks.ts, docs/data-saver.md §1) that an unconditional field crossed by
+four bytes. The client reads absent as zero, so absent and 0 mean the same thing here.
+```
+
+### briefCompiler — eigener Fakt
+
+```text
+The brief compiler's mode is its OWN fact beside the analyst's — one switch used to imply
+the other, and a client that inferred one from the other would re-create exactly that.
+OMITTED AT ZERO like attentionOpen above and for the same 12 KiB reason: off is the
+default and the common case, and absent reads as off wherever it is consumed.
+```
+
+### helperDevices — Messung 2026-08-28
+
+```text
+the helper device register — machine-level like the gate line beside it, and the owner's
+ONLY view of the machines that take work off this box (the portal is the helper's view,
+and it shows one device: its own). OMITTED WHEN EMPTY, like attentionOpen above and for
+the same 14 KB reason: a fleet nobody has ever registered a device with pays nothing for
+this feature, and absent reads as "no device has ever registered" — which is exactly
+what it means. It rides this poll rather than a route of its own because the panel is
+drawn beside the gate line and must move with it, and because the whole payload is one
+small array. MEASURED, not guessed (2026-08-28, two registered devices, one holding a
+claim): 293 B for the fat row (three capabilities, a held claim), 192 B for the plain
+one. The ceiling is HELPER_DEVICE_KEEP=20 such rows, ~5 KB, which is real against the
+14 KB budget e2e/tasks.ts holds — but 20 devices means twenty machines the owner runs,
+and the honest fix then is a cap here, not a smaller row.
+```
+
+### harness/effort — bei null weggelassen
+
+```text
+OMITTED when null, which is the overwhelmingly common case — this is the 2s poll,
+already the app's most expensive path (data-saver), and a null per slot per poll is
+bytes for nothing. The client reads absent as "the default harness". What each
+harness SUPPORTS is not here at all: that is static, and rides GET /api/harnesses
+once, instead of being re-sent every two seconds for every slot.
+```
+
+### boxFor — die entgegengesetzte Regel
+
+```text
+WHICH BOX AND WHICH DAEMON — RESOLVED, and carried whenever the slot's harness has a
+container concept at all, including when the slot chose neither. That is the opposite
+rule from `harness`/`effort` above, and it is the point of the row: "which VM did I
+get" is unanswerable if the default case sends nothing, which is exactly the state
+this replaced. It costs two short strings on the rare slot that runs in a box and
+nothing on every other, so the 2s poll does not notice.
+```
+
+### ctx — null ist eine Antwort
+
+```text
+how full this session's context is, from its own transcript's newest usage record.
+Present on every slot (never omitted like `harness` above) because its null is an
+ANSWER — "Fleet cannot tell for this slot" — and a reader must be able to see the
+difference between that and an empty context. Cached against the file's identity, so
+an unchanged transcript costs one stat here. The owner sees this value, and the
+separately armed tickMigrate reads the SAME function; null remains "cannot tell".
+```
+
+## fetch: codex-candidates
+
+### Kopfkommentar
+
+```text
+Attended Codex recovery is owner-only by POSITION below tokenGate. It is deliberately not
+part of the 2 s poll: opening the surface performs one bounded, full historical walk and
+exposes identity metadata only — never transcript content. Unlike v1 lazy discovery, this
+route has no pane-lifetime window because an older manually resumed conversation is exactly
+what the owner is here to identify.
+```
+
+## fetch: GET /api/slots/:id/export
+
+### Warum plain capture — die widerlegte Praemisse
+
+```text
+print/PDF export: full scrollback as a self-contained light-theme page — plain capture
+(no -e) because a white page prints better than terminal colors. That is the WHOLE reason
+now: this comment also claimed -e bakes in absolute-column cursor jumps, and that premise
+was measured false on tmux 3.6a (see the WS reseed path — `-e` minus SGR is byte-identical
+to plain). Leaving the export plain is a design choice, not a workaround.
+?format=txt downloads raw.
+```
+
+## fetch: GET /api/prompts
+
+### Drei verschiedene Zaehler
+
+```text
+three different counts, and this route is the only one where they can all differ:
+`total` = rows in the journal, `matched` = rows this q kept, `prompts.length` = the window.
+They used to be one number (`lines.length`) reported next to a q-FILTERED list, so a search
+that matched two rows still answered "total 4212" — read as "capped", never as "filtered".
+```
+
+## fetch: ledger reads
+
+### /api/slot-stats
+
+```text
+the same audit trail as /api/audit, read as slot HEALTH rather than as a list of lines: does
+a slot keep its identity across a crash, does one of them keep falling over, how long does a
+session live and how does it end (slotstats.ts names the four questions and the exclusions).
+Derived, never stored — the events were always there, only nobody aggregated them.
+```
+
+### /api/flakes
+
+```text
+the per-check trail, read as the flake question (trailstats.ts): which checks fail, where
+the suite spends its wall clock, and — the one that replaces a seven-minute re-run — did
+check X fail on trees that do not contain my change. Same access model as /api/slot-stats
+above: derived, never stored, owner-only by POSITION (past the tokenGate, structurally 404
+on SHARE_HOSTS). ?check= turns on the point answer, ?suite= and ?days= narrow the window.
+It gates nothing and alarms nobody — a verdict here is EVIDENCE for the lane's own proof
+order, not a substitute for it.
+```
+
+## fetch: GET /api/lane
+
+### Das Dossier und der Query-Parameter
+
+```text
+THE DOSSIER (see the dossier region): the same six sources the lenses above read one at a
+time, joined by branch into one lane's story — plus the fleet/land note, which no other route
+reads. Owner-only by POSITION exactly like its inputs, and read-only by construction: it
+opens no file for writing and runs no git command that can mutate a tree.
+
+Branch names carry slashes, so the key is a QUERY parameter and not a path segment — the
+idiom /api/commits and /api/dirinfo already use for path-shaped values, and the one that
+cannot be broken by a proxy normalizing %2F. Without it: the index, i.e. which lanes there
+are to read at all (every branch the outcome ledger knows, plus the lanes open right now,
+which by definition have no outcome row yet).
+```
+
+### Sortierung — offene Lanes zuerst
+
+```text
+OPEN lanes first, then finished ones newest-first. Not one `ts` ordering for both: a live
+lane's `ts` is its session start, which is unreadable for a pane whose transcript does not
+exist yet (sessionStart returns null) — such a lane would sort to the very bottom, i.e. the
+lane most worth reading would be the hardest to find. Ranking by state instead of inventing
+a timestamp keeps the list honest AND useful.
+```
+
+## fetch: GET /api/transport
+
+### Kopfkommentar
+
+```text
+the transport ledger (see the TRANSPORT region): bytes actually sent since boot, per peer
+and per path. Its OWN route on purpose — /api/sessions is the endpoint being shrunk and is
+polled every 2s, so a counter carried inside it would inflate the very thing it measures.
+Owner-only, read-only, and it says nothing about WHY bytes were sent.
+```
+
+## fetch: helper device mode
+
+### Platzierung und "speichert einen Wunsch"
+
+```text
+...and the owner's half of the device register (stage A). It lives HERE, below the owner
+gate and beside /api/helper/token, for the same reason that route does: handleHelperRoute
+scopes by an exact-match regex, so a path it does not name falls straight through to the
+owner gate — the helper principal cannot reach this, and the perimeter regex e2e/security.ts
+pins does not grow by one character.
+The route STORES A WISH AND NOTHING ELSE: no dispatch, no connection to the device, no
+effect on any claim it currently holds. The device finds out on its next heartbeat, or never
+if it has stopped polling — which degrades exactly like a dead daemon does today.
+```
+
+## fetch: POST /api/enhance
+
+### Kopfkommentar
+
+```text
+✨ rework a compose-box draft. Runs in the focused slot's cwd so repo context
+(CLAUDE.md etc.) rides along; the result replaces the box, never auto-sends.
+The slot's deterministic git state rides along as a DATA block — the same briefPayload
+the sideboard shows — so the enhancer can ground a vague draft in a real path/branch
+instead of returning it untouched. Facts only; it never sees the session itself.
+```
+
+### draftId
+
+```text
+draftId: the disposition rail's join key for this draft (see the DISPOSITION region).
+Stamped here, not client-side — the key must not drift, and the plain-http Tailscale
+origin has no crypto.subtle. Identical output → identical id, which is correct: the
+label is about the CONTENT the owner ruled on.
+```
+
+## fetch: GET /api/slots/:id/worktrees
+
+### Kopfkommentar
+
+```text
+lane map: every open worktree of the focused slot's repo — held by which slot,
+dirty count, ahead/behind vs the primary checkout's HEAD. Includes ORPHANS
+(worktrees whose slot was killed): previously invisible, now reattachable/removable.
+Works from lane slots too: `worktree list` from a linked worktree covers the whole repo.
+```
+
+### Clone-Lane — --show-toplevel
+
+```text
+From a CLONE lane, `--show-toplevel` is the clone itself — a self-contained repo whose
+only worktree is the lane, which would render the lane map as "this repo has one lane, me".
+The recorded repo is the one fact that still points at the origin, so it wins where it
+exists. A worktree lane answers identically either way (it shares the root's git).
+```
+
+### Clone-Lanes sind fuer `git worktree list` unsichtbar
+
+```text
+`git worktree list` is the source of truth for worktree lanes and CANNOT see a clone lane —
+a clone is not a worktree of this repo, it is its own repository. Left out, a clone lane
+would be missing from the one surface whose whole job is "every lane open on this repo",
+and the omission would read as "no such lane" rather than "a lane this list cannot see".
+Only clones of THIS repo, and only live ones: a clone has no on-disk registry, so unlike a
+worktree there is no orphan of it to rediscover after its slot is gone.
+```
+
+## fetch: GET /api/slots/:id/risk
+
+### Kopfkommentar
+
+```text
+focused risk preview for a SLOT's own lane worktree — used by the client before
+⏏ land and before killing a lane-holding slot, neither of which had real git-state
+context before this (kill in particular never checked git state at all)
+```
+
+## fetch: POST /api/worktrees/discard
+
+### Kopfkommentar
+
+```text
+☠ deliberate destruction — the ONE path that may eat work. Force-removes the
+worktree and deletes its branch; everything else in fleet refuses that. The client
+gates the click behind a read-first confirm, the server re-checks identity: branch
+rides along in the body so a click aimed at a stale board can't destroy whatever
+lane replaced it. Head sha is captured first and returned — the one-line undo
+(`git branch <name> <sha>`) keeps the commits recoverable until gc.
+```
+
+## fetch: POST /api/repos/undo-land
+
+### Kopfkommentar
+
+```text
+↩ undo the last land on a repo — the reversible pointer for the one action that mutates
+main. ONE record per call, off the top of the repo's stack: two lands are reversed by two
+calls, each with its own git gate and its own `reverted` ledger row, because each is a
+separate statement about main. GIT decides, never optimism: reset main back to where it was
+ONLY while it is still EXACTLY where that land left it (nobody landed/committed on top) AND
+no commit the reset would discard has reached a remote (that would rewrite shared history).
+Otherwise refuse with a precise reason — a safe refusal is the correct answer. The landed
+branch is kept by land, so a reset leaves the work fully recoverable by reopening the lane.
+```
+
+## fetch: POST /api/slots/:id/merge
+
+### ownerLandActor — wer ruft
+
+```text
+WHO IS CALLING, as far as this route can honestly tell. The channel is what tokenFrom
+already accepted; the SUSPECT flag is the one inference on top of it, and it is narrow on
+purpose: an owner token arriving over bearer/query on a lane whose task belongs to a
+Program that HAS a live bound MAIN is the exact shape a session reaching for fleet.json
+produces. The owner's own scripts use Bearer too, which is why this flags and never blocks
+— the land proceeds, and the sufficient unflagged path for a MAIN is now the self route.
+```
+
+### syncLaneRefs — Clone-Lanes
+
+```text
+EVERY branch below reads one side against the other by ref: the confirm-land's ancestry
+check and `branch --merged` are root-side, the rebase is clone-side. On a clone lane none
+of that is true until the two are mirrored, and each would fail in its own confident way
+— "main is not an ancestor" for a lane that is perfectly rebased, or a rebase onto the
+base branch as it stood at clone time. Fail the whole request rather than proceed on refs
+that do not describe this lane. (No-op for a worktree lane.)
+```
+
+### Der Idle-Gate — zwei Fassungen desselben Absatzes
+
+```text
+the idle gate guards a run that STARTS the agent — a confirm-land is a pure git ff
+of an already-reviewed resolution, so the agent's own trailing pane output must not
+block it (otherwise every confirm right after a resolve bounces off "let it settle").
+the shared choke-point, idle-only: a land is an owner-initiated git ff, not automation,
+so it deliberately waives the master stop + quiet hours (opts off) and only honors the
+idle gate — and a confirm-land waives even that (idleMs 0), since it's a pure ff of an
+already-reviewed resolution whose trailing pane output must not block it.
+```
+
+### Der Kollisions-Guard gilt nur bei ausgechecktem Integrationszweig
+
+```text
+the collision guard only matters when the integration branch is checked out in a
+working tree: an ff-merge THERE rewrites the lane's files on disk and git refuses if
+one is uncommitted. When the integration branch is checked out nowhere (the primary
+parked off it), landing advances the ref with branch -f and touches no working tree,
+so a dirty primary is irrelevant — skip the guard entirely.
+```
+
+### Nur die Dateien der Lane zaehlen
+
+```text
+an ff-merge rewrites ONLY the files the lane changed — so refuse the land only if
+one of THOSE files is uncommitted in the holder tree. An unrelated dirty file
+(e.g. a working HANDOFF.md the owner keeps editing) is left untouched by git's ff
+and must not block; the old check refused on ANY dirty tracked file and wedged every
+land behind an irrelevant edit. git's own --ff-only stays the final arbiter below.
+```
+
+### Der ungetrackte Zwilling (2026-08-05)
+
+```text
+UNTRACKED twin of the same refusal (2026-08-05): git's ff-only refuses to overwrite
+an untracked holder file just as hard as a modified one — but that used to surface
+only AFTER the full verify chain, as raw stderr in the verdict. Same refusal, before
+the spend, curated. Unrelated untracked files stay ignored (the "unbeteiligte
+schmutzige Datei" doctrine) — only a name the lane itself adds collides.
+```
+
+### confirm-land
+
+```text
+confirm-land: the owner reviewed an agent conflict resolution and is landing it.
+No agent, no trust in the stored verdict — the guarantee is purely git: main is an
+ancestor of the (clean) lane branch, so the branch is genuinely rebased on top and
+the ff-merge is safe. If main moved since the resolution the ancestry fails and we
+send them back to re-run ⏫ (which re-rebases against the new main).
+```
+
+### confirmResolvedCandidate — ein Schritt fuer beide Tueren
+
+```text
+THE SAME step the Program-MAIN self-land route takes under a `guarded` promotion; the
+owner arm marks a superseded verify stale rather than re-running it, and records the
+land as human-confirmed. Everything else is one function, so the two confirms cannot
+drift into two land paths.
+```
+
+### Der ⏸-Guard — was "resolved" NICHT heisst (Messungen 2026-08-17/19)
+
+```text
+⏸ guard: a pending "resolved" verdict means agent-chosen conflict resolutions
+are sitting in this lane awaiting a human eye. While the lane is still rebased
+onto main, a plain re-run would sail through the clean path and LAND them
+unreviewed — refuse and point back at review. Only when main has moved on is
+the verdict genuinely stale; then a fresh run (which re-rebases) is the fix.
+The SAME guard covers an INTERRUPTED run that had already handed the conflicts to the
+agent (`conflicted` set — see mergeJob's marker): the resolutions may be committed in
+the lane and nobody, not even the server, ever saw a verdict for them. Ancestry is the
+same discriminator as above — main still an ancestor means the rebase stands, so a
+re-run would take the clean path and land unreviewed work. An interrupted run that
+never got past the script pre-pass carries NO `conflicted` and is deliberately not
+caught here: no agent judgment is in that tree, and a fresh run redoes rebase, verify
+and review from scratch, which is strictly the honest outcome.
+WHAT "resolved" DOES NOT MEAN. The status word is written for FOUR different sachlagen
+and only ONE of them holds a resolution: the conflict branch (`conflicted` + `resolvedBy`
+set), plus three CLEAN-rebase stops that merely decline to auto-land — verify never
+measured (`ok: null` — waitedOut/timedOut/skipped), verify measured RED (`ok: false`),
+and the ② reviewer flagging a look. None of those three has an agent's judgment in the
+tree, and gating them here told the owner a falsehood about their tree ("conflict
+resolution awaits your review") while refusing the very re-run their own verdict text
+recommends. Measured live three times on 2026-08-17/19 — twice on `waitedOut`, once on a
+red gate, which is the expensive one: it made a red gate unrepeatable, so the mandated
+flake proof (run the same tree again) could not be driven through the gate at all and
+the only exit from the verdict was `{confirm:true}`, the path that skips the measurement.
+So: discriminate on the RESOLUTION, not on the word.
+Both halves — the ⏸ hold and what a fresh run carries out of the superseded verdict —
+live in ONE helper shared with the Program-MAIN self-land route, so the two doors cannot
+drift into honouring unreviewed resolutions on one path and dropping them on the other.
+```
+
+## fetch: GET /api/slots/:id/commits
+
+### Kopfkommentar
+
+```text
+the slot's commits, for the review window's left column. Until this existed the UI could
+show a lane's commit COUNT (the outcome feed) and its subjects as a destructive-action
+warning (worktreeRisk), but never as something to read — there was no route.
+```
+
+## fetch: POST /api/slots/:id/commit
+
+### Der Mid-Run-Guard gehoert hierher
+
+```text
+the mid-run guard belongs HERE, not only in the client's confirm dialog: every other way
+into this route (a self-token auto, the raw owner API, a second tab) used to bypass the
+warning entirely and snapshot a half-finished tree. Same shape as the land path above —
+owner-initiated, so master stop / quiet hours / agent-liveness are deliberately waived
+and only the idle gate applies; `confirm` (the client sets it once the dialog or the
+main-session staging preview has been acknowledged) waives even that. The client's own
+threshold is LOOSER than MERGE_IDLE_MS, so anything the server blocks the dialog already
+covered — this closes the hole without adding a prompt the owner didn't have before.
+```
+
+## fetch: GET /api/harnesses
+
+### Kopfkommentar
+
+```text
+the harness catalogue: what a session can be spawned as, and what each one can do. STATIC
+(the registry is a module constant), so the client fetches it once instead of the 2s poll
+carrying a copy per slot. This is what makes "degrade visibly" possible in the UI at all —
+without it the client would have to hardcode a second copy of `supports`, which is exactly
+the drift the registry exists to prevent.
+```
+
+### defaultModel
+
+```text
+A null model on the default adapter still launches this concrete model, and the picker
+must be able to say WHICH without copying an env-derived server constant into JS. It is
+Claude-only on purpose: a foreign adapter keeps its own implicit default, and the client
+labels that honestly as "default" instead of applying this value to it.
+```
+
+### containerDefaults
+
+```text
+the fleet's box defaults, published for the same reason `default` above is: they are a
+fact about THIS fleet (FLEET_CONTAINER / FLEET_CONTAINER_CONTEXT), and the alternative is
+the client hardcoding "fleet"/"default" — a second copy of a server constant, which is
+the drift this catalogue exists to prevent. The picker shows them as placeholders, so an
+owner sees what typing nothing will get them.
+```
+
+## fetch: GET /api/commits
+
+### Kopfkommentar
+
+```text
+recent commits in a repo Fleet KNOWS — the activity window's second lens. The outcome ledger
+records what Fleet itself landed; this records what is actually in the repo, which is not the
+same set: a commit made by hand in a terminal session appears here and in no ledger.
+
+`repo` is validated against the known set rather than taken as a path. /api/dirinfo does run
+git in an owner-chosen directory, so this is not a boundary the app defends everywhere — but
+this route has no reason to reach beyond the repos Fleet is already working in, and a route
+that needs no generality should not offer any.
+```
+
+## fetch: GET /api/file
+
+### EINE Datei fuer jede Dateiliste — zwei Modi
+
+```text
+--- ONE file, for every file list in the UI ---
+Four surfaces list files (the picker's Contents, a commit's files, a land's footprint, the
+board's changed-files card) and none of them could show one. This is the single route they
+share, and it answers in exactly two modes, because a file has two meanings here:
+  · ?path=<absolute>            — what is on disk NOW (the picker: the file may not be in git at all)
+  · ?repo=&rev=&path=<relative> — what a COMMIT left there (a commit's file list is a
+                                  statement about that revision, and today's bytes are not it)
+Bounded: FILE_CAP of text, and a NUL in the first 8 KB means binary — reported as binary, never
+rendered as mojibake. Access model is positional, exactly like /api/dirinfo and /api/commits
+above: past the owner tokenGate, structurally 404 on a share host.
+```
+
+## fetch: GET /api/tree
+
+### Kopfkommentar
+
+```text
+--- the file EXPLORER's tree -----------------------------------------------------------
+`git ls-files` and nothing else. It is one cheap call, it is the repo's OWN answer to
+"which files are mine", and it excludes node_modules and build output for free — a readdir
+walk would have to re-derive .gitignore badly and would then be the slowest thing on the
+board. The consequence is stated rather than hidden: an UNTRACKED file does not appear here.
+The board's changed-files card is where a new file shows up, and it opens the same viewer.
+Anchored on a SLOT, not a free path: the tree is "this session's repo", which is also the
+only directory the write route below will accept.
+```
+
+## fetch: POST /api/file/write
+
+### Die EINE schreibende Route — Containment ist die Form der Route
+
+```text
+--- the ONE route on this server that writes a file the owner named ---------------------
+
+/api/file above reads any absolute path on purpose — the picker browses the whole home
+directory, and that is existing, deliberate design. This route is deliberately NOT its
+mirror image: a read is recoverable, a write is not, and a write-anywhere endpoint would be
+a remote-code-execution gadget wearing an editor's face (~/.claude/settings.json,
+watchdog.sh, a launchd plist are each one path away from a textarea).
+
+So containment is not a validation step here, it is the route's shape:
+  · the target is resolved inside a SLOT's own working directory, and BOTH sides go through
+    realpath first. A string prefix test over unresolved paths is passed by any symlink
+    pointing out of the tree; the dispatcher's lane cap canonicalises for the same reason.
+    Resolved fresh, deliberately not through repoCanon() — that cache answers from a
+    previous resolution, and a guard must not.
+  · the file must already EXIST. An editor edits; creating one is a different gesture and
+    would need its own thinking about parent directories that do not exist yet.
+  · FILE_WRITE_DENY, above, wherever in the tree the file sits.
+  · the write is CONDITIONAL on the hash the reader was shown. A lane's agent writes the
+    same files this editor opens, so "last save wins" would mean silently deleting an
+    agent's work — the one new failure this feature would otherwise introduce.
+```
+
+### Nur innerhalb eines git working tree
+
+```text
+Only inside a git working tree, which is tighter than it looks and deliberate on two
+counts. It keeps the route's reach equal to the surface that offers it (the explorer is
+`git ls-files`, so it never appears for a plain directory) — a route that can write more
+than any UI can ask for is a gadget waiting to be found. And it means every edit made here
+is visible in `git status` and revertible with `git checkout --`: the owner's own undo,
+which a write into a bare directory would not have. Without it, a session opened on ~
+would make this editor's containment "the home directory", ~/.claude/settings.json included.
+```
+
+## fetch: POST /api/slots/:id/upload
+
+### Kopfkommentar — der Landbarkeits-Gate ist die tragende Zeile
+
+```text
+--- the OTHER write: a file the OWNER hands to a session (drag&drop, paste, 📎) ----------
+
+Containment is the same shape as /api/file/write above and for the same reason — the target
+is built inside ONE slot's realpath'd working directory and can address nothing else. Two
+things differ, and both make this route the easier of the pair to reason about: the owner
+never names a path (the server does, from DROP_DIR), and the filename that does arrive is
+rebuilt rather than validated (dropName).
+
+The landability gate below is the load-bearing line. Dropping into the worktree is what
+makes retention free (see DROP_DIR), but an untracked file in a lane blocks its land, and
+that failure would be SILENT: the upload succeeds, the agent works for an hour, and the land
+refuses over a screenshot. So the route asks git whether the file it is about to write would
+be ignored, and refuses if not. Fail-closed, and the refusal carries the one line that fixes
+it. Verified as three separate facts in a scratch repo: with `drops/` ignored, `git status
+--porcelain` stays empty and `git worktree remove` succeeds and takes the drops with it;
+without it, status shows `?? drops/` and the remove refuses outright.
+```
+
+### Die Groessenvorpruefung und der Pflicht-Drain (Messung)
+
+```text
+Refuse an oversized body BEFORE buffering it — a cap enforced only after the bytes are in
+memory is not a cap, and req.formData() would hold the whole thing. Advisory only: the
+authoritative check is over the decoded part's own size, below.
+
+THE DISCARD IS NOT OPTIONAL, and it has to be a READ rather than a cancel. Answering while
+the client is still sending leaves an unconsumed request body, and the next request on that
+connection then hangs — forever, not with an error. Measured against this route: a valid
+1 KB upload issued after one over-cap upload never returned (15 s timeout, Bun's fetch).
+`req.body.cancel()` did NOT fix it and neither did answering `connection: close`; reading
+the stream to its end did. Draining is also what keeps the pre-check worth having: the
+bytes pass through a reader and are dropped, so memory stays flat where formData's would
+not. (curl and the browser tolerate the early answer either way — verified — so this is
+about every OTHER client, which is exactly the kind of thing not to leave to luck.)
+```
+
+## fetch: GET /api/dirinfo
+
+### Kopfkommentar
+
+```text
+what the folder under the picker's cursor actually IS. Deliberately a SEPARATE route from
+/api/dirs rather than fields on every listed row: this costs four git calls, and paying that
+per row would make browsing a directory of repos as slow as its slowest repo. One selection,
+one call. Owner-only by position — everything below the share-host gate above is.
+```
+
+## fetch: attention and events inboxes
+
+### Attention-Inbox
+
+```text
+--- the attention inbox (owner side). The full rows live here rather than on /api/sessions,
+which carries only the open COUNT: that poll runs every 2s and was deliberately shrunk, and a
+row body per poll would undo exactly that (docs/data-saver.md). Answering is a delivery into
+the requester's pane, so it inherits the send-uncertain crash boundary; refusing is the
+receipt that the owner saw it and declined, which is why its reason is mandatory.
+```
+
+### Operations-Inbox
+
+```text
+--- the OPERATIONS inbox (owner side), strictly separate from the attention inbox above: that
+one carries decisions a program's main session raised, this one carries completion FACTS a
+subscription asked to be told about with delivery:"inbox". No new payload — the rows already
+ride /api/sessions as `events`. Owner-only by POSITION, past the tokenGate. Its twin is
+POST /api/self/events/:id/ack, which refuses exactly the rows this route accepts.
+```
+
+## fetch: POST /api/tasks
+
+### create-and-release ist ein Release
+
+```text
+create-and-release is a RELEASE (see the field comments below), so it answers to the same
+rule as the ▸ queue button: only an auftrag enters the release lane. Before kind became
+settable here this route hard-set "lane", so the combination could not be expressed at all
+— making the kind editable is what opened the bypass, and this closes it at the door
+rather than letting a row arrive already `queued` in a state no tick will ever run.
+```
+
+### Die persistierte Agentenwahl
+
+```text
+The row's persisted agent choice, in the attended route's exact top-level vocabulary and
+through the same validators (taskSpawnFromBody: harness first, then model/effort against
+that adapter). Absence persists nothing — the row stays legacy-shaped and the dispatch
+default (DEFAULT_SPAWN) remains its honest meaning.
+```
+
+## fetch: POST /api/tasks/:id/dispatch
+
+### Kopfkommentar
+
+```text
+the manual "start now" button: dispatch THIS task into a fresh lane immediately.
+Independent of `dispatchOn` (the owner may run the queue entirely by hand with the auto
+tick off) and NOT bound by DISPATCH_MAX_LANES — the cap bounds UNATTENDED fan-out, and
+this is an attended click. Master stop / quiet hours don't bind either (owner act, the
+same carve-out canDeliver documents); the post-spawn claude-alive gate holds as always.
+```
+
+### Welcher Agent — Feld fuer Feld
+
+```text
+WHICH AGENT runs it. An explicit body field wins PER FIELD; a field the body does not name
+falls to the ROW's own persisted choice (Task.spawn via taskSpawnOf), and only full absence
+on both sides is the default adapter — so a body that predates this field on a legacy row
+takes exactly the path it always took, byte for byte. Validated BEFORE the free-slot lookup
+on purpose: a malformed request should be told it is malformed, not handed a 409 about
+machine capacity that would disappear on retry.
+```
+
+### Re-Validierung gegen die EFFEKTIVE Harness
+
+```text
+...and the COMBINED value is re-validated as a WHOLE against the EFFECTIVE harness: the
+model is judged by that harness's charset, never by one shared widened rule (a claude slot
+keeps MODEL_RE, a foreign one gets HARNESS_MODEL_RE — the counter-proof that they have not
+collapsed lives in fleet-e2e-claude-gate.ts, phase 1). A row-stored model or effort that an
+overriding body harness cannot carry is therefore a 400 here, never a mixed pair on a pane.
+```
+
+### Roh-Start
+
+```text
+A RAW START is one no reading vouched for: no analysis at all, or a verdict that asked for
+the owner. This route still gates on none of it — an attended click outranks every
+advisory, which is the whole point of the button — but the acknowledgment the UI collects
+(src/client.ts, .qrawack) rides into the audit detail, so a deliberate raw start is
+afterwards distinguishable from a start off a `ready` row. Recorded only when the row
+REALLY was raw: a flag on a ready row would pin a deliberation that never happened, and
+an audit line that can be claimed rather than earned is worth less than no line at all.
+```
+
+### Audit-Detail statt zweitem Event-Namen
+
+```text
+the mode rides in the audit detail, never a second event name: one "an owner started a
+task" line stays greppable, and the bare id remains the normal path's exact detail
+the harness rides in the SAME detail for the same reason, and only when one is EFFECTIVE —
+body-named or row-stored, it names the adapter that actually ran; a default start keeps
+producing the exact line it produced before either field existed
+```
+
+## fetch: POST /api/tasks/:id/reanalyse
+
+### Die Verweigerung ohne Analyst
+
+```text
+The refusal stands whatever the compiler is doing: this route re-reads, and with no reader
+its writes are pure deletion. But the reason must not keep claiming deletion is ALL that
+would follow once a compiler is running — it would recompile the dropped brief on its next
+tick, which is a different act from the one being asked for. ↻ refine is the attended way
+to a new brief; nothing here mints a second verb out of a route named reanalyse.
+```
+
+## fetch: refine
+
+### refine-confirm — alles oder nichts
+
+```text
+the owner's half of the refine pair. `{accept:false}` discards the proposal and does nothing
+else. Accepting is ALL-OR-NOTHING by design (briefs/task-refine.md): a child that turns out
+useless is thrown away afterwards with the archive button that already exists — a per-child
+confirm would be a second UI for that same operation.
+```
+
+### Die deterministische Abnahme beim Promote
+
+```text
+The deterministic acceptance, recomputed AT the promote against the tree as it stands now
+(refine-validate.ts). It does NOT gate: a proposal with hallucinated paths still promotes
+if the owner says so, the same latitude ⏫ author grants him over a red verify — the value
+is that he could see it, and that the ledger records he confirmed it anyway. Reading it
+here rather than trusting the projection the detail pane showed is the point: minutes may
+have passed, and the tree may have moved under both of them.
+```
+
+### Was ein Kind erbt und was nicht
+
+```text
+source "owner": the owner is confirming this text, whatever the original row came in as.
+NO `brief` and NO `analysis` — a child is a NEW draft, so it must reach the sweep as one:
+inheriting either would carry a compile and a judgment about a text that no longer exists.
+`repo` rides along, or the split would silently retarget the dispatcher default. Note the
+children land as `pending`, never `queued`: refining proposes work, releasing it stays a
+separate owner act, and confirming a split must not smuggle four rows past that boundary.
+```
+
+### files — das eine geerbte Feld
+
+```text
+the ONE thing a child inherits from the proposal besides its text: the paths the refiner
+verified against the tree, which the owner is confirming along with everything else. It
+is not a model judgement ABOUT this row the way `brief` and `analysis` are — those two
+are deliberately left off above so the child meets the sweep as the fresh draft it is.
+```
+
+### Die Abnahme in der Audit-Zeile
+
+```text
+the acceptance rides INTO the audit line when it is not clean, because "the owner promoted
+a proposal that named two paths this tree does not have" is exactly the kind of sighted
+decision an outcome ledger is later asked about. A clean one adds nothing: silence there
+already means pass, and a "(validation: pass)" on every row would train the eye past it.
+```
+
+## fetch: POST /api/tasks/:id/brief
+
+### Kopfkommentar
+
+```text
+the brief is the one model output the owner may overwrite, and that is the point of storing
+it: it is the exact text a lane will receive, so being able to read it before the fact is
+worth little unless you can also fix it. An edited brief is PINNED (`edited`) — the sweep
+never recompiles over it — and it invalidates the analysis, because the verdict was about
+the other string.
+```
+
+## fetch: POST /api/tasks/:id/comment
+
+### Kopfkommentar
+
+```text
+A COMMENT — the one text on this row the OWNER writes. Every other text here is machine
+output (brief, verdict, refine proposal) or the original request, and until now a remark
+about a task had to be typed into a pane, where it died at the next /clear.
+Allowed in EVERY status on purpose: the most useful remark is often about a row that has
+already run ("this is why it was reverted"), and a queue whose memory stops at `sent` is
+exactly the queue that was here before.
+```
+
+## fetch: task actions
+
+### Der Founding-Task einer laufenden Lane (Vorfall 2026-08-05)
+
+```text
+a running lane's founding task must stay tracked — the shelf is not a place to hide live
+work. `delete` shares the guard (2026-08-05): deleting a sent row didn't just hide it, it
+orphaned the lane — /api/self/criterion resolves the founding task by slot+status "sent",
+so a running clarify lane lost its one way to record a criterion, permanently (409).
+```
+
+### B1 (F-C) — propose-Outcome des Steward-Vorschlags
+
+```text
+B1 (F-C): the owner's promote/dismiss of a STEWARD-origin proposal is a causally-clean,
+deterministic `propose`-class outcome (unlike git deltas, accept/reject is directly
+attributable). Fire ONCE per task, gated on the pending→ transition ONLY: promote counts
+helped, dismiss counts the distinct `dismissed` signal. Deleting an already-promoted
+(queued) proposal is cleanup, not a dismissal — the pending guard makes that a no-op, so a
+promoted-then-deleted task can never double-count. Read the class BEFORE mutating status.
+archive mirrors delete for the measurement channel: shelving a PENDING proposal IS a
+dismissal — without this, archive would be a silent second path around the channel
+`adopt` remains the compatibility verb on the "helped" side for a steward notiz; the
+general reversible kind route above is the complete category editor.
+```
+
+### Eine Advisory-Zeile ist keine Arbeit (Owner-Ask 2026-08-05)
+
+```text
+AN ADVISORY ROW IS NOT WORK (owner ask 2026-08-05, restored here after the kind rename
+dropped it). Releasing one produced a `queued` row that no tick would ever run, carrying
+a note explaining its own inertness — a contradiction parked in the release lane. The
+conversion is the owner's act: `adopt` (or the /kind route) turns it into an auftrag,
+back at pending, where it is analysed and still has to be released. Same rule, same
+wording as the dispatch button above, because it is the same question.
+```
+
+### Freigeben ist die Entscheidung — Override-Spur
+
+```text
+RELEASING IS THE DECISION, and when it contradicts the analyst it is an override that
+must leave a trace. Before this, promoting a flagged task was indistinguishable from
+promoting a clean one — so the analyst could never be calibrated against what the owner
+actually did with it. The note is not a warning, it is a record.
+"needs-you" ONLY, never "unknown": an unread task carries no objection to overrule, and
+booking one as an override would both mis-record the owner's act and — because the note
+is written here — overwrite the dispatcher's "waiting: not analysed yet" with a sentence
+claiming a verdict that was never reached. (Caught by e2e (h6), which asserted the wait.)
+```
+
+### Der Journal-Eintrag traegt, worum es ging (Messung 2026-08-05)
+
+```text
+the row itself is deleted or mutated right above, so the record must carry what the
+ruling was ABOUT or the trail is unreadable — live-measured 2026-08-05: 14 rows,
+7 helped / 7 dismissed, and nobody could say what the dismissed half had proposed.
+`ref` stays the task id (historic rows read that way); `slug` is the steward's stable
+condition ref when it filed one. The 200-char excerpt is a deliberate retention
+trade-off: enough to calibrate the filing threshold against, not an archive of texts
+the owner chose to discard.
+```
+
+## fetch: POST /api/slots/:id/watch
+
+### Kopfkommentar
+
+```text
+subscribe slot :id to another slot's done-looking. The route's slot is the RECEIVER, exactly
+as it is for /autos above — every path that types into a pane names the pane in the URL, and
+the thing being watched is body data. The owner half of the pair; the self half is
+POST /api/self/watch, and it is the one that carries the not-a-lane subscriber rule. The
+owner keeps the wider reach here on purpose: pointing a lane at another lane is a coupling
+somebody has to be able to make, and the owner is the principal who can see it on the board.
+```
+
+### STN-2 — Transition-Watches nur ueber die Self-Route
+
+```text
+STN-2: a transition watch is the receiver's OWN question, asked in its own words, and the
+self route carries the not-a-lane rule that keeps Supervisor text out of lane panes. The
+owner's wider reach here would route around that rule by registering one on a lane's behalf
+— so this kind is refused by name at the owner door, never silently rebound.
+```
+
+## fetch: slot mission
+
+### Kopfkommentar
+
+```text
+the owner writes this slot's standing intention (Slot.mission). Owner-only by
+CONSTRUCTION, not by an extra check: the steward gate above intercepts its own token
+before this chain and default-denies anything handleStewardRoute doesn't claim, and it
+must stay that way here — a producer that can write the anchor it is judged against is
+grading its own drift. Explicit `null` clears; a blank string clears the same way.
+```
+
+## fetch: POST /api/slots/:id/restart
+
+### Kopfkommentar — der Anlass (2026-08-06)
+
+```text
+↻ bring the session back. The pane is restarted, the SLOT is not touched — which is the
+whole verb, and the reason it must never route through closeSlot/killSlot: those clear
+sessionId, worktree, label, model and mission, drop the slot's shares and autos, detach its
+tasks and emit a lane outcome. That is a session ENDING. This is the opposite: the pane dies
+and ensureSlot, seeing the untouched s.sessionId and its transcript, respawns with
+`--resume <id>` (slotCmd) — the conversation continues in the same transcript.
+The occasion: claude can switch conversations IN-PROCESS. The pane's argv still named the
+pinned session while a different transcript was being written, and Escape did not undo it
+(measured 2026-08-06). Nothing outside the pane can put it back; only a respawn can.
+```
+
+### Inline statt Self-Heal-Loop
+
+```text
+rebuilt INLINE rather than left to the 2s self-heal loop: the button promises a session
+that is back, and a route that only kills cannot say whether it is. Those two seconds
+are also exactly when the owner is watching the board, and a slot that reads dead there
+invites a second click on something else.
+```
+
+### resumed — von ensureSlot abgelesen
+
+```text
+read off what ensureSlot DID, rather than re-deriving its resume formula here (two copies
+of that predicate is how they drift). The pin survives the rebuild only when it was
+resumable; a fresh uuid (pin but no transcript) and no pin at all (a non-claude FLEET_CMD)
+both answer false, which is the truth in both cases.
+```
+
+## fetch: POST /send
+
+### Owner-Wait vs Main-Wait
+
+```text
+The owner has spoken to this pane, so an OWNER wait has arrived — that wait exists to hold
+automation back, never the person it is waiting for. A "main" wait is a different debt: it
+waits for Program-MAIN's answer to an open clarification, and the owner typing into the pane
+is not that answer. Clearing it would re-open steward nudges past an unanswered
+clarification (the guard that refuses exactly that lives in handleStewardSend).
+```
+
+### Der unsichere Send (ACP-25)
+
+```text
+tmux may have accepted part of the paste before reporting failure, or the composer was
+OBSERVED still holding the text after Enter (ACP-25) — so neither "failed" nor
+"delivered" is an observed fact, the same truth rule the clarification/attention
+transport follows. The journal write here is MANDATORY: an unjournaled uncertain send is
+the silent loss this receipt exists to remove, and it used to escape as an untyped 500.
+History deliberately does NOT gain the entry: history feeds the pane-recall UI, where an
+entry reads as "this text is in that pane" — replaying a paste that may never have
+landed would present a guess as a fact. No retry and no tick: the owner sees the 409.
+```
+
+## websocket: open
+
+### Reseed bei Breiten-Mismatch
+
+```text
+this client's width doesn't match the pane's current width (or the client
+explicitly asked for a reseed regardless — see the `force` comment above).
+tmux reflows pane history on resize-window, so resizing then capturing fresh replays
+correctly-wrapped scrollback instead of the raw stream's stale wrapping.
+Trade-off: this also resizes the shared pty for any other connected client
+(last connect wins, same as /resize) — true concurrent multi-width live
+rendering would need a per-client vt emulator, out of scope here.
+Chained through resizeChain (shared with /resize) so a second client
+connecting/resizing concurrently can't sneak its own resize-window in
+between this one and its capture-pane, handing this client a seed
+reflowed to the OTHER client's width instead of its own.
+```
+
+### -e ist sicher — Messung tmux 3.6a, 2026-08-05
+
+```text
+-e (color) is safe here, and the reason it was left off is not reproducible on this
+tmux. The old comment said an escape-preserving capture bakes styled-vs-default runs
+in as absolute-column cursor jumps ("\x1b[200G") at the ORIGINAL width, which would
+re-garble a narrower client. MEASURED instead, tmux 3.6a, 2026-08-05: wide colored
+TUI content in a 200-col pane, resized to 55 exactly as this path does, captured both
+ways — `-e` output with only SGR (\x1b[…m) removed is BYTE-IDENTICAL to the plain
+capture (1004 = 1004 B, empty diff), and contains ZERO cursor-motion escapes. So `-e`
+is plain-plus-color on this tmux, and history keeping its color costs nothing.
+The fear was legitimate and is now a CHECK rather than a sacrificed capability:
+e2e/slots.ts pins that the seed carries SGR and carries no cursor-motion escape, so
+a tmux that ever starts emitting one goes red here instead of silently garbling.
+```
+
+### Gast-Seed aus capture-pane
+
+```text
+guests never pass cols/rows (they must not resize the owner's pty), so they
+can't take the resize+capture reseed above. Seed them from a plain capture-pane
+at the pane's CURRENT size instead of slicing the raw stream: capture output is
+line-aligned and already-reflowed, so it can't begin mid-escape-sequence and
+it's a few KB rather than the megabytes a raw tail pushed to a phone on every
+reconnect — the raw-tail path desynced guest terminals (partial escapes stacked
+onto un-reset scrollback) after the frequent WS drops mobile connections see.
+(The owner path below now takes the same seed, for the same two reasons.)
+Live bytes after this keep flowing from the shared offset via poll()/broadcast,
+same as the owner reseed path. -e (color) for the reason measured at the resize path
+above: it adds SGR and nothing else, so it cannot change how a guest's terminal wraps
+the seed — the guest's unknown width was only ever a risk via cursor-motion escapes,
+which this tmux does not emit.
+```
+
+### Owner-Reconnect — Kontinuitaet ist der heikle Teil (Messung 2026-07-26)
+
+```text
+Owner reconnect at a width that already matches the pane — the common case, since a
+phone reconnecting after a WS drop is the same client at the same size. This used to
+slice REPLAY_TAIL bytes out of the raw stream; it now takes the same line-aligned
+capture-pane seed the guest path above takes, for the same reasons spelled out there.
+Measured on the 12 live panes (2026-07-26): 5 634–173 282 B instead of
+149 822–2 000 000 B, 15.2× less in aggregate — and the 2 MB cap was not a rare
+worst case, it bound at its full value on every pane whose stream had outgrown it
+(3 of 12, streams run 2.3–4.9 MB). -e, for the measurement the resize path gives.
+
+Continuity is the delicate part. The raw slice ended exactly at s.offset, so the next
+broadcast continued seamlessly. A capture instead reflects the pane as of whatever the
+stream file already held, which is AHEAD of s.offset — poll() lags by up to its 100 ms
+tick — so the bytes in [s.offset, seedUntil) are in this client's seed AND still on
+their way to it. Sending them again duplicates lines. Advancing s.offset instead is
+not an option: it is the SHARED broadcast cursor, and moving it would punch that same
+range out of every other connected client's stream (the resize path above may do that
+only because its repaint() redraws everyone). So the overlap is dropped for this one
+socket, by afterSeed(), on its way out.
+The position is read BEFORE the capture on purpose: bytes already in the file were fed
+through tmux before they were piped out, so the capture is guaranteed to include them —
+reading it after would risk skipping bytes the capture does NOT show, and a gap is
+worse than an overlap (a dropped line never comes back). Bytes written during the
+capture itself may be in it and get resent: that residual window is one capture-pane
+spawn wide instead of a poll tick, and it is inherent to every capture-based seed here.
 ```

@@ -22034,12 +22034,9 @@ Bun.serve<WSData>({
     return new Response("internal error", { status: 500 });
   },
   async fetch(req, server) {
-    // Every response leaves through finishHttp (see the TRANSPORT region): it is the only place
-    // that sees the finished body AND the request's accept-encoding — json(), which builds most
-    // of them, sees neither. Written as a nested declaration on purpose: extracting the body to a
-    // top-level function would reindent ~1200 lines and turn every concurrent lane's server.ts
-    // diff into a conflict, for no behavioural difference. A WebSocket upgrade returns undefined
-    // from here exactly as before — finishHttp hands that straight back untouched.
+    // Every response leaves through finishHttp — the only place that sees the finished body AND the
+    // accept-encoding (json() sees neither). Nested on purpose: a top-level extraction would reindent
+    // ~1200 lines for no behavioural difference. Narrativ: server-narrativ-archiv.md#fetch-entry
     return finishHttp(req, server.requestIP(req)?.address ?? "", await handle());
     async function handle(): Promise<Response | undefined> {
     const blocked = guard(req);
@@ -22071,31 +22068,10 @@ Bun.serve<WSData>({
       if (!pub) return new Response("not found", { status: 404 });
     }
 
-    // the session's own row — the read half of the self family, and the one that belongs to EVERY
-    // session rather than to a lane. It exists because /api/self/gate is the wrong carrier for it:
-    // that route's payload (verify, cleanReview, mergeRepairRounds, rulebookDrifted) is land-gate
-    // knowledge, meaningless to a session that will never land, which is why it answers a non-lane
-    // 409 and keeps doing so. What a plain session actually lacks is duller and more useful — who
-    // am I on this board, and what have I already scheduled for myself.
-    //
-    // The cut is deliberately narrow: every field here is THIS slot's own row, nothing global and
-    // nothing about another slot. `lane` is null for a plain session, and that is the field that
-    // makes its siblings' 409s predictable instead of surprising — a session can ask once whether
-    // the lane-only routes will answer it at all. The autos are served verbatim because
-    // createAutoForSlot already hands this same principal a full Auto object back on every mint,
-    // so no field here is a class of information the credential could not already see.
-    //
-    // The watches pass that same test and are served the same way: createWatchForSlot returns a
-    // full Watch row on every mint AND on every re-subscribe (the idempotent path returns the
-    // existing row verbatim), so a session can already read back any watch of its own by asking
-    // for it again. SPENT rows are included, not just armed ones, and that is the load-bearing
-    // half: a watch disarmed because its target died delivers NOTHING into the pane — only
-    // `lastResult` records it. Serving armed rows alone would make "still waiting" and "will never
-    // come" look identical from inside the session, which is the one belief this whole surface
-    // exists to make impossible (see dropWatchesFor). Bounded by WATCH_KEEP_SPENT, like the autos.
-    //
-    // Same principal, same flat-cost auth and the same share-host unreachability as its siblings
-    // below. Read-only, and it grants no capability at all.
+    // the session's own row — the read half of the self family, and it belongs to EVERY session, not
+    // to a lane. Every field is THIS slot's own row, nothing global. SPENT watches are served on
+    // purpose: a watch disarmed by its target's death delivers NOTHING into the pane, so armed-only
+    // would make "still waiting" and "will never come" identical from inside. Narrativ: server-narrativ-archiv.md#fetch-get-apiself
     if (url.pathname === "/api/self" && req.method === "GET") {
       const given = req.headers.get("x-fleet-self-token") ?? "";
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
@@ -22119,28 +22095,9 @@ Bun.serve<WSData>({
       });
     }
 
-    // the flake question, asked from inside a session — /api/flakes with the scoped credential.
-    //
-    // IT HAS TO BE REACHABLE FROM A LANE OR IT SOLVES NOTHING: the proof order it replaces
-    // ("run the same tree again", ~425 s median plus the suite mutex) is an obligation CLAUDE.md
-    // puts on LANES, at the moment a lane sees a red check. An owner-only route would answer the
-    // question for the one principal who was not asked it.
-    //
-    // WHICH TIER, and why not one of its neighbours. The self family has three, not two, and this
-    // route joins the widest: /api/self and /api/self/autos answer EVERY session, the lane-only operations
-    // below are lane-only, /api/self/watch is non-lane-only. The two narrow tiers are narrow
-    // because their content is meaningless to the other principal — land-gate knowledge to a
-    // session that will never land, a lane-waits-on-lane coupling nobody can see. Neither reason
-    // applies here: a lane adjudicating its own red and the owner adjudicating a post-land audit
-    // ask the identical question of the identical rows. Hanging it off /api/self/gate instead was
-    // the alternative and is wrong twice — it would make the answer lane-ONLY (re-introducing the
-    // gap above for the owner-side session), and gate is a parameterless read of this process's
-    // env, while this is a parameterised query over a ledger.
-    //
-    // It also grants no capability. The trail lives in the main checkout's `e2e-trail/`, which a
-    // lane can already reach through the shared common dir (docs/e2e-trail.md §3) — this route
-    // saves it a directory walk, it does not show it a file it could not open. Read-only, and the
-    // payload is aggregate: check names, tree shas and run ids, no `detail` and no prose.
+    // the flake question, asked from inside a session. IT HAS TO BE REACHABLE FROM A LANE OR IT SOLVES
+    // NOTHING: the proof order it replaces is an obligation CLAUDE.md puts on lanes. Read-only,
+    // aggregate payload, no capability granted. Why this tier: server-narrativ-archiv.md#fetch-get-apiselfflakes
     if (url.pathname === "/api/self/flakes" && req.method === "GET") {
       const given = req.headers.get("x-fleet-self-token") ?? "";
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
@@ -22148,14 +22105,9 @@ Bun.serve<WSData>({
       return json(trailStatsFromQuery(url));
     }
 
-    // self-scheduling: a session schedules its own future check-in, authenticated by its scoped
-    // FLEET_SELF_TOKEN (baked into the pane env — see ensureSlot) instead of the owner token.
-    // Deliberately unreachable on the public share host (this sits AFTER that gate, unlike
-    // /intake) — it's a local-machine credential, not a public one. The target slot is
-    // HARD-DERIVED from which slot's token matches — any `slot` field in the body is structurally
-    // never read (createAutoForSlot takes `s` directly), so this route cannot be pointed at any
-    // slot but the token's own. No lane check, and never had one: this is the capability the
-    // widened export exists to hand a plain session.
+    // self-scheduling with the scoped FLEET_SELF_TOKEN (see ensureSlot). Sits AFTER the share-host gate,
+    // unlike /intake. The target slot is HARD-DERIVED from the token — a `slot` field in the body is
+    // structurally never read (createAutoForSlot takes `s`). No lane check, by design.
     if (url.pathname === "/api/self/autos" && req.method === "POST") {
       const given = req.headers.get("x-fleet-self-token") ?? "";
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
@@ -22172,11 +22124,9 @@ Bun.serve<WSData>({
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree)
         return json({ error: "programs are brackets above lanes; a lane cannot propose or read them as its own" }, 409);
-      // The bound Supervisor reads every Program's CONTENT, not just the ones it authored: it holds
-      // the cross-program portfolio together, and intent/successCriterion/nonGoals/openQuestions are
-      // exactly what a portfolio is made of — a title is a label, not a thing to reason about. The
-      // disjunct is the SAME occupancy-derived predicate the Supervisor's other senses use, so this
-      // reach follows the binding through succession instead of clinging to a proposer identity.
+      // The bound Supervisor reads every Program's CONTENT, not just its own (it holds the portfolio
+      // together); the disjunct is the SAME occupancy-derived predicate its other senses use, so the
+      // reach follows the binding through succession. Narrativ: server-narrativ-archiv.md#fetch-apiselfprograms
       if (req.method === "GET") return json({ programs: programs.filter((p) => sameProgramSession(p, s)
         || (p.main?.slot === s.id && p.main.openedAt === s.openedAt) || isBoundSupervisor(s))
         .map(publicProgram) });
@@ -22202,11 +22152,9 @@ Bun.serve<WSData>({
       return programExecutionView(s);
     }
 
-    // The Supervisor's two Cut-2 channels, on the same every-session rail and behind the same
-    // flat-cost 401, because the credential question ("is this a live session's own token") is
-    // identical. What separates them from their neighbours is the OCCUPANCY gate below: they answer
-    // only the session the owner bound as Supervisor, and a stale binding answers nobody. A lane
-    // needs no clause of its own — a lane is never the Supervisor, so the same check covers it.
+    // The Supervisor's two Cut-2 channels: same every-session rail, same flat-cost 401. What separates
+    // them is the OCCUPANCY gate — only the session the owner bound as Supervisor; a lane is never the
+    // Supervisor, so the same check covers it. Narrativ: server-narrativ-archiv.md#fetch-supervisor-self-routes
     if (url.pathname === "/api/self/supervisor-view" && req.method === "GET") {
       const given = req.headers.get("x-fleet-self-token") ?? "";
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
@@ -22268,25 +22216,11 @@ Bun.serve<WSData>({
       return mainDirectFinalize(s, body);
     }
 
-    // the OUTBOUND twin of /autos, and the second capability a plain session gets: instead of
-    // guessing a delay and re-checking, it subscribes to another slot's done-looking and is told
-    // ONCE, into its own pane, when the predicate turns true. Same principal, same flat-cost auth,
-    // same hard binding — the RECEIVER is the token's slot and `createWatchForSlot` never reads a
-    // `slot` field from the body, so a spoofed one changes nothing. That binding is what makes
-    // this safe to hand out at all: the route types into a pane, and it can only ever type into
-    // the caller's own.
-    //
-    // AND IT IS THE MIRROR OF THE ORIGINAL LANE-ONLY ROUTES BELOW, not a copy of them. They are LANE-only and
-    // answer a plain session 409; this one is NON-LANE-only and answers a lane 409. Same reason
-    // read in both directions — the question is meaningless for the other principal — but the
-    // asymmetry is the design, so it is spelled out rather than left to be re-derived. A lane
-    // waiting on a lane is a coupling Fleet does not have today, and it would be invisible: it
-    // would live inside a pane, on no board, in no ledger, while the owner still believes the two
-    // are independent. Widening this later costs an `if`; taking it back after sessions have been
-    // written against it does not. The predicate `s.worktree && s.label !== STEWARD_LABEL` is
-    // deliberately the SAME one done-looking classifies by (see laneSignalView) — so the rule
-    // reads exactly as "whoever can BE watched cannot watch", and the ⚙ steward, which that
-    // predicate excludes by name, may subscribe like any other planning session.
+    // the OUTBOUND twin of /autos: the RECEIVER is the token's slot and createWatchForSlot never reads a
+    // body `slot`, so the route can only ever type into the caller's own pane. NON-LANE-only, the mirror
+    // of the lane-only routes: a lane waiting on a lane is a coupling only the owner can make visible.
+    // The predicate is deliberately the SAME one done-looking classifies by (laneSignalView) — "whoever
+    // can BE watched cannot watch", so the ⚙ steward may subscribe. Narrativ: server-narrativ-archiv.md#fetch-post-apiselfwatch
     if (url.pathname === "/api/self/watch" && req.method === "POST") {
       const given = req.headers.get("x-fleet-self-token") ?? "";
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
@@ -22417,11 +22351,9 @@ Bun.serve<WSData>({
       return handleSelfRetire(s);
     }
 
-    // the lane's own drift view — same principal, same flat-cost auth as /api/self/autos above.
-    // Read-only by construction (laneDrift never touches a working tree), and it grants no new
-    // capability: everything in the payload is committed state a lane could derive itself through
-    // the shared refs (`git diff base...otherBranch`) — the route exists so the session, the board
-    // and the sync path read ONE server-computed answer, not so a lane learns something new.
+    // the lane's own drift view — read-only by construction (laneDrift never touches a working tree)
+    // and no new capability: the route exists so session, board and sync path read ONE server-computed
+    // answer. Narrativ: server-narrativ-archiv.md#fetch-get-apiselfdrift
     if (url.pathname === "/api/self/drift" && req.method === "GET") {
       const given = req.headers.get("x-fleet-self-token") ?? "";
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
@@ -22435,19 +22367,10 @@ Bun.serve<WSData>({
       if (!main) return json({ error: "no integration branch resolvable for this lane's repo" }, 409);
       const seenKey = driftCache.get(s.id)?.key; // before the call — laneDrift is what fills it
       const d = await laneDrift(s, main);
-      // Instrumentation, autonomy map §11.3 step A. Until now this route wrote nothing, so
-      // "do lanes check their drift, and WHEN in their life?" was unanswerable — the instruction
-      // that produces the call lives once, in a gitignored spawn-time copy of CLAUDE.md, and
-      // whether it is ever followed was pure belief. The BRANCH is the key, never the slot id
-      // (slots get recycled): with lane-outcomes' `ts` and `sessionMs` giving land time and
-      // lifetime, the event's position in that lifetime is computable from the two ledgers alone.
-      // Only a FRESH answer is booked. laneDrift caches per slot on (branch tip, main tip), so a
-      // lane re-asking with nothing moved is a cache hit and writes nothing: the stream is bounded
-      // by real ref movement instead of by caller politeness, which keeps a polling loop from
-      // rotating this very log's history off the end (the AUDIT_ROTATE_BYTES hazard spelled out
-      // at STEWARD_JOURNAL_PER_HOUR). The first call of any lane always misses, and that is the
-      // one event §11.2's metric needs. Read the absence accordingly: no event means no fresh
-      // answer was served, NOT that the lane never asked.
+      // Instrumentation (autonomy map §11.3 step A). The BRANCH is the key, never the slot id (slots get
+      // recycled). Only a FRESH answer is booked — laneDrift caches per (branch tip, main tip), so a
+      // polling loop cannot rotate this log's history off the end. Read the absence accordingly: no
+      // event means no fresh answer was served, NOT that the lane never asked. Narrativ: server-narrativ-archiv.md#fetch-get-apiselfdrift
       if (d && driftCache.get(s.id)?.key !== seenKey)
         audit("self_drift", s.id, `${w.branch} behind:${d.behind} conflict:${d.wouldConflict ?? "unknown"} dirty:${d.dirty}`
           + (d.stale === false ? "" : ` stale:${d.stale ?? "unknown"}`)); // a reading of a stale mirror is
@@ -22456,27 +22379,18 @@ Bun.serve<WSData>({
       return d ? json(d) : json({ error: "drift could not be computed — a git read failed" }, 500);
     }
 
-    // the lane's own view of THE GATE — the one fact family no file in its worktree can carry:
-    // the live land gate is this process's env (VERIFY_CMD…), a lane's CLAUDE.md is a spawn-time
-    // COPY, and watchdog.sh on disk can differ from the running watchdog until kickstart
-    // (docs/attic/lane-context.md §2, the verified defect this route closes). Same principal,
-    // same flat-cost auth, same one-scope-rule 409 as its siblings. Read-only, and it grants no
-    // capability: knowing the judge changes which suites a lane runs, never the verdict.
+    // the lane's own view of THE GATE — the one fact family no file in its worktree can carry: the live
+    // gate is this process's env, a lane's CLAUDE.md is a spawn-time COPY. Read-only, grants no
+    // capability. Narrativ: server-narrativ-archiv.md#fetch-get-apiselfgate
     if (url.pathname === "/api/self/gate" && req.method === "GET") {
       const given = req.headers.get("x-fleet-self-token") ?? "";
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — the gate judges a lane's land" }, 409);
-      // rulebook: does the lane's CLAUDE.md still hold what the source repo would give it TODAY?
-      // Since the fragment split that is no longer the source file itself — a lane is written the
-      // LANE rendering (3 of 7 fragments), so a byte compare against the monolith would be
-      // permanently true and would send every lane to load the very bytes the split just saved.
-      // So the expected side is `laneRulebookFor`, the SAME function the spawn seam wrote with;
-      // where that is null (no readable `rulebook/`, the ordinary state of a foreign task.repo)
-      // the spawn copied the monolith and the compare falls back to it, in lockstep.
-      // Compared BODY-ONLY: the back-reference block carries the generation timestamp, so
-      // including it would report drift on every single call.
-      // null = not comparable (either side unreadable) — served as absent, NEVER as "no drift".
+      // rulebook drift: the expected side is `laneRulebookFor`, the SAME function the spawn seam wrote
+      // with (null ⇒ the spawn copied the monolith, and the compare falls back to it, in lockstep).
+      // Compared BODY-ONLY — the back-reference block carries the generation timestamp. null = not
+      // comparable, served as absent, NEVER as "no drift". Narrativ: server-narrativ-archiv.md#fetch-get-apiselfgate
       let rulebookDrifted: boolean | null = null;
       try {
         const copy = await Bun.file(`${s.cwd!}/CLAUDE.md`).text();
@@ -22491,11 +22405,8 @@ Bun.serve<WSData>({
       // actually meet, not the global.
       const gateVerifyCmd = await verifyCmdFor(s.worktree.repo);
       return json({
-        // `timeoutMs` is the WORK budget and `waitMs` the queueing one — two numbers because a
-        // single one is what let a land be killed by somebody else's suite (VERIFY_WAIT_MS).
-        // The cmd is resolved for THIS LANE'S REPO, not read off the global: since P-7c the two
-        // can differ, and a self-report that showed the global would tell a lane in a repo with
-        // its own command about a gate it will never meet.
+        // `timeoutMs` is the WORK budget and `waitMs` the queueing one (VERIFY_WAIT_MS) — two numbers. The
+        // cmd is resolved for THIS LANE'S REPO, not the global: since P-7c they can differ.
         verify: gateVerifyCmd
           ? { cmd: gateVerifyCmd, timeoutMs: VERIFY_TIMEOUT_MS, waitMs: VERIFY_WAIT_MS, skipExit: VERIFY_SKIP_EXIT }
           : null,
@@ -22504,21 +22415,16 @@ Bun.serve<WSData>({
         postlandAudit: POSTLAND_AUDIT_CMD !== null,
         mergeRepairRounds: MERGE_REPAIR_ROUNDS,
         rulebookDrifted,
-        // the machine-busy fact (autonomy verbs, Verb 1): the suite mutex is the one wait a
-        // lane's verify will actually hang on (FLEET_VERIFY_TIMEOUT_MS is wall-clock, and a
-        // queued isolated run inside it cost a land 300s of silence — docs/suite-contention.md).
-        // Until now this route named the judge but not the queue in front of the courtroom.
-        // null = free; states mirror e2e-stage.sh exactly (held/overdue/stale/parked).
+        // the machine-busy fact (autonomy verbs, Verb 1): the suite mutex is the one wait a lane's verify
+        // actually hangs on. null = free; states mirror e2e-stage.sh exactly (held/overdue/stale/parked).
         suiteLock: suiteLockView(),
         localProof: await laneLocalProof(s),
       });
     }
 
-    // the clarify lane's PROPOSED done-criterion, written back onto its own founding task so it
-    // outlives the pane (before this it lived in scrollback and died at /clear). Same principal
-    // and flat-cost auth as its siblings, and the same authority: none. It lands as a proposal —
-    // `confirmedAt` stays null until the OWNER confirms, so a producer can still not author the
-    // anchor it is judged against; it can only write down what it is asking for.
+    // the clarify lane's PROPOSED done-criterion, written onto its own founding task so it outlives the
+    // pane. It lands as a proposal — `confirmedAt` stays null until the OWNER confirms, so a producer
+    // can never author the anchor it is judged against.
     if (url.pathname === "/api/self/criterion" && req.method === "POST") {
       const given = req.headers.get("x-fleet-self-token") ?? "";
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
@@ -22541,29 +22447,11 @@ Bun.serve<WSData>({
       return json({ ok: true, proposedAt: t.criterion.proposedAt });
     }
 
-    // THE OFFER DOOR — the fifth lane-only route, and the one that lets a lane hand its OWN preview
-    // suite to another machine instead of holding this box's single suite mutex for ~13 minutes
-    // (measured p50, docs/attic/helper-lane-suiten-entwurf-2026-08-26.md §1.1).
-    //
-    // WHY LANE-ONLY, resolved against the family's two opposite scope rules rather than guessed:
-    // the lane-only four (drift, gate, criterion, verify-intent) are narrow because their ANSWER is
-    // only defined for a lane; the non-lane-only four (watch, tasks/:id/release, succeed, retire)
-    // are narrow because they would let a lane enter a COUPLING only the owner may make visible.
-    // An offer is the first kind and not the second: it is a statement about one lane's own tree,
-    // meaningless to a session that will never run a preview, and it couples the lane to a machine
-    // that holds no slot at all — never to another lane.
-    //
-    // THE BODY IS CLOSED, exactly as at POST /api/self/tasks/:id/release: the repo, the branch, the
-    // cwd and the slot all come from the token's own row, and the command is `./e2e-isolated.sh`
-    // fixed. No field can nominate WHICH tree gets bundled, so this route cannot be pointed at
-    // anything but the caller's own worktree.
-    //
-    // AND IT STARTS NOTHING. Offering is not running: no suite is spawned here, no queue is filled,
-    // the land gate is untouched, and a red remote verdict gates nothing (tier 2 gates nothing —
-    // docs/verify-tiering.md §6). What the offer DOES do is bind the lane: while its own offer is
-    // open or claimed it must not run the suite locally, and the withdraw door below is where that
-    // permission comes back. That makes "I am running it myself" a state transition the server
-    // witnessed instead of an intention in a pane.
+    // THE OFFER DOOR — a lane hands its OWN preview suite to another machine. Lane-only: the answer is
+    // only defined for a lane's tree, and it couples the lane to a machine holding no slot, never to
+    // another lane. THE BODY IS CLOSED: repo, branch, cwd and slot come from the token's row, the
+    // command is fixed. AND IT STARTS NOTHING — but it BINDS the lane: while its offer is open or
+    // claimed it must not run the suite locally; withdraw is where that permission comes back. Narrativ: server-narrativ-archiv.md#fetch-apiselfsuite-offer
     if (url.pathname === "/api/self/suite-offer" && (req.method === "GET" || req.method === "POST")) {
       const given = req.headers.get("x-fleet-self-token") ?? "";
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
@@ -22571,10 +22459,8 @@ Bun.serve<WSData>({
       if (!s.worktree) return json({ error: "not a lane — a suite offer hands over a lane's own working tree" }, 409);
       expireHelperClaims();
       const existing = laneSuiteOfferOf(s);
-      // THE READ HALF: state, and on a settled offer the verdict WITH its provenance. `waitPolicy`
-      // and `suiteLock` travel with it because the lane's wait is its own foreground loop and those
-      // two numbers are what decides how long waiting is worth it (§5.2): free mutex ⇒ every waiting
-      // second is pure loss, held mutex ⇒ a local run would queue anyway and waiting costs nothing.
+      // THE READ HALF: state, and on a settled offer the verdict WITH provenance. `waitPolicy` and
+      // `suiteLock` travel with it because they decide how long waiting is worth (§5.2).
       if (req.method === "GET") {
         // a settled offer is still readable by the lane that made it — the verdict outlives the
         // offer, or a lane that asked one second too late could never learn its own answer
@@ -22602,16 +22488,10 @@ Bun.serve<WSData>({
       return json({ offer: laneSuiteView(job), existing: false });
     }
 
-    // …and the way back out of it. Two answers, and the difference between them is the whole mutex:
-    //   · an OPEN offer withdraws with 200, and that 200 is the lane's permission to run the suite
-    //     locally. Nothing else grants it.
-    //   · a LIVE-CLAIMED offer answers 409 by default, because somebody is running that tree right
-    //     now and the owner's invariant for this portal is that work is taken over, never doubled.
-    //     `{"abandon": true}` overrides it deliberately — a lane must be able to stop waiting on a
-    //     helper that took the job and went quiet (§5.3). The cost of abandoning is the helper's
-    //     time, and it is not a correctness violation because nothing here gates: the job is marked
-    //     `abandoned` and a verdict arriving afterwards is refused, exactly as a lapsed one is.
-    // An EXPIRED claim is absent everywhere, here included: it can never hold a lane for 45 minutes.
+    // …and the way back out. An OPEN offer withdraws with 200, and that 200 is the lane's permission to
+    // run the suite locally — nothing else grants it. A LIVE-CLAIMED offer answers 409 (work is taken
+    // over, never doubled) unless `{"abandon": true}`: nothing here gates, so abandoning costs only the
+    // helper's time. An EXPIRED claim is absent everywhere. Narrativ: server-narrativ-archiv.md#fetch-post-apiselfsuite-offerwithdraw
     if (url.pathname === "/api/self/suite-offer/withdraw" && req.method === "POST") {
       const given = req.headers.get("x-fleet-self-token") ?? "";
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
@@ -22638,11 +22518,8 @@ Bun.serve<WSData>({
       return json({ ok: true, offer: laneSuiteView(job), mayRunLocally: true });
     }
 
-    // the lane's own account of a verify-suite run — same principal and same flat-cost auth as the
-    // two routes above. It grants no capability at all: nothing is started, stopped or queued, and
-    // the report only ever reaches the board and the audit log. The 409 for a non-lane keeps this
-    // family's one scope rule (these three routes answer FOR A LANE), not because a plain session's
-    // report would be dangerous — no plain session is ever handed a self token to send one with.
+    // the lane's own account of a verify-suite run. Grants no capability: nothing is started, stopped
+    // or queued; the 409 for a non-lane keeps this family's one scope rule.
     if (url.pathname === "/api/self/verify-intent" && req.method === "POST") {
       const given = req.headers.get("x-fleet-self-token") ?? "";
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
@@ -22651,12 +22528,9 @@ Bun.serve<WSData>({
       return recordVerifyIntent(s, await readJson(req));
     }
 
-    // the disposition rail's hard rule, enforced HERE because the owner gate below would answer a
-    // lane's credential with a generic 401 and hide WHY. A lane must never label its own work: a
-    // recognized per-slot FLEET_SELF_TOKEN on this path — sent either as its own header or offered
-    // as if it were the owner token — is a valid credential with the wrong scope, so 403, the same
-    // distinction the steward gate draws below. Scoped to this one path on purpose: every other
-    // route keeps its existing self-token behaviour untouched.
+    // the disposition rail's hard rule, enforced HERE because the owner gate below would answer a lane's
+    // credential with a generic 401 and hide WHY: a recognized FLEET_SELF_TOKEN on this path (own header
+    // or offered as the owner token) is a valid credential with the wrong scope → 403. This one path only.
     if (url.pathname === "/api/dispositions") {
       const offered = [req.headers.get("x-fleet-self-token") ?? "", tokenFrom(req) ?? ""].filter(Boolean);
       if (offered.some((t) => slots.some((x) => x.cwd && x.selfToken && secretEq(t, x.selfToken))))
@@ -22671,34 +22545,26 @@ Bun.serve<WSData>({
       return handleOwnerProgramRoute(req, url);
     }
 
-    // The Supervisor is an owner bracket above the Programs, and it takes exactly the same owner
-    // gate for exactly the same reason: a self token uses its own scoped header and is therefore
-    // not a credential here at all (401), and a steward token is a plain owner-auth failure rather
-    // than a second authority over who supervises the fleet.
+    // The Supervisor is an owner bracket above the Programs, same owner gate for the same reason: a
+    // self token is not a credential here (401), a steward token a plain owner-auth failure.
     if (url.pathname === "/api/supervisor/bootstrap") {
       if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
       if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
       return bootstrapSupervisor(await readJson(req) ?? {});
     }
 
-    // steward principal: same placement rationale as self/autos above — sits AFTER the
-    // SHARE_HOSTS gate, so a valid steward token is structurally unreachable from the public
-    // tunnel. Any request carrying the steward token is intercepted HERE, before the owner
-    // gate below: hitting an out-of-scope path (kill/land/share/open, or any owner route)
-    // with a valid-but-wrong-scope credential is a 403 (told apart from tokenGate's 401,
-    // which means "not a credential we recognize at all" and carries its throttle/audit).
+    // steward principal: AFTER the SHARE_HOSTS gate (unreachable from the tunnel), BEFORE the owner
+    // gate. An out-of-scope path with a valid-but-wrong-scope credential is 403, told apart from
+    // tokenGate's 401 ("not a credential we recognize", with its throttle/audit).
     const stewardGiven = tokenFrom(req);
     if (stewardGiven && stewardToken && secretEq(stewardGiven, stewardToken)) {
       const r = await handleStewardRoute(req, url);
       return r ?? json({ error: "steward token: route not in scope" }, 403);
     }
 
-    // helper principal (THE REMOTE HELPER PORTAL): same placement rationale as the steward block
-    // above — after the SHARE_HOSTS gate, so the portal is structurally unreachable from the public
-    // tunnel, and before the owner gate, so a helper token never falls through to it. Unlike the
-    // steward block this dispatches on the PATH first and only then checks the credential: the
-    // owner's own cookie must open /helper from the board, and a path-blind interception would have
-    // made every owner request pay this handler's auth.
+    // helper principal (THE REMOTE HELPER PORTAL): same placement as the steward block. Unlike it this
+    // dispatches on the PATH first, then the credential: the owner's own cookie must open /helper, and a
+    // path-blind interception would make every owner request pay this handler's auth.
     {
       const r = await handleHelperRoute(req, url);
       if (r) return r;
@@ -22831,10 +22697,8 @@ Bun.serve<WSData>({
           return json({ ok: true, comment: c });
         }
       }
-      // NO send route, deliberately: a guest has no way to put text into the pane. It was
-      // removed with the interactive mode rather than gated, so there is no branch left that a
-      // later change could flip back open. logPrompt's "share" source stays — it labels prompts
-      // already written to the log by the mode that used to exist.
+      // NO send route, deliberately: removed with the interactive mode rather than gated, so no branch is
+      // left that a later change could flip open. (logPrompt's "share" source labels old log rows.)
       return json({ error: "bad request" }, 400);
     }
     const wsShare = /^\/ws-share\/([a-z0-9]+)$/.exec(url.pathname);
@@ -22882,10 +22746,8 @@ Bun.serve<WSData>({
       const rowsParam = url.searchParams.get("rows");
       const cols = colsParam ? Math.min(300, Math.max(20, Number(colsParam) | 0)) : 0;
       const rows = rowsParam ? Math.min(200, Math.max(10, Number(rowsParam) | 0)) : 0;
-      // set by the client's explicit reload/refresh action — a plain reconnect (auto-retry
-      // after a drop, or a fresh slot assignment) only reseeds on an actual width mismatch,
-      // which does nothing if the client's width already happens to match; force skips that
-      // check so "reload" reliably re-derives from tmux's current state either way
+      // force = the client's explicit reload: a plain reconnect only reseeds on an actual width mismatch,
+      // force skips that check so "reload" reliably re-derives from tmux's current state.
       const force = url.searchParams.get("force") === "1";
       // seed = how many lines of scrollback this client is willing to be handed on connect
       // (the data-saver switch sends it; a normal client omits it). Clamped rather than
@@ -22906,24 +22768,17 @@ Bun.serve<WSData>({
         // once it goes stale — "old client after a deploy" must not look like a regression
         v: bundleV(),
         autos,
-        // the event-triggered siblings, served next to them: who is waiting to be told what, and
-        // what became of the ones that are spent. There is no board button yet — the surface is
-        // the route — but an armed subscription nobody can SEE is the same silent state this
-        // feature exists to remove, so it rides the owner poll from the first commit.
+        // the event-triggered siblings: an armed subscription nobody can SEE is the silent state this
+        // feature exists to remove, so it rides the owner poll.
         watches,
         // Typed Watch completions are durable objects; pane text is only their transport. The
         // owner sees every receiver binding and terminal/uncertain state here, including events
         // whose receiver has gone and that therefore cannot appear in any current /api/self row.
         events: fleetEvents,
-        // ONE NUMBER, on purpose. This is the app's most expensive path, so the attention inbox
-        // rides it as the count of rows that still want the owner (open + send-uncertain) and
-        // nothing else; the row bodies are behind GET /api/attention, fetched when the panel opens
-        // and re-fetched when this count moves while it is open.
-        //
-        // OMITTED AT ZERO, like the per-slot harness/effort fields above and for the same reason:
-        // nothing waiting is the overwhelmingly common case, and this payload is measured against a
-        // 12 KiB budget (e2e/tasks.ts, docs/data-saver.md §1) that an unconditional field crossed by
-        // four bytes. The client reads absent as zero, so absent and 0 mean the same thing here.
+        // ONE NUMBER, on purpose: the attention inbox rides the app's most expensive path as the count of
+        // rows that still want the owner; the bodies are behind GET /api/attention. OMITTED AT ZERO like
+        // harness/effort: this payload is measured against a 12 KiB budget (e2e/tasks.ts, docs/data-saver.md
+        // §1) that an unconditional field crossed by four bytes. Absent reads as zero.
         ...(attentionRequests.some((a) => a.status === "open" || a.status === "send-uncertain")
           ? { attentionOpen: attentionRequests.filter((a) => a.status === "open" || a.status === "send-uncertain").length }
           : {}),
@@ -22936,10 +22791,8 @@ Bun.serve<WSData>({
         dispatch: { available: !!DISPATCH_REPO, on: dispatchOn, maxLanes: DISPATCH_MAX_LANES, repo: DISPATCH_REPO },
         // Global runtime fact, beside dispatch rather than inferred per row from stored verdicts.
         analysis: { on: ANALYSIS_ON },
-        // The brief compiler's mode is its OWN fact beside the analyst's — one switch used to imply
-        // the other, and a client that inferred one from the other would re-create exactly that.
-        // OMITTED AT ZERO like attentionOpen above and for the same 12 KiB reason: off is the
-        // default and the common case, and absent reads as off wherever it is consumed.
+        // The brief compiler's mode is its OWN fact beside the analyst's — one switch used to imply the
+        // other. OMITTED AT ZERO like attentionOpen, for the same 12 KiB reason; absent reads as off.
         ...(BRIEF_ON ? { briefCompiler: { on: true } } : {}),
         autosOn,
         quietHours,
@@ -22955,18 +22808,9 @@ Bun.serve<WSData>({
         // the suite mutex and the lanes' own verify reports — null when neither has anything to
         // say. Sight, not control: see the verify GATE region for why nothing here reaps or runs.
         gate: gateView(),
-        // the helper device register — machine-level like the gate line beside it, and the owner's
-        // ONLY view of the machines that take work off this box (the portal is the helper's view,
-        // and it shows one device: its own). OMITTED WHEN EMPTY, like attentionOpen above and for
-        // the same 14 KB reason: a fleet nobody has ever registered a device with pays nothing for
-        // this feature, and absent reads as "no device has ever registered" — which is exactly
-        // what it means. It rides this poll rather than a route of its own because the panel is
-        // drawn beside the gate line and must move with it, and because the whole payload is one
-        // small array. MEASURED, not guessed (2026-08-28, two registered devices, one holding a
-        // claim): 293 B for the fat row (three capabilities, a held claim), 192 B for the plain
-        // one. The ceiling is HELPER_DEVICE_KEEP=20 such rows, ~5 KB, which is real against the
-        // 14 KB budget e2e/tasks.ts holds — but 20 devices means twenty machines the owner runs,
-        // and the honest fix then is a cap here, not a smaller row.
+        // the helper device register — the owner's ONLY view of the machines that take work off this box.
+        // OMITTED WHEN EMPTY, for the same budget reason as attentionOpen; rides this poll because the panel
+        // is drawn beside the gate line. Row sizes MEASURED, ceiling HELPER_DEVICE_KEEP: server-narrativ-archiv.md#fetch-get-apisessions
         ...(helperDevices.size ? { helperDevices: helperDevicesView() } : {}),
         // what this server has thrown since it booted — null while nothing has, so an untroubled
         // fleet pays ~14 bytes for it. Sight only: nothing here retries, suppresses or heals
@@ -22985,11 +22829,8 @@ Bun.serve<WSData>({
             repo: s.cwd ? (s.worktree?.repo ?? repoInfo.get(s.id) ?? null) : null,
             lastOutput: s.lastOutput,
             git: gitInfo.get(s.id) ?? null, worktree: s.worktree, model: s.model,
-            // OMITTED when null, which is the overwhelmingly common case — this is the 2s poll,
-            // already the app's most expensive path (data-saver), and a null per slot per poll is
-            // bytes for nothing. The client reads absent as "the default harness". What each
-            // harness SUPPORTS is not here at all: that is static, and rides GET /api/harnesses
-            // once, instead of being re-sent every two seconds for every slot.
+            // OMITTED when null (the common case) — this is the 2s poll (data-saver); absent reads as "the
+            // default harness". What each harness SUPPORTS is static and rides GET /api/harnesses once.
             ...(s.harness ? { harness: s.harness } : {}),
             ...(s.effort ? { effort: s.effort } : {}),
             // Codex binds its rollout lazily after the first prompt. This typed advisory is the
@@ -23000,24 +22841,18 @@ Bun.serve<WSData>({
               sessionId: s.sessionId,
               disconnectSeenAt: s.codexDisconnectSeenAt,
             } } : {}),
-            // WHICH BOX AND WHICH DAEMON — RESOLVED, and carried whenever the slot's harness has a
-            // container concept at all, including when the slot chose neither. That is the opposite
-            // rule from `harness`/`effort` above, and it is the point of the row: "which VM did I
-            // get" is unanswerable if the default case sends nothing, which is exactly the state
-            // this replaced. It costs two short strings on the rare slot that runs in a box and
-            // nothing on every other, so the 2s poll does not notice.
+            // WHICH BOX AND WHICH DAEMON — carried whenever the harness has a container concept at all, the
+            // default case included: the OPPOSITE rule from harness/effort, because "which VM did I get" is
+            // unanswerable if the default sends nothing. Two short strings on the rare boxed slot.
             ...(harnessOf(s.harness).supports.container ? boxFor(s) : {}),
             // "no-agent" is the one that matters: the pane is alive and accepting keystrokes with
             // nothing behind it — what an unresolvable model leaves, and what typing into it means.
             // Cached (git tick), so it is a REPORT, never a gate: every gate keeps its own fresh
             // probe. null = the tick has not reached this slot yet, which is not an answer.
             agent: agentInfo.get(s.id) ?? null,
-            // how full this session's context is, from its own transcript's newest usage record.
-            // Present on every slot (never omitted like `harness` above) because its null is an
-            // ANSWER — "Fleet cannot tell for this slot" — and a reader must be able to see the
-            // difference between that and an empty context. Cached against the file's identity, so
-            // an unchanged transcript costs one stat here. The owner sees this value, and the
-            // separately armed tickMigrate reads the SAME function; null remains "cannot tell".
+            // how full this session's context is. Present on EVERY slot (never omitted like `harness`) because
+            // its null is an ANSWER — "Fleet cannot tell" — distinct from an empty context. Cached against the
+            // file's identity; the separately armed tickMigrate reads the SAME function.
             ctx: contextFill(s),
             share: sh ? {
               id: sh.id, password: sh.secret, created: sh.created,
@@ -23031,11 +22866,9 @@ Bun.serve<WSData>({
         }),
       });
     }
-    // Attended Codex recovery is owner-only by POSITION below tokenGate. It is deliberately not
-    // part of the 2 s poll: opening the surface performs one bounded, full historical walk and
-    // exposes identity metadata only — never transcript content. Unlike v1 lazy discovery, this
-    // route has no pane-lifetime window because an older manually resumed conversation is exactly
-    // what the owner is here to identify.
+    // Attended Codex recovery: owner-only by POSITION, deliberately NOT in the 2 s poll (one bounded full
+    // historical walk, identity metadata only, never transcript content). No pane-lifetime window: an
+    // older manually resumed conversation is exactly what the owner is here to identify.
     const codexCandidatesMatch = /^\/api\/slots\/(\d+)\/codex-candidates$/.exec(url.pathname);
     if (req.method === "GET" && codexCandidatesMatch) {
       const s = slotFrom(codexCandidatesMatch[1]);
@@ -23090,12 +22923,9 @@ Bun.serve<WSData>({
         errors: [...serverErrors.values()].sort((a, b) => b.last - a.last),
       });
     }
-    // print/PDF export: full scrollback as a self-contained light-theme page — plain capture
-    // (no -e) because a white page prints better than terminal colors. That is the WHOLE reason
-    // now: this comment also claimed -e bakes in absolute-column cursor jumps, and that premise
-    // was measured false on tmux 3.6a (see the WS reseed path — `-e` minus SGR is byte-identical
-    // to plain). Leaving the export plain is a design choice, not a workaround.
-    // ?format=txt downloads raw.
+    // print/PDF export: full scrollback as a self-contained light-theme page — plain capture (no -e)
+    // because a white page prints better. A design choice, not a workaround: the old cursor-jump premise
+    // was measured false on tmux 3.6a (server-narrativ-archiv.md#fetch-get-apislotsidexport). ?format=txt downloads raw.
     const exportMatch = /^\/api\/slots\/(\d+)\/export$/.exec(url.pathname);
     if (req.method === "GET" && exportMatch) {
       const s = slotFrom(exportMatch[1]);
@@ -23149,10 +22979,8 @@ Bun.serve<WSData>({
       const q = (url.searchParams.get("q") ?? "").toLowerCase();
       const { rows, total, malformed } =
         await readLedger<{ ts?: unknown; text?: unknown; label?: unknown; cwd?: unknown }>(PROMPT_LOG);
-      // three different counts, and this route is the only one where they can all differ:
-      // `total` = rows in the journal, `matched` = rows this q kept, `prompts.length` = the window.
-      // They used to be one number (`lines.length`) reported next to a q-FILTERED list, so a search
-      // that matched two rows still answered "total 4212" — read as "capped", never as "filtered".
+      // three different counts, and this is the only route where all can differ: `total` = rows in the
+      // journal, `matched` = rows this q kept, `prompts.length` = the window. Narrativ: server-narrativ-archiv.md#fetch-get-apiprompts
       const all = rows.filter((e) => !q || `${e.text} ${e.label ?? ""} ${e.cwd ?? ""}`.toLowerCase().includes(q));
       all.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0) - (typeof a.ts === "number" ? a.ts : 0));
       return json({ prompts: all.slice(0, limit), total, matched: all.length, malformed });
@@ -23167,20 +22995,14 @@ Bun.serve<WSData>({
       events.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0) - (typeof a.ts === "number" ? a.ts : 0));
       return json({ events: events.slice(0, limit), total, malformed });
     }
-    // the same audit trail as /api/audit, read as slot HEALTH rather than as a list of lines: does
-    // a slot keep its identity across a crash, does one of them keep falling over, how long does a
-    // session live and how does it end (slotstats.ts names the four questions and the exclusions).
-    // Derived, never stored — the events were always there, only nobody aggregated them.
+    // the same audit trail as /api/audit, read as slot HEALTH (slotstats.ts names the four questions
+    // and the exclusions). Derived, never stored.
     if (url.pathname === "/api/slot-stats" && req.method === "GET") {
       return json(await slotStatsView(Date.now()));
     }
-    // the per-check trail, read as the flake question (trailstats.ts): which checks fail, where
-    // the suite spends its wall clock, and — the one that replaces a seven-minute re-run — did
-    // check X fail on trees that do not contain my change. Same access model as /api/slot-stats
-    // above: derived, never stored, owner-only by POSITION (past the tokenGate, structurally 404
-    // on SHARE_HOSTS). ?check= turns on the point answer, ?suite= and ?days= narrow the window.
-    // It gates nothing and alarms nobody — a verdict here is EVIDENCE for the lane's own proof
-    // order, not a substitute for it.
+    // the per-check trail, read as the flake question (trailstats.ts): did check X fail on trees that do
+    // not contain my change. Same access model as /api/slot-stats: derived, never stored, owner-only by
+    // POSITION. It gates nothing — a verdict here is EVIDENCE for the lane's own proof order, not a substitute.
     if (url.pathname === "/api/flakes" && req.method === "GET") {
       return json(trailStatsFromQuery(url));
     }
@@ -23235,16 +23057,10 @@ Bun.serve<WSData>({
     // else calls them — no tick, no auto.
     if (url.pathname === "/api/deploys" && req.method === "GET") return await deploysRoute(url);
     if (url.pathname === "/api/deploy" && req.method === "POST") return await deployVerb("owner");
-    // THE DOSSIER (see the dossier region): the same six sources the lenses above read one at a
-    // time, joined by branch into one lane's story — plus the fleet/land note, which no other route
-    // reads. Owner-only by POSITION exactly like its inputs, and read-only by construction: it
-    // opens no file for writing and runs no git command that can mutate a tree.
-    //
-    // Branch names carry slashes, so the key is a QUERY parameter and not a path segment — the
-    // idiom /api/commits and /api/dirinfo already use for path-shaped values, and the one that
-    // cannot be broken by a proxy normalizing %2F. Without it: the index, i.e. which lanes there
-    // are to read at all (every branch the outcome ledger knows, plus the lanes open right now,
-    // which by definition have no outcome row yet).
+    // THE DOSSIER (see the dossier region): six sources joined by branch into one lane's story, plus the
+    // fleet/land note. Owner-only by POSITION, read-only by construction. Branch names carry slashes, so
+    // the key is a QUERY parameter, never a path segment (a proxy normalizing %2F cannot break it).
+    // Without it: the index — every ledger branch plus the lanes open right now. Narrativ: server-narrativ-archiv.md#fetch-get-apilane
     if (url.pathname === "/api/lane" && req.method === "GET") {
       const branch = (url.searchParams.get("branch") ?? "").trim();
       const repoHint = (url.searchParams.get("repo") ?? "").trim() || null;
@@ -23271,19 +23087,15 @@ Bun.serve<WSData>({
         byBranch.set(b, { branch: b, repo: s.worktree.repo, ts: byBranch.get(b)?.ts ?? sessionStart(s) ?? 0,
           disposition: byBranch.get(b)?.disposition ?? null, live: s.id });
       }
-      // OPEN lanes first, then finished ones newest-first. Not one `ts` ordering for both: a live
-      // lane's `ts` is its session start, which is unreadable for a pane whose transcript does not
-      // exist yet (sessionStart returns null) — such a lane would sort to the very bottom, i.e. the
-      // lane most worth reading would be the hardest to find. Ranking by state instead of inventing
-      // a timestamp keeps the list honest AND useful.
+      // OPEN lanes first, then finished ones newest-first — not one `ts` ordering: a live lane's `ts` is
+      // its session start, unreadable (null) for a pane without a transcript yet, which would sort the
+      // lane most worth reading to the very bottom.
       const lanes = [...byBranch.values()]
         .sort((a, b) => (a.live === null ? 1 : 0) - (b.live === null ? 1 : 0) || b.ts - a.ts);
       return json({ lanes: lanes.slice(0, 500), total: lanes.length });
     }
-    // the transport ledger (see the TRANSPORT region): bytes actually sent since boot, per peer
-    // and per path. Its OWN route on purpose — /api/sessions is the endpoint being shrunk and is
-    // polled every 2s, so a counter carried inside it would inflate the very thing it measures.
-    // Owner-only, read-only, and it says nothing about WHY bytes were sent.
+    // the transport ledger (TRANSPORT region). Its OWN route on purpose: /api/sessions is the endpoint
+    // being shrunk, and a counter inside it would inflate what it measures. Owner-only, read-only.
     if (url.pathname === "/api/transport" && req.method === "GET") return json(transportReport());
     // the owner disposition rail (see the DISPOSITION region). GET is the same read model as the
     // two trails above; POST is the ONLY writer, and it is owner-only by construction — a lane's
@@ -23302,14 +23114,10 @@ Bun.serve<WSData>({
     // this repo is public, and the host half of that URL is the owner's own to type.
     if (url.pathname === "/api/helper/token" && req.method === "GET")
       return json({ token: helperToken, claimTimeoutMs: HELPER_CLAIM_TIMEOUT_MS });
-    // ...and the owner's half of the device register (stage A). It lives HERE, below the owner
-    // gate and beside /api/helper/token, for the same reason that route does: handleHelperRoute
-    // scopes by an exact-match regex, so a path it does not name falls straight through to the
-    // owner gate — the helper principal cannot reach this, and the perimeter regex e2e/security.ts
-    // pins does not grow by one character.
-    // The route STORES A WISH AND NOTHING ELSE: no dispatch, no connection to the device, no
-    // effect on any claim it currently holds. The device finds out on its next heartbeat, or never
-    // if it has stopped polling — which degrades exactly like a dead daemon does today.
+    // the owner's half of the device register. HERE, below the owner gate: handleHelperRoute scopes by an
+    // exact-match regex, so the helper principal cannot reach this and the perimeter regex e2e/security.ts
+    // pins does not grow. The route STORES A WISH AND NOTHING ELSE: no dispatch, no connection, no
+    // effect on a held claim — the device finds out on its next heartbeat, or never.
     const devMode = /^\/api\/helper\/devices\/([a-z0-9]{8,32})\/mode$/.exec(url.pathname);
     if (devMode && req.method === "POST") {
       const body = await readJson(req);
@@ -23324,11 +23132,9 @@ Bun.serve<WSData>({
       audit("helper_device_mode", undefined, `${d.name} -> ${d.desiredMode}`);
       return json({ device: d });
     }
-    // ✨ rework a compose-box draft. Runs in the focused slot's cwd so repo context
-    // (CLAUDE.md etc.) rides along; the result replaces the box, never auto-sends.
-    // The slot's deterministic git state rides along as a DATA block — the same briefPayload
-    // the sideboard shows — so the enhancer can ground a vague draft in a real path/branch
-    // instead of returning it untouched. Facts only; it never sees the session itself.
+    // ✨ rework a compose-box draft in the focused slot's cwd; the result replaces the box, never
+    // auto-sends. The slot's git state rides along as a DATA block (briefPayload) — facts only, the
+    // enhancer never sees the session itself.
     if (url.pathname === "/api/enhance" && req.method === "POST") {
       const body = await readJson(req);
       if (!body || typeof body.text !== "string" || !body.text.trim() || body.text.length > 20_000)
@@ -23339,10 +23145,8 @@ Bun.serve<WSData>({
       const facts = s?.cwd ? await briefPayload(s) : null;
       try {
         const prompt = await runEnhance(body.text.trim(), s?.cwd ?? HOME, facts);
-        // draftId: the disposition rail's join key for this draft (see the DISPOSITION region).
-        // Stamped here, not client-side — the key must not drift, and the plain-http Tailscale
-        // origin has no crypto.subtle. Identical output → identical id, which is correct: the
-        // label is about the CONTENT the owner ruled on.
+        // draftId: the disposition rail's join key. Stamped here, not client-side — the key must not drift,
+        // and plain-http Tailscale has no crypto.subtle. Identical output → identical id, correctly so.
         return json({ prompt, draftId: createHash("sha256").update(prompt).digest("hex").slice(0, 16) });
       } catch (e) {
         return json({ error: e instanceof Error ? e.message : "enhance failed" }, 502);
@@ -23396,18 +23200,14 @@ Bun.serve<WSData>({
       if (!p) return json({ error: "not a git repository" }, 400);
       return json({ ...p, worktree: s.worktree });
     }
-    // lane map: every open worktree of the focused slot's repo — held by which slot,
-    // dirty count, ahead/behind vs the primary checkout's HEAD. Includes ORPHANS
-    // (worktrees whose slot was killed): previously invisible, now reattachable/removable.
-    // Works from lane slots too: `worktree list` from a linked worktree covers the whole repo.
+    // lane map: every open worktree of the focused slot's repo, including ORPHANS (worktrees whose slot
+    // was killed). Works from lane slots too: `worktree list` from a linked worktree covers the repo.
     const wtsMatch = /^\/api\/slots\/(\d+)\/worktrees$/.exec(url.pathname);
     if (req.method === "GET" && wtsMatch) {
       const s = slotFrom(wtsMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
-      // From a CLONE lane, `--show-toplevel` is the clone itself — a self-contained repo whose
-      // only worktree is the lane, which would render the lane map as "this repo has one lane, me".
-      // The recorded repo is the one fact that still points at the origin, so it wins where it
-      // exists. A worktree lane answers identically either way (it shares the root's git).
+      // From a CLONE lane, `--show-toplevel` is the clone itself; the recorded repo is the one fact that
+      // still points at the origin, so it wins. A worktree lane answers identically either way.
       const top = s.worktree?.form === "clone"
         ? { code: 0, out: s.worktree.repo, err: "" }
         : await git(s.cwd, "rev-parse", "--show-toplevel");
@@ -23418,12 +23218,9 @@ Bun.serve<WSData>({
       // ahead/behind measured against the integration branch, not the primary's HEAD (which may
       // be parked off it) — matches what land actually integrates onto
       const intb = (await integrationBranch(primary.path)) ?? "HEAD";
-      // `git worktree list` is the source of truth for worktree lanes and CANNOT see a clone lane —
-      // a clone is not a worktree of this repo, it is its own repository. Left out, a clone lane
-      // would be missing from the one surface whose whole job is "every lane open on this repo",
-      // and the omission would read as "no such lane" rather than "a lane this list cannot see".
-      // Only clones of THIS repo, and only live ones: a clone has no on-disk registry, so unlike a
-      // worktree there is no orphan of it to rediscover after its slot is gone.
+      // `git worktree list` CANNOT see a clone lane (it is its own repository); left out, a clone lane
+      // would be missing from the one surface whose job is "every lane open on this repo". Only clones of
+      // THIS repo, and only live ones — a clone has no on-disk registry, so no orphan to rediscover.
       const cloneLanes: WtEntry[] = slots
         .filter((x) => x.cwd && x.worktree?.form === "clone" && x.worktree.repo === top.out)
         .map((x) => ({ path: x.cwd!, branch: x.worktree!.branch, primary: false }));
@@ -23446,9 +23243,8 @@ Bun.serve<WSData>({
       }
       return json({ repo: primary.path, main: intb !== "HEAD" ? intb : primary.branch, worktrees: rows });
     }
-    // focused risk preview for a SLOT's own lane worktree — used by the client before
-    // ⏏ land and before killing a lane-holding slot, neither of which had real git-state
-    // context before this (kill in particular never checked git state at all)
+    // focused risk preview for a SLOT's own lane worktree — read by the client before ⏏ land and before
+    // killing a lane-holding slot.
     const riskMatch = /^\/api\/slots\/(\d+)\/risk$/.exec(url.pathname);
     if (req.method === "GET" && riskMatch) {
       const s = slotFrom(riskMatch[1]);
@@ -23532,12 +23328,9 @@ Bun.serve<WSData>({
       void tickGit().catch(() => {});
       return json({ ok: true, removed: wt.path });
     }
-    // ☠ deliberate destruction — the ONE path that may eat work. Force-removes the
-    // worktree and deletes its branch; everything else in fleet refuses that. The client
-    // gates the click behind a read-first confirm, the server re-checks identity: branch
-    // rides along in the body so a click aimed at a stale board can't destroy whatever
-    // lane replaced it. Head sha is captured first and returned — the one-line undo
-    // (`git branch <name> <sha>`) keeps the commits recoverable until gc.
+    // ☠ deliberate destruction — the ONE path that may eat work (force-remove + branch delete). The
+    // server re-checks identity: the branch rides in the body so a click aimed at a stale board cannot
+    // destroy the lane that replaced it. Head sha is returned — the one-line undo until gc.
     if (url.pathname === "/api/worktrees/discard" && req.method === "POST") {
       const body = await readJson(req);
       if (!body || typeof body.repo !== "string" || typeof body.path !== "string" || typeof body.branch !== "string")
@@ -23610,14 +23403,10 @@ Bun.serve<WSData>({
     // caller can tell "no override" from "that worker was never wired up" without guessing.
     if (url.pathname === "/api/repo-workers" && req.method === "GET")
       return json({ keys: REPO_WORKER_KEYS, workers: repoWorkers });
-    // ↩ undo the last land on a repo — the reversible pointer for the one action that mutates
-    // main. ONE record per call, off the top of the repo's stack: two lands are reversed by two
-    // calls, each with its own git gate and its own `reverted` ledger row, because each is a
-    // separate statement about main. GIT decides, never optimism: reset main back to where it was
-    // ONLY while it is still EXACTLY where that land left it (nobody landed/committed on top) AND
-    // no commit the reset would discard has reached a remote (that would rewrite shared history).
-    // Otherwise refuse with a precise reason — a safe refusal is the correct answer. The landed
-    // branch is kept by land, so a reset leaves the work fully recoverable by reopening the lane.
+    // ↩ undo the last land on a repo: ONE record per call, off the top of the stack (two lands = two
+    // calls, each its own git gate and `reverted` ledger row). GIT decides, never optimism: reset ONLY
+    // while main is still EXACTLY where that land left it AND no discarded commit has reached a remote.
+    // Otherwise a precise refusal; the landed branch is kept, so the work stays recoverable.
     if (url.pathname === "/api/repos/undo-land" && req.method === "POST") {
       const body = await readJson(req);
       if (!body || typeof body.repo !== "string" || !body.repo.trim()) return json({ error: "expected { repo }" }, 400);
@@ -23673,12 +23462,9 @@ Bun.serve<WSData>({
           undoable: undoableFor(s.worktree.repo) });
       if (mergeInflight.has(s.id) || mergeStart.has(s.id)) return json({ running: true });
       mergeStart.add(s.id); // reserve BEFORE the first await — two parallel POSTs otherwise both start a rebase
-      // WHO IS CALLING, as far as this route can honestly tell. The channel is what tokenFrom
-      // already accepted; the SUSPECT flag is the one inference on top of it, and it is narrow on
-      // purpose: an owner token arriving over bearer/query on a lane whose task belongs to a
-      // Program that HAS a live bound MAIN is the exact shape a session reaching for fleet.json
-      // produces. The owner's own scripts use Bearer too, which is why this flags and never blocks
-      // — the land proceeds, and the sufficient unflagged path for a MAIN is now the self route.
+      // WHO IS CALLING, as far as this route can honestly tell: the channel is what tokenFrom accepted;
+      // SUSPECT is the one narrow inference — an owner token over bearer/query on a lane whose task belongs
+      // to a Program with a live bound MAIN. Flags, never blocks (the owner's own scripts use Bearer too).
       const ownerActor = ownerLandActor(req, s);
       if (ownerActor.suspect) {
         const at = s.taskId ? tasks.find((x) => x.id === s.taskId) : undefined;
@@ -23694,49 +23480,35 @@ Bun.serve<WSData>({
         if (st.out) return json({ status: "blocked",
           detail: `uncommitted changes — commit them (or ask the session to) first:\n${st.out.slice(0, 400)}` });
         if (await gitOpInProgress(cwd)) return json({ status: "blocked", detail: "a git merge/rebase is in progress in this lane — finish or abort it in the session first" });
-        // EVERY branch below reads one side against the other by ref: the confirm-land's ancestry
-        // check and `branch --merged` are root-side, the rebase is clone-side. On a clone lane none
-        // of that is true until the two are mirrored, and each would fail in its own confident way
-        // — "main is not an ancestor" for a lane that is perfectly rebased, or a rebase onto the
-        // base branch as it stood at clone time. Fail the whole request rather than proceed on refs
-        // that do not describe this lane. (No-op for a worktree lane.)
+        // EVERY branch below reads one side against the other by ref (ancestry and `branch --merged`
+        // root-side, the rebase clone-side). On a clone lane none of that holds until the two are mirrored,
+        // and each would fail in its own confident way — so fail the whole request. (No-op for a worktree lane.)
         const laneSync = await syncLaneRefs(s.worktree, cwd);
         if (laneSync) return json({ status: "blocked", detail: `${laneSync.error} — nothing was merged or landed.` });
-        // the idle gate guards a run that STARTS the agent — a confirm-land is a pure git ff
-        // of an already-reviewed resolution, so the agent's own trailing pane output must not
-        // block it (otherwise every confirm right after a resolve bounces off "let it settle").
-        // the shared choke-point, idle-only: a land is an owner-initiated git ff, not automation,
-        // so it deliberately waives the master stop + quiet hours (opts off) and only honors the
-        // idle gate — and a confirm-land waives even that (idleMs 0), since it's a pure ff of an
-        // already-reviewed resolution whose trailing pane output must not block it.
+        // the shared choke-point, idle-only: a land is an owner-initiated git ff, not automation, so it
+        // waives master stop + quiet hours and honors only the idle gate — and a confirm-land waives even
+        // that (idleMs 0): a pure ff of an already-reviewed resolution must not bounce off trailing pane output.
         const landGate = await canDeliver(s, { now: Date.now(), killSwitch: false, harness: false, alive: false, quietHours: false, idleMs: body?.confirm ? 0 : MERGE_IDLE_MS });
         if (!landGate.ok) return json({ status: "blocked", detail: "the session is actively working right now — let it settle for a moment, then land" });
         const main = await integrationBranch(repo);
         if (!main) return json({ error: "cannot resolve the repo's main branch" }, 400);
         if (main === branch) return json({ error: "the integration branch is the lane branch itself" }, 409);
-        // the collision guard only matters when the integration branch is checked out in a
-        // working tree: an ff-merge THERE rewrites the lane's files on disk and git refuses if
-        // one is uncommitted. When the integration branch is checked out nowhere (the primary
-        // parked off it), landing advances the ref with branch -f and touches no working tree,
-        // so a dirty primary is irrelevant — skip the guard entirely.
+        // the collision guard only matters when the integration branch is checked out somewhere: an ff-merge
+        // THERE rewrites files on disk. Checked out nowhere (primary parked off it), landing advances the
+        // ref with branch -f and touches no working tree — skip the guard entirely.
         const landHolder = (await listWorktrees(repo)).find((w) => w.branch === main);
         if (landHolder) {
-          // an ff-merge rewrites ONLY the files the lane changed — so refuse the land only if
-          // one of THOSE files is uncommitted in the holder tree. An unrelated dirty file
-          // (e.g. a working HANDOFF.md the owner keeps editing) is left untouched by git's ff
-          // and must not block; the old check refused on ANY dirty tracked file and wedged every
-          // land behind an irrelevant edit. git's own --ff-only stays the final arbiter below.
+          // an ff-merge rewrites ONLY the files the lane changed — so refuse only if one of THOSE is
+          // uncommitted in the holder tree; an unrelated dirty file (a working HANDOFF.md) must not block.
+          // git's own --ff-only stays the final arbiter below. Narrativ: server-narrativ-archiv.md#fetch-post-apislotsidmerge
           const pst = await git(landHolder.path, "status", "--porcelain");
           if (pst.code === 0 && pst.out) {
             const rows = pst.out.split("\n").filter((l) => l && !l.startsWith("!!"));
             const pathOf = (l: string): string =>
               (l.includes(" -> ") ? l.slice(l.indexOf(" -> ") + 4) : l.slice(3)).trim();
             const dirty = new Set(rows.filter((l) => !l.startsWith("??")).map(pathOf));
-            // UNTRACKED twin of the same refusal (2026-08-05): git's ff-only refuses to overwrite
-            // an untracked holder file just as hard as a modified one — but that used to surface
-            // only AFTER the full verify chain, as raw stderr in the verdict. Same refusal, before
-            // the spend, curated. Unrelated untracked files stay ignored (the "unbeteiligte
-            // schmutzige Datei" doctrine) — only a name the lane itself adds collides.
+            // UNTRACKED twin of the same refusal (2026-08-05): git's ff-only refuses to overwrite an untracked
+            // holder file just as hard — caught here, before the verify spend. Only a name the lane itself adds collides.
             const untracked = new Set(rows.filter((l) => l.startsWith("??")).map(pathOf));
             if (dirty.size || untracked.size) {
               const mb = await git(repo, "merge-base", main, branch);
@@ -23755,16 +23527,12 @@ Bun.serve<WSData>({
             }
           }
         }
-        // confirm-land: the owner reviewed an agent conflict resolution and is landing it.
-        // No agent, no trust in the stored verdict — the guarantee is purely git: main is an
-        // ancestor of the (clean) lane branch, so the branch is genuinely rebased on top and
-        // the ff-merge is safe. If main moved since the resolution the ancestry fails and we
-        // send them back to re-run ⏫ (which re-rebases against the new main).
+        // confirm-land: the owner reviewed an agent conflict resolution and is landing it. No agent, no
+        // trust in the stored verdict — the guarantee is purely git: main is an ancestor of the clean lane
+        // branch. If main moved since, the ancestry fails and they re-run ⏫.
         if (body?.confirm === true) {
-          // THE SAME step the Program-MAIN self-land route takes under a `guarded` promotion; the
-          // owner arm marks a superseded verify stale rather than re-running it, and records the
-          // land as human-confirmed. Everything else is one function, so the two confirms cannot
-          // drift into two land paths.
+          // THE SAME step the Program-MAIN self-land route takes under a `guarded` promotion — one function,
+          // so the two confirms cannot drift into two land paths.
           const confirmed = await confirmResolvedCandidate(s, cwd, repo, main, branch,
             { byHuman: true, actor: ownerActor });
           return json(confirmed.body, confirmed.status);
@@ -23784,34 +23552,12 @@ Bun.serve<WSData>({
           }
           return json({ status: "merged", landed: true, branch, detail: "already merged — landed without the agent" });
         }
-        // ⏸ guard: a pending "resolved" verdict means agent-chosen conflict resolutions
-        // are sitting in this lane awaiting a human eye. While the lane is still rebased
-        // onto main, a plain re-run would sail through the clean path and LAND them
-        // unreviewed — refuse and point back at review. Only when main has moved on is
-        // the verdict genuinely stale; then a fresh run (which re-rebases) is the fix.
-        // The SAME guard covers an INTERRUPTED run that had already handed the conflicts to the
-        // agent (`conflicted` set — see mergeJob's marker): the resolutions may be committed in
-        // the lane and nobody, not even the server, ever saw a verdict for them. Ancestry is the
-        // same discriminator as above — main still an ancestor means the rebase stands, so a
-        // re-run would take the clean path and land unreviewed work. An interrupted run that
-        // never got past the script pre-pass carries NO `conflicted` and is deliberately not
-        // caught here: no agent judgment is in that tree, and a fresh run redoes rebase, verify
-        // and review from scratch, which is strictly the honest outcome.
-        // WHAT "resolved" DOES NOT MEAN. The status word is written for FOUR different sachlagen
-        // and only ONE of them holds a resolution: the conflict branch (`conflicted` + `resolvedBy`
-        // set), plus three CLEAN-rebase stops that merely decline to auto-land — verify never
-        // measured (`ok: null` — waitedOut/timedOut/skipped), verify measured RED (`ok: false`),
-        // and the ② reviewer flagging a look. None of those three has an agent's judgment in the
-        // tree, and gating them here told the owner a falsehood about their tree ("conflict
-        // resolution awaits your review") while refusing the very re-run their own verdict text
-        // recommends. Measured live three times on 2026-08-17/19 — twice on `waitedOut`, once on a
-        // red gate, which is the expensive one: it made a red gate unrepeatable, so the mandated
-        // flake proof (run the same tree again) could not be driven through the gate at all and
-        // the only exit from the verdict was `{confirm:true}`, the path that skips the measurement.
-        // So: discriminate on the RESOLUTION, not on the word.
-        // Both halves — the ⏸ hold and what a fresh run carries out of the superseded verdict —
-        // live in ONE helper shared with the Program-MAIN self-land route, so the two doors cannot
-        // drift into honouring unreviewed resolutions on one path and dropping them on the other.
+        // ⏸ guard: a pending "resolved" verdict with agent-chosen conflict resolutions in the lane must not
+        // sail through the clean path and LAND unreviewed; the SAME guard covers an INTERRUPTED run that had
+        // handed the conflicts to the agent (`conflicted`). Ancestry is the discriminator: main still an
+        // ancestor means the rebase stands. "resolved" is written for FOUR sachlagen and only ONE holds a
+        // resolution — discriminate on the RESOLUTION, not on the word. Both halves live in ONE helper shared
+        // with the self-land route. Why, and the live measurements: server-narrativ-archiv.md#fetch-post-apislotsidmerge
         const carry = await carriedFromPendingVerdict(s, repo, main, branch);
         if ("hold" in carry)
           return json({ running: false, last: carry.hold.last, status: carry.hold.last.status,
@@ -23847,9 +23593,7 @@ Bun.serve<WSData>({
         truncated: diff.length > DIFF_CAP,
       });
     }
-    // the slot's commits, for the review window's left column. Until this existed the UI could
-    // show a lane's commit COUNT (the outcome feed) and its subjects as a destructive-action
-    // warning (worktreeRisk), but never as something to read — there was no route.
+    // the slot's commits, for the review window's left column (slotCommits).
     const clMatch = /^\/api\/slots\/(\d+)\/commits$/.exec(url.pathname);
     if (req.method === "GET" && clMatch) {
       const s = slotFrom(clMatch[1]);
@@ -23906,14 +23650,10 @@ Bun.serve<WSData>({
       // it stays refused only if the cwd isn't a git repo, which commitLane's status check catches
       const body = await readJson(req);
       const mode = body?.mode === "agent" ? "agent" : "quick";
-      // the mid-run guard belongs HERE, not only in the client's confirm dialog: every other way
-      // into this route (a self-token auto, the raw owner API, a second tab) used to bypass the
-      // warning entirely and snapshot a half-finished tree. Same shape as the land path above —
-      // owner-initiated, so master stop / quiet hours / agent-liveness are deliberately waived
-      // and only the idle gate applies; `confirm` (the client sets it once the dialog or the
-      // main-session staging preview has been acknowledged) waives even that. The client's own
-      // threshold is LOOSER than MERGE_IDLE_MS, so anything the server blocks the dialog already
-      // covered — this closes the hole without adding a prompt the owner didn't have before.
+      // the mid-run guard belongs HERE, not only in the client's confirm dialog: a self-token auto, the raw
+      // API and a second tab bypassed it. Same shape as the land path — owner-initiated, so only the idle
+      // gate applies and `confirm` waives even that. The client's threshold is LOOSER than MERGE_IDLE_MS,
+      // so the dialog already covered anything the server blocks.
       const ciGate = await canDeliver(s, { now: Date.now(), killSwitch: false, harness: false, alive: false,
         quietHours: false, idleMs: body?.confirm ? 0 : MERGE_IDLE_MS });
       if (!ciGate.ok) return json({ committed: false, reason: "the session is actively working right now — a commit would snapshot a half-finished tree; let it settle, then commit" }, 409);
@@ -23926,11 +23666,8 @@ Bun.serve<WSData>({
         commitInflight.delete(s.id);
       }
     }
-    // the harness catalogue: what a session can be spawned as, and what each one can do. STATIC
-    // (the registry is a module constant), so the client fetches it once instead of the 2s poll
-    // carrying a copy per slot. This is what makes "degrade visibly" possible in the UI at all —
-    // without it the client would have to hardcode a second copy of `supports`, which is exactly
-    // the drift the registry exists to prevent.
+    // the harness catalogue: STATIC, fetched once instead of per slot per poll. Without it the client
+    // would hardcode a second copy of `supports` — exactly the drift the registry exists to prevent.
     if (url.pathname === "/api/harnesses" && req.method === "GET") {
       return json({
         harnesses: HARNESSES.map((h) => ({
@@ -23949,16 +23686,11 @@ Bun.serve<WSData>({
           // "is `container` an agent?" is exactly the question the client got wrong by guessing.
           role: h.role,
         })),
-        // A null model on the default adapter still launches this concrete model, and the picker
-        // must be able to say WHICH without copying an env-derived server constant into JS. It is
-        // Claude-only on purpose: a foreign adapter keeps its own implicit default, and the client
-        // labels that honestly as "default" instead of applying this value to it.
+        // A null model on the default adapter still launches this concrete model, and the picker must be
+        // able to say WHICH. Claude-only on purpose: a foreign adapter keeps its own implicit default.
         defaultModel: DEFAULT_MODEL,
-        // the fleet's box defaults, published for the same reason `default` above is: they are a
-        // fact about THIS fleet (FLEET_CONTAINER / FLEET_CONTAINER_CONTEXT), and the alternative is
-        // the client hardcoding "fleet"/"default" — a second copy of a server constant, which is
-        // the drift this catalogue exists to prevent. The picker shows them as placeholders, so an
-        // owner sees what typing nothing will get them.
+        // the fleet's box defaults, published for the same reason `default` is: a fact about THIS fleet
+        // (FLEET_CONTAINER / FLEET_CONTAINER_CONTEXT), and the alternative is the client hardcoding a copy.
         containerDefaults: { container: CONTAINER_NAME, containerContext: CONTAINER_CONTEXT },
       });
     }
@@ -23972,14 +23704,9 @@ Bun.serve<WSData>({
         return json({ error: e instanceof Error ? e.message : "bad path" }, 400);
       }
     }
-    // recent commits in a repo Fleet KNOWS — the activity window's second lens. The outcome ledger
-    // records what Fleet itself landed; this records what is actually in the repo, which is not the
-    // same set: a commit made by hand in a terminal session appears here and in no ledger.
-    //
-    // `repo` is validated against the known set rather than taken as a path. /api/dirinfo does run
-    // git in an owner-chosen directory, so this is not a boundary the app defends everywhere — but
-    // this route has no reason to reach beyond the repos Fleet is already working in, and a route
-    // that needs no generality should not offer any.
+    // recent commits in a repo Fleet KNOWS — what is actually in the repo, not what Fleet landed (a
+    // hand-made commit appears here and in no ledger). `repo` is validated against the known set, not
+    // taken as a path: a route that needs no generality should not offer any.
     if (url.pathname === "/api/commits") {
       const repos = knownRepos();
       const want = url.searchParams.get("repo");
@@ -23995,16 +23722,11 @@ Bun.serve<WSData>({
         capped: (rows?.length ?? 0) >= MAX_COMMIT_ROWS,
       });
     }
-    // --- ONE file, for every file list in the UI ---
-    // Four surfaces list files (the picker's Contents, a commit's files, a land's footprint, the
-    // board's changed-files card) and none of them could show one. This is the single route they
-    // share, and it answers in exactly two modes, because a file has two meanings here:
+    // --- ONE file, for every file list in the UI. Two modes, because a file has two meanings here:
     //   · ?path=<absolute>            — what is on disk NOW (the picker: the file may not be in git at all)
-    //   · ?repo=&rev=&path=<relative> — what a COMMIT left there (a commit's file list is a
-    //                                   statement about that revision, and today's bytes are not it)
-    // Bounded: FILE_CAP of text, and a NUL in the first 8 KB means binary — reported as binary, never
-    // rendered as mojibake. Access model is positional, exactly like /api/dirinfo and /api/commits
-    // above: past the owner tokenGate, structurally 404 on a share host.
+    //   · ?repo=&rev=&path=<relative> — what a COMMIT left there (today's bytes are not that statement)
+    // Bounded: FILE_CAP of text, a NUL in the first 8 KB means binary (reported, never rendered as
+    // mojibake). Positional access model, like /api/dirinfo and /api/commits.
     if (url.pathname === "/api/file") {
       const raw = url.searchParams.get("path") ?? "";
       const rev = url.searchParams.get("rev");
@@ -24045,14 +23767,10 @@ Bun.serve<WSData>({
       const body = fileBody(text);
       return json({ ...body, path, rev: null, size: st.size, ...editability(bytes, text, body) });
     }
-    // --- the file EXPLORER's tree -----------------------------------------------------------
-    // `git ls-files` and nothing else. It is one cheap call, it is the repo's OWN answer to
-    // "which files are mine", and it excludes node_modules and build output for free — a readdir
-    // walk would have to re-derive .gitignore badly and would then be the slowest thing on the
-    // board. The consequence is stated rather than hidden: an UNTRACKED file does not appear here.
-    // The board's changed-files card is where a new file shows up, and it opens the same viewer.
-    // Anchored on a SLOT, not a free path: the tree is "this session's repo", which is also the
-    // only directory the write route below will accept.
+    // --- the file EXPLORER's tree: `git ls-files` and nothing else — the repo's OWN answer to "which
+    // files are mine", node_modules excluded for free. Consequence stated, not hidden: an UNTRACKED file
+    // does not appear here (the changed-files card is where it shows up). Anchored on a SLOT: the tree
+    // is "this session's repo", the only directory the write route below accepts.
     if (url.pathname === "/api/tree") {
       const s = slotFrom(url.searchParams.get("slot"));
       if (!s?.cwd) return json({ error: "slot not active" }, 400);
@@ -24064,26 +23782,14 @@ Bun.serve<WSData>({
       const all = r.out.split("\0").filter(Boolean).sort();
       return json({ root, files: all.slice(0, TREE_CAP), total: all.length, capped: all.length > TREE_CAP });
     }
-    // --- the ONE route on this server that writes a file the owner named ---------------------
-    //
-    // /api/file above reads any absolute path on purpose — the picker browses the whole home
-    // directory, and that is existing, deliberate design. This route is deliberately NOT its
-    // mirror image: a read is recoverable, a write is not, and a write-anywhere endpoint would be
-    // a remote-code-execution gadget wearing an editor's face (~/.claude/settings.json,
-    // watchdog.sh, a launchd plist are each one path away from a textarea).
-    //
-    // So containment is not a validation step here, it is the route's shape:
-    //   · the target is resolved inside a SLOT's own working directory, and BOTH sides go through
-    //     realpath first. A string prefix test over unresolved paths is passed by any symlink
-    //     pointing out of the tree; the dispatcher's lane cap canonicalises for the same reason.
-    //     Resolved fresh, deliberately not through repoCanon() — that cache answers from a
-    //     previous resolution, and a guard must not.
-    //   · the file must already EXIST. An editor edits; creating one is a different gesture and
-    //     would need its own thinking about parent directories that do not exist yet.
-    //   · FILE_WRITE_DENY, above, wherever in the tree the file sits.
-    //   · the write is CONDITIONAL on the hash the reader was shown. A lane's agent writes the
-    //     same files this editor opens, so "last save wins" would mean silently deleting an
-    //     agent's work — the one new failure this feature would otherwise introduce.
+    // --- the ONE route on this server that writes a file the owner named. NOT the mirror of /api/file:
+    // a read is recoverable, a write is not, and write-anywhere is an RCE gadget wearing an editor's
+    // face. Containment is the route's SHAPE, not a validation step:
+    //   · the target is resolved inside a SLOT's working directory, BOTH sides through realpath (a prefix
+    //     test over unresolved paths is passed by any symlink); resolved fresh, never via repoCanon()'s cache
+    //   · the file must already EXIST · FILE_WRITE_DENY wherever it sits · the write is CONDITIONAL on
+    //     the hash the reader was shown — an agent writes the same files, "last save wins" would delete its work
+    // Narrativ: server-narrativ-archiv.md#fetch-post-apifilewrite
     if (url.pathname === "/api/file/write" && req.method === "POST") {
       const b = await readJson(req);
       const s = slotFrom(b?.slot);
@@ -24096,13 +23802,9 @@ Bun.serve<WSData>({
       if (b.text.includes("\0")) return json({ error: "refusing to write a NUL byte through a text editor" }, 400);
       let root: string;
       try { root = realpathSync(s.cwd); } catch { return json({ error: "this session's directory is gone" }, 400); }
-      // Only inside a git working tree, which is tighter than it looks and deliberate on two
-      // counts. It keeps the route's reach equal to the surface that offers it (the explorer is
-      // `git ls-files`, so it never appears for a plain directory) — a route that can write more
-      // than any UI can ask for is a gadget waiting to be found. And it means every edit made here
-      // is visible in `git status` and revertible with `git checkout --`: the owner's own undo,
-      // which a write into a bare directory would not have. Without it, a session opened on ~
-      // would make this editor's containment "the home directory", ~/.claude/settings.json included.
+      // Only inside a git working tree, deliberately: it keeps the route's reach equal to the surface that
+      // offers it (the explorer is `git ls-files`), and every edit is visible in `git status` and
+      // revertible. Without it a session opened on ~ would make the containment "the home directory".
       if (!existsSync(`${root}/.git`)) return json({ error: "this session is not in a git working tree" }, 400);
       let target: string;
       // resolve() lets an ABSOLUTE path through unchanged, which is what the viewer sends — the
@@ -24125,40 +23827,20 @@ Bun.serve<WSData>({
       audit("file_write", s.id, `${rel} · ${next.length}b`);
       return json({ ok: true, path: target, hash: createHash("sha256").update(next).digest("hex"), size: next.length });
     }
-    // --- the OTHER write: a file the OWNER hands to a session (drag&drop, paste, 📎) ----------
-    //
-    // Containment is the same shape as /api/file/write above and for the same reason — the target
-    // is built inside ONE slot's realpath'd working directory and can address nothing else. Two
-    // things differ, and both make this route the easier of the pair to reason about: the owner
-    // never names a path (the server does, from DROP_DIR), and the filename that does arrive is
-    // rebuilt rather than validated (dropName).
-    //
-    // The landability gate below is the load-bearing line. Dropping into the worktree is what
-    // makes retention free (see DROP_DIR), but an untracked file in a lane blocks its land, and
-    // that failure would be SILENT: the upload succeeds, the agent works for an hour, and the land
-    // refuses over a screenshot. So the route asks git whether the file it is about to write would
-    // be ignored, and refuses if not. Fail-closed, and the refusal carries the one line that fixes
-    // it. Verified as three separate facts in a scratch repo: with `drops/` ignored, `git status
-    // --porcelain` stays empty and `git worktree remove` succeeds and takes the drops with it;
-    // without it, status shows `?? drops/` and the remove refuses outright.
+    // --- the OTHER write: a file the OWNER hands to a session (drag&drop, paste, 📎). Same containment
+    // shape as /api/file/write; the owner never names a path (DROP_DIR) and the filename is rebuilt
+    // (dropName). The landability gate below is the load-bearing line: an untracked file in a lane
+    // blocks its land SILENTLY hours later, so the route asks git whether the file would be ignored and
+    // refuses if not, fail-closed. Verified facts: server-narrativ-archiv.md#fetch-post-apislotsidupload
     const upMatch = /^\/api\/slots\/(\d+)\/upload$/.exec(url.pathname);
     if (upMatch && req.method === "POST") {
       const s = slotFrom(upMatch[1]);
       if (!s?.cwd) return json({ error: "slot not active" }, 400);
       const capMb = Math.round(UPLOAD_CAP / 1024 / 1024);
-      // Refuse an oversized body BEFORE buffering it — a cap enforced only after the bytes are in
-      // memory is not a cap, and req.formData() would hold the whole thing. Advisory only: the
-      // authoritative check is over the decoded part's own size, below.
-      //
-      // THE DISCARD IS NOT OPTIONAL, and it has to be a READ rather than a cancel. Answering while
-      // the client is still sending leaves an unconsumed request body, and the next request on that
-      // connection then hangs — forever, not with an error. Measured against this route: a valid
-      // 1 KB upload issued after one over-cap upload never returned (15 s timeout, Bun's fetch).
-      // `req.body.cancel()` did NOT fix it and neither did answering `connection: close`; reading
-      // the stream to its end did. Draining is also what keeps the pre-check worth having: the
-      // bytes pass through a reader and are dropped, so memory stays flat where formData's would
-      // not. (curl and the browser tolerate the early answer either way — verified — so this is
-      // about every OTHER client, which is exactly the kind of thing not to leave to luck.)
+      // Refuse an oversized body BEFORE buffering it (advisory; the authoritative check is the decoded
+      // part's size below). THE DISCARD IS NOT OPTIONAL, and it has to be a READ rather than a cancel:
+      // answering while the client still sends leaves an unconsumed body, and the next request on that
+      // connection hangs forever — `req.body.cancel()` did NOT fix it, draining did. Measurement: server-narrativ-archiv.md#fetch-post-apislotsidupload
       if (Number(req.headers.get("content-length") ?? 0) > UPLOAD_CAP + UPLOAD_ENVELOPE_SLACK) {
         await drainBody(req);
         return json({ error: `too large — the cap is ${capMb} MB` }, 413);
@@ -24213,10 +23895,8 @@ Bun.serve<WSData>({
         truncated: diff.length > DIFF_CAP,
       });
     }
-    // what the folder under the picker's cursor actually IS. Deliberately a SEPARATE route from
-    // /api/dirs rather than fields on every listed row: this costs four git calls, and paying that
-    // per row would make browsing a directory of repos as slow as its slowest repo. One selection,
-    // one call. Owner-only by position — everything below the share-host gate above is.
+    // what the folder under the picker's cursor actually IS. A SEPARATE route from /api/dirs on purpose:
+    // four git calls per selection, never per listed row. Owner-only by position.
     if (url.pathname === "/api/dirinfo") {
       try {
         return json(await dirInfo(url.searchParams.get("path") ?? "~"));
@@ -24234,11 +23914,9 @@ Bun.serve<WSData>({
       saveState();
       return json({ ok: true, pins });
     }
-    // --- the attention inbox (owner side). The full rows live here rather than on /api/sessions,
-    // which carries only the open COUNT: that poll runs every 2s and was deliberately shrunk, and a
-    // row body per poll would undo exactly that (docs/data-saver.md). Answering is a delivery into
-    // the requester's pane, so it inherits the send-uncertain crash boundary; refusing is the
-    // receipt that the owner saw it and declined, which is why its reason is mandatory.
+    // --- the attention inbox (owner side). Full rows live here, /api/sessions carries only the COUNT
+    // (docs/data-saver.md). Answering is a delivery into the requester's pane (send-uncertain crash
+    // boundary); refusing is the receipt that the owner declined, which is why its reason is mandatory.
     if (url.pathname === "/api/attention" && req.method === "GET")
       return json({ requests: attentionOwnerView() });
     const attentionAnswer = /^\/api\/attention\/([0-9a-f]{24})\/answer$/.exec(url.pathname);
@@ -24247,11 +23925,9 @@ Bun.serve<WSData>({
     const attentionRefuse = /^\/api\/attention\/([0-9a-f]{24})\/refuse$/.exec(url.pathname);
     if (attentionRefuse && req.method === "POST")
       return refuseAttentionRequest(attentionRefuse[1], await readJson(req));
-    // --- the OPERATIONS inbox (owner side), strictly separate from the attention inbox above: that
-    // one carries decisions a program's main session raised, this one carries completion FACTS a
-    // subscription asked to be told about with delivery:"inbox". No new payload — the rows already
-    // ride /api/sessions as `events`. Owner-only by POSITION, past the tokenGate. Its twin is
-    // POST /api/self/events/:id/ack, which refuses exactly the rows this route accepts.
+    // --- the OPERATIONS inbox (owner side), separate from attention: completion FACTS a subscription
+    // asked for with delivery:"inbox". No new payload — the rows ride /api/sessions as `events`. Its
+    // twin is POST /api/self/events/:id/ack, which refuses exactly the rows this route accepts.
     const eventOwnerAck = /^\/api\/events\/([a-z0-9]+)\/ack$/.exec(url.pathname);
     if (eventOwnerAck && req.method === "POST")
       return await ownerAcknowledgeFleetEvent(eventOwnerAck[1]);
@@ -24262,17 +23938,12 @@ Bun.serve<WSData>({
       if (!body || typeof body.text !== "string" || !body.text.trim()) return json({ error: "bad text" }, 400);
       if (body.kind !== undefined && !isTaskKind(body.kind))
         return json({ error: `kind must be one of: ${TASK_KINDS.join(", ")}` }, 400);
-      // create-and-release is a RELEASE (see the field comments below), so it answers to the same
-      // rule as the ▸ queue button: only an auftrag enters the release lane. Before kind became
-      // settable here this route hard-set "lane", so the combination could not be expressed at all
-      // — making the kind editable is what opened the bypass, and this closes it at the door
-      // rather than letting a row arrive already `queued` in a state no tick will ever run.
+      // create-and-release is a RELEASE (see the field comments below), so only an auftrag enters the
+      // release lane — closed at the door rather than letting a row arrive `queued` in a state no tick runs.
       if (body.queue === true && isTaskKind(body.kind) && body.kind !== "auftrag")
         return json({ error: `a ${body.kind} is advisory, not a work brief — create it pending, then change its kind` }, 409);
-      // The row's persisted agent choice, in the attended route's exact top-level vocabulary and
-      // through the same validators (taskSpawnFromBody: harness first, then model/effort against
-      // that adapter). Absence persists nothing — the row stays legacy-shaped and the dispatch
-      // default (DEFAULT_SPAWN) remains its honest meaning.
+      // The row's persisted agent choice, through the attended route's validators (taskSpawnFromBody:
+      // harness first). Absence persists nothing — the row stays legacy-shaped, DEFAULT_SPAWN its meaning.
       const spawnChoice = taskSpawnFromBody(body);
       if (!spawnChoice.ok) return json({ error: spawnChoice.error }, 400);
       let taskProgramId: string | undefined;
@@ -24340,11 +24011,9 @@ Bun.serve<WSData>({
       audit("task_kind", undefined, `${t.id}:${before}->${t.kind}`);
       return json({ ok: true, task: t });
     }
-    // the manual "start now" button: dispatch THIS task into a fresh lane immediately.
-    // Independent of `dispatchOn` (the owner may run the queue entirely by hand with the auto
-    // tick off) and NOT bound by DISPATCH_MAX_LANES — the cap bounds UNATTENDED fan-out, and
-    // this is an attended click. Master stop / quiet hours don't bind either (owner act, the
-    // same carve-out canDeliver documents); the post-spawn claude-alive gate holds as always.
+    // the manual "start now" button. Independent of `dispatchOn` and NOT bound by DISPATCH_MAX_LANES —
+    // the cap bounds UNATTENDED fan-out, this is an attended click; master stop / quiet hours don't bind
+    // either (owner act, the canDeliver carve-out). The post-spawn claude-alive gate holds as always.
     const taskDispatch = /^\/api\/tasks\/([a-z0-9]+)\/dispatch$/.exec(url.pathname);
     if (req.method === "POST" && taskDispatch) {
       const t = tasks.find((x) => x.id === taskDispatch[1]);
@@ -24359,19 +24028,14 @@ Bun.serve<WSData>({
       // owner first (clarify-prompt.ts). Only reachable from this attended route.
       const dBody = await readJson(req);
       const clarify = dBody?.clarify === true;
-      // WHICH AGENT runs it. An explicit body field wins PER FIELD; a field the body does not name
-      // falls to the ROW's own persisted choice (Task.spawn via taskSpawnOf), and only full absence
-      // on both sides is the default adapter — so a body that predates this field on a legacy row
-      // takes exactly the path it always took, byte for byte. Validated BEFORE the free-slot lookup
-      // on purpose: a malformed request should be told it is malformed, not handed a 409 about
-      // machine capacity that would disappear on retry.
+      // WHICH AGENT runs it: an explicit body field wins PER FIELD, a missing one falls to the ROW's own
+      // persisted choice (taskSpawnOf), full absence on both sides is the default adapter. Validated BEFORE
+      // the free-slot lookup: a malformed request is told so, not handed a 409 about capacity.
       const dh = harnessIdOf(dBody);
       if (!dh.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
-      // ...and the COMBINED value is re-validated as a WHOLE against the EFFECTIVE harness: the
-      // model is judged by that harness's charset, never by one shared widened rule (a claude slot
-      // keeps MODEL_RE, a foreign one gets HARNESS_MODEL_RE — the counter-proof that they have not
-      // collapsed lives in fleet-e2e-claude-gate.ts, phase 1). A row-stored model or effort that an
-      // overriding body harness cannot carry is therefore a 400 here, never a mixed pair on a pane.
+      // ...and the COMBINED value is re-validated as a WHOLE against the EFFECTIVE harness: the model is
+      // judged by that harness's charset (a claude slot keeps MODEL_RE, a foreign one HARNESS_MODEL_RE —
+      // counter-proof in fleet-e2e-claude-gate.ts phase 1). A row-stored model an overriding harness cannot carry is a 400.
       const dNames = (k: "harness" | "model" | "effort"): boolean => {
         const v = dBody?.[k]; return v !== undefined && v !== null && v !== "";
       };
@@ -24384,23 +24048,17 @@ Bun.serve<WSData>({
       if (!dEffort.ok) return json({ error: effortErrFor(dHarness) }, 400);
       const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
       if (!free) return json({ error: "no free slot" }, 409);
-      // A RAW START is one no reading vouched for: no analysis at all, or a verdict that asked for
-      // the owner. This route still gates on none of it — an attended click outranks every
-      // advisory, which is the whole point of the button — but the acknowledgment the UI collects
-      // (src/client.ts, .qrawack) rides into the audit detail, so a deliberate raw start is
-      // afterwards distinguishable from a start off a `ready` row. Recorded only when the row
-      // REALLY was raw: a flag on a ready row would pin a deliberation that never happened, and
-      // an audit line that can be claimed rather than earned is worth less than no line at all.
+      // A RAW START is one no reading vouched for. This route gates on none of it — an attended click
+      // outranks every advisory — but the UI's acknowledgment (src/client.ts, .qrawack) rides into the
+      // audit detail. Recorded ONLY when the row REALLY was raw: a flag on a ready row would pin a
+      // deliberation that never happened.
       const rawAck = dBody?.acknowledged === true && (!t.analysis || t.analysis.verdict !== "ready");
       const r = await dispatchTask(t, free, true, clarify,
         { harness: dHarnessId, model: dModel.model, effort: dEffort.effort });
       if (!r.ok) return json({ error: r.error }, 500);
       r.tail.catch(() => {}); // the tail requeues on every failure itself; nothing to add here
-      // the mode rides in the audit detail, never a second event name: one "an owner started a
-      // task" line stays greppable, and the bare id remains the normal path's exact detail
-      // the harness rides in the SAME detail for the same reason, and only when one is EFFECTIVE —
-      // body-named or row-stored, it names the adapter that actually ran; a default start keeps
-      // producing the exact line it produced before either field existed
+      // the mode and the EFFECTIVE harness ride in the audit detail, never a second event name: one "an
+      // owner started a task" line stays greppable, and a default start keeps producing its exact old line.
       audit("task_dispatch", r.slot,
         [t.id, clarify ? "clarify" : "", rawAck ? "raw-acknowledged" : "", dHarnessId ? `harness=${dHarnessId}` : ""].filter(Boolean).join(" "));
       return json({ ok: true, slot: r.slot, branch: r.branch, clarify, rawAcknowledged: rawAck });
@@ -24416,11 +24074,9 @@ Bun.serve<WSData>({
       if (t.status !== "pending" && t.status !== "queued")
         return json({ error: `task is ${t.status} — only a pending or queued task is analysed` }, 409);
       if (t.kind !== "auftrag") return json({ error: `${t.kind} is advisory, not a work brief — nothing to analyse` }, 409);
-      // The refusal stands whatever the compiler is doing: this route re-reads, and with no reader
-      // its writes are pure deletion. But the reason must not keep claiming deletion is ALL that
-      // would follow once a compiler is running — it would recompile the dropped brief on its next
-      // tick, which is a different act from the one being asked for. ↻ refine is the attended way
-      // to a new brief; nothing here mints a second verb out of a route named reanalyse.
+      // The refusal stands whatever the compiler is doing: with no reader this route's writes are pure
+      // deletion, and a running compiler would only recompile the dropped brief — ↻ refine is the attended
+      // way to a new brief; nothing here mints a second verb.
       if (!ANALYSIS_ON)
         return json({ error: "no analyst sweep is configured — reanalysis would otherwise only delete the existing analysis and machine-generated brief"
           + (BRIEF_ON ? "; the brief compiler is on, but it compiles rather than reads, and would simply recompile the deleted brief — use ↻ refine to change one" : "") }, 409);
@@ -24455,10 +24111,8 @@ Bun.serve<WSData>({
       audit("task_refine", undefined, t.id);
       return json({ ok: true, running: true });
     }
-    // the owner's half of the refine pair. `{accept:false}` discards the proposal and does nothing
-    // else. Accepting is ALL-OR-NOTHING by design (briefs/task-refine.md): a child that turns out
-    // useless is thrown away afterwards with the archive button that already exists — a per-child
-    // confirm would be a second UI for that same operation.
+    // the owner's half of the refine pair. `{accept:false}` discards the proposal. Accepting is
+    // ALL-OR-NOTHING by design (briefs/task-refine.md): a useless child is archived afterwards.
     const taskRefineConfirm = /^\/api\/tasks\/([a-z0-9]+)\/refine-confirm$/.exec(url.pathname);
     if (req.method === "POST" && taskRefineConfirm) {
       const t = tasks.find((x) => x.id === taskRefineConfirm[1]);
@@ -24478,11 +24132,8 @@ Bun.serve<WSData>({
       // archived original afterwards
       if (refineInflight.has(t.id)) return json({ error: "a refine is still running for this task" }, 409);
       // The deterministic acceptance, recomputed AT the promote against the tree as it stands now
-      // (refine-validate.ts). It does NOT gate: a proposal with hallucinated paths still promotes
-      // if the owner says so, the same latitude ⏫ author grants him over a red verify — the value
-      // is that he could see it, and that the ledger records he confirmed it anyway. Reading it
-      // here rather than trusting the projection the detail pane showed is the point: minutes may
-      // have passed, and the tree may have moved under both of them.
+      // (refine-validate.ts). It does NOT gate — a proposal with hallucinated paths still promotes if the
+      // owner says so — but the ledger records that he could see it and confirmed anyway.
       const rRepoRaw = t.repo ?? (DISPATCH_REPO || null);
       const rValidation = refineValidationFor(t,
         rRepoRaw ? trackedSnapshotFor(rRepoRaw) : null).validation ?? null;
@@ -24492,17 +24143,12 @@ Bun.serve<WSData>({
         const id = randomBytes(4).toString("hex");
         return {
           id, originId, ...(t.programId ? { programId: t.programId } : {}), text: refineChildText(c),
-          // source "owner": the owner is confirming this text, whatever the original row came in as.
-          // NO `brief` and NO `analysis` — a child is a NEW draft, so it must reach the sweep as one:
-          // inheriting either would carry a compile and a judgment about a text that no longer exists.
-          // `repo` rides along, or the split would silently retarget the dispatcher default. Note the
-          // children land as `pending`, never `queued`: refining proposes work, releasing it stays a
-          // separate owner act, and confirming a split must not smuggle four rows past that boundary.
+          // source "owner": the owner is confirming this text. NO `brief` and NO `analysis` — a child is a NEW
+          // draft and must reach the sweep as one. `repo` rides along, or the split would silently retarget
+          // the dispatcher default. Children land `pending`, never `queued`: releasing stays a separate owner act.
           source: "owner", from: null, kind: "auftrag", repo: t.repo,
-          // the ONE thing a child inherits from the proposal besides its text: the paths the refiner
-          // verified against the tree, which the owner is confirming along with everything else. It
-          // is not a model judgement ABOUT this row the way `brief` and `analysis` are — those two
-          // are deliberately left off above so the child meets the sweep as the fresh draft it is.
+          // the ONE thing a child inherits besides its text: the paths the refiner verified against the tree.
+          // Not a model judgement ABOUT this row the way `brief` and `analysis` are.
           ...(c.files.length ? {
             files: c.files.slice(0, MAX_REFINE_FILES), filesOrigin: "confirmed" as const,
           } : {}),
@@ -24516,20 +24162,16 @@ Bun.serve<WSData>({
       t.status = "archived";
       t.note = `refined → ${kids.map((k) => k.id).join(", ")}`;
       saveState();
-      // the acceptance rides INTO the audit line when it is not clean, because "the owner promoted
-      // a proposal that named two paths this tree does not have" is exactly the kind of sighted
-      // decision an outcome ledger is later asked about. A clean one adds nothing: silence there
-      // already means pass, and a "(validation: pass)" on every row would train the eye past it.
+      // the acceptance rides INTO the audit line when it is not clean — a sighted decision an outcome
+      // ledger is later asked about. A clean one adds nothing: silence already means pass.
       audit("task_refine_confirm", undefined, `${t.id} → ${kids.map((k) => k.id).join(",")}`
         + (rValidation && rValidation.verdict !== "pass"
           ? ` (validation: ${rValidation.verdict}, ${rValidation.findings.length} finding${rValidation.findings.length === 1 ? "" : "s"})` : ""));
       return json({ ok: true, tasks: kids.map(taskDigest), validation: rValidation });
     }
-    // the brief is the one model output the owner may overwrite, and that is the point of storing
-    // it: it is the exact text a lane will receive, so being able to read it before the fact is
-    // worth little unless you can also fix it. An edited brief is PINNED (`edited`) — the sweep
-    // never recompiles over it — and it invalidates the analysis, because the verdict was about
-    // the other string.
+    // the brief is the one model output the owner may overwrite — it is the exact text a lane will
+    // receive. An edited brief is PINNED (`edited`; the sweep never recompiles over it) and invalidates
+    // the analysis, because the verdict was about the other string.
     const taskBrief = /^\/api\/tasks\/([a-z0-9]+)\/brief$/.exec(url.pathname);
     if (req.method === "POST" && taskBrief) {
       const t = tasks.find((x) => x.id === taskBrief[1]);
@@ -24544,12 +24186,9 @@ Bun.serve<WSData>({
       saveState();
       return json({ ok: true, brief: t.brief });
     }
-    // A COMMENT — the one text on this row the OWNER writes. Every other text here is machine
-    // output (brief, verdict, refine proposal) or the original request, and until now a remark
-    // about a task had to be typed into a pane, where it died at the next /clear.
-    // Allowed in EVERY status on purpose: the most useful remark is often about a row that has
-    // already run ("this is why it was reverted"), and a queue whose memory stops at `sent` is
-    // exactly the queue that was here before.
+    // A COMMENT — the one text on this row the OWNER writes (everything else is machine output or the
+    // original request). Allowed in EVERY status on purpose: the most useful remark is often about a row
+    // that has already run.
     const taskComment = /^\/api\/tasks\/([a-z0-9]+)\/comment$/.exec(url.pathname);
     if (req.method === "POST" && taskComment) {
       const t = tasks.find((x) => x.id === taskComment[1]);
@@ -24601,22 +24240,15 @@ Bun.serve<WSData>({
     if (req.method === "POST" && taskAct) {
       const t = tasks.find((x) => x.id === taskAct[1]);
       if (!t) return json({ error: "unknown task" }, 404);
-      // a running lane's founding task must stay tracked — the shelf is not a place to hide live
-      // work. `delete` shares the guard (2026-08-05): deleting a sent row didn't just hide it, it
-      // orphaned the lane — /api/self/criterion resolves the founding task by slot+status "sent",
-      // so a running clarify lane lost its one way to record a criterion, permanently (409).
+      // a running lane's founding task must stay tracked. `delete` shares the guard: deleting a sent row
+      // orphaned the lane — /api/self/criterion resolves the founding task by slot+status "sent"
+      // (incident 2026-08-05: server-narrativ-archiv.md#fetch-task-actions).
       if ((taskAct[2] === "archive" || taskAct[2] === "delete") && t.status === "sent")
         return json({ error: "task is running in a lane — land or kill the lane first" }, 409);
-      // B1 (F-C): the owner's promote/dismiss of a STEWARD-origin proposal is a causally-clean,
-      // deterministic `propose`-class outcome (unlike git deltas, accept/reject is directly
-      // attributable). Fire ONCE per task, gated on the pending→ transition ONLY: promote counts
-      // helped, dismiss counts the distinct `dismissed` signal. Deleting an already-promoted
-      // (queued) proposal is cleanup, not a dismissal — the pending guard makes that a no-op, so a
-      // promoted-then-deleted task can never double-count. Read the class BEFORE mutating status.
-      // archive mirrors delete for the measurement channel: shelving a PENDING proposal IS a
-      // dismissal — without this, archive would be a silent second path around the channel
-      // `adopt` remains the compatibility verb on the "helped" side for a steward notiz; the
-      // general reversible kind route above is the complete category editor.
+      // B1 (F-C): the owner's promote/dismiss of a STEWARD-origin proposal is a deterministic
+      // `propose`-class outcome. Fire ONCE, gated on the pending→ transition ONLY: deleting an already-
+      // promoted row is cleanup, not a dismissal; archiving a PENDING proposal IS one. Read the class
+      // BEFORE mutating status. `adopt` stays the compat verb on the "helped" side. Narrativ: server-narrativ-archiv.md#fetch-task-actions
       const proposeOutcome: "helped" | "dismissed" | null =
         t.source === "steward" && t.status === "pending"
           ? (taskAct[2] === "queue" || taskAct[2] === "adopt" ? "helped"
@@ -24635,23 +24267,16 @@ Bun.serve<WSData>({
         t.note = "adopted from an observation — analysed like any brief, still yours to release";
       } else if (taskAct[2] === "delete") tasks = tasks.filter((x) => x.id !== t.id);
       else if (taskAct[2] === "queue") {
-        // AN ADVISORY ROW IS NOT WORK (owner ask 2026-08-05, restored here after the kind rename
-        // dropped it). Releasing one produced a `queued` row that no tick would ever run, carrying
-        // a note explaining its own inertness — a contradiction parked in the release lane. The
-        // conversion is the owner's act: `adopt` (or the /kind route) turns it into an auftrag,
-        // back at pending, where it is analysed and still has to be released. Same rule, same
-        // wording as the dispatch button above, because it is the same question.
+        // AN ADVISORY ROW IS NOT WORK (owner ask 2026-08-05): releasing one produced a `queued` row no tick
+        // would ever run. The conversion is the owner's act (`adopt` or /kind), back at pending. Same rule,
+        // same wording as the dispatch button, because it is the same question.
         if (t.kind !== "auftrag") {
           return json({ error: `a ${t.kind} is advisory, not a work brief — change its kind first` }, 409);
         } else {
-          // RELEASING IS THE DECISION, and when it contradicts the analyst it is an override that
-          // must leave a trace. Before this, promoting a flagged task was indistinguishable from
-          // promoting a clean one — so the analyst could never be calibrated against what the owner
-          // actually did with it. The note is not a warning, it is a record.
-          // "needs-you" ONLY, never "unknown": an unread task carries no objection to overrule, and
-          // booking one as an override would both mis-record the owner's act and — because the note
-          // is written here — overwrite the dispatcher's "waiting: not analysed yet" with a sentence
-          // claiming a verdict that was never reached. (Caught by e2e (h6), which asserted the wait.)
+          // RELEASING IS THE DECISION, and contradicting the analyst is an override that must leave a trace
+          // (the note is a record, not a warning). "needs-you" ONLY, never "unknown": an unread task carries no
+          // objection to overrule, and booking one would overwrite the dispatcher's "waiting: not analysed yet"
+          // with a verdict never reached (caught by e2e h6). Narrativ: server-narrativ-archiv.md#fetch-task-actions
           const over = t.analysis?.verdict === "needs-you";
           releaseTask(t, "owner");
           t.note = over ? `released over the analyst's "${t.analysis!.verdict}" — ${t.analysis!.reason}`.slice(0, 200) : null;
@@ -24663,13 +24288,9 @@ Bun.serve<WSData>({
       else if (taskAct[2] === "unarchive") t.status = "pending"; // back to owner review, never straight to queued
       else t.status = "done";
       if (proposeOutcome) {
-        // the row itself is deleted or mutated right above, so the record must carry what the
-        // ruling was ABOUT or the trail is unreadable — live-measured 2026-08-05: 14 rows,
-        // 7 helped / 7 dismissed, and nobody could say what the dismissed half had proposed.
-        // `ref` stays the task id (historic rows read that way); `slug` is the steward's stable
-        // condition ref when it filed one. The 200-char excerpt is a deliberate retention
-        // trade-off: enough to calibrate the filing threshold against, not an archive of texts
-        // the owner chose to discard.
+        // the row is deleted or mutated right above, so the record carries what the ruling was ABOUT: `ref`
+        // stays the task id, `slug` the steward's condition ref, plus a 200-char excerpt (a retention
+        // trade-off, not an archive). Live measurement 2026-08-05: server-narrativ-archiv.md#fetch-task-actions
         writeStewardJournal({ kind: "propose_outcome", ref: t.id, outcome: proposeOutcome,
           taskKind: outcomeKind, ...(t.ref ? { slug: t.ref } : {}), text: t.text.slice(0, 200) });
         audit("steward_propose_outcome", stewardSlot()?.id, `${t.id}:${proposeOutcome}`);
@@ -24714,21 +24335,17 @@ Bun.serve<WSData>({
       if (!s) return json({ error: "bad slot" }, 400);
       return createAutoForSlot(s, await readJson(req), { allowPerpetual: true }); // owner may mint a perpetual (heartbeat) auto
     }
-    // subscribe slot :id to another slot's done-looking. The route's slot is the RECEIVER, exactly
-    // as it is for /autos above — every path that types into a pane names the pane in the URL, and
-    // the thing being watched is body data. The owner half of the pair; the self half is
-    // POST /api/self/watch, and it is the one that carries the not-a-lane subscriber rule. The
-    // owner keeps the wider reach here on purpose: pointing a lane at another lane is a coupling
-    // somebody has to be able to make, and the owner is the principal who can see it on the board.
+    // subscribe slot :id to another slot's done-looking. The route's slot is the RECEIVER, exactly as
+    // for /autos: every path that types into a pane names the pane in the URL. The owner half keeps the
+    // wider reach on purpose (self half: POST /api/self/watch) — pointing a lane at a lane is a coupling
+    // somebody must be able to make, and the owner is the one who sees it on the board.
     const watchCreate = /^\/api\/slots\/(\d+)\/watch$/.exec(url.pathname);
     if (req.method === "POST" && watchCreate) {
       const s = slotFrom(watchCreate[1]);
       if (!s) return json({ error: "bad slot" }, 400);
       const body = await readJson(req);
-      // STN-2: a transition watch is the receiver's OWN question, asked in its own words, and the
-      // self route carries the not-a-lane rule that keeps Supervisor text out of lane panes. The
-      // owner's wider reach here would route around that rule by registering one on a lane's behalf
-      // — so this kind is refused by name at the owner door, never silently rebound.
+      // STN-2: a transition watch is the receiver's OWN question, and the self route carries the not-a-lane
+      // rule; the owner's wider reach would route around it — refused by name, never silently rebound.
       if (body?.kind === "transition")
         return json({ error: "a transition watch is registered by the receiving session itself via POST /api/self/watch — the owner route does not register one on a session's behalf" }, 409);
       return await createWatchForSlot(s, body);
@@ -24792,11 +24409,9 @@ Bun.serve<WSData>({
         saveState();
         return json({ ok: true, label: s.label });
       }
-      // the owner writes this slot's standing intention (Slot.mission). Owner-only by
-      // CONSTRUCTION, not by an extra check: the steward gate above intercepts its own token
-      // before this chain and default-denies anything handleStewardRoute doesn't claim, and it
-      // must stay that way here — a producer that can write the anchor it is judged against is
-      // grading its own drift. Explicit `null` clears; a blank string clears the same way.
+      // the owner writes this slot's standing intention (Slot.mission). Owner-only by CONSTRUCTION: the
+      // steward gate above default-denies, and it must stay that way — a producer that can write the
+      // anchor it is judged against is grading its own drift. `null` and a blank string both clear.
       if (slotMatch[2] === "mission") {
         if (!s.cwd) return json({ error: "slot not active" }, 400);
         const body = await readJson(req);
@@ -24865,15 +24480,11 @@ Bun.serve<WSData>({
           laneSpawn.delete(s.id);
         }
       }
-      // ↻ bring the session back. The pane is restarted, the SLOT is not touched — which is the
-      // whole verb, and the reason it must never route through closeSlot/killSlot: those clear
-      // sessionId, worktree, label, model and mission, drop the slot's shares and autos, detach its
-      // tasks and emit a lane outcome. That is a session ENDING. This is the opposite: the pane dies
-      // and ensureSlot, seeing the untouched s.sessionId and its transcript, respawns with
-      // `--resume <id>` (slotCmd) — the conversation continues in the same transcript.
-      // The occasion: claude can switch conversations IN-PROCESS. The pane's argv still named the
-      // pinned session while a different transcript was being written, and Escape did not undo it
-      // (measured 2026-08-06). Nothing outside the pane can put it back; only a respawn can.
+      // ↻ bring the session back: the pane is restarted, the SLOT is not touched — which is why it must
+      // never route through closeSlot/killSlot (those clear sessionId, worktree, label, model, mission,
+      // drop shares and autos, detach tasks, emit a lane outcome: a session ENDING). ensureSlot, seeing the
+      // untouched s.sessionId and its transcript, respawns with `--resume <id>` (slotCmd). The occasion —
+      // claude switching conversations IN-PROCESS, measured 2026-08-06: server-narrativ-archiv.md#fetch-post-apislotsidrestart
       if (slotMatch[2] === "restart") {
         if (!s.cwd) return json({ error: "slot not active" }, 400);
         if (slotTeardownInflight.has(s.id)) return json({ error: "slot is stopping" }, 409);
@@ -24889,10 +24500,8 @@ Bun.serve<WSData>({
           const stopped = await tmux("kill-pane", "-t", target.paneId);
           if (stopped.code !== 0 || !sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
             return json({ error: "slot changed while restart stopped its pane" }, 409);
-          // rebuilt INLINE rather than left to the 2s self-heal loop: the button promises a session
-          // that is back, and a route that only kills cannot say whether it is. Those two seconds
-          // are also exactly when the owner is watching the board, and a slot that reads dead there
-          // invites a second click on something else.
+          // rebuilt INLINE rather than left to the 2s self-heal loop: the button promises a session that is
+          // back, and a route that only kills cannot say whether it is.
           await ensureSlot(s, "restart");
           if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
             return json({ error: "slot changed while restart rebuilt its pane" }, 409);
@@ -24903,10 +24512,8 @@ Bun.serve<WSData>({
         } finally {
           restarting.delete(s.id);
         }
-        // read off what ensureSlot DID, rather than re-deriving its resume formula here (two copies
-        // of that predicate is how they drift). The pin survives the rebuild only when it was
-        // resumable; a fresh uuid (pin but no transcript) and no pin at all (a non-claude FLEET_CMD)
-        // both answer false, which is the truth in both cases.
+        // read off what ensureSlot DID rather than re-deriving its resume formula (two copies drift): a fresh
+        // uuid (pin, no transcript) and no pin at all both answer false, which is the truth in both cases.
         return json({ ok: true, resumed: pinned !== null && s.sessionId === pinned });
       }
       if (slotMatch[2] === "land") {
@@ -24946,11 +24553,9 @@ Bun.serve<WSData>({
       const s = slotFrom(body.slot);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       if (typeof body.text !== "string" || body.text.length > 100_000) return json({ error: "bad text" }, 400);
-      // The owner has spoken to this pane, so an OWNER wait has arrived — that wait exists to hold
-      // automation back, never the person it is waiting for. A "main" wait is a different debt: it
-      // waits for Program-MAIN's answer to an open clarification, and the owner typing into the pane
-      // is not that answer. Clearing it would re-open steward nudges past an unanswered
-      // clarification (the guard that refuses exactly that lives in handleStewardSend).
+      // The owner has spoken to this pane, so an OWNER wait has arrived — it holds automation back, never
+      // the person it waits for. A "main" wait is a different debt (Program-MAIN's answer to a
+      // clarification) and stays: clearing it would re-open steward nudges (guard in handleStewardSend).
       if (s.awaiting === "owner") s.awaiting = null;
       // THE DELIVERY IDENTITY, minted before the transport is touched so both outcomes can carry
       // the SAME id: the receipt the owner gets back and the journal line are joinable, and the
@@ -24966,14 +24571,11 @@ Bun.serve<WSData>({
         // retryable, so it is neither journaled as a send nor presented as uncertain.
         if (e instanceof SendRefused)
           return json({ error: e.message, receipt: { sendId, at: Date.now(), delivery: "refused", receiver } }, 409);
-        // tmux may have accepted part of the paste before reporting failure, or the composer was
-        // OBSERVED still holding the text after Enter (ACP-25) — so neither "failed" nor
-        // "delivered" is an observed fact, the same truth rule the clarification/attention
-        // transport follows. The journal write here is MANDATORY: an unjournaled uncertain send is
-        // the silent loss this receipt exists to remove, and it used to escape as an untyped 500.
-        // History deliberately does NOT gain the entry: history feeds the pane-recall UI, where an
-        // entry reads as "this text is in that pane" — replaying a paste that may never have
-        // landed would present a guess as a fact. No retry and no tick: the owner sees the 409.
+        // tmux may have accepted part of the paste, or the composer was OBSERVED still holding the text
+        // after Enter (ACP-25) — so neither "failed" nor "delivered" is an observed fact. The journal write
+        // is MANDATORY: an unjournaled uncertain send is the silent loss this receipt exists to remove.
+        // History deliberately does NOT gain the entry (it feeds pane-recall, where an entry reads as "this
+        // text is in that pane"). No retry and no tick: the owner sees the 409.
         const at = Date.now();
         logPrompt(s, body.text, "owner", at, sendId, "uncertain");
         const acceptance = e instanceof SendNotAccepted ? e.acceptance : undefined;
@@ -25051,17 +24653,10 @@ Bun.serve<WSData>({
         return;
       }
       if (cols && rows && (force || cols !== s.cols || rows !== s.rows)) {
-        // this client's width doesn't match the pane's current width (or the client
-        // explicitly asked for a reseed regardless — see the `force` comment above).
-        // tmux reflows pane history on resize-window, so resizing then capturing fresh replays
-        // correctly-wrapped scrollback instead of the raw stream's stale wrapping.
-        // Trade-off: this also resizes the shared pty for any other connected client
-        // (last connect wins, same as /resize) — true concurrent multi-width live
-        // rendering would need a per-client vt emulator, out of scope here.
-        // Chained through resizeChain (shared with /resize) so a second client
-        // connecting/resizing concurrently can't sneak its own resize-window in
-        // between this one and its capture-pane, handing this client a seed
-        // reflowed to the OTHER client's width instead of its own.
+        // width mismatch (or `force`): tmux reflows pane history on resize-window, so resize-then-capture
+        // replays correctly wrapped scrollback. Trade-off: this resizes the shared pty for every other client
+        // (last connect wins, as /resize). Chained through resizeChain so a concurrent resize cannot slip in
+        // between this resize-window and its capture-pane. Narrativ: server-narrativ-archiv.md#websocket-open
         const task = s.resizeChain.then(async () => {
           if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
           s.quietUntil = Date.now() + 1500;
@@ -25069,17 +24664,9 @@ Bun.serve<WSData>({
           if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
           s.cols = cols;
           s.rows = rows;
-          // -e (color) is safe here, and the reason it was left off is not reproducible on this
-          // tmux. The old comment said an escape-preserving capture bakes styled-vs-default runs
-          // in as absolute-column cursor jumps ("\x1b[200G") at the ORIGINAL width, which would
-          // re-garble a narrower client. MEASURED instead, tmux 3.6a, 2026-08-05: wide colored
-          // TUI content in a 200-col pane, resized to 55 exactly as this path does, captured both
-          // ways — `-e` output with only SGR (\x1b[…m) removed is BYTE-IDENTICAL to the plain
-          // capture (1004 = 1004 B, empty diff), and contains ZERO cursor-motion escapes. So `-e`
-          // is plain-plus-color on this tmux, and history keeping its color costs nothing.
-          // The fear was legitimate and is now a CHECK rather than a sacrificed capability:
-          // e2e/slots.ts pins that the seed carries SGR and carries no cursor-motion escape, so
-          // a tmux that ever starts emitting one goes red here instead of silently garbling.
+          // -e (color) is safe here: MEASURED on tmux 3.6a (2026-08-05), `-e` minus SGR is BYTE-IDENTICAL to
+          // the plain capture and carries ZERO cursor-motion escapes. The old fear is now a CHECK: e2e/slots.ts
+          // pins that the seed carries SGR and no cursor motion. Measurement: server-narrativ-archiv.md#websocket-open
           const cap = await tmux("capture-pane", "-t", target.paneId, "-e", "-p", "-S", `-${seedLines}`);
           if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
           ws.send(new TextEncoder().encode(crlf(cap.out) + "\r\n"));
@@ -25095,47 +24682,22 @@ Bun.serve<WSData>({
         s.resizeChain = task.catch(() => {});
         await task;
       } else if (ws.data.share) {
-        // guests never pass cols/rows (they must not resize the owner's pty), so they
-        // can't take the resize+capture reseed above. Seed them from a plain capture-pane
-        // at the pane's CURRENT size instead of slicing the raw stream: capture output is
-        // line-aligned and already-reflowed, so it can't begin mid-escape-sequence and
-        // it's a few KB rather than the megabytes a raw tail pushed to a phone on every
-        // reconnect — the raw-tail path desynced guest terminals (partial escapes stacked
-        // onto un-reset scrollback) after the frequent WS drops mobile connections see.
-        // (The owner path below now takes the same seed, for the same two reasons.)
-        // Live bytes after this keep flowing from the shared offset via poll()/broadcast,
-        // same as the owner reseed path. -e (color) for the reason measured at the resize path
-        // above: it adds SGR and nothing else, so it cannot change how a guest's terminal wraps
-        // the seed — the guest's unknown width was only ever a risk via cursor-motion escapes,
-        // which this tmux does not emit.
+        // guests never pass cols/rows (they must not resize the owner's pty), so they seed from a plain
+        // capture-pane at the pane's CURRENT size: line-aligned, already reflowed, a few KB — the raw-tail
+        // path desynced guest terminals after mobile WS drops. Live bytes keep flowing from the shared offset.
+        // -e for the reason measured above. Narrativ: server-narrativ-archiv.md#websocket-open
         const cap = await tmux("capture-pane", "-t", target.paneId, "-e", "-p", "-S", `-${seedLines}`);
         if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
         ws.send(new TextEncoder().encode(crlf(cap.out) + "\r\n"));
       } else {
-        // Owner reconnect at a width that already matches the pane — the common case, since a
-        // phone reconnecting after a WS drop is the same client at the same size. This used to
-        // slice REPLAY_TAIL bytes out of the raw stream; it now takes the same line-aligned
-        // capture-pane seed the guest path above takes, for the same reasons spelled out there.
-        // Measured on the 12 live panes (2026-07-26): 5 634–173 282 B instead of
-        // 149 822–2 000 000 B, 15.2× less in aggregate — and the 2 MB cap was not a rare
-        // worst case, it bound at its full value on every pane whose stream had outgrown it
-        // (3 of 12, streams run 2.3–4.9 MB). -e, for the measurement the resize path gives.
-        //
-        // Continuity is the delicate part. The raw slice ended exactly at s.offset, so the next
-        // broadcast continued seamlessly. A capture instead reflects the pane as of whatever the
-        // stream file already held, which is AHEAD of s.offset — poll() lags by up to its 100 ms
-        // tick — so the bytes in [s.offset, seedUntil) are in this client's seed AND still on
-        // their way to it. Sending them again duplicates lines. Advancing s.offset instead is
-        // not an option: it is the SHARED broadcast cursor, and moving it would punch that same
-        // range out of every other connected client's stream (the resize path above may do that
-        // only because its repaint() redraws everyone). So the overlap is dropped for this one
-        // socket, by afterSeed(), on its way out.
-        // The position is read BEFORE the capture on purpose: bytes already in the file were fed
-        // through tmux before they were piped out, so the capture is guaranteed to include them —
-        // reading it after would risk skipping bytes the capture does NOT show, and a gap is
-        // worse than an overlap (a dropped line never comes back). Bytes written during the
-        // capture itself may be in it and get resent: that residual window is one capture-pane
-        // spawn wide instead of a poll tick, and it is inherent to every capture-based seed here.
+        // Owner reconnect at a width that already matches — the common case. Takes the same line-aligned
+        // capture-pane seed as the guest path (measured 2026-07-26: 15.2× fewer bytes in aggregate).
+        // Continuity is the delicate part: the capture reflects the pane as of what the stream file already
+        // held, which is AHEAD of s.offset (poll() lags up to its 100 ms tick), so [s.offset, seedUntil) is
+        // in the seed AND still on its way. s.offset is the SHARED broadcast cursor and must not move (that
+        // would punch the range out of every other client); the overlap is dropped for this one socket by
+        // afterSeed(). The position is read BEFORE the capture on purpose — a gap is worse than an overlap.
+        // Narrativ: server-narrativ-archiv.md#websocket-open
         try {
           const size = (await stat(streamFile)).size;
           if (sameSlotStreamOccupant(s, occupant) && !slotTeardownInflight.has(s.id)) ws.data.seedUntil = size;

@@ -81,15 +81,15 @@ import {
   type ProgramValidation, type SupervisorBinding, type ProgramDigest, type DispatchSpawn,
   type SlotStreamOccupant,
 } from "./server/types";
+import { ERROR_KEEP, SERVER_BOOT_AT, serverErrors, errorTotal, logError, errorsView } from "./server/errors";
+import { appendEvent, appendEventStrict, readLedger, readEventLog } from "./server/persist";
+import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
 
 // Defaults to localhost — nothing is network-reachable until you explicitly set FLEET_HOST
 // (e.g. your Tailscale IP via `tailscale ip -4`). Even then, every request needs the access
 // token (printed on boot), because a reachable fleet is remote code execution as your user.
 const HOST = process.env.FLEET_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.FLEET_PORT ?? 8790);
-// separate tmux socket per instance — lets a test instance (FLEET_SOCK=fleettest)
-// run its own s1..sN sessions without touching the live fleet's
-const SOCK = process.env.FLEET_SOCK ?? "claudefleet";
 // lines of scrollback every WS connect is seeded with, from a fresh capture-pane. Capture
 // output is line-aligned and already reflowed to the pane's width, so it can neither begin
 // mid-escape-sequence nor replay the raw stream's stale wrapping — and it costs a few KB
@@ -145,8 +145,6 @@ const AUDIT_ADJUDICATION_FILE = `${import.meta.dir}/audit-adjudications.jsonl`;
 // (no rotation, no history) — a small mutable mirror of the in-memory queue, rewritten whole on
 // every mutation. Absent file = nothing pending. See savePostLandAuditQueue for why it exists.
 const POSTLAND_AUDIT_QUEUE_FILE = `${import.meta.dir}/post-land-audit-queue.json`;
-// one rotation generation (audit.jsonl -> audit.jsonl.1, oldest overwritten) — override for tests
-const AUDIT_ROTATE_BYTES = Number(process.env.FLEET_AUDIT_ROTATE_BYTES ?? 5_000_000) | 0;
 const HOME = process.env.HOME!;
 const SHELL = process.env.SHELL ?? "/bin/sh";
 // Safe default: claude WITH its permission prompts. Opt into unattended mode explicitly:
@@ -2427,95 +2425,6 @@ function logPrompt(s: Slot, text: string, source: "owner" | "share" | "auto" | "
     .catch((e: unknown) => logError("promptLog", e));
 }
 
-// --- THE ERROR CHANNEL -------------------------------------------------------------------------
-// Everything above reports its failures the same way: a line on stdout, which watchdog.sh redirects
-// into a `server.log` with no rotation and — measured, not guessed — no reader. e2e-stage.sh calls
-// it "a server.log nobody reads" in its own source. What that costs is concrete: on 2026-08-07 the
-// owner pressed ↩ kill, got a 500, and the only trace was a TypeError in that file; the same file
-// carries eighteen `analysis: brief compile failed` lines, i.e. eighteen drafts that never got an
-// analysis while their queue rows said `no-analysis` — indistinguishable from "not judged yet".
-//
-// This is the READING half, and it is deliberately small:
-//   · IN MEMORY, never a ledger. A restart is a true fact about this server; a revived error list
-//     would be an invented one. The durable history is server.log, which keeps its job.
-//   · KEYED BY SIGNATURE, not a flat ring. The one real sample says why: a plain ring of the last
-//     N would have been fifty copies of one repeating analysis failure, and the counter would read
-//     "50 errors" for one broken thing. `n` per signature is the honest shape, and it is also what
-//     lets a 2 s tick fail forever without flooding anything.
-//   · SUMMARY on /api/sessions (the 2 s poll, the endpoint data-saver.md exists to keep small) and
-//     `null` while nothing has failed, so the quiet case costs the poll ~14 bytes. The rows live
-//     behind GET /api/errors, fetched on a click — the same split postLandAudit already uses.
-//
-// NOT here, and each absence is a decision:
-//   · process.on("uncaughtException"/"unhandledRejection"). Measured on Bun 1.3.9: with no listener
-//     both print and exit 1; with a listener the process SURVIVES (exit 0, execution continues).
-//     So installing one converts "srv dies, the watchdog respawns it clean in ~60 s" into "srv
-//     limps on in an undefined state" — a robustness regression wearing an observability costume.
-//     Re-exiting from the handler avoids that but records into a buffer that dies microseconds
-//     later, which no poll can ever read. Fatal errors stay fatal; server.log keeps them.
-//   · most of the empty catches. `try { p.kill() } catch {}` is an already-dead process and the
-//     input/resize chains fail visibly in the pane itself. What is wired below is the set where
-//     silence hides a DECISION: a scheduler tick that threw did not do its round, and nothing
-//     anywhere said so.
-// The four state-write reporters above (saveHistory, promptLog, saveState, eventLog) were already
-// PRINTING their failures and now report here instead — same events, a surface that has a reader.
-// One deliberate loss in that swap: they printed every repeat and this prints only the first
-// sighting of a signature. The count is not lost, it moves to `n`; what is lost is a repeating
-// failure's ability to fill a log file that nothing rotates.
-const ERROR_KEEP = 50;          // distinct signatures held; the least-recently-seen is evicted
-const ERROR_MSG_MAX = 200;      // a message is a label here, not a payload — the stack goes to server.log
-const SERVER_BOOT_AT = Date.now();
-interface ServerErrorRow { where: string; msg: string; first: number; last: number; n: number }
-interface ErrorsInfo {
-  total: number; distinct: number; since: number;
-  last: { at: number; where: string; msg: string; n: number };
-}
-// insertion-ordered, and re-inserted on every repeat — so the first key is always the coldest
-// signature and eviction is LRU-by-last-seen without a second index to keep in step
-const serverErrors = new Map<string, ServerErrorRow>();
-let errorTotal = 0;
-function logError(where: string, e: unknown): void {
-  const raw = e instanceof Error ? (e.message || e.name) : String(e);
-  const msg = raw.replace(/\s+/g, " ").trim().slice(0, ERROR_MSG_MAX);
-  const at = Date.now();
-  errorTotal++;
-  // `where` is always a bare identifier from the call sites below — never a space — so this
-  // separator cannot make two different (where, msg) pairs collide on one key
-  const key = `${where} ${msg}`;
-  const prev = serverErrors.get(key);
-  if (prev) {
-    prev.last = at;
-    prev.n++;
-    serverErrors.delete(key); // re-insert at the tail: this signature is now the freshest
-    serverErrors.set(key, prev);
-    return; // the count is the record; printing every repeat is what fills an unrotated file
-  }
-  serverErrors.set(key, { where, msg, first: at, last: at, n: 1 });
-  if (serverErrors.size > ERROR_KEEP) {
-    const coldest = serverErrors.keys().next();
-    if (!coldest.done) serverErrors.delete(coldest.value);
-  }
-  // FIRST sighting of a signature, printed in full — server.log must not come out of this poorer
-  // than it went in. The stack is where the line number lives, which is the whole reason the ↩ kill
-  // incident was diagnosable at all; three frames is enough to name the site without a wall of text.
-  const stack = e instanceof Error && e.stack ? e.stack.split("\n").slice(0, 3).map((l) => l.trim()).join(" | ") : msg;
-  console.log(`error [${where}]: ${stack} — repeats of this are counted, not printed (GET /api/errors)`);
-}
-// One projection for /api/sessions, `null` while nothing has failed — same rule gateView follows,
-// for the same reason. `since` is load-bearing rather than decorative: the counts are meaningless
-// without the window they were counted over, and this buffer's window always starts at boot.
-function errorsView(): ErrorsInfo | null {
-  if (serverErrors.size === 0) return null;
-  const rows = [...serverErrors.values()];
-  const last = rows.reduce((a, b) => (b.last > a.last ? b : a));
-  return {
-    total: errorTotal,
-    distinct: rows.length,
-    since: SERVER_BOOT_AT,
-    last: { at: last.last, where: last.where, msg: last.msg, n: last.n },
-  };
-}
-
 // --- audit log: append-only, own write chain + mode 600 (same discipline as saveHistory/
 // saveState above), deliberately NOT routed through console.log — watchdog.sh redirects
 // stdout to server.log at the shell's default umask, so anything security-sensitive needs
@@ -2694,151 +2603,12 @@ type AuditEvent =
   // (armProgramMainLandWatch), or declined to because that MAIN's return path is full. The second
   // row is the one that matters: a MAIN told nothing must not be told nothing SILENTLY.
   | "program_main_land_watch" | "program_main_land_event_skipped";
-// generic append-only event-log chain: format (one JSON line), chmod 600, single-generation
-// rotation. audit.jsonl is the first consumer but not the only shape this fits (automation-
-// synergies.md finding 5 — journal/outcome logs later reuse this exact discipline instead of
-// re-deriving it). One write chain + one failure flag shared across every file that goes
-// through here: today that's just AUDIT_FILE, so serializing unrelated files on one chain
-// costs nothing yet — split per-file if a second consumer's volume ever makes that a problem.
-let auditChain: Promise<unknown> = Promise.resolve();
-let auditWriteFailed = false; // report a wedged event log once, not on every subsequent event
-function queueEventWrite(file: string, obj: Record<string, unknown>): Promise<void> {
-  const line = `${JSON.stringify(obj)}\n`;
-  const raw = auditChain
-    .then(async () => {
-      if (existsSync(file) && statSync(file).size >= AUDIT_ROTATE_BYTES)
-        renameSync(file, `${file}.1`);
-      await appendFile(file, line, { mode: 0o600 });
-      chmodSync(file, 0o600); // append doesn't guarantee mode on a pre-existing file
-    });
-  auditChain = raw.catch((e: unknown) => {
-      // the latch stays: this one is per-EVENT, so a wedged disk would otherwise call logError on
-      // every audited action. logError's own repeat-suppression counts those; this one drops them,
-      // which is the older and stricter promise and the one this file's readers already rely on.
-      if (auditWriteFailed) return;
-      auditWriteFailed = true;
-      logError("eventLog", e);
-    });
-  return raw;
-}
-function appendEvent(file: string, obj: Record<string, unknown>): Promise<void> {
-  return queueEventWrite(file, obj).catch(() => undefined);
-}
-// Founding receipts are evidence promised by the authority transition, so their caller must see a
-// failed append and roll back. Every unrelated event keeps the historical best-effort contract.
-function appendEventStrict(file: string, obj: Record<string, unknown>): Promise<void> {
-  return queueEventWrite(file, obj);
-}
-// The READ counterpart of appendEvent, rotation-aware (a single-file reader is invisible to
-// rotation: at AUDIT_ROTATE_BYTES the whole history becomes `x.jsonl.1` and `x.jsonl` restarts
-// empty, so it would return a near-empty answer with NO error — the ledger looks young rather
-// than truncated; data-audit-2026-07-27 item 8) and the one place a torn line is counted instead
-// of swallowed. Every ledger route used to drop unparseable lines silently and then answer
-// `total: lines.length` — counting rows it had just discarded — so a torn mid-append row reached
-// the client as a benign "latest 51 of 52, capped" instead of "one row is a hole". `total` is now
-// what was actually PARSED across BOTH generations and `malformed` is the hole, reported
-// separately; that is the same discipline continuityView already applies to this same prompt
-// journal (continuity.ts, the `outOfScope.malformed` counter) — copied, not re-invented.
-// Bounded by construction: exactly two files, each capped at the rotation threshold.
-interface Ledger<T> { rows: T[]; total: number; malformed: number }
-async function readLedger<T>(file: string): Promise<Ledger<T>> {
-  const rows: T[] = [];
-  let malformed = 0;
-  for (const f of [`${file}.1`, file]) { // .1 is the OLDER generation → this order is chronological
-    if (!existsSync(f)) continue;
-    for (const line of (await Bun.file(f).text()).split("\n")) {
-      if (!line) continue;
-      try {
-        rows.push(JSON.parse(line) as T);
-      } catch {
-        malformed++; // a torn mid-append line — a hole, and reported as one
-      }
-    }
-  }
-  return { rows, total: rows.length, malformed };
-}
-// same rotation-safe read, for the callers that only ever cared about `rows` (chronological,
-// oldest generation first) and never adopted the malformed-count contract above.
-async function readEventLog(file: string): Promise<{ rows: Record<string, unknown>[]; total: number }> {
-  const { rows, total } = await readLedger<Record<string, unknown>>(file);
-  return { rows, total };
-}
 function audit(event: AuditEvent, slot?: number, detail?: string): void {
   appendEvent(AUDIT_FILE, {
     ts: Date.now(), event,
     ...(slot !== undefined ? { slot } : {}),
     ...(detail !== undefined ? { detail } : {}),
   });
-}
-
-interface TmuxResult { out: string; err: string; code: number }
-async function tmux(...args: string[]): Promise<TmuxResult> {
-  const p = Bun.spawn(["tmux", "-L", SOCK, ...args], { stdout: "pipe", stderr: "pipe" });
-  const [out, err, code] = await Promise.all([
-    new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited,
-  ]);
-  return { out: out.trim(), err: err.trim(), code };
-}
-
-interface TmuxNewSessionResult { out: string; err: string; code: number | null; timedOut: boolean }
-const tmuxNewSessionTimeout = (raw: string | undefined): number => {
-  const parsed = raw !== undefined && /^\d+$/.test(raw) ? Number(raw) : NaN;
-  return Number.isSafeInteger(parsed) && parsed >= 100 ? parsed : 15_000;
-};
-const TMUX_NEW_SESSION_TIMEOUT_MS = tmuxNewSessionTimeout(process.env.FLEET_TMUX_NEW_SESSION_TIMEOUT_MS);
-const TMUX_NEW_SESSION_KILL_GRACE_MS = 500;
-
-// Only process creation gets a wall-clock bound. A generic timeout on has-session, capture-pane or
-// send-keys would turn an unknown observation/delivery into an ordinary negative result at dozens
-// of unrelated call sites. new-session is different: open/kill wait on its per-slot promise, so an
-// unbounded client process strands both lifecycle verbs. Kill only the exact Bun child we started:
-// TERM first, KILL after a short grace, and never a name-pattern/process-tree sweep.
-async function tmuxNewSession(...args: string[]): Promise<TmuxNewSessionResult> {
-  const p = Bun.spawn(["tmux", "-L", SOCK, "new-session", ...args], { stdout: "pipe", stderr: "pipe" });
-  const outP = new Response(p.stdout).text().catch(() => "");
-  const errP = new Response(p.stderr).text().catch(() => "");
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<"timeout">((resolveTimeout) => {
-    timer = setTimeout(() => resolveTimeout("timeout"), TMUX_NEW_SESSION_TIMEOUT_MS);
-  });
-  const settled = await Promise.race([p.exited, deadline]);
-  if (timer) clearTimeout(timer);
-  let code: number | null = typeof settled === "number" ? settled : null;
-  const timedOut = settled === "timeout";
-  if (timedOut) {
-    try { p.kill(); } catch { /* already exited */ }
-    const term = await Promise.race([
-      p.exited,
-      Bun.sleep(TMUX_NEW_SESSION_KILL_GRACE_MS).then(() => "grace" as const),
-    ]);
-    if (term === "grace") {
-      try { p.kill(9); } catch { /* already exited */ }
-      const killed = await Promise.race([
-        p.exited,
-        Bun.sleep(TMUX_NEW_SESSION_KILL_GRACE_MS).then(() => null),
-      ]);
-      if (typeof killed === "number") code = killed;
-    } else {
-      code = term;
-    }
-  }
-  const bounded = (value: Promise<string>): Promise<string> => timedOut
-    ? Promise.race([value, Bun.sleep(TMUX_NEW_SESSION_KILL_GRACE_MS).then(() => "")])
-    : value;
-  const [out, err] = await Promise.all([bounded(outP), bounded(errP)]);
-  return { out: out.trim(), err: err.trim(), code, timedOut };
-}
-
-class TmuxNewSessionUnavailable extends Error {
-  readonly availability = "unknown" as const;
-}
-
-type TmuxPresence = "present" | "absent" | "unknown";
-interface TmuxSlotObservation { presence: TmuxPresence; root: string | null }
-interface TmuxSlotObservations {
-  known: boolean;
-  sessions: ReadonlyMap<string, string>;
-  detail: string;
 }
 
 const tmuxSlotObservation = (observed: TmuxSlotObservations, slot: number): TmuxSlotObservation => {

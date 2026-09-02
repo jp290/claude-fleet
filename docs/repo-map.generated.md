@@ -28,7 +28,7 @@ Scope and sources, so the omissions are not silent:
 - `e2e/` — The check modules `fleet-e2e.ts` boots in order, plus `pins.ts`: the must-agree pairs whose other side is not TypeScript.
 - `helper-daemon/` — The other machine's half of the remote helper portal: a Bun daemon that claims a job, clones its bundle, runs the suite and reports back — plus its config format and a placeholder systemd unit.
 - `public/` — Static assets `server.ts` serves: the dashboard, share and landing pages, icons and manifest. The client bundles beside them are gitignored build output.
-- `server/` — The server's own modules, cut out of `server.ts` by the Generalsanierung (P4): `types.ts` holds the persisted domain model and its `*From`/`load*` parsers; `server.ts` stays the entry and keeps the state holders.
+- `server/` — The server's own modules, cut out of `server.ts` by the Generalsanierung (P4): `types.ts` holds the persisted domain model and its `*From`/`load*` parsers, `errors.ts` the in-memory error channel (`logError`/`errorsView`), `persist.ts` the append-only JSONL event log and its rotation-aware ledger readers, `tmux.ts` the tmux socket and process wrappers; `server.ts` stays the entry and keeps the state holders.
 - `src/` — Modules shared across the server, the browser bundle and the suites — protocol types, the client, share rendering, shell quoting, markdown, backoff.
 
 ## Top-level `.ts` and `.sh` files (49)

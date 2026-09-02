@@ -645,12 +645,52 @@ export async function run(ctx: Ctx): Promise<void> {
         { slots: { id: number; cwd: string | null; label: string | null }[] }).slots.find((x) => x.id === free)));
 
     const successorTok = sj.slot ? await paneEnv(`s${sj.slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
+
+    // --- the OVERRIDE: a MAIN that moved to another model in its pane (/model) hands the successor
+    // the record it actually wants, instead of the spawn-time one it inherited (2026-09-02: four
+    // slots on the record's claude-opus-5[1m], Fable in the pane, every successor born on the
+    // record). Absent = inherit, proven above. Present = validated exactly as open would validate
+    // it, and a rejected pair opens NOTHING — the predecessor stays, the slot count does not move.
+    type SuccRow = { id: number; cwd: string | null; model: string | null; effort?: string };
+    const succRows = async (): Promise<SuccRow[]> =>
+      ((await (await get("/api/sessions")).json()) as { slots: SuccRow[] }).slots;
+    await Bun.sleep(1100); // same whole-second git-vs-ms boundary as the first handoff above
+    writeFileSync(`${sr}/HANDOFF.md`, "## second handoff\nfor the override successor\n");
+    spawnSync("git", ["-C", sr, "add", "HANDOFF.md"]);
+    check("override setup: a second HANDOFF.md commit, newer than the successor",
+      spawnSync("git", ["-C", sr, "commit", "-qm", "second handoff"]).status === 0);
+    const occupiedBefore = (await succRows()).filter((x) => x.cwd).length;
+    const badModel = await successionPost("succeed", successorTok, { model: "no spaces allowed" });
+    const badModelText = await badModel.text();
+    const badEffort = await successionPost("succeed", successorTok, { effort: "turbo" });
+    const badEffortText = await badEffort.text();
+    check("POST /api/self/succeed with an invalid model is 400 (the open route's own wording) and opens no successor",
+      badModel.status === 400 && badModelText.includes("bad model")
+        && (await succRows()).filter((x) => x.cwd).length === occupiedBefore, `${badModel.status} ${badModelText}`);
+    check("POST /api/self/succeed with an unknown effort is 400 naming the adapter's levels, and opens no successor",
+      badEffort.status === 400 && badEffortText.includes("bad effort (one of: low, medium, high, xhigh, max)")
+        && (await succRows()).filter((x) => x.cwd).length === occupiedBefore, `${badEffort.status} ${badEffortText}`);
+    const overridden = await successionPost("succeed", successorTok, { model: "claude-opus-5[1m]", effort: "max" });
+    const oj = (await overridden.json()) as { ok?: boolean; slot?: number };
+    const overrideRow = (await succRows()).find((x) => x.id === oj.slot);
+    check("POST /api/self/succeed {model, effort} opens the successor ON THE OVERRIDE — the record it will heal and restart from",
+      overridden.ok && !!oj.slot && oj.slot !== sj.slot && overrideRow?.cwd === sr
+        && overrideRow.model === "claude-opus-5[1m]" && overrideRow.effort === "max",
+      `${overridden.status} ${JSON.stringify(oj)} ${JSON.stringify(overrideRow)}`);
+    check("...while the predecessor's own record is untouched by the override (it retires on the grace deadline as before)",
+      (await succRows()).find((x) => x.id === sj.slot)?.model === "claude-sonnet-5",
+      JSON.stringify((await succRows()).find((x) => x.id === sj.slot)));
+
     const retired = await successionPost("retire", successorTok);
     const retiredRow = ((await (await get("/api/sessions")).json()) as
       { slots: { id: number; cwd: string | null; label: string | null }[] }).slots.find((x) => x.id === sj.slot);
     check("POST /api/self/retire immediately removes the reporting successor and clears its label",
       retired.ok && retiredRow?.cwd === null && retiredRow.label === null,
       `${retired.status} ${JSON.stringify(retiredRow)}`);
+    const overrideTok = oj.slot ? await paneEnv(`s${oj.slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
+    const retired2 = await successionPost("retire", overrideTok);
+    check("override successor: retired (cleanup)", retired2.ok
+      && (await succRows()).find((x) => x.id === oj.slot)?.cwd === null, String(retired2.status));
     rmSync(sr, { recursive: true, force: true });
   }
 

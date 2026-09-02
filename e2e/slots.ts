@@ -412,6 +412,84 @@ export async function run(): Promise<void> {
   const msClear = await post("/api/slots/2/mission", { mission: null });
   check("explicit null clears the mission", msClear.ok
     && (await msJson(msClear)).mission === null && (await stewMission(2)) === null);
+
+  // --- POST /api/slots/:id/model: the owner rewrites a LIVE slot's model/effort in the RECORD.
+  // No respawn (the pane keeps running), and that is the point: heal, ↻ restart and succession
+  // read the record, and before this route they all fell back to the spawn-time value. The pane
+  // half (a restart spawns with the new pair) is proven in ./e2e-claude-gate.sh, the only suite
+  // whose FLEET_CMD makes the flags appear; here: the record, both views, the audit trail, and
+  // the three ways in that must NOT reach it. ---
+  type ModelRow = { id: number; model: string | null; effort?: string; harness?: string };
+  const modelRowOf = async (id: number): Promise<ModelRow | undefined> =>
+    ((await (await get("/api/sessions")).json()) as { slots: ModelRow[] }).slots.find((x) => x.id === id);
+  const stewModelRowOf = async (id: number): Promise<ModelRow | undefined> =>
+    ((await (await fetch(`${BASE}/api/steward/sessions`, { headers: { authorization: `Bearer ${stewTok}` } })).json()) as
+      { slots: ModelRow[] }).slots.find((x) => x.id === id);
+  const modelBefore = await modelRowOf(2);
+  const mdSet = await post("/api/slots/2/model", { model: "claude-sonnet-5[1m]", effort: "high" });
+  const mdSetJ = (await mdSet.json()) as { ok?: boolean; model?: string | null; effort?: string | null; error?: string };
+  check("owner rewrites a live slot's model+effort (200, the pair echoed back)",
+    mdSet.ok && mdSetJ.model === "claude-sonnet-5[1m]" && mdSetJ.effort === "high", `${mdSet.status} ${JSON.stringify(mdSetJ)}`);
+  const mdRow = await modelRowOf(2);
+  check("GET /api/sessions serves the rewritten pair on the slot's row",
+    mdRow?.model === "claude-sonnet-5[1m]" && mdRow.effort === "high", JSON.stringify(mdRow));
+  const mdStew = await stewModelRowOf(2);
+  check("GET /api/steward/sessions serves model AND effort (the steward view carried no effort before 2026-09-02)",
+    mdStew?.model === "claude-sonnet-5[1m]" && mdStew.effort === "high", JSON.stringify(mdStew));
+  let mdPersisted: { model?: string | null; effort?: string | null } | undefined;
+  for (let i = 0; i < 40; i++) { // saveState writes on a chain — poll, never a fixed sleep
+    mdPersisted = ((await Bun.file(`${ROOT}/fleet.json`).json()) as
+      { slots?: Record<string, { model?: string | null; effort?: string | null }> }).slots?.["2"];
+    if (mdPersisted?.model === "claude-sonnet-5[1m]" && mdPersisted.effort === "high") break;
+    await Bun.sleep(50);
+  }
+  check("the rewritten pair is persisted to fleet.json — what the next boot's heal spawns from",
+    mdPersisted?.model === "claude-sonnet-5[1m]" && mdPersisted.effort === "high", JSON.stringify(mdPersisted));
+  let mdAudit: { event?: string; slot?: number; detail?: string } | null | undefined;
+  for (let i = 0; i < 40 && !mdAudit; i++) { // appendEvent is fire-and-forget — poll the trail
+    mdAudit = (await Bun.file(`${ROOT}/audit.jsonl`).text()).split("\n").filter(Boolean)
+      .map((l) => { try { return JSON.parse(l) as { event?: string; slot?: number; detail?: string }; } catch { return null; } })
+      .filter((r) => r?.event === "slot_model" && r.slot === 2).at(-1);
+    if (!mdAudit) await Bun.sleep(50);
+  }
+  check("the rewrite is trailed as slot_model with the resulting pair",
+    mdAudit?.detail === "model=claude-sonnet-5[1m] effort=high", JSON.stringify(mdAudit ?? null));
+  // the four rejections, each leaving the record exactly as it was
+  const mdBadModel = await post("/api/slots/2/model", { model: "bad model'; echo" });
+  check("an invalid model is 400 and names the charset", mdBadModel.status === 400
+    && /bad model/.test(((await mdBadModel.json()) as { error?: string }).error ?? ""), String(mdBadModel.status));
+  const mdBadEffort = await post("/api/slots/2/model", { effort: "turbo" });
+  check("an unknown effort is 400 and names the adapter's levels", mdBadEffort.status === 400
+    && ((await mdBadEffort.json()) as { error?: string }).error === "bad effort (one of: low, medium, high, xhigh, max)",
+    String(mdBadEffort.status));
+  const mdEmpty = await post("/api/slots/2/model", {});
+  check("a body naming neither field is 400 — nothing to change is not a change", mdEmpty.status === 400);
+  const mdInactive = await post("/api/slots/4/model", { model: "claude-opus-5" });
+  check("an inactive slot is 400", mdInactive.status === 400);
+  const mdStewWrite = await fetch(`${BASE}/api/slots/2/model`, {
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${stewTok}` },
+    body: JSON.stringify({ model: "claude-opus-5" }),
+  });
+  check("the steward token cannot reach the model route (403, out of scope)", mdStewWrite.status === 403, String(mdStewWrite.status));
+  const selfTok2 = ((await Bun.file(`${ROOT}/fleet.json`).json()) as
+    { slots?: Record<string, { selfToken?: string }> }).slots?.["2"]?.selfToken ?? "";
+  const mdSelfWrite = await fetch(`${BASE}/api/slots/2/model`, {
+    method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": selfTok2 },
+    body: JSON.stringify({ model: "claude-opus-5" }),
+  });
+  check("a slot's own self-token cannot reach the model route (401 — it is not an owner credential)",
+    /^[0-9a-f]{32}$/.test(selfTok2) && mdSelfWrite.status === 401, `tok=${selfTok2.length} ${mdSelfWrite.status}`);
+  const mdAfter = await modelRowOf(2);
+  check("...and none of the six rejections touched the stored pair",
+    mdAfter?.model === "claude-sonnet-5[1m]" && mdAfter.effort === "high", JSON.stringify(mdAfter));
+  // a present null clears — model back to the fleet default, effort back to "no flag" — and the
+  // owner poll then OMITS effort (the data-saver rule for null per-slot fields)
+  const mdClear = await post("/api/slots/2/model", { model: null, effort: "" });
+  const mdCleared = await modelRowOf(2);
+  check("explicit null/\"\" clears model and effort back to the fleet defaults",
+    mdClear.ok && mdCleared?.model === null && mdCleared.effort === undefined, `${mdClear.status} ${JSON.stringify(mdCleared)}`);
+  if (modelBefore?.model || modelBefore?.effort)
+    await post("/api/slots/2/model", { model: modelBefore.model, effort: modelBefore.effort ?? null });
   // per-session, not per-slot: slot 3 is free here (killed above, re-opened later by the export
   // fixture), so this recycle is blast-radius-free
   const msOpen = await post("/api/slots/3/open", { cwd: "~" });

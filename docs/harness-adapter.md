@@ -71,6 +71,11 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
 - Modell-Tiers: `DEFAULT_MODEL` (`server.ts`, override `FLEET_MODEL`) = Sessions/Lanes ohne eigenen Pin;
   `SUMMARY_MODEL` (override `FLEET_SUMMARY_MODEL`) = alle Wegwerf-Worker (summarize, Commit-Msg, enhance,
   Merge-Resolver, ② review, digest). Beide werden gegen `MODEL_RE` validiert.
+- Ein lebender Slot wechselt sein Modell/Effort im DATENSATZ über `POST /api/slots/:id/model` (Owner,
+  kein Respawn; `docs/self-api.md` §model) — Heal, `↻ restart` und Nachfolge spawnen danach damit. Die
+  Nachfolge (`POST /api/self/succeed`) nimmt dasselbe Paar optional als Override. Beides wird nach der
+  Harness des Slots validiert: `supports.model`/`supports.effort` + `effortLevels` des Adapters (codex
+  übersetzt Effort in `--thinking`, siehe §Harness-Adapter), nie nach dem Server-Env.
 
 ## Repo-Worker
 

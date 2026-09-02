@@ -84,10 +84,13 @@ zeigt, dass genau diese Luecke beim Schwesterfix `3974883` heute offen ist.
 **Status:** offen, nicht disponiert. Kein Fix ohne Owner-Freigabe — P6 beginnt laut Plan nach P5,
 und der Feature-Freeze steht bis P7.
 
-**Rang:** hoechster der Liste. **B-05** zeigt, dass das Helfergeraet heute eine Rot-Quote von 85 %
-gegen 22 % lokal faehrt — und ohne die Fehlernamen aus B-01 ist nicht entscheidbar, ob das Geraet,
-die Umgebung oder der Baum schuld ist. B-01 ist damit die Vorbedingung fuer jede Ausweitung der
-Auslagerung, nicht eine Bequemlichkeit.
+**Rang:** hoechster der Liste — mit der schwaecheren und darum haltbareren Begruendung.
+**B-05** zeigt einen Rot-Abstand von 86 % remote gegen 39 % lokal IM SELBEN ZEITFENSTER. Das ist
+kein Alarm (main war in diesem Fenster oft wirklich rot), aber es ist erklaerungsbeduerftig — und
+**ohne die Fehlernamen aus B-01 ist der Abstand nicht entscheidbar.** Solange er es nicht ist, darf
+die Auslagerung nicht ausgeweitet werden. Das ist der Rang: nicht „das Geraet ist kaputt", sondern
+„die Frage ist mit den heutigen Daten unbeantwortbar, und B-01 ist das, was sie beantwortbar
+macht".
 
 ---
 
@@ -188,37 +191,72 @@ einen Absatz.
 
 ---
 
-## B-05 — Das Helfergeraet ist als VERDIKT-Quelle heute unbrauchbar, als Mutex-Entlaster wertvoll
+## B-05 — Der Rot-Abstand des Helfergeraets ist offen; die Auslagerung ist schneller, nicht langsamer
 
-*Messung des Fleet Controller (Slot 1), erhoben 2026-09-02 ~20:05 an `post-land-audits.jsonl`;
-von der Sanierungs-MAIN unabhaengig nachgerechnet und in allen Zahlen reproduziert.
-Filter `ms >= 300000`, damit Nicht-Laeufe herausfallen.*
+*Messung des Fleet Controller (Slot 1) an `post-land-audits.jsonl`, Filter `ms >= 300000`.
+Von der Sanierungs-MAIN unabhaengig nachgerechnet und bestaetigt. **Zweite Fassung** — die erste
+verglich schief, siehe „Methodensatz" unten; sie ist der Grund, dass dieser Abschnitt existiert.*
 
-| | n | p50 | p90 | green | red | unknown | Rot-Quote |
+Vergleichsfenster = die Spanne, in der es ueberhaupt Remote-Laeufe gibt (2026-08-29 12:32 bis
+2026-09-02 21:44). Zahlen der Sanierungs-MAIN, erhoben ~20:15; der Controller erhob ~20:10 und
+kam auf `remote n=13` / `lokal n=36` — die Differenz ist Zuwachs des Ledgers in fuenf Minuten,
+keine Abweichung.
+
+| | n | rot | Rot-Quote | gruen | unknown | p50 | p90 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| **lokal** | 324 | 963 s | 1557 s | 242 | 70 | 12 | **22 %** |
-| **remote** | 13 | 1323 s | 1419 s | 2 | 11 | 0 | **85 %** |
+| **remote** | 14 | 12 | **86 %** | 2 | 0 | **1323 s** | 1419 s |
+| **lokal, GLEICHES Fenster** | 38 | 15 | **39 %** | 19 | 4 | **1557 s** | 1801 s |
+| lokal, ganze Historie | 324 | 70 | 22 % | 242 | 12 | 963 s | 1557 s |
 
-**(1) Remote ist LANGSAMER als lokal, nicht schneller** — p50 1323 s gegen 963 s. Der Gewinn der
-Auslagerung ist also NICHT die Laufzeit, sondern dass der lokale Suite-Mutex frei bleibt. Wer das
-Angebot mit Geschwindigkeit begruendet, begruendet es falsch.
+Die dritte Zeile steht nur da, um zu zeigen, warum sie NICHT hierher gehoert.
 
-**(2) Die Rot-Quote klafft um Faktor ~4.** `n = 13` ist klein, und drei der elf Rots sind
-abgebrochene Kurzlaeufe (597 / 656 / 660 s — `./e2e-isolated.sh` exitet auf dem ersten FAIL, ein
-schneller Lauf ist ein abgebrochener). Aber selbst ohne diese drei bleiben **8 von 10 rot** gegen
-22 % lokal. Dazu der Einzelfall vom selben Tag: P4 Slice 3, derselbe Baum, remote ROT mit 4 Fails —
-lokal GRUEN 3466/0.
+**(1) Remote ist SCHNELLER als lokal — rund 15 % (1323 s gegen 1557 s).** Die erste Fassung dieses
+Eintrags behauptete das Gegenteil („remote ist langsamer, der Gewinn ist NICHT die Laufzeit"). Das
+war falsch, und zwar in beiden Haelften. Der Mechanismus dahinter ist der eigentliche Befund:
+**lokale Laeufe sind unter Last langsam, weil sie sich am Suite-Mutex gegenseitig behindern** — an
+diesem Nachmittag liefen zeitweise drei Wrapper gleichzeitig —, waehrend das Helfergeraet bei
+load 0 arbeitet. Die Auslagerung zahlt also DOPPELT: der lokale Mutex bleibt frei UND der Lauf ist
+schneller. Genau darum ist die p50-Zahl der ganzen Historie (963 s) hier irrefuehrend: sie mittelt
+ueber ruhige Tage, an denen niemand ausgelagert haette.
 
-**Rangordnung, die daraus folgt, und sie ist eine Ordnung, keine Meinung:** solange ein remotes Rot
-weder seine Fehlernamen traegt (B-01) noch seine Quote erklaert ist, taugt das Helfergeraet nicht
-als Quelle eines VERDIKTS. Als Entlaster des lokalen Suite-Mutex bleibt es wertvoll und soll
-weiterlaufen. **Damit ist B-01 kein Komfortmangel, sondern die Vorbedingung dafuer, dem Geraet
-ueberhaupt mehr Arbeit zu geben.**
+**(2) Der Rot-Abstand ist 86 % gegen 39 % — erklaerungsbeduerftig, aber kein Alarm.** Drei der
+zwoelf Remote-Rots sind abgebrochene Kurzlaeufe (597 / 656 / 660 s — `./e2e-isolated.sh` exitet auf
+dem ersten FAIL, ein schneller Lauf ist ein abgebrochener); ohne sie bleiben 9 von 11 gegen 39 %.
+Der Abstand bleibt, aber `main` war in diesem Fenster tatsaechlich oft rot, und bei `n = 14` ist
+das eine OFFENE FRAGE, keine Anklage gegen das Geraet. Dazu der Einzelfall vom selben Tag: P4
+Slice 3, derselbe Baum, remote ROT mit 4 Fails — lokal GRUEN 3466/0.
 
-**Ehrlich zur Belegstaerke:** `n = 13` traegt die Perzentil-Aussage; die Rot-Quoten-Aussage ist ein
-starkes Indiz, keine gesicherte Rate. Was sie NICHT sagt: worin die Ursache liegt — Geraet, Umgebung,
-Nichtdeterminismus unter fremder Last oder echte Defekte, die nur dort sichtbar werden. Genau diese
-Frage ist ohne B-01 nicht beantwortbar, und das ist der Punkt.
+**Rangordnung, die daraus folgt:** das Helfergeraet bleibt als Entlaster des lokalen Suite-Mutex
+wertvoll und soll weiterlaufen. Als alleinige Quelle eines VERDIKTS taugt es erst, wenn der
+verbleibende Abstand erklaert ist — und erklaerbar wird er erst mit den Fehlernamen aus **B-01**.
+Deshalb traegt B-01 den Rang, nicht dieser Eintrag.
+
+**Ehrlich zur Belegstaerke:** `n = 14` traegt die Perzentil-Aussage knapp; die Rot-Quoten-Aussage
+ist ein Indiz, keine gesicherte Rate. Was hier NICHT gemessen ist: die Ursache des Abstands —
+Geraet, Umgebung, Nichtdeterminismus unter fremder Last, oder echte Defekte, die nur dort sichtbar
+werden. Diese Frage ist ohne B-01 nicht beantwortbar, und das ist der ganze Punkt.
+
+---
+
+## Methodensatz — der Zeitfenster-Vergleich (aus dem Fehler in B-01/B-05 gelernt)
+
+> **Ein Vergleich zweier Populationen mit unterschiedlicher Zeitspanne misst die Zeit, nicht den
+> Unterschied.**
+
+Die erste Fassung von B-05 stellte 13 Remote-Laeufe aus vier Tagen gegen 324 lokale Laeufe aus der
+GANZEN Historie und schloss daraus zwei Saetze, die beide falsch waren: „remote ist ~37 % langsamer"
+und „der Gewinn der Auslagerung ist NICHT die Laufzeit". Im gemeinsamen Fenster kehrt sich das um —
+remote ist ~15 % SCHNELLER —, und die Rot-Quote schrumpft von Faktor ~4 auf 86 % gegen 39 %.
+
+Es ist dieselbe Fehlerklasse, vor der das Regelbuch bei Flake-Urteilen warnt: eine Population, die
+unter anderen Bedingungen entstanden ist, als Kontrollgruppe zu benutzen. Die Maschinenlast dieses
+Repos schwankt um mehr als den gemessenen Effekt — die ganze Historie mittelt ueber ruhige Tage.
+
+**Regel fuer jede kuenftige Messung in diesem Register:** das Fenster wird vom SELTENEREN Arm
+bestimmt, und beide Arme werden darauf beschnitten. Die unbeschnittene Zahl darf danebenstehen,
+aber ausdruecklich als „nicht vergleichbar" beschriftet — nie als Kontrollgruppe. Und: der Fehler
+wurde vom Messenden selbst gefunden und gemeldet; das ist der Grund, warum dieser Absatz
+existiert, statt dass die falsche Zahl weiterwandert.
 
 ---
 

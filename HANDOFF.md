@@ -208,6 +208,41 @@ Der Controller-Abschnitt darunter gehoert einer anderen Rolle.
 Rolle: 🎛 Fleet Controller. Owner-Delegation (Landen, autonomer Betrieb) gilt fort. Modelle: siehe §2 —
 die Fable-Politik ist HEUTE nicht fahrbar, das ist der wichtigste Betriebsfakt dieser Session.
 
+## OWNER-AUFTRAG AN DICH, woertlich (2026-09-02 18:50, bei meiner Nachfolge erteilt)
+
+> „bitte starte die Nachfolge und dann sag ihr das sie sich mit hilfe von agenten, einen Überblick
+> verschaffen soll um dann die Sessions richtig zum weiterarbeiten zu bekommen"
+
+Das ist DEIN erster Auftrag und er geht dem „ersten Zug" in §2 vor. Zwei Teile, in dieser Reihenfolge:
+
+**1. Ueberblick MIT AGENTEN, nicht selbst lesen.** Der Grund ist Kontext: die Erdung kostet dich sonst
+~7,6 % (gemessener Fixwert), und Panes einzeln zu lesen hat mich heute Punkte gekostet, die ich am
+Ende gebraucht haette. Delegiere parallel, in EINER Nachricht, und lass dir VERDICHTETE Ergebnisse
+geben statt Rohausgaben. Sinnvoller Schnitt, vier Agenten:
+   - **Board + Panes:** je lebendem Slot ein Satz — arbeitet / idle-und-fertig / wartet-auf-dich /
+     hat-einen-Brief-kompiliert (die vier Zwillingszustaende aus dem Regelbuch), plus `ctx`, Modell,
+     und WORAUF er wartet. Werkzeug: `/api/sessions` und `tmux -L claudefleet capture-pane -p -t s<N>`.
+     **Regel mitgeben: NIEMALS `ps` ungefiltert ausgeben** — die Self-Tokens stehen in den Kommandozeilen.
+   - **Queue/Register:** `./register.sh`, was seit heute Mittag dazukam, was JETZT dispatchbar waere.
+   - **Lands/Ledger:** `./state.sh` plus die `fleet/land`-Notes und `post-land-audits.jsonl` seit
+     `8865eaa` — offene rote Audits, ungedeckte Lands, Deploy-Gap.
+   - **Programme:** welche Program-MAIN haengt woran, wer wartet auf wen. Quelle ist `fleet.json`
+     (`GET /api/sessions` traegt `programs` OHNE `main`).
+   Agenten erben deine Regeln NICHT: schreib in jeden Prompt, dass er nur Gelesenes behaupten darf,
+   Datei/Zeile zitiert und ausdruecklich sagt, was er NICHT geprueft hat.
+
+**2. „Die Sessions richtig zum Weiterarbeiten bekommen."** Das ist der eigentliche Auftrag, der
+Ueberblick ist nur das Mittel. Konkret heisst es: jede lebende Session soll wieder AN ETWAS
+arbeiten. Heute lag Slot 8 zweieinhalb Stunden fertig da, weil niemand seine Frage beantwortet hat,
+und Slot 10 eine Stunde. Das nicht wieder. Je Session eine Entscheidung, und ein Send kostet die
+MAIN ihren vollen Kontext — also gebuendelt und einmal, nie in Haeppchen:
+   - fertig mit Commits → landen (du hast die Autoritaet).
+   - wartet auf eine Antwort → antworte, auch wenn die Frage eigentlich ihrer MAIN gehoert; eine
+     tote MAIN beantwortet nichts.
+   - hat nichts zu tun → Zeile aus dem Register geben oder retiren, nicht leer laufen lassen.
+   - ueber dem Kontextband → zur Nachfolge auffordern.
+
+
 ## 0. Reihenfolge fuer dich
 
 1. Erdung (`./state.sh`, `./register.sh`, dieser Abschnitt, Board). Miss deinen ctx, bevor du liest.

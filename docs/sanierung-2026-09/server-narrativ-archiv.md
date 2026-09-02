@@ -15,6 +15,9 @@ Die Datei waechst ueber die P3-Slices weiter — jeder Slice haengt seine Symbol
 
 - **Slice 1** (`slotCmd`, `ensureSlot` → `openSlot` → `teardownSlotOccupant` bis `sendText`,
   Boot-Sektion) — Basis HEAD `67b2265`, Lane `fleet/260902012020-3ff5`.
+- **Slice 2** (Watch-Typblock, `commsFor` → `createWatchForSlot` → `armProgramMainLandWatch`,
+  `tickAutos` → `dispatchTask` → `briefAndSend`, `tickWatches`) — Basis HEAD `bd0aaae`, Lane
+  `fleet/260902023103-a878`.
 
 ## slotCmd
 
@@ -903,3 +906,772 @@ books the lapse, frees the bundle and restarts the drain, so being a few seconds
 nothing that matters.
 ```
 
+## Watch
+
+### Banner — warum es einen Watch gibt
+
+```text
+--- a WATCH: the event-triggered sibling of an Auto. Same delivery (one prompt typed into one
+pane, through canDeliver), different trigger — a fact about ANOTHER slot instead of a clock.
+
+WHY IT EXISTS. Fleet computes completion facts on the 2s poll; auto-③ consumes only the original
+`doneLooking`, and every other consumer was someone who was already looking. So a session that
+dispatched a lane and turned away had no way back except remembering to check. Measured twice on
+2026-08-07: a driving session missed a finished 807-line lane for ~20 minutes, then replaced the
+habit with a background `until`-loop — which fires once by construction and left the same hole on
+the next lane. A watcher the RECEIVER has to re-arm fails exactly when the receiver is busy,
+which is every time it matters. This one is armed on the server and survives a restart.
+
+WHAT IT IS NOT: it delivers TEXT and nothing else — no commit, land, review or kill. The original
+predicate remains idle+clean+ahead and carries its old warning; the host-commit sibling is weaker
+and says that uncommitted+zero-ahead is intended and requires a host commit. Both remove a WAIT,
+never a CHECK.
+
+The trigger is LEVEL, not edge (tickWatches): either predicate is a standing property of the
+target's facts, so a watch on an already-matching lane fires at once. Firing spends the watch
+(`armed:false`); a target that
+goes back to work and finishes again is a NEW question and needs a new watch. That is the narrow
+reading on purpose: an armed-forever watch is a repeating nudge, and nothing here should be able
+to type into a pane on a cadence nobody chose.
+```
+
+### WatchBase.delivery
+
+```text
+WHERE THE COMPLETION GOES, decided by the SUBSCRIBER at subscribe time and by nobody else.
+Absent is the legacy pane default and is kept absent on load, byte-for-byte: pane delivery is
+what every existing row asked for. "inbox" says the receiver is an owner-attended conversation
+— typing a completion fact into that TUI lands it in the owner's composer, so such a watch
+mints its event straight into the owner operations inbox and no transport ever touches it.
+```
+
+### LaneWatch.kind
+
+```text
+Absent on legacy persisted rows. Keeping it absent after load is intentional: those rows pass
+through byte-for-byte and `watchKind` supplies their discriminator only while evaluating them.
+```
+
+### LaneWatch.targetCwd/targetBranch — Identitaet
+
+```text
+the target's IDENTITY at subscribe time, because `target` alone is not one: slot ids are
+recycled, so an id-only watch would survive its subject and then fire about whatever lane
+moved in next. Teardown drops watches already (dropWatchesFor); these two are the second
+lock, and the tick refuses to fire on a target whose cwd or branch changed underneath it.
+```
+
+### TransitionWatch (STN-1)
+
+```text
+STN-1: the Supervisor→Controller transition rail. The ONLY Watch kind whose trigger is a
+principal's act (the bound Supervisor completing it) rather than a level the tick computes, and
+the only one with a deadline: a Controller that registers "wake me when X" must be able to read
+"X never came" from its own row rather than wait forever. Same slot/occupant/idleSec/armed
+anatomy as every other kind, so the transport, the cap and the teardown need no second ledger.
+```
+
+## commsFor
+
+### Banner + Kopfkommentar
+
+```text
+--- scheduled prompts ---
+a dead agent leaves its pane at a plain shell (`<cmd>; exec $SHELL`) — an unattended
+prompt typed THERE would execute as shell commands. Only send when the harness's own
+process still hangs under the pane process. (pane_current_command is useless here: it
+reports the wrapper zsh even while the agent runs.) The gate applies to every DECLARED
+harness, claude or not; an undeclared custom command is still intentionally whatever the
+operator chose, and answers "unprobed" rather than a liveness claim nobody can support.
+Which comms prove THIS slot's agent. The fleet-wide HARNESS_COMMS is now only the DEFAULT
+adapter's answer (comms: null defers to it), so a slot running a named harness is probed for the
+binary it actually runs. This is the whole per-slot repair, and it lives in one function so both
+consumers — the git/alive tick and claudeAlive — cannot drift apart; e2e/pins.ts pins that neither
+reads HARNESS_COMMS directly any more.
+a `function` declaration, not a const arrow, and that is deliberate: tickGit() reads it from a
+line ABOVE this one, and openSlot/killSlot reach tickGit at boot. A const would sit in its
+temporal dead zone on that path and throw a ReferenceError only at startup — the same ordering
+hazard projDir already documents one region up.
+```
+
+## harnessAutomatable
+
+### Kopfkommentar
+
+```text
+May an UNATTENDED path drive this slot? Separate from "is it alive" on purpose — see the
+HARNESS_AUTOMATION note above. A slot on the default adapter is unaffected forever (that is every
+slot on this fleet today); a slot running a named harness is refused until the owner opts in,
+whatever the probe says. Checked BEFORE the liveness probe by every gate, so the reported reason
+is the specific one ("this harness is not automatable") rather than the generic not-alive it would
+otherwise collapse into — being skipped SILENTLY was the expensive half of the original defect.
+```
+
+### harnessAutomatableFor
+
+```text
+The SAME question one level down — about a Harness rather than about a slot's harness. Extracted
+when a second caller appeared that asks it about an adapter belonging to no slot yet:
+releaseTaskForMain asks it about the harness the TICK would spawn for the row it is releasing.
+Two conditions and the default-adapter exemption live here once, so the two gates cannot drift.
+```
+
+## claudeAlive
+
+### Der unprobed-Waiver
+
+```text
+"unprobed" is the undeclared-command waiver this function has always granted — an operator who
+never said what their FLEET_CMD leaves behind keeps exactly today's behaviour. A DECLARED
+harness no longer gets it: that is the whole repair, and it is why "no-agent" now exists as a
+distinct answer instead of collapsing into the same `true` a live claude returns. Note that a
+named harness declares its comms through the ADAPTER, so it loses the waiver too — a pi slot on
+a `FLEET_CMD=true` fleet is genuinely probed, where before it inherited the empty set.
+```
+
+## paneAgentAt
+
+### AgentState — vier Antworten
+
+```text
+Why the pane has, or has not, got a running agent — four answers, because the two that used to be
+one are the interesting pair: "no-pane" (nothing to type into) and "no-agent" (a pane that is
+alive and accepting keystrokes, with NO agent behind it) are different failures and only the
+second is silent. That is the state an unresolvable model produces: the harness prints its error,
+exits, and slotCmd's `; exec $SHELL` catches the pane — pane_dead=0, prompts accepted, executed
+as shell commands. Nothing could name it before this, for ANY harness including claude.
+
+The pane process ITSELF can be the agent (a single trailing command makes sh exec it — unlike
+slotCmd's `; exec $SHELL`, which keeps it a child), so both the pane pid and its children count.
+```
+
+### Die vierte Probe-Menge (Worker) — historische Parenthese
+
+```text
+(The fourth probe set — the worker session's — used to be a `claudeAliveAt` wrapper here, pinning
+the literal ["claude"] a thousand lines from the spawn line it described. It now rides on the
+adapter that BUILDS that line (Harness.worker), so the two cannot drift: an adapter whose worker
+runs something else carries its own comms, and one that runs nothing carries none. Still four
+sets, still literal for the default adapter — only no longer restated out of reach of its cause.)
+```
+
+## paneReadiness
+
+### Kopfkommentar
+
+```text
+SCREEN readiness, the layer paneAgentAt cannot see: Codex block screens keep the
+node wrapper alive, so the process probe answers `alive` while a paste would be silently eaten
+(measurement and incident inference are separated in the adapter's `readiness` comment). null = this
+harness declares no readiness and keeps today's behaviour: every adapter but codex, including
+the default one, takes that branch and no gate below it may fire. "pending" is neither marker on
+screen — a booting TUI, a redraw, a working agent whose header scrolled off — and is deliberately
+NOT a refusal at the delivery gates (fail-open there; only the bounded boot wait in briefAndSend
+treats it as not-yet-ready, per the owner's cut). A failed capture is "pending" too: the pane
+gates next to this one own the no-pane answer.
+```
+
+## waitForFoundingReadiness
+
+### Kopfkommentar
+
+```text
+Fresh founding prompts have a stricter readiness contract than established-pane deliveries:
+when an adapter declares a ready marker, "pending" means keep waiting within the shared bound.
+Both dispatch and Program-MAIN bootstrap use this one loop so a newly supported blocking screen
+cannot be fixed for one founding rail while the other silently pastes through it.
+```
+
+## createAutoForSlot
+
+### Kopfkommentar
+
+```text
+shared by the owner route (POST /api/slots/:id/autos) and the self-scheduling route
+(POST /api/self/autos) — every guard rail (AUTO_MAX_PER_SLOT, min interval, mandatory
+runs cap, idle gate downstream in tickAutos) lives here exactly once. The caller is
+responsible for how `s` was derived; this function trusts it and never reads a `slot`
+field from the body, so it structurally cannot create an Auto anywhere but on `s`.
+```
+
+## slotDeliveryBudget
+
+### THE DELIVERY BUDGET
+
+```text
+THE DELIVERY BUDGET, IN ONE PLACE — the arithmetic three doors spend and two sights read.
+
+Every receiver has a hard ceiling on how much undelivered future it may owe: open (non-terminal)
+FleetEvents plus armed Watches, capped at FLEET_EVENT_MAX_OPEN_PER_SLOT. An armed Watch reserves
+one future event, a delivered-but-unacknowledged one still holds its own, and when the two fill
+the cap the minting doors refuse — the watch route with `max N active watches per slot`, the two
+report doors with `… receiver has no FleetEvent delivery budget`.
+
+`free === 0` is EXACTLY that refusal condition (debts + reservations >= cap), which is the whole
+reason this is a function rather than three copies of one sum: a sight built on it can never
+claim room a send would not find. Clamped at 0 because the sum is READ, never trusted — a cap
+lowered under live rows would otherwise project a negative as "less than none".
+```
+
+### ownerInboxDebts
+
+```text
+The owner inbox half of the same arithmetic, and deliberately smaller: he holds no watches, so
+there is nothing to reserve — only rows he has not yet acknowledged. `>= cap` is EXACTLY the
+refusal condition of the fleet-report door, for the same reason `free === 0` is over there.
+```
+
+## createWatchForSlot
+
+### Kopfkommentar — zwei Prinzipale, eine Frage
+
+```text
+mint a watch: slot `s` asks to be told, once, when slot `target` looks done. TWO principals now
+reach this function, and the history of why is worth one paragraph: it was owner-only, on a
+MEASUREMENT — FLEET_SELF_TOKEN used to be baked into a LANE's pane and never a plain session's,
+so the session this feature exists for (a driving main checkout) had no credential to subscribe
+with, and a /api/self/ twin would have been reachable by exactly the principal that did not need
+it. That premise expired when every session with a cwd started carrying the credential (the
+selfExport line in ensureSlot), and the twin was built: POST /api/self/watch, which derives `s`
+from the token instead of the URL and then calls straight into here.
+
+WHAT THAT DID NOT CHANGE — read this before adding a condition below. The self route carries its
+own SUBSCRIBER rule (a lane may not subscribe; see the route) because that is a question about
+the caller, and this function never sees a caller. Everything here is about the TARGET and is
+identical for both principals. Same split as createAutoForSlot: the caller owns how `s` was
+derived, this function trusts it and never reads a `slot` field from the body, so neither route
+can put a watch anywhere but on `s`.
+
+EVERY REJECTION HERE ANSWERS THE SAME QUESTION: can this watch ever fire? A watch that cannot is
+worse than no watch, because it is a silent forever-wait — the precise failure this whole surface
+removes. So a target the predicate does not classify is refused at CREATE time, loudly, instead
+of being accepted and then never firing.
+```
+
+### STN-1-Registrierung — geschlossener Body
+
+```text
+STN-1 registration: a CLOSED body. The receiver is `s` (the token's own occupant) and the
+completing principal is the bound Supervisor — neither is a body fact, so `target`, `slot`,
+`programId` and the rest are refused BY NAME rather than ignored: a field that is silently
+dropped reads to its author as if it had been honoured. `delivery` is in the refused set too:
+the inbox is the owner's operations inbox, and a Controller's wake-up has no business there.
+```
+
+### Nicht-automatisierbare Harness — lane ONLY (Messung 2026-08-29)
+
+```text
+Measured live 2026-08-29: a finished GLM lane on pi-zai held an armed {kind:"lane"} watch
+FOREVER. aliveInfo folds harnessAutomatable into `alive`, and BOTH looking predicates
+require alive === true — so a lane whose harness the automation policy declines can never
+be classified, whatever its pane does, and the tick's `stay armed, ask again` is a silent
+forever-wait. The door refuses instead, in this family's one question. lane ONLY: a merge
+watch reads the merge terminal factor below, not laneSignalView, and demonstrably fires on
+exactly such a lane (2026-08-29) — rejecting it there would forbid a working watch.
+```
+
+### Budget-Reservierung
+
+```text
+An armed Watch reserves one future event slot. Delivered-but-unacknowledged and uncertain
+events reserve theirs until the receiver closes them; otherwise repeated subscribe/fire
+cycles could grow fleet.json without bound while the facts we may not prune accumulate.
+The sum is slotDeliveryBudget's, shared with both report doors and with the sights that show
+this budget — the refusal and the projection cannot drift apart while they are one function.
+```
+
+## mintTransport
+
+### Kopfkommentar
+
+```text
+THE ENTIRE TRANSPORT SPLIT, in one expression every mint site spreads. The Watch's delivery
+decides the event's own delivery fact AND its initial status: "inbox" is not a pending state, and
+FACT 2 selects `pending` alone — so an inbox event can never reach sendText, the history append
+or the prompt journal. That is a property of the state machine, not of an added guard, which is
+why no site below needs to know about panes at all.
+```
+
+## armProgramMainLandWatch
+
+### Kopfkommentar — das Event, das eine MAIN nie abonniert hat
+
+```text
+THE EVENT A BOUND PROGRAM-MAIN NEVER SUBSCRIBED FOR — and the reason it has to be minted on its
+behalf. A MAIN learns a merge terminal through a Watch IT armed, and the self-land route hands it
+the subscription only AFTER its own job started. So every land the MAIN did not itself start —
+the owner's ⏏ or ⏫, an already-merged land, a confirm — reached a MAIN that had armed nothing,
+and the row went `done` with no event addressed to anyone. The Program-MAIN then stood on stale
+execution truth until a poll or a human nudge, with its next dependent task blocked behind it
+(measured 2026-08-29 on program f99e9354, task 8e91fdc9 — the land itself was correct).
+
+This arms exactly the subscription the MAIN would have made, in the receiver's name, at the one
+moment the fact becomes terminal; the ordinary mintMergeEvents beside it spends it. NO second
+lifecycle record and no second transport: what arrives is the same merge-terminal FleetEvent,
+occupant-bound (slot + openedAt + sessionId) like every other one, acknowledged and pruned by the
+same doors.
+
+EXACTLY ONE, and each way that could break is answered here rather than downstream:
+ · an already-armed merge watch of the SAME receiver occupant on THIS lane means the
+   subscription exists — arm nothing, and that watch fires instead (one event, not two);
+ · the receiver is the live occupant of the ACTIVE program the LANE belongs to, taken from
+   clarificationReceiverFor's `program-main` basis and nothing weaker. Its lane-watch fallback is
+   deliberately NOT honoured: a watcher who subscribed already owns a row here, and a foreign
+   program or a recycled/succeeded MAIN slot matches no binding at all, so it gets nothing;
+ · a MAIN whose return path is full is refused exactly as the two report doors refuse it, loudly
+   in the trail rather than by growing a debt it cannot pay;
+ · this runs once per terminal landLane, and a retry finds no lane left to land.
+```
+
+## tickAutos
+
+### Policy-Refusal (harness)
+
+```text
+a POLICY refusal, unlike every other gate here, does not resolve by waiting: it holds
+until the owner flips FLEET_HARNESS_AUTOMATION. So it is recorded and the run is spent
+rather than retried in silence every interval — the silent skip is the defect this names.
+```
+
+### quiet-hours
+
+```text
+held inside the owner's quiet window and retried next interval (tick-in-place). No
+staleness fast-forward is needed — advanceAuto reschedules now-relative, so an overdue
+auto fires at most once, never a replayed backlog.
+```
+
+## dispatchTask
+
+### dispatchingTasks
+
+```text
+tasks currently mid-spawn (tick or the manual start route): a task must never be dispatched
+twice. Check-and-add happens synchronously before the first await, so two callers cannot both
+win; the entry is removed once the row is `sent` (or the spawn failed) — from then on the
+status itself carries the state.
+```
+
+### Kopfkommentar — clarify und spawn
+
+```text
+the shared dispatch core: spawn a fresh DISPATCH_REPO lane for `next` in `free`, flip the row
+to `sent`, and hand back the async `tail` that compiles + gates + injects the brief. The tick
+awaits the tail (serial by design, exactly as before); the manual route fires it and answers
+the button in seconds — the row's status/note tracks the rest.
+`clarify` opens the lane to SETTLE the done-criterion with the owner instead of executing
+(owner ask 2026-08-05, the third answer to an eval:review verdict — see clarify-prompt.ts).
+Owner-only by construction: no tick passes it, only the attended button does.
+
+`spawn` is the same choice /api/lanes takes — WHICH AGENT runs the lane — and it exists here for
+one reason: a foreign-harness lane started the other way (POST /api/lanes + a hand-sent brief)
+leaves the queue row unlinked, so nothing requeues it on a failed spawn, no outcome row carries
+it, and the row must be closed by hand. The default is the tick's shape and stays the default
+adapter, byte-for-byte what every caller before this sent.
+```
+
+### taskSpawnOf
+
+```text
+THE ONE BRIDGE from a queue row to a spawn choice: the row's own persisted, SET-time-validated
+field, DEFAULT_SPAWN on absence. Every unattended reader (the tick's dispatch call, the release
+door's entry gate) goes through this accessor, so "which agent would this row run" has exactly
+one answer — never a request value, never an env default (pinned in e2e/pins.ts).
+```
+
+### THE BOLT
+
+```text
+THE BOLT, restated where the choice now arrives. It used to be openSlot's parameter default
+alone: the tick called the short form, so it COULD not name a harness. The tick now passes the
+ROW's own persisted, SET-time-validated choice (taskSpawnOf, pinned in e2e/pins.ts) — and
+exactly therefore this second lock carries weight: a stored foreign choice that reaches an
+unattended call answers to the same two conditions every other unattended path answers to,
+and in the same order, so the reason a start was refused is the specific one rather than a
+generic failure. The tick's own row gate refuses the same rows BEFORE a slot is reserved and
+writes why on the row; this lock stays for any caller that skips that gate.
+```
+
+### wasStatus
+
+```text
+captured BEFORE any mutation, restored on every failure path: an eval-auto row enters as
+"pending", and flipping it to "queued" on a failed spawn used to promote its RETRY to the
+owner path — uncounted by the day valve, ungated by the eval disjunct (found 2026-08-05).
+Restoring the entry status keeps a task on exactly the path that admitted it.
+```
+
+### laneFormOf
+
+```text
+WHICH FORM the working copy takes, resolved through the same one function the two lane
+routes ask. There is no request body here — the button sends no `form` and neither does the
+tick — so this is exactly the "absence" branch: the harness answers, and for every adapter
+but Codex the answer is the worktree this path has always made. Deriving it from `spawnH`
+rather than recomputing the harness is the point: the dispatch route already resolved which
+agent runs, and two derivations of one choice are how they come apart.
+```
+
+### dispatchRepo/anchor
+
+```text
+the task's own target repo wins; the env default covers every unbound row. Resolve and
+choose the parent before materialising the tree, exactly like openLaneInSlot: dispatch is a
+fresh-lane creator too, and must persist the same one-time same-repo decision.
+```
+
+### LaneRef ohne base
+
+```text
+no `base` here (the dispatcher lane keeps today's live re-derivation), but the fork
+commit is still captured — the outcome record needs it after the land moves main
+model/harness/effort ride in from the attended request or the row's own persisted choice
+(DEFAULT_SPAWN is the absence shape and is the claude adapter); `label` stays null here
+because the line below names the slot.
+```
+
+### syncLaneRefs
+
+```text
+A fresh clone's branch exists only in the clone — mirror it up NOW, for openLaneInSlot's
+reason: until the root has the ref, every root-side reader (drift, risk, the land path)
+reports an absence as a fact about the lane. A no-op for a worktree lane.
+```
+
+### releasedBy
+
+```text
+An attended click IS a release, and the only one that never passes through `queued` — this
+route starts a `pending` row directly, so releaseTask never sees it. Stamped OVER whatever
+the row carried: if an unattended promote released it and the owner then pressed ▸ start,
+the lane that actually ran was attended, and a criterion counting unattended lanes must not
+have it. The tick's own path (ownerAct false) writes nothing here — it only ever picks rows
+that were already released, and inventing a value for a legacy row would be the guess the
+field exists to refuse.
+```
+
+### finally — laneSpawn.delete
+
+```text
+release the spawn reservation ALWAYS — without this every dispatched slot stayed
+in laneSpawn forever, unusable by the dispatcher, attach and manual open alike
+until a restart (the sibling routes release in finally; this path didn't).
+Safe to release here: openSlot has set free.cwd, so the slot is no longer "free" to
+any picker, and the task's own state is carried by its status from this point on.
+```
+
+## briefAndSend
+
+### Kopfkommentar — kein Modellaufruf mehr
+
+```text
+the dispatch tail: deliver the brief once claude is up.
+
+NO MODEL CALL LIVES HERE ANY MORE, and that is the point. This function used to compile the
+brief itself — runEnhance on the raw text, in parallel with claude's boot — while the eval gate
+had already approved the RAW TEXT. So the string that was judged and the string that ran were
+different, produced by a cheaper model, and nothing compared them. The brief is now compiled and
+judged together in the analysis sweep and stored on the task; here it is sent with a freshly
+derived ContextPlan anchor block. The stored brief itself is never rewritten with that projection.
+Fallback stays the raw text: a lane with an unpolished brief beats a task that never runs.
+`ownerAct` relaxes the AUTOMATION stops (master stop, quiet hours) on the delivery gates: an
+explicit owner click is attended, not automation — the same "owner acts" carve-out canDeliver
+documents. The claude-alive gate ALWAYS holds: a claude that failed to boot leaves a bare
+shell that would EXECUTE the brief as commands. Never rejects — every failure requeues.
+```
+
+### DISPATCH_CONTEXT_CAPABILITIES
+
+```text
+Every normal worktree lane has the tracked checkout, Bun, git, the e2e harnesses, server.ts,
+and the copied private overlay, so these six capabilities are real for every adapter. The two
+deliberately absent capabilities are `task-queue-read` (a lane's scoped token cannot read the
+owner queue) and `deploy-observe` (deploy facts are owner/steward-only); full host access is not
+used to route around those API boundaries, and no capability probe is invented.
+```
+
+### clarify-Modus
+
+```text
+clarify mode ignores the compiled brief entirely: the enhancer turns a draft into a work brief
+WITH a done-criterion, and a task that reached this button is precisely one where that cannot
+be done yet. Deterministic frame + the raw request, no model call, no failure mode.
+```
+
+### Boot-Sleep
+
+```text
+let claude finish booting in the fresh pane before the first prompt lands; a brand-new
+lane is idle by definition, but claude's own startup needs a moment
+```
+
+### requeue — transient, und die Lane geht mit
+
+```text
+A post-spawn hold is TRANSIENT (dead claude, slot changed mid-boot) — retry-shaped, so the row
+goes back to `queued` and the dispatcher picks it up again. Under the advisory-gate design that
+is the same destination for both paths: the tick only ever runs tasks the owner released, and
+an attended start IS a release. (Deliberately unlike dispatchTask's catch, where the failure is
+persistent — a bad repo — and the row goes back to the status it came from instead of looping.)
+...and it takes the LANE WITH IT. The row going back to `queued` used to be the whole of this
+function: the worktree it had just created and the slot holding it stayed standing, owned by
+nobody — the task no longer pointed at them and no land would ever come. Every retry then
+spawned another pair, so the one path in fleet that retries by design was also the one that
+leaked. Teardown runs in landLane's order and for landLane's reason: the worktree FIRST, while
+the slot is still intact, so a refused removal leaves a lane that is still fully recoverable
+rather than a torn-down slot pointing at an orphaned tree.
+
+THE EDGE, decided here rather than left implicit: a pane that has already produced something
+is not disposable. removeWorktreeSafe is the existing answer and it fits unchanged — it refuses
+an uncommitted tree and unpushed commits, with git's own `worktree remove` refusal behind it —
+so a dirty lane is KEPT, slot and all, and the reason is written onto the row. A worktree
+silently kept would be the same defect in new clothes, which is why the note carries it.
+
+Two paths reach here with the slot no longer ours (identity lost during the boot sleep) or with
+the tree adopted by another session; killing/removing then would end a lane this dispatch never
+owned. Both are read from the live slot list rather than assumed, and `next.slot` is cleared
+either way: a `queued` row must not keep pointing at a slot it has let go of.
+```
+
+### gateOpts — harness:false auf dem Owner-Pfad
+
+```text
+`harness: false` on the OWNER path, and only there — the same waiver land/⏫ author/💾 commit
+already take, for the same reason canDeliver's own comment gives: the policy answers "may
+something UNATTENDED drive this slot", and a click that named the harness is not that. Without
+it an attended foreign-harness start is a lane that spawns and then never receives its brief:
+the gate would hold, the row requeue, and the worktree be torn down — the automation flag
+silently deciding an attended question. The ALIVE gate is not waived and is the one that
+matters here: a pane whose agent failed to boot is a bare shell, and the brief would run there.
+```
+
+### claude-alive-Gate
+
+```text
+fresh claude-alive gate (was synergy-findings.md Tier-0 #2). Requeue on any failure — the
+lane exists, the prompt waits. With the compile gone there is only ONE gate/send window left
+to keep tight; the second round-trip the compile used to need went with it.
+```
+
+### SCREEN readiness beim Founding (Messung 2026-08-12)
+
+```text
+SCREEN readiness, bounded — only for a harness that declares it (codex today; every other
+adapter takes `null` and this loop never runs). The boot sleep above is a grace period, not a
+readiness proof: the proof is the accept marker on the rendered pane. Here — unlike at the
+delivery gates — "pending" is NOT deliverable: this pane is seconds old by construction, so
+"neither marker yet" means "still booting", never "header scrolled off". Measured 2026-08-12:
+a paste+Enter into the trust prompt ANSWERS it and boots an empty composer, the brief gone
+with no error — the 2026-08-10 dispatch race, now refused by name instead of raced by sleep.
+```
+
+### sourceTree
+
+```text
+The pack sources are Fleet-owned, so the tree being dispatched into decides whether they
+exist at all — derived from git, never assumed. This used to be the literal "fleet", which
+handed a foreign lane anchors that cannot resolve there AND receipted them against that
+repo's own head: the one place where the ledger itself was untrue.
+```
+
+### integrationHead VOR dem Plan
+
+```text
+Read the integration tip on the server at the delivery seam. If it cannot be named, do not
+deliver a brief whose receipt would have to invent HEAD; the existing requeue path owns it.
+THIS NOW COMES BEFORE THE PLAN, and the order is the contract rather than a tidy-up: the
+manifest below is read AT this commit and the receipt asserts it, so a plan derived before
+the tip was named could only receipt anchors against a commit nobody read.
+```
+
+### Fleet-Seeds + Repo-Manifest
+
+```text
+The Fleet seeds plus whatever THIS repository declares about itself at that commit — the
+same merge Program-MAIN founding does, and deliberately with no frame branch here: the
+dispatch seam is the 72-of-82 majority of deliveries, and a Fleet-only or foreign-only rule
+would be a second, quieter policy. `repoRootOf` throws on an unnameable root and the catch
+below requeues, exactly as the integrationHead refusal above already does.
+```
+
+### Receipt-Hash
+
+```text
+Hash exactly this canonical JSON: the delivered anchor block plus the receipt-visible plan
+facts {harness, mode, triggers, selected, omitted}. A later reader can reconstruct every byte
+from the row and the renderer the row NAMES — `renderer` says which one wrote this block, and
+a row without that field is a v1 row by date. Neither the mutable task nor a later tree is
+needed.
+```
+
+### briefHash — der Join-Key
+
+```text
+The join key, and deliberately the SAME function LaneOutcome.briefHash uses over the lane's
+first logged prompt: both hash the bytes that actually crossed the seam, so a receipt and
+the outcome of the lane it founded meet exactly. The `hash` above stays what it was — it
+keys {anchorBlock, planFacts}, answers a different question, and nobody re-reads it here.
+```
+
+## dispatchSourceTree
+
+### Kopfkommentar
+
+```text
+Which tree is this dispatch about to change? Git toplevel identity is the whole classifier —
+the same rule preflightProgramMain applies to a Program-MAIN cwd, and for the same reason:
+filenames never upgrade a foreign tree, and a linked worktree of Fleet has its own toplevel.
+A foreign tree cannot resolve Fleet-owned pack anchors, so planContext omits all six as
+`source-unavailable` and the anchor block empties by construction. Throwing when the root
+cannot be read is deliberate: naming no tree beats inventing one, and the caller's requeue path
+owns that failure exactly as it owns the integrationHead refusal at the same seam.
+```
+
+## briefSourceOf
+
+### BriefSource — die Wertetabelle
+
+```text
+WHERE THE DELIVERED TEXT CAME FROM — a closed set, written onto every context receipt beside
+briefHash. Without it the ledger can say WHAT crossed the seam but never by which route it was
+authored, and an empty-lane rate per brief origin (the one number the compiler is judged by) is
+not forward-computable from the rows: a compiled brief and a raw draft leave byte-identical
+receipts. Derived mechanically from the task at the delivery seam, never from a later re-read of
+a mutable row — the row's brief can be edited after the lane already ran.
+  compiled — the analysis sweep's brief (TaskBrief, edited:false)
+  owner    — a brief the owner wrote/edited by hand (TaskBrief, edited:true / model "owner")
+  raw      — no brief on the row: the draft text itself was delivered
+  clarify  — buildClarifyBrief's deterministic frame; deliberately NOT folded into "raw", because
+             a clarify lane is briefed to settle a criterion and produce no commits, so counting
+             it among raw dispatches would read as a raw-brief abort every time it works
+  founding — a server-built Program-MAIN/Supervisor founding template; no task text is involved
+```
+
+### FOUNDING_BRIEF_SOURCE
+
+```text
+...and the value the OTHER four writers use. The founding rails (Program-MAIN and Supervisor,
+bootstrap and succession) deliver a server-built template — buildProgramMainBrief, its succession
+form, and the two Supervisor forms — with no Task anywhere in the call. Neither "raw" (claims a
+draft text that does not exist) nor "compiled" (claims a model that never ran) is true there, so
+the set carries the repo's own word for that delivery instead of the nearest wrong one. Their
+briefHash is the same hash of the same kind of fact, the bytes that crossed the seam: one rule
+for the ledger, not two. It joins no lane outcome only because a Program-MAIN is not a lane.
+```
+
+## LANE_EXIT_FOOTER
+
+### Kopfkommentar — die gemessene Wurzel
+
+```text
+THE LANE'S OWN ENDING, WRITTEN INTO EVERY MUTATING BRIEF. Measured root cause:
+docs/messungen/2026-08-23-rootcause-lane-ohne-commit-und-report.md — a finished lane wrote its
+result to an UNTRACKED file, sat idle-dirty ~20 min (so the lane-ready watch, idle+clean+ahead>0,
+could not fire) and filed nothing. The delivered brief was task text plus anchor block: it said
+what to DO and never what to LEAVE BEHIND. Harness and model behaviour were refuted there by
+transcript, which is why the fix is at this seam and not in any one brief.
+Three acts, deterministic bytes, appended once at the single assembly seam below so a brief
+cannot be delivered without them. A clarify lane is exempt by construction: it must STOP and let
+the owner answer, and telling it to report would be telling it to finish.
+The status list is read from the route's own constant — a footer that named a status the route
+rejects would teach the lane a 400.
+```
+
+## renderContextAnchorBlock
+
+### Kopfkommentar — v2
+
+```text
+v2 renders PURPOSE beside the pointer: v1 handed a lane `- <id> | <path> | <anchor>` and left it
+to guess when following the pointer was worth a read. The pack line carries useWhen exactly once
+and the pointers sit indented beneath it, so one pack is one paragraph however many sources it
+names. A selection WITHOUT useWhen (a repo-declared pack from before the field) loses that line
+and keeps every pointer — the block never goes silent because a purpose was never stated.
+```
+
+## tickWatches
+
+### Banner — der OUTBOUND-Kanal
+
+```text
+--- the OUTBOUND channel for both completion facts (Watch, above). Deliberately its own tick and
+not a branch inside tickAutoReview: auto-③ remains on doneLooking alone, and also breaks out at
+AUTO_REVIEW_MAX_CONCURRENT / skips lanes with a review inflight. Folding delivery there would
+both widen review onto uncommitted work and make notification depend on unrelated capacity.
+
+Runs on the AUTOS cadence, not the review cadence, because what it does is DELIVER: same tick
+speed, same choke-point (canDeliver), same master stop. FLEET_AUTO_REVIEW_MS=0 does not disable
+it — it spawns no agent and costs nothing while no Watch is armed and no event is pending.
+```
+
+### STN-1 expiry
+
+```text
+STN-1 expiry. The tick never MINTS for this kind — only the bound Supervisor's act does
+(completeTransitionWatch). What the tick owns is the deadline: past it the Watch is
+disarmed with a legible reason and NO pane text. One Watch carries at most one
+notification, and that one is the transition; an expiry line typed into the pane would
+be a second stream, which the promotion explicitly refused.
+```
+
+### SUBJECT gone
+
+```text
+…and the SUBJECT, before any gate that could merely delay this row. A held event is a
+promise about a live lane; once that lane is gone the promise cannot come true, and every
+further tick would only be waiting to type stale news into a pane. Teardown already sweeps
+this (dropWatchesFor); here is where a recycle that never passed through teardown, and
+every row restored from disk, is caught.
+```
+
+### Zwei gewaivte Policy-Gates
+
+```text
+Two policy gates are waived for this one-shot: quiet hours, as for a one-shot Auto, and the
+foreign-harness WORK-PROMPT policy. A Watch exists only after an explicit Owner/Self
+subscription and its text is fixed server-generated completion facts, never caller-chosen
+work. This waiver belongs HERE, to that act — not to pi-unfenced or any adapter. The
+kill-switch, fresh agent-liveness and busy/observed gates remain: a paused fleet types
+nothing, and text into a dead pane's bare shell would execute as shell commands.
+```
+
+### SendRefused — der Zaehler geht zurueck (attempts=2006)
+
+```text
+nothing was typed (an occupied composer, i.e. an owner draft): the event is still
+pending and will be offered again once the composer is clear — never appended to it.
+AND THE COUNT GOES BACK WITH IT. A refusal happens BEFORE the paste, so it is not an
+attempt at all: the same measured row reached attempts=2006 against 2005 holds and one
+real send, which made the number read as 2005 failed deliveries into a live pane. The
+held audit line below is where a hold is counted, and it counts only holds.
+```
+
+### send-uncertain bleibt stehen
+
+```text
+tmux may have accepted some or all of the operation before reporting failure, or the
+composer is observably still holding the text (ACP-25). Preserve the pre-send marker
+exactly; neither "failed" nor "delivered" is an observed fact, and send-uncertain is
+replayed only by the bounded fleet-report recovery when rollback proved Fleet's payload
+is absent from the exact receiver pane.
+```
+
+### source "auto"
+
+```text
+source "auto", not a sixth vocabulary word: the prompt log's "auto" already means "the
+machine typed this, unattended" and three distinct machine paths share it (scheduled autos,
+the dispatcher's founding brief, the merge idle guard). The audit trail below is where a
+watch is told apart from those.
+```
+
+### FACT 3
+
+```text
+FACT 3: the ONE bounded retry of a terminal merge verdict whose first delivery was refused at
+the gate — the lane was still producing output, the fleet was paused, an owner draft sat in
+the composer. A second refusal is FINAL: the marker stays on the merge status, where the
+owner can read it, and nothing asks again. Recomputed here rather than reusing the list from
+the top of the tick, because the loops above spend seconds in tmux and a lane can land, be
+recycled or start a fresh merge run inside that window.
+```

@@ -1300,26 +1300,12 @@ interface Auto {
 
 // --- a WATCH: the event-triggered sibling of an Auto. Same delivery (one prompt typed into one
 // pane, through canDeliver), different trigger — a fact about ANOTHER slot instead of a clock.
-//
-// WHY IT EXISTS. Fleet computes completion facts on the 2s poll; auto-③ consumes only the original
-// `doneLooking`, and every other consumer was someone who was already looking. So a session that
-// dispatched a lane and turned away had no way back except remembering to check. Measured twice on
-// 2026-08-07: a driving session missed a finished 807-line lane for ~20 minutes, then replaced the
-// habit with a background `until`-loop — which fires once by construction and left the same hole on
-// the next lane. A watcher the RECEIVER has to re-arm fails exactly when the receiver is busy,
-// which is every time it matters. This one is armed on the server and survives a restart.
-//
-// WHAT IT IS NOT: it delivers TEXT and nothing else — no commit, land, review or kill. The original
-// predicate remains idle+clean+ahead and carries its old warning; the host-commit sibling is weaker
-// and says that uncommitted+zero-ahead is intended and requires a host commit. Both remove a WAIT,
-// never a CHECK.
-//
-// The trigger is LEVEL, not edge (tickWatches): either predicate is a standing property of the
-// target's facts, so a watch on an already-matching lane fires at once. Firing spends the watch
-// (`armed:false`); a target that
-// goes back to work and finishes again is a NEW question and needs a new watch. That is the narrow
-// reading on purpose: an armed-forever watch is a repeating nudge, and nothing here should be able
-// to type into a pane on a cadence nobody chose.
+// Armed on the server and survives a restart, because a watcher the RECEIVER has to re-arm fails
+// exactly when the receiver is busy. It delivers TEXT and nothing else — no commit, land, review
+// or kill; both predicates remove a WAIT, never a CHECK. The trigger is LEVEL, not edge
+// (tickWatches), and firing spends the watch (`armed:false`): an armed-forever watch would be a
+// repeating nudge on a cadence nobody chose. Why it exists (measured 2026-08-07):
+// server-narrativ-archiv.md#watch
 interface WatchBase {
   id: string;
   slot: number;    // who gets typed into. Same meaning `slot` has on an Auto, so the delivery
@@ -1333,23 +1319,20 @@ interface WatchBase {
   created: number;
   firedAt: number | null;
   lastResult: string | null;
-  // WHERE THE COMPLETION GOES, decided by the SUBSCRIBER at subscribe time and by nobody else.
-  // Absent is the legacy pane default and is kept absent on load, byte-for-byte: pane delivery is
-  // what every existing row asked for. "inbox" says the receiver is an owner-attended conversation
-  // — typing a completion fact into that TUI lands it in the owner's composer, so such a watch
-  // mints its event straight into the owner operations inbox and no transport ever touches it.
+  // WHERE THE COMPLETION GOES, decided by the SUBSCRIBER and nobody else. Absent is the legacy pane
+  // default and is kept absent on load, byte-for-byte. "inbox" mints the event straight into the
+  // owner operations inbox and no transport ever touches it (typing into an owner-attended TUI
+  // would land in the owner's composer).
   delivery?: "pane" | "inbox";
 }
 interface LaneWatch extends WatchBase {
-  // Absent on legacy persisted rows. Keeping it absent after load is intentional: those rows pass
-  // through byte-for-byte and `watchKind` supplies their discriminator only while evaluating them.
+  // Absent on legacy persisted rows and kept absent after load; `watchKind` supplies the discriminator.
   kind?: "lane";
   target: number;  // the slot being watched. Never the same as `slot` (a session watching itself
   // learns nothing) and never a slot the predicate cannot classify — see createWatchForSlot.
-  // the target's IDENTITY at subscribe time, because `target` alone is not one: slot ids are
-  // recycled, so an id-only watch would survive its subject and then fire about whatever lane
-  // moved in next. Teardown drops watches already (dropWatchesFor); these two are the second
-  // lock, and the tick refuses to fire on a target whose cwd or branch changed underneath it.
+  // the target's IDENTITY at subscribe time: slot ids are recycled, so an id-only watch would
+  // survive its subject and fire about whatever lane moved in next. Second lock after
+  // dropWatchesFor; the tick refuses a target whose cwd or branch changed underneath it.
   targetCwd: string;
   targetBranch: string;
 }
@@ -1368,11 +1351,9 @@ interface DeployWatch extends WatchBase {
   kind: "deploy";
   deployId: string;
 }
-// STN-1: the Supervisor→Controller transition rail. The ONLY Watch kind whose trigger is a
-// principal's act (the bound Supervisor completing it) rather than a level the tick computes, and
-// the only one with a deadline: a Controller that registers "wake me when X" must be able to read
-// "X never came" from its own row rather than wait forever. Same slot/occupant/idleSec/armed
-// anatomy as every other kind, so the transport, the cap and the teardown need no second ledger.
+// STN-1: the Supervisor→Controller transition rail. The ONLY Watch kind triggered by a principal's
+// act (the bound Supervisor completing it) rather than a level the tick computes, and the only one
+// with a deadline, so a Controller can read "X never came" from its own row instead of waiting forever.
 interface TransitionWatch extends WatchBase {
   kind: "transition";
   awaiting: string;     // the Controller's bounded statement of WHAT transition it expects
@@ -6404,39 +6385,29 @@ async function sendText(s: Slot, text: string, submit: boolean,
 }
 
 // --- scheduled prompts ---
-// a dead agent leaves its pane at a plain shell (`<cmd>; exec $SHELL`) — an unattended
-// prompt typed THERE would execute as shell commands. Only send when the harness's own
-// process still hangs under the pane process. (pane_current_command is useless here: it
-// reports the wrapper zsh even while the agent runs.) The gate applies to every DECLARED
-// harness, claude or not; an undeclared custom command is still intentionally whatever the
-// operator chose, and answers "unprobed" rather than a liveness claim nobody can support.
-// Which comms prove THIS slot's agent. The fleet-wide HARNESS_COMMS is now only the DEFAULT
-// adapter's answer (comms: null defers to it), so a slot running a named harness is probed for the
-// binary it actually runs. This is the whole per-slot repair, and it lives in one function so both
-// consumers — the git/alive tick and claudeAlive — cannot drift apart; e2e/pins.ts pins that neither
-// reads HARNESS_COMMS directly any more.
-// a `function` declaration, not a const arrow, and that is deliberate: tickGit() reads it from a
-// line ABOVE this one, and openSlot/killSlot reach tickGit at boot. A const would sit in its
-// temporal dead zone on that path and throw a ReferenceError only at startup — the same ordering
-// hazard projDir already documents one region up.
+// a dead agent leaves its pane at a plain shell (`<cmd>; exec $SHELL`) — an unattended prompt
+// typed THERE would execute as shell commands. Only send when the harness's own process still
+// hangs under the pane process (pane_current_command reports the wrapper zsh, useless here).
+// commsFor: which comms prove THIS slot's agent. The fleet-wide HARNESS_COMMS is only the DEFAULT
+// adapter's answer (comms: null defers to it); both consumers — the git/alive tick and claudeAlive
+// — resolve through here, pinned in e2e/pins.ts.
+// A `function` declaration, not a const arrow: tickGit() reads it from a line ABOVE, and
+// openSlot/killSlot reach tickGit at boot — a const would throw a ReferenceError from its temporal
+// dead zone only at startup (the same ordering hazard projDir documents one region up).
 function commsFor(s: Slot): string[] {
   const own = harnessOf(s.harness).comms;
   return own ? [...own] : HARNESS_COMMS;
 }
 
-// May an UNATTENDED path drive this slot? Separate from "is it alive" on purpose — see the
-// HARNESS_AUTOMATION note above. A slot on the default adapter is unaffected forever (that is every
-// slot on this fleet today); a slot running a named harness is refused until the owner opts in,
-// whatever the probe says. Checked BEFORE the liveness probe by every gate, so the reported reason
-// is the specific one ("this harness is not automatable") rather than the generic not-alive it would
-// otherwise collapse into — being skipped SILENTLY was the expensive half of the original defect.
+// May an UNATTENDED path drive this slot? Separate from "is it alive" on purpose (HARNESS_AUTOMATION
+// note above): the default adapter is unaffected forever, a named harness is refused until the owner
+// opts in, whatever the probe says. Checked BEFORE the liveness probe by every gate, so the reported
+// reason is the specific one — being skipped SILENTLY was the expensive half of the original defect.
 function harnessAutomatable(s: Slot): boolean {
   return harnessAutomatableFor(harnessOf(s.harness));
 }
-// The SAME question one level down — about a Harness rather than about a slot's harness. Extracted
-// when a second caller appeared that asks it about an adapter belonging to no slot yet:
-// releaseTaskForMain asks it about the harness the TICK would spawn for the row it is releasing.
-// Two conditions and the default-adapter exemption live here once, so the two gates cannot drift.
+// The SAME question about a Harness rather than a slot's harness: releaseTaskForMain asks it about
+// the adapter the TICK would spawn. Both gates share this one body so they cannot drift.
 function harnessAutomatableFor(h: Harness): boolean {
   // the default adapter never consults the flag: it is the harness every automation on this fleet
   // already drives, and gating it would turn one env var into a fleet-wide kill switch by accident.
@@ -6446,24 +6417,17 @@ function harnessAutomatableFor(h: Harness): boolean {
 
 async function claudeAlive(s: Slot): Promise<boolean> {
   const st = await paneAgentAt(sess(s.id), commsFor(s));
-  // "unprobed" is the undeclared-command waiver this function has always granted — an operator who
-  // never said what their FLEET_CMD leaves behind keeps exactly today's behaviour. A DECLARED
-  // harness no longer gets it: that is the whole repair, and it is why "no-agent" now exists as a
-  // distinct answer instead of collapsing into the same `true` a live claude returns. Note that a
-  // named harness declares its comms through the ADAPTER, so it loses the waiver too — a pi slot on
-  // a `FLEET_CMD=true` fleet is genuinely probed, where before it inherited the empty set.
+  // "unprobed" is the undeclared-command waiver: an operator who never declared what FLEET_CMD
+  // leaves behind keeps today's behaviour. A DECLARED harness — a named one declares through its
+  // adapter — is genuinely probed and answers "no-agent". Why: server-narrativ-archiv.md#claudealive
   return st === "alive" || st === "unprobed";
 }
 
-// Why the pane has, or has not, got a running agent — four answers, because the two that used to be
-// one are the interesting pair: "no-pane" (nothing to type into) and "no-agent" (a pane that is
-// alive and accepting keystrokes, with NO agent behind it) are different failures and only the
-// second is silent. That is the state an unresolvable model produces: the harness prints its error,
-// exits, and slotCmd's `; exec $SHELL` catches the pane — pane_dead=0, prompts accepted, executed
-// as shell commands. Nothing could name it before this, for ANY harness including claude.
-//
-// The pane process ITSELF can be the agent (a single trailing command makes sh exec it — unlike
-// slotCmd's `; exec $SHELL`, which keeps it a child), so both the pane pid and its children count.
+// Four answers, because "no-pane" (nothing to type into) and "no-agent" (a pane alive and accepting
+// keystrokes with NO agent behind it — what an unresolvable model leaves after slotCmd's
+// `; exec $SHELL`: prompts accepted, executed as shell commands) are different failures and only the
+// second is silent. The pane process ITSELF can be the agent (a single trailing command makes sh
+// exec it), so both the pane pid and its children count.
 type AgentState = "alive" | "no-agent" | "no-pane" | "unprobed";
 async function paneAgentAt(target: string, comms: string[]): Promise<AgentState> {
   if (!comms.length) return "unprobed";
@@ -6488,15 +6452,12 @@ async function paneAgentAt(target: string, comms: string[]): Promise<AgentState>
   return "no-agent";
 }
 
-// SCREEN readiness, the layer paneAgentAt cannot see: Codex block screens keep the
-// node wrapper alive, so the process probe answers `alive` while a paste would be silently eaten
-// (measurement and incident inference are separated in the adapter's `readiness` comment). null = this
-// harness declares no readiness and keeps today's behaviour: every adapter but codex, including
-// the default one, takes that branch and no gate below it may fire. "pending" is neither marker on
-// screen — a booting TUI, a redraw, a working agent whose header scrolled off — and is deliberately
-// NOT a refusal at the delivery gates (fail-open there; only the bounded boot wait in briefAndSend
-// treats it as not-yet-ready, per the owner's cut). A failed capture is "pending" too: the pane
-// gates next to this one own the no-pane answer.
+// SCREEN readiness, the layer paneAgentAt cannot see: a Codex block screen keeps the node wrapper
+// alive while a paste is silently eaten. null = this harness declares no readiness and keeps today's
+// behaviour (every adapter but codex, the default included — no gate below may fire on it).
+// "pending" is neither marker on screen and is deliberately NOT a refusal at the delivery gates
+// (fail-open; only the bounded boot wait in briefAndSend treats it as not-yet-ready). A failed
+// capture is "pending" too: the pane gates beside this one own the no-pane answer.
 async function paneReadiness(s: Slot): Promise<{ state: "ready" | "blocked" | "pending"; why?: string } | null> {
   const r = harnessOf(s.harness).readiness;
   if (!r) return null;
@@ -6506,10 +6467,9 @@ async function paneReadiness(s: Slot): Promise<{ state: "ready" | "blocked" | "p
   return r.accept.test(cap.out) ? { state: "ready" } : { state: "pending" };
 }
 
-// Fresh founding prompts have a stricter readiness contract than established-pane deliveries:
-// when an adapter declares a ready marker, "pending" means keep waiting within the shared bound.
-// Both dispatch and Program-MAIN bootstrap use this one loop so a newly supported blocking screen
-// cannot be fixed for one founding rail while the other silently pastes through it.
+// Fresh founding prompts have a stricter readiness contract than established-pane deliveries: with
+// a declared ready marker, "pending" means keep waiting within the shared bound. Dispatch and
+// Program-MAIN bootstrap share this one loop so a new blocking screen cannot be fixed for one rail only.
 async function waitForFoundingReadiness(s: Slot, stillCurrent: () => boolean): Promise<
   { ok: true } | { ok: false; kind: "identity" | "blocked" | "timeout"; reason: string }
 > {
@@ -6528,17 +6488,10 @@ async function waitForFoundingReadiness(s: Slot, stillCurrent: () => boolean): P
   }
 }
 
-// (The fourth probe set — the worker session's — used to be a `claudeAliveAt` wrapper here, pinning
-// the literal ["claude"] a thousand lines from the spawn line it described. It now rides on the
-// adapter that BUILDS that line (Harness.worker), so the two cannot drift: an adapter whose worker
-// runs something else carries its own comms, and one that runs nothing carries none. Still four
-// sets, still literal for the default adapter — only no longer restated out of reach of its cause.)
-
 // shared by the owner route (POST /api/slots/:id/autos) and the self-scheduling route
-// (POST /api/self/autos) — every guard rail (AUTO_MAX_PER_SLOT, min interval, mandatory
-// runs cap, idle gate downstream in tickAutos) lives here exactly once. The caller is
-// responsible for how `s` was derived; this function trusts it and never reads a `slot`
-// field from the body, so it structurally cannot create an Auto anywhere but on `s`.
+// (POST /api/self/autos): every guard rail lives here exactly once. The caller owns how `s` was
+// derived; this function never reads a `slot` field from the body, so it structurally cannot
+// create an Auto anywhere but on `s`.
 function createAutoForSlot(s: Slot, body: Record<string, unknown> | null, opts: { allowPerpetual?: boolean } = {}): Response {
   if (!s.cwd) return json({ error: "slot not active" }, 400);
   if (autos.filter((a) => a.slot === s.id && a.enabled).length >= AUTO_MAX_PER_SLOT)
@@ -6586,18 +6539,11 @@ function createAutoForSlot(s: Slot, body: Record<string, unknown> | null, opts: 
   return json({ ok: true, auto: a });
 }
 
-// THE DELIVERY BUDGET, IN ONE PLACE — the arithmetic three doors spend and two sights read.
-//
-// Every receiver has a hard ceiling on how much undelivered future it may owe: open (non-terminal)
-// FleetEvents plus armed Watches, capped at FLEET_EVENT_MAX_OPEN_PER_SLOT. An armed Watch reserves
-// one future event, a delivered-but-unacknowledged one still holds its own, and when the two fill
-// the cap the minting doors refuse — the watch route with `max N active watches per slot`, the two
-// report doors with `… receiver has no FleetEvent delivery budget`.
-//
-// `free === 0` is EXACTLY that refusal condition (debts + reservations >= cap), which is the whole
-// reason this is a function rather than three copies of one sum: a sight built on it can never
-// claim room a send would not find. Clamped at 0 because the sum is READ, never trusted — a cap
-// lowered under live rows would otherwise project a negative as "less than none".
+// THE DELIVERY BUDGET, IN ONE PLACE — the arithmetic three doors spend and two sights read: open
+// (non-terminal) FleetEvents plus armed Watches per receiver, capped at FLEET_EVENT_MAX_OPEN_PER_SLOT.
+// `free === 0` is EXACTLY the refusal condition of the watch route and both report doors — one
+// function, so a sight can never claim room a send would not find. Clamped at 0 because the sum
+// is READ, never trusted: a cap lowered under live rows must not project a negative.
 interface DeliveryBudgetKnown {
   state: "known";
   deliveryDebts: number;
@@ -6607,9 +6553,8 @@ interface DeliveryBudgetKnown {
 }
 type DeliveryBudget = DeliveryBudgetKnown | { state: "unknown"; reason: string };
 
-// The owner inbox half of the same arithmetic, and deliberately smaller: he holds no watches, so
-// there is nothing to reserve — only rows he has not yet acknowledged. `>= cap` is EXACTLY the
-// refusal condition of the fleet-report door, for the same reason `free === 0` is over there.
+// The owner inbox half of the same arithmetic, smaller because he holds no watches: only rows he
+// has not yet acknowledged. `>= cap` is EXACTLY the refusal condition of the fleet-report door.
 function ownerInboxDebts(): number {
   return fleetEvents.filter((e) => e.receiverSlot === null
     && !FLEET_EVENT_TERMINAL.includes(e.status)).length;
@@ -6624,37 +6569,25 @@ function slotDeliveryBudget(slotId: number): DeliveryBudgetKnown {
     free: Math.max(0, cap - deliveryDebts - armedReservations) };
 }
 
-// mint a watch: slot `s` asks to be told, once, when slot `target` looks done. TWO principals now
-// reach this function, and the history of why is worth one paragraph: it was owner-only, on a
-// MEASUREMENT — FLEET_SELF_TOKEN used to be baked into a LANE's pane and never a plain session's,
-// so the session this feature exists for (a driving main checkout) had no credential to subscribe
-// with, and a /api/self/ twin would have been reachable by exactly the principal that did not need
-// it. That premise expired when every session with a cwd started carrying the credential (the
-// selfExport line in ensureSlot), and the twin was built: POST /api/self/watch, which derives `s`
-// from the token instead of the URL and then calls straight into here.
-//
-// WHAT THAT DID NOT CHANGE — read this before adding a condition below. The self route carries its
-// own SUBSCRIBER rule (a lane may not subscribe; see the route) because that is a question about
-// the caller, and this function never sees a caller. Everything here is about the TARGET and is
-// identical for both principals. Same split as createAutoForSlot: the caller owns how `s` was
-// derived, this function trusts it and never reads a `slot` field from the body, so neither route
-// can put a watch anywhere but on `s`.
+// mint a watch: slot `s` asks to be told, once, when slot `target` looks done. Two principals reach
+// here — the owner route and POST /api/self/watch, which derives `s` from the token. The SUBSCRIBER
+// rule (a lane may not subscribe) lives on the self route, because this function never sees a
+// caller: everything here is about the TARGET and identical for both principals. Same split as
+// createAutoForSlot — the caller owns how `s` was derived, and no `slot` field is read from the
+// body. History of the owner-only premise: server-narrativ-archiv.md#createwatchforslot
 //
 // EVERY REJECTION HERE ANSWERS THE SAME QUESTION: can this watch ever fire? A watch that cannot is
-// worse than no watch, because it is a silent forever-wait — the precise failure this whole surface
-// removes. So a target the predicate does not classify is refused at CREATE time, loudly, instead
-// of being accepted and then never firing.
+// a silent forever-wait — the precise failure this surface removes — so an unclassifiable target is
+// refused at CREATE time, loudly.
 async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
   if (!s.cwd) return json({ error: "slot not active" }, 400);
   const b = body ?? {};
   const kind = b.kind === undefined ? "lane" : b.kind;
   if (kind !== "lane" && kind !== "merge" && kind !== "audit" && kind !== "deploy" && kind !== "transition")
     return json({ error: "kind must be 'lane', 'merge', 'audit', 'deploy', or 'transition'" }, 400);
-  // STN-1 registration: a CLOSED body. The receiver is `s` (the token's own occupant) and the
-  // completing principal is the bound Supervisor — neither is a body fact, so `target`, `slot`,
-  // `programId` and the rest are refused BY NAME rather than ignored: a field that is silently
-  // dropped reads to its author as if it had been honoured. `delivery` is in the refused set too:
-  // the inbox is the owner's operations inbox, and a Controller's wake-up has no business there.
+  // STN-1 registration: a CLOSED body. Receiver is `s`, completer is the bound Supervisor — neither
+  // is a body fact, so foreign fields are refused BY NAME rather than ignored (a silently dropped
+  // field reads to its author as honoured). `delivery` too: the inbox is the owner's, not a Controller's.
   if (kind === "transition") {
     const TRANSITION_FIELDS = ["kind", "idleSec", "deadlineSec", "awaiting"];
     const extra = Object.keys(b).filter((k) => !TRANSITION_FIELDS.includes(k));
@@ -6696,13 +6629,11 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
     if (t.label === STEWARD_LABEL) return json({ error: kind === "lane"
       ? "the ⚙ steward is never classified done-looking"
       : "the ⚙ steward has no merge operation to subscribe to" }, 409);
-    // Measured live 2026-08-29: a finished GLM lane on pi-zai held an armed {kind:"lane"} watch
-    // FOREVER. aliveInfo folds harnessAutomatable into `alive`, and BOTH looking predicates
-    // require alive === true — so a lane whose harness the automation policy declines can never
-    // be classified, whatever its pane does, and the tick's `stay armed, ask again` is a silent
-    // forever-wait. The door refuses instead, in this family's one question. lane ONLY: a merge
-    // watch reads the merge terminal factor below, not laneSignalView, and demonstrably fires on
-    // exactly such a lane (2026-08-29) — rejecting it there would forbid a working watch.
+    // lane ONLY: aliveInfo folds harnessAutomatable into `alive` and BOTH looking predicates require
+    // it, so a lane whose harness the policy declines can never be classified — the tick's `stay
+    // armed, ask again` would be a silent forever-wait (measured 2026-08-29, see
+    // server-narrativ-archiv.md#createwatchforslot). A merge watch reads the merge terminal factor
+    // instead and demonstrably fires on exactly such a lane.
     if (kind === "lane" && !harnessAutomatable(t))
       return json({ error: `harness ${harnessOf(t.harness).id} is not automatable — its slot never reads as alive to the done-looking predicate, so this watch could never fire (${HARNESS_AUTOMATION ? "FLEET_HARNESS_AUTOMATION is set; the adapter declines" : "FLEET_HARNESS_AUTOMATION is off; no named harness is automatable without it"})` }, 409);
     const terminal = kind === "merge" ? mergeTerminalFor(t.id, t.cwd, t.worktree.branch) : null;
@@ -6752,11 +6683,9 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
       && (kind === "lane" ? w.armed : true);
   });
   if (dup) return json({ ok: true, watch: dup, existing: true });
-  // An armed Watch reserves one future event slot. Delivered-but-unacknowledged and uncertain
-  // events reserve theirs until the receiver closes them; otherwise repeated subscribe/fire
-  // cycles could grow fleet.json without bound while the facts we may not prune accumulate.
-  // The sum is slotDeliveryBudget's, shared with both report doors and with the sights that show
-  // this budget — the refusal and the projection cannot drift apart while they are one function.
+  // An armed Watch reserves one future event slot; delivered-but-unacknowledged and uncertain events
+  // hold theirs until the receiver closes them. The sum is slotDeliveryBudget's, shared with both
+  // report doors and the sights — refusal and projection cannot drift while they are one function.
   if (slotDeliveryBudget(s.id).free === 0)
     return json({ error: `max ${WATCH_MAX_PER_SLOT} active watches per slot` }, 400);
   const common: WatchBase = {
@@ -6809,11 +6738,10 @@ function mergeEventPayload(outcome: MergeLast): MergeWatchEventPayload {
   };
 }
 
-// THE ENTIRE TRANSPORT SPLIT, in one expression every mint site spreads. The Watch's delivery
-// decides the event's own delivery fact AND its initial status: "inbox" is not a pending state, and
-// FACT 2 selects `pending` alone — so an inbox event can never reach sendText, the history append
-// or the prompt journal. That is a property of the state machine, not of an added guard, which is
-// why no site below needs to know about panes at all.
+// THE ENTIRE TRANSPORT SPLIT, in one expression every mint site spreads: the Watch's delivery
+// decides the event's delivery fact AND its initial status. "inbox" is not a pending state and
+// FACT 2 selects `pending` alone, so an inbox event can never reach sendText — a property of the
+// state machine, not of an added guard.
 function mintTransport(w: Watch): { status: FleetEventStatus; delivery?: "pane" | "inbox" } {
   return {
     status: w.delivery === "inbox" ? "inbox" : "pending",
@@ -6852,30 +6780,14 @@ async function mintMergeEvents(target: number, cwd: string, branch: string, outc
   if (dirty) await saveStateNow();
 }
 
-// THE EVENT A BOUND PROGRAM-MAIN NEVER SUBSCRIBED FOR — and the reason it has to be minted on its
-// behalf. A MAIN learns a merge terminal through a Watch IT armed, and the self-land route hands it
-// the subscription only AFTER its own job started. So every land the MAIN did not itself start —
-// the owner's ⏏ or ⏫, an already-merged land, a confirm — reached a MAIN that had armed nothing,
-// and the row went `done` with no event addressed to anyone. The Program-MAIN then stood on stale
-// execution truth until a poll or a human nudge, with its next dependent task blocked behind it
-// (measured 2026-08-29 on program f99e9354, task 8e91fdc9 — the land itself was correct).
-//
-// This arms exactly the subscription the MAIN would have made, in the receiver's name, at the one
-// moment the fact becomes terminal; the ordinary mintMergeEvents beside it spends it. NO second
-// lifecycle record and no second transport: what arrives is the same merge-terminal FleetEvent,
-// occupant-bound (slot + openedAt + sessionId) like every other one, acknowledged and pruned by the
-// same doors.
-//
-// EXACTLY ONE, and each way that could break is answered here rather than downstream:
-//  · an already-armed merge watch of the SAME receiver occupant on THIS lane means the
-//    subscription exists — arm nothing, and that watch fires instead (one event, not two);
-//  · the receiver is the live occupant of the ACTIVE program the LANE belongs to, taken from
-//    clarificationReceiverFor's `program-main` basis and nothing weaker. Its lane-watch fallback is
-//    deliberately NOT honoured: a watcher who subscribed already owns a row here, and a foreign
-//    program or a recycled/succeeded MAIN slot matches no binding at all, so it gets nothing;
-//  · a MAIN whose return path is full is refused exactly as the two report doors refuse it, loudly
-//    in the trail rather than by growing a debt it cannot pay;
-//  · this runs once per terminal landLane, and a retry finds no lane left to land.
+// THE EVENT A BOUND PROGRAM-MAIN NEVER SUBSCRIBED FOR: a MAIN learns a merge terminal through a
+// Watch IT armed, so every land it did not start itself (owner ⏏/⏫, an already-merged land, a
+// confirm) reached a MAIN that had armed nothing (measured 2026-08-29, program f99e9354). This arms
+// exactly the subscription the MAIN would have made, in the receiver's name, at the moment the fact
+// becomes terminal; mintMergeEvents beside it spends it — no second lifecycle record, no second
+// transport. The receiver is clarificationReceiverFor's `program-main` basis and nothing weaker: its
+// lane-watch fallback is deliberately NOT honoured (a subscriber already owns a row here). The
+// EXACTLY-ONE argument per guard: server-narrativ-archiv.md#armprogrammainlandwatch
 const PROGRAM_MAIN_LAND_IDLE_SEC = 60; // createWatchForSlot's own default: deliver at rest
 function armProgramMainLandWatch(lane: Slot, cwd: string, branch: string): void {
   if (!lane.programId) return;
@@ -8813,9 +8725,8 @@ async function tickAutos(): Promise<void> {
         idleMs: a.idleSec === 0 ? 0 : a.idleSec * 1000,
       });
       if (!verdict.ok) {
-        // a POLICY refusal, unlike every other gate here, does not resolve by waiting: it holds
-        // until the owner flips FLEET_HARNESS_AUTOMATION. So it is recorded and the run is spent
-        // rather than retried in silence every interval — the silent skip is the defect this names.
+        // a POLICY refusal does not resolve by waiting (it holds until the owner flips
+        // FLEET_HARNESS_AUTOMATION), so the run is spent and recorded rather than retried in silence.
         if (verdict.gate === "harness") {
           a.lastResult = `skipped — harness ${harnessOf(s.harness).id} is not automatable (FLEET_HARNESS_AUTOMATION off)`;
           audit("auto_skip", a.slot, a.lastResult);
@@ -8841,9 +8752,8 @@ async function tickAutos(): Promise<void> {
           continue;
         }
         if (verdict.gate === "quiet-hours") {
-          // held inside the owner's quiet window and retried next interval (tick-in-place). No
-          // staleness fast-forward is needed — advanceAuto reschedules now-relative, so an overdue
-          // auto fires at most once, never a replayed backlog.
+          // held inside the owner's quiet window, retried next interval. advanceAuto reschedules
+          // now-relative, so an overdue auto fires at most once, never a replayed backlog.
           a.nextAt = now + (a.everySec ?? 0) * 1000;
           dirty = true;
           continue;
@@ -8882,30 +8792,22 @@ async function tickAutos(): Promise<void> {
 }
 
 // tasks currently mid-spawn (tick or the manual start route): a task must never be dispatched
-// twice. Check-and-add happens synchronously before the first await, so two callers cannot both
-// win; the entry is removed once the row is `sent` (or the spawn failed) — from then on the
-// status itself carries the state.
+// twice. Check-and-add happens synchronously BEFORE the first await, so two callers cannot both
+// win; the entry goes once the row is `sent` (or the spawn failed) — the status carries it from there.
 const dispatchingTasks = new Set<string>();
 
-// the shared dispatch core: spawn a fresh DISPATCH_REPO lane for `next` in `free`, flip the row
-// to `sent`, and hand back the async `tail` that compiles + gates + injects the brief. The tick
-// awaits the tail (serial by design, exactly as before); the manual route fires it and answers
-// the button in seconds — the row's status/note tracks the rest.
+// the shared dispatch core: spawn a fresh lane for `next` in `free`, flip the row to `sent`, and
+// hand back the async `tail` that gates + injects the brief. The tick awaits the tail (serial by
+// design); the manual route fires it and answers the button in seconds.
 // `clarify` opens the lane to SETTLE the done-criterion with the owner instead of executing
-// (owner ask 2026-08-05, the third answer to an eval:review verdict — see clarify-prompt.ts).
-// Owner-only by construction: no tick passes it, only the attended button does.
-//
-// `spawn` is the same choice /api/lanes takes — WHICH AGENT runs the lane — and it exists here for
-// one reason: a foreign-harness lane started the other way (POST /api/lanes + a hand-sent brief)
-// leaves the queue row unlinked, so nothing requeues it on a failed spawn, no outcome row carries
-// it, and the row must be closed by hand. The default is the tick's shape and stays the default
-// adapter, byte-for-byte what every caller before this sent.
+// (clarify-prompt.ts). Owner-only by construction: no tick passes it, only the attended button does.
+// `spawn` is the same choice /api/lanes takes — WHICH AGENT runs the lane — carried here so the
+// queue row stays linked (requeue on failed spawn, outcome row). The default is the tick's shape.
 type DispatchSpawn = { harness: string | null; model: string | null; effort: string | null };
 const DEFAULT_SPAWN: DispatchSpawn = { harness: null, model: null, effort: null };
 // THE ONE BRIDGE from a queue row to a spawn choice: the row's own persisted, SET-time-validated
-// field, DEFAULT_SPAWN on absence. Every unattended reader (the tick's dispatch call, the release
-// door's entry gate) goes through this accessor, so "which agent would this row run" has exactly
-// one answer — never a request value, never an env default (pinned in e2e/pins.ts).
+// field, DEFAULT_SPAWN on absence. Every unattended reader goes through this accessor — never a
+// request value, never an env default (pinned in e2e/pins.ts).
 const taskSpawnOf = (t: Task): DispatchSpawn => t.spawn ?? DEFAULT_SPAWN;
 async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify = false,
   spawn: DispatchSpawn = DEFAULT_SPAWN):
@@ -8915,64 +8817,49 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
   // future caller cannot accidentally turn an advisory category into work by skipping that check.
   if (next.kind !== "auftrag")
     return { ok: false, error: `${next.kind} is advisory — the dispatcher never runs this` };
-  // THE BOLT, restated where the choice now arrives. It used to be openSlot's parameter default
-  // alone: the tick called the short form, so it COULD not name a harness. The tick now passes the
-  // ROW's own persisted, SET-time-validated choice (taskSpawnOf, pinned in e2e/pins.ts) — and
-  // exactly therefore this second lock carries weight: a stored foreign choice that reaches an
-  // unattended call answers to the same two conditions every other unattended path answers to,
-  // and in the same order, so the reason a start was refused is the specific one rather than a
-  // generic failure. The tick's own row gate refuses the same rows BEFORE a slot is reserved and
-  // writes why on the row; this lock stays for any caller that skips that gate.
+  // THE BOLT, restated where the choice now arrives: a stored foreign choice reaching an unattended
+  // call answers to the same two conditions as every other unattended path, in the same order, so
+  // the refusal reason is the specific one. The tick's own row gate refuses the same rows BEFORE a
+  // slot is reserved; this lock stays for any caller that skips that gate (pinned in e2e/pins.ts).
   const spawnH = harnessOf(spawn.harness);
   if (spawnH !== CLAUDE_HARNESS && !ownerAct && !(HARNESS_AUTOMATION && spawnH.automatable))
     return { ok: false, error: `harness ${spawnH.id} is not automatable — no unattended path may drive it (FLEET_HARNESS_AUTOMATION off)` };
   if (dispatchingTasks.has(next.id)) return { ok: false, error: "task is already being dispatched" };
   dispatchingTasks.add(next.id);
-  // captured BEFORE any mutation, restored on every failure path: an eval-auto row enters as
-  // "pending", and flipping it to "queued" on a failed spawn used to promote its RETRY to the
-  // owner path — uncounted by the day valve, ungated by the eval disjunct (found 2026-08-05).
-  // Restoring the entry status keeps a task on exactly the path that admitted it.
+  // captured BEFORE any mutation, restored on every failure path: flipping an eval-auto row from
+  // "pending" to "queued" on a failed spawn would promote its RETRY to the owner path — uncounted
+  // by the day valve, ungated by the eval disjunct (found 2026-08-05).
   const wasStatus = next.status;
   laneSpawn.add(free.id); // reserve before the first await — see laneSpawn
   try {
-    // WHICH FORM the working copy takes, resolved through the same one function the two lane
-    // routes ask. There is no request body here — the button sends no `form` and neither does the
-    // tick — so this is exactly the "absence" branch: the harness answers, and for every adapter
-    // but Codex the answer is the worktree this path has always made. Deriving it from `spawnH`
-    // rather than recomputing the harness is the point: the dispatch route already resolved which
-    // agent runs, and two derivations of one choice are how they come apart.
+    // WHICH FORM the working copy takes, resolved through the same one function the two lane routes
+    // ask; no request body here, so this is exactly the "absence" branch. Derived from `spawnH`,
+    // not a recomputed harness: two derivations of one choice are how they come apart.
     const dForm = laneFormOf(null, spawnH);
     if (!dForm.ok) return { ok: false, error: "form must be 'worktree' or 'clone'" }; // unreachable: no body, no user input
-    // the task's own target repo wins; the env default covers every unbound row. Resolve and
-    // choose the parent before materialising the tree, exactly like openLaneInSlot: dispatch is a
-    // fresh-lane creator too, and must persist the same one-time same-repo decision.
+    // the task's own target repo wins; the env default covers every unbound row. Resolve and choose
+    // the parent BEFORE materialising the tree, exactly like openLaneInSlot.
     const dispatchRepo = await repoRootOf(next.repo ?? DISPATCH_REPO);
     const anchor = await decideLaneAnchor(dispatchRepo, undefined);
     const wt = await createWorktree(dispatchRepo, "", dForm.form);
-    // no `base` here (the dispatcher lane keeps today's live re-derivation), but the fork
-    // commit is still captured — the outcome record needs it after the land moves main
-    // model/harness/effort ride in from the attended request or the row's own persisted choice
-    // (DEFAULT_SPAWN is the absence shape and is the claude adapter); `label` stays null here
-    // because the line below names the slot.
+    // no `base` here (the dispatcher lane keeps the live re-derivation), but the fork commit is
+    // captured — the outcome record needs it after the land moves main. `label` stays null: the
+    // line below names the slot.
     const dRef: LaneRef = { repo: wt.repo, branch: wt.branch,
       baseSha: await laneForkSha(wt.path, await integrationBranch(wt.repo)),
       ...(anchor ? { anchor } : {}),
       // written only for a clone, exactly as openLaneInSlot writes it: a dispatched worktree lane's
       // persisted record must stay byte-identical to the one every dispatch before this produced.
       ...(dForm.form === "clone" ? { form: dForm.form } : {}) };
-    // A fresh clone's branch exists only in the clone — mirror it up NOW, for openLaneInSlot's
-    // reason: until the root has the ref, every root-side reader (drift, risk, the land path)
-    // reports an absence as a fact about the lane. A no-op for a worktree lane.
+    // A fresh clone's branch exists only in the clone — mirror it up NOW: until the root has the
+    // ref, every root-side reader (drift, risk, the land path) reports an absence. No-op for a worktree.
     await syncLaneRefs(dRef, wt.path);
     await openSlot(free, wt.path, dRef, spawn.model, null, spawn.harness, spawn.effort);
     free.label = `⎇ ${next.from ?? "task"} ${wt.branch.replace(/^fleet\//, "")}`.slice(0, MAX_LABEL);
-    // An attended click IS a release, and the only one that never passes through `queued` — this
-    // route starts a `pending` row directly, so releaseTask never sees it. Stamped OVER whatever
-    // the row carried: if an unattended promote released it and the owner then pressed ▸ start,
-    // the lane that actually ran was attended, and a criterion counting unattended lanes must not
-    // have it. The tick's own path (ownerAct false) writes nothing here — it only ever picks rows
-    // that were already released, and inventing a value for a legacy row would be the guess the
-    // field exists to refuse.
+    // An attended click IS a release — the only one that never passes through `queued` — stamped
+    // OVER whatever the row carried: the lane that actually ran was attended. The tick's path
+    // (ownerAct false) writes nothing: it only picks rows already released, and inventing a value
+    // for a legacy row would be the guess this field exists to refuse.
     if (ownerAct) next.releasedBy = "owner";
     // ...and carry it onto the SLOT, which outlives the row: openSlot above has just cleared this
     // (a recycled slot inherits nothing), so the write has to come after it.
@@ -8995,65 +8882,48 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     saveState();
     return { ok: false, error: next.note };
   } finally {
-    // release the spawn reservation ALWAYS — without this every dispatched slot stayed
-    // in laneSpawn forever, unusable by the dispatcher, attach and manual open alike
-    // until a restart (the sibling routes release in finally; this path didn't).
-    // Safe to release here: openSlot has set free.cwd, so the slot is no longer "free" to
-    // any picker, and the task's own state is carried by its status from this point on.
+    // release the spawn reservation ALWAYS (without this every dispatched slot stayed in laneSpawn
+    // until a restart). Safe here: openSlot has set free.cwd, so no picker sees the slot as free.
     laneSpawn.delete(free.id);
     dispatchingTasks.delete(next.id);
   }
 }
 
 // the dispatch tail: deliver the brief once claude is up.
-//
-// NO MODEL CALL LIVES HERE ANY MORE, and that is the point. This function used to compile the
-// brief itself — runEnhance on the raw text, in parallel with claude's boot — while the eval gate
-// had already approved the RAW TEXT. So the string that was judged and the string that ran were
-// different, produced by a cheaper model, and nothing compared them. The brief is now compiled and
-// judged together in the analysis sweep and stored on the task; here it is sent with a freshly
-// derived ContextPlan anchor block. The stored brief itself is never rewritten with that projection.
-// Fallback stays the raw text: a lane with an unpolished brief beats a task that never runs.
-// `ownerAct` relaxes the AUTOMATION stops (master stop, quiet hours) on the delivery gates: an
-// explicit owner click is attended, not automation — the same "owner acts" carve-out canDeliver
-// documents. The claude-alive gate ALWAYS holds: a claude that failed to boot leaves a bare
-// shell that would EXECUTE the brief as commands. Never rejects — every failure requeues.
+// NO MODEL CALL LIVES HERE: the brief is compiled and judged together in the analysis sweep and
+// stored on the task; here it is sent with a freshly derived ContextPlan anchor block, and the
+// stored brief is never rewritten with that projection. Fallback is the raw text. `ownerAct`
+// relaxes the AUTOMATION stops only (master stop, quiet hours — the "owner acts" carve-out
+// canDeliver documents); the claude-alive gate ALWAYS holds, because a claude that failed to boot
+// leaves a bare shell that would EXECUTE the brief. Never rejects — every failure requeues.
+// Why the compile left this function: server-narrativ-archiv.md#briefandsend
 const DISPATCH_CONTEXT_MODE: ContextPackMode = "mutating";
 const DISPATCH_CONTEXT_TRIGGERS: readonly ContextPackTrigger[] = ["always", "verification"];
-// Every normal worktree lane has the tracked checkout, Bun, git, the e2e harnesses, server.ts,
-// and the copied private overlay, so these six capabilities are real for every adapter. The two
-// deliberately absent capabilities are `task-queue-read` (a lane's scoped token cannot read the
-// owner queue) and `deploy-observe` (deploy facts are owner/steward-only); full host access is not
-// used to route around those API boundaries, and no capability probe is invented.
+// Every normal worktree lane has the tracked checkout, Bun, git, the e2e harnesses, server.ts and
+// the copied private overlay, so these six are real for every adapter. Deliberately absent:
+// `task-queue-read` (a lane's scoped token cannot read the owner queue) and `deploy-observe`.
 const DISPATCH_CONTEXT_CAPABILITIES: readonly ContextPackCapability[] = [
   "tracked-source-read", "pure-validator-run", "e2e-run", "git-inspect",
   "harness-adapter-read", "private-overlay-read",
 ];
 
-// Which tree is this dispatch about to change? Git toplevel identity is the whole classifier —
-// the same rule preflightProgramMain applies to a Program-MAIN cwd, and for the same reason:
-// filenames never upgrade a foreign tree, and a linked worktree of Fleet has its own toplevel.
-// A foreign tree cannot resolve Fleet-owned pack anchors, so planContext omits all six as
-// `source-unavailable` and the anchor block empties by construction. Throwing when the root
-// cannot be read is deliberate: naming no tree beats inventing one, and the caller's requeue path
-// owns that failure exactly as it owns the integrationHead refusal at the same seam.
+// Which tree is this dispatch about to change? Git toplevel identity is the whole classifier (the
+// rule preflightProgramMain applies to a Program-MAIN cwd): a foreign tree cannot resolve
+// Fleet-owned pack anchors, so planContext omits all six and the anchor block empties. Throwing on
+// an unreadable root is deliberate — naming no tree beats inventing one; the caller's requeue owns it.
 async function dispatchSourceTree(repo: string): Promise<"fleet" | "foreign"> {
   const repoRoot = await repoRootOf(repo);
   return FLEET_REPO_ROOT !== null && repoRoot === FLEET_REPO_ROOT ? "fleet" : "foreign";
 }
 
-// WHERE THE DELIVERED TEXT CAME FROM — a closed set, written onto every context receipt beside
-// briefHash. Without it the ledger can say WHAT crossed the seam but never by which route it was
-// authored, and an empty-lane rate per brief origin (the one number the compiler is judged by) is
-// not forward-computable from the rows: a compiled brief and a raw draft leave byte-identical
-// receipts. Derived mechanically from the task at the delivery seam, never from a later re-read of
-// a mutable row — the row's brief can be edited after the lane already ran.
+// WHERE THE DELIVERED TEXT CAME FROM — a closed set on every context receipt beside briefHash, so
+// an empty-lane rate per brief origin is computable from the rows. Derived at the delivery seam,
+// never from a later re-read of the mutable row.
 //   compiled — the analysis sweep's brief (TaskBrief, edited:false)
 //   owner    — a brief the owner wrote/edited by hand (TaskBrief, edited:true / model "owner")
 //   raw      — no brief on the row: the draft text itself was delivered
-//   clarify  — buildClarifyBrief's deterministic frame; deliberately NOT folded into "raw", because
-//              a clarify lane is briefed to settle a criterion and produce no commits, so counting
-//              it among raw dispatches would read as a raw-brief abort every time it works
+//   clarify  — buildClarifyBrief's deterministic frame; NOT folded into "raw" (a clarify lane
+//              produces no commits by design, so it would read as a raw-brief abort every time it works)
 //   founding — a server-built Program-MAIN/Supervisor founding template; no task text is involved
 type BriefSource = "compiled" | "owner" | "raw" | "clarify" | "founding";
 
@@ -9063,26 +8933,17 @@ function briefSourceOf(t: Task, clarify: boolean): BriefSource {
   return t.brief.edited || t.brief.model === "owner" ? "owner" : "compiled";
 }
 
-// ...and the value the OTHER four writers use. The founding rails (Program-MAIN and Supervisor,
-// bootstrap and succession) deliver a server-built template — buildProgramMainBrief, its succession
-// form, and the two Supervisor forms — with no Task anywhere in the call. Neither "raw" (claims a
-// draft text that does not exist) nor "compiled" (claims a model that never ran) is true there, so
-// the set carries the repo's own word for that delivery instead of the nearest wrong one. Their
-// briefHash is the same hash of the same kind of fact, the bytes that crossed the seam: one rule
-// for the ledger, not two. It joins no lane outcome only because a Program-MAIN is not a lane.
+// ...and the value the OTHER four writers use: the founding rails deliver a server-built template
+// with no Task in the call, so neither "raw" nor "compiled" is true there. Their briefHash is the
+// same hash of the bytes that crossed the seam — one rule for the ledger, not two.
 const FOUNDING_BRIEF_SOURCE: BriefSource = "founding";
 
 // THE LANE'S OWN ENDING, WRITTEN INTO EVERY MUTATING BRIEF. Measured root cause:
-// docs/messungen/2026-08-23-rootcause-lane-ohne-commit-und-report.md — a finished lane wrote its
-// result to an UNTRACKED file, sat idle-dirty ~20 min (so the lane-ready watch, idle+clean+ahead>0,
-// could not fire) and filed nothing. The delivered brief was task text plus anchor block: it said
-// what to DO and never what to LEAVE BEHIND. Harness and model behaviour were refuted there by
-// transcript, which is why the fix is at this seam and not in any one brief.
-// Three acts, deterministic bytes, appended once at the single assembly seam below so a brief
-// cannot be delivered without them. A clarify lane is exempt by construction: it must STOP and let
-// the owner answer, and telling it to report would be telling it to finish.
-// The status list is read from the route's own constant — a footer that named a status the route
-// rejects would teach the lane a 400.
+// docs/messungen/2026-08-23-rootcause-lane-ohne-commit-und-report.md — the brief said what to DO
+// and never what to LEAVE BEHIND. Three acts, deterministic bytes, appended once at the single
+// assembly seam below so a brief cannot be delivered without them. A clarify lane is exempt by
+// construction: it must STOP and let the owner answer. The status list is read from the route's
+// own constant — a footer naming a status the route rejects would teach the lane a 400.
 const LANE_EXIT_FOOTER = `
 
 --- HOW THIS LANE ENDS (three acts, in this order — they are the deliverable, not paperwork)
@@ -9111,41 +8972,26 @@ const LANE_EXIT_FOOTER = `
 
 async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: string; branch: string; form: LaneForm },
   ownerAct: boolean, clarify = false): Promise<void> {
-  // clarify mode ignores the compiled brief entirely: the enhancer turns a draft into a work brief
-  // WITH a done-criterion, and a task that reached this button is precisely one where that cannot
-  // be done yet. Deterministic frame + the raw request, no model call, no failure mode.
+  // clarify mode ignores the compiled brief: a task that reached this button is precisely one whose
+  // done-criterion cannot be settled yet. Deterministic frame + raw request, no model call.
   const brief = clarify
     ? buildClarifyBrief(next.text, next.analysis?.reason ?? null, `http://${HOST}:${PORT}`)
     : next.brief?.text ?? next.text;
   // read HERE, at the same moment the bytes are chosen — not at receipt time. The row is mutable
   // and a later reader cannot tell whether an edit came before or after this delivery.
   const briefSource = briefSourceOf(next, clarify);
-  // let claude finish booting in the fresh pane before the first prompt lands; a brand-new
-  // lane is idle by definition, but claude's own startup needs a moment
+  // let claude finish booting in the fresh pane before the first prompt lands
   await Bun.sleep(4000);
-  // A post-spawn hold is TRANSIENT (dead claude, slot changed mid-boot) — retry-shaped, so the row
-  // goes back to `queued` and the dispatcher picks it up again. Under the advisory-gate design that
-  // is the same destination for both paths: the tick only ever runs tasks the owner released, and
-  // an attended start IS a release. (Deliberately unlike dispatchTask's catch, where the failure is
-  // persistent — a bad repo — and the row goes back to the status it came from instead of looping.)
-  // ...and it takes the LANE WITH IT. The row going back to `queued` used to be the whole of this
-  // function: the worktree it had just created and the slot holding it stayed standing, owned by
-  // nobody — the task no longer pointed at them and no land would ever come. Every retry then
-  // spawned another pair, so the one path in fleet that retries by design was also the one that
-  // leaked. Teardown runs in landLane's order and for landLane's reason: the worktree FIRST, while
-  // the slot is still intact, so a refused removal leaves a lane that is still fully recoverable
-  // rather than a torn-down slot pointing at an orphaned tree.
-  //
-  // THE EDGE, decided here rather than left implicit: a pane that has already produced something
-  // is not disposable. removeWorktreeSafe is the existing answer and it fits unchanged — it refuses
-  // an uncommitted tree and unpushed commits, with git's own `worktree remove` refusal behind it —
-  // so a dirty lane is KEPT, slot and all, and the reason is written onto the row. A worktree
-  // silently kept would be the same defect in new clothes, which is why the note carries it.
-  //
-  // Two paths reach here with the slot no longer ours (identity lost during the boot sleep) or with
-  // the tree adopted by another session; killing/removing then would end a lane this dispatch never
-  // owned. Both are read from the live slot list rather than assumed, and `next.slot` is cleared
-  // either way: a `queued` row must not keep pointing at a slot it has let go of.
+  // A post-spawn hold is TRANSIENT — retry-shaped, so the row goes back to `queued` and the
+  // dispatcher picks it up again (unlike dispatchTask's catch, where a bad repo is persistent and
+  // the row returns to the status it came from). And it takes the LANE WITH IT: a requeue that left
+  // worktree and slot standing leaked a pair per retry. Teardown runs in landLane's order — the
+  // worktree FIRST, while the slot is intact, so a refused removal leaves a recoverable lane.
+  // A pane that has produced something is not disposable: removeWorktreeSafe refuses an uncommitted
+  // tree and unpushed commits, so a dirty lane is KEPT, slot and all, and the note carries why.
+  // Two paths reach here with the slot no longer ours or the tree adopted by another session; both
+  // are read from the live slot list, and `next.slot` is cleared either way — a `queued` row must
+  // not keep pointing at a slot it has let go of. History: server-narrativ-archiv.md#briefandsend
   const requeue = async (note: string): Promise<void> => {
     const ours = free.cwd === wt.path && free.worktree?.branch === wt.branch;
     const other = slots.find((s) => s.id !== free.id && s.cwd === wt.path);
@@ -9166,51 +9012,37 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   // is still OUR lane before injecting external text, or we'd prompt an unrelated session
   const identityLost = (): boolean =>
     free.cwd !== wt.path || free.worktree?.branch !== wt.branch || next.slot !== free.id;
-  // `harness: false` on the OWNER path, and only there — the same waiver land/⏫ author/💾 commit
-  // already take, for the same reason canDeliver's own comment gives: the policy answers "may
-  // something UNATTENDED drive this slot", and a click that named the harness is not that. Without
-  // it an attended foreign-harness start is a lane that spawns and then never receives its brief:
-  // the gate would hold, the row requeue, and the worktree be torn down — the automation flag
-  // silently deciding an attended question. The ALIVE gate is not waived and is the one that
-  // matters here: a pane whose agent failed to boot is a bare shell, and the brief would run there.
+  // `harness: false` on the OWNER path only — the same waiver land/⏫ author/💾 commit take: the
+  // policy answers "may something UNATTENDED drive this slot", and a click that named the harness is
+  // not that. The ALIVE gate is not waived and is the one that matters: a pane whose agent failed to
+  // boot is a bare shell, and the brief would run there.
   const gateOpts = ownerAct ? { idleMs: 0, killSwitch: false, quietHours: false, harness: false } : { idleMs: 0 };
-  // fresh claude-alive gate (was synergy-findings.md Tier-0 #2). Requeue on any failure — the
-  // lane exists, the prompt waits. With the compile gone there is only ONE gate/send window left
-  // to keep tight; the second round-trip the compile used to need went with it.
+  // fresh claude-alive gate; requeue on any failure — the lane exists, the prompt waits.
   if (identityLost()) { await requeue("slot changed during spawn — requeued"); return; }
   const boot = await canDeliver(free, { now: Date.now(), ...gateOpts });
   // the gate's detail (today: which blocking screen) rides into the note — a requeue whose reason
   // is generic is the silent skip in a milder costume
   if (!boot.ok) { await requeue(`dispatch held (${boot.gate}${boot.detail ? `: ${boot.detail}` : ""}) — requeued`); return; }
-  // SCREEN readiness, bounded — only for a harness that declares it (codex today; every other
-  // adapter takes `null` and this loop never runs). The boot sleep above is a grace period, not a
-  // readiness proof: the proof is the accept marker on the rendered pane. Here — unlike at the
-  // delivery gates — "pending" is NOT deliverable: this pane is seconds old by construction, so
-  // "neither marker yet" means "still booting", never "header scrolled off". Measured 2026-08-12:
-  // a paste+Enter into the trust prompt ANSWERS it and boots an empty composer, the brief gone
-  // with no error — the 2026-08-10 dispatch race, now refused by name instead of raced by sleep.
+  // SCREEN readiness, bounded — only for a harness that declares it. The boot sleep is a grace
+  // period, not a readiness proof; here, unlike at the delivery gates, "pending" is NOT deliverable:
+  // this pane is seconds old, so "neither marker yet" means "still booting". Measured 2026-08-12
+  // (paste+Enter into the trust prompt ANSWERS it): server-narrativ-archiv.md#briefandsend
   const readiness = await waitForFoundingReadiness(free, () => !identityLost());
   if (!readiness.ok) { await requeue(`${readiness.reason} — requeued`); return; }
   try {
     // The pack sources are Fleet-owned, so the tree being dispatched into decides whether they
-    // exist at all — derived from git, never assumed. This used to be the literal "fleet", which
-    // handed a foreign lane anchors that cannot resolve there AND receipted them against that
-    // repo's own head: the one place where the ledger itself was untrue.
+    // exist — derived from git, never assumed (the literal "fleet" once receipted foreign lanes untruly).
     const sourceTree = await dispatchSourceTree(wt.repo);
-    // Read the integration tip on the server at the delivery seam. If it cannot be named, do not
-    // deliver a brief whose receipt would have to invent HEAD; the existing requeue path owns it.
-    // THIS NOW COMES BEFORE THE PLAN, and the order is the contract rather than a tidy-up: the
-    // manifest below is read AT this commit and the receipt asserts it, so a plan derived before
-    // the tip was named could only receipt anchors against a commit nobody read.
+    // Read the integration tip at the delivery seam; if it cannot be named, do not deliver a brief
+    // whose receipt would have to invent HEAD. THIS COMES BEFORE THE PLAN, and the order is the
+    // contract: the manifest is read AT this commit and the receipt asserts it.
     const head = await integrationHead(wt.repo);
     if (!head) throw new Error("could not read integration HEAD for context receipt");
     const planFacts = { sourceTree, harness: free.harness, mode: DISPATCH_CONTEXT_MODE,
       triggers: DISPATCH_CONTEXT_TRIGGERS, capabilities: DISPATCH_CONTEXT_CAPABILITIES };
-    // The Fleet seeds plus whatever THIS repository declares about itself at that commit — the
-    // same merge Program-MAIN founding does, and deliberately with no frame branch here: the
-    // dispatch seam is the 72-of-82 majority of deliveries, and a Fleet-only or foreign-only rule
-    // would be a second, quieter policy. `repoRootOf` throws on an unnameable root and the catch
-    // below requeues, exactly as the integrationHead refusal above already does.
+    // The Fleet seeds plus whatever THIS repository declares about itself at that commit — the same
+    // merge Program-MAIN founding does, deliberately with no frame branch: a Fleet-only or
+    // foreign-only rule would be a second, quieter policy. `repoRootOf` throws → the catch requeues.
     const base = planContext(planFacts);
     const repoPlan = await repoManifestContextPlan(await repoRootOf(wt.repo), head, planFacts);
     const plan: ContextPlan = { selected: [...base.selected, ...repoPlan.selected],
@@ -9222,10 +9054,8 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     await sendText(free, deliveredBrief, true);
     const at = Date.now();
     // Hash exactly this canonical JSON: the delivered anchor block plus the receipt-visible plan
-    // facts {harness, mode, triggers, selected, omitted}. A later reader can reconstruct every byte
-    // from the row and the renderer the row NAMES — `renderer` says which one wrote this block, and
-    // a row without that field is a v1 row by date. Neither the mutable task nor a later tree is
-    // needed.
+    // facts. A later reader reconstructs every byte from the row and the renderer the row NAMES
+    // (`renderer`; a row without it is a v1 row by date).
     const hash = createHash("sha256").update(JSON.stringify({
       anchorBlock,
       planFacts: { harness: free.harness, mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted },
@@ -9239,10 +9069,8 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
       deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength,
       truncated: false,
       renderer: CONTEXT_ANCHOR_RENDERER,
-      // The join key, and deliberately the SAME function LaneOutcome.briefHash uses over the lane's
-      // first logged prompt: both hash the bytes that actually crossed the seam, so a receipt and
-      // the outcome of the lane it founded meet exactly. The `hash` above stays what it was — it
-      // keys {anchorBlock, planFacts}, answers a different question, and nobody re-reads it here.
+      // The join key — the SAME function LaneOutcome.briefHash uses over the lane's first logged
+      // prompt, so a receipt and the outcome it founded meet exactly. `hash` above keys a different question.
       briefHash: briefHashOf(deliveredBrief), briefSource,
     });
     logPrompt(free, deliveredBrief, "auto", at);
@@ -9259,11 +9087,8 @@ type ContextReceiptSelection = {
   sourceHash?: string;
 };
 
-// v2 renders PURPOSE beside the pointer: v1 handed a lane `- <id> | <path> | <anchor>` and left it
-// to guess when following the pointer was worth a read. The pack line carries useWhen exactly once
-// and the pointers sit indented beneath it, so one pack is one paragraph however many sources it
-// names. A selection WITHOUT useWhen (a repo-declared pack from before the field) loses that line
-// and keeps every pointer — the block never goes silent because a purpose was never stated.
+// v2 renders PURPOSE beside the pointer: useWhen once per pack, pointers indented beneath it. A
+// selection WITHOUT useWhen (a repo-declared pack from before the field) keeps every pointer.
 function renderContextAnchorBlock(plan: ContextPlan): string {
   if (plan.selected.length === 0) return "";
   const lines = ["ContextPlan v2 anchors (fresh advisory pointers; no source content is copied):"];
@@ -11787,13 +11612,10 @@ async function tickMigrate(): Promise<void> {
 }
 
 // --- the OUTBOUND channel for both completion facts (Watch, above). Deliberately its own tick and
-// not a branch inside tickAutoReview: auto-③ remains on doneLooking alone, and also breaks out at
-// AUTO_REVIEW_MAX_CONCURRENT / skips lanes with a review inflight. Folding delivery there would
-// both widen review onto uncommitted work and make notification depend on unrelated capacity.
-//
-// Runs on the AUTOS cadence, not the review cadence, because what it does is DELIVER: same tick
-// speed, same choke-point (canDeliver), same master stop. FLEET_AUTO_REVIEW_MS=0 does not disable
-// it — it spawns no agent and costs nothing while no Watch is armed and no event is pending.
+// not a branch inside tickAutoReview: auto-③ remains on doneLooking alone and breaks out at
+// AUTO_REVIEW_MAX_CONCURRENT; folding delivery there would make notification depend on unrelated
+// capacity. Runs on the AUTOS cadence because what it does is DELIVER (same choke-point, same
+// master stop). FLEET_AUTO_REVIEW_MS=0 does NOT disable it — it spawns no agent.
 let watchTickBusy = false;
 async function recoverFleetReportDelivery(event: FleetReportFleetEvent): Promise<boolean> {
   if (event.status !== "send-uncertain" || event.recovery?.state !== "retryable") return false;
@@ -11912,10 +11734,8 @@ async function tickWatches(): Promise<void> {
         continue;
       }
       // STN-1 expiry. The tick never MINTS for this kind — only the bound Supervisor's act does
-      // (completeTransitionWatch). What the tick owns is the deadline: past it the Watch is
-      // disarmed with a legible reason and NO pane text. One Watch carries at most one
-      // notification, and that one is the transition; an expiry line typed into the pane would
-      // be a second stream, which the promotion explicitly refused.
+      // (completeTransitionWatch); it owns the deadline: past it the Watch is disarmed with a legible
+      // reason and NO pane text (one Watch, one notification — an expiry line would be a second stream).
       if (watchKind(w) === "transition" && "deadlineAt" in w) {
         if (now < w.deadlineAt) continue;
         w.armed = false;
@@ -11986,11 +11806,10 @@ async function tickWatches(): Promise<void> {
         dirty = true;
         continue;
       }
-      // …and the SUBJECT, before any gate that could merely delay this row. A held event is a
-      // promise about a live lane; once that lane is gone the promise cannot come true, and every
-      // further tick would only be waiting to type stale news into a pane. Teardown already sweeps
-      // this (dropWatchesFor); here is where a recycle that never passed through teardown, and
-      // every row restored from disk, is caught.
+      // …and the SUBJECT, before any gate that could merely delay this row: a held event is a promise
+      // about a live lane, and once that lane is gone every further tick would only wait to type stale
+      // news. Teardown sweeps this too (dropWatchesFor); a recycle that skipped teardown and every
+      // row restored from disk are caught here.
       if (laneEventSubject(event) === "gone") {
         markFleetEventsSubjectGone();
         dirty = true;
@@ -11999,12 +11818,10 @@ async function tickWatches(): Promise<void> {
       // THE UNOBSERVED-PANE HOLE belongs to transport now, not signal capture. lastOutput=0 is
       // unknown rather than epoch-idle; idleSec:0 remains the explicit opt-out.
       if (event.receiverIdleSec > 0 && s.lastOutput === 0) continue;
-      // Two policy gates are waived for this one-shot: quiet hours, as for a one-shot Auto, and the
-      // foreign-harness WORK-PROMPT policy. A Watch exists only after an explicit Owner/Self
-      // subscription and its text is fixed server-generated completion facts, never caller-chosen
-      // work. This waiver belongs HERE, to that act — not to pi-unfenced or any adapter. The
-      // kill-switch, fresh agent-liveness and busy/observed gates remain: a paused fleet types
-      // nothing, and text into a dead pane's bare shell would execute as shell commands.
+      // Two policy gates are waived for this one-shot: quiet hours (as for a one-shot Auto) and the
+      // foreign-harness WORK-PROMPT policy — the text is fixed server-generated facts after an
+      // explicit subscription; the waiver belongs HERE, to that act, not to any adapter. Kill-switch,
+      // agent-liveness and busy/observed gates remain: a dead pane's bare shell executes text.
       const verdict = await canDeliver(s, {
         now: Date.now(), harness: false, quietHours: false, idleMs: event.receiverIdleSec * 1000,
       });
@@ -12043,23 +11860,19 @@ async function tickWatches(): Promise<void> {
         ({ acceptance } = await sendText(s, text, true, { rollbackOwnPayload: true }));
       } catch (e) {
         if (e instanceof SendRefused) {
-          // nothing was typed (an occupied composer, i.e. an owner draft): the event is still
-          // pending and will be offered again once the composer is clear — never appended to it.
-          // AND THE COUNT GOES BACK WITH IT. A refusal happens BEFORE the paste, so it is not an
-          // attempt at all: the same measured row reached attempts=2006 against 2005 holds and one
-          // real send, which made the number read as 2005 failed deliveries into a live pane. The
-          // held audit line below is where a hold is counted, and it counts only holds.
+          // nothing was typed (an occupied composer, i.e. an owner draft): the event stays pending and
+          // is offered again once the composer is clear. AND THE COUNT GOES BACK WITH IT — a refusal
+          // happens BEFORE the paste, so it is not an attempt; only the held audit line counts holds.
+          // The attempts=2006 measurement: server-narrativ-archiv.md#tickwatches
           event.status = "pending";
           event.attempts = attemptsBefore;
           await saveStateNow();
           audit("fleet_event_held", event.receiverSlot ?? undefined, `${event.id} ${e.message.slice(0, 120)}`);
           continue;
         }
-        // tmux may have accepted some or all of the operation before reporting failure, or the
-        // composer is observably still holding the text (ACP-25). Preserve the pre-send marker
-        // exactly; neither "failed" nor "delivered" is an observed fact, and send-uncertain is
-        // replayed only by the bounded fleet-report recovery when rollback proved Fleet's payload
-        // is absent from the exact receiver pane.
+        // tmux may have accepted part of the operation, or the composer observably still holds the
+        // text (ACP-25). Preserve the pre-send marker: neither "failed" nor "delivered" is observed,
+        // and send-uncertain is replayed only by the bounded fleet-report recovery.
         const rollback = e instanceof SendNotAccepted && e.rollback ? ` rollback=${e.rollback}` : "";
         if (event.kind === "fleet-report") {
           recordFleetReportNonAcceptance(event, e instanceof SendNotAccepted ? e.rollback : null, "transport");
@@ -12078,10 +11891,8 @@ async function tickWatches(): Promise<void> {
       const deliveredAt = Date.now();
       s.history = [...s.history, { text, ts: deliveredAt }].slice(-MAX_HISTORY);
       saveHistory(s);
-      // source "auto", not a sixth vocabulary word: the prompt log's "auto" already means "the
-      // machine typed this, unattended" and three distinct machine paths share it (scheduled autos,
-      // the dispatcher's founding brief, the merge idle guard). The audit trail below is where a
-      // watch is told apart from those.
+      // source "auto", not a sixth vocabulary word: the prompt log's "auto" already means "the machine
+      // typed this, unattended"; the audit trail below is where a watch is told apart.
       logPrompt(s, text, "auto", deliveredAt);
       event.status = "delivered";
       event.deliveredAt = deliveredAt;
@@ -12093,11 +11904,8 @@ async function tickWatches(): Promise<void> {
     }
 
     // FACT 3: the ONE bounded retry of a terminal merge verdict whose first delivery was refused at
-    // the gate — the lane was still producing output, the fleet was paused, an owner draft sat in
-    // the composer. A second refusal is FINAL: the marker stays on the merge status, where the
-    // owner can read it, and nothing asks again. Recomputed here rather than reusing the list from
-    // the top of the tick, because the loops above spend seconds in tmux and a lane can land, be
-    // recycled or start a fresh merge run inside that window.
+    // the gate. A second refusal is FINAL: the marker stays on the merge status. Recomputed here
+    // rather than reused from the top of the tick: the loops above spend seconds in tmux.
     for (const s of verdictRetryDue()) await deliverMergeVerdict(s, s.cwd!, s.worktree!.branch);
 
     if (dirty) saveState();

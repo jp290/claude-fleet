@@ -1,3 +1,72 @@
+# HANDOFF — Fleet Controller / Denksession (Slot 14, Fable 5.1 high): Second-host BOOTSTRAPPED + Remote-Rot erklaert (LANG=de_DE), Denksession B als Notiz + 18 Register-Zeilen, GLM-Zweitmeinung, Owner-Richtung Codex-Controller; Uebergabe bei ~25 % GEMESSEN, 2026-09-02 (13:15)
+
+Rolle: 🎛 Fleet Controller als DENKSESSION (Owner-Auftrag 12:25, Nachtrag 12:40). Keine Watcher gelegt,
+Watches gehoeren den MAINs. Owner-Delegation 10:05 gilt weiter. Modelle: MAINs Fable, Lanes Opus.
+
+## 0. Reihenfolge fuer dich
+
+1. Erdung (`./state.sh`, `./register.sh`, dieser Abschnitt). Dann `docs/messungen/denksession-zusammenarbeit-2026-09-02.md`
+   — §0 (fuenf Saetze) und §5 (korrigierte Reihenfolge). Das ist das Ergebnis, nicht dieser Handoff.
+2. **Auftrag `3bb5a5c9` landen lassen** (eine Zeile in `server.ts#processBirthFingerprint`: `LC_ALL=C` in den
+   `ps`-Spawn, Pin in `e2e/pins.ts`). Er ist `auftrag pending`; Freigabe ist Owner-Akt (Sanierungs-Freeze —
+   Slot 12 entscheidet, ob als Freeze-Ausnahme). Danach `.env` `FLEET_AUDIT_HELPER_GRACE_MS='60000'` + Verb 2,
+   und die Audits laufen wieder auf dem Geraet (Zeile `226a2174`). Vorher NICHT: jeder Remote-Audit ist ohne
+   den Fix deterministisch 5/3443 rot.
+3. **Lane Slot 1 (pi-zai, GLM-Zweitmeinung) ist ein Wegwerf-Slot**: Worktree `fleet-260902105240-69ed` mit
+   einer UNTRACKED Kopie der Notiz. Ueber das Board verwerfen (discard), nie landen. Die Antwort steht in
+   ihrer Pane; §5 der Notiz hat sie schon verarbeitet.
+4. Die 18 neuen Register-Zeilen (`./register.sh`: `[A1]` `[A2]` `[P6 … 12:50]` `[idee B1–B12]` `[Private-repo-o D1/D2]`
+   `[owner-richtung 13:05]`) sind Vorschlaege mit Done-Kriterium; Promotion ist Owner-Akt. Erste Kandidaten
+   in der von GLM korrigierten Reihenfolge: B2 (Composer-Rest leeren), B3 (Send-Ledger), dann B0/B4.
+
+## 1. Was heute passierte (verifiziert; Bodies in `git log f62b1f5..main`)
+
+- **Second-host bootstrapped 12:57:** Owner-Name `second-hostowner`; Bundle von `main` per scp nach
+  `/tmp/claude-fleet.bundle`; `git clone` nach `/var/lib/fleet-helper/work/tree-bootstrap` (f62b1f5); Symlink
+  `work/current`; Unit aus Template (`sed` USER/GROUP/WORK-DIR/BUN-PATH/BUN-DIR; neu `RestartForceExitStatus=75`);
+  `daemon-reload` + `restart`; Journal `running f62b1f58 from …/tree-bootstrap/helper-daemon`.
+- **Deploy `d79bde9c` (Verb 2) ok:true** auf f62b1f5 — vorher war der Live-Server bei `0564565`, also VOR
+  79acd2e, und kannte `daemonSha` nicht. Jetzt: `helperDevices[0].daemonSha = f62b1f5…`, `deployGap.codeBehind
+  false`, `bundleStale false`.
+- **Remote-Rot-Mechanismus reproduziert AUF DEM GERAET:** `ps -o lstart= -p <pid>` unter dem Daemon-Environ
+  (`LANG=de_DE.UTF-8`, procps 4.0.4) druckt `Di Sep  1 07:00:05 2026`; `PROCESS_BIRTH_RE` verlangt
+  `[A-Z][a-z]{2}` → null → `unmeasurable`. Mit `env -i` englisch. Die Locale-Erklaerung TRAEGT also — der
+  andere Agent hatte nur `LC_TIME` erzwungen, der Daemon hat `LANG`. Schreiber `e2e-stage.sh` setzt `LC_ALL=C`.
+- **Denksession B:** Notiz committet (`4206795`). Kern: eine Primitive (Pane-Send) fuer drei Beduerfnisse
+  (Fakt / Weckruf / Entscheidung) plus ein viertes (Peer-Koordination); der Pane-Send ist der einzige Kanal
+  ohne Ledger; 169 von 185 holds heute an EINEM Slot durch 53 Zeichen Composer-Rest; `delivery:"inbox"`
+  existiert und wird nicht benutzt, weil ohne Weckruf/Ack. Rollen-Perspektiven §2.3, Strukturen §2.4,
+  Schnitte §2.5, Private-repo-o §4, GLM §5.
+- **Owner-Datenpunkt 12:50:** ein langer Owner-Paste kam ueber den Fleet-Send nur mit dem Schwanz an
+  (Zeile `86830851`; Owner: fruehere Faelle mit langen Grok-Antworten; Prioritaet „maximal robust").
+
+## 2. Betriebsstand (13:15)
+
+- Slots: 2/5/8 Lanes (Opus), 3/4/7/9/12 MAINs (Fable), 6 Private-repo-o (Owner-Hold), 11 Steward, 13 Vorgaenger-
+  Controller (28 %, zieht sich zurueck), 1 GLM-Wegwerf-Lane. Gate-Lock „overdue" = Slot 5s dritter
+  isolated-Lauf seit 11:35, nicht wedged. Kein Audit laeuft. Dispatcher `on:false`, maxLanes 2.
+- Audit 79acd2e rot 10/3443 gehoert weiter Slot 9 (Rerun lief in Slot 13s Pane, stirbt mit ihr).
+- Host: load 3,2, Swap 2,2/3,0 GB — deutlich besser als am Vormittag.
+
+## 3. Fallen, die ich bezahlt habe
+
+- **Token-Hygiene:** `cat config.json | sed 's/"token":"…/'` hat NICHT gegriffen (das JSON hat ein Leerzeichen
+  nach dem Doppelpunkt) — der Helper-Token stand einmal in meinem Kontext. Muster fuer den naechsten:
+  `python3 -c 'import json;d=json.load(open(...));d.pop("token");print(d)'`, nie sed auf Secrets.
+- Ein langer Paste ueber den Fleet-Send kann VORNE abgeschnitten ankommen, ohne Fehler. Lange Texte
+  an eine Session als Datei + Einzeiler-Pointer zustellen (so lief die GLM-Befragung fehlerfrei).
+- Der Live-Server war 4 Commits hinter HEAD, `state.sh` sagt es (`deploy gap`) — vor jedem „das Feld fehlt
+  auf dem Board" erst `deployGap.codeBehind` pruefen.
+
+## 4. Offene Owner-Punkte
+
+1. `3bb5a5c9` freigeben (Freeze-Ausnahme?) → Grace zurueck. 2. **Owner-Richtung 13:05 (Zeile `98979607`):**
+naechster Controller / unwichtigere Sessions auf codex mit „sol5.6", der entscheidet, wo Fable eingesetzt
+wird — noch kein Entscheid; die fuenf Vorbedingungen stehen in der Zeile. 3. Promotion der B-Zeilen in GLM-
+Reihenfolge. 4. Idle-Sessions 4/6/11 schliessen? 5. GitHub 12 Tage hinter main.
+
+---
+
 # HANDOFF — Fleet Controller (Slot 13, Fable 5.1 high): DENKSESSION vorbereitet — (A) Second-host-Fix als Durchsatz-Hebel, (B) Zusammenarbeit der Sessions (Erfassung, Kommunikation); Watches an die MAINs abgegeben; Modellpolitik MAINs Fable / Lanes Opus; 2026-09-02 (12:35)
 
 Rolle: **🎛 Fleet Controller**, Nachfolge von Slot 14. Owner-Delegation 10:05 gilt weiter. **Owner-Auftrag

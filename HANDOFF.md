@@ -1,3 +1,114 @@
+# HANDOFF — Generalsanierung: P4 Slice 2 gelandet (ffdcece) und Stufe-2-GRUEN, Regelbuch-Gate repariert, erster informativer Remote-Audit seit 8 blinden Roten, 2026-09-02 (18:10)
+
+Program **`b2a14b545fd31fd71ba7b9e1`**, gebunden an Slot 12 (diese Session). Controller ist
+**Slot 7**. Ersetzt den Sanierungs-Abschnitt darunter.
+
+## 1. Gelandet, verifiziert
+
+- **P4 Slice 2 `d7b89fd6` → `ffdcece`** (Lane `fleet/260902073536-c509`, Slot 5, Opus 5 high).
+  `server/errors.ts` (88 Z.), `server/persist.ts` (75), `server/tmux.ts` (72); server.ts
+  24040 → 23810. Land-Note: `verify.ok true`, volle 7-Schritt-Kette, **106,7 s Arbeit / 0 s
+  Wartezeit**, `mainBefore 8865eaa`. **Actor ist `owner-token-outside-board`, NICHT `main`** —
+  Grund in §2/§4.
+  Von mir unabhaengig nachgerechnet, nicht dem Report geglaubt: Move-Multiset LEER,
+  ESM-Reassignment-Sonde (`errorTotal|auditChain|auditWriteFailed`) LEER, kein `server/`-Modul
+  importiert `server.ts`, tsc Gate-Liste exit 0, `bun e2e/pins.ts` ALL PASS aus Lane UND
+  Haupt-Checkout. Zwei Lane-Abweichungen geprueft und richtig: `AUDIT_ROTATE_BYTES` wandert mit
+  (`queueEventWrite` liest es), `observeTmuxSlots`/`tmuxSlotObservation` bleiben im Kern (lesen
+  `repoCanon`/`sessTarget`/`sess`).
+- **Post-Land-Audit `ffdcece`: GRUEN, und diesmal AUSSAGEKRAEFTIG** — remote second-host,
+  `ms 1373734` (22,9 min), **`exitCode 0`**, `clonedSha` = mainSha, `dirty:false`.
+  **`checks:{ran:22}` ist ein Zaehl-Artefakt, nicht die Messung:** `out` ist auf 4096 B gekappt,
+  31 Zeilen aufbewahrt, davon 22 PASS — die Zahl kommt aus dem Tail, nicht aus dem Lauf. Der
+  Beweis ist `exitCode 0` nach 22,9 min (`./e2e-isolated.sh` exitet auf jedem FAIL != 0; die acht
+  blinden Roten davor trugen exit 1 mit „N FAILURES" im Tail).
+  **Damit ist die Blindstelle `df22cf14` fuer ROTE Zeilen zu** — plausible Ursache ist das
+  Daemon-Update (`79acd2e`, daemonSha `f62b1f5`). Was BLEIBT, ist allein der `checks.ran`-
+  Untercount; die P6-Zeile also nicht schliessen, sondern auf den Untercount verengen.
+- **P4 Slice 1 `e03d44c`** (Vorgaengerin): Audit rot/unnamed → `unknowable` adjudiziert, Beleg
+  ist der von mir aus dem Trail verifizierte lokale Lauf `isolated-20260902T064422Z-62019`
+  = 3443/0 auf `b4cca7a`, und `git diff --stat b4cca7a e03d44c` = nur HANDOFF.md.
+- **Deploy `798be4ab`** auf 5e2f47d: boot-verifiziert `ok:true`, plus Dry-Boot 4880d15 als
+  Rollback-Beweis (eigener Socket/Port, `FLEET_CMD=true`, sauber abgeraeumt).
+- **Plan-Nachtrag `3a1723e`** (ersetzt `b548549`, beide docs-only Direkt-Commits): von den vier
+  Zuegen der Beschleunigungs-Messnotiz bleibt nach GLM-§4 **nur Zug 2** — Vorschau entfaellt,
+  wenn `rg -n '<bezeichner>' e2e/` ausserhalb `pins.ts` fuer ALLE Hunk-Bezeichner 0 Code-Treffer
+  hat, mit benanntem Restrisiko und Rueckfallregel. Schritt f bleibt je Slice; P5-Parallelspur
+  erst nach dem A1-Mess-Tag.
+
+## 2. In Flug — das Erste, was du tust
+
+1. **DEPLOY steht aus.** `deployGap.codeBehind` war `true`; `POST /api/deploy` gab um 18:07
+   **409** (`a post-land audit is running on claude-fleet`) — lokaler Audit ueber
+   `fleet/260902051642-e0e3` + `...51644-adb8`. Wiederholen, wenn er durch ist; danach
+   `bundleStale`/`deployGap` auf `/api/sessions`, `bun e2e/pins.ts`, `graphify update .`.
+   **main ist inzwischen `b8ea448`** (Slot 3 hat nach meinem FREEZE-ENDE gelandet) — du deployst
+   also mehr als meinen Slice; das ist richtig so, aber sag es in deinem Bericht.
+2. **P4 Slice 3 = Rest von Tier 1** (Plan §P4 Punkt 3: transport, dir-explorer, audit-queue, auth
+   — error-channel ist mit Slice 2 weg). **Zuerst die Kollisionskarte NEU messen**, meine ist
+   veraltet: je lebender Lane
+   `git -C <worktree> diff -U0 $(git -C <worktree> merge-base HEAD main) -- server.ts | grep '^@@'`.
+   Meine Messung von 09:30 war: transport (16338-17279) und auth (16207-16337) waren frei,
+   audit-queue (12254-13400) war belegt — die belegenden Lanes landen gerade, also neu messen.
+   Brief-Muster steht in §3; der Slice-2-Brief lag in meinem Scratchpad und ist weg.
+3. **`FLEET_AUDIT_HELPER_GRACE_MS`** steht wieder auf 60000 (Audits remote). Der Controller
+   drehte es zwischenzeitlich auf 0 und zurueck; wenn ein Audit wieder blind rot kommt, ist die
+   erste Frage der daemonSha auf dem Geraet, nicht dein Baum.
+
+## 3. Brief-Muster fuer einen P4-Slice (das hat zweimal getragen)
+
+Ueberschrift mit Program-Id, Plan-Anker, Basis-sha und dem Satz „Zeilen gelten fuer GENAU diesen
+Stand; bei Abweichung gilt das Symbol". Dann: **WAS WANDERT** (Symbolliste je Zieldatei, mit der
+Messung, warum es gehen darf) · **WAS BLEIBT** (namentlich, mit Grund) · **REGELN** (reiner Move,
+keine Signatur-/Kommentaraenderung; `server/` importiert nie `server.ts`; ESM-`let`-Sonde als
+Kommando ausgeschrieben; Pins umhaengen statt loeschen, kein vakuum-gruener Pin; Import-Stil per
+`git show <letzter slice> -- server.ts | head -60`) · **BEWEISE 1-5 als Kommandos**
+(Move-Multiset mit `awk '$1 % 2 == 1'`, tsc Gate-Liste + `--noUnusedLocals/Parameters`, pins,
+volle Gate-Kette in eine Log-DATEI, Vorschau NUR wenn der Zug-2-Filter Treffer hat) ·
+**VERBOTEN** (Default-Env-Server, pkill nach Muster, `checkout --`, ungetrackte Dateien) ·
+**Drift-Check vor dem Done-Report** · **DONE als pruefbarer Satz**. Deckel ~2000 bewegte Zeilen.
+
+## 4. Befunde dieser Session (zwei davon kosten dich sonst eine Stunde)
+
+- **Ein Handedit an `CLAUDE.md` im Haupt-Checkout macht JEDES Land-Gate dieser Maschine rot.**
+  Live passiert (Controller Slot 7, 17:04): der Pin `RULE_RENDER` liest `rulebook/` UND
+  `CLAUDE.md` aus **SOURCE_DIR**, also dem Haupt-Checkout, nie aus dem verifizierten Baum. Gate
+  fiel exit 1 nach 906 ms in Stufe 1. **Repariert, und die Reparatur ist die Lehre:** ein blosses
+  Re-Render haette die Korrektur GELOESCHT (sie stand nur im Monolithen). Ich habe sie nach
+  `rulebook/supervisor.md` gezogen und von dort gerendert — und dabei die Wendung
+  „aktualisiert den Slot-Datensatz aber nicht" wiederherstellen muessen, weil die Bedeutungsprobe
+  sie als Muster von Regel **S2** fuehrt (`docs/attic/regelbuch-bedeutungsprobe-2026-08-18.md:130`)
+  und der Handedit sie ersetzt hatte. **Beide Dateien sind gitignored** — kein Commit moeglich,
+  kein main-Zug; der Fix lebt allein in der Working Copy des Haupt-Checkouts. `git status` zeigt
+  ihn nie. Wenn du ihn verlierst, ist jedes Land wieder rot.
+- **Die Self-Land-Tuer kann eine Reparatur ausserhalb des Baums nicht sehen** (Zeile `f0c28e8f`):
+  ihr Guard verweigert mit 409 `no progress since the last verdict`, sobald `candidateSha`
+  unveraendert ist — seine Praemisse „dieselben Bytes ⇒ dieselbe Antwort" gilt fuer die
+  `pins`-Stufe aber nicht, weil die SOURCE_DIR liest. Eskalation ist die Owner-Tuer
+  `POST /api/slots/:id/merge` (**nicht** `/land` — das ist die Main-Direct-Tuer und antwortet
+  „unpushed commits"; und **kein `confirm`**, das verbietet der Program-NonGoal). Daher der
+  `owner`-Actor auf der Land-Note.
+- **`372b3cef` dreimal reproduziert:** `POST /api/self/watch {kind:"merge",target:N}` gibt nach
+  einem gefeuerten Watch den **spent** Watch zurueck (`armed:false`, `firedAt` gesetzt) — auch
+  bei einem NEU laufenden Merge. Eine MAIN steht nach einem roten Land ohne Rueckkanal auf ihr
+  eigenes Re-Land da. Rueckweg, der traegt: Hintergrund-Watcher auf
+  `GET /api/slots/N/merge` bis `running=false` UND `last.at` neuer als das vorige Verdikt.
+- Zwei Queue-Zeilen abgelegt: `f0c28e8f` (Guard + Watch) und `18a14e37` (Selbstbefund B).
+
+## 5. Ehrlichkeiten
+
+- Direkt-Commits ohne Land-Ledger: `b548549`, `3a1723e` (beide docs-only, Plan-Nachtrag) und
+  dieser Handoff. Kein Post-Land-Audit deckt sie; `./state.sh`s Land-Health untertreibt heute.
+- Der Deploy von Slice 2 ist NICHT gefahren (§2 Punkt 1). Der Dry-Boot fuer Slice 2 ebenfalls
+  nicht — Schritt f steht komplett aus.
+- Slice 2 lief nach Zug 2 **ohne** Vorschaulauf. Die einzige volle Messung ist der Post-Land-Audit,
+  und der ist gruen (§1). Der Filter hat also gehalten — n=2, mehr sagt er nicht.
+- Adjudikation, `/send` und der Owner-Merge liefen mit dem Owner-Token; die Routen kennen keinen
+  MAIN-Prinzipal.
+- ctx bei der Uebergabe-Entscheidung: **27,8 % gemessen**.
+
+---
+
 # HANDOFF — Fleet Controller (Slot 15, Fable 5.1 high): drei Nachfolgen (3->4, 4->16, 7->3), Sanierung-Beschleunigung GEMESSEN (dbaeab7), 3bb5a5c9 fertig und Land in Kette, Paste-Platzhalter-Mechanismus gefunden; A1 GELANDET (01ccfb3); Uebergabe bei ~31 % GEMESSEN, 2026-09-02 (15:57)
 
 Rolle: 🎛 Fleet Controller (Owner-Delegation 10:05 gilt; Owner-Prinzip 13:45: nur fragen, was ohne ihn

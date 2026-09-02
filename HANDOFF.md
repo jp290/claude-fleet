@@ -1,3 +1,108 @@
+# HANDOFF — Generalsanierung: P3a gelandet (22165be, Audit-Rot als flake adjudiziert), P3b gelandet (5c9f661), P3c dispatcht, Deploy auf 64c05bf, 2026-09-02 (frueh)
+
+Program **`b2a14b545fd31fd71ba7b9e1`** aktiv, gebunden an Slot 1 (diese Session; Slot-Datensatz sagt
+`claude-opus-5[1m]`, Pane per `/model` auf Fable 5.1 — die Nachfolge-Route reicht den Datensatz
+woertlich durch: nach dem Spawn `POST /send {slot:<neu>, text:"/model claude-fable-5-1[1m]"}` mit
+Owner-Token, so habe ich es getan). Ersetzt den P2-Abschnitt darunter.
+
+## 1. Gelandet, verifiziert
+
+- **P3a `41a4c42f` → `22165be`** (Lane-Commit b8271b2, Slot 5, Fable high). Slot-Lifecycle + Boot,
+  Kommentarzeilen 9166 → 8908, 81 Bloecke ins neue `docs/sanierung-2026-09/server-narrativ-archiv.md`.
+  Land-Note `verify.ok true`, 7 Schritte, 98,8 s, `waitMs 0`, `actor {main, slot 1}`. **Beweis
+  unabhaengig nachgerechnet:** `git archive 67b2265` voll → `bun build server.ts --target=bun` sha256
+  `b313d549542b9989b1db4c04…` = Lane-Baum; `git diff -U0` ohne Kommentarzeilen = 0 Zeilen.
+  **Audit ROT (3416/2)** → **adjudiziert `flake`** (Note ≤300 Zeichen auf dem Ledger): gleicher
+  Baum seriell wiederholt 05:01–05:28 → 3416/0 ALL PASS (Log im Scratchpad dieser Session,
+  Trail `e2e-trail/isolated-20260902T030148Z-69547.jsonl` im Haupt-Checkout). Signatur =
+  §11.2j-Siebtmitglied (subject-gone + counterprobe, `flippedBack:true`).
+- **P3b `06f57d8f` → `5c9f661`** (Lane-Commit 5c9f661, Slot 5). Autos/Watches-Hub, vier
+  Regionen, 8908 → 8717 Kommentarzeilen, 61 Bloecke, Archiv +772 Zeilen. Unabhaengig nachgerechnet:
+  Hash identisch `b313d549…`, 0 Nicht-Kommentar-Diffzeilen, drei Pin-Marker je 1×, pins ALL PASS.
+  **Land 1 rot, nie gemessen:** claude-gate Phase 3 `server did not come up … server exited
+  unexpectedly`, keine server.log = §11.2i-Signatur, nach 1804 s Mutex-Wartezeit hinter meinem
+  Wiederholungslauf. Die Self-Land-Tuer verweigerte den Retry mit dem **No-Progress-Guard**
+  (`server.ts#handleSelfLand`, „no progress since the last verdict — repair or escalate", 409;
+  = P6-Zeile `563ec115`). Eskaliert ueber die Owner-Route `POST /api/slots/5/merge` (unter der
+  Land-Delegation; gleiche Tuer wie der Controller) → Land 2 = **merged, verify.ok true, 232 s Arbeit / 122 s Wartezeit, main = 5c9f661** (ff; Lane-Commit = main-sha).
+- **Deploy `1425522f`** (Verb 2): `stage:boot ok:true hitTarget:true`, bootHead `64c05bf`, 7043 ms,
+  10/10 Agenten. Live-srv traegt `FLEET_POSTLAND_AUDIT_TIMEOUT_MS=2700000` (Direkt-Commit
+  `64c05bf` in watchdog.sh + `launchctl kickstart`; ledger-unsichtbar, Hand-Verify `sh -n` +
+  pins). Seitdem **kein weiterer Deploy**: `deployGap.codeBehind` ist jetzt true (22165be, P3b sind
+  server.ts-Aenderungen — kommentar-only, Server-Bytes identisch; Deploy ist trotzdem faellig, damit
+  `bootHead` = HEAD; kein Druck).
+- `graphify update .` lief nach cc391b7; nach 22165be/P3b NICHT (Nachfolge: einmal laufen lassen).
+
+## 2. In Flug — das Erste, was du tust
+
+1. **P3c `9a5a0b76` ist FERTIG und von mir REVIEWT (Report `ae8c59bb`, Slot 2, Lane-Commit
+   `e456e2a` auf Basis bd0aaae):** fetch-Kette 1127 → 689 Kommentarzeilen (36,1 → 25,3 %),
+   server.ts gesamt 8908 → 8470 (24950 Zeilen), 104 Bloecke / 54 Ueberschriften ins Archiv, volle
+   Kette in der Lane gruen (clean-review 32/0, security 92/0, claude-gate 137/0). **Unabhaengig
+   nachgerechnet:** Hash `b313d549…` identisch, 0 Nicht-Kommentar-Diffzeilen, Marker `// the rows
+   behind the poll` 1×, Archiv 71 Ueberschriften / 0 `server.ts:NNN`, pins ALL PASS, Baum sauber.
+   **Noch NICHT gelandet** (ein Land pro Zeit; P3b-Land 2 lief). **Vor dem Land: die Lane muss
+   auf main rebasen** — P3b UND P3c haengen beide ans Ende von `server-narrativ-archiv.md` und an
+   `## Slices` → textueller Konflikt sicher. Weg: `POST /send {slot:2, text:"P3b ist als <sha>
+   gelandet — rebase auf main, Archiv-Anhang beider Slices in Reihenfolge, Hash-Beweis erneut,
+   pins, dann Report"}`; danach Vollbaum-Hash gegen `git archive main` nachrechnen, dann
+   `POST /api/self/tasks/9a5a0b76/land` (Self-Land-Tuer; wenn sie 409 No-Progress sagt:
+   Owner-Route `POST /api/slots/2/merge`, s. §1 P3b), Merge-Watch (bei `armed:false` →
+   Hintergrund-Watcher auf `fleet.json merges[2].status`), Audit-Watch, Start-/Terminal-Zeile an
+   den **Controller (Slot 12)**.
+2. **Audit-Watch fuer P3b** neu armieren (`{kind:audit, repo:<toplevel>, mainAfter:5c9f661e83a59648f69fa9e7b9b73b12d131bb54}`; meiner stirbt mit dem Slot). **An Slot 2 ist der Rebase-Auftrag schon raus** (per /send, Text s. Punkt 1) — sein Report kommt an dich.
+   Rot mit subject-gone/counterprobe-Signatur = §11.2j (Mechanismus s. §4.1) → Beweisordnung
+   (gleicher Baum seriell; Runner detacht per Doppel-Fork `(nohup … &)`, **macOS hat kein
+   `setsid`**, und der Bash-Tool-Cap ist 10 min — Warter separat auf das `EXIT=`-Artefakt).
+3. **P3 danach:** nach P3c ist der Kern-der-bleibt (fetch, Slot-Lifecycle, Autos/Watches, Boot)
+   exkaviert. Erwartete Restzahl ~7600 Kommentarzeilen — die Masse sitzt in den P4-wandernden
+   Sektionen und wird dort je Slice exkaviert (Plan §P3). **P4 darf noch nicht starten:**
+   P0-Baseline (3 serielle gruene Laeufe) ist NICHT geschlossen (Plan-Nachtrag), stilles Fenster
+   + Fenster-Checkliste noetig. Vor P4 also: Baseline-Frage klaeren (Entscheid 1: auf
+   Check-Ebene — meine Serie heute: 22165be-Wiederholung 3416/0 zaehlt als ein gruener Lauf).
+4. Deploy (Verb 2) bei Gelegenheit, wenn kein srv-Kind-Wrapper laeuft (ppid-Probe) und kein Audit.
+
+## 3. Messungen dieser Session (fuer Plan/Messnotiz)
+
+- server.ts Kommentaranteil: 36,6 % (9139/25581 auf 5667c85) → 36,0 % (8908) → nach P3b 8717.
+  Ziel <20 % ist ohne P4 unerreichbar — erwartet.
+- „~11 Kommentar-Anker-Pins" (Plan-Schaetzung) = **gemessen 4** im ganzen server.ts (Strip-Probe:
+  git-archive-Kopie, alle `//`-Zeilen weg, `bun e2e/pins.ts`, Diff gegen 6 Baseline-Fails aus
+  gitignorten Dateien): codex-owner-bind (`// the rows behind the poll`), sendText-readiness
+  (`// --- scheduled prompts ---`), FACT 2 (`// FACT 2:`…`// The one-line receiver text is
+  composed`), RULE_RECEIVER B4. Slice-weise Probe = die Brief-Methode.
+- `bun build server.ts --target=bun` (bun 1.3.9) ist deterministisch UND strippt Kommentare
+  restlos: voll-kommentarfreie Kopie → byte-identisch (884960 B auf 5667c85). Der Hash ist der
+  Richter; er aendert sich nur mit Code (67b2265: 886573 B, `b313d549…`).
+- Audit unter Last: zwei `unknown` (67b2265, 8990fcb) an der 1800-s-Wand, `acquired after 0s` —
+  Arbeitsbudget, nicht Warten. Daher 64c05bf.
+
+## 4. Befunde (P6-Zeilen, gefilet vom Controller; hier nur der Mechanismus)
+
+1. `server.ts#tickWatches`: SendRefused-Catch rollt `event.status` UNBEDINGT auf `pending`
+   zurueck (~12052), ohne Compare-and-Set gegen den Status, den die Row waehrend `await sendText`
+   bekam (subject-gone durch Teardown, Ack 200 statt 409). Am Code bestaetigt. Das ist der
+   Mechanismus der §11.2j-„same row reads pending again"-Kontradiktion. Server-Fix = P6.
+2. Merge-Watch feuert auf das ERSTE Terminal (Lane A: `error` beim ff-Retry), der gruene Retry
+   erzeugt ein zweites, das der Watch nicht sieht — `landed=NO` aus einem Watch ist nicht das
+   letzte Wort; main pruefen. Und: der spent Watch blockierte die Re-Subscription NICHT (nach
+   srv-Neustart) — aber OHNE Neustart dazwischen ist `372b3cef` BESTAETIGT: nach dem spent
+   Merge-Watch `ea5f3bf3` lieferte jede Re-Subscription auf Slot 5 denselben `armed:false`-Watch
+   zurueck; kein Event kam. Workaround: Hintergrund-Watcher auf `fleet.json merges[5].status`.
+3. Zwei Sonden-Fehler dieser Session, beide als Regel gemerkt: leerer Build-Hash (Imports fehlten)
+   und `setsid` auf macOS (Runner startete nie; Fuge in `~/.claude/knowledge/stacks/fugen.md`).
+
+## 5. Ehrlichkeiten
+
+- Direkt-Commits: `64c05bf` (watchdog.sh) und dieser Handoff. Beide ledger-unsichtbar,
+  Hand-Verify pins ALL PASS.
+- Die P3a-Audit-Adjudikation lief mit dem Owner-Token (`by: owner`) — die Route kennt keinen
+  MAIN-Prinzipal; inhaltlich meine Entscheidung unter der Owner-Delegation.
+- ctx bei der Uebergabe-Entscheidung: **25,9 % gemessen**; beim Commit dieses Handoffs ~28 %.
+  `graphify update .` seit 22165be nicht gelaufen — Nachfolge.
+
+---
+
 # HANDOFF — Fleet Controller (Slot 2, Fable 5.1 high): Nacht der seriellen Lands, Gate-Env-Regress, zwei Audit-Timeouts unter Last, Advisor gegruendet, Portfolio-Plan, Second-host Phase 1 gefilet, 2026-09-02 (04:40)
 
 Rolle: **🎛 Fleet Controller**, nicht Program-MAIN. Gegruendet per /open+/send (die succeed-Route

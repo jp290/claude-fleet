@@ -1,3 +1,110 @@
+# HANDOFF — Fleet Controller (Slot 2, Fable 5.1 high): Nacht der seriellen Lands, Gate-Env-Regress, zwei Audit-Timeouts unter Last, Advisor gegruendet, Portfolio-Plan, Second-host Phase 1 gefilet, 2026-09-02 (04:40)
+
+Rolle: **🎛 Fleet Controller**, nicht Program-MAIN. Gegruendet per /open+/send (die succeed-Route
+scheitert deterministisch, Notiz `9c7d6e02` — die Nachfolge geht wieder ueber /open + /send).
+Owner-Vorgaben in Kraft: Fable 5.1 high ueberall · Usage praktisch unbegrenzt · seriell landen ·
+**Quiet Hours sind AUS** (Owner 03:35, `POST /api/autos/quiet {}`). ctx bei Uebergabe-Entscheid:
+**33,5 % gemessen** (Band 25/30 ueberschritten; die Restkette war das P3a-Land).
+
+## 0. Reihenfolge fuer dich (nichts davon ist Vorsatz, alles hat einen Mechanismus)
+
+1. **Erdung:** `./state.sh`, `./register.sh`, dieser Abschnitt. Dann DREI Rueckwege legen,
+   bevor du irgendetwas anderes tust — meine sterben mit Slot 2: (a) Main-Watcher
+   (`until git rev-parse main != BASE`), (b) Fleet-Report-Watcher auf `audit.jsonl`
+   (`grep -c fleet_report_open`, Basis = aktueller Zaehler), (c) Attention-Watcher auf
+   `fleet.json.attentionRequests` (Laenge) — **Program-MAINs koennen kein `/send`, ihre
+   Freigaben kommen als Attention**; ich habe eine Lane-A-Freigabe 100 min lang uebersehen,
+   weil ich nur `/send` beobachtete.
+2. **P3a ist GELANDET (`22165be`, 04:50, Slot 1 selbst)**; sein
+   Audit ist der erste unter dem 45-min-Budget. **Kein Direkt-Commit auf main, solange
+   irgendein `GET /api/slots/:id/merge` `running:true` sagt** — ein Docs-Commit von mir (82702ae)
+   und einer von Slot 11 (5667c85) haben je einen Fast-Forward gebrochen; Verify blieb gueltig,
+   das Land musste erneut angestossen werden (zweiter Lauf per `{"confirm":true}` auf dem
+   sauberen, rebasten Baum). **Diesen HANDOFF committest du, falls mein Commit unten fehlt.**
+3. **`b0c15ca5` laeuft auf Slot 8** (Program 66499a03, Lineage, Fable). Report geht an Slot 4;
+   Land laut Erfolgsmass per Self-Land durch Slot 4 — wenn Slot 4 stattdessen dich bittet:
+   `POST /api/slots/8/merge`, `{kind:"merge",target:8}` abonnieren.
+4. **`1b677e58` (Workbench, Slot 7) ist released und wartet BEWUSST** auf das b0c15ca5-Land:
+   beide halten `src/client.ts`, und die Maschine stand bei load 33 auf 8 Kernen. Dispatch mit
+   `{"harness":"claude","model":"claude-fable-5-1[1m]","effort":"high","acknowledged":true}`.
+5. **Brief 2 (Slot 10 → Slot 3, private-repo-p) ist berichtet**, Slot 3 landet selbst (wie Brief 1).
+   Danach Brief 3 (`bea7cc37`/`fa7c7d7b` pending) auf Slot 3s Bitte dispatchen.
+6. **Second-host Phase 1 ist gefilet, alle pending, KEIN Release bis `db2d6c85` auf (a) steht:**
+   `dabd4da9` S1 daemon-update · `8228ae65` S2 Job „command" (Self-Tuer + Watch `job`) ·
+   `60d07416` S3 Wake-on-LAN · `c3f91ce1` S4 Presence + suite.log. Slot 9 released nach (a),
+   du dispatchst seriell, S1 zuerst, **nie neben einem laufenden Audit** (Regel unten).
+7. **Kein Deploy von dir:** Deploy gehoert der Sanierungs-MAIN (Slot 1) mit ppid-Probe
+   (Fenster zu, wenn ein `/bin/sh ./e2e-*` in seiner Elternkette `bun server.ts` hat).
+
+## 1. Was steht (verifiziert, 04:35)
+
+- **main = `22165be`** (P3a `22165be` · P2a `ec5b6be`+`e319388` · P2b `cc391b7` · Lane A `4b14096`+`67b2265` ·
+  Workbench `8990fcb` · Docs `5667c85`/`82702ae` · watchdog `64c05bf`). **Live-srv bootet auf
+  `64c05bf`** (Deploy `1425522f` ok, 04:31, Slot 1), `FLEET_POSTLAND_AUDIT_TIMEOUT_MS=2700000`
+  im srv-Env gemessen, `bundleStale:false`, `codeBehind:false`.
+- **Audits:** `e319388` green (3390) · `cc391b7` green (3390) · `67b2265` **unknown**
+  (1800-s-Timeout, Trail 3010 Zeilen, KEIN Mutex-Warten, Suite unter Last 2x langsamer) ·
+  `8990fcb` **unknown** (dasselbe, Trail 2505 ok / 3 Last-Rots). Beide sind kein Regress;
+  Notiz `aecd5f89` traegt die Messung, meine erste Notiz dazu (`673d5224`) war falsch und
+  ist archiviert. Der naechste gruene Audit deckt beide per `covers`.
+- **Slots:** 1 Sanierungs-MAIN (Nachfolge von 11) · 2 ich · 3 Private-repo-y-MAIN · 4
+  Owner-Routing-MAIN · 5 Lane P3a (im Land) · 6 Private-repo-o-MAIN (Hold, Opus-Datensatz) · 7
+  Workbench-MAIN · 8 Lane b0c15ca5 · 9 Second-host-MAIN (Opus-Datensatz) · 10 Lane Brief 2 ·
+  **11 ⚙ steward = der ADVISOR** (Worktree `claude-fleet.worktrees/steward`, Branch `steward`
+  frisch auf `5667c85`, Fable high; Evaluation aller Sessions steht in seiner Pane und im
+  Steward-Journal, 03:24) · 16 Owner-`/usage`-Screen.
+- **Login:** Owner hat sich um 03:20 neu eingeloggt; „Login expired" in Panes davor ist
+  erledigt, danach nicht.
+
+## 2. Vier gemessene Befunde dieser Nacht
+
+- **(a) Gate-Env-Regress, GEFIXT (`e319388`):** `.env` traegt seit 21:50 `FLEET_MODEL`; der
+  Deploy 23:56 exportierte es in srv; jeder Land-Gate ist srv-Kind und erbte es; zwei
+  claude-gate-Checks verglichen gegen den hart kodierten Default → jedes Land rot. Fix:
+  `FLEET_MODEL=` auf allen Suite-Spawnzeilen (`e2e-claude-gate.sh`, `e2e-isolated.sh`).
+- **(b) Audit-Timeout unter Last (Notiz `aecd5f89`):** 10 claude-Prozesse + iOS-Simulator
+  (Slot 3s Verify) → load 33/8 Kerne → Suite 2x langsamer → 1800-s-Wand. Hebel 1 ist
+  deployt (45 min). **Hebel 2 gilt ab jetzt als Controller-Regel: keine Lane-Beweiskette
+  neben einem laufenden Audit starten** (Audit-Zustand: `tail -1 post-land-audits.jsonl`
+  vs. laufender `e2e-isolated` mit srv in der ppid-Kette). Das ist das staerkste Argument
+  fuer den Second-host-Audit.
+- **(c) Owner-Akt an Quiet Hours gescheitert (Notiz `c6d728de`):** `handleAttentionAnswer`
+  ruft `canDeliver` ohne `quietHours:false`, als einziger Owner-Pfad. Quiet Hours sind
+  jetzt aus; der Fix gehoert der Sanierung (P6).
+- **(d) Deploy-Preflight kennt keinen laufenden Merge** (Notiz `4e29e778`, von Slot 10) —
+  heute zweimal per Absprache umgangen (Slot 1 fragt mich vor jedem Deploy).
+
+## 3. Dokumente dieser Nacht
+
+- `docs/portfolio-plan-2026-09-02.md` (`82702ae`, Direkt-Commit docs-only, pins ALL PASS von
+  Hand, kein Land-Ledger-Eintrag): sieben Programs, je Ziel/Stand/Ambition/drei Schnitte/
+  Owner-Tor, Kapazitaetsmodell, Vorfahrt der Sanierung, **§5 = sechs Owner-Entscheidungen**.
+- Second-host-Analyse: `docs/ideen/2026-09-01-second-host-job-vertrag-instanz-freunde.md` plus
+  meine Korrekturen (R2 serverseitig gebaut, R4-Locale gelandet, Geraet offline >4 h).
+
+## 4. Offene Owner-Entscheidungen (unveraendert offen)
+
+1. `db2d6c85` → (a) Daemon-Verzweigung (Empfehlung) oder (b) ssh-Key. Ohne (a) steht Slot 9.
+2. MAC-Adresse des Second-host fuer `.env` + LAN-Frage (gleiches L2-Segment?).
+3. Termin fuer den EINEN Handgriff auf dem Geraet nach dem S1-Land.
+4. Private-repo-o (Slot 6): schliessen, neu gruenden oder Taste-Gate einloesen.
+5. Private-repo-z: jetzt oder nach Private-repo-y Brief 3.
+6. Freunde-Jobs: erst nach dem ersten Remote-Gruen.
+
+## 5. Ehrlichkeiten
+
+- Mein Docs-Commit `82702ae` brach das ff535524-Land (ff-Fehler); zweiter Lauf per confirm.
+- Meine erste Audit-Notiz `673d5224` nannte Mutex-Warten als Ursache — falsch (Slot 4s
+  Trail-Analyse), archiviert.
+- Lane-A-Freigabe (Attention `54493d17`) 100 min uebersehen.
+- Der Brief 2 (`b78fe350`) hing seit Slot 3s Freigabe unbemerkt in `queued`, bis ich ihn um
+  03:20 dispatchte.
+- Keine Suite von mir gefahren; Code-Eingriffe: keine (nur Docs + Steward-Worktree).
+- Slot 8s Composer hielt laut Advisor ungesendeten Text (Lane ff535524, inzwischen gelandet
+  und Slot neu belegt) — Claude-Rest, kein Owner-Entwurf.
+
+---
+
 # HANDOFF — Generalsanierung: P2 KOMPLETT gelandet (P2a e319388, P2b cc391b7), Gate-Env-Regress gefixt, e319388 deployt, P2b-Deploy + P3 offen, 2026-09-02 (Nacht)
 
 Program **`b2a14b545fd31fd71ba7b9e1`** aktiv, gebunden an Slot 11 (diese Session; Fable 5.1 per

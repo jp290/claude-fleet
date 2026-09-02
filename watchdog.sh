@@ -144,8 +144,15 @@ while true; do
     # pane and none writes to main. Live effect on the day it was set: NONE — no slot ran a foreign
     # harness (verified against fleet.json), so it arms a capability rather than changing behaviour.
     # Turning it back off is this one word; nothing else depends on it.
+    #
+    # FLEET_POSTLAND_AUDIT_TIMEOUT_MS=2700000 — the audit's WORK budget (server.ts, grep
+    # POSTLAND_AUDIT_TIMEOUT_MS; default 1800000). Measured 2026-09-02 (queue note aecd5f89): under
+    # load (three lanes running local proof chains beside it) the isolated suite ran ~2x slower than
+    # its green runs (1545-1729 s) and the 1800 s wall killed the 67b2265 audit ~380 checks short —
+    # `unknown`, not red, and nothing measured. 45 min is the gate's own wait budget, reused as the
+    # audit's work budget; a slow audit that finishes is a verdict, one the wall cuts off is not.
     if tmux -L claudefleet new-session -d -s srv \
-      "umask 077; export PATH='$PATH_Q'; cd '$FLEET_DIR' && { if [ -f .env ]; then set -a; . ./.env; set +a; else echo '[watchdog] no .env — FLEET_HOST/ALLOWED_HOSTS/SHARE_* unset, server falls back to its own defaults (likely unreachable at the deployment address)' >> server.log; fi; } && FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_VERIFY_TIMEOUT_MS=300000 FLEET_VERIFY_WAIT_MS=2700000 FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' FLEET_CLEAN_REVIEW=off FLEET_HARNESS_AUTOMATION=1 FLEET_ANALYSIS_MS=0 FLEET_AUTO_REVIEW_MS=0 FLEET_AUDIT_PING_MS=60000 FLEET_DISPATCH_REPO='$FLEET_DIR' FLEET_DISPATCH_MAX_LANES=2 exec bun server.ts >> server.log 2>&1"; then
+      "umask 077; export PATH='$PATH_Q'; cd '$FLEET_DIR' && { if [ -f .env ]; then set -a; . ./.env; set +a; else echo '[watchdog] no .env — FLEET_HOST/ALLOWED_HOSTS/SHARE_* unset, server falls back to its own defaults (likely unreachable at the deployment address)' >> server.log; fi; } && FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_VERIFY_TIMEOUT_MS=300000 FLEET_VERIFY_WAIT_MS=2700000 FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' FLEET_POSTLAND_AUDIT_TIMEOUT_MS=2700000 FLEET_CLEAN_REVIEW=off FLEET_HARNESS_AUTOMATION=1 FLEET_ANALYSIS_MS=0 FLEET_AUTO_REVIEW_MS=0 FLEET_AUDIT_PING_MS=60000 FLEET_DISPATCH_REPO='$FLEET_DIR' FLEET_DISPATCH_MAX_LANES=2 exec bun server.ts >> server.log 2>&1"; then
       echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv was down, restarted" >> "$FLEET_DIR/server.log"
     else
       # log the truth: an unconditional "restarted" here used to fill the log with

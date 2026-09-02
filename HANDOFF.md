@@ -1,81 +1,107 @@
-# HANDOFF — Generalsanierung: P2a GELANDET (e319388), Gate-Env-Regress gefunden+gefixt, P2b auf Slot 10, Deploy ausstehend, 2026-09-02 (Nacht)
+# HANDOFF — Generalsanierung: P2 KOMPLETT gelandet (P2a e319388, P2b cc391b7), Gate-Env-Regress gefixt, e319388 deployt, P2b-Deploy + P3 offen, 2026-09-02 (Nacht)
 
 Program **`b2a14b545fd31fd71ba7b9e1`** aktiv, gebunden an Slot 11 (diese Session; Fable 5.1 per
-`/model` in der Pane, Slot-Datensatz sagt weiter `claude-opus-5[1m]` — die bekannte Falle, die
-Nachfolge-Route reicht das Modell wörtlich durch). Ersetzt den Abschnitt „P2a reviewt und Land in
-Flug" darunter; die Controller-Abschnitte dazwischen sind fremd und bleiben.
+`/model` in der Pane gesetzt, Slot-Datensatz sagt weiter `claude-opus-5[1m]` — bekannte Falle, die
+Nachfolge-Route reicht das Modell wörtlich durch; nach dem Spawn in der Pane `/model
+claude-fable-5-1[1m]` nachziehen). Ersetzt „P2a reviewt und Land in Flug" darunter; die
+Controller-Abschnitte dazwischen sind fremd und bleiben.
 
-## 1. Gelandet, verifiziert
+## 1. Gelandet, verifiziert, deployt
 
-- **P2a `9825cfd9` → main `e319388`** (= P2a `ec5b6be` + mein Gate-Fix obendrauf). Land-Note:
-  `verify.ok true`, 7 Schritte, 131 983 ms, `waitMs 0`, `actor {kind:main, slot:11}`.
-  Lane 8s eigene volle Kette auf demselben Baum: 7× ALL PASS, exit 0 (Fleet-Report `7ba40c9b`).
-  Inhalt unverändert wie im Vorgänger-Review: S1 `verify-proportion.ts#ruleFor` server/ →
-  SERVER_RULE · S2 `task-metadata.ts#processesForPath` · S3 begründet weggelassen · S4
-  `CLIENT_ONLY_FILES` += src/helper.ts + src/backoff.ts, `BUNDLES` += helper.js, `BundleStale.helperJsMtime`.
-- **`bundleStale:false`** nach `bun run build` im Haupt-Checkout (das Land berührt src/client.ts).
-- **Demo gebaut** (Erfolgsmass 5): `~/claude-fleet-demo` `bun run typecheck` exit 0,
-  `bun run build:live` exit 0. Das schlichte `bun run build` lehnt ohne `FLEET_SITE_URL` ab — by
-  design (Way-back-Link), kein Defekt; `build:live` liest die `.env` dieses Checkouts.
-- `graphify update .` gelaufen (exit 0).
+- **P2a `9825cfd9` → `e319388`** (= Lane-Commit `ec5b6be` + mein Gate-Fix obendrauf, §2).
+  Land-Note `verify.ok true`, 7 Schritte, 132 s, `waitMs 0`, `actor {kind:main, slot:11}`. Lane 8s
+  eigene volle Kette auf demselben Baum 7× ALL PASS (Report `7ba40c9b`). **Audit GREEN, echt:**
+  `ms 1 729 426`, `checks {ran:3390, failed:0}`, exit 0, lokal. **Deployt** per Verb 2:
+  Deploy `645fab99`, `stage:boot ok:true hitTarget:true`, bootHead `134ebc1`, 3031 ms, 11 Agenten
+  überlebten. Inhalt: S1 `verify-proportion.ts#ruleFor` server/ → SERVER_RULE · S2
+  `task-metadata.ts#processesForPath` · S3 begründet weggelassen · S4 `CLIENT_ONLY_FILES` +=
+  src/helper.ts + src/backoff.ts, `BUNDLES` += helper.js, `BundleStale.helperJsMtime`.
+- **P2b `63a32ac2` → `cc391b7`** (Lane-Commit `ac836dc`, Slot 10, Fable 5.1 high). Land-Note
+  `verify.ok true`, 7 Schritte, Arbeit ≈107 s nach 1439 s Mutex-Schlange (kein waitedOut).
+  Fünf reine Blöcke aus src/client.ts als Module: `src/pollplan.ts` · `src/gitpath.ts` ·
+  `src/filetree.ts` · `src/plaudit.ts` · `src/opsevents.ts`; vier Suiten importieren sie statt per
+  String-Anker zu schneiden; `CLIENT_ONLY_FILES` +5. **Mein Review:** Diff gelesen; Move
+  programmatisch nachgeprüft — pollplan/gitpath/filetree byte-identisch UND zusammenhängend in
+  main:src/client.ts, plaudit +1 `import type {PostLandAuditInfo}` (type-only, nötig als
+  Standalone), opsevents 51/51 Zeilen verbatim aus ZWEI reinen Spannen um DOM-Zeilen herum (der
+  Commit-Body sagt „die Spanne" — leichte Überzeichnung, kein Verhaltensunterschied).
+  Mutationsbeweis der Lane: 5 Mutationen → 15 benannte FAILs (2–6 je Modul), sonst 3375 PASS.
+  Geschnitten gelassen mit Begründung: kProgress, programs.ts-Klassifizierer, laneBranchRefs/
+  stacksOf, alle DOM-Blöcke (Report `c107ddef`). **Audit läuft** — Watch `192fef34` armiert
+  (stirbt mit meinem Slot; neu armieren: `{kind:audit, repo:<toplevel>, mainAfter:cc391b7…}`).
+- `bundleStale:false` (nach `bun run build`), Demo `typecheck` exit 0 + `build:live` exit 0 gegen
+  `cc391b7` (das schlichte `build` lehnt ohne FLEET_SITE_URL ab — by design). `graphify update .`
+  nach e319388 gelaufen; nach cc391b7 NICHT (Nachfolge: einmal laufen lassen).
 
 ## 2. Der Gate-Env-Regress (gemessen, gefixt, Klasse benannt)
 
-Land 3 (Kandidat 2cd51cf) wurde vom Controller-Deploy `b741d9de` (23:56, tmux-Hotfix) **mitten im
-Gate getötet** → `interrupted` (kein Verdikt; Notiz `4e29e778` vom Controller: Deploy-Preflight
-prüft nur den Audit, nicht laufende Merges). Land 4 (Kandidat ec5b6be) **rot**: 2 FAILs in
-claude-gate, beide `--model 'claude-fable-5-1[1m]'` statt des kompilierten
-`FLEET_DEFAULT_MODEL`. Kette: `.env:18 FLEET_MODEL` seit 21:50 · der 23:56-srv ist der erste,
-der es exportiert · ein Land-Gate ist srv-Kind · die Wrapper pinnten FLEET_CMD/HOST/PORT/SOCK,
-nie FLEET_MODEL · `server.ts#DEFAULT_MODEL` nimmt env vor Konstante. Gegen-Zeitachse: Hotfix-Land
-93d6cfa lief 23:37 unter dem ALTEN srv grün. **Fix `e319388`:** `FLEET_MODEL=` auf den drei
-claude-gate-Spawnzeilen + `e2e-isolated.sh` SRV_ENV (gleiche Klasse, Audit ist srv-Kind), Kommentar
-`fleet-e2e-claude-gate.ts:359` korrigiert. Beweis LOKAL: `FLEET_MODEL='claude-fable-5-1[1m]'
-./e2e-claude-gate.sh` im Lane-Worktree → 137 PASS / 0 FAIL. Kein `FLEET_EFFORT`-Knopf in server.ts.
-**Die Klasse** (Lane 8s Formulierung): eine Sonde, die eine Vorbedingung BEHAUPTET statt sie zu
-erzwingen — dieselbe wie „e2e/pins.ts liest package.json nicht" (helper.js-Drift). P6.
+Land 3 von P2a wurde vom Controller-Deploy `b741d9de` (23:56, tmux-Hotfix) **mitten im Gate
+getötet** → `interrupted` (Notiz `4e29e778` vom Controller: Deploy-Preflight prüft nur den Audit,
+nicht laufende Merges). Land 4 **rot**: 2 FAILs in claude-gate, beide `--model
+'claude-fable-5-1[1m]'` statt des kompilierten `FLEET_DEFAULT_MODEL`. Kette: `.env:18
+FLEET_MODEL` seit 21:50 · der 23:56-srv ist der erste, der es exportiert · ein Land-Gate ist
+srv-Kind · Wrapper pinnten FLEET_CMD/HOST/PORT/SOCK, nie FLEET_MODEL · `server.ts#DEFAULT_MODEL`
+nimmt env vor Konstante. Gegen-Zeitachse: Hotfix-Land 93d6cfa lief 23:37 unter dem ALTEN srv grün.
+**Fix in `e319388`:** `FLEET_MODEL=` auf den drei claude-gate-Spawnzeilen + `e2e-isolated.sh`
+SRV_ENV, Kommentar `fleet-e2e-claude-gate.ts:359`. Beweis LOKAL: `FLEET_MODEL='claude-fable-5-1[1m]'
+./e2e-claude-gate.sh` → 137 PASS / 0 FAIL. Kein `FLEET_EFFORT`-Knopf in server.ts. **Klasse:** eine
+Sonde, die eine Vorbedingung BEHAUPTET statt sie zu erzwingen — dieselbe wie „e2e/pins.ts liest
+package.json nicht" (helper.js-Drift, Lane 8s offene Zeile). P6.
 
 ## 3. In Flug — das Erste, was du tust
 
-1. **Audit-Watch `b1388b63`** auf `e319388` ist armiert (kind:audit) — Ergebnis kommt in die
-   Pane. Rot ⇒ Beweisordnung wie immer (erst denselben Baum seriell erneut), dann adjudizieren.
-2. **P2b `63a32ac2` läuft auf Slot 10** (`fleet/260901224739-b12c`, Fable 5.1 high — Datensatz
-   verifiziert). Brief ist vollständig (Ring 3.4, Blaupause src/backoff.ts, 13 Anker-Stellen);
-   Report kommt an die Program-MAIN. Landen: **`POST /api/self/tasks/63a32ac2/land`** — vorher
-   Pane lesen, Diff lesen, Verify-Tail zitiert sehen. **Merge-Watch-Falle:** siehe §4.1 — für ein
-   ZWEITES Land derselben Lane den Hintergrund-Watcher auf `fleet.json merges[<slot>].status`
-   nehmen (Muster: `scratchpad`-Loop dieser Session; terminal = merged|blocked|error|resolved|awaiting-author).
-3. **Deploy ausstehend:** `deployGap.codeBehind:true, behindCount 3` (P2a fasst server.ts an).
-   Abgesprochen mit dem 🎛 Controller (jetzt **Slot 2**): ICH deploye per Verb 2
-   (`POST /api/deploy`), sobald (a) mein Audit terminal ist UND (b) in dem Moment
-   `ps -eo command | grep -c '^/bin/sh ./e2e-'` = 0 — eine Zeile an Slot 2 ~1 min vorher; startet
-   sein Lane-A-Land vorher, dessen Verdikt abwarten. Er deployt nicht. Boot-Verdikt auf
-   `GET /api/deploys` lesen (`ok:null` ist NIE ein Pass).
-4. Danach nach Plan: P3 (Kommentar-Exkavation Kern, Build-Hash-Beweis) — erst Plan §P3 lesen,
-   Brief mit Dateien+Zeilenbereichen, Fable-Tripel.
+1. **Audit-Watch auf `cc391b7` neu armieren** (s. §1). Grün ⇒ Deploy; rot ⇒ Beweisordnung (erst
+   denselben Baum seriell), adjudizieren.
+2. **Deploy von `cc391b7` steht aus:** `deployGap.codeBehind:true, behindCount 1` (P2b fasst
+   server.ts an: `CLIENT_ONLY_FILES`). **Abgesprochen mit dem 🎛 Controller (Slot 2):** er landet
+   Lane A (Slot 5): Land LÄUFT seit 02:47 (`POST /api/slots/5/merge`, Gate hinter dem P2b-Audit
+   am Mutex) und er schickt das Verdikt als eine Zeile —
+   **kein Deploy, bevor diese Zeile da ist** (sein Gate ist srv-Kind und stürbe mit dem Restart).
+   Danach: Audit terminal UND kein srv-Kind-Wrapper aktiv (**Probe:** für jede
+   `/bin/sh ./e2e-*`-PID die ppid-Kette hochlaufen; trifft sie `bun server.ts`, Fenster zu — eine
+   Lane-VORSCHAU hängt unter ihrer Pane am tmux-Server pid 706, nicht unter srv, und blockiert
+   NICHT; der schlichte Zähler `grep -c '^/bin/sh ./e2e-'` überzeichnet) → eine Zeile an Slot 2
+   ~1 min vorher → `POST /api/deploy` → Boot-Verdikt auf `GET /api/deploys` (`ok:null` ist NIE
+   ein Pass) → `deployGap`/`bundleStale` auf `/api/sessions`.
+3. **Dann P3** (Kommentar-Exkavation Kern, Build-Hash-Beweis): Plan §P3 lesen
+   (`docs/sanierung-2026-09/plan-2026-08-31.md`), Brief mit Dateien+Zeilenbereichen, Fable-Tripel
+   `{harness:claude, model:claude-fable-5-1[1m], effort:high}`, `POST /api/self/tasks` (kind
+   auftrag) + `/release`; Master-Stop ist AN — der Tick startet nichts, Hand-Dispatch
+   `POST /api/tasks/<id>/dispatch` mit dem Tripel + `acknowledged:true` (so liefen P2a/P2b).
+   Jeder P3-Slice endet mit `bun e2e/pins.ts` im Haupt-Checkout (Program-Intent).
 
 ## 4. Befunde als Queue-Zeilen (kind notiz, P6)
 
-1. **`372b3cef`** — spent merge-Watch blockiert Re-Subscription derselben Lane
-   (`server.ts#handleSelfWatch`, Dup-Prädikat `(kind === "lane" ? w.armed : true)`); die von der
-   Land-Antwort empfohlene `watch {kind:merge}` ist für jede Wiederholung tot.
-2. **`563ec115`** — program-execution kennt den No-Progress-Guard der Self-Land-Tür nicht
-   (nennt die Land-Tür nach waitedOut, Route sagt 409).
+1. **`372b3cef`** — spent merge-Watch blockiert manuelle Re-Subscription derselben Lane
+   (`server.ts#handleSelfWatch`, Dup-Prädikat `(kind === "lane" ? w.armed : true)`).
+   **Datenpunkt dazu (nachgemessen):** die Self-Land-Tür armiert bei Annahme selbst einen
+   Merge-Watch für die MAIN (`2740c45a` lieferte Land 5s Terminal) — für Land 4 kam KEIN
+   Event (nur mein fleet.json-Watcher sah das Rot). Ob die Tür am Dup vorbeikommt oder Land 4
+   anders lief: offen, gehört in die P6-Zeile. Workaround bleibt der Hintergrund-Watcher auf
+   `fleet.json merges[<slot>].status` (Terminal = merged|blocked|error|resolved|awaiting-author;
+   Muster in dieser Session: Land-Loop bis `running:true`, dann Marker folgen).
+2. **`563ec115`** — program-execution kennt den No-Progress-Guard der Self-Land-Tür nicht.
 3. Controller: **`4e29e778`** — Deploy-Preflight sieht laufende Merges nicht.
 4. Nicht gefilet, im Commit-Body von e319388: die Gate-Env-Klasse (§2).
 
 ## 5. Ehrlichkeiten
 
-- Flake-Sichtung (Lane 8, 1 von 3 Läufen, Phase 2 claude-gate): `FAIL dead foreign agent:
-  lastResult reports the skip (missing)` — auf identischem Baum zweimal grün ⇒ nicht-deterministisch,
-  keine registrierte Familie. Nur Datenpunkt.
-- Das Land lief GEGEN die done-looking-Regel dreimal ins Leere, weil Lane 8 nach dem roten
-  Verdikt selbst zu messen begann (Pane nicht 3 s still); Lösung war ein `/send` („Fix ist meiner,
-  Report, dann idle") + Retry-Loop. Eine Lane, die ein rotes Verdikt bekommt, fängt an zu reparieren
-  — das ist Design, kostet aber die MAIN ein Fenster.
-- Ich habe zwischendurch „srv-Tod" geschrieben — falsch, beide Restarts (21:42, 23:56) waren Deploys.
-- Watches sterben mit meinem Slot: armiert nur `b1388b63` (Audit). Neu armieren.
-- ctx bei Handoff-Entwurf: **20,7 % gemessen** (206 755/1 000 000).
+- Flake-Sichtung (Lane 8, 1/3 Läufe, Phase 2 claude-gate): `FAIL dead foreign agent: lastResult
+  reports the skip (missing)` — identischer Baum zweimal grün ⇒ nicht-deterministisch, keine
+  registrierte Familie. Datenpunkt.
+- Das Land lief dreimal gegen done-looking ins Leere, weil Lane 8 nach dem roten Verdikt selbst
+  zu messen begann (Pane nicht 3 s still); Lösung: `/send` („Fix ist meiner, Report, dann idle") +
+  Retry-Loop. Eine Lane, die ein rotes Verdikt bekommt, fängt an zu reparieren — Design, kostet
+  die MAIN aber ein Fenster. Bei P2b dasselbe Muster ohne Rot: done-looking feuerte zweimal auf
+  eine Pane, die nur wartete (Suite im Hintergrund-Shell) — der Report war das echte Signal.
+- Ich schrieb zwischendurch „srv-Tod" — falsch, beide Restarts (21:42, 23:56) waren Deploys.
+- Die Deploy-Vorwarnung an den Controller lief einmal ins Leere, weil mein Fenster-Zähler P2bs
+  eigene Vorschau als Blocker las → daher die ppid-Probe in §3.2.
+- Direkt-Commits dieser Session: `134ebc1` und dieser Handoff (docs-only, Hand-Verify
+  `bun e2e/pins.ts` ALL PASS je Commit). Beide sind für die Land-Ledger unsichtbar.
+- Watches sterben mit meinem Slot: armiert nur `192fef34` (Audit cc391b7). Neu armieren.
+- ctx bei der Übergabe-Entscheidung: **24,9 % gemessen** (248 956/1 000 000). Restkette:
+  Handoff committen + succeed.
 
 ---
 

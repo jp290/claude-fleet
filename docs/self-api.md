@@ -801,6 +801,46 @@ unterscheidbar, weil sie den Aufrufer an verschiedene Stellen schicken):
     ABLEHNUNG, und die Ablehnung NENNT die Sprosse, die sie nähme (`guarded`). Unter `guarded`
     greift stattdessen die bestätigte Konflikt-Bestätigung unten.
 
+### Das verlorene Fast-Forward: `errorReason: "ff-lost"` (Sprosse 10, die Ausnahme)
+
+**Gemessen 2026-09-02, 06:09–07:20 CEST** (Programm `66499a03`, MAIN Slot 4, Lane Slot 8): ein
+Self-Land rebaste sauber, das Gate lief GRÜN (110 s Arbeit nach 1838 s Wartezeit am Suite-Mutex),
+und dann verweigerte `git merge --ff-only` das Vorspulen, weil inzwischen ein reiner Docs-Commit
+auf main gelandet war. `mergeJob` schreibt dafür `status:"error"`, `"error"` steht in
+`MERGE_BLOCKING` — und ab da war die Lane **strukturell nie wieder `done-looking`**: der
+lane-ready-Watch konnte nicht feuern, und Sprosse 10 antwortete auf JEDEN weiteren Aufruf
+`the lane is not done-looking (no signal)`. Der Owner musste landen; Schritt 5 des Programms war
+still zu einem Owner-Land degradiert.
+
+Seit 2026-09-03 trägt genau dieses Verdikt eine **getypte, geschlossene** Zusatzangabe:
+
+```
+{"status":"error","landed":false,"errorReason":"ff-lost","verify":{"ok":true,…},
+ "detail":"rebase ok, but fast-forwarding main failed: … — lane kept"}
+```
+
+- **Das Enum ist geschlossen und hat heute GENAU EINEN Wert:** `ff-lost`
+  (`lane-signals.ts#MERGE_ERROR_REASONS`). Es wird an EINER Stelle geschrieben — dem sauberen
+  Land-Zweig in `mergeJob`, den ein rotes, übersprungenes oder abgelaufenes Verify und jeder
+  Konflikt gar nicht erst erreichen. `detail` bleibt Prosa und wird **nie geparst**: eine
+  umformulierte Prosa-Zeile hätte die Lane sonst still wieder blockiert.
+- **Nur dieser eine Fakt hebt die Blockade auf** (`lane-signals.ts#mergeBlocksLane`): die Klausel
+  „no blocked/errored merge (a lost fast-forward is not one)" der drei Prädikate testet POSITIV
+  gegen das PAAR `status === "error"` UND `errorReason === "ff-lost"` — nie gegen den Grund allein.
+  Ein `blocked` (auch eines, das den Grund trägt), ein `error` aus einem geworfenen Merge-Lauf, ein
+  rotes Verify, ein ungelöster Konflikt, ein **abwesender** oder unbekannter `errorReason` — alle
+  blockieren unverändert. Abwesend heißt UNKNOWN, nie „war wohl ein Rennen".
+- **Der Loader validiert ihn** (`server.ts#withValidErrorReason`): ein persistierter Wert
+  überlebt den Neustart nur, wenn er im Enum steht UND auf einem `error`-Verdikt sitzt; sonst wird
+  das FELD fallengelassen (nicht die Zeile) und die Lane blockiert wieder.
+- **Wirkung:** die Lane ist wieder `done-looking`, sobald sie lebendig, idle, sauber und ahead ist;
+  der lane-ready-Watch feuert einmal; die Projektion bleibt `REVIEWABLE` und ihr `nextAction`
+  benennt weiterhin diese Tür. Ein erneutes `POST /api/self/tasks/:id/land` rebast auf das
+  BEWEGTE main, fährt **das volle Gate erneut** und spult vor. Der Progress-Guard (Sprosse 9) ist
+  davon unberührt: er greift über `candidateSha`, und ein `error`-Verdikt trägt keinen (nur
+  reviewable Verdikte binden die Kandidaten-Identität) — ein rotes Verify oder eine geblockte
+  Auflösung auf demselben Kandidaten wird also weiterhin als `no progress` abgelehnt.
+
 ### Die Identität ist sichtbar, bevor die Tür sie prüft (V1a)
 
 Sprosse 2 oben ist die einzige, die eine Session **an ihrer Identität** abweist — und genau dieser

@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, post, restartSrv, tmuxOut } from "./harness";
 import { phaseOf, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
-import type { LaneSignalView } from "../lane-signals";
+import { laneDoneLooking, type LaneSignalView } from "../lane-signals";
 import { setMergeMode } from "./lane-helpers";
 import type { Ctx } from "./ctx";
 
@@ -64,6 +64,9 @@ interface FleetState {
   watches?: Record<string, unknown>[];
   events?: Record<string, unknown>[];
   stewardToken?: string;
+  // the persisted merge verdicts, keyed by slot id — the ff-lost fixture forges `errorReason` here
+  // to prove the loader validates it rather than trusting the file
+  merges?: Record<string, { status?: string; landed?: boolean; errorReason?: string }>;
   slots?: Record<string, { cwd?: string; label?: string | null; selfToken?: string; openedAt?: number; sessionId?: string | null;
     harness?: string | null; model?: string | null; effort?: string | null; successionRetirement?: unknown;
     taskId?: string | null; originId?: string | null; programId?: string | null }>;
@@ -6052,6 +6055,226 @@ export async function run(ctx: Ctx): Promise<void> {
     for (const slot of [pmForeignSlot, pmMainSlot]) if (slot !== null) await post(`/api/slots/${slot}/kill`, {});
     await programPost(pmForeignProgram.id, "complete");
     await programPost(pmProgram.id, "complete");
+
+    // --- (8) THE LOST FAST-FORWARD. The land that rebased cleanly, verified GREEN, and then lost
+    // the LAST step because main moved underneath it. Measured live on 2026-09-02 06:09-07:20 CEST
+    // (program 66499a03, MAIN slot 4, lane slot 8 / fleet/260902022518-0bf1): verify.ok true after
+    // 110 s of work, `mergeLast` became `{status:"error", landed:false, detail:"rebase ok, but
+    // fast-forwarding main failed: … fatal: Not possible to fast-forward, aborting. — lane kept"}`,
+    // and from that moment the lane was STRUCTURALLY unreachable for its own MAIN: "error" is
+    // MERGE_BLOCKING, so done-looking could never hold again, the lane-ready watch could not fire,
+    // and clause (11) answered every retry `the lane is not done-looking (no signal)`. The owner
+    // landed it. Step 5 of that Program had silently degraded to owner-land.
+    //
+    // FOUR THINGS ARE PROVED HERE, and the third is the one that makes the other three mean
+    // something: (a) the typed fact is minted and survives a restart, (b) with it the lane is
+    // done-looking again, the lane-ready watch fires and the door RE-LANDS, (c) forging the field
+    // to a value outside the enum drops it at the loader and puts the lane straight back in the
+    // 2026-09-02 state — the causal link, asserted rather than argued, and (d) no other blocking
+    // shape moved.
+
+    // (8a) THE OTHER SHAPES, over the predicate ITSELF rather than through a lane. A blocked
+    // resolution, an error with no reason, an error with a reason outside the enum and a red
+    // verify's `resolved` verdict are four DIFFERENT states, and the exemption must reach exactly
+    // one of them. Pure, so it is a statement about the rule and not about one afternoon's timing.
+    const ffBase: LaneSignalView = { alive: true, idleMs: 10_000, git: { dirty: 0, ahead: 1 },
+      gitOp: false, merge: null, observed: true, awaiting: null, hostCommits: false };
+    const ffLooks = (merge: LaneSignalView["merge"]): boolean =>
+      laneDoneLooking({ ...ffBase, merge }, 3000);
+    check("done-looking: ONLY the typed lost fast-forward is exempted — blocked, a bare error, a foreign reason and a red verify's verdict are untouched",
+      ffLooks({ status: "error", errorReason: "ff-lost" }) === true
+        && ffLooks({ status: "error" }) === false
+        && ffLooks({ status: "error", errorReason: "main-moved" as never }) === false
+        && ffLooks({ status: "blocked" }) === false
+        && ffLooks({ status: "blocked", errorReason: "ff-lost" }) === false
+        && ffLooks({ status: "resolved" }) === true
+        && ffLooks(null) === true,
+      JSON.stringify({ ffLost: ffLooks({ status: "error", errorReason: "ff-lost" }),
+        bareError: ffLooks({ status: "error" }),
+        foreign: ffLooks({ status: "error", errorReason: "main-moved" as never }),
+        blocked: ffLooks({ status: "blocked" }),
+        blockedWithReason: ffLooks({ status: "blocked", errorReason: "ff-lost" }) }));
+
+    // (8b) THE RACE, made deterministic. FLEET_TEST_LAND_FF_LATCH is the product's own TEST-ONLY
+    // knob (the shape the Game-Maker open latch uses) and it stops the merge job at the ONE await
+    // boundary no external probe can hit by timing: after the land is declared, before
+    // `git merge --ff-only`. The suite plants a commit on main inside that window — the docs-only
+    // commit of the real incident, by another name.
+    const ffLatch = `${ROOT}/ffland.latch`;
+    const ffLatchReached = `${ffLatch}.reached`;
+    const ffLatchRelease = `${ffLatch}.release`;
+    for (const f of [ffLatch, ffLatchReached, ffLatchRelease]) try { rmSync(f); } catch { /* absent */ }
+    writeFileSync(ffLatch, "armed\n", { mode: 0o600 });
+    await restartSrv({ FLEET_TEST_LAND_FF_LATCH: ffLatch });
+
+    const ffProgram = await activateNewProgram("Self-land lost fast-forward");
+    const ffBoot = await beginBootstrap(ffProgram.id, { cwd: REPO2, label: "selfland-fflost-main" });
+    const ffBootBody = await ffBoot.json() as { slot?: number; error?: string };
+    const ffMainSlot = ffBootBody.slot ?? null;
+    const ffMainState = ffMainSlot === null ? undefined : readState().slots?.[String(ffMainSlot)];
+    const ffTok = ffMainState?.selfToken ?? "";
+    if (ffMainSlot !== null) landFixtureMains.push(ffMainSlot);
+    await setPromotion(ffProgram.id, { v: 1, selfLand: "green-only" });
+    const ffRowId = await makeTask({ text: "self-land lost-ff row", programId: ffProgram.id, repo: REPO2 });
+    const ffLane = await conflictLane(ffRowId); // dispatch + read the lane's slot/cwd/branch
+    if (ffLane.cwd) {
+      writeFileSync(`${ffLane.cwd}/selfland-fflost.txt`, "work whose fast-forward is lost to a race\n");
+      spawnSync("git", ["-C", ffLane.cwd, "add", "selfland-fflost.txt"]);
+      spawnSync("git", ["-C", ffLane.cwd, "commit", "-qm", "selfland lost-ff work"]);
+    }
+    const ffReady = ffLane.slot === null ? false : await waitDoneLooking(ffLane.slot);
+    // REPO2's own tree must be clean before this starts, and the probe says so under its OWN name:
+    // `git merge --ff-only` runs in the checkout that HOLDS main, and a dirty tree there would make
+    // both the lost ff and the re-land fail for a reason that has nothing to do with the rule.
+    const ffRepoDirty = spawnSync("git", ["-C", REPO2, "status", "--porcelain"]).stdout.toString().trim();
+    check("lost-ff fixture: a bound MAIN with a green-only promotion owns a live lane that is idle, clean and ahead, and REPO2's main checkout is clean",
+      ffBoot.ok && ffMainSlot !== null && /^[0-9a-f]{32}$/.test(ffTok)
+        && ffLane.slot !== null && !!ffLane.cwd && ffLane.branch !== "" && ffReady && ffRepoDirty === "",
+      JSON.stringify({ boot: ffBoot.status, main: ffMainSlot, lane: ffLane.slot, ready: ffReady,
+        repoDirty: ffRepoDirty.slice(0, 200) }));
+
+    const ffMainBefore = main2Of();
+    const ffFirst = await selfLand(ffTok, ffRowId);
+    // the job runs to the latch; only then does the intruder land, so "main moved between the
+    // verify and the fast-forward" is a FACT of this run rather than a hope about scheduling
+    let ffReachedLatch = false;
+    for (let i = 0; i < 400 && !ffReachedLatch; i++) {
+      ffReachedLatch = existsSync(ffLatchReached);
+      if (!ffReachedLatch) await Bun.sleep(100);
+    }
+    writeFileSync(`${REPO2}/ff-intruder.txt`, "a docs-only commit that landed first\n");
+    spawnSync("git", ["-C", REPO2, "add", "ff-intruder.txt"]);
+    spawnSync("git", ["-C", REPO2, "commit", "-qm", "intruder landed on main first"]);
+    const ffIntruder = main2Of();
+    writeFileSync(ffLatchRelease, "go\n", { mode: 0o600 });
+
+    type FfVerdict = { status?: string; landed?: boolean; errorReason?: string; detail?: string;
+      candidateSha?: string; verify?: { ok?: boolean | null } };
+    const ffSettled = async (ms = 90_000): Promise<FfVerdict | null> => {
+      const deadline = Date.now() + ms;
+      for (;;) {
+        const mg = (await (await get(`/api/slots/${ffLane.slot}/merge`)).json()) as
+          { running?: boolean; last?: FfVerdict | null };
+        if (mg.running === false && mg.last) return mg.last;
+        if (Date.now() >= deadline) return null;
+        await Bun.sleep(150);
+      }
+    };
+    const ffVerdict = await ffSettled();
+    check("(a) lost fast-forward: a clean rebase + GREEN verify that loses the ff leaves status 'error' with the TYPED reason 'ff-lost', the verify verdict it carried, and prose in `detail`",
+      ffFirst.ok && ffReachedLatch && ffIntruder !== ffMainBefore
+        && ffVerdict?.status === "error" && ffVerdict.landed === false
+        && ffVerdict.errorReason === "ff-lost" && ffVerdict.verify?.ok === true
+        && (ffVerdict.detail ?? "").includes("fast-forwarding")
+        && main2Of() === ffIntruder,
+      JSON.stringify({ first: ffFirst.status, reached: ffReachedLatch, verdict: ffVerdict,
+        before: ffMainBefore.slice(0, 8), intruder: ffIntruder.slice(0, 8), now: main2Of().slice(0, 8) }));
+
+    // the latch is spent — everything below is an ordinary server, and the ff must now succeed
+    // the server is stopped BEFORE the file is touched, or its next tick would overwrite the forgery
+    // with the map it is holding. Returns whether the persisted row was actually found, so a patch
+    // that reached nothing fails as ITSELF instead of reading as "the loader dropped it".
+    const ffPatchReason = async (value: string): Promise<boolean> => {
+      await tmuxOut("kill-session", "-t", "srv");
+      await Bun.sleep(500);
+      const st = readState();
+      const row = ffLane.slot === null ? undefined : st.merges?.[String(ffLane.slot)];
+      if (row) row.errorReason = value;
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
+      await restartSrv();
+      return !!row;
+    };
+    const ffMergeNow = async (): Promise<FfVerdict | null> =>
+      ((await (await get(`/api/slots/${ffLane.slot}/merge`)).json()) as { last?: FfVerdict | null }).last ?? null;
+    const ffDoorText = async (): Promise<{ status: number; text: string }> => {
+      const r = await selfLand(ffTok, ffRowId);
+      return { status: r.status, text: await r.text() };
+    };
+
+    // (8c) THE COUNTER-PROOF, and it is the causal link rather than an argument: forge the field to
+    // a value the enum does not contain. The loader must DROP it (absent is unknown, and unknown
+    // blocks), which puts this lane back in exactly the 2026-09-02 state — not done-looking, and
+    // the door refusing with the sentence the incident quoted.
+    const ffForgedPlanted = await ffPatchReason("main-moved");
+    const ffForged = await ffMergeNow();
+    const ffForgedReady = ffLane.slot === null ? false : await waitDoneLooking(ffLane.slot);
+    const ffForgedDoor = await ffDoorText();
+    check("(c) loader validation: a reason outside the closed enum is DROPPED at boot, the lane is not done-looking, and the door refuses in the incident's own words",
+      ffForgedPlanted && ffForged?.status === "error" && ffForged.errorReason === undefined
+        && ffForgedReady && ffForgedDoor.status === 409
+        && ffForgedDoor.text.includes("the lane is not done-looking (no signal)"),
+      JSON.stringify({ planted: ffForgedPlanted, verdict: ffForged, gitReady: ffForgedReady,
+        door: ffForgedDoor.status, text: ffForgedDoor.text.slice(0, 160) }));
+
+    // (8d) …and with the valid fact restored, the SAME lane, the SAME bytes and the SAME door.
+    // The restart is also the hydration proof: the field crosses a boot.
+    const ffRestoredPlanted = await ffPatchReason("ff-lost");
+    const ffHydrated = await ffMergeNow();
+    const ffRestoredReady = ffLane.slot === null ? false : await waitDoneLooking(ffLane.slot);
+    // the lane-ready watch: armed by the MAIN itself, on its own lane, and it can only fire if the
+    // server's predicate holds — the watch tick reads laneWatchSignal and nothing else
+    const ffWatchRes = await fetch(`${BASE}/api/self/watch`, {
+      method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": ffTok },
+      body: JSON.stringify({ target: ffLane.slot, idleSec: 0 }), // kind defaults to "lane"
+    });
+    const ffWatchBody = await ffWatchRes.json() as { watch?: { id: string; armed: boolean }; error?: string };
+    // JOINED ON THE WATCH ID, never on the slot number: slot ids are recycled all through this
+    // module and one section even PLANTS a lane-ready row, so a slot-keyed count would fold a
+    // stranger's event into "fired exactly once".
+    type FfEvent = { id: string; watchId: string | null; kind: string; subjectSlot: number };
+    const ffWatchId = ffWatchBody.watch?.id ?? "";
+    const ffLaneEvents = async (): Promise<FfEvent[]> =>
+      ((await (await get("/api/sessions")).json()) as { events: FfEvent[] }).events
+        .filter((e) => e.watchId === ffWatchId && ffWatchId !== "");
+    let ffEvents = await ffLaneEvents();
+    for (let i = 0; i < 200 && ffEvents.length === 0; i++) {
+      await Bun.sleep(150);
+      ffEvents = await ffLaneEvents();
+    }
+    check("(b) the typed fact re-arms the predicate: the verdict hydrates across the restart and the MAIN's lane-ready watch fires EXACTLY ONCE on its own lane",
+      ffRestoredPlanted && ffHydrated?.status === "error" && ffHydrated.errorReason === "ff-lost"
+        && ffRestoredReady && ffWatchRes.ok && ffWatchBody.watch?.armed === true
+        && ffEvents.length === 1 && ffEvents[0]?.kind === "lane-ready"
+        && ffEvents[0].subjectSlot === ffLane.slot,
+      JSON.stringify({ verdict: ffHydrated, ready: ffRestoredReady, watch: ffWatchBody,
+        events: ffEvents }));
+
+    // the projection agrees with the door instead of contradicting it: REVIEWABLE, and its pointer
+    // names THIS MAIN's own land route — the state the incident's MAIN was shown while every call
+    // to that exact route was refused
+    const ffProjected = (await selfExecution(ffTok)).view?.programs
+      .find((row) => row.program.id === ffProgram.id)?.tasks.rows.find((row) => row.id === ffRowId);
+    check("(b) the projection points at the door that now works: REVIEWABLE, nextAction naming this MAIN's own land route",
+      ffProjected?.phase === "REVIEWABLE"
+        && ffProjected.nextAction === `inspect the diff, then land it yourself → POST /api/self/tasks/${ffRowId}/land`,
+      JSON.stringify({ phase: ffProjected?.phase, basis: ffProjected?.phaseBasis,
+        next: ffProjected?.nextAction }));
+
+    // THE ACT ITSELF: the same row, re-landed by its own MAIN onto the MOVED main. The merge job
+    // rebases again and runs the FULL gate again — nothing here is a shortcut around either.
+    const ffRelandBefore = main2Of();
+    const ffReland = await selfLand(ffTok, ffRowId);
+    const ffRelandBody = await ffReland.json() as { running?: boolean; candidate?: string; error?: string };
+    let ffRow = await slRow(ffRowId);
+    for (let i = 0; i < 400 && ffRow?.status !== "done"; i++) {
+      await Bun.sleep(250);
+      ffRow = await slRow(ffRowId);
+    }
+    const ffRelandAfter = main2Of();
+    const ffLog = spawnSync("git", ["-C", REPO2, "log", "--oneline", "-4"]).stdout.toString();
+    check("(b) THE RE-LAND: after a lost fast-forward the bound MAIN lands its own lane itself — main moves past the intruder onto the lane's work",
+      ffReland.ok && ffRelandBody.running === true && ffRow?.status === "done"
+        && ffRelandBefore === ffIntruder && ffRelandAfter !== ffRelandBefore
+        && ffLog.includes("selfland lost-ff work") && ffLog.includes("intruder landed on main first"),
+      JSON.stringify({ reland: ffReland.status, body: ffRelandBody, row: ffRow?.status,
+        before: ffRelandBefore.slice(0, 8), after: ffRelandAfter.slice(0, 8),
+        log: ffLog.split("\n").slice(0, 4) }));
+    for (const f of [ffLatch, ffLatchReached, ffLatchRelease]) try { rmSync(f); } catch { /* spent */ }
+    await post(`/api/tasks/${ffRowId}/done`, {});
+    await post(`/api/tasks/${ffRowId}/delete`, {});
+    if (ffMainSlot !== null) await post(`/api/slots/${ffMainSlot}/kill`, {});
+    await setPromotion(ffProgram.id, null);
+    await programPost(ffProgram.id, "complete");
 
     for (const slot of [redLaneSlot, greenLaneSlot, cfLane.slot, cf2Lane.slot, suspectLane.slot,
       cookieLane.slot, landMainSlot, ladderSlot]) if (slot !== null) await post(`/api/slots/${slot}/kill`, {});

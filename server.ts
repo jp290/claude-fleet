@@ -12,7 +12,8 @@ import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessa
   type AuditWatchEventPayload, type DeployWatchEventPayload,
   commandJobWatchMessage, type CommandJobWatchEventPayload, type CommandJobArtifactPayload,
   type ClarificationBasis,
-  laneQuietSince, DONE_LOOKING_PROSE, laneStalled, laneStalledSince, STALLED_PROSE } from "./lane-signals";
+  laneQuietSince, DONE_LOOKING_PROSE, laneStalled, laneStalledSince, STALLED_PROSE,
+  MERGE_ERROR_REASONS, type MergeErrorReason } from "./lane-signals";
 import { phaseOf, type Phase, type PhaseInput, type PhaseOutcomeFacts } from "./program-phase";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { buildAnalysisPrompt, ANALYSIS_BLOCKERS } from "./analysis-prompt";
@@ -10937,6 +10938,21 @@ async function waitForGameMakerOpenTestLatch(permit: GameMakerTreeLease | null):
   }
   throw new Error("game-maker E2E open latch timed out before release");
 }
+// TEST-ONLY and absent in every real deployment. The lost fast-forward is a RACE: main moves
+// between the green verify and `git merge --ff-only`, and that window is a few milliseconds of
+// real code no external probe can hit by timing. This file widens exactly that cut so a suite can
+// plant a commit on main inside it deterministically. Armed/reached/release files, one bounded
+// latch, no runtime state and no API — the same shape the two latches beside it use.
+const LAND_FF_LATCH = process.env.FLEET_TEST_LAND_FF_LATCH ?? null;
+async function waitForLandFfTestLatch(): Promise<void> {
+  if (LAND_FF_LATCH === null || !existsSync(LAND_FF_LATCH)) return;
+  writeFileSync(`${LAND_FF_LATCH}.reached`, `${Date.now()}\n`, { mode: 0o600 });
+  for (let waited = 0; waited < 30_000; waited += 10) {
+    if (existsSync(`${LAND_FF_LATCH}.release`)) return;
+    await Bun.sleep(10);
+  }
+  throw new Error("land ff E2E latch timed out before release");
+}
 // TEST-ONLY, absent in production. Succession has two authority cuts that cannot be reached from an
 // external probe by timing: after its target is open and after its founding receipt is durable. The
 // files widen only those cuts so E2E can revoke the predecessor between them and the next mutation.
@@ -11319,6 +11335,15 @@ interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "int
   // set when main WAS advanced (the land is recorded — note + undo) but the lane teardown
   // failed afterwards; distinct from `detail` so "landed but not torn down" is machine-readable
   landError?: string;
+  // WHY an "error" verdict happened, where the answer changes what the LANE is rather than only
+  // what the reader should know. Today exactly one value, and it is a closed enum for that reason:
+  // "ff-lost" — the rebase was clean, the gate authorised the land, and `git merge --ff-only` was
+  // refused because main moved underneath it (see lane-signals.ts#mergeBlocksLane for the incident
+  // and for why that ONE error stops blocking done-looking). `detail` above stays prose and is
+  // never parsed; this is its machine-readable half, and it is written ONLY at a site that has
+  // already passed the gate. Absent is UNKNOWN and blocks exactly as every error always has —
+  // including on a row persisted by an older server, which by construction has none.
+  errorReason?: MergeErrorReason;
   // how many bounded resolver↔verify repair rounds ran (conflict path only) before this verdict
   // settled. >0 means the resolution's first verify was RED and the resolver was fed the failure
   // to repair; `verify` above is the FINAL (post-repair) result. Absent/0 = no repair was needed.
@@ -11355,6 +11380,19 @@ const mergeParked = new Map<string, MergeLast>();
 // the slot is about to be someone else; a KILL only lifts the reviewable shapes into the park
 // and leaves merged/blocked/error in place, exactly as killSlot always has (the board may still
 // be telling the owner how the lane ended).
+// A persisted `errorReason` is the ONE field on this record that can make a lane done-looking
+// again, so a torn, forged or future value must not survive a boot. Validated in the positive
+// direction like everything else here: the value must be in the closed enum AND sit on an "error"
+// verdict. Anything else DROPS the field rather than coercing it — absent is unknown, and unknown
+// blocks. (A whole row is not rejected for it: the verdict itself is still the truth about that
+// lane, and dropping the exemption is the conservative half.)
+function withValidErrorReason(row: MergeLast): MergeLast {
+  if (row.errorReason === undefined) return row;
+  if (row.status === "error" && MERGE_ERROR_REASONS.includes(row.errorReason)) return row;
+  const { errorReason: _errorReason, ...rest } = row;
+  return rest;
+}
+
 function parkMergeVerdict(slotId: number, clearAll: boolean): void {
   const m = mergeLast.get(slotId);
   const reviewable = !!m && (m.status === "resolved" || m.status === "awaiting-author"
@@ -16179,10 +16217,18 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             // restart in the advance→record window is finishable at boot instead of unrecoverable
             const prov: LandProvenance = { verify, confirmedByHuman: false, actor };
             await markLandIntent(root, main, branch, mainBefore, (await git(root, "rev-parse", branch)).out, prov);
+            await waitForLandFfTestLatch(); // TEST-ONLY, inert in production (see LAND_FF_LATCH)
             const adv = await advanceIntegration(root, main, branch);
             if (adv) {
               clearLandIntent(root); // main never moved — the declaration is void, not pending
+              // THE LOST FAST-FORWARD, and the one place the typed reason is written on the
+              // clean path. Reachable only from this branch, i.e. only after the rebase was clean
+              // AND the gate said green or the fleet configured none — so the fact cannot be
+              // minted by a red verify, a skip, a timeout or a conflict, which are all routed to
+              // their own `resolved` verdicts far above. `verify` rides along unchanged: the
+              // verdict it carried is what makes this an interrupted land rather than a bad tree.
               res = { status: "error", landed: false, branch, at: Date.now(), verify,
+                errorReason: "ff-lost",
                 detail: `rebase ok, but fast-forwarding ${main} failed: ${adv.error} — lane kept` };
             } else {
               const mainAfter = (await git(root, "rev-parse", main)).out;
@@ -18684,7 +18730,7 @@ if (existsSync(STATE_FILE)) {
             && /^[0-9a-f]{40,64}$/.test(row.candidateSha ?? "")
             && /^[0-9a-f]{40,64}$/.test(row.diffHash ?? "");
           const { mainSha: _mainSha, candidateSha: _candidateSha, diffHash: _diffHash, ...legacy } = row;
-          mergeLast.set(s.id, identityComplete ? row : legacy as MergeLast);
+          mergeLast.set(s.id, withValidErrorReason(identityComplete ? row : legacy as MergeLast));
         }
       }
     // ...and the branch-keyed park (parkMergeVerdict): only reviewable shapes, and the key must
@@ -18700,7 +18746,7 @@ if (existsSync(STATE_FILE)) {
             && /^[0-9a-f]{40,64}$/.test(row.candidateSha ?? "")
             && /^[0-9a-f]{40,64}$/.test(row.diffHash ?? "");
           const { mainSha: _mainSha, candidateSha: _candidateSha, diffHash: _diffHash, ...legacy } = row;
-          mergeParked.set(b, identityComplete ? row : legacy as MergeLast);
+          mergeParked.set(b, withValidErrorReason(identityComplete ? row : legacy as MergeLast));
         }
     const psh = (persisted as { shelved?: unknown }).shelved;
     if (typeof psh === "object" && psh !== null && !Array.isArray(psh))
@@ -19311,9 +19357,14 @@ async function readStewardJournal(tail: number, kind?: string, ref?: string): Pr
 // to the steward's SENSES so the pulse reasons from them instead of re-inferring in the LLM.
 // `alive`/`gitOp` come from the ~10s tickGit caches — READS ONLY; every delivery/dispatch gate
 // (canDeliver) keeps its FRESH claudeAlive call, a stale cache must never gate a send.
-function stewardMergeView(slotId: number): { status: string; detail: string; conflicted: string[]; at: number } | null {
+// `errorReason` rides along because the done-looking predicate reads THIS view (laneSignalView),
+// and it is the field that tells a lost fast-forward from every other error. Present only where
+// the verdict has one, so the board's existing merge row is byte-identical for every other status.
+function stewardMergeView(slotId: number): { status: string; detail: string; conflicted: string[];
+  at: number; errorReason?: MergeErrorReason } | null {
   const m = mergeLast.get(slotId);
-  return m ? { status: m.status, detail: m.detail, conflicted: m.conflicted ?? [], at: m.at } : null;
+  return m ? { status: m.status, detail: m.detail, conflicted: m.conflicted ?? [], at: m.at,
+    ...(m.errorReason ? { errorReason: m.errorReason } : {}) } : null;
 }
 // The lane's founding intent: the Task that is RUNNING in this slot right now.
 //

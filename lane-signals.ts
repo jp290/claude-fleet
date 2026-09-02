@@ -19,7 +19,7 @@ export interface LaneSignalView {
   idleMs: number | null;
   git: { dirty: number; ahead: number } | null;
   gitOp: boolean | null;
-  merge: { status: string } | null;
+  merge: { status: string; errorReason?: MergeErrorReason } | null;
   // has this pane's output ever been observed? `idleMs` is derived from Slot.lastOutput, which is 0
   // until the poll sees a first byte — and 0 yields a NUMBER (~1.79e12 ms), not a null. done-looking
   // survives that by other means; `stalled` cannot (see STALLED_RULES).
@@ -35,6 +35,41 @@ export interface LaneSignalView {
 // a merge the owner has to look at is not a lane that finished its work
 const MERGE_BLOCKING = ["blocked", "error"];
 
+// --- THE ONE ERROR THAT IS NOT A VERDICT ABOUT THE TREE.
+//
+// Measured 2026-09-02 06:09-07:20 CEST (program 66499a03, MAIN slot 4, lane slot 8): a guarded
+// self-land rebased cleanly, the gate ran GREEN (110 s of work after 1838 s behind the suite
+// mutex), and then `git merge --ff-only` was refused because a docs-only commit had landed on main
+// meanwhile. mergeJob writes that as `status: "error"`, "error" is MERGE_BLOCKING, and from that
+// moment the lane could never be done-looking again: the lane-ready watch could not fire, and
+// clause (11) of the self-land door answered every retry `the lane is not done-looking (no
+// signal)` — with and without `{"confirm":true}`, and after main had moved a second time. The
+// owner had to land it. Step 5 of that Program silently degraded to owner-land.
+//
+// The sentence above is TRUE for a blocked resolution, a red verify and a conflict the resolver
+// could not settle: something in that tree needs eyes. It is FALSE here. Nothing needs looking at
+// — the tree passed its own gate, the land was authorised, and the only thing that happened is
+// that somebody else's commit arrived first. So this ONE fact is exempted.
+//
+// It is exempted as a TYPED fact and never by reading `detail`. `detail` is prose written for a
+// human ("rebase ok, but fast-forwarding main failed: …"), and a predicate that parsed it would
+// re-block the lane silently the day that sentence is reworded. The test is POSITIVE over a closed
+// enum, in the same direction every clause in this file argues for: an absent, unknown or legacy
+// `errorReason` is UNKNOWN and blocks exactly as every error always has. Widening this list is
+// therefore a deliberate act per value, never a side effect.
+export type MergeErrorReason = "ff-lost";
+export const MERGE_ERROR_REASONS: readonly MergeErrorReason[] = ["ff-lost"];
+
+export function mergeBlocksLane(m: LaneSignalView["merge"]): boolean {
+  if (!MERGE_BLOCKING.includes(m?.status ?? "")) return false;
+  // THE PAIR, not the reason alone. A first cut tested only `errorReason` and thereby exempted a
+  // `blocked` row that happened to carry it — caught by this slice's own predicate check before it
+  // ever reached a lane. `blocked` is a merge the owner must look at whatever any persisted row
+  // claims about it, and the loader (server.ts#withValidErrorReason) validates the SAME pair, so
+  // the two halves cannot disagree about which shape the exemption belongs to.
+  return !(m?.status === "error" && m.errorReason === "ff-lost");
+}
+
 export interface LaneRule {
   readonly prose: string;
   readonly holds: (v: LaneSignalView, idleThresholdMs: number) => boolean;
@@ -49,7 +84,7 @@ export const DONE_LOOKING_RULES: readonly LaneRule[] = [
   { prose: "alive", holds: (v) => v.alive === true },
   { prose: "idle", holds: (v, t) => v.idleMs !== null && v.idleMs >= t, clock: true },
   { prose: "no git op in progress", holds: (v) => v.gitOp !== true },
-  { prose: "no blocked/errored merge", holds: (v) => !MERGE_BLOCKING.includes(v.merge?.status ?? "") },
+  { prose: "no blocked/errored merge (a lost fast-forward is not one)", holds: (v) => !mergeBlocksLane(v.merge) },
   { prose: "clean tree", holds: (v) => v.git !== null && v.git.dirty === 0 },
   { prose: "git.ahead>0", holds: (v) => v.git !== null && v.git.ahead > 0 },
 ];
@@ -75,7 +110,7 @@ export const HOST_COMMIT_LOOKING_RULES: readonly LaneRule[] = [
   { prose: "alive", holds: (v) => v.alive === true },
   { prose: "idle", holds: (v, t) => v.idleMs !== null && v.idleMs >= t, clock: true },
   { prose: "no git op in progress", holds: (v) => v.gitOp === false },
-  { prose: "no blocked/errored merge", holds: (v) => !MERGE_BLOCKING.includes(v.merge?.status ?? "") },
+  { prose: "no blocked/errored merge (a lost fast-forward is not one)", holds: (v) => !mergeBlocksLane(v.merge) },
   { prose: "dirty tree", holds: (v) => v.git !== null && v.git.dirty > 0 },
   { prose: "git.ahead===0", holds: (v) => v.git !== null && v.git.ahead === 0 },
   { prose: "awaiting:null", holds: (v) => v.awaiting === null },
@@ -388,7 +423,7 @@ export const STALLED_RULES: readonly LaneRule[] = [
   { prose: "lastOutput>0", holds: (v) => v.observed === true },
   { prose: "idle", holds: (v, t) => v.idleMs !== null && v.idleMs >= t, clock: true },
   { prose: "no git op in progress", holds: (v) => v.gitOp !== true },
-  { prose: "no blocked/errored merge", holds: (v) => !MERGE_BLOCKING.includes(v.merge?.status ?? "") },
+  { prose: "no blocked/errored merge (a lost fast-forward is not one)", holds: (v) => !mergeBlocksLane(v.merge) },
   { prose: "awaiting:null", holds: (v) => v.awaiting === null },
   { prose: "git.ahead===0", holds: (v) => v.git !== null && v.git.ahead === 0 },
 ];

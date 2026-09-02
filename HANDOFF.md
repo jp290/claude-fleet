@@ -1,3 +1,82 @@
+# HANDOFF — Fleet Controller (Slot 15, Fable 5.1 high): drei Nachfolgen (3->4, 4->16, 7->3), Sanierung-Beschleunigung GEMESSEN (dbaeab7), 3bb5a5c9 fertig und Land in Kette, Paste-Platzhalter-Mechanismus gefunden; Uebergabe bei ~30 % GEMESSEN, 2026-09-02 (15:10)
+
+Rolle: 🎛 Fleet Controller (Owner-Delegation 10:05 gilt; Owner-Prinzip 13:45: nur fragen, was ohne ihn
+nicht zu beantworten ist). Modelle: MAINs Fable, Lanes Opus, Sol = gpt-5.6-sol (codex), GLM nur pi-zai.
+Watches gehoeren den MAINs; ich halte nur einen lane-Watch auf Slot 1 (meine eigene Land-Pflicht).
+
+## 0. Reihenfolge fuer dich
+
+1. Erdung (`./state.sh`, `./register.sh`, dieser Abschnitt, Board). Miss deinen ctx, bevor du liest.
+2. **`3bb5a5c9` (A1, Slot 1, Lane `fleet/260902121449-779f`, 1 ahead, fertig 14:43) landen, falls
+   noch nicht geschehen.** Ein Hintergrund-Watcher meiner Pane postet `POST /api/slots/1/merge {}`,
+   sobald Slot 3s Land von Slot 2 (`1b677e58`) gesettelt ist — nie zwei Gates in der Schlange. Stirbt
+   meine Pane vorher, ist der Watcher tot: dann selbst posten. Danach: Audit abwarten (lokal, Grace 0,
+   ~28 min; Verb 2 gibt 409 waehrend eines Audits), dann `.env` `FLEET_AUDIT_HELPER_GRACE_MS='60000'`
+   + `POST /api/deploy`. Ab da laufen Audits auf dem Geraet. Erfolgstest (falsifizierbar): in den
+   `fleet/land`-Notes des naechsten Tages faellt `verify.waitMs` fuer die Mehrzahl der Lands auf ~0.
+   Queue-Zeile `39fbbd1f` ist mit diesem Commit erledigt (Lane sagt es).
+3. **Land `1b677e58` (Slot 2, 16b922e):** war um 14:40 `waitedOut` (2671 s Schlange hinter drei
+   Lane-Suiteketten, nie verifiziert). Slot 3 (Task-Workbench-MAIN, Nachfolgerin von Slot 7) landet es
+   seit 14:47 SELBST per Self-Land-Tuer und haelt den Watch. Nichts von deiner Seite starten.
+4. **GLM-Zweitmeinung ist EINGEARBEITET** (§4 der Notiz, `65f3d53`; Slot 12 hat die Zeile 15:08):
+   Zug 2 traegt jetzt sein Restrisiko, Zug 3 ist gestrichen, das zweite Helfergeraet steht ueber der
+   Linie, P5-Parallelspur erst nach dem A1-Mess-Tag. Der GLM-Slot 7 ist gekillt; pruefe mit
+   `./state.sh`, ob der Worktree `fleet-260902125001-c6f3` als Orphan liegt — dann verwerfen, nie landen.
+5. Slot 12 (Sanierungs-MAIN) hat den Vorschlag (§2 der Notiz, vier Zuege) um 14:51. Was davon in den
+   Plan geht, entscheidet sie; dort nichts umschreiben.
+
+## 1. Was heute passierte (verifiziert; Bodies in `git log df6291e..main`)
+
+- **Nachfolgen ohne Owner-Route:** `POST /api/self/succeed` nimmt seit heute `model`/`effort` im Body
+  (`server.ts#handleSelfSucceed`); Slot 3 (Opus-Datensatz, Fable-Pane) ist damit sauber als Fable nach
+  Slot 4 gegangen, Slot 4 nach 16, Slot 7 nach 3. Program-Bindungen sind mitgewandert
+  (`succeedProgramMain`). Die Composer-Sonde (9c7d6e02) hat NICHT gefeuert — drei von drei. Eine
+  Owner-Route-Nachfolge haette das Program NICHT umgebunden; `bootstrap-main` ist der Notweg, wenn
+  die alte Bindung stale ist.
+- **Slot 14 (Vorgaengerin) und Slot 16 (namenlose Opus-Pane, nur `/usage`, ctx leer) retired** —
+  vorher gab es keinen freien Slot. Brief 6 (`d7c700b1`, private-repo-p) laeuft in Slot 14 (Opus high).
+- **Messnotiz `dbaeab7` + `65f3d53`** (Direkt-Commits, reine Docs, `bun e2e/pins.ts` ALL PASS): §0 der Notiz sind
+  die fuenf Saetze. Kurz: Mutex 09-02 zu 98,9 % belegt; Vorschau in Lanes 52,5 %, fehlerhafte Suiten
+  22,4 %; 200 min Gate-Warten gegen 21 min Gate-Arbeit; H1 halb wahr (nur Audit + Vorschau koennen
+  remote, beides gebaut, S2–S4 verlagern 0 Suite-Minuten); H2 als Filter richtig; H4 traegt; H5 alle
+  private-repo-p-Guards. Die Suite ist LANGSAMER geworden (453 → 675 ms/Check), nicht fehlerhafter.
+- **Paste-Platzhalter-Mechanismus (Zeile `9077e284`):** ein 1132-Zeichen-Send bekam 409 „composer still
+  held only part"; die Pane zeigte `[Pasted text #3]` — Claude Code kollabiert lange Pastes zu einem
+  16-Zeichen-Platzhalter, die Sonde zaehlt Zeichen. `tmux send-keys Enter` hat submitted. Vermutlich
+  dieselbe Wurzel wie 9c7d6e02 und 86830851. Bis zum Fix: Sends unter ~1000 Zeichen halten oder nach
+  dem 409 die Pane lesen und Enter schicken.
+- Slot 1 (A1) war eine CLARIFY-Lane, keine Bau-Lane; ihre drei Fragen (Beweisweg / DONE an Namen /
+  Freeze) habe ich als Controller beantwortet (1a/2a/3a; `releasedBy: owner` ist die Freeze-Ausnahme).
+  Kriterium konnte sie nicht ablegen (Zeile stand `done`, nicht `sent`) — steht im Commit-Body.
+
+## 2. Betriebsstand (15:00)
+
+Lanes 1 (A1, fertig), 2 (Land laeuft), 5 (P4 Slice 2, Slot 12), 8, 10 (S2, 31 % ctx — ueber dem Band,
+aber eine Lane landet statt zu migrieren), 13 (Sol, private-repo-p Receipt, mergePending), 14 (Brief 6).
+MAINs 3/4/16 frisch (11–15 %), 6 (29,6 %), 9 (26,8 %), 11 Steward (27,8 %), 12 (22 %). Dispatcher
+`on:false`, maxLanes 2. Gate-Lock wechselt zwischen Lane-Suiteketten; kein Audit laeuft. Task C
+(`860cecdf`, Slot 16s Program) wartet auf Dispatch mit Vorbedingung suites=0 — erst nach A1 realistisch.
+
+## 3. Fallen, die ich bezahlt habe
+
+- `POST /api/self/watch {kind:"merge"}` nach einem gesettelten Merge feuert SOFORT aus dem alten Fakt
+  und ist dann verbraucht; ein zweiter Subscribe auf dasselbe Ziel gibt die verbrauchte Zeile zurueck
+  (kein neuer Watch). Fuer einen NEUEN Merge auf demselben Slot: Hintergrund-Watcher auf
+  `GET /api/slots/:id/merge running`.
+- `GET /api/sessions` traegt `programs` OHNE `main` — Program-Bindungen nur aus `fleet.json`.
+- Sends ueber ~1000 Zeichen: siehe Platzhalter-Mechanismus oben.
+- Drei Agenten-Berichte lesen kostete ~7 Punkte ctx; die Berichte liegen als Dateien im Repo, ein
+  Nachfolger liest §0 der Notiz, nicht die Berichte.
+
+## 4. Offene Owner-Punkte
+
+1. Zweites Helfergeraet (0 Code, `helperDevices` ist eine Map) — entkoppelt Audit von Vorschau am
+   seriellen Helfer-Slot; `mainMacbook` war am 09-01 23:17 kurz registriert. 2. Promotion der
+   B-Zeilen in GLM-Reihenfolge (B2, B3, B0/B4); `9077e284` gehoert zu B0/B3. 3. Owner-Richtung 13:05
+   (`98979607`, Codex-Controller) — unveraendert offen. 4. GitHub 12 Tage hinter main.
+
+---
+
 # HANDOFF — Program-MAIN „Fleet Task Workbench" (Program `b9c1e0d9`, Slot 7 → Nachfolge), 2026-09-02 14:20, ctx GEMESSEN 30,8 %
 
 Dieser Abschnitt gehoert dem Program-MAIN der Task Workbench; der Controller-Abschnitt darunter ist

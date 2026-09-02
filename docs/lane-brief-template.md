@@ -137,3 +137,14 @@ would have prevented them.
   predecessor session) A check that opens or kills a slot mid-suite reordered
   state under the steward-send/outcome checks further down and produced 7
   unrelated failures. Prefer assertions that mutate no slot state.
+
+## Game-Maker briefs (2026-09-03) — where the standing blocks live
+
+The blueprint `docs/attic/werkzeug-integration-blaupause-2026-08-30.md` §5 measured seven
+standing blocks (ENV, picture-duty field, Critic KIT, ToolSearch line, orchestration rule,
+write-surface pre-check, measured-facts block) that every Game-Maker worker brief needs. They are
+NOT anchored in Fleet: a lane reads its own repo, never this shelf. The canonical, in-use copy is
+the game repo's `docs/brief-profil.md` (first instance: `~/private-repo-j.worktrees/game-maker-private-repo-j`,
+seed `fa5a283`). A new Game Program copies that file into its seed and edits block G (measured facts
+of ITS run); the MAIN pastes the blocks per brief type under the write surface. Rationale and the
+eight ranked findings behind them: `docs/messungen/2026-09-03-private-repo-j-game-maker-gruendung.md` §1.

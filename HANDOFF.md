@@ -5,11 +5,20 @@ Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,
 
 ## 1. Das Erste, was du tust
 
-**Nichts ist in Flug. Der Audit-Watch `3d1c7cc0` ist ARMED auf `4846d831…`** — er meldet sich von
-selbst mit gruen/rot/unknown. Warte ihn ab, BEVOR du deployst oder den naechsten Slice startest.
+**Der Post-Land-Audit auf meinem Land ist ROT — 3508 Checks, 1 Fail — und er ist NICHT
+adjudiziert. Das ist dein erster Akt.** Ich habe den Namen beschafft und den Mechanismus gelesen,
+aber den Beweis NICHT gefahren; Details in Abschnitt 2b. Der Aufwand ist ein serieller
+`./e2e-isolated.sh` (~27 min) auf `4846d83`, und danach ein Urteil ueber
+`POST /api/post-land-audits/adjudicate` (`real | flake | stale-test | unknowable`).
+
 Danach: **P4 Slice 4 = audit-log**, vorvermessen in
 `docs/sanierung-2026-09/p4-slice4-vorbereitung.md` — die Datei ist der Brief-Rohstoff, lies sie
 zuerst.
+
+**Nichts ist in Flug.** Der Audit-Watch `3d1c7cc0` hat gefeuert und ist verbraucht. **Er geht NICHT
+auf dich ueber** — ein Watch haengt an Slot UND `openedAt` der abonnierenden Session; meine stirbt
+mit dieser Uebergabe. Wer nach einem Land eine Nachfolge faehrt, muss den Audit-Watch NEU
+abonnieren (und `armed` pruefen, s. B-07).
 
 ## 2. Gelandet, verifiziert
 
@@ -21,6 +30,48 @@ exakt die Zahl der Vorgaengerin. Land-Note: `verify.ok true`, `exitCode 0`, alle
 
 Ausserdem gelandet (Direkt-Commits, docs-only, je mit `bun e2e/pins.ts` verifiziert, KEIN
 Post-Land-Audit deckt sie): `847c17a` `c98b1ec` `5971cc5` `84f735e` `299ac65` `0a94bd0`.
+
+## 2b. Der rote Post-Land-Audit auf `4846d83` — was ich weiss und was ich NICHT bewiesen habe
+
+`result: red`, **3508 Checks, 1 Fail**, `covers: [fleet/260902154623-7fa9]` — also meine Zeile,
+und nur meine.
+
+**Der Name, aus dem Check-Trail geholt** (der Weg aus B-02; die Ledger-Zeile selbst nennt ihn nicht,
+und das geht nur, weil dieser Lauf LOKAL war):
+
+    ${TMPDIR}/fleet-e2e-trail/isolated-20260902T220305Z-86314.jsonl   (3508 Zeilen = checks.ran)
+
+    check:  "⏸ a re-run is refused while the resolution is still rebased onto main (guard unchanged)"
+    detail: {"status":"blocked","detail":"the session is actively working right now — let it settle
+             for a moment, then land"}
+
+**Der Mechanismus, am Code gelesen.** Die Sonde (`e2e/merge.ts:420`) ruft `settleForMerge()` und
+erwartet dann die Antwort des ⏸-REBASE-Guards: `status === "resolved"` mit `detail` enthaelt
+`review`. Bekommen hat sie die Antwort des AKTIVITAETS-Gates (`server.ts:22671`,
+`if (!landGate.ok) return json({status:"blocked", detail:"the session is actively working right
+now …"})`). Die Fixture-Session war also noch beschaeftigt, als die Sonde mass — **zwei
+verschiedene Gates, und das falsche hat zuerst geantwortet.** Das ist die Gattung „Suite-Sonde
+gegen den eigenen Idle-Gate" (§11.2e-Form), nicht ein Urteil ueber den ⏸-Guard.
+
+**Was FUER „nicht meins" spricht:**
+- Der Check liegt in `e2e/merge.ts`. **Mein Land hat diese Datei nicht angefasst** — der Diff
+  `668d6ff..4846d83` umfasst `server.ts`, `server/{transport,dir-explorer}.ts`, `e2e/security.ts`,
+  `e2e/transport.ts`, `repo-map.ts`, `docs/repo-map.generated.md`. Sonst nichts.
+- Der Fehlschlag ist eine TIMING-Antwort (Session busy), kein falscher Wert.
+- Der Slice ist ein reiner Move ohne Verhaltensdelta; `landGate` (:22671) liegt weit ausserhalb der
+  bewegten Bereiche, und die volle Gate-Kette lief 103 s gruen.
+
+**Was ich NICHT getan habe, und warum das zaehlt:** die Beweisordnung `docs/verify-tiering.md`
+§11.7 verlangt **denselben Baum erneut**. Den Lauf habe ich NICHT gefahren — er dauert ~27 min, und
+ich haette ihn nicht mehr interpretieren koennen. **Damit ist das hier ein begruendeter Verdacht
+und KEIN bewiesener Flake.** Ich habe deshalb bewusst NICHT adjudiziert: ein Urteil, das ich nicht
+verteidigen kann, ist schlimmer als ein offenes Rot. „Sieht aus wie ein bekannter Flake" reicht in
+diesem Repo ausdruecklich nicht.
+
+**Dein Weg, in dieser Reihenfolge:** (1) `./e2e-isolated.sh` seriell auf `4846d83`, nichts daneben
+laufen lassen; (2) faellt derselbe Check wieder → er ist ECHT und gehoert untersucht, faellt er
+nicht → Flake bewiesen; (3) adjudizieren. Das Rot bleibt in beiden Faellen rot — das Urteil sagt
+nur, dass jemand hingesehen hat.
 
 ## 3. VIER Land-Versuche — die Kosten-Aufschluesselung ist die eigentliche Uebergabe
 

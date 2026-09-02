@@ -1783,15 +1783,21 @@ async function programExecutionView(s: Slot): Promise<Response> {
 // runtime setting that was asked for.
 //
 // Keyed by WORKER NAME, so extending to a second worker is one entry in REPO_WORKER_KEYS rather
-// than a second mechanism. Deliberately NOT extended yet: merge/repair write code, and
-// review/cleanReview issue the verdicts a land is gated on — choosing a model for those is a
-// different decision from choosing one to phrase a commit subject, and it should be made on its
-// own evidence rather than inherited from this one.
+// than a second mechanism. Deliberately NOT extended to the model workers that matter most:
+// merge/repair write code, and review/cleanReview issue the verdicts a land is gated on — choosing
+// a model for those is a different decision from choosing one to phrase a commit subject, and it
+// should be made on its own evidence rather than inherited from this one.
+// The SECOND entry is not a model worker at all: `audit` is the repo's own tier-2 command
+// (POSTLAND_AUDIT_CMD is the env default and is fleet's suite; a foreign repo's verify is a
+// different executable, and until this key existed every land outside claude-fleet ended in
+// `unknown: exit 42` forever — the watchdog's repo guard declining). Same storage, same
+// validation, same owner-only door: the value decides what gets EXECUTED over a repo's contents.
 let repoWorkers: Record<string, Record<string, string>> = {};
 // Only names that something actually CONSULTS may be stored. A route that accepted any
 // WorkerName would let the owner configure a worker nothing reads and see it echoed back — a
 // setting that looks applied and does nothing, which is worse than a 400.
-const REPO_WORKER_KEYS: WorkerName[] = ["commitMsg"];
+type RepoWorkerKey = WorkerName | "audit";
+const REPO_WORKER_KEYS: RepoWorkerKey[] = ["commitMsg", "audit"];
 // The stored value is a PATH TO AN EXECUTABLE, never a command line. runWorker spawns it as
 // `Bun.spawn([cmd, "--model", …])` — array form, no shell — so a value carrying arguments would
 // not be split into any, it would be looked up as one absurd filename. Rejecting that shape at
@@ -1814,7 +1820,7 @@ function workerCmdProblem(cmd: string): string | null {
 // entry-then-env, and that ORDER is the compatibility promise (same stance, and the same reason,
 // as VERIFY_CMD_REPOS): a repo with no entry keeps the env default, and a repo with neither keeps
 // the production session path. Nothing about a deployment that never calls the route changes.
-function workerCmdFor(worker: WorkerName, repo: string | null, envDefault: string | null): string | null {
+function workerCmdFor(worker: RepoWorkerKey, repo: string | null, envDefault: string | null): string | null {
   return (repo === null ? undefined : repoWorkers[repoCanon(repo)]?.[worker]) ?? envDefault;
 }
 let shares: Share[] = [];
@@ -11964,6 +11970,23 @@ async function finishLandsInFlight(): Promise<void> {
 // checks"; (c) the server keeps no fleet-specific knowledge — `./e2e-isolated.sh` is the owner's
 // command, not a default compiled into the server.
 const POSTLAND_AUDIT_CMD = process.env.FLEET_POSTLAND_AUDIT_CMD ?? null;
+// THE COMMAND A REPO ACTUALLY MEETS: its stored repo-worker `audit` first, the env default second,
+// nothing third. Every decision site of tier 2 — enqueue, drain, boot-resume, the row, the helper
+// portal, the lane's gate view — asks this one function, because a site that read the env directly
+// would answer "unconfigured" for a repo whose owner configured it. `source` travels onto the row:
+// a green measured by `sh scripts/verify.sh` and one measured by ./e2e-isolated.sh are two
+// different claims, and a reader must be able to tell them apart without re-deriving the config.
+type AuditCmdSource = "repo-worker" | "env";
+function auditCmdFor(repo: string): { cmd: string; source: AuditCmdSource } | null {
+  const own = workerCmdFor("audit", repo, null);
+  if (own) return { cmd: own, source: "repo-worker" };
+  return POSTLAND_AUDIT_CMD ? { cmd: POSTLAND_AUDIT_CMD, source: "env" } : null;
+}
+// "is tier 2 armed at all" — for the surfaces that speak about the deployment rather than a repo
+// (the ledgers view's auditConfigured, the audit route's `configured`, the drain kick). A
+// repo-worker alone arms it — for its repo; the per-repo question is auditCmdFor's.
+const auditConfiguredAnywhere = (): boolean =>
+  POSTLAND_AUDIT_CMD !== null || Object.values(repoWorkers).some((w) => typeof w.audit === "string");
 // Generous on purpose: the suite this tier exists to run takes minutes, and NOTHING waits on it —
 // the only cost of a long ceiling is a late row. A timeout is a failed MEASUREMENT (unknown), not
 // a failure — see the classification below.
@@ -11999,6 +12022,9 @@ interface PostLandAuditRow {
   result: "green" | "red" | "unknown";
   reason?: string;     // present on `unknown` only: WHY no measurement happened
   cmd: string;
+  // which config chose `cmd` — the repo's own worker or the env default. Optional so historical
+  // rows (all env) and remote rows (the helper's own suite) claim nothing they never recorded.
+  cmdSource?: AuditCmdSource;
   exitCode: number | null;
   out: string;         // byte-capped TAIL of stdout+stderr
   fails?: string[];    // remote-only, validated and capped names; absent on local and historical rows
@@ -12436,7 +12462,7 @@ function savePostLandAuditQueue(): void {
 // land it stands for. Nothing is silently dropped: a land is either covered by the run in flight's
 // successor or by the run it triggered.
 function schedulePostLandAudit(repo: string, main: string, branch: string, mainAfter: string): void {
-  if (!POSTLAND_AUDIT_CMD) return; // tier 2 not configured — this is today's behaviour, unchanged
+  if (!auditCmdFor(repo)) return; // tier 2 not configured FOR THIS REPO — today's behaviour, unchanged
   const q = auditQueue.get(repo) ?? { main, covers: [] };
   q.main = main;
   q.covers.push({ branch, mainAfter, at: Date.now() });
@@ -12464,6 +12490,10 @@ async function drainPostLandAudits(): Promise<void> {
       let graceUntil = 0;
       const entry = [...auditQueue.entries()].find(([r, q]) => {
         if (helperClaimOf(r)) return false;
+        // …and SKIPPING an entry whose repo has no command any more (the worker was cleared after
+        // the land queued, on a deployment without the env default). Left where it is, durably:
+        // unconfigured is not skipped, and configuring it again — or a boot — drains it.
+        if (!auditCmdFor(r)) return false;
         if (!graceOn) return true;
         // the YOUNGEST cover: a coalesced entry keeps growing while it waits, and the grace is a
         // promise about the newest land in it, not about the oldest. An entry with no covers is
@@ -12618,8 +12648,9 @@ function postLandAuditChecks(text: string, exitCode: number, fails?: string[]): 
 }
 
 async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]): Promise<void> {
-  const cmd = POSTLAND_AUDIT_CMD;
-  if (!cmd) return;
+  const chosen = auditCmdFor(repo);
+  if (!chosen) return;
+  const { cmd, source: cmdSource } = chosen;
   const startedAt = Date.now();
   // stamped SYNCHRONOUSLY, before the first await: the drain sets its lock and calls this in one
   // turn, so there is no moment an HTTP handler can observe in which the lock is held and this is
@@ -12728,7 +12759,7 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
   const row: PostLandAuditRow = {
     at: Date.now(), startedAt, ms: Date.now() - startedAt,
     repo, main, mainSha, result, ...(reason ? { reason } : {}),
-    cmd, exitCode, out, checks, covers,
+    cmd, cmdSource, exitCode, out, checks, covers,
   };
   lastPostLandAudit = row;
   recordAuditDuration(row);
@@ -12777,7 +12808,9 @@ function postLandAuditLiveView(): PostLandAuditLiveInfo | null {
   const waiting: PostLandAuditLiveInfo["waiting"] = [];
   for (const [repo, q] of auditQueue)
     for (const c of q.covers)
-      if (!inflight.has(c))
+      // a PARKED entry (its repo has no audit command) is not waiting for a run — nothing is
+      // configured to run it. Masked here, where "waiting" is the claim; the queue keeps it.
+      if (!inflight.has(c) && auditCmdFor(repo))
         waiting.push({ repo: basename(repo), main: q.main, branch: c.branch, mainAfter: c.mainAfter, at: c.at });
   const running: PostLandAuditLiveInfo["running"] = r
     ? { phase: "running", repo: basename(r.repo), main: r.main, mainSha: r.mainSha,
@@ -12903,7 +12936,7 @@ function laneSuiteView(j: LaneSuiteJob): Record<string, unknown> {
 // land path's own kick; this is for the two moments a job becomes drainable again without a land:
 // a claim lapsed, or a helper reported and left a fresh cover behind.
 function kickAuditDrain(): void {
-  if (!POSTLAND_AUDIT_CMD || auditDraining || !auditQueue.size) return;
+  if (!auditConfiguredAnywhere() || auditDraining || !auditQueue.size) return;
   auditDraining = true;
   void drainPostLandAudits();
 }
@@ -13078,6 +13111,13 @@ function helperJobsView(forDevice?: string): {
   }
   for (const [repo, q] of auditQueue) {
     if (!q.covers.length) continue;
+    // NOT OFFERED: a repo whose audit is its own repo-worker executable. The daemon runs exactly
+    // one command, `cfg.suiteCmd` (fleet's suite), against whatever it clones — handing it this
+    // job would produce a verdict measured by the wrong suite and record it under the right repo.
+    // The job stays local; nothing is dropped, the drain runs it here. A PARKED entry (no command
+    // at all) is not offered either — it is nobody's work until something is configured.
+    const chosen = auditCmdFor(repo);
+    if (!chosen || chosen.source === "repo-worker") continue;
     const c = helperClaimOf(repo);
     jobs.push({
       id: helperJobId(repo), kind: "audit", repo: basename(repo), main: q.main,
@@ -13278,6 +13318,12 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
   const hit = [...auditQueue.entries()].find(([r, q]) => helperJobId(r) === jobId && q.covers.length);
   if (!hit) return json({ error: "no such open audit job — it may already have been audited" }, 404);
   const [repo, q] = hit;
+  // the same rule as helperJobsView's, on the door and not only on the list: a job that was never
+  // offered must not be claimable by a client that knows the id shape
+  const chosen = auditCmdFor(repo);
+  if (!chosen) return json({ error: "no audit command is configured for this repo — the entry is parked, not offered" }, 409);
+  if (chosen.source === "repo-worker")
+    return json({ error: "this repo's audit is its own repo-worker command — it runs on this machine only, never offered" }, 409);
   // …the two ways this tree could already be somebody's work. Reported apart, not merged: they are
   // different facts, and the helper deserves to know which one it hit.
   const held = helperClaimOf(repo);
@@ -14496,7 +14542,7 @@ async function laneDossier(branch: string, repoHint: string | null): Promise<Lan
     // tier 2 is CONFIGURED-or-not, and that distinction has to survive to the reader: with no
     // FLEET_POSTLAND_AUDIT_CMD there is no measurement to be missing, which is a different sentence
     // from "the suite ran and said nothing about this lane"
-    audits: POSTLAND_AUDIT_CMD || audits.length
+    audits: (repo && auditCmdFor(repo)) || audits.length
       ? measured(capped(audits, DOSSIER_MAX_ROWS))
       : unmeasured("no post-land audit command is configured on this server — tier 2 never ran"),
   };
@@ -18767,7 +18813,7 @@ if (existsSync(STATE_FILE)) {
       for (const [repo, v] of Object.entries(prw as Record<string, unknown>)) {
         if (!repo || typeof v !== "object" || v === null || Array.isArray(v)) continue;
         for (const [w, cmd] of Object.entries(v as Record<string, unknown>)) {
-          if (!REPO_WORKER_KEYS.includes(w as WorkerName)) {
+          if (!REPO_WORKER_KEYS.includes(w as RepoWorkerKey)) {
             console.warn(`[worker] fleet.json names worker "${w}" for ${repo}, which nothing reads — dropped`);
             continue;
           }
@@ -19051,13 +19097,25 @@ if (existsSync(POSTLAND_AUDIT_QUEUE_FILE)) {
       }
     }
     const pending = resumed.reduce((n, [, q]) => n + q.covers.length, 0);
-    if (pending && !POSTLAND_AUDIT_CMD) {
-      // UNCONFIGURED ≠ SKIPPED: the file is left byte-for-byte alone (nothing loaded it into
-      // `auditQueue`) — configure the command, restart, and it drains.
+    // PER REPO, not per deployment: an entry is resumed when ITS repo has a command (env default or
+    // repo-worker), and PARKED otherwise. Parked entries are loaded into the queue as well — the
+    // queue file is rewritten whole on every save, so an entry left out of memory would be lost the
+    // moment another repo's land saved — but the drain's find skips them, and the live view's
+    // `waiting` list masks them: a land nothing is configured to audit is not "waiting for a run".
+    const drainable = resumed.filter(([repo]) => !!auditCmdFor(repo));
+    const parked = resumed.filter(([repo]) => !auditCmdFor(repo));
+    // EVERY entry is loaded, parked ones included — the file is rewritten whole on each save, so an
+    // entry kept out of memory would be lost the moment another repo's land saved. Nothing is
+    // WRITTEN here: a boot that can drain nothing leaves the file byte-for-byte alone.
+    for (const [repo, q] of resumed) auditQueue.set(repo, q);
+    if (pending && !drainable.length) {
+      // UNCONFIGURED ≠ SKIPPED: left on disk, unaudited — configure the command, restart, and it drains.
       console.log(`post-land audit queue: ${pending} pending land(s) across ${resumed.length} repo(s), but`
-        + " FLEET_POSTLAND_AUDIT_CMD is unset — left on disk, unaudited (unconfigured is not skipped).");
+        + " no audit command is configured for any of them — left on disk, unaudited (unconfigured is not skipped).");
     } else if (pending) {
-      for (const [repo, q] of resumed) auditQueue.set(repo, q);
+      if (parked.length)
+        console.log(`post-land audit queue: ${parked.map(([repo, q]) => `${basename(repo)} (${q.covers.length})`).join(", ")}`
+          + " have no audit command — parked on disk, unaudited, until one is configured.");
       console.log(`post-land audit queue: resuming ${pending} pending land(s) after restart — `
         + resumed.map(([repo, q]) => `${basename(repo)}: ${q.covers.map((c) => c.branch).join(", ")}`).join(" | ").slice(0, 300));
       auditDraining = true; // nothing can be draining yet — this is boot
@@ -20719,7 +20777,7 @@ async function ledgersView(prior: Record<string, unknown> | null): Promise<Ledge
     // that never grew a row is the silent-gap signature. (The queue no longer dies with srv —
     // it is durable and boot-resumed since the POSTLAND_AUDIT_QUEUE_FILE land — so a lingering
     // gap now means the run is still going, repeatedly dying, or unconfigured; not restart loss.)
-    auditConfigured: !!POSTLAND_AUDIT_CMD,
+    auditConfigured: auditConfiguredAnywhere(),
     audits: await (async () => {
       const judged = await adjudicationsByAudit();
       return sinceWindow((await readEventLog(POSTLAND_AUDIT_FILE)).rows, "at").map((r) => {
@@ -21415,7 +21473,8 @@ Bun.serve<WSData>({
           : null,
         cleanReview: CLEAN_REVIEW_MODE,
         autoReview: AUTO_REVIEW_MS > 0 ? { tickMs: AUTO_REVIEW_MS, idleMs: AUTO_REVIEW_IDLE_MS } : null,
-        postlandAudit: POSTLAND_AUDIT_CMD !== null,
+        // for THIS LANE'S REPO, like `verify` above: a repo-worker arms tier 2 for its repo alone
+        postlandAudit: auditCmdFor(s.worktree.repo) !== null,
         mergeRepairRounds: MERGE_REPAIR_ROUNDS,
         rulebookDrifted,
         // the machine-busy fact (autonomy verbs, Verb 1): the suite mutex is the one wait a lane's verify
@@ -22047,7 +22106,7 @@ Bun.serve<WSData>({
         const ping = at === null ? undefined : auditPings[String(at)];
         return { ...r, ...(adj ? { adjudication: adj } : {}), ...(ping ? { ping } : {}) };
       });
-      return json({ audits: withAdj, total, malformed, configured: !!POSTLAND_AUDIT_CMD });
+      return json({ audits: withAdj, total, malformed, configured: auditConfiguredAnywhere() });
     }
     // ...and the write that puts a judgement there. Owner-only by POSITION (below tokenGate), the
     // same access model as the trail above. It appends to a SEPARATE file and never opens
@@ -22407,7 +22466,7 @@ Bun.serve<WSData>({
       const body = await readJson(req);
       if (!body || typeof body.repo !== "string" || !body.repo.trim()) return json({ error: "expected { repo, worker, cmd }" }, 400);
       const worker = typeof body.worker === "string" ? body.worker.trim() : "";
-      if (!REPO_WORKER_KEYS.includes(worker as WorkerName))
+      if (!REPO_WORKER_KEYS.includes(worker as RepoWorkerKey))
         return json({ error: `worker must be one of: ${REPO_WORKER_KEYS.join(", ")}` }, 400);
       const top = await git(resolve(expandCwd(body.repo)), "rev-parse", "--show-toplevel");
       if (top.code !== 0) return json({ error: "not a git repository" }, 400);

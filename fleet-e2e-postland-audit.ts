@@ -25,6 +25,7 @@ import { BASE, check, failures, get, IP, paneEnv, plogRead, PORT, post, results,
 import { driveMerge, openLane, seedRepo, settleForMerge, type Lane, type MergeVerdict } from "./e2e/lane-helpers";
 import * as helperPortal from "./e2e/helper-portal";
 import * as helperDaemon from "./e2e/helper-daemon";
+import * as repoWorkerAudit from "./e2e/repo-worker-audit";
 
 // the stand-in suite's control + evidence files (both live next to this script, = the server's dir)
 const setAuditMode = (m: string): Promise<number> => Bun.write(`${import.meta.dir}/auditmode`, m);
@@ -999,6 +1000,11 @@ await helperPortal.run({ REPO, setAuditMode, killSrv, startSrv, auditRows, headO
 // Same fixture, one step further: instead of a human reading a bootstrap and pasting an exit code,
 // helper-daemon/daemon.ts claims, clones, installs, runs and reports on its own.
 await helperDaemon.run({ REPO, setAuditMode, killSrv, startSrv, auditRows, headOf });
+
+// ===== (RW) THE PER-REPO AUDIT COMMAND — a foreign repo audited by its own verify =================
+// Runs after (HD) and restarts the server as its own first act; every count it makes is relative and
+// per repo, and it seeds a third repo of its own.
+await repoWorkerAudit.run({ REPO, DIR: import.meta.dir, setAuditMode, killSrv, startSrv, auditRows });
 
 console.log(results.join("\n"));
 console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");

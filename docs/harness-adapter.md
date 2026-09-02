@@ -45,7 +45,11 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
 
 - **Stufe 2, der Post-Land-Audit, ist seit 2026-07-25 LIVE** (`FLEET_POSTLAND_AUDIT_CMD` in `watchdog.sh`):
   nach jedem Land, das main bewegt, läuft die volle `./e2e-isolated.sh` gegen den Integrations-Tip — **neben**
-  dem Land-Pfad. Sie gated nichts und macht nichts rückgängig; Ergebnis grün/rot/unknown auf
+  dem Land-Pfad. Das Env-Kommando ist fleet's Suite; sein Repo-Guard exitet ausserhalb claude-fleet mit 42, und
+  bis 2026-09-02 war Stufe 2 damit in jedem fremden Repo für immer `unknown` (private-repo-p: drei Lands). Seither
+  wählt ein Repo sein eigenes Kommando über den Repo-Worker `audit` (§Repo-Worker unten) — z. B. ein Wrapper um
+  `sh scripts/verify.sh`. Ein Grün eines fremden Verify prüft man wie jedes: `ms` + `checks{ran}` — ein Skript,
+  das keine `PASS `-Zeilen druckt, liefert ehrlich `ran:0` bei exit 0 (docs/verify-tiering.md §13). Sie gated nichts und macht nichts rückgängig; Ergebnis grün/rot/unknown auf
   `post-land-audits.jsonl` (`GET /api/post-land-audits`). Achtung: `undo-land`, der als Rollback dazu genannt
   wird, gilt für genau EIN Land und nur bis zum nächsten (`server.ts`, grep `undoableFor`) — im Burst ist er
   beim Alarm schon weg. **Seit `0b98fdb` ist ein rotes Ergebnis beurteilbar**:
@@ -79,8 +83,8 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
 
 ## Repo-Worker
 
-- **Der Worker eines Repos wird AM REPO gespeichert, nicht im Env — seit `b64cd54` (2026-08-08), vorerst nur
-  `commitMsg`.** `FLEET_COMMIT_CMD` ist damit nur noch der DEFAULT; ein persistierter Eintrag pro Repo gewinnt
+- **Der Worker eines Repos wird AM REPO gespeichert, nicht im Env — seit `b64cd54` (2026-08-08), zuerst nur
+  `commitMsg`, seit 2026-09-02 auch `audit`.** `FLEET_COMMIT_CMD` ist damit nur noch der DEFAULT; ein persistierter Eintrag pro Repo gewinnt
   darüber (`POST /api/repo-worker {repo, worker, cmd}`, **owner-only**; lesen: `GET /api/repo-workers` →
   `{keys, workers}`, wobei `keys` sagt, was überhaupt konfigurierbar IST — „kein Override" wird so von „nie
   verdrahtet" unterscheidbar). Zwei Konsequenzen:
@@ -95,6 +99,21 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
     `worker-deepseek.py` einschaltbar — für DIESES Repo, ohne die Diffs von
     `private-repo-a`/`private-repo-b` an einen Dritten zu schicken; das Einschalten selbst bleibt ein
     Owner-Akt.
+  - **`audit` (2026-09-02) ist kein Modell-Worker, sondern das Stufe-2-Kommando DIESES Repos** — dieselbe
+    Tür, dieselbe Validierung (absoluter Pfad auf ein Executable, keine Argumente; wer Argumente braucht,
+    schreibt ein Wrapper-Skript). Aufgelöst wird an JEDER Entscheidungsstelle von Stufe 2 durch
+    `server.ts#auditCmdFor`: Repo-Worker vor `FLEET_POSTLAND_AUDIT_CMD` vor nichts. Konsequenzen: (a) ein
+    Land in einem Repo mit Repo-Worker wird auch dann enqueued und auditiert, wenn das Env-Kommando fehlt;
+    (b) die Ledger-Zeile trägt `cmdSource: "repo-worker" | "env"` (historische und Remote-Zeilen ohne Feld);
+    (c) das Skript läuft im temp-Snapshot des Integrations-Tips (`git archive`, kein `.git`), mit dem
+    FLEET_*-freien Kind-Env wie das Env-Kommando, seriell hinter dem Drain — ein fremdes Verify hat den
+    Suite-Mutex von `e2e-stage.sh` NICHT, die Serialisierung leistet allein der Server; (d) exit 42 aus einem
+    Repo-Worker bleibt `unknown` (unconfigured ≠ skipped ≠ grün); (e) **das Helfer-Portal bietet einen
+    Audit-Job eines Repos mit Repo-Worker NIE an** — der Daemon kennt nur `cfg.suiteCmd`, ein Claim auf die
+    Job-ID antwortet 409; der Job bleibt lokal. (f) Boot: ein pendender Queue-Eintrag eines Repos ohne
+    Kommando wird GEPARKT (geladen, damit der nächste Save eines anderen Repos ihn nicht verwirft; nicht
+    gedraint, nicht als `waiting` gezeigt, nicht angeboten) und beim ersten Boot mit Kommando gedraint.
+    Beweis: `e2e/repo-worker-audit.ts` via `./e2e-postland-audit.sh` — kein Gate fährt sie.
 
 ## Harness-Adapter
 

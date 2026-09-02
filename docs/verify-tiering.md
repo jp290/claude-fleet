@@ -2009,6 +2009,10 @@ Geschichte samt aller vier Lehren:
     Lauf liegt bei ~680–700 s mit 17 aufbewahrten PASS-Zeilen. Alles unter einer Minute ist
     verdächtig, egal was in der Spalte steht. Seit `54ea616` trägt die Zeile zusätzlich
     `checks{ran,failed}` — `ran:0` bei `result:"green"` ist die maschinelle Form derselben Frage.
+  - **Seit dem Repo-Worker `audit` (2026-09-02) gilt dieselbe Lesart für FREMDE Verify-Kommandos:** die
+    Zeile trägt `cmdSource: "repo-worker"`, und `checks.ran` zählt nur `PASS `/`FAIL `-Zeilen — ein
+    Verify, das anders spricht, bekommt bei exit 0 ehrlich `green` mit `ran:0`. Das ist kein
+    Nicht-Messen wie oben, aber dieselbe Frage: wer ein Repo-Worker-Grün liest, liest `ms` und `out`.
   - **Der Runner druckt erst am ENDE** (`fleet-e2e.ts`, `results.join`). Ein Absturz löscht damit den
     Beweis, dass alles davor grün war — deshalb hat auch das ECHTE Rot zu `c604390` null PASS-Zeilen,
     obwohl es 445 s gearbeitet hat. „Null Checks" heißt „abgestürzt oder nie gestartet", und die

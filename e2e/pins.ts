@@ -2424,11 +2424,11 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     [...serverExec.matchAll(/.{0,40}\bdocker (?!--context ).{0,40}/g)].map((m) => m[0]).join(" | ") || "none");
   // REPO_WORKER_KEYS is what /api/repo-worker will STORE; workerCmdFor is what actually resolves a
   // stored entry at a worker's call site. tsc holds neither to the other — both sides are a plain
-  // WorkerName — so the two failures this invites are silent in opposite directions: a name in the
+  // RepoWorkerKey — so the two failures this invites are silent in opposite directions: a name in the
   // list with no call site is a setting the owner configures, sees echoed back, and which changes
   // nothing; a call site with no listed name is a resolution nobody can ever reach. The rule is
   // stated as set EQUALITY for that reason, not as one-way coverage.
-  const declared = (serverExec.match(/const REPO_WORKER_KEYS: WorkerName\[\] = \[([^\]]*)\]/)?.[1] ?? "")
+  const declared = (serverExec.match(/const REPO_WORKER_KEYS: RepoWorkerKey\[\] = \[([^\]]*)\]/)?.[1] ?? "")
     .split(",").map((s) => s.trim().replace(/^"|"$/g, "")).filter(Boolean);
   const resolved = [...new Set([...serverExec.matchAll(/workerCmdFor\("([A-Za-z]+)"/g)].map((m) => m[1]))];
   pin("server.ts yields a non-empty REPO_WORKER_KEYS (an unparsed one would make the rule below vacuous)",

@@ -141,6 +141,60 @@ Kein Audit lief bei meiner letzten Messung, also kein 409-Grund. **Ich habe bewu
 der Slice aus §3 fasst `server.ts#reportLaneSuite` an und braucht ohnehin einen Deploy nach dem Land;
 zwei Deploys in einer Stunde sind Verschwendung. Deine Entscheidung, nicht meine Schuld.
 
+## 8. NACHTRAG 00:15 — was nach dem Schreiben dieses Abschnitts noch passierte
+
+- **P4 Slice 3 IST GELANDET** (`14a3ab6`, plus `4846d83` als Nachzieher fuer die Kommentar-Zeiger).
+  Task `c74706b0` steht auf `done`. Damit ist `server.ts` frei — das Nadeloehr aus §0 ist weg.
+- **`860cecdf` ist dispatcht** (Slot 2, Lane `fleet/260902220341-6f16`, `claude-opus-5[1m]`/high —
+  das im Task gespeicherte Fable-Tripel habe ich bewusst ueberschrieben, s. §2 Modellpolitik).
+  Slot 16 hat damit nach 12,3 h Wartezeit wieder Arbeit.
+- **`d2e4f219` (der Drei-Schnitt-Slice) bleibt liegen, und das ist richtig:** er fasst ebenfalls
+  `server.ts` an und waere mit `860cecdf` kollidiert. **Er ist der naechste Dispatch, sobald
+  `860cecdf` gelandet ist.** Danach Slot 9s Nachfolger mit `60d07416`.
+- **Audit `d4bb687a` adjudiziert: `real`** (nicht `flake` — der Check reproduziert). Die Notiz traegt
+  die Attribution: vorbestehend, das gedeckte Land hat die ops-event-Familie sogar verbessert
+  (10 FAILs auf `fda6fda` davor, 1–2 danach).
+- **Deploy `8a19a2f4` gefahren, `ok:true`**, `bootHead == target`. Gap danach: `codeBehind false`,
+  `behindCount 0`, `bundleStale false`.
+- **Advisory-Deckel geloest ohne Anheben: 7/10, drei Plaetze frei.** `8244622e`/`76e6aa3b` stehen als
+  Volleintraege B-03/B-04 im Register und sind ERST DANACH archiviert worden.
+- **Ein Orphan-Worktree liegt herum:** `fleet-260902214923-e402`, kein Slot, kein Diff gegen main,
+  nichts uncommittet. Leer ⇒ verwerfbar. Ich habe ihn NICHT angefasst.
+
+### Die Dauerschaetzung fuer die Sanierung (auf Owner-Wunsch, mit Agent erhoben)
+
+**Realistisch ~14,8 Tage Restlaufzeit, Abschluss ~2026-09-17** (optimistisch 09-10, pessimistisch
+10-07). Der Durchsatz ist **strukturell** eingebrochen, nicht personell: P1–P3 (Docs/Kommentare)
+liefen mit **7,9 Slices/Tag**, P4 (echte Struktur-Moves) mit **2,9** — Grund ist das P4-Slice-Protokoll
+des Plans (Abhaengigkeitsanalyse, Fremd-Review, stilles Fenster, Vorschaulauf, seriell, Dry-Boot).
+Land-zu-Land in P4: ~8 h. Gegenprobe ueber Zeilen (netto −1.252/Tag am besten Tag) ergibt 13,0 Tage
+und bestaetigt die realistische Linie.
+
+**ZWEI BEFUNDE, die dem Owner gehoeren und die die Sanierungs-MAIN kennen muss:**
+1. **Erfolgsmass 1 ist auf der heutigen Slice-Liste arithmetisch NICHT erreichbar.** `server.ts` steht
+   bei 24.313 Zeilen, Ziel ~8.000. Die im Plan NAMENTLICH verbliebenen 16 Subsysteme bringen bei
+   gemessener Ausbeute (~290 Z./Subsystem) zusammen ~4.600 Zeilen → der Kern landet bei ~19.700.
+   Die fehlenden ~11.700 kann nur **Tier 4** bewegen — die Route-Gruppen, fuer die der Plan einen
+   HALBSATZ hat (heute 3 `handle*Route`-Funktionen gegen 94 inline `url.pathname`-Vergleiche).
+   Entweder waechst P4 um eine ungeplante Tier-4-Kampagne (= pessimistische Linie), oder das
+   Erfolgsmass wird neu verhandelt. **Owner-Entscheidung, keine Durchsatzfrage.**
+2. **45 % des Sanierungsaufwands an `server.ts` wurde vom NACHWACHSEN aufgezehrt** (Sanierung −2.259,
+   fremde Programme +1.050). Bei `src/client.ts` ist es schlimmer: die Datei ist unter dem laufenden
+   Programm **netto GEWACHSEN**, 10.578 → 11.006, waehrend ihr Ziel bei 2.000 steht. Die Maße sind
+   erst erreichbar, wenn der Feature-Freeze auch fuer die sieben Nachbarprogramme gilt — heute gilt
+   er nur fuer die Sanierung selbst.
+Belegstaerke ehrlich: die 12 gelandeten Slices, ihre Zeitstempel, die Raten und alle Zeilenzahlen
+sind GEMESSEN. Die Mengengeruste fuer P4 Tier 2–4, P5 und P6 sind ABGELEITET; P6 ("10–20 Slices")
+ist die schwaechste Zahl, weil die Modul-Sweeps noch gar nicht existieren.
+
+### Eine Korrektur an §0/§4
+
+**Der Lane-Deckel bindet den Hand-Knopf NICHT.** `server.ts` sagt an der Dispatch-Route woertlich, sie
+sei „independent of `dispatchOn` and NOT bound by DISPATCH_MAX_LANES — the cap bounds UNATTENDED
+fan-out". Ich hatte Slot 16 den Deckel als Mit-Grund genannt; das war zur Haelfte falsch. Die einzige
+echte Bremse war die `server.ts`-KOLLISION. Praktische Folge fuer dich: du wartest nie auf einen
+freien Lane-Platz, nur auf die Fläche.
+
 ---
 # HANDOFF — Dual-Host cd110019: Phase 1 zur Haelfte gelandet (S1+S2), S3/S4 warten auf einen Lane-Platz; 2026-09-02 (20:0x)
 

@@ -1,6 +1,6 @@
 # second-host-Baseline: 3× `./e2e-isolated.sh` auf dem Linux-Helfer (2026-08-29)
 
-S4-Messlauf des Programms Linux-Work-Horse-Anbindung (`docs/linux-second-host-programm-2026-08-28.md`
+S4-Messlauf des Programms Linux-Work-Horse-Anbindung (`docs/attic/linux-second-host-programm-2026-08-28.md`
 §S4). Zweck laut Plan: die Flake-Familien des Regelbuchs sind an tmux 3.6a/macOS vermessen — diese
 Notiz ist die **Adjudikationsgrundlage für jedes spätere Remote-Rot** von diesem Gerät. Gerätename
 „second-host"; Adressen, Nutzer und Hardware-Kennungen stehen bewusst nicht hier (Repo public), der
@@ -82,7 +82,7 @@ Reihenfolge), und alles hinter Check ~1722, das nie lief.
   (Config-Sensor: `live=60000 | .env='60000'`), Server-`bootHead` == HEAD == `050f96c`,
   `bundleStale` false. Ohne diese Grace kickt ein Land den lokalen Audit-Drain synchron und der
   15-s-Poll des Daemons sieht den Job nie — Mechanismus und die Claim-Fähigkeits-Regel stehen in
-  `docs/linux-second-host-programm-2026-08-28.md` §„S4 — was der Erstbetrieb geändert hat".
+  `docs/attic/linux-second-host-programm-2026-08-28.md` §„S4 — was der Erstbetrieb geändert hat".
 - **Die Vergleichszahl für die Adjudikation, gleicher Tag, gleiche Suite:** der Mac auditierte
   `050f96c` grün mit `checks{ran:3133,failed:0}` in 1273566 ms. Der second-host kam auf
   1655 PASS / 67 FAIL mit Abbruch bei Check ~1722 (die drei Läufe oben, Baum `0d4dca8`; die

@@ -83,7 +83,7 @@ the helper machine; everything this daemon does is a pull.
 
 `fleet-helper.service` is a template with ALL-CAPS placeholders and no host, address or credential
 in it — this repository is public. Installing it on the helper machine is an **owner act**
-(programme plan `docs/linux-second-host-programm-2026-08-28.md`, gate G2); nothing in this repo
+(programme plan `docs/attic/linux-second-host-programm-2026-08-28.md`, gate G2); nothing in this repo
 deploys itself.
 
 **The last manual deploy** is the one that moves the unit onto the symlink. After it, every

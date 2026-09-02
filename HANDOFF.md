@@ -1,3 +1,241 @@
+# HANDOFF — Fleet Controller (Slot 1, Opus 5 high): Ueberblick MIT AGENTEN gefahren, sieben Sessions entsperrt, Helfer-Auslagerung VERMESSEN (die Zahl ist nicht die, die alle dachten) und als Drei-Schnitt-Slice gebrieft; 2026-09-02 (22:50)
+
+Rolle: 🎛 Fleet Controller, Nachfolge von Slot 7 ueber die Owner-Route. Owner-Delegation (Landen,
+autonomer Betrieb, Disposition) gilt fort. Mein ctx bei Uebergabe: 26,3 %.
+
+## 0. Reihenfolge fuer dich
+
+1. Erdung: `./state.sh` · `./register.sh` · NUR dieser Abschnitt · Board. Miss deinen ctx, bevor du liest.
+2. **DAS EINZIGE NADELOEHR DES FLEETS: Slot 2s Land.** Alle fuenf queued Auftragszeilen fassen
+   `server.ts` an, und die Lane `fleet/260902154623-7fa9` (Slot 2, Sanierung P4 Slice 3, `3dd84d1`)
+   haelt es uncommittet. Ich habe Slot 3 um 22:45 freigegeben (Begruendung in §1). **Sobald es
+   gelandet ist: `860cecdf` von Hand dispatchen** (Slot 16, wartet seit 12,3 h, blockiert die
+   Folgezeile `92553809` seines Programms), **danach `d2e4f219`** (der gebriefte Helfer-Slice),
+   **danach Slot 9s `60d07416`**. Diese Reihenfolge ist mein Entscheid, vom Owner delegiert
+   („Entscheide du wie du es machst") — Begruendung: laengste Wartezeit zuerst.
+   Ein Hintergrund-Watcher auf `main`-Bewegung lief bei mir; leg dir selbst einen.
+3. **`dispatch` steht auf `false` (Master-Stop).** Der Tick startet NULL Zeilen, unabhaengig vom
+   Deckel. Jeder Start ist ein Hand-Dispatch — der Knopf umgeht Master-Stop UND Deckel, die
+   Kollisionslesung ist damit DEINE, nicht die des Servers.
+
+## 1. Die Messung, die diese Session wert war: was die Helfer-Auslagerung wirklich bringt
+
+**Drei Fassungen, zwei davon meine eigenen Fehler — die dritte ist die belastbare.** Quelle:
+`post-land-audits.jsonl` + `git notes --ref=fleet/land`, erhoben 2026-09-02 ~22:30.
+
+- **FALSCH (meine 1. Fassung):** „remote ist 37 % langsamer". Ich verglich 13 Remote-Laeufe (alle
+  aus dem Fenster 29.08.–02.09.) gegen 324 lokale aus der GANZEN Historie. **Zeitfenster-Artefakt.**
+- **FALSCH (meine 2. Fassung):** „Faktor 16 auf den Land-Median". Ich hatte `verify.ms` und
+  `verify.waitMs` addiert — **`ms` ENTHAELT die Wartezeit bereits**. Doppelt gezaehlt.
+- **RICHTIG, nach Kettentyp aufgeschluesselt:**
+  | Kettentyp | n | reine Verifikationszeit (`ms` − `waitMs`) |
+  |---|---|---|
+  | voll, 7 Stufen | 61 | **p50 106 s, p90 123 s, max 186 s** |
+  | kurz, `install+pins` (proportional, Docs-Lands) | 35 | **p50 1 s** |
+  Die Gate-Kette ist **konstant** und war nie langsam. Die gesamte Varianz ist die WARTESCHLANGE vor
+  dem Suite-Mutex: p50 0 s, **max 2669 s**. Am 01./02.09. standen **8 von 24** Lands ueber 500 s an;
+  eines starb als `waitedOut` (2669 s gewartet, Verify nie gestartet).
+  Land-Gesamtkosten **vor** 02.09. 16:56: n=24, p50 127 s, max 2704 s, 8/24 ueber 500 s.
+  **Ab** 16:56 (Audits laufen remote): n=5, p50 104 s, **max 111 s, 0/5 ueber 500 s.**
+- **Der Satz, der stimmt:** die Auslagerung macht keinen Testtyp schneller. Sie raeumt die Schlange
+  weg. Der Median bewegt sich kaum — **der Schwanz verschwindet**, und im Schwanz starben Lands.
+- **Was NICHT messbar ist und deshalb Schnitt 3 des Slices wurde:** welche der sieben Stufen die
+  106 s verbraucht. `verify.steps` ist eine PLAN-Liste aus `LOCAL_PROOF_STEPS`; `runVerify` startet
+  die Kette als EIN `sh -c`. Es gibt zur Laufzeit keine Stufengrenze.
+- **Die Gegenrichtung, unbequem:** die sechs Lane-Vorschaulaeufe auf dem Helfer in `fleet.json` sind
+  **6 von 6 rot**, drei ohne `checks`, KEINER mit Fehlernamen. Ausgerechnet der Pfad, den wir
+  ausweiten wollen, ist der am schlechtesten diagnostizierbare. Rot-Quote im selben Fenster:
+  remote 85 % (n=13) gegen lokal 39 % (n=36) — nicht gegen die 22 % der Gesamthistorie.
+
+## 2. Was ich entschieden habe (Owner-Delegation, beide ausdruecklich erteilt)
+
+- **Advisory-Deckel bleibt bei 10, kein globales Anheben.** `server.ts` rechnet den Ueberhang selbst
+  vor (16 × (5+10) + 80 = 320 gegen nominal `MAX_TASKS` 200 — er laeuft SCHON ueber). Und der Druck
+  hat `docs/sanierung-2026-09/p6-befundregister.md` erzeugt, ein git-getracktes Zuhause, das eine
+  sterbende Session ueberlebt. **Rueckfalltuer: `FLEET_PROGRAM_MAX_PENDING_ADVISORY` in `.env`.**
+  Disposition stattdessen: `d2e4f219` per `/adopt` zu `auftrag` gemacht (Ein-Konstanten-Fix mit
+  13-Laeufe-Messung verdient eine Arbeitszeile); `8244622e` + `76e6aa3b` schreibt Slot 3 als
+  Volleintraege B-03/B-04 ins Register, **erst danach archivieren** — sonst wird die Registertabelle
+  eine Sammlung toter Verweise. Archivieren ist reversibel (`status:"archived"` → `unarchive`).
+- **Modellpolitik: Opus bleibt** (Owner 22:0x: „Kann erstmal so bleiben, wenn wir konkrete harte
+  Aufgaben haben koennen wir diese immernoch von fable5.1 loesen lassen"). Fable also gezielt fuer
+  harte Einzelaufgaben, nicht als Orchestrierungs-Default. Die 10:35-Politik ist damit ausgesetzt,
+  nicht widerrufen.
+
+## 3. Der gebriefte Slice `d2e4f219` — liegt fertig, wartet nur auf server.ts
+
+Brief haengt an der Zeile (8983 Zeichen, `POST /api/tasks/:id/brief`). Drei Schnitte, EIN Land:
+1. `SUITE_OFFER_WAIT_HELD_MS` 800 s → 1 800 s. 800 s liegt unter dem Remote-**Minimum** (597 s) und
+   im 23. Perzentil (p50 1323 s, p90 1419 s). **Die drei Laeufe unter Budget waren alle drei ROT** —
+   die Suite exitet auf dem ersten FAIL, ein schneller Lauf ist ein abgebrochener. **Das Budget
+   selektiert auf rot.** Die Lane muss die Lapse-Annahme (`LaneSuiteState "lapsed"`) PRUEFEN, nicht
+   glauben.
+2. B-01: `fails` auf `j.result` in `server.ts#reportLaneSuite` persistieren, wie es der Audit-Pfad
+   tut. Gegenprobe in `e2e/helper-portal.ts`, mit benannter Rot-Mutation.
+3. Stufen-Zeiten: `steps` von `string[]` auf `{name, ms}[]`. **Ich hatte das dem Owner gegenueber als
+   „wenige Zeilen" bezeichnet — das war falsch**, s. §1. Der Brief traegt drei Fallen und ein
+   ausdrueckliches ABBRUCHRECHT: kaempft es gegen den Pin `RULE_VERIFY` oder verlangt es, die Kette
+   in Einzelprozesse zu zerlegen (Verhaltens-Delta = Nicht-Ziel), liefert die Lane 1+2 plus einen
+   Absatz, woran es scheitert. Das ist als vollwertiges Ergebnis benannt.
+
+## 4. Sessions: was ich entsperrt habe (Owner-Auftrag „Sessions ans Arbeiten bringen")
+
+- **Slot 6 → Nachfolge gelaufen**, laeuft jetzt als **Slot 10** bei 11,6 %. Es wartete 53 min auf
+  eine einzige Frage (Model-Override ja/nein). Antwort war: nein, ohne Override erbt die
+  Nachfolgerin den richtigen Datensatz.
+- **Slot 4** hatte die einzige offene Attention des Fleets (`c4466aa9`, 2 h 06 min). Beantwortet und
+  `d5c79ce4` von Hand dispatcht → lief als codex-Lane (`gpt-5.6-sol`/high) auf Slot 7, **Status jetzt
+  `done`**, Worktree sauber abgeraeumt.
+- **Slot 16 stand 3 h 52 min still und hatte NIEMANDEN gefragt** — keine Attention, kein Report. Es
+  hing zusaetzlich in einem `/usage`-Overlay, **das jeden `POST /send` verschluckte** (Quittung sagt
+  `acceptance: unobservable`, die Pane meldet danach „Settings dialog dismissed"). **Erkennungs- und
+  Rueckweg: `tmux send-keys -t s<N> Escape`, dann neu senden.** Danach zugestellt, mit zwei
+  kollisionsfreien Zwischenarbeiten.
+- **Slot 11 (steward)** lag 2,5 h idle, weil sein Pulse an den Controller abgelehnt worden war
+  („Slot 7 arbeitet gerade"). Beide offenen Punkte beantwortet, Rundgang wieder aufgenommen.
+- **Slot 3 ↔ Slot 9 liefen aneinander vorbei** — s. §5, das ist die Falle des Tages.
+
+## 5. Fallen, die ich bezahlt habe
+
+- **SLOT-NUMMERN SIND KEINE ADRESSEN.** Slot 9 schrieb woertlich „Slot 1: hold your P4 Slice 3 land a
+  while longer". Die Sanierungs-MAIN war aber seit 19:17 Slot **3** (Lineage 12 → 1 → 3); Slot 1 war
+  der Controller. **Die Bitte kam nie an, und Slot 3 haette gelandet.** Adressiere ueber das Programm
+  oder ueber den Controller. Ich habe es beiden ins Handoff-Gedaechtnis gegeben.
+- **Ein belegter Composer ist zweimal mein Glueck gewesen.** Zwei `POST /send` an Slot 3 wurden mit
+  409 „composer occupied" abgewiesen — und in genau diesem Fenster kam Slot 9s Befund herein, der
+  meine Nachricht („Land freigegeben") **widerlegt** haette. Der Rueckweg ist `tmux send-keys C-u`,
+  dann neu senden; bei Attention-Antworten erlaubt der Kontrakt den Retry nur mit IDENTISCHEM Text.
+- **`verify.ms` enthaelt `waitMs`.** Wer beide addiert, zaehlt die Schlange doppelt und erfindet einen
+  Faktor. Mir passiert, in einer Zahl, die ich dem Owner schon genannt hatte.
+- **Zwei Populationen mit verschiedener Zeitspanne zu vergleichen misst die Zeit, nicht den
+  Unterschied.** Kostete mich zwei falsche Aussagen in Folge (Laufzeit UND Rot-Quote). Slot 3 nimmt
+  den Satz als Methodenregel ins P6-Register.
+- **Eine Zahl, die ich einer Session gegeben hatte, wanderte in ein GETRACKTES Dokument, bevor ich
+  sie korrigieren konnte.** Slot 3 baute meine 85-%-gegen-22-%-Fassung in `p6-befundregister.md` ein.
+  Korrektur nachgeschickt. **Wer eine Zahl an eine schreibende Session gibt, schuldet ihr die
+  Korrektur schneller als der naechste Commit kommt.**
+
+## 6. Offene Owner-Punkte
+
+1. **Rotes Audit `d4bb687a` (2 FAILs) unadjudiziert — die Attribution ist jetzt ENTSCHIEDEN.** Slot 9s
+   Kontrolllauf auf `fda6fda` (dem Baum VOR seinem Land, Abwesenheit per `git merge-base
+   --is-ancestor` verifiziert): **3455 PASS / 10 FAIL**, Lauf `isolated-20260902T173734Z-53224`,
+   darunter woertlich `restart keeps the busy pending event with the same id and no invented attempt`.
+   Der Baum NACH dem Land faellt 1–2. **Das Land hat die Familie verbessert.** Der Defekt ist
+   vorbestehend (ops-event-/fleet-report-Familie, Q5/Q6) und verdient eine eigene Zeile. Adjudizieren
+   kann nur der Owner.
+2. **Die sieben offenen roten Audits** tragen `fails[]: null` — ausnahmslos. Die Namen holt man aus
+   dem Check-Trail, Join ueber die Zeilenzahl gegen `checks.ran`; zweimal belegt (`3481/2` und
+   `3443/11`). Das Rezept steht als B-02 im P6-Register.
+3. **`3974883` ist inzwischen belegt:** Audit `71361fa9` (21:44, remote, rot) traegt erstmals einen
+   Namen in `fails`. Das betrifft nur den AUDIT-Pfad; die Vorschau-Luecke (B-01) steht unveraendert.
+4. **Zweites Helfergeraet** — unveraendert offen, und §1 macht den Fall staerker: `mainMacbook` ist
+   seit sechs Tagen tot, `second-host` ist der einzige. Ein Ausfall wirft alles auf den lokalen Mutex
+   zurueck, also in den Schwanz aus §1.
+5. B-Zeilen-Promotion und GitHub-Rueckstand stehen unveraendert aus Slot 15s Handoff offen.
+
+## 7. Deploy
+
+`deployGap.codeBehind: true`, `behindCount 18`, aber **`bundleStale: false`** (jemand hat gebaut).
+Kein Audit lief bei meiner letzten Messung, also kein 409-Grund. **Ich habe bewusst NICHT deployt** —
+der Slice aus §3 fasst `server.ts#reportLaneSuite` an und braucht ohnehin einen Deploy nach dem Land;
+zwei Deploys in einer Stunde sind Verschwendung. Deine Entscheidung, nicht meine Schuld.
+
+---
+# HANDOFF — Dual-Host cd110019: Phase 1 zur Haelfte gelandet (S1+S2), S3/S4 warten auf einen Lane-Platz; 2026-09-02 (20:0x)
+
+Program **`cd1100193082db395c1387db`** aktiv und gebunden. Dieser Abschnitt ist NEU und oben
+angesetzt; nichts darunter wurde angefasst (30 Abschnitte vorher, 31 nachher).
+
+## 1. Was gelandet ist — beide mit gruenem Gate, beide vom Controller gelandet
+
+- **S1 `dabd4da9`** (daemon-update als Helper-Job) → main `79acd2e`, `verify.ok true`, volle
+  7-Schritt-Kette. Lane `fleet/260902043021-f92c`.
+- **S2 `8228ae65`** (Job v1 `command`) → main `d4bb687`, `verify.ok true`, 104 s Arbeit, **0 s
+  Mutex-Wartezeit**. Lane `fleet/260902113526-4811`, 3 Commits, 11 Dateien.
+- **Das Program hat KEINE Self-Land-Promotion.** Die Projektion sagt an einer REVIEWABLE-Zeile
+  woertlich „the owner lands it from the board" — nicht versuchen, sondern den Controller bitten.
+
+**Der Geraete-Bootstrap IST passiert:** `helperDevices[secondhostlinux1].daemonSha` stand um 15:4x
+auf `f62b1f5`. Damit ist S1s Erfolgskriterium am ECHTEN Geraet erfuellt und jeder weitere
+Daemon-Deploy ist ein Job (`POST /api/helper/devices/secondhostlinux1/update`), kein Handgriff.
+
+## 2. Was offen ist, in der Reihenfolge, die der Controller gesetzt hat
+
+- **S3 `60d07416`** (Wake-on-LAN) und **S4 `c3f91ce1`** (Presence + suite.log-Artefakt) sind
+  `queued`. **Nicht selbst dispatchen** — Dispatcher ist aus, und der Controller vergibt den
+  Lane-Platz erst an `860cecdf`, dann `d2e4f219`, dann S3. Tripel explizit mitgeben:
+  **`claude/claude-opus-5[1m]`/high** (Owner 10:45: Lanes Opus, MAINs Fable); die Zeilen tragen
+  noch das Fable-Tripel aus dem Filing, der Dispatch-Knopf ueberschreibt es.
+- **S4s Brief muss vor dem Dispatch EINEN Satz dazubekommen** (von mir gemessen, noch nicht
+  eingearbeitet): die neuen Kommentare in `e2e/security.ts` und `server/types.ts` behaupten, die
+  Token-Verweigerung von `claude|codex|pi` mache Remote-Agent-Spawn unmoeglich „whatever the
+  allowlist says". Sie tut das nicht: `bun run build`/`bun test`/`bun run verify` fuehren
+  `package.json`-Skripte AUS DEM EINGEREICHTEN BUNDLE aus, und das kontrolliert der Aufrufer — die
+  Fixture der Lane schreibt selbst ein `package.json` und faehrt `bun run build` hindurch. **Kein
+  Regress** (der Portal-Pfad fuehrt ueber `suiteCmd` seit jeher eingereichten Repo-Code aus), aber
+  die Zusage ist zu stark und ein spaeterer Leser wird sich darauf stuetzen. Korrektur: die
+  Verweigerung bindet den KOMMANDO-STRING, nicht das Ausgefuehrte.
+- **Owner-Grenze, benannt und NICHT gebaut:** `/api/self/watch` verweigert einer Lane weiter
+  `kind:"job"` (409). Die Begruendung (lane-waits-on-lane) trifft auf einen EIGENEN Command-Job
+  nicht zu — aber eine Lane kann heute auch keinen Job filen, also waeren BEIDE Tueren zugleich zu
+  bewegen. Das ist eine Program-Entscheidung (Arbeit von einer Lane auf eine andere Maschine
+  auslagern), keine Check-Inversion. Gehoert in S4 oder Phase 2.
+- **Phase 2** (Program-MAIN + Worker auf second-host — das urspruengliche Erfolgsmass) steht hinter
+  Phase 1 UND einem eigenen Owner-Entscheid. Nicht gefiled.
+- **T14-Digest-Breaker** (`verify.ts` im FREMDEN private-repo-o-Repo, eine eingebrannte Baseline,
+  faellt auf x86_64 rot bei identischem Commit): dem Owner vorgelegt, **nie zugewiesen**. Bis
+  entschieden ist er NICHT in diesem Program. Wirkung bleibt: second-host darf einen Build fahren und
+  bebildern, aber ueber diese Zeile nicht gruen oder rot sprechen.
+
+## 3. Der Audit-Befund, der einen halben Tag gekostet hat — Ergebnis, damit ihn niemand neu faehrt
+
+Das Post-Land-Audit von `d4bb687` war rot 2/3481. **Attribution abgeschlossen: ALTBEFUND, nicht
+dieses Land.** Beweiskette, alle Laeufe seriell und mit Run-ID:
+
+| Baum | Run | Ergebnis |
+|---|---|---|
+| `d4bb687` Audit | `isolated-20260902T161436Z-31724` | 2 FAIL |
+| `d4bb687` gleicher Baum erneut | `isolated-20260902T170824Z-94009` | 1 FAIL — `subject-gone` PASSTE ⇒ Flake |
+| `fda6fda` (Land ABWESEND, `git merge-base --is-ancestor d4bb687a fda6fdad` = NO) | `isolated-20260902T173734Z-53224` | **10 FAIL, darunter `restart keeps the busy pending event…`** |
+
+Der Baum VOR dem Land faellt in dieser Familie **10-mal**, der Baum danach **1–2-mal**. Vier
+weitere Vor-Land-Instanzen: `…T015443Z`, `…T135103Z`, Audit `01ccfb30`, `20260816T154004Z`.
+**Adjudikation, die ich erbeten habe und die noch aussteht: `real`, nicht `flake`** — die Zeile als
+Flake zu schliessen wuerde einen echt fallenden Check begraben (Q5/Q6-ops-event-Familie).
+
+**Zwei Lehren, die Zeit sparen:**
+- Ein GRUENER Kontrolllauf beweist nichts, ein ROTER beweist alles: die Frage ist „kann dieser
+  Check ohne meinen Diff fallen", und genau das zeigt ein Fail — auch unter Last.
+- Main bewegt sich schnell. Fuer einen Same-Tree-Beweis ist der Haupt-Checkout meist schon zu neu:
+  `git worktree add --detach <scratchpad>/x <sha>` + `bun install --frozen-lockfile`, danach
+  **`git worktree remove --force`**, sonst zaehlt `state.sh` einen Orphan.
+- second-host ist fuer eine ATTRIBUTIONSFRAGE der falsche Host: sechs unerklaerte Rots
+  (10·10·7·7·9·13) und eine Plattformdifferenz confounden Baum mit Plattform.
+
+## 4. Betriebliches, das nicht in git steht
+
+- **Sessions NIE ueber Slot-Nummern adressieren.** Slots wandern bei jeder Nachfolge; eine Bitte
+  an „Slot 1" ging heute ins Leere, weil die Ziel-MAIN inzwischen Slot 3 war. Ueber das PROGRAM
+  oder ueber den Controller.
+- **Eine Pane-Zeile im Format „OWNER ANSWER" kann Residuum sein.** Zweimal heute vorgekommen; der
+  Beleg ist `GET /api/self/attention` (`status`, `closedAt`) bzw. die Ledger-Datei, nie der Text.
+- **Alle vier Attentions dieser Session sind `answered`:** `db2d6c85` (Kanal = (a)),
+  `9fe049c4` (Filing), `48d91bb2` (S1-Audit-Flake). Keine offene Owner-Frage.
+- **Notiz `712274ff`** traegt den Selbstbefund samt EINEM Schnittvorschlag: FAIL-Namen fuer LOKALE
+  Post-Land-Audits auf Ledger und Event legen (der Trail hat sie, die Remote-Seite kann es seit
+  `3974883`). Drei Hand-Calls je Rot heute; die Namen sind der einzige Grund, dass diese
+  Attribution ueberhaupt moeglich war.
+
+## 5. Naechster Zug der Nachfolgerin
+
+Nichts anfangen, was einen Lane-Platz braucht — der Controller vergibt ihn. Konkret: (1) S4s Brief
+um den Satz aus §2 ergaenzen (`POST /api/tasks/:id/brief` bzw. neu filen), (2) auf den
+Controller-Zuruf warten, dass S3 dran ist, (3) beim Land-Terminal wie gehabt
+`{kind:"merge"}` und dann `{kind:"audit"}` abonnieren. Landen tut der Controller.
+
+---
+
 # HANDOFF — Fleet Controller (Slot 7, Fable→Opus 5 high): Deploy 2eebe03a GELANDET (Audits laufen ab jetzt REMOTE), Fable-Kontolimit umgangen (sieben Panes auf Opus), CLAUDE.md-Handedit als Land-Killer GEMESSEN und repariert, zwei Lands in Kette; 2026-09-02 (17:15)
 
 Rolle: 🎛 Fleet Controller. Owner-Delegation (Landen, autonomer Betrieb) gilt fort. Modelle: siehe §2 —

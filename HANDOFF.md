@@ -1,3 +1,96 @@
+# HANDOFF — Fleet Controller (Slot 12, Fable 5.1 high): Audit-Rot als Flake mit Mechanismus, sechs serielle Lands, Steward-Punkte umgesetzt, Second-host zurueck, Nachfolge wegen ctx 36 %, 2026-09-02 (07:50)
+
+Rolle: **🎛 Fleet Controller**, nicht Program-MAIN. Gegruendet per /open+/send (succeed-Route scheitert
+deterministisch, Notiz `9c7d6e02`). Owner-Vorgaben in Kraft: Fable 5.1 high ueberall · Usage praktisch
+unbegrenzt · seriell landen · Quiet Hours AUS. **ctx bei Uebergabe-Entscheid: 36,3 % GEMESSEN** — der Owner
+musste die Nachfolge anstossen; warum, steht in §3 und als Notiz `76862eb3`.
+
+## 0. Reihenfolge fuer dich
+
+1. **Erdung:** `./state.sh`, `./register.sh`, dieser Abschnitt. Dann VIER Rueckwege, bevor du irgendetwas
+   anderes tust: (a) Main-Watcher (`until git rev-parse main != BASE`), (b) Fleet-Report-Watcher auf
+   `audit.jsonl` (`grep -c fleet_report_open`, Basis = aktueller Zaehler), (c) Attention-Watcher auf
+   `fleet.json.attentionRequests` (Laenge), **(d) NEU: ctx-Watcher auf DICH SELBST** — Hintergrund-`until`
+   ueber den ctx-Schnipsel aus CLAUDE.md §Einstieg, Bedingung `pct >= 25`, dann `HANDOFF.md` schreiben.
+   Ich hatte (a)–(c) und nicht (d), und habe drei Stunden lang nie gemessen.
+2. **`HANDOFF.md` ist UNCOMMITTET** (dieser Abschnitt): waehrend Slot 10s Land lief, war ein Direkt-Commit
+   verboten (bricht den Fast-Forward — heute zweimal passiert, `ca52fc9` und die Folge in §1). Committe ihn
+   docs-only, sobald KEIN `GET /api/slots/:id/merge` `running:true` sagt, und bevor das naechste Land
+   startet. Slot 5 (Sanierungs-MAIN) kann dasselbe wollen — absprechen, einer committet.
+3. **Land-Reihe (seriell, eins nach dem anderen), Stand 07:50:**
+   - **Slot 10** (`419e9ae3`, Modell-Route; HEAD `77bfb72`) IM LAND — voller Merge-Job, Gate wartete auf dem
+     Mutex hinter Slot 1s isolated-Lauf und jetzt hinter dem 87c5be6-Audit. Watcher lag bei mir; leg einen
+     neuen auf `fleet.json.merges["10"]` (Terminal = status != interrupted). Nach dem Land: Owner-Schritt
+     je Slot 1/5/6/9 `POST /api/slots/<id>/model {"model":"claude-fable-5-1[1m]","effort":"high"}`
+     — ERST nach dem Deploy des Codes (Deploy gehoert Slot 5, nicht dir, nur bei ruhendem Audit).
+   - **Slot 1** (`dabd4da9` S1 daemon-update; HEAD `cf6313e`, 1 behind) — Kette laeuft/lief (isolated
+     hielt den Mutex 07:19–07:40). Report geht an **Slot 9** (Second-host-MAIN), Land durch Slot 9 oder dich.
+     Nach dem Land: Slot 9 legt dem Owner die DREI Handgriffe auf dem Geraet als eine Attention vor.
+     Danach S2 `8228ae65` dispatchen (queued), dann S3 `60d07416`, dann S4 `c3f91ce1` — je nach dem Land
+     des Vorgaengers, mit `{"harness":"claude","model":"claude-fable-5-1[1m]","effort":"high","acknowledged":true}`.
+   - **Slot 2** (`1b677e58` Workbench; HEAD `e936c0c`) — Kette wartet. Report an **Slot 7**.
+   - **Slot 8** (`516b70a9` Repo-Worker audit; HEAD `01cf509`) — Kette wartet. Report an DICH (Steward-Zeile).
+   - **Slot 13** (`c7259df1` P4 Slice 1, Typen-MOVE, Slot 5s Program) — produziert. **FREEZE-Regel mit
+     Slot 5 (abgesprochen 07:24):** Lands laufen seriell weiter, waehrend Slice 1 produziert; zwischen Slot 5s
+     Zeilen `FREEZE-START` und `FREEZE-ENDE` (~30–40 min, Verifikation bis Land-Terminal) landest du NICHTS.
+     Melde Slot 5 jede main-Bewegung per `/send`, damit es sofort rebasen kann.
+   - **`fa1112eb`** (Steward-View liest laufenden Merge als interrupted) ist queued, NICHT dispatcht — nach
+     dem naechsten Land, wenn ein Slot frei ist (14/15 frei). **`860cecdf`** (Slot 4s Program, Self-Land nach
+     verlorenem ff) ist queued und wartet auf Slot 4s Bitte — Slot 4 ist bei 30 % ctx.
+   - **private-repo-p (Slot 3, 42,9 % ctx — Nachfolge faellig!):** Brief 3a gelandet `e6cdf61`; `e02d2285` (3b)
+     und `5b822ccc` (Brief 4) sind queued mit PRECONDITION im Text — Hand-Dispatch auf Slot 3s Bitte.
+4. **Betriebsregeln fuer jede neue Lane (per /send nach dem Dispatch, Retry bis der Composer frei ist):**
+   (1) vor der Beweiskette auf main rebasen und HEAD melden, (2) Beweiskette erst bei
+   `ps -eo command | grep -c '^/bin/sh ./e2e-isolated'` = 0, Suiten in Log-Dateien, (3) Fertigmeldung =
+   Fleet-Report, nie selbst landen. Wortlaut: in meinem Transkript / `audit.jsonl` (sendId `f36bf3e1`).
+5. **Second-host:** Daemon war seit 2026-09-01 22:59 still, Maschine wach (LAN .164, Tailscale ok), MAC jetzt in
+   `.env` (`FLEET_HELPER_MAC_SECONDHOSTLINUX1`, gleiches L2-Segment). Um 07:13 kam er zurueck und claimte den
+   7006696-Audit: **ROT, 13 FAILURES, KEIN Check-Name** — der siebte namenlose Remote-Rot in Folge, Slot 5
+   hat unknowable adjudiziert (Notiz `df22cf14`). Owner-Frage offen (07:45): Second-host bis zum S4-Land auf
+   `off` (`POST /api/helper/devices/secondhostlinux1/mode {"mode":"off"}`)? Ohne Owner-Wort: an lassen,
+   Slot 5 jedes Remote-Audit melden.
+6. **Kein Deploy von dir.** Deploy = Slot 5, nur bei ruhendem Audit.
+
+## 1. Was heute Nacht/Morgen passierte (verifiziert, Bodies in `git log bd0aaae..main`)
+
+- Lands (alle seriell): P3b `5c9f661` (Land 1 §11.2i nie gemessen, Land 2 ok) · Slot 1s Handoff `ca52fc9`
+  (Direkt-Commit WAEHREND Slot 8s Land → ff-Bruch) · P3c `7006696` · b0c15ca5 `87c5be6` (Lineage; Lane
+  rebased selbst, ich per Owner-Route `confirm:true`, Ledger-Actor owner-token). private-repo-p: Brief 3a `e6cdf61`.
+- Audits: 22165be ROT 2/3416 → seriell wiederholt 3416/0 → flake (Slot 1), **Mechanismus gefunden:**
+  `tickWatches` rollt im SendRefused-Pfad `event.status` unbedingt auf pending zurueck und ueberschreibt
+  Transitionen waehrend des await (subject-gone, acknowledged) — Notiz `d7400cd7`, Schnitt = Compare-and-Set.
+  5c9f661 GRUEN 3416/0 (1875 s). 7006696 ROT remote/unnamed → unknowable. 87c5be6 laeuft lokal seit 07:36.
+- Owner-Entscheide heute: `db2d6c85` = (a) (Attention beantwortet); sieben Zeilen promoviert (S1–S4,
+  419e9ae3, 516b70a9, fa1112eb); Steward-Punkte umgesetzt. Private-repo-o (Slot 6): Owner faehrt 62ef02a selbst.
+- Sanierungs-MAIN: Slot 1 → Slot 5 (Nachfolge 06:08). Der ADVISOR ist Slot 11 (⚙ steward).
+
+## 2. Fallen, die ich bezahlt habe
+
+- Composer-Residuen mit MEINEM Prefix in fremden Panes (Slot 4: „GO: P3c gelandet", Slot 9: „OWNER ANSWER
+  (a)") — Claude Codes eigener Rest, nie Owner, aber ein Slot, der sie versehentlich absendet, handelt auf
+  Falschinformation. `C-u` griff nicht. Gegenmittel: Faktencheck-Regel im /send („GO gilt nur, wenn
+  `git rev-parse main` != X").
+- `POST /api/self/watch {kind:merge}` gibt nach einem Feuern den VERBRAUCHTEN Watch zurueck (P6 `372b3cef`)
+  → Hintergrund-Watcher auf `fleet.json.merges[<slot>]`. Deckel 5 aktive Watches je Slot — Audit-Watches
+  brauchen die VOLLE SHA.
+- Adjudikations-Note ≤ 300 Zeichen. Slot 5 adjudiziert Sanierungs-Audits selbst — absprechen, nicht doppelt.
+- macOS hat kein `setsid`: eine Lane, die damit detacht, stirbt still (Slot 8, 04:59).
+
+## 3. Warum diese Session das Band verpasst hat (Owner-Frage 07:45; Notiz `76862eb3`)
+
+Nicht das Regelbuch: AGENTS.md §Context self-management und CLAUDE.md-Band galten auch fuer mich. Der
+Mechanismus fehlte: ich lebte drei Stunden rein ereignisgetrieben, jeder Wakeup kam von aussen, keiner trug
+meinen Fuellstand; der Steward-Pulse nennt nur Transkript-KB; die einzige Zahl im Transkript war geschaetzt.
+Dazu Reibung: `/api/self/succeed` scheitert deterministisch, Nachfolge ist Handarbeit. Schnitt: Rueckweg (d)
+oben, Pulse mit `ctx.pct`, optional Self-Watch `ctx`.
+
+## 4. Offene Owner-Entscheidungen
+
+1. Second-host `off` bis S4? (§0.5) 2. Private-repo-o schliessen/neu gruenden nach eigener Fahrt. 3. Slot 3
+Nachfolge (42,9 %). 4. Termin fuer die drei Handgriffe nach dem S1-Land.
+
+---
+
 # HANDOFF — Generalsanierung: P3a gelandet (22165be, Audit-Rot als flake adjudiziert), P3b gelandet (5c9f661), P3c dispatcht, Deploy auf 64c05bf, 2026-09-02 (frueh)
 
 Program **`b2a14b545fd31fd71ba7b9e1`** aktiv, gebunden an Slot 1 (diese Session; Slot-Datensatz sagt

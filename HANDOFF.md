@@ -116,6 +116,22 @@ beobachten). Modelle: MAINs Fable, Lanes Opus, GLM nur ueber pi-zai. Lange Texte
 Datei + Einzeiler. Und miss deinen ctx, bevor du Agenten startest — drei Extraktionen kosteten mich
 heute ~12 Punkte, die Synthese danach ~8.
 
+## 3b. Nachtrag 13:55 — Owner-Pushes abgearbeitet, zwei Dispatches, B13
+
+- Owner-Prinzip (woertlich 13:45): „ich als Owner werde wirklich nur zu etwas gefragt, wenn es ohne mich
+  nicht vernuenftig zu beantworten ist". Gemessen: 4 offene Attentions, alle Controller-beantwortbar, 0
+  Owner-Entscheide. Erledigt: Audit 79acd2e als **flake** adjudiziert (Slot 9s serieller Rerun 3443/0);
+  **S2 `8228ae65` dispatcht → Slot 10** (Opus high); **`dfc21621` (private-repo-p Brief 5) dispatcht → Slot 13**
+  (`codex` / `gpt-5.6-sol` / high — DAS ist die Sol-Modell-Id, sie hat den Regex bestanden); vier
+  Antworten geschickt; `26cce858` archiviert. Offen: Owner-Inbox-Event `765525a0` (fleet-report vom
+  08-31, Slot 1) — Feldname in `fleet.json` ist nicht `fleetEvents`, per Board acken.
+- **B13 (Zeile im Register):** Attention mit Ziel `controller|owner`, Default controller; nur decision/
+  taste an den Owner, und die als EINE Push-Zeile aufs Telefon. Heute gibt es keinen Fleet-Push; das
+  Session-Werkzeug `PushNotification` skippt bei aktivem Terminal (getestet 13:42).
+- Owner-Richtung 13:40 (Effizienz vor Berechtigungs-Strenge): Notiz §8, Zeile `812e8458`, Memory.
+- Die Antwort-Route echot den vollen Requester-Text in die Pane — jede meiner vier Antworten kostete die
+  MAIN ihren eigenen Text nochmal (B1).
+
 ## 4. Offene Owner-Punkte
 
 1. `3bb5a5c9` freigeben (Freeze-Ausnahme?) → Grace zurueck. 2. **Owner-Richtung 13:05 (Zeile `98979607`):**

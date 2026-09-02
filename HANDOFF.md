@@ -38,6 +38,13 @@ die Fable-Politik ist HEUTE nicht fahrbar, das ist der wichtigste Betriebsfakt d
    Geraets, kein Beleg von dieser Maschine. Das Urteil „voll gelaufen" traegt trotzdem — ueber
    `exitCode 0` nach 22,9 min, `clonedSha == mainSha` und das `ALL PASS` im Tail — aber es gehoert
    nicht als hiesige Messung weitergeschrieben.
+   **Und eine unausgesprochene Voraussetzung, von Slot 3 nachgetragen (Korrektur-Zeile zu
+   `f9db018e`):** die Rekonziliation von `failed` haengt daran, dass die `N FAILURES`-Summenzeile den
+   4-KB-Tail ueberlebt hat. Sie steht am Laufende, ueberlebt also normalerweise — aber ein Lauf, der
+   NACH seiner Summenzeile noch viel ausgibt, faellt aus der Garantie. Drei Schranken geben dann
+   `null` statt einer Zahl (Summenzeile ohne passendes `fails[]` · `exitCode 0` mit `failed != 0` ·
+   `ALL PASS` mit gezaehlten Fails ohne Summenzeile). Und die Rekonziliation korrigiert immer nur die
+   Failure-Differenz, nie die verlorenen PASS-Zeilen — `ran` bleibt kaputt.
 
 ## 1. Was in dieser Session passierte (verifiziert)
 

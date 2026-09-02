@@ -2274,6 +2274,18 @@ interface Program {
   // may roll back after a restart, without overloading Slot.programId (task/lane provenance).
   // Absent is every Standard Program and every Game-Maker Program outside that short transition.
   founding?: ProgramFounding;
+  // THE PERSISTED AUTHORITY LINEAGE — who held this Program's MAIN authority when, and how each
+  // holding ended. Deliberately the FOURTH record and none of the other three: content is what a
+  // session may PROPOSE, `promotion` is a permission the owner GRANTS, `founding` is a crash marker
+  // that lives for one transition — this is a HISTORY that only authority moves append to and
+  // nothing rewrites. It is not derived from audit.jsonl on purpose: that ledger is prose, unbounded,
+  // rotated by nobody and never loaded as state, so a successor reading it would parse sentences
+  // to learn facts the server already knew at write time. Every authority move writes this in the
+  // SAME save as `main` (bootstrap, rebound, succession); a teardown of the bound occupant closes
+  // the open entry without appending; a Program that already had `main` before this record
+  // existed gets exactly one `backfill-unknown` entry at load, with `boundAt` copied from `main` —
+  // never an invented earlier history. Absent = no lineage is known, and the execution view says so.
+  lineage?: ProgramLineage;
   confirmedAt?: number;
   activatedAt?: number;
   completedAt?: number;
@@ -2343,6 +2355,117 @@ const loadProgramProfile = (value: unknown): ProgramProfile | undefined => {
   return { v: 1, kind: r.kind as ProgramProfileKind, confirmedAt: r.confirmedAt };
 };
 const isGameMaker = (p: Program | undefined | null): boolean => p?.profile?.kind === "game-maker";
+
+// CLOSED, VERSIONED, DEFAULT-DENY — loadPromotion's discipline for a record that is a HISTORY
+// rather than a permission, and the degradation direction is the same for the same reason: a
+// lineage nobody can parse is not a shorter lineage, it is no lineage, and the execution view then
+// says "not reconstructible" instead of rendering half a history as the whole one. Unlike the
+// promotion, an unreadable record is REPORTED (one audit row, one log line), because silently
+// losing a history is exactly the failure this record exists to end.
+//
+// `via` names how an entry CAME to hold authority, `endedBy` how the holding ENDED. The first close
+// wins and is never overwritten: a MAIN whose pane was torn down keeps `retire` with the observed
+// time even when a later bootstrap rebinds over the stale binding — that rebound is on the NEW
+// entry's `via`. `endedBy:"rebound"` on an entry therefore means precisely "its death was never
+// observed; the binding was found stale at rebind time". `replaced` is the one exit without a
+// successor: a bootstrap over a stale binding dropped it with its founding marker and then failed,
+// so the Program stands active and unbound.
+type ProgramLineageVia = "bootstrap" | "rebound" | "succeed" | "backfill-unknown";
+type ProgramLineageEndedBy = "rebound" | "succeed" | "retire" | "replaced";
+interface ProgramLineageEntry {
+  slot: number; openedAt: number; sessionId: string | null; boundAt: number;
+  via: ProgramLineageVia; endedAt: number | null; endedBy: ProgramLineageEndedBy | null;
+}
+interface ProgramLineage { v: 1; entries: ProgramLineageEntry[]; dropped: number }
+// the oldest entries fall off first and are COUNTED, so a capped record still says how much of the
+// history it no longer carries
+const PROGRAM_LINEAGE_MAX = 50;
+const PROGRAM_LINEAGE_VIA: ProgramLineageVia[] = ["bootstrap", "rebound", "succeed", "backfill-unknown"];
+const PROGRAM_LINEAGE_ENDED_BY: ProgramLineageEndedBy[] = ["rebound", "succeed", "retire", "replaced"];
+const PROGRAM_LINEAGE_ENTRY_KEYS = ["slot", "openedAt", "sessionId", "boundAt", "via", "endedAt", "endedBy"];
+type ProgramLineageRead = { ok: true; lineage: ProgramLineage } | { ok: false; error: string };
+const loadProgramLineageEntry = (value: unknown, index: number): ProgramLineageEntry | string => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return `entry ${index} must be an object`;
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !PROGRAM_LINEAGE_ENTRY_KEYS.includes(k))
+    || Object.keys(r).length !== PROGRAM_LINEAGE_ENTRY_KEYS.length)
+    return `entry ${index} must contain exactly ${PROGRAM_LINEAGE_ENTRY_KEYS.join(", ")}`;
+  if (!Number.isInteger(r.slot) || (r.slot as number) < 1 || (r.slot as number) > MAX_SLOTS)
+    return `entry ${index} slot must be an integer in 1..${MAX_SLOTS}`;
+  if (typeof r.openedAt !== "number" || !Number.isFinite(r.openedAt) || r.openedAt <= 0)
+    return `entry ${index} openedAt must be a positive number`;
+  if (r.sessionId !== null && typeof r.sessionId !== "string") return `entry ${index} sessionId must be a string or null`;
+  if (typeof r.boundAt !== "number" || !Number.isFinite(r.boundAt) || r.boundAt <= 0)
+    return `entry ${index} boundAt must be a positive number`;
+  if (typeof r.via !== "string" || !PROGRAM_LINEAGE_VIA.includes(r.via as ProgramLineageVia))
+    return `entry ${index} via must be one of ${PROGRAM_LINEAGE_VIA.join(", ")}`;
+  if (r.endedAt !== null && (typeof r.endedAt !== "number" || !Number.isFinite(r.endedAt) || r.endedAt <= 0))
+    return `entry ${index} endedAt must be a positive number or null`;
+  if (r.endedBy !== null && (typeof r.endedBy !== "string"
+    || !PROGRAM_LINEAGE_ENDED_BY.includes(r.endedBy as ProgramLineageEndedBy)))
+    return `entry ${index} endedBy must be one of ${PROGRAM_LINEAGE_ENDED_BY.join(", ")} or null`;
+  if ((r.endedAt === null) !== (r.endedBy === null)) return `entry ${index} endedAt and endedBy must be null together`;
+  return { slot: r.slot as number, openedAt: r.openedAt, sessionId: r.sessionId as string | null,
+    boundAt: r.boundAt, via: r.via as ProgramLineageVia, endedAt: r.endedAt as number | null,
+    endedBy: r.endedBy as ProgramLineageEndedBy | null };
+};
+const loadProgramLineage = (value: unknown): ProgramLineageRead => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "must be an object" };
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !["v", "entries", "dropped"].includes(k)) || Object.keys(r).length !== 3)
+    return { ok: false, error: "must contain exactly v, entries, dropped" };
+  if (r.v !== 1) return { ok: false, error: "v must be 1" };
+  if (!Array.isArray(r.entries)) return { ok: false, error: "entries must be an array" };
+  if (r.entries.length > PROGRAM_LINEAGE_MAX)
+    return { ok: false, error: `entries must hold at most ${PROGRAM_LINEAGE_MAX} rows` };
+  if (!Number.isInteger(r.dropped) || (r.dropped as number) < 0)
+    return { ok: false, error: "dropped must be a non-negative integer" };
+  const entries: ProgramLineageEntry[] = [];
+  for (const [index, raw] of r.entries.entries()) {
+    const entry = loadProgramLineageEntry(raw, index);
+    if (typeof entry === "string") return { ok: false, error: entry };
+    // append-only with close-before-append: only the newest holding can still be open
+    if (entry.endedAt === null && index !== r.entries.length - 1)
+      return { ok: false, error: `entry ${index} is open but is not the newest entry` };
+    entries.push(entry);
+  }
+  return { ok: true, lineage: { v: 1, entries, dropped: r.dropped as number } };
+};
+const lineageEntryFromMain = (main: NonNullable<Program["main"]>, via: ProgramLineageVia): ProgramLineageEntry =>
+  ({ slot: main.slot, openedAt: main.openedAt, sessionId: main.sessionId, boundAt: main.boundAt,
+    via, endedAt: null, endedBy: null });
+// Closes the newest entry if it is open. Never overwrites a close: the first observed ending is the
+// fact, a later one is a different fact that belongs to the entry that follows.
+const closeProgramLineage = (program: Program, endedBy: ProgramLineageEndedBy, at: number): void => {
+  const lineage = program.lineage;
+  const last = lineage?.entries.at(-1);
+  if (!lineage || !last || last.endedAt !== null) return;
+  program.lineage = { ...lineage, entries: [...lineage.entries.slice(0, -1), { ...last, endedAt: at, endedBy }] };
+};
+// The one append. `predecessor` is the binding this move replaces: it closes the open entry with
+// `endedBy`, and — when the record is ABSENT (legacy or unreadable) — first backfills that
+// predecessor from the binding itself, so the appended entry never claims a first holding it did
+// not have. Caps by dropping the oldest and counting them. The CALLER saves, in the same save as
+// `main`, and restores the returned previous record if that save fails.
+const appendProgramLineage = (program: Program, entry: ProgramLineageEntry,
+  predecessor: { main: NonNullable<Program["main"]>; endedBy: ProgramLineageEndedBy } | null): void => {
+  if (!program.lineage)
+    program.lineage = { v: 1, entries: predecessor ? [lineageEntryFromMain(predecessor.main, "backfill-unknown")] : [],
+      dropped: 0 };
+  if (predecessor) closeProgramLineage(program, predecessor.endedBy, entry.boundAt);
+  const entries = [...program.lineage.entries, entry];
+  const overflow = Math.max(0, entries.length - PROGRAM_LINEAGE_MAX);
+  program.lineage = { v: 1, entries: entries.slice(overflow), dropped: program.lineage.dropped + overflow };
+};
+// The teardown hook: the bound occupant of an active Program is being torn down, so its holding
+// ends NOW, with the observed time. Programs whose `main` names a different occupation are
+// untouched — the binding itself is deliberately left in place (it is what "stale" means).
+const closeProgramLineageForOccupant = (slot: number, openedAt: number, at: number): void => {
+  for (const p of programs) {
+    if (!p.main || p.main.slot !== slot || p.main.openedAt !== openedAt) continue;
+    closeProgramLineage(p, "retire", at);
+  }
+};
 
 type ProgramFoundingMode = "bootstrap" | "succession";
 interface ProgramFoundingOccupant { slot: number; openedAt: number }
@@ -2648,9 +2771,16 @@ async function programExecutionView(s: Slot): Promise<Response> {
     const legacyWatches = receiverWatches.filter((w) => w.slotOpenedAt === undefined).length;
     const foreignWatches = receiverWatches.filter((w) => w.slotOpenedAt !== undefined
       && w.slotOpenedAt !== s.openedAt).length;
-    const unknown = [
-      "1 lineage gap: no persisted Program-MAIN lineage exists; earlier bound sessions of this program are not reconstructible.",
-    ];
+    // the lineage gap is named ONLY where one exists: no record → the whole history is unknown; a
+    // record that starts with the load-time backfill → known from that binding on, nothing before;
+    // a capped record → the dropped moves are unknown; a complete record → no line at all
+    const unknown: string[] = [];
+    if (!p.lineage)
+      unknown.push("1 lineage gap: no persisted Program-MAIN lineage exists; earlier bound sessions of this program are not reconstructible.");
+    else if (p.lineage.entries[0]?.via === "backfill-unknown")
+      unknown.push(`1 lineage gap: lineage begins at ${p.lineage.entries[0].boundAt}; earlier bound sessions are not reconstructible.`);
+    else if (p.lineage.dropped > 0)
+      unknown.push(`${p.lineage.dropped} oldest lineage entries were dropped at the cap of ${PROGRAM_LINEAGE_MAX}; those bound sessions are not reconstructible.`);
     if (legacyWatches > 0)
       unknown.push(`${legacyWatches} legacy watches have no slotOpenedAt and are unattributed.`);
     if (foreignWatches > 0)
@@ -2679,6 +2809,9 @@ async function programExecutionView(s: Slot): Promise<Response> {
         boundAt: main.boundAt,
         sessionIdMatch: sessionIdMatchOf(main.sessionId, s.sessionId),
         executionState: p.status === "active" ? "active" : "not-executing",
+        // THE PERSISTED HISTORY of this authority, verbatim from the record — `null` is a real
+        // answer (no record) and the matching unknown line says what that costs
+        lineage: p.lineage ? { entries: p.lineage.entries, dropped: p.lineage.dropped } : null,
       },
       tasks: {
         rows: programTasks.map((t) => {
@@ -3701,6 +3834,10 @@ type AuditEvent =
   // (backfillProgramMainSessionId). Detail names the program and the id that filled the `null`;
   // there is no row for the no-op case, because "nothing to fill" is not an event.
   | "program_main_session_backfill"
+  // a persisted Program-MAIN lineage record could not be read and was loaded as ABSENT — the
+  // default-deny reading of a history, reported rather than repaired. Detail names the program
+  // and the parse error, never an entry.
+  | "program_lineage_unreadable"
   // a terminal land armed the merge subscription its bound Program-MAIN never made
   // (armProgramMainLandWatch), or declined to because that MAIN's return path is full. The second
   // row is the one that matters: a MAIN told nothing must not be told nothing SILENTLY.
@@ -5864,6 +6001,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   rmSync(legacyStreamPath(streamOccupant.slot), { force: true });
   rmSync(historyPath(streamOccupant.slot), { force: true });
   audit("slot_kill", streamOccupant.slot, why);
+  closeProgramLineageForOccupant(s.id, s.openedAt, Date.now());
   s.label = null;
   s.openedAt = 0;
   s.successionRetirement = null;
@@ -6003,10 +6141,16 @@ async function clearProgramFounding(program: Program, founding: ProgramFounding,
   detail: string): Promise<boolean> {
   if (!sameProgramFounding(program.founding, founding)) return false;
   delete program.founding;
+  // a bootstrap marker dropped the stale binding it was replacing; the rollback leaves the Program
+  // active and unbound, so the holding that binding recorded ends here, without a successor
+  const oldLineage = program.lineage;
+  if (founding.mode === "bootstrap" && program.main === undefined)
+    closeProgramLineage(program, "replaced", Date.now());
   try {
     await saveStateNow();
   } catch (e) {
     program.founding = founding; // fail closed in memory when disk did not acknowledge the cut
+    if (oldLineage) program.lineage = oldLineage; else delete program.lineage;
     throw e;
   }
   audit("program_founding_recover", founding.target.slot,
@@ -7931,6 +8075,11 @@ function backfillProgramMainSessionId(s: Slot): boolean {
     if (p.status !== "active" || !main) continue;
     if (main.slot !== s.id || main.openedAt !== s.openedAt || main.sessionId !== null) continue;
     p.main = { ...main, sessionId: s.sessionId };
+    // the lineage entry of this same holding learns the same id, and only that one: an entry never
+    // carries a session id its occupation did not have
+    const last = p.lineage?.entries.at(-1);
+    if (p.lineage && last && last.slot === s.id && last.openedAt === s.openedAt && last.sessionId === null)
+      p.lineage = { ...p.lineage, entries: [...p.lineage.entries.slice(0, -1), { ...last, sessionId: s.sessionId }] };
     changed = true;
     audit("program_main_session_backfill", s.id, `${p.id} session=${s.sessionId}`);
   }
@@ -18822,10 +18971,15 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         at: at + Math.max(0, MIGRATE_GRACE_MS), cwd: predecessor.cwd, token: predecessor.selfToken,
       };
       const oldMain = program.main ? { ...program.main } : undefined;
+      const oldLineage = program.lineage;
       const oldRetirement = s.successionRetirement;
       const oldStarted = successionStarted.get(s.id);
       program.main = { slot: free.id, openedAt: free.openedAt,
         sessionId: free.sessionId ?? null, boundAt: at };
+      // the same save moves the authority and records the move: predecessor closed by `succeed`,
+      // successor appended via `succeed`
+      appendProgramLineage(program, lineageEntryFromMain(program.main, "succeed"),
+        oldMain ? { main: oldMain, endedBy: "succeed" } : null);
       delete program.founding;
       s.successionRetirement = retirement;
       successionStarted.set(s.id, predecessor.selfToken);
@@ -18835,6 +18989,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         await saveStateNow();
       } catch (e) {
         if (oldMain) program.main = oldMain; else delete program.main;
+        if (oldLineage) program.lineage = oldLineage; else delete program.lineage;
         program.founding = founding;
         if (sameSuccessionOccupant(s, predecessor)) {
           s.successionRetirement = oldRetirement;
@@ -19037,13 +19192,21 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
         return json({ error: "Program-MAIN slot changed after receipt" }, 409);
       }
       const oldMain = program.main ? { ...program.main } : undefined;
+      const oldLineage = program.lineage;
       program.main = { slot: candidateIdentity.slot, openedAt: candidateIdentity.openedAt,
         sessionId: free.sessionId ?? null, boundAt: at };
+      // the same save moves the authority and records the move. `replaced` is the stale binding
+      // this bootstrap overwrote (captured before the founding marker dropped it): its entry closes
+      // by `rebound` if nothing observed its ending earlier, and the new holding is appended via
+      // `rebound`; a first bootstrap appends via `bootstrap` and closes nothing.
+      appendProgramLineage(program, lineageEntryFromMain(program.main, replaced ? "rebound" : "bootstrap"),
+        replaced ? { main: replaced, endedBy: "rebound" } : null);
       delete program.founding;
       try {
         await saveStateNow();
       } catch (e) {
         if (oldMain) program.main = oldMain; else delete program.main;
+        if (oldLineage) program.lineage = oldLineage; else delete program.lineage;
         program.founding = founding;
         await cleanup();
         return json({ error: `Program-MAIN binding persistence failed: ${e instanceof Error ? e.message : e}` }, 500);
@@ -19551,6 +19714,7 @@ if (existsSync(STATE_FILE)) {
     // from declared fields so hand-written keys are never persisted.
     if (Array.isArray((persisted as { programs?: unknown }).programs)) {
       const loaded: Program[] = [];
+      const unreadableLineages: { id: string; error: string }[] = [];
       for (const raw of (persisted as { programs: unknown[] }).programs) {
         if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
         const x = raw as Record<string, unknown>;
@@ -19605,6 +19769,18 @@ if (existsSync(STATE_FILE)) {
         }
         const promotion = loadPromotion(x.promotion);
         const profile = loadProgramProfile(x.profile);
+        // the lineage: a row that never had the key is a legacy row and gets its one honest
+        // backfill entry from `main`; a row that HAS the key but cannot be read loads as ABSENT and
+        // is reported — never backfilled over, because that would make an unreadable record look
+        // like a legacy one and hide the loss
+        let lineage: ProgramLineage | undefined;
+        if (Object.prototype.hasOwnProperty.call(x, "lineage")) {
+          const read = loadProgramLineage(x.lineage);
+          if (read.ok) lineage = read.lineage;
+          else unreadableLineages.push({ id: x.id, error: read.error });
+        } else if (main) {
+          lineage = { v: 1, entries: [lineageEntryFromMain(main, "backfill-unknown")], dropped: 0 };
+        }
         let founding: ProgramFounding | undefined;
         if (foundingRead?.ok) {
           const markerProfile = foundingProfileKind(foundingRead.founding);
@@ -19631,6 +19807,7 @@ if (existsSync(STATE_FILE)) {
           ...(promotion ? { promotion } : {}),
           ...(profile ? { profile } : {}),
           ...(founding ? { founding } : {}),
+          ...(lineage ? { lineage } : {}),
           ...(status !== "proposed" ? { confirmedAt: confirmedAt! } : {}),
           ...(status === "active" || status === "complete" ? { activatedAt: activatedAt! } : {}),
           ...(status === "complete" ? { completedAt: completedAt! } : {}) });
@@ -19644,6 +19821,10 @@ if (existsSync(STATE_FILE)) {
         else foundingTargets.set(program.founding.target.slot, program.id);
       }
       programs = capPrograms(loaded);
+      for (const { id, error } of unreadableLineages) {
+        console.error(`Program ${id} lineage unreadable: ${error} — loaded as absent`);
+        audit("program_lineage_unreadable", undefined, `${id} ${error}`);
+      }
     }
     // The Supervisor binding: absent OR malformed loads as null, never as a half-binding — every
     // consumer joins on slot+openedAt, so half of it is a different fact, not a weaker one.

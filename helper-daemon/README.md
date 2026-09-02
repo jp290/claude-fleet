@@ -63,12 +63,40 @@ the helper machine; everything this daemon does is a pull.
   as "nothing was measured". A red for a suite that never ran is the one lie this rail must not
   tell.
 
+- **It updates itself, as a job — and the check comes before the swap.** The owner queues one
+  `daemon-update` per device (`POST /api/helper/devices/:id/update`, owner token; a queued or
+  claimed one answers 409, an unknown device 404, a fleet with no checkout 503). The row is a
+  wish like `desiredMode`: nothing is pushed, the daemon finds it on its own poll, and only the
+  device it is addressed to is ever offered it. It then does four things in this order and no
+  other: clone the fleet's main out of the bundle into `<workDir>/tree-<sha>` · parse-check the
+  new daemon there (`bun build --target=bun helper-daemon/daemon.ts` — **not** `bun --check`,
+  which on Bun 1.3.9 is no check at all and RUNS the file) · move the `checkoutLink` symlink
+  (`<workDir>/current` unless configured) onto the new tree with a create-and-rename, so at no
+  instant does it point at an unchecked tree · exit 75. The unit's `RestartForceExitStatus=75`
+  restarts it from the link; the previous tree stays on disk, and `ln -sfn` back onto it is the
+  whole rollback. A tree that fails the check is reported (`failed`), the link is not moved, and
+  the daemon keeps running. The proof the update TOOK is not the result POST but the next
+  heartbeat: it carries `daemonSha`, the `git rev-parse HEAD` of the tree the daemon booted from,
+  and the board shows it beside the sha it bundled.
+
 ## Deploying it
 
 `fleet-helper.service` is a template with ALL-CAPS placeholders and no host, address or credential
 in it — this repository is public. Installing it on the helper machine is an **owner act**
 (programme plan `docs/linux-second-host-programm-2026-08-28.md`, gate G2); nothing in this repo
 deploys itself.
+
+**The last manual deploy** is the one that moves the unit onto the symlink. After it, every
+further deploy is a `daemon-update` job queued from the board. On the device, as the service
+user unless noted (WORK-DIR is the config's `workDir`):
+
+    git clone <the fleet repository> WORK-DIR/tree-bootstrap      # or fetch+checkout main in the existing one
+    ln -sfn WORK-DIR/tree-bootstrap WORK-DIR/current
+    # the suite calls ast-grep by name: put its directory into the unit's Environment=PATH line
+    sudo cp WORK-DIR/current/helper-daemon/fleet-helper.service /etc/systemd/system/fleet-helper.service
+    #   …then replace USER, GROUP, WORK-DIR, BUN-PATH, BUN-DIR in that copy
+    sudo systemctl daemon-reload && sudo systemctl restart fleet-helper
+    journalctl -u fleet-helper -n 3     # "helper-daemon up: … running <sha> from WORK-DIR/tree-bootstrap/helper-daemon"
 
 ## What proves it works
 

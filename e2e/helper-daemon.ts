@@ -13,7 +13,8 @@
 // here first asserts its own precondition — that the counter was moving, that the daemon was alive
 // and had read the wish — so a probe that could not measure fails as ITSELF rather than as the
 // property it was aiming at.
-import { chmodSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, rmSync,
+  statSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { BASE, ROOT, check, get, post } from "./harness";
@@ -22,7 +23,7 @@ import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
 // STAGE helper-daemon/ into the throwaway instance. The copy list is derived from the entry files'
 // transitive relative imports, so a daemon reached by an import rides along with no wrapper edit
 // and no hand-kept list — the failure mode that killed two harnesses in this repo.
-import { failNamesOf, inQuietHours, localMode, stricter, tailOf, trailIdOf, EXIT_CONFIG,
+import { failNamesOf, inQuietHours, localMode, stricter, tailOf, trailIdOf, EXIT_CONFIG, EXIT_UPDATED,
   type HelperConfig } from "../helper-daemon/daemon";
 
 interface Row {
@@ -37,6 +38,13 @@ interface HelperJob {
   claim: { name: string; claimedAt: number; expiresAt: number } | null; localRunning: boolean;
 }
 interface LiveView { postLandAuditLive: { running: { repo: string | null; phase: string } | null } | null }
+// the OWNER's projection of a device (server.ts#helperDevicesView), the two fields the update rail
+// adds: what the daemon says it RUNS, and the standing update wish with its outcome
+interface OwnerDevice {
+  id: string; daemonSha?: string;
+  update: { id: string; state: string; main: string; mainSha?: string;
+    result?: { ok: boolean; exitCode: number | null; mainSha: string; note: string } } | null;
+}
 
 const DEVICE = "daemonbox0001";           // matches the server's /^[a-z0-9]{8,32}$/
 const DEVICE_NAME = "linux work-horse (e2e)";
@@ -107,12 +115,25 @@ export async function run(h: {
   // ===== (HD.2) THE SCRATCH FLEET, THE COUNTING PROXY, AND THE STAND-IN SUITE ====================
   // e2e/helper-portal.ts leaves the server on a seconds-long claim timeout — right for a lapse
   // check, fatal for a daemon that clones, installs and runs before it reports. Restarted here.
+  const DAEMON = resolve(import.meta.dir, "../helper-daemon/daemon.ts");
+  // THE SOURCE OF THE SELF-UPDATE in (HD.8): a repository whose `helper-daemon/daemon.ts` is THIS
+  // daemon, byte for byte, so that the tree the daemon clones, checks and restarts from is the real
+  // program at a real commit — its heartbeat after the restart is then a `git rev-parse` of a tree
+  // this suite can name. The server is pointed at it through FLEET_HELPER_UPDATE_REPO (the staged
+  // instance runs from no checkout of its own, so the default source would be a 503).
+  const UPD = `${ROOT}/daemonupdaterepo`;
+  rmSync(UPD, { recursive: true, force: true });
+  mkdirSync(`${UPD}/helper-daemon`, { recursive: true });
+  copyFileSync(DAEMON, `${UPD}/helper-daemon/daemon.ts`);
+  for (const args of [["init", "-q", "-b", "main"], ["add", "-A"],
+    ["-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", "commit", "-qm", "the daemon, as shipped"]])
+    spawnSync("git", ["-C", UPD, ...args]);
   await killSrv();
   check("(HD) setup: the server restarts with a claim timeout a real run fits inside",
-    await startSrv({ audit: true, extra: { FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000", FLEET_HELPER_SWEEP_MS: "15000" } }));
+    await startSrv({ audit: true, extra: { FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000", FLEET_HELPER_SWEEP_MS: "15000",
+      FLEET_HELPER_UPDATE_REPO: UPD } }));
   await Bun.sleep(750);
 
-  const DAEMON = resolve(import.meta.dir, "../helper-daemon/daemon.ts");
   check("(HD) setup: e2e-stage.sh staged helper-daemon/ into this instance (derived, not hand-listed)",
     existsSync(DAEMON), DAEMON);
 
@@ -219,14 +240,16 @@ export async function run(h: {
   const MASTER_DEFAULT: Record<string, string> = {
     GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "init.defaultBranch", GIT_CONFIG_VALUE_0: "master",
   };
-  const startDaemon = (): { proc: ReturnType<typeof Bun.spawn>; log: string } => {
+  // `entry` is the daemon FILE to run — the staged copy by default, and in (HD.8) the one behind
+  // the symlink the update just moved, which is what the unit's ExecStart runs on the real machine
+  const startDaemon = (entry = DAEMON): { proc: ReturnType<typeof Bun.spawn>; log: string } => {
     const log = `${DLOG}.${++logSeq}`;
     rmSync(log, { force: true });
     // ONE fd for both streams, opened here and closed by the OS when this process ends: passing a
     // BunFile twice gives the two streams independent write positions and they overwrite each other.
     const fd = openSync(log, "a");
     return {
-      proc: Bun.spawn(["bun", DAEMON, CFG],
+      proc: Bun.spawn(["bun", entry, CFG],
         { cwd: ROOT, stdin: "ignore", stdout: fd, stderr: fd, env: { ...process.env, ...MASTER_DEFAULT } }),
       log,
     };
@@ -494,6 +517,113 @@ export async function run(h: {
 
   daemon.proc.kill();          // by handle, never by name — a pattern kill on this box hits the server's own audit
   await daemon.proc.exited;
+
+  // ===== (HD.8) THE DAEMON UPDATES ITSELF: clone → check → symlink-swap → exit 75 ================
+  // The daemon above read an owner `off` and would not poll again for an hour, so this section
+  // runs a fresh one. What it proves, in order: the owner's door queues a ROW (nothing is pushed);
+  // the row is offered to its device alone; the daemon performs the four steps in exactly that
+  // order and ends in exit 75 with the link on the new tree; started again from the link — the
+  // part systemd plays on the real machine — it boots the NEW tree and its heartbeat names the
+  // bundled sha; and a tree that does not parse is refused BEFORE the link moves, with the daemon
+  // still running afterwards.
+  await post(`/api/helper/devices/${DEVICE}/mode`, { mode: "active" });
+  const CUR = `${WORK}/current`;
+  const shaOf = (dir: string): string => spawnSync("git", ["-C", dir, "rev-parse", "HEAD"]).stdout.toString().trim();
+  const goodSha = shaOf(UPD);
+  const goodTree = `${WORK}/tree-${goodSha.slice(0, 12)}`;
+  const ownerDevice = async (): Promise<OwnerDevice | undefined> =>
+    (((await (await get("/api/sessions")).json()) as { helperDevices?: OwnerDevice[] }).helperDevices ?? [])
+      .find((d) => d.id === DEVICE);
+  const waitDevice = async (pred: (d: OwnerDevice | undefined) => boolean, timeoutMs = 30_000): Promise<OwnerDevice | undefined> => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const d = await ownerDevice();
+      if (pred(d) || Date.now() >= deadline) return d;
+      await Bun.sleep(250);
+    }
+  };
+  const noDev = await post("/api/helper/devices/e2enosuchdev/update", {});
+  const viaHelper = await hpost(`/api/helper/devices/${DEVICE}/update`, {});
+  check("(HD) should-reject: an update for a device nobody has seen is 404, and the HELPER principal cannot queue one (401 — its header is one the owner gate never reads)",
+    noDev.status === 404 && viaHelper.status === 401, `${noDev.status} ${viaHelper.status}`);
+  const updQueued = await post(`/api/helper/devices/${DEVICE}/update`, {});
+  const queuedBody = (await updQueued.json()) as { update?: { id?: string; state?: string; main?: string }; error?: string };
+  check("(HD) THE OWNER QUEUES A daemon-update — a row on the board, nothing pushed to the machine",
+    updQueued.status === 200 && queuedBody.update?.state === "open" && queuedBody.update.main === "main"
+      && /^[0-9a-f]{12}$/.test(queuedBody.update.id ?? ""),
+    `${updQueued.status} ${JSON.stringify(queuedBody)}`);
+  const twice = await post(`/api/helper/devices/${DEVICE}/update`, {});
+  check("(HD) should-reject: a second update while one is updQueued is 409",
+    twice.status === 409, `${twice.status}`);
+  const offered = (await jobsOf()).find((j) => j.kind === "daemon-update");
+  const strangerJobs = ((await (await hget("/api/helper/jobs?deviceId=e2eotherbox001")).json()) as { jobs: HelperJob[] }).jobs;
+  check("(HD) the update is OFFERED TO ITS DEVICE ALONE, as kind daemon-update on main — another deviceId's list has no such job",
+    offered?.id === queuedBody.update?.id && offered?.main === "main" && offered.claim === null && offered.covers === 0
+      && !strangerJobs.some((j) => j.kind === "daemon-update"),
+    `${JSON.stringify(offered)} stranger=${strangerJobs.length}`);
+
+  const up1 = startDaemon();
+  const exit1 = await Promise.race([up1.proc.exited, Bun.sleep(90_000).then(() => -1)]);
+  const l1 = logText(up1.log);
+  const seq = [": clone main", "bun build --target=bun helper-daemon/daemon.ts", ": symlink-swap ", `: exit ${EXIT_UPDATED}`]
+    .map((s) => l1.indexOf(s));
+  check("(HD) THE DAEMON UPDATED ITSELF — clone → check → symlink-swap → exit 75, in exactly that order",
+    exit1 === EXIT_UPDATED && seq.every((i) => i >= 0) && seq[0]! < seq[1]! && seq[1]! < seq[2]! && seq[2]! < seq[3]!,
+    `exit=${exit1} seq=${JSON.stringify(seq)} | ${l1.split("\n").filter((l) => l.includes("update ")).join(" | ").slice(0, 400)}`);
+  const link1 = ((): string => { try { return readlinkSync(CUR); } catch { return "(no link)"; } })();
+  check("(HD) …the link points at the new tree, which is at the exact sha the fleet bundled; bundle and check scratch are gone",
+    link1 === goodTree && shaOf(CUR) === goodSha && !existsSync(`${goodTree}.check`)
+      && !readdirSync(WORK).some((n) => n.endsWith(".bundle")),
+    `link=${link1} sha=${shaOf(CUR)} handedOver=${goodSha} work=${readdirSync(WORK).join(",")}`);
+  const swapReport = reportedBodies.find((b) => b.jobId === queuedBody.update?.id);
+  const dev1 = await waitDevice((d) => d?.update?.state === "reported");
+  check("(HD) …the result POST said exit 0 with the cloned sha, and the board's row reads reported/swapped — while NO daemon has yet reported running it",
+    swapReport?.exitCode === 0 && swapReport.clonedSha === goodSha
+      && dev1?.update?.state === "reported" && dev1.update.result?.ok === true && dev1.update.result.mainSha === goodSha
+      && dev1.daemonSha !== goodSha,
+    `report=${JSON.stringify(swapReport)} board=${JSON.stringify(dev1?.update)} daemonSha=${dev1?.daemonSha ?? "ABSENT"}`);
+
+  // systemd's part, played here: RestartForceExitStatus=75 starts the unit again, and its ExecStart
+  // runs THROUGH THE LINK — so this is the daemon.ts inside the tree the update just checked in.
+  const up2 = startDaemon(`${CUR}/helper-daemon/daemon.ts`);
+  check("(HD) restarted from the link, the daemon boots the NEW tree and says which sha it runs",
+    await waitLog(up2.log, `running ${goodSha.slice(0, 8)} from`),
+    logText(up2.log).split("\n")[0]?.slice(0, 240) ?? "(no log)");
+  const dev2 = await waitDevice((d) => d?.daemonSha === goodSha);
+  check("(HD) THE HEARTBEAT CARRIES daemonSha = the bundled sha, and the board shows it — the update provably took",
+    dev2?.daemonSha === goodSha && dev2.update?.result?.mainSha === goodSha,
+    `daemonSha=${dev2?.daemonSha ?? "ABSENT"} bundled=${goodSha}`);
+
+  // THE NEGATIVE HALF, and the one the whole ordering exists for: a tree whose daemon.ts does not
+  // parse must never become the link's target. The daemon that refuses it is the one running from
+  // the good tree — and it is still running afterwards.
+  await Bun.write(`${UPD}/helper-daemon/daemon.ts`, "const broken = ;\nexport {};\n");
+  spawnSync("git", ["-C", UPD, "-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", "commit", "-qam", "a daemon that does not parse"]);
+  const badSha = shaOf(UPD);
+  const requeued = await post(`/api/helper/devices/${DEVICE}/update`, {});
+  check("(HD) setup: a reported update can be followed by a new one — the row is re-queued open",
+    requeued.status === 200 && badSha !== goodSha, `${requeued.status} bad=${badSha.slice(0, 8)}`);
+  const refused = await waitLog(up2.log, "check-failed", 90_000);
+  const l2 = logText(up2.log);
+  const link2 = ((): string => { try { return readlinkSync(CUR); } catch { return "(no link)"; } })();
+  check("(HD) A TREE THAT DOES NOT PARSE IS REFUSED: check-failed, NO symlink-swap, exit code none — the daemon keeps running from the good tree",
+    refused && !l2.includes("symlink-swap") && link2 === goodTree && up2.proc.exitCode === null,
+    `refused=${refused} swapped=${l2.includes("symlink-swap")} link=${link2} alive=${up2.proc.exitCode === null}`);
+  const dev3 = await waitDevice((d) => d?.update?.state === "reported" && d.update.result?.mainSha === badSha);
+  check("(HD) …the board says failed with the bad sha, and daemonSha still names the good tree",
+    dev3?.update?.result?.ok === false && dev3.update.result.mainSha === badSha
+      && dev3.update.result.note.includes("check-failed") && dev3.daemonSha === goodSha,
+    `${JSON.stringify(dev3?.update)} daemonSha=${dev3?.daemonSha}`);
+  check("(HD) …and both trees are on disk: the refused one for inspection, the good one as the way back",
+    existsSync(`${WORK}/tree-${badSha.slice(0, 12)}`) && existsSync(goodTree),
+    readdirSync(WORK).filter((n) => n.startsWith("tree-")).join(","));
+  const badBeat = await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME, daemonSha: "not-a-sha" });
+  check("(HD) should-reject: a heartbeat whose daemonSha is not 40 hex is 400, and the stored sha is untouched",
+    badBeat.status === 400 && (await ownerDevice())?.daemonSha === goodSha, `${badBeat.status}`);
+
+  up2.proc.kill();
+  await up2.proc.exited;
   proxy.stop(true);
   rmSync(WORK, { recursive: true, force: true });
+  rmSync(UPD, { recursive: true, force: true });
 }

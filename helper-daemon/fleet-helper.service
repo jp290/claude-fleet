@@ -1,15 +1,24 @@
 # TEMPLATE — every ALL-CAPS placeholder below has to be replaced before this file is installed.
 # It carries no host, no address and no credential on purpose: this repository is public.
 #
-# Install (an OWNER act on the helper machine — nothing in this repo deploys itself):
-#   install -d -m 0700 -o USER -g GROUP /etc/fleet-helper /var/lib/fleet-helper/work
+# WORK-DIR is the `workDir` of config.json (e.g. /var/lib/fleet-helper/work). The daemon runs
+# THROUGH THE SYMLINK WORK-DIR/current, never from a checkout you keep by hand: a `daemon-update`
+# job clones the fleet's main into WORK-DIR/tree-<sha>, parse-checks it, moves the link, and exits
+# 75 — this unit restarts it from the new tree. The previous tree stays: `ln -sfn` it back onto
+# `current` and restart, and you are on the old daemon again.
+#
+# Install (an OWNER act on the helper machine — nothing in this repo deploys itself; the LAST one
+# by hand, every deploy after it is a job queued from the Fleet board):
+#   install -d -m 0700 -o USER -g GROUP /etc/fleet-helper WORK-DIR
 #   install -m 0600 -o USER -g GROUP config.json /etc/fleet-helper/config.json
+#   git clone <the fleet repository> WORK-DIR/tree-bootstrap        # as USER
+#   ln -sfn WORK-DIR/tree-bootstrap WORK-DIR/current                 # as USER
 #   cp fleet-helper.service /etc/systemd/system/ && systemctl daemon-reload
 #   systemctl enable --now fleet-helper.service
 
 [Unit]
 Description=Fleet remote helper daemon (claims and runs suites for a Fleet on another machine)
-Documentation=file:///CHECKOUT-DIR/helper-daemon/README.md
+Documentation=file:///WORK-DIR/current/helper-daemon/README.md
 After=network-online.target
 Wants=network-online.target
 
@@ -17,14 +26,15 @@ Wants=network-online.target
 Type=simple
 User=USER
 Group=GROUP
-WorkingDirectory=CHECKOUT-DIR
-ExecStart=BUN-PATH CHECKOUT-DIR/helper-daemon/daemon.ts /etc/fleet-helper/config.json
+WorkingDirectory=WORK-DIR/current
+ExecStart=BUN-PATH WORK-DIR/current/helper-daemon/daemon.ts /etc/fleet-helper/config.json
 
 # systemd's default PATH does not contain the bun install prefix, and `childEnv()` in daemon.ts
 # hands this process's own environment to `installCmd` and `suiteCmd`. Without this line both die
 # as exit 127 — which the fleet correctly classifies as "nothing was measured", so the failure
 # would be SILENT (an unknown, never a red). Found live on the first deploy, 2026-08-29. This is
-# a PATH, not a credential; the token rule below is untouched by it.
+# a PATH, not a credential; the token rule below is untouched by it. Every tool the suite calls by
+# name (bun, git, tmux, ast-grep) has to be reachable through it.
 Environment=PATH=BUN-DIR:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # THE TOKEN IS NOT HERE, AND MUST NEVER BE. An `Environment=` line is readable by any account on
@@ -38,6 +48,11 @@ RestartSec=60
 # Restarting into it would produce one rejected request per minute forever; stopping makes the
 # failure visible in `systemctl status` instead of burying it in the fleet's audit trail.
 RestartPreventExitStatus=78
+# Exit 75 (EX_TEMPFAIL) is the daemon's "I moved WORK-DIR/current onto a checked new tree — start
+# me again from it". It is the SELF-UPDATE path and the only reason this unit must restart on a
+# code that is not a crash: the daemon may not call systemctl itself (this is a system unit, and
+# NoNewPrivileges below is deliberate), so ending the process is the one restart it can ask for.
+RestartForceExitStatus=75
 
 # The suite this daemon runs boots its own tmux server and takes the machine-wide suite lock at
 # /tmp/fleet-e2e.lock (e2e-stage.sh). PrivateTmp would give this service a /tmp of its own, so a

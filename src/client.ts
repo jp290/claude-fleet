@@ -1572,11 +1572,16 @@ function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
 // no `mode` key. `mode` is typed as a plain string, not the closed set: a value this client does
 // not know must render as the text it is, never be silently mapped onto one this client does know.
 interface HelperDeviceClaim { kind?: string; repo: string; ref: string; expiresAt: number }
+interface HelperDeviceUpdate {
+  state?: string; requestedAt?: number; mainSha?: string;
+  result?: { ok?: boolean; exitCode?: number | null; mainSha?: string; note?: string };
+}
 interface HelperDeviceInfo {
   id: string; name: string; lastSeen: number;
   mode?: string; load?: number; capabilities?: string[];
   desiredMode?: string; desiredSet?: boolean;
   claims?: HelperDeviceClaim[]; lapses?: number;
+  daemonSha?: string; update?: HelperDeviceUpdate | null;
 }
 // ONLINE/OFFLINE IS DERIVED, NEVER STORED — the same reading that makes a claim expire: there is no
 // "offline" event anywhere in this system, only a heartbeat that stopped arriving. This is the
@@ -1681,6 +1686,25 @@ function deviceCard(d: HelperDeviceInfo): HTMLElement {
     const r = el("div", "bidmeta", rep.join(" · "));
     r.title = "Reported by the device itself on its last heartbeat. Nothing on this box reads these — they are for your eye.";
     box.appendChild(r);
+  }
+  // the commit the daemon says it runs from — 8 digits, measured on the other machine at its own
+  // boot, absent when that daemon predates the field or runs from a plain copy. Beside it, the
+  // owner's standing update wish and how it went; the two shas agreeing is what "the update took"
+  // looks like, and the board only ever compares — it never restarts anything over there.
+  const shaLine = el("div", "bidmeta", d.daemonSha ? `daemon at ${d.daemonSha.slice(0, 8)}` : "daemon sha not reported");
+  shaLine.title = "git rev-parse HEAD of the tree the daemon started from, sent on its heartbeat. Not a setting: it is what is running there right now.";
+  box.appendChild(shaLine);
+  const u = d.update;
+  if (u && u.state) {
+    const target = u.result?.mainSha ?? u.mainSha;
+    const went = u.state === "reported"
+      ? (u.result?.ok ? "swapped — restarting from the new tree" : `failed${u.result?.note ? `: ${u.result.note}` : ""}`)
+      : u.state === "claimed" ? "being applied" : "queued — it takes it on its next poll";
+    const applied = u.state === "reported" && u.result?.ok && target && d.daemonSha === target;
+    const ul = el("div", "bidmeta",
+      `update${target ? ` to ${target.slice(0, 8)}` : ""}: ${applied ? "applied — the daemon now runs it" : went}`);
+    ul.title = "Queued by you on this board, taken by the daemon on its own poll: clone, parse-check, symlink swap, exit 75, restart by systemd. The old tree stays on the machine as the way back.";
+    box.appendChild(ul);
   }
   return box;
 }

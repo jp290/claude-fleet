@@ -1,3 +1,92 @@
+# HANDOFF — Fleet Controller (Slot 14, Fable 5.1 high): Second-host-Blindstelle umgangen (Grace 0), Verify-Budget 480 s, drei Nachfolgen (3, 5->12), Slot 10 ohne Gate gelandet + nachgemessen, Uebergabe bei 25,8 % GEMESSEN, 2026-09-02 (10:20)
+
+Rolle: **🎛 Fleet Controller**, nicht Program-MAIN. Gegruendet per /open+/send. Owner-Vorgaben in Kraft:
+Fable 5.1 high ueberall · Usage praktisch unbegrenzt · seriell landen · Quiet Hours AUS · **Owner-Delegation
+10:05 „kuemmer dich drum, lass mich konkret wissen, wenn ich was machen soll"** — du entscheidest operativ
+selbst und legst dem Owner nur Handgriffe vor, die nur er tun kann. ctx bei Uebergabe-Entscheid: 25,8 %
+GEMESSEN (ctx-Watcher (d) hat gefeuert — das Band hat diesmal funktioniert).
+
+## 0. Reihenfolge fuer dich
+
+1. **Erdung:** `./state.sh`, `./register.sh`, dieser Abschnitt. Dann die Rueckwege als Hintergrund-`until`
+   (Skripte der Vorgaengerin liegen in ihrem Scratchpad und sterben mit ihr — neu schreiben, ~40 Zeilen):
+   (a) Main-Watcher (Basis = `git rev-parse main`), (b) Fleet-Report-Watcher (`grep -c fleet_report_open
+   audit.jsonl`, Basis = aktueller Zaehler, heute 235), (c) Attention-Watcher auf die Zahl OFFENER Zeilen
+   (`status in (open, send-uncertain)` — die Gesamtlaenge feuert auf Prunes), (d) ctx-Watcher auf dich
+   (ctx-Schnipsel aus CLAUDE.md, `pct >= 25`). (e) je laufendem Land ein Watcher auf
+   `GET /api/slots/<id>/merge` `running:false`.
+2. **Land-Reihe, seriell (Stand 10:20):**
+   - **Lane 1 / Slot 1** (`dabd4da9` S1 daemon-update-Job, HEAD 9510b2b, 1 behind, sauber, Kette gruen) —
+     Report liegt bei **Slot 9** (Second-host-MAIN). Slot 9 landet ueber seine Self-Land-Tuer oder bittet dich
+     (Owner-Route `POST /api/slots/1/merge`). **Danach S2 `8228ae65` dispatchen** mit
+     `{"harness":"claude","model":"claude-fable-5-1[1m]","effort":"high","acknowledged":true}`, dann S3
+     `60d07416`, S4 `c3f91ce1` — je nach dem Land des Vorgaengers.
+   - **Lane 2 / Slot 2** (`1b677e58` Workbench, e936c0c, 5 behind) und **Lane 8 / Slot 8** (`516b70a9`
+     Repo-Worker-Audit, 01cf509, 5 behind): haben 10:14 **GO mit KURZER Kette** (Gate-Kette + ggf. eine
+     Einzelsuite, KEIN isolated — Begruendung: Hostlast, Tier-2 ist Vorschau). Reports: 2 → Slot 7,
+     8 → Attention an dich. Landen ueber die Owner-Route, seriell.
+   - **Slot 5 = P4 Slice 2** (`d7b89fd6`, Lane c509, Slot 12s Program): produziert/verifiziert; Slot 12
+     (Sanierungs-MAIN, Nachfolge von Slot 5) meldet **FREEZE-START/-ENDE** an dich — dazwischen landest du
+     nichts. Slot 12 weiss, dass Lanes 1 und 8 server.ts-Regionen 2914-2956 / 12357-13653 committet halten.
+   - **private-repo-p (Slot 3 N2, Program 07ee8a6d):** Brief 3b (Slot 10, Kandidat 4826847) fiel als
+     `verify timedOut` bei exakt 300 s (Baum gruen, 352 s Wandzeit unter Last) → Budget auf 480 s gehoben
+     (§1), Slot 3 re-landet selbst. Danach bittet Slot 3 um Dispatch von Brief 4 `5b822ccc` (Hand-Dispatch
+     mit dem Tripel, Dispatcher ist AUS).
+3. **Vor JEDEM `confirm:true` auf der Owner-Route: `verify.ok === true` am resolved-Datensatz pruefen**
+   (§2, Notiz `36960138`). Sonst erst `POST /api/slots/<id>/merge` OHNE confirm (frischer Verify), dann confirm.
+4. **Kein Direkt-Commit, solange irgendein `GET /api/slots/:id/merge` `running:true` sagt.** Docs-only
+   Direkt-Commits sind sonst erlaubt (Handoffs); Code-Direkt-Commits nur mit Hand-Verify und Handoff-Vermerk.
+5. **Second-host (§1):** bleibt server-seitig abgeklemmt (`FLEET_AUDIT_HELPER_GRACE_MS='0'` in `.env`), bis der
+   Daemon auf dem Geraet aktuell ist. Owner hat den ssh-Key dieser Maschine eingetragen, aber den
+   **Nutzernamen noch nicht genannt** — sobald er kommt: `ssh <user>@100.64.0.2`, (1) alte Fail-Namen
+   aus `/var/lib/fleet-helper/work/**/tree/e2e-trail/*.jsonl` (`"ok":false`) ziehen, (2)
+   `helper-daemon/daemon.ts` aus `git show main:` einspielen (sha256 beginnt `982ae1ddf6db7a6f`), (3)
+   `sudo systemctl restart fleet-helper`, (4) `.env` Grace zurueck auf `'60000'` + Verb 2. Der http.server
+   auf Port 8441 (Scratchpad dieser Session) stirbt mit ihr — bei Bedarf neu hosten.
+6. **Hostlast ist real** (10:10: Load 7-11, Swap 5,8/7 GB, 28 claude-Prozesse). Hebel in dieser Reihenfolge:
+   Lanes landen (jede Lane = ein Prozess weniger) → dem Owner eine Liste idle Sessions vorlegen (Slot 16 =
+   unbeschriftete Opus-Pane des Owners, Slot 6 Private-repo-o 30 %, Slot 4 31 % idle) — nie selbst killen.
+
+## 1. Was heute passierte (verifiziert; Bodies in `git log 87c5be6..main`)
+
+- **Lands:** 61fa1f1 (Handoff Slot 12, docs) · **c09d5f1** (419e9ae3 Modell-Route, Slot 10) · 4880d15
+  (Handoff Slot 4, docs) · **e03d44c** (P4 Slice 1, Slot 5/13, verify ok 122 s) · 5e2f47d (Handoff Slot 5,
+  docs) · **fc389a1** (watchdog.sh, Direkt-Commit von mir, Hand-Verify `sh -n` + pins ALL PASS).
+- **Audits:** 87c5be6 GRUEN 3423/0 (2425 s lokal) · c09d5f1 GRUEN 3443/0 (1655 s lokal) · **e03d44c ROT
+  second-host, 9 FAILURES, KEINE Namen** = achtes namenloses Remote-Rot; Adjudikation bei Slot 12 (lokaler
+  Beweis: Slot 13s isolated 3443/0 auf identischem Code-Baum b4cca7a).
+- **Deploys (Verb 2):** 798be4ab (Slot 12, Code 5e2f47d, damit Modell-Route live) · f48eca40 (ich, nur
+  .env Grace 0) · 4a6bdb25 (ich, Verify-Budget 480 s). Alle ok:true, hitTarget, 14/14 Sessions ueberlebt.
+- **Nachfolgen:** Slot 3 → Slot 3 N2 via retire + `bootstrap-main` (Live-Occupant-Guard verlangt, dass die
+  alte MAIN VORHER retired ist; Label max 40 Zeichen). Slot 5 → **Slot 12** via `/api/self/succeed` — hat
+  FUNKTIONIERT (Notiz `9c7d6e02` sagt „scheitert deterministisch": gilt nicht fuer jeden Pfad; Datenpunkt
+  fuer die Notiz). Slot 12 hat seinen Datensatz selbst auf Fable gezogen.
+- **Modell-Route gefahren:** Slots 6 und 9 im Datensatz auf `claude-fable-5-1[1m]`/high; alle belegten Slots
+  einheitlich (`GET /api/sessions`).
+- **Owner-Handgriffe:** ssh-Key auf dem Second-host eingetragen (10:05 „done"); Nutzername offen.
+
+## 2. Fallen, die ich bezahlt habe
+
+- **Owner-`confirm:true` landet OHNE frischen Verify** (`byHuman`-Pfad, `verifyProv = reviewed.verify`): Slot
+  10s Gate war `waitedOut` (2669 s hinter dem Audit), mein confirm landete c09d5f1 ungemessen; das Audit hat
+  es dann gemessen. Notiz `36960138` mit Schnittvorschlag (409, solange `reviewed.verify.ok !== true`).
+- **Gate-Wartebudget 45 min reicht nicht, wenn ein Audit (25-40 min) UND Lane-Suiten am Mutex stehen** —
+  Lanes vor einem laufenden Land auf HOLD setzen (heute 08:04 gemacht, hat den zweiten Anlauf gerettet).
+- **Send in einen vollen Composer ist „uncertain"** — Retry-Schleife (`w_send12.sh`-Muster), nie `C-u` in
+  fremden Panes. Slot 12s Composer hielt 10:07 einen echten Owner-Text.
+- **Der Attention-Watcher auf die Gesamtlaenge feuert auf Prunes** — auf OFFENE zaehlen.
+- **`sed` auf `^BASE=`** traf meine Ein-Zeilen-Skripte nicht (Basis stand hinter `.`-Source) — Watcher lief
+  auf toter Basis und feuerte sofort. SHA-Ersatz statt Zeilenmuster.
+- **zsh: `echo ===` schlaegt fehl** (`=`-Expansion) — quoten.
+
+## 3. Offene Owner-Punkte
+
+1. Second-host-Nutzername (dann alles Weitere bei dir, §0.5). 2. Private-repo-o Slot 6 (30 %) nach eigener Fahrt
+schliessen. 3. Idle-Sessions unter Hostlast (§0.6). 4. GitHub ist 12 Tage hinter main (Push nur von der
+Hauptmaschine).
+
+---
+
 # HANDOFF — Generalsanierung: P3 abgeschlossen (P3c 7006696), P4 Slice 1 gelandet (e03d44c), Remote-Audit-Blindstelle gemessen, 2026-09-02 (vormittags)
 
 Program **`b2a14b545fd31fd71ba7b9e1`** aktiv, gebunden an Slot 5 (diese Session; Slot-Datensatz sagt

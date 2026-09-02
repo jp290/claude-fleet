@@ -1,3 +1,59 @@
+# HANDOFF — Program-MAIN „Fleet Task Workbench" (Program `b9c1e0d9`, Slot 7 → Nachfolge), 2026-09-02 14:20, ctx GEMESSEN 30,8 %
+
+Dieser Abschnitt gehoert dem Program-MAIN der Task Workbench; der Controller-Abschnitt darunter ist
+ein anderer Rolleninhaber. Zustand ableiten: `GET /api/self/program-execution` (Self-Token), nicht
+diese Prosa.
+
+## Stand der sechs Zeilen (Program-Kriterien: siehe Program-JSON im Gruendungsbrief)
+- **done, gelandet:** `eaa3ae1a` (Baseline, bc9e7de) · `93fc5af2` (View-Split + Suche, 01459c9) ·
+  `ff535524` (Lane-Zeile an der Task-Zeile, **8990fcb**, gelandet ~05:00 durch den Controller).
+- **IN FLUG: `1b677e58`** (Spawn-Triple sichtbar/waehlbar; Start und Clarify getrennt) — Slot 2,
+  Lane `fleet/260902051642-e0e3`, Commit **16b922e** (vier Dateien, Baum sauber). **Von mir geprueft:**
+  Diff gelesen, e2e-trail auf tree 16b922e gruen (clean-review 17+15/0, security 92/0, claude-gate
+  72+63+6/0), merge-tree gegen main konfliktfrei. **Der Land ist zweimal NICHT durchgekommen, ohne
+  dass der Baum je angesehen wurde:** einmal `error` (FF verweigert, main zog waehrend 1784 s
+  Mutex-Wartezeit — das war ff535524, gleiches Muster), einmal `resolved`/verify NEVER STARTED
+  (waitedOut nach 2671 s hinter drei Lane-Suiteketten). Controller Slot 15 startet den Land neu,
+  sobald der Mutex frei ist, und sagt Bescheid. **Dann, nicht vorher:** `POST /api/self/watch
+  {"kind":"merge","target":2}`; bei landed=YES `{"kind":"audit","repo":<toplevel>,"mainAfter":<sha>}`.
+- **pending `15a3e38b`** (Detail-Kopf: Status/Program/Repo/Lifecycle-Leiste + GENAU EINE Hauptaktion
+  ohne Scrollen bei 1440x900) — erst releasen, wenn 1b677e58 gelandet ist UND keine aktive Lane
+  `src/client.ts`/`public/index.html`/`e2e/tasks.ts` haelt (Program-NonGoal; pruefen: je Worktree
+  `git diff --name-only main...HEAD` + `git status --short`). **Triple: claude / claude-opus-5[1m] /
+  high** (Owner-Entscheid 10:35 via Controller; ERSETZT das Fable-Tripel vom Vorabend). Die Zeile
+  speichert noch das Codex-Tripel vom Filing — der Hand-Dispatch des Controllers ueberschreibt es
+  feldweise; Dispatcher ist AUS (`grep '"dispatch"' fleet.json`).
+- **pending `07c061fa`** (unabhaengiger read-only Review, nur docs/messungen) — strikt nach 15a3e38b.
+- **notiz `56056efe`** (per-Slot taskId/originId/programId fehlen im Poll — needs-main von ff535524,
+  von mir entschieden: KEIN server.ts-Schnitt in diesem Program) · **notiz `8b0114e1`** (Selbstbefund B).
+
+## Beweislage, ehrlich
+- Screenshots 1440x900/390x844 vom 2026-09-01 als ungetrackte PNGs im Wurzelverzeichnis, Messnotiz
+  `docs/messungen/2026-09-01-task-workbench-visual-baseline.md` (**79075de, Direktcommit auf main,
+  docs-only, von Hand verifiziert: install + `bun e2e/pins.ts` ALL PASS**). Nachher-Bilder fuer
+  ff535524/1b677e58 fehlen noch — der Review-Slice 07c061fa oder die Nachfolge nimmt sie.
+- Die 22 neuen Checks von 1b677e58 (`e2e/tasks.ts`) liefen nur auf der Scratch-Instanz der Lane
+  (Vorschau wegen Maschinenlast ausgeschlossen). Erster voller Lauf = Post-Land-Audit. Der Audit von
+  8990fcb war `unknown` (1800-s-Timeout unter load 33, 2505 PASS / 3 Last-Rots, keine Workbench-
+  Checks). **Wird der Audit von 1b677e58 wieder unknown/blind: EINEN seriellen `./e2e-isolated.sh` auf
+  dem gelandeten Baum fahren, sobald `ps -eo command | grep -c '^/bin/sh ./e2e-'` = 0.**
+- Zwei Korrekturen an den Auftragstexten, beide angenommen: originId-Fallback/Program-Pruefung sind
+  aus dem Poll nicht ableitbar (Zeile sagt „program unchecked"); Clarify-first OEFFNET eine Lane
+  (`server.ts#dispatchTask`, Status → sent, awaiting owner) — der Zeilentext behauptete das Gegenteil,
+  der Server-Vertrag gilt (Program-Kriterium „API-Semantik unveraendert").
+
+## Mechanik, die ich bezahlt habe
+- Es gibt keinen Weckruf auf „Commit X ist auf main": Lane-Watch feuert bei done-looking, Merge-Watch
+  nur waehrend/nach einem Merge (Sofortfeuer auf alten interrupted-Fakt!). Hintergrund-Watcher
+  (`run_in_background`) wurden 3x von aussen gekillt; One-shot-Autos sind Timer. Vorschlag in 8b0114e1.
+- Nachricht an den Controller: `POST /send {"slot":<Controller-Slot>,"text":...}` mit Owner-Token
+  aus `fleet.json` (kein Self-Weg). Controller ist jetzt **Slot 15** (Slots 2/10/12/13/14 waren es).
+- Self-Auto loeschen nur ueber die Owner-Route `POST /api/autos/<id>/delete`.
+- Suite-Tails einer Lane liegen im geteilten `e2e-trail/` (Haupt-Checkout, `e2e/trail-emit.ts`),
+  Audits in `$TMPDIR/fleet-e2e-trail/`; nicht im Lane-Scratchpad suchen.
+
+---
+
 # HANDOFF — Fleet Controller / Denksession (Slot 14, Fable 5.1 high): Second-host BOOTSTRAPPED + Remote-Rot erklaert (LANG=de_DE), Denksession B als Notiz + 18 Register-Zeilen, GLM-Zweitmeinung, Owner-Richtung Codex-Controller; Uebergabe bei ~25 % GEMESSEN, 2026-09-02 (13:15)
 
 Rolle: 🎛 Fleet Controller als DENKSESSION (Owner-Auftrag 12:25, Nachtrag 12:40). Keine Watcher gelegt,

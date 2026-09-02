@@ -3212,6 +3212,17 @@ export async function run(): Promise<void> {
     check("job watch: a second subscription to the same job returns the first, never a rival",
       dupR.ok && dup.existing === true && dup.watch?.id === sub.watch?.id, JSON.stringify(dup));
 
+    // THE HANDSHAKE REFUSAL, MEASURED ON AN UNCLAIMED JOB AND ON ITS OWN TERMS. Asking after the
+    // claim below would have been answered by the already-claimed 409 instead — the same status for
+    // a different reason, which is a green that measures nothing. So it gets its own job, and the
+    // assertion reads the REASON, not the number.
+    const noShaJobR = await selfPost(aTok, "/api/self/jobs", { cmd: "bun test" });
+    const noShaJobId = ((await noShaJobR.json()) as { jobId?: string }).jobId ?? "";
+    const noSha = await hpost("/api/helper/claim", { jobId: noShaJobId, deviceId: "watchnoshabox1" });
+    const noShaText = await noSha.text();
+    check("job claim: a device that never named a daemonSha is refused 409 ON THAT GROUND even with an unclaimed id in hand",
+      noSha.status === 409 && noShaText.includes("daemonSha"), `${noSha.status} ${noShaText}`);
+
     const claimed = await hpost("/api/helper/claim", { jobId, deviceId: CMDDEV });
     const claimBody = (await claimed.json()) as { job?: { kind?: string; cmd?: string; argv?: string[];
       timeoutMs?: number; artifacts?: string[]; branch?: string } };
@@ -3222,10 +3233,6 @@ export async function run(): Promise<void> {
         && JSON.stringify(claimBody.job.artifacts) === '["dist/*.js"]'
         && (claimBody.job.branch ?? "").startsWith("fleet-suite/"),
       `${claimed.status} ${JSON.stringify(claimBody)}`);
-    const noSha = await hpost("/api/helper/claim", { jobId, deviceId: "watchnoshabox1" });
-    check("job claim: a device that never named a daemonSha is refused 409 even with the id in hand",
-      noSha.status === 409, `${noSha.status} ${await noSha.text()}`);
-
     const badArt = await hpost("/api/helper/result",
       { jobId, exitCode: 0, tail: "x", artifacts: [{ path: "../escape", sha256: "b".repeat(64), bytes: 1 }] });
     check("job result: an artefact path that climbs out of the clone is refused 400, and the claim survives it",
@@ -3255,11 +3262,21 @@ export async function run(): Promise<void> {
         && evPayload.result === "green" && evPayload.cmd === "bun run build" && evPayload.exitCode === 0
         && evPayload.artifacts?.[0]?.path === "dist/app.js" && evPayload.artifacts[0].bytes === 42,
       `${evCount} event(s) ${JSON.stringify(ev)}`);
-    const evText = (await plogRead()).find((p) => p.slot === aId
-      && p.text.includes(`[event ${ev?.id as string}]`))?.text ?? "";
+    // POLLED, not read once: minting and DELIVERY are two ticks, and the event above is asserted
+    // while it is still `pending`. Reading the journal in the same breath measured the transport's
+    // latency, not the message — the probe failed as the property it was aiming at (2026-09-02).
+    const waitPaneText = async (eventId: string): Promise<string> => {
+      for (let i = 0; i < 120; i++) {
+        const hit = (await plogRead()).find((p) => p.slot === aId && p.text.includes(`[event ${eventId}]`));
+        if (hit) return hit.text;
+        await Bun.sleep(250);
+      }
+      return "";
+    };
+    const evText = ev ? await waitPaneText(ev.id as string) : "";
     check("job watch: the pane text names the artefacts and says they were NOT uploaded",
       evText.includes("dist/app.js") && evText.includes("NOT uploaded")
-        && evText.includes("result=green"), evText.slice(0, 260));
+        && evText.includes("result=green"), evText.slice(0, 260) || "(no pane text within 30s)");
     if (ev) await ackEvent(aTok, ev.id as string);
 
     // LEVEL-TRIGGERED, the property that separates this from an edge: a subscription made after the

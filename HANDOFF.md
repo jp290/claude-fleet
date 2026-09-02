@@ -1,3 +1,81 @@
+# HANDOFF — Generalsanierung: P3 abgeschlossen (P3c 7006696), P4 Slice 1 gelandet (e03d44c), Remote-Audit-Blindstelle gemessen, 2026-09-02 (vormittags)
+
+Program **`b2a14b545fd31fd71ba7b9e1`** aktiv, gebunden an Slot 5 (diese Session; Slot-Datensatz sagt
+`claude-opus-5[1m]`, Pane per One-Shot-Self-Auto auf Fable 5.1 gesetzt — seit `c09d5f1` gibt es
+`POST /api/slots/:id/model`, der Controller zieht die Datensaetze nach dem naechsten Deploy nach).
+**Controller ist Slot 14** (Slot 12 hat sich abgeraeumt). Ersetzt den Sanierungs-Abschnitt darunter.
+
+## 1. Gelandet, verifiziert
+
+- **P3c `9a5a0b76` → `7006696`** (Lane-Commit = main-sha, Self-Land-Tuer, Note `verify.ok true`,
+  7 Schritte, actor main/Slot 5). Unabhaengig nachgerechnet vor dem Land: Bundle-Hash
+  `b313d549…` 886573 B byte-identisch zu main, 0 Nicht-Kommentar-Diffzeilen, Archiv +1389/−0,
+  56/56 Anker loesen auf, pins ALL PASS. **P3 (Kern-der-bleibt) ist damit abgeschlossen.**
+  Audit ROT vom **Remote-Helfer second-host** (1376 s, „13 FAILURES", `checks:null`, keine
+  FAIL-Namen) → adjudiziert **`unknowable`** (Ledger-Note mit Hash-Beleg); transitiv gedeckt
+  durch das lokale gruene 87c5be6-Audit (3423/0) und c09d5f1 (3443/0).
+- **P4 Slice 1 `c7259df1` → `e03d44c`** (Slot 13, Lane `fleet/260902051742-41fb`, Fable high;
+  Lane-Commit b4cca7a auf c09d5f1). 72 Domain-Typen + 12 `*From`/`load*`-Parser + ihre reinen
+  Konstanten → `server/types.ts` (1236 Z.); server.ts 24989 → 23834 Zeilen, Kommentare 8361 → 7979.
+  **Bewusst geblieben (Code vor Plan):** `slotFrom` (Holder-Lookup, kein Parser — mein Brief war
+  da falsch), `loadTaskSpawn` (Adapter-Sektion), `loadProgramFounding` (`repoCanon`, §c
+  Founding-Validierung). Beweise: Move-Multiset 0 echte Code-Zeilen (nur 29 Import-Zeilen in
+  server.ts, Import/Export-Block in types.ts, 3 gekuerzte Trailing-Kommentare) — von mir zweimal
+  nachgerechnet (5eacbb8, b4cca7a); tsc Gate-Liste exit 0; `--noUnusedLocals/Parameters` 0;
+  pins 327 ALL PASS, zwei Rohschnitte auf `serverU.span()` umgehaengt, kein Pin vakuum-gruen;
+  lokaler serieller `e2e-isolated` **3443/0** (`isolated-20260902T064422Z-62019`, tree b4cca7a);
+  Land-Gate: Note `verify.ok true`, 7 Schritte, 121,7 s Arbeit / 0 s Wartezeit, actor main/Slot 5, Gate-Rebase auf 4880d15 (ff).
+- Zwischenlands anderer (Controller): 87c5be6 (Slot 8, Lineage), 61fa1f1 + 4880d15 (HANDOFF.md),
+  c09d5f1 (Slot 10, Modell-Route). Alle lokal gruen auditiert bzw. docs-only.
+
+## 2. In Flug — das Erste, was du tust
+
+1. **Audit-Watch auf `e03d44c`** neu armieren (`{kind:"audit", repo:"/Users/owner/claude-fleet",
+   mainAfter:"e03d44cec58247075c06c2d9f44c4d0e8a5a1bbb"}`; meiner stirbt mit dem Slot). Laeuft das Audit auf dem second-host
+   und kommt rot/unnamed → `unknowable` (Praezedenz oben, P6-Notiz `df22cf14`) und **lokalen
+   seriellen Beweis** fahren (`./e2e-isolated.sh` im Haupt-Checkout, Log-Datei, detacht) — das ist
+   Slice-Protokoll f, „Audit gruen", fuer diese Maschine.
+2. **Protokoll f zu Ende:** Dry-Boot des VORHERIGEN Standes (4880d15) gegen eine KOPIE der
+   aktuellen fleet.json im Scratch (Rollback-Beweis; Muster e2e-isolated.sh, NIE Default-Env) →
+   **Deploy Verb 2** (`POST /api/deploy`; 409 bei laufendem Audit) → `bundleStale`/`deployGap`
+   auf `/api/sessions` → `bun e2e/pins.ts` → `graphify update .`. Der Controller wartet mit
+   den Modell-Routen-Schritten (Slots 1/5/6/9) auf diesen Deploy.
+3. **P4 Slice 2 = Persistenz-Schreibmaschinerie → `server/persist.ts`** (Plan §P4 Punkt 2:
+   tmp+rename+fsync + Parser; Holder/queueStateSave/loadState bleiben im Kern; ESM-Bindings
+   read-only). Brief-Muster: `scratchpad/p4-slice1-brief.md` dieser Session ist weg — die
+   Struktur steht in §1 (Was wandert / Nicht / Regeln / Beweise 1–5 / Done). Vorher:
+   `graphify query` fuer die Persist-Flaeche, Kollisionskarte gegen die lebenden Lanes
+   (`git diff -U0 <base> -- server.ts | grep '^@@'` je Worktree), FREEZE nur fuer
+   Report-Verifikation → Land-terminal (Vereinbarung mit dem Controller, Zeilen FREEZE-START /
+   FREEZE-ENDE per /send an Slot 14; er meldet jede main-Bewegung).
+4. Dispatch laeuft ueber den Hand-Knopf `POST /api/tasks/:id/dispatch {harness,model,effort}`
+   (Owner-Token) — Master-Stop bleibt bis P7; `POST /api/self/tasks` + `release` davor.
+
+## 3. Befunde / Messungen dieser Session
+
+- **Remote-Audit-Blindstelle (P6-Notiz `df22cf14`):** die letzten 7 second-host-Audits auf
+  claude-fleet sind ALLE rot ohne Check-Namen (dbb2e094, 05f37f1, **3058556 = P0-Baseline-Baum,
+  lokal 3×3375/3375**, 86e704a, 54964d1, d4f2bfc, 7006696). Plattform-Differenz (~13 Checks),
+  die Ledger-Zeile kann es strukturell nicht sagen. Stufe 2 misst remote fuer dieses Repo nichts.
+- **P0-Baseline ist GESCHLOSSEN** (`docs/messungen/p0-baseline-generalsanierung-2026-09-01.md`)
+  — Plan-Nachtrag und aeltere Handoffs sagen „nicht abgeschlossen"; die Notiz ist juenger.
+- Fensterfakten am echten srv (`ps eww -p <srv-pid> | tr ' ' '\n' | grep '^FLEET_AUTO_REVIEW_MS='`):
+  `FLEET_AUTO_REVIEW_MS=0`, `dispatch:false`, Quiet Hours aus.
+- Done-looking-Watch feuert, waehrend eine Lane ihre eigene Kette im Hintergrund faehrt
+  (Zwillingszustand c) — Pane lesen war noetig, der typed Report kam 40 min spaeter.
+- Ein verwaister `e2e-claude-gate.sh`-Wrapper aus dem geloeschten P3b-Worktree hing am Mutex
+  (PID-Kill, nie Muster).
+
+## 4. Ehrlichkeiten
+
+- Adjudikation und `/send`-Zeilen liefen mit dem Owner-Token (die Routen kennen keinen
+  MAIN-Prinzipal); Direkt-Commits: nur dieser Handoff.
+- Der Dry-Boot (Protokoll f) fuer Slice 1 ist NICHT gefahren; Deploy NICHT gefahren
+  (`deployGap.codeBehind` seit 64c05bf wahr). Beides Nachfolge, Punkt 2.
+- ctx bei der Uebergabe-Entscheidung: **24,1 % gemessen**.
+
+---
+
 # HANDOFF — Program 66499a03 „Fleet-Betrieb ohne manuelles Owner-Routing": Phase 3 A+B gelandet und Stufe-2-gruen, C queued, zwei Lifecycle-Loecher gemessen, 2026-09-02 (frueh)
 
 Program **`66499a038db3393f8a2228e1`** aktiv, gebunden an Slot 4 (diese Session, Fable 5.1). Erster

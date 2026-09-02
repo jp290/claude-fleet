@@ -329,3 +329,49 @@ Bindungsfakt + Host/Mutex-Fakt → B6 → B10/B11 → Dual-Host S2–S4.
   Verify-Weg; Promotion ist Owner-Akt.
 - Nicht gelesen: `docs/self-api.md` im Fliesstext (nur Ueberschriften und gezielte Stellen), die Acts 6–9
   des ACP-Programms gegen den heutigen Code, die e2e-Sonden zu den sechs Schnitten.
+
+---
+
+## 7. Umsetzungsplan (Owner-Frage 13:20: „Fable entwirft, GLM kontrolliert, Sol legt Hand an")
+
+**Der Dreiklang traegt — unter drei Bedingungen, die aus dem heutigen Baum folgen.**
+
+1. **Der Entwurf ist der TEST, nicht ein Prosa-Brief.** Fable schreibt je Zeile zuerst den Falsifier
+   (den `e2e/`-Check bzw. Pin, der VOR dem Fix rot und danach gruen ist) und den Ort (`datei#symbol`
+   + Zeilenbereich). Ein fremdes Modell kann von einem Test nicht abdriften, von einem Absatz schon; und
+   der Land-Gate fuehrt den Test danach fuer immer aus. Das ist die einzige Form von „Kontrolle", die nicht
+   an ein Modell gebunden ist. Der dichte Brief (Regelbuch: Dateien mit Zeilenbereich, Verify-Kommando
+   ausgeschrieben, Verbote benannt) wird als GETRACKTE Datei `docs/briefs/<zeile>.md` abgelegt; die Queue-
+   Zeile traegt nur den Pointer — Paste-Zustellung langer Briefe ist genau die Fragilitaet von §2.2, und
+   Codex bekommt den Brief heute per Paste.
+2. **GLM kontrolliert an ZWEI Punkten, beide advisory:** (a) Entwurf + Test VOR der Implementierung
+   (dort war sie heute stark: falsche Reihenfolge, fehlender Bindungsfakt, B10-Risiko); (b) den Diff
+   danach mit fester Checkliste (Test wirklich falsifizierend? Rueckfalltuer? Doc-Naht? Pin?). Mechanik:
+   EINE stehende pi-zai-Lane als Critic-Slot; die MAIN schickt einen Pointer („review branch X, Brief Y"),
+   GLM antwortet ueber `POST /api/self/fleet-report` (Lane-Route, typisiert, erreicht die MAIN ohne
+   Pane-Roman). Grund fuer den stehenden Slot: `pi-zai` ist nicht automatisierbar — der Dispatch-Tick
+   startet es nie, jede GLM-Lane braeuchte einen Hand-Dispatch (Owner-Pfad). Ein Slot, viele Reviews.
+3. **Sol implementiert in Codex-Lanes** mit Spawn-Tripel `{codex, <sol-modell-id>, high}` an der Zeile
+   (ACP-24), Codex committet selbst, der Gate faehrt die volle Kette, der Audit laeuft auf dem Geraet.
+   Codex laedt `AGENTS.md`, nicht `CLAUDE.md` — der Brief nennt die privaten Abschnitte namentlich. **Die
+   Modell-Id ist ungeprueft:** sie muss `HARNESS_MODEL_RE` bestehen; erster Schritt ist ein Pilot.
+
+**Orchestrierung ohne neue Maschine:** ein Program „B — Kommunikationskanal" mit einer Fable-MAIN, die
+entwirft (Test + Brief-Datei), Zeilen mit Spawn-Tripel anlegt, GLM-Verdikte als Fleet-Reports liest und
+gruen landet (Self-Land-Promotion wie Slot 3). Dispatch bleibt Controller-/Owner-Handgriff, bis B10 steht
+— das ist der eine Handgriff je Zeile, den der Plan noch braucht.
+
+**Pilot vor Serie:** `3bb5a5c9` (A1, eine Zeile, Falsifier klar: Suite unter `LANG=de_DE.UTF-8` faellt
+in 5 Checks) einmal durch alle drei Rollen. Beweist Modell-Id, Codex-Dispatch, GLM-Review-Schleife und
+Land in ~1 h — bevor zwoelf Zeilen dieselbe Unsicherheit tragen.
+
+**Serie danach in Zweierwellen** (`FLEET_DISPATCH_MAX_LANES` 2, Lands seriell), nach Kollisionsflaeche
+in `server.ts` gebuendelt: W1 B2+B3 (`sendText`-Region) · W2 B0+B4 (`tickWatches`/Zustellung) · W3 B1+B8
+(Renderer, Views) · W4 B6+B9 (Routen) · W5 B10+B11 (Dispatcher/Policy, erst nach B6 und Host-Fakt).
+Realistisch 2–3 Lands/Tag mit Audits auf dem Geraet.
+
+**Zwei Dinge muss der Owner entscheiden, der Plan kann sie nicht:** (1) `server.ts` steht unter dem
+Sanierungs-Freeze bis P7 — B laeuft als Freeze-Ausnahme, als Teil des Sanierungsplans, oder wartet;
+(2) der Codex-Controller („Sol redet, leitet an Fable weiter") sitzt an genau der Naht, die B0/B3/B4
+reparieren — erst danach, wie vom Owner selbst vermutet. Dann traegt er: Sol filet Zeilen und
+Programme, Fable entwirft auf Anforderung, und die Modellwahl je Zeile ist ein Feld, kein Handgriff.

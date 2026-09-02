@@ -621,6 +621,115 @@ export async function run(h: {
   check("(HD) should-reject: a heartbeat whose daemonSha is not 40 hex is 400, and the stored sha is untouched",
     badBeat.status === 400 && (await ownerDevice())?.daemonSha === goodSha, `${badBeat.status}`);
 
+  // ===== (HD.9) THE COMMAND JOB — work sent from here, run there, receipted with artefacts ======
+  // Placed HERE and not earlier for one measured reason: a command job is offered ONLY to a device
+  // whose heartbeat carried `daemonSha`, and `up2` is the first daemon in this file that HAS one —
+  // it runs from the checked-out tree the update above swapped in, so its own `git rev-parse` has an
+  // answer. Running this section against the staged copy (no git checkout around it) would measure
+  // the handshake refusing, not the feature working.
+  {
+    const lane = await openLane(REPO, "cmdjob");
+    const laneToken = await selfTokenOf(lane.slot);
+    const selfH = { "x-fleet-self-token": laneToken, "content-type": "application/json" };
+    // package.json + probe are COMMITTED, then the probe is CHANGED and left uncommitted. That is
+    // the whole point of `git stash create`: the artefact's digest below can only match the dirty
+    // bytes if the tree that ran on the other machine was the tree this lane actually HAS.
+    await Bun.write(`${lane.cwd}/package.json`,
+      JSON.stringify({ name: "cmdprobe", private: true,
+        scripts: { build: "mkdir -p dist && cp probe.txt dist/out.txt" } }, null, 2) + "\n");
+    await Bun.write(`${lane.cwd}/probe.txt`, "committed payload\n");
+    spawnSync("git", ["-C", lane.cwd, "add", "package.json", "probe.txt"]);
+    spawnSync("git", ["-C", lane.cwd, "commit", "-qm", "cmdjob build fixture"]);
+    const DIRTY = "UNCOMMITTED payload the helper must see\n";
+    await Bun.write(`${lane.cwd}/probe.txt`, DIRTY);
+    const shaOfFile = (path: string): string =>
+      spawnSync("shasum", ["-a", "256", path]).stdout.toString().trim().split(/\s+/)[0] ?? "";
+    const wantSha = shaOfFile(`${lane.cwd}/probe.txt`);
+    check("(HD) setup: the lane's dirty probe hashes to something this suite can compare against",
+      /^[0-9a-f]{64}$/.test(wantSha), wantSha);
+
+    // THE REFUSAL FIRST, and its second half is the one that matters: no row is created, so there is
+    // nothing for any helper to claim. A 400 that still queued the job would be the same bug wearing
+    // a status code.
+    const before = (await jobsOf()).filter((j) => j.kind === "command").length;
+    const refusedCmd = await fetch(BASE + "/api/self/jobs",
+      { method: "POST", headers: selfH, body: JSON.stringify({ cmd: "claude -p x" }) });
+    const refusedBody = (await refusedCmd.json()) as { error?: string; jobId?: string };
+    const afterRefusal = (await jobsOf()).filter((j) => j.kind === "command").length;
+    check("(HD) should-reject: a cmd naming an agent harness is 400 AND creates no claimable row",
+      refusedCmd.status === 400 && refusedBody.jobId === undefined && afterRefusal === before
+        && (refusedBody.error ?? "").includes("claude"),
+      `${refusedCmd.status} jobs ${before}→${afterRefusal} ${JSON.stringify(refusedBody.error ?? "")}`);
+    const offList = await fetch(BASE + "/api/self/jobs",
+      { method: "POST", headers: selfH, body: JSON.stringify({ cmd: "make -j8" }) });
+    check("(HD) should-reject: a cmd that is merely not on the allowlist is 400 too, and says so",
+      offList.status === 400 && ((await offList.json()) as { error?: string }).error?.includes("allowlist") === true,
+      `${offList.status}`);
+
+    const madeRes = await fetch(BASE + "/api/self/jobs", { method: "POST", headers: selfH,
+      body: JSON.stringify({ cmd: "bun run build", timeoutMs: 120_000, artifacts: ["dist/*.txt"] }) });
+    const made = (await madeRes.json()) as { jobId?: string; job?: { cmd?: string; argv?: string[] } };
+    const jobId = made.jobId ?? "";
+    check("(HD) THE SESSION POSTS A COMMAND JOB and gets an id back, with the argv the allowlist split",
+      madeRes.status === 200 && /^[0-9a-f]{12}$/.test(jobId) && made.job?.cmd === "bun run build"
+        && JSON.stringify(made.job?.argv) === '["bun","run","build"]',
+      `${madeRes.status} ${JSON.stringify(made)}`);
+
+    // THE HANDSHAKE, measured from the OTHER side: a device that never named a daemonSha does not
+    // see this job at all. `e2eotherbox001` has only ever been used as a jobs-list reader above.
+    const strangerCmd = ((await (await hget("/api/helper/jobs?deviceId=e2eotherbox001")).json()) as
+      { jobs: HelperJob[] }).jobs.filter((j) => j.kind === "command");
+    const mineCmd = (await jobsOf()).find((j) => j.kind === "command" && j.id === jobId);
+    check("(HD) a command job is INVISIBLE to a device whose heartbeat named no daemonSha, and visible to the one that did",
+      strangerCmd.length === 0 && !!mineCmd,
+      `stranger=${strangerCmd.length} mine=${JSON.stringify(mineCmd)}`);
+
+    const readJob = async (): Promise<{ state?: string; treeSha?: string | null; result?: {
+      exitCode?: number | null; result?: string; reason?: string;
+      artifacts?: { path: string; sha256: string; bytes: number }[];
+      remote?: { name?: string; clonedSha?: string } } }> => {
+      const r = await fetch(BASE + `/api/self/jobs/${jobId}`, { headers: { "x-fleet-self-token": laneToken } });
+      return ((await r.json()) as { job?: Record<string, unknown> }).job ?? {};
+    };
+    const deadline = Date.now() + 180_000;
+    let settled = await readJob();
+    while (Date.now() < deadline && settled.state !== "reported") {
+      await Bun.sleep(500);
+      settled = await readJob();
+    }
+    const arts = settled.result?.artifacts ?? [];
+    const out = arts.find((a) => a.path === "dist/out.txt");
+    check("(HD) THE RECEIPT: the remote run of `bun run build` came back exit 0 / green, named by the device that ran it",
+      settled.state === "reported" && settled.result?.exitCode === 0 && settled.result.result === "green"
+        && settled.result.remote?.name === DEVICE_NAME,
+      `state=${settled.state} exit=${settled.result?.exitCode} result=${settled.result?.result}`
+      + ` reason=${settled.result?.reason ?? "-"} remote=${settled.result?.remote?.name ?? "-"}`);
+    check("(HD) …and it carries the artefact the globs asked for, hashed IN THE CLONE — the digest is the lane's UNCOMMITTED bytes, so `git stash create` provably carried them",
+      arts.length >= 1 && out?.sha256 === wantSha && out.bytes === Buffer.byteLength(DIRTY),
+      `${arts.length} artefact(s) ${JSON.stringify(arts.slice(0, 3))} want=${wantSha} wantBytes=${Buffer.byteLength(DIRTY)}`);
+
+    // THE WATCH, through the OWNER route. This slice added a job KIND, not a principal: the
+    // self-watch door still answers a lane 409 ("lane-waits-on-lane"), and widening that is an
+    // owner promotion, not a lane's to make. Both halves are checked, so the boundary is measured
+    // rather than assumed. The watch's own mechanics (fires once, level-triggered) live in
+    // e2e/watch.ts on a non-lane session, which is the principal that can hold one.
+    const laneSelfWatch = await fetch(BASE + "/api/self/watch", { method: "POST", headers: selfH,
+      body: JSON.stringify({ kind: "job", target: jobId, idleSec: 0 }) });
+    check("(HD) a LANE is still refused 409 on /api/self/watch, job kind included — a kind was added, not a principal",
+      laneSelfWatch.status === 409 && (await laneSelfWatch.text()).includes("a lane may not subscribe"),
+      `${laneSelfWatch.status}`);
+    const watchRes = await post(`/api/slots/${lane.slot}/watch`, { kind: "job", target: jobId, idleSec: 0 });
+    const watchBody = (await watchRes.json()) as { watch?: { id?: string; kind?: string; jobId?: string; armed?: boolean } };
+    check("(HD) the owner may point a job watch at this lane, and subscribing AFTER the verdict fires in the subscribe call",
+      watchRes.status === 200 && watchBody.watch?.kind === "job" && watchBody.watch.jobId === jobId
+        && watchBody.watch.armed === false,
+      `${watchRes.status} ${JSON.stringify(watchBody)}`);
+    const badWatch = await post(`/api/slots/${lane.slot}/watch`, { kind: "job", target: "ffffffffffff" });
+    check("(HD) should-reject: a job watch on an id this fleet never offered is 409 — a watch that could never fire is refused at create",
+      badWatch.status === 409, `${badWatch.status}`);
+    await post(`/api/slots/${lane.slot}/kill`, {});
+  }
+
   up2.proc.kill();
   await up2.proc.exited;
   proxy.stop(true);

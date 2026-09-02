@@ -92,6 +92,38 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
   blieb auf veralteter Ausführungswahrheit stehen (Program f99e9354, Task 8e91fdc9).
 
 
+### job — `{kind:"job", target:"<jobId>"}` (Dual-Host S2, R5)
+
+Die fünfte Art auf derselben Route. Subjekt ist ein **Remote-Command-Job** (`POST /api/self/jobs`,
+unten), nicht ein Slot: `target` ist die 12-Hex-Job-Id, gespeichert wird sie als `jobId` — ein
+Slot-`target` ist eine Zahl, und zwei Bedeutungen auf einem Feld sind der Weg, wie ein Watch über das
+falsche Subjekt feuert.
+
+```
+curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"kind":"job","target":"<jobId>","idleSec":0}' \
+  http://<fleet-host>:<port>/api/self/watch
+```
+
+- Feuert **genau einmal**, beim Verdikt, und **dreiwertig** — dieselbe geteilte Klassifikation, die
+  jedes Remote-Ergebnis benutzt (`server.ts#remoteVerdictOf`): exit 0 = `green`, exit ≠ 0 = `red`,
+  kein Exit-Code / 126 / 127 / `VERIFY_SKIP_EXIT` = `unknown` mit `reason`. Ein Timeout ist ein
+  `unknown`, nie ein Rot.
+- **Level-getriggert** wie `merge` und `audit`: ein Abo NACH dem Verdikt feuert sofort aus dem
+  persistierten Fakt. Und jeder Ausgang produziert einen: läuft die Claim ab oder stirbt die
+  anbietende Session, setzt der Sweep selbst ein `unknown`-Verdikt — ein Job kann nicht enden, ohne
+  dass der Watch etwas zu sagen hat.
+- Die Nachricht nennt `result`, `cmd`, den Exit-Code und die **Artefakt-Zeilen** (Pfad, sha256, Bytes,
+  die ersten acht namentlich) — und sagt ausdrücklich, dass die Dateien im Klon gehasht und **nicht
+  hochgeladen** wurden.
+- Ablehnungen: `target must be a 12-character command job id` (400) ·
+  `no such command job — it was never offered, or it has been evicted` (409, das Register hält
+  `COMMAND_JOB_KEEP` = 20 settled Zeilen).
+- **Die Nicht-Lane-Regel gilt unverändert.** Diese Art fügt der Route eine `kind` hinzu, keinen
+  Prinzipal: eine Lane bekommt weiter 409 `a lane may not subscribe`. Will eine Lane auf ihren
+  eigenen Command-Job geweckt werden, muss der Owner den Watch über `POST /api/slots/:id/watch`
+  setzen — oder die Lane liest `GET /api/self/jobs/:id`.
+
 ### transition — `{kind:"transition"}` (STN-1, Program b1c4a497)
 
 Die vierte Art auf derselben Route, und die einzige, deren Auslöser kein Level des Ticks ist, sondern
@@ -382,6 +414,60 @@ ein `task_release`-Audit-Event, weil ein späterer beaufsichtigter ▸ start das
   - **Deckel** (409): `program release cap reached (N/M released rows not yet started) — let the
     tick start one first`.
 
+
+## jobs — `POST /api/self/jobs`, `GET /api/self/jobs/:id`
+
+Arbeit von hier nach dort auslagern, mit Quittung. Eine Session übergibt ihren **eigenen Baum** und
+eine **erlaubte Kommandozeile** an ein Helfer-Gerät; zurück kommt ein Exit-Code, ein Log-Tail und ein
+**Artefakt-Verzeichnis** (Pfad, sha256, Bytes). In diesem Schnitt wird **nichts hochgeladen** — die
+Quittung NENNT die Dateien, sie liefert sie nicht.
+
+```
+curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"cmd":"bun run build","timeoutMs":900000,"artifacts":["dist/*.js"]}' \
+  http://<fleet-host>:<port>/api/self/jobs
+# -> {"jobId":"<12 hex>","job":{...}}
+curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
+  http://<fleet-host>:<port>/api/self/jobs/<jobId>        # Zustand + Quittung
+```
+
+**Nicht lane-only, und das ist eine Entscheidung, kein Versehen.** Die vier lane-only Routen sind es,
+weil ihre Antwort außerhalb einer Lane undefiniert ist (`drift`, `gate`, `criterion`,
+`verify-intent`); `watch` ist nicht-lane-only, weil eine Lane, die auf eine Lane wartet, eine
+Kopplung ist, die nur der Owner sichtbar machen kann. **Beides trifft hier nicht zu:** eine Lane, die
+ihre eigene Suite auslagert, ist genau der Fall, den der Owner gewollt hat, und eine MAIN, die einen
+Build auslagert, ist derselbe Akt mit anderem cwd. Beide übergeben ihren EIGENEN Baum und warten auf
+ihre EIGENE Quittung — keine zweite Session ist beteiligt.
+
+**Der Body ist die Perimeter, und er ist drei Felder breit.** Repo, Branch, cwd und Slot kommen aus
+der Token-Zeile und können vom Aufrufer nie benannt werden.
+
+- `cmd` (Pflicht) muss ein **exakter Schlüssel der Allowlist** sein (`server/types.ts`
+  `HELPER_CMD_ALLOW`): `bun run build` · `bun test` · `bun run verify` · `./e2e-isolated.sh` ·
+  `./e2e-security.sh` · `bun e2e/pins.ts`. Der Wert des Eintrags ist die **argv** — der Helfer
+  exec't sie direkt, es gibt auf dem Weg **kein `sh -c`**, kein Quoting, kein Glob, kein `&&`.
+- **Ein `cmd`, das `claude`, `codex` oder `pi` als Token enthält, wird IMMER mit 400 abgewiesen** —
+  vor der Allowlist und unabhängig von ihrem Inhalt (`./claude`, `/usr/bin/codex`, `bun claude`
+  zählen alle). Ein Fleet, das eine Agenten-Harness an ein Helfer-Gerät posten kann, hätte
+  Remote-Agent-Spawn als Nebenwirkung eines Build-Runners erfunden. Der 400 hinterlässt **keine
+  Zeile**: die Verweigerung und die Abwesenheit von etwas Claimbarem sind eine Tatsache, nicht zwei.
+- `timeoutMs` (optional, Default 900 000) in `[10 000, 3 600 000]`.
+- `artifacts` (optional) sind **Globs relativ zum Klon**, max. 20, jeder relativ und ohne `..`. Der
+  Helfer expandiert sie NACH dem Lauf, hasht bis zu 50 Dateien und schickt `{path, sha256, bytes}`.
+  Eine leere Liste ist eine legitime Antwort (nichts angefragt, oder nichts getroffen) und nie ein
+  Fehlschlag — getrennt wird das allein durch `exitCode`.
+
+**Der Baum ist der ARBEITSBAUM**, genommen per `git stash create` wie beim `suite-offer`: uncommitted
+Arbeit reist mit, untracked Dateien nicht (ihre Zahl steht als `untracked` auf dem Job).
+
+**Der Job wird nur einem Gerät angeboten, dessen Heartbeat `daemonSha` trägt.** Das ist eine
+Fähigkeits-Lesung, kein Versionsvergleich: ein Daemon, der seinen eigenen Baum misst, ist die
+Generation, die auf `kind` verzweigt. Ein älterer würde `cfg.suiteCmd` auf einem Command-Job fahren —
+ein Grün über ein Kommando, das niemand verlangt hat. Der Claim lehnt so ein Gerät zusätzlich mit 409
+ab (die Job-Liste allein ist kein Tor).
+
+Deckel: **3 offene Command-Jobs pro Session** (409), 20 settled Zeilen im Register.
+`GET /api/self/jobs/:id` antwortet nur der anbietenden Session (sonst 404, nie fremde Arbeit).
 
 ## suite-offer — `POST/GET /api/self/suite-offer`, `POST /api/self/suite-offer/withdraw`
 

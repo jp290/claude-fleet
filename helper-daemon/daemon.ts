@@ -172,6 +172,11 @@ interface JobView {
 interface ClaimedJob {
   id: string; kind?: string; repo: string; main?: string; mainSha: string;
   branch?: string; treeSha?: string; untracked?: number;
+  // THE COMMAND KIND's three fields. `argv` is what this process execs — the fleet split the
+  // allowlisted command line at its own perimeter, so there is no parser and no shell here. `cmd` is
+  // carried beside it for the log line only. A `command` claim that arrives WITHOUT `argv` is
+  // unrunnable and is reported as such (127 → unknown), never approximated from `cmd`.
+  cmd?: string; argv?: string[]; timeoutMs?: number; artifacts?: string[];
 }
 
 // THE ONLY PLACE A REQUEST IS MADE, so that "the token is a header" and "every request is logged as
@@ -213,9 +218,18 @@ function childEnv(): Record<string, string> {
 // sh must stay alive to own the pipe, and the kill would land on sh while the suite ran on.
 async function runCmd(cmd: string, cwd: string, logPath: string, timeoutMs: number)
   : Promise<{ code: number | null; timedOut: boolean }> {
+  return await runArgv(["sh", "-c", cmd], cwd, logPath, timeoutMs);
+}
+// THE SAME RUNNER WITHOUT A SHELL, and it is the whole of "no shell interpolation" on this machine.
+// `runCmd` above keeps `sh -c` because its command comes out of THIS machine's own config file
+// (`installCmd`, `suiteCmd`) — a string an owner wrote here, where a shell is the point. A command
+// JOB's line came over the wire, so it arrives pre-split as argv and is exec'd directly: no quoting,
+// no glob, no `&&`, no substitution, and nothing for a crafted string to escape out of.
+async function runArgv(argv: string[], cwd: string, logPath: string, timeoutMs: number)
+  : Promise<{ code: number | null; timedOut: boolean }> {
   const fd = openSync(logPath, "a");
   try {
-    const proc = Bun.spawn(["sh", "-c", cmd], {
+    const proc = Bun.spawn(argv, {
       cwd, env: childEnv(), stdin: "ignore", stdout: fd, stderr: fd,
     });
     let timedOut = false;
@@ -291,6 +305,48 @@ export async function failNamesOf(logPath: string, trail: string | undefined): P
     return boundedFailNames(text.split("\n").filter(Boolean)
       .map((line) => line.replace(/^FAIL\s+/, "").replace(/\s{2}\(.*$/, "")));
   } catch { return []; }
+}
+// THE ARTEFACT DIGEST, computed IN THE CLONE and nowhere else. Three facts per file and no
+// content: `path` relative to the clone, `sha256` of its bytes, `bytes` as a number. Nothing is
+// uploaded in this slice — the receipt NAMES what the run produced so the asking session can decide
+// whether it wants it, which is a different question from whether the run went green.
+//
+// BOUNDED THREE WAYS, because a glob is written by the asking session and evaluated here: at most
+// ARTIFACT_KEEP rows in total, at most ARTIFACT_HASH_MAX bytes hashed per file, and only files
+// (never directories, never symlinks followed out of the tree — Bun.Glob's scan yields paths, and
+// a path that leaves the clone is refused by the server's own validator on arrival).
+const ARTIFACT_KEEP = 50;
+const ARTIFACT_HASH_MAX = 256 * 1024 * 1024;
+export interface ArtifactRow { path: string; sha256: string; bytes: number }
+export async function artifactsOf(clone: string, globs: string[]): Promise<ArtifactRow[]> {
+  const seen = new Set<string>();
+  const out: ArtifactRow[] = [];
+  for (const pattern of globs) {
+    if (out.length >= ARTIFACT_KEEP) break;
+    let matches: string[] = [];
+    try {
+      matches = [];
+      for await (const rel of new Bun.Glob(pattern).scan({ cwd: clone, onlyFiles: true, dot: false }))
+        matches.push(rel);
+    } catch { continue; } // a malformed glob names no file; it is not a reason to lose the run
+    for (const rel of matches.sort()) {
+      if (out.length >= ARTIFACT_KEEP) break;
+      // `..` cannot come out of a scan rooted at the clone, but the row is a claim about a path and
+      // is checked as one here too — the server refuses the same shape, and the two agreeing is the
+      // point (a receipt this daemon would not have written is a receipt the fleet will not store).
+      if (seen.has(rel) || rel.startsWith("/") || rel.split("/").includes("..")) continue;
+      seen.add(rel);
+      try {
+        const file = Bun.file(`${clone}/${rel}`);
+        const bytes = file.size;
+        if (bytes > ARTIFACT_HASH_MAX) continue;
+        const hasher = new Bun.CryptoHasher("sha256");
+        hasher.update(new Uint8Array(await file.arrayBuffer()));
+        out.push({ path: rel, sha256: hasher.digest("hex"), bytes });
+      } catch { /* a file that vanished between scan and read is not in the receipt */ }
+    }
+  }
+  return out;
 }
 const readSlice = async (path: string, from: number, to: number): Promise<string> => {
   try { return await Bun.file(path).slice(from, to).text(); } catch { return ""; }
@@ -379,13 +435,38 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
     // never ran, which is the one lie this rail must not tell.
     if (installed.code !== 0) { await report(cfg, j, 127, `${cfg.installCmd} failed (exit ${installed.code})`, logPath, clonedSha); return; }
 
+    // THE FORK BY KIND, and it is the ONE behavioural difference this feature introduces on this
+    // machine. `cfg.suiteCmd` stays the DEFAULT and remains the whole of what an `audit` and a
+    // `lane-suite` run — a daemon reading a job kind it does not know still runs the owner's own
+    // configured command, byte for byte as before. A `command` job runs the ARGV the claim carried,
+    // for its OWN timeout, and hashes the artefacts it was asked for.
+    const isCommand = j.kind === "command";
+    if (isCommand && (!Array.isArray(j.argv) || j.argv.length === 0)) {
+      // an unrunnable claim fails as ITSELF: 127 is the code the server's shared classifier reads as
+      // "could not be started" (server.ts#remoteVerdictOf), never a red about a command never run.
+      await report(cfg, j, 127, "the claim named no argv — this daemon does not turn a command string into one", logPath, clonedSha);
+      return;
+    }
+    const timeoutMs = isCommand && typeof j.timeoutMs === "number" && j.timeoutMs > 0
+      ? j.timeoutMs : cfg.suiteTimeoutSec * 1000;
     const started = Date.now();
-    const ran = await runCmd(cfg.suiteCmd, clone, logPath, cfg.suiteTimeoutSec * 1000);
-    log(`suite finished exit=${ran.code} timedOut=${ran.timedOut} in ${Math.round((Date.now() - started) / 1000)}s`);
+    const ran = isCommand
+      ? await runArgv(j.argv!, clone, logPath, timeoutMs)
+      : await runCmd(cfg.suiteCmd, clone, logPath, timeoutMs);
+    log(`${isCommand ? `command ${j.cmd ?? j.argv!.join(" ")}` : "suite"} finished exit=${ran.code}`
+      + ` timedOut=${ran.timedOut} in ${Math.round((Date.now() - started) / 1000)}s`);
+    // HASHED BEFORE THE REPORT AND BEFORE THE `finally` BELOW REMOVES THE CLONE — and hashed even on
+    // a red: a failing build that still produced a log is exactly the run whose artefacts are worth
+    // naming. A timeout is the one case with no artefacts, because nothing here can say the files it
+    // would find are finished ones.
+    const artifacts = isCommand && !ran.timedOut
+      ? await artifactsOf(clone, Array.isArray(j.artifacts) ? j.artifacts : [])
+      : [];
     // A TIMEOUT REPORTS NO EXIT CODE AT ALL. The server reads a missing code as `unknown` with a
     // reason, which is what a killed run is — never a red, and never a silent green.
     await report(cfg, j, ran.timedOut ? null : ran.code,
-      ran.timedOut ? `the suite passed ${cfg.suiteTimeoutSec}s and was killed here` : "", logPath, clonedSha);
+      ran.timedOut ? `the ${isCommand ? "command" : "suite"} passed ${Math.round(timeoutMs / 1000)}s and was killed here` : "",
+      logPath, clonedSha, artifacts);
   } finally {
     suiteBusy = false;
     try { rmSync(clone, { recursive: true, force: true }); } catch { /* the verdict is already sent */ }
@@ -395,7 +476,7 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
 }
 
 async function report(cfg: HelperConfig, j: ClaimedJob, exitCode: number | null, note: string,
-  logPath?: string, clonedSha?: string): Promise<void> {
+  logPath?: string, clonedSha?: string, artifacts: ArtifactRow[] = []): Promise<void> {
   const size = logPath && existsSync(logPath) ? statSync(logPath).size : 0;
   const head = logPath ? await readSlice(logPath, 0, Math.min(size, 65_536)) : "";
   const end = logPath ? await readSlice(logPath, Math.max(0, size - 65_536), size) : "";
@@ -407,11 +488,13 @@ async function report(cfg: HelperConfig, j: ClaimedJob, exitCode: number | null,
     // `clonedSha` is SPREAD, so a report from before the clone (or after a rev-parse that failed)
     // carries no such key at all. An absent field is the honest shape for "not measured"; a null
     // one would be a claim this daemon is not in a position to make.
+    // `artifacts` is SPREAD like `clonedSha`: a report from a kind that has none carries no such key
+    // at all, so the two older job kinds' bodies are byte-identical to what they were.
     body: JSON.stringify({ jobId: j.id, exitCode, tail, fails, ...(trail ? { trail } : {}),
-      ...(clonedSha ? { clonedSha } : {}) }),
+      ...(clonedSha ? { clonedSha } : {}), ...(artifacts.length ? { artifacts } : {}) }),
   });
   const body = await bodyOf<{ result?: string }>(res);
-  log(`reported ${j.id} exit=${exitCode} → ${res.status} ${body.result ?? body.error ?? ""}`);
+  log(`reported ${j.id} exit=${exitCode} artifacts=${artifacts.length} → ${res.status} ${body.result ?? body.error ?? ""}`);
 }
 
 // --- the self-update ---------------------------------------------------------------------------

@@ -188,6 +188,30 @@ const PRE_AUTH_ROUTES = [
   // below is unchanged by this feature.
   '= /api/self/suite-offer',
   '= /api/self/suite-offer/withdraw',
+  // Dual-Host S2/R5, THE REMOTE COMMAND JOB. On this list for the same structural reason as every
+  // neighbour — the exact self principal IS the boundary — and it is the first self route whose
+  // body carries a COMMAND LINE, so what bounds it is spelled out rather than inherited:
+  //   · `cmd` must be an EXACT key of HELPER_CMD_ALLOW (server/types.ts#helperCmdCheck), whose
+  //     VALUE is the argv the helper execs — there is no shell, no quoting and no substitution
+  //     anywhere on the path, and adding an entry is a source change under review;
+  //   · a `cmd` naming `claude`, `codex` or `pi` as a token is refused FIRST and unconditionally,
+  //     before the allowlist is consulted at all, so widening that list can never open remote
+  //     agent spawn (pinned from the constant itself in e2e/pins.ts §S10);
+  //   · a refusal leaves NO ROW — the 400 and the absence of anything claimable are one fact;
+  //   · the tree, repo, branch, cwd and slot all come from the token's own row: nothing in the
+  //     body can nominate WHICH tree is bundled, exactly as on the suite-offer door above;
+  //   · the job is OFFERED only to a helper device whose heartbeat named a `daemonSha`, and the
+  //     claim refuses one that did not — an older daemon would run its own configured suite
+  //     command on a command job;
+  //   · `artifacts` are globs relative to the clone, and the receipt they produce is validated on
+  //     arrival (relative path, no `..`, 64-hex digest, non-negative integer bytes; 50 rows max).
+  //     NOTHING is uploaded in this slice — the receipt names files, it does not carry them;
+  //   · caps: 3 open jobs per session, timeoutMs in [10s, 60min]. It starts nothing on this box,
+  //     writes into no pane and reaches no foreign slot. The GET half answers the OFFERING session
+  //     alone (404 for anyone else's token), and the bundle goes out through the EXISTING
+  //     /api/helper/bundle route, so the helper perimeter is unchanged by this feature too.
+  '= /api/self/jobs',
+  String.raw`~ /^\/api\/self\/jobs\/([0-9a-f]{12})$/`,
   // The handler sits before the steward interceptor only so a steward credential meets the same
   // tokenGate 401 as any other non-owner credential. Every matching route calls tokenGate inline
   // before the owner handler; the regex is pinned here as an explicitly reviewed pre-auth shape.

@@ -10325,6 +10325,7 @@ function opsReceiver(e: FleetEventRow): string {
 function opsSubject(e: FleetEventRow): string {
   if (e.kind === "post-land-audit") return `${e.subjectRepo ?? "?"} @ ${(e.subjectMainAfter ?? "").slice(0, 8)}`;
   if (e.kind === "deploy-terminal") return `deploy ${e.subjectDeployId ?? "?"}`;
+  if (e.kind === "command-job") return `command job ${e.subjectJobId ?? "?"}`;
   return `slot ${e.subjectSlot ?? "?"} · ${e.subjectBranch ?? "?"}`;
 }
 
@@ -10342,6 +10343,8 @@ function opsSummary(e: FleetEventRow): string {
     return `${String(p.status)} · task ${typeof p.taskId === "string" ? p.taskId.slice(0, 8) : "—"}`;
   if (e.kind === "deploy-terminal")
     return `ok=${p.ok === true ? "YES" : p.ok === false ? "NO" : "UNVERIFIED"} · stage=${String(p.stage)}`;
+  if (e.kind === "command-job")
+    return `result=${String(p.result)} · ${String(p.cmd)} · ${Array.isArray(p.artifacts) ? p.artifacts.length : 0} artefact(s)`;
   return `${p.ahead ?? "?"} ahead / ${p.dirty ?? "?"} dirty`;
 }
 

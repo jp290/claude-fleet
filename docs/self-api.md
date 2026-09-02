@@ -94,8 +94,8 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
 
 ### job — `{kind:"job", target:"<jobId>"}` (Dual-Host S2, R5)
 
-Die fünfte Art auf derselben Route. Subjekt ist ein **Remote-Command-Job** (`POST /api/self/jobs`,
-unten), nicht ein Slot: `target` ist die 12-Hex-Job-Id, gespeichert wird sie als `jobId` — ein
+Die Art für einen **Remote-Command-Job** (`POST /api/self/jobs`, unten) auf derselben Route. Subjekt
+ist ein JOB, nicht ein Slot: `target` ist die 12-Hex-Job-Id, gespeichert wird sie als `jobId` — ein
 Slot-`target` ist eine Zahl, und zwei Bedeutungen auf einem Feld sind der Weg, wie ein Watch über das
 falsche Subjekt feuert.
 
@@ -116,6 +116,9 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
 - Die Nachricht nennt `result`, `cmd`, den Exit-Code und die **Artefakt-Zeilen** (Pfad, sha256, Bytes,
   die ersten acht namentlich) — und sagt ausdrücklich, dass die Dateien im Klon gehasht und **nicht
   hochgeladen** wurden.
+- Ein zweites Abo auf denselben Job gibt den ersten Watch zurueck (`existing:true`) — solange er
+  ARMED ist. Ein SPENT Watch wird nie als `existing` geliefert: er hat seinen Satz schon gesagt, und
+  ein neues Abo danach ist eine neue Frage, die der Level-Trigger sofort beantwortet.
 - Ablehnungen: `target must be a 12-character command job id` (400) ·
   `no such command job — it was never offered, or it has been evicted` (409, das Register hält
   `COMMAND_JOB_KEEP` = 20 settled Zeilen).

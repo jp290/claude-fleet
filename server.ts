@@ -5468,8 +5468,12 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
       && w.repo === auditIdentity!.repo && w.mainAfter === auditIdentity!.mainAfter;
     if (kind === "deploy") return watchKind(w) === "deploy" && "deployId" in w
       && w.deployId === deployIdentity!.deployId;
+    // ARMED-only, the same rule `lane` and `transition` use and deliberately NOT the audit/deploy
+    // one: a spent job watch has already said its sentence, and returning it as `existing` would
+    // make a fresh subscription silently unanswerable. A re-subscription after a completion is a
+    // NEW question, and level-triggering answers it at once from the persisted verdict.
     if (kind === "job") return watchKind(w) === "job" && "jobId" in w
-      && w.jobId === jobIdentity!.job.id;
+      && w.jobId === jobIdentity!.job.id && w.armed;
     // a transition watch is a question the Controller asks in its own words; the same words,
     // still armed, are the same question. A spent one is never returned as existing — a new
     // registration after a completion or an expiry is a NEW question.

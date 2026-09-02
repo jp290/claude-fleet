@@ -1,5 +1,5 @@
 // The three send paths (JSON answers, static assets, ws.send): gzip, the app.js cache-buster
-// chain, and the byte ledger behind GET /api/transport. See server.ts, the TRANSPORT region.
+// chain, and the byte ledger behind GET /api/transport. See server/transport.ts.
 //
 // public/app.js is a gitignored BUILD artifact, so this module never assumes one is present or
 // that it holds any particular bytes: it writes its own bundle fixture into the throwaway copy

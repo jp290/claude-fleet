@@ -22249,7 +22249,7 @@ Bun.serve<WSData>({
         .sort((a, b) => (a.live === null ? 1 : 0) - (b.live === null ? 1 : 0) || b.ts - a.ts);
       return json({ lanes: lanes.slice(0, 500), total: lanes.length });
     }
-    // the transport ledger (TRANSPORT region). Its OWN route on purpose: /api/sessions is the endpoint
+    // the transport ledger (server/transport.ts). Its OWN route on purpose: /api/sessions is the endpoint
     // being shrunk, and a counter inside it would inflate what it measures. Owner-only, read-only.
     if (url.pathname === "/api/transport" && req.method === "GET") return json(transportReport());
     // the owner disposition rail (see the DISPOSITION region). GET is the same read model as the
@@ -23832,10 +23832,10 @@ Bun.serve<WSData>({
   websocket: {
     // the terminal stream is the most compressible thing this server sends (12.3× on a 2 MB tail
     // of a real pane, 17.7× on a live 27 KB burst). NOTE: this line only negotiates the extension
-    // — the frames are opted in per send() in transportWs (see the TRANSPORT region).
+    // — the frames are opted in per send() in transportWs (see server/transport.ts).
     perMessageDeflate: true,
     async open(ws) {
-      transportWs(ws); // wraps ws.send: per-message deflate + the byte ledger (TRANSPORT region)
+      transportWs(ws); // wraps ws.send: per-message deflate + the byte ledger (server/transport.ts)
       const s = slots[ws.data.slot - 1];
       const inputBinding = ws.data.share ? undefined : ws.data.ownerInput;
       const occupant = inputBinding?.occupant ?? slotStreamOccupant(s);

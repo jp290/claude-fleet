@@ -1,4 +1,4 @@
-# HANDOFF — Fleet Controller (Slot 15, Fable 5.1 high): drei Nachfolgen (3->4, 4->16, 7->3), Sanierung-Beschleunigung GEMESSEN (dbaeab7), 3bb5a5c9 fertig und Land in Kette, Paste-Platzhalter-Mechanismus gefunden; Uebergabe bei ~30 % GEMESSEN, 2026-09-02 (15:10)
+# HANDOFF — Fleet Controller (Slot 15, Fable 5.1 high): drei Nachfolgen (3->4, 4->16, 7->3), Sanierung-Beschleunigung GEMESSEN (dbaeab7), 3bb5a5c9 fertig und Land in Kette, Paste-Platzhalter-Mechanismus gefunden; A1 GELANDET (01ccfb3); Uebergabe bei ~31 % GEMESSEN, 2026-09-02 (15:57)
 
 Rolle: 🎛 Fleet Controller (Owner-Delegation 10:05 gilt; Owner-Prinzip 13:45: nur fragen, was ohne ihn
 nicht zu beantworten ist). Modelle: MAINs Fable, Lanes Opus, Sol = gpt-5.6-sol (codex), GLM nur pi-zai.
@@ -7,23 +7,28 @@ Watches gehoeren den MAINs; ich halte nur einen lane-Watch auf Slot 1 (meine eig
 ## 0. Reihenfolge fuer dich
 
 1. Erdung (`./state.sh`, `./register.sh`, dieser Abschnitt, Board). Miss deinen ctx, bevor du liest.
-2. **`3bb5a5c9` (A1, Slot 1, Lane `fleet/260902121449-779f`, 1 ahead, fertig 14:43) landen, falls
-   noch nicht geschehen.** Ein Hintergrund-Watcher meiner Pane postet `POST /api/slots/1/merge {}`,
-   sobald Slot 3s Land von Slot 2 (`1b677e58`) gesettelt ist — nie zwei Gates in der Schlange. Stirbt
-   meine Pane vorher, ist der Watcher tot: dann selbst posten. Danach: Audit abwarten (lokal, Grace 0,
-   ~28 min; Verb 2 gibt 409 waehrend eines Audits), dann `.env` `FLEET_AUDIT_HELPER_GRACE_MS='60000'`
-   + `POST /api/deploy`. Ab da laufen Audits auf dem Geraet. Erfolgstest (falsifizierbar): in den
-   `fleet/land`-Notes des naechsten Tages faellt `verify.waitMs` fuer die Mehrzahl der Lands auf ~0.
-   Queue-Zeile `39fbbd1f` ist mit diesem Commit erledigt (Lane sagt es).
-3. **Land `1b677e58` (Slot 2, 16b922e):** war um 14:40 `waitedOut` (2671 s Schlange hinter drei
-   Lane-Suiteketten, nie verifiziert). Slot 3 (Task-Workbench-MAIN, Nachfolgerin von Slot 7) landet es
-   seit 14:47 SELBST per Self-Land-Tuer und haelt den Watch. Nichts von deiner Seite starten.
+2. **`3bb5a5c9` (A1) IST GELANDET: main = `01ccfb3` (15:51, zweiter Gate-Lauf gruen, Note
+   `verify.ok true`, 197 s Arbeit / 77 s Warten; erster Lauf rot mit EINEM FAIL „live foreign
+   harness: the scheduled prompt reaches the pane", Send-Boot-Familie §11.2f, derselbe Baum lief
+   danach gruen).** `.env` steht schon auf `FLEET_AUDIT_HELPER_GRACE_MS='60000'` — aktiv wird das
+   erst mit dem naechsten srv-Boot. DEIN ZUG: den lokalen Post-Land-Audit fuer `01ccfb3` abwarten
+   (`POST /api/self/watch {"kind":"audit","repo":"/Users/owner/claude-fleet","mainAfter":"<voller
+   SHA von 01ccfb3>"}`; Verb 2 gibt 409, solange er laeuft), dann `POST /api/deploy` (Owner-Token),
+   `bundleStale`/`deployGap` pruefen. Ab da laufen Audits auf dem Geraet. Erfolgstest: naechster Tag
+   `verify.waitMs` ~0 in den Land-Notes UND die erste Remote-Zeile traegt `fails[]` + `checks.ran`
+   ~3400 (Notiz §2 Zug 1). Queue-Zeile `39fbbd1f` ist mit `01ccfb3` erledigt — schliessen.
+3. **Land `1b677e58` (Slot 2):** ZWEIMAL `waitedOut` (14:40, 15:33 — je 45 min Schlange hinter
+   Lane-Suiteketten, nie verifiziert). Slot 3 (Task-Workbench-MAIN) rebased jetzt auf `01ccfb3` und
+   landet per Self-Land-Tuer (der Guard `unchangedRetry` verlangt bewegtes main, Notiz `789d9034`);
+   Lanes 5/8/10 sind bis ~16:00 gebeten, keine lokale Suite zu starten. Nichts von deiner Seite
+   starten. Mechanismus fuer den Nachfolger: ein Gate stirbt an der 45-min-Wartewand, wenn drei
+   Lane-Ketten den Mutex halten — vor einem Land die Lanes anhalten, nicht das Land wiederholen.
 4. **GLM-Zweitmeinung ist EINGEARBEITET** (§4 der Notiz, `65f3d53`; Slot 12 hat die Zeile 15:08):
    Zug 2 traegt jetzt sein Restrisiko, Zug 3 ist gestrichen, das zweite Helfergeraet steht ueber der
    Linie, P5-Parallelspur erst nach dem A1-Mess-Tag. Der GLM-Slot 7 ist gekillt; pruefe mit
    `./state.sh`, ob der Worktree `fleet-260902125001-c6f3` als Orphan liegt — dann verwerfen, nie landen.
-5. Slot 12 (Sanierungs-MAIN) hat den Vorschlag (§2 der Notiz, vier Zuege) um 14:51. Was davon in den
-   Plan geht, entscheidet sie; dort nichts umschreiben.
+5. Slot 12 hat den Vorschlag UEBERNOMMEN: Plan-Nachtrag `3a1723e` (nur Zug 2 mit Filter auf alle
+   Hunk-Bezeichner, f je Slice, P5-Spur nach dem A1-Mess-Tag). Dort nichts umschreiben.
 
 ## 1. Was heute passierte (verifiziert; Bodies in `git log df6291e..main`)
 

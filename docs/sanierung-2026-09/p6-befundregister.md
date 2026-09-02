@@ -238,6 +238,75 @@ werden. Diese Frage ist ohne B-01 nicht beantwortbar, und das ist der ganze Punk
 
 ---
 
+## B-06 — Ein Deploy toetet einen laufenden LAND, obwohl er einen laufenden AUDIT schuetzt
+
+*Gemessen 2026-09-02 23:46 an der eigenen Land-Kette der Sanierungs-MAIN Slot 3. Neu, keine
+Queue-Zeile.*
+
+`POST /api/deploy` lehnt mit **409** ab, solange ein Post-Land-Audit laeuft — ausdruecklich, weil
+ein `srv`-Kill mitten im Audit ein falsches Rot erzeugt. **Fuer einen laufenden LAND gibt es diese
+Sperre nicht.**
+
+**Beobachtet, nicht hergeleitet:** waehrend der dritte Land-Versuch von `c74706b0` lief, hat ein
+Deploy auf `668d6ff` den Server neu gestartet (`bun server.ts` seit 23:45:59, Ledger-Zeile
+`deploys.jsonl` 23:46:00 `ok:true`). Der Merge-Job kam terminal als
+`status:"interrupted", landed:false, verify.ok:null` zurueck — **verify hat nie gelaufen**, es gab
+also gar kein Urteil ueber den Baum. Die Lane war zu diesem Zeitpunkt bereits rebased (`ee020be` →
+`a5fea1c`); kein `land-inflight.json` blieb liegen, der Worktree blieb sauber.
+
+**Warum das die falsche Haelfte ist, die geschuetzt wird.** Ein unterbrochener Audit kostet ein
+falsches Rot auf einer Ledger-Zeile, die nichts gated. Ein unterbrochener LAND kostet einen
+Gate-Lauf (hier 4 min) und laesst eine Lane in einem Zustand zurueck, den ihr eigener Bericht nicht
+mehr beschreibt: rebased auf einen Stand, den niemand verifiziert hat. Landet zwischen Abbruch und
+Wiederholung fremde Arbeit auf `main`, verschiebt sich der Kandidat erneut.
+
+**Kosten hier gering, weil der Zufall guenstig lag:** der Abbruch traf die Phase VOR dem
+Ledger-Schreiben. Ein Abbruch NACH der `main`-Bewegung, aber vor der Land-Note, haette einen
+Commit auf `main` ohne Provenienz-Note hinterlassen — und die Note ist die einzige Quelle dafuer,
+wer gelandet hat und mit welchem Verify.
+
+**Vorgeschlagene Reparatur:** dieselbe 409-Sperre, die der Audit schon hat, auf einen laufenden
+Merge-/Land-Job ausweiten (`mergeJob`-Inflight). Gegenprobe gehoert neben die bestehende
+Audit-Sperre in `e2e/` — ein Deploy bei laufendem Land MUSS 409 antworten. **Nicht** als
+stiller Retry loesen: der Operator soll sehen, dass er wartet.
+
+**Status:** offen. Ein Advisory-Platz ist seit der `d2e4f219`-Konvertierung frei, falls der Owner
+das lieber als Queue-Zeile fuehrt.
+
+---
+
+## B-07 — Nachtrag zu `372b3cef`: der SPENTe merge-Watch ist PERSISTIERT und meldet `ok:true`
+
+*Gemessen 2026-09-02/03 an drei Land-Versuchen derselben Zeile. Ergaenzt die Queue-Zeile
+`372b3cef`, die nicht editierbar ist (kein `PATCH` auf `/api/tasks`, s. B-04).*
+
+`372b3cef` fuehrt „ein SPENT merge-Watch blockiert die Re-Subscription desselben Ziels". Drei
+Beobachtungen schaerfen das:
+
+1. **Die Antwort sieht wie Erfolg aus.** `POST /api/self/watch {"kind":"merge","target":2}` gibt
+   `ok: true` zurueck — und darin den ALTEN Watch: gleiche `id` (`6fa290fe`), `armed: false`,
+   `firedAt` noch auf dem ERSTEN Land gestempelt. Es gibt kein `error`. **Der einzige Unterschied
+   zwischen „abonniert" und „wird nie feuern" ist das Feld `armed`.**
+2. **Er ueberlebt einen Server-Neustart.** Nach dem Deploy aus B-06 (frischer `bun server.ts`)
+   lieferte dieselbe Anfrage denselben spent Watch. Der Zustand ist also persistiert, nicht
+   in-memory — ein Neustart ist kein Rueckweg.
+3. **Die Folge trifft genau den vorgeschriebenen Ablauf.** Der Gruendungsbrief einer Program-MAIN
+   sagt woertlich: das zurueckgegebene `watch` abonnieren und **ohne zu beobachten** warten. Wer
+   das beim ZWEITEN Land derselben Zeile tut, wartet unbegrenzt auf eine Nachricht, die
+   strukturell nicht kommt — und nichts in der Antwort sagt es ihm.
+
+**Rangvorschlag:** hochstufen. Das ist kein Komfortmangel, sondern ein Benachrichtigungskanal, der
+Erfolg meldet und nichts liefert, auf dem vorgeschriebenen Pfad. Der Ausweg (auf
+`GET /api/slots/:id/merge` pollen) ist genau das, was `5da9c4d` abschaffen wollte.
+
+**Reparatur-Richtung** (nicht gemessen, darum als Frage): entweder einen spent Watch bei
+Re-Subscription ERSETZEN statt zurueckzugeben, oder die Re-Subscription mit einer eigenen
+Ablehnung beantworten („dieser Watch ist verbraucht") — Hauptsache, `ok:true` bedeutet nie wieder
+`armed:false`. **Bis dahin gilt operativ: nach jedem `POST /api/self/watch` das Feld `armed`
+lesen, nie `ok`.**
+
+---
+
 ## Methodensatz — der Zeitfenster-Vergleich (aus dem Fehler in B-01/B-05 gelernt)
 
 > **Ein Vergleich zweier Populationen mit unterschiedlicher Zeitspanne misst die Zeit, nicht den

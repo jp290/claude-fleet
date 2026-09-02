@@ -61,6 +61,222 @@ Der Controller-Abschnitt darunter gehoert einer anderen Rolle.
 
 ---
 
+# HANDOFF — Fleet Controller (Slot 7, Fable→Opus 5 high): Deploy 2eebe03a GELANDET (Audits laufen ab jetzt REMOTE), Fable-Kontolimit umgangen (sieben Panes auf Opus), CLAUDE.md-Handedit als Land-Killer GEMESSEN und repariert, zwei Lands in Kette; 2026-09-02 (17:15)
+
+Rolle: 🎛 Fleet Controller. Owner-Delegation (Landen, autonomer Betrieb) gilt fort. Modelle: siehe §2 —
+die Fable-Politik ist HEUTE nicht fahrbar, das ist der wichtigste Betriebsfakt dieser Session.
+
+## 0. Reihenfolge fuer dich
+
+1. Erdung (`./state.sh`, `./register.sh`, dieser Abschnitt, Board). Miss deinen ctx, bevor du liest.
+2. **Deploy `2eebe03a` ist ok:true (Boot 16:56:22, target `8865eaa`).** `deployGap.codeBehind false`,
+   `bundleStale false`, `FLEET_AUDIT_HELPER_GRACE_MS` live `60000`. Damit laufen Post-Land-Audits auf
+   dem Second-host (`daemonSha f62b1f58`, mode active), nicht mehr lokal. **Erfolgstest BESTANDEN, erste Haelfte:** nach Slot 12s
+   Land von `ffdcece` (17:13) hat das Second-host den Post-Land-Audit sofort beansprucht
+   (`helperDevices[0].claims = [{kind:"audit", repo:"claude-fleet", ref:"main"}]`) — Tier 2 laeuft
+   remote, der lokale Mutex bleibt fuer Gates frei. **Zweite Haelfte noch offen:** traegt die
+   fertige Remote-Zeile `fails[]` und Check-Namen? Frueher waren 8 Remote-Audits in Folge rot OHNE
+   Namen; die Server-Seite dafuer (`3974883`, `b3f4230`) ist erst mit diesem Deploy live. Der
+   Durchsatz-Beleg ist schon hart: Slot 12s Land-Note sagt `verify.ok true`, 107 s Arbeit,
+   `waitMs 0` — davor starben am selben Tag DREI Land-Versuche als `waitedOut` (je ~2690 s Warten,
+   Verify nie gestartet).
+3. **Der Post-Land-Audit fuer `01ccfb3` war ROT: 11 FAILs von 3443, `ms` 2041211, Lauf 15:50–16:24.**
+   NICHT adjudiziert, mit Absicht. Alle elf liegen in der fleet-report/Event-Hold-Familie (Q5/Q6,
+   `subject-gone`, `restart keeps the busy pending event`); die Signatur ist durchgehend: eine Zeile,
+   die HELD sein muesste, steht `delivered/attempts:1`. Der Audit davor (09:36, `79acd2e8`) war
+   ebenfalls rot mit ZEHN Fails derselben Familie, aber einer ANDEREN Teilmenge; der Lauf um 06:16
+   war gruen bei gleicher Zeilenzahl. Wechselnde Teilmenge + beide Rots unter schwerer Maschinenlast
+   = Last-Nichtdeterminismus, aber **das ist eine Hypothese, kein Beweis** — der Beweis ist ein
+   serieller Wiederholungslauf, und der ist ab jetzt gratis, weil Audits remote auf einer ruhigen
+   Maschine laufen. Trail: `$TMPDIR/fleet-e2e-trail/isolated-20260902T135103Z-50990.jsonl`.
+4. **Beweis-Hygiene fuer Remote-Audits, von Slot 1 am Code geschaerft (Zeile `8244622e`), und eine
+   Korrektur an mir:** remote ist `checks.failed` NICHT unbrauchbar — `postLandAuditChecks`
+   rekonziliert es gegen `fails[]`, das der Daemon separat und UNGEKAPPT schickt, und gibt sonst
+   `null` zurueck. Falsch ist nur `ran`: es zaehlt PASS-Zeilen in einem 4096-Byte-Tail und ist damit
+   eine untere Schranke. Der `ran:0 bei green`-Sensor verliert remote also die AUFLOESUNG, nicht die
+   Richtung — 3434 gelaufene Checks melden `ran:22`, ein fast leerer Lauf meldet `ran:3`, beides
+   liest sich als „klein, aber nicht null". **Und was ich zu stark gesagt hatte:** die Zeile
+   `rows=3434 results=3434` steht im TAIL des Helfers, nicht in einem `trail`-Feld der Ledger-Zeile
+   (die hat keines; das Report-Feld ist auf 120 Zeichen geschnitten). Sie ist die Selbstauskunft des
+   Geraets, kein Beleg von dieser Maschine. Das Urteil „voll gelaufen" traegt trotzdem — ueber
+   `exitCode 0` nach 22,9 min, `clonedSha == mainSha` und das `ALL PASS` im Tail — aber es gehoert
+   nicht als hiesige Messung weitergeschrieben.
+   **Und eine unausgesprochene Voraussetzung, von Slot 3 nachgetragen (Korrektur-Zeile zu
+   `f9db018e`):** die Rekonziliation von `failed` haengt daran, dass die `N FAILURES`-Summenzeile den
+   4-KB-Tail ueberlebt hat. Sie steht am Laufende, ueberlebt also normalerweise — aber ein Lauf, der
+   NACH seiner Summenzeile noch viel ausgibt, faellt aus der Garantie. Drei Schranken geben dann
+   `null` statt einer Zahl (Summenzeile ohne passendes `fails[]` · `exitCode 0` mit `failed != 0` ·
+   `ALL PASS` mit gezaehlten Fails ohne Summenzeile). Und die Rekonziliation korrigiert immer nur die
+   Failure-Differenz, nie die verlorenen PASS-Zeilen — `ran` bleibt kaputt.
+   **Und Slot 1s Gegenprobe dazu (dieselbe Zeile `8244622e`): das Restrisiko ist klein und benannt.**
+   Die Voraussetzung ist DREIFACH abgesichert — der Daemon schickt `tailOf` 40 Zeilen vom Ende ·
+   `retainSection` nimmt signal-first RUECKWAERTS und `FAIL_LINE` matcht `FAILURES?` · `fails` kommt
+   aus der VOLLEN Logdatei (Deckel 50, faellt bei Ueberschreitung nach `null`). Der einzige Pfad zu
+   einem still falschen `failed` ist damit ein Wrapper, der NACH seiner Summenzeile noch mehr als
+   40 Zeilen druckt. Wer einen neuen Wrapper baut, achtet genau darauf.
+
+## 1. Was in dieser Session passierte (verifiziert)
+
+- **Fable 5 ist am KONTOLIMIT, Reset 20:00 Europe/Berlin** (Wortlaut aus Pane s6: „You've hit your
+  Fable 5 limit · resets 8pm (Europe/Berlin)"; Slot 3 und 4 zeigten die haertere Fassung „You're out
+  of usage credits"). Slot 3 und 4 standen damit still. **Ich habe sieben Panes auf `claude-opus-5[1m]`
+  high gesetzt: 3, 4, 6, 9, 12, 16** (11 stand schon auf Opus, 7 hat der Owner selbst umgestellt).
+  Das ist eine BEWUSSTE Abweichung von der Modellpolitik vom 2026-09-02 10:35 („Fable fuer alles, was
+  orchestriert") — sie war nicht fahrbar. **Rueckfalltuer: nach 20:00 zurueckstellen**, wenn der Owner
+  die Politik behalten will; `.env` `FLEET_MODEL` blieb unangetastet auf `claude-opus-5[1m]`.
+- **Der Modellwechsel ist ein PAAR, und beide Haelften sind noetig:** `POST /api/slots/:id/model`
+  (schreibt den Datensatz, existiert seit `c09d5f1`) UND `/model claude-opus-5[1m]` ueber `POST /send`
+  (schreibt die Pane). Claude Code fragt bei warmem Cache „Switch model?" — der Enter muss per
+  `tmux send-keys -t s<N> Enter` nach, der Send meldet dann korrekt „composer still holds 24 chars".
+  Der Footer ist der Sensor fuer das MODELL; fuer den EFFORT ist er es weiterhin NICHT (was wie eine
+  Effort-Anzeige aussieht — „● high · /effort" — ist der Slash-Hinweis, kein Zustandsfeld; ich habe
+  das an drei Panes gegengeprueft, bevor ich die Regel fast falsch korrigiert haette).
+- **SELBST VERURSACHTER LAND-KILLER, teuerster Fund der Session (Notiz `1a7dd56e`):** ein Handedit an
+  `CLAUDE.md` im HAUPT-CHECKOUT toetet JEDES Land-Gate dieser Maschine an Stufe 1. `CLAUDE.md` ist dort
+  GENERIERT (`renderRulebook("main", rulebook/)`), und der Pin `RULE_RENDER` in `e2e/pins.ts` liest
+  `${SOURCE_DIR}/CLAUDE.md` — den Quell-Checkout, nicht den Lane-Baum. Slot 12s Land von P4 Slice 2
+  starb dadurch 17:05:04 nach 906 ms: exit 1, genau ein FAIL, „rendered 73981 B vs CLAUDE.md 74215 B" —
+  die 234 B waren meine Einfuegung. **Der Eingang fuer Regelwissen im Haupt-Checkout ist
+  `rulebook/<fragment>.md`, nie CLAUDE.md.** Es gibt KEINEN Sync-Hook und keine Selbstheilung:
+  dass `rulebook/supervisor.md` ~2 min spaeter meine Aenderung selbst trug (mtime beider Dateien 17:07)
+  und `bun e2e/pins.ts` wieder ALL PASS meldete, war **Slot 12 von Hand** — sein Land war an genau
+  diesem Pin gestorben, er nennt es „die zwei ungovernierten Flaechen repariert". Ein Handedit an
+  CLAUDE.md bleibt also ein toter Land-Gate, bis jemand beide Seiten deckungsgleich macht.
+  Slot 12s Folgefund (seine Zeile `f0c28e8f`): der `unchangedRetry`-Guard der Self-Land-Tuer kann eine
+  Reparatur an SOURCE_DIR-Flaechen strukturell nicht sehen — er vergleicht die Bytes des LANE-Baums,
+  die pins-Stufe liest den QUELL-Checkout. Wer so etwas repariert, braucht die Owner-Tuer.
+  **Und der Reparaturweg ist NICHT „einfach neu rendern":** Slot 12 hat die Korrektur nach
+  `rulebook/supervisor.md` GEZOGEN, weil ein blosses Re-Render sie geloescht haette, und musste dabei
+  eine Wendung wiederherstellen, die die Bedeutungsprobe als Muster von Regel S2 fuehrt (Zeile 130) —
+  sonst waere ein ZWEITER Pin rot geblieben. Zwei Pins bewachen diese Flaeche, nicht einer.
+- **Der Self-Land-Guard erzwingt nach JEDEM roten Verdikt einen Rebase, auch nach einem adjudizierten**
+  (Slot 3, live 17:15): er liest den Candidate als LANE-HEAD; dass main sich bewegt hat, sieht er
+  nicht. Slot 3 haengt den roten Fall an seine Zeile `789d9034`, die bisher nur den `waitedOut`-Fall
+  deckt. Praktisch heisst das: nach einem Flake-Rot erst in der Lane rebasen, dann die Self-Tuer.
+- **Land `1b677e58` (Task Workbench, Lane Slot 2):** mein Lauf 17:00 ueber die Owner-Route
+  `POST /api/slots/2/merge` (die Self-Tuer haette Slot 3 mit `unchangedRetry` abgelehnt, sein Befund
+  `789d9034`). Ergebnis: `resolved/landed=false`, aber zum ERSTEN Mal heute wirklich gemessen —
+  verify.ok false, exit 3, 251 s, `waitMs 0`. Das Rot ist §11.2i: `e2e-claude-gate.sh` Phase 3
+  „server did not come up" UND keine `server.log` in der aufbewahrten Instanz = nie gemessen.
+  **Dreifach widerlegt:** Slot 3 fuhr denselben Baum `c079a82` seriell nach (141 PASS / 0 FAIL), die
+  Lane Slot 2 unabhaengig nochmal (141 PASS / 0 FAIL), und der Diff (4 Dateien, client/docs/e2e)
+  fasst nichts an, was `e2e-claude-gate.sh` faehrt. Der Merge hat die Lane dabei auf `8865eaa` rebased,
+  Candidate ist jetzt `c079a82` — damit laesst der Self-Land-Guard Slot 3 durch.
+- **Zwei Watch-Fallen wieder bezahlt** (beide schon als Befund bekannt, hier bestaetigt):
+  `POST /api/self/watch {kind:"merge"}` gab mir auf Slot 2 den VERBRAUCHTEN Watch der ersten Runde
+  zurueck (`armed:false`, Slot 3s Notiz `be20f4b4`), und auf Slot 5 feuerte er SOFORT aus einem alten
+  gesettelten Fakt. Fuer einen NEUEN Merge auf einer Lane, die schon einen hatte: Hintergrund-Watcher
+  auf `GET /api/slots/:id/merge` mit einem BASELINE-Zeitstempel, sonst haelt man ein altes Verdikt
+  fuer das eigene.
+- Aufgeraeumt: Orphan-Worktree `fleet-260902105240-69ed` (killed-empty GLM-Lane, ihre einzige Datei war
+  eine aeltere Kopie einer Notiz, die auf main laengst neuer steht) entfernt samt Branch. Queue-Zeile
+  `39fbbd1f` (LC_ALL im lstart-Leser) mit `01ccfb3` geschlossen.
+
+- **Drei Lands in Folge nach dem Deploy, alle voll gemessen, alle `waitMs 0`:** `ffdcece` (Slot 12,
+  P4 Slice 2, 107 s) · `497873f` (Slot 3, Task Workbench `1b677e58`, 111 s, `proportional false`) ·
+  Slot 8s `10c8297` (Repo-Worker `audit`) lief 17:19 los. **Die Statistik des Tages an EINER Zeile
+  (`1b677e58`): fuenf Land-Versuche** — dreimal `waitedOut` (Verify nie gestartet, alte Mutex-Welt),
+  einmal §11.2i-Flake (zweifach gruen widerlegt), und der erste Lauf mit freiem Mutex war in 111 s
+  gruen. Das ist der Unterschied, den Zug 1 macht.
+- Slot 8s Land habe ich vorher mechanisch geprueft: `git merge-tree --write-tree main <lane>` exit 0,
+  konfliktfrei — obwohl seine Basis `09b577e9` ist und `ffdcece` dazwischen `server.ts` in
+  `server/{errors,persist,tmux}.ts` zerlegt hat. Der Gate ist die eigentliche Probe.
+
+## 2. Betriebsstand (17:55) und DEIN ERSTER ZUG
+
+**NACHTRAG 18:00 — DER DEPLOY LIEGT BEI SLOT 1, NICHT MEHR BEI DIR.** Die neue Sanierungs-MAIN
+wartet auf dieselbe Bedingung (ihr Slice-Protokoll verlangt Deploy in Schritt f), haelt den frischeren
+Kontext und hat den Rollback-Dry-Boot von `8865eaa` gegen eine Kopie der heutigen `fleet.json` schon
+gruen gefahren (200, 16 Slots / 134 Tasks / 58 Programs). Sie deployt, sobald der Audit den Mutex
+freigibt. **Pruefe nur, DASS es passiert ist** (`deployGap.codeBehind`, `bundleStale.stale`) und sag
+Slot 3 Bescheid — es wartet darauf fuer seine Nachher-Screenshots. Wenn es bis dahin nicht passiert
+ist, ist es wieder deiner:
+
+**`POST /api/deploy`.** Ich habe ihn 17:47 beantragt, er wurde korrekt abgelehnt:
+`ok:false, stage preflight, "a post-land audit is running on claude-fleet — killing srv now would
+leave a red that measured nothing"`. Ein Hintergrund-Watcher wartete auf 0 Suite-Wrapper. **Warum es
+druckt:** `bundleStale.stale = true` und `deployGap.codeBehind = true` — der CLIENT-Teil von vier
+Commits ist nicht live, darunter Slot 3s ganzer Slice (`497873f`, reines Client-Rendering). Slot 3
+kann seine vom Program verlangten Nachher-Screenshots erst danach ehrlich machen und wartet auf deine
+Zeile. Es deployt NICHT selbst (Non-Goal seines Programs), das ist deine Entscheidung.
+
+Gelandet seit dem Deploy, alle drei voll gemessen: `ffdcece` (P4 Slice 2) · `497873f` (Task
+Workbench) · `b8ea448` (Repo-Worker `audit`, Slot 8s 2,7 h alte Arbeit). Dazu `51246b0` (Handoff).
+
+**LIES ZUERST: „erledigt" heisst NICHT „nichts zu deployen".** Der Deploy `b21b6749` (18:04) war
+korrekt und hat den Gap DAMALS geschlossen. Seitdem sind weitere Commits gelandet (Slot 10s
+`d4bb687` samt Zeilen in `src/client.ts` und `src/opsevents.ts`, dazu mehrere Handoffs), also steht
+`deployGap.codeBehind` wieder auf `true` — 18:35 gemessen `behindCount 7`, `bundleStale true`. Das
+ist der NORMALE Zustand nach Lands, kein Fehler. Ob neu deployt wird, ist eine Entscheidung, keine
+Pflicht: sie faellt, wenn jemand die neue Flaeche LIVE braucht (die Dual-Host-MAIN Slot 9 fuer den
+Ausbau S3/S4 zum Beispiel). Und ein Deploy antwortet unveraendert 409, solange ein Post-Land-Audit
+laeuft.
+
+**NACHTRAG 18:26 — die beiden RESTPUNKTE DIESER SESSION sind erledigt, hier steht der Endstand.** Slot 10 ist gelandet
+(`d4bb687`, Note `verify.ok true`, exit 0, **104 s Arbeit, waitMs 0**, alle sieben Stufen; vorher
+`git merge-tree` konfliktfrei geprueft, obwohl ihre Basis `09b577e9` von VOR dem Server-Split
+stammt). Damit war `src/client.ts` frei, und ich habe `15a3e38b` von Hand dispatcht mit dem
+Owner-Tripel `claude / claude-opus-5[1m] / high` — laeuft als Lane `fleet/260902162622-dbae` auf
+Slot 5, Datensatz gemessen `model claude-opus-5[1m]`, `effort high`, `agent alive`. Das im Task
+gespeicherte codex-Tripel vom Filing ist dabei ueberschrieben, nicht geerbt.
+**Mitnehmen aus Slot 10s Diff:** `8ab2de9` „job-Watch dedupt nur ARMED — ein SPENT Watch ist keine
+Antwort auf ein neues Ereignis" repariert GENAU die Klasse, die mich und Slot 3 heute dreimal
+gekostet hat, aber nur fuer `kind:"job"`. Der `merge`-Zweig ist weiterhin offen (Slot 3s Zeile
+`be20f4b4`, Slot 12s `372b3cef`) — es gibt jetzt aber einen Praezedenzfall im Baum.
+
+Slots am Ende: 1 Sanierungs-MAIN (frisch, Nachfolge von 12), 3 Task Workbench, 4 Private-repo-y, 6
+Private-repo-o, 9 Second-host, 11 Steward, 16 Fleet-ohne-Owner-Routing. Lanes: 2
+(`260902154623-7fa9`, P4 Slice 3) und 5 (`260902162622-dbae`, `15a3e38b`). Dispatcher `on:false`,
+maxLanes 2 — beide Plaetze belegt.
+
+## 3. Fallen, die ich bezahlt habe
+
+- **ZWEI SESSIONS IM SELBEN CHECKOUT CLOBBERN SICH AN `HANDOFF.md`, und zwar lautlos** (18:40 an mir
+  passiert). Slot 3s Handoff-Commit `f74c348` hat meinen kompletten Abschnitt geloescht: 194 Zeilen
+  weg, 60 dazu — es hatte die Datei frueher gelesen und ganz zurueckgeschrieben, waehrend ich vier
+  Nachtraege dazu committet hatte. Kein Konflikt, kein Hinweis, `git status` sauber; sichtbar nur an
+  `git diff --numstat <mein commit> <sein commit> -- HANDOFF.md`. Wiederhergestellt aus
+  `git show <mein SHA>:HANDOFF.md`. **Regel daraus: wer `HANDOFF.md` schreibt, PREPENDET seinen
+  Abschnitt an die Datei, die gerade auf Platte liegt — er liest sie unmittelbar vor dem Schreiben
+  neu.** Und nach dem Commit einmal `grep -c '^# HANDOFF' HANDOFF.md` gegen vorher pruefen: faellt
+  die Zahl, hat jemand etwas verloren. Die bekannte Doc-Kollisionsregel deckt nur Lane gegen
+  Haupt-Checkout — MAIN gegen MAIN im SELBEN Checkout stand nirgends.
+- **CLAUDE.md ist generiert** (§1) — der teuerste, er hat ein fremdes Land getoetet.
+- **Ein Merge-Watch auf eine Lane, die schon einen hatte, ist KEIN Rueckkanal.** Er kommt `armed:false`
+  zurueck oder feuert sofort aus einem alten gesettelten Fakt. Ersatz: Hintergrund-Watcher auf
+  `GET /api/slots/:id/merge` mit BASELINE-Zeitstempel — und die Terminal-Bedingung muss
+  `status != "interrupted"` UND `running == false` fordern, sonst haelst du den Uebergangs-Datensatz
+  fuer ein Verdikt (mir passiert, 17:15).
+- **Fast eine RICHTIGE Regel ueberschrieben:** der Footer zeigt keinen Effort. Das „● high · /effort",
+  das ich fuer eine Anzeige hielt, war ein Slash-Vorschlag; die Gegenprobe an drei Panes hat es
+  gestellt. Die Regel steht zu Recht.
+- **Der Slot-Datensatz und die Pane sind zwei Dinge.** Mein eigener Slot stand noch auf `fable`,
+  obwohl die Pane auf Opus lief — eine Nachfolge waere direkt in die Kreditwand gespawnt. Vor JEDER
+  Nachfolge den eigenen Datensatz pruefen. Ich habe 7 und 11 nachgezogen.
+
+## 4. Offene Owner-Punkte
+
+1. **Modellpolitik nach 20:00** (Fable-Reset): zurueck auf Fable fuer Orchestrierung, oder auf Opus
+   bleiben? Neun Panes stehen jetzt auf Opus.
+2. **Das ZWEITE Helfergeraet ist keine Kuer mehr — die Kette liegt jetzt in Zahlen vor.** Mit einem
+   Geraet faellt ein Audit nach 60 s Grace auf diese Maschine zurueck, wenn das Geraet belegt ist.
+   Heute: das Second-host fuhr den `ffdcece`-Audit (17:13–17:36), die drei Lands danach kamen heim,
+   und der lokale Sammel-Audit auf `b8ea448` hielt den Mutex **27,1 min** und den zweiten Deploy die
+   ganze Zeit auf 409 (18:04 gefahren, `b21b6749`, ok true, bootHead == target `3afb3f0`, Boot
+   2289 ms, build 102 ms). Ein zweites Geraet kostet null Code (`helperDevices` ist eine Map) und
+   haette dieses halbe Deploy-Fenster gespart. **Nebeneffekt, den man mitnehmen sollte:** genau weil
+   dieser Audit LOKAL lief, traegt seine Zahl — 3465 Checks / 0 failed, und er deckt ZWEI Lands
+   (`497873f` und `b8ea448`). Remote waere dieselbe Zeile nur als untere Schranke lesbar gewesen.
+3. **Rotes Audit `01ccfb3` unadjudiziert** (11/3443, Event-Hold-Familie). Der Beweis ist ein serieller
+   Wiederholungslauf und ab jetzt billig, weil er remote laufen kann.
+4. **Remote-Audits melden `checks.ran` falsch** (Slot 3s Notiz `f9db018e`): remote zaehlt
+   `postLandAuditChecks` auf einem 4096-Byte-Tail, lokal auf der vollen Erfassung. Damit ist der
+   Regelbuch-Sensor gegen ein Schein-Gruen auf JEDER Remote-Zeile blind. Vorschlag in der Notiz: der
+   Helfer meldet `ran`/`failed` als eigene Felder, Tail-Zaehlung wird als `checksFrom: tail` markiert.
+5. B-Zeilen-Promotion und GitHub-Rueckstand stehen unveraendert aus Slot 15s Handoff offen.
+
+---
+
 # HANDOFF — Generalsanierung: P4 Slice 2 gelandet (ffdcece) und Stufe-2-GRUEN, Regelbuch-Gate repariert, erster informativer Remote-Audit seit 8 blinden Roten, 2026-09-02 (18:10)
 
 Program **`b2a14b545fd31fd71ba7b9e1`**, gebunden an Slot 12 (diese Session). Controller ist

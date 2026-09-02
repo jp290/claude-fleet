@@ -45,6 +45,12 @@ die Fable-Politik ist HEUTE nicht fahrbar, das ist der wichtigste Betriebsfakt d
    `null` statt einer Zahl (Summenzeile ohne passendes `fails[]` · `exitCode 0` mit `failed != 0` ·
    `ALL PASS` mit gezaehlten Fails ohne Summenzeile). Und die Rekonziliation korrigiert immer nur die
    Failure-Differenz, nie die verlorenen PASS-Zeilen — `ran` bleibt kaputt.
+   **Und Slot 1s Gegenprobe dazu (dieselbe Zeile `8244622e`): das Restrisiko ist klein und benannt.**
+   Die Voraussetzung ist DREIFACH abgesichert — der Daemon schickt `tailOf` 40 Zeilen vom Ende ·
+   `retainSection` nimmt signal-first RUECKWAERTS und `FAIL_LINE` matcht `FAILURES?` · `fails` kommt
+   aus der VOLLEN Logdatei (Deckel 50, faellt bei Ueberschreitung nach `null`). Der einzige Pfad zu
+   einem still falschen `failed` ist damit ein Wrapper, der NACH seiner Summenzeile noch mehr als
+   40 Zeilen druckt. Wer einen neuen Wrapper baut, achtet genau darauf.
 
 ## 1. Was in dieser Session passierte (verifiziert)
 
@@ -160,9 +166,15 @@ offene Bitte an dich:** wenn Slot 10 gelandet ist, Hand-Dispatch von `15a3e38b` 
 
 1. **Modellpolitik nach 20:00** (Fable-Reset): zurueck auf Fable fuer Orchestrierung, oder auf Opus
    bleiben? Neun Panes stehen jetzt auf Opus.
-2. **Das ZWEITE Helfergeraet ist keine Kuer mehr.** Mit einem Geraet faellt ein Audit nach 60 s Grace
-   auf diese Maschine zurueck, wenn das Geraet belegt ist — bei drei Lands hintereinander heute
-   passiert, und genau dieser lokale Audit blockiert jetzt den Deploy.
+2. **Das ZWEITE Helfergeraet ist keine Kuer mehr — die Kette liegt jetzt in Zahlen vor.** Mit einem
+   Geraet faellt ein Audit nach 60 s Grace auf diese Maschine zurueck, wenn das Geraet belegt ist.
+   Heute: das Second-host fuhr den `ffdcece`-Audit (17:13–17:36), die drei Lands danach kamen heim,
+   und der lokale Sammel-Audit auf `b8ea448` hielt den Mutex **27,1 min** und den zweiten Deploy die
+   ganze Zeit auf 409 (18:04 gefahren, `b21b6749`, ok true, bootHead == target `3afb3f0`, Boot
+   2289 ms, build 102 ms). Ein zweites Geraet kostet null Code (`helperDevices` ist eine Map) und
+   haette dieses halbe Deploy-Fenster gespart. **Nebeneffekt, den man mitnehmen sollte:** genau weil
+   dieser Audit LOKAL lief, traegt seine Zahl — 3465 Checks / 0 failed, und er deckt ZWEI Lands
+   (`497873f` und `b8ea448`). Remote waere dieselbe Zeile nur als untere Schranke lesbar gewesen.
 3. **Rotes Audit `01ccfb3` unadjudiziert** (11/3443, Event-Hold-Familie). Der Beweis ist ein serieller
    Wiederholungslauf und ab jetzt billig, weil er remote laufen kann.
 4. **Remote-Audits melden `checks.ran` falsch** (Slot 3s Notiz `f9db018e`): remote zaehlt

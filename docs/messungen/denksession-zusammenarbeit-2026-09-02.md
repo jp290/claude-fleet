@@ -375,3 +375,20 @@ Sanierungs-Freeze bis P7 — B laeuft als Freeze-Ausnahme, als Teil des Sanierun
 (2) der Codex-Controller („Sol redet, leitet an Fable weiter") sitzt an genau der Naht, die B0/B3/B4
 reparieren — erst danach, wie vom Owner selbst vermutet. Dann traegt er: Sol filet Zeilen und
 Programme, Fable entwirft auf Anforderung, und die Modellwahl je Zeile ist ein Feld, kein Handgriff.
+
+## 8. Owner-Richtung 13:40 — Sicherheit der Session-Kommunikation ist JETZT kein uebergeordnetes Ziel
+
+Owner woertlich: „Wir sollten unbedingt dazu notieren, dass Sicherheit der Session-Kommunikation
+zumindest an diesem Punkt noch kein uebergeordnetes Ziel ist; zu allererst muss alles erstmal
+effizient, smart und effektiv laufen, dann koennen wir am besten weiterarbeiten und haben den Kopf
+frei fuer all die Features und Updates, die wir wollen, ohne uns dann wieder durch ein striktes,
+nicht zusammenhaengendes Berechtigungssystem kaempfen zu duerfen."
+
+Konsequenz fuer jede B-Zeile und fuer §7: Reichweite, Zustellung und Sichtbarkeit zuerst; Deckel,
+Scope-409er und Prinzipal-Trennungen nur dort, wo sie einen GEMESSENEN Schaden verhindern (Beispiel:
+das Lane-Watch-Verbot, das eine stille Ewig-Wartezeit entfernt), nie als Vorsichts-Default. Ein neuer
+Kanal (B12 notify, B0 Pointer-Zustellung, B9 Selbstverwaltung) wird zuerst OFFEN gebaut und geledgert;
+Berechtigung kommt spaeter als zusammenhaengende Schicht, nicht Route fuer Route. Der Fleet laeuft auf
+der eigenen Maschine des Owners — die Vertrauensgrenze ist der Provider, nicht die Nachbar-Session
+(CLAUDE.md §Lese-Reichweite). Diese Richtung ist ein Owner-Entscheid dieser Session; sie ersetzt keine
+harte Invariante in AGENTS.md, aber sie entscheidet jede Abwaegung „Deckel oder Reichweite" in B.

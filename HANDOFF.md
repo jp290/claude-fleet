@@ -106,6 +106,38 @@ Geraet); B senkt Koordinationskosten (weniger Broadcasts, weniger Controller-Han
 ohne B heisst mehr Lanes, die alle ueber denselben Controller laufen; B ohne A heisst gut koordinierte
 Sessions, die am Mutex stehen. Reihenfolge und Schnitt sind deine Frage.
 
+## 2b. Owner-Nachtrag 12:40–12:45 — so soll die Denksession gefuehrt werden
+
+- **Selbstbefunde sind unterwegs:** ich habe 12:42 an die MAINs 3, 4, 7, 9, 12 und den Steward 11 EINE identische
+  Nachricht mit fuenf Sonden geschickt (Warte-/Poll-Turns · ungenutzte Tool-Ausgaben · gebraucht-ohne-Route ·
+  bekommen-ohne-Bedarf · ein Schnittvorschlag). Sie antworten NUR als Notiz `[selbstbefund B 2026-09-02, <Rolle>
+  Slot <n>]` ueber `POST /api/self/tasks` — `./register.sh` zeigt sie unter notiz; es koennen 0–6 sein, eine MAIN
+  mitten in ihrer Kette antwortet spaeter oder gar nicht. Kosten: je MAIN ihr voller Kontext, einmalig, Owner-Go.
+- **Private-repo-o (Slot 6) GESONDERT betrachten** — es arbeitet als Game-Maker-Profil (`docs/product-studio-
+  working-circle.md`, Program-Profile `POST /api/programs/:id/profile`), also weder mit denselben Routen noch
+  denselben Beduerfnissen; es hat die Sonden-Nachricht NICHT bekommen.
+- **Perspektivwechsel je Rolle** (Owner woertlich: „sich in die Lage der einzelnen Rollen hineinversetzen und
+  von da aus verstehen, was diese sehen, und anschliessend, was ihnen fehlen KOENNTE, um fuer ihre Rolle
+  Relevantes noch besser sehen zu koennen. Vielleicht fehlt es auch irgendwo an (kleineren) komplementaeren
+  Strukturen dahinter."). Rollen, die es heute gibt: Owner (Board, `/api/sessions`, `/usage`) · Controller
+  (Register, Panes, Ledger) · Program-MAIN (`program-execution`, Fleet-Reports, Attention) · Lane (Brief,
+  `self/gate`, `self/drift`) · Steward (Pulse, Steward-View) · Game-Maker-MAIN (eigenes Profil) · Helfer-Geraet
+  (Heartbeat, Jobs). Fuer jede: Was sieht sie heute WIRKLICH (Routen, Felder, Pane)? Was entscheidet sie, und
+  mit welcher Information, die sie NICHT hat? Selbstbefunde und meine Aussensicht (§2) sind die zwei Quellen.
+- **Kreativ werden ist erlaubt** („ruhig etwas mental drauf rumkauen … um eine wirklich gute Loesung zu
+  finden") — das ist eine Denk-, keine Implementierungssession. Ergebnis als datierte Notiz in
+  `docs/messungen/`, Ideen als `[idee …]`-Queue-Zeilen (kind notiz/richtung), nichts direkt bauen.
+- **Zweite Meinung von GLM am Ende:** fuer die ersten Ausarbeitungen eine GLM-5.3-Session befragen. Der Fleet
+  hat den Adapter: Harness `PI_ZAI_HARNESS (server.ts)` (server.ts Adapter #2b, `pi --provider zai --model glm-5.3`, Key aus
+  `~/.config/claude-fleet/secrets/zai-coding-plan.key`, Modell-Regex `^glm-5\.3$`). Weg: `POST /api/lanes`
+  oder `open` mit diesem Harness, dann `POST /send` mit der Ausarbeitung als Text und den konkreten Fragen —
+  pi laedt `AGENTS.md`, nicht CLAUDE.md, also den Kontext ausschreiben (GPT-Brief-Checkliste in
+  `rulebook/einstieg.md`: Dateien mit Zeilenbereich, kein Regelbuch wholesale). Ergebnis in dieselbe Notiz.
+- **Worauf es beim Aufsetzen ankommt (Owner: „komplementaer zum Prozess selbst und zu unserem Ziel"):** das
+  Ziel ist Durchsatz mit weniger Owner-/Controller-Handgriffen (Thema A liefert Kapazitaet, B senkt
+  Koordinationskosten); der Prozess ist der bestehende Register-/Promotion-Weg (Vorschlag → Owner-Promotion →
+  Lane) — Ideen also so formulieren, dass sie als Queue-Zeilen mit Done-Kriterium dispatchbar werden.
+
 ## 3. Betriebsstand (12:35)
 
 - **Watches abgegeben** (Owner-Entscheid): meine Skripte gekillt, Server-Watches verbraucht. Audit 79acd2e

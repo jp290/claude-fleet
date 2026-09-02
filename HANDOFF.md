@@ -141,6 +141,36 @@ Mutex; mit Verify konfiguriert landet es bei Gruen selbst. Slot 7 armiert merge-
 der 22 neuen `e2e/tasks.ts`-Checks; Slot 7 faehrt bei unknown einen seriellen Beweislauf. Slot 7 wollte
 15a3e38b mit Fable-Tripel — auf Opus-Tripel hingewiesen (Owner-Entscheid 10:35).
 
+## 3d. Abschluss 14:25 — was jetzt zaehlt, und wie wir verbleiben (Owner-Frage)
+
+**Erste Handgriffe der Nachfolgerin, in dieser Reihenfolge:**
+1. **Slot 3 (Private-repo-y-MAIN, Opus) bei 32 % und Slot 4 (Fleet-ohne-Owner-Routing, Fable) bei 32,7 %
+   — beide ueber dem Band.** Je einen Send: „HANDOFF schreiben + committen, dann `POST /api/self/succeed`";
+   scheitert succeed an der Composer-Sonde (`9c7d6e02`), Nachfolge per Owner-Route (open + Gruendungs-
+   brief) wie bei mir. Slot 3 zuerst (Owner-Nennung 14:20).
+2. **`3bb5a5c9` laeuft als Lane in Slot 1** (Zeile steht `done`, Slot 1 `task 260902121449-779f`, 14:14).
+   Pane lesen, `ahead/dirty` pruefen, landen (`POST /api/slots/1/merge {}`), Audit abwarten, dann `.env`
+   `FLEET_AUDIT_HELPER_GRACE_MS='60000'` + Verb 2. Ab da laufen Audits auf dem Geraet.
+3. **Land 1b677e58 (Slot 2):** `mergePending` war 14:22 wieder `false` — Ausgang in `GET /api/slots/2/merge`
+   bzw. Land-Note pruefen; Slot 7 haelt die Watches. Slot 13 (`gpt-5.6-sol`, private-repo-p Brief 5) hat
+   `mergePending:true` — gehoert Slot 3.
+4. Dann den Denkauftrag §5 (Sanierung beschleunigen) mit den drei Agenten fahren.
+
+**Verbleib, wie mit dem Owner besprochen:**
+- **Sanierung** laeuft unter Slot 12 weiter; Plan gehoert ihr. Sobald Audits remote laufen, steigt der
+  P4-Takt. Die Nachfolgerin liefert ihr aus §5 einen Vorschlag mit den drei Kandidaten: Vorschau bei
+  Move-Slices streichen (Build-SHA-Beweis), Flake-Familien per Namen maschinell adjudizieren, P5/P6
+  vorziehen. Ziel: eher eine Woche als drei bis P7.
+- **Zusammenarbeit (B)** wartet mit `server.ts`-Aenderungen auf P6 (Owner-Entscheid 13:30). JETZT
+  erlaubt und sinnvoll: die Entwuerfe — Falsifier-Tests in `e2e/` und Briefs als Dateien unter
+  `docs/briefs/` fuer B2, B3, B0/B4 zuerst (GLM-korrigierte Reihenfolge), GLM-Vorab-Review ueber einen
+  stehenden pi-zai-Slot per Datei-Pointer. Promotion der Zeilen ist Owner-Akt. Pipeline: Fable entwirft,
+  GLM kontrolliert, Sol (`gpt-5.6-sol`, Regex bestanden) implementiert — Pilot war A1, jetzt in Slot 1.
+- **Owner-Benachrichtigungen (B13):** bis zum Bau beantwortet der Controller jede Attention, die kein
+  `decision`/`taste` ist, selbst — heute 4/4.
+- **Codex-Controller (Sol)** erst, wenn B0/B3/B4 die Zustellung robust und gemessen gemacht haben.
+- **Sicherheit** (Owner-Token beim Controller, Scope-Gates) ist spaeter EINE Schicht — Notiz §8.
+
 ## 4. Offene Owner-Punkte
 
 1. `3bb5a5c9` freigeben (Freeze-Ausnahme?) → Grace zurueck. 2. **Owner-Richtung 13:05 (Zeile `98979607`):**

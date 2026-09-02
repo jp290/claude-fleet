@@ -132,6 +132,15 @@ heute ~12 Punkte, die Synthese danach ~8.
 - Die Antwort-Route echot den vollen Requester-Text in die Pane — jede meiner vier Antworten kostete die
   MAIN ihren eigenen Text nochmal (B1).
 
+## 3c. Nachtrag 14:15 — Land 1b677e58 in Flug
+
+Auf Bitte von Slot 7 (geprueft: Lane 2 `ahead 1`, `dirty 0`, 4 Dateien, kein `server.ts`, 16b922e auf
+3c24053): `POST /api/slots/2/merge {}` → `{"running":true}`. Gate wartet hinter Suite-Lauf pid 65554 am
+Mutex; mit Verify konfiguriert landet es bei Gruen selbst. Slot 7 armiert merge-/audit-Watch selbst
+(per Send bestaetigt, acceptance observed). Der lokale Post-Land-Audit (Grace 0, ~28 min) ist der Beweis
+der 22 neuen `e2e/tasks.ts`-Checks; Slot 7 faehrt bei unknown einen seriellen Beweislauf. Slot 7 wollte
+15a3e38b mit Fable-Tripel — auf Opus-Tripel hingewiesen (Owner-Entscheid 10:35).
+
 ## 4. Offene Owner-Punkte
 
 1. `3bb5a5c9` freigeben (Freeze-Ausnahme?) → Grace zurueck. 2. **Owner-Richtung 13:05 (Zeile `98979607`):**

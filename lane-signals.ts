@@ -169,6 +169,31 @@ export interface DeployWatchEventView {
   payload: DeployWatchEventPayload;
 }
 
+// THE COMMAND JOB's verdict, and it carries the one thing the audit and deploy payloads do not
+// need: a LIST OF ARTEFACTS. A `command` job exists to move work off this box and get something
+// BACK — the receipt without the artefact digest would only say "it ran", which the exit code
+// already says. `bytes` is a number and never the content: this notification is a sentence typed
+// into a pane, and a pane is the wrong place for a file (the upload is its own slice).
+// `artifacts: []` is a legitimate answer (a `bun run build` asked for nothing), NEVER a failure —
+// the two are separated by `exitCode`, and only by it.
+export interface CommandJobArtifactPayload {
+  path: string;
+  sha256: string;
+  bytes: number;
+}
+export interface CommandJobWatchEventPayload {
+  result: "green" | "red" | "unknown";
+  cmd: string;
+  exitCode: number | null;
+  artifacts: CommandJobArtifactPayload[];
+  reason?: string;
+}
+export interface CommandJobWatchEventView {
+  id: string;
+  kind: "command-job";
+  payload: CommandJobWatchEventPayload;
+}
+
 export type ClarificationBasis = "program-main" | "lane-watch" | "program-main+lane-watch";
 // Closed server-stamped provenance only. The question is the one caller field admitted by the
 // request route; no receiver, command, or arbitrary detail can hitch a ride through persistence.
@@ -263,6 +288,23 @@ export function deployWatchMessage(deployId: string, event: DeployWatchEventView
     + `hitTarget=${p.hitTarget === null ? "unknown" : p.hitTarget}; `
     + `bundleStale=${p.bundleStale === null ? "unknown" : p.bundleStale}.${why} This is a successful `
     + `notification of the terminal result, not a claim that the deploy succeeded. ${eventAck(event.id)}`;
+}
+
+export function commandJobWatchMessage(jobId: string, event: CommandJobWatchEventView): string {
+  const p = event.payload;
+  // the three artefact facts, and the CAP is named rather than silently applied: a receipt that
+  // shows 8 of 50 entries and does not say so reads as a complete list.
+  const shown = p.artifacts.slice(0, 8);
+  const files = p.artifacts.length === 0
+    ? "no artefacts were asked for or none matched"
+    : `${p.artifacts.length} artefact(s)`
+      + `${shown.map((a) => ` ${a.path} sha256=${a.sha256.slice(0, 12)} ${a.bytes} B`).join(";")}`
+      + `${p.artifacts.length > shown.length ? ` (+${p.artifacts.length - shown.length} more)` : ""}`;
+  const why = p.reason ? ` Reason: ${p.reason}.` : "";
+  return `[fleet] remote command job [event ${event.id}] ${jobId} reached terminal result=${p.result}; `
+    + `cmd=${p.cmd}; exit=${p.exitCode === null ? "none" : p.exitCode}; ${files}.${why} The artefacts were `
+    + `hashed in the helper's clone and NOT uploaded — this names them, it does not deliver them. `
+    + `${eventAck(event.id)}`;
 }
 
 const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();

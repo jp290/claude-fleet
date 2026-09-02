@@ -3161,6 +3161,131 @@ export async function run(): Promise<void> {
   check("deploy watch: a lane remains refused 409 on the existing self-watch route",
     laneDeployWatch.status === 409 && (await laneDeployWatch.text()).includes("a lane may not subscribe"));
 
+  // --- THE COMMAND JOB WATCH. Same subscription/event/transport/ack rail as the two kinds above,
+  // joined by a JOB id rather than a slot or a deploy id — and driven here through the helper's own
+  // HTTP routes rather than through the daemon, because what is under test is the WATCH, not the
+  // other machine (the daemon's half is e2e/helper-daemon.ts). The device heartbeat carries a
+  // `daemonSha` on purpose: without it the server does not offer a command job at all, which would
+  // make every check below measure the handshake instead of the subscription. ---
+  {
+    const helperTok = ((await (await get("/api/helper/token")).json()) as { token?: string }).token ?? "";
+    const HH = { "x-fleet-helper-token": helperTok, "content-type": "application/json" };
+    const hpost = (path: string, body: unknown): Promise<Response> =>
+      fetch(`${BASE}${path}`, { method: "POST", headers: HH, body: JSON.stringify(body) });
+    const CMDDEV = "watchcmdbox01";
+    const beat = await hpost("/api/helper/device",
+      { deviceId: CMDDEV, name: "cmd box (e2e)", daemonSha: "a".repeat(40) });
+    check("job watch setup: a device that names its own daemonSha is enrolled",
+      beat.ok, `${beat.status}`);
+    const selfPost = (tok: string, path: string, body: unknown): Promise<Response> =>
+      fetch(`${BASE}${path}`, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": tok }, body: JSON.stringify(body) });
+
+    const badKind = await selfWatch(aTok, { kind: "job", target: "NOTHEX" });
+    check("job watch: a target that is not a 12-hex job id is refused 400 with a named field error",
+      badKind.status === 400 && (await badKind.text()).includes("target must be a 12-character command job id"),
+      `${badKind.status}`);
+    const unknownJob = await selfWatch(aTok, { kind: "job", target: "ffffffffffff" });
+    const unknownJobText = await unknownJob.text();
+    check("job watch: an id this fleet never offered is refused 409 because it could never fire",
+      unknownJob.status === 409 && unknownJobText.includes("no such command job"),
+      `${unknownJob.status} ${unknownJobText}`);
+
+    const badCmd = await selfPost(aTok, "/api/self/jobs", { cmd: "codex exec" });
+    check("job door: a cmd naming an agent harness is refused 400, whatever the allowlist holds",
+      badCmd.status === 400 && (await badCmd.text()).includes("codex"), `${badCmd.status}`);
+    const madeR = await selfPost(aTok, "/api/self/jobs",
+      { cmd: "bun run build", artifacts: ["dist/*.js"] });
+    const made = (await madeR.json()) as { jobId?: string; job?: { state?: string; argv?: string[] } };
+    const jobId = made.jobId ?? "";
+    check("job door: a plain session hands over its own tree with an allowlisted cmd and gets a job id",
+      madeR.ok && /^[0-9a-f]{12}$/.test(jobId) && made.job?.state === "open"
+        && JSON.stringify(made.job.argv) === '["bun","run","build"]',
+      `${madeR.status} ${JSON.stringify(made)}`);
+
+    const subR = await selfWatch(aTok, { kind: "job", target: jobId, idleSec: 0 });
+    const sub = await subR.json() as { watch?: { id: string; kind?: string; armed: boolean } };
+    check("job watch: subscribing to an OPEN job is accepted and stays armed — there is no verdict yet",
+      subR.ok && sub.watch?.kind === "job" && sub.watch.armed === true, JSON.stringify(sub));
+    const dupR = await selfWatch(aTok, { kind: "job", target: jobId, idleSec: 0 });
+    const dup = await dupR.json() as { watch?: { id: string }; existing?: boolean };
+    check("job watch: a second subscription to the same job returns the first, never a rival",
+      dupR.ok && dup.existing === true && dup.watch?.id === sub.watch?.id, JSON.stringify(dup));
+
+    const claimed = await hpost("/api/helper/claim", { jobId, deviceId: CMDDEV });
+    const claimBody = (await claimed.json()) as { job?: { kind?: string; cmd?: string; argv?: string[];
+      timeoutMs?: number; artifacts?: string[]; branch?: string } };
+    check("job claim: the claim carries cmd, argv, timeoutMs and the artefact globs — the daemon needs no parser",
+      claimed.ok && claimBody.job?.kind === "command" && claimBody.job.cmd === "bun run build"
+        && JSON.stringify(claimBody.job.argv) === '["bun","run","build"]'
+        && typeof claimBody.job.timeoutMs === "number"
+        && JSON.stringify(claimBody.job.artifacts) === '["dist/*.js"]'
+        && (claimBody.job.branch ?? "").startsWith("fleet-suite/"),
+      `${claimed.status} ${JSON.stringify(claimBody)}`);
+    const noSha = await hpost("/api/helper/claim", { jobId, deviceId: "watchnoshabox1" });
+    check("job claim: a device that never named a daemonSha is refused 409 even with the id in hand",
+      noSha.status === 409, `${noSha.status} ${await noSha.text()}`);
+
+    const badArt = await hpost("/api/helper/result",
+      { jobId, exitCode: 0, tail: "x", artifacts: [{ path: "../escape", sha256: "b".repeat(64), bytes: 1 }] });
+    check("job result: an artefact path that climbs out of the clone is refused 400, and the claim survives it",
+      badArt.status === 400 && (await badArt.text()).includes("relative path"), `${badArt.status}`);
+    const reported = await hpost("/api/helper/result", { jobId, exitCode: 0, tail: "built ok",
+      clonedSha: "c".repeat(40),
+      artifacts: [{ path: "dist/app.js", sha256: "d".repeat(64), bytes: 42 }] });
+    check("job result: the same claim then accepts a well-formed receipt and classifies exit 0 as green",
+      reported.ok && ((await reported.json()) as { result?: string }).result === "green", `${reported.status}`);
+
+    const waitJobEvent = async (watchId: string): Promise<Record<string, unknown> | undefined> => {
+      for (let i = 0; i < 80; i++) {
+        const rows = ((await (await get("/api/sessions")).json()) as
+          { events: Record<string, unknown>[] }).events.filter((e) => e.watchId === watchId);
+        if (rows.length) return rows[0];
+        await Bun.sleep(250);
+      }
+      return undefined;
+    };
+    const ev = sub.watch ? await waitJobEvent(sub.watch.id) : undefined;
+    const evPayload = (ev?.payload ?? {}) as { result?: string; cmd?: string; exitCode?: number | null;
+      artifacts?: { path: string; sha256: string; bytes: number }[] };
+    const evCount = ((await (await get("/api/sessions")).json()) as
+      { events: Record<string, unknown>[] }).events.filter((e) => e.watchId === sub.watch?.id).length;
+    check("job watch: the verdict fires EXACTLY ONCE, with the command, the exit code and the artefact rows",
+      !!ev && ev.kind === "command-job" && ev.subjectJobId === jobId && evCount === 1
+        && evPayload.result === "green" && evPayload.cmd === "bun run build" && evPayload.exitCode === 0
+        && evPayload.artifacts?.[0]?.path === "dist/app.js" && evPayload.artifacts[0].bytes === 42,
+      `${evCount} event(s) ${JSON.stringify(ev)}`);
+    const evText = (await plogRead()).find((p) => p.slot === aId
+      && p.text.includes(`[event ${ev?.id as string}]`))?.text ?? "";
+    check("job watch: the pane text names the artefacts and says they were NOT uploaded",
+      evText.includes("dist/app.js") && evText.includes("NOT uploaded")
+        && evText.includes("result=green"), evText.slice(0, 260));
+    if (ev) await ackEvent(aTok, ev.id as string);
+
+    // LEVEL-TRIGGERED, the property that separates this from an edge: a subscription made after the
+    // verdict must fire from the persisted fact rather than wait for a second one that never comes.
+    const lateR = await selfWatch(aTok, { kind: "job", target: jobId, idleSec: 0 });
+    const late = await lateR.json() as { watch?: { id: string; armed: boolean } };
+    const lateEvent = late.watch ? await waitJobEvent(late.watch.id) : undefined;
+    check("job watch: subscribing AFTER the verdict fires inside the subscribe call itself",
+      lateR.ok && late.watch?.armed === false && lateEvent?.kind === "command-job"
+        && late.watch.id !== sub.watch?.id,
+      `${JSON.stringify(late)} ${lateEvent?.id as string ?? "(no event)"}`);
+    if (lateEvent) await ackEvent(aTok, lateEvent.id as string);
+
+    const readBack = await fetch(`${BASE}/api/self/jobs/${jobId}`, { headers: { "x-fleet-self-token": aTok } });
+    const readBody = (await readBack.json()) as { job?: { state?: string; result?: { result?: string } } };
+    const foreign = await fetch(`${BASE}/api/self/jobs/${jobId}`, { headers: { "x-fleet-self-token": bTok } });
+    check("job read: the offering session reads its own receipt; another session's token gets 404, not somebody else's work",
+      readBack.ok && readBody.job?.state === "reported" && readBody.job.result?.result === "green"
+        && foreign.status === 404,
+      `${readBack.status}/${foreign.status} ${JSON.stringify(readBody.job?.result?.result)}`);
+    const laneJobWatch = await selfWatch(laneDeployToken, { kind: "job", target: jobId });
+    check("job watch: a lane stays refused 409 on the self-watch route — this slice added a kind, not a principal",
+      laneJobWatch.status === 409 && (await laneJobWatch.text()).includes("a lane may not subscribe"),
+      `${laneJobWatch.status}`);
+  }
+
   // --- Restart boundary. Stop before editing state: a live save chain may replace fleet.json.
   // Plant the exact durable image a crash after the pre-send marker leaves, plus a legacy spent
   // Watch and malicious extra payload keys. Load must preserve uncertainty, invent no legacy event,

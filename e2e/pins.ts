@@ -34,6 +34,8 @@ import {
   UNMODELED_CAPABILITY_DIMENSIONS, renderSystemCapabilities,
 } from "../capability-map";
 import { collectRepoMap, firstCommentLine, renderRepoMap } from "../repo-map";
+// the allowlist is IMPORTED, never re-spelled: a pin that copied the list would pin its own copy
+import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck } from "../server/types";
 import { CAPABILITY_FUNCTIONS } from "../src/protocol";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
 // re-implemented the validator would only pin its own copy of the rules.
@@ -3533,7 +3535,8 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
 {
   const RULE_KINDS = "the FleetEvent kind set is closed";
   const expected = ["lane-ready", "host-commit-ready", "merge-terminal", "post-land-audit",
-    "deploy-terminal", "clarification-request", "fleet-report", "supervisor-transition"].sort();
+    "deploy-terminal", "command-job", "clarification-request", "fleet-report",
+    "supervisor-transition"].sort();
   const signals = read("lane-signals.ts");
   const laneKinds = (signals.match(/export type LaneWatchEventKind =([^;\n]+)/)?.[1] ?? "")
     .split("|").map((w) => w.trim().replace(/"/g, "")).filter(Boolean);
@@ -3546,7 +3549,7 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   const union = (server.match(/type FleetEvent =([\s\S]*?);/)?.[1] ?? "")
     .split("|").map((w) => w.trim()).filter(Boolean);
   const got = [...found].sort();
-  pin(`${RULE_KINDS} — the interfaces yield exactly the eight known kinds`,
+  pin(`${RULE_KINDS} — the interfaces yield exactly the nine known kinds`,
     JSON.stringify(got) === JSON.stringify(expected), `[${got.join(",")}]`);
   pin(`${RULE_KINDS} — every union member is one of those interfaces (no kind enters off-list)`,
     union.length > 0 && union.every((m) => new RegExp(`interface ${m} extends FleetEventBase \\{`).test(server)),
@@ -4857,6 +4860,99 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     pin(RULE_WAIT, hasFree && hasHeld,
       `server free=${freeSec}s held=${heldSec}s; fragment names them: free=${hasFree} held=${hasHeld}`);
   }
+}
+
+// ================================================================================================
+// SECTION S10 — THE REMOTE COMMAND JOB. Invariant 6 (`cmd` is allowlisted; an agent harness is
+// refused unconditionally) and the three-field wire between server and daemon.
+// ================================================================================================
+// WHY THIS IS A PIN AND NOT A TEST. Both halves have an other side that is not TypeScript from the
+// compiler's point of view: the refusal is a STRING the server returns, and the daemon is a program
+// that runs on another machine and is only reachable here as text. A compiler cannot see that the
+// allowlist stopped being consulted, and it cannot see that the daemon stopped reading a field the
+// claim still serves. The constant itself is IMPORTED rather than re-spelled — a pin that copied
+// the list would only pin its own copy.
+{
+  const RULE_ALLOW = "a remote command job's cmd is allowlisted, and an agent harness is refused whatever the list says";
+  const cmds = Object.keys(HELPER_CMD_ALLOW);
+  pin(`${RULE_ALLOW} — the allowlist is non-empty and every entry's argv is the command, split`,
+    cmds.length > 0 && cmds.every((c) => {
+      const argv = HELPER_CMD_ALLOW[c];
+      return Array.isArray(argv) && argv.length > 0 && argv.join(" ") === c;
+    }),
+    `[${cmds.join(" | ")}]`);
+  // the REFUSAL, read out of the source of truth by running it — not by matching a message in
+  // server.ts, which would go green the day the check stopped being called.
+  const forbidden = HELPER_CMD_FORBIDDEN.flatMap((f) => [f, `${f} -p hello`, `./${f}`, `/usr/bin/${f} run`,
+    `bun run build && ${f}`, f.toUpperCase()]);
+  const refused = forbidden.filter((c) => helperCmdCheck(c).ok === false);
+  pin(`${RULE_ALLOW} — every shape that names an agent harness as a token is refused`,
+    refused.length === forbidden.length,
+    `${refused.length}/${forbidden.length} refused; forbidden=[${HELPER_CMD_FORBIDDEN.join(",")}]`);
+  // …and the direction that is NOT implied by it: a legitimate entry still passes, or the rule above
+  // would be satisfied by a function that refuses everything.
+  const accepted = cmds.filter((c) => helperCmdCheck(c).ok === true);
+  pin(`${RULE_ALLOW} — and every allowlist entry itself passes (the refusal is not "refuse everything")`,
+    accepted.length === cmds.length && helperCmdCheck("rm -rf /").ok === false
+      && helperCmdCheck("bun run build; echo hi").ok === false,
+    `${accepted.length}/${cmds.length} accepted`);
+  // THE DOOR ACTUALLY CONSULTS IT. The self route must call the checker and must not spell a
+  // command list of its own — the two ways this rule dies quietly.
+  const jobsDoor = serverU.span('/api/self/jobs" && req.method === "POST"', "return json({ jobId: job.id")?.text ?? null;
+  pin(`${RULE_ALLOW} — POST /api/self/jobs runs the shared checker and refuses with 400 before a row exists`,
+    jobsDoor !== null && /helperCmdCheck\(body\?\.cmd\)/.test(jobsDoor)
+      && /return json\(\{ error: cmdCheck\.error \}, 400\)/.test(jobsDoor)
+      && jobsDoor.indexOf("helperCmdCheck") < jobsDoor.indexOf("commandJobs.set("),
+    jobsDoor === null ? "the self jobs door was not found in the server universe"
+      : `checker@${jobsDoor.indexOf("helperCmdCheck")} row@${jobsDoor.indexOf("commandJobs.set(")}`);
+  // NO SHELL, either side. The server hands over argv; the daemon execs it through the runner that
+  // has no `sh -c` in it. `runCmd` keeps its shell for the OWNER's own configured strings — that is
+  // the distinction, and a command job crossing back into it is the regression.
+  const daemonSrc = exists("helper-daemon/daemon.ts") ? read("helper-daemon/daemon.ts") : "";
+  if (daemonSrc === "") skip(`${RULE_ALLOW} — the daemon runs a command job as argv`, "helper-daemon/daemon.ts is not in this tree");
+  else {
+    // ONE `sh -c` in the whole file, and it is runCmd's — the runner for the OWNER's own config
+    // strings. A second one is either a command job that grew a shell or a new wire that did.
+    const shSites = (daemonSrc.match(/"sh", "-c"/g) ?? []).length;
+    pin(`${RULE_ALLOW} — the daemon runs a command job through runArgv (no sh -c) and never through runCmd`,
+      /async function runArgv\(/.test(daemonSrc)
+        && /Bun\.spawn\(argv, \{/.test(daemonSrc)
+        && /\? await runArgv\(j\.argv!/.test(daemonSrc)
+        && shSites === 1
+        && /function runCmd\([\s\S]{0,400}?runArgv\(\["sh", "-c", cmd\]/.test(daemonSrc),
+      `runArgv=${/async function runArgv\(/.test(daemonSrc)} shCallSites=${shSites}`);
+  }
+
+  // --- THE WIRE. Three fields, and each must exist on BOTH sides or a job is claimed and then run
+  // with a default nobody asked for. This is exactly the failure the S1 handshake exists to prevent,
+  // so it is fastened here too rather than trusted to a running suite.
+  const RULE_WIRE = "the command job's three wire fields stand in HelperJobView, in the claim, and in the daemon's ClaimedJob";
+  const jobView = serverU.span("interface HelperJobView {", "\n}")?.text ?? null;
+  const claimFn = serverU.span("async function claimCommandJob(", "\n}")?.text ?? null;
+  const claimedJob = /interface ClaimedJob \{[\s\S]*?\n\}/.exec(daemonSrc)?.[0] ?? "";
+  const fields = ["cmd", "timeoutMs", "artifacts"];
+  const missView = fields.filter((f) => !new RegExp(`\\b${f}\\??:`).test(jobView ?? ""));
+  const missClaim = fields.filter((f) => !new RegExp(`\\b${f}:`).test(claimFn ?? ""));
+  const missDaemon = fields.filter((f) => !new RegExp(`\\b${f}\\?:`).test(claimedJob));
+  if (jobView === null || claimFn === null || claimedJob === "")
+    pin(RULE_WIRE, false, `view=${jobView !== null} claim=${claimFn !== null} daemon=${claimedJob !== ""}`);
+  else pin(RULE_WIRE,
+    missView.length === 0 && missClaim.length === 0 && missDaemon.length === 0
+      && /\bargv\?: string\[\]/.test(claimedJob) && /argv: j\.argv/.test(claimFn),
+    `missing view=[${missView}] claim=[${missClaim}] daemon=[${missDaemon}]`);
+
+  // --- THE S1 HANDSHAKE. A command job is offered ONLY to a device whose heartbeat named a
+  // `daemonSha`, and the claim refuses one that did not. Both halves, because the jobs list alone is
+  // not a gate: a device may POST a jobId it learned any other way.
+  const RULE_SHA = "a command job is offered and claimed only by a daemon that named its own daemonSha";
+  // the body's terminator is the NEXT declaration, not a bare `\n}` — the function opens with a
+  // multi-line return TYPE whose own closing brace would cut this span short of everything it reads
+  const jobsView = serverU.span("function helperJobsView(", "// --- THE OWNER'S HALF OF THE REGISTER")?.text ?? null;
+  pin(RULE_SHA,
+    jobsView !== null && /daemonSha/.test(jobsView) && /if \(!cmdCapable\) break;/.test(jobsView)
+      && claimFn !== null && /helperDevices\.get\(deviceId\)\?\.daemonSha/.test(claimFn),
+    jobsView === null ? "helperJobsView not found"
+      : `view=${/daemonSha/.test(jobsView)} claim=${claimFn !== null && /daemonSha/.test(claimFn)}`);
 }
 
 console.log(rows.join("\n"));

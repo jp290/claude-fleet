@@ -13,9 +13,9 @@ export interface FleetEventRow {
     | "subject-gone" | "inbox";
   delivery?: "pane" | "inbox";
   kind: "lane-ready" | "host-commit-ready" | "merge-terminal" | "post-land-audit"
-    | "deploy-terminal" | "clarification-request" | "fleet-report" | "supervisor-transition";
+    | "deploy-terminal" | "command-job" | "clarification-request" | "fleet-report" | "supervisor-transition";
   subjectSlot?: number; subjectBranch?: string; subjectCwd?: string;
-  subjectRepo?: string; subjectMainAfter?: string; subjectDeployId?: string;
+  subjectRepo?: string; subjectMainAfter?: string; subjectDeployId?: string; subjectJobId?: string;
   payload?: Record<string, unknown>;
   // the two transport clocks, carried for the derivation below. They already ride /api/sessions on
   // every event; nothing was added to the payload to read them.

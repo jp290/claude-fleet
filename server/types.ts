@@ -7,7 +7,8 @@
 import type { ServerWebSocket } from "bun";
 import { ANALYSIS_BLOCKERS } from "../analysis-prompt";
 import type { LaneWatchEventKind, LaneWatchEventPayload, MergeWatchEventPayload, AuditWatchEventPayload,
-  DeployWatchEventPayload, ClarificationEventPayload, ClarificationBasis } from "../lane-signals";
+  DeployWatchEventPayload, CommandJobArtifactPayload, CommandJobWatchEventPayload, ClarificationEventPayload,
+  ClarificationBasis } from "../lane-signals";
 import type { RefineValidation } from "../refine-validate";
 import { FLEET_REPORT_STATUSES, type FleetReportEventPayload, type FleetReportStatus, type LaneAnchor }
   from "../src/protocol";
@@ -91,6 +92,90 @@ interface WatchBase {
   // would land in the owner's composer).
   delivery?: "pane" | "inbox";
 }
+// --- THE REMOTE COMMAND CONTRACT (Invariant 6) --------------------------------------------------
+// A `command` job hands another machine a tree AND a command line, which is the one thing the two
+// older job kinds never did: an audit and a lane-suite both run `cfg.suiteCmd`, a string the OWNER
+// put in the helper's own config file on the helper's own machine. `command` inverts that — the
+// string now comes over the wire from a session in this fleet — so the fleet, not the helper, is
+// what has to be unable to say the wrong thing.
+//
+// TWO RULES, and they are checked in this order because the order is the property:
+//   1. THE FORBIDDEN TOKENS ARE REFUSED FIRST AND UNCONDITIONALLY. `claude`, `codex` and `pi` are
+//      the agent harnesses; a fleet that can post one of them to a helper has invented remote agent
+//      spawn as a side effect of a build runner, and no allowlist entry could ever make that
+//      acceptable. Checking it BEFORE the allowlist is what makes the refusal a property of the
+//      function rather than a property of today's allowlist contents: widen the list below and the
+//      refusal still stands. A token is any `/`-, `\`- or whitespace-separated word, so `./claude`,
+//      `/usr/bin/codex` and `bun claude` are the same refusal as the bare name.
+//   2. THE COMMAND MUST BE AN EXACT ALLOWLIST KEY, and the value is the ARGV it runs as. Argv, not
+//      a string: the helper never hands this to `sh -c`, so there is no quoting, no glob, no `&&`
+//      and no substitution anywhere on the path — which is also why the allowlist can be an exact
+//      match instead of a parser. Adding an entry is a source change under review, by design.
+const HELPER_CMD_MAX = 200;
+const HELPER_CMD_ALLOW: Readonly<Record<string, readonly string[]>> = {
+  "bun run build": ["bun", "run", "build"],
+  "bun test": ["bun", "test"],
+  "bun run verify": ["bun", "run", "verify"],
+  "./e2e-isolated.sh": ["./e2e-isolated.sh"],
+  "./e2e-security.sh": ["./e2e-security.sh"],
+  "bun e2e/pins.ts": ["bun", "e2e/pins.ts"],
+};
+const HELPER_CMD_FORBIDDEN: readonly string[] = ["claude", "codex", "pi"];
+type HelperCmdCheck = { ok: true; cmd: string; argv: string[] } | { ok: false; error: string };
+function helperCmdCheck(raw: unknown): HelperCmdCheck {
+  if (typeof raw !== "string" || !raw.trim()) return { ok: false, error: "cmd must be a non-empty string" };
+  const cmd = raw.trim();
+  if (cmd.length > HELPER_CMD_MAX) return { ok: false, error: `cmd must be at most ${HELPER_CMD_MAX} chars` };
+  const tokens = cmd.toLowerCase().split(/[\s/\\]+/).filter(Boolean);
+  const hit = HELPER_CMD_FORBIDDEN.find((f) => tokens.includes(f));
+  if (hit) return { ok: false, error: `cmd names the agent harness ${JSON.stringify(hit)} — a remote command job may never start an agent, whatever the allowlist says` };
+  const argv = HELPER_CMD_ALLOW[cmd];
+  if (!argv) return { ok: false, error: `cmd is not on the helper allowlist — it is one of [${Object.keys(HELPER_CMD_ALLOW).join(" | ")}]` };
+  return { ok: true, cmd, argv: [...argv] };
+}
+// The artefact GLOBS a job asks for, and the artefact ROWS a helper reports back. Both sides live
+// here so the request shape and the receipt shape cannot drift apart: the second is what the first
+// is allowed to produce. A path is relative and may not climb — `..` anywhere, an absolute path or
+// a backslash is refused rather than normalised, because a receipt naming a path outside the clone
+// is a receipt about a file this rail never handed over.
+const HELPER_ARTIFACT_GLOB_MAX = 20;
+const HELPER_ARTIFACT_MAX = 50;
+const HELPER_ARTIFACT_PATH_MAX = 300;
+const helperArtifactPathOk = (p: string): boolean =>
+  p.length > 0 && p.length <= HELPER_ARTIFACT_PATH_MAX && !p.startsWith("/") && !p.includes("\\")
+  && !p.split("/").some((seg) => seg === ".." || seg === "")
+  && ![...p].some((ch) => ch < " " || ch === "\u007f");
+function helperArtifactGlobsFrom(raw: unknown): { ok: true; globs: string[] } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, globs: [] };
+  if (!Array.isArray(raw)) return { ok: false, error: "artifacts must be an array of globs relative to the clone" };
+  if (raw.length > HELPER_ARTIFACT_GLOB_MAX)
+    return { ok: false, error: `at most ${HELPER_ARTIFACT_GLOB_MAX} artifact globs` };
+  const globs: string[] = [];
+  for (const g of raw) {
+    if (typeof g !== "string" || !helperArtifactPathOk(g.trim()))
+      return { ok: false, error: `artifact glob ${JSON.stringify(String(g).slice(0, 60))} must be relative, non-empty and free of ".."` };
+    globs.push(g.trim());
+  }
+  return { ok: true, globs };
+}
+// null = the field was present and MALFORMED, which is not the same fact as an empty list and must
+// never collapse into it: an empty list is "nothing matched", a malformed one is "this helper is
+// not speaking the contract" and the caller turns it into a refusal.
+function helperArtifactsFrom(raw: unknown): CommandJobArtifactPayload[] | null {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw) || raw.length > HELPER_ARTIFACT_MAX) return null;
+  const out: CommandJobArtifactPayload[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const a = item as Record<string, unknown>;
+    if (typeof a.path !== "string" || !helperArtifactPathOk(a.path)) return null;
+    if (typeof a.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(a.sha256)) return null;
+    if (typeof a.bytes !== "number" || !Number.isInteger(a.bytes) || a.bytes < 0) return null;
+    out.push({ path: a.path, sha256: a.sha256, bytes: a.bytes });
+  }
+  return out;
+}
+
 interface LaneWatch extends WatchBase {
   // Absent on legacy persisted rows and kept absent after load; `watchKind` supplies the discriminator.
   kind?: "lane";
@@ -117,6 +202,14 @@ interface DeployWatch extends WatchBase {
   kind: "deploy";
   deployId: string;
 }
+// The remote COMMAND JOB's subscription. `jobId` and not `target`: the request body names the job
+// `target` for symmetry with the lane/merge kinds, but those two targets are SLOT NUMBERS and this
+// one is a 12-hex job id. Storing it under its own name is what keeps every `"target" in w` narrow
+// in this file honest — a second meaning on one field is how a watch fires about the wrong subject.
+interface CommandJobWatch extends WatchBase {
+  kind: "job";
+  jobId: string;
+}
 // STN-1: the Supervisor→Controller transition rail. The ONLY Watch kind triggered by a principal's
 // act (the bound Supervisor completing it) rather than a level the tick computes, and the only one
 // with a deadline, so a Controller can read "X never came" from its own row instead of waiting forever.
@@ -125,8 +218,8 @@ interface TransitionWatch extends WatchBase {
   awaiting: string;     // the Controller's bounded statement of WHAT transition it expects
   deadlineAt: number;   // absolute ms; the tick disarms past it with lastResult "expired"
 }
-type Watch = LaneWatch | MergeWatch | AuditWatch | DeployWatch | TransitionWatch;
-const watchKind = (w: Watch): "lane" | "merge" | "audit" | "deploy" | "transition" => w.kind ?? "lane";
+type Watch = LaneWatch | MergeWatch | AuditWatch | DeployWatch | TransitionWatch | CommandJobWatch;
+const watchKind = (w: Watch): "lane" | "merge" | "audit" | "deploy" | "transition" | "job" => w.kind ?? "lane";
 const TRANSITION_AWAITING_MAX = 500;
 const TRANSITION_DEADLINE_MIN_SEC = 60;
 const TRANSITION_DEADLINE_MAX_SEC = 86_400;
@@ -146,6 +239,9 @@ function watchFrom(raw: unknown): Watch | null {
   }
   if (w.kind === "deploy") {
     return typeof w.deployId === "string" && /^[0-9a-f]{8}$/.test(w.deployId) ? raw as DeployWatch : null;
+  }
+  if (w.kind === "job") {
+    return typeof w.jobId === "string" && /^[0-9a-f]{12}$/.test(w.jobId) ? raw as CommandJobWatch : null;
   }
   if (w.kind === "transition") {
     // pane-only by construction (the inbox is the owner's, not a Controller's): a persisted row
@@ -238,6 +334,11 @@ interface DeployFleetEvent extends FleetEventBase {
   kind: "deploy-terminal";
   payload: DeployWatchEventPayload;
 }
+interface CommandJobFleetEvent extends FleetEventBase {
+  subjectJobId: string;
+  kind: "command-job";
+  payload: CommandJobWatchEventPayload;
+}
 interface ClarificationFleetEvent extends FleetEventBase {
   subjectSlot: number;
   subjectBranch: string;
@@ -266,7 +367,7 @@ interface SupervisorTransitionFleetEvent extends FleetEventBase {
   payload: SupervisorTransitionEventPayload;
 }
 type FleetEvent = LaneFleetEvent | MergeFleetEvent | AuditFleetEvent | DeployFleetEvent
-  | ClarificationFleetEvent | FleetReportFleetEvent | SupervisorTransitionFleetEvent;
+  | CommandJobFleetEvent | ClarificationFleetEvent | FleetReportFleetEvent | SupervisorTransitionFleetEvent;
 
 // `send-uncertain` mirrors the FleetEvent transport state exactly (see FACT 2 in tickWatches): it is
 // persisted BEFORE tmux is touched, so a process death anywhere after that point is visible after
@@ -529,6 +630,22 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
     return { ...base, subjectDeployId: e.subjectDeployId, kind: e.kind,
       payload: { ok: p.ok, stage: p.stage as DeployWatchEventPayload["stage"], target: p.target,
         bootHead: p.bootHead, hitTarget: p.hitTarget, bundleStale: p.bundleStale, at: p.at,
+        ...(p.reason !== undefined ? { reason: p.reason } : {}) } };
+  }
+  if (e.kind === "command-job") {
+    if (typeof e.subjectJobId !== "string" || !/^[0-9a-f]{12}$/.test(e.subjectJobId)) return null;
+    const p = e.payload as Partial<CommandJobWatchEventPayload> | undefined;
+    // the artefact list goes through the SAME validator the result route uses — a persisted row and
+    // a freshly reported one are the same shape or one of them is lying
+    const artifacts = p ? helperArtifactsFrom(p.artifacts) : null;
+    if (!p || !["green", "red", "unknown"].includes(String(p.result))
+      || helperCmdCheck(p.cmd).ok !== true
+      || !(p.exitCode === null || (typeof p.exitCode === "number" && Number.isInteger(p.exitCode)))
+      || artifacts === null
+      || !(p.reason === undefined || (typeof p.reason === "string" && p.reason.length <= 200))) return null;
+    return { ...base, subjectJobId: e.subjectJobId, kind: e.kind,
+      payload: { result: p.result as CommandJobWatchEventPayload["result"], cmd: p.cmd as string,
+        exitCode: p.exitCode as number | null, artifacts,
         ...(p.reason !== undefined ? { reason: p.reason } : {}) } };
   }
   if (e.kind === "supervisor-transition") {
@@ -1208,9 +1325,10 @@ type ProgramDigest = Pick<Program, "id" | "status" | "title" | "createdAt">;
 
 export type {
   BoxPin, WSData, Share, ShareComment, Auto, WatchBase, LaneWatch, MergeWatch, AuditWatch,
-  DeployWatch, TransitionWatch, Watch, FleetEventStatus, FleetEventRecoveryState,
+  DeployWatch, TransitionWatch, CommandJobWatch, Watch, FleetEventStatus, FleetEventRecoveryState,
   FleetEventRecovery, FleetEventBase, LaneFleetEvent, MergeFleetEvent, AuditFleetEvent,
-  DeployFleetEvent, ClarificationFleetEvent, FleetReportFleetEvent,
+  DeployFleetEvent, CommandJobFleetEvent, ClarificationFleetEvent, FleetReportFleetEvent,
+  HelperCmdCheck,
   SupervisorTransitionEventPayload, SupervisorTransitionFleetEvent, FleetEvent, ClarificationStatus,
   ClarificationRequest, FleetReport, AttentionKind, AttentionStatus, AttentionRequest, TaskKind,
   Task, TaskBrief, TaskComment, TaskAnalysis, AnalysisBlocker, TaskCriterion, RefineChild,
@@ -1233,4 +1351,7 @@ export {
   PROGRAM_PROFILE_KINDS, loadProgramProfile, PROGRAM_LINEAGE_MAX, PROGRAM_LINEAGE_VIA,
   PROGRAM_LINEAGE_ENDED_BY, PROGRAM_LINEAGE_ENTRY_KEYS, loadProgramLineageEntry, loadProgramLineage,
   foundingOccupantFrom, foundingIdentityFrom,
+  HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, HELPER_CMD_MAX, helperCmdCheck,
+  HELPER_ARTIFACT_GLOB_MAX, HELPER_ARTIFACT_MAX, HELPER_ARTIFACT_PATH_MAX,
+  helperArtifactGlobsFrom, helperArtifactsFrom,
 };

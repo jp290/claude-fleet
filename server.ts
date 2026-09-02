@@ -10,6 +10,7 @@ import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessa
   clarificationWatchMessage, clarificationReplyMessage, attentionAnswerMessage,
   type MergeWatchEventPayload,
   type AuditWatchEventPayload, type DeployWatchEventPayload,
+  commandJobWatchMessage, type CommandJobWatchEventPayload, type CommandJobArtifactPayload,
   type ClarificationBasis,
   laneQuietSince, DONE_LOOKING_PROSE, laneStalled, laneStalledSince, STALLED_PROSE } from "./lane-signals";
 import { phaseOf, type Phase, type PhaseInput, type PhaseOutcomeFacts } from "./program-phase";
@@ -67,7 +68,9 @@ import {
   PROGRAM_LINEAGE_MAX, loadProgramLineage, foundingOccupantFrom, foundingIdentityFrom,
   type BoxPin, type WSData, type Share, type ShareComment, type Auto, type WatchBase, type MergeWatch,
   type TransitionWatch, type Watch, type FleetEventStatus, type FleetEventRecoveryState,
+  HELPER_CMD_ALLOW, helperCmdCheck, helperArtifactGlobsFrom, helperArtifactsFrom, HELPER_ARTIFACT_MAX,
   type LaneFleetEvent, type MergeFleetEvent, type AuditFleetEvent, type DeployFleetEvent,
+  type CommandJobFleetEvent,
   type ClarificationFleetEvent, type FleetReportFleetEvent, type SupervisorTransitionFleetEvent,
   type FleetEvent, type ClarificationRequest, type FleetReport, type AttentionKind,
   type AttentionRequest, type TaskKind, type Task, type TaskBrief, type TaskComment,
@@ -1752,7 +1755,9 @@ async function programExecutionView(s: Slot): Promise<Response> {
               ? { repo: w.repo, mainAfter: w.mainAfter }
               : watchKind(w) === "deploy" && "deployId" in w
                 ? { deployId: w.deployId }
-                : "target" in w ? { target: w.target, targetBranch: w.targetBranch } : {}),
+                : watchKind(w) === "job" && "jobId" in w
+                  ? { jobId: w.jobId }
+                  : "target" in w ? { target: w.target, targetBranch: w.targetBranch } : {}),
           })),
           unattributedLegacy: legacyWatches,
           foreignOccupant: foreignWatches,
@@ -2695,6 +2700,7 @@ function queueStateSave(): Promise<void> {
     // would be erased by the most routine thing this machine does — the helper would still be
     // running the suite while the lane's own GET said "no offer".
     laneSuiteJobs: [...laneSuiteJobs.values()],
+    commandJobs: [...commandJobs.values()],
     slots: active, recents, pins, shares, autos, watches,
     events: fleetEvents, clarifications, fleetReports, attentionRequests, tasks, programs, supervisor,
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
@@ -5356,8 +5362,9 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
   if (!s.cwd) return json({ error: "slot not active" }, 400);
   const b = body ?? {};
   const kind = b.kind === undefined ? "lane" : b.kind;
-  if (kind !== "lane" && kind !== "merge" && kind !== "audit" && kind !== "deploy" && kind !== "transition")
-    return json({ error: "kind must be 'lane', 'merge', 'audit', 'deploy', or 'transition'" }, 400);
+  if (kind !== "lane" && kind !== "merge" && kind !== "audit" && kind !== "deploy"
+    && kind !== "transition" && kind !== "job")
+    return json({ error: "kind must be 'lane', 'merge', 'audit', 'deploy', 'transition', or 'job'" }, 400);
   // STN-1 registration: a CLOSED body. Receiver is `s`, completer is the bound Supervisor — neither
   // is a body fact, so foreign fields are refused BY NAME rather than ignored (a silently dropped
   // field reads to its author as honoured). `delivery` too: the inbox is the owner's, not a Controller's.
@@ -5390,6 +5397,7 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
   let identity: { t: Slot; cwd: string; branch: string; terminal: MergeLast | null } | null = null;
   let auditIdentity: { repo: string; mainAfter: string; row: PostLandAuditRow | null } | null = null;
   let deployIdentity: { deployId: string; row: DeployRow | null } | null = null;
+  let jobIdentity: { job: CommandJob } | null = null;
   if (kind === "lane" || kind === "merge") {
     const targetId = Number(b.target ?? NaN) | 0;
     const t = slotFrom(targetId);
@@ -5439,6 +5447,19 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
     if (marker?.id !== deployId && !row)
       return json({ error: "no in-flight or persisted deploy exists with that id — this watch could never fire" }, 409);
     deployIdentity = { deployId, row };
+  } else if (kind === "job") {
+    // `target` in the body, `jobId` on the row: the request word is the one the other kinds use, and
+    // the storage word is the one that cannot be confused with a slot number (server/types.ts).
+    const jobId = typeof b.target === "string" ? b.target.trim() : "";
+    if (!/^[0-9a-f]{12}$/.test(jobId))
+      return json({ error: "target must be a 12-character command job id" }, 400);
+    expireHelperClaims();
+    const job = commandJobs.get(jobId);
+    // the SAME rejection rule the other kinds obey: refuse at CREATE what could never fire. A job
+    // this server has never heard of, or one already evicted, has no verdict left to give — and a
+    // settled one is not refused, it fires immediately from its persisted fact (below).
+    if (!job) return json({ error: "no such command job — it was never offered, or it has been evicted" }, 409);
+    jobIdentity = { job };
   }
 
   const dup = watches.find((w) => {
@@ -5447,6 +5468,8 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
       && w.repo === auditIdentity!.repo && w.mainAfter === auditIdentity!.mainAfter;
     if (kind === "deploy") return watchKind(w) === "deploy" && "deployId" in w
       && w.deployId === deployIdentity!.deployId;
+    if (kind === "job") return watchKind(w) === "job" && "jobId" in w
+      && w.jobId === jobIdentity!.job.id;
     // a transition watch is a question the Controller asks in its own words; the same words,
     // still armed, are the same question. A spent one is never returned as existing — a new
     // registration after a completion or an expiry is a NEW question.
@@ -5474,6 +5497,8 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
     ? { ...common, kind: "audit", repo: auditIdentity!.repo, mainAfter: auditIdentity!.mainAfter }
     : kind === "deploy"
     ? { ...common, kind: "deploy", deployId: deployIdentity!.deployId }
+    : kind === "job"
+    ? { ...common, kind: "job", jobId: jobIdentity!.job.id }
     : kind === "transition"
     ? { ...common, kind: "transition", awaiting: String(b.awaiting),
       deadlineAt: common.created + 1000 * (typeof b.deadlineSec === "number" ? b.deadlineSec : TRANSITION_DEADLINE_DEFAULT_SEC) }
@@ -5486,6 +5511,8 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
     await mintAuditEvents(auditIdentity!.row);
   else if (kind === "deploy" && deployIdentity!.row)
     await mintDeployEvents(deployIdentity!.row);
+  else if (kind === "job" && jobIdentity!.job.result)
+    await mintCommandJobEvents(jobIdentity!.job);
   else await saveStateNow();
   return json({ ok: true, watch: w });
 }
@@ -5652,6 +5679,32 @@ async function mintDeployEvents(row: DeployRow): Promise<void> {
       receiverSlot: receiver.id, receiverOpenedAt: receiver.openedAt, receiverSessionId: receiver.sessionId,
       receiverIdleSec: w.idleSec, subjectDeployId: w.deployId,
       kind: "deploy-terminal", payload: deployEventPayload(row), createdAt: now,
+      ...mintTransport(w), attempts: 0, deliveredAt: null, acknowledgedAt: null,
+    };
+    dirty = spendWatch(w, event) || dirty;
+  }
+  if (dirty) await saveStateNow();
+}
+
+// The `job` kind's mint. Level-triggered like its two siblings: this is called from the result
+// route AND re-derived by tickWatches for every armed job watch, so a verdict that arrives while
+// the fleet is restarting is not lost and a subscription made AFTER the verdict fires at once.
+// A job with no result yet mints nothing — that is the "stay armed, ask again" branch, and the
+// sweep guarantees every job eventually gets one (commandJobLapseResult).
+async function mintCommandJobEvents(j: CommandJob): Promise<void> {
+  const r = j.result;
+  if (!r) return;
+  let dirty = false;
+  const now = Date.now();
+  for (const w of watches) {
+    if (!w.armed || watchKind(w) !== "job" || !("jobId" in w) || w.jobId !== j.id) continue;
+    const receiver = slotFrom(w.slot);
+    if (!receiver?.cwd) continue;
+    const event: CommandJobFleetEvent = {
+      id: randomBytes(12).toString("hex"), watchId: w.id,
+      receiverSlot: receiver.id, receiverOpenedAt: receiver.openedAt, receiverSessionId: receiver.sessionId,
+      receiverIdleSec: w.idleSec, subjectJobId: j.id,
+      kind: "command-job", payload: commandJobEventPayload(j, r), createdAt: now,
       ...mintTransport(w), attempts: 0, deliveredAt: null, acknowledgedAt: null,
     };
     dirty = spendWatch(w, event) || dirty;
@@ -10528,6 +10581,22 @@ async function tickWatches(): Promise<void> {
         if (row) await mintAuditEvents(row);
         continue;
       }
+      if (watchKind(w) === "job" && "jobId" in w) {
+        // an EVICTED job is the one way this subject can vanish without a verdict (the sweep settles
+        // every other ending). Disarm loudly rather than stay armed forever — the same choice the
+        // recycled-target branch below makes.
+        const job = commandJobs.get(w.jobId);
+        if (!job) {
+          w.armed = false;
+          w.lastResult = "the command job is gone from the register — no notification will come";
+          audit("watch_skip", w.slot, w.lastResult);
+          pruneSpentWatches(w.slot);
+          dirty = true;
+          continue;
+        }
+        if (job.result) await mintCommandJobEvents(job);
+        continue;
+      }
       // STN-1 expiry. The tick never MINTS for this kind — only the bound Supervisor's act does
       // (completeTransitionWatch); it owns the deadline: past it the Watch is disarmed with a legible
       // reason and NO pane text (one Watch, one notification — an expiry line would be a second stream).
@@ -10647,6 +10716,8 @@ async function tickWatches(): Promise<void> {
         ? auditWatchMessage(event.subjectRepo, event.subjectMainAfter, event)
         : event.kind === "deploy-terminal"
         ? deployWatchMessage(event.subjectDeployId, event)
+        : event.kind === "command-job"
+        ? commandJobWatchMessage(event.subjectJobId, event)
         : event.kind === "supervisor-transition"
         ? supervisorTransitionMessage(event)
         : laneWatchMessage(event.subjectSlot, event.subjectBranch, event);
@@ -12353,6 +12424,101 @@ const laneSuiteRef = (id: string): string => `${LANE_SUITE_REF_PREFIX}/${id}`;
 // a second time: the bootstrap the helper is shown and the ref the bundle carries must be the same
 // string or the clone lands in an empty directory with no hint why (measured M6).
 const laneSuiteBranch = (id: string): string => laneSuiteRef(id).replace(/^refs\/heads\//, "");
+// --- THE THIRD THING A HELPER CAN BE HANDED: A COMMAND ------------------------------------------
+// An audit and a lane-suite both run `cfg.suiteCmd` — the command the OWNER wrote into the helper's
+// own config on the helper's own machine. A `command` job is the first kind where the command line
+// travels over the wire, and every property below exists because of that one inversion:
+//   · THE ALLOWLIST IS THE PERIMETER (server/types.ts#helperCmdCheck, Invariant 6). It is checked at
+//     the SELF DOOR, before a job row exists, so a refused `cmd` leaves no trace a helper could ever
+//     claim — the refusal and the absence of a claim row are one fact, not two.
+//   · IT RUNS AS ARGV, never as a string handed to `sh -c`. The allowlist's VALUE is the argv, so
+//     the split happens here, under review, and not in a shell on the other machine.
+//   · ONLY A DAEMON THAT NAMES ITSELF MAY SEE ONE. A pre-S1 daemon does not branch on `kind` and
+//     would run `cfg.suiteCmd` on a command job — a green about a command nobody asked for. The
+//     server therefore offers a command job ONLY to a device whose heartbeat carried `daemonSha`
+//     (the field a daemon that knows about `command` measures on itself). That is a capability
+//     reading, not a version string comparison, and it is the whole of the S1 handshake.
+//   · THE RECEIPT NAMES ARTEFACTS, IT DOES NOT CARRY THEM. `artifacts[{path,sha256,bytes}]` is
+//     hashed IN THE CLONE by the helper; nothing is uploaded in this slice. `bytes` is a number
+//     because a receipt is read in a pane.
+// And, like the lane-suite it is modelled on, its verdict lands in the JOB and touches no ledger:
+// `post-land-audits.jsonl` joins over `mainSha`/`covers[].mainAfter`, which a command job has not
+// got, and a row without them answers those joins WRONG rather than failing them.
+type CommandJobState = "open" | "claimed" | "reported" | "lapsed" | "reaped";
+interface CommandJobResult {
+  exitCode: number | null;
+  result: "green" | "red" | "unknown";
+  reason?: string;
+  tail: string;                       // byte-capped, HELPER_TAIL_CAP — the same budget as the audit's
+  trail?: string;
+  fails: string[];                    // EMPTY IS LEGITIMATE here: a `bun run build` produces no
+                                      // check names, and a command job's currency is the exit code
+  artifacts: CommandJobArtifactPayload[];
+  // the same provenance half the lane-suite verdict carries, and non-negotiable for the same
+  // reason: the exit code was produced on a machine this server never opened a connection to.
+  remote: { name: string; claimedAt: number; reportedAt: number; clonedSha?: string };
+  treeSha: string;
+  ms: number;
+}
+interface CommandJob {
+  id: string;                 // 12 hex, the SAME id space the other three kinds use (see LaneSuiteJob)
+  slot: number;
+  slotOpenedAt: number;
+  repo: string;               // the git toplevel the tree was taken from
+  cwd: string;                // the OFFERING session's own checkout — lane or main, both are allowed
+  branch: string;             // what the offering session was on, for the human reading the card
+  cmd: string;                // an EXACT key of HELPER_CMD_ALLOW, validated before this row existed
+  argv: string[];             // …and its value: what the helper execs, with no shell in between
+  timeoutMs: number;
+  artifactGlobs: string[];    // relative to the clone; `[]` is "ask for nothing"
+  offeredAt: number;
+  state: CommandJobState;
+  commitSha: string | null;
+  treeSha: string | null;
+  untracked: number | null;
+  claim: { deviceId: string; name: string; claimedAt: number; expiresAt: number; bundle: string } | null;
+  result: CommandJobResult | null;
+}
+const commandJobs = new Map<string, CommandJob>();
+const COMMAND_JOB_KEEP = 20;             // same bound and same reason as LANE_SUITE_KEEP
+const COMMAND_JOB_MAX_OPEN_PER_SLOT = 3; // one session may not fill the portal with its own work
+const COMMAND_JOB_TIMEOUT_DEFAULT_MS = 900_000;
+const COMMAND_JOB_TIMEOUT_MIN_MS = 10_000;
+const COMMAND_JOB_TIMEOUT_MAX_MS = 3_600_000;
+// The verdict a job gets when nothing measured it. `unknown` and never a red — the same rule
+// remoteVerdictOf states for a run that could not be started — and the `remote` half names whoever
+// held it, or this server when nobody did: a receipt without a name on it is the one sentence this
+// rail may not write.
+function commandJobLapseResult(j: CommandJob, claim: CommandJob["claim"], now: number, reason: string): CommandJobResult {
+  return {
+    exitCode: null, result: "unknown", reason, tail: "", fails: [], artifacts: [],
+    remote: { name: claim?.name ?? "(nobody claimed it)", claimedAt: claim?.claimedAt ?? j.offeredAt, reportedAt: now },
+    treeSha: j.treeSha ?? "", ms: now - (claim?.claimedAt ?? j.offeredAt),
+  };
+}
+function commandJobClaimOf(j: CommandJob): CommandJob["claim"] {
+  return j.claim && Date.now() < j.claim.expiresAt ? j.claim : null;
+}
+// The offering session's own view of its job — the whole of what GET /api/self/jobs/:id serves.
+function commandJobView(j: CommandJob): Record<string, unknown> {
+  const c = commandJobClaimOf(j);
+  return {
+    id: j.id, state: j.state === "claimed" && !c ? "lapsed" : j.state,
+    cmd: j.cmd, argv: j.argv, timeoutMs: j.timeoutMs, artifactGlobs: j.artifactGlobs,
+    branch: j.branch, offeredAt: j.offeredAt,
+    commitSha: j.commitSha, treeSha: j.treeSha, untracked: j.untracked,
+    claim: c ? { name: c.name, claimedAt: c.claimedAt, expiresAt: c.expiresAt } : null,
+    result: j.result,
+  };
+}
+// THE PAYLOAD A `job` WATCH FIRES WITH, derived from the verdict and from nothing else — so a watch
+// message and a `GET /api/self/jobs/:id` can never disagree about what happened.
+function commandJobEventPayload(j: CommandJob, r: CommandJobResult): CommandJobWatchEventPayload {
+  return { result: r.result, cmd: j.cmd, exitCode: r.exitCode,
+    artifacts: r.artifacts.slice(0, HELPER_ARTIFACT_MAX),
+    ...(r.reason ? { reason: r.reason.slice(0, 200) } : {}) };
+}
+
 // THE LANE'S WAITING POLICY — advisory, served, and pinned. Nothing on the server enforces these:
 // the wait is a foreground loop in the lane's own pane. They live here anyway because the rulebook
 // quotes them, and a rule whose number drifts from the code is worse than no rule (e2e/pins.ts
@@ -12878,6 +13044,43 @@ function expireHelperClaims(): boolean {
       changed = true;
     }
   }
+  // …and the FOURTH kind. It sweeps like the preview (no drain takes a command job over either) with
+  // ONE addition that is the whole reason a `job` watch can be trusted: a lapsed or reaped command
+  // job SETTLES WITH A VERDICT — `unknown`, with the reason — instead of merely closing. A watch
+  // whose subject can end without a terminal fact is a silent forever-wait, which is the precise
+  // failure the whole watch surface exists to remove; here the sweep is the only thing that can
+  // produce that fact, so it produces it. Minting is left to tickWatches' level-triggered read (the
+  // same shape the audit and deploy kinds use) because this sweep is synchronous by construction.
+  for (const [id, j] of [...commandJobs]) {
+    const c = j.claim;
+    if (c && now >= c.expiresAt) {
+      try { rmSync(c.bundle, { force: true }); } catch { /* already gone */ }
+      j.claim = null;
+      j.state = "lapsed";
+      j.result = commandJobLapseResult(j, c, now,
+        `${c.name} held this command job for ${Math.round((now - c.claimedAt) / 1000)}s without a result`);
+      helperLapses = [{ id, repo: j.repo, name: c.name, deviceId: c.deviceId,
+        claimedAt: c.claimedAt, expiredAt: now, covers: 0 },
+        ...helperLapses].slice(0, HELPER_LAPSE_KEEP);
+      audit("helper_claim_expired", j.slot,
+        `${c.name} held the command job ${j.cmd} on ${basename(j.repo)} ${j.branch} for `
+        + `${Math.round((now - c.claimedAt) / 1000)}s without a result — no drain takes it over`);
+      changed = true;
+      continue;
+    }
+    const liveCmd = slots.some((x) => x.id === j.slot && x.openedAt === j.slotOpenedAt && x.cwd);
+    if (!liveCmd && (j.state === "open" || j.state === "claimed")) {
+      if (j.claim) { try { rmSync(j.claim.bundle, { force: true }); } catch { /* already gone */ } }
+      const held = j.claim;
+      j.claim = null;
+      j.state = "reaped";
+      j.result = commandJobLapseResult(j, held, now,
+        "the session that offered this command job is gone — nothing to run it for");
+      audit("helper_claim_expired", j.slot,
+        `the session that offered the command job ${j.cmd} on ${basename(j.repo)} ${j.branch} is gone — offer reaped`);
+      changed = true;
+    }
+  }
   // …and the third kind, in the same sweep for the same reason. A lapsed update goes back to OPEN
   // rather than closing: the row is the owner's standing wish, and a daemon that died mid-update
   // (or a restart that lost the result POST) should find it again on its next poll. The lapse is
@@ -12899,6 +13102,11 @@ function expireHelperClaims(): boolean {
   const settled = [...laneSuiteJobs.values()].filter((j) => j.state !== "open" && j.state !== "claimed");
   for (const j of settled.slice(0, Math.max(0, settled.length - LANE_SUITE_KEEP))) {
     laneSuiteJobs.delete(j.id);
+    changed = true;
+  }
+  const settledCmd = [...commandJobs.values()].filter((j) => j.state !== "open" && j.state !== "claimed");
+  for (const j of settledCmd.slice(0, Math.max(0, settledCmd.length - COMMAND_JOB_KEEP))) {
+    commandJobs.delete(j.id);
     changed = true;
   }
   return changed;
@@ -13030,7 +13238,10 @@ async function gitOut(cwd: string, ...args: string[]): Promise<{ out: string; er
 //     recorded and served, and a verdict that arrives with `untracked > 0` says so.
 //   · The sha is read back OUT OF THE BUNDLE HEADER, the same rule buildHelperBundle states: a
 //     second resolution would be a second moment.
-async function buildLaneSuiteBundle(job: LaneSuiteJob, file: string):
+// The parameter is the PAIR this function actually needs and not a LaneSuiteJob: a `command` job
+// takes its tree the same way and through the same `stash create`, and a second copy of the ten
+// measured steps above is the one thing this file must not grow.
+async function buildLaneSuiteBundle(job: { id: string; cwd: string }, file: string):
   Promise<{ commitSha: string; treeSha: string; untracked: number } | { error: string }> {
   try { mkdirSync(HELPER_BUNDLE_DIR, { recursive: true }); chmodSync(HELPER_BUNDLE_DIR, 0o700); }
   catch (e) { return { error: `could not create the bundle dir: ${e instanceof Error ? e.message : "mkdir failed"}` }; }
@@ -13078,7 +13289,7 @@ async function buildLaneSuiteBundle(job: LaneSuiteJob, file: string):
 // where the verdict goes.
 interface HelperJobView {
   id: string;
-  kind: "audit" | "lane-suite" | "daemon-update";
+  kind: "audit" | "lane-suite" | "daemon-update" | "command";
   repo: string;
   // audit: the integration branch. lane-suite: the LANE's own branch — a preview has no main to
   // speak of, and the card's first line is what tells the human which tree they are about to run.
@@ -13089,7 +13300,13 @@ interface HelperJobView {
   oldestAt: number;
   claim: { name: string; claimedAt: number; expiresAt: number } | null;
   localRunning: boolean;
-  untracked?: number;  // lane-suite only, and only once the tree has been taken (i.e. after a claim)
+  untracked?: number;  // lane-suite and command, and only once the tree has been taken (i.e. after a claim)
+  // THE THREE COMMAND FIELDS, present on `kind:"command"` and on nothing else. They ride the VIEW
+  // and not only the claim because the portal card has to say what a human is about to set running
+  // on their own machine — "a job" is not a thing anybody can consent to.
+  cmd?: string;
+  timeoutMs?: number;
+  artifacts?: string[];   // the GLOBS asked for; the receipt's rows are the answer to them
 }
 // `forDevice` is the asking device's id, when it gave one: a daemon-update is offered to the ONE
 // device it is addressed to and appears in nobody else's list — a browser on the portal page, or
@@ -13142,6 +13359,27 @@ function helperJobsView(forDevice?: string): {
       ...(j.untracked !== null ? { untracked: j.untracked } : {}),
     });
   }
+  // THE S1 HANDSHAKE, and it is a CAPABILITY reading rather than a version comparison: a daemon that
+  // reports `daemonSha` is a daemon that measured its own tree, which is exactly the generation that
+  // branches on `kind`. An older one does not, and would run `cfg.suiteCmd` on a command job —
+  // a green about a command nobody asked for. So a command job is invisible to it, and invisible to
+  // the browser portal too (a human clicking claim has no `cmd` runner either). `forDevice` absent =
+  // no device = no command jobs, which is the fail-closed direction.
+  const cmdCapable = !!(forDevice && helperDevices.get(forDevice)?.daemonSha);
+  for (const j of commandJobs.values()) {
+    if (!cmdCapable) break;
+    if (j.state !== "open" && j.state !== "claimed") continue;
+    const c = commandJobClaimOf(j);
+    if (!c && j.state === "claimed") continue; // lapsed but not yet swept — not offerable
+    jobs.push({
+      id: j.id, kind: "command", repo: basename(j.repo), main: j.branch,
+      branches: [j.branch], covers: 0, oldestAt: j.offeredAt,
+      claim: c ? { name: c.name, claimedAt: c.claimedAt, expiresAt: c.expiresAt } : null,
+      localRunning: false,
+      ...(j.untracked !== null ? { untracked: j.untracked } : {}),
+      cmd: j.cmd, timeoutMs: j.timeoutMs, artifacts: j.artifactGlobs,
+    });
+  }
   // `configured` still answers for the AUDIT queue alone, and the portal's own subline says both
   // halves: a fleet with no audit command can still be offered a lane's preview.
   // Field by field rather than a spread: the row now carries the claimant's deviceId, and that is
@@ -13168,7 +13406,7 @@ function helperJobsView(forDevice?: string): {
 //     bookkeeping lag.
 //   · `repo` is a basename, exactly like on the portal. A git toplevel is a path on this box and
 //     the panel has no use for one.
-interface HelperDeviceClaimView { kind: "audit" | "lane-suite" | "daemon-update"; repo: string; ref: string; expiresAt: number }
+interface HelperDeviceClaimView { kind: "audit" | "lane-suite" | "daemon-update" | "command"; repo: string; ref: string; expiresAt: number }
 interface HelperDeviceView {
   id: string; name: string; lastSeen: number;
   mode?: DeviceMode; load?: number; capabilities?: string[];
@@ -13193,6 +13431,11 @@ function helperDevicesView(): HelperDeviceView[] {
     if (j.state !== "claimed") continue;
     const c = laneSuiteClaimOf(j);
     if (c) push(c.deviceId, { kind: "lane-suite", repo: basename(j.repo), ref: j.branch, expiresAt: c.expiresAt });
+  }
+  for (const j of commandJobs.values()) {
+    if (j.state !== "claimed") continue;
+    const c = commandJobClaimOf(j);
+    if (c) push(c.deviceId, { kind: "command", repo: basename(j.repo), ref: j.branch, expiresAt: c.expiresAt });
   }
   for (const u of helperUpdates.values()) {
     const c = helperUpdateClaimOf(u);
@@ -13269,6 +13512,63 @@ async function claimLaneSuite(j: LaneSuiteJob, deviceId: string): Promise<Respon
     branches: [j.branch], covers: 0,
     claimedAt: now, expiresAt: j.claim.expiresAt, name: j.claim.name } });
 }
+// The command half of the claim. Same bundle build as the preview's — the same `git stash create`,
+// so the tree that runs is the tree the offering session HAS and not the tree it last committed —
+// and one refusal neither of the other kinds has: THE DEVICE MUST HAVE NAMED ITSELF. A daemon
+// without `daemonSha` on its heartbeat predates the `kind` branch and would run `cfg.suiteCmd`
+// instead of `argv`; the job is already invisible in its jobs list, and this is the second lock on
+// the same door (a device may POST a jobId it learned any other way).
+async function claimCommandJob(j: CommandJob, deviceId: string): Promise<Response> {
+  if (j.state === "reaped") return json({ error: "the session that offered this command job is gone — nothing to run it for" }, 404);
+  if (j.state === "reported") return json({ error: "this command job was already reported" }, 404);
+  if (j.state === "lapsed") return json({ error: "this command job lapsed and was not renewed" }, 404);
+  const held = commandJobClaimOf(j);
+  if (held) return json({ error: `already claimed by ${held.name} — it expires ${new Date(held.expiresAt).toISOString()}` }, 409);
+  if (!helperDevices.get(deviceId)?.daemonSha)
+    return json({ error: "this device's heartbeat names no daemonSha — a daemon that does not measure its own tree does not branch on job kind, and would run its configured suite command instead of this job's argv" }, 409);
+  const live = slots.find((x) => x.id === j.slot && x.openedAt === j.slotOpenedAt && x.cwd);
+  if (!live) {
+    j.state = "reaped";
+    j.result = commandJobLapseResult(j, null, Date.now(),
+      "the session that offered this command job is gone — nothing to run it for");
+    await saveStateNow();
+    return json({ error: "the session that offered this command job is gone — nothing to run it for" }, 409);
+  }
+  const file = `${HELPER_BUNDLE_DIR}/${j.id}-${randomBytes(4).toString("hex")}.bundle`;
+  const built = await buildLaneSuiteBundle(j, file);
+  if ("error" in built) {
+    try { rmSync(file, { force: true }); } catch { /* never written */ }
+    return json({ error: built.error }, 500);
+  }
+  // RE-CHECKED after the await, the same way both siblings re-check
+  if (commandJobClaimOf(j) || j.state !== "open") {
+    try { rmSync(file, { force: true }); } catch { /* nothing to clean */ }
+    return json({ error: "the job changed while the bundle was being built — try again" }, 409);
+  }
+  const now = Date.now();
+  j.commitSha = built.commitSha;
+  j.treeSha = built.treeSha;
+  j.untracked = built.untracked;
+  j.state = "claimed";
+  j.claim = { deviceId, name: helperDeviceName(deviceId), claimedAt: now,
+    expiresAt: now + HELPER_CLAIM_TIMEOUT_MS, bundle: file };
+  if (helperDevices.has(deviceId)) setHelperDevice(deviceId, j.claim.name); // touch lastSeen
+  audit("helper_claim", j.slot,
+    `${j.claim.name} claimed the command job ${j.cmd} on ${basename(j.repo)} ${j.branch}`
+    + `@${built.commitSha.slice(0, 8)} tree ${built.treeSha.slice(0, 8)}`
+    + `${built.untracked ? ` (${built.untracked} untracked file(s) NOT included)` : ""}`);
+  await saveStateNow();
+  return json({ job: { id: j.id, kind: "command", repo: basename(j.repo), main: j.branch,
+    mainSha: built.commitSha, treeSha: built.treeSha, untracked: built.untracked,
+    branch: laneSuiteBranch(j.id),
+    branches: [j.branch], covers: 0,
+    // THE THREE FIELDS THE DAEMON RUNS ON. `argv` is served beside `cmd` and is the one it execs:
+    // the split happened at the allowlist, under review, so no parser and no shell exists on the
+    // other machine. A daemon that finds no `argv` must refuse the job as unrunnable rather than
+    // fall back to a string — the two are not the same command.
+    cmd: j.cmd, argv: j.argv, timeoutMs: j.timeoutMs, artifacts: j.artifactGlobs,
+    claimedAt: now, expiresAt: j.claim.expiresAt, name: j.claim.name } });
+}
 // The daemon-update half of the claim. The one refusal the other two kinds do not have: the row
 // is ADDRESSED — a device may only take its own update, because the thing being handed over is
 // "restart yourself from this tree", and that sentence has exactly one valid listener.
@@ -13313,6 +13613,8 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
   // branch is the audit path, byte for byte as it was.
   const lane = laneSuiteJobs.get(jobId);
   if (lane) return await claimLaneSuite(lane, deviceId);
+  const cmdJob = commandJobs.get(jobId);
+  if (cmdJob) return await claimCommandJob(cmdJob, deviceId);
   const upd = helperUpdateById(jobId);
   if (upd) return await claimDaemonUpdate(upd, deviceId);
   const hit = [...auditQueue.entries()].find(([r, q]) => helperJobId(r) === jobId && q.covers.length);
@@ -13411,6 +13713,51 @@ async function reportLaneSuite(j: LaneSuiteJob, body: Record<string, unknown> | 
   await saveStateNow();
   return json({ ok: true, kind: "lane-suite", result, ...(reason ? { reason } : {}) });
 }
+// The command verdict. Same shape and same rules as the preview's — it lands in the JOB, no ledger
+// row, no drain kick — plus the ONE thing this kind adds: THE ARTEFACT ROWS ARE VALIDATED, NEVER
+// TRUSTED. They come off the network from a machine the owner enrolled, and a receipt naming a path
+// outside the clone (an absolute path, a `..`) or a sha that is not a sha would be worse than the
+// absence it replaced: it would be a measurement-shaped claim about a file this rail never handed
+// over. A malformed list is a 400 and NO verdict, deliberately — the claim stays live and the
+// helper can report again, which is the only outcome that does not throw away a real run.
+// An EMPTY list is not malformed and never will be: a `bun run build` that was asked for nothing,
+// and a run whose globs matched nothing, are both legitimate and are separated by `exitCode`.
+async function reportCommandJob(j: CommandJob, body: Record<string, unknown> | null): Promise<Response> {
+  const claim = commandJobClaimOf(j);
+  if (!claim) return json({ error: "no live claim for this command job — it lapsed, was reaped, or was already reported" }, 409);
+  const artifacts = helperArtifactsFrom(body?.artifacts);
+  if (artifacts === null)
+    return json({ error: `artifacts must be at most ${HELPER_ARTIFACT_MAX} rows of {path, sha256, bytes}: a relative path free of "..", a 64-hex digest, and a non-negative integer byte count` }, 400);
+  const rawExit = body?.exitCode;
+  const exitCode = typeof rawExit === "number" && Number.isFinite(rawExit) ? Math.trunc(rawExit) : null;
+  const tail = retainRunOutput(typeof body?.tail === "string" ? body.tail : "", "", HELPER_TAIL_CAP).trim();
+  const fails = helperFailNames(body?.fails) ?? [];
+  const trail = typeof body?.trail === "string" && body.trail.trim() ? body.trail.trim().slice(0, 120) : undefined;
+  const { result, reason } = remoteVerdictOf(exitCode); // the SHARED classifier — one green everywhere
+  const now = Date.now();
+  const clonedSha = typeof body?.clonedSha === "string" && /^[0-9a-f]{40}$/.test(body.clonedSha)
+    ? body.clonedSha : undefined;
+  j.result = {
+    exitCode, result, ...(reason ? { reason } : {}), tail, ...(trail ? { trail } : {}),
+    fails, artifacts,
+    remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now,
+      ...(clonedSha ? { clonedSha } : {}) },
+    treeSha: j.treeSha ?? "", ms: now - claim.claimedAt,
+  };
+  j.state = "reported";
+  j.claim = null;
+  try { rmSync(claim.bundle, { force: true }); } catch { /* the helper has its copy */ }
+  audit("helper_result", j.slot,
+    `${result} command job ${j.cmd} on ${basename(j.repo)} ${j.branch} tree ${(j.treeSha ?? "").slice(0, 8)}`
+    + ` from ${claim.name} (${artifacts.length} artefact(s))`
+    + `${clonedSha ? ` (ran ${clonedSha.slice(0, 8)})` : " (the helper named no clone sha)"}`
+    + `${clonedSha && j.commitSha && clonedSha !== j.commitSha
+        ? ` — THE HELPER RAN ${clonedSha.slice(0, 8)}, NOT THE ${j.commitSha.slice(0, 8)} HANDED OVER` : ""}`
+    + `${trail ? ` [${trail}]` : ""}${reason ? ` — ${reason}` : ""}`.slice(0, 240));
+  await mintCommandJobEvents(j);
+  await saveStateNow();
+  return json({ ok: true, kind: "command", result, ...(reason ? { reason } : {}), artifacts: artifacts.length });
+}
 // The daemon-update result. No ledger row, no verdict classifier: the currency here is "did the
 // link move" (exit 0) or not (anything else, with the daemon's own sentence in the tail), and the
 // proof that a moved link became a running daemon is not this POST at all but the `daemonSha` on
@@ -13451,6 +13798,8 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
   // kickAuditDrain) has run.
   const lane = laneSuiteJobs.get(jobId);
   if (lane) return await reportLaneSuite(lane, body);
+  const cmdJob = commandJobs.get(jobId);
+  if (cmdJob) return await reportCommandJob(cmdJob, body);
   const hit = [...helperClaims.entries()].find(([r, c]) => c.id === jobId && helperClaimOf(r));
   // A LAPSED CLAIM IS REFUSED, deliberately: past the timeout the job belongs to the local drain
   // again, so accepting a late verdict would write a row about a tree this machine may be auditing
@@ -13621,6 +13970,16 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
       return new Response(Bun.file(lc.bundle), {
         headers: { "content-type": "application/octet-stream", "cache-control": "no-store",
           "content-disposition": `attachment; filename="${laneJob.id}-${(laneJob.commitSha ?? "").slice(0, 8)}.bundle"` },
+      });
+    }
+    const cmdJob = commandJobs.get(bundle[1]!);
+    if (cmdJob) {
+      const cc = commandJobClaimOf(cmdJob);
+      if (!cc) return json({ error: "no live claim for this job" }, 409);
+      if (!existsSync(cc.bundle)) return json({ error: "the bundle is gone — let the claim lapse and take it again" }, 410);
+      return new Response(Bun.file(cc.bundle), {
+        headers: { "content-type": "application/octet-stream", "cache-control": "no-store",
+          "content-disposition": `attachment; filename="${cmdJob.id}-${(cmdJob.commitSha ?? "").slice(0, 8)}.bundle"` },
       });
     }
     const upd = helperUpdateById(bundle[1]!);
@@ -18421,6 +18780,16 @@ if (existsSync(STATE_FILE)) {
       for (const j of (persisted as { laneSuiteJobs: LaneSuiteJob[] }).laneSuiteJobs)
         if (j && typeof j.id === "string" && typeof j.slot === "number" && typeof j.slotOpenedAt === "number"
           && typeof j.cwd === "string" && typeof j.state === "string") laneSuiteJobs.set(j.id, j);
+
+    // The command register is restored through the SAME allowlist the self door enforces
+    // (helperCmdCheck): a row whose `cmd` is no longer allowed — the list narrowed while the row sat
+    // on disk — is DROPPED rather than reoffered. That is the one place a state file could otherwise
+    // outlive the perimeter that admitted it.
+    if (Array.isArray((persisted as { commandJobs?: unknown }).commandJobs))
+      for (const j of (persisted as { commandJobs: CommandJob[] }).commandJobs)
+        if (j && typeof j.id === "string" && typeof j.repo === "string" && typeof j.branch === "string"
+          && typeof j.cwd === "string" && typeof j.state === "string"
+          && Array.isArray(j.argv) && helperCmdCheck(j.cmd).ok) commandJobs.set(j.id, j);
     if (Array.isArray((persisted as { helperLapses?: unknown }).helperLapses))
       helperLapses = ((persisted as { helperLapses: HelperLapse[] }).helperLapses)
         .filter((l) => l && typeof l.id === "string" && typeof l.expiredAt === "number").slice(0, HELPER_LAPSE_KEEP);
@@ -21548,6 +21917,77 @@ Bun.serve<WSData>({
       audit("helper_claim", s.id, `offered the preview suite of ${basename(job.repo)} ${job.branch} to the portal`);
       await saveStateNow();
       return json({ offer: laneSuiteView(job), existing: false });
+    }
+
+    // THE COMMAND DOOR — a session hands another machine a TREE AND A COMMAND, and gets a receipt.
+    // NOT lane-only, and the exception is deliberate rather than an oversight: the two lane-only
+    // rules in this family exist because their answer is undefined off a lane (drift, gate) or
+    // because the coupling would be invisible to the owner (watch). Neither applies here. A lane
+    // outsourcing its OWN suite is the case the owner named as wanted, and a main session
+    // outsourcing a build is the same act with a different cwd — both hand over their own tree and
+    // wait for their own receipt, and the portal shows the job on the board either way.
+    //
+    // THE BODY IS THE PERIMETER, and it is three fields wide. `cmd` must be an exact allowlist key
+    // (server/types.ts#helperCmdCheck) and a `cmd` naming an agent harness is refused FIRST and
+    // unconditionally; the tree, the repo, the branch and the slot all come from the token's row and
+    // can never be named by the caller. A refused command therefore leaves NO row: the 400 and the
+    // absence of anything a helper could claim are one fact.
+    if (url.pathname === "/api/self/jobs" && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      const body = await readJson(req);
+      const cmdCheck = helperCmdCheck(body?.cmd);
+      if (!cmdCheck.ok) return json({ error: cmdCheck.error }, 400);
+      const globs = helperArtifactGlobsFrom(body?.artifacts);
+      if (!globs.ok) return json({ error: globs.error }, 400);
+      const rawTimeout = body?.timeoutMs;
+      if (rawTimeout !== undefined && (typeof rawTimeout !== "number" || !Number.isFinite(rawTimeout)
+        || !Number.isInteger(rawTimeout) || rawTimeout < COMMAND_JOB_TIMEOUT_MIN_MS
+        || rawTimeout > COMMAND_JOB_TIMEOUT_MAX_MS))
+        return json({ error: `timeoutMs must be an integer in [${COMMAND_JOB_TIMEOUT_MIN_MS}, ${COMMAND_JOB_TIMEOUT_MAX_MS}]` }, 400);
+      const timeoutMs = typeof rawTimeout === "number" ? rawTimeout : COMMAND_JOB_TIMEOUT_DEFAULT_MS;
+      expireHelperClaims();
+      const mine = [...commandJobs.values()]
+        .filter((j) => j.slot === s.id && j.slotOpenedAt === s.openedAt && (j.state === "open" || j.state === "claimed"));
+      if (mine.length >= COMMAND_JOB_MAX_OPEN_PER_SLOT)
+        return json({ error: `max ${COMMAND_JOB_MAX_OPEN_PER_SLOT} open command jobs per session — read or let the existing ones settle first` }, 409);
+      // the repo is MEASURED from the session's own cwd, never taken from the body. A lane knows its
+      // toplevel already; a main session's is one rev-parse away, and a cwd that is not in a git
+      // checkout has no tree to bundle and says so instead of offering an empty one.
+      const top = s.worktree ? { code: 0, out: s.worktree.repo } : await gitOut(s.cwd!, "rev-parse", "--show-toplevel");
+      if (top.code !== 0 || !top.out)
+        return json({ error: "this session's cwd is not inside a git checkout — there is no tree to hand over" }, 409);
+      const head = await gitOut(s.cwd!, "rev-parse", "--abbrev-ref", "HEAD");
+      const job: CommandJob = {
+        id: randomBytes(6).toString("hex"), slot: s.id, slotOpenedAt: s.openedAt,
+        repo: repoCanon(top.out), cwd: s.cwd!,
+        branch: s.worktree?.branch ?? (head.code === 0 && head.out ? head.out : "HEAD"),
+        cmd: cmdCheck.cmd, argv: cmdCheck.argv, timeoutMs, artifactGlobs: globs.globs,
+        offeredAt: Date.now(), state: "open",
+        commitSha: null, treeSha: null, untracked: null, claim: null, result: null,
+      };
+      commandJobs.set(job.id, job);
+      audit("helper_claim", s.id,
+        `offered the command job ${job.cmd} on ${basename(job.repo)} ${job.branch} to the portal`);
+      await saveStateNow();
+      return json({ jobId: job.id, job: commandJobView(job) });
+    }
+
+    // …and its read half. Bound to the OFFERING session: a job is readable by the slot that made it
+    // and by nobody else on this door, so the receipt cannot be collected by whoever guesses an id.
+    {
+      const m = /^\/api\/self\/jobs\/([0-9a-f]{12})$/.exec(url.pathname);
+      if (m && req.method === "GET") {
+        const given = req.headers.get("x-fleet-self-token") ?? "";
+        const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+        if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+        expireHelperClaims();
+        const job = commandJobs.get(m[1]!);
+        if (!job || job.slot !== s.id || job.slotOpenedAt !== s.openedAt)
+          return json({ error: "no such command job on this session" }, 404);
+        return json({ job: commandJobView(job) });
+      }
     }
 
     // …and the way back out. An OPEN offer withdraws with 200, and that 200 is the lane's permission to

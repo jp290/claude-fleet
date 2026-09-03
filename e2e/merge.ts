@@ -70,10 +70,30 @@ export async function run(lc: LaneCtx): Promise<void> {
   // A concrete merge subscription is accepted only while this exact lane operation is running
   // or while its terminal fact is still persisted. The hang makes the before-completion half
   // deterministic; it later settles as a normal blocked MergeLast.
+  const deployBuildProbe = `${ROOT}/merge-deploy-build-ran`;
+  const deployRestartProbe = `${ROOT}/merge-deploy-restart-ran`;
+  rmSync(deployBuildProbe, { force: true });
+  rmSync(deployRestartProbe, { force: true });
+  await restartSrv({
+    FLEET_DEPLOY_BUILD_CMD: `touch ${deployBuildProbe}`,
+    FLEET_DEPLOY_RESTART_CMD: `touch ${deployRestartProbe}`,
+  });
   await setMergeMode("hang");
   await settleForMerge(lc.lnSlot);
   const mgB = await post(`/api/slots/${lc.lnSlot}/merge`, {});
   check("merge POST starts an async job", ((await mgB.json()) as { running?: boolean }).running === true);
+  const mergeBranch = spawnSync("git", ["-C", lc.lnPath, "branch", "--show-current"]).stdout.toString().trim();
+  const deployViewWhileMerge = (await (await get("/api/deploys")).json()) as { blocked?: string | null };
+  const deployDuringMerge = await post("/api/deploy", {});
+  const deployDuringMergeBody = (await deployDuringMerge.json()) as { ok?: unknown; stage?: string; reason?: string };
+  check("deploy refuses at preflight while the merge/land is running and names the active land",
+    deployDuringMerge.status === 409 && deployDuringMergeBody.ok === false
+      && deployDuringMergeBody.stage === "preflight" && mergeBranch.length > 0
+      && (deployDuringMergeBody.reason ?? "").includes(mergeBranch),
+    `${deployDuringMerge.status} ${JSON.stringify(deployDuringMergeBody)}`);
+  check("GET /api/deploys exposes the same active-land blocker to the operator",
+    mergeBranch.length > 0 && (deployViewWhileMerge.blocked ?? "").includes(mergeBranch),
+    JSON.stringify(deployViewWhileMerge));
   const subBeforeR = await selfMergeWatch(receiverAToken, lc.lnSlot);
   const subBefore = (await subBeforeR.json()) as { watch?: MergeWatchRow; existing?: boolean; error?: string };
   check("merge event: subscription BEFORE completion binds the target slot plus cwd+branch",
@@ -87,6 +107,13 @@ export async function run(lc: LaneCtx): Promise<void> {
       && eventBefore.payload.landed === false
       && (await mergeEvents()).filter((e) => e.watchId === subBefore.watch?.id).length === 1,
     JSON.stringify({ verdict: vB.last, event: eventBefore }));
+  check("deploy refusal is an early no-op: neither build nor restart ran, and the merge reached its normal terminal",
+    !exists(deployBuildProbe) && !exists(deployRestartProbe) && vB.last?.status === "blocked"
+      && vB.last.detail === "fake hang" && (await get("/api/sessions")).ok,
+    JSON.stringify({ build: exists(deployBuildProbe), restart: exists(deployRestartProbe), verdict: vB.last }));
+  const deployViewAfterMerge = (await (await get("/api/deploys")).json()) as { blocked?: string | null };
+  check("the deploy land blocker disappears after the merge reaches its terminal",
+    deployViewAfterMerge.blocked === null, JSON.stringify(deployViewAfterMerge));
   const beforeText = (await plogRead()).filter((p) => p.slot === receiverA
     && p.text.includes(`[event ${eventBefore?.id}]`));
   check("merge event: a negative terminal result is delivered successfully and says landed=NO",
@@ -120,6 +147,9 @@ export async function run(lc: LaneCtx): Promise<void> {
   check("merge event: a replacement occupant cannot acknowledge the old session's event",
     reopenReceiverB.ok && replacedAck?.status === 409,
     `${replacedAck?.status} ${replacedAck ? await replacedAck.text() : "no event"}`);
+  rmSync(deployBuildProbe, { force: true });
+  rmSync(deployRestartProbe, { force: true });
+  await restartSrv();
 
   await setMergeMode("blocked");
   await settleForMerge(lc.lnSlot);

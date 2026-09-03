@@ -20178,15 +20178,24 @@ async function resolveDeployMarker(): Promise<void> {
   if (row.ok !== true) console.log(`deploy ${m.id}: ${row.ok === false ? "FAILED" : "unverified"} — ${row.reason ?? ""}`);
 }
 
-// The precondition, checked by the verb and not by its caller. Only the RUNNER blocks: the queue is
-// a file that is replayed at boot (see the audit queue's own comment), so a waiting audit loses
-// nothing to a restart — a running one loses its measurement and leaves a red behind.
+// The precondition, checked by the verb and not by its caller. A reserved/running land is an
+// in-memory act whose process must survive through its terminal verdict. For audits only the RUNNER
+// blocks: the queue is replayed at boot, so a waiting audit loses nothing to a restart.
 function deployBlocker(): string | null {
+  const activeLands = [...new Set([...mergeStart, ...mergeInflight.keys()])]
+    .sort((a, b) => a - b)
+    .map((id) => {
+      const branch = slotFrom(id)?.worktree?.branch;
+      return branch ? `${branch} (slot ${id})` : `slot ${id}`;
+    });
+  const blockers: string[] = [];
+  if (activeLands.length)
+    blockers.push(`a merge/land is reserved or running on ${activeLands.join(", ")} — restarting srv now would interrupt it before its terminal verdict`);
   if (runningPostLandAudit)
-    return `a post-land audit is running on ${basename(runningPostLandAudit.repo)} — killing srv now would leave a red that measured nothing`;
-  if (auditDraining)
-    return "a post-land audit is starting — killing srv now would leave a red that measured nothing";
-  return null;
+    blockers.push(`a post-land audit is running on ${basename(runningPostLandAudit.repo)} — killing srv now would leave a red that measured nothing`);
+  else if (auditDraining)
+    blockers.push("a post-land audit is starting — killing srv now would leave a red that measured nothing");
+  return blockers.length ? blockers.join("; ") : null;
 }
 
 async function runDeployBuild(): Promise<{ exitCode: number | null; out: string; ms: number }> {

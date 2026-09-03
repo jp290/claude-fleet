@@ -816,6 +816,33 @@ EIN benanntes Kriterium geschlossen. Was bleibt, ist unten in drei Saetzen.
 3. **Audit-Watch `4af1b06e` ist armed** auf `mainAfter a58e9c1`. Kommt er rot, gilt dieselbe
    Beweisordnung wie unten.
 
+### Nachtrag der Nachfolgerin (Slot 2, 2026-09-03 17:5x) — Punkt 3 ist zu, Punkt 2 laeuft neu
+
+- **Punkt 3 GESCHLOSSEN: der Audit auf `a58e9c1` ist GRUEN.** Am Ledger nachgelesen, nicht am
+  Wort „green": `exit 0`, `ms 1 395 654`, Trail `rows=3506`, und er lief **auf dem Helfer
+  second-host** (`cmd: "remote helper (second-host): ./e2e-isolated.sh"`) — der erste Helfer-Job
+  dieses Fleets, der geliefert hat statt zu lapsen.
+- **Punkt 2 musste NEU gestellt werden, und das ist ein Mechanismus-Befund:** die Attention
+  `dddb2141` hat den Owner NIE erreicht. Sie steht als `status: "refused"`,
+  `refusedReason: "requester session ended"`, `closedAt` = der Moment meiner Nachfolge. **Eine
+  Attention stirbt mit der Session, die sie gestellt hat** — die Rail-Reihenfolge „genau eine
+  Attention an der Grenze, dann `succeed`" verliert die Frage also lautlos. Wer an der Grenze
+  fragt, muss auf die Antwort WARTEN oder die Frage in der Nachfolge neu stellen.
+- **Neu gestellt als `cc80f083`** (kind `decision`, `candidateSha a58e9c1`), verengt auf die
+  eine offene Entscheidung: Punkt 1 ist mit `63c77b3` erledigt und steht nicht mehr drin.
+- **Punkt 2 habe ich selbst am Code nachgeprueft, nicht uebernommen** — und das Urteil haelt an
+  vier unabhaengigen Stellen: `clarify-prompt.ts` (Kopfkommentar: „open the lane anyway"),
+  `src/client.ts#qDispatchBody` (schickt `{clarify:true}` an `/api/tasks/:id/dispatch`),
+  `server.ts#dispatchTask` (legt den Worktree an, setzt `sent`, parkt den Slot auf den Owner) und
+  `e2e/tasks.ts` (haelt genau das gruen fest). Der Brief `07c061fa` fuehrt „clarify-first startet
+  keine Lane" woertlich als sein Kriterium **(h)** — der achte Satz des Owners ist ein anderer
+  (Beweis-Paket incl. „Review ohne offene P0/P1"). **Die Klemme, die der Owner entscheidet:**
+  solange die P1-Zeile in `a58e9c1` steht, ist SEIN (h) woertlich unerfuellt.
+- Betriebsstand von mir gemessen: `bundleStale.stale false`, `deployGap.codeBehind false`,
+  `errors null`, keine Suite und kein Audit laufend, mein ctx 13,5 %.
+- **Kein Code mehr noetig.** Bei (A) ist mein einziger Akt ein docs-only Nachtrag in
+  `docs/messungen/2026-09-03-task-workbench-review.md`; bei (B) eine neue Programmzeile.
+
 ## Fallen, die ich in dieser Session BEZAHLT habe (alle mit Beleg)
 
 - **`git diff --stat main..HEAD` in einer Lane liest sich wie Loeschung fremder Arbeit.** Die

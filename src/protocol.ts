@@ -82,6 +82,12 @@ export const DISPOSITION_VERDICTS: DispositionVerdict[] = ["accepted", "edited",
 export interface PostLandAuditInfo {
   at: number; ms?: number; result: string; repo?: string; main?: string;
   mainSha?: string; covers?: string[]; reason?: string;
+  // WHY the other machine measured nothing, in its own account rather than in this server's
+  // classification of an exit code — a closed set on the server (server.ts#helperNoMeasureOf), a
+  // plain string here for the usual reason: a value this client does not know must degrade to
+  // "not recorded", never be mapped onto one it does know. `remoteTimeoutMs` rides with
+  // `remoteReason: "timeout"` alone; both absent on a local row and on every historical one.
+  remoteReason?: string; remoteTimeoutMs?: number;
 }
 
 // --- post-land audit: the run that has NOT finished ---------------------------------------------

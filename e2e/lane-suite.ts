@@ -46,10 +46,18 @@ interface OfferView {
     treeSha?: string; ms?: number;
   } | null;
 }
+interface HelperPresenceView {
+  online: boolean; name: string | null; mode: string | null; lastSeenAgeMs: number | null;
+}
 interface OfferPayload {
   offer: OfferView | null; existing?: boolean; mayRunLocally?: boolean; error?: string;
+  reason?: string;
   waitPolicy?: { freeMs: number; heldMs: number };
   suiteLock?: unknown;
+  // OPTIONAL for the same reason `remote` is above: what is under test is that the server SENDS the
+  // presence reading, and a mandatory field would let a server that stopped sending it take the
+  // module down with a TypeError instead of failing the named check.
+  helper?: HelperPresenceView;
 }
 
 const DEVICE = "lanesuitedev01";     // matches the server's /^[a-z0-9]{8,32}$/
@@ -107,6 +115,13 @@ export async function run(): Promise<void> {
     fetch(BASE + path, { headers: { "x-fleet-self-token": token } });
   const offerOf = async (token: string): Promise<OfferPayload> =>
     await bodyOf<OfferPayload>(await selfGet("/api/self/suite-offer", token));
+  const gateOf = async (token: string): Promise<{ helper?: HelperPresenceView; error?: string }> =>
+    await bodyOf<{ helper?: HelperPresenceView }>(await selfGet("/api/self/gate", token));
+  // ONE heartbeat, sent immediately before an offer is MINTED. The offer door refuses to mint while
+  // nothing is beating (LS.0), and the harness runs with a deliberately short online window
+  // (FLEET_DEVICE_ONLINE_MS in e2e-isolated.sh) so that refusal is observable at all — which means
+  // a beat from earlier in this module is not a standing permission and must not be treated as one.
+  const beat = (): Promise<Response> => hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME });
 
   // the audit ledger, counted in LINES. The main runner boots with no FLEET_POSTLAND_AUDIT_CMD, so
   // the file is typically absent — absent is 0 rows, which is exactly the quantity (LS.5) compares.
@@ -149,6 +164,46 @@ export async function run(): Promise<void> {
       && (await selfPost("/api/self/suite-offer", undefined)).status === 401);
   await post(`/api/slots/${freeSlot}/kill`, {});
 
+  // ===== (LS.0) NO MACHINE, NO OFFER ============================================================
+  // The rulebook tells a lane to hand its preview to the portal "if a helper device is online", and
+  // until this cut a lane could not ask: the register is the OWNER's panel. So a lane in a fleet
+  // where nothing was beating got an open job back and then waited out SUITE_OFFER_WAIT_FREE_MS
+  // (180 s) for a claim that could not arrive. The rule is now answerable in one round trip.
+  //
+  // THE PRECONDITION IS MEASURED, NOT ASSUMED. Another module (e2e/watch.ts) enrols a device
+  // earlier in this run, and the window is short but not zero — so this block first establishes
+  // that nothing is inside it, and if something is, IT fails as itself rather than dressing a
+  // timing accident up as a broken door.
+  const gate0 = await gateOf(laneTok);
+  check("(LS.0) precondition: no helper device is inside the online window at this point in the run",
+    gate0.helper !== undefined && gate0.helper.online === false,
+    `helper=${JSON.stringify(gate0.helper)}`);
+  check("(LS.0) …and the gate carries the presence object itself — a lane can read it without the board",
+    gate0.helper !== undefined && typeof gate0.helper.online === "boolean"
+      && "name" in gate0.helper && "mode" in gate0.helper && "lastSeenAgeMs" in gate0.helper,
+    JSON.stringify(gate0.helper));
+  const t0 = Date.now();
+  const dryRes = await selfPost("/api/self/suite-offer", laneTok);
+  const dry = await bodyOf<OfferPayload>(dryRes);
+  const dryMs = Date.now() - t0;
+  check("(LS.0) THE OFFER IS REFUSED WITH A REASON, not with 180 s of silence — 200, offer:null",
+    dryRes.status === 200 && dry.offer === null && dry.reason === "no helper online" && dryMs < 2000,
+    `${dryRes.status} in ${dryMs}ms ${JSON.stringify(dry).slice(0, 200)}`);
+  check("(LS.0) …and the refusal carries the same presence reading the gate served",
+    dry.helper?.online === false, JSON.stringify(dry.helper));
+  check("(LS.0) …and NOTHING was minted: a refused offer leaves no job on the portal",
+    !(await jobs()).some((j) => j.kind === "lane-suite"),
+    JSON.stringify((await jobs()).map((j) => `${j.kind}:${j.id}`)));
+
+  // …and now a machine beats. The SAME call, the same lane, one heartbeat apart.
+  check("(LS.0) setup: a stand-in device registers and is heard from",
+    (await beat()).ok);
+  const gate1 = await gateOf(laneTok);
+  check("(LS.0) the gate flips to online and NAMES the machine that made it true",
+    gate1.helper?.online === true && gate1.helper.name === DEVICE_NAME
+      && (gate1.helper.lastSeenAgeMs ?? 1e9) < 5000,
+    JSON.stringify(gate1.helper));
+
   const offer1Res = await selfPost("/api/self/suite-offer", laneTok);
   const offer1 = await bodyOf<OfferPayload>(offer1Res);
   check("(LS) the lane offers its preview suite and gets an open job back",
@@ -178,8 +233,6 @@ export async function run(): Promise<void> {
   check("(LS) …and it covers no land and claims no local run — a preview is neither",
     listed?.covers === 0 && listed.localRunning === false && listed.branches.join(",") === ln.branch,
     JSON.stringify({ covers: listed?.covers, localRunning: listed?.localRunning, branches: listed?.branches }));
-
-  await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME });
 
   // ===== (LS.3) THE TREE THAT LEAVES IS THE WORKING TREE ========================================
   // Measured before it was built (design doc §3.1): `git stash create` writes a commit object and
@@ -289,6 +342,7 @@ export async function run(): Promise<void> {
   // otherwise nothing stops the tree being measured twice, which is the invariant the whole portal
   // exists for. So: withdraw returns 200 and that 200 is the permission; afterwards the job is
   // simply not there to claim.
+  await beat(); // the mint gate wants a machine that is beating NOW (LS.0)
   const offer3 = await bodyOf<OfferPayload>(await selfPost("/api/self/suite-offer", laneTok));
   const job3 = offer3.offer?.id ?? "";
   check("(LS) a settled offer does not block a new one — the lane may offer the next tree",
@@ -308,6 +362,7 @@ export async function run(): Promise<void> {
   // …and the other direction: while a machine really is running it, withdrawing is REFUSED, because
   // a 200 there would authorize the second run. Abandoning is the deliberate override (design doc
   // §5.3): a lane must be able to stop waiting on a helper that took the job and went quiet.
+  await beat(); // the mint gate wants a machine that is beating NOW (LS.0)
   const offer4 = await bodyOf<OfferPayload>(await selfPost("/api/self/suite-offer", laneTok));
   const job4 = offer4.offer?.id ?? "";
   const claim4 = await hpost("/api/helper/claim", { jobId: job4, deviceId: DEVICE });
@@ -331,6 +386,7 @@ export async function run(): Promise<void> {
   // land or be killed while the offer sits open. Identity is slot + openedAt, never the bare slot id.
   const gone: Lane = await openLane(REPO, "suitegone");
   const goneTok = await selfTokenOf(gone.slot);
+  await beat(); // the mint gate wants a machine that is beating NOW (LS.0)
   const goneOffer = await bodyOf<OfferPayload>(await selfPost("/api/self/suite-offer", goneTok));
   const goneId = goneOffer.offer?.id ?? "";
   check("(LS) setup: a second lane offers its preview too",

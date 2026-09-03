@@ -210,8 +210,14 @@ const PRE_AUTH_ROUTES = [
   //     VALUE is the argv the helper execs — there is no shell, no quoting and no substitution
   //     anywhere on the path, and adding an entry is a source change under review;
   //   · a `cmd` naming `claude`, `codex` or `pi` as a token is refused FIRST and unconditionally,
-  //     before the allowlist is consulted at all, so widening that list can never open remote
-  //     agent spawn (pinned from the constant itself in e2e/pins.ts §S10);
+  //     before the allowlist is consulted at all, so widening that list leaves the COMMAND STRING
+  //     just as refused (pinned from the constant itself in e2e/pins.ts §S10). That is the whole
+  //     of the claim: the refusal binds what may be NAMED, not what the named thing runs — three
+  //     allowlist entries (`bun run build`, `bun test`, `bun run verify`) execute a `package.json`
+  //     script out of the SUBMITTED bundle, which is the caller's own file (e2e/helper-daemon.ts's
+  //     `cmdjob` lane writes exactly such a script and runs it through). Submitted repo code has
+  //     always been what `suiteCmd` executes on the portal path; nothing here narrows or widens
+  //     that, only the sentence written about it;
   //   · a refusal leaves NO ROW — the 400 and the absence of anything claimable are one fact;
   //   · the tree, repo, branch, cwd and slot all come from the token's own row: nothing in the
   //     body can nominate WHICH tree is bundled, exactly as on the suite-offer door above;

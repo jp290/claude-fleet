@@ -5138,6 +5138,62 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     addrLine.trim() || "HELPER_WAKE_ADDR not found");
 }
 
+// ================================================================================================
+// SECTION S11 — HELPER PRESENCE HAS ONE SOURCE. "Is that machine there?" is answered in three
+// places now — the owner's dot, /api/self/gate, and the door that decides whether a lane's preview
+// offer is minted at all — and before this cut two of them were going to answer it from two
+// different copies of 90_000 (src/client.ts had its own const). A window that drifts does not
+// fail loudly: the board draws a green dot over a machine the offer door has already written off.
+// ================================================================================================
+// WHY A PIN AND NOT A TEST. The two sides are a TypeScript constant and a number that travels
+// through a JSON payload into a DOM string; a compiler sees neither the duplication nor its
+// absence. Pinned on the DECLARATION rather than on the literal, deliberately: `90_000` also
+// appears in src/client.ts as gateAge's formatting threshold, which is a different number that
+// happens to be equal, and a rule that could not tell them apart would be a rule nobody keeps.
+{
+  const RULE_ONLINE = "the helper online window is declared once, in the server, and reaches the client through the projection";
+  const decls = (u: Universe): string[] =>
+    u.files.filter((f) => /const DEVICE_ONLINE_MS\s*=/.test(f.text)).map((f) => f.file);
+  const serverDecls = decls(serverU);
+  const clientDecls = decls(clientU);
+  pin(`${RULE_ONLINE} — exactly one declaration, and it is in the server universe`,
+    serverDecls.length === 1 && serverDecls[0] === "server.ts" && clientDecls.length === 0,
+    `server=[${serverDecls.join(",")}] client=[${clientDecls.join(",")}]`);
+  // …and it is CONFIGURABLE with the measured default kept. A knob whose default drifted would move
+  // production behaviour under a line whose whole justification is the 90 s measurement beside it.
+  const line = /const DEVICE_ONLINE_MS[^\n]*\n/.exec(serverU.module("server.ts"))?.[0] ?? "";
+  pin(`${RULE_ONLINE} — env-tunable with the 90 s default unchanged`,
+    /process\.env\.FLEET_DEVICE_ONLINE_MS/.test(line) && /90_000/.test(line),
+    line.trim() || "DEVICE_ONLINE_MS not found");
+  // THE WIRE. The window and the rows travel TOGETHER — a payload with devices and no window is one
+  // the client cannot judge — and the client reads the served value rather than a fallback of its own.
+  const proj = /\.\.\.\(helperDevices\.size \? \{[^}]*\}/.exec(serverU.module("server.ts"))?.[0] ?? "";
+  pin(`${RULE_ONLINE} — /api/sessions ships helperOnlineMs in the SAME conditional as helperDevices`,
+    /helperDevices:/.test(proj) && /helperOnlineMs: DEVICE_ONLINE_MS/.test(proj),
+    proj.trim().slice(0, 160) || "the helperDevices projection was not found");
+  const clientText = clientU.text;
+  pin(`${RULE_ONLINE} — the client reads the served window and never falls back to a number of its own`,
+    /deviceOnlineMs = data\.helperOnlineMs \?\? null/.test(clientText)
+      && !/helperOnlineMs \?\? \d/.test(clientText),
+    /deviceOnlineMs = data\.helperOnlineMs/.test(clientText) ? "reads the projection" : "no read of data.helperOnlineMs found");
+  // …and the harness ARMS the knob. Same shape as the FLEET_MIGRATE_PCT pin above and the same
+  // reason: with the 90 s production default, e2e/lane-suite.ts's "nothing is beating" precondition
+  // would be a race against how long the nine modules before it happened to take, not a fact.
+  pin(`${RULE_ONLINE} — e2e-isolated.sh arms a short window, or the offline half measures nothing`,
+    /\bFLEET_DEVICE_ONLINE_MS=[1-9]\d*\b/.test(read("e2e-isolated.sh")),
+    /FLEET_DEVICE_ONLINE_MS=(\d+)/.exec(read("e2e-isolated.sh"))?.[1] ?? "not armed");
+  // THE DOOR. The refusal has to stand in front of MINTING and behind the idempotent
+  // existing-offer branch, or a lane loses track of an offer it already made the moment its helper
+  // goes quiet. Order asserted by position, the same shape §S10 uses on the jobs door.
+  const offerDoor = serverU.span('/api/self/suite-offer" && (req.method === "GET"', "laneSuiteJobs.set(job.id, job)")?.text ?? null;
+  pin(`${RULE_ONLINE} — the offer door refuses to MINT while nothing is beating, after the existing-offer branch`,
+    offerDoor !== null && /helperPresence\(\)/.test(offerDoor)
+      && /reason: "no helper online"/.test(offerDoor)
+      && offerDoor.indexOf("existing: true") < offerDoor.indexOf('reason: "no helper online"'),
+    offerDoor === null ? "the suite-offer door was not found in the server universe"
+      : `existing@${offerDoor.indexOf("existing: true")} refusal@${offerDoor.indexOf('reason: "no helper online"')}`);
+}
+
 console.log(rows.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

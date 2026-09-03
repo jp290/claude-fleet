@@ -31,6 +31,19 @@ export function postLandAlarm(a: PostLandAuditInfo | null, ackedAt: number): Pla
   return tone === "red"
     ? { tone, where, headline: "POST-LAND AUDIT FAILED — the full suite is failing on the integration tip",
         note: "This audit gates nothing and nothing was rolled back. ↩ undo-land reverses the newest lands, one press per land, at most 3 deep — and which of them broke it is still yours to find." }
-    : { tone, where, headline: "POST-LAND AUDIT DID NOT MEASURE — no verdict exists for this land",
+    : { tone, where, headline: unknownHeadline(a),
         note: "A measurement that did not happen is not a pass. Nothing about the integration tip has been checked." };
+}
+// "unknown" is true and unactionable — it is the same word for a run that was KILLED at its budget
+// and for one whose binary was missing, and the next step differs completely. The remote daemon is
+// the only party that knows which, so when it says so the headline says it too. The generic line
+// stays the fallback and is never a claim: a row without the field simply did not record one.
+function unknownHeadline(a: PostLandAuditInfo): string {
+  if (a.remoteReason === "timeout") {
+    const s = a.remoteTimeoutMs ? ` after ${Math.round(a.remoteTimeoutMs / 1000)}s` : "";
+    return `POST-LAND AUDIT TIMED OUT${s} — it was killed on the helper, so no verdict exists for this land`;
+  }
+  if (a.remoteReason === "could-not-start")
+    return "POST-LAND AUDIT COULD NOT START — the suite never ran on the helper, so no verdict exists for this land";
+  return "POST-LAND AUDIT DID NOT MEASURE — no verdict exists for this land";
 }

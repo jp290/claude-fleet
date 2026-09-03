@@ -11872,7 +11872,11 @@ interface PostLandAuditRow {
   // a repo under parallel edit was unfalsifiable by construction (2026-08-29, 748ec97 —
   // docs/messungen/2026-08-29-adjudikation-second-host-401.md). Optional and absent when unmeasured:
   // a historical row, or a daemon too old to send it, must never read as "the shas agreed".
-  remote?: { name: string; claimedAt: number; reportedAt: number; trail?: string; clonedSha?: string };
+  // `reason`/`timeoutMs` here are the OTHER machine's account of why it measured nothing — a closed
+  // set, see helperNoMeasureOf. Not to be confused with the row's own `reason` above, which is this
+  // server's classification of the exit code and says nothing about a killed run.
+  remote?: { name: string; claimedAt: number; reportedAt: number; trail?: string; clonedSha?: string;
+    reason?: HelperNoMeasureReason; timeoutMs?: number };
 }
 // the newest row, for the board. In memory for the poll path, but REHYDRATED from the trail at boot
 // (see the boot block): a red audit is typically followed within minutes by the deploy that restarts
@@ -12082,6 +12086,19 @@ const isDeviceMode = (v: unknown): v is DeviceMode =>
 const DEVICE_MODE_DEFAULT: DeviceMode = "active";
 const DEVICE_CAPS_KEEP = 8;        // a capability list is a hint, not an inventory
 const DEVICE_CAP_LEN = 24;
+// ONLINE/OFFLINE IS DERIVED, NEVER STORED — the same reading that makes a claim expire. There is no
+// "offline" event anywhere in this system, only a heartbeat that stopped arriving, and this is the
+// window that separates the two.
+// THE NUMBER LIVES HERE AND NOWHERE ELSE. src/client.ts used to spell its own 90_000, which made
+// "is that machine there?" a question two programs answered separately and could answer
+// differently; the client now reads this value out of the /api/sessions projection, and
+// e2e/pins.ts §S11 pins that there is exactly one source of it.
+// 90 s rather than tight, and it is a POLICY number rather than a constant of nature: it has to
+// cover a whole heartbeat interval plus a backoff plus a suspended laptop lid, and the daemon's
+// interval is its own config on its own machine. An operator whose helper beats every five minutes
+// needs a wider window, and this suite needs a narrower one to observe the transition at all —
+// hence the env knob, with the measured default unchanged.
+const DEVICE_ONLINE_MS = Math.max(1000, Number(process.env.FLEET_DEVICE_ONLINE_MS ?? 90_000) | 0);
 interface HelperDevice {
   id: string; name: string; lastSeen: number;
   mode?: DeviceMode;         // the device's own reading of itself, last heartbeat
@@ -12127,6 +12144,35 @@ function helperClaimCandidateExists(now = Date.now()): boolean {
   }
   return false;
 }
+// THE PRESENCE READING — one sentence about the whole register, for the two doors that have to
+// answer "is there another machine at all?" from INSIDE a session (/api/self/gate and the
+// suite-offer door). Until it existed, a lane could not ask: the register is the OWNER's panel, and
+// a lane that offered its preview into an empty fleet simply waited out SUITE_OFFER_WAIT_FREE_MS.
+//
+// IT NAMES THE FRESHEST DEVICE, and that is not a heuristic: `online` is true iff SOME device is
+// inside the window, and the freshest one is inside it whenever any is — so one row answers both
+// halves, and the name/mode the lane is shown belong to the row that made the answer true.
+//
+// `online` IS THE CLOCK ALONE, exactly as the owner's dot has always drawn it, and `mode` rides
+// BESIDE it rather than being folded in. A machine that is beating but says `quiet` is present and
+// not taking work; collapsing those into one boolean would leave a lane unable to tell "nobody is
+// there" from "somebody is there and resting", and the second is the case where waiting is worth
+// something. This is deliberately NOT helperClaimCandidateExists: that one is the audit grace's
+// stricter reading (owner's wish AND the device's mode AND a tighter clock), and a lane asking
+// "should I even offer?" wants the presence fact plus the mode, not a verdict it cannot inspect.
+interface HelperPresence {
+  online: boolean;
+  name: string | null;          // …of the freshest device, or null when none has ever registered
+  mode: DeviceMode | null;      // its own last reading of itself; null = it never said
+  lastSeenAgeMs: number | null; // null ONLY when there is no device at all — never "we did not look"
+}
+function helperPresence(now = Date.now()): HelperPresence {
+  let freshest: HelperDevice | null = null;
+  for (const d of helperDevices.values()) if (!freshest || d.lastSeen > freshest.lastSeen) freshest = d;
+  if (!freshest) return { online: false, name: null, mode: null, lastSeenAgeMs: null };
+  const age = Math.max(0, now - freshest.lastSeen);
+  return { online: age < DEVICE_ONLINE_MS, name: freshest.name, mode: freshest.mode ?? null, lastSeenAgeMs: age };
+}
 
 // --- THE SECOND JOB KIND: a LANE's preview suite -----------------------------------------------
 // The portal's job list used to be the tier-2 audit queue and nothing else, so the one suite run a
@@ -12170,7 +12216,10 @@ interface LaneSuiteResult {
   // the one sentence a lane report may never write ("./e2e-isolated.sh green", full stop).
   // `clonedSha` belongs to the same half and is the strongest part of it: the sha the helper had
   // checked out, measured there rather than asserted here. Absent when the daemon did not send one.
-  remote: { name: string; claimedAt: number; reportedAt: number; clonedSha?: string };
+  // …and the same two no-measurement fields the audit row carries (helperNoMeasureOf): a preview
+  // that was KILLED at its deadline reads identically to one that sent no code, unless it says so.
+  remote: { name: string; claimedAt: number; reportedAt: number; clonedSha?: string;
+    reason?: HelperNoMeasureReason; timeoutMs?: number };
   treeSha: string;                  // the tree that was handed over — the lane compares its own
   ms: number;
 }
@@ -12242,7 +12291,8 @@ interface CommandJobResult {
   artifacts: CommandJobArtifactPayload[];
   // the same provenance half the lane-suite verdict carries, and non-negotiable for the same
   // reason: the exit code was produced on a machine this server never opened a connection to.
-  remote: { name: string; claimedAt: number; reportedAt: number; clonedSha?: string };
+  remote: { name: string; claimedAt: number; reportedAt: number; clonedSha?: string;
+    reason?: HelperNoMeasureReason; timeoutMs?: number };
   treeSha: string;
   ms: number;
 }
@@ -12738,7 +12788,12 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
 function postLandAuditSummary(): PostLandAuditInfo | null {
   const r = lastPostLandAudit;
   return r ? { at: r.at, ms: r.ms, result: r.result, repo: basename(r.repo), main: r.main,
-    mainSha: r.mainSha, covers: r.covers.map((c) => c.branch), ...(r.reason ? { reason: r.reason } : {}) } : null;
+    mainSha: r.mainSha, covers: r.covers.map((c) => c.branch), ...(r.reason ? { reason: r.reason } : {}),
+    // the other machine's own account of a non-measurement, flattened for the wire. It rides only
+    // when it was actually reported: the board draws "timed out after N s" from these two, and
+    // without them falls back to the honest "no verdict exists".
+    ...(r.remote?.reason ? { remoteReason: r.remote.reason } : {}),
+    ...(r.remote?.timeoutMs ? { remoteTimeoutMs: r.remote.timeoutMs } : {}) } : null;
 }
 // ...and the projection for the run that has NOT finished. Deliberately a SECOND carrier rather
 // than fields bolted onto the one above: `postLandAudit` is the newest RESULT and a reader may keep
@@ -13566,6 +13621,36 @@ function remoteVerdictOf(exitCode: number | null): { result: PostLandAuditRow["r
   if (exitCode === 126 || exitCode === 127) return { result: "unknown", reason: `the audit command could not be started (exit ${exitCode})` };
   return exitCode === 0 ? { result: "green" } : { result: "red" };
 }
+// WHY THE OTHER MACHINE PRODUCED NO EXIT CODE — in a CLOSED set, beside the prose the classifier
+// already writes. The two are different statements and both are needed:
+//   · the row's own `reason` is THIS server's reading of an exit code (remoteVerdictOf). It is the
+//     only thing this box can derive, and for a killed run it derives nothing at all: a timeout
+//     reaches here as `exitCode: null`, byte-identical to a daemon that simply sent no code.
+//   · `remote.reason` is what only the OTHER machine knows. A board line that can say "timeout
+//     after 900 s" instead of "unknown" is the difference between an unactionable non-measurement
+//     and one whose next step (raise the budget, or find what got slow) is obvious.
+// `could-not-start` is NOT taken from the wire: the shared classifier already recognises 126/127,
+// and deriving it here keeps one function deciding what an exit code means. Only `timeout` crosses
+// the network, because only the machine that killed the run can report it.
+// A VALUE THIS SERVER CANNOT READ IS DROPPED, not refused. The alternative — 400 on an unknown
+// code — would make a NEWER daemon's whole verdict hostage to an annotation, and the daemon is the
+// side that updates first on this rail (a daemon-update job lands long before a deploy here).
+// Absent reads as "the machine did not say", which is exactly what an unreadable value means.
+type HelperNoMeasureReason = "timeout" | "could-not-start";
+const HELPER_NO_MEASURE_REASONS: readonly HelperNoMeasureReason[] = ["timeout", "could-not-start"];
+interface HelperNoMeasure { reason?: HelperNoMeasureReason; timeoutMs?: number }
+function helperNoMeasureOf(body: Record<string, unknown> | null, exitCode: number | null): HelperNoMeasure {
+  const raw = body?.reason;
+  if (typeof raw === "string" && (HELPER_NO_MEASURE_REASONS as readonly string[]).includes(raw)) {
+    const reason = raw as HelperNoMeasureReason;
+    const ms = body?.timeoutMs;
+    // the budget rides only with the reason it explains, and only when it is a real one: a
+    // "timeout after 0 s" on the board would be a number nobody can act on.
+    return reason === "timeout" && typeof ms === "number" && Number.isInteger(ms) && ms > 0
+      ? { reason, timeoutMs: ms } : { reason };
+  }
+  return exitCode === 126 || exitCode === 127 ? { reason: "could-not-start" } : {};
+}
 // The lane-suite verdict. It lands in the JOB and nowhere else — no ledger, no duration sample, no
 // drain kick — and it keeps the provenance the audit row keeps, for the same reason (§6 of the
 // design doc): the exit code and the tail were TYPED IN by a human on another machine, so a verdict
@@ -13594,7 +13679,7 @@ async function reportLaneSuite(j: LaneSuiteJob, body: Record<string, unknown> | 
     exitCode, result, ...(reason ? { reason } : {}), tail, ...(trail ? { trail } : {}),
     checks: measured ? postLandAuditChecks(tail, exitCode as number, fails) : null,
     remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now,
-      ...(clonedSha ? { clonedSha } : {}) },
+      ...(clonedSha ? { clonedSha } : {}), ...helperNoMeasureOf(body, exitCode) },
     treeSha: j.treeSha ?? "", ms: now - claim.claimedAt,
   };
   j.state = "reported";
@@ -13637,7 +13722,7 @@ async function reportCommandJob(j: CommandJob, body: Record<string, unknown> | n
     exitCode, result, ...(reason ? { reason } : {}), tail, ...(trail ? { trail } : {}),
     fails, artifacts,
     remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now,
-      ...(clonedSha ? { clonedSha } : {}) },
+      ...(clonedSha ? { clonedSha } : {}), ...helperNoMeasureOf(body, exitCode) },
     treeSha: j.treeSha ?? "", ms: now - claim.claimedAt,
   };
   j.state = "reported";
@@ -13727,7 +13812,7 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
     checks: measured ? postLandAuditChecks(tail, exitCode as number, fails) : null,
     covers: claim.covers,
     remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now, ...(trail ? { trail } : {}),
-      ...(clonedSha ? { clonedSha } : {}) },
+      ...(clonedSha ? { clonedSha } : {}), ...helperNoMeasureOf(body, exitCode) },
   };
   lastPostLandAudit = row;
   recordAuditDuration(row); // a no-op for a remote row by contract — see auditCounts
@@ -21717,6 +21802,11 @@ Bun.serve<WSData>({
         // the machine-busy fact (autonomy verbs, Verb 1): the suite mutex is the one wait a lane's verify
         // actually hangs on. null = free; states mirror e2e-stage.sh exactly (held/overdue/stale/parked).
         suiteLock: suiteLockView(),
+        // IS THERE ANOTHER MACHINE? The one fact that decides whether offering the preview suite is
+        // a shortcut or a 180 s detour, and until now it was visible only on the owner's board. The
+        // same object the suite-offer door answers with, from the same reading — a lane must not be
+        // able to see "online" here and be refused there in the same second.
+        helper: helperPresence(),
         localProof: await laneLocalProof(s),
       });
     }
@@ -21770,12 +21860,30 @@ Bun.serve<WSData>({
           offer: last ? laneSuiteView(last) : null,
           waitPolicy: { freeMs: SUITE_OFFER_WAIT_FREE_MS, heldMs: SUITE_OFFER_WAIT_HELD_MS },
           suiteLock: suiteLockView(),
+          helper: helperPresence(), // …and WHO could take it, same reading as /api/self/gate's
         });
       }
       // ONE OPEN OFFER PER SLOT. A second POST returns the first with `existing: true` rather than
       // minting a rival — the same idempotent shape createWatchForSlot uses, and for the same
       // reason: a caller that retries must not end up holding two of anything.
-      if (existing) return json({ offer: laneSuiteView(existing), existing: true });
+      if (existing) return json({ offer: laneSuiteView(existing), existing: true, helper: helperPresence() });
+      // NO OFFER WITHOUT A MACHINE THAT COULD TAKE IT. Before this, a lane in a fleet where nothing
+      // was beating still got an open job back and then waited SUITE_OFFER_WAIT_FREE_MS (180 s) for
+      // a claim that could not arrive — pure delay on the lane's own preview, and invisible from
+      // inside, because the register is the owner's panel. The rulebook's rule ("offer it IF a
+      // helper device is online") is now answerable in ONE round trip: `offer: null` with a reason.
+      // 200, not an error: nothing went wrong, and a 4xx would send a lane looking for a fault.
+      // ORDER MATTERS. The existing-offer branch above runs FIRST and unconditionally — a lane must
+      // always be able to find its own open offer again, and a helper going quiet after the offer
+      // was minted does not un-mint it. This gate stands in front of MINTING and nothing else.
+      // And it is presence, not claimability: a device that is beating but `quiet` still gets the
+      // offer, because `quiet` is a state its next heartbeat can leave. `helper.mode` rides in the
+      // answer so the lane can read that for itself rather than be judged by a boolean.
+      const presence = helperPresence();
+      if (!presence.online)
+        return json({ offer: null, reason: "no helper online", helper: presence,
+          waitPolicy: { freeMs: SUITE_OFFER_WAIT_FREE_MS, heldMs: SUITE_OFFER_WAIT_HELD_MS },
+          suiteLock: suiteLockView() });
       const job: LaneSuiteJob = {
         id: randomBytes(6).toString("hex"), slot: s.id, slotOpenedAt: s.openedAt,
         repo: s.worktree.repo, cwd: s.cwd!, branch: s.worktree.branch, offeredAt: Date.now(),
@@ -21784,7 +21892,7 @@ Bun.serve<WSData>({
       laneSuiteJobs.set(job.id, job);
       audit("helper_claim", s.id, `offered the preview suite of ${basename(job.repo)} ${job.branch} to the portal`);
       await saveStateNow();
-      return json({ offer: laneSuiteView(job), existing: false });
+      return json({ offer: laneSuiteView(job), existing: false, helper: presence });
     }
 
     // THE COMMAND DOOR — a session hands another machine a TREE AND A COMMAND, and gets a receipt.
@@ -22189,7 +22297,11 @@ Bun.serve<WSData>({
         // the helper device register — the owner's ONLY view of the machines that take work off this box.
         // OMITTED WHEN EMPTY, for the same budget reason as attentionOpen; rides this poll because the panel
         // is drawn beside the gate line. Row sizes MEASURED, ceiling HELPER_DEVICE_KEEP: server-narrativ-archiv.md#fetch-get-apisessions
-        ...(helperDevices.size ? { helperDevices: helperDevicesView() } : {}),
+        // `helperOnlineMs` rides WITH the register and only with it: it is the window the client
+        // draws its online/offline dot against, and the client no longer carries a copy of the
+        // number (see DEVICE_ONLINE_MS). A payload with rows and no window would be a payload the
+        // client cannot judge — they travel together or not at all.
+        ...(helperDevices.size ? { helperDevices: helperDevicesView(), helperOnlineMs: DEVICE_ONLINE_MS } : {}),
         // what this server has thrown since it booted — null while nothing has, so an untroubled
         // fleet pays ~14 bytes for it. Sight only: nothing here retries, suppresses or heals
         // anything. The rows are behind GET /api/errors (see THE ERROR CHANNEL).

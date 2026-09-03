@@ -63,7 +63,12 @@ interface Row {
   at: number; ms: number; repo: string; main: string; mainSha: string; result: string; reason?: string;
   cmd: string; exitCode: number | null; out: string; checks?: { ran: number; failed: number } | null;
   covers: { branch: string; mainAfter: string }[];
-  remote?: { name: string; claimedAt: number; reportedAt: number; trail?: string; clonedSha?: string };
+  remote?: { name: string; claimedAt: number; reportedAt: number; trail?: string; clonedSha?: string;
+    // the other machine's own account of a NON-measurement. Optional and typed as a plain string
+    // for the same reason every other remote field here is: what is under test is that the server
+    // writes it, and a mandatory field would let a server that stopped writing it take this module
+    // down with a TypeError instead of failing the named check.
+    reason?: string; timeoutMs?: number };
 }
 interface LiveView {
   postLandAuditLive: { running: { repo: string | null; phase: string } | null } | null;
@@ -544,6 +549,59 @@ export async function run(h: {
     graceReport.ok && graceRows.filter((r) => r.mainSha === graceSha).length === 1
       && graceRows.find((r) => r.mainSha === graceSha)?.remote?.name === DEVICE_NAME,
     `${graceReport.status} ${JSON.stringify(graceRows.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`))}`);
+
+  // ===== (K7b) A NON-MEASUREMENT SAYS WHICH ONE IT WAS ==========================================
+  // `exitCode: null` reaches this server identically whether the run was KILLED at its budget or
+  // simply produced no code, and the shared classifier turns both into the same `unknown` with the
+  // same prose. That word is true and unactionable: "raise the budget" and "find out why nothing
+  // started" are different next steps. Only the machine that killed the run knows which, so it now
+  // says so — and the verdict's own semantics are UNCHANGED, which is the half this block pins
+  // hardest: still `unknown`, still `checks: null`, still never a red.
+  const rowsBeforeTo = (await newRepoRows()).length;
+  const toLane = await openLane(REPO, "timedout");
+  await driveMerge(toLane, toLane.branch);
+  const toSha = headOf();
+  await Bun.sleep(2500); // inside the grace, so the job is the helper's to claim
+  const toJob = await jobFor(REPO);
+  const toClaim = toJob ? await hpost("/api/helper/claim", { jobId: toJob.id, deviceId: DEVICE }) : null;
+  check("(K7b) setup: the helper claims the job it is about to time out on",
+    toClaim?.ok === true, `${toClaim?.status} ${JSON.stringify(toJob)}`);
+  const TO_MS = 900_000;
+  const toReport = await hpost("/api/helper/result",
+    { jobId: toJob?.id ?? "", exitCode: null, reason: "timeout", timeoutMs: TO_MS,
+      tail: "the suite passed 900s and was killed here" });
+  const toRows = await waitNewRepoRows(rowsBeforeTo + 1);
+  const toRow = toRows.find((r) => r.mainSha === toSha);
+  check("(K7b) A TIMED-OUT RUN IS STILL `unknown` WITH `checks: null` — the verdict did not move",
+    toReport.ok && !!toRow && toRow.result === "unknown" && toRow.checks === null && toRow.exitCode === null,
+    `${toReport.status} ${JSON.stringify(toRow).slice(0, 240)}`);
+  check("(K7b) …and the row now NAMES the timeout and the budget it was killed at",
+    toRow?.remote?.reason === "timeout" && toRow.remote.timeoutMs === TO_MS,
+    JSON.stringify(toRow?.remote));
+
+  // …and the OTHER non-measurement, which is derived HERE rather than taken off the wire: 126/127
+  // is already what the shared classifier calls "could not be started", and one function deciding
+  // what an exit code means beats a second opinion travelling beside it. The bogus `reason` in the
+  // same body is the second half of the check: a code this server cannot read is DROPPED, never a
+  // 400 — refusing would make a newer daemon's whole verdict hostage to an annotation.
+  const rowsBeforeCns = (await newRepoRows()).length;
+  const cnsLane = await openLane(REPO, "nostart");
+  await driveMerge(cnsLane, cnsLane.branch);
+  const cnsSha = headOf();
+  await Bun.sleep(2500);
+  const cnsJob = await jobFor(REPO);
+  const cnsClaim = cnsJob ? await hpost("/api/helper/claim", { jobId: cnsJob.id, deviceId: DEVICE }) : null;
+  check("(K7b) setup: the helper claims the job whose command never started",
+    cnsClaim?.ok === true, `${cnsClaim?.status} ${JSON.stringify(cnsJob)}`);
+  const cnsReport = await hpost("/api/helper/result",
+    { jobId: cnsJob?.id ?? "", exitCode: 127, reason: "flurb", timeoutMs: 5,
+      tail: "bun install --frozen-lockfile failed (exit 127)" });
+  const cnsRows = await waitNewRepoRows(rowsBeforeCns + 1);
+  const cnsRow = cnsRows.find((r) => r.mainSha === cnsSha);
+  check("(K7b) exit 127 is classified `could-not-start` BY THIS SERVER, and an unreadable reason is dropped",
+    cnsReport.ok && cnsRow?.result === "unknown" && cnsRow.remote?.reason === "could-not-start"
+      && cnsRow.remote.timeoutMs === undefined,
+    `${cnsReport.status} ${JSON.stringify(cnsRow?.remote)} result=${cnsRow?.result}`);
 
   // (2) THE GRACE NEVER STARVES. Nobody claims this one, and NOTHING ELSE would ever wake the
   // drain: the land's own kick already happened, and the only other kicks in the server are a claim

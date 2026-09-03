@@ -951,7 +951,7 @@ export async function run(): Promise<void> {
     // around it stays regex-asserted — no DOM harness here — and the ON-path server behaviour
     // lives in ./e2e-postland-audit.sh.
     type PlaAudit = { at: number; result: string; repo: string; main: string; mainSha: string;
-      covers: string[]; reason?: string };
+      covers: string[]; reason?: string; remoteReason?: string; remoteTimeoutMs?: number };
     type PlaAlarm = { tone: string; headline: string; where: string; note: string } | null;
     // what is asserted about client.ts is that it SHIPS the module under test — a classifier
     // re-inlined there would leave every alarm check below measuring code the bundle never runs
@@ -978,6 +978,21 @@ export async function run(): Promise<void> {
     check("alarm: an UNKNOWN audit is its own tone and carries the reason (a non-measurement, not a defect)",
       plaUnk?.tone === "unknown" && plaUnk.where.includes("timed out")
       && !/\bred\b/i.test(plaUnk.headline), JSON.stringify(plaUnk));
+    // …and WHICH non-measurement it was, when the other machine could say. "unknown" is true and
+    // unactionable — it is the same word for a run killed at its budget and for one whose command
+    // never started, and the next step differs completely. The verdict does NOT move: still the
+    // unknown tone, never red, and the generic line stays the fallback for a row that recorded
+    // nothing rather than becoming a guess.
+    const plaTo = plaCall(plaRow({ result: "unknown", remoteReason: "timeout", remoteTimeoutMs: 900_000 }));
+    check("alarm: a TIMED-OUT remote audit names the timeout and its budget, and is still not red",
+      plaTo?.tone === "unknown" && /timed out/i.test(plaTo.headline) && plaTo.headline.includes("900s")
+      && !/\bred\b/i.test(plaTo.headline), JSON.stringify(plaTo));
+    const plaCns = plaCall(plaRow({ result: "unknown", remoteReason: "could-not-start" }));
+    const plaBare = plaCall(plaRow({ result: "unknown" }));
+    check("alarm: could-not-start says so, and a row that recorded NO reason keeps the generic line",
+      /could not start/i.test(plaCns?.headline ?? "") && plaCns?.tone === "unknown"
+      && /DID NOT MEASURE/.test(plaBare?.headline ?? ""),
+      `${JSON.stringify(plaCns?.headline)} | ${JSON.stringify(plaBare?.headline)}`);
     // the ack is keyed to ONE audit's `at`. A sticky "dismissed" flag would swallow the next alarm.
     check("alarm: acknowledging THIS audit silences it — and only it",
       plaCall(plaRow({}), 1000) === null && plaCall(plaRow({ at: 2000 }), 1000)?.tone === "red",

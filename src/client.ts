@@ -1588,20 +1588,19 @@ interface HelperDeviceInfo {
   lastWakeAt?: number; wakeConfigured?: boolean;
 }
 // ONLINE/OFFLINE IS DERIVED, NEVER STORED — the same reading that makes a claim expire: there is no
-// "offline" event anywhere in this system, only a heartbeat that stopped arriving. This is the
-// threshold, and 90 s is chosen rather than tight:
-//   · nothing beats on a fixed tick TODAY. The portal page polls the JOB LIST every 10 s
-//     (src/helper.ts) and that read touches nothing; only a device POST and a claim move `lastSeen`
-//     (server.ts#setHelperDevice). The S3 daemon is what will beat, and its interval is not fixed
-//     yet — so a 30 s window would turn one slow beat, one backoff or one suspended laptop lid into
-//     a false "offline" before that number even exists.
-//   · it is short enough that a machine switched off is grey within a minute and a half, which is
-//     the question this dot exists to answer ("can I hand it work right now").
+// "offline" event anywhere in this system, only a heartbeat that stopped arriving.
+// THE WINDOW IS THE SERVER'S AND IS READ, NEVER SPELLED. This file used to carry its own module
+// constant holding the same 90-second figure, and the server answered the same question from a
+// second copy of it as soon as /api/self/gate learned to — two programs deciding "is that machine
+// there?" separately is exactly the drift the projection exists to prevent. It now arrives beside
+// the register (server.ts#DEVICE_ONLINE_MS), and e2e/pins.ts §S11 pins the single source: that pin
+// counts DECLARATIONS, so this paragraph deliberately names the old constant nowhere.
+// `null` = the server sent rows without a window, which only an OLDER server does. That is not
+// "offline" and is not "online": the dot says the window was not served and prints the age anyway,
+// because the age is a measurement and the verdict would be an invention.
 // The age is ALWAYS printed next to the word, so "offline" is never a bare claim: it says how long
-// ago the last beat was and lets the owner judge the gap themselves. Consequence of the paragraph
-// above, stated rather than discovered: before the S3 daemon exists, a device that registered once
-// and went quiet reads offline here after 90 s — which is correct, because nothing is beating.
-const DEVICE_ONLINE_MS = 90_000;
+// ago the last beat was and lets the owner judge the gap themselves.
+let deviceOnlineMs: number | null = null;
 // The closed set the owner can wish for. It is the server's `DEVICE_MODES` (server.ts) spelled a
 // second time — deliberately not pinned: the server validates the value and refuses anything else
 // with a 400 the button surfaces, so a drift here is a loud button, not a silent wrong state.
@@ -1625,12 +1624,15 @@ function deviceCard(d: HelperDeviceInfo): HTMLElement {
   const box = el("div", "bdev");
   box.appendChild(el("div", "bidhead", d.name));
   const age = Math.max(0, Date.now() - d.lastSeen);
-  const online = age < DEVICE_ONLINE_MS;
+  const online = deviceOnlineMs === null ? null : age < deviceOnlineMs;
   const state = el("div", "bstate");
-  const dot = el("span", online ? "ready" : "", online ? "● online" : "○ offline");
-  dot.title = online
-    ? `Its last heartbeat is ${gateAge(age)} old — younger than the ${Math.round(DEVICE_ONLINE_MS / 1000)}s window. Derived from lastSeen; nothing here pings the machine.`
-    : `Nothing has been heard from it for ${gateAge(age)} (window: ${Math.round(DEVICE_ONLINE_MS / 1000)}s). That is a silence, not a report — the machine may be off, asleep, or simply not running the daemon.`;
+  const dot = el("span", online ? "ready" : "",
+    online === null ? "○ heartbeat window not served" : online ? "● online" : "○ offline");
+  dot.title = online === null
+    ? `This server sent the register without its online window, so nothing here can say whether ${gateAge(age)} is inside it. The age is measured; the verdict is not invented.`
+    : online
+      ? `Its last heartbeat is ${gateAge(age)} old — younger than the ${Math.round(deviceOnlineMs! / 1000)}s window. Derived from lastSeen; nothing here pings the machine.`
+      : `Nothing has been heard from it for ${gateAge(age)} (window: ${Math.round(deviceOnlineMs! / 1000)}s). That is a silence, not a report — the machine may be off, asleep, or simply not running the daemon.`;
   state.appendChild(dot);
   // the device's OWN reading of itself, and absent means it never said — not "active"
   state.appendChild(document.createTextNode(
@@ -1756,8 +1758,11 @@ const devIsOpen = (): boolean => devdlg.style.display === "flex";
 // owner's eye: the claim is still the helper's until it expires, so this box is not auditing that
 // tree and the other one may or may not be. It is a LOOKING GLASS like the ops inbox — nothing
 // here reaps, requeues or fails anything; the claim's own deadline does that, on its own clock.
+// …and with no window served there is no such thing as "not beating": the list is empty rather
+// than guessed, so the ⚠ badge can never be raised on a threshold this client made up.
 const devStale = (): HelperDeviceInfo[] =>
-  helperDevicesInfo.filter((d) => Date.now() - d.lastSeen >= DEVICE_ONLINE_MS && (d.claims?.length ?? 0) > 0);
+  deviceOnlineMs === null ? []
+    : helperDevicesInfo.filter((d) => Date.now() - d.lastSeen >= deviceOnlineMs! && (d.claims?.length ?? 0) > 0);
 function renderDevBtn() {
   const n = helperDevicesInfo.length;
   const m = devStale().length;
@@ -5241,6 +5246,8 @@ async function refresh() {
       // omitted by the server when the register is empty — absent means "no device has ever
       // registered", never "the server does not know about devices"
       helperDevices?: HelperDeviceInfo[];
+      // the window those rows are judged against, and it rides with them — see deviceOnlineMs
+      helperOnlineMs?: number;
       attentionOpen?: number;
       events?: FleetEventRow[];
       deployGap?: DeployGapInfo | null; bundleStale?: BundleStaleInfo | null };
@@ -5279,6 +5286,9 @@ async function refresh() {
     // device dialog are painted from here instead — they have no timer of their own, and a badge
     // that only moved when the board happened to repaint would be a stale count.
     helperDevicesInfo = data.helperDevices ?? [];
+    // the window travels WITH the rows (server.ts, the /api/sessions projection). Absent rows means
+    // absent window, and the reset to null is the honest state — not the last window we happened to see.
+    deviceOnlineMs = data.helperOnlineMs ?? null;
     renderDevBtn();
     if (devIsOpen()) renderDevDlg();
     // the attention inbox's whole share of the 2s poll: one number. It paints the badge, and while

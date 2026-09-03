@@ -464,9 +464,13 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
       : [];
     // A TIMEOUT REPORTS NO EXIT CODE AT ALL. The server reads a missing code as `unknown` with a
     // reason, which is what a killed run is — never a red, and never a silent green.
+    // …and the BUDGET travels with it as a field, not only inside the note. `exitCode: null` reaches
+    // the server identically whether a run was killed here or simply produced no code, and the
+    // server cannot tell them apart — only this process can. Without the field the board's only
+    // honest word is "unknown", which is true and says nothing about what to do next.
     await report(cfg, j, ran.timedOut ? null : ran.code,
       ran.timedOut ? `the ${isCommand ? "command" : "suite"} passed ${Math.round(timeoutMs / 1000)}s and was killed here` : "",
-      logPath, clonedSha, artifacts);
+      logPath, clonedSha, artifacts, ran.timedOut ? timeoutMs : undefined);
   } finally {
     suiteBusy = false;
     try { rmSync(clone, { recursive: true, force: true }); } catch { /* the verdict is already sent */ }
@@ -475,8 +479,14 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
   }
 }
 
+// `timedOutMs` is the ONE fact about a non-measurement that only this machine holds: the budget the
+// run was killed at. Present ⇒ `reason: "timeout"` on the wire. The OTHER non-measurement,
+// "could not be started", is deliberately NOT sent — 126/127 is already read by the server's shared
+// classifier (server.ts#remoteVerdictOf), and one function deciding what an exit code means is
+// worth more than a second opinion travelling beside it.
 async function report(cfg: HelperConfig, j: ClaimedJob, exitCode: number | null, note: string,
-  logPath?: string, clonedSha?: string, artifacts: ArtifactRow[] = []): Promise<void> {
+  logPath?: string, clonedSha?: string, artifacts: ArtifactRow[] = [],
+  timedOutMs?: number): Promise<void> {
   const size = logPath && existsSync(logPath) ? statSync(logPath).size : 0;
   const head = logPath ? await readSlice(logPath, 0, Math.min(size, 65_536)) : "";
   const end = logPath ? await readSlice(logPath, Math.max(0, size - 65_536), size) : "";
@@ -490,8 +500,11 @@ async function report(cfg: HelperConfig, j: ClaimedJob, exitCode: number | null,
     // one would be a claim this daemon is not in a position to make.
     // `artifacts` is SPREAD like `clonedSha`: a report from a kind that has none carries no such key
     // at all, so the two older job kinds' bodies are byte-identical to what they were.
+    // `reason`/`timeoutMs` are SPREAD like `clonedSha` and `artifacts`: a report that did not time
+    // out carries no such keys, so every body this daemon sent before is byte-identical.
     body: JSON.stringify({ jobId: j.id, exitCode, tail, fails, ...(trail ? { trail } : {}),
-      ...(clonedSha ? { clonedSha } : {}), ...(artifacts.length ? { artifacts } : {}) }),
+      ...(clonedSha ? { clonedSha } : {}), ...(artifacts.length ? { artifacts } : {}),
+      ...(timedOutMs ? { reason: "timeout", timeoutMs: timedOutMs } : {}) }),
   });
   const body = await bodyOf<{ result?: string }>(res);
   log(`reported ${j.id} exit=${exitCode} artifacts=${artifacts.length} → ${res.status} ${body.result ?? body.error ?? ""}`);

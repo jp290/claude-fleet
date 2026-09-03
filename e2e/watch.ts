@@ -3486,7 +3486,10 @@ export async function run(): Promise<void> {
       `${unknownJob.status} ${unknownJobText}`);
 
     const badCmd = await selfPost(aTok, "/api/self/jobs", { cmd: "codex exec" });
-    check("job door: a cmd naming an agent harness is refused 400, whatever the allowlist holds",
+    // The refusal binds the COMMAND STRING and nothing further: an allowlisted `bun run build`
+    // still runs the submitted bundle's own `package.json` script. This check measures the string
+    // door, which is the only thing it can measure.
+    check("job door: a cmd naming an agent harness is refused 400 before the allowlist is consulted",
       badCmd.status === 400 && (await badCmd.text()).includes("codex"), `${badCmd.status}`);
     const madeR = await selfPost(aTok, "/api/self/jobs",
       { cmd: "bun run build", artifacts: ["dist/*.js"] });

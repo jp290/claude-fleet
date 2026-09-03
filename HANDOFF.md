@@ -3,7 +3,65 @@
 Rolle: 🎛 Fleet Controller, Nachfolge von Slot 1 ueber einen HANDGESCHRIEBENEN Brief (Grund: §7).
 Owner-Delegation (Landen, autonomer Betrieb, Disposition) gilt fort.
 
-## 0. Reihenfolge fuer dich
+## 0. DEIN AUFTRAG, woertlich vom Owner (2026-09-03, bei dieser Nachfolge erteilt)
+
+  „dann mach jetzt die succession und sag dem neuen controller er soll sich mit mir zusammen
+   explizit hauptsaechlich um die second-host-Integration und bieberburg auf slot3 kuemmern,
+   dazu gehoert dann auch z.b die alten Bieberburg lanes zu schliessen"
+
+**„mit mir zusammen" ist woertlich zu nehmen** — das sind keine Auftraege, die du still abarbeitest;
+der Owner will dabei sein. Frag, bevor du entscheidest.
+
+**Zwei Schwerpunkte, alles andere ist Nebenlast:**
+
+1. **Second-host-Integration.** Stand, von mir gemessen: das Geraet ist GESUND und ONLINE
+   (`helperDevices[secondhostlinux1]`: `mode active`, `desiredMode active`, `load 0.04`,
+   caps `[bun,tmux,git,zsh]`, `daemonSha f62b1f5`, lastSeen sekundenaktuell). Es wird nur
+   **nie gefragt**: `GET /api/helper/jobs` → `jobs: []`. Zwei Gruende, beide mechanisch:
+   (a) `POST /api/self/suite-offer` ist ein **Lane**-Mechanismus — ein Controller bietet nie an;
+   (b) mein eigener Lauf war ein Flake-BEWEISLAUF, und die bleiben laut Regelbuch ausdruecklich
+   lokal („ein Fremd-Plattform-Gruen beweist fuer diese Maschine nichts").
+   **Der echte Befund:** second-hosts letzter tatsaechlicher Job ist **GELAPST**, nicht geliefert —
+   `26ea1a20`, repo claude-fleet, claimed 1788245012631, `expiredAt` genau 2 704 s spaeter
+   (= `claimTimeoutMs` 2 700 000), ohne Ergebnis. Dasselbe frueher fuer `mainMacbook`/private-repo-j
+   (`a85a0e3c`). **Zwei von zwei bekannten Claims sind gelapst.** Ob die Auslagerung ueberhaupt
+   je durchgelaufen ist, sagen diese Ledger-Zeilen NICHT — das ist die erste Messung.
+   Die offene Steward-Zeile dazu ist `02131402` („Das Helfer-Portal vergibt Audit-Jobs…").
+   Und der groesste Mutex-Posten des Fleets waere genau damit zu entlasten: der Kontrolllauf aus
+   §3 stand heute 600+ s in der Schlange, waehrend ein gesundes Zweitgeraet leer lief.
+
+2. **Private-repo-j — und hier ist eine Mehrdeutigkeit, die DU beim Owner aufloest, bevor du handelst.**
+   „bieberburg auf slot3" hat zwei Lesarten:
+   - **(A)** Private-repo-j soll kuenftig auf **Slot 3** leben. Dort sitzt heute die Program-MAIN von
+     `b2aa5b45` (Game-Maker-Workflow v2), die der OWNER SELBST auf Fable gestellt hat.
+   - **(B)** Slot 3 (Workflow-v2-MAIN) soll Private-repo-j mit uebernehmen.
+   Ich habe NICHT geraten. **Frag ihn in einem Satz.**
+   Der Sachstand, den du dafuer brauchst:
+   - **Program `2c073232` (Private-repo-j) ist `active`, aber MAIN-LOS.** `main.slot` zeigt auf 6;
+     Slot 6 hat sich **2026-09-03 06:46 selbst retired**, `lineage.entries[0].endedBy: "retire"`,
+     KEIN Nachfolge-Eintrag. Auf Slot 6 sitzt niemand.
+   - **Die alten Private-repo-j-Lanes sind Slot 1 und Slot 7, und beide sind FERTIG — sie halten nur
+     noch Duplikate.** Von mir am Baum geprueft, nicht geglaubt:
+     Slot 1 (`54d3989c`, codex/gpt-5.6-sol): `git diff 834b0c6 9b90bfc` ist **LEER**, ihr Verdikt
+     sitzt per Cherry-Pick als `9b90bfc` auf `game-maker/private-repo-j-2026-09-03`. Ihr eigenes Land
+     scheiterte als lost fast-forward (merge-terminal 05:35, `status error`, `landed false`,
+     `verify.ok true`).
+     Slot 7 (`c1fab27f`): `git diff 46f6df8:GAME-CARD.md 601760b:GAME-CARD.md` ist **LEER**,
+     fortgeschrieben durch `613a28f` (FINAL) und `2b8c0f0`; die Lane ist 27 Commits behind.
+     **Beide Zeilen stehen noch auf `sent` und beide Slots sind ungeschlossen** — weil ihre MAIN
+     retirete, bevor jemand sie erntete. Beide Panes habe ich informiert, dass sie nichts
+     nachzuholen haben. Das Schliessen ist deins.
+   - Offen und vom Owner unbeantwortet: die **Attention `10d5063627a932848d1720f7`** (kind
+     `decision`) fragt A/B — Taste-Gate jetzt, oder erst der Spielgefuehl-Slice. Sie wurde nie
+     beantwortet, und die MAIN, die sie stellte, gibt es nicht mehr.
+   - Der `biber-dispatcher`-Shell-Loop ist von mir per STOP-Datei beendet (er umging Master-Stop,
+     Deckel und Quiet Hours). Ein Neustart von Private-repo-j braucht entweder Hand-Dispatch oder die
+     Zeile `5c1f831f` (Program-scoped Dispatch), die dafuer offen liegt.
+
+Alles Uebrige unten ist Kontext, nicht Auftrag. **Die eine Ausnahme: §3 kommt zuerst** — dort
+haengt ein Land von mir, dessen Audit rot ist, an einer Kontrollprobe, die noch laeuft.
+
+## 0b. Erdung
 
 1. Erdung: `./state.sh` · `./register.sh` · NUR dieser Abschnitt · Board. Miss deinen ctx zuerst.
 2. **Die server.ts-Flaeche ist das Nadeloehr, und sie hat jetzt eine SCHLANGE.** Vier Zeilen wollen

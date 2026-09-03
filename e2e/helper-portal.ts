@@ -810,8 +810,12 @@ export async function run(h: {
     JSON.stringify(wakeRows.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`)));
   await waitNoLocalRun();
 
-  // (W5) UNCONFIGURED IS THE DEFAULT, and it is a REFUSAL, not a throw. This restart also puts the
-  // server back exactly as the section above it left it, for whatever runs next.
+  // (W5) UNCONFIGURED IS THE DEFAULT, and it is a REFUSAL, not a throw. The message matters as much
+  // as the status: with no address on the host the answer must be the HOST-LEVEL one, not
+  // `no MAC configured for <id>` — that sentence says "the rail works, this device is not set up"
+  // and would send the owner after the wrong knob. This check caught exactly that ordering on its
+  // first run. This restart also puts the server back as the section above it left it, for
+  // whatever runs next.
   await killSrv();
   check("(W5) setup: the server restarts with NO wake address at all",
     await startSrv({ audit: true, extra: { FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000",

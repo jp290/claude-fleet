@@ -22354,9 +22354,14 @@ Bun.serve<WSData>({
     if (devWake && req.method === "POST") {
       const d = helperDevices.get(devWake[1]!);
       if (!d) return json({ error: "no such device" }, 404);
+      // THE HOST-LEVEL FACT FIRST, and the order is the whole difference between two refusals that
+      // read alike and mean opposite things. `no MAC configured for <id>` says "this rail works,
+      // that device is not set up"; on a fleet with no wake address at all that sentence is a lie
+      // that sends the owner looking for the wrong knob. Measured: e2e/helper-portal.ts §(W5)
+      // caught exactly this — the unconfigured-host case answered per-device.
+      if (!HELPER_WAKE_ADDR) return json({ error: "no wake address configured" }, 409);
       const mac = wakeMacFor(d.id);
       if (!mac) return json({ error: `no MAC configured for ${d.id}` }, 409);
-      if (!HELPER_WAKE_ADDR) return json({ error: "no wake address configured" }, 409);
       const out = await sendWakeFrame(mac);
       const at = Date.now();
       // stamped on a failed attempt too, for the same reason the tick does: this field is "when a

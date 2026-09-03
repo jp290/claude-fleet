@@ -438,7 +438,50 @@ Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,
 
 ## 1. Das Erste, was du tust
 
-**Ein Land ist IN FLUG**: Task `8990eeb0` (Slice 5+6), Kandidat `625bf235`, Lane Slot 6
+**Slice 5+6 IST GELANDET** (`c80b171` Move + `5848207` §11.2l), verifiziert: `verify.ok true`,
+`exitCode 0`, alle sieben Stufen, 106 s Arbeit, `waitMs 0`, `proportional false`. Module auf `main`
+byte-identisch zu dem, was ich vor dem Land geprueft hatte. `server.ts` steht bei **23760**.
+
+**ZWEI SCHRITTE SIND OFFEN, und sie sind dein erster Akt — in dieser Reihenfolge:**
+
+1. **Den Post-Land-Audit auf `5848207f` adjudizieren.** Er lief beim Schreiben dieser Zeilen noch
+   (eine Suite auf der Maschine). Hol den Namen des gefallenen Checks aus dem Trail, wenn er rot
+   ist — die aufbewahrten Ausgabezeilen nennen ihn nicht (B-02). **Und rechne die Basisrate, statt
+   den Rerun zu fahren:** das war heute dreimal der billigere und staerkere Beweis. Ein roter Lauf
+   auf einem Baum VOR dem Land widerlegt die Attribution; ein gruener Rerun danach beweist nichts.
+2. **Slice-Protokoll §f zu Ende fahren.** `bun e2e/pins.ts` habe ich nach dem Land gefahren:
+   **ALL PASS**. Offen sind: Dry-Boot des Vorstands gegen eine Scratch-Kopie der `fleet.json`
+   (Rollback-Beweis, ~2 min — das Rezept steht in §2 fuer Slice 4), dann **Deploy (Verb 2)**, dann
+   `bundleStale`/`deployGap`, dann `graphify update .`.
+   **Der Deploy ist BLOCKIERT, solange der Audit laeuft** (`POST /api/deploy` gibt 409) — das ist
+   Absicht, ein srv-Kill mitten im Audit erzeugt ein falsches Rot. Stand bei Uebergabe:
+   `deployGap.codeBehind: true`, `behindCount 11` — **mein Slice ist noch NICHT live.**
+
+Danach ist Tier 1 des Plans leer und der naechste Slice will erst eine Messung: siehe §6.
+
+---
+
+## 1b. Was die Land-Kette dieses Slices gekostet hat (die eigentliche Uebergabe)
+
+**Ein Slice, sieben Land-Versuche, fuenf verschiedene Ursachen, keine davon der Code:**
+
+| # | Ergebnis | Code gemessen? |
+| --- | --- | --- |
+| 1 | verify ROT, exit 3 | **nein** — §11.2i, Phase-3-Server bootete nie (`no server.log`) |
+| 2 | 409 no-progress | nein |
+| 3 | `verify.ok null`, `waitMs 2669000` | **nein** — 44,5 min Schlange, Mutex nie bekommen |
+| 4 | 409 no-progress | nein |
+| 5 | Gate GRUEN, dann Fast-Forward verloren | ja — `main` zog waehrend des Laufs weiter |
+| 6/7 | `no signal` | nein — der Vor-Fix-Merge-Record sperrte zirkulaer (B-09) |
+| — | Owner faehrt Weg (b) ueber die Owner-Merge-Route | **gelandet** |
+
+Belege und Done-Kriterien: **B-09** (Record sperrt zirkulaer, Fix nicht rueckwirkend), **`e48ab251`**
+(Guard behandelt `waitedOut` wie ein Urteil), **`04fdfc77`** (Flake-Genus), **§11.2i** (7 Laeufe auf
+code-identischem Baum: 5 gruen / 2 rot). Wer den naechsten Slice briefet, sollte wissen, dass die
+Land-Kette derzeit mehr Zeit mit Nicht-Messen verbringt als mit Messen — das ist die teuerste
+offene Naht der Sanierung, teurer als jeder Slice-Inhalt.
+
+**(historisch, erledigt) Ein Land war IN FLUG**: Task `8990eeb0` (Slice 5+6), Kandidat `625bf235`, Lane Slot 6
 `fleet/260903062628-c5ef`. Prüfe zuerst, ob es durch ist — und zwar an der Identität, nicht am
 Text:
 

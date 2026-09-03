@@ -405,50 +405,53 @@ gelassen.
 war seit dem Land um 8 Doc-Commits weitergezogen, und die Route verweigert dann permanent
 (`server.ts`, die Kontiguitaetspruefung in `pushUndo`/`killUndoStack`).
 
-## 3b. EIN FERTIGER BRANCH WARTET AUFS LANDEN — `pack-source-hash` (Slot 14)
+## 3b. `pack-source-hash` IST GELANDET — und der Weg dorthin korrigiert eine Route-Annahme
 
-Slot 14 (openSource) hat kurz vor meinem Handoff gemeldet, dass ihr Pack-Versions-Schnitt fertig
-ist. **Sie landet NICHT selbst — der Branch ist dem Controller zum Landen uebergeben.** Von mir am
-Baum nachgeprueft, nicht geglaubt:
+**Gelandet als `7994b801` (main), Land-Note gruen:** `verify.ok true`, volle siebenstufige Kette
+(`install pins tsc build clean-review security claude-gate`), `proportional false`. Drei Commits von
+Slot 14 (openSource/openPacks): Pack-Version als OBSERVED `sourceHash` je Auswahl, die server.ts-
+Haelfte, und die Nachbesserung `b79d25d`, die aus der Byte-Fassung eine Blob-Sha-Fassung machte.
 
-- Branch `pack-source-hash`, **2 Commits**: `6535f71` (reine Haelfte) und `2b4abd6`
-  (server.ts-Haelfte). Basis ist `24f9cfc`, also **16 Commits hinter main** — ein Land rebased.
-- Diff: `briefstats.ts`, `context-manifest.ts`, `context-packs.ts`, `server.ts` (+48/-37) und drei
-  e2e-Dateien (`e2e/briefstats.ts`, `e2e/context-plan.ts`, `e2e/programs.ts`), zusammen 7 Dateien.
-- **KEIN SLOT HAELT IHN.** Der Worktree liegt im Scratchpad einer fremden Session und ist damit ein
-  Orphan im Sinne von `./state.sh`.
+**Die Nachbesserung ist der Teil, der zaehlt** — Slot 14 hat sie selbst gemessen, vor dem Landen:
+die erste Fassung las **1 794 908 Bytes je Auslieferung** (server.ts allein 1 574 279) und brauchte
+~108 ms `git show` — bei JEDEM Lane-Dispatch und JEDER Program-MAIN-Gruendung. Ein `ls-tree` ohne
+`--name-only` traegt die Objektnamen schon und kostet ~24 ms. Der Eingriff wurde dadurch KLEINER:
+`planRepoContext` ist wieder woertlich main, `CONTEXT_SEED_SOURCE_PATHS` geloescht, dieselben vier
+Beruehrungspunkte. Ihre Vorschau: `./e2e-isolated.sh` 3525 PASS / 2 FAIL, beide aus dem Check-Trail
+als `flake` belegt (`restart keeps the busy pending event…` 17/366; `⏸ a re-run is refused…` 7/629),
+beide ausserhalb der angefassten Flaeche. **Ihre 17/366 und meine 15/363 fuer denselben Check sind
+zwei unabhaengige Messungen desselben Flakes** — das stuetzt auch meine Adjudikation aus §3.
 
-**Wie du ihn landest, ohne von Hand zu mergen:** ein Hand-Merge waere fuer jedes land-seitige Ledger
-unsichtbar (keine Land-Note, keine `lane-outcomes`-Zeile, kein Post-Land-Audit) und zwaenge dich,
-`./e2e-isolated.sh` selbst zu fahren. Der mechanische Weg ist stattdessen
-**`POST /api/slots/:id/open-worktree`** auf einen FREIEN Slot (Body `{repo}`; ein belegter Slot wird
-mit 400 abgelehnt), danach der normale `POST /api/slots/:id/merge`. So behaelt das Land seine
-Provenienz. **Ich habe diesen Weg NICHT gefahren — er ist aus der Route gelesen, nicht erprobt.**
+**KORREKTUR AN MEINER EIGENEN FRUEHEREN FASSUNG DIESES ABSCHNITTS.** Ich hatte hier geschrieben,
+`POST /api/slots/:id/open-worktree` sei der Weg, einen fremden Branch in einen Slot zu uebernehmen,
+und das ausdruecklich als „gelesen, nicht erprobt" gekennzeichnet. **Es war falsch.** Die Route legt
+IMMER einen neuen Branch an (`openLaneInSlot` ruft `git worktree add -b`), und auf einen existierenden
+Namen antwortet sie `worktree add failed: … a branch named 'pack-source-hash' already exists`. Sie
+kann keinen bestehenden Branch adoptieren.
 
-**Was Slot 14 ueber die Beruehrung von `server.ts` sagt** (ihre Angabe, von mir NICHT nachgelesen):
-vier Stellen, keine in Dispatch/Land/Succession — Import-Block, `repoManifestContextPlan`, die
-Merge-Stelle im Dispatch (`const base = planContext(planFacts);` bleibt woertlich, Pin
-`e2e/pins.ts:1431`) und `programMainContextPlan`. Der gelieferte Brief bleibe byteidentisch, nur die
-Receipt-Zeile gewinne einen `sourceHash`.
+**Der Weg, der wirklich funktioniert** (von mir gefahren, nicht gelesen):
+1. Der fremde Baum muss den Branch loslassen — git checkt denselben Branch nie zweimal aus. Slot 14s
+   `git worktree remove` auf ihr Scratchpad genuegte.
+2. `POST /api/slots/<frei>/open-worktree` mit `{repo}` und OHNE `branch` → frischer Lane-Worktree auf
+   einem neuen `fleet/<stamp>`-Branch.
+3. `git -C <lane-worktree> reset --hard <geprueftem sha>` — der Lane-Branch traegt danach genau die
+   Commits, sauber, keine untracked files.
+4. `POST /api/slots/<slot>/merge`. Das Land behaelt volle Provenienz: Note, `lane-outcomes`-Zeile,
+   Post-Land-Audit.
 
-**Der Haken, und deshalb habe ich nicht gelandet:** die `./e2e-isolated.sh`-Vorschau auf `2b4abd6`
-lief beim Schreiben noch, und **ihr Ergebnis meldet die NACHFOLGE-Session von Slot 14**, nicht Slot
-14 selbst. Warte darauf oder fahre sie selbst — `e2e/programs.ts` ist eine Suite-Datei, und
-`e2e/security.ts` laeuft ausschliesslich in dieser Vorschau. Gate-tsc-Liste und `bun e2e/pins.ts`
-waren laut ihrem Bericht gruen. Ihr Ideen-Stand: `3f561b5`.
-
-**Kollision beachten:** dieser Branch fasst `server.ts` an, genau wie die vier Zeilen der
-server.ts-Schlange (`6f401842` zuerst). Lande ihn, BEVOR du eine davon dispatchst.
-
-**UND EINE WARNUNG AUS DEMSELBEN VORGANG — sie hat mich einen Datenverlust gekostet:** Slot 14s
-Session hat ihren Handoff-Abschnitt in `HANDOFF.md` des HAUPT-CHECKOUTS geschrieben und dabei die
-Datei **komplett ersetzt statt vorangestellt** — 4172 Zeilen weg. Mein eigenes `git add HANDOFF.md
-&& git commit` lief danach UNBEDINGT durch (das `&&` haengt nur am `add`, nicht am vorherigen
-Python) und hat ihre Kuerzung unter MEINER Commit-Nachricht festgeschrieben: `48d3353`. Ich habe den
-vollen Stand aus `ba75249` wiederhergestellt und ihren Abschnitt oben behalten. **Zwei Lehren:**
-eine fremde Session kann `HANDOFF.md` im Haupt-Checkout jederzeit unter dir wegschreiben, also
-`git diff --stat` lesen, BEVOR du committest; und ein `git commit` gehoert an den Erfolg des
-vorherigen Schrittes gekettet, nicht in eine neue Zeile.
+**DREI DINGE, DIE DICH SONST JE EINEN FEHLVERSUCH KOSTEN:**
+- **`open-worktree` SPAWNT EINEN VOLLWERTIGEN AGENTEN**, auch wenn du den Slot nur zum Landen
+  brauchst. Er bekam keinen Brief, war nach kurzer Zeit bei 10 % Kontext und hatte vier Shells offen.
+  Er ist auch der Grund fuer den naechsten Punkt. (Nach dem Land raeumt sich der Slot selbst.)
+- **`merge` antwortet `{"status":"blocked"}`, solange die Session arbeitet.** Es kostete **acht
+  Anlaeufe ueber gut drei Minuten**, bis der ungebriefte Agent still war. Eine Retry-Schleife mit
+  25 s Abstand ist das Mittel, kein Grund zur Sorge.
+- **DER ERSTE LAND-VERSUCH WAR GRUEN UND LANDETE TROTZDEM NICHT** (`status error`, `landed false`,
+  `verify.ok true`): main bewegte sich waehrend des Gates, das Fast-Forward ging verloren. Danach war
+  der Branch bereits auf main rebaset und main sein direkter Vorfahr — **einfach nochmal landen**,
+  der zweite Versuch lief durch. **Das ist der zweite Fall an diesem Tag, in dem der Deploy-Rueckstand
+  Geld kostet**: der Fix dafuer (`24f9cfc`) liegt auf Platte, der laufende Server ist Dutzende
+  Commits davor.
 
 ## 4. DIE OFFENEN OWNER-FRAGEN, gesammelt — das ist der Kern deiner Uebergabe
 

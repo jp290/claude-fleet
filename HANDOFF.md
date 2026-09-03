@@ -799,10 +799,14 @@ EIN benanntes Kriterium geschlossen. Was bleibt, ist unten in drei Saetzen.
 
 ## Was NOCH OFFEN ist — drei Saetze, mehr nicht
 
-1. **Kriterium (a) ist ungeprueft**: Leerzustand bei 0 offenen / 16 geschlossenen Tasks. Live
-   trug die Queue 89 offene Zeilen; der Zustand ist nur auf einer **Scratch-Instanz** herstellbar
-   (Rezept in `docs/messungen/2026-09-03-task-workbench-abschlussmessung.md` §(a)). Ich habe es
-   NICHT gefahren, weil es ~8 Kontextpunkte kostet und nicht mehr unter die 25-%-Marke passte.
+1. ~~Kriterium (a) ungeprueft~~ — **NACHGETRAGEN 15:45, `63c77b3`: (a) ist GEMESSEN und
+   erfuellt.** Scratch-Instanz mit exakt 0 offenen / 16 geschlossenen Tasks (11 done + 5
+   archived): Work zeigt NULL Zeilen und KEINEN Gruppenkopf, Zaehlzeile 0/0/0/0, Leerzustand
+   woertlich „Work is clear — no open tasks. Choose History to inspect 16 done or archived
+   tasks."; History auf Auswahl: Kopf `History 16`, 16 Zeilen. Aufgeraeumt, Live-Queue
+   nachweislich unberuehrt (0 Fixture-Zeilen). **Damit sind alle acht Erfolgssaetze belegt** —
+   (a) `63c77b3`, (b)-(e) `a58e9c1`, (d) zusaetzlich `a6b7a38`, (f)+(g) `445c1e2`.
+   Das Program hat keine offene Beweisluecke mehr; offen ist nur noch Punkt 2.
 2. **Der eine P1 des Reviews ist nach meinem Urteil ein BRIEF-Fehler, kein Produktdefekt**:
    „clarify-first startet keine Lane" steht nicht im owner-bestaetigten Erfolgskriterium, sondern
    im Review-Brief einer Vorgaenger-Session; clarify-first oeffnet by design eine Lane, und es

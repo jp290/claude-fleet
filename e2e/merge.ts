@@ -20,6 +20,9 @@ type MergeWatchRow = { id: string; kind: "merge"; slot: number; target: number; 
 const mergeEvents = async (): Promise<MergeEventRow[]> =>
   (((await (await get("/api/sessions")).json()) as { events: unknown[] }).events as MergeEventRow[])
     .filter((e) => e.kind === "merge-terminal");
+const mergeWatches = async (): Promise<MergeWatchRow[]> =>
+  (((await (await get("/api/sessions")).json()) as { watches: unknown[] }).watches as MergeWatchRow[])
+    .filter((w) => w.kind === "merge");
 const waitMergeEvent = async (watchId: string, terminal = true): Promise<MergeEventRow | undefined> => {
   let found: MergeEventRow | undefined;
   for (let i = 0; i < 160; i++) {
@@ -128,18 +131,53 @@ export async function run(lc: LaneCtx): Promise<void> {
     subAfterR.ok && subAfter.watch?.armed === false && eventAfter?.payload.status === "blocked"
       && eventAfter.payload.landed === false,
     `${subAfterR.status} ${JSON.stringify({ subAfter, eventAfter })}`);
-  const duplicateR = await selfMergeWatch(receiverBToken, lc.lnSlot);
-  const duplicate = (await duplicateR.json()) as { watch?: MergeWatchRow; existing?: boolean };
-  check("merge event: duplicate subscription returns the same subscription and never mints a twin",
-    duplicateR.ok && duplicate.existing === true && duplicate.watch?.id === subAfter.watch?.id
-      && (await mergeEvents()).filter((e) => e.watchId === subAfter.watch?.id).length === 1,
-    JSON.stringify(duplicate));
+  const spentWatchCount = (await mergeWatches()).filter((w) => w.slot === receiverB
+    && w.target === lc.lnSlot && w.targetCwd === lc.lnPath).length;
+  const spentEventCount = (await mergeEvents()).filter((e) => e.receiverSlot === receiverB).length;
+  const spentRetryR = await selfMergeWatch(receiverBToken, lc.lnSlot);
+  const spentRetry = (await spentRetryR.json()) as { watch?: MergeWatchRow; existing?: boolean; error?: string };
+  check("merge event: a spent subscription explicitly refuses the same persisted terminal",
+    spentRetryR.status === 409 && spentRetry.watch === undefined && spentRetry.existing === undefined
+      && (spentRetry.error ?? "").includes("already fired")
+      && (spentRetry.error ?? "").includes("no newer merge"),
+    `${spentRetryR.status} ${JSON.stringify(spentRetry)}`);
+  check("merge event: the spent refusal creates no watch or event",
+    (await mergeWatches()).filter((w) => w.slot === receiverB
+      && w.target === lc.lnSlot && w.targetCwd === lc.lnPath).length === spentWatchCount
+      && (await mergeEvents()).filter((e) => e.receiverSlot === receiverB).length === spentEventCount,
+    JSON.stringify({ spentWatchCount, spentEventCount }));
   const ack1 = eventAfter ? await ackMergeEvent(receiverBToken, eventAfter.id) : null;
   const ack2 = eventAfter ? await ackMergeEvent(receiverBToken, eventAfter.id) : null;
   check("merge event: acknowledgement is idempotent",
     ack1?.ok === true && ack2?.ok === true
       && ((await ack2.json()) as { existing?: boolean }).existing === true,
     `${ack1?.status}/${ack2?.status}`);
+
+  await setMergeMode("hang");
+  await settleForMerge(lc.lnSlot);
+  const newerMergeR = await post(`/api/slots/${lc.lnSlot}/merge`, {});
+  const newerMerge = (await newerMergeR.json()) as { running?: boolean };
+  check("merge event: a newer merge starts after the prior terminal fired",
+    newerMergeR.ok && newerMerge.running === true, `${newerMergeR.status} ${JSON.stringify(newerMerge)}`);
+  const renewedR = await selfMergeWatch(receiverBToken, lc.lnSlot);
+  const renewed = (await renewedR.json()) as { watch?: MergeWatchRow; existing?: boolean; error?: string };
+  check("merge event: an in-flight newer merge arms a fresh subscription after the spent one",
+    renewedR.ok && renewed.existing === undefined && renewed.watch?.armed === true
+      && renewed.watch.id !== subAfter.watch?.id,
+    `${renewedR.status} ${JSON.stringify(renewed)}`);
+  const renewedDuplicateR = await selfMergeWatch(receiverBToken, lc.lnSlot);
+  const renewedDuplicate = (await renewedDuplicateR.json()) as { watch?: MergeWatchRow; existing?: boolean };
+  check("merge event: an armed duplicate returns the fresh subscription idempotently",
+    renewedDuplicateR.ok && renewedDuplicate.existing === true
+      && renewedDuplicate.watch?.id === renewed.watch?.id,
+    `${renewedDuplicateR.status} ${JSON.stringify(renewedDuplicate)}`);
+  const renewedVerdict = await waitMerge(lc.lnSlot);
+  const renewedEvent = renewed.watch ? await waitMergeEvent(renewed.watch.id) : undefined;
+  check("merge event: the newer terminal fires exactly one event for the fresh subscription",
+    renewedVerdict.last?.status === "blocked" && renewedEvent?.payload.status === "blocked"
+      && (await mergeEvents()).filter((e) => e.watchId === renewed.watch?.id).length === 1,
+    JSON.stringify({ verdict: renewedVerdict.last, event: renewedEvent }));
+  if (renewedEvent) await ackMergeEvent(receiverBToken, renewedEvent.id);
   await post(`/api/slots/${receiverB}/kill`, {});
   const reopenReceiverB = await post(`/api/slots/${receiverB}/open`, { cwd: REPO });
   receiverBToken = await paneEnv(`s${receiverB}`, "FLEET_SELF_TOKEN") ?? "";

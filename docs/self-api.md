@@ -51,8 +51,8 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
   Pane beschäftigt, bleibt der Watch armed und die Nachricht verfällt NICHT).
 - Ein `slot`-/`from`-Feld im Body wird ignoriert — die Route bindet hart an deinen Token-Slot, genau wie
   `/api/self/autos`. Sie kann strukturell in keine fremde Pane tippen.
-- Deckel: **5 armed pro Slot** (`WATCH_MAX_PER_SLOT`, geteilt mit dem Owner-Pfad). Ein zweites Abo auf
-  dasselbe Ziel gibt DENSELBEN Watch zurück (`existing:true`), nie einen zweiten.
+- Deckel: **5 armed pro Slot** (`WATCH_MAX_PER_SLOT`, geteilt mit dem Owner-Pfad). Ein zweites noch
+  armed Abo auf dasselbe Ziel gibt DENSELBEN Watch zurück (`existing:true`), nie einen zweiten.
 - Ablehnungen, jede sagt „dieser Watch könnte nie feuern": `bad target` (400) ·
   `a session cannot watch itself` (400) · `target slot not active` (400) ·
   `target is not a lane — done-looking only classifies lanes` (409) ·
@@ -63,6 +63,12 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
   klassifizieren; `{kind:"merge"}` liest den Merge-Terminalfaktor, nicht `laneSignalView`, und bleibt
   erlaubt) · `max 5 active watches per slot` (400). Dazu die
   Prinzipal-Ablehnung: als LANE 409 (oben).
+- `{kind:"merge"}` bleibt beim ersten späten Abo level-getriggert: ein persistiertes Terminal feuert
+  sofort. Hat dieses Terminal für denselben Empfänger bereits einen Watch gefeuert, wird ein
+  erneutes Abo ohne neueren laufenden Merge mit 409 abgelehnt, statt den verbrauchten Watch als
+  `existing:true` zurückzugeben oder das alte Terminal erneut zuzustellen. Sobald ein neuer Merge
+  reserviert oder läuft, entsteht dagegen genau ein neuer armed Watch; dessen Duplikat bleibt
+  idempotent und gibt seine neue ID mit `existing:true` zurück.
 - **Was die Nachricht ist und was nicht:** sie nennt Slot, Branch und die Fakten (`N ahead / M dirty`) und
   sagt ausdrücklich, dass „LOOKS done" ein Server-Prädikat ist und kein Bericht der Lane — die vier
   Zwillingszustände oben sind ihr nicht unterscheidbar. **Nie auf diese Nachricht allein landen.** Pane lesen.

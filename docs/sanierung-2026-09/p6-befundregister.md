@@ -602,6 +602,50 @@ Ort, den `state.sh` und die Audit-Ansicht nicht lesen.
 
 ---
 
+## B-14 — der REMOTE-Audit-Pfad ist dreimal so rot wie der lokale, und die Rots sind fast alle EINE Testfamilie
+
+**Gemessen** 2026-09-03 an `post-land-audits.jsonl` (448 Zeilen), ausgelöst durch zwei
+aufeinanderfolgende rote Audits mit *identischen* FAIL-Namen auf *verschiedenen* Bäumen
+(`6b8b89d` Slice 7a, `1e5419c` B-06).
+
+| Pfad | Zeilen | rot | grün | unknown | Rot-Anteil der ENTSCHIEDENEN |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| remote (`second-host`) | 29 | 17 | 3 | 9 | **17/20 = 85 %** |
+| lokal | 419 | 82 | — | — | **82/419 = 20 %** |
+
+**Und die Rots sind nicht gestreut.** Jeder rote Remote-Lauf, dessen `fails[]` überhaupt Namen
+trägt (die älteren sind leer — das Feld kam erst mit `3974883`), zieht ausschließlich aus der
+Watch/Event-Transportfamilie von `e2e/watch.ts`: `subject-gone` · `counterprobe` ·
+`restart keeps the busy pending event …` · `a dead receiver leaves its event inspectable as
+receiver-gone in the owner view` · `busy -> later idle delivers the SAME pending event exactly
+once`. Fünf Namen, eine Naht.
+
+**Der Beleg, der die Maschine als Ursache ausschließt:** die B-06-Lane hat denselben Inhalt
+Minuten vorher über das Suite-Portal auf **demselben `second-host`** fahren lassen — 3542 Checks,
+**0 FAILs, grün**. Gleiche Maschine, gleicher Baum-Inhalt, entgegengesetztes Ergebnis. Der
+Unterschied liegt also nicht am Gerät, sondern an der Art, wie der AUDIT dort läuft (Timing,
+Nebenlast, oder eine Vorbedingung, die der Audit-Pfad nicht herstellt und der Portal-Pfad schon).
+
+**Warum das mehr ist als „noch eine Flake-Zeile":** ein Sensor, der bei 85 % seiner entschiedenen
+Läufe rot zeigt, ist kein Alarm mehr, sondern Rauschen. Jedes einzelne Rot kostet heute eine
+Adjudikation von Hand (zwei allein an diesem Abend), und die Gewöhnung daran ist genau der
+Mechanismus, mit dem ein echtes Rot künftig durchrutscht. Das gehört neben E1: E1 macht die
+Fail-Namen und `checks.ran` ehrlich — **dieser Befund fragt, warum der remote gefahrene Audit
+überhaupt so viel häufiger fällt.**
+
+**Was ich NICHT kontrolliert habe, und es könnte die Zahl erklären:** die Remote-Zeilen sind
+jünger und dichter beieinander (der Helfer-Pfad ist neu), die lokalen decken die ganze Historie
+ab. Die 20 % lokal sind also über einen anderen Zeitraum gemittelt als die 85 % remote. Ein
+sauberer Vergleich nimmt nur Läufe seit dem ersten Remote-Audit — das habe ich nicht gerechnet.
+Die Assoziation ist gemessen, die Kausalität ist es nicht.
+
+**Vorgeschlagenes Done-Kriterium:** entweder fällt die Remote-Rotrate dieser Familie nach einer
+benannten Ursache auf die lokale Basisrate, oder der Audit-Pfad stellt die Vorbedingung her, die
+der Portal-Pfad offenbar hat. **Verifikation:** zehn aufeinanderfolgende Remote-Audits, Rotrate
+dieser fünf Checks gegen die lokale Basisrate.
+
+---
+
 ## Bereits als Queue-Zeile abgelegte P6-Befunde (nur Verweis, Inhalt lebt an der Zeile)
 
 | ID | Kurz |

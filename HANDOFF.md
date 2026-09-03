@@ -1,3 +1,66 @@
+# HANDOFF — Dual-Host cd110019 (Slot 6): KORREKTUR am Merkposten — die beiden Zeilen tragen SEHR WOHL ein `Task.spawn`, und es zeigt auf FABLE; 2026-09-03 (21:3x)
+
+Program `cd1100193082db395c1387db`, gebunden, Lineage 9 → 5 → 6. Ich habe nichts gestartet,
+released oder gelandet. Dieser Abschnitt korrigiert genau EINEN Satz des Abschnitts darunter und
+laesst alles andere daran gelten.
+
+## Der korrigierte Satz
+
+§0 des Abschnitts darunter sagt: „beide Zeilen tragen **kein `Task.spawn`** … sie tragen gar
+nichts. Sie fallen also auf `DEFAULT_SPAWN`." **Das stimmt nicht.** Gemessen in `fleet.json`
+(dem Zustand, den der laufende Server geladen hat), 2026-09-03 21:3x:
+
+```
+60d07416  spawn {"harness": null, "model": "claude-fable-5-1[1m]", "effort": "high"}
+c3f91ce1  spawn {"harness": null, "model": "claude-fable-5-1[1m]", "effort": "high"}
+```
+
+Beide Zeilen sind am **2026-09-02 03:49** gefiled worden — also VOR dem Owner-Entscheid
+10:35/10:45 desselben Tages, der „Fable ueberall" durch „Fable orchestriert, jede LANE auf
+`claude-opus-5[1m]`" ersetzt hat. Sie tragen damit das ueberholte Tripel, nicht gar keines.
+
+## Warum die Korrektur die Handlungsanweisung VERSCHAERFT statt sie aufzuheben
+
+Die Schlussfolgerung des Merkpostens bleibt richtig — **der Dispatch-Body MUSS
+`{"harness":"claude","model":"claude-opus-5[1m]","effort":"high"}` explizit nennen** —, aber der
+Grund ist ein anderer und ein schlimmerer:
+
+- Der Vorrang ist **per Feld** (`server.ts#taskDispatch`, dokumentiert in `docs/self-api.md`
+  §dispatch): ein im Body genanntes Feld gewinnt, ein fehlendes faellt auf `taskSpawnOf(t)` =
+  `Task.spawn`, und erst bei dessen Absenz auf den Default-Adapter.
+- Unter der alten (falschen) Lesart waere ein leerer Body „fast richtig": Harness und Modell
+  kaemen ueber `FLEET_MODEL` = `claude-opus-5[1m]` korrekt heraus, nur `effort` ginge verloren.
+- Unter der gemessenen Lage ist ein leerer Body **falsch im Modell**: er spawnt die Lane auf
+  **Fable 5.1** und trifft damit genau das Limit, das der Owner-Entscheid schuetzen soll.
+
+Wer den alten Satz glaubt, haelt einen leeren Body fuer eine kleine Schlamperei. Er ist eine
+Verletzung der Modellpolitik.
+
+## Was ich NICHT getan habe, und warum
+
+**Das persistierte `Task.spawn` nicht repariert** — es gibt dafuer keine Tuer. `Task.spawn` wird
+SET-Zeit validiert und geschrieben (`POST /api/self/tasks` beim Filing); eine Route, die das
+Tripel einer BESTEHENDEN Zeile aendert, existiert nicht (`rg 'taskSpawnOf' server.ts`: nur
+Lesestellen — `tickDispatch`, `taskDispatch`, die Release-Tuer). Der explizite Body ist also
+nicht nur der bequemere, sondern der einzige Weg.
+
+## Betriebsstand (gemessen)
+
+`dispatch: false` (Master-Dispatch aus, kein Tick startet etwas) · beide Zeilen `queued`, Briefs
+`edited:true` (9 204 / 6 831 Z.) · Projektion `nextAction` fuer beide: „queued — the dispatch tick
+starts it; no door belongs to this row" · keine Suite und kein Audit laufend · zwei verwaiste
+Worktrees auf `7e3070f` gehoeren fremden Programs, nicht mir.
+
+**Eine Beobachtung ohne Handlung:** dieser Slot laeuft laut Pane auf Opus 5 (1M), waehrend die
+Modellpolitik fuer eine Program-MAIN Fable 5.1 vorsieht. Ich drehe das nicht mitten in der
+Session — die Abweichung geht auf die SICHERE Seite des Limits, das der Entscheid schuetzt.
+
+## Dein erster Zug
+
+Unveraendert der des Abschnitts darunter: **nichts starten.** S3 (`60d07416`), dann S4
+(`c3f91ce1`), beide vom Controller von Hand, beide mit dem expliziten Body oben.
+
+---
 # HANDOFF — Program `b9c1e0d9` „Fleet Task Workbench" ist ABGESCHLOSSEN (Slot 2 → retire, 2026-09-03 21:2x)
 
 Das ist kein Uebergabe-, sondern ein ABSCHLUSS-Abschnitt: es gibt keine Nachfolgerin, das Program

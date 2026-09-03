@@ -665,7 +665,7 @@ for (const s of (await dispSess()).slots) if (s.worktree && !lanesBefore.has(s.i
 
   // the restart is trailed under its own event, never as a self-heal — slotstats divides
   // resumed/heals to measure the durability promise, and an owner-triggered rebuild that resumes
-  // by construction is no evidence for it (server.ts, the slot_restart comment on AuditEvent).
+  // by construction is no evidence for it (server/audit-log.ts, the slot_restart comment on AuditEvent).
   let rsRows: string[] = [];
   for (let i = 0; i < 40; i++) {
     rsRows = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)

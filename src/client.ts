@@ -8673,8 +8673,8 @@ function decodeAudit(event: string, detail?: string): string {
         : why ? `${act} (${why})` : act;
     }
     // the owner's ↻ — same detail vocabulary as a heal, deliberately a different event: a rebuild
-    // nobody asked for and one the owner asked for answer different questions (server.ts, the
-    // slot_restart comment on the AuditEvent union)
+    // nobody asked for and one the owner asked for answer different questions (server/audit-log.ts,
+    // the slot_restart comment on the AuditEvent union)
     case "slot_restart": {
       const [how, why] = (detail ?? "").split(":");
       if (how === "resumed") return "restarted by the owner — its conversation came back";

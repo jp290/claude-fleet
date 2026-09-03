@@ -281,6 +281,14 @@ export async function run(h: {
     const lane = await openLane(REPO, name);
     const token = await selfTokenOf(lane.slot);
     const headers = { "x-fleet-self-token": token, "content-type": "application/json" };
+    // The offer door refuses to MINT while no device is inside the online window
+    // (server.ts#helperPresence). This section runs with the daemon deliberately wished OFF and
+    // therefore silent, so the last real heartbeat is minutes of test time away by now — the beat
+    // below states the precondition instead of leaning on how long the section above happened to
+    // take. It touches lastSeen only; the owner's `off` wish and the daemon's silence are untouched,
+    // and it goes straight to the fleet rather than through the recording proxy, so `seen` is not
+    // moved by it either.
+    await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME });
     const offerRes = await fetch(BASE + "/api/self/suite-offer",
       { method: "POST", headers, body: "{}" });
     const offer = (await offerRes.json()) as { offer?: { id?: string } };

@@ -102,11 +102,22 @@ interface WatchBase {
 // TWO RULES, and they are checked in this order because the order is the property:
 //   1. THE FORBIDDEN TOKENS ARE REFUSED FIRST AND UNCONDITIONALLY. `claude`, `codex` and `pi` are
 //      the agent harnesses; a fleet that can post one of them to a helper has invented remote agent
-//      spawn as a side effect of a build runner, and no allowlist entry could ever make that
-//      acceptable. Checking it BEFORE the allowlist is what makes the refusal a property of the
-//      function rather than a property of today's allowlist contents: widen the list below and the
-//      refusal still stands. A token is any `/`-, `\`- or whitespace-separated word, so `./claude`,
-//      `/usr/bin/codex` and `bun claude` are the same refusal as the bare name.
+//      spawn as a side effect of a build runner. Checking it BEFORE the allowlist is what makes the
+//      refusal a property of the function rather than a property of today's allowlist contents:
+//      widen the list below and the COMMAND STRING is still refused. A token is any `/`-, `\`- or
+//      whitespace-separated word, so `./claude`, `/usr/bin/codex` and `bun claude` are the same
+//      refusal as the bare name.
+//
+//      AND HERE IS WHAT THIS RULE DOES NOT SAY, because the earlier wording said it and was too
+//      strong: THIS BINDS THE COMMAND STRING, NOT THE PROCESS TREE IT STARTS. Three of the six
+//      allowlist entries (`bun run build`, `bun test`, `bun run verify`) run a `package.json`
+//      script OUT OF THE SUBMITTED BUNDLE, and that file's contents are the caller's — e2e's own
+//      fixture writes itself a `build` script and runs `bun run build` through it
+//      (e2e/helper-daemon.ts, the `cmdjob` lane). So the refusal is a statement about what may be
+//      NAMED here, and it is not, and cannot be, a statement about what the named script goes on
+//      to execute on the other machine. NO REGRESSION IS IMPLIED: the portal path has always run
+//      submitted repo code through `suiteCmd`, and this check does exactly the right thing at its
+//      own place. What changed is only the size of the promise written around it.
 //   2. THE COMMAND MUST BE AN EXACT ALLOWLIST KEY, and the value is the ARGV it runs as. Argv, not
 //      a string: the helper never hands this to `sh -c`, so there is no quoting, no glob, no `&&`
 //      and no substitution anywhere on the path — which is also why the allowlist can be an exact
@@ -128,7 +139,7 @@ function helperCmdCheck(raw: unknown): HelperCmdCheck {
   if (cmd.length > HELPER_CMD_MAX) return { ok: false, error: `cmd must be at most ${HELPER_CMD_MAX} chars` };
   const tokens = cmd.toLowerCase().split(/[\s/\\]+/).filter(Boolean);
   const hit = HELPER_CMD_FORBIDDEN.find((f) => tokens.includes(f));
-  if (hit) return { ok: false, error: `cmd names the agent harness ${JSON.stringify(hit)} — a remote command job may never start an agent, whatever the allowlist says` };
+  if (hit) return { ok: false, error: `cmd names the agent harness ${JSON.stringify(hit)} — a remote command job's command line may never name an agent (this binds the command string, not what an allowlisted script goes on to run)` };
   const argv = HELPER_CMD_ALLOW[cmd];
   if (!argv) return { ok: false, error: `cmd is not on the helper allowlist — it is one of [${Object.keys(HELPER_CMD_ALLOW).join(" | ")}]` };
   return { ok: true, cmd, argv: [...argv] };

@@ -15,6 +15,16 @@ ist `null`, wenn kein Lock-Verzeichnis existiert; sonst trägt es `state`
 mit anderem Abdruck ist `stale` und durch den nächsten Contender reapbar; live PID mit fehlendem,
 leerem, malformed oder unmessbarem Abdruck ist `unknown` und wird nicht automatisch gereapt.
 
+**`helper` — gibt es überhaupt eine zweite Maschine?** Dasselbe Objekt, das die Suite-Offer-Tür
+mitliefert, aus derselben Lesung: `online` (boolean) · `name` (der Name des ZULETZT gehörten
+Geräts, `null` wenn nie eines registriert war) · `mode` (dessen eigene letzte Selbstauskunft,
+`null` = hat nie eine gegeben) · `lastSeenAgeMs` (`null` NUR wenn es kein Gerät gibt — nie
+„nicht nachgesehen"). `online` ist ALLEIN die Uhr: `lastSeen` jünger als `DEVICE_ONLINE_MS`
+(`server.ts#DEVICE_ONLINE_MS`, Default 90 000 ms, `FLEET_DEVICE_ONLINE_MS`). Der `mode` steht
+DANEBEN statt eingerechnet: ein Gerät, das schlägt und `quiet` sagt, ist da und nimmt nichts —
+und das ist ein anderer Fall als „niemand da", weil nur im ersten Warten etwas bringt. Das ist
+absichtlich NICHT `helperClaimCandidateExists` (die strengere Lesung der Audit-Gnadenfrist).
+
 ## autos — `POST /api/self/autos`
 
 Use them to schedule a future check-in on yourself, e.g. right before you'd otherwise go idle waiting on
@@ -502,6 +512,21 @@ Kein Feld kann nominieren, WELCHER Baum gebündelt wird. `withdraw` liest genau 
 **Ein offenes Angebot pro Slot.** Ein zweites POST gibt das bestehende zurück (`existing: true`),
 das Muster von `createWatchForSlot`.
 
+**KEIN ANGEBOT OHNE HELFER.** Ist beim POST kein Gerät online (`helper.online === false`, dieselbe
+Lesung wie in `/api/self/gate`), antwortet die Tür **200** mit `{"offer": null, "reason": "no helper
+online", "helper": {...}}` und mintet nichts. Vorher bekam eine Lane in einer Flotte, in der nichts
+schlug, ein offenes Job-Objekt und wartete danach `SUITE_OFFER_WAIT_FREE_MS` (180 s) auf einen
+Claim, der nicht kommen konnte — die Regel „biete den Lauf an, WENN ein Helfer-Gerät online ist"
+war von innen nicht prüfbar. Sie ist es jetzt, in einem Roundtrip. Zwei Feinheiten, beide Absicht:
+
+- **200, kein 4xx** — es ist nichts schiefgegangen, und ein Fehlerstatus schickte die Lane auf die
+  Suche nach einem Defekt.
+- **Die Reihenfolge:** der `existing`-Zweig läuft ZUERST und unbedingt. Eine Lane muss ihr eigenes
+  offenes Angebot immer wiederfinden, und ein Helfer, der nach dem Mint verstummt, mintet es nicht
+  zurück. Die Sperre steht vor dem MINTEN und vor nichts sonst. Ein schlagendes, aber `quiet`
+  gemeldetes Gerät bekommt das Angebot weiterhin — `quiet` ist ein Zustand, den sein nächster
+  Herzschlag verlassen kann; `helper.mode` reist mit, damit die Lane das selbst lesen kann.
+
 **Was der Server aufnimmt, und wann.** Erst beim CLAIM, in `buildLaneSuiteBundle`: `git stash
 create` (leer bei sauberem Baum ⇒ `HEAD`) → transientes `refs/heads/fleet-suite/<jobId>` →
 `git bundle create` → `finally` `update-ref -d`. Der Stash-STACK bleibt unberührt (gemessen 0/0),
@@ -518,8 +543,19 @@ Dateien reisen NICHT mit**; ihre Zahl steht als `untracked` im Job, damit ein gr
 - `result` (bei `state:"reported"`) — `exitCode` · `result` (`green|red|unknown`) · `reason` (nur
   bei `unknown`) · `tail` (4096 B gedeckelt) · `trail` · `checks{ran,failed}` (`null` = nicht
   zählbar, nie eine erfundene Null) · **`remote{name,claimedAt,reportedAt}`** · `treeSha` · `ms`.
+  `remote` trägt zusätzlich `reason`/`timeoutMs`, wenn die andere Maschine sagen konnte, WARUM sie
+  nichts gemessen hat: geschlossene Menge `timeout|could-not-start` (`server.ts#helperNoMeasureOf`).
+  Nicht zu verwechseln mit dem `reason` eine Ebene darüber — das ist die Klassifikation DIESES
+  Servers aus dem Exit-Code, und für einen abgewürgten Lauf leitet sie gar nichts ab: ein Timeout
+  kommt als `exitCode: null` an, Byte für Byte wie „hat keinen Code geschickt". `could-not-start`
+  wird hier aus 126/127 abgeleitet, nur `timeout` reist über das Netz; ein Code, den dieser Server
+  nicht lesen kann, wird VERWORFEN (Feld fehlt), nie mit 400 quittiert — sonst wäre das Verdikt
+  eines neueren Daemons Geisel einer Anmerkung.
 - `waitPolicy{freeMs,heldMs}` — die Wartezahlen aus `SUITE_OFFER_WAIT_FREE_MS` /
   `SUITE_OFFER_WAIT_HELD_MS`, damit die Lane sie nicht aus dem Gedächtnis zitiert.
+- `helper{online,name,mode,lastSeenAgeMs}` — dieselbe Präsenz-Lesung wie in `/api/self/gate`, und
+  sie reist an JEDER Antwort dieser Tür mit (GET, `existing`, frisch gemintet, abgelehnt), damit
+  eine Lane nicht in derselben Sekunde hier „online" lesen und dort abgelehnt werden kann.
 - `suiteLock` — dieselbe Sicht wie in `/api/self/gate`: `null` frei, sonst `state`
   `held|overdue|stale|parked|unknown` plus `pid`, `alive`, `identityProven`,
   `birth{stored,current,state}`, `acquiredAt`, `ageMs`/legacy `heldMs`, `nextAction`, `reason`

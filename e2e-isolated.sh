@@ -766,6 +766,16 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # foreign-harness policy in its CLOSED state, so an operator who exports the flag in their own shell
 # would flip a test's premise out from under it and the failure would read as a broken gate. The
 # live fleet turns it on (watchdog.sh); this line keeps the suite's answer independent of that.
+# FLEET_DEVICE_ONLINE_MS=20000 makes the helper-presence TRANSITION observable. The production
+# default is 90 s (server.ts#DEVICE_ONLINE_MS) and the offer door refuses to mint a preview offer
+# while nothing is beating inside that window — so with the default, e2e/lane-suite.ts could only
+# ever measure the online half: e2e/watch.ts enrols a device minutes earlier in the same run, and
+# 90 s is long enough that "is it stale yet?" would be a race rather than a fact. 20 s is the
+# smallest value with real headroom in BOTH directions: the module beats immediately before every
+# mint (one localhost round trip, milliseconds, ~1000x margin), while the gap between watch.ts's
+# beat and lane-suite's first call is nine intervening modules of lane opens and lands. It is a
+# policy number, not a test-only knob — an operator whose daemon beats every five minutes needs a
+# wider window for the same reason this suite needs a narrower one.
 # FLEET_BRIEF_MS=0 is stated for the same reason and one worse consequence: the brief compiler's
 # tick exists to run the ENHANCER, so an operator who exported a cadence in their own shell would
 # have this suite spawn real agents. Its server default is 0; e2e/tasks.ts (hB) turns it on and off
@@ -779,7 +789,7 @@ mkdir -p "$PI_ZAI_AGENT_DIR"
 mkdir -p "$PI_OX_AGENT_DIR"
 printf '%s\n' 'fleet-e2e-zai-stand-in-key' > "$PI_ZAI_KEY_FILE"
 chmod 600 "$PI_ZAI_KEY_FILE"
-SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_MODEL= FLEET_CMD=true FLEET_HARNESS_AUTOMATION=0 FLEET_E2E_COMPOSER_MODE='$COMPOSER_MODE' FLEET_E2E_COMPOSER_STATE='$COMPOSER_STATE' FLEET_CODEX_SESSIONS_DIR='$CODEX_SESSIONS' FLEET_PI_ZAI_AGENT_DIR='$PI_ZAI_AGENT_DIR' FLEET_PI_ZAI_KEY_FILE='$PI_ZAI_KEY_FILE' FLEET_PI_OX_AGENT_DIR='$PI_OX_AGENT_DIR' FLEET_READY_WAIT_MS=3000 FLEET_ACCEPT_WAIT_MS=800 FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_MIGRATE_PCT=44 FLEET_MIGRATE_IDLE_MS=0 FLEET_MIGRATE_COOLDOWN_MS=900000 FLEET_MIGRATE_TICK_MS=250 FLEET_MIGRATE_GRACE_MS=500 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=0 FLEET_BACKLOG_NUDGE_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_VERIFY_WAIT_MS=5000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_VERIFY_CMD_REPOS='{\"$REPO2_P\":\"$DIR/fakeverify2\"}' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
+SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_MODEL= FLEET_CMD=true FLEET_HARNESS_AUTOMATION=0 FLEET_E2E_COMPOSER_MODE='$COMPOSER_MODE' FLEET_E2E_COMPOSER_STATE='$COMPOSER_STATE' FLEET_CODEX_SESSIONS_DIR='$CODEX_SESSIONS' FLEET_PI_ZAI_AGENT_DIR='$PI_ZAI_AGENT_DIR' FLEET_PI_ZAI_KEY_FILE='$PI_ZAI_KEY_FILE' FLEET_PI_OX_AGENT_DIR='$PI_OX_AGENT_DIR' FLEET_READY_WAIT_MS=3000 FLEET_ACCEPT_WAIT_MS=800 FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_MIGRATE_PCT=44 FLEET_MIGRATE_IDLE_MS=0 FLEET_MIGRATE_COOLDOWN_MS=900000 FLEET_MIGRATE_TICK_MS=250 FLEET_MIGRATE_GRACE_MS=500 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=0 FLEET_BACKLOG_NUDGE_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_DEVICE_ONLINE_MS=20000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_VERIFY_WAIT_MS=5000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_VERIFY_CMD_REPOS='{\"$REPO2_P\":\"$DIR/fakeverify2\"}' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
 tmux -L "$SOCK" new-session -d -s srv \
   "cd '$DIR' && PATH='$DIR:$PATH' FLEET_HOST=127.0.0.1 $SRV_ENV exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.

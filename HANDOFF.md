@@ -1,3 +1,88 @@
+# HANDOFF — Program-MAIN Game-Maker-Workflow v2 (`b2aa5b453d0f2bf9ddce8232`, Slot 3): Schritte 1–2 gelandet, Schritt 3 haengt an EINEM Hand-Dispatch, Schritt 4 liegt fertig gebrieft; 2026-09-04 (00:3x), ctx GEMESSEN 23,4 %
+
+Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was
+git und die Sensoren nicht tragen.
+
+## 1. Das Erste, was du tust
+
+**`5efd84bb` (GLM-Kreuz-Review, `pi-zai`/`glm-5.3`) von Hand dispatchen lassen — du kannst es
+nicht selbst.** `POST /api/self/tasks/5efd84bb/release` antwortet woertlich
+`harness pi-zai is not automatable — no unattended path may drive it (FLEET_HARNESS_AUTOMATION off)`.
+Nur der Owner-/Controller-Knopf waivt das Harness-Gate. Ich habe zweimal darum gebeten; der
+Controller (Slot 8) hat zugesagt („den stosse ich wie vereinbart als Zeile an"), es ist bis
+00:3x nicht passiert. **Bitte erneut anfragen — nicht warten, der Controller sieht eine pending
+Zeile nicht von selbst.**
+
+Danach, ohne Rueckfrage: `a451a985` (Adjudikation, claude/opus/high) freigeben, sobald
+`docs/game-maker/entwurf/kreuzreview-glm.md` auf main liegt. Der Brief prueft diese Vorbedingung
+selbst und bricht ab, wenn sie fehlt.
+
+## 2. Gelandet und am Baum nachgeprueft (nicht der Benachrichtigung geglaubt)
+
+| Datei | Z. | SHA | Land-Note |
+|---|---|---|---|
+| `docs/game-maker/entwurf/evidenz-pack.md` | 799 | `51430a6` | verify.ok true, 841 ms |
+| `docs/game-maker/entwurf/entwurf-B-sol.md` | 745 | `ed03554` | verify.ok true, 685 ms |
+| `docs/game-maker/entwurf/entwurf-A-opus.md` | 750 | `b3462e3` + `5337b9f` | verify.ok true, 811 ms |
+
+Das Pack ist versiegelt: 87 Befunde mit `datei:zeile`, 8 offene Widersprueche W1–W8, Manifest mit
+sha256 der neun Quellen (von mir unabhaengig nachgerechnet, deckungsgleich).
+
+**DER STREITPUNKT, um den es geht:** A sagt **142 250 Tokens** (14,2 % von 1M) nach einem vollen
+Zyklus, B sagt **65 000** — Faktor 2,2 aus demselben Pack, gleiche Widerlegungsgrenze 250 000.
+GLM rechnet beide Summen nach (§2 des Kreuz-Review-Briefs), die Adjudikation entscheidet EINE
+Zahl, der Trockenzyklus misst sie. Das ist der Kern des Programs, nicht ein Detail.
+
+## 3. Was NACH dem Pack gemessen wurde und in die Adjudikation eingeht (E1–E5 im Brief `a451a985`)
+
+- **E1** Eine Program-MAIN kann filen und freigeben, aber **nicht starten** — der Tick haengt am
+  Master-Schalter (`fleet.json "dispatch"`, `server.ts#tickDispatch`, live `false`). Jeder Start
+  dieses Programs war ein fremder Handgriff. Erstbeleg fuer die offene Zeile `5c1f831f`.
+- **E2** Die Release-Tuer weist einen nicht-automatisierbaren Harness ab (s. §1). Eine Rolle auf
+  `pi-zai` kann darum **nie** im automatischen Takt stehen — harte Grenze fuer den Rollen-Graph.
+- **E3** `git grep`-basierte Pins sehen **keine untrackten Dateien**. Entwurf A meldete lokal
+  `ALL PASS` und wurde am Gate rot (`leak-pin`), weil die Datei beim lokalen Lauf noch untracked
+  war. Notiz `4cc4a02d`, mit Done-Kriterium fuer den sondenseitigen Schnitt.
+- **E4** Getrackte Dateien tragen keine Deploy-Identitaet (public repo). Platzhalter im Repo, die
+  echte Adresse setzt die MAIN beim Filen ein. Notiz `1f84ca33`. Beide Entwuerfe sind so redigiert.
+- **E5** Ein docs-only-Land ist ein **Gratis-Kontrolllauf** fuer das vorherige Audit. Notiz
+  `252a659e`.
+
+## 4. Eine Korrektur, die im Ledger anders steht als meine Messung
+
+Beide roten Audits dieses Programs sind als **stale-test** adjudiziert (Controller, Owner-
+Delegation). Fuer `ed03554` (`e2e/watch.ts:3364`) ist das mein eigenes Urteil. Fuer `5337b9f`
+hatte ich **flake** vorgeschlagen und begruendet: die Q6-Familie ist 16/18 Trail-Laeufe gruen,
+die beiden Audits liefen seriell auf **bytegleichem Code** (beide Lands docs-only) und hatten
+**disjunkte** Fehlermengen. Das Urteil ist das des Owners und steht; die **Messung** lebt
+unabhaengig in `252a659e`. Wer Q6 spaeter „repariert", sollte das gelesen haben.
+
+**Betriebsannahme, aus „Nichts weiter offen" abgeleitet, nicht ausdruecklich bestaetigt:** kuenftige
+rote Audits DIESER beiden Signaturen melde ich nicht mehr einzeln, sondern gesammelt in der
+Abschlussnotiz. Die Reparaturzeile liegt als `bffe3de0` (Done-Kriterium korrigiert: die Fixture
+muss B **wirklich** beschaeftigt halten — „die Vorbedingung messen" geht nicht, sie haelt nie).
+
+## 5. Was noch aussteht
+
+- **Schritt 3** Kreuz-Review `5efd84bb` (Hand-Dispatch) → **Schritt 4** Adjudikation `a451a985`
+  (gebrieft, wartet) → **Schritt 5** Trockenzyklus.
+- **Trockenzyklus: OWNER-WAHL, noch nicht getroffen** — pausierte Private-repo-j mit frischer MAIN
+  (dort existiert die Vergleichszahl 528k) oder ein kleines Canary. Empfehlung des Controllers
+  und meine: Private-repo-j. **Fragen, bevor Schritt 5 anfaengt.**
+- **Erfolgskriterium (4)** verlangt am Ende: die Fleet-Zeilen aus `workflow-v2.md` als `auftrag`
+  mit Done-Kriterium filen (mindestens Program-scoped Dispatch — `5c1f831f` existiert schon,
+  pending — und Critic-Requeue), plus Program-MAIN-ctx ≤ 25 % bei Abschluss, gemessen.
+- Nichts ist in Flug. Keine Lane offen, keine Attention offen, kein Watch armed.
+
+## 6. Betriebsnotiz zu dieser Rolle
+
+Die MAIN hat in 5 Schritten **kein einziges Artefakt vollstaendig gelesen** und kein Bild
+angesehen — nur Reports, Land-Notes, Projektion und gezielte `grep`/`sed`-Proben am Baum. Von
+Gruendung bis hier: **23,4 %**. Das ist die Regel, die v2 tragen soll, an sich selbst vorgefuehrt;
+wenn die Adjudikation ihre Vorhersagezahl waehlt, ist diese Zahl der erste Datenpunkt daneben.
+
+---
+
 # HANDOFF — 🎛 Fleet Controller (Slot 8, Fable): Owner hat das Sagen zurueckdelegiert; RESCOPE der Sanierung ist entschieden, 4 Lands, 7 Dispatches, 2 Kills, 1 Deploy; 2026-09-04 (00:2x), ctx GEMESSEN 25 %
 
 Zustand ableiten: `./state.sh`, Owner-Poll, Panes. Hier nur, was git nicht traegt.

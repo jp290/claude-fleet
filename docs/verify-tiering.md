@@ -1968,6 +1968,52 @@ now in the main checkout's copy, item 1 replacing the old rule rather than sitti
 from one leak; at four hand-runs in an evening it is visibly accumulating. Still outside the repo,
 still not touched.
 
+### 11.2l A fourteenth family: the busy-receiver restart check in `e2e/watch.ts` (2026-09-03 — MECHANISM READ FROM THE TRAIL REGISTER, discriminator measured, NOT repaired)
+
+**The member, a singleton:** `restart keeps the busy pending event with the same id and no
+invented attempt` (`e2e/watch.ts`, the restart-boundary block). Failing detail every time: the
+row comes back `status:"delivered"`, `attempts:1`, `deliveredAt` set, where the check expects
+`pending` / `attempts:0`.
+
+**Proven pre-existing, from the trail register rather than from re-runs.** 364 of the 715
+`isolated-*` trails carry this check. It has gone red **15 times on 13 DISTINCT trees** — one
+lone red on 2026-08-16 (`9db4b85`), then eleven on 2026-09-02 (`2d4eb92`, `5e2f47d`, `d63bb91`,
+`866aeea`, `d4bb687` twice, `fda6fda`, `a97f0f5`, `299ac65`, `fa9edd0`, `4d2dd39`) and three on
+2026-09-03 (`9f3b5a0`, then twice on the P4 Slice 5+6 tree `7d938ce`, which is what occasioned
+this entry). A check that reds on thirteen unrelated trees is not any one of their regressions.
+
+**The mechanism, read out of the code and confirmed by the numbers.** The fixture keeps receiver
+slot B loud with `echo watch-still-busy` every 250 ms, but that loop exits the moment `eventB` is
+first SEEN pending — from then on nothing in the fixture keeps the pane busy. `eventB` carries
+`receiverIdleSec: 2`, and `tickWatches` delivers as soon as `canDeliver` sees 2 s of pane quiet
+(`server.ts`, the `idleMs: event.receiverIdleSec * 1000` gate). So the check passes only if the
+work BETWEEN the busy-event anchor and the restart boundary keeps that pane from ever being quiet
+for two seconds — a precondition the fixture does not control and never asserts.
+
+**The discriminator, measured over all 364 runs** — elapsed time from the check
+`one signal creates exactly one durable event even for a busy receiver` to the restart check:
+
+| | min | median | p95 | max |
+|---|---:|---:|---:|---:|
+| 349 green runs | 1.3 s | 3.1 s | 3.5 s | 7.5 s |
+| 15 red runs | 3.5 s | 4.0 s | — | 5.1 s |
+
+Every red sits at or above 3.5 s; only 21 of 349 greens do. The separation is not clean (a 7.5 s
+green exists), so this is a strong correlate and not a law — but it is the same 2 s gate showing
+through, and it is the first numeric handle this family has.
+
+**Why the reds cluster on 2026-09-02:** `1748417` (`feat(helper): Job v1 command`) inserted the
+whole job-watch block INTO that stretch, between the anchor and the restart boundary, and
+`d4bb687` added to it. Eleven of the fifteen reds are on or after that day. Lengthening the
+stretch is what moved the fixture across the gate — nobody changed the delivery path.
+
+**Not repaired, deliberately: the fix is a fixture change and belongs to a lane that owns
+`e2e/watch.ts`,** not to a move slice that only happened to trip it. The shape of the fix is the
+one §11.2f already used: the fixture must CONTROL its precondition (keep sending to slot B until
+the restart, or subscribe with `idleSec: 0` and assert the pending-ness it actually engineered)
+rather than inherit it from whatever else happens to type into that pane. Until then a red here
+is NOT a verdict on the tree under test — check the stretch in the run's trail first.
+
 ## 12. Ein Cast auf eine Netz-Antwort ist eine Behauptung — der `awaiting`-Befund (aus `CLAUDE.md` umgezogen 2026-08-18)
 
 Die Regel steht in `CLAUDE.md` §Deploy; hier der Befund im Original:

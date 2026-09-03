@@ -1,3 +1,153 @@
+# HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 9 → Nachfolge): Slice 4 GELANDET, Slice 5+6 im FÜNFTEN Land-Versuch, und die Land-Kette selbst ist der teuerste Befund des Tages; 2026-09-03 (11:5x), ctx GEMESSEN 30,8 %
+
+Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,
+`GET /api/self/program-execution`. Hier steht nur, was git und die Sensoren NICHT tragen.
+
+## 1. Das Erste, was du tust
+
+**Ein Land ist IN FLUG**: Task `8990eeb0` (Slice 5+6), Kandidat `625bf235`, Lane Slot 6
+`fleet/260903062628-c5ef`. Prüfe zuerst, ob es durch ist — und zwar an der Identität, nicht am
+Text:
+
+    git cat-file -e main:server/http.ts && echo GELANDET || echo NICHT
+
+- **Gelandet:** Post-Land-Audit abonnieren (`{kind:"audit", repo:"/Users/owner/claude-fleet",
+  mainAfter:"<sha>"}`), `armed` prüfen, dann §f des Slice-Protokolls fahren: Dry-Boot des
+  Vorstands gegen eine Scratch-Kopie der `fleet.json` → Deploy (Verb 2) → `bundleStale`/`deployGap`
+  → `bun e2e/pins.ts` → `graphify update .`.
+- **Nicht gelandet:** lies `GET /api/slots/6/merge`. Bei `verify.ok:null` mit hohem `waitMs` ist es
+  wieder ein **waitedOut** (siehe §4) — dann Maschine leerlaufen lassen (`ps -eo command | grep -c
+  '^/bin/sh ./e2e-'` muss 0 sein), die Lane um einen Rebase bitten (der Guard verlangt einen neuen
+  Kandidaten) und erneut landen. Bei `verify.ok:false` erst die Signatur lesen, bevor du dem Code
+  glaubst.
+
+## 2. Gelandet und verifiziert
+
+**P4 Slice 4 (`46d29d8`)** — Audit-Log nach `server/audit-log.ts`. `server.ts` 23962 → 23776
+(−186). Gate voll grün, sieben Stufen, 107 s. Von mir am Baum nachgemessen, nicht der Meldung
+geglaubt: Move-Treue per `diff` (genau zwei beabsichtigte Abweichungen), Regel 2 gehalten,
+Anker-Nest unberührt, **und der Pfadvergleich für `AUDIT_FILE` von mir selbst ausgeführt** —
+byte-gleich. §f komplett gefahren: Rollback-Dry-Boot (Vorstand bootet gegen heutige `fleet.json`,
+HTTP 200, kein Crash-Loop), Deploy `281f0f3b` `ok:true`, `deployGap` auf 0, `graphify update`.
+
+Post-Land-Audit darauf war **rot (3508/1)** und ist **adjudiziert `flake`** (`at 1788401780607`) —
+Basisrate 4/26, drei Rote auf Bäumen VOR dem Land, Signatur in allen vier identisch.
+
+**Direkt-Commit `82869c1`** — die Slice-5+6-Vormessung. Docs-only, `bun e2e/pins.ts` ALL PASS,
+**kein Post-Land-Audit deckt ihn**.
+
+## 3. Eine Änderung, die git NICHT trägt — lies das, bevor du dem Regelbuch glaubst
+
+Ich habe das Regelbuch von **dreizehn auf vierzehn Flake-Familien** gezogen (§11.2l). Geändert
+habe ich `rulebook/lane-discipline.md`, dann `CLAUDE.md` neu gerendert. **Beide sind untracked.**
+`git log` zeigt davon nichts, `./state.sh` zeigt davon nichts, und eine Lane, die heute spawnt,
+bekommt die neue Fassung nur als Kopie. Wenn du dich fragst, warum eine Regel da steht, die in
+keinem Commit auftaucht: hier ist sie her.
+
+## 4. Der teuerste Befund des Tages: die Land-Kette misst nicht mehr
+
+Slice 5+6 hat **fünf** Land-Versuche gebraucht. Die Tabelle ist die eigentliche Übergabe:
+
+| # | Ergebnis | hat der Gate den Code gemessen? |
+|---|---|---|
+| 1 | verify ROT, exit 3 | **nein** — §11.2i, Phase-3-Server bootete nie (`no server.log`) |
+| 2 | 409 no-progress | nein |
+| 3 | `verify.ok: null`, `waitMs 2669000` | **nein** — 44,5 min Schlange, Mutex nie bekommen |
+| 4 | 409 no-progress | nein |
+| 5 | in Flug | ? |
+
+Über 70 min Wanduhr, null Messungen — bei Code, den die Lane selbst **fünfmal grün** hatte. Zwei
+getrennte Ursachen, beide gefilet:
+
+- **`e48ab251`** — der no-progress-Guard behandelt ein `waitedOut` (`verify.ok===null`, Baum nie
+  angesehen) wie ein rotes Urteil. Der Datensatz unterscheidet die beiden, die Route nicht. Folge:
+  man muss Bewegung erfinden (Rebase), um Arbeit zu wiederholen, an der sich nichts geändert hat.
+  Done-Kriterium mit Fixture auf beiden Seiten steht in der Zeile.
+- **§11.2i**, weiter ohne Mechanismus. Die Lane hat ihn auf einem über alle Rebases
+  **code-identischen** Baum beziffert: **7 `claude-gate`-Läufe, 5 grün / 2 rot** — rund jeder
+  dritte Land-Versuch stirbt an einer Suite, die den Code nie gemessen hat.
+
+**Der Mutex selbst ist in Ordnung** — ich hatte zwei parallele `e2e-isolated` im Verdacht und es
+war falsch: `/tmp/fleet-e2e.lock/pid` nannte den Halter, der zweite Wrapper hatte keinen Runner
+und wartete. Die Schlange ist echt, die Parallelität nicht.
+
+## 5. Was ich gefilet habe, und eine Zahl von mir, die überholt ist
+
+- **`7e984bde`** — Nachtrag zu `0c190377` (300-Zeichen-Deckel an `adjudicate`), dritte Instanz plus
+  die strukturelle Folge: der Deckel macht die Ledger-Zeile zum Zeiger auf etwas außerhalb des
+  Ledgers.
+- **`04fdfc77`** — das Flake-Genus „die Sonde sampelt einen by-design-Transienten".
+  **KORREKTUR, und sie ist meine:** dort steht `15,4 %` für die §11.2l-Familie. Das war eine
+  Kleinstichprobe aus 26 Läufen meines TMPDIR-Fensters. Die Lane hat über **364** Läufe gemessen:
+  **15 Rote auf 13 verschiedenen Bäumen ≈ 4,1 %**, geclustert am 02./03.09. Die belastbare Zahl
+  steht in `docs/verify-tiering.md` §11.2l; die Queue-Zeile ist an dieser Stelle zu hoch.
+- **`e48ab251`** — siehe §4.
+
+## 6. Slice 5+6 inhaltlich — was die Vormessung wert war
+
+`server/http.ts` (json, HOST, PORT — echtes Blattmodul, **null** Importe) + `server/auth.ts`
+(zwölf Symbole). `server.ts` 23827 → 23735 (−92). Von mir geprüft: Move-Treue mechanisch, Regel 2,
+und **der ESM-read-only-Beweis über alle dreizehn importierten Bindungen mit funktionierender
+Gegenprobe** (`TOKEN` 2 Treffer, `shares` 6 — die Sonde kann feuern, die Leere ist gemessen).
+
+Der Blocker, den KEINE Vormessung hatte und den erst der Compiler zeigte: **`let TOKEN`** wird vom
+Kern im Boot-Pfad beschrieben. Ein Move daraus wäre ein Laufzeit-TypeError gewesen, den `tsc` nicht
+sieht und der erst im Watchdog-Respawn zuschlägt — also nach dem Land. `e2e/security.ts` §1
+verlangt unabhängig davon dasselbe (`tokenGate` muss beim Gate-Marker bleiben).
+
+**Nächster Slice:** Tier 1 ist nach 5+6 leer. Der Plan nennt als offenen Tier-1-Posten noch
+„audit-queue" — und `p4-slice4-vorbereitung.md` sagt ausdrücklich, dass **nicht entscheidbar ist**,
+ob damit das Audit-LOG (erledigt, Slice 4) oder die Post-Land-Audit-QUEUE (`auditQueue`, mit Drain,
+Helfer-Portal und Retention) gemeint war. Die Queue ist deutlich größer und berührt den
+Helfer-Pfad: eigener Slice mit eigener Messung, kein Anhängsel. **Miss sie, bevor du sie briefst.**
+
+## 7. Offen, und wem es gehört
+
+- **Erfolgsmaß 1 ist unerreichbar, und der Owner-Entscheid steht aus.** Controller-Projektion:
+  275/Subsystem, Kern ~19.930 gegen Ziel 8.000. Meine zwei Slices lagen bei −186 und −92, beide
+  unter Schnitt. Der belastbare Satz dazu ist nicht die Hochrechnung, sondern die Bauart:
+  **`json` allein hat 1039 Aufrufstellen, von denen sich keine ändert** — die Kernzeilen sind
+  Aufrufstellen, nicht Definitionen, und ein Move bewegt nur die Definition.
+- Die Attention `5954d4da` meiner Vorgängerin ist weiter offen (Advisory-Disposition,
+  Feature-Freeze).
+- Der §11.2l-Fix gehört einer Lane, die `e2e/watch.ts` besitzt. §11.2i hat weiter keinen
+  Mechanismus.
+
+## 8. Sondendisziplin — drei eigene Fehlschüsse an einem Tag
+
+Alle drei hätten als Antwort durchgehen können; jeder wurde nur entdeckt, weil ein zweiter Sensor
+widersprach:
+
+| Sonde | fiel auf | richtige Form |
+| --- | --- | --- |
+| `awk '/\bshares\b/'` | macOS-`awk` liest `\b` als Backspace → LEER, las sich wie „kommt nicht vor" | Wortgrenzen nur mit `grep`/`rg` |
+| Watcher auf „`main` hat sich bewegt" | fremdes Doku-Land eines anderen Programms | `git merge-base --is-ancestor` |
+| Watcher auf Subject-Grep `Slice 5+6` | **meinen eigenen** Messnotiz-Commit auf `main` | `git cat-file -e main:<datei-die-nur-dieser-slice-erzeugt>` |
+
+Regel daraus: **eine Warte-Bedingung prüft Identität, nie Text und nie „hat sich etwas bewegt"** —
+in einem Fleet mit fünf parallel landenden Programmen ist jede unspezifische Bedingung ein
+Rauschmelder. Und: mein Diff-Rezept an die Lane (`git diff … -- docs/`) war zu weit; es fing
+`main`s eingehende Dateien mit. Die Lane hat das korrigiert, zu Recht — ein Inhaltsbeweis
+schränkt auf die Dateien ein, die der Slice wirklich anfasst.
+
+## 9. Ehrlichkeiten
+
+- Diese Session lief auf `claude-opus-5[1m]`, nicht Fable. Die Modellpolitik vom 02.09. will Fable
+  5.1 für eine Program-MAIN. Geerbt, nicht behoben — der Zug ist ein PAAR (`POST
+  /api/slots/:id/model` UND `/model` in der Pane).
+- Alle meine eigenen Commits sind Direkt-Commits aus dem Haupt-Checkout, docs-only, mit
+  `bun e2e/pins.ts` verifiziert — **nicht** mit der vollen Suite, und kein Post-Land-Audit deckt
+  sie. `./state.sh`s Land-Health-Zahlen zählen sie nicht.
+- **B-07 dreimal live bestätigt:** nach einem fehlgeschlagenen Land gibt
+  `POST /api/self/watch {kind:"merge"}` den VERBRAUCHTEN Watch zurück (`ok:true`, `armed:false`).
+  Der vom Gründungsbrief vorgeschriebene Rückweg ist dort tot; ich bin auf Hintergrund-Watcher
+  ausgewichen. **Immer `armed` lesen, nie `ok`.**
+- Ich habe einen Widerspruch zwischen Projektion (`REVIEWABLE`) und Land-Tür (`no signal`)
+  gemessen und **nicht** gefilet: die Projektion nannte die Tür unter `R9` (merge-last non-land
+  verdict), was sie unabhängig vom Live-Prädikat tut. Kein Defekt.
+
+---
+
 # HANDOFF — Fleet Controller (Slot 13, Fable 5.1 high): Land 24f9cfc entlastet, zwei Owner-Ideen als Entwuerfe gelandet und von GLM gegengelesen, 6f401842-Brief korrigiert; 2026-09-03 (11:0x), ctx GEMESSEN 25,2 %
 
 Rolle: 🎛 Fleet Controller, Nachfolge von Slot 12 ueber einen handgeschriebenen Brief.

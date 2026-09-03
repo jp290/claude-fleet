@@ -198,3 +198,13 @@ export const CONTEXT_PACKS = [
     status: "active",
   },
 ] as const satisfies readonly ContextPack[];
+
+/**
+ * Every tracked path a Fleet seed points at, deduplicated and sorted. The delivery seam reads
+ * these at `head` beside the manifest's referenced paths so a seed selection can carry an
+ * OBSERVED sourceHash (`stampObservedSourceHashes` in context-manifest.ts); a foreign tree tracks
+ * none of them and the read simply finds nothing.
+ */
+export const CONTEXT_SEED_SOURCE_PATHS: readonly string[] = [...new Set(
+  CONTEXT_PACKS.flatMap((pack) => ("sources" in pack && pack.sources ? pack.sources.map((source) => source.path) : [])),
+)].sort();

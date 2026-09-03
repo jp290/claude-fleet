@@ -71,6 +71,8 @@ export interface OutcomeRecord {
 /** a context-receipts.jsonl line, same stance. `briefSource`/`briefHash` are absent before 735aa45. */
 export interface ReceiptRecord {
   at?: unknown; branch?: unknown; taskId?: unknown; briefHash?: unknown; briefSource?: unknown;
+  /** the delivered ContextPlan selections, `{id, sourceHash?}` rows; absent on a row from before the plan rail */
+  selected?: unknown;
 }
 
 export interface SourceStats {
@@ -92,8 +94,29 @@ export interface SourceStats {
   dispositions: Record<string, number>;
 }
 
+/**
+ * The same two rates per delivered PACK × SOURCE VERSION — the unit a pack-quality question is
+ * asked in ("did version N+1 of verify-e2e land more zero-prompt lanes than N?"). One lane books
+ * each pack it was delivered once; a receipt that names no packs is counted beside these rows.
+ */
+export interface PackStats {
+  id: string;
+  /** the OBSERVED hash of the pack's sources at delivery; null = delivered without one (unversioned) */
+  sourceHash: string | null;
+  lanes: number;
+  killedEmpty: number;
+  emptyRate: number | null;
+  landed: number;
+  zeroPrompt: number;
+  zeroPromptRate: number | null;
+  promptsUnreadable: number;
+  dispositions: Record<string, number>;
+}
+
 export interface BriefStatsSummary {
   sources: SourceStats[];
+  /** pack × version rows, lanes descending; the join is the same lane join as `sources` */
+  packs: PackStats[];
   overall: {
     lanes: number; killedEmpty: number; emptyRate: number | null;
     /** the same rate without the population whose emptiness is its contract (see the header) */
@@ -129,6 +152,8 @@ export interface BriefStatsSummary {
     unknownSource: number;
     /** taskId null (a founding/Supervisor delivery) or no branch: indexable by nothing */
     noLaneKey: number;
+    /** `selected` is not an array: a delivery that names no packs (a row from before the plan rail) */
+    noSelected: number;
     malformed: number;
   };
   /** how each join was actually decided, and what the two briefHashes said about it */
@@ -139,6 +164,8 @@ export interface BriefStatsSummary {
     hashMismatch: number;
     hashUnavailable: number;
   };
+  /** every joined lane lands in exactly one of the two: its receipt named its packs, or it did not */
+  packJoin: { lanes: number; lanesWithoutSelected: number };
 }
 
 // the lane key's separator. A branch name cannot contain a control byte (git refuses it), so this
@@ -151,7 +178,24 @@ function bump(into: Record<string, number>, key: string): void {
   into[key] = (into[key] ?? 0) + 1;
 }
 
-interface Receipt { taskId: string; branch: string; briefHash: string | null; source: BriefSource | null | "unknown" }
+interface PackKey { id: string; sourceHash: string | null }
+interface Receipt {
+  taskId: string; branch: string; briefHash: string | null; source: BriefSource | null | "unknown";
+  /** null = the row names no packs at all ("not stated"), which is not the same as an empty list */
+  packs: readonly PackKey[] | null;
+}
+/** the delivered selections of a receipt row; an entry without a readable id is skipped, never invented */
+const packsOf = (v: unknown): PackKey[] | null => {
+  if (!Array.isArray(v)) return null;
+  const out: PackKey[] = [];
+  for (const sel of v) {
+    if (typeof sel !== "object" || sel === null) continue;
+    const id = str((sel as Record<string, unknown>).id);
+    if (!id) continue;
+    out.push({ id, sourceHash: str((sel as Record<string, unknown>).sourceHash) });
+  }
+  return out;
+};
 
 /**
  * The two brief-quality rates, derived from the two ledgers alone.
@@ -171,7 +215,7 @@ export function briefStats(
   const byKey = new Map<string, Receipt[]>();
   const receiptStats = {
     total: receipts.length, bySource: {} as Record<string, number>,
-    preP2: 0, unknownSource: 0, noLaneKey: 0, malformed: opts.receiptsMalformed ?? 0,
+    preP2: 0, unknownSource: 0, noLaneKey: 0, noSelected: 0, malformed: opts.receiptsMalformed ?? 0,
   };
   for (const r of receipts) {
     const rawSource = r.briefSource;
@@ -182,13 +226,15 @@ export function briefStats(
     if (source === null) receiptStats.preP2++;
     else if (source === "unknown") receiptStats.unknownSource++;
     else bump(receiptStats.bySource, source);
+    const packs = packsOf(r.selected);
+    if (packs === null) receiptStats.noSelected++;
 
     const taskId = str(r.taskId);
     const branch = str(r.branch);
     // a founding receipt names no task, so it is indexable by nothing — that is its shape, not a
     // defect, and it is why `founding` can never reach a lane rate
     if (!taskId || !branch) { receiptStats.noLaneKey++; continue; }
-    const rec: Receipt = { taskId, branch, briefHash: str(r.briefHash), source };
+    const rec: Receipt = { taskId, branch, briefHash: str(r.briefHash), source, packs };
     const key = `${taskId}${KEY_SEP}${branch}`;
     const list = byKey.get(key);
     if (list) list.push(rec); else byKey.set(key, [rec]);
@@ -234,6 +280,31 @@ export function briefStats(
     bySource.set(source, fresh);
     return fresh;
   };
+  // ONE booking rule for both tables: a lane counts the same way under its brief origin and under
+  // each pack it was delivered, so the two tables can never disagree about what a lane did.
+  interface Booked { lanes: number; killedEmpty: number; landed: number; zeroPrompt: number; promptsUnreadable: number; dispositions: Record<string, number> }
+  const book = (b: Booked, lane: Lane): void => {
+    b.lanes++;
+    bump(b.dispositions, lane.disposition);
+    if (lane.disposition === "killed-empty") b.killedEmpty++;
+    if (lane.disposition === "landed") {
+      if (lane.ownerPrompts === null) b.promptsUnreadable++;
+      else {
+        b.landed++;
+        if (lane.ownerPrompts === 0) b.zeroPrompt++;
+      }
+    }
+  };
+  const packJoin = { lanes: 0, lanesWithoutSelected: 0 };
+  const byPack = new Map<string, PackStats>();
+  const packStatsFor = (key: string, pack: PackKey): PackStats => {
+    const existing = byPack.get(key);
+    if (existing) return existing;
+    const fresh: PackStats = { id: pack.id, sourceHash: pack.sourceHash, lanes: 0, killedEmpty: 0, emptyRate: null,
+      landed: 0, zeroPrompt: 0, zeroPromptRate: null, promptsUnreadable: 0, dispositions: {} };
+    byPack.set(key, fresh);
+    return fresh;
+  };
 
   for (const [key, lanes] of byLane) {
     // ONE LANE, ONE OUTCOME. A reverted lane has a `landed` row and a `reverted` row (the second
@@ -267,15 +338,19 @@ export function briefStats(
     else if (lane.briefHash === picked.briefHash) join.hashConfirmed++;
     else join.hashMismatch++; // joined on the key that carries; the disagreement is reported, not hidden
 
-    const s = statsFor(picked.source);
-    s.lanes++;
-    bump(s.dispositions, lane.disposition);
-    if (lane.disposition === "killed-empty") s.killedEmpty++;
-    if (lane.disposition === "landed") {
-      if (lane.ownerPrompts === null) s.promptsUnreadable++;
-      else {
-        s.landed++;
-        if (lane.ownerPrompts === 0) s.zeroPrompt++;
+    book(statsFor(picked.source), lane);
+    // the SAME lane, booked once per delivered pack × version. A receipt that names no packs is
+    // counted beside the rows: folding it into an "unversioned" bucket would make "not stated"
+    // look like "delivered without a hash", and those are different facts.
+    if (picked.packs === null) packJoin.lanesWithoutSelected++;
+    else {
+      packJoin.lanes++;
+      const seenPack = new Set<string>();
+      for (const pack of picked.packs) {
+        const packKey = `${pack.id}${KEY_SEP}${pack.sourceHash ?? ""}`;
+        if (seenPack.has(packKey)) continue; // one lane, one booking per pack, however often the row repeats it
+        seenPack.add(packKey);
+        book(packStatsFor(packKey, pack), lane);
       }
     }
   }
@@ -287,6 +362,13 @@ export function briefStats(
     s.zeroPromptRate = rate(s.zeroPrompt, s.landed);
   }
   rows.sort((a, b) => b.lanes - a.lanes || a.source.localeCompare(b.source));
+  const packRows = [...byPack.values()];
+  for (const p of packRows) {
+    p.emptyRate = rate(p.killedEmpty, p.lanes);
+    p.zeroPromptRate = rate(p.zeroPrompt, p.landed);
+  }
+  packRows.sort((a, b) => b.lanes - a.lanes || a.id.localeCompare(b.id)
+    || (a.sourceHash ?? "").localeCompare(b.sourceHash ?? ""));
 
   const sum = (pick: (s: SourceStats) => number, only?: (s: SourceStats) => boolean): number =>
     rows.filter((s) => (only ? only(s) : true)).reduce((n, s) => n + pick(s), 0);
@@ -297,13 +379,14 @@ export function briefStats(
 
   return {
     sources: rows,
+    packs: packRows,
     overall: {
       lanes, killedEmpty, emptyRate: rate(killedEmpty, lanes),
       excludingClarify: { lanes: workLanes, killedEmpty: workEmpty, emptyRate: rate(workEmpty, workLanes) },
       landed, zeroPrompt, zeroPromptRate: rate(zeroPrompt, landed),
       promptsUnreadable: sum((s) => s.promptsUnreadable),
     },
-    excluded, outOfScope, receipts: receiptStats, join,
+    excluded, outOfScope, receipts: receiptStats, join, packJoin,
   };
 }
 
@@ -350,6 +433,17 @@ export function renderBriefStats(s: BriefStatsSummary): string {
   if (s.sources.some((r) => r.emptyIsContract))
     out.push("  † a clarify lane is briefed NOT to commit — its killed-empty is the contract kept, not a failure");
 
+  out.push(`  ${pad("pack @ source version", 48)}${pad("lanes", 6)} ${pad("killed-empty", 21)}${pad("landed", 8)}0-owner-prompt`);
+  for (const p of s.packs) {
+    out.push(`  ${pad(`${p.id} @${p.sourceHash ? p.sourceHash.slice(0, 12) : "unversioned"}`, 48)}${pad(p.lanes, 6)} `
+      + `${pad(frac(p.killedEmpty, p.lanes, p.emptyRate), 21)}${pad(p.landed, 8)}`
+      + `${frac(p.zeroPrompt, p.landed, p.zeroPromptRate)}`
+      + (p.promptsUnreadable ? `  (+${p.promptsUnreadable} landed w/o a readable ownerPrompts)` : ""));
+  }
+  if (!s.packs.length) out.push("  (no joined lane's receipt named its packs)");
+  out.push(`  one booking per lane per delivered pack · ${s.packJoin.lanes} joined lane(s) named packs`
+    + ` · ${s.packJoin.lanesWithoutSelected} did not`);
+
   const ex = s.excluded;
   out.push("excluded (each lane row lands in exactly one bucket):");
   out.push(`  no taskId ${ex.noTaskId} · no branch ${ex.noBranch} · superseded rows ${ex.supersededOutcomeRows}`
@@ -360,7 +454,7 @@ export function renderBriefStats(s: BriefStatsSummary): string {
   const rc = s.receipts;
   const bySource = Object.entries(rc.bySource).sort().map(([k, v]) => `${k} ${v}`).join(" · ") || "none";
   out.push(`receipts ${rc.total}: ${bySource} · pre-P2 ${rc.preP2} · unknown ${rc.unknownSource}`
-    + ` · no lane key ${rc.noLaneKey} · malformed ${rc.malformed}`);
+    + ` · no lane key ${rc.noLaneKey} · no selected ${rc.noSelected} · malformed ${rc.malformed}`);
   out.push(`joins: by taskId+branch ${s.join.byTaskBranch} · disambiguated by briefHash ${s.join.disambiguatedByHash}`
     + ` · hash confirmed ${s.join.hashConfirmed} · hash mismatch ${s.join.hashMismatch}`
     + ` · hash unavailable ${s.join.hashUnavailable}`);

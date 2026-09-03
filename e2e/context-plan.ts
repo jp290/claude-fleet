@@ -5,7 +5,9 @@ import {
   type ContextPackCapability,
 } from "../context-packs";
 import { CONTEXT_PLAN_OMISSION_REASONS, planContext } from "../context-plan";
-import { CONTEXT_MANIFEST_MAX_BYTES, CONTEXT_MANIFEST_OMISSION_ID, planRepoContext, readContextManifest } from "../context-manifest";
+import { createHash } from "node:crypto";
+import { CONTEXT_MANIFEST_MAX_BYTES, CONTEXT_MANIFEST_OMISSION_ID, observedSourceHash, planRepoContext,
+  readContextManifest, stampObservedSourceHashes } from "../context-manifest";
 
 export type ContextPlanCheck = (name: string, ok: boolean, detail?: string) => void;
 
@@ -132,6 +134,30 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
       && JSON.stringify(valid.selected[0].sources) === JSON.stringify([{ path: "docs/promise.md", anchor: "## Product promise" }]),
     JSON.stringify(valid));
   const repoUseWhen = "Wenn du das Produktversprechen dieses Repos pruefst.";
+  // --- the observed source version. A pack's sourceHash is a MEASUREMENT over the bytes the
+  // validator proved, never a literal someone typed, so "version N vs N+1" is computable.
+  const promiseBytes = "## Product promise\nplay first.\n";
+  const expectedHash = createHash("sha256").update("docs/promise.md").update("\0").update(promiseBytes).update("\0").digest("hex");
+  check("context manifest: a validated repo pack carries the OBSERVED sha256 of the bytes the validator proved, framed path\\0bytes\\0",
+    valid.selected[0]?.sourceHash === expectedHash, JSON.stringify(valid.selected[0]));
+  const edited = planRepoContext(repoWorld([repoPack()], "## Product promise\nplay second.\n"));
+  check("context manifest: the observed hash follows the bytes — a source edit is a new pack version",
+    typeof edited.selected[0]?.sourceHash === "string" && edited.selected[0].sourceHash !== expectedHash,
+    JSON.stringify(edited.selected[0]));
+  const declared = planRepoContext(repoWorld([repoPack({ sourceHash: "a".repeat(64), observedAt: "2026-01-01T00:00:00Z" })]));
+  check("context manifest: an observed hash beats a declared literal — a measurement over a claim",
+    declared.selected[0]?.sourceHash === expectedHash, JSON.stringify(declared.selected[0]));
+  const seedBytes = new Map([["AGENTS.md", "## Portable operating contract\n## Verify\n"]]);
+  const stamped = stampObservedSourceHashes(normal.selected, seedBytes);
+  const stampedCore = stamped.find((p) => p.id === "portable-core");
+  const stampedVerify = stamped.find((p) => p.id === "verify-e2e");
+  check("context plan: stampObservedSourceHashes hashes a seed only when EVERY source was read — a half-read seed stays unstamped, never half-hashed",
+    typeof stampedCore?.sourceHash === "string" && stampedVerify !== undefined && stampedVerify.sourceHash === undefined
+      && normal.selected.every((p) => p.sourceHash === undefined),
+    JSON.stringify(stamped.map((p) => [p.id, p.sourceHash ?? null])));
+  check("context plan: a stamped seed hash equals the observed hash over the same bytes, so seed and repo rows are one unit",
+    stampedCore?.sourceHash === observedSourceHash([{ path: "AGENTS.md", anchor: "## Portable operating contract" }], seedBytes));
+
   const withUseWhen = planRepoContext(repoWorld([repoPack({ useWhen: repoUseWhen })]));
   check("context manifest: a repo pack's own purpose line is carried through, never rewritten",
     withUseWhen.selected.length === 1 && withUseWhen.selected[0].useWhen === repoUseWhen,

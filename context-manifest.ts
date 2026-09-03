@@ -5,6 +5,7 @@
 // COMMIT THE RECEIPT ASSERTS, validates it with the same pure validator the Fleet seeds pass, and
 // plans it through the same omission ladder. Everything in this file is pure — it is handed the
 // manifest bytes and the repo facts, and performs no filesystem, git, env, or network read.
+import { createHash } from "node:crypto";
 import { validateContextPacks, validUseWhen, type ContextPackRepoFacts } from "./context-pack-validator";
 import { CONTEXT_PACKS, type ContextPackCapability, type ContextPackMode, type ContextPackSource,
   type ContextPackTrigger } from "./context-packs";
@@ -132,6 +133,11 @@ export function planRepoContext(input: RepoContextPlanInput): ContextPlan {
       omitted.push({ id, why });
       continue;
     }
+    // OBSERVED beats DECLARED: the validator just proved these exact bytes, so their hash is a
+    // measurement of the delivered version; a manifest's literal is a claim about it and only
+    // fills in where nothing was read.
+    const sourceHash = observedSourceHash(pack.sources, input.repo.sourceBytes)
+      ?? (typeof pack.sourceHash === "string" ? pack.sourceHash : undefined);
     selected.push({
       id,
       sources: pack.sources.map((source) => ({ path: source.path, anchor: source.anchor })),
@@ -140,8 +146,44 @@ export function planRepoContext(input: RepoContextPlanInput): ContextPlan {
       // only ever see a valid line or none. It is still stated here rather than assumed: the field
       // is carried into a delivered brief, and a carrier must never widen what it was handed.
       ...(validUseWhen(pack.useWhen) ? { useWhen: pack.useWhen } : {}),
-      ...(typeof pack.sourceHash === "string" ? { sourceHash: pack.sourceHash } : {}),
+      ...(sourceHash === undefined ? {} : { sourceHash }),
     });
   }
   return { selected, omitted };
+}
+
+/**
+ * The OBSERVED source hash of a pack: sha256 over the exact bytes Fleet read at the planned commit
+ * for every source path, in source order, each framed as `path\0bytes\0`. `undefined` when any
+ * source was not read — an unobserved pack carries no hash, never a partial one. The hash is over
+ * whole files on purpose: it is the version of what the anchor points INTO, and the only thing
+ * that was actually measured.
+ */
+export function observedSourceHash(
+  sources: readonly ContextPackSource[], sourceBytes: ReadonlyMap<string, string>,
+): string | undefined {
+  if (sources.length === 0) return undefined;
+  const hash = createHash("sha256");
+  for (const source of sources) {
+    const bytes = sourceBytes.get(source.path);
+    if (bytes === undefined) return undefined;
+    hash.update(source.path).update("\0").update(bytes).update("\0");
+  }
+  return hash.digest("hex");
+}
+
+/**
+ * Stamp observed hashes onto the selections that carry none — the Fleet seeds, which `planContext`
+ * plans without bytes. A selection that already has a hash keeps it, a private one is not
+ * observable here, and a seed whose sources were not all read stays unstamped rather than
+ * half-hashed. Pure; the caller hands over whatever it read at `head`.
+ */
+export function stampObservedSourceHashes(
+  selected: readonly ContextPlanSelection[], sourceBytes: ReadonlyMap<string, string>,
+): ContextPlanSelection[] {
+  return selected.map((selection) => {
+    if (selection.sourceHash !== undefined || "privateSourceId" in selection.sources) return selection;
+    const observed = observedSourceHash(selection.sources, sourceBytes);
+    return observed === undefined ? selection : { ...selection, sourceHash: observed };
+  });
 }

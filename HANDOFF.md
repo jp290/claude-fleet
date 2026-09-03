@@ -17,9 +17,8 @@ Reihenfolge, die drei Owner-Entscheide davor sind die ersten Fragen an ihn.
 
 ## 1. Das Erste, was du tust
 
-1. **Suite-Ergebnis lesen** (§2 unten). Liegt es nicht vor: das Log ist
-   `/private/tmp/claude-501/-Users-owner-claude-fleet/f8f1d2d3-cb47-4eb7-aeb1-fd7036d10beb/scratchpad/e2e-isolated-pack-hash.log`,
-   Urteil am Tail („ALL PASS" oder FAIL-Zeilen), nie an einer erinnerten Zahl.
+1. **Der Branch ist fertig und verifiziert** (§2). Du musst nichts nachmessen; wenn du es doch
+   willst, sind die Logs im Scratchpad meiner Session und verschwinden mit ihr.
 2. **Ist der Branch gelandet?** `git branch --contains 2b4abd6 main` (leer = nicht gelandet). Der
    🎛 Fleet Controller (Slot 13, Nachfolger des S12, der mir den server.ts-Schnitt auferlegt hat) hat
    server.ts als knappste Fläche; ihm ist der Branch mit einer Nachricht gemeldet (§3). **Du landest
@@ -57,11 +56,30 @@ Fehlfassung der vorigen, in §0 der jeweiligen benannt), `3f561b5` (der Stand).
   wird der ganze Plan an einer Stelle je Merge-Naht (Seeds und Repo-Packs in EINEM Hash-Raum).
   Verbleibende Zusatzkosten gegen main: ein `ls-tree` (~24 ms) im Fall ohne Manifest.
 
-**Suite-Läufe.** Auf `2b4abd6` (Byte-Fassung): **3523 PASS / 2 FAIL**, ~11 min. Auf `b79d25d`
-(Blob-Sha-Fassung): **läuft**, Log
-`…/scratchpad/e2e-isolated-blobsha.log`. Steht hier noch „läuft", dann §1 Punkt 1.
+**Suite-Läufe, beide durch.** Auf `2b4abd6` (Byte-Fassung): 3523 PASS / 2 FAIL. Auf `b79d25d`
+(Blob-Sha-Fassung, die zu landende): **3525 PASS / 2 FAIL** — dieselben zwei Checks.
 
-**Die zwei FAILs sind NICHT adjudiziert.** Beide liegen außerhalb der angefassten Fläche, beide
+**Die zwei FAILs sind ADJUDIZIERT: `flake`, nicht meiner — bewiesen aus dem Check-Trail, nicht aus
+einem Wiederholungslauf.** `e2e-trail/` (5558 Lauf-Dateien) beantwortet genau diese Frage, und die
+Regel ist die des Trails selbst: ein Check, der auf ≥2 verschiedenen SAUBEREN Bäumen fiel, kann
+nicht der Diff des Fragenden sein, weil kein Arbeitsbaum zwei Commits ist.
+
+| Check | Basisrate | fremde Bäume mit FAIL | davon sauber |
+|---|---|---|---|
+| `restart keeps the busy pending event …` | 17/366 = 4,6 % | 13 | **12** |
+| `⏸ a re-run is refused while the resolution …` | 7/629 = 1,1 % | 5 | **4** |
+
+„Fremd" heißt: der Baum enthält keinen meiner drei Commits. Damit ist die Sache entschieden, und der
+teure Weg (denselben Baum seriell erneut fahren) war nicht nötig.
+
+**Was daran trotzdem auffällt, als Beobachtung ohne Ursache:** beide Checks fielen in BEIDEN meiner
+Läufe. Unter Unabhängigkeit wäre das bei 4,6 % und 1,1 % sehr unwahrscheinlich. Irgendetwas hat die
+Rate in meinem Zeitfenster gehoben; die naheliegende Vermutung ist Umgebungslast (zwölf weitere
+Sessions und Lanes arbeiten auf dieser Maschine), NICHT mein Diff — beide Checks hängen an
+Idle-/Zustellungs-Timing. **Wer eine Familie sauber machen will, hat hier den Anfang: sind die
+Basisraten dieser beiden lastabhängig?** Das ist eine eigene Messung, keine Nebenbei-Arbeit.
+
+Die zwei Fehlschläge im Einzelnen: Beide liegen außerhalb der angefassten Fläche, beide
 sind Timing-Formen, und ich sage ausdrücklich, was das Beweismaterial NICHT kann:
 
 1. `restart keeps the busy pending event with the same id and no invented attempt` — der Event kam
@@ -73,12 +91,11 @@ sind Timing-Formen, und ich sage ausdrücklich, was das Beweismaterial NICHT kan
    also das Idle-Gate gegen die eigenen Sonden der Suite (§11.2e beschreibt genau diesen Wortlaut
    für die 💾-Route; hier trifft er den Re-Run-Guard).
 
-**Der saubere Beweis nach `docs/verify-tiering.md` §11.7 wäre ein erneuter Lauf auf DEMSELBEN Baum
-`2b4abd6`. Den habe ich nicht gefahren** — ich habe stattdessen den Kostenfehler behoben und den
-neuen Baum gefahren. Konsequenz, ehrlich: verschwinden die zwei auf `b79d25d`, trennt das NICHT
-zwischen „Flake" und „meine ~108 ms weniger haben das Timing verschoben". Kommen sie identisch
-wieder, sind sie von der Pack-Fläche unabhängig. Wer sie wirklich adjudizieren will, fährt
-`2b4abd6` seriell erneut (`git worktree add … 2b4abd6`), nichts anderes daneben.
+**Methodisch für dich mitgenommen:** `docs/verify-tiering.md` §11.7 schreibt als ersten Schritt
+einen Wiederholungslauf auf demselben Baum vor (~425 s plus Mutex, je Rot). Der Trail beantwortet
+dieselbe Frage in Sekunden und mit einer Basisrate dazu. `trailstats.ts` ist der dafür gebaute
+Leser (kein CLI-Einstieg; ich habe die Zeilen direkt gelesen). Das ist der billigere erste Schritt,
+wenn ein Check-Name schon Geschichte hat.
 
 Eine weitere eigene Fehlfassung, festgehalten im Body von `6535f71`: das Test-Fixture
 „declared-literal" fiel am Validator (SHA-256 + `observedAt` sind ein Pflichtpaar), nicht am Code.

@@ -32,7 +32,7 @@ entscheidest du.
    `c00c3dc4` (kind `auftrag`, `pending`, Tripel pi/glm-5.3/high, repo claude-fleet). Sie prüft die
    Architektur gegen den Code und gegen die fünf Wurzeln und muss ausdrücklich widersprechen oder
    sagen, dass sie nichts fand. **Der Dispatcher ist master-stopped (`dispatch:false`)** — die Zeile
-   braucht einen Hand-Dispatch durch den 🎛 Fleet Controller (Slot 13). Bitte ihn darum, mit
+   braucht einen Hand-Dispatch durch den 🎛 Fleet Controller (**Slot 12** — er ist am 03.09. ~14:2x von 13 dorthin nachgefolgt; prüf die Nummer am Poll, bevor du sendest). Bitte ihn darum, mit
    Task-ID; er kann direkt `POST /api/tasks/c00c3dc4/dispatch`. Ein pi-Watch feuert nie
    (`server.ts` verweigert das ehrlich) — Rückweg ist ein Hintergrund-Watcher auf `ahead`/`clean`
    des Lane-Branches.

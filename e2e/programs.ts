@@ -196,8 +196,8 @@ const programPost = (id: string, action: "confirm" | "activate" | "complete" | "
   });
 const contextReceipts = async (): Promise<{ receipts: ContextReceipt[]; total: number; malformed: number }> =>
   (await (await get("/api/context-receipts")).json()) as { receipts: ContextReceipt[]; total: number; malformed: number };
-const sessions = async (): Promise<{ slots: { id: number; cwd: string | null; label: string | null; openedAt?: number }[] }> =>
-  (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null; label: string | null; openedAt?: number }[] };
+const sessions = async (): Promise<{ slots: { id: number; cwd: string | null; label: string | null; openedAt?: number; harness?: string }[] }> =>
+  (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null; label: string | null; openedAt?: number; harness?: string }[] };
 const activateNewProgram = async (title: string): Promise<Program> => {
   const made = await post("/api/programs", { ...content, title });
   const program = ((await made.json()) as { program: Program }).program;
@@ -1574,6 +1574,113 @@ export async function run(ctx: Ctx): Promise<void> {
     successionReceipt?.briefSource === "founding"
       && successionReceipt?.briefHash === briefHashOf(successionPrompt),
     JSON.stringify(successionReceipt ?? null));
+
+  // --- THE UNBOUND SUCCESSION RAIL — the one founding delivery that had no gate. ------------
+  // Everything above proves the BOUND rail: succeedProgramMain holds the boot grace, the delivery
+  // gate and the bounded readiness wait before it pastes. The generic branch of
+  // POST /api/self/succeed (server.ts#handleSelfSucceed, the branch a session that is neither
+  // Program-MAIN nor Supervisor takes) went from openSlot straight into sendText, and that is
+  // where all four live failures of 2026-09-03 happened — `prompt not accepted — composer still
+  // holds 98 chars after 3000ms`, with the agent measured alive only ~6 s after the open. A
+  // fixture that probed either bound rail would have proven nothing about it: both had the gate.
+  //
+  // The measurement is the WITHHOLDING, not the arrival. The successor's pane is planted with a
+  // live process on a screen that carries NO ready marker; past the accept window — the exact
+  // window whose expiry produced the live error — the pane is read and must NOT hold the brief.
+  // Only then is the ready marker planted, and the brief must arrive whole. Old code fails the
+  // first assertion (it pasted before the pane existed as anything); a gate that merely slept
+  // longer fails the second.
+  //
+  // A PRIVATE repo, for the reason e2e/self-token.ts names on its own succession block: the
+  // handoff commit below would otherwise move the shared REPO under every later fixture here.
+  const unboundRepo = `${ROOT}/unbound-succession-repo`;
+  rmSync(unboundRepo, { recursive: true, force: true });
+  mkdirSync(unboundRepo, { recursive: true });
+  spawnSync("git", ["-C", unboundRepo, "init", "-q", "-b", "main"]);
+  spawnSync("git", ["-C", unboundRepo, "config", "user.email", "t@t"]);
+  spawnSync("git", ["-C", unboundRepo, "config", "user.name", "t"]);
+  // one commit before the slot opens, so the checkout has a HEAD the server can read at all — and
+  // so the handoff the succession accepts is provably the SECOND one, committed after the open
+  writeFileSync(`${unboundRepo}/HANDOFF.md`, "## older handoff\nnot for this session\n");
+  spawnSync("git", ["-C", unboundRepo, "add", "HANDOFF.md"]);
+  spawnSync("git", ["-C", unboundRepo, "commit", "-qm", "older handoff"]);
+  const unboundPredLabel = "unbound-succession-predecessor";
+  const unboundFreeSlot = (await sessions()).slots.find((s) => !s.cwd)?.id ?? 0;
+  const unboundOpen = unboundFreeSlot > 0
+    ? await post(`/api/slots/${unboundFreeSlot}/open`,
+      { cwd: unboundRepo, label: unboundPredLabel, harness: "codex", model: "gpt-5.5" })
+    : null;
+  // read off the LIVE route, not the persisted file: saveState is debounced, and a slot opened
+  // one line ago may not be on disk yet — `readState()` there would answer about the last save
+  const unboundPredRow = (await sessions()).slots.find((s) => s.id === unboundFreeSlot);
+  check("unbound succession setup: a codex session that is neither Program-MAIN nor Supervisor is open",
+    !!unboundOpen?.ok && unboundFreeSlot > 0 && unboundPredRow?.cwd === unboundRepo
+      && !(await ownerPrograms()).some((p) => p.main?.slot === unboundFreeSlot)
+      && unboundPredRow?.harness === "codex",
+    `slot=${unboundFreeSlot} status=${unboundOpen?.status} row=${JSON.stringify(unboundPredRow ?? null)}`);
+  const unboundPredOpenedAt = unboundPredRow?.openedAt ?? Date.now();
+  // git commit times are whole seconds while openedAt is milliseconds — cross the boundary so the
+  // handoff gate is proven by ORDER rather than by truncation (same reason as the block above)
+  await Bun.sleep(Math.max(0, (Math.floor(unboundPredOpenedAt / 1000) + 2) * 1000 - Date.now()));
+  writeFileSync(`${unboundRepo}/HANDOFF.md`, "## Unbound succession\nthe generic rail continues\n");
+  spawnSync("git", ["-C", unboundRepo, "add", "HANDOFF.md"]);
+  const unboundHandoff = spawnSync("git", ["-C", unboundRepo, "commit", "-qm", "unbound succession handoff"]);
+  check("unbound succession setup: HANDOFF.md is clean and committed after the predecessor opened",
+    unboundHandoff.status === 0
+      && spawnSync("git", ["-C", unboundRepo, "status", "--porcelain", "--", "HANDOFF.md"], { encoding: "utf8" }).stdout.trim() === "",
+    unboundHandoff.stderr.toString());
+
+  const unboundToken = await paneEnv(`s${unboundFreeSlot}`, "FLEET_SELF_TOKEN") ?? "";
+  check("unbound succession setup: the predecessor pane carries its own self credential",
+    /^[0-9a-f]{32}$/.test(unboundToken), `${unboundToken.length} chars`);
+  const unboundCarry = "carry-marker-unbound-late-readiness";
+  const unboundSuccLabel = "unbound-succession-successor";
+  const unboundPending = selfSucceed(unboundToken, { label: unboundSuccLabel, carry: unboundCarry });
+  const unboundSuccSlot = await waitForLabel(unboundSuccLabel);
+  check("unbound succession setup: exactly one successor reservation became observable",
+    unboundSuccSlot !== null && unboundSuccSlot !== unboundFreeSlot, String(unboundSuccSlot));
+  // anchored on the successor's OWN openedAt, not on when this fixture noticed it: the server's
+  // grace and readiness budget both start there, so a slow poll cannot eat the margin
+  const unboundSuccOpenedAt = unboundSuccSlot === null ? Date.now()
+    : (await sessions()).slots.find((s) => s.id === unboundSuccSlot)?.openedAt ?? Date.now();
+  const unboundAcceptWaitMs = Number(process.env.FLEET_ACCEPT_WAIT_MS ?? 3000);
+  let unboundMuteRendered = false;
+  if (unboundSuccSlot !== null) {
+    await Bun.sleep(250); // let openSlot's ensureSlot finish before the pane is replaced
+    unboundMuteRendered = await plantScreen(unboundSuccSlot, "booting, no marker yet", "unbound succession");
+  }
+  // read the pane PAST the accept window — the window whose expiry is the live error's own text
+  await Bun.sleep(Math.max(0, unboundSuccOpenedAt + unboundAcceptWaitMs + 1000 - Date.now()));
+  const unboundDuringCap = unboundSuccSlot === null ? { out: "" }
+    : await tmuxOut("capture-pane", "-t", `s${unboundSuccSlot}`, "-p", "-J", "-S", "-");
+  const unboundWithheldAfterMs = Date.now() - unboundSuccOpenedAt;
+  check("the UNBOUND succession rail withholds the founding brief from a pane with no ready marker, past the accept window",
+    unboundMuteRendered && !unboundDuringCap.out.includes(unboundCarry)
+      && !unboundDuringCap.out.includes("[fleet succession]")
+      && unboundWithheldAfterMs > unboundAcceptWaitMs,
+    `withheld ${unboundWithheldAfterMs}ms > accept ${unboundAcceptWaitMs}ms; pane=${unboundDuringCap.out.slice(-160)}`);
+
+  // the marker appears LATE — after the accept window, inside the bounded readiness budget
+  await Bun.sleep(Math.max(0, unboundSuccOpenedAt + 4300 - Date.now()));
+  const unboundReadyAtMs = Date.now() - unboundSuccOpenedAt;
+  const unboundReadyRendered = unboundSuccSlot === null ? false
+    : await plantScreen(unboundSuccSlot, ">_ OpenAI Codex (v0.147.0)", "unbound succession");
+  const unboundSuccRes = await unboundPending;
+  const unboundBody = await unboundSuccRes.json() as { ok?: boolean; slot?: number; label?: string | null };
+  let unboundCap = { out: "" };
+  for (let i = 0; i < 40 && !unboundCap.out.includes(unboundCarry); i++) {
+    await Bun.sleep(100);
+    if (unboundSuccSlot !== null)
+      unboundCap = await tmuxOut("capture-pane", "-t", `s${unboundSuccSlot}`, "-p", "-J", "-S", "-");
+  }
+  check("…and delivers it WHOLE once that marker appears — response, brief head and carry tail all on the late pane",
+    unboundReadyRendered && unboundSuccRes.ok && unboundBody.ok === true && unboundBody.slot === unboundSuccSlot
+      && unboundBody.label === unboundSuccLabel
+      && unboundCap.out.includes("[fleet succession]") && unboundCap.out.includes(unboundCarry),
+    `marker at ${unboundReadyAtMs}ms; ${unboundSuccRes.status} ${JSON.stringify(unboundBody)} pane=${unboundCap.out.slice(-200)}`);
+  if (unboundSuccSlot !== null) await post(`/api/slots/${unboundSuccSlot}/kill`, {});
+  await post(`/api/slots/${unboundFreeSlot}/kill`, {});
+  rmSync(unboundRepo, { recursive: true, force: true });
 
   // --- THE PROGRAM-MAIN EXECUTION RAIL: one block, four founding shapes, byte for byte. ---
   // Every prompt this section reads was already delivered above, and together they are EVERY

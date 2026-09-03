@@ -2036,6 +2036,20 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     && /waitForFoundingReadiness\(free, candidateCurrent\)/.test(successionBody)
     && /waitForFoundingReadiness\(free, stillCurrent\)/.test(bootstrapBody),
     "shared founding readiness wait used by briefAndSend, Program-MAIN bootstrap, and succession");
+  // ...AND EVERY founding delivery is covered, counted rather than named. The 2026-09-03 cut was
+  // briefed as "the five `sendText(free, deliveredBrief, true)` sites"; there are SIX, and the
+  // sixth — handleSelfSucceed's generic branch — carries a different variable name, so it fell
+  // through the literal search AND was the only one with no gate at all. It was where all four
+  // live `composer still holds N chars` failures happened. A count is the only shape of this pin
+  // that a seventh rail cannot walk past: adding a founding delivery without its grace and its
+  // bounded wait moves one of these three numbers off the others.
+  const foundingSends = (server.match(/await sendText\(free, [A-Za-z]+, true\);/g) ?? []).length;
+  const foundingWaits = (server.match(/await waitForFoundingReadiness\(free, /g) ?? []).length;
+  const foundingGraces = (server.match(/await Bun\.sleep\(FOUNDING_BOOT_GRACE_MS\);/g) ?? []).length;
+  pin("all SIX founding deliveries are gated — same count of sends, bounded waits and shared boot graces, and no naked 4 s sleep left",
+    foundingSends === 6 && foundingWaits === 6 && foundingGraces === 6
+      && !/await Bun\.sleep\(4000\);/.test(server),
+    `sends=${foundingSends} waits=${foundingWaits} graces=${foundingGraces}`);
   const executionStart = server.indexOf("async function programExecutionView(");
   const executionBody = executionStart < 0 ? ""
     : server.slice(executionStart, server.indexOf("\n}\n", executionStart));

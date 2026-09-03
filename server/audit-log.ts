@@ -192,6 +192,11 @@ type AuditEvent =
   // response says it once, to one caller. Detail names the program and the REPLACED occupation
   // (slot + openedAt), never a line of the Program's content or of the founding brief.
   | "program_main_rebound"
+  // the same act on the Supervisor rail: a bootstrap overwrote a STALE Supervisor binding whose
+  // slot no longer carries the (id, openedAt) it was bound to. Before this row the route REFUSED
+  // such a binding, which left the fleet unable to appoint a Supervisor at all. Detail names the
+  // REPLACED occupation (slot + openedAt) and nothing else — never a line of the founding brief.
+  | "supervisor_rebound"
   // the recorded MAIN binding learned the session id its pane discovered AFTER the bind
   // (backfillProgramMainSessionId). Detail names the program and the id that filled the `null`;
   // there is no row for the no-op case, because "nothing to fill" is not an event.

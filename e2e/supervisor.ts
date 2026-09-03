@@ -921,4 +921,59 @@ export async function run(): Promise<void> {
   // The predecessor retires on its own MIGRATE_GRACE timer; only the successor is this module's
   // to clean up, and it must be freed so later sections still find open slots.
   await post(`/api/slots/${successorSlot}/kill`, {});
+
+  // ============================================================================================
+  // Cut 3 — BOOTSTRAP OVER A DEAD BINDING. Deliberately last: it MOVES the binding, so every
+  // section above would have to re-anchor its `bound`/`transferred` reads around it.
+  //
+  // The kill one line up left `supervisor` naming a slot that no longer carries that occupation —
+  // exactly the live state of 2026-09-03, when the only route that can appoint a Supervisor
+  // answered `stale Supervisor binding: slot 5 openedAt 1787497726285` (a record from 21.08.) and
+  // refused. The record outlives every restart, so the refusal was permanent: the fleet could not
+  // appoint a Supervisor again by any door. Program-MAIN bootstrap has answered this the other way
+  // since its own rebind seam, and this is the same rule on the same terms — overwrite, and NAME
+  // what was replaced, in the response and in one trail row. The twin (a LIVE binding is still
+  // `existing:true`, never overwritten) is the idempotency check in Cut 1 and is not repeated.
+  // ============================================================================================
+  const staleBinding = (await ownerRead()).supervisor;
+  const occupiedBeforeRebind = await occupied();
+  check("supervisor rebind precondition: the binding survives its occupant's death and now names an empty slot",
+    sameBinding(staleBinding, transferred)
+      && (await sessions()).slots.find((s) => s.id === staleBinding?.slot)?.cwd === null,
+    `${JSON.stringify(staleBinding)} slots=${JSON.stringify((await sessions()).slots.find((s) => s.id === staleBinding?.slot) ?? null)}`);
+  const auditBeforeRebind = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).length;
+  const receiptsBeforeRebind = await receipts();
+  const rebind = await bootstrap({ cwd: ROOT, label: "supervisor-rebind" });
+  const rebindBody = await rebind.json() as { ok?: boolean; existing?: boolean; slot?: number;
+    supervisor?: SupervisorBinding; replaced?: SupervisorBinding };
+  const rebindSlot = rebindBody.slot ?? 0;
+  const rebindState = readState().slots?.[String(rebindSlot)];
+  check("supervisor rebind: a DEAD binding is overwritten instead of refused, and the response names what it replaced",
+    rebind.ok && rebindBody.ok === true && rebindBody.existing !== true
+      && rebindSlot > 0 && rebindSlot !== staleBinding?.slot
+      && sameBinding(rebindBody.replaced ?? null, staleBinding)
+      && rebindBody.supervisor?.slot === rebindSlot
+      && rebindBody.supervisor?.openedAt === rebindState?.openedAt
+      && sameBinding((await ownerRead()).supervisor, rebindBody.supervisor ?? null)
+      && (await occupied()) === occupiedBeforeRebind + 1,
+    `${rebind.status} ${JSON.stringify(rebindBody)} state=${JSON.stringify(rebindState ?? null)}`);
+  const rebindTrail = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+    .slice(auditBeforeRebind)
+    .map((line) => JSON.parse(line) as { event?: string; slot?: number; detail?: string })
+    .filter((row) => row.event === "supervisor_rebound");
+  check("supervisor rebind leaves ONE trail row naming the replaced occupation and no brief text",
+    rebindTrail.length === 1 && rebindTrail[0]?.slot === rebindSlot
+      && rebindTrail[0]?.detail === `replaced slot:${staleBinding?.slot} openedAt:${staleBinding?.openedAt}`,
+    JSON.stringify(rebindTrail));
+  // the rebind ran the WHOLE founding path, so it delivered a founding brief and receipted it —
+  // an overwrite that skipped either would have appointed a Supervisor that was never told anything
+  const rebindPrompt = await historyOf(rebindSlot);
+  const rebindReceipt = (await receipts()).receipts.filter((r) => r.slot === rebindSlot).at(-1);
+  check("supervisor rebind: the replacement is FOUNDED — the brief is delivered and receipted like a first bootstrap",
+    rebindPrompt.split("\n")[0] === FOUNDING_FIRST
+      && (await receipts()).total === receiptsBeforeRebind.total + 1
+      && rebindReceipt?.briefSource === "founding"
+      && rebindReceipt?.briefHash === briefHashOf(rebindPrompt),
+    `${rebindPrompt.slice(0, 120)} | ${JSON.stringify(rebindReceipt ?? null)}`);
+  await post(`/api/slots/${rebindSlot}/kill`, {});
 }

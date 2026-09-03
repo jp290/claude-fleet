@@ -4703,6 +4703,12 @@ const DEFAULT_BOOT_SETTLE_MS = 250;
 // The dispatch tail's budget for a readiness-declaring harness to show its accept marker; 20 s is
 // machine-load headroom (codex renders in ~0.3–0.7 s). Env-tunable for the suites only.
 const READY_WAIT_MS = Math.max(1000, Number(process.env.FLEET_READY_WAIT_MS ?? 20_000) | 0);
+// The grace every founding rail holds between openSlot and its first probe, so a pane that is
+// still drawing is not measured as one that failed. It is a GRACE, never a readiness proof — the
+// bounded wait above is the proof, and for a harness that declares no ready marker this sleep is
+// all there is. One constant because the six founding deliveries are one decision: the four live
+// 2026-09-03 succession failures happened on the one rail that had neither.
+const FOUNDING_BOOT_GRACE_MS = 4000;
 
 // --- ACP-25: acceptance is OBSERVED, never echoed -------------------------------------------------
 // Process-alive, header readiness and lastOutput-idle prove nothing about prompt acceptance; the
@@ -5780,11 +5786,45 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
           e instanceof GameMakerTreeConflict ? 409 : 500);
       }
 
+      // THE GENERIC RAIL WAS THE ONE WITHOUT A FOUNDING GATE. Supervisor and Program-MAIN
+      // succession have held boot grace + delivery gate + bounded readiness since their own cuts;
+      // this branch went from openSlot straight into sendText, and the four live failures of
+      // 2026-09-03 (`prompt not accepted — composer still holds 98 chars after 3000ms`, note
+      // 8b7c18c9) were all here: the brief was typed into a pane whose agent was measured alive
+      // only ~6 s after the open, so the composer that should have drained had not been drawn yet.
+      // Same three steps, same order, same identity re-checks as the two bound rails — a founding
+      // paste is a founding paste, and there is no reason the unbound one should be the cheap one.
+      const openedAt = free.openedAt;
+      const stillCurrent = (): boolean => !!free.cwd && free.openedAt === openedAt;
+      const cleanup = async (): Promise<void> => {
+        if (stillCurrent()) await killSlot(free, "handoff");
+      };
+      await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
+      if (!stillCurrent()) {
+        await cleanup();
+        return json({ error: "successor slot changed during boot" }, 500);
+      }
+      const gate = await canDeliver(free, { now: Date.now(), idleMs: 0,
+        killSwitch: false, quietHours: false, harness: false });
+      if (!gate.ok) {
+        await cleanup();
+        return json({ error: `successor delivery held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})` }, 500);
+      }
+      const readiness = await waitForFoundingReadiness(free, stillCurrent);
+      if (!readiness.ok) {
+        await cleanup();
+        return json({ error: `successor ${readiness.reason}` }, 500);
+      }
+
       const brief = buildSuccessionBrief(carry);
+      if (!stillCurrent()) {
+        await cleanup();
+        return json({ error: "successor slot changed before founding delivery" }, 500);
+      }
       try {
         await sendText(free, brief, true);
       } catch (e) {
-        await killSlot(free, "handoff");
+        await cleanup();
         return json({ error: `successor brief failed: ${e instanceof Error ? e.message : e}` }, 500);
       }
       const now = Date.now();
@@ -7660,7 +7700,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   // and a later reader cannot tell whether an edit came before or after this delivery.
   const briefSource = briefSourceOf(next, clarify);
   // let claude finish booting in the fresh pane before the first prompt lands
-  await Bun.sleep(4000);
+  await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
   // A post-spawn hold is TRANSIENT — retry-shaped, so the row goes back to `queued` and the
   // dispatcher picks it up again (unlike dispatchTask's catch, where a bad repo is persistent and
   // the row returns to the status it came from). And it takes the LANE WITH IT: a requeue that left
@@ -16915,7 +16955,7 @@ async function succeedSupervisor(s: Slot, label: string | null, carry: string | 
       const cleanup = async (): Promise<void> => {
         if (stillCurrent()) await killSlot(free, "reopen");
       };
-      await Bun.sleep(4000);
+      await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
       if (!stillCurrent()) {
         await cleanup();
         return json({ error: "Supervisor successor slot changed during boot" }, 500);
@@ -17006,11 +17046,20 @@ async function bootstrapSupervisor(body: Record<string, unknown>): Promise<Respo
   if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > MAX_LABEL))
     return json({ error: `label must be a string of at most ${MAX_LABEL} chars` }, 400);
 
+  // A binding is LIVE only while its slot still carries the same (id, openedAt) it was bound to;
+  // anything else — the slot emptied, or recycled into a different occupant — is a record of a
+  // session that no longer exists, and the authority it names is unreachable. The old refusal
+  // ("stale Supervisor binding: slot 5 openedAt 1787497726285") left the fleet with NO way to
+  // appoint a Supervisor again: the route it would use is the one the dead record blocks, and the
+  // record outlives every restart. Program-MAIN bootstrap has answered this the other way since
+  // its own rebind seam — a dead binding is overwritten, and the success response NAMES what it
+  // replaced. Same rule here, same visibility: `replaced` in the body, an audit row, never silent.
+  let replacedSupervisor: SupervisorBinding | null = null;
   if (supervisor) {
     const occupant = slotFrom(supervisor.slot);
     if (occupant?.cwd && occupant.openedAt === supervisor.openedAt)
       return json({ ok: true, existing: true, supervisor });
-    return json({ error: `stale Supervisor binding: slot ${supervisor.slot} openedAt ${supervisor.openedAt}` }, 409);
+    replacedSupervisor = { ...supervisor };
   }
   if (supervisorBootstrapInflight) return json({ error: "Supervisor bootstrap already in flight" }, 409);
 
@@ -17037,7 +17086,7 @@ async function bootstrapSupervisor(body: Record<string, unknown>): Promise<Respo
       const cleanup = async (): Promise<void> => {
         if (stillCurrent()) await killSlot(free, "reopen");
       };
-      await Bun.sleep(4000);
+      await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
       if (!stillCurrent()) return json({ error: "Supervisor slot changed during boot" }, 500);
       const gate = await canDeliver(free, { now: Date.now(), idleMs: 0,
         killSwitch: false, quietHours: false, harness: false });
@@ -17070,6 +17119,12 @@ async function bootstrapSupervisor(body: Record<string, unknown>): Promise<Respo
       const at = Date.now();
       supervisor = { slot: free.id, openedAt: free.openedAt,
         sessionId: free.sessionId ?? null, boundAt: at };
+      // AFTER the successful send, like every other authority cut on this rail: a bootstrap that
+      // overwrote the dead record and then failed to deliver would have destroyed the only trace
+      // of the previous appointment for nothing.
+      if (replacedSupervisor)
+        audit("supervisor_rebound", free.id,
+          `replaced slot:${replacedSupervisor.slot} openedAt:${replacedSupervisor.openedAt}`);
       const hash = createHash("sha256").update(JSON.stringify({
         anchorBlock,
         planFacts: { harness: free.harness, mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted },
@@ -17087,7 +17142,8 @@ async function bootstrapSupervisor(body: Record<string, unknown>): Promise<Respo
       saveHistory(free);
       logPrompt(free, deliveredBrief, "auto", at);
       await saveStateNow();
-      return json({ ok: true, slot: free.id, supervisor });
+      return json({ ok: true, slot: free.id, supervisor,
+        ...(replacedSupervisor ? { replaced: replacedSupervisor } : {}) });
     } finally {
       laneSpawn.delete(free.id);
     }
@@ -17553,7 +17609,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         return json({ error: "Program-MAIN successor slot changed after open" }, 500);
       }
       if (!transferCurrent()) return await revoked("after successor open");
-      await Bun.sleep(4000);
+      await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
       if (!candidateCurrent()) {
         await cleanup();
         return json({ error: "Program-MAIN successor slot changed during boot" }, 500);
@@ -17812,7 +17868,7 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
         if (stillCurrent() || !target?.cwd)
           await rollbackProgramFounding(program, founding, "bootstrap-failed");
       };
-      await Bun.sleep(4000);
+      await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
       if (!stillCurrent()) {
         await cleanup();
         return json({ error: "Program-MAIN slot changed during boot" }, 500);

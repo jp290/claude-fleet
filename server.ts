@@ -34,7 +34,6 @@ import {
 } from "./context-manifest";
 import {
   CONTEXT_PACKS,
-  CONTEXT_SEED_SOURCE_PATHS,
   type ContextPackCapability,
   type ContextPackMode,
   type ContextPackTrigger,
@@ -7716,8 +7715,9 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // merge Program-MAIN founding does, deliberately with no frame branch: a Fleet-only or
     // foreign-only rule would be a second, quieter policy. `repoRootOf` throws → the catch requeues.
     const base = planContext(planFacts);
-    const { repoPlan, sourceBytes } = await repoManifestContextPlan(await repoRootOf(wt.repo), head, planFacts);
-    const plan: ContextPlan = { selected: [...stampObservedSourceHashes(base.selected, sourceBytes), ...repoPlan.selected],
+    const { repoPlan, blobShas } = await repoManifestContextPlan(await repoRootOf(wt.repo), head, planFacts);
+    const plan: ContextPlan = {
+      selected: stampObservedSourceHashes([...base.selected, ...repoPlan.selected], blobShas),
       omitted: [...base.omitted, ...repoPlan.omitted] };
     const anchorBlock = renderContextAnchorBlock(plan);
     const deliveredBrief = `${brief}${anchorBlock}${clarify ? "" : LANE_EXIT_FOOTER}`;
@@ -16569,37 +16569,52 @@ async function showAtHead(repoRoot: string, head: string, path: string, maxBytes
 // it, so one manifest reader serves every delivery seam instead of one per seam. The repository is
 // named by root and commit alone — this function knows nothing about frames, and deliberately so:
 // Fleet's own checkout declares packs by exactly the same rule a target repository does.
-// Returns the repo-declared plan AND the bytes it was planned from: the caller stamps the Fleet
-// seeds' OBSERVED sourceHash from the same read (`stampObservedSourceHashes`), so a receipt names
-// the version of every source it pointed at — seed and repo pack alike — from one `git show` pass.
+// Returns the repo-declared plan AND the tree listing it was planned against: the caller stamps
+// every selection's OBSERVED source version from the same listing (`stampObservedSourceHashes`),
+// so a receipt names the version of each source it pointed at — seed and repo pack alike — for the
+// cost of the `ls-tree` this seam already ran. NOTHING is read to compute a version; only the
+// manifest's own sources are read, and only because the validator checks their anchors.
 async function repoManifestContextPlan(repoRoot: string, head: string,
-  facts: Omit<ContextPlanInput, "sourceTree">): Promise<{ repoPlan: ContextPlan; sourceBytes: ReadonlyMap<string, string> }> {
+  facts: Omit<ContextPlanInput, "sourceTree">): Promise<{ repoPlan: ContextPlan; blobShas: ReadonlyMap<string, string> }> {
   const raw = await showAtHead(repoRoot, head, CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES);
   const manifest: ContextManifestRead = raw.kind === "unread"
     ? { kind: "invalid", detail: "manifest could not be read at head within its byte bound" }
     : readContextManifest(raw.kind === "bytes" ? raw.text : null);
 
-  // One read serves two readers: the validator (manifest sources) and the observed sourceHash on
-  // every selection (manifest sources AND the seeds' own). A seed path a foreign tree does not
-  // track is skipped by the same guard as an untracked manifest source, so the read costs a
-  // foreign repo one ls-tree and nothing else. `sourceTree` is not in `facts` on purpose; the
-  // seeds are planned without bytes and stamped only where every source was actually read.
+  // ONE listing, two readers: `trackedPaths` gates what the validator may believe, and the blob
+  // shas beside them ARE the source versions the receipt stamps. `-r` without `--name-only` costs
+  // the same call and adds the object name — a path that is quoted here (a name with a control
+  // character) is quoted under `--name-only` too, so tracked-path behaviour is unchanged.
+  // It runs even with no manifest: the Fleet seeds still need their version.
   const trackedPaths = new Set<string>();
-  const sourceBytes = new Map<string, string>();
-  const wanted = new Set<string>(CONTEXT_SEED_SOURCE_PATHS);
-  if (manifest.kind === "packs") for (const path of manifest.referencedPaths) wanted.add(path);
-  const tracked = await gitRead(repoRoot, "ls-tree", "-r", "--name-only", head);
-  if (tracked.code === 0) for (const path of tracked.out.split("\n")) if (path) trackedPaths.add(path);
-  for (const path of [...wanted].sort()) {
-    if (!trackedPaths.has(path)) continue;
-    const bytes = await showAtHead(repoRoot, head, path, CONTEXT_MANIFEST_MAX_SOURCE_BYTES);
-    // A source Fleet did not read stays OUT of the facts: the validator then reports the anchor
-    // as unchecked, which the plan turns into a named omission rather than a hopeful delivery —
-    // and a seed with such a source stays unhashed rather than half-hashed.
-    if (bytes.kind === "bytes") sourceBytes.set(path, bytes.text);
+  const blobShas = new Map<string, string>();
+  const tracked = await gitRead(repoRoot, "ls-tree", "-r", head);
+  if (tracked.code === 0) for (const line of tracked.out.split("\n")) {
+    const tab = line.indexOf("\t");
+    if (tab < 0) continue;
+    const [, type, sha] = line.slice(0, tab).split(" ");
+    const path = line.slice(tab + 1);
+    if (!path) continue;
+    // A submodule entry (`commit`) is TRACKED but has no blob: it stayed in this set under
+    // `--name-only`, so it stays here, and it simply gets no version. Dropping it would relabel a
+    // pack pointing at one from "anchor unchecked" to "untracked" — a different sentence about the
+    // same undeliverable pack.
+    trackedPaths.add(path);
+    if (type === "blob" && sha) blobShas.set(path, sha);
   }
-  if (manifest.kind === "absent") return { repoPlan: { selected: [], omitted: [] }, sourceBytes };
-  return { repoPlan: planRepoContext({ manifest, repo: { trackedPaths, sourceBytes }, facts }), sourceBytes };
+  if (manifest.kind === "absent") return { repoPlan: { selected: [], omitted: [] }, blobShas };
+
+  const sourceBytes = new Map<string, string>();
+  if (manifest.kind === "packs") {
+    for (const path of manifest.referencedPaths) {
+      if (!trackedPaths.has(path)) continue;
+      const bytes = await showAtHead(repoRoot, head, path, CONTEXT_MANIFEST_MAX_SOURCE_BYTES);
+      // A source Fleet did not read stays OUT of the facts: the validator then reports the anchor
+      // as unchecked, which the plan turns into a named omission rather than a hopeful delivery.
+      if (bytes.kind === "bytes") sourceBytes.set(path, bytes.text);
+    }
+  }
+  return { repoPlan: planRepoContext({ manifest, repo: { trackedPaths, sourceBytes }, facts }), blobShas };
 }
 
 // The Fleet seeds and the repository's own declared packs land in ONE plan and one receipt. In a
@@ -16611,9 +16626,9 @@ async function repoManifestContextPlan(repoRoot: string, head: string,
 async function programMainContextPlan(preflight: ProgramMainPreflight,
   facts: ReturnType<typeof programMainContextFacts>): Promise<ContextPlan> {
   const base = planContext(facts);
-  const { repoPlan, sourceBytes } = await repoManifestContextPlan(preflight.repoRoot, preflight.head, facts);
+  const { repoPlan, blobShas } = await repoManifestContextPlan(preflight.repoRoot, preflight.head, facts);
   return {
-    selected: [...stampObservedSourceHashes(base.selected, sourceBytes), ...repoPlan.selected],
+    selected: stampObservedSourceHashes([...base.selected, ...repoPlan.selected], blobShas),
     omitted: [...base.omitted, ...repoPlan.omitted],
   };
 }

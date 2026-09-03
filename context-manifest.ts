@@ -133,11 +133,6 @@ export function planRepoContext(input: RepoContextPlanInput): ContextPlan {
       omitted.push({ id, why });
       continue;
     }
-    // OBSERVED beats DECLARED: the validator just proved these exact bytes, so their hash is a
-    // measurement of the delivered version; a manifest's literal is a claim about it and only
-    // fills in where nothing was read.
-    const sourceHash = observedSourceHash(pack.sources, input.repo.sourceBytes)
-      ?? (typeof pack.sourceHash === "string" ? pack.sourceHash : undefined);
     selected.push({
       id,
       sources: pack.sources.map((source) => ({ path: source.path, anchor: source.anchor })),
@@ -146,44 +141,56 @@ export function planRepoContext(input: RepoContextPlanInput): ContextPlan {
       // only ever see a valid line or none. It is still stated here rather than assumed: the field
       // is carried into a delivered brief, and a carrier must never widen what it was handed.
       ...(validUseWhen(pack.useWhen) ? { useWhen: pack.useWhen } : {}),
-      ...(sourceHash === undefined ? {} : { sourceHash }),
+      ...(typeof pack.sourceHash === "string" ? { sourceHash: pack.sourceHash } : {}),
     });
   }
   return { selected, omitted };
 }
 
 /**
- * The OBSERVED source hash of a pack: sha256 over the exact bytes Fleet read at the planned commit
- * for every source path, in source order, each framed as `path\0bytes\0`. `undefined` when any
- * source was not read — an unobserved pack carries no hash, never a partial one. The hash is over
- * whole files on purpose: it is the version of what the anchor points INTO, and the only thing
- * that was actually measured.
+ * The OBSERVED source version of a pack: sha256 over `path\0<git blob sha>\0` per source, in
+ * source order. `undefined` when any source has no blob at the planned commit — an unobservable
+ * pack carries no version, never a partial one.
+ *
+ * WHY BLOB SHAS AND NOT THE BYTES. Git already content-addresses every tracked file, and the
+ * delivery seam already lists the tree once. Hashing the bytes instead meant reading them: the
+ * six seed sources of this Fleet are 1 794 908 bytes at HEAD (1 574 279 of them `server.ts`
+ * alone) and cost ~108 ms of `git show` per delivery, measured 2026-09-03 — against ~24 ms for
+ * the one `ls-tree` that carries every path's blob sha. It is also EXACTER: `gitRead` trims its
+ * output, so a byte hash silently described a file without its trailing newline.
+ *
+ * The hash is over whole blobs on purpose: it is the version of what the anchor points INTO, not
+ * of the anchor line. A pack with one source still gets a hash rather than the bare blob sha, so
+ * one-source and many-source packs live in one space.
  */
 export function observedSourceHash(
-  sources: readonly ContextPackSource[], sourceBytes: ReadonlyMap<string, string>,
+  sources: readonly ContextPackSource[], blobShas: ReadonlyMap<string, string>,
 ): string | undefined {
   if (sources.length === 0) return undefined;
   const hash = createHash("sha256");
   for (const source of sources) {
-    const bytes = sourceBytes.get(source.path);
-    if (bytes === undefined) return undefined;
-    hash.update(source.path).update("\0").update(bytes).update("\0");
+    const blob = blobShas.get(source.path);
+    if (blob === undefined) return undefined;
+    hash.update(source.path).update("\0").update(blob).update("\0");
   }
   return hash.digest("hex");
 }
 
 /**
- * Stamp observed hashes onto the selections that carry none — the Fleet seeds, which `planContext`
- * plans without bytes. A selection that already has a hash keeps it, a private one is not
- * observable here, and a seed whose sources were not all read stays unstamped rather than
- * half-hashed. Pure; the caller hands over whatever it read at `head`.
+ * Stamp the observed source version onto every selection of a planned delivery — Fleet seeds and
+ * repo-declared packs alike, so the receipt's `sourceHash` means ONE thing.
+ *
+ * OBSERVED BEATS DECLARED: a manifest's literal is a claim about a version, the blob sha at the
+ * planned commit is that version. The literal survives only where nothing is observable (an
+ * untracked source, a foreign tree), and a private overlay is never observable here at all.
+ * Pure; the caller hands over the tree listing it already made.
  */
 export function stampObservedSourceHashes(
-  selected: readonly ContextPlanSelection[], sourceBytes: ReadonlyMap<string, string>,
+  selected: readonly ContextPlanSelection[], blobShas: ReadonlyMap<string, string>,
 ): ContextPlanSelection[] {
   return selected.map((selection) => {
-    if (selection.sourceHash !== undefined || "privateSourceId" in selection.sources) return selection;
-    const observed = observedSourceHash(selection.sources, sourceBytes);
+    if ("privateSourceId" in selection.sources) return selection;
+    const observed = observedSourceHash(selection.sources, blobShas);
     return observed === undefined ? selection : { ...selection, sourceHash: observed };
   });
 }

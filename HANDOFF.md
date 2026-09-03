@@ -1,3 +1,116 @@
+# HANDOFF — Private-repo-p-Audit abgeschlossen, Owner-Entscheide gefallen, ARCHITEKTUR „Studio als Objekt" wartet auf Implementierung (Slot 15 „iosWorktrail" → Nachfolge, 2026-09-03 15:0x)
+
+Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`. Hier steht nur,
+was git und die Sensoren NICHT tragen.
+
+## 0. DEIN AUFTRAG — der Owner, wörtlich (2026-09-03)
+
+> „ich möchte das du dann jetzt die succession für die nächste Session durchführst. und ihr den
+> Auftrag gibst sich einzuarbeiten und die Implementierung anzugehen. Die architekturelle
+> Implementierung des Studios als ein Object ist wahrscheinlich am besten zu aller erst
+> anzugehen. […] Ich will auf jeden Fall erst den Workflow use. vernünftig ausetzen. Die
+> Übersicht will ich seperat angehen, das studio sollte nur schonmal damit im Hinterkopf richtig
+> aufgesetzt werden usw. Entscheide du wie wir das implementieren sollten. Ja eine App hat ein
+> eigenes repo meiner meinung nach […]. GLM gegenlesung eig immer sinnvoll bei sowas :^)"
+
+Du bist also eine **Einarbeitungs- und Implementierungs-Session**: erst lesen, dann S1 aus der
+Architektur-Entscheidung bauen lassen. „Entscheide du wie" hat der Owner an MICH delegiert und ich
+habe entschieden — die Entscheidung steht in `docs/ideen/2026-09-03-studio-als-objekt.md` und ist
+dein Ausgangspunkt, nicht dein Diskussionsgegenstand. Was dort unter §7 als offen benannt ist,
+entscheidest du.
+
+## 1. Das Erste, was du tust — in dieser Reihenfolge
+
+1. **Erden:** `./state.sh`, `./register.sh`. Dann diese drei Dokumente, in dieser Folge:
+   - `docs/ideen/2026-09-03-studio-als-objekt.md` (die Entscheidung, ~150 Zeilen — DEIN Auftrag)
+   - `docs/messungen/2026-09-03-private-repo-p-worktrail-audit-synthese.md` (die fünf Wurzeln, das Warum)
+   - `docs/ideen/2026-09-03-private-repo-p-workflow-v2.md` (der Vorschlag mit den zehn Fleet-Schnitten)
+   Die sechs Strang-Reports unter `docs/messungen/private-repo-p-audit-2026-09-03/` sind Belege, kein
+   Pflichtprogramm — lies einen erst, wenn eine konkrete Frage ihn braucht (A5 ist der für Design,
+   A1 der für Zahlen).
+2. **GLM-Gegenlesung anstoßen, BEVOR gebaut wird.** Die Zeile liegt fertig gebrieft als
+   `c00c3dc4` (kind `auftrag`, `pending`, Tripel pi/glm-5.3/high, repo claude-fleet). Sie prüft die
+   Architektur gegen den Code und gegen die fünf Wurzeln und muss ausdrücklich widersprechen oder
+   sagen, dass sie nichts fand. **Der Dispatcher ist master-stopped (`dispatch:false`)** — die Zeile
+   braucht einen Hand-Dispatch durch den 🎛 Fleet Controller (Slot 13). Bitte ihn darum, mit
+   Task-ID; er kann direkt `POST /api/tasks/c00c3dc4/dispatch`. Ein pi-Watch feuert nie
+   (`server.ts` verweigert das ehrlich) — Rückweg ist ein Hintergrund-Watcher auf `ahead`/`clean`
+   des Lane-Branches.
+3. **Parallel S1 vorbereiten, nicht bauen.** S1 fasst `server/types.ts` und `server.ts` an — und
+   die **Sanierungs-MAIN (Slot 9) schneidet server.ts gerade aktiv**. Vor jeder Fläche dort: mit
+   Slot 9 abstimmen, welche Regionen frei sind (sie meldet FREEZE-START/-ENDE). Das ist die
+   Kollision, die dich sonst einen ganzen Land-Versuch kostet.
+4. **Dann S1 als EINE Lane briefen** (Opus 5, high; Beweisort `e2e/programs.ts`). Erst wenn die
+   GLM-Gegenlesung da ist und du ihre Funde oberhalb der Schnittlinie eingearbeitet hast.
+
+## 2. Die Owner-Entscheide, die jetzt gelten (alle sechs Fragen des Vorschlags sind beantwortet)
+
+Wörtlich und mit Konsequenz stehen sie in `docs/ideen/2026-09-03-studio-als-objekt.md` §0. Kurzform:
+
+1. **Die „AI" in Private-repo-y ist der Workflow selbst** — das Produkt führt den Enduser durch
+   Erstellen, Testen, Revidieren und Aufsetzen SEINES Workflows. Kein Provider-Aufruf als
+   Produktkern. Damit ist die Audit-Frage „wo ist die AI" beantwortet: sie war nie ein Modellaufruf,
+   sondern das Führungs-Wissen, das die App heute nicht hat (sie formatiert Eingaben um).
+2. **Erst der Workflow, dann die App.** Private-repo-y wird NICHT weitergebaut. **Brief 9
+   (`ba896b1b`, queued seit 03.09. 08:22) bleibt liegen** — nicht dispatchen; die zwei HIGH bleiben
+   bewusst offen. Die Private-repo-y-MAIN auf **Slot 4 (28 % ctx)** hat davon noch nichts gehört;
+   wenn du ihr eine Nachricht schickst, dann GENAU EINE mit diesem Stopp (jede kostet ihren vollen
+   Kontext).
+3. **Die Übersicht wird separat angegangen** — kein UI in S1–S4, aber die Datenform muss sie ohne
+   zweiten Umbau tragen. Deshalb die drei Ebenen Idee/Workflow/Sessions als je ein Record.
+4. **Studio-als-Objekt zuerst.**
+5. **Eine App hat ein eigenes Repo** („obwohl andere repo's später auch apps bekommen könnten") →
+   `repoPolicy: "one-app-per-repo"` am Studio, mechanisch geprüft bei der Gründung. Die Trennung
+   von Private-repo-y und Private-repo-x im bestehenden `~/private-repo-p` ist ein eigener kleiner Schnitt im
+   Produkt-Repo und ausdrücklich NICHT Teil von S1–S4.
+6. **GLM-Gegenlesung ist ab jetzt Regel, nicht Einzelfall** („eig immer sinnvoll bei sowas").
+
+## 3. Was diese Session getan hat
+
+Ein Commit auf main, `840d23d` (docs-only, `bun e2e/pins.ts` ALL PASS, Public-Repo-Scan leer):
+der Private-repo-p-Worktrail-Audit. Methode: sechs unabhängige, nur lesende Opus-5-Stränge mit
+gemeinsamem Kontext-Brief; Synthese und Nachprüfung von acht tragenden Behauptungen am Code durch
+mich. Der zweite Commit trägt die Architektur-Entscheidung.
+
+Fünf Wurzeln, gerankt: (1) kein Akteur mit fremder Wahrnehmung im ganzen Rail — 0 Design-/Critic-
+Vokabular in acht Bau-Briefs, der Review ist Vertrags-Abgleich, das Owner-Video war eine
+XCUITest-Aufzeichnung, `review.sh` existiert und wurde nie gerufen; (2) das owner-bestätigte
+Program-JSON trägt drei strukturell unerfüllbare Erfolgsklauseln, 10:0 Attentions Fleet:Produkt;
+(3) Gates und Golden Cases messen das selbstdeklarierte Universum, der Probelauf ist ein
+Orakel-Echo, Brief 6 diktierte einen falschen Algorithmus, den Fixture und Test jetzt verteidigen;
+(4) 79 % Wartezeit (bereinigt 49,7 % = Private-repo-o-Niveau), davon 26,9 h eine still gestorbene MAIN
+nach einem Land-Verdikt, das nur die Lane erreichte; (5) der Workflow ist kein Objekt, CONTINUE
+existiert nicht. **iOS-neu ist fast nichts** — die Blaupausen-Schnitte S1/S3/S4 vom 30.08. waren
+nicht gelandet, als der iOS-Lauf begann.
+
+## 4. Was git NICHT trägt
+
+- **Task `c00c3dc4` (GLM-Gegenlesung) ist `pending` und wartet auf Hand-Dispatch** (§1.2). Sie ist
+  von mir gebrieft, nicht freigegeben.
+- **Ich habe NIEMANDEM eine Nachricht geschickt** — weder dem Controller (Slot 13) noch der
+  Private-repo-y-MAIN (Slot 4) noch der Sanierungs-MAIN (Slot 9). Alle drei Kontakte aus §1 und §2
+  sind DEINE, und keiner ist doppelt.
+- **Modell dieser Nachfolge:** ich übergebe dir `claude-opus-5[1m]` / `high` — der Owner hat diese
+  Session ausdrücklich auf Opus 5 (1M) gesetzt und als Default gespeichert. Wenn du überwiegend
+  orchestrierst statt selbst zu graben, gilt die Modellpolitik vom 02.09. (Orchestrierer auf
+  Fable 5.1) und du wechselst selbst: `POST /api/slots/<dein slot>/model` UND `/model <id>` in der
+  Pane — beide Hälften, sonst fällt eine still zurück.
+- **Das Game-Maker-Workflow-Dokument aus Program `b2aa5b45` (Slot 3) ist die Formvorlage für
+  `workflow.doc`** und war beim Schreiben noch nicht adjudiziert (Stand: Schritt 2a/2b queued).
+  S1 hängt nicht daran (S1 kennt nur Pfad+Hash), S2 schon. Nicht zwei Formate erfinden.
+- **Kontextstand beim Schreiben: 8,9 % (gemessen, `ctx.pct` am Slot 15).** Weit unter dem Band —
+  die Übergabe ist eine Owner-Anweisung, keine Bandreaktion.
+- Nichts läuft im Hintergrund, keine Suite, kein Watch von mir, kein Branch offen.
+
+## 5. Was ich als Nächstes täte
+
+GLM-Dispatch erbitten, währenddessen `server/types.ts#Program` und die Profil-Tür in `server.ts`
+selbst lesen (die Entscheidung nennt die Symbole, aber du sollst sie gesehen haben, bevor du
+briefst), mit Slot 9 die server.ts-Regionen klären, dann S1 in EINEM Brief: Record + Persistenz +
+drei Türen + `publicProgram` + `e2e/programs.ts`, mit dem Restart-Fall als Done-Kriterium. Nicht
+selbst bauen.
+
+---
 # HANDOFF — Kontext-Pack-Netz (Slot 14 „openSource" → Nachfolge): Stand-Doc steht, Schritt 1 auf Branch `pack-source-hash` (drei Commits, dritter korrigiert einen eigenen Kostenfehler)
 
 Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`. Hier steht nur,

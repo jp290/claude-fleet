@@ -67,6 +67,8 @@ import {
   validAttentionBranch, MAX_SUPERVISOR_NUDGE_TEXT, TASK_KINDS, isTaskKind, loadTaskKind,
   PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion, PROGRAM_PROFILE_KINDS, loadProgramProfile,
   PROGRAM_LINEAGE_MAX, loadProgramLineage, foundingOccupantFrom, foundingIdentityFrom,
+  MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
+  type Studio, type StudioContent, type ProgramStudioBinding,
   type BoxPin, type WSData, type Share, type ShareComment, type Auto, type WatchBase, type MergeWatch,
   type TransitionWatch, type Watch, type FleetEventStatus, type FleetEventRecoveryState,
   HELPER_CMD_ALLOW, helperCmdCheck, helperArtifactGlobsFrom, helperArtifactsFrom, HELPER_ARTIFACT_MAX,
@@ -1494,6 +1496,12 @@ const sameProgramSession = (p: Program, s: Slot): boolean => p.proposedBy.kind =
   && p.proposedBy.slot === s.id && p.proposedBy.openedAt === s.openedAt
   && p.proposedBy.sessionId === s.sessionId;
 let programs: Program[] = [];
+// The studio inventory — a SHARED source several Programs may bind, so it lives beside `programs`
+// rather than inside one of them, exactly as the Supervisor binding does for the same reason.
+// The cap is HARD and evicts nothing: capPrograms may drop rows because it always has a COMPLETE
+// candidate to drop, and a studio never becomes complete — an eviction here would have no
+// candidate but the owner's own act. Overflow is refused AT THE DOOR (409), never lost in silence.
+let studios: Studio[] = [];
 const programBootstrapInflight = new Set<string>();
 let startupStateRefusal: string | null = null;
 
@@ -2519,7 +2527,8 @@ function queueStateSave(): Promise<void> {
     laneSuiteJobs: [...laneSuiteJobs.values()],
     commandJobs: [...commandJobs.values()],
     slots: active, recents, pins, shares, autos, watches,
-    events: fleetEvents, clarifications, fleetReports, attentionRequests, tasks, programs, supervisor,
+    events: fleetEvents, clarifications, fleetReports, attentionRequests, tasks, programs, studios,
+    supervisor,
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
     repoBases, repoWorkers, shelved, undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
@@ -18041,6 +18050,82 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     await saveStateNow();
     return json({ ok: true, program: publicProgram(program) });
   }
+  // THE STUDIO BINDING DOOR — the only writer of `program.studio`, and its own route for the same
+  // reason the profile door is: it reads a BODY carrying an owner decision. Two acts, one door:
+  // `{"studio": {"id": "..."}}` binds, `{"studio": null}` releases, and releasing is the same
+  // request shape so an owner never reaches for a different tool to take a choice back.
+  //
+  // WHAT IS STORED IS A POINTER PLUS THE REVISION IT WAS MADE AGAINST, never a copy of the record.
+  // A copy would be a second source for the same text — the exact failure the Studio exists to end.
+  // `rev` is read off the studio HERE, at binding time, so a later change to a shared studio shows
+  // up as a difference rather than acting silently under a MAIN founded before it. NOTHING in this
+  // cut compares the two numbers; this door only makes the comparison possible.
+  //
+  // THE STATUS GATES ARE THE PROFILE DOOR'S, for the profile door's reason: this record is spent at
+  // FOUNDING, and a binding that changed under a running MAIN would mean the session was founded
+  // under one workflow and judged under another. A complete program refuses every real write; an
+  // active program with a LIVE bound MAIN refuses to rebind or release; an active program on a
+  // stale or absent binding stays writable, because that is precisely the program whose NEXT
+  // founding should use a fresh owner decision.
+  const studioBindRoute = /^\/api\/programs\/([^/]+)\/studio$/.exec(url.pathname);
+  if (studioBindRoute) {
+    if (req.method !== "POST") return json({ error: "bad request" }, 400);
+    const program = programs.find((p) => p.id === studioBindRoute[1]);
+    if (!program) return json({ error: "unknown program" }, 404);
+    const body = await readJson(req);
+    if (!body || typeof body !== "object" || Array.isArray(body))
+      return json({ error: "invalid json" }, 400);
+    const extra = Object.keys(body).filter((k) => k !== "studio");
+    if (extra.length)
+      return json({ error: `this door reads studio only — [${extra.join(", ")}] is not read` }, 400);
+    if (!("studio" in body))
+      return json({ error: 'studio is required — send {"studio": {"id": "private-repo-p"}} to bind, {"studio": null} to release' }, 400);
+    // The desired binding is decided BEFORE any gate, so every refusal below is about the CHANGE
+    // and not about a shape nobody validated — the profile door's rule, one record over.
+    let desired: ProgramStudioBinding | null = null;
+    if (body.studio !== null) {
+      const raw = body.studio;
+      if (!raw || typeof raw !== "object" || Array.isArray(raw))
+        return json({ error: "studio must be an object or null" }, 400);
+      const fields = raw as Record<string, unknown>;
+      const unknown = Object.keys(fields).filter((k) => k !== "id");
+      if (unknown.length)
+        return json({ error: `unknown studio key(s): ${unknown.join(", ")} — a binding body is exactly {id}; boundAt and rev are stamped here` }, 400);
+      if (typeof fields.id !== "string" || !STUDIO_ID_RE.test(fields.id))
+        return json({ error: "id must be a studio id (lowercase letters, digits and dashes)" }, 400);
+      const studio = studios.find((x) => x.id === fields.id);
+      if (!studio)
+        return json({ error: `unknown studio ${fields.id} — create it with POST /api/studios before binding a program to it` }, 404);
+      desired = { id: studio.id, boundAt: 0, rev: studio.rev }; // boundAt stamped below
+    }
+    // IDENTICAL RETRIES ARE READS OF THE ACT THAT ALREADY LANDED. Answered before every in-flight
+    // and lifecycle gate, for the profile door's reason: a lost 200 may be retried while the
+    // founding it enabled is already running, and a 409 there would make an idempotent owner
+    // actuator non-idempotent. This branch changes no timestamp, writes no audit row, performs no
+    // save — and it does NOT re-anchor `rev`: re-binding against a newer revision is a real change,
+    // and the way to make one is to release and bind again.
+    const currentBinding = program.studio;
+    if (desired === null ? currentBinding === undefined : currentBinding?.id === desired.id)
+      return json({ ok: true, program: publicProgram(program) });
+    if (programBootstrapInflight.has(program.id) || program.founding)
+      return json({ error: "a Program-MAIN founding for this program is in flight — its brief reads this binding, so it cannot change underneath it. Retry once the founding has answered" }, 409);
+    if (program.status === "complete")
+      return json({ error: "cannot change the studio of a complete program — its receipts, outcomes and briefs are already dated against the workflow it ran under" }, 409);
+    const studioOccupant = program.main ? slotFrom(program.main.slot) : null;
+    const studioLiveBound = !!program.main && !!studioOccupant?.cwd
+      && studioOccupant.openedAt === program.main.openedAt;
+    if (program.status === "active" && studioLiveBound)
+      return json({ error: `this program has a LIVE bound Program-MAIN in slot ${program.main!.slot} — its studio is fixed for that session, because it was founded under this one. Retire or replace the binding first` }, 409);
+    if (desired === null) {
+      delete program.studio;
+      audit("program_studio", undefined, `${program.id} released`);
+    } else {
+      program.studio = { ...desired, boundAt: Date.now() };
+      audit("program_studio", undefined, `${program.id} studio=${desired.id} rev=${desired.rev}`);
+    }
+    await saveStateNow();
+    return json({ ok: true, program: publicProgram(program) });
+  }
   const action = /^\/api\/programs\/([^/]+)\/(confirm|activate|complete|discard|bootstrap-main)$/.exec(url.pathname);
   if (!action || req.method !== "POST") return json({ error: "bad request" }, 400);
   const program = programs.find((p) => p.id === action[1]);
@@ -18099,6 +18184,92 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
   programs = programs.filter((p) => p !== program);
   await saveStateNow();
   return json({ ok: true });
+}
+
+// === THE STUDIO DOORS — owner truth about the WORKFLOW, one door per act ======================
+// A Studio is not a Program's property: several Programs may bind the same one, so its inventory
+// lives here rather than on any program route. Everything below spells the profile door's four
+// rules, because the same reasons hold: a CLOSED body (a key silently ignored is a key the owner
+// believes was honoured), the form validated BEFORE any lock, an identical repetition answered as
+// a READ, and a real change dated by the server's own clock.
+//
+// WHAT THIS CUT DELIBERATELY DOES NOT DO: nothing reads these records. No brief, no gate, no rail
+// and no view is changed by a studio existing or by a program binding one. The inventory must
+// stand before anything is founded on it, and a reader built at the same time as its store is a
+// reader nobody can prove wrong.
+const studioContentOf = (s: Studio): StudioContent => ({ name: s.name,
+  machineProfile: s.machineProfile, repoPolicy: s.repoPolicy, workflow: s.workflow,
+  briefBlocks: s.briefBlocks, gates: s.gates });
+// The one lock a shared record needs, and it is the profile door's race, not a new one: a founding
+// reads its Program's brief inputs twice, seconds apart, so a write to a studio a founding Program
+// is bound to would make those two reads differ. Narrow on purpose — it names the studio, not the
+// server: an unrelated founding never blocks an unrelated studio.
+const studioFoundingInflight = (studioId: string): Program | undefined =>
+  programs.find((p) => p.studio?.id === studioId
+    && (programBootstrapInflight.has(p.id) || !!p.founding));
+
+async function handleOwnerStudioRoute(req: Request, url: URL): Promise<Response> {
+  if (url.pathname === "/api/studios" && req.method === "GET") return json({ studios });
+  if (url.pathname === "/api/studios" && req.method === "POST") {
+    const body = await readJson(req);
+    if (!body || typeof body !== "object" || Array.isArray(body))
+      return json({ error: "invalid json" }, 400);
+    const fields = body as Record<string, unknown>;
+    if (typeof fields.id !== "string" || !STUDIO_ID_RE.test(fields.id))
+      return json({ error: "id must be a slug of lowercase letters, digits and dashes (2-40 characters), e.g. private-repo-p — it is how a brief and a ledger name this workflow" }, 400);
+    const { id, ...rest } = fields;
+    const valid = studioContentFrom(rest);
+    if (!valid.ok) return json({ error: valid.error }, 400);
+    // An identical create is a READ of the act that already landed — the same rule the profile door
+    // states, and the reason a create needs it too: a lost 200 is retried, and a retry that turned
+    // into a 409 would make an idempotent owner actuator non-idempotent. A DIFFERENT body under an
+    // existing id is a change and is refused here, because there is a door for changes and using
+    // the wrong one silently would rewrite a record the owner meant to create.
+    const existing = studios.find((x) => x.id === id);
+    if (existing) {
+      if (JSON.stringify(studioContentOf(existing)) === JSON.stringify(valid.content))
+        return json({ ok: true, studio: existing });
+      return json({ error: `a studio named ${id} already exists — change it with POST /api/studios/${id}, which bumps its rev` }, 409);
+    }
+    // HARD CAP, NO EVICTION. capPrograms may drop rows because it always has a COMPLETE candidate;
+    // a studio never becomes complete, so an eviction here could only throw away an owner act.
+    if (studios.length >= MAX_STUDIOS)
+      return json({ error: `the studio inventory holds its maximum of ${MAX_STUDIOS} — nothing is evicted to make room, because a studio never becomes complete and every row here is an owner decision` }, 409);
+    const at = Date.now();
+    const studio: Studio = { v: 1, id, createdAt: at, confirmedAt: at, rev: 1, ...valid.content };
+    studios = [...studios, studio];
+    audit("studio_create", undefined, `${id} machineProfile=${studio.machineProfile} stages=${studio.workflow.stages.length}`);
+    await saveStateNow();
+    return json({ ok: true, studio });
+  }
+  const studioRoute = /^\/api\/studios\/([^/]+)$/.exec(url.pathname);
+  if (!studioRoute || req.method !== "POST") return json({ error: "bad request" }, 400);
+  const studio = studios.find((x) => x.id === studioRoute[1]);
+  if (!studio) return json({ error: "unknown studio" }, 404);
+  const body = await readJson(req);
+  if (!body || typeof body !== "object" || Array.isArray(body))
+    return json({ error: "invalid json" }, 400);
+  const valid = studioContentFrom(body);
+  if (!valid.ok) return json({ error: valid.error }, 400);
+  // IDENTICAL IS A READ: no rev bump, no stamp, no audit row, no save. `rev` is the number every
+  // binding is measured against, so bumping it for a repetition would invent drift that never
+  // happened and make a stale binding look stale that is not.
+  if (JSON.stringify(studioContentOf(studio)) === JSON.stringify(valid.content))
+    return json({ ok: true, studio });
+  const founding = studioFoundingInflight(studio.id);
+  if (founding)
+    return json({ error: `a Program-MAIN founding for program ${founding.id}, which is bound to this studio, is in flight — that founding reads this record twice, seconds apart, so it cannot change underneath it. Retry once the founding has answered` }, 409);
+  // A MERELY ACTIVE bound program does NOT refuse this write, and that is decided, not forgotten
+  // (docs/ideen/2026-09-03-studio-als-objekt.md §8 F2): a studio is a shared source, and refusing
+  // every change while any bound program is active would freeze the record for good — the whole
+  // standalone use of this cut is that the owner can curate the workflow while the readers are
+  // built. The drift is made VISIBLE instead of silent: the binding keeps the `rev` it was made
+  // against and this bump moves the studio's. Nothing here compares them.
+  const updated: Studio = { ...studio, ...valid.content, rev: studio.rev + 1, confirmedAt: Date.now() };
+  studios = studios.map((x) => (x.id === studio.id ? updated : x));
+  audit("studio_change", undefined, `${studio.id} rev=${updated.rev}`);
+  await saveStateNow();
+  return json({ ok: true, studio: updated });
 }
 
 // public feature-request dropbox. Gated by its own secret; strict caps; hard hourly rate
@@ -18390,6 +18561,28 @@ if (existsSync(STATE_FILE)) {
               .slice(-MAX_COMMENTS_PER_TASK)
             : undefined }));
       tasks = capTasks(tasks);
+    // THE STUDIO INVENTORY, read back with the discipline the Program loader states one comment
+    // down: absent stays [], and a row this build cannot parse is SKIPPED WHOLE — never repaired
+    // field by field, because half a workflow is a different workflow, not a shorter one. Read
+    // BEFORE the Programs so the bindings below are resolved against an inventory that already
+    // exists. A binding whose studio is missing is kept as written and NOT scrubbed: the owner's
+    // act is the honest record, and quietly deleting a pointer would hide exactly the loss this
+    // loader was added to prevent (a field nobody reads back dies at the first restart, silently).
+    if (Array.isArray((persisted as { studios?: unknown }).studios)) {
+      const loadedStudios: Studio[] = [];
+      let unreadableStudios = 0;
+      for (const raw of (persisted as { studios: unknown[] }).studios) {
+        const studio = loadStudio(raw);
+        if (!studio) { unreadableStudios++; continue; }
+        if (loadedStudios.some((x) => x.id === studio.id)) { unreadableStudios++; continue; }
+        loadedStudios.push(studio);
+      }
+      studios = loadedStudios.slice(0, MAX_STUDIOS);
+      if (unreadableStudios) {
+        console.error(`${unreadableStudios} persisted studio row(s) unreadable — skipped`);
+        audit("studio_unreadable", undefined, `${unreadableStudios} row(s) skipped at load`);
+      }
+    }
     // absent Programs stay []; no provenance is inferred from slots or tasks, and rows are rebuilt
     // from declared fields so hand-written keys are never persisted.
     if (Array.isArray((persisted as { programs?: unknown }).programs)) {
@@ -18449,6 +18642,10 @@ if (existsSync(STATE_FILE)) {
         }
         const promotion = loadPromotion(x.promotion);
         const profile = loadProgramProfile(x.profile);
+        // the studio BINDING, read explicitly for the reason the comment at the top of this block
+        // states: rows are rebuilt from declared fields, so a field nobody names here does not
+        // survive a restart and nothing says so. Unreadable degrades to ABSENT, like the profile.
+        const studioBinding = loadProgramStudioBinding(x.studio);
         // the lineage: a row that never had the key is a legacy row and gets its one honest
         // backfill entry from `main`; a row that HAS the key but cannot be read loads as ABSENT and
         // is reported — never backfilled over, because that would make an unreadable record look
@@ -18486,6 +18683,7 @@ if (existsSync(STATE_FILE)) {
           ...(main ? { main } : {}),
           ...(promotion ? { promotion } : {}),
           ...(profile ? { profile } : {}),
+          ...(studioBinding ? { studio: studioBinding } : {}),
           ...(founding ? { founding } : {}),
           ...(lineage ? { lineage } : {}),
           ...(status !== "proposed" ? { confirmedAt: confirmedAt! } : {}),
@@ -21493,9 +21691,17 @@ Bun.serve<WSData>({
     // Programs are owner truth after proposal. They deliberately take the same tokenGate as the
     // task owner API, but are checked before the steward dispatcher so a steward credential is a
     // plain owner-auth failure (401), never a second authority over confirm/activate/complete.
-    if (/^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile))?$/.test(url.pathname)) {
+    if (/^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|studio))?$/.test(url.pathname)) {
       if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
       return handleOwnerProgramRoute(req, url);
+    }
+
+    // The studio inventory sits beside the Programs and takes the same owner gate for the same
+    // reason: a session may propose what a Program is FOR, never the workflow it will be judged by.
+    // Checked before the steward dispatcher, so a steward credential is a plain owner-auth failure.
+    if (/^\/api\/studios(?:\/[^/]+)?$/.test(url.pathname)) {
+      if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
+      return handleOwnerStudioRoute(req, url);
     }
 
     // The Supervisor is an owner bracket above the Programs, same owner gate for the same reason: a

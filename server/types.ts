@@ -1100,6 +1100,13 @@ interface Program {
   // says otherwise. Written by exactly one route (POST /api/programs/:id/profile), cleared by the
   // same one with {"profile": null}, never backfilled at load and never written by a self route.
   profile?: ProgramProfile;
+  // THE FIFTH RECORD, and deliberately not a key inside `profile`: loadProgramProfile refuses any
+  // object carrying a key outside {v, kind, confirmedAt}, so a studio field in there would load
+  // EVERY existing profile as absent. Written by exactly one route
+  // (POST /api/programs/:id/studio), cleared by the same one with {"studio": null}, never
+  // backfilled at load and never written by a self route — the environment and the workflow are
+  // both owner decisions, and a session may propose neither.
+  studio?: ProgramStudioBinding;
   // A Game-Maker founding crosses pane creation, prompt delivery and a durable authority move.
   // This intent is the crash boundary between those acts: it names exactly the candidate Fleet
   // may roll back after a restart, without overloading Slot.programId (task/lane provenance).
@@ -1184,6 +1191,220 @@ const loadProgramProfile = (value: unknown): ProgramProfile | undefined => {
   if (typeof r.kind !== "string" || !PROGRAM_PROFILE_KINDS.includes(r.kind as ProgramProfileKind)) return undefined;
   if (typeof r.confirmedAt !== "number" || !Number.isFinite(r.confirmedAt) || r.confirmedAt <= 0) return undefined;
   return { v: 1, kind: r.kind as ProgramProfileKind, confirmedAt: r.confirmedAt };
+};
+
+// === THE STUDIO RECORD — the WORKFLOW as data, beside the machine environment, never inside it ===
+// loadProgramProfile's four properties, one record over: CLOSED, VERSIONED, DEFAULT-ABSENT, and
+// `confirmedAt` stamped server-side so a caller can never date the owner's act. What is NEW here is
+// the direction of ownership: `profile` answers "which MACHINE is this MAIN founded into" and is an
+// enum the code switches on; a Studio answers "which WORKFLOW does it run" and is CONTENT — stages,
+// spawn triples, gates, brief blocks. The two were one thing until 2026-09-03, and the cost of that
+// was measured: three normative rules landed in a section only a game-maker Program inherits and
+// reached the iOS run in zero of eight lanes
+// (docs/messungen/2026-09-03-private-repo-p-worktrail-audit-synthese.md, root 5).
+//
+// A STUDIO IS A SHARED SOURCE, NOT A PROGRAM'S PROPERTY. Several Programs may bind the same one, so
+// unlike `profile` it cannot be frozen for the lifetime of one MAIN without freezing it for every
+// other reader. `rev` is the whole answer to that: it rises by one on every REAL change, the binding
+// keeps the `rev` it was made against, and a drift is therefore VISIBLE by comparison rather than
+// silent. Nothing in this cut compares them — S1 is inventory only.
+//
+// `machineProfile` REFERENCES the two environments that already exist; it invents no third one and
+// switches nothing. `ProgramProfileKind` and `isGameMaker` are deliberately untouched by this record.
+type StudioMachineProfile = "standard" | "game-maker";
+type StudioRepoPolicy = "one-app-per-repo" | "shared-repo";
+type StudioBriefAudience = "main" | "lane" | "review" | "critic";
+const STUDIO_MACHINE_PROFILES: StudioMachineProfile[] = ["standard", "game-maker"];
+const STUDIO_REPO_POLICIES: StudioRepoPolicy[] = ["one-app-per-repo", "shared-repo"];
+const STUDIO_BRIEF_AUDIENCES: StudioBriefAudience[] = ["main", "lane", "review", "critic"];
+// A POINTER WITH AN OBSERVED HASH, never embedded prose — the construction context-manifest.ts
+// chose for `sourceHash`, for the same reason: a record that carries text is never maintained and
+// is unreadable in a diff, while a pointer inherits the repo's review paths. `sha` is a sha256 hex
+// digest as the wire supplies it; NOTHING in this cut re-reads the file to check it, and no reader
+// may treat it as verified.
+interface StudioWorkflowDoc { path: string; sha: string }
+// the spawn triple per stage — the configuration that today lives only in briefs and handoffs
+// (preflight on Opus, critic on a foreign family, review on codex). Free strings on purpose: the
+// adapter names are the harness's vocabulary, not this record's, and pinning them here would make
+// every new adapter a server diff — the exact failure this record exists to end.
+interface StudioStageSpawn { harness: string; model: string; effort: string }
+interface StudioStage { id: string; title: string; role: string; required: boolean;
+  gate?: string; spawn?: StudioStageSpawn }
+interface StudioWorkflow { doc: StudioWorkflowDoc; stages: StudioStage[] }
+interface StudioBriefBlock { id: string; appliesTo: StudioBriefAudience; text: string }
+interface StudioGates { criticBeforeTaste: boolean; programLint: boolean; completeNeedsProof: boolean }
+interface Studio {
+  v: 1; id: string; name: string; createdAt: number; confirmedAt: number; rev: number;
+  machineProfile: StudioMachineProfile;
+  repoPolicy: StudioRepoPolicy;
+  workflow: StudioWorkflow;
+  briefBlocks: StudioBriefBlock[];
+  gates: StudioGates;
+}
+// the owner-settable half — everything the wire may carry. `id` is owner-chosen (a slug, so the
+// record is referenceable by name in a brief and readable in a ledger); the four stamps
+// (`v`, `createdAt`, `confirmedAt`, `rev`) are the server's and appear in no request body.
+type StudioContent = Pick<Studio, "name" | "machineProfile" | "repoPolicy" | "workflow"
+  | "briefBlocks" | "gates">;
+type StudioContentRead = { ok: true; content: StudioContent } | { ok: false; error: string };
+const MAX_STUDIOS = 20;
+const STUDIO_ID_RE = /^[a-z0-9][a-z0-9-]{1,39}$/;
+const STUDIO_NAME_MAX = 120;
+const STUDIO_STAGES_MAX = 40;
+const STUDIO_BRIEF_BLOCKS_MAX = 40;
+const STUDIO_TEXT_MAX = 8000;
+const STUDIO_SHORT_MAX = 200;
+const STUDIO_KEYS = ["v", "id", "name", "createdAt", "confirmedAt", "rev", "machineProfile",
+  "repoPolicy", "workflow", "briefBlocks", "gates"];
+const STUDIO_CONTENT_KEYS = ["name", "machineProfile", "repoPolicy", "workflow", "briefBlocks", "gates"];
+const STUDIO_STAGE_KEYS = ["id", "title", "role", "required", "gate", "spawn"];
+const STUDIO_SPAWN_KEYS = ["harness", "model", "effort"];
+const STUDIO_BRIEF_BLOCK_KEYS = ["id", "appliesTo", "text"];
+const shortStudioString = (v: unknown, max = STUDIO_SHORT_MAX): boolean =>
+  typeof v === "string" && v.length > 0 && v.length <= max;
+const studioStageFrom = (value: unknown, i: number): StudioStage | string => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return `stage ${i} must be an object`;
+  const r = value as Record<string, unknown>;
+  const unknown = Object.keys(r).filter((k) => !STUDIO_STAGE_KEYS.includes(k));
+  if (unknown.length) return `stage ${i} has unknown key(s): ${unknown.join(", ")} — a stage is exactly {${STUDIO_STAGE_KEYS.join(", ")}}`;
+  if (!shortStudioString(r.id)) return `stage ${i} id must be a non-empty string of at most ${STUDIO_SHORT_MAX} characters`;
+  if (!shortStudioString(r.title)) return `stage ${i} title must be a non-empty string of at most ${STUDIO_SHORT_MAX} characters`;
+  if (!shortStudioString(r.role)) return `stage ${i} role must be a non-empty string of at most ${STUDIO_SHORT_MAX} characters`;
+  if (typeof r.required !== "boolean") return `stage ${i} required must be a boolean`;
+  if (r.gate !== undefined && !shortStudioString(r.gate))
+    return `stage ${i} gate must be a non-empty string of at most ${STUDIO_SHORT_MAX} characters when present`;
+  let spawn: StudioStageSpawn | undefined;
+  if (r.spawn !== undefined) {
+    if (!r.spawn || typeof r.spawn !== "object" || Array.isArray(r.spawn))
+      return `stage ${i} spawn must be an object when present`;
+    const s = r.spawn as Record<string, unknown>;
+    const unknownSpawn = Object.keys(s).filter((k) => !STUDIO_SPAWN_KEYS.includes(k));
+    if (unknownSpawn.length)
+      return `stage ${i} spawn has unknown key(s): ${unknownSpawn.join(", ")} — a spawn is exactly {${STUDIO_SPAWN_KEYS.join(", ")}}`;
+    if (!shortStudioString(s.harness) || !shortStudioString(s.model) || !shortStudioString(s.effort))
+      return `stage ${i} spawn must carry harness, model and effort as non-empty strings`;
+    spawn = { harness: s.harness as string, model: s.model as string, effort: s.effort as string };
+  }
+  return { id: r.id as string, title: r.title as string, role: r.role as string,
+    required: r.required, ...(r.gate !== undefined ? { gate: r.gate as string } : {}),
+    ...(spawn ? { spawn } : {}) };
+};
+const studioBriefBlockFrom = (value: unknown, i: number): StudioBriefBlock | string => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return `briefBlock ${i} must be an object`;
+  const r = value as Record<string, unknown>;
+  const unknown = Object.keys(r).filter((k) => !STUDIO_BRIEF_BLOCK_KEYS.includes(k));
+  if (unknown.length) return `briefBlock ${i} has unknown key(s): ${unknown.join(", ")} — a block is exactly {${STUDIO_BRIEF_BLOCK_KEYS.join(", ")}}`;
+  if (!shortStudioString(r.id)) return `briefBlock ${i} id must be a non-empty string of at most ${STUDIO_SHORT_MAX} characters`;
+  if (typeof r.appliesTo !== "string" || !STUDIO_BRIEF_AUDIENCES.includes(r.appliesTo as StudioBriefAudience))
+    return `briefBlock ${i} appliesTo must be one of: ${STUDIO_BRIEF_AUDIENCES.join(", ")}`;
+  if (!shortStudioString(r.text, STUDIO_TEXT_MAX))
+    return `briefBlock ${i} text must be a non-empty string of at most ${STUDIO_TEXT_MAX} characters`;
+  return { id: r.id as string, appliesTo: r.appliesTo as StudioBriefAudience, text: r.text as string };
+};
+// The ONE reader of everything a caller may send, used by BOTH studio doors so create and change
+// can never disagree about what a legal Studio is. It returns a typed error rather than undefined
+// because a door owes the owner the reason: a 400 that only says "invalid" turns a typo into a
+// hunt. Nothing here is field-wise repaired — half a workflow is a different workflow.
+const studioContentFrom = (value: unknown): StudioContentRead => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "must be an object" };
+  const r = value as Record<string, unknown>;
+  const unknown = Object.keys(r).filter((k) => !STUDIO_CONTENT_KEYS.includes(k));
+  if (unknown.length)
+    return { ok: false, error: `unknown studio key(s): ${unknown.join(", ")} — a studio body is exactly {${STUDIO_CONTENT_KEYS.join(", ")}}` };
+  if (!shortStudioString(r.name, STUDIO_NAME_MAX))
+    return { ok: false, error: `name must be a non-empty string of at most ${STUDIO_NAME_MAX} characters` };
+  if (typeof r.machineProfile !== "string" || !STUDIO_MACHINE_PROFILES.includes(r.machineProfile as StudioMachineProfile))
+    return { ok: false, error: `machineProfile must be one of: ${STUDIO_MACHINE_PROFILES.join(", ")} — a studio CHOOSES an existing machine environment, it never invents one` };
+  if (typeof r.repoPolicy !== "string" || !STUDIO_REPO_POLICIES.includes(r.repoPolicy as StudioRepoPolicy))
+    return { ok: false, error: `repoPolicy must be one of: ${STUDIO_REPO_POLICIES.join(", ")}` };
+  if (!r.workflow || typeof r.workflow !== "object" || Array.isArray(r.workflow))
+    return { ok: false, error: "workflow must be an object" };
+  const w = r.workflow as Record<string, unknown>;
+  const unknownWorkflow = Object.keys(w).filter((k) => k !== "doc" && k !== "stages");
+  if (unknownWorkflow.length)
+    return { ok: false, error: `unknown workflow key(s): ${unknownWorkflow.join(", ")} — workflow is exactly {doc, stages}` };
+  if (!w.doc || typeof w.doc !== "object" || Array.isArray(w.doc))
+    return { ok: false, error: "workflow.doc must be an object" };
+  const doc = w.doc as Record<string, unknown>;
+  const unknownDoc = Object.keys(doc).filter((k) => k !== "path" && k !== "sha");
+  if (unknownDoc.length)
+    return { ok: false, error: `unknown workflow.doc key(s): ${unknownDoc.join(", ")} — doc is exactly {path, sha}` };
+  if (!shortStudioString(doc.path, STUDIO_SHORT_MAX) || (doc.path as string).startsWith("/")
+    || (doc.path as string).includes(".."))
+    return { ok: false, error: "workflow.doc.path must be a repo-relative path without .. segments" };
+  if (typeof doc.sha !== "string" || !/^[0-9a-f]{64}$/.test(doc.sha))
+    return { ok: false, error: "workflow.doc.sha must be a sha256 hex digest — the OBSERVED hash of the document, which nothing here re-reads" };
+  if (!Array.isArray(w.stages)) return { ok: false, error: "workflow.stages must be an array" };
+  if (w.stages.length > STUDIO_STAGES_MAX)
+    return { ok: false, error: `workflow.stages must hold at most ${STUDIO_STAGES_MAX} stages` };
+  const stages: StudioStage[] = [];
+  for (const [i, raw] of w.stages.entries()) {
+    const stage = studioStageFrom(raw, i);
+    if (typeof stage === "string") return { ok: false, error: stage };
+    if (stages.some((s) => s.id === stage.id))
+      return { ok: false, error: `stage ${i} repeats the id ${stage.id} — stage ids are how a later reader joins progress to a stage` };
+    stages.push(stage);
+  }
+  if (!Array.isArray(r.briefBlocks)) return { ok: false, error: "briefBlocks must be an array" };
+  if (r.briefBlocks.length > STUDIO_BRIEF_BLOCKS_MAX)
+    return { ok: false, error: `briefBlocks must hold at most ${STUDIO_BRIEF_BLOCKS_MAX} blocks` };
+  const briefBlocks: StudioBriefBlock[] = [];
+  for (const [i, raw] of r.briefBlocks.entries()) {
+    const block = studioBriefBlockFrom(raw, i);
+    if (typeof block === "string") return { ok: false, error: block };
+    if (briefBlocks.some((b) => b.id === block.id))
+      return { ok: false, error: `briefBlock ${i} repeats the id ${block.id}` };
+    briefBlocks.push(block);
+  }
+  if (!r.gates || typeof r.gates !== "object" || Array.isArray(r.gates))
+    return { ok: false, error: "gates must be an object" };
+  const g = r.gates as Record<string, unknown>;
+  const gateKeys = ["criticBeforeTaste", "programLint", "completeNeedsProof"];
+  const unknownGates = Object.keys(g).filter((k) => !gateKeys.includes(k));
+  if (unknownGates.length)
+    return { ok: false, error: `unknown gates key(s): ${unknownGates.join(", ")} — gates is exactly {${gateKeys.join(", ")}}` };
+  if (gateKeys.some((k) => typeof g[k] !== "boolean"))
+    return { ok: false, error: `gates.${gateKeys.join(", gates.")} must each be a boolean` };
+  return { ok: true, content: { name: r.name as string,
+    machineProfile: r.machineProfile as StudioMachineProfile,
+    repoPolicy: r.repoPolicy as StudioRepoPolicy,
+    workflow: { doc: { path: doc.path as string, sha: doc.sha }, stages },
+    briefBlocks, gates: { criticBeforeTaste: g.criticBeforeTaste as boolean,
+      programLint: g.programLint as boolean, completeNeedsProof: g.completeNeedsProof as boolean } } };
+};
+// loadProgramProfile's discipline, on a whole record instead of a three-field one: anything that is
+// not exactly a well-formed v1 Studio loads as ABSENT — the row is SKIPPED, never field-wise
+// repaired. A half-read workflow is not a smaller workflow, it is a different one, and a Program
+// bound to it would be founded against stages nobody wrote.
+const loadStudio = (value: unknown): Studio | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !STUDIO_KEYS.includes(k))) return undefined;
+  if (r.v !== 1) return undefined;
+  if (typeof r.id !== "string" || !STUDIO_ID_RE.test(r.id)) return undefined;
+  for (const stamp of ["createdAt", "confirmedAt"])
+    if (typeof r[stamp] !== "number" || !Number.isFinite(r[stamp]) || (r[stamp] as number) <= 0) return undefined;
+  if (!Number.isInteger(r.rev) || (r.rev as number) < 1) return undefined;
+  const content = studioContentFrom({ name: r.name, machineProfile: r.machineProfile,
+    repoPolicy: r.repoPolicy, workflow: r.workflow, briefBlocks: r.briefBlocks, gates: r.gates });
+  if (!content.ok) return undefined;
+  return { v: 1, id: r.id, createdAt: r.createdAt as number, confirmedAt: r.confirmedAt as number,
+    rev: r.rev as number, ...content.content };
+};
+// THE BINDING — a POINTER, never a copy. A copy would be a second source for the same text, which
+// is the very failure mode this record ends. `rev` is the studio's revision AT BINDING TIME, so a
+// later change to a shared studio is visible as a difference instead of acting silently under a
+// living MAIN (docs/ideen/2026-09-03-studio-als-objekt.md §8 F2). Nothing in this cut compares the
+// two numbers; whoever renders from them is S2.
+interface ProgramStudioBinding { id: string; boundAt: number; rev: number }
+const loadProgramStudioBinding = (value: unknown): ProgramStudioBinding | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !["id", "boundAt", "rev"].includes(k))) return undefined;
+  if (typeof r.id !== "string" || !STUDIO_ID_RE.test(r.id)) return undefined;
+  if (typeof r.boundAt !== "number" || !Number.isFinite(r.boundAt) || r.boundAt <= 0) return undefined;
+  if (!Number.isInteger(r.rev) || (r.rev as number) < 1) return undefined;
+  return { id: r.id, boundAt: r.boundAt, rev: r.rev as number };
 };
 
 // CLOSED, VERSIONED, DEFAULT-DENY — loadPromotion's discipline for a record that is a HISTORY
@@ -1339,6 +1560,9 @@ export type {
   ProgramFoundingMode, ProgramFoundingOccupant, ProgramFoundingV1, ProgramFoundingProfileKind,
   ProgramFoundingIdentity, ProgramFoundingV2, ProgramFounding, ProgramFoundingRead, ProgramContent,
   ProgramValidation, SupervisorBinding, ProgramDigest, DispatchSpawn, SlotStreamOccupant,
+  StudioMachineProfile, StudioRepoPolicy, StudioBriefAudience, StudioWorkflowDoc, StudioStageSpawn,
+  StudioStage, StudioWorkflow, StudioBriefBlock, StudioGates, Studio, StudioContent,
+  StudioContentRead, ProgramStudioBinding,
 };
 export {
   MAX_SLOTS, watchKind, TRANSITION_AWAITING_MAX, TRANSITION_DEADLINE_MIN_SEC,
@@ -1351,6 +1575,7 @@ export {
   PROGRAM_PROFILE_KINDS, loadProgramProfile, PROGRAM_LINEAGE_MAX, PROGRAM_LINEAGE_VIA,
   PROGRAM_LINEAGE_ENDED_BY, PROGRAM_LINEAGE_ENTRY_KEYS, loadProgramLineageEntry, loadProgramLineage,
   foundingOccupantFrom, foundingIdentityFrom,
+  MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, HELPER_CMD_MAX, helperCmdCheck,
   HELPER_ARTIFACT_GLOB_MAX, HELPER_ARTIFACT_MAX, HELPER_ARTIFACT_PATH_MAX,
   helperArtifactGlobsFrom, helperArtifactsFrom,

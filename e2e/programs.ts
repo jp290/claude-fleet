@@ -41,6 +41,10 @@ interface Program extends ProgramContent {
   // the owner's EXECUTION ENVIRONMENT for this program's MAIN — absent on every Program until the
   // owner grants it, and absent is the exact legacy Standard MAIN every assertion here reads as.
   profile?: { v: number; kind: string; confirmedAt: number };
+  // the owner's WORKFLOW pointer — a fifth record beside promotion/profile/founding/lineage, and a
+  // POINTER never a copy: `rev` is the studio's revision at BINDING time, so a later change to a
+  // shared studio is a visible difference instead of a silent one.
+  studio?: { id: string; boundAt: number; rev: number };
   founding?: { v: number; profileKind?: "standard" | "game-maker"; attemptId: string;
     mode: "bootstrap" | "succession"; canonicalRoot?: string; targetRoot?: string;
     target: { slot: number; openedAt: number; selfTokenHash?: string };
@@ -57,9 +61,17 @@ interface Program extends ProgramContent {
   activatedAt?: number;
   completedAt?: number;
 }
+interface Studio {
+  v: number; id: string; name: string; createdAt: number; confirmedAt: number; rev: number;
+  machineProfile: string; repoPolicy: string;
+  workflow: { doc: { path: string; sha: string }; stages: Record<string, unknown>[] };
+  briefBlocks: Record<string, unknown>[];
+  gates: { criticBeforeTaste: boolean; programLint: boolean; completeNeedsProof: boolean };
+}
 interface FleetState {
   supervisor?: Record<string, unknown> | null;
   programs?: Program[];
+  studios?: Record<string, unknown>[];
   attentionRequests?: Record<string, unknown>[];
   tasks?: Record<string, unknown>[];
   watches?: Record<string, unknown>[];
@@ -4801,6 +4813,348 @@ export async function run(ctx: Ctx): Promise<void> {
     await programPost(staleProgram.id, "complete");
     await programPost(profileControl.id, "complete");
     for (const id of profileCarriers) await programPost(id, "complete");
+  }
+
+  // === THE STUDIO RECORD: the WORKFLOW as data, and a Program's POINTER at it ===================
+  // A fifth record beside promotion/profile/founding/lineage, and deliberately not a key inside
+  // `profile`: loadProgramProfile refuses any object with a key outside {v, kind, confirmedAt}, so
+  // a studio field in there would load EVERY existing profile as absent. The distinction this
+  // section keeps alive is the one the iOS audit costed (root 5): `profile` is the MACHINE a MAIN
+  // is founded into and an enum the code switches on; a Studio is the WORKFLOW it runs and is
+  // CONTENT — stages, spawn triples, gates, brief blocks — that an owner may curate without a
+  // server diff.
+  //
+  // NOTHING READS THESE RECORDS YET, and that is the property under test as much as any refusal:
+  // this cut is inventory. What must hold is that the inventory SURVIVES — the loader half is where
+  // a field silently dies, because Program rows are rebuilt from declared fields and no compiler
+  // and no route probe can see a field that was never read back.
+  {
+    const studioPost = (body: unknown): Promise<Response> =>
+      fetch(`${BASE}/api/studios`, { method: "POST", headers: H, body: JSON.stringify(body) });
+    const studioChange = (id: string, body: unknown): Promise<Response> =>
+      fetch(`${BASE}/api/studios/${id}`, { method: "POST", headers: H, body: JSON.stringify(body) });
+    const listStudios = async (): Promise<Studio[]> =>
+      ((await (await get("/api/studios")).json()) as { studios: Studio[] }).studios;
+    const studioOf = async (id: string): Promise<Studio | undefined> =>
+      (await listStudios()).find((s) => s.id === id);
+    const bindDoor = (programId: string, body: unknown): Promise<Response> =>
+      fetch(`${BASE}/api/programs/${programId}/studio`, { method: "POST", headers: H, body: JSON.stringify(body) });
+    const bindTo = (programId: string, studio: unknown): Promise<Response> => bindDoor(programId, { studio });
+    const bindingOf = async (programId: string): Promise<Program["studio"]> =>
+      (await ownerPrograms()).find((p) => p.id === programId)?.studio;
+    const WF_SHA = "a".repeat(64);
+    const studioBody = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+      name: "iOS App Studio",
+      machineProfile: "standard",
+      repoPolicy: "one-app-per-repo",
+      workflow: {
+        doc: { path: "docs/game-maker/workflow-v2.md", sha: WF_SHA },
+        stages: [
+          { id: "preflight", title: "Preflight", role: "main", required: true,
+            spawn: { harness: "claude", model: "claude-opus-5[1m]", effort: "high" } },
+          { id: "critic", title: "Critic", role: "critic", required: true, gate: "criticBeforeTaste" },
+        ],
+      },
+      briefBlocks: [{ id: "produktblick", appliesTo: "main", text: "Read the product before the code." }],
+      gates: { criticBeforeTaste: true, programLint: true, completeNeedsProof: false },
+      ...over,
+    });
+    // EVERY off-schema body is a 400 that creates NOTHING. A workflow narrowed to its nearest
+    // readable shape is a workflow nobody wrote, and a Program founded against it would be judged
+    // by stages the owner never chose — the same reason the profile door refuses by a closed set.
+    const badStudios: [string, unknown][] = [
+      ["an unknown top-level key", { ...studioBody(), id: "bad-extra", strict: true }],
+      ["an id that is not a slug", { ...studioBody(), id: "Not A Slug" }],
+      ["no id at all", studioBody()],
+      ["a machineProfile outside the two that exist", { ...studioBody({ machineProfile: "private-repo-p" }), id: "bad-machine" }],
+      ["a repoPolicy outside the closed set", { ...studioBody({ repoPolicy: "whatever" }), id: "bad-repo" }],
+      ["a doc sha that is not a sha256 digest", { ...studioBody({ workflow: { doc: { path: "docs/x.md", sha: "abc" }, stages: [] } }), id: "bad-sha" }],
+      ["a doc path that escapes the repo", { ...studioBody({ workflow: { doc: { path: "../etc/passwd", sha: WF_SHA }, stages: [] } }), id: "bad-path" }],
+      ["a stage with an unknown key", { ...studioBody({ workflow: { doc: { path: "docs/x.md", sha: WF_SHA },
+        stages: [{ id: "s", title: "S", role: "main", required: true, owner: "nobody" }] } }), id: "bad-stage" }],
+      ["two stages sharing one id", { ...studioBody({ workflow: { doc: { path: "docs/x.md", sha: WF_SHA },
+        stages: [{ id: "s", title: "S", role: "main", required: true }, { id: "s", title: "T", role: "lane", required: false }] } }), id: "bad-stage-ids" }],
+      ["a brief block for an audience nobody serves", { ...studioBody({ briefBlocks: [{ id: "b", appliesTo: "supervisor", text: "x" }] }), id: "bad-audience" }],
+      ["a gate that is not a boolean", { ...studioBody({ gates: { criticBeforeTaste: true, programLint: "yes", completeNeedsProof: false } }), id: "bad-gate" }],
+      ["gates with a member missing", { ...studioBody({ gates: { criticBeforeTaste: true, programLint: true } }), id: "bad-gates-short" }],
+      ["a rev dictated from the wire", { ...studioBody(), id: "bad-rev", rev: 7 }],
+      ["a confirmedAt dictated from the wire", { ...studioBody(), id: "bad-stamp", confirmedAt: 1 }],
+    ];
+    const studiosBefore = (await listStudios()).length;
+    const badStudioResults = await Promise.all(badStudios.map(([, body]) => studioPost(body)));
+    check("studio door: every off-schema body is 400 and creates NO studio",
+      badStudioResults.every((r) => r.status === 400) && (await listStudios()).length === studiosBefore,
+      `${badStudios.map(([why], i) => `${why}=${badStudioResults[i]?.status}`).join(" | ")}`);
+    // THE SERVER STAMPS THE ACT and starts the revision at 1. An identical create is a READ of the
+    // act that already landed: it re-dates nothing and bumps nothing, because `rev` is the number
+    // every binding is measured against and a repetition must not invent drift that never happened.
+    const beforeCreate = Date.now();
+    const created = await studioPost({ ...studioBody(), id: "private-repo-p" });
+    const createdRow = await studioOf("private-repo-p");
+    const afterCreate = Date.now();
+    const recreate = await studioPost({ ...studioBody(), id: "private-repo-p" });
+    const recreatedRow = await studioOf("private-repo-p");
+    check("studio door: a create stores a server-stamped v1 record at rev 1 and an identical repeat is a true no-op",
+      created.ok && createdRow?.v === 1 && createdRow.id === "private-repo-p" && createdRow.rev === 1
+        && createdRow.name === "iOS App Studio" && createdRow.machineProfile === "standard"
+        && createdRow.workflow.stages.length === 2 && createdRow.workflow.doc.sha === WF_SHA
+        && typeof createdRow.createdAt === "number" && createdRow.createdAt >= beforeCreate
+        && createdRow.createdAt <= afterCreate && createdRow.confirmedAt === createdRow.createdAt
+        && recreate.ok && JSON.stringify(recreatedRow) === JSON.stringify(createdRow),
+      `${created.status} rev=${createdRow?.rev} repeat=${recreate.status} same=${JSON.stringify(recreatedRow) === JSON.stringify(createdRow)}`);
+    // A DIFFERENT body under an existing id is a CHANGE, and there is a door for changes. Answering
+    // it at the create door would silently rewrite a record the owner meant to create.
+    const collide = await studioPost({ ...studioBody({ name: "Something else" }), id: "private-repo-p" });
+    const collideText = await collide.text();
+    const changed = await studioChange("private-repo-p", studioBody({ name: "iOS App Studio v2" }));
+    const changedRow = await studioOf("private-repo-p");
+    const rechange = await studioChange("private-repo-p", studioBody({ name: "iOS App Studio v2" }));
+    const rechangedRow = await studioOf("private-repo-p");
+    check("studio door: a different body under an existing id is 409, while the change door bumps rev and re-dates the record",
+      collide.status === 409 && collideText.includes("already exists")
+        && changed.ok && changedRow?.rev === 2 && changedRow.name === "iOS App Studio v2"
+        && changedRow.createdAt === createdRow?.createdAt
+        && changedRow.confirmedAt >= (createdRow?.confirmedAt ?? 0)
+        && rechange.ok && rechangedRow?.rev === 2
+        && JSON.stringify(rechangedRow) === JSON.stringify(changedRow),
+      `collide=${collide.status}:${collideText} change=${changed.status} rev=${changedRow?.rev} repeat=${rechange.status} rev=${rechangedRow?.rev}`);
+    // the credential boundary, for the reason the profile door has one: a session that could write
+    // this would be choosing the workflow it is judged by.
+    const studioAsSelf = await fetch(`${BASE}/api/studios`, {
+      method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": plainToken },
+      body: JSON.stringify({ ...studioBody(), id: "smuggled-studio" }),
+    });
+    const studioListAsSelf = await fetch(`${BASE}/api/studios`, { headers: { "x-fleet-self-token": plainToken } });
+    const studioUnknown = await studioChange("no-such-studio", studioBody());
+    check("studio door: a self token is not a credential here (401) and an unknown studio id is 404",
+      studioAsSelf.status === 401 && studioListAsSelf.status === 401
+        && (await studioOf("smuggled-studio")) === undefined && studioUnknown.status === 404,
+      `create=${studioAsSelf.status} list=${studioListAsSelf.status} unknown=${studioUnknown.status}`);
+
+    // --- THE BINDING: a pointer plus the revision it was made against, and the restart that proves
+    // the loader reads it back. This is the cut's done-criterion: a field the Program loader does
+    // not NAME is dropped at the first restart, and nothing — no compiler, no route probe — says so.
+    const boundProgram = await activateNewProgram("Studio binding survives a restart");
+    const bindBadKey = await bindDoor(boundProgram.id, { studio: { id: "private-repo-p" }, force: true });
+    const bindInnerKey = await bindTo(boundProgram.id, { id: "private-repo-p", rev: 9 });
+    const bindMissing = await bindDoor(boundProgram.id, {});
+    const bindUnknownStudio = await bindTo(boundProgram.id, { id: "no-such-studio" });
+    const bindUnknownText = await bindUnknownStudio.text();
+    const releaseAbsent = await bindTo(boundProgram.id, null);
+    check("studio binding: an unknown body key, an unknown inner key and a missing field are 400, an unknown studio is 404, and releasing an absent binding is an ordinary success",
+      bindBadKey.status === 400 && bindInnerKey.status === 400 && bindMissing.status === 400
+        && bindUnknownStudio.status === 404 && bindUnknownText.includes("unknown studio")
+        && releaseAbsent.ok && (await bindingOf(boundProgram.id)) === undefined,
+      `key=${bindBadKey.status} inner=${bindInnerKey.status} missing=${bindMissing.status} unknown=${bindUnknownStudio.status} release=${releaseAbsent.status}`);
+    const beforeBind = Date.now();
+    const bound = await bindTo(boundProgram.id, { id: "private-repo-p" });
+    const binding = await bindingOf(boundProgram.id);
+    const afterBind = Date.now();
+    const rebindSame = await bindTo(boundProgram.id, { id: "private-repo-p" });
+    check("studio binding: the door stores a pointer with the studio's CURRENT rev and a server stamp, and an identical bind is a true no-op",
+      bound.ok && binding?.id === "private-repo-p" && binding.rev === 2
+        && typeof binding.boundAt === "number" && binding.boundAt >= beforeBind && binding.boundAt <= afterBind
+        && rebindSame.ok && JSON.stringify(await bindingOf(boundProgram.id)) === JSON.stringify(binding),
+      `${bound.status} ${JSON.stringify(binding ?? null)} repeat=${rebindSame.status}`);
+    // THE RESTART. Both halves in one boot: the studio inventory and the Program's pointer at it.
+    await restartSrv();
+    const studioAfterBoot = await studioOf("private-repo-p");
+    const bindingAfterBoot = await bindingOf(boundProgram.id);
+    check("studio persistence: a studio and a Program's binding both survive a restart byte for byte",
+      JSON.stringify(studioAfterBoot) === JSON.stringify(changedRow)
+        && JSON.stringify(bindingAfterBoot) === JSON.stringify(binding),
+      JSON.stringify({ studio: studioAfterBoot ?? null, binding: bindingAfterBoot ?? null }));
+    // …and THE DRIFT IS VISIBLE, NOT REFUSED. A studio is a SHARED source: refusing every change
+    // while any bound program is merely active would freeze the record for good, and the standalone
+    // use of this cut is that the owner can curate the workflow while its readers are still being
+    // built (docs/ideen/2026-09-03-studio-als-objekt.md §8 F2). So the change lands, the studio's
+    // rev moves, and the binding keeps the rev it was made against — two numbers, one difference,
+    // and nothing in this cut compares them.
+    const driftChange = await studioChange("private-repo-p", studioBody({ name: "iOS App Studio v3" }));
+    const driftStudio = await studioOf("private-repo-p");
+    const driftBinding = await bindingOf(boundProgram.id);
+    check("studio drift: changing a studio bound by an ACTIVE program is allowed, and the binding keeps the rev it was made against",
+      driftChange.ok && driftStudio?.rev === 3 && driftBinding?.rev === 2
+        && driftBinding.boundAt === binding?.boundAt,
+      `change=${driftChange.status} studioRev=${driftStudio?.rev} bindingRev=${driftBinding?.rev}`);
+
+    // --- THE FOUNDING RACE, the profile door's race one record over and for the identical reason:
+    // a founding reads its Program's brief inputs twice, seconds apart. A write in that window makes
+    // the two reads differ — a MAIN founded under one workflow and judged under another. Both doors
+    // are locked for that moment: the binding on the Program, and the SHARED studio the founding is
+    // bound to. The refusal is about the MOMENT, so the same write is answered by three different
+    // sentences as the founding progresses (in flight → live binding → stale binding writes).
+    const raceStudioProgram = await activateNewProgram("Studio write against a founding in flight");
+    await studioPost({ ...studioBody({ name: "Second Studio" }), id: "second-studio" });
+    await bindTo(raceStudioProgram.id, { id: "private-repo-p" });
+    const raceStudioLabel = "program-main-studio-race";
+    const raceStudioPending = beginBootstrap(raceStudioProgram.id, {
+      cwd: gameRepo, label: raceStudioLabel, harness: "codex", model: "gpt-5.5", effort: "high",
+    });
+    const raceStudioSlot = await waitForLabel(raceStudioLabel);
+    check("studio race precondition: the founding occupant became observable while its bootstrap is still in flight",
+      raceStudioSlot !== null, String(raceStudioSlot));
+    const raceIdenticalBind = await bindTo(raceStudioProgram.id, { id: "private-repo-p" });
+    const raceRebind = await bindTo(raceStudioProgram.id, { id: "second-studio" });
+    const raceRebindText = await raceRebind.text();
+    const raceStudioWrite = await studioChange("private-repo-p", studioBody({ name: "iOS App Studio v4" }));
+    const raceStudioWriteText = await raceStudioWrite.text();
+    const raceUnboundStudioWrite = await studioChange("second-studio", studioBody({ name: "Second Studio v2" }));
+    const raceBindingDuring = await bindingOf(raceStudioProgram.id);
+    const raceStudioDuring = await studioOf("private-repo-p");
+    check("studio race: an identical bind is 200 in flight, while a rebind and a write to the BOUND studio are refused and neither record moves",
+      raceIdenticalBind.ok && raceRebind.status === 409 && raceRebindText.includes("in flight")
+        && raceStudioWrite.status === 409 && raceStudioWriteText.includes("in flight")
+        && raceStudioWriteText.includes(raceStudioProgram.id)
+        && raceBindingDuring?.id === "private-repo-p" && raceStudioDuring?.rev === 3,
+      `bind=${raceIdenticalBind.status} rebind=${raceRebind.status} write=${raceStudioWrite.status} ${raceStudioWriteText}`);
+    // …and the lock names the STUDIO, not the server: a studio no founding is bound to stays
+    // writable in the same instant. A lock wider than its reason would stop the owner curating
+    // every other workflow whenever any program is being founded.
+    check("studio race: the in-flight lock is scoped to the bound studio — an unrelated studio is written in the same moment",
+      raceUnboundStudioWrite.ok && (await studioOf("second-studio"))?.rev === 2,
+      `${raceUnboundStudioWrite.status} rev=${(await studioOf("second-studio"))?.rev}`);
+    if (raceStudioSlot !== null) await respawnScreen(raceStudioSlot, ">_ OpenAI Codex (v0.147.0)");
+    const raceStudioResponse = await raceStudioPending;
+    const raceStudioBody = await raceStudioResponse.json() as { ok?: boolean; slot?: number };
+    const raceAfterFounding = await bindTo(raceStudioProgram.id, { id: "second-studio" });
+    const raceAfterFoundingText = await raceAfterFounding.text();
+    const raceStudioAfterFounding = await studioChange("private-repo-p", studioBody({ name: "iOS App Studio v4" }));
+    if (raceStudioBody.slot) await post(`/api/slots/${raceStudioBody.slot}/kill`, {});
+    const raceAfterKill = await bindTo(raceStudioProgram.id, { id: "second-studio" });
+    check("studio race: the in-flight refusal names the moment — afterwards a LIVE binding refuses in different words, the studio itself is free again, and a stale binding writes",
+      raceStudioResponse.ok && raceAfterFounding.status === 409
+        && raceAfterFoundingText.includes("LIVE bound") && !raceAfterFoundingText.includes("in flight")
+        && raceStudioAfterFounding.ok
+        && raceAfterKill.ok && (await bindingOf(raceStudioProgram.id))?.id === "second-studio",
+      `afterFounding=${raceAfterFounding.status}:${raceAfterFoundingText} studio=${raceStudioAfterFounding.status} afterKill=${raceAfterKill.status}`);
+
+    // A CONFIRMED DECISION ON FINISHED WORK IS NOT REWRITABLE — the profile door's rule, and the
+    // reason carries over unchanged: a complete program's receipts, outcomes and briefs are already
+    // dated against the workflow it ran under. The identical retry still reads.
+    const doneStudioProgram = await activateNewProgram("Studio binding on completed work");
+    await bindTo(doneStudioProgram.id, { id: "private-repo-p" });
+    const doneBindingBefore = await bindingOf(doneStudioProgram.id);
+    await programPost(doneStudioProgram.id, "complete");
+    const completeRetry = await bindTo(doneStudioProgram.id, { id: "private-repo-p" });
+    const completeRelease = await bindTo(doneStudioProgram.id, null);
+    const completeReleaseText = await completeRelease.text();
+    check("studio binding: a complete program accepts the identical retry but refuses a real change and keeps the dated pointer",
+      completeRetry.ok && completeRelease.status === 409 && completeReleaseText.includes("complete")
+        && JSON.stringify(await bindingOf(doneStudioProgram.id)) === JSON.stringify(doneBindingBefore),
+      `retry=${completeRetry.status} release=${completeRelease.status} ${completeReleaseText}`);
+
+    // THE WORKFLOW CANNOT BE PROPOSED, ONLY GRANTED — the same boundary the profile record draws,
+    // and the same adversary: content reaches storage through validateProgramContent, a CLOSED
+    // object of seven named fields, so a `studio` riding on a proposal is accepted-but-absent.
+    const smuggleStudio = await selfPropose(plainToken, {
+      ...content, title: "Smuggle a studio through a session proposal", studio: { id: "private-repo-p" } });
+    const smuggleStudioRow = (await smuggleStudio.json()) as { program?: Program };
+    const smuggleStudioOwner = await post("/api/programs", {
+      ...content, title: "Smuggle a studio through an owner proposal", studio: { id: "private-repo-p", boundAt: 1, rev: 1 } });
+    const smuggleStudioOwnerRow = (await smuggleStudioOwner.json()) as { program?: Program };
+    const smuggledIds = [smuggleStudioRow.program?.id, smuggleStudioOwnerRow.program?.id]
+      .filter((id): id is string => typeof id === "string");
+    const smuggledStored = (await ownerPrograms()).filter((p) => smuggledIds.includes(p.id));
+    check("studio boundary: a binding cannot be smuggled through a session proposal or an owner proposal",
+      smuggledIds.length === 2 && smuggledStored.length === 2
+        && smuggledStored.every((p) => p.studio === undefined && !("studio" in p)),
+      JSON.stringify(smuggledStored.map((p) => p.studio ?? null)));
+    for (const id of smuggledIds) await programPost(id, "discard");
+
+    // --- THE LOADER, PROBED IN THE DANGEROUS DIRECTION. A studio row this build cannot parse is
+    // SKIPPED WHOLE — never repaired field by field, because half a workflow is a different
+    // workflow — and it must not take the rows beside it down with it. A malformed BINDING degrades
+    // to absent and costs the Program nothing, exactly as a malformed profile does.
+    const bindingCarrier = await activateNewProgram("Studio binding loader carrier");
+    await bindTo(bindingCarrier.id, { id: "private-repo-p" });
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const studioState = readState();
+    const goodStudio = (studioState.studios ?? []).find((x) => (x as { id?: string }).id === "private-repo-p");
+    const badStudioRows: unknown[] = [
+      { ...goodStudio, id: "shape-version", v: 2 },                                  // a version nobody knows
+      { ...goodStudio, id: "shape-machine", machineProfile: "private-repo-p" },           // a third machine environment
+      { ...goodStudio, id: "shape-rev", rev: 0 },                                     // a revision below the first
+      { ...goodStudio, id: "shape-extra", strict: true },                             // an unknown key
+      { ...goodStudio, id: "Shape Slug" },                                            // an id that is not a slug
+      { ...goodStudio, id: "shape-stages", workflow: { doc: { path: "docs/x.md", sha: "abc" }, stages: [] } },
+    ];
+    studioState.studios = [...badStudioRows as Record<string, unknown>[], ...(studioState.studios ?? [])];
+    const badBindings: unknown[] = [{ id: "private-repo-p", boundAt: 1 }, { id: "private-repo-p", boundAt: 1, rev: 0 },
+      { id: "private-repo-p", boundAt: 1, rev: 1, sticky: true }, "private-repo-p"];
+    const bindingCarrierRow = studioState.programs?.find((x) => x.id === bindingCarrier.id);
+    if (bindingCarrierRow) (bindingCarrierRow as unknown as Record<string, unknown>).studio = badBindings[0];
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(studioState, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const afterStudioLoad = await listStudios();
+    check("studio loader: every malformed persisted row is skipped whole, and the well-formed studios beside them survive the same boot",
+      !!goodStudio && afterStudioLoad.length === 2
+        && afterStudioLoad.every((s) => s.id === "private-repo-p" || s.id === "second-studio")
+        && afterStudioLoad.find((s) => s.id === "private-repo-p")?.rev === 4,
+      JSON.stringify({ planted: badStudioRows.length, survivors: afterStudioLoad.map((s) => s.id) }));
+    const carrierAfterLoad = (await ownerPrograms()).find((p) => p.id === bindingCarrier.id);
+    check("studio loader: an unreadable binding degrades to ABSENT and costs the record, never the Program",
+      !!carrierAfterLoad && carrierAfterLoad.studio === undefined && !("studio" in carrierAfterLoad)
+        && carrierAfterLoad.status === "active" && carrierAfterLoad.intent === content.intent,
+      JSON.stringify(carrierAfterLoad ?? null));
+    // the remaining malformed bindings, each on its own boot — a loader that accepted any of them
+    // would hand a later reader a pointer with no revision to compare, which is the whole point of
+    // storing one.
+    const bindingShapeResults: string[] = [];
+    for (const shape of badBindings.slice(1)) {
+      await tmuxOut("kill-session", "-t", "srv");
+      await Bun.sleep(500);
+      const shapeState = readState();
+      const row = shapeState.programs?.find((x) => x.id === bindingCarrier.id);
+      if (row) (row as unknown as Record<string, unknown>).studio = shape;
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(shapeState, null, 2), { mode: 0o600 });
+      await restartSrv();
+      bindingShapeResults.push(JSON.stringify((await bindingOf(bindingCarrier.id)) ?? null));
+    }
+    check("studio loader: every malformed binding shape loads as absent, never as a pointer without its revision",
+      bindingShapeResults.length === badBindings.length - 1
+        && bindingShapeResults.every((r) => r === "null"),
+      bindingShapeResults.join(" | "));
+    // …and a legacy Program persisted before this record existed gains no binding at load.
+    const legacyStudioRow = (await ownerPrograms()).find((p) => p.id === proposed.id);
+    check("studio loader: a legacy Program without the field loads with no binding and is never backfilled",
+      !!legacyStudioRow && legacyStudioRow.studio === undefined && !("studio" in legacyStudioRow),
+      JSON.stringify(legacyStudioRow ?? null));
+    // THE HOT DIGEST IS UNTOUCHED and the full record carries the pointer — the split the promotion
+    // and profile records keep, for the reason they keep it: a 2 s poll is not where an owner
+    // decision belongs.
+    const studioPoll = await (await get("/api/sessions")).json() as { programs: Record<string, unknown>[] };
+    const studioDigest = studioPoll.programs.find((p) => p.id === boundProgram.id);
+    check("studio projection: GET /api/programs carries the binding while the 2 s ProgramDigest stays exactly four fields",
+      !!studioDigest && JSON.stringify(Object.keys(studioDigest).sort())
+        === JSON.stringify(["createdAt", "id", "status", "title"])
+        && !("studio" in studioDigest)
+        && (await bindingOf(boundProgram.id))?.id === "private-repo-p",
+      `digest=${JSON.stringify(studioDigest)}`);
+
+    // THE CAP IS HARD AND EVICTS NOTHING. capPrograms may drop rows because a COMPLETE program is
+    // always a candidate; a studio never becomes complete, so an eviction here could only throw
+    // away an owner act. Overflow is refused AT THE DOOR, and every existing row is still there
+    // afterwards — the failure this shape exists to prevent is a silent one.
+    const capBefore = (await listStudios()).length;
+    const capFill: number[] = [];
+    for (let i = capBefore; i < 20; i++)
+      capFill.push((await studioPost({ ...studioBody({ name: `Filler ${i}` }), id: `filler-${i}` })).status);
+    const capOverflow = await studioPost({ ...studioBody({ name: "One too many" }), id: "one-too-many" });
+    const capOverflowText = await capOverflow.text();
+    const capAfter = await listStudios();
+    check("studio cap: the inventory refuses overflow at the door instead of evicting an owner act",
+      capFill.every((s) => s === 200) && capOverflow.status === 409
+        && capOverflowText.includes("maximum") && capAfter.length === 20
+        && capAfter.some((s) => s.id === "private-repo-p") && capAfter.some((s) => s.id === "second-studio")
+        && !capAfter.some((s) => s.id === "one-too-many"),
+      `fill=${capFill.join(",")} overflow=${capOverflow.status} count=${capAfter.length}`);
+
+    await bindTo(boundProgram.id, null);
+    await programPost(boundProgram.id, "complete");
+    await programPost(raceStudioProgram.id, "complete");
+    await programPost(bindingCarrier.id, "complete");
   }
 
   // === THE OWNER BOARD'S PROMOTION SECTION, run rather than described ==========================

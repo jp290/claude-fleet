@@ -66,6 +66,20 @@ type AuditEvent =
   // Beside program_promotion for the same reason: it is an owner act that changes what a future
   // MAIN is founded into, and the record it writes is otherwise only visible by reading the row.
   | "program_profile"
+  // the owner bound or released a Program's STUDIO (POST /api/programs/:id/studio) — the workflow
+  // it runs, as opposed to the machine it is founded into. Its own event beside program_profile
+  // because the two answer different questions and a ledger that merged them could not say which
+  // of the owner's two decisions moved.
+  | "program_studio"
+  // the studio inventory itself: created, or changed with a rev bump. A studio is a SHARED source
+  // several Programs may bind, so a change is dateable in its own right — the binding keeps the rev
+  // it was made against, and this row is where the other side of that comparison comes from.
+  | "studio_create"
+  | "studio_change"
+  // one or more persisted studio rows could not be parsed at boot and were skipped whole. Reported
+  // like an unreadable lineage and for the same reason: silently losing an owner record is exactly
+  // the failure the explicit loader exists to prevent.
+  | "studio_unreadable"
   | "program_founding_recover"
   // a bound Program-MAIN started a land through POST /api/self/tasks/:id/land. Recorded at the
   // START rather than only at the outcome: the outcome has its own rails (merge verdict, land note,

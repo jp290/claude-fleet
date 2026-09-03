@@ -1,3 +1,139 @@
+# HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 6 → Nachfolge): Slice 5+6 ist LIVE (§f komplett), und Tier 1 endet an einer Wand, die niemand vermessen hatte — die `server/`-Module sind BLÄTTER; 2026-09-03 (19:4x), ctx GEMESSEN 25,0 %
+
+Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,
+`GET /api/self/program-execution`. Hier steht nur, was git und die Sensoren NICHT tragen.
+
+## 1. Das Erste, was du tust: ZWEI OWNER-TORE, und beide sind schon gestellt und wahrscheinlich schon tot
+
+**Attention `d3b14a4d` (kind `decision`, gestellt 19:49).** Sie stirbt mit meiner Nachfolge —
+so wie `5954d4da` zweimal gestorben ist (Status heute `refused`, „requester session ended").
+Das ist **B-12** im Register, kein Versehen. Darum steht der Inhalt hier, und darum stellst du
+sie **nicht blind neu**: erst nachsehen, ob der Owner geantwortet hat.
+
+**TOR 1 — die Form des nächsten Slice (Entscheidung).** Siehe §3. Meine Empfehlung ist (b).
+**TOR 2 — der Advisory-Deckel steht auf 10/10.** `POST /api/self/tasks` lehnt jede weitere
+`notiz` ab. Drei heutige Befunde liegen deshalb nur getrackt im Register (B-10/B-11/B-12), nicht
+als Queue-Zeile. Erfolgsmaß 6 verlangt Disposition, nicht Zwischenlagerung. Das Tor ist seit dem
+02.09. dasselbe.
+
+**Fang keine Lane an, bevor TOR 1 beantwortet ist** — die Form des Schnitts ist die Frage, nicht
+sein Inhalt, und eine Lane auf der falschen Form ist ein verlorener Land-Zyklus (und die kosten
+auf dieser Maschine gerade fünf bis sieben Versuche, §1b der Vorgängerin).
+
+## 2. Was gelandet, verifiziert und LIVE ist — §f ist zu Ende gefahren
+
+Slice 5+6 (`c80b171` + `5848207`) war bei meiner Übernahme gelandet, aber nicht live. **Jetzt ist
+das Protokoll §f vollständig, jeder Schritt von mir selbst ausgeführt:**
+
+| Schritt | Ergebnis |
+| --- | --- |
+| Post-Land-Audit | **rot** (3527 Checks, 4 FAILs, 1744 s) → **adjudiziert `flake`** |
+| Dry-Boot-Rollback | `f3a56d7` aus `git archive`, Socket `fleetdry61`/8861, `FLEET_CMD=true`, gegen eine **Kopie** der heutigen `fleet.json`: HTTP 200, 16 Slots / 182 Tasks / 60 Programs gelesen, 0 Fehlerzeilen, **ein** Boot-Banner (kein Crash-Loop). Per PID + `tmux -L fleetdry61 kill-server` abgeräumt, Live-Server danach 200. |
+| Deploy (Verb 2) | `5cfe2f38` **`ok:true`, `hitTarget:true`**, 3677 ms, Ziel `2c9f35d` |
+| Health | `deployGap.behindCount` **20 → 0**, `codeBehind:false`, `bundleStale:false`, `errors:null` |
+| `bun e2e/pins.ts` | ALL PASS |
+| `graphify update .` | 9335 Knoten, 13660 Kanten, 677 Communities |
+
+**Zur Adjudikation, weil sie NICHT von mir kam und ihre Begründung falsch war:** eine andere
+Session hat mein Audit 2,5 min nach dem Fall als `flake` adjudiziert und in
+`docs/verify-tiering.md` geschrieben, das Land sei „docs-only". Das beschreibt `5848207f` gegen
+seinen ELTERN. Die Land-Note sagt `mainBefore f3a56d7` → `mainAfter 5848207f`, `covers` nennt die
+Slice-5+6-Lane — der auditierte Tip enthält `c80b171`, also 112 Zeilen aus `server.ts` heraus.
+**Das Urteil bleibt richtig, aus einem Grund, der den ganzen Land-Diff prüft** (`2c9f35d`):
+`git diff f3a56d7 5848207` hat **null** Code-Treffer auf `fleetEvents`/`pruneFleetEvents`/
+`FleetEvent`/`watches`/`tickWatches`/`eventRows`/`FLEET_EVENT_*`; der einzige Treffer überhaupt
+ist das Wort `tickWatches` in der Prosa desselben Nachtrags. Gegenprobe: dieselbe Suchform findet
+29 Treffer auf die Namen, die der Diff wirklich bewegt. **Merksatz, jetzt im Doc: ein Audit misst
+den TIP, nicht den obersten Commit.**
+
+## 3. Der Befund, der die Planung ändert: ab hier gibt es kein nächstes BLATT mehr
+
+Ich habe den letzten offenen Tier-1-Posten („audit-queue") vorvermessen — zweimal, weil die erste
+Messung falsch war. Beide Fassungen stehen in `docs/sanierung-2026-09/p4-slice7-vorbereitung.md`,
+die Korrektur als **§6**; lies §6 zuerst, §1–§4 beschreiben einen Schnitt, den es so nicht gibt.
+
+**Die Invariante, die ich zuerst nicht geprüft hatte:** jedes bestehende Modul unter `server/`
+ist ein BLATT. `auth.ts`, `audit-log.ts`, `transport.ts` importieren nur node/bun und andere
+`server/`-Module — **keines importiert aus `server.ts`.** Der Kern importiert die Module, nie
+umgekehrt.
+
+Je Einheit gemessen: sechs Einheiten der Queue sind echte Blätter, drei weitere hängen nur an
+Typen bzw. `lastPostLandAudit`, die ohnehin im Bereich stehen und mitziehen. Übrig bleiben
+**sieben echte Kern-Bindungen**, und sie sitzen in genau den zwei größten Funktionen:
+
+- `drainPostLandAudits` → `helperClaimCandidateExists`, `helperClaimOf`, `reportServerRun`
+- `runPostLandAudit` → `mintAuditEvents`, `retainRunOutput`, `descendantPids`,
+  `killProcessTree`, `VERIFY_SKIP_EXIT`
+- (`auditCmdFor` → `repoWorkers`, `workerCmdFor`)
+
+**Drei Formen, und die Wahl ist TOR 1:** (a) Injektion — verhaltenserhaltend, aber
+Signaturänderung, bricht mit dem Muster aller sechs bisherigen Slices · **(b) vorher die Blätter
+schneiden** — erster Schritt ein vermessener Mini-Slice `server/proc.ts` (`retainRunOutput` +
+`STDERR_MARK`/`byteLen`/`retainSection`, `descendantPids` + `KILL_TREE_MAX_DEPTH`,
+`killProcessTree`; ~100 Z., echtes Blatt, und `retainRunOutput` bedient auch den Verify-Gate),
+danach bleiben vier Bindungen · (c) nur die Blätter nehmen, Drain und Runner bleiben im Kern
+(~200 der 530 Z.).
+
+**Für Erfolgsmaß 1 ist das der zweite, unabhängige Grund.** §7 der Vorgängerin begründet die
+Unerreichbarkeit damit, dass die Kernzeilen AUFRUFSTELLEN sind. Dazu kommt jetzt: sechs Slices
+lang war „das nächste Blatt" verfügbar, ab hier ist es das nicht mehr. Jeder weitere Schnitt
+kostet entweder eine Signaturänderung oder einen vorgelagerten Slice.
+
+## 4. Drei Befunde, die nur getrackt liegen (Advisory-Deckel), im Register B-10/B-11/B-12
+
+- **B-10** — `e2e/watch.ts:3457` und `:3460` rufen `check()` **ohne `detail`**. Ihre
+  Trail-`detail`-Spalte ist leer, die Audit-Ausgabezeilen nennen sie ohnehin nicht (B-02 eine
+  Ebene tiefer). Für eine Adjudikation bleibt nur die Basisrate. Billig zu schließen: beide
+  hängen an derselben Vorbedingung (`eventRows()` enthält `eventA`).
+- **B-11** — die Instanz, die ein roter Lauf „kept for inspection" hinterlässt, hat ihr eigenes
+  `audit.jsonl` schon weggerottet: 438 + 47 Zeilen, ältester Zeitstempel `1788454415020` bei
+  Laufbeginn `~1788452759` — **die letzten ~83 s von 1744**. Mich hat es direkt getroffen: ich
+  wollte „`pruneFleetEvents` hat `eventA` verdrängt" an der Abwesenheit von
+  `fleet_event_prune`-Zeilen prüfen, und die Null war das Rotationsfenster, keine Messung.
+- **B-12** — die Sterblichkeit der Attention, siehe §1.
+
+## 5. Was git NICHT trägt
+
+- **Ich bin Slot 6.** Der Suite-Mutex wurde heute Abend ~24 min von einer fremden
+  `./e2e-isolated.sh` (pid 35054) gehalten — nicht von mir und nicht vom Audit.
+- **Ich habe einen `./e2e-isolated.sh`-Rerun GESTARTET UND ABGEBROCHEN.** Er stand hinter dem
+  Mutex in der Schlange und hätte ~50 min der knappsten Ressource des Programs gekostet; die
+  Trail-Basisraten aus `ff7fd72` (367 Läufe) plus die Diff-Reichweite beantworten dieselbe Frage.
+  Abbruch sauber: Wrapper per notierter PID, **kein Runner gespawnt** (er hatte den Lock nie),
+  kein tmux-Socket zurückgeblieben. Geprüft, nicht angenommen.
+- **Der Flake-Register-Route entgeht Historie, und das hat mich fast in die Irre geführt.**
+  `GET /api/self/flakes` gab für zwei der vier Checks `insufficient-evidence` (1 Fehlschlag, nur
+  dieser Lauf). Die andere Session las **alle** `e2e-trail/*.jsonl` und fand 5/367 bzw. 6/367 —
+  die Route liest nur die **400 neuesten** Dateien, und genau dort lebt eine historische Flake
+  per Definition nicht. Das ist in `docs/e2e-trail.md` §7 dokumentiert; ich habe es zu spät
+  gelesen. **Wer eine Absenz aus dieser Route zitiert, muss die Kappung mitzitieren.**
+- **Der Dispatcher steht auf `on: false`** (Master-Stop, wie das Program es will), `autosOn` an,
+  0 Lanes, 4 freie Slots. Eine freigegebene Zeile startet also NICHT von selbst — ein Slice
+  braucht den Hand-Dispatch mit dem Owner-Token.
+
+## 6. Ehrlichkeiten
+
+- **Ich habe in meinem zweiten Erdungs-Kommando `ps -eo pid,lstart,command` gefahren** und damit
+  das `FLEET_SELF_TOKEN` eines fremden Slots in meinen Kontext gedruckt — genau das, was der
+  Token-Hygiene-Absatz des Regelbuchs verbietet, und der Absatz nennt diesen Weg wörtlich. Danach
+  nur noch gefilterte Formen. Es ist die dritte dokumentierte Instanz derselben Sache.
+- **Meine erste Slice-7-Messung war falsch** und hätte eine Lane gekostet: sie zählte neun Namen
+  als „Importe INS Modul" und nannte sie ungeprüft, statt sie zu prüfen. Die Blatt-Invariante
+  stand die ganze Zeit in drei Dateien, die ich hätte öffnen können.
+- **Eine eigene Sonde hat mich belogen und ich habe es gemerkt:** sie schrieb `killProcessTree`
+  die Namen `MergeLast`/`VerifyPlan` zu, weil ich seinen Endpunkt geschätzt statt gelesen hatte —
+  die beiden gehören `runVerify` bei `:11146`. Grenzen werden gelesen.
+- **Alle vier meiner Commits sind Direkt-Commits aus dem Haupt-Checkout**, docs-only, je mit
+  `bun e2e/pins.ts` ALL PASS und leerem Public-Repo-Scan verifiziert — **nicht** mit der vollen
+  Suite, und kein Post-Land-Audit deckt sie. `./state.sh`s Land-Health-Zahlen zählen sie nicht.
+  `d05cf97` · `2c9f35d` · `6e2a817` · `05db5de`.
+- **Diese Session lief auf `claude-opus-5[1m]`/high, nicht Fable.** Die Modellpolitik will Fable
+  5.1 für eine Program-MAIN. Geerbt, nicht behoben — ich habe überwiegend am Code gemessen, nicht
+  orchestriert. Wenn du überwiegend briefst und landest, wechsle: der Zug ist ein PAAR
+  (`POST /api/slots/:id/model` UND `/model <id>` in der Pane).
+
+---
+
 # HANDOFF - Fleet Controller (Slot 12, claude-opus-5[1m] high): Sanierung Slice 5+6 gelandet (Merge-Record-Deadlock aufgeloest), alle Attentions leer, Private-repo-j neu gegruendet, codex/sol auf Slot 15 - und mein eigener "F1"-Befund zweimal korrigiert und am Ende verworfen; 2026-09-03 (19:1x), ctx GEMESSEN 28 %
 
 Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`. Hier steht nur, was

@@ -5349,11 +5349,20 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
     // still armed, are the same question. A spent one is never returned as existing — a new
     // registration after a completion or an expiry is a NEW question.
     if (kind === "transition") return "awaiting" in w && w.armed && w.awaiting === String(b.awaiting);
+    // A merge duplicate is the same subscription only while armed. Once fired, the terminal/inflight
+    // distinction below decides whether this is a stale repeat or a subscription to a newer run.
     return watchKind(w) === kind && "target" in w && w.target === identity!.t.id
       && w.targetCwd === identity!.cwd && w.targetBranch === identity!.branch
-      && (kind === "lane" ? w.armed : true);
+      && (kind === "lane" || kind === "merge" ? w.armed : true);
   });
   if (dup) return json({ ok: true, watch: dup, existing: true });
+  // A persisted terminal is level-triggered once per receiver. The fired row is the receipt; without
+  // a newer reserved/running merge, another subscription could only replay the same terminal.
+  if (kind === "merge" && identity!.terminal && watches.some((w) => w.firedAt !== null
+    && w.slot === s.id && watchKind(w) === "merge" && "target" in w
+    && w.target === identity!.t.id && w.targetCwd === identity!.cwd
+    && w.targetBranch === identity!.branch))
+    return json({ error: "this merge terminal already fired a watch for this receiver; no newer merge is running" }, 409);
   // An armed Watch reserves one future event slot; delivered-but-unacknowledged and uncertain events
   // hold theirs until the receiver closes them. The sum is slotDeliveryBudget's, shared with both
   // report doors and the sights — refusal and projection cannot drift while they are one function.

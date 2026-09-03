@@ -86,3 +86,43 @@ Zusatz, der Trail habe die Daten. Hat er: die Rangliste ist ein Einzeiler ueber
 `$TMPDIR/fleet-e2e-trail/*.jsonl`, und sie hat hier eine Adjudikation entschieden, die sonst
 entweder elf Minuten Suite-Mutex oder ein geratenes Urteil gekostet haette. Die Grenze ist die
 Aufbewahrung: 33 Laeufe, nicht die 5421 Zeilen, die `./state.sh` fuer den Haupt-Checkout zaehlt.
+
+## 6. Nachtrag, gleicher Tag: dieselbe Methode auf drei Checks eines REMOTE-Audits
+
+Audit `at=1788462365585`, Baum `6b8b89d9` (Slice 7a der Generalsanierung, `server.ts` +
+`server/proc.ts`, reiner Move), gefahren **auf second-host** (`cmd: "remote helper (second-host):
+./e2e-isolated.sh"`, `ms` 1 398 441 = 23 min, `remote.clonedSha == mainSha`, also kein
+Baum-Zweifel). Rot mit drei FAILs.
+
+**Diesmal standen die Namen schon auf der Ledger-Zeile** — das Feld `fails[]`, das die
+Remote-Seite seit `3974883` fuellt. Nur die Pane-Benachrichtigung elidierte sie. Wer bei einem
+REMOTEN Rot das Ledger liest statt der Benachrichtigung, spart sich den Trail-Umweg aus §1.
+
+| Check | seen | fail | Rate |
+|---|---|---|---|
+| `subject-gone: the torn-down lane's undelivered event is terminal as itself, unackable, and frees its budget` | 30 | 7 | **23,3 %** |
+| `counterprobe: the live subject's held event is delivered on its FIRST attempt; the dead one is never typed` | 30 | 5 | **16,7 %** |
+| `restart keeps the busy pending event with the same id and no invented attempt` | 30 | 8 | **26,7 %** |
+
+Fehlschlaege ab 2026-08-31, ueber viele Baeume, und drei davon am **2026-09-03 vor** dem Land
+(`…T014544Z`, `…T085614Z`, `…T092428Z` — der Land liegt bei 15:30Z). Sie treten gebuendelt auf
+(`isolated-20260902T135103Z-50990` traegt alle drei). Das ist die Q5/Q6-ops-event-Familie, die
+das Regelbuch fuehrt und die der Dual-Host-Handoff §3 schon am Vor-Land-Baum `fda6fda` gemessen
+hatte. Verdikt `flake` abgelegt.
+
+**Der Vorbehalt, ausgesprochen statt verschwiegen:** der Diff fasst Prozess-/Ausgabe-Hygiene an,
+und ein Check namens „restart keeps the busy pending event" klingt danach, als koenne er davon
+abhaengen. Die Basisrate entscheidet das trotzdem — er fiel achtmal, bevor dieser Diff existierte.
+
+## 7. Ein Sensor, der weniger misst, als sein Name sagt
+
+Dieselbe Zeile meldet `checks: {ran: 24, failed: 3}` — waehrend eine ihrer eigenen PASS-Zeilen
+`rows=3538 results=3538` ausweist. Grund: `server.ts#postLandAuditChecks` zaehlt `PASS `- und
+`FAIL `-Zeilen **im aufbewahrten, elidierten Text**. Bei 3 538 Checks ueberleben ~24 Zeilen die
+Elision, also ist `ran` deren Anzahl, nicht die der Laeufe. `failed: 3` stimmt nur, weil es aus
+der `3 FAILURES`-Summenzeile rekonziliert wird.
+
+Konsequenz fuer die Regelbuch-Regel „ein Audit-Gruen prueft man an `ms` und an den PASS-Zeilen":
+die `ms`-Haelfte traegt (hier 23 min = echter Lauf), die `checks.ran`-Haelfte traegt **nicht** als
+Mass fuer „wurde etwas gemessen" — `ran` ist bei jedem grossen Lauf zweistellig, egal wie viel
+lief. Nur `ran: 0` bleibt aussagekraeftig, weil dann auch die Elision nichts zu behalten hatte.

@@ -984,7 +984,22 @@ mit, erstmals alle vier gemeinsam in 367 Läufen. Basisraten und der billigste n
 stehen jetzt dort. **Für dich nur relevant, falls dich jemand danach fragt** — es gehört nicht zum
 Kontext-Pack-Netz.
 
-**Auf Branch `pack-source-hash` (Basis `24f9cfc`), NICHT gelandet:**
+**GELANDET UND DEPLOYT** (Nachtrag, gegen 17:4x geprüft — die Fassung unten sagte „nicht gelandet",
+das ist überholt). Alle drei Commits sind unter NEUEN SHAs auf main: `a1d24d3` (reine Hälfte),
+`87e3ce2` (server.ts-Hälfte), `7994b80` (Blob-Sha-Korrektur). Beweis: `git cherry -v main
+pack-source-hash` markiert alle drei mit `-`, also „Patch schon oben". **Der Branch
+`pack-source-hash` ist damit redundant** und `git merge --ff-only pack-source-hash` ist unmöglich
+(main ist ihm voraus); ein Merge des Branches würde 40 Dateien und 8162 Zeilen fremder Arbeit
+zurückdrehen. **Wer diesen Branch sieht, löscht ihn oder lässt ihn liegen — er wird nie gemerged.**
+
+**Und es funktioniert live.** Frische Receipts tragen die Quellversion je Pack, und sie BEWEGT sich:
+`verify-e2e` stand um 16:10 auf `c35381b4` und um 18:04 auf `d3028cb5`, weil ich an diesem
+Nachmittag `docs/verify-tiering.md` geändert habe — eine seiner Quellen. Version N gegen N+1 ist
+damit beobachtbar, was der ganze Zweck war. Nächster sinnvoller Schritt für dich:
+`bun briefstats.ts` gibt Zeilen mit `@<hash>` statt `@unversioned`, sobald genug Lanes auf einer
+Version gelaufen sind.
+
+**Die ursprüngliche Fassung des Branch-Abschnitts (Basis `24f9cfc`), historisch:**
 
 - `6535f71` reine Hälfte: `context-manifest.ts#observedSourceHash` + `#stampObservedSourceHashes`,
   `context-packs.ts#CONTEXT_SEED_SOURCE_PATHS`, `briefstats.ts` Pack × Version-Tabelle; 5 + 4 neue

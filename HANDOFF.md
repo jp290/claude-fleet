@@ -62,31 +62,45 @@ benutzen.
 
 ## 4 Der Betriebsbefund, der groesser ist als dieses Programm
 
-**Die Flake-Familie §11.2l (`restart keeps the busy pending event…`, `e2e/watch.ts`) ist von ~0 %
-auf ~80 % gekippt.** Gemessen ueber alle 34 Trail-Laeufe in `$TMPDIR/fleet-e2e-trail`, die den
-Check gefahren haben:
+**Der Post-Land-Audit hat eine Rauschgrenze von 49 %.** Gemessen ueber alle 35 Trail-Laeufe in
+`$TMPDIR/fleet-e2e-trail`, zwei Flake-Familien nebeneinander:
 
 ```
-30.08. – 02.09. frueh:  15 Laeufe,  0 rot
-ab 02.09. 03:54:        19 Laeufe, 11 rot
-die letzten 10 Laeufe:             8 rot
+busy-receiver (§11.2l, e2e/watch.ts)      11 von 35 rot   (31 %)
+Q6 fleet-report / subject-gone            9 von 35 rot   (26 %)
+mindestens EINE der beiden rot           17 von 35       (49 %)
 ```
 
-Das ist keine stabile Flake mehr, sondern eine Sonden-Regression in Zeitlupe. **Konsequenz, die
-jeden betrifft, der heute landet:** bei ~80 % ist der Post-Land-Audit als Sensor tot — jedes Land
-wird rot, jedes Rot wird routinemaessig als Flake abgetan, und das erste ECHTE Rot geht darin
-unter. Reparaturzeile `bffe3de0`; der Controller (Slot 16) konvertiert sie zur `auftrag`-Zeile und
-dispatcht sie als naechste freie Lane.
+Bei jedem zweiten Land ein Rot, das routinemaessig als Flake abgetan wird — **genau da geht das
+erste ECHTE Rot unter.** Das ist der Preis, und er faellt jedem an, der heute landet, nicht nur
+diesem Programm.
+
+**Eine Hypothese, die ich geprueft und VERWORFEN habe — falls du dieselbe Spur aufnimmst:** die
+letzten sechs Laeufe sehen aus, als wechselten sich die beiden Familien ab (beide schweren
+Q6-Laeufe hatten busy-receiver gruen). Die Kreuztabelle ueber alle 35 widerlegt das:
+`busy gruen/Q6 gruen 18 · busy gruen/Q6 ROT 6 · busy ROT/Q6 gruen 8 · beide ROT 3`. Erwartungswert
+fuer „beide rot" bei Unabhaengigkeit ist 35 × (11/35) × (9/35) = 2,8, beobachtet 3. Das sind zwei
+UNABHAENGIGE Familien, keine gemeinsame Wurzel. Die 49 % entstehen von allein aus 31 % und 26 %.
+Konsequenz fuer `bffe3de0`: die Zeile bleibt, wie sie ist — eine Familie, eine Fixture. Die
+Q6-Familie braucht eine EIGENE Zeile, kein Anhaengsel.
 
 **Die Beweisordnung, die hier funktioniert hat, und die du wiederverwenden kannst:** weder der
 Rerun desselben Baums (faellt identisch) noch der frische HEAD-Worktree (laeuft gruen) entscheidet
-diese Familie — entschieden hat der **Zeitfenster-Join Trail ↔ `post-land-audits.jsonl`**. Konkret:
-`00:11:41→00:40:14 ROT = tip c692ff44` gegen `00:40:19→01:08:17 ROT = tip d1d29c1`. `c692ff44`
-traegt keinen Commit dieses Programs — damit war die Entlastung bewiesen, ohne eine Suite zu
-starten. Beide Audits sind als `stale-test` adjudiziert.
+diese Familien. Entschieden haben zwei Dinge:
+1. **Der Zeitfenster-Join Trail ↔ `post-land-audits.jsonl`.** `00:11:41→00:40:14 ROT = tip
+   c692ff44` gegen `00:40:19→01:08:17 ROT = tip d1d29c1`; `c692ff44` traegt keinen Commit dieses
+   Programs, also war die Entlastung bewiesen, ohne eine Suite zu starten.
+2. **Disjunkte Fehlermengen auf fast bytegleichem Code.** Audit 00:40 (tip `d1d29c1`):
+   busy-receiver ROT, Q6 0/10. Audit 01:08 (tip `2ad3670`): busy-receiver GRUEN, Q6 8/10. Der
+   Baumunterschied ist `git diff --name-only d1d29c1 2ad3670` = fuenf Dateien, alle Markdown unter
+   `docs/`. **Eine deterministische Regression kann den vorher fallenden Check nicht REPARIEREN.**
+
+Alle drei roten Audits dieses Programs sind als `stale-test` adjudiziert (das dritte, auf
+`2ad3670`, mit Vorschlag flake beim Controller Slot 16).
 
 **Merkposten:** das Feld `out` einer Audit-Zeile im Ledger ist ein TAIL und **elidiert die
-FAIL-Zeile**. Wer wissen will, WAS gefallen ist, liest den Trail, nicht das Ledger.
+FAIL-Zeilen** — bei acht Fehlern stand dort woertlich nur `8 FAILURES`. Wer wissen will, WAS
+gefallen ist, liest den Trail, nicht das Ledger.
 
 ## 5 Zwei Dinge, die ich anders gemacht habe als der Normalweg — mit Grund
 
@@ -118,6 +132,6 @@ FAIL-Zeile**. Wer wissen will, WAS gefallen ist, liest den Trail, nicht das Ledg
 
 ## 7 Stand in einem Satz
 
-Nichts ist in Flug, keine Lane dieses Programs offen, ein Audit-Watch armed (`89fb734d`, auf
-`49e3d97`). Sieben Zeilen offen: fuenf `notiz` (Messungen, kein Dispatch-Motor) und die zwei
+Nichts ist in Flug, keine Lane dieses Programs offen, kein Watch mehr armed (`89fb734d` hat auf
+`49e3d97` gefeuert, Ergebnis in §4). Sieben Zeilen offen: fuenf `notiz` (Messungen, kein Dispatch-Motor) und die zwei
 `auftrag` aus §3. Das Programm ist an einer Owner-Antwort, nicht an Arbeit.

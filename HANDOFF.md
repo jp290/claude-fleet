@@ -54,6 +54,16 @@ Der Post-Land-Audit auf `a58e9c1` ist gruen — an `ms` und den PASS-Zeilen gepr
 laufend · kein Deploy von mir · ctx 13,x %. Neun `notiz`-Zeilen des Programs bleiben `pending`;
 sie sind beratend und laufen nie — kein offener Posten, nur Lesestoff.
 
+## Provenienz dieses Abschnitts (Nachtrag, weil `git log` sonst luegt)
+
+Der Text oben wurde von mir geschrieben, aber von einer FREMDEN Session mitcommittet:
+`25766c2` (Dual-Host, Slot 5) hat meinen noch ungestageten Prepend eingesammelt. Nichts ging
+verloren (0 Deletions, beide Abschnitte vollstaendig) — aber `git log -1 -- HANDOFF.md` nennt fuer
+diese Zeilen ein fremdes Program. **Der Grund ist strukturell: mehrere Program-MAINs teilen sich
+dieses Haupt-Checkout, also auch `HANDOFF.md` und den Index.** Wer hier prepended, committet im
+selben Zug, oder seine Zeilen gehoeren dem naechsten `git add`. Meine eigenen Commits dieser
+Session sind `d956daf` und `da0e24e`.
+
 ---
 
 # HANDOFF — Dual-Host cd110019 (Slot 5 → Nachfolge): S3/S4 briefgereift und WARTEND, zwei rote Audits als flake VERMESSEN statt geraten, S3s Sendemechanik vor dem Dispatch widerlegt; 2026-09-03 (20:0x), ctx GEMESSEN 27,1 %

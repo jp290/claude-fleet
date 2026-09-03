@@ -3,6 +3,43 @@
 Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,
 `GET /api/self/program-execution`. Hier steht nur, was git und die Sensoren NICHT tragen.
 
+## 0d. ERLEDIGT 19:0x — S1 IST GELANDET (main `f606e75`)
+
+**Der Auftrag dieser Session ist damit abgeschlossen.** Vier Commits auf main, keine offene Kette:
+`461baea` Gegenlesung · `ce7d14d` Gegenlesung eingearbeitet · `07f891a` S1 · `f606e75` der
+Sicherheits-Nachtrag. Queue-Zeile `cf959aba` ist erledigt, `d1373cf7` (notiz) offen fuer den Owner.
+
+**Das Land-Verdikt, woertlich:** `verify.ok true`, `proportional false`, steps
+`[install, pins, tsc, build, clean-review, security, claude-gate]`, exit 0, **103 176 ms**,
+`mainBefore d06919d3 -> mainAfter f606e754`. Der Tail sagt: `0s of this 103s run was spent waiting
+for /tmp/fleet-e2e.lock`. **Wichtig: die Lane hing 21 Commits zurueck und wurde ueber Slice 5+6
+(`c80b171`, json/HOST/PORT nach `server/http.ts`) rebased — die volle Kette lief auf dem REBASTEN
+Baum**, damit ist der Refactor-Konflikt nicht bloss „kein Textkonflikt", sondern uebersetzt und
+gruen.
+
+**Die Adjudikation des roten Vorschaulaufs, nachgeprueft (nicht geglaubt):** der eine lokale FAIL
+war `restart keeps the busy pending event with the same id and no invented attempt` — woertlich
+die in CLAUDE.md §11.2l gefuehrte OFFENE Flake-Familie (15x rot auf 13 verschiedenen Baeumen,
+zwoelf aelter als dieser Slice). Die Lane hat die Beweisordnung richtig gefahren: erst denselben
+Baum erneut, der fiel NICHT identisch (1 statt 2) — damit ist Nicht-Determiniertheit direkt
+belegt. **Offen und ehrlich so benannt: der zweite Helfer-FAIL bleibt namenlos** (siehe §0c).
+Wenn der Post-Land-Audit rot wird, ist §11.2l der erste Verdaechtige — das ist kein
+Freifahrtschein, nur die Reihenfolge.
+
+**Zugabe der Lane ueber den Brief hinaus, von ihr selbst benannt:** eine SIEBTE Ablehnung an
+`POST /api/studios` — ein Studio-id ist ein owner-gewaehlter Slug, also ist „gleiche id, anderer
+Body" 409 mit Verweis auf die Aenderungstuer, „identisch" dagegen ein Read. Richtige Konsequenz
+des Entwurfs, und sie hat sie gemeldet statt sie unterzuschieben.
+
+**Zusagen eingeloest:** die Sanierungs-MAIN ist inzwischen von Slot 9 auf **Slot 4** nachgefolgt;
+die versprochene server.ts-Meldung ging dorthin (send `f5a4bf4f`, acceptance observed), nicht an
+die tote Slot-Nummer. **Merkposten: Slot-Nummern altern innerhalb einer Session** — vor jedem Send
+am Poll pruefen, ein `slot not active` ist die billige Variante des Fehlers.
+
+**Was als Naechstes ansteht:** S2 — aber erst, wenn das Game-Maker-Workflow-Dokument aus
+`b2aa5b45` adjudiziert ist (S2 braucht seine FORM, S1 nicht). Und S2 faltet den Studio-Block in
+`#railBlockFor`, NICHT als zweiten Summanden an die Builder-Naehte (§8 F1/Widerspruch).
+
 ## 1. Das Erste, was du tust: ZWEI OWNER-TORE, und beide sind schon gestellt und wahrscheinlich schon tot
 
 **Attention `d3b14a4d` (kind `decision`, gestellt 19:49).** Sie stirbt mit meiner Nachfolge —

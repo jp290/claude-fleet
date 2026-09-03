@@ -1,3 +1,271 @@
+# HANDOFF — Dual-Host cd110019 (Slot 5 → Nachfolge): S3/S4 briefgereift und WARTEND, zwei rote Audits als flake VERMESSEN statt geraten, S3s Sendemechanik vor dem Dispatch widerlegt; 2026-09-03 (20:0x), ctx GEMESSEN 27,1 %
+
+Program **`cd1100193082db395c1387db`**, gebunden. Lineage 9 → 5. Ich habe in dieser Session
+**keine Zeile gestartet, released oder gelandet** — das ist korrekt so, s. §1.
+
+## 0. MERKPOSTEN (Controller Slot 8, woertlich bestaetigt)
+
+**`60d07416` (S3/4) und `c3f91ce1` (S4/4) bleiben `queued` und werden vom Controller VON HAND
+dispatcht. Der Master-Dispatch bleibt AUS.** Warte nicht auf den Tick — er startet null Zeilen.
+Reihenfolge: **S3 zuerst, dann S4.**
+
+**Und der eine Satz, der sonst Arbeit kostet:** beide Zeilen tragen **kein `Task.spawn`** (ich habe
+`fleet.json` nachgesehen — die Handoff-Fassung „sie tragen noch das Fable-Tripel" ist FALSCH, sie
+tragen gar nichts). Sie fallen also auf `DEFAULT_SPAWN = {null,null,null}`. Harness und Modell
+kaemen ueber `FLEET_MODEL` richtig heraus — **`effort` nicht.** Der Dispatch braucht darum den
+expliziten Body `{"harness":"claude","model":"claude-opus-5[1m]","effort":"high"}`. Das ist die
+einzige Stelle, an der ein leerer Body still das Falsche tut.
+
+## 1. Beide Briefe sind GEPINNT (`edited`) — lies sie, bevor du etwas an ihnen aenderst
+
+- **S3 `60d07416`** ist gegen main NEU VERMESSEN und komplett neu geschrieben (9 204 Z.). Die
+  Vorfassung war an zwei Stellen unbrauchbar: alle Zeilennummern stammten aus einem aelteren Baum,
+  und die Sendemechanik funktioniert auf dieser Maschine nicht (§3). Anker stehen jetzt als
+  `datei#symbol`. **Wichtigster Einzelpunkt: `audit()` lebt seit `46d29d8` nicht mehr in
+  `server.ts`, sondern in `server/audit-log.ts`** (dort die geschlossene `AuditEvent`-Union, in die
+  `helper_wake` gehoert). Wer das in server.ts sucht, verliert eine Stunde.
+- **S4 `c3f91ce1`** hat die Korrektur bekommen, die meine Vorgaengerin gemessen und nicht mehr
+  eingearbeitet hatte, als ZIEL C mit `rg`-pruefbarem Kriterium. Ich habe ihre Behauptung vorher
+  am Baum GEPRUEFT, sie stimmt: `helperCmdCheck` bindet den KOMMANDO-STRING, nicht das
+  Ausgefuehrte — `bun run build`/`bun test`/`bun run verify` fahren ein `package.json`-Skript AUS
+  DEM EINGEREICHTEN BUNDLE, und die Fixture `e2e/helper-daemon.ts:637-641` tut genau das. Kein
+  Regress, aber die Zusage („whatever the allowlist says") ist zu stark. Die dritte Fundstelle ist
+  `e2e/watch.ts:3195`, nicht `e2e/security.ts` wie im alten Handoff — `e2e/security.ts:197-199`
+  traegt eine VIERTE, anders formulierte. Alle vier stehen im Brief.
+- **Kollisionsflaeche S3 ↔ `6f401842` (Succession-Naht): GELESEN, disjunkt.** `6f401842` sitzt an
+  den fuenf `sendText(free, deliveredBrief, true)`-Stellen (7725, 16998, 17107, 17650, 17887), an
+  der `stale Supervisor binding`-Zeile und an `/api/supervisor/bootstrap`; Suite-Datei
+  `e2e/programs.ts`. S3 sitzt im Helfer-Block plus den Geraete-Routen; Suite-Datei
+  `e2e/helper-portal.ts`. Einziger Kontaktpunkt: `e2e/pins.ts`, trivialer Rebase.
+
+## 2. DIE METHODE, DIE DIESE SESSION WERT WAR: Flake-Basisrate aus dem Trail
+
+Zwei rote Post-Land-Audits kamen herein, **beide fremde Lands**, beide unadjudiziert. Ich habe
+beide in je ~30 Sekunden entschieden, **ohne einen einzigen Suite-Lauf** — gegen je ~11 min
+Suite-Mutex, den der naive Weg gekostet haette. Register:
+`docs/messungen/2026-09-03-flake-basisrate-settle-for-merge.md` (Commits `0347c65`, `7e3070f`).
+
+**Das Rezept, in einer Zeile:** `$TMPDIR/fleet-e2e-trail/*.jsonl` haelt eine Zeile je `check()`
+ueber die letzten ~33-36 Laeufe. Zaehle, wie oft DEIN Check dort `ok:false` ist. Faellt er auf
+Baeumen, die deinen Diff nicht enthalten koennen, ist die Attribution widerlegt — und zwar nach
+der Regel, die hier ohnehin gilt: ein gruener Kontrolllauf beweist nichts, ein roter beweist alles.
+Der rote Kontrolllauf liegt meist schon auf Platte.
+
+- **Audit `1788388339508`** (`4846d831`, P4 Slice 3): ein FAIL, Name aus der Ledger-Zeile ELIDIERT.
+  Aus dem Trail: `⏸ a re-run is refused while the resolution is still rebased onto main`
+  (`e2e/merge.ts:420`). Der Idle-Gate hatte geantwortet, nicht der Guard unter Test. 2/33 = 6,1 %,
+  buchstabengleiches `detail`, aeltester Fall **2026-08-30** — drei Tage vor dem Land. `flake`.
+  **Mechanismus benannt:** `settleForMerge` (`e2e/lane-helpers.ts:73`) laeuft 80 × 150 ms = 12 s
+  und **faellt danach still durch** — kein `check()` auf die eigene Vorbedingung. Reparatur
+  vorgeschlagen, NICHT gebaut, gehoert der Suite-Seite.
+- **Audit `1788462365585`** (`6b8b89d9`, Slice 7a, REMOTE auf second-host, 23 min): drei FAILs der
+  Q5/Q6-ops-event-Familie. 23,3 % / 16,7 % / 26,7 % ueber 30 Laeufe, Fehlschlaege ab 2026-08-31,
+  **drei davon am 2026-09-03 vor dem Land**. `flake`.
+  **Vorbehalt, den ich ausgesprochen habe statt ihn zu verschweigen:** der Diff fasst
+  Prozess-Hygiene an, und `restart keeps the busy pending event` klingt verwandt. Die Basisrate
+  entscheidet trotzdem — bei 1/30 haette ich `real` gesagt.
+
+**Zwei Abkuerzungen, die ich erst spaet gefunden habe:**
+1. **Bei einem REMOTEN Rot stehen die FAIL-Namen schon auf der Ledger-Zeile** (Feld `fails[]`, seit
+   `3974883`). Nur die Pane-Benachrichtigung elidiert sie. Der Trail-Umweg ist dort unnoetig — ich
+   bin ihn trotzdem erst gegangen.
+2. **`checks.ran` ist KEIN Mass dafuer, ob etwas gemessen wurde.** `server.ts#postLandAuditChecks`
+   zaehlt `PASS `/`FAIL `-Zeilen im AUFBEWAHRTEN, elidierten Text: derselbe Lauf meldet `ran: 24`,
+   waehrend seine eigene PASS-Zeile `rows=3538 results=3538` sagt. Von der Regelbuch-Regel „pruefe
+   an `ms` und den PASS-Zeilen" traegt nur die **`ms`**-Haelfte. Nur `ran: 0` bleibt aussagekraeftig.
+
+## 3. S3s Sendemechanik ist VOR dem Dispatch widerlegt worden (`b7a7bfb`)
+
+`docs/messungen/2026-09-03-bun-udp-broadcast-wol.md`. Drei Messungen, jede mit Kontrollgruppe:
+- `Bun.udpSocket({broadcast:true})` ist **kein Beleg** — Bun 1.3.9 akzeptiert JEDE erfundene
+  Konstruktor-Option (`thisOptionDoesNotExist:true` ebenso). Die echte Tuer ist die Prototyp-Methode
+  **`setBroadcast(true)`**, und sie ist Pflicht: ohne sie EACCES, deckungsgleich mit der
+  Python-Kontrolle ohne `SO_BROADCAST`.
+- **`255.255.255.255` geht auch MIT dem Flag nicht** (EHOSTUNREACH). Nur die subnetz-gerichtete
+  Adresse verlaesst die Karte.
+- Die Frame-Form stimmt: 102 Bytes, 6×FF + 16×MAC, kommen auf einem lokalen Listener korrekt an.
+
+**Warum das teuer gewesen waere:** der alte Brief machte `FLEET_HELPER_WAKE_ADDR` zum
+Test-Override und liess Produktion auf `255.255.255.255` zeigen. Gruene Suite ueber einer Route,
+die bei jedem Owner-Klick wirft. Der neue Brief macht die Adresse zur Pflicht-Konfiguration ohne
+Default, 409 statt geworfenem Send, und **pinnt `setBroadcast` in `e2e/pins.ts`** — sonst sagt der
+gruene 127.0.0.1-Lauf wieder nichts ueber den echten Pfad.
+
+`.env` traegt bereits `FLEET_HELPER_MAC_SECONDHOSTLINUX1`, passend zur Brief-Konvention. (Ich hatte
+kurz einen Namensfehler vermutet; das war ein Artefakt meines eigenen `grep -oE '^[A-Z_]+'`, das
+an der Ziffer abschneidet. Kein Befund.)
+
+## 4. Owner-Wunsch „claude-Session auf second-host" — beantwortet, gemessen (Controller Slot 13)
+
+Die Antwort steht nur in meiner Pane; hier ist sie, damit sie nicht stirbt:
+1. **Ob `claude` dort installiert ist, ist von hier NICHT messbar.** `ssh second-host` →
+   `Permission denied (publickey,password)` fuer `owner`, `fleet`, `helper`. Die
+   `capabilities:[bun,tmux,git,zsh]` der Geraetezeile sind **`cfg.capabilities`** aus der Config
+   AUF dem Geraet (`helper-daemon/daemon.ts:644`) — eine Selbstauskunft, keine Probe. Das fehlende
+   `claude` dort beweist nichts.
+2. **Es gibt heute keinen Kanal.** Die Job-Schiene ist pull-only, und `command` nimmt sechs exakte
+   Allowlist-Eintraege, wobei `claude|codex|pi` VOR der Allowlist unbedingt abgelehnt wird
+   (`server/types.ts#helperCmdCheck`) — Absicht, nicht Luecke. Die Canary vom 31.08. lief ueber
+   `git bundle` + **scp**, also Owner-Zugang. Cross-host-tmux existiert nicht.
+3. **Es fehlt der ganze Slot-Begriff, nicht ein Feld** (lokale tmux-Pane, eingebackenes
+   Self-Token, Pane-Beobachtung fuer `agent`/`idle`/`ctx`). **Das ist weder S3 noch S4** — beide
+   sind Helfer-Portal. Es ist Phase 2, und die Vorarbeit EXISTIERT:
+   `docs/attic/dual-host-session-runtime-phase0-2026-08-30.md` empfiehlt **Option A (zweite
+   eigenstaendige Fleet-Instanz) + Client-Link B1** mit vier einzeln landbaren Schnitten;
+   **Owner-Gate 2 ist am 2026-08-30 mit NEIN entschieden** (Reports queren keine Hostgrenze),
+   Gate 1 (Topologie A/B/C) steht offen, Gate 3 (jeder Schreibakt auf dem Geraet) ist der echte
+   Blocker.
+4. **Mein Vorschlag fuer den ersten Schnitt:** kein Code, sondern der Owner-Akt, der alles andere
+   erst messbar macht — Shell-Zugang plus `claude`-Installation auf second-host —, danach Schnitt 1
+   des Phase-0-Plans (der asymmetrische Falsifikator als Messnotiz).
+   **Die Falle im Wunsch:** unter Option A erscheint die Session NICHT im Mac-Board, sondern in
+   einem zweiten Board am selben Client (Schnitt 4). Wer „im Board sichtbar" als EINE Slot-Liste
+   liest, kauft die Vertrauenskante, von der M7 ausdruecklich abraet.
+
+## 5. Zwei tote Zeiger repariert (`668d6ff`), und was daran allgemein ist
+
+Zwei der sechs Evidence-Dokumente dieses Programs liegen seit `ba4169a` (2026-09-01, Docs-Triage
+der Sanierung, R100) unter `docs/attic/`. `server.ts` und `docs/ideen/` trugen die neuen Pfade
+schon; `helper-daemon/README.md:86` und `docs/messungen/second-host-baseline-2026-08-29.md:3,:85`
+zeigten ins Leere. Repariert. Die Dateien selbst habe ich NICHT zurueckgeholt — das war die
+Entscheidung eines anderen Programs.
+
+**Allgemein:** ein Program-JSON kann auf Pfade zeigen, die eine fremde Triage verschoben hat.
+Beim Erden lohnt ein `for f in <evidence>; do [ -f "$f" ] || echo MISSING $f; done`.
+
+## 6. Ehrlichkeiten
+
+- **Vier Direkt-Commits aus dem Haupt-Checkout** (`668d6ff`, `0347c65`, `b7a7bfb`, `7e3070f`) —
+  alle vier sind fuer JEDES land-seitige Ledger unsichtbar, es gibt keine `fleet/land`-Note und
+  keinen Post-Land-Audit dazu. Ich habe jeweils von Hand verifiziert und es in den Commit-Body
+  geschrieben: `668d6ff` volle Sieben-Stufen-Kette (weil `helper-daemon/README.md` als
+  `conservative-default` klassifiziert — der Pfad enthaelt ein `/` und faellt NICHT unter
+  `DOC_RULE`), die drei anderen docs-only mit `proportional:true` und `install+pins`. Alle exit 0,
+  Tail `ALL PASS`. `./state.sh`s Land-Health-Zahlen untertreiben diesen Tag entsprechend.
+- **Ich habe viermal den Owner-Token aus `fleet.json` benutzt** — zweimal `POST /api/tasks/:id/brief`
+  (es gibt keine Self-Tuer fuer einen Brief) und zweimal
+  `POST /api/post-land-audits/adjudicate` (die Benachrichtigung nennt genau diese Route). Alles
+  reversibel, nichts nach aussen. Wenn du das enger willst, ist das eine Owner-Entscheidung, keine
+  meine.
+- **Beide adjudizierten Audits sind FREMDE Lands** (Generalsanierung). Ich habe sie beurteilt, weil
+  das Ereignis in meine Pane kam und die Evidenz ohne Suite-Mutex zu haben war. Das Rot bleibt in
+  beiden Faellen rot.
+- **Nicht gemessen:** ob der WoL-Frame beim Second-host ANKOMMT (L2-Frage, Owner); ob Linux dieselbe
+  `255.255.255.255`-Route verweigert (nur macOS gemessen); ob die drei ops-event-Checks eine
+  gemeinsame Wurzel haben (sie treten gebuendelt auf, das ist ein Indiz, keine Messung).
+- **Phase 2 ist weiterhin NICHT gefiled** und haengt an Owner-Gate 1.
+
+## 7. Dein erster Zug
+
+Erden (`./state.sh`, `./register.sh`, nur dieser Abschnitt, `GET /api/self/program-execution`).
+Dann: **nichts starten.** Beide Zeilen sind briefgereift und warten auf den Controller. Kommt ein
+Lane-Report herein, ist er ein ANSPRUCH — Diff und zitierten Verify-Tail lesen, nicht den Bericht
+glauben. Kommt ein rotes Audit herein, nimm §2 und miss die Basisrate, bevor du eine Suite faehrst.
+
+---
+# HANDOFF — Program 66499a03 „Fleet-Betrieb ohne manuelles Owner-Routing" (Slot 16 → Nachfolge): C gelandet und das rote Audit als flake entlastet, D1 briefbereit mit KEEP, drei Befunde gefilet; 2026-09-03 (21:2x)
+
+Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,
+`GET /api/self/program-execution`. Hier steht nur, was git und die Sensoren NICHT tragen.
+
+## 0. Das Erste, was du tust
+
+1. **`GET /api/self/program-execution`** — deine Zeilen, ihre `phase` und `nextAction`. Die
+   `authority.lineage` traegt jetzt DREI Eintraege (Slot 4 `backfill-unknown` → Slot 16 `succeed`
+   → du). Der Slot-4→16-Wechsel war der erste dokumentierte Self-Succession-Beweis dieses
+   Programs; deiner ist der zweite.
+2. **`92553809` (Worker D1) ist die naechste Tat, Status `pending`, Brief ANGEHAENGT** (11 588
+   Zeichen, symbolverankerte Fassung, Spawn `claude-opus-5[1m]` / high). **Entscheidung KEEP,
+   vom Controller bestaetigt.** Der noetige Owner-Akt ist GENAU EINER:
+   `POST /api/tasks/92553809/dispatch`. **Kein Release davor** — die Route nimmt `pending` ODER
+   `queued` (in `server.ts`, Zweig `taskDispatch`, selbst gelesen), und der Master-Dispatcher ist
+   aus, ein Release wuerde also nur den Status bewegen und nichts starten.
+3. **Die Reihenfolge, die den Dispatch heute blockiert:** D1 teilt `server.ts` mit der
+   Succession-Naht `6f401842` (Owner-Prioritaet), und die stand bei meiner Uebergabe selbst noch
+   `pending`. Erst die Naht, dann D1.
+
+## 1. Was gelandet ist, und wie es wirklich steht
+
+- **Worker C `860cecdf` → `24f9cfc` GELANDET** (Land durch den Controller). Der Schnitt: ein
+  geschlossenes Enum `MergeErrorReason` (heute genau `"ff-lost"`) + `mergeBlocksLane()` in
+  `lane-signals.ts`, das Feld `MergeLast.errorReason` an GENAU EINER Schreibstelle in `server.ts`
+  (dem sauberen Land-Zweig), plus Test-Latch. Damit ist ein verlorenes Fast-Forward nach gruenem
+  Verify wieder `done-looking` und selbst nachlandbar — das Loch, an dem Schritt 5 des Programms
+  still zum Owner-Land degradierte. **Ich habe den Diff selbst gelesen, nicht den Report.**
+- **Mein Brief-Befund zu C war richtig gedacht und trotzdem gegenstandslos:** ich hielt
+  `program-phase.ts` fuer noetig (R9/`NON_LAND_MERGE`), die Lane hat nachgemessen und gezeigt,
+  dass R9 ohnehin `REVIEWABLE` liefert und `nextActionFor` bei `guarded`-Promotion die
+  Self-Land-Tuer nennt — Projektion und Tuer stimmen ueberein, die Datei musste nicht geschrieben
+  werden. Merke: die Frage war gut, die Antwort kam aus der Messung, nicht aus meiner Vorsicht.
+- **Das rote Post-Land-Audit auf `24f9cfc` ist als `flake` adjudiziert** (Controller Slot 13),
+  Event `c34ea715` quittiert. Vier Fails, alle FleetEvent-Transport. Entlastung: die EXAKTE
+  Vierer-Signatur fiel viermal VOR dem Land auf fremden Baeumen (`9db4b85` 16.08., `d63bb91`,
+  `299ac65`, `4d2dd39` 02.09.); mindestens einer der vier faellt in 15/363 Laeufen (4,1 %).
+  **`undo-land` ist damit vom Tisch** — und `HANDOFF.md` §3 einer fremden Session sagte das
+  Gegenteil („mein Land ist unter Verdacht", „undo-land ist der Rueckweg"). Ich habe dort einen
+  datierten Nachtrag angebracht statt fremde Prosa umzuschreiben (`de2e179`).
+
+## 2. Die teuerste Lehre dieser Session: ES GIBT ZWEI TRAIL-SPEICHER
+
+`e2e/trail-emit.ts#defaultDir` schreibt neben den git-common-dir, also **`<repo>/e2e-trail/`** —
+im Haupt-Checkout **5514 Dateien**. Auf `$TMPDIR/fleet-e2e-trail/` faellt es NUR zurueck, wenn gar
+kein git-Baum aufloest (`docs/e2e-trail.md` Punkt 3) — dort lagen **32**. Ich habe Basisraten auf
+der 32er-Stichprobe gerechnet und als vollstaendig gemeldet; eine fremde Session tat dasselbe und
+zog daraus „0/26, keine Flake-Historie" und beinahe ein `undo-land`. **`./state.sh` nennt die
+grosse Zahl in seiner Ledger-Zeile** — sie stand in meiner Erdung, und ich habe sie mit meiner
+eigenen Messung nicht verbunden. Wenn du eine Basisrate brauchst: `e2e-trail/`, nie TMPDIR.
+
+## 3. Gefilet (alles `notiz`, alles unter diesem Program)
+
+- **`ee7bc7d1`** — die sieben Q6-fleet-report-Checks messen die Recovery-Kappe NICHT, wenn die
+  Zustellung zufaellig gelingt: Kopf des Clusters ist `parked5=false` bei
+  `{status:"delivered", attempts:1}` — die Fixture BRAUCHT eine Ablehnung des Pastes und bekommt
+  eine Annahme. Klasse: eine Sonde, die ihre Vorbedingung nicht kontrolliert (wie §11.2f).
+  Schnittvorschlag: eigener `check()` auf die Vorbedingung, damit sie als SIE SELBST scheitert.
+- **`2eb48783`** — Korrektur der Basisrate in `ee7bc7d1` (falscher Speicher, siehe §2): auf
+  `e2e-trail/` sind es **3/29 Laeufe = 10,3 %**, nicht 1/12. Mechanismus unveraendert.
+- **`0f44755c`** — eine FERTIGE Antwort in einer Pane hat keinen typisierten Rueckweg zum Owner.
+  Verifiziert: eine Lane hat `POST /api/self/fleet-report` (mit Owner-Inbox-Rueckfall), eine
+  Program-MAIN hat nur `attention` (Kinds decision/blocked/review-ready — eine Tuer fuer eine
+  FRAGE), eine Session ohne Program-Bindung hat KEINE von beiden (`openFleetReport` lehnt jeden
+  Nicht-Lane-Aufrufer ab). **Die Zeile ist ausdruecklich KEIN Latenz-Beleg** — die zuerst
+  gemeldeten ~40 min hat der Meldende selbst widerrufen, gemessen sind ~2,5 min.
+
+## 4. Erfolgsmass — ehrlicher Stand
+
+BELEGT seit meiner Vorgaengerin zusaetzlich: Self-Succession dokumentiert (die Lineage traegt den
+`succeed`-Eintrag, live geprueft) · roter Post-Land-Audit erreicht die aktive MAIN und wird mit
+benanntem Mechanismus adjudiziert (Watch `{kind:"audit"}` gelegt, Event kam von selbst, quittiert).
+NICHT BELEGT: **ausdrueckliche Report-Annahme** (das ist D1, `92553809`) · **automatisches Cleanup
+einer clean+ahead0-Lane ohne Kandidat** (waere D2, NICHT gefilet — haengt an D1s Fakt, vorher
+nicht sinnvoll) · **kein Owner-Management** (strukturell unerfuellbar, solange der Master-Stop aus
+ist; unveraenderter Owner-Entscheid).
+
+## 5. Fallen, die ich bezahlt habe
+
+- **Ich stand 3 h 52 min still**, weil ich „warte ohne zu beobachten" als Erlaubnis las, unbegrenzt
+  zu warten. Eine Zeile, die STRUKTURELL nicht starten kann (Master-Stop aus, Deckel voll,
+  Dateikollision), wird nie von selbst zur Nachricht. **Wenn nichts kommt, ist die Frage faellig,
+  nicht die Geduld** — `POST /api/self/attention` kostet fast nichts.
+- **Zwei Attentions scheiterten am Cap** (`MAX_ATTENTION_TEXT` = 2000): vorher zaehlen, nicht
+  hinterher kuerzen.
+- **`GET /api/self` traegt fuer diesen Slot `ctx: null`** — eine Program-MAIN kann ihren eigenen
+  Fuellstand nicht messen (Owner-Poll ist per Program-Verbot zu). Schaetzen und es als Schaetzung
+  kennzeichnen; nie eine nackte Zahl in einen Handoff schreiben.
+- Direkt-Commits aus dem Haupt-Checkout (dieser und `de2e179`) sind **docs-only**: kein Land-Gate,
+  kein Post-Land-Audit, keine Ledger-Zeile. Gesagt, wie das Regelbuch es verlangt.
+
+## 6. Offene Owner-Punkte
+
+- Owner-Frage 4 des Programs (begrenzte read-only Portfolioansicht fuer den Controller) ist NICHT
+  gestellt worden. Sie ist eine Geschmacks-/Scope-Frage und gehoert nach D1, nicht davor.
+- Ob D1 den benannten Q6-Cluster gegen den Trail selbst adjudizieren darf: sein Brief verlangt
+  woertlich `ALL PASS`, sonst `needs-main`. Bei 10,3 % je Lauf laeuft er mit dieser
+  Wahrscheinlichkeit in dieselbe Hand-Adjudikation, die C schon gekostet hat. Dem Controller
+  vorgelegt, bewusst offen gelassen.
+
+---
+
 # HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 6 → Nachfolge): Slice 5+6 ist LIVE (§f komplett), und Tier 1 endet an einer Wand, die niemand vermessen hatte — die `server/`-Module sind BLÄTTER; 2026-09-03 (19:4x), ctx GEMESSEN 25,0 %
 
 Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,

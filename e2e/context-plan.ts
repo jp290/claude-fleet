@@ -109,6 +109,9 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
     modes: ["read-only", "mutating"], estimatedBytes: 1200, evidence: "tree-anchor",
     owner: "owner", status: "active", ...over,
   });
+  const privateOnly = planContext({ sourceTree: "fleet", harness: "claude", mode: "mutating",
+    triggers: ["deployment"], capabilities: fullCapabilities() })
+    .selected.filter((pack) => "privateSourceId" in pack.sources);
   const repoWorld = (packs: readonly unknown[], bytes = "## Product promise\nplay first.\n") => ({
     manifest: readContextManifest(JSON.stringify(packs)),
     repo: { trackedPaths: new Set(["docs/promise.md"]), sourceBytes: new Map([["docs/promise.md", bytes]]) },
@@ -134,29 +137,44 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
       && JSON.stringify(valid.selected[0].sources) === JSON.stringify([{ path: "docs/promise.md", anchor: "## Product promise" }]),
     JSON.stringify(valid));
   const repoUseWhen = "Wenn du das Produktversprechen dieses Repos pruefst.";
-  // --- the observed source version. A pack's sourceHash is a MEASUREMENT over the bytes the
-  // validator proved, never a literal someone typed, so "version N vs N+1" is computable.
-  const promiseBytes = "## Product promise\nplay first.\n";
-  const expectedHash = createHash("sha256").update("docs/promise.md").update("\0").update(promiseBytes).update("\0").digest("hex");
-  check("context manifest: a validated repo pack carries the OBSERVED sha256 of the bytes the validator proved, framed path\\0bytes\\0",
-    valid.selected[0]?.sourceHash === expectedHash, JSON.stringify(valid.selected[0]));
-  const edited = planRepoContext(repoWorld([repoPack()], "## Product promise\nplay second.\n"));
-  check("context manifest: the observed hash follows the bytes — a source edit is a new pack version",
-    typeof edited.selected[0]?.sourceHash === "string" && edited.selected[0].sourceHash !== expectedHash,
-    JSON.stringify(edited.selected[0]));
-  const declared = planRepoContext(repoWorld([repoPack({ sourceHash: "a".repeat(64), observedAt: "2026-01-01T00:00:00Z" })]));
-  check("context manifest: an observed hash beats a declared literal — a measurement over a claim",
-    declared.selected[0]?.sourceHash === expectedHash, JSON.stringify(declared.selected[0]));
-  const seedBytes = new Map([["AGENTS.md", "## Portable operating contract\n## Verify\n"]]);
-  const stamped = stampObservedSourceHashes(normal.selected, seedBytes);
+  // --- the observed source VERSION. A selection's sourceHash is git's own content address of the
+  // sources at the planned commit, never a literal someone typed, so "version N vs N+1" is
+  // computable — and it costs the tree listing the seam already makes, not a blob read.
+  const blob = (n: number): string => String(n).repeat(40).slice(0, 40);
+  const promiseShas = new Map([["docs/promise.md", blob(1)]]);
+  const promiseSource = [{ path: "docs/promise.md", anchor: "## Product promise" }];
+  const expectedHash = createHash("sha256").update("docs/promise.md").update("\0").update(blob(1)).update("\0").digest("hex");
+  check("context plan: the observed source version is sha256 over `path\\0<blob sha>\\0`, in source order",
+    observedSourceHash(promiseSource, promiseShas) === expectedHash, String(observedSourceHash(promiseSource, promiseShas)));
+  check("context plan: the version follows the blob — a source edit is a new pack version, an unchanged tree is the same one",
+    observedSourceHash(promiseSource, new Map([["docs/promise.md", blob(2)]])) !== expectedHash
+      && observedSourceHash(promiseSource, new Map([["docs/promise.md", blob(1)]])) === expectedHash);
+  check("context plan: a pack whose source has no blob at the commit gets NO version — never a partial one",
+    observedSourceHash([...promiseSource, { path: "docs/absent.md", anchor: "## Nope" }], promiseShas) === undefined
+      && observedSourceHash([], promiseShas) === undefined);
+  // stamping: seeds and repo packs go through ONE function, so `sourceHash` means one thing
+  const stamped = stampObservedSourceHashes([...valid.selected, ...normal.selected],
+    new Map([["docs/promise.md", blob(1)], ["AGENTS.md", blob(3)]]));
+  const stampedPromise = stamped.find((p) => p.id === "product-promise");
   const stampedCore = stamped.find((p) => p.id === "portable-core");
   const stampedVerify = stamped.find((p) => p.id === "verify-e2e");
-  check("context plan: stampObservedSourceHashes hashes a seed only when EVERY source was read — a half-read seed stays unstamped, never half-hashed",
-    typeof stampedCore?.sourceHash === "string" && stampedVerify !== undefined && stampedVerify.sourceHash === undefined
+  check("context plan: stamping versions a seed only when EVERY source has a blob — a partly-tracked seed stays unstamped",
+    stampedCore?.sourceHash === observedSourceHash([{ path: "AGENTS.md", anchor: "## Portable operating contract" }],
+      new Map([["AGENTS.md", blob(3)]]))
+      && stampedVerify !== undefined && stampedVerify.sourceHash === undefined
       && normal.selected.every((p) => p.sourceHash === undefined),
     JSON.stringify(stamped.map((p) => [p.id, p.sourceHash ?? null])));
-  check("context plan: a stamped seed hash equals the observed hash over the same bytes, so seed and repo rows are one unit",
-    stampedCore?.sourceHash === observedSourceHash([{ path: "AGENTS.md", anchor: "## Portable operating contract" }], seedBytes));
+  check("context plan: seed and repo-declared rows are stamped by the same rule, so the receipt's sourceHash is one space",
+    stampedPromise?.sourceHash === expectedHash, JSON.stringify(stampedPromise));
+  const declaredLiteral = planRepoContext(repoWorld([repoPack({ sourceHash: "a".repeat(64), observedAt: "2026-01-01T00:00:00Z" })]));
+  check("context plan: an OBSERVED version beats a manifest's declared literal — a measurement over a claim",
+    declaredLiteral.selected[0]?.sourceHash === "a".repeat(64)
+      && stampObservedSourceHashes(declaredLiteral.selected, promiseShas)[0]?.sourceHash === expectedHash,
+    JSON.stringify(declaredLiteral.selected[0]));
+  check("context plan: with nothing observable the declared literal survives, and a private overlay is never stamped",
+    stampObservedSourceHashes(declaredLiteral.selected, new Map())[0]?.sourceHash === "a".repeat(64)
+      && JSON.stringify(stampObservedSourceHashes(privateOnly, promiseShas)) === JSON.stringify(privateOnly),
+    JSON.stringify(privateOnly));
 
   const withUseWhen = planRepoContext(repoWorld([repoPack({ useWhen: repoUseWhen })]));
   check("context manifest: a repo pack's own purpose line is carried through, never rewritten",

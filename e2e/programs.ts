@@ -649,15 +649,13 @@ export async function run(ctx: Ctx): Promise<void> {
       sources: [{ path: "docs/absent.md", anchor: "## Never tracked" }] }),
   ], null, 2), "declare context packs");
   const carrierOn = await foundInto(manifestRepo, "program-main-carrier-present");
-  // the OBSERVED version of the pack's sources, recomputed here over the same blobs the seam read
-  // at HEAD — a receipt that carried a literal instead would not survive this equality
-  // `.trim()` because the seam reads every blob through gitRead, which trims — the hash is over
-  // exactly what the seam read, and that is the observation the receipt claims
-  const blobAt = (repo: string, path: string): string =>
-    spawnSync("git", ["-C", repo, "show", `HEAD:${path}`], { encoding: "utf8" }).stdout.trim();
+  // the OBSERVED version of the pack's sources, recomputed here from git's own content address at
+  // HEAD — a receipt carrying a declared literal instead would not survive this equality
+  const blobSha = (repo: string, path: string): string =>
+    spawnSync("git", ["-C", repo, "rev-parse", `HEAD:${path}`], { encoding: "utf8" }).stdout.trim();
   const promiseSources = [{ path: "AGENTS.md", anchor: "## Repo contract" }, { path: "docs/promise.md", anchor: "## Product promise" }];
   const expectedPromiseHash = observedSourceHash(promiseSources,
-    new Map(promiseSources.map((source) => [source.path, blobAt(manifestRepo, source.path)])));
+    new Map(promiseSources.map((source) => [source.path, blobSha(manifestRepo, source.path)])));
   const expectedBlock = "\n\nContextPlan v2 anchors (fresh advisory pointers; no source content is copied):"
     + "\n- product-promise"
     + "\n  AGENTS.md | ## Repo contract"

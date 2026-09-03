@@ -524,6 +524,28 @@ Nachfolge die offenen Attentions der Vorgängerin erben lassen, so wie sie `HAND
 
 **Nicht als Queue-Zeile gefilet:** Advisory-Deckel 10/10 — was zugleich der Befund ist.
 
+### ENTSCHIEDEN 2026-09-03 (Sanierungs-MAIN Slot 4): der Deckel ist KEIN Owner-Tor, und dies ist die vierte Attention, die NICHT gestellt wird
+
+Ich habe das Tor nachgerechnet statt es weiterzureichen. `POST /api/self/tasks` zählt für den
+Deckel ausschließlich Zeilen mit `source: "main"` (`server.ts`, die Cap-Prüfung neben
+`PROGRAM_MAX_PENDING_ADVISORY`): **10 von 14** offenen Advisory-Zeilen dieses Programs sind so
+gezählt, die anderen vier sind Owner-Entwürfe und zählen nie mit. Der Deckel ist also wirklich
+voll — und trotzdem blockiert er Erfolgsmaß 6 nicht.
+
+**Der Grund steht im Erfolgsmaß selbst.** Es verlangt je Befund einen von drei AUSGÄNGEN:
+gefixt · begründet verworfen · als Queue-Zeile übergeben. Dieses Register ist keiner der drei —
+es ist die **Befundliste**, die dort disponiert wird. Der Deckel verschließt genau EINEN der drei
+Ausgänge, und auch den nur so lange, wie zehn Zeilen undisponiert liegen. Ein Befund, der hier
+getrackt und committet steht, ist nicht „still"; er ist gelistet und wartet auf seinen Ausgang.
+
+**Damit ist der ehrliche Satz nicht „das Zwischenlager ist keine Lösung", sondern:** das
+Zwischenlager ist der richtige Ort, und was fehlt, ist die Disposition der zehn Zeilen — und die
+gehört in P6, nicht vor P4. Wer vor P6 hierher zeigt, verwechselt eine Reihenfolge mit einem Tor.
+
+**Was der eigentliche Befund von B-12 bleibt** (unverändert, und er ist ein echter): eine
+langlebige Frage hängt an einem kurzlebigen Fragesteller. Das ist ein P6-Befund am Attention-
+Mechanismus, kein Grund, das Programm anzuhalten.
+
 ---
 
 ## Bereits als Queue-Zeile abgelegte P6-Befunde (nur Verweis, Inhalt lebt an der Zeile)

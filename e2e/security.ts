@@ -220,7 +220,16 @@ const PRE_AUTH_ROUTES = [
   // session can never widen its own authority: the record is written by this route alone (pinned in
   // e2e/pins.ts), and a self token meets the same tokenGate 401 here as any other non-owner
   // credential.
-  String.raw`~ /^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile))?$/`,
+  // `studio` joined the verb set 2026-09-03 for the same reason `promotion` and `profile` did, and
+  // with the same consequence: it is the OWNER's binding of a Program to a WORKFLOW record, written
+  // by this route alone, and a session that could write it would be choosing the workflow it is
+  // judged by. Owner side of this line, tokenGate inline, no self-token header read.
+  String.raw`~ /^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|studio))?$/`,
+  // The studio inventory itself, beside the Programs regex and for its reasons: a Studio is owner
+  // truth about the workflow (stages, gates, brief blocks), several Programs may bind the same one,
+  // and the handler sits before the steward interceptor only so a steward credential meets the same
+  // tokenGate 401 as any other non-owner credential.
+  String.raw`~ /^\/api\/studios(?:\/[^/]+)?$/`,
   // Same placement and same reason as the Programs regex above, one bracket higher: the Supervisor
   // is cross-program owner identity, so the handler sits before the steward interceptor only so a
   // steward credential meets the same tokenGate 401 as any other non-owner credential. The route
@@ -333,6 +342,12 @@ const dangerous = (slot: number): Probe[] => [
   // the content-bearing read exists while the principal matrix proves scoped credentials do not.
   { path: "/api/programs", method: "POST", body: {}, ownerSafe: true },
   { path: "/api/programs", method: "GET", ownerSafe: true },
+  // The studio inventory is owner truth about the WORKFLOW a Program binds — stages, spawn triples,
+  // gates, brief blocks — so it is owner-only for the reason the Program bodies above are: a session
+  // that could write it would be choosing the workflow it is judged by. Empty POST is a
+  // side-effect-free named 400 (no id), which is what lets it carry the positive control.
+  { path: "/api/studios", method: "POST", body: {}, ownerSafe: true },
+  { path: "/api/studios", method: "GET", ownerSafe: true },
   { path: "/api/dispatch", method: "POST", body: {} },
   // the board editor's pair (§F5). The WRITE route is the only one on this server that puts bytes
   // into a file the caller named, so an auth regression here is not a leak — it is arbitrary code

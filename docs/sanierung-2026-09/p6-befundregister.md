@@ -327,6 +327,48 @@ aber ausdruecklich als „nicht vergleichbar" beschriftet — nie als Kontrollgr
 wurde vom Messenden selbst gefunden und gemeldet; das ist der Grund, warum dieser Absatz
 existiert, statt dass die falsche Zahl weiterwandert.
 
+## B-08 — ein committeter `HANDOFF.md`-Abschnitt wurde auf `main` still geloescht
+
+**Gemessen** 2026-09-03 11:50–12:00 (Sanierungs-MAIN Slot 9), an den Zeilenzahlen der Commit-Kette:
+
+| Commit | Zeilen | was passierte |
+| --- | ---: | --- |
+| `ba75249` | 4029 | Stand vor meinem Commit |
+| `60884cc` | 4179 | **+150 = mein Handoff-Abschnitt**, committet 11:50:01 |
+| `48d3353` | 94 | fremde Session **ERSETZT** die Datei durch nur ihren eigenen Abschnitt |
+| `eb89431` | 4170 | „Wiederherstellung des geloeschten Korpus" — aus `ba75249` + eigenem Abschnitt, also aus einem Stand **VOR** `60884cc` |
+
+Meine 150 committeten Zeilen waren damit von `main` verschwunden — **ohne Konflikt, ohne
+Fehlermeldung, ohne dass eine der beiden Seiten es haette bemerken koennen**. Wiederhergestellt in
+`4a412e6`.
+
+**Zwei getrennt behebbare Fehler:**
+1. `48d3353` hat den Korpus **ersetzt statt ergaenzt**. `HANDOFF.md` ist append-only: der eigene
+   Abschnitt wird vorangestellt, der Rest bleibt stehen.
+2. `eb89431` hat **aus einer Kopie restauriert statt aus git**. `git checkout <parent-des-schadens>
+   -- HANDOFF.md` haette den Stand unmittelbar vor der Loeschung geholt (`60884cc`, 4179 Z.) und
+   nichts verloren. Eine Wiederherstellung, die ihre Quelle nicht am Elternteil des Schadens
+   festmacht, ist eine zweite Loeschung mit gutem Gewissen.
+
+**Warum das strukturell ist und nicht ein Ausrutscher:** `HANDOFF.md` ist die einzige Datei, an der
+ALLE Sessions des Fleets gleichzeitig schreiben — und zugleich die Datei, auf der die Nachfolge
+beruht. `POST /api/self/succeed` prueft nur, dass ein `HANDOFF.md`-Commit **juenger als die Session**
+ist; der Inhalt kann laengst von einem Dritten ueberschrieben sein, und succeed ginge trotzdem
+durch. Die Nachfolgerin erbt dann eine Datei ohne den Abschnitt ihrer Vorgaengerin und merkt es nie.
+
+**Done-Kriterium, drei Stufen, getrennt entscheidbar:**
+- (a) ein Pin/eine Fixture lehnt einen `HANDOFF.md`-Commit ab, der die Datei um mehr als N Prozent
+  **verkuerzt**, ohne dass die Commit-Nachricht das ausdruecklich benennt. Die Loeschung von 4029 auf
+  94 Zeilen waere daran gescheitert.
+- (b) `succeed` prueft zusaetzlich, dass der juengste `HANDOFF.md`-Commit der **eigenen** Session
+  gehoert und die Datei seither nicht gekuerzt wurde.
+- (c) Alternative, die die Kollisionsflaeche ganz aufloest: ein Abschnitt je Datei unter
+  `docs/handoffs/<slot>-<ts>.md` statt einer gemeinsamen Datei.
+
+**Nicht als Queue-Zeile gefilet:** der Advisory-Deckel stand auf 10/10
+(`program advisory filing cap reached — ask the owner to dispose or drop one first`). Genau der
+Grund, aus dem dieses Register existiert.
+
 ---
 
 ## Bereits als Queue-Zeile abgelegte P6-Befunde (nur Verweis, Inhalt lebt an der Zeile)

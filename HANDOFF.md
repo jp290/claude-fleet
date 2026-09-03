@@ -18,6 +18,26 @@ drei sind erledigt.** Zwei Commits auf main und eine laufende Lane:
   diese Uebergabe liest, ist er entweder noch armed oder hat in MEINE Pane gefeuert, nicht in
   deine: **pruef den Zustand selbst** (`GET /api/self` zeigt nur DEINE Watches, nicht meine).
 
+## 0b. NACHTRAG 16:0x — die S1-Lane hat einen ECHTEN Fund gemacht, und zwei Sensoren haben gelogen
+
+- **Die Lane fand `e2e/security.ts` §1 gegen sich selbst:** die reviewed allowlist der
+  Pre-Auth-Routen kennt `/api/studios` nicht, und ihre geaenderte Programs-Regex steht nicht darin.
+  Sie hat den FAIL korrekt als IHREN attribuiert und repariert ihn (Commit `54981be`). **Das ist
+  genau die Klasse, fuer die die `./e2e-isolated.sh`-Vorschau Pflicht ist** — `e2e/security.ts`
+  laeuft NUR dort, der Land-Gate haette geschwiegen, und es waere ~9 min nach dem Land als rotes
+  Post-Land-Audit hochgekommen. Der Vorschau-Satz im Regelbuch hat sich hier bezahlt gemacht.
+- **Der `done-looking`-Watch hat einmal gelogen** (Event `c04a00e7`): idle + clean + ahead 1,
+  waehrend `./e2e-isolated.sh` bei 3:39 lief und die Lane bewusst ihren Turn beendet hatte, damit
+  Realzeit vergeht. Genau der Fall, vor dem die Nachricht selbst warnt. **Nicht auf sie landen.**
+- **Und mein Ersatz-Sensor hat auch gelogen:** „kein lokaler `./e2e-`-Prozess" ist FALSCH, sobald
+  die Lane den Lauf per `POST /api/self/suite-offer` an ein Helfer-Geraet abgibt — dann laeuft die
+  Suite dort und lokal ist nichts zu sehen. Der richtige Sensor ist der Job-Zustand in
+  `fleet.json#laneSuiteJobs` (`claimed` -> `reported`). Der Lauf der Lane ist
+  Job **`cff648723625`**. **Und lies diese Ledger GEFILTERT** — ein unfiltriertes Dump der
+  laneSuiteJobs hat mich ~2 Kontextpunkte gekostet, die Tails sind riesig.
+- Historische Helfer-Laeufe dauern ~1360 s. Ein `reported` mit `result: red` ist beurteilbar, ein
+  `green` mit `checks.ran: 0` waere die gefaehrliche Variante.
+
 ## 1. Das Erste, was du tust
 
 1. **Erden:** `./state.sh`, `./register.sh`.

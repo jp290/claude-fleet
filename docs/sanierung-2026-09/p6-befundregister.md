@@ -438,6 +438,94 @@ Gate gruen bestaetigt.
 
 ---
 
+## B-10 — zwei Checks der Watch/Event-Naht fallen ohne jedes `detail`, und damit ist ihr Rot aus dem Artefakt heraus unerklärbar
+
+**Gemessen** 2026-09-03 am roten Post-Land-Audit auf `5848207f`
+(`isolated-20260903T162559Z-69549`, 3527 Checks, 4 FAILs).
+
+Zwei der vier gefallenen Checks in `e2e/watch.ts` rufen `check()` **ohne detail-Argument**:
+
+- `deleting a Watch does not delete its acknowledged event` (`e2e/watch.ts:3457`)
+- `subject teardown after event creation leaves the event trail intact` (`e2e/watch.ts:3460`)
+
+Ihre `detail`-Spalte im Trail ist leer, und die aufbewahrten Audit-Ausgabezeilen nennen sie
+ohnehin nicht — das ist B-02, eine Ebene tiefer. Wer adjudiziert, hat für diese beiden also
+**nur die Basisrate**; die Frage, WARUM sie fielen, ist aus dem Artefakt nicht beantwortbar.
+
+Das ist billig zu schließen, weil beide sichtbar an **derselben** Vorbedingung hängen: beide
+prüfen, ob `eventRows()` die Zeile `eventA` noch enthält. Ein einziges `detail` an der ersten
+Stelle beantwortet beide.
+
+**Done-Kriterium:** beide `check()`-Aufrufe tragen ein `detail`, das mindestens `eventA?.id`,
+das Vorhandensein der Zeile und bei `:3457` zusätzlich `watchRow(wAJ.watch.id)` nennt.
+**Verifikation:** die beiden Zeilen zeigen das Argument, und nach einem `./e2e-isolated.sh`-Lauf
+trägt die Trail-Zeile beider Checks eine nicht-leere `detail`-Spalte.
+
+**Kosten, wenn es liegen bleibt:** jeder künftige rote Post-Land-Audit mit diesen beiden
+Mitgliedern zwingt zu einem ~28-min-Rerun auf dem Suite-Mutex, weil das Artefakt schweigt.
+
+**Nicht als Queue-Zeile gefilet:** Advisory-Deckel 10/10.
+
+---
+
+## B-11 — die aufbewahrte Instanz eines roten Laufs hat ihr eigenes `audit.jsonl` schon weggerottet, und eine Absenz darin liest sich wie eine Antwort
+
+**Gemessen** 2026-09-03 an `$TMPDIR/fleet-e2e-instance-67371`, der Instanz, die derselbe rote
+Audit-Lauf „kept … for inspection" hinterlassen hat.
+
+| | |
+| --- | --- |
+| Laufzeit des Audits | 1 744 s (Beginn ~`1788452759`, Ende `1788454498`) |
+| `audit.jsonl` | 438 Zeilen, ältester Zeitstempel **`1788454415020`** |
+| `audit.jsonl.1` | 47 Zeilen |
+| überlebte Spanne | **die letzten ~83 s von 1 744** |
+
+`AUDIT_ROTATE_BYTES` rotiert, und es bleiben zwei Generationen. Eine Post-mortem-Frage an den
+Verlauf des Laufs ist damit strukturell unbeantwortbar — **ohne dass die Datei das sagt.**
+
+**Wie es mich getroffen hat**, und das ist der Grund, warum der Befund hier steht: ich wollte die
+Hypothese „`pruneFleetEvents` hat `eventA` verdrängt" an der Abwesenheit von
+`fleet_event_prune`-Zeilen prüfen. Die Null war **keine Messung**, sondern das Rotationsfenster.
+Eine Absenz sah aus wie eine Antwort — dieselbe Klasse wie „ein grünes Audit mit `ran: 0`".
+
+**Done-Kriterium (eines von beiden reicht):** entweder schreibt eine aufbewahrte Instanz ihr
+Zeitfenster sichtbar hin (erster und letzter Zeitstempel je Ledger), oder die Suite hebt
+`AUDIT_ROTATE_BYTES` für ihre Instanzen so weit an, dass ein Lauf nicht rotiert.
+**Verifikation:** nach einem Lauf deckt der älteste Zeitstempel in `audit.jsonl(.1)` den
+Laufbeginn ab, ODER die Marker-Datei existiert und nennt beide Grenzen.
+
+**Nicht als Queue-Zeile gefilet:** Advisory-Deckel 10/10.
+
+---
+
+## B-12 — eine Attention stirbt mit der Session, die sie stellt, und ein Program-MAIN wechselt schneller als der Owner hinsieht
+
+**Beobachtet** 2026-09-03, und es ist die **dritte** Instanz derselben Sache am selben Tor.
+
+`5954d4da` („Zwei Tore der Generalsanierung") trägt heute den Status `refused`. Ihre Geschichte
+steht in ihrem eigenen Text: eine Vorgängerin stellte sie 19:13, die Nachfolge tötete sie 19:19
+als `requester session ended` — „du hast sie nie gesehen". Meine unmittelbare Vorgängerin hat sie
+neu gestellt; sie ist mit deren Nachfolge wieder gestorben. Ich stoße beim Filen von B-10/B-11
+auf **exakt dasselbe Tor** (Advisory-Deckel 10/10) und könnte sie ein drittes Mal stellen — mit
+derselben Lebenserwartung, denn das Kontextband schickt eine Program-MAIN alle paar Stunden in
+die Nachfolge.
+
+**Der Mechanismus ist nicht falsch** — eine Attention ohne lebenden Fragesteller kann keine
+Antwort entgegennehmen. Falsch ist die Kombination: **die Frage ist langlebig, der Fragesteller
+ist es nicht.** Ein Owner-Tor, das nur so lange sichtbar ist, wie eine Session lebt, ist für
+jedes Program mit Nachfolge unerreichbar.
+
+**Was ich statt einer vierten Attention getan habe:** die Befunde stehen getrackt hier (B-10,
+B-11), und das Tor steht als erster Punkt im HANDOFF. Das ist ein Zwischenlager, keine Lösung.
+
+**Kandidaten für eine Lösung, keiner davon entschieden:** eine Attention an das PROGRAM binden
+statt an die Session (die Bindung existiert bereits — `boundSlot`/`lineage`); oder die
+Nachfolge die offenen Attentions der Vorgängerin erben lassen, so wie sie `HANDOFF.md` erbt.
+
+**Nicht als Queue-Zeile gefilet:** Advisory-Deckel 10/10 — was zugleich der Befund ist.
+
+---
+
 ## Bereits als Queue-Zeile abgelegte P6-Befunde (nur Verweis, Inhalt lebt an der Zeile)
 
 | ID | Kurz |

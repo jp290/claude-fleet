@@ -6,8 +6,10 @@ suite, POST the exit code, the log tail and the trail id back.
 
 It replaces exactly one sentence of the portal's Stage-1 non-goals — *"a human on the other machine
 clicks claim"* (owner promotion G0, 2026-08-28). The other three stand and are not negotiable here:
-**no server-side auto-dispatch, no ssh runner, no push.** The Fleet never opens a connection towards
-the helper machine; everything this daemon does is a pull.
+**no server-side auto-dispatch, no ssh runner, no push.** The Fleet never opens a *connection*
+towards the helper machine; everything this daemon does is a pull. The one exception to that last
+word is named and bounded below (**Wake-on-LAN**): a magic packet is not a connection — nothing can
+answer it, and all it does is switch a box on so it can start pulling.
 
 ## Running it
 
@@ -79,6 +81,51 @@ the helper machine; everything this daemon does is a pull.
   heartbeat: it carries `daemonSha`, the `git rev-parse HEAD` of the tree the daemon booted from,
   and the board shows it beside the sha it bundled.
 
+- **Wake-on-LAN is the ONE named exception to "no push", and it is named here so nothing else can
+  quietly join it.** Everything above is a pull: the Fleet answers, this machine asks. A magic
+  packet is the single case where the Fleet emits something towards a helper, and what makes it
+  acceptable is exactly what makes it useless for anything else — a connectionless UDP broadcast
+  carrying six `0xFF` bytes and a MAC sixteen times, no credential, no session, no addressee that
+  can answer, and no effect on the machine beyond switching it on so it can start *polling*, as
+  before. The other two non-goals are untouched: still no ssh runner, still no server-side
+  auto-dispatch (a woken machine claims its own work or claims nothing).
+
+  Two doors, both refusing rather than throwing when the host is not configured for it:
+
+  - `POST /api/helper/devices/:id/wake` (owner token, beside `/mode` and `/update`). Answers
+    `{sent, at, deviceId}`. `sent: true` means **the frame left this box** — never that the machine
+    is awake; WoL has no acknowledgement, and the next heartbeat is the only thing that answers
+    that. Unknown device → 404, no MAC for it → 409, no wake address on the host → 409.
+  - the **auto-wake tick**, which sends at most one frame per tick and only when all three hold:
+    a helper job is open and unclaimed, the owner's wish for that device is `active`, and its last
+    heartbeat is older than `FLEET_HELPER_WAKE_AFTER_MS`. Then `FLEET_HELPER_WAKE_BACKOFF_MS` per
+    device, stamped on a failed attempt too — a box that cannot boot must not be packeted forever.
+
+  **Configuration is env on the Fleet host and never a tracked file** (this repository is public),
+  and none of it ever enters an API response: the board learns only `wakeConfigured` and
+  `lastWakeAt`.
+
+  | variable | meaning |
+  | --- | --- |
+  | `FLEET_HELPER_WAKE_ADDR` | **required, no default.** The subnet-directed broadcast address of the segment the helper is on (`x.x.x.255`). Unset ⇒ both doors 409 and no tick is armed. |
+  | `FLEET_HELPER_WAKE_PORT` | UDP port, default `9`. |
+  | `FLEET_HELPER_MAC_<DEVICEID IN CAPS>` | that device's MAC, e.g. `FLEET_HELPER_MAC_SECONDHOSTLINUX1=00:11:22:33:44:55`. Colons, dashes or bare hex; anything unparseable reads as *not configured*. |
+  | `FLEET_HELPER_WAKE_AFTER_MS` | silence before the tick will wake it, default 600000. |
+  | `FLEET_HELPER_WAKE_BACKOFF_MS` | per-device pause after a frame, default 900000. |
+  | `FLEET_HELPER_WAKE_TICK_MS` | the tick's own clock, default 30000. Its own knob rather than `FLEET_HELPER_SWEEP_MS`, which `HELPER_FRESH_MS` is derived from. |
+
+  **Why there is no `255.255.255.255` default** — measured on the Fleet host 2026-09-03: from a
+  socket bound to `0.0.0.0` on macOS that address fails `EHOSTUNREACH` *even with* `SO_BROADCAST`
+  set, while the subnet-directed address sends 102 bytes at once. A default would therefore be a
+  value that throws in production while a suite pointed elsewhere goes green. The same measurement
+  is why `setBroadcast(true)` is a pinned requirement and not an option in the constructor: Bun
+  1.3.9 accepts any unknown constructor option silently (`{thisOptionDoesNotExist:true}` too), so
+  only the *method* call is evidence — without it every broadcast send fails `EACCES`.
+
+  **What is NOT measured, and is not claimed:** whether a frame arrives. WoL does not travel over
+  Tailscale — the Fleet host and the helper must share an L2 segment, or the router must forward
+  directed broadcast. Nothing in this repo tests that; the first real wake is an owner act.
+
 ## Deploying it
 
 `fleet-helper.service` is a template with ALL-CAPS placeholders and no host, address or credential
@@ -104,3 +151,11 @@ user unless noted (WORK-DIR is the config's `workDir`):
 Fleet instance through a counting proxy, and asserts the claim, the clone, the install, the verdict
 on the audit ledger with its `remote` provenance, the zero-request `off` mode, and the
 single-request refusal of a bad token.
+
+The **wake** rail above is proved by the same wrapper in `e2e/helper-portal.ts` §(W), against a real
+UDP listener in the harness process rather than a spy on the server: one POST yields exactly one
+102-byte frame with the configured MAC; an absent or unparseable MAC and an unconfigured address
+each yield 409 and no frame; and the tick sends nothing while no job is waiting, exactly one when
+one is, and nothing more inside the backoff. `e2e/pins.ts` holds the doctrine half — one UDP call
+site in the whole server, it calls `setBroadcast`, and no MAC is written down anywhere in the
+shipped code.

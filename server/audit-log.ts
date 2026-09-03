@@ -139,6 +139,11 @@ type AuditEvent =
   // no dispatch behind it, so this row is the only place the change is ever visible from outside.
   | "helper_device_mode"
   | "helper_update_queued" | "helper_update"
+  // …and the ONE row in this ledger for something this box SENT towards a helper rather than
+  // answered: a Wake-on-LAN frame (helper-daemon/README.md §The rules, the single named exception
+  // to "no push"). The detail says whether the frame left the box — never that the machine woke —
+  // and carries neither the MAC nor the broadcast address.
+  | "helper_wake"
   // the deploy verb (Verb 2): one row when a build fails, one when a restart is launched, one when
   // the NEXT BOOT judges it. The trio is what makes "was the deploy verified?" answerable at all —
   // the verb kills the process that would otherwise report its own result.

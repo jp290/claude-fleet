@@ -1582,6 +1582,10 @@ interface HelperDeviceInfo {
   desiredMode?: string; desiredSet?: boolean;
   claims?: HelperDeviceClaim[]; lapses?: number;
   daemonSha?: string; update?: HelperDeviceUpdate | null;
+  // the wake rail. `wakeConfigured` is optional here and NOT on the server for the usual reason:
+  // an older server sends neither field, and `undefined` has to stay distinguishable from a server
+  // that answered "no MAC, no address" — the first draws nothing, the second says so.
+  lastWakeAt?: number; wakeConfigured?: boolean;
 }
 // ONLINE/OFFLINE IS DERIVED, NEVER STORED — the same reading that makes a claim expire: there is no
 // "offline" event anywhere in this system, only a heartbeat that stopped arriving. This is the
@@ -1691,6 +1695,36 @@ function deviceCard(d: HelperDeviceInfo): HTMLElement {
   // boot, absent when that daemon predates the field or runs from a plain copy. Beside it, the
   // owner's standing update wish and how it went; the two shas agreeing is what "the update took"
   // looks like, and the board only ever compares — it never restarts anything over there.
+  // THE ONE BUTTON ON THIS BOARD THAT REACHES OUT. Drawn only where the server said the frame
+  // would go somewhere (`wakeConfigured`), because a button that can only ever 409 teaches the
+  // owner to distrust the panel. Absent field = an older server = no row at all, which is the same
+  // silence every other back-compat read here produces.
+  if (d.wakeConfigured !== undefined) {
+    const wrow = el("div", "bbtnrow");
+    if (d.wakeConfigured) {
+      const wb = el("button", "bbtn subtle", "wecken") as HTMLButtonElement;
+      wb.title = "Send one Wake-on-LAN magic packet to that machine's MAC. The single exception to \"Fleet never opens anything towards a helper\": a broadcast frame with no credential, no session and no reply. It says the frame LEFT this box — never that the machine woke up.";
+      wb.onclick = async () => {
+        wb.disabled = true;
+        const res = await post(`/api/helper/devices/${encodeURIComponent(d.id)}/wake`, {});
+        const j = (await res.json().catch(() => null)) as { sent?: boolean; at?: number; error?: string } | null;
+        if (!res.ok || j?.sent !== true) alert(j?.error ?? "the wake frame could not be sent");
+        // stamped from the server's own `at` either way: the field is "last attempt", and the 2 s
+        // poll rebuilds this row from the same value.
+        if (typeof j?.at === "number") d.lastWakeAt = j.at;
+        wb.disabled = false;
+        repaintDevices();
+      };
+      wrow.appendChild(wb);
+    }
+    const stamp = el("div", "bidmeta", !d.wakeConfigured
+      ? "wake not configured on this Fleet host (no MAC for this device, or no broadcast address)"
+      : d.lastWakeAt ? `last wake frame ${gateAge(Math.max(0, Date.now() - d.lastWakeAt))} ago`
+        : "never woken from here");
+    stamp.title = "When a magic packet last LEFT this box for that machine. There is no acknowledgement to record — whether it arrived is answered only by the next heartbeat.";
+    if (d.wakeConfigured) box.appendChild(wrow);
+    box.appendChild(stamp);
+  }
   const shaLine = el("div", "bidmeta", d.daemonSha ? `daemon at ${d.daemonSha.slice(0, 8)}` : "daemon sha not reported");
   shaLine.title = "git rev-parse HEAD of the tree the daemon started from, sent on its heartbeat. Not a setting: it is what is running there right now.";
   box.appendChild(shaLine);

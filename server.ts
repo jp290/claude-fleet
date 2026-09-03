@@ -11794,6 +11794,30 @@ const AUDIT_HELPER_GRACE_MS = Math.max(0, Number(process.env.FLEET_AUDIT_HELPER_
 // one missed beat and a slow network while a box switched off ten minutes ago cannot hold a job
 // back. The failure direction is the safe one — too strict simply means no grace, which is exactly
 // today's behaviour, never a job nobody runs.
+// --- WAKE-ON-LAN: THE ONE NAMED EXCEPTION TO THE PULL DOCTRINE ---------------------------------
+// helper-daemon/README.md's third non-goal is "no push", and every other line in this file keeps
+// it: the Fleet opens NOTHING towards a helper. A magic packet is the deliberate exception, and it
+// is narrow enough to name: a connectionless UDP broadcast, no credential, no session, no reply,
+// no addressee that could answer — the only thing it can do to a machine is switch it on. Anything
+// that machine then does, it does by polling, exactly as before.
+//
+// THE ADDRESS IS CONFIGURATION AND IT IS MANDATORY — measured on this box 2026-09-03, and the
+// measurement is the reason there is no default. `255.255.255.255` fails EHOSTUNREACH from a
+// socket bound to 0.0.0.0 on macOS even WITH SO_BROADCAST set; the subnet-directed address
+// (`x.x.x.255`) is what actually leaves the card. A default would therefore be a value that throws
+// in production while a test pointed elsewhere goes green — a feature that exists only in its own
+// suite. Unset means the door answers 409 and sends nothing.
+const HELPER_WAKE_ADDR: string | null = process.env.FLEET_HELPER_WAKE_ADDR?.trim() || null;
+const HELPER_WAKE_PORT = Math.min(65_535, Math.max(1, Number(process.env.FLEET_HELPER_WAKE_PORT ?? 9) | 0));
+// how long a device must have been silent before the tick will wake it, and how long it is then
+// left alone. The backoff is per device and the failure direction is deliberate: too long simply
+// means the owner clicks the button, too short means a box that cannot boot is packeted forever.
+const HELPER_WAKE_AFTER_MS = Math.max(0, Number(process.env.FLEET_HELPER_WAKE_AFTER_MS ?? 600_000) | 0);
+const HELPER_WAKE_BACKOFF_MS = Math.max(0, Number(process.env.FLEET_HELPER_WAKE_BACKOFF_MS ?? 900_000) | 0);
+// its own clock rather than HELPER_SWEEP_MS: that one is DIVIDED INTO HELPER_FRESH_MS, so turning
+// it down to make this tick fast in a harness would silently redefine what "that machine is there"
+// means for the grace and the candidate reading above.
+const HELPER_WAKE_TICK_MS = Math.max(250, Number(process.env.FLEET_HELPER_WAKE_TICK_MS ?? 30_000) | 0);
 const HELPER_FRESH_MS = 3 * HELPER_SWEEP_MS;
 const HELPER_LAPSE_KEEP = 20;      // enough to see a flaky helper as a pattern, not a history
 const HELPER_DEVICE_KEEP = 20;     // ...and the same for the names devices gave themselves
@@ -11910,6 +11934,7 @@ interface HelperDevice {
   capabilities?: string[];   // ...and what it says it can run
   desiredMode?: DeviceMode;  // the OWNER's wish. Never written by the helper principal
   daemonSha?: string;        // the commit the daemon says it RUNS FROM (40 hex) — measured there, or absent
+  lastWakeAt?: number;       // when a magic packet last LEFT this box for it. Not "it woke up" — see sendWakeFrame
 }
 const helperDevices = new Map<string, HelperDevice>();
 // What a heartbeat is allowed to carry. Keys are present only when the device actually sent them,
@@ -13021,6 +13046,11 @@ interface HelperDeviceView {
   lapses: number;
   daemonSha?: string;              // what the daemon says it runs — absent until a daemon that measures it beats
   update: HelperUpdateView | null; // the owner's standing update wish for it, and how it went
+  // the wake rail's two facts, and NEITHER of them is the MAC or the broadcast address: those are
+  // env on this host, they never enter a response, and `wakeConfigured` is the whole of what the
+  // board is allowed to know about them — whether the button would do anything.
+  lastWakeAt?: number;
+  wakeConfigured: boolean;
 }
 function helperDevicesView(): HelperDeviceView[] {
   const held = new Map<string, HelperDeviceClaimView[]>();
@@ -13062,8 +13092,113 @@ function helperDevicesView(): HelperDeviceView[] {
     lapses: helperLapses.filter((l) => (l.deviceId ? l.deviceId === d.id : l.name === d.name)).length,
     ...(d.daemonSha ? { daemonSha: d.daemonSha } : {}),
     update: helperUpdateView(d.id),
+    ...(d.lastWakeAt ? { lastWakeAt: d.lastWakeAt } : {}),
+    wakeConfigured: !!HELPER_WAKE_ADDR && !!wakeMacFor(d.id),
   }));
 }
+// THE MAC LIVES IN THE ENVIRONMENT AND NOWHERE ELSE. Not in fleet.json (which is a state file this
+// repo's own tooling prints), not in a tracked file (this repo is public), not in a response and
+// not in an audit detail: a MAC is the one piece of a helper machine's identity that a stranger on
+// its LAN could use, and the whole point of the exception below is that it stays boring.
+// `FLEET_HELPER_MAC_<DEVICEID IN CAPS>` — the device id is already `[a-z0-9]{8,32}`, so upcasing it
+// yields a legal env key with no escaping question.
+function wakeMacFor(deviceId: string): Uint8Array | null {
+  if (!/^[a-z0-9]{8,32}$/.test(deviceId)) return null;
+  const raw = process.env[`FLEET_HELPER_MAC_${deviceId.toUpperCase()}`]?.trim();
+  if (!raw) return null;
+  const hex = raw.replace(/[:.-]/g, "").toLowerCase();
+  if (!/^[0-9a-f]{12}$/.test(hex)) return null;
+  const mac = new Uint8Array(6);
+  for (let i = 0; i < 6; i++) mac[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return mac;
+}
+// the magic packet itself: 6 × 0xFF, then the MAC sixteen times. 102 bytes, fixed.
+function magicPacket(mac: Uint8Array): Uint8Array {
+  const frame = new Uint8Array(102);
+  frame.fill(0xff, 0, 6);
+  for (let i = 0; i < 16; i++) frame.set(mac, 6 + i * 6);
+  return frame;
+}
+// THE ONLY PLACE IN THIS SERVER THAT OPENS A UDP SOCKET, and e2e/pins.ts holds that: one call site,
+// and it calls setBroadcast. Measured 2026-09-03 on this box — WITHOUT setBroadcast every send to a
+// broadcast address fails EACCES (identical to a Python control without SO_BROADCAST), so the flag
+// is the door, not decoration. A green test over a socket that never had it would be a green over
+// a send that can only ever throw in production.
+//
+// `sent: true` means THE FRAME LEFT THIS BOX. It does not mean the machine is awake, that the frame
+// was routed, or that anything received it — WoL is connectionless and there is no answer to wait
+// for. Nothing in this file may ever phrase it as more than that.
+async function sendWakeFrame(mac: Uint8Array): Promise<{ sent: true } | { sent: false; error: string }> {
+  if (!HELPER_WAKE_ADDR) return { sent: false, error: "no wake address configured" };
+  let sock: Bun.udp.Socket<"buffer"> | null = null;
+  try {
+    sock = await Bun.udpSocket({});
+    sock.setBroadcast(true);
+    const ok = sock.send(magicPacket(mac), HELPER_WAKE_PORT, HELPER_WAKE_ADDR);
+    if (!ok) return { sent: false, error: "the socket refused the frame (backpressure)" };
+    return { sent: true };
+  } catch (e) {
+    // the CODE only, never the message and never the address: an errno is a diagnosis, a message
+    // is a string this box composed around configuration the response may not carry.
+    const code = (e as { code?: string })?.code;
+    return { sent: false, error: `send failed (${typeof code === "string" ? code : "unknown"})` };
+  } finally {
+    try { sock?.close(); } catch { /* already gone */ }
+  }
+}
+// IS THERE WORK NO MACHINE HAS TAKEN? The auto-wake's first condition, and it deliberately reads
+// the same three registers helperJobsView offers a device from — a wake for work that is already
+// claimed, already running here, or not offerable at all would be a packet for nothing.
+//   · an AUDIT entry that has covers, has a command that is not a repo-worker's (those are never
+//     offered), is unclaimed and is not the local drain's right now.
+//   · a lane PREVIEW or a COMMAND job still `open` — `claimed` is somebody else's already.
+//   · and this device's OWN queued daemon-update, which no other machine can take.
+// Deliberately NOT asked: whether the job is fresh. The wake rail's clock is the device's silence,
+// not the job's age; AUDIT_HELPER_GRACE_MS is what decides how long work waits for a helper.
+function helperWorkAwaitingClaim(deviceId: string): boolean {
+  for (const [repo, q] of auditQueue) {
+    if (!q.covers.length) continue;
+    const chosen = auditCmdFor(repo);
+    if (!chosen || chosen.source === "repo-worker") continue;
+    if (helperClaimOf(repo)) continue;
+    if (auditRunningRepo === repo || runningPostLandAudit?.repo === repo) continue;
+    return true;
+  }
+  for (const j of laneSuiteJobs.values()) if (j.state === "open") return true;
+  for (const j of commandJobs.values()) if (j.state === "open") return true;
+  return helperUpdates.get(deviceId)?.state === "open";
+}
+// THE AUTO-WAKE. Three conditions and a per-device backoff, and every one of them is a refusal to
+// send: work is waiting, the owner wishes this machine active, and it has been silent long enough
+// that "asleep" is a better reading than "between beats". A device that is beating is never woken —
+// it is already there, and a packet would be noise with a MAC in it.
+let helperWakeBusy = false;
+async function tickHelperWake(): Promise<void> {
+  if (helperWakeBusy || !HELPER_WAKE_ADDR || HELPER_WAKE_AFTER_MS <= 0) return;
+  helperWakeBusy = true;
+  try {
+    const now = Date.now();
+    for (const d of helperDevices.values()) {
+      if ((d.desiredMode ?? DEVICE_MODE_DEFAULT) !== "active") continue;
+      if (now - d.lastSeen < HELPER_WAKE_AFTER_MS) continue;
+      if (d.lastWakeAt && now - d.lastWakeAt < HELPER_WAKE_BACKOFF_MS) continue;
+      const mac = wakeMacFor(d.id);
+      if (!mac) continue;
+      if (!helperWorkAwaitingClaim(d.id)) continue;
+      const out = await sendWakeFrame(mac);
+      // the stamp is the BACKOFF's clock as much as the board's, so it is set on an attempt that
+      // failed too: a box whose network refuses the frame must not be retried every tick.
+      d.lastWakeAt = Date.now();
+      await saveStateNow();
+      audit("helper_wake", undefined,
+        `${d.name} <- auto wake ${out.sent ? "frame sent" : `NOT sent: ${out.error}`}`);
+      break; // at most one machine per tick — the next one is one tick away, and nothing is lost
+    }
+  } finally {
+    helperWakeBusy = false;
+  }
+}
+
 // The lane-suite half of the claim. Same shape as its audit sibling and the same rule behind every
 // refusal — nothing may be worked on twice — but the facts it checks are the lane's, not the queue's:
 // a withdrawn offer is GONE (404, not 409: there is nothing to take), a lapsed or reported one is
@@ -18304,6 +18439,7 @@ if (existsSync(STATE_FILE)) {
               : {}),
             ...(isDeviceMode(d.desiredMode) ? { desiredMode: d.desiredMode } : {}),
             ...(typeof d.daemonSha === "string" && /^[0-9a-f]{40}$/.test(d.daemonSha) ? { daemonSha: d.daemonSha } : {}),
+            ...(typeof d.lastWakeAt === "number" && Number.isFinite(d.lastWakeAt) ? { lastWakeAt: d.lastWakeAt } : {}),
           });
     // the update rows, for the same reason the claims are: a deploy here is land-then-restart, and
     // a queued update that vanished with the restart would be a wish the owner made and nobody kept
@@ -19042,6 +19178,9 @@ setInterval(() => {
   void saveStateNow().catch((e: unknown) => logError("helperClaimSweep", e));
   kickAuditDrain();
 }, HELPER_SWEEP_MS);
+// the wake rail, armed only when an address is configured: without one every pass would refuse,
+// and a timer that can only ever do nothing is a timer that should not exist.
+if (HELPER_WAKE_ADDR) setInterval(() => void tickHelperWake().catch((e: unknown) => logError("tickHelperWake", e)), HELPER_WAKE_TICK_MS);
 // auto-③ on done-looking lanes (advisory; FLEET_AUTO_REVIEW_MS=0 turns the tick off entirely)
 if (AUTO_REVIEW_MS > 0) setInterval(() => void tickAutoReview().catch((e: unknown) => logError("tickAutoReview", e)), AUTO_REVIEW_MS);
 if (BACKLOG_NUDGE_MS > 0) setInterval(() => void tickBacklogNudge().catch((e: unknown) => logError("tickBacklogNudge", e)), BACKLOG_NUDGE_MS);
@@ -22203,6 +22342,29 @@ Bun.serve<WSData>({
       await saveStateNow();
       audit("helper_update_queued", undefined, `${d.name} <- daemon-update from ${basename(HELPER_UPDATE_REPO)} ${main}`);
       return json({ update: helperUpdateView(d.id) });
+    }
+    // …and the owner's THIRD door onto a device, the only one in this server that opens something
+    // TOWARDS the other machine. It is one UDP broadcast frame and it is documented as the single
+    // named exception to the portal's "no push" rule (helper-daemon/README.md §The rules): no
+    // credential travels, no connection is made, nothing can answer it, and the only effect it can
+    // have is that a switched-off box switches on and starts POLLING, exactly as before.
+    // Both refusals are 409 rather than a thrown send: an unconfigured MAC or address is a fact
+    // about this host, and the honest answer is "there is nothing to send", never a 500.
+    const devWake = /^\/api\/helper\/devices\/([a-z0-9]{8,32})\/wake$/.exec(url.pathname);
+    if (devWake && req.method === "POST") {
+      const d = helperDevices.get(devWake[1]!);
+      if (!d) return json({ error: "no such device" }, 404);
+      const mac = wakeMacFor(d.id);
+      if (!mac) return json({ error: `no MAC configured for ${d.id}` }, 409);
+      if (!HELPER_WAKE_ADDR) return json({ error: "no wake address configured" }, 409);
+      const out = await sendWakeFrame(mac);
+      const at = Date.now();
+      // stamped on a failed attempt too, for the same reason the tick does: this field is "when a
+      // frame was last attempted for it", and the board prints it beside the outcome.
+      d.lastWakeAt = at;
+      await saveStateNow();
+      audit("helper_wake", undefined, `${d.name} <- wake ${out.sent ? "frame sent" : `NOT sent: ${out.error}`}`);
+      return json({ sent: out.sent, at, deviceId: d.id, ...(out.sent ? {} : { error: out.error }) });
     }
     // ✨ rework a compose-box draft in the focused slot's cwd; the result replaces the box, never
     // auto-sends. The slot's git state rides along as a DATA block (briefPayload) — facts only, the

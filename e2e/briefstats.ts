@@ -25,10 +25,12 @@ import { briefStats, readJsonl, type BriefStatsSummary, type OutcomeRecord, type
 const TMP = `${process.env.TMPDIR ?? "/tmp"}/fleet-briefstats-fixtures-${process.pid}`;
 
 /** one receipt as the dispatch seam writes it; `source: null` is a row from before 735aa45 */
-const receipt = (o: { task: string | null; branch: string; hash?: string | null; source?: string | null }): ReceiptRecord => ({
+const receipt = (o: { task: string | null; branch: string; hash?: string | null; source?: string | null;
+  selected?: unknown }): ReceiptRecord => ({
   at: 1_700_000_000_000, taskId: o.task, branch: o.branch,
   briefHash: o.hash === undefined ? `h-${o.branch}` : o.hash,
   ...(o.source ? { briefSource: o.source } : {}), // absent = a row from before 735aa45
+  ...(o.selected === undefined ? {} : { selected: o.selected }), // absent = a row from before the plan rail
 });
 
 /** one lane outcome as buildLaneOutcome writes it */
@@ -264,6 +266,45 @@ export async function run(): Promise<void> {
   check("briefstats: the rotated-away generation is IN the rates — dropping it would halve the denominator",
     rotated.overall.lanes === 2 && rotated.overall.killedEmpty === 1 && rotated.outOfScope.malformed === 1,
     JSON.stringify(rotated.overall));
+
+  // --- (p) THE PACK × VERSION ROWS: the unit a pack-quality question is asked in. One lane books
+  // each delivered pack once; two versions of one pack are two rows; a receipt that names no packs
+  // is counted beside the rows, never folded into an "unversioned" bucket — "not stated" and
+  // "delivered without a hash" are different facts.
+  const packReceipts: ReceiptRecord[] = [
+    receipt({ task: "p1", branch: "pb1", source: "compiled",
+      selected: [{ id: "verify-e2e", sourceHash: "v1" }, { id: "portable-core", sourceHash: "c1" }] }),
+    receipt({ task: "p2", branch: "pb2", source: "compiled",
+      selected: [{ id: "verify-e2e", sourceHash: "v1" }, { id: "verify-e2e", sourceHash: "v1" }] }),
+    receipt({ task: "p3", branch: "pb3", source: "raw",
+      selected: [{ id: "verify-e2e", sourceHash: "v2" }, { id: "rulebook-generat" }, { notAnId: 1 }] }),
+    receipt({ task: "p4", branch: "pb4", source: "raw" }),
+  ];
+  const packOutcomes: OutcomeRecord[] = [
+    outcome({ task: "p1", branch: "pb1", disposition: "landed", prompts: 0 }),
+    outcome({ task: "p2", branch: "pb2", disposition: "killed-empty" }),
+    outcome({ task: "p3", branch: "pb3", disposition: "landed", prompts: 2 }),
+    outcome({ task: "p4", branch: "pb4", disposition: "landed", prompts: 0 }),
+  ];
+  const packs = briefStats(packOutcomes, packReceipts);
+  const packRow = (id: string, hash: string | null) => packs.packs.find((p) => p.id === id && p.sourceHash === hash);
+  const v1 = packRow("verify-e2e", "v1"), v2 = packRow("verify-e2e", "v2");
+  const core = packRow("portable-core", "c1"), unversioned = packRow("rulebook-generat", null);
+  check("briefstats: a pack is booked per SOURCE VERSION — two hashes of one id are two rows with their own denominators",
+    v1?.lanes === 2 && v1.killedEmpty === 1 && v1.emptyRate === 0.5 && v1.landed === 1 && v1.zeroPrompt === 1
+      && v2?.lanes === 1 && v2.killedEmpty === 0 && v2.landed === 1 && v2.zeroPrompt === 0 && v2.zeroPromptRate === 0,
+    JSON.stringify(packs.packs));
+  check("briefstats: one lane books one pack once, however often the receipt repeats the row, and an entry without an id books nothing",
+    v1?.lanes === 2 && core?.lanes === 1 && packs.packs.length === 4, JSON.stringify(packs.packs));
+  check("briefstats: a pack delivered without a hash is its own `unversioned` row; a receipt naming no packs is counted beside the rows",
+    unversioned?.lanes === 1 && unversioned.sourceHash === null
+      && packs.packJoin.lanes === 3 && packs.packJoin.lanesWithoutSelected === 1
+      && packs.receipts.noSelected === 1 && packs.overall.lanes === 4,
+    JSON.stringify({ packJoin: packs.packJoin, receipts: packs.receipts }));
+  check("briefstats: the pack rows sit beside the brief-origin rates and change none of them",
+    packs.overall.lanes === 4 && row(packs, "compiled")?.lanes === 2 && row(packs, "raw")?.lanes === 2
+      && packs.overall.killedEmpty === 1 && packs.overall.zeroPrompt === 2,
+    JSON.stringify(packs.sources));
 
   // --- the CLI half, spawned as the operator runs it: argv → the rotation-aware read → the reader.
   const cli = Bun.spawnSync(["bun", `${ROOT}/briefstats.ts`, outFile, recFile, "--json"], { cwd: ROOT });

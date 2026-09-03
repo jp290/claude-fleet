@@ -548,6 +548,60 @@ Mechanismus, kein Grund, das Programm anzuhalten.
 
 ---
 
+## B-13 — die Begründung der Flake-Adjudikation zu `6b8b89d` (Slice 7a), weil sie in 300 Zeichen nicht passt
+
+**Ereignis** `at=1788462365585`, Audit auf `mainSha 6b8b89d` (Slice 7a, `server/proc.ts`),
+gefahren vom Remote-Helfer `second-host`, `exitCode 1`, `checks {ran: 24, failed: 3}`,
+`ms 1398441`. Adjudiziert **`flake`** — die Kurznote an der Zeile verweist hierher.
+
+**Zuerst die Zeile selbst lesen, sonst liest man sie falsch.** `ran: 24` sieht wie eine
+Enthauptung aus (ein echter Lauf liegt bei ~3.500). Ist es nicht: auf einer REMOTEN Zeile ist
+`ran` nur eine untere Schranke (**B-03**), belastbar ist `failed`. Die 23,3 Minuten Laufzeit
+belegen einen vollen Lauf. Wer hier „nichts wurde gemessen" schließt, verwirft ein echtes
+Ergebnis; wer `ran: 24` für die Checkzahl hält, meldet einen Absturz, den es nicht gab.
+
+**Die drei FAILs** — alle drei in der Watch/Event-Transportfamilie von `e2e/watch.ts`:
+
+1. `subject-gone: the torn-down lane's undelivered event is terminal as itself, unackable, and frees its budget`
+2. `counterprobe: the live subject's held event is delivered on its FIRST attempt; the dead one is never typed`
+3. `restart keeps the busy pending event with the same id and no invented attempt` (§11.2l)
+
+**Beleg 1 — das lokale Trail-Register, selbst ausgezählt** (30 `isolated-*`-Läufe auf Platte,
+`$TMPDIR/fleet-e2e-trail`; die Route `/api/self/flakes` sieht nur die 400 neuesten Dateien und
+taugt für eine historische Familie per Konstruktion nicht — `docs/e2e-trail.md` §7):
+
+| Check | rot / Läufe | Basisrate | jüngstes Rot |
+| --- | --- | --- | --- |
+| `subject-gone` | 7 / 30 | 23 % | `isolated-20260903T162559Z-69549` |
+| `counterprobe` | 5 / 30 | 17 % | `isolated-20260902T135103Z-50990` |
+| `restart …busy pending` | 8 / 30 | 27 % | `isolated-20260903T162559Z-69549` |
+
+Der Lauf `162559Z` trägt **zwei der drei** rot und liegt **~65 min vor** dem Commit `887bf29`.
+Ein Rot auf einem früheren Baum widerlegt die Attribution — das ist dieselbe Beweisform, mit der
+§11.2l entschieden wurde, und sie ist stärker als jeder Rerun.
+
+**Beleg 2, unabhängig vom ersten.** Die Lane hat die volle `./e2e-isolated.sh` **zweimal seriell
+auf genau diesem Baum** (`887bf29`) gefahren: 3547 Checks, beide Male **exakt ein** FAIL — Nr. 3.
+`subject-gone` und `counterprobe` waren dort **grün**. Gleicher Code, gleiche Maschine, grün: die
+beiden können vom Schnitt nicht verursacht sein.
+
+**Beleg 3, mechanisch.** Der Slice bewegt vier Funktionen (`byteLen`, `retainRunOutput`,
+`descendantPids`, `killProcessTree`) als reinen Move — im `diff --color-moved=dimmed-zebra`
+bleiben 17 nicht-Move-Zeilen übrig (Import, vier `export`-Präfixe, Modulkopf, Leerzeilen).
+`tickWatches` und der Event-Zustellpfad haben **null** Referenzen auf eines der vier Symbole.
+
+**Was dieses Urteil NICHT stützt, und das gehört dazu:** der Trail dieses konkreten Laufs liegt
+unter `/var/lib/fleet-helper` auf dem Helfergerät und ist von hier nicht lesbar (`df22cf14`). Für
+DIESES Artefakt bleibt die Innensicht unzugänglich; das Urteil steht auf dem lokalen Register und
+den zwei Lane-Läufen, nicht auf dem Lauf selbst. Ein `unknowable` wäre die vorsichtigere, aber
+falschere Antwort gewesen: zwei unabhängige Beweislinien zeigen auf dieselbe Ursache.
+
+**Nebenbefund, dritte Instanz von `7e984bde`:** die 300-Zeichen-Grenze der Adjudikationsnote hat
+diese Begründung erneut aus der Zeile in ein Dokument gedrängt. Das Urteil steht damit an einem
+Ort, den `state.sh` und die Audit-Ansicht nicht lesen.
+
+---
+
 ## Bereits als Queue-Zeile abgelegte P6-Befunde (nur Verweis, Inhalt lebt an der Zeile)
 
 | ID | Kurz |

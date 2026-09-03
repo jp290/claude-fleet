@@ -30,10 +30,11 @@ import { validateRefineProposal, type RefineValidation } from "./refine-validate
 import { planContext, type ContextPlan, type ContextPlanInput, type ContextPlanSelection } from "./context-plan";
 import {
   CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES, planRepoContext, readContextManifest,
-  type ContextManifestRead,
+  stampObservedSourceHashes, type ContextManifestRead,
 } from "./context-manifest";
 import {
   CONTEXT_PACKS,
+  CONTEXT_SEED_SOURCE_PATHS,
   type ContextPackCapability,
   type ContextPackMode,
   type ContextPackTrigger,
@@ -7715,8 +7716,8 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // merge Program-MAIN founding does, deliberately with no frame branch: a Fleet-only or
     // foreign-only rule would be a second, quieter policy. `repoRootOf` throws → the catch requeues.
     const base = planContext(planFacts);
-    const repoPlan = await repoManifestContextPlan(await repoRootOf(wt.repo), head, planFacts);
-    const plan: ContextPlan = { selected: [...base.selected, ...repoPlan.selected],
+    const { repoPlan, sourceBytes } = await repoManifestContextPlan(await repoRootOf(wt.repo), head, planFacts);
+    const plan: ContextPlan = { selected: [...stampObservedSourceHashes(base.selected, sourceBytes), ...repoPlan.selected],
       omitted: [...base.omitted, ...repoPlan.omitted] };
     const anchorBlock = renderContextAnchorBlock(plan);
     const deliveredBrief = `${brief}${anchorBlock}${clarify ? "" : LANE_EXIT_FOOTER}`;
@@ -16568,28 +16569,37 @@ async function showAtHead(repoRoot: string, head: string, path: string, maxBytes
 // it, so one manifest reader serves every delivery seam instead of one per seam. The repository is
 // named by root and commit alone — this function knows nothing about frames, and deliberately so:
 // Fleet's own checkout declares packs by exactly the same rule a target repository does.
+// Returns the repo-declared plan AND the bytes it was planned from: the caller stamps the Fleet
+// seeds' OBSERVED sourceHash from the same read (`stampObservedSourceHashes`), so a receipt names
+// the version of every source it pointed at — seed and repo pack alike — from one `git show` pass.
 async function repoManifestContextPlan(repoRoot: string, head: string,
-  facts: Omit<ContextPlanInput, "sourceTree">): Promise<ContextPlan> {
+  facts: Omit<ContextPlanInput, "sourceTree">): Promise<{ repoPlan: ContextPlan; sourceBytes: ReadonlyMap<string, string> }> {
   const raw = await showAtHead(repoRoot, head, CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES);
   const manifest: ContextManifestRead = raw.kind === "unread"
     ? { kind: "invalid", detail: "manifest could not be read at head within its byte bound" }
     : readContextManifest(raw.kind === "bytes" ? raw.text : null);
-  if (manifest.kind === "absent") return { selected: [], omitted: [] };
 
+  // One read serves two readers: the validator (manifest sources) and the observed sourceHash on
+  // every selection (manifest sources AND the seeds' own). A seed path a foreign tree does not
+  // track is skipped by the same guard as an untracked manifest source, so the read costs a
+  // foreign repo one ls-tree and nothing else. `sourceTree` is not in `facts` on purpose; the
+  // seeds are planned without bytes and stamped only where every source was actually read.
   const trackedPaths = new Set<string>();
   const sourceBytes = new Map<string, string>();
-  if (manifest.kind === "packs") {
-    const tracked = await gitRead(repoRoot, "ls-tree", "-r", "--name-only", head);
-    if (tracked.code === 0) for (const path of tracked.out.split("\n")) if (path) trackedPaths.add(path);
-    for (const path of manifest.referencedPaths) {
-      if (!trackedPaths.has(path)) continue;
-      const bytes = await showAtHead(repoRoot, head, path, CONTEXT_MANIFEST_MAX_SOURCE_BYTES);
-      // A source Fleet did not read stays OUT of the facts: the validator then reports the anchor
-      // as unchecked, which the plan turns into a named omission rather than a hopeful delivery.
-      if (bytes.kind === "bytes") sourceBytes.set(path, bytes.text);
-    }
+  const wanted = new Set<string>(CONTEXT_SEED_SOURCE_PATHS);
+  if (manifest.kind === "packs") for (const path of manifest.referencedPaths) wanted.add(path);
+  const tracked = await gitRead(repoRoot, "ls-tree", "-r", "--name-only", head);
+  if (tracked.code === 0) for (const path of tracked.out.split("\n")) if (path) trackedPaths.add(path);
+  for (const path of [...wanted].sort()) {
+    if (!trackedPaths.has(path)) continue;
+    const bytes = await showAtHead(repoRoot, head, path, CONTEXT_MANIFEST_MAX_SOURCE_BYTES);
+    // A source Fleet did not read stays OUT of the facts: the validator then reports the anchor
+    // as unchecked, which the plan turns into a named omission rather than a hopeful delivery —
+    // and a seed with such a source stays unhashed rather than half-hashed.
+    if (bytes.kind === "bytes") sourceBytes.set(path, bytes.text);
   }
-  return planRepoContext({ manifest, repo: { trackedPaths, sourceBytes }, facts });
+  if (manifest.kind === "absent") return { repoPlan: { selected: [], omitted: [] }, sourceBytes };
+  return { repoPlan: planRepoContext({ manifest, repo: { trackedPaths, sourceBytes }, facts }), sourceBytes };
 }
 
 // The Fleet seeds and the repository's own declared packs land in ONE plan and one receipt. In a
@@ -16601,9 +16611,9 @@ async function repoManifestContextPlan(repoRoot: string, head: string,
 async function programMainContextPlan(preflight: ProgramMainPreflight,
   facts: ReturnType<typeof programMainContextFacts>): Promise<ContextPlan> {
   const base = planContext(facts);
-  const repoPlan = await repoManifestContextPlan(preflight.repoRoot, preflight.head, facts);
+  const { repoPlan, sourceBytes } = await repoManifestContextPlan(preflight.repoRoot, preflight.head, facts);
   return {
-    selected: [...base.selected, ...repoPlan.selected],
+    selected: [...stampObservedSourceHashes(base.selected, sourceBytes), ...repoPlan.selected],
     omitted: [...base.omitted, ...repoPlan.omitted],
   };
 }

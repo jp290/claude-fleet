@@ -7,6 +7,7 @@ import { dirname, resolve } from "node:path";
 import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, post, restartSrv, tmuxOut } from "./harness";
 import { phaseOf, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import { laneDoneLooking, type LaneSignalView } from "../lane-signals";
+import { observedSourceHash } from "../context-manifest";
 import { setMergeMode } from "./lane-helpers";
 import type { Ctx } from "./ctx";
 
@@ -648,6 +649,15 @@ export async function run(ctx: Ctx): Promise<void> {
       sources: [{ path: "docs/absent.md", anchor: "## Never tracked" }] }),
   ], null, 2), "declare context packs");
   const carrierOn = await foundInto(manifestRepo, "program-main-carrier-present");
+  // the OBSERVED version of the pack's sources, recomputed here over the same blobs the seam read
+  // at HEAD — a receipt that carried a literal instead would not survive this equality
+  // `.trim()` because the seam reads every blob through gitRead, which trims — the hash is over
+  // exactly what the seam read, and that is the observation the receipt claims
+  const blobAt = (repo: string, path: string): string =>
+    spawnSync("git", ["-C", repo, "show", `HEAD:${path}`], { encoding: "utf8" }).stdout.trim();
+  const promiseSources = [{ path: "AGENTS.md", anchor: "## Repo contract" }, { path: "docs/promise.md", anchor: "## Product promise" }];
+  const expectedPromiseHash = observedSourceHash(promiseSources,
+    new Map(promiseSources.map((source) => [source.path, blobAt(manifestRepo, source.path)])));
   const expectedBlock = "\n\nContextPlan v2 anchors (fresh advisory pointers; no source content is copied):"
     + "\n- product-promise"
     + "\n  AGENTS.md | ## Repo contract"
@@ -656,11 +666,12 @@ export async function run(ctx: Ctx): Promise<void> {
     manifestCommit === 0 && carrierOn.prompt === carrierBefore.prompt + expectedBlock
       && anchorsResolve(carrierOn.receipt),
     carrierOn.prompt.slice(-400));
-  check("Program-MAIN carrier receipt: the repo pack is a selected row, the bad pointer a named omission, and the hash recomputes",
+  check("Program-MAIN carrier receipt: the repo pack is a selected row WITH the observed source version, the bad pointer a named omission, and the hash recomputes",
     !!carrierOn.receipt && JSON.stringify(carrierOn.receipt.selected) === JSON.stringify([{
       id: "product-promise",
       anchors: [{ path: "AGENTS.md", anchor: "## Repo contract" },
         { path: "docs/promise.md", anchor: "## Product promise" }],
+      sourceHash: expectedPromiseHash,
     }])
       && carrierOn.receipt.omitted.length === 7
       && carrierOn.receipt.omitted.filter((entry) => entry.why === "source-unavailable").length === 6
@@ -723,6 +734,11 @@ export async function run(ctx: Ctx): Promise<void> {
       && anchorsResolve(fleetReceipt) && fleetReceipt.hash === promptHash(fleetPrompt, fleetReceipt)
       && fleetReceipt.deliveredBytes === new TextEncoder().encode(fleetPrompt).byteLength,
     JSON.stringify(fleetReceipt ?? null));
+  check("Program-MAIN Fleet frame: every selected seed with tracked sources carries its OBSERVED 64-hex sourceHash — the seeds are versioned from the same read as the manifest",
+    !!fleetReceipt && fleetReceipt.selected.filter((selection) => Array.isArray(selection.anchors)).length > 0
+      && fleetReceipt.selected.filter((selection) => Array.isArray(selection.anchors))
+        .every((selection) => typeof selection.sourceHash === "string" && /^[a-f0-9]{64}$/.test(selection.sourceHash)),
+    JSON.stringify(fleetReceipt?.selected.map((selection) => [selection.id, selection.sourceHash ?? null]) ?? null));
   check("Program-MAIN Fleet frame: a manifest tracked in the Fleet checkout IS read, delivered, and receipted beside the seeds",
     fleetManifestCommit.status === 0 && !!fleetReceipt
       && fleetPrompt.includes("fleet-frame-carrier-probe")

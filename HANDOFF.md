@@ -1,3 +1,61 @@
+# HANDOFF — Program `b9c1e0d9` „Fleet Task Workbench" ist ABGESCHLOSSEN (Slot 2 → retire, 2026-09-03 21:2x)
+
+Das ist kein Uebergabe-, sondern ein ABSCHLUSS-Abschnitt: es gibt keine Nachfolgerin, das Program
+steht auf `status: "complete"` (`completedAt` 1788463527287), und dieser Slot retiret. Wer hier
+weiterliest, sucht entweder die Beweislage oder die zwei Mechanismus-Befunde am Ende.
+
+## Was diese Session getan hat
+
+Sie hat KEINEN Code geschrieben — es war keiner mehr noetig. Drei Akte:
+
+1. **Die offene Owner-Entscheidung neu gestellt.** Die Attention `dddb2141` meiner Vorgaengerin
+   hatte den Owner nie erreicht (siehe Befund 1). Neu als `cc80f083`, verengt auf die eine
+   verbliebene Frage. **Antwort: (A)** — der P1 ist ein Brief-Fehler, kein Produktdefekt.
+2. **`da0e24e`** — die Adjudikation als Nachtrag in
+   `docs/messungen/2026-09-03-task-workbench-review.md`. Form wie bei einem adjudizierten
+   Post-Land-Audit: die Messung des Reviewers bleibt UNVERAENDERT (Frontmatter, Urteil, P1-Befund
+   nicht angefasst), der Nachtrag haengt am Ende und ist als nicht-vom-Reviewer gekennzeichnet,
+   unter dem P1-Punkt steht nur ein Zeiger. **Damit hat der Review keine offenen P0/P1 mehr, und
+   der achte Erfolgssatz ist erfuellt.**
+3. **Program auf `complete` gesetzt** (`POST /api/programs/b9c1e0d9…/complete`, Owner-Token unter
+   der Delegation des Controllers).
+
+Beide Commits dieser Session (`d956daf`, `da0e24e`) sind **Direkt-Commits aus dem Haupt-Checkout**
+und damit fuer jedes land-seitige Ledger unsichtbar — keine `fleet/land`-Note, keine
+`lane-outcomes`-Zeile, kein Post-Land-Audit. Beide sind rein docs; Beweiskette daher die
+proportionale, die der Land-Gate seit `e896826` fuer einen docs-only-Diff selbst waehlt:
+`bun install --frozen-lockfile` exit 0, `bun e2e/pins.ts` ALL PASS, Public-Repo-Scan leer.
+
+## Die Beweislage des Programs, an einer Stelle
+
+Sechs `auftrag`-Zeilen terminal, alle Lands `verified`. Je Erfolgssatz:
+(a) `63c77b3` · (b)-(e) `a58e9c1` · (d) zusaetzlich `a6b7a38` · (f)+(g) `445c1e2` ·
+(h) `a58e9c1` + `da0e24e` (Review ohne offene P0/P1, nach Adjudikation).
+Der Post-Land-Audit auf `a58e9c1` ist gruen — an `ms` und den PASS-Zeilen geprueft, nicht am Wort:
+`exit 0`, `ms 1 395 654`, Trail `rows=3506`.
+
+## Zwei Mechanismus-Befunde, die groesser sind als dieses Program
+
+1. **Eine Attention stirbt mit der Session, die sie gestellt hat.** `dddb2141` steht als
+   `status: "refused"`, `refusedReason: "requester session ended"`, `closedAt` = der Moment der
+   Nachfolge. Die Rail-Reihenfolge „genau eine Attention an der Grenze, dann `succeed`" verliert
+   die Frage damit LAUTLOS: die Vorgaengerin hat korrekt gefragt und korrekt uebergeben, und der
+   Owner sah nie etwas. Wer an der Grenze fragt, muss auf die Antwort warten oder sie in der
+   Nachfolge neu stellen — bis das jemand baut, ist es ein Handgriff, den jede Program-MAIN kennen
+   muss.
+2. **Der erste Helfer-Job dieses Fleets, der GELIEFERT hat.** Der Audit auf `a58e9c1` lief als
+   `remote helper (second-host): ./e2e-isolated.sh` und kam vollstaendig zurueck. Die beiden
+   bekannten Vorgaenger-Claims waren gelapst (`26ea1a20`, `a85a0e3c`) — die Frage „ist die
+   Auslagerung je durchgelaufen?" ist damit mit JA beantwortet, mit genau einem Beleg.
+
+## Betriebsstand beim Abschluss (gemessen, nicht erinnert)
+
+`bundleStale.stale false` · `deployGap.codeBehind false` · `errors null` · keine Suite, kein Audit
+laufend · kein Deploy von mir · ctx 13,x %. Neun `notiz`-Zeilen des Programs bleiben `pending`;
+sie sind beratend und laufen nie — kein offener Posten, nur Lesestoff.
+
+---
+
 # HANDOFF — Dual-Host cd110019 (Slot 5 → Nachfolge): S3/S4 briefgereift und WARTEND, zwei rote Audits als flake VERMESSEN statt geraten, S3s Sendemechanik vor dem Dispatch widerlegt; 2026-09-03 (20:0x), ctx GEMESSEN 27,1 %
 
 Program **`cd1100193082db395c1387db`**, gebunden. Lineage 9 → 5. Ich habe in dieser Session
@@ -161,6 +219,20 @@ Erden (`./state.sh`, `./register.sh`, nur dieser Abschnitt, `GET /api/self/progr
 Dann: **nichts starten.** Beide Zeilen sind briefgereift und warten auf den Controller. Kommt ein
 Lane-Report herein, ist er ein ANSPRUCH — Diff und zitierten Verify-Tail lesen, nicht den Bericht
 glauben. Kommt ein rotes Audit herein, nimm §2 und miss die Basisrate, bevor du eine Suite faehrst.
+
+## 8. Nachtrag in eigener Sache: dieser Handoff wurde von einer FREMDEN Session committet
+
+Ich habe diesen Abschnitt um ~21:2x vorangestellt und wollte ihn selbst committen. Dazwischen lief
+`fd521ac` (Slot 16, 21:25:01) — dessen `git add HANDOFF.md` hat meinen noch uncommitteten Text
+mitgenommen und unter SEINER Commit-Message gelandet. Inhaltlich ging nichts verloren (44
+Abschnitte vorher wie nachher, beide Fassungen vollstaendig), aber die Provenienz ist falsch: wer
+`git log -- HANDOFF.md` liest, findet meinen Abschnitt unter „Program 66499a03 Slot 16".
+
+**Die Regel daraus:** `HANDOFF.md` ist im HAUPT-Checkout eine geteilte Datei, an der mehrere
+Program-MAINs gleichzeitig schreiben. Zwischen Schreiben und Committen liegt hier ein Fenster von
+Sekunden, in dem eine fremde Session deinen Text adoptiert — oder, wie bei `68afeda` schon einmal
+bezahlt, ihn beim Zurueckschreiben still loescht. Also: **prepend und commit in EINEM Zug**, und
+danach `git log -1 -- HANDOFF.md` pruefen, ob der Commit wirklich deiner ist.
 
 ---
 # HANDOFF — Program 66499a03 „Fleet-Betrieb ohne manuelles Owner-Routing" (Slot 16 → Nachfolge): C gelandet und das rote Audit als flake entlastet, D1 briefbereit mit KEEP, drei Befunde gefilet; 2026-09-03 (21:2x)

@@ -646,6 +646,48 @@ dieser fünf Checks gegen die lokale Basisrate.
 
 ---
 
+## B-15 — die neue Spent-Watch-Ablehnung kennt den Merge-LAUF nicht, nur die Lane-Identität
+
+**Gefunden** 2026-09-04 beim Review von B-07 (`30cc5d5`), VOR dem Land, und bewusst nicht als
+Blocker behandelt.
+
+B-07 schließt einen echten Fehler: ein verbrauchter merge-Watch wurde als `existing:true`
+zurückgegeben, was für den Abonnenten ein stilles Für-immer-Warten war. Der Fix ist ein strikter
+Fortschritt. Er hat aber einen Rest, den der Brief nicht abdeckte:
+
+`createWatchForSlot` löst die Merge-Identität als `{t, cwd, branch, terminal}` auf —
+`mergeTerminalFor(t.id, t.cwd, branch)`. **Es gibt keine Kennung des einzelnen Merge-LAUFS.** Die
+neue 409-Bedingung fragt „hat für diesen Empfänger *irgendein* Watch auf (Slot, cwd, Branch)
+schon gefeuert" — nicht „auf dieses Terminal".
+
+**Der Restfall:** Merge 1 auf einer Lane settlet (z. B. `blocked`), der Watch feuert. Später läuft
+auf **derselben** Lane-Identität Merge 2 und settlet ebenfalls, BEVOR der Empfänger erneut
+abonniert. Dann ist `identity.terminal` gesetzt, ein gefeuerter Watch existiert — und der
+Empfänger bekommt 409 mit der Begründung „no newer merge is running", die in genau diesem Moment
+wörtlich stimmt und trotzdem in die Irre führt: ein neuerer Merge *ist gelaufen*, und sein Ausgang
+ist über einen Watch nicht mehr erreichbar.
+
+**Warum das trotzdem kein Blocker war:**
+- Der dokumentierte Ablauf abonniert unmittelbar nach dem Land-POST; ein Merge braucht die volle
+  Gate-Kette (100–140 s gemessen), ist also beim Abonnieren praktisch nie schon terminal.
+- Das ALTE Verhalten war im selben Szenario schlechter (stiller Für-immer-Wait statt einer
+  irreführenden 409).
+- Zwei Merges auf derselben `(Slot, cwd, Branch)`-Identität entstehen fast nur beim Re-Land nach
+  einem blockierten Merge — das ist B-09s Szenario, und dort abonniert der Empfänger ebenfalls
+  direkt nach dem POST.
+
+**Done-Kriterium:** die Ablehnung unterscheidet den Lauf — entweder trägt `MergeLast` eine
+Lauf-Kennung (oder einen Zeitstempel), die der gefeuerte Watch mitschreibt und die Bedingung
+vergleicht, oder die Ablehnung nennt ehrlich, dass ein neuerer Merge bereits terminal ist, und
+verweist auf `GET /api/slots/:id/merge`. **Verifikation:** eine Fixture mit zwei
+aufeinanderfolgenden Terminals auf derselben Lane-Identität, bei der das zweite Abo den zweiten
+Ausgang erfährt.
+
+**Nicht als Queue-Zeile gefilet:** Advisory-Deckel 10/10 (siehe B-12) — hier als Registerzeile
+disponiert, so wie es der B-12-Entscheid vorsieht.
+
+---
+
 ## Bereits als Queue-Zeile abgelegte P6-Befunde (nur Verweis, Inhalt lebt an der Zeile)
 
 | ID | Kurz |

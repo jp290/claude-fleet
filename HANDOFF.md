@@ -563,6 +563,40 @@ Rauschmelder. Und: mein Diff-Rezept an die Lane (`git diff … -- docs/`) war zu
 `main`s eingehende Dateien mit. Die Lane hat das korrigiert, zu Recht — ein Inhaltsbeweis
 schränkt auf die Dateien ein, die der Slice wirklich anfasst.
 
+## 8b. NACHTRAG 18:3x — der Deadlock ist vom Owner aufgeloest, Weg (b)
+
+Der Owner hat auf Attention `0792786f` mit **(b)** geantwortet und 18:2x unter seiner
+Land-Delegation `POST /api/slots/6/merge` mit dem Owner-Token gefahren. Begruendung, die man
+kennen muss: **die `done-looking`-Pruefung sitzt in der SELF-LAND-Tuer (`server.ts:6926`), die
+OWNER-Merge-Route hat sie nicht.** Gewaivt ist ausschliesslich das Praedikat, das faelschlich
+falsch war; der Land-Gate faehrt die volle Kette auf dem Baum, den er landet. **Der blockierende
+Record bleibt absichtlich unangetastet, damit B-09 seinen Beweis behaelt** — das ist besser als
+mein eigener Vorschlag (a), der die Evidenz fuer das Symptom geopfert haette.
+
+Owner-Gegenpruefung am Code, die B-09 bestaetigt: `lane-signals.ts:70` ist woertlich
+`!(status === error && errorReason === ff-lost)`, und `server.ts:11384` nennt `errorReason` selbst
+„the ONE field". Der Fix `24f9cfc` ging 17:23:52 live, fuenf Stunden nach dem Record von 12:22:19.
+
+**Was DIR davon bleibt:** der Land-Ausgang haengt an einem Owner-Watch (`9d970fc1`), nicht an dir.
+Offen und Program-Arbeit: **(1)** den Post-Land-Audit auf diesen Land adjudizieren, **(2)**
+Slice-Protokoll §f fahren (Dry-Boot-Rollback → Deploy Verb 2 → `bundleStale`/`deployGap` →
+`bun e2e/pins.ts` → `graphify update .`).
+
+## 8c. F1 — `acceptance: observed` ist KEIN Zustellbeweis (Owner-Befund, und er trifft mich zweimal)
+
+`POST /send` meldet `acceptance: "observed"`, obwohl der Text nur **gequeued** ist. Ich habe in
+dieser Session zweimal „Zugestellt, acceptance: observed" berichtet und das als Beleg behandelt —
+beide Aussagen waren staerker als die Messung. **Regel: Receipt lesen, dann die PANE pruefen, und
+nur die Pane zitieren.**
+
+Zweite Haelfte desselben Befunds, und die ist teurer: **ungesendeter Text im eigenen Composer
+blockiert `idle` und damit `done-looking` unbegrenzt.** Zweimal heute an diesem Slot gemessen —
+einmal fuenf Stunden Liegezeit (Lane 6, Composer hielt „fahr die drei Suiten trotzdem"), einmal
+eine verlorene Attention-Runde (mein eigener Slot hielt die Antwort „(a)"). Kein Sensor sagt dabei
+„blockiert": `GET /api/self` zeigt `idle: null`, der Watch steht `armed: true` und feuert nie.
+Wer auf einen Lane-Watch wartet, der nicht feuert, prueft **zuerst den Composer der Zielpane** —
+`C-u` greift dort nicht, `45x BSpace` schon.
+
 ## 9. Ehrlichkeiten
 
 - Diese Session lief auf `claude-opus-5[1m]`, nicht Fable. Die Modellpolitik vom 02.09. will Fable

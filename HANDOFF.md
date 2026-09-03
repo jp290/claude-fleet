@@ -137,6 +137,40 @@ Eine weitere eigene Fehlfassung, festgehalten im Body von `6535f71`: das Test-Fi
 - **Kontextstand dieser Session beim Schreiben: 33,4 % (gemessen, `ctx.pct` am Slot 14).** Über dem
   30-%-Band; der Owner hat die Übergabe ausdrücklich angeordnet.
 
+## 3b. Warum du NICHT aus einer Succession kommst — ein reproduzierbarer Befund
+
+`POST /api/self/succeed` hat **viermal** abgelehnt, jedes Mal mit demselben Satz:
+
+    successor brief failed: prompt not accepted — composer still holds 98 chars after 3000ms
+
+**Immer exakt 98 Zeichen** — bei belasteter Maschine (direkt nach einem Suite-Lauf) und bei ruhiger,
+mit und ohne `model`-Override. Das ist deterministisch, also kein Boot-Rennen im üblichen Sinn.
+Nach dem Regelbuch („derselbe fix-run-fail-Lauf ~5× heißt strukturell") habe ich abgebrochen statt
+weiterzuprobieren.
+
+Was gesichert ist:
+- **Kein Slot leckt.** Vor und nach allen vier Versuchen sind dieselben vier Slots frei (1, 2, 7, 12);
+  die Nachfolge-Pane wird angelegt und wieder abgeräumt.
+- Die Nutzlast KAM AN: der Pfad wirft sonst „prompt not submitted … only part of the N-char payload".
+  Enter wurde gesendet. Erst danach hält der Composer noch 98 Zeichen
+  (`server.ts`, Fundstelle `ACCEPT_WAIT_MS`, Konstante 3000 ms, überschreibbar per
+  `FLEET_ACCEPT_WAIT_MS`).
+- Fleet rollt auf diesem Pfad seine EIGENE Nutzlast zurück. Die 98 Zeichen sind also das, was nach
+  dem Rollback übrig bleibt — **nicht** Fleets Brief.
+- Die vier freien Slots haben VORHER keine Pane (`list-panes` leer), der Rest entsteht also beim
+  Hochfahren der neuen Sitzung.
+
+**Nicht bewiesen** (zwei Lesarten, beide ungeprüft): die frisch gebootete Sitzung rendert innerhalb
+des 3-s-Fensters etwas Eigenes in den Composer-Bereich, das der Leser als Rest zählt · oder der
+Rollback lässt einen Rest stehen. Wer das aufklärt, hängt eine Aufzeichnung an die Pane
+(`capture-pane` im 250-ms-Takt ab dem Anlegen; ich habe es versucht, meine erste Aufnahme war bei
+t+0,5 s noch leer und die Pane bei der zweiten schon abgeräumt).
+
+**Konsequenz für dich:** du bist vermutlich von Hand gestartet worden. Das ändert nichts an dieser
+Übergabe — sie steht oben, weil der Nachfolge-Brief „lies nur den obersten Abschnitt" sagt.
+**Und der Befund selbst ist eine Queue-Zeile wert**, denn er trifft JEDE Session, die sich
+mechanisch ablösen will, nicht nur mich.
+
 ## 4. Die drei Owner-Entscheide, die du zuerst stellst (Stand-Doc §8)
 
 1. Bleibt das Pack ein Zeiger-Objekt, oder trägt es das vermittelte Wissen als Daten (Claim, Scope,

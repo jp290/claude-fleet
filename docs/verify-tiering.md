@@ -2121,6 +2121,27 @@ Geschichte samt aller vier Lehren:
     wird, ist oft noch syntaktisch gültig — dann verschwindet nicht das Ergebnis, sondern die
     ARBEIT, und übrig bleibt ein Erfolg. Wer eine Zeile am Dateiende ändert, prüft die Zeilenzahl.
 
+**NACHTRAG 2026-09-03, zwei Präzisierungen aus einem roten REMOTE-Audit** (`at=1788457854590`,
+Land `f606e754`, gelaufen auf dem Second-host):
+
+1. **`checks.ran` zählt die PASS/FAIL-Zeilen der AUFBEWAHRTEN Ausgabe, nicht die des Laufs.** Die
+   Zeile meldete `checks {ran: 22, failed: 1}` — der Lauf hatte 3538 Checks. Beides stimmt: `out`
+   ist auf 3979 Zeichen gekürzt (die Aufzeichnung beginnt mit `… [10 lines elided]`) und enthält
+   21 PASS plus 1 FAIL. Wer `ran` als Lauf-Statistik liest, liegt hier um zwei Größenordnungen
+   daneben — in der Richtung, die einen ECHTEN Lauf wie einen leeren aussehen lässt. Die Regel
+   oben rettet einen: `ms` war 1 396 397 (23,3 min), und eine der aufbewahrten PASS-Zeilen nennt
+   selbst die Zeilenzahl des Trails. Kurz: **`ran` ist eine Aussage über die Aufzeichnung, `ms`
+   und die Trail-Zeilenzahl sind die Aussage über den Lauf.**
+2. **Für ein REMOTE gelaufenes Audit gibt es den Trail hier nicht.** Die Datei liegt auf dem
+   Helfergerät (`/var/lib/fleet-helper/work/run-…/tree/e2e-trail/<run>.jsonl`); das lokale
+   `e2e-trail/` hat für so einen Lauf **keine** Datei (nachgeprüft für
+   `isolated-20260903T172744Z-1875991`). Die Trail-Abfrage, die einen roten Check lokal in Sekunden
+   adjudiziert, steht für Remote-Audits also NICHT zur Verfügung. Der Ersatz ist gebaut und hat
+   funktioniert: die Ledger-Zeile führt `fails` mit den Namen der gefallenen Checks — danach greift
+   die Basisraten-Abfrage über die lokalen Trails wieder, weil sie über den CHECK-NAMEN geht und
+   nicht über diesen Lauf.
+
+
 ## 14. Der Remote-Helfer: Tier 2 auf einer zweiten Maschine (Stufe 1, 2026-08-26)
 
 Tier 2 ist der einzige Ort, an dem eine 5,6-Minuten-Suite leben kann (§6) — und genau darum ist er

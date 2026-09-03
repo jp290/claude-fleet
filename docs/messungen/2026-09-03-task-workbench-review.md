@@ -63,6 +63,11 @@ unentdeckt bleiben. Das ist eine Beweisluecke, kein behaupteter Produktdefekt.
 - **P0:** keine.
 - **P1:** `clarify-first` startet entgegen (h) eine Lane; Owner-Entscheidung noetig, ob (h) oder die
   in (g) geschuetzte bestehende Dispatch-Semantik gilt.
+- **ADJUDIZIERT am 2026-09-03 — dieser P1 ist GESCHLOSSEN, ohne Codeaenderung.** Die geforderte
+  Owner-Entscheidung ist gefallen (Attention `cc80f083`): der Widerspruch liegt im Review-BRIEF,
+  nicht im Produkt. Begruendung, Belege und Tragweite im Nachtrag am Ende dieser Notiz. Der Befund
+  des Reviews bleibt oben stehen, wie er gemessen wurde — er zaehlt ab hier nicht mehr als offener
+  P1. **Offene P0/P1 nach Adjudikation: keine.**
 
 ## Server-Diff
 
@@ -120,3 +125,59 @@ Kein eigener authentifizierter Browserlauf, keine neue Pixelaufnahme und keine A
 laufenden Fleet. Insbesondere bleiben der sichtbare 0/16-Leerzustand, echte Tastatur-/Mobile-Nutzung
 und der Draft ueber zwei reale Polls ungeprueft. Andere Workbench-Pfade ausserhalb der vier Slices
 und ihrer unmittelbar beruehrten Client-/E2E-Symbole wurden nicht bewertet.
+
+---
+
+## Nachtrag: Adjudikation des P1 (Program-MAIN, Owner-Entscheid 2026-09-03)
+
+Dieser Abschnitt ist nicht vom Reviewer. Er wurde von der Program-MAIN „Fleet Task Workbench"
+(Slot 2) nach der Owner-Antwort auf Attention `cc80f083` angehaengt. Die Messung oben ist
+unveraendert; hier steht nur, wie ihr einziger offener P1 entschieden wurde — dieselbe Form wie bei
+einem adjudizierten Post-Land-Audit: **der Befund bleibt der Befund, das Urteil sagt, dass jemand
+hingesehen hat.**
+
+**Entscheid: (A) — Brief-Fehler, kein Produktdefekt. Kein Code wurde geaendert.**
+
+### Warum der Satz nicht zu diesem Program gehoert
+
+Der P1 misst gegen ein Kriterium **(h)**, das woertlich so lautet: „Laufende Lanes erscheinen genau
+einmal an ihrer Task-Zeile; Spawn-Triple ist sichtbar/waehlbar, clarify-first startet keine Lane."
+Dieser Satz stammt aus dem Review-BRIEF der Queue-Zeile `07c061fa`, geschrieben von einer
+Vorgaenger-Session. Der achte Satz des owner-bestaetigten Erfolgskriteriums ist ein anderer:
+„Vorher-/Nachher-Screenshots, Commit-SHA, woertliche ALL-PASS-Tails und unabhaengiger Codex-Review
+ohne offene P0/P1 liegen vor." Der Reviewer hat also korrekt gegen das gemessen, was ihm gegeben
+wurde — die Brief-Zeile war falsch, nicht seine Arbeit.
+
+### Dass clarify-first eine Lane oeffnet, ist das SOLL — an vier Stellen belegt
+
+Nachgelesen am Baum `d956daf`, nicht aus dem Review uebernommen:
+
+- `clarify-prompt.ts` — Kopfkommentar nennt die Absicht ausdruecklich: „open the lane anyway, but
+  with an explicit instruction to SETTLE the criterion with the owner before writing a line of
+  code." Der Brief selbst sagt der Lane „Then STOP and wait."
+- `src/client.ts#qDispatchBody` — `▸ clarify first` schickt `{clarify:true}` samt gewaehltem
+  Spawn-Tripel an **denselben** Endpunkt `/api/tasks/:id/dispatch` wie `▸ start lane`.
+- `server.ts#dispatchTask` — `clarify` legt den Worktree an, setzt die Zeile auf `sent`, schreibt
+  die Note `clarify lane <branch> — settling the done-criterion with you` und setzt
+  `slot.awaiting = "owner"`. Owner-only per Konstruktion: kein Tick reicht das Flag durch.
+- `e2e/tasks.ts` — haelt genau diese Wirkung gruen fest und sagt in seinem eigenen Kommentar, dass
+  ein clarify-Start den Status NICHT in Ruhe laesst.
+
+Dazu die Lane-Disziplin im Regelbuch, die es von der anderen Seite bestaetigt: „**Bist du eine
+CLARIFY-Lane** (dein Gruendungsprompt sagt ‚settle WHAT DONE MEANS … not to implement it yet')?" —
+ein Text, der nur eine Leserin haben kann, naemlich eine Lane.
+
+**Praezisierung zur Begruendung des Entscheids, damit sie nicht falsch weitergetragen wird:** die
+Regelbuchzeile „eine Scout-Zeile gehoert ueber `▸ clarify first`, nicht `▸ start lane`" regelt den
+WEG einer unscharfen Zeile, nicht die Lane-Freiheit — clarify-first oeffnet sehr wohl eine Lane,
+nur eine, die erst das Kriterium klaert und dann stoppt. Der Entscheid haengt daran nicht: das
+Verhalten ist an den vier Stellen oben als SOLL belegt.
+
+### Was eine Aenderung gekostet haette
+
+`clarify-first` lane-frei zu machen waere eine Aenderung an `server.ts#dispatchTask`, also an der
+Dispatch- und Autoritaetssemantik. Das kollidiert mit dem siebten Erfolgssatz („bestehende API-/
+Autoritaetssemantik bleibt unveraendert") und mit dem ersten Non-Goal („Keine Aenderung an
+server.ts oder Autoritaetsgrenzen ohne gemessenen Client-Blocker"). Ein gemessener Client-Blocker
+existiert nicht. Wollte man die Wirkung dennoch, waere sie eine neue Programmzeile mit eigenem
+Kriterium — kein Nachtrag zu diesem Program.

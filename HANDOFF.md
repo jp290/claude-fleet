@@ -1,3 +1,112 @@
+# HANDOFF — Studio-als-Objekt: Gegenlesung gelandet und eingearbeitet, S1 laeuft als Lane auf Slot 1 (Slot 13 „studioObjekt" → Nachfolge, 2026-09-03 15:3x)
+
+Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`. Hier steht nur,
+was git und die Sensoren NICHT tragen.
+
+## 0. Wo die Arbeit steht
+
+Der Auftrag der Vorgaengerin war: einarbeiten, GLM-Gegenlesung anstossen, dann S1 briefen. **Alle
+drei sind erledigt.** Zwei Commits auf main und eine laufende Lane:
+
+- `461baea` — die GLM-Gegenlesung (Lane, pi-zai/glm-5.3, docs-only, proportionales Gate
+  install+pins, ALL PASS, 880 ms).
+- `ce7d14d` — die Gegenlesung EINGEARBEITET in `docs/ideen/2026-09-03-studio-als-objekt.md`
+  (neues §8, §1 korrigiert, §7 entschieden). **Direkt-Commit aus dem Haupt-Checkout** — siehe §3.
+- **Lane auf Slot 1, Branch `fleet/260903153159-4f7c`, Task `cf959aba`** (claude-opus-5[1m], high):
+  S1 = der `Studio`-Record, seine Persistenz und seine Tueren. Sie laeuft, seit ~15:32.
+  **Ein Lane-Watch von mir ist armed: `46474c59`** — er feuert EINMAL auf done-looking. Wenn du
+  diese Uebergabe liest, ist er entweder noch armed oder hat in MEINE Pane gefeuert, nicht in
+  deine: **pruef den Zustand selbst** (`GET /api/self` zeigt nur DEINE Watches, nicht meine).
+
+## 1. Das Erste, was du tust
+
+1. **Erden:** `./state.sh`, `./register.sh`.
+2. **Die Lane auf Slot 1 pruefen** — Pane lesen UND `ahead`/`dirty`, nie den Slot-Zustand allein.
+   Die vier Zwillingszustaende von „idle" gelten unveraendert.
+3. **`docs/ideen/2026-09-03-studio-als-objekt.md` lesen, aber §8 ZUERST** — dort steht, was die
+   Gegenlesung geaendert hat. Wer nur §1–§7 liest, baut auf der alten Fassung.
+   Dann `docs/messungen/2026-09-03-gegenlesung-studio-objekt-glm.md` (die Gegenlesung selbst,
+   323 Zeilen, mit ihrer eigenen Fundliste und Schnittlinie).
+4. **Landen, wenn die Lane sauber und ahead>0 ist.** Danach: **der Sanierungs-MAIN auf Slot 9 hat
+   ausdruecklich darum gebeten, benachrichtigt zu werden, wenn server.ts sich bewegt** — ich habe
+   das zweimal getan, halte die Zusage.
+
+## 2. Was git NICHT traegt
+
+- **Die Slot-Nummern haben sich bewegt.** Der 🎛 Fleet Controller sitzt auf **12**. Ich war 13.
+  Die Sanierungs-MAIN ist **9**. Die Private-repo-y-MAIN ist **4** (28 % ctx) und hat vom
+  Stopp-Entscheid des Owners **noch nichts gehoert** — ich habe ihr NICHTS geschickt. Wenn du ihr
+  schreibst: GENAU EINE Nachricht, sie kostet ihren vollen Kontext.
+- **Der Fleet Controller war ~25 min in einem Owner-Dialog blockiert** (Deploy-Frage) und konnte
+  in dieser Zeit KEINE Nachricht annehmen (`POST /send` → 409 „composer occupied"). Er hat
+  inzwischen deployt (`bootHead` = `903f516`, `codeBehind:false`). Merkposten: ein Controller in
+  einem AskUserQuestion-Dialog ist fuer Sends unerreichbar, und das sieht wie ein Compose-Rest aus.
+- **Ich habe die GLM-Zeile `c00c3dc4` SELBST hand-dispatcht**, statt darauf zu warten, dass der
+  Controller es tut (er war blockiert, und ich habe im Haupt-Checkout das Owner-Token). Vorher
+  Last gemessen: 1 Lane gegen Deckel 2, drei freie Slots, 0 Suiten, load 3.25.
+- **Das gebriefte Spawn-Tripel der GLM-Zeile war strukturell unspawnbar** und hat einen
+  Dispatch gekostet: `{harness:"pi", model:"glm-5.3"}` passiert die Validierung (pi's `modelRe`
+  ist `HARNESS_MODEL_RE`, ein CHARSET) und stirbt 4,4 s spaeter als
+  `dispatch held (not-alive) — requeued`. `pi --list-models` (0.84.0) fuehrt KEIN glm. Der
+  richtige Harness ist **`pi-zai`** (`server.ts#PI_ZAI_HARNESS`). Voller Befund samt Vorschlag als
+  Queue-Zeile **`d1373cf7`** (notiz). **Kurzform fuer den naechsten, der GLM briefed:
+  `harness: "pi-zai"`, nie `pi`.** Und: ein gescheiterter Spawn laesst seinen Branch als Leiche
+  stehen (ich habe `fleet/260903131126-4890` von Hand geloescht).
+- **Ein pi-zai-Lane-Watch ist unmoeglich** (`automatable:false` → 409, ehrlich begruendet). Ein
+  **merge**-Watch auf dieselbe Lane geht. Fuer die GLM-Lane habe ich einen
+  Hintergrund-Watcher auf `ahead`/`clean` gefahren; er hat nach 543 s gefeuert.
+- **Brief 9 (`ba896b1b`) liegt weiterhin unangetastet** — Owner-Entscheid, nicht dispatchen.
+- **Modell dieser Session:** `claude-opus-5[1m]` / high. Ich habe NICHT auf Fable gewechselt,
+  obwohl die Modellpolitik das fuer Orchestrierer vorsieht: diese Session hat selbst am Code
+  gelesen und geurteilt (elf Aufrufstellen nachgezaehlt, Nahtkommentare geprueft), das ist
+  Grabungs- und nicht Orchestrierungsarbeit. Wenn du ueberwiegend briefst und landest, wechsle —
+  beide Haelften (`POST /api/slots/<slot>/model` UND `/model <id>` in der Pane).
+- **Kontextstand beim Schreiben: 24,7 % (gemessen, `ctx.pct` am Slot 13).** Genau an der
+  Uebergabe-Marke; die Kette (Gegenlesung einarbeiten + S1 briefen) ist zu Ende gefahren.
+- Nichts laeuft sonst im Hintergrund: keine Suite, kein Audit, kein zweiter Watcher.
+
+## 3. Der Direkt-Commit, ausdruecklich gesagt
+
+`ce7d14d` ist ein **Direkt-Commit aus dem Haupt-Checkout** und damit fuer JEDES land-seitige
+Ledger unsichtbar: keine `fleet/land`-Note, keine `lane-outcomes.jsonl`-Zeile, kein
+Post-Land-Audit. Verifikation von Hand: `bun install --frozen-lockfile` exit 0,
+`bun e2e/pins.ts` ALL PASS exit 0, Public-Repo-Scan auf Hostnamen/IP leer. Der Diff ist REIN
+DOCS (eine Datei unter `docs/ideen/`), und damit ist diese Kette dieselbe, die der Land-Gate seit
+`e896826` fuer einen docs-only-Diff selbst waehlt — nicht die volle. Wer die Land-Health-Zahlen
+von `./state.sh` liest: sie zaehlen nur Lanes und untertreiben diesen Tag um zwei Commits.
+
+## 4. Die Entscheidungen, die ich getroffen habe (und die du erben, nicht neu aufmachen musst)
+
+Alle in `docs/ideen/2026-09-03-studio-als-objekt.md` §7 und §8 begruendet und am Code belegt:
+
+1. **`Studio` wohnt in `server/types.ts`** — die Datei haelt schon die Loader-Familie, und Slot 9
+   hat bestaetigt, dass sie das Ziel ist und keine ihrer Tiers meine Flaeche beruehrt.
+2. **`Program.studio` ist ein fuenfter Record**, kein Feld in `profile` —
+   `loadProgramProfile` verwirft jeden Fremdkey als ABSENT, ein Feld dort machte jedes bestehende
+   Profil unlesbar.
+3. **Die Bindung traegt `rev`**, und `POST /api/studios/:id` bumpt ihn. Ein Studio ist eine QUELLE,
+   die mehrere Programs teilen — eine `briefBlocks`-Aenderung unter einer lebenden MAIN ist
+   woertlich „founded under one contract, judged under another". **Refust wird nur die Aenderung
+   waehrend einer Gruendung IN FLUG**; bei bloss aktivem Program bleibt der Record schreibbar und
+   die Drift wird SICHTBAR statt still (S1s einziger Alleinnutzen ist die Kuratur).
+4. **Ein `game-maker`-Studio referenziert den Rail-Inhalt, es dupliziert ihn nie.** Duplikation
+   waere zwei Quellen und damit K2 in neuem Gewand.
+5. **S4 ist ab jetzt kein Bau-Schnitt, sondern eine eigene Mini-Entscheidung.**
+6. **S2 faltet den Studio-Block in `#railBlockFor`** — NICHT als vierten Summand an die zwei
+   Builder-Naehte. Der Kommentar dort sagt „the one selector, read by both builders", und beide
+   Builder haben die identische Naht; ein zweiter Summand ist genau die zweite Naht, vor der er
+   warnt. **Das korrigiert die alte Fassung der Entscheidung.**
+
+## 5. Was ich als Naechstes taete
+
+Die S1-Lane zu Ende begleiten und landen; Slot 9 benachrichtigen; dann **S2 briefen — aber erst
+nachdem das Game-Maker-Workflow-Dokument aus `b2aa5b45` adjudiziert ist** (es existiert noch
+nicht, nur `docs/game-maker/entwurf/evidenz-pack.md`; S2 braucht seine FORM, S1 nicht). Und die
+offenen Punkte aus dem „Nicht geprueft"-Block der Entscheidung sind echte Vorarbeit fuer S3: wo
+das `criticBeforeTaste`-409 sein Verdikt LIEST und woran eine Attention als Taste-Marker
+erkennbar ist — ohne diese Definition ist S3s Done-Kriterium nicht falsifizierbar.
+
+---
 # HANDOFF — Private-repo-p-Audit abgeschlossen, Owner-Entscheide gefallen, ARCHITEKTUR „Studio als Objekt" wartet auf Implementierung (Slot 15 „iosWorktrail" → Nachfolge, 2026-09-03 15:0x)
 
 Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`. Hier steht nur,

@@ -1,3 +1,171 @@
+# HANDOFF — Fleet Controller (Slot 13, Fable 5.1 high): Land 24f9cfc entlastet, zwei Owner-Ideen als Entwuerfe gelandet und von GLM gegengelesen, 6f401842-Brief korrigiert; 2026-09-03 (11:0x), ctx GEMESSEN 25,2 %
+
+Rolle: 🎛 Fleet Controller, Nachfolge von Slot 12 ueber einen handgeschriebenen Brief.
+Owner-Delegation (Landen, autonomer Betrieb, Disposition) gilt fort.
+
+## 0. DEIN AUFTRAG — unveraendert der vom Owner, plus was ich davon abgearbeitet habe
+
+  „sag dem neuen controller er soll sich mit mir zusammen explizit hauptsaechlich um die
+   second-host-Integration und bieberburg auf slot3 kuemmern, dazu gehoert dann auch z.b die alten
+   Bieberburg lanes zu schliessen"
+
+**„MIT MIR ZUSAMMEN" IST WOERTLICH.** Frag, bevor du entscheidest. Ich habe mich daran gehalten und
+deshalb Punkte offen gelassen, die ich haette raten koennen.
+
+Zweiter, spaeterer Owner-Auftrag (2026-09-03, woertlich):
+  „WIr sollten alle diese Idee von sol sessions auf codex ausarbeiten lassen und dann GLM
+   drueberschauen und pruefen lassen."
+Das ist ERLEDIGT fuer die zwei Ideen dieser Session (§2). Der Weg funktionierte gut und ist als
+Muster brauchbar: sol/codex arbeitet aus, GLM liest gegen, beides als Docs-Lane, beides gelandet.
+
+## 1. WAS DU ZUERST TUST
+
+Nichts haengt. Kein Land ist unter Verdacht, keine Suite laeuft, kein Watch von mir geht auf dich
+ueber (Watches haengen an Slot UND openedAt). Erde dich normal (`./state.sh`, `./register.sh`,
+dieser Abschnitt, Board) und geh dann an §4 — die Owner-Fragen, die auf Antwort warten.
+
+## 2. GELANDET IN DIESER SESSION, alles mit gruenem Gate
+
+- **`bfa7a61`** docs/ideen/2026-09-03-session-ledger-je-program.md (sol/codex, Slot 2)
+- **`5881455`** docs/ideen/2026-09-03-harness-uebergreifende-nachfolge.md (sol/codex, Slot 7)
+- **`2573678`** docs/ideen/2026-09-03-gegenlesung-glm.md (GLM/pi-zai, Slot 1)
+- **`51430a6`** Evidenz-Pack v2 des Game-Maker-Workflows (Slot 3s Zeile d2fd538f, von mir dispatcht)
+
+**Der wichtigste Fund der drei Dokumente, zweimal unabhaengig gezaehlt:** die offene Zeile
+`6f401842` benannte FUENF Zustellstellen, es gibt SECHS. Die sechste (`server.ts:5777`,
+`sendText(free, brief, true)` im generischen Zweig von `handleSelfSucceed`) traegt einen anderen
+Variablennamen und faellt durch jedes Literalmuster. **Genau dort geschahen alle vier gemessenen
+Nachfolge-Fehlschlaege** („composer still holds 98 chars after 3000ms", Notiz `8b7c18c9`), denn
+Supervisor und Program-MAIN haben den Readiness-Aufruf laengst — der generische Zweig hat zwischen
+`openSlot` und `sendText` weder `canDeliver` noch `waitForFoundingReadiness`. **Ich habe der Zeile
+`6f401842` deshalb einen korrigierten Brief angehaengt** (sie stand auf `pending`, kein Brief
+vorher). Der Brief nennt alle sechs Stellen mit Zeilennummern (Stand main 5881455, selbst
+nachpruefen), verlangt ausdruecklich eine Fixture, die den GENERISCHEN Pfad beweist, und grenzt den
+Harness-Override ab. **Die Zeile ist NICHT dispatcht** — ich wollte dem Owner den Start nicht
+vorwegnehmen.
+
+## 3. §3 DER VORGAENGERIN IST GESCHLOSSEN — das Land `24f9cfc` ist entlastet
+
+Der rote Post-Land-Audit ist als **`flake`** adjudiziert. Belegkette, aus dem lokalen Trail des
+Haupt-Checkouts (**363 isolated-Laeufe**, nicht die 26, mit denen vorher argumentiert wurde): die
+exakte Vierer-Signatur der busy-receiver-Familie fiel **4x VOR dem Land** auf Baeumen ohne den
+Lane-Code (`9db4b85` vom 16.08. auf main, `d63bb91`, `299ac65` auf main, `4d2dd39` vom 02.09.).
+Check 1 allein faellt lokal 15/363. Der Audit lief auf dem **Second-host** und war vollstaendig —
+3506 Trail-Zeilen; das „checks ran:25" ist ein Artefakt des aufbewahrten 4-KB-Tails, nicht „nur 25
+gemessen" (der Hinweis kam von Slot 16, er ist richtig und gehoert ins Regelbuch-Wissen).
+
+**Die Kontrollprobe auf `80cd901` habe ich ABGEBROCHEN, bevor sie lief** — sie stand noch hinter
+dem Suite-Mutex. Begruendung: bei ~1 % Basisrate entscheidet ein einzelner Lauf nichts, was 363
+Laeufe nicht schon sagen; der Abbruch gab dem Mutex 23 Minuten zurueck. Der Worktree
+`…/8d083b5c-…/scratchpad/ctrl` ist ein Fremd-Scratchpad und nicht meiner; ich habe ihn liegen
+gelassen.
+
+**`undo-land` war ohnehin tot** und die Handoff-Zeile „undo-land ist der Rueckweg" war falsch: main
+war seit dem Land um 8 Doc-Commits weitergezogen, und die Route verweigert dann permanent
+(`server.ts`, die Kontiguitaetspruefung in `pushUndo`/`killUndoStack`).
+
+## 4. DIE OFFENEN OWNER-FRAGEN, gesammelt — das ist der Kern deiner Uebergabe
+
+Ich habe sie ihm gestellt und KEINE Antwort auf die Betriebsfragen bekommen. Frag nach, rate nicht.
+
+**Betrieb (vier, von mir gestellt):**
+1. Bekommt die Fleet Shell-Zugang auf den Second-host, oder bleibt das sein Kanal? Ohne das ist dort
+   keine Session baubar (§5).
+2. `6f401842` dispatchen? Brief ist korrigiert und liegt bereit.
+3. Deploy? Der laufende Server ist **16 Commits** hinter HEAD (Stand beim Schreiben), darunter der
+   Fix fuer das verlorene Fast-Forward. Kein Audit laeuft.
+4. Das alte Private-repo-j-Program `2c073232` als abgeloest schliessen? Es ist `active` und MAIN-los.
+
+**Aus dem Ledger-Entwurf (drei):** Archivierung ueber den 100-Program-Deckel hinaus? · 200
+Arbeits-Sessions je Program mit gezaehltem Verlust, oder vollstaendig? · harness-interne Subagenten
+erst dann erfassen, wenn Fleet ihnen eine eigene beobachtete Identitaet geben kann?
+
+**Aus dem Nachfolge-Entwurf (drei, je mit Empfehlung):** nur `claude ↔ codex` freigeben
+(empfohlen) oder jedes Agentenpaar? · Zielmodell bei jedem Harness-Wechsel verpflichtend
+(empfohlen)? · `restart` soll Spawn-Felder laut ablehnen (empfohlen)?
+
+**Aus GLM, zwei Dinge OBERHALB der Schnittlinie, vor jeder Umsetzung zu klaeren:**
+- Ledger: das **Crash-Fenster der zwei Schreiber**. `dispatchTask` persistiert ueber debounced
+  `saveState()`, nicht `saveStateNow()`. Stirbt der Server dazwischen, gibt es keinen Writer, der
+  den Eintrag je schliesst, und das Deckel-Argument („hoechstens 16 offene") stimmt nicht mehr.
+- Nachfolge: der **Crash-Orphan** fuer den generischen und den Supervisor-Pfad. Nur Program-MAIN hat
+  einen persistenten Founding-Marker mit Boot-Rollback. Das neue Readiness-Warten VERGROESSERT
+  dieses Fenster.
+
+**Offen und nie beantwortet (aelter):** Attention `10d5063627a932848d1720f7` (Private-repo-j-Taste-Gate)
+wurde beim Retire von Slot 6 als „requester session ended" geschlossen — die Frage ist damit weg,
+nicht beantwortet. Und Slot 8 hat eine neue Attention `dddb2141` offen: das Task-Workbench-Program
+ist fertig bis auf ein ungeprueftes Leerzustands-Kriterium.
+
+## 5. SECOND-HOST — der Handoff-Befund meiner Vorgaengerin war FALSCH, hier ist der gemessene
+
+Ihre Fassung („das Geraet wird nie gefragt, beide Claims gelapst") stimmt nicht. **24 Post-Land-Audits
+liefen seit dem 29.08. auf dem Second-host, alle 24 haben ein `reportedAt`**, auch der auf `24f9cfc`
+(23 min). Die Verdrahtung funktioniert. Das echte Problem ist die Beurteilbarkeit:
+
+| Laeufer seit 29.08. | gemessen | rot |
+|---|---|---|
+| Second-host | 15 | 13 (87 %) |
+| lokal | 42 | 18 (43 %) |
+
+**Eine claude-Session AUF dem Second-host ist heute zweifach verriegelt** (von Slot 5 gemessen, von
+mir beide Haelften nachgeprueft):
+- **Kein Zugang von hier.** `ssh second-host` → `Permission denied (publickey,password)`. Die
+  Faehigkeitsliste des Geraets (`[bun,tmux,git,zsh]`) ist eine Selbstauskunft aus seiner Config
+  (`helper-daemon/daemon.ts`), keine Probe — dass dort kein `claude` steht, beweist nichts.
+- **Die Job-Schiene kann strukturell keinen Agenten starten.** `server/types.ts#helperCmdCheck`
+  kennt genau sechs erlaubte Kommandos (`bun run build`, `bun test`, `bun run verify`,
+  `./e2e-isolated.sh`, `./e2e-security.sh`, `bun e2e/pins.ts`) und lehnt die Namen
+  `claude|codex|pi` UNBEDINGT ab, vor der Allowlist. Absicht, keine Luecke.
+
+Die Canary vom 31.08. lief deshalb ueber `git bundle` + `scp`, also ueber den Owner-Zugang.
+**Der erste Schnitt ist ein Owner-Akt, kein Code.** Danach empfiehlt die Phase-0-Analyse
+(`docs/attic/dual-host-session-runtime-phase0-2026-08-30.md`) Option A: eine zweite eigenstaendige
+Fleet-Instanz auf dem Second-host plus Client-Link. Warnung von Slot 5, die ich weitergebe: diese
+Session laeuft dann unter einem ZWEITEN Board, nicht in der heutigen Slot-Liste — wer beides
+zusammenzwingt, kauft die Vertrauenskante, von der die Analyse abraet.
+
+## 6. PRIVATE-REPO-J — Slot 1 und 7 sind geschlossen, die Mehrdeutigkeit ist NOCH OFFEN
+
+- **Erledigt:** Slot 1 und Slot 7 gekillt, Zeilen `54d3989c` und `c1fab27f` auf `done`. Achtung fuer
+  den naechsten Fall: **der Kill setzt die Task-Zeile auf `pending` zurueck**, also wieder
+  dispatchbar — das `done` muss man einzeln nachziehen (`POST /api/tasks/:id/done`).
+- **NICHT ENTSCHIEDEN, weil der Owner nicht geantwortet hat:** „bieberburg auf slot3" hat zwei
+  Lesarten — (A) Private-repo-j lebt kuenftig auf Slot 3, wo heute die Game-Maker-Workflow-v2-MAIN von
+  `b2aa5b45` sitzt, oder (B) Slot 3 uebernimmt Private-repo-j zusaetzlich. **Rate das nicht.**
+- Program `2c073232` ist `active` und MAIN-los (Slot 6 retirete 06:46 ohne Nachfolge-Eintrag).
+
+## 7. WAS ICH UEBER DEN BETRIEB GELERNT HABE — kostet dich sonst je einen Fehlversuch
+
+- **Eine `pi-zai`-Lane (GLM) kann man NICHT abonnieren.** `POST /api/self/watch` antwortet woertlich:
+  „harness pi-zai is not automatable — its slot never reads as alive to the done-looking predicate".
+  Ersatz: ein Hintergrund-Wächter auf den echten Commit (`git show <branch>:<datei>` in einer
+  `until`-Schleife). Hat sofort funktioniert.
+- **Eine Lane, die `/api/self/gate` VOR ihrem ersten Commit fragt, bekommt die volle siebenstufige
+  Kette** — `verify-proportion.ts` klassifiziert den DIFF, und ein leerer Diff gilt per Vertrag als
+  gemischt. Reihenfolge im Brief mitgeben: **erst committen, dann das Gate fragen.** Slot 7 hat so
+  eine volle Kette gefahren, die sie nicht gebraucht haette, und dabei den Mutex gehalten.
+- **`POST /api/slots/:id/merge` antwortet `{"status":"blocked"}`, solange die Session arbeitet.**
+  Kein Fehler, einfach spaeter nochmal.
+- Der Land-Takt war heute problemlos: drei Docs-Lands hintereinander, alle mit
+  `verify.proportional`-Kurzkette, kein Wartekonflikt.
+
+## 8. EHRLICHKEITEN
+
+- **Ich habe Slot 16 eine falsche Zahl geschickt** („~40 Minuten Zustellverzoegerung") und sie
+  wenige Minuten spaeter korrigiert. Der Fehler: ich schrieb die Uhrzeit in die Prosa, BEVOR ich sie
+  nachgeschlagen hatte. Gemessen waren es 2 Minuten 27. Die Regel dagegen steht im Regelbuch, ich
+  habe sie gebrochen.
+- **Die drei Entwuerfe habe ich nicht Zeile fuer Zeile gegengeprueft.** Ich habe die Struktur, den
+  Prioritaetsfund und die Urteile gelesen und den Sechs-Stellen-Fund als einzigen selbst
+  nachvollzogen (zwei unabhaengige Zaehlungen stimmten ueberein). GLM nennt in §3 ausdruecklich, was
+  ES nicht geprueft hat — lies das, bevor du auf ein Detail baust.
+- **Die Adjudikation von `24f9cfc` ruht auf meiner eigenen Trail-Auswertung**, nicht auf einer
+  Kontrollprobe. Das ist starke Evidenz, aber kein Experiment.
+- Der Owner hat diese Session per `/model` auf Opus 5 gestellt. Das weicht von der Modellpolitik ab
+  (Fable fuer Controller); es war sein ausdruecklicher Akt, ich habe ihn nicht diskutiert.
+
+---
 # HANDOFF — Program-MAIN „Fleet Task Workbench" (Program `b9c1e0d9`, Slot 8), 2026-09-03 (08:5x), ctx GEMESSEN 27,4 %
 
 Zustand ableiten, nicht aus dieser Prosa lesen: `GET /api/self/program-execution`.

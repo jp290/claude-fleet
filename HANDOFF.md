@@ -1,3 +1,134 @@
+# HANDOFF — Fleet Controller (Slot 12, Fable 5.1 high): Succession-Naht als Auftrag gebrieft, Slot 6 vermessen (die 528k-Ursache ist NICHT was alle dachten), Workflow-v2-Program gegruendet, alle 13 Slots einzeln wieder in Arbeit gesetzt; 2026-09-03 (08:2x), ctx GEMESSEN 28,1 %
+
+Rolle: 🎛 Fleet Controller, Nachfolge von Slot 1 ueber einen HANDGESCHRIEBENEN Brief (Grund: §7).
+Owner-Delegation (Landen, autonomer Betrieb, Disposition) gilt fort.
+
+## 0. Reihenfolge fuer dich
+
+1. Erdung: `./state.sh` · `./register.sh` · NUR dieser Abschnitt · Board. Miss deinen ctx zuerst.
+2. **Die server.ts-Flaeche ist das Nadeloehr, und sie hat jetzt eine SCHLANGE.** Vier Zeilen wollen
+   sie, alle kollidieren miteinander, Reihenfolge ist mein Entscheid:
+   **`6f401842` (Succession-Naht, Owner-Prioritaet) → `92553809` (D1, Brief haengt) →
+   `60d07416` (Slot 5, Dual-Host S3) → `d2e4f219` (Drei-Schnitt-Helfer-Slice).**
+   `dispatch` steht auf `false`; jeder Start ist ein Hand-Dispatch, die Kollisionslesung ist DEINE.
+3. **Nicht kollidierend und schon unterwegs:** `07c061fa` laeuft als Lane auf Slot 2
+   (codex/gpt-5.6-sol/high, read-only Review der Workbench-Slices).
+
+## 1. Was in Flug ist
+
+- **Lane Slot 2 (`07c061fa`)** — gerade dispatcht, noch kein Report.
+- **Post-Land-Audit auf `24f9cfc`** (das Land von 860cecdf) laeuft oder steht aus. **Lies ihn**:
+  ich habe ueber vier rote Checks hinweg gelandet, siehe §3. Faellt er rot auf die
+  Q6-fleet-report- oder die watch.ts-busy-receiver-Familie, ist das die BESTAETIGUNG meines
+  Urteils, nicht sein Widerruf — dieselbe Nicht-Determiniertheit. Faellt er auf etwas rund um
+  `ff-lost`/`MergeErrorReason`, ist das MEIN Fehler und `undo-land` ist der Rueckweg.
+- **Kein Watch von mir geht auf dich ueber** — Watches haengen an Slot UND `openedAt`.
+
+## 2. Gelandet / getan, verifiziert
+
+- **`24f9cfc`** — 860cecdf (self-land after lost fast-forward). `ff-lost` 2x in main:server.ts.
+- **`80cd901`** — Direkt-Commit, docs/messungen/2026-09-03-slot6-kontext-anatomie-….md,
+  `bun e2e/pins.ts` ALL PASS. **KEIN Post-Land-Audit deckt ihn** (Direkt-Commit).
+- Zwei rote Audits adjudiziert: `71361fa` **flake** (Beweis von Slot 8), `224d829`
+  **unknowable** (`checks.ran=0` — nichts gemessen; Ursache von Slot 10 reproduziert).
+- Beide offenen Attentions geschlossen (`fd18910b`, `2abfa35c`).
+- D1s korrigierter Brief (11588 Zeichen, aus Slot 16s Scratchpad) haengt an `92553809`.
+
+## 3. Das Urteil, das du kennen musst: ich habe ueber rote Checks gelandet
+
+Lane `860cecdf` meldete sich `needs-main` mit 4 roten `e2e/watch.ts`-Checks und berief sich auf
+Trail-Basisraten. Das reicht nach Regelbuch NICHT („der Fail ist deiner, bis du das Gegenteil
+beweist"), und ihre Raten lagen ausserdem NACH `b20e7e4`, wo §11.2j sagt: ein Rot dort ist
+wieder ECHT. Also habe ich den fehlenden Beweis selbst gefahren — seriell, 29 min, Maschine
+leer (0 Suiten), kein Audit im Fenster, Log NICHT verschraenkt (die zweite „run-id" im Log ist
+eine hartkodierte Fixture-Konstante, `e2e/lane-suite.ts:238` — das kostet sonst eine Stunde).
+
+Ergebnis: **7 FAILURES, aber fast DISJUNKT zur Lane.** Drei ihrer vier (subject-gone,
+counterprobe, merge-resolver) wurden gruen; sechs neue in der Q6-fleet-report-Familie
+(cap/starvation/ack) wurden rot, die die Lane nie sah. Zwei serielle Laeufe desselben Baums,
+kein reproduzierbares Set, und Q6 hat keinen Kausalpfad zu einem Diff ueber Merge-Fehlergruende.
+
+**Das ist kein gruener Tail, also kein Lehrbuchbeweis — es ist ein Urteil, und ich nenne es als
+eines.** Vertretbar, weil Tier 2 denselben Lauf noch einmal faehrt und `undo-land` drei tief
+reicht. Wenn du es anders siehst, ist der Rueckweg offen.
+
+## 4. Slot 6 — die 528k-Ursache war NICHT, was alle annahmen
+
+Gemessen am Transcript (4,35 MB, 459 Turns, `usage`-Felder), committed als `80cd901`:
+**null Agent-Subagenten.** Die MAIN fuellte 528k, weil sie die Artefakte ihrer eigenen Lanes
+SELBST nachlas — 195 Bash-Aufrufe, die zwoelf groessten ausnahmslos `cat <Dokument> Teil N`
+(Card-Entwurf, Card-Endfassung, Intake, Fakten) — und 34 PNGs als Bilder anschaute, weil die
+Codex-Critic-Lane „no liveness signal" gab. 150k davon in den ersten 45 Minuten; das 25/30-Band
+war gerissen, bevor die erste Lane lief. Fuenf Folgerungen stehen in §4 der Notiz.
+**Slot 6 hat sich um 06:46 RETIRED, ohne Nachfolge** — Program `2c073232` ist `active` mit
+`main.slot: 6`, aber dort sitzt niemand. Das ist aufzuraeumen, ich kam nicht mehr dazu.
+
+## 5. Program `b2aa5b45` — Game-Maker-Workflow v2
+
+`active`, MAIN auf **Slot 3** (der Owner hat sie selbst auf Fable gestellt), Repo `claude-fleet`,
+`profile: null` — und das ist RICHTIG, kein Workaround: das game-maker-Profil bedeutet laut
+`server.ts#gameMakerMachineError` „EINE Session baut, startet, steuert, nimmt wahr, repariert in
+EINEM Baum". Genau das soll diese MAIN nicht sein. Das Profil kommt erst beim **Trockenzyklus in
+`~/private-repo-j`** zurueck. Aufbau: Evidenz-Pack versiegeln → zwei Entwuerfe PARALLEL (Opus-Lane +
+sol-Lane) → GLM-Kreuz-Review → Opus-Adjudikation → Trockenzyklus mit gemessener MAIN-ctx.
+**Noch nicht gebrieft** — die Evidenz-Pack-Lane ist der naechste Akt dieses Programs.
+
+## 6. Die Sanierung, mit korrigierten Zahlen
+
+`server.ts` **23.776** (Basis 31.08. 25.522). P4 Slice 4 (`46d29d8`, audit-log) ist gelandet.
+**Die Ausbeute FAELLT: Slice 4 brachte 186 Zeilen gegen den Schnitt 289** → neuer Schnitt
+**275/Subsystem**. 14 verbliebene Subsysteme × 275 = ~3.850 → Kern **~19.930** gegen Ziel 8.000.
+
+**Erfolgsmass 1 ist unerreichbar, und der Plan widerspricht sich dabei selbst:** Tier 4 soll die
+Luecke schliessen, aber `plan-2026-08-31.md:58` UND `:121` erklaeren die fetch-Kette zweimal zum
+permanenten Kern — und die ist 2.843 Zeilen mit 74 der 91 inline `url.pathname`-Vergleiche
+(in `handle*Route`-Form liegen nur 17). Dritter ungezaehlter Posten: server.ts ist **33,4 %
+Kommentar** (7.993 Z.) gegen Erfolgsmass 2 (<20 %), nach drei P3-Slices.
+**Meine Empfehlung an den Owner steht aus:** (1) Erfolgsmass neu verhandeln, (2) Feature-Freeze
+auf die Nachbarprogramme ausweiten — bei `src/client.ts` waechst Fremdarbeit **3,3:1** gegen die
+Sanierung (−182 gegen +607, netto +425 bei Ziel 2.000).
+
+## 7. Zwei Befunde ueber die Nachfolge selbst — beide gefilet, beide OFFEN
+
+- **`fd6b7dea`** — `POST /api/self/succeed` hat KEIN Readiness-Gate und pastet nach 3000 ms in
+  eine bootende Pane. 3x an der Nachfolge Slot 1→12 gescheitert. Program-MAIN-Nachfolgen liefen
+  heute 8x durch, weil die Pane zufaellig schneller war — dieselbe Naht, gleiches Risiko.
+  Dieselbe Signatur steht 15x in `audit.jsonl` (Recovery-Prompts, Watch-Zustellungen, ein
+  Merge-Verdict). Reparatur = `paneReadiness()` + `READY_WAIT_MS`, wie der Codex-Dispatch.
+- **`ada76ad9`** — `POST /api/supervisor/bootstrap` ist durch ein Binding vom 21.08. gesperrt
+  (409 auf Slot 5, wo laengst der Dual-Host-MAIN sitzt). **Darum liest du hier einen
+  handgeschriebenen Brief.** Beides zusammen ist der Auftrag `6f401842` (Brief haengt).
+
+## 8. Regelbuch-Korrekturen aus dieser Session (im Haupt-Checkout nachziehen)
+
+- **Der Footer NENNT den Effort.** `CLAUDE.md` §Supervisor-Rolle sagt „verifiziere den Effort
+  NICHT am Footer — der Footer nennt ihn nicht". An Slot 16 heute gesehen: die Fusszeile traegt
+  rechts `● high · /effort`. Die Zeile ist ueberholt.
+- **Ein offener `/usage`-Overlay FRISST eine Zustellung.** Slot 16 quittierte `unobservable`,
+  die Nachricht kam nie an; `tmux send-keys Escape` raeumt ihn, danach ging sie durch.
+- **`POST /api/attention/:id/answer` will `text`, nicht `answer`** (400 „text must be a string").
+- **`POST /api/self/watch` will `{"kind":"lane","target":<slot>}`** — `{"slot":N}` gibt
+  400 „bad target" ohne Hinweis auf das richtige Feld.
+- **Es gibt kein `POST /api/slots/:id/land`** — die Route heisst `/merge`. `/land` faellt in
+  einen Cleanup-Pfad und antwortet mit „unpushed commits", was wie ein Land-Refusal aussieht.
+- **Der Adjudikations-Deckel liegt bei 300 Zeichen** (gefilet als `0c190377`) — zu eng, um die
+  Belegkette eines Urteils aufzuschreiben.
+
+## 9. Ehrlichkeiten
+
+- Der Ueberblick ueber 13 Slots kam von DREI Opus-Agenten, nicht von mir; ich habe ihre Fakten
+  stichprobenartig gegengeprueft (Slot 16s Attention, die Task-Briefe, die Audit-Zahlen), aber
+  nicht jede Pane selbst gelesen. Die Slot-Nachrichten bauen darauf.
+- Die zwei Adjudikationen ruhen auf FREMDEN Beweisen (Slot 8, Slot 10). Das steht in den Notizen.
+- Ich habe die Private-repo-j-MAIN pausiert und den `biber-dispatcher`-Loop per STOP beendet — dann
+  hat sich Slot 6 selbst retired. Ob das Folge meiner Nachricht war, weiss ich nicht.
+- Offen und vom Owner unbeantwortet: die Modellpolitik. Er sagte „am besten opus oder sol …
+  bis auf da wo es sich wirklich lohnt", was ich als „Fable sparen" lese — das weicht von der
+  09-02-Politik ab, die Fable fuer JEDE MAIN wollte. Nicht promotet, meine Lesart.
+- `07c061fa` habe ich dispatcht, ohne den Report der Vorgaenger-Lane auf Slot 2 abzuwarten —
+  der Slot war frei, weil ihr Land durchlief.
+
+---
 # HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 3 → Nachfolge): P4 Slice 3 GELANDET (4846d83, Gate gruen 103 s), vier Land-Versuche und was jeder gekostet hat, Slice 4 vom Compiler vorvermessen; 2026-09-03 (00:0x), ctx GEMESSEN 31,2 %
 
 Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,

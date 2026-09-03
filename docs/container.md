@@ -269,7 +269,7 @@ semantics and has **not** been executed — this run is where it would first be 
 
 ## Trap 1 — binding 0.0.0.0 is half the move
 
-`ALLOWED_HOSTS` (`server.ts#ALLOWED_HOSTS`) admits exactly `$FLEET_HOST:$FLEET_PORT`,
+`ALLOWED_HOSTS` (`server/auth.ts#ALLOWED_HOSTS`) admits exactly `$FLEET_HOST:$FLEET_PORT`,
 `localhost:$FLEET_PORT` and `127.0.0.1:$FLEET_PORT`. With `FLEET_HOST=0.0.0.0` that set holds
 nothing a browser will ever send, so the published address is refused by the DNS-rebinding
 guard. Measured: `-p 18790:8790` answers **403 on every route, dashboard included** — which

@@ -3486,14 +3486,16 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   // sources in the same order" rather than by comparing bodies, which would break on a reformat.
   const chanBody = server.slice(server.indexOf("function tokenChannel("),
     server.indexOf("\n}", server.indexOf("function tokenChannel(")));
-  const fromBody = server.slice(server.indexOf("function tokenFrom("),
-    server.indexOf("\n}", server.indexOf("function tokenFrom(")));
+  // tokenFrom moved to server/auth.ts in the P4 auth slice, so its body is cut with span() —
+  // a raw slice would run from that module's anchor to the first `\n}` in server.ts.
+  const fromSpan = serverU.span("function tokenFrom(", "\n}");
+  const fromBody = fromSpan?.text ?? "";
   const tokenOrder = (b: string): string[] =>
     [...b.matchAll(/authorization|fleet=|searchParams\.get\("token"\)/g)].map((m) => m[0]);
   pin(`${RULE_LAND} — tokenChannel reads the SAME three token sources in the SAME order tokenFrom accepts them`,
-    tokenOrder(chanBody).length === 3
+    fromSpan !== null && tokenOrder(chanBody).length === 3
     && JSON.stringify(tokenOrder(chanBody)) === JSON.stringify(tokenOrder(fromBody)),
-    JSON.stringify({ channel: tokenOrder(chanBody), from: tokenOrder(fromBody) }));
+    JSON.stringify({ channel: tokenOrder(chanBody), from: tokenOrder(fromBody), fromIn: fromSpan?.file ?? null }));
   // …and the CONFIRM step has exactly one implementation too, with two callers. The `guarded` rung
   // widens WHO may take the existing confirm, and the whole argument for allowing it rests on there
   // being no second land path to audit — so a second `markLandIntent` outside the two known writers

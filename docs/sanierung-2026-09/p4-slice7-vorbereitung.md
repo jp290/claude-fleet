@@ -175,3 +175,46 @@ Diese Messung nennt den zweiten Grund: **die verbleibenden Bereiche sind keine B
 Slices lang war „das nächste Blatt" verfügbar; ab hier ist es das nicht mehr, und jeder weitere
 Schnitt kostet entweder eine Signaturänderung oder einen vorgelagerten Slice. Das gehört in den
 Owner-Entscheid, der zu Erfolgsmaß 1 ohnehin aussteht.
+
+## 7. ENTSCHIEDEN 2026-09-03 (Sanierungs-MAIN Slot 4), vermessen am Baum `f606e75` (server.ts 23.966 Z.): Form (2), und der Entscheid ist MEINER, nicht der des Owners
+
+Meine Vorgängerin hat die drei Formen aus §6 als **Owner-Tor** gestellt (Attention `d3b14a4d`,
+Status heute `open`, Antwort `null`, Requester-Slot weg — eine Antwort darauf bekäme 409 und
+würde die Zeile refusen; das ist B-12, zum dritten Mal). **Ich stelle sie nicht neu.** Grund:
+die Wahl zwischen (1)/(2)/(3) ist eine ZERLEGUNG, und Zerlegung ist ausdrücklich die Arbeit der
+Program-MAIN. Form (2) ist außerdem die einzige der drei, die *keine* Owner-Erlaubnis braucht:
+sie ist verhaltenserhaltend, ein reiner Move, ändert keine Signatur, bricht mit keinem Muster
+der sechs bisherigen Slices, wächst nicht über den bestätigten Scope hinaus und ist einzeln
+revertierbar. (1) wäre eine Richtungsänderung (Signaturen), (3) ein halber Schnitt.
+
+**Was WIRKLICH offen und Owner-Sache bleibt** — und getrennt davon gestellt gehört: die
+Erreichbarkeit von **Erfolgsmaß 1** (Kern ≤ ~8.000 Z.), für die §6 den zweiten unabhängigen
+Grund liefert. Das ist eine Änderung am bestätigten Erfolgsmaß, nicht an der Schnittform.
+
+### Die Messung, an der ich §6 vor der Freigabe nachgeprüft habe
+
+`graphify query` liefert für diesen Bereich **zwei Fehlkanten**, die ein Brief nicht erben darf:
+`retainRunOutput --calls--> trim()` (server.ts:10875) und `descendantPids --calls--> trim()`
+(:11124) sind beide `String.prototype.trim`, nicht der lokale Helfer `trim` bei `server.ts#trim`;
+`descendantPids --references--> Task` ist ebenfalls unbelegt. Am Code gelesen (nicht geraten):
+
+| Symbol | eigene Abhängigkeit | außerhalb server.ts referenziert |
+| --- | --- | --- |
+| `retainRunOutput` | `retainSection`, `byteLen`, `STDERR_MARK` | nein (nur Prosa) |
+| `retainSection` | `byteLen`, `tailBytes`, `FAIL_LINE`, `ELIDE_COST` | nein |
+| `tailBytes` / `byteLen` | `utf8`, `utf8Dec` (TextEncoder/Decoder) | nein |
+| `descendantPids` | `KILL_TREE_MAX_DEPTH`, `Bun.spawn`, `pgrep` | nein |
+| `killProcessTree` | `process.kill` | nein |
+
+**Damit ist die Einheit ein echtes Blatt: node/bun und sonst nichts.** Kein `e2e/pins.ts`-Pin
+nennt eines dieser Symbole (geprüft), also gibt es hier nichts umzuhängen.
+
+**Vier Rück-Importe in den Kern** (die erlaubte Richtung): `retainRunOutput` (7 Aufrufstellen —
+`runVerify`, `runPostLandAudit`, 4× Helfer-Report-Tails, 2× Deploy), `byteLen` (:11241 in
+`runVerify`), `descendantPids` (2), `killProcessTree` (4). `VERIFY_OUT_CAP`,
+`POSTLAND_AUDIT_OUT_CAP`, `HELPER_TAIL_CAP` und `DEPLOY_OUT_CAP` bleiben im Kern — es sind
+Budgets ihrer Aufrufer, keine Eigenschaft der Retention.
+
+**Die eine Falle des Schnitts:** der Modulname `utf8` (`const utf8 = new TextEncoder()`) kollidiert
+namentlich mit dem String-Literal `"utf8"`, das in `server.ts` ~15× als Encoding-Argument steht.
+Ein `sed`-artiger Move fasst die Literale an. Der Move ist deshalb per Hand-Schnitt zu fahren.

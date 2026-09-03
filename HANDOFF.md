@@ -1,3 +1,143 @@
+# HANDOFF — Kontext-Pack-Netz (Slot 14 „openSource" → Nachfolge): Stand-Doc steht, Schritt 1 auf Branch `pack-source-hash` (drei Commits, dritter korrigiert einen eigenen Kostenfehler)
+
+Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`. Hier steht nur,
+was git und die Sensoren NICHT tragen.
+
+## 0. Der Owner-Auftrag für dich, wörtlich
+
+*„Am Ende machen wir dann eine succession in eine neue Session die die idee weiter mit mir zusammen
+durchdenkt und die implementierung soweit plant und ausarbeitet."* und *„Lass uns dies jetzt alles
+eins nach dem anderen aber auch mit der benötigen Sorgfalt, angehen."*
+
+Du bist also eine DENK- und PLANUNGS-Session mit dem Owner, keine Bau-Session. Die Idee heißt
+Kontext-Pack-Netz; der lesbare Stand ist `docs/ideen/2026-09-03-kontextpack-netz-stand.md` (lies
+§1 und §8 zuerst, dann §2 und §5; die drei Fassungen davor nur bei Bedarf als Herleitung). Der
+Owner denkt in Schritten und will je Schritt einen Beweis; die Tabelle in §8 des Stand-Docs ist die
+Reihenfolge, die drei Owner-Entscheide davor sind die ersten Fragen an ihn.
+
+## 1. Das Erste, was du tust
+
+1. **Suite-Ergebnis lesen** (§2 unten). Liegt es nicht vor: das Log ist
+   `/private/tmp/claude-501/-Users-owner-claude-fleet/f8f1d2d3-cb47-4eb7-aeb1-fd7036d10beb/scratchpad/e2e-isolated-pack-hash.log`,
+   Urteil am Tail („ALL PASS" oder FAIL-Zeilen), nie an einer erinnerten Zahl.
+2. **Ist der Branch gelandet?** `git branch --contains 2b4abd6 main` (leer = nicht gelandet). Der
+   🎛 Fleet Controller (Slot 13, Nachfolger des S12, der mir den server.ts-Schnitt auferlegt hat) hat
+   server.ts als knappste Fläche; ihm ist der Branch mit einer Nachricht gemeldet (§3). **Du landest
+   nicht selbst**, es sei denn, der Controller gibt es dir. Ein ff-Merge des Branches ist ein
+   main-direkter Zug: kein Land-Ledger, kein Post-Land-Audit. Der Suite-Lauf auf `2b4abd6` IST die
+   Vollverifikation, die das Regelbuch dafür verlangt, und muss dann im Commit-Body/Handoff stehen.
+3. **Nach dem Land:** Deploy über Verb 2 (`POST /api/deploy`), `bundleStale` prüfen, dann
+   `bun briefstats.ts` im Haupt-Checkout. Die ersten Zeilen `@<hash>` statt `@unversioned` in der
+   Tabelle „pack @ source version" sind der Beweis für Schritt 1. Vorher gibt es dort nur
+   `@unversioned` (301 gejointe Lanes am 2026-09-03).
+4. **Dann mit dem Owner Schritt 2 durchdenken** (Stand-Doc §2 und §8): `avoidWhen` mit
+   Vorfall-Referenz, Act-seitiges `requires[]`, das vermittelte Wissen als Daten. Erst Kriterium
+   und Beweis je Teil, dann eine Lane briefen. Bauen tut eine Lane (Opus 5, high), nicht du.
+
+## 2. Gelandet, gebaut, verifiziert
+
+**Auf main, direkt committet (docs-only, `bun e2e/pins.ts` ALL PASS, kein Post-Land-Audit deckt
+sie):** `fcaa4a4` → `f1cc8c5` → `eac1a0f` (drei Fassungen der Analyse, jede eine korrigierte
+Fehlfassung der vorigen, in §0 der jeweiligen benannt), `3f561b5` (der Stand).
+
+**Auf Branch `pack-source-hash` (Basis `24f9cfc`), NICHT gelandet:**
+
+- `6535f71` reine Hälfte: `context-manifest.ts#observedSourceHash` + `#stampObservedSourceHashes`,
+  `context-packs.ts#CONTEXT_SEED_SOURCE_PATHS`, `briefstats.ts` Pack × Version-Tabelle; 5 + 4 neue
+  Checks. Gate-tsc-Liste exit 0, pins ALL PASS, `bun e2e/context-plan.ts` ALL PASS, briefstats-Modul
+  0 FAILURES, `bun run build` exit 0.
+- `2b4abd6` server.ts-Hälfte: vier Stellen, plus zwei Pins in `e2e/programs.ts`.
+- `b79d25d` **Korrektur eines eigenen Kostenfehlers, gefunden vor dem Landen.** Die Byte-Fassung
+  ließ bei JEDER Auslieferung die sechs Seed-Quellen lesen: 1 794 908 Bytes (davon `server.ts`
+  1 574 279) und ~108 ms `git show` je Lane-Dispatch und je Program-MAIN-Gründung, gemessen am
+  HEAD. Ein `git ls-tree -r <head>` ohne `--name-only` kostet ~24 ms, läuft an der Naht ohnehin und
+  trägt zu jedem Pfad den Objektnamen. Die Version ist jetzt sha256 über `path\0<blob sha>\0`;
+  kein Byte wird mehr gelesen, um eine Version zu bestimmen. Dadurch wurde der Diff KLEINER:
+  `planRepoContext` ist wieder wörtlich main, `CONTEXT_SEED_SOURCE_PATHS` ist gelöscht, gestempelt
+  wird der ganze Plan an einer Stelle je Merge-Naht (Seeds und Repo-Packs in EINEM Hash-Raum).
+  Verbleibende Zusatzkosten gegen main: ein `ls-tree` (~24 ms) im Fall ohne Manifest.
+
+**Suite-Läufe.** Auf `2b4abd6` (Byte-Fassung): **3523 PASS / 2 FAIL**, ~11 min. Auf `b79d25d`
+(Blob-Sha-Fassung): **läuft**, Log
+`…/scratchpad/e2e-isolated-blobsha.log`. Steht hier noch „läuft", dann §1 Punkt 1.
+
+**Die zwei FAILs sind NICHT adjudiziert.** Beide liegen außerhalb der angefassten Fläche, beide
+sind Timing-Formen, und ich sage ausdrücklich, was das Beweismaterial NICHT kann:
+
+1. `restart keeps the busy pending event with the same id and no invented attempt` — der Event kam
+   `status:"delivered", attempts:1` statt busy-pending zurück, bei `receiverIdleSec: 2`. Die
+   Fixture verlangt einen BESCHÄFTIGTEN Empfänger, kontrolliert das aber nicht: die Form der
+   Watch-Zustellungs-Familie (`docs/verify-tiering.md` §11.2j und ihre Nachbarn).
+2. `⏸ a re-run is refused while the resolution is still rebased onto main (guard unchanged)` — die
+   Ablehnung kam, aber mit dem falschen Grund: wörtlich „the session is actively working right now",
+   also das Idle-Gate gegen die eigenen Sonden der Suite (§11.2e beschreibt genau diesen Wortlaut
+   für die 💾-Route; hier trifft er den Re-Run-Guard).
+
+**Der saubere Beweis nach `docs/verify-tiering.md` §11.7 wäre ein erneuter Lauf auf DEMSELBEN Baum
+`2b4abd6`. Den habe ich nicht gefahren** — ich habe stattdessen den Kostenfehler behoben und den
+neuen Baum gefahren. Konsequenz, ehrlich: verschwinden die zwei auf `b79d25d`, trennt das NICHT
+zwischen „Flake" und „meine ~108 ms weniger haben das Timing verschoben". Kommen sie identisch
+wieder, sind sie von der Pack-Fläche unabhängig. Wer sie wirklich adjudizieren will, fährt
+`2b4abd6` seriell erneut (`git worktree add … 2b4abd6`), nichts anderes daneben.
+
+Eine weitere eigene Fehlfassung, festgehalten im Body von `6535f71`: das Test-Fixture
+„declared-literal" fiel am Validator (SHA-256 + `observedAt` sind ein Pflichtpaar), nicht am Code.
+
+**Mutationsprobe der neuen Sonden** (sie können fallen, sind nicht tautologisch): Framing aus
+`observedSourceHash` entfernt → 4 FAILs in `e2e/context-plan.ts`, zurückgesetzt → ALL PASS.
+
+## 3. Was git NICHT trägt
+
+- **Der Worktree** liegt im Session-Scratchpad
+  (`…/f8f1d2d3-cb47-4eb7-aeb1-fd7036d10beb/scratchpad/pack-hash`). Verschwindet das Verzeichnis,
+  bleibt der Branch im Repo; `git worktree prune` räumt den Eintrag. Nichts Uncommittetes liegt dort.
+- **Dem Controller (Slot 13) ist EINE Nachricht geschickt** (2026-09-03): Branch, die vier
+  server.ts-Stellen, Suite läuft. Sie beschreibt den Stand von `2b4abd6`, also die Fassung VOR der
+  Kostenkorrektur; die vier Stellen sind dieselben geblieben, `repoManifestContextPlan` liefert
+  jetzt aber `{repoPlan, blobShas}` statt `sourceBytes`. **Das ist die eine Korrektur, die du ihm
+  schuldest** — zusammen mit dem Suite-Ergebnis, in EINER Nachricht. Jede Nachricht kostet seinen
+  vollen Kontext.
+- **Rulebook-Nachtrag, den jemand von Hand in `CLAUDE.md` (untracked, Generat aus `rulebook/`)
+  ziehen muss, sobald gelandet und deployt:** unter „Wissenspflege" eine Zeile, dass ein Receipt
+  seit diesem Land die Quellversion jeder Auswahl trägt (`sourceHash`, beobachtet, nie deklariert)
+  und `bun briefstats.ts` die Tabelle „pack @ source version" druckt. Ich habe `CLAUDE.md` NICHT
+  angefasst; die Sanierungs-MAIN (Slot 9) hält dort eine eigene untracked Änderung (14. Flake-
+  Familie), also erst deren Stand lesen, dann `rulebook/` ändern und rendern.
+- **MEIN FEHLER, und die Regel daraus: `HANDOFF.md` ist ein STAPEL, kein Dokument.** Jede Session
+  stellt ihren Abschnitt VORAN, der Korpus darunter (4224 Zeilen von anderen Sessions) bleibt
+  stehen. Ich habe die Datei mit dem `Write`-Werkzeug geschrieben, statt voranzustellen, und damit
+  im Arbeitsbaum 4172 Zeilen fremder Übergaben gelöscht. Eine andere Session hat diesen Arbeitsbaum
+  dann mitcommittet (`48d3353`, −4172/+87) und die Folgen in zwei Commits wieder eingesammelt
+  (`eb89431` +4076, `4a412e6` +150). Wiederhergestellt und bewiesen: außerhalb meines eigenen
+  Abschnitts ist die Datei jetzt byteidentisch zu HEAD (Zeilenvergleich, 4224 = 4224). **Regel für
+  dich: `HANDOFF.md` nur voranstellen, nie ganz schreiben, und vorher lesen.** Sie ist außerdem von
+  MEHREREN MAIN-Sessions gleichzeitig in Benutzung — ein Full-File-Werkzeug darauf ist immer falsch.
+- **Eine Fuge fürs Regal** (`~/.claude/knowledge/stacks/fugen.md`, nicht in diesem Repo): git ×
+  Inhalts-Hashing — wer eine Version über gelesene Bytes bildet, bezahlt die Bytes und bekommt sie
+  obendrein durch einen trimmenden Leser verfälscht, obwohl `ls-tree` die Objektnamen in einem Zug
+  liefert. Probe: jede Stelle, die `git show` liest, um daraus einen Hash zu bilden. Habe ich NICHT
+  eingetragen (Datei außerhalb dieses Repos, geteilte Realität); Beleg ist der Body von `b79d25d`.
+- **Kontextstand dieser Session beim Schreiben: 33,4 % (gemessen, `ctx.pct` am Slot 14).** Über dem
+  30-%-Band; der Owner hat die Übergabe ausdrücklich angeordnet.
+
+## 4. Die drei Owner-Entscheide, die du zuerst stellst (Stand-Doc §8)
+
+1. Bleibt das Pack ein Zeiger-Objekt, oder trägt es das vermittelte Wissen als Daten (Claim, Scope,
+   Sonde)? Empfehlung: Zeiger für Quellen PLUS ein `conveys`-Block, weil nur der über Fleets hinweg
+   lesbar ist.
+2. „Unbedingt" ans Pack oder an den Act? Empfehlung: an den Act (`requires[]`).
+3. Welche Pools zuerst? Empfehlung: Klasse 1 (Werkzeug-Fakt, Sonde + Replikation) allein, bei einem
+   Owner mit zwei Hosts; Pools 2 bis 6 erst mit dem zweiten Owner.
+
+## 5. Was ich als Nächstes täte
+
+Mit dem Owner das Pack-Schema aus Stand-Doc §2 Zeile für Zeile durchgehen (was steht, was fehlt),
+die drei Entscheide holen, dann für Schritt 2 ein Kriterium + Verify-Weg je Teil festlegen
+(`/kriterium-grill`) und EINE Lane briefen (Opus 5, high; `e2e/context-packs.ts` als Beweisort).
+Nicht selbst graben.
+
+---
+
 # HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 9 → Nachfolge): Slice 4 GELANDET, Slice 5+6 im FÜNFTEN Land-Versuch, und die Land-Kette selbst ist der teuerste Befund des Tages; 2026-09-03 (11:5x), ctx GEMESSEN 30,8 %
 
 Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,
@@ -148,102 +288,6 @@ schränkt auf die Dateien ein, die der Slice wirklich anfasst.
 
 ---
 
-# HANDOFF — Kontext-Pack-Netz (Slot 14 „openSource" → Nachfolge): Stand-Doc steht, Schritt 1 auf Branch `pack-source-hash`, Suite-Ergebnis in §2
-
-Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`. Hier steht nur,
-was git und die Sensoren NICHT tragen.
-
-## 0. Der Owner-Auftrag für dich, wörtlich
-
-*„Am Ende machen wir dann eine succession in eine neue Session die die idee weiter mit mir zusammen
-durchdenkt und die implementierung soweit plant und ausarbeitet."* und *„Lass uns dies jetzt alles
-eins nach dem anderen aber auch mit der benötigen Sorgfalt, angehen."*
-
-Du bist also eine DENK- und PLANUNGS-Session mit dem Owner, keine Bau-Session. Die Idee heißt
-Kontext-Pack-Netz; der lesbare Stand ist `docs/ideen/2026-09-03-kontextpack-netz-stand.md` (lies
-§1 und §8 zuerst, dann §2 und §5; die drei Fassungen davor nur bei Bedarf als Herleitung). Der
-Owner denkt in Schritten und will je Schritt einen Beweis; die Tabelle in §8 des Stand-Docs ist die
-Reihenfolge, die drei Owner-Entscheide davor sind die ersten Fragen an ihn.
-
-## 1. Das Erste, was du tust
-
-1. **Suite-Ergebnis lesen** (§2 unten). Liegt es nicht vor: das Log ist
-   `/private/tmp/claude-501/-Users-owner-claude-fleet/f8f1d2d3-cb47-4eb7-aeb1-fd7036d10beb/scratchpad/e2e-isolated-pack-hash.log`,
-   Urteil am Tail („ALL PASS" oder FAIL-Zeilen), nie an einer erinnerten Zahl.
-2. **Ist der Branch gelandet?** `git branch --contains 2b4abd6 main` (leer = nicht gelandet). Der
-   🎛 Fleet Controller (Slot 13, Nachfolger des S12, der mir den server.ts-Schnitt auferlegt hat) hat
-   server.ts als knappste Fläche; ihm ist der Branch mit einer Nachricht gemeldet (§3). **Du landest
-   nicht selbst**, es sei denn, der Controller gibt es dir. Ein ff-Merge des Branches ist ein
-   main-direkter Zug: kein Land-Ledger, kein Post-Land-Audit. Der Suite-Lauf auf `2b4abd6` IST die
-   Vollverifikation, die das Regelbuch dafür verlangt, und muss dann im Commit-Body/Handoff stehen.
-3. **Nach dem Land:** Deploy über Verb 2 (`POST /api/deploy`), `bundleStale` prüfen, dann
-   `bun briefstats.ts` im Haupt-Checkout. Die ersten Zeilen `@<hash>` statt `@unversioned` in der
-   Tabelle „pack @ source version" sind der Beweis für Schritt 1. Vorher gibt es dort nur
-   `@unversioned` (301 gejointe Lanes am 2026-09-03).
-4. **Dann mit dem Owner Schritt 2 durchdenken** (Stand-Doc §2 und §8): `avoidWhen` mit
-   Vorfall-Referenz, Act-seitiges `requires[]`, das vermittelte Wissen als Daten. Erst Kriterium
-   und Beweis je Teil, dann eine Lane briefen. Bauen tut eine Lane (Opus 5, high), nicht du.
-
-## 2. Gelandet, gebaut, verifiziert
-
-**Auf main, direkt committet (docs-only, `bun e2e/pins.ts` ALL PASS, kein Post-Land-Audit deckt
-sie):** `fcaa4a4` → `f1cc8c5` → `eac1a0f` (drei Fassungen der Analyse, jede eine korrigierte
-Fehlfassung der vorigen, in §0 der jeweiligen benannt), `3f561b5` (der Stand).
-
-**Auf Branch `pack-source-hash` (Basis `24f9cfc`), NICHT gelandet:**
-
-- `6535f71` reine Hälfte: `context-manifest.ts#observedSourceHash` + `#stampObservedSourceHashes`,
-  `context-packs.ts#CONTEXT_SEED_SOURCE_PATHS`, `briefstats.ts` Pack × Version-Tabelle; 5 + 4 neue
-  Checks. Gate-tsc-Liste exit 0, pins ALL PASS, `bun e2e/context-plan.ts` ALL PASS, briefstats-Modul
-  0 FAILURES, `bun run build` exit 0.
-- `2b4abd6` server.ts-Hälfte: vier Stellen (Import; `repoManifestContextPlan` liefert
-  `{repoPlan, sourceBytes}` und liest die Seed-Pfade mit; beide Merge-Stellen stempeln
-  `base.selected`), plus zwei Pins in `e2e/programs.ts`. Gate-tsc + pins grün. Der gelieferte
-  Brief bleibt byteidentisch, nur die Receipt-Zeile gewinnt `sourceHash`.
-- **`./e2e-isolated.sh` auf `2b4abd6`:** SIEHE ZEILE UNTEN — sie wird vor dem Succeed
-  nachgetragen. Steht hier noch „läuft", dann §1 Punkt 1.
-
-  > Suite-Ergebnis: läuft (gestartet 2026-09-03, wartete zuerst ~3 min hinter einem fremden Lauf am Mutex).
-
-Eine eigene Fehlfassung unterwegs, festgehalten im Body von `6535f71`: das Test-Fixture
-„declared-literal" fiel am Validator (SHA-256 + `observedAt` sind ein Pflichtpaar), nicht am
-Code. Und gemessen an der Naht: `gitRead` trimmt, der Server hasht also getrimmte Bytes; die
-Sonde in `e2e/programs.ts` rechnet deshalb über `git show` + `trim()` nach.
-
-## 3. Was git NICHT trägt
-
-- **Der Worktree** liegt im Session-Scratchpad
-  (`…/f8f1d2d3-cb47-4eb7-aeb1-fd7036d10beb/scratchpad/pack-hash`). Verschwindet das Verzeichnis,
-  bleibt der Branch im Repo; `git worktree prune` räumt den Eintrag. Nichts Uncommittetes liegt dort.
-- **Dem Controller (Slot 13) ist EINE Nachricht geschickt** (2026-09-03, nach dem Schreiben dieses
-  Handoffs): Branch, die vier server.ts-Stellen, Suite läuft, Ergebnis kommt von dir. Schick ihm
-  keine zweite mit demselben Inhalt; jede Nachricht kostet seinen vollen Kontext.
-- **Rulebook-Nachtrag, den jemand von Hand in `CLAUDE.md` (untracked, Generat aus `rulebook/`)
-  ziehen muss, sobald gelandet und deployt:** unter „Wissenspflege" eine Zeile, dass ein Receipt
-  seit diesem Land die Quellversion jeder Auswahl trägt (`sourceHash`, beobachtet, nie deklariert)
-  und `bun briefstats.ts` die Tabelle „pack @ source version" druckt. Ich habe `CLAUDE.md` NICHT
-  angefasst; die Sanierungs-MAIN (Slot 9) hält dort eine eigene untracked Änderung (14. Flake-
-  Familie), also erst deren Stand lesen, dann `rulebook/` ändern und rendern.
-- **Kontextstand dieser Session beim Schreiben: 33,4 % (gemessen, `ctx.pct` am Slot 14).** Über dem
-  30-%-Band; der Owner hat die Übergabe ausdrücklich angeordnet.
-
-## 4. Die drei Owner-Entscheide, die du zuerst stellst (Stand-Doc §8)
-
-1. Bleibt das Pack ein Zeiger-Objekt, oder trägt es das vermittelte Wissen als Daten (Claim, Scope,
-   Sonde)? Empfehlung: Zeiger für Quellen PLUS ein `conveys`-Block, weil nur der über Fleets hinweg
-   lesbar ist.
-2. „Unbedingt" ans Pack oder an den Act? Empfehlung: an den Act (`requires[]`).
-3. Welche Pools zuerst? Empfehlung: Klasse 1 (Werkzeug-Fakt, Sonde + Replikation) allein, bei einem
-   Owner mit zwei Hosts; Pools 2 bis 6 erst mit dem zweiten Owner.
-
-## 5. Was ich als Nächstes täte
-
-Mit dem Owner das Pack-Schema aus Stand-Doc §2 Zeile für Zeile durchgehen (was steht, was fehlt),
-die drei Entscheide holen, dann für Schritt 2 ein Kriterium + Verify-Weg je Teil festlegen
-(`/kriterium-grill`) und EINE Lane briefen (Opus 5, high; `e2e/context-packs.ts` als Beweisort).
-Nicht selbst graben.
-
----
 # HANDOFF — Fleet Controller (Slot 13, Fable 5.1 high): Land 24f9cfc entlastet, zwei Owner-Ideen als Entwuerfe gelandet und von GLM gegengelesen, 6f401842-Brief korrigiert; 2026-09-03 (11:0x), ctx GEMESSEN 25,2 %
 
 Rolle: 🎛 Fleet Controller, Nachfolge von Slot 12 ueber einen handgeschriebenen Brief.

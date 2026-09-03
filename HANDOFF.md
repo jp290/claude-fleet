@@ -1,3 +1,80 @@
+# HANDOFF — Program-MAIN „Fleet Task Workbench" (Program `b9c1e0d9`, Slot 8), 2026-09-03 (08:5x), ctx GEMESSEN 27,4 %
+
+Zustand ableiten, nicht aus dieser Prosa lesen: `GET /api/self/program-execution`.
+**Das Program ist inhaltlich FERTIG** — alle fuenf Auftragszeilen terminal, Beweislage bis auf
+EIN benanntes Kriterium geschlossen. Was bleibt, ist unten in drei Saetzen.
+
+## Was in dieser Session gelandet ist
+
+- **`15a3e38b` → `71361fa`** (Task-Detail-Kopf: Status, Program-/Repo-Chip, Lifecycle-Leiste,
+  GENAU EINE Hauptaktion). Land-Note: `verify.ok true`, volle Sieben-Schritt-Kette, **104,1 s
+  Arbeit / 0 s Wartezeit**, `proportional false`. Diff selbst gelesen: nur `src/client.ts`,
+  `public/index.html`, `e2e/tasks.ts`; alle Akte laufen ueber `place()` in dieselben Knoten mit
+  denselben Handlern — keine zweite Tuer, kein neuer API-Aufruf.
+- **`07c061fa` → `a58e9c1`** (unabhaengiger Codex-Review als Messnotiz). `verify.ok true`,
+  `proportional TRUE` mit `['install','pins']` — die docs-only-Kurzkette, korrekt.
+  **Ich habe die Lane vor dem Land von Hand auf main rebast**: `docs/messungen/INDEX.md`
+  kollidierte (beide haengen eine Zeile ans Ende) — Aufloesung ist BEIDE Zeilen, nie eine Wahl.
+- Zwei Direkt-Commits im Haupt-Checkout, fuer die Land-Ledger unsichtbar (im Body gesagt):
+  **`a6b7a38`** (Falz im Browser gemessen) und **`445c1e2`** (Abschlussmessung (f)/(g)).
+
+## Was NOCH OFFEN ist — drei Saetze, mehr nicht
+
+1. **Kriterium (a) ist ungeprueft**: Leerzustand bei 0 offenen / 16 geschlossenen Tasks. Live
+   trug die Queue 89 offene Zeilen; der Zustand ist nur auf einer **Scratch-Instanz** herstellbar
+   (Rezept in `docs/messungen/2026-09-03-task-workbench-abschlussmessung.md` §(a)). Ich habe es
+   NICHT gefahren, weil es ~8 Kontextpunkte kostet und nicht mehr unter die 25-%-Marke passte.
+2. **Der eine P1 des Reviews ist nach meinem Urteil ein BRIEF-Fehler, kein Produktdefekt**:
+   „clarify-first startet keine Lane" steht nicht im owner-bestaetigten Erfolgskriterium, sondern
+   im Review-Brief einer Vorgaenger-Session; clarify-first oeffnet by design eine Lane, und es
+   lane-frei zu machen wuerde Kriterium (g) und das Non-Goal zu Autoritaetsgrenzen verletzen.
+   Begruendung mit Belegen: `445c1e2`. **Der Owner kann das ueberstimmen** — dann ist es eine
+   NEUE Programmzeile, kein Nachtrag.
+3. **Audit-Watch `4af1b06e` ist armed** auf `mainAfter a58e9c1`. Kommt er rot, gilt dieselbe
+   Beweisordnung wie unten.
+
+## Fallen, die ich in dieser Session BEZAHLT habe (alle mit Beleg)
+
+- **`git diff --stat main..HEAD` in einer Lane liest sich wie Loeschung fremder Arbeit.** Die
+  Review-Lane „loeschte" scheinbar 249 Zeilen `HANDOFF.md` und zwei ganze Notizen — es war nur
+  ein veralteter Fork-Punkt. Der richtige Blick ist
+  `git diff $(git merge-base main HEAD)..HEAD`; dort waren es +123 Zeilen, zwei Dateien, null
+  Loeschungen.
+- **Ein frischer Worktree hat kein `node_modules`.** `./e2e-isolated.sh` stirbt dort nach
+  ~347 PASS an `realpathSync(node_modules)` in `e2e/slots.ts` — und der GEDRUCKTE FAIL-Name
+  gehoert einer ANDEREN Sonde als der, die starb. Erst `bun install --frozen-lockfile`, dann
+  messen. Die Review-Lane ist in dieselbe Falle getreten.
+- **`ps -eo command | grep -c '<muster>'` zaehlt seinen eigenen grep mit** — meldete 2 laufende
+  Runner, es waren 0. Fast haette ich deshalb einen noetigen Lauf verschoben.
+- **„Zwei run-ids in einem Log = zwei verschraenkte Laeufe" ist als Heuristik falsch**:
+  `isolated-20260826T1200Z-9191` ist eine FIXTURE-Konstante (`e2e/lane-suite.ts:238`).
+- **Von 85 ROTEN Post-Land-Audits trug genau EINES `fails[]`-Namen** — meines. Die Namensgebung
+  ging erst mit dem heutigen Deploy live. **Das Ledger taugt nicht als Flake-Historie**, und
+  „dieser Check ist noch nie aufgetaucht" ist daraus nicht ableitbar.
+- **Eine Sonde, deren Vorbedingung nicht gilt, ist kein Beleg.** Mein erster (g)-Test zeigte
+  „Entwurf ueberlebt 5,3 s" bei NULL DOM-Mutationen — es war gar kein Refresh zu ueberleben.
+  Erst die zweite Fassung mass die Vorbedingung (`window.fetch` umhuellt: 4 `/api/sessions` in
+  7,1 s) und wurde damit ein Beweis.
+- **Mein eigener Lesefehler, benannt:** ich habe „`07c061fa` traegt kein Spawn-Tripel" gemeldet,
+  weil ich flache Keys `harness/model/effort` geprueft habe. Es liegt in **`t.spawn`**
+  (`codex/gpt-5.6-sol/high`) und wurde benutzt. Absenz eines Schluessels ist keine Absenz der Sache.
+
+## Betriebsstand
+
+- main `445c1e2`. **Client-Bundle habe ich aus `71361fa` gebaut** (`bundleStale` war true) —
+  ohne das ist der Client-Teil eines Lands unsichtbar. **Kein Deploy**: der laufende Server war
+  dabei 15 Commits aelter, ohne Belang, weil dieses Program `server.ts` in KEINEM der vier Lands
+  anfasst (mechanisch geprueft, alle vier `grep -c '^server\.ts$'` = 0).
+- Rotes Audit auf `71361fa` ist als **flake** adjudiziert (Controller S12) — mit meinem
+  Kontrolllauf auf `299ac65` als Beleg: 3477 PASS / 4 FAIL, derselbe Check ohne mein Diff.
+  Details als Queue-Zeile `2d0e73fa`.
+- Playwright-Weg ohne Token im Kontext: lokaler 302-Redirect auf `127.0.0.1:8913`, der die
+  `/?token=…`-URL in der Shell baut; Helfer ist gestoppt. PNGs ungetrackt im Wurzelverzeichnis.
+- Dieser Slot laeuft auf `claude-opus-5[1m]/high`, waehrend die Modellpolitik fuer eine
+  Program-MAIN **Fable 5.1** vorsieht — geerbt ueber die Nachfolge, nie korrigiert.
+
+---
+
 # HANDOFF — Fleet Controller (Slot 12, Fable 5.1 high): Succession-Naht als Auftrag gebrieft, Slot 6 vermessen (die 528k-Ursache ist NICHT was alle dachten), Workflow-v2-Program gegruendet, alle 13 Slots einzeln wieder in Arbeit gesetzt; 2026-09-03 (08:2x), ctx GEMESSEN 28,1 %
 
 Rolle: 🎛 Fleet Controller, Nachfolge von Slot 1 ueber einen HANDGESCHRIEBENEN Brief (Grund: §7).

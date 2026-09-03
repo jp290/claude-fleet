@@ -369,6 +369,73 @@ durch. Die Nachfolgerin erbt dann eine Datei ohne den Abschnitt ihrer Vorgaenger
 (`program advisory filing cap reached — ask the owner to dispose or drop one first`). Genau der
 Grund, aus dem dieses Register existiert.
 
+## B-09 — der `ff-lost`-Fix ist NICHT rueckwirkend: ein Merge-Record von VOR dem Deploy sperrt seine Lane dauerhaft
+
+**Gemessen** 2026-09-03 18:0x (Sanierungs-MAIN Slot 9) an Lane 6 / Task `8990eeb0` (P4 Slice 5+6).
+Die Lane ist **fertig, sauber, verifiziert — und strukturell nicht landbar**.
+
+**Der gespeicherte Merge-Record** (`GET /api/slots/6/merge`, `last`):
+
+| Feld | Wert |
+| --- | --- |
+| `status` | `"error"` |
+| `errorReason` | **`null`** ← der Kern des Befunds |
+| `landed` | `false` |
+| `detail` | „rebase ok, but fast-forwarding main failed: … Diverging branches can't be fast-forwarded … — lane kept" |
+| `verify` | **`ok: true`, `exitCode: 0`**, `ms 2064136` (34,4 min), `waitMs 1956000` (32,6 min Schlange) |
+| geschrieben | **12:22:19** |
+
+**Der Gate hat gemessen und BESTANDEN** — 108 s Netto-Arbeit nach 32,6 min Warten. Erst danach
+scheiterte das Fast-Forward, weil `main` waehrend des Laufs weiterzog.
+
+**Warum das dauerhaft sperrt.** `server.ts` (grep `MERGE_BLOCKING`, `withValidErrorReason` und
+`laneSignalView`) sagt es selbst: *„A persisted `errorReason` is the ONE field on this record that
+can make a lane done-looking [again]"*. Der Fix `24f9cfc` mintet `errorReason: "ff-lost"` genau
+dafuer. Aber:
+
+- Der Record wurde **12:22:19** geschrieben.
+- Der Fix wurde **17:23:52** deployt (`0deb6aef`, target `903f5163`).
+
+Also fuenf Stunden zu spaet. `withValidErrorReason` laesst einen Record mit fehlendem
+`errorReason` unveraendert durch, `mergeBlocksLane` sperrt weiter, und **der Fix hilft nur Records,
+die nach ihm entstehen.** Der laufende Server TRAEGT den Fix (`bootHead 903f5163`, Vorfahre-Probe
+positiv) — er kann diesen Record nur nicht heilen.
+
+**Die Sperre ist zirkulaer:** `mergeBlocksLane` verhindert `done-looking` → die Land-Tuer verlangt
+`done-looking` → nur ein erfolgreicher Merge ersetzt den Record → ein Merge braucht die Land-Tuer.
+Ein Rebase loest es NICHT (selbst gefahren: `247d483`, sauber, 2 ahead, Module byte-identisch,
+`server.ts` genau −92 gegen `main`), weil der Record am SLOT haengt, nicht am Baum.
+
+**Zweiter, getrennt behebbarer Defekt — die Ablehnung nennt die Ursache nicht.** Der exakte
+Wortlaut der Land-Tuer, woertlich:
+
+> `the lane is not done-looking (no signal) — it must be alive, idle, clean and ahead of its base; let it finish, or commit its work, then call again`
+
+Sie nennt vier Bedingungen und einen Rat. Der Rat ist falsch: die Lane IST fertig und HAT
+committet (sauber, 0 untracked, 2 ahead — von zwei Seiten gemessen). Die tatsaechlich verletzte
+Bedingung — der blockierende Merge-Record — **kommt in der Nachricht nicht vor**. Wer ihr folgt,
+schickt die Lane in eine Arbeit, die nichts aendert; genau das ist hier zweimal passiert
+(Land-Versuche 6 und 7, beide mit dieser Meldung).
+
+**Done-Kriterium, drei Stufen, getrennt entscheidbar:**
+- (a) **Backfill:** beim Boot bekommt jeder persistierte `status:"error"`-Record, dessen `detail`
+  das Fast-Forward-Muster traegt, `errorReason: "ff-lost"` nachgetragen — dieselbe Stelle, an der
+  `withValidErrorReason` heute schon jeden Record beim Laden prueft. Fixture: ein Record ohne
+  `errorReason` plus ff-`detail` macht die Lane nach dem Boot wieder `done-looking`; ein Record mit
+  fremdem `detail` NICHT.
+- (b) **Die Ablehnung nennt die verletzte Bedingung**, statt vier zu aufzuzaehlen und die fuenfte
+  zu verschweigen — inklusive „ein gespeicherter Merge-Fehler sperrt diese Lane; Grund: <detail>".
+- (c) **Ein Ausgang, der keinen Merge braucht:** eine Owner-/Controller-Route, die einen
+  blockierenden Merge-Record verwirft (nicht faelscht — verwirft), damit ein zirkulaerer Zustand
+  ueberhaupt aufloesbar ist, ohne die Lane wegzuwerfen.
+
+**Kosten dieses einen Slices, weil er beide Defekte getroffen hat:** sieben Land-Versuche, vier
+verschiedene Ursachen (§11.2i-Flake · no-progress-Guard 2× · `waitedOut` nach 44,5 min Schlange ·
+verlorenes Fast-Forward), plus dieser Deadlock. Der Code selbst ist seit 12:22 vom autoritativen
+Gate gruen bestaetigt.
+
+**Nicht als Queue-Zeile gefilet:** Advisory-Deckel 10/10.
+
 ---
 
 ## Bereits als Queue-Zeile abgelegte P6-Befunde (nur Verweis, Inhalt lebt an der Zeile)

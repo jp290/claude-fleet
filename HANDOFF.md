@@ -1,3 +1,42 @@
+# HANDOFF — 🎛 Fleet Controller (Slot 8, Fable): Owner hat das Sagen zurueckdelegiert; RESCOPE der Sanierung ist entschieden, 4 Lands, 7 Dispatches, 2 Kills, 1 Deploy; 2026-09-04 (00:2x), ctx GEMESSEN 25 %
+
+Zustand ableiten: `./state.sh`, Owner-Poll, Panes. Hier nur, was git nicht traegt.
+
+## 0. Was in Flug ist und wer es landet
+
+| Lane | Slot | Auftrag | Landet |
+|---|---|---|---|
+| Dual-Host S4 `c3f91ce1` | 2 | Opus/high, dispatcht 23:12 | **Controller** (dann nichts mehr aus diesem Program bis Owner MAC/Broadcast in `.env` setzt — Lane-9-Report) |
+| Succession-Readiness-Gate `6f401842` | 5 | Opus/high, dispatcht 00:13 | **Controller**; danach D1 `92553809` dispatchen (Slot 10 wartet darauf, Attention `cc9572a6` beantwortet) |
+| E1 Audit-Sensoren `4b92b2f0` | 11 | sol | **Slot 4** (Sanierung) |
+| E5 B-07 `97f9bd97` | 1 | sol | **Slot 4**; B-09 `51f59f63` queued, Slot 4 dispatcht seriell |
+| Private-repo-j-Critic (Opus) | — | fertig, Verdikt bei Slot 7 | **Slot 7** (fremdes Repo) |
+
+Watches sterben mit diesem Slot: **neu armen** auf 2 und 5 (`POST /api/self/watch`), nach jedem
+eigenen Merge-POST `{kind:"merge"}`. Ein Hintergrund-Deploy-Loop (Slot 8, Bash) wartet auf
+`suites running = 0` und feuert dann `POST /api/deploy` — S3 (`c692ff4`) ist sonst NICHT live;
+`codeBehind` am Poll pruefen, ggf. selbst deployen (409 waehrend Audit, `1e5419c` blockt es
+waehrend eines Lands).
+
+## 1. Entscheide dieser Session (Rueckfalltuer: die jeweilige Zeile)
+
+- **RESCOPE Sanierung** (sol + GLM unabhaengig, `docs/messungen/2026-09-03-gegenpruefung-sanierung-rescope.md`; Slot 4 hat es als `e670579` ins Plan-Doc genommen): keine P4/P5-Slices mehr, E1 Sensoren → E5 Land-Pfad-Zeilen → Collaboration B. Lanes auf codex/gpt-5.6-sol (Owner: Kontingent unbegrenzt).
+- **Workbench-P1 = (A) Brief-Fehler** (Attention `cc80f083`), Program geschlossen, Slot 2 retired.
+- **Docs-Land-Audits ed03554/5337b9f = stale-test** (§11.2l), eingetragen 00:13.
+- **6f401842 vor D1** — Begruendung: dreimal heute gemessen, dass `succeed` auf frischen Panes den Brief nicht abschickt (Notiz `e2d91805`).
+
+## 2. Offen, Owner-seitig
+
+- Attention `65aa1937` (Private-repo-j: spielen oder Reparaturrunde) — Produktfrage, nicht meine.
+- Slot 13 (studioObjekt, 34 %) haelt idle bis Game-Maker-Adjudikation (Slot 3, Schritt 3/5); Nachfolge dann per **open+send** (Dispatch-Pfad), nicht `succeed`.
+- Slot 12: leere Fable-Session mit angefangenem Owner-Text im Composer — nicht angefasst.
+- Slot 15 (sol, Lagebild) idle, wiederverwendbar fuer read-only Brief-Arbeit.
+
+## 3. Betriebsfehler, die ich heute bezahlt habe (Kurzform; Langform im Owner-Bericht 00:2x)
+
+Enter-feuert-nicht (Slot 16 3 h; `succeed` 13/14/16) · `release` startet nichts bei Master-Stop (Slot 7 wartete auf einen nie gestarteten Critic) · Attentions sterben mit der Session (5 offen, 6 refused) · GLM-Ergebnis lag nur in /tmp · 2 codex-Critics scheiterten an Infrastruktur (Pack ohne serve.ts, kein Browser) · docs-only Land kostet 30 min Audit und war beide Male rot (§11.2l) · Suite-Mutex: Lane 9 wartete 30+ min, Land 25 min · Remote-Audit 85 % rot vs 20 % lokal (B-14, `6828029`) · `git log main..branch` luegt ueber gelandete Patches, `git cherry` nicht (Slot 14 hat mich korrigiert).
+
+---
 # HANDOFF — Dual-Host cd110019 (Slot 6): KORREKTUR am Merkposten — die beiden Zeilen tragen SEHR WOHL ein `Task.spawn`, und es zeigt auf FABLE; 2026-09-03 (21:3x)
 
 Program `cd1100193082db395c1387db`, gebunden, Lineage 9 → 5 → 6. Ich habe nichts gestartet,

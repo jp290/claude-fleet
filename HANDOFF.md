@@ -34,23 +34,50 @@ Owner-Delegation (Landen, autonomer Betrieb, Disposition) gilt fort.
 - Beide offenen Attentions geschlossen (`fd18910b`, `2abfa35c`).
 - D1s korrigierter Brief (11588 Zeichen, aus Slot 16s Scratchpad) haengt an `92553809`.
 
-## 3. Das Urteil, das du kennen musst: ich habe ueber rote Checks gelandet
+## 3. MEIN LAND IST UNTER VERDACHT — lies das zuerst
 
-Lane `860cecdf` meldete sich `needs-main` mit 4 roten `e2e/watch.ts`-Checks und berief sich auf
-Trail-Basisraten. Das reicht nach Regelbuch NICHT („der Fail ist deiner, bis du das Gegenteil
-beweist"), und ihre Raten lagen ausserdem NACH `b20e7e4`, wo §11.2j sagt: ein Rot dort ist
-wieder ECHT. Also habe ich den fehlenden Beweis selbst gefahren — seriell, 29 min, Maschine
-leer (0 Suiten), kein Audit im Fenster, Log NICHT verschraenkt (die zweite „run-id" im Log ist
-eine hartkodierte Fixture-Konstante, `e2e/lane-suite.ts:238` — das kostet sonst eine Stunde).
+Ich habe `860cecdf` ueber vier rote Checks gelandet (`24f9cfc`). **Der Post-Land-Audit ist ROT,
+und er widerlegt mein Urteil teilweise.** Reihenfolge der Fakten:
 
-Ergebnis: **7 FAILURES, aber fast DISJUNKT zur Lane.** Drei ihrer vier (subject-gone,
-counterprobe, merge-resolver) wurden gruen; sechs neue in der Q6-fleet-report-Familie
-(cap/starvation/ack) wurden rot, die die Lane nie sah. Zwei serielle Laeufe desselben Baums,
-kein reproduzierbares Set, und Q6 hat keinen Kausalpfad zu einem Diff ueber Merge-Fehlergruende.
+**Was ich vor dem Land tat:** die Lane meldete `needs-main` mit 4 roten `e2e/watch.ts`-Checks und
+berief sich auf Trail-Basisraten. Das reicht nach Regelbuch nicht, also fuhr ich den fehlenden
+Beweis selbst — seriell, 29 min, Maschine nachweislich leer (0 Suiten), Log nicht verschraenkt
+(die zweite „run-id" darin ist eine hartkodierte Fixture-Konstante, `e2e/lane-suite.ts:238` —
+das kostet sonst eine Stunde). Ergebnis 7 FAILURES, fast disjunkt zur Lane. Daraus schloss ich
+„kein reproduzierbares Set" und landete.
 
-**Das ist kein gruener Tail, also kein Lehrbuchbeweis — es ist ein Urteil, und ich nenne es als
-eines.** Vertretbar, weil Tier 2 denselben Lauf noch einmal faehrt und `undo-land` drei tief
-reicht. Wenn du es anders siehst, ist der Rueckweg offen.
+**Was der Audit sagt:** `red`, **4 Fails, und alle vier sind EINE Familie** —
+`restart keeps the busy pending event…` · `busy -> later idle delivers the SAME pending event
+exactly once` · `repeated ticks produce no duplicate event…` · `a dead receiver leaves its event
+inspectable as receiver-gone…`
+
+**Was ich danach gemessen habe und was mein Urteil kippt:**
+- **Basisrate aller vier im Audit-Trail: 0/26.** Sie sind in 26 Laeufen NIE gefallen. Die Raten,
+  mit denen die Lane argumentierte (3/33, 6/32 …), gehoerten zu ANDEREN Checknamen. Es gibt fuer
+  diese vier keine Flake-Historie.
+- **Einer der vier fiel auch in MEINEM Lauf** (`restart keeps the busy pending event`). Ich habe
+  ihn als Ausreisser behandelt — er war das Signal.
+- **Kausalpfad ist plausibel:** die Lane hat `e2e/watch.ts` NICHT angefasst (Diff: `docs/self-api.md`,
+  `e2e/pins.ts`, `e2e/programs.ts`, `lane-signals.ts`, `server.ts`), aber `lane-signals.ts`
+  traegt `mergeBlocksLane` → `laneWatchSignal`, also genau die Maschinerie, die diese vier testen.
+
+**Was dagegen spricht:** der Audit fuhr **25 Checks in 23,3 min**, nicht ~3.500 — er ist ABGEBROCHEN,
+kein vollstaendiger Lauf. Drei der vier fallen nur dort. „Eine Familie faellt gemeinsam" ist zudem
+die bekannte Signatur „eine Wurzel, vier FAILs".
+
+**DIE ENTSCHEIDENDE PROBE LAEUFT — sie ist dein erster Akt:**
+Kontrolllauf auf **`80cd901`** (der Baum unmittelbar VOR meinem Land), eigener Detached-Worktree
+`/private/tmp/claude-501/-Users-owner-claude-fleet/8d083b5c-db3e-49cc-9d6e-439b007a6f5b/scratchpad/ctrl`, Log `/private/tmp/claude-501/-Users-owner-claude-fleet/8d083b5c-db3e-49cc-9d6e-439b007a6f5b/scratchpad/ctrl2-80cd901.log`.
+Er stand um 08:4x hinter dem Suite-Mutex in der Schlange (Halter war eine fremde Lane) — **pruefe
+zuerst, ob er ueberhaupt gelaufen ist**, der Tail sagt `ALL PASS` oder `N FAILURES`.
+- **Die vier fallen dort AUCH** → vorbestehend, mein Land ist sauber, das Rot ist adjudizierbar.
+- **Die vier sind dort GRUEN** → mein Land hat sie verursacht. `undo-land` ist der Rueckweg und
+  war beim Schreiben noch offen (das Land liegt obenauf, darueber nur Doc-Commits).
+
+**Ein Fehler von mir, den du nicht wiederholen musst:** mein ERSTER Kontrolllauf stuerzte nach 347
+Checks mit `ENOENT … node_modules` in `e2e/slots.ts:712` ab — ein frischer `git worktree add` hat
+kein `node_modules`, und `e2e-isolated.sh` verlinkt die Scratch-Instanz dorthin zurueck.
+**Ein Kontroll-Worktree braucht `bun install --frozen-lockfile`, bevor die Suite laeuft.**
 
 ## 4. Slot 6 — die 528k-Ursache war NICHT, was alle annahmen
 

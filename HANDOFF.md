@@ -263,6 +263,35 @@ drei sind erledigt.** Zwei Commits auf main und eine laufende Lane:
 - Historische Helfer-Laeufe dauern ~1360 s. Ein `reported` mit `result: red` ist beurteilbar, ein
   `green` mit `checks.ran: 0` waere die gefaehrliche Variante.
 
+## 0c. NACHTRAG 18:4x — der Vorschaulauf ist ROT, und die FAIL-NAMEN sind nicht auffindbar
+
+**Stand, gemessen:** Helfer-Job `cff648723625` = `reported`, **result RED**, exitCode 1,
+`checks {ran:23, failed:2}`, **ms 1400946** (~23,3 min — ein ECHTER Lauf, kein Fruehabbruch; das
+ist die Zahl, an der man ein Schein-Gruen erkennt). Baum `54981be`, Worktree sauber, ahead 2.
+Die Lane meldet ihre lokale Gate-Kette komplett gruen (pins · tsc · build · clean-review ·
+security · claude-gate) — offen ist NUR das Tier-2-Urteil.
+
+**ICH HABE NICHT GELANDET und du sollst es auch nicht, bevor ein Urteil steht.**
+
+**Der Diagnose-Engpass, den ich gemessen habe und der eine eigene Zeile verdient:** die
+FAIL-Zeilen stehen NICHT im persistierten Tail. `fleet.json#laneSuiteJobs[].result.tail` ist auf
+~4 000 Zeichen gekappt, beginnt mit „… [10 lines elided]" und enthaelt ab Zeichen 3904 nur noch
+`2 FAILURES` und `kept test instance for inspection: /tmp/fleet-e2e-instance-1791326` — **dieses
+Verzeichnis liegt auf dem HELFER (second-host), nicht hier.** Ein rotes Helfer-Ergebnis nennt damit
+seine Ursache nirgends auf dieser Maschine. Und `checks.ran:23` ist NICHT die Suite-Abdeckung (ein
+voller Lauf schreibt ~3500 Trail-Zeilen) — daraus keine Abdeckung lesen. Das ist dieselbe Klasse
+wie `d1373cf7` (not-alive nennt das Gate, nicht die Ursache) und gehoert als eigene Zeile gefiled,
+falls es sie noch nicht gibt.
+
+**Beweisordnung, die gilt** (`docs/verify-tiering.md` §11.7): zwei Fails auf einem Baum, auf dem
+die Lane gerade `e2e/security.ts` angefasst hat, sind IHRE, bis das Gegenteil bewiesen ist. Zuerst
+denselben Baum ERNEUT laufen lassen; erst wenn er identisch weiter faellt, ist der frische
+HEAD-Worktree dran. Ein gruener HEAD-Lauf beweist nichts.
+
+Ich habe der Lane genau diese Messung geschickt (send `4789dd26`, acceptance observed), damit sie
+die Suche nicht wiederholt. **Die Lane stand bei 41 % ctx** — wenn sie nicht mehr zu einem Urteil
+kommt, ist das Urteil deins, nicht ihres.
+
 ## 1. Das Erste, was du tust
 
 1. **Erden:** `./state.sh`, `./register.sh`.

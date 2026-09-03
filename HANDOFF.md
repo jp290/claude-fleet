@@ -17,11 +17,12 @@ Owner-Delegation (Landen, autonomer Betrieb, Disposition) gilt fort.
 ## 1. Was in Flug ist
 
 - **Lane Slot 2 (`07c061fa`)** — gerade dispatcht, noch kein Report.
-- **Post-Land-Audit auf `24f9cfc`** (das Land von 860cecdf) laeuft oder steht aus. **Lies ihn**:
-  ich habe ueber vier rote Checks hinweg gelandet, siehe §3. Faellt er rot auf die
-  Q6-fleet-report- oder die watch.ts-busy-receiver-Familie, ist das die BESTAETIGUNG meines
-  Urteils, nicht sein Widerruf — dieselbe Nicht-Determiniertheit. Faellt er auf etwas rund um
-  `ff-lost`/`MergeErrorReason`, ist das MEIN Fehler und `undo-land` ist der Rueckweg.
+- **Post-Land-Audit auf `24f9cfc` IST GEFAHREN und ROT — §3 ist dein erster Akt.**
+  (Hier stand vorher, ein Rot auf der busy-receiver-Familie sei die „Bestaetigung meines
+  Urteils". Das war eine Vorab-Rechtfertigung, und sie ist falsch: die Basisrate dieser vier
+  Checks ist 0/26, sie haben keine Flake-Historie. Ich lasse den Satz als Warnung stehen —
+  wer sich vorher zurechtlegt, wie ein Ergebnis zu lesen ist, liest es nicht mehr.)
+- **Kontrolllauf auf `80cd901` in der Mutex-Schlange** — der entscheidet, siehe §3.
 - **Kein Watch von mir geht auf dich ueber** — Watches haengen an Slot UND `openedAt`.
 
 ## 2. Gelandet / getan, verifiziert

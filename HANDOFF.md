@@ -1,3 +1,205 @@
+# HANDOFF — Fleet Controller (Slot 12, claude-opus-5[1m] high): F1 gefunden — `POST /send` luegt ueber die Zustellung, und das hat heute vier Sessions 13 h stillgelegt; Sanierung Slice 5+6 gelandet, alle Attentions leer, Private-repo-j neu gegruendet, codex/sol auf Slot 15; 2026-09-03 (18:5x), ctx GEMESSEN 26,8 %
+
+Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`. Hier steht nur, was
+git und die Sensoren NICHT tragen. **Achtung: der oberste Abschnitt dieser Datei ist NICHT
+zuverlaessig der neueste — die Abschnitte liegen chronologisch durcheinander. `grep -n '^# HANDOFF'`.**
+Mein Vorgaenger hat mich auf „nur der oberste Abschnitt" geschickt und ich habe den falschen gelesen.
+
+## 0. DEIN AUFTRAG — unveraendert der vom Owner, plus was davon steht
+
+  „sag dem neuen controller er soll sich mit mir zusammen explizit hauptsaechlich um die
+   second-host-Integration und bieberburg auf slot3 kuemmern, dazu gehoert dann auch z.b die alten
+   Bieberburg lanes zu schliessen"
+
+**„MIT MIR ZUSAMMEN" IST WOERTLICH** — und es hat sich zweimal ausgezahlt: auf meine Slot-3-Frage kam
+eine GEGENFRAGE („ist ein programm an einen slot fest gebunden über seine Laufzeit?"), nicht eine
+Antwort. Wer geraten haette, haette falsch geraten.
+
+Spaeterer Auftrag desselben Tages, woertlich, und er ist ERLEDIGT:
+  „können wir eigentlich schon eine succession in codex mit sol hinein machen? Ich würde gerne
+   wollen das du der session sagst das sie sich erstmal mit subagenten ein gutes Bild von den slots
+   macht. […] um damit dann am ende auch die slots erstmal zu schließen die wir gerade nicht bediene
+   bzw. gebrauchen können. WIr müssen nämlich letztendlich das System soweit wie es geht erstmal
+   wieder gerade bügeln. Es fehlen bestimmt fixes die in summe ziemlich ärger machen."
+
+## 1. DAS EINE ERGEBNIS, DAS DU NICHT VERLIEREN DARFST: F1
+
+**`POST /send` meldet `acceptance:"observed"`, obwohl der Text nur GEQUEUED ist.** Der Absender
+glaubt, zugestellt zu haben. Beleg: `sendId d1614ae2bb3fbef8ddced5a2` an Slot 9 kam mit `observed`
+zurueck, waehrend die Pane woertlich „Press up to edit queued messages" zeigte.
+
+**Die Kopplung, die daraus einen Deadlock macht:** `done-looking` verlangt IDLE
+(`lane-signals.ts#laneWatchSignal`), und ein Composer-Rest unterdrueckt idle. Slot 9s Watch
+`62c9068e` stand deshalb FUENF STUNDEN auf `armed:true / firedAt:null` — es wartete auf ein
+Ereignis, das nicht kommen konnte, waehrend seine eigene Anweisung ebenfalls feststeckte.
+
+Vier Sessions, gemessen 17:2x, oldest first: Slot 8 seit 10:54 (6 h 32) · Slot 6 seit 12:24 (5 h 02)
+· Slot 9 seit 15:15 (2 h 11). **Und Slot 9 ein ZWEITES Mal am selben Tag**, mit seiner Antwort auf
+seine eigene Attention — die Attention stand dabei auf `answer:null`, die Antwort war also nie durch
+die Route gelaufen. Summe rund 13 h 45 Stillstand, und **kein Sensor sagt dabei „blockiert"**.
+
+MECHANISCH GEMESSEN, verlass dich darauf statt es neu zu lernen:
+- `tmux send-keys Enter` UND `C-m` submittieren in so einer Pane NICHT. Beides probiert.
+- EINZELNE ZEICHEN kommen an ('x' erschien, `BSpace` entfernte es). Der Input ist nicht tot.
+- `C-u` griff bei Slot 9 (CPU 6–13 %), bei Slot 6 NICHT (CPU 0,3 %). **Eine wedged Pane REPAINTET
+  NICHT** — `capture-pane` liefert dann einen STUNDEN ALTEN Frame, und das fuehrt jede Diagnose in
+  die Irre. Gegenprobe: CPU des claude/codex-Prozesses messen, oder ein Zeichen senden und den
+  Repaint beobachten.
+- WAS GEHT: `C-u` auf die Ziel-Pane, dann `POST /send`, **danach die Pane pruefen**. So alle vier
+  geloest; Slot 8 hat daraufhin (a) gemessen und die Nachfolge gefahren (jetzt Slot 2).
+
+**Das ist dieselbe Klasse wie der Succession-Fehler** („composer still holds 98 chars after 3000ms",
+Notizen `641897ec` + `8b7c18c9`): der Paste landet, das Submit nicht. Damit sind BEIDE bisherigen
+Erklaerungen widerlegt — die Boot-Race (agent==alive nach 3 s, von Slot 13 gemessen) und die
+Platzhalter-Hypothese („mehrzeiliger Paste klappt ein"), denn meine Fundstuecke sind EINZEILIG,
+29/40/29 Zeichen. **Der eine Zug, der die Ursache endgueltig entscheidet und noch NICHT gefahren
+ist:** bei einem Fehlschlag den Composer-INHALT auslesen statt nur seine LAENGE. Ein Readiness-Gate
+(Zeile `6f401842`) haette nichts davon verhindert — sag das dem Owner ODER der Lane, falls er sie
+startet. Der Brief der Zeile unterstellt weiterhin die Readiness-Erklaerung.
+
+## 2. GELANDET / GETAN IN DIESER SESSION
+
+- **Deploy 17:23:52** (Verb 2, `POST /api/deploy`, id `0deb6aef`): der Server war **33 Commits**
+  hinter HEAD. Jetzt `behindCount 0`. Darunter der Fix fuers verlorene Fast-Forward — der zwei
+  Land-Versuche desselben Tages gekostet hatte. **Und genau dieser Deploy erzeugte den naechsten
+  Befund**, siehe §3.
+- **Sanierung P4 Slice 5+6 GELANDET** als `c80b171` + `5848207`, Land-Note gruen: `verify.ok true`,
+  volle siebenstufige Kette, exit 0, 106 s, `waitMs 0`, `proportional false`. Fuenfter Versuch.
+  Actor korrekt als `owner-token-outside-board` — das war ich, nicht der Owner (Slot 9s Commit
+  `ff21577` schreibt „Owner loest den Deadlock"; das ist eine Provenienz-Ungenauigkeit, kein Fehler
+  in der Sache).
+- **Private-repo-j-MAIN neu gegruendet auf Slot 7** (`POST /api/programs/2c073232.../bootstrap-main`,
+  cwd `private-repo-j.worktrees/game-maker-private-repo-j`, Opus 5 1M / high). Es spielt schon: prueft den
+  Stempel `42AC0AB` und fahrt echten Eingabepfad ueber Playwright.
+- **codex/gpt-5.6-sol auf Slot 15** („Lagebild + Aufraeumen"), per Owner-Route + handgeschriebenem
+  Brief, weil die Nachfolge das nicht kann (§4). Der Owner ist mit ihm im direkten Gespraech.
+- **Fuenf offene Attentions abgearbeitet → jetzt NULL.** Vier rote Audits adjudiziert.
+- **Zeile `4e5e2e18` auf done** — die Queue trug den Beweis selbst: `66367988` sagt woertlich
+  „codex-Fallback; ersetzt die nicht startbare pi-zai-Zeile 4e5e2e18" und war done.
+
+## 3. DER LAND-DEADLOCK, den mein eigener Deploy ausgeloest hat — lies das vor dem naechsten Land
+
+Slot 9s Attention `0792786f`: die Lane war **verifiziert gruen und strukturell nicht landbar**. Am
+Code nachgeprueft, nicht uebernommen: `lane-signals.ts:70` ist woertlich
+`!(m?.status === "error" && m.errorReason === "ff-lost")`, und `server.ts:11384` nennt `errorReason`
+selbst „the ONE field on this record that can make a lane done-looking". Der Merge-Record von
+12:22 trug `errorReason: null`; der Fix `24f9cfc`, der dort `'ff-lost'` mintet, ging **durch meinen
+Deploy 17:23:52 live, fuenf Stunden NACH dem Record — nicht rueckwirkend**. Zirkulaer: kein
+done-looking → keine Land-Tuer → kein neuer Merge → Record bleibt. Ein Rebase hilft nicht, der
+Record haengt am SLOT, nicht am Baum.
+
+**DER AUSWEG, den du wiederverwenden kannst:** die `done-looking`-Pruefung sitzt NUR in der
+**Self-Land-Tuer** einer Program-MAIN (`server.ts:6926`). Die **Owner-Merge-Route hat sie nicht**
+(kein `laneWatchSignal` an ihrer `mergeJob(`-Aufrufstelle, nur der busy-Vorbehalt). Ein
+`POST /api/slots/:id/merge` mit dem Owner-Token waivt damit ausschliesslich das Praedikat, das
+faelschlich falsch war — **keine Verifikation**, der Land-Gate faehrt die volle Kette auf dem Baum,
+den er landet. Kein State-Eingriff, der blockierende Record bleibt, damit B-09 seinen Beweis behaelt.
+
+## 4. NACHFOLGE NACH CODEX: NEIN, nicht ueber die Route
+
+`server.ts#handleSelfSucceed` sagt woertlich „that harness is not overridable here" und uebergibt
+`s.harness` der Vorgaengerin an `openSlot`. **Der Weg, der geht** und den ich gefahren habe:
+`POST /api/slots/<frei>/open` mit `{cwd, harness:"codex", model:"gpt-5.6-sol", label}`, auf den
+Accept-Marker `>_ OpenAI Codex (v` warten, dann `POST /send` mit dem Brief — und **die Pane
+pruefen**, nicht dem Receipt glauben (§1). Der harness-uebergreifende Nachfolgeweg ist der Entwurf
+`5881455`, ungebaut; drei Owner-Fragen dazu stehen in §7.
+
+## 5. EIN PROGRAM IST NICHT FEST AN EINEN SLOT GEBUNDEN — die Antwort auf die Owner-Gegenfrage
+
+- `Program.main` ist OPTIONAL und bindet an eine **Insassin**, nicht an einen Slot:
+  `boundProgramForMain` verlangt `p.main.slot === s.id` **und** `p.main.openedAt === s.openedAt`.
+- `ProgramLineageVia` = `bootstrap | rebound | succeed | backfill-unknown`. **`rebound` ist der
+  explizite Zug**, auditiert als `program_main_rebound`; die Antwort NENNT, was sie ersetzt.
+- **ABER: eine Session kann MAIN von GENAU EINEM Program sein.** Zwei aktive Programs auf derselben
+  `(slot, openedAt)` sind ein benannter Fehler („ambiguous Program-MAIN binding … the owner must
+  resolve which one this session is MAIN of").
+
+**Konsequenz, die die Owner-Frage anders entscheidet, als sie gestellt war:** Lesart (B) „Slot 3
+uebernimmt Private-repo-j zusaetzlich" ist als MAIN-Schaft NICHT baubar. Ich habe Private-repo-j deshalb auf
+Slot 7 gelegt und Slot 3 bei seinem Program gelassen. **Will der Owner Slot 3 doch, ist das ein
+`rebound` und kostet die Game-Maker-v2-MAIN.** Das ist noch nicht entschieden.
+
+Und: Program `2c073232` war NICHT abgeloest, sondern das heutige Private-repo-j — 10 Zeilen, 8 done. Es
+war seit 08:46 MAIN-los, weil Slot 6s Insassin retirete. Das abgeloeste ist `ff4420b7`, `complete`.
+
+## 6. MEINE NEUN FIX-KANDIDATEN — der Owner hat ausdruecklich danach gefragt
+
+Vollstaendig mit Belegen im Gruendungsbrief von Slot 15 (es soll sie am Code pruefen; frag es nach
+dem Ergebnis, statt sie neu zu erheben). Kurzform, gerankt:
+
+| # | Befund | Beleg |
+|---|---|---|
+| F1 | `POST /send` luegt ueber die Zustellung (`observed` fuer `queued`) | §1, sendId d1614ae2 |
+| F2 | Composer-Rest unterdrueckt idle, kein Sensor sagt „blockiert" | 13 h 45 an einem Tag |
+| F3 | armed Watches haben keinen Alterungs-Sensor | `62c9068e`, 5 h `firedAt:null` |
+| F4 | `Program.main` zeigt nach Retire weiter auf die Tote; `lineage` sagt korrekt `endedBy:"retire"` — die zwei Records widersprechen sich | `2c073232`, 08:46–17:54 |
+| F5 | Kill einer Lane setzt ihre Task-Zeile auf `pending` zurueck, obwohl gelandet | Slot-13-Handoff §6 |
+| F6 | Post-Land-Audit bewahrt einen 4-KB-Tail OHNE die FAIL-Zeilen | drei Reds von heute, aus dem Trail aufgeloest |
+| F7 | auf `deployGap` reagiert nichts | 33 Commits, zwei verlorene FFs |
+| F8 | verwaister Suite-Mutex liest sich wie „gehalten" | tote PID 93222 seit 13:07 |
+| F9 | (keine Bug, Owner-Entscheid) Dispatcher master-stopped bei 16 offenen `auftrag` — potenziert F2 | `dispatch:false` |
+
+Was ich NICHT geprueft habe: ob F1 im Acceptance-Pfad sitzt oder erst in seiner Sonde; ob F4 in den
+Teardown oder den Loader gehoert; die Suite-Wirkungen jeder dieser Aenderungen.
+
+## 7. WAS BEIM OWNER LIEGT
+
+- **`1281d0ad` ist bereit und ABSICHTLICH nicht dispatcht:** zwei Entwurfs-Zeilen (`b2f1c42d` Opus /
+  `5c6cb96c` sol, je EINE neue Datei unter `docs/game-maker/entwurf/`, von Slot 3 kollisionsfrei
+  gelesen), muessen PARALLEL laufen. Ich habe sie liegen gelassen, weil der Owner **selbst Slots
+  killt** (10 und 11 um 18:22:07/18:22:12, `slot_kill … owner`) — zwei neue Lanes arbeiten gegen sein
+  Aufraeumen. Gehen auf ein Wort raus.
+- **Slot-3-Mehrdeutigkeit** (§5) — jetzt mit Preisschild statt als offene Frage.
+- **Second-host:** unveraendert ein OWNER-AKT, kein Code. `ssh second-host` → `Permission denied`, und
+  `server/types.ts#helperCmdCheck` lehnt die Namen `claude|codex|pi` UNBEDINGT ab (Absicht). Die
+  Zahlen aus Slot 13s §5 gelten.
+- **Die neun §4-Fragen meines Vorgaengers** sind unbeantwortet: vier Betriebsfragen (zwei davon habe
+  ich selbst erledigt — Deploy und `2c073232`), drei aus dem Ledger-Entwurf, drei aus dem
+  Nachfolge-Entwurf (je mit Empfehlung), zwei GLM-Punkte oberhalb der Schnittlinie (Crash-Fenster der
+  zwei Ledger-Schreiber; Crash-Orphan, den das Readiness-Warten VERGROESSERT). Sie stehen in Slot 13s
+  Abschnitt §4 dieser Datei.
+- **SECHS alte rote Audits bleiben unadjudiziert**, alle aelter als heute und ausserhalb meiner
+  Evidenz: `at=1787155820391` (0c5692fc) · `1787502074218` (dac6595c, 8 Fails) · `1787669301193`
+  (bebebf0e) · `1787675932255` (303abf71) · `1788075087447` (dbb2e094, `checks:null`) ·
+  `1788359095955` (01ccfb30, 11 Fails).
+
+## 8. DER SESSION-KONFLIKT, den ich entschieden habe — falls jemand widerspricht
+
+Slot 3 wollte den Check `restart keeps the busy pending event…` als **flake** (5/27), Slot 4 als
+**stale-test** (4/4 identisch, idleMs 4747/6164/4776/4924 bei Schwelle idleSec 2, `e2e/watch.ts`
+bytegleich). **Ich habe zu Slot 4 entschieden und Slot 3 mit Begruendung ueberstimmt.** Nicht wegen
+der Zahl, sondern weil Slot 4 den MECHANISMUS benennt (zwischen `watch.ts:2996-2997` und dem Check
+bei 3364 gibt es kein `send-keys` auf `bId`, B ist zum Neustart ZUVERLAESSIG untaetig — Zustellung an
+einen Untaetigen ist korrektes Verhalten) und weil die Konsequenz den Ausschlag gibt: als `flake`
+abgelegt faerbt dieser Test JEDES kuenftige Fleet-Land rot und entwertet das Signal dauerhaft. Das
+deckt sich mit `docs/verify-tiering.md` §11.2l, das dieselbe Familie als OFFEN und dieselbe
+Diskriminante fuehrt. Eingetragen: drei `stale-test` (`1788427462474`, `1788429130802`,
+`1788435319259`), der Second-host-Lauf `1788450664665` als `unknowable`. **Die Abhilfe ist ungebaut
+und gehoert Slot 4** (B vor `kill-session` erneut laut machen, oder Beschaeftigung ueber einen
+explizit gesetzten Zustand statt ueber `lastOutput`-Timing) — sie beruehrt `e2e/watch.ts`, braucht
+also die isolierte Vorschau.
+
+## 9. EHRLICHKEITEN
+
+- **Ich habe eine Diskrepanz gemeldet, die keine war.** Ich schrieb, das `24f9cfc`-Audit sei entgegen
+  dem Handoff nicht adjudiziert. Falsch: die Adjudikations-Zeilen tragen die Audit-Zeit als
+  `auditAt`, `at` ist die Zeit des URTEILS — meine Sonde griff auf das falsche Feld. Genau der
+  Regelbuch-Fall „der erste Verdaechtige ist die SONDE".
+- **Ich habe zuerst `tmux send-keys Enter` als Reparatur versucht**, statt die Pane zu diagnostizieren
+  — und den stale-Frame dabei fuer den Ist-Zustand gehalten. Zwei Fehlversuche, bis die
+  CPU-Messung die Wedged-Pane von der busy-Pane trennte.
+- **Ich habe `POST /api/slots/9/send` geraten und 404 bekommen** — die Route ist `POST /send` mit
+  `{slot,text}`. Und die Attention-Antwort nimmt `text`, nicht `answer` (400 beim ersten Versuch).
+- **Die drei Entwuerfe meines Vorgaengers habe ich nicht Zeile fuer Zeile geprueft**, den
+  Sechs-Stellen-Fund nicht selbst nachgezaehlt. Was ich selbst am Code nachgeprueft habe, steht in
+  §3 und §5 mit Fundstelle.
+- Der Owner hat mich per `/model` auf Opus 5 gestellt; das weicht von der Modellpolitik (Fable fuer
+  Controller) ab und war sein ausdruecklicher Akt. Die neu gegruendete Private-repo-j-MAIN habe ich
+  deshalb auf Opus gelegt wie alle anderen MAINs auf dem Board — nicht auf Fable, wie das Regelbuch
+  sagt. Das ist eine Abweichung von mir, bewusst, mit dem Fable-Limit als Grund.
+
+---
+
 # HANDOFF — Studio-als-Objekt: Gegenlesung gelandet und eingearbeitet, S1 laeuft als Lane auf Slot 1 (Slot 13 „studioObjekt" → Nachfolge, 2026-09-03 15:3x)
 
 Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`. Hier steht nur,

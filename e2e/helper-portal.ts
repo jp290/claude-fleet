@@ -50,6 +50,11 @@ interface OwnerDeviceView {
   desiredMode: string; desiredSet: boolean;
   claims: { kind: string; repo: string; ref: string; expiresAt: number }[];
   lapses: number;
+  // the wake rail. `wakeConfigured` is mandatory here for the same reason `desiredSet` is: the
+  // server always sends it, so a server that stopped must fail a check rather than degrade into
+  // "the board draws no button". `lastWakeAt` is optional because "never woken" is a real state.
+  wakeConfigured: boolean;
+  lastWakeAt?: number;
 }
 // The row shape this module asserts on. Deliberately its own copy rather than an import from the
 // harness: what is being proven is that a REMOTE row carries `remote`, and a type that made the
@@ -606,4 +611,222 @@ export async function run(h: {
   await setAuditMode("green");
   check("(K7) …and that run finished, leaving the queue empty for whatever follows",
     await waitNoLocalRun() && (await jobs()).jobs.length === 0, JSON.stringify((await jobs()).jobs));
+
+  // ===== (W) WAKE-ON-LAN — THE ONE NAMED EXCEPTION TO "NO PUSH" ===================================
+  // Everything else in this portal is a pull: the Fleet answers, the other machine asks. A magic
+  // packet is the single case where this box emits something towards a helper, and the reason it is
+  // allowed to be that case is exactly what these checks measure — one connectionless UDP frame, no
+  // credential in it, nothing that can answer it, and no effect beyond a switched-off box switching
+  // on and then polling as before.
+  //
+  // THE FIXTURE IS A REAL SOCKET, not a spy on the server's internals: a listener in THIS process,
+  // and the server configured to send at it. That is what makes "the frame left the box" a measured
+  // fact rather than a code reading — and it is why the address is configuration here (see below).
+  //
+  // WHY THE ADDRESS IS CONFIGURED AND HAS NO DEFAULT — measured on the fleet host 2026-09-03:
+  // `255.255.255.255` fails EHOSTUNREACH from a 0.0.0.0-bound socket on macOS EVEN WITH SO_BROADCAST
+  // set, while the subnet-directed address goes out at once. A default would have made this section
+  // green over a route production can never take.
+  const wakePkts: Uint8Array[] = [];
+  const wakeRx = await Bun.udpSocket({
+    hostname: "127.0.0.1", port: 0,
+    socket: { data(_sock, buf): void { wakePkts.push(new Uint8Array(buf)); } },
+  });
+  const WAKE_PORT = String(wakeRx.port);
+  // built from bytes rather than written as a literal, for two reasons: `e2e/pins.ts` forbids a
+  // MAC-shaped literal in the shipped universes and a fixture that looks like a real card's address
+  // is the kind of thing that gets copied out of a test, and it exercises the server's own parser
+  // on the ordinary colon form.
+  const MAC_BYTES = [0x02, 0x00, 0x5e, 0x10, 0x00, 0x99];
+  const macEnv = (bytes: readonly number[]): string =>
+    bytes.map((b) => b.toString(16).padStart(2, "0")).join(":");
+  const MAC_ENV = macEnv(MAC_BYTES);
+  const DEVICE_NOMAC = "e2e0device02";     // registered, never given a MAC — the 409 case
+  const DEVICE_BADMAC = "e2e0device03";    // given an unparseable one — the SAME 409, deliberately
+  // THE AUTO-WAKE GETS ITS OWN DEVICE AND ITS OWN MAC, and both halves matter. Its own device
+  // because `lastWakeAt` is the backoff's clock and (W2) below presses the button on DEVICE — a
+  // tick measured on that same row would be suppressed by the button's stamp, and the negative
+  // check that follows would pass for the wrong reason (vacuum-green: no packet because of a
+  // backoff, read as "no packet because no work"). Its own MAC because the packet on the wire is
+  // then evidence of WHICH device the tick chose, not merely that a tick fired.
+  const DEVICE_AUTO = "e2e0device04";
+  const MAC_AUTO = [0x02, 0x00, 0x5e, 0x10, 0x00, 0x9a];
+  const isMagicOf = (p: Uint8Array, mac: readonly number[]): boolean =>
+    p.length === 102
+    && [...p.slice(0, 6)].every((b) => b === 0xff)
+    && [...Array(16).keys()].every((i) => mac.every((b, k) => p[6 + i * 6 + k] === b));
+  const isMagic = (p: Uint8Array): boolean => isMagicOf(p, MAC_BYTES);
+  const waitPkts = async (n: number, timeoutMs: number): Promise<number> => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline && wakePkts.length < n) await Bun.sleep(50);
+    return wakePkts.length;
+  };
+  const WAKE_ENV = {
+    FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000", FLEET_HELPER_SWEEP_MS: "15000",
+    FLEET_HELPER_WAKE_ADDR: "127.0.0.1", FLEET_HELPER_WAKE_PORT: WAKE_PORT,
+    [`FLEET_HELPER_MAC_${DEVICE.toUpperCase()}`]: MAC_ENV,
+    [`FLEET_HELPER_MAC_${DEVICE_BADMAC.toUpperCase()}`]: "definitely-not-a-mac",
+    [`FLEET_HELPER_MAC_${DEVICE_AUTO.toUpperCase()}`]: macEnv(MAC_AUTO),
+  };
+  const devOf = async (id: string): Promise<OwnerDeviceView | undefined> =>
+    (await ownerDevices())?.find((d) => d.id === id);
+
+  await killSrv();
+  check("(W) setup: the server restarts with a wake address, a wake port and one device's MAC",
+    await startSrv({ audit: true, extra: WAKE_ENV }));
+  await Bun.sleep(750);
+  for (const [id, name] of [[DEVICE, DEVICE_NAME], [DEVICE_NOMAC, "e2e box without a MAC"],
+    [DEVICE_BADMAC, "e2e box with a bad MAC"]] as const)
+    await hpost("/api/helper/device", { deviceId: id, name, mode: "active", load: 0.1 });
+
+  // (W1) THE BOARD LEARNS WHETHER THE BUTTON WOULD DO ANYTHING — and nothing else. `wakeConfigured`
+  // is the WHOLE of what the owner's poll is allowed to know about the MAC and the address: a
+  // board that could read either would have put both on every phone that ever opened this fleet.
+  const wakeCfg = await devOf(DEVICE);
+  const noMacCfg = await devOf(DEVICE_NOMAC);
+  const badMacCfg = await devOf(DEVICE_BADMAC);
+  check("(W1) the owner's poll says wakeConfigured per device — true with a MAC, false without one",
+    wakeCfg?.wakeConfigured === true && noMacCfg?.wakeConfigured === false
+      && wakeCfg.lastWakeAt === undefined,
+    `${wakeCfg?.wakeConfigured}/${noMacCfg?.wakeConfigured} lastWakeAt=${wakeCfg?.lastWakeAt}`);
+  // an UNPARSEABLE MAC is not "configured with a problem", it is not configured. Anything else
+  // would draw a live button over a value that can only ever fail at send time.
+  check("(W1) an unparseable MAC reads as NOT configured, exactly like an absent one",
+    badMacCfg?.wakeConfigured === false, `${badMacCfg?.wakeConfigured}`);
+  // …and the payload itself. The MAC is checked in all three spellings it could be written in;
+  // the ADDRESS cannot be checked this way here and this comment says so rather than pretending:
+  // the harness binds the server on 127.0.0.1, so that string is in the payload for reasons that
+  // have nothing to do with the wake rail. What covers the address instead is the key-set check
+  // below (a leak would need a field) and the pins' declaration-line rule.
+  const sessText = await (await get("/api/sessions")).text();
+  const macForms = [MAC_ENV, MAC_ENV.replaceAll(":", "-"), MAC_ENV.replaceAll(":", "")];
+  check("(W1) the MAC appears in NO form anywhere in the owner's poll",
+    macForms.every((f) => !sessText.toLowerCase().includes(f.toLowerCase())), macForms.join(" "));
+  const KNOWN_DEV_KEYS = ["id", "name", "lastSeen", "mode", "load", "capabilities", "desiredMode",
+    "desiredSet", "claims", "lapses", "daemonSha", "update", "lastWakeAt", "wakeConfigured"];
+  const strayKeys = Object.keys(wakeCfg ?? {}).filter((k) => !KNOWN_DEV_KEYS.includes(k));
+  check("(W1) the device row carries no field beyond the known set — a leaked address would need one",
+    !!wakeCfg && strayKeys.length === 0, `stray=[${strayKeys}]`);
+
+  // (W2) THE OWNER'S BUTTON. One POST, one frame, 102 bytes, 6×FF then the MAC sixteen times.
+  const wakeRes = await post(`/api/helper/devices/${DEVICE}/wake`, {});
+  const wakeBody = (await wakeRes.json()) as { sent?: boolean; at?: number; deviceId?: string; error?: string };
+  const got = await waitPkts(1, 5000);
+  check("(W2) POST /wake answers sent:true with a timestamp and the device id",
+    wakeRes.ok && wakeBody.sent === true && typeof wakeBody.at === "number"
+      && wakeBody.deviceId === DEVICE && wakeBody.error === undefined,
+    `${wakeRes.status} ${JSON.stringify(wakeBody)}`);
+  check("(W2) EXACTLY ONE magic packet arrives: 102 bytes, 6×FF, the MAC sixteen times",
+    got === 1 && wakePkts.length === 1 && isMagic(wakePkts[0]!),
+    `${wakePkts.length} packet(s), first ${wakePkts[0]?.length ?? 0} bytes, magic=${wakePkts[0] ? isMagic(wakePkts[0]) : false}`);
+  const stamped = await devOf(DEVICE);
+  check("(W2) …and the board now carries the stamp of that frame, not a claim about the machine",
+    typeof stamped?.lastWakeAt === "number" && stamped.lastWakeAt >= (wakeBody.at ?? 0),
+    `${stamped?.lastWakeAt} vs ${wakeBody.at}`);
+
+  // (W3) THE TWO REFUSALS, and both are 409 with NO packet. An unconfigured MAC is a fact about
+  // THIS host, so the honest answer is "there is nothing to send" — never a thrown send, never a
+  // 500, and never a silent 200 over a frame that never existed.
+  const noMacRes = await post(`/api/helper/devices/${DEVICE_NOMAC}/wake`, {});
+  const noMacErr = (await noMacRes.json()) as { error?: string };
+  const badMacRes = await post(`/api/helper/devices/${DEVICE_BADMAC}/wake`, {});
+  const unknownRes = await post("/api/helper/devices/e2enosuchdevi/wake", {});
+  await Bun.sleep(600);
+  check("(W3) no MAC configured → 409 naming the device, and no packet",
+    noMacRes.status === 409 && (noMacErr.error ?? "").includes(DEVICE_NOMAC) && wakePkts.length === 1,
+    `${noMacRes.status} ${JSON.stringify(noMacErr)} pkts=${wakePkts.length}`);
+  check("(W3) an unparseable MAC → the same 409, and no packet",
+    badMacRes.status === 409 && wakePkts.length === 1, `${badMacRes.status} pkts=${wakePkts.length}`);
+  check("(W3) a device nobody has ever seen → 404 'no such device', and no packet",
+    unknownRes.status === 404
+      && ((await unknownRes.json()) as { error?: string }).error === "no such device"
+      && wakePkts.length === 1, `${unknownRes.status} pkts=${wakePkts.length}`);
+  // a HELPER may not press it: the wake door sits below the owner gate beside /mode and /update,
+  // so the helper principal's exact-match scope cannot reach it and the perimeter does not grow.
+  const helperTry = await hpost(`/api/helper/devices/${DEVICE}/wake`, {});
+  await Bun.sleep(300);
+  check("(W3) the HELPER token cannot press the wake button (owner-gated, like /mode and /update)",
+    helperTry.status === 401 && wakePkts.length === 1, `${helperTry.status} pkts=${wakePkts.length}`);
+
+  // (W4) THE AUTO-WAKE, and its FIRST check is the negative one. Device wished active, silent
+  // longer than the configured window, MAC and address in place — and NO packet, because nothing
+  // is waiting to be claimed. Delete that condition from the server and this is the check that
+  // fails; without it the two below would pass over a tick that simply packets on a timer.
+  await killSrv();
+  check("(W4) setup: the server restarts with a fast wake tick, a 1 ms silence window and a grace",
+    await startSrv({ audit: true, extra: { ...WAKE_ENV,
+      FLEET_AUDIT_HELPER_GRACE_MS: "20000",
+      FLEET_HELPER_WAKE_AFTER_MS: "1", FLEET_HELPER_WAKE_BACKOFF_MS: "600000",
+      FLEET_HELPER_WAKE_TICK_MS: "250" } }));
+  await Bun.sleep(750);
+  // the two clocks are INDEPENDENT on purpose and this fixture leans on it: the device beats (so
+  // the grace has a claim candidate to hold work for) while the wake window is 1 ms (so it is also
+  // "silent long enough"). In production those are minutes apart; here they must both hold at once,
+  // because what is under test is the JOB condition, not the clock.
+  await post(`/api/helper/devices/${DEVICE}/mode`, { mode: "active" });
+  await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME, mode: "active", load: 0.1 });
+  // registered HERE and nowhere above: this row has never been woken, so its backoff is genuinely
+  // open and the silence below can only be the job condition's doing. Its desiredMode is never set
+  // — DEVICE_MODE_DEFAULT resolves an absent wish to `active`, which is the state a real machine
+  // nobody has decided about is in.
+  await hpost("/api/helper/device", { deviceId: DEVICE_AUTO, name: "e2e box that is asleep", mode: "active", load: 0.1 });
+  const autoCfg = await devOf(DEVICE_AUTO);
+  check("(W4) setup: the auto-wake's own device is registered, configured and never yet woken",
+    autoCfg?.wakeConfigured === true && autoCfg.lastWakeAt === undefined
+      && autoCfg.desiredMode === "active" && autoCfg.desiredSet === false,
+    JSON.stringify(autoCfg));
+  const beforeIdle = wakePkts.length;
+  await Bun.sleep(2000);   // ~8 ticks
+  check("(W4) NO WORK, NO PACKET: eight ticks pass over an active, long-silent device in silence",
+    wakePkts.length === beforeIdle, `${wakePkts.length - beforeIdle} packet(s) in 2s`);
+
+  // …and now work that nobody has taken. The grace is what keeps it unclaimed for a while: the
+  // local drain leaves a fresh entry alone while a claim-capable device is registered, which is
+  // precisely the situation a wake exists for — a job waiting for a machine that is not there.
+  const rowsBeforeWake = (await newRepoRows()).length;
+  const wakeLane = await openLane(REPO, "wakework");
+  await driveMerge(wakeLane, wakeLane.branch);
+  const wakeSha = headOf();
+  const afterOne = await waitPkts(beforeIdle + 1, 15_000);
+  check("(W4) WORK WAITING + ACTIVE + SILENT: the tick sends exactly one packet, for THAT device's MAC",
+    afterOne === beforeIdle + 1 && isMagicOf(wakePkts[beforeIdle]!, MAC_AUTO),
+    `${afterOne - beforeIdle} packet(s), matchesAutoMac=${wakePkts[beforeIdle] ? isMagicOf(wakePkts[beforeIdle]!, MAC_AUTO) : false}`);
+  check("(W4) …and the device whose button was pressed in (W2) is NOT packeted again — its backoff holds",
+    !wakePkts.slice(beforeIdle).some((p) => isMagic(p)), `${wakePkts.length - beforeIdle} packet(s) since`);
+  // THE BACKOFF. Same three conditions still true, ~12 more ticks — and nothing. A box that cannot
+  // boot must not be packeted every tick until somebody notices.
+  await Bun.sleep(3000);
+  check("(W4) THE BACKOFF HOLDS: twelve further ticks under the same three conditions send nothing",
+    wakePkts.length === beforeIdle + 1, `${wakePkts.length - beforeIdle} packet(s) total`);
+  const autoStamped = await devOf(DEVICE_AUTO);
+  check("(W4) …and the auto-wake stamped the same field the button does, on its own row",
+    typeof autoStamped?.lastWakeAt === "number" && autoStamped.lastWakeAt > (wakeBody.at ?? 0),
+    `${autoStamped?.lastWakeAt} vs button ${wakeBody.at}`);
+  // nothing is lost by any of this: the grace lapses and the local drain takes the job, exactly as
+  // it does when no wake rail exists at all.
+  const wakeRows = await waitNewRepoRows(rowsBeforeWake + 1, 90_000);
+  check("(W4) the wake changed nothing about the work itself — the local drain still takes it",
+    wakeRows.some((r) => r.mainSha === wakeSha && !r.remote), 
+    JSON.stringify(wakeRows.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`)));
+  await waitNoLocalRun();
+
+  // (W5) UNCONFIGURED IS THE DEFAULT, and it is a REFUSAL, not a throw. This restart also puts the
+  // server back exactly as the section above it left it, for whatever runs next.
+  await killSrv();
+  check("(W5) setup: the server restarts with NO wake address at all",
+    await startSrv({ audit: true, extra: { FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000",
+      FLEET_HELPER_SWEEP_MS: "15000" } }));
+  await Bun.sleep(750);
+  await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME, mode: "active", load: 0.2 });
+  const beforeOff = wakePkts.length;
+  const offRes = await post(`/api/helper/devices/${DEVICE}/wake`, {});
+  const offErr = (await offRes.json()) as { error?: string };
+  await Bun.sleep(600);
+  check("(W5) no wake address configured → 409 'no wake address configured', and no packet",
+    offRes.status === 409 && offErr.error === "no wake address configured"
+      && wakePkts.length === beforeOff, `${offRes.status} ${JSON.stringify(offErr)}`);
+  check("(W5) …and the board draws no button: wakeConfigured is false for every device",
+    ((await ownerDevices()) ?? []).every((d) => d.wakeConfigured === false),
+    JSON.stringify(((await ownerDevices()) ?? []).map((d) => `${d.id}:${d.wakeConfigured}`)));
+  wakeRx.close();
 }

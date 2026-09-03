@@ -5016,6 +5016,54 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       : `view=${/daemonSha/.test(jobsView)} claim=${claimFn !== null && /daemonSha/.test(claimFn)}`);
 }
 
+// --- WAKE-ON-LAN IS THE ONE NAMED EXCEPTION TO "NO PUSH", AND IT STAYS ONE ---------------------
+// Three rules, and each one guards a different way this could quietly stop being true.
+//
+// (a) ONE SOCKET. `helper-daemon/README.md` §The rules names exactly one place this Fleet opens
+//     anything towards a helper. A second UDP call site anywhere in the server universe is a second
+//     such place — that is a doctrine change, not a refactor, and it has to be argued rather than
+//     merged. The pin is a COUNT, so a new one fails here whatever it calls itself.
+//
+// (b) THAT SOCKET CALLS setBroadcast. Measured on the fleet host 2026-09-03: without it every send
+//     to a broadcast address fails EACCES (a Python control without SO_BROADCAST fails identically,
+//     and with it 102 bytes go out at once). A constructor OPTION proves nothing — Bun 1.3.9
+//     accepts `{thisOptionDoesNotExist:true}` without complaint, so a `{broadcast:true}` in the
+//     options object is not evidence of anything. Drop the METHOD call and the suite stays green
+//     over a loopback address while every real send throws: a feature that exists only in its test.
+//
+// (c) NO MAC IN THE CODE. The address of a helper machine's card is env on the host and nothing
+//     else — this repo is public. A MAC-shaped literal in the server or client universe is either
+//     a hard-coded device or a debug line that outlived its debugging.
+{
+  const RULE_WOL = "wake-on-lan is one UDP call site in the server, it calls setBroadcast, and no MAC is written down";
+  const udpSites = [...serverU.text.matchAll(/Bun\.udpSocket\(/g)].length;
+  const sender = serverU.span("async function sendWakeFrame(", "\n}\n", 3);
+  pin(`${RULE_WOL} — exactly one Bun.udpSocket call site in the server universe`,
+    udpSites === 1, `${udpSites} call site(s)`);
+  pin(`${RULE_WOL} — that call site is sendWakeFrame and it calls setBroadcast(true) before sending`,
+    sender !== null && /Bun\.udpSocket\(/.test(sender.text)
+      && /\.setBroadcast\(true\)/.test(sender.text)
+      && sender.text.indexOf(".setBroadcast(true)") < sender.text.indexOf(".send("),
+    sender === null ? "sendWakeFrame was not found in the server universe"
+      : `broadcast@${sender.text.indexOf(".setBroadcast(true)")} send@${sender.text.indexOf(".send(")} in ${sender.file}`);
+  // the literal below is built rather than written, so this rule cannot match itself
+  const macRe = new RegExp(`(?:[0-9a-fA-F]{2}${":"}){5}[0-9a-fA-F]{2}`);
+  const macHits = [...serverU.files, ...clientU.files].filter((f) => macRe.test(f.text)).map((f) => f.file);
+  pin(`${RULE_WOL} — no MAC-shaped literal in the server or client universe`,
+    macHits.length === 0, macHits.length ? macHits.join(", ") : "clean");
+  // …and the address is MANDATORY CONFIGURATION, never a baked-in default. `255.255.255.255` was
+  // measured EHOSTUNREACH from a 0.0.0.0-bound socket on this host even WITH the broadcast flag,
+  // so a default would be a value that throws in production while the suite points elsewhere.
+  const addrLine = /const HELPER_WAKE_ADDR[^\n]*\n/.exec(serverU.module("server.ts"))?.[0] ?? "";
+  // scanned on the DECLARATION LINE, not over the whole universe: the measurement that produced
+  // this rule is written down in the prose beside it, and a rule that forbids naming the value it
+  // forbids would make its own reasoning unwritable.
+  pin(`${RULE_WOL} — the wake address is required configuration with no default`,
+    /process\.env\.FLEET_HELPER_WAKE_ADDR/.test(addrLine) && /\|\| null;/.test(addrLine)
+      && !/["'`]/.test(addrLine.replace(/^[^=]*=/, "")),
+    addrLine.trim() || "HELPER_WAKE_ADDR not found");
+}
+
 console.log(rows.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

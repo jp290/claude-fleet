@@ -1,4 +1,4 @@
-# HANDOFF — Fleet Controller (Slot 12, claude-opus-5[1m] high): F1 gefunden — `POST /send` luegt ueber die Zustellung, und das hat heute vier Sessions 13 h stillgelegt; Sanierung Slice 5+6 gelandet, alle Attentions leer, Private-repo-j neu gegruendet, codex/sol auf Slot 15; 2026-09-03 (18:5x), ctx GEMESSEN 26,8 %
+# HANDOFF - Fleet Controller (Slot 12, claude-opus-5[1m] high): F1 gefunden (`POST /send` meldet `observed` fuer GEQUEUED), meine Erklaerung dazu selbst widerlegt; Sanierung Slice 5+6 gelandet, alle Attentions leer, Private-repo-j neu gegruendet, codex/sol auf Slot 15; 2026-09-03 (19:0x), ctx GEMESSEN 27 %
 
 Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`. Hier steht nur, was
 git und die Sensoren NICHT tragen. **Achtung: der oberste Abschnitt dieser Datei ist NICHT
@@ -22,40 +22,57 @@ Spaeterer Auftrag desselben Tages, woertlich, und er ist ERLEDIGT:
    bzw. gebrauchen können. WIr müssen nämlich letztendlich das System soweit wie es geht erstmal
    wieder gerade bügeln. Es fehlen bestimmt fixes die in summe ziemlich ärger machen."
 
-## 1. DAS EINE ERGEBNIS, DAS DU NICHT VERLIEREN DARFST: F1
+## 1. F1 STEHT — MEINE ERKLAERUNG DAZU WAR FALSCH, UND DAS IST DIE WICHTIGERE ZEILE
 
-**`POST /send` meldet `acceptance:"observed"`, obwohl der Text nur GEQUEUED ist.** Der Absender
-glaubt, zugestellt zu haben. Beleg: `sendId d1614ae2bb3fbef8ddced5a2` an Slot 9 kam mit `observed`
-zurueck, waehrend die Pane woertlich „Press up to edit queued messages" zeigte.
+**KORREKTUR AN MIR SELBST, noch in derselben Session gefunden.** Ich hatte hier geschrieben, ein
+Composer-Rest unterdruecke `idle` und habe damit Slot 9s Watch fuenf Stunden am Feuern gehindert;
+und ich hatte „vier Sessions, 13 h 45 Stillstand" gezaehlt. **Beides traegt nicht.** Was wirklich
+gilt, getrennt nach Beweislage:
 
-**Die Kopplung, die daraus einen Deadlock macht:** `done-looking` verlangt IDLE
-(`lane-signals.ts#laneWatchSignal`), und ein Composer-Rest unterdrueckt idle. Slot 9s Watch
-`62c9068e` stand deshalb FUENF STUNDEN auf `armed:true / firedAt:null` — es wartete auf ein
-Ereignis, das nicht kommen konnte, waehrend seine eigene Anweisung ebenfalls feststeckte.
+**WAS STEHT (direkt beobachtet):**
+- **`POST /send` meldet `acceptance:"observed"`, obwohl der Text nur GEQUEUED ist.** Beleg:
+  `sendId d1614ae2bb3fbef8ddced5a2` an Slot 9 kam mit `observed` zurueck, waehrend die Pane —
+  frisch beschrieben, also kein alter Frame — woertlich „Press up to edit queued messages" zeigte.
+- **Der Attention-Pfad hat GAR KEIN Zustell-Faktum.** `attentionRequests[].answer` traegt nur
+  `{text, at, by}`; die Route kennt zwar `send-uncertain`, aber der Record kann „zugestellt" und
+  „haengt" nicht unterscheiden. Vier Antworten von mir stehen als `answered`, und das ist keine
+  Zustellung.
+- **Slot 6s Composer hielt wirklich ungesendeten Text** (`fahr die drei Suiten trotzdem`) —
+  repaint-bestaetigt: ein 'x' ersetzte die Anzeige, ein `BSpace` brachte den Text zurueck.
+- **`send-keys Enter` UND `C-m` submittieren in so einer Pane nicht**; einzelne Zeichen kommen an.
+  `C-u` griff bei Slot 9, bei Slot 6 nicht.
 
-Vier Sessions, gemessen 17:2x, oldest first: Slot 8 seit 10:54 (6 h 32) · Slot 6 seit 12:24 (5 h 02)
-· Slot 9 seit 15:15 (2 h 11). **Und Slot 9 ein ZWEITES Mal am selben Tag**, mit seiner Antwort auf
-seine eigene Attention — die Attention stand dabei auf `answer:null`, die Antwort war also nie durch
-die Route gelaufen. Summe rund 13 h 45 Stillstand, und **kein Sensor sagt dabei „blockiert"**.
+**WAS NICHT STEHT — und warum du es nicht wiederholen sollst:**
+- **„Composer-Rest unterdrueckt idle" habe ich NIE gemessen, nur geschlossen.** `idle` ist in
+  `lane-signals.ts#DONE_LOOKING_RULES` eine EIGENE Klausel (`idleMs >= t`) aus der
+  Pane-Beobachtung; dass ungesendeter Text sie kippt, folgt daraus nicht.
+- **Der Watch feuerte aus einem ANDEREN Grund nicht.** `DONE_LOOKING_RULES` ist ein UND aus sechs
+  Klauseln, und eine ist „no blocked/errored merge (a lost fast-forward is not one)". Slot 6s Record
+  war `status:"error"` mit `errorReason: undefined`, also `mergeBlocksLane === true` — **die Lane
+  konnte nie done-looking sein, egal was ihr Composer hielt.** Der Kommentar ueber
+  `mergeBlocksLane` beschreibt genau dieses Szenario, gemessen am 2026-09-02, woertlich: „from that
+  moment the lane could never be done-looking again: the lane-ready watch could not fire". Die
+  Ursache steht in §3, nicht hier. Ich hatte zwei Mechanismen verwechselt.
+- **Die Zahlen 6 h 32 / 5 h 02 / 2 h 11 und die Summe 13 h 45 sind NICHT belegt.** Sie ruhten auf
+  Pane-Frames, und ein abschliessender repaint-erzwungener Sweep zeigte: in Slot 1, 4, 5 und 16 war
+  der volle Composer jedes Mal ein STALE FRAME, die Composer waren leer. Nur Slot 6 ist bestaetigt.
+  Slot 8 und Slot 9 haben auf meine ERNEUTE Zustellung reagiert — das beweist nicht, dass die erste
+  haengengeblieben war.
 
-MECHANISCH GEMESSEN, verlass dich darauf statt es neu zu lernen:
-- `tmux send-keys Enter` UND `C-m` submittieren in so einer Pane NICHT. Beides probiert.
-- EINZELNE ZEICHEN kommen an ('x' erschien, `BSpace` entfernte es). Der Input ist nicht tot.
-- `C-u` griff bei Slot 9 (CPU 6–13 %), bei Slot 6 NICHT (CPU 0,3 %). **Eine wedged Pane REPAINTET
-  NICHT** — `capture-pane` liefert dann einen STUNDEN ALTEN Frame, und das fuehrt jede Diagnose in
-  die Irre. Gegenprobe: CPU des claude/codex-Prozesses messen, oder ein Zeichen senden und den
-  Repaint beobachten.
-- WAS GEHT: `C-u` auf die Ziel-Pane, dann `POST /send`, **danach die Pane pruefen**. So alle vier
-  geloest; Slot 8 hat daraufhin (a) gemessen und die Nachfolge gefahren (jetzt Slot 2).
+**DIE METHODISCHE LEHRE, die dich sonst genauso hereinlegt: eine wedged oder untaetige Pane
+REPAINTET NICHT, und `capture-pane` liefert dann einen stunden-alten Frame.** Mein erster
+Diskriminator (CPU niedrig + kein busy-Marker + letzter Turn beendet) trennt „haengt" NICHT von
+„alter Frame" — er hat mir fuenf Fehltreffer geliefert. **Der einzige Test, der es entscheidet:
+Repaint erzwingen** — ein `x` senden, lesen, `BSpace`. Der ist ungefaehrlich (er haengt an, `C-u`
+zerstoert), und er ist Pflicht, bevor irgendjemand „Composer haengt" behauptet.
 
-**Das ist dieselbe Klasse wie der Succession-Fehler** („composer still holds 98 chars after 3000ms",
-Notizen `641897ec` + `8b7c18c9`): der Paste landet, das Submit nicht. Damit sind BEIDE bisherigen
-Erklaerungen widerlegt — die Boot-Race (agent==alive nach 3 s, von Slot 13 gemessen) und die
-Platzhalter-Hypothese („mehrzeiliger Paste klappt ein"), denn meine Fundstuecke sind EINZEILIG,
-29/40/29 Zeichen. **Der eine Zug, der die Ursache endgueltig entscheidet und noch NICHT gefahren
-ist:** bei einem Fehlschlag den Composer-INHALT auslesen statt nur seine LAENGE. Ein Readiness-Gate
-(Zeile `6f401842`) haette nichts davon verhindert — sag das dem Owner ODER der Lane, falls er sie
-startet. Der Brief der Zeile unterstellt weiterhin die Readiness-Erklaerung.
+**Fuer den Succession-Fehler heisst das:** F1 bleibt der beste Kandidat („composer still holds 98
+chars after 3000ms" ist derselbe Zustand — Paste landet, Submit nicht), und die Boot-Race-Erklaerung
+bleibt widerlegt (agent==alive nach 3 s, von Slot 13 gemessen). Aber **die Ursache ist weiter
+offen**, und ein Readiness-Gate (Zeile `6f401842`) adressiert sie moeglicherweise nicht — sag das
+dem Owner ODER der Lane, falls er sie startet; der Brief der Zeile unterstellt die
+Readiness-Erklaerung. Der entscheidende, noch ungefahrene Zug bleibt: bei einem Fehlschlag den
+Composer-INHALT auslesen statt seine LAENGE, **an einer nachweislich frisch gerepainteten Pane**.
 
 ## 2. GELANDET / GETAN IN DIESER SESSION
 
@@ -130,8 +147,8 @@ dem Ergebnis, statt sie neu zu erheben). Kurzform, gerankt:
 | # | Befund | Beleg |
 |---|---|---|
 | F1 | `POST /send` luegt ueber die Zustellung (`observed` fuer `queued`) | §1, sendId d1614ae2 |
-| F2 | Composer-Rest unterdrueckt idle, kein Sensor sagt „blockiert" | 13 h 45 an einem Tag |
-| F3 | armed Watches haben keinen Alterungs-Sensor | `62c9068e`, 5 h `firedAt:null` |
+| F2 | kein Sensor sagt "ein Composer haelt ungesendeten Text" - die Behauptung "unterdrueckt idle" ist ZURUECKGEZOGEN (siehe 1.) | nur Slot 6 bestaetigt |
+| F3 | armed Watches haben keinen Alterungs-Sensor (die Ursache hier war der Merge-Record, nicht der Composer) | `62c9068e`, 5 h `firedAt:null` |
 | F4 | `Program.main` zeigt nach Retire weiter auf die Tote; `lineage` sagt korrekt `endedBy:"retire"` — die zwei Records widersprechen sich | `2c073232`, 08:46–17:54 |
 | F5 | Kill einer Lane setzt ihre Task-Zeile auf `pending` zurueck, obwohl gelandet | Slot-13-Handoff §6 |
 | F6 | Post-Land-Audit bewahrt einen 4-KB-Tail OHNE die FAIL-Zeilen | drei Reds von heute, aus dem Trail aufgeloest |
@@ -180,6 +197,13 @@ explizit gesetzten Zustand statt ueber `lastOutput`-Timing) — sie beruehrt `e2
 also die isolierte Vorschau.
 
 ## 9. EHRLICHKEITEN
+
+- **Der Hauptbefund dieser Session war zur Haelfte falsch, und ich habe es selbst gefunden** -
+  nach dem Commit `9152a83`, der die falsche Fassung traegt. Abschnitt 1 ist ersetzt, die Zahl
+  "13 h 45" und die Kausalkette "Composer-Rest unterdrueckt idle" sind zurueckgezogen. Der Fehler:
+  ich habe aus Pane-Frames Dauern gerechnet und zwei Mechanismen verwechselt, statt
+  `lane-signals.ts` zu lesen - dort stand die richtige Ursache samt einer Messung vom 2026-09-02
+  die ganze Zeit im Kommentar.
 
 - **Ich habe eine Diskrepanz gemeldet, die keine war.** Ich schrieb, das `24f9cfc`-Audit sei entgegen
   dem Handoff nicht adjudiziert. Falsch: die Adjudikations-Zeilen tragen die Audit-Zeit als

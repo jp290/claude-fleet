@@ -1,4 +1,4 @@
-# HANDOFF - Fleet Controller (Slot 12, claude-opus-5[1m] high): F1 gefunden (`POST /send` meldet `observed` fuer GEQUEUED), meine Erklaerung dazu selbst widerlegt; Sanierung Slice 5+6 gelandet, alle Attentions leer, Private-repo-j neu gegruendet, codex/sol auf Slot 15; 2026-09-03 (19:0x), ctx GEMESSEN 27 %
+# HANDOFF - Fleet Controller (Slot 12, claude-opus-5[1m] high): Sanierung Slice 5+6 gelandet (Merge-Record-Deadlock aufgeloest), alle Attentions leer, Private-repo-j neu gegruendet, codex/sol auf Slot 15 - und mein eigener "F1"-Befund zweimal korrigiert und am Ende verworfen; 2026-09-03 (19:1x), ctx GEMESSEN 28 %
 
 Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`. Hier steht nur, was
 git und die Sensoren NICHT tragen. **Achtung: der oberste Abschnitt dieser Datei ist NICHT
@@ -22,57 +22,48 @@ Spaeterer Auftrag desselben Tages, woertlich, und er ist ERLEDIGT:
    bzw. gebrauchen können. WIr müssen nämlich letztendlich das System soweit wie es geht erstmal
    wieder gerade bügeln. Es fehlen bestimmt fixes die in summe ziemlich ärger machen."
 
-## 1. F1 STEHT — MEINE ERKLAERUNG DAZU WAR FALSCH, UND DAS IST DIE WICHTIGERE ZEILE
+## 1. F1 UND F2 SIND TOT — ich habe eine Sensor-Illusion fuer einen Systemfehler gehalten
 
-**KORREKTUR AN MIR SELBST, noch in derselben Session gefunden.** Ich hatte hier geschrieben, ein
-Composer-Rest unterdruecke `idle` und habe damit Slot 9s Watch fuenf Stunden am Feuern gehindert;
-und ich hatte „vier Sessions, 13 h 45 Stillstand" gezaehlt. **Beides traegt nicht.** Was wirklich
-gilt, getrennt nach Beweislage:
+**ZWEITE UND ENDGUELTIGE KORREKTUR, beide noch in derselben Session gefunden.** Ich hatte gemeldet,
+`POST /send` luege ueber die Zustellung (`acceptance:"observed"` fuer nur GEQUEUEten Text) und ein
+Composer-Rest habe vier Sessions stillgelegt. **Beides ist falsch. Es gibt keinen solchen Fehler.**
 
-**WAS STEHT (direkt beobachtet):**
-- **`POST /send` meldet `acceptance:"observed"`, obwohl der Text nur GEQUEUED ist.** Beleg:
-  `sendId d1614ae2bb3fbef8ddced5a2` an Slot 9 kam mit `observed` zurueck, waehrend die Pane —
-  frisch beschrieben, also kein alter Frame — woertlich „Press up to edit queued messages" zeigte.
-- **Der Attention-Pfad hat GAR KEIN Zustell-Faktum.** `attentionRequests[].answer` traegt nur
-  `{text, at, by}`; die Route kennt zwar `send-uncertain`, aber der Record kann „zugestellt" und
-  „haengt" nicht unterscheiden. Vier Antworten von mir stehen als `answered`, und das ist keine
-  Zustellung.
-- **Slot 6s Composer hielt wirklich ungesendeten Text** (`fahr die drei Suiten trotzdem`) —
-  repaint-bestaetigt: ein 'x' ersetzte die Anzeige, ein `BSpace` brachte den Text zurueck.
-- **`send-keys Enter` UND `C-m` submittieren in so einer Pane nicht**; einzelne Zeichen kommen an.
-  `C-u` griff bei Slot 9, bei Slot 6 nicht.
+**Der Beweis, und er kostet einen einzigen Aufruf:** ein `POST /send` an eine Pane mit belegtem
+Composer antwortet **409** mit `{"error":"composer occupied (131 chars) — nothing typed",
+"receipt":{...,"delivery":"refused"}}`. Der Schutz steht in `server.ts` (grep `composer occupied`):
+`readComposer` liest den ECHTEN Composer vor jedem Paste, und ein nicht-leerer wirft `SendRefused` —
+mit dem Kommentar „an occupied composer is an owner draft: pasting would append to it and Enter
+would send both as one turn". **Die Route ist korrekt und ehrlich.**
 
-**WAS NICHT STEHT — und warum du es nicht wiederholen sollst:**
-- **„Composer-Rest unterdrueckt idle" habe ich NIE gemessen, nur geschlossen.** `idle` ist in
-  `lane-signals.ts#DONE_LOOKING_RULES` eine EIGENE Klausel (`idleMs >= t`) aus der
-  Pane-Beobachtung; dass ungesendeter Text sie kippt, folgt daraus nicht.
-- **Der Watch feuerte aus einem ANDEREN Grund nicht.** `DONE_LOOKING_RULES` ist ein UND aus sechs
-  Klauseln, und eine ist „no blocked/errored merge (a lost fast-forward is not one)". Slot 6s Record
-  war `status:"error"` mit `errorReason: undefined`, also `mergeBlocksLane === true` — **die Lane
-  konnte nie done-looking sein, egal was ihr Composer hielt.** Der Kommentar ueber
-  `mergeBlocksLane` beschreibt genau dieses Szenario, gemessen am 2026-09-02, woertlich: „from that
-  moment the lane could never be done-looking again: the lane-ready watch could not fire". Die
-  Ursache steht in §3, nicht hier. Ich hatte zwei Mechanismen verwechselt.
-- **Die Zahlen 6 h 32 / 5 h 02 / 2 h 11 und die Summe 13 h 45 sind NICHT belegt.** Sie ruhten auf
-  Pane-Frames, und ein abschliessender repaint-erzwungener Sweep zeigte: in Slot 1, 4, 5 und 16 war
-  der volle Composer jedes Mal ein STALE FRAME, die Composer waren leer. Nur Slot 6 ist bestaetigt.
-  Slot 8 und Slot 9 haben auf meine ERNEUTE Zustellung reagiert — das beweist nicht, dass die erste
-  haengengeblieben war.
+Daraus folgt rueckwaerts: meine Sends an Slot 6, 8 und 9 kamen mit `observed` zurueck, also fand
+`readComposer` deren Composer LEER. Der Text, den ich in diesen Panes sah, war nie lebender
+Composer-Inhalt, sondern die Anzeige des zuletzt abgeschickten Prompts. Und „Press up to edit queued
+messages" bei Slot 9 erschien, weil meine Nachricht bei einer BESCHAEFTIGTEN Session normal
+eingereiht wurde — sie ist danach abgearbeitet worden. Kein Fehler, Normalbetrieb.
 
-**DIE METHODISCHE LEHRE, die dich sonst genauso hereinlegt: eine wedged oder untaetige Pane
-REPAINTET NICHT, und `capture-pane` liefert dann einen stunden-alten Frame.** Mein erster
-Diskriminator (CPU niedrig + kein busy-Marker + letzter Turn beendet) trennt „haengt" NICHT von
-„alter Frame" — er hat mir fuenf Fehltreffer geliefert. **Der einzige Test, der es entscheidet:
-Repaint erzwingen** — ein `x` senden, lesen, `BSpace`. Der ist ungefaehrlich (er haengt an, `C-u`
-zerstoert), und er ist Pflicht, bevor irgendjemand „Composer haengt" behauptet.
+**WAS DIE FALLE WAR: `capture-pane` liefert die zuletzt GEMALTE Zeile, und eine untaetige Pane malt
+nicht neu.** Ein voller `❯`-Balken beweist damit gar nichts. Mein erster Diskriminator (CPU niedrig
++ kein busy-Marker + letzter Turn beendet) trennt „haengt" nicht von „alter Frame" — fuenf
+Fehltreffer in einem einzigen Sweep (Slot 1, 3, 4, 5, 16 sahen alle belegt aus und waren leer).
 
-**Fuer den Succession-Fehler heisst das:** F1 bleibt der beste Kandidat („composer still holds 98
-chars after 3000ms" ist derselbe Zustand — Paste landet, Submit nicht), und die Boot-Race-Erklaerung
-bleibt widerlegt (agent==alive nach 3 s, von Slot 13 gemessen). Aber **die Ursache ist weiter
-offen**, und ein Readiness-Gate (Zeile `6f401842`) adressiert sie moeglicherweise nicht — sag das
-dem Owner ODER der Lane, falls er sie startet; der Brief der Zeile unterstellt die
-Readiness-Erklaerung. Der entscheidende, noch ungefahrene Zug bleibt: bei einem Fehlschlag den
-Composer-INHALT auslesen statt seine LAENGE, **an einer nachweislich frisch gerepainteten Pane**.
+**DER RICHTIGE SENSOR, benutz ihn statt eines Frames:** `POST /send` mit einer Probe-Nutzlast. Es
+antwortet 409 mit der ZEICHENZAHL, wenn der Composer belegt ist, und stellt sonst zu. Das ist die
+Server-eigene Messung, kostet einen Aufruf und kann nicht veralten. Zweitbester Weg an der Pane:
+Repaint erzwingen (`x` senden, lesen, `BSpace` — haengt an, zerstoert nichts; `C-u` zerstoert).
+
+**Fuer den Succession-Fehler heisst das:** F1 ist als Erklaerung WEG. Was von der Vorgeschichte
+bleibt, ist nur noch die Widerlegung der Boot-Race durch Slot 13 (agent==alive nach 3 s) und die
+Widerlegung der Platzhalter-Hypothese. **Die Ursache von „composer still holds 98 chars after
+3000ms" ist damit vollstaendig offen** — und weil die Sonde dieselbe `readComposer`-Familie benutzt,
+ist der erste Verdaechtige jetzt die SONDE bzw. das, was in der frisch geoeffneten Pane wirklich
+steht. Der ungefahrene Zug bleibt derselbe und ist wichtiger denn je: bei einem Fehlschlag den
+Composer-INHALT auslesen, nicht seine Laenge. Ein Readiness-Gate (`6f401842`) adressiert nichts
+davon nachweislich.
+
+**Was von meiner Fix-Liste uebrigbleibt:** F1 und F2 gestrichen. F3 bleibt als Sensor-Luecke, aber
+seine Evidenz (Watch 5 h armed) gehoert §3, nicht dem Composer. F4–F9 stehen unberuehrt auf ihrer
+eigenen Evidenz. **Der einzige echte, heute bewiesene Systemfehler dieser Session ist §3** — und der
+gehoert Slot 9, nicht mir: es hat ihn diagnostiziert, ich habe ihn nur nachgeprueft und aufgeloest.
 
 ## 2. GELANDET / GETAN IN DIESER SESSION
 
@@ -146,8 +137,8 @@ dem Ergebnis, statt sie neu zu erheben). Kurzform, gerankt:
 
 | # | Befund | Beleg |
 |---|---|---|
-| F1 | `POST /send` luegt ueber die Zustellung (`observed` fuer `queued`) | §1, sendId d1614ae2 |
-| F2 | kein Sensor sagt "ein Composer haelt ungesendeten Text" - die Behauptung "unterdrueckt idle" ist ZURUECKGEZOGEN (siehe 1.) | nur Slot 6 bestaetigt |
+| ~~F1~~ | GESTRICHEN - die Route hat einen Composer-Schutz und lehnt mit 409 ab (siehe 1.) | - |
+| ~~F2~~ | GESTRICHEN mit F1 - es gab nie einen haengenden Composer | - |
 | F3 | armed Watches haben keinen Alterungs-Sensor (die Ursache hier war der Merge-Record, nicht der Composer) | `62c9068e`, 5 h `firedAt:null` |
 | F4 | `Program.main` zeigt nach Retire weiter auf die Tote; `lineage` sagt korrekt `endedBy:"retire"` — die zwei Records widersprechen sich | `2c073232`, 08:46–17:54 |
 | F5 | Kill einer Lane setzt ihre Task-Zeile auf `pending` zurueck, obwohl gelandet | Slot-13-Handoff §6 |
@@ -197,6 +188,14 @@ explizit gesetzten Zustand statt ueber `lastOutput`-Timing) — sie beruehrt `e2
 also die isolierte Vorschau.
 
 ## 9. EHRLICHKEITEN
+
+- **Mein Hauptbefund war eine Sensor-Illusion, und ich habe ihn zweimal korrigieren muessen,
+  beide Male selbst.** Erst die Kausalkette (der Watch hing am Merge-Record, nicht am Composer),
+  dann der Befund als Ganzes (es gab nie einen haengenden Composer; die Route schuetzt korrekt und
+  lehnt mit 409 ab). Beide falschen Fassungen stehen committet in `9152a83` und `6b44987`. Der
+  Fehler war jedes Mal derselbe und steht so im Regelbuch: ich habe eine ANZEIGE fuer einen ZUSTAND
+  gehalten und daraus Dauern gerechnet, statt den Sensor zu suchen, den der Server selbst hat.
+  Wer diesen Abschnitt liest, glaube ihm nicht mehr als den Belegen darin.
 
 - **Der Hauptbefund dieser Session war zur Haelfte falsch, und ich habe es selbst gefunden** -
   nach dem Commit `9152a83`, der die falsche Fassung traegt. Abschnitt 1 ist ersetzt, die Zahl

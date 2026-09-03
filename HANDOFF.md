@@ -535,6 +535,14 @@ Reihenfolge, die drei Owner-Entscheide davor sind die ersten Fragen an ihn.
 sie):** `fcaa4a4` → `f1cc8c5` → `eac1a0f` (drei Fassungen der Analyse, jede eine korrigierte
 Fehlfassung der vorigen, in §0 der jeweiligen benannt), `3f561b5` (der Stand).
 
+**Nach dem Handoff noch direkt auf main** (Direkt-Commits, in ihren Bodies deklariert): `ff7fd72` —
+ein rotes Post-Land-Audit auf `5848207f` kam herein, ich habe es als `flake` adjudiziert (das
+gelandete Commit ist docs-only, kann keinen Check regressen) und dabei gemessen, dass §11.2l in
+`docs/verify-tiering.md` seine Familie zu Unrecht einen Singleton nennt: drei Geschwister fielen
+mit, erstmals alle vier gemeinsam in 367 Läufen. Basisraten und der billigste nächste Messschritt
+stehen jetzt dort. **Für dich nur relevant, falls dich jemand danach fragt** — es gehört nicht zum
+Kontext-Pack-Netz.
+
 **Auf Branch `pack-source-hash` (Basis `24f9cfc`), NICHT gelandet:**
 
 - `6535f71` reine Hälfte: `context-manifest.ts#observedSourceHash` + `#stampObservedSourceHashes`,

@@ -2014,6 +2014,36 @@ the restart, or subscribe with `idleSec: 0` and assert the pending-ness it actua
 rather than inherit it from whatever else happens to type into that pane. Until then a red here
 is NOT a verdict on the tree under test — check the stretch in the run's trail first.
 
+**NACHTRAG 2026-09-03, nach dem Post-Land-Audit auf `5848207f`: die Familie ist KEIN Singleton.**
+Dieses Audit (`isolated-20260903T162559Z-69549`, 3527 Checks) fiel vierfach, und alle vier sitzen
+in derselben Naht — Watch/Event-Lebenszyklus um Teardown und Restart:
+
+| Check | Basisrate im Trail | Bäume mit FAIL (davon sauber) |
+|---|---|---|
+| `subject-gone: the torn-down lane's undelivered event is terminal as itself…` | 13/85 = 15,3 % | 6 (2) |
+| `restart keeps the busy pending event with the same id and no invented attempt` | 17/367 = 4,6 % | 15 (14) |
+| `deleting a Watch does not delete its acknowledged event` | 5/367 = 1,4 % | 2 (0) |
+| `subject teardown after event creation leaves the event trail intact` | 6/367 = 1,6 % | 3 (0) |
+
+Gemessen über alle `e2e-trail/*.jsonl` des Haupt-Checkouts am 2026-09-03; die Zahl für den
+Restart-Check liegt eine Rotmeldung über der oben genannten, weil die Läufe dieses Tages mitzählen.
+
+**Zwei Beobachtungen, die den Reparaturweg oben schärfen, ohne ihn zu ersetzen:**
+
+1. **Alle vier fielen zum ersten Mal GEMEINSAM** — in keinem der 367 Läufe davor sind sie zusammen
+   rot geworden (35 Läufe hatten mindestens einen). Wer die Fixture nach dem §11.2f-Muster
+   repariert, sollte deshalb prüfen, ob die vier eine gemeinsame Vorbedingung teilen (die
+   Empfänger-Beschäftigung) statt vier eigene zu haben — dann ist es EIN Schnitt, nicht vier.
+2. **Die beiden seltenen Mitglieder sind noch nie mit `tree: null` rot geworden** (0 von 5 bzw.
+   0 von 6): sie fallen nur in Läufen, die einen Baum auflösen konnten, also nicht in
+   Post-Land-Audits — bis zu diesem hier. Das ist ein Unterschied im Umfeld, kein Urteil über den
+   Baum, und der billigste nächste Messschritt an dieser Familie.
+
+Das Audit selbst ist als `flake` adjudiziert, und zwar aus einem Grund, der keine Statistik
+braucht: **das gelandete Commit `5848207f` ist docs-only** — 46 eingefügte Zeilen in genau dieser
+Datei, dem Eintrag §11.2l. Ein Diff, das nur Prosa bewegt, kann keinen Check regressen.
+
+
 ## 12. Ein Cast auf eine Netz-Antwort ist eine Behauptung — der `awaiting`-Befund (aus `CLAUDE.md` umgezogen 2026-08-18)
 
 Die Regel steht in `CLAUDE.md` §Deploy; hier der Befund im Original:

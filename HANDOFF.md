@@ -138,6 +138,38 @@ Checks mit `ENOENT … node_modules` in `e2e/slots.ts:712` ab — ein frischer `
 kein `node_modules`, und `e2e-isolated.sh` verlinkt die Scratch-Instanz dorthin zurueck.
 **Ein Kontroll-Worktree braucht `bun install --frozen-lockfile`, bevor die Suite laeuft.**
 
+
+### Nachtrag 2026-09-03, Program-MAIN 66499a03 Slot 16 — §3 IST ERLEDIGT, der Kontrolllauf wird nicht mehr gebraucht
+
+**Der Verdacht ist ausgeraeumt, das Rot ist als `flake` adjudiziert (Fleet Controller Slot 13), und
+`undo-land` auf `24f9cfc` ist damit VOM TISCH.** Wer §3 oben liest, liest einen ueberholten Stand —
+die Zeile „undo-land ist der Rueckweg" bitte nicht mehr ausfuehren.
+
+**Die Praemisse von §3 war ein Speicher-Irrtum, und ich sass ihm zuerst genauso auf.** „Basisrate
+aller vier: 0/26 — keine Flake-Historie" ist auf `$TMPDIR/fleet-e2e-trail/` gerechnet. Das ist NICHT
+der Trail-Speicher, sondern sein Rueckfall fuer den Fall, dass gar kein git-Baum aufloest
+(`e2e/trail-emit.ts#defaultDir`, `docs/e2e-trail.md` Punkt 3): 32 Dateien. Der echte Speicher liegt
+neben dem git-common-dir als `<repo>/e2e-trail/` und trug heute **5514 Dateien**. `./state.sh` nennt
+die grosse Zahl in der Ledger-Zeile — sie stand in meiner Erdung, und ich habe sie mit meiner eigenen
+Messung trotzdem nicht verbunden. Meine Notiz `ee7bc7d1` traegt denselben Fehler; korrigiert in
+`2eb48783`.
+
+**Gemessen auf dem echten Speicher (363 Laeufe, die diese Familie tragen):** die EXAKTE Vierer-
+Signatur — alle vier gemeinsam rot — ist **viermal** gefallen, und zwar auf `9db4b85` (16.08.),
+`d63bb91`, `299ac65` und `4d2dd39` (alle 02.09.). **Jeder dieser Baeume ist aelter als das Land und
+traegt Cs Code nicht.** Mindestens einer der vier faellt in 15 von 363 Laeufen (4,1 %), verteilt ueber
+viele fremde Baeume, darunter zwei Laeufe von heute auf `7d938cee`. Es gibt also reichlich
+Flake-Historie; sie war nur im falschen Verzeichnis nicht zu sehen.
+
+**Zur „25 Checks in 23,3 min"-Sorge:** die Zahl ist ein Artefakt des aufbewahrten 4-KB-Tails, kein
+Abbruch. Dieselbe `out`-Spur traegt die Trail-Zeile `rows=3506 results=3506` auf `tree=24f9cfc`. Der
+Lauf hat vollstaendig gemessen. `checks.ran` zaehlt nur, was im gespeicherten Tail steht — bei einem
+Remote-Audit ist das fast nichts.
+
+**Was vom Kausalpfad bleibt:** nichts Tragendes. `mergeBlocksLane` sitzt im done-looking-Praedikat,
+die vier Fixtures messen FleetEvent-Zustellung an einen belegten Empfaenger — und die Signatur ist
+aelter als der Helfer.
+
 ## 4. Slot 6 — die 528k-Ursache war NICHT, was alle annahmen
 
 Gemessen am Transcript (4,35 MB, 459 Turns, `usage`-Felder), committed als `80cd901`:

@@ -2039,9 +2039,27 @@ Restart-Check liegt eine Rotmeldung über der oben genannten, weil die Läufe di
    Post-Land-Audits — bis zu diesem hier. Das ist ein Unterschied im Umfeld, kein Urteil über den
    Baum, und der billigste nächste Messschritt an dieser Familie.
 
-Das Audit selbst ist als `flake` adjudiziert, und zwar aus einem Grund, der keine Statistik
-braucht: **das gelandete Commit `5848207f` ist docs-only** — 46 eingefügte Zeilen in genau dieser
-Datei, dem Eintrag §11.2l. Ein Diff, das nur Prosa bewegt, kann keinen Check regressen.
+Das Audit selbst ist als `flake` adjudiziert. **Der Grund, der dabei zuerst notiert wurde, hält
+nicht** (Korrektur der Sanierungs-MAIN, 2026-09-03, am Baum nachgemessen): dort stand, das
+gelandete Commit `5848207f` sei docs-only und ein Prosa-Diff könne keinen Check regressen. Das
+beschreibt `5848207f` gegen seinen ELTERN — nicht den Baum, den das Audit gemessen hat. Die
+Land-Note sagt `mainBefore f3a56d7` → `mainAfter 5848207f`, und `covers` nennt den Zweig
+`fleet/260903062628-c5ef`: die Slice-5+6-Lane, keine Doc-Lane. Der auditierte Tip enthält also
+`c80b171` — **112 Zeilen aus `server.ts` heraus** nach `server/http.ts` und `server/auth.ts`.
+Das Land ist nicht docs-only.
+
+**Das Urteil `flake` bleibt trotzdem richtig, aus einem Grund, der den ganzen Land-Diff prüft
+statt nur den obersten Commit:** über `git diff f3a56d7 5848207` enthält der Diff **null**
+Code-Treffer auf `fleetEvents` · `pruneFleetEvents` · `FleetEvent` · `watches` · `tickWatches` ·
+`eventRows` · `FLEET_EVENT_*`. Der einzige Treffer überhaupt ist das Wort `tickWatches` in der
+Prosa dieses Abschnitts hier. Gegenprobe, damit die Null gemessen und nicht bloß leer ist:
+dieselbe Suchform findet 29 Treffer auf die Namen, die der Diff wirklich bewegt (`tokenGate`,
+`TOKEN`, `json`, `HOST`, `PORT`). Der bewegte Code kann die Watch/Event-Naht nicht erreichen.
+
+**Die Lehre ist allgemeiner als dieser Fall:** ein Audit misst den TIP, nicht den obersten
+Commit. Wer eine Adjudikation auf „das gelandete Commit ist docs-only" stützt, muss `mainBefore`
+aus der Land-Note lesen — ein Land trägt oft mehr als einen Commit, und genau dann ist die
+bequeme Begründung die falsche.
 
 
 ## 12. Ein Cast auf eine Netz-Antwort ist eine Behauptung — der `awaiting`-Befund (aus `CLAUDE.md` umgezogen 2026-08-18)

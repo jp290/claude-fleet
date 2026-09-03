@@ -93,3 +93,85 @@ möglich** — das Modul importiert zwei Funktionen aus dem Kern, wie jedes ande
 - **Die Suiten.** `./e2e-postland-audit.sh` ist die einzige Suite, die auf diesem Pfad etwas
   beweist, und kein Gate fährt sie. Sie gehört ausgeschrieben in den Brief, zusätzlich zur
   `./e2e-isolated.sh`-Vorschau.
+
+---
+
+## 6. NACHTRAG, gemessen 2026-09-03 nach dem Deploy — §1–§4 beschreiben einen Schnitt, den die Modul-Invariante dieses Repos NICHT zulässt
+
+**Die Invariante, die ich beim ersten Schreiben nicht geprüft habe:** jedes bestehende Modul
+unter `server/` ist ein BLATT. `server/auth.ts` importiert `node:crypto`, `./audit-log`,
+`./http`, `./types`; `server/audit-log.ts` importiert `node:path` und `./persist`;
+`server/transport.ts` importiert `node:fs`, `node:path`, `bun`, `./types`. **Keines importiert
+aus `server.ts`.** Der Kern importiert die Module, nie umgekehrt — und `server/audit-log.ts`
+zeigt auch, wohin ein Pfad-Konstante gehört: `AUDIT_FILE` liegt IM Modul, der Kern importiert
+sie von dort.
+
+§3 oben zählt 14 Rückimporte in den Kern — das ist die richtige Richtung und unproblematisch.
+§5 zählt neun Namen als „Importe INS Modul" und nennt sie ungeprüft. **Geprüft sind sie jetzt,
+und sie sind der eigentliche Befund: sie brechen die Blatt-Invariante.**
+
+### Was je Einheit wirklich am Kern hängt
+
+| Einheit | Kern-Abhängigkeiten |
+| --- | --- |
+| `state 11840-11866` (`auditQueue`, `auditDraining`, `runningPostLandAudit`, …) | **keine — Blatt** |
+| `schedulePostLandAudit` | **keine — Blatt** |
+| `snapshotIntegrationTree` | **keine — Blatt** |
+| `auditChildEnv` | **keine — Blatt** |
+| `postLandAuditLiveView` | **keine — Blatt** |
+| `kickAuditDrain` + `armAuditGraceKick` | **keine — Blatt** |
+| `savePostLandAuditQueue` | `POSTLAND_AUDIT_QUEUE_FILE` — Pfad, zieht nach dem `AUDIT_FILE`-Muster MIT ins Modul |
+| `durations` (12269–12323) | `PostLandAuditRow` — Typ, steht bei `:11803` und zieht mit |
+| `postLandAuditChecks` | `PostLandAuditChecks` — Typ, `:11802`, zieht mit |
+| `postLandAuditSummary` | `lastPostLandAudit` — `:11836`, zieht mit |
+| `consts+types 11760-11800` | **`repoWorkers`, `workerCmdFor`** (Repo-Worker-Registry im Kern) |
+| **`drainPostLandAudits`** | **`helperClaimCandidateExists`, `helperClaimOf`** (Helfer-Portal, Tier 3) **, `reportServerRun`** |
+| **`runPostLandAudit`** | **`mintAuditEvents`** (`:5471`, Event-System), **`retainRunOutput`** (`:10874`), **`descendantPids`** (`:11114`), **`killProcessTree`** (`:11138`), **`VERIFY_SKIP_EXIT`** (`:10912`) |
+
+Die Typen und `lastPostLandAudit` sind also GRATIS — sie stehen ohnehin im Bereich. Übrig
+bleiben **sieben echte Kern-Bindungen**, und sie verteilen sich auf zwei Funktionen: den Drain
+und den Runner. Genau die beiden sind das Herz des Slice.
+
+### Was daraus folgt
+
+**Slice 7 als „Move der Audit-Queue" ist kein reiner Move.** Er hat drei Formen, und die Wahl
+ist eine Entscheidung, keine Messung:
+
+1. **Injektion** — Drain und Runner nehmen ihre sieben Bindungen als Parameter. Verhaltenserhaltend,
+   aber KEIN Move: die Signaturen ändern sich, und `c.` des Slice-Protokolls („Verhaltens-Delta?")
+   bekommt echte Arbeit. Bricht mit dem Muster aller sechs bisherigen Slices.
+2. **Vorher die Abhängigkeiten schneiden** — erst die Blätter, dann die Queue.
+3. **Nur die Blätter nehmen** und Drain + Runner im Kern lassen. Ehrlich, aber es bewegt
+   vielleicht 200 der 530 Zeilen und lässt die zwei größten Funktionen stehen.
+
+**Empfehlung: (2), und der erste Schnitt ist ein eigener, vollständig vermessener Mini-Slice.**
+
+### Der Mini-Slice, der vorher gehört: `server/proc.ts`
+
+Drei der sieben Bindungen sind selbst Blätter und gehören zusammen — Prozess- und
+Ausgabe-Hygiene, die nichts mit Audit zu tun hat:
+
+| Symbol | Z. | eigene Abhängigkeit |
+| --- | --- | --- |
+| `retainRunOutput` | `:10874` | `STDERR_MARK`, `byteLen`, `retainSection` — alle drei lokal, ziehen mit |
+| `descendantPids` | `:11114` | `KILL_TREE_MAX_DEPTH` — zieht mit |
+| `killProcessTree` | `:11138` | **keine** |
+
+Zusammen ~100 Zeilen, echtes Blatt, und `retainRunOutput` wird auch vom Verify-Gate benutzt —
+der Schnitt zahlt also zweimal. **Warnung an den, der ihn briefet:** meine erste Sonde schrieb
+`killProcessTree` fälschlich `MergeLast`/`VerifyPlan` zu, weil ich seinen Endpunkt geraten statt
+gelesen hatte — die beiden gehören `runVerify` bei `:11146`. Die Grenzen jeder Einheit werden
+GELESEN, nicht geschätzt.
+
+Danach bleiben für die Queue vier echte Bindungen: `mintAuditEvents`, `reportServerRun`,
+`repoWorkers`/`workerCmdFor` und das Helfer-Paar. **Ob die überhaupt schneidbar sind, ohne den
+Kern umzubauen, ist offen und ist die Frage, die vor jedem Queue-Brief beantwortet sein muss.**
+
+### Und was das für Erfolgsmaß 1 heißt
+
+Der Befund ist größer als dieser Slice. `HANDOFF.md` §7 hält Erfolgsmaß 1 (Kern ≤ 8.000 Z.) für
+unerreichbar und begründet es damit, dass die Kernzeilen AUFRUFSTELLEN sind, keine Definitionen.
+Diese Messung nennt den zweiten Grund: **die verbleibenden Bereiche sind keine Blätter.** Sechs
+Slices lang war „das nächste Blatt" verfügbar; ab hier ist es das nicht mehr, und jeder weitere
+Schnitt kostet entweder eine Signaturänderung oder einen vorgelagerten Slice. Das gehört in den
+Owner-Entscheid, der zu Erfolgsmaß 1 ohnehin aussteht.

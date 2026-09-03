@@ -93,12 +93,10 @@ import { STATIC, bundleV, staticResponse, finishHttp, transportWs, transportSinc
 import { DIRS_CAP, FIND_MAX_DEPTH, FIND_MAX_VISIT, FIND_MAX_HITS, FIND_MAX_MS, FIND_FANOUT, FIND_MAX_SLOW,
   findSlow, knownSlow, readdirSoon, gitKind, subdirNames, DIRINFO_COMMITS, FILE_CAP, fileBody, editability,
   TREE_CAP, FILE_WRITE_DENY, dirEntries, type DirEntry } from "./server/dir-explorer";
+import { json, HOST, PORT } from "./server/http";
+import { tokenFrom, secretEq, commentStrike, authFails, failStrike, shareGate, closeShareClients,
+  guard } from "./server/auth";
 
-// Defaults to localhost — nothing is network-reachable until you explicitly set FLEET_HOST
-// (e.g. your Tailscale IP via `tailscale ip -4`). Even then, every request needs the access
-// token (printed on boot), because a reachable fleet is remote code execution as your user.
-const HOST = process.env.FLEET_HOST ?? "127.0.0.1";
-const PORT = Number(process.env.FLEET_PORT ?? 8790);
 // lines of scrollback every WS connect is seeded with, from a fresh capture-pane. Capture
 // output is line-aligned and already reflowed to the pane's width, so it can neither begin
 // mid-escape-sequence nor replay the raw stream's stale wrapping — and it costs a few KB
@@ -16280,26 +16278,14 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
   await deliverMergeVerdict(s, cwd, branch);
 }
 
-// --- auth: single access token, sent once via ?token= then held in a SameSite=Strict cookie.
-// Strict cookie + Origin/Host guards below are what stand between "any website you visit"
-// and keystroke injection into your shells (WebSockets are not subject to CORS).
-function tokenFrom(req: Request): string | null {
-  const auth = req.headers.get("authorization");
-  if (auth?.startsWith("Bearer ")) return auth.slice(7);
-  const cookie = req.headers.get("cookie");
-  const m = cookie ? /(?:^|;\s*)fleet=([^;]+)/.exec(cookie) : null;
-  if (m) return m[1];
-  return new URL(req.url).searchParams.get("token");
-}
-
-function secretEq(a: string, b: string): boolean {
-  const A = Buffer.from(a), B = Buffer.from(b);
-  return A.length === B.length && timingSafeEqual(A, B);
-}
+// --- the owner token itself, and only it: `TOKEN` is a module-wide `let` the boot path assigns,
+// and an imported ESM binding cannot be assigned to — so the token and its two readers stay here
+// while the rest of the auth surface (tokenFrom, secretEq, the share gates, guard) is imported
+// from server/auth.ts above.
 let TOKEN = "";
 const tokenOk = (t: string | null): boolean => !!t && secretEq(t, TOKEN);
 // throttled wrapper for the two request paths that check a caller-supplied token: a flat
-// per-attempt cost, same precedent as share auth (failStrike below), but deliberately no
+// per-attempt cost, same precedent as share auth (failStrike in server/auth.ts), but deliberately no
 // escalating lockout here — the owner token is the ONLY credential this app has, so a
 // count-based lockout would let a remote guesser lock the real owner out of their own
 // dashboard, which is worse than unlimited-but-throttled guessing against 192 bits of entropy
@@ -16310,87 +16296,9 @@ async function tokenGate(t: string | null): Promise<boolean> {
   return false;
 }
 
-// --- share auth: per-share cookie, brute-force throttled (public-facing) ---
+// the share lookup stays in the core for the same reason `TOKEN` does: `shares` is a module-wide
+// `let` this file reassigns in six places, so an importer could never write it back.
 const shareBy = (id: string) => shares.find((x) => x.id === id) ?? null;
-// comment flood guard: per-share sliding minute, cheap and in-memory — guests are
-// already authed, this only stops a stuck key / paste loop from filling the thread
-const commentTimes = new Map<string, number[]>();
-function commentStrike(id: string): boolean {
-  const now = Date.now();
-  const list = (commentTimes.get(id) ?? []).filter((t) => now - t < 60_000);
-  if (list.length >= 10) { commentTimes.set(id, list); return true; }
-  commentTimes.set(id, [...list, now]);
-  return false;
-}
-function shareAuthed(req: Request, sh: Share): boolean {
-  const cookie = req.headers.get("cookie");
-  const m = cookie ? new RegExp(`(?:^|;\\s*)share_${sh.id}=([^;]+)`).exec(cookie) : null;
-  return !!m && secretEq(m[1], sh.secret);
-}
-const authFails = new Map<string, { count: number; resetAt: number }>();
-function failStrike(id: string): boolean {
-  const now = Date.now();
-  const f = authFails.get(id);
-  if (!f || now > f.resetAt) {
-    authFails.set(id, { count: 1, resetAt: now + 3600_000 });
-    return false;
-  }
-  f.count++;
-  return f.count > 50; // locked for the rest of the hour
-}
-// A wrong share COOKIE is a password guess like any other. /s/<id>/auth throttles every guess
-// (400ms flat) and locks the share after 50, but the cookie path used to answer an unlimited
-// number of guesses at full request rate — the same secret, a cheaper oracle, no lockout. Since
-// a share is a live window onto the owner's terminal, that made a weak owner-chosen password
-// (the route floor is 8 chars) brute-forceable in the open. Every non-/auth share surface routes
-// its credential check through here so both paths feed ONE counter.
-// Two deliberate asymmetries:
-//  - an ABSENT cookie is not a guess (a guest who hasn't logged in yet, or the share page's own
-//    first load) and never consumes a strike — otherwise any stranger could lock a share by
-//    loading its URL 51 times.
-//  - a VALID cookie is answered before the lock is consulted, so a lockout silences guessers
-//    without evicting the authenticated guest (/auth's pre-check does refuse even a correct
-//    password while locked — that stays, it is the path a guesser uses).
-function shareCookieOffered(req: Request, sh: Share): boolean {
-  const cookie = req.headers.get("cookie");
-  return !!cookie && new RegExp(`(?:^|;\\s*)share_${sh.id}=`).test(cookie); // id is [a-z0-9], regex-safe
-}
-async function shareGate(req: Request, sh: Share): Promise<Response | null> {
-  if (shareAuthed(req, sh)) return null;
-  if (!shareCookieOffered(req, sh)) return json({ error: "unauthorized" }, 401);
-  const locked = failStrike(sh.id);
-  audit(locked ? "share_auth_lock" : "share_auth_fail", sh.slot); // never the guessed secret
-  await Bun.sleep(400); // flat cost per wrong guess, same as /auth
-  return json({ error: locked ? "too many attempts — try again later" : "unauthorized" }, locked ? 429 : 401);
-}
-function closeShareClients(s: Slot, shareId: string, code = 4001, reason = "share revoked"): void {
-  for (const ws of s.clients) if (ws.data.share === shareId) ws.close(code, reason);
-}
-
-const ALLOWED_HOSTS = new Set(
-  [`${HOST}:${PORT}`, `localhost:${PORT}`, `127.0.0.1:${PORT}`]
-    .concat((process.env.FLEET_ALLOWED_HOSTS ?? "").split(",").map((h) => h.trim()).filter(Boolean)),
-);
-
-// DNS-rebinding guard (Host) + cross-site guard (Origin). Browsers attach Origin to
-// fetch/XHR/WebSocket; if it's present its host must be us.
-function guard(req: Request): Response | null {
-  const host = req.headers.get("host") ?? "";
-  if (!ALLOWED_HOSTS.has(host))
-    return json({ error: `host '${host}' not allowed — set FLEET_ALLOWED_HOSTS` }, 403);
-  const origin = req.headers.get("origin");
-  if (origin) {
-    try {
-      if (new URL(origin).host !== host) return json({ error: "cross-origin request blocked" }, 403);
-    } catch {
-      return json({ error: "cross-origin request blocked" }, 403);
-    }
-  }
-  return null;
-}
-
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 function transportReport(): Record<string, unknown> {
   // open sockets are counted from the live client sets rather than tracked on close — the

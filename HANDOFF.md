@@ -162,6 +162,23 @@ git und die Sensoren nicht tragen. Die Abschnitte darunter sind FREMD (geteilte 
   `0a099c62` entschieden — die Route kennt kein „offen", darum diese Form.
 - **Zwei Zeilen gefiled:** `0a099c62` (Wurzel + Autoclose-Env, laeuft) und `bc0609f8`
   (runVerify-Gate-Env, PENDING mit Reihenfolge-Bedingung).
+- **Audit-Determiniertheit (79036e9a, MAIN Slot 6), 00:0x:** Messnotiz fe939cd gelandet — jede
+  Flake-Familie springt am Tag ihrer Landung von 0 auf ihre Dauerrate; Generator ist der LANDEWEG
+  neuer Check-Familien. Mein Entscheid auf Attention 87e55422: Kriterium (b) ERSETZT durch „je
+  Familie 0 Fails auf allen Baeumen mit dem Fix bei ≥10 Laeufen (Register, merge-base)“; Regel A
+  (keine neue Check-Familie ohne 3 gruene serielle Laeufe) gilt sofort als Brief-Regel des Programs.
+  **OFFENE OWNER-FRAGE (Promotion): Regel A fleet-weit?** Vorschlag N=3, nur fuer Lands, die e2e/ um
+  eine FAMILIE erweitern; Kosten ~1,5 h je solchem Land. Kein Ruhefenster zugesagt (B).
+- **23:5x Mutex-Stau (Attention fbe5e7d9 von 66499a03):** vier Suite-Laeufe in EINER mkdir-Schlange
+  ohne Reihenfolge (Server-Audit haelt, Arm A 0a099c62 / postland-audit 8ab7215f seit 21:51 /
+  postland-audit S1 warten) — 8ab7215f verhungert 2 h. Merkposten fuer Fleet-Betrieb: **FIFO-Mutex**.
+  Verursacht durch meine zwei Hand-Dispatches; nichts abgeschossen.
+- Zwei Altlast-Urteile fuer 66499a03 abgelegt (at=1788490729963 real, at=1788417759511 flake).
+- Fleet-Betrieb-MAIN ist per Succession auf **Slot 8**; 66499a03-MAIN auf **Slot 5**. Slot 2 (R2')
+  traegt einen UNGESENDETEN Nudge der alten MAIN im Composer („report what you have so far“) — der
+  neuen MAIN gemeldet, nicht selbst abgeschickt.
+- `bc0609f8` (runVerify erbt Server-Env — Land-Gate-Kette laeuft mit Autoclose=1; PATH darf nicht
+  verlorengehen) liegt PENDING: Freigabe erst NACH dem Land von 0a099c62.
 
 ## 2. Was JETZT offen ist, in dieser Reihenfolge
 
@@ -368,6 +385,9 @@ gpt-5.6-sol/high, GLM-Gegenchecks pi-zai/glm-5.3/high (kein Lane-Watch: Monitor 
   real/flake/stale-test/unknowable — ein „zurueckgezogen/offen“ gibt es nur als unknowable+Note.
 - **Der Suite-Trail der Audits liegt im TMPDIR des SERVERS**
   (`/private/var/folders/sj/…/T/fleet-e2e-trail/`), nicht in meinem; `find … -name 'isolated-<datum>*'`.
+- **Kein `/send` unmittelbar vor/waehrend `POST /api/deploy`:** stirbt der Server zwischen Paste und
+  Enter, liegt der halbe Text im Composer der Zielpane und JEDE weitere Zustellung dorthin bekommt 409
+  „composer occupied“. Heilung: `tmux send-keys C-u` (eigener Text!) und per `/send` neu.
 - Die Uhr: mein Vorgaenger schrieb „21:2x", die Maschine sagte 21:01 — Zeitangaben mit x sind
   Schaetzungen, `date` ist die Messung.
 

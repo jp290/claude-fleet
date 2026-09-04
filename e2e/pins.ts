@@ -5209,6 +5209,36 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
 }
 
 // ================================================================================================
+// SECTION S11b — A WITHDRAWN SUITE OFFER KEEPS ITS INTERNAL RECEIPT WITHOUT WIDENING THE WIRE.
+// The history is useful only if the live claim is copied before the field whose nullness drives
+// claimability is cleared. These fields are records, never inputs to waiting or dispatch decisions.
+// ================================================================================================
+{
+  const RULE_RECEIPT = "suite-offer withdrawal records the former live claim and end time without making either a decision input";
+  const route = serverU.span('if (url.pathname === "/api/self/suite-offer/withdraw"',
+    '// the lane\'s own account of a verify-suite run')?.text ?? null;
+  const claimWasAt = route?.indexOf("job.claimWas =") ?? -1;
+  const endedAt = route?.indexOf("job.endedAt = Date.now()") ?? -1;
+  const clearAt = route?.indexOf("job.claim = null") ?? -1;
+  pin(`${RULE_RECEIPT} — the held claim and end time are recorded BEFORE the live claim is cleared`,
+    route !== null && claimWasAt >= 0 && endedAt >= 0 && clearAt >= 0
+      && claimWasAt < clearAt && endedAt < clearAt
+      && /job\.claimWas\s*=\s*\{\s*deviceId:\s*held\.deviceId,\s*name:\s*held\.name,\s*claimedAt:\s*held\.claimedAt,\s*expiresAt:\s*held\.expiresAt\s*\}/s.test(route),
+    route === null ? "the suite-offer withdraw route was not found"
+      : `claimWas@${claimWasAt} endedAt@${endedAt} clear@${clearAt}`);
+  const lineageRuntime = serverU.span("const lineageEntryFromMain", "const foundingRoot")?.text ?? null;
+  const lineageTypes = serverU.span("\ntype ProgramLineageVia =", "\ntype ProgramFoundingMode =")?.text ?? null;
+  const receiptUniverse = lineageRuntime === null || lineageTypes === null ? ""
+    : serverU.text.replace(lineageRuntime, "").replace(lineageTypes, "");
+  const claimWasMentions = [...receiptUniverse.matchAll(/\bclaimWas\b/g)].length;
+  const endedAtMentions = [...receiptUniverse.matchAll(/\bendedAt\b/g)].length;
+  pin(`${RULE_RECEIPT} — claimWas and endedAt have one type declaration and one withdraw write, with NO product reader`,
+    lineageRuntime !== null && lineageTypes !== null && claimWasMentions === 2 && endedAtMentions === 2,
+    `lineage runtime=${lineageRuntime !== null} types=${lineageTypes !== null}; `
+      + `claimWas mentions=${claimWasMentions} endedAt mentions=${endedAtMentions}`);
+}
+
+// ================================================================================================
 // SECTION S12 — THE HELPER ARTEFACT RAIL. A suite.log arrives AFTER the audit row it belongs to,
 // and the whole design rests on two facts a compiler cannot see: the rail never touches the audit
 // trail, and the daemon uploads only after its verdict is already in. Both other sides are text —

@@ -17,7 +17,7 @@
 // code the lane has not got. (LS.3) is that assertion.
 import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { BASE, REPO, ROOT, check, get, post } from "./harness";
+import { BASE, REPO, ROOT, check, get, post, restartSrv } from "./harness";
 import { openLane, type Lane } from "./lane-helpers";
 
 interface HelperJob {
@@ -59,9 +59,24 @@ interface OfferPayload {
   // module down with a TypeError instead of failing the named check.
   helper?: HelperPresenceView;
 }
+interface PersistedLaneSuiteJob {
+  id: string; state: string; offeredAt: number; claim: unknown;
+  claimWas?: { deviceId: string; name: string; claimedAt: number; expiresAt: number };
+  endedAt?: number;
+}
 
 const DEVICE = "lanesuitedev01";     // matches the server's /^[a-z0-9]{8,32}$/
 const DEVICE_NAME = "lane-suite box";
+const OFFER_WIRE_KEYS = "id,state,branch,offeredAt,commitSha,treeSha,untracked,claim,result";
+const keysOf = (value: unknown): string =>
+  value && typeof value === "object" ? Object.keys(value).join(",") : "";
+const persistedLaneSuiteJob = (id: string): PersistedLaneSuiteJob | undefined => {
+  try {
+    const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { laneSuiteJobs?: PersistedLaneSuiteJob[] };
+    return state.laneSuiteJobs?.find((job) => job.id === id);
+  } catch { return undefined; }
+};
 
 // A body reader that CANNOT take the run down. Every route below is expected to answer JSON, but a
 // mutation under test can make one throw and answer a 500 with a non-JSON body — and a bare
@@ -347,11 +362,24 @@ export async function run(): Promise<void> {
   const job3 = offer3.offer?.id ?? "";
   check("(LS) a settled offer does not block a new one — the lane may offer the next tree",
     offer3.existing === false && job3 !== jobId, JSON.stringify(offer3.offer).slice(0, 160));
+  const wireGet = await offerOf(laneTok);
   const wd = await selfPost("/api/self/suite-offer/withdraw", laneTok);
   const wdBody = await bodyOf<OfferPayload>(wd);
   check("(LS) withdrawing an OPEN offer succeeds, and that 200 is the permission to run locally",
     wd.ok && wdBody.mayRunLocally === true && wdBody.offer?.state === "withdrawn",
     `${wd.status} ${JSON.stringify(wdBody.offer)}`);
+  check("(LS.6) the GET, POST and free-withdraw wire shapes stay byte-for-byte closed over the old keys",
+    keysOf(wireGet) === "offer,waitPolicy,suiteLock,helper" && keysOf(wireGet.offer) === OFFER_WIRE_KEYS
+      && keysOf(offer3) === "offer,existing,helper" && keysOf(offer3.offer) === OFFER_WIRE_KEYS
+      && keysOf(wdBody) === "ok,offer,mayRunLocally" && keysOf(wdBody.offer) === OFFER_WIRE_KEYS,
+    JSON.stringify({ get: keysOf(wireGet), getOffer: keysOf(wireGet.offer), post: keysOf(offer3),
+      postOffer: keysOf(offer3.offer), withdraw: keysOf(wdBody), withdrawOffer: keysOf(wdBody.offer) }));
+  const withdrawnOnDisk = persistedLaneSuiteJob(job3);
+  check("(LS.6) a FREE withdrawal persists its end without inventing a former claim",
+    withdrawnOnDisk?.state === "withdrawn" && withdrawnOnDisk.claim === null
+      && !("claimWas" in withdrawnOnDisk) && typeof withdrawnOnDisk.endedAt === "number"
+      && withdrawnOnDisk.endedAt >= withdrawnOnDisk.offeredAt,
+    JSON.stringify(withdrawnOnDisk));
   const claimWithdrawn = await hpost("/api/helper/claim", { jobId: job3, deviceId: DEVICE });
   check("(LS) A WITHDRAWN OFFER CANNOT BE CLAIMED — 404, and it is off the list",
     claimWithdrawn.status === 404 && !(await jobs()).some((j) => j.id === job3),
@@ -366,6 +394,7 @@ export async function run(): Promise<void> {
   const offer4 = await bodyOf<OfferPayload>(await selfPost("/api/self/suite-offer", laneTok));
   const job4 = offer4.offer?.id ?? "";
   const claim4 = await hpost("/api/helper/claim", { jobId: job4, deviceId: DEVICE });
+  const claim4Body = await bodyOf<{ job?: ClaimedJob }>(claim4);
   check("(LS) setup: the fourth offer is claimed", claim4.ok, `${claim4.status}`);
   const wdHeld = await selfPost("/api/self/suite-offer/withdraw", laneTok);
   const wdHeldBody = await bodyOf<OfferPayload>(wdHeld);
@@ -377,9 +406,41 @@ export async function run(): Promise<void> {
   check("(LS) …and abandoning it deliberately succeeds, so a silent helper cannot deadlock the lane",
     wdAbandon.ok && wdAbandonBody.offer?.state === "abandoned" && wdAbandonBody.mayRunLocally === true,
     `${wdAbandon.status} ${JSON.stringify(wdAbandonBody.offer)}`);
+  check("(LS.6) the claimed-withdraw wire stays closed while the durable row keeps holder provenance",
+    keysOf(wdAbandonBody) === "ok,offer,mayRunLocally" && keysOf(wdAbandonBody.offer) === OFFER_WIRE_KEYS
+      && !("claimWas" in (wdAbandonBody.offer ?? {})) && !("endedAt" in (wdAbandonBody.offer ?? {})),
+    JSON.stringify({ withdraw: keysOf(wdAbandonBody), offer: keysOf(wdAbandonBody.offer) }));
+  const abandonedOnDisk = persistedLaneSuiteJob(job4);
+  check("(LS.6) a CLAIMED abandonment persists the holder, claim lifetime and end while clearing the live claim",
+    abandonedOnDisk?.state === "abandoned" && abandonedOnDisk.claim === null
+      && abandonedOnDisk.claimWas?.deviceId === DEVICE && abandonedOnDisk.claimWas.name === DEVICE_NAME
+      && abandonedOnDisk.claimWas.claimedAt === claim4Body.job?.claimedAt
+      && abandonedOnDisk.claimWas.expiresAt === claim4Body.job?.expiresAt
+      && keysOf(abandonedOnDisk.claimWas) === "deviceId,name,claimedAt,expiresAt"
+      && typeof abandonedOnDisk.endedAt === "number" && abandonedOnDisk.endedAt >= abandonedOnDisk.offeredAt,
+    JSON.stringify({ response: claim4Body.job, persisted: abandonedOnDisk }));
   const lateResult = await hpost("/api/helper/result", { jobId: job4, exitCode: 0, tail: "ALL PASS" });
   check("(LS) a verdict arriving after the lane abandoned the job is refused — the lane owns the tree again",
     lateResult.status === 409, `${lateResult.status} ${JSON.stringify(await bodyOf(lateResult))}`);
+
+  await restartSrv();
+  await beat();
+  const hydrationSave = await bodyOf<OfferPayload>(await selfPost("/api/self/suite-offer", laneTok));
+  const hydrationSaveId = hydrationSave.offer?.id ?? "";
+  const hydrationWithdraw = await selfPost("/api/self/suite-offer/withdraw", laneTok);
+  const withdrawnAfterRestart = persistedLaneSuiteJob(job3);
+  const abandonedAfterRestart = persistedLaneSuiteJob(job4);
+  check("(LS.6) BOTH terminal records hydrate across a server restart and survive the next full state write",
+    /^[0-9a-f]{12}$/.test(hydrationSaveId) && hydrationWithdraw.ok
+      && withdrawnAfterRestart?.state === "withdrawn" && withdrawnAfterRestart.claim === null
+      && !("claimWas" in withdrawnAfterRestart) && typeof withdrawnAfterRestart.endedAt === "number"
+      && abandonedAfterRestart?.state === "abandoned" && abandonedAfterRestart.claim === null
+      && abandonedAfterRestart.claimWas?.deviceId === DEVICE
+      && abandonedAfterRestart.claimWas.name === DEVICE_NAME
+      && abandonedAfterRestart.claimWas.claimedAt === claim4Body.job?.claimedAt
+      && abandonedAfterRestart.claimWas.expiresAt === claim4Body.job?.expiresAt
+      && typeof abandonedAfterRestart.endedAt === "number",
+    JSON.stringify({ save: hydrationSaveId, free: withdrawnAfterRestart, held: abandonedAfterRestart }));
 
   // ===== (LS.7) THE LANE DISAPPEARS =============================================================
   // There is no drain behind a preview: its only interested party is one lane, and that lane can

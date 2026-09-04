@@ -1,4 +1,4 @@
-# HANDOFF — 🎛 Fleet Controller (Slot 9, Fable 5.1): Deckel freigeraeumt, Lebenszyklus-Kette laeuft (S1 + R2'), Context-Pack-Zeilen gefiled, Program Audit-Determiniertheit gegruendet; 2026-09-04 21:2x, ctx GEMESSEN 23–26 %
+# HANDOFF — 🎛 Fleet Controller (Slot 9, Fable 5.1): Deckel freigeraeumt, Lebenszyklus-Kette laeuft, R1 DEPLOYT, Audit-Proportion + Audit-Rot-Untersuchung als Lanes, Program Audit-Determiniertheit gegruendet; 2026-09-04 22:1x, ctx GEMESSEN ~30 % (Owner-Entscheid 22:0x: Band 25/30 fuer diese Session ausgesetzt, Anker 40 %)
 
 Zustand ableiten: `./state.sh`, `./register.sh`, Owner-Poll, Panes. Hier nur, was git nicht traegt.
 Die Abschnitte darunter sind FREMD (Vorgaengerin Slot 6, MAIN Slot 7, Slot 5, Sanierung, Dual-Host).
@@ -49,6 +49,39 @@ gpt-5.6-sol/high, GLM-Gegenchecks pi-zai/glm-5.3/high (kein Lane-Watch: Monitor 
   Harvest-Konzept `docs/attic/konzept-sensor-rueckschreibung-2026-08-30.md` Teil D. Kostenpunkt
   genannt: jedes docs-only-Land loest ein volles Tier-2-Audit aus. **Keine Owner-Antwort bisher.**
 
+### 1b. Nachtrag 21:3x–22:1x (nach dem ersten Handoff-Commit 26cfaf0)
+
+- **Owner-Entscheid 21:3x: ein rein-docs-Land loest KEIN volles Tier-2-Audit mehr aus** (ersetzt
+  e896826 fuer den Audit-Teil). Zeile **`8ab7215f` AUDIT-PROPORTION** (Opus 5 high, Program
+  Fleet-Betrieb) laeuft auf **Slot 7**, per Hand-Dispatch AM DECKEL VORBEI (Owner will Tempo).
+  Entscheidung je Audit-Eintrag: alle Cover mit `verify.proportional === true` in der Land-Note ⇒
+  install+pins, sonst voll; Ledger-Zeile bekommt `proportional`+`steps`; proportionale Audits nie an
+  den Helfer. Beweis: `./e2e-postland-audit.sh` + Mutation. Report an MAIN Slot 5 (Self-Land), dann
+  Controller-Deploy + **den gitignorten Regelbuch-Satz „Post-Land-Audit bleibt unveraendert voll“
+  im Haupt-Checkout ueber `rulebook/` nachziehen** (die Lane meldet den Wortlaut).
+- **Audit auf fc45fe4 ROT (17 Fails, 38,3 min) → R1-Verdacht → widerlegt:** der Rerun auf quasi
+  identischem Baum (Audit 1f7d410, 32,4 min) hatte 1 Fail (§11.2o). Alle vier Verdaechtigen-Familien
+  gruen. **R1 ist DEPLOYT: Deploy `4f9a7415` ok:true, bootHead dc7e141, bundleStale false,
+  deployGap 0.** Urteile: at=1788552725755 flake (§11.2o) abgelegt; at=1788550781547 auf
+  `unknowable` mit Rueckzugs-Note (die Route kennt kein „offen“) — entscheidet Lane 0a099c62.
+- **Zeile `0a099c62` (Opus 5, Fleet-Betrieb) laeuft auf Slot 1** (Hand-Dispatch, Deckel 4/2):
+  Teil 1 = `FLEET_LANE_AUTOCLOSE=0` in `e2e-isolated.sh`/`e2e-stage.sh` pinnen (SRV_ENV behauptet
+  „STATED, not left to chance“ und fuehrt die Variable nicht; der Audit-srv erbt 1 seit 566cbae) +
+  Sonde, die den Env des Suite-srv MISST + Kommentar `e2e/watch.ts` ~3180 korrigieren. Teil 2 =
+  PAAR-Versuch seriell `FLEET_LANE_AUTOCLOSE=1` vs `=0` auf demselben Baum; Hypothese: Autoclose
+  scharf (notwendig) + langsamer Lauf (Ausloeser) = Autoclose-Tick gewinnt das Rennen gegen die
+  requeue-probe („lane closed before landing“). Dauer beider Laeufe mitberichten.
+- **Zusage an MAIN Slot 3 (Attention c001a756 beantwortet):** mein Hand-Kill von Slot 2 hat ihren
+  Autoclose-Beweis (Erfolgssatz 8) zerstoert (Tick braucht 30 min Stillstand, ich zog nach 8 min
+  ein). `9f1dbfb4` ist queued (read-only Beleg-Lane); **wenn sie startet und gemeldet hat: 35 min
+  NICHT anfassen** — kein Kill, kein Land, auch wenn sie wie ein freier Slot aussieht. Slot 3 nennt
+  den Branch. Ihr Befund (Schwelle laenger als die Standzeit einer fertigen Lane) gehoert als Zeile
+  ins Program Fleet-Betrieb.
+- private-repo-p Brief 9 (`ba896b1b`) **gelandet und gruen** (b26756f, verify ok 287 s). Kein Deploy.
+- Ein Startbeleg (Dauer als Lastsensor) ging an die Audit-Determiniertheit-MAIN Slot 6 — beim ersten
+  Versuch 409 „composer occupied“, Retry lief im Hintergrund; steht er nicht in Slot 6s Pane, nochmal
+  schicken.
+
 ## 2. Was JETZT offen ist, in dieser Reihenfolge
 
 1. **Rueckwege neu legen — alle meine sterben mit dieser Session:** Lane-Watch Slot 1
@@ -56,10 +89,8 @@ gpt-5.6-sol/high, GLM-Gegenchecks pi-zai/glm-5.3/high (kein Lane-Watch: Monitor 
    fc45fe4>}` — nur falls der Deploy unten noch aussteht · Attention-Monitor (45-s-Poll
    `GET /api/attention` status=open) · Task-Status-Monitor auf S1/S2/S5a + die 9 pending
    Lebenszyklus-Ids + CP-A/B/C + ba896b1b + ce329973 (`GET /api/tasks` → `{tasks:[...]}`).
-2. **Deploy nach R1** (a6bf269/0e659fb, server.ts; deployGap 10+ Commits): Audit auf fc45fe4 laeuft
-   seit 21:01:22 (Lock-pid 31575) — `POST /api/deploy` gibt 409 waehrend des Audits; danach
-   deployen, `GET /api/deploys` ok:true pruefen, `bundleStale` am Owner-Poll. Falls ich es vor der
-   Nachfolge geschafft habe, steht es in §1 als Nachtrag.
+2. **Deploy nach R1: ERLEDIGT** (4f9a7415). Naechste Deploys nach den Lands von 8ab7215f, 0a099c62,
+   S1 — je `POST /api/deploy` (409 waehrend eines Audits → Audit-Watch, dann deployen).
 3. **Freigabe-Kette Lebenszyklus:** nach S2-Land S3a-i `30383e62` UND S12 `7ed73694` queuen
    (`POST /api/tasks/:id/queue`); nach S3a-i: S3a-ii `c464af30` + S4 `8e1e0be4`; dann S3b `417d2be5`
    → S3d `74319808` → S3c `288f6359`; S5b `ee47b0f8`, S5c `1832c7eb` unabhaengig. Nach S2 auch
@@ -87,6 +118,20 @@ gpt-5.6-sol/high, GLM-Gegenchecks pi-zai/glm-5.3/high (kein Lane-Watch: Monitor 
   ein Schnitt-Kandidat fuer das Audit-Program (steht in dessen evidence).
 - **Python-Heredoc mit deutschen Anfuehrungszeichen: „…" mit GERADEM Schlusszeichen beendet den
   String** — „…“ (U+201C) benutzen.
+- **`pgrep -f 'bun server.ts' | head -1` trifft zuerst einen SUITE-Server** (die Audits spawnen
+  eigene) — der Live-Server ist der `pane_pid` von `tmux list-windows -t srv`. Und ein
+  `last.status: "interrupted"` neben `running:true` ist der DURABLE-INTENT-Platzhalter jedes
+  Merge-Laufs, kein Absturz.
+- **Ein `POST merge {confirm:true}` auf einen aelter reviewten Kandidaten antwortet `stale`**; der
+  folgende unbestaetigte `POST merge` startet den Review-Lauf und LANDET auf dem sauberen Pfad
+  selbst (private-repo-p, 287 s) — der Merge-Watch muss NACH diesem POST armiert werden, sonst feuert
+  er sofort auf dem alten Terminalfakt.
+- **`/send` antwortet 409 „composer occupied“, wenn die Zielpane Text im Composer hat** — das ist
+  Claude Codes eigener Rest (Owner-Regel), nichts zu deuten; spaeter erneut senden.
+- **Adjudikationen sind ueberschreibbar** (gleiches `at`, neues Urteil); die vier Verdikte sind
+  real/flake/stale-test/unknowable — ein „zurueckgezogen/offen“ gibt es nur als unknowable+Note.
+- **Der Suite-Trail der Audits liegt im TMPDIR des SERVERS**
+  (`/private/var/folders/sj/…/T/fleet-e2e-trail/`), nicht in meinem; `find … -name 'isolated-<datum>*'`.
 - Die Uhr: mein Vorgaenger schrieb „21:2x", die Maschine sagte 21:01 — Zeitangaben mit x sind
   Schaetzungen, `date` ist die Messung.
 

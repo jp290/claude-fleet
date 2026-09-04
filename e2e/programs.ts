@@ -7305,6 +7305,19 @@ exit 0
         await Bun.sleep(150);
       }
     };
+    // A LAND is not readable at /api/slots/:id/merge, and that is the product being right rather
+    // than a gap: the land tears the lane down, so the row keyed by its slot goes with it. Measured
+    // as a red check on 2026-09-04 — `verdict: null` beside a land note that said the land had
+    // happened, i.e. the probe failing, not the chain. So a landing arm is read where (8b)'s own
+    // re-land reads it: the TASK row reaches `done`. The kept-lane arms keep using ffrSettled.
+    const ffrDone = async (row: string, ms = 120_000): Promise<boolean> => {
+      const deadline = Date.now() + ms;
+      for (;;) {
+        if ((await slRow(row))?.status === "done") return true;
+        if (Date.now() >= deadline) return false;
+        await Bun.sleep(250);
+      }
+    };
     const ffrWaitFile = async (path: string, ms = 60_000): Promise<boolean> => {
       const deadline = Date.now() + ms;
       while (!existsSync(path)) {
@@ -7350,26 +7363,32 @@ exit 0
     })();
     const ffrRunsDuring = ffrLogRuns();
     writeFileSync(`${ROOT}/ffretry.go.2`, "go\n");
-    const ffrAVerdict = await ffrSettled(ffrA.slot);
+    const ffrALanded = await ffrDone(ffrA.row);
     const ffrAMain = main2Of();
     const ffrANote = spawnSync("git", ["-C", REPO2, "notes", "--ref=fleet/land", "show", ffrAMain])
       .stdout.toString();
-    const ffrANoteJson = ((): { ffRounds?: number; verify?: { mainSha?: string; ok?: boolean | null } } => {
+    const ffrANoteJson = ((): { ffRounds?: number; verify?: { mainSha?: string; ok?: boolean | null; out?: string } } => {
       try { return JSON.parse(ffrANote) as { ffRounds?: number }; } catch { return {}; }
     })();
+    const ffrALog = spawnSync("git", ["-C", REPO2, "log", "--oneline", "-3"]).stdout.toString();
     check("(i) the lost fast-forward is retried and LANDS: the second round re-rebases onto the intruder's main, re-verifies, and moves main onto the lane's work",
-      ffrA.fired && ffrA.reached && ffrAVerdict?.status === "merged" && ffrAVerdict.landed === true
-        && ffrAMain !== ffrA.intruder
-        && spawnSync("git", ["-C", REPO2, "log", "--oneline", "-3"]).stdout.toString().includes("ff retry landing")
-        && spawnSync("git", ["-C", REPO2, "log", "--oneline", "-3"]).stdout.toString().includes("intruder landing landed on main first"),
-      JSON.stringify({ fired: ffrA.fired, reached: ffrA.reached, verdict: ffrAVerdict,
-        intruder: ffrA.intruder.slice(0, 8), main: ffrAMain.slice(0, 8) }));
-    check("(ii) the record is the SECOND round's: the verdict counts the round, and the land note carries the verify verdict of the tree that actually landed — not the first round's",
-      ffrAVerdict?.ffRounds === 1 && ffrANoteJson.ffRounds === 1
-        && ffrAVerdict.verify?.mainSha === ffrA.intruder
-        && ffrANoteJson.verify?.mainSha === ffrA.intruder && ffrANoteJson.verify?.ok === true,
-      JSON.stringify({ verdictRounds: ffrAVerdict?.ffRounds, verdictMainSha: ffrAVerdict?.verify?.mainSha?.slice(0, 8),
-        note: ffrANoteJson, intruder: ffrA.intruder.slice(0, 8) }));
+      ffrA.fired && ffrA.reached && ffrALanded && ffrAMain !== ffrA.intruder
+        && ffrALog.includes("ff retry landing")
+        && ffrALog.includes("intruder landing landed on main first"),
+      JSON.stringify({ fired: ffrA.fired, reached: ffrA.reached, done: ffrALanded,
+        intruder: ffrA.intruder.slice(0, 8), main: ffrAMain.slice(0, 8),
+        log: ffrALog.split("\n").slice(0, 3) }));
+    // THE NOTE, and only the note: it is the durable record of what landed, it outlives the lane
+    // the verdict died with, and the owner's rule is about IT ("die Land-Note traegt das
+    // verify-Verdikt DER RUNDE, DIE GELANDET HAT"). Three independent ways of saying the same
+    // thing, because one of them alone could be an accident: the round count, the main the gate was
+    // run against (the INTRUDER's, not the one the first round verified), and the gate's own words
+    // — the scripted stand-in prints its run number, so "run 2" is the second gate saying so itself.
+    check("(ii) the record is the SECOND round's: the land note counts the round and carries the verify verdict of the tree that actually landed — not the first round's",
+      ffrANoteJson.ffRounds === 1 && ffrANoteJson.verify?.ok === true
+        && ffrANoteJson.verify?.mainSha === ffrA.intruder
+        && (ffrANoteJson.verify?.out ?? "").includes("run 2"),
+      JSON.stringify({ note: ffrANoteJson, intruder: ffrA.intruder.slice(0, 8) }));
     check("(iii) the retry round runs inside a hold the server already owns: the lock names the live server while the round is in flight, and its gate was handed that hold instead of queueing for one",
       ffrParked && ffrHeldPid === String(ffrSrvPid) && ffrAlive(ffrHeldPid) && ffrHeldBirth !== ""
         && ffrRunsDuring.length === 2

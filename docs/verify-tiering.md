@@ -2480,3 +2480,63 @@ registrierten Familie angehört") unsichtbar.
 **Für einen Leser eines roten Laufs gilt bis dahin:** dieser eine FAIL mit dem
 `phase:"UNKNOWN"`-detail ist **kein Urteil über den Baum**. Register befragen, dann attribuieren —
 nicht rerunnen: bei 2,9 % ist ein grüner Rerun fast sicher und beweist nichts.
+
+---
+
+### 11.2p Eine achtzehnte Familie: der `requeue-teardown-empty`-Rest, der zwölf `backlog nudge`-Checks mitreisst (2026-09-04 — EINE SICHTUNG, Mechanismus vollstaendig aus dem Trail gelesen, Regress strukturell ausgeschlossen; NICHT repariert)
+
+Gefunden beim Adjudizieren des roten Post-Land-Audits `at=1788550781547` (Lauf
+`isolated-20260904T190127Z-33824`, 3 649 Checks, **17 FAILURES**). Erster Akt des Programs
+„Audit-Determiniertheit 2026-09".
+
+**Siebzehn Fails, aber nur DREI Wurzeln — und eine davon zieht zwoelf mit.**
+
+Gruppe A, die Wurzel (`e2e/tasks.ts`, requeue-Probe):
+
+- `requeue probe (empty): the row went back to queued through the GATE, not some other path`
+- `an empty lane is torn down by its own requeue — no worktree left behind`
+- `…and no slot left held by it either` (detail: `slot=5`)
+
+Gruppe B, die KASKADE (zwoelf Checks, alle `backlog nudge …`): die Setup-Zeile der Sektion sagt
+woertlich `backlog nudge setup: the only open row is a pending kind:notiz observation` — und ihr
+Detail zeigt, was sie stattdessen fand: die Zeile `e7fa35c3` mit `"kind":"auftrag"`,
+`"status":"pending"`, Text `requeue-teardown-empty`. Das ist der Rest aus Gruppe A. Die zwoelf
+Checks danach massen ein VERSCHMUTZTES Register und fielen als der Vertrag, den sie pruefen —
+`backlog nudge: kind:notiz NEVER counts as backlog`, `… honors quiet hours`, `… sends exactly one
+slot in the round`, und so weiter. Zwei von ihnen nennen als Ziel `slot 5`: denselben Slot, den
+Gruppe A nicht freigegeben hat.
+
+Gruppe C, zwei Einzelfaelle ohne Verbindung zu A: ein Mitglied der succession-pane-Familie
+(`…and delivers it WHOLE once that marker appears`, Detail
+`500 {"error":"successor delivery held (not-alive)"}` — dieselbe Signatur wie dort registriert) und
+`§2b a top-level module the server imports is still a deploy` (`behindCount:1, codeBehind:false`).
+
+**Basisrate, aus dem lokalen Trail-Register** (7 Tage bis 2026-09-04, `suite=isolated`; gezaehlt nur
+Laeufe, in denen die Gruppe ueberhaupt lief):
+
+| Gruppe | rote Laeufe / Laeufe | Baeume |
+| --- | ---: | ---: |
+| `requeue probe (empty)` | 1/177 | 1 (dieser Lauf, `tree:null`) |
+| `an empty lane is torn down by its own requeue` | 1/177 | 1 |
+| `…and no slot left held by it either` | 1/177 | 1 |
+| `backlog nudge …` (zwoelf Checks) | 1/170 | 1 |
+| `§2b a top-level module …` | 1/169 | 1 |
+
+**Warum das trotz n=1 kein Regress ist, und zwar ohne Rerun:** der Audit-Baum `f588287` besteht
+gegenueber seinem Vorgaenger aus genau drei Commits, und ihr gemeinsamer Diff ist
+`docs/verify-tiering.md` (+10), `HANDOFF.md` (+15) und `fleet-watchdog.service` (+9/−4). Kein
+`server.ts`, kein `e2e/`, kein Wrapper, kein `src/`. Ein Regress im requeue-Teardown oder im
+backlog-nudge-Pfad ist aus diesem Diff strukturell unmoeglich. Verdikt entsprechend **flake** —
+hergeleitet aus dem Diff und dem Register, nicht aus einem gruenen Wiederholungslauf.
+
+**Warum sie hier steht, obwohl 0,6 % die niedrigste Rate aller registrierten Familien ist:** ihr
+Radius. Eine einzige nicht gehaltene Vorbedingung erzeugt SIEBZEHN rote Zeilen und damit ein rotes
+Audit, das wie ein Flaechenbrand aussieht. Sie ist das reinste Exemplar der Klasse, die das Regelbuch
+so formuliert: **eine Sonde, die nicht laufen konnte, muss als SIE SELBST scheitern.** Der Schnitt ist
+zweiteilig und beide Haelften sind billig: (1) die requeue-Probe raeumt ihre Zeile und ihren Slot
+auch auf dem Fehlerpfad ab, (2) die `backlog nudge`-Sektion bricht ab, wenn ihre Setup-Zeile rot
+ist, statt zwoelf Vertraege gegen ein fremdes Register zu messen.
+
+**Fuer einen Leser eines roten Laufs:** siebzehn Fails heissen hier nicht siebzehn Befunde. Zuerst
+die Setup-Zeilen der betroffenen Sektionen lesen — ist eine davon rot, sind die Checks darunter
+UNGEMESSEN, nicht verletzt.

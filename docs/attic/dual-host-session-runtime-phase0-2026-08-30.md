@@ -197,7 +197,14 @@ Option A sie voraussetzt (Baseline-Nachtrag 2026-08-30).
 ## Erste Schnitte (vier, je einzeln landbar)
 
 **Schnitt 1 — Den Falsifikator fahren, bevor irgendetwas gebaut wird.**
-Owner-Akt auf dem Gerät (G2). *Done:* eine Mess-Notiz unter `docs/messungen/` mit vollständigem
+~~Owner-Akt auf dem Gerät (G2).~~ **KORRIGIERT 2026-09-04 (Program-MAIN Slot 11, am Code
+gemessen): kein Geräte-Akt und kein Shell-Zugang nötig.** `./e2e-isolated.sh` ist ein Schlüssel
+in `HELPER_CMD_ALLOW` (`server/types.ts#helperCmdCheck`) und damit über `POST /api/self/jobs`
+fahrbar — die Tür, die S2 dieses Programs nach dem Datum dieser Notiz gelandet hat. ssh auf
+second-host bleibt zu (2026-09-04 geprobt: `owner`/`fleet`/`helper` je
+`Permission denied (publickey,password)`) und wird dafür nicht gebraucht. Was den Lauf bis
+2026-09-04 blockierte, war ein Daemon auf einem Baum vor S2; das `daemon-update` (S1) hat das
+geschlossen. *Done:* eine Mess-Notiz unter `docs/messungen/` mit vollständigem
 seriellem Lauf, Exit, PASS/FAIL, den Signaturen der genannten Familien und der Aussage
 „Empfehlung A steht / fällt". *Verify:* die Notiz zitiert die Tail-Zeile des Laufs wörtlich.
 **Der Test ist asymmetrisch, und die Notiz muss das sagen:** ein ROT dieser Familien wirft A um,
@@ -226,13 +233,20 @@ Geräten, ein Umschalter im Kopf, ein Klick wechselt die Origin; kein Proxy, kei
 
 ## Owner-Gates
 
-1. **Topologie-Entscheid A/B/C** — diese Notiz empfiehlt A, entscheidet sie nicht.
+1. **ENTSCHIEDEN am 2026-09-04 (Owner, über Controller Slot 5, Attention `b0f54823`): A.**
+   Zweite eigenständige Fleet-Instanz auf second-host + Client-Link B1 — die Empfehlung dieser
+   Notiz ist angenommen. Der Absatz stand hier als offene Frage; sie ist beantwortet, nicht
+   weggefallen. Damit sind Schnitt 2 und Schnitt 3 freigegeben (released 2026-09-04 als
+   `74dcff75` / `8fea4ac1`), und Schnitt 1 ist zu fahren.
 2. **ENTSCHIEDEN am 2026-08-30 (Owner, V1): NEIN.** Fleet-Reports überqueren keine Hostgrenze; jede
    Maschine behält eigene Program-MAIN, Inbox, Tokens und Ledgers, und der gemeinsame Client macht
    beide Instanzen erreichbar. Eine hostübergreifende Inbox/Event-Bridge ist vertagt und wäre ein
    eigener Architekturentscheid. Damit ist Schnitt 4 bestätigt statt bedingt. (Der Absatz stand hier
    als offene Frage; sie ist beantwortet, nicht weggefallen.)
-3. **Jeder Schreibakt auf second-host** (Installation, systemd, Start, Netz-Bind) bleibt Owner-Akt —
+3. **Präzisiert 2026-09-04:** ein allowlisted Kommando über das Helfer-Portal ist KEIN Schreibakt
+   in diesem Sinne — es klont in das Lauf-Verzeichnis des Daemons und räumt es wieder ab. Ein
+   `daemon-update` ist einer und bleibt Owner-Akt (am 2026-09-04 einmal ausgeführt).
+   **Jeder Schreibakt auf second-host** (Installation, systemd, Start, Netz-Bind) bleibt Owner-Akt —
    G2 des laufenden Programms gilt unverändert weiter.
 4. **Aktivierung:** eine zweite netzerreichbare Instanz ist eine zweite Fläche, für die
    „a reachable fleet is remote code execution as your user" gilt; Bind-Adresse, Token und

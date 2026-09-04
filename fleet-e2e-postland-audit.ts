@@ -40,7 +40,8 @@ type AuditRow = {
   // deliberately `string`, not the server's union: a server WITHOUT tier 2 must make every
   // assertion below fail individually, and the no-row sentinel needs a value no check can match
   result: string; reason?: string; cmd: string; exitCode: number | null;
-  out: string; checks?: { ran: number; failed: number } | null;
+  out: string; fails?: string[]; trail?: string;
+  checks?: { ran: number; failed: number; ranIsLowerBound?: true } | null;
   ping?: { at: number; status: string; updatedAt: number; lastResult: string; deliveredAt?: number; slot?: number };
   covers: { branch: string; mainAfter: string; at: number }[];
 };
@@ -163,6 +164,7 @@ const startSrv = async (opts: { audit: boolean; auditPing?: boolean; extra?: Rec
     "FLEET_CLEAN_REVIEW", "FLEET_CLEAN_REVIEW_CMD", "FLEET_POSTLAND_AUDIT_TIMEOUT_MS",
     ...(opts.audit ? ["FLEET_POSTLAND_AUDIT_CMD"] : [])]
     .map((k) => envArg(k, process.env[k])).join("")
+    + (opts.audit ? "" : "FLEET_POSTLAND_AUDIT_CMD='' ")
     + Object.entries(opts.extra ?? {}).map(([k, v]) => envArg(k, v)).join("");
   const pingEnv = opts.auditPing
     ? "FLEET_AUDIT_PING_MS=250 FLEET_BACKLOG_NUDGE_IDLE_MS=100 "
@@ -319,7 +321,9 @@ check("audit event: rendered text names RED, the audited tip, and its event-spec
   eEventText.includes("result=red") && eEventText.includes(e.mainSha)
     && eEventText.includes(`POST /api/self/events/${eEvent?.id}/ack`), eEventText);
 check("the audit row counts every PASS/FAIL line and every failed check from complete output",
-  e.checks?.ran === 3 && e.checks.failed === 3, JSON.stringify(e.checks));
+  e.checks?.ran === 4 && e.checks.failed === 3 && e.checks.ranIsLowerBound === undefined, JSON.stringify(e.checks));
+check("a local audit row records the filename of the check trail named by its complete output",
+  e.trail === "local-audit-trail.jsonl", `trail=${e.trail ?? "ABSENT"}`);
 check("the red row NAMES the land it followed", e.covers.length === 1 && e.covers[0].branch === echoLane.branch,
   JSON.stringify(e.covers));
 const sess = (await (await get("/api/sessions")).json()) as { postLandAudit: { result?: string; covers?: string[]; mainSha?: string } | null };
@@ -986,6 +990,25 @@ check("(J) delivered stays delivered across restart and is still exactly once",
 check("(J) an already-adjudicated red is never pinged",
   !(await pingPrompts()).some((p) => p.text.includes(`at=${garbled.at}`) || p.text.includes(garbledLane.branch)),
   JSON.stringify((await pingPrompts()).map((p) => p.text.slice(0, 100))));
+
+// A remote red already carries exact failed-check names on its ledger row. Add that persisted row
+// directly: this section is about the reader's message, not another helper transport round-trip.
+const namedAt = Date.now();
+const namedFails = ["remote failure alpha", "remote failure beta"];
+appendFileSync(`${import.meta.dir}/post-land-audits.jsonl`, `${JSON.stringify({
+  at: namedAt, startedAt: namedAt - 10, ms: 10, repo: REPO, main: "main", mainSha: precheck.mainSha,
+  result: "red", cmd: "remote helper (fixture): ./e2e-isolated.sh", exitCode: 1,
+  out: "2 FAILURES", fails: namedFails, checks: { ran: 2, failed: 2, ranIsLowerBound: true },
+  covers: [{ branch: "fleet/named-red-fixture", mainAfter: precheck.mainSha, at: namedAt - 10 }],
+  remote: { name: "fixture helper", claimedAt: namedAt - 10, reportedAt: namedAt },
+})}\n`);
+const namedDelivered = await waitPing(namedAt, (p) => p.status === "delivered", 10_000);
+const namedPingText = (await pingPrompts()).find((p) => p.text.includes(`at=${namedAt}`))?.text ?? "";
+check("(J) a red audit ping lists every persisted remote fail name instead of discarding them",
+  namedDelivered?.ping?.status === "delivered"
+    && namedFails.every((name) => namedPingText.includes(`FAIL  ${name}`))
+    && namedPingText.includes("checks.ran (Untergrenze): 2"),
+  namedPingText.slice(0, 900));
 
 // ===== (K) THE REMOTE HELPER PORTAL =============================================================
 // Runs LAST, and that placement is load-bearing rather than tidy: this section seeds a second repo

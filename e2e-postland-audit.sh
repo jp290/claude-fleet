@@ -85,7 +85,7 @@ mode="$(cat "$d/auditmode" 2>/dev/null || echo green)"
 : > "$d/auditbusy"
 echo "run pwd=$PWD files=$(ls | tr '\n' ',') recur=[${FLEET_POSTLAND_AUDIT_CMD:-}] token=[${FLEET_TOKEN:-}] cr=[${FLEET_CLEAN_REVIEW:-}] path=[${PATH:+set}] mode=$mode" >> "$d/auditruns"
 case "$mode" in
-  red)         rm -f "$d/auditbusy"; echo "FAIL  post-land audit sabotage one"; echo "FAIL  post-land audit sabotage two"; echo "FAIL  post-land audit sabotage three"; echo "3 FAILURES"; exit 1 ;;
+  red)         rm -f "$d/auditbusy"; trail="$d/local-audit-trail.jsonl"; : > "$trail"; echo "PASS  trail: the run wrote a durable per-check trail  (file=$trail rows=0)"; echo "FAIL  post-land audit sabotage one"; echo "FAIL  post-land audit sabotage two"; echo "FAIL  post-land audit sabotage three"; echo "3 FAILURES"; exit 1 ;;
   precheck)    rm -f "$d/auditbusy"; echo "error: ENOENT: no such file or directory, stat 'streams/s1.raw'" >&2; echo "    at statSync (e2e/restart.ts:12:3)" >&2; exit 1 ;;
   garbled)     rm -f "$d/auditbusy"; echo "FAIL  only one check line exists"; echo "2 FAILURES"; exit 1 ;;
   decline)     rm -f "$d/auditbusy"; echo "audit skipped: this stand-in declines to verify that tree"; exit 42 ;;

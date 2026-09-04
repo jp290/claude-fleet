@@ -198,15 +198,15 @@ exit 0
   // The daemon runs exactly one command, cfg.suiteCmd (fleet's suite), against whatever it clones —
   // a repo-worker audit handed over would be measured by the wrong suite and recorded under the
   // right repo. So the job is local-only: not listed, not claimable, and still drained here.
-  // Fixture: the env repo's audit is LONG (12 s — a whole second land has to fit inside it, the
-  // same sizing as (I.1)) and in flight, so the foreign repo's land queues behind it and is
-  // observable as a queue entry rather than consumed at once.
+  // Fixture: the env repo's audit is SLOW (6 s) and in flight, so the already-settled foreign
+  // repo's land queues behind it and is observable rather than consumed at once. It must stay
+  // below this harness's 10 s audit timeout or the fixture manufactures an unknown verdict.
   const helperToken = ((await (await get("/api/helper/token")).json()) as { token?: string }).token ?? "";
   const HH = { "x-fleet-helper-token": helperToken, "content-type": "application/json" };
   const DEVICE = "rwauditdevice1";
   const jobs = async (): Promise<HelperJobs> =>
     (await (await fetch(`${BASE}/api/helper/jobs?deviceId=${DEVICE}`, { headers: HH })).json()) as HelperJobs;
-  await setAuditMode("long");
+  await setAuditMode("slow");
   const slowLane = await openLane(REPO, "rw-slow");
   const rwC = await openLane(RW, "rw-charlie");
   await settleForMerge(slowLane.slot);

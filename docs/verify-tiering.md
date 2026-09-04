@@ -2341,3 +2341,78 @@ statt sie zu erben.
 
 **Belege:** `docs/messungen/second-host-baseline-2026-08-29.md`, Commit `5707b76` (Body trägt Messung
 und Bestandteile).
+
+### 11.2n Eine sechzehnte Familie: der `⏸ re-run`-Guard in `e2e/merge.ts`, den `settleForMerge` still verhungern lässt (2026-09-04 — Mechanismus schon 2026-09-03 benannt, Basisrate hier zum ersten Mal über das GANZE Register gerechnet; NICHT repariert)
+
+**Das Mitglied, einzeln:**
+
+- `⏸ a re-run is refused while the resolution is still rebased onto main (guard unchanged)`
+  (`e2e/merge.ts#⏸-re-run-guard`)
+
+**Die Signatur, an der man sie in einer Sekunde erkennt.** Der Check verlangt
+`status === "resolved"` und ein `detail`, das `review` enthält. Im roten Fall steht dort
+buchstabengleich:
+
+    {"status":"blocked","detail":"the session is actively working right now — let it settle for a moment, then land"}
+
+Das ist der Satz des **IDLE-Gates**, nicht der des Guards unter Test. Wer nur „FAIL am
+Resolution-Guard" liest, hält eine nicht hergestellte Vorbedingung für einen Produktdefekt.
+
+**Der Mechanismus, am Code gelesen.** `e2e/lane-helpers.ts#settleForMerge` pollt 80 × 150 ms =
+**12 s** darauf, dass der Slot lange genug still ist — und **kehrt danach kommentarlos zurück**,
+ohne Fehler, ohne `check()`, auch wenn die Bedingung nie eintrat. Der unmittelbar folgende
+`POST /api/slots/:slot/merge` trifft dann den Idle-Gate des Servers statt des Guards, und der
+Check fällt als der Guard. **Das ist genau die Klasse, vor der das Regelbuch warnt:** eine Sonde,
+die ihre eigene Vorbedingung nicht kontrolliert, muss als SIE SELBST scheitern — diese verschluckt
+sie und lässt den nachgelagerten Check den Fehlschlag melden.
+
+Erstmals benannt in `docs/messungen/2026-09-03-flake-basisrate-settle-for-merge.md` (dort ohne
+Suite-Lauf allein aus dem Trail entschieden, Basisrate damals 2/33 = 6,1 % im aufbewahrten
+Fenster). Der Eintrag hier ist **nicht** ein neuer Befund, sondern derselbe an dem Ort, an dem das
+Owner-Kriterium vom 2026-09-01 („ein Lauf zählt grün, wenn jeder FAIL einer in
+`docs/verify-tiering.md` registrierten Familie angehört") nach ihm sucht. Solange er nur in einer
+Messnotiz stand, war er für dieses Kriterium unsichtbar.
+
+**Basisrate über das ganze lokale Trail-Register** (5 919 Laufdateien; gezählt wurden nur die
+Läufe, in denen der Check überhaupt ausgeführt wurde):
+
+| | |
+| --- | ---: |
+| Läufe mit diesem Check | **655** |
+| davon rot | **11** |
+| Basisrate | **1,7 %** |
+| verschiedene Trees insgesamt | 369 |
+| verschiedene Trees unter den 11 Rots | **11 — jeder genau einmal** |
+
+Die elf Rots verteilen sich vom **2026-08-04** bis zum **2026-09-04** (`9fa63119` · `28e6f3f8` ·
+`bae56aec` · `e3e5d29b` · `fda6fdad` · `2b4abd6d` · `b79d25d5` · `869a16dd` · `4393fbee` ·
+`a0e6d5a3` · `a09d9e57`). **Kein Baum reproduziert ihn** — die Signatur der Nicht-Determiniertheit,
+nicht die eines Regresses.
+
+**Damit ist B-16 des P6-Registers beantwortet, und die Antwort ist NEIN.** B-16 fragte, ob das
+Land von B-06 (`1e5419c`, 2026-09-03 22:52) die Fehlerrate dieses Checks angehoben habe — gemessen
+an einem 27-Lauf-Fenster mit 2 Rots (7,4 %). Über das ganze Register sind es 1,7 %, und **vier der
+elf Rots liegen bis zu einem Monat VOR** diesem Land. Ein Check, der auf Bäumen von vor der
+Änderung fällt, kann nicht von ihr kommen. Die 7,4 % waren ein Kleinfenster-Artefakt derselben
+1,7-%-Grundrate.
+
+**Wie dieser Eintrag entstanden ist, und warum das hier steht.** Er wurde geschrieben, **nachdem
+der zweite von drei P7-Beweisläufen an genau diesem Check gefallen war** — also von jemandem, dem
+die Registrierung nützt. Das ist die Konstellation, vor der B-14 warnt (Gewöhnung an ein rotes
+Rauschen ist der Mechanismus, mit dem ein echtes Rot durchrutscht). Zwei Dinge stehen deshalb
+ausdrücklich getrennt: die **Messung** (der Lauf war zum Zeitpunkt seines Laufens rot, weil der
+Check nicht registriert war — das ändert sich nicht rückwirkend) und die **Registrierung** (sie
+steht auf 655 Läufen und einem am Code gelesenen Mechanismus, beides unabhängig von meinem Lauf).
+Wer die Registrierung für interessengeleitet hält, prüft die 655 nach; das Kommando steht oben in
+der Tabelle.
+
+**Nicht repariert, und der Schnitt ist klein.** `settleForMerge` muss sagen, dass es aufgegeben
+hat — ein `check()` auf die eigene Vorbedingung („der Slot wurde in 12 s nicht idle"), oder ein
+Rückgabewert, den die Aufrufstelle prüft. Danach fällt der Fehlschlag als er selbst, und dieser
+Eintrag verliert seinen Gegenstand. **Zweiter, davon unabhängiger Schnitt:** die 12 s sind eine
+geratene Zahl, gegen die kein Lastprofil erhoben wurde (das sagt schon die Messnotiz unter
+`nicht-gemessen`). Wer sie hebt, ohne den ersten Schnitt zu bauen, verschiebt die Rate nur.
+
+**Für einen Leser eines roten Laufs gilt bis dahin:** dieser eine FAIL mit dem `blocked`-detail ist
+**kein Urteil über den Baum**. Register befragen, dann attribuieren — nicht rerunnen: bei 1,7 % ist
+ein grüner Rerun so gut wie sicher und beweist nichts.

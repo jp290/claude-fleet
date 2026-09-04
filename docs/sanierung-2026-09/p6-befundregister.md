@@ -724,6 +724,32 @@ wie oben.
 überhaupt auf einen Server-Neustart empfindlich ist — dann entscheidet ein Blick statt zwanzig
 Läufe.
 
+### BEANTWORTET 2026-09-04 (Program-MAIN Slot 6, P7-Beweislauf 2) — die Antwort ist NEIN
+
+Der zweite der drei P7-Beweisläufe fiel an genau diesem Check, und das gab den Anlass, die Rate
+über das GANZE lokale Trail-Register zu rechnen statt über ein 27-Lauf-Fenster:
+
+| | |
+| --- | ---: |
+| Trail-Laufdateien insgesamt | 5 919 |
+| Läufe, in denen der Check ausgeführt wurde | **655** |
+| davon rot | **11** |
+| Basisrate | **1,7 %** (nicht 7,4 %) |
+| verschiedene Trees unter den 11 Rots | **11 — jeder genau einmal** |
+
+**Vier der elf Rots liegen vor dem B-06-Land** (`1e5419c`, 2026-09-03 22:52): 2026-08-04,
+2026-08-26 (×2), 2026-08-27. Ein Check, der auf Bäumen von bis zu einem Monat vor der Änderung
+fällt, kann nicht von ihr kommen. Die 2/27 waren ein Kleinfenster-Artefakt derselben Grundrate;
+B-06s `restartSrv()` bleibt, wo es ist.
+
+**Und der Mechanismus ist nicht der Server, sondern die Sonde:**
+`e2e/lane-helpers.ts#settleForMerge` pollt 12 s und kehrt danach STILL zurück; der folgende
+merge-POST trifft dann den IDLE-Gate statt des Guards unter Test. Registriert als sechzehnte
+Flake-Familie in `docs/verify-tiering.md` §11.2n, wo das Owner-Kriterium vom 2026-09-01 nach ihr
+sucht — bis dahin stand sie nur in einer Messnotiz und war für dieses Kriterium unsichtbar.
+
+**Diese Zeile ist damit geschlossen.**
+
 ---
 
 ## B-17 — die Tier-2-VORSCHAU verhungert den Land-GATE: ein optionaler Lauf blockiert einen pflichtigen
@@ -1040,7 +1066,7 @@ wurde gelesen; wo sie „OFFEN" sagt, ist die Gegenprobe gelaufen und negativ au
 | B-13 | **ERLEDIGT als Aufzeichnung** | Die Begruendung der `6b8b89d`-Adjudikation ist hier abgelegt; die Zeile selbst verweist hierher. Kein weiterer Ausgang noetig. |
 | B-14 | **OFFEN — Messung** | Die Rotrate ist gemessen, die URSACHE nicht — und der Eintrag sagt selbst, dass sein Vergleichsfenster nicht kontrolliert ist. Voraussetzung ist B-05. |
 | B-15 | **OFFEN — klein** | Keine Kennung des einzelnen Merge-LAUFS; `createWatchForSlot` loest weiter ueber `{t, cwd, branch, terminal}` auf. |
-| B-16 | **OFFEN — Messung** | 2/27 ist keine Rate. Der billige Zwischenschritt (ist der Guard-Check ueberhaupt neustart-empfindlich?) ist nicht gegangen. |
+| B-16 | **GESCHLOSSEN 2026-09-04 — Antwort NEIN** | Über das ganze Trail-Register 11/655 = 1,7 % auf elf verschiedenen Trees, vier Rots VOR dem B-06-Land. Mechanismus ist `e2e/lane-helpers.ts#settleForMerge`, nicht B-06. Registriert als `docs/verify-tiering.md` §11.2n. Siehe §BEANTWORTET am Eintrag. |
 | B-17 | **OFFEN — Owner** | Mutex-Prioritaet zwischen optionalem und pflichtigem Lauf. Die Sofort-Umgehung (Vorschau nur bei Beruehrung von `e2e/`, Wrapper oder Land-Pfad) steht bereits im Regelbuch und wurde in E5/E6 befolgt. |
 | B-18 | **OFFEN — Owner** | Dieselbe Kette, ein Glied weiter. Der einzige benannte Fix (**zweites Helfergeraet**) ist ein Owner-Akt, kein Code. |
 | B-19 | **OFFEN — Owner** | Das ff-Rennen ist strukturell; drei Richtungen benannt, keine gebaut, keine ist die Entscheidung einer MAIN. Heute erneut belegt (14:24, fremde Lane). |
@@ -1054,15 +1080,16 @@ wurde gelesen; wo sie „OFFEN" sagt, ist die Gegenprobe gelaufen und negativ au
 | Ausgang | n | Zeilen |
 | --- | ---: | --- |
 | gefixt (Codepfad gelesen, Commit genannt) | 8 | B-01, B-02, B-03, B-06, B-07, B-09, B-21, B-22 |
-| begruendet verworfen / als Aufzeichnung oder Methode erledigt | 4 | B-04, B-13, B-20, B-23 |
+| begruendet verworfen / als Aufzeichnung oder Methode erledigt | 5 | B-04, B-13, B-16, B-20, B-23 |
 | offen, klein und ohne Owner-Entscheid baubar | 4 | B-10, B-11, B-15, sowie die Gegenprobe zu B-01 |
-| offen, wartet auf eine MESSUNG (keine Entscheidung fehlt) | 3 | B-05, B-14, B-16 |
+| offen, wartet auf eine MESSUNG (keine Entscheidung fehlt) | 2 | B-05, B-14 — **B-16 ist am 2026-09-04 mit NEIN beantwortet und geschlossen** |
 | offen, gehoert dem OWNER (Struktur, Geraet, Prioritaet) | 4 | B-08, B-17, B-18, B-19 |
 | Mechanismus-Rest an einem entschiedenen Eintrag | 2 | B-12, B-23 |
 
 **Nichts steht still**, und das ist die Aussage, die Erfolgsmass 6 verlangt — nicht „alles ist
-behoben". Von 23 Befunden sind 12 aus dem Weg (8 gefixt, 4 als Wissen abgelegt), 7 sind offene
-Arbeit mit benanntem naechsten Schritt, und 4 sind Owner-Tore. Die 14 Queue-Zeilen daneben sind
+behoben". Von 23 Befunden sind **13 aus dem Weg** (8 gefixt, 5 als Wissen/Methode abgelegt —
+B-16 kam am selben Tag dazu, siehe unten), **6 sind offene Arbeit** mit benanntem naechsten
+Schritt, und **4 sind Owner-Tore**. Die 14 Queue-Zeilen daneben sind
 per Definition „uebergeben" — ihr Ausgang ist die Disposition des Owners, und die ist der
 letzte fehlende Teil von Erfolgsmass 6.
 

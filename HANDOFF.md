@@ -1,3 +1,73 @@
+# HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 6): GESCHLOSSEN. Program `complete`, Freeze aufgehoben, zwei Maße als offene Zeilen weitergegeben; 2026-09-04 18:1x
+
+**Es gibt hier nichts mehr zu tun, und das ist der Punkt dieses Abschnitts.** Das Program ist
+`complete` (`completedAt` 1788537302866). Wer es fortsetzen will, gründet ein neues — der Plan
+`docs/sanierung-2026-09/plan-2026-08-31.md` trägt seit `35dc46b` einen Schluss-Marker und ist ein
+datierter Schnappschuss, kein lebender Auftrag. **Neue Arbeit wird gegen die Abschlussnotiz
+abgeleitet, nicht gegen den Plantext.**
+
+## Die drei Owner-Entscheide, wie sie gefallen sind (Freigabe 17:4x über 🎛 Controller Slot 5)
+
+1. **Die 14 pending `notiz`-Zeilen disponiert der Controller**, nicht diese Rolle — Agent-Triage
+   gegen `5f8153c`, Überholtes wird mit Kommentar archiviert. **Der Deckel stand um 18:0x
+   nachgesehen weiter bei 10/10**; danach ist er frei, der Controller meldet es.
+2. **Erfolgsmaß 5: Lauf 2 zählt als GRÜN MIT REGISTRIERTER FAMILIE §11.2n**, begründet mit der
+   Trail-Evidenz 11/655 auf elf Bäumen, die unabhängig von meinem eigenen roten Lauf trägt — der
+   B-14-Vorbehalt ist gehört und beantwortet worden, nicht übergangen. **Lauf 3 ist keine Messung.
+   Kein frisches Triple auf dieser Maschine.**
+   **Und der Wortlaut ist Teil des Entscheids: „Schreib es genau so, nicht als sauberes Grün."**
+   Also: die vom Plan geforderten DREI KONSEKUTIVEN Läufe sind **nicht gefahren worden** — nicht,
+   weil der Baum sie nicht bestanden hätte, sondern weil die Maschine den dritten nicht tragen
+   konnte. **Wer das später als „alle Suiten grün" zitiert, zitiert es falsch.**
+3. **Unfreeze und schließen, kein P5.** Die zwei verfehlten Maße sind offene Zeilen für ein
+   späteres Program, ausdrücklich keine Fehler.
+
+## Was gelandet ist (alles docs-only, Direkt-Commits, je gegen laufende Merges geprüft, je `bun e2e/pins.ts` ALL PASS)
+
+`5f8153c` E6-Disposition · `fafe01d` Abschlussmessung + §11.2n + B-16 geschlossen · `40a55e4`
+Handoff · `35dc46b` Owner-Entscheid, Unfreeze, Zielbild-Vergleich, Plan-Schluss-Marker.
+
+## Die zwei offenen Zeilen — sie haben noch KEINE Queue-Zeile
+
+Sie leben in `docs/messungen/2026-09-04-generalsanierung-abschlussmessung.md` §„Zwei offene Zeilen",
+weil der Advisory-Deckel voll war. **Wenn der Controller den Deckel freigemeldet hat, gehören sie
+als `notiz` an das Nachfolge-Program** — nicht an dieses, es ist `complete`:
+
+1. **`src/client.ts` = 11 067 Zeilen** (Anker 10 578). P5 lief nie. Die Schnittreihenfolge steht
+   fertig im Plan-Nachtrag 2026-09-02 und ist wiederverwendbar.
+2. **Kommentaranteil Server-Code 33,6 %** gegen < 20 %. **Zuerst ist das MASS zu entscheiden**, nicht
+   die Zahl zu senken: es zählt Zeilen, nicht Kommentarsorten, während die Hausregel dieses Repos
+   Kommentare verlangt, die Mechanismus und Preis erklären. Ein Anteilsziel bestraft genau die
+   Kommentare, die erwünscht sind — diese Kritik steht seit 2026-08-25 im Repo und ist nie
+   aufgelöst worden.
+
+## Zwei Dinge, die git nicht trägt
+
+**(a) Zwei Faktenkorrekturen an `rulebook/`** (gitignored, im Haupt-Checkout gerendert, §6b-Pin
+grün): `server.ts` ~13 600 → **24 603** Zeilen in der GPT-Brief-Checkliste (die alte Zahl war um
+Faktor 1,8 zu klein), und die Flake-Familienzahl **15 → 16** samt §11.2n-Eintrag. Beides sind
+Fakten, keine Regeln — keine Promotion nötig, keine erfolgt. **Bei einem Neuaufsetzen dieser
+Maschine sind sie weg**; der getrackte Teil (§11.2n in `docs/verify-tiering.md`) überlebt.
+
+**(b) Der Dispatcher ist NICHT angefasst** — `fleet.json` steht auf `dispatch: false`. Ob das zum
+Freeze dieses Programs gehörte oder zum Normalbetrieb, ist von hier nicht entscheidbar, und der
+Schalter trifft jedes andere Program. Das Umlegen gehört dem Owner oder dem Controller.
+
+## Was diese Rolle hinterlässt, das über das Program hinausreicht
+
+- **Das Trail-Register als Beweismittel.** Dreimal an einem Tag hat es eine Attribution in Sekunden
+  entschieden, wo ein Rerun 25–50 min Suite-Mutex gekostet und oft gar nichts diskriminiert hätte
+  (B-20, B-23, §11.2n). Bei einer Basisrate von 1,7 % ist ein grüner Rerun so gut wie sicher und
+  beweist nichts — das Register beweist etwas.
+- **Der gepinnte Worktree für Beweisläufe.** `git worktree add --detach <scratch> <sha>` +
+  `bun install --frozen-lockfile`, dann von dort `./e2e-isolated.sh`. `main` darf sich während der
+  Messung bewegen; die Trail-Zeilen belegen den Baum (`tree=…`, `dirty=false`). Ohne das messen
+  drei „konsekutive" Läufe drei verschiedene Bäume, ohne dass es jemand sieht.
+- **Die Maschine als Messgröße.** ~58 MB freie Seiten, 115 unreapte `fleet-e2e-instance-*`
+  (2,7 GB), Platte 89 %. Diese Verzeichnisse sind zugleich die Post-mortem-Artefakte, aus denen
+  §11.2m und §11.2n ihre Wurzeln gelesen haben — **was fehlt, ist ein Aufbewahrungsfenster, kein
+  `rm`.** Ein Suite-Lauf stirbt hier inzwischen am Speicher, nicht am Code.
+
 # HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 6): P7 IST GEMESSEN, das Program steht an DREI Owner-Entscheiden, und es gibt keine Bauarbeit mehr; 2026-09-04 15:4x, ctx GEMESSEN 29,9 %
 
 Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,

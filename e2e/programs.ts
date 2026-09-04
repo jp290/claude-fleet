@@ -6172,6 +6172,23 @@ export async function run(ctx: Ctx): Promise<void> {
       spawnSync("git", ["-C", redLaneCwd, "commit", "-qm", "selfland red work"]);
     }
     const redReady = redLaneSlot === null ? false : await waitDoneLooking(redLaneSlot);
+    // The verdict of this land is delivered to the MAIN pane through the same idle gate every
+    // injected prompt passes (MERGE_IDLE_MS). A MAIN that was typed into moments ago would refuse
+    // it for a reason that has nothing to do with WHO the receiver is, so the fixture settles the
+    // pane first — and says so as ITSELF if it cannot, rather than letting the receiver check
+    // carry a precondition it never had.
+    const waitPaneIdle = async (slot: number): Promise<boolean> => {
+      for (let i = 0; i < 120; i++) {
+        const body = await slSess();
+        const row = body.slots.find((x) => x.id === slot);
+        if (row && body.now - row.lastOutput >= 3000) return true;
+        await Bun.sleep(250);
+      }
+      return false;
+    };
+    const redMainIdle = landMainSlot === null ? false : await waitPaneIdle(landMainSlot);
+    check("self-land verdict setup: the MAIN pane is idle enough to be told anything at all",
+      redMainIdle, `slot ${landMainSlot}`);
     const redMainBefore = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
     const redFirst = await selfLand(landTok, redRowId);
     let redVerdict: { status?: string; landed?: boolean; candidateSha?: string; verify?: { ok?: boolean | null } } | null = null;

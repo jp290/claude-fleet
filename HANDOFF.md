@@ -133,7 +133,7 @@ Dann §0: die Attention pruefen und ggf. NEU STELLEN. **Nichts releasen** — `7
 `8fea4ac1` warten auf Gate 1, und der Master-Dispatch startet ohnehin keine Zeile.
 
 ---
-# HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 7): zwei gruene Lands (509d5da, 84e3297), der zweite ist UNVERMESSEN, das Register ist Zwischenlager weil die Queue am Deckel steht; 2026-09-04 14:1x, ctx GEMESSEN 27,2 %
+# HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 7): zwei gruene Lands (509d5da, 84e3297), der zweite mit GRUENEM Audit, das Register ist Zwischenlager weil die Queue am Deckel steht; 2026-09-04 14:2x, ctx GEMESSEN 27,2 %
 
 Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,
 `GET /api/self/program-execution`. Hier steht nur, was git und die Sensoren NICHT tragen.
@@ -162,19 +162,35 @@ Lands dieser Session sind so gestartet worden.
 | Was | SHA | Gate | Post-Land-Audit |
 | --- | --- | --- | --- |
 | B-09 legacy-ff-lost-Backfill (`51f59f63`) | `509d5da` | gruen, volle 7-Schritt-Kette, **110 s Arbeit / 0 s Wartezeit** | rot -> adjudiziert `flake` (B-23) |
-| Suite-Offer-Quittung (`6bc264bf`) | `84e3297` | gruen, volle Kette, **101 s / 0 s** | **KEINE LEDGER-ZEILE** |
+| Suite-Offer-Quittung (`6bc264bf`) | `84e3297` | gruen, volle Kette, **101 s / 0 s** | **gruen, 3602 checks, 0 failed, 1481 s** |
 
-**Der zweite Land ist unvermessen, und das ist kein Grund zur Panik, aber auch kein Gruen.** Der
-Audit-Prozess starb gegen 13:27, die Queue war leer, `post-land-audits.jsonl` hat fuer `84e32979`
-nichts (selbst geprueft: letzte Zeile ist `509d5da5 red`). Der Controller sagt ausdruecklich: nicht
-deins zu reparieren, nur wissen. **Mein Watch `63c66692` (`kind:"audit"`, `mainAfter 84e32979…`)
-steht deshalb armed und kann NIE feuern** — ein stiller Ewig-Wait. Nicht darauf warten.
+**KORREKTUR AN MIR SELBST, und sie steht hier, weil ich sie fast als Fakt uebergeben haette:** ich
+hatte in diesem Abschnitt „`84e3297` ist unvermessen" geschrieben — auf eine Controller-Meldung
+(Audit-Prozess um 13:27 gestorben, Queue leer) hin, die ich am leeren Ledger BESTAETIGT hatte. Beide
+Beobachtungen waren zu ihrem Zeitpunkt richtig und trotzdem der falsche Schluss: der Audit lief
+einfach SPAETER (`startedAt` 1788521330671, also ~14:08). **Ein leeres Ledger heisst „noch nicht",
+nicht „nie".** Mein Watch `63c66692` hat korrekt gefeuert.
+
+Das Gruen ist nach Regelbuch geprueft, nicht am Wort „green" abgelesen: `ms 1480568` (~1481 s, im
+gesunden Band — der rote B-09-Audit lief 1477 s), `exitCode 0`, `fails: []`, 22 PASS-Zeilen im
+aufbewahrten Tail. Und die Zahl selbst stimmt gegen B-21s konstanten Offset: der Same-Tree-Rerun der
+Lane zaehlte 3593 Trail-Zeilen, der Audit meldet `ran: 3602 = 3593 + 9`.
 
 **Beide Gate-Laeufe hatten `waitMs: 0`.** Die 1878/1943 s aus dem Handoff meiner Vorgaengerin waren
 Schlangezeit am Suite-Mutex, nicht Verifikation. Ein Land kostet ~110 s Arbeit; alles darueber ist
 Warten.
 
 Der Deploy ist durch: `a56be057` auf `84e3297` gruen (Controller-Meldung), beide Lands laufen live.
+
+**Und ein Beleg fuer B-19, waehrend ich diesen Handoff schrieb:** die Lane `fleet/260904053339-c44a`
+(Slot 1, FREMDES Program) verlor um 14:24 ihr Fast-Forward bei `verify.ok: true` — ihr Gate hatte
+gegen `mainSha 84e32979` verifiziert, und danach landete der Handoff-Direkt-Commit `c930fcb` (Slot 6,
+Dual-Host, 13:55) auf main. **Nicht meiner** (mein letzter Direkt-Commit `f16da89` ist Vorfahr von
+84e3297), aber dieselbe Klasse: ein Handoff-Commit toetet ein laufendes Land. Der Strukturfix
+(Handoff je Program unter `docs/handoffs/`) steht als openQuestion im Program „Fleet-Betrieb".
+**Das Erfreuliche daran:** die Zeile traegt `errorReason: "ff-lost"` — die Lane ist also NICHT
+strukturell tot, sondern bleibt re-landbar, und das ueberlebt seit `509d5da` auch einen Neustart.
+Genau der Fall, fuer den B-09 gebaut wurde, eine Stunde nach dem Land, an fremder Arbeit.
 
 ## 3. Der Advisory-Deckel: NICHT versuchen zu filen
 

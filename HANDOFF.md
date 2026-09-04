@@ -1,10 +1,39 @@
-# HANDOFF — 🎛 Fleet Controller (Slot 12, Fable): Lagebild ueber 11 Slots, Deploy ff228e5, 3 Slots geschlossen, D2 dispatcht; 2026-09-04 07:36, ctx GEMESSEN 23,1 %
+# HANDOFF — 🎛 Fleet Controller (Slot 12, Fable): Lagebild, Deploy ff228e5, 6 Lanes in Flug (S2, GLM-Denkauftrag, 2 Manifeste, D2, E1), Slot 3 im Merge; 2026-09-04 08:02, ctx GEMESSEN 28,4 %
 
 Zustand ableiten: `./state.sh`, `./register.sh`, Owner-Poll, Panes. Hier nur, was git nicht traegt.
 Die elf Slot-Berichte + zwei Aggregate dieser Session liegen NUR im Scratchpad dieser Session
 (`…/c48dbe49-…/scratchpad/reports/`) — die Essenz steht unten.
 
-## 0. In Flug und wer landet
+## 0a. NEU seit 07:36 — Owner-Richtung und was daraus in Flug ist (Watches sterben mit Slot 12 — NEU ARMEN)
+
+**Owner-Richtung (woertlich sinngemaess, 07:5x):** Private-repo-j ist in aktueller Form misslungen; erst
+Studio-als-Objekt (S2) und die Ansicht dafuer bauen, dann Private-repo-j und die Private-repo-y-iOS-App
+richtig angehen. Alles hat „zu wenig Zusammenhang"; die ContextPacks muessen besser geroutet und in
+die Arbeit eingebunden werden; die Studio-Workflows wirken noch nicht richtig, vermutlich wegen der
+Packs und des Arbeits-Managements — Ansicht + darauf aufbauende Systeme sollen helfen. Parallel eine
+GLM-Session, die denkt, wie Packs auf einem System mit Jobschichten aussehen sollten.
+
+**Meine Einschaetzung, vom Owner mit „alles klar" angenommen:** kein Produkt-Repo hat ein
+`.fleet/context-packs.json` (gemessen: Private-repo-j, private-repo-p keins; 5 Quittungen heute, alle
+claude-fleet). Reihenfolge: S2 → Manifeste in den Produkt-Repos → Program-Ansicht → Architekturfrage
+„waehlt das Studio die Packs (Stufe+Rolle) oder das Program?" (meine Empfehlung: Studio).
+
+| Zeile | Slot | Harness | Auftrag | Watch |
+|---|---|---|---|---|
+| `0555828b` S2 Studio-als-Objekt | 2 | Opus/high | Brief liegt im text; studios=[] → Lane muss Fixture selbst anlegen | keiner (Deckel 5) — armen |
+| `6fd9d46e` GLM-Denkauftrag Packs+Jobschichten | 4 | pi-zai glm-5.3 | Notiz `docs/ideen/2026-09-04-context-packs-jobschichten-glm.md`, committen | **pi-zai ist nicht automatable → KEIN lane-Watch moeglich, Pane lesen** |
+| `d21121d1` Manifest Private-repo-j | 5 | Opus | docs-only in /Users/owner/private-repo-j | 20ef46eb (armed, stirbt) |
+| `798a420d` Manifest private-repo-p | 7 | Opus | docs-only in /Users/owner/private-repo-p | a9d1f785 (armed, stirbt) |
+| `74d90c5e` Program-Ansicht (Owner-Dossier-Route + Panel + 2 Checks) | — | queued | ERST dispatchen, wenn S2/E1/D2 gelandet sind (server.ts-Ueberlappung) | — |
+| `4a29ffcd` D2 | 1 | Opus | laeuft | — |
+| `bffe3de0` §11.2l | 3 | Opus | **Merge laeuft seit 07:42** (`/api/slots/3/merge` running:true); Lane hat auf 8ee867b rebased, Gate-Kette gruen; Report 7b1c0f9e | 7d6c6f31 merge→3 (stirbt; nach Terminalfakt feuert ein neuer Watch sofort) |
+| `4b92b2f0` E1 | 11 | codex | Slot 8 landet (Watch a994affb) | — |
+
+Land-Reihenfolge: Slot 3 (laeuft) → E1 (Slot 8) → Manifeste (fremde Repos, kein Fleet-Mutex) → D2 → S2 → dann `74d90c5e` dispatchen.
+Nach Slot 3s Land: CLAUDE.md §11.2l → „REPARIERT in 251adab" (SHA nach Rebase; die Lane warnt: ca81fbb existiert nie auf main).
+Gesehen und offen: `POST /api/self/watch {kind:merge}` auf Slot 3 feuerte um 07:42 SOFORT aus dem ALTEN ff-lost-Fakt (Event eeef0d72, `landed=NO`), obwohl d32b69d „reject spent" deployt ist — die Ablehnung greift offenbar nur ohne neueren Lauf; Notiz-Kandidat, nicht bewertet.
+
+## 0. In Flug und wer landet (Stand 07:36, teils ueberholt durch 0a)
 
 | Lane | Slot | Auftrag | Stand 07:36 | Landet |
 |---|---|---|---|---|

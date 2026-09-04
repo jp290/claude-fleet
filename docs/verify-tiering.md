@@ -2467,6 +2467,16 @@ also bevor eine einzige ihrer Zeilen existierte. Der Fund entstand genau so, wie
 vorschreibt: ein Vorschaulauf fiel, das Register wurde befragt, und es hat geantwortet. Weder ein
 Rerun desselben Baums noch ein frischer HEAD-Worktree hätte das bei 2,9 % entschieden.
 
+**Zweite, unabhängige Messung am selben Tag.**
+`docs/messungen/2026-09-04-falsifikator-second-host.md` §5 zählt denselben Check in einem SPÄTEREN,
+größeren Fenster (232 grün / 7 rot auf 5 Bäumen) — dieselbe Rate von 2,9 %, aus einer anderen Frage
+heraus gerechnet (welche Fails eines Second-host-Laufs ein Host-Unterschied sind und welche nicht).
+Sie kommt zum selben Ergebnis: **kein Host-Unterschied, ein lokales Flake.** Dass diese Zahl bis
+jetzt nur in einer Messnotiz stand, ist genau der Grund, warum sie hier steht — §11.2n sagt es in
+eigenen Worten: solange eine Familie nur in einer Messnotiz lebt, ist sie für das Owner-Kriterium
+vom 2026-09-01 („ein Lauf zählt grün, wenn jeder FAIL einer in `docs/verify-tiering.md`
+registrierten Familie angehört") unsichtbar.
+
 **Für einen Leser eines roten Laufs gilt bis dahin:** dieser eine FAIL mit dem
 `phase:"UNKNOWN"`-detail ist **kein Urteil über den Baum**. Register befragen, dann attribuieren —
 nicht rerunnen: bei 2,9 % ist ein grüner Rerun fast sicher und beweist nichts.

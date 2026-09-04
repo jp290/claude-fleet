@@ -179,7 +179,7 @@ export interface AuditWatchEventPayload {
   result: "green" | "red" | "unknown";
   mainSha: string;
   covers: AuditWatchCoverPayload[];
-  checks: { ran: number; failed: number } | null;
+  checks: { ran: number; failed: number; ranIsLowerBound?: true } | null;
   reason?: string;
 }
 export interface AuditWatchEventView {
@@ -307,7 +307,9 @@ export function mergeWatchMessage(slot: number, cwd: string, event: MergeWatchEv
 
 export function auditWatchMessage(repo: string, mainAfter: string, event: AuditWatchEventView): string {
   const p = event.payload;
-  const checks = p.checks ? `${p.checks.ran} checks, ${p.checks.failed} failed` : "check count unknown";
+  const checks = p.checks
+    ? `${p.checks.ranIsLowerBound ? "at least " : ""}${p.checks.ran} checks, ${p.checks.failed} failed`
+    : "check count unknown";
   const why = p.reason ? ` Reason: ${p.reason}.` : "";
   return `[fleet] post-land audit [event ${event.id}] for ${repo} land ${mainAfter} reached terminal `
     + `result=${p.result}; audited tip=${p.mainSha || "unknown"}; ${checks}.${why} This notification `

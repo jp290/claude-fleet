@@ -29,10 +29,11 @@ import { failNamesOf, inQuietHours, localMode, stricter, tailOf, trailIdOf, EXIT
 interface Row {
   at: number; ms: number; repo: string; main: string; mainSha: string; result: string; reason?: string;
   cmd: string; exitCode: number | null; out: string; fails?: string[];
-  checks?: { ran: number; failed: number } | null;
+  checks?: CheckCount | null;
   covers: { branch: string; mainAfter: string }[];
   remote?: { name: string; claimedAt: number; reportedAt: number; trail?: string; clonedSha?: string };
 }
+interface CheckCount { ran: number; failed: number; ranIsLowerBound?: true }
 interface HelperJob {
   id: string; kind?: string; repo: string; main: string; branches: string[]; covers: number;
   claim: { name: string; claimedAt: number; expiresAt: number } | null; localRunning: boolean;
@@ -49,6 +50,8 @@ interface OwnerDevice {
 const DEVICE = "daemonbox0001";           // matches the server's /^[a-z0-9]{8,32}$/
 const DEVICE_NAME = "linux work-horse (e2e)";
 const TRAIL = "isolated-20260828T2200Z-7777";
+const REMOTE_PRE_TRAIL_CHECKS = 3476;
+const REMOTE_TOTAL_CHECKS = REMOTE_PRE_TRAIL_CHECKS + 9;
 
 export async function run(h: {
   REPO: string;
@@ -209,6 +212,15 @@ export async function run(h: {
     'echo "FAIL  remote trail failure beta"',
     'i=0; while [ "$i" -lt 60 ]; do echo "trailing filler $i"; i=$((i + 1)); done',
     `echo "run pwd=$(pwd) files=$(ls | tr '\\n' ',') recur=[\${FLEET_POSTLAND_AUDIT_CMD:-}] token=[\${FLEET_TOKEN:-}]"`,
+    `echo "PASS  trail: the run wrote a durable per-check trail  (file=$PWD/e2e-trail/${TRAIL}.jsonl rows=${REMOTE_PRE_TRAIL_CHECKS})"`,
+    `echo "PASS  trail: one row per check() call — trail rows match the suite's result count  (rows=${REMOTE_PRE_TRAIL_CHECKS} results=${REMOTE_PRE_TRAIL_CHECKS})"`,
+    'echo "PASS  trail: the trail is outside the instance dir"',
+    'echo "PASS  trail: a node_modules symlink whose target is not a work tree never falls back to the staged wrapper"',
+    'echo "PASS  trail: sentinel check — its own row is asserted below"',
+    'echo "PASS  trail: a known check row carries the full shape"',
+    'echo "PASS  trail: rows name the tree under test"',
+    'echo "PASS  trail: a failing check row keeps its detail"',
+    'echo "PASS  trail: a passing check row carries no detail"',
     'echo "2 FAILURES"',
     "exit 1",
   ].join("\n"));
@@ -276,7 +288,7 @@ export async function run(h: {
     return token;
   };
   const previewReport = async (name: string, result: Record<string, unknown>): Promise<{
-    status: number; body: { offer?: { state?: string; result?: { checks?: { ran: number; failed: number } | null } } };
+    status: number; body: { offer?: { state?: string; result?: { checks?: CheckCount | null } } };
   }> => {
     const lane = await openLane(REPO, name);
     const token = await selfTokenOf(lane.slot);
@@ -296,7 +308,7 @@ export async function run(h: {
     await hpost("/api/helper/claim", { jobId, deviceId: DEVICE });
     const resultRes = await hpost("/api/helper/result", { jobId, ...result });
     const read = await fetch(BASE + "/api/self/suite-offer", { headers: { "x-fleet-self-token": token } });
-    const body = await read.json() as { offer?: { state?: string; result?: { checks?: { ran: number; failed: number } | null } } };
+    const body = await read.json() as { offer?: { state?: string; result?: { checks?: CheckCount | null } } };
     await post(`/api/slots/${lane.slot}/kill`, {});
     return { status: resultRes.status, body };
   };
@@ -431,9 +443,13 @@ export async function run(h: {
     JSON.stringify(reported));
   check("(HD) the row stores those bounded names and corroborates a summary whose FAIL lines fell outside the tail",
     JSON.stringify(remoteRow?.fails) === '["remote trail failure alpha","remote trail failure beta"]'
-      && remoteRow?.checks?.ran === 2 && remoteRow.checks.failed === 2
+      && remoteRow?.checks?.failed === 2
       && remoteRow.cmd.includes("remote helper") && remoteRow.cmd.includes(DEVICE_NAME),
     `${JSON.stringify(remoteRow?.fails)} ${JSON.stringify(remoteRow?.checks)} ${remoteRow?.cmd}`);
+  check("(HD) remote checks.ran uses the retained trail self-count as the complete run total",
+    remoteRow?.checks?.ran === REMOTE_TOTAL_CHECKS
+      && remoteRow.checks.ranIsLowerBound === undefined,
+    `${JSON.stringify(remoteRow?.checks)} expected=${REMOTE_TOTAL_CHECKS}`);
   const dossier = await (await get(`/api/lane?branch=${encodeURIComponent(job.branch)}`)).json() as {
     audits?: { state?: string; value?: { rows?: { fails?: string[] }[] } };
   };
@@ -487,9 +503,10 @@ export async function run(h: {
   const legacy = await previewReport("daemonlegacy", {
     exitCode: 1, tail: "FAIL  legacy visible failure\n1 FAILURES",
   });
-  check("(HD) an OLD result body without fails is still accepted with exactly the prior check count",
+  check("(HD) an OLD result body without fails is still accepted, with its tail count marked as a lower bound",
     legacy.status === 200 && legacy.body.offer?.state === "reported"
-      && legacy.body.offer.result?.checks?.ran === 1 && legacy.body.offer.result.checks.failed === 1,
+      && legacy.body.offer.result?.checks?.ran === 1 && legacy.body.offer.result.checks.failed === 1
+      && legacy.body.offer.result.checks.ranIsLowerBound === true,
     JSON.stringify(legacy));
 
   const fiftyOne = Array.from({ length: 51 }, (_, i) => `bounded failure ${i + 1}`);

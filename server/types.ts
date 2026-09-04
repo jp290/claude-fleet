@@ -644,7 +644,8 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
       || p.covers.some((c) => !c || typeof c.branch !== "string" || typeof c.mainAfter !== "string")
       || !(p.checks === null || (typeof p.checks === "object" && p.checks !== null
         && Number.isInteger(p.checks.ran) && p.checks.ran >= 0
-        && Number.isInteger(p.checks.failed) && p.checks.failed >= 0))
+        && Number.isInteger(p.checks.failed) && p.checks.failed >= 0
+        && (p.checks.ranIsLowerBound === undefined || p.checks.ranIsLowerBound === true)))
       || !(p.reason === undefined || (typeof p.reason === "string" && p.reason.length <= 200))) return null;
     return { ...base, subjectRepo: e.subjectRepo, subjectMainAfter: e.subjectMainAfter,
       kind: e.kind, payload: { result: p.result as AuditWatchEventPayload["result"], mainSha: p.mainSha,

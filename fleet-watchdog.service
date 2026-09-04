@@ -33,8 +33,11 @@
 [Unit]
 Description=claude-fleet watchdog (keeps the srv tmux session — the fleet server — alive)
 Documentation=file://FLEET-DIR/watchdog.sh
-After=network-online.target
-Wants=network-online.target
+# NO network ordering, and that is deliberate twice over. A USER manager has its own unit
+# namespace and does not see system targets, so `Wants=network-online.target` here would name a
+# unit that is simply not found. And it would buy nothing: if the server cannot bind FLEET_HOST
+# yet, it exits, and the loop below starts it again five seconds later — the wait for the network
+# is the watchdog's own job and it already does it.
 
 [Service]
 Type=simple
@@ -82,8 +85,10 @@ KillMode=process
 PrivateTmp=false
 
 # watchdog.sh writes its own lines to FLEET-DIR/server.log; these two capture everything else, the
-# way StandardOutPath/StandardErrorPath do in launchd-example.plist. Replace both with `journal` if
-# you would rather read it through `journalctl --user -u fleet-watchdog`.
+# way StandardOutPath/StandardErrorPath do in launchd-example.plist. `append:` needs systemd 240 or
+# newer and an unknown value makes the unit fail to LOAD, so on anything older replace both with
+# `journal` — which is also the better choice if you would rather read it through
+# `journalctl --user -u fleet-watchdog`.
 StandardOutput=append:FLEET-DIR/watchdog.log
 StandardError=append:FLEET-DIR/watchdog.log
 

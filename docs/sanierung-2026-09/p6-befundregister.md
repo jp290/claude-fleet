@@ -873,6 +873,57 @@ Alt-Helfer-Audit weiter. Wer alt gegen neu ueber die Zeile hinweg vergleicht, mi
 nicht die Suite.
 
 
+## B-22 — das Suite-Offer-Ledger belegt, was `d2e4f219` als „nicht geprüft" führte — und löscht dabei den Beleg, den der eigene Vorschlag der Zeile bräuchte
+
+GEMESSEN 2026-09-04 von Slot 7 an `fleet.json#laneSuiteJobs` + `audit.jsonl`, ausgelöst durch die
+`Unresolved`-Zeile der B-09-Lane („Remote-Angebot blieb 800 s geclaimt ohne Resultat").
+
+**(1) Die Lücke ist teilweise geschlossen.** `d2e4f219` maß Post-Land-Audits und sagte ehrlich,
+lane-suite-Vorschauen hätten kein eigenes Ledger. Sie haben eines: `laneSuiteJobs` trägt je Angebot
+`offeredAt` + `state`, der Abbruch steht mit `ts` in `audit.jsonl` (`event: helper_result`). Zwei
+Instanzen desselben Tages, beide auf `second-host`, beide `result: null`:
+
+| Angebot | Slot / Branch | offeredAt → abandoned | Dauer |
+| --- | --- | --- | --- |
+| `36c43a0edfef` | 8 / `fleet/260904083919-f581` (B-09, eigenes Program) | 1788511649060 → 1788512483435 | **834,4 s** |
+| `900bd42c5c19` | 2 / `fleet/260904055850-898f` (FREMDES Program) | 1788502234408 → 1788503395689 | **1161,3 s** |
+
+Der Schluss der Zeile („beide fahren dasselbe `./e2e-isolated.sh` auf demselben Gerät, aber das ist
+ein Schluss, keine Messung") ist damit an zwei lane-suite-Instanzen gestützt: die Vorschau läuft dem
+800-s-Budget genauso davon wie der Audit. **Belegstärke ehrlich: n=2, und beide sind ABBRÜCHE** —
+über die Laufzeit eines lane-suite-Angebots, das FERTIG wird, sagen sie nichts, weil keines fertig
+wurde.
+
+**(2) Der Record löscht seinen eigenen besten Beleg.** In `POST /api/self/suite-offer/withdraw`
+(`server.ts`, grep `mayRunLocally`) steht `job.claim = null;` VOR
+`job.state = held ? "abandoned" : "withdrawn";`. Zwei Folgen, und die erste ist gut:
+
+- `state: "abandoned"` ist selbst der Beweis, dass ein Claim gehalten wurde — der Zustand wird aus
+  `held` abgeleitet, `withdrawn` heißt „war frei". Die beiden sind unterscheidbar, ohne dem Bericht
+  der Lane glauben zu müssen. Genau so ist oben verifiziert worden, dass die B-09-Lane richtig lag.
+- Danach trägt die Zeile `claim: null` und hat kein `endedAt`. WER hielt, WANN er claimte, WANN der
+  Claim abgelaufen wäre, WANN abgebrochen wurde — nichts steht mehr am Job. Der Name überlebt nur in
+  der Audit-Zeile („while second-host held it"), die Abbruchzeit nur als deren `ts`.
+
+**Die Konsequenz ist der Punkt:** `d2e4f219` schlägt vor, die Wartezeit an die LEBENDIGKEIT des
+Claims zu binden statt an eine feste Frist (`claim.expiresAt` + `helperDevices[].lastSeen`). Dieser
+Vorschlag ist an der HISTORIE nicht prüfbar — die Felder, die er lesen würde, sind in genau den
+Zeilen gelöscht, die den Fall belegen. Wer ihn bauen will, misst vorwärts oder repariert zuerst die
+Aufzeichnung.
+
+**Vorschlag (klein, nicht promoviert):** beim Abbruch den Claim nicht nullen, sondern nach
+`job.claimWas` (name, deviceId, claimedAt, expiresAt) umhängen und `job.endedAt` stempeln. Rein
+additiv, kein Verhalten am Wartepfad. Rückfalltür: die zwei Felder wieder entfernen.
+
+**NICHT GEPRÜFT:** ob `second-host` während der beiden Fenster durchgehend `lastSeen`-frisch war —
+genau das ist wegen (2) aus der Historie nicht rekonstruierbar. Heute ist das Gerät aktiv und hält
+den Claim `26ea1a205005` für den Post-Land-Audit derselben Branch; daraus folgt für die zwei Fenster
+nichts.
+
+**Diese Zeile hat KEINE Queue-Zeile.** `POST /api/self/tasks` lehnte mit
+`program advisory filing cap reached (10/10 pending advisory rows awaiting owner disposition)` ab —
+der Deckel ist erreicht, und das Register ist der vorgesehene zweite Ort.
+
 ## Bereits als Queue-Zeile abgelegte P6-Befunde (nur Verweis, Inhalt lebt an der Zeile)
 
 | ID | Kurz |

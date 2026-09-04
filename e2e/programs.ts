@@ -1630,8 +1630,17 @@ export async function run(ctx: Ctx): Promise<void> {
       && spawnSync("git", ["-C", unboundRepo, "status", "--porcelain", "--", "HANDOFF.md"], { encoding: "utf8" }).stdout.trim() === "",
     unboundHandoff.stderr.toString());
 
-  const unboundToken = await paneEnv(`s${unboundFreeSlot}`, "FLEET_SELF_TOKEN") ?? "";
-  check("unbound succession setup: the predecessor pane carries its own self credential",
+  // NOT paneEnv: that probe types a printf into the pane and reads the echo back, which needs a
+  // SHELL there. A codex pane runs the real TUI wherever the binary exists, so the probe answers
+  // nothing and the whole block fails as a credential problem it does not have (measured here
+  // 2026-09-04: five reds, all downstream of one empty token). The persisted row is the credential's
+  // own home and is harness-blind; it is written by openSlot's debounced save, so it is polled.
+  let unboundToken = "";
+  for (let i = 0; i < 50 && !/^[0-9a-f]{32}$/.test(unboundToken); i++) {
+    unboundToken = readState().slots?.[String(unboundFreeSlot)]?.selfToken ?? "";
+    if (!/^[0-9a-f]{32}$/.test(unboundToken)) await Bun.sleep(100);
+  }
+  check("unbound succession setup: the predecessor's persisted row carries its own self credential",
     /^[0-9a-f]{32}$/.test(unboundToken), `${unboundToken.length} chars`);
   const unboundCarry = "carry-marker-unbound-late-readiness";
   const unboundSuccLabel = "unbound-succession-successor";

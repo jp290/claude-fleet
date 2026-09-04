@@ -1,3 +1,79 @@
+# HANDOFF — 🎛 Fleet Controller (Slot 5, Fable): Owner-Runde „alle Punkte angehen" abgearbeitet, zwei Audits als Messnotizen, S2-Land in Flug; 2026-09-04 18:0x, ctx GEMESSEN 27,8 %
+
+Zustand ableiten: `./state.sh`, `./register.sh`, Owner-Poll, Panes. Hier nur, was git nicht traegt.
+Die Abschnitte darunter sind FREMD (andere Programs) — HANDOFF.md ist eine geteilte Datei; das
+Datenschichten-Audit B3 misst, dass genau diese Datei 37 % der main-Bewegungen und damit der
+ff-lost-Verluste erzeugt. Handoff je Program ist offene Frage des Programs Fleet-Betrieb.
+
+## 0. Rolle (Owner-Entscheid 09:1x, unveraendert)
+
+Ueberblick + Owner-Nachrichten/Ideen auf Programs routen. KEINE Merges, keine Lane-Watches —
+Program-MAINs landen selbst. AUSNAHME heute unter Owner-Freigabe 17:4x („lass uns diese Punkte
+alle angehen"): Board-Lands fuer Zeilen OHNE Program (GLM-Notiz `6fd9d46e` → `d7b73f4` gelandet;
+S2 `0555828b` Slot 2 in Flug, Merge-Watch `7051c3f7`), weil `selfLandTaskForMain` eine Zeile mit
+`programId:null` fuer jede MAIN ablehnt. Modellpolitik: Controller Fable, MAINs + Lanes Opus 5.
+
+## 1. Was heute gefallen ist (Owner-Freigabe 17:4x, Controller-Entscheide, alle per Attention-Antwort)
+
+- **4a83cffa (66499a03, Slot 3): (A) ARM IT.** `FLEET_LANE_AUTOCLOSE=1` im srv-Spawn von
+  `watchdog.sh` (`566cbae`, Direkt-Commit, Pins gruen, Isolated NICHT gefahren — steht im Body),
+  `launchctl kickstart`, Deploy `c43b4e27` gruen, `./state.sh` zeigt `live=1`. Slot 3 baut seine
+  Beleg-Lane, sobald Dispatch an ist. Rueckfalltuer: Wert auf 0, kickstart, Deploy.
+- **b50afa74 (Sanierung): (1) Notizen disponiert, (2) Erfolgsmass 5 = Lauf 2 zaehlt gruen MIT
+  Familie §11.2n, (3) Unfreeze + schliessen.** Die MAIN hat geschlossen (`2b4b4ea`, Program
+  complete) und ist retired. 4 notiz archiviert (`9c7d6e02 372b3cef df22cf14 7e984bde`, Belege
+  im Kommentar), 10 bleiben pending mit Kommentar „Eigentuemer f170dc46" (9) bzw. Owner
+  (`d07646bc`).
+- **ecb8946d (Fleet-Betrieb, Slot 7): (1) Dispatch AUS bis S2 gelandet, dann EIN mit Deckel 2;
+  (2) S2 landet der Controller vom Board; (3) ff-Richtung (b) Retry unter GEHALTENEM Lock,
+  bounded 2 Runden, Gate JE RUNDE neu; (4) `d51e02ca` geloescht, R4' filen.**
+- **b0f54823 (Dual-Host, Slot 11): Topologie A; Daemon-Update `ac03728d4f02` gequeued und
+  FERTIG (daemonSha 40a55e40); Schnitt 2+3 (`74dcff75`, `8fea4ac1`) released (queued).**
+- Deploys heute von mir: `a56be057` (84e3297), `3f76a555` (40a55e4), `c43b4e27` (566cbae), alle
+  gruen an `GET /api/deploys`.
+
+## 2. Was JETZT offen ist (Reihenfolge)
+
+1. **S2-Verdikt** (Watch `7051c3f7`, `GET /api/slots/2/merge`). Gruen ⇒ `0555828b` done. ff-lost
+   ⇒ einmal neu `POST /api/slots/2/merge` (main bewegte sich waehrend des Gates durch
+   Handoff-Direkt-Commits `35dc46b`, `9b31c79`, `2b4b4ea`).
+2. **Master-Dispatch EIN** (`POST /api/dispatch {"on":true}`, Deckel bleibt 2). Vorher pruefen:
+   `fa1112eb` (Steward-Brief) steht `queued` und wuerde MITSTARTEN — unqueue, wenn nicht gewollt.
+   `ba896b1b` ist private-repo-p (fremdes Repo, startet hier nicht).
+3. **Eine gebuendelte Nachricht an Slot 7** (Fleet-Betrieb): Dispatch an; KORREKTUR meiner
+   14:0x/18:0x-Aussage — das Audit zu `84e3297` hat eine GRUENE Zeile (13:53, ran 3602/0), die
+   Zeile wird erst am ENDE geschrieben, ich hatte zu frueh nachgesehen, KEIN Befund; die zwei
+   Messnotizen `docs/messungen/2026-09-04-datenschichten-audit.md` (B1–B8) und
+   `…-context-pack-routing.md` (Luecken 1–7) sind ihr Programm-Futter, Prioritaet B1 (Attention
+   ueberlebt Succession), B2 (interrupted clean merge), B3/R2, dann Pack-Luecke 1+3 (S).
+   Und eine an Slot 3: Flag live, Dispatch an, Beleg-Lane starten.
+4. **Diese Datei + die zwei Messnotizen + INDEX committen** — ERST wenn kein Land laeuft
+   (`GET /api/slots/:id/merge` running:false fuer alle Lanes).
+5. Owner-Bericht (unten in §4 die Kurzfassung), dann `POST /api/self/succeed`.
+
+## 3. Bezahlte Lehren dieser Session
+
+- **Ein Audit-Ledger ohne Zeile heisst „laeuft noch", nicht „verloren"** — die Zeile entsteht am
+  Ende (Datenschichten-Audit, Inventar). Ich habe es zwei MAINs falsch gemeldet.
+- **Attentions sterben mit JEDER Succession** (B1): drei heute, jede vom Owner nie gesehen.
+  Antworte Attentions SOFORT, bevor die MAIN ins 25/30-Band laeuft, oder sie sind weg.
+- **Nachrichten an MAINs sind Vollkontext-Kosten**: Slot 9 (36 %) habe ich deshalb nicht
+  angeschrieben, sondern seine Zeile selbst archiviert; die MAIN hat sich dann selbst retired.
+- **Lanes-Deckel 2 + Dispatch aus = drei Programs blockiert** an zwei fertigen, ungelandeten
+  Lanes. Erst landen, dann einschalten.
+- Vier Opus-Surveys/Audits kosten je 130–170k Agent-Tokens und liefern zitierfaehige Befunde;
+  ihre Ergebnisse gehoeren als Messnotiz in den Baum, nicht in den Controller-Kontext.
+
+## 4. Owner-Kurzfassung (fuer die Nachfolgerin, falls der Bericht nicht mehr rausgeht)
+
+Alle vier Owner-Tore beantwortet; Autoclose scharf; Sanierung GESCHLOSSEN; GLM-Notiz gelandet;
+S2 in Flug; Second-host-Daemon aktuell. Zwei Audits liegen als Messnotizen im Baum. Smartester
+naechster Zug: Fleet-Betrieb (Slot 7) nimmt B1+B2+R2 als drei Lanes; Pack-Luecke 3 (`pi-ox` ins
+Array) ist ein Einzeiler, den jede Lane nebenbei landen kann.
+
+---
+---
+
 # HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 6): GESCHLOSSEN. Program `complete`, Freeze aufgehoben, zwei Maße als offene Zeilen weitergegeben; 2026-09-04 18:1x
 
 **Es gibt hier nichts mehr zu tun, und das ist der Punkt dieses Abschnitts.** Das Program ist

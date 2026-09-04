@@ -924,6 +924,67 @@ nichts.
 `program advisory filing cap reached (10/10 pending advisory rows awaiting owner disposition)` ab —
 der Deckel ist erreicht, und das Register ist der vorgesehene zweite Ort.
 
+## B-23 — ein MECHANISMUS-Ausschluss schlägt den Same-Tree-Rerun, wenn der neue Codepfad nachweislich nicht gelaufen sein kann
+
+GEMESSEN 2026-09-04 von Slot 7 am roten Post-Land-Audit des B-09-Lands (`509d5da`, remote auf
+`second-host`, 3597 Checks / 2 Fails, 1477 s). Methodisch die Fortsetzung von B-20: dort entschied das
+Trail-Register die Attribution in Sekunden, hier entschied sie das **Ausführungsfenster** — und der
+vorgeschriebene Rerun wurde bewusst NICHT gefahren.
+
+**Die zwei Fails:** `re-subscribing to the same target returns the SAME watch, never a second` und
+`delete the spent transport Watch`. Beide in `e2e/watch.ts`, beide Watch-Transport — und das Land
+verändert, wann eine Lane wieder `done-looking` wird. Der Verdacht war also real und nicht
+wegzuwinken.
+
+**Der Ausschluss, in drei Schritten, alle am Code gelesen:**
+
+1. `withValidErrorReason` hat genau zwei Aufrufstellen, **beide im Boot-State-Restore** (dem
+   `persisted`-Reader): der `mergeLast`- und der `mergeParked`-Zweig. Kein Request-, Tick- oder
+   Merge-Pfad ruft sie.
+2. Der neue Arm verlangt `status: "error"`. Der `mergeParked`-Zweig lässt ausschließlich
+   `resolved | interrupted | awaiting-author` zu — er kann den Arm strukturell nie erreichen. Bleibt
+   `mergeLast`. Der Arm verlangt dort zusätzlich `errorReason` ABWESEND, `landed:false`,
+   `verify.ok === true` und die historische Detail-Prosa.
+3. Die einzige Fixture, die reason-lose Legacy-Zeilen pflanzt UND den Server neu startet, ist die
+   ff-lost-Fixture in `e2e/programs.ts`. **`fleet-e2e.ts` ruft `watch.run()` in Zeile 98,
+   `programs.run(ctx)` erst in Zeile 123.** Zum Zeitpunkt der beiden Checks trägt die `fleet.json`
+   der Instanz keine Merge-Zeile dieser Form, und der einzige vorangegangene Boot war der frische
+   Instanz-Start.
+
+⇒ Der neue Codepfad **kann** nicht gelaufen sein. Nicht „unwahrscheinlich" — unmöglich.
+
+**EINE WURZEL, NICHT ZWEI.** Beide Checks hängen am selben Watch-Objekt `wA` (`e2e/watch.ts:3242`).
+Liefert das Re-Subscribe (`:3255`) eine ANDERE Watch-Id, zeigt das Delete (`:3774`) auf eine
+veraltete Id und fällt mit. Damit ist das naheliegende Gegenargument („zwei unabhängige Flakes
+gleichzeitig, p ≈ 2·10⁻⁵") gegenstandslos: es ist ein Ereignis, nicht zwei. Die gemeinsame Wurzel ist
+die bereits gefilete Naht `372b3cef` (ein SPENT Watch blockiert die Re-Subscription desselben Ziels);
+die Signatur des Vorläufers vom 2026-08-24/25 passt exakt.
+
+**Trail-Basisraten** (lokales `e2e-trail`, 5888 Laufdateien):
+
+| Check | Fails / Läufe | verschiedene Trees | je zusammen? |
+| --- | --- | --- | --- |
+| `re-subscribing to the same target…` | 2 / 497 (0,40 %) | 282 | nein |
+| `delete the spent transport Watch` | 2 / 388 (0,52 %) | 223 | nein |
+
+**EHRLICHE GRENZE, und sie ist selbst ein Befund:** dieser Lauf lief REMOTE auf `second-host`, und
+**Remote-Läufe schreiben nicht in das lokale `e2e-trail`** — ihre Trail-Datei bleibt auf dem
+Helfergerät (hier: `…/run-26ea1a205005-…/tree/e2e-trail/isolated-20260904T100656Z-2731260.jsonl`).
+Die Basisraten oben sind also LOKALE Prioren, keine Remote-Basisrate. Solange der Trail des Helfers
+nicht zurückfließt, kann das Register einen remote roten Audit nie so entlasten, wie B-20 es lokal
+konnte. Das ist die nächstliegende Erweiterung des Artefakt-Rails.
+
+**Warum kein Same-Tree-Rerun:** §11.7 verlangt ihn als ERSTEN Schritt, weil er meist der billigste
+entscheidende Beweis ist. Hier war er der schwächere: ein grüner Rerun trennt „nicht-deterministisch"
+nicht von „die Flake feuerte diesmal nicht", während der Ausführungsfenster-Ausschluss beweist, dass
+der Diff die Checks gar nicht erreicht hat. Zusätzlich hätte der Lauf ~25 min Suite-Mutex gekostet,
+neben einer laufenden Lane — genau die Verhungerungskette aus B-18. **Verallgemeinerung als
+Regelvorschlag (nicht promoviert):** kann man zeigen, dass der geänderte Codepfad VOR dem roten
+Check nicht ausgeführt wurde, ist die Attribution erledigt und der Rerun entfällt. Der Beweis ist
+eine Lese-Aufgabe (Aufrufstellen + Reihenfolge im Runner), keine Maschinenzeit.
+
+Adjudiziert `flake` (`at 1788517887279`). Das Rot bleibt rot.
+
 ## Bereits als Queue-Zeile abgelegte P6-Befunde (nur Verweis, Inhalt lebt an der Zeile)
 
 | ID | Kurz |

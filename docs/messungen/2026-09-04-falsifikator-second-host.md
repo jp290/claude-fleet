@@ -127,3 +127,40 @@ Baum. Er ist heute nicht ohne weiteres zu haben — ein Command-Job buendelt den
 waere ein Eingriff in fremde Sessions. Wer das aufloest, loest zugleich die in §4 benannte
 Artefakt-Luecke: beide Male fehlt der Weg, einen bestimmten Baum gezielt auf dem Helfer zu messen
 und sein Detail zurueckzubekommen.
+
+## 6. KORREKTUR 2026-09-04 21:1x — §5 hat zu wenig Laeufe gezaehlt, und einer seiner Saetze war falsch
+
+Ein dritter Second-host-Lauf (Post-Land-Audit zu `10ba7afd`, FREMDES Land, `ran 3633 / failed 1`)
+hatte als einziges FAIL `projection nextAction: …` — **`D2 setup` war dort GRUEN**. Damit ist der
+Satz aus §5, dieser Check sei „der EINZIGE Check, bei dem Host und Ausgang bisher perfekt
+zusammenfallen", **falsch**. Er fiel nicht in jedem Second-host-Lauf.
+
+**Der Fehler dahinter ist methodisch und gehoert benannt:** §5 zaehlte die Second-host-Laeufe, die ICH
+kannte — meinen eigenen Command-Job und den einen, auf den mich der Controller hinwies. Das
+Audit-Ledger fuehrt sie alle. Nachgezaehlt, und dabei ausdruecklich nur die Laeufe NACH dem Deploy
+von `52673b6` (10:32), weil die frueheren Remote-Zeilen tail-only sind und `ran` 22-26 melden statt
+~3 600 — sie sind keine vergleichbaren Messungen und werden hier nicht mitgezaehlt:
+
+| Baum | ran | failed | `D2 setup` |
+|---|---|---|---|
+| `b1186d8a` 16:00 | 3621 | 0 | gruen |
+| `8567a41` (mein Command-Job) | ~3624 | 1 | **rot** |
+| `940887dc` 18:57 | 3628 | 2 | **rot** |
+| `76f33762` 20:34 | 3633 | 9 | **rot** |
+| `10ba7afd` 21:01 | 3633 | 1 | gruen |
+
+**Also: 3 rot in 5 Second-host-Laeufen, die den Check enthielten, gegen 0 rot in 5 lokalen
+Sichtungen.** Die RICHTUNG des Befunds aus §5 bleibt damit bestehen und wird auf mehr Laeufen sogar
+deutlicher; was faellt, ist die Behauptung eines perfekten Zusammenfalls und die in §5 genannte
+Wahrscheinlichkeitszahl — die galt fuer eine 2-gegen-0-Aufteilung, die es nicht gab. Ich ersetze sie
+nicht durch eine neue: 60 % gegen 0 % bei je fuenf Laeufen ist ein Signal, das man an mehr Laeufen
+misst, nicht an einer schaerferen Rechnung auf denselben zehn.
+
+Unveraendert bleibt: **Empfehlung A steht.** In keinem der fuenf vergleichbaren Second-host-Laeufe war
+eine der beiden Familien rot, deren Rot A umwerfen wuerde. Und die Einschraenkung aus §5 bleibt
+ebenfalls — zeitempfindliche Fixtures setzen auf second-host oefter aus; sie ist jetzt nur besser
+belegt und praeziser begrenzt.
+
+**Fuer die naechste Messung, damit sie meinen Fehler nicht wiederholt:** die Grundgesamtheit der
+Remote-Laeufe steht im Audit-Ledger (`post-land-audits.jsonl`, `remote.name`), nicht in dem, was
+eine Session zufaellig gesehen hat — und Zeilen vor dem 09-04 10:32 sind dort keine Messungen.

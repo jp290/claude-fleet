@@ -17213,11 +17213,20 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                 // we do NOT retry unheld — that would spend the queue three times over, which is the
                 // cost this whole change exists to remove — and the verdict says so in the machine's
                 // name rather than the tree's.
-                if (ffRounds < LAND_FF_RETRY_ROUNDS && !ffHeld && !ffLockDenied) {
+                // FIRST: is this even the race? `advanceIntegration` also refuses when the main
+                // CHECKOUT is dirty — git will not fast-forward over uncommitted work — and then
+                // main has NOT moved. Rebasing onto the same commit and re-running the gate could
+                // not change that outcome, so a retry would buy two full gate chains, hold the
+                // machine-wide mutex through both, and end at exactly this verdict anyway. Main
+                // moving is the whole premise of the retry, so it is checked rather than assumed;
+                // an unreadable sha counts as "did not move" (no absence is evidence here either).
+                const mainNow = (await git(root, "rev-parse", main)).out;
+                const mainMoved = /^[0-9a-f]{40,64}$/.test(mainNow) && mainNow !== mainBefore;
+                if (mainMoved && ffRounds < LAND_FF_RETRY_ROUNDS && !ffHeld && !ffLockDenied) {
                   ffHeld = await holdSuiteLock(VERIFY_WAIT_MS);
                   ffLockDenied = !ffHeld;
                 }
-                if (ffRounds < LAND_FF_RETRY_ROUNDS && ffHeld) {
+                if (mainMoved && ffRounds < LAND_FF_RETRY_ROUNDS && ffHeld) {
                   ffRounds++;
                   // FIVE ways this stops instead of going round, and each writes the verdict of the
                   // situation it actually found — never `ff-lost`, which would be a lie about a lane

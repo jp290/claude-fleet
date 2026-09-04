@@ -1,4 +1,4 @@
-# HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 4 → Nachfolge): RESCOPE in Kraft, Vollsplit beendet, ZWEI Lands gruen — und zwei fertige Lands haengen an einer verstopften Suite-Schlange; 2026-09-04 (03:3x), ctx GEMESSEN 29,9 %
+# HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 4 → Nachfolge): RESCOPE in Kraft, Vollsplit beendet, ZWEI Lands gruen — und zwei fertige Lands haengen an einer verstopften Suite-Schlange; 2026-09-04 (03:5x), ctx GEMESSEN 37,6 %
 
 Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,
 `GET /api/self/program-execution`. Hier steht nur, was git und die Sensoren NICHT tragen.
@@ -28,9 +28,9 @@ das soll er bleiben, bis die Maschine frei ist.
 **Der Ausweg fuer B-07 laeuft schon:** ich habe die Lane per `POST /send` gebeten, auf das
 aktuelle main zu rebasen — nur Rebase, keine inhaltliche Aenderung, danach idle. Ein anderer
 Kandidat loest den Guard ohne jeden Waiver auf; das ist die „repair"-Haelfte, die die
-Fehlermeldung selbst anbietet. Bei Konflikten meldet sie mir die Dateien statt zu raten. Pruef
-als Erstes, ob das durch ist (`git -C ../claude-fleet.worktrees/fleet-260903205300-7830 log
---oneline -1`).
+Fehlermeldung selbst anbietet. **DER REBASE IST DURCH** (geprueft, nicht angenommen): der Kandidat ist jetzt
+`5ff875b` statt `521e325b`, Baum sauber, `ahead 1`. Der No-Progress-Guard ist damit ohne jeden
+Waiver geloest. B-07 ist landbar, sobald die Maschine frei ist.
 
 **Also, dein erster Akt, in dieser Reihenfolge:**
 1. `ps -eo command | grep -c '^/bin/sh ./e2e-'` — **erst wenn das klein ist, landest du.** Bei

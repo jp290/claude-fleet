@@ -16140,30 +16140,22 @@ function suiteLockTryTake(): boolean {
   suiteLockHeld = true;
   return true;
 }
-// the wrappers' reap, re-expressed: only a lock we have READ as stale, and only after re-checking
-// that the pid AND birth files still hold the values that made it stale — the same microsecond-wide
-// race the shell narrows the same way.
-function suiteLockReapStale(stale: GateLock): void {
-  if (stale.state !== "stale" || stale.pid === null) return; // a parked dir is never reaped, here either
-  let pid: string | null = null, birth: string | null = null;
-  try { pid = readFileSync(`${SUITE_LOCK}/pid`, "utf8").trim(); } catch { return; }
-  try { birth = readFileSync(`${SUITE_LOCK}/birth`, "utf8").trim(); } catch { birth = null; }
-  if (pid !== String(stale.pid) || birth !== (stale.birth.stored ?? null)) return;
-  try {
-    rmSync(`${SUITE_LOCK}/pid`, { force: true });
-    rmSync(`${SUITE_LOCK}/birth`, { force: true });
-    rmdirSync(SUITE_LOCK);
-  } catch { /* lost the race to another contender — it holds it now, which is the same outcome */ }
-}
-// Take it, or say honestly that we could not. `false` is a fact about the MACHINE (another suite
-// held it for the whole budget), never about the tree, and the caller words it that way.
+// Take it, or say honestly that we could not. `false` is a fact about the MACHINE, never about the
+// tree, and the caller words it that way.
+//
+// AND IT DOES NOT REAP — deliberately, against the obvious temptation. docs/suite-contention.md §7
+// rejected a second reaper by name: reaping belongs to the wrappers, which re-check the pid VALUE
+// immediately before removing the dir, and every further participant enlarges exactly the window
+// that design shrank to microseconds. A holder becoming stale is a crashed suite, and the next
+// wrapper contender clears it; this waiter simply waits, and gives up honestly if nothing does.
+// The cost is real and accepted: a stale lock with no other contender means the retry does not
+// happen at all, and the verdict says the machine could not be taken. That is one lost retry
+// against a class of race in the one mechanism this whole box's serialization rests on.
 async function holdSuiteLock(budgetMs: number): Promise<boolean> {
   if (suiteLockHeld) return false; // one hold per process: a second land must not nest inside the first
   const deadline = Date.now() + budgetMs;
   for (;;) {
-    const view = suiteLockView();
-    if (view === null && suiteLockTryTake()) return true;
-    if (view && view.state === "stale") suiteLockReapStale(view);
+    if (suiteLockTryTake()) return true;
     if (Date.now() >= deadline) return false;
     await Bun.sleep(SUITE_LOCK_POLL_MS);
   }

@@ -2569,6 +2569,39 @@ once that marker appears` und `§2b a top-level module …`. Damit ist die Nicht
 direkt bewiesen (Beweisordnung §11.7, erste Stufe) und die aus Diff und Register hergeleitete
 Adjudikation bestaetigt. Basisrate der Wurzelgruppe damit 1/178.
 
+**Der Paar-Versuch (2026-09-04 22:17–00:33, seriell, nie parallel).** Zwei `./e2e-isolated.sh` auf
+demselben Baum (`acbac59`), die einzige Differenz ist der Flag: Arm B mit dem gestateten
+`FLEET_LANE_AUTOCLOSE=0`, Arm A auf einer Scratch-Kopie desselben Baums, in der genau die zwei
+Pin-Stellen entfernt sind, gefahren mit `FLEET_LANE_AUTOCLOSE=1` im Env.
+
+| | Checks | Fails | Arbeitsdauer | Mutex-Wartezeit |
+| --- | ---: | ---: | ---: | ---: |
+| Arm B (`=0`) | 3 641 | 1 | 1 904 s (31,7 min) | 1 s |
+| Arm A (`=1`) | 3 650 | 5 | 1 985 s (33,1 min) | 4 225 s (70 min) |
+
+**Die requeue-/backlog-Gruppe ist in BEIDEN Armen gruen** — `requeue probe (empty)` (beide
+Zeilen), `an empty lane is torn down by its own requeue`, `…no slot left held by it either`, die
+`backlog nudge`-Setup-Zeile und alle 28 `backlog nudge`-Checks. Die Hypothese „scharfer Autoclose
+gewinnt gegen die requeue-Probe" ist damit bei n=1 **nicht bestaetigt**: der scharfe Flag allein
+reicht nicht. Was der Versuch NICHT testet, ist das zweite Bein der Hypothese — beide Arme liefen
+mit ~32 min nahe dem Median (30,4 min) und erreichten die 38,3 min des roten Laufs nicht; ueber
+Last als zusaetzliche Bedingung sagt er nichts.
+
+Die vier zusaetzlichen Fails in Arm A sind die D2-Familie und genau die erwartete Folge des
+Armierens (`D2 flag off`, `D2 teardown`, `D2 setup: both closing lanes …`) — plus die neue Sonde,
+die dabei ihre Arbeit tat und der Grund ist, dass diese vier lesbar sind:
+
+    FAIL  D2 setup: the suite server states FLEET_LANE_AUTOCLOSE=0 in its own environment
+          — the off-state below is pinned, not inherited  ({"srvReadable":true,"srv":"1","runner":"1"})
+
+Sie nennt die falsche PRAEMISSE beim Namen (`srv:"1"`, und `srvReadable:true` als Kontrolle), statt
+die drei Zeilen darunter wie einen kaputten Lane-Schluss aussehen zu lassen.
+
+**Nebenbefund fuer Audit-Determiniertheit:** §11.2o (`projection nextAction`) fiel in BEIDEN Armen —
+der Autoclose-Zustand aendert seine Rate also nicht. Im lokalen Trail-Register (2026-09-01 bis
+2026-09-04, 39 Dateien, 33 Laeufe mit dieser Zeile) stand sie vor dem Paar bei 3/33; mit beiden
+Armen 5/35.
+
 **Und die Hypothese, die dabei geprueft und WIDERLEGT wurde:** die requeue-Probe fiel mit der Note
 `lane closed before landing — review and requeue if still wanted`, was nach einem vom Audit-srv
 geerbten `FLEET_LANE_AUTOCLOSE=1` aussieht (`watchdog.sh` bewaffnet den Flag seit `566cbae`). Zwei

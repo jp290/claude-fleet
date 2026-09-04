@@ -113,10 +113,9 @@ if (REPO) {
   await landProvenance.run();
   await concurrency.run();
   await selfToken.run(ctx);
-  // the LANE-SUITE half of the remote helper portal — a lane offering its own preview run. Right
-  // after the self-token family because that is the credential it is driven with, and before
-  // programs.run() because that section restarts the scratch server. It opens and kills its own
-  // lanes and leaves no offer behind, so it shares no fixture with either neighbour.
+  // the LANE-SUITE half of the remote helper portal — right after the self-token family whose
+  // credential drives it. It now restarts the scratch server once to prove claimWas/endedAt hydration
+  // and remains before programs.run(); it opens and kills its own lanes and leaves no offer behind.
   await laneSuite.run();
   // Programs are planning-session artifacts above lanes. They use both the plain session and the
   // surviving lane self-token established immediately above, and restart the scratch server once.

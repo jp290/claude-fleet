@@ -1,0 +1,91 @@
+# TEMPLATE — the Linux half of this fleet's boot contract, and the twin of launchd-example.plist.
+# Every ALL-CAPS placeholder has to be replaced before this file is installed. It carries no host,
+# no address and no credential on purpose: this repository is public.
+#
+# THE TWIN-NESS IS THE WHOLE POINT. Both boot paths start the SAME watchdog.sh, so the land gate
+# and the post-land audit are defined in exactly one place — that script's VERIFY_CMD and
+# AUDIT_CMD — and neither path can carry its own version of them. This file therefore describes
+# the chain and never defines one; e2e/pins.ts holds both halves of that sentence, so a step added
+# to the gate and not to this template (or the reverse) is a red row, not a discovery six weeks on.
+#
+# A USER unit, not a system one. launchd-example.plist is a LaunchAgent: the fleet runs as the
+# owner, with the owner's HOME, and the tmux sessions it spawns are the ones the owner attaches to.
+# A system unit would put them under another account, and `tmux -L claudefleet attach` would find
+# nothing.
+#
+# NOT INSTALLED AND NOT MEASURED ANYWHERE. Nothing in this repo deploys itself, and no host has
+# ever run this file — its shape is derived from watchdog.sh, from launchd-example.plist and from
+# helper-daemon/fleet-helper.service (the one systemd unit here that HAS run, on Debian). Treat the
+# first install as the measurement.
+#
+# Install (an owner act on the machine):
+#   mkdir -p ~/.config/systemd/user
+#   cp fleet-watchdog.service ~/.config/systemd/user/    # after replacing FLEET-DIR below
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now fleet-watchdog.service
+#   sudo loginctl enable-linger USER    # the KeepAlive half: survive logout and reboot
+#
+# Reloading the gate. watchdog.sh bakes VERIFY_CMD into the srv-spawn line, so changing the gate
+# needs `systemctl --user restart fleet-watchdog.service` AND a kill of the running srv session —
+# the counterpart of `launchctl kickstart -k gui/$(id -u)/com.claude-fleet.watchdog` on macOS. On
+# both paths a plain srv restart keeps the OLD baked string running.
+
+[Unit]
+Description=claude-fleet watchdog (keeps the srv tmux session — the fleet server — alive)
+Documentation=file://FLEET-DIR/watchdog.sh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=FLEET-DIR
+ExecStart=/bin/sh FLEET-DIR/watchdog.sh
+
+# THE MANDATORY LINE — twice paid for on the macOS side, and systemd repeats the trap exactly.
+# watchdog.sh PREPENDS to whatever PATH it is handed (`export PATH="…:$PATH"`), and the server
+# bakes ITS OWN PATH into every pane command, so what is missing here is missing inside every
+# claude session this fleet will ever start. A systemd service's default PATH is
+# /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin — it holds neither the bun prefix
+# nor the claude one, and watchdog.sh's own additions are the macOS ones (/opt/homebrew/bin),
+# inert here. Without this line the gate dies at its first step on "bun: not found".
+# `%h` is systemd's specifier for this user's home, expanded by systemd and not by a shell — which
+# is exactly why $HOME would NOT work in this line.
+#
+# What this PATH has to be able to run is the gate chain, in watchdog.sh's own order (held against
+# VERIFY_CMD by e2e/pins.ts, so this list cannot drift away from the gate it describes):
+#   bun install · bun e2e/pins.ts · bunx tsc · bun run build ·
+#   ./e2e-clean-review.sh · ./e2e-security.sh · ./e2e-claude-gate.sh
+# and, after every land that moves main, tier 2: ./e2e-isolated.sh (AUDIT_CMD). Every one of them
+# calls bun, git and tmux by name, and the suites reach claude through the same PATH.
+Environment=PATH=%h/.local/bin:%h/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# NO deployment identity here, and none in a drop-in either. FLEET_HOST, ALLOWED_HOSTS, SHARE_HOSTS
+# and SHARE_URL live in the gitignored .env, which watchdog.sh sources INSIDE the srv pane. That
+# placement is load-bearing — the pane's shell is a child of the tmux SERVER, not of this unit, so
+# an `Environment=` line here would not reach it anyway — and such a line is additionally readable
+# by every account on the box through `systemctl show` and /proc/<pid>/environ.
+
+Restart=always
+RestartSec=5
+
+# KillMode=process, and it is not a nicety. `tmux new-session -d` forks the tmux SERVER out of this
+# unit's process when no server is running yet, so it lands in this cgroup; the default
+# KillMode=control-group would then take the fleet's srv session — and every live claude pane with
+# it — on a plain `systemctl --user restart`. The watchdog is a supervisor loop whose subject must
+# outlive it, the same independence the macOS path has.
+KillMode=process
+
+# The suites this gate runs boot their own tmux servers and take the machine-wide suite lock at
+# /tmp/fleet-e2e.lock (e2e-stage.sh). PrivateTmp would give this service a /tmp of its own, so a
+# suite a human starts by hand and one the gate starts would stop serializing against each other —
+# the one thing that lock exists for.
+PrivateTmp=false
+
+# watchdog.sh writes its own lines to FLEET-DIR/server.log; these two capture everything else, the
+# way StandardOutPath/StandardErrorPath do in launchd-example.plist. Replace both with `journal` if
+# you would rather read it through `journalctl --user -u fleet-watchdog`.
+StandardOutput=append:FLEET-DIR/watchdog.log
+StandardError=append:FLEET-DIR/watchdog.log
+
+[Install]
+WantedBy=default.target

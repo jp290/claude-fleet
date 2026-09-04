@@ -69,6 +69,21 @@ ein Monitor/until-loop auf `git rev-list --count main..HEAD` + `status --porcela
 4. **Attentions**: heute 6 beantwortet (Slots 3 und 11), keine offen um 21:2x. Slot 3 filet nach jedem
    roten Audit ein fertiges Urteil — ablegen mit `POST /api/post-land-audits/adjudicate {at, verdict,
    note≤300}`.
+6. **Owner-Frage 21:2x, WOERTLICH: „was hat es eigentlich mit diesen nachrichten immer auf sich.
+   Muessen wir uns da vllt mal strukturell drum kuemmern? vllt die audits ausbessern oder sowas" —
+   ausdruecklich an die NAECHSTE Session delegiert.** Was die Nachrichten sind: jede Zustellung
+   (lane-ready, fleet-report, merge-Ausgang, audit-Ausgang, Attention) ist ein `sendText` in die Pane
+   mit Ack-Pflicht, also je ein Turn — heute ~15 Stueck in 2,5 h, davon zwei Doppel (fleet-report +
+   lane-ready fuer dieselbe Lane, B-A3) und drei Audit-Rots, die alle Flakes waren. Strukturell sind
+   ZWEI Dinge dran: (a) die Zustellung selbst — D1 Inbox (pull, eine Nudge je Idle-Punkt) + S3d Dedupe
+   sind im Paket; (b) **die Audits selbst:** lokal heute 9 von 12 rot, remote 6 von 11, alle als
+   Flake adjudiziert — die bekannten Familien (`docs/verify-tiering.md` §11.2m PARKED-Quartett,
+   §11.2n re-run-Guard, `projection nextAction` 5/208, `subject-gone` 17/113, Q6-Paar 3/60) sind
+   MESSBAR und nicht repariert. Vorschlag fuer die Nachfolgerin: ein Program „Audit-Determiniertheit"
+   filen — Trail-Register nach Basisrate ranken (`e2e-trail/*.jsonl`, ok:false je Check-Name), die
+   Top-5-Familien je als Codex-Schnitt mit Fixture-Fix + Beweislauf LOKAL (Flake-Beweise nie auf dem
+   Helfer), Erfolgsmass: lokale Rot-Rate unter 2 von 10 in 5 Tagen. Erst danach hat ein rotes Audit
+   wieder Signalwert, und die Nachrichten dazu hoeren auf, Rauschen zu sein.
 5. **Vier Programs `active` mit toter MAIN** (2c073232 Private-repo-j, 07ee8a6d private-repo-p, f99e9354
    Private-repo-o, b2aa5b45 Game-Maker v2) — Owner-Entscheid parken/neu binden steht aus; B-A1/D2 macht
    es sichtbar.

@@ -880,6 +880,53 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       + `suites missing=[${missSuite}] extra=[${extraSuite}]; tsc missing=[${missTsc}] extra=[${extraTsc}]`);
   }
 
+  // THE SECOND BOOT PATH, held to the first. macOS starts watchdog.sh through
+  // launchd-example.plist; Linux starts THE SAME script through fleet-watchdog.service. Because
+  // both only start the script, VERIFY_CMD and AUDIT_CMD are defined once and inherited twice —
+  // that is what makes gate drift between the two boot paths impossible rather than unlikely, and
+  // these rows are what keeps it so. The unit may DESCRIBE the chain (its PATH is the whole reason
+  // the chain can run at all on a host whose systemd default PATH has neither bun nor claude) and
+  // may never DEFINE one. So: the described order is held against VERIFY_CMD's own, a rival
+  // command definition is a failure, and the PATH is derived from watchdog.sh rather than copied.
+  const UNIT = "fleet-watchdog.service";
+  const RULE_UNIT = "the systemd boot path describes watchdog.sh's chain in watchdog.sh's order";
+  const unit = ((): string | null => { try { return read(UNIT); } catch { return null; } })();
+  // the probe fails as ITSELF: "no template" and "the template disagrees with the gate" are
+  // different answers, and a missing file rendered as a chain mismatch would send its reader to
+  // the wrong file.
+  if (unit === null) pin(`${RULE_UNIT} — PROBE: the template is readable`, false, `${UNIT} not found at the repo root`);
+  else {
+    const unitChain = stepsOf(unit).join(">");
+    const gateChainHere = stepsOf(verifyCmd).join(">");
+    pin(RULE_UNIT, unitChain.length > 0 && unitChain === gateChainHere,
+      `unit=[${unitChain}] gate=[${gateChainHere}]`);
+
+    // AUDIT_CMD is the other half of the contract this template claims to carry, and it is the
+    // half a reader of the unit cannot see anywhere else: tier 2 runs AFTER the land, so a host
+    // whose PATH cannot reach it produces `unknown` — a non-measurement that is silent by design.
+    const auditSuites = [...auditCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => m[1]);
+    const unnamedAudit = auditSuites.filter((f) => !unit.includes(f));
+    const rival = ["VERIFY_CMD=", "AUDIT_CMD="].filter((k) => unit.includes(k));
+    const runsScript = /^ExecStart=\S*\/sh\s+\S*watchdog\.sh\s*$/m.test(unit);
+    pin("the systemd unit starts watchdog.sh itself, names its audit tier and defines no gate of its own",
+      auditSuites.length > 0 && unnamedAudit.length === 0 && rival.length === 0 && runsScript,
+      `execstart=${runsScript} audit=[${auditSuites}] unnamed=[${unnamedAudit}] rival=[${rival}]`);
+
+    // THE PFLICHTZEILE. watchdog.sh PREPENDS to the PATH it is handed, and its own additions are
+    // the macOS ones — so on Linux the inherited half is the only half that can carry bun and
+    // claude, and a service that takes systemd's default has neither. Derived from watchdog.sh's
+    // own export, never a copied list: the $HOME-relative entries are exactly the ones no
+    // distribution ships, and they are the two this machine has already paid for twice.
+    const watchdogPath = /^export PATH="([^"]*)"/m.exec(watchdog)?.[1] ?? "";
+    const homeEntries = watchdogPath.split(":").filter((e) => e.startsWith("$HOME/"))
+      .map((e) => e.replace("$HOME", ""));
+    const unitPath = unit.split("\n").find((l) => l.startsWith("Environment=PATH=")) ?? "";
+    const unreachable = homeEntries.filter((e) => !unitPath.includes(e));
+    pin("the systemd unit sets PATH explicitly and reaches every home-relative tool watchdog.sh names",
+      homeEntries.length > 0 && unitPath !== "" && unreachable.length === 0,
+      `watchdog=[${homeEntries}] unit line ${unitPath === "" ? "MISSING" : "present"}, unreachable=[${unreachable}]`);
+  }
+
   const proportionalCmd = /const VERIFY_PROPORTIONAL_CMD = '([^']+)'/.exec(server)?.[1] ?? "";
   const proportionalSteps = stepsOf(proportionalCmd);
   // The REPO GUARD is pinned as a THIRD side of the same sentence, because the short chain is the

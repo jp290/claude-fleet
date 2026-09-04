@@ -1,3 +1,102 @@
+# HANDOFF — 🎛 Fleet Controller (Slot 6, Fable 5.1): Lebenszyklus-Paket aufgesetzt (12 Codex-Zeilen), Context-Pack-Gegencheck laeuft, drei Board-Lands + zwei Deploys gefahren; 2026-09-04 21:2x, ctx GEMESSEN 34,2 %
+
+Zustand ableiten: `./state.sh`, `./register.sh`, Owner-Poll, Panes. Hier nur, was git nicht traegt.
+Die Abschnitte darunter sind FREMD (Vorgaengerin Slot 5, Generalsanierung, Dual-Host).
+
+## 0. Rolle (unveraendert, Owner-Entscheid 2026-09-04 09:1x + 19:2x)
+
+Ueberblick + Owner-Nachrichten auf Programs routen. Lands vom Board NUR fuer Zeilen ohne
+lebende MAIN oder ohne Self-Land-Promotion (Dual-Host cd110019 hat keine — dessen Schnitte landet
+der Controller; private-repo-p 07ee8a6d hat eine TOTE MAIN). Audit-Adjudikation gehoert Fleet-Betrieb
+(Owner 19:2x), ABER die Route ist owner-only: die MAIN Slot 3 urteilt, der Controller legt ab
+(heute dreimal so gelaufen: 40f7006 flake, 76f3376 flake; 2b4b4ea2/940887dc noch offen bei Slot 7).
+Modellpolitik: Controller Fable 5.1, MAINs + Lanes Opus 5; Codex-Worker gpt-5.6-sol/high;
+GLM-Gegenchecks pi-zai/glm-5.3/high (KEIN Lane-Watch moeglich: „not automatable" → Rueckweg ist
+ein Monitor/until-loop auf `git rev-list --count main..HEAD` + `status --porcelain` im Worktree).
+
+## 1. Was heute (18:5x–21:2x) gefallen ist
+
+- **Owner-Auftrag „grobe Architekturfehler in Session-Konfiguration/Zusammenarbeit"** →
+  Opus-Erhebung `docs/messungen/2026-09-04-architektur-zusammenarbeit.md` (B-A1..B-A8, 287a9db) →
+  Struktur-Plan `docs/program-lebenszyklus-2026-09-04.md` (3d51376; Leitidee: das Program ist die
+  dauerhafte Einheit, Occupant nur bei Zustellung aufgeloest; vier Datenschichten D1 Inbox pull ·
+  D2 Projektion · D3 Handoff am Program · D4 vollstaendige Ledger) → **GLM-Gegencheck**
+  `docs/messungen/2026-09-04-plan-gegencheck-glm.md` (76f3376; 8/9 bestaetigt) → sechs Korrekturen
+  eingearbeitet (1342496; groesste: 3b muss `laneAutoCloseRefusal`/`decideFleetReport`/
+  `fleetReportFrom` mit umziehen, sonst steht der scharfe Autoclose still) → **Fable-5.1-Lane**
+  `docs/program-lebenszyklus-architektur-2026-09-04.md` (10ba7af, 658 Z.: §0 Kern + je Schnitt ein
+  fertiger Codex-Brief; 12 Abweichungen vom Plan benannt) → Footer-Messung fuer 5b nachgeliefert
+  (4693bfb). Owner 21:0x: „setz es auf und mach es".
+- **Lebenszyklus-Paket gefiled auf Program Fleet-Betrieb `f170dc46e4b026ee34d9392e`**, 12 auftrag-
+  Zeilen, alle `{codex, gpt-5.6-sol, high}`: QUEUED S1 `3cd64a5f` · S2 `9fd34beb` · S5a `db6902c4`;
+  PENDING S3a-i `30383e62` (nach S2) → S3a-ii `c464af30` → S3b `417d2be5` → S3d `74319808` → S3c
+  `288f6359`; S4 `8e1e0be4` (nach S3a-i); S5b `ee47b0f8`, S5c `1832c7eb` (unabhaengig); S12
+  `7ed73694` Program-Blick Client (nach S2). Reports gehen an die MAIN Slot 7 (program-main), die per
+  Self-Land landet. **Der Controller gibt die pending-Zeilen frei, sobald der Vorgaenger gelandet
+  ist** (`POST /api/tasks/:id/...` — Owner-Queue: Zeile auf queued setzen; oder Slot 7 per
+  `/api/self/tasks/:id/release`), faehrt Deploy (`POST /api/deploy`, 409 waehrend Audit → Audit-Watch)
+  und `bun run build` nach Client-Lands. Slot 7 ist informiert (eine Nachricht, 21:1x) und steht bei
+  37 % — rechne mit seiner Succession; die Ids stehen hier, falls sein Handoff sie verliert.
+- **Context-Pack-Routing** (Owner 20:5x „parallel anschauen"): GLM-Gegencheck der Notiz
+  `docs/messungen/2026-09-04-context-pack-routing.md` laeuft als Task `3dde5471` auf **Slot 4**, Lane
+  `fleet/260904185415-e94e`, Ergebnisdatei `docs/messungen/2026-09-04-context-pack-gegencheck-glm.md`.
+  Danach (NICHT gefiled, wartet auf das Ergebnis): kleinster Schnitt der Notiz (triggers als Funktion
+  des Akts + Omissions rendern) + drei Einzeiler (pi-ox ins Manifest, Null-Pack-Warnung,
+  selected/omitted in die Sichten) als Codex-Zeilen; Kollisionsflaeche mit S4 (buildSuccessionBrief)
+  beachten — der Gegencheck soll sagen, was zuerst landet.
+- **Board-Lands + Deploys:** Dual-Host Schnitt 2 (`40f7006`, Deploy `588ad769` gruen) und Schnitt 3
+  (`22cf0c4`, Deploy `994dae11` gruen; `instance:{name:"mac"}` live, `FLEET_INSTANCE` in `.env` von
+  Slot 11 gesetzt). GLM-Notiz und Fable-Notiz docs-only gelandet (kurze Kette).
+- **private-repo-p Lane Slot 1 (`ba896b1b`, Brief 9, Program-MAIN TOT):** Report akzeptiert; Land-Gate
+  ZWEIMAL rot an `PrivacyGateUITests/testBlockedSendThenReleasedHandoffRepairAndLocalStore` „Contrast
+  failed" (exit 65, Load ~15), Lane hatte den Baum zweimal gruen → an die Lane zurueckgegeben mit
+  Hypothese frisch gebooteter Simulator (Lane hatte `simctl shutdown` gefahren). Lane arbeitet
+  (dirty 1, 38 %). **Nachfolgerin: Lane-Watch auf Slot 1 neu armieren** (`POST /api/self/watch
+  {target:1}`), Report lesen, dann `POST /api/slots/1/merge` — niemand sonst landet sie.
+
+## 2. Was JETZT offen ist, in dieser Reihenfolge
+
+1. **Rueckwege neu legen — alle meine sterben mit dieser Session:** Attention-Monitor (45-s-Poll
+   `GET /api/attention` status=open, dedupliziert) · Task-Status-Monitor auf die 12 Ids + `6c9e2ac1`
+   (Beleg-Lane Slot 3, queued am Deckel) + `0c0ee831` (Owner-`[idee]` Secret-Drop, Slot 8 — Pane lesen
+   bevor „fertig": idee-Zeilen kompilieren oft nur einen Brief) + `880387df` (R1, Slot 2, 5 ahead) ·
+   Monitor auf Worktree `fleet-260904185415-e94e` (GLM) · Lane-Watch Slot 1.
+2. **GLM-Ergebnis Slot 4** landen (docs-only, `POST /api/slots/4/merge {confirm:true}` — pi-zai-Slot
+   ist danach sofort inaktiv, kein Merge-Watch moeglich, Antwort kommt synchron), lesen, dann die
+   Context-Pack-Zeilen filen (Program: Fleet-Betrieb, Codex).
+3. **Freigabe-Kette Lebenszyklus** wie oben. Nach S2-Land: S3a-i UND S12 queuen. Nach jedem
+   server.ts-Land: Deploy; nach S12: `bun run build`.
+4. **Attentions**: heute 6 beantwortet (Slots 3 und 11), keine offen um 21:2x. Slot 3 filet nach jedem
+   roten Audit ein fertiges Urteil — ablegen mit `POST /api/post-land-audits/adjudicate {at, verdict,
+   note≤300}`.
+5. **Vier Programs `active` mit toter MAIN** (2c073232 Private-repo-j, 07ee8a6d private-repo-p, f99e9354
+   Private-repo-o, b2aa5b45 Game-Maker v2) — Owner-Entscheid parken/neu binden steht aus; B-A1/D2 macht
+   es sichtbar.
+
+## 3. Second-host-Stand (Owner-Frage 21:2x, gemessen am Ledger)
+
+24 h: 11 Remote-Audits (4 gruen · 6 rot · 1 unknown = korrekter Skip „not the fleet repo", exit 42),
+jeder Job 1 450–1 562 s claim→report, Daemon `second-host`, alle 6 Rots adjudiziert. Lokal im selben
+Fenster: 12 (2 gruen · 9 rot · 1 unknown), 0–2 052 s. Mechanisch laeuft der Helfer stabil; die Rot-Rate
+ist dort NIEDRIGER als lokal. Offen (Slot 3, an Slot 11 weitergegeben): 76f3376 fiel remote mit 9
+Checks, derselbe Code lokal mit 1 — n=1, systematisch vs. zufaellig unentschieden; ein zweiter
+Helper-Lauf auf demselben Baum wuerde es trennen. `GET /api/helper/jobs` (Owner) zeigt 1 Job-Zeile.
+
+## 4. Bezahlte Lehren dieser Session
+
+- **Shell-Quoting toetet lange `/send`-Nachrichten still (400)** — lange Texte per Python
+  `json.dumps` senden; mein Sende-Test „ping-probe" kostete Slot 7 einen Turn.
+- **`POST /api/tasks` verlangt die VOLLE 24-Zeichen-programId** (409 „unknown programId" bei
+  Praefix); Spawn-Felder `harness/model/effort` top-level funktionieren.
+- **Adjudikations-Note ≤ 300 Zeichen.** **Lane-Watch auf pi-zai: 409 „not automatable".**
+- **Deploy direkt nach einem Land geht durch, wenn der Audit noch nicht laeuft** (994dae11); sonst
+  409 → Audit-Watch `{kind:"audit", repo, mainAfter}` und danach deployen.
+- Drei Audit-Urteile heute von einer MAIN korrekt gefaellt, aber nur vom Controller ablegbar, und
+  jede lokale Zeile ohne `fails` — das Paket S1/S5a/S3c trifft genau das.
+
+---
+---
+
 # HANDOFF — Program-MAIN „Fleet-Betrieb 2026-09" (`f170dc46e4b026ee34d9392e`, Slot 7, Opus 5): R1 gelandet und gruen verifiziert, zwei Audits adjudiziert, und das Program traegt seit 21:0x ein 12-Zeilen-LEBENSZYKLUS-Paket, das ich NICHT mehr gestartet habe; 2026-09-04 21:1x, ctx GEMESSEN 36,8 % (367 768/1 000 000)
 
 Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was

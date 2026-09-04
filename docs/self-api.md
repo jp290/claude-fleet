@@ -1029,6 +1029,37 @@ Seit 2026-09-03 trägt genau dieses Verdikt eine **getypte, geschlossene** Zusat
   reviewable Verdikte binden die Kandidaten-Identität) — ein rotes Verify oder eine geblockte
   Auflösung auf demselben Kandidaten wird also weiterhin als `no progress` abgelehnt.
 
+### Wohin das Verdikt geht: an den, der gelandet hat (seit 2026-09-04)
+
+**Gemessen am 2026-09-04:** genau das `ff-lost`-Verdikt von oben wurde in die **LANE**-Pane
+gepastet. Die Lane las es als Arbeitsauftrag und fuhr ihre komplette Verify-Kette neu — je ~10 min
+auf dem EINEN Suite-Mutex dieser Maschine, an einer einzigen Zeile sechsmal an einem Tag, dreimal
+davon durch `ff-lost`. Der Empfänger war falsch: bei einem Self-Land hat eine **Program-MAIN** den
+Land ausgelöst, nicht die Lane.
+
+Seit `server.ts#deliverMergeVerdict` den `actor` des Laufs kennt, folgt der Empfänger dem
+**Auslöser**:
+
+- **`actor.kind === "main"`** (diese Tür) ⇒ das Verdikt geht an den MAIN-Slot, und die **Lane
+  bekommt NICHTS**: kein Paste, keine `history`-Zeile, keine Prompt-Journal-Zeile. Genau dieses
+  Schweigen ist der Zweck.
+- **`actor.kind === "owner"` / `"unknown"`** ⇒ unverändert die Lane-Pane, byte-identisch wie vorher.
+- **Die Identitätsfrage ist auf der MAIN-Seite eine ANDERE** (`server.ts#mainVerdictReceiver`) und
+  nicht die kopierte Lane-Prüfung: Program existiert und ist `active` · die Bindung nennt noch
+  dieselbe Occupation · der Slot ist nicht recycled · dieselbe Session (`sessionId` DIREKT
+  verglichen, wie an der Landtür: zwei `null` sind ein Treffer, ein `null` auf einer Seite nicht).
+  Fällt eine der vier Fragen, **fällt das Verdikt NICHT auf die Lane zurück** — es ist unzustellbar,
+  bleibt auf dem Merge-Status lesbar und wird als `merge_verdict_undeliverable` mit dem Grund
+  protokolliert. Ein Lane-Fallback wäre genau der Paste, den der Schnitt abschafft.
+- **Persistiert**, weil der eine gebundene Retry aus `tickWatches` keinen Job-Frame hat, aus dem er
+  einen Actor erben könnte: `MergeLast.verdictTo` hält Slot, Program, Task und die Occupation neben
+  `verdictDelivery`. Der Loader (`server.ts#withValidVerdictTo`) liest ihn in der Disziplin von
+  `loadLandActor` — eine halbe Attribution wird nie repariert, sondern ganz verworfen; und
+  **abwesend heißt LANE**, was jede vor diesem Feld geschriebene Zeile ohnehin bedeutet.
+- **Unverändert:** Text und Art des Verdikts, der Deckel von zwei Versuchen, und die Gate-Liste —
+  auch die MAIN-Pane hat Liveness-, blocked-screen- und Idle-Gate. Prosa in eine Pane ohne Agent
+  dahinter ist ein Shell-Kommando.
+
 ### Die Identität ist sichtbar, bevor die Tür sie prüft (V1a)
 
 Sprosse 2 oben ist die einzige, die eine Session **an ihrer Identität** abweist — und genau dieser

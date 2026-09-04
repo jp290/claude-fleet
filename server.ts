@@ -11695,11 +11695,17 @@ function withValidVerdictTo(row: MergeLast): MergeLast {
   const raw: unknown = row.verdictTo;
   if (raw === undefined) return row;
   const r = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
-  if (r && Number.isInteger(r.slot) && typeof r.openedAt === "number" && Number.isFinite(r.openedAt)
-    && r.openedAt > 0 && (typeof r.sessionId === "string" || r.sessionId === null)
+  const o = r?.occupant && typeof r.occupant === "object" && !Array.isArray(r.occupant)
+    ? r.occupant as Record<string, unknown> : null;
+  const occupant = o && typeof o.openedAt === "number" && Number.isFinite(o.openedAt) && o.openedAt > 0
+    && (typeof o.sessionId === "string" || o.sessionId === null)
+    ? { openedAt: o.openedAt, sessionId: o.sessionId } : null;
+  // an occupant KEY that is present but unreadable is a torn row, not an unreadable-binding row:
+  // the two mean different things, and reading one as the other would invent a fact.
+  const occupantOk = r ? (r.occupant === null ? true : occupant !== null) : false;
+  if (r && occupantOk && Number.isInteger(r.slot)
     && typeof r.program === "string" && r.program && typeof r.task === "string" && r.task)
-    return { ...row, verdictTo: { slot: r.slot as number, openedAt: r.openedAt,
-      sessionId: r.sessionId, program: r.program, task: r.task } };
+    return { ...row, verdictTo: { slot: r.slot as number, program: r.program, task: r.task, occupant } };
   const { verdictTo: _verdictTo, ...rest } = row;
   return rest;
 }
@@ -16532,36 +16538,45 @@ const MERGE_VERDICT_MAX_ATTEMPTS = 2;
 // occupant that asked" — the same triple the self-land door itself gated on (program binding, slot
 // occupancy, session id), because a slot recycled between the land and its verdict is a stranger
 // being handed another session's answer.
-type MergeVerdictReceiver = { slot: number; openedAt: number; sessionId: string | null;
-  program: string; task: string };
+// `occupant` is nullable and that is NOT a convenience: it is the honest answer for a `main` land
+// whose binding could not be read at the moment the verdict was aimed. Such a row is undeliverable
+// and says so — it must never degrade into "no receiver", because absent means THE LANE, and the
+// lane is exactly who this must stop reaching.
+type MergeVerdictReceiver = { slot: number; program: string; task: string;
+  occupant: { openedAt: number; sessionId: string | null } | null };
 
 // PINNED AT THE START OF THE RUN, from the Program's own binding — the record the self-land door
-// compared against, not the live pane, so an occupant that dies mid-gate is still named here and
-// then fails the check below instead of quietly becoming somebody else.
-// `null` means THE LANE, and only for the two actor arms that genuinely have no other receiver.
+// compared against, not the live pane. Pinned at the start rather than read at the terminal for
+// one reason: a gate run is minutes long, and reading the binding afterwards would let a MAIN that
+// succeeded or was rebound mid-run turn into "no receiver" and put the verdict back in the lane.
+// `null` means THE LANE, and ONLY the two actor arms that genuinely have no other receiver ever
+// produce it.
 function verdictReceiverOf(actor: LandActor): MergeVerdictReceiver | null {
   if (actor.kind !== "main") return null;
   const bound = programs.find((p) => p.id === actor.program)?.main ?? null;
-  if (!bound || bound.slot !== actor.slot) return null;
-  return { slot: bound.slot, openedAt: bound.openedAt, sessionId: bound.sessionId,
-    program: actor.program, task: actor.task };
+  return { slot: actor.slot, program: actor.program, task: actor.task,
+    occupant: bound && bound.slot === actor.slot
+      ? { openedAt: bound.openedAt, sessionId: bound.sessionId } : null };
 }
 
-// Is the occupant that asked for this land still there to be told? Three sentences, and each one
-// names its own refusal so the trail can say WHY a verdict went nowhere.
+// Is the occupant that asked for this land still there to be told? Four sentences, and each one
+// names its own refusal so the trail can say WHY a verdict went nowhere — "the program went away"
+// and "the session did" are different facts to a reader looking for the answer they never got.
 // `sessionId` is compared DIRECTLY, exactly as the self-land door compares it: two nulls (a harness
 // that pins no session id) are a match, one null on either side is not.
 function mainVerdictReceiver(to: MergeVerdictReceiver): { ok: true; slot: Slot } | { ok: false; why: string } {
+  if (!to.occupant)
+    return { ok: false, why: `the MAIN occupant of program ${to.program} was unreadable when this land started` };
   const program = programs.find((p) => p.id === to.program);
   if (!program || program.status !== "active")
     return { ok: false, why: `program ${to.program} is ${program ? program.status : "gone"}` };
   const bound = program.main;
-  if (!bound || bound.slot !== to.slot || bound.openedAt !== to.openedAt)
+  if (!bound || bound.slot !== to.slot || bound.openedAt !== to.occupant.openedAt)
     return { ok: false, why: `program ${to.program} is no longer bound to the occupant that asked` };
   const live = slotFrom(to.slot);
-  if (!live?.cwd || live.openedAt !== to.openedAt)
+  if (!live?.cwd || live.openedAt !== to.occupant.openedAt)
     return { ok: false, why: `slot ${to.slot} was recycled since the land` };
-  if (live.sessionId !== to.sessionId)
+  if (live.sessionId !== to.occupant.sessionId)
     return { ok: false, why: `slot ${to.slot} holds a different session id than the one that asked` };
   return { ok: true, slot: live };
 }
@@ -16622,15 +16637,16 @@ function mergeVerdictMessage(kind: MergeVerdictKind, r: MergeLast, main: string)
 // attempt the gate refused — once more from tickWatches. Every precondition is re-read here rather
 // than trusted from the caller, because both call sites reach it across awaits.
 async function deliverMergeVerdict(s: Slot, cwd: string, branch: string,
-  actor?: LandActor): Promise<void> {
+  pinned?: MergeVerdictReceiver | null): Promise<void> {
   const outcome = mergeLast.get(s.id);
   if (!outcome || outcome.branch !== branch) return;
   const kind = mergeVerdictKind(outcome);
   if (!kind) return;
-  // WHO THIS VERDICT IS FOR, from the live actor at the job's terminal and from the ROW on the
-  // tick's retry — which is why the row carries it: the two calls can be separated by a restart,
-  // and a retry that re-derived "the lane" from an absent frame would undo the whole cut.
-  const to = actor ? verdictReceiverOf(actor) : outcome.verdictTo ?? null;
+  // WHO THIS VERDICT IS FOR: the receiver the job pinned from its actor when the run STARTED, and
+  // the one on the ROW when the tick retries — which is why the row carries it at all. The two
+  // calls can be separated by a restart, and a retry that re-derived "the lane" from an absent
+  // frame would undo the whole cut.
+  const to = pinned !== undefined ? pinned : outcome.verdictTo ?? null;
   const prev = outcome.verdictDelivery;
   if (prev?.sent || (prev?.attempts ?? 0) >= MERGE_VERDICT_MAX_ATTEMPTS) return;
   const attempts = (prev?.attempts ?? 0) + 1;
@@ -16696,7 +16712,8 @@ async function deliverMergeVerdict(s: Slot, cwd: string, branch: string,
   // this verdict becomes its `laneBrief`. Every dispatched lane is briefed before it can ever be
   // merged, so the shape needs a hand-made, prompt-less lane whose code someone committed from
   // outside — and the alternative (keeping server-typed text out of the one journal that records
-  // such things) is the worse trade, exactly as it was there.
+  // such things) is the worse trade, exactly as it was there. The coupling does not follow the
+  // MAIN receiver anywhere: laneOwnerPrompts reads LANES, and a MAIN is not one.
   const now = Date.now();
   target.history = [...target.history, { text, ts: now }].slice(-MAX_HISTORY);
   saveHistory(target);
@@ -16720,6 +16737,9 @@ function verdictRetryDue(): Slot[] {
 async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main: string,
   carried: string[] = [], carriedBy: "agent" | "author" = "agent",
   actor: LandActor = { kind: "owner", via: "cookie" }): Promise<void> {
+  // WHO THE VERDICT AT THE END BELONGS TO, decided HERE and not down there: the route that called
+  // this has just verified the asker's identity, and the gate below runs for minutes.
+  const verdictTo = verdictReceiverOf(actor);
   let res: MergeLast;
   let candidateMainSha: string | null = null;
   const bindCandidate = async (r: MergeLast): Promise<MergeLast> => {
@@ -17103,9 +17123,9 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
   await record(res);
   // THE VERDICT GOES BACK TO WHOEVER ASKED. After `record`, never before: the fact is on disk
   // first, so a death between the two loses a notification and never a verdict. A land tore the
-  // worktree down and is filtered out inside. `actor` is what picks the receiver — the lane on an
-  // owner ⏫, the Program-MAIN that called the self-land door on its own.
-  await deliverMergeVerdict(s, cwd, branch, actor);
+  // worktree down and is filtered out inside. The ACTOR is what picked the receiver — the lane on
+  // an owner ⏫, the Program-MAIN that called the self-land door on its own.
+  await deliverMergeVerdict(s, cwd, branch, verdictTo);
 }
 
 // --- the owner token itself, and only it: `TOKEN` is a module-wide `let` the boot path assigns,

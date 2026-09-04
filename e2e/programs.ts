@@ -6215,13 +6215,16 @@ export async function run(ctx: Ctx): Promise<void> {
     // has no job frame to inherit an actor from, so without this field a restart between the two
     // would quietly re-aim the verdict at the lane — the exact paste this cut removes.
     const redReceiver = ((await (await get(`/api/slots/${redLaneSlot}/merge`)).json()) as
-      { last: { verdictTo?: { slot?: number; openedAt?: number; program?: string; task?: string } } | null })
+      { last: { verdictTo?: { slot?: number; program?: string; task?: string;
+        occupant?: { openedAt?: number; sessionId?: string | null } | null } } | null })
       .last?.verdictTo ?? null;
-    check("self-land verdict: the merge row records the MAIN occupant as the receiver — slot, program and task, not just a slot number",
+    const landMainOpenedAt = landMainSlot === null ? null
+      : readState().slots?.[String(landMainSlot)]?.openedAt ?? null;
+    check("self-land verdict: the merge row records the MAIN OCCUPANT as the receiver — program, task and the exact occupant, not just a slot number",
       redReceiver?.slot === landMainSlot && redReceiver.program === landProgram.id
-        && redReceiver.task === redRowId && typeof redReceiver.openedAt === "number"
-        && (redReceiver.openedAt ?? 0) > 0,
-      JSON.stringify(redReceiver));
+        && redReceiver.task === redRowId && !!redReceiver.occupant
+        && redReceiver.occupant.openedAt === landMainOpenedAt,
+      JSON.stringify({ receiver: redReceiver, liveOpenedAt: landMainOpenedAt }));
     // the merge job rebased this lane onto the main the green land moved, so its git facts are
     // freshly stale; done-looking gates ABOVE the progress guard and the probe would otherwise
     // measure the tick rather than the guard.

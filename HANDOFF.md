@@ -1,3 +1,105 @@
+# HANDOFF — Program 66499a03 „Fleet-Betrieb ohne manuelles Owner-Routing" (Slot 10): Erfolgssatz 7 ist ZWEIMAL belegt, D2 ist angenommen und landbar, und die Tueren, die dem gebundenen MAIN fehlen, sind benannt; 2026-09-04 (08:xx), ctx GESCHAETZT ~20 % (diese Rolle liest `ctx: null` — nie als Messung ausgeben)
+
+Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`.
+Hier steht nur, was git und die Sensoren NICHT tragen. Lineage 4 → 16 → 10.
+
+## 0. Das Erste, was du tust
+
+1. **`GET /api/self/program-execution`** — deine Zeilen und ihre `nextAction`.
+2. **Status von `4a29ffcd` (D2)**. Beim Schreiben `sent` auf Slot 1, Lane `fleet/260904053339-c44a`,
+   **Report `3478ad04ff40c8786b560143` von mir ANGENOMMEN, landbar bei `21cc5b4`** (patch-id
+   `300868d4`, ueber zwei Rebases stabil). **Der Controller landet, nicht du.**
+3. Kommt danach ein rotes Post-Land-Audit: §3 dieses Abschnitts, nicht raten.
+
+## 1. Was BELEGT ist (und was ausdruecklich nicht)
+
+- **Erfolgssatz 7 („terminale Reports werden ausdruecklich angenommen") ist ZWEIMAL belegt** — die
+  erste Evidenz in der Geschichte dieses Programs: `17854c56e0c12377fed71616` (D1-Nachschnitt,
+  `complete`) und `3478ad04ff40c8786b560143` (D2, `needs-main`). Beide `disposition: accepted`, beide
+  mit Begruendung, beide vom exakten Receiver-Occupant (Slot 10). **Der zweite ist der wertvollere:**
+  ein `needs-main`-Report anzunehmen zeigt, dass die Tuer ein URTEIL ablegt, nicht ein Gruen abstempelt.
+- **Kriterium (b) von D1 laeuft live:** die Projektion traegt auf der Zeile `8df64679`
+  `report{id,status,disposition,decidedAt}`. Eine Nachfolgerin liest „gelesen und angenommen" ohne
+  eine Pane. Daneben steht `92553809` mit `report: null` — die ehrliche Narbe (§2).
+- **NICHT belegt:** Erfolgssatz 8 (automatisches Cleanup) ist GEBAUT, aber `FLEET_LANE_AUTOCLOSE`
+  ist per Default AUS — gebaut ist nicht gelaufen. Erfolgssatz 11 („kein Owner-Management") bleibt
+  strukturell unerfuellbar, solange der Master-Dispatch aus ist (unveraenderter Owner-Entscheid).
+
+## 2. Der Befund, der groesser ist als dieses Program (`df95f129`)
+
+**Wer nicht landet, erfaehrt nichts.** Bei einem Land durch den Controller routen BEIDE terminalen
+Fakten am gebundenen Program-MAIN vorbei. Gemessen an D1 (`92553809` → `275339a`):
+- **Report:** es existiert KEINE `fleetReports`-Zeile fuer `92553809` — ueber alle persistierten
+  Zeilen nachgezaehlt. Die Lane hat ihren im Brief woertlich verlangten Terminalreport nie gestellt,
+  und **nichts im Lifecycle hat das bemerkt**: Zeile `done`, Land gruen, Slot abgeraeumt.
+- **Audit:** das rote Audit auf `275339a` ist Event `e4840e79` mit `receiverSlot: 16` — dem
+  Controller. Nicht mir.
+- **Mechanismus:** den Audit-Watch legt, WER LANDET. Ohne Self-Land-Promotion landet der Controller,
+  also abonniert der Controller. Der gebundene MAIN erfaehrt alles per Owner-Relay — genau das
+  „manuelle Owner-Routing", das dieses Program abschaffen soll.
+- **Vorsicht bei der Gegenprobe:** Empfaenger ist das Occupant-TRIPEL, nicht die Slotnummer. Eine
+  Zaehlung „Events auf Slot 10" meldet zu viel — die aelteren gehoeren VORIGEN Insassen.
+- **Kein Schnittvorschlag von mir, mit Absicht.** Die zwei Kandidaten (Empfaenger am gebundenen MAIN
+  statt am Lander · Self-Land-Promotion ausweiten) sind eine Owner-/Scope-Frage, keine Messfrage.
+
+**Folgekosten, konkret:** D1s einziger serieller `./e2e-isolated.sh` ist bis heute **UNKNOWN**, nie
+„bestanden" — die Land-Kette endet bei `claude-gate`, Tier 2 laeuft daneben, und ohne Report gibt es
+keinen zitierten Tail. Das rote Audit mit 5 Fails kam ~30 min nach dem Land.
+
+## 3. Vier Werkzeuge, die je einen Fehlschluss verhindern (alle diese Session bezahlt)
+
+- **Ein Audit ist NICHT namenlos: die FAIL-Namen stehen im Feld `fails`, nicht im Tail.** Der Tail
+  zeigt PASS-Zeilen und „5 FAILURES"; `out` ist elidiert und enthaelt NULL FAIL-Zeilen. Ich stand
+  kurz vor einem `unknowable`, waehrend die fuenf Namen im Datensatz lagen.
+- **`checks.ran` ist der ELISIONS-Zaehler, nicht die Checkzahl.** Dasselbe Audit meldete
+  `ran: 26` und in derselben Ausgabe `rows=3577`.
+- **Basisraten NUR aus `<repo>/e2e-trail/`** (5 700+ Dateien), nie `$TMPDIR/fleet-e2e-trail/`
+  (32er-Attrappe, hat schon einmal ein falsches „keine Flake-Historie" erzeugt). **Und mit
+  SUBSTRING matchen:** der echte Checkname traegt Suffixe (`… (guard unchanged)`). Mein
+  Exact-Match sagte „NOT FOUND" fuer eine Familie, die 9/648 rot ist.
+- **`POST /api/post-land-audits/adjudicate` ist OWNER-ONLY** (Route liegt bei `server.ts:22746`,
+  unter dem Gate bei `:22408`). Das Audit-Ereignis fordert den Empfaenger woertlich zur
+  Adjudikation auf — ein gebundener MAIN bekommt `unauthorized`. Urteil formulieren und dem
+  Controller geben.
+
+**Offen und noch nicht abgelegt:** das Audit `at=1788500609482` (Baum `d32b69d`) hat von mir das
+fertige Urteil **`stale-test`** samt Notiz bekommen, aber niemand konnte es posten. Begruendung in
+einem Satz: `d32b69d` ENTHAELT `275339a`, aber NICHT die Reparatur `6c1e672` (merge-base in beiden
+Richtungen geprueft) — vier der fuenf Fails sind die dort noch unreparierten Sonden, der fuenfte ist
+§11.2l.
+
+## 4. Zwei Doc-Nachzuege, die D2 korrekt ausserhalb seines Schreibsatzes gelassen hat
+
+- **Regelbuch-Satz fuer `FLEET_LANE_AUTOCLOSE`** (Default AUS). **Ueber `rulebook/` — Fragment +
+  Render + Pins. `CLAUDE.md` ist ein GENERAT und darf nie handgeeditet werden**, sonst stirbt jeder
+  Land-Gate an Stufe 1.
+- **`docs/verify-tiering.md` §11.2n** fuer die Familie „⏸ a re-run is refused while the resolution is
+  still rebased onto main (guard unchanged)" — **und zwar als ZEIGER** auf die schon existierende
+  `docs/messungen/2026-09-03-flake-basisrate-settle-for-merge.md` (Mechanismus dort benannt:
+  `settleForMerge`, `e2e/lane-helpers.ts#L73`, gibt nach 12 s STILL auf), nicht als Neumessung.
+
+## 5. Betrieb dieser Rolle
+
+- **Hintergrund-Watcher sterben in dieser Pane lautlos** (n=2, ohne Ausgabe, Ursache unbekannt).
+  Das widerspricht der Rangfolge im Regelbuch, die den `until`-Watcher UEBER den One-Shot stellt —
+  n=2 ist zu duenn fuer eine Regelaenderung, aber dick genug fuer den Rueckweg: **`POST
+  /api/self/autos`, one-shot, immer genau EINER armed.** Er lebt im Server und ueberlebt, was den
+  Watcher toetet. Beim Schreiben armed: `6a67fcf3`.
+- **`reason` bei accept/reject ist auf 500 Zeichen gedeckelt — GATE auf die Zahl, zaehle sie nicht
+  nur.** Ich bin zweimal aufgelaufen; der Fix ist ein `assert len(r)<=500` VOR dem Senden.
+- **Die accept-Route braucht die volle 24-Hex-Id** (`[0-9a-f]{24}`); die Kurzform matcht nicht.
+- **Der eigene Fuellstand ist fuer diese Rolle unmessbar** (`ctx: null`, Owner-Poll per
+  Program-Verbot zu). Schaetzen und als Schaetzung kennzeichnen — nie eine nackte Zahl.
+
+## 6. Was ich NICHT getan habe (und warum)
+
+Kein Deploy, kein Land, kein zweiter Task neben D2, keine Attention ausser der einen beantworteten
+(`cc9572a6`, Reihenfolge-Entscheid → (B) Naht zuerst). Die Owner-Frage 4 des Programs (begrenzte
+read-only Portfolioansicht fuer den Controller) ist weiterhin NICHT gestellt — sie ist eine
+Geschmacks-/Scope-Frage und gehoert hinter D2s Land.
+
+---
+
 # HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 8): BEIDE haengenden Lands sind drin und verifiziert, E1s Fix ist am lebenden Objekt bewiesen, vier neue Registerzeilen; 2026-09-04 (10:0x), ctx GEMESSEN 24,7 %
 
 Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,

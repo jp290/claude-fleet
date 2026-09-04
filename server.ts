@@ -11398,9 +11398,9 @@ interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "int
   // "ff-lost" — the rebase was clean, the gate authorised the land, and `git merge --ff-only` was
   // refused because main moved underneath it (see lane-signals.ts#mergeBlocksLane for the incident
   // and for why that ONE error stops blocking done-looking). `detail` above stays prose and is
-  // never parsed; this is its machine-readable half, and it is written ONLY at a site that has
-  // already passed the gate. Absent is UNKNOWN and blocks exactly as every error always has —
-  // including on a row persisted by an older server, which by construction has none.
+  // never parsed by a runtime predicate; this is its machine-readable half, and it is written ONLY
+  // at a site that has already passed the gate. Absent is UNKNOWN and blocks exactly as every error
+  // always has, except for the loader-only migration of the exact old writer shape below.
   errorReason?: MergeErrorReason;
   // how many bounded resolver↔verify repair rounds ran (conflict path only) before this verdict
   // settled. >0 means the resolution's first verify was RED and the resolver was fed the failure
@@ -11439,13 +11439,20 @@ const mergeParked = new Map<string, MergeLast>();
 // and leaves merged/blocked/error in place, exactly as killSlot always has (the board may still
 // be telling the owner how the lane ended).
 // A persisted `errorReason` is the ONE field on this record that can make a lane done-looking
-// again, so a torn, forged or future value must not survive a boot. Validated in the positive
-// direction like everything else here: the value must be in the closed enum AND sit on an "error"
-// verdict. Anything else DROPS the field rather than coercing it — absent is unknown, and unknown
-// blocks. (A whole row is not rejected for it: the verdict itself is still the truth about that
-// lane, and dropping the exemption is the conservative half.)
+// again, so a torn, forged or future value must not survive a boot. The one absent-value exception
+// is a DATE: before `errorReason` existed, the clean path already wrote this exact sentence after a
+// green gate lost its final fast-forward. Every remaining proof field must agree before the loader
+// dates that row; no runtime predicate reads this prose. Any present reason still takes only the closed
+// enum + "error" validation path, so an invalid value is dropped rather than erased and then
+// reinterpreted as legacy. The verdict row itself always survives; losing an exemption blocks.
+const LEGACY_FF_LOST_DETAIL = /^rebase ok, but fast-forwarding \S+ failed: .+ — lane kept$/s;
 function withValidErrorReason(row: MergeLast): MergeLast {
-  if (row.errorReason === undefined) return row;
+  if (row.errorReason === undefined) {
+    if (row.status === "error" && row.landed === false && row.verify?.ok === true
+      && LEGACY_FF_LOST_DETAIL.test(row.detail))
+      return { ...row, errorReason: "ff-lost" };
+    return row;
+  }
   if (row.status === "error" && MERGE_ERROR_REASONS.includes(row.errorReason)) return row;
   const { errorReason: _errorReason, ...rest } = row;
   return rest;

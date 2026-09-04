@@ -79,9 +79,10 @@ interface FleetState {
   watches?: Record<string, unknown>[];
   events?: Record<string, unknown>[];
   stewardToken?: string;
-  // the persisted merge verdicts, keyed by slot id — the ff-lost fixture forges `errorReason` here
-  // to prove the loader validates it rather than trusting the file
-  merges?: Record<string, { status?: string; landed?: boolean; errorReason?: string }>;
+  // the persisted merge verdicts, keyed by slot id — the ff-lost fixture forges the legacy shape
+  // and each rejecting control here to prove the loader validates rather than trusts the file
+  merges?: Record<string, { status?: string; landed?: boolean; errorReason?: string; detail?: string;
+    verify?: { ok?: boolean | null } }>;
   slots?: Record<string, { cwd?: string; label?: string | null; selfToken?: string; openedAt?: number; sessionId?: string | null;
     harness?: string | null; model?: string | null; effort?: string | null; successionRetirement?: unknown;
     taskId?: string | null; originId?: string | null; programId?: string | null }>;
@@ -6777,16 +6778,24 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify({ first: ffFirst.status, reached: ffReachedLatch, verdict: ffVerdict,
         before: ffMainBefore.slice(0, 8), intruder: ffIntruder.slice(0, 8), now: main2Of().slice(0, 8) }));
 
-    // the latch is spent — everything below is an ordinary server, and the ff must now succeed
-    // the server is stopped BEFORE the file is touched, or its next tick would overwrite the forgery
-    // with the map it is holding. Returns whether the persisted row was actually found, so a patch
-    // that reached nothing fails as ITSELF instead of reading as "the loader dropped it".
-    const ffPatchReason = async (value: string): Promise<boolean> => {
+    // the latch is spent — everything below is an ordinary server, and the ff must now succeed.
+    // The server is stopped BEFORE the file is touched, or its next tick would overwrite the
+    // fixture with the map it is holding. Every plant starts from the exact old writer shape and
+    // explicitly removes the reason; an override then changes ONE proof field for each control.
+    // Returns whether the persisted row was actually found, so a patch that reached nothing fails
+    // as ITSELF instead of reading as "the loader rejected it".
+    const ffHistoricalDetail = ffVerdict?.detail ?? "";
+    const ffPlantPersisted = async (overrides: Partial<FfVerdict>): Promise<boolean> => {
       await tmuxOut("kill-session", "-t", "srv");
       await Bun.sleep(500);
       const st = readState();
-      const row = ffLane.slot === null ? undefined : st.merges?.[String(ffLane.slot)];
-      if (row) row.errorReason = value;
+      const key = ffLane.slot === null ? "" : String(ffLane.slot);
+      const row = key === "" ? undefined : st.merges?.[key];
+      if (row && st.merges) {
+        const { errorReason: _errorReason, ...withoutReason } = row;
+        st.merges[key] = { ...withoutReason, status: "error", landed: false,
+          detail: ffHistoricalDetail, verify: { ok: true }, ...overrides };
+      }
       writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
       await restartSrv();
       return !!row;
@@ -6798,24 +6807,40 @@ export async function run(ctx: Ctx): Promise<void> {
       return { status: r.status, text: await r.text() };
     };
 
-    // (8c) THE COUNTER-PROOF, and it is the causal link rather than an argument: forge the field to
-    // a value the enum does not contain. The loader must DROP it (absent is unknown, and unknown
-    // blocks), which puts this lane back in exactly the 2026-09-02 state — not done-looking, and
-    // the door refusing with the sentence the incident quoted.
-    const ffForgedPlanted = await ffPatchReason("main-moved");
-    const ffForged = await ffMergeNow();
-    const ffForgedReady = ffLane.slot === null ? false : await waitDoneLooking(ffLane.slot);
-    const ffForgedDoor = await ffDoorText();
-    check("(c) loader validation: a reason outside the closed enum is DROPPED at boot, the lane is not done-looking, and the door refuses in the incident's own words",
-      ffForgedPlanted && ffForged?.status === "error" && ffForged.errorReason === undefined
-        && ffForgedReady && ffForgedDoor.status === 409
-        && ffForgedDoor.text.includes("the lane is not done-looking (no signal)"),
-      JSON.stringify({ planted: ffForgedPlanted, verdict: ffForged, gitReady: ffForgedReady,
-        door: ffForgedDoor.status, text: ffForgedDoor.text.slice(0, 160) }));
+    // (8c) THE NEGATIVE BOUNDARY. Each row differs from the historical record in exactly one
+    // proof field. None may acquire the exemption: absent/red/unknown verification, an ordinary
+    // foreign error, a malformed landed error, an invalid reason, and a blocking non-error status
+    // all remain blocked after the loader has seen them.
+    const ffControls: { name: string; overrides: Partial<FfVerdict>; status: string }[] = [
+      { name: "absent verify", overrides: { verify: undefined }, status: "error" },
+      { name: "red verify", overrides: { verify: { ok: false } }, status: "error" },
+      { name: "unknown verify", overrides: { verify: { ok: null } }, status: "error" },
+      { name: "foreign detail", overrides: { detail: "ordinary merge failure — lane kept" }, status: "error" },
+      { name: "malformed landed error", overrides: { landed: true }, status: "error" },
+      { name: "invalid reason", overrides: { errorReason: "main-moved" }, status: "error" },
+      { name: "non-error status", overrides: { status: "blocked" }, status: "blocked" },
+    ];
+    const ffControlResults: { name: string; planted: boolean; status?: string; reason?: string;
+      ready: boolean; door: number; text: string }[] = [];
+    for (const control of ffControls) {
+      const planted = await ffPlantPersisted(control.overrides);
+      const hydrated = await ffMergeNow();
+      const ready = ffLane.slot === null ? false : await waitDoneLooking(ffLane.slot);
+      const door = await ffDoorText();
+      ffControlResults.push({ name: control.name, planted, status: hydrated?.status,
+        reason: hydrated?.errorReason, ready, door: door.status, text: door.text.slice(0, 160) });
+    }
+    check("(c) legacy loader boundary: absent/non-green verify, foreign detail, malformed landed state, invalid reason and a blocking non-error status receive no exemption",
+      ffControlResults.length === ffControls.length
+        && ffControlResults.every((row, i) => row.planted && row.status === ffControls[i]?.status
+          && row.reason === undefined && row.ready && row.door === 409
+          && row.text.includes("the lane is not done-looking (no signal)")),
+      JSON.stringify(ffControlResults));
 
-    // (8d) …and with the valid fact restored, the SAME lane, the SAME bytes and the SAME door.
-    // The restart is also the hydration proof: the field crosses a boot.
-    const ffRestoredPlanted = await ffPatchReason("ff-lost");
+    // (8d) THE POSITIVE LEGACY SHAPE: no reason is planted. The loader must date this one row from
+    // its status + non-land + green verify + historical detail, backfill the typed reason, and make
+    // the SAME lane with the SAME bytes eligible for the SAME existing re-land path.
+    const ffRestoredPlanted = await ffPlantPersisted({});
     const ffHydrated = await ffMergeNow();
     const ffRestoredReady = ffLane.slot === null ? false : await waitDoneLooking(ffLane.slot);
     // the lane-ready watch: armed by the MAIN itself, on its own lane, and it can only fire if the

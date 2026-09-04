@@ -13,6 +13,7 @@ import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessa
   commandJobWatchMessage, type CommandJobWatchEventPayload, type CommandJobArtifactPayload,
   type ClarificationBasis,
   laneQuietSince, DONE_LOOKING_PROSE, laneStalled, laneStalledSince, STALLED_PROSE,
+  laneSpentLooking,
   MERGE_ERROR_REASONS, type MergeErrorReason } from "./lane-signals";
 import { phaseOf, type Phase, type PhaseInput, type PhaseOutcomeFacts } from "./program-phase";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
@@ -10010,6 +10011,195 @@ async function tickAutoReview(): Promise<void> {
   }
 }
 
+// --- THE AUTOMATIC LANE CLOSE, and the fact that finally makes one safe ------------------------
+//
+// THE COST THIS REMOVES: a worker lane that is finished, clean, has NOTHING ahead of main and
+// produced no landable candidate stays open forever. It holds a dispatcher slot (DISPATCH_MAX_LANES
+// is 2-3), it reads as healthy-RUNNING to every projection that is not looking at `stalled`, and
+// the only thing that ends it is the owner pressing kill. That hand is exactly the owner routing
+// this Program exists to remove — and until 275339a there was no fact honest enough to hang the
+// close on. `stalled` alone is NOT that fact: it is an accusation about a pane, and the four states
+// CLAUDE.md names (compiled a brief · gave up · was rejected · finished a read-only slice) are
+// indistinguishable inside it. The acceptance door added the missing half: the receiving MAIN's
+// PERSISTED verdict on this lane's own terminal report. A human read the work and said so.
+//
+// SEPARATE TICK, NOT A BRANCH IN tickAutoReview — argued from where the facts are, not from taste.
+// Every input already exists and none is re-assembled here: the git/pane half comes from the one
+// laneSignalView both other lane consumers read, the merge half from the same three maps
+// programPhaseInput reads, the judgement half from `fleetReports` in memory, and the commit count
+// from buildLaneOutcome, the ledger's own recorder. So this adds no fact source. What it does add
+// is an IRREVERSIBLE act: auto-③ mints a review and tickWatches mints an event — both advisory,
+// both cheap to be wrong about — while this one kills a pane. Folding it into tickAutoReview would
+// put that act behind another act's busy flag and concurrency budget, and tie the close to
+// FLEET_AUTO_REVIEW_* knobs that mean something else. It is deliberately NOT reachable from
+// tickDispatch: nothing on the lane-START path may end a lane.
+//
+// OFF BY DEFAULT, in FLEET_CLEAN_REVIEW's own shape — the recognised on/off spellings are named so
+// that an unrecognised value says so out loud instead of passing for a decision, which is the exact
+// trap that cost that flag a red land gate on 2026-07-28. Absence means DO NOTHING: no tick is
+// registered at all, so the arming is a deployment decision the owner makes once in watchdog.sh's
+// srv-spawn line, never something a tick can do to itself.
+const LANE_AUTOCLOSE_RAW = (process.env.FLEET_LANE_AUTOCLOSE ?? "").trim();
+const LANE_AUTOCLOSE_OFF_RE = /^(0|off|false|no)$/i;
+const LANE_AUTOCLOSE_ON = /^(1|true|on|yes)$/i.test(LANE_AUTOCLOSE_RAW);
+if (LANE_AUTOCLOSE_RAW && !LANE_AUTOCLOSE_ON && !LANE_AUTOCLOSE_OFF_RE.test(LANE_AUTOCLOSE_RAW))
+  console.log(`[fleet] FLEET_LANE_AUTOCLOSE=${JSON.stringify(LANE_AUTOCLOSE_RAW)} is not a recognised`
+    + " value — the automatic lane close is OFF. Recognised: 1/true/on/yes · 0/off/false/no.");
+
+// the reports THIS occupant filed — the worker arm of fleetReportsFor, without the receiver arm. A
+// lane must never be closed on the strength of a report it merely RECEIVED (it cannot receive one),
+// and slot ids recycle, so the exact triple is the join and nothing weaker.
+function laneOwnReports(s: Slot): FleetReport[] {
+  return fleetReports.filter((r) => r.worker.slot === s.id && r.worker.openedAt === s.openedAt
+    && r.worker.sessionId === s.sessionId);
+}
+
+// THE PERMISSION, as a list of NAMED refusals rather than one boolean. Every clause is a positive
+// test over a fact that must be KNOWN — the direction lane-signals.ts argues for at length — so a
+// missing or unmeasurable input refuses, never permits. `null` is the only value that closes a lane
+// and it is reachable exactly once through the whole list.
+function laneAutoCloseRefusal(s: Slot, now: number): string | null {
+  if (!LANE_AUTOCLOSE_ON) return "the automatic lane close is not armed";
+  // the owner's master stop pauses automation, and an irreversible act is the last thing that may
+  // run past it. Quiet hours are NOT read: they exist so nothing types into a pane at 3am, and this
+  // path types nothing anywhere.
+  if (!autosOn) return "automation is paused (autosOn is off)";
+  if (!s.cwd || !s.worktree) return "not a fleet-created worktree lane";
+  if (s.label === STEWARD_LABEL) return "the planning pane is a standing role, not a spent lane";
+  if (slotTeardownInflight.has(s.id) || restarting.has(s.id))
+    return "a teardown or restart already holds this slot";
+  // the ~10s gitOp cache inside the predicate cannot see a job that started since; these can.
+  if (mergeInflight.has(s.id) || mergeStart.has(s.id) || commitInflight.has(s.id)
+    || reviewInflight.has(s.id)) return "a merge, commit or review job holds this lane";
+  // NO LANDABLE CANDIDATE, read as the strictest form of the question: a merge verdict for THIS
+  // lane means it was offered for integration once, and what a MAIN does with a settled verdict is
+  // a decision with eyes on it. `ahead === 0` inside the predicate says the same thing from the git
+  // side; this says it from the lifecycle side, and the two are not redundant — a
+  // resolved-but-not-landed lane can sit at ahead 0 with a verdict somebody still owes a look at.
+  // …and the verdict is matched by BRANCH, because `mergeLast` is keyed by SLOT and survives a
+  // recycle: teardownSlotOccupant parks only the REVIEWABLE verdicts (parkMergeVerdict's
+  // `clearAll: false`), so a `merged`/`blocked`/`error` row from a previous occupant is still
+  // sitting under this slot id. Refuse unless the row PROVABLY describes another lane — an unnamed
+  // branch is UNKNOWN and stays a refusal, in the same direction every clause here reads.
+  const verdict = mergeLast.get(s.id);
+  if (verdict && !(typeof verdict.branch === "string" && verdict.branch !== ""
+    && verdict.branch !== s.worktree.branch))
+    return "a merge verdict is on record — this lane's candidate is somebody's to look at";
+  if (!laneSpentLooking(laneSignalView(s, now), STALLED_IDLE_MS))
+    return "the lane is not spent-looking";
+  // …and the Program binding, both halves. A hand-opened lane and a lane of another Program are the
+  // same refusal in different words: this tick closes work that a Program's own MAIN judged.
+  if (!s.taskId) return "no queue row founded this lane";
+  if (!s.programId) return "this lane belongs to no Program";
+  const program = programs.find((p) => p.id === s.programId);
+  if (!program || program.status !== "active") return "this lane's Program is not active";
+  // Absent evidence is not a verdict. It is also what a lane whose rows fell off the retention tail
+  // (pruneFleetReports, FLEET_REPORT_KEEP) reads as — and that is the correct outcome for it too:
+  // a close nobody can reconstruct the authority for is a close that must not happen.
+  const own = laneOwnReports(s);
+  if (own.length === 0) return "this lane filed no terminal report";
+  // EVERY report, not merely the newest. Deciding one and leaving another open is a MAIN that is
+  // still reading, and "never closes a lane whose report is undecided" has to mean every row the
+  // lane filed — the newest-only reading would close a lane over an unanswered question.
+  for (const r of own) {
+    if (r.receiver === null) return "an owner-inbox report carries no MAIN verdict to close on";
+    const d = r.decision;
+    if (!d) return "a report of this lane is undecided";
+    // the decision names the EXACT receiver occupant. fleetReportFrom enforces this on the way in
+    // and decideFleetReport on the way through, which is precisely why it is re-tested here: a
+    // guarantee an actuator inherits from two other files is a guarantee it stops noticing.
+    if (d.by.slot !== r.receiver.slot || d.by.openedAt !== r.receiver.openedAt
+      || d.by.sessionId !== r.receiver.sessionId)
+      return "a report's verdict does not name its exact receiver occupant";
+    if (r.provenance.taskId !== s.taskId || r.provenance.programId !== s.programId)
+      return "a report's provenance does not match this lane's own task and Program";
+  }
+  return null;
+}
+
+// the row whose verdict authorised the close — newest by reportedAt among this lane's own, so the
+// trail names the judgement a reader would reconstruct from rather than an older superseded one.
+function laneAutoCloseAuthority(s: Slot): FleetReport | null {
+  let newest: FleetReport | null = null;
+  for (const r of laneOwnReports(s)) if (!newest || r.reportedAt > newest.reportedAt) newest = r;
+  return newest;
+}
+
+// ONE ATTEMPT PER OCCUPANT, and it is a ceiling rather than a permission — which is why it lives
+// here and not in the refusal list. The trigger is LEVEL-triggered: a lane that qualifies keeps
+// qualifying, so a teardown that threw (a tmux absence this box could not prove) would leave the
+// lane standing and earn it a SECOND outcome row on the next tick — one close, two rows, and every
+// population counted off that ledger silently double-counts it. Keyed slot → openedAt like
+// backlogNudgeTried: bounded by MAX_SLOTS, and a recycled slot's next occupant invalidates it by
+// carrying a different openedAt rather than by anyone remembering to clear the entry.
+const autoCloseTried = new Map<number, number>();
+
+let autoCloseBusy = false;
+async function tickLaneAutoClose(): Promise<void> {
+  if (!LANE_AUTOCLOSE_ON || autoCloseBusy) return;
+  autoCloseBusy = true;
+  try {
+    for (const s of slots) {
+      if (autoCloseTried.get(s.id) === s.openedAt) continue;
+      if (laneAutoCloseRefusal(s, Date.now()) !== null) continue;
+      const report = laneAutoCloseAuthority(s);
+      const decision = report?.decision;
+      // not reachable past the refusal list, and deliberately not written as a non-null assertion:
+      // an actuator that could ever close a lane without naming its authority is the one shape this
+      // whole slice exists to make impossible.
+      if (!report || !decision) continue;
+      const occupant = { openedAt: s.openedAt, sessionId: s.sessionId, cwd: s.cwd };
+      // the ledger's OWN recorder, with its own git reads — never a second count of this lane's
+      // commits. buildLaneOutcome resolves killed-dirty vs killed-empty from `commitCount` itself.
+      const row = await buildLaneOutcome(s, "killed");
+      if (!row) {
+        console.log(`lane auto-close: slot ${s.id} left open — no lane outcome could be assembled`);
+        continue;
+      }
+      // THE ASSERTION, and it is the last line of defence rather than a formality: `ahead` in the
+      // predicate is the ~10s tickGit cache, while this is a fresh `rev-list --count` over the
+      // lane's own base..HEAD. A lane that committed inside that window arrives here as
+      // killed-dirty, and killed-dirty is real work — it is never closed, and no row is written for
+      // a close that did not happen.
+      if (row.disposition !== "killed-empty") {
+        console.log(`lane auto-close: slot ${s.id} left open — outcome is ${row.disposition},`
+          + " and a lane with commits is never closed automatically");
+        continue;
+      }
+      // buildLaneOutcome spawned git; a slot can be recycled inside that gap and this decision was
+      // read for the occupant that is gone. Re-prove identity AND re-run the whole list.
+      if (s.openedAt !== occupant.openedAt || s.sessionId !== occupant.sessionId
+        || s.cwd !== occupant.cwd || laneAutoCloseRefusal(s, Date.now()) !== null) continue;
+      // the ceiling is spent BEFORE the row, so a failure below is remembered too (auto-③'s own
+      // rule at reviewAutoTried), and the trail FIRST, exactly as the hand close writes it (the
+      // /kill route records before it tears down) plus the one field that says no hand was here.
+      autoCloseTried.set(s.id, s.openedAt);
+      emitLaneOutcome({ ...row, autoClose: { reportId: report.id,
+        disposition: decision.disposition, decidedAt: decision.at, decidedBySlot: decision.by.slot } });
+      // `owner` is the SlotEnding a plain kill writes, and it is what an automatic close writes too:
+      // that vocabulary lives in slotstats.ts, so this tick cannot add a word of its own without
+      // widening past its write set. The discriminator that DOES exist is `autoClose` on the row
+      // above — slotstats counts this ending with the hand closes, and a reader who needs the two
+      // apart joins the outcome ledger, never a pane.
+      // a teardown that throws must not abort the sweep for every other lane, and it is LOUD: the
+      // row above already says this lane was closed, so a silent failure would leave the ledger and
+      // the board disagreeing with nothing on the trail to say which one is wrong.
+      try {
+        await killSlot(s, "owner");
+      } catch (e) {
+        logError("laneAutoClose", e);
+        console.log(`lane auto-close: slot ${s.id} recorded ${row.branch} as closed but its teardown `
+          + "threw — the lane is still standing and will not be retried under this occupant");
+        continue;
+      }
+      console.log(`lane auto-close: slot ${s.id} (${row.branch}) closed killed-empty on report `
+        + `${report.id} (${decision.disposition} by slot ${decision.by.slot})`);
+    }
+  } finally {
+    autoCloseBusy = false;
+  }
+}
+
 interface BacklogNudgeMarker {
   session: string; openKey: string; lastAt: number; count: number;
 }
@@ -14461,6 +14651,17 @@ interface LaneOutcome {
   // would make an unmeasurable lane read as a frugal one. Optional because every row written before
   // this field existed carries no answer at all, and the reader must say so rather than default.
   toolResultBytes?: ToolResultBytes | null;
+  // WHO ENDED THIS LANE, written ONLY by the automatic close (tickLaneAutoClose) and absent on
+  // every hand kill, land, shelve and revert. It exists because the answer does not fit anywhere
+  // else: `SlotEnding` is slotstats.ts's closed vocabulary, so an automatic close is counted there
+  // under the same `owner` word a button press writes, and without this field the two are one
+  // number. Absence therefore says "no automatic close claimed this row" — never "a human did it",
+  // and for a row written before the field the same honest-absence discipline releasedBy/landedBy/
+  // resolvedBy follow above.
+  // The authorising report is NAMED rather than summarised: its verdict is a row with its own
+  // retention, and reconstructing why this lane was closed means reading that id — never a pane.
+  autoClose?: { reportId: string; disposition: FleetReportDisposition; decidedAt: number;
+    decidedBySlot: number };
 }
 // total + per-tool tool_result bytes. `byTool` keys are the tool NAMES from the matching tool_use
 // entry; a tool_result whose tool_use id is not in the same file lands under "?" rather than being
@@ -19683,6 +19884,11 @@ setInterval(() => {
 if (HELPER_WAKE_ADDR) setInterval(() => void tickHelperWake().catch((e: unknown) => logError("tickHelperWake", e)), HELPER_WAKE_TICK_MS);
 // auto-③ on done-looking lanes (advisory; FLEET_AUTO_REVIEW_MS=0 turns the tick off entirely)
 if (AUTO_REVIEW_MS > 0) setInterval(() => void tickAutoReview().catch((e: unknown) => logError("tickAutoReview", e)), AUTO_REVIEW_MS);
+// the automatic close of a SPENT lane whose terminal report a bound MAIN judged. OFF unless the
+// owner armed FLEET_LANE_AUTOCLOSE: absence registers no timer at all, so the feature does not
+// exist rather than existing and declining. It rides the scheduler cadence the watch tick already
+// uses instead of minting a knob of its own — the close is level-triggered and nothing waits on it.
+if (LANE_AUTOCLOSE_ON) setInterval(() => void tickLaneAutoClose().catch((e: unknown) => logError("tickLaneAutoClose", e)), AUTOS_TICK_MS);
 if (BACKLOG_NUDGE_MS > 0) setInterval(() => void tickBacklogNudge().catch((e: unknown) => logError("tickBacklogNudge", e)), BACKLOG_NUDGE_MS);
 if (AUDIT_PING_MS > 0) setInterval(() => void tickAuditPing().catch((e: unknown) => logError("tickAuditPing", e)), AUDIT_PING_MS);
 if (MIGRATE_PCT > 0) setInterval(() => void tickMigrate().catch((e: unknown) => logError("tickMigrate", e)), MIGRATE_TICK_MS);

@@ -853,6 +853,58 @@ Die Lane-Fußzeile (`LANE_EXIT_FOOTER`) bleibt **unverändert**: sie sagt der LA
 committen, einen getypten Report filen, idle gehen. Was die MAIN danach mit dem Report tut, ist
 nicht ihr Wissen und gehört nicht in ihren Brief.
 
+### Der automatische Lane-Schluss — `FLEET_LANE_AUTOCLOSE` (keine Route)
+
+**Das ist kein Self-Endpoint, sondern der einzige Verbraucher des Urteils oben — und er steht hier,
+weil eine Lane, die sich unbeobachtet schließt, genau die Art Verhalten ist, die verrottet, wenn nur
+der Code sie kennt.** Eine Worker-Lane, die FERTIG ist, sauber, NICHTS vor main hat und keinen
+landbaren Kandidaten produziert hat, bleibt sonst für immer offen: sie hält einen Dispatcher-Platz,
+liest sich für jede Projektion als gesundes RUNNING, und beendet wird sie vom Owner per Hand.
+
+**Der Schalter ist ein Deployment-Entscheid, kein Laufzeit-Zustand.** Er hat die Form von
+`FLEET_CLEAN_REVIEW`: erkannt sind `1`/`true`/`on`/`yes` und `0`/`off`/`false`/`no`, jede andere
+Schreibweise ist AUS **und sagt es beim Boot laut** (eine stille Vertipper-Deaktivierung hat genau
+diesen Nachbarflag am 2026-07-28 ein rotes Land-Gate gekostet). **Abwesenheit heißt NICHTS TUN:**
+ohne den Flag wird gar kein Timer registriert — der Tick kann sich nicht selbst schärfen.
+
+**Geschlossen wird eine Lane NUR, wenn JEDER dieser Fakten am Live-Zustand gelesen wurde. Fehlt oder
+ist einer unmessbar, bleibt die Lane offen** (`server.ts#laneAutoCloseRefusal`, jede Ablehnung trägt
+ihren eigenen Satz):
+
+| Fakt | Quelle | Warum er zählt |
+| --- | --- | --- |
+| `autosOn` | Owner-Master-Stop | ein irreversibler Akt läuft nie an der Pause vorbei |
+| Lane, kein `⚙ steward`, kein Teardown/Restart in Flug | Slot | eine stehende Rolle ist keine verbrauchte Lane |
+| kein Merge-/Commit-/Review-Job | die vier Inflight-Maps | frischer als der ~10-s-`gitOp`-Cache |
+| **kein Merge-Verdikt auf Akte** | `mergeLast` | ein Kandidat, auf den jemand schauen muss — auch bei `ahead 0` |
+| `spent-looking` | `lane-signals.ts#laneSpentLooking` | `stalled` + sauberer Baum: alive · beobachtet · idle · kein Git-Op · kein blockierender Merge · `awaiting:null` · `ahead===0` · `dirty===0` |
+| `taskId` + `programId`, Program `active` | Slot + `programs` | geschlossen wird Arbeit, die eine Program-MAIN beurteilt hat |
+| **JEDER eigene Report beurteilt** | `fleetReports` (Worker-Tripel) | „unbeurteilt" heißt jede Zeile, nicht nur die neueste |
+| `decision.by` === `receiver` | dieselbe Zeile | der EXAKTE Empfänger-Occupant, hier nochmal geprüft |
+| `disposition === "killed-empty"` | `buildLaneOutcome` | frischer `rev-list --count`, nicht der Cache |
+
+**Beide Verdikte schließen.** Die Tür heißt „beurteilt", nicht „angenommen": ein `rejected` Report
+ist eine gelesene Antwort und beendet die Lane genauso wie ein `accepted`. Was NICHT schließt, ist
+eine Zeile ohne Urteil — und eine `owner-inbox`-Zeile kann strukturell keins tragen.
+
+**Die letzte Linie ist eine ZUSICHERUNG, keine Formalität.** `ahead` im Prädikat ist der ~10-s-Cache
+von `tickGit`; `buildLaneOutcome` zählt die Commits frisch. Eine Lane, die in diesem Fenster
+committet hat, kommt als `killed-dirty` an — und **eine Lane mit Commits wird NIE automatisch
+geschlossen, in keinem Zustand**. Es wird dann auch keine Zeile geschrieben.
+
+**Die Spur ist dieselbe, die ein Hand-Schluss schreibt**, plus ein Feld: die Lane-Outcome-Zeile trägt
+`disposition: "killed-empty"` und zusätzlich
+`autoClose: {reportId, disposition, decidedAt, decidedBySlot}`. Damit ist der Schluss **ohne Pane**
+rekonstruierbar — die Zeile NENNT den Report, dessen Urteil ihn autorisiert hat. Absicht und Grenze
+dieses Feldes: das Vokabular `SlotEnding` liegt in `slotstats.ts`, deshalb zählt die Endungs-Statistik
+einen automatischen Schluss unter demselben `owner` wie einen Knopfdruck; wer die beiden trennen
+will, joint das Outcome-Ledger, nie eine Pane.
+
+**Was der Tick nie tut:** landen, `main` bewegen, eine Lane mit unbeurteiltem Report schließen, eine
+fremde oder programmlose Lane schließen, einen dirty- oder `ahead>0`-Baum töten, Text in eine Pane
+schreiben, oder vom Dispatch-Tick aus laufen — nichts auf dem Lane-START-Pfad beendet eine Lane. Der
+Worktree bleibt liegen wie nach jedem Kill.
+
 ## land — `POST /api/self/tasks/:id/land`
 
 **Die eine Self-Route, die einen Integrations-Branch bewegt.** Eine gebundene Program-MAIN landet

@@ -450,3 +450,34 @@ export function laneStalledSince(v: LaneSignalView, now: number): number | null 
   if (!STALLED_RULES.every((r) => r.clock || r.holds(v, 0))) return null;
   return now - v.idleMs;
 }
+
+// --- `spent-looking`: the stalled shape PLUS a clean tree, and it is only HALF of a permission.
+//
+// STALLED_RULES above ends with the sentence "What to DO about a stalled lane is a separate, later
+// decision". This is that decision's git-and-pane half, and nothing more: a lane that is alive, was
+// observed, has gone quiet, is not mid-git-op, carries no merge the owner must look at, is not
+// parked on the owner, has NOTHING ahead of its base — and whose tree is clean, so there is not even
+// uncommitted work to lose. Together those clauses say "this lane produced no candidate and is not
+// producing one".
+//
+// THEY DO NOT SAY IT MAY BE CLOSED. Every one of the four look-alike states CLAUDE.md names is still
+// in here: a lane that compiled a brief instead of building, one that gave up, one whose work was
+// rejected, one that finished a read-only slice. Telling them apart is not a git fact and this file
+// will never claim it. The permission is assembled one bracket up (server.ts#laneAutoCloseRefusal),
+// where the lane's own terminal report and the receiving MAIN's persisted verdict on it live — and
+// that predicate is off unless the owner armed it.
+//
+// Composed from STALLED_RULES rather than restated: `stalled` and `spent` must never be able to
+// disagree about what "this lane has nothing to show for itself" means, and one edit keeps prose,
+// both predicates and the digest line in step. The added clause is the same positive shape as every
+// clause it joins — an unknown `git` is not a clean tree.
+export const SPENT_RULES: readonly LaneRule[] = [
+  ...STALLED_RULES,
+  { prose: "clean tree", holds: (v) => v.git !== null && v.git.dirty === 0 },
+];
+
+export const SPENT_PROSE = `${SPENT_RULES.map((r) => r.prose).join(" + ")} → spent-looking`;
+
+export function laneSpentLooking(v: LaneSignalView, idleThresholdMs: number): boolean {
+  return SPENT_RULES.every((r) => r.holds(v, idleThresholdMs));
+}

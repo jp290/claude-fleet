@@ -13,12 +13,13 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { BASE, check, get, paneEnv, post } from "./harness";
+import { BASE, check, get, paneEnv, post, restartSrv, tmuxOut } from "./harness";
 import { driveMerge, openLane, seedRepo, settleForMerge, type Lane } from "./lane-helpers";
 
 interface Row {
   at: number; ms: number; repo: string; main: string; mainSha: string; result: string; reason?: string;
   cmd: string; cmdSource?: string; exitCode: number | null; out: string;
+  fails?: string[];
   checks?: { ran: number; failed: number } | null;
   covers: { branch: string; mainAfter: string }[];
 }
@@ -57,6 +58,19 @@ mode="$(cat "$d/auditmode-rw" 2>/dev/null || echo green)"
 echo "run pwd=$PWD files=$(ls | tr '\\n' ',') recur=[\${FLEET_POSTLAND_AUDIT_CMD:-}] mode=$mode" >> "$d/auditruns-rw"
 case "$mode" in
   decline) echo "verify skipped: this repo-worker declines that tree"; exit 42 ;;
+  red)
+    echo "PASS  repo-worker verify: tree builds"
+    echo "FAIL  repo-worker verify: unit tests  (2 of 9 assertions)"
+    echo "FAIL  repo-worker verify: (parenthesised) name  (detail with  (nested) parens)"
+    echo "2 FAILURES"
+    exit 1
+    ;;
+  redmany)
+    i=1
+    while [ "$i" -le 60 ]; do echo "FAIL  many $i"; i=$((i + 1)); done
+    echo "60 FAILURES"
+    exit 1
+    ;;
   slow) sleep 6 ;;
 esac
 echo "PASS  repo-worker verify: tree builds"
@@ -192,6 +206,65 @@ exit 0
   check("(RW) a repo-worker that declines (exit 42) records unknown, never green — with the reason and no invented count",
     b?.result === "unknown" && b.exitCode === 42 && (b.reason ?? "").includes("declined") && b.checks === null
       && b.cmdSource === "repo-worker" && b.covers[0]?.branch === rwB.branch, JSON.stringify(b).slice(0, 300));
+  await setRwMode("green");
+
+  // ===== (RW.9) LOCAL RED ROWS CARRY THE EXACT FAIL NAMES ========================================
+  await setRwMode("red");
+  const rwRed = await openLane(RW, "rw-red");
+  const redHad = (await rowsFor(RW)).length;
+  await land(rwRed);
+  const red = await waitNewRow(RW, redHad);
+  // BREAKS IF: the local fails assignment is absent, or its parser keeps the harness detail suffix.
+  check("(RW) a local red row carries fails: exactly the FAIL names of the complete output, detail suffix cut, in order",
+    red?.result === "red" && red.checks?.failed === 2
+      && JSON.stringify(red.fails) === JSON.stringify([
+        "repo-worker verify: unit tests",
+        "repo-worker verify: (parenthesised) name",
+      ]), JSON.stringify(red).slice(0, 500));
+
+  await setRwMode("redmany");
+  const rwRedMany = await openLane(RW, "rw-redmany");
+  const redManyHad = (await rowsFor(RW)).length;
+  await land(rwRedMany);
+  const redMany = await waitNewRow(RW, redManyHad);
+  // BREAKS IF: the local path bypasses helperFailNames and therefore its HELPER_FAILS_KEEP cap.
+  check("(RW) local fails are capped at HELPER_FAILS_KEEP through helperFailNames",
+    redMany?.result === "red" && redMany.checks?.failed === 60 && redMany.fails?.length === 50,
+    JSON.stringify(redMany).slice(0, 500));
+
+  // BREAKS IF: fails is computed before classification and writes an empty measured list on green or unknown rows.
+  check("(RW) control: a green local row and an unknown (exit 42) row carry no fails key",
+    a !== null && b !== null && !("fails" in a) && !("fails" in b),
+    JSON.stringify({ green: a, unknown: b }).slice(0, 500));
+
+  for (const prior of await auditRows()) {
+    if (prior.result === "red" && prior.at !== red?.at)
+      await post("/api/post-land-audits/adjudicate",
+        { at: prior.at, verdict: "unknowable", note: "e2e setup: the local named red is the ping subject" });
+  }
+  const occupied = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] }).slots;
+  for (const s of occupied) if (s.cwd) await post(`/api/slots/${s.id}/kill`, {});
+  await restartSrv({ FLEET_AUDIT_PING_MS: "1000", FLEET_BACKLOG_NUDGE_IDLE_MS: "100" });
+  const pingSlot = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+    .slots.find((s) => !s.cwd)?.id ?? 0;
+  const pingOpen = pingSlot ? await post(`/api/slots/${pingSlot}/open`, { cwd: RW }) : null;
+  await Bun.sleep(1700);
+  const pingProbe = pingSlot ? await paneEnv(`s${pingSlot}`, "FLEET_SELF_SLOT") : null;
+  let pingPane = "";
+  const pingDeadline = Date.now() + 10_000;
+  while (Date.now() < pingDeadline) {
+    pingPane = pingSlot ? (await tmuxOut("capture-pane", "-t", `s${pingSlot}`, "-p", "-J", "-S", "-")).out : "";
+    if (pingPane.includes("Fehlgeschlagene Checks (aus der vollstaendigen Ausgabe gelesen):")) break;
+    await Bun.sleep(200);
+  }
+  // BREAKS IF: auditPingMessage keeps attributing local names to the remote helper.
+  check("(RW) the audit ping names local fails as read from the output, not as helper-reported",
+    pingOpen?.ok === true && pingProbe === String(pingSlot)
+      && pingPane.includes(`at=${red?.at}`)
+      && pingPane.includes("Fehlgeschlagene Checks (aus der vollstaendigen Ausgabe gelesen):"),
+    `slot=${pingSlot} probe=${pingProbe} pane=${pingPane.slice(-700)}`);
+  if (pingSlot) await post(`/api/slots/${pingSlot}/kill`, {});
+  await restartSrv();
   await setRwMode("green");
 
   // ===== (RW.5) THE HELPER PORTAL NEVER OFFERS IT ==================================================

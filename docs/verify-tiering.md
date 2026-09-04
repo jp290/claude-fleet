@@ -2189,6 +2189,11 @@ Land `f606e754`, gelaufen auf dem Second-host):
    die Basisraten-Abfrage über die lokalen Trails wieder, weil sie über den CHECK-NAMEN geht und
    nicht über diesen Lauf.
 
+**Ergänzt 2026-09-04:** Auch eine lokal gelaufene rote Zeile führt nun `fails`. Der Server liest die
+Namen aus der vollständigen Ausgabe vor deren Byte-Cap, entfernt den Detail-Suffix des Harness und
+validiert/deckelt sie mit demselben `helperFailNames` wie Remote-Zeilen. `unknown`-Zeilen und ältere
+Zeilen ohne diese Messung tragen das Feld weiterhin nicht.
+
 
 ## 14. Der Remote-Helfer: Tier 2 auf einer zweiten Maschine (Stufe 1, 2026-08-26)
 

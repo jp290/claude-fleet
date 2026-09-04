@@ -778,6 +778,101 @@ Regelbuch; die E5-Briefs haben es pauschal verlangt, und das war zu viel.
 
 ---
 
+## B-18 — die Verhungerungs-KETTE ist laenger als der Mutex: eine Vorschau fror `main` ueber drei Programme ein
+
+GEMESSEN 2026-09-04 von der Sanierungs-MAIN Slot 8 am Land von E1 (`4b92b2f0`). B-17 sagt
+"optionaler Lauf verdraengt pflichtigen". Die Kette reicht zwei Glieder weiter, und erst das
+letzte kostet fremde Programme etwas:
+
+    optionale e2e-isolated.sh-Vorschau haelt /tmp/fleet-e2e.lock
+      -> der PFLICHT-Harness der Lane (./e2e-postland-audit.sh) wartet 1697 s und startet NIE
+      -> die Lane haelt ihr Hintergrund-Terminal offen und ist damit NICHT idle
+      -> `done-looking` (idle + clean + ahead>0) faellt, `signal: null` an der Land-Tuer
+      -> das Land ist unmoeglich
+      -> der Controller haelt `main` eingefroren, damit das Land nicht erneut ff-lost stirbt
+      -> DREI Programme committen nicht mehr auf main
+
+Beleg woertlich aus dem Lane-Log: `[suite-lock] e2e-postland-audit.sh waiting 1697s for
+/tmp/fleet-e2e.lock — held by live pid 82187`, daneben ein zweites wartendes `e2e-isolated.sh`.
+Aufgeloest, indem die Lane per `POST /send` gebeten wurde, den WARTENDEN Lauf abzubrechen
+(`exit 130`, keine Aenderung, kein Commit); sie war im naechsten Turn done-looking, das Land ging
+durch. Begruendung des Abbruchs, nicht Bequemlichkeit: die Lane hatte denselben Harness auf
+demselben Payload bereits ALL PASS gefahren, und der Merge-Job hatte danach nur die BASIS bewegt
+(`41a7a3b` -> `1989bed`, `git diff main...HEAD` byte-identisch, 7 Dateien / 114 / 29).
+
+**Die Diagnose-Lehre, teurer als der Befund:** `signal: null` wurde von mir ZWEIMAL aus der API
+falsch gedeutet — erst als reponweit stehender git-Tick (er lief; ich hatte `idle`/`observed` von
+`/api/sessions` gelesen, wo es diese Felder NICHT gibt, und `dict.get()` gab `None`), dann als
+"un-getickte idleMs, klaert sich beim naechsten Tick". Beides falsch. Die Antwort stand in der
+PANE und war beim ersten Blick eindeutig. Das Regelbuch sagt genau das an der done-looking-
+Nachricht ("Read the pane before you act"); die Regel ist nicht neu, sie wurde nicht befolgt.
+
+## B-19 — Gate-DAUER x main-Commitrate: der `ff-lost` ist ein Muenzwurf, und er trifft alle
+
+GEMESSEN 2026-09-04, Slot 8. Getrennt von B-17/B-18 zu fuehren, weil die Abhilfe eine andere ist:
+B-17 ist Mutex-Verdraengung, dies ist ein RENNEN um den Fast-Forward.
+
+- `main` nahm **23 Commits in 6 h** (~3,8/h), aus mindestens drei Programmen.
+- Eine gruene Land-Kette (voll, 7 Schritte) dauerte heute **1878 s / 1943 s / 2099 s** (~31–35 min).
+- P(kein fremder Commit im Fenster) ~ e^(-3.8 * 0.55) ~ **46 %**.
+
+E1 starb ZWEIMAL an `ff-lost`, bei jeweils `verify.ok: true` — die Arbeit war nie das Problem.
+Einer der beiden war der Handoff-Direkt-Commit `402e962` des Controllers, der sich selbst
+gemeldet hat; ein anderes Program dokumentierte im selben Fenster dasselbe Rennen (`5edc4f5`:
+"bffe3de0 im ff-Rennen"). Gelandet wurde erst, als der Controller `main` freiwillig stillhielt.
+**Das ist heute ein manueller Workaround fuer etwas Strukturelles** — solange die Kette 31 min
+braucht und main 3,8 Commits/h nimmt, ist jedes Land ein Muenzwurf. Richtungen (keine gebaut,
+keine ist meine Entscheidung): Land-Fenster/Serialisierung ueber Programme · ein Retry unter
+gehaltenem Lock · `--no-ff` fuer den Land-Commit statt Fast-Forward-Pflicht.
+
+## B-20 — das Trail-Register schlaegt den Same-Tree-Rerun bei der ATTRIBUTION eines roten Audits
+
+GEMESSEN 2026-09-04, Slot 8, am roten Post-Land-Audit von B-07 (`d32b69d`, 5 Fails / 3577 Checks).
+Die Zuordnung "meins oder nicht" war in Sekunden entschieden, ohne einen einzigen Suite-Lauf:
+alle fuenf Fails standen bereits auf Tree `d86fcc78` — `main` VOR diesem Land. Ein Check, der auf
+einem Baum OHNE den Diff faellt, kann nicht vom Diff kommen.
+
+| Check | Basisrate | verschiedene Trees |
+| --- | --- | --- |
+| `restart keeps the busy pending event…` | 30/381 (7,9 %) | 26 (= §11.2l) |
+| `ProgramExecutionView report join` (x2) | 1/3, 1/3 | 1 (`d86fcc78`) |
+| `unbound succession setup…` | 1/5 | 1 (`d86fcc78`) |
+| `§1 the pre-auth route set…` | 14/619 (2,3 %) | 12 |
+
+Der §11.7-Rerun haette ~50 min gekostet und dabei JEDES andere Gate blockiert — an einem Tag, an
+dem genau diese Blockade (B-18) bereits main einfror. Zweite Instanz nach §11.2l, wo das
+Trail-Register ebenfalls entschied und Rerun wie HEAD-Worktree gerade NICHT diskriminierten.
+**Grenze, ausdruecklich:** die Basisraten stammen aus dem LOKALEN Register, das Audit lief auf dem
+Helfer — Korroboration, nicht Identitaet. Adjudiziert als `flake` (Note kappt bei 300 Zeichen).
+
+## B-21 — `checks.ran` auf dem Helfer-Pfad: vorher ~160x zu klein, nach E1 korrekt (Vorher/Nachher gemessen)
+
+GEMESSEN 2026-09-04 von Slot 8 und unabhaengig von der Game-Maker-v2-MAIN (Slot 9), zwei Wege,
+dieselbe Naht. Beide sind fast in denselben FEHLALARM gelaufen: nach Regelbuch ist ein kleines
+`checks.ran` die Signatur eines Laufs, der NICHTS gemessen hat.
+
+| Tree | Pfad | `checks.ran` | Trail-Zeile im selben `out` |
+| --- | --- | --- | --- |
+| `2ad3670d` / `bed56413` / `275339ab` | lokal | 3551 / 3561 / 3581 | 3542 / 3552 / 3572 (Differenz konstant 9) |
+| `d32b69d2` (B-07) | HELFER | **26** | 3577 |
+| `4ff94e32` | HELFER | **22** | 3588 |
+| `52673b64` (E1 selbst) | HELFER | **3597** | 3588 — **nach E1** |
+
+Die letzte Zeile ist der Beweis am lebenden Objekt: das erste Helfer-Audit NACH E1s Land meldet
+`{ran: 3597, failed: 0}` bei `ms 1450 s`, `ranIsLowerBound` ABWESEND — also als vollstaendig
+behauptet, und 3597 = 3588 + 9, exakt der lokale Offset.
+
+**Was E1 NICHT schliesst** (Restpunkt der Slot-9-MAIN, hier als Verifizierer uebernommen, Zeile
+`001d4cc3`): der Diskriminator wandert von "Zahl ist klein" auf "Trail-Zeile fehlt" — nichts
+VERLANGT die Trail-Zeile von einem vollstaendigen Helfer-Lauf, ein wirklich enthaupteter Lauf
+bekommt `ranIsLowerBound: true` mit kleiner Tail-Zahl. Die Sonde dafuer gehoert in
+`fleet-e2e-postland-audit.ts` (die einzige Suite, die am Audit-Pfad etwas beweist, und die kein
+Gate faehrt). **Und:** der Fix wirkt beim SCHREIBEN, er rechnet nichts nach — die ~453
+Bestandszeilen behalten ihre falschen Zahlen, und `./state.sh`s Land-Health untertreibt jeden
+Alt-Helfer-Audit weiter. Wer alt gegen neu ueber die Zeile hinweg vergleicht, misst den FIX und
+nicht die Suite.
+
+
 ## Bereits als Queue-Zeile abgelegte P6-Befunde (nur Verweis, Inhalt lebt an der Zeile)
 
 | ID | Kurz |

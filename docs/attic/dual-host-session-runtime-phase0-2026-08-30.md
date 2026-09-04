@@ -233,6 +233,21 @@ Vorlage neben `watchdog.sh` mit demselben `VERIFY_CMD`/`AUDIT_CMD`-Vertrag; `Env
 Pflichtzeile (die zweimal bezahlte Lektion). *Done:* Vorlage existiert, und `e2e/pins.ts` vergleicht
 ihre Schrittkette gegen `watchdog.sh` in derselben Familie, die die Kette schon über drei Quellen
 vergleicht — Drift zwischen den beiden Boot-Wegen wird damit unmöglich. *Verify:* `bun e2e/pins.ts`.
+**GEBAUT 2026-09-04** (Lane `fleet/260904173009-54fb`). `fleet-watchdog.service` am Repo-Wurzel,
+eine **User**-Unit — launchd-example.plist ist ein LaunchAgent, die Fleet läuft als der Owner mit
+dessen HOME, und eine System-Unit legte die tmux-Sessions unter ein anderes Konto. Sie STARTET
+`watchdog.sh` und definiert deshalb keinen eigenen Gate: VERIFY_CMD und AUDIT_CMD bleiben einmal
+definiert und werden zweimal geerbt — das ist der Mechanismus hinter „Drift unmöglich", die vier
+Pin-Zeilen sind, was ihn festhält (Probe „template not found" fällt als sie selbst · Schrittkette ==
+VERIFY_CMD über dasselbe `stepsOf()` · startet `watchdog.sh`, nennt die Audit-Stufe, trägt keine
+rivalisierende Gate-Definition · PATH-Zeile erreicht jeden `$HOME`-relativen Eintrag, aus
+`watchdog.sh`s eigenem `export PATH=` abgeleitet). Zwei Linux-Eigenheiten ohne macOS-Vorbild stehen
+in der Vorlage: `KillMode=process` (`tmux new-session -d` forkt den tmux-SERVER aus dem
+Unit-Prozess, der Default `control-group` nähme bei jedem Restart die srv-Session und jede lebende
+Pane mit) und `PrivateTmp=false` (sonst hört der Suite-Mutex unter `/tmp/fleet-e2e.lock` auf zu
+serialisieren). **Kein Host hat die Datei je ausgeführt** — ihre Form ist aus `watchdog.sh`,
+launchd-example.plist und `helper-daemon/fleet-helper.service` abgeleitet; die erste Installation
+IST die Messung, und sie bleibt Owner-Gate 3.
 
 **Schnitt 4 — B1-Instanz-Umschalter im Board.**
 Erst wenn Schnitt 1 grün ist und eine zweite Instanz real läuft: eine Liste `{name, url}` neben den

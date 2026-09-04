@@ -616,6 +616,20 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
     stage.includes('$_st_cur_pid" = "$_st_hp"') && stage.includes('$_st_cur_birth" = "$_st_hb"'),
     "missing reap-time birth equality in e2e-stage.sh");
 
+  // THE INHERITED HOLD (2026-09-04) is a must-pair across a shell script and a TypeScript file —
+  // exactly the drift no compiler sees. server.ts's ff retry chain holds this mutex itself and
+  // hands the name of its hold to the gate child; e2e-stage.sh is the only thing that reads it.
+  // Rename either side and NOTHING breaks loudly: the retry rounds simply queue again for a lock
+  // this very server is holding, and the wait the whole change exists to remove comes back silent.
+  // The shell's three conditions are pinned WITH the variable, because the variable alone must
+  // never be enough — a stale export that skipped the lock file would let a suite run unserialized.
+  pin("the inherited suite-mutex hold is one name on both sides, and the shell honours it only over a LIVE pid the lock file itself records",
+    server.includes("FLEET_SUITE_LOCK_HELD_BY: String(process.pid)")
+      && stage.includes('_st_held_by="${FLEET_SUITE_LOCK_HELD_BY:-}"')
+      && stage.includes('kill -0 "$_st_held_by" 2>/dev/null')
+      && stage.includes('"$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)" = "$_st_held_by"'),
+    `server=${server.includes("FLEET_SUITE_LOCK_HELD_BY: String(process.pid)")} shellVar=${stage.includes('_st_held_by="${FLEET_SUITE_LOCK_HELD_BY:-}"')} alive=${stage.includes('kill -0 "$_st_held_by" 2>/dev/null')} onDisk=${stage.includes('"$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)" = "$_st_held_by"')}`);
+
   // AND THE SAME FENCE EVERYWHERE A BIRTH IS READ, as a rule over a derived set rather than as
   // four remembered file names: every `lstart=` reader — in the shell scripts, in the e2e modules
   // AND in server.ts — must carry LC_ALL at its call site. Four sites today
@@ -3683,6 +3697,22 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   const ffLatch = server.indexOf("await waitForLandFfTestLatch();");
   const ffIntent = server.indexOf("await markLandIntent(root, main, branch, mainBefore,");
   const ffAdvance = server.indexOf("const adv = await advanceIntegration(root, main, branch);");
+  // ...AND THE BOUNDED RETRY MAY NEVER LAND A TREE THE GATE HAS NOT SEEN. After a second rebase
+  // the tree is a different one, so the re-rebase, the re-verify and the stop on anything non-green
+  // must all sit BETWEEN the lost fast-forward and the next advance, in that order. An edit that
+  // hoists the gate out of the loop would land a re-rebased tree behind the FIRST round's green —
+  // the one thing this retry must never do, and a change that reads as a harmless simplification.
+  const ffRetry = server.indexOf("if (ffRounds < LAND_FF_RETRY_ROUNDS && ffHeld) {");
+  const ffReRebase = server.indexOf("const again = await tryScriptRebase(cwd, main);", ffRetry);
+  const ffReVerify = server.indexOf("verify = await gateRun(() => runVerify(cwd, landMain, retryPlan, true));", ffRetry);
+  const ffReStop = server.indexOf("res = { ...cleanVerifyStop(verify, branch), ffRounds }; break;", ffRetry);
+  const ffMint = server.indexOf('errorReason: "ff-lost"', ffRetry);
+  pin(`${RULE_FF} — the bounded retry re-rebases, RE-RUNS THE GATE and stops on any non-green before it may advance again`,
+    ffRetry > 0 && ffReRebase > ffRetry && ffReVerify > ffReRebase && ffReStop > ffReVerify
+      && ffMint > ffReStop
+      && /const LAND_FF_RETRY_ROUNDS = Math\.min\(5, Math\.max\(0, Number\(process\.env\.FLEET_LAND_FF_RETRY_ROUNDS \?\? 2\) \| 0\)\);/.test(server)
+      && read("e2e/programs.ts").includes('FLEET_LAND_FF_RETRY_ROUNDS: "0"'),
+    `retry=${ffRetry} rebase=${ffReRebase} verify=${ffReVerify} stop=${ffReStop} mint=${ffMint}`);
   pin(`${RULE_FF} — the default-off E2E latch sits between the land declaration and the fast-forward, and a fixture arms it`,
     server.includes("process.env.FLEET_TEST_LAND_FF_LATCH ?? null")
       && ffIntent >= 0 && ffLatch > ffIntent && ffAdvance > ffLatch

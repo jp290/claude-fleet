@@ -1,5 +1,5 @@
 import { stat, rm, readdir, appendFile, mkdtemp } from "node:fs/promises";
-import { appendFileSync, existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, unlinkSync, realpathSync } from "node:fs";
+import { appendFileSync, existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
@@ -11043,6 +11043,16 @@ const MERGE_TIMEOUT_MS = Math.max(60_000, Number(process.env.FLEET_MERGE_TIMEOUT
 // verify state the human reviews (a repaired-green resolution instead of a dead-ended red one). The
 // authority every round is git + a re-run of runVerify, never the agent's word.
 const MERGE_REPAIR_ROUNDS = Math.min(3, Math.max(0, Number(process.env.FLEET_MERGE_REPAIR_ROUNDS ?? 2) | 0));
+// --- THE LOST FAST-FORWARD IS RETRIED, NOT REPORTED (owner decision 2026-09-04) ----------------
+// `ff-lost` means the rebase was clean, the gate was green, and main moved between that verdict
+// and `git merge --ff-only`. Until now that was a TERMINAL state: the lane stayed, and a human
+// repeated the whole move. It is mechanical and repeatable — on 2026-09-04 it happened six times
+// on ONE row, four of them because a direct commit landed on main while a land was running.
+// So the chain re-reads main, re-rebases onto it, RE-RUNS THE GATE and advances again, for at most
+// this many rounds. 0 is today's behaviour byte for byte and is the way back out.
+// NOT the same number as MERGE_REPAIR_ROUNDS above and never to be folded into it: that one counts
+// an agent's attempts to fix a tree it broke, this one counts a race with another lander.
+const LAND_FF_RETRY_ROUNDS = Math.min(5, Math.max(0, Number(process.env.FLEET_LAND_FF_RETRY_ROUNDS ?? 2) | 0));
 // OPT-IN clean-path advisory reviewer (design note §7). Default OFF → production behaviour is
 // byte-for-byte unchanged until the owner sets FLEET_CLEAN_REVIEW. When ON, a reviewer agent looks at
 // a clean+green lane about to AUTO-LAND and may ONLY downgrade it to a stop-and-review — never approve
@@ -11423,11 +11433,17 @@ async function verifyPlanFor(cwd: string, repo: string, mainSha: string): Promis
   return { cmd, proportional, steps };
 }
 
-async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null): Promise<MergeLast["verify"]> {
+// `heldSuiteLock` — this gate runs INSIDE a suite-mutex hold this server already owns (the ff retry
+// chain below), so its staged steps must not queue for a lock that is already ours. Passed to THIS
+// child and to no other: a blanket `process.env` entry would be inherited by the post-land audit
+// too, and an audit that believes it holds the mutex would run its suite beside the next one.
+async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null,
+  heldSuiteLock = false): Promise<MergeLast["verify"]> {
   if (!plan) return undefined;
   const { cmd, proportional, steps } = plan;
   const startedAt = Date.now();
-  const p = Bun.spawn(["sh", "-c", cmd], { cwd, stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn(["sh", "-c", cmd], { cwd, stdout: "pipe", stderr: "pipe",
+    ...(heldSuiteLock ? { env: { ...process.env, FLEET_SUITE_LOCK_HELD_BY: String(process.pid) } } : {}) });
   let timedOut = false, waitedOut = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   // wait the chain has finished and REPORTED (its `acquired after Ns` lines). The report supersedes
@@ -11627,6 +11643,12 @@ interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "int
   // settled. >0 means the resolution's first verify was RED and the resolver was fed the failure
   // to repair; `verify` above is the FINAL (post-repair) result. Absent/0 = no repair was needed.
   repairRounds?: number;
+  // HOW MANY TIMES THIS LAND LOST THE FAST-FORWARD AND WENT ROUND AGAIN (clean path only, see
+  // LAND_FF_RETRY_ROUNDS). Absent = the first attempt decided it, which is what every verdict
+  // written before 2026-09-04 means. >0 says the tree under `verify` is NOT the one the first
+  // round verified: it was re-rebased onto the main that overtook it and re-gated that many times.
+  // A land that succeeded on the second try must not read like one that succeeded on the first.
+  ffRounds?: number;
   // OPT-IN clean-path advisory reviewer verdict (present only when FLEET_CLEAN_REVIEW ran on the clean
   // auto-land path). "review" DOWNGRADED an auto-land to a stop-and-review; "ok" rode along on a land.
   // Advisory FACTS for the human, never a gate — the deterministic verify stays the authority.
@@ -11945,6 +11967,11 @@ interface LandProvenance {
   resolvedBy?: "agent" | "author";
   repairRounds?: number;
   candidateSha?: string;
+  // …and the clean path's own count: how many lost fast-forwards this land survived before it took
+  // (LAND_FF_RETRY_ROUNDS). Absent = it took on the first attempt. `verify` beside it is always the
+  // round that actually landed — the note may not carry an earlier round's verdict for a later
+  // round's tree, which is the reason the gate is re-run rather than reused.
+  ffRounds?: number;
 }
 async function writeLandNote(repo: string, branch: string, mainBefore: string, mainAfter: string, prov: LandProvenance): Promise<void> {
   const tip = mainAfter; // the fast-forwarded integration branch IS the landed commit
@@ -11955,6 +11982,7 @@ async function writeLandNote(repo: string, branch: string, mainBefore: string, m
       ...(prov.resolverDetail ? { resolverDetail: prov.resolverDetail } : {}),
       ...(prov.resolvedBy ? { resolvedBy: prov.resolvedBy } : {}),
       ...(prov.repairRounds ? { repairRounds: prov.repairRounds } : {}),
+      ...(prov.ffRounds ? { ffRounds: prov.ffRounds } : {}),
       ...(prov.candidateSha ? { candidateSha: prov.candidateSha } : {}),
       ...(prov.verify ? { verify: prov.verify } : {}),
       confirmedByHuman: prov.confirmedByHuman,
@@ -16073,6 +16101,82 @@ function suiteLockView(): GateLock | null {
     `recorded pid ${pid} is alive, but holder identity is ${birthState}`,
     "a possibly live legacy holder is preserved; contenders must not auto-reap it");
 }
+
+// --- ...AND THE ONE PLACE THIS SERVER TAKES THAT LOCK ITSELF ----------------------------------
+// Everywhere else the mutex is a WRAPPER's business: e2e-stage.sh takes it, and this process only
+// ever reads it (suiteLockView above). The ff retry chain is the exception the owner asked for on
+// 2026-09-04 — "Retry unter GEHALTENEM Lock … das Anstehen war der teure Teil": between two rounds
+// the machine must not be given away, or every round pays the queue again.
+//
+// THE HAZARD THIS HAS AND A SUITE DOES NOT, stated because the shell's whole release contract rests
+// on it: release is IMPLICIT there, and the next contender reaps a lock whose recorded pid is dead.
+// A `bun server.ts` is not dead — it outlives its own merge job — so a chain that ends without
+// releasing would park the machine for the rest of this server's life, and nothing would reap it.
+// Two answers, and neither is discipline:
+//   · the release is structural — `finally` at the retry chain, so every exit path frees it
+//     (thrown pre-pass, red gate, recycled slot, a `break` nobody thought about);
+//   · a server that DIES holding it leaves exactly the shape the wrappers already reap: pid file
+//     present, that pid gone. The two writes below are synchronous and pid-FIRST, the same order
+//     e2e-stage.sh uses, so the torn state a death can produce is `stale`, never `parked` — a
+//     pid-LESS dir is the manual park and this path can never create one.
+// The reap, the birth fingerprint, the pid file and mkdir-atomicity are UNCHANGED: this is the
+// shell's own procedure, expressed once more on this side.
+let suiteLockHeld = false;
+const SUITE_LOCK_POLL_MS = 1_000;
+function suiteLockTryTake(): boolean {
+  try { mkdirSync(SUITE_LOCK); } catch { return false; } // mkdir IS the claim — atomic, as in the shell
+  // Refuse to hold what we cannot be identified as, exactly as e2e-stage.sh refuses (`_st_self_birth`
+  // empty → exit 3): a lock without a birth fingerprint is one no contender may ever safely reap
+  // if our pid is later recycled.
+  const birth = processBirthFingerprint(process.pid);
+  if (!birth) { try { rmdirSync(SUITE_LOCK); } catch { /* someone else's problem now */ } return false; }
+  try {
+    writeFileSync(`${SUITE_LOCK}/pid`, `${process.pid}\n`, { mode: 0o600 });
+    writeFileSync(`${SUITE_LOCK}/birth`, `${birth}\n`, { mode: 0o600 });
+  } catch { return false; } // pid written or not, a death here leaves a reapable dir, never a park
+  suiteLockHeld = true;
+  return true;
+}
+// the wrappers' reap, re-expressed: only a lock we have READ as stale, and only after re-checking
+// that the pid AND birth files still hold the values that made it stale — the same microsecond-wide
+// race the shell narrows the same way.
+function suiteLockReapStale(stale: GateLock): void {
+  if (stale.state !== "stale" || stale.pid === null) return; // a parked dir is never reaped, here either
+  let pid: string | null = null, birth: string | null = null;
+  try { pid = readFileSync(`${SUITE_LOCK}/pid`, "utf8").trim(); } catch { return; }
+  try { birth = readFileSync(`${SUITE_LOCK}/birth`, "utf8").trim(); } catch { birth = null; }
+  if (pid !== String(stale.pid) || birth !== (stale.birth.stored ?? null)) return;
+  try {
+    rmSync(`${SUITE_LOCK}/pid`, { force: true });
+    rmSync(`${SUITE_LOCK}/birth`, { force: true });
+    rmdirSync(SUITE_LOCK);
+  } catch { /* lost the race to another contender — it holds it now, which is the same outcome */ }
+}
+// Take it, or say honestly that we could not. `false` is a fact about the MACHINE (another suite
+// held it for the whole budget), never about the tree, and the caller words it that way.
+async function holdSuiteLock(budgetMs: number): Promise<boolean> {
+  if (suiteLockHeld) return false; // one hold per process: a second land must not nest inside the first
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    const view = suiteLockView();
+    if (view === null && suiteLockTryTake()) return true;
+    if (view && view.state === "stale") suiteLockReapStale(view);
+    if (Date.now() >= deadline) return false;
+    await Bun.sleep(SUITE_LOCK_POLL_MS);
+  }
+}
+// Never removes a lock that is no longer ours: if a contender reaped us (a recycled pid, a torn
+// write) and took it, the dir belongs to them and this must not touch it.
+function releaseSuiteLock(): void {
+  if (!suiteLockHeld) return;
+  suiteLockHeld = false;
+  try {
+    if (readFileSync(`${SUITE_LOCK}/pid`, "utf8").trim() !== String(process.pid)) return;
+    rmSync(`${SUITE_LOCK}/pid`, { force: true });
+    rmSync(`${SUITE_LOCK}/birth`, { force: true });
+    rmdirSync(SUITE_LOCK);
+  } catch { /* already gone: nothing to give back */ }
+}
 // One projection for /api/sessions. Returns null when there is nothing to say, so the 2s poll
 // carries four bytes rather than an empty shape (the payload is already the fleet's biggest, see
 // docs/data-saver.md). Prunes as it reads: this is the only reader, so a timer would be a second
@@ -16734,6 +16838,51 @@ function verdictRetryDue(): Slot[] {
   });
 }
 
+// --- THE CLEAN PATH'S NON-GREEN OUTCOMES, WORDED ONCE ------------------------------------------
+// Four states reach here and none of them lands: a skip, a timeout, a run that never started, and a
+// red gate. They were written inline until 2026-09-04, when the bounded ff retry below gained a
+// SECOND place that has to answer them — a retry round verifies a different tree and can come back
+// any of these four ways. A second copy of the wording is exactly the drift this repo pins against
+// elsewhere: the steward relay quotes `detail` verbatim, so two copies would eventually tell the
+// same situation two ways. Called only where `verify` exists and `ok !== true`, so this is total.
+function cleanVerifyStop(verify: NonNullable<MergeLast["verify"]>, branch: string): MergeLast {
+  if (verify.ok === null) {
+    // CLEAN path but NO MEASUREMENT — the decision site (see VERIFY_SKIP_EXIT above). THREE
+    // ways to get here and they must not be worded alike, but they get the identical stop:
+    //   SKIPPED      — a configured gate declined to run on this tree.
+    //   TIMED OUT    — the gate was working and was killed at VERIFY_TIMEOUT_MS.
+    //   NEVER STARTED— the gate was queued behind the suite mutex for VERIFY_WAIT_MS and was
+    //                  killed there, having never looked at the tree at all.
+    // Either way this land would be as unverified as a red one while LOOKING greener than an
+    // unconfigured fleet, so the auto-land is downgraded to the same stop-and-review a red
+    // verify gets: the owner keeps full latitude (confirm-land never hard-blocks), but no
+    // tree reaches main unattended behind a gate that measured nothing. A fleet with NO
+    // verify command at all is untouched — `verify === undefined` never reaches here, and
+    // that deployment's auto-land is the owner's standing decision.
+    // The timeout wording deliberately refuses to blame the tree: on 2026-08-06 a lane spent
+    // an afternoon looking for a defect of its own behind a `verify failed` that was really
+    // ~255s of queueing behind somebody else's suite. `waitMs` on the record, and the
+    // reserved note in `out`, now say where the budget went.
+    const spent = verify.ms !== undefined
+      ? ` It ran ${Math.round(verify.ms / 1000)}s${verify.waitMs !== undefined ? `, ${verify.waitPartial ? "at least " : ""}${Math.round(verify.waitMs / 1000)}s of it queued behind the suite mutex rather than verifying` : ""}.`
+      : "";
+    return { status: "resolved", landed: false, branch, at: Date.now(), verify,
+      detail: (verify.waitedOut
+        ? `clean rebase, but verify NEVER STARTED (${verify.cmd}) — killed after ${VERIFY_WAIT_MS}ms still queued behind the suite mutex, so it never looked at this tree and this is NOT a verdict about it; it did not auto-land.${spent} Re-run the gate once the machine is free, or land if intended.`
+        : verify.timedOut
+        ? `clean rebase, but verify TIMED OUT after ${VERIFY_TIMEOUT_MS}ms of work (${verify.cmd}) — killed mid-run, so nothing was verified and this is NOT a verdict about the tree; it did not auto-land.${spent} Read the output, re-run the gate, or land if intended.`
+        : `clean rebase, but verify SKIPPED itself (${verify.cmd}) — nothing was verified, so this did not auto-land; review the output, then land if intended.`).slice(0, 600) };
+  }
+  // CLEAN path but verify RED: today this would auto-land, but the rebased tree does
+  // NOT pass verify — landing it lands broken code. Consciously downgrade the auto-land
+  // to a "resolved"-style stop-and-review verdict (design note §1): no ff, no land. The
+  // owner reviews the verify output and MAY still land via confirm (owner latitude,
+  // OWNER.md §4a — confirm-land never hard-blocks on ok:false). A missing verify cmd
+  // (verify === undefined) never reaches here, so today's clean-path land is preserved.
+  return { status: "resolved", landed: false, branch, at: Date.now(), verify,
+    detail: `clean rebase, but verify failed (${verify.cmd}) — not auto-landed; review the output, then land if intended.`.slice(0, 600) };
+}
+
 async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main: string,
   carried: string[] = [], carriedBy: "agent" | "author" = "agent",
   actor: LandActor = { kind: "owner", via: "cookie" }): Promise<void> {
@@ -16997,41 +17146,12 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             detail: ((pre.clean
               ? `${main} moved on, so this lane re-rebased with no conflicts — but it still carries an ${resolvedBy}'s unreviewed resolution of ${unreviewed.length} conflict${unreviewed.length === 1 ? "" : "s"} from an earlier run. Review the diff, then land.`
               : `${fellBack}${r.detail}${r.detail ? " " : ""}— resolved ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"};${repairNote} review the diff, then land.`) + gateNote).slice(0, 600) };
-        } else if (verify && verify.ok === null) {
-          // CLEAN path but NO MEASUREMENT — the decision site (see VERIFY_SKIP_EXIT above). THREE
-          // ways to get here and they must not be worded alike, but they get the identical stop:
-          //   SKIPPED      — a configured gate declined to run on this tree.
-          //   TIMED OUT    — the gate was working and was killed at VERIFY_TIMEOUT_MS.
-          //   NEVER STARTED— the gate was queued behind the suite mutex for VERIFY_WAIT_MS and was
-          //                  killed there, having never looked at the tree at all.
-          // Either way this land would be as unverified as a red one while LOOKING greener than an
-          // unconfigured fleet, so the auto-land is downgraded to the same stop-and-review a red
-          // verify gets: the owner keeps full latitude (confirm-land never hard-blocks), but no
-          // tree reaches main unattended behind a gate that measured nothing. A fleet with NO
-          // verify command at all is untouched — `verify === undefined` never reaches here, and
-          // that deployment's auto-land is the owner's standing decision.
-          // The timeout wording deliberately refuses to blame the tree: on 2026-08-06 a lane spent
-          // an afternoon looking for a defect of its own behind a `verify failed` that was really
-          // ~255s of queueing behind somebody else's suite. `waitMs` on the record, and the
-          // reserved note in `out`, now say where the budget went.
-          const spent = verify.ms !== undefined
-            ? ` It ran ${Math.round(verify.ms / 1000)}s${verify.waitMs !== undefined ? `, ${verify.waitPartial ? "at least " : ""}${Math.round(verify.waitMs / 1000)}s of it queued behind the suite mutex rather than verifying` : ""}.`
-            : "";
-          res = { status: "resolved", landed: false, branch, at: Date.now(), verify,
-            detail: (verify.waitedOut
-              ? `clean rebase, but verify NEVER STARTED (${verify.cmd}) — killed after ${VERIFY_WAIT_MS}ms still queued behind the suite mutex, so it never looked at this tree and this is NOT a verdict about it; it did not auto-land.${spent} Re-run the gate once the machine is free, or land if intended.`
-              : verify.timedOut
-              ? `clean rebase, but verify TIMED OUT after ${VERIFY_TIMEOUT_MS}ms of work (${verify.cmd}) — killed mid-run, so nothing was verified and this is NOT a verdict about the tree; it did not auto-land.${spent} Read the output, re-run the gate, or land if intended.`
-              : `clean rebase, but verify SKIPPED itself (${verify.cmd}) — nothing was verified, so this did not auto-land; review the output, then land if intended.`).slice(0, 600) };
-        } else if (verify && verify.ok === false) {
-          // CLEAN path but verify RED: today this would auto-land, but the rebased tree does
-          // NOT pass verify — landing it lands broken code. Consciously downgrade the auto-land
-          // to a "resolved"-style stop-and-review verdict (design note §1): no ff, no land. The
-          // owner reviews the verify output and MAY still land via confirm (owner latitude,
-          // OWNER.md §4a — confirm-land never hard-blocks on ok:false). A missing verify cmd
-          // (verify === undefined) never reaches here, so today's clean-path land is preserved.
-          res = { status: "resolved", landed: false, branch, at: Date.now(), verify,
-            detail: `clean rebase, but verify failed (${verify.cmd}) — not auto-landed; review the output, then land if intended.`.slice(0, 600) };
+        } else if (verify && verify.ok !== true) {
+          // NOT GREEN, and on the clean path there is nothing to repair: a skip, a timeout, a run
+          // that never started, or a red gate. All four stop for the owner and none of them lands;
+          // the sentences that tell them apart live in cleanVerifyStop, which the ff retry chain
+          // below reuses so a retried tree is judged in exactly the same words as a first one.
+          res = cleanVerifyStop(verify, branch);
         } else {
           // CLEAN path, verify green or unconfigured: git rebased with zero conflicts and verification
           // passed — or no verify command is configured at all, the owner's standing decision (the
@@ -17053,53 +17173,127 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
               cleanReview: { verdict: cleanReview.verdict, reason: cleanReview.reason },
               detail: `clean rebase + green verify, but the advisory reviewer flagged a look: ${cleanReview.reason} — not auto-landed; review the diff, then land.`.slice(0, 600) };
           } else {
-            // land it — the state-changing step on the integration branch is the SERVER's, never the
-            // agent's: advanceIntegration ff-merges (git refuses over a dirty tree) or advances the ref.
-            const mainBefore = mainSha;
-            // the job's own rebase (and any resolver commits on top of it) rewrote the lane tip;
-            // the root's mirror still points at where this lane started. Both lines below read the
-            // branch ROOT-side, so the mirror has to catch up before either of them runs.
-            const landSync = await syncLaneRefs(s.worktree, cwd);
-            if (landSync) throw new Error(`${landSync.error} — nothing was landed`);
-            // declare the land before making it — the marker is on disk before main moves, so a
-            // restart in the advance→record window is finishable at boot instead of unrecoverable
-            const prov: LandProvenance = { verify, confirmedByHuman: false, actor };
-            await markLandIntent(root, main, branch, mainBefore, (await git(root, "rev-parse", branch)).out, prov);
-            await waitForLandFfTestLatch(); // TEST-ONLY, inert in production (see LAND_FF_LATCH)
-            const adv = await advanceIntegration(root, main, branch);
-            if (adv) {
-              clearLandIntent(root); // main never moved — the declaration is void, not pending
-              // THE LOST FAST-FORWARD, and the one place the typed reason is written on the
-              // clean path. Reachable only from this branch, i.e. only after the rebase was clean
-              // AND the gate said green or the fleet configured none — so the fact cannot be
-              // minted by a red verify, a skip, a timeout or a conflict, which are all routed to
-              // their own `resolved` verdicts far above. `verify` rides along unchanged: the
-              // verdict it carried is what makes this an interrupted land rather than a bad tree.
-              res = { status: "error", landed: false, branch, at: Date.now(), verify,
-                errorReason: "ff-lost",
-                detail: `rebase ok, but fast-forwarding ${main} failed: ${adv.error} — lane kept` };
-            } else {
-              const mainAfter = (await git(root, "rev-parse", main)).out;
-              if (LAND_PAUSE_MS) await Bun.sleep(LAND_PAUSE_MS); // TEST-ONLY, 0 in production
-              // main HAS moved — record the land (undo record + provenance note) NOW, before the teardown
-              // (coupling it to landLane used to leave a moved main with neither note nor undo on failure).
-              await recordLand(root, main, branch, mainBefore, mainAfter, prov);
-              const landedOutcome: MergeLast = { status: "merged", landed: true, branch, at: Date.now(), verify,
-                detail: r.detail,
-                ...(CLEAN_REVIEW_MODE === "gate" && cleanReview
-                  ? { cleanReview: { verdict: cleanReview.verdict, reason: cleanReview.reason } } : {}) };
-              // the owner may have recycled the slot mid-run — landLane re-checks it is still this lane
-              const land = s.cwd === cwd && s.worktree?.branch === branch
-                // clean auto-land — n/a land-shape facts (the ONLY unattended land), but the verify
-                // verdict this job just produced is the local truth the record needs
-                ? await landLane(s, { ...NO_LAND_FACTS, verified: verify ? verify.ok : null, baseSha: mainBefore,
-                    mainAfter, landedBy: actor, ...(shadow ? { cleanReviewShadow: shadow } : {}) },
-                    () => mintMergeEvents(s.id, cwd, branch, landedOutcome))
-                : { error: "slot changed during the merge — lane merged but not landed", code: 409 };
-              res = "error" in land
-                ? { status: "merged", landed: false, branch, at: Date.now(), verify, landError: land.error,
-                    detail: `${r.detail} — landed on ${main} (recorded), but lane teardown failed: ${land.error}`.slice(0, 600) }
-                : landedOutcome;
+            // --- THE BOUNDED, RE-VERIFIED RETRY OF A LOST FAST-FORWARD (owner, 2026-09-04) -----
+            // Everything below used to run once. It now runs up to LAND_FF_RETRY_ROUNDS + 1 times,
+            // and the loop exists for ONE fact: `ff-lost` is not a statement about this tree, it is
+            // another lander winning the last step. Each round re-reads main, re-rebases onto it,
+            // RE-RUNS THE GATE and declares the land again — in that order, every round, because
+            // after a second rebase the tree is a DIFFERENT one and a note carrying the first
+            // round's verdict would be a false sentence about what landed. Nothing here shortcuts
+            // that: there is no "same sha, skip the gate" arm, by decision.
+            // The mutex is taken ONCE, before the first retry, and held to the end (the `finally`):
+            // the queueing, not the gate, is what made a repeat expensive.
+            let ffRounds = 0;      // how many times this land had to go round again
+            let ffHeld = false;    // do WE hold the suite mutex right now (see holdSuiteLock)
+            let ffLockDenied = false; // we wanted it, the machine never gave it to us
+            let landMain = mainSha;   // the main THIS round is rebased onto and verified against
+            try {
+              for (;;) {
+              // land it — the state-changing step on the integration branch is the SERVER's, never the
+              // agent's: advanceIntegration ff-merges (git refuses over a dirty tree) or advances the ref.
+              const mainBefore = landMain;
+              // the job's own rebase (and any resolver commits on top of it) rewrote the lane tip;
+              // the root's mirror still points at where this lane started. Both lines below read the
+              // branch ROOT-side, so the mirror has to catch up before either of them runs.
+              const landSync = await syncLaneRefs(s.worktree, cwd);
+              if (landSync) throw new Error(`${landSync.error} — nothing was landed`);
+              // declare the land before making it — the marker is on disk before main moves, so a
+              // restart in the advance→record window is finishable at boot instead of unrecoverable.
+              // EVERY round, not just the first: a retry moves main from a different commit, so the
+              // marker a crash leaves behind has to describe the round that is actually in flight.
+              const prov: LandProvenance = { verify, confirmedByHuman: false, actor,
+                ...(ffRounds ? { ffRounds } : {}) };
+              await markLandIntent(root, main, branch, mainBefore, (await git(root, "rev-parse", branch)).out, prov);
+              await waitForLandFfTestLatch(); // TEST-ONLY, inert in production (see LAND_FF_LATCH)
+              const adv = await advanceIntegration(root, main, branch);
+              if (adv) {
+                clearLandIntent(root); // main never moved — the declaration is void, not pending
+                // ROUND AGAIN? Only while the budget lasts AND we hold the machine. The mutex is
+                // asked for once (`ffHeld` latches); if another suite holds it for the whole budget
+                // we do NOT retry unheld — that would spend the queue three times over, which is the
+                // cost this whole change exists to remove — and the verdict says so in the machine's
+                // name rather than the tree's.
+                if (ffRounds < LAND_FF_RETRY_ROUNDS && !ffHeld && !ffLockDenied) {
+                  ffHeld = await holdSuiteLock(VERIFY_WAIT_MS);
+                  ffLockDenied = !ffHeld;
+                }
+                if (ffRounds < LAND_FF_RETRY_ROUNDS && ffHeld) {
+                  ffRounds++;
+                  // FIVE ways this stops instead of going round, and each writes the verdict of the
+                  // situation it actually found — never `ff-lost`, which would be a lie about a lane
+                  // that now conflicts, is dirty, or failed a gate. The four thrown ones funnel into
+                  // the catch below (status "error", the message as detail, carried conflicts kept).
+                  const again = await tryScriptRebase(cwd, main);
+                  if (again.halted)
+                    throw new Error(`${main} moved under this land and the retry rebase onto it halted: ${again.halted}. Nothing was landed — resolve it in the session, then re-run ⏫.`);
+                  if (!again.clean)
+                    throw new Error(`${main} moved under this land and the lane no longer rebases onto it cleanly — ${again.conflicted.length} conflicting file${again.conflicted.length === 1 ? "" : "s"} (${again.conflicted.slice(0, 6).join(", ")}). Nothing was landed; re-run ⏫ and the conflict path takes it.`.slice(0, 600));
+                  if (s.cwd !== cwd || s.worktree?.branch !== branch)
+                    throw new Error("the slot was recycled during the merge — nothing was landed");
+                  const rst = await git(cwd, "status", "--porcelain");
+                  const ranc = await git(root, "merge-base", "--is-ancestor", main, branch);
+                  if (rst.code !== 0 || rst.out || ranc.code !== 0)
+                    throw new Error(`the retry rebase left the lane ${rst.out ? "not clean" : `not rebased onto ${main}`} — nothing was landed`);
+                  // THE TREE IS NEW, SO THE GATE RUNS AGAIN. `true`: this gate inherits the mutex we
+                  // are holding instead of queueing for it (runVerify → FLEET_SUITE_LOCK_HELD_BY).
+                  landMain = (await git(root, "rev-parse", main)).out;
+                  candidateMainSha = landMain; // a reviewable verdict from here on describes THIS main
+                  const retryPlan = await verifyPlanFor(cwd, root, landMain);
+                  verify = await gateRun(() => runVerify(cwd, landMain, retryPlan, true));
+                  // a retry may NEVER turn a non-green gate into a land by rolling it again: the
+                  // round's own verdict is what stands, worded exactly as a first round's would be.
+                  if (verify && verify.ok !== true) { res = { ...cleanVerifyStop(verify, branch), ffRounds }; break; }
+                  continue;
+                }
+                // THE LOST FAST-FORWARD, and the one place the typed reason is written on the
+                // clean path. Reachable only from this branch, i.e. only after the rebase was clean
+                // AND the gate said green or the fleet configured none — so the fact cannot be
+                // minted by a red verify, a skip, a timeout or a conflict, which are all routed to
+                // their own `resolved` verdicts far above. `verify` rides along unchanged: the
+                // verdict it carried is what makes this an interrupted land rather than a bad tree.
+                // The suffix is ADDITIVE and empty at LAND_FF_RETRY_ROUNDS=0, where this verdict is
+                // byte for byte the one this server wrote before the retry existed.
+                const ffNote = ffRounds
+                  ? ` (re-rebased and re-verified ${ffRounds} time${ffRounds === 1 ? "" : "s"} — main moved again each time)`
+                  : ffLockDenied
+                  ? ` (no retry: ${SUITE_LOCK} could not be taken within ${VERIFY_WAIT_MS}ms — another suite, or another land of this server, is holding the machine — so the re-verified retry never started; that is the machine, not this tree)`
+                  : "";
+                res = { status: "error", landed: false, branch, at: Date.now(), verify,
+                  errorReason: "ff-lost", ...(ffRounds ? { ffRounds } : {}),
+                  detail: `rebase ok, but fast-forwarding ${main} failed: ${adv.error} — lane kept${ffNote}`.slice(0, 600) };
+                break;
+              } else {
+                const mainAfter = (await git(root, "rev-parse", main)).out;
+                if (LAND_PAUSE_MS) await Bun.sleep(LAND_PAUSE_MS); // TEST-ONLY, 0 in production
+                // main HAS moved — record the land (undo record + provenance note) NOW, before the teardown
+                // (coupling it to landLane used to leave a moved main with neither note nor undo on failure).
+                await recordLand(root, main, branch, mainBefore, mainAfter, prov);
+                const landedOutcome: MergeLast = { status: "merged", landed: true, branch, at: Date.now(), verify,
+                  detail: r.detail, ...(ffRounds ? { ffRounds } : {}),
+                  ...(CLEAN_REVIEW_MODE === "gate" && cleanReview
+                    ? { cleanReview: { verdict: cleanReview.verdict, reason: cleanReview.reason } } : {}) };
+                // the owner may have recycled the slot mid-run — landLane re-checks it is still this lane
+                const land = s.cwd === cwd && s.worktree?.branch === branch
+                  // clean auto-land — n/a land-shape facts (the ONLY unattended land), but the verify
+                  // verdict this job just produced is the local truth the record needs
+                  ? await landLane(s, { ...NO_LAND_FACTS, verified: verify ? verify.ok : null, baseSha: mainBefore,
+                      mainAfter, landedBy: actor, ...(shadow ? { cleanReviewShadow: shadow } : {}) },
+                      () => mintMergeEvents(s.id, cwd, branch, landedOutcome))
+                  : { error: "slot changed during the merge — lane merged but not landed", code: 409 };
+                res = "error" in land
+                  ? { status: "merged", landed: false, branch, at: Date.now(), verify, landError: land.error,
+                      ...(ffRounds ? { ffRounds } : {}),
+                      detail: `${r.detail} — landed on ${main} (recorded), but lane teardown failed: ${land.error}`.slice(0, 600) }
+                  : landedOutcome;
+                break;
+              }
+              }
+            } finally {
+              // STRUCTURAL, not discipline: every way out of that loop — a land, a lost ff at the
+              // last round, a red retry gate, a thrown rebase, a recycled slot — gives the machine
+              // back here. A server that dies instead leaves a lock whose pid is dead, which is the
+              // shape the wrappers already reap (see holdSuiteLock's hazard note).
+              if (ffHeld) releaseSuiteLock();
             }
           }
         }

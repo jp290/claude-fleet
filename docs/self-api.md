@@ -1021,6 +1021,22 @@ Seit 2026-09-03 trägt genau dieses Verdikt eine **getypte, geschlossene** Zusat
   unbekanntes Verify, ein fremdes Detail, ein fehlendes oder von `false` abweichendes `landed`, ein
   vorhandener ungültiger Grund oder ein anderer Status bekommen keine Ausnahme. Ein bloßes
   Legacy-`error` ist weiterhin UNKNOWN und blockiert.
+- **Seit 2026-09-04 ist dieses Verdikt der ZWEITE Ausgang, nicht der erste** (Owner-Entscheid):
+  verliert ein sauberes, grün verifiziertes Land die Vorspulung, liest `mergeJob` main neu, rebast
+  die Lane auf das NEUE main, **fährt das Gate erneut** und spult wieder vor — bis zu
+  `FLEET_LAND_FF_RETRY_ROUNDS` mal (Default 2; `0` ist exakt das Verhalten davor und die
+  Rückfalltür). Erst wenn die letzte Runde wieder verliert, steht das Verdikt oben — im Wortlaut
+  unverändert, mit einem additiven Zusatz in `detail` und dem Zähler `ffRounds` auf dem Verdikt.
+  Drei Dinge daran sind Kontrakt, nicht Implementierungsdetail:
+  **(a)** es wird nie ein Baum gelandet, den das Gate nicht gesehen hat — nach jedem erneuten
+  Rebase ist der Baum ein anderer, also läuft das Gate erneut, und `verify` auf Verdikt und Note
+  ist das der Runde, die GELANDET hat;
+  **(b)** ein rotes, übersprungenes oder abgelaufenes Gate in einer Retry-Runde landet nichts und
+  schreibt das Verdikt seiner Lage (`resolved`), nie `ff-lost` und nie grün — ein Retry würfelt ein
+  Gate nicht, bis es ihm passt;
+  **(c)** die Kette nimmt den **Suite-Mutex einmal** und hält ihn über alle Runden (die Gate-Läufe
+  darin erben ihn über `FLEET_SUITE_LOCK_HELD_BY` statt sich neu anzustellen); bekommt sie ihn im
+  Budget nicht, wird gar nicht wiederholt und `detail` benennt dafür die Maschine, nicht den Baum.
 - **Wirkung:** die Lane ist wieder `done-looking`, sobald sie lebendig, idle, sauber und ahead ist;
   der lane-ready-Watch feuert einmal; die Projektion bleibt `REVIEWABLE` und ihr `nextAction`
   benennt weiterhin diese Tür. Ein erneutes `POST /api/self/tasks/:id/land` rebast auf das
@@ -1141,7 +1157,9 @@ einer roten Bestätigung zu tun ist, ist das Urteil der MAIN; die fünf Eskalati
 die zur Attention gehen.
 
 **Die Note eines so gelandeten Kandidaten trägt** `conflicted`, `resolvedBy`, `repairRounds`,
-`candidateSha`, das FRISCHE Verify-Ergebnis und `confirmedByHuman:false`.
+`candidateSha`, das FRISCHE Verify-Ergebnis und `confirmedByHuman:false`. (Ein Land des SAUBEREN
+Pfades trägt keines dieser Felder, aber seit 2026-09-04 `ffRounds`, sobald es die Vorspulung
+mindestens einmal verloren und den Zug wiederholt hat — fehlt das Feld, gelang es im ersten Anlauf.)
 
 ### Aktor-Provenienz: wer den Integrations-Branch bewegt hat
 

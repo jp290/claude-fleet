@@ -6977,7 +6977,11 @@ export async function run(ctx: Ctx): Promise<void> {
     const ffLatchRelease = `${ffLatch}.release`;
     for (const f of [ffLatch, ffLatchReached, ffLatchRelease]) try { rmSync(f); } catch { /* absent */ }
     writeFileSync(ffLatch, "armed\n", { mode: 0o600 });
-    await restartSrv({ FLEET_TEST_LAND_FF_LATCH: ffLatch });
+    // FLEET_LAND_FF_RETRY_ROUNDS=0 is not scenery: it is the way back out of the bounded retry
+    // (8e) adds below, and this arm is the check that it really is one. At 0 the chain must produce
+    // the 2026-09-02 verdict byte for byte — the typed `ff-lost`, that prose, main unmoved and the
+    // lane kept — which is exactly what the rest of section 8 then plants, forges and re-lands.
+    await restartSrv({ FLEET_TEST_LAND_FF_LATCH: ffLatch, FLEET_LAND_FF_RETRY_ROUNDS: "0" });
 
     const ffProgram = await activateNewProgram("Self-land lost fast-forward");
     const ffBoot = await beginBootstrap(ffProgram.id, { cwd: REPO2, label: "selfland-fflost-main" });
@@ -7165,6 +7169,273 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify({ reland: ffReland.status, body: ffRelandBody, row: ffRow?.status,
         before: ffRelandBefore.slice(0, 8), after: ffRelandAfter.slice(0, 8),
         log: ffLog.split("\n").slice(0, 4) }));
+
+    // --- (8e) THE LOST FAST-FORWARD IS RETRIED, RE-VERIFIED, AND ONLY THEN LANDED (2026-09-04) --
+    // (8b) proved the typed dead end. The owner's answer to it is a BOUNDED retry under a HELD
+    // suite mutex: main moved, so re-read it, re-rebase onto it, RE-RUN THE GATE, and try the
+    // fast-forward again — at most FLEET_LAND_FF_RETRY_ROUNDS times, with 0 the way back to the
+    // behaviour (8b) just measured. Four things are proved here and each fails on its own:
+    //   (i)   the second round LANDS, with no human and no second route;
+    //   (ii)  the note carries the SECOND round's verify verdict and the round count — a land that
+    //         succeeded on the retry may not read like one that succeeded first time;
+    //   (iii) the second round runs inside a mutex hold the server already owns: its gate does not
+    //         queue, and the lock on disk names the live server while the round is in flight;
+    //   (iv)  a RED gate in the retry round lands nothing and writes the red verdict, never
+    //         `ff-lost` and never green — a retry may not re-roll a gate until it likes the answer.
+    // The gate is a SCRIPTED stand-in whose answer is chosen per invocation, because "the first
+    // round was green and the second was red" is not a property of any tree: it is the ordering
+    // this rule is about. It also records, per run, whether it was handed an inherited hold — the
+    // only place (iii) can be measured from, since the hold is passed to the gate child alone.
+    // The server gets its OWN lock directory: this suite is holding the real one right now
+    // (e2e-stage.sh took it), and a server contending for that would wait out its whole budget
+    // behind its own runner.
+    const ffrLatch = `${ROOT}/ffretry.latch`;
+    const ffrLock = `${ROOT}/ffretry.lock`;
+    const ffrVerify = `${ROOT}/ffretryverify`;
+    const ffrCount = `${ROOT}/ffretry.count`;
+    const ffrLog = `${ROOT}/ffretry.log`;
+    writeFileSync(ffrVerify, `#!/bin/sh
+# scripted stand-in gate for the ff retry chain (e2e/programs.ts §8e). cwd = the rebased lane.
+# Per invocation it records: the run number, whether an inherited suite-mutex hold was handed to
+# it (FLEET_SUITE_LOCK_HELD_BY), and who the lock on disk says is holding. \`park\` blocks the run
+# so the fixture can look at the machine while a round is in flight; \`red\` makes that run fail.
+d=$(dirname "$0")
+n=$(( $(cat "$d/ffretry.count" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$d/ffretry.count"
+printf 'run=%s heldBy=%s lockpid=%s\\n' "$n" "\${FLEET_SUITE_LOCK_HELD_BY:-none}" \\
+  "$(cat "\${FLEET_SUITE_LOCK:-/nonexistent}/pid" 2>/dev/null || echo none)" >> "$d/ffretry.log"
+if [ -f "$d/ffretry.park.$n" ]; then
+  : > "$d/ffretry.parked.$n"
+  i=0
+  while [ ! -f "$d/ffretry.go.$n" ] && [ "$i" -lt 300 ]; do sleep 0.2; i=$((i+1)); done
+fi
+if [ -f "$d/ffretry.red.$n" ]; then
+  echo "verify FAIL: scripted red on run $n"
+  exit 1
+fi
+echo "verify OK: scripted green on run $n"
+exit 0
+`, { mode: 0o755 });
+    // the SAME repo key the wrapper computed (a realpath), with this script in place of the
+    // stand-in — deriving it from the live env instead of rebuilding it keeps the fixture from
+    // guessing how the wrapper canonicalises REPO2. The global command is set too, so the fixture
+    // holds whichever of the two paths resolves.
+    const ffrRepos = ((): string => {
+      try {
+        const map = JSON.parse(process.env.FLEET_VERIFY_CMD_REPOS ?? "{}") as Record<string, string>;
+        return JSON.stringify(Object.fromEntries(Object.keys(map).map((k) => [k, ffrVerify])));
+      } catch { return "{}"; }
+    })();
+    const ffrEnv = {
+      FLEET_TEST_LAND_FF_LATCH: ffrLatch,
+      FLEET_LAND_FF_RETRY_ROUNDS: "2",
+      FLEET_SUITE_LOCK: ffrLock,
+      FLEET_VERIFY_CMD: ffrVerify,
+      FLEET_VERIFY_CMD_REPOS: ffrRepos,
+      // the parked round holds the gate open on purpose; 8 s of WORK budget would kill it and the
+      // verdict would be a timeout instead of the thing under test
+      FLEET_VERIFY_TIMEOUT_MS: "60000",
+    };
+    rmSync(ffrLock, { recursive: true, force: true });
+    await restartSrv(ffrEnv);
+    // the pid the lock must name while a retry round is in flight, read from the machine rather
+    // than assumed: the check below is "the live server holds it", not "some pid is written down".
+    // The pane's own pid IS the server (restartSrv execs bun), but that is an assumption about the
+    // spawn line rather than a measurement, so it is checked: the pid this returns must be a process
+    // whose command line names server.ts, else the first child that is. The command line is only
+    // ever asked a yes/no question here and never recorded — it carries this instance's token.
+    const ffrSrvPid = ((): number | null => {
+      const cmdOf = (pid: string): string =>
+        spawnSync("ps", ["-o", "command=", "-p", pid]).stdout.toString();
+      const pane = spawnSync("sh", ["-c",
+        `tmux -L ${SOCK} list-panes -t srv -F '#{pane_pid}' 2>/dev/null | head -1`]).stdout.toString().trim();
+      if (!/^\d+$/.test(pane)) return null;
+      if (cmdOf(pane).includes("server.ts")) return Number(pane);
+      const kid = spawnSync("sh", ["-c", `pgrep -P ${pane} 2>/dev/null`]).stdout.toString()
+        .split("\n").map((x) => x.trim())
+        .find((x) => /^\d+$/.test(x) && cmdOf(x).includes("server.ts")) ?? "";
+      return /^\d+$/.test(kid) ? Number(kid) : null;
+    })();
+    const ffrProgram = await activateNewProgram("Self-land ff retry");
+    const ffrBoot = await beginBootstrap(ffrProgram.id, { cwd: REPO2, label: "selfland-ffretry-main" });
+    const ffrMainSlot = (await ffrBoot.json() as { slot?: number }).slot ?? null;
+    const ffrTok = ffrMainSlot === null ? "" : readState().slots?.[String(ffrMainSlot)]?.selfToken ?? "";
+    if (ffrMainSlot !== null) landFixtureMains.push(ffrMainSlot);
+    await setPromotion(ffrProgram.id, { v: 1, selfLand: "green-only" });
+    const ffrLanes: number[] = [];
+    const ffrRows: string[] = [];
+    // one land of one throwaway row: dispatch a lane, commit work in it, wait until the server's
+    // own done-looking predicate holds, fire the self-land door, wait for the latch, plant the
+    // intruder that steals the fast-forward, release. Returns the pieces each arm asserts on.
+    const ffrLand = async (name: string, file: string): Promise<{ row: string; slot: number | null;
+        fired: boolean; reached: boolean; intruder: string }> => {
+      for (const f of [`${ffrLatch}.reached`, `${ffrLatch}.release`]) try { rmSync(f); } catch { /* absent */ }
+      writeFileSync(ffrLatch, "armed\n", { mode: 0o600 });
+      const row = await makeTask({ text: `ff retry ${name}`, programId: ffrProgram.id, repo: REPO2 });
+      ffrRows.push(row);
+      const lane = await conflictLane(row);
+      if (lane.cwd) {
+        writeFileSync(`${lane.cwd}/${file}`, `work whose first fast-forward is lost — ${name}\n`);
+        spawnSync("git", ["-C", lane.cwd, "add", file]);
+        spawnSync("git", ["-C", lane.cwd, "commit", "-qm", `ff retry ${name}`]);
+      }
+      if (lane.slot !== null) { ffrLanes.push(lane.slot); await waitDoneLooking(lane.slot); }
+      const fired = ffrTok === "" ? false : (await selfLand(ffrTok, row)).ok;
+      let reached = false;
+      for (let i = 0; i < 400 && !reached; i++) {
+        reached = existsSync(`${ffrLatch}.reached`);
+        if (!reached) await Bun.sleep(100);
+      }
+      writeFileSync(`${REPO2}/ff-intruder-${name}.txt`, "a commit that took the fast-forward first\n");
+      spawnSync("git", ["-C", REPO2, "add", `ff-intruder-${name}.txt`]);
+      spawnSync("git", ["-C", REPO2, "commit", "-qm", `intruder ${name} landed on main first`]);
+      const intruder = main2Of();
+      writeFileSync(`${ffrLatch}.release`, "go\n", { mode: 0o600 });
+      return { row, slot: lane.slot, fired, reached, intruder };
+    };
+    type FfrVerdict = { status?: string; landed?: boolean; errorReason?: string; detail?: string;
+      ffRounds?: number; verify?: { ok?: boolean | null; mainSha?: string } };
+    const ffrSettled = async (slot: number | null, ms = 120_000): Promise<FfrVerdict | null> => {
+      const deadline = Date.now() + ms;
+      for (;;) {
+        const mg = (await (await get(`/api/slots/${slot}/merge`)).json()) as
+          { running?: boolean; last?: FfrVerdict | null };
+        if (mg.running === false && mg.last) return mg.last;
+        if (Date.now() >= deadline) return null;
+        await Bun.sleep(150);
+      }
+    };
+    const ffrWaitFile = async (path: string, ms = 60_000): Promise<boolean> => {
+      const deadline = Date.now() + ms;
+      while (!existsSync(path)) {
+        if (Date.now() >= deadline) return false;
+        await Bun.sleep(100);
+      }
+      return true;
+    };
+    const ffrLogRuns = (): { run: string; heldBy: string; lockpid: string }[] =>
+      (existsSync(ffrLog) ? readFileSync(ffrLog, "utf8") : "").split("\n").filter(Boolean)
+        .map((l) => ({ run: /run=(\S+)/.exec(l)?.[1] ?? "", heldBy: /heldBy=(\S+)/.exec(l)?.[1] ?? "",
+          lockpid: /lockpid=(\S+)/.exec(l)?.[1] ?? "" }));
+    const ffrAlive = (pid: string): boolean =>
+      /^\d+$/.test(pid) && spawnSync("kill", ["-0", pid]).status === 0;
+    // each arm starts its own run numbering, so "the retry round" is always run 2 whatever ran
+    // before it — a counter shared across arms would put the park/red file on the wrong round
+    const ffrReset = (): void => {
+      writeFileSync(ffrCount, "0\n");
+      try { rmSync(ffrLog); } catch { /* first arm */ }
+    };
+
+    check("ff retry fixture: a bound MAIN with a green-only promotion, its own suite lock, a scripted gate and the live server's pid",
+      ffrBoot.ok && ffrMainSlot !== null && /^[0-9a-f]{32}$/.test(ffrTok)
+        && ffrSrvPid !== null && ffrRepos !== "{}"
+        && spawnSync("git", ["-C", REPO2, "status", "--porcelain"]).stdout.toString().trim() === "",
+      JSON.stringify({ boot: ffrBoot.status, main: ffrMainSlot, srvPid: ffrSrvPid, repos: ffrRepos }));
+
+    // (i)+(ii)+(iii) THE RETRY THAT LANDS. Run 2 — the retry round's gate — is PARKED, so the
+    // machine can be read while that round is genuinely in flight rather than afterwards.
+    ffrReset();
+    writeFileSync(`${ROOT}/ffretry.park.2`, "park\n");
+    const ffrA = await ffrLand("landing", "ffretry-landing.txt");
+    const ffrParked = await ffrWaitFile(`${ROOT}/ffretry.parked.2`);
+    // the lock as it stands WHILE the retry round's gate runs: it must be the server's own hold —
+    // a live pid with a birth fingerprint, i.e. the shape a contender reads as `held`, never the
+    // pid-less dir that means a human parked the machine
+    const ffrHeldPid = ((): string => {
+      try { return readFileSync(`${ffrLock}/pid`, "utf8").trim(); } catch { return ""; }
+    })();
+    const ffrHeldBirth = ((): string => {
+      try { return readFileSync(`${ffrLock}/birth`, "utf8").trim(); } catch { return ""; }
+    })();
+    const ffrRunsDuring = ffrLogRuns();
+    writeFileSync(`${ROOT}/ffretry.go.2`, "go\n");
+    const ffrAVerdict = await ffrSettled(ffrA.slot);
+    const ffrAMain = main2Of();
+    const ffrANote = spawnSync("git", ["-C", REPO2, "notes", "--ref=fleet/land", "show", ffrAMain])
+      .stdout.toString();
+    const ffrANoteJson = ((): { ffRounds?: number; verify?: { mainSha?: string; ok?: boolean | null } } => {
+      try { return JSON.parse(ffrANote) as { ffRounds?: number }; } catch { return {}; }
+    })();
+    check("(i) the lost fast-forward is retried and LANDS: the second round re-rebases onto the intruder's main, re-verifies, and moves main onto the lane's work",
+      ffrA.fired && ffrA.reached && ffrAVerdict?.status === "merged" && ffrAVerdict.landed === true
+        && ffrAMain !== ffrA.intruder
+        && spawnSync("git", ["-C", REPO2, "log", "--oneline", "-3"]).stdout.toString().includes("ff retry landing")
+        && spawnSync("git", ["-C", REPO2, "log", "--oneline", "-3"]).stdout.toString().includes("intruder landing landed on main first"),
+      JSON.stringify({ fired: ffrA.fired, reached: ffrA.reached, verdict: ffrAVerdict,
+        intruder: ffrA.intruder.slice(0, 8), main: ffrAMain.slice(0, 8) }));
+    check("(ii) the record is the SECOND round's: the verdict counts the round, and the land note carries the verify verdict of the tree that actually landed — not the first round's",
+      ffrAVerdict?.ffRounds === 1 && ffrANoteJson.ffRounds === 1
+        && ffrAVerdict.verify?.mainSha === ffrA.intruder
+        && ffrANoteJson.verify?.mainSha === ffrA.intruder && ffrANoteJson.verify?.ok === true,
+      JSON.stringify({ verdictRounds: ffrAVerdict?.ffRounds, verdictMainSha: ffrAVerdict?.verify?.mainSha?.slice(0, 8),
+        note: ffrANoteJson, intruder: ffrA.intruder.slice(0, 8) }));
+    check("(iii) the retry round runs inside a hold the server already owns: the lock names the live server while the round is in flight, and its gate was handed that hold instead of queueing for one",
+      ffrParked && ffrHeldPid === String(ffrSrvPid) && ffrAlive(ffrHeldPid) && ffrHeldBirth !== ""
+        && ffrRunsDuring.length === 2
+        && ffrRunsDuring[0]?.heldBy === "none"
+        && ffrRunsDuring[1]?.heldBy === String(ffrSrvPid)
+        && ffrRunsDuring[1]?.lockpid === String(ffrSrvPid),
+      JSON.stringify({ parked: ffrParked, lockPid: ffrHeldPid, srvPid: ffrSrvPid,
+        birth: ffrHeldBirth.slice(0, 40), runs: ffrRunsDuring }));
+    check("(iii) the hold is given back: once the chain ends the mutex is free again, on the land path too",
+      !existsSync(ffrLock), `${ffrLock} still exists`);
+
+    // (iv) A RED GATE IN THE RETRY ROUND. Same race, same chain — and the round's own verdict is
+    // what stands. `ff-lost` here would be a lie about a tree that failed, and green would be a
+    // land nobody verified.
+    ffrReset();
+    writeFileSync(`${ROOT}/ffretry.red.2`, "red\n");
+    const ffrB = await ffrLand("red", "ffretry-red.txt");
+    const ffrBVerdict = await ffrSettled(ffrB.slot);
+    check("(iv) a RED gate in the retry round lands nothing and writes the RED verdict — not ff-lost, not green — and main stays where the intruder left it",
+      ffrB.fired && ffrB.reached && ffrBVerdict?.status === "resolved" && ffrBVerdict.landed === false
+        && ffrBVerdict.verify?.ok === false && ffrBVerdict.errorReason === undefined
+        && ffrBVerdict.ffRounds === 1 && (ffrBVerdict.detail ?? "").includes("verify failed")
+        && main2Of() === ffrB.intruder && !existsSync(ffrLock),
+      JSON.stringify({ verdict: ffrBVerdict, main: main2Of().slice(0, 8), intruder: ffrB.intruder.slice(0, 8) }));
+
+    // (v) THE HAZARD THE SHELL DOES NOT HAVE. e2e-stage.sh releases IMPLICITLY: the next contender
+    // reaps a lock whose recorded pid is dead. A server is never dead — so a hold it loses track of
+    // would park this machine for good, and a pid-LESS lock dir is by contract never reaped at all.
+    // So: kill the holder in the middle of a held chain and read what it left behind. The answer
+    // must be the reapable shape (a pid file naming a process that is gone), never the manual park.
+    ffrReset();
+    writeFileSync(`${ROOT}/ffretry.park.2`, "park\n");
+    try { rmSync(`${ROOT}/ffretry.parked.2`); } catch { /* first arm's */ }
+    try { rmSync(`${ROOT}/ffretry.go.2`); } catch { /* first arm's */ }
+    const ffrC = await ffrLand("death", "ffretry-death.txt");
+    const ffrCParked = await ffrWaitFile(`${ROOT}/ffretry.parked.2`);
+    const ffrCPidBefore = ((): string => {
+      try { return readFileSync(`${ffrLock}/pid`, "utf8").trim(); } catch { return ""; }
+    })();
+    await tmuxOut("kill-session", "-t", "srv"); // the holder dies mid-chain, mid-hold
+    await Bun.sleep(500);
+    writeFileSync(`${ROOT}/ffretry.go.2`, "go\n"); // let the orphaned gate child leave
+    const ffrCLeft = {
+      dir: existsSync(ffrLock),
+      pid: ((): string => { try { return readFileSync(`${ffrLock}/pid`, "utf8").trim(); } catch { return ""; } })(),
+      birth: existsSync(`${ffrLock}/birth`),
+    };
+    check("(v) a holder that dies mid-chain leaves a REAPABLE lock, never a parked one: the pid file is still there and the process it names is gone",
+      ffrCParked && ffrCPidBefore === String(ffrSrvPid) && ffrCLeft.dir
+        && ffrCLeft.pid === ffrCPidBefore && ffrCLeft.birth && !ffrAlive(ffrCLeft.pid),
+      JSON.stringify({ parked: ffrCParked, before: ffrCPidBefore, left: ffrCLeft,
+        alive: ffrCLeft.pid === "" ? null : ffrAlive(ffrCLeft.pid) }));
+
+    for (const f of [`${ffrLatch}`, `${ffrLatch}.reached`, `${ffrLatch}.release`, ffrVerify, ffrCount,
+      ffrLog, `${ROOT}/ffretry.park.2`, `${ROOT}/ffretry.red.2`, `${ROOT}/ffretry.parked.2`,
+      `${ROOT}/ffretry.go.2`]) try { rmSync(f); } catch { /* spent */ }
+    rmSync(ffrLock, { recursive: true, force: true });
+    await restartSrv();
+    for (const slot of ffrLanes) await post(`/api/slots/${slot}/kill`, {});
+    for (const id of ffrRows) {
+      await post(`/api/tasks/${id}/done`, {});
+      await post(`/api/tasks/${id}/delete`, {});
+    }
+    if (ffrMainSlot !== null) await post(`/api/slots/${ffrMainSlot}/kill`, {});
+    await setPromotion(ffrProgram.id, null);
+    await programPost(ffrProgram.id, "complete");
+
     for (const f of [ffLatch, ffLatchReached, ffLatchRelease]) try { rmSync(f); } catch { /* spent */ }
     await post(`/api/tasks/${ffRowId}/done`, {});
     await post(`/api/tasks/${ffRowId}/delete`, {});

@@ -55,6 +55,16 @@ export FLEET_LANE_AUTOCLOSE=0
 #   - A pid-LESS lock dir is a manual hold (a human parked the machine) and is never reaped.
 #   - The reap re-checks the pid VALUE before removing, shrinking the reap/re-acquire race to
 #     microseconds; two pollers at 15s cadence cannot practically collide inside it.
+#   - AN INHERITED HOLD (2026-09-04, owner: "Retry unter GEHALTENEM Lock"). The land gate's ff retry
+#     chain runs the gate SEVERAL times in a row, and between rounds the machine must not be given
+#     away — the queueing, not the gate, is what made a repeat expensive. server.ts therefore takes
+#     this lock ITSELF for the whole chain and exports FLEET_SUITE_LOCK_HELD_BY=<its pid> into the
+#     gate child alone. A step that sees that variable AND finds the lock's own pid file naming that
+#     same LIVE process does not queue, does not write pid/birth, and releases nothing: it is running
+#     inside a hold that already exists. The env var alone grants nothing — the lock on disk has the
+#     last word, so a stale export cannot let a suite run unserialized. Everything else about the
+#     mutex is unchanged: mkdir stays the claim, the pid/birth files stay the identity, the reap
+#     stays the wrappers', and a pid-LESS dir stays a manual park.
 #
 # --- AND THE WAIT SPEAKS (2026-08-06) ----------------------------------------------------------
 # This loop used to block in complete silence, and that silence had a price the land gate paid.
@@ -99,6 +109,20 @@ _st_birth_of() {
 _st_valid_birth() {
   printf '%s\n' "$1" | grep -Eq '^[A-Z][a-z]{2} [A-Z][a-z]{2} [0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2} [0-9]{4}$'
 }
+# Do we already run inside somebody's hold? THREE conditions, and the two on disk are what make the
+# variable safe to honour: it must name a pid, that pid must be the one the lock file records, and
+# that process must still be alive. Fail any of them and this is an ordinary contender again — which
+# is the whole guard against a stale export handing out an unserialized run.
+_st_held_by="${FLEET_SUITE_LOCK_HELD_BY:-}"
+_st_lock_pid=$$
+_st_inherited=0
+if [ -n "$_st_held_by" ] \
+  && [ "$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)" = "$_st_held_by" ] \
+  && kill -0 "$_st_held_by" 2>/dev/null; then
+  _st_inherited=1
+  _st_lock_pid=$_st_held_by
+fi
+if [ "$_st_inherited" = 0 ]; then
 _st_self_birth=$(_st_birth_of "$$")
 if [ -z "$_st_self_birth" ]; then
   printf '[suite-lock-error] %s cannot record process birth for pid %s; refusing to hold %s\n' "$_st_who" "$$" "$FLEET_SUITE_LOCK" >&2
@@ -159,7 +183,14 @@ while ! mkdir "$FLEET_SUITE_LOCK" 2>/dev/null; do
 done
 echo "$$" > "$FLEET_SUITE_LOCK/pid"
 printf '%s\n' "$_st_self_birth" > "$FLEET_SUITE_LOCK/birth"
-printf '[suite-lock] %s acquired after %ss (pid %s)\n' "$_st_who" "$(( $(date +%s) - _st_t0 ))" "$$"
+fi
+# ONE acquire format, on both paths — and that is a contract, not tidiness: runVerify sums exactly
+# the lines this printf produces (SUITE_LOCK_RE), e2e/pins.ts requires that EXACTLY ONE of this
+# file's suite-lock formats classify as an acquire, and a second one invented for the inherited case
+# would be summed a second time. An inherited step therefore reports the truth in the existing
+# words — `after 0s`, naming the pid that actually holds the lock — because silence here means
+# "this command does not report its waits", which would be a different and false statement.
+printf '[suite-lock] %s acquired after %ss (pid %s)\n' "$_st_who" "$(( $(date +%s) - _st_t0 ))" "$_st_lock_pid"
 
 # Exit 3 means the suite's server prerequisite never came up; ordinary check failures use exit 1.
 # The caller exits immediately after this returns, so its normal success-only directory cleanup is

@@ -1,32 +1,37 @@
-# HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 4 → Nachfolge): RESCOPE ist in Kraft, Vollsplit ist beendet, drei Lands, und EIN Land haengt noch in der Luft; 2026-09-04 (02:0x), ctx GEMESSEN 29,9 %
+# HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 4 → Nachfolge): RESCOPE in Kraft, Vollsplit beendet, ZWEI Lands gruen — und zwei fertige Lands haengen an einer verstopften Suite-Schlange; 2026-09-04 (03:3x), ctx GEMESSEN 29,9 %
 
 Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,
 `GET /api/self/program-execution`. Hier steht nur, was git und die Sensoren NICHT tragen.
 
-## 1. DEIN ERSTER AKT: B-07 ist verifiziert gruen und NICHT gelandet
+## 1. DEIN ERSTER AKT: zwei verifizierte Lands liegen bereit, und sie haengen NICHT an ihnen selbst
 
-Task `97f9bd97`, Lane `fleet/260903205300-7830`, Slot 1. Der Land-Gate lief **gruen** (volle
-Kette, `verify.ok:true`), danach ging der Fast-Forward verloren: `merges["1"]` traegt
-`status:"error"`, `landed:false`, **`errorReason:"ff-lost"`**. Das ist NICHT B-09 — der Fix
-`24f9cfc` hat gemintet, die Lane ist also nicht dauerhaft gesperrt.
+**B-07 (`97f9bd97`, Lane `fleet/260903205300-7830`, Slot 1)** und **E1 (`4b92b2f0`, Lane
+`fleet/260903192830-8293`, Slot 11)** stehen beide auf `REVIEWABLE`, beide Diffs habe ich
+gelesen und geprueft, beide Gate-Ketten waren gruen. **Ich habe sie nicht mehr landen koennen,
+und der Grund ist nicht die Arbeit, sondern die Maschine — er steht als B-17 im Register.**
 
-**Die Ursache war ICH.** Der eine Commit, der mir den Fast-Forward weggenommen hat, ist
-`c0f6fef` — mein eigener B-15-Doc-Commit, geschrieben waehrend der Gate meiner eigenen Landung
-lief. **Lehre, die ich sonst nirgends im Regelbuch finde: waehrend dein eigenes Land laeuft,
-committe NICHTS ins Haupt-Checkout.** Der Gate braucht 100–140 s, und in dieser Zeit ist jeder
-Commit auf main ein verlorener Land-Zyklus. Doc-Commits fuehlen sich harmlos an; dieser hat
-~15 min gekostet.
+**Was zweimal passiert ist:** B-07s erster Landeversuch verlor den Fast-Forward (`ff-lost`,
+Ursache war mein eigener Doc-Commit waehrend des laufenden Gates — siehe Lehre unten). Der
+ZWEITE Versuch gab nach **2 703 s** auf: `status:"resolved"`, `landed:false`,
+`verify.ok:null`, `detail: "clean rebase, but verify NEVER STARTED"`. Das ist **kein Rot** —
+der Gate hat den Baum nie angesehen. Zur selben Zeit standen drei `./e2e-isolated.sh`-Wrapper
+in der Schlange, einer davon seit 46 min: laenger als das gesamte Wartebudget eines Lands.
 
-**Stand bei meiner Uebergabe:** die Lane hat sich SELBST rebased (`behind 0, ahead 1, clean`,
-ctx von 86,6 % auf 12,1 % — codex kompaktiert selbst, das ist Betrieb, kein Alarm). Sie war beim
-Schreiben nur noch nicht *idle*, darum lehnt die Self-Land-Tuer mit
-`not done-looking (no signal)` ab. **Ich habe Watch `612424c6` (kind `lane`, target 1) armed
-gelassen** — er feuert, wenn sie done-looking wird. Dann: Pane lesen, `POST
-/api/self/tasks/97f9bd97/land`, Merge-Watch, Audit-Watch.
+**Also, dein erster Akt, in dieser Reihenfolge:**
+1. `ps -eo command | grep -c '^/bin/sh ./e2e-'` — steht die Schlange noch? Wenn ja, hat ein
+   Landeversuch weiter schlechte Chancen; das ist Diagnose, nicht Resignation.
+2. `POST /api/self/tasks/97f9bd97/land`, dann (NACH dessen Terminal) `4b92b2f0`. Nie zwei
+   parallel.
+3. **Verlass dich beim Merge-Watch NICHT auf `POST /api/self/watch {kind:"merge"}` fuer B-07.**
+   Ich habe dort `armed:false` zurueckbekommen — den VERBRAUCHTEN Watch des ersten Versuchs,
+   ausgeliefert als erfolgreiches Abo. Das ist exakt der Bug, den B-07 behebt und der bis zu
+   seinem Land live bleibt. Nimm stattdessen einen Hintergrund-Watcher auf
+   `fleet.json → merges["1"].at`.
 
-**Was du NICHT tun sollst:** den Owner-Merge-Waiver (`POST /api/slots/1/merge` mit Owner-Token)
-ziehen. Der ist fuer den Fall, dass das Praedikat FAELSCHLICH falsch ist. Hier ist es korrekt
-falsch — die Lane arbeitet wirklich.
+**DIE LEHRE, die im Regelbuch fehlt und die mich ein Land gekostet hat: waehrend dein eigenes
+Land laeuft, committe NICHTS ins Haupt-Checkout.** Der Gate braucht 100-140 s, und jeder Commit
+auf main in diesem Fenster nimmt dem Land den Fast-Forward. Doc-Commits fuehlen sich harmlos an;
+`c0f6fef` war meiner. Reihenfolge, die funktioniert: committen, DANN landen.
 
 ## 2. Was gelandet und verifiziert ist
 
@@ -83,8 +88,16 @@ haetten. Ich habe sie als K1–K3 VOR den unveraenderten Brieftext gehaengt:
 - **K1:** der VERIFY-Block sagt `http://127.0.0.1:8790` — das antwortet auf dieser Maschine NIE
   (der Server bindet nur die Tailscale-IP). Der allererste Befehl waere gescheitert und haette
   wie ein toter Server ausgesehen.
-- **K2:** `./e2e-isolated.sh` stand als blinder lokaler Lauf drin. Jetzt: erst Portal anbieten,
-  lokal nur bei null laufenden Suiten, Abbruch nie per Namensmuster.
+- **K2:** `./e2e-isolated.sh` stand als blinder lokaler Lauf drin. Erst Portal anbieten,
+  Abbruch nie per Namensmuster. **ACHTUNG — die Haelfte „lokal nur bei null laufenden Suiten"
+  habe ich ZURUECKGEZOGEN, und B-09 traegt sie noch.** Sie war ein Deadlock: der Zaehler zaehlt
+  auch WARTENDE Wrapper mit, und die Wrapper serialisieren sich seit `ddc5128` ohnehin selbst
+  ueber `/tmp/fleet-e2e.lock` — auf dieser Maschine wird der Zaehler nie 0. Zwei Lanes sind
+  darin haengengeblieben (die E1-Lane 3 h, mit Klaerungsfrage; die B-07-Lane bis ich sie per
+  `POST /send` herausgeholt habe). **Wenn du B-09 dispatchst, schick die Korrektur mit:** einfach
+  starten, den Mutex serialisieren lassen, die `[suite mutex: …]`-Zeile zitieren. Und besser
+  noch, nach B-17: die Vorschau NUR verlangen, wenn der Schnitt `e2e/`, einen Wrapper oder den
+  Merge-/Land-Pfad beruehrt — B-09 tut das, E1 tat es nicht.
 - **K3:** Beweisordnung §11.7 plus die drei offenen Flake-Familien mit Basisraten.
 **K2 hat sich sofort bezahlt gemacht:** die B-07-Lane konnte ihren Rerun nicht fahren, weil die
 Maschine nie frei war — und hat korrekt `needs-main` gemeldet statt ein gruenes Ergebnis zu
@@ -110,6 +123,16 @@ derselben Charge kollidieren also in der DATEI, nicht im Server — pruef das be
   Kausalitaet nicht.
 - **B-15** — B-07s neue Ablehnung unterscheidet die Lane, nicht den Merge-LAUF. Kein Blocker
   (das alte Verhalten war schlechter), Done-Kriterium steht an der Zeile.
+- **B-16 OFFEN** — hat mein eigenes B-06-Land die Rate des Merge-Resolution-Guards angehoben?
+  B-06 setzt ein `restartSrv()` MITTEN in `e2e/merge.ts`, und der betroffene Guard ist
+  nachgelagert. Die E1-Lane ist entlastet (ein Rot liegt 22 h davor), mein Land ist es NICHT —
+  das sind zwei Fragen, beantwortet ist nur die erste.
+- **B-17 — der zweite grosse Befund.** Die Tier-2-VORSCHAU verhungert den Land-GATE: der Mutex
+  behandelt alle sieben Wrapper gleich, aber die Lane-Vorschau ist per Owner-Entscheid KEIN
+  Gate, waehrend `VERIFY_CMD` eines ist. Ein optionaler Lauf verdraengt einen pflichtigen.
+  Erklaert drei Vorfaelle einer Nacht (2000-s-Acquire, 3-h-Blockade, 2703-s-Waitout) und haengt
+  an B-14: weil lokale Laeufe die Maschine saettigen, wandern Audits auf den Remote-Helfer mit
+  85 % Rotrate. Drei Richtungen vorgeschlagen, keine gebaut.
 - **B-12 entschieden** — der Advisory-Deckel 10/10 ist KEIN Owner-Tor. Er zaehlt nur
   `source:"main"`, und Erfolgsmass 6 verlangt je Befund einen von drei AUSGAENGEN; das Register
   ist die LISTE, nicht einer der Ausgaenge. Die Disposition gehoert in P6. **Stell dieses Tor

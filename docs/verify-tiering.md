@@ -2557,3 +2557,28 @@ ist, statt zwoelf Vertraege gegen ein fremdes Register zu messen.
 **Fuer einen Leser eines roten Laufs:** siebzehn Fails heissen hier nicht siebzehn Befunde. Zuerst
 die Setup-Zeilen der betroffenen Sektionen lesen — ist eine davon rot, sind die Checks darunter
 UNGEMESSEN, nicht verletzt.
+
+**Nachtrag 2026-09-04 ~22:20 — der Wiederholungslauf ist da, und er ist gruen.** Das naechste
+Post-Land-Audit lief auf Tip `1f7d410` (derselbe R1-Code, gegenueber `f588287` nur zwei
+docs-Commits) als Lauf `isolated-20260904T193948Z-28477`: **3 649 Checks, GENAU EIN Fail** —
+`projection nextAction …` mit dem bekannten Detail `{"with":null,"without":null,"phase":"UNKNOWN"}`
+(§11.2o). Alle drei Gruppen gruen: `requeue probe (empty): … through the GATE` (Zeile 1179 in
+beiden Laeufen — dort `ok:false` mit `note=lane fleet/260904190817-2afc`, hier `ok:true`),
+`backlog nudge setup: the only open row is a pending kind:notiz observation`, `…delivers it WHOLE
+once that marker appears` und `§2b a top-level module …`. Damit ist die Nicht-Determiniertheit
+direkt bewiesen (Beweisordnung §11.7, erste Stufe) und die aus Diff und Register hergeleitete
+Adjudikation bestaetigt. Basisrate der Wurzelgruppe damit 1/178.
+
+**Und die Hypothese, die dabei geprueft und WIDERLEGT wurde:** die requeue-Probe fiel mit der Note
+`lane closed before landing — review and requeue if still wanted`, was nach einem vom Audit-srv
+geerbten `FLEET_LANE_AUTOCLOSE=1` aussieht (`watchdog.sh` bewaffnet den Flag seit `566cbae`). Zwei
+Messungen sagen nein. (1) Der Flag erreicht die Audit-Suite nicht: `server.ts#runPostLandAudit`
+spawnt durch `server.ts#auditChildEnv`, das JEDE `FLEET_*`-Variable verwirft — direkt am Prozess
+gemessen (2026-09-04, ein Variablenname je Prozess gefiltert ausgegeben): live srv
+`FLEET_INSTANCE=mac` traegt `FLEET_LANE_AUTOCLOSE=1`, die Audit-Suite-Server
+`FLEET_INSTANCE=e2e-isolated` tragen sie nicht, waehrend `FLEET_PORT` in derselben Abfrage lesbar
+ist (die Kontrolle, die „nicht gesetzt" von „nicht lesbar" trennt). (2) Die Note diskriminiert
+ohnehin nichts: sie wird von `server.ts#teardownSlotOccupant` geschrieben, dem generischen
+Occupant-Abbau, den JEDER Schluss durchlaeuft — Hand-Kill, Probe, Autoclose gleichermassen. Die
+Env-Naht ist trotzdem real, nur an einer anderen Stelle (§6, `runVerify` filtert nicht) und seit
+demselben Tag gestated statt geerbt.

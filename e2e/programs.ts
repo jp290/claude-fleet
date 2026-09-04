@@ -7323,7 +7323,8 @@ exit 0
     // before it — a counter shared across arms would put the park/red file on the wrong round
     const ffrReset = (): void => {
       writeFileSync(ffrCount, "0\n");
-      try { rmSync(ffrLog); } catch { /* first arm */ }
+      for (const f of [ffrLog, `${ROOT}/ffretry.park.2`, `${ROOT}/ffretry.red.2`,
+        `${ROOT}/ffretry.parked.2`, `${ROOT}/ffretry.go.2`]) try { rmSync(f); } catch { /* first arm */ }
     };
 
     check("ff retry fixture: a bound MAIN with a green-only promotion, its own suite lock, a scripted gate and the live server's pid",
@@ -7401,8 +7402,6 @@ exit 0
     // must be the reapable shape (a pid file naming a process that is gone), never the manual park.
     ffrReset();
     writeFileSync(`${ROOT}/ffretry.park.2`, "park\n");
-    try { rmSync(`${ROOT}/ffretry.parked.2`); } catch { /* first arm's */ }
-    try { rmSync(`${ROOT}/ffretry.go.2`); } catch { /* first arm's */ }
     const ffrC = await ffrLand("death", "ffretry-death.txt");
     const ffrCParked = await ffrWaitFile(`${ROOT}/ffretry.parked.2`);
     const ffrCPidBefore = ((): string => {

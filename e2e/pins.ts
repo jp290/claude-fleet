@@ -3702,7 +3702,7 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   // must all sit BETWEEN the lost fast-forward and the next advance, in that order. An edit that
   // hoists the gate out of the loop would land a re-rebased tree behind the FIRST round's green —
   // the one thing this retry must never do, and a change that reads as a harmless simplification.
-  const ffRetry = server.indexOf("if (ffRounds < LAND_FF_RETRY_ROUNDS && ffHeld) {");
+  const ffRetry = server.indexOf("if (mainMoved && ffRounds < LAND_FF_RETRY_ROUNDS && ffHeld) {");
   const ffReRebase = server.indexOf("const again = await tryScriptRebase(cwd, main);", ffRetry);
   const ffReVerify = server.indexOf("verify = await gateRun(() => runVerify(cwd, landMain, retryPlan, true));", ffRetry);
   const ffReStop = server.indexOf("res = { ...cleanVerifyStop(verify, branch), ffRounds }; break;", ffRetry);
@@ -3711,6 +3711,10 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     ffRetry > 0 && ffReRebase > ffRetry && ffReVerify > ffReRebase && ffReStop > ffReVerify
       && ffMint > ffReStop
       && /const LAND_FF_RETRY_ROUNDS = Math\.min\(5, Math\.max\(0, Number\(process\.env\.FLEET_LAND_FF_RETRY_ROUNDS \?\? 2\) \| 0\)\);/.test(server)
+      // and the premise itself: main MOVING is what a retry answers. A fast-forward refused over a
+      // dirty main checkout leaves main where it was, and re-gating the same tree twice for that
+      // would hold this machine's one mutex through two full chains to reach the same verdict.
+      && server.includes('const mainMoved = /^[0-9a-f]{40,64}$/.test(mainNow) && mainNow !== mainBefore;')
       && read("e2e/programs.ts").includes('FLEET_LAND_FF_RETRY_ROUNDS: "0"'),
     `retry=${ffRetry} rebase=${ffReRebase} verify=${ffReVerify} stop=${ffReStop} mint=${ffMint}`);
   pin(`${RULE_FF} — the default-off E2E latch sits between the land declaration and the fast-forward, and a fixture arms it`,

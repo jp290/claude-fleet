@@ -84,3 +84,46 @@ verbietet der Kommando-Tuer, je einen Agenten zu nennen, und die `capabilities` 
 (`bun`, `tmux`, `git`, `zsh`) kommen aus der Geraete-Konfiguration (`cfg.capabilities`), sind also
 eine Selbstauskunft und keine Probe. Genau diese Luecke ist der Grund, warum ein Gruen hier nur die
 Maschinerie beweist.
+
+## 5. NACHTRAG 2026-09-04 21:0x — ein zweiter Second-host-Lauf, und was er am Urteil aendert
+
+Ein zweites vollstaendiges `./e2e-isolated.sh` lief auf second-host, als Post-Land-Audit zu `76f3376`
+(docs-only, Program Fleet-Betrieb): `ms 1 562 345`, `ran 3633 / failed 9`. Der Controller hat das
+Audit als `flake` adjudiziert (ein docs-only-Diff kann nichts brechen); die PLATTFORM-Frage wurde
+mir zugeordnet, weil der Helfer diesem Program gehoert. Hier ist sie beantwortet, soweit zwei
+Laeufe sie beantworten koennen.
+
+**Acht der neun Fails sind KEIN Host-Unterschied.** Am lokalen Trail-Register nachgemessen:
+
+| Familie | lokal gruen | lokal rot | Baeume |
+|---|---|---|---|
+| `Q6 fleet-report …` (fuenf Checks, fallen als Cluster) | je ~80 | je 6 | 4 |
+| `subject-gone: …` (§11.2j) | — | 15,2 % | 10 |
+| `projection nextAction: …` | 232 | 7 (2,9 %) | 5 |
+
+Die Q6-Gruppe ist also ein bekanntes lokales Flake-Cluster mit ~7 % Basisrate, das auf beiden
+Hosts faellt. (Ein sechster Q6-Check hat lokal 0 Sichtungen — er wird offenbar nur erreicht, wenn
+der vorige besteht; das ist kein Beleg fuer irgendetwas und wird hier nicht als einer gefuehrt.)
+
+**Der neunte ist der interessante, und er verschaerft §3.** `D2 setup: both closing lanes reached
+the spent shape …` steht jetzt bei **0 rot in 5 lokalen Sichtungen gegen 2 rot in 2
+Second-host-Laeufen** — es ist der EINZIGE Check, bei dem Host und Ausgang bisher perfekt
+zusammenfallen. §3 nannte dafuer zwei Lesarten und liess sie offen; die zweite (ein echter
+Host-Unterschied im `stalled`/git-Tick-Timing unter Linux) ist damit deutlich wahrscheinlicher
+geworden, aber **immer noch nicht bewiesen**: bei gleicher wahrer Rate auf beiden Hosts haette
+diese 2-gegen-0-Aufteilung noch rund 5 % Wahrscheinlichkeit. n auf dem Helfer ist ZWEI.
+
+**Was das Urteil dieser Notiz aendert und was nicht.** „Empfehlung A steht" bleibt: die beiden
+Familien, deren Rot A umwerfen wuerde, waren in beiden Second-host-Laeufen gruen. Was dazukommt, ist
+eine BENANNTE EINSCHRAENKUNG, die in §1 noch nicht stand: **zeitempfindliche Fixtures scheinen auf
+second-host haeufiger auszusetzen als hier.** Fuer Option A ist das keine Absage — die Suite ist
+Testinfrastruktur, kein Produktpfad — aber es ist die konkrete Form, die die offene Programmfrage
+„welche Sessionformen sind Linux-tauglich" bisher angenommen hat, und der naechste Schnitt in diese
+Richtung sollte sie messen statt sie zu erben.
+
+**Der billigste Diskriminator, ausdruecklich NICHT gefahren:** ein zweiter Helfer-Lauf auf DEMSELBEN
+Baum. Er ist heute nicht ohne weiteres zu haben — ein Command-Job buendelt den Baum des eigenen
+`cwd` zur Claim-Zeit, und `76f3376` ist nicht mehr `main`; den Haupt-Checkout dafuer zu bewegen
+waere ein Eingriff in fremde Sessions. Wer das aufloest, loest zugleich die in §4 benannte
+Artefakt-Luecke: beide Male fehlt der Weg, einen bestimmten Baum gezielt auf dem Helfer zu messen
+und sein Detail zurueckzubekommen.

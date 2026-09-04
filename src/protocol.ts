@@ -118,6 +118,12 @@ export interface PostLandAuditInfo {
   // server rather than built here on purpose: the storage layout is this box's business, and a
   // client that composed the path would be a second place that has to know it.
   artifact?: { bytes: number; sha256: string; url: string };
+  // WHICH CHAIN measured this tip. Present only when the audit ran the docs-only short chain
+  // (install+pins, since 2026-09-04); absent is the full configured suite, which is what every
+  // older row means too. The alarm needs it because its red headline NAMES the suite — a
+  // proportional red is a failing pins run, not a failing `./e2e-isolated.sh`, and the difference
+  // is the first thing the reader does next.
+  proportional?: true;
 }
 
 // --- post-land audit: the run that has NOT finished ---------------------------------------------

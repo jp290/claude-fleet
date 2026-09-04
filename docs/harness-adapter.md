@@ -50,7 +50,21 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
   wählt ein Repo sein eigenes Kommando über den Repo-Worker `audit` (§Repo-Worker unten) — z. B. ein Wrapper um
   `sh scripts/verify.sh`. Ein Grün eines fremden Verify prüft man wie jedes: `ms` + `checks{ran}` — ein Skript,
   das keine `PASS `-Zeilen druckt, liefert ehrlich `ran:0` bei exit 0 (docs/verify-tiering.md §13). Sie gated nichts und macht nichts rückgängig; Ergebnis grün/rot/unknown auf
-  `post-land-audits.jsonl` (`GET /api/post-land-audits`). Achtung: `undo-land`, der als Rollback dazu genannt
+  `post-land-audits.jsonl` (`GET /api/post-land-audits`).
+  **Seit 2026-09-04 (Owner) ist Stufe 2 PROPORTIONAL**: ein Eintrag, dessen JEDER Cover ein Land mit
+  dem Docs-only-Stempel des Land-Gates ist, läuft mit derselben kurzen Kette wie sein Gate
+  (install+pins) statt mit der vollen Suite — entschieden am koaleszierten Eintrag
+  (`server.ts#entryRunsShortChain`, gefahren in `server.ts#runPostLandAudit`), also kippt EIN
+  Code-Land im Burst den ganzen Tip zurück auf die volle Suite. Die Zeile trägt dann
+  `proportional:true` + `steps:["install","pins"]` und `cmdSource:"proportional"`; fehlt der Stempel,
+  war es die volle Kette — Abwesenheit ist nie Harmlosigkeit. Ein proportionaler Eintrag wird dem
+  Helfer-Portal weder angeboten noch für es zurückgehalten (`server.ts#helperJobsView`,
+  `server.ts#helperClaim`), weil der Daemon die volle Suite fährt und damit etwas anderes messen
+  würde als die Frage. Anlass, am Ledger nachgelesen: 76f3376 und 10ba7af (2026-09-04), je EINE
+  Docs-Datei, bekamen je ein volles `./e2e-isolated.sh` — 1562 s bzw. 1530 s, beide ROT, 9 bzw. 1
+  von 3633 Checks gefallen, beide als Flake adjudiziert. Beide liefen zufaellig auf dem Helfer, es
+  kostete also 52 Minuten der ANDEREN Maschine plus Claim-Fenster; lokal waere es dieselbe Zeit am
+  Suite-Mutex dieser Maschine gewesen. Achtung: `undo-land`, der als Rollback dazu genannt
   wird, gilt für genau EIN Land und nur bis zum nächsten (`server.ts`, grep `undoableFor`) — im Burst ist er
   beim Alarm schon weg. **Seit `0b98fdb` ist ein rotes Ergebnis beurteilbar**:
   `POST /api/post-land-audits/adjudicate {at, verdict, note}` (Owner,

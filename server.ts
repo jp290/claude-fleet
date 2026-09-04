@@ -5542,7 +5542,8 @@ function auditEventPayload(row: PostLandAuditRow, mainAfter: string): AuditWatch
   const match = all.find((c) => c.mainAfter === mainAfter);
   if (match && !covers.some((c) => c.mainAfter === mainAfter)) covers = [match, ...covers.slice(-49)];
   return { result: row.result, mainSha: row.mainSha, covers, checks: row.checks,
-    ...(row.reason ? { reason: row.reason.slice(0, 200) } : {}) };
+    ...(row.reason ? { reason: row.reason.slice(0, 200) } : {}),
+    ...(row.proportional ? { proportional: true as const } : {}) };
 }
 
 async function mintAuditEvents(row: PostLandAuditRow): Promise<void> {
@@ -10298,6 +10299,13 @@ function auditPingMessage(row: Record<string, unknown>): string {
     `Audit-Baum (Land-SHA): ${sha}`,
     `covers: ${covers.length ? covers.join(", ") : "(keine Branches aufgezeichnet)"}`,
     `result: ${result} · exitCode: ${exitCode}`,
+    // WHICH CHAIN produced it. A proportional red is a failing `bun e2e/pins.ts`, not a failing
+    // suite, and the adjudicator's next step differs completely — so it is stated rather than left
+    // to be inferred from a two-line output tail. Absent field = the full configured command, which
+    // is what every row before 2026-09-04 is.
+    row.proportional === true
+      ? "Kette: proportional (docs-only, install+pins) — NICHT die volle Suite"
+      : "Kette: die volle konfigurierte Audit-Kette",
     checks ? `checks.ran${ranIsLowerBound ? " (Untergrenze)" : ""}: ${displayedRan} · checks.failed: ${checks.failed}`
       : "checks: nicht ableitbar (alte oder unauswertbare Ausgabe; NICHT als 0 lesen)",
     ...(checks?.ran === 0
@@ -11100,6 +11108,13 @@ const VERIFY_CMD = process.env.FLEET_VERIFY_CMD ?? null;
 // interpolated because VERIFY_SKIP_EXIT is declared below this line; the pin is what keeps them one
 // number, the same way it does for the shell side.
 const VERIFY_PROPORTIONAL_CMD = '[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile && bun e2e/pins.ts';
+// …and the steps that command IS, named once. The gate itself never needs this — it stamps the
+// steps verify-proportion.ts classified for the actual diff (DOC_RULE = install, pins) — but the
+// post-land audit has no diff to classify: it inherits an already-made verdict from its covers and
+// must still stamp the chain it ran. Writing the pair here rather than at the audit's row keeps
+// the command and its step names one edit apart, and e2e/pins.ts holds them against each other
+// (it already parses the command into steps) so neither can move alone.
+const VERIFY_PROPORTIONAL_STEPS: LocalProofStep[] = ["install", "pins"];
 // MAY the short chain be chosen for this repo at all — the guard above asked BEFORE the selection
 // instead of after it. Deliberately the same sentinel and therefore the same question, so the two
 // cannot disagree about which trees the short chain is for; git toplevel identity (FLEET_REPO_ROOT)
@@ -12034,7 +12049,10 @@ async function recordLand(repo: string, main: string, branch: string, mainBefore
   // trigger: a land that did not move main (already-merged / empty lane) integrates nothing new and
   // has nothing to audit. Synchronous by contract — it queues and returns before any await, so the
   // land path's latency is unchanged. See the region below for what it deliberately does NOT do.
-  schedulePostLandAudit(repo, main, branch, mainAfter);
+  // …carrying the gate's own proportion verdict, which the note one line above has just recorded
+  // under `verify.proportional`. `prov.verify` absent (no gate configured) or `proportional` absent
+  // (an older persisted verdict) both mean NOT PROVEN and buy the full suite.
+  schedulePostLandAudit(repo, main, branch, mainAfter, prov.verify?.proportional === true);
   // ...and only now is the land fully recorded. Clearing LAST, after the note and the audit
   // trigger, is deliberate: a death anywhere above leaves the marker, boot re-runs this whole
   // function, and every step of it is idempotent (`pushUndo` REPLACES the identical record, a
@@ -12113,7 +12131,11 @@ const POSTLAND_AUDIT_CMD = process.env.FLEET_POSTLAND_AUDIT_CMD ?? null;
 // would answer "unconfigured" for a repo whose owner configured it. `source` travels onto the row:
 // a green measured by `sh scripts/verify.sh` and one measured by ./e2e-isolated.sh are two
 // different claims, and a reader must be able to tell them apart without re-deriving the config.
-type AuditCmdSource = "repo-worker" | "env";
+// `proportional` is the third source and it is NOT a config: it is the short chain the server
+// chose FOR ITSELF because every land in the entry already passed the docs-only gate. Naming it
+// rather than reporting the configured source keeps the row honest — a reader must be able to see
+// that neither the repo-worker nor the env default measured this tree.
+type AuditCmdSource = "repo-worker" | "env" | "proportional";
 function auditCmdFor(repo: string): { cmd: string; source: AuditCmdSource } | null {
   const own = workerCmdFor("audit", repo, null);
   if (own) return { cmd: own, source: "repo-worker" };
@@ -12131,7 +12153,22 @@ const POSTLAND_AUDIT_TIMEOUT_MS = Math.max(10_000, Number(process.env.FLEET_POST
 const POSTLAND_AUDIT_OUT_CAP = 4096; // byte budget for the retained stdout/stderr, same helper as verify.out
 const POSTLAND_AUDIT_KILL_GRACE_MS = 5_000; // SIGTERM → this long → SIGKILL, on the timeout path
 // the lands one audit run followed — a run is coalesced (below), so it can cover more than one
-interface AuditCover { branch: string; mainAfter: string; at: number }
+//
+// `proportional` is the LAND GATE'S OWN VERDICT about this one land, carried forward: true only
+// when that land's gate ran the docs-only short chain (verifyPlanFor's `proportional`, i.e. every
+// changed path classified docs-or-prose by verify-proportion.ts AND the repo runs the short chain).
+// ABSENT IS THE CONSERVATIVE READING and covers four real cases that must never read as harmless:
+// a land with no gate configured at all, a land whose diff was mixed or empty, a cover restored
+// from a queue file an older server wrote, and a land recovered from a marker with no verdict.
+//
+// WHY THE COVER AND NOT THE fleet/land NOTE (the note carries the identical `verify.proportional`,
+// written from this same `prov` one line earlier in recordLand): reading the note would make the
+// classification an ASYNC git call, and both places that need the answer are synchronous by
+// contract — the drain's selection, whose "no await between the find and `auditRunningRepo = repo`"
+// is what closes the window a remote claim could slip through, and helperJobsView, which is a pure
+// projection. The note stays the durable, human-readable record of the same fact; this is the same
+// fact on the queue, and verify-proportion.ts remains the single place that classifies anything.
+interface AuditCover { branch: string; mainAfter: string; at: number; proportional?: true }
 // …and its identity AS A VALUE. The drain can consume its own frozen slice positionally, because
 // it holds the machine for the whole run and never lets go of the objects. Nothing else may: a
 // remote claim outlives a `kill-session -t srv`, and both sides of it — the queue file and the
@@ -12141,6 +12178,24 @@ interface AuditCover { branch: string; mainAfter: string; at: number }
 // with two rows, `green remote` and `green local`, which is exactly the duplicate this rail exists
 // to prevent. The three fields together are the cover — a branch lands once at one tip at one time.
 const coverKey = (c: AuditCover): string => `${c.branch}\u0000${c.mainAfter}\u0000${c.at}`;
+// MAY THIS WHOLE ENTRY BE AUDITED BY THE SHORT CHAIN — the audit's half of the proportion decision
+// (owner 2026-09-04), and the exact analogue of verifyPlanFor's on the gate side. Two conjuncts,
+// each the same one the gate asks:
+//   · EVERY cover is a land the gate itself ran short. An entry is coalesced, so one code land in
+//     the burst puts the whole tip back on the full suite — which is right: the audit measures the
+//     TREE, and that tree now contains code the short chain never looks at. An entry with no covers
+//     is nothing to audit and is never "proportional".
+//   · the repo runs the short chain at all. Docs-only is a property of the DIFF, being verifiable
+//     by `bun e2e/pins.ts` a property of the REPO — the distinction the gate paid for on 2026-08-26
+//     (two live foreign-repo lands that exited 42). Without this a docs-only land in a product repo
+//     would have its configured audit command REPLACED by a fleet-shaped one that cannot run there.
+// The measurement that asked for it, checked against the ledger rather than quoted: 76f3376 and
+// 10ba7af (2026-09-04), one docs file each, drew a full `./e2e-isolated.sh` apiece — 1 562 s and
+// 1 530 s, both RED, 9 and 1 failed of 3 633 checks, both adjudicated flake. Both happened to run
+// on the helper, so what they actually cost was 52 minutes of the OTHER machine plus its claim
+// window; run locally, the same two would have held this machine's suite mutex for that long.
+const entryRunsShortChain = (repo: string, covers: AuditCover[]): boolean =>
+  covers.length > 0 && covers.every((c) => c.proportional === true) && repoRunsShortChain(repo);
 // The durable row. `mainSha` is the integration tip actually audited and `covers` names every land
 // since the previous run, so the two questions this tier exists to answer are plain joins over the
 // trail: "which land was the last GREEN audit" = the newest green row's covers/mainSha, and "which
@@ -12162,6 +12217,13 @@ interface PostLandAuditRow {
   // which config chose `cmd` — the repo's own worker or the env default. Optional so historical
   // rows (all env) and remote rows (the helper's own suite) claim nothing they never recorded.
   cmdSource?: AuditCmdSource;
+  // THE SHORT CHAIN, STAMPED — the same pair the land note carries for the gate (`verify.proportional`
+  // + `verify.steps`), so a reader joins the two tiers without re-deriving either. Present ONLY on a
+  // run that actually took the short chain; absent means the full configured command ran, which is
+  // what every historical and every remote row means too. It is load-bearing for reading `checks`:
+  // a small `ran` beside a green is a complete statement only when this says which chain produced it.
+  proportional?: true;
+  steps?: LocalProofStep[];
   exitCode: number | null;
   out: string;         // byte-capped TAIL of stdout+stderr
   fails?: string[];    // validated and capped names: remote rows carry what the helper reported, local rows what localFailNames read from the complete output; absent on unknown rows and on rows written before either existed
@@ -12719,6 +12781,13 @@ function auditCounts(row: PostLandAuditRow): boolean {
   // the 16 s kill above, and it would poison the same distribution, which exists to answer "should
   // I keep waiting for the audit running HERE". The row still lands on the ledger in full.
   if (row.remote) return false;
+  // …AND NEITHER IS A SHORT-CHAIN ROW, for the same reason and with the same failure mode. This
+  // distribution answers exactly one question — "should I keep waiting for the audit running HERE"
+  // — and a proportional run is install+pins in seconds against a full suite's minutes. Mixed in,
+  // a repo that lands mostly docs would report a p50 that describes neither chain, and the board's
+  // ETA would tell a waiting owner a number no run of the pending kind has ever taken. The row is
+  // on the ledger in full, stamped `proportional`; it is simply not a sample of this cost.
+  if (row.proportional) return false;
   if (row.result !== "green" && row.result !== "red") return false;
   if (row.exitCode !== null && row.exitCode > 128 && row.exitCode <= 165) return false;
   return typeof row.ms === "number" && row.ms > 0;
@@ -12774,11 +12843,15 @@ function savePostLandAuditQueue(): void {
 // into exactly ONE follow-up run against the then-current tip, and that run's `covers` names every
 // land it stands for. Nothing is silently dropped: a land is either covered by the run in flight's
 // successor or by the run it triggered.
-function schedulePostLandAudit(repo: string, main: string, branch: string, mainAfter: string): void {
+function schedulePostLandAudit(repo: string, main: string, branch: string, mainAfter: string,
+  proportional: boolean): void {
   if (!auditCmdFor(repo)) return; // tier 2 not configured FOR THIS REPO — today's behaviour, unchanged
   const q = auditQueue.get(repo) ?? { main, covers: [] };
   q.main = main;
-  q.covers.push({ branch, mainAfter, at: Date.now() });
+  // the flag is written ONLY when the gate proved it, never as `proportional: false` — absence is
+  // the state an old queue file and a gateless land already have, and one spelling for "not proven"
+  // is what keeps entryRunsShortChain from having to distinguish two kinds of no.
+  q.covers.push({ branch, mainAfter, at: Date.now(), ...(proportional ? { proportional: true as const } : {}) });
   auditQueue.set(repo, q);
   savePostLandAuditQueue(); // durable BEFORE the land path returns — see the file's comment
   if (auditDraining) return; // the loop below will pick this up — never a second concurrent suite
@@ -12807,6 +12880,14 @@ async function drainPostLandAudits(): Promise<void> {
         // the land queued, on a deployment without the env default). Left where it is, durably:
         // unconfigured is not skipped, and configuring it again — or a boot — drains it.
         if (!auditCmdFor(r)) return false;
+        // …and NEVER holding a short-chain entry back for a helper. The grace exists to give
+        // another machine first refusal on a ~9-minute suite; this entry is install+pins, seconds,
+        // and it is not offered to the portal at all (helperJobsView / helperClaim refuse it for
+        // the same reason a repo-worker job is refused: the daemon runs the fleet SUITE, which is
+        // the wrong measurement for this tree). Waiting would be pure latency for a job nobody can
+        // take. Placed after the claim and command checks so an already-claimed or parked entry
+        // still answers with its own state.
+        if (entryRunsShortChain(r, q.covers)) return true;
         if (!graceOn) return true;
         // the YOUNGEST cover: a coalesced entry keeps growing while it waits, and the grace is a
         // promise about the newest land in it, not about the oldest. An entry with no covers is
@@ -12843,7 +12924,10 @@ async function drainPostLandAudits(): Promise<void> {
       // exit including a throw. Sight only; deleting this wrapper restores today's behaviour.
       await reportServerRun("audit",
         { slot: null, label: basename(repo), branch: q.main, suite: "post-land audit", cwd: null },
-        () => runPostLandAudit(repo, q.main, covers)); // never throws — every failure is a row
+        // The proportion is decided HERE, on the frozen slice, in the same turn as the selection —
+        // not inside the run, which would re-read a `q.covers` a concurrent land may already have
+        // grown. What this run stands for and what chain it earns are one decision over one list.
+        () => runPostLandAudit(repo, q.main, covers, entryRunsShortChain(repo, covers))); // never throws — every failure is a row
       // ...and only NOW is the entry consumed. Deleting first — today's order — means a process
       // death mid-run loses the audit even with a durable mirror, because the mirror would already
       // say "nothing pending". An entry outlives its run and dies with the ROW: queued and
@@ -13001,10 +13085,16 @@ function postLandAuditChecks(text: string, exitCode: number, fails?: string[], c
   return { ran, failed, ...(!completeOutput && trailCount === null ? { ranIsLowerBound: true as const } : {}) };
 }
 
-async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]): Promise<void> {
+async function runPostLandAudit(repo: string, main: string, covers: AuditCover[],
+  proportional: boolean): Promise<void> {
+  // Asked even on the short-chain path, and deliberately: an entry whose repo has no audit command
+  // any more is PARKED, and a parked entry must stay unmeasured rather than quietly acquire a
+  // fleet-shaped chain nobody configured. The short chain REPLACES a configured command; it never
+  // arms tier 2 where the owner switched it off.
   const chosen = auditCmdFor(repo);
   if (!chosen) return;
-  const { cmd, source: cmdSource } = chosen;
+  const cmd = proportional ? VERIFY_PROPORTIONAL_CMD : chosen.cmd;
+  const cmdSource: AuditCmdSource = proportional ? "proportional" : chosen.source;
   const startedAt = Date.now();
   // stamped SYNCHRONOUSLY, before the first await: the drain sets its lock and calls this in one
   // turn, so there is no moment an HTTP handler can observe in which the lock is held and this is
@@ -13120,6 +13210,7 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
     at: Date.now(), startedAt, ms: Date.now() - startedAt,
     repo, main, mainSha, result, ...(reason ? { reason } : {}),
     cmd, cmdSource, exitCode, out, ...(fails !== undefined ? { fails } : {}), ...(trail ? { trail } : {}), checks, covers,
+    ...(proportional ? { proportional: true as const, steps: [...VERIFY_PROPORTIONAL_STEPS] } : {}),
   };
   lastPostLandAudit = row;
   recordAuditDuration(row);
@@ -13133,7 +13224,8 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
   await mintAuditEvents(row);
   const named = covers.map((c) => c.branch).join(", ").slice(0, 120);
   audit("postland_audit", undefined,
-    `${result} ${basename(repo)} ${main}@${mainSha.slice(0, 8)} after ${named}${reason ? ` — ${reason}` : ""}`.slice(0, 240));
+    `${result}${proportional ? " proportional" : ""} ${basename(repo)} ${main}@${mainSha.slice(0, 8)}`
+    + ` after ${named}${reason ? ` — ${reason}` : ""}`.slice(0, 240));
   // a non-green audit is the alarm this tier exists to raise: loud in the server log, on the audit
   // trail, on its own durable trail, and on the board's poll payload — and it always NAMES the
   // land(s) it followed, because "something is red" without "after which land" is not actionable.
@@ -13147,6 +13239,8 @@ function postLandAuditSummary(): PostLandAuditInfo | null {
   const r = lastPostLandAudit;
   return r ? { at: r.at, ms: r.ms, result: r.result, repo: basename(r.repo), main: r.main,
     mainSha: r.mainSha, covers: r.covers.map((c) => c.branch), ...(r.reason ? { reason: r.reason } : {}),
+    // …and which chain produced it, so the board's alarm cannot name a suite that never ran
+    ...(r.proportional ? { proportional: true as const } : {}),
     // the other machine's own account of a non-measurement, flattened for the wire. It rides only
     // when it was actually reported: the board draws "timed out after N s" from these two, and
     // without them falls back to the honest "no verdict exists".
@@ -13538,8 +13632,14 @@ function helperJobsView(forDevice?: string): {
     // job would produce a verdict measured by the wrong suite and record it under the right repo.
     // The job stays local; nothing is dropped, the drain runs it here. A PARKED entry (no command
     // at all) is not offered either — it is nobody's work until something is configured.
+    // …and NOT OFFERED: an entry every one of whose lands passed the docs-only gate. Same reason
+    // as the repo-worker skip, in the other direction: the daemon runs `cfg.suiteCmd` — the FULL
+    // fleet suite — so taking this job would spend a remote machine's ~9 minutes on a tree whose
+    // proportional measurement is install+pins here, and file the result as if the short chain had
+    // been the question. The job stays local; the drain runs it in seconds and skips the grace.
     const chosen = auditCmdFor(repo);
     if (!chosen || chosen.source === "repo-worker") continue;
+    if (entryRunsShortChain(repo, q.covers)) continue;
     const c = helperClaimOf(repo);
     jobs.push({
       id: helperJobId(repo), kind: "audit", repo: basename(repo), main: q.main,
@@ -13941,6 +14041,8 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
   if (!chosen) return json({ error: "no audit command is configured for this repo — the entry is parked, not offered" }, 409);
   if (chosen.source === "repo-worker")
     return json({ error: "this repo's audit is its own repo-worker command — it runs on this machine only, never offered" }, 409);
+  if (entryRunsShortChain(repo, q.covers))
+    return json({ error: "every land in this entry passed the docs-only gate — it is audited by the short chain (install+pins) on this machine only, never offered" }, 409);
   // …the two ways this tree could already be somebody's work. Reported apart, not merged: they are
   // different facts, and the helper deserves to know which one it hit.
   const held = helperClaimOf(repo);
@@ -20267,7 +20369,13 @@ if (existsSync(POSTLAND_AUDIT_QUEUE_FILE)) {
         if (typeof e.main !== "string" || !Array.isArray(e.covers)) continue;
         const covers = e.covers.filter((c): c is AuditCover =>
           !!c && typeof c === "object" && typeof (c as AuditCover).branch === "string"
-          && typeof (c as AuditCover).mainAfter === "string" && typeof (c as AuditCover).at === "number");
+          && typeof (c as AuditCover).mainAfter === "string" && typeof (c as AuditCover).at === "number")
+          // NARROWED, not passed through: `proportional` decides whether a tree gets the short
+          // chain, so the only value this loader may believe is a literal `true`. Anything else —
+          // absent (every file an older server wrote), a string, a 1 — is "not proven" and buys
+          // the full suite, which is the same conservative reading the enqueue side writes.
+          .map((c): AuditCover => ({ branch: c.branch, mainAfter: c.mainAfter, at: c.at,
+            ...(c.proportional === true ? { proportional: true as const } : {}) }));
         if (covers.length) resumed.push([repo, { main: e.main, covers }]);
       }
     }

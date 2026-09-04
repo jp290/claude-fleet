@@ -341,11 +341,35 @@ fallende Check liest. Die Produktionsaenderung kann die Projektion nicht erreich
 (seine eigene Vorbedingung) war gruen. Uebrig bleibt EIN Mechanismus: 206 neue Zeilen VOR dem Check
 im selben sequentiellen Lauf mit geteiltem Server. Gegenhypothese ist staerker: beide Rots fielen in
 das OOM-Fenster.
-**LAEUFT GERADE:** der entscheidende Lauf auf `ad75273` bei ruhiger Maschine, in einem
-Wegwerf-Worktree (Scratchpad, PID war 29125). Gruen => Last, S2 entlastet, Attention „S2 landbar".
-Rot mit demselben Check => Fixture-Reihenfolge, S2 repariert. **Vorab gebunden: bei Rot NICHT
-diagnostizieren.** Danach `git worktree remove <scratchpad>/disc-ad75273 --force`, sonst Orphan.
-`ad75273` ist 12+ Commits hinter main — ein Rebase ist vor jedem Land faellig.
+**ERGEBNIS DES LAUFS (gefahren, Wegwerf-Worktree, `ad75273`, dirty=false): 3603 PASS, 2
+FAILURES** — und die Antwort ist zweigeteilt:
+- `projection nextAction` ist **ENTLASTET**: hier gruen. Das Rot aus Laeufen 2+3 war LAST, nicht
+  S2s Fixture-Reihenfolge. Meine Notiz `9ecdb29f` ist damit bestaetigt, `ae7f0f1e` endgueltig
+  ueberholt.
+- Dafuer fielen ZWEI ANDERE, beide Succession-/Pane-Familie: `unbound succession: pane s8 rendered
+  the harness screen (the pane died with the command)` und `…delivers it WHOLE once that marker
+  appears (500 successor delivery held (not-alive))`. Trail-Register: der erste hat **2 Laeufe,
+  beide auf `ad75273`, beide rot — er hat NIE bestanden**; der zweite 14 Laeufe, 11 gruen, rot auf
+  `5f9ef45` (1x) und `ad75273` (2x, dort auch 1x gruen).
+**DER CONFOUND, und er ist total:** JEDER Lauf auf `ad75273` fiel in das heutige OOM-Fenster, jeder
+historische gruene Lauf nicht. Baum und Bedingung sind perfekt korreliert — weitere Laeufe HEUTE
+koennen das nicht trennen. „the pane died with the command" ist zudem die Signatur eines
+Spawn-Fehlers unter Speicherdruck.
+**URTEIL: S2 ist NICHT landbar, und kein Lauf dieses Baumes war je vollstaendig gruen.** Ich habe
+keine Landbar-Attention gehoben.
+**DER NAECHSTE SCHRITT, billig und benannt (NICHT gefahren, ich stand im Band):** einen Lauf auf
+PLAIN MAIN unter heutigen Bedingungen. Zeigt main dieselben Succession-Rots, ist es die Maschine
+und S2 ist frei; ist main gruen, gehoert das Rot zu `ad75273`. Erst danach lohnt ein Rerun auf
+`ad75273` — und der will eine Maschine mit echtem freien Speicher, nicht nur „0 Wrapper".
+`ad75273` ist 12+ Commits hinter main — ein Rebase ist vor jedem Land ohnehin faellig.
+
+**BEZAHLTE LEHRE DIESES LAUFS, zweimal:** (1) „0 Suite-Wrapper" heisst NICHT „ruhige Maschine" —
+ein LAND-GATE der Live-Fleet ist kein Wrapper und zaehlt in keinem `grep -c '^/bin/sh ./e2e-'`.
+Mein Lauf hat einem echten Land 25 min Wartebudget abgenommen. Wer den Mutex nehmen will, prueft
+zusaetzlich auf einen wartenden `verify skipped`-Guard unter `bun server.ts`. (2) Ein Lauf mit
+`nohup … > log` ist BLOCKGEPUFFERT: „0 PASS-Zeilen" bei laufendem Prozess ist ein Messfehler des
+Beobachters, kein Haenger. Der Fortschrittssensor ist die `server.log` im Instanzverzeichnis oder
+das Trail, nie die Groesse der eigenen Logdatei.
 
 ## 5. Maschine: das OOM-Muster ist der stille Kostentreiber
 

@@ -1,3 +1,65 @@
+# HANDOFF — 🎛 Fleet Controller (Slot 16, Fable): 3 Lands, 1 Deploy, 5 Audits adjudiziert, 2 Hand-Dispatches, 1 Restart-Sturm bezahlt; 2026-09-04 (06:1x), ctx GEMESSEN 22,6 % beim Schreiben
+
+Zustand ableiten: `./state.sh`, `./register.sh`, Owner-Poll (Schnipsel CLAUDE.md §Kontext-Band), Panes.
+Hier nur, was git nicht traegt. Watches sterben mit diesem Slot — NEU ARMEN.
+
+## 0. Was in Flug ist und wer es landet
+
+| Lane | Slot | Auftrag | Stand | Landet |
+|---|---|---|---|---|
+| Dual-Host S4 `c3f91ce1` | 2 | 5 Commits (`d3681b3`..`b699ebf`), Report bei Slot 6 | **Merge laeuft** (gestartet 06:09), wartet am Mutex hinter Slot 3s Vorschau | **Controller** — danach Regelbuch-Zeilen aus §3 nachziehen |
+| §11.2l-Fixture `bffe3de0` | 3 | Opus/high, mein Brief (Task.brief), dispatcht 02:32 | isolierte Vorschau laeuft seit ~06:04 | **Controller**; danach in CLAUDE.md „§11.2l — OFFEN" auf REPARIERT |
+| D1-Nachschnitt `8df64679` | 5 | Opus/high, mein Brief, dispatcht 03:01 (Program 66499a03) | baut | **Controller**; danach ERST `POST /api/deploy` (275339a ist absichtlich NICHT live) |
+| E5 B-07 `97f9bd97` | 1 | sol | — | **Slot 4** (Sanierung) |
+| E1 Audit-Sensoren `4b92b2f0` | 11 | sol | — | **Slot 4** |
+
+Nach jedem eigenen Merge-POST sofort `{kind:"merge",target:<slot>}` armen; nach jedem Land, das
+Code bewegt, `{kind:"audit",repo,mainAfter}`.
+
+## 1. Gelandet und deployt (am Baum nachgeprueft)
+
+- `6f401842` Succession-Readiness-Gate → `2f442a4` + `bed5641`, volle Kette gruen. **Deployt 03:5x
+  (`551c4d01`, bootHead `bed5641`)** — der reparierte `succeed`-Pfad ist LIVE, aber noch von keiner
+  Session benutzt worden. Wer als naechster migriert, misst ihn zum ersten Mal.
+- D1 `92553809` → `275339a`, Gate gruen, **Audit ROT und als `real` adjudiziert**: 4 von 5 Fails nur
+  auf diesem Baum (security-Allowlist-Pin fuer `/api/self/fleet-report/:id/(accept|reject)`, D1s zwei
+  neue report-join-Checks liefern `report:null`, Unbound-Succession-Setup kippt mit D1 als einzigem
+  Delta). Reparatur = Slot 5. **Nicht deployen, bevor Slot 5 gelandet ist.**
+- Deploy `11ed2b31` (01:36) trug S3 Wake-on-LAN (`c692ff4`) und alles davor live.
+
+## 2. Entscheide dieser Session (Rueckfalltuer: die jeweilige Zeile)
+
+- **D1 ohne isolierte Vorschau gelandet** (Vorschau hing 40 min am Mutex; Tier-2 ist kein Gate).
+  Falsch fuer eine Lane, die `e2e/` anfasst: `e2e/security.ts` laeuft NUR dort, und genau dieser Pin
+  fiel. Lehre: bei `e2e/`-Diff die Vorschau abwarten oder das Rot einpreisen — ich habe es eingepreist,
+  ohne es zu sagen.
+- **Vier Audits stale-test** (`c692ff44`, `d1d29c1`, `2ad3670`, `bed5641`), alle am Trail-Register
+  nachgerechnet, Notizen an den Zeilen. Basisrate heute: §11.2l 13/36, Q6-Familie 9/35; Slot 9 hat
+  gezeigt, dass 17/35 Audit-Laeufe mindestens ein Rot aus den zwei Familien tragen (49 %).
+- **`bffe3de0` von notiz zu auftrag adoptiert und dispatcht** — die Reparatur der 49 % hat Vorrang.
+- **Restart-Sturm 01:35–01:38, meiner:** Deploy-Loop wartete auf `"ok":true` im POST-Body; der
+  Body sagt per Design `ok:null, stage:"restarting"`. 30 srv-Boots in 150 s, kein gemessener Schaden
+  (13 alive, Watches armed). Zeilen `ca6dc7a7` + Korrektur `deb0de66`. **Deploy-Erfolg NUR an der
+  boot-Zeile in `GET /api/deploys` lesen.** Vorschlag offen: `deployRun` bei HEAD == bootHead ablehnen.
+
+## 3. Regelbuch-Zeilen, die nach Slot 2s Land in CLAUDE.md nachzuziehen sind (Lane-Report, Text)
+
+- Flake-Familien „Vierzehn" → FUENFZEHN: „das PARKED-Quartett in `e2e/repo-worker-audit.ts`
+  (§11.2m — OFFEN; slow=sleep 6 gegen den 10-s-SERVER-FLOOR)". Slot 2 merkt an: Lane
+  `fleet/260903192830-8293` (Slot 11, E1) haelt genau diese Dateien — der Schnitt kann dort schon laufen.
+- Suite-Offer-Zeile kuerzen: die Lane muss „ist ein Helfer online" nicht mehr selbst pruefen
+  (`GET /api/self/gate` traegt `helper{online,…}`, die Offer-Tuer mintet ohne Helfer nicht).
+- Nach `bffe3de0`: §11.2l in der Liste auf REPARIERT in <sha>.
+
+## 4. Offen, nicht meins
+
+- Attention `65aa1937` (Private-repo-j, Produktfrage) und `8b4772db` (Game-Maker Schritt 5, zwei Owner-Wahlen) — Owner.
+- Slot 13 (studioObjekt) hat den Stups bekommen, S2 selbst zu briefen; keine Rueckmeldung gesehen.
+- Slot 9 (Game-Maker-MAIN) sammelt weitere §11.2l/Q6-Rots in seiner Abschlussnotiz statt einzeln.
+- Q6-Familie als EIGENE Zeile filen, sobald `bffe3de0` gelandet ist (Slot 9s Vorschlag, richtig).
+
+---
+
 # HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 4 → Nachfolge): RESCOPE in Kraft, Vollsplit beendet, ZWEI Lands gruen — und zwei fertige Lands haengen an einer verstopften Suite-Schlange; 2026-09-04 (03:5x), ctx GEMESSEN 37,6 %
 
 Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,

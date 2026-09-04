@@ -15,7 +15,8 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
-import { auditWatchMessage, laneHostCommitLooking, laneStalled, laneWatchEventKind, laneWatchMessage, laneWatchPayload, laneWatchSignal,
+import { auditWatchMessage, laneHostCommitLooking, laneSpentLooking, laneStalled, laneWatchEventKind, laneWatchMessage, laneWatchPayload, laneWatchSignal,
+  SPENT_RULES, STALLED_RULES,
   type AuditWatchEventPayload, type AuditWatchEventView, type ClarificationEventPayload, type LaneSignalView,
   type LaneWatchEventPayload } from "../lane-signals";
 import { composerArrival, composerHoldsExactly, composerResidue, composerRows,
@@ -2855,6 +2856,319 @@ export async function run(): Promise<void> {
     d1Cleaned.fleetReports = [];
     d1Cleaned.programs = (d1Cleaned.programs ?? []).filter((p) => p.id !== d1ProgramId);
     writeFileSync(d1Path, JSON.stringify(d1Cleaned, null, 2), { mode: 0o600 });
+    await restartSrv();
+  }
+
+  // === RESULT-RAIL D2 · THE AUTOMATIC CLOSE OF A SPENT LANE ===================================
+  // D1 above gave a MAIN a way to say "I read this work and took it". This block proves the one
+  // thing that verdict makes safe: closing a worker lane that is FINISHED, CLEAN, has nothing ahead
+  // of main and produced no landable candidate — the lane that otherwise sits open forever holding
+  // a dispatcher slot until the owner presses kill by hand.
+  //
+  // Everything here is a REFUSAL except two lanes. That asymmetry is the design: the git/pane half
+  // (`spent-looking`) cannot tell a lane that gave up from one that finished a read-only slice, so
+  // the close is gated on a persisted human-read judgement AND on a fresh commit count, and every
+  // fixture below differs from the closing one in exactly ONE fact.
+  {
+    // --- the predicate half, direct, and this is the falsifier for the ahead clause. Every
+    // integration fixture below refuses through TWO independent guards (the predicate and the
+    // killed-empty assertion), so no behavioural check can isolate one of them; this one can.
+    // Dropping `git.ahead===0` from SPENT_RULES turns exactly this check red.
+    const spentShape: LaneSignalView = { alive: true, idleMs: 5000, git: { dirty: 0, ahead: 0 },
+      gitOp: false, merge: null, observed: true, awaiting: null, hostCommits: false };
+    check("D2 predicate: spent-looking is the stalled shape plus a clean tree — ahead>0 and dirty>0 each refuse it",
+      laneSpentLooking(spentShape, 1500) === true
+      && laneSpentLooking({ ...spentShape, git: { dirty: 0, ahead: 1 } }, 1500) === false
+      && laneSpentLooking({ ...spentShape, git: { dirty: 1, ahead: 0 } }, 1500) === false,
+      JSON.stringify({ spent: laneSpentLooking(spentShape, 1500),
+        ahead: laneSpentLooking({ ...spentShape, git: { dirty: 0, ahead: 1 } }, 1500),
+        dirty: laneSpentLooking({ ...spentShape, git: { dirty: 1, ahead: 0 } }, 1500) }));
+    // …and every OTHER unknown-or-parked fact refuses too, in the positive direction the clause
+    // list argues for: an unknown git, an unobserved pane, a lane parked on the owner and a lane
+    // with something to show are four different sentences and none of them is permission.
+    check("D2 predicate: an unknown, unobserved, parked or ahead lane is never spent-looking",
+      laneSpentLooking({ ...spentShape, git: null }, 1500) === false
+      && laneSpentLooking({ ...spentShape, observed: false }, 1500) === false
+      && laneSpentLooking({ ...spentShape, awaiting: "owner" }, 1500) === false
+      && laneSpentLooking({ ...spentShape, alive: null }, 1500) === false
+      && laneSpentLooking({ ...spentShape, idleMs: 100 }, 1500) === false,
+      "positive clauses over facts that must be known");
+    // the composition itself, so the live probe below is not a tautology: `stalled` is served on
+    // the steward view and `dirty` beside it, and spent-looking is exactly their conjunction.
+    check("D2 predicate: spent-looking === served `stalled` AND a clean tree, so the served facts can stand in for it",
+      SPENT_RULES.length === STALLED_RULES.length + 1
+      && SPENT_RULES.slice(0, STALLED_RULES.length).every((r, i) => r === STALLED_RULES[i])
+      && SPENT_RULES[SPENT_RULES.length - 1]?.prose === "clean tree"
+      && laneStalled(spentShape, 1500) === true,
+      `${SPENT_RULES.length} clauses, last=${SPENT_RULES[SPENT_RULES.length - 1]?.prose}`);
+
+    const d2Main = await freeSlot();
+    const d2MainOpen = d2Main ? await post(`/api/slots/${d2Main}/open`, { cwd: REPO, label: "d2-autoclose-main" }) : null;
+    const d2NewLane = async (): Promise<{ ok?: boolean; slot: number; cwd: string; branch: string }> =>
+      (await (await post("/api/lanes", { repo: REPO })).json()) as
+        { ok?: boolean; slot: number; cwd: string; branch: string };
+    const acceptedLane = await d2NewLane();
+    const rejectedLane = await d2NewLane();
+    const dirtyLane = await d2NewLane();
+    const aheadLane = await d2NewLane();
+    const rejectedAheadLane = await d2NewLane();
+    const undecidedLane = await d2NewLane();
+    const reportlessLane = await d2NewLane();
+    const d2Lanes = [acceptedLane, rejectedLane, dirtyLane, aheadLane, rejectedAheadLane,
+      undecidedLane, reportlessLane];
+    const d2Refusers = [dirtyLane, aheadLane, rejectedAheadLane, undecidedLane, reportlessLane];
+    check("D2 fixtures: one MAIN occupant and seven distinct lanes exist",
+      !!d2MainOpen?.ok && d2Lanes.every((l) => typeof l.slot === "number" && !!l.cwd && !!l.branch)
+        && new Set([d2Main, ...d2Lanes.map((l) => l.slot)]).size === 8,
+      JSON.stringify({ d2Main, lanes: d2Lanes.map((l) => l.slot) }));
+    const d2MainTok = await paneEnv(`s${d2Main}`, "FLEET_SELF_TOKEN") ?? "";
+    const d2Tok = new Map<number, string>();
+    for (const l of d2Lanes) d2Tok.set(l.slot, await paneEnv(`s${l.slot}`, "FLEET_SELF_TOKEN") ?? "");
+    check("D2 fixtures: every participant carries its own exact scoped credential",
+      /^[0-9a-f]{32}$/.test(d2MainTok) && [...d2Tok.values()].every((t) => /^[0-9a-f]{32}$/.test(t))
+        && new Set([d2MainTok, ...d2Tok.values()]).size === 8,
+      `lengths=${[d2MainTok, ...d2Tok.values()].map((t) => t.length).join("/")}`);
+
+    // The Program binding and the per-lane queue identity, planted with srv down — the technique
+    // every binding fixture in this file uses. The task ids are ids and nothing more: the close
+    // JOINS them (lane row ↔ report provenance) and never reads a task row, so planting a row here
+    // would add a fixture nothing under test consults.
+    const d2Path = `${ROOT}/fleet.json`;
+    const d2ProgramId = "b".repeat(24);
+    const d2TaskId = (slot: number): string => `d2task${String(slot).padStart(6, "0")}`;
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const d2Plant = JSON.parse(readFileSync(d2Path, "utf8")) as {
+      slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
+    };
+    const d2MainRow = d2Plant.slots[String(d2Main)] ?? {};
+    d2Plant.programs = [...(d2Plant.programs ?? []), {
+      id: d2ProgramId, title: "Automatic lane close fixture",
+      intent: "Close a spent lane whose result a MAIN judged",
+      successCriterion: "A spent, judged lane is closed without the owner", nonGoals: [],
+      decisions: [], evidence: [], openQuestions: [], status: "active",
+      createdAt: Date.now() - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: Date.now() - 900, activatedAt: Date.now() - 800,
+      main: { slot: d2Main, openedAt: d2MainRow.openedAt, sessionId: d2MainRow.sessionId,
+        boundAt: Date.now() - 700 },
+    }];
+    for (const l of d2Lanes) {
+      d2Plant.slots[String(l.slot)].programId = d2ProgramId;
+      d2Plant.slots[String(l.slot)].taskId = d2TaskId(l.slot);
+    }
+    writeFileSync(d2Path, JSON.stringify(d2Plant, null, 2), { mode: 0o600 });
+    await restartSrv();
+
+    // the two git shapes that must refuse, made from real trees rather than planted numbers: an
+    // uncommitted file, and a lane that actually has a commit its base does not.
+    await Bun.write(`${dirtyLane.cwd}/d2-uncommitted.txt`, "a lane with work nobody recorded\n");
+    for (const l of [aheadLane, rejectedAheadLane]) {
+      await Bun.write(`${l.cwd}/d2-candidate.txt`, "a lane with something to show for itself\n");
+      spawnSync("git", ["-C", l.cwd, "add", "d2-candidate.txt"]);
+      spawnSync("git", ["-C", l.cwd, "commit", "-qm", "D2 fixture: this lane produced a candidate"]);
+    }
+
+    // Filed and judged ONE AT A TIME on purpose: a decision settles its FleetEvent, so the receiver's
+    // delivery budget (5 open rows per slot) is returned before the next report needs it. The
+    // undecided row is filed LAST and left open — it is the one debt this MAIN carries.
+    const d2Report = new Map<number, FleetReportRow>();
+    const d2Decide: [{ slot: number }, "accept" | "reject"][] = [
+      [acceptedLane, "accept"], [rejectedLane, "reject"], [dirtyLane, "accept"],
+      [aheadLane, "accept"], [rejectedAheadLane, "reject"],
+    ];
+    const d2Verdicts: number[] = [];
+    for (const [lane, verdict] of d2Decide) {
+      const filed = await selfFleetReport(d2Tok.get(lane.slot) ?? "",
+        { status: "complete", text: `D2 fixture: slot ${lane.slot} finished and produced no candidate.` });
+      const row = (await filed.json() as { report?: FleetReportRow }).report;
+      if (!row) continue;
+      d2Report.set(lane.slot, row);
+      const decided = await decideReport(d2MainTok, row.id, verdict, { reason: `D2: ${verdict}ed` });
+      const after = (await decided.json() as { report?: FleetReportRow }).report;
+      if (after?.decision) { d2Report.set(lane.slot, after); d2Verdicts.push(lane.slot); }
+    }
+    const undecidedFiled = await selfFleetReport(d2Tok.get(undecidedLane.slot) ?? "",
+      { status: "needs-main", text: "D2 fixture: a decision is owed on this one and never given." });
+    const undecidedRow = (await undecidedFiled.json() as { report?: FleetReportRow }).report;
+    if (undecidedRow) d2Report.set(undecidedLane.slot, undecidedRow);
+    check("D2 fixtures: five reports carry a verdict by the exact receiver, one is filed and undecided, one lane filed nothing",
+      d2Verdicts.length === 5
+        && d2Report.get(acceptedLane.slot)?.decision?.disposition === "accepted"
+        && d2Report.get(rejectedLane.slot)?.decision?.disposition === "rejected"
+        && d2Report.get(rejectedAheadLane.slot)?.decision?.disposition === "rejected"
+        && d2Report.get(acceptedLane.slot)?.decision?.by.slot === d2Main
+        && (undecidedRow?.decision ?? null) === null
+        && (await selfFleetReports(d2Tok.get(reportlessLane.slot) ?? "")).reports.length === 0,
+      JSON.stringify({ decided: d2Verdicts, undecided: undecidedRow?.id ?? null,
+        dispositions: [...d2Report.entries()].map(([s, r]) => [s, r.decision?.disposition ?? null]) }));
+
+    // --- the live precondition, read off the SERVER's own served facts rather than re-derived
+    // here: `stalled` plus a clean tree IS spent-looking (pinned as a composition three checks
+    // above), so a lane that does not reach this shape fails as a SETUP problem instead of making
+    // the close look broken. The isolated harness shrinks FLEET_STALLED_IDLE_MS to 3 s.
+    const d2SvTok = ((await (await get("/api/steward/token")).json()) as { token: string }).token;
+    type D2Sv = { id: number; stalled: boolean; observed: boolean;
+      git: { dirty: number; ahead: number } | null };
+    const d2Sv = async (): Promise<D2Sv[]> =>
+      ((await (await fetch(BASE + "/api/steward/sessions",
+        { headers: { authorization: `Bearer ${d2SvTok}` } })).json()) as { slots: D2Sv[] }).slots;
+    const d2SpentNow = async (slot: number): Promise<boolean> => {
+      const v = (await d2Sv()).find((x) => x.id === slot);
+      return v?.stalled === true && v.git?.dirty === 0;
+    };
+    let closerSpent = false;
+    for (let i = 0; i < 60 && !closerSpent; i++) {
+      closerSpent = await d2SpentNow(acceptedLane.slot) && await d2SpentNow(rejectedLane.slot);
+      if (!closerSpent) await Bun.sleep(1000);
+    }
+    const d2SvBefore = await d2Sv();
+    const svOf = (slot: number): D2Sv | undefined => d2SvBefore.find((x) => x.id === slot);
+    check("D2 setup: both closing lanes reached the spent shape, and every refusing lane differs from them in exactly one fact",
+      closerSpent
+        && svOf(dirtyLane.slot)?.git?.dirty === 1
+        && svOf(aheadLane.slot)?.git?.ahead === 1
+        && svOf(rejectedAheadLane.slot)?.git?.ahead === 1
+        && svOf(undecidedLane.slot)?.stalled === true && svOf(undecidedLane.slot)?.git?.dirty === 0
+        && svOf(reportlessLane.slot)?.stalled === true && svOf(reportlessLane.slot)?.git?.dirty === 0,
+      JSON.stringify(d2SvBefore.filter((x) => d2Lanes.some((l) => l.slot === x.id))
+        .map((x) => [x.id, x.stalled, x.git])));
+
+    // --- (b) THE FLAG'S ABSENCE MEANS DO NOTHING, and this is where it is worth measuring: every
+    // fact the close needs is now true for two lanes, and the server was booted without the flag.
+    const outcomesOf = async (branch: string): Promise<Record<string, unknown>[]> =>
+      ((await (await get("/api/lane-outcomes?limit=1000")).json()) as
+        { outcomes: Record<string, unknown>[] }).outcomes.filter((o) => o.branch === branch);
+    const liveSlots = async (): Promise<{ id: number; cwd: string | null }[]> =>
+      ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] }).slots;
+    await Bun.sleep(Math.max(3000, AUTOS_TICK_MS * 8));
+    const unarmedSlots = await liveSlots();
+    const unarmedRows = await Promise.all(d2Lanes.map((l) => outcomesOf(l.branch)));
+    check("D2 flag off: with FLEET_LANE_AUTOCLOSE unset the ready lanes are untouched and no outcome row is written",
+      d2Lanes.every((l) => (unarmedSlots.find((x) => x.id === l.slot)?.cwd ?? null) !== null)
+        && unarmedRows.every((rows) => rows.length === 0),
+      JSON.stringify({ open: d2Lanes.map((l) => unarmedSlots.find((x) => x.id === l.slot)?.cwd !== null),
+        rows: unarmedRows.map((r) => r.length) }));
+
+    // --- ARM IT. The flag rides one restart; the next plain restartSrv drops it again, because it
+    // is not in this process's env (see restartSrv's own note).
+    const d2MainShaBefore = spawnSync("git", ["-C", REPO, "rev-parse", "main"], { encoding: "utf8" }).stdout.trim();
+    const d2OpenBefore = (await liveSlots()).filter((x) => x.cwd !== null).map((x) => x.id);
+    const d2PlogBefore = (await plogRead()).length;
+    await restartSrv({ FLEET_LANE_AUTOCLOSE: "1" });
+    let closedBoth = false;
+    for (let i = 0; i < 120 && !closedBoth; i++) {
+      const live = await liveSlots();
+      closedBoth = (live.find((x) => x.id === acceptedLane.slot)?.cwd ?? null) === null
+        && (live.find((x) => x.id === rejectedLane.slot)?.cwd ?? null) === null;
+      if (!closedBoth) await Bun.sleep(1000);
+    }
+    const d2LiveAfter = await liveSlots();
+    const acceptedRows = await outcomesOf(acceptedLane.branch);
+    const rejectedRows = await outcomesOf(rejectedLane.branch);
+    const acceptedRow = acceptedRows[0] as { disposition?: string; commitCount?: number;
+      repo?: string; taskId?: string; programId?: string;
+      autoClose?: { reportId?: string; disposition?: string; decidedAt?: number; decidedBySlot?: number } } | undefined;
+    const rejectedRow = rejectedRows[0] as { disposition?: string;
+      autoClose?: { reportId?: string; disposition?: string } } | undefined;
+    check("D2 close: a spent lane whose report was ACCEPTED by its exact receiver is torn down without the owner",
+      closedBoth && (d2LiveAfter.find((x) => x.id === acceptedLane.slot)?.cwd ?? null) === null,
+      JSON.stringify({ closedBoth, cwd: d2LiveAfter.find((x) => x.id === acceptedLane.slot)?.cwd ?? null }));
+    check("D2 close: a REJECTED verdict closes the lane the same way — the door is 'judged', not 'approved'",
+      (d2LiveAfter.find((x) => x.id === rejectedLane.slot)?.cwd ?? null) === null
+        && rejectedRow?.disposition === "killed-empty"
+        && rejectedRow.autoClose?.disposition === "rejected"
+        && rejectedRow.autoClose.reportId === d2Report.get(rejectedLane.slot)?.id,
+      JSON.stringify({ row: rejectedRow ?? null }));
+    // --- (c) the trail a hand close writes, plus the one field that says no hand was involved.
+    // Reconstructible WITHOUT a pane: the disposition, the lane's own provenance, and the id of the
+    // report whose verdict authorised it are all on the row.
+    check("D2 trail: exactly one killed-empty row per closed lane, carrying the authorising report id, its verdict and the deciding occupant",
+      acceptedRows.length === 1 && rejectedRows.length === 1
+        && acceptedRow?.disposition === "killed-empty" && acceptedRow.commitCount === 0
+        && acceptedRow.autoClose?.disposition === "accepted"
+        && !!d2Report.get(acceptedLane.slot)?.id
+        && acceptedRow.autoClose.reportId === d2Report.get(acceptedLane.slot)?.id
+        && acceptedRow.autoClose.decidedBySlot === d2Main
+        && acceptedRow.autoClose.decidedAt === d2Report.get(acceptedLane.slot)?.decision?.at
+        && acceptedRow.taskId === d2TaskId(acceptedLane.slot) && acceptedRow.programId === d2ProgramId,
+      JSON.stringify({ rows: acceptedRows.length, row: acceptedRow ?? null }));
+    // …and the worktree survives the close exactly as it survives a hand kill: killSlot never
+    // removes a tree, so nothing this tick does can destroy work it decided not to look at.
+    check("D2 trail: the closed lane's worktree is still on disk, as after any hand kill",
+      existsSync(acceptedLane.cwd) && existsSync(rejectedLane.cwd),
+      `${acceptedLane.cwd} ${rejectedLane.cwd}`);
+
+    // --- (a) EVERY refusal, each isolated to one fact, measured on the same armed server.
+    const refusalRows = await Promise.all(d2Refusers.map((l) => outcomesOf(l.branch)));
+    const stillOpen = d2Refusers.map((l) => (d2LiveAfter.find((x) => x.id === l.slot)?.cwd ?? null) !== null);
+    check("D2 refusal: a dirty tree is never closed, however decided its report",
+      stillOpen[0] === true && refusalRows[0]?.length === 0,
+      JSON.stringify({ open: stillOpen[0], rows: refusalRows[0]?.length }));
+    check("D2 refusal: ahead>0 is never closed — a lane with a candidate is somebody's to look at",
+      stillOpen[1] === true && refusalRows[1]?.length === 0,
+      JSON.stringify({ open: stillOpen[1], rows: refusalRows[1]?.length }));
+    check("D2 refusal: a REJECTED report does not license closing a lane that is still ahead",
+      stillOpen[2] === true && refusalRows[2]?.length === 0,
+      JSON.stringify({ open: stillOpen[2], rows: refusalRows[2]?.length }));
+    // the row is FOUND and undecided — a `?.decision === undefined` on a row that is simply gone
+    // would pass for the trivial reason that there is nothing to read, which is the shape this
+    // check must not be able to have.
+    const undecidedStanding = (await selfFleetReports(d2MainTok)).reports
+      .find((r) => r.id === undecidedRow?.id);
+    check("D2 refusal: a filed but UNDECIDED report never closes a lane, however spent it looks",
+      stillOpen[3] === true && refusalRows[3]?.length === 0
+        && !!undecidedStanding && (undecidedStanding.decision ?? null) === null,
+      JSON.stringify({ open: stillOpen[3], rows: refusalRows[3]?.length,
+        standing: !!undecidedStanding, decision: undecidedStanding?.decision ?? null }));
+    check("D2 refusal: a lane that filed NO report is never closed — absent evidence is not a verdict",
+      stillOpen[4] === true && refusalRows[4]?.length === 0,
+      JSON.stringify({ open: stillOpen[4], rows: refusalRows[4]?.length }));
+
+    // --- (d) what the close must never do, measured rather than asserted in prose: it moves no
+    // integration branch, it types nothing into any lane, and it takes no slot it was not entitled
+    // to — including every lane other modules left open on this server.
+    const d2MainShaAfter = spawnSync("git", ["-C", REPO, "rev-parse", "main"], { encoding: "utf8" }).stdout.trim();
+    const d2PlogAfter = await plogRead();
+    const laneWrites = d2PlogAfter.slice(d2PlogBefore)
+      .filter((entry) => d2Lanes.some((l) => l.slot === entry.slot)).length;
+    const foreignClosed = d2OpenBefore.filter((id) => !d2Lanes.some((l) => l.slot === id)
+      && (d2LiveAfter.find((x) => x.id === id)?.cwd ?? null) === null);
+    check("D2 invariants: the close lands nothing, types nothing into a lane, and closes no slot outside its own fixtures",
+      d2MainShaBefore !== "" && d2MainShaAfter === d2MainShaBefore
+        && laneWrites === 0 && foreignClosed.length === 0,
+      JSON.stringify({ main: [d2MainShaBefore.slice(0, 8), d2MainShaAfter.slice(0, 8)],
+        laneWrites, foreignClosed }));
+
+    // --- and the FLAG rode exactly one restart. Proven rather than trusted to the harness note:
+    // the dirty lane's ONE refusing fact is removed, so on an armed server it would now close —
+    // same Program, same accepted verdict, same spent shape as the two lanes that did. It stays
+    // open across the plain restart, which is also what every module after this one depends on.
+    rmSync(`${dirtyLane.cwd}/d2-uncommitted.txt`, { force: true });
+    await restartSrv(); // plain: FLEET_LANE_AUTOCLOSE is not in this process's env, so it is dropped
+    let disarmedSpent = false;
+    for (let i = 0; i < 60 && !disarmedSpent; i++) {
+      disarmedSpent = await d2SpentNow(dirtyLane.slot);
+      if (!disarmedSpent) await Bun.sleep(1000);
+    }
+    await Bun.sleep(Math.max(3000, AUTOS_TICK_MS * 8));
+    const disarmedLive = await liveSlots();
+    check("D2 teardown: the flag rode exactly one restart — the now-spent, accepted lane stays open on the plain restart",
+      disarmedSpent && (disarmedLive.find((x) => x.id === dirtyLane.slot)?.cwd ?? null) !== null
+        && (await outcomesOf(dirtyLane.branch)).length === 0,
+      JSON.stringify({ spent: disarmedSpent,
+        cwd: disarmedLive.find((x) => x.id === dirtyLane.slot)?.cwd ?? null }));
+
+    for (const l of d2Refusers) await post(`/api/slots/${l.slot}/kill`, {});
+    if (d2Main) await post(`/api/slots/${d2Main}/kill`, {});
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const d2Cleaned = JSON.parse(readFileSync(d2Path, "utf8")) as {
+      events?: { kind?: string }[]; fleetReports?: unknown[]; programs?: { id?: string }[];
+    };
+    d2Cleaned.events = (d2Cleaned.events ?? []).filter((e) => e.kind !== "fleet-report");
+    d2Cleaned.fleetReports = [];
+    d2Cleaned.programs = (d2Cleaned.programs ?? []).filter((p) => p.id !== d2ProgramId);
+    writeFileSync(d2Path, JSON.stringify(d2Cleaned, null, 2), { mode: 0o600 });
     await restartSrv();
   }
 

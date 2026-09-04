@@ -3808,6 +3808,73 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && /return decideFleetReport\(s, selfReportDecision\[1\],/.test(server),
     `forbidden=[${decisionForbidden.join(",")}] callSites=${decisionCallSites}`);
 
+  // --- D2 · THE AUTOMATIC LANE CLOSE, the acceptance door's only consumer. Three halves can drift
+  // without a compiler noticing, and each one is a behaviour that closes panes unattended: the
+  // FLAG NAME (env string vs the doc that tells an owner how to arm it), the DISPOSITION WORD (the
+  // LaneDisposition union vs the assertion vs the doc), and the two source rules that keep the act
+  // where it belongs — armed only by the flag, and unreachable from the lane-START path.
+  const autoCloseTick = server.match(/async function tickLaneAutoClose\([\s\S]*?\n\}/)?.[0] ?? "";
+  const autoCloseRefusal = server.match(/function laneAutoCloseRefusal\([\s\S]*?\n\}/)?.[0] ?? "";
+  const autoCloseSection = selfApi.slice(selfApi.indexOf("### Der automatische Lane-Schluss"));
+  pin(`${RULE_RECEIVER} — the auto-close flag is one name in server.ts and in the doc that tells an owner how to arm it (D2)`,
+    /process\.env\.FLEET_LANE_AUTOCLOSE/.test(server)
+      && autoCloseSection !== "" && autoCloseSection.includes("FLEET_LANE_AUTOCLOSE")
+      // the off-by-default shape itself: the recognised spellings are NAMED, so an unrecognised
+      // value cannot pass for a decision (FLEET_CLEAN_REVIEW's own 2026-07-28 lesson)
+      && server.includes("const LANE_AUTOCLOSE_OFF_RE = /^(0|off|false|no)$/i;")
+      && server.includes('const LANE_AUTOCLOSE_ON = /^(1|true|on|yes)$/i.test(LANE_AUTOCLOSE_RAW);')
+      && autoCloseSection.includes("`1`/`true`/`on`/`yes`"),
+    `env=${/process\.env\.FLEET_LANE_AUTOCLOSE/.test(server)} docSection=${autoCloseSection !== ""}`);
+  pin(`${RULE_RECEIVER} — killed-empty is one word across the disposition union, the tick's assertion and the doc (D2)`,
+    /type LaneDisposition = [^\n]*"killed-empty"/.test(server)
+      && autoCloseTick.includes('row.disposition !== "killed-empty"')
+      && !/"killed-dirty"/.test(autoCloseTick)
+      && autoCloseSection.includes("killed-empty") && autoCloseSection.includes("killed-dirty"),
+    `union=${/type LaneDisposition = [^\n]*"killed-empty"/.test(server)}`
+      + ` assertion=${autoCloseTick.includes('row.disposition !== "killed-empty"')}`);
+  // The act, as SOURCE. The trail must be written BEFORE the teardown (killSlot clears the lane
+  // state buildLaneOutcome reads), the tick must never reach a land, and the timer must exist only
+  // behind the flag — a registration outside that guard is a tick that arms itself.
+  const emitAt = autoCloseTick.indexOf("emitLaneOutcome({ ...row, autoClose:");
+  const killAt = autoCloseTick.indexOf('await killSlot(s, "owner");');
+  const autoCloseForbidden = ["landLane", "mergeJob", "sendText", "removeWorktreeSafe",
+    "tickDispatch", "dispatchTask"].filter((token) => new RegExp(`\\b${token}\\b`).test(autoCloseTick));
+  // …and the ONE-ATTEMPT ceiling, spent BEFORE the row: the trigger is level-triggered, so a lane
+  // that survives a thrown teardown would otherwise earn a second outcome row for one close.
+  const triedAt = autoCloseTick.indexOf("autoCloseTried.set(s.id, s.openedAt);");
+  pin(`${RULE_RECEIVER} — the auto-close records before it tears down, lands nothing, and is registered only behind the flag (D2)`,
+    autoCloseTick !== "" && emitAt >= 0 && killAt > emitAt && autoCloseForbidden.length === 0
+      && triedAt >= 0 && triedAt < emitAt
+      && autoCloseTick.includes("autoCloseTried.get(s.id) === s.openedAt")
+      && server.includes("if (LANE_AUTOCLOSE_ON) setInterval(() => void tickLaneAutoClose()")
+      && (server.split("tickLaneAutoClose(").length - 2) === 1,
+    `emit@${emitAt} kill@${killAt} forbidden=[${autoCloseForbidden.join(",")}]`
+      + ` callSites=${server.split("tickLaneAutoClose(").length - 2}`);
+  // …and the permission list is default-DENY: every clause returns a sentence, the only `null` is
+  // the last line, and the two facts that cannot be re-derived elsewhere (the exact receiver
+  // occupant, the Program binding) are tested here rather than inherited from the door that wrote
+  // them. A guarantee an actuator inherits is a guarantee it stops noticing.
+  pin(`${RULE_RECEIVER} — the auto-close permission is a list of named refusals with exactly one null (D2)`,
+    autoCloseRefusal !== ""
+      && (autoCloseRefusal.match(/return null;/g) ?? []).length === 1
+      && autoCloseRefusal.includes("if (!autosOn) return")
+      // matched by BRANCH, not merely by slot: mergeLast survives a recycle, so `has(s.id)` alone
+      // would refuse forever on a slot whose PREVIOUS occupant merged
+      && autoCloseRefusal.includes("verdict.branch !== s.worktree.branch")
+      && autoCloseRefusal.includes("laneSpentLooking(laneSignalView(s, now), STALLED_IDLE_MS)")
+      && autoCloseRefusal.includes("d.by.sessionId !== r.receiver.sessionId")
+      && autoCloseRefusal.includes('program.status !== "active"'),
+    `nulls=${(autoCloseRefusal.match(/return null;/g) ?? []).length}`
+      + ` refusals=${(autoCloseRefusal.match(/return "/g) ?? []).length}`);
+  // The predicate half is COMPOSED from the stalled clause list, never restated: `stalled` and
+  // `spent` must not be able to disagree about "this lane has nothing to show for itself".
+  const laneSignals = read("lane-signals.ts");
+  pin(`${RULE_RECEIVER} — spent-looking is STALLED_RULES plus one clean-tree clause, not a second clause list (D2)`,
+    laneSignals.includes("export const SPENT_RULES: readonly LaneRule[] = [\n  ...STALLED_RULES,")
+      && laneSignals.includes('{ prose: "clean tree", holds: (v) => v.git !== null && v.git.dirty === 0 },')
+      && laneSignals.includes("export function laneSpentLooking("),
+    `composed=${laneSignals.includes("...STALLED_RULES,")}`);
+
   // The footer is a LIFECYCLE instruction, and a clarify lane has a different lifecycle: it stops
   // for the owner. Appending it there would tell a lane to finish work it was told not to start.
   pin(`${RULE_RECEIVER} — the exit footer is appended to mutating briefs only, clarify exempted at the seam`,

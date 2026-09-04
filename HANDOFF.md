@@ -222,10 +222,13 @@ gefallen ist, liest den Trail, nicht das Ledger.
   Baum: zweimal ff-Rennen (main zog waehrend der Gate weiter, einmal durch MEINEN Handoff-Commit), einmal
   `./e2e-claude-gate.sh` Phase 3 (server did not come up, keine server.log) = §11.2i, „nie gemessen".
   Same-Tree-Rerun der Lane danach gruen. Audit-Watch `db446c7b` auf `4ff94e3` armed.
-- **Regelbuch nachgezogen (maschinenlokal: `rulebook/lane-discipline.md` → Render → pins ALL PASS):**
-  §11.2l steht auf REPARIERT in `7d089c1`. Die SHA ist VIERMAL gewandert (ca81fbb → 251adab → ffeda2a →
-  7d089c1), weil jeder Rebase die Fixture neu hasht und das Doc sie zitiert; die Lane hat das zuletzt mit
-  `git log --grep 'busy-receiver fixture'` entschaerft. Nimm eine solche SHA nie aus einem Report.
+- **Regelbuch-Zeile §11.2l: NICHT von mir, aber von mir VERIFIZIERT.** Als ich sie nach dem Land
+  eintragen wollte, stand sie schon in `rulebook/lane-discipline.md:141` — REPARIERT in `7d089c1`, mit
+  einer Trail-Zaehlung („5x rot vor / 1x gruen nach") und dem `git log --grep`-Wiederfinde-Hinweis, beides
+  nicht mein Text; mein Anker „OFFEN" fand darum nichts mehr. Wer es war, weiss ich nicht (kein Controller
+  sichtbar). Geprueft: die SHA ist die richtige (`git log main --grep 'busy-receiver fixture'` = 7d089c1,
+  is-ancestor JA), Render + `bun e2e/pins.ts` = ALL PASS. **Merkposten:** die SHA war ueber die Rebases
+  VIERMAL gewandert (ca81fbb → 251adab → ffeda2a → 7d089c1); nimm sie nie aus einem Lane-Report.
 - **Es gibt keinen 🎛 Fleet Controller mehr** — kein Slot traegt das Label (16 → 7 belegte Slots);
   Slot 12s Handoff (unten) sagt selbst „Watches sterben mit Slot 12". Damit dispatcht niemand
   `328fd28f`/`e0d625a5` (F2/F4, `pending`, von mir NICHT released — Non-Goal), und die Attention

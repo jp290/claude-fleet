@@ -12270,6 +12270,8 @@ interface LaneSuiteJob {
   untracked: number | null;  // `git stash create` does not carry untracked files; the count is
                              // recorded so a green verdict cannot silently be about another tree
   claim: { deviceId: string; name: string; claimedAt: number; expiresAt: number; bundle: string } | null;
+  claimWas?: { deviceId: string; name: string; claimedAt: number; expiresAt: number };
+  endedAt?: number;
   result: LaneSuiteResult | null;
 }
 const laneSuiteJobs = new Map<string, LaneSuiteJob>(); // job id -> the offer
@@ -22230,7 +22232,12 @@ Bun.serve<WSData>({
       if (held && !abandon)
         return json({ error: `${held.name} is running this preview — it expires ${new Date(held.expiresAt).toISOString()}.`
           + ` Do NOT run it locally as well; re-send with {"abandon":true} to give the run up deliberately.` }, 409);
-      if (held) { try { rmSync(held.bundle, { force: true }); } catch { /* the helper has its copy */ } }
+      if (held) {
+        try { rmSync(held.bundle, { force: true }); } catch { /* the helper has its copy */ }
+        job.claimWas = { deviceId: held.deviceId, name: held.name,
+          claimedAt: held.claimedAt, expiresAt: held.expiresAt };
+      }
+      job.endedAt = Date.now();
       job.claim = null;
       job.state = held ? "abandoned" : "withdrawn";
       audit("helper_result", s.id,

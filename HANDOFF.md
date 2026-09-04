@@ -1,3 +1,116 @@
+# HANDOFF — Program-MAIN „Fleet-Betrieb 2026-09" (`f170dc46e4b026ee34d9392e`, Slot 7, Opus 5): R1 gelandet und gruen verifiziert, zwei Audits adjudiziert, und das Program traegt seit 21:0x ein 12-Zeilen-LEBENSZYKLUS-Paket, das ich NICHT mehr gestartet habe; 2026-09-04 21:1x, ctx GEMESSEN 36,8 % (367 768/1 000 000)
+
+Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was
+git und die Sensoren nicht tragen. Die Abschnitte darunter sind FREMD (geteilte Datei).
+
+## 0. DAS ERSTE: drei Dinge, die mit meiner Session STERBEN
+
+1. **Ein armed Audit-Watch auf `fc45fe4`** (`87d2a96c`, Program-Land von R1). Er stirbt beim
+   Teardown, still — das ist B1, und B1 ist genau die Zeile, die das Paket unten als S3a-ii
+   repariert. **Du bekommst das Audit-Ergebnis also NICHT in die Pane.** Hol es dir selbst:
+   `grep 'fc45fe4' post-land-audits.jsonl` (Ledger, gitignored — `grep`, nicht `rg`). Ist es rot,
+   ist die Adjudikation MEINE Rolle, also jetzt deine (Owner-Entscheid 2026-09-04 19:2x).
+2. **Vier Regelbuch-Aenderungen von mir liegen in KEINEM Commit.** `rulebook/` und `CLAUDE.md` sind
+   gitignored; die Aenderungen leben nur auf dieser Maschine. Sie sind gerendert und `bun e2e/pins.ts`
+   ist gruen. Inhalt, damit du sie wiedererkennst: (a) `lane-discipline` — „0 Suite-Wrapper" ist kein
+   Beweis fuer eine ruhige Maschine (Gate faehrt vier Schritte vor dem ersten `e2e-*.sh`), (b)
+   dieselbe Datei — `nohup … > log` ist blockgepuffert, (c) `deploy` — eine FEHLENDE Audit-Zeile
+   heisst „laeuft noch", nie „verloren", (d) `lane-discipline` — Flake-Familien sechzehn -> SIEBZEHN
+   mit §11.2o. Faellt eine Maschine aus, sind sie weg.
+3. **Kein Direkt-Commit auf main, solange ein fremdes Gate laeuft.** Ich habe heute EINEN Land an
+   genau dem verloren: `16e0af2`, ein Docs-Commit mit 43 Zeilen, killte 104 757 ms gruenes Gate.
+
+## 1. Was ich geliefert habe
+
+- **R1 `880387df` GELANDET** (`fc45fe4`), Land-Note `verify.ok true`, exit 0, ms 100 883, waitMs
+  1 000, alle sieben Schritte, `proportional false`. Das Merge-Verdikt geht ab jetzt an die
+  anfordernde MAIN statt in die Lane-Pane. Zweiter Anlauf; der erste starb an ff-lost.
+- **Zwei rote Post-Land-Audits adjudiziert**, beide `flake`, beide mit eigener Messung:
+  `2b4b4ea` (at=1788539211552) und `940887d` (at=1788541056390). Evidenz in den Queue-Notizen
+  `b55059a1` und `5c9c7ab6`. **Der Controller hat sie um 21:0x noch als „offen" gemeldet — das ist
+  stale, nicht widerspruechlich.** Sechs AELTERE rote Audits (08-19 bis 09-02) sind unadjudiziert;
+  keines ist ein Fleet-Betrieb-Land, ich habe sie bewusst liegen lassen.
+- **Zwei Zeilen gefiled:** `76261837` (R4', beide Empfaenger-Selektoren) und `ce329973` (R2',
+  ff-Retry unter gehaltenem Lock). **`fa3a36b3`** (B1) ebenfalls — inzwischen ueberholt, s. §3.
+
+## 2. DAS PAKET, das ich nicht mehr gestartet habe (Controller-Nachricht 21:0x, Owner-Freigabe)
+
+Zwoelf `auftrag`-Zeilen, alle **Codex gpt-5.6-sol/high**, Brief je Abschnitt in
+`docs/program-lebenszyklus-architektur-2026-09-04.md` (§0 KERN + ein Schnitt). Plan:
+`docs/program-lebenszyklus-2026-09-04.md`. Befunde: `docs/messungen/2026-09-04-architektur-zusammenarbeit.md`.
+GLM-Gegencheck: `docs/messungen/2026-09-04-plan-gegencheck-glm.md`.
+
+| Zeile | Id | Reihenfolge |
+|---|---|---|
+| S1 Audit-`fails[]` lokal | `3cd64a5f` | QUEUED |
+| S2 Program-Projektion | `9fd34beb` | QUEUED |
+| S5a Adjudikations-Actor | `db6902c4` | QUEUED |
+| S3a-i Inbox-Datenmodell | `30383e62` | nach S2 |
+| S3a-ii Attention/Reconcile/Nudge | `c464af30` | nach S3a-i |
+| S3b Report adressiert Program | `417d2be5` | nach S3a-ii |
+| S3d Lane-Watch-Dedupe | `74319808` | nach S3b |
+| S3c rotes Audit an das Program | `288f6359` | nach S3d |
+| S4 Handoff am Program statt in git | `8e1e0be4` | nach S3a-i |
+| S5b `paneModel` Ruecklese | `ee47b0f8` | unabhaengig |
+| S5c `..._MAX_LANES_PER_PROGRAM=1` | `1832c7eb` | unabhaengig |
+| S12 Program-Blick (Client) | `7ed73694` | nach S2 |
+
+**ARBEITSTEILUNG, vom Controller gesetzt und von mir mit Schweigen angenommen** (er bot an, dass
+ich selbst freigebe): **er** gibt die pending-Zeilen frei, sobald der Vorgaenger gelandet ist, und
+faehrt Deploy + `bun run build` nach Lands mit `server.ts`/Client. **Du** nimmst die Reports
+entgegen, pruefst den DIFF (nicht den Bericht) und landest per `POST /api/self/tasks/:id/land`.
+Willst du lieber selbst freigeben, sag ihm das in einem Satz.
+
+## 3. Meine eigenen Zeilen vs. das Paket — vier Ueberschneidungen, drei Loeschungen offen
+
+Ich habe den Controller/Owner gebeten, drei Zeilen zu loeschen; **ob es passiert ist, PRUEFE, statt
+es zu glauben** (`grep '"id": "<id>"' fleet.json`). Eine Program-MAIN hat keine Ruecknahme-Tuer —
+`rg -n 'api/self/tasks' server.ts` findet nur `/release` und `/land`.
+
+- `0c4a7692` — alte R2-Fassung, ueberholt von `ce329973`. LOESCHEN.
+- `fa3a36b3` — B1. **Ueberholt:** §3 des Architektur-Docs traegt woertlich „schliesst B-A2, **B1**".
+  LOESCHEN.
+- `a9fb4b6d` — Program-Ansicht. **Ueberholt** von S2 (Projektion) + S12 (Client). LOESCHEN.
+- `76261837` — R4'. **HALB ueberholt:** §5/S3c nimmt den Audit-Empfaenger. Die zweite Haelfte
+  (`server.ts#tickBacklogNudge` waehlt seinen Empfaenger OHNE Repo-Filter und `tasks` ist
+  fleet-weit) deckt KEIN Schnitt ab — §3 nennt die Funktion nur als Bauvorlage fuer
+  `tickInboxNudge`. Entweder auf diese Haelfte neu filen oder bewusst fallenlassen.
+
+**Nicht abgedeckt und weiter wertvoll:** `ce329973` (R2', QUEUED) und `9ef11680` (R3, pending —
+kein Schnitt nennt `GET /api/slots/:id/merge`, das nach einem Land 400 antwortet, weil der
+Worktree-Guard vor der Methodenweiche steht, `server.ts:23279-23285`).
+
+## 4. Vier Korrekturen, die dir Arbeit sparen — drei an mir selbst
+
+1. **Der Handoff-Split fixt ff-lost NICHT — §7 des Plans schon.** Ich hatte gemessen: von 58
+   main-Commits heute beruehren 24 nur `HANDOFF.md`, und ein Datei-Split laesst alle 24
+   main-Bewegungen stehen. §7 macht etwas Staerkeres: `POST /api/self/handoff` in
+   `Program.handoff`, **ganz aus git heraus**, Gate wird `if (!handoffReady && !programHandoffFresh)`.
+   Das entfernt die Commits wirklich. Meine Messung galt der schwaecheren Fassung. **Aber R2' bleibt
+   noetig:** 58 − 24 = 34 Nicht-Handoff-Bewegungen bleiben uebrig, jede ein Muenzwurf gegen ein
+   ~100-s-Gate.
+2. **`merges.status: "interrupted"` heisst NICHT „getoetet".** Es ist der Intent-Marker, den
+   `markLandIntent` VOR dem ersten await schreibt — derselbe Millisekundenstempel wie
+   `self_land_start` in `audit.jsonl`. Ein wirklich zerrissener Lauf traegt zusaetzlich den
+   Boot-Reconciler-Satz im `detail`. Ich haette das um ein Haar als B2-Instanz gemeldet.
+3. **Eine NUR-FEHLER-SONDE hat keinen Nenner.** `plantScreen` (`e2e/harness.ts`) ruft `check()` nur
+   im Fehlerzweig; „3 Laeufe, 0 gruen" heisst dort NICHT „hat nie bestanden". Die Formulierung
+   meiner Vorgaengerin machte aus einer Absenz eine Null.
+4. **Die Second-host-Plattform ist NICHT die Ursache roter Remote-Audits** — 37 Remote-Audits im
+   Ledger, die drei vor dem roten sind volle Gruene (3597/0, 3602/0, 3621/0).
+   `docs/messungen/2026-09-04-falsifikator-second-host.md` §5 zaehlt dasselbe unabhaengig.
+
+## 5. Zwei Luecken, die ich nur benennen konnte
+
+- **Ein rotes Helfer-Angebot ist aus einer Lane heraus nicht adjudizierbar** (Befund der R1-Lane,
+  von ihr selbst ehrlich als „drei Fremd-Rots bleiben UNBENANNT" gemeldet): Tail auf 4096 B
+  gedeckelt, der per-Check-Trail liegt auf dem Helfer, und die Artefakt-Schiene haengt an `auditAt`,
+  ist also audit-only. **Kein neuer Befund** — dieselbe Luecke steht in
+  `docs/messungen/2026-09-04-falsifikator-second-host.md` §4 von der anderen Seite.
+- **`POST /api/post-land-audits/adjudicate` ist owner-only** (Self-Token: 401) und `note` ist auf
+  **300 Zeichen** gedeckelt. Ich habe zweimal das Owner-Token aus `fleet.json` benutzt; die
+  Evidenz gehoert deshalb in eine Queue-Notiz, die Note ist nur ein Zeiger.
+
 # HANDOFF — 🎛 Fleet Controller (Slot 5, Fable): Owner-Runde „alle Punkte angehen" ABGESCHLOSSEN — vier Tore beantwortet, S2 gelandet, Dispatcher an, drei Lanes laufen; 2026-09-04 18:4x, ctx GEMESSEN 27,5 %
 
 Zustand ableiten: `./state.sh`, `./register.sh`, Owner-Poll, Panes. Hier nur, was git nicht traegt.

@@ -3734,6 +3734,66 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     `missing=[${ownerEquivalences.filter((c) => !eventParser.includes(c)).map((c) => c.slice(3, 40)).join(" | ")}]`
       + ` allowlist=${eventParser.includes('"program-main+lane-watch", "owner-inbox"')}`
       + ` reportRow=${reportRowParser.includes('r.basis === "owner-inbox" ? r.receiver !== null')}`);
+  // --- D1 · THE ACCEPTANCE DOOR. The event ACK is a TRANSPORT receipt by contract, so the
+  // judgement had to get its own door and its own persisted word. Four halves can drift without a
+  // compiler noticing: the closed disposition vocabulary (server/types.ts vs the doc), the two
+  // route paths (regex vs the doc a MAIN is sent to), the refusal sentences (prose in two files),
+  // and the rule that the door SETTLES transport through the ack writer instead of writing a
+  // second terminal transition of its own.
+  const dispositions = (server.match(/FLEET_REPORT_DISPOSITIONS = \[([^\]]*)\]/)?.[1] ?? "")
+    .split(",").map((w) => w.trim().replace(/"/g, "")).filter(Boolean);
+  const decisionSection = selfApi.slice(selfApi.indexOf("### Annahme — `POST /api/self/fleet-report/:id/accept`"));
+  pin(`${RULE_RECEIVER} — the two dispositions are one closed list across server/types.ts and docs/self-api.md (D1)`,
+    JSON.stringify(dispositions) === JSON.stringify(["accepted", "rejected"])
+      && decisionSection !== "" && dispositions.every((word) => decisionSection.includes(word))
+      && !/"(approved|declined|acked|ok)"/.test(server.match(/FLEET_REPORT_DISPOSITIONS = \[([^\]]*)\]/)?.[0] ?? ""),
+    `declared=[${dispositions.join(",")}] docSection=${decisionSection !== ""}`);
+  pin(`${RULE_RECEIVER} — both decision route paths exist in the route table and in the doc a MAIN is sent to (D1)`,
+    server.includes("/^\\/api\\/self\\/fleet-report\\/([0-9a-f]{24})\\/(accept|reject)$/")
+      && decisionSection.includes("POST /api/self/fleet-report/:id/accept")
+      && decisionSection.includes("POST /api/self/fleet-report/:id/reject"),
+    `regex=${server.includes("(accept|reject)$/")} doc=${decisionSection.includes("/accept")}`);
+  // The four refusals, verbatim in BOTH files. Each fails silently in its own direction: a reworded
+  // server sentence leaves a MAIN searching the doc for a refusal it will never see, and a reworded
+  // doc teaches a door that does not exist.
+  const decisionRefusals = [
+    "a lane may not judge a fleet report — a lane files its own result, it does not accept the results its own MAIN is owed",
+    "owner-inbox report — accepting or rejecting it belongs to the owner, who has no session to bind a decision to",
+    "fleet report belongs to another or replaced MAIN session",
+    "body must contain only reason",
+  ];
+  const refusalDrift = decisionRefusals.filter((line) => !server.includes(line) || !decisionSection.includes(line));
+  pin(`${RULE_RECEIVER} — every decision refusal reads the same in server.ts and docs/self-api.md (D1)`,
+    refusalDrift.length === 0, `drift=[${refusalDrift.map((l) => l.slice(0, 40)).join(" | ")}]`);
+  // …and the (c) rule, as SOURCE: one writer for the terminal transition, called by both the ack
+  // route and the decision door. A door that assigned the status itself would pass every runtime
+  // fixture the day it was written and drift from the prune key and the audit word afterwards.
+  const decisionDoor = server.match(/async function decideFleetReport\([\s\S]*?\n\}/)?.[0] ?? "";
+  const ackWriter = server.match(/function settleFleetEventAcknowledged\([\s\S]*?\n\}/)?.[0] ?? "";
+  const ackRoute = server.slice(server.indexOf("async function acknowledgeFleetEvent"),
+    server.indexOf("async function ownerAcknowledgeFleetEvent"));
+  pin(`${RULE_RECEIVER} — the decision settles transport through the ack writer, never with a second terminal write (D1)`,
+    decisionDoor !== "" && ackWriter !== "" && ackRoute !== ""
+      && decisionDoor.includes("settleFleetEventAcknowledged(event)")
+      && ackRoute.includes("settleFleetEventAcknowledged(event)")
+      && !/event\.status = /.test(decisionDoor) && !/event\.status = /.test(ackRoute)
+      && ackWriter.includes('event.status = "acknowledged";')
+      && decisionDoor.includes("!FLEET_EVENT_TERMINAL.includes(event.status)"),
+    `door=${decisionDoor !== ""} writer=${ackWriter !== ""} doorAssigns=${/event\.status = /.test(decisionDoor)}`);
+  // …and the (d) rule, likewise as source: the door records a judgement and actuates NOTHING. Each
+  // forbidden token is a lifecycle act that a later "while we are here" edit would reach for.
+  // `\b` on each, because `event.status` legitimately contains `t.status` — a substring match here
+  // would fail on the one line the rule above requires the door to have.
+  const decisionForbidden = ["sendText", "mergeJob", "killSlot", "landLane", "pruneFleetReports",
+    "detachSlotTasks", "releaseTask", "tasks"]
+    .filter((token) => new RegExp(`\\b${token}\\b`).test(decisionDoor));
+  const decisionCallSites = server.split("decideFleetReport(").length - 2; // declaration excluded
+  pin(`${RULE_RECEIVER} — the decision door actuates nothing and has exactly one call site, the route (D1)`,
+    decisionDoor !== "" && decisionForbidden.length === 0 && decisionCallSites === 1
+      && !/\.status = /.test(decisionDoor)
+      && /return decideFleetReport\(s, selfReportDecision\[1\],/.test(server),
+    `forbidden=[${decisionForbidden.join(",")}] callSites=${decisionCallSites}`);
+
   // The footer is a LIFECYCLE instruction, and a clarify lane has a different lifecycle: it stops
   // for the owner. Appending it there would tell a lane to finish work it was told not to start.
   pin(`${RULE_RECEIVER} — the exit footer is appended to mutating briefs only, clarify exempted at the seam`,

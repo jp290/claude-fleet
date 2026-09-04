@@ -391,6 +391,24 @@ interface ClarificationRequest {
   closedAt: number | null;
 }
 
+// THE JUDGEMENT VOCABULARY, and it is deliberately NOT a transport word. A FleetEvent status says
+// whether BYTES reached a pane; these two say whether the receiving MAIN read the work and took it.
+// Until this cut the only door a MAIN had was the event ACK, which by contract is a receipt — so a
+// successor reconstructing a Program could not tell an accepted report from an unread one.
+const FLEET_REPORT_DISPOSITIONS = ["accepted", "rejected"] as const;
+type FleetReportDisposition = typeof FLEET_REPORT_DISPOSITIONS[number];
+// ONE object rather than four parallel fields, for the reason ClarificationRequest.answer is one:
+// "who decided, when, which way and why" is a single fact, and a row carrying three of the four
+// would be a half-decision no reader could adjudicate. `reason` is optional PROSE and stays null
+// when the deciding MAIN gave none — an empty string would read as "they wrote nothing", which is
+// a different claim from "they were not asked to".
+interface FleetReportDecision {
+  disposition: FleetReportDisposition;
+  at: number;
+  by: { slot: number; openedAt: number; sessionId: string | null };
+  reason: string | null;
+}
+
 // A report is the immutable result sibling of a ClarificationRequest. Transport state belongs to
 // its FleetEvent; this row carries only the lane-stamped report and the exact two endpoint
 // occupants. In particular there is no attempt/task lifecycle identity here.
@@ -406,6 +424,12 @@ interface FleetReport {
   receiver: { slot: number; openedAt: number; sessionId: string | null } | null;
   basis: FleetReportEventPayload["basis"];
   eventId: string;
+  // THE ACCEPTANCE FACT, and undecided is the ABSENCE of the key or an explicit null: a row
+  // persisted before this door existed carries neither and stays observably undecided rather than
+  // being repaired into a judgement nobody made. It is bound to the RECEIVER half above and
+  // fleetReportFrom checks the two together — an owner-inbox row (receiver null) can structurally
+  // never carry one, because the owner is a principal with no occupant to be the decider.
+  decision?: FleetReportDecision | null;
 }
 
 // THE OWNER-FACING TWIN of ClarificationRequest, with the roles flipped: there a worker asks its
@@ -731,6 +755,25 @@ function fleetReportFrom(raw: unknown): FleetReport | null {
     || !nullableString(provenance.programId)
     || !["program-main", "lane-watch", "program-main+lane-watch", "owner-inbox"].includes(String(r.basis))
     || typeof r.eventId !== "string" || !/^[0-9a-f]{24}$/.test(r.eventId)) return null;
+  // The decision half, default-deny like every other half of this row. Absent and null are the
+  // same undecided fact and both pass; anything present must be COMPLETE and must name the exact
+  // receiver occupant this row was filed to. A row that could claim a decider it never had would
+  // hydrate quietly and then lie to the successor view that reads it — the same failure the
+  // receiver/basis pair above exists to prevent, one field further in.
+  const decision = r.decision;
+  if (decision !== undefined && decision !== null) {
+    if (typeof decision !== "object" || Array.isArray(decision)) return null;
+    const d = decision as Partial<FleetReportDecision>;
+    if (!occupant(d.by, false)) return null;
+    const by = d.by as { slot: number; openedAt: number; sessionId: string | null };
+    if (!FLEET_REPORT_DISPOSITIONS.includes(d.disposition as FleetReportDisposition)
+      || typeof d.at !== "number" || !Number.isFinite(d.at) || d.at <= 0
+      || !(d.reason === null || (typeof d.reason === "string" && !!d.reason.trim()
+        && d.reason.length <= MAX_FLEET_REPORT_DECISION_REASON))
+      || r.receiver === null || r.receiver === undefined
+      || by.slot !== r.receiver.slot || by.openedAt !== r.receiver.openedAt
+      || by.sessionId !== r.receiver.sessionId) return null;
+  }
   return raw as FleetReport;
 }
 
@@ -783,6 +826,9 @@ const MAX_CLARIFICATION_QUESTION = 2000;
 const MAX_CLARIFICATION_ANSWER = 4000;
 
 const MAX_FLEET_REPORT_TEXT = 4000;
+// The decision's optional prose. Far smaller than the report it judges on purpose: the report is
+// the work, this is one sentence saying what the MAIN did with it.
+const MAX_FLEET_REPORT_DECISION_REASON = 500;
 
 // Its own constants, copied from the clarification values rather than aliased: the two channels
 // answer to different principals and one may be retuned without silently retuning the other.
@@ -1551,7 +1597,7 @@ export type {
   DeployFleetEvent, CommandJobFleetEvent, ClarificationFleetEvent, FleetReportFleetEvent,
   HelperCmdCheck,
   SupervisorTransitionEventPayload, SupervisorTransitionFleetEvent, FleetEvent, ClarificationStatus,
-  ClarificationRequest, FleetReport, AttentionKind, AttentionStatus, AttentionRequest, TaskKind,
+  ClarificationRequest, FleetReportDisposition, FleetReportDecision, FleetReport, AttentionKind, AttentionStatus, AttentionRequest, TaskKind,
   Task, TaskBrief, TaskComment, TaskAnalysis, AnalysisBlocker, TaskCriterion, RefineChild,
   RefineProposal, TaskRefine, LaneForm, LaneRef, SuccessionRetirement, CodexRecoveryState, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
@@ -1569,6 +1615,7 @@ export {
   TRANSITION_DEADLINE_MAX_SEC, TRANSITION_DEADLINE_DEFAULT_SEC, watchFrom, FLEET_EVENT_TERMINAL,
   ATTENTION_KINDS, fleetEventRecoveryFrom, fleetEventFrom, clarificationFrom, fleetReportFrom,
   attentionFrom, MAX_CLARIFICATION_QUESTION, MAX_CLARIFICATION_ANSWER, MAX_FLEET_REPORT_TEXT,
+  FLEET_REPORT_DISPOSITIONS, MAX_FLEET_REPORT_DECISION_REASON,
   MAX_ATTENTION_TEXT, MAX_ATTENTION_ANSWER, MAX_ATTENTION_PROVENANCE_TEXT,
   ATTENTION_CANDIDATE_SHA_RE, ATTENTION_BRANCH_RE, validAttentionBranch, MAX_SUPERVISOR_NUDGE_TEXT,
   TASK_KINDS, isTaskKind, loadTaskKind, PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion,

@@ -91,6 +91,9 @@ interface FleetReportRow {
   // null exactly when basis is "owner-inbox" — the owner is a principal, not an occupant
   receiver: { slot: number; openedAt: number; sessionId: string | null } | null;
   basis: "program-main" | "lane-watch" | "program-main+lane-watch" | "owner-inbox"; eventId: string;
+  // absent or null = undecided; present = the receiving MAIN judged the work (D1)
+  decision?: { disposition: "accepted" | "rejected"; at: number;
+    by: { slot: number; openedAt: number; sessionId: string | null }; reason: string | null } | null;
 }
 interface FleetReportEventRow {
   id: string; watchId: null; receiverSlot: number | null; receiverOpenedAt: number | null;
@@ -142,6 +145,13 @@ const ackEvent = (tok: string | null, id: string): Promise<Response> =>
   fetch(`${BASE}/api/self/events/${id}/ack`, {
     method: "POST",
     headers: tok === null ? {} : { "x-fleet-self-token": tok },
+  });
+const decideReport = (tok: string | null, id: string, verdict: "accept" | "reject",
+  body?: unknown, raw?: string): Promise<Response> =>
+  fetch(`${BASE}/api/self/fleet-report/${id}/${verdict}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(tok === null ? {} : { "x-fleet-self-token": tok }) },
+    body: raw ?? (body === undefined ? "" : JSON.stringify(body)),
   });
 const selfClarify = (tok: string | null, body: unknown, raw?: string, contentType = "application/json"): Promise<Response> =>
   fetch(`${BASE}/api/self/clarifications`, {
@@ -2561,6 +2571,290 @@ export async function run(): Promise<void> {
     b4Cleaned.events = (b4Cleaned.events ?? []).filter((e) => e.kind !== "fleet-report");
     b4Cleaned.fleetReports = [];
     writeFileSync(b4Path, JSON.stringify(b4Cleaned, null, 2), { mode: 0o600 });
+    await restartSrv();
+  }
+
+  // === RESULT-RAIL D1 · THE TYPED REPORT ACCEPTANCE DOOR =====================================
+  // The event ACK is a TRANSPORT receipt by contract ("I received bytes"), so nothing persisted
+  // whether the receiving MAIN read the diff and TOOK the work. This block proves the judgement
+  // door beside it: who may open it, that it is opened exactly once, that it settles the transport
+  // through the ack route's own writer without touching an already-terminal row, that it actuates
+  // nothing else, and that the verdict survives a restart as the row's own persisted fact.
+  {
+    const d1Main = await freeSlot();
+    const d1MainOpen = d1Main ? await post(`/api/slots/${d1Main}/open`, { cwd: REPO, label: "d1-report-main" }) : null;
+    const d1Other = await freeSlot();
+    const d1OtherOpen = d1Other ? await post(`/api/slots/${d1Other}/open`, { cwd: REPO, label: "d1-other-main" }) : null;
+    const d1Lane = async () => (await (await post("/api/lanes", { repo: REPO })).json()) as
+      { slot: number; cwd: string; branch: string };
+    const acceptLane = await d1Lane();
+    const rejectLane = await d1Lane();
+    const terminalLane = await d1Lane();
+    const inboxLane = await d1Lane();
+    check("D1 fixtures: two MAIN occupants and four distinct lanes exist",
+      !!d1MainOpen?.ok && !!d1OtherOpen?.ok
+        && new Set([d1Main, d1Other, acceptLane.slot, rejectLane.slot, terminalLane.slot,
+          inboxLane.slot]).size === 6,
+      JSON.stringify({ d1Main, d1Other, lanes: [acceptLane.slot, rejectLane.slot, terminalLane.slot, inboxLane.slot] }));
+    const d1MainTok = await paneEnv(`s${d1Main}`, "FLEET_SELF_TOKEN") ?? "";
+    const d1OtherTok = await paneEnv(`s${d1Other}`, "FLEET_SELF_TOKEN") ?? "";
+    const acceptTok = await paneEnv(`s${acceptLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const rejectTok = await paneEnv(`s${rejectLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const terminalTok = await paneEnv(`s${terminalLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const inboxTok = await paneEnv(`s${inboxLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    check("D1 fixtures: every participant carries its own exact scoped credential",
+      [d1MainTok, d1OtherTok, acceptTok, rejectTok, terminalTok, inboxTok].every((t) => /^[0-9a-f]{32}$/.test(t))
+        && new Set([d1MainTok, d1OtherTok, acceptTok, rejectTok, terminalTok, inboxTok]).size === 6,
+      `lengths=${[d1MainTok, d1OtherTok, acceptTok, rejectTok, terminalTok, inboxTok].map((t) => t.length).join("/")}`);
+
+    // A REAL queue row, not a string: criterion (d) says the decision never moves Task.status, and
+    // a fabricated id could not falsify that. The lane carries it the way a dispatched lane does.
+    const d1Task = (await (await post("/api/tasks",
+      { text: "D1 acceptance-door fixture row", queue: false, kind: "notiz" })).json()) as { task?: { id: string; status: string } };
+    const d1TaskId = d1Task.task?.id ?? "";
+    const d1TaskStatusBefore = d1Task.task?.status ?? "";
+    const d1Path = `${ROOT}/fleet.json`;
+    const d1ProgramId = "e".repeat(24);
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const d1Plant = JSON.parse(readFileSync(d1Path, "utf8")) as {
+      slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
+    };
+    const d1MainRow = d1Plant.slots[String(d1Main)];
+    d1Plant.programs = [...(d1Plant.programs ?? []), {
+      id: d1ProgramId, title: "Acceptance door fixture", intent: "Judge typed worker results",
+      successCriterion: "A terminal report is expressly accepted or rejected", nonGoals: [],
+      decisions: [], evidence: [], openQuestions: [], status: "active",
+      createdAt: Date.now() - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: Date.now() - 900, activatedAt: Date.now() - 800,
+      main: { slot: d1Main, openedAt: d1MainRow.openedAt, sessionId: d1MainRow.sessionId, boundAt: Date.now() - 700 },
+    }];
+    for (const lane of [acceptLane, rejectLane, terminalLane])
+      d1Plant.slots[String(lane.slot)].programId = d1ProgramId;
+    d1Plant.slots[String(acceptLane.slot)].taskId = d1TaskId;
+    // the inbox lane is the B4 shape on purpose: a task dispatched it, nothing bound it
+    d1Plant.slots[String(inboxLane.slot)].taskId = "task-d1-owner-inbox";
+    writeFileSync(d1Path, JSON.stringify(d1Plant, null, 2), { mode: 0o600 });
+    await restartSrv();
+
+    const filed = await Promise.all([
+      selfFleetReport(acceptTok, { status: "complete", text: "D1: the slice is done and verified." }),
+      selfFleetReport(rejectTok, { status: "needs-main", text: "D1: a decision is owed here." }),
+      selfFleetReport(terminalTok, { status: "failed", text: "D1: this one did not work." }),
+      selfFleetReport(inboxTok, { status: "complete", text: "D1: filed to the owner inbox." }),
+    ]);
+    const [acceptReport, rejectReport, terminalReport, inboxReport] = await Promise.all(
+      filed.map(async (r) => (await r.json() as { report?: FleetReportRow }).report));
+    check("D1 fixtures: three bound reports and one owner-inbox report exist, all undecided",
+      filed.every((r) => r.ok)
+        && [acceptReport, rejectReport, terminalReport].every((r) => r?.receiver?.slot === d1Main
+          && r?.basis === "program-main" && (r?.decision ?? null) === null)
+        && inboxReport?.receiver === null && inboxReport.basis === "owner-inbox"
+        && (inboxReport.decision ?? null) === null,
+      JSON.stringify({ filed: filed.map((r) => r.status),
+        rows: [acceptReport, rejectReport, terminalReport, inboxReport]
+          .map((r) => [r?.id, r?.basis, r?.decision ?? null]) }));
+
+    // The already-terminal arm needs a row that is terminal AND carries a timestamp a second write
+    // would change. Planted with srv down rather than driven through the composer: what is under
+    // test here is the door's branch, not the transport that produced the terminal state.
+    const acknowledgedAtPlant = Date.now() - 60_000;
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const d1TerminalPlant = JSON.parse(readFileSync(d1Path, "utf8")) as {
+      events?: { id?: string; status?: string; acknowledgedAt?: number | null }[];
+    };
+    for (const event of d1TerminalPlant.events ?? []) {
+      if (event.id !== terminalReport?.eventId) continue;
+      event.status = "acknowledged";
+      event.acknowledgedAt = acknowledgedAtPlant;
+    }
+    writeFileSync(d1Path, JSON.stringify(d1TerminalPlant, null, 2), { mode: 0o600 });
+    await restartSrv();
+
+    // --- who may NOT open the door. Each refusal names its own reason: a lane is refused as a
+    // lane (route level, before any row is looked at), a foreign MAIN as a foreign occupant, an
+    // owner-inbox row as the owner's, and an unknown id as unknown.
+    const laneJudge = await decideReport(acceptTok, acceptReport?.id ?? "", "accept");
+    const laneJudgeText = await laneJudge.text();
+    check("D1 lane exclusion: a worker lane may not judge a report, and is told which edge that is",
+      laneJudge.status === 409
+        && laneJudgeText.includes("a lane may not judge a fleet report — a lane files its own result, it does not accept the results its own MAIN is owed"),
+      `${laneJudge.status} ${laneJudgeText}`);
+    const wrongOccupant = await decideReport(d1OtherTok, acceptReport?.id ?? "", "accept");
+    const wrongOccupantText = await wrongOccupant.text();
+    check("D1 occupant binding: a MAIN that is not this report's exact receiver is refused in the replyClarification form",
+      wrongOccupant.status === 409
+        && wrongOccupantText.includes("fleet report belongs to another or replaced MAIN session"),
+      `${wrongOccupant.status} ${wrongOccupantText}`);
+    const inboxJudge = await decideReport(d1MainTok, inboxReport?.id ?? "", "accept");
+    const inboxJudgeText = await inboxJudge.text();
+    check("D1 owner-inbox: a report filed to the owner principal is refused with its own sentence, never silently accepted",
+      inboxJudge.status === 409
+        && inboxJudgeText.includes("owner-inbox report — accepting or rejecting it belongs to the owner, who has no session to bind a decision to")
+        && !inboxJudgeText.includes("belongs to another")
+        && ((await selfFleetReports(inboxTok)).reports.find((r) => r.id === inboxReport?.id)?.decision ?? null) === null,
+      `${inboxJudge.status} ${inboxJudgeText}`);
+    const unknownJudge = await decideReport(d1MainTok, "0".repeat(24), "accept");
+    const unknownJudgeText = await unknownJudge.text();
+    check("D1 unknown id: an id that names no row is 404, not a 409 about somebody else's row",
+      unknownJudge.status === 404 && unknownJudgeText.includes("unknown fleet report"),
+      `${unknownJudge.status} ${unknownJudgeText}`);
+    const badBodies = await Promise.all([
+      decideReport(d1MainTok, acceptReport?.id ?? "", "accept", { reason: "ok", disposition: "accepted" }),
+      decideReport(d1MainTok, acceptReport?.id ?? "", "accept", { verdict: "accepted" }),
+      decideReport(d1MainTok, acceptReport?.id ?? "", "accept", { reason: 5 }),
+      decideReport(d1MainTok, acceptReport?.id ?? "", "accept", { reason: "x".repeat(501) }),
+    ]);
+    const badBodyTexts = await Promise.all(badBodies.map((r) => r.text()));
+    check("D1 body shape: the body is absent/empty or exactly {reason}, in fleet-report's own discipline",
+      badBodies.every((r) => r.status === 400)
+        && badBodyTexts[0]?.includes("body must contain only reason") === true
+        && badBodyTexts[1]?.includes("body must contain only reason") === true
+        && badBodyTexts[2]?.includes("reason must be a string") === true
+        && badBodyTexts[3]?.includes("reason must be at most 500 chars") === true
+        && ((await selfFleetReports(d1MainTok)).reports.find((r) => r.id === acceptReport?.id)?.decision ?? null) === null,
+      JSON.stringify({ statuses: badBodies.map((r) => r.status), texts: badBodyTexts }));
+
+    // --- the door itself, both verdicts, and what each one does to the transport row beside it.
+    // …and the twin door is UNCHANGED, which is the half a source pin cannot measure: the ACK is a
+    // transport receipt and still refuses a row that was never offered. That refusal is also the
+    // sharpest statement of the difference between the two doors — the judgement settles from
+    // `pending`, because a MAIN that read the row through GET /api/self/fleet-report received it
+    // without any paste, while the ack route by design has nothing to receipt yet.
+    const pendingAck = await ackEvent(d1MainTok, acceptReport?.eventId ?? "");
+    const pendingAckText = await pendingAck.text();
+    check("D1 the event ACK keeps its meaning: a pending row is still not acknowledgeable through it",
+      pendingAck.status === 409 && pendingAckText.includes("event is not acknowledgeable")
+        && pendingAckText.includes("pending"),
+      `${pendingAck.status} ${pendingAckText}`);
+    const plogBeforeDecision = (await plogRead()).length;
+    const eventsBeforeDecision = await fleetReportEventRows();
+    const reportsBeforeDecision = (await selfFleetReports(d1MainTok)).reports.length;
+    const acceptRes = await decideReport(d1MainTok, acceptReport?.id ?? "", "accept",
+      { reason: "Diff read, verify quoted, slice taken." });
+    const acceptBody = await acceptRes.json() as { ok?: boolean; report?: FleetReportRow };
+    const d1MainRowAfter = (JSON.parse(readFileSync(d1Path, "utf8")) as
+      { slots?: Record<string, { openedAt?: number; sessionId?: string | null }> }).slots?.[String(d1Main)];
+    const acceptEvent = (await fleetReportEventRows()).find((e) => e.id === acceptReport?.eventId);
+    check("D1 accept: the verdict, its time, its deciding occupant and its reason land on the report row",
+      acceptRes.ok && acceptBody.ok === true
+        && acceptBody.report?.decision?.disposition === "accepted"
+        && typeof acceptBody.report.decision.at === "number" && acceptBody.report.decision.at > 0
+        && acceptBody.report.decision.by.slot === d1Main
+        && acceptBody.report.decision.by.openedAt === d1MainRowAfter?.openedAt
+        && acceptBody.report.decision.by.sessionId === (d1MainRowAfter?.sessionId ?? null)
+        && acceptBody.report.decision.reason === "Diff read, verify quoted, slice taken.",
+      JSON.stringify(acceptBody.report?.decision ?? null));
+    check("D1 accept settles transport: a still-open FleetEvent becomes acknowledged, so recovery stops re-pasting a judged report",
+      eventsBeforeDecision.find((e) => e.id === acceptReport?.eventId)?.status === "pending"
+        && acceptEvent?.status === "acknowledged" && typeof acceptEvent.acknowledgedAt === "number"
+        && (acceptEvent.acknowledgedAt ?? 0) > 0,
+      JSON.stringify({ before: eventsBeforeDecision.find((e) => e.id === acceptReport?.eventId)?.status,
+        after: acceptEvent }));
+    const ackAfterDecision = await ackEvent(d1MainTok, acceptReport?.eventId ?? "");
+    const ackAfterBody = await ackAfterDecision.json() as { ok?: boolean; existing?: boolean;
+      event?: { acknowledgedAt?: number | null } };
+    check("D1 the event ACK keeps its meaning: after the decision settled the row it reports the existing acknowledgement and rewrites nothing",
+      ackAfterDecision.ok && ackAfterBody.ok === true && ackAfterBody.existing === true
+        && ackAfterBody.event?.acknowledgedAt === acceptEvent?.acknowledgedAt,
+      JSON.stringify({ status: ackAfterDecision.status, body: ackAfterBody }));
+    const rejectRes = await decideReport(d1MainTok, rejectReport?.id ?? "", "reject");
+    const rejectBody = await rejectRes.json() as { ok?: boolean; report?: FleetReportRow };
+    check("D1 reject: the opposite verdict is recorded the same way, and an omitted reason is null rather than empty prose",
+      rejectRes.ok && rejectBody.report?.decision?.disposition === "rejected"
+        && rejectBody.report.decision.reason === null
+        && rejectBody.report.decision.by.slot === d1Main,
+      JSON.stringify(rejectBody.report?.decision ?? null));
+    const terminalRes = await decideReport(d1MainTok, terminalReport?.id ?? "", "accept");
+    const terminalBody = await terminalRes.json() as { ok?: boolean; report?: FleetReportRow };
+    const terminalEvent = (await fleetReportEventRows()).find((e) => e.id === terminalReport?.eventId);
+    check("D1 already-terminal event: the verdict is recorded and the settled row is left byte-for-byte as it was",
+      terminalRes.ok && terminalBody.report?.decision?.disposition === "accepted"
+        && terminalEvent?.status === "acknowledged"
+        && terminalEvent.acknowledgedAt === acknowledgedAtPlant,
+      JSON.stringify({ planted: acknowledgedAtPlant, after: terminalEvent }));
+    const secondAccept = await decideReport(d1MainTok, acceptReport?.id ?? "", "accept",
+      { reason: "a second, later opinion" });
+    const secondAcceptText = await secondAccept.text();
+    const secondReject = await decideReport(d1MainTok, acceptReport?.id ?? "", "reject");
+    const secondRejectText = await secondReject.text();
+    const afterSecond = (await selfFleetReports(d1MainTok)).reports.find((r) => r.id === acceptReport?.id);
+    check("D1 first decision wins: a second call — same verdict or the opposite — is 409 and the row is unchanged",
+      secondAccept.status === 409 && secondAcceptText.includes("fleet report was already accepted")
+        && secondReject.status === 409 && secondRejectText.includes("fleet report was already accepted")
+        && JSON.stringify(afterSecond?.decision) === JSON.stringify(acceptBody.report?.decision),
+      JSON.stringify({ second: secondAccept.status, opposite: secondReject.status,
+        standing: afterSecond?.decision ?? null }));
+
+    // --- criterion (d), measured rather than asserted in prose: the door judges and actuates
+    // nothing. The queue row is a REAL one, the lanes are alive, no text reached any pane, and the
+    // report tail is exactly as long as it was — an accepted row is kept the way a terminal row is.
+    const d1TaskAfter = ((await (await get("/api/tasks")).json()) as { tasks?: { id: string; status: string }[] })
+      .tasks?.find((t) => t.id === d1TaskId);
+    const laneStillOpen = ((await (await get("/api/sessions")).json()) as
+      { slots: { id: number; cwd: string | null }[] }).slots
+      .filter((x) => [acceptLane.slot, rejectLane.slot, terminalLane.slot].includes(x.id) && x.cwd).length;
+    const plogAfterDecision = await plogRead();
+    const laneWritesAfter = plogAfterDecision.slice(plogBeforeDecision)
+      .filter((entry) => [acceptLane.slot, rejectLane.slot, terminalLane.slot].includes(entry.slot)).length;
+    check("D1 the decision actuates nothing: Task.status, the lanes, the worker panes and report retention are untouched",
+      d1TaskId !== "" && d1TaskAfter?.status === d1TaskStatusBefore
+        && laneStillOpen === 3 && laneWritesAfter === 0
+        && (await selfFleetReports(d1MainTok)).reports.length === reportsBeforeDecision,
+      JSON.stringify({ task: [d1TaskStatusBefore, d1TaskAfter?.status], lanes: laneStillOpen,
+        paneWrites: laneWritesAfter, reports: reportsBeforeDecision }));
+
+    // --- and it is the ROW's fact, not this process's memory. The malformed plants ride the same
+    // restart: a decision naming a session other than the receiver, and one missing its verdict,
+    // must be DISCARDED whole rather than repaired into a judgement nobody made.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const d1Hydrate = JSON.parse(readFileSync(d1Path, "utf8")) as { fleetReports?: FleetReportRow[] };
+    const forgedBase = d1Hydrate.fleetReports?.find((r) => r.id === rejectReport?.id);
+    const forged: FleetReportRow[] = forgedBase ? [
+      { ...forgedBase, id: "d1".padEnd(24, "0"), eventId: "d2".padEnd(24, "0"),
+        decision: { disposition: "accepted", at: Date.now(), reason: null,
+          by: { slot: d1Other, openedAt: 1, sessionId: null } } },
+      { ...forgedBase, id: "d3".padEnd(24, "0"), eventId: "d4".padEnd(24, "0"),
+        decision: { at: Date.now(), reason: null,
+          by: forgedBase.receiver } as unknown as FleetReportRow["decision"] },
+    ] : [];
+    d1Hydrate.fleetReports?.push(...forged);
+    writeFileSync(d1Path, JSON.stringify(d1Hydrate, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const hydrated = (await selfFleetReports(d1MainTok)).reports;
+    check("D1 durability: both verdicts reconstruct field-for-field from disk, and a decision that names a foreign or incomplete principal is discarded",
+      forged.length === 2
+        && JSON.stringify(hydrated.find((r) => r.id === acceptReport?.id)?.decision)
+          === JSON.stringify(acceptBody.report?.decision)
+        && JSON.stringify(hydrated.find((r) => r.id === rejectReport?.id)?.decision)
+          === JSON.stringify(rejectBody.report?.decision)
+        && !hydrated.some((r) => forged.some((f) => f.id === r.id)),
+      JSON.stringify({ accepted: hydrated.find((r) => r.id === acceptReport?.id)?.decision ?? null,
+        rejected: hydrated.find((r) => r.id === rejectReport?.id)?.decision ?? null,
+        forgedSurvivors: hydrated.filter((r) => forged.some((f) => f.id === r.id)).map((r) => r.id) }));
+    // …and the WORKER can read back what was done with its own result: fleetReportsFor binds both
+    // endpoints, so the decision is visible through the same route that returned the row.
+    const workerView = (await selfFleetReports(acceptTok)).reports.find((r) => r.id === acceptReport?.id);
+    check("D1 visibility: the deciding MAIN and the reporting worker both read the verdict off GET /api/self/fleet-report",
+      workerView?.decision?.disposition === "accepted"
+        && workerView.decision.by.slot === d1Main
+        && hydrated.find((r) => r.id === acceptReport?.id)?.decision?.disposition === "accepted",
+      JSON.stringify(workerView?.decision ?? null));
+
+    for (const slot of [acceptLane.slot, rejectLane.slot, terminalLane.slot, inboxLane.slot,
+      d1Main, d1Other]) await post(`/api/slots/${slot}/kill`, {});
+    if (d1TaskId) await post(`/api/tasks/${d1TaskId}/delete`, {});
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const d1Cleaned = JSON.parse(readFileSync(d1Path, "utf8")) as {
+      events?: { kind?: string }[]; fleetReports?: unknown[]; programs?: { id?: string }[];
+    };
+    d1Cleaned.events = (d1Cleaned.events ?? []).filter((e) => e.kind !== "fleet-report");
+    d1Cleaned.fleetReports = [];
+    d1Cleaned.programs = (d1Cleaned.programs ?? []).filter((p) => p.id !== d1ProgramId);
+    writeFileSync(d1Path, JSON.stringify(d1Cleaned, null, 2), { mode: 0o600 });
     await restartSrv();
   }
 

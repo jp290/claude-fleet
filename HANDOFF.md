@@ -308,9 +308,10 @@ gpt-5.6-sol/high, GLM-Gegenchecks pi-zai/glm-5.3/high (kein Lane-Watch: Monitor 
   requeue-probe („lane closed before landing“). Dauer beider Laeufe mitberichten.
 - **Zusage an MAIN Slot 3 (Attention c001a756 beantwortet):** mein Hand-Kill von Slot 2 hat ihren
   Autoclose-Beweis (Erfolgssatz 8) zerstoert (Tick braucht 30 min Stillstand, ich zog nach 8 min
-  ein). `9f1dbfb4` ist queued (read-only Beleg-Lane); **wenn sie startet und gemeldet hat: 35 min
-  NICHT anfassen** — kein Kill, kein Land, auch wenn sie wie ein freier Slot aussieht. Slot 3 nennt
-  den Branch. Ihr Befund (Schwelle laenger als die Standzeit einer fertigen Lane) gehoert als Zeile
+  ein). `9f1dbfb4` ist queued (read-only Beleg-Lane); **ZUSTANDSBASIERT (Attention bc59777c, 22:3x): die
+  Lane, deren taskId 9f1dbfb4 ist, ab ihrem Report 35 min NICHT anfassen** — kein Kill, kein Land,
+  kein Send, auch wenn sie wie ein freier Slot aussieht; kein Branchname noetig. Gegenseite ist jetzt
+  die Nachfolgerin von Slot 3 (Program 66499a03, aktuell Slot 5). Ihr Befund (Schwelle laenger als die Standzeit einer fertigen Lane) gehoert als Zeile
   ins Program Fleet-Betrieb.
 - private-repo-p Brief 9 (`ba896b1b`) **gelandet und gruen** (b26756f, verify ok 287 s). Kein Deploy.
 - Ein Startbeleg (Dauer als Lastsensor) ging an die Audit-Determiniertheit-MAIN Slot 6 — beim ersten

@@ -29,6 +29,20 @@
 # staging time, naming the file and the import — not forty lines later as a module-resolution
 # error inside a tmux pane, in a server.log nobody reads.
 
+# --- HERMETIC BEHAVIOUR KNOBS. Sourcing this file IS starting a suite, and a suite's answer must
+# not depend on the shell that launched it. Every FLEET_* knob a wrapper does not name on its own
+# srv spawn line is INHERITED: tmux bakes its server's env into every pane it opens, and the
+# runner is started from this same shell.
+#
+# FLEET_LANE_AUTOCLOSE is the knob that currently has a live arming to inherit. watchdog.sh arms
+# it on the deployed srv (=1 since 566cbae), and server.ts#runVerify spawns the land gate's chain
+# — three of these wrappers — with the server's environment UNFILTERED. (The post-land audit is
+# the one caller that filters: server.ts#auditChildEnv drops every FLEET_*.) Stated 0 rather than
+# unset, so the off-state is a fact a probe can read (e2e/watch.ts, "D2 setup") instead of an
+# absence that cannot be told apart from an oversight. A check that needs the flag ON arms it for
+# exactly one restart through e2e/harness.ts#restartSrv's `extra`, which wins over this value.
+export FLEET_LANE_AUTOCLOSE=0
+
 # --- machine-wide suite mutex (owner decision 2026-07-28). Suites are serial on this box: two
 # concurrent instances reliably poison each other's runs (docs/suite-contention.md; measured again
 # 2026-07-28 — three owner interventions in one afternoon because the serialization lived only in

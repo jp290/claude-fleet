@@ -3872,6 +3872,23 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && server.includes('const LANE_AUTOCLOSE_ON = /^(1|true|on|yes)$/i.test(LANE_AUTOCLOSE_RAW);')
       && autoCloseSection.includes("`1`/`true`/`on`/`yes`"),
     `env=${/process\.env\.FLEET_LANE_AUTOCLOSE/.test(server)} docSection=${autoCloseSection !== ""}`);
+  // …and the SUITE side of that same flag, which no compiler and no runtime check can see: a knob
+  // the wrappers do not NAME is inherited from whatever shell started them, and this is the knob
+  // the deployed fleet arms (watchdog.sh) whose env server.ts#runVerify hands to the land gate's
+  // chain unfiltered. Three statements, because they cover three different callers: the SRV_ENV
+  // line covers the isolated suite's own srv and runner, the e2e-stage.sh export covers all seven
+  // wrappers, and the probe is what turns the off-state from an assumption into a measurement.
+  // Scoped to the SRV_ENV assignment itself, not to the file — the comment above it names the
+  // string too, and a pin that its own explanation satisfies measures nothing.
+  const isoSrvEnv = /^SRV_ENV="([^\n]*)"$/m.exec(read("e2e-isolated.sh"))?.[1] ?? "";
+  pin(`${RULE_RECEIVER} — the suites STATE FLEET_LANE_AUTOCLOSE=0 instead of inheriting it, and measure that they did (D2)`,
+    /\bFLEET_LANE_AUTOCLOSE=0\b/.test(isoSrvEnv)
+      && /^export FLEET_LANE_AUTOCLOSE=0$/m.test(read("e2e-stage.sh"))
+      && /export async function srvEnv\(/.test(read("e2e/harness.ts"))
+      && read("e2e/watch.ts").includes('srvEnv("FLEET_LANE_AUTOCLOSE")'),
+    `srvEnv=${/\bFLEET_LANE_AUTOCLOSE=0\b/.test(isoSrvEnv)} stage=${/^export FLEET_LANE_AUTOCLOSE=0$/m.test(read("e2e-stage.sh"))}`
+      + ` helper=${/export async function srvEnv\(/.test(read("e2e/harness.ts"))}`
+      + ` probe=${read("e2e/watch.ts").includes('srvEnv("FLEET_LANE_AUTOCLOSE")')}`);
   pin(`${RULE_RECEIVER} — killed-empty is one word across the disposition union, the tick's assertion and the doc (D2)`,
     /type LaneDisposition = [^\n]*"killed-empty"/.test(server)
       && autoCloseTick.includes('row.disposition !== "killed-empty"')

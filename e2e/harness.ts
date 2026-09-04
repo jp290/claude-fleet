@@ -204,6 +204,35 @@ export async function paneEnv(target: string, varName: string, timeoutMs = 20_00
   return null;
 }
 
+// The srv pane's OWN process environment, one named variable at a time, WITH A CONTROL — so that
+// "this variable is not set" and "this process's environment could not be read at all" are
+// different answers rather than the same silence. paneEnv() cannot serve here: the srv pane execs
+// `bun server.ts` outright, so there is no shell in it to print anything.
+//
+// Readability is decided by a variable the spawn line ALWAYS carries (FLEET_PORT), never by
+// whether the asked-for name turned up. Without that control an unreadable environment would
+// report every variable as absent, and a probe would pass for the wrong reason — the exact shape
+// CLAUDE.md's "a probe that could not run must fail as ITSELF" rule is about.
+//
+// Only the asked-for assignment is ever returned. A process line in this fleet carries the scoped
+// self-credentials by construction (ensureSlot bakes them into the pane's shell string), so the
+// raw line must never travel into a check detail, a log or a transcript.
+export async function srvEnv(varName: string): Promise<{ readable: boolean; value: string | null }> {
+  const { out: pidOut } = await tmuxOut("list-panes", "-t", "srv", "-F", "#{pane_pid}");
+  const pid = (pidOut.trim().split("\n")[0] ?? "").trim();
+  if (!/^\d+$/.test(pid)) return { readable: false, value: null };
+  let tokens: string[] = [];
+  try { // Linux: exact and NUL-delimited, so a value containing spaces survives
+    tokens = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0");
+  } catch { // macOS: `ps eww` prints the environment after the command, space-separated
+    const p = Bun.spawnSync(["ps", "eww", "-p", pid, "-o", "command="]);
+    tokens = new TextDecoder().decode(p.stdout).split(/\s+/);
+  }
+  const hit = tokens.find((t) => t.startsWith(`${varName}=`));
+  return { readable: tokens.some((t) => t.startsWith("FLEET_PORT=")),
+    value: hit === undefined ? null : hit.slice(varName.length + 1) };
+}
+
 // --- the codex pane stand-in ------------------------------------------------------------------
 // A live process in a pane that renders ONE measured screen and then stays there, so the screen
 // families (Program-MAIN founding, the dispatch readiness tail) can drive a codex slot without a

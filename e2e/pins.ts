@@ -3608,15 +3608,29 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && (signals.match(/!mergeBlocksLane\(v\.merge\)/g) ?? []).length === 3
       && (signals.match(/MERGE_BLOCKING\.includes/g) ?? []).length === 1,
     `body=${blocksBody.replace(/\s+/g, " ").slice(0, 120)}`);
-  // ONE writer, and it sits on the clean path AFTER the land was declared — a second site would
-  // mean some other failure could mint the exemption
-  pin(`${RULE_FF} — server.ts mints "ff-lost" at exactly one site, on the clean land path`,
-    (server.match(/errorReason: "ff-lost"/g) ?? []).length === 1
-      && server.indexOf('errorReason: "ff-lost"') > server.indexOf("await advanceIntegration(root, main, branch)")
-      && /function withValidErrorReason\(row: MergeLast\): MergeLast \{/.test(server)
+  // ONE runtime writer on the clean path, plus ONE loader-only legacy backfill. The latter has to
+  // prove every old-writer field before it can mint the exemption; an invalid present reason takes
+  // the validation/drop arm and can never fall through into migration.
+  const loaderAt = server.indexOf("function withValidErrorReason(row: MergeLast): MergeLast {");
+  const loaderEnd = loaderAt < 0 ? -1 : server.indexOf("\n}\n", loaderAt);
+  const loaderBody = loaderAt < 0 || loaderEnd < 0 ? "" : server.slice(loaderAt, loaderEnd + 2);
+  const reasonSites = [...server.matchAll(/errorReason: "ff-lost"/g)].map((m) => m.index);
+  const cleanAdvance = server.indexOf("await advanceIntegration(root, main, branch)");
+  pin(`${RULE_FF} — server.ts keeps one clean-path runtime mint plus one loader-only legacy backfill`,
+    reasonSites.length === 2
+      && reasonSites.filter((at) => at >= loaderAt && at < loaderEnd).length === 1
+      && reasonSites.filter((at) => at > cleanAdvance).length === 1
       && server.includes("MERGE_ERROR_REASONS.includes(row.errorReason)")
       && (server.match(/withValidErrorReason\(identityComplete/g) ?? []).length === 2,
-    `writes=${(server.match(/errorReason: "ff-lost"/g) ?? []).length} loaders=${(server.match(/withValidErrorReason\(identityComplete/g) ?? []).length}`);
+    `reasonSites=${reasonSites.length} loader=${reasonSites.filter((at) => at >= loaderAt && at < loaderEnd).length} runtime=${reasonSites.filter((at) => at > cleanAdvance).length} calls=${(server.match(/withValidErrorReason\(identityComplete/g) ?? []).length}`);
+  pin(`${RULE_FF} — the legacy backfill requires the complete old lost-FF proof and no existing reason`,
+    loaderBody.includes('row.errorReason === undefined')
+      && loaderBody.includes('row.status === "error"')
+      && loaderBody.includes("row.landed === false")
+      && loaderBody.includes("row.verify?.ok === true")
+      && loaderBody.includes("LEGACY_FF_LOST_DETAIL.test(row.detail)")
+      && loaderBody.includes('return { ...row, errorReason: "ff-lost" }'),
+    `body=${loaderBody.replace(/\s+/g, " ").slice(0, 240)}`);
   // the default-off latch that lets a suite hit the race, and the fixture that arms it — same
   // shape and same reason as the Game-Maker open latch pinned further down
   const ffLatch = server.indexOf("await waitForLandFfTestLatch();");

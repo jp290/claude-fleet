@@ -959,9 +959,16 @@ Seit 2026-09-03 trägt genau dieses Verdikt eine **getypte, geschlossene** Zusat
   Ein `blocked` (auch eines, das den Grund trägt), ein `error` aus einem geworfenen Merge-Lauf, ein
   rotes Verify, ein ungelöster Konflikt, ein **abwesender** oder unbekannter `errorReason` — alle
   blockieren unverändert. Abwesend heißt UNKNOWN, nie „war wohl ein Rennen".
-- **Der Loader validiert ihn** (`server.ts#withValidErrorReason`): ein persistierter Wert
-  überlebt den Neustart nur, wenn er im Enum steht UND auf einem `error`-Verdikt sitzt; sonst wird
-  das FELD fallengelassen (nicht die Zeile) und die Lane blockiert wieder.
+- **Der Loader validiert ihn und datiert genau die alte Schreiberform**
+  (`server.ts#withValidErrorReason`): ein persistierter Wert überlebt den Neustart nur, wenn er im
+  Enum steht UND auf einem `error`-Verdikt sitzt; sonst wird das FELD fallengelassen (nicht die
+  Zeile) und die Lane blockiert wieder. Fehlt das Feld ganz, trägt der Loader `ff-lost` nur dann
+  nach, wenn der alte Record vollständig belegt: `status:"error"`, `landed:false`,
+  `verify.ok === true` und `detail` in der historischen Form
+  `rebase ok, but fast-forwarding <main> failed: <Fehler> — lane kept`. Ein fehlendes, rotes oder
+  unbekanntes Verify, ein fremdes Detail, ein fehlendes oder von `false` abweichendes `landed`, ein
+  vorhandener ungültiger Grund oder ein anderer Status bekommen keine Ausnahme. Ein bloßes
+  Legacy-`error` ist weiterhin UNKNOWN und blockiert.
 - **Wirkung:** die Lane ist wieder `done-looking`, sobald sie lebendig, idle, sauber und ahead ist;
   der lane-ready-Watch feuert einmal; die Projektion bleibt `REVIEWABLE` und ihr `nextAction`
   benennt weiterhin diese Tür. Ein erneutes `POST /api/self/tasks/:id/land` rebast auf das

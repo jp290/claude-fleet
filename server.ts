@@ -10850,6 +10850,9 @@ async function tickWatches(): Promise<void> {
     // FACT 3: the ONE bounded retry of a terminal merge verdict whose first delivery was refused at
     // the gate. A second refusal is FINAL: the marker stays on the merge status. Recomputed here
     // rather than reused from the top of the tick: the loops above spend seconds in tmux.
+    // NO ACTOR IS PASSED, and that is the point of persisting the receiver: a tick has no job frame
+    // to inherit one from, so it reads `verdictTo` off the row — which survives a restart, where an
+    // in-memory frame would not.
     for (const s of verdictRetryDue()) await deliverMergeVerdict(s, s.cwd!, s.worktree!.branch);
 
     if (dirty) saveState();
@@ -11635,7 +11638,14 @@ interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "int
   // run" hold without an id to compare. `sent:false` with `gate` is a refusal that STANDS: the
   // attempt count is capped, so a lane that never goes quiet is told at most twice and the refusal
   // then stays readable here instead of being re-offered on every tick forever.
-  verdictDelivery?: { at: number; attempts: number; sent: boolean; kind: MergeVerdictKind; gate?: string } }
+  verdictDelivery?: { at: number; attempts: number; sent: boolean; kind: MergeVerdictKind; gate?: string };
+  // WHO ASKED FOR THIS RUN, when the asker was a Program-MAIN rather than the owner's board.
+  // Written beside the marker above by the FIRST delivery attempt, and read by the tick's retry —
+  // which is the whole reason it is persisted rather than carried in the job frame: a restart
+  // between the attempt and its retry would otherwise re-aim the verdict at the lane, which is
+  // exactly the paste this field exists to end. ABSENT IS THE LANE, always: an owner land, an
+  // unattributable one, and every row written before this field existed all read the same way.
+  verdictTo?: MergeVerdictReceiver }
 const mergeInflight = new Map<number, Promise<void>>();
 // slots whose merge POST is still in its pre-flight guards: the `has(inflight)` check and
 // the `set` are separated by several awaits, so without this SYNCHRONOUS reservation two
@@ -11673,6 +11683,24 @@ function withValidErrorReason(row: MergeLast): MergeLast {
   }
   if (row.status === "error" && MERGE_ERROR_REASONS.includes(row.errorReason)) return row;
   const { errorReason: _errorReason, ...rest } = row;
+  return rest;
+}
+
+// …and the same discipline for the verdict's receiver, in loadLandActor's words: half an
+// attribution is a DIFFERENT claim, not a weaker one, so a torn, forged or future shape is dropped
+// whole rather than repaired field-wise. Dropping it is safe in exactly one direction — the row
+// then reads as an owner land and the verdict goes back to the lane, which is what every row
+// written before this field existed means anyway.
+function withValidVerdictTo(row: MergeLast): MergeLast {
+  const raw: unknown = row.verdictTo;
+  if (raw === undefined) return row;
+  const r = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
+  if (r && Number.isInteger(r.slot) && typeof r.openedAt === "number" && Number.isFinite(r.openedAt)
+    && r.openedAt > 0 && (typeof r.sessionId === "string" || r.sessionId === null)
+    && typeof r.program === "string" && r.program && typeof r.task === "string" && r.task)
+    return { ...row, verdictTo: { slot: r.slot as number, openedAt: r.openedAt,
+      sessionId: r.sessionId, program: r.program, task: r.task } };
+  const { verdictTo: _verdictTo, ...rest } = row;
   return rest;
 }
 
@@ -16489,6 +16517,55 @@ type MergeVerdictKind = "review" | "error" | "waited";
 // permanently busy must not be re-offered the same verdict for the rest of its life.
 const MERGE_VERDICT_MAX_ATTEMPTS = 2;
 
+// --- ...AND WHEN THE LANE IS NOT WHO ASKED ----------------------------------------------------
+// The paragraph above is the OWNER's case and stays exactly as it was: the owner drove ⏫ from the
+// board, so the only session left holding something to do is the lane. A Program-MAIN self-land is
+// the other case, and it was being answered with the owner's, measured 2026-09-04: a ff-lost
+// verdict landed in the LANE pane, the lane read it as work, and it re-ran the whole verification
+// chain on this machine's ONE suite mutex — six times on a single row, three of them ff-lost.
+// Nothing about that verdict was the lane's: it had reported done, a MAIN had judged the tree and
+// asked for the land, and the answer belongs to the session that asked. So the receiver follows
+// the ACTOR, and the lane is told NOTHING on that path — the silence is the point of the cut.
+//
+// The delivery-time identity question is a DIFFERENT one on this side, not the lane check with
+// another slot in it. There it is "is this still the tree's author"; here it is "is this still the
+// occupant that asked" — the same triple the self-land door itself gated on (program binding, slot
+// occupancy, session id), because a slot recycled between the land and its verdict is a stranger
+// being handed another session's answer.
+type MergeVerdictReceiver = { slot: number; openedAt: number; sessionId: string | null;
+  program: string; task: string };
+
+// PINNED AT THE START OF THE RUN, from the Program's own binding — the record the self-land door
+// compared against, not the live pane, so an occupant that dies mid-gate is still named here and
+// then fails the check below instead of quietly becoming somebody else.
+// `null` means THE LANE, and only for the two actor arms that genuinely have no other receiver.
+function verdictReceiverOf(actor: LandActor): MergeVerdictReceiver | null {
+  if (actor.kind !== "main") return null;
+  const bound = programs.find((p) => p.id === actor.program)?.main ?? null;
+  if (!bound || bound.slot !== actor.slot) return null;
+  return { slot: bound.slot, openedAt: bound.openedAt, sessionId: bound.sessionId,
+    program: actor.program, task: actor.task };
+}
+
+// Is the occupant that asked for this land still there to be told? Three sentences, and each one
+// names its own refusal so the trail can say WHY a verdict went nowhere.
+// `sessionId` is compared DIRECTLY, exactly as the self-land door compares it: two nulls (a harness
+// that pins no session id) are a match, one null on either side is not.
+function mainVerdictReceiver(to: MergeVerdictReceiver): { ok: true; slot: Slot } | { ok: false; why: string } {
+  const program = programs.find((p) => p.id === to.program);
+  if (!program || program.status !== "active")
+    return { ok: false, why: `program ${to.program} is ${program ? program.status : "gone"}` };
+  const bound = program.main;
+  if (!bound || bound.slot !== to.slot || bound.openedAt !== to.openedAt)
+    return { ok: false, why: `program ${to.program} is no longer bound to the occupant that asked` };
+  const live = slotFrom(to.slot);
+  if (!live?.cwd || live.openedAt !== to.openedAt)
+    return { ok: false, why: `slot ${to.slot} was recycled since the land` };
+  if (live.sessionId !== to.sessionId)
+    return { ok: false, why: `slot ${to.slot} holds a different session id than the one that asked` };
+  return { ok: true, slot: live };
+}
+
 // The three exits that keep a lane AND leave it something to do. Everything else is silent on
 // purpose: `blocked` never touched the tree and the route already answered the owner synchronously,
 // a `merged` row is either landed or a teardown failure that no rebase in the lane repairs,
@@ -16544,48 +16621,71 @@ function mergeVerdictMessage(kind: MergeVerdictKind, r: MergeLast, main: string)
 // EXACTLY ONCE PER RUN, at most twice attempted. Called at mergeJob's terminal and — only for an
 // attempt the gate refused — once more from tickWatches. Every precondition is re-read here rather
 // than trusted from the caller, because both call sites reach it across awaits.
-async function deliverMergeVerdict(s: Slot, cwd: string, branch: string): Promise<void> {
+async function deliverMergeVerdict(s: Slot, cwd: string, branch: string,
+  actor?: LandActor): Promise<void> {
   const outcome = mergeLast.get(s.id);
   if (!outcome || outcome.branch !== branch) return;
   const kind = mergeVerdictKind(outcome);
   if (!kind) return;
-  // the lane must still BE this lane: a slot recycled onto another cwd mid-run, or a lane whose
-  // worktree was removed, is not the session that wrote this tree — and is the same identity check
-  // `record` makes one function down.
-  if (!s.cwd || s.cwd !== cwd || s.worktree?.branch !== branch) return;
+  // WHO THIS VERDICT IS FOR, from the live actor at the job's terminal and from the ROW on the
+  // tick's retry — which is why the row carries it: the two calls can be separated by a restart,
+  // and a retry that re-derived "the lane" from an absent frame would undo the whole cut.
+  const to = actor ? verdictReceiverOf(actor) : outcome.verdictTo ?? null;
   const prev = outcome.verdictDelivery;
   if (prev?.sent || (prev?.attempts ?? 0) >= MERGE_VERDICT_MAX_ATTEMPTS) return;
   const attempts = (prev?.attempts ?? 0) + 1;
   // The stamp writes only while the map still holds THIS object. That is the whole dedupe: a run
-  // superseded mid-delivery must not mark the successor's verdict as already delivered.
+  // superseded mid-delivery must not mark the successor's verdict as already delivered. The
+  // receiver rides along on the same write, so the retry above has it after a restart.
   const mark = async (sent: boolean, gate?: string): Promise<void> => {
     if (mergeLast.get(s.id) !== outcome) return;
-    mergeLast.set(s.id, { ...outcome,
+    mergeLast.set(s.id, { ...outcome, ...(to ? { verdictTo: to } : {}),
       verdictDelivery: { at: Date.now(), attempts, sent, kind, ...(gate ? { gate } : {}) } });
     await saveStateNow();
   };
+  // WHICH PANE — and on the MAIN side a failed check does NOT fall back to the lane. Falling back
+  // is precisely the paste this path removes: an undeliverable verdict is recorded as undeliverable
+  // and stays readable on the merge status, which is the recoverable direction.
+  let target: Slot;
+  if (to) {
+    const recv = mainVerdictReceiver(to);
+    if (!recv.ok) {
+      await mark(false, "receiver-gone");
+      audit("merge_verdict_undeliverable", to.slot,
+        `${branch}: ${kind} — ${recv.why} (attempt ${attempts}/${MERGE_VERDICT_MAX_ATTEMPTS}, lane slot=${s.id})`);
+      return;
+    }
+    target = recv.slot;
+  } else {
+    // the lane must still BE this lane: a slot recycled onto another cwd mid-run, or a lane whose
+    // worktree was removed, is not the session that wrote this tree — and is the same identity check
+    // `record` makes one function down.
+    if (!s.cwd || s.cwd !== cwd || s.worktree?.branch !== branch) return;
+    target = s;
+  }
+  const suffix = to ? ` → main slot=${to.slot} task=${to.task} (lane slot=${s.id})` : "";
   // ⏫ is an owner act and this is its RESULT going back to the session that produced the tree, so
   // the master stop and quiet hours are waived exactly as wakeAuthor waives them — and the foreign-
   // harness WORK-PROMPT policy with them, on the same ground tickWatches states: the text is a
   // fixed server-composed fact, never caller-chosen work. The liveness, blocked-screen and idle
   // gates STAND: prose into a pane with no agent behind it executes as shell commands, and a
   // verdict pasted over a session mid-turn is the interruption the author brief refuses to be.
-  const gate = await canDeliver(s, { now: Date.now(), killSwitch: false, harness: false,
+  const gate = await canDeliver(target, { now: Date.now(), killSwitch: false, harness: false,
     quietHours: false, idleMs: MERGE_IDLE_MS });
   if (!gate.ok) {
     await mark(false, gate.gate);
-    audit("merge_verdict_skip", s.id, `${branch}: ${kind} — ${gate.gate} (attempt ${attempts}/${MERGE_VERDICT_MAX_ATTEMPTS})`);
+    audit("merge_verdict_skip", target.id, `${branch}: ${kind} — ${gate.gate} (attempt ${attempts}/${MERGE_VERDICT_MAX_ATTEMPTS})${suffix}`);
     return;
   }
   const main = (s.worktree ? await integrationBranch(s.worktree.repo) : null) ?? "the integration branch";
   const text = mergeVerdictMessage(kind, outcome, main);
   try {
-    await sendText(s, text, true);
+    await sendText(target, text, true);
   } catch (e) {
     // SendRefused typed nothing at all (an owner draft in the composer); anything else may have
     // typed part of it. Neither is retried beyond the shared cap, and both are named in the marker.
     await mark(false, e instanceof SendRefused ? "composer-occupied" : "send-failed");
-    audit("merge_verdict_skip", s.id, `${branch}: ${kind} — ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
+    audit("merge_verdict_skip", target.id, `${branch}: ${kind} — ${String(e instanceof Error ? e.message : e).slice(0, 120)}${suffix}`);
     return;
   }
   // server-injected text in the owner's own pane belongs in the same two records every other
@@ -16598,11 +16698,11 @@ async function deliverMergeVerdict(s: Slot, cwd: string, branch: string): Promis
   // outside — and the alternative (keeping server-typed text out of the one journal that records
   // such things) is the worse trade, exactly as it was there.
   const now = Date.now();
-  s.history = [...s.history, { text, ts: now }].slice(-MAX_HISTORY);
-  saveHistory(s);
-  logPrompt(s, text, "auto", now);
+  target.history = [...target.history, { text, ts: now }].slice(-MAX_HISTORY);
+  saveHistory(target);
+  logPrompt(target, text, "auto", now);
   await mark(true);
-  audit("merge_verdict_sent", s.id, `${branch}: ${kind}`);
+  audit("merge_verdict_sent", target.id, `${branch}: ${kind}${suffix}`);
 }
 
 // Lanes whose ONE retry is owed — see FACT 3 in tickWatches. A slot with a merge run in flight is
@@ -17001,10 +17101,11 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
     for (const d of graphDirs) try { rmSync(d, { recursive: true, force: true }); } catch { /* inert in TMPDIR */ }
   }
   await record(res);
-  // THE VERDICT GOES BACK TO THE LANE. After `record`, never before: the fact is on disk first, so
-  // a death between the two loses a notification and never a verdict. A land tore the worktree
-  // down and is filtered out inside.
-  await deliverMergeVerdict(s, cwd, branch);
+  // THE VERDICT GOES BACK TO WHOEVER ASKED. After `record`, never before: the fact is on disk
+  // first, so a death between the two loses a notification and never a verdict. A land tore the
+  // worktree down and is filtered out inside. `actor` is what picks the receiver — the lane on an
+  // owner ⏫, the Program-MAIN that called the self-land door on its own.
+  await deliverMergeVerdict(s, cwd, branch, actor);
 }
 
 // --- the owner token itself, and only it: `TOKEN` is a module-wide `let` the boot path assigns,
@@ -19671,7 +19772,7 @@ if (existsSync(STATE_FILE)) {
             && /^[0-9a-f]{40,64}$/.test(row.candidateSha ?? "")
             && /^[0-9a-f]{40,64}$/.test(row.diffHash ?? "");
           const { mainSha: _mainSha, candidateSha: _candidateSha, diffHash: _diffHash, ...legacy } = row;
-          mergeLast.set(s.id, withValidErrorReason(identityComplete ? row : legacy as MergeLast));
+          mergeLast.set(s.id, withValidVerdictTo(withValidErrorReason(identityComplete ? row : legacy as MergeLast)));
         }
       }
     // ...and the branch-keyed park (parkMergeVerdict): only reviewable shapes, and the key must
@@ -19687,7 +19788,7 @@ if (existsSync(STATE_FILE)) {
             && /^[0-9a-f]{40,64}$/.test(row.candidateSha ?? "")
             && /^[0-9a-f]{40,64}$/.test(row.diffHash ?? "");
           const { mainSha: _mainSha, candidateSha: _candidateSha, diffHash: _diffHash, ...legacy } = row;
-          mergeParked.set(b, withValidErrorReason(identityComplete ? row : legacy as MergeLast));
+          mergeParked.set(b, withValidVerdictTo(withValidErrorReason(identityComplete ? row : legacy as MergeLast)));
         }
     const psh = (persisted as { shelved?: unknown }).shelved;
     if (typeof psh === "object" && psh !== null && !Array.isArray(psh))

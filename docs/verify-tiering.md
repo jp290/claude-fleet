@@ -368,6 +368,27 @@ it in `SRV_ENV`, that particular knob is stated by every wrapper and `e2e/watch.
 check reads the value back off the srv process, so an inherited value fails as a wrong premise
 instead of as a broken feature.
 
+**Proportion, added 2026-09-04 (owner).** Tier 2 no longer runs the full suite over a tree whose
+every new land was docs-only. `server.ts#drainPostLandAudits` asks `entryRunsShortChain` of the
+COALESCED entry — every cover must carry the land gate's own `proportional` stamp, and the repo must
+be one the short chain is about (`repoRunsShortChain`, the same `[ -f fleet-e2e.ts ]` question the
+gate asks) — and `server.ts#runPostLandAudit` then executes `VERIFY_PROPORTIONAL_CMD` (install+pins)
+instead of the configured suite, stamping `proportional` + `steps` on the ledger row exactly as the
+land note stamps them for tier 1. The flag rides on the queue's `AuditCover`, not on a re-read of
+the note, because both places that need it — the drain's selection and `helperJobsView` — are
+synchronous by contract. **Absence is never harmlessness:** a mixed or empty burst, a land with no
+gate, a cover restored from an older queue file all read as not-proven and buy the full suite. What
+this does NOT weaken is (e): a docs-only tip still gets the only proof that is about it — the prose
+claims `bun e2e/pins.ts` holds across files no compiler reads. What it removes is the measurement
+that asked for the change, read off `post-land-audits.jsonl` rather than quoted: 76f3376 and
+10ba7af (2026-09-04), one docs file each, drew a full `./e2e-isolated.sh` apiece — 1562 s and
+1530 s, both RED, 9 and 1 failed of 3633 checks, both adjudicated flake. Both of those two ran on
+the helper, so the cost was 52 minutes of the OTHER machine plus its claim window; run locally the
+same pair would have held this machine's suite mutex for that long.
+A proportional entry is also never offered to a remote helper and never held in the helper grace
+(`helperJobsView`, `helperClaim`): the daemon runs the full fleet suite, so taking the job would
+measure something other than the question, and the local answer costs seconds.
+
 **The honest statement:** tier 2 is not a stronger tier 1. It is the only place a 5.6-minute suite
 can live, and tier 1 is the only place prevention and attribution can live. Building tier 2 does not
 retire the question "what does a green gate guarantee" — it answers a *different* question, and

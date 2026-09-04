@@ -181,6 +181,11 @@ export interface AuditWatchEventPayload {
   covers: AuditWatchCoverPayload[];
   checks: { ran: number; failed: number; ranIsLowerBound?: true } | null;
   reason?: string;
+  // WHICH CHAIN produced this result. Present only on a run that took the docs-only short chain
+  // (install+pins); absent is the full configured suite, which is what every older event means
+  // too. Without it the subscriber reads a green with a handful of checks and cannot tell a
+  // proportional measurement from a suite that barely started.
+  proportional?: true;
 }
 export interface AuditWatchEventView {
   id: string;
@@ -311,8 +316,11 @@ export function auditWatchMessage(repo: string, mainAfter: string, event: AuditW
     ? `${p.checks.ranIsLowerBound ? "at least " : ""}${p.checks.ran} checks, ${p.checks.failed} failed`
     : "check count unknown";
   const why = p.reason ? ` Reason: ${p.reason}.` : "";
+  // the chain is named where the numbers are, because it is what makes them readable: a green over
+  // install+pins is a statement about prose claims, not about the suite.
+  const chain = p.proportional ? " chain=proportional (docs-only: install+pins, not the full suite)" : "";
   return `[fleet] post-land audit [event ${event.id}] for ${repo} land ${mainAfter} reached terminal `
-    + `result=${p.result}; audited tip=${p.mainSha || "unknown"}; ${checks}.${why} This notification `
+    + `result=${p.result}; audited tip=${p.mainSha || "unknown"}; ${checks}${chain}.${why} This notification `
     + `does not adjudicate, undo, or deploy anything. ${eventAck(event.id)}`;
 }
 

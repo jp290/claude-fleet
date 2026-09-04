@@ -652,11 +652,15 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
         && Number.isInteger(p.checks.ran) && p.checks.ran >= 0
         && Number.isInteger(p.checks.failed) && p.checks.failed >= 0
         && (p.checks.ranIsLowerBound === undefined || p.checks.ranIsLowerBound === true)))
-      || !(p.reason === undefined || (typeof p.reason === "string" && p.reason.length <= 200))) return null;
+      || !(p.reason === undefined || (typeof p.reason === "string" && p.reason.length <= 200))
+      || !(p.proportional === undefined || p.proportional === true)) return null;
     return { ...base, subjectRepo: e.subjectRepo, subjectMainAfter: e.subjectMainAfter,
       kind: e.kind, payload: { result: p.result as AuditWatchEventPayload["result"], mainSha: p.mainSha,
         covers: p.covers.map((c) => ({ branch: c.branch, mainAfter: c.mainAfter })), checks: p.checks,
-      ...(p.reason !== undefined ? { reason: p.reason } : {}) } };
+      ...(p.reason !== undefined ? { reason: p.reason } : {}),
+      // `true` or absent, never `false`: one spelling for "the full suite ran", the same way the
+      // ledger row and the queue cover spell it.
+      ...(p.proportional === true ? { proportional: true as const } : {}) } };
   }
   if (e.kind === "deploy-terminal") {
     if (typeof e.subjectDeployId !== "string" || !/^[0-9a-f]{8}$/.test(e.subjectDeployId)) return null;

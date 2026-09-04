@@ -184,8 +184,12 @@ route is unreachable, run the full chain below. Every selected step must pass; s
 failure.
 
 The server-side land gate remains authoritative: it runs its full configured chain except that,
-since 2026-08-25, a docs-only land in THIS repo runs the short `install` + `pins` proof; the
-post-land audit remains full. Local proof and the land gate use the same classification source.
+since 2026-08-25, a docs-only land in THIS repo runs the short `install` + `pins` proof; since
+2026-09-04 a docs-only land gets that same short chain in the post-land audit as well, and there
+the question is asked of the whole coalesced entry — EVERY land it covers must have passed the
+docs-only gate, otherwise the audit runs the full suite. A proportional entry is never offered to a
+remote helper and never waits for one. Local proof and the land gate use the same classification
+source.
 The short proof is this repo's own chain — `bun e2e/pins.ts` is a file only this tree has — so
 since 2026-08-26 it is only ever chosen here: a land in another repo runs that repo's configured
 chain unchanged, docs-only or not, and its note stamps that full chain rather than the two steps.

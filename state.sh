@@ -92,7 +92,14 @@ else:
             shape += f" · checks {ck.get('ran')}/{ck.get('failed')} failed"
         elif ck is None:
             shape += " · checks not recorded (row predates 54ea616)"
-        suspect = isinstance(ms, (int, float)) and ms < 60_000
+        # …and since 2026-09-04 the duration only means that for a run of the FULL suite. A
+        # docs-only entry is audited by the short chain (install+pins) and finishes in seconds BY
+        # DESIGN, stamped `proportional` — without this the cheap case would raise the alarm that
+        # exists for the phantom case, on every docs land.
+        prop = last.get('proportional') is True
+        if prop:
+            shape += f" · proportional [{','.join(last.get('steps') or [])}]"
+        suspect = not prop and isinstance(ms, (int, float)) and ms < 60_000
         print(f"  newest audit: {last.get('result')} on {str(last.get('mainSha'))[:8]}{shape}"
               f" covering {[c.get('branch','')[-9:] for c in last.get('covers',[])]}")
         if suspect:

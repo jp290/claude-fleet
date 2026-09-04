@@ -964,6 +964,19 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     + `guard=${JSON.stringify(propGuard?.[1] ?? null)}/${propGuard?.[2] ?? null} `
     + `gateGuard=${JSON.stringify(gateGuard?.[1] ?? null)} skipExit=${skipExitHere}`);
 
+  // …AND THE STEP NAMES THAT COMMAND IS SOLD AS. The gate never states them separately — it stamps
+  // whatever verify-proportion.ts classified for the actual diff — but the post-land audit has no
+  // diff to classify (owner 2026-09-04: a docs-only land gets the short chain in tier 2 as well),
+  // so it stamps VERIFY_PROPORTIONAL_STEPS onto its ledger row. That constant is prose about the
+  // command above it, and nothing else in the tree would notice if the two stopped agreeing: a row
+  // could then claim `steps:["install","pins"]` over a chain that had grown a third step.
+  const proportionalStepsConst = /const VERIFY_PROPORTIONAL_STEPS: LocalProofStep\[\] = \[([^\]]*)\]/
+    .exec(server)?.[1] ?? "";
+  const declaredSteps = [...proportionalStepsConst.matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
+  pin("the audit's proportional step names are exactly the steps its command runs",
+    declaredSteps.length > 0 && declaredSteps.join(">") === proportionalSteps.join(">"),
+    `declared=[${declaredSteps.join(">")}] cmd=[${proportionalSteps.join(">")}]`);
+
   // and the anchors, held HARD — unlike section 6's, which are advisory because a lane's CLAUDE.md
   // is a spawn-time copy. This file is tracked, so the tree it ships with is the tree it describes.
   // CLAUDE.md is the one exception and it is named rather than derived: it is git-ignored, so a

@@ -6,7 +6,8 @@
 // green), a burst of lands never spawns two concurrent suites, and — sections E–G, which restart the
 // server and therefore run last — a pending audit survives the death of the process that owed it.
 // Run via ./e2e-postland-audit.sh — never against a live fleet.
-import { appendFileSync, existsSync, readFileSync, unlinkSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 // Plumbing — IP/PORT/SOCK/BASE, the owner token read out of the instance's fleet.json, get/check,
 // and the live-fleet refusal this file used to carry as its own copied line — is e2e/harness.ts;
@@ -39,8 +40,11 @@ type AuditRow = {
   at: number; startedAt: number; ms: number; repo: string; main: string; mainSha: string;
   // deliberately `string`, not the server's union: a server WITHOUT tier 2 must make every
   // assertion below fail individually, and the no-row sentinel needs a value no check can match
-  result: string; reason?: string; cmd: string; exitCode: number | null;
+  result: string; reason?: string; cmd: string; cmdSource?: string; exitCode: number | null;
   out: string; fails?: string[]; trail?: string;
+  // the short-chain stamp (section P). Optional here for the same reason `result` is a bare string:
+  // a server without the proportional audit must fail each assertion on its own rather than throw.
+  proportional?: boolean; steps?: string[];
   checks?: { ran: number; failed: number; ranIsLowerBound?: true } | null;
   ping?: { at: number; status: string; updatedAt: number; lastResult: string; deliveredAt?: number; slot?: number };
   covers: { branch: string; mainAfter: string; at: number }[];
@@ -181,6 +185,43 @@ const startSrv = async (opts: { audit: boolean; auditPing?: boolean; extra?: Rec
 // throwaway repo the lanes fork from
 const REPO = `${import.meta.dir}/testrepo`;
 await seedRepo(REPO);
+// …made able to answer the SHORT CHAIN, for section (P). `repoRunsShortChain` is a property of the
+// REPO (`[ -f fleet-e2e.ts ]`), so without these files a docs-only land here would run the full
+// configured chain on both tiers and the proportional path would be unreachable — the check would
+// pass over a case that never happened. Same recipe e2e-isolated.sh seeds for the GATE's half of
+// this fixture, with its own marker so a run can name which pins it executed:
+//   · fleet-e2e.ts  — the sentinel both guards test for
+//   · e2e/pins.ts   — what the short chain actually runs; it prints suite-shaped PASS lines so the
+//                     row's `checks` is a real count rather than the zero an unanchored echo yields
+//   · package.json + a file: dep + bun.lock — `bun install --frozen-lockfile` refuses without them
+//   · .gitignore for node_modules/ — the short chain INSTALLS in the lane worktree, and an
+//     untracked node_modules there would make the lane dirty and block its own land
+// Nothing here is docs-or-prose except .gitignore, so every existing lane in this harness (all of
+// which commit a root `.txt`) keeps the full chain exactly as before.
+const seedShortChainFixture = async (repo: string): Promise<void> => {
+  mkdirSync(`${repo}/e2e`, { recursive: true });
+  mkdirSync(`${repo}/vendor/fixture-dep`, { recursive: true });
+  await Bun.write(`${repo}/fleet-e2e.ts`, "// proportional audit fixture sentinel\n");
+  // …and it MEASURES the environment it was handed. The stamp `proportional:true` on a ledger row
+  // is a claim about a run somebody must be able to reproduce, so the row has to be able to say
+  // which FLEET_* knobs its chain saw. `auditChildEnv` strips them wholesale; the LAND GATE's own
+  // short run does not (runVerify inherits the server's env), and this one line is what lets a
+  // reader see that difference instead of assuming either side.
+  await Bun.write(`${repo}/e2e/pins.ts`,
+    'const fleetEnv = Object.keys(process.env).filter((k) => k.startsWith("FLEET_")).sort();\n'
+    + 'console.log("PASS  proportional fixture pin one");\n'
+    + 'console.log(`PASS  proportional fixture pin two  (fleetenv=[${fleetEnv.join(",")}])`);\n'
+    + 'console.log("ALL PASS");\n');
+  await Bun.write(`${repo}/vendor/fixture-dep/package.json`, '{"name":"fixture-dep","version":"1.0.0"}\n');
+  await Bun.write(`${repo}/package.json`,
+    '{"name":"proportional-audit-fixture","private":true,'
+    + '"dependencies":{"fixture-dep":"file:vendor/fixture-dep"}}\n');
+  await Bun.write(`${repo}/.gitignore`, "node_modules/\n");
+  spawnSync("bun", ["install"], { cwd: repo });
+  spawnSync("git", ["-C", repo, "add", "-A"]);
+  spawnSync("git", ["-C", repo, "commit", "-qm", "short-chain fixture"]);
+};
+await seedShortChainFixture(REPO);
 const headOf = (ref = "main"): string => spawnSync("git", ["-C", REPO, "rev-parse", ref]).stdout.toString().trim();
 const noteAt = (sha: string): boolean => spawnSync("git", ["-C", REPO, "notes", "--ref=fleet/land", "show", sha]).status === 0;
 const opReceiver = ((await (await get("/api/sessions")).json()) as
@@ -1009,6 +1050,194 @@ check("(J) a red audit ping lists every persisted remote fail name instead of di
     && namedFails.every((name) => namedPingText.includes(`FAIL  ${name}`))
     && namedPingText.includes("checks.ran (Untergrenze): 2"),
   namedPingText.slice(0, 900));
+
+// ===== (P) A DOCS-ONLY LAND IS AUDITED BY THE SHORT CHAIN, AND IS NEVER OFFERED AWAY =============
+// Owner decision 2026-09-04: a docs-only land gets the same proportional chain in tier 2 that its
+// land gate already ran (install+pins), instead of the full suite. The measurement behind it, read
+// off the ledger: 76f3376 and 10ba7af, one docs file each, drew a full suite apiece — 1562 s and
+// 1530 s, both red, both flake — for no statement about anything.
+//
+// THE DECISION IS THE ENTRY'S, NOT THE LAND'S, because an audit measures a TREE: an entry is
+// coalesced, so one code land folded into it puts the whole tip back on the full suite. Both halves
+// are checked here, and each is written so a regression in the OTHER direction fails too — a server
+// that always ran short would fail the mixed case, one that always ran full would fail the first.
+//
+// Placed immediately before (K) for exactly (K)'s reason: it seeds a second repo and adds rows, so
+// every count it makes is RELATIVE and nothing above it moves.
+const pBase = (path: string): string => path.split("/").pop() ?? path;
+// the drain's own view of what it is running — the only non-guessing way to know the machine is
+// busy elsewhere, and the same probe (K) uses rather than a sleep
+const pLiveRepo = async (): Promise<string | null> => (await live())?.running?.repo ?? null;
+const pWaitLocalRun = async (repo: string, timeoutMs = 60_000): Promise<boolean> => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if ((await pLiveRepo()) === pBase(repo)) return true;
+    await Bun.sleep(100);
+  }
+  return false;
+};
+const pWaitRowFor = async (branch: string, timeoutMs = 90_000): Promise<AuditRow> => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const hit = (await auditRows()).find((r) => r.covers.some((c) => c.branch === branch));
+    if (hit) return hit;
+    if (Date.now() >= deadline) {
+      check(`(P) an audit row appeared for ${branch}`, false, `none after ${timeoutMs}ms`);
+      return NO_ROW;
+    }
+    await Bun.sleep(200);
+  }
+};
+// a lane whose ONLY changed path is docs-or-prose — openLane commits a root `.txt`, which
+// verify-proportion.ts classifies conservative-default, so this harness needs its own shape
+const makeDocsLane = async (name: string): Promise<Lane> => {
+  const ln = (await (await post("/api/lanes", { repo: REPO })).json()) as Lane;
+  mkdirSync(`${ln.cwd}/docs`, { recursive: true });
+  await Bun.write(`${ln.cwd}/docs/${name}.md`, `${name} measurement note\n`);
+  spawnSync("git", ["-C", ln.cwd, "add", "-A"]);
+  // same index-lock retry openLane pays: a fresh worktree can hold one while tickGit polls
+  for (let i = 0; i < 12; i++) {
+    spawnSync("git", ["-C", ln.cwd, "commit", "-qm", `${name} docs-only lane work`]);
+    if (spawnSync("git", ["-C", ln.cwd, "log", "--oneline", "-1"]).stdout.toString()
+      .includes(`${name} docs-only lane work`)) break;
+    await Bun.sleep(300);
+  }
+  return ln;
+};
+const pNote = (sha: string): Record<string, unknown> | null => {
+  const r = spawnSync("git", ["-C", REPO, "notes", "--ref=fleet/land", "show", sha]);
+  if (r.status !== 0) return null;
+  try { return JSON.parse(r.stdout.toString().trim()) as Record<string, unknown>; } catch { return null; }
+};
+
+// The decoy occupies the drain so a docs-only entry can be caught QUEUED — a job with an idle drain
+// does not exist, the drain starts on the land that queued it. Its own lands are `.txt`, so its
+// audit is the full stand-in and the two repos never share a chain.
+const PDECOY = `${REPO}-propdecoy`;
+await seedRepo(PDECOY);
+const pHelperToken = ((await (await get("/api/helper/token")).json()) as { token?: string }).token ?? "";
+const pJobs = async (): Promise<{ jobs: { id: string; repo: string; covers: number }[] }> =>
+  (await (await fetch(`${BASE}/api/helper/jobs`,
+    { headers: { "x-fleet-helper-token": pHelperToken } })).json()) as
+    { jobs: { id: string; repo: string; covers: number }[] };
+// The job id is sha256 of the repo path AS THE SERVER RECORDS IT — git's toplevel, which on this
+// box answers /private/tmp for a /tmp scratch dir. Taking the key out of the durable queue mirror
+// rather than hashing our own spelling is what keeps this probe from failing as a 404 that reads
+// like the refusal it is meant to prove.
+const pQueueKeyFor = async (repo: string): Promise<string> =>
+  Object.keys((await readQueueFile()) ?? {}).find((k) => pBase(k) === pBase(repo)) ?? "";
+const pJobIdOf = (repoKey: string): string =>
+  createHash("sha256").update(repoKey).digest("hex").slice(0, 12);
+
+// --- (P.1) ONE DOCS-ONLY LAND: the short chain, and no offer -------------------------------------
+const pDocs = await makeDocsLane("propshort");
+await settleForMerge(pDocs.slot); // pay the idle gate BEFORE the decoy's window opens
+await setAuditMode("slow");       // 6 s of drain-busy, so the queued entry is observed rather than raced
+// (not `long`: 12 s would overrun this harness's FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 and leave an
+// `unknown` decoy row behind — a non-green this section has no business minting)
+const pDecoyLane = await openLane(PDECOY, "propdecoy");
+const pDecoyLanded = await driveMerge(pDecoyLane, pDecoyLane.branch);
+const pDrainBusy = await pWaitLocalRun(PDECOY);
+check("(P) setup: the decoy repo's land took the drain, so the next entry stays queued",
+  pDecoyLanded.gone && pDrainBusy, `landed=${pDecoyLanded.gone} live=${await pLiveRepo()}`);
+// AFTER the decoy's own stand-in line is on the evidence log, so the count below measures only
+// what the docs land did (or did not) run
+const pRunsBefore = (await runLog()).length;
+const pDocsLanded = await driveMerge(pDocs, pDocs.branch);
+const pDocsSha = headOf();
+check("(P) setup: the docs-only lane landed while the drain was busy elsewhere",
+  pDocsLanded.gone && pDocsSha !== "", `landed=${pDocsLanded.gone} head=${pDocsSha}`);
+const pDocsNote = pNote(pDocsSha);
+const pDocsVerify = pDocsNote?.verify as { proportional?: boolean; steps?: string[] } | undefined;
+check("(P) setup: the LAND GATE itself ran short on this candidate — the fact tier 2 inherits",
+  pDocsVerify?.proportional === true
+    && JSON.stringify(pDocsVerify.steps) === JSON.stringify(["install", "pins"]),
+  JSON.stringify(pDocsVerify));
+
+const pQueueKey = await pQueueKeyFor(REPO);
+const pOffered = await pJobs();
+check("(P) a queued docs-only entry is NEVER offered to the portal (the decoy's still is)",
+  pQueueKey !== ""
+    && pOffered.jobs.some((j) => j.repo === pBase(PDECOY))
+    && !pOffered.jobs.some((j) => j.repo === pBase(REPO)),
+  `key=${pQueueKey} jobs=${JSON.stringify(pOffered.jobs.map((j) => `${j.repo}:${j.covers}`))}`);
+const pClaim = pQueueKey === "" ? null
+  : await post("/api/helper/claim", { jobId: pJobIdOf(pQueueKey), deviceId: "propshortdev1" },
+    { "x-fleet-helper-token": pHelperToken, "content-type": "application/json" });
+const pClaimBody = pClaim ? await pClaim.text() : "";
+check("(P) …and the claim DOOR refuses it too, naming the short chain — not only the list",
+  pClaim?.status === 409 && pClaimBody.includes("short chain"), `${pClaim?.status} ${pClaimBody.slice(0, 200)}`);
+
+const pShortRow = await pWaitRowFor(pDocs.branch);
+check("(P) the docs-only entry is audited by the SHORT CHAIN, stamped as such with its exact steps",
+  pShortRow.proportional === true
+    && JSON.stringify(pShortRow.steps) === JSON.stringify(["install", "pins"])
+    && pShortRow.cmdSource === "proportional",
+  JSON.stringify({ proportional: pShortRow.proportional, steps: pShortRow.steps,
+    cmdSource: pShortRow.cmdSource, cmd: pShortRow.cmd }));
+check("(P) the command it ran is install+pins behind the repo guard, NOT the configured suite",
+  pShortRow.cmd.startsWith('[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }; ')
+    && pShortRow.cmd.endsWith("bun e2e/pins.ts")
+    && pShortRow.cmd !== process.env.FLEET_POSTLAND_AUDIT_CMD,
+  JSON.stringify(pShortRow.cmd));
+check("(P) it MEASURED the landed tree — green, exit 0, with this repo's own pins output and count",
+  pShortRow.result === "green" && pShortRow.exitCode === 0
+    && pShortRow.out.includes("proportional fixture pin one")
+    && pShortRow.checks?.ran === 2 && pShortRow.checks.failed === 0,
+  JSON.stringify({ result: pShortRow.result, exit: pShortRow.exitCode, checks: pShortRow.checks,
+    out: pShortRow.out.slice(0, 200) }));
+check("(P) the configured full-suite stand-in was never invoked for it",
+  (await runLog()).length === pRunsBefore,
+  `before=${pRunsBefore} after=${(await runLog()).length}`);
+// THE ENVIRONMENT THE STAMP IS A CLAIM ABOUT. `auditChildEnv` strips every FLEET_* key from an
+// audit child — that rule predates this slice and the short chain inherits it rather than opting
+// out — so a proportional run sees NONE, and the row's own output says so instead of leaving the
+// reader to trust the rule. The land gate's short run is the counterpart and is deliberately
+// different: `runVerify` spawns with the server's env, so the note's `out` names the knobs the
+// server was booted with. Both halves are asserted here so neither can silently become the other.
+const pAuditFleetEnv = /fleetenv=\[([^\]]*)\]/.exec(pShortRow.out)?.[1];
+const pGateFleetEnv = /fleetenv=\[([^\]]*)\]/.exec(
+  (pDocsNote?.verify as { out?: string } | undefined)?.out ?? "")?.[1];
+check("(P) the proportional AUDIT child inherits NO FLEET_* knob, and its own output proves it",
+  pAuditFleetEnv === "", `audit=[${pAuditFleetEnv ?? "no fleetenv line"}]`);
+check("(P) …while the proportional LAND GATE run does see the server's FLEET_* env — measured, not assumed",
+  pGateFleetEnv !== undefined && pGateFleetEnv !== ""
+    && pGateFleetEnv.split(",").includes("FLEET_POSTLAND_AUDIT_CMD"),
+  `gate=[${pGateFleetEnv ?? "no fleetenv line"}]`);
+check("(P) the row joins to the land it followed, and to that land's own note",
+  pShortRow.covers.length === 1 && pShortRow.covers[0].branch === pDocs.branch
+    && pShortRow.covers[0].mainAfter === pDocsSha && pShortRow.mainSha === pDocsSha,
+  `${JSON.stringify(pShortRow.covers)} sha=${pShortRow.mainSha}`);
+
+// --- (P.2) ONE CODE LAND IN THE ENTRY PUTS THE WHOLE TIP BACK ON THE FULL SUITE ------------------
+await setAuditMode("slow");
+const pMixA = await makeLane("propmixa");
+const pMixDocs = await makeDocsLane("propmixdocs");
+const pMixB = await makeLane("propmixb");
+for (const ln of [pMixA, pMixDocs, pMixB]) await settleForMerge(ln.slot);
+const pMixALanded = await driveMerge(pMixA, pMixA.branch);
+const pMixBusy = await pWaitLocalRun(REPO);
+check("(P) setup: a code land holds the drain, so the next two lands coalesce behind it",
+  pMixALanded.gone && pMixBusy, `landed=${pMixALanded.gone} live=${await pLiveRepo()}`);
+const pMixRunsBefore = (await runLog()).length;
+const pMixDocsLanded = await driveMerge(pMixDocs, pMixDocs.branch);
+const pMixBLanded = await driveMerge(pMixB, pMixB.branch);
+check("(P) setup: both coalescing lands reached main",
+  pMixDocsLanded.gone && pMixBLanded.gone,
+  spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString().trim());
+await setAuditMode("green"); // the holding run already read its mode; the follow-up may be fast
+const pMixRow = await pWaitRowFor(pMixDocs.branch);
+check("(P) a coalesced entry holding ONE non-docs land runs the FULL configured suite",
+  pMixRow.covers.length === 2
+    && pMixRow.covers.some((c) => c.branch === pMixDocs.branch)
+    && pMixRow.covers.some((c) => c.branch === pMixB.branch)
+    && pMixRow.proportional === undefined && pMixRow.steps === undefined
+    && pMixRow.cmd === process.env.FLEET_POSTLAND_AUDIT_CMD && pMixRow.cmdSource === "env",
+  JSON.stringify({ covers: pMixRow.covers.map((c) => c.branch), proportional: pMixRow.proportional,
+    steps: pMixRow.steps, cmdSource: pMixRow.cmdSource, cmd: pMixRow.cmd }));
+check("(P) …and it really executed that suite — the stand-in logged a run for it",
+  (await runLog()).length === pMixRunsBefore + 1 && pMixRow.result === "green",
+  `before=${pMixRunsBefore} after=${(await runLog()).length} result=${pMixRow.result}`);
 
 // ===== (K) THE REMOTE HELPER PORTAL =============================================================
 // Runs LAST, and that placement is load-bearing rather than tidy: this section seeds a second repo

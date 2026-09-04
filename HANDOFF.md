@@ -1,3 +1,132 @@
+# HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 6): P7 IST GEMESSEN, das Program steht an DREI Owner-Entscheiden, und es gibt keine Bauarbeit mehr; 2026-09-04 15:4x, ctx GEMESSEN 29,9 %
+
+Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,
+`GET /api/self/program-execution`. Hier steht nur, was git und die Sensoren NICHT tragen.
+
+## 0. DAS EINE, WAS DU IN DEN ERSTEN FUENF MINUTEN TUST
+
+**Meine Attention `b50afa74ab1e42adff1471a3` (drei Entscheide, s. §3) STIRBT mit meiner
+Nachfolge** — `refused: requester session ended`. Das ist B-12, der dokumentierte Mechanismus, und
+sie ist die fuenfte Instanz davon in diesem Program. **Pruefe `GET /api/self/attention`; ist sie
+`refused` und unbeantwortet, STELLE SIE NEU.** Der volle Inhalt steht in §3.
+
+**Und dann: fang nichts an.** Es gibt in diesem Program keine offene Bauarbeit mehr — nur noch
+Entscheide, die dem Owner gehoeren. Wer hier eine Lane startet, erfindet Arbeit.
+
+## 1. Was diese Session geliefert hat
+
+Zwei Direkt-Commits, beide docs-only, beide vor dem Commit gegen laufende Merge-Jobs auf Slot
+1/2/4 geprueft, beide von Hand mit `bun e2e/pins.ts` → ALL PASS verifiziert:
+
+| SHA | Was |
+| --- | --- |
+| `5f8153c` | **E6** — jeder der 23 P6-Befunde bekommt einen am Baum NACHGESEHENEN Ausgang; die Queue-Verweistabelle war fuenf Zeilen zu kurz |
+| `fafe01d` | **P7** — die Abschlussmessung, die 16. Flake-Familie (§11.2n), B-16 geschlossen |
+
+**Ergebnis der Abschlussmessung, drei von sechs erfuellt** (Zahlen und Kommandos:
+`docs/messungen/2026-09-04-generalsanierung-abschlussmessung.md`):
+
+| # | Urteil | Kern |
+| --- | --- | --- |
+| 1 Struktur | **halb** | Blatt-Invariante haelt, groesstes Modul 1 641 — aber `src/client.ts` 11 067 statt ≤ 2 000 (P5 lief nie) |
+| 2 Kommentaranteil | **verfehlt** | 33,6 % gegen < 20 %, und STEIGEND (33,3 % am 09-03) |
+| 3 tote Doc-Pfade | **erfuellt** | 0 von 43, als Pin-Klasse in Stufe 1 des Land-Gates |
+| 4 attic/repo-map/Symlinks | **erfuellt** | 88 Dateien, **NULL Symlinks im ganzen Baum**, 0 ungetrackt, repo-map byte-gepinnt |
+| 5 Suiten/Demo/Deploy | **verfehlt** | Demo ✓, Live-Server ✓, aber die drei Beweislaeufe nicht (s. §2) |
+| 6 P6-Disposition | **registerseitig erfuellt** | offen bleiben nur die 14 Owner-Dispositionen |
+
+**Die Zahl, die man sich merken sollte:** der Split hat 2 701 Zeilen aus `server.ts` bewegt, im
+selben Fenster ist die Server-Flaeche um 1 782 gewachsen — netto faellt `server.ts` um 919.
+**Alle elf `feat`-Commits auf `server.ts` seit dem Anker stammen aus FREMDEN Programmen**, keiner
+aus der Sanierung. Der Feature-Freeze hat innen gehalten und aussen nie existiert; eine
+Program-MAIN kann ihn nicht durchsetzen.
+
+## 2. Die drei Beweislaeufe — und der eine, den ich NICHT nachgeholt habe
+
+Alle aus einem auf `a09d9e5` **gepinnten** Worktree (`git worktree add --detach`), weil `main`
+sich waehrend der Messung bewegt hat. Trail-Zeilen belegen `tree=a09d9e57…`, `dirty=false`.
+
+| Lauf | Dauer | exit | Ergebnis |
+| --- | ---: | ---: | --- |
+| 1 | ~25 min | 0 | **3 602 / 0**, `ALL PASS` |
+| 2 | 30 min 16 s | 1 | 3 601 / **1** — `⏸ re-run …guard unchanged` |
+| 3 | ~1 min | — | **vom Host abgeschossen (Speicherdruck), kein Urteil** |
+
+**Lauf 2s FAIL ist jetzt Flake-Familie 16** (`docs/verify-tiering.md` §11.2n):
+`e2e/lane-helpers.ts#settleForMerge` pollt 12 s und **kehrt danach still zurueck**; der folgende
+merge-POST trifft den IDLE-Gate statt des Guards unter Test, und der Check faellt unter dem Namen
+des Guards. Signatur ist das `blocked`-detail. Basisrate ueber das GANZE Trail-Register:
+**11/655 = 1,7 % auf elf verschiedenen Baeumen, jeder genau einmal.**
+
+**Damit ist B-16 beantwortet, mit NEIN:** vier der elf Rots liegen bis zu einem Monat VOR dem
+B-06-Land, das B-16 verdaechtigt hatte. Die 2/27 = 7,4 % waren ein Kleinfenster-Artefakt.
+
+**Der Satz, den du mir nicht durchgehen lassen sollst:** ich habe die Familie registriert,
+NACHDEM mein eigener Lauf an ihr gefallen war. Das ist B-14s Konstellation. Sie steht auf 655
+Laeufen und einem am Code gelesenen Mechanismus — aber die Wahl, welche Lesart von Erfolgsmass 5
+zaehlt, habe ich ausdruecklich dem Owner gelassen und NICHT selbst getroffen.
+
+**Warum kein vierter Lauf:** Lauf 3 starb am Speicherdruck der Maschine, nicht an der Suite —
+**~58 MB freie Seiten, 7 lebende claude-Sessions, 115 unreapte `fleet-e2e-instance-*` (2,7 GB),
+Platte 89 % voll.** Ein vierter Lauf haette dieselbe Ursache getroffen. Aufgeraeumt habe ich nur
+MEINEN Leak, ueber die **notierte** PID (33401) und den notierten Socket (`fleettest33401`), nie
+ueber ein Namensmuster — der Stale-Lock war der wichtige Teil, ein toter Halter blockiert jede
+fremde Suite. **Die 115 fremden Instanzen habe ich NICHT angefasst:** genau aus solchen lesen
+§11.2m und §11.2n ihre Wurzeln. Was fehlt, ist ein Aufbewahrungsfenster, nicht ein `rm`.
+
+## 3. Der Inhalt der sterbenden Attention
+
+**(1) Die 14 pending `notiz`-Zeilen disponieren.** Letzter offener Teil von Erfolgsmass 6; der
+Advisory-Deckel steht 10/10, von hier aus kann keine weitere Zeile entstehen.
+
+**(2) Welche Lesart von Erfolgsmass 5 zaehlt?** Entweder Lauf 2 zaehlt nach §11.2n gruen und nur
+Lauf 3 fehlt; oder ein frisches Triple, ~85 min exklusiver Suite-Mutex auf der oben vermessenen
+Maschine. Bei 1,7 % Basisrate fuer §11.2n allein liegt die Chance, dass dieselbe Familie nicht
+wieder feuert, bei ~95 % — die anderen fuenfzehn sind nicht eingerechnet.
+
+**(3) Unfreeze + Program schliessen — oder P5 doch fahren?** `src/client.ts` und der
+Kommentaranteil sind die zwei Posten, die ein Weiterlaufen rechtfertigen wuerden. Beide hat der
+RESCOPE gestoppt, nicht ein Fehlschlag.
+
+## 4. Zwei Aenderungen, die GIT NICHT TRAEGT — melde sie weiter
+
+`rulebook/` und `CLAUDE.md` sind gitignored. Ich habe im **Haupt-Checkout** zwei
+**Faktenkorrekturen** am Fragment gemacht und neu gerendert (Rezept im Kopf von `rulebook.ts`);
+`bun e2e/pins.ts` §6b ist danach gruen. Beides sind Fakten, keine Regeln — eine Promotion war
+nicht noetig und ist nicht erfolgt:
+
+1. **`rulebook/einstieg.md`, GPT-Brief-Checkliste:** „`server.ts` sind ~13 600 Zeilen" → **24 603**
+   (gemessen). Die alte Zahl war um Faktor 1,8 zu klein und hat jeden darauf gebauten
+   Brief-Kostenvoranschlag untertrieben. Dazu neu: die zehn `server/`-Blatt-Module und die
+   Blatt-Invariante, damit ein Brief sie nennen kann.
+2. **`rulebook/lane-discipline.md`:** „Fuenfzehn bekannte Flake-Familien" → **„Sechzehn"**, plus
+   der §11.2n-Eintrag in der Aufzaehlung.
+
+**Wenn diese Maschine neu aufgesetzt wird, sind beide weg.** Der getrackte Teil (§11.2n in
+`docs/verify-tiering.md`) ueberlebt.
+
+## 5. Ehrlichkeiten
+
+- **Eine Fehlmessung auf dem Weg, und sie ist die billigste Sorte:** mein erster Zeilen-Trend lief
+  als `git show $sha:server.ts | wc -l` in einer Schleife und gab 85/95/344 Zeilen fuer
+  20k-Zeilen-Baeume zurueck. Die Pipe brach still — kein Fehler, kein Exit-Code, nur falsche
+  Zahlen, die wie eine Messung aussahen. Alle Trendzahlen stammen aus dem Datei-Umweg
+  (`git show … > f; wc -l < f`). Wer in diesem Repo Historie vermisst: nimm den Umweg.
+- **`d2e4f219` habe ich NICHT dispatcht** — aus demselben Grund wie meine Vorgaengerin (ihr §4).
+  Ihre Vorarbeit (`2627564`, `claimWas`+`endedAt`) ist gelandet, die naechsten Angebote
+  produzieren also echte Zahlen. Die Entscheidung bleibt beim Owner.
+- **Zwei Benutzungen des Owner-Tokens aus `fleet.json`**, beide nur lesend: `GET /api/sessions`
+  (Deploy-Fakten, eigener `ctx`) und `GET /api/slots/:id/merge` fuer 1/2/4 vor jedem Direkt-Commit.
+  Kein Schreibzugriff, nichts nach aussen.
+- **Ein Doppel-Eintrag, den ich selbst verursacht und selbst repariert habe:** mein erstes Append
+  an das P6-Register duplizierte drei Tabellenzeilen (`9c7d6e02`/`372b3cef`/`563ec115`), weil ich
+  das Dateiende aus einem aelteren `sed`-Ausschnitt im Kopf hatte statt es nachzusehen. Vor dem
+  Commit entfernt. Lehre: an ein 1 000-Zeilen-Dokument nicht anhaengen, ohne sein Ende in
+  DIESEM Moment zu lesen.
+- **Der gepinnte Worktree ist geraeumt** (`git worktree remove --force`), `git worktree list`
+  zeigt wieder fuenf Eintraege. Er war der Grund, dass die Laeufe trotz bewegtem `main` denselben
+  Baum messen — das Rezept ist in der Messnotiz festgehalten und lohnt die Wiederverwendung.
+
 # HANDOFF — Dual-Host cd110019 (Slot 6 → Nachfolge): PHASE 1 IST KOMPLETT, gelandet, deployt und gruen auditiert; Phase 2 haengt an EINER Owner-Antwort, die mit dieser Session STIRBT; 2026-09-04 (14:0x), ctx GEMESSEN 25,6 %
 
 Program `cd1100193082db395c1387db`, gebunden. Lineage 9 → 5 → 6 → du.

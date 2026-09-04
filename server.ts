@@ -63,6 +63,7 @@ import {
   TRANSITION_DEADLINE_MAX_SEC, TRANSITION_DEADLINE_DEFAULT_SEC, watchFrom, FLEET_EVENT_TERMINAL,
   ATTENTION_KINDS, fleetEventFrom, clarificationFrom, fleetReportFrom, attentionFrom,
   MAX_CLARIFICATION_QUESTION, MAX_CLARIFICATION_ANSWER, MAX_FLEET_REPORT_TEXT, MAX_ATTENTION_TEXT,
+  FLEET_REPORT_DISPOSITIONS, MAX_FLEET_REPORT_DECISION_REASON,
   MAX_ATTENTION_ANSWER, MAX_ATTENTION_PROVENANCE_TEXT, ATTENTION_CANDIDATE_SHA_RE,
   validAttentionBranch, MAX_SUPERVISOR_NUDGE_TEXT, TASK_KINDS, isTaskKind, loadTaskKind,
   PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion, PROGRAM_PROFILE_KINDS, loadProgramProfile,
@@ -75,7 +76,8 @@ import {
   type LaneFleetEvent, type MergeFleetEvent, type AuditFleetEvent, type DeployFleetEvent,
   type CommandJobFleetEvent,
   type ClarificationFleetEvent, type FleetReportFleetEvent, type SupervisorTransitionFleetEvent,
-  type FleetEvent, type ClarificationRequest, type FleetReport, type AttentionKind,
+  type FleetEvent, type ClarificationRequest, type FleetReport, type FleetReportDisposition,
+  type AttentionKind,
   type AttentionRequest, type TaskKind, type Task, type TaskBrief, type TaskComment,
   type TaskAnalysis, type AnalysisBlocker, type TaskCriterion, type RefineChild, type RefineProposal,
   type TaskRefine, type LaneForm, type LaneRef, type SuccessionRetirement, type CodexRecoveryState,
@@ -1592,6 +1594,27 @@ function newestOutcomeByTask(sortedRows: Record<string, unknown>[]): Map<string,
   return byTask;
 }
 
+// The newest PRESENT fleet-report row for one task inside one program, projected down to the four
+// facts a reconstruction needs. Pure and per request, like every other join in the view: nothing is
+// stored, nothing is pruned here, and the full row stays reachable through GET /api/self/fleet-report
+// for the occupant it was filed to. Deliberately NOT an input to program-phase.ts — the reducer must
+// not read a prunable row (its own pin says so), and this fact changes no phase.
+function latestReportFor(taskId: string, programId: string): {
+  id: string; status: FleetReportStatus; disposition: FleetReportDisposition | null;
+  decidedAt: number | null;
+} | null {
+  let newest: FleetReport | null = null;
+  for (const r of fleetReports) {
+    if (r.provenance.taskId !== taskId || r.provenance.programId !== programId) continue;
+    if (!newest || r.reportedAt > newest.reportedAt) newest = r;
+  }
+  return newest === null ? null : {
+    id: newest.id, status: newest.status,
+    disposition: newest.decision?.disposition ?? null,
+    decidedAt: newest.decision?.at ?? null,
+  };
+}
+
 // The row-level pointer that rides beside `phase`. Fact-only by construction: every branch is a
 // function of the phase, the row's own status and the Program's owner-granted promotion record —
 // no pane text, no quality judgement, nothing stored. `null` is a real answer and means "no door
@@ -1669,6 +1692,12 @@ async function programExecutionView(s: Slot): Promise<Response> {
       unknown.push(`${receiptLedger.malformed} malformed receipt ledger rows make reconstruction incomplete.`);
     if (p.status !== "active")
       unknown.push(`1 program has status ${p.status}; executionState is not-executing.`);
+    // The one honest caveat the per-row report fact carries: report retention is a bounded tail
+    // (pruneFleetReports over FLEET_REPORT_KEEP terminal rows), so once the tail is full a row's
+    // `report: null` can mean "dropped by retention" as well as "never filed". Named only while
+    // that is actually possible — a line that fired on an empty tail would be noise, not a gap.
+    if (fleetReports.length >= FLEET_REPORT_KEEP)
+      unknown.push(`report retention holds ${fleetReports.length} rows at the ceiling of ${FLEET_REPORT_KEEP}; a task row with report null may have had one dropped rather than never filed.`);
     return {
       program: {
         id: p.id, status: p.status, title: p.title, createdAt: p.createdAt,
@@ -1708,6 +1737,15 @@ async function programExecutionView(s: Slot): Promise<Response> {
             // that showed REVIEWABLE without naming the door left the MAIN to rediscover it (or,
             // measured once as `9cc8b1e`, to reach for the owner token instead).
             nextAction: nextActionFor(derived.phase, t, p.promotion),
+            // THE WORKER'S TYPED RESULT AND WHAT THIS PROGRAM DID WITH IT, joined by the row's own
+            // persisted provenance rather than by any occupant: the report was filed TO one MAIN
+            // occupant, and the session reading this may be its successor, bound later through
+            // authority.lineage with a different triple. That successor is exactly the reader who
+            // cannot ask GET /api/self/fleet-report — it is not the receiver — and who would
+            // otherwise have to read a pane to learn whether a terminal report was ever accepted.
+            // `disposition: null` is a real answer and means filed-but-unjudged; a null row means
+            // no report is PRESENT (see the retention line in `unknown`). Newest by reportedAt.
+            report: latestReportFor(t.id, p.id),
           };
         }),
         total: programTasks.length,
@@ -6396,10 +6434,7 @@ async function acknowledgeFleetEvent(s: Slot, id: string): Promise<Response> {
   // possibly-sent pane text can resolve the crash boundary. Pending was definitely never offered.
   if (event.status !== "delivered" && event.status !== "send-uncertain")
     return json({ error: "event is not acknowledgeable", status: event.status }, 409);
-  event.status = "acknowledged";
-  event.acknowledgedAt = Date.now();
-  audit("fleet_event_ack", s.id, event.id);
-  pruneFleetEvents(s.id);
+  settleFleetEventAcknowledged(event);
   await saveStateNow();
   return json({ ok: true, existing: false, event });
 }
@@ -6426,6 +6461,77 @@ async function ownerAcknowledgeFleetEvent(id: string): Promise<Response> {
   pruneFleetEvents(event.receiverSlot);
   await saveStateNow();
   return json({ ok: true, existing: false, event });
+}
+
+// THE ONE PLACE A SESSION-SIDE ACKNOWLEDGEMENT IS WRITTEN. Extracted rather than copied when the
+// report-decision door needed the same settle: two writers for one terminal transition is how the
+// prune key, the audit word and the terminal status drift apart one edit at a time. It decides
+// nothing — every refusal about WHETHER to settle stays at its caller, where the reason lives.
+function settleFleetEventAcknowledged(event: FleetEvent): void {
+  event.status = "acknowledged";
+  event.acknowledgedAt = Date.now();
+  audit("fleet_event_ack", event.receiverSlot ?? undefined, event.id);
+  pruneFleetEvents(event.receiverSlot);
+}
+
+// THE JUDGEMENT DOOR, and its whole reason to exist is that the ACK next to it is NOT one. The ack
+// is a transport receipt ("I received bytes") by contract, so nothing persisted whether the MAIN
+// read the diff and took the work — a successor reconstructing the Program could not tell an
+// accepted report from an unread one, and no later cleanup could hang on a fact that did not exist.
+//
+// The fact lives on the REPORT, not on the event, and that is the load-bearing choice: the event is
+// transport and is pruned on its own per-receiver clock (pruneFleetEvents), while the report is the
+// judged object with its own retention. A verdict stored on the event would vanish while the row it
+// judged was still there, and it would overload one word ("acknowledged") with two meanings.
+//
+// It moves NOTHING else: no Task.status, no land, no lane teardown, no text into the worker's pane,
+// and no retention pass of its own. A report stays a MESSAGE; this records what was done with it.
+async function decideFleetReport(s: Slot, id: string, disposition: FleetReportDisposition,
+  body: Record<string, unknown> | null): Promise<Response> {
+  const report = fleetReports.find((r) => r.id === id);
+  if (!report) return json({ error: "unknown fleet report" }, 404);
+  // FIRST, ahead of the occupant comparison, for acknowledgeFleetEvent's reason verbatim: an
+  // owner-inbox row has no receiver occupant at all, so comparing it against this session would
+  // answer "belongs to another or replaced MAIN session" — the wrong reason, pointing a MAIN at a
+  // session that cannot exist. The owner is a principal, and none is invented for him here either.
+  if (report.receiver === null)
+    return json({ error: "owner-inbox report — accepting or rejecting it belongs to the owner, who has no session to bind a decision to" }, 409);
+  if (report.receiver.slot !== s.id || report.receiver.openedAt !== s.openedAt
+    || report.receiver.sessionId !== s.sessionId)
+    return json({ error: "fleet report belongs to another or replaced MAIN session" }, 409);
+  // The body may say ONE thing or nothing, in openFleetReport's own discipline: what a request
+  // cannot name, it cannot smuggle. Disposition comes from the PATH, everything else from the row.
+  if (body && Object.keys(body).some((key) => key !== "reason"))
+    return json({ error: "body must contain only reason" }, 400);
+  let reason: string | null = null;
+  if (body && body.reason !== undefined) {
+    if (typeof body.reason !== "string") return json({ error: "reason must be a string" }, 400);
+    if (body.reason.length > MAX_FLEET_REPORT_DECISION_REASON)
+      return json({ error: `reason must be at most ${MAX_FLEET_REPORT_DECISION_REASON} chars` }, 400);
+    reason = body.reason.trim() || null;
+  }
+  // FIRST DECISION WINS, and a second call is refused rather than absorbed — even an identical one.
+  // A report is judged once: this row is what a successor reconstructs from, and a door that
+  // re-stamped it would let a later session quietly overwrite a predecessor's verdict with its own.
+  if (report.decision)
+    return json({ error: `fleet report was already ${report.decision.disposition}`,
+      decision: report.decision }, 409);
+
+  const at = Date.now();
+  report.decision = { disposition, at,
+    by: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId }, reason };
+  // …and the transport half, through the ack route's OWN writer rather than a second one. A MAIN
+  // that judged the report has by construction received it, so leaving the event open would let
+  // recoverFleetReportDelivery re-paste a report already decided. An already-terminal event is left
+  // exactly as it is: `receiver-gone` and `subject-gone` are evidence of a loss, not an open debt,
+  // and overwriting them would erase the one record that says what happened to that delivery.
+  const event = fleetEvents.find((e) => e.id === report.eventId);
+  if (event && !FLEET_EVENT_TERMINAL.includes(event.status)) settleFleetEventAcknowledged(event);
+  // No audit word of its own: the durable record of this act is the row it just wrote — persisted,
+  // hydrated and projected — and a trail line would be the weaker copy of it. What the trail does
+  // carry is the transport half above, under the same word the explicit ack route writes.
+  await saveStateNow();
+  return json({ ok: true, report });
 }
 
 // The same teardown act for the OTHER promise a slot can leave behind: an open suite offer in the
@@ -21418,6 +21524,26 @@ Bun.serve<WSData>({
       if (!s.worktree || s.label === STEWARD_LABEL)
         return json({ error: "not a worker lane — MAIN and the steward cannot file a fleet report" }, 409);
       return openFleetReport(s, await readJson(req));
+    }
+
+    // …and the door that JUDGES one of those rows. Deliberately NOT folded into the event-ack
+    // regex below: that route is a transport receipt for every event kind and keeps every one of
+    // its refusals, while this one records what the receiving MAIN did with the work. NON-lane
+    // only, for the "one edge per role" reason its four neighbours state — a lane FILES its own
+    // result, it does not accept the results its own MAIN is owed. Which report and which verdict
+    // both come from the PATH; the exact receiver occupant is compared inside the handler, the way
+    // replyClarification compares the clarification's. Placed ABOVE the release route on purpose:
+    // that route's pin holds "reads no body" over the region from its own opening line down to the
+    // events-ack line, and this handler does read one.
+    const selfReportDecision = /^\/api\/self\/fleet-report\/([0-9a-f]{24})\/(accept|reject)$/.exec(url.pathname);
+    if (selfReportDecision && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not judge a fleet report — a lane files its own result, it does not accept the results its own MAIN is owed" }, 409);
+      return decideFleetReport(s, selfReportDecision[1],
+        selfReportDecision[2] === "accept" ? "accepted" : "rejected", await readJson(req));
     }
 
     const selfClarificationReply = /^\/api\/self\/clarifications\/([0-9a-f]{24})\/reply$/.exec(url.pathname);

@@ -97,6 +97,11 @@ interface ProgramExecutionRow {
     slot: number | null; originId: string | null; text: string;
     // derived per request, stored nowhere (program-phase.ts)
     phase: Phase; phaseBasis: string[]; note: string | null;
+    // D1: the newest PRESENT fleet-report for this row, joined by persisted provenance and NOT by
+    // occupant — which is why a successor MAIN, bound later with a different triple, can read it.
+    // null = no row present; disposition null = filed but not yet judged.
+    report: { id: string; status: string; disposition: "accepted" | "rejected" | null;
+      decidedAt: number | null } | null;
     // derived beside `phase` and stored nowhere: WHICH DOOR is next from where the row sits. A
     // pointer, never a grade. null = no door belongs to this row right now.
     nextAction: string | null;
@@ -1574,6 +1579,66 @@ export async function run(ctx: Ctx): Promise<void> {
     successionReceipt?.briefSource === "founding"
       && successionReceipt?.briefHash === briefHashOf(successionPrompt),
     JSON.stringify(successionReceipt ?? null));
+
+  // --- D1 · A DECIDED REPORT IS VISIBLE TO THE SUCCESSOR, WHICH NEVER RECEIVED IT. -----------
+  // A worker's typed report is filed to ONE MAIN occupant, and the only door that occupant had was
+  // the event ACK — a transport receipt by contract. So the session reading this Program next could
+  // not tell an accepted report from an unread one, and had no way to ask: it is not the receiver,
+  // so GET /api/self/fleet-report answers it nothing. The fact therefore rides the PROJECTION,
+  // joined by the row's persisted provenance (taskId + programId).
+  //
+  // The decided row is PLANTED with srv down — the technique every binding fixture here uses — for
+  // one reason: the principal that may decide is the PREDECESSOR occupant, and the succession above
+  // has already ended it. The door itself is driven live in e2e/watch.ts §D1; what is under test
+  // here is who can SEE the fact afterwards, and the plant travels through fleetReportFrom on the
+  // way in, so a row that could not hydrate would take this check red rather than pass it.
+  const successorTokenOf = (slot: number | null): string =>
+    slot === null ? "" : readState().slots?.[String(slot)]?.selfToken ?? "";
+  const beforePlantView = await selfExecution(successorTokenOf(successorSlot));
+  const beforePlantRow = beforePlantView.view?.programs.find((x) => x.program.id === mainProgram.id)
+    ?.tasks.rows.find((row) => row.id === matchingTaskId);
+  check("ProgramExecutionView report join: the successor is bound and its task row carries an explicit report null before any row exists",
+    beforePlantView.response.ok && !!beforePlantRow && beforePlantRow.report === null
+      && beforePlantView.view?.programs[0]?.authority.boundSlot === successorSlot
+      && successorSlot !== bound?.slot,
+    JSON.stringify({ boundSlot: beforePlantView.view?.programs[0]?.authority.boundSlot,
+      predecessor: bound?.slot, report: beforePlantRow?.report }));
+  const decidedReportId = "c".repeat(24);
+  const decidedReportEventId = "d".repeat(24);
+  const decidedAt = Date.now() - 5000;
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const reportPlantState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+    { fleetReports?: unknown[] };
+  const decidedReceiver = { slot: bound?.slot ?? 0, openedAt: bound?.openedAt ?? 0,
+    sessionId: bound?.sessionId ?? null };
+  reportPlantState.fleetReports = [...(reportPlantState.fleetReports ?? []), {
+    id: decidedReportId, reportedAt: decidedAt - 1000, status: "needs-main",
+    text: "D1 successor fixture: the slice landed as far as it could and a decision was owed.",
+    worker: { slot: 1, openedAt: 1, sessionId: null, cwd: REPO, branch: "fleet/d1-successor-fixture" },
+    provenance: { taskId: matchingTaskId, originId: null, programId: mainProgram.id },
+    receiver: decidedReceiver, basis: "program-main", eventId: decidedReportEventId,
+    decision: { disposition: "accepted", at: decidedAt, by: decidedReceiver,
+      reason: "predecessor read the diff and took the work" },
+  }];
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(reportPlantState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const d1SuccessorToken = successorTokenOf(successorSlot);
+  const d1SuccessorView = await selfExecution(d1SuccessorToken);
+  const successorRow = d1SuccessorView.view?.programs.find((x) => x.program.id === mainProgram.id)
+    ?.tasks.rows.find((row) => row.id === matchingTaskId);
+  const successorReports = await (await fetch(`${BASE}/api/self/fleet-report`,
+    { headers: { "x-fleet-self-token": d1SuccessorToken } })).json() as { reports?: { id: string }[] };
+  check("ProgramExecutionView report join: a successor MAIN with a DIFFERENT occupant triple reads the predecessor's verdict without touching a pane",
+    d1SuccessorView.response.ok && successorRow?.report?.id === decidedReportId
+      && successorRow.report.status === "needs-main"
+      && successorRow.report.disposition === "accepted"
+      && successorRow.report.decidedAt === decidedAt
+      // …and the falsifier for WHY the projection has to carry it: the successor is not the
+      // receiver, so the report route — correct as it is — hands it nothing.
+      && !(successorReports.reports ?? []).some((r) => r.id === decidedReportId),
+    JSON.stringify({ report: successorRow?.report ?? null,
+      viaReportRoute: (successorReports.reports ?? []).map((r) => r.id) }));
 
   // --- THE UNBOUND SUCCESSION RAIL — the one founding delivery that had no gate. ------------
   // Everything above proves the BOUND rail: succeedProgramMain holds the boot grace, the delivery

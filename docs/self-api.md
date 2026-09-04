@@ -724,6 +724,83 @@ behandelt ein fehlendes Event als terminal, sonst hielte eine Zeile ohne Event d
 Eine Zeile mit noch offenem Event wird nie gepruned. Ein Report ist also kein Archiv — was bleiben soll, gehört in den
 Commit.
 
+### Annahme — `POST /api/self/fleet-report/:id/accept`, `POST /api/self/fleet-report/:id/reject`
+
+**Der ACK ist ein Transport-Empfang, keine Beurteilung.** `POST /api/self/events/:id/ack` sagt
+per Vertrag „ich habe Bytes bekommen" — bis zu diesem Schnitt persistierte nichts, ob die
+empfangende MAIN den Diff gelesen und die Arbeit ANGENOMMEN oder ABGELEHNT hat. Eine Nachfolge-MAIN,
+die ein Program aus `GET /api/self/program-execution` rekonstruiert, konnte einen angenommenen
+Report nicht von einem ungelesenen unterscheiden.
+
+```
+curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report/<report-id>/accept \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"reason":"Diff gelesen, Verify zitiert, Scheibe uebernommen"}'
+```
+
+- **Der Fakt sitzt auf der REPORT-Zeile, nicht auf dem FleetEvent.** Das Event ist Transport und
+  wird auf seiner EIGENEN Uhr gepruned (`pruneFleetEvents`, je Empfänger); der Report ist das
+  BEURTEILTE Objekt mit eigener Retention. Ein Urteil auf dem Event verschwände, während die Zeile,
+  die es beurteilt, noch da ist — und es überlüde ein Wort (`acknowledged`) mit zwei Bedeutungen.
+- **`decision` ist EIN Objekt oder es ist nicht da**: `{disposition, at, by:{slot,openedAt,sessionId},
+  reason}`. `disposition` ist genau einer von zwei (`FLEET_REPORT_DISPOSITIONS` in `server/types.ts`):
+  `accepted` · `rejected`. Fehlt der Schlüssel oder ist er `null`, ist die Zeile UNBEURTEILT — eine
+  vor dieser Tür persistierte Zeile bleibt beobachtbar unbeurteilt und wird nie zu einem Urteil
+  repariert, das niemand gefällt hat. `reason` ist optionale Prosa ≤ 500 Zeichen oder `null`.
+- **Nur der EXAKTE gebundene Empfänger-Occupant entscheidet** (`slot` + `openedAt` + `sessionId`),
+  und `fleetReportFrom` prüft `decision.by` gegen `receiver` zusammen: eine Zeile kann strukturell
+  kein Urteil eines Prinzipals tragen, an den sie nie gefilet wurde.
+- **Die erste Entscheidung gewinnt.** Ein zweiter Aufruf ist 409 (`fleet report was already
+  accepted|rejected`, die stehende `decision` im Body) und die Zeile bleibt unverändert — auch bei
+  identischer Wiederholung. Ein Report wird EINMAL beurteilt; sonst überschriebe eine spätere
+  Session das Urteil ihrer Vorgängerin.
+
+**Die Ablehnungen, in dieser Reihenfolge:**
+
+| Fall | Antwort |
+|---|---|
+| Lane als Aufrufer | 409 `a lane may not judge a fleet report — a lane files its own result, it does not accept the results its own MAIN is owed` (Route-Ebene, wie bei `release`/`attention`/`tasks`) |
+| unbekannte id | 404 `unknown fleet report` |
+| Owner-Inbox-Zeile (`receiver: null`) | 409 `owner-inbox report — accepting or rejecting it belongs to the owner, who has no session to bind a decision to` — **vor** dem Occupant-Vergleich, aus demselben Grund wie beim Self-ACK: eine Owner-Zeile HAT keinen Occupant, und „belongs to another session" wäre der falsche Grund |
+| fremde oder ersetzte MAIN | 409 `fleet report belongs to another or replaced MAIN session` (dieselbe Form wie `replyClarification`) |
+| Body mit anderem Schlüssel | 400 `body must contain only reason` — dieselbe Disziplin wie `body must contain only status and text` |
+| `reason` kein String / > 500 | 400 mit der Grenze im Text |
+
+**Der Transport wird mitgeschlossen, durch den SCHREIBER der ACK-Route, nicht durch einen zweiten.**
+Ist das Event der Zeile noch nicht terminal, setzt die Entscheidung es auf `acknowledged`
+(`settleFleetEventAcknowledged`, Audit-Wort `fleet_event_ack`) — eine MAIN, die geurteilt hat, hat
+den Report per Konstruktion bekommen, und ein offenes Event ließe `recoverFleetReportDelivery` einen
+bereits beurteilten Report erneut pasten. Ein BEREITS terminales Event bleibt exakt wie es ist
+(`receiver-gone`/`subject-gone` sind Verlust-Evidenz, keine offene Schuld). `POST
+/api/self/events/:id/ack` behält seine Bedeutung und jede seiner Ablehnungen unverändert.
+
+**Was die Tür NICHT tut** — jedes davon ist ein eigener Check, keine Prosa: sie bewegt nie
+`Task.status`, landet nicht, tötet oder schließt keine Lane, schickt nichts in die Worker-Pane und
+ändert die Retention nicht (eine beurteilte Zeile hält `pruneFleetReports` genau wie jede andere
+terminale Zeile). Kein Tick ruft sie — sie hat genau eine Aufrufstelle, und die ist die Route.
+Eine Ablehnung schickt der Lane KEINE Nachricht; ob das ein Transport braucht, ist offen und
+bewusst nicht gebaut.
+
+**Sichtbarkeit, zwei Sichten für zwei Leser:**
+
+- **`GET /api/self/fleet-report`** liefert die volle Zeile inklusive `decision` — an den Worker und
+  an den Empfänger, exakt occupant-gebunden wie zuvor.
+- **`GET /api/self/program-execution`** trägt den Fakt je Task-Zeile als
+  `report: {id, status, disposition, decidedAt}` oder `null`. Der Join läuft über die persistierte
+  `provenance` (`taskId` + `programId`), NICHT über einen Occupant — genau darum sieht ihn auch eine
+  NACHFOLGE-MAIN, die später über `authority.lineage` gebunden wurde und ein anderes Tripel trägt.
+  Sie ist der Leser, der `GET /api/self/fleet-report` nicht fragen kann (sie ist nicht der
+  Empfänger) und sonst eine Pane lesen müsste. `disposition: null` heißt gefilet-aber-unbeurteilt;
+  `report: null` heißt „keine Zeile VORHANDEN" — und weil die Retention ein begrenzter Schwanz ist,
+  nennt die `unknown`-Liste genau dann eine Zeile, wenn die Decke (`FLEET_REPORT_KEEP`) erreicht ist
+  und ein `null` daher auch „weggepruned" heißen kann.
+- Der Fakt ist **kein Eingang des Phasen-Reducers**: `program-phase.ts` liest keine prunebare Zeile
+  (sein eigener Pin sagt das), und keine Phase ändert sich durch ihn.
+
+Die Lane-Fußzeile (`LANE_EXIT_FOOTER`) bleibt **unverändert**: sie sagt der LANE, wie sie endet —
+committen, einen getypten Report filen, idle gehen. Was die MAIN danach mit dem Report tut, ist
+nicht ihr Wissen und gehört nicht in ihren Brief.
+
 ## land — `POST /api/self/tasks/:id/land`
 
 **Die eine Self-Route, die einen Integrations-Branch bewegt.** Eine gebundene Program-MAIN landet

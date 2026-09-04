@@ -280,7 +280,7 @@ Rauschen), dann #11/#14/#15 als Owner-Fragen buendeln — EINE Nachricht, nicht 
 ---
 ---
 
-# HANDOFF — 🎛 Fleet Controller (Slot 9, Fable 5.1): Deckel freigeraeumt, Lebenszyklus-Kette laeuft, R1 DEPLOYT, Audit-Proportion + Audit-Rot-Untersuchung als Lanes, Program Audit-Determiniertheit gegruendet; 2026-09-04 22:1x, ctx GEMESSEN ~30 % (Owner-Entscheid 22:0x: Band 25/30 fuer diese Session ausgesetzt, Anker 40 %)
+# HANDOFF — 🎛 Fleet Controller (Slot 9, Fable 5.1): Deckel freigeraeumt, Lebenszyklus-Kette laeuft, R1 DEPLOYT, Audit-Proportion + Audit-Rot-Untersuchung als Lanes, Program Audit-Determiniertheit gegruendet; 2026-09-05 00:4x, ctx GEMESSEN ~37 %; Succession auf Owner-Ansage 00:4x
 
 Zustand ableiten: `./state.sh`, `./register.sh`, Owner-Poll, Panes. Hier nur, was git nicht traegt.
 Die Abschnitte darunter sind FREMD (Vorgaengerin Slot 6, MAIN Slot 7, Slot 5, Sanierung, Dual-Host).
@@ -367,11 +367,19 @@ gpt-5.6-sol/high, GLM-Gegenchecks pi-zai/glm-5.3/high (kein Lane-Watch: Monitor 
 
 ## 2. Was JETZT offen ist, in dieser Reihenfolge
 
-1. **Rueckwege neu legen — alle meine sterben mit dieser Session:** Lane-Watch Slot 1
-   (`POST /api/self/watch {target:1}`) · Audit-Watch `{kind:"audit", repo, mainAfter:<VOLLE sha von
-   fc45fe4>}` — nur falls der Deploy unten noch aussteht · Attention-Monitor (45-s-Poll
-   `GET /api/attention` status=open) · Task-Status-Monitor auf S1/S2/S5a + die 9 pending
-   Lebenszyklus-Ids + CP-A/B/C + ba896b1b + ce329973 (`GET /api/tasks` → `{tasks:[...]}`).
+1. **DAS ERSTE (00:4x):** Slot 7 (`8ab7215f` AUDIT-PROPORTION) hat committet — `a40e898`, 11 Dateien,
+   +441, landbar; ihr Beweislauf `./e2e-postland-audit.sh` steht seit 21:51 im Mutex (Halter: Arm A der
+   Lane Slot 1 seit 22:49, ueber 1,5 h). Die MAIN Slot 8 bekommt den fleet-report (ich habe ihren
+   haengenden Nudge zugestellt) und landet per Self-Land; **du deployst danach** (`POST /api/deploy`,
+   409 bei laufendem Audit) **und ziehst den Regelbuch-Satz nach** („Post-Land-Audit bleibt
+   unveraendert voll“ → proportional fuer rein-docs-Lands; Fragment unter `rulebook/`, Render-Einzeiler
+   im Kopf von `rulebook.ts`, dann `bun e2e/pins.ts`). Slot 4 (S1, Codex 63 %) und Slot 1 (0a099c62)
+   wurden 00:2x zum Zwischencommit angewiesen — pruefe `ahead`. Nach dem Land von 0a099c62:
+   `bc0609f8` queuen. Wenn zwei Lanes gelandet sind, startet der Tick S2/S5a von selbst.
+1b. **Rueckwege neu legen — alle meine sterben mit dieser Session:** Lane-Watches Slot 1/7,
+   Audit-Watches, Attention-Monitor (45 s), Task-Status-Monitor (siehe §2 alt), Antwort von Slot 11 zur
+   Second-host-Frage (00:2x) kommt evtl. als Nachricht an DEINEN Slot — Slot 11 weiss von der
+   Succession nichts.
 2. **Deploy nach R1: ERLEDIGT** (4f9a7415). Naechste Deploys nach den Lands von 8ab7215f, 0a099c62,
    S1 — je `POST /api/deploy` (409 waehrend eines Audits → Audit-Watch, dann deployen).
 3. **Freigabe-Kette Lebenszyklus:** nach S2-Land S3a-i `30383e62` UND S12 `7ed73694` queuen

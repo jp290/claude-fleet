@@ -1001,3 +1001,72 @@ Adjudiziert `flake` (`at 1788517887279`). Das Rot bleibt rot.
 | `9c7d6e02` | `POST /api/se…` (zweimal identisch reproduziert) |
 | `372b3cef` | ein SPENT merge-Watch blockiert die Re-Subscription desselben Ziels |
 | `563ec115` | `program-execution` kennt den … (s. Zeile) |
+| `d07646bc` | **Nachgetragen 2026-09-04 (E6):** Owner-Wunsch Second-host-Ausbau, zwei Stufen (Suite-Lauf-Anzeige prominenter; `src/client.ts#deviceCard`) |
+| `18a14e37` | **Nachgetragen 2026-09-04 (E6):** Selbstbefund B — Poll-/Turn-Oekonomie einer Program-MAIN, am eigenen Transcript gemessen |
+| `7e984bde` | **Nachgetragen 2026-09-04 (E6):** dritte Instanz des 300-Zeichen-Deckels an `POST /api/post-land-audits/adjudicate` (vgl. B-13, B-20) |
+| `04fdfc77` | **Nachgetragen 2026-09-04 (E6):** benanntes Flake-GENUS „die Sonde sampelt einen by-design-Transienten" |
+| `e48ab251` | **Nachgetragen 2026-09-04 (E6):** der no-progress-Guard behandelt ein `waitedOut` wie ein Urteil |
+
+Die letzten fuenf standen bis zum 2026-09-04 nicht in dieser Tabelle, obwohl sie als Queue-Zeile
+existierten. Sie waren damit nicht „still" — aber von hier aus unsichtbar, und Erfolgsmass 6 wird an
+DIESER Liste gemessen. Der Abgleich laeuft gegen
+`GET /api/self/program-execution` → `programs[0].tasks.rows`, nicht gegen das Gedaechtnis.
+
+---
+
+# Disposition — der Ausgang je Befund (E6, 2026-09-04, Program-MAIN Slot 6)
+
+Erfolgsmass 6 verlangt je Befund **einen von drei Ausgaengen**: gefixt · begruendet verworfen · als
+Queue-Zeile uebergeben. Bis heute trug dieses Register die Befunde, aber keinen ablesbaren Ausgang —
+die Disposition steckte in der Prosa der Eintraege und war nicht zaehlbar. Diese Tabelle ist der
+fehlende Ausgang, und **jede Zeile ist am heutigen Baum `a09d9e5` nachgesehen, nicht aus den
+Eintraegen abgeschrieben**. Wo eine Zeile „GEFIXT" sagt, steht der Commit daneben und der Codepfad
+wurde gelesen; wo sie „OFFEN" sagt, ist die Gegenprobe gelaufen und negativ ausgefallen.
+
+| # | Ausgang | Beleg, heute nachgesehen |
+| --- | --- | --- |
+| B-01 | **GEFIXT, aber UNBEWIESEN** | `reportLaneSuite`s `j.result` traegt `fails` (`server.ts`, grep `fails, artifacts`) — eingebracht von `1748417` (Dual-Host „Job v1 `command`"), also als NEBENWIRKUNG fremder Arbeit, nicht als Fix hierauf. **Die Gegenprobe, die der Eintrag selbst verlangt, fehlt:** `grep -n fails e2e/helper-portal.ts` findet nur zwei Kommentar-Treffer, keine Sonde. Damit steht B-01 heute genau dort, wo er `3974883` kritisiert hat. |
+| B-02 | **GEFIXT, mit Sonde** | Der LOKALE Audit-Pfad schreibt den Trail-Dateinamen: `trail = postLandAuditTrailFile(completeOutput)` (`server.ts`), Gegenprobe `fleet-e2e-postland-audit.ts` („a local audit row records the filename of the check trail named by its complete output"). Beides aus E1 `52673b6`. **Rest, klein:** das Ausleserezept steht weiterhin nicht in `docs/e2e-trail.md`. |
+| B-03 | **GEFIXT (Ehrlichkeits-Label)** | `ranIsLowerBound` existiert und wird beim Schreiben UND beim Rendern gefuehrt (`server.ts`, grep `ranIsLowerBound`; `interface PostLandAuditChecks`), E1 `52673b6`. |
+| B-04 | **BEGRUENDET VERWORFEN** | Kein offener Defekt, sondern eine Warnung an kuenftige Wrapper-Autoren; die drei Lagen dagegen sind im Eintrag am Code gelesen. Bleibt als Warnung stehen, wird nicht zur Arbeit. |
+| B-05 | **OFFEN — Messung** | Der Rot-Abstand ist erst mit B-01s Namen entscheidbar. Die Namen existieren jetzt; **gemessen ist nichts** — es gibt keinen Lauf, der die Frage beantwortet. |
+| B-06 | **GEFIXT** | `1e5419c fix: block deploy during active land`. |
+| B-07 | **GEFIXT** | `d32b69d fix: reject spent merge watch subscriptions`. Rest: B-15. |
+| B-08 | **OFFEN — Owner** | `grep -n HANDOFF e2e/pins.ts` findet nur zwei Game-Maker-Regeln, keinen Kuerzungs-Guard. Stufe (c) (`docs/handoffs/<slot>-<ts>.md`) liegt als openQuestion im Program „Fleet-Betrieb" — also NICHT in diesem Program disponierbar. |
+| B-09 | **GEFIXT** | `509d5da fix: backfill legacy lost fast-forwards`; am lebenden Objekt belegt (Lane `fleet/260904053339-c44a` trug am 14:24 `errorReason: "ff-lost"` statt dauerhafter Sperre). |
+| B-10 | **OFFEN — klein** | Beide `check()`-Aufrufe (`e2e/watch.ts`, „deleting a Watch does not delete its acknowledged event" / „subject teardown after event creation leaves the event trail intact") haben weiterhin **kein drittes Argument**. Nachgesehen 2026-09-04. |
+| B-11 | **OFFEN — klein** | `AUDIT_ROTATE_BYTES` steht unveraendert bei 5 MB (`server/persist.ts`), kein Fenster-Marker in einer aufbewahrten Instanz. |
+| B-12 | **ENTSCHIEDEN (Deckel) · OFFEN (Mechanismus)** | Der Deckel ist kein Tor — Entscheid vom 2026-09-03, in diesem Dokument. Der eigentliche Befund (langlebige Frage an kurzlebigem Fragesteller) ist heute erneut belegt: die Attentions `d3b14a4d` und `5f5da618` stehen `refused: requester session ended`. |
+| B-13 | **ERLEDIGT als Aufzeichnung** | Die Begruendung der `6b8b89d`-Adjudikation ist hier abgelegt; die Zeile selbst verweist hierher. Kein weiterer Ausgang noetig. |
+| B-14 | **OFFEN — Messung** | Die Rotrate ist gemessen, die URSACHE nicht — und der Eintrag sagt selbst, dass sein Vergleichsfenster nicht kontrolliert ist. Voraussetzung ist B-05. |
+| B-15 | **OFFEN — klein** | Keine Kennung des einzelnen Merge-LAUFS; `createWatchForSlot` loest weiter ueber `{t, cwd, branch, terminal}` auf. |
+| B-16 | **OFFEN — Messung** | 2/27 ist keine Rate. Der billige Zwischenschritt (ist der Guard-Check ueberhaupt neustart-empfindlich?) ist nicht gegangen. |
+| B-17 | **OFFEN — Owner** | Mutex-Prioritaet zwischen optionalem und pflichtigem Lauf. Die Sofort-Umgehung (Vorschau nur bei Beruehrung von `e2e/`, Wrapper oder Land-Pfad) steht bereits im Regelbuch und wurde in E5/E6 befolgt. |
+| B-18 | **OFFEN — Owner** | Dieselbe Kette, ein Glied weiter. Der einzige benannte Fix (**zweites Helfergeraet**) ist ein Owner-Akt, kein Code. |
+| B-19 | **OFFEN — Owner** | Das ff-Rennen ist strukturell; drei Richtungen benannt, keine gebaut, keine ist die Entscheidung einer MAIN. Heute erneut belegt (14:24, fremde Lane). |
+| B-20 | **ERLEDIGT als Methode** | Das Trail-Register schlaegt den Same-Tree-Rerun bei der Attribution. Zweimal benutzt, beide Male getragen. |
+| B-21 | **GEFIXT · Rest fremd** | E1 `52673b6` am lebenden Objekt belegt (`ran: 3597 = 3588 + 9`). Der Restpunkt (nichts VERLANGT die Trail-Zeile von einem vollstaendigen Helfer-Lauf) haengt als Zeile `001d4cc3` an einem FREMDEN Program — von hier aus nicht disponierbar, und das ist der ehrliche Ausgang, kein Versaeumnis. |
+| B-22 | **GEFIXT** | `2627564 fix: retain suite-offer withdrawal receipt` — `claimWas` (deviceId, name, claimedAt, expiresAt) + `endedAt` (`server.ts`, grep `claimWas`). Die naechsten Angebote produzieren die Zahlen, die `d2e4f219` braucht. |
+| B-23 | **ERLEDIGT als Methode · Rest OFFEN** | Der Mechanismus-Ausschluss ist ein Regelvorschlag, nicht promoviert. Der benannte Rest ist echt und unerledigt: **Remote-Laeufe schreiben nicht in das lokale `e2e-trail`**, also kann das Register einen remote roten Audit nie so entlasten wie einen lokalen. |
+
+## Was diese Tabelle zaehlt
+
+| Ausgang | n | Zeilen |
+| --- | ---: | --- |
+| gefixt (Codepfad gelesen, Commit genannt) | 8 | B-01, B-02, B-03, B-06, B-07, B-09, B-21, B-22 |
+| begruendet verworfen / als Aufzeichnung oder Methode erledigt | 4 | B-04, B-13, B-20, B-23 |
+| offen, klein und ohne Owner-Entscheid baubar | 4 | B-10, B-11, B-15, sowie die Gegenprobe zu B-01 |
+| offen, wartet auf eine MESSUNG (keine Entscheidung fehlt) | 3 | B-05, B-14, B-16 |
+| offen, gehoert dem OWNER (Struktur, Geraet, Prioritaet) | 4 | B-08, B-17, B-18, B-19 |
+| Mechanismus-Rest an einem entschiedenen Eintrag | 2 | B-12, B-23 |
+
+**Nichts steht still**, und das ist die Aussage, die Erfolgsmass 6 verlangt — nicht „alles ist
+behoben". Von 23 Befunden sind 12 aus dem Weg (8 gefixt, 4 als Wissen abgelegt), 7 sind offene
+Arbeit mit benanntem naechsten Schritt, und 4 sind Owner-Tore. Die 14 Queue-Zeilen daneben sind
+per Definition „uebergeben" — ihr Ausgang ist die Disposition des Owners, und die ist der
+letzte fehlende Teil von Erfolgsmass 6.
+
+**Ehrlich zur Reichweite dieser Tabelle:** sie sagt, wo ein Befund steht, nicht ob er richtig ist.
+Zwei Eintraege stuetzen sich auf Messungen, deren eigene Grenze im Eintrag benannt ist (B-05s
+`n = 14`, B-14s unkontrolliertes Vergleichsfenster) — die stehen hier als „offen — Messung",
+nicht als Befund mit Rang.

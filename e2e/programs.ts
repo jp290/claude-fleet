@@ -5516,26 +5516,39 @@ export async function run(ctx: Ctx): Promise<void> {
     await Bun.sleep(600);
     const laneRoom = await spawnSessions();
     // the fixture fails AS ITSELF when the board cannot hold a lane — a missing free slot must not
-    // read as a brief that lost its studio block
-    check("studio lane precondition: a free slot and room under the lane cap for the two probe lanes",
-      laneRoom.filter((s) => !s.cwd).length >= 1 && laneRoom.filter((s) => s.worktree).length === 0,
+    // read as a brief that lost its studio block. One standing lane is tolerated for the reason the
+    // task-spawn fixture tolerates it: the restart section's own slot may still hold one.
+    check("studio lane precondition: free slots and room under the lane cap for the two probe lanes",
+      laneRoom.filter((s) => !s.cwd).length >= 2 && laneRoom.filter((s) => s.worktree).length <= 1,
       `free=${laneRoom.filter((s) => !s.cwd).length} lanes=${laneRoom.filter((s) => s.worktree).length}`);
-    const laneBriefOf = async (taskId: string): Promise<string> => {
+    // READ THE PROMPT JOURNAL, not slot.history: the dispatch seam calls sendText + logPrompt and
+    // pushes NOTHING into the slot's own history — only the founding path does that. Measured the
+    // hard way on 2026-09-04: the feature delivered both briefs correctly while this fixture read
+    // an empty history and reported it as a lost studio block. The `since` stamp is what separates
+    // the two deliveries, which are byte-identical by construction and land in the same slot.
+    const laneBriefOf = async (taskId: string): Promise<{ text: string; detail: string }> => {
+      const since = Date.now();
       const res = await post(`/api/tasks/${taskId}/dispatch`, {});
-      const body = await res.json() as { ok?: boolean; slot?: number };
+      const body = await res.json() as { ok?: boolean; slot?: number; error?: string };
       let text = "";
       for (let i = 0; i < 60 && typeof body.slot === "number"; i++) {
-        const h = await (await get(`/api/slots/${body.slot}/history`)).json() as { history: { text: string }[] };
-        text = h.history.at(-1)?.text ?? "";
-        if (text.includes(laneProbeText)) break;
+        const res2 = await get(`/api/prompts?limit=50&q=${encodeURIComponent(laneProbeText)}`);
+        const j = (await res2.json()) as { prompts: { ts?: number; slot?: number; text?: string }[] };
+        const hit = j.prompts.find((p) => p.slot === body.slot && typeof p.ts === "number"
+          && p.ts >= since && (p.text ?? "").includes(laneProbeText));
+        if (hit) { text = hit.text ?? ""; break; }
         await Bun.sleep(250);
       }
       if (typeof body.slot === "number") await post(`/api/slots/${body.slot}/kill`, {});
       await Bun.sleep(400);
-      return text;
+      // the dispatch's own answer rides into the detail: a refused start must never read as a brief
+      // that lost its block
+      return { text, detail: `${res.status}${body.error ? `:${body.error}` : ""} slot=${body.slot ?? "none"}` };
     };
-    const laneFreePrompt = await laneBriefOf(laneFreeRow.task.id);
-    const laneBoundPrompt = await laneBriefOf(laneBoundRow.task.id);
+    const laneFree = await laneBriefOf(laneFreeRow.task.id);
+    const laneBound = await laneBriefOf(laneBoundRow.task.id);
+    const laneFreePrompt = laneFree.text;
+    const laneBoundPrompt = laneBound.text;
     // the lane seam: the block sits before the anchors for the rail's reason (the context receipt
     // hashes the anchor block alone), and before the exit footer, whose three acts stay last
     const laneSeam = (prompt: string): number => {
@@ -5553,7 +5566,7 @@ export async function run(ctx: Ctx): Promise<void> {
       laneFreePrompt.includes(laneProbeText) && !laneFreePrompt.includes("--- THE STUDIO WORKFLOW")
         && laneBoundPrompt.length > 0 && laneBoundPrompt === splicedLane,
       laneBoundPrompt === splicedLane ? "equal"
-        : `free=${laneFreePrompt.length} bound=${laneBoundPrompt.length} boundTail=${JSON.stringify(laneBoundPrompt.slice(laneSeam(laneFreePrompt), laneSeam(laneFreePrompt) + 260))}`);
+        : `dispatch[free=${laneFree.detail} bound=${laneBound.detail}] len=${laneFreePrompt.length}/${laneBoundPrompt.length} boundTail=${JSON.stringify(laneBoundPrompt.slice(laneSeam(laneFreePrompt), laneSeam(laneFreePrompt) + 260))}`);
     // AUDIENCE IS A PARTITION, and the two audiences nobody serves stay unserved. `review` and
     // `critic` blocks are stored and rendered NOWHERE today: Fleet has one worker-brief builder and
     // no typed lane role to select by (workflow-v2.md §7 F4). Guessing the role from the harness or

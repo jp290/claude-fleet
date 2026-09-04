@@ -688,6 +688,44 @@ disponiert, so wie es der B-12-Entscheid vorsieht.
 
 ---
 
+## B-16 — OFFEN: hat B-06 die Fehlerrate des Merge-Resolution-Guards angehoben? (Testreihenfolge, nicht Verhalten)
+
+**Angestossen** 2026-09-04 durch den roten Vorschaulauf der E1-Lane. Der zweite FAIL,
+`⏸ a re-run is refused while the resolution is still rebased onto main (guard unchanged)`
+(`e2e/merge.ts#⏸-re-run-guard`), war keiner der bekannten drei und wurde deshalb eigens
+ausgezählt: **2 rot in 27 lokalen `isolated`-Trails (7,4 %).**
+
+**Die E1-Lane ist damit entlastet, und das ist entschieden:** der eine Rot-Lauf
+`isolated-20260902T220305Z-86314` liegt am 2026-09-03 00:03 Ortszeit — **rund 22 Stunden vor**
+dem Land von B-06 (`1e5419c`, 22:52) und lange vor E1s Ast. Ein Rot auf einem früheren Baum
+widerlegt die Attribution.
+
+**Was NICHT entschieden ist, und darum steht diese Zeile hier:** der *zweite* Rot-Lauf
+`isolated-20260903T221141Z-89964` liegt am 2026-09-04 00:11 — **1 h 19 min nach** dem B-06-Land.
+Und B-06 hat ausgerechnet `e2e/merge.ts` angefasst: es setzt für seine Deploy-Sonden ein
+`restartSrv({FLEET_DEPLOY_BUILD_CMD, FLEET_DEPLOY_RESTART_CMD})` **mitten in die Sequenz** und
+stellt am Ende mit `restartSrv()` wieder her. Ein Server-Neustart mitten in einer Suite ist genau
+die Art Eingriff, die nachgelagerte Zustands-Fixtures perturbieren kann — und der
+Resolution-Guard bei `:450` ist nachgelagert.
+
+**Zwei rote Läufe sind keine Rate.** 2/27 lassen sich mit einer bereits vorher existierenden
+Flake genauso erklären wie mit einer neuen Reihenfolge-Fragilität. Ich behaupte hier nichts;
+ich halte fest, dass die Frage nach meinem eigenen Land offen ist, statt sie mit der
+Entlastung der E1-Lane mit zu erledigen — das sind zwei verschiedene Fragen, und nur die erste
+ist beantwortet.
+
+**Done-Kriterium:** die Rate dieses Checks über zehn `isolated`-Läufe auf Bäumen MIT B-06 gegen
+die zehn davor. Bleibt sie bei ~7 %, ist die Sache erledigt und diese Zeile wird geschlossen;
+steigt sie, gehört B-06s `restartSrv()` aus der Mitte der Sequenz heraus (z. B. eigene Sektion
+am Ende, oder Sonden ohne Neustart). **Verifikation:** Auszählung im Check-Trail, dieselbe Form
+wie oben.
+
+**Billiger Zwischenschritt, falls jemand ihn zuerst will:** prüfen, ob der Guard-Check
+überhaupt auf einen Server-Neustart empfindlich ist — dann entscheidet ein Blick statt zwanzig
+Läufe.
+
+---
+
 ## Bereits als Queue-Zeile abgelegte P6-Befunde (nur Verweis, Inhalt lebt an der Zeile)
 
 | ID | Kurz |

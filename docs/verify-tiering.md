@@ -2416,3 +2416,57 @@ geratene Zahl, gegen die kein Lastprofil erhoben wurde (das sagt schon die Messn
 **Für einen Leser eines roten Laufs gilt bis dahin:** dieser eine FAIL mit dem `blocked`-detail ist
 **kein Urteil über den Baum**. Register befragen, dann attribuieren — nicht rerunnen: bei 1,7 % ist
 ein grüner Rerun so gut wie sicher und beweist nichts.
+
+
+### 11.2o Eine siebzehnte Familie: die Projektions-Sonde in `e2e/programs.ts`, die ihr eigenes UNKNOWN wegwirft (2026-09-04 — Basisrate und Diskriminator AUS DEM TRAIL-REGISTER; Wurzel NICHT isoliert, NICHT repariert)
+
+**Das Mitglied, einzeln:**
+
+- `projection nextAction: a REVIEWABLE row of a promoted Program names the MAIN's OWN land door, and
+  without the promotion the board's` (`e2e/programs.ts`, im Land-Tür-Block)
+
+**Die Signatur, an der man sie in einer Sekunde erkennt** — in allen sechs Rots buchstabengleich:
+
+    {"with":null,"without":null,"phase":"UNKNOWN"}
+
+`phase: "UNKNOWN"` heißt: die Reduktion in `program-phase.ts` hat für die Zeile eine der beiden
+UNKNOWN-Regeln genommen (R6 „sent row owns no live lane" oder R10 „lane facts incomplete"), statt
+R9/R11 zu erreichen. Die unmittelbar davor stehende Setup-Zeile derselben Fixture
+(`self-land green fixture: the row is running on a live lane that is idle, clean and ahead`) war in
+jedem dieser Läufe GRÜN — die Lane war Sekundenbruchteile vorher also done-looking. Das ist die
+Form einer Lesung, die die Tick-Auffrischung der Git-Fakten verpasst, nicht die eines Regresses.
+
+**Was hier NICHT behauptet wird:** WELCHE der beiden Regeln gefeuert hat. Die Sonde druckt
+ausschließlich `phase` — `phaseBasis` und das `unknown`-Feld, die der Server in derselben Antwort
+mitliefert und die die Frage wörtlich beantworten, wirft sie weg. **Das ist der erste Schnitt und
+er ist billig:** die Evidenzzeile um `phaseBasis`/`unknown` erweitern, dann sagt der nächste rote
+Lauf die Wurzel selbst, statt sie einer Messung zu überlassen. Solange das nicht geschehen ist,
+bleibt die Wurzel offen und dieser Eintrag ist eine ATTRIBUTION, keine Diagnose.
+
+**Basisrate über das ganze lokale Trail-Register** (5 967 Laufdateien; gezählt nur Läufe, in denen
+der Check überhaupt ausgeführt wurde):
+
+| | |
+| --- | ---: |
+| Läufe mit diesem Check | **209** |
+| davon rot | **6** |
+| Basisrate | **2,9 %** |
+| verschiedene Trees insgesamt | 131 |
+| verschiedene Trees unter den 6 Rots | **5** |
+
+Die sechs Rots, vom 2026-08-27 bis zum 2026-09-04: `2d88521f` · `d63bb91f` · `ad75273a` (2×) ·
+`940887dc` · `fb20d077`.
+
+**Der Diskriminator ist diesmal ein Baum, der beides tut.** `2d88521f` wurde **neunmal** gefahren
+und ist **einmal** rot — derselbe Baum, achtmal grün. Ein Regress kann das nicht; eine
+Nicht-Determiniertheit tut genau das. `ad75273a` liefert dasselbe Bild in klein (3 Läufe, 2 rot).
+
+**Und der Beleg, der die Attribution für die R1-Lane vom 2026-09-04 entschieden hat:** `940887dc`
+ist der BASIS-Commit dieser Lane — der Check war auf dem Baum rot, von dem die Lane gebrancht hat,
+also bevor eine einzige ihrer Zeilen existierte. Der Fund entstand genau so, wie das Regelbuch es
+vorschreibt: ein Vorschaulauf fiel, das Register wurde befragt, und es hat geantwortet. Weder ein
+Rerun desselben Baums noch ein frischer HEAD-Worktree hätte das bei 2,9 % entschieden.
+
+**Für einen Leser eines roten Laufs gilt bis dahin:** dieser eine FAIL mit dem
+`phase:"UNKNOWN"`-detail ist **kein Urteil über den Baum**. Register befragen, dann attribuieren —
+nicht rerunnen: bei 2,9 % ist ein grüner Rerun fast sicher und beweist nichts.

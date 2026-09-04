@@ -111,6 +111,11 @@ E1 (landet), E5/B-09 `51f59f63` (queued, eine Lane ~2 h + Land), E6 Abschlussmes
   ALTEN Fakt, wenn der POST noch nicht `running:true` persistiert hat (2x gesehen).
 - §11.2i-Sichtung 08:30 an bffe3de0 (Phase 3, keine server.log).
 
+---
+---
+
+<!-- Ab hier die Program-MAIN Game-Maker v2 (Slot 9). Der Controller-Handoff Slot 13 steht oben, woertlich und unveraendert. -->
+
 # HANDOFF — Program-MAIN Game-Maker-Workflow v2 (`b2aa5b453d0f2bf9ddce8232`, Slot 9): Schritte 3–4 UND bffe3de0 gelandet, KEIN Controller mehr; 2026-09-04 (08:xx), ctx GEMESSEN 32,3 %
 
 Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was
@@ -301,83 +306,107 @@ eine Attention offen. Das Programm ist an einer Owner-Antwort UND einem fehlende
 ---
 
 <!-- Ab hier WOERTLICH der Handoff des 🎛 Fleet Controllers Slot 12 (13b2edf), von der Program-MAIN Slot 9 unveraendert belassen -->
+## 9 Owner-Antwort auf die Attention (2026-09-04 09:1x, ueber Controller Slot 13) — WORTLAUT-FOLGEN
 
-# HANDOFF — 🎛 Fleet Controller (Slot 12, Fable): Lagebild, Deploy ff228e5, 6 Lanes in Flug (S2, GLM-Denkauftrag, 2 Manifeste, D2, E1), Slot 3 im Merge; 2026-09-04 08:02, ctx GEMESSEN 28,4 %
+**Die Attention `8b4772db` ist BEANTWORTET.** Beide Fragen, und die erste anders als beide
+Empfehlungen:
 
-Zustand ableiten: `./state.sh`, `./register.sh`, Owner-Poll, Panes. Hier nur, was git nicht traegt.
-Die elf Slot-Berichte + zwei Aggregate dieser Session liegen NUR im Scratchpad dieser Session
-(`…/c48dbe49-…/scratchpad/reports/`) — die Essenz steht unten.
+1. **Trockenzyklus ZURUECKGESTELLT — weder Private-repo-j noch Canary, jetzt nicht.** „Er ist gerade
+   nicht wichtig." Fokus: der Workflow selbst (Schritte 3/4 zu Ende, Doku), und **davor** muss das
+   Studio richtig aufgesetzt sein (S2 „Studio-als-Objekt" landet, dann Program-Ansicht).
+   **Schritt 5 erst nach ausdruecklicher Owner-Freigabe.** Nicht von selbst anfangen, auch nicht,
+   wenn die Maschine frei aussieht.
+2. **Program-scoped Dispatch (`5c1f831f`) muss NICHT vorher landen.** Die Zeile bleibt liegen.
+3. **Keine Direkt-Commits auf main, solange ein fremdes Land laeuft** (Controller Slot 13,
+   konkret: bis E1 `4b92b2f0` auf main ist — mein `c79eeb9` und sein `402e962` haben E1 je einen
+   ff-lost gekostet, den sechsten). Handoff-Text bis dahin LOKAL halten.
 
-## 0a. NEU seit 07:36 — Owner-Richtung und was daraus in Flug ist (Watches sterben mit Slot 12 — NEU ARMEN)
+### Was das fuer die Erfolgskriterien heisst — ehrlich, nicht beschoenigt
 
-**Owner-Richtung (woertlich sinngemaess, 07:5x):** Private-repo-j ist in aktueller Form misslungen; erst
-Studio-als-Objekt (S2) und die Ansicht dafuer bauen, dann Private-repo-j und die Private-repo-y-iOS-App
-richtig angehen. Alles hat „zu wenig Zusammenhang"; die ContextPacks muessen besser geroutet und in
-die Arbeit eingebunden werden; die Studio-Workflows wirken noch nicht richtig, vermutlich wegen der
-Packs und des Arbeits-Managements — Ansicht + darauf aufbauende Systeme sollen helfen. Parallel eine
-GLM-Session, die denkt, wie Packs auf einem System mit Jobschichten aussehen sollten.
+- **(1) und (2) sind ERFUELLT** (§2 oben, gegen die Abschnitte geprueft).
+- **(3) bleibt zur HAELFTE offen und ist es jetzt AUF OWNER-BESCHLUSS**, nicht aus Mangel: die
+  Vorhersage steht (142 250 / Widerlegungsgrenze 250 000), die Nachmessung ist zurueckgestellt.
+- **(4) ist zur Haelfte erfuellt — und seine ctx-Klausel ist von MIR GERISSEN.** „Program-MAIN-ctx
+  dieses Programs bei Abschluss ≤ 25 %, gemessen": ich stand bei **32,3 %** (323k), als die Antwort
+  kam. Das ist kein Formfehler, das ist ein Messwert, und er gehoert in die Evidenz des Workflows,
+  den dieses Program gebaut hat.
 
-**Meine Einschaetzung, vom Owner mit „alles klar" angenommen:** kein Produkt-Repo hat ein
-`.fleet/context-packs.json` (gemessen: Private-repo-j, private-repo-p keins; 5 Quittungen heute, alle
-claude-fleet). Reihenfolge: S2 → Manifeste in den Produkt-Repos → Program-Ansicht → Architekturfrage
-„waehlt das Studio die Packs (Stufe+Rolle) oder das Program?" (meine Empfehlung: Studio).
+### Der Messwert, den dieses Program an sich selbst erzeugt hat (fuer die Doku)
 
-| Zeile | Slot | Harness | Auftrag | Watch |
-|---|---|---|---|---|
-| `0555828b` S2 Studio-als-Objekt | 2 | Opus/high | Brief liegt im text; studios=[] → Lane muss Fixture selbst anlegen | keiner (Deckel 5) — armen |
-| `6fd9d46e` GLM-Denkauftrag Packs+Jobschichten | 4 | pi-zai glm-5.3 | Notiz `docs/ideen/2026-09-04-context-packs-jobschichten-glm.md`, committen | **pi-zai ist nicht automatable → KEIN lane-Watch moeglich, Pane lesen** |
-| `d21121d1` Manifest Private-repo-j | 5 | Opus | docs-only in /Users/owner/private-repo-j | 20ef46eb (armed, stirbt) |
-| `798a420d` Manifest private-repo-p | 7 | Opus | docs-only in /Users/owner/private-repo-p | a9d1f785 (armed, stirbt) |
-| `74d90c5e` Program-Ansicht (Owner-Dossier-Route + Panel + 2 Checks) | — | queued | ERST dispatchen, wenn S2/E1/D2 gelandet sind (server.ts-Ueberlappung) | — |
-| `4a29ffcd` D2 | 1 | Opus | laeuft | — |
-| `bffe3de0` §11.2l | 3 | Opus | **Merge laeuft seit 07:42** (`/api/slots/3/merge` running:true); Lane hat auf 8ee867b rebased, Gate-Kette gruen; Report 7b1c0f9e | 7d6c6f31 merge→3 (stirbt; nach Terminalfakt feuert ein neuer Watch sofort) |
-| `4b92b2f0` E1 | 11 | codex | Slot 8 landet (Watch a994affb) | — |
+Ich habe die Disziplin gefahren, die `workflow-v2.md` vorschreibt: **kein Artefakt vollstaendig
+gelesen, kein Bild geoeffnet, keine Pane gepollt** — nur Reports, Land-Notes, Projektion und
+gezielte `grep`/`sed`-Proben. Trotzdem 323k. Die Aufschluesselung, soweit ich sie benennen kann:
 
-Land-Reihenfolge: Slot 3 (laeuft) → E1 (Slot 8) → Manifeste (fremde Repos, kein Fleet-Mutex) → D2 → S2 → dann `74d90c5e` dispatchen.
-Nach Slot 3s Land: CLAUDE.md §11.2l → „REPARIERT in 251adab" (SHA nach Rebase; die Lane warnt: ca81fbb existiert nie auf main).
-Gesehen und offen: `POST /api/self/watch {kind:merge}` auf Slot 3 feuerte um 07:42 SOFORT aus dem ALTEN ff-lost-Fakt (Event eeef0d72, `landed=NO`), obwohl d32b69d „reject spent" deployt ist — die Ablehnung greift offenbar nur ohne neueren Lauf; Notiz-Kandidat, nicht bewertet.
+- **Nicht** die Orchestrierung der fuenf Lanes. Die war billig und lief nach Plan.
+- **Sondern** die Fleet-Betriebskosten daneben: drei Flake-Forensiken mit Trail-Joins, vier
+  Land-Versuche fuer EINE Zeile (zwei ff-Rennen, ein §11.2i-Rot, ein Erfolg), zwei
+  Controller-Nachfolgen mit verlorener Adresse, ein roter Regelbuch-Pin durch fremde Handedits,
+  drei HANDOFF.md-Neufassungen nach Fremdueberschreibung.
+- **Die Lehre fuer `workflow-v2.md` §6:** die Vorhersage von 142 250 bucht die ARBEIT einer MAIN.
+  Sie bucht NICHT den Betrieb einer Flotte, in der Lands im Rennen verlorengehen, Controller
+  wechseln und ein geteiltes HANDOFF.md ueberschrieben wird. Genau das war der Streitpunkt A7:
+  A gewann, weil B die Betriebskosten mit null buchte — **und meine 323k zeigen, dass auch A eine
+  Kostenklasse fehlt.** Das ist kein Widerspruch zur Adjudikation, sondern ihre Fortsetzung mit
+  einem Datenpunkt, den es beim Entwerfen noch nicht gab.
+- **Ehrliche Grenze dieses Datenpunkts:** ich bin die MAIN eines META-Programs (Workflow entwerfen),
+  nicht die eines Game-Maker-Programs. Der Wert widerlegt die Vorhersage NICHT — er zeigt, welche
+  Kostenklasse der Trockenzyklus mitmessen muss, wenn er kommt.
 
-## 0. In Flug und wer landet (Stand 07:36, teils ueberholt durch 0a)
+### Reihenfolge fuer die Nachfolgerin
 
-| Lane | Slot | Auftrag | Stand 07:36 | Landet |
-|---|---|---|---|---|
-| §11.2l-Fixture `bffe3de0` | 3 | e2e/watch.ts +21, docs +39; Zielcheck 5x rot vor / 1x gruen nach dem Fix (Trail) | Verify-Kette laeuft hinter dem Suite-Mutex; ahead 2, sauber; merge-tree gegen main 0 Konflikte | **Controller** (Watch `f7a2d74e` lane→3 armed). Danach CLAUDE.md §11.2l → REPARIERT in <sha> |
-| E1 Audit-Sensoren `4b92b2f0` | 11 (codex sol) | 1 Commit 5545230, 7 Dateien | ff-lost 07:21 (main lief weiter), rebased, faehrt lokal e2e-postland-audit.sh | **Slot 8** (Watch a994affb armed). Als NAECHSTEN Land der Maschine fahren, sonst dritter ff-lost |
-| D2 Lane-Cleanup `4a29ffcd` | 1 | Opus/high, Program 66499a03 | dispatcht 07:33 (Hand) | Controller; MAIN Slot 10 hat Watch-Pflicht |
-| Audit-Watch `eaa36b7f` audit→ff228e5 | 12 | — | 3 Audits warten (d32b69d, 6c1e672, ff228e5), keiner laeuft, Ledger seit 04:58 leer | — |
+1. Warten, bis E1 `4b92b2f0` auf main ist (Hintergrund-Watcher, oder `./register.sh`), DANN diesen
+   Abschnitt committen. Vorher nichts auf main.
+2. Nichts an Schritt 5 anfangen. Er ist zurueckgestellt, nicht faellig.
+3. Was der Owner als naechstes will, liegt NICHT in diesem Program: S2 Studio-als-Objekt, dann
+   Program-Ansicht. Dieses Program ist bis auf Schritt 5 und die Abschlussnotiz fertig.
 
-## 1. Getan (07:2x–07:35)
+### Eine offene Kleinigkeit, die ich bewusst NICHT selbst erledigt habe
 
-- **Deploy `48f5e64f` ok:true, bootHead = main ff228e5** (14 Commits: B-06, B-07, D1, D1-Nachschnitt, S4, B1). Annahme-Tuer `/api/self/fleet-report/:id/accept` ist LIVE; Slot 10 hat Report 17854c56 angenommen (`disposition: accepted`) — **Erfolgssatz 7 von 66499a03 erstmals belegt.**
-- Attention a446d18b (Slot 6, S4 landbereit) beantwortet: gelandet+deployt.
-- Geschlossen (geerntet, nichts uncommittet): Slot 15 (Lagebild-sol, 13 h altes Lagebild), Slot 16 (alter Controller, hing an `GET /api/slots/2/merge` — Bug #1 unten), Slot 13 (studioObjekt; sein Ergebnis ist Zeile 0555828b pending/owner).
-- **Slot 7 (Private-repo-j-MAIN) wurde 07:33:25 mit `slot_kill owner` beendet — NICHT von mir** (meine Kills 07:34:39; Dispatch hatte freie Slots). Attention 65aa1937 damit refused. Private-repo-j braucht eine FRISCHE MAIN — deckt sich mit 8b4772db Option 1a.
+**`b55477fb` (auftrag, pending) ist ein ~90-%-Duplikat von E1 `4b92b2f0` und gehoert archiviert.**
+Ich habe sie gefilet, bevor ich die offenen Zeilen gegen `./register.sh` geprueft hatte — der
+Fehler ist meiner. Ersatz liegt als `001d4cc3` (notiz) und nennt die Ersetzung ausdruecklich.
 
-## 2. Programs (8 aktiv)
+**Warum sie trotzdem noch dasteht:** die Tuer ist `POST /api/tasks/b55477fb/archive`
+(`server.ts`, `taskAct[2] === "archive"`; reversibel ueber `/unarchive` → `pending`) und
+**owner-token-gated**. Es gibt fuer eine Program-MAIN keine Self-Tuer zum Archivieren — die
+Partition ist: eine MAIN FILED und RELEASED, der Owner kuratiert die Queue. Ich habe in dieser
+Session zweimal abgelehnt, das Owner-Token aus `fleet.json` fuer eine fehlende Self-Tuer zu nehmen
+(pi-zai-Dispatch, `POST /send` an die eigene Lane). Es jetzt fuer meine EIGENE Bequemlichkeit zu
+nehmen, waere dieselbe Regel selektiv angewandt — darum nicht.
 
-- 66499a03 Owner-Routing (Slot 10, 23,6 %): 7 Lands, D2 in Flug. Danach: 5c1f831f Program-scoped Dispatch (pending, OHNE programId → nur Owner kann starten; Owner-Akt: einem Program zuordnen).
-- b2a14b54 Sanierung (Slot 8, 16 %): E1 in Flug, **B-09 `51f59f63` queued, startet nie (dispatch=false) → Hand-Dispatch codex/gpt-5.6-sol/high NACH E1-Land.** Advisory-Deckel 14/10 → 409.
-- cd110019 Dual-Host (Slot 6, 22,8 %): Phase 1 komplett; Erfolgsmass nicht gebaut. Fehlt: R4-Zeile, daemon-update-Job (second-host-Daemon auf f62b1f5, 167 Commits alt), Phase-2-Topologie = Owner.
-- b2aa5b45 Game-Maker v2 (Slot 9, 24,4 %): Schritte 1–4 auf main, Schritt 5 ohne Zeile; wartet seit 00:22 auf **Owner-Attention 8b4772db** (1a Private-repo-j frische MAIN / 2 nein). MAIN succeedet nicht, weil Attention mit Session stirbt (Bug #3).
-- 2c073232 Private-repo-j: MAIN tot (s.o.), 2 tote pending-Zeilen 41d866a6, 2953b842 → schliessen.
-- 07ee8a6d Private-repo-y: MAIN Slot 4 retirt ohne Nachfolge, Brief 9 ba896b1b queued verwaist → Owner: schliessen oder neue MAIN.
-- f99e9354 Private-repo-o: verwaist (stale Bindung Slot 10), keine offene Zeile → complete setzen. 4785b33b Private-repo-z: proposed, 0 Tasks, 4 Tage → verwerfen.
+**Es brennt nichts, und das ist gemessen, nicht gehofft:** die Zeile ist `pending` und nie
+released; `tickDispatch` waehlt woertlich `status === "queued"`, eine pending auftrag-Zeile kann
+strukturell nicht starten. Das Risiko ist ein LESEFEHLER im Register, kein Betriebsrisiko.
 
-## 3. Sanierung — Antwort auf „ist die Verbesserung eingebaut?"
+**Ein Aufruf raeumt es:** `POST /api/tasks/b55477fb/archive` mit Owner-Token. Owner oder Controller,
+nicht ich.
 
-JA. RESCOPE e670579 (Zielzahl ≤8000 aufgehoben, Slice 7a letzter Split, dann E1/E5) ist gelandet UND seit 07:29 komplett deployt (B-07 d32b69d war die letzte nicht-deployte Haelfte). server.ts 25 522 → 24 547, server/ 10 Module, Blatt-Invariante erfuellt (max types.ts 1640, kein Rueckimport). **Ein Doc-Nachzug fehlt:** der RESCOPE-Abschnitt behauptet „Gegenpruefungs-Doc nicht auffindbar" und „Stop-Regeln GLM i–iv nicht uebermittelt" — beides falsch: `docs/messungen/2026-09-03-gegenpruefung-sanierung-rescope.md` (98985c8, Ancestor von e670579) existiert, Stop-Regeln stehen dort Z.196–201. GLM-Ziel „Kern <~20k" ohne Zahl uebernommen.
+### Eine Korrektur an meiner eigenen Diagnose (nach dem E1-Land)
 
-## 4. Owner-Routing-Bugs, am Code verifiziert (Aggregator A; Schnittlinie nach 5)
+Ich hatte dem Controller geschrieben, E1s `signal:null` sei „un-getickte idleMs, kein Baumproblem",
+und seine gleichlautende Deutung bestaetigt. **Beide falsch.** Die Lane hielt ein
+HINTERGRUND-TERMINAL offen: ihr eigenes `./e2e-postland-audit.sh` wartete **1697 s** auf
+`/tmp/fleet-e2e.lock` und hatte NIE angefangen. Sichtbar wurde es erst, als der Controller die PANE
+las statt die API zu befragen; nach dem Abbruch (exit 130, nichts veraendert) war die Lane sofort
+done-looking.
 
-1. `GET /api/slots/:id/merge` — Guard `!s.worktree` (server.ts:23223) VOR der Methodenweiche → nach erfolgreichem Land 400; ein Poll darauf feuert nie. **Toetete Slot 16.** Fix: GET vor den Guard.
-2. `deliverMergeVerdict` (:16267, returnt bei !s.worktree) und `mintAuditEvents` (:5538, nur watches) erreichen keine Program-MAIN. Fix: Fallback-Empfaenger task.programId→program.main. Slot 10s Schnittvorschlag + Sonde stehen in seiner Pane 07:31.
-3. `reconcileAttention` (:7351) refused „requester session ended" ohne Rebind — 6 Faelle heute (inkl. 65aa1937). Fix: an Program-Lineage koppeln. Achtung: e2e/attention.ts koennte das heutige Verhalten als SOLL pinnen.
-4. `tickAuditPing` (:10124) waehlt die am laengsten stille Nicht-Lane ohne Repo-/Rechte-Filter; adjudicate ist owner-only (:22746) — 6 Fehlzustellungen (Private-repo-j-MAIN, Lagebild-sol). Fix: cwd-Repo-Match. Offenes Urteil liegt in `/Users/owner/private-repo-j-packs/audit-adjudikation-1788490729963.json` (verdict real, at 1788490729963).
-5. ff-lost ohne Retry (:3778/:16669) — 2x heute. Fix: ein bounded Rebase+ff-Neuversuch in mergeJob (LAND_FF_LATCH existiert).
-— darunter: Doppel-Adjudikationen by:"owner" hart (:14135, 23 Audits mit >1 Urteil; HANDOFF §2 von Slot 16 verbuchte 4 Ueberschreibungen als Erstjudikat) · ungebundene Nicht-Lane hat keinen Kanal (:21816) · kein Self-Withdraw fuer Attention · Advisory-Deckel altert nie · `closeProgramLineageForOccupant` (:1397) laesst status active.
+**Die Lehre, teurer als der Fehler:** `GET /api/self/program-execution` sagt, WO eine Zeile steht —
+nicht, WORAUF ihre Lane wartet. Ein `signal:null` ist eine Abwesenheit, und eine Abwesenheit
+erklaert sich nie aus der API, die sie meldet. Das Regelbuch sagt es bereits („immer die Pane lesen
+UND `ahead`/`dirty` pruefen, nie den Slot-Zustand allein") — ich habe es auf einer FREMDEN Lane
+nicht angewandt, weil sie nicht meine war.
 
-## 5. Regelbuch-Nachzug (CLAUDE.md, Haupt-Checkout, Text aus Slot-2-Lane-Report)
-- Flake-Familien „Vierzehn" → FUENFZEHN: PARKED-Quartett `e2e/repo-worker-audit.ts` §11.2m (OFFEN; slow=sleep 6 gegen 10-s-Floor, Floor ist UNTERGRENZE → beide Schnitte offen).
-- Nach Slot 3s Land: §11.2l → REPARIERT in <sha>.
-- Suite-Offer-Zeile kuerzen (GET /api/self/gate traegt helper{online}).
-- Modellpolitik: ALLE MAINs (6, 8, 9, 10) laufen auf Opus statt Fable; Slot 9 model:null. Nachzug = Route + `/model` in der Pane, je Slot.
+**B-17 mit Preisschild, als Kette:** optionale Vorschau haelt den Suite-Mutex → der PFLICHTIGE
+Harness einer Lane verhungert → die Lane wird nie idle → `done-looking` faellt → Land unmoeglich →
+main ueber DREI Programme eingefroren. E1 brauchte fuenf Anlaeufe (zwei am ff-Rennen gestorben, Kette
+jedes Mal gruen), mein `bffe3de0` vier. Dieselbe Wurzel, zweimal bezahlt.
+
+### Diese Datei ist EINE Datei fuer ALLE MAINs — dritte Kollision an einem Tag
+
+`HANDOFF.md` wurde heute dreimal unter mir ueberschrieben (Slot 12 zweimal, Slot 13 einmal), und
+mein eigener Wiederaufbau hat beim letzten Mal Duplikate erzeugt, weil ich die Struktur ANNAHM
+statt sie zu messen (`grep -n '^# HANDOFF'` haette es in einer Zeile gezeigt). **Regel fuer die
+Nachfolgerin: vor jedem Schreiben an dieser Datei `grep -n '^# HANDOFF' HANDOFF.md` — dann weisst
+du, wieviele Fassungen drinstehen und wo deine anfaengt.** Diese Fassung traegt genau zwei:
+Controller Slot 13 oben (woertlich), meine darunter. Die Slot-12-Fassung habe ich entfernt; sie ist
+ueberholt und steht vollstaendig in der git-Historie.

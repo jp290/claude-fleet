@@ -2226,10 +2226,12 @@ Folge-Mitglieder sind Zeilenzahl- und Queue-Zustands-Aussagen gegen Basislinien
 einen Zeile folgen, ist **abgeleitet, nicht einzeln isoliert** — was gemessen ist: sie fallen in
 allen acht Registerläufen gemeinsam mit ihr und nie ohne sie.
 
-**Belegt als vorbestehend, aus dem Trail-Register.** 41 `postland-*`-Trails liegen im
-Haupt-Checkout, acht davon tragen diese Checks: **7× rot auf 5 VERSCHIEDENEN Bäumen** —
-`869a16dd` (3×), `0c4907df`, `a8e838bb`, `1e5419ce` und `d3681b3f` (der Baum dieses Slices).
-Vier dieser fünf Bäume sind ÄLTER als der Slice, der das Rot zuletzt geerbt hat.
+**Belegt als vorbestehend, aus dem Trail-Register.** Stand 2026-09-04, nach den drei Läufen, die
+diesen Eintrag veranlasst haben: elf Läufe tragen diese Checks, **9× rot auf 7 VERSCHIEDENEN
+Bäumen** — `869a16dd` (3×), `0c4907df`, `a8e838bb`, `1e5419ce` und die drei aufeinanderfolgenden
+Bäume dieses Slices (`d3681b3f`, `d1653fbf`, `2e54fc82`). Die vier Bäume vor dem Slice sind ÄLTER
+als er; drei der neun Rots sind seine eigenen Messungen desselben Fehlers und beweisen darum
+nichts über ihn, sondern nur, dass die Ursache auf dieser Maschine nicht wegflackert.
 
 **Der entscheidende Datenpunkt ist ein GLEICHER-BAUM-UMSCHLAG:** derselbe Baum `869a16dd` lief
 einmal GRÜN (`postland-audit-20260903T210734Z-84088`) und dreimal rot. Ein Check, der auf
@@ -2241,8 +2243,11 @@ dieselben vier FAILs, `rows=31 was=30` beide Male). Das ist auch zu erwarten —
 Maschinenlast, und die Maschine war während beider Läufe gleich belastet. Entschieden hat wieder
 das Register.
 
-**Basisrate 7/8 = 87,5 % rot.** Das ist keine seltene Flake, sondern eine Fixture, deren Marge
-auf dieser Maschine fast nie reicht; sie ist am 2026-09-03 zum ersten Mal im Register aufgetaucht.
+**Basisrate 9/11 = 82 % rot.** Das ist keine seltene Flake, sondern eine Fixture, deren Marge auf
+dieser Maschine fast nie reicht; sie ist am 2026-09-03 zum ersten Mal im Register aufgetaucht. Und
+die Ursache ist dreimal identisch nachgemessen worden — `ms` 10 092 / 10 092 / 10 082 gegen ein
+Budget von 10 000 —, was die Marge-Lesart oben bestätigt und eine Rennstelle im Server ausschließt:
+ein Rennen streut, eine zu knappe Marge landet jedes Mal knapp daneben.
 
 **Nicht repariert, absichtlich — und es gibt ZWEI legitime Schnitte, nebeneinander gestellt,
 weil die Wahl der nächsten Person gehört:**

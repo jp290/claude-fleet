@@ -308,9 +308,9 @@ export async function run(): Promise<void> {
     // sourcing the stage script IS taking the lock (that is the whole design), so a probe that
     // must block is killed rather than waited out: the first line is printed before the loop's
     // first `sleep 15`, which is precisely the property under test.
-    const stageSay = async (killAfterMs: number): Promise<string> => {
+    const stageSay = async (killAfterMs: number, extra: Record<string, string> = {}): Promise<string> => {
       const p = Bun.spawn(["sh", "-c", `. "${STAGE}"`],
-        { cwd: SRC, env: { ...process.env, FLEET_SUITE_LOCK: PROBE }, stdout: "pipe", stderr: "pipe" });
+        { cwd: SRC, env: { ...process.env, FLEET_SUITE_LOCK: PROBE, ...extra }, stdout: "pipe", stderr: "pipe" });
       const t = killAfterMs > 0 ? setTimeout(() => { try { p.kill(); } catch { /* already gone */ } }, killAfterMs) : null;
       const out = `${await new Response(p.stdout).text()}${await new Response(p.stderr).text()}`;
       await p.exited;
@@ -410,6 +410,56 @@ export async function run(): Promise<void> {
     check("§2b the stale holder is reaped and the lock actually taken (the state resolves, it is not just named)",
       / acquired after \d+s \(pid \d+\)$/m.test(stale) && readFileSync(`${PROBE}/pid`, "utf8").trim() !== String(goneP),
       JSON.stringify(stale.slice(0, 400)));
+    // ===== §2c AN INHERITED HOLD: running INSIDE somebody else's lock =====
+    // The land gate's ff retry chain runs the gate several times in a row, and between rounds the
+    // machine must not be given away — so since 2026-09-04 server.ts takes this mutex ITSELF and
+    // tells the gate child it already holds it (FLEET_SUITE_LOCK_HELD_BY). The step then does not
+    // queue, does not write pid/birth, and releases nothing.
+    // The variable ALONE may never be enough, and that is what the two controls are for: a stale
+    // export, or one naming a holder that has died, must put the step straight back in the queue.
+    // Otherwise a leftover environment entry would silently let two suites run at once on a box
+    // whose whole serialization rests on this dir.
+    rmSync(PROBE, { recursive: true, force: true });
+    mkdirSync(PROBE, { recursive: true });
+    writeFileSync(`${PROBE}/pid`, `${process.pid}\n`);
+    writeFileSync(`${PROBE}/birth`, `${thisBirth}\n`);
+    const inherited = await stageSay(5000, { FLEET_SUITE_LOCK_HELD_BY: String(process.pid) });
+    check("§2c a step told it runs inside a LIVE holder's lock does not queue at all — it reports the existing hold in the one acquire format, naming the holder",
+      new RegExp(`^\\[suite-lock\\][^\\n]* acquired after [01]s \\(pid ${process.pid}\\)$`, "m").test(inherited)
+        && !inherited.includes("waiting"), JSON.stringify(inherited.slice(0, 400)));
+    check("§2c the inherited step takes nothing over: the holder's own pid and birth files are untouched",
+      readFileSync(`${PROBE}/pid`, "utf8").trim() === String(process.pid)
+        && readFileSync(`${PROBE}/birth`, "utf8").trim() === thisBirth,
+      JSON.stringify({ pid: readFileSync(`${PROBE}/pid`, "utf8").trim(),
+        birth: readFileSync(`${PROBE}/birth`, "utf8").trim() }));
+
+    // CONTROL A: the variable names somebody, but not the process this lock records. The lock file
+    // has the last word, so this is an ordinary contender and must block.
+    const strangerSay = await stageSay(2500, { FLEET_SUITE_LOCK_HELD_BY: String(process.ppid) });
+    check("§2c an inheritance claim that does NOT match the lock's own pid file grants nothing — the step queues like any other",
+      /waiting [01]s for [^\n]* — held by live pid \d+ with proven identity \(up /.test(strangerSay)
+        && !/ acquired after /.test(strangerSay)
+        && readFileSync(`${PROBE}/pid`, "utf8").trim() === String(process.pid),
+      JSON.stringify(strangerSay.slice(0, 400)));
+
+    // CONTROL B: the variable matches the recorded pid — but that process is gone. An inherited
+    // hold from a dead holder is no hold, so this must fall through to the ordinary reap and take
+    // the lock for itself. This is also the shape a crashed land-gate holder leaves behind.
+    rmSync(PROBE, { recursive: true, force: true });
+    mkdirSync(PROBE, { recursive: true });
+    const goneHolder = spawnSync("/bin/sh", ["-c", "exit 0"]).pid ?? 0;
+    let holderDead = false;
+    try { process.kill(goneHolder, 0); } catch { holderDead = true; }
+    writeFileSync(`${PROBE}/pid`, `${goneHolder}\n`);
+    writeFileSync(`${PROBE}/birth`, `${differentValidBirth(thisBirth)}\n`);
+    const deadHolderSay = await stageSay(5000, { FLEET_SUITE_LOCK_HELD_BY: String(goneHolder) });
+    check("§2c an inheritance claim naming a DEAD holder is no hold: the step reaps the lock and takes it under its own pid",
+      holderDead && goneHolder > 0
+        && new RegExp(`stale — recorded pid ${goneHolder} is gone`).test(deadHolderSay)
+        && / acquired after \d+s \(pid \d+\)$/m.test(deadHolderSay)
+        && readFileSync(`${PROBE}/pid`, "utf8").trim() !== String(goneHolder),
+      JSON.stringify({ gone: goneHolder, dead: holderDead, say: deadHolderSay.slice(0, 400) }));
+
     rmSync(PROBE, { recursive: true, force: true });
   }
   // back to the real lock for everything below — and back to the env every later module expects

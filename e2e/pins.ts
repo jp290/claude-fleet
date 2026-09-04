@@ -5194,6 +5194,61 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       : `existing@${offerDoor.indexOf("existing: true")} refusal@${offerDoor.indexOf('reason: "no helper online"')}`);
 }
 
+// ================================================================================================
+// SECTION S12 — THE HELPER ARTEFACT RAIL. A suite.log arrives AFTER the audit row it belongs to,
+// and the whole design rests on two facts a compiler cannot see: the rail never touches the audit
+// trail, and the daemon uploads only after its verdict is already in. Both other sides are text —
+// an append-only file and a program on another machine.
+// ================================================================================================
+{
+  const RULE_ART = "the artefact rail is a SIDE rail: it cannot reach the audit trail, and the upload follows the verdict";
+  const srv = serverU.module("server.ts");
+  // 1. THE RAIL AND THE TRAIL ARE DIFFERENT FILES, and the upload handler writes only to the rail.
+  //    A single appendEvent(POSTLAND_AUDIT_FILE, …) inside it would make "an upload cannot move a
+  //    result" a rule somebody has to keep instead of a thing the code cannot do.
+  const route = serverU.span("const artifact = /^\\/api\\/helper\\/artifact", "const bundle = /^")?.text ?? null;
+  pin(`${RULE_ART} — the upload handler appends to HELPER_ARTIFACT_FILE and to nothing else`,
+    route !== null && /appendEvent\(HELPER_ARTIFACT_FILE/.test(route)
+      && !/appendEvent\(POSTLAND_AUDIT_FILE/.test(route)
+      && !/writeFileSync\(POSTLAND_AUDIT_FILE/.test(route),
+    route === null ? "the artefact route was not found in the server universe" : "one writer, the rail");
+  // 2. THE KEY IS THE ROW'S `at`, never the job id. An audit job's id is sha256(repo) and repeats
+  //    for every audit of that repo — a jobId key would collide by construction, which is exactly
+  //    the mistake the adjudication rail's comment warns about.
+  pin(`${RULE_ART} — the route REQUIRES the row key and offers no newest-job fallback`,
+    route !== null && /searchParams\.get\("at"\)/.test(route)
+      && /expected \?at=/.test(route)
+      && /r\.at === auditAt/.test(route),
+    route === null ? "not found" : "at is required and resolves the row");
+  // 3. THE ORDER, on the daemon's side. `report()` sends the verdict and only then calls the
+  //    uploader; a call site that moved above the result POST would make a transfer able to hold a
+  //    verdict up, which is the one property this whole rail is built around.
+  const daemonSrc = exists("helper-daemon/daemon.ts") ? read("helper-daemon/daemon.ts") : "";
+  if (daemonSrc === "") skip(`${RULE_ART} — the daemon uploads AFTER the result POST`, "helper-daemon/daemon.ts is not in this tree");
+  else {
+    const reportFn = /async function report\([\s\S]*?\n\}/.exec(daemonSrc)?.[0] ?? "";
+    const postAt = reportFn.indexOf('"/api/helper/result"');
+    const upAt = reportFn.indexOf("uploadSuiteLog(");
+    pin(`${RULE_ART} — the daemon uploads AFTER the result POST, and never awaits it before one`,
+      postAt >= 0 && upAt > postAt,
+      reportFn === "" ? "report() was not found" : `resultPOST@${postAt} upload@${upAt}`);
+    // …and a failed upload is a LOG LINE. A throw would propagate out of report() into work()'s
+    // `finally`, and a retry loop would hammer a box that may simply be down.
+    const upFn = /async function uploadSuiteLog\([\s\S]*?\n\}/.exec(daemonSrc)?.[0] ?? "";
+    pin(`${RULE_ART} — an upload failure is logged and dropped: no throw, no retry, no backoff`,
+      upFn !== "" && /catch \(e\) \{/.test(upFn) && /log\(`suite\.log upload/.test(upFn)
+        && !/for \(|while \(|setTimeout\(/.test(upFn),
+      upFn === "" ? "uploadSuiteLog was not found" : "one try/catch, one log line");
+  }
+  // 4. THE STORE IS UNDER STREAM_DIR, which .gitignore ignores as a whole directory. An artefact
+  //    written anywhere else would be the untracked file that blocks a land — silently, hours later.
+  pin(`${RULE_ART} — artefacts are stored under STREAM_DIR, and .gitignore ignores that directory`,
+    /const HELPER_ARTIFACT_DIR = `\$\{STREAM_DIR\}\/helper-artifacts`/.test(srv)
+      && /^streams\/$/m.test(read(".gitignore"))
+      && /^helper-artifacts\.jsonl$/m.test(read(".gitignore")),
+    `dir=${/HELPER_ARTIFACT_DIR = `[^\n]*/.exec(srv)?.[0] ?? "not found"}`);
+}
+
 console.log(rows.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

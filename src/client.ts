@@ -5217,6 +5217,23 @@ function renderPostLandAudit() {
   body.appendChild(el("div", "plahd", al.headline));
   body.appendChild(el("div", "plawhere", al.where));
   body.appendChild(el("div", "planote", `${fmtTs(postLandAudit?.at ?? 0)} · ${al.note}`));
+  // THE WHOLE LOG, when a remote helper handed one over. `out` on the row is a 4 KB tail, and for a
+  // RED audit the next question is always "which checks, and what was around them" — an answer that
+  // used to live only in a run directory the helper deletes in its own `finally`. Drawn only when
+  // the rail actually joined something in: no link is "no log arrived", never an empty page.
+  const art = postLandAudit?.artifact;
+  if (art) {
+    const line = el("div", "planote");
+    const a = el("a", "plalog", `suite.log · ${Math.max(1, Math.round(art.bytes / 1024))} KB`) as HTMLAnchorElement;
+    a.href = art.url;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.title = `The full suite log the helper uploaded after this verdict, ${art.bytes} bytes,`
+      + ` sha256 ${art.sha256.slice(0, 12)}…. It arrived AFTER the row was written and is joined in`
+      + ` from a side rail — nothing about it changed the result above.`;
+    line.appendChild(a);
+    body.appendChild(line);
+  }
   const ack = el("button", "plaack", "acknowledge") as HTMLButtonElement;
   ack.title = "hide this alarm. The dismissal is keyed to THIS audit — the next non-green one raises it again.";
   ack.onclick = () => {

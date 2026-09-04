@@ -284,14 +284,30 @@ const STEWARD_ROUTES = [
 // …and the SECOND scoped principal's, added 2026-08-26 with the remote helper portal. Same rule,
 // same reason: `handleHelperRoute` sits above the owner gate, so its route set is pre-auth surface
 // and a new entry here is a security decision. What the portal's token buys is bounded to exactly
-// these six: read the queue, name this device, take one job, fetch its bundle, report its verdict.
+// these seven: read the queue, name this device, take one job, fetch its bundle, report its
+// verdict, and hand back that run's suite.log.
 // `/api/helper/token` is deliberately ABSENT — reading the credential is the owner's act and lives
 // below the owner gate, and the handler's own guard regex leaves it out.
+//
+// THE SEVENTH, added by Dual-Host R2: `/api/helper/artifact/<12hex>` is the only route on this
+// perimeter that takes BYTES, and what bounds it is written out rather than inherited:
+//   · it runs AFTER the verdict by the daemon's own order and writes to a SIDE rail
+//     (HELPER_ARTIFACT_FILE) — it cannot reach POSTLAND_AUDIT_FILE at all, so no upload, refused
+//     or accepted, can move a `result`;
+//   · the target row is named by `?at=<row key>` and must EXIST and must carry `remote.jobId`
+//     equal to the job in the path — a log cannot be filed onto another job's row;
+//   · the caller names no path: the storage location is rebuilt on this side from the rail row,
+//     under STREAM_DIR, which is gitignored as a directory so an artefact can never become the
+//     untracked file that blocks a land;
+//   · the body is capped twice — the content-length claim is refused before buffering (413, body
+//     DRAINED, never cancelled) and the decoded size is the authoritative check;
+//   · the digest is computed HERE over the bytes written, never copied off the wire.
 const HELPER_ROUTES = [
-  String.raw`~ /^\/(helper|api\/helper\/(jobs|device|claim|result|bundle\/[0-9a-f]{12}))$/`,
+  String.raw`~ /^\/(helper|api\/helper\/(jobs|device|claim|result|bundle\/[0-9a-f]{12}|artifact\/[0-9a-f]{12}))$/`,
   "= /helper", "= /api/helper/jobs", "= /api/helper/device",
   "= /api/helper/claim", "= /api/helper/result",
   String.raw`~ /^\/api\/helper\/bundle\/([0-9a-f]{12})$/`,
+  String.raw`~ /^\/api\/helper\/artifact\/([0-9a-f]{12})$/`,
 ];
 
 const LITERAL = /url\.pathname === "([^"]+)"/g;

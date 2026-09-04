@@ -176,6 +176,40 @@ holder of a lock nobody holds.
 - **The mkdir mutex is untouched.** It remains the whole truth of serialization; a report is advisory
   and a lane that never sends one is not treated differently by anything.
 
+### 7b. …and since 2026-09-04 the server is also a HOLDER — in one place, and still never a reaper
+
+The owner's answer to the lost fast-forward (`docs/self-api.md` §land) is a bounded retry: main
+moved under a green land, so the chain re-rebases, **re-runs the gate** and advances again. Between
+those rounds the machine must not be given away — the queueing, not the gate, is what made a repeat
+expensive — so `mergeJob` takes this mutex ITSELF for the whole retry chain
+(`server.ts#holdSuiteLock`, released in a `finally`), and the gate runs inside that hold rather than
+queueing three more times for a lock the same process already owns.
+
+Three lines of the design above are deliberately kept, and one is deliberately extended:
+
+- **It still never reaps.** The bullet above is not softened by this: `holdSuiteLock` takes a free
+  dir or waits, and a stale lock is left for the next *wrapper* contender to clear. The accepted
+  cost is one lost retry whenever a crashed suite's lock sits there with nobody else contending —
+  paid rather than enlarging the reap window this section shrank to microseconds.
+- **A holder that dies leaves the reapable shape, never a park.** A `bun server.ts` outlives its own
+  merge job, so a hold it lost track of would park the box for the life of the process; the release
+  is therefore structural (`finally`), and the two writes are synchronous and **pid-first**, so the
+  worst a death can leave is `stale` — the pid-less dir that means *manual park* is unreachable from
+  this path. If the birth fingerprint cannot be measured, it refuses to hold at all, exactly as
+  `e2e-stage.sh` refuses (`_st_self_birth`).
+- **The hold is inheritable, and only downwards.** `FLEET_SUITE_LOCK_HELD_BY=<pid>` is exported into
+  the **gate child alone** — never into `process.env`, or the post-land audit would inherit it and
+  run its suite beside the next one. `e2e-stage.sh` honours it only when the lock file on disk names
+  that same, still-living process: the variable alone grants nothing, so a stale export cannot make
+  a suite run unserialized. An inherited step reports through the existing acquire format
+  (`after 0s`), because a second format would be summed twice by `runVerify` and would fall
+  `e2e/pins.ts`'s "exactly one acquire" rule.
+
+**Consequence for anyone reading the machine:** `ps -eo command | grep -c '^/bin/sh ./e2e-'` can now
+read **0 while the mutex is genuinely held** for a third reason — not only during the gate chain's
+`bun install`/`pins`/`tsc`/`build` prologue and the audit's, but for the whole gap between two retry
+rounds. The pid file in the lock dir remains the only reliable answer to "is the machine busy".
+
 ## 8. The waiter speaks for itself (2026-08-06)
 
 §7 gave the mutex a *reader*: the board can now say who holds it. It could not help the one party

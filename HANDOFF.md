@@ -4,6 +4,36 @@ Zustand ableiten: `./state.sh`, `./register.sh`, Owner-Poll, Panes. Hier nur, wa
 Der Abschnitt darunter (Program-MAIN Game-Maker v2, Slot 9) ist FREMD und steht hier, weil
 HANDOFF.md eine geteilte Datei ist — nicht als meiner lesen.
 
+## 0-UPDATE 09:3x — beide Entscheide gefallen, Program „Fleet-Betrieb" gegruendet, E1 gelandet
+
+- **Owner-Entscheide (09:1x):** Fleet-Betrieb JA (Program `f170dc46`, aktiv, Self-Land `guarded`,
+  MAIN Opus 5 high in **Slot 3**, Gruendungsbrief = Program-Intent + Nachtrag per /send: Owner-Zeilen
+  lassen sich NICHT nachtraeglich einem Program zuordnen, die MAIN mintet ihre Zeilen selbst; S2
+  bleibt Owner-Zeile, die MAIN meldet „landbar" per Attention, der OWNER landet vom Board).
+  Trockenzyklus ZURUECKGESTELLT, Slot 9 fokussiert Workflow, Studio zuerst (Attention `8b4772db`
+  beantwortet). Modellpolitik NEU: MAINs Opus 5 (Slot 9+10 zurueckgedreht, Pane vom Owner, Datensatz
+  von mir), nur der Controller Fable. „SOTA-Reasoning fuer den Controller und wirklich harte
+  MAIN-Probleme reservieren."
+- **Controller-Rolle ab jetzt (Owner-Wort):** Ueberblick, Owner-Nachrichten und Ideen auf Programs
+  routen. KEINE Merges, keine Watches auf Lanes — die gehoeren den Program-MAINs. Offene Owner-Zeilen
+  ohne Program (`74d90c5e`, `51f59f63` E5 gehoert Sanierung) an die passende MAIN geben und die
+  Owner-Zeile schliessen, sobald die MAIN ihre Kopie gemintet hat.
+- **E1 gelandet** `52673b6` (Slot 8 Self-Land, verify gruen, 7 Dateien). **Deploy ausgeloest**
+  `POST /api/deploy` id `afb0b7c0` auf 52673b6 — Verdikt bei `GET /api/deploys` PRUEFEN (ok:null =
+  nicht feststellbar). Sanierung: bleibt E5/B-09 + E6 Abschlussmessung (Slot 8).
+- **Sechs ff-lost an E1 heute, vier davon durch Handoff-Direkt-Commits (Slot 9 2x, ich 1x, plus
+  13b2edf).** Regel fuer JEDE Session bis zur Reparatur: vor einem Direkt-Commit auf main
+  `GET /api/slots/:id/merge` der laufenden Lanes pruefen; laeuft ein Land, warten. Strukturfix
+  (Handoff je Program unter docs/handoffs/, Succeed-Route anpassen) steht als openQuestion im
+  Program Fleet-Betrieb — hoechste Prioritaet nach den zwei Merge-Fixes.
+- **Was wir uebersehen (dem Owner genannt):** (1) geteilte HANDOFF.md, s.o.; (2) der Suite-Mutex
+  taktet die Maschine — Post-Land-Audit auf das Helfer-Geraet verlagern ist der groesste
+  Durchsatz-Hebel; (3) Studio ohne Ansicht und Pack-Routung — S2, Program-Ansicht, GLM-Notiz
+  (Slot 4) sind die Basis, dann „waehlt Studio oder Program die Packs?"; (4) Program-scoped Dispatch
+  nach der Sanierung einschalten.
+- **Maschine knapp am Speicher** (13 claude-Sessions + Suiten; Hintergrund-Watcher wurden vom
+  System gekillt) — Server-Watches statt Prozess-Watcher nehmen.
+
 ## 0. Zwei Owner-Entscheide, die JETZT offen sind (Owner-Worte 08:3x–08:4x, sinngemaess)
 
 1. **„Merge-Benachrichtigungen aus dem Controller auslagern"** — Owner-Vorschlag: Steward-Session

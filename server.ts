@@ -53,8 +53,8 @@ import {
 import {
   WS_INPUT_MAX_BYTES, FLEET_DEFAULT_MODEL, WORKER_CONTRACTS, doneMark, contextWindowFor,
   DISPOSITION_WORKERS, DISPOSITION_VERDICTS,
-  FLEET_REPORT_STATUSES, normalizeLaneAnchor,
-  type GitInfo, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo, type WorkerName,
+  FLEET_REPORT_STATUSES, normalizeLaneAnchor, instanceNameFrom,
+  type GitInfo, type InstanceIdentity, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo, type WorkerName,
   type DispositionWorker, type DispositionVerdict,
   type FleetReportStatus,
 } from "./src/protocol";
@@ -837,6 +837,14 @@ const CONTAINER_CONTEXT = (() => {
   const c = process.env.FLEET_CONTAINER_CONTEXT;
   return c && CONTAINER_CONTEXT_RE.test(c) ? c : "default";
 })();
+
+// WHICH FLEET THIS PROCESS IS — read once at boot from the operator's env, never derived from the
+// machine (src/protocol.ts#INSTANCE_NAME_RE carries the charset and the reasoning). It folds to
+// `null` rather than to a default word: the pair above may fold, because "fleet"/"default" are
+// real, checkable answers about a docker daemon on THIS box, while an invented instance name would
+// be a false identity claim on the one field a second instance is supposed to be told apart by.
+const INSTANCE_NAME = instanceNameFrom(process.env.FLEET_INSTANCE);
+const INSTANCE: InstanceIdentity = { name: INSTANCE_NAME };
 
 // Adapter #4 — a slot whose agent runs inside a container. THE CUT IS DELIBERATELY NARROW, and
 // docs/container.md's "Why the whole app, never the slots" is the argument it has to survive: that
@@ -6312,7 +6320,10 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
     id, reportedAt, status, text,
     worker: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId,
       cwd: s.cwd!, branch: s.worktree!.branch },
-    provenance: { taskId: s.taskId, originId: s.originId, programId: s.programId },
+    // ...and WHICH FLEET the lane ran on. Stamped at birth from this process's own boot-time
+    // identity, so the row keeps saying it after it has been carried to another instance's reader.
+    provenance: { taskId: s.taskId, originId: s.originId, programId: s.programId,
+      instance: INSTANCE_NAME },
     receiver: bound?.receiver ?? null, basis: bound?.basis ?? "owner-inbox", eventId,
   };
   const event: FleetReportFleetEvent = {
@@ -22799,6 +22810,14 @@ Bun.serve<WSData>({
         now: Date.now(),
         chips: CHIPS,
         shareBase: SHARE_URL,
+        // WHICH FLEET ANSWERED — ONCE per response, never per slot. The board renders 16 slot rows
+        // and this payload is measured against 14 KiB (e2e/tasks.ts), so a per-slot copy of a
+        // constant would multiply a fact that cannot vary within one response. Always sent, even
+        // as `{name:null}`: "this instance is unnamed" is an answer, and an omitted key would make
+        // an old server and an unnamed new one indistinguishable to the switcher that reads it.
+        // Additive — every client that had no idea it existed keeps working, it is a new top-level
+        // key beside `chips` and nothing else changed shape.
+        instance: INSTANCE,
         // bundle version: a long-lived tab compares this across polls and reloads itself
         // once it goes stale — "old client after a deploy" must not look like a regression
         v: bundleV(),

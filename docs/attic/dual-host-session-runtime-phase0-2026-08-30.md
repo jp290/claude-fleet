@@ -218,6 +218,15 @@ Hostname-Leak in Prosa), und `FleetReport.provenance` merkt sich die Instanz, in
 entstand. Nicht pro Slot — siehe Byte-Decke M1. *Done:* das Feld ist da, der Report trägt es, ein
 alter Client ignoriert es; `e2e/tasks.ts`-Budget-Sonde weiterhin `< 14 * 1024`. *Verify:* volle
 lokale Kette + `./e2e-isolated.sh` (e2e/ berührt).
+**GEBAUT 2026-09-04** (Lane `fleet/260904163343-a5bc`). Env-Variable `FLEET_INSTANCE`, Charset und Normalisierer in
+`src/protocol.ts#INSTANCE_NAME_RE` / `#instanceNameFrom`, Boot-Wert `server.ts#INSTANCE_NAME`.
+Ohne gesetzte Variable ist der Name `null` — bewusst KEIN Default-Wort wie bei
+`FLEET_CONTAINER`, weil zwei unbenannte Instanzen unter einem erfundenen gemeinsamen Namen
+genau die Verwechslung wären, die dieses Feld beseitigen soll. Auf der Zeile
+`FleetReport.provenance.instance` heißt ABWESEND „vor dem Feld persistiert" und wird nie
+repariert; ein Name, der den Charset verletzt, verwirft die Zeile ganz
+(`server/types.ts#fleetReportFrom`). Der FleetEvent-Payload trägt bewusst KEINE Kopie: er reitet
+den 2-s-Poll.
 
 **Schnitt 3 — `watchdog.sh` als systemd-Einheit, im Repo, ohne das Gerät anzufassen.**
 Vorlage neben `watchdog.sh` mit demselben `VERIFY_CMD`/`AUDIT_CMD`-Vertrag; `Environment=PATH=` als

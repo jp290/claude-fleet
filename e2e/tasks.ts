@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { check, get, post, restartSrv, afterTick, paneEnv, plantScreen, plogRead, tmuxOut, BASE, DISPATCH_TICK_MS, REPO, REPO2, REPO3, ROOT } from "./harness";
+import { check, get, post, restartSrv, afterTick, paneEnv, plantScreen, plogRead, tmuxOut, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
 import { buildAnalysisPrompt } from "../analysis-prompt";
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
@@ -12,6 +12,7 @@ import { deriveTaskMetadata, type TaskCluster } from "../task-metadata";
 import { matchTaskWaveAnalysis, projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from "../task-waves";
 import { classifyAnalystOffWarning } from "../task-analysis-warning";
 import { analysisStaleness } from "../analysis-staleness";
+import { INSTANCE_NAME_RE } from "../src/protocol";
 import type { Ctx } from "./ctx";
 
 // The first bytes of briefAndSend's LANE_EXIT_FOOTER. Deliberately the HEADING and not the whole
@@ -1227,6 +1228,39 @@ export async function run(ctx: Ctx): Promise<void> {
     // and still cannot hide under it.
     check("the 16-slot sessions payload stays under 14 KB with a 15 KB task queued and bounded event facts",
       bytes < 14 * 1024, `${bytes} B`);
+
+    // --- instance identity rides this payload ONCE (dual-host Schnitt 2). The budget check above
+    // is this cut's guard rail and stays where it is: the whole reason the name is not a slot field
+    // is that a slot field is paid 16 times per response. Both halves are checked HERE, against the
+    // same raw body the budget was measured on, so "carried" and "carried cheaply" cannot drift
+    // apart. The wrapper boots this server with FLEET_INSTANCE (e2e-isolated.sh), so the value is
+    // the operator's, never a hostname.
+    const instancePoll = JSON.parse(raw) as
+      { instance?: { name?: string | null }; slots: Record<string, unknown>[] };
+    // The probe's own precondition, failing AS ITSELF: without a name on the server's line the two
+    // checks below would be measuring an unnamed instance and reporting it as a broken field.
+    check("precondition: the wrapper booted this server with a named FLEET_INSTANCE",
+      INSTANCE_NAME_RE.test(INSTANCE_NAME), JSON.stringify(INSTANCE_NAME));
+    check("the sessions poll names the instance exactly once per response, never per slot",
+      instancePoll.instance?.name === INSTANCE_NAME
+        && raw.split('"instance"').length - 1 === 1
+        && instancePoll.slots.length === 16
+        && instancePoll.slots.every((row) => !("instance" in row)),
+      JSON.stringify({ instance: instancePoll.instance, slots: instancePoll.slots.length,
+        occurrences: raw.split('"instance"').length - 1 }));
+    // Additive, stated as the property an OLD client actually has: it reads a fixed set of keys and
+    // ignores the rest. Nothing that existed before this cut moved, so a reader that never heard of
+    // `instance` parses the same payload it always did — and the new key is a self-contained leaf
+    // with exactly one member, so there is no half-shape for it to trip over either.
+    const preInstanceKeys = ["now", "chips", "shareBase", "v", "autos", "watches", "events", "tasks",
+      "programs", "dispatch", "analysis", "autosOn", "quietHours", "intake", "postLandAudit",
+      "postLandAuditLive", "gate", "errors", "deployGap", "bundleStale", "slots"];
+    const instanceLeaf = (instancePoll.instance ?? {}) as Record<string, unknown>;
+    check("the instance field is additive: every pre-cut key is still present and the new one is a one-member leaf",
+      preInstanceKeys.every((k) => k in (instancePoll as unknown as Record<string, unknown>))
+        && JSON.stringify(Object.keys(instanceLeaf)) === JSON.stringify(["name"]),
+      JSON.stringify({ missing: preInstanceKeys.filter((k) => !(k in (instancePoll as unknown as Record<string, unknown>))),
+        leaf: Object.keys(instanceLeaf) }));
     const fullT = ((await (await get("/api/tasks")).json()) as { tasks: { id: string; text: string }[] })
       .tasks.find((t) => t.id === bigT.task.id);
     check("the full prompt text is reachable behind GET /api/tasks (what the queue overlay renders)",

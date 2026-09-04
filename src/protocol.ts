@@ -45,6 +45,30 @@ export interface FleetReportEventPayload {
   basis: "program-main" | "lane-watch" | "program-main+lane-watch" | "owner-inbox";
 }
 
+// --- instance identity --------------------------------------------------------------------------
+// WHICH FLEET ANSWERED. Once a second Fleet process exists (dual-host programme, topology A: a
+// second standalone instance rather than one process reaching across machines), every answer a
+// board or a successor reads is ambiguous without this — two instances render the same slot
+// numbers, the same task ids and the same report vocabulary.
+//
+// THE NAME IS OPERATOR-GIVEN, never derived: no hostname, no interface address, no cwd. This repo
+// is public and a hostname in a payload is a hostname in a screenshot; an env value is also the
+// only form the operator can change without a code change. Absent or malformed folds to `null`,
+// which is the honest "this instance was never named" — deliberately NOT a default string like
+// "fleet", because two unnamed instances sharing one invented name is exactly the confusion this
+// field exists to remove.
+//
+// HOW IT RELATES TO `container`/`containerContext` (the pre-existing pair that also names an
+// execution place): those two answer "which box, on which docker daemon" WITHIN one instance and
+// live per slot; this one answers "which fleet process served this response" and lives ONCE per
+// response. They never substitute for each other, and this one is deliberately not per slot — see
+// the payload budget probe in e2e/tasks.ts.
+export const INSTANCE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+export interface InstanceIdentity { name: string | null }
+export function instanceNameFrom(value: unknown): string | null {
+  return typeof value === "string" && INSTANCE_NAME_RE.test(value) ? value : null;
+}
+
 // --- stable lane ownership ----------------------------------------------------------------------
 // A lane belongs to one main-session OCCUPANT, not merely to a numbered slot: slots recycle, so
 // the opening timestamp is the generation half of the identity. Optional on every carrier because

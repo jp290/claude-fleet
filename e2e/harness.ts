@@ -10,6 +10,12 @@ export const IP = process.env.FLEET_E2E_HOST ?? "127.0.0.1";
 // (own port + own tmux socket) instead of the live fleet — see e2e-isolated.sh
 export const PORT = Number(process.env.FLEET_PORT ?? 8790);
 export const SOCK = process.env.FLEET_SOCK ?? "claudefleet";
+// The instance name the wrapper booted this server with (server.ts#INSTANCE_NAME). Read from the
+// runner's own env rather than retyped in each check module: e2e-isolated.sh puts FLEET_INSTANCE on
+// the runner line as well as the server line, so a changed value there can never leave a check
+// asserting a name nothing serves. Empty when a harness boots no instance name — the probes that
+// use it fail on that as their own stated precondition.
+export const INSTANCE_NAME = process.env.FLEET_INSTANCE ?? "";
 // THE LIVE-FLEET REFUSAL. Every e2e entry point — the runner and the four single-file harnesses —
 // opens and kills slots, restarts srv, drives merges and lands. Against the live pair that is the
 // owner's real panes. Each harness used to carry its own hand-copied version of this line, which

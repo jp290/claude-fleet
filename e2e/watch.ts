@@ -23,7 +23,7 @@ import { composerArrival, composerHoldsExactly, composerResidue, composerRows,
   type ComposerArrival } from "../composer";
 import { FLEET_REPORT_STATUSES, type FleetReportEventPayload, type FleetReportStatus } from "../src/protocol";
 import { PANE_ACK_STALE_MS, opsOpen, opsUnacked } from "../src/opsevents";
-import { AUTOS_TICK_MS, BASE, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut } from "./harness";
+import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut } from "./harness";
 
 interface WatchRow {
   id: string; slot: number; target: number; targetBranch: string;
@@ -88,7 +88,9 @@ interface ClarificationEventRow {
 interface FleetReportRow {
   id: string; reportedAt: number; status: FleetReportStatus; text: string;
   worker: { slot: number; openedAt: number; sessionId: string | null; cwd: string; branch: string };
-  provenance: { taskId: string | null; originId: string | null; programId: string | null };
+  // `instance` absent = a row persisted before the field existed (dual-host Schnitt 2)
+  provenance: { taskId: string | null; originId: string | null; programId: string | null;
+    instance?: string | null };
   // null exactly when basis is "owner-inbox" — the owner is a principal, not an occupant
   receiver: { slot: number; openedAt: number; sessionId: string | null } | null;
   basis: "program-main" | "lane-watch" | "program-main+lane-watch" | "owner-inbox"; eventId: string;
@@ -1831,6 +1833,15 @@ export async function run(): Promise<void> {
         && completeEvent?.watchId === null && completeEvent.receiverSlot === main
         && completeEvent.payload.reportId === completeReport.id,
       JSON.stringify({ completeReport, completeEvent }));
+    // ...and WHICH FLEET took it (dual-host Schnitt 2). Stamped on the ROW only: the FleetEvent
+    // payload is the transport copy that rides the 2 s poll, and a per-event copy of a constant is
+    // the multiplication the payload budget exists to refuse.
+    check("fleet-report provenance names the instance the lane ran on, and the event payload does not carry a copy",
+      completeReport?.provenance.instance === INSTANCE_NAME
+        && needsReport?.provenance.instance === INSTANCE_NAME
+        && failedReport?.provenance.instance === INSTANCE_NAME
+        && !("instance" in (completeEvent?.payload ?? {})),
+      JSON.stringify({ row: completeReport?.provenance, payload: completeEvent?.payload }));
     await Bun.sleep(300);
     const openAudits = auditRows().slice(reportAuditStart).filter((row) => row.event === "fleet_report_open");
     const expectedOpenAudits = [
@@ -1872,6 +1883,21 @@ export async function run(): Promise<void> {
     for (const event of restartImage.events ?? [])
       if (event.id === completeReport?.eventId) event.receiverIdleSec = 0;
     restartImage.fleetReports?.push({ id: "malformed", status: "complete" });
+    // Two more plants for the instance field, one per direction. A row written before the field
+    // existed loses the key entirely and must hydrate UNCHANGED — repairing it into this server's
+    // own name is precisely the lie a dual-host provenance field must never tell. A row carrying a
+    // malformed name is discarded whole, like every other shape this loader refuses.
+    const legacyRow = (restartImage.fleetReports as { id?: string;
+      provenance?: { instance?: string | null } }[] | undefined)
+      ?.find((r) => r.id === needsReport?.id);
+    if (legacyRow?.provenance) delete legacyRow.provenance.instance;
+    const badInstanceRow = JSON.parse(JSON.stringify(
+      (restartImage.fleetReports as { id?: string }[] | undefined)
+        ?.find((r) => r.id === failedReport?.id) ?? {})) as
+      { id: string; eventId: string; provenance: { instance: string } };
+    badInstanceRow.id = "0".repeat(24);
+    badInstanceRow.provenance.instance = "not a name!";
+    restartImage.fleetReports?.push(badInstanceRow);
     writeFileSync(reportStatePath, JSON.stringify(restartImage, null, 2), { mode: 0o600 });
     const recoveryLatch = `${ROOT}/fleet-report-recovery.latch`;
     rmSync(recoveryLatch, { force: true });
@@ -1889,6 +1915,13 @@ export async function run(): Promise<void> {
         && !(JSON.parse(readFileSync(reportStatePath, "utf8")) as { fleetReports?: { id?: string }[] })
         .fleetReports?.some((r) => r.id === "malformed"),
       JSON.stringify(afterRestart.map((r) => [r.id, r.status])));
+    check("Q4 fleet-report instance provenance: a stamped row keeps its name, a pre-field row stays nameless, a malformed name is discarded",
+      afterRestart.find((r) => r.id === completeReport?.id)?.provenance.instance === INSTANCE_NAME
+        && !("instance" in (afterRestart.find((r) => r.id === needsReport?.id)?.provenance ?? {}))
+        && !afterRestart.some((r) => r.id === badInstanceRow.id)
+        && !(JSON.parse(readFileSync(reportStatePath, "utf8")) as { fleetReports?: { id?: string }[] })
+        .fleetReports?.some((r) => r.id === badInstanceRow.id),
+      JSON.stringify(afterRestart.map((r) => [r.id, r.provenance.instance ?? "(absent)"])));
 
     for (let i = 0; i < 160 && !existsSync(`${recoveryLatch}.reached`); i++) await Bun.sleep(50);
     const recovering = (await fleetReportEventRows()).find((e) => e.id === completeReport?.eventId);

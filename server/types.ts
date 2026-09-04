@@ -10,8 +10,8 @@ import type { LaneWatchEventKind, LaneWatchEventPayload, MergeWatchEventPayload,
   DeployWatchEventPayload, CommandJobArtifactPayload, CommandJobWatchEventPayload, ClarificationEventPayload,
   ClarificationBasis } from "../lane-signals";
 import type { RefineValidation } from "../refine-validate";
-import { FLEET_REPORT_STATUSES, type FleetReportEventPayload, type FleetReportStatus, type LaneAnchor }
-  from "../src/protocol";
+import { FLEET_REPORT_STATUSES, INSTANCE_NAME_RE, type FleetReportEventPayload, type FleetReportStatus,
+  type LaneAnchor } from "../src/protocol";
 import type { TaskCluster, TaskFilesOrigin } from "../task-metadata";
 
 const MAX_SLOTS = 16; // fixed places — the sidebar always shows all of them
@@ -429,7 +429,13 @@ interface FleetReport {
   status: FleetReportStatus;
   text: string;
   worker: { slot: number; openedAt: number; sessionId: string | null; cwd: string; branch: string };
-  provenance: { taskId: string | null; originId: string | null; programId: string | null };
+  // `instance` is WHICH FLEET took this report (src/protocol.ts#InstanceIdentity). Absent means a
+  // row persisted before the field existed and stays observably absent — never repaired into a
+  // claim, because a row hydrated on instance B would otherwise start saying B about work done on
+  // A, which is the one thing this field exists to prevent. New rows always carry the key; `null`
+  // is the named fact "this instance has no name", distinct from "we did not know to ask".
+  provenance: { taskId: string | null; originId: string | null; programId: string | null;
+    instance?: string | null };
   // null exactly when `basis` is "owner-inbox": the report was filed to the owner principal, who
   // has no occupant triple. The two fields are one fact and fleetReportFrom checks them together.
   receiver: { slot: number; openedAt: number; sessionId: string | null } | null;
@@ -765,6 +771,11 @@ function fleetReportFrom(raw: unknown): FleetReport | null {
     || (r.basis === "owner-inbox" ? r.receiver !== null : !occupant(r.receiver, false))
     || !provenance || !nullableString(provenance.taskId) || !nullableString(provenance.originId)
     || !nullableString(provenance.programId)
+    // additive and default-deny in the same breath: absent passes (pre-field row), null passes
+    // (unnamed instance), and a present string must be a WELL-FORMED instance name — a row
+    // carrying junk there would travel as provenance and be read as one.
+    || !(provenance.instance === undefined || provenance.instance === null
+      || (typeof provenance.instance === "string" && INSTANCE_NAME_RE.test(provenance.instance)))
     || !["program-main", "lane-watch", "program-main+lane-watch", "owner-inbox"].includes(String(r.basis))
     || typeof r.eventId !== "string" || !/^[0-9a-f]{24}$/.test(r.eventId)) return null;
   // The decision half, default-deny like every other half of this row. Absent and null are the

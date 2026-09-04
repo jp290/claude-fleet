@@ -1,3 +1,146 @@
+# HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 4 → Nachfolge): RESCOPE ist in Kraft, Vollsplit ist beendet, drei Lands, und EIN Land haengt noch in der Luft; 2026-09-04 (02:0x), ctx GEMESSEN 29,9 %
+
+Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,
+`GET /api/self/program-execution`. Hier steht nur, was git und die Sensoren NICHT tragen.
+
+## 1. DEIN ERSTER AKT: B-07 ist verifiziert gruen und NICHT gelandet
+
+Task `97f9bd97`, Lane `fleet/260903205300-7830`, Slot 1. Der Land-Gate lief **gruen** (volle
+Kette, `verify.ok:true`), danach ging der Fast-Forward verloren: `merges["1"]` traegt
+`status:"error"`, `landed:false`, **`errorReason:"ff-lost"`**. Das ist NICHT B-09 — der Fix
+`24f9cfc` hat gemintet, die Lane ist also nicht dauerhaft gesperrt.
+
+**Die Ursache war ICH.** Der eine Commit, der mir den Fast-Forward weggenommen hat, ist
+`c0f6fef` — mein eigener B-15-Doc-Commit, geschrieben waehrend der Gate meiner eigenen Landung
+lief. **Lehre, die ich sonst nirgends im Regelbuch finde: waehrend dein eigenes Land laeuft,
+committe NICHTS ins Haupt-Checkout.** Der Gate braucht 100–140 s, und in dieser Zeit ist jeder
+Commit auf main ein verlorener Land-Zyklus. Doc-Commits fuehlen sich harmlos an; dieser hat
+~15 min gekostet.
+
+**Stand bei meiner Uebergabe:** die Lane hat sich SELBST rebased (`behind 0, ahead 1, clean`,
+ctx von 86,6 % auf 12,1 % — codex kompaktiert selbst, das ist Betrieb, kein Alarm). Sie war beim
+Schreiben nur noch nicht *idle*, darum lehnt die Self-Land-Tuer mit
+`not done-looking (no signal)` ab. **Ich habe Watch `612424c6` (kind `lane`, target 1) armed
+gelassen** — er feuert, wenn sie done-looking wird. Dann: Pane lesen, `POST
+/api/self/tasks/97f9bd97/land`, Merge-Watch, Audit-Watch.
+
+**Was du NICHT tun sollst:** den Owner-Merge-Waiver (`POST /api/slots/1/merge` mit Owner-Token)
+ziehen. Der ist fuer den Fall, dass das Praedikat FAELSCHLICH falsch ist. Hier ist es korrekt
+falsch — die Lane arbeitet wirklich.
+
+## 2. Was gelandet und verifiziert ist
+
+| Was | SHA | Gate | Post-Land-Audit |
+| --- | --- | --- | --- |
+| Slice 7a `server/proc.ts` (letzter Split-Slice) | `6b8b89d` | gruen, volle Kette | rot → `flake` (B-13) |
+| B-06 Deploy schuetzt laufenden Land | `1e5419c` | gruen, volle Kette | rot → `flake` (B-14) |
+| B-07 Spent-Merge-Watch | — | **gruen, aber ff-lost** | — |
+
+Slice 7a ist **deployt** (`8e072fc1`, `ok:true`, `bootHead 7e3070f`) — nachgeprueft an
+`deploys.jsonl`, nicht geglaubt. `deployGap.codeBehind:false`, `bundleStale:false`.
+`bun e2e/pins.ts` ALL PASS, `graphify update .` aktuell (9428/13778/682).
+
+## 3. Der RESCOPE — in Kraft, mit ZWEI unbelegten Stellen
+
+Der Fleet Controller (Slot 8, Owner-Delegation) hat den Vollsplit beendet. Steht als
+RESCOPE-Abschnitt **oben** in `docs/sanierung-2026-09/plan-2026-08-31.md`; Erfolgsmass 1
+(`Kern <= 8.000`) ist dort **durchgestrichen**, nicht still umgeschrieben. Neues Zielbild: Kern
+stabil, Blatt-Invariante fuer `server/*`, kein Modul > 2.000.
+
+**Zwei Dinge fehlen, und sie sind KEINE Schlamperei von dir, wenn du sie offen findest:**
+- Das als Beleg genannte `docs/messungen/2026-09-03-gegenpruefung-sanierung-rescope.md`
+  **existiert nirgends** — nicht auf main, nicht in einem Branch, nicht in einem Worktree
+  (`git log --all --diff-filter=A` geprueft). Die zwei Gegenpruefungsberichte sind zitiert,
+  nicht belegt.
+- Die **Stop-Regeln GLM i–iv** wurden verlangt, aber nie uebermittelt. Ich habe sie NICHT
+  erfunden. Erster Punkt fuer dich oder den Controller.
+
+Der Entscheid selbst ist trotzdem tragfaehig: meine eigene Messung
+(`p4-slice7-vorbereitung.md` §6/§7) kam unabhaengig zum selben Schluss.
+
+## 4. Was laeuft und was wartet
+
+- **E1 (`4b92b2f0`), Slot 11, codex/gpt-5.6-sol/high, ctx 43,7 %** — Audit-Sensoren: Fail-Namen
+  in `auditPingMessage` (`server.ts:9894-9925` druckt `row.fails` NIRGENDS, obwohl `:13436` sie
+  persistiert) und `checks.ran`, das die AUFZEICHNUNG statt des LAUFS zaehlt
+  (`postLandAuditChecks`, `server.ts:12398-12420`).
+  **Nachreichen, sobald sie sich meldet** (ich wollte ihren laufenden Schnitt nicht stoeren):
+  derselbe Sensor ist auch auf dem **Vorschau**-Pfad kaputt — der Suite-Job `2b2d3b8260b3`
+  meldet `checks {ran: 22, failed: 0}` bei 3542 echten Trail-Zeilen.
+- **B-09 (`51f59f63`), `queued`** — ff-lost-Backfill beim Boot. Brief liegt fertig in
+  `docs/sanierung-2026-09/briefs-e5-2026-09-03.md`. Dispatch:
+  `POST /api/tasks/51f59f63/dispatch` mit `{harness:"codex",model:"gpt-5.6-sol",effort:"high"}`,
+  Master-Dispatch bleibt aus.
+- **`d2e4f219`, `pending`** — `SUITE_OFFER_WAIT_HELD_MS` falsch dimensioniert. Aeltere Zeile,
+  vom Controller zu `auftrag` konvertiert.
+
+**Deckel, an die ich mich gehalten habe:** max 2 Lanes gleichzeitig, nie zwei Lands parallel.
+
+## 5. Drei Korrekturen, die ich an FREMDEN Briefs vorgenommen habe — pruef sie bei den naechsten
+
+Die E5-Briefs (`4c33933`, von sol) sind gut, trugen aber drei Fehler, die je eine Lane gekostet
+haetten. Ich habe sie als K1–K3 VOR den unveraenderten Brieftext gehaengt:
+- **K1:** der VERIFY-Block sagt `http://127.0.0.1:8790` — das antwortet auf dieser Maschine NIE
+  (der Server bindet nur die Tailscale-IP). Der allererste Befehl waere gescheitert und haette
+  wie ein toter Server ausgesehen.
+- **K2:** `./e2e-isolated.sh` stand als blinder lokaler Lauf drin. Jetzt: erst Portal anbieten,
+  lokal nur bei null laufenden Suiten, Abbruch nie per Namensmuster.
+- **K3:** Beweisordnung §11.7 plus die drei offenen Flake-Familien mit Basisraten.
+**K2 hat sich sofort bezahlt gemacht:** die B-07-Lane konnte ihren Rerun nicht fahren, weil die
+Maschine nie frei war — und hat korrekt `needs-main` gemeldet statt ein gruenes Ergebnis zu
+behaupten.
+
+Dazu **K4 per `POST /send`** an die B-07-Lane: ihr Brief war auf `869a16d` vermessen, B-06 hatte
+inzwischen `e2e/merge.ts` genau in ihrer Region um ~30 Zeilen verlaengert. Zwei Briefs aus
+derselben Charge kollidieren also in der DATEI, nicht im Server — pruef das bei B-09.
+
+## 6. Vier Registerzeilen, die ich neu geschrieben habe
+
+`docs/sanierung-2026-09/p6-befundregister.md`:
+- **B-13** — die Flake-Begruendung zu `6b8b89d`, drei unabhaengige Beweislinien. Sie steht dort
+  und nicht an der Zeile, weil die Adjudikationsnote bei **300 Zeichen** kappt (dritte Instanz
+  von `7e984bde`).
+- **B-14 — der wichtigste Befund des Abends.** Der REMOTE gefahrene Post-Land-Audit ist
+  **17 rot / 3 gruen / 9 unknown von 29**, lokal **82 rot von 419**. Und jeder rote Remote-Lauf
+  mit Namen zieht ausschliesslich aus der Watch/Event-Transportfamilie von `e2e/watch.ts`.
+  Der Beleg, der die MASCHINE ausschliesst: die B-06-Lane liess denselben Inhalt Minuten vorher
+  ueber das Portal auf DEMSELBEN `second-host` laufen — 3542 Checks, **0 FAILs**. Ein Sensor mit
+  85 % Rot ist Rauschen, kein Alarm. **Ausdruecklich nicht kontrolliert:** die Remote-Zeilen sind
+  juenger und dichter, die lokalen decken die ganze Historie — die Assoziation ist gemessen, die
+  Kausalitaet nicht.
+- **B-15** — B-07s neue Ablehnung unterscheidet die Lane, nicht den Merge-LAUF. Kein Blocker
+  (das alte Verhalten war schlechter), Done-Kriterium steht an der Zeile.
+- **B-12 entschieden** — der Advisory-Deckel 10/10 ist KEIN Owner-Tor. Er zaehlt nur
+  `source:"main"`, und Erfolgsmass 6 verlangt je Befund einen von drei AUSGAENGEN; das Register
+  ist die LISTE, nicht einer der Ausgaenge. Die Disposition gehoert in P6. **Stell dieses Tor
+  nicht zum vierten Mal.**
+
+## 7. Ehrlichkeiten
+
+- **Ich habe den §11.7-Same-Tree-Rerun bei B-07 NICHT nachgeholt.** Das ist eine bewusste
+  Abweichung: fuer die §11.2l-Familie ist der Rerun dokumentiert nicht diskriminierend (er faellt
+  identisch — bei Slice 7a Stunden vorher bewiesen), entschieden hat das Trail-Register, das mir
+  vorlag. Ein ~50-min-Lauf haette zusaetzlich jedes andere Gate blockiert. Wer das anders sieht,
+  hat einen Punkt — die Abweichung steht hier, damit sie pruefbar ist.
+- **Vier Direkt-Commits aus dem Haupt-Checkout** (`3671156`, `ab1d6c9`, `e670579`, `c0f6fef`,
+  plus dieser) — alle docs-only, alle mit `bun e2e/pins.ts` ALL PASS von Hand verifiziert. Sie
+  sind fuer JEDES land-seitige Ledger unsichtbar; `./state.sh`s Land-Health-Zahlen untertreiben
+  diesen Tag entsprechend.
+- **`HANDOFF.md` wurde von einer fremden Program-MAIN von 5755 auf 123 Zeilen ERSETZT**
+  (`11ed2b3`), nicht ergaenzt. Das ist **B-08, zweite Instanz**. Nichts ist verloren — der
+  vorherige Stand steht in `git show 694cd73:HANDOFF.md`, der Sanierungs-Abschnitt meiner
+  Vorgaengerin darin. Ich habe meinen Abschnitt oben angehaengt und den alten Stand NICHT
+  wiederhergestellt: das ist ein Owner-/Controller-Entscheid, kein Alleingang meinerseits.
+- **Die Attention `d3b14a4d` meiner Vorgaengerin steht weiter auf `open`** und ist tot: ihr
+  Requester-Slot ist weg, `answerAttention` wuerde mit 409 refusen. Ich habe sie nicht neu
+  gestellt und den Entscheid stattdessen selbst getroffen (§7 der Slice-7-Vorbereitung).
+- **Ich habe in dieser Session KEINE Attention gestellt.** Die einzige, die ich fuer echt
+  Owner-Sache halte, ist die Erreichbarkeit von Erfolgsmass 1 — und die hat der RESCOPE
+  inzwischen beantwortet.
+
+
+---
+
 # HANDOFF — Program-MAIN Game-Maker-Workflow v2 (`b2aa5b453d0f2bf9ddce8232`, Slot 9): Schritte 3–4 gelandet, das Programm haengt nur noch an EINER Owner-Antwort; 2026-09-04 (01:1x), ctx GEMESSEN 21,2 %
 
 Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was

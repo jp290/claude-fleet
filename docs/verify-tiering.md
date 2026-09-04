@@ -2187,6 +2187,66 @@ ZWEITES Repo: eine wartende Zeile bei leerlaufendem Drain gibt es nicht — der 
 Land, das sie einreiht —, ein beanspruchbarer Job braucht also einen Drain, der anderswo beschäftigt
 ist.
 
+
+### 11.2m Eine fünfzehnte Familie: das PARKED-Quartett in `e2e/repo-worker-audit.ts` (2026-09-04 — Wurzel AM GEHALTENEN INSTANZ-LEDGER ABGELESEN, NICHT repariert)
+
+**Die Mitglieder, ein Quartett, und sie fallen immer zusammen** (`e2e/repo-worker-audit.ts`,
+Abschnitte RW.5 bis RW.8 — vier Checks, in allen acht Läufen des Registers 4/4 gemeinsam
+vorhanden und 4/4 gemeinsam rot oder grün):
+
+- `(RW) …after the env repo's run, which finished green on its own command` ← **die Wurzel**
+- `(RW) …while a land in a repo with neither is neither audited nor queued — today's unconfigured behaviour`
+- `(RW) the entry is PARKED: still on disk, not audited, and not shown as waiting`
+- `(RW) another repo's land is audited meanwhile (its own command) — and its save did NOT drop the parked entry`
+
+**Die Wurzel, aus dem aufbewahrten Instanz-Ledger gelesen statt vermutet.** Der erste Check liest
+die `REPO`-Zeile des „slow"-Lands aus RW.5 und verlangt `result: "green"`, `cmdSource: "env"`.
+Gemessen wurde:
+
+    {"result":"unknown","cmdSource":"env","ms":10092,
+     "reason":"audit timed out after 10000ms — no verdict"}
+
+`slow` ist `sleep 6` (`e2e-postland-audit.sh`), das Budget ist
+`FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000` — **und 10 000 ms ist der SERVER-EIGENE FLOOR**
+(`Math.max(10_000, …)`), also nicht nach oben stellbar. Der Abstand zwischen Fixture und Budget
+ist damit fest 4 s, und auf dieser Maschine unter Suite-Last (in der Messnacht hielt EIN
+`./e2e-isolated.sh` den Mutex 61 Minuten am Stück) reicht er nicht: 6 s Schlaf plus Spawn plus
+Snapshot kosteten 10 092 ms. Das Ergebnis ist ein `unknown` statt eines `green` — korrektes
+Server-Verhalten, falsche Fixture-Marge.
+
+**Was VERIFIZIERT ist und was NICHT.** Die Wurzel oben ist am Ledger abgelesen. Die drei
+Folge-Mitglieder sind Zeilenzahl- und Queue-Zustands-Aussagen gegen Basislinien
+(`rows=31 was=30`, `ctl3Had`, `queueHas`), die im selben Lauf mitfallen; dass sie ALLE aus dieser
+einen Zeile folgen, ist **abgeleitet, nicht einzeln isoliert** — was gemessen ist: sie fallen in
+allen acht Registerläufen gemeinsam mit ihr und nie ohne sie.
+
+**Belegt als vorbestehend, aus dem Trail-Register.** 41 `postland-*`-Trails liegen im
+Haupt-Checkout, acht davon tragen diese Checks: **7× rot auf 5 VERSCHIEDENEN Bäumen** —
+`869a16dd` (3×), `0c4907df`, `a8e838bb`, `1e5419ce` und `d3681b3f` (der Baum dieses Slices).
+Vier dieser fünf Bäume sind ÄLTER als der Slice, der das Rot zuletzt geerbt hat.
+
+**Der entscheidende Datenpunkt ist ein GLEICHER-BAUM-UMSCHLAG:** derselbe Baum `869a16dd` lief
+einmal GRÜN (`postland-audit-20260903T210734Z-84088`) und dreimal rot. Ein Check, der auf
+demselben Commit beide Ausgänge produziert, ist nicht dessen Regress.
+
+**Merkposten zur BEWEISORDNUNG, wie in §11.2l.** Der vom Regelbuch zuerst verlangte Rerun
+DESSELBEN Baums entschied hier NICHTS: er fiel identisch (`d3681b3f`, zwei Läufe, viermal
+dieselben vier FAILs, `rows=31 was=30` beide Male). Das ist auch zu erwarten — die Ursache ist
+Maschinenlast, und die Maschine war während beider Läufe gleich belastet. Entschieden hat wieder
+das Register.
+
+**Basisrate 7/8 = 87,5 % rot.** Das ist keine seltene Flake, sondern eine Fixture, deren Marge
+auf dieser Maschine fast nie reicht; sie ist am 2026-09-03 zum ersten Mal im Register aufgetaucht.
+
+**Nicht repariert, absichtlich, und der Schnitt ist klein und benannt:** das Budget ist der
+Server-Floor und unbeweglich, also muss die FIXTURE-Seite kleiner werden — `slow` von 6 s auf
+etwa 3 s, oder RW.5 bekommt einen eigenen, kürzeren Modus (dasselbe Argument, mit dem `long`
+sich aus `slow` gelöst hat: `e2e-postland-audit.sh`, der Kommentarblock über `auditmode`).
+Zusätzlich sollte der Check als ER SELBST fallen: ein `reason` mit „timed out" heißt „diese
+Sonde konnte nicht messen", nicht „der Server hat falsch klassifiziert". Bis dahin gilt für
+einen Leser eines roten `./e2e-postland-audit.sh`: **dieses Quartett ist kein Urteil über den
+Baum** — erst das Register befragen, dann attribuieren.
+
 ### 14.1 Ein remote `unknown` mit exit 127 ist zuerst ein leerer Klon, nicht ein fehlendes Kommando (2026-08-29)
 
 **Der Mechanismus.** `server.ts#buildHelperBundle` baut das Transport-Bundle mit `git bundle create

@@ -726,6 +726,58 @@ Läufe.
 
 ---
 
+## B-17 — die Tier-2-VORSCHAU verhungert den Land-GATE: ein optionaler Lauf blockiert einen pflichtigen
+
+**Gemessen** 2026-09-04 (03:2x), nachdem der zweite B-07-Landeversuch nach **2 703 s**
+(`FLEET_VERIFY_WAIT_MS`, 45 min) mit `status:"resolved"`, `landed:false`, `verify.ok:null` und
+`detail: "clean rebase, but verify NEVER STARTED"` aufgegeben hat.
+
+**Der Maschinenzustand in diesem Moment:** drei `./e2e-isolated.sh`-Wrapper, einer hält
+`/tmp/fleet-e2e.lock` (pid 97309, 21 min im Lauf), die anderen warten — **einer davon seit
+45:37 min, also länger als das gesamte Wartebudget eines Lands.** Ein isolated-Lauf braucht
+~25 min; drei in der Schlange sind ~75 min. Ein Land mit 45 min Budget kommt da strukturell
+nicht durch.
+
+**Die Asymmetrie ist das Eigentliche.** Der Mutex in `e2e-stage.sh` behandelt alle sieben
+Wrapper gleich. Aber sie sind nicht gleich:
+
+| Lauf | Rolle | Konsequenz beim Ausfall |
+| --- | --- | --- |
+| `./e2e-isolated.sh` als Lane-Vorschau | **Tier-2, ausdrücklich KEIN Gate** | nichts — der Post-Land-Audit fährt denselben Lauf danach ohnehin |
+| Land-Gate (`VERIFY_CMD`) | **Gate** | das Land findet nicht statt |
+
+**Ein optionaler Lauf verdrängt also einen pflichtigen, und zwar ohne dass irgendwo eine
+Priorität behauptet würde.** Das Regelbuch sagt seit dem Owner-Entscheid vom 2026-08-07
+ausdrücklich, die Vorschau sei „Tier-2-Vorschau, kein Gate, und keine Pflicht in jeder Lane" —
+der Mutex weiß davon nichts.
+
+**Drei Vorfälle EINER Nacht, die derselbe Mechanismus erklärt:**
+1. Die E1-Lane wartete **2 000 s** auf ihr Acquire (`[suite-lock] acquired after 2000s`).
+2. Dieselbe Lane hing davor 3 h fest und musste eine Klärung stellen.
+3. Dieser Land-Waitout, 2 703 s, ohne dass der Baum je angesehen wurde.
+
+**Und es hängt mit B-14 zusammen:** weil lokale Vorschauläufe die Maschine sättigen, wandern
+Audits auf den Remote-Helfer — dessen Rotrate 85 % beträgt. Die Überlastung erzeugt also nicht
+nur Wartezeit, sie verschiebt die Messung auf den unzuverlässigeren Pfad.
+
+**Vorgeschlagene Richtungen, keine davon entschieden und keine von mir gebaut:**
+- Der Land-Gate bekommt Vorrang am Mutex (eine Prioritätsstufe, kein zweiter Lock).
+- Oder: Lane-Vorschauläufe nehmen den Lock gar nicht mehr, sondern werden abgewiesen, solange
+  ein Gate wartet — sie sind per Entscheid verzichtbar.
+- Oder: das Wartebudget eines Lands wird an die gemessene Schlangentiefe gekoppelt statt an eine
+  feste Zahl.
+
+**Done-Kriterium:** ein Land, das startet, während zwei Vorschauläufe in der Schlange stehen,
+erreicht seinen Gate innerhalb seines Budgets. **Verifikation:** die `waitMs`/`ms`-Felder der
+Land-Note gegen die gleichzeitige Wrapper-Zahl, über zehn Lands.
+
+**Sofort-Umgehung für die nächste Session, kostet nichts:** die Vorschau ist verzichtbar —
+brief Lanes so, dass `./e2e-isolated.sh` NUR gefahren wird, wenn der Schnitt `e2e/`, einen
+Wrapper oder den Merge-/Land-Pfad berührt, und sonst gar nicht. Genau so steht es ohnehin im
+Regelbuch; die E5-Briefs haben es pauschal verlangt, und das war zu viel.
+
+---
+
 ## Bereits als Queue-Zeile abgelegte P6-Befunde (nur Verweis, Inhalt lebt an der Zeile)
 
 | ID | Kurz |

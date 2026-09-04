@@ -1,3 +1,108 @@
+# HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 8): BEIDE haengenden Lands sind drin und verifiziert, E1s Fix ist am lebenden Objekt bewiesen, vier neue Registerzeilen; 2026-09-04 (10:0x), ctx GEMESSEN 24,7 %
+
+Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,
+`GET /api/self/program-execution`. Hier steht nur, was git und die Sensoren NICHT tragen.
+
+## 1. DEIN ERSTER AKT: nichts haengt mehr. Fang bei B-09 an — aber lies vorher §5.
+
+Die Uebergabe meiner Vorgaengerin hatte GENAU EINEN Auftrag ("zwei verifizierte Lands warten auf
+einen freien Suite-Mutex"). **Der ist erledigt, beide sind auf main und nachgeprueft:**
+
+| Was | SHA | Gate | Post-Land-Audit |
+| --- | --- | --- | --- |
+| B-07 Spent-Merge-Watch (`97f9bd97`) | `d32b69d` | gruen, volle 7-Schritt-Kette, 1878 s | rot -> `flake` adjudiziert (Beleg: B-20) |
+| E1 Audit-Sensoren (`4b92b2f0`) | `52673b6` | gruen, volle Kette, 1943 s | **gruen, 3597 checks, 0 failed, 1450 s** |
+
+Land-Notes selbst gelesen (`git notes --ref=fleet/land show <sha>`), nicht der Nachricht geglaubt.
+
+**Der Deploy ist SCHON DURCH — such ihn nicht als offene Arbeit:** `deployGap.bootHead` steht auf
+`52673b6`, `codeBehind: false`, `bundleStale: false`. Der laufende Server traegt beide Lands. Die
+3 Commits, die main voraus ist, sind docs-only (meine Registerzeile + zwei Handoffs).
+
+**Offen und in dieser Reihenfolge sinnvoll:**
+1. **B-09 `51f59f63`** (`queued`, nie dispatcht). Brief in `docs/sanierung-2026-09/briefs-e5-2026-09-03.md`.
+   Dispatch: `POST /api/tasks/51f59f63/dispatch` mit `{harness:"codex",model:"gpt-5.6-sol",effort:"high"}`.
+   **Schick die K2-Korrektur mit** (§5 der Vorgaengerin: der Brief traegt noch die zurueckgezogene
+   Haelfte "lokal nur bei null laufenden Suiten" — das ist ein DEADLOCK auf dieser Maschine).
+   Ergaenze nach B-18: die Vorschau nur verlangen, wo der Schnitt sie braucht.
+2. **`d2e4f219`** (`pending`, `auftrag`) — `SUITE_OFFER_WAIT_HELD_MS` falsch dimensioniert.
+3. Die zwei **unbelegten RESCOPE-Stellen** meiner Vorgaengerin, unveraendert offen: das als Beleg
+   genannte `docs/messungen/2026-09-03-gegenpruefung-sanierung-rescope.md` **existiert nirgends**,
+   und die **Stop-Regeln GLM i–iv** wurden nie uebermittelt. Ich habe beides nicht erfunden und
+   nicht nachgeholt.
+
+## 2. Vier neue Registerzeilen — `6d8d85a`, in `docs/sanierung-2026-09/p6-befundregister.md`
+
+Alle vier sind an den beiden Lands GEMESSEN, nicht hergeleitet. Kurzform, Inhalt steht dort:
+
+- **B-18 — die Verhungerungskette ist laenger als der Mutex.** Der PFLICHT-Harness einer Lane
+  wartete **1697 s** auf den Lock und startete nie -> Lane hielt ihr Hintergrund-Terminal offen ->
+  nicht idle -> `done-looking` faellt -> Land unmoeglich -> Controller fror `main` ueber DREI
+  Programme ein. Das ist B-17 mit Preisschild.
+- **B-19 — `ff-lost` ist ein Muenzwurf, und er trifft alle.** 23 Commits/6 h auf main gegen eine
+  31–35-min-Gate-Kette = ~46 % Chance auf ein sauberes Fenster. E1 starb ZWEIMAL daran, bei
+  `verify.ok: true`. Drei Richtungen benannt, keine gebaut — das ist ein Owner-/Controller-Thema.
+- **B-20 — das Trail-Register schlaegt den Same-Tree-Rerun bei der ATTRIBUTION.** Alle 5 Fails des
+  roten B-07-Audits standen schon auf `d86fcc78` (main VOR dem Land). Sekunden statt ~50 min.
+- **B-21 — `checks.ran` vorher/nachher, am lebenden Objekt.** Helfer-Pfad war ~160x zu klein
+  (26 bzw. 22 gegen Trail 3577/3588); das erste Helfer-Audit NACH E1 meldet `3597 = 3588 + 9`.
+
+## 3. Der Zug, den du vielleicht wiederholen musst — und seine Bedingungen
+
+Ich habe eine LANE per `POST /send` gebeten, ihren laufenden `./e2e-postland-audit.sh`
+**abzubrechen**. Das ist kein Normalfall und war nur zulaessig, weil ALLE drei Bedingungen galten:
+
+1. Der Lauf hatte **noch nicht angefangen** — er wartete 1697 s auf den Lock (im Lane-Log woertlich
+   nachlesbar: `[suite-lock] … waiting 1697s`). Ein LAUFENDER Lauf wird nicht abgebrochen.
+2. Dieselbe Suite war auf **demselben Payload** schon `ALL PASS` — der Merge-Job hatte danach nur
+   die BASIS bewegt (`41a7a3b` -> `1989bed`), `git diff main...HEAD` byte-identisch (7 Dateien,
+   114/29). Ich habe das verglichen, nicht angenommen.
+3. Der **Land-Gate faehrt die volle Kette ohnehin** und ist die Autoritaet; die Vorschau ist es nie.
+
+Die Lane hat sauber abgebrochen (`exit 130`, keine Aenderung, kein Commit) und war im naechsten
+Turn done-looking. **Wenn eine der drei Bedingungen fehlt: nicht abbrechen, warten.**
+
+## 4. Cross-Program: der Freeze war fremde Hilfe, kein Mechanismus
+
+Der 🎛 Fleet Controller (Slot 13) hat von sich aus `main` eingefroren, bis E1 drauf war, und mir
+gesagt, dass EINER meiner beiden `ff-lost` sein eigener Handoff-Commit `402e962` war. Ohne diesen
+Freeze waere E1 vermutlich ein viertes Mal am Rennen gestorben. **Das ist Kulanz, keine
+Einrichtung** — B-19 ist genau die Zeile, die daraus einen Mechanismus machen wuerde.
+
+Parallel hat die **Game-Maker-v2-MAIN (Slot 9)** denselben `checks.ran`-Defekt unabhaengig
+gemessen und dafuer `b55477fb` gefilet; nach Ruecksprache hat SIE selbst festgestellt, dass die
+Zeile zu ~90 % E1 ist, und sie zurueckgezogen zugunsten der `notiz` **`001d4cc3`** (nur die
+Restpunkte). **`b55477fb` liegt weiter `pending` in IHREM Program** (`b2aa5b453d0f2bf9ddce8232`) —
+ich habe sie NICHT archiviert: fremde Program-Queue, nicht meine Authority. Tuer, falls jemand
+Zustaendiges es tut: `POST /api/tasks/b55477fb/archive` (reversibel via `unarchive`). Gefahr geht
+von ihr nicht aus: `pending` + nie released kann `tickDispatch` strukturell nicht starten.
+
+## 5. Ehrlichkeiten — bitte lies das, bevor du meinen Zahlen vertraust
+
+- **Ich habe `signal: null` ZWEIMAL aus der API falsch gedeutet.** Erst als reponweit stehenden
+  git-Tick — er lief; ich hatte `idle`/`observed` von `GET /api/sessions` gelesen, **wo es diese
+  Felder gar nicht gibt**, und `dict.get()` gab `None` zurueck. Dann als "un-getickte idleMs,
+  klaert sich beim naechsten Tick". Beides falsch; die Antwort stand in der PANE und war beim
+  ersten Blick eindeutig (das Hintergrund-Terminal). Das Regelbuch sagt genau das AN der
+  done-looking-Nachricht. **Konsequenz fuer dich: bei `signal: null` zuerst
+  `tmux -L claudefleet capture-pane -p -t s<N> | tail -20`, nicht die API befragen.**
+- **Ich habe mir eine Eskalationsschwelle gesetzt und sie dann verschoben**, ohne es sofort zu
+  sagen ("beim dritten verschiedenen Fehlschlag stelle ich eine Attention"). Sachlich war das
+  Weitermachen richtig (der rote Gate-Lauf kostete 135 s, nicht 31 min), aber die Schwelle war
+  meine und ich habe sie gerissen. Ich habe in dieser Session **KEINE Attention gestellt**; die
+  eine, die ich fuer echt Owner-Sache halte, ist B-19.
+- **Der §11.7-Same-Tree-Rerun bei E1s rotem Gate stammt nicht von mir, sondern von der LANE.** Sie
+  hat ihn gefahren und `rot -> ALL PASS` bei `start-head == end-head == 41a7a3b` belegt. Meine
+  eigene Begruendung war vorher nur Fingerabdruck + Basisraten (§11.2i) — richtig, aber nicht der
+  Beweis, den das Regelbuch verlangt.
+- **E1 brauchte FUENF Anlaeufe, aus fuenf verschiedenen Gruenden**, und keiner war sein Code:
+  `ff-lost` (fremdes Land) · `interrupted` (fremder Deploy killte srv mitten im Merge) · rot durch
+  §11.2i (Phase 3 ohne Server, `no server.log` = nie gemessen) · No-Progress-Guard (per Rebase
+  reparieren, das ist der vorgesehene Weg) · Lane nicht idle (B-18). Die Kette war zweimal gruen,
+  bevor sie durchging.
+- **Ein Direkt-Commit aus dem Haupt-Checkout** (`6d8d85a`, docs-only, `bun e2e/pins.ts` ALL PASS von
+  Hand). Fuer jedes land-seitige Ledger unsichtbar; `./state.sh`s Land-Health untertreibt ihn.
+
 # HANDOFF — 🎛 Fleet Controller (Slot 13, Fable): Manifeste + §11.2l gelandet, Owner will Merges aus dem Controller heraus, zwei Owner-Entscheide offen; 2026-09-04 08:5x, ctx GEMESSEN 22,3 % (vor dem Schreiben)
 
 Zustand ableiten: `./state.sh`, `./register.sh`, Owner-Poll, Panes. Hier nur, was git nicht traegt.

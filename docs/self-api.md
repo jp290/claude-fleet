@@ -551,6 +551,16 @@ Dateien reisen NICHT mit**; ihre Zahl steht als `untracked` im Job, damit ein gr
   wird hier aus 126/127 abgeleitet, nur `timeout` reist über das Netz; ein Code, den dieser Server
   nicht lesen kann, wird VERWORFEN (Feld fehlt), nie mit 400 quittiert — sonst wäre das Verdikt
   eines neueren Daemons Geisel einer Anmerkung.
+- `remote.artifact{bytes,sha256,url}` (nur auf einer AUDIT-Zeile) — die ganze `suite.log`, die der
+  Helfer NACH dem Verdikt hochgeladen hat. **Sie steht nicht IN der Ledger-Zeile auf Platte**: die
+  ist append-only, und der Fakt trifft später ein. Sie liegt auf einer SEITEN-SCHIENE
+  (`helper-artifacts.jsonl`, Schlüssel = das `at` der Audit-Zeile) und wird an jeder Lesefläche auf
+  die Zeile GEJOINT — dasselbe Muster wie `adjudication` und davor `dispositions.jsonl`, kopiert
+  statt neu erfunden. Konsequenz, die das Muster kauft: ein Upload kann `result` nicht bewegen, weil
+  der Schreiber die Audit-Datei gar nicht anfasst. Fehlt das Feld, ist keine Log-Datei angekommen —
+  das ist eine andere Aussage als „der Lauf hat keine erzeugt", und keine wird als die andere
+  gezeichnet. Die Bytes selbst holt `GET /api/post-land-audits/artifact?at=<n>` (Owner-Route; 410,
+  wenn die Retention die Bytes weggeräumt hat und nur die Schienen-Zeile sie noch erinnert).
 - `waitPolicy{freeMs,heldMs}` — die Wartezahlen aus `SUITE_OFFER_WAIT_FREE_MS` /
   `SUITE_OFFER_WAIT_HELD_MS`, damit die Lane sie nicht aus dem Gedächtnis zitiert.
 - `helper{online,name,mode,lastSeenAgeMs}` — dieselbe Präsenz-Lesung wie in `/api/self/gate`, und

@@ -88,6 +88,12 @@ export interface PostLandAuditInfo {
   // "not recorded", never be mapped onto one it does know. `remoteTimeoutMs` rides with
   // `remoteReason: "timeout"` alone; both absent on a local row and on every historical one.
   remoteReason?: string; remoteTimeoutMs?: number;
+  // the artefact rail, JOINED onto the row by the server (server.ts, THE HELPER ARTEFACT RAIL).
+  // Absent means no suite.log was uploaded for this audit — which is a different statement from
+  // "the run produced none", and the alarm draws neither as the other. `url` is served by the
+  // server rather than built here on purpose: the storage layout is this box's business, and a
+  // client that composed the path would be a second place that has to know it.
+  artifact?: { bytes: number; sha256: string; url: string };
 }
 
 // --- post-land audit: the run that has NOT finished ---------------------------------------------

@@ -152,6 +152,10 @@ const POSTLAND_AUDIT_FILE = `${import.meta.dir}/post-land-audits.jsonl`;
 // reason plus one: it makes "a judgement can never rewrite `result`" structural rather than a rule
 // the route has to keep. Same appendEvent discipline/rotation as the trails above.
 const AUDIT_ADJUDICATION_FILE = `${import.meta.dir}/audit-adjudications.jsonl`;
+// the ARTEFACT rail for that same trail — one append-only line per helper suite.log that arrived
+// AFTER its audit row was written. A SIDE rail for the identical reason the adjudication rail is
+// one, and the pattern is copied rather than re-invented (see THE HELPER ARTEFACT RAIL below).
+const HELPER_ARTIFACT_FILE = `${import.meta.dir}/helper-artifacts.jsonl`;
 // the PENDING side of that trail: lands whose audit has not produced a row yet. Not an event log
 // (no rotation, no history) — a small mutable mirror of the in-memory queue, rewritten whole on
 // every mutation. Absent file = nothing pending. See savePostLandAuditQueue for why it exists.
@@ -11875,8 +11879,11 @@ interface PostLandAuditRow {
   // `reason`/`timeoutMs` here are the OTHER machine's account of why it measured nothing — a closed
   // set, see helperNoMeasureOf. Not to be confused with the row's own `reason` above, which is this
   // server's classification of the exit code and says nothing about a killed run.
+  // `jobId` is the claim this row came out of. It is NOT a key — an audit job's id is
+  // `sha256(repo)` and repeats for every audit of that repo — but it is what an arriving artefact
+  // upload is checked AGAINST, so a log can never be filed onto a row from another job.
   remote?: { name: string; claimedAt: number; reportedAt: number; trail?: string; clonedSha?: string;
-    reason?: HelperNoMeasureReason; timeoutMs?: number };
+    reason?: HelperNoMeasureReason; timeoutMs?: number; jobId?: string };
 }
 // the newest row, for the board. In memory for the poll path, but REHYDRATED from the trail at boot
 // (see the boot block): a red audit is typically followed within minutes by the deploy that restarts
@@ -12793,7 +12800,13 @@ function postLandAuditSummary(): PostLandAuditInfo | null {
     // when it was actually reported: the board draws "timed out after N s" from these two, and
     // without them falls back to the honest "no verdict exists".
     ...(r.remote?.reason ? { remoteReason: r.remote.reason } : {}),
-    ...(r.remote?.timeoutMs ? { remoteTimeoutMs: r.remote.timeoutMs } : {}) } : null;
+    ...(r.remote?.timeoutMs ? { remoteTimeoutMs: r.remote.timeoutMs } : {}),
+    // the artefact rail, JOINED (see THE HELPER ARTEFACT RAIL). Absent means no log arrived — which
+    // is a different statement from "the run produced none", and neither is drawn as the other.
+    ...((): Record<string, unknown> => {
+      const a = artifactViewFor(r.at);
+      return a ? { artifact: a } : {};
+    })() } : null;
 }
 // ...and the projection for the run that has NOT finished. Deliberately a SECOND carrier rather
 // than fields bolted onto the one above: `postLandAudit` is the newest RESULT and a reader may keep
@@ -13812,7 +13825,7 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
     checks: measured ? postLandAuditChecks(tail, exitCode as number, fails) : null,
     covers: claim.covers,
     remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now, ...(trail ? { trail } : {}),
-      ...(clonedSha ? { clonedSha } : {}), ...helperNoMeasureOf(body, exitCode) },
+      ...(clonedSha ? { clonedSha } : {}), ...helperNoMeasureOf(body, exitCode), jobId: claim.id },
   };
   lastPostLandAudit = row;
   recordAuditDuration(row); // a no-op for a remote row by contract — see auditCounts
@@ -13852,7 +13865,10 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
       + `${reason ? ` (${reason})` : ""}${shaDivergence} — this audit gates nothing; ↩ undo-land is the rollback.`);
   await saveStateNow();
   kickAuditDrain(); // a land that arrived during the claim is drainable again this instant
-  return json({ ok: true, result, ...(reason ? { reason } : {}) });
+  // `auditAt` is the ROW KEY, handed back so the artefact upload that follows can name the exact
+  // row instead of guessing one. It is the whole reason the upload needs no semantic key: without
+  // this the helper could only say "the job", and one job id covers every audit of a repo.
+  return json({ ok: true, result, ...(reason ? { reason } : {}), auditAt: row.at });
 }
 // The portal's own gate. The owner's own credential opens it too — checked FIRST and synchronously,
 // so opening the page from the board costs nothing — and every other credential pays the same flat
@@ -13877,7 +13893,7 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
   // is the exact failure that pin exists to prevent. It also settles /api/helper/token by leaving it
   // OUT: reading the portal's credential is the OWNER's act and lives below the owner gate, beside
   // /api/steward/token. A prefix guard would have swallowed it and answered the owner 403.
-  if (!/^\/(helper|api\/helper\/(jobs|device|claim|result|bundle\/[0-9a-f]{12}))$/.test(url.pathname)) return null;
+  if (!/^\/(helper|api\/helper\/(jobs|device|claim|result|bundle\/[0-9a-f]{12}|artifact\/[0-9a-f]{12}))$/.test(url.pathname)) return null;
   if (!(await helperAuthed(req, url))) return json({ error: "unauthorized" }, 401);
   if (url.pathname === "/helper" && req.method === "GET")
     return new Response(Bun.file(`${import.meta.dir}/public/helper.html`), {
@@ -13935,6 +13951,75 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
   }
   if (url.pathname === "/api/helper/claim" && req.method === "POST") return await helperClaim(await readJson(req));
   if (url.pathname === "/api/helper/result" && req.method === "POST") return await helperResult(await readJson(req));
+  // THE ARTEFACT UPLOAD — the only route on this perimeter that takes BYTES, and the last thing a
+  // helper does. Everything about it is downstream of one rule: THE VERDICT IS ALREADY IN. It runs
+  // after the result POST by the daemon's own order, it writes to a SIDE rail
+  // (HELPER_ARTIFACT_FILE), and it cannot touch the audit row — so a refusal here, a truncation
+  // here, an outage here all leave the ledger exactly as the verdict left it.
+  //
+  // `at` is REQUIRED and is the row key the result POST just handed back. There is deliberately no
+  // "newest job with this id" fallback: an audit job id is `sha256(repo)` and repeats for every
+  // audit of that repo, so a fallback would file a log onto whichever row happened to be newest —
+  // the exact collision the KEY paragraph above exists to prevent. And nothing needs one: only a
+  // daemon new enough to upload at all is new enough to have read `auditAt` out of its own receipt.
+  const artifact = /^\/api\/helper\/artifact\/([0-9a-f]{12})$/.exec(url.pathname);
+  if (artifact && req.method === "POST") {
+    const jobId = artifact[1]!;
+    const rawAt = url.searchParams.get("at") ?? "";
+    const auditAt = /^\d{10,16}$/.test(rawAt) ? Number(rawAt) : NaN;
+    if (!Number.isFinite(auditAt)) {
+      await drainBody(req);
+      return json({ error: "expected ?at=<the auditAt the result POST returned>" }, 400);
+    }
+    const capMb = (HELPER_ARTIFACT_BYTES_MAX / 1024 / 1024).toFixed(1);
+    // Refuse an oversized body BEFORE buffering it, and DRAIN rather than cancel — the same
+    // measured rule /api/slots/:id/upload states: answering while the client is still sending
+    // leaves an unconsumed body and the next request on that connection hangs forever.
+    if (Number(req.headers.get("content-length") ?? 0) > HELPER_ARTIFACT_BYTES_MAX) {
+      await drainBody(req);
+      return json({ error: `suite.log is larger than the ${capMb} MB cap` }, 413);
+    }
+    // The row must EXIST and must be THIS job's, and both are checked before a byte is written —
+    // an artefact stored for a row that names nothing is a file nothing can ever join back.
+    const { rows } = await readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE);
+    const target = rows.find((r) => r.at === auditAt);
+    if (!target) {
+      await drainBody(req);
+      return json({ error: `no post-land audit row with at=${auditAt}` }, 404);
+    }
+    const rowJob = (target.remote as { jobId?: unknown } | undefined)?.jobId;
+    if (typeof rowJob !== "string" || rowJob !== jobId) {
+      await drainBody(req);
+      return json({ error: "that audit row came from another job — refusing to file this log onto it" }, 404);
+    }
+    const buf = new Uint8Array(await req.arrayBuffer());
+    // the authoritative size check: content-length is the client's claim, this is the measurement
+    if (buf.byteLength > HELPER_ARTIFACT_BYTES_MAX)
+      return json({ error: `suite.log is larger than the ${capMb} MB cap` }, 413);
+    if (buf.byteLength === 0) return json({ error: "that suite.log is empty" }, 400);
+    const rel = `helper-artifacts/${jobId}/${auditAt}/suite.log`;
+    const abs = `${STREAM_DIR}/${rel}`;
+    try {
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, buf);
+    } catch (e) {
+      return json({ error: `the artefact could not be stored: ${e instanceof Error ? e.message : "write failed"}` }, 500);
+    }
+    const rec: HelperArtifact = {
+      at: Date.now(), auditAt, jobId, path: rel, bytes: buf.byteLength,
+      // hashed HERE, over the bytes that were actually written. A digest copied off the wire would
+      // certify the sender's opinion of its own file rather than what this box now holds.
+      sha256: createHash("sha256").update(buf).digest("hex"),
+    };
+    rememberHelperArtifact(rec as unknown as Record<string, unknown>);
+    appendEvent(HELPER_ARTIFACT_FILE, rec as unknown as Record<string, unknown>);
+    pruneHelperArtifacts();
+    audit("helper_result", undefined,
+      `suite.log ${rec.bytes}b for the ${String(target.result)} audit at ${auditAt} from job ${jobId}`.slice(0, 240));
+    // `result` is echoed back UNCHANGED, the same confirmation writeAuditAdjudication returns and
+    // for the same reason: the caller sees that handing over a log did not move the verdict.
+    return json({ ok: true, artifact: { bytes: rec.bytes, sha256: rec.sha256 }, result: target.result });
+  }
   const bundle = /^\/api\/helper\/bundle\/([0-9a-f]{12})$/.exec(url.pathname);
   if (bundle && req.method === "GET") {
     expireHelperClaims();
@@ -14076,6 +14161,99 @@ async function writeAuditAdjudication(body: Record<string, unknown> | null): Pro
   // `result` is echoed back UNCHANGED and on purpose: the caller's own confirmation that judging a
   // red did not launder it into a pass.
   return json({ ok: true, adjudication: rec, result: target.result });
+}
+// --- THE HELPER ARTEFACT RAIL: the suite.log that arrives after its own row -----------------------
+// A remote audit's verdict is a 4 KB tail. When it is RED, the next question is always "which
+// checks, and what did the output say around them" — and the answer lived only in a run directory
+// on the other machine, which that daemon deletes in its own `finally`. This rail is the missing
+// half: the helper uploads its whole `suite.log` and the board can link it.
+//
+// THE ORDER IS THE PROPERTY, and it runs one way only: the daemon POSTs its RESULT first and
+// uploads afterwards. A verdict may never wait on a file transfer, so an upload that fails is a log
+// line on the other machine and nothing here — no retry, no backoff, no effect on the row.
+//
+// WHICH MAKES THIS A SIDE RAIL, not a field written into the audit row, and the reasoning is not
+// re-derived here because this repo already did it twice (DISPOSITION_FILE, then
+// AUDIT_ADJUDICATION_FILE — see the ADJUDICATION region's comment). Copied, not re-invented:
+//   · POSTLAND_AUDIT_FILE is append-only through appendEvent's serialized chain and rotates into a
+//     `.1` generation. Editing a row in place would have to read both generations, rewrite whole
+//     files, and race an audit finishing mid-rewrite — a lost row, or a torn write that costs the
+//     entire history instead of one line.
+//   · the alternative of DELAYING the row until the upload arrives trades a missing OPTIONAL field
+//     for a missing MANDATORY row, which is strictly worse.
+// What the brief asked for is preserved where it is observable: every read surface JOINS the rail
+// in and serves `remote.artifact` ON the row, so a consumer sees the field the brief specified and
+// never the plumbing.
+//
+// KEY = the audit row's `at`, for the reason the adjudication rail states and one this rail makes
+// sharper: an AUDIT job's id is `sha256(repo).slice(0,12)`, i.e. STABLE PER REPO ACROSS BOOTS, so
+// every audit of one repo shares it. A jobId key would therefore collide by construction. `at` is
+// stamped once per row by a globally serialized drain, is present on every row including the
+// unmeasurable ones, and is already every reader's sort key. The jobId is carried on the rail and
+// checked against the row, but it is a CROSS-CHECK, never the key.
+interface HelperArtifact {
+  at: number;        // when the upload landed
+  auditAt: number;   // the audit row it belongs to (that row's `at`) — THE KEY
+  jobId: string;     // the claim it came from, cross-checked against the row. Not the key.
+  path: string;      // where the bytes are, relative to STREAM_DIR — never an absolute path in a payload
+  bytes: number;
+  sha256: string;
+}
+// Uploads live under STREAM_DIR, which is already gitignored as a directory — so an artefact can
+// never become the untracked file that blocks a land. `<jobId>/<auditAt>/` and not `<jobId>/`
+// alone: the jobId repeats per repo (see the KEY paragraph), so one directory per job would let
+// the next audit of the same repo silently overwrite the log a rail row still points at.
+const HELPER_ARTIFACT_DIR = `${STREAM_DIR}/helper-artifacts`;
+// NAMED APART from server/types.ts#HELPER_ARTIFACT_MAX, which is a different quantity on the same
+// rail's neighbour: that one caps how many artefact ROWS a command-job receipt may NAME, this one
+// caps how many BYTES a suite.log may carry. The env keys stay the brief's.
+const HELPER_ARTIFACT_BYTES_MAX = Math.max(64 * 1024, Number(process.env.FLEET_HELPER_ARTIFACT_MAX ?? 8 * 1024 * 1024) | 0);
+const HELPER_ARTIFACT_KEEP = Math.max(1, Number(process.env.FLEET_HELPER_ARTIFACT_KEEP ?? 30) | 0);
+// The rail's in-memory index, and the ONE place a reader joins from. It differs from
+// adjudicationsByAudit() — which re-reads its file per call — for a measured reason: this field is
+// served on the /api/sessions payload, which is the 2 s poll and the largest response this server
+// sends, so a per-poll ledger read is exactly the cost that route's budget forbids. The file stays
+// the durable truth: this map is built from it ONCE at boot and appended to by the only writer
+// there is (writeHelperArtifact, below). If they could ever disagree, the file wins.
+const helperArtifactByAudit = new Map<number, HelperArtifact>();
+function rememberHelperArtifact(r: Record<string, unknown>): void {
+  const auditAt = typeof r.auditAt === "number" ? r.auditAt : NaN;
+  const at = typeof r.at === "number" ? r.at : 0;
+  const jobId = typeof r.jobId === "string" ? r.jobId : "";
+  const path = typeof r.path === "string" ? r.path : "";
+  const bytes = typeof r.bytes === "number" ? r.bytes : NaN;
+  const sha256 = typeof r.sha256 === "string" ? r.sha256 : "";
+  // a torn or half-written row is SKIPPED, never repaired into a plausible one: a rail row that
+  // names bytes nobody can verify is worse than the absence it replaced
+  if (!Number.isFinite(auditAt) || !jobId || !path || !Number.isFinite(bytes) || !/^[0-9a-f]{64}$/.test(sha256)) return;
+  const prev = helperArtifactByAudit.get(auditAt);
+  // newest-wins per audit row, history kept on the rail — the same append-only-with-latest-reading
+  // shape adjudicationsByAudit uses, and for the same reason: a re-upload corrects, never duplicates.
+  if (!prev || at >= prev.at) helperArtifactByAudit.set(auditAt, { at, auditAt, jobId, path, bytes, sha256 });
+}
+async function loadHelperArtifacts(): Promise<void> {
+  const { rows } = await readLedger<Record<string, unknown>>(HELPER_ARTIFACT_FILE);
+  for (const r of rows) rememberHelperArtifact(r);
+}
+// What a read surface serves ON the row. `path` is deliberately NOT in it: it is this box's own
+// storage layout, and a consumer's business is that the log exists, how big it is, whether the
+// bytes are the ones the helper hashed, and the ONE route that serves them.
+function artifactViewFor(auditAt: unknown): { bytes: number; sha256: string; url: string } | undefined {
+  const a = typeof auditAt === "number" ? helperArtifactByAudit.get(auditAt) : undefined;
+  return a ? { bytes: a.bytes, sha256: a.sha256, url: `/api/post-land-audits/artifact?at=${a.auditAt}` } : undefined;
+}
+// Bounded by JOB DIRECTORY, not by rail row: a re-upload for the same row replaces bytes in place,
+// so counting rows would prune directories that are still pointed at. Newest `HELPER_ARTIFACT_KEEP`
+// audit keys survive; the rail keeps its history either way, and a row whose bytes were pruned
+// still says truthfully how big they were and what they hashed to.
+function pruneHelperArtifacts(): void {
+  try {
+    const keys = [...helperArtifactByAudit.values()].sort((a, b) => b.auditAt - a.auditAt);
+    for (const dead of keys.slice(HELPER_ARTIFACT_KEEP)) {
+      const dir = `${HELPER_ARTIFACT_DIR}/${dead.jobId}/${dead.auditAt}`;
+      try { rmSync(dir, { recursive: true, force: true }); } catch { /* a dir already gone is the goal */ }
+    }
+  } catch { /* pruning is housekeeping: it never fails an upload that already succeeded */ }
 }
 // The one-shot BACKFILL, run at boot. Eight of the thirteen reds on the live trail were produced
 // before the signal-first retention landed (70cd443, in effect on the live srv from the restart
@@ -14706,7 +14884,10 @@ interface DossierTask { id: string; text: string; kind: Task["kind"]; source: Ta
   match: TaskMatch }
 interface DossierAudit { at: number; result: string; mainSha: string; covers: string[];
   reason?: string; exitCode: number | null; out: string; cmd: string; fails?: string[];
-  adjudication?: AuditAdjudication }
+  adjudication?: AuditAdjudication;
+  // the artefact rail, joined like the adjudication beside it — a dossier reader chasing a red
+  // wants the whole suite.log, not the 4 KB tail `out` kept
+  artifact?: { bytes: number; sha256: string; url: string } }
 interface LaneDossier {
   branch: string;
   repo: string | null;      // the git toplevel this lane's work lives in, null when nothing knows it
@@ -14869,6 +15050,10 @@ async function laneDossier(branch: string, repoHint: string | null): Promise<Lan
         cmd: typeof r.cmd === "string" ? r.cmd : "",
         ...(fails !== undefined ? { fails } : {}),
         ...(adj ? { adjudication: adj } : {}),
+        ...((): Record<string, unknown> => { // …and the artefact rail beside it
+          const a = artifactViewFor(r.at);
+          return a ? { artifact: a } : {};
+        })(),
       };
     });
 
@@ -19351,6 +19536,14 @@ if (existsSync(POSTLAND_AUDIT_FILE)) {
     console.log("post-land audit trail: last row unreadable — the board starts without it");
   }
 }
+// ...and the ARTEFACT rail's in-memory index, from the file that is its durable truth. Rotation-safe
+// (readLedger reads both generations). A failure here costs the LINK on the board, never the row.
+try {
+  await loadHelperArtifacts();
+} catch (e) {
+  console.log(`helper artefact rail: index not built (${e instanceof Error ? e.message : e})`
+    + " — audit rows will show no suite.log link until the next upload.");
+}
 // ...and seed the RUNTIME DISTRIBUTION from the same trail (rotation-safe: readLedger reads both
 // generations) — a restart right after a land is the common case, not the rare one.
 try {
@@ -21091,6 +21284,10 @@ async function ledgersView(prior: Record<string, unknown> | null): Promise<Ledge
           ...(typeof r.reason === "string" ? { reason: r.reason.slice(0, 200) } : {}),
           ...(adj ? { adjudication: { verdict: adj.verdict, at: adj.at, by: adj.by,
             ...(adj.note ? { note: adj.note.slice(0, 200) } : {}) } } : {}),
+          ...((): Record<string, unknown> => { // the artefact rail, joined here too
+            const a = artifactViewFor(num(r.at));
+            return a ? { artifact: a } : {};
+          })(),
         };
       });
     })(),
@@ -22532,7 +22729,13 @@ Bun.serve<WSData>({
         const at = typeof r.at === "number" ? r.at : null;
         const adj = at === null ? undefined : judged.get(at);
         const ping = at === null ? undefined : auditPings[String(at)];
-        return { ...r, ...(adj ? { adjudication: adj } : {}), ...(ping ? { ping } : {}) };
+        // …and the SECOND rail, joined the same way and served ON `remote` — which is where the
+        // brief put it, and where a reader of one row expects everything that row's helper produced
+        const art = at === null ? undefined : artifactViewFor(at);
+        const remote = art && r.remote && typeof r.remote === "object"
+          ? { ...(r.remote as Record<string, unknown>), artifact: art } : r.remote;
+        return { ...r, ...(remote !== undefined ? { remote } : {}),
+          ...(adj ? { adjudication: adj } : {}), ...(ping ? { ping } : {}) };
       });
       return json({ audits: withAdj, total, malformed, configured: auditConfiguredAnywhere() });
     }
@@ -22542,6 +22745,25 @@ Bun.serve<WSData>({
     // keeps — it is a thing it cannot do.
     if (url.pathname === "/api/post-land-audits/adjudicate" && req.method === "POST")
       return await writeAuditAdjudication(await readJson(req));
+    // …and the READ half of the artefact rail: the bytes themselves, the one route that serves
+    // them. Owner-only by POSITION (below tokenGate), like the trail above. Addressed by the row
+    // key and NOT by a path from the caller — the stored path is rebuilt from the rail row here, so
+    // no request can name a file, and `text/plain` is stated rather than sniffed because a suite
+    // log is exactly that and a guessed content-type is how a log becomes a rendered page.
+    if (url.pathname === "/api/post-land-audits/artifact" && req.method === "GET") {
+      const rawAt = url.searchParams.get("at") ?? "";
+      const rec = /^\d{10,16}$/.test(rawAt) ? helperArtifactByAudit.get(Number(rawAt)) : undefined;
+      if (!rec) return json({ error: "no suite.log was uploaded for that audit" }, 404);
+      const abs = `${STREAM_DIR}/${rec.path}`;
+      // the rail outlives the bytes on purpose (pruneHelperArtifacts keeps the newest
+      // HELPER_ARTIFACT_KEEP), so "the row remembers a log this box no longer holds" is a real and
+      // nameable state — never a 404 that reads as "there never was one".
+      if (!existsSync(abs)) return json({ error: "that suite.log has been pruned — the rail row remembers it, the bytes are gone" }, 410);
+      return new Response(Bun.file(abs), {
+        headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store",
+          "content-disposition": `inline; filename="suite-${rec.auditAt}.log"` },
+      });
+    }
     // VERB 2 (see the deploy region): build + restart srv, verified by the next boot. Owner-only by
     // POSITION here; the steward reaches the same two functions through handleStewardRoute. Nothing
     // else calls them — no tick, no auto.

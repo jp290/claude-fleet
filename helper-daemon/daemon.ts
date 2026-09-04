@@ -183,9 +183,14 @@ interface ClaimedJob {
 // method+path" are properties of the file rather than of each call site. A 401 is raised as an
 // AuthFault by this function and by nothing else, which is what makes the single-request guarantee
 // above checkable: there is one door, and it closes the process.
-async function api(cfg: HelperConfig, path: string, init?: { method: string; body: string }): Promise<Response> {
+// `body` widened from `string` to BodyInit and `headers` added for ONE caller: the suite.log
+// upload sends bytes as text/plain. JSON stays the default for every other call, so no existing
+// request's headers move — the override is opt-in and the token header is always this file's.
+async function api(cfg: HelperConfig, path: string,
+  init?: { method: string; body: BodyInit; headers?: Record<string, string> }): Promise<Response> {
   const headers: Record<string, string> = { "x-fleet-helper-token": cfg.token };
   if (init) headers["content-type"] = "application/json";
+  Object.assign(headers, init?.headers ?? {});
   log(`req ${init?.method ?? "GET"} ${path}`);
   const res = await fetch(new URL(path, cfg.fleetUrl).toString(), { ...init, headers });
   if (res.status === 401) throw new AuthFault(`the fleet refused this machine's helper token (401 on ${path})`);
@@ -506,8 +511,49 @@ async function report(cfg: HelperConfig, j: ClaimedJob, exitCode: number | null,
       ...(clonedSha ? { clonedSha } : {}), ...(artifacts.length ? { artifacts } : {}),
       ...(timedOutMs ? { reason: "timeout", timeoutMs: timedOutMs } : {}) }),
   });
-  const body = await bodyOf<{ result?: string }>(res);
+  const body = await bodyOf<{ result?: string; auditAt?: number }>(res);
   log(`reported ${j.id} exit=${exitCode} artifacts=${artifacts.length} → ${res.status} ${body.result ?? body.error ?? ""}`);
+  // AND ONLY NOW THE LOG. Strictly after the verdict is in, and never a condition of it: the whole
+  // point of this rail is that a red audit can be read afterwards, which is worth nothing if the
+  // transfer can hold the verdict up. Hence the shape below — no retry, no backoff, no throw, and
+  // no effect on anything this function already did.
+  if (logPath) await uploadSuiteLog(cfg, j, body.auditAt, logPath);
+}
+
+// The suite.log upload. Three refusals to send at all, each of them a fact the server would
+// otherwise have to guess at:
+//   · no `auditAt` in the receipt — the server did not write a ledger row for this kind of job (a
+//     lane-suite or command verdict lives in the job, not in the audit trail), so there is nothing
+//     to file a log against. Silence, not an error.
+//   · nothing on disk, or an empty file: an upload of zero bytes would put a rail row on a red
+//     saying "here is the log" and hand back nothing.
+//   · over the cap this daemon knows about — the server refuses the same size with a 413, and
+//     spending the upload to be told so is the one cost that is avoidable here.
+// Everything else is the server's to judge, and its answer is LOGGED and dropped.
+const SUITE_LOG_MAX = 8 * 1024 * 1024; // mirrors FLEET_HELPER_ARTIFACT_MAX's default, deliberately
+async function uploadSuiteLog(cfg: HelperConfig, j: ClaimedJob, auditAt: number | undefined,
+  logPath: string): Promise<void> {
+  if (typeof auditAt !== "number" || !Number.isFinite(auditAt)) return;
+  let size = 0;
+  try { size = existsSync(logPath) ? statSync(logPath).size : 0; } catch { return; }
+  if (size === 0) { log(`no suite.log to upload for ${j.id}`); return; }
+  if (size > SUITE_LOG_MAX) {
+    log(`suite.log for ${j.id} is ${size}b, over the ${SUITE_LOG_MAX}b cap — not uploaded`);
+    return;
+  }
+  try {
+    const res = await api(cfg, `/api/helper/artifact/${j.id}?at=${auditAt}`, {
+      method: "POST",
+      headers: { "content-type": "text/plain; charset=utf-8" },
+      body: await Bun.file(logPath).arrayBuffer(),
+    });
+    const body = await bodyOf<{ artifact?: { bytes?: number } }>(res);
+    log(`uploaded suite.log for ${j.id} (${size}b) → ${res.status} ${body.artifact?.bytes ?? body.error ?? ""}`);
+  } catch (e) {
+    // A LOG LINE AND NOTHING ELSE. The verdict is already on the ledger; a failed transfer must not
+    // become a retry loop against a box that may simply be down.
+    log(`suite.log upload for ${j.id} failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 // --- the self-update ---------------------------------------------------------------------------

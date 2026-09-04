@@ -48,6 +48,9 @@
   .plaudit.unknown .plawhere { color: #f0d3a0; }
   .plaudit .planote { color: #c09795; }
   .plaudit.unknown .planote { color: #b39a68; }
+  /* the suite.log link on a non-green audit — underlined, so it reads as the one clickable thing
+     inside a bar whose other lines are statements rather than actions */
+  .plaudit .plalog { color: inherit; text-decoration: underline; cursor: pointer; }
   .plaudit .plaack { flex: none; padding: 5px 10px; border-radius: 6px; border: 1px solid #7a3b38;
     background: #2a0f11; color: #ffd7d5; font-family: inherit; font-size: 11px; cursor: pointer; }
   .plaudit.unknown .plaack { border-color: #7a6238; background: #2a2210; color: #ffe6b8; }

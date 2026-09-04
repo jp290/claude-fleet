@@ -18,7 +18,9 @@
 // to be busy ELSEWHERE. That is a second repo whose audit is in flight, and it is the reason this
 // section seeds one instead of reusing the harness's.
 import { spawnSync } from "node:child_process";
-import { BASE, check, get, post } from "./harness";
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync } from "node:fs";
+import { BASE, ROOT, check, get, post } from "./harness";
 import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
 
 interface HelperJob {
@@ -68,7 +70,12 @@ interface Row {
     // for the same reason every other remote field here is: what is under test is that the server
     // writes it, and a mandatory field would let a server that stopped writing it take this module
     // down with a TypeError instead of failing the named check.
-    reason?: string; timeoutMs?: number };
+    reason?: string; timeoutMs?: number;
+    // the job the row came out of (the cross-check an upload is measured against) and the artefact
+    // rail JOINED in by the read surface. Both optional for the same reason as every field above:
+    // what is under test is that the server writes them, and a mandatory field would let a server
+    // that stopped writing one take this module down with a TypeError instead of failing a check.
+    jobId?: string; artifact?: { bytes: number; sha256: string; url: string } };
 }
 interface LiveView {
   postLandAuditLive: { running: { repo: string | null; phase: string } | null } | null;
@@ -122,6 +129,12 @@ export async function run(h: {
   const hget = (path: string): Promise<Response> => fetch(BASE + path, { headers: HH });
   const hpost = (path: string, body: unknown): Promise<Response> =>
     post(path, body, { ...HH, "content-type": "application/json" });
+  // the artefact upload's poster: BYTES, not JSON. Separate from hpost on purpose — hpost sets a
+  // JSON content-type, and a suite.log that arrived labelled application/json would be a fixture
+  // proving something other than what the daemon does.
+  const hpostRaw = (path: string, body: string, headers: Record<string, string> = {}): Promise<Response> =>
+    fetch(BASE + path, { method: "POST",
+      headers: { ...HH, "content-type": "text/plain; charset=utf-8", ...headers }, body });
   const jobs = async (): Promise<HelperJobs> => (await (await hget(`/api/helper/jobs?deviceId=${DEVICE}`)).json()) as HelperJobs;
   // the OWNER's poll — the board's only source for the device panel. `undefined` is a fact, not a
   // read failure: the server omits the field entirely while no device has ever registered.
@@ -602,6 +615,96 @@ export async function run(h: {
     cnsReport.ok && cnsRow?.result === "unknown" && cnsRow.remote?.reason === "could-not-start"
       && cnsRow.remote.timeoutMs === undefined,
     `${cnsReport.status} ${JSON.stringify(cnsRow?.remote)} result=${cnsRow?.result}`);
+
+  // ===== (K7c) THE SUITE.LOG THAT ARRIVES AFTER ITS OWN ROW =====================================
+  // A remote red is a 4 KB tail, and the whole log lived only in a run directory the daemon deletes
+  // in its own `finally`. The artefact rail is the missing half — and its ORDER is the property:
+  // the verdict goes first, the bytes follow, and nothing about the second can move the first.
+  // Everything below is written against a SIDE rail joined at the read surface, which is what
+  // "die Ledger-Zeile traegt remote.artifact" means once the row itself is append-only.
+  const rowsBeforeArt = (await newRepoRows()).length;
+  const artLane = await openLane(REPO, "suitelog");
+  await driveMerge(artLane, artLane.branch);
+  const artSha = headOf();
+  await Bun.sleep(2500);                       // inside the grace, so the job is the helper's
+  const artJob = await jobFor(REPO);
+  const artClaim = artJob ? await hpost("/api/helper/claim", { jobId: artJob.id, deviceId: DEVICE }) : null;
+  check("(K7c) setup: the helper claims the job whose log it will hand over",
+    artClaim?.ok === true, `${artClaim?.status} ${JSON.stringify(artJob)}`);
+  const artReportRes = await hpost("/api/helper/result",
+    { jobId: artJob?.id ?? "", exitCode: 1, tail: "FAIL  something remote\n1 FAILURES" });
+  const artReport = (await artReportRes.json()) as { result?: string; auditAt?: number };
+  // THE KEY TRAVELS IN THE RECEIPT. Without it an upload could only name the JOB — and an audit
+  // job's id is sha256(repo), the same string for every audit of that repo, so "newest job with
+  // this id" would file a log onto whichever row happened to be newest. This is the whole reason
+  // the rail needs no semantic key.
+  check("(K7c) the result receipt hands back the ROW KEY the upload must name",
+    artReportRes.ok && artReport.result === "red" && typeof artReport.auditAt === "number",
+    `${artReportRes.status} ${JSON.stringify(artReport)}`);
+  const auditAt = artReport.auditAt ?? 0;
+  const artRows = await waitNewRepoRows(rowsBeforeArt + 1);
+  const artRow = artRows.find((r) => r.mainSha === artSha);
+  check("(K7c) …and the row it names carries the job id an upload will be checked against",
+    artRow?.at === auditAt && artRow.remote?.jobId === artJob?.id,
+    `at=${artRow?.at} want=${auditAt} jobId=${artRow?.remote?.jobId} want=${artJob?.id}`);
+  check("(K7c) …and before any upload the row carries NO artefact — absent is 'none arrived'",
+    artRow?.remote?.artifact === undefined, JSON.stringify(artRow?.remote));
+
+  const artUrl = `/api/helper/artifact/${artJob?.id ?? ""}?at=${auditAt}`;
+  // THE PERIMETER, four refusals. Each one is a fact the rail would otherwise have to guess at.
+  const artNoTok = await fetch(BASE + artUrl, { method: "POST",
+    headers: { "content-type": "text/plain" }, body: "x" });
+  check("(K7c) the upload needs the helper credential — 401 without it",
+    artNoTok.status === 401, `${artNoTok.status}`);
+  const noAt = await hpostRaw(`/api/helper/artifact/${artJob?.id ?? ""}`, "x");
+  check("(K7c) …and it must NAME the row: no ?at is a 400, never a guess at the newest",
+    noAt.status === 400 && (await noAt.text()).includes("auditAt"), `${noAt.status}`);
+  const foreign = await hpostRaw(`/api/helper/artifact/${"f".repeat(12)}?at=${auditAt}`, "x");
+  check("(K7c) …a log for ANOTHER job is refused 404 — the row's own jobId is the cross-check",
+    foreign.status === 404 && (await foreign.text()).includes("another job"), `${foreign.status}`);
+  const noRow = await hpostRaw(`/api/helper/artifact/${artJob?.id ?? ""}?at=1234567890123`, "x");
+  check("(K7c) …and a row key that names nothing is a 404, not an orphan file",
+    noRow.status === 404, `${noRow.status}`);
+
+  // THE CAP, and the half that matters is what it LEAVES BEHIND. A refused upload that had already
+  // written its bytes would be a file no rail row points at — the exact orphan the size check
+  // exists to prevent — so the directory is asserted, not just the status.
+  const artDir = `${ROOT}/streams/helper-artifacts/${artJob?.id ?? "none"}`;
+  const over = await hpostRaw(artUrl, "z".repeat(9 * 1024 * 1024));
+  check("(K7c) a 9 MB suite.log is refused 413 and leaves NO file behind",
+    over.status === 413 && !existsSync(`${artDir}/${auditAt}/suite.log`),
+    `${over.status} dirExists=${existsSync(artDir)}`);
+
+  // …and the accepted one. 1 MB, and the digest is compared against the sha256 of what was SENT:
+  // the server hashes the bytes it wrote, so an equal digest is the round trip, not an echo.
+  // exactly 1 MiB of ASCII, so `bytes` on the row is a number the reader can check by eye rather
+  // than a length that happens to agree with itself
+  const LOG = "PASS  remote check\n".repeat(56_000).slice(0, 1024 * 1024);
+  const wantSha = createHash("sha256").update(Buffer.from(LOG, "utf8")).digest("hex");
+  const up = await hpostRaw(artUrl, LOG);
+  const upBody = (await up.json()) as { artifact?: { bytes?: number; sha256?: string }; result?: string };
+  check("(K7c) THE UPLOAD LANDS — and the receipt echoes the verdict back UNCHANGED",
+    up.ok && upBody.artifact?.sha256 === wantSha && upBody.artifact.bytes === Buffer.byteLength(LOG, "utf8")
+      && upBody.result === "red",
+    `${up.status} ${JSON.stringify(upBody.artifact)} result=${upBody.result}`);
+  const joined = (await newRepoRows()).find((r) => r.at === auditAt);
+  check("(K7c) THE READ SURFACE SERVES IT ON THE ROW — remote.artifact.sha256 is the sent bytes'",
+    joined?.remote?.artifact?.sha256 === wantSha
+      && joined.remote.artifact.bytes === Buffer.byteLength(LOG, "utf8"),
+    JSON.stringify(joined?.remote?.artifact));
+  check("(K7c) …and the VERDICT DID NOT MOVE: the rail cannot reach the audit trail at all",
+    joined?.result === "red" && joined.exitCode === 1,
+    `result=${joined?.result} exit=${joined?.exitCode}`);
+  // the bytes themselves, through the OWNER route the row's `url` names — a link that 404s would
+  // be worse than no link, and this is the only check that proves the two halves agree on a path
+  const served = await get(joined?.remote?.artifact?.url ?? "/api/post-land-audits/artifact?at=0");
+  const servedText = await served.text();
+  check("(K7c) …and the url on the row serves exactly those bytes back",
+    served.ok && createHash("sha256").update(Buffer.from(servedText, "utf8")).digest("hex") === wantSha,
+    `${served.status} ${servedText.length}b`);
+  check("(K7c) …stored under STREAM_DIR, which is gitignored — an artefact can never block a land",
+    existsSync(`${artDir}/${auditAt}/suite.log`),
+    `${artDir} => ${existsSync(artDir) ? readdirSync(artDir).join(",") : "absent"}`);
 
   // (2) THE GRACE NEVER STARVES. Nobody claims this one, and NOTHING ELSE would ever wake the
   // drain: the land's own kick already happened, and the only other kicks in the server are a claim

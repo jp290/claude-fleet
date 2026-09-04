@@ -351,6 +351,23 @@ each has a class the other structurally cannot see.
   `unknown` rather than blocking work — the inverse fail direction their classification block argues
   for, and it is the right one for something that gates nothing.
 
+**And one asymmetry that is neither, measured 2026-09-04:** the two tiers hand their command
+*different environments*, and only one of them says so. `server.ts#runPostLandAudit` spawns its
+command through `server.ts#auditChildEnv`, which drops **every** `FLEET_*` variable — a rule, not a
+list, argued in its own comment (a nested fleet must not inherit the outer one's audit command,
+credentials or behaviour knobs). `server.ts#runVerify` spawns the pre-land gate's chain with **no
+`env` option at all**, so it inherits the deployed server's environment whole. Consequence for
+anyone reading a red: a knob armed on the live srv reaches the three suite wrappers the gate chain
+runs (`e2e-clean-review.sh` · `e2e-security.sh` · `e2e-claude-gate.sh`) and reaches the tier-2
+`./e2e-isolated.sh` **not at all**. Measured directly rather than inferred: with
+`FLEET_LANE_AUTOCLOSE=1` on the deployed srv (`watchdog.sh`, since `566cbae`), the audit's own suite
+servers carried no such variable. The corollary is a trap in the other direction — an env difference
+between the gate and the audit can make one tier red where the other is green, for a reason that is
+in neither tree. Since `e2e-stage.sh` exports `FLEET_LANE_AUTOCLOSE=0` and `e2e-isolated.sh` names
+it in `SRV_ENV`, that particular knob is stated by every wrapper and `e2e/watch.ts`'s `D2 setup`
+check reads the value back off the srv process, so an inherited value fails as a wrong premise
+instead of as a broken feature.
+
 **The honest statement:** tier 2 is not a stronger tier 1. It is the only place a 5.6-minute suite
 can live, and tier 1 is the only place prevention and attribution can live. Building tier 2 does not
 retire the question "what does a green gate guarantee" — it answers a *different* question, and

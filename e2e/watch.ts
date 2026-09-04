@@ -23,7 +23,7 @@ import { composerArrival, composerHoldsExactly, composerResidue, composerRows,
   type ComposerArrival } from "../composer";
 import { FLEET_REPORT_STATUSES, type FleetReportEventPayload, type FleetReportStatus } from "../src/protocol";
 import { PANE_ACK_STALE_MS, opsOpen, opsUnacked } from "../src/opsevents";
-import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut } from "./harness";
+import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, srvEnv, tmuxOut } from "./harness";
 
 interface WatchRow {
   id: string; slot: number; target: number; targetBranch: string;
@@ -3073,17 +3073,30 @@ export async function run(): Promise<void> {
         { outcomes: Record<string, unknown>[] }).outcomes.filter((o) => o.branch === branch);
     const liveSlots = async (): Promise<{ id: number; cwd: string | null }[]> =>
       ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] }).slots;
+    // …and the FLAG'S OWN STATE, measured on the server instead of assumed from its absence. A
+    // knob no wrapper names is inherited from whatever shell started the suite, and this is the
+    // one knob the deployed fleet ARMS (watchdog.sh, since 566cbae) — server.ts#runVerify hands
+    // the land gate's chain the live server's env unfiltered, so the inheritance is a real path
+    // and not a hypothetical. e2e-isolated.sh states 0 in SRV_ENV and e2e-stage.sh exports the
+    // same 0 for every wrapper; this reads both ends back. It fails as ITSELF — an inherited `1`
+    // must read as a wrong PREMISE here, never as a broken close two lines below.
+    const d2Flag = await srvEnv("FLEET_LANE_AUTOCLOSE");
+    check("D2 setup: the suite server states FLEET_LANE_AUTOCLOSE=0 in its own environment — the off-state below is pinned, not inherited",
+      d2Flag.readable && d2Flag.value === "0" && (process.env.FLEET_LANE_AUTOCLOSE ?? null) === "0",
+      JSON.stringify({ srvReadable: d2Flag.readable, srv: d2Flag.value,
+        runner: process.env.FLEET_LANE_AUTOCLOSE ?? null }));
     await Bun.sleep(Math.max(3000, AUTOS_TICK_MS * 8));
     const unarmedSlots = await liveSlots();
     const unarmedRows = await Promise.all(d2Lanes.map((l) => outcomesOf(l.branch)));
-    check("D2 flag off: with FLEET_LANE_AUTOCLOSE unset the ready lanes are untouched and no outcome row is written",
+    check("D2 flag off: with FLEET_LANE_AUTOCLOSE stated 0 the ready lanes are untouched and no outcome row is written",
       d2Lanes.every((l) => (unarmedSlots.find((x) => x.id === l.slot)?.cwd ?? null) !== null)
         && unarmedRows.every((rows) => rows.length === 0),
       JSON.stringify({ open: d2Lanes.map((l) => unarmedSlots.find((x) => x.id === l.slot)?.cwd !== null),
         rows: unarmedRows.map((r) => r.length) }));
 
-    // --- ARM IT. The flag rides one restart; the next plain restartSrv drops it again, because it
-    // is not in this process's env (see restartSrv's own note).
+    // --- ARM IT. The flag rides one restart: `extra` wins only for the restart it is passed to,
+    // and the next plain restartSrv falls back to the stated 0 this process's env carries (see
+    // restartSrv's own note, and the SRV_ENV paragraph in e2e-isolated.sh for why it is stated).
     const d2MainShaBefore = spawnSync("git", ["-C", REPO, "rev-parse", "main"], { encoding: "utf8" }).stdout.trim();
     const d2OpenBefore = (await liveSlots()).filter((x) => x.cwd !== null).map((x) => x.id);
     const d2PlogBefore = (await plogRead()).length;
@@ -3177,7 +3190,7 @@ export async function run(): Promise<void> {
     // same Program, same accepted verdict, same spent shape as the two lanes that did. It stays
     // open across the plain restart, which is also what every module after this one depends on.
     rmSync(`${dirtyLane.cwd}/d2-uncommitted.txt`, { force: true });
-    await restartSrv(); // plain: FLEET_LANE_AUTOCLOSE is not in this process's env, so it is dropped
+    await restartSrv(); // plain: the stated FLEET_LANE_AUTOCLOSE=0 rides along, so the flag is off again
     let disarmedSpent = false;
     for (let i = 0; i < 60 && !disarmedSpent; i++) {
       disarmedSpent = await d2SpentNow(dirtyLane.slot);

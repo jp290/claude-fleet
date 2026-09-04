@@ -5463,6 +5463,26 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     `dir=${/HELPER_ARTIFACT_DIR = `[^\n]*/.exec(srv)?.[0] ?? "not found"}`);
 }
 
+{
+  const RULE_FAILS = "the local audit row's fails pass through helperFailNames";
+  const local = server.match(/function localFailNames\([\s\S]*?\n\}/)?.[0] ?? "";
+  const audit = server.match(/async function runPostLandAudit\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_FAILS} — localFailNames exists and reads the harness's FAIL lines`,
+    local !== "" && local.includes("/^FAIL  (.*)$/") && local.includes('.indexOf("  (")'),
+    local === "" ? "localFailNames not found in server.ts" : "FAIL line and detail suffix are explicit");
+  const failNamesAt = audit.indexOf("helperFailNames(localFailNames(");
+  pin(`${RULE_FAILS} — the local audit row's fails pass through helperFailNames`,
+    audit !== "" && failNamesAt >= 0,
+    audit === "" ? "runPostLandAudit not found in server.ts" : `helperFailNames(localFailNames)@${failNamesAt}`);
+  const redAt = audit.indexOf('result = "red"');
+  pin(`${RULE_FAILS} — local fail names are assigned only after red classification`,
+    audit !== "" && redAt >= 0 && failNamesAt > redAt,
+    audit === "" ? "runPostLandAudit not found in server.ts" : `red@${redAt} fails@${failNamesAt}`);
+  pin(`${RULE_FAILS} — local check counting keeps the helper-name argument absent`,
+    audit.includes("postLandAuditChecks(completeOutput, exitCode, undefined, true)"),
+    audit === "" ? "runPostLandAudit not found in server.ts" : "postLandAuditChecks local call inspected");
+}
+
 console.log(rows.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

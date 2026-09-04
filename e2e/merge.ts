@@ -1705,9 +1705,15 @@ export async function run(lc: LaneCtx): Promise<void> {
       !!rowLegacy && !!rowTorn && !!rowGone && !!rowRecycled && !!recyclRow,
       JSON.stringify({ merges: Object.keys(toState.merges ?? {}), program: !!recyclRow }));
     await Bun.write(`${ROOT}/fleet.json`, JSON.stringify(toState, null, 2));
-    await restartSrv();
+    // THE TICK IS SLOWED FOR THIS ONE RESTART, and it is a precondition rather than a convenience:
+    // boot stamps every pane's `lastOutput` to boot time (unknown is never permission), so with the
+    // suite's 250ms cadence both remaining attempts would burn against canDeliver's 3s busy gate
+    // within the first second and every row below would read "silent" for a reason that has nothing
+    // to do with its receiver. One tick at ~6s, after the panes are idle again, measures the
+    // receiver and nothing else. Restored to the suite's cadence at the end of the block.
+    await restartSrv({ FLEET_AUTOS_TICK_MS: "6000" });
     const sentAgain = async (ln: { slot: number; branch: string }): Promise<number> => {
-      for (let i = 0; i < 200; i++) {
+      for (let i = 0; i < 600; i++) {
         if ((await verdictSends(ln.branch)).length > 1) break;
         await Bun.sleep(50);
       }
@@ -1757,6 +1763,7 @@ export async function run(lc: LaneCtx): Promise<void> {
         && !(recyclAudit[0]?.detail ?? "").includes("is gone"),
       JSON.stringify({ sends: recyclSends.length, mark: recyclMark, audit: recyclAudit.slice(-1) }));
     for (const ln of [lnLegacyTo, lnTornTo, lnGoneTo, lnRecycledTo]) await dropLane(ln);
+    await restartSrv(); // back to the suite's own cadence for everything after this block
   }
 
   // orphan flow: a killed lane's worktree survives on disk, shows slot:null in the map,

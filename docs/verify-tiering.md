@@ -2207,12 +2207,18 @@ Gemessen wurde:
      "reason":"audit timed out after 10000ms — no verdict"}
 
 `slow` ist `sleep 6` (`e2e-postland-audit.sh`), das Budget ist
-`FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000` — **und 10 000 ms ist der SERVER-EIGENE FLOOR**
-(`Math.max(10_000, …)`), also nicht nach oben stellbar. Der Abstand zwischen Fixture und Budget
-ist damit fest 4 s, und auf dieser Maschine unter Suite-Last (in der Messnacht hielt EIN
-`./e2e-isolated.sh` den Mutex 61 Minuten am Stück) reicht er nicht: 6 s Schlaf plus Spawn plus
-Snapshot kosteten 10 092 ms. Das Ergebnis ist ein `unknown` statt eines `green` — korrektes
-Server-Verhalten, falsche Fixture-Marge.
+`FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000`. Der Abstand zwischen Fixture und Budget ist damit 4 s,
+und auf dieser Maschine unter Suite-Last (in der Messnacht hielt EIN `./e2e-isolated.sh` den
+Mutex 61 Minuten am Stück) reicht er nicht: 6 s Schlaf plus Spawn plus Snapshot kosteten
+10 092 ms. Das Ergebnis ist ein `unknown` statt eines `green` — korrektes Server-Verhalten,
+falsche Fixture-Marge.
+
+**Zum Budget, damit die nächste Person WÄHLEN kann.** `server.ts:11670` liest
+`Math.max(10_000, Number(process.env.FLEET_POSTLAND_AUDIT_TIMEOUT_MS ?? 1_800_000) | 0)`.
+`Math.max` ist eine UNTERGRENZE: nach unten (< 10 s) ist der Wert unbeweglich, **nach oben ist er
+frei stellbar** — `FLEET_POSTLAND_AUDIT_TIMEOUT_MS=20000` ergibt 20 000. Der Wrapper hat schlicht
+den Floor-Wert gewählt; sein eigener Kommentar (`e2e-postland-audit.sh`, der Block über
+`auditmode`) sagt korrekt „is the server's own floor" und eben NICHT „nicht anhebbar".
 
 **Was VERIFIZIERT ist und was NICHT.** Die Wurzel oben ist am Ledger abgelesen. Die drei
 Folge-Mitglieder sind Zeilenzahl- und Queue-Zustands-Aussagen gegen Basislinien
@@ -2238,14 +2244,23 @@ das Register.
 **Basisrate 7/8 = 87,5 % rot.** Das ist keine seltene Flake, sondern eine Fixture, deren Marge
 auf dieser Maschine fast nie reicht; sie ist am 2026-09-03 zum ersten Mal im Register aufgetaucht.
 
-**Nicht repariert, absichtlich, und der Schnitt ist klein und benannt:** das Budget ist der
-Server-Floor und unbeweglich, also muss die FIXTURE-Seite kleiner werden — `slow` von 6 s auf
-etwa 3 s, oder RW.5 bekommt einen eigenen, kürzeren Modus (dasselbe Argument, mit dem `long`
-sich aus `slow` gelöst hat: `e2e-postland-audit.sh`, der Kommentarblock über `auditmode`).
-Zusätzlich sollte der Check als ER SELBST fallen: ein `reason` mit „timed out" heißt „diese
-Sonde konnte nicht messen", nicht „der Server hat falsch klassifiziert". Bis dahin gilt für
-einen Leser eines roten `./e2e-postland-audit.sh`: **dieses Quartett ist kein Urteil über den
-Baum** — erst das Register befragen, dann attribuieren.
+**Nicht repariert, absichtlich — und es gibt ZWEI legitime Schnitte, nebeneinander gestellt,
+weil die Wahl der nächsten Person gehört:**
+
+1. **Budget-Seite:** der Wrapper hebt `FLEET_POSTLAND_AUDIT_TIMEOUT_MS` von 10 000 auf z. B.
+   20 000. Marge 4 s → 14 s. Preis: der `hang`-Check (`sleep 30`) läuft dann 20 s statt 10 s in
+   den Kill-Pfad, die Suite wird also ~10 s länger. Geprüft: **kein** Check in
+   `e2e/repo-worker-audit.ts` behauptet die 10 000 (grep leer), und `hang` schläft 30 s, liefe
+   also auch bei 20 000 weiter in den Kill-Pfad.
+2. **Fixture-Seite:** `slow` von 6 s auf etwa 3 s, oder RW.5 bekommt einen eigenen, kürzeren
+   Modus (dasselbe Argument, mit dem `long` sich aus `slow` gelöst hat). Preis: keiner an der
+   Laufzeit — `hang` bleibt schnell.
+
+**Und unabhängig davon, welcher gewählt wird — dies ist der wichtigere Teil:** der Check muss als
+ER SELBST fallen. Ein `reason` mit „timed out" heißt „diese Sonde konnte nicht messen", nicht
+„der Server hat falsch klassifiziert"; solange er beides gleich meldet, verschiebt jede Marge das
+Problem nur. Bis dahin gilt für einen Leser eines roten `./e2e-postland-audit.sh`: **dieses
+Quartett ist kein Urteil über den Baum** — erst das Register befragen, dann attribuieren.
 
 ### 14.1 Ein remote `unknown` mit exit 127 ist zuerst ein leerer Klon, nicht ein fehlendes Kommando (2026-08-29)
 

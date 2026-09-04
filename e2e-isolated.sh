@@ -560,13 +560,13 @@ fi
 # for the sleep's full duration instead of returning what was already printed (measured — with the
 # redirect the read returns at the kill, output intact).
 # The suite-lock lines are part of the fixture, not decoration: they are what e2e-stage.sh prints in
-# a real chain, and the server both sums them into verify.waitMs and reads them LIVE to decide which
+# a real chain (including the `position N of M` segment the FIFO queue added on 2026-09-05), and the server both sums them into verify.waitMs and reads them LIVE to decide which
 # of its two budgets is running. Three staged steps, two of which blocked (3s + 0s + 1s), and the
 # LAST lock line is an acquire — so this run is working when the clock kills it, and the 4s it spent
 # queueing must have been credited back to the work budget rather than eaten out of it. That is the
 # whole regression: before 2026-08-07 this would have died at the budget, not at budget + 4s.
 if git grep -qI VERIFYHANG -- . 2>/dev/null; then
-  echo "[suite-lock] e2e-clean-review.sh waiting 0s for /tmp/fleet-e2e.lock — held by live pid 4242 (up 04:11): /bin/sh ./e2e-isolated.sh"
+  echo "[suite-lock] e2e-clean-review.sh waiting 0s for /tmp/fleet-e2e.lock — position 1 of 2 — held by live pid 4242 with proven identity (up 04:11): /bin/sh ./e2e-isolated.sh"
   echo "[suite-lock] e2e-clean-review.sh acquired after 3s (pid 4243)"
   echo "PASS  the chain step that finished before the machine got busy"
   echo "ALL PASS"
@@ -588,8 +588,8 @@ if git grep -qI VERIFYWAIT -- . 2>/dev/null; then
   echo "[suite-lock] e2e-clean-review.sh acquired after 1s (pid 5101)"
   echo "PASS  the one chain step that got in before the machine got busy"
   echo "ALL PASS"
-  echo "[suite-lock] e2e-security.sh waiting 0s for /tmp/fleet-e2e.lock — held by live pid 5100 (up 07:41): /bin/sh ./e2e-isolated.sh"
-  echo "[suite-lock] e2e-security.sh waiting 2s for /tmp/fleet-e2e.lock — held by live pid 5100 (up 07:43): /bin/sh ./e2e-isolated.sh"
+  echo "[suite-lock] e2e-security.sh waiting 0s for /tmp/fleet-e2e.lock — position 2 of 2 — held by live pid 5100 with proven identity (up 07:41): /bin/sh ./e2e-isolated.sh"
+  echo "[suite-lock] e2e-security.sh waiting 2s for /tmp/fleet-e2e.lock — position 2 of 2 — held by live pid 5100 with proven identity (up 07:43): /bin/sh ./e2e-isolated.sh"
   sleep 30 </dev/null >/dev/null 2>&1
   echo "verify OK: the wait stand-in was never meant to reach this line"
   exit 0

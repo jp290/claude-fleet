@@ -95,6 +95,47 @@ export FLEET_LANE_AUTOCLOSE=0
 # Every emission is throttled through _st_say_at, including the reap: a lock dir that resists
 # rmdir would otherwise spin this loop into a log flood.
 FLEET_SUITE_LOCK="${FLEET_SUITE_LOCK:-/tmp/fleet-e2e.lock}"
+# --- AND THE WAIT IS ORDERED (2026-09-05) ------------------------------------------------------
+# The loop below used to be a RACE, not a queue: every contender slept 15s and ran at `mkdir`
+# again, so waiting longer bought nothing. Measured 2026-09-04/05: slot 7's
+# ./e2e-postland-audit.sh waited 2h45m and lost THREE mkdir races in a row to contenders that had
+# arrived after it. It cost a LAND the same night — the gate of lane ce329973 was killed at 45 min
+# still queued (`waitedOut`), having never looked at the tree — and the land that DID get through
+# carries `ms 1979676 / waitMs 1864000` in its note: 94 % queue, 6 % measurement.
+#
+# The fix is a TICKET, taken at ARRIVAL and before the first `mkdir` attempt. Only the contender
+# holding the oldest LIVE ticket attempts the lock; everyone else names its position and sleeps.
+# No daemon, no background process, no new dependency — one directory per contender.
+#   · The QUEUE is derived from the lock path, never configured on its own: a probe pointed at a
+#     private lock must get a private queue with it.
+#   · A TICKET is a directory `t<n>.<pid>` — the pid is in the NAME, so creating one is a single
+#     atomic mkdir with no torn state a reaper could mistake for an orphan. `n` is max(existing)+1,
+#     so a number is never handed out below a waiter that already holds one, and the counter resets
+#     to 1 by itself once the queue empties. The birth fingerprint goes INSIDE, and the ticket rules
+#     mirror the lock's own states exactly: pid dead → orphan, reaped, blocks nobody · pid alive
+#     with a DIFFERENT birth → recycled pid, orphan, reaped · pid alive with a MISSING birth →
+#     unknown, kept (a contender one syscall from writing it, or a legacy holder — neither may be
+#     reaped on a guess).
+#   · Ties (two contenders that scanned in the same window and drew the same `n`) break by pid, so
+#     exactly one is the front and the order is total.
+#   · The ticket is DROPPED the instant the lock is taken, which is what makes `position 2 of 3`
+#     mean "two contenders are waiting behind me" rather than "one holder and me".
+#   · AN INHERITED STEP IS NEVER ENQUEUED. All of this lives inside the `_st_inherited = 0` guard:
+#     a step running inside somebody else's hold does not queue, does not take a ticket and does
+#     not wait — it already has the machine. Enqueueing it would deadlock it behind itself.
+#   · It FAILS OPEN: a contender that cannot take a ticket races exactly as before. The mutex is the
+#     SAFETY and the ticket only the FAIRNESS, and a fairness device that can kill a land gate is
+#     worse than the unfairness it removes. docker-verify.sh's duplicated loop is such a contender.
+#
+# NOT built here: a wait budget for the wrapper. The loop stays endless on purpose — runVerify
+# already kills a still-queued gate after FLEET_VERIFY_WAIT_MS and names it `waitedOut`, never
+# `ok:false`. A second deadline in the shell would be an abort the server cannot classify: a wait
+# that reads like a red gate. FIFO also removes the reason to want one — the remaining wait is now
+# bounded by the suites ahead, and the position is printed next to the elapsed seconds.
+FLEET_SUITE_QUEUE="$FLEET_SUITE_LOCK.q"
+# Seconds between polls. A knob so a probe can drive a handover in seconds instead of minutes; the
+# DEFAULT is the 15s cadence server.ts's comments and docs/land-mechanics.md describe.
+FLEET_SUITE_POLL_SEC="${FLEET_SUITE_POLL_SEC:-15}"
 _st_who=$(basename "$0" 2>/dev/null || echo suite)
 _st_t0=$(date +%s)
 _st_say_at=0   # elapsed seconds at which the next line is due; 0 = the first block always speaks
@@ -108,6 +149,53 @@ _st_birth_of() {
 }
 _st_valid_birth() {
   printf '%s\n' "$1" | grep -Eq '^[A-Z][a-z]{2} [A-Z][a-z]{2} [0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2} [0-9]{4}$'
+}
+# Walk the queue once: reap every orphaned ticket, then report where I stand.
+#   _st_qmax  highest ticket number SEEN this pass (live or reaped) — what a new ticket counts from
+#   _st_qn    live tickets, mine included
+#   _st_pos   my rank among them, 1 = front and the only rank allowed to touch the lock
+#   _st_mine  whether my own ticket is still there (a /tmp sweeper is not a reason to lose my place)
+# `if` rather than `[ … ] && …` throughout: a false test at the end of a body exits a `set -e`
+# caller (attic/steward-arena.sh), and "no ticket is older than mine" is the NORMAL outcome here.
+_st_queue_scan() {
+  _st_qmax=0
+  _st_qn=0
+  _st_pos=1
+  _st_mine=0
+  for _st_tk in "$FLEET_SUITE_QUEUE"/t*.*; do
+    [ -d "$_st_tk" ] || continue
+    _st_tb=${_st_tk##*/}
+    _st_tn=${_st_tb%%.*}
+    _st_tn=${_st_tn#t}
+    _st_tp=${_st_tb##*.}
+    case "$_st_tn" in ''|*[!0-9]*) continue ;; esac
+    case "$_st_tp" in ''|*[!0-9]*) continue ;; esac
+    if [ "$_st_tn" -gt "$_st_qmax" ]; then _st_qmax=$_st_tn; fi
+    _st_tlive=1
+    if ! kill -0 "$_st_tp" 2>/dev/null; then
+      _st_tlive=0
+    else
+      _st_tbf=$(cat "$_st_tk/birth" 2>/dev/null || true)
+      if [ -n "$_st_tbf" ] && _st_valid_birth "$_st_tbf"; then
+        _st_tbn=$(_st_birth_of "$_st_tp")
+        if [ -n "$_st_tbn" ] && [ "$_st_tbn" != "$_st_tbf" ]; then _st_tlive=0; fi
+      fi
+    fi
+    if [ "$_st_tlive" = 0 ]; then
+      rm -f "$_st_tk/birth" 2>/dev/null || true
+      rmdir "$_st_tk" 2>/dev/null || true
+      continue
+    fi
+    _st_qn=$(( _st_qn + 1 ))
+    if [ "$_st_myn" -gt 0 ]; then
+      if [ "$_st_tn" -lt "$_st_myn" ]; then
+        _st_pos=$(( _st_pos + 1 ))
+      elif [ "$_st_tn" -eq "$_st_myn" ] && [ "$_st_tp" -lt "$$" ]; then
+        _st_pos=$(( _st_pos + 1 ))
+      fi
+      if [ "$_st_tn" -eq "$_st_myn" ] && [ "$_st_tp" -eq "$$" ]; then _st_mine=1; fi
+    fi
+  done
 }
 # Do we already run inside somebody's hold? THREE conditions, and the two on disk are what make the
 # variable safe to honour: it must name a pid, that pid must be the one the lock file records, and
@@ -128,7 +216,47 @@ if [ -z "$_st_self_birth" ]; then
   printf '[suite-lock-error] %s cannot record process birth for pid %s; refusing to hold %s\n' "$_st_who" "$$" "$FLEET_SUITE_LOCK" >&2
   return 3 2>/dev/null || exit 3
 fi
-while ! mkdir "$FLEET_SUITE_LOCK" 2>/dev/null; do
+# Take the ticket BEFORE the first `mkdir` on the lock — the whole point is that arrival is
+# recorded on arrival. Inside the inherited guard: a step running in somebody else's hold never
+# reaches this and is never enqueued.
+_st_myn=0
+_st_ticket=""
+mkdir -p "$FLEET_SUITE_QUEUE" 2>/dev/null || true
+_st_queue_scan
+_st_myn=$(( _st_qmax + 1 ))
+_st_try=0
+while [ "$_st_try" -lt 20 ]; do
+  if mkdir "$FLEET_SUITE_QUEUE/t$_st_myn.$$" 2>/dev/null; then
+    _st_ticket="$FLEET_SUITE_QUEUE/t$_st_myn.$$"
+    break
+  fi
+  mkdir -p "$FLEET_SUITE_QUEUE" 2>/dev/null || true
+  _st_myn=$(( _st_myn + 1 ))
+  _st_try=$(( _st_try + 1 ))
+done
+if [ -n "$_st_ticket" ]; then
+  printf '%s\n' "$_st_self_birth" > "$_st_ticket/birth"
+else
+  # Open, not closed: see the UNQUEUED note above. `_st_myn=0` makes _st_queue_scan leave _st_pos
+  # at 1, so this contender races exactly as every contender did before the ticket existed.
+  # Prefix deliberately NOT `[suite-lock] `: that is the wire format runVerify's SUITE_LOCK_RE
+  # parses, and a line it cannot classify would be a wait silently recorded as zero.
+  _st_myn=0
+  printf '[suite-lock-unqueued] %s could not take a queue ticket under %s; contending UNORDERED, as before\n' "$_st_who" "$FLEET_SUITE_QUEUE" >&2
+fi
+while :; do
+  _st_queue_scan
+  # A ticket that vanished under us (a /tmp sweeper) is re-staked at its ORIGINAL number: we did
+  # arrive when we arrived, and losing the place to a filesystem cleaner would be the starvation
+  # this queue exists to end.
+  if [ "$_st_myn" -gt 0 ] && [ "$_st_mine" = 0 ]; then
+    if mkdir "$FLEET_SUITE_QUEUE/t$_st_myn.$$" 2>/dev/null; then
+      _st_ticket="$FLEET_SUITE_QUEUE/t$_st_myn.$$"
+      printf '%s\n' "$_st_self_birth" > "$_st_ticket/birth"
+    fi
+    _st_qn=$(( _st_qn + 1 ))
+  fi
+  if [ "$_st_pos" -eq 1 ] && mkdir "$FLEET_SUITE_LOCK" 2>/dev/null; then break; fi
   # `|| true`: a missing pid file makes `cat` fail, and under a `set -e` caller (attic/steward-arena.sh)
   # a failing command substitution in an assignment would abort the whole run — on the PARKED
   # state, i.e. exactly when it must instead be reported.
@@ -136,7 +264,12 @@ while ! mkdir "$FLEET_SUITE_LOCK" 2>/dev/null; do
   _st_hb=$(cat "$FLEET_SUITE_LOCK/birth" 2>/dev/null || true)
   _st_dead=0
   _st_reap=0
-  if [ -z "$_st_hp" ]; then
+  if [ ! -d "$FLEET_SUITE_LOCK" ]; then
+    # Not a lock state at all: the mutex is FREE and someone who arrived before me has it next.
+    # Said in its own words, because reading the absent dir would classify it `parked` — the one
+    # state that never resolves — and a waiter told "parked" reasonably stops expecting a turn.
+    _st_why="queued — the mutex is FREE and an older ticket is ahead of mine (t$_st_myn); it is handed over in arrival order"
+  elif [ -z "$_st_hp" ]; then
     if [ -z "$_st_hb" ]; then
       _st_why="parked — the dir carries NO pid file, so nothing will ever reap it (rmdir it to release)"
     else
@@ -163,9 +296,14 @@ while ! mkdir "$FLEET_SUITE_LOCK" 2>/dev/null; do
     _st_reap=1
     _st_why="stale — recorded pid $_st_hp is gone, nothing is running; reaping it"
   fi
+  if [ "$_st_myn" -gt 0 ]; then
+    _st_where="position $_st_pos of $_st_qn"
+  else
+    _st_where="unqueued (no ticket; racing, not ordered)"
+  fi
   _st_el=$(( $(date +%s) - _st_t0 ))
   if [ "$_st_el" -ge "$_st_say_at" ]; then
-    printf '[suite-lock] %s waiting %ss for %s — %s\n' "$_st_who" "$_st_el" "$FLEET_SUITE_LOCK" "$_st_why"
+    printf '[suite-lock] %s waiting %ss for %s — %s — %s\n' "$_st_who" "$_st_el" "$FLEET_SUITE_LOCK" "$_st_where" "$_st_why"
     _st_say_at=$(( _st_el + 60 ))
   fi
   if [ "$_st_reap" = 1 ]; then
@@ -179,10 +317,19 @@ while ! mkdir "$FLEET_SUITE_LOCK" 2>/dev/null; do
     fi
     continue
   fi
-  sleep 15
+  sleep "$FLEET_SUITE_POLL_SEC"
 done
 echo "$$" > "$FLEET_SUITE_LOCK/pid"
 printf '%s\n' "$_st_self_birth" > "$FLEET_SUITE_LOCK/birth"
+# The ticket has done its job the moment the lock names the holder, and dropping it here is what
+# keeps `position N of M` a count of WAITERS. The queue dir itself is left standing: rmdir-ing it
+# would race a contender between its `mkdir -p` and its `mkdir t1.<pid>`, and an empty directory
+# costs nothing — the numbering resets on its own once the last ticket is gone.
+if [ -n "$_st_ticket" ]; then
+  rm -f "$_st_ticket/birth" 2>/dev/null || true
+  rmdir "$_st_ticket" 2>/dev/null || true
+  _st_ticket=""
+fi
 fi
 # ONE acquire format, on both paths — and that is a contract, not tidiness: runVerify sums exactly
 # the lines this printf produces (SUITE_LOCK_RE), e2e/pins.ts requires that EXACTLY ONE of this

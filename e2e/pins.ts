@@ -629,6 +629,67 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
       && stage.includes('kill -0 "$_st_held_by" 2>/dev/null')
       && stage.includes('"$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)" = "$_st_held_by"'),
     `server=${server.includes("FLEET_SUITE_LOCK_HELD_BY: String(process.pid)")} shellVar=${stage.includes('_st_held_by="${FLEET_SUITE_LOCK_HELD_BY:-}"')} alive=${stage.includes('kill -0 "$_st_held_by" 2>/dev/null')} onDisk=${stage.includes('"$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)" = "$_st_held_by"')}`);
+  // THE FIFO SEAM (2026-09-05). The mutex used to be a race: `sleep 15` + retry `mkdir`, no order,
+  // so waiting longer bought nothing — measured, slot 7's post-land audit waited 2h45m and lost
+  // three races to younger contenders. The fix is one ticket per contender, and it is exactly the
+  // kind of seam this file exists for: nothing in TypeScript can see it, and if it comes undone the
+  // suite still runs and still serializes — it just quietly goes back to starving whoever waits
+  // longest, on a machine where the starved contender is often a LAND gate.
+  // Held as the three properties that make it a queue, each falsifiable on its own:
+  {
+    const lines = stage.split("\n");
+    const lockAcquire = lines.findIndex((l) => /mkdir "\$FLEET_SUITE_LOCK"/.test(l));
+    const ticketTake = lines.findIndex((l) => /mkdir "\$FLEET_SUITE_QUEUE\/t\$_st_myn\.\$\$"/.test(l));
+    // (1) the lock is taken by the FRONT ONLY. This is the whole mechanism: without the guard every
+    //     contender races for `mkdir` again and the tickets become decoration.
+    const lockAttempts = lines.filter((l) => /mkdir "\$FLEET_SUITE_LOCK"/.test(l));
+    pin("only the front of the ticket queue attempts the suite mutex",
+      lockAttempts.length === 1 && /\[ "\$_st_pos" -eq 1 \] && mkdir "\$FLEET_SUITE_LOCK"/.test(lockAttempts[0] ?? ""),
+      `${lockAttempts.length} mkdir site(s): ${JSON.stringify(lockAttempts.map((l) => l.trim()))}`);
+    // (2) the ticket is taken at ARRIVAL — before the WAIT LOOP is even entered, not merely before
+    //     the mkdir inside it. A ticket drawn after a failed attempt would record the order in which
+    //     contenders LOSE, not the order in which they arrived. Anchored on the loop head rather
+    //     than on the lock's own line, because the loop ALSO re-stakes a ticket a /tmp sweeper
+    //     removed, and that second site would satisfy a naive "before the lock" ordering.
+    const loopHead = lines.findIndex((l) => /^while :; do$/.test(l));
+    pin("the queue ticket is taken before the wait loop is entered, so arrival order is arrival order",
+      ticketTake >= 0 && loopHead >= 0 && lockAcquire > loopHead && ticketTake < loopHead,
+      `ticket@${ticketTake} loop@${loopHead} lock@${lockAcquire}`);
+    // (3) a dead contender's ticket blocks nobody — the lock's own orphan rule, applied to the
+    //     queue. Without it the fairness queue starves harder than the race it replaced.
+    pin("an orphaned ticket is reaped: a contender's place dies with its process",
+      /kill -0 "\$_st_tp"/.test(stage) && /rmdir "\$_st_tk"/.test(stage),
+      `liveness=${/kill -0 "\$_st_tp"/.test(stage)} reap=${/rmdir "\$_st_tk"/.test(stage)}`);
+    // and the wait line carries the POSITION next to the elapsed seconds. Seconds alone cannot say
+    // whether waiting longer is worth anything, which is what a later wrapper-budget cut needs.
+    const waitLine = lines.find((l) => /printf '\[suite-lock\] %s waiting/.test(l)) ?? "";
+    pin("the wait line names the contender's own position, not just its elapsed seconds",
+      /"\$_st_where"/.test(waitLine) && /_st_where="position \$_st_pos of \$_st_qn"/.test(stage),
+      JSON.stringify(waitLine.trim()));
+    // the queue path is DERIVED from the lock path: a probe pointed at a private lock must not
+    // order itself against the machine's real waiters (e2e/verify-queue.ts §2c depends on this).
+    pin("the ticket queue is derived from the lock path, never configured apart from it",
+      /^FLEET_SUITE_QUEUE="\$FLEET_SUITE_LOCK\.q"$/m.test(stage), "FLEET_SUITE_QUEUE is not derived from FLEET_SUITE_LOCK");
+    // the poll cadence stays 15s by default. The knob exists so §2c can drive a handover in seconds;
+    // a changed DEFAULT would silently re-time every wrapper's wait on the live box.
+    pin("the suite-mutex poll cadence still defaults to 15s",
+      /^FLEET_SUITE_POLL_SEC="\$\{FLEET_SUITE_POLL_SEC:-15\}"$/m.test(stage), "default poll cadence changed");
+    // AND THE FOURTH PROPERTY, where the two 2026-09 changes meet: an INHERITED step must never be
+    // enqueued. It is already running inside somebody's hold, so a ticket would put it in line
+    // behind the very lock it holds — a deadlock, and a silent one. The guard is structural rather
+    // than a condition of its own: the ticket lives INSIDE `if [ "$_st_inherited" = 0 ]`, so the
+    // inherited path cannot reach it. Pinned as that containment, because a later edit that lifts
+    // the ticket out of the guard would look harmless and wedge every ff retry round.
+    const guardOpen = lines.findIndex((l) => /^if \[ "\$_st_inherited" = 0 \]; then$/.test(l));
+    // the guard's OWN `fi`, not the first one: the birth refusal inside it closes at column 0 too.
+    // Anchored on the shared acquire printf, which is the first statement after the guard closes.
+    const acquireAt = lines.findIndex((l) => /printf '\[suite-lock\] %s acquired after/.test(l));
+    const guardClose = acquireAt < 0 ? -1
+      : lines.reduce((acc, l, i) => (i > guardOpen && i < acquireAt && /^fi$/.test(l) ? i : acc), -1);
+    pin("an inherited hold is never enqueued: ticket, wait loop and lock all live inside the _st_inherited guard",
+      guardOpen >= 0 && guardClose > guardOpen && ticketTake > guardOpen && lockAcquire < guardClose,
+      `guard=${guardOpen}..${guardClose} ticket@${ticketTake} lock@${lockAcquire}`);
+  }
 
   // AND THE SAME FENCE EVERYWHERE A BIRTH IS READ, as a rule over a derived set rather than as
   // four remembered file names: every `lstart=` reader — in the shell scripts, in the e2e modules

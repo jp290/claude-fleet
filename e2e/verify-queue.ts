@@ -26,7 +26,7 @@
 // §1–§6 assert nothing about a suite having run. §7 does the opposite: it MAKES fleet run two
 // (against sleeping stand-ins, never a real suite) and reads the surface while they are in flight,
 // which is why its preconditions — did the stand-in actually start? — are checks of their own.
-import { chmodSync, existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { BASE, REPO, ROOT, TOKEN, check, get, post, readText, restartSrv } from "./harness";
@@ -461,6 +461,191 @@ export async function run(): Promise<void> {
       JSON.stringify({ gone: goneHolder, dead: holderDead, say: deadHolderSay.slice(0, 400) }));
 
     rmSync(PROBE, { recursive: true, force: true });
+  }
+
+  // ===== §2c the ORDER of the wait: a QUEUE, not a race =====
+  // §2b proved the waiter SAYS the right thing. This proves it gets its turn in the right ORDER,
+  // which until 2026-09-05 it did not: the loop was `sleep 15` + retry `mkdir`, so waiting longer
+  // bought nothing at all. Measured on the live box 2026-09-04/05 — slot 7's
+  // ./e2e-postland-audit.sh waited 2h45m and lost THREE races to contenders that arrived after it,
+  // one of them 56 minutes old. The cost lands on the wrong side: runVerify moves a LAND's clock
+  // between two budgets on exactly this stdout, so a land gate pays for a preview run's luck.
+  //
+  // THE DISCRIMINATOR, and the reason this is a proof rather than a coin flip: the three contenders
+  // are given DELIBERATELY INVERTED poll intervals — the FIRST to arrive polls slowest (6s) and the
+  // LAST polls fastest (1s). Under the old free-for-all the fastest poller reliably wins the moment
+  // the lock frees, so a race produces c·b·a. Only an arrival-ordered handover produces a·b·c, and
+  // a single green run therefore means something. (Without that inversion, three contenders passing
+  // once is 1-in-6 luck.)
+  {
+    const SRC = ((): string => {
+      try { return dirname(readlinkSync(`${ROOT}/node_modules`)); } catch { return ROOT; }
+    })();
+    const STAGE = `${SRC}/e2e-stage.sh`;
+    const LOCK = `${TMP}/fleet-e2e-fifo-${process.pid}`;      // never the real mutex — see the header
+    const QUEUE = `${LOCK}.q`;                                 // derived BY THE SCRIPT from the lock path
+    const ORDER = `${TMP}/fleet-e2e-fifo-order-${process.pid}`;
+    const alive: { kill: () => void }[] = [];
+    const tickets = (): string[] => {
+      try { return readdirSync(QUEUE).filter((x) => /^t\d+\.\d+$/.test(x)).sort(); } catch { return []; }
+    };
+    // A contender: source the stage script (which IS taking the lock) and, on acquisition, record
+    // its own name. It then exits, and that exit is the release — implicit, exactly as in production.
+    const contend = (name: string, pollSec: number, extra: Record<string, string> = {}): { proc: ReturnType<typeof Bun.spawn>; out: () => Promise<string> } => {
+      const p = Bun.spawn(["sh", "-c", `. "${STAGE}"; printf '%s\\n' "$FIFO_NAME" >> "${ORDER}"`], {
+        cwd: SRC,
+        env: { ...process.env, FLEET_SUITE_LOCK: LOCK, FLEET_SUITE_POLL_SEC: String(pollSec), FIFO_NAME: name, ...extra },
+        stdout: "pipe", stderr: "pipe",
+      });
+      alive.push({ kill: () => { try { p.kill(9); } catch { /* already gone */ } } });
+      return { proc: p, out: async () => `${await new Response(p.stdout).text()}${await new Response(p.stderr).text()}` };
+    };
+    // arrival is recorded when the TICKET appears, so the order the test sets up is a fact on disk
+    // rather than a sleep somebody tuned. A contender that never takes one fails its own check below.
+    const awaitTickets = async (n: number, ms: number): Promise<number> => {
+      for (let i = 0; i < ms / 50 && tickets().length < n; i++) await Bun.sleep(50);
+      return tickets().length;
+    };
+    const orderLines = (): string[] => {
+      try { return readFileSync(ORDER, "utf8").split("\n").filter(Boolean); } catch { return []; }
+    };
+    const awaitOrder = async (n: number, ms: number): Promise<string[]> => {
+      for (let i = 0; i < ms / 100 && orderLines().length < n; i++) await Bun.sleep(100);
+      return orderLines();
+    };
+
+    rmSync(LOCK, { recursive: true, force: true });
+    rmSync(QUEUE, { recursive: true, force: true });
+    rmSync(ORDER, { force: true });
+    // a LIVE holder with proven identity: nothing may be reaped, so every contender must queue
+    mkdirSync(LOCK, { recursive: true });
+    writeFileSync(`${LOCK}/pid`, `${process.pid}\n`);
+    writeFileSync(`${LOCK}/birth`, `${thisBirth}\n`);
+
+    const a = contend("a", 6), aT = await awaitTickets(1, 15_000);
+    const b = contend("b", 3), bT = await awaitTickets(2, 15_000);
+    const c = contend("c", 1), cT = await awaitTickets(3, 15_000);
+    check("§2c fixture: three contenders arrive in a known order and each takes a queue ticket",
+      aT === 1 && bT === 2 && cT === 3, `tickets after each arrival: ${aT}/${bT}/${cT} — ${JSON.stringify(tickets())}`);
+    check("§2c ticket numbers are issued in arrival order, and reset to 1 on an empty queue",
+      tickets().map((t) => t.split(".")[0]).join(",") === "t1,t2,t3", JSON.stringify(tickets()));
+    check("§2c a queued contender does not touch the lock it is not the front of",
+      readFileSync(`${LOCK}/pid`, "utf8").trim() === String(process.pid)
+        && readFileSync(`${LOCK}/birth`, "utf8").trim() === thisBirth,
+      readFileSync(`${LOCK}/pid`, "utf8").trim());
+
+    // RELEASE. The holder here is this very process, which cannot die, so the release is the dir
+    // going away — the same fact the reap produces for a dead holder.
+    rmSync(LOCK, { recursive: true, force: true });
+    // 6s+3s+1s of polling plus slack; a race would finish this far sooner and in the wrong order
+    const order = await awaitOrder(3, 60_000);
+    check("§2c the mutex is handed over in ARRIVAL order, not to whoever polls fastest",
+      order.join(",") === "a,b,c",
+      `${JSON.stringify(order)} (a race hands it to the 1s poller first: c,b,a)`);
+    check("§2c waiting time no longer depends on arrival position: the FIRST to arrive is served first, though it polls slowest",
+      order[0] === "a", JSON.stringify(order));
+
+    const [aOut, bOut, cOut] = await Promise.all([a.out(), b.out(), c.out()]);
+    await Promise.all([a.proc.exited, b.proc.exited, c.proc.exited]);
+    // The position is the half of the wait line a later wrapper-budget cut has to build on: elapsed
+    // seconds alone cannot say whether waiting more is worth anything.
+    check("§2c each waiter names its OWN position in the queue, alongside the elapsed seconds",
+      /waiting \d+s for [^\n]* — position 1 of 1 — /.test(aOut)
+        && /waiting \d+s for [^\n]* — position 2 of 2 — /.test(bOut)
+        && /waiting \d+s for [^\n]* — position 3 of 3 — /.test(cOut),
+      JSON.stringify([aOut.split("\n")[0], bOut.split("\n")[0], cOut.split("\n")[0]]));
+    check("§2c every contender still ends with the acquire line runVerify sums, and none claimed it early",
+      [aOut, bOut, cOut].every((o) => / acquired after \d+s \(pid \d+\)$/m.test(o)),
+      JSON.stringify([aOut.slice(-120), bOut.slice(-120), cOut.slice(-120)]));
+    check("§2c the queue empties itself: every ticket is gone once the last contender has been served",
+      tickets().length === 0, JSON.stringify(tickets()));
+
+    // --- THE MUTEX-FREE WINDOW has its own sentence, and it needs its own fixture. The run above
+    // passes through it in well under a second, and the 60s heartbeat throttle means no waiter gets
+    // to print inside it — so the branch is staged directly: a LIVE ticket ahead, and NO lock at
+    // all. It is the case where waiting is least intuitive (the mutex is free and I still may not
+    // take it) and the one where reading the absent dir would classify it `parked` — the single
+    // state that never resolves, which a waiter reasonably reads as "stop expecting a turn".
+    rmSync(LOCK, { recursive: true, force: true });
+    rmSync(ORDER, { force: true });
+    const ahead = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" });
+    alive.push({ kill: () => { try { ahead.kill(9); } catch { /* already gone */ } } });
+    mkdirSync(`${QUEUE}/t1.${ahead.pid}`, { recursive: true });
+    writeFileSync(`${QUEUE}/t1.${ahead.pid}/birth`, `${processBirthOf(ahead.pid)}\n`);
+    const q = contend("q", 1);
+    const qT = await awaitTickets(2, 15_000);
+    check("§2c fixture: a live ticket is ahead of the contender, and the mutex itself is free",
+      qT === 2 && !existsSync(LOCK), `${qT} ticket(s), lock exists=${existsSync(LOCK)}`);
+    await Bun.sleep(2000);
+    q.proc.kill(9);
+    const qOut = await q.out();
+    await q.proc.exited;
+    check("§2c a free mutex is NOT taken out of turn: an older live ticket holds the contender back",
+      !/ acquired after /.test(qOut) && !existsSync(LOCK) && orderLines().length === 0,
+      JSON.stringify([qOut.split("\n")[0], `lock=${existsSync(LOCK)}`, orderLines().join(",")]));
+    check("§2c and it says so in its own words, instead of misreading the absent dir as a manual park",
+      /position 2 of 2 — queued — the mutex is FREE/.test(qOut) && !qOut.includes("parked"),
+      JSON.stringify(qOut.split("\n").filter(Boolean).slice(0, 2)));
+    ahead.kill(9);
+    await ahead.exited;
+    rmSync(QUEUE, { recursive: true, force: true });
+
+    // --- AND A WAITER THAT DIES BLOCKS NOBODY. The ticket inherits the lock's own orphan rule
+    // (property (2) of the mutex: a dead holder is reaped, a hand-parked one never is), because a
+    // fairness queue whose corpses hold places is a worse starvation than the race it replaced.
+    rmSync(ORDER, { force: true });
+    mkdirSync(LOCK, { recursive: true });
+    writeFileSync(`${LOCK}/pid`, `${process.pid}\n`);
+    writeFileSync(`${LOCK}/birth`, `${thisBirth}\n`);
+    const d = contend("d", 1), dT = await awaitTickets(1, 15_000);
+    const e = contend("e", 1), eT = await awaitTickets(2, 15_000);
+    check("§2c fixture: a front waiter and one behind it, in that order",
+      dT === 1 && eT === 2, `${dT}/${eT} — ${JSON.stringify(tickets())}`);
+    const dTicket = tickets()[0] ?? "";
+    d.proc.kill(9);
+    await d.proc.exited;
+    rmSync(LOCK, { recursive: true, force: true });
+    const after = await awaitOrder(1, 30_000);
+    check("§2c a waiter killed mid-queue does not block the contenders behind it",
+      after.join(",") === "e", `${JSON.stringify(after)} (front waiter ${dTicket} was killed while holding position 1)`);
+    check("§2c the dead waiter's ticket is reaped, exactly as a dead lock holder is",
+      dTicket !== "" && !tickets().includes(dTicket), `${dTicket} vs ${JSON.stringify(tickets())}`);
+    await e.proc.exited;
+
+    // --- AND AN INHERITED STEP IS NEVER ENQUEUED. This is where the two 2026-09 changes meet, and
+    // getting it wrong is a SILENT deadlock rather than a red check: server.ts's ff retry chain
+    // holds this mutex itself and hands its name to the gate child, so a step that queued would
+    // wait in line behind the very lock it is already running inside — forever, printing positions.
+    // The lock on disk still has the last word (a stale export grants nothing), which is why the
+    // fixture puts a REAL live pid in the pid file and names that same pid in the variable.
+    rmSync(ORDER, { force: true });
+    rmSync(QUEUE, { recursive: true, force: true });
+    const holder = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" });
+    alive.push({ kill: () => { try { holder.kill(9); } catch { /* already gone */ } } });
+    mkdirSync(LOCK, { recursive: true });
+    writeFileSync(`${LOCK}/pid`, `${holder.pid}\n`);
+    writeFileSync(`${LOCK}/birth`, `${processBirthOf(holder.pid)}\n`);
+    const inh = contend("inherited", 1, { FLEET_SUITE_LOCK_HELD_BY: String(holder.pid) });
+    await inh.proc.exited;
+    const inhOut = await inh.out();
+    check("§2c a step inside an inherited hold takes NO ticket — it would otherwise queue behind the lock it already holds",
+      tickets().length === 0 && !/position \d+ of \d+/.test(inhOut),
+      JSON.stringify([tickets(), inhOut.split("\n")[0]]));
+    check("§2c it proceeds at once and reports in the ONE acquire format, naming the pid that actually holds the lock",
+      inhOut.includes(`acquired after 0s (pid ${holder.pid})`)
+        && /^\[suite-lock\] [^\n]* acquired after 0s \(pid \d+\)$/m.test(inhOut)
+        && orderLines().join(",") === "inherited",
+      JSON.stringify([inhOut.split("\n").filter(Boolean).slice(-1)[0], orderLines()]));
+    check("§2c and it released nothing: the hold it ran inside is still recorded, untouched",
+      readFileSync(`${LOCK}/pid`, "utf8").trim() === String(holder.pid),
+      readFileSync(`${LOCK}/pid`, "utf8").trim());
+    holder.kill(9);
+    await holder.exited;
+
+    for (const p of alive) p.kill();
+    rmSync(LOCK, { recursive: true, force: true });
+    rmSync(QUEUE, { recursive: true, force: true });
+    rmSync(ORDER, { force: true });
   }
   // back to the real lock for everything below — and back to the env every later module expects
   await restartSrv();

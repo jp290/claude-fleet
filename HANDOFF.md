@@ -1,4 +1,4 @@
-# HANDOFF — 🎛 Fleet Controller (Slot 5, Fable): Owner-Runde „alle Punkte angehen" abgearbeitet, zwei Audits als Messnotizen, S2-Land in Flug; 2026-09-04 18:0x, ctx GEMESSEN 27,8 %
+# HANDOFF — 🎛 Fleet Controller (Slot 5, Fable): Owner-Runde „alle Punkte angehen" ABGESCHLOSSEN — vier Tore beantwortet, S2 gelandet, Dispatcher an, drei Lanes laufen; 2026-09-04 18:4x, ctx GEMESSEN 27,5 %
 
 Zustand ableiten: `./state.sh`, `./register.sh`, Owner-Poll, Panes. Hier nur, was git nicht traegt.
 Die Abschnitte darunter sind FREMD (andere Programs) — HANDOFF.md ist eine geteilte Datei; das
@@ -32,24 +32,33 @@ S2 `0555828b` Slot 2 in Flug, Merge-Watch `7051c3f7`), weil `selfLandTaskForMain
 - Deploys heute von mir: `a56be057` (84e3297), `3f76a555` (40a55e4), `c43b4e27` (566cbae), alle
   gruen an `GET /api/deploys`.
 
-## 2. Was JETZT offen ist (Reihenfolge)
+## 2. Was JETZT offen ist (Stand 18:4x — die Kette von §2 ist ABGEARBEITET)
 
-1. **S2-Verdikt** (Watch `7051c3f7`, `GET /api/slots/2/merge`). Gruen ⇒ `0555828b` done. ff-lost
-   ⇒ einmal neu `POST /api/slots/2/merge` (main bewegte sich waehrend des Gates durch
-   Handoff-Direkt-Commits `35dc46b`, `9b31c79`, `2b4b4ea`).
-2. **Master-Dispatch EIN** (`POST /api/dispatch {"on":true}`, Deckel bleibt 2). Vorher pruefen:
-   `fa1112eb` (Steward-Brief) steht `queued` und wuerde MITSTARTEN — unqueue, wenn nicht gewollt.
-   `ba896b1b` ist private-repo-p (fremdes Repo, startet hier nicht).
-3. **Eine gebuendelte Nachricht an Slot 7** (Fleet-Betrieb): Dispatch an; KORREKTUR meiner
-   14:0x/18:0x-Aussage — das Audit zu `84e3297` hat eine GRUENE Zeile (13:53, ran 3602/0), die
-   Zeile wird erst am ENDE geschrieben, ich hatte zu frueh nachgesehen, KEIN Befund; die zwei
-   Messnotizen `docs/messungen/2026-09-04-datenschichten-audit.md` (B1–B8) und
-   `…-context-pack-routing.md` (Luecken 1–7) sind ihr Programm-Futter, Prioritaet B1 (Attention
-   ueberlebt Succession), B2 (interrupted clean merge), B3/R2, dann Pack-Luecke 1+3 (S).
-   Und eine an Slot 3: Flag live, Dispatch an, Beleg-Lane starten.
-4. **Diese Datei + die zwei Messnotizen + INDEX committen** — ERST wenn kein Land laeuft
-   (`GET /api/slots/:id/merge` running:false fuer alle Lanes).
-5. Owner-Bericht (unten in §4 die Kurzfassung), dann `POST /api/self/succeed`.
+**Erledigt seit dem ersten Schreiben dieses Abschnitts:** S2 gelandet (`8069b9a` + `940887d`,
+verify.ok=true, sieben Schritte, ms 181 700, Task `0555828b` done) — ZWEITER Anlauf; der erste
+starb 18:28 an ff-lost nach 32 min gruenem Gate, weil main dreimal von reinen HANDOFF.md-Commits
+bewegt wurde. Lehre, die B3 praezisiert und in den Baum gehoert: eigene Docs VOR dem Land
+committen, dann war der Neuversuch in 3 min durch. **Master-Dispatch EIN** (`POST /api/dispatch`),
+erster Tick verteilte sofort: `ba896b1b` → Slot 1 (private-repo-p), `880387df` R1 → Slot 2,
+`74dcff75` Dual-Host S2 → Slot 4; `8fea4ac1` wartet korrekt mit „waiting: 2/2 lanes busy in
+claude-fleet". `fa1112eb` (steward-brief, kein Program, kein lebender Steward) habe ich
+UNQUEUED mit Begruendung als Kommentar, damit sie keinen der zwei Plaetze vor Programm-Arbeit
+belegt — reversibel, wieder freigeben sobald ein Platz frei ist. Slots 7 und 3 sind informiert.
+
+**Offen fuer die Nachfolgerin, in dieser Reihenfolge:**
+1. **Nichts ist blockiert und nichts wartet auf dich.** Drei Lanes laufen autonom, ihre MAINs
+   halten die Watches. Der naechste Owner-Akt entsteht erst, wenn eine MAIN eine Attention hebt.
+2. **Wenn ein Lane-Platz frei wird:** `fa1112eb` wieder queuen (oder liegen lassen, bis ein
+   Steward lebt) und pruefen, ob Slot 3 seine Beleg-Lane fuer Erfolgssatz 8 gefiled hat.
+3. **Zwei Programs mit toter MAIN-Bindung, aber `active`:** `2c073232` (Private-repo-j) und
+   `07ee8a6d` (private-repo-p, dessen Zeile `ba896b1b` gerade auf Slot 1 LAEUFT — ihr Report hat
+   damit keinen Empfaenger). Entweder MAIN neu binden oder Program parken. Dazu `f99e9354` und
+   `b2aa5b45`, deren Slots leer sind. Der Server erkennt es (`health.occupancy: stale`) und
+   faellt ueberall geschlossen — es ist Aufraeumen, kein Defekt.
+4. **Die zwei Audit-Notizen sind das Arbeitsmaterial** (`75ff091`): B1 Attention ueberlebt
+   Succession, B3-S Handoff je Program, B2 Merge-Guard — in dieser Reihenfolge dem Program
+   Fleet-Betrieb empfohlen. Pack-Luecke 3 (`pi-ox` ins harnesses-Array) ist ein Einzeiler.
+5. Owner-Bericht ist raus (Kurzfassung in §4).
 
 ## 3. Bezahlte Lehren dieser Session
 

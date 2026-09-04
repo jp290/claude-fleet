@@ -5115,6 +5115,14 @@ export async function run(ctx: Ctx): Promise<void> {
       ["two stages sharing one id", { ...studioBody({ workflow: { doc: { path: "docs/x.md", sha: WF_SHA },
         stages: [{ id: "s", title: "S", role: "main", required: true }, { id: "s", title: "T", role: "lane", required: false }] } }), id: "bad-stage-ids" }],
       ["a brief block for an audience nobody serves", { ...studioBody({ briefBlocks: [{ id: "b", appliesTo: "supervisor", text: "x" }] }), id: "bad-audience" }],
+      // the three fields S2 added, each refused rather than narrowed: a budget of 0, a fractional
+      // stop line and a consequence that is not text are all things a session would still obey
+      ["a stage budget that is not a positive integer", { ...studioBody({ workflow: { doc: { path: "docs/x.md", sha: WF_SHA },
+        stages: [{ id: "s", title: "S", role: "r", required: true, budget: 0 }] } }), id: "bad-budget" }],
+      ["a stage stop line that is fractional", { ...studioBody({ workflow: { doc: { path: "docs/x.md", sha: WF_SHA },
+        stages: [{ id: "s", title: "S", role: "r", required: true, stopLine: 1.5 }] } }), id: "bad-stopline" }],
+      ["a stage onBreach that is not text", { ...studioBody({ workflow: { doc: { path: "docs/x.md", sha: WF_SHA },
+        stages: [{ id: "s", title: "S", role: "r", required: true, onBreach: 7 }] } }), id: "bad-onbreach" }],
       ["a gate that is not a boolean", { ...studioBody({ gates: { criticBeforeTaste: true, programLint: "yes", completeNeedsProof: false } }), id: "bad-gate" }],
       ["gates with a member missing", { ...studioBody({ gates: { criticBeforeTaste: true, programLint: true } }), id: "bad-gates-short" }],
       ["a rev dictated from the wire", { ...studioBody(), id: "bad-rev", rev: 7 }],
@@ -5372,6 +5380,193 @@ export async function run(ctx: Ctx): Promise<void> {
         && !("studio" in studioDigest)
         && (await bindingOf(boundProgram.id))?.id === "private-repo-p",
       `digest=${JSON.stringify(studioDigest)}`);
+
+    // === S2 — THE WORKFLOW REACHES THE SESSIONS =================================================
+    // S1 stored the record and deliberately let NOTHING read it. This is the reader, and the two
+    // properties below are opposites of one another: a bound Program must carry the owner's
+    // workflow into the session that runs it, and an UNBOUND one must receive the brief it received
+    // before this cut existed — byte for byte, never "looks the same".
+    //
+    // HOW THE BASELINE IS HELD, since a hash over a whole founding brief would rot on the next
+    // commit (the anchor block reads the tree): TWO independent equalities. First the rail — the
+    // unbound founding's rail must be the same bytes as the four founding shapes checked above,
+    // which e2e/pins.ts pins at SOURCE (RAIL_STANDARD_SHA256). Second a SPLICE — the bound prompt
+    // must be the unbound prompt with the expected studio bytes, written out here by hand and never
+    // read back from the server, inserted at exactly one position. One extra byte in either half,
+    // or the block landing anywhere but between the rail and the anchors, fails both.
+    const briefStages = [
+      { id: "preflight-architect", title: "Preflight-Architect", role: "architect", required: true,
+        spawn: { harness: "claude", model: "claude-opus-5[1m]", effort: "high" },
+        budget: 60000, stopLine: 150000,
+        onBreach: "needs-main naming what is missing; never compact" },
+      // the LEGACY stage shape, in the SAME record: none of the three fields this cut added. A
+      // studio written before them keeps rendering, and renders no budget nobody ever wrote.
+      { id: "builder", title: "Builder", role: "builder", required: false, gate: "programLint" },
+    ];
+    const briefStudioContent = (over: Record<string, unknown> = {}): Record<string, unknown> => studioBody({
+      name: "Brief Studio",
+      workflow: { doc: { path: "docs/game-maker/workflow-v2.md", sha: WF_SHA }, stages: briefStages },
+      briefBlocks: [
+        { id: "produktblick", appliesTo: "main", text: "MAIN ONE: read the product before the code." },
+        { id: "beweiszeile", appliesTo: "main", text: "MAIN TWO:\nVERIFY: is a quote, never a sentence." },
+        { id: "lane-slice", appliesTo: "lane", text: "LANE: one slice, one quoted verify line." },
+        { id: "critic-blind", appliesTo: "critic", text: "CRITIC: fix the blind standard first." },
+      ],
+      ...over,
+    });
+    const briefStudioCreated = await studioPost({ ...briefStudioContent(), id: "brief-studio" });
+    // the expected bytes, hand-written: the drift sentences appear ONLY when the two revisions differ
+    const expectedHead = (name: string, rev: number, boundRev: number): string[] => ["", "",
+      `--- THE STUDIO WORKFLOW: ${name} (brief-studio), revision ${rev}`, "",
+      "This Program is bound to an owner-curated studio. What follows is that record, not advice.",
+      `Workflow document: docs/game-maker/workflow-v2.md (declared sha ${WF_SHA}; nothing`,
+      "re-read the file, so treat the digest as the owner's claim about which version this describes).",
+      ...(boundRev === rev ? [] : [
+        `The binding was made against revision ${boundRev} and the record now stands at ${rev}:`,
+        "this brief renders the CURRENT record, and the difference is stated so it is not silent."])];
+    const expectedStages = ["", "STAGES, in the order the studio declares them:",
+      "1. preflight-architect — Preflight-Architect (required)",
+      "   Role: architect",
+      "   Spawn: claude / claude-opus-5[1m] / high",
+      "   Budget: 60000 tokens — what this act should cost",
+      "   Stop line: 150000 tokens — where this role stops and reports",
+      "   On breach: needs-main naming what is missing; never compact",
+      "2. builder — Builder (optional)",
+      "   Role: builder",
+      "   Gate: programLint"];
+    const expectedMainBody = ["", "STUDIO BRIEF BLOCKS for this brief (owner text, verbatim):",
+      "", "[produktblick]", "MAIN ONE: read the product before the code.",
+      "", "[beweiszeile]", "MAIN TWO:\nVERIFY: is a quote, never a sentence."];
+    const expectedMainBlock = [...expectedHead("Brief Studio", 1, 1), ...expectedStages,
+      ...expectedMainBody].join("\n");
+
+    const briefTitle = "Studio brief rendering pair";
+    // one founding, one prompt — the three below share a title on purpose, so their owner payloads
+    // are byte-identical and the studio block is the entire delta between them
+    const foundStudioBrief = async (label: string, program: Program): Promise<string> => {
+      const pending = beginBootstrap(program.id, { cwd: gameRepo, label,
+        harness: "codex", model: "gpt-5.5", effort: "high" });
+      const slot = await waitForLabel(label);
+      if (slot !== null) await respawnScreen(slot, ">_ OpenAI Codex (v0.147.0)");
+      const body = await (await pending).json() as { slot?: number };
+      const history = typeof body.slot === "number"
+        ? await (await get(`/api/slots/${body.slot}/history`)).json() as { history: { text: string }[] }
+        : { history: [] as { text: string }[] };
+      if (typeof body.slot === "number") await post(`/api/slots/${body.slot}/kill`, {});
+      await programPost(program.id, "complete");
+      return history.history.at(-1)?.text ?? "";
+    };
+    const unboundBriefProgram = await activateNewProgram(briefTitle);
+    const unboundPrompt = await foundStudioBrief("studio-brief-unbound", unboundBriefProgram);
+    const boundBriefProgram = await activateNewProgram(briefTitle);
+    await bindTo(boundBriefProgram.id, { id: "brief-studio" });
+    const boundPrompt = await foundStudioBrief("studio-brief-bound", boundBriefProgram);
+    const foundingSeam = (prompt: string): number => {
+      const anchors = prompt.indexOf("\n\nContextPlan v2 anchors");
+      return anchors >= 0 ? anchors : prompt.length;
+    };
+    const splicedFounding = unboundPrompt.slice(0, foundingSeam(unboundPrompt)) + expectedMainBlock
+      + unboundPrompt.slice(foundingSeam(unboundPrompt));
+    check("studio brief (S2): a Program with NO binding is founded with the pinned rail and not one added byte",
+      briefStudioCreated.ok && unboundPrompt.length > 0 && rail.length > 0
+        && railOf(unboundPrompt) === rail && !unboundPrompt.includes("--- THE STUDIO WORKFLOW"),
+      `len=${unboundPrompt.length} railMatch=${railOf(unboundPrompt) === rail} railLen=${rail.length}/${railOf(unboundPrompt).length}`);
+    check("studio brief (S2): a bound Program's brief is the unbound one with EXACTLY the studio bytes, spliced between the rail and the anchors",
+      boundPrompt.length > 0 && boundPrompt === splicedFounding
+        && railOf(boundPrompt) === rail + expectedMainBlock,
+      boundPrompt === splicedFounding ? "equal"
+        : `delta=${JSON.stringify(railOf(boundPrompt).slice(rail.length))} expected=${JSON.stringify(expectedMainBlock)}`);
+    // …and the legacy stage inside that same record rendered its own three lines and NOTHING else:
+    // a budget, a stop line or a consequence the owner never wrote would be an invented contract.
+    check("studio brief (S2): a stage without the three new fields renders its own lines and invents no budget, stop line or consequence",
+      boundPrompt.includes("\n2. builder — Builder (optional)\n   Role: builder\n   Gate: programLint\n")
+        && boundPrompt.split("Budget:").length === 2 && boundPrompt.split("Stop line:").length === 2
+        && boundPrompt.split("On breach:").length === 2,
+      `budgets=${boundPrompt.split("Budget:").length - 1} stops=${boundPrompt.split("Stop line:").length - 1} breaches=${boundPrompt.split("On breach:").length - 1}`);
+
+    // A BINDING OLDER THAN THE RECORD renders the CURRENT workflow and SAYS the two numbers differ.
+    // There is no rev history (§8 F2 — studios are few and nobody asked for the retrospect), so the
+    // current row is the only text that exists; the alternative to naming the difference is a brief
+    // that quietly delivers a workflow the owner bound something else against.
+    const driftBriefProgram = await activateNewProgram(briefTitle);
+    await bindTo(driftBriefProgram.id, { id: "brief-studio" });
+    const briefStudioChanged = await studioChange("brief-studio", briefStudioContent({ name: "Brief Studio v2" }));
+    const driftPrompt = await foundStudioBrief("studio-brief-drift", driftBriefProgram);
+    const expectedDriftBlock = [...expectedHead("Brief Studio v2", 2, 1), ...expectedStages,
+      ...expectedMainBody].join("\n");
+    check("studio brief (S2): a binding older than the record renders the CURRENT workflow and states the difference instead of hiding it",
+      briefStudioChanged.ok && railOf(driftPrompt) === rail + expectedDriftBlock,
+      railOf(driftPrompt) === rail + expectedDriftBlock ? "equal"
+        : `delta=${JSON.stringify(railOf(driftPrompt).slice(rail.length))}`);
+
+    // --- THE LANE HALF, one seam over. briefAndSend never passes through railBlockFor, so a worker
+    // lane reads its half of the record there, through the slot's programId. Two rows with
+    // IDENTICAL text — one inside the bound Program, one inside no Program at all — and the same
+    // splice equality decides it. (The analyst is off in this suite, FLEET_ANALYSIS_MS=0, so
+    // neither row can acquire a compiled brief and diverge for a reason that is not the studio.)
+    const laneStudioProgram = await activateNewProgram("Studio lane brief carrier");
+    await bindTo(laneStudioProgram.id, { id: "brief-studio" });
+    const laneProbeText = "studio lane brief byte-identity probe";
+    const laneBoundRow = (await (await post("/api/tasks", { queue: false, text: laneProbeText,
+      kind: "auftrag", programId: laneStudioProgram.id })).json()) as { task: { id: string } };
+    const laneFreeRow = (await (await post("/api/tasks", { queue: false, text: laneProbeText,
+      kind: "auftrag" })).json()) as { task: { id: string } };
+    for (const s of await spawnSessions())
+      if (s.worktree && s.id !== ctx.restartSelfSlot) await post(`/api/slots/${s.id}/kill`, {});
+    await Bun.sleep(600);
+    const laneRoom = await spawnSessions();
+    // the fixture fails AS ITSELF when the board cannot hold a lane — a missing free slot must not
+    // read as a brief that lost its studio block
+    check("studio lane precondition: a free slot and room under the lane cap for the two probe lanes",
+      laneRoom.filter((s) => !s.cwd).length >= 1 && laneRoom.filter((s) => s.worktree).length === 0,
+      `free=${laneRoom.filter((s) => !s.cwd).length} lanes=${laneRoom.filter((s) => s.worktree).length}`);
+    const laneBriefOf = async (taskId: string): Promise<string> => {
+      const res = await post(`/api/tasks/${taskId}/dispatch`, {});
+      const body = await res.json() as { ok?: boolean; slot?: number };
+      let text = "";
+      for (let i = 0; i < 60 && typeof body.slot === "number"; i++) {
+        const h = await (await get(`/api/slots/${body.slot}/history`)).json() as { history: { text: string }[] };
+        text = h.history.at(-1)?.text ?? "";
+        if (text.includes(laneProbeText)) break;
+        await Bun.sleep(250);
+      }
+      if (typeof body.slot === "number") await post(`/api/slots/${body.slot}/kill`, {});
+      await Bun.sleep(400);
+      return text;
+    };
+    const laneFreePrompt = await laneBriefOf(laneFreeRow.task.id);
+    const laneBoundPrompt = await laneBriefOf(laneBoundRow.task.id);
+    // the lane seam: the block sits before the anchors for the rail's reason (the context receipt
+    // hashes the anchor block alone), and before the exit footer, whose three acts stay last
+    const laneSeam = (prompt: string): number => {
+      const anchors = prompt.indexOf("\n\nContextPlan v2 anchors");
+      if (anchors >= 0) return anchors;
+      const footer = prompt.indexOf("\n\n--- HOW THIS LANE ENDS");
+      return footer >= 0 ? footer : prompt.length;
+    };
+    const expectedLaneBlock = [...expectedHead("Brief Studio v2", 2, 2),
+      "", "STUDIO BRIEF BLOCKS for this brief (owner text, verbatim):",
+      "", "[lane-slice]", "LANE: one slice, one quoted verify line."].join("\n");
+    const splicedLane = laneFreePrompt.slice(0, laneSeam(laneFreePrompt)) + expectedLaneBlock
+      + laneFreePrompt.slice(laneSeam(laneFreePrompt));
+    check("studio brief (S2): a lane outside every studio gets byte-identically today's brief, and a lane inside one gets it plus EXACTLY the lane blocks",
+      laneFreePrompt.includes(laneProbeText) && !laneFreePrompt.includes("--- THE STUDIO WORKFLOW")
+        && laneBoundPrompt.length > 0 && laneBoundPrompt === splicedLane,
+      laneBoundPrompt === splicedLane ? "equal"
+        : `free=${laneFreePrompt.length} bound=${laneBoundPrompt.length} boundTail=${JSON.stringify(laneBoundPrompt.slice(laneSeam(laneFreePrompt), laneSeam(laneFreePrompt) + 260))}`);
+    // AUDIENCE IS A PARTITION, and the two audiences nobody serves stay unserved. `review` and
+    // `critic` blocks are stored and rendered NOWHERE today: Fleet has one worker-brief builder and
+    // no typed lane role to select by (workflow-v2.md §7 F4). Guessing the role from the harness or
+    // the task text would be a second, quieter source for a choice that is the owner's.
+    check("studio brief (S2): main blocks reach only the founding brief, lane blocks only the lane, and the critic block reaches nobody",
+      boundPrompt.includes("MAIN ONE:") && boundPrompt.includes("MAIN TWO:")
+        && !boundPrompt.includes("LANE:") && !boundPrompt.includes("CRITIC:")
+        && laneBoundPrompt.includes("LANE: one slice") && !laneBoundPrompt.includes("MAIN ONE:")
+        && !laneBoundPrompt.includes("CRITIC:")
+        && (await studioOf("brief-studio"))?.briefBlocks.length === 4,
+      `blocks=${(await studioOf("brief-studio"))?.briefBlocks.length} critic=${boundPrompt.includes("CRITIC:") || laneBoundPrompt.includes("CRITIC:")}`);
+    for (const id of [laneBoundRow.task.id, laneFreeRow.task.id]) await post(`/api/tasks/${id}/delete`, {});
+    await programPost(laneStudioProgram.id, "complete");
 
     // THE CAP IS HARD AND EVICTS NOTHING. capPrograms may drop rows because a COMPLETE program is
     // always a candidate; a studio never becomes complete, so an eviction here could only throw

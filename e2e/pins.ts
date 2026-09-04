@@ -3877,8 +3877,13 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
 
   // The footer is a LIFECYCLE instruction, and a clarify lane has a different lifecycle: it stops
   // for the owner. Appending it there would tell a lane to finish work it was told not to start.
+  // THE WHOLE SEAM IS THE PIN, in order: the brief, the studio's lane blocks (S2 — empty for a lane
+  // in no studio, so an unbound lane's bytes are unchanged), the anchors, and the footer LAST. The
+  // order is not cosmetic: the context receipt hashes the anchor block alone, so anything appended
+  // after it would be hashed as if it were an anchor, and the three closing acts must be the last
+  // thing a lane reads.
   pin(`${RULE_RECEIVER} — the exit footer is appended to mutating briefs only, clarify exempted at the seam`,
-    /const deliveredBrief = `\$\{brief\}\$\{anchorBlock\}\$\{clarify \? "" : LANE_EXIT_FOOTER\}`;/.test(server)
+    /const deliveredBrief = `\$\{brief\}\$\{studioLaneBlock\}\$\{anchorBlock\}\$\{clarify \? "" : LANE_EXIT_FOOTER\}`;/.test(server)
       && (server.split("LANE_EXIT_FOOTER").length - 1) === 2,
     `LANE_EXIT_FOOTER mentions=${server.split("LANE_EXIT_FOOTER").length - 1}`);
 }

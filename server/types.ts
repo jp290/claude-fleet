@@ -1286,8 +1286,14 @@ interface StudioWorkflowDoc { path: string; sha: string }
 // adapter names are the harness's vocabulary, not this record's, and pinning them here would make
 // every new adapter a server diff — the exact failure this record exists to end.
 interface StudioStageSpawn { harness: string; model: string; effort: string }
+// THREE NUMBERS AND A CONSEQUENCE, and they are not the same thing (workflow-v2.md §1.2, which
+// carries all three per role): `budget` is what the act SHOULD cost, `stopLine` is where the role
+// stops and reports, and `onBreach` is what happens when the stop line is reached. A brief that
+// rendered a budget as if it were a limit, or a limit with no consequence, would teach the session
+// the wrong contract — so the record carries the three separately or not at all. ALL THREE ARE
+// OPTIONAL: a studio written before this cut keeps loading, its stages simply render without them.
 interface StudioStage { id: string; title: string; role: string; required: boolean;
-  gate?: string; spawn?: StudioStageSpawn }
+  gate?: string; spawn?: StudioStageSpawn; budget?: number; stopLine?: number; onBreach?: string }
 interface StudioWorkflow { doc: StudioWorkflowDoc; stages: StudioStage[] }
 interface StudioBriefBlock { id: string; appliesTo: StudioBriefAudience; text: string }
 interface StudioGates { criticBeforeTaste: boolean; programLint: boolean; completeNeedsProof: boolean }
@@ -1315,7 +1321,7 @@ const STUDIO_SHORT_MAX = 200;
 const STUDIO_KEYS = ["v", "id", "name", "createdAt", "confirmedAt", "rev", "machineProfile",
   "repoPolicy", "workflow", "briefBlocks", "gates"];
 const STUDIO_CONTENT_KEYS = ["name", "machineProfile", "repoPolicy", "workflow", "briefBlocks", "gates"];
-const STUDIO_STAGE_KEYS = ["id", "title", "role", "required", "gate", "spawn"];
+const STUDIO_STAGE_KEYS = ["id", "title", "role", "required", "gate", "spawn", "budget", "stopLine", "onBreach"];
 const STUDIO_SPAWN_KEYS = ["harness", "model", "effort"];
 const STUDIO_BRIEF_BLOCK_KEYS = ["id", "appliesTo", "text"];
 const shortStudioString = (v: unknown, max = STUDIO_SHORT_MAX): boolean =>
@@ -1343,9 +1349,20 @@ const studioStageFrom = (value: unknown, i: number): StudioStage | string => {
       return `stage ${i} spawn must carry harness, model and effort as non-empty strings`;
     spawn = { harness: s.harness as string, model: s.model as string, effort: s.effort as string };
   }
+  // A token count is a POSITIVE INTEGER or it is not a token count. `0` and a fraction are refused
+  // rather than narrowed, for the reason every other field here is: a budget nobody wrote is a
+  // budget the session would still obey.
+  for (const key of ["budget", "stopLine"] as const)
+    if (r[key] !== undefined && !(typeof r[key] === "number" && Number.isInteger(r[key]) && (r[key] as number) > 0))
+      return `stage ${i} ${key} must be a positive integer number of tokens when present`;
+  if (r.onBreach !== undefined && !shortStudioString(r.onBreach))
+    return `stage ${i} onBreach must be a non-empty string of at most ${STUDIO_SHORT_MAX} characters when present`;
   return { id: r.id as string, title: r.title as string, role: r.role as string,
     required: r.required, ...(r.gate !== undefined ? { gate: r.gate as string } : {}),
-    ...(spawn ? { spawn } : {}) };
+    ...(spawn ? { spawn } : {}),
+    ...(r.budget !== undefined ? { budget: r.budget as number } : {}),
+    ...(r.stopLine !== undefined ? { stopLine: r.stopLine as number } : {}),
+    ...(r.onBreach !== undefined ? { onBreach: r.onBreach as string } : {}) };
 };
 const studioBriefBlockFrom = (value: unknown, i: number): StudioBriefBlock | string => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return `briefBlock ${i} must be an object`;

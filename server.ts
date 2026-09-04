@@ -70,7 +70,8 @@ import {
   PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion, PROGRAM_PROFILE_KINDS, loadProgramProfile,
   PROGRAM_LINEAGE_MAX, loadProgramLineage, foundingOccupantFrom, foundingIdentityFrom,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
-  type Studio, type StudioContent, type ProgramStudioBinding,
+  type Studio, type StudioContent, type ProgramStudioBinding, type StudioStage,
+  type StudioBriefAudience,
   type BoxPin, type WSData, type Share, type ShareComment, type Auto, type WatchBase, type MergeWatch,
   type TransitionWatch, type Watch, type FleetEventStatus, type FleetEventRecoveryState,
   HELPER_CMD_ALLOW, helperCmdCheck, helperArtifactGlobsFrom, helperArtifactsFrom, HELPER_ARTIFACT_MAX,
@@ -7888,7 +7889,23 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
       selected: stampObservedSourceHashes([...base.selected, ...repoPlan.selected], blobShas),
       omitted: [...base.omitted, ...repoPlan.omitted] };
     const anchorBlock = renderContextAnchorBlock(plan);
-    const deliveredBrief = `${brief}${anchorBlock}${clarify ? "" : LANE_EXIT_FOOTER}`;
+    // THE LANE'S HALF OF THE STUDIO RECORD. The founding brief's half is folded into railBlockFor;
+    // a worker lane never passes through that selector, so its half is read here — through the
+    // slot's programId, which dispatchTask wrote from the row moments ago. An absent programId, an
+    // absent binding, and a studio with nothing addressed to a lane all render the empty string, so
+    // a lane outside a studio receives byte-identically the brief every dispatch delivered before.
+    //
+    // POSITION is the rail's position for the rail's reason: before the anchors, because the
+    // context receipt hashes the anchor block ALONE and it has to stay the tail of the brief; and
+    // before the exit footer, because the three closing acts are the last thing a lane reads.
+    //
+    // AUDIENCE "lane", and only that one. `review` and `critic` blocks are stored and rendered
+    // NOWHERE today, which is a gap named rather than papered over: Fleet has exactly one
+    // worker-brief builder and no typed lane role to select by (workflow-v2.md §7 F4). Guessing a
+    // role from the harness or the task text would be a second, quieter source for an owner choice.
+    const laneProgram = free.programId ? programs.find((p) => p.id === free.programId) : undefined;
+    const studioLaneBlock = laneProgram ? studioBlockFor(laneProgram, "lane") : "";
+    const deliveredBrief = `${brief}${studioLaneBlock}${anchorBlock}${clarify ? "" : LANE_EXIT_FOOTER}`;
     const selected = contextReceiptSelections(plan.selected);
     const omitted = plan.omitted.map((entry) => ({ ...entry }));
     await sendText(free, deliveredBrief, true);
@@ -17447,9 +17464,82 @@ you need. A routine clean, green, in-program land is not a boundary; it is your 
 
 const PROGRAM_MAIN_RAIL_BLOCK = RAIL_HEAD + RAIL_ROLE_STANDARD + RAIL_TAIL;
 const GAME_MAKER_RAIL_BLOCK = RAIL_HEAD + RAIL_ROLE_GAME_MAKER + RAIL_TAIL;
-// The one selector, read by both builders. A Program with no profile gets the exact legacy bytes.
+
+// === THE STUDIO BLOCK — the owner's curated workflow, delivered to the sessions that run it =====
+// The record and its doors landed as inventory and NOTHING read them (S1, docs/ideen/
+// 2026-09-03-studio-als-objekt.md §5). This is the reader. What it buys is measured, not assumed:
+// on the iOS run three normative workflow rules lived only in prose, and reached zero of eight
+// lanes (docs/messungen/2026-09-03-private-repo-p-worktrail-audit-synthese.md, root 5). A rule that is
+// not in a brief is not in the session.
+//
+// IT IS FOLDED INTO `railBlockFor`, NOT ADDED AT THE TWO BUILDER SEAMS. `railBlockFor` is "the one
+// selector, read by both builders", and both builders carry the identical seam
+// `body.join("\n") + railBlockFor(program) + anchorBlock`. Hanging the studio text off those two
+// seams instead would create the SECOND seam the selector exists to prevent: the next founding
+// variant gets written against one of them and silently ships without the block. One selector, one
+// seam, four founding shapes — the property e2e/programs.ts holds byte for byte.
+//
+// A PROGRAM WITH NO BINDING GETS ZERO ADDITIONAL BYTES. That is the property under test first: an
+// unbound Program's founding brief is byte-identical to the one every founding before this cut
+// delivered, and a bound one's whole delta is this block.
+//
+// RENDERED FROM THE CURRENT RECORD. There is no rev history (decided in §8 F2 — studios are few and
+// nobody asked for the retrospect), so the current row is the only text that exists. When the
+// binding was made against an older revision the brief SAYS SO rather than pretending otherwise:
+// the drift is made visible, which is the entire reason `rev` is stored at binding time.
+const studioOfProgram = (program: Program): Studio | undefined =>
+  program.studio ? studios.find((one) => one.id === program.studio!.id) : undefined;
+
+// Only fields that EXIST are rendered. An absent budget prints nothing — a "budget: none" line
+// would read as a decision the owner never made, and the three fields are optional precisely
+// because a studio written before them is still a studio.
+const studioStageLines = (stage: StudioStage, i: number): string[] => {
+  const lines = [`${i + 1}. ${stage.id} — ${stage.title} (${stage.required ? "required" : "optional"})`,
+    `   Role: ${stage.role}`];
+  if (stage.spawn) lines.push(`   Spawn: ${stage.spawn.harness} / ${stage.spawn.model} / ${stage.spawn.effort}`);
+  if (stage.budget !== undefined) lines.push(`   Budget: ${stage.budget} tokens — what this act should cost`);
+  if (stage.stopLine !== undefined) lines.push(`   Stop line: ${stage.stopLine} tokens — where this role stops and reports`);
+  if (stage.onBreach !== undefined) lines.push(`   On breach: ${stage.onBreach}`);
+  if (stage.gate !== undefined) lines.push(`   Gate: ${stage.gate}`);
+  return lines;
+};
+
+// The owner's block text is copied VERBATIM — never summarised, never reflowed, never truncated.
+// It is already capped at the door (STUDIO_TEXT_MAX per block, STUDIO_BRIEF_BLOCKS_MAX blocks), and
+// a brief that paraphrased an owner's rule would be a second source for it, which is the failure
+// this whole record exists to end.
+const studioBlockFor = (program: Program, audience: StudioBriefAudience): string => {
+  const studio = studioOfProgram(program);
+  if (!studio) return "";
+  const blocks = studio.briefBlocks.filter((block) => block.appliesTo === audience);
+  const stages = audience === "main" ? studio.workflow.stages : [];
+  if (blocks.length === 0 && stages.length === 0) return "";
+  const bound = program.studio!.rev;
+  const lines = [``, ``,
+    `--- THE STUDIO WORKFLOW: ${studio.name} (${studio.id}), revision ${studio.rev}`,
+    ``,
+    `This Program is bound to an owner-curated studio. What follows is that record, not advice.`,
+    `Workflow document: ${studio.workflow.doc.path} (declared sha ${studio.workflow.doc.sha}; nothing`,
+    `re-read the file, so treat the digest as the owner's claim about which version this describes).`];
+  if (bound !== studio.rev)
+    lines.push(`The binding was made against revision ${bound} and the record now stands at ${studio.rev}:`,
+      `this brief renders the CURRENT record, and the difference is stated so it is not silent.`);
+  if (stages.length) {
+    lines.push(``, `STAGES, in the order the studio declares them:`);
+    for (const [i, stage] of stages.entries()) lines.push(...studioStageLines(stage, i));
+  }
+  if (blocks.length) {
+    lines.push(``, `STUDIO BRIEF BLOCKS for this brief (owner text, verbatim):`);
+    for (const block of blocks) lines.push(``, `[${block.id}]`, block.text);
+  }
+  return lines.join("\n");
+};
+
+// The one selector, read by both builders. A Program with no profile gets the exact legacy bytes,
+// and a Program with no studio binding gets exactly those same bytes plus nothing.
 const railBlockFor = (program: Program): string =>
-  isGameMaker(program) ? GAME_MAKER_RAIL_BLOCK : PROGRAM_MAIN_RAIL_BLOCK;
+  (isGameMaker(program) ? GAME_MAKER_RAIL_BLOCK : PROGRAM_MAIN_RAIL_BLOCK)
+  + studioBlockFor(program, "main");
 
 
 function buildProgramMainBrief(program: Program, frame: ProgramMainFrame, anchorBlock: string): string {

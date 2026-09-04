@@ -332,3 +332,77 @@ up only as the lock. Doing it from `e2e-stage.sh` needs the live server's host, 
 credential the wrapper has no business knowing — a real coupling, and the lock line already answers
 "something is running" for that case. Also, the info card is desktop-only (`renderBoard` returns
 early on mobile), so the phone sees none of this.
+
+## 10. The wait becomes a QUEUE, not a race (2026-09-05)
+
+§7 through §9 made the mutex **visible**. They deliberately changed nothing about how it is
+*granted* — "no scheduling, priorities, or merge train" (§7) was the right call for the SERVER, and
+it still is. But it left a property nobody had stated out loud, and reading `e2e-stage.sh` says it
+plainly: the grant was a **race**. The wait path was `sleep 15` and then another `mkdir` against the
+same door. There was no order and no memory of arrival — **waiting longer bought nothing at all**.
+
+**Measured on the live box, 2026-09-04 21:51 → 2026-09-05 00:4x** (read off `ps` and the trail by
+the controller and by lane `8ab7215f`): the `./e2e-postland-audit.sh` wrapper of lane `8ab7215f`
+waited **2 h 45 min** and lost **three** `mkdir` races in a row to contenders that arrived after it —
+61841 (`e2e-isolated.sh`) held for 1 h 41 min, then 40106 (a post-land audit **56 minutes** old) won,
+and only then 95634. Its own run, once it finally got in, held the lock for **5 minutes**. Twice
+that night a holder was measured past an hour (`up 01:03:57`, `up 01:06:31`) against a ~30 min
+median; the long one was not wedged — its trail was growing live, the machine was in swap.
+
+**Why this is not merely unfair but expensive, and lands on the wrong side.** `server.ts#runVerify`
+streams this exact stdout and moves a LAND's clock between two budgets on it (§8). So the contender
+that pays for a preview run's luck is a **land gate** — and a land gate is the one contender whose
+budget can kill something. Starvation was unbounded in principle and, that night, ~2 h 45 min in
+practice.
+
+**The cut (`e2e-stage.sh`, shell only — no daemon, no background process, no new dependency).**
+A **ticket**, taken at ARRIVAL and before the first attempt on the lock, so arrival order is recorded
+when a contender arrives rather than when it happens to win. Only the holder of the oldest LIVE
+ticket attempts the lock; everyone else names its position and sleeps.
+
+- The queue is **derived** from the lock path (`$FLEET_SUITE_LOCK.q`), never configured apart from
+  it — a probe pointed at a private lock must not order itself against the machine's real waiters.
+- A ticket is a directory `t<n>.<pid>`: the pid is in the NAME, so creating one is a single atomic
+  `mkdir` with no torn state a reaper could mistake for an orphan. `n` is `max(existing)+1`, so a
+  number is never issued below a waiter that already holds one, and the counter resets to 1 by
+  itself once the queue empties.
+- **The three existing properties are unchanged**, and the ticket inherits the lock's own orphan
+  rule verbatim: pid dead → reaped · pid alive with a DIFFERENT birth fingerprint → recycled pid,
+  reaped · pid alive with a MISSING birth → `unknown`, kept (either a contender one syscall from
+  writing it, or a legacy holder — neither may be reaped on a guess). `parked` still never resolves
+  on its own, and nothing reaps it.
+- The wait line now carries **position next to elapsed seconds**: `— position 2 of 3 —`. Seconds
+  alone cannot say whether waiting longer is worth anything.
+- A free mutex with an older ticket ahead gets its **own sentence** (`queued — the mutex is FREE`),
+  because reading the absent dir would classify it `parked` — the one state that never resolves, and
+  a waiter told "parked" reasonably stops expecting a turn.
+- It **fails open**: a contender that cannot take a ticket races exactly as before
+  (`[suite-lock-unqueued]`, deliberately not the `[suite-lock] ` wire format runVerify parses). The
+  mutex is the SAFETY, the ticket only the FAIRNESS — and a fairness device that can kill a land
+  gate is worse than the unfairness it removes. `docker-verify.sh`'s duplicated loop (§ its own
+  comment) is such a contender by construction and keeps working untouched.
+
+**Two things deliberately NOT built, both because they would make the record worse:**
+
+- **A wait budget for the wrapper.** The loop is still endless. The server already owns the honest
+  budget — `runVerify` kills a still-queued gate after `FLEET_VERIFY_WAIT_MS` (45 min live) and names
+  it `waitedOut`, never `ok:false`, so a land that never started says exactly that. A second deadline
+  down in the shell would produce an abort the server cannot classify: a wait that reads like a red
+  gate, which is the precise failure §8 exists to prevent. FIFO also removes the reason to want one —
+  a waiter's remaining wait is now bounded by the suites ahead of it, and its position is printed.
+  (The brief for this cut named `server.ts#holdSuiteLock`; no function of that name exists — the
+  budget lives in `runVerify`'s `waitedOut` branch.)
+- **A priority class ("land gate before preview/audit").** It was offered and is declined, because
+  the measurement argues against it: the contender that starved was a **post-land audit**, not a land
+  gate. A class that lets gates jump would starve audits harder and re-import the very unfairness
+  this removes, now with a rule attached. §7's "no scheduling, priorities, or merge train" survives
+  this section intact — **ordering by arrival is not a priority**; it is the absence of one.
+
+**Proof** (`e2e/verify-queue.ts` §2c, 14 checks). Three contenders arrive in a known order and must
+be served in it. The discriminator, and the reason a single green run means something here: the poll
+intervals are **deliberately inverted** — the first to arrive polls slowest (6 s), the last fastest
+(1 s). In the old race the fastest poller reliably wins the moment the lock frees, so a race yields
+`c·b·a`. Counter-checked by removing the front-of-queue guard: §2c then fails with exactly
+`["c","b","a"]`. Also proven: a waiter killed mid-queue blocks nobody behind it and its ticket is
+reaped, and a FREE mutex is not taken out of turn while an older live ticket sits ahead. Six pins in
+`e2e/pins.ts` hold the seam, each mutation-checked.

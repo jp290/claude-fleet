@@ -16122,7 +16122,10 @@ function suiteLockView(): GateLock | null {
 // The reap, the birth fingerprint, the pid file and mkdir-atomicity are UNCHANGED: this is the
 // shell's own procedure, expressed once more on this side.
 let suiteLockHeld = false;
-const SUITE_LOCK_POLL_MS = 1_000;
+// Coarse on purpose: every poll that finds a live holder costs a `ps` (the birth fingerprint), and
+// the wrappers themselves re-check at 15 s. Five seconds buys a bounded latency nobody can feel
+// against a budget measured in minutes.
+const SUITE_LOCK_POLL_MS = 5_000;
 function suiteLockTryTake(): boolean {
   try { mkdirSync(SUITE_LOCK); } catch { return false; } // mkdir IS the claim — atomic, as in the shell
   // Refuse to hold what we cannot be identified as, exactly as e2e-stage.sh refuses (`_st_self_birth`
@@ -17183,6 +17186,11 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             // that: there is no "same sha, skip the gate" arm, by decision.
             // The mutex is taken ONCE, before the first retry, and held to the end (the `finally`):
             // the queueing, not the gate, is what made a repeat expensive.
+            // BOUNDED BY THE ROUND COUNT AND BY NOTHING ELSE — no clock is involved in the exit,
+            // and it is readable in one place: this loop has exactly ONE `continue`, it sits after
+            // `ffRounds++`, and the arm holding it is gated on `ffRounds < LAND_FF_RETRY_ROUNDS`.
+            // Every other path out of the loop is a `break`. So at most LAND_FF_RETRY_ROUNDS + 1
+            // iterations run, and at 0 the loop body executes exactly once — today's code path.
             let ffRounds = 0;      // how many times this land had to go round again
             let ffHeld = false;    // do WE hold the suite mutex right now (see holdSuiteLock)
             let ffLockDenied = false; // we wanted it, the machine never gave it to us

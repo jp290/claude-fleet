@@ -1,6 +1,6 @@
 ---
 frage: Sind die sechs Erfolgsmasse der Generalsanierung 2026-09 erreicht — nachgemessen am Baum a09d9e5, in der Fassung, die RESCOPE und die Entscheide vom 2026-09-01 ihnen gegeben haben?
-urteil: "Drei von sechs sind erfuellt (3 tote Doc-Pfade = 0 von 43 und als Pin-Klasse in Stufe 1 des Land-Gates gehalten; 4 attic/repo-map/Symlinks mit 88 getrackten Dateien, NULL Symlinks im ganzen Baum und byte-gepinnter repo-map; 6 P6-Disposition auf der Registerseite geschlossen). Drei sind verfehlt, jedes mit benanntem Grund: 1 nur zur Haelfte (Blatt-Invariante und Modulgroessen halten, src/client.ts steht bei 11 067 statt <=2 000, weil der RESCOPE P5 gestoppt hat), 2 mit 33,6 % Kommentaranteil gegen <20 % und STEIGEND, 5 weil von drei Beweislaeufen einer gruen war (3602/0), einer rot an einem damals unregistrierten Check und der dritte vom Speicherdruck des Hosts nach einer Minute abgeschossen wurde. Der rote Check ist als sechzehnte Flake-Familie registriert (verify-tiering §11.2n, Basisrate 11/655 = 1,7 % auf elf verschiedenen Baeumen) — die Registrierung erfolgte NACH und WEGEN des eigenen roten Laufs und ist als solche gekennzeichnet."
+urteil: "Drei von sechs sind erfuellt (3 tote Doc-Pfade = 0 von 43 und als Pin-Klasse in Stufe 1 des Land-Gates gehalten; 4 attic/repo-map/Symlinks mit 88 getrackten Dateien, NULL Symlinks im ganzen Baum und byte-gepinnter repo-map; 6 P6-Disposition auf der Registerseite geschlossen). Drei sind verfehlt, jedes mit benanntem Grund: 1 nur zur Haelfte (Blatt-Invariante und Modulgroessen halten, src/client.ts steht bei 11 067 statt <=2 000, weil der RESCOPE P5 gestoppt hat), 2 mit 33,6 % Kommentaranteil gegen <20 % und STEIGEND, 5 weil von drei Beweislaeufen einer gruen war (3602/0), einer rot an einem damals unregistrierten Check und der dritte vom Speicherdruck des Hosts nach einer Minute abgeschossen wurde. OWNER-ENTSCHEID 2026-09-04: Lauf 2 zaehlt als GRUEN MIT REGISTRIERTER FAMILIE §11.2n (Begruendung: die Trail-Evidenz 11/655 traegt unabhaengig vom eigenen Rot), Lauf 3 ist keine Messung, kein frisches Triple auf dieser Maschine — und ausdruecklich NICHT als sauberes Gruen zu zitieren: die geforderten drei konsekutiven Laeufe sind nicht gefahren worden. Program am selben Tag als complete geschlossen, Freeze aufgehoben, die zwei verfehlten Masse als offene Zeilen fuer ein spaeteres Program. Der rote Check ist als sechzehnte Flake-Familie registriert (verify-tiering §11.2n, Basisrate 11/655 = 1,7 % auf elf verschiedenen Baeumen) — die Registrierung erfolgte NACH und WEGEN des eigenen roten Laufs und ist als solche gekennzeichnet."
 bereich: [sanierung, verify, flake, struktur, ledger]
 belege: [a09d9e57e471d404aba70bdf5911ae8424dfe967, 49038af, 5f8153c, 52673b6, 1e5419c, d32b69d, 509d5da, 2627564, docs/sanierung-2026-09/plan-2026-08-31.md, docs/sanierung-2026-09/p6-befundregister.md, docs/sanierung-2026-09/w2-filter.md, docs/verify-tiering.md, docs/messungen/2026-09-03-flake-basisrate-settle-for-merge.md, e2e/lane-helpers.ts#settleForMerge, e2e/merge.ts]
 nicht-gemessen: Der dritte Beweislauf (vom Host abgeschossen, kein Urteil ueber den Baum); ob ein Wiederholungs-Triple gruen waere; die Ursache des Speicherdrucks jenseits der gezaehlten Posten; ob der Kommentaranteil-Filter (Zeilen, nicht Kommentarsorten) das Maass ueberhaupt richtig abbildet; die Rot-Ursache von B-05/B-14 (Remote-Audit-Abstand) — dafuer existieren die Fehlernamen jetzt, gemessen ist nichts
@@ -235,6 +235,91 @@ Chance, dass dieselbe Familie nicht wieder feuert, bei ~95 % — die anderen fü
 darin nicht eingerechnet. Ich habe den Versuch **nicht** gestartet: Lauf 3 starb am Speicherdruck,
 und ein vierter Lauf auf derselben Maschine hätte dieselbe Ursache getroffen.
 
+### ENTSCHIEDEN 2026-09-04 (Owner-Freigabe 17:4x, zugestellt über den 🎛 Controller Slot 5)
+
+Die Wahl zwischen den beiden Lesarten ist getroffen worden, und sie lautet **nicht „grün"**:
+
+> **Lauf 2 zählt als GRÜN MIT REGISTRIERTER FAMILIE §11.2n. Lauf 3 ist keine Messung. Kein
+> frisches Triple auf dieser Maschine (Speicher).**
+
+Die Begründung des Entscheids ist die Trail-Evidenz, ausdrücklich **unabhängig von meinem eigenen
+roten Lauf**: 11/655 auf elf verschiedenen Bäumen trägt die Familie für sich, ob mein Lauf sie
+getroffen hat oder nicht. Der Vorbehalt aus B-14 ist damit gehört und beantwortet, nicht übergangen.
+
+**Und der Auftrag zur Formulierung war ausdrücklich: „Schreib es genau so, nicht als sauberes
+Grün."** Also, wörtlich, als der Stand, der in jedes spätere Zitat gehört:
+
+**Erfolgsmaß 5 ist NICHT als sauberes Grün belegt.** Belegt sind: ein vollständig grüner Lauf
+(3 602 / 0), ein Lauf, dessen einziger FAIL einer registrierten Flake-Familie angehört, und ein
+dritter Lauf, den es nicht gibt. Die vom Plan geforderten *drei konsekutiven* Läufe sind damit
+**nicht gefahren worden** — nicht, weil der Baum sie nicht bestanden hätte, sondern weil die
+Maschine den dritten nicht tragen konnte. Wer diese Zeile später als „alle Suiten grün" zitiert,
+zitiert sie falsch.
+
+---
+
+# Abschluss (P7, 2026-09-04, unter Owner-Freigabe)
+
+## Der Unfreeze
+
+**Der Feature-Freeze dieses Programs ist aufgehoben.** Er war eine Erklärung dieses Programs, kein
+Mechanismus — und die Messung oben zeigt, dass er genau so gewirkt hat: innerhalb der Sanierung
+gehalten (null `feat`-Commits von hier), außerhalb wirkungslos (elf `feat`-Commits auf `server.ts`
+aus fremden Programmen). Die Lehre für den nächsten, der einen ausruft: **ein repoweiter Freeze
+braucht einen Owner-Akt, keine Programmzeile.**
+
+**Was ich NICHT angefasst habe, und das ist Absicht:** der Dispatcher steht in `fleet.json` auf
+`dispatch: false`. Ob das zu diesem Freeze gehört oder zum Normalbetrieb des Fleets, ist von hier
+aus nicht entscheidbar, und es ist ein repoweiter Schalter, der jedes andere Program trifft. Er
+bleibt, wie er ist; das Umlegen gehört dem Owner oder dem Controller.
+
+## Das erreichte Zielbild, gegen das geplante gestellt
+
+| | geplant (Stand 2026-08-31) | erreicht (2026-09-04) |
+| --- | --- | --- |
+| `server.ts` | Kern ≤ ~8 000 Z. | **24 603** — Zielzahl per RESCOPE aufgehoben |
+| `server/` | Subsysteme als Module, keines > ~2 000 | **10 Module, 2 701 Z., größtes 1 641** ✓ |
+| Blatt-Invariante | — (kam erst mit dem RESCOPE) | **hält**: kein `server/*.ts` importiert aus `server.ts` ✓ |
+| `src/client.ts` | Entry ≤ ~2 000 Z. | **11 067** — P5 wurde vom RESCOPE gestoppt |
+| Kommentaranteil | < 20 % | **33,6 %**, steigend |
+| Doc-Pfade | 0 tot, als Klasse | **0 von 43, als Pin-Klasse im Land-Gate** ✓ |
+| Archiv | ~100 Dateien, keine Secret-Symlinks | **88 Dateien, NULL Symlinks im Baum** ✓ |
+| P6 | jeder Befund disponiert | **23 Befunde mit Ausgang; 14 Zeilen beim Owner** ✓ |
+
+## Zwei offene Zeilen für ein späteres Program — ausdrücklich KEINE Fehler
+
+Owner-Entscheid: die zwei verfehlten Maße werden als offene Arbeit weitergegeben, nicht als
+Scheitern verbucht. Beide sind gestoppte Kampagnen, keine kaputten Dinge:
+
+1. **`src/client.ts` ist 11 067 Zeilen** (Anker 10 578, also +489 während der Sanierung). Der
+   Client-Split P5 ist nie gelaufen; der RESCOPE hat ihn gestoppt, bevor er begann. Die
+   Reihenfolge, die der Plan-Nachtrag dafür schon festgelegt hatte, steht dort und ist
+   wiederverwendbar: `ui.ts`, Pane, Picker, Klein-Dialoge zuerst; Explorer, Programs,
+   Review/Outcomes, Watch zuletzt.
+2. **Der Kommentaranteil im Server-Code ist 33,6 %** gegen ein Ziel von < 20 %. **Und das Maß
+   selbst gehört mit auf den Tisch:** es zählt Zeilen, nicht Kommentarsorten, während die Hausregel
+   dieses Repos Kommentare verlangt, die Mechanismus und Preis erklären. Ein Anteilsziel bestraft
+   genau die Kommentare, die erwünscht sind. Wer die Zeile aufnimmt, entscheidet zuerst, ob er den
+   Anteil oder die Sorte messen will.
+
+**Warum sie heute nicht als Queue-Zeilen existieren:** der Advisory-Deckel steht weiter bei 10/10
+(14 pending `notiz`-Zeilen, nachgesehen um 18:0x). Die Triage läuft beim Controller; solange sie
+nicht durch ist, lehnt `POST /api/self/tasks` jede weitere Zeile ab. Diese zwei Absätze sind
+deshalb der Ort, an dem die beiden Zeilen bis dahin leben — dasselbe Muster, aus dem das
+P6-Befundregister entstanden ist.
+
+## Was dieses Programm hinterlässt, das es nicht geplant hatte
+
+- **Ein Befundregister mit Ausgängen** (`docs/sanierung-2026-09/p6-befundregister.md`) — 23
+  Befunde, jeder mit einem am Baum nachgesehenen Ausgang statt einer Prosa-Erwähnung.
+- **Zwei neue Flake-Familien im Register** (§11.2m, §11.2n) und mit ihnen eine Beweisform, die
+  Maschinenzeit spart: das **Trail-Register** entscheidet die Attribution eines roten Laufs in
+  Sekunden, wo ein Rerun 25–50 Minuten Suite-Mutex kostet und oft gar nichts diskriminiert
+  (B-20, B-23, und §11.2n selbst).
+- **Drei Land-Pfad-Reparaturen** (`1e5419c`, `d32b69d`, `509d5da`), die aus den eigenen
+  Betriebsschmerzen des Programms entstanden sind, nicht aus einem Plan.
+
+
 ## Erfolgsmaß 6 — P6-Befundliste vollständig disponiert
 
 **ERFÜLLT auf der Registerseite, OFFEN am Owner-Tor.**
@@ -296,7 +381,8 @@ auch keine weitere Zeile entstehen. Das ist das eine echte Owner-Tor dieses Prog
    Quittung dafür. **Das dritte (Erfolgsmaß 5) ist anders:** es scheitert nicht am Code, sondern an
    einem roten Check aus einer inzwischen registrierten Flake-Familie und an einem Lauf, den der
    Host abgeschossen hat. Diese Unterscheidung ist der Unterschied zwischen „das Programm hat sein
-   Ziel nicht erreicht" und „die Maschine konnte die Frage nicht beantworten".
+   Ziel nicht erreicht" und „die Maschine konnte die Frage nicht beantworten" — und der
+   Owner-Entscheid unten hat genau sie übernommen, ohne daraus ein sauberes Grün zu machen.
 2. **Der Feature-Freeze war innerhalb des Programs real und außerhalb Fiktion.** Elf
    `feat`-Commits auf `server.ts` in vier Tagen, keiner davon von hier. Ein Program-MAIN kann
    keinen repoweiten Freeze durchsetzen; wer das nächste Mal einen ausruft, braucht dafür einen

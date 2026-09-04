@@ -1968,7 +1968,7 @@ now in the main checkout's copy, item 1 replacing the old rule rather than sitti
 from one leak; at four hand-runs in an evening it is visibly accumulating. Still outside the repo,
 still not touched.
 
-### 11.2l A fourteenth family: the busy-receiver restart check in `e2e/watch.ts` (2026-09-03 — MECHANISM READ FROM THE TRAIL REGISTER, discriminator measured, NOT repaired)
+### 11.2l A fourteenth family: the busy-receiver restart check in `e2e/watch.ts` (2026-09-03 — MECHANISM READ FROM THE TRAIL REGISTER, discriminator measured; REPARIERT 2026-09-04 in `7d089c1`)
 
 **The member, a singleton:** `restart keeps the busy pending event with the same id and no
 invented attempt` (`e2e/watch.ts`, the restart-boundary block). Failing detail every time: the
@@ -2007,12 +2007,14 @@ whole job-watch block INTO that stretch, between the anchor and the restart boun
 `d4bb687` added to it. Eleven of the fifteen reds are on or after that day. Lengthening the
 stretch is what moved the fixture across the gate — nobody changed the delivery path.
 
-**Not repaired, deliberately: the fix is a fixture change and belongs to a lane that owns
-`e2e/watch.ts`,** not to a move slice that only happened to trip it. The shape of the fix is the
+**Not repaired IN THAT SLICE, deliberately — überholt am 2026-09-04, siehe die Reparatur am Ende
+dieses Abschnitts: der Fix ist eine Fixture-Änderung und gehörte einer Lane, die `e2e/watch.ts`
+besitzt,** nicht einer Move-Slice, die nur zufällig darüber stolperte. The shape of the fix is the
 one §11.2f already used: the fixture must CONTROL its precondition (keep sending to slot B until
 the restart, or subscribe with `idleSec: 0` and assert the pending-ness it actually engineered)
-rather than inherit it from whatever else happens to type into that pane. Until then a red here
-is NOT a verdict on the tree under test — check the stretch in the run's trail first.
+rather than inherit it from whatever else happens to type into that pane. Bis zur Reparatur galt:
+a red here is NOT a verdict on the tree under test — check the stretch in the run's trail first.
+**Ab `7d089c1` ist ein Rot hier wieder ECHT.**
 
 **NACHTRAG 2026-09-03, nach dem Post-Land-Audit auf `5848207f`: die Familie ist KEIN Singleton.**
 Dieses Audit (`isolated-20260903T162559Z-69549`, 3527 Checks) fiel vierfach, und alle vier sitzen
@@ -2061,6 +2063,35 @@ Commit. Wer eine Adjudikation auf „das gelandete Commit ist docs-only" stützt
 aus der Land-Note lesen — ein Land trägt oft mehr als einen Commit, und genau dann ist die
 bequeme Begründung die falsche.
 
+
+**REPARIERT 2026-09-04 in `7d089c1` — die Fixture stellt ihre Vorbedingung jetzt selbst her, statt
+sie zu erben.** (Die Sha ist die des Lane-Commits `fix(e2e): the busy-receiver fixture inherited
+its precondition from unrelated work — now it produces it`; ein Rebase vor dem Land kann sie
+verschoben haben, das Subject nicht — `git log --grep 'busy-receiver fixture'` findet ihn immer.) Der Beschäftiger, der bisher mit der ERSTEN Sichtung von `pending` endete, läuft als
+Hintergrund-Schleife (`busyKeeperOn` / `busyKeeper` in `e2e/watch.ts`, dieselbe 250-ms-`send-keys`-
+Kadenz wie die Schleife davor) vom Signal-Anker durch den Deploy- und den Job-Watch-Block bis HINTER
+die Restart-Prüfungen und wird erst dort abgeschaltet, wo der Block „The pending event survived" die
+Pane absichtlich verstummen lässt. `receiverIdleSec: 2` bleibt unverändert: genau dieser Wert ist es,
+den die spätere Zustellung („busy -> later idle delivers the SAME pending event exactly once") misst
+— ihn hochzudrehen hätte die Reparatur mit dem Verlust dieser Messung bezahlt. Damit hängt `pending`
+nicht mehr daran, wie lange die dazwischenliegende, unverwandte Arbeit zufällig dauert; die oben
+gemessene Strecke Anker→Restart ist kein Diskriminator mehr, weil die Pane über die ganze Strecke laut ist.
+
+**Mutationsprobe, damit die Reparatur nicht tautologisch ist** (Lauf
+`isolated-20260904T040403Z-36460`, Baum `d86fcc7`+dirty): Beschäftiger auf `false` gesetzt und die
+Ruhe, die die Fixture bisher per Zufall erbte, als `await Bun.sleep(3000)` explizit gemacht — der
+Check fällt sofort und mit genau dem Fingerabdruck dieses Abschnitts,
+`{"status":"delivered","attempts":1,"receiverIdleSec":2}`, `deliveredAt - createdAt = 2206 ms`.
+Mit ihm fällt `busy transport owes the already-created event without typing or minting another`,
+das dieselbe Vorbedingung liest — die beiden sind EIN Befund, nicht zwei.
+
+**Basisrate am Reparaturtag, aus 5705 Trails des Haupt-Checkouts nachgemessen** (2026-09-04):
+`restart keeps the busy pending event…` 26/376 = 6,9 % über die ganze Geschichte, aber **11 der
+letzten 12 Läufe rot, davon 10 in Folge** — der Post-Land-Audit war als Sensor faktisch tot.
+Die beiden Nachbarn, die derselbe Auftrag mitprüfen ließ, haben dieses Los NICHT:
+`re-subscribing to the same target returns the SAME watch, never a second` 2/483 = 0,4 % (letztes Rot
+2026-08-25), `self-watch is idempotent too — re-subscribing returns the SAME watch, not a second`
+0/472. Sie gehören nicht in diese Familie.
 
 ## 12. Ein Cast auf eine Netz-Antwort ist eine Behauptung — der `awaiting`-Befund (aus `CLAUDE.md` umgezogen 2026-08-18)
 

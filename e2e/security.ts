@@ -106,7 +106,22 @@ const PRE_AUTH_ROUTES = [
   // and no body field can nominate one; the body is the closed three-value status plus length-capped
   // text. The row is report-only: no land, dispatch, auto, Watch or tick gates on its status.
   '= /api/self/fleet-report',
-  // The owner-facing twin of the line above, and it is the QUIETEST entry on this list: it writes
+  // …and the door that JUDGES one of those rows, deliberately its own route rather than a fold
+  // into the event-ack regex: that one is a TRANSPORT receipt for every event kind, this one
+  // records what the receiving MAIN did with the work. Who may call it: the exact self principal
+  // of the report's RECEIVER occupant — NON-lane only (a lane files its own result, it does not
+  // accept the results its own MAIN is owed; 409, never 401), and the receiver triple is compared
+  // inside the handler the way replyClarification compares a clarification's, so a replaced MAIN
+  // session at the same slot is refused. An owner-inbox row (receiver null) is refused outright:
+  // no session is invented for the owner. Which report and which verdict BOTH come from the PATH;
+  // the body may carry `reason` and nothing else (any other key is a 400, never dropped), capped
+  // at MAX_FLEET_REPORT_DECISION_REASON. First decision wins — a second call, even an identical
+  // one, is a 409 that leaves the row untouched. What it does NOT do: no pane is written, no
+  // foreign slot is reachable, no task status, land, dispatch or tick moves. Its one side effect
+  // beyond the row is the transport half — settleFleetEventAcknowledged on the report's own event,
+  // through the ack route's single writer, and an already-terminal event is left exactly as it is.
+  String.raw`~ /^\/api\/self\/fleet-report\/([0-9a-f]{24})\/(accept|reject)$/`,
+  // The owner-facing twin of the fleet-report pair above, and it is the QUIETEST entry on this list: it writes
   // nothing into any pane and reaches no foreign slot. POST is non-lane-only AND requires the
   // caller to be the current bound MAIN of an active program (programId is derived from that
   // binding, never read from the body); GET returns only rows carrying the caller's exact occupant

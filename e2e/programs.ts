@@ -74,6 +74,8 @@ interface FleetState {
   studios?: Record<string, unknown>[];
   attentionRequests?: Record<string, unknown>[];
   tasks?: Record<string, unknown>[];
+  // read narrowly by the D1 report-join fixture, which only ever asks which ids are present
+  fleetReports?: { id?: string }[];
   watches?: Record<string, unknown>[];
   events?: Record<string, unknown>[];
   stewardToken?: string;
@@ -1594,15 +1596,41 @@ export async function run(ctx: Ctx): Promise<void> {
   // way in, so a row that could not hydrate would take this check red rather than pass it.
   const successorTokenOf = (slot: number | null): string =>
     slot === null ? "" : readState().slots?.[String(slot)]?.selfToken ?? "";
+  // ITS OWN task row, planted here rather than borrowed. The block above deliberately PRUNES
+  // `matchingTaskId` (the "later modules receive the exact pre-probe ledgers" cleanup), so a check
+  // down here that joined on that id would look up a row that no longer exists — and `report` would
+  // read null for the trivial reason that there is no row at all, which is exactly the answer this
+  // pair must not be able to give. The id is distinct so nothing above can be reattached by it, and
+  // the row is removed again below, in the same discipline as that cleanup.
+  const d1TaskId = "d1reporttaskrow";
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const d1TaskState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { tasks?: unknown[] };
+  d1TaskState.tasks = [...(d1TaskState.tasks ?? []), {
+    id: d1TaskId, originId: null, programId: mainProgram.id,
+    text: "D1 report-join fixture: the row a terminal worker report was filed against",
+    source: "owner", from: null, kind: "auftrag", repo: REPO, status: "done",
+    releasedBy: "owner", created: Date.now() - 60_000, slot: null, note: null,
+  }];
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(d1TaskState, null, 2), { mode: 0o600 });
+  await restartSrv();
   const beforePlantView = await selfExecution(successorTokenOf(successorSlot));
   const beforePlantRow = beforePlantView.view?.programs.find((x) => x.program.id === mainProgram.id)
-    ?.tasks.rows.find((row) => row.id === matchingTaskId);
+    ?.tasks.rows.find((row) => row.id === d1TaskId);
+  // …and it fails as ITSELF when the plant did not take: without this line an absent row reads as
+  // `report` merely being absent from the detail, which is the shape that cost a full audit cycle.
+  check("ProgramExecutionView report join prerequisite: the planted task row is observable to the bound successor",
+    beforePlantView.response.ok && !!beforePlantRow,
+    JSON.stringify({ ok: beforePlantView.response.ok, rowFound: !!beforePlantRow,
+      programFound: !!beforePlantView.view?.programs.find((x) => x.program.id === mainProgram.id),
+      taskIds: beforePlantView.view?.programs.find((x) => x.program.id === mainProgram.id)
+        ?.tasks.rows.map((row) => row.id) ?? null }));
   check("ProgramExecutionView report join: the successor is bound and its task row carries an explicit report null before any row exists",
     beforePlantView.response.ok && !!beforePlantRow && beforePlantRow.report === null
       && beforePlantView.view?.programs[0]?.authority.boundSlot === successorSlot
       && successorSlot !== bound?.slot,
     JSON.stringify({ boundSlot: beforePlantView.view?.programs[0]?.authority.boundSlot,
-      predecessor: bound?.slot, report: beforePlantRow?.report }));
+      predecessor: bound?.slot, rowFound: !!beforePlantRow, report: beforePlantRow?.report ?? null }));
   const decidedReportId = "c".repeat(24);
   const decidedReportEventId = "d".repeat(24);
   const decidedAt = Date.now() - 5000;
@@ -1616,7 +1644,7 @@ export async function run(ctx: Ctx): Promise<void> {
     id: decidedReportId, reportedAt: decidedAt - 1000, status: "needs-main",
     text: "D1 successor fixture: the slice landed as far as it could and a decision was owed.",
     worker: { slot: 1, openedAt: 1, sessionId: null, cwd: REPO, branch: "fleet/d1-successor-fixture" },
-    provenance: { taskId: matchingTaskId, originId: null, programId: mainProgram.id },
+    provenance: { taskId: d1TaskId, originId: null, programId: mainProgram.id },
     receiver: decidedReceiver, basis: "program-main", eventId: decidedReportEventId,
     decision: { disposition: "accepted", at: decidedAt, by: decidedReceiver,
       reason: "predecessor read the diff and took the work" },
@@ -1626,7 +1654,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const d1SuccessorToken = successorTokenOf(successorSlot);
   const d1SuccessorView = await selfExecution(d1SuccessorToken);
   const successorRow = d1SuccessorView.view?.programs.find((x) => x.program.id === mainProgram.id)
-    ?.tasks.rows.find((row) => row.id === matchingTaskId);
+    ?.tasks.rows.find((row) => row.id === d1TaskId);
   const successorReports = await (await fetch(`${BASE}/api/self/fleet-report`,
     { headers: { "x-fleet-self-token": d1SuccessorToken } })).json() as { reports?: { id: string }[] };
   check("ProgramExecutionView report join: a successor MAIN with a DIFFERENT occupant triple reads the predecessor's verdict without touching a pane",
@@ -1639,6 +1667,26 @@ export async function run(ctx: Ctx): Promise<void> {
       && !(successorReports.reports ?? []).some((r) => r.id === decidedReportId),
     JSON.stringify({ report: successorRow?.report ?? null,
       viaReportRoute: (successorReports.reports ?? []).map((r) => r.id) }));
+  // …and D1 takes its own plants back out, for the same reason the block above states: a task row
+  // and a report row left on the active Program would ride into every later module's view of it.
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const d1Cleanup = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+    { tasks?: { id?: string }[]; fleetReports?: { id?: string }[] };
+  d1Cleanup.tasks = (d1Cleanup.tasks ?? []).filter((t) => t.id !== d1TaskId);
+  d1Cleanup.fleetReports = (d1Cleanup.fleetReports ?? []).filter((r) => r.id !== decidedReportId);
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(d1Cleanup, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const d1CleanView = await selfExecution(successorTokenOf(successorSlot));
+  check("ProgramExecutionView report join cleanup: neither planted row survives into the next block",
+    d1CleanView.response.ok
+      && !d1CleanView.view?.programs.find((x) => x.program.id === mainProgram.id)
+        ?.tasks.rows.some((row) => row.id === d1TaskId)
+      && !(readState().fleetReports ?? []).some((r) => r.id === decidedReportId),
+    JSON.stringify({ ok: d1CleanView.response.ok,
+      taskIds: d1CleanView.view?.programs.find((x) => x.program.id === mainProgram.id)
+        ?.tasks.rows.map((row) => row.id) ?? null,
+      reportIds: (readState().fleetReports ?? []).map((r) => r.id) }));
 
   // --- THE UNBOUND SUCCESSION RAIL — the one founding delivery that had no gate. ------------
   // Everything above proves the BOUND rail: succeedProgramMain holds the boot grace, the delivery
@@ -1678,11 +1726,21 @@ export async function run(ctx: Ctx): Promise<void> {
   // read off the LIVE route, not the persisted file: saveState is debounced, and a slot opened
   // one line ago may not be on disk yet — `readState()` there would answer about the last save
   const unboundPredRow = (await sessions()).slots.find((s) => s.id === unboundFreeSlot);
+  // THE OCCUPANT, not the slot number. `handleSelfSucceed` decides "is this session a Program-MAIN"
+  // as status==="active" AND main.slot===s.id AND main.openedAt===s.openedAt, and this probe has to
+  // ask the same question about the same session — a slot-number-only test answers a different one.
+  // It went red once for exactly that reason: the succession-ambiguity block above INJECTS
+  // `ambiguousProgram.main = {...bound}` (the predecessor's triple) and then completes that program
+  // without clearing the binding, so the predecessor's slot NUMBER stays named by a completed
+  // program forever. As soon as that slot was recycled here, the old form read "this session is a
+  // Program-MAIN" about a session that had just been opened.
+  const unboundMainBindings = (await ownerPrograms()).filter((p) => p.status === "active"
+    && p.main?.slot === unboundFreeSlot && p.main.openedAt === unboundPredRow?.openedAt);
   check("unbound succession setup: a codex session that is neither Program-MAIN nor Supervisor is open",
     !!unboundOpen?.ok && unboundFreeSlot > 0 && unboundPredRow?.cwd === unboundRepo
-      && !(await ownerPrograms()).some((p) => p.main?.slot === unboundFreeSlot)
+      && unboundMainBindings.length === 0
       && unboundPredRow?.harness === "codex",
-    `slot=${unboundFreeSlot} status=${unboundOpen?.status} row=${JSON.stringify(unboundPredRow ?? null)}`);
+    `slot=${unboundFreeSlot} status=${unboundOpen?.status} bindings=${JSON.stringify(unboundMainBindings.map((p) => ({ id: p.id, main: p.main })))} row=${JSON.stringify(unboundPredRow ?? null)}`);
   const unboundPredOpenedAt = unboundPredRow?.openedAt ?? Date.now();
   // git commit times are whole seconds while openedAt is milliseconds — cross the boundary so the
   // handoff gate is proven by ORDER rather than by truncation (same reason as the block above)

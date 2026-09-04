@@ -1,3 +1,98 @@
+# HANDOFF — 🎛 Fleet Controller (Slot 9, Fable 5.1): Deckel freigeraeumt, Lebenszyklus-Kette laeuft (S1 + R2'), Context-Pack-Zeilen gefiled, Program Audit-Determiniertheit gegruendet; 2026-09-04 21:2x, ctx GEMESSEN 23–26 %
+
+Zustand ableiten: `./state.sh`, `./register.sh`, Owner-Poll, Panes. Hier nur, was git nicht traegt.
+Die Abschnitte darunter sind FREMD (Vorgaengerin Slot 6, MAIN Slot 7, Slot 5, Sanierung, Dual-Host).
+
+## 0. Rolle (unveraendert, Owner-Entscheid 2026-09-04 09:1x + 19:2x)
+
+Ueberblick + Owner-Nachrichten auf Programs routen. Lands vom Board NUR fuer Zeilen ohne lebende
+MAIN oder ohne Self-Land-Promotion. Audit-Adjudikation: die MAIN urteilt, der Controller legt ab
+(`POST /api/post-land-audits/adjudicate {at, verdict, note<=300}`). Modellpolitik: Controller
+Fable 5.1, MAINs + Lanes Opus 5 (steht als decision am Program f170dc46), Codex-Worker
+gpt-5.6-sol/high, GLM-Gegenchecks pi-zai/glm-5.3/high (kein Lane-Watch: Monitor auf den Worktree).
+
+## 1. Was in dieser Session (21:0x–21:2x) gefallen ist
+
+- **Deckel-Blockade geloest** (Nachricht der MAIN Slot 5, 21:0x): Slot 8 (Owner-[idee] Secret-Drop,
+  Clarify-Ergebnis, docs-only) gelandet → 704237d; Slot 2 (Beleg-Lane 6c9e2ac1, absichtlich ohne
+  Kandidat, Report eb093e03 liegt bei Slot 3) per `POST /api/slots/2/kill` geschlossen; die drei
+  ueberholten Zeilen 0c4a7692 · fa3a36b3 · a9fb4b6d geloescht (`POST /api/tasks/:id/delete`).
+  Der Tick startete danach R2' ce329973 (Slot 2) und S1 3cd64a5f (Slot 4, Codex). S2 9fd34beb und
+  S5a db6902c4 stehen queued („2/2 lanes busy"), starten von selbst beim naechsten freien Platz.
+- **GLM-Gegencheck Context-Pack** (Slot 4, 3dde5471) gelandet → 69f3a5c
+  (`docs/messungen/2026-09-04-context-pack-gegencheck-glm.md`: 5/8 bestaetigt, 3 teilweise, keine
+  widerlegt). Daraus auf Program Fleet-Betrieb `f170dc46e4b026ee34d9392e` gefiled, alle Codex
+  gpt-5.6-sol/high, alle PENDING (der Controller gibt frei): **CP-A `4b8099fe`** (Trigger-Ableitung
+  briefAndSend + Omissions-Render + pi-ox ins Manifest; unabhaengig, kollisionsfrei — freigeben,
+  sobald S5a dispatcht ist, damit das Lebenszyklus-Paket Vorrang behaelt) · **CP-B `bf95f753`**
+  (selected/omitted + Null-Pack-Flag in supervisorView/programExecutionView + Board; NACH S2-Land)
+  · **CP-C `b2bd8cef`** (buildSuccessionBrief durch die Plan+Quittungs-Naht, receiptWrites-Pin 5→6;
+  NACH S4-Land) · **Notiz `d5e6c26b`** (zwei Owner-Entscheide: task-queue-read an der Lane-Naht;
+  Rollen-Vokabular im selben Akt wie D1 3a-i).
+- **Slot 1 (private-repo-p Brief 9 `ba896b1b`, MAIN tot):** das „go ahead" der Vorgaengerin lag seit
+  19:29 UNGESENDET im Composer (Pane sagte „done 7:29 PM"); ein tmux-`Enter` half nicht, `POST /send
+  {slot:1,text}` hat es zugestellt (acceptance observed), Lane arbeitet („2 shells"). Niemand sonst
+  landet sie: Lane-Watch lesen, Pane lesen, dann `POST /api/slots/1/merge`.
+- **Program „Audit-Determiniertheit 2026-09" `79036e9a58e3429578165297` gegruendet** (Owner-Auftrag
+  21:2x, HANDOFF Slot 6 §2.6): Content → confirm → activate → Promotion selfLand guarded →
+  `bootstrap-main` auf **Slot 6** (Opus 5 high), Bindung live, Gruendungsbrief zugestellt, MAIN
+  erdet sich. Evidenz im Program: Trail-Ranking 7 Tage (191 Laeufe; roh busy-receiver 44/178 =
+  24,7 %, NACH 7d089c1 0/12 — der Fix haelt; nach dem Fix: projection nextAction 4/11 ·
+  subject-gone+counterprobe 3/12 · „delivers it WHOLE" 3/11 · re-run-Guard 2/11 · „unbound
+  succession: pane s8" 2/2 auf einem Baum, ungeklaert; 8 von 12 Laeufen rot). Erfolgsmass (b):
+  lokale Audit-Rot-Rate unter 2 von 10 ueber 5 Tage, gemessen am Ledger.
+- **Owner-Frage 21:1x „Zusammenarbeitsfix-Session / sollten Lanes fleet-interne Reports statt
+  docs committen?"** beantwortet (Bericht im Controller-Transcript): keine solche Regel; der
+  mess-notiz-Skill verlangt das Gegenteil (Notiz committen, weil 21,7 % killed-empty); der
+  Fleet-Report ist per Code MESSAGE, nie Zustand (`pruneFleetReports`, 20 Zeilen); was der Owner
+  meint, ist D3 (MAIN-Handoff am Program statt git, Schnitt 4, ungelandet) bzw. das ungebaute
+  Harvest-Konzept `docs/attic/konzept-sensor-rueckschreibung-2026-08-30.md` Teil D. Kostenpunkt
+  genannt: jedes docs-only-Land loest ein volles Tier-2-Audit aus. **Keine Owner-Antwort bisher.**
+
+## 2. Was JETZT offen ist, in dieser Reihenfolge
+
+1. **Rueckwege neu legen — alle meine sterben mit dieser Session:** Lane-Watch Slot 1
+   (`POST /api/self/watch {target:1}`) · Audit-Watch `{kind:"audit", repo, mainAfter:<VOLLE sha von
+   fc45fe4>}` — nur falls der Deploy unten noch aussteht · Attention-Monitor (45-s-Poll
+   `GET /api/attention` status=open) · Task-Status-Monitor auf S1/S2/S5a + die 9 pending
+   Lebenszyklus-Ids + CP-A/B/C + ba896b1b + ce329973 (`GET /api/tasks` → `{tasks:[...]}`).
+2. **Deploy nach R1** (a6bf269/0e659fb, server.ts; deployGap 10+ Commits): Audit auf fc45fe4 laeuft
+   seit 21:01:22 (Lock-pid 31575) — `POST /api/deploy` gibt 409 waehrend des Audits; danach
+   deployen, `GET /api/deploys` ok:true pruefen, `bundleStale` am Owner-Poll. Falls ich es vor der
+   Nachfolge geschafft habe, steht es in §1 als Nachtrag.
+3. **Freigabe-Kette Lebenszyklus:** nach S2-Land S3a-i `30383e62` UND S12 `7ed73694` queuen
+   (`POST /api/tasks/:id/queue`); nach S3a-i: S3a-ii `c464af30` + S4 `8e1e0be4`; dann S3b `417d2be5`
+   → S3d `74319808` → S3c `288f6359`; S5b `ee47b0f8`, S5c `1832c7eb` unabhaengig. Nach S2 auch
+   CP-B; nach S4 CP-C; CP-A sobald S5a dispatcht ist. Nach jedem server.ts-Land Deploy; nach S12
+   und CP-B `bun run build`. Die MAIN Slot 5 nimmt Reports und landet per Self-Land — sie hat die
+   Release-Tuer selbst, falls du lieber sie freigeben laesst (Angebot in ihrer Nachricht 21:0x).
+4. **Audit-Determiniertheit MAIN Slot 6**: erste Zeile klaert „unbound succession: pane s8"
+   (Regress oder Fixture); Reports/Adjudikationen kommen an dich. Flake-Beweislaeufe LOKAL.
+5. **Vier Programs `active` mit toter MAIN** (2c073232 Private-repo-j → Slot 7 leer, 07ee8a6d private-repo-p
+   → Slot 4 ist jetzt eine Codex-Lane, f99e9354 Private-repo-o → Slot 10 leer, b2aa5b45 Game-Maker v2
+   → zeigt auf Slot 9 = DIESEN Controller-Slot) — Owner-Entscheid parken/neu binden steht aus.
+6. Sechs rote Audits ohne Urteil (alle aelter als heute, laut Slot 5 kein Fleet-Betrieb-Land).
+
+## 3. Bezahlte Lehren dieser Session
+
+- **`/send` ist `POST /send {slot, text}`, nicht `/api/slots/:id/send`** (404). Kill ist
+  `POST /api/slots/:id/kill`; Task-Loeschung `POST /api/tasks/:id/delete` (409 bei `sent`).
+- **Ein `tmux send-keys Enter` in einen Claude-Code-Composer mit liegendem Text sendet NICHT** —
+  die Board-Route (`/send`) tut es. Erst Pane lesen: „done HH:MM" + Text im Composer = haengt.
+- **Program-Content-Felder sind je ≤ 300 Zeichen** (evidence[], openQuestions[]; intent laenger
+  erlaubt). Gruendungs-Reihenfolge, die funktioniert: `POST /api/programs` → `/confirm` →
+  `/activate` → `/promotion {policy:{v:1,selfLand:"guarded"}}` → `/bootstrap-main {cwd,label,
+  harness,model,effort}`.
+- **Trail-Ranking: 32 von 191 Laeufen tragen keinen `tree`** — die Attribution ist dort unmoeglich;
+  ein Schnitt-Kandidat fuer das Audit-Program (steht in dessen evidence).
+- **Python-Heredoc mit deutschen Anfuehrungszeichen: „…" mit GERADEM Schlusszeichen beendet den
+  String** — „…“ (U+201C) benutzen.
+- Die Uhr: mein Vorgaenger schrieb „21:2x", die Maschine sagte 21:01 — Zeitangaben mit x sind
+  Schaetzungen, `date` ist die Messung.
+
+---
+---
+
 # HANDOFF — 🎛 Fleet Controller (Slot 6, Fable 5.1): Lebenszyklus-Paket aufgesetzt (12 Codex-Zeilen), Context-Pack-Gegencheck laeuft, drei Board-Lands + zwei Deploys gefahren; 2026-09-04 21:2x, ctx GEMESSEN 34,2 %
 
 Zustand ableiten: `./state.sh`, `./register.sh`, Owner-Poll, Panes. Hier nur, was git nicht traegt.

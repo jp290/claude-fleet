@@ -492,6 +492,73 @@ Kein Deploy, kein Land, kein zweiter Task neben D2, keine Attention ausser der e
 read-only Portfolioansicht fuer den Controller) ist weiterhin NICHT gestellt — sie ist eine
 Geschmacks-/Scope-Frage und gehoert hinter D2s Land.
 
+## 7. NACHTRAG (14:5x) — D2 ist FERTIG UND BEWIESEN, aber NICHT GELANDET: zweimal am ff-Rennen verloren
+
+**Der Stand in einem Satz:** `4a29ffcd` steht auf `sent`, Slot 1, Kandidat zuletzt `5a97ca0`
+(patch-id **`300868d4`** ueber ALLE Rebases byte-identisch), Report **viermal** von mir angenommen —
+und main hat den Commit trotzdem nicht.
+
+**Was zweimal passierte** (Events `fb52737e`, `40e4d3ca`): `status=error`, `landed=NO`,
+**`verify` beide Male GRUEN**. Verdikt woertlich „rebase ok, but fast-forwarding main failed".
+Das ist **kein Urteil ueber den Diff** — das Gate lief sauber durch, main bewegte sich waehrenddessen.
+
+**Die gemessene Ursache (B-19-Muenzwurf):**
+- main bewegt sich ~3 Commits/h, also **alle ~20 min**.
+- Das Land-Gate-Fenster ist **breiter**: Kettenlaufzeit plus Suite-Mutex-Wartezeit (die letzten
+  Lands warteten **531 s** und **1560 s**; `FLEET_VERIFY_WAIT_MS` erlaubt bis 45 min).
+- **Ein Kandidat kann dieses Rennen nicht aus eigener Kraft gewinnen.** Jeder weitere Rebase ist
+  derselbe Muenzwurf bei denselben Quoten — die Lane hat das selbst korrekt geschlossen und
+  ausdruecklich aufgehoert nachzurebasen.
+- Eine FREMDE Program-MAIN steht bei `79cf723` an derselben Wand („jeder eigene Land erhoeht die
+  behind-Zahl zweier fertiger, wartender Lanes").
+
+**Die Vorbedingung, die den Unterschied macht — VOR jedem weiteren Landversuch pruefen:**
+```
+ps -eo command | grep -c '^/bin/sh ./e2e-'      # MUSS 0 sein
+ls -d /tmp/fleet-e2e.lock 2>/dev/null           # und der Halter tot/abwesend
+```
+Bei freier Maschine faellt der Gate auf ~110 s und das Fenster von ~10 min auf ~2. **Bei gehaltenem
+Mutex NICHT landen** — das verschenkt das Fast-Forward ein weiteres Mal. Ich habe zu zwei
+Zeitpunkten geprueft und **zwei VERSCHIEDENE lebende Halter** gesehen (`35976`, dann `97701`): die
+Maschine laeuft derzeit Suite an Suite, das ruhige Fenster kommt nicht von selbst.
+
+**Damit ist eine Entscheidung faellig, die keine Lane und keine MAIN treffen kann** (fuer den Owner
+bzw. den Controller):
+1. ein **serialisiertes ruhiges Fenster** fuer diesen einen Land, oder
+2. eine **andere Land-Form als `--ff-only`** unter B-19 — das waere eine Aenderung am Land-Pfad und
+   ist Scope, den ich ungefragt nicht nehme.
+
+**Erfolgssatz 8, ehrlich:** GEBAUT, **nicht belegt** — und der Code liegt nicht einmal auf main.
+`FLEET_LANE_AUTOCLOSE` ist per Default AUS; „eine Lane hat sich automatisch geschlossen" ist NICHT
+passiert und darf nicht behauptet werden. Belegbar ist: der Mechanismus, seine fuenf einzeln
+gepruefte Ablehnungen, der Mutations-Falsifikator (LIVE PASS / MUTANT FAIL) — und dass der Diff
+viermal unabhaengig verifiziert wurde.
+
+**Erfolgssatz 7: VIERMAL belegt** (`17854c56`, `3478ad04`, `d80c33ac`, `b731f041`), dreimal davon auf
+`needs-main`-Reports — die Tuer legt ein URTEIL ab, sie stempelt kein Gruen.
+
+**Und Worker Cs Fix hat sich im Betrieb bewiesen:** beide gescheiterten Merges liessen die Zeile
+`REVIEWABLE` mit offener Self-Land-Tuer stehen (`R9`), statt still zum Owner-Land zu degradieren.
+Genau dafuer war `MergeErrorReason: "ff-lost"` gebaut.
+
+**Zwei Korrekturen an mir selbst, damit sie niemand erbt:**
+- Ich habe stundenlang berichtet, der Land sei die Tat des Controllers. **Falsch:** die Zeile trug
+  `nextAction: „inspect the diff, then land it yourself"` und das Program traegt `selfLand: guarded`.
+  Ich hatte die Projektion einmal am Anfang gelesen und danach auf einer erinnerten Regel gefahren.
+  **Die Projektion wird VOR JEDER Tat gelesen, nicht einmal pro Session.**
+- Als der Re-Land „not done-looking (no signal)" sagte, habe ich auf `alive` getippt und daraus
+  beinahe einen Befund gemacht („eine fertige Lane strandet, weil ihr Agent geht"). **Falsch:** die
+  Lane war am Leben und **nicht idle**, weil sie gerade die Kette neu fuhr. Die Ablehnung nennt die
+  Klausel NICHT — `alive`, `idle` und der `errorReason` sind fuer ein Self-Token unsichtbar. Nicht
+  raten, welche der sechs Klauseln faellt.
+
+**`§11.2l` ist seit `7d089c1` REPARIERT** (mechanisch geprueft: nicht Vorfahr von `4393fbe`, sehr
+wohl Vorfahr von main). Meine eigene Basisrate 8,3 % / 28 Baeume stammt aus der UNREPARIERTEN Zeit
+und darf ein kuenftiges Rot dort **nicht mehr entlasten**. Neu in der Quelle ausserdem: eine
+fuenfzehnte Familie `§11.2m`. Der zweite Rote von D2 („⏸ a re-run is refused while the resolution is
+still rebased onto main", `e2e/merge.ts`, 9/646 auf 9 Baeumen) hat weiterhin KEINE Familie und
+braucht `§11.2n` — als ZEIGER auf `docs/messungen/2026-09-03-flake-basisrate-settle-for-merge.md`.
+
 ---
 
 # HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 8): BEIDE haengenden Lands sind drin und verifiziert, E1s Fix ist am lebenden Objekt bewiesen, vier neue Registerzeilen; 2026-09-04 (10:0x), ctx GEMESSEN 24,7 %

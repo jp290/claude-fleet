@@ -1,4 +1,87 @@
-# HANDOFF — Program-MAIN Game-Maker-Workflow v2 (`b2aa5b453d0f2bf9ddce8232`, Slot 9): Schritte 3–4 gelandet, bffe3de0 haengt im ff-Rennen, KEIN Controller mehr; 2026-09-04 (08:xx), ctx GEMESSEN 26,4 %
+# HANDOFF — 🎛 Fleet Controller (Slot 13, Fable): Manifeste + §11.2l gelandet, Owner will Merges aus dem Controller heraus, zwei Owner-Entscheide offen; 2026-09-04 08:5x, ctx GEMESSEN 22,3 % (vor dem Schreiben)
+
+Zustand ableiten: `./state.sh`, `./register.sh`, Owner-Poll, Panes. Hier nur, was git nicht traegt.
+Der Abschnitt darunter (Program-MAIN Game-Maker v2, Slot 9) ist FREMD und steht hier, weil
+HANDOFF.md eine geteilte Datei ist — nicht als meiner lesen.
+
+## 0. Zwei Owner-Entscheide, die JETZT offen sind (Owner-Worte 08:3x–08:4x, sinngemaess)
+
+1. **„Merge-Benachrichtigungen aus dem Controller auslagern"** — Owner-Vorschlag: Steward-Session
+   auf Opus 5, ggf. „ein Steward je 4–5 Slots", der Controller nur noch Ueberblick + Routing der
+   Owner-Nachrichten; „am Ende soll das projektintern oder zwischen MAIN & Lane passieren".
+   **Meine Antwort (Code gelesen):** NICHT der Steward — sein Token erreicht sieben Routen
+   (`/api/steward/{autos,digest,journal,send,sessions,tasks,token}`), keine Merge-/Land-Route,
+   `docs/steward.md` §„What it is NOT" = not a gate. Die Rolle existiert schon: **Program-MAIN mit
+   Self-Land-Promotion** (`PromotionPolicy.selfLand`, Land ueber `POST /api/self/tasks/:id/land`;
+   Slot 8 landet E1 so). Vorschlag an den Owner: Program „Fleet-Betrieb" mit Opus-5-MAIN (high) +
+   Self-Land gruenden, das alle heimatlosen Fleet-Zeilen nimmt (S2 `0555828b`, Program-Ansicht
+   `74d90c5e`, die Routing-Bugs aus §4 des Slot-12-Handoffs); Modellpolitik dann: MAINs Opus 5, nur
+   Controller Fable (Slot 9+10 habe ich um 08:1x nach der ALTEN Regel auf Fable gestellt — Route +
+   Pane; zurueckdrehen, wenn der Owner ja sagt). Zwei kleine Lanes fuer die Ursachen der Last:
+   Merge-Verdikt an die MAIN statt an die Lane-Pane (`deliverMergeVerdict`; die Lane faehrt sonst
+   nach jedem ff-lost ihre Kette neu — Slot 3 tat das dreimal, je ~10 min Mutex) und ein bounded
+   Rebase+ff-Neuversuch in `mergeJob` (ff-lost heute 4x an bffe3de0). **Antwort steht aus.**
+2. **Attention `8b4772db1d9dcf39d833383f` (kind decision, Slot 9, Game-Maker v2 Schritt 5):**
+   (1) Trockenzyklus auf pausierter Private-repo-j mit FRISCHER MAIN (a, Vergleichszahl 528k) oder
+   Canary (b)? (2) Muss `5c1f831f` Program-scoped Dispatch vorher landen? Empfehlung aller
+   Beteiligten inkl. mir: **a, nein.** Dem Owner so vorgelegt, Antwort steht aus.
+
+## 1. Getan (08:0x–08:5x)
+
+- Manifeste gelandet, beide Verify gruen mit dem Repo-eigenen Kommando: private-repo-p `a454dc2`
+  (6 Packs), Private-repo-j `0e30a45` (5 Packs). Beide validieren gegen `context-pack-validator.ts`
+  ohne Fehler (nur `CAPABILITY_AVAILABILITY_UNKNOWN`, weil ohne Harness-Snapshot geprueft;
+  Skript: Scratchpad `validate-manifest.ts`). Reports der Lanes: Scratchpad `reports/`.
+- §11.2l gelandet: `7d089c1` + `4ff94e3` (Slot 3, bffe3de0 done). Sechs Anlaeufe: 3x ff-lost
+  (main bewegte sich durch Handoff-Direkt-Commits 13b2edf, 5edc4f5), 1x §11.2i (Phase-3-Server
+  ohne server.log), 2x „session actively working" (Lane fuhr Kette neu). Kein Deploy noetig.
+- Regelbuch: §11.2l → REPARIERT in `7d089c1`; Flake-Familien vierzehn → fuenfzehn (§11.2m
+  PARKED-Quartett); Suite-Offer-Zeile nennt `helper` an `GET /api/self/gate`; Loader-Fragment sagt
+  jetzt, dass CLAUDE.md GENERIERT ist.
+- Modellpolitik-Nachzug: Slot 9 + 10 auf Fable (Route `POST /api/slots/:id/model` + `/model` in
+  der Pane, Dialog per Enter bestaetigt, Footer „Fable 5.1"). Slot 8 NICHT (wartete auf Watch),
+  Slot 6 NICHT (Composer belegt, fremde Pane). Siehe §0.1 — evtl. alles zurueckdrehen.
+- Mein Slot heisst jetzt „🎛 Fleet Controller" (`POST /api/slots/13/rename`); Slot 9 hatte „KEIN
+  Controller" in seinen Handoff geschrieben, weil der Slot unbeschriftet war.
+
+## 2. Bezahlte Lehre dieser Session
+
+**CLAUDE.md ist aus `rulebook/*.md` GERENDERT** (Rezept im Kopf von `rulebook.ts`); ein
+Hand-Edit faellt den byte-genauen Pin `e2e/pins.ts` §6b = Stufe 1 JEDES Land-Gates. Meine drei
+Edits um 08:04 liessen ~20 min lang jeden Land der Maschine an Stufe 1 sterben; `rulebookDrifted`
+sah es nicht. Jemand zog die Edits um 08:23 ins Fragment (nicht ich). Memory geschrieben
+(`feedback-claude-md-is-rendered-from-rulebook`). Regelbuch-Nachzug heisst: Fragment → Render →
+`bun e2e/pins.ts`.
+
+## 3. In Flug und wer landet
+
+| Zeile | Slot | Stand | Landet |
+|---|---|---|---|
+| `4b92b2f0` E1 | 11 (codex) | Kette gruen, idle, „nicht gelandet" | **Slot 8** (Self-Land, Watch 2035a34b) |
+| `4a29ffcd` D2 | 1 | 4393fbe, wartet auf Mutex fuer Schritte 5–7 + Isolated | Controller (Program 66499a03 = Slot 10 hat Watch-Pflicht) |
+| `0555828b` S2 | 2 | 0957488 (4 Dateien, +315), wartet auf Gate-Kette + Isolated (Helfer „second-host") | Controller — oder das neue Program |
+| `6fd9d46e` GLM-Denkauftrag | 4 | pi-zai, schreibt Notiz `docs/ideen/2026-09-04-context-packs-jobschichten-glm.md` | kein Watch moeglich (nicht automatable) — Pane lesen |
+| `74d90c5e` Program-Ansicht | — | queued | ERST nach S2/E1/D2 (server.ts-Ueberlappung) |
+
+Land-Reihenfolge: E1 (Slot 8) → D2 → S2 → dann `74d90c5e`. Watches sterben mit diesem Slot: neu
+armen (lane 1, 2; `{kind:merge}` nach jedem eigenen Merge-POST; Deckel 5, `GET /api/self` zeigt
+die Liste). Merge-Watch feuert beim Armen SOFORT aus einem alten Terminalfakt, wenn kein neuer
+Lauf laeuft — erst POST merge, 2 s warten, dann armen.
+
+## 4. Sanierung, Restdauer (dem Owner 08:2x genannt)
+
+E1 (landet), E5/B-09 `51f59f63` (queued, eine Lane ~2 h + Land), E6 Abschlussmessung (docs, ~1 h):
+~4–5 h, Annahme kein weiterer ff-lost und ein Land je 45–60 min Mutex.
+
+## 5. Notiz-Kandidaten (nicht gemintet)
+
+- `GET /api/slots/:id/merge` nach Land → `not a fleet-created worktree lane` (§4.1 des
+  Slot-12-Handoffs): ein Hintergrund-Watcher auf `running:false` endet nie. Selbst bezahlt.
+- Merge-Watch-Fehlzustellung: `{kind:merge}` nach einem NEUEN Merge-POST fired trotzdem aus dem
+  ALTEN Fakt, wenn der POST noch nicht `running:true` persistiert hat (2x gesehen).
+- §11.2i-Sichtung 08:30 an bffe3de0 (Phase 3, keine server.log).
+
+# HANDOFF — Program-MAIN Game-Maker-Workflow v2 (`b2aa5b453d0f2bf9ddce8232`, Slot 9): Schritte 3–4 UND bffe3de0 gelandet, KEIN Controller mehr; 2026-09-04 (08:xx), ctx GEMESSEN 32,3 %
 
 Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was
 git und die Sensoren nicht tragen.
@@ -132,15 +215,17 @@ gefallen ist, liest den Trail, nicht das Ledger.
 
 ## 8 Nachtrag (08:xx): bffe3de0 im ff-Rennen, kein Controller, und HANDOFF.md ist eine geteilte Datei
 
-- **`bffe3de0` (§11.2l-Reparatur) ist zur `auftrag`-Zeile DIESES Programs konvertiert und gelaufen**
-  (Slot 3, `fleet/260904023213-657d`). Am Baum nachgeprueft: `251adab` (Fixture, `e2e/watch.ts` +21)
-  + `c756a1d` (Doc, `docs/verify-tiering.md` +39/-5), behind 0 / ahead 2 / dirty 0. Mutationsprobe
-  sauber (Keeper aus → §11.2l-Fingerabdruck 2206 ms; Keeper an → alle fuenf gruen), Gate-Kette gruen.
-- **Der Land ist ZWEIMAL am ff-Rennen gescheitert, nie am Baum** (`landed=NO, verify green`): main
-  zieht waehrend der ~110 s Gate weiter (sechs Lanes in Flug laut Slot 12). Die Lane rebast selbst
-  nach, ist dabei nicht idle, die Land-Tuer sagt `not done-looking (no signal)`. **Die Projektion
-  nennt `POST /api/self/tasks/bffe3de0/land` als MEINE Tuer (R9).** Lane-Watch `bcb73ca8` armed;
-  beim Feuern: Diff ist geprueft, sofort landen, bei erneutem ff-Fehlschlag sofort nochmal.
+- **`bffe3de0` (§11.2l-Reparatur) IST GELANDET — von mir, ueber die Tuer, die die Projektion nannte**
+  (`POST /api/self/tasks/bffe3de0/land`, `selfLand: green-only`). main = `4ff94e3` (Doc) auf **`7d089c1`**
+  (Fixture, `e2e/watch.ts` +21). Land-Note: verify.ok true, volle 7-Stufen-Kette, **1194 s, davon 1090 s
+  Warten auf den Suite-Mutex** — das ist B-17 (`1f1e12a`) als Zahl. Vorher drei Fehlversuche, KEINER am
+  Baum: zweimal ff-Rennen (main zog waehrend der Gate weiter, einmal durch MEINEN Handoff-Commit), einmal
+  `./e2e-claude-gate.sh` Phase 3 (server did not come up, keine server.log) = §11.2i, „nie gemessen".
+  Same-Tree-Rerun der Lane danach gruen. Audit-Watch `db446c7b` auf `4ff94e3` armed.
+- **Regelbuch nachgezogen (maschinenlokal: `rulebook/lane-discipline.md` → Render → pins ALL PASS):**
+  §11.2l steht auf REPARIERT in `7d089c1`. Die SHA ist VIERMAL gewandert (ca81fbb → 251adab → ffeda2a →
+  7d089c1), weil jeder Rebase die Fixture neu hasht und das Doc sie zitiert; die Lane hat das zuletzt mit
+  `git log --grep 'busy-receiver fixture'` entschaerft. Nimm eine solche SHA nie aus einem Report.
 - **Es gibt keinen 🎛 Fleet Controller mehr** — kein Slot traegt das Label (16 → 7 belegte Slots);
   Slot 12s Handoff (unten) sagt selbst „Watches sterben mit Slot 12". Damit dispatcht niemand
   `328fd28f`/`e0d625a5` (F2/F4, `pending`, von mir NICHT released — Non-Goal), und die Attention

@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rena
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
-import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, post, restartSrv, tmuxOut } from "./harness";
+import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, tmuxOut } from "./harness";
 import { phaseOf, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import { laneDoneLooking, type LaneSignalView } from "../lane-signals";
 import { observedSourceHash } from "../context-manifest";
@@ -6186,6 +6186,42 @@ export async function run(ctx: Ctx): Promise<void> {
         && redVerdict.verify?.ok === false && (await slRow(redRowId))?.status === "sent"
         && spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim() === redMainBefore,
       JSON.stringify({ first: redFirst.status, verdict: redVerdict }));
+
+    // --- THE VERDICT'S RECEIVER: a self-land is answered to the MAIN THAT ASKED (2026-09-04) ----
+    // Measured that morning: the red/ff-lost verdict of a self-land was typed into the LANE pane.
+    // The lane read it as an order and re-ran its whole verification chain on this machine's ONE
+    // suite mutex — six times on a single row, three of them ff-lost. Nothing about that verdict
+    // was the lane's: it had reported done, THIS MAIN judged the tree and asked for the land, and
+    // the answer belongs to the session that asked. The red arm above is exactly that shape (a
+    // kept lane with a reviewable verdict and a `main` actor), so it is measured here rather than
+    // built a second time. TWO halves, and the silence is the one the incident was about.
+    const redLaneBranch = redLaneSlot === null ? ""
+      : (await slSess()).slots.find((x) => x.id === redLaneSlot)?.worktree?.branch ?? "";
+    const redVerdictRows = async (): Promise<{ slot: number; source: string }[]> =>
+      (await plogRead()).filter((e) => e.text.includes(`[fleet land verdict — ${redLaneBranch}]`))
+        .map((e) => ({ slot: e.slot, source: e.source }));
+    // the delivery runs at the merge job's terminal, after the record the poll above already saw —
+    // so it is polled for, never slept on, and the last thing seen is what a failure prints.
+    let redRows = await redVerdictRows();
+    for (let i = 0; i < 240 && redRows.length === 0; i++) {
+      await Bun.sleep(250);
+      redRows = await redVerdictRows();
+    }
+    check("self-land verdict: the answer goes to the MAIN that asked, and the LANE that wrote the tree is told NOTHING",
+      !!redLaneBranch && redRows.length === 1 && redRows[0]?.slot === landMainSlot
+        && redRows[0]?.source === "auto" && !redRows.some((r) => r.slot === redLaneSlot),
+      JSON.stringify({ branch: redLaneBranch, mainSlot: landMainSlot, laneSlot: redLaneSlot, rows: redRows }));
+    // …and the row REMEMBERS that receiver, which is what the tick's bounded retry reads: a retry
+    // has no job frame to inherit an actor from, so without this field a restart between the two
+    // would quietly re-aim the verdict at the lane — the exact paste this cut removes.
+    const redReceiver = ((await (await get(`/api/slots/${redLaneSlot}/merge`)).json()) as
+      { last: { verdictTo?: { slot?: number; openedAt?: number; program?: string; task?: string } } | null })
+      .last?.verdictTo ?? null;
+    check("self-land verdict: the merge row records the MAIN occupant as the receiver — slot, program and task, not just a slot number",
+      redReceiver?.slot === landMainSlot && redReceiver.program === landProgram.id
+        && redReceiver.task === redRowId && typeof redReceiver.openedAt === "number"
+        && (redReceiver.openedAt ?? 0) > 0,
+      JSON.stringify(redReceiver));
     // the merge job rebased this lane onto the main the green land moved, so its git facts are
     // freshly stale; done-looking gates ABOVE the progress guard and the probe would otherwise
     // measure the tick rather than the guard.

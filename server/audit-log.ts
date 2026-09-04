@@ -46,11 +46,14 @@ type AuditEvent =
   // ② the conflict went to the lane's OWN session instead of the throwaway resolver — the durable
   // half of `resolvedBy`, recorded at the moment of the decision rather than reconstructed at land
   | "merge_wake_author"
-  // the terminal verdict of a merge run going back into the lane it describes, and the refusal
-  // when the delivery gate was closed. Both on the trail because this is the server typing prose
-  // into a session's pane: what it sent, and what it decided not to send, are the same class of
-  // fact as merge_wake_author one line up.
-  | "merge_verdict_sent" | "merge_verdict_skip"
+  // the terminal verdict of a merge run going back to whoever asked for it — the lane on an owner
+  // ⏫, the Program-MAIN that drove a self-land — and the refusal when the delivery gate was closed.
+  // Both on the trail because this is the server typing prose into a session's pane: what it sent,
+  // and what it decided not to send, are the same class of fact as merge_wake_author one line up.
+  // The THIRD is its own word on purpose: a gate refusal is temporary and capped, while an
+  // undeliverable verdict says the occupant that asked is GONE — and that one is never re-aimed at
+  // the lane, so the trail is the only place the disappearance is written down.
+  | "merge_verdict_sent" | "merge_verdict_skip" | "merge_verdict_undeliverable"
   | "steward_send" | "steward_send_capped"
   | "steward_journal" | "steward_journal_capped" | "steward_task" | "steward_propose_outcome"
   // ACP-23 · a bound Program-MAIN filed a row of its own Program through POST /api/self/tasks.

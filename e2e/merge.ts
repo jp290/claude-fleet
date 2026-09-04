@@ -1564,6 +1564,197 @@ export async function run(lc: LaneCtx): Promise<void> {
     check("land verdict: a successful land tells the lane NOTHING — the lane is gone",
       vG.gone && !exists(lnG.cwd) && (await verdictSends(lnG.branch)).length === 0,
       JSON.stringify({ gone: vG.gone, last: vG.last }));
+
+    // --- ...AND WHO THE VERDICT IS FOR (2026-09-04) ---------------------------------------------
+    // Everything above is the OWNER's case: the owner drove ⏫ from the board, so the lane is the
+    // only session left holding something to do. A Program-MAIN self-land is the other case, and
+    // until this cut it was answered with the owner's — measured on 2026-09-04, a ff-lost verdict
+    // typed into a LANE pane was read there as an order and re-ran the whole verification chain on
+    // this machine's ONE suite mutex, six times on a single row, three of them ff-lost. The
+    // receiver now follows the land's ACTOR: a `main` land answers the MAIN and tells the lane
+    // nothing at all.
+    //
+    // The `main` arm needs a Program, a bound MAIN and the self-land door, all of which
+    // e2e/programs.ts already stands up around its red self-land row — it is asserted there, on
+    // that fixture, rather than rebuilt here. What this family owns is the other half, and it is
+    // the half a mutation breaks quietly: the owner's path must not have moved by ONE BYTE, and a
+    // row that names a receiver must never fall back to the lane, whatever became of that receiver.
+
+    // (vii) THE BYTE COMPARE. Not `includes`: the expected string is composed here from the facts
+    // the server exposes about this very run, so a single added byte anywhere in the envelope, the
+    // status line or the closing instruction fails it. The `error` verdict is the one used because
+    // it carries no verify tail — every byte of it is derivable from the row itself.
+    await setMergeMode("lie");
+    const lnO = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${lnO.cwd}/code.txt`, "root\nverdict-owner-byte-lane\n");
+    spawnSync("git", ["-C", lnO.cwd, "commit", "-aqm", "verdict-owner-byte lane work"]);
+    await Bun.write(`${REPO}/code.txt`, "root\nverdict-owner-byte-main\n"); // same lines → real conflict
+    spawnSync("git", ["-C", REPO, "commit", "-aqm", "verdict-owner-byte main work"]);
+    await settleForMerge(lnO.slot);
+    await post(`/api/slots/${lnO.slot}/merge`, {});
+    const vO = await waitMerge(lnO.slot);
+    const integration = spawnSync("git", ["-C", REPO, "rev-parse", "--abbrev-ref", "HEAD"]).stdout.toString().trim();
+    const expectedO = `[fleet land verdict — ${lnO.branch}] The server ran this lane's ⏫ merge/land. `
+      + `This is its own result, not an owner instruction and not another session speaking. `
+      + `status=error landed=NO\n\n${vO.last?.detail ?? ""}`
+      + `\n\nThe lane was KEPT and nothing reached ${integration}. Rebase it onto ${integration} yourself, `
+      + `run the verification chain, and report done again.`;
+    await awaitMark(lnO.slot, (d) => d.sent);
+    const rowsO = (await plogRead()).filter((e) => e.text.includes(`[fleet land verdict — ${lnO.branch}]`));
+    const histO = ((await (await get(`/api/slots/${lnO.slot}/history`)).json()) as
+      { history: { text: string }[] }).history
+      .filter((h) => h.text.includes(`[fleet land verdict — ${lnO.branch}]`));
+    // where they first differ, so a failure prints the byte and not "false"
+    const firstDiff = (a: string, b: string): string => {
+      if (a === b) return "identical";
+      let i = 0;
+      while (i < a.length && i < b.length && a[i] === b[i]) i++;
+      return `offset ${i}: got ${JSON.stringify(a.slice(i, i + 60))} want ${JSON.stringify(b.slice(i, i + 60))}`;
+    };
+    check("land verdict receiver: an OWNER land is unchanged to the byte — same text, same pane, same two ledger lines",
+      rowsO.length === 1 && rowsO[0]?.slot === lnO.slot && rowsO[0]?.source === "auto"
+        && rowsO[0]?.text === expectedO && histO.length === 1 && histO[0]?.text === expectedO,
+      JSON.stringify({ rows: rowsO.length, slot: rowsO[0]?.slot, source: rowsO[0]?.source,
+        history: histO.length, diff: firstDiff(rowsO[0]?.text ?? "", expectedO) }));
+    // …and the machine-readable half of "same receiver": an owner land records NO receiver at all,
+    // which is what makes an absent field mean "the lane" for every row written before it existed.
+    const markO = await verdictMark(lnO.slot);
+    const rowO = ((await (await get(`/api/slots/${lnO.slot}/merge`)).json()) as
+      { last: { verdictTo?: unknown } | null }).last;
+    check("land verdict receiver: an owner land records no receiver — absent is the lane, and stays the lane",
+      markO?.sent === true && rowO !== null && rowO.verdictTo === undefined,
+      JSON.stringify({ mark: markO, verdictTo: rowO?.verdictTo ?? null }));
+    await dropLane(lnO);
+    await setMergeMode("do");
+
+    // (viii) THE PERSISTED RECEIVER, and the three ways a restored row can name one. The tick's
+    // retry (FACT 3) has no job frame to inherit an actor from, so it reads the receiver off the
+    // ROW — which is the whole reason the field is persisted. Three rows are planted at once and
+    // the SAME tick decides all three, so the discrimination is real rather than three timings:
+    //   · a row with NO receiver is the legacy bestand and goes to the lane, exactly as today;
+    //   · a row with a TORN receiver is dropped whole by the loader — half an attribution is a
+    //     different claim, not a weaker one — and therefore also goes to the lane;
+    //   · a row naming a receiver that is GONE goes NOWHERE. Not to the lane: falling back is
+    //     precisely the paste this cut removes, so it is booked as undeliverable and stays readable.
+    //   · and a row naming a receiver whose SLOT WAS RECYCLED — the shape the incident's own worry
+    //     is about, and a different arm of the check from the one above: the Program is there and
+    //     still bound to the occupant that asked, but that occupant is no longer in the slot. A
+    //     stranger must not be handed another session's answer, and neither must the lane.
+    const lnLegacyTo = await markerLane("verdict-legacy-to", "lane work with a VERIFYBAD marker\n");
+    const lnTornTo = await markerLane("verdict-torn-to", "lane work with a VERIFYBAD marker\n");
+    const lnGoneTo = await markerLane("verdict-gone-to", "lane work with a VERIFYBAD marker\n");
+    const lnRecycledTo = await markerLane("verdict-recycled-to", "lane work with a VERIFYBAD marker\n");
+    // the recycled arm needs a Program that EXISTS and is still bound to the occupant that asked.
+    // Minted through the owner route so its content is the real validated shape; only the two
+    // fields no route may write — `status` and the `main` binding — are set in the plant below.
+    const recyclProg = ((await (await post("/api/programs", {
+      title: "verdict receiver fixture", intent: "hold a binding a recycled receiver can be measured against",
+      successCriterion: "the planted receiver resolves to a slot that is no longer its occupant",
+      nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+    })).json()) as { program?: { id: string } }).program?.id ?? "";
+    for (const ln of [lnLegacyTo, lnTornTo, lnGoneTo, lnRecycledTo]) {
+      await settleForMerge(ln.slot);
+      await post(`/api/slots/${ln.slot}/merge`, {});
+      await waitMerge(ln.slot);
+      await awaitMark(ln.slot, (d) => d.sent);
+    }
+    const beforeTo = await Promise.all([lnLegacyTo, lnTornTo, lnGoneTo, lnRecycledTo]
+      .map(async (ln) => (await verdictSends(ln.branch)).length));
+    check("land verdict receiver setup: all four planted lanes were told exactly once before the plant",
+      beforeTo.every((n) => n === 1) && !!recyclProg, JSON.stringify({ sends: beforeTo, program: recyclProg }));
+    // killing the scratch server before editing its scratch fleet.json makes the plant
+    // deterministic — no process can overwrite it (the ACP-03 Q4 fixture's discipline)
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const toState = (await Bun.file(`${ROOT}/fleet.json`).json()) as
+      { merges?: Record<string, Record<string, unknown>>;
+        programs?: Record<string, unknown>[] };
+    const replant = { at: Date.now(), attempts: 1, sent: false, kind: "review" };
+    const rowLegacy = toState.merges?.[String(lnLegacyTo.slot)];
+    const rowTorn = toState.merges?.[String(lnTornTo.slot)];
+    const rowGone = toState.merges?.[String(lnGoneTo.slot)];
+    const rowRecycled = toState.merges?.[String(lnRecycledTo.slot)];
+    // openedAt 1 is an occupant no live slot can be: the binding still names it, the slot does not.
+    const recyclRow = toState.programs?.find((p) => (p as { id?: string }).id === recyclProg);
+    if (recyclRow) {
+      // the loader refuses an active row without both stamps, so the plant supplies exactly the
+      // two fields the lifecycle demands and nothing more
+      recyclRow.status = "active";
+      recyclRow.confirmedAt = Date.now();
+      recyclRow.activatedAt = Date.now();
+      recyclRow.main = { slot: lnRecycledTo.slot, openedAt: 1, sessionId: null, boundAt: 1 };
+    }
+    if (rowRecycled) {
+      rowRecycled.verdictDelivery = { ...replant };
+      rowRecycled.verdictTo = { slot: lnRecycledTo.slot, openedAt: 1, sessionId: null,
+        program: recyclProg, task: "0".repeat(24) };
+    }
+    if (rowLegacy) rowLegacy.verdictDelivery = { ...replant };
+    if (rowTorn) {
+      rowTorn.verdictDelivery = { ...replant };
+      rowTorn.verdictTo = { slot: "not-a-slot", openedAt: 0, program: 7 }; // torn on three fields at once
+    }
+    if (rowGone) {
+      rowGone.verdictDelivery = { ...replant };
+      rowGone.verdictTo = { slot: lnGoneTo.slot, openedAt: 1, sessionId: null,
+        program: "0".repeat(24), task: "0".repeat(24) };
+    }
+    check("land verdict receiver setup: the four persisted rows exist, were replanted as owed-a-retry, and the fixture binding is in place",
+      !!rowLegacy && !!rowTorn && !!rowGone && !!rowRecycled && !!recyclRow,
+      JSON.stringify({ merges: Object.keys(toState.merges ?? {}), program: !!recyclRow }));
+    await Bun.write(`${ROOT}/fleet.json`, JSON.stringify(toState, null, 2));
+    await restartSrv();
+    const sentAgain = async (ln: { slot: number; branch: string }): Promise<number> => {
+      for (let i = 0; i < 200; i++) {
+        if ((await verdictSends(ln.branch)).length > 1) break;
+        await Bun.sleep(50);
+      }
+      return (await verdictSends(ln.branch)).length;
+    };
+    const legacyAgain = await sentAgain(lnLegacyTo);
+    const tornAgain = await sentAgain(lnTornTo);
+    const legacyRows = (await plogRead()).filter((e) => e.text.includes(`[fleet land verdict — ${lnLegacyTo.branch}]`));
+    const tornRow = ((await (await get(`/api/slots/${lnTornTo.slot}/merge`)).json()) as
+      { last: { verdictTo?: unknown } | null }).last;
+    check("land verdict receiver: a restored row with NO receiver is the legacy bestand — it loads and goes to the lane",
+      legacyAgain === 2 && legacyRows.every((e) => e.slot === lnLegacyTo.slot),
+      JSON.stringify({ sends: legacyAgain, slots: legacyRows.map((e) => e.slot) }));
+    check("land verdict receiver: a TORN receiver is dropped whole at load, never repaired field-wise, and the row goes to the lane",
+      tornAgain === 2 && tornRow !== null && tornRow.verdictTo === undefined,
+      JSON.stringify({ sends: tornAgain, verdictTo: tornRow?.verdictTo ?? null }));
+    // the third one is the SILENCE, and it is asserted after the other two have already moved —
+    // the same tick that redelivered them is the tick that refused this one, so "nothing yet" and
+    // "nothing ever" are not being confused.
+    const goneMark = await awaitMark(lnGoneTo.slot, (d) => d.attempts >= 2);
+    const goneSends = await verdictSends(lnGoneTo.branch);
+    const goneRow = ((await (await get(`/api/slots/${lnGoneTo.slot}/merge`)).json()) as
+      { last: { verdictTo?: { slot?: number; program?: string } } | null }).last;
+    const goneAudit = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+      .flatMap((line) => { try { return [JSON.parse(line) as { event?: string; slot?: number; detail?: string }]; } catch { return []; } })
+      .filter((r) => r.event === "merge_verdict_undeliverable" && (r.detail ?? "").startsWith(`${lnGoneTo.branch}:`));
+    check("land verdict receiver: a receiver that is GONE is told nothing and the LANE is not told either — no fallback",
+      goneSends.length === 1 && goneMark?.sent === false && goneMark.gate === "receiver-gone"
+        && goneRow?.verdictTo?.slot === lnGoneTo.slot,
+      JSON.stringify({ sends: goneSends.length, mark: goneMark, verdictTo: goneRow?.verdictTo ?? null }));
+    check("land verdict receiver: the trail NAMES why the verdict went nowhere — the only place that disappearance is written down",
+      goneAudit.length === 1 && (goneAudit[0]?.detail ?? "").includes("review")
+        && (goneAudit[0]?.detail ?? "").includes("is gone")
+        && (goneAudit[0]?.detail ?? "").includes(`lane slot=${lnGoneTo.slot}`),
+      JSON.stringify(goneAudit.slice(-2)));
+    // …and the arm the incident's own worry names: the Program is there and still bound to the
+    // occupant that asked, but that occupant is not in the slot any more. Its own refusal, in its
+    // own words — a reader must be able to tell "the program went away" from "the session did".
+    const recyclMark = await awaitMark(lnRecycledTo.slot, (d) => d.attempts >= 2);
+    const recyclSends = await verdictSends(lnRecycledTo.branch);
+    const recyclAudit = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+      .flatMap((line) => { try { return [JSON.parse(line) as { event?: string; detail?: string }]; } catch { return []; } })
+      .filter((r) => r.event === "merge_verdict_undeliverable" && (r.detail ?? "").startsWith(`${lnRecycledTo.branch}:`));
+    check("land verdict receiver: a MAIN slot recycled between the land and the verdict gets NOTHING, the lane gets nothing, and the trail says which of the two it was",
+      recyclSends.length === 1 && recyclMark?.sent === false && recyclMark.gate === "receiver-gone"
+        && recyclAudit.length === 1 && (recyclAudit[0]?.detail ?? "").includes("was recycled since the land")
+        && !(recyclAudit[0]?.detail ?? "").includes("is gone"),
+      JSON.stringify({ sends: recyclSends.length, mark: recyclMark, audit: recyclAudit.slice(-1) }));
+    for (const ln of [lnLegacyTo, lnTornTo, lnGoneTo, lnRecycledTo]) await dropLane(ln);
   }
 
   // orphan flow: a killed lane's worktree survives on disk, shows slot:null in the map,

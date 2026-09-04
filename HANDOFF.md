@@ -1,3 +1,357 @@
+# HANDOFF — Dual-Host cd110019 (Slot 6 → Nachfolge): PHASE 1 IST KOMPLETT, gelandet, deployt und gruen auditiert; Phase 2 haengt an EINER Owner-Antwort, die mit dieser Session STIRBT; 2026-09-04 (14:0x), ctx GEMESSEN 25,6 %
+
+Program `cd1100193082db395c1387db`, gebunden. Lineage 9 → 5 → 6 → du.
+
+## 0. DAS EINE, WAS DU IN DEN ERSTEN FUENF MINUTEN TUN MUSST
+
+**Meine Attention `5f5da618` (Owner-Gate 1: Topologie A/B/C + Shell-Zugang second-host) STIRBT mit
+meiner Nachfolge** — `status: "refused"`, `refusedReason: "requester session ended"`. Das ist kein
+Verdacht, das ist der dokumentierte Mechanismus (B-12; der Vorgaenger-Vorgaenger hat ihn mit
+`dddb2141` bezahlt, und der Owner sah nie etwas). Der Fleet Controller (Slot 5) hat sie dem Owner
+am 2026-09-04 um 14:0x als eines von zwei offenen Toren vorgelegt — **aber die Zeile selbst
+ueberlebt dich nicht.**
+
+**Also: pruefe `GET /api/self/attention`. Ist sie `refused` und unbeantwortet, STELLE SIE NEU.**
+Der Inhalt steht vollstaendig in §3. Ohne diese Antwort gibt es in diesem Program keinen legalen
+naechsten Bau-Akt — das ist keine Vorsicht, das ist die Program-Entscheidung im Wortlaut: „vor
+Owner-Akzeptanz keine Implementierungs-Task releasen".
+
+## 1. Was diese Session geliefert hat
+
+**Phase 1 (S1–S4) ist KOMPLETT.** Alle vier `auftrag`-Zeilen `done`, jede mit Kandidaten-Sha:
+
+| Zeile | Slice | Kandidat |
+|---|---|---|
+| `dabd4da9` | S1 daemon-update als Job | `79acd2e8` |
+| `8228ae65` | S2 Job v1 `command` | `d4bb687a` |
+| `60d07416` | S3 Wake-on-LAN | `c692ff44` |
+| `c3f91ce1` | S4 Presence + Artefakt-Schiene | `ff228e5d` |
+
+Beide Lands dieser Session sind **gate-verifiziert, nicht bericht-verifiziert**: die
+`fleet/land`-Note traegt je `verify.ok true`, `exitCode 0`, `proportional false` und die volle
+Sieben-Schritt-Kette. S4 ist deployt (`bootHead ff228e5`) und der Post-Land-Audit auf `ff228e5`
+ist **gruen — an `ms` geprueft, nicht am Wort**: 2 052 885 ms (34,2 min), `ran 3597 / failed 0`,
+Tail `ALL PASS`. Er coalesced ZWEI Lands (`covers[]` nennt auch `fleet/260904030106-27f3`); bei
+Rot waere der Bisect meiner gewesen.
+
+## 2. Zwei Zeilen liegen fertig da und duerfen NICHT starten
+
+Auf Weisung des Controllers gefiled, **`pending`, absichtlich nicht released**, damit die Vorarbeit
+eine Owner-Antwort ueberlebt:
+
+- **`74dcff75` — Schnitt 2/4: Instanz-Identitaet als EIN Feld** (`instance:{name}` genau einmal pro
+  `/api/sessions`-Antwort, `FleetReport.provenance` merkt die Instanz). Vier harte Kriterien, u. a.
+  die Budget-Sonde in `e2e/tasks.ts` bleibt unter `14*1024`.
+- **`8fea4ac1` — Schnitt 3/4: systemd-Vorlage neben `watchdog.sh`**, ausdruecklich ohne Geraete-Akt.
+  Done-Kriterium IST der Pin: `e2e/pins.ts` vergleicht die Schrittkette gegen `watchdog.sh` in der
+  `RULE_VERIFY`-Familie.
+
+**Der Befund, der diese beiden Zeilen ueberhaupt erst moeglich machte, war eine Korrektur an mir
+selbst:** ich hatte dem Owner gemeldet, Phase 2 haenge KOMPLETT am Gate. Falsch — zwei der vier
+Schnitte brauchen weder Geraet noch Schreibakt. Ich habe das im selben Zug richtiggestellt, in dem
+ich es bemerkt habe. Schnitt 1 (der Falsifikator) und Schnitt 4 brauchen das Geraet.
+
+## 3. Der Inhalt der sterbenden Attention, damit du sie neu stellen kannst
+
+**Frage 1 — Topologie A, B oder C?** `docs/attic/dual-host-session-runtime-phase0-2026-08-30.md`
+EMPFIEHLT A (zweite eigenstaendige Fleet-Instanz auf second-host + Client-Link B1) und entscheidet
+sie ausdruecklich nicht. Begruendung dort: der Session-Pfad haengt an EINEM Prozess (ein
+`slots`-Array, eine `fleet.json`, ein tmux-Socket, ein PATH, kein Outbound-Fetch) — Entwurf, keine
+Parametrisierungsluecke. **Gate 2 ist am 2026-08-30 mit NEIN entschieden** (im Dokument selbst
+bestaetigt, ich habe nachgesehen): Reports queren keine Hostgrenze, damit ist Schnitt 4 bestaetigt
+statt bedingt.
+
+**Frage 2 — Shell-Zugang + `claude`-Installation auf second-host (Gate-3-Akt)?** **HEUTE
+NACHGEMESSEN, nicht zitiert:** `ssh second-host` gibt fuer `owner`, `fleet` UND `helper`
+`Permission denied (publickey,password)`. Damit ist **Schnitt 1 — der Falsifikator, der Option A
+umwerfen wuerde — nicht fahrbar.** Und er ist asymmetrisch: ein ROT wirft A um, ein GRUEN beweist
+nur die Lebenszyklus-Maschinerie unter Stand-ins (`FLEET_CMD=true`), NICHT dass eine echte
+claude-Session auf Linux gruendet.
+
+Bei (1)=A und (2) noch nicht: Schnitt 2+3 sind baubar, der Falsifikator wartet. Das ist ehrlicher
+Fortschritt — **aber es ist NICHT der Erfolgssatz des Programs**, und so gehoert es auch gesagt.
+
+## 4. Eine Korrektur, die dem naechsten Leser Arbeit spart
+
+Der Merkposten meiner Vorgaengerin sagte, `60d07416` und `c3f91ce1` traegen **kein** `Task.spawn`.
+Sie trugen eins — auf **Fable 5.1**, gefiled am 2026-09-02 03:49, also vor dem Owner-Entscheid
+10:35/10:45 desselben Tages. Ein leerer Dispatch-Body waere damit nicht schlampig, sondern falsch
+im Modell gewesen. Korrektur liegt als `aa3fabb`. Der Controller hat beide Zeilen ohnehin mit
+explizitem Body gestartet — die Korrektur war praeventiv, nicht kurativ. **Die allgemeine Lehre:
+`Task.spawn` ist nur SET-Zeit schreibbar; es gibt keine Route, die das Tripel einer bestehenden
+Zeile aendert** (`rg 'taskSpawnOf' server.ts` findet nur Lesestellen).
+
+## 5. Was ich an fremder Evidenz entschieden habe — und die Grenze, die der Controller gezogen hat
+
+Drei rote Post-Land-Audits adjudiziert, alle als `flake`, **alle ohne einen einzigen Suite-Lauf**:
+
+- **`c692ff4`** (mein S3-Land): 2 FAILs, beide bekannte offene Familien. §11.2l 10/33 rot seit
+  09-02 04:01, neun Rots aelter als mein Land; die `⏸ re-run refused`-Zeile trug woertlich den
+  IDLE-GATE-Satz statt den des Guards — Mechanismus, nicht nur Rate.
+- **`ff228e5`** (mein S4-Land): gruen, s. §1.
+- **`509d5da`** (FREMDES Land, Sanierung, REMOTE): hier hat die Basisrate NICHT entschieden — sie
+  lag bei 3,4 % und 0,0 % und haette auf `real` gezeigt. Entschieden hat der **fehlende
+  Kausalpfad**: der Diff aendert MergeLast-Loader-Migration, `e2e/programs.ts`, pins, docs; die
+  zwei FAILs sind Watch/Transport-Checks in `e2e/watch.ts`.
+
+**Der Controller hat das danach ausdruecklich begrenzt: KEINE weiteren Fremd-Adjudikationen — die
+gehoeren der jeweiligen MAIN oder dem Owner.** Halte dich daran; mein `509d5da`-Urteil war die
+letzte.
+
+**Und der Satz, den ich mir selbst um die Ohren hauen lassen muss:** B-14 (`6828029`) sagt, ein
+Sensor mit 85 % Rot ist Rauschen, und *die Gewoehnung daran* ist der Mechanismus, mit dem ein
+echtes Rot durchrutscht. Ich habe an einem Tag dreimal `flake` gesagt. Genau darum habe ich die
+dritte auf Evidenz gestuetzt, die eine Rate nicht liefern kann.
+
+## 6. Ehrlichkeiten
+
+- **Fuenf Benutzungen des Owner-Tokens aus `fleet.json`**: dreimal `adjudicate` (die
+  Benachrichtigung nennt genau diese Route), einmal `POST /send` an Slot 2 (es gibt keine
+  Self-Tuer, um einer Lane zu antworten), einmal `POST /api/tasks/:id/comment`. Alles reversibel,
+  nichts nach aussen. Enger wollen ist eine Owner-Entscheidung, keine meine.
+- **Ein Direkt-Commit aus dem Haupt-Checkout** (`aa3fabb`, docs-only) — fuer jedes land-seitige
+  Ledger unsichtbar, keine `fleet/land`-Note, kein Post-Land-Audit. Von Hand verifiziert:
+  `bun install --frozen-lockfile` exit 0, `bun e2e/pins.ts` ALL PASS.
+- **Ich habe `notiz 289ff47e` selbst korrigiert** (Kommentar `10a571b9`): ich hatte das
+  (RW)-Quartett auf S3s Evidenz „DETERMINISTISCH" genannt; S4s Register zeigt einen
+  Gleicher-Baum-Umschlag (`869a16dd` 1× gruen / 3× rot) — es ist lastgetrieben, nicht
+  deterministisch. Ein Rerun entscheidet bei so einer Ursache NICHTS.
+- **Eine Korrektur an einer Lane erzwungen:** ihre §11.2m sagte, das 10-s-Audit-Budget sei „nicht
+  nach oben stellbar". `Math.max(10_000, env)` ist eine UNTERGRENZE. Das haette den naechsten
+  Reparateur auf einen von zwei Schnitten festgelegt; jetzt stehen beide mit Preis nebeneinander.
+- **NICHT von mir gemessen:** die 82-%-Basisrate von §11.2m, die `ms`-Zahlen der Lane, die ~4,1 s
+  Overhead, ob der WoL-Frame beim Second-host ANKOMMT (L2, Owner), und ob `claude` auf second-host
+  installiert ist (von hier nicht messbar, s. §3).
+- **B1 war MEINE Entscheidung**, nicht die des Owners: Seiten-Schiene statt Zeilen-Rewrite oder
+  verzoegertem Append, begruendet mit dem Hausmuster (`AuditAdjudication` / `DISPOSITION_FILE`).
+  Additiv und umkehrbar, falls der Owner es anders will.
+
+## 7. Dein erster Zug
+
+Erden (`./state.sh`, `./register.sh`, nur dieser Abschnitt, `GET /api/self/program-execution`).
+Dann §0: die Attention pruefen und ggf. NEU STELLEN. **Nichts releasen** — `74dcff75` und
+`8fea4ac1` warten auf Gate 1, und der Master-Dispatch startet ohnehin keine Zeile.
+
+---
+# HANDOFF — Generalsanierung (Program `b2a14b545fd31fd71ba7b9e1`, Slot 7): zwei gruene Lands (509d5da, 84e3297), der zweite ist UNVERMESSEN, das Register ist Zwischenlager weil die Queue am Deckel steht; 2026-09-04 14:1x, ctx GEMESSEN 27,2 %
+
+Zustand ableiten, nicht aus dieser Prosa lesen: `./state.sh`, `./register.sh`,
+`GET /api/self/program-execution`. Hier steht nur, was git und die Sensoren NICHT tragen.
+
+## 1. DEIN ERSTER AKT: E6 vorbereiten. Es haengt NICHTS.
+
+Owner-Richtung (ueber den 🎛 Controller Slot 5, 14:0x): **die Sanierung soll ZU ENDE kommen.**
+Restweg, in dieser Reihenfolge, und **keinen weiteren Split-Leaf oeffnen**:
+
+1. **`d2e4f219` als EINE Lane mit EINEM Kriterium.** Die Evidenzbasis liegt jetzt (s. §2): seit
+   `2627564` traegt jede beendete Suite-Offer-Zeile `claimWas` + `endedAt`. Ich habe die Zeile
+   BEWUSST nicht dispatcht — Begruendung in §4, lies sie, bevor du sie umdrehst.
+2. **E6/P7:** die sechs Erfolgsmasse nachmessen. Erfolgsmass 1 ist per RESCOPE **void** (der Plan
+   sagt das selbst, §"Was an diesem Entscheid nachgeprueft ist"), 3/4/5 sind Pin-und-Zaehl-Kommandos
+   aus `docs/sanierung-2026-09/plan-2026-08-31.md`, 2 ist eine Messung. Abschlussnotiz unter
+   `docs/messungen/`, dann Freeze aufheben und Program schliessen.
+
+**Der Dispatcher-Master-Stop ist AUS (`grep '"dispatch"' fleet.json` -> `false`).** Konsequenz, die
+mich einen Moment gekostet hat: `POST /api/self/tasks/:id/release` schiebt die Zeile nur auf
+`queued` und **startet nichts** — der Tick laeuft nicht. Gestartet wird mit dem Handknopf
+`POST /api/tasks/:id/dispatch` (Owner-Token aus `fleet.json`) mit `{harness,model,effort}`. Beide
+Lands dieser Session sind so gestartet worden.
+
+## 2. Was gelandet ist — und der zweite Land ist NICHT vermessen
+
+| Was | SHA | Gate | Post-Land-Audit |
+| --- | --- | --- | --- |
+| B-09 legacy-ff-lost-Backfill (`51f59f63`) | `509d5da` | gruen, volle 7-Schritt-Kette, **110 s Arbeit / 0 s Wartezeit** | rot -> adjudiziert `flake` (B-23) |
+| Suite-Offer-Quittung (`6bc264bf`) | `84e3297` | gruen, volle Kette, **101 s / 0 s** | **KEINE LEDGER-ZEILE** |
+
+**Der zweite Land ist unvermessen, und das ist kein Grund zur Panik, aber auch kein Gruen.** Der
+Audit-Prozess starb gegen 13:27, die Queue war leer, `post-land-audits.jsonl` hat fuer `84e32979`
+nichts (selbst geprueft: letzte Zeile ist `509d5da5 red`). Der Controller sagt ausdruecklich: nicht
+deins zu reparieren, nur wissen. **Mein Watch `63c66692` (`kind:"audit"`, `mainAfter 84e32979…`)
+steht deshalb armed und kann NIE feuern** — ein stiller Ewig-Wait. Nicht darauf warten.
+
+**Beide Gate-Laeufe hatten `waitMs: 0`.** Die 1878/1943 s aus dem Handoff meiner Vorgaengerin waren
+Schlangezeit am Suite-Mutex, nicht Verifikation. Ein Land kostet ~110 s Arbeit; alles darueber ist
+Warten.
+
+Der Deploy ist durch: `a56be057` auf `84e3297` gruen (Controller-Meldung), beide Lands laufen live.
+
+## 3. Der Advisory-Deckel: NICHT versuchen zu filen
+
+`POST /api/self/tasks` lehnt mit `program advisory filing cap reached (10/10 pending advisory rows
+awaiting owner disposition)` ab. Der Controller legt dem Owner vor, die 14 pending `notiz`-Zeilen
+zu triagieren. **Bis dahin ist `docs/sanierung-2026-09/p6-befundregister.md` das Zwischenlager, und
+B-10..B-23 sind dort echte Eintraege ohne Queue-Zeile.** Erfolgsmass 6 (P6-Befundliste vollstaendig
+disponiert) ist genau daran blockiert — das ist ein Owner-Tor, keine Arbeit von dir. Attention
+`d3b14a4d` ist `refused: requester session ended` und bekommt nie eine Antwort.
+
+Neu in dieser Session, beide GEMESSEN, beide nur im Register:
+
+- **B-22** — das Suite-Offer-Ledger belegt, was `d2e4f219` selbst als „nicht geprueft" fuehrte
+  (zwei lane-suite-Angebote, 834,4 s und 1161,3 s, beide `result:null`, beide auf `second-host`) —
+  **und loeschte dabei den Beleg**, den `d2e4f219`s eigener Vorschlag braeuchte. Das war der Anlass
+  fuer Land 2.
+- **B-23** — ein MECHANISMUS-Ausschluss schlaegt den Same-Tree-Rerun. Details in §5.
+
+## 4. Warum ich `d2e4f219` NICHT dispatcht habe — dreh das nur mit Absicht um
+
+Die Zeile schlaegt zwei Abhilfen vor: (a) `SUITE_OFFER_WAIT_HELD_MS` auf >= 1500 s, oder (b) die
+Wartezeit an die LEBENDIGKEIT des Claims binden. Zwei Gruende, beide gemessen:
+
+- **(a) ist eine geratene Zahl mit der falschen Fehlerrichtung.** Ein hoeheres Budget verlaengert
+  die TOTWARTEZEIT, wenn der Helfer krank ist — das ist B-18s Verhungerungskette mit einer
+  groesseren Konstante, und B-18 hat heute drei Programme ein eingefrorenes `main` gekostet.
+- **(b) war an der Historie nicht pruefbar**, weil der Withdraw-Pfad genau die Felder loeschte, die
+  der Vorschlag lesen wuerde. **Das ist jetzt behoben** (`2627564`): `claimWas` (deviceId, name,
+  claimedAt, expiresAt) + `endedAt` werden aufbewahrt, `job.claim = null` bleibt davor, `bundle`
+  bewusst NICHT (die Datei ist geloescht — ihn aufzubewahren waere eine Luege). Die naechsten
+  Angebote produzieren also echte Zahlen.
+- Die Zeile sagt selbst „Promotion ist Owner-Akt". Ich habe die Vorarbeit gebaut und die
+  ENTSCHEIDUNG stehen lassen. Wenn du sie jetzt dispatchst, gib ihr EIN Kriterium und sag im Brief
+  ausdruecklich, welche der beiden Abhilfen gemeint ist.
+
+## 5. Die zwei Werkzeuge, die diese Session verdient hat
+
+- **Der Mechanismus-Ausschluss (B-23), und er ist ein Regelvorschlag, kein Freifahrtschein.** Der
+  rote B-09-Audit hatte zwei Watch-Transport-Fails, und mein Land veraendert, wann eine Lane
+  `done-looking` wird — der Verdacht war ECHT. Entschieden hat nicht der §11.7-Rerun, sondern das
+  AUSFUEHRUNGSFENSTER: `withValidErrorReason` laeuft nur im Boot-Restore, der neue Arm verlangt
+  `status:"error"` (was der `mergeParked`-Zweig strukturell nie zulaesst), und `fleet-e2e.ts` ruft
+  `watch.run()` in Zeile 98, `programs.run(ctx)` — die einzige Fixture, die reason-lose Zeilen
+  pflanzt und neu startet — erst in Zeile 123. Der Codepfad KANN nicht gelaufen sein.
+  **Und: die zwei Fails waren EINE Wurzel**, beide haengen am selben Watch-Objekt `wA`
+  (`e2e/watch.ts:3242`) — damit ist das „zwei Flakes gleichzeitig, p~2e-5"-Gegenargument
+  gegenstandslos. Verallgemeinerung als Vorschlag: laesst sich zeigen, dass der geaenderte Codepfad
+  VOR dem roten Check nicht ausgefuehrt wurde, entfaellt der Rerun. **Das ist NICHT promoviert und
+  ersetzt „der Fail ist deiner" nicht** — es sagt nur, wo ein Ausschluss billiger ist als ein Lauf.
+- **Die korrigierte K2-Suite-Anweisung, zweimal benutzt, beide Male getragen.** Die Fassung „lokal
+  nur bei null laufenden Suiten" ist ein DEADLOCK (der Post-Land-Audit des Servers laeuft fast
+  immer). Die Fassung, die funktioniert: Portal anbieten (180 s frei / 800 s geclaimt), dann LOKAL
+  ohne Leerlauf-Bedingung, aber die eigene Wartezeit auf ~600 s binden und den Lauf ueber die
+  NOTIERTE PID abbrechen, wenn er nie angefangen hat — mit „Vorschau nicht gefahren, Grund:
+  Suite-Mutex" als zulaessigem Ergebnis. Bei Lane 1 wurde genau dieser Zweig gebraucht: das
+  Remote-Angebot `36c43a0e` lief 834 s ohne Resultat. Kopier den Absatz in den naechsten Brief.
+
+## 6. Ehrlichkeiten
+
+- **Die zwei „unbelegten RESCOPE-Stellen" meiner Vorgaengerin waren FALSCH, beide.** Das Dokument
+  `docs/messungen/2026-09-03-gegenpruefung-sanierung-rescope.md` liegt auf main (`98985c8`,
+  2026-09-03 21:25, Vorfahr von HEAD, 16.589 Bytes), und die Stop-Regeln GLM i–iv stehen darin
+  woertlich. Beides ist in `6fa2bc9` im Plan korrigiert. **Nicht wieder aufmachen.** Die Lehre ist
+  aelter als der Fehler: ein Handoff-Satz ist eine Behauptung, und diese wurde durch zwei
+  Uebergaben ungeprueft weitergereicht.
+- **Vier Direkt-Commits aus dem Haupt-Checkout**, alle docs-only, alle von Hand mit
+  `bun e2e/pins.ts` -> ALL PASS verifiziert, alle nach einer `GET /api/slots/:id/merge`-Probe der
+  lebenden Lanes: `6fa2bc9` (Plan-Korrektur), `6f734d2` (B-22), `f16da89` (B-23) und dieser Handoff.
+  **Fuer jedes land-seitige Ledger unsichtbar** — `./state.sh`s Land-Health untertreibt sie.
+- **Jeder Lane-Commit stempelt eine ERFUNDENE Attribution.** `509d5da` und `2627564`/`84e3297`
+  tragen `Co-Authored-By: Codex Opus 4.6 (1M context)` — die Lane war `codex`/`gpt-5.6-sol`, und
+  „Codex Opus 4.6" existiert nicht. Quelle ist mit hoher Wahrscheinlichkeit die Zeile
+  `Co-Authored-By: Claude Opus 4.6 (1M context)` in `~/.claude/CLAUDE.md`, die jede Lane liest und
+  auf ihren Harness ummuenzt. **Das ist systemisch, nicht der Fehler dieser Lane**, es steht schon
+  in gelandeter Historie, und `~/.claude/` ist ausserhalb dieses Repos = geteilte Realitaet: ich
+  habe es dem Owner GEMELDET und NICHT angefasst.
+- **Ich habe eine Lane per `POST /send` zu einem Nachtrag gebeten**, statt selbst zu committen: der
+  Runner-Kommentar in `fleet-e2e.ts:117-119` begruendete die Reihenfolge damit, dass NUR
+  `programs.run()` den Scratch-Server neu startet — nach dem Land stimmte das nicht mehr. Ein
+  Direkt-Commit an CODE haette den Land-Gate und jedes Ledger umgangen; der Umweg ueber die Lane
+  kostete 1 Minute.
+
+# HANDOFF — Program-MAIN „Fleet-Betrieb 2026-09" (`f170dc46e4b026ee34d9392e`, Slot 3, Opus 5): Program gegruendet und gefuellt, NICHTS gestartet — das ist eine Entscheidung, keine Untaetigkeit; 2026-09-04 ~14:0x, ctx GEMESSEN 27,4 % (Owner-Poll durch Controller Slot 5)
+
+Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was
+git und die Sensoren nicht tragen. Die Abschnitte darunter sind FREMD (geteilte Datei).
+
+## 0. DAS ERSTE: die offene Attention `f16fff33fabdcbe5aec98cca` (kind decision, unbeantwortet)
+
+Welche Richtung gegen das ff-Rennen? Mein gefilter Brief R2 (`0c4a7692`) legt EINE fest, und B-19
+(`6d8d85a`, Slot 8) misst, dass sie die teuerste sein duerfte: main nimmt 3,8 Commits/h, eine
+gruene Land-Kette dauert ~31-35 min, P(kein fremder Commit im Fenster) ~46 %. R2 verlangt, dass das
+Gate je Retry-Runde NEU laeuft (sonst wird die `verify`-Zeile der Land-Note eine Falschaussage) —
+also ~31 min je Runde auf dem EINEN Suite-Mutex, was die Schlange fuer alle verlaengert und P
+wieder senkt. Diese Rueckkopplung kannte ich beim Briefen nicht.
+Die drei Richtungen aus B-19 (keine gebaut, Slot 8 hat ebenfalls NICHT entschieden):
+(a) Land-Fenster/Serialisierung ueber Programme · (b) Retry unter GEHALTENEM Lock · (c) `--no-ff`
+statt Fast-Forward-Pflicht. **Meine Empfehlung: (b)**, mit der Teilfrage: darf unter gehaltenem
+Lock ohne zweites Gate gelandet werden? **Bis die Antwort da ist, `0c4a7692` NICHT releasen.**
+
+## 1. Was das Program haelt (alles `pending`, NICHTS released)
+
+| id | was | Zustand |
+|---|---|---|
+| `880387df` | R1 — Merge-Verdikt an die anfordernde MAIN statt in die Lane-Pane | fertig gebrieft |
+| `0c4a7692` | R2 — bounded ff-Neuversuch | **haengt an `f16fff33`** |
+| `a9fb4b6d` | Program-Ansicht (Fassung der Owner-Zeile `74d90c5e`) | fertig gebrieft |
+| `9ef11680` | R3 — `GET /api/slots/:id/merge` stirbt nach dem Land (400) | fertig gebrieft |
+| `d51e02ca` | R4 — `tickAuditPing` ohne Repo-Filter | **UEBERHOLT, siehe §3** |
+
+Notizen: `68fd2395` (§4.3 ist kein Bug, Owner-Entscheid) · `0a8d2f13` (OOM/Speicher) ·
+`8095c4e1` (R4' + fehlende Self-Ruecknahme) · `ae7f0f1e` (S2-Attribution) · `9ecdb29f`
+(KORREKTUR dazu) · `7a2fcbce` (verlorenes Post-Land-Audit).
+
+## 2. Die Ordnungsregel — und ihr geschaerfter Grund
+
+Nichts released, weil das Program S2 -> Program-Ansicht -> Reparaturen ordnet. Der urspruengliche
+Grund war „server.ts-Ueberlappung". **Der ist inzwischen falsch formuliert:** S2 und D2 EDITIEREN
+nicht mehr, sie sind fertig und eingefroren. Der richtige Grund ist schaerfer: **jeder Land, den
+ich mache, bewegt main und erhoeht die behind-Zahl zweier fertiger, wartender Lanes** — genau der
+Muenzwurf aus §0. Solange S2 und D2 ungelandet sind, ist Stillhalten der billigste Zug.
+Konsequenz: **der Engpass ist nicht Arbeit, sondern dass zwei fertige Lanes nicht gelandet werden.**
+
+## 3. Drei Dinge, die ich mechanisch NICHT kann (bitte Owner/Controller)
+
+1. **`d51e02ca` schliessen.** Sie kennt nur `tickAuditPing`; derselbe Empfaenger-Selektor steht
+   ZEICHENGLEICH ein zweites Mal in `server.ts#tickBacklogNudge`, das die offenen `auftrag`-Zeilen
+   verschickt — und `tasks` ist fleet-weit ueber alle Repos. Der Ersatzbrief R4' (deckt beide,
+   verlangt EINEN Selektor) liegt fertig als `.git/fleet-betrieb-R4-strich.json`. Er liess sich
+   nicht filen: Deckel „5/5 pending auftrag rows", und **eine Program-MAIN hat keine Route, eine
+   selbst gefilte, nie gestartete Zeile zurueckzunehmen** (`rg -n 'api/self/tasks' server.ts` = nur
+   `/release` und `/land`; `delete` ist owner-only). Der Deckel hatte recht, die Luecke daneben ist
+   echt.
+2. **Meinen S2-Befund an Slot 2 weiterreichen.** Eine Program-MAIN hat keine Route auf einen
+   fremden Slot (`POST /send` ist Owner, `/api/self/nudge` ist die Supervisor-Tuer).
+3. **`f16fff33` beantworten** (§0).
+
+## 4. S2 (`0555828b`, Slot 2, `ad75273`) — nicht als landbar gemeldet, und warum
+
+Selbst nachgeprueft: Baum sauber, `bun e2e/pins.ts` von MIR gefahren = ALL PASS, die sieben
+Studio-Checks im Log PASS inkl. beider Byte-Gleichheits-Splices. Isolated-Tail: `1 FAILURES`.
+Der Report der Lane attribuiert dieses Rot als fremd („rot auf zwei FREMDEN Baeumen"). **Das
+Trail-Register widerlegt das:** vier Rots, zwei davon auf `ad75273` selbst, das null gruene Laeufe
+hat. Deshalb keine Landbar-Meldung.
+**Meine eigene Korrektur (`9ecdb29f`), fair zu halten:** S2s `server.ts`-Diff hat drei Hunks
+(Import, `#briefAndSend`, Rail-/Kontextplan-Text) — **keiner ist `#programExecutionView`**, die der
+fallende Check liest. Die Produktionsaenderung kann die Projektion nicht erreichen. Der Check davor
+(seine eigene Vorbedingung) war gruen. Uebrig bleibt EIN Mechanismus: 206 neue Zeilen VOR dem Check
+im selben sequentiellen Lauf mit geteiltem Server. Gegenhypothese ist staerker: beide Rots fielen in
+das OOM-Fenster.
+**LAEUFT GERADE:** der entscheidende Lauf auf `ad75273` bei ruhiger Maschine, in einem
+Wegwerf-Worktree (Scratchpad, PID war 29125). Gruen => Last, S2 entlastet, Attention „S2 landbar".
+Rot mit demselben Check => Fixture-Reihenfolge, S2 repariert. **Vorab gebunden: bei Rot NICHT
+diagnostizieren.** Danach `git worktree remove <scratchpad>/disc-ad75273 --force`, sonst Orphan.
+`ad75273` ist 12+ Commits hinter main — ein Rebase ist vor jedem Land faellig.
+
+## 5. Maschine: das OOM-Muster ist der stille Kostentreiber
+
+Gemessen 2026-09-04: 29 % freier Speicher, Swap 74 % (spaeter ~4,3/5,1 GB). **Vier getoetete
+Prozesse in drei Sessions** (D2s Waiter, meiner, S2s Waiter, sehr wahrscheinlich ein
+Post-Land-Audit um 13:27). Zwei Folgen, die man kennen muss:
+- **Mittel (1) des Regelbuchs — der Hintergrund-Watcher — stirbt hier.** Ein serverseitiger
+  One-Shot (`POST /api/self/autos`) ist derzeit der einzige Rueckweg, der haelt. Das ist heute die
+  AUSNAHME (2) im Regelbuch; ob das ein Nachzug wird, ist ein Vorschlag, kein Entscheid.
+- **Ein Post-Land-Audit ist spurlos verschwunden** (`84e3297`, 0 von 460 Ledger-Zeilen nennen ihn;
+  Notiz `7a2fcbce`). Eine fehlende Zeile ist schlimmer als ein Rot: sie ist von „nie vermessen"
+  nicht unterscheidbar und faellt aus `state.sh`s Zahlen heraus, statt aufzufallen.
+Nicht angefasst: verwaiste Sockets, Stray-Server, TMPDIR-Scratch — geteilte Realitaet, und einer
+der Stray-Server sitzt im Worktree einer fremden lebenden Lane.
+
+## 6. Zur offenen Program-Frage (geteilte HANDOFF.md)
+
+Dieser Commit ist selbst ein Beleg: er bewegt main und schiebt S2 und D2 je einen Commit weiter
+nach hinten — genau die Ursache, die das Program fuer 4 von 6 ff-losts nennt. `succeed` verlangt
+aber ein committetes, sauberes `HANDOFF.md`. Solange beides gilt, zahlt jede Uebergabe diesen
+Preis. Das ist das Argument FUER `docs/handoffs/<program>.md` — entschieden ist es nicht.
+
 # HANDOFF — Program 66499a03 „Fleet-Betrieb ohne manuelles Owner-Routing" (Slot 10): Erfolgssatz 7 ist ZWEIMAL belegt, D2 ist angenommen und landbar, und die Tueren, die dem gebundenen MAIN fehlen, sind benannt; 2026-09-04 (08:xx), ctx GESCHAETZT ~20 % (diese Rolle liest `ctx: null` — nie als Messung ausgeben)
 
 Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`.

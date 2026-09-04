@@ -592,6 +592,25 @@ Drei unabhaengige Unterbriefe, jeder allein landbar. 5b haengt an einer MESSUNG,
 
 **VORAUSSETZUNG (blockierend).** Der Plan sagt „der git-Tick liest das Modell aus dem Footer der Pane (dort steht es)". Am Code ist das NICHT belegbar: `tickGit` liest keinen Pane-Text, `paneAgentAt` liest `ps`, `paneReadiness` liest `capture-pane` nur fuer Harnesses mit `readiness`-Deklaration; kein Symbol in `server.ts` parst ein Modell aus einem Screen (GLM-Gegencheck, gezielte Suche). Ob und wie die claude-Pane das Modell im Footer zeigt, ist eine Messung an einer LEBENDEN Pane, die ein Codex-Worker in einer Lane nicht machen darf (Live-tmux ist gemeinsame Realitaet). Der Brief braucht als Eingabe EINE Zeile: das Footer-Muster (eine `capture-pane`-Zeile einer claude-Pane, Modellname durch `<model>` ersetzt). Fehlt sie: Report `needs-main` mit genau dieser Frage, kein Code.
 
+**MESSUNG NACHGELIEFERT (Controller Slot 6, 2026-09-04 20:2x, `tmux -L claudefleet capture-pane -p -t s<N>`,
+zweitletzte nicht-leere Zeile, Mehrfach-Leerzeichen auf drei gekuerzt).** Vier lebende claude-Panes
+(Slots 1, 3, 7, 11) zeigen dasselbe Muster, drei Felder mit `  |  ` getrennt, davor zwei Leerzeichen:
+```
+  main  |  ctx [##--------] 25%  |  Opus 5 (1M context)   /rc
+  main  |  ctx [###-------] 31%  |  Opus 5 (1M context)   new task? /clear to save 306.7k tokens
+  fleet/260904163327-dcac  |  ctx [###-------] 38%  |  Opus 5 (1M context)   /rc
+```
+Frueher am Tag an weiteren Panes gesehen: `  fleet/260904181121-2f70  |  ctx [#---------] 10%  |  Fable 5.1`
+und `  main  |  ctx [----------] --%  |  Fable 5` (Slot 15, `--%` heisst „nicht messbar", NICHT null Prozent).
+Der Modellname ist das DRITTE Feld bis zum naechsten Lauf von drei oder mehr Leerzeichen; der
+Klammerzusatz `(1M context)` gehoert zum Namen. Daraus folgt fuer `modelFooter`: eine Zeile, die mit
+`  ` beginnt, Feld 1 = Branch, Feld 2 = `ctx [...] NN%` oder `--%`, Feld 3 = Modellname; Capture-Gruppe
+auf Feld 3 bis zum Drei-Leerzeichen-Lauf oder Zeilenende. Die Pane einer pi-zai-Lane zeigt STATTDESSEN
+eine Statuszeile der Form `↑94k ↓30k R2.8M CH98.9% 9.4%/1.0M (auto)   glm-5.3 •` — der Modellname steht
+dort am Zeilenende vor dem `•`; ein zweites Muster, das dieser Schnitt NICHT abdecken muss (claude-only),
+das der Adapter aber deklarieren koennte. Der Effort steht in KEINEM Footer (bekannt, Regelbuch).
+Damit ist die Voraussetzung erfuellt; 5b ist nicht mehr needs-main.
+
 **ZIEL.** Der Server traegt je Slot einen SENSOR `paneModel` (Lesung, nicht Zustand) und die Owner-Route `POST /api/slots/:id/model` kann optional `/model <id>` in die Pane schicken und stempelt `modelPushedAt`.
 
 **DONE-KRITERIUM.** `e2e/programs.ts` (oder `e2e/slots.ts`) beweist per `plantScreen` mit einer Footer-Zeile nach dem Muster, dass `/api/sessions` `paneModel` mit dem gepflanzten Wert traegt, ohne Muster `null` bleibt; `push:true` schreibt genau eine `/model <id>`-Zeile in die Pane und `modelPushedAt`; Default-Body bleibt byte-gleich (bestehende `./e2e-claude-gate.sh`-Checks gruen). Verify: volle Kette §0.5 (enthaelt `./e2e-claude-gate.sh`), dann `./e2e-isolated.sh` als Vorschau.

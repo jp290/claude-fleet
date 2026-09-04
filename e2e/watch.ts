@@ -3293,6 +3293,22 @@ export async function run(): Promise<void> {
     eventA = await eventForWatch(wAJ.watch.id);
     eventB = await eventForWatch(wB.watch.id);
   }
+  // --- AND KEEP IT LOUD. The loop above ends at the FIRST sighting of `pending`, but eventB carries
+  // receiverIdleSec 2 and the transport tick hands it over after any two quiet seconds — so from
+  // here to the restart boundary ~350 lines below the precondition "B is busy" was inherited from
+  // however long the unrelated work in between happened to take, never controlled. Measured
+  // (docs/verify-tiering.md §11.2l): red on 13 distinct trees, every red at a stretch >= 3.5 s, and
+  // `1748417` pushed the median across the gate by inserting the job-watch block into that stretch.
+  // The fixture now produces the busy-ness it asserts, on the SAME send-keys cadence as the loop
+  // above, and stops only after the restart checks have read the pending row — the block at "The
+  // pending event survived" then re-opens the gate deliberately and proves the later delivery. ---
+  let busyKeeperOn = true;
+  const busyKeeper = (async (): Promise<void> => {
+    while (busyKeeperOn) {
+      try { await tmuxOut("send-keys", "-t", `s${bId}`, "echo watch-still-busy", "Enter"); } catch { /* pane may be mid-restart */ }
+      await Bun.sleep(250);
+    }
+  })();
   check("one signal creates exactly one durable event even for a busy receiver",
     eventB?.status === "pending" && eventB.attempts === 0
     && (await eventRows()).filter((e) => e.watchId === wB.watch.id).length === 1,
@@ -3704,6 +3720,11 @@ export async function run(): Promise<void> {
   check("the bound session may explicitly resolve a possibly-seen send-uncertain event",
     resolveUncertain.ok && (await eventRows()).find((e) => e.id === crashId)?.status === "acknowledged",
     `${resolveUncertain.status} ${await resolveUncertain.text()}`);
+
+  // the engineered busy-ness ends HERE, and not one check earlier: everything above this line reads
+  // the event while it must still be pending. What follows deliberately lets the pane fall quiet.
+  busyKeeperOn = false;
+  await busyKeeper;
 
   // --- The pending event survived. Re-observe B after restart, then let its two-second idle gate
   // elapse. The same event is delivered once; repeated ticks neither mint nor inject a twin. ---

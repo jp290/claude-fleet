@@ -16119,12 +16119,12 @@ function suiteLockView(): GateLock | null {
 //     present, that pid gone. The two writes below are synchronous and pid-FIRST, the same order
 //     e2e-stage.sh uses, so the torn state a death can produce is `stale`, never `parked` — a
 //     pid-LESS dir is the manual park and this path can never create one.
-// The reap, the birth fingerprint, the pid file and mkdir-atomicity are UNCHANGED: this is the
-// shell's own procedure, expressed once more on this side.
+// The pid/birth files, their order, and mkdir-as-the-claim are the shell's, unchanged. The REAP is
+// not here at all — see holdSuiteLock.
 let suiteLockHeld = false;
-// Coarse on purpose: every poll that finds a live holder costs a `ps` (the birth fingerprint), and
-// the wrappers themselves re-check at 15 s. Five seconds buys a bounded latency nobody can feel
-// against a budget measured in minutes.
+// The contention poll. A losing attempt is one failed `mkdir` and costs nothing, but nothing is
+// gained by spinning either: the wrappers themselves re-check at 15 s, and against a budget
+// measured in minutes five seconds of latency is not a number anyone can feel.
 const SUITE_LOCK_POLL_MS = 5_000;
 function suiteLockTryTake(): boolean {
   try { mkdirSync(SUITE_LOCK); } catch { return false; } // mkdir IS the claim — atomic, as in the shell

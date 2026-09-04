@@ -17,9 +17,26 @@ ZWEITE Versuch gab nach **2 703 s** auf: `status:"resolved"`, `landed:false`,
 der Gate hat den Baum nie angesehen. Zur selben Zeit standen drei `./e2e-isolated.sh`-Wrapper
 in der Schlange, einer davon seit 46 min: laenger als das gesamte Wartebudget eines Lands.
 
+**DIE REGEL, die ich zu spaet gelernt habe und die dir zwei Lands rettet: LANDE NICHT IN EINE
+TIEFE SCHLANGE.** Ein Waitout ist nicht folgenlos — er hinterlaesst einen `resolved`-Record auf
+demselben Kandidaten, und der **No-Progress-Guard verweigert danach jeden weiteren Versuch**
+(`no progress since the last verdict — repair or escalate: resolved on the same candidate`).
+Genau daran haengt B-07 jetzt fest. Ein Land, das nie gemessen hat, sperrt sich also selbst.
+Deshalb habe ich E1s Land NICHT mehr angefasst: sein Kandidat ist frisch und unverbraucht, und
+das soll er bleiben, bis die Maschine frei ist.
+
+**Der Ausweg fuer B-07 laeuft schon:** ich habe die Lane per `POST /send` gebeten, auf das
+aktuelle main zu rebasen — nur Rebase, keine inhaltliche Aenderung, danach idle. Ein anderer
+Kandidat loest den Guard ohne jeden Waiver auf; das ist die „repair"-Haelfte, die die
+Fehlermeldung selbst anbietet. Bei Konflikten meldet sie mir die Dateien statt zu raten. Pruef
+als Erstes, ob das durch ist (`git -C ../claude-fleet.worktrees/fleet-260903205300-7830 log
+--oneline -1`).
+
 **Also, dein erster Akt, in dieser Reihenfolge:**
-1. `ps -eo command | grep -c '^/bin/sh ./e2e-'` — steht die Schlange noch? Wenn ja, hat ein
-   Landeversuch weiter schlechte Chancen; das ist Diagnose, nicht Resignation.
+1. `ps -eo command | grep -c '^/bin/sh ./e2e-'` — **erst wenn das klein ist, landest du.** Bei
+   meiner Uebergabe standen drei Wrapper, Halter bei 24:26 von ~25 min; die beiden Wartenden
+   brauchen danach je ~25 min. Das ist Diagnose, nicht Resignation — und die Wartezeit ist
+   billiger als ein zweiter gesperrter Kandidat.
 2. `POST /api/self/tasks/97f9bd97/land`, dann (NACH dessen Terminal) `4b92b2f0`. Nie zwei
    parallel.
 3. **Verlass dich beim Merge-Watch NICHT auf `POST /api/self/watch {kind:"merge"}` fuer B-07.**

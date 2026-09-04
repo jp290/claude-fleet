@@ -1627,10 +1627,10 @@ export async function run(lc: LaneCtx): Promise<void> {
     await dropLane(lnO);
     await setMergeMode("do");
 
-    // (viii) THE PERSISTED RECEIVER, and the three ways a restored row can name one. The tick's
+    // (viii) THE PERSISTED RECEIVER, and the four ways a restored row can name one. The tick's
     // retry (FACT 3) has no job frame to inherit an actor from, so it reads the receiver off the
-    // ROW — which is the whole reason the field is persisted. Three rows are planted at once and
-    // the SAME tick decides all three, so the discrimination is real rather than three timings:
+    // ROW — which is the whole reason the field is persisted. Four rows are planted at once and
+    // the SAME tick decides all four, so the discrimination is real rather than four timings:
     //   · a row with NO receiver is the legacy bestand and goes to the lane, exactly as today;
     //   · a row with a TORN receiver is dropped whole by the loader — half an attribution is a
     //     different claim, not a weaker one — and therefore also goes to the lane;
@@ -1686,18 +1686,20 @@ export async function run(lc: LaneCtx): Promise<void> {
     }
     if (rowRecycled) {
       rowRecycled.verdictDelivery = { ...replant };
-      rowRecycled.verdictTo = { slot: lnRecycledTo.slot, openedAt: 1, sessionId: null,
-        program: recyclProg, task: "0".repeat(24) };
+      rowRecycled.verdictTo = { slot: lnRecycledTo.slot, program: recyclProg, task: "0".repeat(24),
+        occupant: { openedAt: 1, sessionId: null } };
     }
     if (rowLegacy) rowLegacy.verdictDelivery = { ...replant };
     if (rowTorn) {
       rowTorn.verdictDelivery = { ...replant };
-      rowTorn.verdictTo = { slot: "not-a-slot", openedAt: 0, program: 7 }; // torn on three fields at once
+      // torn on every field at once, occupant included: an occupant KEY that is present but
+      // unreadable is a torn row, not the (legitimate) "binding was unreadable" row
+      rowTorn.verdictTo = { slot: "not-a-slot", program: 7, task: "", occupant: { openedAt: "later" } };
     }
     if (rowGone) {
       rowGone.verdictDelivery = { ...replant };
-      rowGone.verdictTo = { slot: lnGoneTo.slot, openedAt: 1, sessionId: null,
-        program: "0".repeat(24), task: "0".repeat(24) };
+      rowGone.verdictTo = { slot: lnGoneTo.slot, program: "0".repeat(24), task: "0".repeat(24),
+        occupant: { openedAt: 1, sessionId: null } };
     }
     check("land verdict receiver setup: the four persisted rows exist, were replanted as owed-a-retry, and the fixture binding is in place",
       !!rowLegacy && !!rowTorn && !!rowGone && !!rowRecycled && !!recyclRow,

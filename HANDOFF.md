@@ -1,3 +1,113 @@
+# HANDOFF — Program-MAIN „Fleet-Betrieb 2026-09" (`f170dc46e4b026ee34d9392e`, Slot 5, Opus 5): der Deckel war der Engpass, nicht die Arbeit — vier Lanes laufen, R1 ist deployt, und ein rotes 17-Fail-Audit hat zwei falsche Hypothesen widerlegt (meine und die des Controllers); 2026-09-04 22:2x, ctx GEMESSEN 24,9 % (249 048/1 000 000)
+
+Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was
+git und die Sensoren nicht tragen. Die Abschnitte darunter sind FREMD (geteilte Datei).
+
+## 0. DAS ERSTE: was mit meiner Session stirbt
+
+1. **VIER LAUFENDE LANES, deren Reports an MEIN Occupant-Tripel adressiert sind.** Das ist B1:
+   eine Succession kann einen Report mit `refused / "requester session ended"` beenden, STILL.
+   Pruefe als ERSTES `GET /api/self/attention` und den Report-Bestand; findest du dort einen
+   refused Report einer dieser Lanes, ist er UNBEANTWORTET, nicht abgelehnt — hol ihn neu.
+   | Slot | Task | was sie tut |
+   |---|---|---|
+   | 2 | `ce329973` R2' | bounded Rebase+ff-Neuversuch unter GEHALTENEM Suite-Lock |
+   | 4 | `3cd64a5f` S1 | Audit-`fails[]` lokal (Lebenszyklus-Paket) |
+   | 7 | `8ab7215f` AUDIT-PROPORTION | docs-only-Land ⇒ kurze Audit-Kette (Owner 21:3x) |
+   | 1 | `0a099c62` | Wurzel des 17-Fail-Audits + Autoclose-Env; Arm B des Paar-Versuchs lief 22:18 |
+2. **Keine armed Watches, keine Autos mehr.** Beide Audit-Watches (`b9fbc136` fc45fe4,
+   `a1faeac8` 704237d) haben gefeuert und sind verbraucht; der Self-Auto `d27ef1f7` ist
+   abgelaufen. Du startest ohne Rueckweg — leg dir selbst einen, BEVOR du wartest.
+3. **Keine offene Attention.** Ich habe in dieser Session keine gestellt: es gab keine
+   Owner-Grenze, nur Controller-Koordination. Das war richtig und bleibt der Massstab.
+
+## 1. Was ich geliefert habe
+
+- **Der Engpass war strukturell, nicht inhaltlich.** Mein Program lief bei Uebernahme mit NULL
+  Lanes: alle vier queued-Zeilen trugen woertlich `waiting: 3/2 lanes busy in claude-fleet`, und
+  alle drei Besetzer gehoerten anderen. Eine gebuendelte Nachricht an den Controller (Slot 8
+  landbar mit ahead=1; Slot 2 eine READ-ONLY Beleg-Lane, die per Brief NIE landet) hat den Deckel
+  freigeraeumt. **Lehre fuer dich: wenn nichts laeuft, lies die `note` der queued-Zeilen, bevor du
+  irgendetwas anderes tust — sie nennt den Grund mechanisch.**
+- **R1 (`fc45fe4`) ist DEPLOYT und verifiziert** (Deploy `4f9a7415`, bootHead `dc7e141`,
+  `deployGap 0`, `bundleStale false`). Geprueft habe ich nicht die Quittung, sondern den Code:
+  `git merge-base --is-ancestor a6bf269 dc7e141` ist wahr — das Merge-Verdikt-an-den-Lander ist live.
+- **Zwei rote Audits beurteilt, eines davon ZURUECKGEZOGEN** (s. §3). `at=1788552725755` ist
+  `flake` (§11.2o). `at=1788550781547` steht als `unknowable` mit Rueckzugs-Note und wird von
+  `0a099c62` entschieden — die Route kennt kein „offen", darum diese Form.
+- **Zwei Zeilen gefiled:** `0a099c62` (Wurzel + Autoclose-Env, laeuft) und `bc0609f8`
+  (runVerify-Gate-Env, PENDING mit Reihenfolge-Bedingung).
+
+## 2. Was JETZT offen ist, in dieser Reihenfolge
+
+1. **Reports der vier Lanes entgegennehmen, DIFF pruefen (nie den Bericht), per Self-Land landen.**
+   Vorrang laut Controller: `8ab7215f` vor den S-Zeilen. Nach jedem Land, das `server.ts`
+   beruehrt, EIN Satz an den Controller — er deployt.
+2. **`bc0609f8` freigeben, aber ERST nach dem Land von `0a099c62`.** Beide fassen dieselbe Naht an
+   (Wrapper-Seite vs. Server-Seite). Vorher freigeben = zwei Lanes auf einer Naht.
+3. **Beim Land von `0a099c62`: §11.2p im Baum nachziehen.** Der Eintrag (`dc7e141`,
+   `docs/verify-tiering.md`) beschreibt die Kaskade korrekt, nennt aber WEDER den
+   runVerify-Durchgriff NOCH den Dauer-Sensor. Steht am Ende fest, dass die requeue-Gruppe nur bei
+   `FLEET_LANE_AUTOCLOSE=1` faellt, ist sie KEINE Flake-Familie, sondern ein auf Kommando
+   reproduzierbarer Konfigurationsfehler — dann muss der Eintrag das sagen. **Das ist meine
+   Zusage, die ich nicht mehr einloese; sie ist jetzt deine.**
+4. **`76261837` (R4') bleibt aufgeschoben** bis S3c (`288f6359`) gelandet ist. Grund am Code
+   geprueft, nicht geglaubt: S3c laesst `tickAuditPing` fuer Lands OHNE Program bei der
+   ungefilterten Kandidatenwahl (`server.ts:10352`), und `tickBacklogNudge` (`:10423`/`:10433`)
+   fasst kein Schnitt an. Beim Wiederaufgreifen den Brief neu verankern.
+5. **Kriterium (a) des Programs ist NICHT erfuellt:** fuenf offene auftrag-Zeilen ohne
+   programId sind Fleet-Arbeit — `5c1f831f` (explizit `[fleet-betrieb]`) und die vier
+   `[steward-brief]`-Zeilen. **`0e069d4c` dupliziert S1 `3cd64a5f`** (lokal rotes Audit ist
+   namenlos) — beide freigeben heisst zwei Lanes auf demselben Code. Eine Program-MAIN hat keine
+   Tuer, um eine fremde Zeile umzuhaengen; das ist eine Bitte an den Controller.
+
+## 3. Vier Korrekturen — drei an mir selbst, und die Methode ist wichtiger als der Inhalt
+
+1. **Ich habe R1 verdaechtigt, und ich lag falsch.** Die 17 Fails haeuften sich in
+   Zustellungs-/Empfaengerwahl-Semantik, und R1 hatte genau das geaendert. Plausibel, falsch.
+   **Was es gefangen hat: ich habe den Versuch gebaut, der die Hypothese WIDERLEGEN konnte, nicht
+   den, der sie bestaetigt haette.** Der Rerun auf identischem R1-Code liess alle vier
+   Verdaechtigen-Familien gruen laufen. Ich hatte eine Stunde vorher selbst notiert, dass eine
+   Signatur, die dorthin zeigt, wo man ohnehin verdaechtigt, MEHR Pruefung braucht — und bin dann
+   in die weichere Fassung derselben Falle gelaufen.
+2. **Dann habe ich ueberkorrigiert:** „der Autoclose-Env faellt als Ursache aus, weil beide Laeufe
+   ihn hatten". Das verwechselt **hinreichend** mit **notwendig**. Beide Laeufe erbten ihn, nur
+   einer kaskadierte ⇒ nicht hinreichend; ueber notwendig sagt es NICHTS. Der Satz ist
+   zurueckgezogen.
+3. **Und die Autoclose-Hypothese war ohnehin am falschen Ort.** Lane `0a099c62` hat direkt am
+   Prozess gemessen: `server.ts#auditChildEnv` (`:12897`) scrubbt JEDES `FLEET_*` — der Audit erbt
+   nichts. Der echte Durchgriff ist `server.ts#runVerify` (`:11426`, Spawn `:11430`): dort steht
+   `Bun.spawn(["sh","-c",cmd], { cwd, stdout, stderr })` **ohne env-Option**, also erbt der
+   LAND-GATE die volle Server-Umgebung. Schaerfung, die im Brief `bc0609f8` steht: die Invariante
+   FEHLT nicht, sie ist benannt vorhanden und an genau einer Stelle nicht angewandt.
+4. **Der Dauer-Sensor, den heute niemand liest.** Aus `post-land-audits.jsonl`: der 17-Fail-Lauf
+   brauchte **38,3 min** — der langsamste lokale Voll-Audit im ganzen Ledger — gegen einen Median
+   von **30,4 min** aus den sieben davor; der Rerun 32,4 min mit 1 Fail. Die Zahl steht in jeder
+   Ledger-Zeile und wird nirgends gelesen. **Gehoert ins Program „Audit-Determiniertheit", nicht
+   hierher** — ich habe daraus bewusst keine zweite Baustelle gemacht.
+
+## 4. Zwei Saetze Betrieb, die dir Zeit sparen
+
+- **`POST /send` ist die Route, NICHT `/api/send`** (letzteres antwortet „not found"). Lange Texte
+  per `python3 json.dumps` in eine Datei und `--data-binary @datei` — Shell-Quoting toetet lange
+  Nachrichten still.
+- **Dieser Handoff ist ein DIREKT-COMMIT auf main und damit fuer jedes land-seitige Ledger
+  unsichtbar** (keine Land-Note, keine `lane-outcomes.jsonl`-Zeile, kein Post-Land-Audit).
+  Verifikation von Hand: **nur die kurze Kette `bun e2e/pins.ts`, ALL PASS** — die Aenderung ist
+  rein docs (`HANDOFF.md`), also die proportionale Beweismenge nach `e896826`. `./e2e-isolated.sh`
+  habe ich BEWUSST NICHT gefahren: den Suite-Mutex hielt Arm B der Lane `0a099c62`, und ein
+  zweiter isolierter Lauf daneben haette genau den Versuch vergiftet, der die offene Audit-Zeile
+  entscheidet. Wer das nachrechnet, findet also korrekt „keine Suite gelaufen" — es ist eine
+  Entscheidung, kein Versaeumnis.
+- **Der Deckel war heute mehrfach bewusst ueberschritten** (Hand-Dispatch am Deckel vorbei, 4/2).
+  Das ist eine Controller-Entscheidung und in Ordnung — aber die Maschine stand dabei bei **87 %
+  Swap** (4457/5120 MB), gegen 74 % heute frueh, als zwei Hintergrund-Waiter OOM-getoetet wurden
+  (Notiz `0a8d2f13`). **Stirbt eine Lane unter Last mitten im Verify, sieht das aus wie ein roter
+  Gate.** Erst die Speicher-Signatur pruefen, dann jemandem einen Regress zuschreiben.
+
+---
+---
+
 # HANDOFF — 🎛 Fleet Controller (Slot 9, Fable 5.1): Deckel freigeraeumt, Lebenszyklus-Kette laeuft, R1 DEPLOYT, Audit-Proportion + Audit-Rot-Untersuchung als Lanes, Program Audit-Determiniertheit gegruendet; 2026-09-04 22:1x, ctx GEMESSEN ~30 % (Owner-Entscheid 22:0x: Band 25/30 fuer diese Session ausgesetzt, Anker 40 %)
 
 Zustand ableiten: `./state.sh`, `./register.sh`, Owner-Poll, Panes. Hier nur, was git nicht traegt.

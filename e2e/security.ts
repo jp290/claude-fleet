@@ -245,7 +245,10 @@ const PRE_AUTH_ROUTES = [
   // with the same consequence: it is the OWNER's binding of a Program to a WORKFLOW record, written
   // by this route alone, and a session that could write it would be choosing the workflow it is
   // judged by. Owner side of this line, tokenGate inline, no self-token header read.
-  String.raw`~ /^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|studio))?$/`,
+  // `dispatch` joined this alternation 2026-09-05 with the program-scoped dispatch door. REVIEWED,
+  // not merely widened: the route is inside the block whose FIRST statement is the owner tokenGate,
+  // exactly like its four neighbours here, so it is pre-auth in position and owner-only in effect.
+  String.raw`~ /^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|studio|dispatch))?$/`,
   // The studio inventory itself, beside the Programs regex and for its reasons: a Studio is owner
   // truth about the workflow (stages, gates, brief blocks), several Programs may bind the same one,
   // and the handler sits before the steward interceptor only so a steward credential meets the same

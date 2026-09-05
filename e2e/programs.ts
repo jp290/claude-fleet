@@ -4864,8 +4864,12 @@ export async function run(ctx: Ctx): Promise<void> {
   // (3) `on:false` IS NOT ABSENCE. The record stays, dated and readable; the tick refuses exactly as
   // it did in (1). The lane from (2) is killed first, so the per-program cap is provably NOT what is
   // holding the row back.
-  await pdKillLanes();
+  // ...and the ORDER here is the fixture, not a detail: the grant is taken back BEFORE the lane is
+  // killed. Killing first frees the per-program cap while the grant is still on, and the 250 ms tick
+  // then correctly starts the waiting row — which is the product working, and a red check measuring
+  // the test's own race (paid once, 2026-09-05, run isolated-20260905T132104Z-78880).
   const pdOff = await pdDispatchDoor(mainProgram.id, { dispatch: { v: 1, on: false, maxLanes: 2 } });
+  await pdKillLanes();
   const pdOffRecord = await pdProgramRecord(mainProgram.id);
   await pdSettle();
   const pdMachine2C = await spawnRowOf(pdMachine2);

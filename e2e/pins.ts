@@ -623,12 +623,15 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
   // this very server is holding, and the wait the whole change exists to remove comes back silent.
   // The shell's three conditions are pinned WITH the variable, because the variable alone must
   // never be enough — a stale export that skipped the lock file would let a suite run unserialized.
+  // The server half moved into server.ts#verifyChildEnv on 2026-09-05 (the gate child's env is
+  // scrubbed of FLEET_* now, so this one has to be MINTED rather than left in place) — same name,
+  // same must-pair, an assignment instead of an object-literal entry.
   pin("the inherited suite-mutex hold is one name on both sides, and the shell honours it only over a LIVE pid the lock file itself records",
-    server.includes("FLEET_SUITE_LOCK_HELD_BY: String(process.pid)")
+    server.includes("env.FLEET_SUITE_LOCK_HELD_BY = String(process.pid)")
       && stage.includes('_st_held_by="${FLEET_SUITE_LOCK_HELD_BY:-}"')
       && stage.includes('kill -0 "$_st_held_by" 2>/dev/null')
       && stage.includes('"$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)" = "$_st_held_by"'),
-    `server=${server.includes("FLEET_SUITE_LOCK_HELD_BY: String(process.pid)")} shellVar=${stage.includes('_st_held_by="${FLEET_SUITE_LOCK_HELD_BY:-}"')} alive=${stage.includes('kill -0 "$_st_held_by" 2>/dev/null')} onDisk=${stage.includes('"$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)" = "$_st_held_by"')}`);
+    `server=${server.includes("env.FLEET_SUITE_LOCK_HELD_BY = String(process.pid)")} shellVar=${stage.includes('_st_held_by="${FLEET_SUITE_LOCK_HELD_BY:-}"')} alive=${stage.includes('kill -0 "$_st_held_by" 2>/dev/null')} onDisk=${stage.includes('"$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)" = "$_st_held_by"')}`);
   // THE FIFO SEAM (2026-09-05). The mutex used to be a race: `sleep 15` + retry `mkdir`, no order,
   // so waiting longer bought nothing — measured, slot 7's post-land audit waited 2h45m and lost
   // three races to younger contenders. The fix is one ticket per contender, and it is exactly the
@@ -3982,10 +3985,13 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     `env=${/process\.env\.FLEET_LANE_AUTOCLOSE/.test(server)} docSection=${autoCloseSection !== ""}`);
   // …and the SUITE side of that same flag, which no compiler and no runtime check can see: a knob
   // the wrappers do not NAME is inherited from whatever shell started them, and this is the knob
-  // the deployed fleet arms (watchdog.sh) whose env server.ts#runVerify hands to the land gate's
-  // chain unfiltered. Three statements, because they cover three different callers: the SRV_ENV
-  // line covers the isolated suite's own srv and runner, the e2e-stage.sh export covers all seven
-  // wrappers, and the probe is what turns the off-state from an assumption into a measurement.
+  // the deployed fleet arms (watchdog.sh). Since 2026-09-05 server.ts#runVerify scrubs FLEET_* out
+  // of the land gate's child (verifyChildEnv, pinned below), so the wrappers are no longer the only
+  // thing standing between that armed 1 and a suite reading it — both halves are stated, which is
+  // what a knob with two independent inheritance paths is worth. Three statements, because they
+  // cover three different callers: the SRV_ENV line covers the isolated suite's own srv and runner,
+  // the e2e-stage.sh export covers all seven wrappers, and the probe is what turns the off-state
+  // from an assumption into a measurement.
   // Scoped to the SRV_ENV assignment itself, not to the file — the comment above it names the
   // string too, and a pin that its own explanation satisfies measures nothing.
   const isoSrvEnv = /^SRV_ENV="([^\n]*)"$/m.exec(read("e2e-isolated.sh"))?.[1] ?? "";
@@ -3997,6 +4003,50 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     `srvEnv=${/\bFLEET_LANE_AUTOCLOSE=0\b/.test(isoSrvEnv)} stage=${/^export FLEET_LANE_AUTOCLOSE=0$/m.test(read("e2e-stage.sh"))}`
       + ` helper=${/export async function srvEnv\(/.test(read("e2e/harness.ts"))}`
       + ` probe=${read("e2e/watch.ts").includes('srvEnv("FLEET_LANE_AUTOCLOSE")')}`);
+  // …AND THE SERVER SIDE OF THE SAME INHERITANCE, which the line above could only work around.
+  // runVerify's Bun.spawn passed no `env` at all until 2026-09-05, so Bun handed the land gate's
+  // chain `process.env` whole — measured 2026-09-05 through e2e-clean-review.sh's verify stand-in:
+  // fourteen FLEET_* names arrived in the child, FLEET_SELF_TOKEN and FLEET_SELF_SLOT among them.
+  // The gate was therefore measuring a world no lane running those same three wrappers by hand can
+  // reproduce, which is the "green in the lane, red at the gate, and nobody can say why" class.
+  //
+  // Four coupled facts, because each fails differently and only the first is obvious:
+  //   · the spawn passes an env AT ALL — delete the option and Bun silently inherits everything
+  //   · it is built by a RULE over the FLEET_ prefix, never a list of known-bad names (the payload
+  //     boots three more fleet servers, so the wrong knob is not enumerable in advance)
+  //   · exactly the SUITE-MUTEX knobs survive it: this server holds the same lock and hands its
+  //     hold across, so scrubbing FLEET_SUITE_LOCK would have the child queue for a lock this
+  //     process is holding — a silent deadlock, never a red check
+  //   · FLEET_SUITE_LOCK_HELD_BY is MINTED under a real hold, not kept; an inherited one is a
+  //     licence to skip a mutex nobody is holding for that child
+  // The measurement is pinned beside the rule for the same reason the D2 probe is above it: a
+  // source-text rule with no run behind it is an assumption with a green box around it.
+  const verifyEnvBody = serverU.span("// PATH IS NOT TOUCHED", "// `heldSuiteLock` —")?.text ?? "";
+  const verifyEnvKeeps = 'const VERIFY_CHILD_KEEPS = new Set(["FLEET_SUITE_LOCK", "FLEET_SUITE_POLL_SEC"]);';
+  const verifyEnvSpawn = server.includes("env: verifyChildEnv(heldSuiteLock) });");
+  const verifyEnvRule = verifyEnvBody.includes('!k.startsWith("FLEET_") || VERIFY_CHILD_KEEPS.has(k)');
+  const verifyEnvMint = verifyEnvBody.includes("if (heldSuiteLock) env.FLEET_SUITE_LOCK_HELD_BY = String(process.pid);")
+    && !verifyEnvBody.includes('"FLEET_SUITE_LOCK_HELD_BY"');
+  const verifyEnvProbe = read("e2e-clean-review.sh").includes('} > "$0.env"')
+    && read("fleet-e2e-clean-review.ts").includes('srvEnv("FLEET_CLEAN_REVIEW")');
+  pin("the land gate's chain is spawned with a SCRUBBED env — the same FLEET_* rule auditChildEnv applies to the tier-2 child",
+    verifyEnvSpawn && verifyEnvRule && verifyEnvBody.includes(verifyEnvKeeps)
+      && verifyEnvMint && verifyEnvProbe,
+    `spawn=${verifyEnvSpawn} rule=${verifyEnvRule} keeps=${verifyEnvBody.includes(verifyEnvKeeps)}`
+      + ` minted=${verifyEnvMint} probe=${verifyEnvProbe}`);
+  // PATH is the one thing the scrub must NOT touch, and it is safe by CONSTRUCTION rather than by a
+  // name in a list: the rule keeps every non-FLEET variable, so PATH cannot be dropped without
+  // dropping the rule. Pinned as the negative it is — a `delete env.PATH`, a PATH key written into
+  // the built env, or an inverted filter that keeps only FLEET_* would each kill every land gate on
+  // this machine at `bun install` (launchd carries neither ~/.bun/bin nor ~/.local/bin nor brew,
+  // which is why watchdog.sh exports one). e2e-clean-review.sh compares the child's PATH to the
+  // runner's on every land gate; this is the source half of that measurement.
+  pin("the gate-child scrub cannot lose PATH: it keeps every non-FLEET variable, and says so",
+    verifyEnvBody !== "" && !/\bdelete env\.PATH\b/.test(verifyEnvBody) && !/env\.PATH\s*=/.test(verifyEnvBody)
+      && verifyEnvBody.includes("PATH IS NOT TOUCHED")
+      && read("fleet-e2e-clean-review.ts").includes("process.env.PATH"),
+    `body=${verifyEnvBody !== ""} stated=${verifyEnvBody.includes("PATH IS NOT TOUCHED")}`
+      + ` measured=${read("fleet-e2e-clean-review.ts").includes("process.env.PATH")}`);
   pin(`${RULE_RECEIVER} — killed-empty is one word across the disposition union, the tick's assertion and the doc (D2)`,
     /type LaneDisposition = [^\n]*"killed-empty"/.test(server)
       && autoCloseTick.includes('row.disposition !== "killed-empty"')

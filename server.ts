@@ -11451,6 +11451,51 @@ async function verifyPlanFor(cwd: string, repo: string, mainSha: string): Promis
   return { cmd, proportional, steps };
 }
 
+// The gate chain's environment is this server's, MINUS every `FLEET_*` — the same RULE
+// auditChildEnv applies to the tier-2 child, and for the same reason. The payload here is "boot
+// another fleet server" three times over: e2e-clean-review.sh, e2e-security.sh and
+// e2e-claude-gate.sh each spawn their own `bun server.ts`, and every knob THIS server was
+// configured with is wrong for those.
+//
+// Until 2026-09-05 this spawn passed no `env` at all, so Bun handed the child `process.env` whole:
+// watchdog.sh:155's FLEET_LANE_AUTOCLOSE=1, FLEET_HARNESS_AUTOMATION=1, FLEET_CLEAN_REVIEW,
+// FLEET_DISPATCH_*, FLEET_POSTLAND_AUDIT_CMD, FLEET_VERIFY_* and whatever `.env` adds (measured:
+// FLEET_INSTANCE, FLEET_CMD, FLEET_MODEL, FLEET_SHARE_HOSTS…). A lane running those same three
+// wrappers by hand has none of them. That is the "green in the lane, red at the gate, and nobody
+// can say why" class, and it was not a missing idea — auditChildEnv is the idea, it was just never
+// applied on this side.
+//
+// A RULE and not an allowlist, and that is a measurement rather than a preference: none of the
+// three wrappers reads a `FLEET_*` out of its inherited environment. Each states every knob it
+// needs on its own srv spawn line and on its own runner line (`grep -n 'FLEET_' e2e-*.sh` —
+// verified 2026-09-05, every hit is an assignment or a comment). The only reads of an inherited
+// value in the whole chain are in e2e-stage.sh, and all three name the SUITE MUTEX.
+//
+// Those three are carried, for one reason: this server is a PARTICIPANT in that mutex, not merely
+// the caller of something that takes it. It takes the same lock (SUITE_LOCK, read from
+// FLEET_SUITE_LOCK) and hands its hold across as FLEET_SUITE_LOCK_HELD_BY, which e2e-stage.sh
+// honours only if the pid it names is the one recorded in `$FLEET_SUITE_LOCK/pid`. Scrub
+// FLEET_SUITE_LOCK on a server configured with a non-default lock and the child reads the wrong
+// directory, fails the hold test, and queues for a lock this very process is holding — a silent
+// deadlock, not a red check.
+//
+// PATH IS NOT TOUCHED, and that is the load-bearing half. The launchd context carries neither
+// ~/.local/bin (claude) nor ~/.bun/bin (bun) nor brew, which is why watchdog.sh exports an explicit
+// PATH into the srv; losing it here would kill every land gate on this machine at `bun install`.
+// Keeping every non-FLEET variable is what makes that safe by construction rather than by a name
+// somebody has to remember to list.
+const VERIFY_CHILD_KEEPS = new Set(["FLEET_SUITE_LOCK", "FLEET_SUITE_POLL_SEC"]);
+function verifyChildEnv(heldSuiteLock: boolean): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env))
+    if (typeof v === "string" && (!k.startsWith("FLEET_") || VERIFY_CHILD_KEEPS.has(k))) env[k] = v;
+  // MINTED here, never inherited — which is why FLEET_SUITE_LOCK_HELD_BY is absent from the set
+  // above rather than listed in it. The hold is a fact about THIS process; an inherited value would
+  // hand a child a licence to skip a mutex nobody is holding on its behalf.
+  if (heldSuiteLock) env.FLEET_SUITE_LOCK_HELD_BY = String(process.pid);
+  return env;
+}
+
 // `heldSuiteLock` — this gate runs INSIDE a suite-mutex hold this server already owns (the ff retry
 // chain below), so its staged steps must not queue for a lock that is already ours. Passed to THIS
 // child and to no other: a blanket `process.env` entry would be inherited by the post-land audit
@@ -11460,8 +11505,8 @@ async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null,
   if (!plan) return undefined;
   const { cmd, proportional, steps } = plan;
   const startedAt = Date.now();
-  const p = Bun.spawn(["sh", "-c", cmd], { cwd, stdout: "pipe", stderr: "pipe",
-    ...(heldSuiteLock ? { env: { ...process.env, FLEET_SUITE_LOCK_HELD_BY: String(process.pid) } } : {}) });
+  const p = Bun.spawn(["sh", "-c", cmd],
+    { cwd, stdout: "pipe", stderr: "pipe", env: verifyChildEnv(heldSuiteLock) });
   let timedOut = false, waitedOut = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   // wait the chain has finished and REPORTED (its `acquired after Ns` lines). The report supersedes

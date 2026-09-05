@@ -351,22 +351,42 @@ each has a class the other structurally cannot see.
   `unknown` rather than blocking work — the inverse fail direction their classification block argues
   for, and it is the right one for something that gates nothing.
 
-**And one asymmetry that is neither, measured 2026-09-04:** the two tiers hand their command
-*different environments*, and only one of them says so. `server.ts#runPostLandAudit` spawns its
-command through `server.ts#auditChildEnv`, which drops **every** `FLEET_*` variable — a rule, not a
-list, argued in its own comment (a nested fleet must not inherit the outer one's audit command,
-credentials or behaviour knobs). `server.ts#runVerify` spawns the pre-land gate's chain with **no
-`env` option at all**, so it inherits the deployed server's environment whole. Consequence for
-anyone reading a red: a knob armed on the live srv reaches the three suite wrappers the gate chain
-runs (`e2e-clean-review.sh` · `e2e-security.sh` · `e2e-claude-gate.sh`) and reaches the tier-2
-`./e2e-isolated.sh` **not at all**. Measured directly rather than inferred: with
-`FLEET_LANE_AUTOCLOSE=1` on the deployed srv (`watchdog.sh`, since `566cbae`), the audit's own suite
-servers carried no such variable. The corollary is a trap in the other direction — an env difference
-between the gate and the audit can make one tier red where the other is green, for a reason that is
-in neither tree. Since `e2e-stage.sh` exports `FLEET_LANE_AUTOCLOSE=0` and `e2e-isolated.sh` names
-it in `SRV_ENV`, that particular knob is stated by every wrapper and `e2e/watch.ts`'s `D2 setup`
-check reads the value back off the srv process, so an inherited value fails as a wrong premise
-instead of as a broken feature.
+**And one asymmetry that WAS neither — measured 2026-09-04, closed 2026-09-05.** The two tiers used
+to hand their command *different environments*, and only one of them said so.
+`server.ts#runPostLandAudit` has always spawned through `server.ts#auditChildEnv`, which drops
+**every** `FLEET_*` variable — a rule, not a list, argued in its own comment (a nested fleet must not
+inherit the outer one's audit command, credentials or behaviour knobs). `server.ts#runVerify` passed
+**no `env` option at all**, so Bun handed the pre-land gate's chain the deployed server's environment
+whole. The finding was never "an idea is missing" but "an existing invariant is not applied on one
+side": a knob armed on the live srv reached the three suite wrappers the gate chain runs
+(`e2e-clean-review.sh` · `e2e-security.sh` · `e2e-claude-gate.sh`) and reached the tier-2
+`./e2e-isolated.sh` **not at all** — so the gate measured a world no lane running those same three
+wrappers by hand could reproduce. That is the "green in the lane, red at the gate, and nobody can
+say why" class, and it also runs the other way: an env difference can make one tier red where the
+other is green, for a reason that is in neither tree.
+
+**What the gate child gets now** is `server.ts#verifyChildEnv`: the same `FLEET_*` rule, with the
+suite-mutex knobs carried and `FLEET_SUITE_LOCK_HELD_BY` **minted** rather than inherited. Those
+survive because this server is a *participant* in that mutex — it takes the same lock (`SUITE_LOCK`,
+from `FLEET_SUITE_LOCK`) and hands its hold to the child, which `e2e-stage.sh` honours only over a
+pid recorded in `$FLEET_SUITE_LOCK/pid`; scrubbing the lock path would have the child queue for a
+lock this very process holds — a silent deadlock, not a red check. **PATH is untouched**, which is
+what keeps `bun` reachable at all: the launchd context carries neither `~/.bun/bin` nor
+`~/.local/bin` nor brew, which is why `watchdog.sh` exports one.
+
+Both ends are measured rather than asserted. Before the cut (2026-09-05, `e2e-clean-review.sh`'s
+verify stand-in recording the env it was handed): **14** `FLEET_*` names in the gate child, including
+`FLEET_SELF_TOKEN` and `FLEET_SELF_SLOT`. After: **0**, with `PATH` byte-identical to the runner's.
+That stand-in keeps recording, so every land gate re-measures its own child environment — with a
+control in the same reading (`srvEnv("FLEET_CLEAN_REVIEW")` proves the server does carry a `FLEET_*`
+knob, so an absence can never pass for a null reading). `e2e/pins.ts` holds the source side: the
+spawn passes an env at all, the rule is a prefix and not a name list, exactly the mutex knobs
+survive, and the mint is not a keep.
+
+The wrapper-stated defaults stay where they are and are now belt-and-braces rather than the only
+guard: `e2e-stage.sh` exports `FLEET_LANE_AUTOCLOSE=0`, `e2e-isolated.sh` names it in `SRV_ENV`, and
+`e2e/watch.ts`'s `D2 setup` reads the value back off the srv process, so an inherited value would
+fail as a wrong premise instead of as a broken feature.
 
 **Proportion, added 2026-09-04 (owner).** Tier 2 no longer runs the full suite over a tree whose
 every new land was docs-only. `server.ts#drainPostLandAudits` asks `entryRunsShortChain` of the
@@ -2639,5 +2659,7 @@ gemessen (2026-09-04, ein Variablenname je Prozess gefiltert ausgegeben): live s
 ist (die Kontrolle, die „nicht gesetzt" von „nicht lesbar" trennt). (2) Die Note diskriminiert
 ohnehin nichts: sie wird von `server.ts#teardownSlotOccupant` geschrieben, dem generischen
 Occupant-Abbau, den JEDER Schluss durchlaeuft — Hand-Kill, Probe, Autoclose gleichermassen. Die
-Env-Naht ist trotzdem real, nur an einer anderen Stelle (§6, `runVerify` filtert nicht) und seit
-demselben Tag gestated statt geerbt.
+Env-Naht ist trotzdem real, nur an einer anderen Stelle (§6, `runVerify` filterte nicht) und seit
+demselben Tag gestated statt geerbt. **Nachtrag 2026-09-05:** diese zweite Stelle ist geschlossen —
+`runVerify` spawnt jetzt durch `server.ts#verifyChildEnv`, nach derselben Regel; vorher/nachher am
+Kind gemessen (14 `FLEET_*`-Namen → 0, PATH unveraendert), §6.

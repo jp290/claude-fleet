@@ -1032,6 +1032,117 @@ export async function run(): Promise<void> {
         (await openDebts()).length === 0,
         JSON.stringify((await openDebts()).map((e) => `${e.kind}:${e.status}`)));
       await post(`/api/slots/${living.slot}/kill`, {});
+
+      // --- (6) §11.2j's ROOT, MEASURED AS ITSELF RATHER THAN THROUGH THE FIXTURE ABOVE.
+      // Everything up to here reads the tick from the OUTSIDE and can only report the damage:
+      // a row the block above read as `subject-gone` reading `pending` again (`flippedBack`),
+      // beside a budget door that refuses because that resurrected row is still spending it
+      // (`freed:400`) — 12 of 12 red runs since b20e7e4 carry the first, 11 of them both.
+      // The mechanism is one lost update inside server.ts#tickWatches: the loop validates a row
+      // (`status === "pending"`, subject present), then AWAITS `canDeliver`, which shells out to
+      // ps/pgrep. An owner kill of the subject lane runs to completion inside that await and
+      // `markFleetEventsSubjectGone` writes the terminal state on the very row the loop is
+      // holding — after which the loop wrote its `send-uncertain` marker over it.
+      // This probe drives that window directly: the tick is PARKED in it by a server-side latch,
+      // the subject is killed while it stands there, and what the tick writes on release is read.
+      // It needs no draft and no refusal — with a free composer the unrepaired tick DELIVERS a
+      // torn-down lane's notification into the pane, which is the product harm the terminal state
+      // exists to prevent, and it is asserted here as a prompt-log fact.
+      {
+        const tickLatch = process.env.FLEET_TEST_WATCH_TICK_LATCH ?? "";
+        const clearTickLatch = (): void => {
+          for (const suffix of ["", ".reached", ".release"]) rmSync(`${tickLatch}${suffix}`, { force: true });
+        };
+        // 60 s, because the WATCH still has to fire first and the completion predicate it fires on
+        // is recomputed on the 10 s tickGit — the same bound the doomed/living mint above uses.
+        const latchReached = async (): Promise<string> => {
+          for (let i = 0; i < 600 && !existsSync(`${tickLatch}.reached`); i++) await Bun.sleep(100);
+          return existsSync(`${tickLatch}.reached`) ? readFileSync(`${tickLatch}.reached`, "utf8") : "";
+        };
+        // The probe cannot run without the knob, and a probe that cannot run must fail as ITSELF —
+        // never as the contract it was going to measure (CLAUDE.md, and §11.2j's own lesson).
+        const latchArmable = tickLatch.length > 0 && !existsSync(tickLatch);
+        check("tick-window fixture: the suite states the server-side tick latch and it is disarmed",
+          latchArmable, JSON.stringify({ path: tickLatch.length > 0, alreadyArmed: existsSync(tickLatch) }));
+
+        // A free composer, in BOTH readings transport uses: the unrepaired tick must be able to
+        // reach the pane, otherwise "nothing was typed" would be true for the wrong reason.
+        setComposerMode("normal");
+        const tickDrained = await drainComposer(40);
+        await tmuxOut("send-keys", "-t", `s${uId}`, "BSpace");
+        await Bun.sleep(100);
+        const tickFrame = composerResidue({ kind: "rules" },
+          (await tmuxOut("capture-pane", "-p", "-e", "-t", `s${uId}`)).out);
+        const tickWindow = await receiverId();
+        check("tick-window fixture: the receiver enters the window live, with an empty composer in both readings",
+          stateBuffer().text === "" && tickFrame === ""
+          && tickWindow.paneId !== "" && tickWindow.agent === "alive",
+          JSON.stringify({ drained: tickDrained, internal: stateBuffer().text.length,
+            frame: (tickFrame ?? "?").slice(0, 40), pane: tickWindow.paneId, agent: tickWindow.agent }));
+
+        const doomedLane = (await (await post("/api/lanes", { repo: REPO })).json()) as
+          { slot: number; cwd: string; branch: string };
+        await Bun.write(`${doomedLane.cwd}/acp27-tick-window.txt`, "tick window subject\n");
+        spawnSync("git", ["-C", doomedLane.cwd, "add", "acp27-tick-window.txt"]);
+        spawnSync("git", ["-C", doomedLane.cwd, "commit", "-qm", "acp27 tick window subject"]);
+        let tickSubjectReady = false;
+        for (let i = 0; i < 90 && !tickSubjectReady; i++) {
+          const row = ((await (await get("/api/sessions")).json()) as
+            { slots: { id: number; git: { ahead?: number; dirty?: number } | null }[] }).slots
+            .find((x) => x.id === doomedLane.slot);
+          tickSubjectReady = row?.git?.ahead === 1 && row.git.dirty === 0;
+          if (!tickSubjectReady) await Bun.sleep(500);
+        }
+        check("tick-window fixture: the subject lane is committed and clean, so its completion mints one event",
+          tickSubjectReady, JSON.stringify({ slot: doomedLane.slot, branch: doomedLane.branch }));
+
+        // Arm on THIS branch: the latch fires for one row and cannot park a neighbouring family's.
+        clearTickLatch();
+        if (latchArmable) writeFileSync(tickLatch, `${doomedLane.branch}\n`, { mode: 0o600 });
+        const tickWatchRes = await post(`/api/slots/${uId}/watch`, { target: doomedLane.slot, idleSec: 0 });
+        const tickWatchId = ((await tickWatchRes.json()) as { watch?: WatchRow }).watch?.id ?? "";
+        const parkedRaw = latchArmable ? await latchReached() : "";
+        const parked = parkedRaw ? JSON.parse(parkedRaw) as
+          { eventId: string; status: string; attempts: number } : null;
+        check("tick-window fixture: the tick is parked inside its own delivery window, on a pending row it has not marked yet",
+          tickWatchRes.ok && /^[0-9a-f]{8}$/.test(tickWatchId)
+          && parked?.status === "pending" && parked.attempts === 0,
+          JSON.stringify({ watch: tickWatchRes.status, watchId: tickWatchId, parked }));
+
+        // The world moves while the tick stands in it — the only thing this probe injects.
+        await post(`/api/slots/${doomedLane.slot}/kill`, {});
+        let killedRow: FleetEventRow | undefined;
+        for (let i = 0; i < 60 && killedRow?.status !== "subject-gone"; i++) {
+          killedRow = await eventById(parked?.eventId ?? "x");
+          if (killedRow?.status !== "subject-gone") await Bun.sleep(100);
+        }
+        check("tick-window fixture: the subject dies while the tick is parked and the row goes terminal underneath it",
+          killedRow?.status === "subject-gone" && killedRow.attempts === 0
+          && killedRow.deliveredAt === null,
+          JSON.stringify({ status: killedRow?.status, attempts: killedRow?.attempts,
+            deliveredAt: killedRow?.deliveredAt ?? null }));
+
+        if (latchArmable) writeFileSync(`${tickLatch}.release`, "ok\n", { mode: 0o600 });
+        // Give the released tick its full round plus two more: the damage this measures is written
+        // by the release itself, and any later tick would only sweep the row a second time.
+        await Bun.sleep(AUTOS_TICK_MS * 8 + 1500);
+        const afterRelease = await eventById(parked?.eventId ?? "x");
+        const typedAfter = (await plogRead()).filter((e) => e.slot === uId
+          && e.text.startsWith(`[fleet] slot ${doomedLane.slot} (${doomedLane.branch})`));
+        const budgetAfter = await receiverBudget();
+        const tickIntact = await windowIntact("tick window", tickWindow, "");
+        if (tickIntact)
+          check("tick window: a row that went terminal while the tick was parked is never remarked, never typed, and stops spending its receiver's budget",
+            afterRelease?.status === "subject-gone" && afterRelease.attempts === 0
+            && afterRelease.deliveredAt === null && typedAfter.length === 0
+            && !budgetAfter.open.some((row) => row.startsWith(`${parked?.eventId}:`)),
+            JSON.stringify({ status: afterRelease?.status, attempts: afterRelease?.attempts,
+              deliveredAt: afterRelease?.deliveredAt ?? null, typed: typedAfter.length,
+              typedHead: typedAfter.map((t) => t.text.slice(0, 60)),
+              open: budgetAfter.open, eventId: parked?.eventId ?? null }));
+        clearTickLatch();
+        setComposerMode("hold");
+      }
     }
 
     // Later modules own the post-land ledger's zero-row and exact-count fixtures. Restore the byte

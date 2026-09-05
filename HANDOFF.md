@@ -1,3 +1,225 @@
+# HANDOFF — 🎛 Fleet Controller (Slot 3, Fable 5.1): zwei Deploys gefahren, Freeze aufgehoben, Codex auf 0.153.4, Astra mechanisch belegt UND sein Fenster widerlegt; DEIN AUFTRAG hat zwei Stufen, und Stufe 1 ist deine eigene Erdung; 2026-09-05 08:0x, ctx GEMESSEN 30,5 %
+
+> **Ein Abschnitt je LEBENDEM Prinzipal** (Vorschlag, nicht promoviert): dieser ERSETZT den der
+> Controller-Vorgaengerin (Slot 9, 03:0x). **Der Controller ist, wer das Label `🎛 Fleet Controller`
+> traegt — nie eine Slot-Nummer aus Prosa.** Lineage: 5 → 6 → 9 → 3 → 9 → 3 → du.
+
+Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, Owner-Poll, Panes. Hier steht nur,
+was git und die Sensoren nicht tragen.
+
+## 0. DEIN AUFTRAG — zwei Stufen, und die Reihenfolge ist eine Owner-Vorgabe
+
+Owner, 2026-09-05 07:5x, **WOERTLICH** (die Rangliste endet, wo diese Saetze erfuellt sind):
+
+> „dein nachfolger sollte in fable5.1 laufen und mir dann helfen eine asta session zu spawnen die
+> sich die claude fleet codebase einmal ganz genau anschaut unter dem hintergrund wissen was das
+> ganze werden soll, und dann nach verbesserungen und optimierungen sucht, von außen nach Innen und
+> mit besonderer sorgfalt für die md dateien des systems und der einzlenen agenten rollen. astra
+> sollte hier für alles opus5 worker benutzen, für die ausgiebige rechercher, implementierung, usw.
+> astra sollte sicherstellen das diese agenten auch die richtigen anweiseungen, werkzeuge und
+> datenschichten haben um eine gute entscheidung zu treffen"
+
+Zwei Minuten spaeter nachgereicht, **WOERTLICH**:
+
+> „und bevor dein nachfolger diese astra session erzeugt sollte er sich zuerst selbst mit opus
+> agenten einen überblick verschaffen" · „darüber woran die slots arbeiten usw."
+
+### Stufe 1 — DEIN eigener Ueberblick, mit Opus-Agenten, BEVOR Astra existiert
+
+Der Owner hat Subagenten fuer diese Sache ausdruecklich freigegeben (das Regelbuch verbietet sie
+sonst ohne Aufforderung). Fuer den Bericht dieser Nacht liefen vier Opus-Agenten parallel und das
+hat funktioniert; das Muster ist wiederverwendbar:
+
+- **Ein Agent je Frage, nicht ein Agent fuer alles.** Bewaehrt hat sich der Schnitt Commits/Features
+  · Ledger-Zahlen · Betrieb+Queue+Programs · Erkenntnisse/Korrekturen.
+- **Jeder Prompt braucht harte Verbote**, sonst kostet er die Maschine: keine Suiten starten, kein
+  `bun run build`, kein git-Schreibzug, kein tmux-`send-keys`, kein `kill`, keine POST-Route. Lesende
+  GETs sind in Ordnung.
+- **Token-Hygiene in JEDEN Prompt**: `ps -eo command` druckt hier die Self-Tokens FREMDER Slots in
+  den Bericht. Zaehlen ja (`ps -eo command | grep -c '<muster>'`), Zeilen ausgeben nein.
+- **`rg` respektiert `.gitignore`**, und gitignored sind ausgerechnet `fleet.json`, die drei Ledger,
+  `.env`, `CLAUDE.md` und `rulebook/`. Fuer alles Operative gehoert `rg -uu`, `grep` oder `python3`
+  in den Prompt, sonst liefert der Agent ein LEERES Ergebnis statt eines Fehlers.
+- **Agenten erben deine Regeln nicht.** Schreib „lies, bevor du behauptest", „zitiere Datei und
+  Symbol", „sag, was du NICHT geprueft hast", „trenne gemessen von abgeleitet" wortwoertlich hinein.
+
+Die Frage dieser Stufe ist die des Owners: **woran arbeiten die Slots gerade**. Zielbild fuer deinen
+eigenen Kopf, bevor du Astra briefst: je belegtem Slot Rolle, Harness, Modell, Fuellstand und die
+Arbeit, an der er sitzt; je aktivem Program die gebundene MAIN und ob sie lebt; die offenen
+Queue-Zeilen nach Gruppe; die zwei Deckel und wer an ihnen steht. `./state.sh` und `./register.sh`
+sind der Anfang, nicht das Ende — die Panes tragen den Rest.
+
+### Stufe 2 — die Astra-Session, danach
+
+**Astra ist mechanisch belegt, nicht vermutet** (2026-09-05 07:4x, Probe im Scratchpad):
+Modell-Id `gpt-6-astra`, Harness `codex`, geantwortet hat sie. Beide Codex-Installationen stehen auf
+**0.153.4** (Astra verlangt ≥ 0.153.1). `HARNESS_MODEL_RE` laesst die Id ohne Codeaenderung durch,
+`effortLevels` des Codex-Adapters traegt `high`/`xhigh`/`max`/`ultra`. Eine Astra-Lane ist also
+sofort dispatchbar.
+
+**DIE EINE ZAHL, DIE DAS DESIGN BESTIMMT: Astras Fenster ist hier 258 400 Tokens, nicht 1 050 000.**
+Gemessen am `token_count`-Satz der Rollout-Datei der Probe, nicht aus der Ankuendigung uebernommen
+(die nennt 1,05 M; auf diesem Konto, Plan `prolite`, gilt die kleinere Zahl). Konsequenz, und sie ist
+der Kern des Briefs:
+
+- **Astra darf die Codebase NICHT selbst lesen.** 461 getrackte `.md`-Dateien allein, davon 352 unter
+  `docs/`; `server.ts` hat 24 603 Zeilen. Ein einziger Lesedurchgang sprengt das Fenster.
+- **Astra ist der KOPF: briefen, Ergebnisse zusammenfuehren, urteilen.** Das Lesen, Recherchieren und
+  Implementieren gehoert den Opus-5-Lanes — genau das hat der Owner mit „für alles opus5 worker"
+  gesagt.
+- Zum Vergleich, damit die Groessenordnung sitzt: diese Controller-Session hat ~305 000 Tokens
+  verbraucht, also mehr als Astras ganzes Fenster. Zwei Codex-Lanes standen heute nach 80 bzw. 113
+  Minuten Arbeit an EINER Scheibe bei 64,6 % und 72,6 %.
+
+**Worker-Tripel fuer jede Lane:** `{harness:"claude", model:"claude-opus-5[1m]", effort:"high"}` —
+das ist zugleich die geltende Modellpolitik (Owner 2026-09-02: Orchestrierung Fable, Lanes Opus 5).
+
+**Der fleet-native Weg**, und er braucht dich als Uebersetzer: Astra wird **Program-MAIN eines neuen
+Programs**. Eine Session schlaegt ein Program nur VOR (`POST /api/self/programs`); **Bestaetigen und
+Aktivieren sind Owner-Akte**, ebenso die Bindung der MAIN. Danach filet Astra eigene Zeilen
+(`POST /api/self/tasks`), gibt sie frei (`POST /api/self/tasks/:id/release`, setzt nur
+`pending → queued` und dispatcht NICHT), und der Tick startet die Lanes.
+
+**Deckel, die den Takt bestimmen** (alle heute live gemessen): `FLEET_DISPATCH_MAX_LANES` = **2** je
+Repo, und der Program-Deckel faellt mangels eigener Variable auf denselben Wert zurueck — eine breite
+Review serialisiert also auf zwei gleichzeitige Lanes. `PROGRAM_MAX_PENDING` = 5 offene `auftrag`,
+`PROGRAM_MAX_PENDING_ADVISORY` = 10 offene beratende Zeilen je Program. **Zwei Programs stehen HEUTE
+am Advisory-Deckel**; ein drittes Program erbt das Problem nicht, aber der Owner muss die zwanzig
+Altzeilen irgendwann disponieren.
+
+**Drei Fallen, die genau diesen Auftrag betreffen** — sie gehoeren in Astras Gruendungsbrief, nicht
+in deine Erinnerung:
+
+1. **Codex laedt `AGENTS.md`, NICHT `CLAUDE.md`.** Der portable Vertrag traegt die Controller-Zeile
+   und den 25-%-Hinweis, die hostspezifische Realitaet steht im Overlay. Was Astra davon braucht,
+   muss der Brief namentlich anfordern.
+2. **`CLAUDE.md` und `rulebook/` sind gitignored** — der Auftrag zielt aber ausdruecklich auf „die md
+   dateien des systems und der einzelnen agenten rollen". Eine Lane sieht ihre Aenderung daran nie in
+   `git status` und kann sie NICHT landen; sie stirbt mit dem Worktree. **Regelbuch-Befunde muessen
+   als TEXT im Report kommen**, und der Fragment-Edit passiert im Haupt-Checkout. Getrackt und damit
+   landbar sind `AGENTS.md`, `SYSTEM.md`, `README.md` und alles unter `docs/`.
+3. **Eine reine Mess-Lane ist ohne Artefakt nicht landbar** (`FILES: keine`, `ahead=0`). Der Weg ist
+   die `mess-notiz`-Skill: Ergebnis als getrackte Notiz unter `docs/messungen/`, committen, landen.
+   Sonst muss jedes Ergebnis von Hand aus der Pane geerntet werden, bevor der Slot stirbt.
+
+**Werkzeuge und Datenschichten, die in jeden Lane-Brief gehoeren** (das ist der Owner-Satz „die
+richtigen anweisungen, werkzeuge und datenschichten"): getrackter Code → `rg`; alles Operative →
+`rg -uu`/`grep`/`python3`; Struktur → `ast-grep --pattern '<muster>' --lang ts <datei>`; der
+Wissensgraph ist read-only auch aus einer Lane befragbar (`graphify query "<frage>" --graph
+"$(dirname "$(git rev-parse --git-common-dir)")/graphify-out/graph.json"`, Rezept in `AGENTS.md`);
+Wissen aus `git show main:docs/...` statt aus dem Spawn-Zeit-Schnappschuss des eigenen Baums;
+Befundregister sind die COMMIT-BODIES und `git notes --ref=fleet/land`, nicht die Subjects; Zahlen
+kommen aus den drei Ledgern und den **ZWEI** Trail-Registern (lokal `e2e-trail/`, Audits nach
+`$TMPDIR/fleet-e2e-trail` — wer nur eines liest, untertreibt, heute mit 215/12 statt 250/20 bezahlt).
+
+**„unter dem hintergrund wissen was das ganze werden soll"** — die Quellen dafuer, alle geprueft
+vorhanden: `AGENTS.md` (Vokabular, Rollen-Tabelle, harte Invarianten), `SYSTEM.md` (13 KB, hat genau
+EINEN Leser-Verweis im ganzen Baum, seine Rolle ist selbst eine offene Owner-Frage),
+`docs/attic/operating-model.md`, `docs/attic/autonomy-plan.md`, `docs/controller.md`,
+`docs/steward.md`, `docs/portfolio-plan-2026-09-02.md`, `docs/agentic-control-plane-program-2026-08-20.md`
+und die Program-Datensaetze in `fleet.json`.
+
+**„von außen nach Innen"** liest sich am Baum als: portabler Vertrag und Einstiegsflaechen zuerst
+(`AGENTS.md`, `README.md`, `SYSTEM.md`, Board-Client), dann die Rollen-Dokumente, dann die
+Server-Naht (`server.ts` plus die zehn Blatt-Module unter `server/`, Invariante: kein `server/*.ts`
+importiert aus `server.ts`), zuletzt die Gates und Suiten.
+
+## 1. Rolle (unveraendert, Owner-Entscheide 2026-09-04 09:1x/19:2x + Korrektur 00:5x)
+
+Ueberblick halten, Owner-Nachrichten auf Programs routen. Lands vom Board NUR fuer Zeilen ohne
+lebende MAIN oder ohne Self-Land-Promotion. Audit-Adjudikation: die MAIN urteilt, der Controller legt
+ab; fuer Controller-gelandete Zeilen urteilt der Controller. Lane-Events der Program-Lanes gehoeren
+der Program-MAIN. **Der Controller haelt den Deploy-Trigger und die Mutex-Koordination.**
+Modellpolitik: Controller und MAINs Fable 5.1, Lanes Opus 5 high, Codex `gpt-5.6-sol` bzw. jetzt
+`gpt-6-astra`, GLM ueber `pi-zai` (nie `pi`).
+
+## 2. Was in dieser Session (02:49–08:0x) gefallen ist
+
+- **R2' gelandet** (Slot 10, `1c3c6ef` → `e71f620`, sechs Commits, Gate gruen ueber alle sieben
+  Schritte) und **um 03:56 deployt** (`640d0024`, Boot-Verdikt ok, hitTarget, `deployGap` 0). Damit
+  ist der bounded ff-Retry scharf: `FLEET_LAND_FF_RETRY_ROUNDS` defaultet in `server.ts` auf 2 und
+  ist in `watchdog.sh` nicht gesetzt. **Der fleetweite Commit-Freeze ist aufgehoben und strukturell
+  ueberfluessig.**
+- **Zweiter Deploy 07:36** (`82f55be0` auf `9718592`, ok, hitTarget, `bundleStale` false): damit sind
+  das proportionale Tier-2-Audit, der FIFO-Suite-Mutex und die FAIL-Namen auf lokalen Audit-Zeilen
+  live.
+- **Audit auf `e71f620` rot 3/3661, von Slot 10 selbst als `flake` adjudiziert** (`at=1788573383933`).
+  Ich habe die Evidenz geliefert und NICHT selbst geurteilt — die MAIN urteilt.
+- **Attention `6793f141` (Deploy-Entscheid) beantwortet und geschlossen.** Sie war an den Owner
+  gerichtet, der Deploy-Trigger liegt aber beim Controller.
+- **Codex aktualisiert.** Falle, die eine halbe Stunde gekostet haette: `codex update` ruft
+  `npm install -g` und trifft damit den Homebrew-Prefix, waehrend der PATH `~/.local/bin` zuerst
+  nimmt. Beide Baeume stehen jetzt auf 0.153.4; `codex doctor` meldet die Doppelinstallation
+  weiterhin als Fehler, weil das naechste Update wieder nur eine Haelfte trifft.
+- **Statusbericht ueber 16 h an den Owner geliefert**, aus vier parallelen Opus-Agenten.
+
+## 3. Was JETZT offen ist, alles Owner-Sache
+
+1. **Eine offene Attention, `d549e09b`, seit 02:29** (Dual-Host, MAIN Slot 8 lebt): Gate 3 ist die
+   erste Installation der systemd-Vorlage auf einem Host, Gate 4 die Aktivierung einer zweiten
+   netzerreichbaren Instanz. Beide sind Host-Akte, von einer Session nicht fahrbar. Die MAIN wartet
+   und faengt bis zur Antwort nichts an.
+2. **Vier Programs stehen `active` mit toter gebundener MAIN**: Private-repo-o, private-repo-p, Private-repo-j,
+   Game-Maker v2. Vorschlag der Vorgaengerinnen: zwei archivieren, zwei neu binden.
+3. **Zwei Programs am Advisory-Deckel** (je 10/10 pending): sie koennen keine Messung mehr in die
+   Queue legen, bis der Owner disponiert.
+4. **Sicherheitsbefund, unberuehrt:** die Datei-Route liest mit dem Owner-Token jede Datei auf der
+   Platte, ohne Sperrliste; `.env` und der GLM-Schluessel sind vom Board aus lesbar.
+5. **Die globale `~/.claude/CLAUDE.md` widerspricht dem Fleet-Vertrag in drei Punkten** (u. a.
+   Kontextschwelle 60 % gegen 25/30). Owner-Datei, nicht unsere.
+6. **§11.2o ist kein Flake mehr, sondern ein Regimewechsel**: 1,4 % Rot vor dem 04.09. gegen 39,5 %
+   danach, im 16-h-Fenster 19 Rot bei 23 Beobachtungen. Das Regelbuch fuehrt weiter 2–3 %, also den
+   Durchschnitt ueber beide Regime. Gehoert dem Program Audit-Determiniertheit; die Wurzel ist offen,
+   weil die Sonde ihr eigenes Diagnosefeld wegwirft.
+7. **Maschinenhygiene:** 3,5 GB Scratch unter `$TMPDIR`, ein verwaister tmux-Socket, 297 aktive
+   Codex-Rollouts mit 1,21 GB. Niemand reapt das.
+
+## 4. ZUSAGEN, DIE DU ERBST — sie sterben sonst still mit mir
+
+- **Die Lane mit `taskId 9f1dbfb4` bleibt ab IHREM Report 35 Minuten unangetastet**: kein Kill, kein
+  Land, kein Send, auch wenn sie wie ein freier Slot aussieht. Zustandsbasiert, kein Branchname
+  noetig. Quelle: Attention `bc59777c`, festgehalten in `80fd38e`. Sie stand NICHT im Handoff meiner
+  Vorgaengerin und waere fast verloren gegangen — die Program-MAIN 66499a03 hat sie zurueckgeholt.
+  Ohne sie stirbt deren Erfolgssatz 8 ein drittes Mal.
+- **Vor JEDEM Deploy fragst du die Program-MAIN 66499a03 nach ihrem Fenster.** Sie meldet von sich
+  aus „FENSTER AUF HH:MM" bei ihrer Report-Annahme und „FENSTER ZU" mit Ergebnis; solange keine
+  dieser Nachrichten vorliegt, ist die Antwort nein und du deployst ohne Ruecksicht.
+- **Der Grund dafuer, am Code verifiziert:** die Boot-Rehydrierung stempelt `s.lastOutput` jeder Pane
+  auf die Bootzeit, und `lastOutput` ist nicht persistiert. **Jeder srv-Neustart nullt die Idle-Uhr
+  JEDER Pane.** Der Auto-Close verlangt 30 Minuten ununterbrochenes Idle — ein Deploy im Fenster
+  toetet den Beleg, ohne dass irgendjemand die Lane anfasst. Das deckt keine der „nicht anfassen"-
+  Zusagen ab, weil es kein Eingriff in die Lane ist.
+
+## 5. Messungen dieser Session, die anderswo nicht stehen
+
+- **Astras Fenster ist hier 258 400, nicht 1 050 000** (Rollout-`token_count` der Probe). Der
+  Codex-Plan ist `prolite`, das Wochenlimit stand bei **76 %** mit Reset am 07.09., Guthaben null.
+  Wer eine Astra-Session aufsetzt, konkurriert mit den Codex-Lanes um denselben Topf.
+- **REGELBUCH-DRIFT, noch nicht nachgezogen:** `rulebook/einstieg.md` behauptet, ein GPT-Slot habe
+  `ctx: null` und dort zaehle nur die Selbstauskunft. **Falsch.** Der Codex-Adapter liest Zaehler UND
+  Fenster aus Codex' eigener Rollout-Datei (`windowFromFile: true`); zwei Codex-Lanes meldeten heute
+  64,6 % und 72,6 %. Das 25/30-Band hat auf Codex also einen Sensor. Fragment editieren, mit dem
+  Einzeiler aus dem Kopf von `rulebook.ts` rendern, `bun e2e/pins.ts`.
+- **`supports.selfSchedule: false` beim Codex-Adapter gated NICHTS** — das Feld wird nur vom Client
+  und von zwei Pins gelesen. Die Zugangsdaten stecken in jeder Pane mit `cwd`. Es ist eine
+  Nicht-Werbung fuer eine ungemessene Faehigkeit, kein Verbot.
+- **Die Nachfolge hat kein Harness-Tor**: `handleSelfSucceed` prueft Handoff, Occupant und
+  Program-Bindung, erbt den Harness und validiert Modell/Effort gegen dessen eigene Liste. Ein
+  Nicht-claude-Prinzipal koennte sich also selbst abloesen.
+- **Codex hat kein Transcript im Fleet-Sinn** (`supports.transcript: false`, bewusst): Gespraechsansicht
+  und ✨-Zusammenfassung des Boards funktionieren fuer einen Codex-Slot nicht. Fuer eine Astra-Session
+  heisst das: was der Owner lesen soll, muss in einem Artefakt landen, nicht in der Pane bleiben.
+
+## 6. Was mit dieser Session stirbt
+
+Zwei gefeuerte Merge-Watches und ein gefeuerter Audit-Watch, alle zugestellt und quittiert. Keine
+offene Attention meinerseits. Kein Hintergrund-Poller. Die zwei Zusagen aus §4 ueberleben NUR, weil
+sie hier stehen.
+
+---
+---
+
+
 # HANDOFF — Program-MAIN „Fleet-Betrieb 2026-09" (`f170dc46e4b026ee34d9392e`, Slot 5, Opus 5): drei Lands, alle gruen, KEINER deployt — und der Beweis dafuer ist ein `fails: null`; 2026-09-05 06:0x, ctx GEMESSEN 33,8 %
 
 Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was git
@@ -568,121 +790,6 @@ und die Sensoren nicht tragen. Die Abschnitte darunter sind FREMD (geteilte Date
   nach `e896826`. Vor dem Commit habe ich JEDEN aktiven Slot auf `merge running` geprueft (alle
   `False`): ein Direkt-Commit waehrend eines fremden Lands ist die ff-lost-Quelle, die das Program
   benennt.
-
----
----
-
-# HANDOFF — 🎛 Fleet Controller (Slot 9, Fable 5.1): rotes Audit widerlegt, GLM-Gegencheck gelandet, K1 gebaut (CLAUDE.md −10 KB), Freeze auf main bis R2' landet; 2026-09-05 03:0x, ctx GEMESSEN 30,5 %; Succession im Band
-
-> **Regel (Vorschlag, promoviert noch nicht): ein Abschnitt je LEBENDEM Prinzipal** — dieser Abschnitt
-> ERSETZT den der Controller-Vorgaengerin (Slot 3, 01:3x). Such deinen an der Program-Id/Rolle in der
-> Ueberschrift; K3 (`7f60903b`) ist NICHT gelandet, der Succession-Brief sagt weiter „oberster Abschnitt".
-
-Zustand ableiten: `./state.sh`, `./register.sh`, Owner-Poll, Panes. Hier nur, was git nicht traegt.
-Lineage Controller: 5 → 6 → 9 → 3 → 9 → du. **Fremde Handoffs sagen „Controller = Slot 3" — Slot 3 war
-seit 02:20 eine Lane. Der Controller ist, wer das Label `🎛 Fleet Controller` traegt (Owner-Poll), nie
-eine Slot-Nummer aus Prosa.**
-
-## 0. Rolle (unveraendert, Owner-Entscheid 2026-09-04 09:1x + 19:2x + Korrektur 00:5x)
-
-Ueberblick + Owner-Nachrichten auf Programs routen. Lands vom Board NUR fuer Zeilen ohne lebende MAIN
-oder ohne Self-Land-Promotion. Audit-Adjudikation: die MAIN urteilt, der Controller legt ab; fuer
-Controller-gelandete Zeilen urteilt der Controller. Lane-Events der Program-Lanes gehoeren der
-Program-MAIN (Fleet-Betrieb = Slot 10), der Controller haelt Deploy-Trigger und Mutex-Koordination.
-Modellpolitik: Controller Fable 5.1, MAINs + Lanes Opus 5 high, Codex gpt-5.6-sol, GLM ueber `pi-zai`
-(nie `pi`).
-
-## 1. Was in dieser Session (02:2x–03:0x) gefallen ist
-
-- **Audit auf `5202fd6` ROT 3/3651 → `flake` abgelegt** (at=1788567702804): identisches Trio wie auf
-  `ed36971` — `unbound succession pane s8` ist eine Nur-bei-Fehler-Diagnose in `e2e/harness.ts`, „successor
-  delivery held" ihre Folge, §11.2o der dritte. Register: unbound-succession 4 rot/10 Laeufe, §11.2o 6/36.
-  Evidenz-Buendel an Slot 6 (Audit-Determiniertheit) zugestellt.
-- **GLM-Gegencheck der Kontextschicht-Analyse GELANDET** (`60511be`, Lane `f8bcca00` pi-zai auf Slot 3,
-  `docs/messungen/2026-09-05-kontextschicht-gegencheck-glm.md`): 6 BESTAETIGT (B2 B4 B5 B7 B8 B10), 4
-  TEILWEISE (B1 B3 B6 B9), 0 widerlegt. Zwei Korrekturen, die den Plan aendern: **K2 (Worker-Ambientlast)
-  ist im Normalbetrieb ein Seltenfall** — `mergeJob` startet Worker im LANE-Worktree, watchdog schaltet
-  cleanReview/autoReview/analysis ab, das Transcript wird im `finally` geloescht (Sonde nur mid-run).
-  **K3 kollidiert frontal mit Lebenszyklus-S4** (gleiche Schritt-3-Zeile, `handoffCommittedAfterOpen`
-  eingefroren) und der Satz steht an DREI Stellen (`buildProgramMainBrief` fehlte). Beide Briefs sind per
-  `POST /api/tasks/:id/brief` nachgeschaerft (0735ae31: nur Sonde; 7f60903b: erst nach S4).
-- **K1 `56b9d19b` GEBAUT und `done`:** `rulebook/lane-discipline.md` 30 285 → 18 795 B, 16 Bloecke auf
-  Regel + Zeiger, Originale datiert in `docs/attic/regelbuch-messgeschichten-2026-08.md` §15 (`4f9a8b0`).
-  CLAUDE.md 85 465 → 74 877 B, danach durch B4-Teil-A wieder **75 0xx** — siehe §2.4. `bun e2e/pins.ts`
-  ALL PASS bei jedem Schnitt; alle 48 Bedeutungsprobe-Phrasen D1–D48 stehen weiter im Fragment.
-  **rulebook/ und CLAUDE.md sind gitignored: K1 existiert nur auf dieser Maschine + im Attic-Commit.**
-- **B4 Teil A** im Regelbuch erledigt (lokal): `self-scheduling.md` zaehlt keine Routen mehr („genau vier"
-  war 7, „VIER" war 9 — am Code), `deploy.md` `:9832` → `server.ts#killUndoStack`. Teil B (self-api-Tabelle
-  + Pin gegen `:NNNN`) ist Zeile **`0db86b6a`**; **B8** (Footer-Satz clarifications) ist Zeile **`44f04a90`**,
-  beide pending am Program Fleet-Betrieb.
-- Verwaister, sauberer `ctrl`-Worktree einer Vorgaengerin entfernt (`80cd901` liegt in main). Slot 11
-  (Dual-Host) ist retired (`slot not active`).
-
-## 2. Was JETZT offen ist, in dieser Reihenfolge
-
-0. **COMMIT-FREEZE AUF main, bis Slot 10 sein R2'-Land MELDET.** Der alte Job (Slot 2, seit 02:21:53) ist
-   seit `2a32c39` (02:26) terminal verloren — zwei Direkt-Commits (Slot 11 Handoff, Nachtrag Audit-Det.)
-   lagen unter dem laufenden Land; ff-lost ist im heutigen Code terminal (`server.ts#mergeJob`, „lane
-   kept"). Er stirbt ~03:07 als `waitedOut` oder frueher als `ff-lost`. **Slot 10 hat GO fuer den
-   Neuversuch** und weiss, dass dieser Handoff-Commit noch kommt. Der Land-Job rebased EINMAL zu Beginn,
-   ff-only am Ende, und das Fenster ist die 45-min-Mutex-Schlange — jeder Direkt-Commit dazwischen
-   toetet das Land. Slots 5, 6, 10 kennen den Freeze; Slot 15 (Owner-Session) NICHT — dem Owner gesagt.
-1. **Deploy NACH dem R2'-Land** (R2' fasst `server.ts` +373/-90 an): `POST /api/deploy` (409 solange ein
-   Land oder Audit laeuft — beide Ablehnungen sind richtig), dann `bundleStale` am Owner-Poll. Heute ist
-   der Gap harmlos: `git diff dc7e141..HEAD -- server.ts server/ src/` ist LEER, nur docs/e2e.
-   **Jedes Land loest einen Post-Land-Audit aus, der den Deploy fuer seine Dauer blockiert** — Deploy also
-   direkt nach dem Land feuern, bevor sein Audit den Mutex bekommt (Audit wartet erst in der Schlange).
-2. **Slot 7 (`8ab7215f`, Audit-Proportion) landet Slot 10** nach seinem Beweislauf (PID 29844 wartet seit
-   ~2 h im Mutex). **Danach MUSS das Regelbuch mit:** `rulebook/lane-discipline.md` Block 1 sagt „der
-   Post-Land-Audit bleibt unveraendert voll" — `a40e898` kehrt das fuer rein-docs-Lands um. Controller-
-   Handarbeit (gitignored): Fragment editieren, Einzeiler aus dem Kopf von `rulebook.ts`, `bun e2e/pins.ts`.
-3. **Mutex-Lage 03:0x:** Halter 97719 (Slot 4 Codex, isolated, seit 01:51 im Lock, Runner seit ~02:22 —
-   NICHT wedged, server.log lebt) · Anwaerter 29844 (Slot 7 Beweislauf), 94455 (Slot 1 claude-gate), 76248
-   (das tote R2'-Gate, stirbt von selbst), 90583 (Post-Land-Audit der GLM-Notiz). Slot 1 hat seine
-   freiwillige Vorschau 50740 auf meine Bitte zurueckgezogen. Der Mutex ist ein RENNEN — `d4342a62`
-   (Slot 1) baut die FIFO; ihr Erfolgssatz in Zahlen: 5 Anwaerter, laengste Wartezeit 1 h 58.
-4. **K1-Ziel `wc -c CLAUDE.md` < 75 000 knapp verfehlt** nach B4-A (Stand beim Schreiben 75 0xx–75 3xx,
-   die letzte Messung steht im Commit-Body dieses Handoffs). Ein Absatz Kuerzung irgendwo im
-   Lane-Fragment reicht; RULE_PLACED verlangt die D-Phrasen aus `docs/attic/regelbuch-bedeutungsprobe-2026-08-18.md`.
-5. **Naechste Lanes, wenn Slots frei werden** (Deckel 2 fuer den Tick, Hand-Dispatch prueft nicht; Lane-Zahl
-   bei vier halten): `9da27a0b` (Audit-Det., MAIN Slot 6) und `bc0609f8` per
-   `POST /api/tasks/:id/dispatch {harness:"claude",model:"claude-opus-5[1m]",effort:"high"}`; danach
-   B1-Sonde (`0735ae31`, nachgeschaerft), `0db86b6a` (B4-B), `44f04a90` (B8). **`7f60903b` (K3) NICHT vor
-   dem Land von Lebenszyklus-S4.** README-Zeile `9fe80661` und Codex-Adapter-Audit `5123167c` danach.
-6. **Owner-Entscheide, unbeantwortet seit 00:5x:** vier Programs `active` mit toter MAIN (f99e9354
-   Private-repo-o, 07ee8a6d private-repo-p, 2c073232 Private-repo-j, b2aa5b45 Game-Maker v2); Vorschlag: Game-Maker v2
-   + Private-repo-o archivieren, zwei neu binden. Neu aus dem GLM-Check: B6 (globale `~/.claude/CLAUDE.md`
-   kollidiert in drei Punkten mit dem Fleet-Vertrag — Owner-Datei) und die SYSTEM.md-Frage (Agenten-Leser
-   oder Owner-Dokument) sind Owner-Fragen, nicht Arbeit.
-7. **Regelvorschlaege (propose, NICHT promoviert):** (a) „Ein Direkt-Commit ist erst erlaubt, wenn
-   `fleet.json#merges` keinen laufenden Land zeigt" — heute dreimal bezahlt (fd7d605, 031f7aa, 2a32c39).
-   (b) Ein HANDOFF-Abschnitt je lebendem Prinzipal, ersetzen statt stapeln (hier angewandt).
-   (c) Von Slot 10 gemeldet: `POST /api/self/tasks/:id/land` wertet ein `waitedOut` als Verdikt („no
-   progress since the last verdict", 409) — Zeile `6101dbc3`.
-
-## 3. Bezahlte Lehren dieser Session
-
-- **Eine Nachricht an eine MAIN loest Arbeit aus — und Arbeit endet in einem Commit.** Mein Evidenz-Buendel
-  an Slot 6 fuehrte 90 s spaeter zu `2a32c39` unter dem laufenden Land. Jede Bitte an eine MAIN traegt ab
-  jetzt den Satz „vor einem Direkt-Commit `merges` pruefen".
-- **Deploy-Preflight lehnt auch einen TOTEN Merge-Job ab** (per-Slot `mergeStart`/`mergeInflight`); der
-  saubere Weg ist warten (waitedOut), nicht der srv-Kill und nicht `kill` aufs Gate (das schriebe ein
-  falsches rotes Verify auf die Zeile).
-- **pi-zai-Lanes:** `POST /api/self/watch` (lane UND merge) antwortet „target slot not active" — Rueckweg
-  ist ein Hintergrund-Watcher auf `git rev-list --count main..HEAD` im Worktree bzw. auf
-  `GET /api/slots/:id/merge`; **nach dem Land ist der Slot recycelt und der Endpunkt LEER** — das Land liest
-  man dann an `git log main`, nicht am Slot.
-- **zsh `echo "$JSON"` expandiert `\n`** — JSON aus einer Antwort nie per `echo` weiterreichen, sondern
-  in eine Datei schreiben und mit python lesen. Kostete einen Fehlschluss („Task nicht angelegt").
-- **Der Leak-Pin liest den Attic:** wer einen Regelbuch-Block mit dem Live-Host archiviert, faellt
-  `leak-pin` — im Attic steht `<FLEET_HOST>`, im gitignorten Fragment die IP.
-- Die Uhr: die Panes zeigen die Zeit, ich hatte sie einmal 20 min zu spaet geschaetzt — `date` kostet nichts.
-
-## 4. Was mit dieser Session stirbt
-
-Merge-Watch `5048e3f3` auf Slot 2 (R2') und Audit-Watch `b6e762bf` (bereits gefeuert). **Neu armieren,
-sobald Slot 10 den Neuversuch feuert:** `POST /api/self/watch {"kind":"merge","target":2}`. Kein
-Hintergrund-Poller ueberlebt; keine offene Attention meinerseits.
 
 ---
 ---

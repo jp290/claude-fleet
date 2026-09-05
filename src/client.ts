@@ -6299,7 +6299,7 @@ type ProgramFoundingState = { state: "absent" }
   | { state: "pending"; record: PublicProgramFounding }
   | { state: "unreadable" };
 interface ProgramInfo extends ProgramDigest {
-  intent?: string; successCriterion?: string; nonGoals?: string[];
+  intent?: string; successCriterion?: string;
   // ABSENT or null = unbound. A PRESENT object may still be incomplete, and that is `unknown`,
   // never `live` — see programMark.
   main?: { slot?: number; openedAt?: number; sessionId?: string | null; boundAt?: number } | null;

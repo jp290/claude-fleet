@@ -77,6 +77,31 @@
   #sidehead { display: flex; align-items: center; gap: 8px; padding: 10px 10px 6px;
     font-size: 12px; font-weight: 700; color: #e8e8e8; }
   #sidetitle { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* the instance chip + its switcher (dual-host S3). It names the fleet that answered this board;
+     the menu it opens is a list of ORIGINS, so a click leaves this document entirely — which is
+     why it is a plain anchor-less button and never carries a token. Hidden until the poll says
+     there is something to name, and hidden by a CLASS rather than an inline style, or the
+     collapsed-rail rule further down could never win against it. */
+  #instwrap { display: none; position: relative; flex: none; }
+  #instwrap.on { display: flex; }
+  #instbtn { max-width: 108px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    padding: 2px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised);
+    color: var(--dim); font-size: 10px; font-weight: 700; font-family: inherit; line-height: 1.5; }
+  #instbtn.pick { cursor: pointer; }
+  #instbtn.pick:hover { color: var(--text); border-color: var(--focus); }
+  #instmenu { display: none; position: absolute; z-index: 40; top: calc(100% + 4px); right: 0;
+    min-width: 190px; max-width: 76vw; padding: 4px; border-radius: 8px; border: 1px solid var(--line);
+    background: #181818; box-shadow: 0 8px 22px #000a; flex-direction: column; gap: 2px; }
+  #instmenu.open { display: flex; }
+  .instrow { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 5px 7px;
+    border: 0; border-radius: 6px; background: none; color: var(--text); font-family: inherit;
+    font-size: 11px; text-align: left; cursor: pointer; }
+  .instrow:hover { background: var(--sel); }
+  .instrow.here { cursor: default; color: var(--accent); }
+  .instrow.here:hover { background: none; }
+  .instrow .instname { flex: none; font-weight: 700; }
+  .instrow .insturl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; color: var(--dim); font-size: 10px; text-align: right; }
   /* row 2: view/layout tools, separate from the identity row above */
   #sidetools { display: flex; align-items: center; gap: 3px; padding: 0 10px 8px; }
   #sidetools #queuebtn { margin-left: auto; }
@@ -109,6 +134,7 @@
   /* collapsed rail: numbers + activity dots only, hand the freed width to the terminals */
   #side.collapsed { width: 50px; }
   #side.collapsed #sidetitle, #side.collapsed #dot, #side.collapsed #sidetools,
+  #side.collapsed #instwrap,
   #side.collapsed #sidefoot, #side.collapsed .lbl, #side.collapsed .slotact { display: none; }
   #side.collapsed #sidehead { padding: 10px 0 6px; justify-content: center; }
   #side.collapsed #slots { padding: 4px 4px; }
@@ -1431,6 +1457,7 @@
     <div id="sidehead">
       <button id="collapse" title="collapse sidebar">‹</button>
       <span id="dot" class="dot off"></span><span id="sidetitle">Claude Fleet</span>
+      <span id="instwrap"><button id="instbtn"></button><div id="instmenu"></div></span>
     </div>
     <div id="sidetools">
       <span id="layouts">

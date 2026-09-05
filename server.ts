@@ -53,8 +53,8 @@ import {
 import {
   WS_INPUT_MAX_BYTES, FLEET_DEFAULT_MODEL, WORKER_CONTRACTS, doneMark, contextWindowFor,
   DISPOSITION_WORKERS, DISPOSITION_VERDICTS,
-  FLEET_REPORT_STATUSES, normalizeLaneAnchor, instanceNameFrom,
-  type GitInfo, type InstanceIdentity, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo, type WorkerName,
+  FLEET_REPORT_STATUSES, normalizeLaneAnchor, instanceNameFrom, instanceLinksFrom,
+  type GitInfo, type InstanceIdentity, type InstanceLink, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo, type WorkerName,
   type DispositionWorker, type DispositionVerdict,
   type FleetReportStatus,
 } from "./src/protocol";
@@ -846,6 +846,24 @@ const CONTAINER_CONTEXT = (() => {
 // be a false identity claim on the one field a second instance is supposed to be told apart by.
 const INSTANCE_NAME = instanceNameFrom(process.env.FLEET_INSTANCE);
 const INSTANCE: InstanceIdentity = { name: INSTANCE_NAME };
+
+// …AND WHICH OTHER FLEETS THE BOARD MAY OFFER A LINK TO (dual-host S3). Read here, beside the name,
+// because "which fleet am I" and "which fleets exist" are one operator decision written in one env
+// line — the SAME line on both hosts, which is why this list is not required to exclude self: the
+// board decides what "here" is by comparing origins, so one identical FLEET_INSTANCES can be
+// deployed everywhere.
+//
+// WHAT THIS IS NOT, and the reason it is only a few lines: it is not federation. No proxy, no shared
+// token, no outbound request — `server.ts` still has exactly one `fetch(`, the Bun.serve handler.
+// Switching is the BROWSER navigating to another origin, where that origin's own cookie meets that
+// origin's own login. A malformed entry is dropped one by one and SAID SO in the log, because the
+// alternative — a URL that silently never appears in the header — is indistinguishable from an env
+// line that never reached this process (parser and charset: src/protocol.ts#instanceLinksFrom).
+const INSTANCE_LINKS: InstanceLink[] = (() => {
+  const parsed = instanceLinksFrom(process.env.FLEET_INSTANCES);
+  for (const reason of parsed.rejected) console.log(`[fleet] FLEET_INSTANCES: dropped — ${reason}`);
+  return parsed.links;
+})();
 
 // …AND WHETHER THIS FLEET IS ALLOWED TO WRITE THE INTEGRATION BRANCH AT ALL. The dual-host cut of
 // 2026-09-05 put a SECOND instance on a follower host that fast-forwards `main` from the canonical
@@ -23703,6 +23721,14 @@ Bun.serve<WSData>({
         // same to the board, and the board's whole job here is to stop offering a gesture that
         // cannot work. 13 B against the ~1 300 B of headroom the 14 KiB budget measures (e2e/tasks.ts).
         lands: LANDS_ENABLED,
+        // …and which OTHER fleets this board may offer a link to. OMITTED WHEN EMPTY, unlike `lands`
+        // above, and the asymmetry is not an oversight: `lands` had to distinguish a pre-flag server
+        // (which lands) from a locked one, so absence there would have been a wrong answer. Here an
+        // old server and a new unconfigured one mean the same thing to the reader — no switcher —
+        // so the honest cheap shape is to send nothing at all on the single-host machine that is
+        // still the ordinary case. Bounded at src/protocol.ts#INSTANCE_LINKS_MAX_BYTES against the
+        // 14 KiB budget this payload is measured by (e2e/tasks.ts).
+        ...(INSTANCE_LINKS.length ? { instances: INSTANCE_LINKS } : {}),
         // bundle version: a long-lived tab compares this across polls and reloads itself
         // once it goes stale — "old client after a deploy" must not look like a regression
         v: bundleV(),

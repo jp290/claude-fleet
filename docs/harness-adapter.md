@@ -43,6 +43,35 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
   kanonische Host setzt die Variable nie. Nicht in `watchdog.sh`: die Sperre ist eine
   Host-Entscheidung des Folgers und gehört in dessen `.env`.
 
+## Instanz-Identität und Umschalter (Dual-Host)
+
+- **`FLEET_INSTANCE` (seit 2026-09-04) — wie heißt DIESE Fleet?** Ein Wort des Operators, nie aus
+  der Maschine abgeleitet (kein Hostname, keine Adresse, kein cwd — das Repo ist öffentlich, und ein
+  Hostname in einer Antwort ist ein Hostname im Screenshot). Charset und Normalisierer:
+  `src/protocol.ts#INSTANCE_NAME_RE` / `#instanceNameFrom`. Fehlend oder ungültig faltet auf `null`,
+  ausdrücklich NICHT auf ein Default-Wort: zwei unbenannte Instanzen mit demselben erfundenen Namen
+  sind genau die Verwechslung, gegen die das Feld existiert. Sichtbar als `instance` einmal pro
+  `GET /api/sessions` und auf jeder Report-Zeile (`FleetReport.provenance.instance`).
+- **`FLEET_INSTANCES` (seit 2026-09-05, Dual-Host S3) — welche ANDEREN Fleets darf das Board
+  verlinken?** JSON-Array aus `{name,url}`; `name` gegen dasselbe `INSTANCE_NAME_RE`, `url` gegen
+  `src/protocol.ts#INSTANCE_URL_RE` — Schema (`http`/`https`), Host, optionaler Port, ein optionaler
+  Schrägstrich am Ende wird abgeschnitten, **sonst nichts**: kein `@` (Userinfo), kein Pfad, keine
+  Query, kein Fragment, kein IPv6-Literal. Das ist kein Schmuck, sondern die Garantie selbst — der
+  String landet im `location.assign` des Boards, und der Charset ist der Grund, warum ein Umschalten
+  keine Credential tragen KANN. Ungültige Einträge werden **einzeln verworfen und geloggt**
+  (`[fleet] FLEET_INSTANCES: dropped — entry #<i> …`); ein kaputter Eintrag kostet die guten nicht,
+  und ein unparsbarer Gesamtwert lässt das Board laufen (eine Zeile, kein Umschalter). Die Liste ist
+  in BYTES gedeckelt (`src/protocol.ts#INSTANCE_LINKS_MAX_BYTES`), weil die reale Schranke die
+  14-KiB-Messung von `/api/sessions` ist (`e2e/tasks.ts`). Projiziert als `instances`, **weggelassen
+  wenn leer** — anders als `lands`, wo Abwesenheit „ja" heißen musste; hier sagen ein alter Server
+  und ein neuer unkonfigurierter dasselbe.
+- **Was der Umschalter NICHT ist: Föderation.** Kein Proxy, kein geteiltes Token, kein
+  Outbound-Request — `server.ts` hat weiterhin genau ein `fetch(`, den `Bun.serve`-Handler. Ein Klick
+  ist der BROWSER, der auf eine andere Origin geht; jede Instanz behält Login und Cookie, weil ein
+  Cookie per Origin gilt. Dieselbe `FLEET_INSTANCES`-Zeile darf auf BEIDEN Hosts stehen: das Board
+  entscheidet über den Origin-Vergleich, welcher Eintrag „you are here" ist. Der Kopfzeilen-Chip
+  zeigt den eigenen `instance.name`; ohne Namen UND ohne Liste ist die Kopfzeile unverändert.
+
 ## Tool-Scoping
 
 - **Agenten-Tool-Scoping: `--allowedTools` ist ADDITIV zur Allow-Liste in `~/.claude/settings.json`.** Ein

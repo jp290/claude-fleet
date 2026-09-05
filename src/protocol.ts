@@ -69,6 +69,83 @@ export function instanceNameFrom(value: unknown): string | null {
   return typeof value === "string" && INSTANCE_NAME_RE.test(value) ? value : null;
 }
 
+// --- the instance switcher's list ----------------------------------------------------------------
+// WHICH OTHER FLEETS EXIST, and nothing more. Topology A federates by HAND (docs/dual-host-topologie-
+// entscheidung-2026-09-05.md §2): two standalone instances, no proxy, no shared token, no outbound
+// request from either server. So the list this parses is a set of LINKS the board offers the owner —
+// a click changes `location.origin` and the browser then presents that origin's own cookie to that
+// origin's own login. Nothing here ever travels between the two servers.
+//
+// THE URL IS AN ORIGIN AND THE CHARSET SAYS SO. scheme + host + optional port, one optional trailing
+// slash that is stripped, and nothing else: no userinfo (`@`), no path, no query, no fragment. That
+// is not decoration — this string ends up in `location.assign`, so the charset IS the guarantee that
+// a switch cannot carry a credential, cannot smuggle a `javascript:` scheme, and cannot be aimed at
+// a deeper path on a host the operator only meant to name. An IPv6 literal is deliberately outside
+// it (it would need brackets, and every address in this fleet is a name or IPv4); such an entry is
+// dropped WITH a reason rather than silently, which is the whole point of `rejected`.
+export const INSTANCE_URL_RE =
+  /^https?:\/\/[A-Za-z0-9](?:[A-Za-z0-9.-]{0,126}[A-Za-z0-9])?(?::\d{1,5})?$/;
+
+// THE LIST IS BOUNDED IN BYTES, not in entries, because the constraint it is actually up against is
+// a byte one: /api/sessions is polled every 2 s by every open tab and is measured against 14 KiB
+// (e2e/tasks.ts), with roughly 1 300 B of headroom. A cap on the COUNT would not bound the payload
+// (a name may be 64 chars and a host 128), while this bounds both the payload and — since a menu
+// long enough to matter cannot fit under it — the switcher's own length.
+export const INSTANCE_LINKS_MAX_BYTES = 1024;
+
+export interface InstanceLink { name: string; url: string }
+// `rejected` is the reason half, and it exists so that a dropped entry is an EVENT rather than an
+// absence: the server logs each line at boot. An operator whose typo'd URL simply vanished from the
+// header would have no way to tell it from "the list never reached this process".
+export interface InstanceLinksParse { links: InstanceLink[]; rejected: string[] }
+
+const shortly = (v: unknown): string => {
+  const s = JSON.stringify(v) ?? String(v);
+  return s.length > 80 ? `${s.slice(0, 77)}…` : s;
+};
+
+// Parses FLEET_INSTANCES. ABSENCE IS NOT AN ERROR (an unset variable is the ordinary single-host
+// case and must not log anything); a present-but-broken value is, down to the individual entry —
+// one bad row never costs the good ones.
+export function instanceLinksFrom(value: unknown): InstanceLinksParse {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) return { links: [], rejected: [] };
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); }
+  catch (e) { return { links: [], rejected: [`not JSON (${e instanceof Error ? e.message : String(e)})`] }; }
+  if (!Array.isArray(parsed)) return { links: [], rejected: [`not a JSON array: ${shortly(parsed)}`] };
+  const links: InstanceLink[] = [];
+  const rejected: string[] = [];
+  const seen = new Set<string>();
+  let bytes = 2; // the "[]" the entries go inside — the budget is on the SERIALISED list
+  for (let i = 0; i < parsed.length; i++) {
+    const entry = parsed[i] as unknown;
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      rejected.push(`entry #${i} is not an object: ${shortly(entry)}`);
+      continue;
+    }
+    const e = entry as { name?: unknown; url?: unknown };
+    const name = instanceNameFrom(e.name);
+    if (name === null) { rejected.push(`entry #${i} has no valid name: ${shortly(e.name)}`); continue; }
+    const rawUrl = typeof e.url === "string" ? e.url.trim().replace(/\/$/, "") : "";
+    if (!INSTANCE_URL_RE.test(rawUrl)) {
+      rejected.push(`entry #${i} (${name}) has no valid http(s) origin as url: ${shortly(e.url)}`);
+      continue;
+    }
+    const key = rawUrl.toLowerCase();
+    if (seen.has(key)) { rejected.push(`entry #${i} (${name}) repeats an url already listed: ${shortly(rawUrl)}`); continue; }
+    const cost = JSON.stringify({ name, url: rawUrl }).length + (links.length ? 1 : 0);
+    if (bytes + cost > INSTANCE_LINKS_MAX_BYTES) {
+      rejected.push(`entry #${i} (${name}) does not fit the ${INSTANCE_LINKS_MAX_BYTES} B list budget`);
+      continue;
+    }
+    bytes += cost;
+    seen.add(key);
+    links.push({ name, url: rawUrl });
+  }
+  return { links, rejected };
+}
+
 // --- stable lane ownership ----------------------------------------------------------------------
 // A lane belongs to one main-session OCCUPANT, not merely to a numbered slot: slots recycle, so
 // the opening timestamp is the generation half of the identity. Optional on every carrier because

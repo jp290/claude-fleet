@@ -42,7 +42,7 @@ import {
 } from "../lane-signals";
 // the allowlist is IMPORTED, never re-spelled: a pin that copied the list would pin its own copy
 import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck } from "../server/types";
-import { CAPABILITY_FUNCTIONS } from "../src/protocol";
+import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
 // re-implemented the validator would only pin its own copy of the rules.
 import { CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS } from "../context-packs";
@@ -5098,6 +5098,39 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && rolledBack503.startsWith("503: founding rolled back")
       && rolledBack503.includes("recovery rolled-back") && rolledBack503.includes("affected slot 7"),
     failureErr || JSON.stringify({ pending503, rolledBack503 }));
+}
+
+// --- THE INSTANCE SWITCHER (dual-host S3) ↔ THE ONE PROPERTY THAT MAKES IT SAFE TO HAVE.
+// Topology A federates BY HAND: a switch is the browser moving to another origin, and each instance
+// keeps its own login only because a cookie is per origin. That holds exactly as long as the
+// destination is the projected url and nothing else. The day someone appends `?token=` so the other
+// board "opens logged in", these two instances share one credential and the cut has quietly built
+// the thing it was designed without — and it would be a one-line, well-meant edit. tsc sees none of
+// it (both sides are strings) and there is no DOM harness here, so it is fastened at the source; the
+// charset and the projection are measured live in e2e/tasks.ts.
+{
+  const RULE_SWITCH = "the Board's instance switcher navigates to a projected origin and carries no credential";
+  const client = clientU.text;
+  const head = clientU.span("function renderInstanceHead(", "\n}\n", 3)?.text ?? "";
+  pin(`${RULE_SWITCH} — the switch is location.assign of the link's own url, with nothing concatenated onto it`,
+    head.includes("location.assign(link.url)")
+      && !/location\.assign\([^)]*[+`]/.test(head)
+      && !/token|cookie|credential|document\.cookie/i.test(head),
+    head === "" ? "renderInstanceHead not found" : `${head.length} bytes`);
+  pin(`${RULE_SWITCH} — that is the ONLY navigation in the client, and the wire list is re-checked against the shared charset first`,
+    client.split("location.assign(").length - 1 === 1
+      && client.includes("INSTANCE_URL_RE.test(l.url)")
+      && client.includes('from "./protocol"'),
+    `assignOccurrences=${client.split("location.assign(").length - 1}`);
+  // The charset itself is the guarantee, so it must stay a charset: an origin and nothing after it.
+  const charset = clientU.module("src/protocol.ts");
+  pin(`${RULE_SWITCH} — INSTANCE_URL_RE is anchored at both ends and admits no path, query, fragment or userinfo`,
+    /export const INSTANCE_URL_RE =\s*\n?\s*\/\^https\?:/.test(charset)
+      && INSTANCE_URL_RE.source.startsWith("^https?:")
+      && INSTANCE_URL_RE.source.endsWith("$")
+      && !["http://u:p@h", "http://h/board", "http://h?t=1", "http://h#f", "javascript:alert(1)"]
+        .some((u) => INSTANCE_URL_RE.test(u)),
+    INSTANCE_URL_RE.source);
 }
 
 // The profile buttons are an owner actuator, not decorative prose. Runtime executes the pure

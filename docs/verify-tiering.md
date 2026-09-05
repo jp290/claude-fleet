@@ -1514,7 +1514,7 @@ conclusion ("not proven") from a wrong measurement. Two lanes were also reported
 suite without taking the lock; the lock is a convention carried in each brief, so any lane that is
 briefed without it silently breaks everyone else's serial proof.
 
-### 11.2j A twelfth family: the `pi-unfenced` watch-delivery quartet (2026-08-31 filed; 2026-09-01 MECHANISM ISOLATED and repaired test-side — the fixture sampled a by-design transient)
+### 11.2j A twelfth family: the `pi-unfenced` watch-delivery quartet (2026-08-31 filed; 2026-09-01 MECHANISM ISOLATED and repaired test-side — the fixture sampled a by-design transient; 2026-09-05 die verbliebene WURZEL liegt im SERVER und ist REPARIERT, `ee98c8d` + `2c40368`)
 
 **Status (2026-09-01, corrected — this paragraph read "open, CAUSE not proven" until the repair
 landed): MECHANISM ISOLATED and repaired test-side in `b20e7e4`.** The two cuts are further down
@@ -1794,6 +1794,108 @@ fragment `rulebook/lane-discipline.md` said "Zwoelf bekannte Flake-Familien" and
 re-rendered from it; §11.2k took it to "Dreizehn" the same day, and on 2026-09-01 the fragment's
 §11.2j/§11.2k entries were pulled through to REPARIERT (`b20e7e4` / `05f37f1`). Both are gitignored, so no commit carries that change — on a drift suspicion,
 re-render (the command is in the head of `rulebook.ts`).
+
+
+**REPARIERT 2026-09-05 in `ee98c8d` (Server + eigene Sonde) und `2c40368` (Fixture-Vorbedingung)
+— ein Rot auf diesen acht Zeilen NACH `ee98c8d` ist wieder ECHT und gehoert dem, der es sieht.**
+Nichts oben ist zurueckgenommen; das hier haengt an.
+
+**Was nach `b20e7e4` noch fiel, aus dem Register statt aus der Erinnerung.** Fenster = alle
+`e2e-trail/isolated-*.jsonl`, deren `tree` `b20e7e4` als Vorfahren hat
+(`git merge-base --is-ancestor`): **12 rote Laeufe / 101 = 11,9 %**, auf 9 Baeumen. Und die zwoelf
+zerfallen SAUBER in zwei Signaturen, was vorher niemand getrennt hatte:
+
+| Signatur | Laeufe | woran erkennbar |
+|---|---|---|
+| `flippedBack:true` und/oder `freed:400` | **9** | `subject-gone` 12x, `counterprobe` 11x, immer als Paar; die sechs juengsten roten Laeufe (ab 2026-09-03) tragen NUR dieses Paar |
+| `livingId:null` | **3** | nur 2026-09-02 (`2d4eb921`, `d63bb91f`); Pane gesund, Draft in beiden Composer-Lesungen, `settleWaits:0` |
+
+Die in der Filing-Fassung oben zitierten Details `draftBytes:546` und `attempts:100..341` stammen
+aus Baeumen VOR `b20e7e4` (`088d3a8b`, `00d9b58b`). Schnitt 1/2 haben sie geschlossen; in 101
+Laeufen danach sind sie nicht wieder aufgetreten. Wer sie noch als offenen Faden fuehrt, jagt ein
+Gespenst.
+
+**WURZEL 1 (9 von 12), und sie liegt im SERVER, nicht in der Fixture: ein LOST UPDATE in
+`server.ts#tickWatches`.** Die FACT-2-Schleife validiert eine Zeile (`status !== "pending"` →
+skip; `laneEventSubject(event) === "gone"` → terminalisieren) und AWAITET danach `canDeliver`,
+das auf ps/pgrep hinausshellt. Ein `kill` der Subjekt-Lane laeuft in diesem Fenster VOLLSTAENDIG
+durch — `killSlot` → `dropWatchesFor` → `markFleetEventsSubjectGone` — und schreibt `subject-gone`
+auf genau die Zeile, die die Schleife noch haelt. Danach schrieb die Schleife ihren
+`send-uncertain`-Marker darueber, und der `SendRefused`-Arm rollte auf `pending` zurueck:
+**pending → subject-gone → send-uncertain → pending.** Das ist EIN Defekt und erklaert BEIDE
+Faeden, die §11.2j oben als moeglicherweise unabhaengig fuehrt:
+
+- der siebte Member (`subject-gone` → `pending`, `doomedRows:1`): dieselbe Zeile, zwei Lesungen,
+  eine Ruecknahme dazwischen. Damit ist die „contradictory double reading" von 2026-09-01
+  aufgeloest — keine der beiden Lesungen las die falsche Zeile, die Zeile selbst ging zurueck.
+- `freed:400`: die auferstandene Zeile zaehlt wieder als offene Schuld, die Budget-Tuer sieht 5
+  statt 4 und verweigert. Die Hypothese von 2026-09-01 („eine zusaetzliche Schuld verbraucht die
+  Marge von genau einem Event") war RICHTIG in der Rechnung und unvollstaendig in der Ursache: die
+  zusaetzliche Schuld ist die wiederbelebte Zeile selbst. Belegt in flagranti im Lauf
+  `isolated-20260904T102222Z-51905`: `budgetAtFree.open` fuehrt die doomed-Id als `send-uncertain`
+  NACH der Lesung, die sie als `subject-gone` sah — und `send-uncertain` schreibt in diesem Server
+  nur `tickWatches`.
+
+Produktschaden, nicht nur Fixture-Rauschen: bei FREIEM Composer refused `sendText` nicht, der Tick
+tippt also die Nachricht ueber eine abgerissene Lane in die Empfaengerpane — genau das, was der
+terminale Zustand verhindern soll. Reparatur: nach `canDeliver` werden beide Fakten NEU gelesen.
+
+**Die eigene Sonde dazu** (`FLEET_TEST_WATCH_TICK_LATCH`, `e2e/watch.ts` ACP-27 (6)): der Tick wird
+in genau diesem Fenster geparkt, die Lane waehrenddessen getoetet, dann freigegeben — und gelesen,
+was er schreibt. Sie misst den Serverfehler direkt und braucht weder Draft noch Refusal.
+
+**WURZEL 2 (3 von 12), und die liegt in der FIXTURE: die zwei Subjekt-Abos wurden nie gelesen.**
+`POST /api/slots/:id/watch` wurde ohne `r.ok`-Pruefung abgesetzt; bei einer Ablehnung
+(`400 max 5 active watches per slot`) blieb die Watch-Id `""`, `eventForWatch("")` fand nichts,
+und 50 s spaeter meldete die Fixture „die Lane-Vollendung hat keine Zeile gemuenzt" — eine Kaskade
+ueber fuenf Vertraege auf eine Subscription, die nie stattgefunden hat. In beiden 2026-09-02-Laeufen
+faellt `arrival:` unmittelbar davor und laesst seine Zeile `pending` stehen, also eine offene Schuld
+mehr auf demselben Empfaenger. Nicht bewiesen ist, dass die Tuer damals wirklich 400 sagte — die
+Fixture hat es nicht aufgeschrieben, und GENAU das ist der Defekt. Ab `2c40368` scheitert die
+Vorbedingung als SIE SELBST, mit Status, den Worten der Tuer und dem Budget in diesem Moment.
+
+**Verifikation (2026-09-05, Baum `2c40368`, alle drei Laeufe `dirty:false` und BEWEISBAR seriell —
+kein anderer `isolated-*`-Trail traegt eine Zeile in ihren Fenstern).** Die Beweisform ist die
+Owner-/Controller-Fassung vom 2026-09-05: DREI Laeufe, nicht fuenf.
+
+| Lauf | run-id | checks / FAIL | die acht §11.2j-Mitglieder + die sechs neuen Zeilen |
+|---|---|---|---|
+| 1 | `isolated-20260905T073835Z-83558` | 3687 / 3 | **14/14 PASS** |
+| 2 | `isolated-20260905T092010Z-24639` | 3686 / 1 | **14/14 PASS** |
+| 3 | `isolated-20260905T102255Z-80773` | 3686 / 3 | **14/14 PASS** |
+
+Die sieben roten Checks dieser drei Laeufe gehoeren AUSNAHMSLOS anderen Familien, und sie werden
+hier mit Namen und Detail genannt statt weggelassen:
+
+- `projection nextAction: a REVIEWABLE row of a promoted Program names the MAIN's OWN land door…`
+  `{"with":null,"without":null,"phase":"UNKNOWN"}` — in ALLEN DREI Laeufen. Die Projection-Familie.
+- `unbound succession: pane s8 rendered the harness screen` (`the pane died with the command`) und
+  `…and delivers it WHOLE once that marker appears…` (`500 successor delivery held (not-alive)`) —
+  Lauf 1. Die succession-pane-Familie.
+- `re-subscribing to the same target returns the SAME watch, never a second` (`62912fb5 vs
+  5fc3c077`) und sein Folgefehler `delete the spent transport Watch` — Lauf 3. **Das ist eine
+  bislang UNREGISTRIERTE seltene Familie, keine Regression dieser Lane:** 3 Fails / 519 Laeufe
+  = 0,58 %, mit Sichtungen am 2026-08-24 (`210fcd92`, Detail `4877e0aa vs 4877e0aa` — dort fiel
+  der dritte Konjunkt) und 2026-08-25 (`56498796`, `af91e664 vs 56af7474` — dieselbe Form wie
+  heute). Der Diff dieser Lane kann strukturell keine zweite Watch muenzen: er faesst die
+  Subscribe-Route nicht an, und die Watch der neuen Sonde liegt auf einem Slot, der ~2700 Zeilen
+  frueher getoetet wird. Wer sie jagt, faengt hier an.
+
+**MUTATIONS-BEWEIS.** Nur die zwei Neulesungen entfernt (Latch und Sonde unveraendert), Lauf
+`isolated-20260905T084416Z-10928` (`dirty:true`, nach dem watch-Modul abgebrochen): die VIER
+Vorbedingungszeilen bleiben GRUEN und ausschliesslich der Vertrag faellt —
+`{"status":"delivered","attempts":1,"typed":1,"typedHead":["[fleet] slot 8 (fleet/260905084739-3c64)
+[event 373672269dd8"],"open":["373672269dd8508a2ed0e0cb:delivered"]}`. Das ist der Schaden selbst
+und kein Stellvertreter: die terminale Zeile wurde neu markiert, in die Empfaengerpane GETIPPT
+(eine Prompt-Log-Zeile, die die abgerissene Lane nennt) und haelt deren Zustellbudget wieder.
+Wer diesen Trail spaeter maschinell auswertet: **dieser eine Lauf traegt `ee98c8d` als Vorfahren
+UND einen Family-Fail, und beides ist Absicht** — er ist `dirty:true` und mutiert.
+
+**Das maschinenunabhaengige Mass ist NOCH NICHT erreicht, und das wird hier gesagt statt
+verschwiegen.** Verlangt sind 0 Family-Fails bei mindestens 10 Laeufen auf Baeumen, die den Fix
+enthalten. Stand 2026-09-05 12:45: **3 saubere Laeufe, 0 Family-Fails — sieben fehlen.** Sie
+kommen von selbst (jeder Post-Land-Audit zaehlt mit); die Zahl ist das Kriterium des Programs,
+nicht die Bringschuld dieser Lane.
 
 ### 11.2k A thirteenth family: the raw-review persist race in `e2e/outcomes.ts` (2026-09-01 — REPARIERT, mechanism read out of the code)
 

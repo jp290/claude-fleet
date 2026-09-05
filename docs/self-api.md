@@ -324,6 +324,26 @@ eigene MAIN freigibt. Der `⚙ steward` darf.
 Lane (409, an der Route): `a lane may not file a queue row — a lane executes the row it was founded
 on, it does not fill the queue its own MAIN releases from`.
 
+### Der abgeleitete Program-Status (`GET /api/self/program-execution`)
+
+Jede Program-Zeile trägt `status`: eine pro Request berechnete Sicht, die nichts speichert und
+nichts bewegt. `main {slot, occupancy, sessionIdMatch}`, `attention {open}` und
+`lanes {running, queued, waiting}` stammen aus dem aktuellen Speicherzustand. `lastLand` liest die
+neueste gelandete Outcome-Zeile des Programs; `lastAudit` verbindet deren `mainAfter` mit dem
+Audit-Trail und seiner Adjudikation. Wo kein passender Fakt existiert, steht `null` — nie ein
+erfundener Erfolg. `deploy` erscheint nur, wenn der letzte Land in genau dem Checkout liegt, den
+der Server selbst vermisst (`REPO_DIR`, also `FLEET_REPO_DIR` oder das Verzeichnis von
+`server.ts`) — sonst `null`, denn `codeBehind` ist ein Fakt ÜBER diesen Checkout und über keinen
+anderen. Gelesen wird der bereits gecachte Wert vom git-Tick; die View startet kein `git`, und
+solange der Cache leer ist, ist `codeBehind` `null` (unbekannt), nie `false`.
+
+Die gepollte Owner-Liste `GET /api/programs` öffnet keine Ledger. Sie trägt dieselbe
+Speicherhälfte unter `executionStatus`; der Name ist absichtlich verschieden, weil `status` dort
+bereits der persistierte Program-Lebenszyklus (`proposed|confirmed|active|complete`) ist.
+`lastLand`, `lastAudit` und `deploy` sind in dieser Liste weggelassen. Der Owner-Poll
+`GET /api/sessions` trägt `programsStale` nur, wenn mindestens ein aktives Program eine stale
+MAIN-Bindung hat; bei null ist das Feld wegen des Poll-Budgets abwesend.
+
 ### Die abgeleitete `phase` (`GET /api/self/program-execution`)
 
 Jede Zeile in `tasks.rows[]` trägt seit Slice A vier zusätzliche Felder. **Sie werden pro Request

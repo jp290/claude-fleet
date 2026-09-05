@@ -57,9 +57,25 @@ interface Program extends ProgramContent {
   // V1a — the bound MAIN's health, both halves from one server helper. Derived per request and
   // persisted nowhere, so it is read off the ROUTE and never off fleet.json.
   health?: { occupancy?: string; sessionIdMatch?: string };
+  // D2's additive owner-list spelling: `status` is already the persisted lifecycle field above,
+  // so this response-only projection cannot use that name without destroying the existing API.
+  executionStatus?: ProgramStatusViewMemory;
   confirmedAt?: number;
   activatedAt?: number;
   completedAt?: number;
+}
+interface ProgramStatusViewMemory {
+  main: { slot: number | null; occupancy: "live" | "stale" | "unbound";
+    sessionIdMatch: "exact" | "divergent" | "unknown" };
+  attention: { open: number };
+  lanes: { running: number; queued: number; waiting: number };
+}
+interface ProgramStatusView extends ProgramStatusViewMemory {
+  lastLand: { sha: string; branch: string | null; verifyOk: boolean | null; at: number;
+    repo: string | null } | null;
+  lastAudit: { at: number; result: "green" | "red" | "unknown"; fails: string[] | null;
+    adjudicated: "real" | "flake" | "stale-test" | "unknowable" | null } | null;
+  deploy: { codeBehind: boolean | null } | null;
 }
 interface Studio {
   v: number; id: string; name: string; createdAt: number; confirmedAt: number; rev: number;
@@ -96,6 +112,7 @@ interface ProgramExecutionRow {
     sessionIdMatch: "exact" | "divergent" | "unknown"; executionState: "active" | "not-executing";
     // the persisted lineage verbatim, or null when no record exists (the unknown list then says so)
     lineage: { entries: ProgramLineageEntry[]; dropped: number } | null };
+  status: ProgramStatusView;
   tasks: { rows: { id: string; kind: string; status: string; releasedBy: string | null;
     slot: number | null; originId: string | null; text: string;
     // derived per request, stored nowhere (program-phase.ts)
@@ -933,6 +950,162 @@ export async function run(ctx: Ctx): Promise<void> {
     `bound=${boundSelfView.programs.length} other=${otherSelfView.programs.length}`);
   check("Program-MAIN self view: a lane token still receives the existing 409",
     laneSelfView.response.status === 409, String(laneSelfView.response.status));
+
+  const staleStatusProgram = await activateNewProgram("D2 stale status projection");
+  const completeStaleStatusProgram = await activateNewProgram("D2 complete stale control");
+  const unboundStatusProgram = await activateNewProgram("D2 unbound status projection");
+  const foreignStatusProgram = await activateNewProgram("D2 foreign MAIN scope control");
+  const statusSlot = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? 0;
+  const statusOpen = statusSlot > 0
+    ? await post(`/api/slots/${statusSlot}/open`, { cwd: REPO, label: "d2-stale-binding" }) : null;
+  // THE FOREIGN MAIN GETS ITS OWN OCCUPANT, and this is not a style choice. The obvious fixture is
+  // the plain occupant of slot 2, but `programExecutionView` selects `boundPrograms` WITHOUT
+  // reading Program.status, so a program bound there stays in that slot's view after it is
+  // completed — and the existing check "ProgramExecutionView foreign non-lane" asserts slot 2 sees
+  // exactly ZERO programs. A dedicated slot, killed at the end of this block, keeps that promise.
+  const foreignStatusSlot = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? 0;
+  const foreignStatusOpen = foreignStatusSlot > 0
+    ? await post(`/api/slots/${foreignStatusSlot}/open`, { cwd: REPO, label: "d2-foreign-main" }) : null;
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const statusState = readState();
+  const statusOccupant = statusState.slots?.[String(statusSlot)];
+  const staleStatusRow = statusState.programs?.find((p) => p.id === staleStatusProgram.id);
+  const completeStaleStatusRow = statusState.programs?.find((p) => p.id === completeStaleStatusProgram.id);
+  const foreignStatusRow = statusState.programs?.find((p) => p.id === foreignStatusProgram.id);
+  const plantedStatusMain = statusOccupant?.openedAt ? {
+    slot: statusSlot, openedAt: statusOccupant.openedAt,
+    sessionId: statusOccupant.sessionId ?? null, boundAt: Date.now(),
+  } : null;
+  if (staleStatusRow && plantedStatusMain) staleStatusRow.main = { ...plantedStatusMain };
+  if (completeStaleStatusRow && plantedStatusMain) completeStaleStatusRow.main = { ...plantedStatusMain };
+  const foreignOccupant = statusState.slots?.[String(foreignStatusSlot)];
+  if (foreignStatusRow && foreignStatusSlot > 0 && foreignOccupant?.openedAt) foreignStatusRow.main = {
+    slot: foreignStatusSlot, openedAt: foreignOccupant.openedAt,
+    sessionId: foreignOccupant.sessionId ?? null, boundAt: Date.now(),
+  };
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(statusState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const foreignStatusToken = readState().slots?.[String(foreignStatusSlot)]?.selfToken ?? "";
+  // A probe that could not run must fail as ITSELF, never as the rule it was meant to measure: a
+  // missing occupant or credential below would read as "the scope rule held" and prove nothing.
+  check("program status fixture prerequisite: both planted occupants and the foreign MAIN credential exist",
+    statusOpen?.ok === true && foreignStatusOpen?.ok === true && plantedStatusMain !== null
+      && !!foreignStatusRow?.main && /^[0-9a-f]{32}$/.test(foreignStatusToken),
+    JSON.stringify({ statusSlot, foreignStatusSlot, plantedStatusMain,
+      foreignMain: foreignStatusRow?.main ?? null, tokenLen: foreignStatusToken.length }));
+  const statusKill = statusSlot > 0 ? await post(`/api/slots/${statusSlot}/kill`, {}) : null;
+  const statusRecycle = statusSlot > 0
+    ? await post(`/api/slots/${statusSlot}/open`, { cwd: REPO, label: "d2-recycled-occupant" }) : null;
+  const completeStaleResponse = await programPost(completeStaleStatusProgram.id, "complete");
+  const statusPrograms = await ownerPrograms();
+  const liveStatus = statusPrograms.find((p) => p.id === mainProgram.id)?.executionStatus;
+  const staleStatus = statusPrograms.find((p) => p.id === staleStatusProgram.id)?.executionStatus;
+  const completeStaleStatus = statusPrograms.find((p) => p.id === completeStaleStatusProgram.id)?.executionStatus;
+  const unboundStatus = statusPrograms.find((p) => p.id === unboundStatusProgram.id)?.executionStatus;
+  // BREAKS IF: programOccupancy compares only slot id, so the recycled occupant reads as the bound MAIN.
+  check("program status: the bound occupant projects live, a killed binding projects stale, an unbound program projects unbound",
+    statusOpen?.ok === true && statusKill?.ok === true && statusRecycle?.ok === true
+      && completeStaleResponse.ok && liveStatus?.main.occupancy === "live"
+      && staleStatus?.main.occupancy === "stale" && completeStaleStatus?.main.occupancy === "stale"
+      && unboundStatus?.main.occupancy === "unbound"
+      && liveStatus.main.slot === mainSlot && staleStatus.main.slot === statusSlot
+      && unboundStatus.main.slot === null,
+    JSON.stringify({ statusSlot, liveStatus, staleStatus, completeStaleStatus, unboundStatus }));
+
+  const stalePoll = await (await get("/api/sessions")).json() as { programsStale?: number };
+  const completeActiveStale = await programPost(staleStatusProgram.id, "complete");
+  const zeroStalePoll = await (await get("/api/sessions")).json() as { programsStale?: number };
+  // BREAKS IF: the counter includes complete Programs, or serializes zero instead of omitting it.
+  check("program status: programsStale rides /api/sessions as the count of stale ACTIVE programs and is omitted at zero",
+    stalePoll.programsStale === 1 && completeActiveStale.ok
+      && !("programsStale" in zeroStalePoll),
+    JSON.stringify({ stalePoll, zeroStalePoll }));
+  await programPost(unboundStatusProgram.id, "complete");
+  if (statusSlot > 0) await post(`/api/slots/${statusSlot}/kill`, {});
+
+  const d2LandA = "a12d2a12d2a12d2a12d2a12d2a12d2a12d2a12d2";
+  const d2LandB = "b12d2b12d2b12d2b12d2b12d2b12d2b12d2b12d2";
+  const d2BaseAt = Date.now() + 5_000;
+  const d2AuditAt = d2BaseAt + 300;
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const d2OutcomePath = `${ROOT}/lane-outcomes.jsonl`;
+  const d2AuditPath = `${ROOT}/post-land-audits.jsonl`;
+  const d2AdjudicationPath = `${ROOT}/audit-adjudications.jsonl`;
+  appendFileSync(d2OutcomePath, `${JSON.stringify({
+    ts: d2BaseAt + 200, programId: mainProgram.id, disposition: "landed",
+    branch: "d2-status-newer", headSha: "c".repeat(40), mainAfter: d2LandA,
+    verified: null, repo: REPO,
+  })}\n`);
+  appendFileSync(d2OutcomePath, `${JSON.stringify({
+    ts: d2BaseAt + 100, programId: mainProgram.id, disposition: "landed",
+    branch: "d2-status-older", headSha: d2LandB, mainAfter: d2LandB,
+    verified: true, repo: REPO,
+  })}\n`);
+  appendFileSync(d2AuditPath, `${JSON.stringify({
+    at: d2AuditAt - 100, startedAt: d2AuditAt - 110, ms: 10, repo: REPO, main: "main",
+    mainSha: d2LandB, result: "green", cmd: "d2-status-probe", exitCode: 0, out: "ALL PASS",
+    checks: { ran: 1, failed: 0 }, covers: [{ branch: "d2-status-older", mainAfter: d2LandB, at: d2BaseAt + 100 }],
+  })}\n`);
+  appendFileSync(d2AuditPath, `${JSON.stringify({
+    at: d2AuditAt, startedAt: d2AuditAt - 10, ms: 10, repo: REPO, main: "main",
+    mainSha: "d".repeat(40), result: "red", cmd: "d2-status-probe", exitCode: 1,
+    out: "FAIL  d2 status probe", fails: ["d2 status probe"], checks: { ran: 1, failed: 1 },
+    covers: [{ branch: "d2-status-newer", mainAfter: d2LandA, at: d2BaseAt + 200 }],
+  })}\n`);
+  await restartSrv();
+  const d2Adjudication = await post("/api/post-land-audits/adjudicate",
+    { at: d2AuditAt, verdict: "flake", note: "D2 projection fixture" });
+  await Bun.sleep(100);
+  const d2Execution = await selfExecution(mainSelfToken);
+  const d2ExecutionStatus = d2Execution.view?.programs
+    .find((row) => row.program.id === mainProgram.id)?.status;
+  // BREAKS IF: either join uses branch instead of mainAfter, selects the oldest row, drops fails, or omits the verdict rail.
+  check("program status: lastLand and lastAudit join by mainAfter, newest first, and carry fails and the adjudication verdict",
+    d2Adjudication.ok && d2ExecutionStatus?.lastLand?.sha === d2LandA
+      && d2ExecutionStatus.lastLand.branch === "d2-status-newer"
+      && d2ExecutionStatus.lastLand.verifyOk === null
+      && d2ExecutionStatus.lastLand.at === d2BaseAt + 200
+      && d2ExecutionStatus.lastAudit?.at === d2AuditAt
+      && d2ExecutionStatus.lastAudit.result === "red"
+      && JSON.stringify(d2ExecutionStatus.lastAudit.fails) === JSON.stringify(["d2 status probe"])
+      && d2ExecutionStatus.lastAudit.adjudicated === "flake",
+    JSON.stringify(d2ExecutionStatus ?? null));
+
+  const d2OwnerProgram = (await ownerPrograms()).find((p) => p.id === mainProgram.id);
+  // BREAKS IF: the polled owner list starts reading or serializing either ledger half.
+  check("program status: the owner list carries the in-memory half only and no ledger fields",
+    d2OwnerProgram?.executionStatus?.main.occupancy === "live"
+      && !Object.prototype.hasOwnProperty.call(d2OwnerProgram.executionStatus, "lastLand")
+      && !Object.prototype.hasOwnProperty.call(d2OwnerProgram.executionStatus, "lastAudit")
+      && !Object.prototype.hasOwnProperty.call(d2OwnerProgram.executionStatus, "deploy"),
+    JSON.stringify(d2OwnerProgram?.executionStatus ?? null));
+
+  const d2ForeignExecution = await selfExecution(foreignStatusToken);
+  // BREAKS IF: programExecutionView projects all Programs instead of the exact bound occupant's Programs.
+  check("program status: a MAIN of another program does not see this program's status",
+    d2ForeignExecution.response.ok && d2ForeignExecution.view !== null
+      && d2ForeignExecution.view.programs.some((row) => row.program.id === foreignStatusProgram.id)
+      && d2ForeignExecution.view.programs.every((row) => row.program.id !== mainProgram.id),
+    JSON.stringify(d2ForeignExecution.view ?? null));
+  await programPost(foreignStatusProgram.id, "complete");
+  // The dedicated foreign occupant dies with its block: nothing after this point may find a Program
+  // bound to a slot the later fixtures recycle.
+  if (foreignStatusSlot > 0) await post(`/api/slots/${foreignStatusSlot}/kill`, {});
+
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  writeFileSync(d2OutcomePath, readFileSync(d2OutcomePath, "utf8").split("\n")
+    .filter((line) => line && !line.includes('"branch":"d2-status-')).join("\n") + "\n", { mode: 0o600 });
+  writeFileSync(d2AuditPath, readFileSync(d2AuditPath, "utf8").split("\n")
+    .filter((line) => line && !line.includes('"cmd":"d2-status-probe"')).join("\n") + "\n", { mode: 0o600 });
+  // The adjudication rail only exists once a verdict was written; a failed POST above must leave a
+  // named red check behind, never a thrown ENOENT that takes the rest of the suite with it.
+  if (existsSync(d2AdjudicationPath))
+    writeFileSync(d2AdjudicationPath, readFileSync(d2AdjudicationPath, "utf8").split("\n")
+      .filter((line) => line && !line.includes(`"auditAt":${d2AuditAt}`)).join("\n") + "\n", { mode: 0o600 });
+  await restartSrv();
 
   // --- The derived Program phase (program-phase.ts): a PURE reducer over the closed input list
   // I1–I6, checked here with hand-built inputs before anything touches a server. Every rule of the

@@ -1,0 +1,31 @@
+# TEMPLATE — the schedule for fleet-sync.service beside it. The FLEET-DIR placeholder below is the
+# same one its neighbour carries, so the install seds both files with one expression. It carries no
+# host, no address and no credential, for the same reason as its neighbours — this repository is
+# public.
+#
+# MONOTONIC, NOT CALENDAR, and therefore no `Persistent=`. `Persistent=` only means anything for
+# OnCalendar timers (it replays a run the machine slept through); on a monotonic timer it is inert,
+# and writing it here would claim a catch-up behaviour that does not exist. OnBootSec below is the
+# catch-up: after a reboot the checkout is stale by exactly the downtime, and this fetches once the
+# watchdog beside it has had its own minutes to bring the fleet up.
+#
+# WHY MINUTES AND NOT SECONDS. Two costs pull the same way. The fetch moves the tree the follower's
+# sessions and suites read while it takes no lock (fleet-sync.service says what that exposes), and
+# a follower whose main checkout carries a local edit answers exit 4 on EVERY tick — a fifteen-
+# minute period makes that a visible row in `systemctl --user list-timers`, a one-minute period
+# makes it noise a reader learns to skip. Nothing on this host gates on freshness: the helper
+# daemon fetches its own tree per job (helper-daemon/README.md), and the follower never lands. So
+# the value being bought here is convenience, and it is priced accordingly.
+
+[Unit]
+Description=claude-fleet follower sync — periodic fast-forward onto the canonical main
+Documentation=file://FLEET-DIR/fleet-sync.sh
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+# so two hosts, or two reboots, do not line their fetches up on the same second
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,67 @@
+# TEMPLATE — the unit that RUNS fleet-sync.sh, driven by fleet-sync.timer beside it.
+# Every ALL-CAPS placeholder has to be replaced before this file is installed. It carries no host,
+# no address and no credential on purpose: this repository is public. The far side is named only by
+# a git REMOTE in the follower's gitignored .git/config, and the key that reaches it lives in that
+# user's ~/.ssh — the same rule fleet-sync.sh itself states in its head.
+#
+# THE FOLLOWER ONLY, AND IT HAS NO TWIN. fleet-watchdog.service has one (launchd-example.plist)
+# because both hosts boot the same watchdog. This pair does not: under the standing decision
+# (path b, 2026-09-05, docs/dual-host-git-transport.md) the CANONICAL host never fetches from the
+# follower and never runs this script, so installing this on it would be a category error.
+#
+# ONESHOT, AND ALLOWED TO FAIL LOUDLY — that is the whole design. fleet-sync.sh answers in five
+# exits (0 current or fast-forwarded · 2 fetch failed · 3 DIVERGED · 4 precondition refused), and
+# anything but 0 leaves this unit `failed`, which is what `systemctl --user status fleet-sync` and
+# `systemctl --user list-timers` then show. Exit 3 is the one a human owes an answer to: it means
+# this host has landed something, and under path b it must not. Do NOT add `SuccessExitStatus=` to
+# quieten any of them — a transport that fails silently is the failure this unit exists to make
+# visible.
+#
+# WHAT IT DOES NOT GUARD, stated rather than implied. The tree it moves is the tree the follower's
+# sessions and suites read, and this unit takes no lock — not the suite mutex at /tmp/fleet-e2e.lock
+# and not git's. The exposure is smaller than it sounds: e2e-stage.sh copies a suite's tree into its
+# own scratch directory before the suite runs, so what a fast-forward can land inside is that copy's
+# own window, not a whole suite. It is not zero. That is why the timer beside this file is set in
+# minutes rather than seconds, and why shortening it is a decision and not a tweak.
+#
+# NO [Install] SECTION, deliberately. This unit is started BY the timer; `systemctl --user enable`
+# belongs on fleet-sync.timer alone. A service enabled by hand here would also run at boot, outside
+# the schedule the timer states.
+#
+# Install (an owner act on the follower, after fleet-sync.sh has ARRIVED THERE THROUGH A LAND —
+# an untracked hand-copied twin of a tracked file is exactly what makes the next ff-only sync fail):
+#   sed "s|FLEET-DIR|$HOME/claude-fleet|g" fleet-sync.service > ~/.config/systemd/user/fleet-sync.service
+#   sed "s|FLEET-DIR|$HOME/claude-fleet|g" fleet-sync.timer   > ~/.config/systemd/user/fleet-sync.timer
+#   systemctl --user daemon-reload
+#   systemctl --user start fleet-sync.service     # measure the fetch ONCE by hand before arming it
+#   systemctl --user enable --now fleet-sync.timer
+# `sudo loginctl enable-linger USER` is the same prerequisite fleet-watchdog.service names, and it
+# is paid once for both: without it this user's whole systemd manager stops at logout.
+
+[Unit]
+Description=claude-fleet follower sync (fast-forward this checkout onto the canonical host's main)
+Documentation=file://FLEET-DIR/fleet-sync.sh
+
+[Service]
+Type=oneshot
+WorkingDirectory=FLEET-DIR
+ExecStart=/bin/sh FLEET-DIR/fleet-sync.sh
+
+# EXPLICIT, for the reason its neighbour pays twice over: a service inherits systemd's own default
+# PATH, not a login shell's. What this one has to reach is smaller than the watchdog's — `git` and
+# the `ssh` it shells out to, both from the distribution — so no home-relative entry belongs here.
+# If it ever needs one, it needs it for a reason worth writing down next to it.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# THE KEY IS NOT HERE AND MUST NEVER BE, the same sentence helper-daemon/fleet-helper.service makes
+# about its token: an `Environment=` line is readable by every account on the box through
+# `systemctl show` and /proc/<pid>/environ. ssh finds the follower's key through HOME, which the
+# user manager already sets — and NOT through a forwarded agent, which exists only inside an
+# interactive session. That is why the install above starts this unit once by hand: a fetch that
+# only ever worked over a forwarded agent passes from a terminal and fails from the timer.
+
+# The journal, not a file. watchdog.sh keeps its own server.log because it has prose of its own to
+# write; this unit's whole output is one line from fleet-sync.sh, and `journalctl --user -u
+# fleet-sync` keeps it with the exit status that explains it.
+StandardOutput=journal
+StandardError=journal

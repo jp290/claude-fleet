@@ -75,11 +75,66 @@ Vorbedingung verweigert (nicht auf `main`, schmutziger Baum, unbekanntes Remote)
   ist dort **dash**): aktuell `0` · Fast-Forward `0` · schmutzig `4` · unbekanntes Remote `4` ·
   auseinandergelaufen `3` · nicht auf `main` `4`.
 
+## Der systemd-Schnitt auf dem Folger (2026-09-05, gemessen)
+
+Der Folger fährt seit diesem Schnitt **drei** Units, und sie gehören verschiedenen Ebenen an —
+das ist der Grund, warum eine von ihnen Linger braucht und die andere nicht:
+
+| Unit | Manager | Was sie ist |
+|---|---|---|
+| `fleet-watchdog.service` | **User** (`systemctl --user`) | die Fleet des Folgers selbst: startet `watchdog.sh`, das die `srv`-tmux-Session hält. Die Sessions, die sie spawnt, müssen dem Owner gehören und in dessen `tmux -L claudefleet` liegen — darum User und nicht System. |
+| `fleet-sync.service` + `.timer` | **User** | dieser Transport: alle 15 min ein `fleet-sync.sh`, plus einmal 3 min nach dem Boot. |
+| `fleet-helper.service` | **System** (`/etc/systemd/system`) | der Helfer-Daemon, der Suiten für die *kanonische* Fleet fährt. Stand vorher, wurde nicht angefasst. |
+
+**`loginctl enable-linger` ist die Bedingung genau der ersten beiden.** Ohne Linger existiert der
+User-Manager nur, solange eine Session dieses Benutzers offen ist: nach einem Reboot ohne Login
+kommt keine User-Unit hoch, egal wie `enabled` sie ist. Die System-Unit des Helfers braucht das
+nicht und hat es nie gebraucht — sie hängt an PID 1. Gemessen: `Linger=no` vorher, `Linger=yes`
+nach `sudo loginctl enable-linger USER`.
+
+**Der Timer läuft `fleet-sync.sh`, er wiederholt es nicht.** Die fünf Ausgänge oben sind die ganze
+Semantik: alles außer `0` lässt die Unit `failed`, sichtbar in `systemctl --user status fleet-sync`
+und in `systemctl --user list-timers`. Ein `SuccessExitStatus=` dort wäre die Umkehrung dieses
+Schnitts — Ausgang `3` ist genau das Ereignis, das ein Mensch sehen muss.
+
+**Was der Timer NICHT absichert, ausgesprochen statt angedeutet:** er nimmt keinen Lock, weder den
+Suite-Mutex noch git. Der Baum, den er bewegt, ist der Baum, den die Sessions und Suiten des Folgers
+lesen. Die Fläche ist kleiner als sie klingt — `e2e-stage.sh` kopiert den Baum einer Suite in ihr
+eigenes Scratch-Verzeichnis, bevor sie läuft, also trifft ein Fast-Forward höchstens das Fenster
+dieser Kopie und nie einen ganzen Lauf — aber sie ist nicht null. Deshalb steht die Periode in
+Minuten, und deshalb ist ihr Verkürzen eine Entscheidung und kein Handgriff.
+
+**Der Schlüssel wird über `HOME` gefunden, nicht über einen Agenten.** Das ist der Fehlschlag, den
+dieser Schnitt aktiv ausgeschlossen hat: ein `git fetch`, das nur über ein weitergereichtes
+`SSH_AUTH_SOCK` funktioniert, ist aus einem Terminal grün und aus dem Timer rot. Darum startet die
+Install-Anleitung im Kopf von `fleet-sync.service` die Unit einmal von Hand — ein `systemctl --user
+start` hat weder tty noch Agent.
+
+### Verifikation
+
+- **`.env` des Folgers**, gitignoriert, Modus 600, eigener Token, `FLEET_INSTANCE` ≠ dem des
+  kanonischen Hosts; `FLEET_SHARE_HOSTS`/`FLEET_SHARE_URL` **leer**, weil auf diesem Host kein
+  Tunnel terminiert. `git status --porcelain` sieht die Datei nicht.
+- **`systemctl --user is-active fleet-watchdog`** → `active`, `is-enabled` → `enabled`;
+  `tmux -L claudefleet has-session -t =srv` → Exit `0`.
+- **`GET /api/sessions`** auf der Adresse des Folgers antwortet, `instance.name` trägt dessen
+  Rollenwort. Ein dort geöffneter Slot meldet `agent: alive` — die Pane-Kette ist `bash → claude`,
+  d.h. `FLEET_CMD` des Folgers löst auf.
+- **`fleet-sync.service` von Hand**, ohne tty und ohne Agent: `Result=success`,
+  `ExecMainStatus=0`, Journal-Zeile `fleet-sync: already current at <sha>`.
+- **`fleet-sync.timer`**: `enabled` + `active (waiting)`, nächster Trigger 15 min später in
+  `list-timers`. (Ein `list-timers` unmittelbar nach dem `enable` zeigt `NEXT -`; das ist das
+  Rennen gegen die erste Berechnung, keine fehlende Zeitplanung — Sekunden später steht der
+  Trigger da.)
+- **Reboot**: siehe die Zeile darunter.
+
 ## Was dieser Schnitt NICHT tut
 
-- **Nichts läuft automatisch.** Es gibt keinen Timer und keine Unit; jeder Zug ist bis auf Weiteres
-  ein Kommando. Der Timer gehört in den systemd-Schnitt (`fleet-watchdog.service`), nicht hierher —
-  und er kann `fleet-sync.sh` erst aufrufen, wenn diese Datei auf dem Folger angekommen ist.
+- **Der Timer ist da, die Gegenrichtung nicht.** Der Satz „nichts läuft automatisch" galt bis zum
+  systemd-Schnitt oben und gilt jetzt nur noch für die Richtung **R**. `fleet-sync.sh` erreichte den
+  Folger, wie es musste — durch einen Land und dessen Fast-Forward, nicht durch eine Handkopie: eine
+  untrackte Zwillingsdatei einer getrackten hätte genau den `--ff-only` blockiert, der sie holen
+  sollte.
 - **Die Gegenrichtung ist manuell und bleibt es**, solange sie vom kanonischen Host aus getrieben
   wird: dessen launchd-Seite ist Host-Zustand außerhalb dieses Repos.
 - **Kein Land auf dem zweiten Host.** `fleet-sync.sh` erzwingt das nicht, es MISST es nur (Ausgang

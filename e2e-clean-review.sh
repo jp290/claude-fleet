@@ -24,8 +24,23 @@ mkdir -p "$DIR"
 stage_instance "$SRC" "$DIR" server.ts fleet-e2e-clean-review.ts || exit 1
 
 # green verify stand-in (no sabotage marker → clean+green → the reviewer is what decides the land)
+#
+# It also RECORDS THE ENVIRONMENT IT WAS HANDED, because it is the only thing in this suite that
+# stands exactly where the land gate's chain stands: server.ts#runVerify spawns FLEET_VERIFY_CMD,
+# and that is this file. The gate's real chain boots three more fleet servers, so every FLEET_* knob
+# the spawning server carries is wrong for it — server.ts#auditChildEnv has scrubbed the tier-2
+# child on exactly that reasoning since it was written, and runVerify did not until 2026-09-05.
+#
+# FLEET_* NAMES ONLY, never values: a fleet process carries scoped self-credentials by construction
+# (CLAUDE.md, token hygiene), so a dump of values would put them in a log and a check detail. PATH
+# is recorded WITH its value, and that is the control half rather than an exception — it is not a
+# secret, and "no FLEET_* here" is only worth something beside "and PATH arrived unchanged".
 cat > "$DIR/fakeverify" <<'EOF'
 #!/bin/sh
+{ env | grep '^FLEET_' | cut -d= -f1 | sort | tr '\n' ' '
+  echo
+  printf 'PATH=%s\n' "$PATH"
+} > "$0.env"
 echo "verify OK"
 exit 0
 EOF

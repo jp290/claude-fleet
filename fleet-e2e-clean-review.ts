@@ -16,7 +16,8 @@
 // check() in harness.ts is the per-check trail's single emit site, so BOTH phases of this suite now
 // leave durable rows (docs/e2e-trail.md), stamped FLEET_E2E_SUITE=clean-review by the wrapper.
 import { spawnSync } from "node:child_process";
-import { check, failures, get, post, results } from "./e2e/harness";
+import { readFileSync } from "node:fs";
+import { check, failures, get, post, results, srvEnv } from "./e2e/harness";
 import { driveMerge, openLane, seedRepo, type Lane, type MergeVerdict } from "./e2e/lane-helpers";
 
 const setReviewMode = (m: string): Promise<number> => Bun.write(`${import.meta.dir}/cleanreviewmode`, m);
@@ -155,6 +156,56 @@ check("reviewer 'review' downgrades a clean+green auto-land to a stop (resolved,
   !A.gone && A.last?.status === "resolved" && A.last?.landed === false && A.last?.cleanReview?.verdict === "review",
   JSON.stringify(A.last));
 check("the downgraded lane's commit did NOT reach main", !mainLog().includes("alpha lane work"), mainLog());
+
+// (A2) WHICH ENVIRONMENT that gate run was handed — the half no local preview of these wrappers
+// could see. The land gate's chain boots three fleet servers of its own, so the knobs THIS server
+// was configured with are wrong for it; server.ts#auditChildEnv drops every FLEET_* from the
+// tier-2 child for that reason, and until 2026-09-05 server.ts#runVerify passed no `env` at all,
+// so Bun handed the gate `process.env` whole (watchdog.sh:155 arms FLEET_LANE_AUTOCLOSE=1,
+// FLEET_HARNESS_AUTOMATION=1, FLEET_CLEAN_REVIEW, FLEET_DISPATCH_*, and `.env` adds more). The gate
+// therefore measured a world no lane running these same three wrappers by hand can reproduce.
+//
+// Measured HERE because this suite is one of those three wrappers: a land gate re-reads its own
+// child environment every time it runs, instead of a rule being asserted about source text alone.
+//
+// WITH A CONTROL IN THE SAME MEASUREMENT, so an absence can never be read as a null reading. The
+// server's own FLEET_CLEAN_REVIEW is read back off the live srv (e2e/harness.ts#srvEnv, names the
+// pane's process and returns only the one assignment), which establishes that this server really
+// does carry a FLEET_* knob — and PATH is compared across the same dump. A stand-in that never ran
+// leaves no dump and fails the fixture line below under its own name, not as a scrub.
+const gateEnv = ((): { fleet: string[]; path: string } | null => {
+  try {
+    const raw = readFileSync(`${import.meta.dir}/fakeverify.env`, "utf8").split("\n");
+    return { fleet: (raw[0] ?? "").trim().split(/\s+/).filter(Boolean),
+      path: (raw.find((l) => l.startsWith("PATH=")) ?? "").slice(5) };
+  } catch { return null; }
+})();
+const srvCleanReview = await srvEnv("FLEET_CLEAN_REVIEW");
+check("gate-env fixture: the verify stand-in recorded the environment it was handed, and this server demonstrably carries a FLEET_* knob of its own",
+  gateEnv !== null && srvCleanReview.readable && srvCleanReview.value === "1",
+  JSON.stringify({ childFleet: gateEnv?.fleet ?? null, childPathLen: gateEnv?.path.length ?? null,
+    srvReadable: srvCleanReview.readable, srvCleanReview: srvCleanReview.value }));
+
+// The suite mutex is the one thing this server and its gate child take part in TOGETHER — the
+// server holds the same lock (server.ts#SUITE_LOCK, from FLEET_SUITE_LOCK) and e2e-stage.sh honours
+// a handed-over hold only if the pid it names is the one in `$FLEET_SUITE_LOCK/pid`. Those knobs
+// ride along by rule; nothing else FLEET_* may. FLEET_SUITE_LOCK_HELD_BY is not among them because
+// it is MINTED per spawn and only under a real hold, which a gate driven from a merge POST never
+// has — that path belongs to the ff-retry chain.
+//
+// PATH is compared against THIS RUNNER'S, not re-read off the srv: the runner and the srv are
+// siblings out of the same wrapper shell, so the value is one value, and comparing it exactly beats
+// re-parsing it out of a process line. It is the dangerous half of the cut — the launchd context
+// carries neither ~/.bun/bin nor ~/.local/bin nor brew, so a gate child that loses PATH dies at
+// `bun install` on every land this machine attempts.
+const GATE_ENV_ALLOWED = new Set(["FLEET_SUITE_LOCK", "FLEET_SUITE_POLL_SEC"]);
+const gateEnvStrays = (gateEnv?.fleet ?? []).filter((n) => !GATE_ENV_ALLOWED.has(n));
+check("the land gate's chain is spawned with the server's FLEET_* scrubbed — and with PATH arriving unchanged",
+  gateEnv !== null && gateEnvStrays.length === 0
+    && gateEnv.path !== "" && gateEnv.path === (process.env.PATH ?? ""),
+  JSON.stringify({ childFleet: gateEnv?.fleet ?? null, strays: gateEnvStrays,
+    childPathLen: gateEnv?.path.length ?? null, runnerPathLen: (process.env.PATH ?? "").length,
+    pathSame: gateEnv !== null && gateEnv.path === (process.env.PATH ?? "") }));
 
 // (B) reviewer "ok" → the clean+green lane AUTO-LANDS (slot torn down, commit on main).
 await setReviewMode("ok");

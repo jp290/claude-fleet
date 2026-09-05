@@ -5625,6 +5625,37 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
 }
 
 {
+  const RULE_D2 = "program status is a read-only projection and the poll derives only stale active Programs";
+  const sessionsAt = server.indexOf('url.pathname === "/api/sessions"');
+  const tasksAt = sessionsAt < 0 ? -1 : server.indexOf("tasks: tasks.map(taskDigest)", sessionsAt);
+  const attentionAt = sessionsAt < 0 ? -1 : server.indexOf("attentionOpen:", sessionsAt);
+  const pollStatus = attentionAt < 0 || tasksAt < 0 ? "" : server.slice(attentionAt, tasksAt);
+  pin(`${RULE_D2} — programsStale is derived from programOccupancy for active Programs and omitted at zero`,
+    pollStatus.includes('p.status === "active"')
+      && pollStatus.includes('programOccupancy(p) === "stale"')
+      && pollStatus.includes("stale > 0 ? { programsStale: stale } : {}"),
+    pollStatus === "" ? "the attentionOpen→taskDigest poll block was not found"
+      : `${pollStatus.split("\n").length} lines inspected`);
+  pin(`${RULE_D2} — the owner poll reads no ledger`,
+    pollStatus !== "" && !pollStatus.includes("readLedger("),
+    pollStatus === "" ? "the attentionOpen→taskDigest poll block was not found" : "poll block inspected");
+
+  const statusSpan = serverU.span("function programStatusView(p: Program, ctx?: ProgramStatusContext)",
+    "// V1b — THE RETURN PATH");
+  const statusBody = statusSpan?.text ?? "";
+  pin(`${RULE_D2} — programStatusView contains no mutation primitive`,
+    statusBody !== "" && !/\b(?:saveState|saveStateNow|appendEvent|sendText|spawnCmd)\b/.test(statusBody),
+    statusBody === "" ? "programStatusView not found in server.ts" : "projection body inspected");
+
+  const ownerSpan = serverU.span('url.pathname === "/api/programs" && req.method === "GET"',
+    'url.pathname === "/api/programs" && req.method === "POST"');
+  const ownerBody = ownerSpan?.text ?? "";
+  pin(`${RULE_D2} — the owner list calls programStatusView without a ledger and opens no ledger`,
+    ownerBody.includes("executionStatus: programStatusView(p)") && !ownerBody.includes("readLedger("),
+    ownerBody === "" ? "the GET /api/programs route was not found" : "owner list body inspected");
+}
+
+{
   const RULE_FAILS = "the local audit row's fails pass through helperFailNames";
   const local = server.match(/function localFailNames\([\s\S]*?\n\}/)?.[0] ?? "";
   const audit = server.match(/async function runPostLandAudit\([\s\S]*?\n\}/)?.[0] ?? "";

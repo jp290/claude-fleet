@@ -1657,9 +1657,11 @@ function nextActionFor(phase: Phase, t: Task, promotion: PromotionPolicy | undef
 // bound MAIN occupant is the only authority bracket; everything below joins by persisted ids or
 // the full receiver occupant triple, and every gap stays visible as an explicit unknown.
 async function programExecutionView(s: Slot): Promise<Response> {
-  const [outcomeLedger, receiptLedger] = await Promise.all([
+  const [outcomeLedger, receiptLedger, auditLedger, judged] = await Promise.all([
     readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE),
     readLedger<Record<string, unknown>>(CONTEXT_RECEIPT_FILE),
+    readLedger<unknown>(POSTLAND_AUDIT_FILE),
+    adjudicationsByAudit(),
   ]);
   const now = Date.now();
   const boundPrograms = programs.filter((p) => p.main
@@ -1704,6 +1706,8 @@ async function programExecutionView(s: Slot): Promise<Response> {
       unknown.push(`${outcomeLedger.malformed} malformed outcome ledger rows make reconstruction incomplete.`);
     if (receiptLedger.malformed > 0)
       unknown.push(`${receiptLedger.malformed} malformed receipt ledger rows make reconstruction incomplete.`);
+    if (auditLedger.malformed > 0)
+      unknown.push(`${auditLedger.malformed} malformed audit ledger rows make reconstruction incomplete.`);
     if (p.status !== "active")
       unknown.push(`1 program has status ${p.status}; executionState is not-executing.`);
     // The one honest caveat the per-row report fact carries: report retention is a bounded tail
@@ -1732,6 +1736,8 @@ async function programExecutionView(s: Slot): Promise<Response> {
         // answer (no record) and the matching unknown line says what that costs
         lineage: p.lineage ? { entries: p.lineage.entries, dropped: p.lineage.dropped } : null,
       },
+      status: programStatusView(p, { outcomeRows: outcomeLedger.rows,
+        auditRows: auditLedger.rows, judged }),
       tasks: {
         rows: programTasks.map((t) => {
           // DERIVED per request, stored nowhere. `phase` says where the row sits on the rail; it
@@ -6705,6 +6711,88 @@ function programHealth(p: Program): ProgramHealth {
   // reads it as a statement about the bound MAIN.
   if (occupancy !== "live" || !main || !live) return { occupancy, sessionIdMatch: "unknown" };
   return { occupancy, sessionIdMatch: sessionIdMatchOf(main.sessionId, live.sessionId) };
+}
+
+interface ProgramStatusMemoryView {
+  main: { slot: number | null; occupancy: ProgramOccupancy; sessionIdMatch: SessionIdMatch };
+  attention: { open: number };
+  lanes: { running: number; queued: number; waiting: number };
+}
+interface ProgramStatusView extends ProgramStatusMemoryView {
+  lastLand: { sha: string; branch: string | null; verifyOk: boolean | null; at: number;
+    repo: string | null } | null;
+  lastAudit: { at: number; result: "green" | "red" | "unknown"; fails: string[] | null;
+    adjudicated: AdjudicationVerdict | null } | null;
+  deploy: { codeBehind: boolean | null } | null;
+}
+interface ProgramStatusContext {
+  outcomeRows: Record<string, unknown>[];
+  auditRows: unknown[];
+  judged: Map<number, AuditAdjudication>;
+}
+
+// D2 is one read-only projection over the existing in-memory and ledger facts. The owner list calls
+// the no-context overload, so its 2 s reader gets only the in-memory half and never opens a ledger.
+function programStatusView(p: Program): ProgramStatusMemoryView;
+function programStatusView(p: Program, ctx: ProgramStatusContext): ProgramStatusView;
+function programStatusView(p: Program, ctx?: ProgramStatusContext): ProgramStatusMemoryView | ProgramStatusView {
+  const health = programHealth(p);
+  const programTasks = tasks.filter((t) => t.programId === p.id);
+  const queued = programTasks.filter((t) => t.status === "queued");
+  const memory: ProgramStatusMemoryView = {
+    main: { slot: p.main?.slot ?? null, ...health },
+    attention: { open: attentionRequests.filter((a) => a.programId === p.id
+      && (a.status === "open" || a.status === "send-uncertain")).length },
+    lanes: {
+      running: slots.filter((s) => s.cwd && s.programId === p.id).length,
+      queued: queued.length,
+      waiting: queued.filter((t) => t.note?.startsWith("waiting:")).length,
+    },
+  };
+  if (!ctx) return memory;
+
+  const landed = ctx.outcomeRows.filter((row) => row.programId === p.id
+    && row.disposition === "landed");
+  const newestLand = landed.reduce<Record<string, unknown> | null>((newest, row) =>
+    newest === null || (typeof row.ts === "number" ? row.ts : 0)
+      > (typeof newest.ts === "number" ? newest.ts : 0) ? row : newest, null);
+  const landSha = typeof newestLand?.mainAfter === "string" ? newestLand.mainAfter
+    : typeof newestLand?.headSha === "string" ? newestLand.headSha : null;
+  const lastLand = newestLand && landSha && typeof newestLand.ts === "number" ? {
+    sha: landSha,
+    branch: typeof newestLand.branch === "string" ? newestLand.branch : null,
+    verifyOk: newestLand.verified === true ? true : newestLand.verified === false ? false : null,
+    at: newestLand.ts,
+    repo: typeof newestLand.repo === "string" ? newestLand.repo : null,
+  } : null;
+
+  const landedMainAfter = new Set(landed.flatMap((row) =>
+    typeof row.mainAfter === "string" ? [row.mainAfter] : []));
+  const newestAudit = ctx.auditRows.map(validAuditRow)
+    .filter((row): row is PostLandAuditRow => row !== null && typeof row.at === "number"
+      && (landedMainAfter.has(row.mainSha)
+        || row.covers.some((cover) => landedMainAfter.has(cover.mainAfter))))
+    .reduce<PostLandAuditRow | null>((newest, row) =>
+      newest === null || row.at > newest.at ? row : newest, null);
+  const lastAudit = newestAudit === null ? null : {
+    at: newestAudit.at,
+    result: newestAudit.result,
+    fails: Array.isArray(newestAudit.fails)
+      && newestAudit.fails.every((name): name is string => typeof name === "string")
+      ? newestAudit.fails : null,
+    adjudicated: ctx.judged.get(newestAudit.at)?.verdict ?? null,
+  };
+  // THE GUARD NAMES THE CHECKOUT THE FACT WAS MEASURED IN, and that is REPO_DIR, not this file's
+  // directory: deployGap() runs its BOOT_HEAD..HEAD count in REPO_DIR, which is
+  // `process.env.FLEET_REPO_DIR || import.meta.dir`. Where the two differ, comparing against
+  // import.meta.dir would hang a codeBehind measured in one checkout onto a land in another —
+  // an invented answer, which is the one thing this projection may never produce. `deploy` is
+  // therefore null for every land outside the measured checkout, and `codeBehind` stays null
+  // while the git tick has not yet filled deployFacts (unknown, never false).
+  const deploy = lastLand !== null && lastLand.repo !== null
+    && repoCanon(lastLand.repo) === repoCanon(REPO_DIR)
+    ? { codeBehind: deployFacts?.gap.codeBehind ?? null } : null;
+  return { ...memory, lastLand, lastAudit, deploy };
 }
 
 // V1b — THE RETURN PATH AS A SHARED HEALTH FACT, and the reason it is one helper and not two
@@ -19294,7 +19382,10 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
   // rides along in `...p` untouched — this cut adds no second rendering of it.
   if (url.pathname === "/api/programs" && req.method === "GET")
     return json({ programs: programs.map((p) => ({ ...publicProgram(p), health: programHealth(p),
-      ...programReturnPath(p) })), supervisor });
+      ...programReturnPath(p),
+      // `status` is already Program.status (the lifecycle state). D2 therefore uses an additive,
+      // non-colliding owner-list name while the self execution row can use its requested `status`.
+      executionStatus: programStatusView(p) })), supervisor });
   if (url.pathname === "/api/programs" && req.method === "POST") {
     const valid = validateProgramContent(await readJson(req));
     if (!valid.ok) return json({ error: valid.error }, 400);
@@ -23415,6 +23506,11 @@ Bun.serve<WSData>({
         ...(attentionRequests.some((a) => a.status === "open" || a.status === "send-uncertain")
           ? { attentionOpen: attentionRequests.filter((a) => a.status === "open" || a.status === "send-uncertain").length }
           : {}),
+        ...(() => {
+          const stale = programs.filter((p) => p.status === "active"
+            && programOccupancy(p) === "stale").length;
+          return stale > 0 ? { programsStale: stale } : {};
+        })(),
         // digests only — the prompt texts live behind GET /api/tasks (see TaskDigest)
         tasks: tasks.map(taskDigest),
         // Program bodies are owner-decision documents and never ride the 2 s poll. This digest is

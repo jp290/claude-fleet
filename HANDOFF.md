@@ -1,4 +1,4 @@
-# HANDOFF — Program-MAIN 66499a03 „Fleet-Betrieb ohne manuelles Owner-Routing" (Slot 2, Opus 5): ERFOLGSSATZ 8 IST NICHT UNBELEGT, SONDERN STRUKTURELL UNERREICHBAR — der TUI-Repaint kommt 14 ms vor der Schwelle; die Wahl liegt beim Owner; 2026-09-05 11:0x, ctx GEMESSEN 26,5 %
+# HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 5, Opus 5): VIER Lands, drei deployt — und eines traegt eine Regression, die ich selbst gefunden und gefilt habe; 2026-09-05 11:5x, ctx GEMESSEN 44,1 % (Owner-Poll)
 
 Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was git
 und die Sensoren nicht tragen. Lineage 4 → 16 → 10 → 3 → 5 → 2 → du.
@@ -379,6 +379,44 @@ und die Sensoren nicht tragen. Die Abschnitte darunter sind FREMD (geteilte Date
 3. **Slot 4 traegt eine frische Lane `fleet/260905035705-b963` mit `taskId: None`** — vom Tick
    gestartet, waehrend ich landete. Ich habe sie NICHT gebrieft und nicht geprueft; sie gehoert
    keiner Zeile dieses Programs, die ich kenne. Erst lesen, dann urteilen.
+
+## 0. WAS MIT MEINER SESSION STIRBT — NICHTS HAENGT IN DER LUFT
+
+`GET /api/self` bei der Uebergabe: **0 autos, 0 armed watches, keine offene Attention** (die eine,
+`6793f1414b53a1c6d3b428d6`, ist vom Owner mit dem Deploy beantwortet). Baum sauber. Der
+Astra-Relais-Auftrag liegt beim CONTROLLER, nicht bei dir — er war kurz meiner und ist um 11:4x
+zurueckgezogen worden; er steht deshalb absichtlich nicht mehr im Handoff.
+
+**Ich habe zu spaet uebergeben, und der Grund gehoert hierher:** 44,1 % gegen ein Band von 25/30.
+Es gibt KEINEN Kontext-Nudge im Code, und die Supervisor-Bindung ist seit dem 23.08. stale — es
+kommt also niemand und sagt es dir. **Miss deinen Fuellstand selbst und frueh** (Schnipsel im
+Regelbuch, Abschnitt Kontext-Band). Anker: ~2,5 Punkte je Land; ich habe vier gefahren plus acht
+Direkt-Commits.
+
+### Die Zeilen, die JETZT laufen oder warten
+
+- **`35ac0b97` (queued) — die dringendste.** Fix fuer die Regression aus dem naechsten Abschnitt;
+  sie ist LIVE und macht jedes rein-docs-Land rot. Brief traegt Wurzel, zweiteiliges
+  Done-Kriterium und drei benannte Entwuerfe mit ihren Fallen.
+- **`ec0bf175` (SENT, Lane laeuft)** — Lebenszyklus S2, Opus 5, ersetzt `9fd34beb`.
+- **`02740e69` (queued)** — Lebenszyklus S5a, Opus 5, ersetzt `db6902c4`.
+- **`9fd34beb` und `db6902c4` DUERFEN NIE FREIGEGEBEN WERDEN** — ihr `spawn` traegt persistent
+  `codex/gpt-5.6-sol`, KEINE Route aendert es, ein Release spawnt wieder eine sol-Lane gegen die
+  Owner-Ansage von 08:1x. **Dasselbe gilt fuer die zwoelf weiteren sol-Zeilen** (S3a-i, S3a-ii,
+  S3b, S3c, S3d, S4, S5b, S5c, S12, CP-A, CP-B, CP-C): wer eine davon will, **filt sie NEU**, so
+  wie ich es mit den zweien getan habe — nicht freigeben.
+
+### Das Regelbuch: gerendert und konsistent, aber GEWACHSEN statt verdichtet
+
+`CLAUDE.md` ist **81 322 B**, das Ziel des Controllers ist **< 75 000**. Ehrlicher Stand: **die
+Verdichtung von `rulebook/lane-discipline.md` ist NICHT angefangen** — ich habe im Gegenteil heute
+**rund 3,6 KB HINZUGEFUEGT** (Tier-2-proportional; FIFO-Mutex samt der Einschraenkung, dass
+`server.ts#holdSuiteLock` ohne Ticket nimmt; die Deploy-Regel zur Idle-Uhr). Jede dieser Zeilen
+beschreibt Verhalten, das sich heute auf main GEAENDERT hat, keine war falsch — aber der Posten ist
+damit der faelligste des Programs und grosszuegig meiner.
+**Gerendert ist es:** ich habe ausschliesslich Fragmente editiert und danach den Render-Einzeiler
+aus dem Kopf von `rulebook.ts` gefahren; `bun e2e/pins.ts` war nach JEDEM Zug ALL PASS, der
+byte-genaue Pin haelt. Es liegt nichts Halbfertiges herum.
 
 ## 0b. EINE REGRESSION, DIE ICH SELBST GELANDET HABE — sie ist LIVE und macht jedes docs-Land rot
 

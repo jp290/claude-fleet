@@ -1373,6 +1373,90 @@ export async function run(): Promise<void> {
     rmSync(scratch, { recursive: true, force: true });
   }
 
+  // --- THE STREAM TICK CARRIES TWO FACTS, and a quiet window may only suppress one of them.
+  // `quietUntil` exists so output FLEET ITSELF caused does not read as the session working: the
+  // repaint after the pipe-pane attach (server.ts#ensureSlot), the repaint after a resize, and the
+  // echo of a payload we pasted. That is a statement about RECENCY. It is not a statement about
+  // whether this pane has ever been seen at all — and `lastOutput === 0` carries exactly that
+  // second fact: lane-signals.ts reads it as `observed` in STALLED_RULES/SPENT_RULES, and
+  // program-phase.ts's R10 refuses to judge a row whose lane was never observed.
+  //
+  // THE DEFECT THIS PINS: poll() advances `s.offset` unconditionally but stamped `lastOutput` only
+  // OUTSIDE the window, so a burst consumed INSIDE it was spent without ever being counted, and a
+  // pane whose only output falls there stayed "never observed" for the rest of its life. That is
+  // every `FLEET_CMD=true` pane in this suite. Load points the WRONG WAY on it: a tick delayed past
+  // the window consumes the same burst through the ordinary path and the bug hides, which is why
+  // this is a LOOP whose every attempt establishes its own precondition before it may judge.
+  //
+  // THE PRECONDITION, and the two ways an attempt fails to establish it. The stream file is written
+  // in a shape the sampler below can read off (measured 2026-09-05, 1 ms sampler, both code
+  // versions): the seed capture appears at ~tOpen-220 ms as 2 B, the pipe-pane attach lets the
+  // pane's own paint in at ~tOpen-190 ms (281 B), and the rest of the repaint settles by ~tOpen+190
+  // ms (326 B). `quietUntil` is assigned between those first two, so THE FIRST BYTE PAST THE SEED
+  // is the window opening. An attempt therefore counts only when (1) every byte settled deep inside
+  // the window, and (2) the stamp is either absent (the defect swallowing the burst) or at/after
+  // that first past-seed byte. A stamp EARLIER than it is a tick that consumed the 2-byte seed
+  // BEFORE the window existed — an ordinary stamp that would read as a repair without being one
+  // (seen 1 in 3 on the unfixed server before this clause; 0 in 5 after). Both misses retry, and
+  // running out of attempts is reported AS THAT, never as the invariant being violated. ---
+  {
+    const streamPath = (): string | null => {
+      const f = readdirSync(`${ROOT}/streams`).find((x) => x.startsWith("s3-") && x.endsWith(".raw"));
+      return f ? `${ROOT}/streams/${f}` : null;
+    };
+    const lastOutputOf3 = async (): Promise<number> =>
+      ((await (await get("/api/sessions")).json()) as { slots: { id: number; lastOutput: number }[] })
+        .slots.find((s) => s.id === 3)?.lastOutput ?? 0;
+    const WINDOW_INSIDE_MS = 1200; // quietUntil runs to at least tOpen+1200; this stays under it
+    type Attempt = { openMs: number; bytes: number; seed: number; pastSeedAt: number;
+      settledAt: number; stamp: number; established: boolean };
+    const attempts: Attempt[] = [];
+    let verdict: { lastOutput: number; bytes: number; bytesAfter: number } | null = null;
+    for (let round = 0; round < 4 && !verdict; round++) {
+      await post("/api/slots/3/kill", {});
+      const marks: { t: number; size: number }[] = [];
+      let sampling = true;
+      // started BEFORE the open: the attach, and therefore the whole window, happens inside it
+      const sampler = (async () => {
+        let path: string | null = null;
+        while (sampling) {
+          if (!path) path = streamPath();
+          if (path) { try { marks.push({ t: Date.now(), size: Bun.file(path).size }); } catch { path = null; } }
+          await Bun.sleep(1);
+        }
+      })();
+      const tCall = Date.now();
+      const opened = await post("/api/slots/3/open", { cwd: "~" });
+      const tOpen = Date.now();
+      let stamp = 0;
+      while (Date.now() - tOpen < WINDOW_INSIDE_MS) {
+        await Bun.sleep(50);
+        if (stamp === 0) stamp = await lastOutputOf3();
+      }
+      sampling = false;
+      await sampler;
+      const path = streamPath();
+      const bytes = path ? Bun.file(path).size : -1;
+      const seed = marks.length ? marks[0]!.size : -1;
+      const pastSeedAt = marks.find((m) => m.size > seed)?.t ?? 0;
+      const settledAt = marks.find((m) => m.size === bytes)?.t ?? 0;
+      const established = opened.ok && bytes > 0 && seed > 0 && pastSeedAt > 0 && settledAt > 0
+        && settledAt - tOpen <= 600 && (stamp === 0 || stamp >= pastSeedAt);
+      attempts.push({ openMs: tOpen - tCall, bytes, seed, pastSeedAt: pastSeedAt - tOpen,
+        settledAt: settledAt - tOpen, stamp: stamp === 0 ? 0 : stamp - tOpen, established });
+      if (!established) continue;
+      // past the window's far edge, with the byte count re-read: an unchanged stream proves no
+      // later burst arrived to set `lastOutput` through the ordinary path behind our back.
+      await Bun.sleep(Math.max(0, tOpen + 2600 - Date.now()));
+      verdict = { lastOutput: await lastOutputOf3(), bytes, bytesAfter: path ? Bun.file(path).size : -1 };
+    }
+    check("probe: slot 3's only burst arrived early and the tick that consumed it ran inside the quiet window",
+      !!verdict && verdict.bytesAfter === verdict.bytes, JSON.stringify({ attempts }));
+    check("a stream burst consumed inside a quiet window still ends the pane's never-observed state",
+      !!verdict && verdict.lastOutput > 0, JSON.stringify(verdict));
+    await post("/api/slots/3/kill", {});
+  }
+
   for (const t of ["s1", "s2"]) await tmuxOut("send-keys", "-t", t, "C-u");
 
   // --- slot HEALTH (slotstats.ts): the derived view over the audit trail. Pure-module assertions

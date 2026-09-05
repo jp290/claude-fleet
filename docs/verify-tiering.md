@@ -2601,7 +2601,7 @@ geratene Zahl, gegen die kein Lastprofil erhoben wurde (das sagt schon die Messn
 ein grüner Rerun so gut wie sicher und beweist nichts.
 
 
-### 11.2o Eine siebzehnte Familie: die Projektions-Sonde in `e2e/programs.ts` — KEIN Flake um eine feste Rate, sondern ein REGIME-WECHSEL am 2026-09-04 (Stand 2026-09-05: Evidenzzeile repariert, R6 ausgeschlossen, R10 gefeuert; Wurzel eingegrenzt auf die UMGEBUNG, nicht auf einen Commit)
+### 11.2o Eine siebzehnte Familie: die Projektions-Sonde in `e2e/programs.ts` — KEIN Flake um eine feste Rate, sondern ein REGIME-WECHSEL am 2026-09-04 (Stand 2026-09-05: Evidenzzeile repariert, R10/`observed` GEMESSEN, Mechanismus am Code gelesen; NICHT repariert)
 
 **Das Mitglied, einzeln:**
 
@@ -2666,16 +2666,52 @@ nicht wiederbelebt. **R6 („sent row owns no live lane") ist damit ausgeschloss
 `observed` (`lastOutput 0`) · `git` (`gitInfo` auf `null`, gesetzt bei einem fehlgeschlagenen
 git-Spawn, `server.ts` im Sessions-Poll) — sagt die neue Evidenzzeile beim nächsten Rot selbst.
 
-**Warum die Setup-Zeile davor trotzdem grün ist, und warum das kein Widerspruch ist.** Die Fixture
-wartet mit `waitDoneLooking` auf `row.git && dirty === 0 && ahead > 0 && now - row.lastOutput >= 3000`.
-Die letzte Klausel ist bei `lastOutput === 0` erfüllt, weil `now - 0` ≈ 1,79e12 ms ist — genau die
-Falle, gegen die `laneSignalView` das separate Feld `observed` überhaupt führt. Die Setup-Zeile kann
-also auf einer nie beobachteten Pane grün werden, während die Projektion ehrlich UNKNOWN sagt. Das
-ist ein KANDIDAT für den fehlenden Fakt, keine Feststellung — die Evidenzzeile entscheidet ihn.
+**GEMESSEN, erster roter Lauf nach dem Sonden-Commit** (`isolated-20260905T145210Z-77794`, Baum
+`e897f038`, `dirty:false`) — die neue Evidenzzeile beantwortet die Frage wörtlich und in BEIDEN
+Beinen identisch:
 
-**Für einen Leser eines roten Laufs gilt:** dieser FAIL ist bei einer Rate von 93,8 % **kein
-Urteil über den Baum** und ein Rerun beweist nichts — aber er ist ab jetzt auch keine Attribution
-mehr, sondern eine Frage mit Antwort im `detail`. Lies `basis`, nicht `phase`.
+    "basis":["R10: lane facts incomplete — the predicate cannot be evaluated (pane never observed (lastOutput 0))"]
+    "unknown":["1 task (71d8de95) projects as phase UNKNOWN: pane never observed (lastOutput 0)."]
+
+Beide Beine gleich heißt: es ist ein STEHENDER Zustand, kein Rennen zwischen den zwei GETs. Genau
+darum zeigten alle 25 Rots `with:null` UND `without:null`.
+
+**DER MECHANISMUS, am Code gelesen und nicht erschlossen.** Drei Stellen greifen ineinander:
+
+1. `e2e-isolated.sh` fährt den Server mit `FLEET_CMD=true`. Die Pane einer Fixture-Lane führt also
+   `true` aus und ist danach für immer still — sie hat GENAU EINEN Ausgabestoß, den beim Aufbau.
+   Die Arbeit der Lane macht die Fixture selbst per `spawnSync("git", …)`, die Pane wird nie
+   gebraucht.
+2. `server.ts#ensureSlot` hängt `pipe-pane` an und öffnet unmittelbar danach ein ABSICHTLICHES
+   1 500-ms-Ruhefenster (`s.quietUntil = Date.now() + 1500`), weil der folgende `repaint` keine
+   Sitzungsaktivität ist.
+3. Der Stream-Tick (`server.ts`, `if (size > s.offset)`) schiebt `s.offset` IMMER vor, setzt
+   `s.lastOutput` aber nur, wenn `Date.now() > s.quietUntil`.
+
+Fällt der erste Tick INS Ruhefenster, verzehrt er den einzigen Ausgabestoß, ohne `lastOutput` zu
+setzen — und weil nie ein zweiter kommt, bleibt `lastOutput` für die ganze Lebensdauer der Lane
+**0**. `observed` ist dann dauerhaft `false`, `laneFactsKnown` scheitert, und die Projektion sagt
+ehrlich R10/UNKNOWN. Fällt der erste Tick hinter das Fenster, wird `lastOutput` gesetzt und derselbe
+Lauf ist grün. Das ist der Zufallsanteil der Familie, und er sitzt nicht in der Projektion.
+
+**Warum die Setup-Zeile davor trotzdem grün ist.** `waitDoneLooking` prüft
+`now - row.lastOutput >= 3000`, und das ist bei `lastOutput === 0` erfüllt, weil `now - 0`
+≈ 1,79e12 ms ist — genau die Falle, gegen die `laneSignalView` das separate Feld `observed`
+überhaupt führt (der Kommentar dort sagt es wörtlich). Die Setup-Zeile behauptet also „the row is
+running on a live lane that is idle, clean and ahead" über eine Pane, die nie beobachtet wurde. Sie
+ist die Sonde, die nicht laufen konnte und trotzdem nicht als SIE SELBST scheitert — die Regel aus
+dem Regelbuch, wörtlich verletzt, eine Zeile über dem Rot, das sie erzeugt.
+
+**WAS HIER NICHT BEHAUPTET WIRD.** Der Mechanismus oben ist ALT — `quietUntil`, `FLEET_CMD=true`
+und die `observed`-Klausel stehen alle seit Langem so da. Er erklärt, WARUM der Check überhaupt
+kippen kann, aber NICHT, warum die Rate am 09-04 nachmittags von ~1 % auf über 90 % gesprungen ist.
+Irgendetwas hat das Rennen zwischen dem ersten Stream-Tick und dem 1 500-ms-Fenster verschoben; was,
+ist offen. Die naheliegende Vermutung „Maschinenlast" ist NICHT bestätigt und zeigt sogar in die
+unbequeme Richtung: ein ausgebremster Tick fiele eher HINTER das Fenster und machte den Lauf grün.
+
+**Für einen Leser eines roten Laufs gilt:** bei über 90 % ist dieser FAIL **kein Urteil über den
+Baum** und ein Rerun beweist nichts. Lies `basis`, nicht `phase` — und wenn dort etwas anderes steht
+als `pane never observed (lastOutput 0)`, ist es ein NEUER Befund und gehört gemeldet.
 
 ### 11.2p Eine achtzehnte Familie: der `requeue-teardown-empty`-Rest, der zwölf `backlog nudge`-Checks mitreisst (2026-09-04 — EINE SICHTUNG, Mechanismus vollstaendig aus dem Trail gelesen, Regress strukturell ausgeschlossen; NICHT repariert)
 

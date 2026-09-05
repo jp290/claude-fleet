@@ -2601,7 +2601,7 @@ geratene Zahl, gegen die kein Lastprofil erhoben wurde (das sagt schon die Messn
 ein grüner Rerun so gut wie sicher und beweist nichts.
 
 
-### 11.2o Eine siebzehnte Familie: die Projektions-Sonde in `e2e/programs.ts` — KEIN Flake um eine feste Rate, sondern ein REGIME-WECHSEL am 2026-09-04 (Stand 2026-09-05: Evidenzzeile repariert, R10/`observed` GEMESSEN, Mechanismus am Code gelesen; NICHT repariert)
+### 11.2o Eine siebzehnte Familie: die Projektions-Sonde in `e2e/programs.ts` — KEIN Flake um eine feste Rate, sondern ein REGIME-WECHSEL am 2026-09-04 (Stand 2026-09-05: Evidenzzeile repariert, R10/`observed` GEMESSEN, Mechanismus am Code gelesen — **die Wurzel ist seit `<LAND-SHA>` REPARIERT, der Regime-Wechsel selbst bleibt offen**)
 
 **Das Mitglied, einzeln:**
 
@@ -2712,6 +2712,80 @@ unbequeme Richtung: ein ausgebremster Tick fiele eher HINTER das Fenster und mac
 **Für einen Leser eines roten Laufs gilt:** bei über 90 % ist dieser FAIL **kein Urteil über den
 Baum** und ein Rerun beweist nichts. Lies `basis`, nicht `phase` — und wenn dort etwas anderes steht
 als `pane never observed (lastOutput 0)`, ist es ein NEUER Befund und gehört gemeldet.
+
+---
+
+**REPARIERT am 2026-09-05, `<LAND-SHA>` — und die Reparatur trifft die Wurzel, nicht die Rate.**
+Der Schnitt sitzt an genau der Stelle, die Punkt 3 oben beschreibt, und er ist eine Zeile:
+
+    -  if (Date.now() > s.quietUntil) s.lastOutput = Date.now();
+    +  if (Date.now() > s.quietUntil || s.lastOutput === 0) s.lastOutput = Date.now();
+
+**Die Begründung, und sie ist nicht „das Fenster war zu lang".** Wofür `quietUntil` da ist, steht an
+seinen vier Setzern und ist damit belegbar, nicht vermutet: `ensureSlot` (der Repaint NACH dem
+`pipe-pane`-Anhängen), zweimal der Resize-Pfad (`// the repaint this causes is not session
+activity`) und der Eigen-Paste-Pfad (`OWN_PASTE_QUIET_MS`, damit Fleets eigene eingefügte Nutzlast
+nicht als Agentenarbeit zählt). Alle vier sagen dasselbe: **die gleich eintreffenden Bytes sind
+UNSERE.** Das ist eine Aussage über die AKTUALITÄT — den Aktivitätspunkt — und sie bleibt in Kraft.
+
+`lastOutput === 0` trägt aber eine ZWEITE, andere Tatsache: diese Pane wurde noch nie gesehen.
+`lane-signals.ts` liest sie als `observed` (Klausel in `STALLED_RULES` und damit in `SPENT_RULES`),
+`program-phase.ts` verweigert über `laneFactsKnown` das Urteil (R10). Das Ruhefenster hat bis heute
+BEIDE Tatsachen unterdrückt, obwohl es nur für die erste ein Mandat hat — und weil `s.offset` zwei
+Zeilen darüber IMMER vorgeschoben wird, war der Stoß danach verbraucht. Der Schnitt gibt dem Fenster
+sein Veto über die AUFFRISCHUNG und nimmt ihm das Veto über den ÜBERGANG.
+
+**Die Weitung ist konstruktiv begrenzt.** Der Zweig kann je Besetzung höchstens EINMAL feuern, denn
+der einzige Schreiber der 0 ist der Teardown, der auch `s.cwd` löscht. Und er behauptet NICHT, dass
+ein Agent da ist: das ist `alive` (`paneAgentAt`), eine eigene ps/pgrep-Sonde, und `canDeliver`s
+frisches `not-alive`-Tor ist unberührt.
+
+**Gemessen, beide Richtungen, gleiche Konstruktion, serielle Läufe auf dieser Maschine (2026-09-05):**
+
+| Server | Vorbedingung hergestellt | `lastOutput` nach dem Fenster | Verdikt |
+| --- | ---: | --- | --- |
+| `5986afa` (unrepariert) | 5/5 in der ersten Runde | `0` in 5/5 | ROT 5/5 |
+| derselbe Baum + der Schnitt | 5/5 in der ersten Runde | gestempelt in 5/5 | GRÜN 5/5 |
+
+Die Rohzahlen einer Öffnung, mit einem 1-ms-Sampler auf der Stream-Datei (beide Fassungen
+identisch): die Seed-Aufnahme erscheint bei ~`tOpen−220 ms` mit **2 B**, der `pipe-pane`-Anschluss
+lässt die eigene Bemalung der Pane bei ~`tOpen−190 ms` herein (**281 B**), der Rest des Repaints
+setzt sich bis ~`tOpen+190 ms` (**326 B**). Danach schweigt die Pane für immer. `quietUntil` wird
+zwischen den ersten beiden gesetzt — **das erste Byte JENSEITS des Seeds ist also das Öffnen des
+Fensters**, und genau daran erkennt die Sonde, ob ihr Tick drin lag.
+
+**Die Sonde, und warum sie eine Schleife ist.** `e2e/slots.ts` trägt sie jetzt als Paar:
+
+- `probe: slot 3's only burst arrived early and the tick that consumed it ran inside the quiet
+  window` — die Vorbedingung, die als SIE SELBST fällt.
+- `a stream burst consumed inside a quiet window still ends the pane's never-observed state` — die
+  Invariante.
+
+Der Defekt ist ein Rennen, das die Sonde nicht steuert: ein Tick, der HINTER das Fenster fällt,
+verzehrt denselben Stoß auf dem gewöhnlichen Weg und stempelt — dann ist nichts zu messen. Jede
+Runde stellt darum ihre eigene Vorbedingung her (alle Bytes tief im Fenster gesetzt UND der Stempel
+entweder abwesend oder ab dem ersten Byte jenseits des Seeds) und darf nur dann urteilen; vier
+Runden, und das Ausgehen der Runden wird ALS DAS gemeldet. Die dritte Klausel ist nicht kosmetisch:
+ohne sie ging die Sonde auf dem UNREPARIERTEN Server in **1 von 3** Läufen grün, weil ein Tick den
+2-Byte-Seed verzehrte, bevor das Fenster überhaupt existierte (mit ihr: 0 von 5).
+
+**Die Setup-Zeile ist ebenfalls repariert, als eigener Schnitt.** `waitDoneLooking` in
+`e2e/programs.ts` führt jetzt `row.lastOutput > 0` als eigene Klausel — vorher war
+`now - row.lastOutput >= 3000` bei `lastOutput === 0` trivial erfüllt (`now - 0` ≈ 1,79e12 ms) und
+die Zeile behauptete „live lane, idle, clean, ahead" über eine nie beobachtete Pane. Ein Ausfall
+dieser Vorbedingung fällt jetzt an der Setup-Zeile, mit `why` = der letzten Zeile, an der der Wait
+aufgab, statt drei Checks später als Projektionsfehler.
+
+**WAS DAMIT NICHT ERKLÄRT IST — der Regime-Wechsel selbst.** Der Sprung von ~1 % auf über 90 % am
+09-04-Nachmittag bleibt UNGEKLÄRT. Was diese Messung dazu beiträgt, ist ein Ausschluss und eine
+Unbequemlichkeit: auf einer ruhigen Maschine wird der Anschluss-Stoß in 11 von 11 Öffnungen INNERHALB
+des Fensters verzehrt, also war der 93-%-Zustand der NORMALFALL dieses Mechanismus und nicht die
+Ausnahme — was erklärungsbedürftig ist, sind die grünen Läufe VOR dem 09-04, nicht die roten danach.
+Die naheliegende Vermutung ist, dass der Echo-Stoß der gepasteten Gründungs-Nachricht früher
+regelmäßig HINTER dem Fenster landete und ab dem 09-04 davor; das ist eine Hypothese, für die hier
+KEINE Messung vorliegt. Praktisch ist die Frage für diesen Check erledigt — der Anschluss-Stoß
+existiert immer und zählt jetzt immer — und damit auch nicht mehr über ihn beobachtbar. Wer sie
+weiterverfolgen will, braucht einen anderen Sensor als `projection nextAction`.
 
 ### 11.2p Eine achtzehnte Familie: der `requeue-teardown-empty`-Rest, der zwölf `backlog nudge`-Checks mitreisst (2026-09-04 — EINE SICHTUNG, Mechanismus vollstaendig aus dem Trail gelesen, Regress strukturell ausgeschlossen; NICHT repariert)
 

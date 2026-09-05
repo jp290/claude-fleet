@@ -8915,9 +8915,25 @@ async function poll(): Promise<void> {
           if (!sameSlotStreamOccupant(s, occupant)) return;
           const from = s.offset;
           s.offset = size;
-          // output during a quiet window is a repaint we caused (resize jiggle),
-          // not the session doing work — stream it, but don't light the activity dot
-          if (Date.now() > s.quietUntil) s.lastOutput = Date.now();
+          // THIS STAMP CARRIES TWO FACTS, and the quiet window may only suppress one.
+          // A quiet window says "the bytes about to arrive are ours": the repaint after the attach
+          // below, the repaint after a resize, the echo of a payload WE pasted. Letting those
+          // refresh the activity dot would report Fleet's own jiggle as the session working, so
+          // they do not — that is the RECENCY half, and it is unchanged.
+          // `lastOutput === 0` is the OTHER fact: this pane's output has never been seen at all.
+          // lane-signals.ts reads it as `observed` (STALLED_RULES, SPENT_RULES) and program-phase.ts
+          // R10 refuses to judge a row whose lane carries it — both on the rule that an unknown must
+          // never read as permission. Until 2026-09-05 the window suppressed that fact too: `s.offset`
+          // advances unconditionally two lines up, so a burst consumed INSIDE the window was SPENT
+          // without being counted, and a pane whose only output falls there stayed "never observed"
+          // for the rest of its life. Measured on a fixture pane: 326 B of shell paint at attach
+          // +102 ms, `lastOutput` still 0 at +8.5 s, 6 of 6 (e2e/slots.ts pins it).
+          // So the window keeps its veto over the REFRESH and loses it over the TRANSITION. The
+          // widening is bounded by construction: it can fire at most once per occupant, because the
+          // only writer of 0 is the teardown that also clears `s.cwd`. What it does NOT do is claim
+          // an agent is there — that is `alive` (paneAgentAt), a separate probe, and canDeliver's
+          // fresh liveness gate is untouched by this line.
+          if (Date.now() > s.quietUntil || s.lastOutput === 0) s.lastOutput = Date.now();
           broadcast(s, from, new Uint8Array(buf));
         }
       } catch {

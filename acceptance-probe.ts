@@ -199,6 +199,17 @@ if (openX.ok) {
     // The trigger is POSITIONAL (a control run with the same token mid-text submitted fine), so the
     // reason line below deliberately carries a harmless `$HOME` IN THE MIDDLE: user text keeps its
     // dollars, only the generated tail may not end on one. Both halves are asserted.
+    // THE CELL MUST NOT RACE THE BOOT, and this is not caution — it is the difference between a
+    // regression and a green that means nothing. Measured 2026-09-05 on this machine: the exact
+    // old-form text whose mention overlay eats the Enter on a settled pane was SUBMITTED, cleanly,
+    // on a pane still painting `model: loading`. The trigger needs the initialised TUI. So the
+    // event may only be minted once the header has resolved a model — and the wait is asserted as
+    // ITSELF, because a cell that measured an unsettled pane measured nothing.
+    const settled = await awaitFrame(2, /model:\s+(?!loading)\S/, 60_000);
+    check("codex chain: the TUI is settled before the event is minted (an unsettled pane submits either form)",
+      /model:\s+(?!loading)\S/.test(settled),
+      settled.split("\n").filter((l) => /model:/.test(l)).join(" | ").slice(0, 120) || "no model line in frame");
+
     const mainAfter = `d1${"0".repeat(38)}`;
     const reason = "INERT PROBE: do nothing, run nothing, reply nothing. Notes mention $HOME in passing";
     appendFileSync(`${ROOT}/post-land-audits.jsonl`, `${JSON.stringify({
@@ -261,11 +272,15 @@ if (openX.ok) {
     const ackRes = delivered && selfTok
       ? await fetch(`${BASE}/api/self/events/${delivered.id}/ack`, { method: "POST", headers: { "x-fleet-self-token": selfTok } })
       : null;
+    // the refusal must NAME itself: `acknowledgeFleetEvent` has four distinct 409s and they are four
+    // different defects. A bare status code sends the next reader guessing.
+    const ackWhy = ackRes && ackRes.status !== 200
+      ? ((await ackRes.clone().json().catch(() => ({}))) as { error?: string }).error ?? "" : "";
     const acked = wId ? await awaitEvent(wId, (e) => e.acknowledgedAt != null, 10_000) : undefined;
     check("codex chain: the receiver acknowledges exactly that event id and the ACK is stored",
       selfTok !== "" && ackRes?.status === 200 && acked?.acknowledgedAt != null
         && acked.status === "acknowledged" && acked.id === delivered?.id,
-      `tokenPresent=${selfTok !== ""} ack=${ackRes?.status ?? "not sent"} stored=${acked?.acknowledgedAt ?? "null"} status=${acked?.status} ackedByPaneFirst=${preAck !== null}`);
+      `tokenPresent=${selfTok !== ""} ack=${ackRes?.status ?? "not sent"} stored=${acked?.acknowledgedAt ?? "null"} status=${acked?.status} ackedByPaneFirst=${preAck !== null} why=${JSON.stringify(ackWhy)}`);
   }
   await post("/api/slots/2/kill", {});
 }

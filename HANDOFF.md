@@ -5,7 +5,16 @@ und die Sensoren nicht tragen. Lineage 4 → 16 → 10 → 3 → 5 → 2 → 10 
 
 ## 0. DAS ERSTE, WAS DU TUST — zwei Zeilen, und beide sind Tueren, keine Fragen
 
-- **`ec0bf175` (S2 · D2 Program-Status-Projektion) ist FERTIG UND GEPRUEFT, aber NICHT gelandet.**
+- **`ec0bf175` IST GELANDET: `1d5efb9`** (drei Commits `df41b3c` / `8785f46` / `1d5efb9`),
+  `verify.ok:true`, `exitCode 0`, `ms 188620`, `waitMs 91000`, Land-Note mit
+  `actor{kind:main, slot:10, program:f170dc46, task:ec0bf175, sessionIdMatch:exact}`. **Damit sind
+  BEIDE Zeilen oberhalb der Schnittlinie durch die eigene Sprosse gelandet** — zusammen mit
+  `93e5460` zwei Belege fuer Erfolgskriterium (d). **Der Post-Land-Audit zu `1d5efb9` steht noch
+  aus; ich konnte keinen Watch mehr halten — arm ihn neu**
+  (`{"kind":"audit","repo":"/Users/owner/claude-fleet","mainAfter":"1d5efb95..."}`).
+  Der Weg dorthin ist unten als §0-alt konserviert, weil die MECHANIK wiederkommt:
+
+- ~~**`ec0bf175` ist FERTIG UND GEPRUEFT, aber NICHT gelandet.**~~ (§0-alt, erledigt — Mechanik gilt)
   Der Gate lief voll durch und starb an `e2e-claude-gate.sh` **Phase 3**: `server did not come up`,
   **`no server.log exists`** in der aufbewahrten Instanz. Das ist woertlich die NIE-GEMESSEN-Signatur
   aus dem Regelbuch, kein Regress am Diff — bei `ms 665428 / waitMs 531000` (**80 % Schlange**, 3 von
@@ -20,7 +29,14 @@ und die Sensoren nicht tragen. Lineage 4 → 16 → 10 → 3 → 5 → 2 → 10 
   **(a) die LANE rebased selbst und committet** (der Weg, den der Guard mit „repair" meint), oder
   **(b) der Owner landet vom Board**, dessen Route diesen Guard nicht kennt. Ein no-op-Commit auf der
   Lane waere ein Rail-Trick und ist keiner von beiden.
-  **STAND BEI DER UEBERGABE: (a) laeuft.** Ich habe Slot 4 um 13:5x per `POST /send` (die Route ist
+  **AUSGANG, zur Bestaetigung der Mechanik: (a) hat funktioniert.** Die Lane rebaste sauber
+  (`7173a09b -> 51e1ef6`, drei Commits neu geschrieben, Diff unveraendert 336/-2), meldete
+  AUSDRUECKLICH „kein Konflikt, kein Leer-Commit" — und der Guard oeffnete, **weil der KANDIDAT
+  sich bewegt hat, nicht main**. Genau die Unterscheidung, die ich oben erst falsch hatte.
+  Nebenbefund der Lane, zweite Kontrolle fuer die Last-These: ihre Kette fuhr ALLE FUENF Phasen von
+  `e2e-claude-gate.sh` inkl. der `harness waiver`-Phase 3, `grep -c 'did not come up'` = 0.
+
+  **STAND BEI DER UEBERGABE (historisch): (a) lief.** Ich habe Slot 4 um 13:5x per `POST /send` (die Route ist
   `/send`, NICHT `/api/send`) den Repair-Auftrag geschickt — Composer vorher mit `C-u` geleert, weil
   dort ein ungesendetes `land it` stand und ein Paste damit verschmolzen waere. Die Lane ist **6
   hinter main**, und ZWEI dieser sechs fassen `server.ts` an, dieselbe Datei wie sie selbst
@@ -113,6 +129,19 @@ daraus ein Urteil.** Vor einem Land unter Andrang lohnt der Blick auf `/tmp/flee
 - **Die Live-Route schlaegt die Zustandsdatei.** `fleet.json` zeigte `interrupted`, `GET
   /api/slots/:id/merge` zeigte im selben Moment das vollstaendige Verdikt samt `waitMs`, `exitCode`
   und stderr-Tail. Fuer ein Merge-Urteil immer die Route fragen.
+
+## 4a. EIN FEHLER VON MIR, den du nicht wiederholen sollst
+
+Ich habe um 14:41:25 `63ff7f6` (nur `HANDOFF.md`) auf main committet, **waehrend Slot 5s Land seit
+14:20:53 lief**. Die Ursache ist mechanisch und billig zu vermeiden: ich hatte die `merges`-Probe
+und den `git commit` in DERSELBEN `&&`-Kette — die Probe druckte korrekt `'5': 'interrupted'`
+(= ein Land LAEUFT), aber ihre Ausgabe wurde nie gelesen, weil der Commit im selben Zug lief.
+**Die Probe gehoert in einen EIGENEN Aufruf, dessen Ausgabe du liest, bevor du committest.**
+Ausgang, ehrlich in beide Richtungen: Slot 5 hat **keinen** ff-lost erlitten — sein Verdikt ist
+`resolved, landed=False, verify.ok=None`, „clean rebase, but verify NEVER STARTED", also die dritte
+Queue-Aushungerung des Tages und nicht meine Kollision. Der Fehler bleibt trotzdem einer; er ist
+nur diesmal nicht teuer geworden. Ich habe Slot 3 (MAIN des betroffenen Programs) per `/send`
+gewarnt, statt es ihn entdecken zu lassen.
 
 ## 4b. DER TIER-2-BEFUND ZU `93e5460` IST `unknown` — und der Grund ist ein Budget-Defekt
 

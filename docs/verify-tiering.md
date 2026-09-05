@@ -531,6 +531,19 @@ throwaway `testrepo`), and no check in `e2e/*.ts` runs git against `ROOT`
 (`grep -rn ROOT e2e/*.ts | grep -i git` → empty). VERIFIED by reading, not by executing an audit
 run — so the *class* of problem is excluded, not the specific run.
 
+**And where that assumption stopped holding — 2026-09-05.** It was verified for the SUITE, which
+stages its own copy. The PROPORTIONAL chain added later (§6b, `install+pins`) runs `bun e2e/pins.ts`
+in the snapshot ITSELF, with no wrapper and no staging, and six pins there ask git what the tree
+tracks. From the deploy at 07:36 every docs-only land was red with
+`fatal: not a git repository` (audit rows `2e671a47`, `8a4655cb` — two out of two, six identical
+fails, ~1 s each). The pins were not at fault: each failed as ITSELF ("the derivation ran",
+"PROBE: git named the repo's top level"), which is why nothing above them could read the row as
+anything but red. `server.ts#snapshotIntegrationTree` now gives the SHORT chain's snapshot an index
+of its own — `git init -q -b main && git add -A -f`, built before the `node_modules` symlink so the
+link cannot enter the index, and deliberately WITHOUT a commit so a history question still fails as
+itself instead of answering with a sha that is not `mainSha`. The FULL chain's snapshot stays
+git-less on purpose; §11.7's trail note is the reason.
+
 ## 8. Proposal — the smallest step that raises what "green" guarantees
 
 Ranked. Steps 1 and 2 are the proposal; 3 is the sibling lane's, listed so the tiering is whole.
@@ -1356,7 +1369,12 @@ otherwise.**
 its suite inside a git-less snapshot of the integration tip (`server.ts#runPostLandAudit` →
 `snapshotIntegrationTree`, under `$TMPDIR/fleet-postland-audit-*`), so `e2e/trail-emit.ts`'s
 `sourceTree()` resolves nothing and the trail falls back to `$TMPDIR/fleet-e2e-trail/` with
-`tree:null` on every row. **A §11.6 query over `e2e-trail/` alone therefore silently omits every
+`tree:null` on every row. **This is why the git context of 2026-09-05 (§7) is the short
+chain's alone:** `resolveSourceTree` follows the staged instance's `node_modules` symlink and asks
+the target `rev-parse --is-inside-work-tree`. A `.git` in the snapshot would answer YES, `defaultDir()`
+would put the trail inside a directory the server deletes when the audit ends, and the flake register
+would silently lose exactly the runs that adjudicate a land. The short chain writes no trail rows at
+all, so it can have its index and this paragraph stays true. **A §11.6 query over `e2e-trail/` alone therefore silently omits every
 post-land audit run** — here, 3 of the 7 sightings, i.e. the run that ADJUDICATES a land is the one
 a flake query cannot see. Same trap as the gitignore-blind `rg`: the answer comes back empty, and
 empty reads as "it did not happen". Both directories, or the number is wrong.

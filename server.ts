@@ -13051,10 +13051,29 @@ async function drainPostLandAudits(): Promise<void> {
 //   · it registers nothing with git. A `worktree add` would show up in `git worktree list`, which
 //     the lane map, the orphan surfaces and advanceIntegration all read — a crashed audit would
 //     leave visible fleet-wide state behind. A stray directory in TMPDIR is inert.
-// The cost, stated: the snapshot is a tree, not a repository, so an audit command that needs git
-// HISTORY cannot run here. `./e2e-isolated.sh` does not — it copies files and builds its own
-// throwaway repo (verified 2026-07-25).
-async function snapshotIntegrationTree(repo: string, sha: string, dir: string): Promise<string | null> {
+// A `git archive` tree carries no `.git`, and that cost was paid in full on 2026-09-05: the
+// proportional chain (install+pins) runs `bun e2e/pins.ts` NAKED here, with no wrapper, and six
+// pins that ask git what this tree tracks died as `fatal: not a git repository` — every docs-only
+// land red, twice out of two, from the deploy at 07:36. The full chain never saw it because
+// `./e2e-isolated.sh` stages a COPY and `git init`s a repository for it. So a chain that runs
+// directly in this tree — today exactly the proportional one — gets a git context here, and
+// `gitContext` is that question, not a tidiness flag.
+//
+// WHY NOT ALWAYS, since a git context can only add: because for the FULL chain it subtracts, in a
+// place nothing would have reported. The staged instance's one pointer home is its node_modules
+// symlink, and `e2e/trail-emit.ts#resolveSourceTree` follows it and asks the target
+// `rev-parse --is-inside-work-tree`. Today that answers NO for this snapshot, so an audit run's
+// trail rows carry `tree:null` and land in `$TMPDIR/fleet-e2e-trail` (docs/verify-tiering.md §11.7,
+// docs/e2e-trail.md). With a `.git` here it would answer YES, `defaultDir()` would put the trail
+// inside this scratch dir, and the whole run's rows would be deleted with it — the flake register
+// would lose exactly the runs that adjudicate a land, silently.
+//
+// The cost that remains, stated: there is deliberately NO COMMIT, so the snapshot has an index and
+// no HEAD. An audit command that needs git HISTORY still cannot run here — and must keep failing as
+// itself. A fabricated commit would answer `git rev-parse HEAD` with a sha that is NOT mainSha,
+// which is worse than an error: it is a wrong measurement wearing a right shape.
+async function snapshotIntegrationTree(repo: string, sha: string, dir: string,
+  gitContext: boolean): Promise<string | null> {
   try {
     mkdirSync(dir, { recursive: true });
   } catch (e) {
@@ -13069,6 +13088,26 @@ async function snapshotIntegrationTree(repo: string, sha: string, dir: string): 
   const err = await new Response(p.stderr).text();
   await new Response(p.stdout).text();
   if ((await p.exited) !== 0) return `git archive/extract failed: ${err.trim().slice(0, 200)}`;
+  // THE GIT CONTEXT, and it is built HERE — before the node_modules symlink below, never after.
+  // `git add` must see exactly what `git archive` wrote and nothing else: `.gitignore`'s
+  // `node_modules/` (with the trailing slash) does NOT match a SYMLINK named node_modules, so the
+  // reversed order puts the link into the index and the tree the pins measure is no longer the tip.
+  // Measured on this box while building this seam: 629 tracked paths instead of 628.
+  //   · `-b main` — a fresh repo with no commits has no branch to disagree about, but the name is
+  //     stated rather than inherited from init.defaultBranch, which is an Apple gitconfig on this
+  //     machine and `master` on Debian (the same trap e2e-isolated.sh's fixtures spell out).
+  //   · `add -A -f` — `-f` so a tracked-but-ignored path (`git add -f` at the tip) and any global
+  //     core.excludesFile cannot silently shrink the index below the tree that is actually here.
+  //     Everything present at this moment IS the tip's tree; the index must say so.
+  // Failure returns an error string like the extract above: a snapshot whose git context could not
+  // be built is an UNMEASURED tree (`unknown`), never a red suite.
+  if (gitContext) {
+    const gitScript = 'git -C "$1" init -q -b main && git -C "$1" add -A -f';
+    const g = Bun.spawn(["sh", "-c", gitScript, "sh", dir], { stdout: "pipe", stderr: "pipe" });
+    const gErr = await new Response(g.stderr).text();
+    await new Response(g.stdout).text();
+    if ((await g.exited) !== 0) return `git context for the audit snapshot failed: ${gErr.trim().slice(0, 200)}`;
+  }
   // installed dependencies are not tracked content, and re-installing per audit would dominate the
   // run. Link the repo's own node_modules in, exactly as e2e-isolated.sh does for its copy. Removed
   // as a LINK before the scratch dir is deleted, so the repo's real tree is never in reach of the rm.
@@ -13208,7 +13247,9 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
     if (!mainSha) {
       reason = `could not resolve ${main} — nothing to audit`;
     } else {
-      const snapErr = await snapshotIntegrationTree(repo, mainSha, dir);
+      // `proportional` IS the "does the command run in this tree itself" question here: the short
+      // chain runs `bun e2e/pins.ts` in the snapshot, the configured full chain stages a copy.
+      const snapErr = await snapshotIntegrationTree(repo, mainSha, dir, proportional);
       if (snapErr) {
         reason = snapErr;
       } else {

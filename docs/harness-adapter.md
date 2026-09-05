@@ -119,7 +119,9 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
     `server.ts#auditCmdFor`: Repo-Worker vor `FLEET_POSTLAND_AUDIT_CMD` vor nichts. Konsequenzen: (a) ein
     Land in einem Repo mit Repo-Worker wird auch dann enqueued und auditiert, wenn das Env-Kommando fehlt;
     (b) die Ledger-Zeile trägt `cmdSource: "repo-worker" | "env"` (historische und Remote-Zeilen ohne Feld);
-    (c) das Skript läuft im temp-Snapshot des Integrations-Tips (`git archive`, kein `.git`), mit dem
+    (c) das Skript läuft im temp-Snapshot des Integrations-Tips (`git archive`; **kein `.git` — ausser
+    bei einem docs-only Land, dessen proportionale Kette seit 2026-09-05 einen eigenen Index ohne
+    Commit bekommt, `server.ts#snapshotIntegrationTree`**), mit dem
     FLEET_*-freien Kind-Env wie das Env-Kommando, seriell hinter dem Drain — ein fremdes Verify hat den
     Suite-Mutex von `e2e-stage.sh` NICHT, die Serialisierung leistet allein der Server; (d) exit 42 aus einem
     Repo-Worker bleibt `unknown` (unconfigured ≠ skipped ≠ grün); (e) **das Helfer-Portal bietet einen

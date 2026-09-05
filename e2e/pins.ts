@@ -4047,6 +4047,43 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && read("fleet-e2e-clean-review.ts").includes("process.env.PATH"),
     `body=${verifyEnvBody !== ""} stated=${verifyEnvBody.includes("PATH IS NOT TOUCHED")}`
       + ` measured=${read("fleet-e2e-clean-review.ts").includes("process.env.PATH")}`);
+  // --- THE AUDIT SNAPSHOT'S OWN GIT CONTEXT (2026-09-05). `snapshotIntegrationTree` extracts the
+  // tip with `git archive`, which carries no `.git`, and the proportional chain runs `bun
+  // e2e/pins.ts` in that tree NAKED — no wrapper, none of the staging `./e2e-isolated.sh` does for
+  // the full chain. SIX PINS IN THIS FILE ask git what the tree tracks, and from the deploy of
+  // 2026-09-05 07:36 every docs-only land was red with `fatal: not a git repository` (audit rows
+  // 2e671a47 and 8a4655cb, two out of two). The rule is pinned HERE, at gate speed, and not only
+  // in fleet-e2e-postland-audit.ts, because no gate runs that harness.
+  // ORDER IS THE OTHER HALF, and it is not stylistic: `.gitignore`'s `node_modules/` — trailing
+  // slash — does not match a SYMLINK of that name, so an index built AFTER the link holds 629
+  // paths of a 628-path tree, and every pin stays green over the wrong number. The offsets are
+  // compared rather than the presence of both lines, because presence is what the reversed
+  // version also has.
+  // NO COMMIT is the third fact and it is deliberate: a fabricated HEAD would answer
+  // `git rev-parse HEAD` with a sha that is NOT the audited mainSha, turning a question that
+  // currently fails as itself into a wrong answer in a right shape.
+  // AND IT IS THE SHORT CHAIN'S ALONE, held as the CALL's own argument. The full chain stages its
+  // own repo, and a `.git` here would make `e2e/trail-emit.ts#resolveSourceTree` — which follows a
+  // staged instance's node_modules symlink and asks the target `--is-inside-work-tree` — answer YES
+  // for a directory the server deletes after the run, moving every audit run's trail rows inside it
+  // and out of the flake register. "The snapshot has a git context" and "the run that needs one
+  // gets one" are different claims; only the second is true here.
+  // Read off the STATEMENT, never the prose: both spellings occur in the comment that explains
+  // them, and a pin that matches its own explanation is green on a file with no code in it.
+  const snapBody = serverU.span("async function snapshotIntegrationTree(", "\n}\n", 3)?.text ?? "";
+  const snapCode = snapBody.split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
+  const snapScript = /const gitScript = ('[^']*'|"[^"]*");/.exec(snapCode)?.[1] ?? "";
+  const snapAt = snapCode.indexOf("const gitScript =");
+  const snapLinkAt = snapCode.indexOf("symlinkSync(");
+  const snapGated = /if \(gitContext\) \{/.test(snapCode)
+    && server.includes("await snapshotIntegrationTree(repo, mainSha, dir, proportional);");
+  const snapProbed = read("fleet-e2e-postland-audit.ts").includes("git named this tree");
+  pin("the audit snapshot gets a git context of its own, indexed BEFORE the node_modules symlink and never committed",
+    snapCode !== "" && snapAt >= 0 && snapLinkAt > snapAt
+      && /init -q -b main/.test(snapScript) && /add -A -f/.test(snapScript)
+      && !/\bcommit\b/.test(snapCode) && snapGated && snapProbed,
+    `script=${snapScript || "not found"} script@${snapAt} link@${snapLinkAt}`
+      + ` commitless=${!/\bcommit\b/.test(snapCode)} shortChainOnly=${snapGated} measured=${snapProbed}`);
   pin(`${RULE_RECEIVER} — killed-empty is one word across the disposition union, the tick's assertion and the doc (D2)`,
     /type LaneDisposition = [^\n]*"killed-empty"/.test(server)
       && autoCloseTick.includes('row.disposition !== "killed-empty"')

@@ -1043,6 +1043,17 @@ await seedRepo(PREPO);
   //   · e2e/pins.ts   — what the short chain really runs. It prints suite-shaped PASS lines so the
   //     row's `checks` is a real count, and it NAMES the FLEET_* keys it was handed, so the
   //     `proportional:true` stamp is a claim about an environment a reader can reproduce.
+  //     ITS THIRD PIN IS THE GIT SEAM (2026-09-05). The real e2e/pins.ts has six pins that ask git
+  //     what this tree tracks, and a `git archive` snapshot carries no `.git`: for one deploy day
+  //     every docs-only land was red with `fatal: not a git repository`, because the proportional
+  //     chain runs NAKED here — no wrapper, none of the staging `./e2e-isolated.sh` does. Those six
+  //     pins behaved correctly (each failed as ITSELF, "the derivation ran", "PROBE: git named …"),
+  //     which is exactly why nothing above them could see it. So this fixture asks the same
+  //     question in miniature, and asks it TWICE OVER: it fails as itself when git cannot answer,
+  //     and it prints the COUNT, which the check below compares to the landed tree. The count is
+  //     the half that catches the subtler regression — building the index after the node_modules
+  //     symlink instead of before puts the link into it, and the audit then measures 629 paths of
+  //     a 628-path tree with every pin still green.
   //   · package.json + a file: dep + bun.lock — `bun install --frozen-lockfile` refuses without them
   //   · .gitignore for node_modules/ — the short chain INSTALLS in the lane worktree, and an
   //     untracked node_modules there would make the lane dirty and block its own land
@@ -1053,6 +1064,15 @@ await seedRepo(PREPO);
     'const fleetEnv = Object.keys(process.env).filter((k) => k.startsWith("FLEET_")).sort();\n'
     + 'console.log("PASS  proportional fixture pin one");\n'
     + 'console.log(`PASS  proportional fixture pin two  (fleetenv=[${fleetEnv.join(",")}])`);\n'
+    + 'const ls = Bun.spawnSync(["git", "ls-files", "-z"]);\n'
+    + 'const tracked = ls.exitCode === 0 ? ls.stdout.toString().split("\\0").filter(Boolean) : null;\n'
+    + 'if (tracked === null) {\n'
+    + '  console.log(`FAIL  proportional fixture pin three — git named this tree  '
+    + '(${ls.stderr.toString().trim().slice(0, 120)})`);\n'
+    + '  console.log("1 FAILURES");\n'
+    + '  process.exit(1);\n'
+    + '}\n'
+    + 'console.log(`PASS  proportional fixture pin three — git named this tree  (tracked=${tracked.length})`);\n'
     + 'console.log("ALL PASS");\n');
   await Bun.write(`${PREPO}/vendor/fixture-dep/package.json`, '{"name":"fixture-dep","version":"1.0.0"}\n');
   await Bun.write(`${PREPO}/package.json`,
@@ -1184,27 +1204,53 @@ check("(P) the command it ran is install+pins behind the repo guard, NOT the con
 check("(P) it MEASURED the landed tree — green, exit 0, with this repo's own pins output and count",
   pShortRow.result === "green" && pShortRow.exitCode === 0
     && pShortRow.out.includes("proportional fixture pin one")
-    && pShortRow.checks?.ran === 2 && pShortRow.checks.failed === 0,
+    && pShortRow.checks?.ran === 3 && pShortRow.checks.failed === 0,
   JSON.stringify({ result: pShortRow.result, exit: pShortRow.exitCode, checks: pShortRow.checks,
     out: pShortRow.out.slice(0, 200) }));
+// THE GIT SEAM, and the reason it is a check of its own rather than a clause above: the six real
+// pins that died here on 2026-09-05 all failed as THEMSELVES, so a row that only says "red" names
+// nothing a reader can act on. This says which property broke. `snapshotIntegrationTree` gives the
+// extracted tree an index of its own — no commit, so history questions still fail as themselves —
+// and the count is the proof that the index describes THE SNAPSHOT: the expected number is read
+// from the landed sha's tree, and the node_modules symlink the same function adds afterwards is
+// not in it. An index built one line later would read one path too many and pass every other check.
+// Read at the row's OWN mainSha, not at pDocsSha: the audit resolves the tip when it starts, and a
+// probe that names a different tree than the run it is judging would be a wrong number in a green box.
+const pTipPaths = spawnSync("git", ["-C", PREPO, "ls-tree", "-r", "--name-only", pShortRow.mainSha || "HEAD"],
+  { encoding: "utf8" }).stdout.split("\n").filter(Boolean).length;
+const pTrackedSeen = Number(/proportional fixture pin three[^(]*\(tracked=(\d+)\)/.exec(pShortRow.out)?.[1] ?? NaN);
+check("(P) the short chain can ask git about the tree it stands in, and git answers with THAT tree",
+  pTipPaths > 0 && pTrackedSeen === pTipPaths
+    && !pShortRow.out.includes("not a git repository"),
+  `tracked=${String(pTrackedSeen)} tipPaths=${pTipPaths} sha=${(pShortRow.mainSha || "?").slice(0, 8)}`);
 check("(P) the configured full-suite stand-in was never invoked for it",
   (await runLog()).length === pRunsBefore,
   `before=${pRunsBefore} after=${(await runLog()).length}`);
 // THE ENVIRONMENT THE STAMP IS A CLAIM ABOUT. `auditChildEnv` strips every FLEET_* key from an
 // audit child — that rule predates this slice and the short chain inherits it rather than opting
 // out — so a proportional run sees NONE, and the row's own output says so instead of leaving the
-// reader to trust the rule. The land gate's short run is the counterpart and is deliberately
-// different: `runVerify` spawns with the server's env, so the note's `out` names the knobs the
-// server was booted with. Both halves are asserted here so neither can silently become the other.
+// reader to trust the rule.
+//
+// THE GATE HALF WAS REWRITTEN ON 2026-09-05, and the reason is worth keeping. It used to assert the
+// opposite for the land gate — "`runVerify` spawns with the server's env, so the note names the
+// knobs the server was booted with" — and that was true when this section was written (`036ff7c`,
+// 00:23). `d37f835` (08:32, the SAME day) gave the gate child the same FLEET_* rule the audit child
+// always had, and recorded the measurement in its own body: `nachher childFleet = []`. The check
+// kept asserting the pre-fix world and went red — silently, because no gate runs this harness; it
+// was caught the next time someone ran it by hand. What both halves now say is the surviving
+// property: NEITHER child may carry a behaviour knob, and the gate's only permitted FLEET_* names
+// are the suite-mutex ones `VERIFY_CHILD_KEEPS` exists for. The `fleetenv` LINE must be present in
+// both, so "measured and empty" can never be read out of "never measured".
+const pFleetEnvKeep = ["FLEET_SUITE_LOCK", "FLEET_SUITE_POLL_SEC", "FLEET_SUITE_LOCK_HELD_BY"];
 const pAuditFleetEnv = /fleetenv=\[([^\]]*)\]/.exec(pShortRow.out)?.[1];
 const pGateFleetEnv = /fleetenv=\[([^\]]*)\]/.exec(
   (pDocsNote?.verify as { out?: string } | undefined)?.out ?? "")?.[1];
 check("(P) the proportional AUDIT child inherits NO FLEET_* knob, and its own output proves it",
   pAuditFleetEnv === "", `audit=[${pAuditFleetEnv ?? "no fleetenv line"}]`);
-check("(P) …while the proportional LAND GATE run does see the server's FLEET_* env — measured, not assumed",
-  pGateFleetEnv !== undefined && pGateFleetEnv !== ""
-    && pGateFleetEnv.split(",").includes("FLEET_POSTLAND_AUDIT_CMD"),
-  `gate=[${pGateFleetEnv ?? "no fleetenv line"}]`);
+check("(P) …and the proportional LAND GATE child carries no behaviour knob either — at most the suite-mutex keys",
+  pGateFleetEnv !== undefined
+    && pGateFleetEnv.split(",").filter(Boolean).every((k) => pFleetEnvKeep.includes(k)),
+  `gate=[${pGateFleetEnv ?? "no fleetenv line"}] allowed=[${pFleetEnvKeep.join(",")}]`);
 check("(P) the row joins to the land it followed, and to that land's own note",
   pShortRow.covers.length === 1 && pShortRow.covers[0].branch === pDocs.branch
     && pShortRow.covers[0].mainAfter === pDocsSha && pShortRow.mainSha === pDocsSha,

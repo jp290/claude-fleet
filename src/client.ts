@@ -282,6 +282,12 @@ let analysisOn: boolean | undefined;
 // `undefined` and `false` mean the same thing here — off.
 let briefCompilerOn: boolean | undefined;
 let intakeOn = false;
+// Whether THIS fleet writes the integration branch (server.ts, FLEET_LANDS). A follower instance
+// fast-forwards main from the canonical host and refuses both land doors with a 409; offering ⏏
+// there would be a button whose only possible outcome is an alert. Defaults to TRUE and is set from
+// `data.lands !== false`, so a server that predates the field — and every ordinary canonical
+// instance, which never sets the flag — keeps every land affordance exactly as it was.
+let landsEnabled = true;
 let serverNow = 0;
 let shareBase = ""; // public URL prefix for share links (FLEET_SHARE_URL server-side)
 
@@ -2474,16 +2480,26 @@ async function renderBoard() {
         // one land verb on screen at a time. Normally this IS the land. In the review state
         // the note owns "⏏ land", so this becomes the distinct "re-run" action (only needed
         // if main moved) — never a second, competing land button. Green = "ready to land".
-        const lb = el("button", "bbtn" + (ahead && !mg?.running && !awaitingReview ? " green" : ""),
-          mg?.running ? "… landing" : awaitingReview ? "↻ re-run merge" : "⏏ land lane") as HTMLButtonElement;
-        lb.disabled = !!mg?.running;
-        lb.title = awaitingReview
-          ? "re-run the merge from scratch — only needed if main moved since these conflicts were resolved"
-          : "already-merged lanes land immediately; otherwise this rebases onto main and lands "
-            + "automatically — on conflicts a background agent resolves them and pauses for your review "
-            + "before anything reaches main";
-        lb.onclick = () => void doLand(slot);
-        land.appendChild(lb);
+        // …unless this fleet does not land at all (FLEET_LANDS=0). Then the verb is not disabled
+        // but ABSENT: a greyed-out control still says "this is the thing you would do here", and on
+        // a follower instance it is not. ⇲ shelve stays — setting a lane aside is local, and it is
+        // the exit that remains when landing is somebody else's host. Visibility only: the server's
+        // 409 is the guarantee, this is the board declining to offer a gesture it knows is refused.
+        if (landsEnabled) {
+          const lb = el("button", "bbtn" + (ahead && !mg?.running && !awaitingReview ? " green" : ""),
+            mg?.running ? "… landing" : awaitingReview ? "↻ re-run merge" : "⏏ land lane") as HTMLButtonElement;
+          lb.disabled = !!mg?.running;
+          lb.title = awaitingReview
+            ? "re-run the merge from scratch — only needed if main moved since these conflicts were resolved"
+            : "already-merged lanes land immediately; otherwise this rebases onto main and lands "
+              + "automatically — on conflicts a background agent resolves them and pauses for your review "
+              + "before anything reaches main";
+          lb.onclick = () => void doLand(slot);
+          land.appendChild(lb);
+        } else {
+          land.appendChild(el("div", "bmergedetail",
+            "this fleet follows a canonical main and does not land — land this branch on the canonical host"));
+        }
         // ⇲ shelve — the safe third exit beside land: set aside WITH a note, keep the worktree.
         const shb = el("button", "bbtn", "⇲ shelve") as HTMLButtonElement;
         shb.disabled = !!mg?.running;
@@ -2516,9 +2532,13 @@ async function renderBoard() {
           const acts = el("div", "bmergeacts");
           const rev = el("button", "bmergereview", "± review diff") as HTMLButtonElement;
           rev.onclick = () => void openMergeDiff(slot);
-          const landb = el("button", "bmergeland", "⏏ land") as HTMLButtonElement;
-          landb.onclick = () => void doMergeLand(slot);
-          acts.append(rev, landb);
+          acts.append(rev);
+          // reviewing a carried-over verdict stays available on a follower; confirming it does not.
+          if (landsEnabled) {
+            const landb = el("button", "bmergeland", "⏏ land") as HTMLButtonElement;
+            landb.onclick = () => void doMergeLand(slot);
+            acts.append(landb);
+          }
           note.appendChild(acts);
           land.appendChild(note);
         } else if (l) {
@@ -5146,7 +5166,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       // ✔ save = quick-commit this lane's uncommitted work — lets a phone user save outside
       // the conversation (land/merge refuse a dirty tree; a kill would otherwise lose it)
       if (s.worktree) mkact("✔", "save (commit work)", () => { void doCommit(s.id, "quick"); });
-      if (s.worktree) mkact("⏏", "land", () => { void doLand(s.id); });
+      if (s.worktree && landsEnabled) mkact("⏏", "land", () => { void doLand(s.id); });
       if (s.worktree) mkact("⇲", "shelve (set aside + note)", () => { void doShelve(s.id); });
       row.appendChild(rowacts);
       // §F3 click semantics, in the owner's words ("erst aufklappt und klickbar wenn man auf ihn
@@ -5254,6 +5274,8 @@ async function refresh() {
     const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string;
       v?: number; autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo; intake?: boolean;
       analysis?: { on?: boolean };
+      // absent on a server that predates the flag → treated as "this fleet lands", the old behaviour
+      lands?: boolean;
       // omitted at zero by the server — absent means the compiler is off, exactly like `false`
       briefCompiler?: { on?: boolean };
       // digest only (id/status/title/createdAt) — the binding lives on GET /api/programs
@@ -5284,6 +5306,7 @@ async function refresh() {
     tasksList = data.tasks ?? [];
     programsPoll = data.programs ?? [];
     dispatch = data.dispatch ?? { available: false, on: false, maxLanes: 0, repo: "" };
+    landsEnabled = data.lands !== false;
     analysisOn = data.analysis?.on;
     briefCompilerOn = data.briefCompiler?.on;
     intakeOn = data.intake ?? false;
@@ -5844,7 +5867,7 @@ async function openReview(slotId: number, initial: RvSource, startAt?: RvPick) {
     const d = diffs.get(source);
     // the ⏏ button appears only on a land diff that actually loaded and has content — the same
     // fail-closed posture as the land confirm, which is where the real gate still lives
-    if (isLane && source === "land" && d && !d.loadFailed && !d.error && !d.empty) {
+    if (isLane && landsEnabled && source === "land" && d && !d.loadFailed && !d.error && !d.empty) {
       const land = el("button", "shrbtn primary", "⏏ land") as HTMLButtonElement;
       land.style.marginLeft = "auto";
       land.onclick = () => { shell.close(); void doMergeLand(slotId); };

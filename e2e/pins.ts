@@ -3695,6 +3695,45 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     !!ownerCall && ownerRoute >= 0 && nextRoute > ownerCall.n
       && !!selfCall && selfHandler >= 0 && selfHandlerEnd > selfHandler,
     `owner route=${ownerRoute + 1} call=${(ownerCall?.n ?? -1) + 1} nextRoute=${nextRoute + 1} | self ${selfHandler + 1}..${selfHandlerEnd + 1} call=${(selfCall?.n ?? -1) + 1}`);
+  // …AND BOTH ARE BEHIND THE FOLLOWER'S LOCK (dual-host S2, 2026-09-05). `FLEET_LANDS=0` makes this
+  // instance one that fast-forwards a canonical main instead of writing one, and the guarantee it
+  // owes is not "the click is refused" but "no land record exists": no job, no mergeLast, no
+  // lane-outcomes line, no fleet/land note. That is a property of WHERE the guard sits, which no
+  // runtime check can see — a guard moved three lines down, below `mergeStart.add` or below the
+  // route's first git read, still answers 409 and still leaves a trace. So the position is pinned
+  // textually: per door, the refusal appears AFTER the door opens and BEFORE that door's mergeJob
+  // call. The two doors are asserted separately rather than as one interleaving, because the
+  // self-land handler sits far above the owner route in the file and their order is not a property
+  // worth freezing.
+  const guardLine = "if (!LANDS_ENABLED) return json({ error: LANDS_LOCKED }, 409);";
+  const guards = lines.map((line, i) => ({ line, n: i }))
+    .filter(({ line }) => line.includes(guardLine) && !line.trim().startsWith("//"));
+  const ownerGuard = guards.find((gd) => ownerRoute >= 0 && gd.n > ownerRoute
+    && !!ownerCall && gd.n < ownerCall.n);
+  const selfGuard = guards.find((gd) => selfHandler >= 0 && gd.n > selfHandler
+    && !!selfCall && gd.n < selfCall.n);
+  pin(`${RULE_LAND} — exactly two FLEET_LANDS guards, one per door, each above its own mergeJob call`,
+    guards.length === 2 && !!ownerGuard && !!selfGuard && ownerGuard.n !== selfGuard.n,
+    `guards=[${guards.map((gd) => gd.n + 1).join(",")}] ownerGuard=${(ownerGuard?.n ?? -1) + 1} selfGuard=${(selfGuard?.n ?? -1) + 1}`);
+  // …and the owner door's guard is above the FIRST thing that door writes. `mergeStart.add` is that
+  // line by name (the reservation taken before the first await), and it is the cheapest proof that
+  // the refusal costs no state: everything the route does after it is downstream of that reservation.
+  const mergeStartAdd = lines.findIndex((l, i) => i > ownerRoute && l.includes("mergeStart.add("));
+  pin(`${RULE_LAND} — the ⏫ door's lock is asked before the route reserves anything`,
+    !!ownerGuard && mergeStartAdd > ownerGuard.n,
+    `guard=${(ownerGuard?.n ?? -1) + 1} mergeStart.add=${mergeStartAdd + 1}`);
+  // …and the sentence itself is ONE constant, not two string literals that can drift apart. Both
+  // doors answer a follower's caller identically, and docs/e2e quote it.
+  pin(`${RULE_LAND} — the refusal is one shared constant with the canonical-main wording`,
+    /const LANDS_LOCKED = "this instance does not land — it follows a canonical main";/.test(server)
+      && server.split("this instance does not land").length - 1 === 1,
+    `LANDS_LOCKED occurrences of the sentence: ${server.split("this instance does not land").length - 1}`);
+  // …and the switch defaults OPEN. A fail-closed reading of an unset or unrecognised value would
+  // strand the canonical host on a typo, which is the one outcome worse than a follower landing once.
+  pin(`${RULE_LAND} — FLEET_LANDS defaults to landing and only 0/off/false/no closes it`,
+    /const LANDS_ENABLED = !LANDS_OFF_RE\.test\(LANDS_RAW\);/.test(server)
+      && /const LANDS_OFF_RE = \/\^\(0\|off\|false\|no\)\$\/i;/.test(server),
+    JSON.stringify({ derived: /const LANDS_ENABLED = !LANDS_OFF_RE\.test\(LANDS_RAW\);/.test(server) }));
   // …and the direction that actually matters, asserted as ITSELF rather than inferred from the two
   // above: NO tick calls it. A third call site added inside a scheduler would move the count to 3
   // and fail the first pin, but a future edit that also relaxed the count would slip past — so the

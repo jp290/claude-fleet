@@ -12,7 +12,7 @@
 // Both are reproduced here against a REAL kill of the real server, not a simulated one.
 import { spawnSync } from "node:child_process";
 import { chmodSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { REPO, ROOT, check, get, post, restartSrv, tmuxOut } from "./harness";
+import { BASE, REPO, ROOT, check, get, post, restartSrv, tmuxOut } from "./harness";
 import { setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
 const g = (dir: string, ...a: string[]): { out: string; err: string; code: number } => {
@@ -43,6 +43,23 @@ const openLane = async (): Promise<Lane | null> => {
   const j = (await (await post("/api/lanes", { repo: REPO })).json()) as
     { slot?: number; cwd?: string; branch?: string };
   return j.slot && j.cwd && j.branch ? { slot: j.slot, cwd: j.cwd, branch: j.branch } : null;
+};
+
+// a slot's own scoped credential, out of the persisted state — the MAIN land door takes nothing
+// else. Polled for the shape rather than read once: openSlot queues saveState before it awaits the
+// pane spawn, so the file can lag the route by a hair. A timeout returns what was last seen, so a
+// genuine absence fails its own check instead of hiding inside a retry loop.
+const selfTokenOf = async (slot: number): Promise<string> => {
+  let seen = "";
+  for (let i = 0; i < 60; i++) {
+    try {
+      seen = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots?: Record<string, { selfToken?: string }> }).slots?.[String(slot)]?.selfToken ?? "";
+    } catch { /* mid-write */ }
+    if (/^[0-9a-f]{32}$/.test(seen)) return seen;
+    await Bun.sleep(50);
+  }
+  return seen;
 };
 
 interface AuditEvent { event?: string; detail?: string }
@@ -305,6 +322,106 @@ export async function run(): Promise<void> {
       `${migUndo.status} ${JSON.stringify(migJ)} now=${g(repo, "rev-parse", "main").out.slice(0, 8)} want=${migBefore.slice(0, 8)}`);
     check("…and that migrated stack holds exactly the one record it was given (nothing invented under it)",
       (await post("/api/repos/undo-land", { repo })).status === 404);
+  }
+
+  // === E — FLEET_LANDS=0: the instance that FOLLOWS a canonical main (dual-host S2) ======
+  // The follower host runs its own fleet and fast-forwards main from the canonical one. Until this
+  // flag existed, "the follower never lands" was an owner rule with nothing behind it: fleet-sync.sh
+  // only MEASURES the divergence a single ⏫ click would create (exit 3), after the fact. What is
+  // proven here is not that a click is refused — a 409 further down the route would also be a
+  // refusal — but that the refusal costs NO LAND RECORD: no job, no mergeLast verdict, no
+  // lane-outcomes line. And the counter-proof rides with it, because a lock that also fired when
+  // nobody asked for it would be a canonical host that cannot land.
+  {
+    const le = await openLane();
+    check("(setup E) lane for the land-lock case opened", !!le, JSON.stringify(le));
+    const recvTok = receiver ? await selfTokenOf(receiver) : "";
+    check("(setup E) the non-lane receiver carries a self-credential to knock on the MAIN land door with",
+      /^[0-9a-f]{32}$/.test(recvTok), `${recvTok.length} chars, slot ${receiver}`);
+    if (le) {
+      const laneTok = await selfTokenOf(le.slot);
+      check("(setup E) the lane carries a self-credential to read /api/self/gate with",
+        /^[0-9a-f]{32}$/.test(laneTok), `${laneTok.length} chars`);
+      // the lane is left DIRTY on purpose. With the flag OPEN the ⏫ door must reach its OWN first
+      // refusal (uncommitted changes) — a control that spends no merge job and, unlike a green
+      // land, can be run again after the restart to show the door reopening.
+      await Bun.write(`${le.cwd}/lands.txt`, "follower\n");
+
+      const LOCK = "this instance does not land — it follows a canonical main";
+      const ownerDoor = async (body: Record<string, unknown> = {}): Promise<string> => {
+        const r = await post(`/api/slots/${le.slot}/merge`, body);
+        const j = (await r.json().catch(() => ({}))) as { error?: string; detail?: string; status?: string };
+        return `${r.status} ${j.error ?? j.detail ?? j.status ?? ""}`;
+      };
+      const mainDoor = async (): Promise<string> => {
+        const r = await fetch(`${BASE}/api/self/tasks/deadbeef/land`,
+          { method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": recvTok } });
+        const j = (await r.json().catch(() => ({}))) as { error?: string };
+        return `${r.status} ${j.error ?? ""}`;
+      };
+      const pollLands = async (): Promise<boolean | undefined> =>
+        ((await (await get("/api/sessions")).json()) as { lands?: boolean }).lands;
+      const gateLands = async (): Promise<boolean | undefined> => {
+        const r = await fetch(`${BASE}/api/self/gate`, { headers: { "x-fleet-self-token": laneTok } });
+        return ((await r.json().catch(() => ({}))) as { lands?: boolean }).lands;
+      };
+      const ledgerLines = (): number => {
+        try { return readFileSync(`${ROOT}/lane-outcomes.jsonl`, "utf8").split("\n").filter(Boolean).length; }
+        catch { return 0; }
+      };
+
+      // --- the counter-proof FIRST, on the server this module has been running on all along:
+      // no FLEET_LANDS anywhere in its env, so this is "today's behaviour" by construction.
+      const openPoll = await pollLands();
+      const openGate = await gateLands();
+      check("with no FLEET_LANDS set, the fleet says it LANDS on both the poll and the lane's gate",
+        openPoll === true && openGate === true, JSON.stringify({ poll: openPoll, gate: openGate }));
+      const openOwner = await ownerDoor();
+      check("…and the ⏫ door is reached: it refuses for its OWN reason (the dirty tree), not for the lock",
+        !openOwner.includes(LOCK) && /uncommitted changes/.test(openOwner), openOwner);
+      const openMain = await mainDoor();
+      check("…and the MAIN land door is reached: it refuses on the binding bracket, not on the lock",
+        !openMain.includes(LOCK) && openMain.startsWith("409") && /bound MAIN/.test(openMain), openMain);
+
+      // --- FLEET_LANDS=0 -------------------------------------------------------------------
+      await restartSrv({ FLEET_LANDS: "0" });
+      const beforeLedger = ledgerLines();
+      const lockedPoll = await pollLands();
+      const lockedGate = await gateLands();
+      check("FLEET_LANDS=0: the poll and the lane's gate both say this fleet does NOT land",
+        lockedPoll === false && lockedGate === false, JSON.stringify({ poll: lockedPoll, gate: lockedGate }));
+      const lockedOwner = await ownerDoor();
+      check("FLEET_LANDS=0: the ⏫ owner merge door answers 409 with the canonical-main sentence",
+        lockedOwner === `409 ${LOCK}`, lockedOwner);
+      const lockedConfirm = await ownerDoor({ confirm: true });
+      check("FLEET_LANDS=0: the ⏬ confirm-land door — the other way that route reaches main — answers the same",
+        lockedConfirm === `409 ${LOCK}`, lockedConfirm);
+      const lockedMain = await mainDoor();
+      check("FLEET_LANDS=0: the Program-MAIN land door answers 409 with the same sentence, before the binding bracket",
+        lockedMain === `409 ${LOCK}`, lockedMain);
+      // …and the part that a 409 alone would not prove: nothing was written on the way out.
+      const after = (await (await get(`/api/slots/${le.slot}/merge`)).json()) as
+        { running?: boolean; last: unknown };
+      check("FLEET_LANDS=0: three refused land attempts leave NO verdict and NO running job — GET still answers",
+        after.running === false && after.last === null, JSON.stringify(after));
+      check("FLEET_LANDS=0: …and no lane-outcome line was minted by the refusals",
+        ledgerLines() === beforeLedger, `${beforeLedger} -> ${ledgerLines()}`);
+
+      // --- FLEET_LANDS=1, and an unrecognised value ------------------------------------------
+      await restartSrv({ FLEET_LANDS: "1" });
+      const onPoll = await pollLands();
+      const onOwner = await ownerDoor();
+      check("FLEET_LANDS=1: the fleet lands again and the ⏫ door is back at its own dirty-tree refusal",
+        onPoll === true && !onOwner.includes(LOCK) && /uncommitted changes/.test(onOwner),
+        `${JSON.stringify({ poll: onPoll })} ${onOwner}`);
+      await restartSrv({ FLEET_LANDS: "vielleicht" });
+      const oddPoll = await pollLands();
+      const oddOwner = await ownerDoor();
+      check("an unrecognised FLEET_LANDS value leaves the instance LANDING (it says so in a log line, it does not strand the host)",
+        oddPoll === true && !oddOwner.includes(LOCK), `${JSON.stringify({ poll: oddPoll })} ${oddOwner}`);
+      await restartSrv(); // the flag is a per-restart `extra`, never in process.env — leave it gone
+      await post(`/api/slots/${le.slot}/kill`, {});
+    }
   }
 
   await setMergeMode("blocked"); // leave the shared mode file as the other modules expect it

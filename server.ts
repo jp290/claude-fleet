@@ -847,6 +847,31 @@ const CONTAINER_CONTEXT = (() => {
 const INSTANCE_NAME = instanceNameFrom(process.env.FLEET_INSTANCE);
 const INSTANCE: InstanceIdentity = { name: INSTANCE_NAME };
 
+// …AND WHETHER THIS FLEET IS ALLOWED TO WRITE THE INTEGRATION BRANCH AT ALL. The dual-host cut of
+// 2026-09-05 put a SECOND instance on a follower host that fast-forwards `main` from the canonical
+// one (`fleet-sync.sh`, exit 3 = DIVERGED). Until now "the follower never lands" was an owner rule
+// with no mechanism behind it: fleet-sync only MEASURES the divergence it would cause, after the
+// fact, and a single ⏫ click there is enough to produce it. This is the mechanism — read once at
+// boot, beside the instance name, because "which fleet" and "may this fleet land" are one operator
+// decision made in one env line.
+//
+// DEFAULT OPEN, unlike FLEET_LANE_AUTOCLOSE's default-off, and that asymmetry is the point: the
+// canonical host sets nothing and keeps landing exactly as before, so the flag can only ever be a
+// deliberate act on the machine that wants to be a follower. The recognised spellings are that
+// flag's, and an unrecognised value SAYS SO and stays OPEN — a typo'd `FLEET_LANDS=nope` must not
+// silently strand the canonical host, which is the failure mode a fail-closed reading would buy.
+const LANDS_RAW = (process.env.FLEET_LANDS ?? "").trim();
+const LANDS_OFF_RE = /^(0|off|false|no)$/i;
+const LANDS_ON_RE = /^(1|on|true|yes)$/i;
+const LANDS_ENABLED = !LANDS_OFF_RE.test(LANDS_RAW);
+if (LANDS_RAW && !LANDS_ON_RE.test(LANDS_RAW) && !LANDS_OFF_RE.test(LANDS_RAW))
+  console.log(`[fleet] FLEET_LANDS=${JSON.stringify(LANDS_RAW)} is not a recognised value — this`
+    + " instance LANDS. Recognised: 1/true/on/yes · 0/off/false/no.");
+// ONE sentence, shared by both doors, so a follower's refusal reads identically wherever it is met
+// and a pin can hold the pair. It names the reason rather than the flag: the caller's repair is not
+// "set an env var", it is "land on the canonical host".
+const LANDS_LOCKED = "this instance does not land — it follows a canonical main";
+
 // Adapter #4 — a slot whose agent runs inside a container. THE CUT IS DELIBERATELY NARROW, and
 // docs/container.md's "Why the whole app, never the slots" is the argument it has to survive: that
 // section rejects a boundary THROUGH the bundle (server, tmux, claude, git), because it blinds
@@ -7119,6 +7144,12 @@ async function guardedConfirmJob(lane: Slot, cwd: string, repo: string, main: st
 // different things — and several of them (dirty/not-done-looking/busy) are MAIN-side repairs it can
 // make and call again, while the rest are not.
 async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
+  // (0) THE INSTANCE, before the principal. Every other refusal in this function tells a MAIN to
+  // fix something about ITSELF or its lane; this one is about the machine, and no repair a caller
+  // could make would change it — so it is asked first, and it is the same sentence the ⏫ owner
+  // door answers with. Placed above the bracket on purpose: on a follower host a caller must not
+  // have to be correctly bound to learn that nothing here can ever reach main.
+  if (!LANDS_ENABLED) return json({ error: LANDS_LOCKED }, 409);
   // (1) THE BRACKET, in its own words. "not bound" and "ambiguously bound" stay two refusals here
   // exactly as at the release and filing doors.
   const bound = boundProgramForMain(s);
@@ -23175,6 +23206,10 @@ Bun.serve<WSData>({
         verify: gateVerifyCmd
           ? { cmd: gateVerifyCmd, timeoutMs: VERIFY_TIMEOUT_MS, waitMs: VERIFY_WAIT_MS, skipExit: VERIFY_SKIP_EXIT }
           : null,
+        // the one gate fact that is not about the lane's tree but about the machine it sits on: on a
+        // follower instance nothing this lane does can reach main, and it should learn that from the
+        // same route it learns the verify command from, not from a 409 at the end of a green chain.
+        lands: LANDS_ENABLED,
         cleanReview: CLEAN_REVIEW_MODE,
         autoReview: AUTO_REVIEW_MS > 0 ? { tickMs: AUTO_REVIEW_MS, idleMs: AUTO_REVIEW_IDLE_MS } : null,
         // for THIS LANE'S REPO, like `verify` above: a repo-worker arms tier 2 for its repo alone
@@ -23645,6 +23680,13 @@ Bun.serve<WSData>({
         // Additive — every client that had no idea it existed keeps working, it is a new top-level
         // key beside `chips` and nothing else changed shape.
         instance: INSTANCE,
+        // …and whether that fleet writes the integration branch. Beside `instance` and ONCE per
+        // response for the same reason: it is a boot-time constant of the process, so a per-slot
+        // copy would pay 16× for a fact that cannot vary within one response. ALWAYS sent, never
+        // omitted at `true` — an absent key would make a pre-flag server and a locked one read the
+        // same to the board, and the board's whole job here is to stop offering a gesture that
+        // cannot work. 13 B against the ~1 300 B of headroom the 14 KiB budget measures (e2e/tasks.ts).
+        lands: LANDS_ENABLED,
         // bundle version: a long-lived tab compares this across polls and reloads itself
         // once it goes stale — "old client after a deploy" must not look like a regression
         v: bundleV(),
@@ -24427,6 +24469,15 @@ Bun.serve<WSData>({
       if (req.method === "GET")
         return json({ running: mergeInflight.has(s.id) || mergeStart.has(s.id), last: mergeLast.get(s.id) ?? null,
           undoable: undoableFor(s.worktree.repo) });
+      // DOOR 1 OF 2 ONTO THE LAND PATH, and the follower's lock sits FIRST — before the inflight
+      // reservation, before the body is read, before a single git call. A refusal further down
+      // would still be a refusal, but it would have written something on the way: `mergeStart`,
+      // an `owner_token_ambient_use` audit line, or (further still) a `mergeLast` verdict that the
+      // board renders and `parkMergeVerdict` persists. An instance that does not land must leave
+      // NO land record at all, so the question is asked before the route has any state to lose.
+      // GET is deliberately still answered above: reading a verdict this instance may have carried
+      // over from before the flag is not landing, and a board that could not poll would look broken.
+      if (!LANDS_ENABLED) return json({ error: LANDS_LOCKED }, 409);
       if (mergeInflight.has(s.id) || mergeStart.has(s.id)) return json({ running: true });
       mergeStart.add(s.id); // reserve BEFORE the first await — two parallel POSTs otherwise both start a rebase
       // WHO IS CALLING, as far as this route can honestly tell: the channel is what tokenFrom accepted;

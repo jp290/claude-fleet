@@ -1055,6 +1055,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const d2LandB = "b12d2b12d2b12d2b12d2b12d2b12d2b12d2b12d2";
   const d2BaseAt = Date.now() + 5_000;
   const d2AuditAt = d2BaseAt + 300;
+  const d2UncoveredAt = d2BaseAt + 400;
   await tmuxOut("kill-session", "-t", "srv");
   await Bun.sleep(500);
   const d2OutcomePath = `${ROOT}/lane-outcomes.jsonl`;
@@ -1080,6 +1081,16 @@ export async function run(ctx: Ctx): Promise<void> {
     mainSha: "d".repeat(40), result: "red", cmd: "d2-status-probe", exitCode: 1,
     out: "FAIL  d2 status probe", fails: ["d2 status probe"], checks: { ran: 1, failed: 1 },
     covers: [{ branch: "d2-status-newer", mainAfter: d2LandA, at: d2BaseAt + 200 }],
+  })}\n`);
+  // …and the SAME red shape over a land no outcome row names. It is the control the I14 block below
+  // needs: without a row whose covers reach no Program, "bearer is suspect" and "bearer is suspect
+  // HERE" are the same green, and a flag that is constant measures nothing. Carries the same `cmd`
+  // so the teardown at the end of this fixture takes it away with the other two.
+  appendFileSync(d2AuditPath, `${JSON.stringify({
+    at: d2UncoveredAt, startedAt: d2UncoveredAt - 10, ms: 10, repo: REPO, main: "main",
+    mainSha: "e".repeat(40), result: "red", cmd: "d2-status-probe", exitCode: 1,
+    out: "FAIL  d2 uncovered probe", fails: ["d2 uncovered probe"], checks: { ran: 1, failed: 1 },
+    covers: [{ branch: "d2-status-uncovered", mainAfter: "f".repeat(40), at: d2BaseAt + 250 }],
   })}\n`);
   await restartSrv();
   const d2Adjudication = await post("/api/post-land-audits/adjudicate",
@@ -1129,6 +1140,82 @@ export async function run(ctx: Ctx): Promise<void> {
   // bound to a slot the later fixtures recycle.
   if (foreignStatusSlot > 0) await post(`/api/slots/${foreignStatusSlot}/kill`, {});
 
+  // --- I14 / D4: WHO judged the audit, MEASURED. `by:"owner"` names the only principal this route
+  // has, so the fact the rail was missing is the CHANNEL — and, on bearer/query, whether the judged
+  // audit covers a land of an ACTIVE Program whose bound MAIN is LIVE. That is exactly the shape the
+  // land path already flags (`owner_token_ambient_use`), and until now an ambient script judging a
+  // red audit was byte-identical on the rail to the owner ruling from the board.
+  //
+  // The fixture above is the whole cast: mainProgram is active with a live bound MAIN (asserted two
+  // checks up), d2AuditAt's cover joins to its landed outcome row through repo+branch+mainAfter, and
+  // d2UncoveredAt is the same red shape over a land no outcome row names.
+  type AdjActor = { kind?: string; via?: string; suspect?: string };
+  const adjudicateAs = (at: number, note: string, headers?: Record<string, string>): Promise<Response> =>
+    headers ? post("/api/post-land-audits/adjudicate", { at, verdict: "flake", note }, headers)
+      : post("/api/post-land-audits/adjudicate", { at, verdict: "flake", note });
+  const actorOf = async (r: Response): Promise<AdjActor | null> =>
+    ((await r.json()) as { adjudication?: { actor?: AdjActor } }).adjudication?.actor ?? null;
+  const bearerAdj = await adjudicateAs(d2AuditAt, "I14 bearer on a program-covered audit");
+  const bearerActor = await actorOf(bearerAdj);
+  // the COOKIE control on the SAME row. `H` carries the bearer header, and tokenChannel reads
+  // authorization first — so this request must not carry it at all, or it measures bearer again.
+  const cookieAdj = await adjudicateAs(d2AuditAt, "I14 cookie on the same covered audit",
+    { "content-type": "application/json", cookie: `fleet=${TOKEN}` });
+  const cookieActor = await actorOf(cookieAdj);
+  const uncoveredAdj = await adjudicateAs(d2UncoveredAt, "I14 bearer on a programless audit");
+  const uncoveredActor = await actorOf(uncoveredAdj);
+  // THE RAIL, NOT THE ANSWER. appendEvent is not awaited by the route, so the durable rows arrive
+  // after the 200s above; polled bounded, and what is not there at the cap is quoted as it is.
+  type PersistedAdj = { auditAt?: number; note?: string; actor?: AdjActor };
+  const persistedAdjs = async (): Promise<PersistedAdj[]> => (existsSync(d2AdjudicationPath)
+    ? readFileSync(d2AdjudicationPath, "utf8") : "").split("\n").filter(Boolean)
+    .flatMap((line) => { try { return [JSON.parse(line) as PersistedAdj]; } catch { return []; } });
+  let adjRail: PersistedAdj[] = [];
+  for (let i = 0; i < 60; i++) {
+    adjRail = await persistedAdjs();
+    if (adjRail.filter((r) => r.auditAt === d2AuditAt && r.actor).length >= 2
+      && adjRail.some((r) => r.auditAt === d2UncoveredAt && r.actor)) break;
+    await Bun.sleep(100);
+  }
+  const railBearer = adjRail.find((r) => r.auditAt === d2AuditAt && r.note?.startsWith("I14 bearer"));
+  const railCookie = adjRail.find((r) => r.auditAt === d2AuditAt && r.note?.startsWith("I14 cookie"));
+  const railUncovered = adjRail.find((r) => r.auditAt === d2UncoveredAt);
+  // BREAKS IF: `via` is stamped rather than read from the request (cookie and bearer then agree);
+  // the suspect arm drops the `via !== "cookie"` guard (the board's own channel is flagged too); or
+  // it ignores coverage/liveness (the programless row is flagged as well). Each of the three arms
+  // is asserted on BOTH the answer and the durable row — a response-only actor is not a record.
+  check("adjudication actor: a bearer verdict on a program-covered audit with a live MAIN is via bearer AND suspect, the cookie verdict on the same row is neither, and a bearer verdict on a programless audit is unflagged",
+    d2OwnerProgram?.executionStatus?.main.occupancy === "live"
+      && bearerAdj.ok && bearerActor?.kind === "owner" && bearerActor.via === "bearer"
+      && bearerActor.suspect === "owner-token-outside-board"
+      && cookieAdj.ok && cookieActor?.kind === "owner" && cookieActor.via === "cookie"
+      && cookieActor.suspect === undefined
+      && uncoveredAdj.ok && uncoveredActor?.kind === "owner" && uncoveredActor.via === "bearer"
+      && uncoveredActor.suspect === undefined
+      && railBearer?.actor?.via === "bearer" && railBearer.actor.suspect === "owner-token-outside-board"
+      && railCookie?.actor?.via === "cookie" && railCookie.actor.suspect === undefined
+      && railUncovered?.actor?.via === "bearer" && railUncovered.actor.suspect === undefined,
+    JSON.stringify({ occupancy: d2OwnerProgram?.executionStatus?.main.occupancy ?? null,
+      answers: { bearer: bearerActor, cookie: cookieActor, uncovered: uncoveredActor },
+      rail: { bearer: railBearer?.actor ?? null, cookie: railCookie?.actor ?? null,
+        uncovered: railUncovered?.actor ?? null } }));
+  // …and the LOADER. A judgement made before this rail existed carries no `actor` key at all, and
+  // the honest answer for it is NO FIELD — not the `cookie` default the route falls back to, and
+  // not loadLandActor's `unknown` arm either, which would claim the key was there and unreadable.
+  // Written straight to the rail (adjudicationsByAudit re-reads the file per call, no restart) with
+  // a newer `at` than the three above, so newest-wins puts exactly this row on the joined view.
+  appendFileSync(d2AdjudicationPath, `${JSON.stringify({ at: Date.now() + 60_000,
+    auditAt: d2UncoveredAt, verdict: "real", by: "owner", note: "I14 historical row without actor" })}\n`);
+  const d2AuditTrail = await (await get("/api/post-land-audits?limit=1000")).json() as
+    { audits?: { at?: number; adjudication?: { note?: string; by?: string; actor?: unknown } }[] };
+  const historicalAdj = d2AuditTrail.audits?.find((a) => a.at === d2UncoveredAt)?.adjudication;
+  // BREAKS IF: adjudicationsByAudit reads `actor` unconditionally — loadLandActor answers the
+  // `unknown` arm for the absent value and every pre-rail judgement grows an actor nobody measured.
+  check("adjudication actor: a persisted judgement written without an actor key loads without one — never as cookie, never as unknown",
+    historicalAdj?.note === "I14 historical row without actor" && historicalAdj.by === "owner"
+      && !Object.prototype.hasOwnProperty.call(historicalAdj, "actor"),
+    JSON.stringify(historicalAdj ?? null));
+
   await tmuxOut("kill-session", "-t", "srv");
   await Bun.sleep(500);
   writeFileSync(d2OutcomePath, readFileSync(d2OutcomePath, "utf8").split("\n")
@@ -1139,7 +1226,8 @@ export async function run(ctx: Ctx): Promise<void> {
   // named red check behind, never a thrown ENOENT that takes the rest of the suite with it.
   if (existsSync(d2AdjudicationPath))
     writeFileSync(d2AdjudicationPath, readFileSync(d2AdjudicationPath, "utf8").split("\n")
-      .filter((line) => line && !line.includes(`"auditAt":${d2AuditAt}`)).join("\n") + "\n", { mode: 0o600 });
+      .filter((line) => line && !line.includes(`"auditAt":${d2AuditAt}`)
+        && !line.includes(`"auditAt":${d2UncoveredAt}`)).join("\n") + "\n", { mode: 0o600 });
   await restartSrv();
 
   // --- The derived Program phase (program-phase.ts): a PURE reducer over the closed input list

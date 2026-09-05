@@ -1235,6 +1235,21 @@ deren Zeile zu einem Program mit LEBENDER gebundener MAIN gehört ⇒
 läuft weiter** — die eigenen Skripte des Owners nutzen Bearer. Der Cookie-Kanal des Boards wird nie
 geflaggt (als Gegenprobe geprüft), sonst zählte der Flag jedes gewöhnliche Owner-Land mit.
 
+**Dieselbe Messung liegt seit 2026-09-05 auf `POST /api/post-land-audits/adjudicate`.** Ein Urteil
+über ein rotes Tier-2-Audit war auf der Adjudikations-Schiene byte-identisch, egal ob der Owner es
+am Board fällte oder ein Skript mit dem aus `fleet.json` gelesenen Token. Neue Zeilen tragen
+`actor:{kind:"owner",via,suspect?}`, aus demselben `tokenChannel(req)` wie der Land-Pfad. Der
+`suspect`-Flag ist hier genauso eng: `via !== "cookie"` UND ein Cover des beurteilten Audits gehört
+über das Outcome-Ledger (`programsForAuditRow`, Join `repo`+`branch`+`mainAfter` — nie über den
+Branch allein) zu einem AKTIVEN Program mit LEBENDER gebundener MAIN; dann zusätzlich die
+Trail-Zeile `owner_token_ambient_use`. Das Urteil läuft weiter, wie das Land weiterläuft.
+
+**Ein Unterschied zum Land ist Absicht:** dort ist `actor` PFLICHT, hier OPTIONAL. Jede
+Adjudikation, die vor dieser Schiene geschrieben wurde, und jede `by:"backfill"`-Zeile hat keine
+Antwort — und der Loader (`adjudicationsByAudit`) liest das Feld nur bei VORHANDENEM Key. Ein
+fehlender Key kommt ohne Feld zurück, nie als `cookie` und nie als `loadLandActor`s
+`unknown`-Arm: „diese Zeile kann es nicht sagen" ist etwas anderes als „unlesbar".
+
 **VERHINDERUNG ist als UNSUPPORTED klassifiziert, und zwar ehrlich:** jede Session auf diesem Host
 läuft unter der Owner-uid, und `fleet.json` ist 0600, aber same-uid lesbar aus jedem Worktree.
 Akquise zu stoppen bräuchte Host-Sandboxing, das der Owner ausgeschlossen hat. Was existiert, ist

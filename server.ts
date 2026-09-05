@@ -4914,6 +4914,32 @@ async function waitForFleetReportRecoveryTestLatch(event: FleetReportFleetEvent,
   throw new Error("fleet-report recovery E2E latch timed out before release");
 }
 
+// THE TICK'S DELIVERY WINDOW, HELD OPEN ON PURPOSE. `tickWatches` validates a row's world (status
+// `pending`, subject lane present) and then AWAITS `canDeliver`, which shells out to ps/pgrep.
+// Everything an owner does inside that window — above all killing the subject lane — runs to
+// completion there. This latch parks the tick in exactly that window so a probe can move the world
+// underneath it and read what the tick writes afterwards. Optional second field = the subject
+// BRANCH, so a probe catches its own row and no other.
+const WATCH_TICK_TEST_LATCH = process.env.FLEET_TEST_WATCH_TICK_LATCH ?? null;
+let watchTickTestLatchUsed = false;
+async function waitForWatchTickTestLatch(event: FleetEvent): Promise<void> {
+  if (!WATCH_TICK_TEST_LATCH || watchTickTestLatchUsed || !existsSync(WATCH_TICK_TEST_LATCH)) return;
+  const marker = readFileSync(WATCH_TICK_TEST_LATCH, "utf8").trim();
+  if (marker && !(isLaneFleetEvent(event) && event.subjectBranch === marker)) return;
+  watchTickTestLatchUsed = true;
+  writeFileSync(`${WATCH_TICK_TEST_LATCH}.reached`, JSON.stringify({
+    eventId: event.id, status: event.status, attempts: event.attempts,
+  }), { mode: 0o600 });
+  // 30 s, not the 10 s the send latches use: the probe that parks here has to tear a whole lane
+  // slot down (tmux session included) before it can release, and a latch that expires mid-teardown
+  // would fail the run as a delivery defect instead of as itself.
+  for (let waited = 0; waited < 30_000; waited += 10) {
+    if (existsSync(`${WATCH_TICK_TEST_LATCH}.release`)) return;
+    await Bun.sleep(10);
+  }
+  throw new Error("watch tick E2E latch timed out before release");
+}
+
 const WS_INPUT_TEST_LATCH = process.env.FLEET_TEST_WS_INPUT_LATCH ?? null;
 let wsInputTestLatchUsed = false;
 async function waitForWsInputTestLatch(bound: { occupant: SlotStreamOccupant; paneId: string }): Promise<void> {
@@ -10784,6 +10810,21 @@ async function tickWatches(): Promise<void> {
         event.status = "receiver-gone";
         audit("fleet_event_receiver_gone", event.receiverSlot ?? undefined, `${event.id} no agent running in pane`);
         pruneFleetEvents(event.receiverSlot);
+        dirty = true;
+        continue;
+      }
+      // THE WORLD ABOVE WAS VALIDATED BEFORE AN AWAIT, AND IT MOVES INSIDE ONE. `canDeliver` shells
+      // out to ps/pgrep; an owner kill of the subject lane runs to completion in that window, and
+      // `markFleetEventsSubjectGone` writes the terminal state on THIS row while this loop is still
+      // holding it. Writing the marker now would resurrect a terminal row into the queue: the pane
+      // then receives stale news about a lane that is already gone, and until the next tick sweeps
+      // it the row goes on spending its receiver's delivery budget. Both facts are re-read here
+      // rather than trusted from the read that opened the round — §11.2j is what the trust cost:
+      // `subject-gone` read back as `pending` (`flippedBack`) beside a `freed:400`.
+      await waitForWatchTickTestLatch(event);
+      if (event.status !== "pending") continue;
+      if (laneEventSubject(event) === "gone") {
+        markFleetEventsSubjectGone();
         dirty = true;
         continue;
       }

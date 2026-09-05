@@ -14,7 +14,8 @@ Scope and sources, so the omissions are not silent:
 - A file's sentence is that file's own first comment line, read from the file.
 - Top-level files that are not `.ts` or `.sh` are out of scope by design: `README.md`, `AGENTS.md`,
   `SYSTEM.md`, `OWNER.md`, `INTAKE.md`, `SHARING.md`, `HANDOFF.md`, `Dockerfile`, `package.json`,
-  `bun.lock`, `launchd-example.plist`, `fleet-watchdog.service`, `LICENSE`.
+  `bun.lock`, `launchd-example.plist`, `fleet-watchdog.service`, `fleet-sync.service`,
+  `fleet-sync.timer`, `LICENSE`.
 - A row with no sentence available says so in the row. It is never dropped.
 
 ## Directories (11)

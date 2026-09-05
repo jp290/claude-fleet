@@ -1,3 +1,123 @@
+# HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 10, Opus 5): die Audit-Regression ist ZU (`93e5460`, ueber die eigene Self-Land-Sprosse), die zweite Lane haengt an einem NIE-GEMESSENEN Gate — und ich habe die Last-Hypothese am Ende mit einer Kontrolle belegt; 2026-09-05 13:5x
+
+Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was git
+und die Sensoren nicht tragen. Lineage 4 → 16 → 10 → 3 → 5 → 2 → 10 → du.
+
+## 0. DAS ERSTE, WAS DU TUST — zwei Zeilen, und beide sind Tueren, keine Fragen
+
+- **`ec0bf175` (S2 · D2 Program-Status-Projektion) ist FERTIG UND GEPRUEFT, aber NICHT gelandet.**
+  Der Gate lief voll durch und starb an `e2e-claude-gate.sh` **Phase 3**: `server did not come up`,
+  **`no server.log exists`** in der aufbewahrten Instanz. Das ist woertlich die NIE-GEMESSEN-Signatur
+  aus dem Regelbuch, kein Regress am Diff — bei `ms 665428 / waitMs 531000` (**80 % Schlange**, 3 von
+  3 Stufen blockiert) unter fuenf lebenden Lanes ist ein 30-s-Server-Boot-Timeout der Normalfall.
+  **Der Diff ist von mir geprueft und getragen** (Details §2). Die Tuer ist jetzt zu: die Self-Land-Route
+  antwortet `no progress since the last verdict — resolved on the same candidate 7173a09b`.
+  ZWEI ehrliche Wege, keiner davon ein no-op-Commit auf der Lane (das waere ein Rail-Trick):
+  **(a)** der Guard haengt an der Kandidaten-Sha — bewegt sich main, rebased die Lane, neuer Kandidat,
+  Tuer offen; **(b)** der Owner landet vom Board, die Owner-Route kennt diesen Guard nicht.
+  **Das ist eine LIVE-Instanz deiner eigenen Zeile `6101dbc3` (R5)** — der Guard haelt ein nie
+  gemessenes Gate fuer ein Urteil. Wenn du R5 baust, ist das dein Beleg-Fall.
+- **`35ac0b97` (Audit-Regression) IST GELANDET: `93e5460`**, im zweiten Anlauf, `verify.ok:true`,
+  alle sieben Stufen, `exitCode 0`. Die Land-Note traegt
+  `actor {kind:main, slot:10, program:f170dc46, task:35ac0b97, sessionIdMatch:exact}` — also ein
+  Beleg fuer Erfolgskriterium (d), gelandet ueber die eigene Sprosse, nicht durch den Controller.
+  **OFFEN daran: der Post-Land-Audit.** Ich hatte Watch `9b43fa5b`
+  (`{"kind":"audit","mainAfter":"93e54601..."}`) armiert — **ein Watch stirbt mit meiner Session,
+  arm ihn neu.** Und **DER DEPLOY FEHLT NOCH** (§1): ohne ihn bleibt jedes rein-docs-Land rot.
+
+## 1. Die Kette, die niemand sonst zusammenhaengt: das Audit-Rot ist DREI Schritte tief
+
+Jedes rein-docs-Land ist seit dem Deploy 07:36 rot — fuenf in Folge, immer dieselben sechs
+`fatal: not a git repository`-Fails, `ms ~1000`. Reihenfolge bis das aufhoert:
+**(1)** ~~`35ac0b97` landen~~ **ERLEDIGT: `93e5460`** · **(2)** DEPLOY (der Fix ist Servercode —
+`runPostLandAudit`; ohne Deploy aendert das Land nichts) · **(3)** das naechste rein-docs-Land
+erzeugt erst dann die gruene Zeile. **Schritt 2 ist der einzige, der noch aussteht.**
+**Der Deploy gehoert dem Controller** (Slot 7 hat ihn heute 12:53 gefahren, `bootHead 22b2bf40`) —
+frag ihn, deploy nicht selbst, sonst zwei srv-Neustarts.
+
+## 2. Was ich an den zwei Diffs geprueft habe (damit du es nicht zweimal liest)
+
+- **`ec0bf175` / `7c4dedf`, +336/−2.** Beide Abweichungen vom Brief sind richtig und beide „der Code
+  gewinnt": `executionStatus:` statt `status:` in der Owner-Liste, weil `publicProgram` die ganze
+  Program-Zeile spreadet und `Program.status` dort schon der Lebenszyklus ist (der Brief haette ihn
+  fuer jeden Board-Leser still ueberschrieben); und der Deploy-Guard auf `repoCanon(REPO_DIR)` statt
+  `import.meta.dir`, weil `deployGap()` in `REPO_DIR` zaehlt. Die Overload-Trennung haelt: die
+  Owner-Liste ruft die Ledger-lose Form. Es irrt in Richtung SCHWEIGEN (`landedMainAfter` nur aus
+  `mainAfter`, also eher `lastAudit:null` als ein geratener Join; `codeBehind` bleibt `null`, nie
+  `false`). Jeder Check unter benannter Mutation rot gesehen, Kaskade als Rauschen deklariert.
+- **`35ac0b97` / `9a6592c`, +159/−15.** `gitContext` haengt am `proportional`-Flag, weil das genau
+  die Frage IST. `git init -q -b main && git add -A -f` laeuft VOR dem node_modules-Symlink —
+  `.gitignore`s `node_modules/` matcht keinen SYMLINK, umgekehrt indiziert es 629 Pfade eines
+  628-Pfad-Baums, mit jedem Pin gruen. KEIN Commit, absichtlich: ein erfundener HEAD beantwortete
+  `git rev-parse HEAD` mit einer sha != `mainSha` — eine falsche Messung in richtiger Form. Ein
+  gescheiterter git-Kontext gibt einen Fehlerstring → `unknown`, nie ein rotes Suite-Urteil.
+  Der teuerste Satz des Reports ist der, warum NICHT immer: mit `.git` im Snapshot folgt
+  `e2e/trail-emit.ts#resolveSourceTree` dem node_modules-Symlink, `--is-inside-work-tree` kippt auf
+  YES, und der Trail landete IM Scratch-Verzeichnis, das der Server danach loescht — das
+  Flake-Register verloere still genau die Laeufe, die ein Land adjudizieren.
+
+## 3. Was ich selbst am Host getan habe (`bb96059`, Direkt-Commit)
+
+Der faelligste Posten des Programs, und er kann keine Lane sein (`rulebook/` ist gitignored):
+**acht aufeinanderfolgende Bullets** in `rulebook/lane-discipline.md` ueber EINEN Gegenstand
+(Suite-Mutex, Sensoren, Warten) — 5 398 B, ueber zwei Tage gewachsen — auf **drei** Regeln gezogen.
+Keine Regel gestrichen; die acht Originalbloecke stehen als **§15.30–§15.37** in
+`docs/attic/regelbuch-messgeschichten-2026-08.md`, Gegenprobe an neun tragenden Zeichenketten.
+`bun e2e/pins.ts` ALL PASS, `RULE_RENDER` byte-identisch.
+**Ehrlich: 81 322 → 79 508 B, NICHT < 75 000.** Der Rest ist mit Prosa-Schnitt nicht zu holen — die
+verbliebenen Bullets sind ueberwiegend je eine Regel mit ihrem bezahlten Preis. Wer die 75 000 will,
+verlagert ganze Regelbloecke nach `docs/` und zeigt nur hin. Das ist ein STRUKTUR-Entscheid.
+Mitgenommen: der `FLEET_LANE_AUTOCLOSE`-Absatz trug „scharf, nie ausgeloest" ohne Ursache — die
+Ursache (14-ms-Phasenkopplung des 30-min-Repaints gegen `STALLED_IDLE_MS`) steht jetzt dort, frisch
+nachgezaehlt `0 von 786`.
+
+## 3b. DIE KONTROLLE, die die Last-Hypothese aus der Vermutung holt
+
+Zwei Laeufe DESSELBEN Gates, dieselbe `e2e-claude-gate.sh` Phase 3 (harness waiver):
+
+| Lauf | `waitMs` | `ms` | Phase 3 | Ergebnis |
+|---|---|---|---|---|
+| `ec0bf175`, 13:12 | **531 000** (3 von 3 Stufen blockiert) | 665 428 | `server did not come up`, **kein `server.log`** | RED |
+| `35ac0b97`, 13:32 | **0** (0 von 3 blockiert) | 115 985 | gruen | `ok:true` |
+
+**Der 30-s-Server-Boot der Phase 3 ist lastempfindlich, und die Schlange ist die Last.** Damit ist
+das erste Rot als NIE-GEMESSEN belegt statt nur behauptet — und die Lehre ist nicht „die Maschine
+ist zu langsam" (im selben Fenster landete Slot 1 gruen), sondern: **wer unter Mutex-Andrang landet,
+kauft eine Phase-3-Nichtmessung mit spuerbarer Wahrscheinlichkeit ein, und der Progress-Guard macht
+daraus ein Urteil.** Vor einem Land unter Andrang lohnt der Blick auf `/tmp/fleet-e2e.lock.q`.
+
+## 4. Drei Korrekturen an meinen eigenen Saetzen dieser Session
+
+- **Ich habe `merges: {'4': 'interrupted'}` als „der Land wurde von einem Neustart getoetet" gelesen
+  und das dem Owner so gemeldet. Falsch.** Die Regelbuch-Regel sagt es richtig: `interrupted` OHNE
+  `verify` heisst **ein Land LAEUFT**. Es lief noch elf Minuten und resolvte dann mit `verify.ok:false`.
+  Der `detail`-Text („der Server wurde mitten im Lauf unterbrochen") ist ein pessimistischer
+  Vorab-Eintrag, kein Befund — lies ihn nie als einen.
+- **Ich habe „beide meine Lands liefen in rote Gates" gesagt. Falsch, und die Vermischung war
+  teuer:** NUR `ec0bf175` hatte je ein rotes Gate. `35ac0b97`s Gate war BEIDE Male gruen — sein
+  einziges Hindernis war der geteilte Working Tree (fremde uncommittete `docs/verify-tiering.md`,
+  committet als `0347f06`). Zwei blockierte Lanes, zwei voellig verschiedene Ursachen.
+- **Die Live-Route schlaegt die Zustandsdatei.** `fleet.json` zeigte `interrupted`, `GET
+  /api/slots/:id/merge` zeigte im selben Moment das vollstaendige Verdikt samt `waitMs`, `exitCode`
+  und stderr-Tail. Fuer ein Merge-Urteil immer die Route fragen.
+
+## 5. Offen, unbeansprucht
+
+- **§11.2o in `docs/verify-tiering.md` traegt eine veraltete Basisrate:** dokumentiert `6/209 = 2,9 %`,
+  heute gemessen `18/221 = 8,1 %`, sieben der Rots von heute vor 08:12. Die S2-Lane hat das korrekt
+  NICHT zu einem zweiten Schnitt gemacht, nur gemeldet. Eine Zeile Register-Pflege.
+- **Vierzehn Zeilen dieses Programs tragen persistent `spawn codex/gpt-5.6-sol`** (S3a-i, S3a-ii, S3b,
+  S3c, S3d, S4, S5a, S5b, S5c, S12, CP-A, CP-B, CP-C, S2-alt). KEINE Route aendert den Spawn: wer eine
+  davon will, **filt sie NEU** (`ec0bf175`/`02740e69` zeigen wie), niemals freigeben. Drei weitere
+  solche Zeilen liegen im Program `79036e9a` — nicht deine, aber der Controller sollte es wissen.
+- **Erfolgskriterium (a) ist EINE Zeile entfernt:** von 95 offenen Fleet-Zeilen haben 11 kein Program,
+  davon sind 10 `notiz` (laufen nie) und genau eine ist ein `auftrag`: **`5c1f831f`**. Eine
+  Program-Zuweisung von aussen gibt es nicht — das ist ein Owner-/Controller-Griff.
+- **Maschinenhygiene, von nichts geerntet:** 3,4 G TMPDIR-Scratch, vier verwaiste e2e-tmux-Sockets.
+  Ich habe sie NICHT angefasst: einer der „strays" hatte sein cwd in einer LEBENDEN Lane, und
+  `state.sh`s Heuristik haengt an TMPDIR. Bei fuenf Lanes und Mutex-Andrang ist das kein Aufraeumen
+  nebenbei, sondern eine eigene Zeile mit notierten PIDs.
+
 # HANDOFF — 🎛 Fleet Controller (Slot 7, Fable 5.1): Astra gegruendet und von Codex-Taubheit befreit, sol-Lanes auf Opus umgesetzt, drei strukturelle Befunde gemessen; 2026-09-05 12:5x, ctx GEMESSEN 38,5 %
 
 > **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 3, 08:0x).

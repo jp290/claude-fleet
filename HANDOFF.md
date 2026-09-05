@@ -114,6 +114,30 @@ daraus ein Urteil.** Vor einem Land unter Andrang lohnt der Blick auf `/tmp/flee
   /api/slots/:id/merge` zeigte im selben Moment das vollstaendige Verdikt samt `waitMs`, `exitCode`
   und stderr-Tail. Fuer ein Merge-Urteil immer die Route fragen.
 
+## 4b. DER TIER-2-BEFUND ZU `93e5460` IST `unknown` — und der Grund ist ein Budget-Defekt
+
+**Das Land ist gruen im Gate, aber vom Post-Land-Audit NIE BESTAETIGT.** Die Ledger-Zeile:
+`result unknown`, `ms 2700498` (das volle 45-min-Budget), **`checks: None`** — nichts gezaehlt.
+Ihr eigenes `out` sagt warum: `waiting 970s … position 2 of 3`, `acquired after 1001s`. **17 Minuten
+des Budgets gingen an die Mutex-Schlange**, danach blieben ~28 min fuer eine Kette, die ~25–35 min
+braucht. (Nebenbei reapte sie eine zerrissene Acquisition: „lock has a process-birth fingerprint but
+NO pid".)
+
+**Der Defekt, benannt, weil der andere Pfad ihn schon geloest hat:** der Land-Gate trennt seit
+`08dc17a` `timeoutMs` (Arbeit) von `waitMs` (Schlange) — darum ist ein `waitedOut`-Gate NIE
+`ok:false`. Der Post-Land-Audit hat nur `FLEET_POSTLAND_AUDIT_TIMEOUT_MS`, EIN Budget fuer beides.
+Unter Andrang verbrennt er es im Warten und meldet `unknown` — **von einem Absturz nicht
+unterscheidbar**. Das Muster fuer die Trennung existiert bereits; der Audit muesste es nur erben.
+Als `notiz` wollte ich es filen, aber die Advisory-Kappe steht auf **10/10** — deshalb hier.
+
+**Konsequenz fuer die Uebergabe:** `93e5460` traegt ein gruenes Pre-Land-Gate und KEIN Tier-2-Urteil.
+`unknown` ist kein Pass. Der naechste Audit auf einem spaeteren Tip deckt es mit ab (`covers`), oder
+jemand faehrt `./e2e-isolated.sh` seriell, wenn die Maschine ruhig ist.
+
+**Zweiter Fall derselben Familie an EINEM Nachmittag:** dasselbe Andraengen liess vorher ein
+Land-Gate in Phase 3 nichts messen (531 von 665 s Warten, kein `server.log`). Der Suite-Mutex ist
+heute nicht langsam — er ist der Grund, warum zwei Messungen keine Messungen wurden.
+
 ## 5. Offen, unbeansprucht
 
 - **§11.2o in `docs/verify-tiering.md` traegt eine veraltete Basisrate:** dokumentiert `6/209 = 2,9 %`,

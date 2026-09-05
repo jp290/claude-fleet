@@ -799,3 +799,103 @@ Zweiter Schnitt derselben Verdichtung (2026-09-05, sechs weitere Bloecke, nur Me
   Logdatei ist kein Fortschrittssensor. Fortschritt liest man an der `server.log` im
   Instanzverzeichnis oder am Trail (`docs/e2e-trail.md`).
 
+
+
+## §15.30–§15.37 Der Suite-Mutex-Block des Regelbuchs — acht Bullets, zusammengezogen 2026-09-05
+
+Am 2026-09-05 standen im Fragment `rulebook/lane-discipline.md` **acht** aufeinanderfolgende
+Bullets ueber denselben Gegenstand (Suite-Mutex, seine Sensoren, sein Warten) — 5 398 B, ueber
+zwei Tage angewachsen, jede Zeile fuer sich richtig. Die Program-MAIN Fleet-Betrieb hat sie zu
+DREI Regel-Bullets zusammengezogen (Sensoren · Warteordnung · einen Lauf lesen). **Keine Regel
+ist gestrichen**, nur die Messgeschichten und die Herleitungen sind hierher gewandert. Die
+Originalbloecke stehen unveraendert unten, damit der Nachweis „nichts verloren" am Text und nicht
+an einer Behauptung haengt.
+
+
+### §15.30 Suite-Mutex Semantik und Prozess-grep (Originalblock, 2026-09-05)
+
+- **Suiten serialisieren sich seit `ddc5128` SELBST** (Mutex in `e2e-stage.sh`, alle sieben Wrapper
+  inkl. Land-Gate und Tier-2-Audit): kein manuelles `until mkdir` um Suite-Läufe. Semantik:
+  `/tmp/fleet-e2e.lock` **existiert ≠ gehalten** — die `pid`-Datei darin entscheidet (toter Halter
+  wird gereapt; eine PID-**lose** Lock-Dir ist ein manueller Park-Halt und wird nie gereapt). Ob die
+  Maschine ruhig ist, sagt nur das PAAR: `pid`-Datei UND Server (`GET /api/slots/:id/merge` →
+  `running`, bzw. `merges` im Zustand). Das Prozess-grep (`ps -eo command | grep -c '^/bin/sh ./e2e-'`,
+  mit Anker) ist das schwaechste Signal: Land-Gate und Audit fahren install/pins/tsc/build BEVOR ihr
+  erster Wrapper startet, in diesem Fenster zaehlt es NULL. Bezahlt: `docs/attic/regelbuch-messgeschichten-2026-08.md` §15.
+
+
+### §15.31 FIFO-Ticket seit d0befb9 (Originalblock, 2026-09-05)
+
+- **UND SEIT `d0befb9` IST DAS WARTEN GEORDNET — die Warteposition ist wieder ein Guthaben.** Der
+  Mutex war ein RENNEN (jeder Anwaerter schlief 15 s und griff erneut nach `mkdir`), messbar bis zur
+  Aushungerung: ein Post-Land-Audit stand am 2026-09-05 **3 h 39 min** und verlor Lotterie um
+  Lotterie an Anwaerter, die nach ihm kamen. Jetzt nimmt jeder Anwaerter bei der ANKUNFT ein Ticket
+  (`t<n>.<pid>` unter `$FLEET_SUITE_LOCK.q`, also `/tmp/fleet-e2e.lock.q`), und nur wer das aelteste
+  LEBENDE Ticket haelt, greift nach dem Lock. Vier Saetze, die man braucht: die Wartezeile nennt
+  jetzt **`position N of M`** neben den Sekunden · ein totes Ticket wird nach derselben
+  Dreiteilung gereapt wie der Lock selbst (pid tot ⇒ Waise · pid lebt mit ANDERER birth ⇒ Waise ·
+  pid lebt mit FEHLENDER birth ⇒ unbekannt, wird BEHALTEN) · es faellt **offen** auf: wer kein
+  Ticket bekommt, rennt wie frueher, denn der Mutex ist die Sicherheit und das Ticket nur die
+  Fairness · und ein Schritt, der INNERHALB eines fremden Holds laeuft, reiht sich NIE ein
+  (`_st_inherited`), sonst wartete er hinter dem Lock, in dem er schon laeuft — ein stiller
+  Deadlock, kein roter Check.
+
+
+### §15.32 Der Server steht nicht in der Schlange (Originalblock, 2026-09-05)
+
+- **Die Ordnung gilt nur fuer die SHELL-Anwaerter — der Server steht nicht in der Schlange.** Die
+  ff-Retry-Kette nimmt den Lock ueber `server.ts#holdSuiteLock` mit eigenem `mkdir` und OHNE Ticket,
+  und sie pollt alle 5 s gegen die 15 s des Wartenden (`FLEET_SUITE_POLL_SEC`). Ein Land-Gate, das
+  seinen Hold ueber mehrere Runden haelt, ueberholt die Schlange also systematisch. Das ist kein
+  Defekt (die Sicherheit ist unveraendert `mkdir`, und ein haltendes Gate SOLL nicht neu anstehen),
+  aber wer „FIFO" liest, darf es nicht fleetweit lesen. Gemessen 2026-09-05 beim Land von
+  `d0befb9` selbst: `ms 1 733 067`, davon `waitMs 1 621 000` — **94 % Schlange**.
+
+
+### §15.33 ELAPSED eines Wrappers ist Warten plus Arbeit (Originalblock, 2026-09-05)
+
+- **Die ELAPSED eines Suite-Wrappers ist NICHT seine Laufzeit — sie misst Warten PLUS Arbeit**
+  (bezahlt 2026-09-05 02:4x, Program-MAIN Fleet-Betrieb, an einer Live-Lane): ein `./e2e-isolated.sh`
+  mit 1:28 ELAPSED sah nach einem Haenger aus und war keiner. Der belastbare Sensor ist die ELAPSED
+  des `bun`-KINDES — `ps -eo pid,ppid,etime,comm | awk '$2==<wrapper-pid>'` — sie stand bei 24 min:
+  der Wrapper hatte 64 min in der Mutex-Schlange gestanden und lief seitdem normal. Wer die beiden
+  verwechselt, haelt JEDE stark angestandene Suite fuer haengend, und an einem Tag mit 94 %
+  Schlangenanteil ist das jede. Dieselbe Zahl beantwortet auch „wem gehoert der Lauf": die
+  Elternkette (`ps -o ppid=`) nennt die Lane, `lsof -a -p <pid> -d cwd` ihren Worktree.
+
+
+### §15.34 Drittes Nullfenster des Prozess-greps (Originalblock, 2026-09-05)
+
+- **DRITTES NULLFENSTER des Prozess-greps, scharf seit dem Deploy 2026-09-05 03:56 (Server auf
+  `089fb0a`):** die ff-Retry-Kette laesst den SERVER den Suite-Mutex selbst nehmen und ueber mehrere
+  Gate-Runden halten (`server.ts#holdSuiteLock`, `FLEET_LAND_FF_RETRY_ROUNDS`, Default 2). In diesem
+  Fenster laeuft KEIN Wrapper, `ps -eo command | grep -c '^/bin/sh ./e2e-'` zaehlt NULL — und der
+  Lock ist trotzdem gehalten, von einem `bun server.ts`. Die `pid`-Datei sagt es (sie traegt dann die
+  PID des Servers, nicht die eines Wrappers); das grep sagt es nie. Damit hat das Prozess-grep drei
+  bekannte Nullfenster und bleibt der schwaechste der drei Sensoren.
+
+
+### §15.35 Der Server-Halter wird nie gereapt (Originalblock, 2026-09-05)
+
+- **Und dieser Halter wird NIE gereapt, solange der Server lebt** — ein `bun server.ts` ist nicht tot,
+  also greift die Stale-Regel der Wrapper nicht. Die Freigabe ist strukturell (`finally` an der
+  Retry-Kette). Stirbt der Server im Halten, bleibt genau die Form zurueck, die die Wrapper reapen:
+  `pid` vorhanden, Prozess weg. Ein pid-LOSES Lock-Verzeichnis kann dieser Pfad nie erzeugen.
+
+
+### §15.36 Ein Land-Gate gewinnt den Mutex dreimal (Originalblock, 2026-09-05)
+
+- **Ein Land-Gate muss den Mutex DREIMAL gewinnen, nicht einmal** (verifiziert 2026-09-05: je ein
+  `. "$SRC/e2e-stage.sh"` in `e2e-clean-review.sh`, `e2e-security.sh`, `e2e-claude-gate.sh`). Die
+  Kette `VERIFY_CMD` faehrt diese drei Wrapper nacheinander, und jeder stellt sich EINZELN neu an —
+  es gibt keinen durchgehaltenen Hold ueber die Kette. Darum ist `waitMs` eines Gates die SUMME
+  dreier Wartezeiten, und darum kippt ein Gate unter Contention selbst dann ins Wartebudget, wenn
+  es zwischendurch schon einmal drangekommen war. (Der einzige Hold ueber mehrere Laeufe hinweg ist
+  der der ff-Retry-Kette in `server.ts`, und der ist genau deshalb gebaut worden.)
+
+
+### §15.37 Suite-Lauf hinter nohup (Originalblock, 2026-09-05)
+
+- **Ein Suite-Lauf hinter `nohup … > log` ist BLOCKGEPUFFERT:** „0 PASS-Zeilen" bei lebendem Prozess
+  ist ein Messfehler des Beobachters, kein Haenger. Fortschritt liest man an der `server.log` der
+  Instanz oder am Trail (`docs/e2e-trail.md`).

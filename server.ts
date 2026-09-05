@@ -23387,7 +23387,7 @@ Bun.serve<WSData>({
     // Programs are owner truth after proposal. They deliberately take the same tokenGate as the
     // task owner API, but are checked before the steward dispatcher so a steward credential is a
     // plain owner-auth failure (401), never a second authority over confirm/activate/complete.
-    if (/^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|studio))?$/.test(url.pathname)) {
+    if (/^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|studio|dispatch))?$/.test(url.pathname)) {
       if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
       return handleOwnerProgramRoute(req, url);
     }

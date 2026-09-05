@@ -1057,10 +1057,18 @@ export async function run(ctx: Ctx): Promise<void> {
   await restartSrv();
   const d2Adjudication = await post("/api/post-land-audits/adjudicate",
     { at: d2AuditAt, verdict: "flake", note: "D2 projection fixture" });
-  await Bun.sleep(100);
-  const d2Execution = await selfExecution(mainSelfToken);
-  const d2ExecutionStatus = d2Execution.view?.programs
-    .find((row) => row.program.id === mainProgram.id)?.status;
+  // WAIT FOR THE RAIL, DO NOT GUESS AT IT. writeAuditAdjudication calls appendEvent WITHOUT
+  // awaiting it and answers first, so the verdict reaches AUDIT_ADJUDICATION_FILE after the 200 —
+  // and adjudicationsByAudit() reads only that file. A fixed sleep here is a flake with a timer on
+  // it; this polls the projection itself, bounded, and then asserts the whole tuple. A verdict that
+  // never lands still fails the check below on `adjudicated`, which is the honest outcome.
+  let d2ExecutionStatus: ProgramStatusView | undefined;
+  for (let i = 0; i < 40; i++) {
+    const probe = await selfExecution(mainSelfToken);
+    d2ExecutionStatus = probe.view?.programs.find((row) => row.program.id === mainProgram.id)?.status;
+    if (d2ExecutionStatus?.lastAudit?.adjudicated) break;
+    await Bun.sleep(100);
+  }
   // BREAKS IF: either join uses branch instead of mainAfter, selects the oldest row, drops fails, or omits the verdict rail.
   check("program status: lastLand and lastAudit join by mainAfter, newest first, and carry fails and the adjudication verdict",
     d2Adjudication.ok && d2ExecutionStatus?.lastLand?.sha === d2LandA

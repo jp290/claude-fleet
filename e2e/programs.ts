@@ -6357,13 +6357,29 @@ export async function run(ctx: Ctx): Promise<void> {
     // done-looking is a SERVER predicate over git facts refreshed on the slow tick plus a pane idle
     // clause — so a fixture that only commits and calls would race the tick and read as "the route
     // refuses a finished lane". Polled on the same facts the predicate reads (MERGE_IDLE_MS=3000).
+    //
+    // `lastOutput > 0` IS A CLAUSE, not decoration: 0 means this pane's output was never observed,
+    // and the subtraction below happily turns it into ~1.79e12 ms — so without it this helper
+    // reported "live lane, idle, clean, ahead" over a pane NOBODY HAS EVER SEEN, which is the exact
+    // trap `observed` exists to close (lane-signals.ts, program-phase.ts R10). It cost a red
+    // `projection nextAction`: the check downstream read UNKNOWN/R10 while this said ready, so the
+    // failure surfaced at the projection instead of here, where the missing fact actually is.
+    // `doneLookingWhy` carries the last row a wait gave up on, so the fixture check that consumes
+    // this can say WHICH clause was missing instead of only `ready:false`.
+    let doneLookingWhy = "";
     const waitDoneLooking = async (slot: number): Promise<boolean> => {
+      let last = "no row";
       for (let i = 0; i < 120; i++) {
         const body = await slSess();
         const row = body.slots.find((x) => x.id === slot);
-        if (row?.git && row.git.dirty === 0 && row.git.ahead > 0 && body.now - row.lastOutput >= 3000) return true;
+        if (row?.git && row.git.dirty === 0 && row.git.ahead > 0
+          && row.lastOutput > 0 && body.now - row.lastOutput >= 3000) return true;
+        last = row ? JSON.stringify({ slot, git: row.git,
+          observed: row.lastOutput > 0, idleMs: row.lastOutput > 0 ? body.now - row.lastOutput : null })
+          : `slot ${slot} has no row`;
         await Bun.sleep(250);
       }
+      doneLookingWhy = last;
       return false;
     };
 
@@ -6521,7 +6537,8 @@ export async function run(ctx: Ctx): Promise<void> {
     const greenMainBefore = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
     check("self-land green fixture: the row is running on a live lane that is idle, clean and ahead",
       greenDispatch.ok && greenRow?.status === "sent" && greenLaneSlot !== null && !!greenLaneCwd && greenReady,
-      JSON.stringify({ dispatch: greenDispatch.status, slot: greenLaneSlot, cwd: greenLaneCwd, ready: greenReady }));
+      JSON.stringify({ dispatch: greenDispatch.status, slot: greenLaneSlot, cwd: greenLaneCwd,
+        ready: greenReady, why: greenReady ? "" : doneLookingWhy }));
 
     // --- THE PROJECTION TIE-IN (brief §2.6), measured where the state is deterministic: this lane
     // is idle, clean and ahead, so its row is REVIEWABLE, and the Program carries `green-only`. The

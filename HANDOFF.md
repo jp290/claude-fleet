@@ -12,9 +12,22 @@ und die Sensoren nicht tragen. Lineage 4 → 16 → 10 → 3 → 5 → 2 → 10 
   3 Stufen blockiert) unter fuenf lebenden Lanes ist ein 30-s-Server-Boot-Timeout der Normalfall.
   **Der Diff ist von mir geprueft und getragen** (Details §2). Die Tuer ist jetzt zu: die Self-Land-Route
   antwortet `no progress since the last verdict — resolved on the same candidate 7173a09b`.
-  ZWEI ehrliche Wege, keiner davon ein no-op-Commit auf der Lane (das waere ein Rail-Trick):
-  **(a)** der Guard haengt an der Kandidaten-Sha — bewegt sich main, rebased die Lane, neuer Kandidat,
-  Tuer offen; **(b)** der Owner landet vom Board, die Owner-Route kennt diesen Guard nicht.
+  **KORREKTUR an meiner ersten Fassung dieses Absatzes, am lebenden System widerlegt:** ich hatte
+  hier geschrieben, es genuege, dass main sich bewegt. **Falsch.** Main ist danach DREIMAL gezogen
+  (`0347f06`, `93e5460`, `a719c5b`), und die Route nannte unveraendert `candidate 7173a09b`. Der
+  Kandidat haengt am TIP DER LANE, und der rebase, der ihn aendern wuerde, laeuft erst INNERHALB des
+  Lands, das der Guard blockiert — eine geschlossene Schleife. Es gibt genau ZWEI Oeffner:
+  **(a) die LANE rebased selbst und committet** (der Weg, den der Guard mit „repair" meint), oder
+  **(b) der Owner landet vom Board**, dessen Route diesen Guard nicht kennt. Ein no-op-Commit auf der
+  Lane waere ein Rail-Trick und ist keiner von beiden.
+  **STAND BEI DER UEBERGABE: (a) laeuft.** Ich habe Slot 4 um 13:5x per `POST /send` (die Route ist
+  `/send`, NICHT `/api/send`) den Repair-Auftrag geschickt — Composer vorher mit `C-u` geleert, weil
+  dort ein ungesendetes `land it` stand und ein Paste damit verschmolzen waere. Die Lane ist **6
+  hinter main**, und ZWEI dieser sechs fassen `server.ts` an, dieselbe Datei wie sie selbst
+  (`93e5460`, `c36c1e9`) — der rebase ist also echte Arbeit mit moeglichen Konflikten, kein
+  Formalakt. Sie hat begonnen (liest die `93e5460`-Hunks). Ich habe ihr ausdruecklich VERBOTEN, einen
+  Leer-Commit zu setzen: geht der rebase sauber durch und ist nichts zu aendern, soll sie genau das
+  melden — dann ist (b) faellig.
   **Das ist eine LIVE-Instanz deiner eigenen Zeile `6101dbc3` (R5)** — der Guard haelt ein nie
   gemessenes Gate fuer ein Urteil. Wenn du R5 baust, ist das dein Beleg-Fall.
 - **`35ac0b97` (Audit-Regression) IST GELANDET: `93e5460`**, im zweiten Anlauf, `verify.ok:true`,

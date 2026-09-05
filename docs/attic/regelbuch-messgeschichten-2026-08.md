@@ -505,3 +505,297 @@ Dort steht auch `deployGap` (`codeBehind`)
   Drei optionale Env-Knöpfe: `FLEET_DEPLOY_BUILD_CMD` (default `bun run build`), `FLEET_DEPLOY_RESTART_CMD`
   (default aus `SOCK` abgeleitet, damit eine Test-Instanz nie das Live-srv trifft),
   `FLEET_DEPLOY_BUILD_TIMEOUT_MS` (default 300 s). Kein Board-Knopf.
+
+## §15 K1-Verdichtung von `rulebook/lane-discipline.md` (2026-09-05, Zeile `56b9d19b`)
+
+Owner-Ansage 2026-09-05 01:4x („alles auf einen guten Stand"). Acht Bloecke des Lane-Fragments
+wurden auf je eine Regel plus Zeiger gekuerzt; hier stehen die ORIGINALBLOECKE (Stand 2026-09-05
+vor der Verdichtung), damit keine Messgeschichte verloren geht. Regeln wurden nicht gestrichen,
+nur Geschichte und Zahlen. Gegencheck der zugrunde liegenden Analyse:
+`docs/messungen/2026-09-05-kontextschicht-gegencheck-glm.md` (B2 bestaetigt).
+
+### §15.6 e2e-isolated Tier-2-Vorschau (Originalblock, 2026-09-05)
+
+- **`./e2e-isolated.sh` ist Tier-2-Vorschau, kein Gate — und keine Pflicht in jeder Lane**
+  (Owner-Entscheid 2026-08-07; gemessen: ~165 min/Tag Suite-Mutex fuer 0 echte Vorschau-Funde in zwei
+  Tagen, und derselbe Lauf laeuft nach dem Land ohnehin als Stufe 2). Fahre sie, wenn du `e2e/`, einen
+  Suite-Wrapper (`e2e-*.sh`, `e2e-stage.sh`) oder den Merge-/Land-Pfad angefasst hast — **oder wenn du
+  eine Aussage aenderst, ueber die irgendwo eine Behauptung steht** (ein `supports.*`-Feld, ein
+  `effortLevels`, eine `note`, ein Kontrakt-Default). Denn `e2e/security.ts` laeuft AUSSCHLIESSLICH in
+  `./e2e-isolated.sh` — `./e2e-security.sh` ist der separate Einzeldatei-Harness und enthaelt diese
+  Familie NICHT, der Land-Gate sagt dir dort also NICHTS: du faehrst die Vorschau oder rechnest mit dem
+  Audit ~9 min nach dem Land. Genau so einmal faellig geworden (`8e154dd`, adjudiziert `stale-test`,
+  repariert `6cc8283`) — der Entscheid bleibt trotzdem richtig; Rueckfalltuer: diese Zeile zurueckdrehen.
+  Safe inside lanes (jede isolierte Suite meidet den Live-Socket). Run `./e2e-clean-review.sh` whenever
+  you touch the merge/land path — die einzige Suite, die den ②-Reviewer-Kontrakt (downgrade-only +
+  fail-closed) beweist. **Und `./e2e-postland-audit.sh`, wenn du den Tier-2-Audit-Pfad anfasst** (Queue,
+  Drain, Snapshot, Retention) — die einzige Suite, die dort etwas beweist; kein Gate faehrt sie, also
+  rottet sie unbemerkt, wenn niemand sie mitlaufen laesst (einmal monatelang passiert). Volle
+  Geschichte: `docs/attic/regelbuch-messgeschichten-2026-08.md` §9.
+
+### §15.15 Achtzehn Flake-Familien (Register-Langfassung) (Originalblock, 2026-09-05)
+
+- **Achtzehn bekannte Flake-Familien** — Instanzen und Mechanismen stehen in `docs/verify-tiering.md`,
+  dort und nur dort, damit die Zahlen nicht an zwei Stellen altern: drei Familien aus §5b ·
+  **merge/resolver** („agent reported rebased, but the lane is not clean", §11) · „N marks, 1..N-1" im
+  reseed+live-bytes-Check (§11.2b) · die Pane-Beobachtungs-Rennstelle im `stalled`-Abschnitt (§11.2c —
+  bis zu vier FAILs, EINE Wurzel) · der 💾-commit-Idle-Gate gegen die eigenen Sonden der Suite (§11.2e)
+  · die **Send-Boot-Fixtures** in `./e2e-claude-gate.sh`, die eine Vorbedingung behaupteten, die sie
+  nicht kontrollieren (§11.2f — sechs Checks, `lastOutput` ist kein Bereitschafts-Signal; repariert
+  in zwei Schnitten 2026-08-19, §11.2c-bis ist darin aufgegangen) · die **send-receipt-Gruppe** in
+  `e2e/slots.ts` (§11.2g) — REPARIERT in `4bde073`: tmux 3.6a laesst `new-session -c <gone>` still
+  auf `$HOME` zurueckfallen, der Heal gelang also IMMER; die Sonde haelt den Heal jetzt mit
+  `remain-on-exit` + toter Pane bei has-session=0 fest. Ein Rot dort NACH `4bde073` ist wieder
+  ECHT. (Die drei `lines=0`-§7-Sichtungen von 2026-08-25/26 sind dort re-attribuiert und seit
+  `7875c19` repariert — ein §7-lines=0-Rot danach ist wieder ECHT.)
+  · die **owner-token-ambient-use-Gruppe** in `e2e/programs.ts` (§11.2h) — REPARIERT in `70698a7`:
+  die Sonde las den Land an der TASK-ZEILE ab, und die requeuet der abgekoppelte Brief-Tail 4 s nach
+  dem Dispatch ueber das `done` hinweg (9,0 % Basisrate, 7/78 Laeufe; Note und Ambient-Zeile waren
+  jedes Mal korrekt). Sie pollt jetzt den Integrationszweig und die Note. Ein Rot dort NACH `70698a7`
+  ist wieder ECHT. **FIX1 ist BEHOBEN** (2026-07-28, `GIT_OPTIONAL_LOCKS=0` an den
+  read-only-git-Aufrufen; Beweis 10/10 ueber 5 serielle Laeufe) — ein FIX1-Rot danach ist wieder ECHT
+  und deins. · der **Suite-Server-Phasen-Restart**, der den sterbenden tmux-Server ueberholt
+  (§11.2i — offen; Fingerabdruck `server exited unexpectedly`; Post-mortem: keine oder nur
+  Vorphasen-`server.log`) · die **pi-unfenced-Watch-Zustellungs-Familie** (§11.2j — MECHANISMUS
+  ISOLIERT, acht Mitglieder, test-seitig REPARIERT in `b20e7e4`: `server.ts#tickWatches`
+  persistiert `send-uncertain` + `attempts++` VOR dem tmux-Roundtrip und rollt erst nach
+  `SendRefused` zurueck — die Fixtures sampelten diesen by-design-Transienten. Sie MESSEN jetzt
+  ihre Vorbedingung (Schnitt 1) und warten den Transienten bounded aus (Schnitt 2, `settleEvent`;
+  `settleWaits` wird gedruckt). Ein Rot dort NACH `b20e7e4` ist wieder ECHT — es sei denn, die
+  Vorbedingungs-Sonde faellt als SIE SELBST, dann sagt sie das woertlich) · die
+  **raw-review-Persist-Rennstelle** in `e2e/outcomes.ts` (§11.2k — test-seitig REPARIERT in
+  `05f37f1`: Block 9b wartet auf die PERSISTIERTE Review-Wirkung statt auf den Klick; ein 9b-Rot
+  ist ab jetzt wieder ECHT. Der Server-Bug dahinter — `teardownSlotOccupant` raeumt
+  `reviewInflight` nicht — steht als P6-Zeile offen, nicht als Flake).
+  · der **busy-receiver-Restart-Check** in `e2e/watch.ts` (§11.2l — REPARIERT in `7d089c1`, 2026-09-04: die Fixture erzeugt ihre
+  Vorbedingung jetzt selbst statt sie von fremder Arbeit zu erben; Zielcheck 5x rot vor / 1x gruen
+  nach dem Fix im Trail. Ein Rot dort NACH `7d089c1` ist wieder ECHT. Zum Wiederfinden nach einem
+  Rebase: `git log --grep "busy-receiver fixture"`. Der Befund, aus dem Trail-Register
+  bewiesen 2026-09-03: `restart keeps the busy pending event with the same id and no invented
+  attempt` ist 15x auf 13 VERSCHIEDENEN Baeumen rot, zwoelf davon aelter als der Slice, der das Rot
+  zuletzt geerbt hat. Die Fixture verlaesst ihre busy-Schleife, sobald sie das Event EINMAL pending
+  gesehen hat, und kontrolliert ihre Vorbedingung danach nicht mehr; Diskriminator ueber 364 Laeufe
+  ist die Strecke Anker→Restart, gruen Median 3,1 s / p95 3,5 s gegen rot min 3,5 s / Median 4,0 s.
+  **Merkposten zur BEWEISORDNUNG:** hier entschied weder der Rerun desselben Baums (faellt identisch)
+  noch der frische HEAD-Worktree (laeuft gruen) — entschieden hat das Trail-Register. Ein roter Lauf
+  auf einem Baum VOR dem Land widerlegt die Attribution; ein gruener Rerun danach beweist nichts).
+  · das **PARKED-Quartett** in `e2e/repo-worker-audit.ts` (§11.2m — OFFEN, Wurzel am aufbewahrten
+  Instanz-Ledger abgelesen 2026-09-04: RW.5–RW.8 fallen immer zu viert; das „slow"-Land ist `sleep 6`
+  gegen `FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000`, unter Suite-Last kostet es 10 092 ms und der Audit
+  antwortet korrekt `unknown` statt `green` — falsche Fixture-Marge, kein Server-Bug. Der Floor ist
+  eine UNTERGRENZE, beide Schnitte (Marge weiten / Budget heben) stehen offen)
+  · der **`⏸ re-run`-Guard** in `e2e/merge.ts` (§11.2n — OFFEN, Mechanismus am Code gelesen:
+  `e2e/lane-helpers.ts#settleForMerge` pollt 12 s und kehrt danach STILL zurueck, der folgende
+  merge-POST trifft den IDLE-Gate statt des Guards, und der Check faellt als der Guard. Signatur:
+  `{"status":"blocked","detail":"the session is actively working right now …"}`. Basisrate ueber das
+  ganze Trail-Register 11/655 = 1,7 % auf ELF verschiedenen Trees, keiner reproduziert — und
+  vier Rots liegen vor dem Land, das B-16 verdaechtigt hatte, womit B-16 mit NEIN beantwortet ist.
+  · die **Projektions-Sonde** in `e2e/programs.ts` (§11.2o — OFFEN, gelandet 2026-09-04 mit `fc45fe4`:
+  `projection nextAction: a REVIEWABLE row of a promoted Program …` faellt mit dem IMMER GLEICHEN
+  Detail `{"with":null,"without":null,"phase":"UNKNOWN"}` — beide `.find(...)` leer, die Fixture-Zeile
+  war in der Projektion gar nicht da. Basisrate 2,1–2,9 % ueber 209–237 Laeufe auf FUENF verschiedenen
+  Baeumen seit 2026-08-27; `2d88521f` lief neunmal und fiel einmal, also entscheidet auch hier das
+  Register und nicht ein Rerun. Ausdruecklich KEIN Host-Unterschied
+  (`docs/messungen/2026-09-04-falsifikator-second-host.md` §5). **Die Wurzel ist NICHT isoliert**, und der
+  Grund steht in der Sonde selbst: sie druckt nur `phase` und wirft `phaseBasis` und `unknown` weg —
+  die zwei Felder, die in derselben Antwort stehen und die Frage woertlich beantworten wuerden. Erster
+  Schnitt ist darum die Evidenzzeile, nicht die Wurzel).
+  Bei 1,7 % beweist ein gruener Rerun NICHTS; das Register entscheidet).
+  · der **`requeue-teardown-empty`-Rest** in `e2e/tasks.ts` (§11.2p — OFFEN, EINE Sichtung
+  2026-09-04, Mechanismus vollstaendig aus dem Trail gelesen: die requeue-Probe liess ihre
+  Zeile (`kind:auftrag`) und ihren Slot stehen, und die Setup-Zeile der `backlog nudge`-Sektion
+  — `the only open row is a pending kind:notiz observation` — fand genau diesen Rest. Die zwoelf
+  Checks darunter massen ein VERSCHMUTZTES Register und fielen als der Vertrag. **Ein Fail, siebzehn
+  rote Zeilen.** Basisrate 1/177, also die niedrigste aller Familien — registriert wegen des
+  RADIUS, nicht der Rate. Regress ohne Rerun ausgeschlossen: der Audit-Baum `f588287` hat gegenueber
+  seinem Vorgaenger nur `docs/verify-tiering.md`, `HANDOFF.md` und `fleet-watchdog.service` im Diff.
+  Merkregel fuer einen Leser: siebzehn Fails sind nicht siebzehn Befunde — zuerst die SETUP-Zeilen
+  der betroffenen Sektionen lesen; ist eine rot, ist alles darunter UNGEMESSEN, nicht verletzt).
+  Gleiche Beweisordnung wie immer, kein Freifahrtschein.
+
+### §15.16 Suite-Mutex und das Nullfenster des Prozess-grep (Originalblock, 2026-09-05)
+
+- **Suiten serialisieren sich seit `ddc5128` SELBST** (Mutex in `e2e-stage.sh`, gilt für alle sieben Wrapper
+  inkl. Land-Gate und Tier-2-Audit): kein manuelles `until mkdir` mehr um Suite-Läufe. Semantik:
+  `/tmp/fleet-e2e.lock` **existiert ≠ gehalten** — die `pid`-Datei darin entscheidet (toter Halter wird vom
+  nächsten Anwärter gereapt; eine PID-**lose** Lock-Dir ist ein manueller Park-Halt und wird nie gereapt — so
+  parkst du die Maschine absichtlich). Maschine prüfen: `ps -eo command | grep -c '^/bin/sh ./e2e-'` (ein
+  schlichtes grep ohne Anker zählt zsh-Wrapper mit — darauf ist am 2026-07-26 eine Lane hereingefallen).
+  **Aber „0 Wrapper" ist KEIN Beweis fuer eine ruhige Maschine — am 2026-09-04 bezahlt** (ein
+  Vorschaulauf nahm einem echten Land ~25 min Wartebudget ab). Mechanismus, an `watchdog.sh`
+  nachgelesen und nicht zitiert: `VERIFY_CMD` faehrt VIER Schritte — `bun install`,
+  `bun e2e/pins.ts`, `bunx tsc`, `bun run build` — BEVOR der erste `./e2e-*.sh` startet, und
+  `AUDIT_CMD` faehrt `bun install` vor seinem `./e2e-isolated.sh`. In diesen Fenstern zaehlt das
+  grep NULL, waehrend ein Land bzw. ein Tier-2-Audit laeuft und den Mutex gleich nimmt. Belastbar
+  ist deshalb nur das Paar: die `pid`-Datei in `/tmp/fleet-e2e.lock` (haelt gerade jemand?) UND der
+  Server (`GET /api/slots/:id/merge` → `running`, bzw. `merges` im Zustand: faehrt eine fremde MAIN
+  gerade einen Land?). Das Prozess-grep ist von den dreien das schwaechste Signal.
+
+### §15.19 concurrency-safe vs. Maschinenlast (Originalblock, 2026-09-05)
+
+- `./e2e-isolated.sh`, `./e2e-claude-gate.sh` und `./e2e-clean-review.sh` leiten SOCK/PORT/DIR aus
+  `$$` ab (getrennte Port-Baender) → parallel-sicher fuer Socket/Port/Verzeichnis, **NICHT fuer
+  Maschinenlast**: zwei `./e2e-isolated.sh` gleichzeitig erzeugen auf dieser Maschine zuverlaessig
+  Fehler auf BEIDEN Baeumen mit unterschiedlicher Signatur — so ein Paar beweist gar nichts. Die Suite
+  ist unter Last messbar nicht-deterministisch (ein Lauf fiel 3/759 auf einem Baum mit NULL
+  Code-Aenderungen). **Kein Freifahrtschein:** ein Fail bleibt deiner, bis du ihn als Flake beweist, und
+  **der fails-identically-at-HEAD-Beweis MUSS seriell laufen** — auch nichts anderes danebenstellen, das
+  die Maschine belegt: der Post-Land-Audit (Stufe 2) IST ein `e2e-isolated`-Lauf. Konsequenz fuers Gate:
+  die volle Suite darf genau darum kein hartes Pre-Land-Gate sein; sie laeuft als Stufe 2 NACH dem Land.
+  Messungen: `docs/attic/regelbuch-messgeschichten-2026-08.md` §11.
+
+### §15.20 claude-gate: drei Phasen (Originalblock, 2026-09-05)
+
+- `./e2e-claude-gate.sh` hat **DREI Phasen** in einem Wrapper (`grep -n 'phase:' e2e-claude-gate.sh` —
+  es gilt die Datei): Phase 1 `FLEET_CMD=claude` (Stand-in-Binary) · Phase 2 `FLEET_CMD=harn` (eine
+  Harness, die server.ts nie gehoert hat, nur per Env deklariert) · Phase 3 `FLEET_CMD=true` mit LEERER
+  `FLEET_HARNESS_COMMS` (Gegenprobe zum „unprobed"-Waiver). Phase 1+2 sind ein PAAR und keine allein
+  vollstaendig: Phase 2 beweist, dass fremde Modell-Muster akzeptiert werden; die Gegenprobe (ein
+  claude-Fleet lehnt genau diese Muster weiter ab) kann nur in Phase 1 stehen — wer `MODEL_RE`
+  aufweitet, kommt an Phase 2 vorbei und wird von Phase 1 gestellt. Phase 2 setzt `default-shell` des
+  Test-Sockets auf zsh — ein Check haengt daran, dass ein unquotetes Glob-Modell die Pane toetet.
+  **Jede Phase wartet 30 s auf ihren eigenen Server und laeuft danach WEITER, egal ob er je geantwortet
+  hat** — ein solches Rot liest sich wie ein Code-Regress und heisst „nie gemessen";
+  Erkennungsmerkmal am Post-Mortem: **keine `server.log` in der aufbewahrten Instanz**.
+
+### §15.24 rg/ast-grep/graphify (Originalblock, 2026-09-05)
+
+- **`rg` respektiert `.gitignore` — und gitignored sind hier ausgerechnet `CLAUDE.md` (dieses
+  Regelbuch), `fleet.json` (die Queue), die drei Ledger (`lane-outcomes.jsonl` ·
+  `post-land-audits.jsonl` · `audit.jsonl`) und `.env`.** Ein `rg` darueber liefert kein
+  Fehlerergebnis, sondern ein LEERES — und leer liest sich wie „gibt es nicht". Regel: getrackter Code
+  → `rg` gern; alles Operative → **`rg -uu`** (oder schlicht `grep`). Strukturelle Fragen („alle
+  Aufrufstellen von X") → `ast-grep --pattern '<muster>' --lang ts <datei>` (0.45.1, user-lokal, auch
+  als `sg`; `--json=compact` fuer Maschinen) — gemessen trennt es echte Aufrufstellen von
+  Kommentar-/String-Phantomen. `graphify` deckt dieselbe Ebene ab, aber NUR im Haupt-Checkout
+  (gitignored, nie im Worktree). Und die `grep`-Aufrufe in `state.sh`/`register.sh` bewusst NICHT auf
+  `rg` umstellen: sie lesen gitignorte Dateien, ein naiver Tausch macht daraus stille Leer-Ergebnisse.
+  Messdetails: `docs/attic/regelbuch-messgeschichten-2026-08.md` §12.
+
+### §15.30 Demo-Repo (Originalblock, 2026-09-05)
+
+- **Die Demo ist ein eigenes, remote-loses Repo unter `~/claude-fleet-demo`** (Owner-Vorgabe: nicht
+  veroeffentlichen — dieses Repo ist public). Sie baut gegen DIESEN Checkout: `@app/*`-Alias auf
+  `src/client.ts`, Seite aus `public/index.html` abgeleitet, `node_modules`-Symlink. Konsequenz: **eine
+  Aenderung an `public/index.html` oder `src/client.ts` kann die Demo brechen, und
+  kein Gate hier sagt es** — sie hat ihr eigenes `bun run typecheck`/`bun run build`, Sekunden. Und: nie eine Datei
+  ausserhalb dieses Repos in die tsc-Liste des Gates eintragen — eine Lane hat nur getrackte Dateien,
+  so ein Eintrag laesst JEDE Lane am Verify scheitern.
+
+### §15.33 pkill trifft den Live-Server (Originalblock, 2026-09-05)
+
+- **Scratch-Instanzen NIE mit `pkill -f "bun server.ts"` beenden — das Muster trifft den LIVE-Server**
+  (gemessen 2026-08-06 in Lane `6102`: getroffen, vom Watchdog in ~1 s respawnt, alle 8 Sessions überlebten —
+  Glück, kein Design). Nur `tmux -L <scratch-socket> kill-server` oder die notierte PID.
+
+### §15.34 pkill trifft den Post-Land-Audit (Originalblock, 2026-09-05)
+
+- **Dieselbe Falle gilt für SUITEN: `pkill -f 'e2e-isolated.sh'` trifft auch den Post-Land-Audit des
+  Servers** (einmal bezahlt: der mitgetoetete Audit stand als ROT im Register, obwohl nie etwas
+  vermessen wurde — adjudiziert `unknowable`). Regel: einen eigenen Suite-Lauf **nur über seine
+  notierte PID** beenden (`kill <pid>`), nie über ein Namensmuster — auf dieser Maschine läuft immer
+  auch der Audit des Servers unter demselben Namen. Und die Vorschau ist ohnehin verzichtbar: Tier-2
+  ist Vorschau, kein Gate, und läuft nach dem Land automatisch.
+
+### §15.35 kill <wrapper-pid> reicht nicht (Originalblock, 2026-09-05)
+
+- **Und `kill <wrapper-pid>` reicht NICHT** (P5-Lane, 2026-08-18): der Wrapper stirbt, der `bun fleet-e2e.ts`-
+  Runner läuft weiter (ppid 1), schreibt in denselben geerbten fd und spawnt sein tmux-srv sogar neu. Voller
+  Abbruch: Runner-PID killen UND `tmux -L fleettest<pid> kill-server`, danach Lock und Socket prüfen.
+  Erkennungsmerkmal einer verschränkten Logdatei: `grep -ao 'isolated-[0-9TZ]*-[0-9]*' <log> | sort -u`
+  liefert ZWEI run-ids — und grep hält so ein Log für BINÄR (ohne `-a` leere Ergebnisse, die sich wie „keine
+  Fehler" lesen). Zwei verschränkte Läufe vergiften sich auf dieser Maschine gegenseitig; keine der beiden
+  Zahlen ist dann ein Urteil.
+
+
+Zweiter Schnitt derselben Verdichtung (2026-09-05, sechs weitere Bloecke, nur Messdetails gestrichen):
+
+### §15.1 Proportionale lokale Verifikation (Originalblock, 2026-09-05)
+
+- **Proportionale lokale Verifikation (seit `b09f6c4`, 2026-08-13):** frage zuerst
+  `GET /api/self/gate` (self-token) und fahre die von `localProof.steps` empfohlene Beweismenge
+  (Step-Namen = Zeilen der vollen Kette unten; `classifiedAs` nennt je Datei die Regel).
+  `localProof: null` oder Route nicht erreichbar ⇒ volle Kette. `isolatedPreview` steuert nur die
+  Vorschau (`true` = fahren, `"self-assess"` = die bestehende Merge-/Land-Pfad-Selbstprüfung).
+  Der serverseitige Land-Gate bleibt autoritativ und fährt die volle Kette; seit 2026-08-25
+  (`e896826`, Owner-Entscheid) wählt er für rein-docs-Lands (JEDE Diff-Datei klassifiziert
+  docs-or-prose, leerer/gemischter Diff ⇒ voll) die kurze Beweiskette install+pins, stempelt
+  `verify.proportional` + `verify.steps` ehrlich auf die Land-Note, und der Post-Land-Audit
+  bleibt unverändert voll — der lokale Beweis ist der schnelle, nie der Ersatz. Vertrag:
+  `AGENTS.md` §Verify, Mapper: `verify-proportion.ts` (einzige Klassifikationsquelle beider
+  Seiten).
+
+### §15.9 Gate-Route /api/self/gate (Originalblock, 2026-09-05)
+
+- **Was dich wirklich gated, ist abfragbar** (Lane-only, gleiche Credential wie drift, seit `184fc72`):
+  `curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" http://<FLEET_HOST>:8790/api/self/gate` — live
+  `verify{cmd,timeoutMs,waitMs,skipExit}` (`verify:null` = kein Gate konfiguriert; **zwei Budgets, nicht
+  austauschbar** — `timeoutMs` ist, was das Gate ARBEITEND ausgeben darf, `waitMs`, was es in der Schlange vor
+  dem Suite-Mutex verbringen darf, bevor es anfängt (getrennt seit `08dc17a`). Ein `waitedOut` ist nie
+  `ok:false`: es hat den Baum nie angesehen), `cleanReview`-Modus,
+  `autoReview`, `postlandAudit`, `mergeRepairRounds`, `rulebookDrifted` (deine CLAUDE.md-Kopie vs. Quelle;
+  `null` = nicht vergleichbar, NIE „kein Drift" — bei `true` die Regeln aus `git show main:` bzw. dem
+  Quell-Checkout nachziehen, bevor du auf sie baust). Die Route liest den Env des LAUFENDEN Servers, nicht
+  eine Datei — bei Abweichung von der Verify-Zeile oben gilt die Route.
+
+### §15.21 fleet-e2e.ts Runner und Kopierlisten (Originalblock, 2026-09-05)
+
+- `fleet-e2e.ts` is a **runner only**: it boots the check modules in `e2e/*.ts` in order and prints
+  the tail. Add a check next to its family in the right `e2e/<family>.ts`, never at EOF and never back
+  into the runner. Shared plumbing (`check`, `post`/`get`, `tmuxOut`, `paneEnv`, `ROOT`, `REPO`) is
+  `e2e/harness.ts`; fixtures that outlive their own section travel through `e2e/ctx.ts`. A pane
+  env-var probe MUST go through `paneEnv()` — hand-rolled send-keys + sleep + capture-pane is the shape
+  of a removed flake. `e2e-isolated.sh` copies `e2e/` alongside `fleet-e2e.ts`; a new sibling file
+  needs no wrapper change, a new top-level directory does. `fleet-e2e-claude-gate.ts`,
+  `fleet-e2e-clean-review.ts`, `fleet-e2e-security.ts` und `fleet-e2e-postland-audit.ts` sind separate
+  Einzeldatei-Harnesses und NICHT Teil dieser Struktur. **Hand-Kopierlisten gibt es nicht mehr, und du
+  pflegst auch keine:** seit dem Stage-Fold `3d38960` leiten alle sieben Wrapper ihre Kopierliste aus
+  `e2e-stage.sh` ab, und zwei Pins halten das fest — die alte Todesart (eine Suite stirbt monatelang
+  unentdeckt am Boot, weil ein Modul in ihrer Hand-Liste fehlte) ist strukturell zu.
+
+### §15.22 CLAUDE.md nur KOPIERT (Originalblock, 2026-09-05)
+
+- **Merke (2026-07-25): `CLAUDE.md` ist gitignored und wird beim Lane-Spawn nur KOPIERT** (`server.ts`, grep
+  `createWorktree`). Eine Lane, die diese Datei per Wissenspflege aktualisiert, sieht ihre Änderung nie in
+  `git status`, und sie stirbt mit dem Worktree beim Land. Also: Rulebook-Änderungen aus einer Lane **im
+  Report als Text melden**, damit sie im Haupt-Checkout von Hand nachgezogen werden. Und: die Kopie ist ein
+  Spawn-Zeit-Snapshot — eine lang lebende Lane (⚙ steward) driftet; im Zweifel die Datei im Haupt-Checkout
+  lesen. Details: `docs/ungoverned-artifacts.md`.
+
+### §15.26 docs-Regal Spawn-Snapshot (Originalblock, 2026-09-05)
+
+- **Dein `docs/`-Regal ist ein Spawn-Zeit-Snapshot — lies Wissen aus `main:`, nicht aus dem Working Tree.**
+  Ein Worktree teilt sich die Object-Database, also liefert `git show main:docs/x.md` IMMER den aktuellen
+  Stand, auch wenn die Datei in deinem Baum fehlt oder älter ist (verifiziert 2026-07-27: Lane `e288` hatte
+  `docs/suite-contention.md` nicht im Baum, `git show main:` lieferte es vollständig). Konkret:
+  `git log --oneline HEAD..main -- docs/` zeigt, was seit deinem Fork dazukam — einmal am Anfang und nochmal,
+  bevor du einen roten Check adjudizierst oder einen Befund als neu meldest. Kostet nichts, und eine lange
+  laufende Lane altert sonst gegen eine Welt, die sich weiterbewegt hat (`docs/knowledge-currency.md` §3).
+
+### §15.29 Doc-Kollision Lane/Haupt-Checkout (Originalblock, 2026-09-05)
+
+- Doc-Kollision Lane↔Haupt-Checkout: eine Lane brancht von committed HEAD und sieht *uncommittete* neuere
+  Analyse im Haupt-Checkout NICHT — ein blinder ff-Land regressiert sie still (passiert 2026-07-22,
+  canDeliver-Lane vs. main-seitige synergy/overview-Analyse). Vor dem Landen einer doc-berührenden Lane gegen
+  die **working copy** des Haupt-Checkouts reconcilen (nicht nur die evtl. ältere Lane-Basis re-anchoren).
+  Besser: main-seitige Doc-Analyse **committen, bevor** du eine Lane spawnst, die dieselben Docs anfasst —
+  keine wertvolle Analyse uncommitted im Haupt-Checkout liegen lassen (unsichtbar für Lanes +
+  Kollisions-Zündstoff).
+
+### §15.13 Fail ist deiner / Beweisreihenfolge (Originalblock, 2026-09-05)
+
+- Ein e2e-Check-Fail zählt als DEINER, bis du das Gegenteil beweist. "Sieht aus wie ein bekannter Flake"
+  reicht nicht; die benannten Flakes sind kein Freifahrtschein für neue Fails gleicher Signatur.
+  **Beweisreihenfolge korrigiert 2026-07-26 (docs/verify-tiering.md §11.7): ZUERST denselben Baum erneut
+  laufen lassen.** Läuft er grün, ist die Nicht-Determiniertheit direkt bewiesen — fertig. Der frische
+  HEAD-Worktree ist der **Fallback** für einen Baum, der identisch weiter fällt: ein *grüner* HEAD-Lauf
+  beweist nämlich nichts, weil er "unser Regress" nicht von "der Flake hat diesmal nicht gefeuert" trennt,
+  sich aber wie ein Schuldspruch liest. Transcript in den Report, immer.
+
+### §15.17 nohup blockgepuffert (Originalblock, 2026-09-05)
+
+- **Ein Suite-Lauf hinter `nohup … > log` ist BLOCKGEPUFFERT** (2026-09-04): „0 PASS-Zeilen" bei
+  lebendem Prozess ist ein Messfehler des BEOBACHTERS, kein Haenger — die Groesse der eigenen
+  Logdatei ist kein Fortschrittssensor. Fortschritt liest man an der `server.log` im
+  Instanzverzeichnis oder am Trail (`docs/e2e-trail.md`).
+

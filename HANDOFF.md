@@ -263,6 +263,37 @@ und die Sensoren nicht tragen. Die Abschnitte darunter sind FREMD (geteilte Date
    gestartet, waehrend ich landete. Ich habe sie NICHT gebrieft und nicht geprueft; sie gehoert
    keiner Zeile dieses Programs, die ich kenne. Erst lesen, dann urteilen.
 
+## 0b. EINE REGRESSION, DIE ICH SELBST GELANDET HABE — sie ist LIVE und macht jedes docs-Land rot
+
+**`cbccd3a` (Tier 2 proportional) faehrt `bun e2e/pins.ts` in einem Baum OHNE `.git`.** Seit dem
+Deploy 07:36 ist damit JEDES rein-docs-Land rot. Zwei von zwei: Audit-Zeilen `2e671a47` (08:49,
+375/6) und `8a4655cb` (09:49, 377/6), beide `proportional:true`, beide ~1 s, beide sechs identische
+Fails mit `fatal: not a git repository (or any of the parent directories): .git`.
+
+**Die Sonden sind nicht schuld — sie scheitern korrekt ALS SIE SELBST** („die Ableitung lief",
+„PROBE: git named …", „source set is not empty"). Genau die Regel, die dieses Repo verlangt, und
+sie hat funktioniert.
+
+**Wurzel, am Code gelesen:** `server.ts#runPostLandAudit` legt den Tip per
+`snapshotIntegrationTree` in einen tmpdir und spawnt mit `cwd: dir`; ein Snapshot hat kein `.git`.
+Der VOLLE Pfad ueberlebt das nur, weil `e2e-isolated.sh` `node_modules` auf den Quell-Checkout
+zurueck-symlinkt (`docs/e2e-trail.md` §3) — die proportionale Kette faehrt nackt, ohne diesen
+Zeiger. Der LAND-GATE ist nicht betroffen: er laeuft im Lane-Worktree, und der hat eine
+`.git`-DATEI.
+
+**Erledigt:** beide Zeilen als `real` adjudiziert (NICHT flake — wer das als Rauschen ablegt,
+konserviert es), und **`35ac0b97` ist gefilt UND freigegeben** (Opus 5, mit Wurzel, Done-Kriterium
+in zwei Teilen und einem benannten Entwurfsraum). **Ich habe den Fix NICHT selbst gefahren:
+ctx 38 %, und die Wahl zwischen den drei Entwuerfen ist echte Entwurfsarbeit, keine Glue.**
+
+**UND EIN ROT, DAS ICH BEWUSST NICHT ADJUDIZIERT HABE:** das Audit zu `d37f835` (09:49, 3678/4).
+Drei der vier kenne ich — `projection nextAction` (§11.2o) und das Paar `subject-gone` /
+`counterprobe`, das die Vorgaengerin als gemeinsam fallend vermessen hat. Die vierte,
+**`D2 setup: both closing lanes reached the spent shape …`, habe ich NICHT untersucht** — und eine
+SETUP-Zeile heisst, dass alles unter ihr UNGEMESSEN ist, nicht verletzt. Sie ist ausserdem genau
+die Familie, die der Deploy erstmals scharf gemacht hat (`FLEET_LANE_AUTOCLOSE`). **Ein
+unadjudiziertes Rot ist sichtbar, ein falsch adjudiziertes ist unsichtbar** — darum liegt es offen.
+
 ## 1. Was gelandet ist — VIER Lands, alle mit gruener Note, alle von MIR (actor-Rail, `confirmedByHuman false`)
 
 - **`bc0609f8` → `d37f835`** (GATE-ENV, gelandet 09:2x NACH dem Deploy). `runVerify` spawnte die

@@ -6512,19 +6512,34 @@ export async function run(ctx: Ctx): Promise<void> {
     // pointer must therefore name THIS MAIN's own door. Both directions, because a pointer that
     // said the same thing with and without the permission would be decoration: with the promotion
     // revoked the SAME row must point at the board instead, and say why.
-    const nextWith = (await selfExecution(landTok)).view?.programs
-      .find((row) => row.program.id === landProgram.id)?.tasks.rows.find((row) => row.id === greenRowId);
+    const progWith = (await selfExecution(landTok)).view?.programs
+      .find((row) => row.program.id === landProgram.id);
+    const nextWith = progWith?.tasks.rows.find((row) => row.id === greenRowId);
     await setPromotion(landProgram.id, null);
-    const nextWithout = (await selfExecution(landTok)).view?.programs
-      .find((row) => row.program.id === landProgram.id)?.tasks.rows.find((row) => row.id === greenRowId);
+    const progWithout = (await selfExecution(landTok)).view?.programs
+      .find((row) => row.program.id === landProgram.id);
+    const nextWithout = progWithout?.tasks.rows.find((row) => row.id === greenRowId);
     await setPromotion(landProgram.id, { v: 1, selfLand: "green-only" });
+    // THE EVIDENCE LINE, and it is the whole reason this check is readable when it falls. `phase`
+    // alone cannot say WHY: UNKNOWN is either R6 ("sent row owns no live lane") or R10 ("lane facts
+    // incomplete"), and those are different defects with different fixes. The server hands both
+    // answers back in the SAME response — `phaseBasis` names the rule that fired plus its detail,
+    // and the program row's `unknown` carries the sentence for this task id — so a probe that
+    // printed only `phase` was throwing away the diagnosis and buying it back at ~30 min per
+    // isolated rerun (measured: six reds, all reading {"with":null,"without":null,"phase":"UNKNOWN"},
+    // docs/verify-tiering.md §11.2o). BOTH legs are printed because the check asserts a phase on
+    // each: the without-leg is a second GET at a later instant and can fall alone.
+    const unknownFor = (prog: ProgramExecutionRow | undefined): string[] =>
+      (prog?.unknown ?? []).filter((line) => line.includes(greenRowId));
     check("projection nextAction: a REVIEWABLE row of a promoted Program names the MAIN's OWN land door, and without the promotion the board's",
       nextWith?.phase === "REVIEWABLE" && nextWith.nextAction === `inspect the diff, then land it yourself → POST /api/self/tasks/${greenRowId}/land`
         && nextWithout?.phase === "REVIEWABLE"
         && (nextWithout.nextAction ?? "").includes("the owner lands it from the board")
         && !(nextWithout.nextAction ?? "").includes("/land"),
       JSON.stringify({ with: nextWith?.nextAction, without: nextWithout?.nextAction,
-        phase: nextWith?.phase }));
+        phase: nextWith?.phase, phaseWithout: nextWithout?.phase,
+        basis: nextWith?.phaseBasis ?? null, basisWithout: nextWithout?.phaseBasis ?? null,
+        unknown: unknownFor(progWith), unknownWithout: unknownFor(progWithout) }));
 
     const landRes = await selfLand(landTok, greenRowId);
     const landRespBody = await landRes.json() as { running?: boolean; candidate?: string; laneSlot?: number;

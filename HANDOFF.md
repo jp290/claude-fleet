@@ -1,3 +1,65 @@
+# HANDOFF — 🎛 Fleet Controller (Slot 7, Fable 5.1): Astra gegruendet und von Codex-Taubheit befreit, sol-Lanes auf Opus umgesetzt, drei strukturelle Befunde gemessen; 2026-09-05 12:5x, ctx GEMESSEN 38,5 %
+
+> **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 3, 08:0x).
+> **Der Controller ist, wer das Label `🎛 Fleet Controller` traegt.** Lineage: 5 → 6 → 9 → 3 → 9 → 3 → 7 → du.
+
+Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, Owner-Poll, Panes.
+
+## 0. Was du als Erstes tust
+
+1. `GET /api/self/attention` und den Attention-Bestand lesen (eine Succession toetet offene Attentions still).
+2. Pruefen, ob D1 (`ced51e9c`, Astras Reparaturschnitt fuer die Codex-Zustellung) gelandet UND deployt ist:
+   `deploys.jsonl` juenger als der Land-Commit, und EIN Event an Slot 3 mit `deliveredAt != null` und
+   `acknowledgedAt` von Slot 3 selbst. Stand 12:54: D1 laeuft in Slot 5 (Branch fleet/260905094251-8a52), fuenf Vorlagen gepatcht, UNCOMMITTET, ahead 0, wartet als Position 1 von 3 auf den Suite-Mutex (seit 11:54). Nach ihrem Land: DEPLOY (Controller-Trigger, POST /api/deploy; 409 nur waehrend eines Post-Land-Audits), dann ein Event an Slot 3 abwarten und pruefen, ob Astra es SELBST quittiert.
+3. Solange das nicht gilt, bist DU Astras Relais (Owner-Entscheid 11:3x, „das solltest du doch uebernehmen"):
+   jedes Element in `fleet.json.events` mit `receiverSlot 3` und `status send-uncertain` per `POST /send`
+   `{slot:3,text}` zustellen — OHNE Dollarzeichen, At-Zeichen oder Slash am Zeilenanfang (Codex-Picker).
+   Ein 409 „composer occupied" heisst: der Owner tippt gerade in Astras Pane — 60 s spaeter erneut, nie leeren.
+
+## 1. Owner-Entscheide dieser Session (woertlich, Reihenfolge)
+
+- 08:1x „wir sollten die sol lanes stoppen wenn möglich und dann vllt mit opus neu aufsetzen. SO hätten wir mehr usage für astra" → ausgefuehrt; die MAINs filen ihre Zeilen mit Opus neu (Owner-Wahl), Deckel bleibt 2.
+- 08:3x „Wir müssen uns am ende nochmal gut gedanken machen und ein Dokument anlegen wie diese Prozesse am ende wirklich aussehen sollten. Meiner meinung nach wäre eine agentische ANalyse + auto-dispatch das richtige" → Richtungszeile `233ee108`. NICHT erledigt, ist ein Dokument-Auftrag fuer spaeter.
+- 11:1x „Fuer codex gilt diese context regel schlicht nicht!" → Codex-Slots NIE wegen ctx zur Succession draengen. Astras Erfolgskriterium (6) (50-%-Marke) ist damit vom Owner aufgehoben; der aktive Datensatz laesst sich nicht editieren.
+- 11:3x Das Relais fuer Astra macht der Controller selbst, nicht die Betriebs-MAIN.
+- „Und sobald das alles durch ist darfst du dann auch" → meine Uebergabe nach D1-Deploy und Zustellbeweis.
+
+## 2. Was in dieser Session gefallen ist (Belege in Commit-Bodies, Ledgern, Queue)
+
+- Program `eec69528` „Codebase-Review von aussen nach innen" vorgeschlagen (Controller), vom Owner bestaetigt/aktiviert/gebootstrapt: Astra = Slot 3, codex `gpt-6-astra` high. Astra landet SELBST (Land-Notes `actor kind main`). Gelandet: S0 `2e671a47`, S0R `8a4655cb`, S1 `535fa051`, D0 `c5ad8a7`. Astras Lanes wurden bisher JEDES Mal vom Owner oder von mir per Hand am Deckel vorbei gestartet.
+- sol-Lanes (Slots 1/4, dann ihre Tick-Nachfolger) gekillt; Patches der uncommitteten Arbeit im Scratchpad dieser Session (stirbt mit ihr; Slot 5 alt hatte die Pfade). Die drei Zeilen tragen persistent `spawn codex`; MAINs haben neu gefilet (`2de16229`, `ec0bf175`, `02740e69`).
+- Drei strukturelle Befunde, alle als Notiz in der Queue:
+  - `6d156308` proportionales Post-Land-Audit misst in einem `git archive`-Baum ohne `.git` → jedes docs-only-Land ist 6/375 rot. Zwei Audits als `unknowable` adjudiziert (at 1788590947828, 1788594542376). Fix laeuft bei Fleet-Betrieb als `35ac0b97`.
+  - `b958ac17` Codex-Zustellung: Dollarzeichen am Textende oeffnet den Prompt-Picker, Enter geht verloren (mit Kontrollprobe in s11/s13). D0 hat es isoliert reproduziert; D1 `ced51e9c` ist der Fix (fuenf Stellen: lane-signals.ts:274/:291, server.ts:6264/:6271/:10497).
+  - `51753e67` kein Kontext-Nudge zur Succession im Code; Supervisor-Bindung stale seit 23.08.; Vorschlag nimmt Codex aus.
+- Erfolgssatz 8 (Program 66499a03) ist strukturell unerreichbar: Claude Codes „Checking for updates" malt alle 30 min, 14 ms vor STALLED_IDLE_MS. Attention `24c10c30` an den Owner (offen).
+- Slot 1 (Beleg-Lane 9f1dbfb4) nach FENSTER ZU als killed-empty abgeraeumt; die Zeile ist pending bei Slot 2.
+
+## 3. Offen, alles Owner-Sache
+
+- Attentions `d549e09b` (Slot 8, Gates 3/4) und `24c10c30` (Idle-Uhr: Schwelle 20 min vs. Chrome ausnehmen).
+- Vier `active`-Programs mit toter MAIN (Private-repo-o, Private-repo-y, Private-repo-j, Game-Maker v2).
+- Regelbuch-Drift `rulebook/einstieg.md` („GPT-Slot hat ctx null") — falsch, Codex-Adapter liest die Rollout-Datei. Fragment + Render + `bun e2e/pins.ts`; nicht gleichzeitig mit einer anderen Rulebook-Verdichtung.
+- Das Prozess-Dokument aus `233ee108`.
+
+## 5. Lage 12:5x, gemessen (zwei Opus-Agenten + eigene Sensoren) — das Bild, das du erbst
+
+- **Deploy 12:53 gefahren** (`13accd03`, Boot ok, bootHead `22b2bf40`, Rueckstand 0): damit ist `d37f835` (Gate-Kind erbt Server-Env nicht mehr) live. Der Deploy hat die Idle-Uhr jeder Pane genullt; kein Beleg hing daran.
+- **Vier Lanes laufen, Deckel 2, alle vier von Hand gestartet (drei von mir).** Suite-Mutex: Halter Slot 1 (`2de16229`, isolated-Beweislauf, Arbeit seit 12:22), Schlange FIFO: Slot 5 D1 (`e2e-clean-review`, seit 11:54) → Slot 9 `35ac0b97` (`e2e-postland-audit`) → Slot 4 `ec0bf175`. Keine Lane haengt; alles ist Warten. **Slot 5 und Slot 9 halten je 4–5 Dateien UNCOMMITTET bei ahead 0** — stirbt eine, stirbt die Arbeit. Slot 9 meldete um 12:43 „system running low on memory", sieben Hintergrund-Waiter wurden gekillt, der Lauf ueberlebte. KEINE fuenfte Lane starten.
+- **Astra (Slot 3, `gpt-6-astra`, Footer MEDIUM):** idle, Composer leer, alle Events quittiert (zwei davon ueber mein Relais). Vier Zeilen done (S0, S0R, D0, S1), D1 laeuft, `6a527587` (GLM-5.3-Gegenlesung ueber `pi-zai`) ist am Release mit 409 „harness pi-zai is not automatable" gescheitert → Attention `a92824bc`. Zweite Attention `4a577450`: der Effort-Abfall auf medium war nicht ihre Wahl; `~/.codex/config.toml` traegt jetzt `model_reasoning_effort = "medium"` (heute frueh high) — Owner-Datei, nicht anfassen. Kein S2/S3/S4 gefilet.
+- **Fleet-Betrieb MAIN = Slot 10** (seit 11:19, ctx 20 %): hat den Mutex-Block des Regelbuchs verdichtet (`bb96059`, CLAUDE.md 79 508 B, Ziel < 75 000 verfehlt und gesagt), kennt `35ac0b97` als seine Lane. Der Owner hatte ihm „deploy jetzt" getippt — ich habe deployt und es ihm gesagt.
+- **Slot 6 (Audit-Determiniertheit):** hat die Git-lose Audit-Ursache unabhaengig gefunden und an Fleet-Betrieb gegeben; Owner-Antwort im Composer „die drei codex-zeilen sind gedroppt, mach weiter". Lane Slot 1 ist seine.
+- **Slot 2:** Attention `24c10c30` offen (Idle-Uhr), Fallback-Check 14:59. **Slot 8:** wartet seit 02:29 auf `d549e09b`. **Slot 15 `fable5`:** fungiert faktisch als Audit-Adjudikator (auditPings gehen dorthin) und sitzt im `/usage`-Screen.
+- **Queue:** 42 pending auftrag, 110 notiz, 2 richtung, 1 queued (`02740e69`, Fleet-Betrieb). Vier offene Attentions, alle Owner-Sache.
+- **Mein Relais fuer Astra** ist mit diesem Slot beendet (Monitor gestoppt). Bis D1 deployt ist, uebernimmst DU es (§0).
+
+## 4. Was mit dieser Session stirbt
+
+Ein Lane-Watch auf Slot 5 (D1) und ein verbrauchter Self-Auto; beide Monitore sind gestoppt, das Scratchpad mit den sol-Patches. Kein offener Owner-Auftrag ausser dem Relais aus §0.
+
+---
+---
+
 # HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 5, Opus 5): VIER Lands, drei deployt — und eines traegt eine Regression, die ich selbst gefunden und gefilt habe; 2026-09-05 11:5x, ctx GEMESSEN 44,1 % (Owner-Poll)
 
 Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was git

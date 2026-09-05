@@ -1514,7 +1514,7 @@ conclusion ("not proven") from a wrong measurement. Two lanes were also reported
 suite without taking the lock; the lock is a convention carried in each brief, so any lane that is
 briefed without it silently breaks everyone else's serial proof.
 
-### 11.2j A twelfth family: the `pi-unfenced` watch-delivery quartet (2026-08-31 filed; 2026-09-01 MECHANISM ISOLATED and repaired test-side — the fixture sampled a by-design transient; 2026-09-05 die verbliebene WURZEL liegt im SERVER und ist REPARIERT, `ee98c8d` + `2c40368`)
+### 11.2j A twelfth family: the `pi-unfenced` watch-delivery quartet (2026-08-31 filed; 2026-09-01 MECHANISM ISOLATED and repaired test-side — the fixture sampled a by-design transient; 2026-09-05 die verbliebene WURZEL liegt im SERVER und ist REPARIERT, `c36c1e9` + `1db9296`)
 
 **Status (2026-09-01, corrected — this paragraph read "open, CAUSE not proven" until the repair
 landed): MECHANISM ISOLATED and repaired test-side in `b20e7e4`.** The two cuts are further down
@@ -1796,8 +1796,8 @@ re-rendered from it; §11.2k took it to "Dreizehn" the same day, and on 2026-09-
 re-render (the command is in the head of `rulebook.ts`).
 
 
-**REPARIERT 2026-09-05 in `ee98c8d` (Server + eigene Sonde) und `2c40368` (Fixture-Vorbedingung)
-— ein Rot auf diesen acht Zeilen NACH `ee98c8d` ist wieder ECHT und gehoert dem, der es sieht.**
+**REPARIERT 2026-09-05 in `c36c1e9` (Server + eigene Sonde) und `1db9296` (Fixture-Vorbedingung)
+— ein Rot auf diesen acht Zeilen NACH `c36c1e9` ist wieder ECHT und gehoert dem, der es sieht.**
 Nichts oben ist zurueckgenommen; das hier haengt an.
 
 **Was nach `b20e7e4` noch fiel, aus dem Register statt aus der Erinnerung.** Fenster = alle
@@ -1851,10 +1851,10 @@ und 50 s spaeter meldete die Fixture „die Lane-Vollendung hat keine Zeile gemu
 ueber fuenf Vertraege auf eine Subscription, die nie stattgefunden hat. In beiden 2026-09-02-Laeufen
 faellt `arrival:` unmittelbar davor und laesst seine Zeile `pending` stehen, also eine offene Schuld
 mehr auf demselben Empfaenger. Nicht bewiesen ist, dass die Tuer damals wirklich 400 sagte — die
-Fixture hat es nicht aufgeschrieben, und GENAU das ist der Defekt. Ab `2c40368` scheitert die
+Fixture hat es nicht aufgeschrieben, und GENAU das ist der Defekt. Ab `1db9296` scheitert die
 Vorbedingung als SIE SELBST, mit Status, den Worten der Tuer und dem Budget in diesem Moment.
 
-**Verifikation (2026-09-05, Baum `2c40368`, alle drei Laeufe `dirty:false` und BEWEISBAR seriell —
+**Verifikation (2026-09-05, Baum `1db9296`, alle drei Laeufe `dirty:false` und BEWEISBAR seriell —
 kein anderer `isolated-*`-Trail traegt eine Zeile in ihren Fenstern).** Die Beweisform ist die
 Owner-/Controller-Fassung vom 2026-09-05: DREI Laeufe, nicht fuenf.
 
@@ -1888,7 +1888,7 @@ Vorbedingungszeilen bleiben GRUEN und ausschliesslich der Vertrag faellt —
 [event 373672269dd8"],"open":["373672269dd8508a2ed0e0cb:delivered"]}`. Das ist der Schaden selbst
 und kein Stellvertreter: die terminale Zeile wurde neu markiert, in die Empfaengerpane GETIPPT
 (eine Prompt-Log-Zeile, die die abgerissene Lane nennt) und haelt deren Zustellbudget wieder.
-Wer diesen Trail spaeter maschinell auswertet: **dieser eine Lauf traegt `ee98c8d` als Vorfahren
+Wer diesen Trail spaeter maschinell auswertet: **dieser eine Lauf traegt `c36c1e9` als Vorfahren
 UND einen Family-Fail, und beides ist Absicht** — er ist `dirty:true` und mutiert.
 
 **Das maschinenunabhaengige Mass ist NOCH NICHT erreicht, und das wird hier gesagt statt

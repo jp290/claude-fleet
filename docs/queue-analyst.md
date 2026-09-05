@@ -297,6 +297,37 @@ Die Vertrauensgrenzen im Präsens stehen in `CLAUDE.md` §Deploy; hier die Vollr
     (eine Deklaration über eine fremde Fläche ist eine BEHAUPTUNG, kein Typ). Das Werkzeug dagegen ist
     billig und war hier entscheidend: **zuerst die Union im Client korrigieren, dann `tsc` die
     Fundstellen aufzählen lassen** (nannte exakt sechs, `TS2367 no overlap`) — nie von Hand suchen.
+  - **(a2) Der globale Master-Stop ist seit dem Program-scoped Dispatch KEIN Tick-Gate mehr, sondern
+    ein Gate JE ZEILE** (`server.ts#tickDispatch`; die Vorgeschichte steht in
+    `docs/game-maker/workflow-v2.md` §7 F1 und in
+    `docs/messungen/2026-09-03-private-repo-j-game-maker-gruendung.md` §3). Der Owner kann EINEM Program
+    per `POST /api/programs/:id/dispatch` einen Datensatz `{v:1, on, maxLanes}` geben
+    (CLOSED/VERSIONED/DEFAULT-ABSENT wie promotion/profile/studio, `confirmedAt` serverseitig
+    gestempelt, unlesbar ⇒ ABSENT ⇒ exakt das Alt-Verhalten, Loader `server/types.ts#loadProgramDispatch`);
+    dann startet der Tick die freigegebenen Zeilen GENAU dieses Programs auch bei `"dispatch": false`.
+    Fünf Sätze, die man braucht:
+    - **Der Deckel des Owners kann nur VERENGEN.** `server.ts#programDispatchCap` ist ein
+      `Math.min` gegen `FLEET_DISPATCH_MAX_LANES_PER_PROGRAM`; der Repo-Deckel
+      `FLEET_DISPATCH_MAX_LANES` steht unverändert darüber und wird zuerst geprüft.
+    - **Der Zuschlag wird nur ausgegeben, solange das Program `active` ist**
+      (`server.ts#programDispatchGrant`) — die liegengebliebenen `queued`-Zeilen eines
+      abgeschlossenen Programs starten nichts.
+    - **Alles andere gilt weiter**: der Autos-Master-Stop (`autosOn`, über `canDeliver`), Repo- und
+      Program-Deckel, die Analyse, die Kollisionslesung, der Harness-Bolt und der freie Slot. Der
+      Datensatz öffnet den Dispatcher, nicht den Hand-Knopf.
+    - **Quiet Hours werden für genau EIN Paar übergangen**: eine Zeile mit `releasedBy:"machine"` in
+      einem Program mit aktivem Zuschlag. Eine owner-freigegebene Zeile desselben Programs wartet
+      weiter — die Nacht-Regel wird nicht aufgeweicht, sie bekommt einen benannten Zweig.
+    - **Quiet Hours ÜBERSPRINGT seither die Zeile, statt den Tick zu beenden** (`continue` statt
+      `return`): sobald eine Zeile befreit sein kann und ihre Nachbarin nicht, ist das keine
+      Bedingung der MASCHINE mehr. Ohne diesen Schnitt hielte die älteste nicht-befreite Zeile die
+      befreite das ganze Fenster hinter sich — genau der Stillstand, gegen den der Zuschlag gebaut
+      ist. Jedes ANDERE Gate an dieser Stelle (`no free slot`, Autos-Stop) beendet den Tick weiter.
+    Owner-Fläche: Program-Detail, Sektion „Program dispatch" neben „Self-land promotion"
+    (`src/client.ts#programDispatchState`). Beweis: `e2e/programs.ts`, Sektion
+    „Program-scoped dispatch" (sieben Fälle inkl. Positivkontrolle bei offenem Master-Stop);
+    Form-Pins in `e2e/pins.ts` (ein Schreiber, ein Leser, die Min-Klausel, das Quiet-Hours-Paar,
+    der Loader). **Kein neues `FLEET_*`-Env.**
   - **(b)** Der Lane-Deckel zählt nur noch Lanes im `DISPATCH_REPO` (kanonisiert via realpath — createWorktree
     speichert das Symlink-aufgelöste Toplevel!), und eine wartende Task sagt auf ihrer Row WARUM („waiting:
     N/M lanes busy" / „no free slot").

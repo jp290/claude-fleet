@@ -70,6 +70,7 @@ import {
   PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion, PROGRAM_PROFILE_KINDS, loadProgramProfile,
   PROGRAM_LINEAGE_MAX, loadProgramLineage, foundingOccupantFrom, foundingIdentityFrom,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
+  PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch, type ProgramDispatch,
   type Studio, type StudioContent, type ProgramStudioBinding, type StudioStage,
   type StudioBriefAudience,
   type BoxPin, type WSData, type Share, type ShareComment, type Auto, type WatchBase, type MergeWatch,
@@ -8588,9 +8589,40 @@ async function runRefineJob(t: Task, repo: string): Promise<void> {
 // It runs `queued` and nothing else. That is the answer to "may the machine choose its own work":
 // no. It may work unattended, on what you released, which is a different question and the one the
 // owner actually wanted answered yes.
+// THE OWNER'S PROGRAM-SCOPED DISPATCH PERMISSION, resolved for ONE queue row — and the single
+// reader of `Program.dispatch`, so the tick's four uses of it (the entry guard, the per-row master
+// stop, the per-program cap and the quiet-hours branch) cannot drift apart.
+//
+// THREE CONDITIONS, each a different sentence. The row must NAME a program; that program must still
+// be ACTIVE; and its record must say `on`. The lifecycle check lives HERE and not at the owner door
+// on purpose: a status moves after the act, and a complete program's leftover queued rows must not
+// keep spawning lanes on a permission granted while it was still running. `on:false` and ABSENT
+// refuse identically here and are two different facts everywhere else — the promotion ladder's rule.
+// ...and the ACTIVE-and-ON clause itself is written ONCE, here, because both readers below need it
+// and two copies is how one of them silently stops applying.
+const programDispatchGrant = (p: Program): ProgramDispatch | undefined =>
+  p.status === "active" && p.dispatch?.on ? p.dispatch : undefined;
+const programDispatchOn = (t: Task): ProgramDispatch | undefined => {
+  if (!t.programId) return undefined;
+  const p = programs.find((x) => x.id === t.programId);
+  return p ? programDispatchGrant(p) : undefined;
+};
+// ...and the CEILING that record may LOWER, never raise. FLEET_DISPATCH_MAX_LANES_PER_PROGRAM stays
+// the machine's number and this Math.min is the whole safety property: a `maxLanes` above the env
+// cap is legal, stored and inert. A row whose program carries no active grant gets the env cap
+// exactly — byte for byte the number this line computed before the record existed.
+const programDispatchCap = (pd: ProgramDispatch | undefined): number =>
+  Math.min(pd?.maxLanes ?? DISPATCH_MAX_LANES_PER_PROGRAM, DISPATCH_MAX_LANES_PER_PROGRAM);
 let dispatchBusy = false;
 async function tickDispatch(): Promise<void> {
-  if (dispatchBusy || !dispatchOn || !DISPATCH_REPO) return;
+  if (dispatchBusy || !DISPATCH_REPO) return;
+  // THE GLOBAL MASTER STOP IS NO LONGER THIS TICK'S OWN GATE — it became a per-ROW gate at the top
+  // of the loop below, because the owner may now grant ONE program the right to have its released
+  // rows started while the fleet queue is stopped. This line keeps the cheap early return for the
+  // case that is still the overwhelming majority: stopped fleet, no program holding a grant, no
+  // work to do. It reads the same `on` predicate programDispatchOn does, one program at a time, so
+  // an entry taken here is always an entry some row could survive.
+  if (!dispatchOn && !programs.some(programDispatchGrant)) return;
   dispatchBusy = true;
   try {
     // Advisory categories are never dispatchable. Filtering here prevents an inert queued row
@@ -8609,6 +8641,16 @@ async function tickDispatch(): Promise<void> {
     for (const t of tasks) if (t.status === "sent") runningIds.add(t.id);
     const runningBranches = new Set(slots.filter((s) => s.cwd && s.worktree).map((s) => s.worktree!.branch));
     for (const next of candidates) {
+      // THE MASTER STOP, READ PER ROW — and read FIRST, above every `waiting` note below, which is
+      // not a stylistic choice: under a stopped fleet this tick used to return before the loop, so
+      // no row ever received a note. If this check sat lower, a single program's grant would start
+      // painting wait-notes onto every UNRELATED queued row in the fleet — a visible state change
+      // on rows the owner's grant said nothing about. Skipping here keeps them byte-identical.
+      // It SKIPS rather than returns for the reason the caps below do: whether a row may run under
+      // a stopped fleet is a property of THAT ROW's bracket, and one unbracketed row at the head of
+      // an oldest-first queue must not hide the program row behind it.
+      const pd = programDispatchOn(next);
+      if (!dispatchOn && !pd) continue;
       // a released task that cannot run RIGHT NOW says why on its own row instead of sitting silent
       // until the owner digs (the stalled-queue finding, 2026-08-04). Written only on change, so the
       // 8 s tick doesn't churn saveState.
@@ -8644,11 +8686,16 @@ async function tickDispatch(): Promise<void> {
       // check below do: it is a property of ONE ROW's bracket, not of the machine. Returning here
       // would let a single full program hold every unrelated row in the queue behind it — a
       // per-program cap that caps the whole fleet.
+      // ...and the number it caps against is now the owner's, where the owner set one: an active
+      // grant's `maxLanes` through programDispatchCap, which can only narrow the env value. The
+      // note prints the number that actually held, so the board never names a budget the tick did
+      // not use.
       if (next.programId) {
+        const programCap = programDispatchCap(pd);
         const programLanes = slots.filter((s) => s.cwd && s.programId === next.programId).length;
-        if (programLanes >= DISPATCH_MAX_LANES_PER_PROGRAM) {
+        if (programLanes >= programCap) {
           const title = programs.find((p) => p.id === next.programId)?.title ?? next.programId;
-          waiting(`waiting: ${programLanes}/${DISPATCH_MAX_LANES_PER_PROGRAM} lanes busy in program "${title}" — land or close one of ITS lanes`);
+          waiting(`waiting: ${programLanes}/${programCap} lanes busy in program "${title}" — land or close one of ITS lanes`);
           continue;
         }
       }
@@ -8735,12 +8782,34 @@ async function tickDispatch(): Promise<void> {
         const hit = a.collides.find((c) => runningIds.has(c) || runningBranches.has(c));
         if (hit) { waiting(`waiting: collides with running work (${hit}) — same files, says the analyst`.slice(0, 200)); continue; }
       }
-      // master stop + quiet hours gate the dispatcher BEFORE a lane is spawned (was
+      // the autos kill-switch and quiet hours gate the dispatcher BEFORE a lane is spawned (was
       // synergy-findings.md Tier-0 #1 — neither reached this path) — a paused or quiet fleet leaves
       // the task queued for the next eligible tick. No idle/alive gate: the target lane does not
-      // exist yet.
-      const pre = await canDeliver(free, { now: Date.now(), alive: false });
-      if (!pre.ok) return; // task stays queued
+      // exist yet. The AUTOS kill-switch is deliberately NOT touched by a program grant: that
+      // switch says "no machine-generated text reaches any pane at all", which is a wider statement
+      // than "the fleet queue is stopped", and a program-scoped door must not quietly reinterpret it.
+      //
+      // QUIET HOURS, AND THE ONE NAMED BRANCH AROUND THEM. A row RELEASED BY THE MACHINE inside a
+      // program holding an active grant is not the surface quiet hours exists to mute: that surface
+      // is text arriving at the owner's own panes at 3am, and this is a fresh unattended lane in a
+      // worktree nobody is sitting in front of. The waiver is that pair and nothing looser — an
+      // owner-released row in the same program still waits, because an owner act at 3am is exactly
+      // the thing the window was set to defer.
+      const quietWaived = !!pd && next.releasedBy === "machine";
+      const pre = await canDeliver(free, { now: Date.now(), alive: false,
+        ...(quietWaived ? { quietHours: false } : {}) });
+      if (!pre.ok) {
+        // ...and quiet hours stopped being a condition of the MACHINE the moment one row could be
+        // waived from it and its neighbour could not. So it SKIPS, like the caps and the collision
+        // check above: returning here would let the oldest non-waived row hold the waived one
+        // behind it for the whole window — which is the exact stall this grant exists to end, and
+        // it would happen with the global dispatcher ON, where every foreign row hits this gate.
+        // Every OTHER gate here is still genuinely fleet-wide and still stops the tick.
+        // No note: quiet hours is a fleet-wide fact the board already shows, and the same sentence
+        // repeated onto every queued row would be noise, not a reason.
+        if (pre.gate === "quiet-hours") continue;
+        return; // task stays queued
+      }
       const r = await dispatchTask(next, free, false, false, taskSpawnOf(next));
       if (r.ok) await r.tail;
       return; // serial by design — one lane per tick, whichever row got past every gate
@@ -19599,6 +19668,70 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     await saveStateNow();
     return json({ ok: true, program: publicProgram(program) });
   }
+  // THE PROGRAM-SCOPED DISPATCH DOOR — the only writer of `program.dispatch`, and its own route for
+  // the reason the three doors above it are: it reads a BODY carrying an owner decision. Two acts,
+  // one door: `{"dispatch": {"v":1,"on":true,"maxLanes":2}}` grants, `{"dispatch": null}` revokes,
+  // and revoking is the same request shape so an owner never reaches for a different tool to take a
+  // permission back.
+  //
+  // WHAT IT GRANTS, said exactly: the fleet's dispatch tick may start THIS program's released rows
+  // while the GLOBAL dispatcher is stopped. It grants nothing else. The autos kill-switch, the repo
+  // lane cap, the per-program lane cap, the analyst's reading, the collision check, the harness
+  // automation bolt and the free-slot requirement all still hold — a permission that lifted those
+  // would not be a program-scoped switch, it would be the hand button with a record attached.
+  //
+  // `on:false` IS NOT ABSENCE, for the promotion ladder's reason: absent is "the owner never said",
+  // off is "the owner said no", and a ledger that could not tell them apart would make a revocation
+  // look like a program nobody ever reached. Both refuse identically at the tick; only the trail and
+  // this pane can tell you which one you are looking at.
+  //
+  // NO STATUS GATE, and no in-flight gate. This record is read fresh on every tick against the
+  // program's CURRENT status (tickDispatch requires `active`), so gating the write would be a
+  // second, drifting copy of that rule rather than a safety property — the promotion door's stance,
+  // and for the same reason: what this record permits is checked where it is spent.
+  const programDispatchRoute = /^\/api\/programs\/([^/]+)\/dispatch$/.exec(url.pathname);
+  if (programDispatchRoute) {
+    if (req.method !== "POST") return json({ error: "bad request" }, 400);
+    const program = programs.find((p) => p.id === programDispatchRoute[1]);
+    if (!program) return json({ error: "unknown program" }, 404);
+    const body = await readJson(req);
+    if (!body || typeof body !== "object" || Array.isArray(body))
+      return json({ error: "invalid json" }, 400);
+    const extra = Object.keys(body).filter((k) => k !== "dispatch");
+    if (extra.length)
+      return json({ error: `this door reads dispatch only — [${extra.join(", ")}] is not read` }, 400);
+    if (!("dispatch" in body))
+      return json({ error: 'dispatch is required — send {"dispatch": {"v":1,"on":true,"maxLanes":2}} to grant, {"dispatch": null} to revoke' }, 400);
+    if (body.dispatch === null) {
+      // idempotent by construction, and audited only where something was actually taken back — the
+      // promotion door's rule: "the owner revoked" is a dateable act, "the owner revoked nothing"
+      // is not.
+      const had = program.dispatch !== undefined;
+      delete program.dispatch;
+      if (had) audit("program_dispatch", undefined, `${program.id} revoked`);
+      await saveStateNow();
+      return json({ ok: true, program: publicProgram(program) });
+    }
+    const raw = body.dispatch;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw))
+      return json({ error: "dispatch must be an object or null" }, 400);
+    const fields = raw as Record<string, unknown>;
+    // A CLOSED SET, refused rather than ignored: a key silently dropped is a key the owner believes
+    // was honoured, and `maxLanes` is precisely the key where that belief is expensive.
+    const unknown = Object.keys(fields).filter((k) => k !== "v" && k !== "on" && k !== "maxLanes");
+    if (unknown.length)
+      return json({ error: `unknown dispatch key(s): ${unknown.join(", ")} — v1 is exactly {v, on, maxLanes}; confirmedAt is stamped here` }, 400);
+    if (fields.v !== 1) return json({ error: "v must be 1 — this server knows no other program-dispatch schema" }, 400);
+    if (typeof fields.on !== "boolean")
+      return json({ error: "on must be true or false — a permission that arrives by coercion is one nobody granted" }, 400);
+    if (typeof fields.maxLanes !== "number" || !Number.isInteger(fields.maxLanes)
+      || fields.maxLanes < 1 || fields.maxLanes > PROGRAM_DISPATCH_MAX_LANES_MAX)
+      return json({ error: `maxLanes must be a whole number between 1 and ${PROGRAM_DISPATCH_MAX_LANES_MAX} — it can only ever LOWER the machine-wide per-program budget, never raise it` }, 400);
+    program.dispatch = { v: 1, on: fields.on, maxLanes: fields.maxLanes, confirmedAt: Date.now() };
+    audit("program_dispatch", undefined, `${program.id} on=${program.dispatch.on} maxLanes=${program.dispatch.maxLanes}`);
+    await saveStateNow();
+    return json({ ok: true, program: publicProgram(program) });
+  }
   const action = /^\/api\/programs\/([^/]+)\/(confirm|activate|complete|discard|bootstrap-main)$/.exec(url.pathname);
   if (!action || req.method !== "POST") return json({ error: "bad request" }, 400);
   const program = programs.find((p) => p.id === action[1]);
@@ -20120,6 +20253,11 @@ if (existsSync(STATE_FILE)) {
         // states: rows are rebuilt from declared fields, so a field nobody names here does not
         // survive a restart and nothing says so. Unreadable degrades to ABSENT, like the profile.
         const studioBinding = loadProgramStudioBinding(x.studio);
+        // the PROGRAM-SCOPED DISPATCH permission, read with the promotion record's discipline and
+        // for the promotion record's reason: an unreadable permission degrades to ABSENT, which
+        // here means "the global switch decides this program alone" — the legacy behaviour, never
+        // a narrower-looking guess at what the owner meant.
+        const programDispatch = loadProgramDispatch(x.dispatch);
         // the lineage: a row that never had the key is a legacy row and gets its one honest
         // backfill entry from `main`; a row that HAS the key but cannot be read loads as ABSENT and
         // is reported — never backfilled over, because that would make an unreadable record look
@@ -20158,6 +20296,7 @@ if (existsSync(STATE_FILE)) {
           ...(promotion ? { promotion } : {}),
           ...(profile ? { profile } : {}),
           ...(studioBinding ? { studio: studioBinding } : {}),
+          ...(programDispatch ? { dispatch: programDispatch } : {}),
           ...(founding ? { founding } : {}),
           ...(lineage ? { lineage } : {}),
           ...(status !== "proposed" ? { confirmedAt: confirmedAt! } : {}),

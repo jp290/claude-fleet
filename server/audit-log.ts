@@ -74,6 +74,13 @@ type AuditEvent =
   // because the two answer different questions and a ledger that merged them could not say which
   // of the owner's two decisions moved.
   | "program_studio"
+  // the owner granted or revoked a Program's PROGRAM-SCOPED DISPATCH permission
+  // (POST /api/programs/:id/dispatch) — whether the tick may start THIS program's released rows
+  // while the global dispatcher is stopped, and how many at once. Its own event beside the three
+  // above because it is the only one of the four that widens what the machine may start
+  // UNATTENDED; a ledger that merged it into program_promotion could not say whether the owner
+  // opened landing or opened starting.
+  | "program_dispatch"
   // the studio inventory itself: created, or changed with a rev bump. A studio is a SHARED source
   // several Programs may bind, so a change is dateable in its own right — the binding keeps the rev
   // it was made against, and this row is where the other side of that comparison comes from.

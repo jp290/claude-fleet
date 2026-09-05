@@ -45,6 +45,11 @@ interface Program extends ProgramContent {
   // POINTER never a copy: `rev` is the studio's revision at BINDING time, so a later change to a
   // shared studio is a visible difference instead of a silent one.
   studio?: { id: string; boundAt: number; rev: number };
+  // the owner's PROGRAM-SCOPED DISPATCH permission — may the tick start THIS program's released
+  // rows while the global dispatcher is stopped, and how many of its lanes at once. Absent on every
+  // Program until the owner grants it, and absent is the byte-for-byte legacy behaviour every
+  // assertion outside the section below reads as.
+  dispatch?: { v: number; on: boolean; maxLanes: number; confirmedAt: number };
   founding?: { v: number; profileKind?: "standard" | "game-maker"; attemptId: string;
     mode: "bootstrap" | "succession"; canonicalRoot?: string; targetRoot?: string;
     target: { slot: number; openedAt: number; selfTokenHash?: string };
@@ -4725,6 +4730,239 @@ export async function run(ctx: Ctx): Promise<void> {
       && spawnSwitchesAfter.dispatchOn === switchesBefore.dispatchOn
       && spawnSwitchesAfter.autosOn === switchesBefore.autosOn,
     `rows=${(await spawnRows()).filter((t) => spawnTasks.includes(t.id)).length} switches=${JSON.stringify(spawnSwitchesAfter)}`);
+
+
+  // === Program-scoped dispatch · `Program.dispatch` =========================================
+  // THE PROPERTY UNDER TEST, in one sentence: with the GLOBAL dispatcher stopped, the tick starts
+  // the released rows of a program the owner granted `dispatch.on` — and starts nothing else, up to
+  // that grant's own lane number, with quiet hours stepped around for machine-released rows only.
+  //
+  // WHY THIS SECTION AND NOT e2e/tasks.ts: every assertion here needs a LIVE bound Program-MAIN
+  // (only `POST /api/self/tasks/:id/release` produces `releasedBy:"machine"`, which is half of the
+  // quiet-hours pair), and that binding is this file's fixture. It runs on the same `successorToken`
+  // the two sections above use.
+  //
+  // THE NON-TAUTOLOGY GUARDS ARE EXPLICIT, because almost every check below is a NEGATIVE ("stays
+  // queued") and a negative passes for free on a fleet that could not have started anything anyway:
+  // the board must have free slots and room under both lane caps, the queue must hold exactly the
+  // rows this section minted, and phase 4 is a positive control that the very same board DOES start
+  // an ungranted row the moment the global switch opens.
+  const pdSwitchesBefore = await fleetSwitches();
+  const pdTasks: string[] = [];
+  const pdMake = async (fields: Record<string, unknown>): Promise<string> => {
+    const created = (await (await post("/api/tasks", { queue: false, ...fields })).json()) as { task: TaskRow };
+    pdTasks.push(created.task.id);
+    return created.task.id;
+  };
+  // the OWNER's release door, deliberately in two steps rather than `{queue:true}`: the create-and-
+  // release shorthand stamps a kind note on the row, and half of what this section proves is that an
+  // ungranted row keeps a NULL note under a stopped fleet. `▸ queue` releases and clears the note.
+  const pdOwnerRelease = async (id: string): Promise<Response> => post(`/api/tasks/${id}/queue`, {});
+  const pdDispatchDoor = (id: string, body: unknown): Promise<Response> =>
+    post(`/api/programs/${id}/dispatch`, body);
+  const pdProgramRecord = async (id: string): Promise<Program["dispatch"] | "absent"> => {
+    const row = (await ownerPrograms()).find((x) => x.id === id);
+    return row && "dispatch" in row ? row.dispatch : "absent";
+  };
+  const pdLanes = async (): Promise<{ id: number; cwd: string | null; worktree: unknown | null }[]> =>
+    ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null; worktree: unknown | null }[] }).slots;
+  const pdKillLanes = async (): Promise<void> => {
+    for (const s of await pdLanes()) if (s.worktree && s.id !== ctx.restartSelfSlot) await post(`/api/slots/${s.id}/kill`, {});
+    await Bun.sleep(600);
+  };
+  // > FLEET_DISPATCH_TICK_MS (250 ms here) by a wide margin, and long enough for several ticks: a
+  // negative that waited less than one tick would prove the clock, not the gate.
+  const pdSettle = (): Promise<void> => Bun.sleep(1600);
+  const pdUntil = async (want: () => Promise<boolean>): Promise<void> => {
+    for (let i = 0; i < 60; i++) { if (await want()) return; await Bun.sleep(250); }
+  };
+
+  await post("/api/dispatch", { on: false });
+  await post("/api/autos/switch", { on: true }); // the AUTOS kill-switch is NOT what a program grant reaches
+  await post("/api/autos/quiet", { start: null });
+  await pdKillLanes();
+  const pdBoard = await pdLanes();
+  const pdQueuedBefore = (await spawnRows()).filter((t) => t.status === "queued" && t.kind === "auftrag");
+  check("program-dispatch fixture: free slots, an empty lane board and an empty released queue (non-tautology guard)",
+    pdBoard.filter((s) => !s.cwd).length >= 2
+      && pdBoard.filter((s) => s.worktree && s.id !== ctx.restartSelfSlot).length === 0
+      && pdQueuedBefore.length === 0
+      && (await pdProgramRecord(mainProgram.id)) === "absent",
+    `free=${pdBoard.filter((s) => !s.cwd).length} lanes=${pdBoard.filter((s) => s.worktree).length} queued=${JSON.stringify(pdQueuedBefore.map((t) => t.id))} record=${JSON.stringify(await pdProgramRecord(mainProgram.id))}`);
+
+  // THE DOOR ITSELF, before anything it permits: a CLOSED body, a versioned record, a bounded
+  // lane number, and a stamp the caller cannot supply. Each refusal is its own sentence because
+  // each tells the caller to fix a different thing.
+  const pdControl = await activateNewProgram("program-dispatch control bracket");
+  const [pdBadKey, pdBadV, pdBadOn, pdBadLanes, pdBadStamp] = await Promise.all([
+    pdDispatchDoor(mainProgram.id, { dispatch: { v: 1, on: true, maxLanes: 1 }, policy: { v: 1 } }),
+    pdDispatchDoor(mainProgram.id, { dispatch: { v: 2, on: true, maxLanes: 1 } }),
+    pdDispatchDoor(mainProgram.id, { dispatch: { v: 1, on: "yes", maxLanes: 1 } }),
+    pdDispatchDoor(mainProgram.id, { dispatch: { v: 1, on: true, maxLanes: 0 } }),
+    pdDispatchDoor(mainProgram.id, { dispatch: { v: 1, on: true, maxLanes: 1, confirmedAt: 1 } }),
+  ]);
+  const pdBadTexts = await Promise.all([pdBadKey, pdBadV, pdBadOn, pdBadLanes, pdBadStamp].map((r) => r.text()));
+  check("program-dispatch door: a closed body, v1 only, a boolean `on`, a bounded maxLanes and no caller-supplied stamp — and no record is written",
+    [pdBadKey, pdBadV, pdBadOn, pdBadLanes, pdBadStamp].every((r) => r.status === 400)
+      && pdBadTexts[0].includes("this door reads dispatch only")
+      && pdBadTexts[1].includes("v must be 1")
+      && pdBadTexts[2].includes("on must be true or false")
+      && pdBadTexts[3].includes("maxLanes must be a whole number")
+      && pdBadTexts[4].includes("confirmedAt is stamped here")
+      && (await pdProgramRecord(mainProgram.id)) === "absent",
+    pdBadTexts.join(" | "));
+
+  // (1) MASTER STOP ON, NO GRANT ANYWHERE — the byte-for-byte legacy case. Three released rows sit
+  // through a full tick window: one bracketed by a program with no record, one bracketed by
+  // nobody, and one released BY THE MACHINE inside the program that is about to be granted. None
+  // moves, and — the half a status check would miss — none gains a wait-note either. The tick
+  // returns before its candidate loop here, so a note appearing on any of these rows would mean the
+  // loop started reasoning about rows the owner's grant says nothing about.
+  const pdForeignId = await pdMake({ text: "program-dispatch: control-program row", programId: pdControl.id });
+  const pdLooseId = await pdMake({ text: "program-dispatch: unbracketed row" });
+  const pdMachine1 = await pdMake({ text: "program-dispatch: granted program, machine-released #1", programId: mainProgram.id });
+  const pdForeignRelease = await pdOwnerRelease(pdForeignId);
+  const pdLooseRelease = await pdOwnerRelease(pdLooseId);
+  const pdMachine1Release = await selfRelease(successorToken, pdMachine1);
+  const pdBeforeStop = await fleetSwitches();
+  await pdSettle();
+  const [pdForeignA, pdLooseA, pdMachineA] = await Promise.all([spawnRowOf(pdForeignId), spawnRowOf(pdLooseId), spawnRowOf(pdMachine1)]);
+  const pdAfterStop = await fleetSwitches();
+  check("program-dispatch (1): with the global dispatcher stopped and no program granted, a full tick window moves nothing and writes no note",
+    pdForeignRelease.status === 200 && pdLooseRelease.status === 200 && pdMachine1Release.status === 200
+      && pdForeignA?.status === "queued" && (pdForeignA?.note ?? null) === null
+      && pdLooseA?.status === "queued" && (pdLooseA?.note ?? null) === null
+      && pdMachineA?.status === "queued" && (pdMachineA?.note ?? null) === null
+      && pdMachineA?.releasedBy === "machine" && pdForeignA?.releasedBy === "owner"
+      && pdAfterStop.lanes === pdBeforeStop.lanes && pdAfterStop.occupied === pdBeforeStop.occupied
+      && pdAfterStop.dispatchOn === false && pdAfterStop.autosOn === true,
+    `foreign=${JSON.stringify(pdForeignA ?? null)} loose=${JSON.stringify(pdLooseA ?? null)} machine=${JSON.stringify(pdMachineA ?? null)} switches=${JSON.stringify(pdAfterStop)}`);
+
+  // (2) THE SAME BOARD, ONE GRANT — and it reaches exactly one program's rows. maxLanes is 1
+  // against a machine-wide per-program budget of 3 (FLEET_DISPATCH_MAX_LANES_PER_PROGRAM's default
+  // in this suite), so the grant's own number is provably the one that held. The two ungranted rows
+  // are OLDER than both granted ones and sit at the head of the oldest-first sweep: if the per-row
+  // master stop returned instead of skipping, nothing below could ever start.
+  const pdGrant = await pdDispatchDoor(mainProgram.id, { dispatch: { v: 1, on: true, maxLanes: 1 } });
+  const pdGrantRecord = await pdProgramRecord(mainProgram.id);
+  const pdMachine2 = await pdMake({ text: "program-dispatch: granted program, machine-released #2", programId: mainProgram.id });
+  const pdMachine2Release = await selfRelease(successorToken, pdMachine2);
+  await pdUntil(async () => (await spawnRowOf(pdMachine1))?.status === "sent" && !!(await spawnRowOf(pdMachine2))?.note);
+  const [pdForeignB, pdLooseB, pdMachine1B, pdMachine2B] = await Promise.all([
+    spawnRowOf(pdForeignId), spawnRowOf(pdLooseId), spawnRowOf(pdMachine1), spawnRowOf(pdMachine2)]);
+  check("program-dispatch (2): a granted program's row starts under the stopped fleet, its OWN maxLanes holds the next one, and the two ungranted rows ahead of it never move",
+    pdGrant.status === 200 && pdGrantRecord !== "absent" && pdGrantRecord?.on === true
+      && pdGrantRecord?.maxLanes === 1 && typeof pdGrantRecord?.confirmedAt === "number"
+      && pdMachine2Release.status === 200
+      && pdMachine1B?.status === "sent" && typeof pdMachine1B?.slot === "number"
+      && pdMachine2B?.status === "queued"
+      && (pdMachine2B?.note ?? "").includes('1/1 lanes busy in program "')
+      && pdForeignB?.status === "queued" && (pdForeignB?.note ?? null) === null
+      && pdLooseB?.status === "queued" && (pdLooseB?.note ?? null) === null,
+    `grant=${pdGrant.status}:${JSON.stringify(pdGrantRecord)} m1=${JSON.stringify(pdMachine1B ?? null)} m2=${JSON.stringify(pdMachine2B ?? null)} foreign=${JSON.stringify(pdForeignB ?? null)} loose=${JSON.stringify(pdLooseB ?? null)}`);
+
+  // (3) `on:false` IS NOT ABSENCE. The record stays, dated and readable; the tick refuses exactly as
+  // it did in (1). The lane from (2) is killed first, so the per-program cap is provably NOT what is
+  // holding the row back.
+  await pdKillLanes();
+  const pdOff = await pdDispatchDoor(mainProgram.id, { dispatch: { v: 1, on: false, maxLanes: 2 } });
+  const pdOffRecord = await pdProgramRecord(mainProgram.id);
+  await pdSettle();
+  const pdMachine2C = await spawnRowOf(pdMachine2);
+  const pdLanesC = (await pdLanes()).filter((s) => s.worktree && s.id !== ctx.restartSelfSlot).length;
+  check("program-dispatch (3): an explicit off is a stored, dated decision — and it refuses exactly like an absent record, with the lane board empty",
+    pdOff.status === 200 && pdOffRecord !== "absent" && pdOffRecord?.on === false
+      && pdOffRecord?.maxLanes === 2 && typeof pdOffRecord?.confirmedAt === "number"
+      && pdMachine2C?.status === "queued" && pdLanesC === 0,
+    `off=${pdOff.status}:${JSON.stringify(pdOffRecord)} row=${JSON.stringify(pdMachine2C ?? null)} lanes=${pdLanesC}`);
+
+  // (4) THE POSITIVE CONTROL, and the reason every negative above is worth something: the SAME
+  // board, the SAME ungranted control-program row, and the global switch opened. It starts. So the
+  // rows that stayed queued in (1)–(3) stayed queued because of the gate under test and not because
+  // this fleet could not spawn a lane.
+  await post(`/api/tasks/${pdLooseId}/delete`, {});
+  await post(`/api/tasks/${pdMachine2}/delete`, {});
+  await post("/api/dispatch", { on: true });
+  await pdUntil(async () => (await spawnRowOf(pdForeignId))?.status === "sent");
+  const pdForeignD = await spawnRowOf(pdForeignId);
+  await post("/api/dispatch", { on: false });
+  check("program-dispatch (4): the ungranted control row DOES start once the global switch opens — the negatives above are gates, not a dead board",
+    pdForeignD?.status === "sent" && typeof pdForeignD?.slot === "number",
+    JSON.stringify(pdForeignD ?? null));
+  await pdKillLanes();
+
+  // (5) QUIET HOURS, AND THE ONE NAMED BRANCH AROUND THEM. Two rows of the SAME granted program in
+  // the SAME window: the owner-released one is older and still waits, the machine-released one
+  // starts. That pair is the whole rule — the waiver is bound to WHO released the row, not to the
+  // program. The window is two hours wide so an hour rollover mid-run cannot turn this into a flake.
+  const pdGrant2 = await pdDispatchDoor(mainProgram.id, { dispatch: { v: 1, on: true, maxLanes: 2 } });
+  const pdQuietStart = new Date().getHours();
+  await post("/api/autos/quiet", { start: pdQuietStart, end: (pdQuietStart + 2) % 24 });
+  const pdQuietOwnerId = await pdMake({ text: "program-dispatch: granted program, OWNER-released in quiet hours", programId: mainProgram.id });
+  const pdQuietMachineId = await pdMake({ text: "program-dispatch: granted program, MACHINE-released in quiet hours", programId: mainProgram.id });
+  const pdQuietOwnerRelease = await pdOwnerRelease(pdQuietOwnerId);
+  const pdQuietMachineRelease = await selfRelease(successorToken, pdQuietMachineId);
+  const pdQuietState = (await (await get("/api/sessions")).json()) as { quietHours: { start: number; end: number } | null };
+  await pdUntil(async () => (await spawnRowOf(pdQuietMachineId))?.status === "sent");
+  await pdSettle(); // the owner row gets a further full window to fail in
+  const [pdQuietOwnerRow, pdQuietMachineRow] = await Promise.all([spawnRowOf(pdQuietOwnerId), spawnRowOf(pdQuietMachineId)]);
+  check("program-dispatch (5): inside quiet hours a granted program's MACHINE-released row starts while its OWNER-released row — older, same program, same window — keeps waiting",
+    pdGrant2.status === 200
+      && pdQuietState.quietHours?.start === pdQuietStart
+      && pdQuietOwnerRelease.status === 200 && pdQuietMachineRelease.status === 200
+      && pdQuietOwnerRow?.releasedBy === "owner" && pdQuietMachineRow?.releasedBy === "machine"
+      && pdQuietMachineRow?.status === "sent" && typeof pdQuietMachineRow?.slot === "number"
+      && pdQuietOwnerRow?.status === "queued",
+    `quiet=${JSON.stringify(pdQuietState.quietHours)} owner=${JSON.stringify(pdQuietOwnerRow ?? null)} machine=${JSON.stringify(pdQuietMachineRow ?? null)}`);
+  await post("/api/autos/quiet", { start: null });
+  await pdKillLanes();
+
+  // (6) AN UNREADABLE RECORD LOADS AS ABSENT — never as a weaker grant, and never as a grant at all.
+  // Planted as a v2 shape, which is the dangerous direction: a loader that read it as "its nearest
+  // v1 meaning" would hand a future schema today's permission. Proved twice, because the display
+  // half and the behaviour half fail differently: the route stops sending the key, and the tick
+  // refuses the granted program's machine-released row exactly as in (1).
+  const pdPlantState = readState();
+  pdPlantState.programs = (pdPlantState.programs ?? []).map((x) => x.id === mainProgram.id
+    ? { ...x, dispatch: { v: 2, on: true, maxLanes: 2, confirmedAt: Date.now() } } : x);
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(pdPlantState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  await post("/api/dispatch", { on: false }); // a restart reloads the persisted switches
+  await post("/api/autos/switch", { on: true });
+  const pdUnreadableRecord = await pdProgramRecord(mainProgram.id);
+  const pdUnreadableId = await pdMake({ text: "program-dispatch: row under an unreadable grant", programId: mainProgram.id });
+  const pdUnreadableRelease = await selfRelease(successorToken, pdUnreadableId);
+  await pdSettle();
+  const pdUnreadableRow = await spawnRowOf(pdUnreadableId);
+  check("program-dispatch (6): a v2 dispatch record loads as ABSENT — the route stops sending it, and the tick refuses the program's machine-released row under the stopped fleet",
+    pdUnreadableRecord === "absent"
+      && pdUnreadableRelease.status === 200
+      && pdUnreadableRow?.status === "queued" && (pdUnreadableRow?.note ?? null) === null,
+    `record=${JSON.stringify(pdUnreadableRecord)} release=${pdUnreadableRelease.status} row=${JSON.stringify(pdUnreadableRow ?? null)}`);
+
+  // (7) REVOKE IS IDEMPOTENT, and revoking what is already absent is the state the caller asked for.
+  const pdRevoke1 = await pdDispatchDoor(mainProgram.id, { dispatch: null });
+  const pdRevoke2 = await pdDispatchDoor(mainProgram.id, { dispatch: null });
+  check("program-dispatch (7): revoke answers 200 twice and leaves no record either time",
+    pdRevoke1.status === 200 && pdRevoke2.status === 200
+      && (await pdProgramRecord(mainProgram.id)) === "absent",
+    `${pdRevoke1.status}/${pdRevoke2.status} record=${JSON.stringify(await pdProgramRecord(mainProgram.id))}`);
+
+  // cleanup — every row this section minted is deleted, every lane it spawned is gone, quiet hours
+  // are cleared and both master stops go back where the section found them.
+  await pdKillLanes();
+  for (const id of pdTasks) await post(`/api/tasks/${id}/delete`, {});
+  await post("/api/autos/quiet", { start: null });
+  await post("/api/dispatch", { on: pdSwitchesBefore.dispatchOn });
+  await post("/api/autos/switch", { on: pdSwitchesBefore.autosOn });
+  const pdSwitchesAfter = await fleetSwitches();
+  check("program-dispatch cleanup: every probe row and lane is gone, no dispatch record survives, and both master stops are back where they were",
+    (await spawnRows()).every((t) => !pdTasks.includes(t.id))
+      && (await pdLanes()).filter((s) => s.worktree && s.id !== ctx.restartSelfSlot).length === 0
+      && (await pdProgramRecord(mainProgram.id)) === "absent"
+      && pdSwitchesAfter.dispatchOn === pdSwitchesBefore.dispatchOn
+      && pdSwitchesAfter.autosOn === pdSwitchesBefore.autosOn,
+    `rows=${(await spawnRows()).filter((t) => pdTasks.includes(t.id)).length} switches=${JSON.stringify(pdSwitchesAfter)}`);
 
   if (successorSlot !== null) await post(`/api/slots/${successorSlot}/kill`, {});
   const occupiedAfterKill = (await sessions()).slots.filter((s) => s.cwd).length;

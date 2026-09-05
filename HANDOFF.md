@@ -194,14 +194,14 @@ Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, Owner-Poll, P
 ## 0. Was du als Erstes tust
 
 1. `GET /api/self/attention` — ich hatte keine offene Attention; alle vier vom Morgen sind beantwortet.
-2. **D1 (`ced51e9c`, Slot 5, Branch `fleet/260905094251-8a52`) ist im ZWEITEN Land** (gefeuert 15:52, `POST /api/slots/5/merge`).
-   Das erste Land brach nach 45 min Schlange ab (`waitedOut`, „verify NEVER STARTED", sagt nichts ueber den Baum). Astra hat D1 an
-   HEAD `fc7e3fc` freigegeben (Notiz `5556cf75`); die Lane hat danach auf main rebased — dieselben drei Commits, jetzt
-   `8b901d4/3da83e7/cba8807`. Lies `fleet.json.merges["5"]`: `landed:true` → **DEPLOY** (`POST /api/deploy`; 409 nur waehrend eines
-   Post-Land-Audits). Der Deploy bringt zugleich `FLEET_HELPER_WAKE_ADDR` live (siehe 2).
-3. **Nach dem Deploy zwei Proben:** (a) `POST /api/helper/devices/secondhostlinux1/wake` muss `sent:true` antworten (vorher 409 „no wake
-   address configured"; die Maschine laeuft, der Frame ist harmlos). (b) Das NAECHSTE Event an Slot 3 (Astra, Codex) muss ohne Relais
-   `delivered`/`acknowledged` werden. Erst dann ist der Codex-Defekt zu.
+2. **D1 IST GELANDET UND DEPLOYT** (Stand 16:0x): zweites Land `merged`, verify ok; main `4d7d60b`; Deploy `86ab66ad` Boot ok,
+   bootHead = main. Damit live: Codex-Zustellfix (kein Hinweis endet mehr auf dem Token-Sigil) und `FLEET_HELPER_WAKE_ADDR`.
+   **Wake-Probe gefahren:** `POST /api/helper/devices/secondhostlinux1/wake` antwortet `{"sent":true}` (vorher 409). Slot 5 raeumen,
+   falls das Land es nicht schon tat.
+3. **Die eine offene Probe: Codex-Zustellung ohne Relais.** Das naechste Event an Slot 3 (Astra) muss `delivered` und von ihr selbst
+   `acknowledged` werden. Bis es kommt, gilt die Relais-Regel unter 4; danach ist der Defekt zu. Das Merge-Terminal-Event `88220bd4`
+   habe ich noch relayt (alter Server-Text). ACHTUNG: das ERSTE Event einer FRISCHEN Codex-Pane kann weiter 409 beim eigenen Ack
+   bekommen (Session-Id lazy gebunden) — das ist D2 `e88884c8`, nicht D1.
 4. **Bis dahin bist DU Astras Relais:** Event in `fleet.json.events` mit `receiverSlot 3` und `status send-uncertain` → in Astras Pane
    steht der Text mit offenem Picker („no matches / Press enter to insert or esc to close"): `tmux -L claudefleet send-keys -t s3 Escape`
    leert den Composer (Owner-Entscheid: Composer-Rest ist nie ein Owner-Entwurf), dann `POST /send {slot:3,text}` — Text ohne `$`
@@ -238,7 +238,7 @@ Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, Owner-Poll, P
 
 ## 4. Was mit dieser Session stirbt
 
-Sieben Hintergrund-Waechter (Relais auf send-uncertain, Mutex-frei, Pane-Waechter Slot 1/5) und ein gefeuerter Lane-Watch auf Slot 1, ein gespendeter Merge-Watch auf Slot 5. Kein Auto, keine Mission, keine offene Attention. **Dieser Commit nimmt 43 uncommittete Zeilen des Slot-2-Nachtrags „0a" im Fleet-Betrieb-Abschnitt mit** — sie standen im Haupt-Checkout, und `succeed` verlangt die Datei sauber.
+Alle Hintergrund-Waechter (Relais auf send-uncertain, Pane-Waechter Slot 1) und die gefeuerten Watches (Lane Slot 1, Merge Slot 5). **Slot 2 (66499a03) will succeeden und findet keinen freien Slot** — nach dem Aufraeumen von Slot 5 geht es. Kein Auto, keine Mission, keine offene Attention. **Mechanismus, den Slot 2 belegt hat (`1388caf`, `4d7d60b`):** wir teilen EINEN Checkout; wer HANDOFF.md committet, nimmt fremde uncommittete Abschnitte mit oder ueberschreibt Zeile 1 eines fremden Titels. Regel-Vorschlag (nicht promoviert): eigenen Abschnitt VORANSTELLEN, nie Zeile 1 ersetzen, eigene Aenderung nicht laenger als noetig uncommittet lassen. Genau so ist mein Abschnitt in Slot 2s Commit `4d7d60b` gelandet.
 
 ---
 ---

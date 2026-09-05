@@ -5604,6 +5604,34 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && claimFn !== null && /helperDevices\.get\(deviceId\)\?\.daemonSha/.test(claimFn),
     jobsView === null ? "helperJobsView not found"
       : `view=${/daemonSha/.test(jobsView)} claim=${claimFn !== null && /daemonSha/.test(claimFn)}`);
+
+  // --- …AND THE SHA IS READ, NOT COUNTED. Presence proves the daemon measured its own tree; it does
+  // not prove that tree knows `kind`. A daemon between `79acd2e` and `1748417` reports a sha and
+  // still falls through to `cfg.suiteCmd` — the receipt of a suite run for a command nobody ran. So
+  // the claim measures ANCESTRY of the command-kind commit, and the three halves are pinned here
+  // because none of them is TypeScript's to keep: the floor DEFAULT is a literal (an env knob may
+  // move it for a throwaway instance, never for this fleet), the measurement is a git call whose
+  // exit code is the answer, and an unmeasurable vintage must fall on the REFUSING side — a
+  // `?? true` there would reopen the whole door while every type still checked.
+  const RULE_VINTAGE = "a command job is claimed only by a daemon whose sha HAS the command-kind commit as an ancestor, from a per-sha cache";
+  const vintageFn = serverU.span("async function daemonKnowsCommandKind(", "\n}")?.text ?? null;
+  const floorLine = serverU.span("const HELPER_CMD_FLOOR_SHA =", ";\n")?.text ?? null;
+  if (vintageFn === null || claimFn === null || floorLine === null)
+    pin(RULE_VINTAGE, false, `vintage=${vintageFn !== null} claim=${claimFn !== null} floor=${floorLine !== null}`);
+  else pin(RULE_VINTAGE,
+    // the floor default is the commit that taught the daemon `kind: "command"` — measured with
+    // `git log -S'kind === "command"' -- helper-daemon/`, not quoted from the Befund that asked for
+    // this guard (that one named `d4bb687`, two commits later and an e2e-only change)
+    /"1748417c8008224e839f9b944dacb534ce4905a2"/.test(floorLine)
+      && /merge-base", "--is-ancestor", HELPER_CMD_FLOOR_SHA, sha/.test(vintageFn)
+      && /HELPER_UPDATE_REPO === null \? false/.test(vintageFn)      // unmeasured refuses
+      && /helperCmdVintage\.get\(sha\)/.test(vintageFn)             // the cache is keyed by the SHA
+      && /helperCmdVintage\.set\(sha, \{ ok, at: Date\.now\(\) \}\)/.test(vintageFn)
+      && /HELPER_CMD_VINTAGE_TTL_MS/.test(vintageFn)
+      && /await daemonKnowsCommandKind\(daemonSha\)/.test(claimFn),
+    `floor=${/1748417c8008224e839f9b944dacb534ce4905a2/.test(floorLine)}`
+    + ` mergeBase=${/merge-base/.test(vintageFn)} failClosed=${/=== null \? false/.test(vintageFn)}`
+    + ` shaKeyed=${/helperCmdVintage\.get\(sha\)/.test(vintageFn)} calledFromClaim=${/daemonKnowsCommandKind/.test(claimFn)}`);
 }
 
 // --- WAKE-ON-LAN IS THE ONE NAMED EXCEPTION TO "NO PUSH", AND IT STAYS ONE ---------------------

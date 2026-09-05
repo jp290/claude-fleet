@@ -3975,10 +3975,16 @@ export async function run(): Promise<void> {
     const hpost = (path: string, body: unknown): Promise<Response> =>
       fetch(`${BASE}${path}`, { method: "POST", headers: HH, body: JSON.stringify(body) });
     const CMDDEV = "watchcmdbox01";
+    // A REAL sha, and it has to be: the claim does not merely count `daemonSha`, it measures the
+    // vintage it names (server.ts#daemonKnowsCommandKind) against FLEET_HELPER_CMD_FLOOR_SHA in the
+    // daemon-update repo. This instance's floor IS this instance's own checkout HEAD
+    // (e2e-isolated.sh), so HEAD is the sha that passes — a made-up 40-hex one is refused as
+    // unmeasurable, and every check below would then be reading the handshake instead of the watch.
+    const instanceHead = spawnSync("git", ["-C", ROOT, "rev-parse", "HEAD"]).stdout.toString().trim();
     const beat = await hpost("/api/helper/device",
-      { deviceId: CMDDEV, name: "cmd box (e2e)", daemonSha: "a".repeat(40) });
-    check("job watch setup: a device that names its own daemonSha is enrolled",
-      beat.ok, `${beat.status}`);
+      { deviceId: CMDDEV, name: "cmd box (e2e)", daemonSha: instanceHead });
+    check("job watch setup: a device that names its own daemonSha — a real one, at this instance's vintage floor — is enrolled",
+      beat.ok && /^[0-9a-f]{40}$/.test(instanceHead), `${beat.status} sha=${instanceHead.slice(0, 8)}`);
     const selfPost = (tok: string, path: string, body: unknown): Promise<Response> =>
       fetch(`${BASE}${path}`, { method: "POST",
         headers: { "content-type": "application/json", "x-fleet-self-token": tok }, body: JSON.stringify(body) });

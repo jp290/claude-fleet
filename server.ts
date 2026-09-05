@@ -14292,20 +14292,62 @@ async function claimLaneSuite(j: LaneSuiteJob, deviceId: string): Promise<Respon
     branches: [j.branch], covers: 0,
     claimedAt: now, expiresAt: j.claim.expiresAt, name: j.claim.name } });
 }
+// THE VINTAGE MEASUREMENT, and the reason the presence of `daemonSha` was never the whole guard.
+// A sha PROVES the daemon measured its own tree; it does not prove that tree knows `kind`. Between
+// `79acd2e` (daemonSha on the heartbeat) and the floor below, a daemon reports a sha AND still falls
+// through to `cfg.suiteCmd` on a command job — the receipt of a suite run for a command nobody ran,
+// which is the one outcome this whole rail exists to make impossible. So the sha is READ.
+//
+// THE FLOOR is measured, not quoted: `git log -S'kind === "command"' -- helper-daemon/` names
+// exactly `1748417`, and the same commit introduced `runArgv` and the `argv` field. (The Befund
+// that asked for this guard named `d4bb687` — two commits later and an e2e-only change that never
+// touched helper-daemon/; using it would refuse two daemon revisions that DO know the kind.)
+//
+// WHICH REPO ANSWERS: the one a daemon's tree comes FROM — `HELPER_UPDATE_REPO`, the source of
+// every daemon-update bundle. Not the job's repo: a session in a foreign checkout has never heard
+// of a fleet sha, and would make every daemon look ancient.
+//
+// The env knob exists so a throwaway instance can point the floor at its own fixture repo. It is
+// owner-side server config of the same class as FLEET_HELPER_UPDATE_REPO; nothing on the wire
+// reaches it.
+const HELPER_CMD_FLOOR_SHA = process.env.FLEET_HELPER_CMD_FLOOR_SHA?.trim()
+  || "1748417c8008224e839f9b944dacb534ce4905a2";
+// PER-SHA CACHE, deliberately short-lived. The answer for two commits that both resolve is
+// immutable, but "this repo has no such object" is not — a fetch changes it — so nothing is
+// remembered for long. Keyed by the SHA and nothing else: keyed by device it would keep answering
+// for a daemon that has since updated itself, which is the failure it is supposed to prevent.
+const HELPER_CMD_VINTAGE_TTL_MS = 60_000;
+const helperCmdVintage = new Map<string, { ok: boolean; at: number }>();
+async function daemonKnowsCommandKind(sha: string): Promise<boolean> {
+  const hit = helperCmdVintage.get(sha);
+  if (hit && Date.now() - hit.at < HELPER_CMD_VINTAGE_TTL_MS) return hit.ok;
+  // NO REPO TO ASK IS NOT HARMLESS. An unmeasured vintage is refused exactly like an old one: the
+  // failure mode here is a silently wrong receipt, and "we could not tell" must never buy the claim.
+  const ok = HELPER_UPDATE_REPO === null ? false
+    : (await gitRead(HELPER_UPDATE_REPO, "merge-base", "--is-ancestor", HELPER_CMD_FLOOR_SHA, sha)).code === 0;
+  if (helperCmdVintage.size > 256) helperCmdVintage.clear(); // the key comes off the wire; bound it
+  helperCmdVintage.set(sha, { ok, at: Date.now() });
+  return ok;
+}
 // The command half of the claim. Same bundle build as the preview's — the same `git stash create`,
 // so the tree that runs is the tree the offering session HAS and not the tree it last committed —
-// and one refusal neither of the other kinds has: THE DEVICE MUST HAVE NAMED ITSELF. A daemon
-// without `daemonSha` on its heartbeat predates the `kind` branch and would run `cfg.suiteCmd`
-// instead of `argv`; the job is already invisible in its jobs list, and this is the second lock on
-// the same door (a device may POST a jobId it learned any other way).
+// and two refusals neither of the other kinds has: THE DEVICE MUST HAVE NAMED ITSELF, AND THE NAME
+// MUST BE NEW ENOUGH. A daemon without `daemonSha` on its heartbeat predates the `kind` branch and
+// would run `cfg.suiteCmd` instead of `argv`; a daemon WITH one whose tree predates the floor does
+// exactly the same thing while looking modern. The job is already invisible to the first in its
+// jobs list, and this is the second lock on the same door (a device may POST a jobId it learned any
+// other way).
 async function claimCommandJob(j: CommandJob, deviceId: string): Promise<Response> {
   if (j.state === "reaped") return json({ error: "the session that offered this command job is gone — nothing to run it for" }, 404);
   if (j.state === "reported") return json({ error: "this command job was already reported" }, 404);
   if (j.state === "lapsed") return json({ error: "this command job lapsed and was not renewed" }, 404);
   const held = commandJobClaimOf(j);
   if (held) return json({ error: `already claimed by ${held.name} — it expires ${new Date(held.expiresAt).toISOString()}` }, 409);
-  if (!helperDevices.get(deviceId)?.daemonSha)
+  const daemonSha = helperDevices.get(deviceId)?.daemonSha;
+  if (!daemonSha)
     return json({ error: "this device's heartbeat names no daemonSha — a daemon that does not measure its own tree does not branch on job kind, and would run its configured suite command instead of this job's argv" }, 409);
+  if (!(await daemonKnowsCommandKind(daemonSha)))
+    return json({ error: `this device's daemon runs ${daemonSha.slice(0, 8)}, which does not have ${HELPER_CMD_FLOOR_SHA.slice(0, 8)} — the commit that taught the daemon to branch on job kind — as an ancestor in ${HELPER_UPDATE_REPO === null ? "any checkout this fleet can read (no daemon-update repo is configured, so the vintage cannot be measured at all)" : basename(HELPER_UPDATE_REPO)}; such a daemon would run its configured suite command instead of this job's argv. Queue it a daemon-update and let it report a newer sha.` }, 409);
   const live = slots.find((x) => x.id === j.slot && x.openedAt === j.slotOpenedAt && x.cwd);
   if (!live) {
     j.state = "reaped";

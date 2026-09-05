@@ -6598,11 +6598,11 @@ type ProgramDispatchStateName = "absent" | "on" | "off" | "unreadable";
 const PROGRAM_DISPATCH_MAX_LANES_UI = 16; // mirrors server/types.ts#PROGRAM_DISPATCH_MAX_LANES_MAX
 function programDispatchState(p: ProgramInfo): {
   state: ProgramDispatchStateName; label: string; tone: "ok" | "dim" | "warn";
-  sentence: string; stamped: string | null; maxLanes: number | null;
+  sentence: string; stamped: string | null;
 } {
   const rec = p.dispatch;
   if (rec === undefined || rec === null)
-    return { state: "absent", label: "program dispatch: never granted", tone: "dim", stamped: null, maxLanes: null,
+    return { state: "absent", label: "program dispatch: never granted", tone: "dim", stamped: null,
       sentence: "No owner record at all — nothing was ever granted or refused here. This program's"
         + " released rows are started by the fleet dispatcher exactly as every other program's are:"
         + " when the global switch is stopped, nothing of this program starts either." };
@@ -6611,7 +6611,7 @@ function programDispatchState(p: ProgramInfo): {
     || typeof rec.maxLanes !== "number" || !Number.isInteger(rec.maxLanes)
     || rec.maxLanes < 1 || rec.maxLanes > PROGRAM_DISPATCH_MAX_LANES_UI
     || typeof rec.confirmedAt !== "number" || !Number.isFinite(rec.confirmedAt) || rec.confirmedAt <= 0)
-    return { state: "unreadable", label: "program dispatch: unreadable record", tone: "warn", stamped: null, maxLanes: null,
+    return { state: "unreadable", label: "program dispatch: unreadable record", tone: "warn", stamped: null,
       sentence: "A dispatch record IS stored on this program, but it is not a shape this build can"
         + " read as a v1 grant — so nothing here says what was granted, and no time is shown because"
         + " an unreadable stamp is not a date. This is not the never-granted case: something is"
@@ -6619,12 +6619,12 @@ function programDispatchState(p: ProgramInfo): {
         + " program as ungranted; granting below overwrites the record outright." };
   const stamped = fmtTs(rec.confirmedAt);
   if (!rec.on)
-    return { state: "off", label: "program dispatch: off", tone: "dim", stamped, maxLanes: rec.maxLanes,
+    return { state: "off", label: "program dispatch: off", tone: "dim", stamped,
       sentence: "The record exists and grants nothing — this is you having said NO, not you having"
         + " never said. The tick refuses this program's rows under a stopped fleet exactly as it"
         + " would without a record, but the fact is a different one: it was decided, and it is dated." };
   return { state: "on", label: `program dispatch: on · ${rec.maxLanes} lane${rec.maxLanes === 1 ? "" : "s"}`,
-    tone: "ok", stamped, maxLanes: rec.maxLanes,
+    tone: "ok", stamped,
     sentence: `The tick may start THIS program's released rows while the global dispatcher is`
       + ` stopped, up to ${rec.maxLanes} of its lanes at once — and that number can only LOWER the`
       + " machine-wide per-program budget, never raise it. Nothing else is waived: the autos"

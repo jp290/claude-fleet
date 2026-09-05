@@ -24,12 +24,24 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
   → `/api/self/watch`, auto-③)? Zwei Bedingungen, nicht eine: der Flag ist die Zustimmung des Operators,
   `automatable: true` am Adapter ist der Anspruch des einzelnen Harness — ein morgen dazukommender Adapter
   erbt die Erlaubnis also NICHT (die Container-Zeile `c3531b41` ist genau dieser Fall). **Was der Flag NICHT
-  öffnet, und das ist der Grund, warum er entscheidbar war: kein Tick landet.** Die einzige
-  `mergeJob(`-Aufrufstelle ist eine Route, also tippt jeder geöffnete Pfad einen PROMPT in eine Pane und
-  keiner schreibt auf main. Der Default-Adapter fragt den Flag nie (sonst wäre eine Variable ein
+  öffnet, und das ist der Grund, warum er entscheidbar war: kein Tick landet.** Beide
+  `mergeJob(`-Aufrufstellen sind Routen (seit 2026-08-24 zwei: die Owner-Merge-Route und
+  `server.ts#selfLandTaskForMain`; `e2e/pins.ts` liest zusätzlich die Tick-Bodies), also tippt jeder
+  geöffnete Pfad einen PROMPT in eine Pane und keiner schreibt auf main. Der Default-Adapter fragt den Flag nie (sonst wäre eine Variable ein
   versehentlicher fleet-weiter Kill-Switch). Am Tag des Einschaltens war die Wirkung **null** — kein Slot fuhr
   einen fremden Harness (an `fleet.json` geprüft); er bewaffnet eine Fähigkeit, statt Verhalten zu ändern. Die
   Suiten setzen ihn explizit auf `0` (`e2e-isolated.sh`), damit `§6c` nicht an der Shell des Operators hängt.
+- **`FLEET_LANDS` (seit 2026-09-05, Dual-Host S2) — darf DIESE Fleet die Integrationsbranch überhaupt
+  schreiben?** Default OFFEN (nicht gesetzt = landen wie bisher), `0/off/false/no` sperrt,
+  `1/on/true/yes` öffnet ausdrücklich, ein unerkannter Wert loggt eine Zeile und bleibt OFFEN — ein
+  Tippfehler darf den kanonischen Host nicht stranden. Gesperrt antworten BEIDE Türen auf den
+  Land-Pfad (Owner-Merge-Route und `server.ts#selfLandTaskForMain`) mit
+  `409 this instance does not land — it follows a canonical main`, und zwar vor jedem Schreibakt: kein
+  Job, kein `mergeLast`, keine `lane-outcomes`-Zeile, keine Land-Note. Der Wert steht als `lands` auf
+  `GET /api/sessions` (einmal, neben `instance`) und auf `GET /api/self/gate`; das Board blendet die
+  ⏏-Knöpfe aus. Gedacht für den FOLGER-Host, der `main` per `fleet-sync.sh` fast-forwarded — der
+  kanonische Host setzt die Variable nie. Nicht in `watchdog.sh`: die Sperre ist eine
+  Host-Entscheidung des Folgers und gehört in dessen `.env`.
 
 ## Tool-Scoping
 

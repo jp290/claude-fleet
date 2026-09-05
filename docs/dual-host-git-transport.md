@@ -137,5 +137,14 @@ start` hat weder tty noch Agent.
   sollte.
 - **Die Gegenrichtung ist manuell und bleibt es**, solange sie vom kanonischen Host aus getrieben
   wird: dessen launchd-Seite ist Host-Zustand außerhalb dieses Repos.
-- **Kein Land auf dem zweiten Host.** `fleet-sync.sh` erzwingt das nicht, es MISST es nur (Ausgang
-  `3`). Die Regel ist der Owner-Entscheid, nicht das Skript.
+- **Kein Land auf dem zweiten Host — der MECHANISMUS ist seit dem S2-Schnitt (2026-09-05) der
+  Env-Schalter `FLEET_LANDS`, `fleet-sync.sh` ist der Sensor dahinter.** `FLEET_LANDS=0` laesst
+  beide Tueren auf den Land-Pfad — die Owner-Merge-Route und `server.ts#selfLandTaskForMain` — mit
+  409 `this instance does not land — it follows a canonical main` antworten, und zwar VOR jedem
+  Schreibakt: kein Job, kein `mergeLast`-Verdikt, keine `lane-outcomes`-Zeile, keine Land-Note.
+  Sichtbar als `lands` auf `GET /api/sessions` (einmal, neben `instance`) und auf
+  `GET /api/self/gate`; das Board blendet die ⏏-Knoepfe aus, wenn `lands === false`. Der Schalter
+  ist DEFAULT OFFEN und ein unerkannter Wert bleibt offen (Logzeile) — ein Tippfehler darf nie den
+  kanonischen Host stranden. Was `fleet-sync.sh` weiter leistet, ist die Gegenprobe: Ausgang `3`
+  (DIVERGED) misst, dass der Folger doch abgewichen ist — durch einen Land vor dem Schalter, einen
+  Handgriff an `git`, oder eine Fleet, die ohne die Variable gestartet wurde.

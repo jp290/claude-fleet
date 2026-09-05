@@ -197,3 +197,52 @@ nachliefert.
 - Eine Regel „keine neue Check-Familie ohne N gruene serielle Laeufe" waere die Konsequenz aus 6.4.
   Sie ist hier **vorgeschlagen, nicht gesetzt** — in diesem Repo wird eine Dauerregel erst durch
   Owner-Promotion normativ.
+
+---
+
+## 7. Nachtrag II: Nebenlaeufigkeit direkt aus dem Trail gemessen — und als Erklaerung ausgeschlossen
+
+Anlass: dasselbe Fehler-TRIO fiel am 2026-09-05 auf zwei aufeinanderfolgenden Audits (`ed36971`
+`at=1788565731607` und `5202fd6` `at=1788567702804`), beide docs-only, beide ohne Kante zum Diff.
+Zwei identische Trios hintereinander sehen nicht nach Muenzwurf aus, und zur selben Zeit stand der
+Suite-Mutex mit fuenf Wartenden (laengste Wartezeit 1 h 38). Das ist die Last-Lesart in ihrer
+staerksten Form, also noch einmal gepruft — diesmal mit einem Sensor, den §6 nicht hatte.
+
+**Der Sensor:** jede Trail-Zeile traegt `ts`. Aus erster und letzter Zeile einer Laufdatei ergibt
+sich das Zeitintervall des Laufs; die Ueberlappung zweier Intervalle ist damit direkt zaehlbar.
+Das misst Nebenlaeufigkeit **ohne** Prozess-`grep` und rueckwirkend ueber das ganze Register
+(223 isolated-Laeufe mit Zeitstempeln, 9 Tage).
+
+**Das Ergebnis, in einem Satz: die Ueberlappung ist praktisch ueberall NULL.**
+
+| Familie | rot/Laeufe | median Ueberlappung rot | gruen | median Dauer rot | gruen |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| unbound succession | 8/32 | 0 | 0 | 29,5 min | 30,5 min |
+| delivers WHOLE | 8/32 | 0 | 0 | 30,1 min | 30,3 min |
+| projection §11.2o | 16/198 | 0 | 0 | 31,7 min | 26,7 min |
+
+Genau **drei** von 223 Laeufen ueberlappen ueberhaupt einen anderen, und alle drei sind GRUEN.
+
+Zwei Schluesse:
+
+1. **Der Suite-Mutex haelt.** Isolierte Laeufe laufen auf dieser Maschine faktisch nie gleichzeitig,
+   auch nicht in einer Schlange mit fuenf Wartenden. Die Warnung des Regelbuchs („zwei
+   `./e2e-isolated.sh` gleichzeitig vergiften sich gegenseitig") beschreibt eine echte Gefahr, aber
+   keinen eingetretenen Zustand — und ein Beweislauf, der endlich drankommt, wird nicht von einem
+   parallelen isolierten Lauf verdorben. Das ist eine gute Nachricht fuer die Beweisfuehrung des
+   Programs.
+2. **Fuer die succession-pane-Familie ist Last als Erklaerung ausgeschlossen**, und zwar auf beiden
+   Achsen: die roten Laeufe ueberlappen so wenig wie die gruenen, und sie sind sogar minimal
+   KUERZER (29,5 gegen 30,5 min). Wer dort eine Renn-Wurzel sucht, sucht sie nicht in der
+   Maschinenbelegung. Fuer §11.2o bleibt ein schwacher Dauer-Unterschied (31,7 gegen 26,7 min) —
+   derselbe schwache Effekt wie in §6.2, und dort war er gepoolt vier Prozentpunkte wert.
+
+**Was dieser Nachtrag NICHT ausschliesst:** Last aus allem, was KEIN isolierter Lauf ist — Lanes,
+Land-Gates, Builds, der Server selbst. Der Sensor sieht nur Trail-schreibende Laeufe. Die Aussage
+lautet also praezise: *isolierte Laeufe stoeren einander nicht*, nicht *die Maschine war ruhig*.
+
+**Und das Trio bleibt damit unerklaert.** Zwei identische Trios hintereinander sind bei 25 % · 25 %
+· 8 % unwahrscheinlich genug, dass „Zufall" die schwaechste der offenen Antworten ist; die beiden
+staerkeren — eine gemeinsame Wurzel der drei, oder ein Zustand der Maschine, den der Trail nicht
+sieht — sind beide offen. Fail 2 ist ausserdem laut Controller eine FOLGE von Fail 1, was das Trio
+auf zwei unabhaengige Wurzeln reduziert und die Unwahrscheinlichkeit entsprechend mildert.

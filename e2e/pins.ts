@@ -2681,6 +2681,31 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     promoWrites.length === 2 && promoRouteStart > 0 && promoRouteEnd > promoRouteStart
     && promoWrites.every((m) => m.index > promoRouteStart && m.index < promoRouteEnd),
     `${promoWrites.length} write(s): ${promoWrites.map((m) => m[0]).join(" | ")}`);
+  // --- EVERY OWNER PROGRAM SUB-ROUTE IS ADMITTED BY THE ROUTER'S OWN ALLOWLIST. The programs
+  // handler matches its sub-routes with regexes of its own, but nothing reaches it unless the
+  // router's path test lets the URL through first — and that test is a hand-written alternation of
+  // names, one function and 3 800 lines away. A door added to the handler without its name in that
+  // list compiles, typechecks, passes every pin about its shape, and answers 404 forever. Measured
+  // 2026-09-05: the program-dispatch door shipped complete and unreachable, and the FIVE runtime
+  // checks that caught it all reported the same "not found" — the cheapest possible signature for
+  // the most expensive possible mistake. This is the structural half, so the next door cannot pay
+  // for it again.
+  const ownerProgFn = serverU.span("async function handleOwnerProgramRoute", "\n}\n")?.text ?? "";
+  const gateLine = server.split("\n").find((l) => l.includes("api\\/programs(?:\\/[^/]+\\/(?:")) ?? "";
+  const gateNames = (gateLine.match(/\(\?:([a-z|-]+)\)\)\?\$/)?.[1] ?? "").split("|").filter(Boolean);
+  const SUB = "/^\\/api\\/programs\\/([^/]+)\\/";
+  const declaredSubRoutes: string[] = [];
+  for (let at = ownerProgFn.indexOf(SUB); at >= 0; at = ownerProgFn.indexOf(SUB, at + 1)) {
+    const end = ownerProgFn.indexOf("$/", at);
+    if (end < 0) break;
+    for (const name of ownerProgFn.slice(at + SUB.length, end).replace(/^\(|\)$/g, "").split("|"))
+      declaredSubRoutes.push(name);
+  }
+  const unreachable = declaredSubRoutes.filter((n) => !gateNames.includes(n));
+  pin("every /api/programs/:id/<sub> route the handler declares is named in the router's allowlist — an unlisted door is a permanent 404",
+    ownerProgFn.length > 1000 && gateNames.length >= 8 && declaredSubRoutes.length >= 8
+    && unreachable.length === 0,
+    JSON.stringify({ declared: declaredSubRoutes, gate: gateNames, unreachable }));
   // --- THE PROGRAM-DISPATCH RECORD HAS EXACTLY ONE WRITER, for the promotion record's reason one
   // record over — a self route that could write it would be a program granting ITSELF the right to
   // have its own released rows started unattended, which is the one shape the record exists to

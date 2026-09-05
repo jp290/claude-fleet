@@ -15044,6 +15044,13 @@ interface AuditAdjudication {
   auditAt: number;             // the audit row it judges (that row's `at`)
   verdict: AdjudicationVerdict;
   by: "owner" | "backfill";
+  // WHICH CHANNEL the owner judged through, measured exactly as ownerLandActor measures it on the
+  // land path. `by` above already names the only principal this route has, so the fact worth
+  // recording is the channel — the board's cookie, a script's bearer, a typed `?token=`.
+  // OPTIONAL, and that is the honest shape here rather than the mandatory one the land note
+  // carries: every row written before this field existed, and every `backfill` row, has no answer.
+  // Absence says "this row cannot say" — the loader below never fills it in with a guessed cookie.
+  actor?: LandActor;
   note?: string;
 }
 // newest-wins per audit row, so a mis-judgement is corrected by adjudicating again and the rail
@@ -15058,6 +15065,10 @@ async function adjudicationsByAudit(): Promise<Map<number, AuditAdjudication>> {
     const rec: AuditAdjudication = {
       at: typeof r.at === "number" ? r.at : 0, auditAt, verdict: verdict as AdjudicationVerdict,
       by: r.by === "backfill" ? "backfill" : "owner",
+      // PRESENCE-GATED, never defaulted: loadLandActor turns anything unreadable into the honest
+      // `unknown` arm, but a row that never had the key at all must stay WITHOUT the field. Reading
+      // it unconditionally would stamp every historical judgement with an actor nobody measured.
+      ...(Object.prototype.hasOwnProperty.call(r, "actor") ? { actor: loadLandActor(r.actor) } : {}),
       ...(typeof r.note === "string" && r.note ? { note: r.note } : {}),
     };
     const prev = byAudit.get(auditAt);
@@ -15066,8 +15077,34 @@ async function adjudicationsByAudit(): Promise<Map<number, AuditAdjudication>> {
   }
   return byAudit;
 }
+// WHICH PROGRAMS DOES THIS AUDIT ROW SPEAK FOR. An AuditCover names a landed branch and the
+// integration tip it produced; Program authority lives on the task-derived OUTCOME row
+// (LaneOutcome.programId). That ledger is the only durable bridge between the two: `Task` carries
+// no branch, and the lane whose land is being audited is normally torn down long before anyone
+// judges its audit. Joined on repo + branch + mainAfter together, never on the branch alone — a
+// branch name is reused, a tip is not — and newest-outcome-wins per cover, the same latest-reading
+// discipline every trail here uses. A cover with no matching landed row stays PROGRAMLESS rather
+// than being attributed to the nearest guess.
+async function programsForAuditRow(row: PostLandAuditRow): Promise<Map<string, AuditCover[]>> {
+  const byProgram = new Map<string, AuditCover[]>();
+  if (row.covers.length === 0) return byProgram;
+  const { rows } = await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE);
+  for (const cover of row.covers) {
+    let newest: Record<string, unknown> | null = null;
+    for (const o of rows) {
+      if (o.disposition !== "landed" || o.repo !== row.repo || o.branch !== cover.branch
+        || o.mainAfter !== cover.mainAfter || typeof o.programId !== "string" || !o.programId) continue;
+      const ts = typeof o.ts === "number" ? o.ts : 0;
+      if (!newest || ts >= (typeof newest.ts === "number" ? newest.ts : 0)) newest = o;
+    }
+    if (!newest) continue;
+    const id = newest.programId as string;
+    byProgram.set(id, [...(byProgram.get(id) ?? []), cover]);
+  }
+  return byProgram;
+}
 // the owner write. Mirrors writeDisposition: validate and append in one place, return the Response.
-async function writeAuditAdjudication(body: Record<string, unknown> | null): Promise<Response> {
+async function writeAuditAdjudication(body: Record<string, unknown> | null, req: Request): Promise<Response> {
   if (!body) return json({ error: "invalid json" }, 400);
   const auditAt = typeof body.at === "number" ? body.at : NaN;
   const verdict = body.verdict;
@@ -15083,15 +15120,39 @@ async function writeAuditAdjudication(body: Record<string, unknown> | null): Pro
   const { rows } = await readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE);
   const target = rows.find((r) => r.at === auditAt);
   if (!target) return json({ error: `no post-land audit row with at=${auditAt}` }, 404);
+  // WHO JUDGED IT, MEASURED — the adjudication rail's half of the same question the land path
+  // answers in ownerLandActor, derived the same way and deliberately not re-invented. `via` is the
+  // channel tokenFrom already accepted and then discarded; `cookie` is the board's own shape and
+  // the honest fallback for a request that reached this owner-gated position without one.
+  // The `suspect` arm is the narrow one the land path defines: bearer/query — a script, not the
+  // board — judging an audit that covers a land of an ACTIVE Program whose bound MAIN is LIVE.
+  // A row this server cannot read AS an audit row proves no coverage, so it draws no flag: the
+  // absence of the flag always means "not shown", never "shown to be safe".
+  const via = tokenChannel(req) ?? "cookie";
+  const validTarget = validAuditRow(target);
+  const byProgram = validTarget ? await programsForAuditRow(validTarget) : new Map<string, AuditCover[]>();
+  const ambient = via !== "cookie" && [...byProgram.keys()].some((id) => {
+    const p = programs.find((x) => x.id === id);
+    return !!p && p.status === "active" && programOccupancy(p) === "live";
+  });
+  const actor: LandActor = ambient
+    ? { kind: "owner", via, suspect: "owner-token-outside-board" }
+    : { kind: "owner", via };
   const rec: AuditAdjudication = {
     at: Date.now(), auditAt, verdict: verdict as AdjudicationVerdict,
     by: "owner", // stamped, never read from the body — this route has exactly one principal
+    actor,      // …and measured, never read from the body either
     ...(note ? { note } : {}),
   };
   auditAdjudicationClaims.add(auditAt);
   appendEvent(AUDIT_ADJUDICATION_FILE, rec as unknown as Record<string, unknown>);
   audit("postland_audit", undefined,
-    `adjudicated ${verdict} — ${String(target.result)} audit at ${auditAt}${note ? `: ${note}` : ""}`.slice(0, 240));
+    `adjudicated ${verdict} — ${String(target.result)} audit at ${auditAt} (${landActorDetail(actor)})${note ? `: ${note}` : ""}`.slice(0, 240));
+  // the same named line the land path writes, on the same class of act — a ledger that can NAME
+  // the shape, never a barrier: the judgement above has already been accepted.
+  if (actor.suspect)
+    audit("owner_token_ambient_use", undefined,
+      `audit=${auditAt} programs=${[...byProgram.keys()].join(",")} via=${via}`);
   // `result` is echoed back UNCHANGED and on purpose: the caller's own confirmation that judging a
   // red did not launder it into a pass.
   return json({ ok: true, adjudication: rec, result: target.result });
@@ -24159,7 +24220,7 @@ Bun.serve<WSData>({
     // POSTLAND_AUDIT_FILE for writing, so "an adjudicated red stays red" is not a rule this handler
     // keeps — it is a thing it cannot do.
     if (url.pathname === "/api/post-land-audits/adjudicate" && req.method === "POST")
-      return await writeAuditAdjudication(await readJson(req));
+      return await writeAuditAdjudication(await readJson(req), req);
     // …and the READ half of the artefact rail: the bytes themselves, the one route that serves
     // them. Owner-only by POSITION (below tokenGate), like the trail above. Addressed by the row
     // key and NOT by a path from the caller — the stored path is rebuilt from the rail row here, so

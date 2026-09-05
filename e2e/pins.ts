@@ -6059,6 +6059,47 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     relapsed.length === 0, relapsed.length ? `back: ${relapsed.join(" | ")}` : "neither form present");
 }
 
+// --- THE ADJUDICATION RAIL'S ACTOR (I14). The land path stopped guessing who acted on 2026-08-23
+// (LandProvenance.actor); the adjudication rail kept stamping `by: "owner"` and nothing else, so a
+// script judging a red audit was byte-identical in the ledger to the owner clicking the board. The
+// three facts below are one function's CONTROL FLOW and a loader's PRESENCE test — a compiler sees
+// neither, which is why they are pinned textually and their behaviour is proved in e2e/programs.ts.
+{
+  const RULE_ACTOR = "the adjudication rail measures its token channel";
+  const write = server.match(/async function writeAuditAdjudication\([\s\S]*?\n\}/)?.[0] ?? "";
+  const load = server.match(/async function adjudicationsByAudit\([\s\S]*?\n\}/)?.[0] ?? "";
+  const bridge = server.match(/async function programsForAuditRow\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_ACTOR} — writeAuditAdjudication takes the request and measures its channel`,
+    write !== "" && write.includes("req: Request") && write.includes("tokenChannel(req)"),
+    write === "" ? "writeAuditAdjudication not found in server.ts"
+      : `req param=${write.includes("req: Request")} tokenChannel=${write.includes("tokenChannel(req)")}`);
+  // the principal is still SERVER-STAMPED. Measuring the channel must not turn `by` into something
+  // the body can say — that inversion is the whole reason `by` was stamped in the first place.
+  pin(`${RULE_ACTOR} — the owner principal stays stamped beside the measured actor`,
+    write !== "" && write.includes('by: "owner"') && write.includes("landActorDetail(actor)")
+      && write.includes('audit("owner_token_ambient_use"'),
+    write === "" ? "writeAuditAdjudication not found in server.ts"
+      : `by=${write.includes('by: "owner"')} detail=${write.includes("landActorDetail(actor)")}`);
+  // the SUSPECT arm is narrow by construction: cookie is the board's own shape and is never
+  // flagged, and the bridge that decides coverage joins repo+branch+tip, never the branch alone.
+  pin(`${RULE_ACTOR} — the suspect arm excludes cookie and reads coverage through programsForAuditRow`,
+    write !== "" && write.includes('via !== "cookie"') && write.includes("programsForAuditRow(")
+      && bridge !== "" && bridge.includes("o.repo !== row.repo") && bridge.includes("o.branch !== cover.branch")
+      && bridge.includes("o.mainAfter !== cover.mainAfter"),
+    write === "" || bridge === "" ? "writeAuditAdjudication or programsForAuditRow not found in server.ts"
+      : `cookie-exempt=${write.includes('via !== "cookie"')} join=${
+        ([["repo", "o.repo !== row.repo"], ["branch", "o.branch !== cover.branch"],
+          ["mainAfter", "o.mainAfter !== cover.mainAfter"]] as [string, string][])
+          .filter(([, c]) => bridge.includes(c)).map(([n]) => n).join("+") || "none"}`);
+  // …and the LOADER never invents one. loadLandActor turns unreadable into the honest `unknown`
+  // arm, but a persisted row that never carried the key must come back WITHOUT the field: a
+  // default here would retro-stamp every judgement made before this rail existed.
+  pin(`${RULE_ACTOR} — adjudicationsByAudit loads actor only from a present persisted key`,
+    load !== "" && load.includes('hasOwnProperty.call(r, "actor")') && load.includes("loadLandActor(r.actor)"),
+    load === "" ? "adjudicationsByAudit not found in server.ts"
+      : `presence guard=${load.includes('hasOwnProperty.call(r, "actor")')} loader=${load.includes("loadLandActor(r.actor)")}`);
+}
+
 console.log(rows.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

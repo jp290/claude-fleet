@@ -1,43 +1,42 @@
-# HANDOFF — 🎛 Fleet Controller (Slot 5, Fable 5.1): Program-Dispatch gelandet+deployt, Suite-Schnitte A/B gefilet, Codex-Zustellprobe ZU, GLM- und Dual-Host-Schnitt-1 gelandet; 2026-09-05 17:0x, ctx GEMESSEN ~27 %
+# HANDOFF — 🎛 Fleet Controller (Slot 4, Fable 5.1): Dual-Host bis S1 durch, S2 laeuft, Owner hat die Dual-Host-Entscheidungen an den Controller delegiert; 2026-09-05 20:5x, ctx GEMESSEN 34 %
 
-> **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 12, 15:5x).
-> **Der Controller ist, wer das Label `🎛 Fleet Controller` traegt.** Lineage: … → 7 → 12 → 5 → du.
+> **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 5, 17:0x).
+> **Der Controller ist, wer das Label `🎛 Fleet Controller` traegt.** Lineage: … → 12 → 5 → 4 → du.
 
 Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, Owner-Poll, Panes.
 
 ## 0. Was du als Erstes tust
 
-1. `GET /api/self/attention` und der Attention-Bestand: ich habe KEINE offene Attention hinterlassen; Astras zwei (Advisory-Deckel, GLM-Land) sind beantwortet.
-2. **KEIN DEPLOY, solange Slot 1 (Beleg-Lane 2 `9f1dbfb4`, Program 66499a03, Slot 8) laeuft und danach noch ~20 min** — Slot 8s Beweis (erste `autoClose`-Zeile ueberhaupt) haengt an einem deploy-freien Idle-Fenster nach der Report-Annahme; jeder Deploy nullt die Idle-Uhr aller Panes. Slot 8 meldet dir das Fenster selbst, wenn der Report da ist. `deployGap.codeBehind` steht nach dem Dual-Host-Land `7b1d9cd` auf `true` — die Dateien sind docs/dual-host-git-transport.md, docs/repo-map.generated.md, fleet-sync.sh; KEIN Server-Code darunter, der Deploy ist funktional nicht noetig. Deploy erst nach Slot 8s Fenster, und nur wenn wirklich Server-Code dahinter liegt.
-3. **Audit-Watches, die mit mir sterben:** `7a68c9f` (Program-Dispatch) und `7b1d9cd` (Dual-Host) — arm beide neu (`{"kind":"audit","repo":"/Users/owner/claude-fleet","mainAfter":"<sha>"}`; die mainAfter-Sha steht in der Land-Note `git notes --ref=fleet/land show <tip>`). Erwartung: rot auf genau den zwei bekannten Familien (D2 setup, projection nextAction), alles andere ist Befund.
-4. **Slot 4s Composer trug beim Land den ungesendeten Text „mach gate 3 und 4 als einen akt, claude installier ich".** Nach Owner-Regel ist ein Composer-Rest nie ein Owner-Entwurf; ich habe ihn nicht ausgefuehrt, aber die Folgezeile `0c00f9a9` (Gate 3+4 als EIN Akt) genau so geschnitten und als BLOCKIERT markiert, bis `ssh second-hostowner@100.64.0.2 'command -v claude'` einen Pfad liefert. Der Owner muss Claude Code dort installieren und einloggen (Credential-Akt, sein Kontingent) — das steht in meinem Schlussbericht an ihn.
-5. **Das Dual-Host-Program `cd110019` hat KEINE lebende MAIN:** `program.main` zeigt auf Slot 8 mit `openedAt 1788567958928` (retired); der heutige Slot 8 ist die MAIN von 66499a03. Genau daran starb Slot 4s needs-main-Report („no exact clarification receiver evidence"), und die Lane stand 30 min stumm. Owner-Wahl: neue MAIN spawnen oder das Program ueber den Controller fahren; bis dahin liest DU die Panes der Dual-Host-Lanes.
+1. `GET /api/self/attention`: ich habe KEINE offene Attention hinterlassen. Meine Watches sterben mit mir — der einzige, der zaehlt: **Lane-Watch auf Slot 5** (S2 Land-Sperre, Task `c893717a`, Branch `fleet/260905184251-520e`, Opus 5 high, seit 20:43). Arm ihn neu: `POST /api/self/watch {"target":5}`. Du bist damit Empfaenger ihrer Klaerungen und ihres Reports (das Dual-Host-Program `cd110019` hat KEINE lebende MAIN, sein `program.main` zeigt auf einen abgeraeumten Slot 8; der Controller faehrt es).
+2. **Wenn S2 gemeldet ist:** Report lesen, `POST /api/self/fleet-report/:id/accept`, landen (`POST /api/slots/5/merge {}`), Merge-Watch, Audit-Watch auf den Tip, **Deploy** (server.ts + client beruehrt: `POST /api/deploy`, danach `GET /api/deploys` `ok:true` und `deployGap.codeBehind:false` pruefen). Dann **W2 auf dem Folger** (Controller-Akt, delegiert): `ssh second-hostowner@100.64.0.2 'bash -lc "…"'` — die Zeile `FLEET_LANDS='0'` in `~/claude-fleet/.env` (gequotet!) anhaengen, `tmux -L claudefleet kill-session -t srv` dort (Watchdog spawnt neu), dann `GET /api/sessions` dort → `lands:false`. Der Folger zieht main erst per Timer (alle 15 min, `systemctl --user list-timers fleet-sync.timer`), also W2 erst NACH dem Sync des S2-Tips.
+3. **Dann S3** (`35d4aa62`, B1-Umschalter, pending) und **E7** (`7d1c6ca6`, C-Guard, pending) — beide per `POST /api/tasks/:id/dispatch {"harness":"claude","model":"claude-opus-5[1m]","effort":"high"}`, S3 nicht neben S2 (server.ts+client). Danach S4 (der reale E2E-Lauf) — Auftragstext steht in `docs/dual-host-topologie-entscheidung-2026-09-05.md` §3; W3/W4 sind Controller-Akte unter der Delegation.
+4. **Kein Deploy noetig** fuer den Stand jetzt: ueber `bootHead b7c2cc1` liegen nur Docs (`b10a763`, `1cb5dc7`).
 
 ## 1. Owner-Entscheide dieser Session
 
-- 16:2x „Wollen wir die Suite vllt einfach etwas verkleinern?" → meine Antwort nach Messung: erst Wartezeit und Vorschau, kein Check faellt. „Ja bitte geh diese Punkte jetzt sauber an." → Zeilen `aa3fd660` (Schnitt A: Warten auf Bedingung statt Timer) und `5cd2d1b9` (Schnitt B: Modulfilter + Fixture-Karte fuer die Lane-Vorschau) im Program Audit-Determiniertheit (Slot 6), Reihenfolge NACH Slot 6s Zeile 3 (`423f4031`, queued, wartet am Deckel); `7d3d29de` (Offer-Seite sieht den Second-host nicht) standalone pending. Messbasis in den Texten: Trail `isolated-20260905T121144Z`, 3139 Checks, 1690 s; 83 Checks >5 s = 753 s; 461 sleep() = 366 s; programs/tasks/watch/merge = 2/3 der Zeit; heute rot auf genau EINEM Check.
-- Freigabe an Slot 4 (Dual-Host), die einzige Wirkung ausserhalb des Repos: eine fetch-only-Zeile (`restrict,command="/usr/bin/git-upload-pack '/Users/owner/claude-fleet'"`) in `~/.ssh/authorized_keys` auf oldmac, append-only, Backup im Lane-Scratchpad. Owner-Delegation „entscheide du" fuer Dual-Host; rueckgaengig = die Zeile loeschen.
+- 18:4x „claude code login done, kuemmer du dich um den rest" → Second-host-Zeile entsperrt und gelandet (`5986afa`), Waisen geraeumt.
+- 20:0x „stoss das an, aber Denkauftrag an eine fable5.1 lane" → Topologie-Vorlage `b10a763`.
+- **20:2x „Ich will dass du das komplett uebernimmst und beantwortest, frag mich nur was du wirklich fragen musst"** → E1–E7 vom Controller entschieden (A; Gate 2 bleibt NEIN; Land-Sperre JA; Program-Datensatz neu bestaetigen; Kanarie JA, gefahren; keine weiteren Harnesses auf dem Folger; C-Guard JA). Tabelle: `docs/messungen/2026-09-05-second-host-claude-slot-kanarie.md` §4. **Diese Delegation gilt fort** — Host-Akte auf dem Folger (`.env`, Units, `~/.claude.json`) fuehrst DU aus, einzeln benannt im Report; fragen musst du nur bei Geld, fremden Konten (z. B. codex-Login) oder Publikation.
 
 ## 2. Was gefallen ist (Belege: Ledger, Queue, Commit-Bodies)
 
-- **Gelandet+deployt:** Program-Dispatch `5c1f831f` als vier Commits, Tip `7a68c9f`, verify ok 111 s, waitMs 0; Deploy `0deb6aef` Boot ok, bootHead = Tip. Slot 1s eigener Bestaetigungslauf: 1 FAIL = projection nextAction (bekannt), sonst gruen.
-- **Gelandet (docs/skript, kein Deploy):** GLM-Gegenlesung `6a527587` → `fedf579` nach fachlicher Annahme durch Astra (Report `f4469951`); Dual-Host Schnitt 1 `cf4a85cd` → `7b1d9cd`, verify gruen ( `fleet-sync.sh`, `docs/dual-host-git-transport.md`, Repo-Map).
-- **Codex-Zustellprobe ZU:** das Audit-Event `35c0a100` kam direkt bei Astra an (attempts 1) und wurde von ihr selbst quittiert. Kein Relais mehr noetig. D2 `e88884c8` bleibt pending bei Astra.
-- **Astras Rueckgabe an Slot 7 lag seit 13:42 unzugestellt** (Queue-Notiz `410b24ea`, von der Vorgaengerin nicht relayt) — relayt, Korrektur `d1682e2`, angenommen, gelandet. Sieben abgearbeitete D1-Koordinationsnotizen archiviert (Advisory-Deckel 10/10 → 3/10). Drei Doppel-Zeilen von Slot 6 archiviert (`9da27a0b`, `865439d9`, `0c6c78e7`). Richtung `233ee108` → Prozess-Dokument als `d2b69d3d` pending in Astras Program.
-- **Waisen:** vier vollstaendig gelandete Worktrees entfernt. ZWEI bleiben mit uncommitteter Arbeit (b963 = Task `9fd34beb`, 290 Zeilen programExecutionView/programHealth; 1787 = `db6902c4`, ersetzt durch `02740e69`) — nicht meine Entscheidung; loeschen oder salvagen ist Owner-/MAIN-Sache.
-- **Maschine:** 8,6 GB RAM; macOS killte Slot 1 zwei Hintergrund-Waechter wegen Speicherknappheit (43 % frei bei 7 claude/11 codex/21 bun-Prozessen). Kein Befund gefilet, nur gemessen.
-- Audits `1d5efb9` und `cba8807` rot, beide exakt die zwei bekannten Familien. Die Audits laufen „(remote, second-host)" — der Helfer ist erreichbar; nur die Offer-Seite sieht ihn nicht (`7d3d29de`).
+- Lands: `b935ac3` (Slot 2, §11.2o-Sonde), `b7c2cc1` (Slot 8 self-land, Owner-Programmliste −47 %, **deployt** `6cfa9a65` ok), `5986afa` (Dual-Host Schnitt 2: Folger-Fleet + systemd + Sync-Timer; E2E bewiesen: Timer zog den Tip um 20:08 unbeaufsichtigt), `b10a763` (Topologie-Vorlage, Fable-Lane), **`1cb5dc7` DIREKT-COMMIT** (Kanarie-Notiz; von Hand verifiziert: install ok, pins ALL PASS 408, Leak-Grep leer; KEIN Land-Ledger, KEIN Audit — `./state.sh` untertreibt entsprechend).
+- Audits beurteilt: `7a68c9f` flake (§11.2o + D2), `f980546` unknowable (Budget-Familie, lokal 1395 s Schlange), `b935ac3` stale-test (§11.2o, Wurzel gemessen), `b7c2cc1` flake (dasselbe Paar). Slot 8 misst D2 setup als lastempfindlich (8/490 Audits, 6 heute).
+- Erste `autoClose`-Zeile ueberhaupt (Z.795, Slot 8s Beleg). Befund: der Worktree bleibt liegen (Notiz `1d05c49b`); Waise 136c von Hand entfernt.
+- Notizen gefilet: `629e8b2d` (Audit faellt bei belegtem Helfer lokal + 14-min-Kick-Luecke), `3ad9e850` (Lane-Vorschau verliert FAIL-Namen: Server spreadet `fails` nicht ins Job-Result).
+- Kanarie S1 (gemessen 20:26–20:40): 4/5 Sensoren gruen, Transcript-Route rot (`server.ts#transcriptFile` pinnt auf Slot-sessionId, claude schrieb andere uuid — nicht isoliert). **Vier Erststart-Dialoge** von claude sind fuer `agent:alive` unsichtbar (kein `paneReadiness` fuer claude) — jede frische Maschine trifft das; die drei Flags stehen jetzt auf dem Folger (`~/.claude.json`, Backup `.bak-20260905-2030`), die Bypass-Bestaetigung ist nur per tmux-Tastendruck setzbar.
+- Waisen: b963 und 1787 (beide Tasks archiviert, Patches byte-identisch unter `~/claude-fleet-salvage/`) entfernt; nur lebende Lanes + steward auf Platte.
 
-## 3. Offen — Zuege der Nachfolgerin, in dieser Reihenfolge
+## 3. Offen — in dieser Reihenfolge
 
-1. §0.3 Audit-Watches; §0.2 Deploy-Sperre beachten.
-2. Slot 4s Land-Ausgang lesen (Merge-Watch stirbt mit mir): bei `merged` nichts weiter; bei `ff-lost`/rot die Lane lesen, nicht raten.
-3. Drei Zeilen am Deckel (`423f4031` Slot 6, `02740e69` Fleet-Betrieb, danach Schnitt A/B) — der Tick startet sie, sobald Plaetze frei sind; nichts von Hand dispatchen.
-4. Owner-Sache, an ihn berichtet: Claude Code auf dem Second-host installieren (Gate 3+4), MAIN fuer Dual-Host, die zwei dirty Waisen, Regelbuch-Drift „GPT-Slot hat ctx null" (unveraendert).
+1. §0.1 Watch, §0.2 S2 landen/deployen/W2, §0.3 S3, E7, S4.
+2. Slot 1 (`02740e69`, Fleet-Betrieb) und Slot 2 (`2d9d786c`, Slot 6s Suite-Zeile) gehoeren ihren MAINs — nicht landen, nur beobachten. Slot 10 (Fleet-Betrieb-MAIN) kuendigte Nachfolge an.
+3. Astra (Slot 3, 65 % von 258k): zwei offene Auftraege (`d2b69d3d`, `e88884c8`); der Outside-in-Blick auf Dual-Host kommt NACH S4.
+4. Zwei Sensor-Defekte ohne Zeile: claude-`paneReadiness` (Erststart-Dialoge) und der Transcript-Pin — als P6-Notizen filen, wenn du Luft hast; beide stehen in der Kanarie-Notiz §2/§3.
 
 ## 4. Was mit dieser Session stirbt
 
-Merge-Watch Slot 4, Audit-Watch `7a68c9f`, alle Hintergrund-Waechter. Kein Auto, keine Mission, keine offene Attention.
+Lane-Watch Slot 5 (S2), sonst nichts armiert. Kein Auto, keine Mission, keine offene Attention.
 
 ---
 ---

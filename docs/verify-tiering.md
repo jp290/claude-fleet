@@ -2601,70 +2601,81 @@ geratene Zahl, gegen die kein Lastprofil erhoben wurde (das sagt schon die Messn
 ein grüner Rerun so gut wie sicher und beweist nichts.
 
 
-### 11.2o Eine siebzehnte Familie: die Projektions-Sonde in `e2e/programs.ts`, die ihr eigenes UNKNOWN wegwirft (2026-09-04 — Basisrate und Diskriminator AUS DEM TRAIL-REGISTER; Wurzel NICHT isoliert, NICHT repariert)
+### 11.2o Eine siebzehnte Familie: die Projektions-Sonde in `e2e/programs.ts` — KEIN Flake um eine feste Rate, sondern ein REGIME-WECHSEL am 2026-09-04 (Stand 2026-09-05: Evidenzzeile repariert, R6 ausgeschlossen, R10 gefeuert; Wurzel eingegrenzt auf die UMGEBUNG, nicht auf einen Commit)
 
 **Das Mitglied, einzeln:**
 
 - `projection nextAction: a REVIEWABLE row of a promoted Program names the MAIN's OWN land door, and
   without the promotion the board's` (`e2e/programs.ts`, im Land-Tür-Block)
 
-**Die Signatur, an der man sie in einer Sekunde erkennt** — in allen sechs Rots buchstabengleich:
+**Die Signatur, an der man sie in einer Sekunde erkennt** — in allen 25 Rots buchstabengleich:
 
     {"with":null,"without":null,"phase":"UNKNOWN"}
 
-`phase: "UNKNOWN"` heißt: die Reduktion in `program-phase.ts` hat für die Zeile eine der beiden
-UNKNOWN-Regeln genommen (R6 „sent row owns no live lane" oder R10 „lane facts incomplete"), statt
-R9/R11 zu erreichen. Die unmittelbar davor stehende Setup-Zeile derselben Fixture
-(`self-land green fixture: the row is running on a live lane that is idle, clean and ahead`) war in
-jedem dieser Läufe GRÜN — die Lane war Sekundenbruchteile vorher also done-looking. Das ist die
-Form einer Lesung, die die Tick-Auffrischung der Git-Fakten verpasst, nicht die eines Regresses.
+**Diese Signatur ist Geschichte.** Seit dem Commit „fix(sonde): die Projektions-Sonde wirft ihre
+eigene Diagnose nicht mehr weg" druckt die Zeile `phaseBasis` und die gefilterte `unknown`-Liste für
+BEIDE Beine, also die Regel, die gefeuert hat, samt dem Fakt, der fehlte. Ein Rot ab diesem Commit
+liest sich zum Beispiel so:
 
-**Was hier NICHT behauptet wird:** WELCHE der beiden Regeln gefeuert hat. Die Sonde druckt
-ausschließlich `phase` — `phaseBasis` und das `unknown`-Feld, die der Server in derselben Antwort
-mitliefert und die die Frage wörtlich beantworten, wirft sie weg. **Das ist der erste Schnitt und
-er ist billig:** die Evidenzzeile um `phaseBasis`/`unknown` erweitern, dann sagt der nächste rote
-Lauf die Wurzel selbst, statt sie einer Messung zu überlassen. Solange das nicht geschehen ist,
-bleibt die Wurzel offen und dieser Eintrag ist eine ATTRIBUTION, keine Diagnose.
+    "basis":["R10: lane facts incomplete — the predicate cannot be evaluated (…)"]
 
-**Basisrate über das ganze lokale Trail-Register** (5 967 Laufdateien; gezählt nur Läufe, in denen
-der Check überhaupt ausgeführt wurde):
+Wer ein Rot mit der ALTEN, dreifeldrigen Signatur sieht, liest einen Lauf auf einem Baum von VOR
+diesem Commit — das ist selbst schon die Datierung.
 
-| | |
-| --- | ---: |
-| Läufe mit diesem Check | **209** |
-| davon rot | **6** |
-| Basisrate | **2,9 %** |
-| verschiedene Trees insgesamt | 131 |
-| verschiedene Trees unter den 6 Rots | **5** |
+**Die Rate „2,1–2,9 %" aus der ersten Fassung dieses Eintrags ist ÜBERHOLT und war nie eine Rate.**
+Sie ist der Durchschnitt über zwei Regime und verdeckt genau den Sprung, der die Familie
+interessant macht. Über dasselbe lokale Trail-Register (6 209 Laufdateien; gezählt nur Läufe, in
+denen der Check überhaupt ausgeführt wurde), nach Tagen:
 
-Die sechs Rots, vom 2026-08-27 bis zum 2026-09-04: `2d88521f` · `d63bb91f` · `ad75273a` (2×) ·
-`940887dc` · `fb20d077`.
+| Tag | Läufe | rot | Rate |
+| --- | ---: | ---: | ---: |
+| 08-24 … 09-01 | 151 | 1 | 0,7 % (nur 08-27) |
+| 09-02 | 23 | 1 | 4,3 % |
+| 09-03 | 15 | 0 | 0 % |
+| **09-04** | **24** | **8** | **33,3 %** |
+| **09-05** | **16** | **15** | **93,8 %** |
+| gesamt | 229 | 25 | 10,9 % |
 
-**Der Diskriminator ist diesmal ein Baum, der beides tut.** `2d88521f` wurde **neunmal** gefahren
-und ist **einmal** rot — derselbe Baum, achtmal grün. Ein Regress kann das nicht; eine
-Nicht-Determiniertheit tut genau das. `ad75273a` liefert dasselbe Bild in klein (3 Läufe, 2 rot).
+**Die Bruchstelle ist auf drei Stunden eingegrenzt und liegt NICHT am Tagesanfang.** Chronologisch,
+mit UTC-Laufzeiten aus dem Register: 09-04 bis einschließlich 13:02 UTC laufen 15 von 17 grün; ab
+**09-04 16:42 UTC sind 20 von 21 Läufen rot**, über 18 verschiedene Bäume. Die einzige Ausnahme
+danach ist `beb43930` (09-05 12:40 UTC).
 
-**Und der Beleg, der die Attribution für die R1-Lane vom 2026-09-04 entschieden hat:** `940887dc`
-ist der BASIS-Commit dieser Lane — der Check war auf dem Baum rot, von dem die Lane gebrancht hat,
-also bevor eine einzige ihrer Zeilen existierte. Der Fund entstand genau so, wie das Regelbuch es
-vorschreibt: ein Vorschaulauf fiel, das Register wurde befragt, und es hat geantwortet. Weder ein
-Rerun desselben Baums noch ein frischer HEAD-Worktree hätte das bei 2,9 % entschieden.
+**Die Wurzel ist die UMGEBUNG, nicht ein Commit — und das Register beweist es allein.** Der
+Diskriminator, den ein „Baum von vor dem Sprung, heute gefahren" liefern sollte, steht schon darin:
 
-**Zweite, unabhängige Messung am selben Tag.**
-`docs/messungen/2026-09-04-falsifikator-second-host.md` §5 zählt denselben Check in einem SPÄTEREN,
-größeren Fenster (232 grün / 7 rot auf 5 Bäumen) — dieselbe Rate von 2,9 %, aus einer anderen Frage
-heraus gerechnet (welche Fails eines Second-host-Laufs ein Host-Unterschied sind und welche nicht).
-Sie kommt zum selben Ergebnis: **kein Host-Unterschied, ein lokales Flake.** Dass diese Zahl bis
-jetzt nur in einer Messnotiz stand, ist genau der Grund, warum sie hier steht — §11.2n sagt es in
-eigenen Worten: solange eine Familie nur in einer Messnotiz lebt, ist sie für das Owner-Kriterium
-vom 2026-09-01 („ein Lauf zählt grün, wenn jeder FAIL einer in `docs/verify-tiering.md`
-registrierten Familie angehört") unsichtbar.
+- `940887dc` ist ein Baum vom 09-04 **07:04 UTC**. Er läuft am 09-04 **16:42 UTC ROT**.
+- `ad75273a` (inhaltsgleicher Lane-Zwilling desselben Commits) läuft 07:35 rot, 08:08 rot —
+  und **11:52 GRÜN**.
 
-**Für einen Leser eines roten Laufs gilt bis dahin:** dieser eine FAIL mit dem
-`phase:"UNKNOWN"`-detail ist **kein Urteil über den Baum**. Register befragen, dann attribuieren —
-nicht rerunnen: bei 2,9 % ist ein grüner Rerun fast sicher und beweist nichts.
+Derselbe Baum in beide Richtungen, und ein Vor-Sprung-Baum nach dem Sprung rot: der Server, den die
+isolierte Suite testet, kommt AUS DEM BAUM, also kann Server-Code die Antwort nicht bestimmen. Was
+übrig bleibt, ist die Maschine um den Lauf herum. Suite-gegen-Suite-Nebenläufigkeit ist als Ursache
+bereits ausgeschlossen (`docs/messungen/2026-09-04-flake-ranking-trail.md` §7: von 223 Läufen
+überlappen genau drei, alle drei grün) — offen und wahrscheinlich bleibt die ANDERE Last:
+Lanes, Land-Gates und Builds, die seit dem 09-04-Nachmittag durchgehend auf dieser Maschine laufen.
 
----
+**Welche Regel feuert: R10, nicht R6 — aus dem Register entschieden, ohne einen einzigen Rerun.**
+In JEDEM der 25 roten Läufe ist die unmittelbar folgende Zeile GRÜN:
+`self-land: the bound MAIN starts the land WITHOUT an owner token …` assertiert
+`landRespBody.laneSlot === greenLaneSlot`, und `server.ts#selfLandTaskForMain` gibt diesen Wert nur
+heraus, wenn die Zeile `sent` ist UND ein lebender Slot mit `cwd`, `worktree` und
+`lane.taskId === t.id` existiert. Das passiert Millisekunden NACH beiden GETs, und ein Slot wird
+nicht wiederbelebt. **R6 („sent row owns no live lane") ist damit ausgeschlossen; gefeuert hat R10
+(„lane facts incomplete").** Welcher der drei R10-Fakten fehlte — `alive` (Pane nie gepollt) ·
+`observed` (`lastOutput 0`) · `git` (`gitInfo` auf `null`, gesetzt bei einem fehlgeschlagenen
+git-Spawn, `server.ts` im Sessions-Poll) — sagt die neue Evidenzzeile beim nächsten Rot selbst.
+
+**Warum die Setup-Zeile davor trotzdem grün ist, und warum das kein Widerspruch ist.** Die Fixture
+wartet mit `waitDoneLooking` auf `row.git && dirty === 0 && ahead > 0 && now - row.lastOutput >= 3000`.
+Die letzte Klausel ist bei `lastOutput === 0` erfüllt, weil `now - 0` ≈ 1,79e12 ms ist — genau die
+Falle, gegen die `laneSignalView` das separate Feld `observed` überhaupt führt. Die Setup-Zeile kann
+also auf einer nie beobachteten Pane grün werden, während die Projektion ehrlich UNKNOWN sagt. Das
+ist ein KANDIDAT für den fehlenden Fakt, keine Feststellung — die Evidenzzeile entscheidet ihn.
+
+**Für einen Leser eines roten Laufs gilt:** dieser FAIL ist bei einer Rate von 93,8 % **kein
+Urteil über den Baum** und ein Rerun beweist nichts — aber er ist ab jetzt auch keine Attribution
+mehr, sondern eine Frage mit Antwort im `detail`. Lies `basis`, nicht `phase`.
 
 ### 11.2p Eine achtzehnte Familie: der `requeue-teardown-empty`-Rest, der zwölf `backlog nudge`-Checks mitreisst (2026-09-04 — EINE SICHTUNG, Mechanismus vollstaendig aus dem Trail gelesen, Regress strukturell ausgeschlossen; NICHT repariert)
 

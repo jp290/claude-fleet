@@ -13,7 +13,7 @@
 // here first asserts its own precondition — that the counter was moving, that the daemon was alive
 // and had read the wish — so a probe that could not measure fails as ITSELF rather than as the
 // property it was aiming at.
-import { chmodSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, rmSync,
+import { chmodSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync,
   statSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -131,10 +131,25 @@ export async function run(h: {
   for (const args of [["init", "-q", "-b", "main"], ["add", "-A"],
     ["-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", "commit", "-qm", "the daemon, as shipped"]])
     spawnSync("git", ["-C", UPD, ...args]);
+  // A VINTAGE OF ITS OWN, for the guard in (HD.9b). The server refuses a command-job claim whose
+  // device names a `daemonSha` that does not have the command-kind commit as an ancestor, measured
+  // in FLEET_HELPER_UPDATE_REPO. The real floor (`1748417`) is a commit of the SOURCE repo, which
+  // this fixture has never heard of — so the fixture gets two commits and the server is pointed at
+  // the second: everything below the floor is then a sha this suite can name, and so is everything
+  // at or above it. The daemon's own updates in (HD.8) land on top, which is why they keep passing.
+  const shaOfUpd = (): string => spawnSync("git", ["-C", UPD, "rev-parse", "HEAD"]).stdout.toString().trim();
+  const PRE_FLOOR = shaOfUpd();
+  await Bun.write(`${UPD}/helper-daemon/COMMAND-KIND`, "the generation that branches on job kind\n");
+  for (const args of [["add", "-A"],
+    ["-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", "commit", "-qm", "the command kind"]])
+    spawnSync("git", ["-C", UPD, ...args]);
+  const CMD_FLOOR = shaOfUpd();
   await killSrv();
-  check("(HD) setup: the server restarts with a claim timeout a real run fits inside",
+  check("(HD) setup: the server restarts with a claim timeout a real run fits inside, and a daemon-vintage floor this fixture can name",
     await startSrv({ audit: true, extra: { FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000", FLEET_HELPER_SWEEP_MS: "15000",
-      FLEET_HELPER_UPDATE_REPO: UPD } }));
+      FLEET_HELPER_UPDATE_REPO: UPD, FLEET_HELPER_CMD_FLOOR_SHA: CMD_FLOOR } })
+      && /^[0-9a-f]{40}$/.test(PRE_FLOOR) && /^[0-9a-f]{40}$/.test(CMD_FLOOR) && PRE_FLOOR !== CMD_FLOOR,
+    `preFloor=${PRE_FLOOR.slice(0, 8)} floor=${CMD_FLOOR.slice(0, 8)}`);
   await Bun.sleep(750);
 
   check("(HD) setup: e2e-stage.sh staged helper-daemon/ into this instance (derived, not hand-listed)",
@@ -752,6 +767,62 @@ export async function run(h: {
     const badWatch = await post(`/api/slots/${lane.slot}/watch`, { kind: "job", target: "ffffffffffff" });
     check("(HD) should-reject: a job watch on an id this fleet never offered is 409 — a watch that could never fire is refused at create",
       badWatch.status === 409, `${badWatch.status}`);
+
+    // ===== (HD.9b) THE VINTAGE GUARD: A daemonSha IS READ, NOT COUNTED ==========================
+    // The handshake above proves a daemon that named NO sha is turned away. This proves the half
+    // that a presence check cannot reach: a daemon that names one whose tree predates the command
+    // kind is turned away too. It is the difference between a claim refused and the receipt of a
+    // `cfg.suiteCmd` run handed back as the verdict of a command nobody ran.
+    //
+    // THE DAEMON IS STOPPED FIRST, and that is the check's design and not tidying: an open command
+    // job is claimable by the live daemon within a poll, so a refusal measured against it could be
+    // answered by "already claimed by …" — the same 409 for a different reason, which is the exact
+    // vacuum-green this file has already paid for once (d4bb687, 2026-09-02). With no rival poller
+    // the jobs below stay open until this suite touches them.
+    up2.proc.kill();
+    await up2.proc.exited;
+    const OLDBOX = "e2eoldvintagebox";
+    const NEWBOX = "e2enewvintagebox";
+    const beatOld = await hpost("/api/helper/device", { deviceId: OLDBOX, name: "old daemon (e2e)", daemonSha: PRE_FLOOR });
+    const beatNew = await hpost("/api/helper/device", { deviceId: NEWBOX, name: "current daemon (e2e)", daemonSha: CMD_FLOOR });
+    check("(HD.9b) setup: two devices enroll, one naming a PRE-FLOOR daemon sha and one naming the floor itself",
+      beatOld.ok && beatNew.ok, `old=${beatOld.status} new=${beatNew.status}`);
+    const newJob = async (cmd: string): Promise<string> => {
+      const r = await fetch(BASE + "/api/self/jobs", { method: "POST", headers: selfH, body: JSON.stringify({ cmd }) });
+      return ((await r.json()) as { jobId?: string }).jobId ?? "";
+    };
+    const jobOld = await newJob("bun test");
+    const jobNew = await newJob("bun run verify");
+    const oldClaim = await hpost("/api/helper/claim", { jobId: jobOld, deviceId: OLDBOX });
+    const oldText = await oldClaim.text();
+    check("(HD.9b) A DAEMON WHOSE TREE PREDATES THE COMMAND KIND IS REFUSED THE CLAIM — 409 naming its own sha and the floor it lacks",
+      oldClaim.status === 409 && oldText.includes(PRE_FLOOR.slice(0, 8)) && oldText.includes(CMD_FLOOR.slice(0, 8))
+        && !oldText.includes("already claimed"),
+      `${oldClaim.status} ${oldText.slice(0, 300)}`);
+    const newClaim = await hpost("/api/helper/claim", { jobId: jobNew, deviceId: NEWBOX });
+    const newBody = (await newClaim.json()) as { job?: { kind?: string; argv?: string[] }; error?: string };
+    check("(HD.9b) …and a daemon AT the floor commit claims the same kind of job — the guard reads the sha, it does not merely have one",
+      newClaim.status === 200 && newBody.job?.kind === "command"
+        && JSON.stringify(newBody.job.argv) === '["bun","run","verify"]',
+      `${newClaim.status} ${JSON.stringify(newBody).slice(0, 300)}`);
+
+    // THE CACHE, measured rather than asserted: the answer is remembered PER SHA, so with the
+    // source repo moved out from under the server both verdicts must still come back — and come
+    // back DIFFERENT. A guard that re-measured would find no repo and refuse the good sha too (an
+    // unmeasurable vintage is refused by design); a cache keyed by anything but the sha would hand
+    // one device the other's answer.
+    await hpost("/api/helper/result", { jobId: jobNew, exitCode: 0, tail: "verified", clonedSha: "e".repeat(40) });
+    const jobCached = await newJob("bun run build");
+    renameSync(UPD, `${UPD}.away`);
+    const cachedGood = await hpost("/api/helper/claim", { jobId: jobCached, deviceId: NEWBOX });
+    const cachedOld = await hpost("/api/helper/claim", { jobId: jobOld, deviceId: OLDBOX });
+    const cachedOldText = await cachedOld.text();
+    renameSync(`${UPD}.away`, UPD);
+    check("(HD.9b) THE VINTAGE IS CACHED PER SHA: with the source repo moved away the good sha still claims and the old sha is still refused on the vintage ground — two answers, neither re-measured and neither leaked into the other",
+      cachedGood.status === 200 && cachedOld.status === 409
+        && cachedOldText.includes(PRE_FLOOR.slice(0, 8)) && !cachedOldText.includes("already claimed"),
+      `good=${cachedGood.status} old=${cachedOld.status} ${cachedOldText.slice(0, 200)}`);
+
     await post(`/api/slots/${lane.slot}/kill`, {});
   }
 

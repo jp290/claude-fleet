@@ -1,3 +1,120 @@
+# HANDOFF — Program-MAIN 66499a03 „Fleet-Betrieb ohne manuelles Owner-Routing" (Slot 2, Opus 5): ERFOLGSSATZ 8 IST NICHT UNBELEGT, SONDERN STRUKTURELL UNERREICHBAR — der TUI-Repaint kommt 14 ms vor der Schwelle; die Wahl liegt beim Owner; 2026-09-05 11:0x, ctx GEMESSEN 26,5 %
+
+Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was git
+und die Sensoren nicht tragen. Lineage 4 → 16 → 10 → 3 → 5 → 2 → du.
+
+## 0. DER BEFUND, der die ganze Jagd beendet — und die EINE offene Owner-Frage
+
+**Erfolgssatz 8 (automatisches Cleanup einer clean+ahead0-Lane) kann fuer eine claude-Lane NIE
+feuern.** Nicht Pech, nicht der Deckel, keine fremde Hand. Gemessen an der Beleg-Lane `9f1dbfb4`
+(Slot 1, Branch `fleet/260905061853-2111`):
+
+| | |
+|---|---|
+| Repaint 1 | 08:49:04.487 |
+| Repaint 2 | 09:19:04.473 |
+| Abstand | **1799,986 s** |
+| `STALLED_IDLE_MS` | **1800,000 s** |
+
+Claude Code malt in eine IDLE Pane alle 30 min `Checking for updates` (beide Paints in den
+Stream-Bytes von `streams/s1-…​.raw` belegt, 59 bzw. 70 ANSI-Sequenzen, sonst nur Footer). Der Timer
+laeuft ab dem VORIGEN Paint, die mtime ist dessen ENDE — die Phase ist selbstgestellt und liegt
+damit dauerhaft ~14 ms VOR der Schwelle. `server.ts#poll` setzt `lastOutput` bei JEDEM Byte-Zuwachs
+des pipe-pane-Streams; einzige Ausnahme ist der selbstverursachte Resize (`quietUntil`). TUI-Chrome
+ist nicht ausgenommen. Also erreicht `idleMs` nie 1 800 000, Zyklus fuer Zyklus.
+
+**Das erklaert die Null:** 0 `autoClose` in inzwischen 785 Ledger-Zeilen.
+
+**ZWEITER VERBRAUCHER, wichtiger als mein Program:** dieselbe Schwelle speist das Feld `stalled` auf
+`/api/sessions` (`server.ts`, neben `doneLookingSince`). Es kann fuer eine claude-Lane nie `true`
+werden — **das Board unterzaehlt gestoppte Lanes still.** Niemand handelt darauf, aber jeder, der es
+liest, liest eine Flagge, die nicht feuern kann.
+
+**DIE OFFENE FRAGE — Attention `24c10c30f8f2d261f210f87f`, Stand 11:01 `open`.** Sie STIRBT mit
+meiner Session (`reconcileAttention`, „requester session ended"); darum steht sie hier vollstaendig,
+damit du sie NEU STELLEN kannst statt sie zu erben:
+- **(a) `FLEET_STALLED_IDLE_MS` auf einen Wert, der nicht mit dem 30-min-Takt kollidiert (z. B. 20 min).**
+  Eine Zeile in `watchdog.sh` + `launchctl kickstart`. MEINE EMPFEHLUNG: billigste Aenderung, loest
+  die Phasenkopplung sofort, und danach ist der Beleg in einem Lauf zu holen.
+- **(b) `poll()` schneiden, damit TUI-Chrome nicht als Arbeit zaehlt.** Sauberer, aber Chrome von
+  Arbeit im Byte-Strom zu trennen ist nicht trivial — eigene Lane, eigenes Kriterium.
+- **(c) Satz 8 mit der ehrlichen Einschraenkung fuehren** — dann bleibt er unbelegt und dieses
+  Program schliesst mit 10 von 11.
+
+**Bis der Owner waehlt: `9f1dbfb4` NICHT erneut releasen.** Die Zeile steht wieder `pending` (der
+Kill hat sie requeued). Ein zweiter Lauf scheitert identisch an denselben 14 ms und kostet einen
+Lane-Platz plus Stunden fuer ein Ergebnis, das mit Zeitstempeln auf beiden Seiten schon vorliegt.
+
+## 1. Was seit dem letzten Handoff wirklich passiert ist
+
+- **Die Beleg-Lane ist gelaufen** (Start 08:18:53 per TICK, nicht von Hand — Satz 11 fuer diese
+  Zeile intakt). Report `7035c488f34aeeca12510a6d` um 08:22:08, von mir um **08:22:48** angenommen;
+  die Entscheidung traegt mein exaktes Occupant-Tripel, also war die Auto-Close-Vorbedingung erfuellt.
+- **Ende 09:21:21 per Owner-Token**, `killed-empty`, `commitCount 0`, **ohne** `autoClose`.
+  Regelkonform: die 35-min-Zusage war abgelaufen und ich hatte „FENSTER ZU" gemeldet.
+- **Ehrlich zur Bilanz:** der Lane-Platz wurde frei, weil der Owner 08:18/08:19 vier Lanes killen
+  liess — nicht weil eine Lane von selbst endete. Und `9f1dbfb4` traegt `releasedBy:"owner"`, ging
+  also durch die Owner-Tuer, nicht durch die Self-Release-Tuer einer MAIN.
+- **Alle uebrigen Auto-Close-Klauseln HALTEN** (`server.ts#laneAutoCloseRefusal`, einzeln geprueft):
+  Flag armiert, `autosOn`, Worktree-Lane, kein Steward, keine Merge-/Commit-/Review-Jobs, `taskId` +
+  `programId` am Slot, Program aktiv, genau EIN Terminalreport mit Urteil des exakten Empfaengers,
+  Provenienz stimmt. `mergeLast.get(1)` war `null` (Controller-Lesung 08:26). Die Klaerungs-Falle war
+  entschaerft (`awaiting: null`, keine offene Clarification). **Es fehlte einzig die Uhr.**
+
+## 2. Werkzeuge, die ich teuer gelernt habe — nimm sie mit
+
+- **DIE IDLE-UHR IST OHNE OWNER-TOKEN LESBAR: die mtime von `streams/s<slot>-<openedAt>-<hash>.raw`.**
+  `poll()` leitet `lastOutput` genau aus dem Wachstum dieser Datei ab. Faelligkeit =
+  `mtime + STALLED_IDLE_MS`. Das ersetzt jede Bitte an den Controller um eine `lastOutput`-Lesung —
+  und es zeigt AUCH, WAS gemalt wurde (Tail entschachteln, ANSI strippen).
+- **`POST /api/self/tasks` ist bei 10/10 pending advisory rows ZU** („program advisory filing cap
+  reached … ask the owner to dispose"). Das Register dieses Programs nimmt keine Zeile mehr an; meine
+  zwei Befunde stehen deshalb hier statt dort.
+- **`accept` nimmt `reason` bis 500 Zeichen — und einen LEEREN Body akzeptiert es ebenfalls mit
+  `ok:true`.** Mein erster Versuch lief in einen `assert`, schrieb eine leere Datei, und
+  `--data-binary @leer` wurde als gueltige Annahme OHNE Grund verbucht. Die Annahme steht, `reason`
+  ist `null`, und es gibt keine Re-Decide-Tuer. **Laenge VOR dem Schreiben pruefen, nie im selben
+  Skript, das die Datei schon truncated hat.**
+- **`GET /api/self/fleet-report` traegt die Entscheidung NICHT.** `disposition` liest sich dort als
+  `None`, auch wenn die Annahme steht — ich habe daraus einmal faelschlich „nicht angenommen"
+  geschlossen. Der Beweis ist die 409-Antwort eines zweiten `accept` (`already accepted`) samt
+  `decision`-Objekt, oder `fleetReports` in `fleet.json`.
+- **Ein `bun server.ts` mit frischer Startzeit ist nicht automatisch ein Deploy.** Ein Suite-Lauf
+  startet seinen eigenen. Unterscheide an `deploys.jsonl` und am tmux-Socket (`fleettest<pid>`),
+  nicht an der Prozessliste — ich hielt 08:55:35 fuer einen Deploy in meinem Messfenster.
+- **Ein Heartbeat-Text altert schneller als du denkst.** Zwei meiner vier Autos feuerten mit
+  Verzweigungen, deren Praemisse ueberholt war (einer haette eine falsche Attention ausgeloest).
+  Schreib in den Text, WORAN der Nachfolger merkt, dass die Praemisse tot ist.
+
+## 3. Korrekturen an meinen eigenen frueheren Saetzen
+
+- **`f176ad1e` war KEIN Defekt.** Ich meldete, `reconcileAttention` lasse die Attention einer
+  beendeten Anfragerin auf `open` stehen. Sie stand kurz darauf auf `refused` („requester session
+  ended"): die Refusal haengt am Slot-TEARDOWN, und der lag hinter der Succession-Grace. Ein
+  Zeitfenster, kein Steckenbleiben — die Projektion korrigierte meine Zeile selbst von `OWNER_GATE`
+  auf `READY (R5)`.
+- **Der Repaint war NICHT der Agentenzaehler** (so die naheliegende Vermutung des Controllers,
+  2,3 s vor einem fremden Land). Die Bytes sagen `Checking for updates`. Die Cadence-Zaehlung ueber
+  vier Streams (s1 1×/40 min · s5 9×/294 min · s15 6×/916 min · s6 2×/703 min) sah unregelmaessig aus
+  und liess mich zuerst sagen, die Schwelle sei „treffbar, nicht unerreichbar". Erst das ZWEITE
+  Intervall an derselben Pane zeigte die Phasenkopplung. **Eine Haeufigkeit ueber fremde Panes ist
+  kein Ersatz fuer zwei aufeinanderfolgende Messungen an derselben.**
+
+## 4. Offen, ehrlich
+
+- **Satz 8** — die Owner-Wahl oben. „Gebaut, nie gelaufen" ist ab jetzt der falsche Satz; richtig ist
+  **„gebaut, kann unter der heutigen Schwelle nicht laufen"**.
+- **Satz 11** — strukturell offen, unveraendert: 3 von 4 Program-Lands ueber Owner-Token, und die
+  Beleg-Zeile selbst war owner-released.
+- **Ungeprueft von mir:** ob die 14-ms-Phasenkopplung auch fuer `codex`- und `pi`-Panes gilt (deren
+  TUIs malen anders; nur claude ist gemessen). Wer (a) waehlt, sollte das mitmessen — sonst
+  repariert er die Uhr fuer einen Harness und nicht fuer die Fleet.
+- **Dieser Commit ist ein DIREKT-COMMIT aus dem Haupt-Checkout** und damit fuer jedes land-seitige
+  Ledger unsichtbar: keine Land-Note, keine `lane-outcomes`-Zeile, kein Post-Land-Audit. Verifikation
+  von Hand, proportional fuer eine reine Prosa-Aenderung: `bun install --frozen-lockfile` +
+  `bun e2e/pins.ts` (Ergebnis unten im Commit-Body). Kein laufender Land wurde beruehrt — `merges`
+  und `landPending` waren beide leer, an `fleet.json` geprueft, bevor ich committet habe.
+
 # HANDOFF — 🎛 Fleet Controller (Slot 3, Fable 5.1): zwei Deploys gefahren, Freeze aufgehoben, Codex auf 0.153.4, Astra mechanisch belegt UND sein Fenster widerlegt; DEIN AUFTRAG hat zwei Stufen, und Stufe 1 ist deine eigene Erdung; 2026-09-05 08:0x, ctx GEMESSEN 30,5 %
 
 > **Ein Abschnitt je LEBENDEM Prinzipal** (Vorschlag, nicht promoviert): dieser ERSETZT den der

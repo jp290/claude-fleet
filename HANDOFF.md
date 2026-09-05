@@ -263,7 +263,30 @@ und die Sensoren nicht tragen. Die Abschnitte darunter sind FREMD (geteilte Date
    gestartet, waehrend ich landete. Ich habe sie NICHT gebrieft und nicht geprueft; sie gehoert
    keiner Zeile dieses Programs, die ich kenne. Erst lesen, dann urteilen.
 
-## 1. Was gelandet ist — drei Lands, alle mit gruener Note, alle von MIR (actor-Rail, `confirmedByHuman false`)
+## 1. Was gelandet ist — VIER Lands, alle mit gruener Note, alle von MIR (actor-Rail, `confirmedByHuman false`)
+
+- **`bc0609f8` → `d37f835`** (GATE-ENV, gelandet 09:2x NACH dem Deploy). `runVerify` spawnte die
+  Gate-Kette ohne `env`-Option, Bun gab ihr `process.env` VOLLSTAENDIG; jetzt durch
+  `server.ts#verifyChildEnv`. **Der Befund liegt ueber dem Brief: `FLEET_SELF_TOKEN` und
+  `FLEET_SELF_SLOT` — die scoped Lane-Credentials — erreichten den Gate-Kind-Prozess.** Gemessen
+  14 FLEET_*-Namen vorher, 0 nachher, PATH byte-gleich (641 Zeichen).
+  Zwei Entwurfsentscheide, die man beim Anfassen kennen muss: `FLEET_SUITE_LOCK`/`_POLL_SEC`
+  bleiben ABSICHTLICH stehen (dieser Server ist am Mutex BETEILIGT — scrubben liesse das Kind auf
+  einen Lock warten, den der Prozess selbst haelt: stiller Deadlock, kein rotes Kreuz), und
+  `FLEET_SUITE_LOCK_HELD_BY` wird pro Spawn GEMUENZT statt geerbt. PATH ueberlebt per Konstruktion
+  (jede Nicht-FLEET-Variable bleibt), nicht per Allowlist.
+  **OFFEN und ausdruecklich NICHT geklaert:** der Helfer-Lauf (second-host, Suite-Offer
+  `47d777ad094d`) auf DEMSELBEN Commit kam ROT zurueck, 2 von 3678 — **welche zwei, ist nicht
+  feststellbar**. Ich habe es selbst nachgesehen statt es zu glauben: der gespeicherte `tail` traegt
+  `2 FAILURES`, aber KEINE FAIL-Zeilen, und `result.fails` ist `null`. Ich habe trotzdem gelandet
+  (lokale Kette gruen, lokaler isolated-Lauf mit genau einem Fail = §11.2o) — das ist ein Urteil
+  mit einer bekannten Luecke, kein sauberer Freispruch. **Wer das Audit zu `d37f835` liest, hat die
+  billigste Gegenprobe.** Watch `62dc4eba`.
+  **Kleiner Folgebefund:** `eb07267` gibt POST-LAND-AUDIT-Zeilen ihre Fehlernamen — eine
+  SUITE-OFFER-Job-Zeile (`laneSuiteJobs[].result`) hat das Feld `fails` weiterhin gar nicht
+  befuellt. Dieselbe Frage, zwei Pfade, nur einer beantwortbar.
+
+## 1b. Die drei Lands davor
 
 - **`3cd64a5f` → `eb07267`** (lokale Audit-Zeile traegt `fails[]`). Gate gruen, 366 s, davon 257 s
   Schlange. **Post-Land-Audit GRUEN: 3661 checks, 0 failed, 30,6 min, exit 0.**
@@ -290,7 +313,18 @@ und die Sensoren nicht tragen. Die Abschnitte darunter sind FREMD (geteilte Date
 4. **Advisory-Deckel ist VOLL (10/10 pending).** `POST /api/self/tasks` mit `kind:notiz` wird
    abgelehnt, bis der Owner Zeilen disponiert. Ich habe meine Messung deshalb als getrackte Notiz
    abgelegt (`1a69a52`), nicht als Queue-Zeile. Elf advisory-Zeilen warten.
-5. Die alten Zeilen bleiben: `9ef11680` (R3), `15c760fb`, `76261837`.
+5. **Zwei Zeilen neu aufgesetzt (Owner 08:1x: sol-Lanes stoppen, Usage fuer Astra).** Der
+   Controller hat die beiden Codex/sol-Lanes bei 0 Commits beendet; ich habe je eine
+   Opus-5-Ersatzzeile gefilt und freigegeben: **`ec0bf175`** (ersetzt `9fd34beb`, Lebenszyklus S2)
+   und **`02740e69`** (ersetzt `db6902c4`, S5a), beide `claude-opus-5[1m]` / `high`
+   (`harness: null` ⇒ `harnessOf` faellt auf `CLAUDE_HARNESS`, am Code geprueft).
+   **DIE ALTEN ZEILEN DUERFEN NICHT FREIGEGEBEN WERDEN** — ihr `spawn` traegt persistent
+   `codex/gpt-5.6-sol` und KEINE Route aendert es; ein Release spawnt wieder eine sol-Lane. Steht
+   auch im Kopf der neuen Briefs. Die geretteten sol-Diffs (ungeprueft, nie verifiziert, gegen
+   aelteren main) liegen dauerhaft unter `/private/tmp/claude-fleet-salvage/` und sind in den
+   Briefs als ANGEBOT beschrieben, nicht als Erbe.
+   **Beide Filing-Deckel dieses Programs sind aktiv:** advisory 10/10, `auftrag` 5 pending.
+6. Die alten Zeilen bleiben: `9ef11680` (R3), `15c760fb`, `76261837`.
 
 ## 3. Korrekturen und Lehren — Methode wieder wichtiger als Inhalt
 

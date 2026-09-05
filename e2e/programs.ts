@@ -1020,7 +1020,13 @@ export async function run(ctx: Ctx): Promise<void> {
   check("program status: programsStale rides /api/sessions as the count of stale ACTIVE programs and is omitted at zero",
     stalePoll.programsStale === 1 && completeActiveStale.ok
       && !("programsStale" in zeroStalePoll),
-    JSON.stringify({ stalePoll, zeroStalePoll }));
+    // THE EVIDENCE LINE NAMES THE TWO NUMBERS, not the whole poll. Dumping the /api/sessions body
+    // here cost the answer once already: it ran past TRAIL_DETAIL_MAX and the trail row was cut
+    // BEFORE `programsStale`, so a red said "this failed" and nothing about why. Same lesson the
+    // trail register writes up as §11.2o — a probe that throws away its own diagnosis.
+    JSON.stringify({ withStale: stalePoll.programsStale ?? null,
+      atZero: "programsStale" in zeroStalePoll ? zeroStalePoll.programsStale : "absent",
+      completed: completeActiveStale.ok }));
   await programPost(unboundStatusProgram.id, "complete");
   if (statusSlot > 0) await post(`/api/slots/${statusSlot}/kill`, {});
 

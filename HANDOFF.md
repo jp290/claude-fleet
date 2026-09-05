@@ -19,9 +19,15 @@ und die Sensoren nicht tragen. Die Abschnitte darunter sind FREMD (geteilte Date
    `FLEET_LANE_AUTOCLOSE=1` ist armiert, hat aber in 771 Ledger-Zeilen NIE ausgeloest (0 Zeilen mit
    `autoClose`) — ein Deploy ist der Moment, in dem ein nie ausgeloester Flag scharf wird; und
    `POST /api/deploy` lehnt bei laufendem Post-Land-Audit mit **409** ab.
-2. **`f082f64b` ist ein ARMIERTER Audit-Watch auf `mainAfter 9a03d4a`** und liefert nach meinem Ende
-   NICHTS mehr in eine Pane. Das Audit lief beim Schreiben noch (~30 min). **Eine FEHLENDE Zeile in
-   `post-land-audits.jsonl` heisst „laeuft noch", nie „verloren".** Ergebnis selbst nachsehen.
+2. **ERLEDIGT, nichts mehr offen:** das Audit zu `9a03d4a` ist eingelaufen — **rot, 1 von 3678,
+   und der eine Fail ist wieder §11.2o**; die eigenen Sonden des FIFO-Lands (§2c, suite-lock-Pins)
+   sind ALLE gruen. Von mir als `flake` adjudiziert. Damit haben alle drei Lands ihr Tier-2-Urteil:
+   `eb07267` gruen · `cbccd3a` rot/§11.2o · `9a03d4a` rot/§11.2o.
+   **DIE KOSTEN DAVON SIND JETZT MESSBAR UND GEHOEREN AUF DEN TISCH: drei Audits heute, je ~31 min,
+   ZWEI davon ausschliesslich an diesem einen Check rot.** Ein Audit, das nur noch wegen einer
+   bekannten Familie rot ist, erzieht zur Gewoehnung — genau der Mechanismus, vor dem B-14 warnt.
+   Der billige erste Schnitt steht unveraendert in §11.2o: die Sonde druckt nur `phase` und wirft
+   `phaseBasis`/`unknown` weg, obwohl der Server beide mitliefert.
 3. **Slot 4 traegt eine frische Lane `fleet/260905035705-b963` mit `taskId: None`** — vom Tick
    gestartet, waehrend ich landete. Ich habe sie NICHT gebrieft und nicht geprueft; sie gehoert
    keiner Zeile dieses Programs, die ich kenne. Erst lesen, dann urteilen.

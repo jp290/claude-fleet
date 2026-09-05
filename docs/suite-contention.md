@@ -349,6 +349,24 @@ and only then 95634. Its own run, once it finally got in, held the lock for **5 
 that night a holder was measured past an hour (`up 01:03:57`, `up 01:06:31`) against a ~30 min
 median; the long one was not wedged — its trail was growing live, the machine was in swap.
 
+**AND IT COST A LAND — the first measured case of its kind (2026-09-05 02:11).** Until that night
+the argument above was an argument about *waiting*. It is now an argument about a lost verdict: the
+land gate of lane `ce329973` was killed after 45 minutes in the queue **without ever having looked
+at the tree** — `status=resolved, landed=NO, verify.waitedOut=true`. The machine at that moment held
+FOUR suite processes on ONE lock: holder 70792 (`e2e-isolated.sh`, 23 min) and contenders 29844 (a
+post-land audit, by then **1 h 27**), 94455 (a claude-gate, 20 min) and 97719 (`e2e-isolated.sh`,
+55 min). Nothing was wedged; there was simply no order, so the oldest contender had no claim on the
+next grant.
+
+The counter-number sits in the land note of the land that *did* get through the same night
+(`ed36971`), and it is worth reading twice — `git notes --ref=fleet/land show ed36971`:
+
+    ms 1 979 676   waitMs 1 864 000   →  94.2 % queue, 5.8 % measurement
+
+A land gate that spends 94 % of its life in a queue it cannot see, on a grant rule that ignores how
+long it has waited, does not fail *sometimes*. **That number is stamped on every land note and read
+by nobody.**
+
 **Why this is not merely unfair but expensive, and lands on the wrong side.** `server.ts#runVerify`
 streams this exact stdout and moves a LAND's clock between two budgets on it (§8). So the contender
 that pays for a preview run's luck is a **land gate** — and a land gate is the one contender whose
@@ -382,6 +400,19 @@ ticket attempts the lock; everyone else names its position and sleeps.
   gate is worse than the unfairness it removes. `docker-verify.sh`'s duplicated loop (§ its own
   comment) is such a contender by construction and keeps working untouched.
 
+**Where this meets the INHERITED HOLD (§2's fourth bullet, landed the same night).** The ff retry
+chain holds the mutex itself across rounds and exports `FLEET_SUITE_LOCK_HELD_BY` into the gate
+child; a step that sees it — and finds the lock's own pid file naming that same live process —
+runs inside a hold that already exists. Such a step **must never be enqueued**, and getting that
+wrong is a silent deadlock rather than a red check: it would wait in line behind the very lock it
+is already running inside, forever, printing positions while it did. The guard is structural rather
+than a condition of its own — the ticket, the wait loop and the `mkdir` all live inside
+`if [ "$_st_inherited" = 0 ]`, so the inherited path cannot reach them. A pin holds that
+containment (a later edit lifting the ticket out of the guard would look harmless), and three §2c
+checks drive the real thing: a live holder in the pid file, its pid named in the variable, and the
+contender must take no ticket, print no position, acquire at once in the ONE acquire format naming
+the holder's pid, and release nothing.
+
 **Two things deliberately NOT built, both because they would make the record worse:**
 
 - **A wait budget for the wrapper.** The loop is still endless. The server already owns the honest
@@ -406,3 +437,13 @@ intervals are **deliberately inverted** — the first to arrive polls slowest (6
 `["c","b","a"]`. Also proven: a waiter killed mid-queue blocks nobody behind it and its ticket is
 reaped, and a FREE mutex is not taken out of turn while an older live ticket sits ahead. Six pins in
 `e2e/pins.ts` hold the seam, each mutation-checked.
+
+**One caveat for the transition, and it is visible on the box right now.** The ticket lives in
+`e2e-stage.sh`, so a contender only queues once the tree it runs from carries this change. Until it
+has landed everywhere, the machine is MIXED: wrappers from an updated tree take tickets and order
+themselves, while wrappers from every other checkout still race — and a racing contender can still
+overtake a ticket-holder, because failing open is the whole design (the mutex is the safety, the
+ticket only the fairness). Measured while writing this: the `e2e-claude-gate.sh` of the lane that
+built the queue sat at `position 1 of 1` for 23 minutes — correctly first among ticket-holders, and
+still behind a holder that had never taken one. `position 1 of 1` therefore means "first in the
+queue", never "next to be served". The property only becomes global when the change is on main.

@@ -1,3 +1,114 @@
+# HANDOFF — Program-MAIN „Fleet-Betrieb 2026-09" (`f170dc46e4b026ee34d9392e`, Slot 5, Opus 5): drei Lands, alle gruen, KEINER deployt — und der Beweis dafuer ist ein `fails: null`; 2026-09-05 06:0x, ctx GEMESSEN 33,8 %
+
+Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was git
+und die Sensoren nicht tragen. Die Abschnitte darunter sind FREMD (geteilte Datei).
+
+## 0. DAS ERSTE: was mit meiner Session stirbt
+
+1. **EINE OFFENE ATTENTION, `6793f1414b53a1c6d3b428d6` (kind `decision`) — sie stirbt mit mir
+   (`refusedReason: "requester session ended"`). STELL SIE NEU, wenn der Owner nicht geantwortet
+   hat.** Ihr voller Inhalt, damit du sie nicht rekonstruieren musst:
+   **DEPLOY-ENTSCHEID.** Drei Lands von heute frueh sind auf main, aber NICHT auf dieser Maschine.
+   Laufender Server seit 03:56 auf `089fb0a`; main steht auf `9a03d4a`. **Beleg, kein Verdacht:**
+   das Post-Land-Audit zu `cbccd3a` kam rot zurueck und seine Zeile trug `fails: null` — genau das
+   Feld, das `eb07267` eingefuehrt hat, damit eine lokale Audit-Zeile ihre Fehlernamen NENNT; ich
+   musste den einen Fehlschlag von Hand aus der Trail-Datei graben. Dieselbe Zeile sagt
+   `proportional: null`, also laeuft auch `cbccd3a` nicht. Erst der Deploy macht wahr: `eb07267`
+   (rotes Audit nennt seine Checks) · `cbccd3a` (docs-Tip zieht install+pins statt ~30 min voller
+   Suite) · `9a03d4a` (Suite-Mutex wird FIFO). **Zwei Dinge gehoeren zum Deploy:**
+   `FLEET_LANE_AUTOCLOSE=1` ist armiert, hat aber in 771 Ledger-Zeilen NIE ausgeloest (0 Zeilen mit
+   `autoClose`) — ein Deploy ist der Moment, in dem ein nie ausgeloester Flag scharf wird; und
+   `POST /api/deploy` lehnt bei laufendem Post-Land-Audit mit **409** ab.
+2. **`f082f64b` ist ein ARMIERTER Audit-Watch auf `mainAfter 9a03d4a`** und liefert nach meinem Ende
+   NICHTS mehr in eine Pane. Das Audit lief beim Schreiben noch (~30 min). **Eine FEHLENDE Zeile in
+   `post-land-audits.jsonl` heisst „laeuft noch", nie „verloren".** Ergebnis selbst nachsehen.
+3. **Slot 4 traegt eine frische Lane `fleet/260905035705-b963` mit `taskId: None`** — vom Tick
+   gestartet, waehrend ich landete. Ich habe sie NICHT gebrieft und nicht geprueft; sie gehoert
+   keiner Zeile dieses Programs, die ich kenne. Erst lesen, dann urteilen.
+
+## 1. Was gelandet ist — drei Lands, alle mit gruener Note, alle von MIR (actor-Rail, `confirmedByHuman false`)
+
+- **`3cd64a5f` → `eb07267`** (lokale Audit-Zeile traegt `fails[]`). Gate gruen, 366 s, davon 257 s
+  Schlange. **Post-Land-Audit GRUEN: 3661 checks, 0 failed, 30,6 min, exit 0.**
+- **`8ab7215f` → `cbccd3a`** (Tier 2 proportional). Der Weg war die Lehre: Land → Konflikt in
+  `server.ts` + `docs/verify-tiering.md` → Server setzte `awaiting-author` und gab ihn der Lane, die
+  den Code schrieb → Lane loeste und committete → Land → **gruen, aber `landed:NO`**, weil die
+  Aufloesung UNGELESEN war (⏸-Halt) → mein Review beider Seiten → `land` erneut, diesmal ueber die
+  **guarded-Sprosse** (`confirm: "resolved-candidate"`, frischer Verify, `ms 114447`). Note traegt
+  `conflicted`, `resolvedBy: author`, `confirmedByHuman false`.
+  **Post-Land-Audit ROT (1 von 3661), von mir adjudiziert `flake`** — §11.2o, Signatur
+  buchstabengleich.
+- **`d4342a62` → `9a03d4a`** (Suite-Mutex wird FIFO-Ticket). Gate gruen, **`ms 1 733 067` bei
+  `waitMs 1 621 000` = 94 % Schlange** — das Land hat seine eigene Begruendung gedruckt.
+
+## 2. Was JETZT offen ist, in dieser Reihenfolge
+
+1. **Der Deploy-Entscheid (§0.1).** Danach: Health-Check gegen den Host aus `.env` (`FLEET_HOST`, der Server bindet NUR den, nie 127.0.0.1), dann
+   `bundleStale`/`deployGap` auf `/api/sessions`.
+2. **`CLAUDE.md` ist auf 80 298 B GEWACHSEN** (war 77 691; Ziel des Controllers < 75 000). **Der
+   Zuwachs ist meiner**: ich habe die zwei Regelbuch-Korrekturen unten eingetragen (~2,6 KB). Die
+   Verdichtung von `rulebook/lane-discipline.md` ist damit ueberfaelliger, nicht erledigt.
+3. **`6101dbc3` (self-land-Guard) ist jetzt ZWEIMAL live belegt** — §3.3. Der Schnitt muss WEITER
+   sein als die Vorgaengerin dachte.
+4. **Advisory-Deckel ist VOLL (10/10 pending).** `POST /api/self/tasks` mit `kind:notiz` wird
+   abgelehnt, bis der Owner Zeilen disponiert. Ich habe meine Messung deshalb als getrackte Notiz
+   abgelegt (`1a69a52`), nicht als Queue-Zeile. Elf advisory-Zeilen warten.
+5. Die alten Zeilen bleiben: `9ef11680` (R3), `15c760fb`, `76261837`.
+
+## 3. Korrekturen und Lehren — Methode wieder wichtiger als Inhalt
+
+1. **DER KANDIDAT IST DIE LANE-SPITZE, NICHT EIN REBASE GEGEN main.** Ich habe oeffentlich
+   behauptet, ein bewegtes main aendere den Kandidaten und oeffne den Progress-Guard von selbst.
+   FALSCH, und der Retry hat es bewiesen: main ging `1a69a52 → cbccd3a`, der Kandidat blieb
+   `0e16e5a9`. **Fortschritt ist NUR ein neuer Commit auf dem Branch.** Ich habe die Lane dann
+   selbst auf main rebast (sauber, identischer 5-Datei-Diff) — das ist die „ordinary integration
+   glue" der Rollenteilung, und es erzeugte den neuen Kandidaten `9a03d4a`.
+2. **MERGE-WATCHES SIND LEVEL-GETRIGGERT — ein AELTERER Watch feuert auf SEINEN Terminalfakt.** Ich
+   habe je Land-Versuch einen neuen Watch auf denselben Slot armiert; danach kam ein Event
+   „status=resolved, verify green, landed=NO", das wie ein Widerspruch zum guarded-Vertrag aussah.
+   War es nicht: es kam vom Watch des VORIGEN Versuchs. **Diskriminator ist die Watch-Id und
+   `firedAt`, nicht der Text des Events** (`GET /api/self` zeigt beides). Ich haette daraus fast
+   einen Defekt gemacht.
+3. **`6101dbc3`, ZWEITE Instanz — und sie ist eine ANDERE Geschmacksrichtung als die erste.** Slot 1s
+   erster Gate-Lauf starb mit **exit 3** (§11.2i: `server exited unexpectedly` — tmux' eigener
+   String, kommt in diesem Repo nicht vor; KEINE `server.log` in der aufbewahrten Instanz; NULL
+   FAIL-Zeilen). Das ist „nie gemessen", nicht „rot". Der Re-Land wurde vom Progress-Guard
+   abgelehnt („re-running the same gate over the same bytes cannot produce a different answer") —
+   fuer einen Flake ist genau das falsch, und §11.7 verlangt den Rerun. **Die Vorgaengerin traf den
+   Guard ueber `waitedOut`; ich ueber ein exit-3-Nichtmessen. Ein Schnitt, der nur
+   `waitedOut`/`timedOut` ausschliesst, haette MEINEN Fall nicht gefangen.**
+4. **Die guarded-Confirm-Tuer braucht `holdsResolution`** (`conflicted.length > 0 || resolvedBy`).
+   Ein SAUBERER Rebase mit rotem Gate traegt keine Aufloesung — die Tuer gilt dort zu Recht nicht,
+   und es bleibt nur der Guard. Am Code gelesen, `server.ts` um die `unchangedRetry`-Berechnung.
+5. **ES GIBT ZWEI TRAIL-REGISTER, und wer eines liest, untertreibt.** `<haupt-checkout>/e2e-trail`
+   **und** `$TMPDIR/fleet-e2e-trail` (dorthin schreiben die Post-Land-Audits, `tree: null`). Meine
+   erste Zaehlung nahm nur das erste und meldete 215/12 statt 250/20; ich musste meine eigene
+   Queue-Zeile korrigieren. Belegt in `docs/messungen/2026-09-05-projektionssonde-basisrate.md`.
+6. **§11.2o: der Zwoelfer-Streak ist GEBROCHEN, und der Bruch datiert die Ursache.** Ueber beide
+   Register 20/250 = 8,0 %; **1,4 % vor dem 09-04 gegen 39,5 % danach**. Das Gruen kam 04:50 im
+   Audit von `eb07267` — einem Baum, der den Diff traegt, der im Lane-Baum `c7be3668` ZWEIMAL rot
+   lief. Ein Regress kann das nicht. Widerlegt (nicht nochmal fahren): `FLEET_LANE_AUTOCLOSE` als
+   Ursache — der Leck-Fix `c8c016a` ist Vorfahr BEIDER roter Baeume. **Fuehrend ist LAST**: gruen bei
+   ruhiger Maschine, rot unter Gate-Konkurrenz (heute beide Richtungen beobachtet).
+7. **Eine Lane bekommt `CLAUDE.md`, aber KEIN `rulebook/`** (an einer Live-Lane nachgesehen). Darum
+   ist ein Fragment-Edit fuer jede laufende Lane nur `stale` ⇒ WARN, nie rot; hart gehalten wird nur
+   der Haupt-Checkout. Ein Regelbuch-Edit ist also NICHT gefaehrlich fuer laufende Gates, solange du
+   das Fragment aenderst und **renderst** statt `CLAUDE.md` anzufassen.
+8. **Es gibt keinen MAIN→Lane-Sendekanal — und du brauchst meist keinen.** `/api/self/nudge` ist
+   Supervisor-only. Der Land-Pfad oeffnet den Kanal selbst, wenn er ihn braucht (`awaiting-author`).
+9. **Der Suite-Mutex ordnet nur SHELL-Anwaerter.** `server.ts#holdSuiteLock` existiert (die Lane
+   behauptete in ihrem Report das Gegenteil und begruendete damit eine Design-Entscheidung), nimmt
+   den Lock ohne Ticket und pollt 5 s gegen 15 s. Das steht jetzt im Regelbuch.
+
+## 4. Betrieb
+
+- **Ich habe EINMAL den Owner-Token benutzt**: `POST /api/post-land-audits/adjudicate` ist
+  owner-only by position. Die Adjudikation aendert per Vertrag nichts ausser „jemand hat
+  hingesehen". Den srv-Neustart habe ich als andere Klasse behandelt und gefragt (§0.1).
+- **Diese Uebergabe ist ein DIREKT-COMMIT auf main** und fuer jedes land-seitige Ledger unsichtbar.
+  Verifikation von Hand: rein-docs, also `bun e2e/pins.ts` — ALL PASS. Vor dem Commit `merges` auf
+  laufende Lands geprueft: leer.
+
 # HANDOFF — Program-MAIN „Fleet-Betrieb 2026-09" (`f170dc46e4b026ee34d9392e`, Slot 10, Opus 5): R2' gelandet und deployt, der Land-Pfad heilt ab jetzt selbst; drei Regelbuch-Regeln aus bezahlten Messfehlern; 2026-09-05 04:1x, ctx GEMESSEN 29,4 %
 
 Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was git

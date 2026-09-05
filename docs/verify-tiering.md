@@ -2601,7 +2601,7 @@ geratene Zahl, gegen die kein Lastprofil erhoben wurde (das sagt schon die Messn
 ein grüner Rerun so gut wie sicher und beweist nichts.
 
 
-### 11.2o Eine siebzehnte Familie: die Projektions-Sonde in `e2e/programs.ts` — KEIN Flake um eine feste Rate, sondern ein REGIME-WECHSEL am 2026-09-04 (Stand 2026-09-05: Evidenzzeile repariert, R10/`observed` GEMESSEN, Mechanismus am Code gelesen — **die Wurzel ist seit `<LAND-SHA>` REPARIERT, der Regime-Wechsel selbst bleibt offen**)
+### 11.2o Eine siebzehnte Familie: die Projektions-Sonde in `e2e/programs.ts` — KEIN Flake um eine feste Rate, sondern ein REGIME-WECHSEL am 2026-09-04 (Stand 2026-09-05: Evidenzzeile repariert, R10/`observed` GEMESSEN, Mechanismus am Code gelesen — **die Wurzel ist seit `4c562e7` REPARIERT, der Regime-Wechsel selbst bleibt offen**)
 
 **Das Mitglied, einzeln:**
 
@@ -2715,7 +2715,7 @@ als `pane never observed (lastOutput 0)`, ist es ein NEUER Befund und gehört ge
 
 ---
 
-**REPARIERT am 2026-09-05, `<LAND-SHA>` — und die Reparatur trifft die Wurzel, nicht die Rate.**
+**REPARIERT am 2026-09-05, `4c562e7` (Server-Wurzel) + `21150ac` (Fixture-Klausel) — und die Reparatur trifft die Wurzel, nicht die Rate.**
 Der Schnitt sitzt an genau der Stelle, die Punkt 3 oben beschreibt, und er ist eine Zeile:
 
     -  if (Date.now() > s.quietUntil) s.lastOutput = Date.now();

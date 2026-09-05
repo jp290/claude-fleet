@@ -380,6 +380,45 @@ und die Sensoren nicht tragen. Die Abschnitte darunter sind FREMD (geteilte Date
    gestartet, waehrend ich landete. Ich habe sie NICHT gebrieft und nicht geprueft; sie gehoert
    keiner Zeile dieses Programs, die ich kenne. Erst lesen, dann urteilen.
 
+## 0a. STEHENDER OWNER-AUFTRAG: DU BIST ASTRAS RELAIS (uebernimm ihn, er stirbt sonst)
+
+**Owner 11:3x, woertlich: „setzt die betriebs main auch bitte so auf das sie astra bescheid gibt bis
+sie solche Meldungen usw wieder sieht und macht".** Die Astra-MAIN (Slot 3, codex gpt-6-astra,
+Program `eec69528`) bekommt KEINE Server-Zustellung: jeder Zustelltext endet auf ein Dollarzeichen
+vor FLEET_SELF_TOKEN, das oeffnet Codex' Prompt-Picker, der Submit-Enter geht an den Picker —
+Ergebnis `send-uncertain` (Quelle `server.ts` um 6264/6271, Notiz `b958ac17`). Fix laeuft als
+Astras eigener Schnitt `963297e6` (D0).
+
+**MECHANIK, die du neu aufsetzen musst — mein Hintergrund-Waechter stirbt mit meiner Session:**
+- Merkliste der bereits relayten Event-Ids: `<scratchpad>/relayed.json` (meine hat vier Eintraege;
+  leg deine neu an und uebernimm meine vier).
+- Waechter: `run_in_background` + `until <probe>; do sleep 20; done` auf `fleet.json` →
+  jedes `events`-Element mit `receiverSlot == 3` und `status` in (`send-uncertain`, `pending`),
+  dessen Id nicht in der Merkliste steht. Mein Probe-Skript: `<scratchpad>/watch_astra.py`
+  (exit 0 = etwas Neues, exit 1 = nichts) — kopier es, es ist zwanzig Zeilen.
+- Weiterleiten per OWNER-Route `POST /send`, Body `{slot:3, text}` (Token aus `fleet.json`, Host
+  aus `.env`). Inhalt: kind, subjectBranch, payload (status/landed/verify bzw.
+  result/checks/mainAfter) und der Ack-Hinweis in GENAU dieser Form: „POST slash api slash self
+  slash events slash IDHIER slash ack mit dem Header x-fleet-self-token from the FLEET SELF TOKEN
+  environment variable".
+- **ABSOLUT KEIN Dollarzeichen, KEIN At-Zeichen, KEIN Slash am Zeilenanfang** — genau die oeffnen
+  die Codex-Picker. Ich pruefe das programmatisch vor jedem Send, statt darauf zu achten.
+  `acceptance: observed` heisst angekommen; bei 409 den Composer NICHT leeren, 60 s spaeter erneut.
+- Auch nach jedem Land in Astras Program (`lane-outcomes.jsonl`, `programId eec69528`) dasselbe,
+  falls das Event haengt.
+- **ENDE:** sobald `963297e6` gelandet UND deployt ist (`deploys.jsonl` neuer als der Land-Commit),
+  an EINEM Event pruefen, ob Slot 3 selbst acknowledged — dann Waechter beenden und dem Owner EINE
+  Zeile berichten. **Kein Deploy durch dich**; der Trigger bleibt beim Controller, und dem
+  Controller sagen, wenn D0 gelandet ist.
+
+**Stand bei meiner Uebergabe:** vier haengende Events in EINEM gebuendelten Send zugestellt
+(`acceptance: observed`, sendId `09a4c641e601a43fa9f60253`) — zwei merge-terminals
+(`a9cc964c0a67722f5a560963`, `b361812f7a47ca9264954510`, beide merged/landed/verify ok) und zwei
+rote Post-Land-Audits (`8cb0da2b209e592139898260` auf `8a4655cb`, `61c9ae230b49a756a721fd21` auf
+`535fa051`). **Gebuendelt statt vier Sends, weil jede Nachricht an eine MAIN deren vollen Kontext
+kostet.** Beiden Audits habe ich ausdruecklich mitgegeben, dass sie NICHT Astras Schuld sind,
+sondern meine Regression aus §0b — sonst sucht Astra einen Fehler, den ich gebaut habe.
+
 ## 0b. EINE REGRESSION, DIE ICH SELBST GELANDET HABE — sie ist LIVE und macht jedes docs-Land rot
 
 **`cbccd3a` (Tier 2 proportional) faehrt `bun e2e/pins.ts` in einem Baum OHNE `.git`.** Seit dem

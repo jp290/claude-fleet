@@ -34,6 +34,12 @@ import {
   UNMODELED_CAPABILITY_DIMENSIONS, renderSystemCapabilities,
 } from "../capability-map";
 import { collectRepoMap, firstCommentLine, renderRepoMap } from "../repo-map";
+// the pane-hint builders are IMPORTED and CALLED by the sigil rule at the end of this file: only a
+// rendered hint shows the tail `${eventAck(id)}` actually contributes, which a source scan cannot.
+import {
+  attentionAnswerMessage, auditWatchMessage, clarificationReplyMessage, clarificationWatchMessage,
+  commandJobWatchMessage, deployWatchMessage, laneWatchMessage, mergeWatchMessage,
+} from "../lane-signals";
 // the allowlist is IMPORTED, never re-spelled: a pin that copied the list would pin its own copy
 import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck } from "../server/types";
 import { CAPABILITY_FUNCTIONS } from "../src/protocol";
@@ -5673,6 +5679,111 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   pin(`${RULE_FAILS} — local check counting keeps the helper-name argument absent`,
     audit.includes("postLandAuditChecks(completeOutput, exitCode, undefined, true)"),
     audit === "" ? "runPostLandAudit not found in server.ts" : "postLandAuditChecks local call inspected");
+}
+
+// ================================================================================================
+// A FLEET-COMPOSED PANE HINT NEVER ENDS ON A SHELL SIGIL TOKEN
+// ================================================================================================
+// Measured 2026-09-05 (docs/messungen/2026-09-05-astra-d0-report-zustellung.md, repro at
+// codex-cli 0.153.4 / 200x50): every event hint ended `… from $FLEET_SELF_TOKEN.`, and in the Codex
+// TUI a `$`-token sitting at the CURSOR — which after a paste is the last token — opens the mention
+// overlay ("no matches" / "Press enter to insert or esc to close"). That overlay EATS the Enter.
+// Fleet then behaved exactly as designed and that is why nothing shouted: the composer still held
+// the full payload, rollbackOwnComposerPayload cleared it, the send was recorded send-uncertain,
+// and the bounded recovery replayed the identical paste five times. 9 of 9 events to that slot were
+// never delivered; every Claude receiver in the same ledger took the same tail at attempts=1.
+//
+// The trigger is POSITIONAL — the control run with the same `$` token NOT at the end submitted
+// fine — so this is deliberately NOT a sigil ban on shell text, user text, or docs. It is a rule
+// about the END of the small, DERIVED set of strings Fleet composes and types into someone's pane.
+{
+  const RULE_SIGIL = "a Fleet-composed pane hint never ENDS on a shell sigil token (a cursor-adjacent $NAME opens the Codex mention overlay, which eats the Enter)";
+  // the tail shape itself: a `$NAME` token with nothing after it but closing punctuation
+  const SIGIL_TAIL = /\$[A-Za-z_][A-Za-z0-9_]*[\s.,;:!?)\]"'`]*$/;
+  // THE SUBJECT IS DERIVED, never listed: every builder whose output the server assigns to `text`
+  // and hands to sendText. A new event kind with a new builder joins this rule by existing; a
+  // `const text = await req.text()` contributes no name and is silently not this class.
+  // which half of the derived set each name belongs to is DERIVED TOO, from lane-signals.ts's own
+  // export list — a builder moved between the two files changes halves without an edit here.
+  const LANE_SIGNAL_MESSAGE_EXPORTS = new Set(
+    [...read("lane-signals.ts").matchAll(/export function (\w*Message)\s*\(/g)].map((m) => m[1]!));
+  const builders = new Set<string>();
+  for (const m of serverU.text.matchAll(/const text = ((?:[^;]|\n)*?);/g))
+    for (const n of m[1]!.matchAll(/\b(\w*Message)\s*\(/g)) builders.add(n[1]!);
+  // fails as ITSELF, and in BOTH halves: a derivation that collapsed to one file would leave every
+  // row below trivially true — the same green, measured over half the subject.
+  pin(`${RULE_SIGIL} — the subject set is derived from the server universe's pane sends, and holds both halves`,
+    builders.size > 0
+      && [...builders].some((n) => LANE_SIGNAL_MESSAGE_EXPORTS.has(n))
+      && [...builders].some((n) => !LANE_SIGNAL_MESSAGE_EXPORTS.has(n)),
+    `${builders.size} builder(s): [${[...builders].sort().join(", ")}]`);
+
+  // --- HALF ONE: the lane-signals builders are CALLED, not read. Rendering is the only way to see
+  //     the tail that `${eventAck(event.id)}` actually contributes — a source scan sees `}`.
+  const laneEvent = { id: "e1", kind: "lane-ready" as const,
+    payload: { ahead: 3, dirty: 0, idleMs: 120_000, observed: true, gitOp: false, awaiting: null, hostCommits: false } };
+  const rendered: Record<string, string> = {
+    laneWatchMessage: laneWatchMessage(7, "fleet/probe", laneEvent),
+    hostCommitReady: laneWatchMessage(7, "fleet/probe", { ...laneEvent, kind: "host-commit-ready" }),
+    mergeWatchMessage: mergeWatchMessage(7, "/tmp/probe", { id: "e2", kind: "merge-terminal",
+      payload: { status: "merged", landed: true, branch: "fleet/probe", at: 0, verify: { ok: true } } }),
+    auditWatchMessage: auditWatchMessage("probe", "a".repeat(40), { id: "e3", kind: "post-land-audit",
+      payload: { result: "green", mainSha: "a".repeat(40), covers: [], checks: { ran: 9, failed: 0 } } }),
+    deployWatchMessage: deployWatchMessage("d1", { id: "e4", kind: "deploy-terminal",
+      payload: { ok: true, stage: "boot", target: "a".repeat(40), bootHead: "a".repeat(40), hitTarget: true, bundleStale: false, at: 0 } }),
+    commandJobWatchMessage: commandJobWatchMessage("j1", { id: "e5", kind: "command-job",
+      payload: { result: "green", cmd: "bun run build", exitCode: 0, artifacts: [] } }),
+    clarificationWatchMessage: clarificationWatchMessage(7, "fleet/probe", { id: "e6", kind: "clarification-request",
+      payload: { requestId: "r1", question: "q", taskId: null, originId: null, programId: null, basis: "lane-watch" } }),
+    clarificationReplyMessage: clarificationReplyMessage("r1", "q", "a"),
+    attentionAnswerMessage: attentionAnswerMessage("r1", "decision", "raised", "answer"),
+  };
+  // BOTH DIRECTIONS. A derived builder that lane-signals exports but this table forgot would
+  // otherwise leave the rule green over a hint nobody rendered.
+  const exported = new Set(Object.keys(rendered));
+  const missing = [...builders].filter((n) => LANE_SIGNAL_MESSAGE_EXPORTS.has(n) && !exported.has(n));
+  pin(`${RULE_SIGIL} — every derived builder exported by lane-signals.ts is rendered here`,
+    missing.length === 0, missing.length ? `no fixture for: ${missing.join(", ")}` : `${exported.size} rendered`);
+  const badRender = Object.entries(rendered).filter(([, text]) => SIGIL_TAIL.test(text));
+  pin(`${RULE_SIGIL} — rendered: no lane-signals hint ends on $NAME`,
+    badRender.length === 0,
+    badRender.length
+      ? badRender.map(([n, t]) => `${n}: …${JSON.stringify(t.slice(-48))}`).join("; ")
+      : `${Object.keys(rendered).length} rendered hint(s), tails clean`);
+
+  // --- HALF TWO: the server-local builders cannot be imported (server.ts boots on import), so they
+  //     are read. Every string literal in the body is checked, not only the last one: a literal that
+  //     ends on `$NAME` is the defect whether or not another segment follows it today.
+  const LIT = /([`"'])((?:\\.|(?!\1)[\s\S])*)\1/g;
+  const serverLocal = [...builders].filter((n) => !LANE_SIGNAL_MESSAGE_EXPORTS.has(n)).sort();
+  const unread: string[] = [];
+  const badLit: string[] = [];
+  for (const name of serverLocal) {
+    const body = new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n\\}`).exec(serverU.text)?.[0] ?? "";
+    if (!body) { unread.push(name); continue; }
+    const lits = [...body.matchAll(LIT)].map((m) => m[2]!);
+    if (!lits.length) { unread.push(name); continue; }
+    // a literal ending in an interpolation does not end the TEXT — strip it before judging the tail
+    for (const lit of lits) {
+      const tail = lit.replace(/\$\{[^}]*\}\s*$/, "");
+      if (SIGIL_TAIL.test(tail)) badLit.push(`${name}: …${JSON.stringify(tail.slice(-48))}`);
+    }
+  }
+  // fails as ITSELF: a builder whose body or literals could not be read is NOT a measured builder
+  pin(`${RULE_SIGIL} — every server-local derived builder's body was read`,
+    unread.length === 0 && serverLocal.length > 0,
+    unread.length ? `unreadable: ${unread.join(", ")}` : `${serverLocal.length} read: [${serverLocal.join(", ")}]`);
+  pin(`${RULE_SIGIL} — source: no server-local hint literal ends on $NAME`,
+    badLit.length === 0, badLit.length ? badLit.join("; ") : `${serverLocal.length} builder(s) clean`);
+
+  // --- THE MEASURED OLD FORM, negatively. Named as the byte sequence the live failure carried, so
+  //     a reintroduction fails under the sentence that describes the incident and not under a regex.
+  const OLD_FORMS = ["x-fleet-self-token from $FLEET_SELF_TOKEN.", "x-fleet-self-token aus $FLEET_SELF_TOKEN."];
+  const relapsed = OLD_FORMS.filter((f) =>
+    serverU.text.includes(f) || read("lane-signals.ts").includes(f)
+    || Object.values(rendered).some((t) => t.includes(f)));
+  pin(`${RULE_SIGIL} — the exact live-failure tail of 2026-09-05 is gone from both hint universes`,
+    relapsed.length === 0, relapsed.length ? `back: ${relapsed.join(" | ")}` : "neither form present");
 }
 
 console.log(rows.join("\n"));

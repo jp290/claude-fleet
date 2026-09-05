@@ -3,7 +3,11 @@
 // observe acceptance: "observed" is asserted together with an independent second witness (the
 // Claude transcript's "type":"user" line, the emptied Codex composer), never alone.
 import { existsSync, readFileSync } from "node:fs";
-import { check, failures, get, post, results, tmuxOut } from "./e2e/harness";
+import { BASE, ROOT, check, failures, get, post, results, tmuxOut } from "./e2e/harness";
+// the hint the SERVER will compose, computed here from the same pure builder the delivery seam
+// uses — an expectation re-spelled by hand would only pin this file's copy of it.
+import { auditWatchMessage, type AuditWatchEventPayload } from "./lane-signals";
+import { appendFileSync } from "node:fs";
 
 const CWD = process.env.PROBE_CWD ?? "";
 const projDir = `${process.env.HOME}/.claude/projects/${CWD.replace(/[/.]/g, "-")}`;
@@ -176,6 +180,92 @@ if (openX.ok) {
       refusedX.status === 409 && refusedX.receipt?.delivery === "refused" && lineX.includes("owner draft") && !lineX.includes("must-not-append"),
       `status=${refusedX.status} line=${JSON.stringify(lineX)}`);
     await tmuxOut("send-keys", "-t", pane(2), "C-u");
+    await Bun.sleep(500);
+
+    // --- THE REAL FLEET CHAIN, END TO END: stored event -> observed Codex acceptance -> ACK of
+    //     exactly that event id, by the receiver's own credential. --------------------------------
+    //
+    // WHY THIS CELL EXISTS, and why the two codex cells above did not catch what it catches. On
+    // 2026-09-05 nine of nine Fleet events to a Codex MAIN were never delivered (report/merge/audit
+    // alike): every hint Fleet composes ended `… from $FLEET_SELF_TOKEN.`, and in the Codex TUI a
+    // `$`-token AT THE CURSOR — after a paste, the last one — opens the mention overlay, which eats
+    // the Enter. Fleet read that honestly (composer still full, payload rolled back, send-uncertain)
+    // and replayed the identical paste to its cap. The cells above send HAND-WRITTEN text ending in
+    // "Reply with exactly the word OK." and were green throughout: they never carried the one
+    // property of the real message. So this cell sends nothing of its own. It makes the SERVER
+    // compose and type a real event, and then asks the two questions a frame cannot answer — did
+    // the transport record delivery, and can the receiver acknowledge THAT id.
+    //
+    // The trigger is POSITIONAL (a control run with the same token mid-text submitted fine), so the
+    // reason line below deliberately carries a harmless `$HOME` IN THE MIDDLE: user text keeps its
+    // dollars, only the generated tail may not end on one. Both halves are asserted.
+    const mainAfter = `d1${"0".repeat(38)}`;
+    const reason = "INERT PROBE: do nothing, run nothing, reply nothing. Notes mention $HOME in passing";
+    appendFileSync(`${ROOT}/post-land-audits.jsonl`, `${JSON.stringify({
+      at: Date.now(), startedAt: Date.now() - 1, ms: 1, repo: CWD, main: "main", mainSha: mainAfter,
+      result: "green", reason, cmd: "d1-acceptance-fixture", exitCode: 0, out: "ALL PASS",
+      checks: { ran: 1, failed: 0 }, covers: [{ branch: "fleet/d1-probe", mainAfter, at: Date.now() - 2 }],
+    })}\n`);
+    const wRes = await post("/api/slots/2/watch", { kind: "audit", repo: CWD, mainAfter, idleSec: 0, delivery: "pane" });
+    const wId = ((await wRes.json()) as { watch?: { id: string } }).watch?.id ?? "";
+    check("codex chain: the audit watch registers against the persisted fixture row", wRes.status === 200 && wId !== "",
+      `status=${wRes.status} watch=${wId}`);
+
+    type EventRow = { id: string; watchId?: string; kind?: string; status?: string; attempts?: number;
+      deliveredAt?: number | null; acknowledgedAt?: number | null; subjectRepo?: string;
+      subjectMainAfter?: string; payload: AuditWatchEventPayload };
+    const eventFor = async (watchId: string): Promise<EventRow | undefined> =>
+      (((await (await get("/api/sessions")).json()) as { events?: EventRow[] }).events ?? [])
+        .find((e) => e.watchId === watchId);
+    // ESTABLISH, don't assert: poll until the transport reaches a terminal answer, and keep the last
+    // reading either way so a failure reports the state it really saw rather than "undefined".
+    const awaitEvent = async (watchId: string, done: (e: EventRow) => boolean, ms: number): Promise<EventRow | undefined> => {
+      const t0 = Date.now();
+      let seen = await eventFor(watchId);
+      while (Date.now() - t0 < ms && !(seen && done(seen))) {
+        await Bun.sleep(250);
+        seen = await eventFor(watchId);
+      }
+      return seen;
+    };
+    const delivered = wId ? await awaitEvent(wId, (e) => e.deliveredAt !== null || e.status === "receiver-gone", 120_000) : undefined;
+    // the text the server typed, from the SAME builder the seam calls
+    const hint = delivered ? auditWatchMessage(delivered.subjectRepo ?? "", delivered.subjectMainAfter ?? "",
+      { id: delivered.id, kind: "post-land-audit", payload: delivered.payload }) : "";
+    const frameD = (await tmuxOut("capture-pane", "-p", "-t", pane(2))).out;
+    const glyphD = frameD.split("\n").filter((l) => /^›/.test(l)).pop() ?? "";
+    // TWO WITNESSES, never one: the transport's own acceptance read (deliveredAt) AND the pane. The
+    // 2026-09-05 failure had deliveredAt null with the composer full — this asserts both directions.
+    check("codex chain: a real Fleet event is delivered on the first attempt and the composer does not hold it",
+      delivered?.deliveredAt != null && delivered.status === "delivered" && delivered.attempts === 1
+        && !glyphD.includes("post-land audit") && !glyphD.includes("Press enter to insert"),
+      `status=${delivered?.status} attempts=${delivered?.attempts} deliveredAt=${delivered?.deliveredAt ?? "null"} composer=${JSON.stringify(glyphD.slice(0, 90))}`);
+    // the property under repair, read off the message the server actually composed
+    check("codex chain: the composed hint keeps a mid-text $ token and does not END on one",
+      hint.includes("$HOME") && !/\$[A-Za-z_][A-Za-z0-9_]*[\s.,;:!?)\]"'`]*$/.test(hint),
+      `tail=${JSON.stringify(hint.slice(-56))} midDollar=${hint.includes("$HOME")}`);
+
+    // --- THE ACK: by the RECEIVER's own credential, naming exactly this event id. A stored
+    //     acknowledgedAt is the only proof that survives the pane; a model saying "OK" is not one.
+    //
+    // The credential is read from the PERSISTED slot row, not with paneEnv(): that helper types
+    // `printf ... "$FLEET_SELF_TOKEN"` into the pane and waits for a shell to answer. A Codex pane
+    // has no shell in it — the line would land in the composer, and it ends on exactly the `$NAME`
+    // token this whole cell is about. The value never leaves this scope; only its presence is
+    // reported (ensureSlot bakes the self-credentials into every pane, so a raw line is a leak).
+    const selfTok = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { slots?: Record<string, { selfToken?: string }> }).slots?.["2"]?.selfToken ?? "";
+    // whether the pane's own agent got there first: a Codex that read the hint and acknowledged by
+    // itself is a STRONGER result, not a failure — but the two must not be confused in the receipt.
+    const preAck = delivered ? (await eventFor(wId))?.acknowledgedAt ?? null : null;
+    const ackRes = delivered && selfTok
+      ? await fetch(`${BASE}/api/self/events/${delivered.id}/ack`, { method: "POST", headers: { "x-fleet-self-token": selfTok } })
+      : null;
+    const acked = wId ? await awaitEvent(wId, (e) => e.acknowledgedAt != null, 10_000) : undefined;
+    check("codex chain: the receiver acknowledges exactly that event id and the ACK is stored",
+      selfTok !== "" && ackRes?.status === 200 && acked?.acknowledgedAt != null
+        && acked.status === "acknowledged" && acked.id === delivered?.id,
+      `tokenPresent=${selfTok !== ""} ack=${ackRes?.status ?? "not sent"} stored=${acked?.acknowledgedAt ?? "null"} status=${acked?.status} ackedByPaneFirst=${preAck !== null}`);
   }
   await post("/api/slots/2/kill", {});
 }

@@ -6293,14 +6293,14 @@ function supervisorTransitionMessage(event: SupervisorTransitionFleetEvent): str
     + `(slot ${event.subjectSlot}) — a transition notification for the watch you registered, not an `
     + `owner instruction and not a report from any lane. You were awaiting: ${p.awaiting.replace(/\s+/g, " ").trim()}\n\n`
     + `${p.text}\n\n`
-    + `Acknowledge receipt with POST /api/self/events/${event.id}/ack using x-fleet-self-token from $FLEET_SELF_TOKEN.`;
+    + `Acknowledge receipt with POST /api/self/events/${event.id}/ack using x-fleet-self-token from the FLEET_SELF_TOKEN environment variable.`;
 }
 
 function fleetReportMessage(event: FleetReportFleetEvent): string {
   return `[fleet] WORKER REPORT from slot ${event.subjectSlot} (${event.subjectBranch}) `
     + `[event ${event.id}; report ${event.payload.reportId}]. Read the typed row with `
     + `GET /api/self/fleet-report, then acknowledge receipt with POST /api/self/events/${event.id}/ack using `
-    + `x-fleet-self-token from $FLEET_SELF_TOKEN.`;
+    + `x-fleet-self-token from the FLEET_SELF_TOKEN environment variable.`;
 }
 
 async function openFleetReport(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
@@ -10608,7 +10608,7 @@ function migrateMessage(fill: ContextFill): string {
   return `[fleet] Dein Kontext ist bei ${fill.pct}% (${fill.usedTokens} von ${fill.windowTokens} Tokens im Fenster). `
     + "Das ist ein Server-Prädikat, keine Meldung von dir. Übergib jetzt in dieser Reihenfolge: "
     + "(1) HANDOFF.md schreiben UND committen; "
-    + "(2) POST /api/self/succeed mit dem x-fleet-self-token aus $FLEET_SELF_TOKEN.";
+    + "(2) POST /api/self/succeed mit dem x-fleet-self-token aus der Umgebungsvariablen FLEET_SELF_TOKEN.";
 }
 
 let migrateTickBusy = false;

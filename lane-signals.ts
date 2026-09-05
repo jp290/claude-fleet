@@ -271,7 +271,7 @@ export function laneWatchPayload(v: LaneSignalView): LaneWatchEventPayload {
 export function laneWatchMessage(slot: number, branch: string, event: LaneWatchEventView): string {
   const { id, kind, payload: p } = event;
   const ack = `After reading, acknowledge event ${id}: POST /api/self/events/${id}/ack with `
-    + `x-fleet-self-token from $FLEET_SELF_TOKEN.`;
+    + `x-fleet-self-token from the FLEET_SELF_TOKEN environment variable.`;
   if (kind === "host-commit-ready") {
     return `[fleet] slot ${slot} (${branch}) [event ${id}] now LOOKS ready for a host commit — pane idle, `
       + `${p.ahead} ahead / ${p.dirty} dirty. The work is UNCOMMITTED, 0 ahead is expected `
@@ -288,7 +288,7 @@ export function laneWatchMessage(slot: number, branch: string, event: LaneWatchE
 
 const eventAck = (id: string): string =>
   `After reading, acknowledge event ${id}: POST /api/self/events/${id}/ack with `
-  + `x-fleet-self-token from $FLEET_SELF_TOKEN.`;
+  + `x-fleet-self-token from the FLEET_SELF_TOKEN environment variable.`;
 
 export function mergeWatchMessage(slot: number, cwd: string, event: MergeWatchEventView): string {
   const p = event.payload;

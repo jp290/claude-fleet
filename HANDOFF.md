@@ -1,3 +1,47 @@
+# HANDOFF — 🎛 Fleet Controller (Slot 5, Fable 5.1): Program-Dispatch gelandet+deployt, Suite-Schnitte A/B gefilet, Codex-Zustellprobe ZU, GLM- und Dual-Host-Schnitt-1 gelandet; 2026-09-05 17:0x, ctx GEMESSEN ~27 %
+
+> **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 12, 15:5x).
+> **Der Controller ist, wer das Label `🎛 Fleet Controller` traegt.** Lineage: … → 7 → 12 → 5 → du.
+
+Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, Owner-Poll, Panes.
+
+## 0. Was du als Erstes tust
+
+1. `GET /api/self/attention` und der Attention-Bestand: ich habe KEINE offene Attention hinterlassen; Astras zwei (Advisory-Deckel, GLM-Land) sind beantwortet.
+2. **KEIN DEPLOY, solange Slot 1 (Beleg-Lane 2 `9f1dbfb4`, Program 66499a03, Slot 8) laeuft und danach noch ~20 min** — Slot 8s Beweis (erste `autoClose`-Zeile ueberhaupt) haengt an einem deploy-freien Idle-Fenster nach der Report-Annahme; jeder Deploy nullt die Idle-Uhr aller Panes. Slot 8 meldet dir das Fenster selbst, wenn der Report da ist. `deployGap.codeBehind` steht nach dem Dual-Host-Land `7b1d9cd` auf `true` — die Dateien sind docs/dual-host-git-transport.md, docs/repo-map.generated.md, fleet-sync.sh; KEIN Server-Code darunter, der Deploy ist funktional nicht noetig. Deploy erst nach Slot 8s Fenster, und nur wenn wirklich Server-Code dahinter liegt.
+3. **Audit-Watches, die mit mir sterben:** `7a68c9f` (Program-Dispatch) und `7b1d9cd` (Dual-Host) — arm beide neu (`{"kind":"audit","repo":"/Users/owner/claude-fleet","mainAfter":"<sha>"}`; die mainAfter-Sha steht in der Land-Note `git notes --ref=fleet/land show <tip>`). Erwartung: rot auf genau den zwei bekannten Familien (D2 setup, projection nextAction), alles andere ist Befund.
+4. **Slot 4s Composer trug beim Land den ungesendeten Text „mach gate 3 und 4 als einen akt, claude installier ich".** Nach Owner-Regel ist ein Composer-Rest nie ein Owner-Entwurf; ich habe ihn nicht ausgefuehrt, aber die Folgezeile `0c00f9a9` (Gate 3+4 als EIN Akt) genau so geschnitten und als BLOCKIERT markiert, bis `ssh second-hostowner@100.64.0.2 'command -v claude'` einen Pfad liefert. Der Owner muss Claude Code dort installieren und einloggen (Credential-Akt, sein Kontingent) — das steht in meinem Schlussbericht an ihn.
+5. **Das Dual-Host-Program `cd110019` hat KEINE lebende MAIN:** `program.main` zeigt auf Slot 8 mit `openedAt 1788567958928` (retired); der heutige Slot 8 ist die MAIN von 66499a03. Genau daran starb Slot 4s needs-main-Report („no exact clarification receiver evidence"), und die Lane stand 30 min stumm. Owner-Wahl: neue MAIN spawnen oder das Program ueber den Controller fahren; bis dahin liest DU die Panes der Dual-Host-Lanes.
+
+## 1. Owner-Entscheide dieser Session
+
+- 16:2x „Wollen wir die Suite vllt einfach etwas verkleinern?" → meine Antwort nach Messung: erst Wartezeit und Vorschau, kein Check faellt. „Ja bitte geh diese Punkte jetzt sauber an." → Zeilen `aa3fd660` (Schnitt A: Warten auf Bedingung statt Timer) und `5cd2d1b9` (Schnitt B: Modulfilter + Fixture-Karte fuer die Lane-Vorschau) im Program Audit-Determiniertheit (Slot 6), Reihenfolge NACH Slot 6s Zeile 3 (`423f4031`, queued, wartet am Deckel); `7d3d29de` (Offer-Seite sieht den Second-host nicht) standalone pending. Messbasis in den Texten: Trail `isolated-20260905T121144Z`, 3139 Checks, 1690 s; 83 Checks >5 s = 753 s; 461 sleep() = 366 s; programs/tasks/watch/merge = 2/3 der Zeit; heute rot auf genau EINEM Check.
+- Freigabe an Slot 4 (Dual-Host), die einzige Wirkung ausserhalb des Repos: eine fetch-only-Zeile (`restrict,command="/usr/bin/git-upload-pack '/Users/owner/claude-fleet'"`) in `~/.ssh/authorized_keys` auf oldmac, append-only, Backup im Lane-Scratchpad. Owner-Delegation „entscheide du" fuer Dual-Host; rueckgaengig = die Zeile loeschen.
+
+## 2. Was gefallen ist (Belege: Ledger, Queue, Commit-Bodies)
+
+- **Gelandet+deployt:** Program-Dispatch `5c1f831f` als vier Commits, Tip `7a68c9f`, verify ok 111 s, waitMs 0; Deploy `0deb6aef` Boot ok, bootHead = Tip. Slot 1s eigener Bestaetigungslauf: 1 FAIL = projection nextAction (bekannt), sonst gruen.
+- **Gelandet (docs/skript, kein Deploy):** GLM-Gegenlesung `6a527587` → `fedf579` nach fachlicher Annahme durch Astra (Report `f4469951`); Dual-Host Schnitt 1 `cf4a85cd` → `7b1d9cd`, verify gruen ( `fleet-sync.sh`, `docs/dual-host-git-transport.md`, Repo-Map).
+- **Codex-Zustellprobe ZU:** das Audit-Event `35c0a100` kam direkt bei Astra an (attempts 1) und wurde von ihr selbst quittiert. Kein Relais mehr noetig. D2 `e88884c8` bleibt pending bei Astra.
+- **Astras Rueckgabe an Slot 7 lag seit 13:42 unzugestellt** (Queue-Notiz `410b24ea`, von der Vorgaengerin nicht relayt) — relayt, Korrektur `d1682e2`, angenommen, gelandet. Sieben abgearbeitete D1-Koordinationsnotizen archiviert (Advisory-Deckel 10/10 → 3/10). Drei Doppel-Zeilen von Slot 6 archiviert (`9da27a0b`, `865439d9`, `0c6c78e7`). Richtung `233ee108` → Prozess-Dokument als `d2b69d3d` pending in Astras Program.
+- **Waisen:** vier vollstaendig gelandete Worktrees entfernt. ZWEI bleiben mit uncommitteter Arbeit (b963 = Task `9fd34beb`, 290 Zeilen programExecutionView/programHealth; 1787 = `db6902c4`, ersetzt durch `02740e69`) — nicht meine Entscheidung; loeschen oder salvagen ist Owner-/MAIN-Sache.
+- **Maschine:** 8,6 GB RAM; macOS killte Slot 1 zwei Hintergrund-Waechter wegen Speicherknappheit (43 % frei bei 7 claude/11 codex/21 bun-Prozessen). Kein Befund gefilet, nur gemessen.
+- Audits `1d5efb9` und `cba8807` rot, beide exakt die zwei bekannten Familien. Die Audits laufen „(remote, second-host)" — der Helfer ist erreichbar; nur die Offer-Seite sieht ihn nicht (`7d3d29de`).
+
+## 3. Offen — Zuege der Nachfolgerin, in dieser Reihenfolge
+
+1. §0.3 Audit-Watches; §0.2 Deploy-Sperre beachten.
+2. Slot 4s Land-Ausgang lesen (Merge-Watch stirbt mit mir): bei `merged` nichts weiter; bei `ff-lost`/rot die Lane lesen, nicht raten.
+3. Drei Zeilen am Deckel (`423f4031` Slot 6, `02740e69` Fleet-Betrieb, danach Schnitt A/B) — der Tick startet sie, sobald Plaetze frei sind; nichts von Hand dispatchen.
+4. Owner-Sache, an ihn berichtet: Claude Code auf dem Second-host installieren (Gate 3+4), MAIN fuer Dual-Host, die zwei dirty Waisen, Regelbuch-Drift „GPT-Slot hat ctx null" (unveraendert).
+
+## 4. Was mit dieser Session stirbt
+
+Merge-Watch Slot 4, Audit-Watch `7a68c9f`, alle Hintergrund-Waechter. Kein Auto, keine Mission, keine offene Attention.
+
+---
+---
+
 # HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 10, Opus 5): die Audit-Regression ist ZU (`93e5460`, ueber die eigene Self-Land-Sprosse), die zweite Lane haengt an einem NIE-GEMESSENEN Gate — und ich habe die Last-Hypothese am Ende mit einer Kontrolle belegt; 2026-09-05 13:5x
 
 Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was git

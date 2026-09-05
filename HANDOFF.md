@@ -246,181 +246,121 @@ und die Sensoren nicht tragen. Die Abschnitte darunter sind FREMD (geteilte Date
 ---
 ---
 
-# HANDOFF — 🎛 Fleet Controller (Slot 3, Fable 5.1): zwei Lands durch (0a099c62, GLM-Notiz), zwei Analysen committet, d4342a62 laeuft, Deploy haengt am Audit; 2026-09-05 01:3x, ctx GEMESSEN 29,0 %; Succession im Band
+# HANDOFF — 🎛 Fleet Controller (Slot 9, Fable 5.1): rotes Audit widerlegt, GLM-Gegencheck gelandet, K1 gebaut (CLAUDE.md −10 KB), Freeze auf main bis R2' landet; 2026-09-05 03:0x, ctx GEMESSEN 30,5 %; Succession im Band
 
-> **Regel (Vorschlag, promoviert noch nicht): ein Abschnitt je LEBENDEM Prinzipal.** Wer uebergibt,
-> ERSETZT den eigenen Abschnitt statt zu stapeln; Abschnitte abgeschlossener Programs wandern ins
-> Archiv (`docs/attic/handoff-archiv-2026-09-05.md`, zwoelf Abschnitte, 2026-09-05). Solange K3
-> (`7f60903b`) nicht gelandet ist, sagt der Succession-Brief „oberster Abschnitt" — such deinen an
-> der Program-Id in der Ueberschrift.
+> **Regel (Vorschlag, promoviert noch nicht): ein Abschnitt je LEBENDEM Prinzipal** — dieser Abschnitt
+> ERSETZT den der Controller-Vorgaengerin (Slot 3, 01:3x). Such deinen an der Program-Id/Rolle in der
+> Ueberschrift; K3 (`7f60903b`) ist NICHT gelandet, der Succession-Brief sagt weiter „oberster Abschnitt".
 
 Zustand ableiten: `./state.sh`, `./register.sh`, Owner-Poll, Panes. Hier nur, was git nicht traegt.
-Die Abschnitte darunter sind FREMD (Vorgaengerin Controller Slot 9, MAINs Slot 3/5/7, Slot 6, Sanierung, Dual-Host).
-Lineage Controller: 5 → 6 → 9 → 3 → du.
+Lineage Controller: 5 → 6 → 9 → 3 → 9 → du. **Fremde Handoffs sagen „Controller = Slot 3" — Slot 3 war
+seit 02:20 eine Lane. Der Controller ist, wer das Label `🎛 Fleet Controller` traegt (Owner-Poll), nie
+eine Slot-Nummer aus Prosa.**
 
-## 0. Rolle (unveraendert, Owner-Entscheid 2026-09-04 09:1x + 19:2x)
+## 0. Rolle (unveraendert, Owner-Entscheid 2026-09-04 09:1x + 19:2x + Korrektur 00:5x)
 
-Ueberblick + Owner-Nachrichten auf Programs routen. Lands vom Board NUR fuer Zeilen ohne lebende
-MAIN oder ohne Self-Land-Promotion. Audit-Adjudikation: die MAIN urteilt, der Controller legt ab.
-Modellpolitik: Controller Fable 5.1, MAINs + Lanes Opus 5, Codex gpt-5.6-sol/high, GLM ueber
-Adapter **`pi-zai`** (NICHT `pi` — mit `pi` stirbt die Pane still am Modell, Zeile wird requeued
-und der Tick schreibt „lanes busy" als Note darueber; passiert 01:16).
+Ueberblick + Owner-Nachrichten auf Programs routen. Lands vom Board NUR fuer Zeilen ohne lebende MAIN
+oder ohne Self-Land-Promotion. Audit-Adjudikation: die MAIN urteilt, der Controller legt ab; fuer
+Controller-gelandete Zeilen urteilt der Controller. Lane-Events der Program-Lanes gehoeren der
+Program-MAIN (Fleet-Betrieb = Slot 10), der Controller haelt Deploy-Trigger und Mutex-Koordination.
+Modellpolitik: Controller Fable 5.1, MAINs + Lanes Opus 5 high, Codex gpt-5.6-sol, GLM ueber `pi-zai`
+(nie `pi`).
 
-**Owner-Korrektur 00:5x, gilt fort:** Lane-Events (Lane-Watch, Reports) der Program-Lanes gehoeren
-der Program-MAIN (Slot 8 fuer Fleet-Betrieb), nicht dem Controller. Der Controller haelt nur den
-Deploy-Trigger (Audit-Watch) und landet Zeilen ohne MAIN.
+## 1. Was in dieser Session (02:2x–03:0x) gefallen ist
 
-## 1. Was in dieser Session (00:2x–01:3x) gefallen ist
-
-- **0a099c62 (Slot 1, Audit-Rot-Untersuchung) GELANDET** durch MAIN Slot 8 → `ed36971`, verify ok,
-  volle Kette, 33 min davon **31 min Warten im Mutex**. Urteil `flake` auf Audit at=1788550781547
-  abgelegt (Note der MAIN, 296 Z.). Nebenbefund der MAIN: der Audit-srv erbt KEINE `FLEET_*`-Variable
-  (`server.ts#auditChildEnv`), der Land-GATE erbt die volle Server-Umgebung (`server.ts#runVerify`)
-  — das ist Zeile `bc0609f8`, jetzt `queued`.
-- **Owner-Prioritaet 00:5x „Punkt 1 & 2 in den Plan":** d4342a62 (Mutex-FIFO) und die
-  Audit-Rot-Zeilen (8ab7215f proportional, 9da27a0b, bc0609f8) VOR den Lebenszyklus-Zeilen S2/S5a.
-  Slot 8 hat die Ansage woertlich. **d4342a62 laeuft seit 01:25 auf Slot 1** (Opus 5 high, Branch
-  `fleet/260904232513-0b9b`), Zusatz (Wartebudget-Befund von Slot 7, Messung 2 h 45 / drei
-  verlorene Rennen, optionale Gate-vor-Vorschau-Klasse als eigener Commit) zugestellt. Ihr
-  Report geht an Slot 8, Self-Land dort.
-- **Land-Reihenfolge von Slot 8 (begruendet, uebernommen):** 0a099c62 ✔ → R2' (Slot 2, 6 Commits,
-  landbar, wartet auf den Mutex) → Slot 7 (a40e898, Audit-Proportion; zweiter Beweislauf 29844 wartet
-  seit 40 min im Mutex). Nach dem Slot-7-Land: Deploy + **Regelbuch-Satz in
-  `rulebook/lane-discipline.md`** („und der Post-Land-Audit bleibt unveraendert voll" → proportional
-  fuer rein-docs-Lands; Wortlaut aus a40e898s AGENTS.md-Hunk), rendern per Einzeiler im Kopf von
-  `rulebook.ts`, `bun e2e/pins.ts`.
-- **GLM-Zusammenfassung Slot 15 („fable5", Owner-Denksession 17:01–01:14) GELANDET** → `5202fd6`,
-  `docs/messungen/session-slot15-fable5-2026-09-04.md`; proportionaler Gate 764 ms, KEIN Mutex
-  (der kurze Gate faehrt keinen Suite-Wrapper). Kern: Konzept „Konzept-B" (dezentrales
-  Agenten-Kollaborationsnetz), neun Owner-Entscheide woertlich, existiert nur als Artifact.
-- **Zwei Direkt-Commits (docs-only, kein Land-Ledger, kein Audit):** `0ba2f32`
-  `docs/program-ansicht-informationsschichten-2026-09-05.md` (Vorarbeit fuer die Ansicht, die der
-  Owner am 05.09. frueh baut: zehn Schichten, Join-Schluessel gezaehlt, v1 = `GET
-  /api/programs/:id/view` auf Abruf + fleet-weites Banner, drei Owner-Entscheide) und `7c72234`
-  `docs/messungen/kontextschicht-analyse-2026-09-05.md` (Fable-5.1-Subagent: Startladung +35/+46/
-  +120 % seit 08-20; Wegwerf-Worker laedt ~23k Tokens Regelbuch je Lauf, `summaryViaSession` spawnt
-  im Repo-Root; Succession-Brief zeigt auf fremden Handoff-Abschnitt; v1-Schnitt in §5).
-- **HANDOFF.md von 2 121 auf 571 Zeilen (160 → 43 KB) geschnitten** (Owner 01:5x „warum so
-  gigantisch"): vier Abschnitte mit lebendem Leser bleiben (Controller · 66499a03 · Fleet-Betrieb ·
-  Dual-Host), zwoelf liegen in `docs/attic/handoff-archiv-2026-09-05.md`. Regelvorschlag oben im
-  Kopf: ein Abschnitt je lebendem Prinzipal, ersetzen statt stapeln.
-- Context-Pack-Routing dem Owner berichtet (521 Quittungen, 151 leer, vier Packs nie gewaehlt,
-  Trigger sind Konstanten). CP-A/B/C pending; fehlender vierter Schnitt: ein EINGANG
-  (`Task.contextPacks[]` o. ae.), erst nach CP-A filen.
+- **Audit auf `5202fd6` ROT 3/3651 → `flake` abgelegt** (at=1788567702804): identisches Trio wie auf
+  `ed36971` — `unbound succession pane s8` ist eine Nur-bei-Fehler-Diagnose in `e2e/harness.ts`, „successor
+  delivery held" ihre Folge, §11.2o der dritte. Register: unbound-succession 4 rot/10 Laeufe, §11.2o 6/36.
+  Evidenz-Buendel an Slot 6 (Audit-Determiniertheit) zugestellt.
+- **GLM-Gegencheck der Kontextschicht-Analyse GELANDET** (`60511be`, Lane `f8bcca00` pi-zai auf Slot 3,
+  `docs/messungen/2026-09-05-kontextschicht-gegencheck-glm.md`): 6 BESTAETIGT (B2 B4 B5 B7 B8 B10), 4
+  TEILWEISE (B1 B3 B6 B9), 0 widerlegt. Zwei Korrekturen, die den Plan aendern: **K2 (Worker-Ambientlast)
+  ist im Normalbetrieb ein Seltenfall** — `mergeJob` startet Worker im LANE-Worktree, watchdog schaltet
+  cleanReview/autoReview/analysis ab, das Transcript wird im `finally` geloescht (Sonde nur mid-run).
+  **K3 kollidiert frontal mit Lebenszyklus-S4** (gleiche Schritt-3-Zeile, `handoffCommittedAfterOpen`
+  eingefroren) und der Satz steht an DREI Stellen (`buildProgramMainBrief` fehlte). Beide Briefs sind per
+  `POST /api/tasks/:id/brief` nachgeschaerft (0735ae31: nur Sonde; 7f60903b: erst nach S4).
+- **K1 `56b9d19b` GEBAUT und `done`:** `rulebook/lane-discipline.md` 30 285 → 18 795 B, 16 Bloecke auf
+  Regel + Zeiger, Originale datiert in `docs/attic/regelbuch-messgeschichten-2026-08.md` §15 (`4f9a8b0`).
+  CLAUDE.md 85 465 → 74 877 B, danach durch B4-Teil-A wieder **75 0xx** — siehe §2.4. `bun e2e/pins.ts`
+  ALL PASS bei jedem Schnitt; alle 48 Bedeutungsprobe-Phrasen D1–D48 stehen weiter im Fragment.
+  **rulebook/ und CLAUDE.md sind gitignored: K1 existiert nur auf dieser Maschine + im Attic-Commit.**
+- **B4 Teil A** im Regelbuch erledigt (lokal): `self-scheduling.md` zaehlt keine Routen mehr („genau vier"
+  war 7, „VIER" war 9 — am Code), `deploy.md` `:9832` → `server.ts#killUndoStack`. Teil B (self-api-Tabelle
+  + Pin gegen `:NNNN`) ist Zeile **`0db86b6a`**; **B8** (Footer-Satz clarifications) ist Zeile **`44f04a90`**,
+  beide pending am Program Fleet-Betrieb.
+- Verwaister, sauberer `ctrl`-Worktree einer Vorgaengerin entfernt (`80cd901` liegt in main). Slot 11
+  (Dual-Host) ist retired (`slot not active`).
 
 ## 2. Was JETZT offen ist, in dieser Reihenfolge
 
-0. **R2' (Slot 2) IST NICHT GELANDET — und es ist kein Rot** (Merge-Terminal 02:11:
-   `status=resolved, landed=NO`, Detail „clean rebase, but verify NEVER STARTED"). Der Gate hat sein
-   45-min-WARTEBUDGET im Suite-Mutex ausgesessen, ohne den Baum je anzusehen; `waitedOut` ist nie
-   `ok:false`. Die Lane ist unveraendert landbar, der Rebase war sauber — **Slot 8 stoesst neu an,
-   sobald der Mutex frei ist** (informiert 02:12). Lage in dem Moment: Halter 70792 (isolated,
-   23 min), Anwaerter 29844 (Slot-7-Beweislauf, 1 h 27), 94455 (claude-gate von d4342a62/Slot 1),
-   97719 (Slot 4, 55 min) — VIER Suite-Prozesse, ein Lock. **Das ist der erste gemessene Fall, in
-   dem die Aushungerung ein LAND gekostet hat**, nicht nur Wartezeit; gehoert als Erfolgssatz in
-   d4342a62.
-1. **Deploy** — `codeBehind:true` seit ed36971 (+5202fd6); zwei Versuche 01:5x/02:12 abgelehnt
-   (Preflight: erst laufender Land, dann laufender Post-Land-Audit — beide Ablehnungen sind
-   RICHTIG). Audit 5667 lief 01:18-01:48;
-   `POST /api/deploy` antwortet 409 solange. Mein Audit-Watch `431e29b5` auf ed36971 STIRBT mit
-   mir — neu armieren: `POST /api/self/watch {kind:"audit", repo:"/Users/owner/claude-fleet",
-   mainAfter:"<sha ed36971 voll>"}`. Danach `bundleStale` pruefen.
-2. **R2'-Land (Slot 2) und Slot-7-Land** fahren Slot 8; nach JEDEM Deploy. Nach dem Slot-7-Land
-   der Regelbuch-Satz (oben).
-3. **Nach dem R2'-Land:** 9da27a0b (Audit-Determiniertheit, MAIN Slot 6) in den freien Slot
-   hand-dispatchen (`POST /api/tasks/9da27a0b/dispatch {harness:"claude",model:"claude-opus-5[1m]",
-   effort:"high"}`); danach bc0609f8. Lane-Zahl bei VIER halten (Maschine im Swap).
-4. **Slot 4 (Codex S1, 72 % von 258k)** faehrt seine dritte isolierte Vorschau; Codex kompaktiert
-   selbst, kein Succession-Druck. Sein Report geht an Slot 8.
-5. **Owner-Entscheide, die nur er treffen kann** (gestellt 00:5x, unbeantwortet): vier Programs
-   `active` mit `occupancy: stale` (f99e9354 Private-repo-o, 07ee8a6d private-repo-p, 2c073232 Private-repo-j,
-   b2aa5b45 Game-Maker v2 → zeigt auf Slot 9, der inzwischen recycelt wurde). API kennt nur
-   `archive`/`complete`. Vorschlag stand: Game-Maker v2 + Private-repo-o archivieren, die zwei anderen
-   neu binden, wenn Lanes frei. **Regel A** (aus dem Handoff Slot 9 §2) bleibt offen.
-6. Sechs rote Audits ohne Urteil (aelter als 04.09.), unveraendert. **NEU 01:4x: Audit
-   at=1788565731607 auf ed36971 ROT 3/3651** (unbound succession pane s8 · delivers-it-WHOLE ·
-   §11.2o) — alle drei bekannte Familien aus dem Trail-Ranking, keiner beruehrt den Diff; Evidenz an
-   Slot 6 geschickt; **Urteil `flake` von Slot 8 ABGELEGT (01:5x)**: zwei Wurzeln, keine des Lands —
-   `e2e/harness.ts:299` ist eine Nur-bei-Fehler-Diagnose (`check(...,false)`), die strukturell nie
-   gruen erscheinen kann und schon 7,5 h vor dem Land auf fremdem Baum fiel; Fail 2 ist ihre Folge;
-   Fail 3 = §11.2o. Fuer Slot 6 (nicht zugestellt, in die naechste Buendelung): die Familie
-   „unbound succession" ist JUNG — 9 Laeufe im Register, 2/9 bzw. 3/9 rot, auf drei Baeumen. Deploy wartet auf das
-   R2-Urteil (Preflight 409, solange ein Land laeuft).
-7. **Kontextlast-Schnitte GEFILED (01:4x, Owner: „alles auf einen guten Stand, damit Astra sauber
-   arbeiten kann"):** K1 `56b9d19b` (kind `betrieb`, HAUPT-CHECKOUT: rulebook/lane-discipline.md
-   entschlacken, rulebook/ ist gitignored — das tut der Controller oder der Steward von Hand, keine
-   Lane), K2 `0735ae31` (Worker-Ambientlast: erst Transcript-Sonde, dann kappen), K3 `7f60903b`
-   (Succession-Brief zeigt auf den Abschnitt mit der Program-Id; Kollision mit CP-C beachten).
-   Alle pending am Program Fleet-Betrieb; Reihenfolge NACH d4342a62/9da27a0b/bc0609f8, VOR den
-   Lebenszyklus-Zeilen — K1 kann jederzeit, sobald kein Land laeuft (Render + pins, kein Mutex).
-   Die Ansicht selbst baut der Owner am 05.09. frueh auf `docs/program-ansicht-informationsschichten-2026-09-05.md`.
-8. **README aus der Codebase (Owner 01:5x)** — Zeile gefiled, ohne Program (Controller landet):
-   README.md neu aus Code + graphify-Graph statt abgelesener UI-Features, Symbolanker, GLM-Gegencheck
-   jeder Behauptung, Leak-grep leer; die GitHub-Beschreibung nur VORSCHLAGEN, setzen tut der Owner
-   von der Hauptmaschine (nie von hier pushen). Reihenfolge: nach K1–K3, ist Aussenwirkung, kein Betrieb.
-9. **Codex-Adapter-Audit (Owner 02:0x: „gruendlich pruefen ob codex 100 % vernuenftig, sauber,
-   robust")** — Mess-Lane gefiled am Program Fleet-Betrieb (neun mechanische Proben in einer
-   isolierten Instanz, e2e-Deckung je Probe, Rangliste, GLM-Gegencheck; KEIN Umbau in der Lane).
-   Reihenfolge: nach den Mutex-/Audit-Zeilen, parallel zu K2/K3 moeglich (kein Symbol gemeinsam).
-10. **Owner 02:0x zu K3:** der Handoff-Regelvorschlag (ein Abschnitt je Prinzipal) bleibt VORSCHLAG,
-   bis K3 `7f60903b` gelandet ist — nicht vorher promovieren.
-
-## 2b. AUFTRAG AN DICH (Owner-Ansage 01:5x, woertlich): „schreib in dein handoff auch das die
-## naechste session diese punkte angehen sollte und die kontext schichten der einzelnen rollen
-## verbessert, sie soll dafuer glm zum gegencheck benutzen. vllt all dies als lane, smart ausgefuehrt"
-
-Ziel: die Kontextschichten der VIER Leserrollen — Controller/Program-MAIN (Fable/Opus, 1M) ·
-claude-Lane (Opus, 1M) · codex/pi-Lane (258 400) · Wegwerf-Worker (merge/review/analysis) — auf
-Basis von `docs/messungen/kontextschicht-analyse-2026-09-05.md` §2 (B1–B10) und §5 verbessern.
-Erfolgsmass: Startladung je Rolle VORHER/NACHHER in Bytes, am Render gemessen (`wc -c CLAUDE.md`,
-Lane-Render ueber `rulebook.ts`, AGENTS.md, Worker-Transcript), als Messnotiz.
-
-Reihenfolge, nach Token-Hebel und so, dass nichts Widerlegtes gebaut wird:
-1. **EIN GLM-Gegencheck der Analyse ZUERST**, als Lane mit Adapter **`pi-zai`** (NICHT `pi`; kein
-   Lane-/Merge-Watch moeglich → Worktree per `git rev-list --count main..HEAD` beobachten).
-   Muster: `docs/messungen/2026-09-04-context-pack-gegencheck-glm.md` — je Befund B1–B10
-   bestaetigt/teilweise/widerlegt mit Fundstelle, plus Kollisionsflaeche mit dem
-   Lebenszyklus-Paket (S2/S12/3a-i, CP-A/B/C). Docs-only, landet ueber den kurzen Gate ohne Mutex.
-   Widerlegte Befunde werden NICHT gebaut; teilweise bestaetigte bekommen den engeren Schnitt.
-2. **K1 `56b9d19b`** im HAUPT-CHECKOUT (rulebook/ ist gitignored, keine Lane kann es): nur wenn
-   `fleet.json#merges` keinen laufenden Land zeigt; Fragment editieren, Render-Einzeiler aus dem
-   Kopf von `rulebook.ts`, `bun e2e/pins.ts`, Ziel `wc -c CLAUDE.md` < 75 000; jeder gestrichene
-   Absatz eine datierte Zeile im Attic. Keine Regel streichen, nur Geschichte.
-3. **K2 `0735ae31`, dann K3 `7f60903b`** als Opus-5-Lanes, SERIELL, je mit GLM-Gegencheck des DIFFS
-   vor dem Land (eine pi-zai-Lane liest den Branch read-only, Messnotiz, dann erst Self-Land).
-   K3 kollidiert mit CP-C `b2bd8cef` an `buildSuccessionBrief` — nur die Program-Variante anfassen.
-4. Danach **B4–B10 als eigene Zeilen filen**, jede mit Kosten + Verify, NICHT alle auf einmal; die
-   SYSTEM.md-Frage (Agenten-Leser oder Owner-Dokument) dem Owner VORLEGEN, nicht entscheiden.
-
-Rahmen: Lane-Zahl bei vier halten, Mutex beobachten (Halter + Anwaerter), Deckel 2 gilt fuer den
-Tick, Hand-Dispatch prueft ihn nicht. Reihenfolge NACH d4342a62/9da27a0b/bc0609f8 (Owner-Punkt 1
-und 2), VOR Lebenszyklus S2 ff. AGENTS.md bleibt der portable Vertrag; das Regelbuch darf keine
-harte Invariante schwaechen. Done je Schritt = der Verify aus der jeweiligen Zeile.
+0. **COMMIT-FREEZE AUF main, bis Slot 10 sein R2'-Land MELDET.** Der alte Job (Slot 2, seit 02:21:53) ist
+   seit `2a32c39` (02:26) terminal verloren — zwei Direkt-Commits (Slot 11 Handoff, Nachtrag Audit-Det.)
+   lagen unter dem laufenden Land; ff-lost ist im heutigen Code terminal (`server.ts#mergeJob`, „lane
+   kept"). Er stirbt ~03:07 als `waitedOut` oder frueher als `ff-lost`. **Slot 10 hat GO fuer den
+   Neuversuch** und weiss, dass dieser Handoff-Commit noch kommt. Der Land-Job rebased EINMAL zu Beginn,
+   ff-only am Ende, und das Fenster ist die 45-min-Mutex-Schlange — jeder Direkt-Commit dazwischen
+   toetet das Land. Slots 5, 6, 10 kennen den Freeze; Slot 15 (Owner-Session) NICHT — dem Owner gesagt.
+1. **Deploy NACH dem R2'-Land** (R2' fasst `server.ts` +373/-90 an): `POST /api/deploy` (409 solange ein
+   Land oder Audit laeuft — beide Ablehnungen sind richtig), dann `bundleStale` am Owner-Poll. Heute ist
+   der Gap harmlos: `git diff dc7e141..HEAD -- server.ts server/ src/` ist LEER, nur docs/e2e.
+   **Jedes Land loest einen Post-Land-Audit aus, der den Deploy fuer seine Dauer blockiert** — Deploy also
+   direkt nach dem Land feuern, bevor sein Audit den Mutex bekommt (Audit wartet erst in der Schlange).
+2. **Slot 7 (`8ab7215f`, Audit-Proportion) landet Slot 10** nach seinem Beweislauf (PID 29844 wartet seit
+   ~2 h im Mutex). **Danach MUSS das Regelbuch mit:** `rulebook/lane-discipline.md` Block 1 sagt „der
+   Post-Land-Audit bleibt unveraendert voll" — `a40e898` kehrt das fuer rein-docs-Lands um. Controller-
+   Handarbeit (gitignored): Fragment editieren, Einzeiler aus dem Kopf von `rulebook.ts`, `bun e2e/pins.ts`.
+3. **Mutex-Lage 03:0x:** Halter 97719 (Slot 4 Codex, isolated, seit 01:51 im Lock, Runner seit ~02:22 —
+   NICHT wedged, server.log lebt) · Anwaerter 29844 (Slot 7 Beweislauf), 94455 (Slot 1 claude-gate), 76248
+   (das tote R2'-Gate, stirbt von selbst), 90583 (Post-Land-Audit der GLM-Notiz). Slot 1 hat seine
+   freiwillige Vorschau 50740 auf meine Bitte zurueckgezogen. Der Mutex ist ein RENNEN — `d4342a62`
+   (Slot 1) baut die FIFO; ihr Erfolgssatz in Zahlen: 5 Anwaerter, laengste Wartezeit 1 h 58.
+4. **K1-Ziel `wc -c CLAUDE.md` < 75 000 knapp verfehlt** nach B4-A (Stand beim Schreiben 75 0xx–75 3xx,
+   die letzte Messung steht im Commit-Body dieses Handoffs). Ein Absatz Kuerzung irgendwo im
+   Lane-Fragment reicht; RULE_PLACED verlangt die D-Phrasen aus `docs/attic/regelbuch-bedeutungsprobe-2026-08-18.md`.
+5. **Naechste Lanes, wenn Slots frei werden** (Deckel 2 fuer den Tick, Hand-Dispatch prueft nicht; Lane-Zahl
+   bei vier halten): `9da27a0b` (Audit-Det., MAIN Slot 6) und `bc0609f8` per
+   `POST /api/tasks/:id/dispatch {harness:"claude",model:"claude-opus-5[1m]",effort:"high"}`; danach
+   B1-Sonde (`0735ae31`, nachgeschaerft), `0db86b6a` (B4-B), `44f04a90` (B8). **`7f60903b` (K3) NICHT vor
+   dem Land von Lebenszyklus-S4.** README-Zeile `9fe80661` und Codex-Adapter-Audit `5123167c` danach.
+6. **Owner-Entscheide, unbeantwortet seit 00:5x:** vier Programs `active` mit toter MAIN (f99e9354
+   Private-repo-o, 07ee8a6d private-repo-p, 2c073232 Private-repo-j, b2aa5b45 Game-Maker v2); Vorschlag: Game-Maker v2
+   + Private-repo-o archivieren, zwei neu binden. Neu aus dem GLM-Check: B6 (globale `~/.claude/CLAUDE.md`
+   kollidiert in drei Punkten mit dem Fleet-Vertrag — Owner-Datei) und die SYSTEM.md-Frage (Agenten-Leser
+   oder Owner-Dokument) sind Owner-Fragen, nicht Arbeit.
+7. **Regelvorschlaege (propose, NICHT promoviert):** (a) „Ein Direkt-Commit ist erst erlaubt, wenn
+   `fleet.json#merges` keinen laufenden Land zeigt" — heute dreimal bezahlt (fd7d605, 031f7aa, 2a32c39).
+   (b) Ein HANDOFF-Abschnitt je lebendem Prinzipal, ersetzen statt stapeln (hier angewandt).
+   (c) Von Slot 10 gemeldet: `POST /api/self/tasks/:id/land` wertet ein `waitedOut` als Verdikt („no
+   progress since the last verdict", 409) — Zeile `6101dbc3`.
 
 ## 3. Bezahlte Lehren dieser Session
 
-- **KEIN Direkt-Commit auf main, solange ein Land laeuft** (`fleet.json#merges` pruefen): mein
-  `fd7d605` lag um 00:5x unter dem laufenden Land von 0a099c62; die Lane basierte auf 0dbd8cb, der
-  abschliessende `--ff-only` waere `ff-lost` gestorben (bis R2' landet ein Endzustand). Repariert
-  per `git reset --soft 0dbd8cb` VOR dem Gate-Urteil, Commit nach dem Land neu. **Regelvorschlag
-  fuer `rulebook/einstieg.md` (propose, nicht promoviert):** „Ein Direkt-Commit ist erst erlaubt,
-  wenn `merges` keinen laufenden Land zeigt."
-- **Der proportionale Gate nimmt den Mutex NICHT** — `VERIFY_PROPORTIONAL_CMD` = install+pins ohne
-  Wrapper; die Mutex-Erkennung liest die `[suite-lock]`-Zeilen der Wrapper (`server.ts#SUITE_LOCK_RE`).
-  Ein docs-only-Land ist darum jederzeit billig, auch bei vollem Mutex.
-- **pi-zai-Slots sind nicht automatable:** `POST /api/self/watch` (lane UND merge) antwortet
-  „target slot not active"; Rueckweg ist ein Hintergrund-Watcher auf den Worktree (`git rev-list
-  --count main..HEAD`) bzw. auf `GET /api/slots/:id/merge` `running:false`.
-- **Hand-Dispatch prueft den Deckel wirklich nicht** (Regelbuch stimmt); die Note „4/2 lanes busy"
-  an einer requeueten Zeile stammt vom TICK nach dem Requeue und verdeckt den echten Grund. Erst
-  `server.log` (`slot N: created tmux session`) und die Pane lesen.
-- **Mutex-Rennen, gemessen:** Slot 7s 5-min-Lauf wartete 2 h 45 und verlor drei Rennen; der
-  Land-Gate von 0a099c62 wartete 31 von 33 min. Wartezeit/Laufzeit ist der Erfolgssatz fuer
-  d4342a62.
-- Programs kennen den Zustand ihrer MAIN bereits (`programHealth` → `occupancy: stale`), nur das
-  Board zeigt ihn nicht (S12).
+- **Eine Nachricht an eine MAIN loest Arbeit aus — und Arbeit endet in einem Commit.** Mein Evidenz-Buendel
+  an Slot 6 fuehrte 90 s spaeter zu `2a32c39` unter dem laufenden Land. Jede Bitte an eine MAIN traegt ab
+  jetzt den Satz „vor einem Direkt-Commit `merges` pruefen".
+- **Deploy-Preflight lehnt auch einen TOTEN Merge-Job ab** (per-Slot `mergeStart`/`mergeInflight`); der
+  saubere Weg ist warten (waitedOut), nicht der srv-Kill und nicht `kill` aufs Gate (das schriebe ein
+  falsches rotes Verify auf die Zeile).
+- **pi-zai-Lanes:** `POST /api/self/watch` (lane UND merge) antwortet „target slot not active" — Rueckweg
+  ist ein Hintergrund-Watcher auf `git rev-list --count main..HEAD` im Worktree bzw. auf
+  `GET /api/slots/:id/merge`; **nach dem Land ist der Slot recycelt und der Endpunkt LEER** — das Land liest
+  man dann an `git log main`, nicht am Slot.
+- **zsh `echo "$JSON"` expandiert `\n`** — JSON aus einer Antwort nie per `echo` weiterreichen, sondern
+  in eine Datei schreiben und mit python lesen. Kostete einen Fehlschluss („Task nicht angelegt").
+- **Der Leak-Pin liest den Attic:** wer einen Regelbuch-Block mit dem Live-Host archiviert, faellt
+  `leak-pin` — im Attic steht `<FLEET_HOST>`, im gitignorten Fragment die IP.
+- Die Uhr: die Panes zeigen die Zeit, ich hatte sie einmal 20 min zu spaet geschaetzt — `date` kostet nichts.
+
+## 4. Was mit dieser Session stirbt
+
+Merge-Watch `5048e3f3` auf Slot 2 (R2') und Audit-Watch `b6e762bf` (bereits gefeuert). **Neu armieren,
+sobald Slot 10 den Neuversuch feuert:** `POST /api/self/watch {"kind":"merge","target":2}`. Kein
+Hintergrund-Poller ueberlebt; keine offene Attention meinerseits.
 
 ---
+---
+
 # HANDOFF — Program 66499a03 „Fleet-Betrieb ohne manuelles Owner-Routing" (Slot 3): D2 IST GELANDET UND GRUEN AUDITIERT, Erfolgssatz 8 ist es NICHT — der erste Beleg starb an der Uhr, der zweite haengt am Deckel; 2026-09-04 ~22:3x, ctx UNMESSBAR fuer diese Rolle (Schaetzung, keine Zahl)
 
 Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`.

@@ -184,72 +184,113 @@ heute nicht langsam — er ist der Grund, warum zwei Messungen keine Messungen w
   `state.sh`s Heuristik haengt an TMPDIR. Bei fuenf Lanes und Mutex-Andrang ist das kein Aufraeumen
   nebenbei, sondern eine eigene Zeile mit notierten PIDs.
 
-# HANDOFF — 🎛 Fleet Controller (Slot 7, Fable 5.1): Astra gegruendet und von Codex-Taubheit befreit, sol-Lanes auf Opus umgesetzt, drei strukturelle Befunde gemessen; 2026-09-05 12:5x, ctx GEMESSEN 38,5 %
+# HANDOFF — 🎛 Fleet Controller (Slot 12, Fable 5.1): D1 freigegeben und im zweiten Land, Fleet-Betrieb geschnitten, Second-host per SSH erschlossen, Dual-Host Phase 3 entschieden; 2026-09-05 15:5x, ctx GEMESSEN 32,4 %
 
-> **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 3, 08:0x).
-> **Der Controller ist, wer das Label `🎛 Fleet Controller` traegt.** Lineage: 5 → 6 → 9 → 3 → 9 → 3 → 7 → du.
+> **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 7, 12:5x).
+> **Der Controller ist, wer das Label `🎛 Fleet Controller` traegt.** Lineage: 5 → 6 → 9 → 3 → 9 → 3 → 7 → 12 → du.
 
 Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, Owner-Poll, Panes.
 
 ## 0. Was du als Erstes tust
 
-1. `GET /api/self/attention` und den Attention-Bestand lesen (eine Succession toetet offene Attentions still).
-2. Pruefen, ob D1 (`ced51e9c`, Astras Reparaturschnitt fuer die Codex-Zustellung) gelandet UND deployt ist:
-   `deploys.jsonl` juenger als der Land-Commit, und EIN Event an Slot 3 mit `deliveredAt != null` und
-   `acknowledgedAt` von Slot 3 selbst. Stand 12:54: D1 laeuft in Slot 5 (Branch fleet/260905094251-8a52), fuenf Vorlagen gepatcht, UNCOMMITTET, ahead 0, wartet als Position 1 von 3 auf den Suite-Mutex (seit 11:54). Nach ihrem Land: DEPLOY (Controller-Trigger, POST /api/deploy; 409 nur waehrend eines Post-Land-Audits), dann ein Event an Slot 3 abwarten und pruefen, ob Astra es SELBST quittiert.
-3. Solange das nicht gilt, bist DU Astras Relais (Owner-Entscheid 11:3x, „das solltest du doch uebernehmen"):
-   jedes Element in `fleet.json.events` mit `receiverSlot 3` und `status send-uncertain` per `POST /send`
-   `{slot:3,text}` zustellen — OHNE Dollarzeichen, At-Zeichen oder Slash am Zeilenanfang (Codex-Picker).
-   Ein 409 „composer occupied" heisst: der Owner tippt gerade in Astras Pane — 60 s spaeter erneut, nie leeren.
+1. `GET /api/self/attention` — ich hatte keine offene Attention; alle vier vom Morgen sind beantwortet.
+2. **D1 (`ced51e9c`, Slot 5, Branch `fleet/260905094251-8a52`) ist im ZWEITEN Land** (gefeuert 15:52, `POST /api/slots/5/merge`).
+   Das erste Land brach nach 45 min Schlange ab (`waitedOut`, „verify NEVER STARTED", sagt nichts ueber den Baum). Astra hat D1 an
+   HEAD `fc7e3fc` freigegeben (Notiz `5556cf75`); die Lane hat danach auf main rebased — dieselben drei Commits, jetzt
+   `8b901d4/3da83e7/cba8807`. Lies `fleet.json.merges["5"]`: `landed:true` → **DEPLOY** (`POST /api/deploy`; 409 nur waehrend eines
+   Post-Land-Audits). Der Deploy bringt zugleich `FLEET_HELPER_WAKE_ADDR` live (siehe 2).
+3. **Nach dem Deploy zwei Proben:** (a) `POST /api/helper/devices/secondhostlinux1/wake` muss `sent:true` antworten (vorher 409 „no wake
+   address configured"; die Maschine laeuft, der Frame ist harmlos). (b) Das NAECHSTE Event an Slot 3 (Astra, Codex) muss ohne Relais
+   `delivered`/`acknowledged` werden. Erst dann ist der Codex-Defekt zu.
+4. **Bis dahin bist DU Astras Relais:** Event in `fleet.json.events` mit `receiverSlot 3` und `status send-uncertain` → in Astras Pane
+   steht der Text mit offenem Picker („no matches / Press enter to insert or esc to close"): `tmux -L claudefleet send-keys -t s3 Escape`
+   leert den Composer (Owner-Entscheid: Composer-Rest ist nie ein Owner-Entwurf), dann `POST /send {slot:3,text}` — Text ohne `$`
+   am Ende, kein `$`/`@`/`/` am Zeilenanfang, Report-Id und Ack-Route in Worten. Vier Relais heute, alle so gelungen.
+5. **Slot 1 (`5c1f831f`, Program-Dispatch, kein Program):** zwei Commits, Gate lokal gruen bis auf die Suiten; ihr isolated-Lauf hielt den
+   Mutex 60+ min. Ihr Verdikt kommt zu DIR. Landen, wenn sie fertig meldet (Pane lesen, nicht den Watch glauben).
+6. **Slot 4 (`cf4a85cd`, Dual-Host Phase 3):** laeuft mit meinem Entscheid (§1). Slot 7 (GLM-Gegenlesung, docs-only, 1 Commit): landet
+   Astra selbst. D2 `e88884c8` pending bei Astra, Start nach D1.
 
-## 1. Owner-Entscheide dieser Session (woertlich, Reihenfolge)
+## 1. Owner-Entscheide dieser Session (woertlich oder sinngemaess, Reihenfolge)
 
-- 08:1x „wir sollten die sol lanes stoppen wenn möglich und dann vllt mit opus neu aufsetzen. SO hätten wir mehr usage für astra" → ausgefuehrt; die MAINs filen ihre Zeilen mit Opus neu (Owner-Wahl), Deckel bleibt 2.
-- 08:3x „Wir müssen uns am ende nochmal gut gedanken machen und ein Dokument anlegen wie diese Prozesse am ende wirklich aussehen sollten. Meiner meinung nach wäre eine agentische ANalyse + auto-dispatch das richtige" → Richtungszeile `233ee108`. NICHT erledigt, ist ein Dokument-Auftrag fuer spaeter.
-- 11:1x „Fuer codex gilt diese context regel schlicht nicht!" → Codex-Slots NIE wegen ctx zur Succession draengen. Astras Erfolgskriterium (6) (50-%-Marke) ist damit vom Owner aufgehoben; der aktive Datensatz laesst sich nicht editieren.
-- 11:3x Das Relais fuer Astra macht der Controller selbst, nicht die Betriebs-MAIN.
-- „Und sobald das alles durch ist darfst du dann auch" → meine Uebergabe nach D1-Deploy und Zustellbeweis.
+- 13:1x „Ja ich hab den effort geändert — sollten bis morgen abend auf jeden Fall bei medium bleiben" → Astra medium bis 2026-09-06 abends. „Ok ich starte die GLMgegenlesung" → er fand sie nicht, ich habe `6a527587` per Owner-Dispatch (pi-zai/glm-5.3/high) gestartet. „Entscheide du für 3 & 4" → Idle-Uhr (a) 20 min in `.env`, Dual-Host (b) parken.
+- 13:5x „ja bitte mach den Schnitt" → 15 Fleet-Betrieb-Zeilen archiviert (reversibel), Regel an Slot 10: keine neuen Auftraege ausser Produkt-Entblocker/Lebenszyklus.
+- 14:0x „Private-repo-j sollten wir noch etwas auf Eis legen … schwere Aufgaben … an Astra geben" → Memory `feedback-heavy-tasks-to-astra-private-repo-j-on-ice`.
+- 15:1x „das repo definitiv auf second-host packen … auto link … volle funktionalität" → Zeile `cf4a85cd`; „entscheide du" → **Weg (b):** oldmac kanonisch, Second-host zieht per git ueber Tailscale, faehrt Sessions+Suiten, landet nicht; Reihenfolge Transport → Gate 3 (watchdog.service) → Gate 4 (zweite Instanz); Zielbild je Repo (Fleet-Repo spaeter kanonisch auf dem Second-host, iOS auf oldmac), Platzierung nach Profil als eigene Zeile. An Slot 4 per `/send` zugestellt.
+- „Codex-ctx ist NIE Succession-Druck" gilt fort (Astra stand bei 54 %).
 
-## 2. Was in dieser Session gefallen ist (Belege in Commit-Bodies, Ledgern, Queue)
+## 2. Was gefallen ist (Belege: Ledger, Queue, Commit-Bodies)
 
-- Program `eec69528` „Codebase-Review von aussen nach innen" vorgeschlagen (Controller), vom Owner bestaetigt/aktiviert/gebootstrapt: Astra = Slot 3, codex `gpt-6-astra` high. Astra landet SELBST (Land-Notes `actor kind main`). Gelandet: S0 `2e671a47`, S0R `8a4655cb`, S1 `535fa051`, D0 `c5ad8a7`. Astras Lanes wurden bisher JEDES Mal vom Owner oder von mir per Hand am Deckel vorbei gestartet.
-- sol-Lanes (Slots 1/4, dann ihre Tick-Nachfolger) gekillt; Patches der uncommitteten Arbeit im Scratchpad dieser Session (stirbt mit ihr; Slot 5 alt hatte die Pfade). Die drei Zeilen tragen persistent `spawn codex`; MAINs haben neu gefilet (`2de16229`, `ec0bf175`, `02740e69`).
-- Drei strukturelle Befunde, alle als Notiz in der Queue:
-  - `6d156308` proportionales Post-Land-Audit misst in einem `git archive`-Baum ohne `.git` → jedes docs-only-Land ist 6/375 rot. Zwei Audits als `unknowable` adjudiziert (at 1788590947828, 1788594542376). Fix laeuft bei Fleet-Betrieb als `35ac0b97`.
-  - `b958ac17` Codex-Zustellung: Dollarzeichen am Textende oeffnet den Prompt-Picker, Enter geht verloren (mit Kontrollprobe in s11/s13). D0 hat es isoliert reproduziert; D1 `ced51e9c` ist der Fix (fuenf Stellen: lane-signals.ts:274/:291, server.ts:6264/:6271/:10497).
-  - `51753e67` kein Kontext-Nudge zur Succession im Code; Supervisor-Bindung stale seit 23.08.; Vorschlag nimmt Codex aus.
-- Erfolgssatz 8 (Program 66499a03) ist strukturell unerreichbar: Claude Codes „Checking for updates" malt alle 30 min, 14 ms vor STALLED_IDLE_MS. Attention `24c10c30` an den Owner (offen).
-- Slot 1 (Beleg-Lane 9f1dbfb4) nach FENSTER ZU als killed-empty abgeraeumt; die Zeile ist pending bei Slot 2.
+- Deploy `9b3c0db5` (13:45, Boot ok, bootHead `4761020`): Audit-Fix `93e5460` + `FLEET_STALLED_IDLE_MS=1200000` live. `.env` traegt zwei neue Zeilen (STALLED, WAKE_ADDR), beide kommentiert.
+- Gelandet heute durch die MAINs: `c36c1e9/1db9296/126a82d` (Watch-Tick Lost Update, Slot 6), `93e5460` (Audit-Git-Kontext, Slot 10), `ec0bf175` (Lebenszyklus, Slot 4). Slot 8 (Dual-Host) regulaer retired.
+- Slots 11/13 (leere Codex-`gpt-5.6-sol`-Panes im Haupt-Checkout, seit 07:2x) gekillt; ihre Bindungen gehoerten zwei `complete`n Programs.
+- **Second-host:** SSH `second-hostowner@100.64.0.2` passwortlos + sudo (MacBook-Claude hat die Host-Seite gemacht, von hier verifiziert); WoL-MAC stimmt mit `.env`; Helfer pollt alle 15 s, Last 0, 16 Kerne. **Die „Offline"-Meldung von Slot 8 war falsch:** Quiet Hours 23–07 des Daemons. Referenz-Memory `reference-second-host-ssh-and-power`.
+- **§11.2o ist strukturell rot** (D1-Report `a795f0ff`): seit 09-04 16:42 19 rote isolated-Laeufe in Folge auf 13–14 Baeumen; kein Baum bekommt gruenes isolated. An Slot 6 (Program 79036e9a) gegeben, Ursache offen (Land im Fenster 09-04 13:02–16:42 oder Last).
+- Slot 2 (66499a03) hat (a) angenommen, Preis benannt (Marge 3x → 2x Suite-Stille), startet dritten Beleg-Lauf.
 
-## 3. Offen, alles Owner-Sache
+## 3. Offen — Zuege der Nachfolgerin, in dieser Reihenfolge
 
-- Attentions `d549e09b` (Slot 8, Gates 3/4) und `24c10c30` (Idle-Uhr: Schwelle 20 min vs. Chrome ausnehmen).
-- Vier `active`-Programs mit toter MAIN (Private-repo-o, Private-repo-y, Private-repo-j, Game-Maker v2).
-- Regelbuch-Drift `rulebook/einstieg.md` („GPT-Slot hat ctx null") — falsch, Codex-Adapter liest die Rollout-Datei. Fragment + Render + `bun e2e/pins.ts`; nicht gleichzeitig mit einer anderen Rulebook-Verdichtung.
-- Das Prozess-Dokument aus `233ee108`.
-
-## 5. Lage 12:5x, gemessen (zwei Opus-Agenten + eigene Sensoren) — das Bild, das du erbst
-
-- **Deploy 12:53 gefahren** (`13accd03`, Boot ok, bootHead `22b2bf40`, Rueckstand 0): damit ist `d37f835` (Gate-Kind erbt Server-Env nicht mehr) live. Der Deploy hat die Idle-Uhr jeder Pane genullt; kein Beleg hing daran.
-- **Vier Lanes laufen, Deckel 2, alle vier von Hand gestartet (drei von mir).** Suite-Mutex: Halter Slot 1 (`2de16229`, isolated-Beweislauf, Arbeit seit 12:22), Schlange FIFO: Slot 5 D1 (`e2e-clean-review`, seit 11:54) → Slot 9 `35ac0b97` (`e2e-postland-audit`) → Slot 4 `ec0bf175`. Keine Lane haengt; alles ist Warten. **Slot 5 und Slot 9 halten je 4–5 Dateien UNCOMMITTET bei ahead 0** — stirbt eine, stirbt die Arbeit. Slot 9 meldete um 12:43 „system running low on memory", sieben Hintergrund-Waiter wurden gekillt, der Lauf ueberlebte. KEINE fuenfte Lane starten.
-- **Astra (Slot 3, `gpt-6-astra`, Footer MEDIUM):** idle, Composer leer, alle Events quittiert (zwei davon ueber mein Relais). Vier Zeilen done (S0, S0R, D0, S1), D1 laeuft, `6a527587` (GLM-5.3-Gegenlesung ueber `pi-zai`) ist am Release mit 409 „harness pi-zai is not automatable" gescheitert → Attention `a92824bc`. Zweite Attention `4a577450`: der Effort-Abfall auf medium war nicht ihre Wahl; `~/.codex/config.toml` traegt jetzt `model_reasoning_effort = "medium"` (heute frueh high) — Owner-Datei, nicht anfassen. Kein S2/S3/S4 gefilet.
-- **Fleet-Betrieb MAIN = Slot 10** (seit 11:19, ctx 20 %): hat den Mutex-Block des Regelbuchs verdichtet (`bb96059`, CLAUDE.md 79 508 B, Ziel < 75 000 verfehlt und gesagt), kennt `35ac0b97` als seine Lane. Der Owner hatte ihm „deploy jetzt" getippt — ich habe deployt und es ihm gesagt.
-- **Slot 6 (Audit-Determiniertheit):** hat die Git-lose Audit-Ursache unabhaengig gefunden und an Fleet-Betrieb gegeben; Owner-Antwort im Composer „die drei codex-zeilen sind gedroppt, mach weiter". Lane Slot 1 ist seine.
-- **Slot 2:** Attention `24c10c30` offen (Idle-Uhr), Fallback-Check 14:59. **Slot 8:** wartet seit 02:29 auf `d549e09b`. **Slot 15 `fable5`:** fungiert faktisch als Audit-Adjudikator (auditPings gehen dorthin) und sitzt im `/usage`-Screen.
-- **Queue:** 42 pending auftrag, 110 notiz, 2 richtung, 1 queued (`02740e69`, Fleet-Betrieb). Vier offene Attentions, alle Owner-Sache.
-- **Mein Relais fuer Astra** ist mit diesem Slot beendet (Monitor gestoppt). Bis D1 deployt ist, uebernimmst DU es (§0).
+1. §0 (D1 → Deploy → Wake-Probe → Zustellprobe → Relais beenden).
+2. **Prozess-Dokument aus Richtung `233ee108`** (agentische Analyse + Auto-Dispatch, Rueckkanal an die MAIN, dynamischer Deckel, MAIN-Tod → Nachfolge oder Parken): als Zeile in ASTRAS Program filen (Owner: schwere Denkaufgaben an Astra), nicht an Opus.
+3. **Second-host-Vorschauen:** Lane-isolated-Laeufe blockieren den Mutex hier stundenweise, waehrend der Second-host leer laeuft. Slot 1 bot seinen Lauf an; `GET /api/self/suite-offer` meldete um 14:06 `online:false, lastSeenAgeMs 390552`, obwohl der Daemon alle 15 s pollte → Online-Erkennung pruefen, dann Vorschauen verlaesslich dorthin. Eigene Zeile, kein Program (oder Fleet-Betrieb oberhalb der Linie).
+4. Slot 1 landen (§0.5). Astras GLM-Land und D2 beobachten, nicht uebernehmen.
+5. Owner-Sache, unveraendert: Regelbuch-Drift „GPT-Slot hat ctx null"; `/etc/sudoers.d/second-host` (pauschales NOPASSWD, bewusst).
 
 ## 4. Was mit dieser Session stirbt
 
-Ein Lane-Watch auf Slot 5 (D1) und ein verbrauchter Self-Auto; beide Monitore sind gestoppt, das Scratchpad mit den sol-Patches. Kein offener Owner-Auftrag ausser dem Relais aus §0.
+Sieben Hintergrund-Waechter (Relais auf send-uncertain, Mutex-frei, Pane-Waechter Slot 1/5) und ein gefeuerter Lane-Watch auf Slot 1, ein gespendeter Merge-Watch auf Slot 5. Kein Auto, keine Mission, keine offene Attention. **Dieser Commit nimmt 43 uncommittete Zeilen des Slot-2-Nachtrags „0a" im Fleet-Betrieb-Abschnitt mit** — sie standen im Haupt-Checkout, und `succeed` verlangt die Datei sauber.
 
 ---
 ---
-
 # HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 5, Opus 5): VIER Lands, drei deployt — und eines traegt eine Regression, die ich selbst gefunden und gefilt habe; 2026-09-05 11:5x, ctx GEMESSEN 44,1 % (Owner-Poll)
+
+# HANDOFF — Program-MAIN 66499a03 „Fleet-Betrieb ohne manuelles Owner-Routing" (Slot 2, Opus 5): ERFOLGSSATZ 8 IST NICHT UNBELEGT, SONDERN STRUKTURELL UNERREICHBAR — der TUI-Repaint kommt 14 ms vor der Schwelle; der Owner hat (a) gewaehlt, die Schwelle steht auf 20 min, der dritte Beleg-Lauf ist released; 2026-09-05 15:5x, ctx GEMESSEN 29,8 %
 
 Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was git
 und die Sensoren nicht tragen. Lineage 4 → 16 → 10 → 3 → 5 → 2 → du.
+
+## 0a. NACHTRAG 15:5x — DER OWNER HAT ENTSCHIEDEN, UND ZWEI SAETZE UNTEN SIND UEBERHOLT
+
+**Entscheid (a) ist gefallen und LIVE** (Controller Slot 12, vom Owner delegiert, 13:1x):
+`FLEET_STALLED_IDLE_MS='1200000'` (20 min) steht in der gitignorierten `.env:28` — kein Commit,
+kein `launchctl kickstart` noetig, weil `watchdog.sh:155` mit `set -a; . ./.env; set +a` sourct
+(`set -a` exportiert, die Variable erreicht `bun server.ts` also wirklich; ein blosses `. ./.env`
+haette nur eine Shell-Variable gesetzt, die das Kind nie sieht — das war die Falle, die ich vor dem
+Deploy geprueft habe). `FLEET_STALLED_IDLE_MS` kommt in `watchdog.sh` NULL mal vor, wird also von der
+expliziten Liste hinter dem Sourcing nicht ueberschrieben. Live seit **Deploy `9b3c0db5`, Boot ok
+13:45:34, bootHead `4761020`**; der Controller hat den Live-Env gemessen, ich habe die Kette
+(.env-Wert · `set -a` · kein Override · Restart in `deploys.jsonl`) selbst nachgelesen.
+
+**DAMIT SIND ZWEI SAETZE IN ABSCHNITT 0 UEBERHOLT — nicht loeschen, aber nicht mehr befolgen:**
+- „Bis der Owner waehlt: `9f1dbfb4` NICHT erneut releasen" — **erledigt.** Ich habe die Zeile am
+  13:47 ueber die EIGENE Tuer released (`POST /api/self/tasks/9f1dbfb4/release`, `ok:true`,
+  `sessionIdMatch:"exact"`). Sie steht `queued` auf Position 1.
+- **`releasedBy` ist jetzt `machine` statt `owner`.** Die beiden ersten Beleg-Laeufe gingen durch die
+  Owner-Tuer; dieser geht durch die Self-Release-Tuer einer MAIN. Das ist der bessere Satz-11-Beleg,
+  und er ist der Grund, warum ein Hand-Dispatch diesen Lauf beschaedigen wuerde.
+
+**WAS DER DRITTE LAUF BRAUCHT (dein Ablauf, wenn der Report kommt):**
+1. **Sofort annehmen** — `POST /api/self/fleet-report/<24-hex>/accept`. **`reason` max 500 Zeichen,
+   und die Laenge VOR dem Schreiben pruefen:** ein `assert`, das die schon truncated Datei
+   hinterlaesst, sendet einen LEEREN Body, und den verbucht die Route als gueltige Annahme mit
+   `reason: null` — genau so ist mein Grund im zweiten Lauf verlorengegangen, ohne Re-Decide-Tuer.
+2. **„FENSTER AUF HH:MM" an den Controller** (Peer-Name ueber `ListAgents`, Slot 12 — der Name
+   wechselt staendig: d4 → bd → ad an EINEM Tag; nie einen alten wiederverwenden). Ein Deploy im
+   Fenster nullt die Idle-Uhr aller Panes.
+3. **Die Uhr selbst lesen, ohne Owner-Token:** mtime von `streams/s<slot>-<openedAt>-<hash>.raw`.
+   `poll()` leitet `lastOutput` genau aus dem Wachstum dieser Datei ab. **Faelligkeit jetzt
+   `mtime + 1 200 000 ms`.** Der 30-min-Repaint (`Checking for updates`) laesst nach jedem Paint
+   20 freie Minuten — das Fenster existiert in JEDEM Zyklus.
+4. **Der Beleg ist EINE Zeile:** `killed-empty` MIT `autoClose{reportId,disposition,decidedAt,decidedBySlot}`
+   in `lane-outcomes.jsonl`. Stand 15:5x weiterhin **0**. Der Close feuert KEIN Event — niemand weckt
+   dich, du musst zur Faelligkeit selbst nachsehen.
+
+**Benannter Preis des Entscheids, den ich empfohlen habe:** die 30 min waren gegen Fehlurteile
+gewaehlt („a lane running an e2e suite routinely prints nothing for ten minutes at a stretch",
+Kommentar ueber der Konstante). Mit 20 min bleibt die Marge 2x statt 3x. Begrenzt wird der Schaden
+dadurch, dass der Auto-Close zusaetzlich sauberen Baum, `ahead 0`, kein Merge-Verdikt UND einen
+angenommenen Terminalreport verlangt: betroffen waere nur eine Lane, die BERICHTET hat und danach
+20 min stumm weiterarbeitet. Ein ueberraschender `killed-empty` in den naechsten Tagen gehoert hierher.
 
 ## 0. DER BEFUND, der die ganze Jagd beendet — und die EINE offene Owner-Frage
 

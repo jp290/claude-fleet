@@ -1895,12 +1895,24 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // silently permitting programs × per-program lanes on a fixed slot board.
   const repoCapIdx = tBody.indexOf("if (lanes >= DISPATCH_MAX_LANES)");
   const progGuardIdx = tBody.indexOf("if (next.programId) {");
-  const progCapIdx = tBody.indexOf("programLanes >= DISPATCH_MAX_LANES_PER_PROGRAM");
+  const progCapIdx = tBody.indexOf("programLanes >= programCap");
   pin("the repo lane cap is checked UNCONDITIONALLY and BEFORE the per-program one — the second cap can only narrow",
     repoCapIdx > 0 && progGuardIdx > repoCapIdx && progCapIdx > progGuardIdx
     // six spaces = the candidate loop's own body level: the repo check sits under no further `if`
     && /\n      if \(lanes >= DISPATCH_MAX_LANES\) \{/.test(tBody),
     JSON.stringify({ repoCapIdx, progGuardIdx, progCapIdx }));
+  // ...and the NUMBER that second cap uses is now an OWNER-writable one (Program.dispatch.maxLanes),
+  // which is exactly the shape that could quietly widen the machine. It cannot, and the reason is one
+  // expression: programDispatchCap is a Math.min against DISPATCH_MAX_LANES_PER_PROGRAM, so an owner
+  // record can only ever LOWER the env budget and a program without a grant computes the env number
+  // itself. No runtime test can see this — every suite runs with the env default, where a widening
+  // record and a narrowing one produce the same board.
+  const progCapFn = server.match(/const programDispatchCap = [^;]+;/)?.[0] ?? "";
+  pin("the per-program cap number can only be LOWERED by an owner record — programDispatchCap is a min against the env cap",
+    /const programCap = programDispatchCap\(pd\);/.test(tBody)
+    && /Math\.min\(pd\?\.maxLanes \?\? DISPATCH_MAX_LANES_PER_PROGRAM, DISPATCH_MAX_LANES_PER_PROGRAM\)/.test(progCapFn)
+    && !/DISPATCH_MAX_LANES_PER_PROGRAM/.test(tBody.slice(progGuardIdx, progCapIdx + 60)),
+    progCapFn || "programDispatchCap missing");
   // NO NULL BUCKET. `s.programId === next.programId` alone is true for every unbracketed row against
   // every unbracketed lane, so without the truthy guard the cap would silently bind rows whose only
   // shared property is that nobody bracketed them. The `s.cwd &&` is the second half of the same
@@ -2669,6 +2681,58 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     promoWrites.length === 2 && promoRouteStart > 0 && promoRouteEnd > promoRouteStart
     && promoWrites.every((m) => m.index > promoRouteStart && m.index < promoRouteEnd),
     `${promoWrites.length} write(s): ${promoWrites.map((m) => m[0]).join(" | ")}`);
+  // --- THE PROGRAM-DISPATCH RECORD HAS EXACTLY ONE WRITER, for the promotion record's reason one
+  // record over — a self route that could write it would be a program granting ITSELF the right to
+  // have its own released rows started unattended, which is the one shape the record exists to
+  // prevent. Same construction: over the source, because on a fleet with no dispatch record — every
+  // fleet by default — no runtime probe can see a second writer that simply never fired. Assignment
+  // AND deletion, because a revocation written from a second place is the same defect reversed.
+  const progDispWrites = [...serverExec.matchAll(/(?:\w+)\.dispatch = |delete (?:\w+)\.dispatch/g)];
+  const progDispRouteStart = serverExec.indexOf("const programDispatchRoute = /^");
+  const progDispRouteEnd = serverExec.indexOf("const action = /^", progDispRouteStart);
+  pin("program.dispatch is written by exactly one route — the owner program-dispatch door, and nothing else",
+    progDispWrites.length === 2 && progDispRouteStart > 0 && progDispRouteEnd > progDispRouteStart
+    && progDispWrites.every((m) => m.index > progDispRouteStart && m.index < progDispRouteEnd),
+    `${progDispWrites.length} write(s): ${progDispWrites.map((m) => m[0]).join(" | ")}`);
+  // ...and it is READ through exactly one predicate in the tick. The record's whole meaning is
+  // "may the tick start this program's rows under a stopped fleet", and that question is asked in
+  // four places (entry guard, per-row master stop, per-program cap, quiet-hours waiver). A second
+  // reading of `p.dispatch` inside tickDispatch is how the ACTIVE-program clause silently stops
+  // applying to one of them.
+  const progDispReads = [...tBody.matchAll(/\.dispatch\b/g)];
+  pin("tickDispatch reads Program.dispatch through programDispatchOn/programDispatchCap only — never a second inline read",
+    progDispReads.length === 0
+    && /const pd = programDispatchOn\(next\);/.test(tBody)
+    && /if \(!dispatchOn && !pd\) continue;/.test(tBody),
+    `${progDispReads.length} inline read(s) in tickDispatch`);
+  // ...and the ACTIVE clause itself: a complete program's leftover queued rows must not keep
+  // spawning lanes on a permission granted while it was still running. Both readers carry it —
+  // the per-row predicate and the tick's own entry guard, which is the one that decides whether
+  // the loop runs at all under a stopped fleet.
+  const progDispGrantFn = server.match(/const programDispatchGrant = [^;]+;/)?.[0] ?? "";
+  pin("a program-scoped dispatch grant is spent only while the program is ACTIVE — and that clause is written exactly once",
+    /p\.status === "active" && p\.dispatch\?\.on \? p\.dispatch : undefined/.test(progDispGrantFn)
+    && (server.match(/p\.status === "active" && p\.dispatch\?\.on/g) ?? []).length === 1
+    && /return p \? programDispatchGrant\(p\) : undefined;/.test(server)
+    && /if \(!dispatchOn && !programs\.some\(programDispatchGrant\)\) return;/.test(tBody),
+    progDispGrantFn || "programDispatchGrant missing");
+  // ...and the QUIET-HOURS WAIVER is that one named pair and nothing looser: an ACTIVE grant AND a
+  // row the MACHINE released. Widening it to "any row of a granted program" would hand an owner's
+  // 3am ▸ queue click an unattended lane, which is precisely what the window defers.
+  pin("quiet hours are waived for exactly one pair — an active program grant and a machine-released row",
+    /const quietWaived = !!pd && next\.releasedBy === "machine";/.test(tBody)
+    && /\.\.\.\(quietWaived \? \{ quietHours: false \} : \{\}\)/.test(tBody)
+    && /if \(pre\.gate === "quiet-hours"\) continue;/.test(tBody),
+    tBody.match(/const quietWaived[^\n]*/)?.[0] ?? "no waiver");
+  // ...and the loader degrades a malformed dispatch record to ABSENT rather than repairing it
+  // field-wise — loadPromotion's structural half, one record over, and here absence is the byte-for-
+  // byte legacy behaviour under the global switch.
+  const progDispLoader = serverU.span("const loadProgramDispatch = ", "\n};")?.text ?? "";
+  pin("loadProgramDispatch returns undefined on every malformed shape — no field-wise repair of a permission",
+    progDispLoader.includes("return undefined;")
+    && (progDispLoader.match(/return undefined;/g) ?? []).length >= 5
+    && /Object\.keys\(r\)\.some\(\(k\) => !\["v", "on", "maxLanes", "confirmedAt"\]\.includes\(k\)\)/.test(progDispLoader),
+    progDispLoader ? `${(progDispLoader.match(/return undefined;/g) ?? []).length} refusals` : "loadProgramDispatch missing");
   // ...and the three rungs of the ladder are the SAME closed set in the type, the runtime list and
   // the loader. They are three separate expressions of one decision, and a value added to the type
   // alone would compile while the route refused it — a permission that exists and cannot be granted.

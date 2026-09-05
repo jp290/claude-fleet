@@ -1180,6 +1180,16 @@ interface Program {
   // backfilled at load and never written by a self route — the environment and the workflow are
   // both owner decisions, and a session may propose neither.
   studio?: ProgramStudioBinding;
+  // THE SIXTH RECORD — the owner's PROGRAM-SCOPED DISPATCH permission, and deliberately none of the
+  // five above it: `promotion` is what a MAIN may LAND, `profile` is the machine it is founded into,
+  // `studio` is the workflow it runs. This one answers a fourth question nobody else answers — may
+  // the fleet's own tick START this program's released rows while the GLOBAL dispatcher is stopped,
+  // and how many of them at once. Absent means exactly today's behaviour: the global switch decides
+  // alone, so a stopped fleet starts nothing of this program either. Written by exactly one route
+  // (POST /api/programs/:id/dispatch), cleared by the same one with {"dispatch": null}, never
+  // backfilled at load and never written by a self route — a Program-MAIN releases rows, it does
+  // not grant itself the permission to have them started.
+  dispatch?: ProgramDispatch;
   // A Game-Maker founding crosses pane creation, prompt delivery and a durable authority move.
   // This intent is the crash boundary between those acts: it names exactly the candidate Fleet
   // may roll back after a restart, without overloading Slot.programId (task/lane provenance).
@@ -1264,6 +1274,34 @@ const loadProgramProfile = (value: unknown): ProgramProfile | undefined => {
   if (typeof r.kind !== "string" || !PROGRAM_PROFILE_KINDS.includes(r.kind as ProgramProfileKind)) return undefined;
   if (typeof r.confirmedAt !== "number" || !Number.isFinite(r.confirmedAt) || r.confirmedAt <= 0) return undefined;
   return { v: 1, kind: r.kind as ProgramProfileKind, confirmedAt: r.confirmedAt };
+};
+
+// === THE PROGRAM-SCOPED DISPATCH RECORD ====================================================
+// loadPromotion's four properties, one record over: CLOSED, VERSIONED, DEFAULT-ABSENT, and
+// `confirmedAt` stamped server-side so a caller can never date the owner's act. It is a PERMISSION,
+// so its degradation direction is the whole design: anything that is not exactly a well-formed v1
+// record — unknown key, wrong version, non-boolean `on`, an absurd `maxLanes`, a missing stamp —
+// loads as ABSENT, i.e. as "this program has no dispatch permission" and therefore as the byte-for-
+// byte legacy behaviour under the global switch. There is no field-wise repair, for loadPromotion's
+// reason: half a permission is not a weaker permission, it is a different one.
+//
+// `maxLanes` IS A CEILING THE OWNER LOWERS, NEVER RAISES. The tick reads it through a Math.min
+// against FLEET_DISPATCH_MAX_LANES_PER_PROGRAM (server.ts#programDispatchCap), so a number typed
+// here can only ever narrow the machine-wide budget. That is why the legal range below is generous
+// and not itself a safety property: the safety property is the min, and a number above the env cap
+// is legal, stored and simply inert.
+const PROGRAM_DISPATCH_MAX_LANES_MAX = 16;
+interface ProgramDispatch { v: 1; on: boolean; maxLanes: number; confirmedAt: number }
+const loadProgramDispatch = (value: unknown): ProgramDispatch | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !["v", "on", "maxLanes", "confirmedAt"].includes(k))) return undefined;
+  if (r.v !== 1) return undefined;
+  if (typeof r.on !== "boolean") return undefined;
+  if (typeof r.maxLanes !== "number" || !Number.isInteger(r.maxLanes)
+    || r.maxLanes < 1 || r.maxLanes > PROGRAM_DISPATCH_MAX_LANES_MAX) return undefined;
+  if (typeof r.confirmedAt !== "number" || !Number.isFinite(r.confirmedAt) || r.confirmedAt <= 0) return undefined;
+  return { v: 1, on: r.on, maxLanes: r.maxLanes, confirmedAt: r.confirmedAt };
 };
 
 // === THE STUDIO RECORD — the WORKFLOW as data, beside the machine environment, never inside it ===
@@ -1652,7 +1690,7 @@ export type {
   ProgramValidation, SupervisorBinding, ProgramDigest, DispatchSpawn, SlotStreamOccupant,
   StudioMachineProfile, StudioRepoPolicy, StudioBriefAudience, StudioWorkflowDoc, StudioStageSpawn,
   StudioStage, StudioWorkflow, StudioBriefBlock, StudioGates, Studio, StudioContent,
-  StudioContentRead, ProgramStudioBinding,
+  StudioContentRead, ProgramStudioBinding, ProgramDispatch,
 };
 export {
   MAX_SLOTS, watchKind, TRANSITION_AWAITING_MAX, TRANSITION_DEADLINE_MIN_SEC,
@@ -1667,6 +1705,7 @@ export {
   PROGRAM_LINEAGE_ENDED_BY, PROGRAM_LINEAGE_ENTRY_KEYS, loadProgramLineageEntry, loadProgramLineage,
   foundingOccupantFrom, foundingIdentityFrom,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
+  PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,
   HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, HELPER_CMD_MAX, helperCmdCheck,
   HELPER_ARTIFACT_GLOB_MAX, HELPER_ARTIFACT_MAX, HELPER_ARTIFACT_PATH_MAX,
   helperArtifactGlobsFrom, helperArtifactsFrom,

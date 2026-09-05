@@ -864,11 +864,31 @@ export async function run(): Promise<void> {
         JSON.stringify(subjectLanes.map((l) => `${l.slot}:${l.branch}`)));
 
       const subjectWatches = new Map<string, string>();
+      const subjectSubs: { name: string; status: number; body: string }[] = [];
       for (const [name, lane] of [["doomed", doomed], ["living", living]] as const) {
         const r = await post(`/api/slots/${uId}/watch`, { target: lane.slot, idleSec: 0 });
-        const body = await r.json() as { watch?: WatchRow };
-        subjectWatches.set(name, body.watch?.id ?? "");
+        const raw = await r.text();
+        subjectSubs.push({ name, status: r.status, body: raw.slice(0, 60) });
+        let id = "";
+        try { id = (JSON.parse(raw) as { watch?: WatchRow }).watch?.id ?? ""; } catch { id = ""; }
+        subjectWatches.set(name, id);
       }
+      // THE PRECONDITION EVERY CHECK BELOW SPENDS, AND IT WAS NEVER ASSERTED. The two POSTs above
+      // went unread: a REFUSED subscription (`max 5 active watches per slot`, when an upstream
+      // block left this receiver an undelivered debt) left the watch id `""`, `eventForWatch("")`
+      // then found nothing, and 50 s later the fixture reported "the completion minted no event" —
+      // accusing the MINTING contract for a subscription that never happened, and dragging the
+      // held/budget/subject-gone/counterprobe blocks down with it. Measured that way twice on
+      // 2026-09-02 (trees 2d4eb921, d63bb91f: `livingId: null` under a healthy pane and a 45-byte
+      // draft in BOTH composer readings). It fails as ITSELF from here, with the door's own words
+      // and the receiver's budget at that instant, so the reason is on the line that owns it.
+      const subjectBudget = await receiverBudget();
+      const subjectsSubscribed = subjectSubs.every((sub) => sub.status === 200)
+        && [...subjectWatches.values()].every((id) => /^[0-9a-f]{8}$/.test(id));
+      check("subject fixture: BOTH subject subscriptions were accepted by the receiver's watch door",
+        subjectsSubscribed,
+        JSON.stringify({ subs: subjectSubs, ids: Object.fromEntries(subjectWatches),
+          budgetAtSubscribe: subjectBudget }));
       const waitEventFor = async (name: string): Promise<FleetEventRow | undefined> => {
         let row: FleetEventRow | undefined;
         for (let i = 0; i < 200 && !row; i++) {
@@ -885,7 +905,7 @@ export async function run(): Promise<void> {
       // where `event ...: delivered lane-ready to slot 7` sits in the server log one line under
       // the mint it was supposed to be held against.
       const holdIntact = await windowIntact("owner-draft hold", holdWindow, draft);
-      if (holdIntact)
+      if (holdIntact && subjectsSubscribed)
         check("subject fixture: both lane completions minted one pending event each on the busy receiver",
           doomedEvent?.status === "pending" && livingEvent?.status === "pending"
           && doomedEvent.subjectSlot === doomed.slot && livingEvent.subjectSlot === living.slot,
@@ -911,7 +931,7 @@ export async function run(): Promise<void> {
       const heldFrameRaw = (await tmuxOut("capture-pane", "-p", "-e", "-t", `s${uId}`)).out;
       const heldFrame = composerResidue({ kind: "rules" }, heldFrameRaw);
       const heldIntact = await windowIntact("held refusals", holdWindow, draft);
-      if (heldIntact)
+      if (heldIntact && subjectsSubscribed)
         check("held: 100+ pre-paste refusals change neither `attempts` nor the owner's composer",
           heldCount >= heldTarget && heldDoomed?.status === "pending" && heldDoomed.attempts === 0
           && heldLiving?.status === "pending" && heldLiving.attempts === 0
@@ -938,9 +958,10 @@ export async function run(): Promise<void> {
       }
       const cappedText = cappedRes ? await cappedRes.text() : "";
       const cappedFill = cappedRes ? filled.length : -1;
-      check("budget fixture: the receiver reaches its cap, with the two pending lane rows counted in it",
-        cappedRes?.status === 400 && cappedText.includes("max 5 active watches per slot"),
-        JSON.stringify({ accepted: filled.length, capped: cappedRes?.status, body: cappedText.slice(0, 80) }));
+      if (subjectsSubscribed)
+        check("budget fixture: the receiver reaches its cap, with the two pending lane rows counted in it",
+          cappedRes?.status === 400 && cappedText.includes("max 5 active watches per slot"),
+          JSON.stringify({ accepted: filled.length, capped: cappedRes?.status, body: cappedText.slice(0, 80) }));
 
       // --- (4) THE SUBJECT DIES. Its undelivered notification becomes terminal AS ITSELF: not
       // acknowledged (nobody read it), not receiver-gone (the receiver is alive and still holds a
@@ -963,7 +984,7 @@ export async function run(): Promise<void> {
       // The living row is expected to be STILL PENDING here, which is a fact about a composer that
       // is still occupied on a pane that is still the same one. Both are this fixture's to hold.
       const goneIntact = await windowIntact("subject teardown", holdWindow, draft);
-      if (goneIntact)
+      if (goneIntact && subjectsSubscribed)
         check("subject-gone: the torn-down lane's undelivered event is terminal as itself, unackable, and frees its budget",
           goneRow?.status === "subject-gone" && goneRow.deliveredAt === null
           && goneRow.acknowledgedAt === null && goneRow.attempts === 0
@@ -993,7 +1014,7 @@ export async function run(): Promise<void> {
       // precondition. It matters: a delivery counted "on its FIRST attempt" is a statement about
       // one occupant, and a replaced pane makes both halves of the sentence unmeasurable.
       const counterIntact = await windowIntact("counterprobe", holdWindow);
-      if (counterIntact)
+      if (counterIntact && subjectsSubscribed)
         check("counterprobe: the live subject's held event is delivered on its FIRST attempt; the dead one is never typed",
           deliveredLiving?.status === "delivered" && deliveredLiving.attempts === 1
           && plog.filter((e) => e.slot === uId

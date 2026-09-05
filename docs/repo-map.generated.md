@@ -31,7 +31,7 @@ Scope and sources, so the omissions are not silent:
 - `server/` — The server's own modules, cut out of `server.ts` by the Generalsanierung (P4): `types.ts` holds the persisted domain model and its `*From`/`load*` parsers, `errors.ts` the in-memory error channel (`logError`/`errorsView`), `persist.ts` the append-only JSONL event log and its rotation-aware ledger readers, `tmux.ts` the tmux socket and process wrappers, `transport.ts` the gzip/byte-ledger wrappers and the static-asset table (anchored on `PUB`, one level up from this directory), `dir-explorer.ts` the folder picker's caps, its slow-folder memory and the file readability and write-deny rules, `audit-log.ts` the security event trail — the `AuditEvent` vocabulary, `audit()` and `AUDIT_FILE` (anchored on `PUB` like `transport.ts`, so the ledger stays at the repo root), `http.ts` the leaf every other module may import — the `json()` response helper plus `HOST`/`PORT`, binding nothing from the core, `auth.ts` the token and share-credential surface (`tokenFrom`, `secretEq`, the share cookie gates, `ALLOWED_HOSTS` and the `guard` that answers the DNS-rebinding and cross-origin checks); `server.ts` stays the entry and keeps the state holders — including `transportReport` and `listDirs`/`findDirs`/`dirInfo`, which read core state the modules may not import.
 - `src/` — Modules shared across the server, the browser bundle and the suites — protocol types, the client, share rendering, shell quoting, markdown, backoff.
 
-## Top-level `.ts` and `.sh` files (49)
+## Top-level `.ts` and `.sh` files (50)
 
 - `acceptance-probe.sh` — ACP-25 REAL-TUI ACCEPTANCE PROBE — not a gate. It boots an isolated Fleet instance on its own
 - `acceptance-probe.ts` — ACP-25 real-TUI acceptance probe (driver: acceptance-probe.sh). Every check below is against the
@@ -62,6 +62,7 @@ Scope and sources, so the omissions are not silent:
 - `fleet-e2e-postland-audit.ts` — e2e for VERIFICATION TIER 2 — the post-land audit (server.ts, grep POSTLAND_AUDIT_CMD). The MAIN
 - `fleet-e2e-security.ts` — Security e2e: the perimeter properties that must not silently regress. This is a SEPARATE
 - `fleet-e2e.ts` — e2e for claude-fleet: run from the repo root with the server already up.
+- `fleet-sync.sh` — fleet-sync.sh — the FOLLOWER half of the dual-host git transport (docs/dual-host-git-transport.md).
 - `land-candidate.ts` — land-candidate.ts — pure, read-only projection of merge facts for future PromotionPolicy work.
 - `lane-signals.ts` — --- `done-looking` as a DETERMINISTIC predicate (docs/attic/perception-layer.md §3).
 - `merge-prompt.ts` — The conflict-resolver agent's prompt, extracted as a PURE function so its INFORMATION

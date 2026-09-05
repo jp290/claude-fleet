@@ -5,9 +5,18 @@ und die Sensoren nicht tragen. Die Abschnitte darunter sind FREMD (geteilte Date
 
 ## 0. DAS ERSTE: was mit meiner Session stirbt
 
-1. **EINE OFFENE ATTENTION, `6793f1414b53a1c6d3b428d6` (kind `decision`) — sie stirbt mit mir
-   (`refusedReason: "requester session ended"`). STELL SIE NEU, wenn der Owner nicht geantwortet
-   hat.** Ihr voller Inhalt, damit du sie nicht rekonstruieren musst:
+1. **ERLEDIGT — die Attention `6793f1414b53a1c6d3b428d6` IST BEANTWORTET: der Deploy ist
+   gefahren.** 2026-09-05 07:36 vom 🎛 Fleet Controller (Slot 3) auf Owner-Delegation. Verdikt am
+   LEDGER, nicht am 202: `id 82f55be0, stage boot, ok true, target = bootHead = 9718592,
+   hitTarget true, bundleStale false, ms 5281`; danach `deployGap.behindCount 0`, `codeBehind
+   false`, `errors null`, neun Panes leben weiter. **Selbst gegengeprueft:** Server seit 07:36:12,
+   `./state.sh` LIVE-Zeile stimmt. Damit sind `eb07267`, `cbccd3a`/`036ff7c` und
+   `d0befb9`/`9a03d4a` REAL auf dieser Maschine — mitgenommen wurden auch `1a69a52`, `b73b6b8`,
+   `9718592`, weil das Ziel die Lane-Spitze war, nicht ein einzelner Commit.
+   **`FLEET_LANE_AUTOCLOSE=1` ist ab diesem Boot ERSTMALS real scharf** (Stand davor: 0 von 777
+   Outcome-Zeilen mit `autoClose`). Der erste echte Beleg gehoert **Program 66499a03 (Slot 2)**,
+   nicht diesem Program — nicht wegschnappen.
+   Der historische Text der Attention, falls jemand die Begruendung sucht:
    **DEPLOY-ENTSCHEID.** Drei Lands von heute frueh sind auf main, aber NICHT auf dieser Maschine.
    Laufender Server seit 03:56 auf `089fb0a`; main steht auf `9a03d4a`. **Beleg, kein Verdacht:**
    das Post-Land-Audit zu `cbccd3a` kam rot zurueck und seine Zeile trug `fails: null` — genau das

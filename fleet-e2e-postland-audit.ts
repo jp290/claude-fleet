@@ -185,43 +185,6 @@ const startSrv = async (opts: { audit: boolean; auditPing?: boolean; extra?: Rec
 // throwaway repo the lanes fork from
 const REPO = `${import.meta.dir}/testrepo`;
 await seedRepo(REPO);
-// …made able to answer the SHORT CHAIN, for section (P). `repoRunsShortChain` is a property of the
-// REPO (`[ -f fleet-e2e.ts ]`), so without these files a docs-only land here would run the full
-// configured chain on both tiers and the proportional path would be unreachable — the check would
-// pass over a case that never happened. Same recipe e2e-isolated.sh seeds for the GATE's half of
-// this fixture, with its own marker so a run can name which pins it executed:
-//   · fleet-e2e.ts  — the sentinel both guards test for
-//   · e2e/pins.ts   — what the short chain actually runs; it prints suite-shaped PASS lines so the
-//                     row's `checks` is a real count rather than the zero an unanchored echo yields
-//   · package.json + a file: dep + bun.lock — `bun install --frozen-lockfile` refuses without them
-//   · .gitignore for node_modules/ — the short chain INSTALLS in the lane worktree, and an
-//     untracked node_modules there would make the lane dirty and block its own land
-// Nothing here is docs-or-prose except .gitignore, so every existing lane in this harness (all of
-// which commit a root `.txt`) keeps the full chain exactly as before.
-const seedShortChainFixture = async (repo: string): Promise<void> => {
-  mkdirSync(`${repo}/e2e`, { recursive: true });
-  mkdirSync(`${repo}/vendor/fixture-dep`, { recursive: true });
-  await Bun.write(`${repo}/fleet-e2e.ts`, "// proportional audit fixture sentinel\n");
-  // …and it MEASURES the environment it was handed. The stamp `proportional:true` on a ledger row
-  // is a claim about a run somebody must be able to reproduce, so the row has to be able to say
-  // which FLEET_* knobs its chain saw. `auditChildEnv` strips them wholesale; the LAND GATE's own
-  // short run does not (runVerify inherits the server's env), and this one line is what lets a
-  // reader see that difference instead of assuming either side.
-  await Bun.write(`${repo}/e2e/pins.ts`,
-    'const fleetEnv = Object.keys(process.env).filter((k) => k.startsWith("FLEET_")).sort();\n'
-    + 'console.log("PASS  proportional fixture pin one");\n'
-    + 'console.log(`PASS  proportional fixture pin two  (fleetenv=[${fleetEnv.join(",")}])`);\n'
-    + 'console.log("ALL PASS");\n');
-  await Bun.write(`${repo}/vendor/fixture-dep/package.json`, '{"name":"fixture-dep","version":"1.0.0"}\n');
-  await Bun.write(`${repo}/package.json`,
-    '{"name":"proportional-audit-fixture","private":true,'
-    + '"dependencies":{"fixture-dep":"file:vendor/fixture-dep"}}\n');
-  await Bun.write(`${repo}/.gitignore`, "node_modules/\n");
-  spawnSync("bun", ["install"], { cwd: repo });
-  spawnSync("git", ["-C", repo, "add", "-A"]);
-  spawnSync("git", ["-C", repo, "commit", "-qm", "short-chain fixture"]);
-};
-await seedShortChainFixture(REPO);
 const headOf = (ref = "main"): string => spawnSync("git", ["-C", REPO, "rev-parse", ref]).stdout.toString().trim();
 const noteAt = (sha: string): boolean => spawnSync("git", ["-C", REPO, "notes", "--ref=fleet/land", "show", sha]).status === 0;
 const opReceiver = ((await (await get("/api/sessions")).json()) as
@@ -1064,6 +1027,44 @@ check("(J) a red audit ping lists every persisted remote fail name instead of di
 //
 // Placed immediately before (K) for exactly (K)'s reason: it seeds a second repo and adds rows, so
 // every count it makes is RELATIVE and nothing above it moves.
+// ITS OWN REPO, and that is not tidiness. The short chain is a property of the REPO
+// (`[ -f fleet-e2e.ts ]`), so this section needs a repo carrying that sentinel, a runnable
+// `e2e/pins.ts`, and a package.json + bun.lock for `bun install --frozen-lockfile`. Seeding those
+// into the harness's shared REPO is what the first run of this section actually did, and it broke
+// eleven (HD) checks: e2e/helper-daemon.ts LANDS its own root package.json into REPO so the
+// daemon's verbatim install has something to answer, which overwrote this fixture's manifest while
+// its bun.lock stayed — and `--frozen-lockfile` refuses exactly that mismatch (exit 1 → the whole
+// daemon run reported `unknown`). A second repo keeps both fixtures true and leaves every other
+// section's tree byte-identical to what it was before this slice.
+const PREPO = `${import.meta.dir}/testrepo-proportional`;
+await seedRepo(PREPO);
+{
+  //   · fleet-e2e.ts  — the sentinel both the gate's and the audit's guard test for
+  //   · e2e/pins.ts   — what the short chain really runs. It prints suite-shaped PASS lines so the
+  //     row's `checks` is a real count, and it NAMES the FLEET_* keys it was handed, so the
+  //     `proportional:true` stamp is a claim about an environment a reader can reproduce.
+  //   · package.json + a file: dep + bun.lock — `bun install --frozen-lockfile` refuses without them
+  //   · .gitignore for node_modules/ — the short chain INSTALLS in the lane worktree, and an
+  //     untracked node_modules there would make the lane dirty and block its own land
+  mkdirSync(`${PREPO}/e2e`, { recursive: true });
+  mkdirSync(`${PREPO}/vendor/fixture-dep`, { recursive: true });
+  await Bun.write(`${PREPO}/fleet-e2e.ts`, "// proportional audit fixture sentinel\n");
+  await Bun.write(`${PREPO}/e2e/pins.ts`,
+    'const fleetEnv = Object.keys(process.env).filter((k) => k.startsWith("FLEET_")).sort();\n'
+    + 'console.log("PASS  proportional fixture pin one");\n'
+    + 'console.log(`PASS  proportional fixture pin two  (fleetenv=[${fleetEnv.join(",")}])`);\n'
+    + 'console.log("ALL PASS");\n');
+  await Bun.write(`${PREPO}/vendor/fixture-dep/package.json`, '{"name":"fixture-dep","version":"1.0.0"}\n');
+  await Bun.write(`${PREPO}/package.json`,
+    '{"name":"proportional-audit-fixture","private":true,'
+    + '"dependencies":{"fixture-dep":"file:vendor/fixture-dep"}}\n');
+  await Bun.write(`${PREPO}/.gitignore`, "node_modules/\n");
+  spawnSync("bun", ["install"], { cwd: PREPO });
+  spawnSync("git", ["-C", PREPO, "add", "-A"]);
+  spawnSync("git", ["-C", PREPO, "commit", "-qm", "short-chain fixture"]);
+}
+const pHeadOf = (): string =>
+  spawnSync("git", ["-C", PREPO, "rev-parse", "main"]).stdout.toString().trim();
 const pBase = (path: string): string => path.split("/").pop() ?? path;
 // the drain's own view of what it is running — the only non-guessing way to know the machine is
 // busy elsewhere, and the same probe (K) uses rather than a sleep
@@ -1091,7 +1092,7 @@ const pWaitRowFor = async (branch: string, timeoutMs = 90_000): Promise<AuditRow
 // a lane whose ONLY changed path is docs-or-prose — openLane commits a root `.txt`, which
 // verify-proportion.ts classifies conservative-default, so this harness needs its own shape
 const makeDocsLane = async (name: string): Promise<Lane> => {
-  const ln = (await (await post("/api/lanes", { repo: REPO })).json()) as Lane;
+  const ln = (await (await post("/api/lanes", { repo: PREPO })).json()) as Lane;
   mkdirSync(`${ln.cwd}/docs`, { recursive: true });
   await Bun.write(`${ln.cwd}/docs/${name}.md`, `${name} measurement note\n`);
   spawnSync("git", ["-C", ln.cwd, "add", "-A"]);
@@ -1105,7 +1106,7 @@ const makeDocsLane = async (name: string): Promise<Lane> => {
   return ln;
 };
 const pNote = (sha: string): Record<string, unknown> | null => {
-  const r = spawnSync("git", ["-C", REPO, "notes", "--ref=fleet/land", "show", sha]);
+  const r = spawnSync("git", ["-C", PREPO, "notes", "--ref=fleet/land", "show", sha]);
   if (r.status !== 0) return null;
   try { return JSON.parse(r.stdout.toString().trim()) as Record<string, unknown>; } catch { return null; }
 };
@@ -1113,7 +1114,7 @@ const pNote = (sha: string): Record<string, unknown> | null => {
 // The decoy occupies the drain so a docs-only entry can be caught QUEUED — a job with an idle drain
 // does not exist, the drain starts on the land that queued it. Its own lands are `.txt`, so its
 // audit is the full stand-in and the two repos never share a chain.
-const PDECOY = `${REPO}-propdecoy`;
+const PDECOY = `${PREPO}-decoy`;
 await seedRepo(PDECOY);
 const pHelperToken = ((await (await get("/api/helper/token")).json()) as { token?: string }).token ?? "";
 const pJobs = async (): Promise<{ jobs: { id: string; repo: string; covers: number }[] }> =>
@@ -1144,7 +1145,7 @@ check("(P) setup: the decoy repo's land took the drain, so the next entry stays 
 // what the docs land did (or did not) run
 const pRunsBefore = (await runLog()).length;
 const pDocsLanded = await driveMerge(pDocs, pDocs.branch);
-const pDocsSha = headOf();
+const pDocsSha = pHeadOf();
 check("(P) setup: the docs-only lane landed while the drain was busy elsewhere",
   pDocsLanded.gone && pDocsSha !== "", `landed=${pDocsLanded.gone} head=${pDocsSha}`);
 const pDocsNote = pNote(pDocsSha);
@@ -1154,12 +1155,12 @@ check("(P) setup: the LAND GATE itself ran short on this candidate — the fact 
     && JSON.stringify(pDocsVerify.steps) === JSON.stringify(["install", "pins"]),
   JSON.stringify(pDocsVerify));
 
-const pQueueKey = await pQueueKeyFor(REPO);
+const pQueueKey = await pQueueKeyFor(PREPO);
 const pOffered = await pJobs();
 check("(P) a queued docs-only entry is NEVER offered to the portal (the decoy's still is)",
   pQueueKey !== ""
     && pOffered.jobs.some((j) => j.repo === pBase(PDECOY))
-    && !pOffered.jobs.some((j) => j.repo === pBase(REPO)),
+    && !pOffered.jobs.some((j) => j.repo === pBase(PREPO)),
   `key=${pQueueKey} jobs=${JSON.stringify(pOffered.jobs.map((j) => `${j.repo}:${j.covers}`))}`);
 const pClaim = pQueueKey === "" ? null
   : await post("/api/helper/claim", { jobId: pJobIdOf(pQueueKey), deviceId: "propshortdev1" },
@@ -1211,12 +1212,12 @@ check("(P) the row joins to the land it followed, and to that land's own note",
 
 // --- (P.2) ONE CODE LAND IN THE ENTRY PUTS THE WHOLE TIP BACK ON THE FULL SUITE ------------------
 await setAuditMode("slow");
-const pMixA = await makeLane("propmixa");
+const pMixA = await openLane(PREPO, "propmixa");
 const pMixDocs = await makeDocsLane("propmixdocs");
-const pMixB = await makeLane("propmixb");
+const pMixB = await openLane(PREPO, "propmixb");
 for (const ln of [pMixA, pMixDocs, pMixB]) await settleForMerge(ln.slot);
 const pMixALanded = await driveMerge(pMixA, pMixA.branch);
-const pMixBusy = await pWaitLocalRun(REPO);
+const pMixBusy = await pWaitLocalRun(PREPO);
 check("(P) setup: a code land holds the drain, so the next two lands coalesce behind it",
   pMixALanded.gone && pMixBusy, `landed=${pMixALanded.gone} live=${await pLiveRepo()}`);
 const pMixRunsBefore = (await runLog()).length;
@@ -1224,7 +1225,7 @@ const pMixDocsLanded = await driveMerge(pMixDocs, pMixDocs.branch);
 const pMixBLanded = await driveMerge(pMixB, pMixB.branch);
 check("(P) setup: both coalescing lands reached main",
   pMixDocsLanded.gone && pMixBLanded.gone,
-  spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString().trim());
+  spawnSync("git", ["-C", PREPO, "log", "--oneline", "-4"]).stdout.toString().trim());
 await setAuditMode("green"); // the holding run already read its mode; the follow-up may be fast
 const pMixRow = await pWaitRowFor(pMixDocs.branch);
 check("(P) a coalesced entry holding ONE non-docs land runs the FULL configured suite",

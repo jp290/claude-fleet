@@ -5752,29 +5752,61 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       : `${Object.keys(rendered).length} rendered hint(s), tails clean`);
 
   // --- HALF TWO: the server-local builders cannot be imported (server.ts boots on import), so they
-  //     are read. Every string literal in the body is checked, not only the last one: a literal that
-  //     ends on `$NAME` is the defect whether or not another segment follows it today.
-  const LIT = /([`"'])((?:\\.|(?!\1)[\s\S])*)\1/g;
+  //     are read. What is judged is the MESSAGE TAIL and only that: a literal that TERMINATES a
+  //     statement. Judging every literal in the body instead was over-broad and was caught in
+  //     review — `\`notes $HOME\` + \` in passing.\`` and `\`notes $HOME${suffix}\`` are both legal
+  //     (the rendered hint does not end on the sigil), and both were being failed. The counter-probe
+  //     two rows down holds that line in BOTH directions so it cannot quietly drift back.
+  const TAIL_LIT = /([`"'])((?:\\.|(?!\1)[\s\S])*)\1\s*;/g;
+  const ENDS_IN_INTERPOLATION = /\$\{[^}]*\}\s*$/;
+  // one tail literal -> flagged / unjudgeable / clean. An interpolated end is NOT strippable: the
+  // real last characters are a runtime value, so the honest answer is "not measured", never a pass.
+  const judgeTails = (body: string): { tails: number; flagged: string[]; unjudgeable: number } => {
+    const flagged: string[] = [];
+    let tails = 0, unjudgeable = 0;
+    for (const m of body.matchAll(TAIL_LIT)) {
+      tails++;
+      const lit = m[2]!;
+      if (ENDS_IN_INTERPOLATION.test(lit)) { unjudgeable++; continue; }
+      if (SIGIL_TAIL.test(lit)) flagged.push(lit);
+    }
+    return { tails, flagged, unjudgeable };
+  };
   const serverLocal = [...builders].filter((n) => !LANE_SIGNAL_MESSAGE_EXPORTS.has(n)).sort();
   const unread: string[] = [];
   const badLit: string[] = [];
+  const unjudged: string[] = [];
   for (const name of serverLocal) {
     const body = new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n\\}`).exec(serverU.text)?.[0] ?? "";
     if (!body) { unread.push(name); continue; }
-    const lits = [...body.matchAll(LIT)].map((m) => m[2]!);
-    if (!lits.length) { unread.push(name); continue; }
-    // a literal ending in an interpolation does not end the TEXT — strip it before judging the tail
-    for (const lit of lits) {
-      const tail = lit.replace(/\$\{[^}]*\}\s*$/, "");
-      if (SIGIL_TAIL.test(tail)) badLit.push(`${name}: …${JSON.stringify(tail.slice(-48))}`);
-    }
+    const r = judgeTails(body);
+    if (!r.tails) { unread.push(name); continue; }
+    for (const lit of r.flagged) badLit.push(`${name}: …${JSON.stringify(lit.slice(-48))}`);
+    if (r.unjudgeable) unjudged.push(`${name}×${r.unjudgeable}`);
   }
-  // fails as ITSELF: a builder whose body or literals could not be read is NOT a measured builder
-  pin(`${RULE_SIGIL} — every server-local derived builder's body was read`,
+  // fails as ITSELF: a builder with no readable message tail is NOT a measured builder
+  pin(`${RULE_SIGIL} — every server-local derived builder has a readable message tail`,
     unread.length === 0 && serverLocal.length > 0,
-    unread.length ? `unreadable: ${unread.join(", ")}` : `${serverLocal.length} read: [${serverLocal.join(", ")}]`);
-  pin(`${RULE_SIGIL} — source: no server-local hint literal ends on $NAME`,
+    unread.length ? `no tail found: ${unread.join(", ")}` : `${serverLocal.length} read: [${serverLocal.join(", ")}]`);
+  pin(`${RULE_SIGIL} — source: no server-local message TAIL ends on $NAME`,
     badLit.length === 0, badLit.length ? badLit.join("; ") : `${serverLocal.length} builder(s) clean`);
+  // never a silent pass: a tail whose last characters are a runtime value was not measured, and the
+  // row says so under its own name rather than borrowing the green above.
+  if (unjudged.length)
+    skip(`${RULE_SIGIL} — tails ending in an interpolation are not judgeable from source`,
+      `not measured: ${unjudged.join(", ")}`);
+
+  // THE COUNTER-PROBE, both directions, on the predicate itself — three lines of fixture, no parser.
+  // Without it "narrow enough" is an opinion; with it, over-broad and under-broad both fail here.
+  const PROBE = [
+    { want: true, why: "the measured old closing form", body: "function f(){ return `a ` + `x-fleet-self-token from $FLEET_SELF_TOKEN.`; }" },
+    { want: false, why: "a mid-text sigil followed by concatenation", body: "function f(){ return `notes $HOME` + ` in passing.`; }" },
+    { want: false, why: "a mid-text sigil before a closing interpolation", body: "function f(){ return `notes $HOME${suffix}`; }" },
+  ];
+  const wrong = PROBE.filter((c) => (judgeTails(c.body).flagged.length > 0) !== c.want);
+  pin(`${RULE_SIGIL} — the tail predicate flags the old closing form and NOTHING mid-text`,
+    wrong.length === 0,
+    wrong.length ? `misjudged: ${wrong.map((c) => c.why).join("; ")}` : `${PROBE.length} fixtures, both directions`);
 
   // --- THE MEASURED OLD FORM, negatively. Named as the byte sequence the live failure carried, so
   //     a reintroduction fails under the sentence that describes the incident and not under a regex.

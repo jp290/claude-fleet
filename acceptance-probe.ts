@@ -239,7 +239,7 @@ if (openX.ok) {
       }
       return seen;
     };
-    const delivered = wId ? await awaitEvent(wId, (e) => e.deliveredAt !== null || e.status === "receiver-gone", 120_000) : undefined;
+    const delivered = wId ? await awaitEvent(wId, (e) => e.deliveredAt != null || e.status === "receiver-gone", 120_000) : undefined;
     // the text the server typed, from the SAME builder the seam calls
     const hint = delivered ? auditWatchMessage(delivered.subjectRepo ?? "", delivered.subjectMainAfter ?? "",
       { id: delivered.id, kind: "post-land-audit", payload: delivered.payload }) : "";

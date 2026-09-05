@@ -4836,7 +4836,7 @@ export async function run(): Promise<void> {
       nudge.includes("50%") && nudge.includes("1000000 Tokens im Fenster")
         && nudge.includes("Server-Prädikat, keine Meldung von dir")
         && nudge.indexOf("HANDOFF.md schreiben UND committen") < nudge.indexOf("POST /api/self/succeed")
-        && nudge.includes("x-fleet-self-token aus $FLEET_SELF_TOKEN"), nudge);
+        && nudge.includes("x-fleet-self-token aus der Umgebungsvariablen FLEET_SELF_TOKEN"), nudge);
     check("tickMigrate never nudges a lane, the ⚙ steward, or a ctx:null slot",
       (await migratePrompts(lane.slot)).length === 0
         && (await migratePrompts(stewardId)).length === 0

@@ -12,7 +12,8 @@ import { deriveTaskMetadata, type TaskCluster } from "../task-metadata";
 import { matchTaskWaveAnalysis, projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from "../task-waves";
 import { classifyAnalystOffWarning } from "../task-analysis-warning";
 import { analysisStaleness } from "../analysis-staleness";
-import { INSTANCE_NAME_RE } from "../src/protocol";
+import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_NAME_RE, INSTANCE_URL_RE, instanceLinksFrom,
+  type InstanceLink } from "../src/protocol";
 import type { Ctx } from "./ctx";
 
 // The first bytes of briefAndSend's LANE_EXIT_FOOTER. Deliberately the HEADING and not the whole
@@ -1312,6 +1313,126 @@ export async function run(ctx: Ctx): Promise<void> {
       && matchingGenerationWarning.delivery === "stored-brief",
       JSON.stringify({ staleGenerationWarning, matchingGenerationWarning }));
     await post(`/api/tasks/${bigT.task.id}/delete`, {});
+  }
+
+  // --- THE INSTANCE SWITCHER'S LIST (dual-host S3). Beside the budget block above on purpose: the
+  // argument for `instance` being one field per response is a byte argument, and `instances` is the
+  // second thing that could spend that same headroom. Two halves are proven here, and both are the
+  // ones no compiler sees: that a MALFORMED entry is dropped one by one AND said so in the log (an
+  // entry that vanished silently is indistinguishable from an env line that never arrived), and
+  // that what survives reaches the board on /api/sessions in the shape the header reads. The pure
+  // parser is exercised directly first, because a table of rejected shapes is a table, not twelve
+  // server restarts.
+  {
+    const parse = (v: unknown): { links: InstanceLink[]; rejected: string[] } => instanceLinksFrom(v);
+
+    // ABSENCE IS SILENT — the single-host case is the ordinary one and must log nothing at all.
+    const absent = [parse(undefined), parse(""), parse("   ")];
+    check("FLEET_INSTANCES: unset, empty and blank are the single-host case — no links, no complaint",
+      absent.every((r) => r.links.length === 0 && r.rejected.length === 0),
+      JSON.stringify(absent));
+
+    // …and a value that is PRESENT but broken is never silent.
+    const notJson = parse("{nope");
+    const notArray = parse('{"name":"mac","url":"http://a"}');
+    check("FLEET_INSTANCES: a non-JSON and a non-array value are each rejected WITH a reason",
+      notJson.links.length === 0 && notJson.rejected.length === 1 && notJson.rejected[0]!.startsWith("not JSON")
+      && notArray.links.length === 0 && notArray.rejected.length === 1
+      && notArray.rejected[0]!.startsWith("not a JSON array"),
+      JSON.stringify({ notJson, notArray }));
+
+    // ONE BAD ROW NEVER COSTS THE GOOD ONES, and every rejection names the entry it dropped.
+    const mixed = parse(JSON.stringify([
+      { name: "mac", url: "http://192.0.2.10:8790" },
+      { name: "bad name", url: "http://ok.example" },          // name fails INSTANCE_NAME_RE
+      { name: "sneaky", url: "http://user:pw@evil.example" },  // userinfo — outside the charset
+      { name: "deep", url: "http://ok.example/board?token=x" },// path + query — outside the charset
+      { name: "js", url: "javascript:alert(1)" },              // not http(s)
+      { name: "v6", url: "http://[::1]:8790" },                // IPv6 literal, deliberately unsupported
+      "second-host",                                             // not an object
+      { name: "dup", url: "http://192.0.2.10:8790/" },       // same origin as #0 once normalised
+      { name: "second-host", url: "https://follower.example:8790/" }, // trailing slash is stripped
+    ]));
+    check("FLEET_INSTANCES: the two valid entries survive nine rows, and the trailing slash is normalised away",
+      JSON.stringify(mixed.links) === JSON.stringify([
+        { name: "mac", url: "http://192.0.2.10:8790" },
+        { name: "second-host", url: "https://follower.example:8790" }]),
+      JSON.stringify(mixed.links));
+    check("FLEET_INSTANCES: each of the seven bad rows is rejected BY INDEX, with the reason it failed on",
+      mixed.rejected.length === 7
+      && mixed.rejected[0]!.startsWith("entry #1 has no valid name")
+      && mixed.rejected.slice(1, 5).every((r, i) => r.startsWith(`entry #${i + 2} (`) && r.includes("no valid http(s) origin"))
+      && mixed.rejected[5]!.startsWith("entry #6 is not an object")
+      && mixed.rejected[6]!.includes("repeats an url already listed"),
+      JSON.stringify(mixed.rejected));
+
+    // THE BUDGET IS A BYTE BUDGET, and the entry that does not fit is dropped with a reason rather
+    // than truncating the list silently — the same rule as every other row.
+    const wide = Array.from({ length: 40 }, (_, i) => ({ name: `inst${i}`, url: `http://host${i}.example:8790` }));
+    const capped = parse(JSON.stringify(wide));
+    check(`FLEET_INSTANCES: the list is bounded at ${INSTANCE_LINKS_MAX_BYTES} B of serialised links, and the overflow is named`,
+      Buffer.byteLength(JSON.stringify(capped.links)) <= INSTANCE_LINKS_MAX_BYTES
+      && capped.links.length > 0 && capped.links.length < wide.length
+      && capped.rejected.length === wide.length - capped.links.length
+      && capped.rejected.every((r) => r.includes("does not fit")),
+      JSON.stringify({ kept: capped.links.length, bytes: Buffer.byteLength(JSON.stringify(capped.links)),
+        rejected: capped.rejected.length, first: capped.rejected[0] }));
+
+    // The charset is the guarantee the CLIENT leans on before it navigates, so state it as itself.
+    check("the instance url charset admits an origin and refuses credentials, paths, queries and other schemes",
+      ["http://mac", "http://192.0.2.10:8790", "https://follower.example:8790"].every((u) => INSTANCE_URL_RE.test(u))
+      && ["http://u:p@h", "http://h/board", "http://h?t=1", "http://h#f", "javascript:alert(1)",
+        "ftp://h", "//h", "http://h:8790/x"].every((u) => !INSTANCE_URL_RE.test(u)),
+      INSTANCE_URL_RE.source);
+
+    // --- AND NOW THE LIVE HALF: the same list through a real boot, onto /api/sessions, with the
+    // rejections in this server's own log. Nothing else can prove the env is READ.
+    const logAt = existsSync(`${ROOT}/server.log`) ? readFileSync(`${ROOT}/server.log`, "utf8").length : 0;
+    const beforeRaw = await (await get("/api/sessions")).text();
+    check("with no FLEET_INSTANCES set, the poll carries no `instances` key at all (the single-host board)",
+      !("instances" in (JSON.parse(beforeRaw) as Record<string, unknown>)),
+      `${Buffer.byteLength(beforeRaw)} B`);
+
+    await restartSrv({ FLEET_INSTANCES: JSON.stringify([
+      { name: "mac", url: "http://192.0.2.10:8790" },
+      { name: "not a name", url: "http://ok.example" },
+      { name: "follower", url: "https://follower.example:8790/" },
+      { name: "credentialed", url: "http://user:pw@evil.example" },
+    ]) });
+    const afterRaw = await (await get("/api/sessions")).text();
+    const after = JSON.parse(afterRaw) as { instance?: { name?: string | null }; instances?: InstanceLink[] };
+    check("the sessions poll projects exactly the two valid entries, in order, beside the instance name",
+      JSON.stringify(after.instances) === JSON.stringify([
+        { name: "mac", url: "http://192.0.2.10:8790" },
+        { name: "follower", url: "https://follower.example:8790" }])
+      && after.instance?.name === INSTANCE_NAME,
+      JSON.stringify({ instance: after.instance, instances: after.instances }));
+    check("…and no rejected entry reaches the wire — the board can never render a credentialed url",
+      !afterRaw.includes("evil.example") && !afterRaw.includes("not a name")
+      && !afterRaw.includes("user:pw"),
+      JSON.stringify(after.instances));
+    check("…and the projected list costs less than the budget it is bounded by",
+      Buffer.byteLength(JSON.stringify(after.instances ?? [])) <= INSTANCE_LINKS_MAX_BYTES,
+      `${Buffer.byteLength(JSON.stringify(after.instances ?? []))} B of ${INSTANCE_LINKS_MAX_BYTES} B`);
+    const bootLog = existsSync(`${ROOT}/server.log`)
+      ? readFileSync(`${ROOT}/server.log`, "utf8").slice(logAt) : "";
+    check("the two dropped entries are LOGGED by this boot, each with its index and its reason",
+      /FLEET_INSTANCES: dropped — entry #1 has no valid name/.test(bootLog)
+      && /FLEET_INSTANCES: dropped — entry #3 \(credentialed\) has no valid http\(s\) origin/.test(bootLog),
+      JSON.stringify(bootLog.split("\n").filter((l) => l.includes("FLEET_INSTANCES"))));
+
+    // …and the counter-proof: a boot with an entirely broken value keeps the board working, says so
+    // once, and leaves the key off — a typo must not strand an instance any more than FLEET_LANDS does.
+    const brokenAt = readFileSync(`${ROOT}/server.log`, "utf8").length;
+    await restartSrv({ FLEET_INSTANCES: "not json at all" });
+    const brokenPoll = JSON.parse(await (await get("/api/sessions")).text()) as Record<string, unknown>;
+    const brokenLog = readFileSync(`${ROOT}/server.log`, "utf8").slice(brokenAt);
+    check("an unparseable FLEET_INSTANCES leaves the board switcher-less and running, and says so once",
+      !("instances" in brokenPoll) && Array.isArray(brokenPoll.slots)
+      && brokenLog.split("FLEET_INSTANCES: dropped").length - 1 === 1
+      && /dropped — not JSON/.test(brokenLog),
+      JSON.stringify(brokenLog.split("\n").filter((l) => l.includes("FLEET_INSTANCES"))));
+    await restartSrv(); // the flag is a per-restart `extra`, never in process.env — leave it gone
   }
   // --- comments: the owner's own text ON a row. Same two-tier rule as the prompt above (the poll
   // carries a count, the text rides GET /api/tasks), plus the contract that makes a comment safe

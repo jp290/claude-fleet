@@ -18,8 +18,8 @@ import { classifyAnalystOffWarning } from "../task-analysis-warning";
 // everything this file and server.ts must say identically — see src/protocol.ts. Importing rather
 // than re-declaring is what makes tsc, which gates every land, the thing that notices a drift.
 import {
-  WS_INPUT_MAX_BYTES, DISPOSITION_VERDICTS, normalizeLaneAnchor,
-  type GitInfo, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo,
+  WS_INPUT_MAX_BYTES, DISPOSITION_VERDICTS, INSTANCE_NAME_RE, INSTANCE_URL_RE, normalizeLaneAnchor,
+  type GitInfo, type InstanceLink, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo,
   type DispositionWorker, type DispositionVerdict,
 } from "./protocol";
 // the list-on-the-left / thing-in-full-on-the-right window shared by review, picker, queue and
@@ -76,6 +76,68 @@ function setCollapsed(on: boolean) {
   requestAnimationFrame(() => { for (const p of panes) p.refit(); });
 }
 collapseBtn.onclick = () => setCollapsed(!sideCollapsed);
+
+// --- the instance chip and its switcher (dual-host S3) -------------------------------------------
+// WHAT THIS IS: the board's answer to "which fleet am I looking at", plus the owner's one-click way
+// to look at the other one. Topology A federates BY HAND — two standalone servers, no proxy, no
+// shared token, no request between them — so switching here is nothing but the browser navigating
+// to another origin. Each instance keeps its own login because a cookie IS per origin; that is not
+// a policy this code enforces, it is the reason the feature could be this small.
+//
+// THE ONE RULE THAT MATTERS: the destination is the projected url and NOTHING is appended to it. No
+// token, no query, no path. The charset the server validated against (src/protocol.ts#INSTANCE_URL_RE)
+// is re-applied to the WIRE value here, at the boundary, so the board can never be talked into
+// navigating somewhere that charset forbids even by its own server.
+const instWrap = $("instwrap"), instBtn = $("instbtn") as HTMLButtonElement, instMenu = $("instmenu");
+let instanceName: string | null = null;
+let instanceLinks: InstanceLink[] = [];
+let instRendered = "";
+
+const instMenuOpen = () => instMenu.classList.contains("open");
+function setInstMenu(open: boolean) {
+  instMenu.classList.toggle("open", open && instanceLinks.length > 0);
+}
+// the origin a link actually resolves to — `new URL` folds the default port away, so a list that
+// spells this instance `http://host:80` still marks itself as "here" instead of offering a switch
+// to the page you are already on. Safe without a guard: every survivor passed INSTANCE_URL_RE.
+const instOriginOf = (url: string): string => new URL(url).origin;
+
+function renderInstanceHead() {
+  const key = JSON.stringify([instanceName, instanceLinks]);
+  if (key === instRendered) return; // an open menu must survive the 2 s poll
+  instRendered = key;
+  if (instanceName === null && instanceLinks.length === 0) {
+    // the ordinary single-host board, byte for byte as it was before this cut
+    setInstMenu(false);
+    instWrap.classList.remove("on");
+    return;
+  }
+  instWrap.classList.add("on");
+  const pick = instanceLinks.length > 0;
+  instBtn.textContent = (instanceName ?? "unnamed") + (pick ? " ▾" : "");
+  instBtn.classList.toggle("pick", pick);
+  instBtn.title = instanceName === null
+    ? "this fleet was given no FLEET_INSTANCE name"
+    : `this board is served by the fleet instance “${instanceName}”`;
+  instBtn.onclick = pick ? () => setInstMenu(!instMenuOpen()) : null;
+  instMenu.replaceChildren(...instanceLinks.map((link) => {
+    const here = instOriginOf(link.url) === location.origin;
+    const row = el("button", `instrow${here ? " here" : ""}`);
+    row.append(el("span", "instname", link.name), el("span", "insturl", here ? "you are here" : link.url));
+    row.title = here ? `${link.name} — this board` : `open ${link.name} at ${link.url} (its own login)`;
+    row.onclick = () => {
+      setInstMenu(false);
+      if (!here) location.assign(link.url);
+    };
+    return row;
+  }));
+  if (!pick) setInstMenu(false);
+}
+
+document.addEventListener("click", (e) => {
+  if (instMenuOpen() && !instWrap.contains(e.target as Node)) setInstMenu(false);
+}, true);
+window.addEventListener("keydown", (e) => { if (e.key === "Escape" && instMenuOpen()) setInstMenu(false); });
 
 // navigator.clipboard only exists in a secure context (HTTPS or localhost) — this
 // dashboard is normally reached over plain HTTP via a Tailscale IP, so it's undefined
@@ -5274,8 +5336,13 @@ async function refresh() {
     const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string;
       v?: number; autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo; intake?: boolean;
       analysis?: { on?: boolean };
+      // WHICH FLEET ANSWERED — always sent since the dual-host cut, `{name:null}` when unnamed
+      instance?: { name?: string | null };
       // absent on a server that predates the flag → treated as "this fleet lands", the old behaviour
       lands?: boolean;
+      // omitted by the server when nothing is configured — absent and empty are the same answer
+      // here ("this board offers no switcher"), unlike `lands` above where absence had to mean YES
+      instances?: InstanceLink[];
       // omitted at zero by the server — absent means the compiler is off, exactly like `false`
       briefCompiler?: { on?: boolean };
       // digest only (id/status/title/createdAt) — the binding lives on GET /api/programs
@@ -5307,6 +5374,15 @@ async function refresh() {
     programsPoll = data.programs ?? [];
     dispatch = data.dispatch ?? { available: false, on: false, maxLanes: 0, repo: "" };
     landsEnabled = data.lands !== false;
+    instanceName = data.instance?.name ?? null;
+    // THE BOUNDARY CHECK, and it is not paranoia about our own server: this list is the only wire
+    // value the board turns into a NAVIGATION. Re-applying the server's own charset here means the
+    // set of places a click can reach is decided by one regex that both ends import, so widening it
+    // on one side alone widens nothing.
+    instanceLinks = (data.instances ?? []).filter((l) =>
+      typeof l?.name === "string" && INSTANCE_NAME_RE.test(l.name)
+      && typeof l.url === "string" && INSTANCE_URL_RE.test(l.url));
+    renderInstanceHead();
     analysisOn = data.analysis?.on;
     briefCompilerOn = data.briefCompiler?.on;
     intakeOn = data.intake ?? false;

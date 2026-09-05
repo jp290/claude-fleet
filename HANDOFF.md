@@ -1,3 +1,127 @@
+# HANDOFF — Dual-Host `cd110019` (Slot 11 → Nachfolge): PHASE 2 IST KOMPLETT — Gate 1 mit A beantwortet, der Falsifikator GEFAHREN (A steht), Schnitt 2+3 gelandet und deployt; es bleiben ZWEI Owner-Gates und kein Code; 2026-09-05 00:3x, ctx GEMESSEN 35,5 %
+
+Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`.
+Hier steht nur, was git und die Sensoren nicht tragen.
+
+## 0. DAS EINE, WAS DU WISSEN MUSST: es ist KEIN Code mehr offen, und du sollst auch keinen bauen
+
+Beide `auftrag`-Zeilen sind `done` mit Kandidaten-Sha (`74dcff75` → `40f7006a`, `8fea4ac1` →
+`22cf0c4b`), beide gate-verifiziert mit voller Sieben-Schritt-Kette, beide deployt. Der Live-Server
+trägt `instance:{name:"mac"}` — von mir am Poll gemessen, nicht vom Controller übernommen.
+
+**Was bleibt, sind zwei OWNER-GATES, und sie sind absichtlich KEINE Attention:**
+
+- **Gate 3 — die erste Installation von `fleet-watchdog.service` auf einem Host.** Die Vorlage ist
+  gelandet, aber **kein Host hat sie je ausgeführt**; die erste Installation IST die Messung. Owner-Akt.
+- **Gate 4 — Aktivierung einer zweiten netzerreichbaren Instanz** (Bind-Adresse, Token,
+  Share-Perimeter, `src/share.ts`). **Schnitt 4 (B1-Umschalter) ist ohne sie nicht baubar** — die
+  Phase-0-Notiz sagt ausdrücklich „erst wenn Schnitt 1 grün ist UND eine zweite Instanz real läuft".
+  Schnitt 1 ist grün. Es fehlt die Instanz, nicht der Code.
+
+**Warum sie hier stehen und nicht als Attention:** eine Attention stirbt mit ihrer Session
+(`server.ts#reconcileAttention`, „requester session ended") — genau das ist meiner Vorgängerin mit
+`5f5da618` passiert und dem Vorgänger davor mit `dddb2141`. Ich habe die Attention neu gestellt und
+sie wurde beantwortet; diese beiden Gates aber sind nicht dringend genug, um eine Session offen zu
+halten, und zu wichtig, um mit einer zu sterben. **Stell sie erst, wenn der Owner das Program
+weiterfahren will** — bis dahin ist dieses Program inhaltlich am Ende seines baubaren Teils.
+
+## 1. Der Befund, der die Lage geändert hat (und der im Handoff meiner Vorgängerin falsch stand)
+
+Sie schrieb, Schnitt 1 (der Falsifikator) sei **nicht fahrbar**, weil `ssh second-host` zu ist. Die
+Kausalkette war falsch. `./e2e-isolated.sh` ist ein Schlüssel in `HELPER_CMD_ALLOW`
+(`server/types.ts#helperCmdCheck`) und damit über `POST /api/self/jobs` fahrbar — die Tür, die S2
+dieses Programs selbst gelandet hat. ssh ist tatsächlich zu (von mir geprobt), wird aber nicht
+gebraucht. Was wirklich blockierte: der Daemon lief auf einem Baum VOR S2 und kannte
+`kind:"command"` nicht. Ein `daemon-update` (S1, Owner-Akt) hat das geschlossen.
+
+**Lehre für dich: wenn ein Handoff sagt „geht nicht", prüfe die BEGRÜNDUNG, nicht nur die Aussage.**
+
+## 2. Der Falsifikator und seine Einschränkung — und meine eigene Korrektur daran
+
+`docs/messungen/2026-09-04-falsifikator-second-host.md`, gelandet als `5f7bf15`, danach **zweimal von
+mir selbst korrigiert** (`16e0af2` Nachtrag, `09b2c4f` Korrektur). Lies §6 zuerst, sie überstimmt §5.
+
+Urteil: **Empfehlung A steht** — in keinem vergleichbaren Second-host-Lauf war eine der beiden
+Familien rot, deren Rot A umwerfen würde. Asymmetrie unverändert: Grün beweist die Maschinerie unter
+Stand-ins (`FLEET_CMD=true`), **nie** eine claude-Installation auf Linux (die ist von hier nicht
+messbar — `HELPER_CMD_FORBIDDEN = ["claude","codex","pi"]`).
+
+Die benannte Einschränkung: **zeitempfindliche Fixtures setzen auf second-host öfter aus** —
+`D2 setup` 3 rot / 5 Second-host-Läufe gegen 0 rot / 5 lokale Sichtungen.
+
+**Mein Fehler dabei, weil er dich sonst auch trifft:** §5 zählte nur die Second-host-Läufe, die ICH
+kannte (meinen Command-Job + einen Hinweis). Die Grundgesamtheit steht im **Audit-Ledger**
+(`post-land-audits.jsonl`, Feld `remote.name`). Und Remote-Zeilen **vor dem 2026-09-04 10:32**
+(Deploy `52673b6`) sind tail-only und melden `ran` 22–26 statt ~3 600 — sie sind keine Messungen und
+dürfen nicht mitgezählt werden.
+
+## 3. Vier `notiz`-Zeilen von mir, alle pending, keine gehört mir zur Reparatur
+
+- **`901593dd`** — der Claim-Guard für `kind:"command"` prüft die ANWESENHEIT eines `daemonSha`,
+  nicht WELCHEN. Ein zu alter Daemon kommt durch und führt `cfg.suiteCmd` statt der argv aus: eine
+  falsch attribuierte **grüne** Quittung, die teurere Sorte. Zwei Schnitte mit Preis darin.
+- **`69ad472d`** — das `D2 setup`-Rot auf second-host (Erstsichtung, ausdrücklich nicht adjudiziert).
+- **`94affaf3`** — `projection nextAction …` (`e2e/programs.ts`): **7/239 = 2,9 % auf 5 Bäumen**,
+  ältester Rot 2026-08-27, alle sieben mit identischem Detail
+  `{"with":null,"without":null,"phase":"UNKNOWN"}`. Mechanismus: Messung und Gegenprobe halten
+  denselben Wert ⇒ „nie gemessen". Die Sonde fällt als das, was sie messen sollte, statt als sie
+  selbst — ihr fehlt der eigene `check()` auf die Vorbedingung. **Diese Zeile ist heute mehrfach
+  nachgefragt worden; sie erspart der nächsten MAIN die Herleitung.**
+- **`bceea779`** — s. §4.
+
+## 4. Der Befund, der mich selbst belastet, und die Regel, die ich daraus ziehe
+
+Das Post-Land-Audit auf meinem Schnitt-3-Land war rot mit **17 FAILs** über drei unverwandte
+Familien. Meine Lesung: **Flake, lastgetrieben** — fünf der sechs geprüften Checks hatten ihren
+**ersten Rot überhaupt** (je 421–577 grün vorher), der Lauf brauchte 38,3 min statt 24–34, und im
+Audit-Fenster landeten **fünf Direkt-Commits auf main**, jeder mit graphify-Rebuild-Hook.
+
+**Einer davon war meiner** (`09b2c4f`), und ich hatte im Commit-Body notiert, es brenne „kein
+Land-Gate, der laufende Prozess ist nur ein Post-Land-Audit, das merget nichts". Der Satz stimmt und
+der Schluss war trotzdem falsch: **es ist dieselbe Maschine, und sie urteilt gerade über ein Land.**
+
+**Also die Regel, die ich dir hinterlasse und die es so noch nirgends gibt:** vor einem Direkt-Commit
+reicht es NICHT zu prüfen, ob ein Land-Gate brennt — prüfe auch, ob ein Post-Land-Audit läuft
+(`ps -eo command | grep -c '^/bin/sh ./e2e-'`), und wenn ja, warte oder nimm in Kauf, dass du ein
+fremdes Urteil verschlechterst. Es ist heute der zweite Schaden derselben Wurzel: um 18:28 starb ein
+Land-Gate an ff-lost, weil Direkt-Commits main während des Gates bewegten (1 915 457 ms grüner Verify
+vertan). Direkt-Commits sind gegen die Land- und Audit-Maschinerie unserialisiert.
+
+**Und die Sonden-Lehre, die mich zweimal erwischt hat:** mein erster Merge-Check vor einem Commit las
+`fleet.json`-Slots als Liste (es ist ein Dict) und suchte den Merge-Zustand am Slot (er steht unter
+`merges`) — leeres Ergebnis, das sich wie „kein Land läuft" las. **Eine Sonde, die nicht laufen kann,
+muss als SIE SELBST scheitern.**
+
+## 5. Ehrlichkeiten
+
+- **Vier Direkt-Commits aus dem Haupt-Checkout** (`9b31c79`, `5f7bf15`, `16e0af2`, `09b2c4f`), alle
+  docs-only, alle für die land-seitigen Ledger unsichtbar. Von Hand verifiziert: je
+  `bun install --frozen-lockfile` exit 0 und `bun e2e/pins.ts` ALL PASS. `./state.sh`s
+  Land-Health-Zahlen untertreiben diesen Tag entsprechend.
+- **`FLEET_INSTANCE="mac"` in `.env` ist MEINE Wahl**, vom Controller delegiert. Rollenwort, kein
+  Hostname (der Wert steht in jeder `/api/sessions`-Antwort und damit in jedem Share). Gegenstück ist
+  der Helfer-Name `second-host`. Ändern = eine Zeile + srv-Restart.
+- **NICHT von mir gemessen:** ob der WoL-Frame beim Second-host ankommt · was ein graphify-Rebuild
+  wirklich an Last kostet (§4 behauptet Korrelation und einen Mechanismus, keine gemessene
+  Kausalität) · `unbound succession: pane s8 rendered the harness screen` (fremdes Audit) · die von
+  Lanes zitierten Verify-Ausgaben (der Gate fährt die Kette ohnehin selbst).
+- **Der Second-host-Helfer war um 00:23 OFFLINE**: letzter Heartbeat 22:59:45, `DEVICE_ONLINE_MS` ist
+  90 s. Sein letzter Job scheiterte 21:55:50 in derselben Sekunde mit `exit 127`
+  („Bun could not find a package.json file") — der Klon war leer. Warum die Heartbeats danach
+  aufhörten, ist von hier **nicht** messbar (Pull-Client, kein eingehender Kanal, ssh zu).
+- **Drei Attentions gestellt, alle beantwortet, keine offen.** Keine Fremd-Adjudikation abgelegt —
+  die Controller-Weisung meiner Vorgängerin gilt fort, und ich habe sie zweimal angewandt
+  (`10ba7afd`, `5202fd63`), statt zu urteilen.
+
+## 6. Dein erster Zug
+
+Erden. Dann `GET /api/self/attention` — es ist nichts offen, das ist diesmal der SOLL-Zustand und
+kein Verlust. **Fang keinen Schnitt 4 an**: er hängt an Gate 4, nicht an Code. Wenn der Owner das
+Program weiterfahren will, ist der nächste Akt die EINE Attention mit Gate 3 und Gate 4 zusammen —
+zusammen, weil Schnitt 4 an beiden hängt und einzeln gestellt nur eine halbe Frage wäre.
+
+---
+
 # HANDOFF — Program-MAIN „Fleet-Betrieb 2026-09" (`f170dc46e4b026ee34d9392e`, Slot 8, Opus 5): zwei Lands versucht, EINER durch (`ed36971`), R2' am Suite-Mutex ausgesessen; das rote Audit auf meinem eigenen Land ist widerlegt, und das Regelbuch trug eine falsche Betriebsaussage; 2026-09-05 02:0x, ctx GEMESSEN 25,3 %
 
 Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was git

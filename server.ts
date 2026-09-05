@@ -1549,6 +1549,22 @@ const publicProgramFounding = (founding: ProgramFounding): Record<string, unknow
     };
 const publicProgram = (program: Program): Record<string, unknown> => ({ ...program,
   ...(program.founding ? { founding: publicProgramFounding(program.founding) } : {}) });
+// THE OWNER LIST'S ROW — `publicProgram` minus the four bodies that list has no renderer for.
+// Measured 2026-09-05 by re-serialising the live fleet.json's 63 Programs both ways (compact JSON,
+// persisted rows only — the route's derived `health`/return-path/executionStatus ride on top of
+// both sides equally): 224 926 B before, 118 579 B after, 106 347 B saved = 47.3 %. That weight is
+// dead payload on a poll the client repeats with a 30 s floor, while its renderer (src/client.ts,
+// the "Frame" section) reads exactly `intent` and `successCriterion`. Not a leak — the route is
+// owner-gated — just weight, and weight is the whole reason for the cut.
+// `evidence` becomes a COUNT rather than vanishing: no renderer hangs off it, but probes do, and a
+// number keeps their intent ("the full row is fat") sharper than an `Array.isArray` ever did.
+// This is the LIST only. Every other publicProgram callsite keeps the full shape by design —
+// /api/self/programs above all, where a pane reads the content itself (e2e/supervisor.ts).
+const publicProgramListRow = (program: Program): Record<string, unknown> => {
+  const { nonGoals: _nonGoals, decisions: _decisions, evidence: _evidence,
+    openQuestions: _openQuestions, ...rest } = publicProgram(program);
+  return { ...rest, evidenceCount: program.evidence.length };
+};
 const foundingAffected = (founding: ProgramFounding): { attemptId: string; slot: number; openedAt: number } => ({
   attemptId: founding.attemptId, slot: founding.target.slot, openedAt: founding.target.openedAt,
 });
@@ -19444,13 +19460,15 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
   // .programs, so it stays compatible by construction. `health` and the return path beside it are
   // the same additive shape and the same computations the Supervisor portfolio uses — DERIVED
   // fields, never persisted: they are recomputed per request because the occupant they describe can
-  // die between two of them. `health.occupancy` is where the former top-level `occupancy` lives
+  // die between two of them. The row itself is `publicProgramListRow`, not `publicProgram`: the four
+  // unrendered bodies are dropped here and `evidence` travels as `evidenceCount` (see there for the
+  // measurement). `health.occupancy` is where the former top-level `occupancy` lives
   // since V1a: it and `sessionIdMatch` are two halves of one question ("is the bound MAIN still
   // there, and is it still the one that was bound"), and splitting them across the row invited a
   // reader to answer the first and forget the second. The owner's own top-level `promotion` record
-  // rides along in `...p` untouched — this cut adds no second rendering of it.
+  // rides along in that spread untouched — this cut adds no second rendering of it.
   if (url.pathname === "/api/programs" && req.method === "GET")
-    return json({ programs: programs.map((p) => ({ ...publicProgram(p), health: programHealth(p),
+    return json({ programs: programs.map((p) => ({ ...publicProgramListRow(p), health: programHealth(p),
       ...programReturnPath(p),
       // `status` is already Program.status (the lifecycle state). D2 therefore uses an additive,
       // non-colliding owner-list name while the self execution row can use its requested `status`.

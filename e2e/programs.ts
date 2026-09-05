@@ -184,8 +184,13 @@ const canonical = (value: unknown): unknown => Array.isArray(value)
     ? Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))
       .map(([key, entry]) => [key, canonical(entry)]))
     : value;
-const ownerPrograms = async (): Promise<Program[]> =>
-  ((await (await get("/api/programs")).json()) as { programs: Program[] }).programs;
+// THE OWNER LIST ROW is not the full Program: server.ts#publicProgramListRow drops the four bodies
+// the list has no renderer for and sends `evidence` as `evidenceCount`. The full six survive on
+// /api/self/programs, where a pane reads the content itself (e2e/supervisor.ts).
+type OwnerProgramRow = Omit<Program, "nonGoals" | "decisions" | "evidence" | "openQuestions">
+  & { evidenceCount: number };
+const ownerPrograms = async (): Promise<OwnerProgramRow[]> =>
+  ((await (await get("/api/programs")).json()) as { programs: OwnerProgramRow[] }).programs;
 // occupancy is DERIVED per request and never persisted, so it is read off the route and never off
 // fleet.json — a state-file read would answer `undefined` for every program and look like "the
 // field is missing" rather than "this reader asked the wrong source". Since V1a it lives inside
@@ -448,8 +453,19 @@ export async function run(ctx: Ctx): Promise<void> {
   const full = (await ownerPrograms()).find((p) => p.id === proposed.id);
   check("programs digest: /api/sessions carries exactly id/status/title/createdAt and no bodies",
     !!digest && JSON.stringify(Object.keys(digest).sort()) === JSON.stringify(["createdAt", "id", "status", "title"])
-      && !("intent" in digest) && !!full?.intent && Array.isArray(full?.evidence),
+      && !("intent" in digest) && !!full?.intent && full?.evidenceCount === content.evidence.length,
     `digest=${JSON.stringify(digest)} full=${JSON.stringify(full)}`);
+  // …and the owner LIST is itself no longer the whole record: the four bodies it has no renderer
+  // for are gone, `evidence` travels as a count, and the SELF route beside it still carries all six
+  // — the split is what makes the 30 s poll cheap without making a pane's read poorer.
+  const selfFull = (await selfPrograms(plainToken)).programs.find((p) => p.id === proposed.id);
+  check("programs list projection: the owner list drops nonGoals/decisions/openQuestions and counts evidence, while /api/self/programs keeps all six",
+    !!full && !("nonGoals" in full) && !("decisions" in full) && !("openQuestions" in full)
+      && !("evidence" in full) && typeof full.evidenceCount === "number"
+      && !!selfFull && Array.isArray(selfFull.evidence) && Array.isArray(selfFull.nonGoals)
+      && Array.isArray(selfFull.decisions) && Array.isArray(selfFull.openQuestions)
+      && selfFull.evidence.length === full.evidenceCount,
+    `ownerKeys=${JSON.stringify(Object.keys(full ?? {}).sort())} selfEvidence=${JSON.stringify(selfFull?.evidence ?? null)}`);
 
   const tasksAfter = await (await get("/api/tasks")).json() as { tasks: Record<string, unknown>[] };
   check("programs isolation: creating and confirming a Program changes no task rows or queue projection",
@@ -5457,7 +5473,7 @@ export async function run(ctx: Ctx): Promise<void> {
       plantedIds.every((id) => {
         const row = afterProfileLoad.find((x) => x.id === id);
         return !!row && row.status === "active" && row.intent === content.intent
-          && Array.isArray(row.evidence) && row.evidence.length === content.evidence.length;
+          && row.evidenceCount === content.evidence.length;
       }),
       JSON.stringify(plantedIds.map((id) => [id, afterProfileLoad.find((x) => x.id === id)?.status ?? "GONE"])));
     // …and the legacy row: a Program persisted before this record existed carries no profile and

@@ -1,4 +1,4 @@
-# HANDOFF — 🎛 Fleet Controller (Slot 7, Fable 5.1): Dual-Host S2+S3 gelandet und deployt, W2 scharf, Umschalter-Liste auf beiden Hosts, E7 in Flug; 2026-09-06 03:2x, ctx GEMESSEN ~25 %
+# HANDOFF — 🎛 Fleet Controller (Slot 7, Fable 5.1): Dual-Host S2+S3+E7 gelandet und deployt, W2 scharf, Umschalter-Liste auf beiden Hosts live; naechstes ist S4; 2026-09-06 04:1x, ctx GEMESSEN 27 %
 
 > **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 4, 20:5x).
 > **Der Controller ist, wer das Label `🎛 Fleet Controller` traegt.** Lineage: … → 5 → 4 → 7 → du.
@@ -7,30 +7,27 @@ Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, Owner-Poll, P
 
 ## 0. Was du als Erstes tust
 
-1. `GET /api/self/attention`: ich hinterlasse KEINE offene Attention. Meine Watches sterben mit mir; der
-   einzige, der zaehlt: **E7 in Slot 5** (C-Guard, Task `7d1c6ca6`, Branch `fleet/260905204936-38af`,
-   Commit `04614ea`, Opus 5 high). Arm `POST /api/self/watch {"target":5}`. Die Lane hatte auf `e479fed`
-   rebased, ihre Kette neu gefahren und zuletzt einen **Kontrolllauf auf main allein** gestartet — also
-   hat ihre isolierte Vorschau ein Rot gezeigt, und sie beweist per §11.7-Fallback, ob es der Baum oder
-   ihr Diff ist. Report lesen: ist das Rot bei main identisch, ist es nicht ihres. Ihr Diff habe ich
-   gelesen und trage ihn (Floor-Sha `1748417c` ist der Command-Commit auf main; `HELPER_UPDATE_REPO`
-   faellt auf den Fleet-Checkout zurueck, ist live nie null).
-2. **Wenn E7 gemeldet ist:** accept, `POST /api/slots/5/merge {}`, Merge-Watch, Audit-Watch auf den Tip,
-   **Deploy** (`POST /api/deploy`; danach `GET /api/deploys` `ok:true`, `deployGap.codeBehind:false`).
-   **Dieser Deploy ist doppelt faellig:** er aktiviert auch `FLEET_INSTANCES` in der Mac-`.env` (Zeile
-   steht seit 03:0x, der laufende srv kennt sie noch nicht — Owner-Poll hier sagt `instances: null`,
-   der Folger sagt schon beide). Die Route lehnt bei laufendem Audit mit `preflight` ab — dann Audit-Watch
-   abwarten, nicht `kill-session`.
-3. **Dann S4** (der reale End-to-End-Lauf; Text `docs/dual-host-topologie-entscheidung-2026-09-05.md` §3
-   S4). Er ist eine NEUE Tiefenkette und hat drei Vorbedingungen, alle deine: (a) die Bundle-Luecke des
-   Folgers `74fee8c3` — sein Board hat kein `public/*.js`, `fleet-sync.sh` baut nicht; ohne Fix ist W3
-   nur per API machbar (`POST /api/programs` + confirm auf `<folger>:8790`, Token in dessen `.env`
-   `FLEET_TOKEN`, NICHT in dessen `fleet.json`, dort ist `token: null`); (b) W3 = ein nicht-iOS Program
-   auf dem Folger bestaetigen, MAIN dort bootstrappen (Fable); (c) W4 = die Lane-Branch hierher holen
-   (`git fetch ssh://<user>@<folger>/~/claude-fleet '+refs/heads/*:refs/remotes/second-host/*'`)
-   und durch DIESEN Gate landen. Owner-Delegation gilt fort (§1).
-4. **E8 `34053ec9`** (Suite-Offer ohne Fail-Namen; pending, Program `cd110019`) ist dispatchbar, sobald ein
-   Lane-Platz frei ist — klein, Opus high, unabhaengig von S4.
+1. `GET /api/self/attention`: ich hinterlasse KEINE offene Attention und KEINEN armierten Watch, der
+   noch zaehlt — E7 ist gelandet (`44fb442`), Audit gruen (3731/0, 2 397 s), Deploy `7a39aed3` `ok:true`,
+   bootHead `44fb442`, `codeBehind:false`, Owner-Poll hier zeigt `instances` mit beiden Hosts. Das
+   Dual-Host-Program `cd110019` hat weiterhin KEINE lebende MAIN; der Controller faehrt es.
+2. **S4** (der reale End-to-End-Lauf; Text `docs/dual-host-topologie-entscheidung-2026-09-05.md` §3
+   S4) ist die naechste Zeile und eine NEUE Tiefenkette mit drei Vorbedingungen, alle deine:
+   (a) die Bundle-Luecke des Folgers `74fee8c3` — sein Board hat kein `public/*.js`, `fleet-sync.sh`
+   baut nicht; ohne Fix ist W3 nur per API machbar (`POST /api/programs` + confirm auf `<folger>:8790`,
+   Token in dessen `.env` `FLEET_TOKEN`, NICHT in dessen `fleet.json`, dort ist `token: null`);
+   (b) W3 = ein nicht-iOS Program auf dem Folger bestaetigen, MAIN dort bootstrappen (Fable);
+   (c) W4 = die Lane-Branch hierher holen
+   (`git fetch ssh://<user>@<folger>/~/claude-fleet '+refs/heads/*:refs/remotes/second-host/*'`) und
+   durch DIESEN Gate landen. Empfehlung: erst (a) als kleine Opus-Lane (Kriterium steht in der Notiz),
+   dann S4 als Lane briefen, die MISST — die Host-Akte (b)(c) bleiben deine. Owner-Delegation gilt
+   fort (§1). E7-Nebenwirkung, die S4 trifft: der Live-Server refused jetzt command-Claims eines
+   Second-host-Daemons, dessen `daemonSha` `1748417c` nicht als Vorfahr hat — dann dort einmal
+   `daemon-update` fahren.
+3. **E8 `34053ec9`** (Suite-Offer ohne Fail-Namen; pending, Program `cd110019`) ist dispatchbar, sobald
+   ein Lane-Platz frei ist — klein, Opus high, unabhaengig von S4.
+4. **Notiz `16da0d0f` an Audit-Determiniertheit** (`./e2e-postland-audit.sh` seit `4c562e7` auf main
+   ROT, zwei (J)-Checks; Sonde, nicht Server) — gehoert deren MAIN (Slot 6), nur beobachten.
 
 ## 1. Owner-Entscheide (keine neuen in dieser Session)
 
@@ -56,6 +53,9 @@ Owner-Nachricht 21:2x „wie ist der stand der dinge?" — beantwortet, kein Ent
   Folger verlor die inneren Anfuehrungszeichen (unquoted Heredoc + `"$LINE"` — 88 statt 104 Zeichen,
   Bootlog `dropped — not JSON`); repariert per scp der Zeile + python-Ersatz, srv-Kill, Poll dort zeigt
   beide Eintraege. Lehre: JSON-Werte per Datei auf einen Host bringen, nie durch zwei Shell-Ebenen.
+- **E7 `7d1c6ca6` → `44fb442`** (C-Guard: `daemonSha` wird gelesen, nicht gezaehlt; Note `verify.ok true`,
+  150 s, `waitMs 0`). Report `a1f9f8a2` accepted; zwei gemessene Abweichungen vom Auftrag (Floor `1748417c`,
+  Messung im Helper-Update-Repo) getragen. Audit `44fb442` GRUEN 3731/0. **Deploy `7a39aed3`** `ok:true`.
 - Notizen gefilet: `07ef9694` (claude ohne `paneReadiness`, vier Erststart-Dialoge), `970238ad`
   (`transcriptFile`-Pin), `74fee8c3` (Folger ohne Bundle). Auftrag `34053ec9` (E8).
 - Korrektur am Vorgaenger-Handoff: ueber `bootHead b7c2cc1` lag auch `5986afa` (feat), aber nur
@@ -63,7 +63,7 @@ Owner-Nachricht 21:2x „wie ist der stand der dinge?" — beantwortet, kein Ent
 
 ## 3. Offen — in dieser Reihenfolge
 
-1. §0.1 E7-Watch, §0.2 Land/Deploy (aktiviert `FLEET_INSTANCES` hier), §0.3 S4 mit (a)(b)(c), §0.4 E8.
+1. §0.2 S4 mit (a)(b)(c), §0.3 E8. Nichts in Flug.
 2. Slot 1 (`02740e69`, Fleet-Betrieb) und Slot 6/2-Zeilen gehoeren ihren MAINs — nicht landen. Slot 10
    (Fleet-Betrieb-MAIN) kuendigte Nachfolge an; `e479fed` war ein Docs-Direkt-Commit einer MAIN.
 3. Der Engpass ist die MASCHINE, nicht der Code: 9 GB RAM, 38 % frei, ein Suite-Mutex fuer Lanes und
@@ -74,7 +74,7 @@ Owner-Nachricht 21:2x „wie ist der stand der dinge?" — beantwortet, kein Ent
 
 ## 4. Was mit dieser Session stirbt
 
-Lane-Watch Slot 5 (E7), sonst nichts armiert. Kein Auto, keine Mission, keine offene Attention.
+Nichts armiert. Kein Auto, keine Mission, keine offene Attention. Meine Lane-Plaetze 4 und 5 sind frei.
 
 ---
 ---

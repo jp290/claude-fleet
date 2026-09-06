@@ -93,6 +93,15 @@ Route. Done, wenn die Ansicht ausschließlich aus `GET /api/sessions`, `GET /api
 Reihenfolge danach: Studio als Vorlage (Felder aus Game-Maker v2 und Studio-Doc) → ContextPack
 und Thread zuletzt, mit Astras Plan-Lücken-Register (`1af3fa1f`) als Input.
 
+> Nachtrag 19:2x: „Bei all dem sollte potenziell auch das Routing der ContextPacks, und was auch
+> immer noch, mitbedacht werden."
+
+Lesart: ein ContextPack braucht wie eine Task einen EMPFÄNGER (Repo, Program, Studio-Rolle) und
+einen Weg dorthin. Das ist die Program-Inbox (Fleet-Betrieb D1, `c3604ce3` sent) verallgemeinert
+von Nachrichten auf Packs — D1 sollte deshalb mit Packs als zweitem Payload entworfen werden,
+nicht nur mit Text. Wer ein Pack an eine Rolle statt an eine Session adressiert, braucht das
+`role`-Feld aus §2 (Act 6) zuerst.
+
 ## 5. Offen beim Owner
 
 1. Studio als wiederverwendbare Vorlage oder als langlebiges Ding mit eigener MAIN?
@@ -100,3 +109,4 @@ und Thread zuletzt, mit Astras Plan-Lücken-Register (`1af3fa1f`) als Input.
    Diskussion?
 3. Wer fällt auf der Plattform ein Verdikt: nur der Owner, oder auch eine MAIN mit Grant?
 4. Wie Tasks sich bei Repo, Studio und Sonstigem einreihen (Owner: „müssen wir sauber durchdenken").
+5. Routing der ContextPacks: Empfänger = Rolle, Program oder Repo? Und wer darf ein Pack weiterleiten?

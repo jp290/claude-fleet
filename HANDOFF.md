@@ -230,7 +230,7 @@ git und die Sensoren nicht tragen. Abschnitte darunter sind FREMD.
 ---
 ---
 
-# HANDOFF — 🎛 Fleet Controller (Slot 5, Fable 5.1): Deploy `e1c165e9` auf `bc6f2a5` + Daemon `780d2f5`, Hand-Audit auf dem Second-host GRUEN 3742/0 (steht in keinem Ledger), 129 Scratch-Instanzen gereapt, vier Owner-Richtungen gefilt (eine laeuft als Lane an mich geankert); 2026-09-06 12:0x, ctx GEMESSEN 23,4 %
+# HANDOFF — 🎛 Fleet Controller (Slot 5, Fable 5.1): Deploy `e1c165e9` auf `bc6f2a5` + Daemon `780d2f5`, Hand-Audit Second-host GRUEN 3742/0 (kein Ledger), Wellen-Report GELANDET `d53643b`, 129 Scratch-Instanzen gereapt, sieben Owner-Zeilen gefilt; 2026-09-06 12:2x, ctx GEMESSEN 26,5 %
 
 > **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 6, 09:5x).
 > **Der Controller ist, wer das Label `🎛 Fleet Controller` traegt.** Lineage: … → 2 → 6 → 5 → du.
@@ -240,14 +240,17 @@ Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, Owner-Poll, P
 
 ## 0. Was du als Erstes tust
 
-1. `GET /api/self/attention` + `/fleet-report`: ich hinterlasse KEINE offene Attention. **Mit mir stirbt
-   ein armierter Lane-Watch `695b6462` auf Slot 6** (Lane `18a31359`, Branch `fleet/260906094200-f064`,
-   Denkauftrag Wellenzusammenlegung, an Slot 5 GEANKERT — der Report ist an den Controller adressiert,
-   nach meinem Ende landet er im Owner-Inbox). Armiere `{target:6}` neu, lies dann den Report: es ist ein
-   DOKUMENT (`docs/queue-wellen-<datum>.md`), kein Code; landen wie eine Docs-Lane (kurze Kette).
+1. `GET /api/self/attention` + `/fleet-report`: ich hinterlasse KEINE offene Attention und keinen
+   unentschiedenen Report. **Der Wellen-Report ist GELANDET** (`d53643b`, `docs/queue-wellen-2026-09-06.md`,
+   Docs-Kurzkette 828 ms, Note `verify.ok true`, Hub gepusht, Audit-Watch `4209d226` stirbt mit mir —
+   ein Docs-only-Audit ist 2 s, pruef die Ledger-Zeile). **Lies §5 (S1–S3) und den NEBENBEFUND in §1.1:
+   der Kollisionsgate in `tickDispatch` ist im Betrieb TOT (`FLEET_ANALYSIS_MS=0` in `watchdog.sh`),
+   nur der Lane-Deckel 2 schuetzt** — Notiz mit allen Kernzahlen steht in der Queue (Suchwort
+   „WELLEN-REPORT GELANDET"). Naechster Zug daraus: S1+S2 mit `187aa1a0` in EIN Program, wenn der Owner
+   freigibt; der Wellen-Schnitt ist Arithmetik, kein Modell.
 2. **`84cf7335` (Resolver-Sensor) und `d904fb4e` (Second-host zwei Suiten parallel) sind `queued`** — beide
    starten vom Tick, sobald der Lane-Deckel (2 je Repo) frei ist; Slot 1 (`508dc4bb`) und Slot 4
-   (`76d39cae`) gehoeren der Audit-Determiniertheit-MAIN Slot 7, Slot 6 dem Owner-Handdispatch. Sobald
+   (`76d39cae`) gehoeren der Audit-Determiniertheit-MAIN Slot 7; Slot 6 ist seit dem Land frei. Sobald
    eine der beiden einen Slot hat: Lane-Watch, sonst landet ihr Report nirgends bei dir.
 3. **Kein Deploy offen:** `bootHead bc6f2a5` = main, `codeBehind:false`, `bundleStale:false` (12:0x).
    Hub steht auf main (`git ls-remote hub main`). **Hub-Regel bis W5b: nach JEDEM Land `git push hub
@@ -305,7 +308,7 @@ Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, Owner-Poll, P
 
 ## 4. Was mit dieser Session stirbt
 
-Lane-Watch `695b6462` (Slot 6). Kein Auto, keine Mission, keine Attention. Zwei Monitore dieser Pane
+Audit-Watch `4209d226` (d53643b). Lane-/Merge-Watch auf Slot 6 sind gefeuert. Kein Auto, keine Mission, keine Attention. Zwei Monitore dieser Pane
 (84cf7335-Status, Second-host) sterben mit der Pane, sie sind nur meine Wecker.
 
 ---

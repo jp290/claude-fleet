@@ -19,7 +19,15 @@
 #       directory is created in the copy. (drill-3.sh's earlier derived GUARD — the only derived
 #       thing in the old arrangement — matched `from "./name"` only and was blind to precisely
 #       that shape.)
-#   (2) public/ and package.json — the fixed runtime assets every instance needs.
+#   (2) public/, package.json and fleet-sync.sh — the fixed assets every instance needs. The first
+#       two are runtime; fleet-sync.sh is here because a check runs THE REAL SCRIPT (e2e/land-
+#       durability.ts §F) and no import scan can see a file a test SPAWNS. It used to be reached
+#       through (4)'s pointer home instead, and that is precisely why it had to move: the pointer
+#       home resolves only when the source tree is a git work tree, and the post-land audit's
+#       source is a `git archive` extract with no `.git` at all (server.ts#snapshotIntegrationTree
+#       builds a git context ONLY for the proportional short chain). So §F's probe read
+#       `sourceTree=null` and failed in EVERY full audit while passing in every lane — main was
+#       red from b224ef8 on. An instance now carries the script it is asked to exercise.
 #   (3) $STAGE_EXTRA — assets read BY PATH rather than imported, which no import scan can see
 #       (fleet-e2e-security.ts readFileSync's src/client.ts and src/md.ts).
 #   (4) a node_modules symlink back to SRC. Also the only pointer home from inside the copy, which
@@ -432,7 +440,7 @@ stage_instance() {
     mkdir -p "$_st_d/$(dirname "$_st_rel")" || return 1
     cp "$_st_s/$_st_rel" "$_st_d/$_st_rel" || return 1
   done
-  cp -R "$_st_s/public" "$_st_s/package.json" "$_st_d/" || return 1
+  cp -R "$_st_s/public" "$_st_s/package.json" "$_st_s/fleet-sync.sh" "$_st_d/" || return 1
   for _st_x in ${STAGE_EXTRA:-}; do
     cp -R "$_st_s/$_st_x" "$_st_d/" || return 1
   done

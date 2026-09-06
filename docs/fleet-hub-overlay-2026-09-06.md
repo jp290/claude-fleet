@@ -45,6 +45,15 @@ Repos, sondern Arten von Aktivität IM Repo und laufen gleichzeitig. Studio = Vo
 Stufen, Werkzeuge, ContextPlan), Program = Ausführung (Ziel, MAIN, Queue, Erfolgskriterium),
 AutoDev = Autonomiegrad eines Programs, nicht ein Geschwister der Studios.
 
+> Nachtrag 18:5x: „Ja, wobei wir alles soweit, je nach Programm und Modus, abstrahieren und
+> simplifizieren wollen."
+
+Konsequenz: die Projektion ist HÖHENABHÄNGIG. Je Aktivitätsart eine eigene Kartenform, nicht
+drei gleichförmige Spalten: ein freeDev-Repo zeigt seine Slots und sonst nichts · ein
+AutoDev-Program zeigt seine Regler (Release-Tür, Self-Land, Dispatch-Grant, Deckel), den
+Queue-Stand in einer Zahl und die NÄCHSTE Owner-Entscheidung · ein Studio zeigt seine Stufen und
+die Stufe, in der es steht. Detail liegt eine Ebene tiefer, in der bestehenden Ansicht.
+
 ## 3. Die eine harte Regel: Overlay heißt Projektion
 
 Der Hub hat KEINEN eigenen Zustand. Er liest dieselben Daten wie Board, Queue und
@@ -56,8 +65,9 @@ richtigen Stelle.
 
 ## 4. Vorgeschlagener erster Schnitt (client-only, freezefrei nach Portfolio-Plan §0.4)
 
-Eine Repo-Zeile je Projekt-Repo mit drei Spalten: freie Slots · laufende Programs mit
-Autonomiegrad und Queue-Stand (queued/sent/pending) · Studios vorerst als Verweis auf ihre Docs.
+Eine Repo-Zeile je Projekt-Repo mit je einer Karte pro Aktivitätsart (Form nach §2-Nachtrag):
+freie Slots · laufende Programs mit Autonomiegrad, Queue-Zahl und nächster Owner-Entscheidung ·
+Studios vorerst als Verweis auf ihre Docs.
 Darunter die Land-Takt-Zahl des Repos aus den Ledgern. Kein neues Feld am Server, keine neue
 Route. Done, wenn die Ansicht ausschließlich aus `GET /api/sessions`, `GET /api/tasks`,
 `GET /api/programs` gebaut ist und jeder Klick in eine bestehende Ansicht führt.

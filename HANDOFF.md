@@ -1,3 +1,147 @@
+# HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 2, Opus 5): drei Zeilen gelandet, zwei mit gruenem Audit; EINE Sackgasse im Land-Pfad ist heute zweimal beim Owner gelandet, obwohl er das Landen delegiert hat; 2026-09-07 00:4x, ctx GEMESSEN 30,3 %
+
+> **Dieser Abschnitt ERSETZT keinen anderen — er steht oben, weil der Gruendungsbrief „read only the top
+> HANDOFF.md section" sagt und die Datei GETEILT ist.** Der Abschnitt darunter gehoert einem FREMDEN Program
+> (Audit-Determiniertheit). Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`.
+
+## 0. DEIN ERSTER ZUG — nichts landen, zuerst zwei Tueren pruefen
+
+**Es wartet KEINE landbare Lane von uns.** Was wartet, sind zwei Dinge, die nur der Owner loesen kann; pruefe
+beide, BEVOR du irgendetwas planst:
+
+1. **`GET /api/self/attention`** — meine Zeile `589c7290` (`blocked`) steht `open`. **EINE SUCCESSION TOETET
+   OFFENE ATTENTIONS STILL** (`refused`, `requester session ended`). Findest du sie so vor, ist sie
+   UNBEANTWORTET, nicht abgelehnt — **stell sie neu**, ihr Inhalt steht vollstaendig in §2 unten.
+2. **Slot 11** (`580cc453`, `fleet/260906175114-c807`, docs-only, von Program `e3b3a064` angenommen) haelt
+   den zweiten Lane-Platz und hat KEINE Landepartei. **Du kannst sie nicht landen** — zweimal mechanisch
+   gemessen (2026-09-06 21:0x und 00:3x):
+   `POST /api/self/tasks/580cc453/land` → 409 `task belongs to no program of this MAIN`.
+   Die Ablehnung kommt auf Stufe 3 der Leiter (Programgrenze), VOR jeder Verify-Frage — „docs-only ist
+   billig" aendert daran nichts. Solange sie steht, ist der Lane-Deckel 2/2 belegt und **`c5de54cc` kann
+   nicht starten**. Nicht du bist blockiert, der Owner-Klick fehlt.
+
+## 1. Was gelandet ist (Shas auf main verifiziert)
+
+| Sha | Zeile | Gate | Audit |
+|---|---|---|---|
+| `c4e53f9` | I14 Adjudikations-Aktor (Schnitt 5a) | gruen, `ms 149789`, `waitMs 0` | `unknown` — 2 700 s Timeout, nie gemessen |
+| `394a066` | `746500ec` Second-host zweiter Mutex-Slot | gruen, `ms 140944`, `waitMs 0` | **gruen `3772/0`, `ms 2102616`** |
+| `d6d5cb2`+`453092c` | `c3604ce3` Schnitt 3a-i Program-Inbox | **NIE GELAUFEN** (§2) | **gruen `3780/0`, `ms 2114904`** |
+
+**Kriterium (d) hat jetzt vier Belege**: `93e5460`, `1d5efb9` (Vorgaengerin), `c4e53f9`, `394a066` tragen
+`actor{kind:"main", slot:…, program:f170dc46}` — kein Merge des Controllers. `453092c` traegt
+`actor{kind:"owner", via:"cookie"}, confirmedByHuman:true` und ist die AUSNAHME, die §2 erklaert.
+
+**`hubPush` ist live und beobachtet** (erstes Land nach Deploy `5c7553fd`):
+`{"ok":true,"remote":"hub","sha":"…"}` auf `394a066` UND `453092c`. Kein Hand-Push mehr. Fehlt das Feld
+einmal, ist das ein Befund — melde es dem Controller.
+
+## 2. DIE SACKGASSE, und sie ist der wichtigste Satz dieses Abschnitts
+
+**Ein Land, dessen Gate AUSGEWARTET wurde, ist auf der Self-Land-Sprosse dauerhaft tot.** Gemessen an
+`c3604ce3`:
+- Gate: `resolved/landed:false`, `"clean rebase, but verify NEVER STARTED"`,
+  `verify{ok:null, waitedOut:true, ms:2782909, waitMs:2656000}` — 44 von 46 min Schlange, dann Kill.
+- Zweiter Land-Aufruf bei **nachweislich freiem Mutex** → 409
+  `no progress since the last verdict — repair or escalate: resolved on the same candidate cc1fc7dc`.
+- **Warum es keinen Ausweg gibt:** der Guard (`server.ts#selfLandTaskForMain`, grep
+  `no progress since the last verdict`) begruendet sich mit „re-running the same gate over the same bytes
+  cannot produce a different answer" — fuer `waitedOut` ist das FALSCH, der Gate hat die Bytes nie gelesen.
+  Die `guarded`-Ausnahme daneben verlangt `conflicted` ODER `resolvedBy`; ein **sauberer** Rebase hat beides
+  nicht. Der Baum aendert sich nicht mehr, und main-Bewegung oeffnet den Guard nicht (`4761020`).
+- **Der bessere dritte Weg, den ich erst nach der Attention fand:** der Guard sitzt AUSSCHLIESSLICH in
+  `selfLandTaskForMain`. Die Owner-⏫-Route ruft dasselbe `mergeJob` OHNE diese Sprosse — sie laeuft den Gate
+  FRISCH und landet auf echtem Gruen, statt verify `stale` zu stempeln. Nenne dem Owner diesen Weg zuerst.
+- **Reparatur ist gefilt: `1c746e96`** (`verify.ok===null && waitedOut` darf kein `unchangedRetry` sein; drei
+  Checks mit Mutation, roter und gruener Fall muessen weiterhin abgelehnt werden). Die aeltere Zeile dazu,
+  `6101dbc3`, ist ARCHIVIERT und nie gelandet — genau deshalb stand ich davor.
+
+**Was ich NICHT getan habe:** einen Leer-Commit in die Lane setzen, um die Kandidaten-Sha zu aendern. Das
+oeffnet den Guard mechanisch und faelscht „Fortschritt". Tu es auch nicht.
+
+## 3. Die Wurzel des Tages, als Kette — sie erklaert alles andere
+
+> Offer-Seite sieht den Helfer nicht → Vorschau laeuft LOKAL → Mac-Mutex ~75 min belegt →
+> mein Land-Gate wartet 2 656 s aus → Progress-Guard sperrt den zweiten Versuch → Zeile beim Owner.
+
+Jedes Glied ist gemessen. Das erste: die Lane von `746500ec` hat den Suite-Offer **versucht** und bekam
+`offer:null`, `reason "no helper online"`, `lastSeenAgeMs 141485` (20:43, keine Quiet Hours). Damit ist die
+Owner-Regel vom 2026-09-06 20:3x („Vorschauen ueber den Suite-Offer auf den Second-host") **derzeit nicht
+durchsetzbar** — die Tuer sieht den Helfer nicht. **`c5de54cc` ist deshalb nicht Aufraeumarbeit, sondern die
+Voraussetzung dafuer, dass die Regel wirkt.** Zweiter unabhaengiger Beleg desselben Befunds, heute datiert;
+der erste ist vom 2026-09-05 14:06.
+
+Drei Nicht-Antworten an einem Tag, alle aus derselben Wurzel: Audit `57ff764` (2 700 s → `unknown`), Audit zu
+`37d6e95` (2 700 s → `unknown`), Land-Gate `c3604ce3` (2 656 s Schlange → `waitedOut`). Und: **die Suite ist
+nicht zu langsam.** Drei Volllaeufe heute, die ein Verdikt erreichten: 2 102 616 / 2 102 689 / 2 114 904 ms —
+alle deutlich unter der 2 700 000-ms-Decke. Die Differenz ist Warten, nicht Arbeit.
+
+## 4. Die Queue, in dieser Reihenfolge, mit dem Warum
+
+1. **`c5de54cc`** (queued, wartet auf einen Lane-Platz) — Offer-Online-Divergenz. Ihr Brief traegt zwei
+   Nachtraege von mir: (a) ZUERST am heutigen HEAD pruefen, ob die Divergenz noch besteht — `394a066` hat
+   `helper-daemon/daemon.ts` und den Portal-Claim-Pfad gerade bewegt, ein belegtes „besteht nicht mehr"
+   beendet die Zeile vollwertig; (b) der heutige Anlass mit Zahlen.
+2. **`1c746e96`** — der Progress-Guard aus §2. Bis sie laeuft, endet jedes ausgewartete Land beim Owner.
+3. **`c9791a49`** — der Post-Land-Audit zaehlt Warten als Arbeit UND sein Timeout toetet das Kind nicht
+   (Wrapper hielt den Mutex 41 min nach dem Aufgeben des Servers weiter; die Kill-Staffel `killProcessTree`
+   IST da und greift nicht — miss zuerst warum). **`ff4544f5` ist die veraltete Fassung derselben Zeile und
+   gehoert archiviert** — Text-Anfang identisch, leicht zu verwechseln.
+4. **`18e87e67`** — eine abgelehnte Lane erfaehrt ihre Ablehnung nicht (Controller-Befund; erst am Code
+   entscheiden, welche der drei Formen zutrifft, auch wenn das den Befund widerlegt).
+5. **`c62aa3e9`** — adressierter Rueckweg MAIN↔Controller. **Brief ist ABSICHTLICH noch nicht geschaerft**:
+   Symbol-Anker und E2E-Namen koennen erst gegen den GELANDETEN Inbox-Baum (`453092c`) geschrieben werden.
+   Jetzt ist er gelandet — das Schaerfen ist ein guter erster Arbeitszug fuer dich.
+6. **Hub-Schnitt 1** (client-only, Master-Detail nach `docs/fleet-hub-overlay-2026-09-06.md` §4 MIT Nachtrag
+   19:0x — nicht die Drei-Spalten-Form aus `0544306f`). **Noch nicht gefilt**, Grund unten.
+
+**ZWEI FILING-DECKEL, beide heute erreicht** — plane damit, sie sind keine Fehler:
+- `kind:"notiz"`: **10/10**, „ask the owner to dispose". Dieses Program kann **keine Befunde mehr filen**.
+  Deshalb stehen zwei in Prosa (§5) statt in der Queue.
+- `kind:"auftrag"`: **5/5 pending, nicht freigegeben**. Genau daran scheiterte der Hub-Brief. Eine Freigabe
+  macht einen Platz frei.
+
+## 5. Zwei Befunde, die nur hier stehen (Notiz-Tuer ist zu)
+
+- **Eine Sonden-Voraussetzung steht im selben `check()` wie die Behauptung.** `e2e/merge.ts:88` liest
+  `git branch --show-current` aus dem Lane-Worktree, NACHDEM der async Merge-Job gestartet wurde; im Rebase
+  liefert das leer. Beide Deploy-Checks daneben gaten auf `mergeBranch.length > 0` und fallen GEMEINSAM —
+  und lesen sich dann als „der Server verweigert den Deploy nicht", obwohl die Fixture nicht lesen konnte.
+  Zwei falsche Schuldsprueche pro Auftreten, Basisrate 1/71, UNREGISTRIERT. Klasse: „eine Sonde, die nicht
+  laufen konnte, muss als SIE SELBST scheitern".
+- **`(J)` in `fleet-e2e-postland-audit.ts` ist auf main deterministisch rot und NICHT registriert.** Der
+  Check behauptet `freshReceiver.lastOutput === 0` direkt nach `/slots/:id/open` — ein Negativ, das die
+  Fixture nicht besitzt (gemessen `openedAt`→`lastOutput` 96 ms / 94 ms). Kontrolle auf sauberem main
+  gefahren (2/2 Lane-Baum, 1/1 main). Siebtes Mitglied der §11.2-Klasse, gehoert nach
+  `docs/verify-tiering.md`.
+
+## 6. Zwei Korrekturen an mir selbst
+
+- **Mein erster Hintergrund-Watcher war falsch gebaut**: `until`-Loop in ein `nohup … &` INNERHALB des
+  Hintergrund-Aufrufs — die Harness verfolgte die aeussere Shell, die sofort mit Exit 0 zurueckkam. Die
+  „fertig"-Meldung war der Wrapper, NICHT die Bedingung; der Mutex war weiter belegt. Haette ich ihr
+  geglaubt, waere ich mitten in den laufenden Lauf hinein gelandet. **Der Loop selbst muss das
+  harness-verfolgte Kommando sein.**
+- **Ich hatte dem Controller zugesagt, `c3604ce3` beim Review gegen „zweiter Payload + Empfaenger-Typ" zu
+  pruefen — und das zurueckgenommen.** Astras Schnittgrenze ist richtig: S3a-i baut das Datenmodell
+  ausdruecklich OHNE Schreiber; einen unbestellten Folgeschnitt hineinzulesen haette entweder den fertigen
+  Basisschnitt aufgehalten oder einen Rueckkanal als geliefert gemeldet, dessen Sender-/Reply-Pfad nie
+  bewiesen wurde. Der Kanal ist `c62aa3e9`.
+
+## 7. Betrieb, was du wissen musst
+
+- **Owner-Regel 2026-09-06 20:3x:** Lane-Vorschau (`./e2e-isolated.sh`) nur noch verlangen, wenn die Lane
+  `e2e/`, einen Suite-Wrapper oder den Merge-/Land-Pfad anfasst — und dann ueber den Suite-Offer, lokal nur
+  als Fallback. **Mein Einwand an den Controller steht unbeantwortet:** weil jeder neue Check per Regelbuch
+  in `e2e/` landet, trifft die erste Bedingung fast jede Lane; der Hebel ist der Second-host, nicht die
+  Ausnahme — und der haengt an `c5de54cc` (§3).
+- **Vor JEDEM Commit auf main** die `merges`-Probe in einem EIGENEN Aufruf, dessen Ausgabe du liest:
+  `python3 -c 'import json; print({k:v["status"] for k,v in json.load(open("fleet.json")).get("merges",{}).items()})'`
+- `docs/messungen/2026-09-06-plan-luecken-register.md` liegt UNTRACKED im Haupt-Checkout (fremde Arbeit,
+  Astra/Controller). Nicht von mir, nicht angefasst, **nicht mitcommitten**.
+- Deploy: `deploy.codeBehind` pruefen; `POST /api/deploy` ist Owner-/Steward-Token, und ein Deploy nullt die
+  Idle-Uhr JEDER Pane — vor dem Zug die Programs fragen, deren Beweis an einem Idle-Fenster haengt.
+
 # HANDOFF — Program-MAIN „Audit-Determiniertheit 2026-09" (`79036e9a58e3429578165297`, Slot 7, Opus 5): zwei Zeilen gelandet (§11.2s D2 + §11.0b Instrument), zwei Familien registriert, lokale Audit-Rot-Rate 79 % → 25 %; 2026-09-06 ~16:0x, ctx GEMESSEN 25.6 %
 
 > **Dieser Abschnitt ERSETZT den aelteren darunter.** Zustand ableiten: `./state.sh`, `./register.sh`,

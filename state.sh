@@ -178,6 +178,28 @@ else:
               f"  — {free}/{len(wait)} waited 0s (suite mutex free)")
     if not work and not wait:
         print("    gate timing UNKNOWN — no note carries ms/waitMs yet (the fields postdate 08dc17a)")
+    # THE CONFLICT RESOLVER'S OWN COST, which no ledger could state before 2026-09-06: the note
+    # carried THAT a conflict was agent-resolved and never which agent, how it answered, or how
+    # long it took. One `resolverRuns` row per worker SPAWN (resolver first, then each repair
+    # round), so `runs` is spawns and not lands. `first-try` is the strictest reading on purpose:
+    # the job's first spawn answered `rebased` AND no repair round followed it — a resolution that
+    # needed a repair round is not a first-try success however green it ended.
+    runs = [r for n in notes for r in (n.get('resolverRuns') or []) if isinstance(r, dict)]
+    jobs = [n.get('resolverRuns') for n in notes if n.get('resolverRuns')]
+    if not runs:
+        print("    resolver UNKNOWN — no land note carries resolverRuns yet (the field postdates"
+              " 2026-09-06; a clean rebase spawns no resolver and correctly has none)")
+    else:
+        # backend rides in the key: a codex-exec run of the same model name is not the same run,
+        # and a histogram that hid that would answer the model question with two things in one bar
+        hist = Counter(f"{r.get('model')}{'/' + r['backend'] if r.get('backend') else ''}" for r in runs)
+        first = sum(1 for j in jobs if len(j) == 1 and j[0].get('status') == 'rebased')
+        st = Counter(r.get('status') for r in runs)
+        print(f"    resolver: {len(runs)} runs over {len(jobs)} conflict lands · "
+              + " ".join(f"{m} {c}" for m, c in hist.most_common())
+              + f" · first-try {first}/{len(jobs)} = {first*100//len(jobs)}%")
+        print("      statuses: " + " ".join(f"{k} {v}" for k, v in st.most_common())
+              + "  — unparseable/error are the model failing its contract or its clock, not git")
 PY
 echo
 echo "=== is the running server the code on disk?  (main checkout: $MAIN_CHECKOUT) ==="

@@ -1624,16 +1624,23 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
 // server.ts wiring deleted. Held EXACT at two call sites, and the suffix form is part of the rule —
 // appending is what keeps runWorker's contract-mark check satisfied, and computing the plan at the
 // call site is what keeps the other nine workers from inheriting landing rules through WorkerSpec.
+// THE SUFFIX IS NOW BOUND TO A NAME (`anchored`) rather than interpolated into the argument, and
+// the rule follows it there rather than being loosened: since 2026-09-06 each worker is timed for
+// its ResolverRun row, and an anchor block computed inside the timed expression would charge every
+// resolver run a git+classification read the model never paid. Both halves are still held exact —
+// the same one-line append at both sites, and the same bound name passed at both calls — so a
+// third worker still cannot inherit landing rules and neither site can quietly drop the suffix.
 {
-  const appended = [...server.matchAll(/\$\{await landingAnchorBlock\(root\)\}`, cwd\);/g)].length;
+  const appended = [...server.matchAll(/^  const anchored = `\$\{prompt\}\$\{await landingAnchorBlock\(root\)\}`;$/gm)].length;
+  const passed = [...server.matchAll(/^      anchored, cwd\);$/gm)].length;
   pin("the merge and repair workers each append the landing anchors, and no shared runner hands them to anyone else",
-    appended === 2
+    appended === 2 && passed === 2
     && /const sourceTree = await dispatchSourceTree\(root\)\.catch\(\(\) => null\);\n  if \(sourceTree === null\) return "";/.test(server)
     && /async function landingAnchorBlock\(root: string\): Promise<string> \{/.test(server)
     && /triggers: \["landing"\],/.test(server)
     && [...server.matchAll(/landingAnchorBlock\(/g)].length === appended + 1
     && !/interface WorkerSpec \{[^}]*plan/.test(server),
-    `${appended} call-site append(s)`);
+    `${appended} call-site append(s), ${passed} bound pass(es)`);
 }
 
 {

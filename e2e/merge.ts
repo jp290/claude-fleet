@@ -266,6 +266,39 @@ export async function run(lc: LaneCtx): Promise<void> {
   const mainLog = spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString();
   check("main received the lane's commit on top of the diverged mainline",
     mainLog.includes("merge work") && mainLog.includes("mainline work"), mainLog.trim());
+  // --- WHICH MODEL RESOLVED THE CONFLICT, AND WHAT THAT COST ------------------------------------
+  // Until 2026-09-06 both ledgers said THAT a conflict was agent-resolved and neither said by
+  // WHOM: `runResolve`/`runRepair` were the only runWorker call sites with no `observe` hook, so
+  // "has this model ever failed on a conflict here?" was unanswerable from 470 land notes.
+  // The note is read at `main` because the ff-merge just made the lane tip the integration tip.
+  // `conflictedFiles` is asserted as the exact 1 this fixture created (code.txt) rather than
+  // ">= 0": a count that could be anything would not tell the field from a zero-initialised one.
+  // The MODEL is asserted as the literal SUMMARY_MODEL default, which is precisely the value under
+  // the owner's question — the merge worker is pinned to the claude route and passes no per-call
+  // model, so summaryViaSession resolves `opts.model ?? SUMMARY_MODEL`. The subprocess stand-in
+  // takes the same value from the same const, so this asserts the wiring, not the transport.
+  type ResolverRunShape = { worker?: string; model?: string; backend?: string; status?: string;
+    ms?: number; conflictedFiles?: number };
+  const landNoteRuns = (sha: string): ResolverRunShape[] | null | undefined => {
+    const raw = spawnSync("git", ["-C", REPO, "notes", "--ref=fleet/land", "show", sha]);
+    if (raw.status !== 0) return undefined; // no note at all — a different failure from "no field"
+    try { return (JSON.parse(raw.stdout.toString()) as { resolverRuns?: ResolverRunShape[] }).resolverRuns ?? null; }
+    catch { return undefined; }
+  };
+  const outcomeRuns = async (branch: string): Promise<ResolverRunShape[] | null | undefined> =>
+    ((await (await get("/api/lane-outcomes?limit=200")).json()) as
+      { outcomes: { branch: string | null; disposition: string; resolverRuns?: ResolverRunShape[] }[] })
+      .outcomes.find((o) => o.disposition === "landed" && o.branch === branch)?.resolverRuns;
+  const resolvedRuns = landNoteRuns("main");
+  check("the land note of an agent-resolved conflict names the resolver's model, verdict, cost and difficulty",
+    (resolvedRuns ?? []).length === 1 && resolvedRuns?.[0]?.worker === "merge"
+      && resolvedRuns[0].status === "rebased" && resolvedRuns[0].model === "claude-sonnet-5[1m]"
+      && resolvedRuns[0].conflictedFiles === 1 && typeof resolvedRuns[0].ms === "number"
+      && (resolvedRuns[0].ms ?? -1) >= 0 && resolvedRuns[0].backend === undefined,
+    JSON.stringify(resolvedRuns ?? null));
+  check("the outcome row carries the SAME resolver runs — the lane-side copy of the note's fact",
+    JSON.stringify(await outcomeRuns(mergeBranch)) === JSON.stringify(resolvedRuns),
+    JSON.stringify({ outcome: await outcomeRuns(mergeBranch), note: resolvedRuns ?? null }));
   check("merge rejects a non-lane slot", (await post("/api/slots/2/merge", {})).status === 400);
 
   // --- F5: merge-job state must not bleed across a slot recycle. A slot recycled while its
@@ -369,7 +402,7 @@ export async function run(lc: LaneCtx): Promise<void> {
   // authority, the agent's JSON is only narrative (seen live — injection-distracted agent
   // rebased perfectly, then narrated instead of answering the contract). Conflict setup so
   // the agent actually runs.
-  const lnP = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  const lnP = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
   await Bun.write(`${lnP.cwd}/code.txt`, "root\nprose-lane\n");
   spawnSync("git", ["-C", lnP.cwd, "commit", "-aqm", "prose lane work"]);
   await Bun.write(`${REPO}/code.txt`, "root\nprose-main\n"); // same file+line → conflict
@@ -385,6 +418,20 @@ export async function run(lc: LaneCtx): Promise<void> {
     ((await (await post(`/api/slots/${lnP.slot}/merge`, { confirm: true })).json()) as { landed?: boolean }).landed === true);
   check("prose-merged lane's commit reached main",
     spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString().includes("prose lane work"));
+  // …and the SAME land records the off-contract answer AS off-contract. This is the half the
+  // ledger exists for: git verified the rebase and the land is correct, so every other field on
+  // this note reads like the clean case above — only `status: "unparseable"` says the model missed
+  // its own JSON contract. Folding that into "blocked" (it resolved nothing) or into "rebased"
+  // (git says it did) would erase the one measurement of the MODEL on a note that measures git.
+  const proseRuns = landNoteRuns("main"); // the ff just made this lane's tip the integration tip
+  check("an off-contract resolver answer is counted AS unparseable on the land note, not folded into blocked",
+    (proseRuns ?? []).length === 1 && proseRuns?.[0]?.worker === "merge"
+      && proseRuns[0].status === "unparseable" && proseRuns[0].model === "claude-sonnet-5[1m]"
+      && proseRuns[0].conflictedFiles === 1,
+    JSON.stringify(proseRuns ?? null));
+  check("the prose land's outcome row counts the same unparseable run",
+    ((await outcomeRuns(lnP.branch)) ?? []).some((r) => r.status === "unparseable" && r.worker === "merge"),
+    JSON.stringify(await outcomeRuns(lnP.branch)));
 
   // Main identity and candidate identity are distinct at confirm. This fixture deliberately moves
   // a CONTEXT line in the SAME file, within patch-id's three context lines: the replay is clean and

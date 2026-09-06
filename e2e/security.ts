@@ -106,6 +106,16 @@ const PRE_AUTH_ROUTES = [
   // and no body field can nominate one; the body is the closed three-value status plus length-capped
   // text. The row is report-only: no land, dispatch, auto, Watch or tick gates on its status.
   '= /api/self/fleet-report',
+  // The PROGRAM INBOX, the durable pull half of the same back-channel, and the narrowest entry on
+  // this list: both verbs are PROGRAM-BOUND on top of the non-lane rule — the caller must be the
+  // current bound MAIN of an ACTIVE Program (boundProgramForMain, slot AND openedAt), so a lane, a
+  // recycled occupant and an unbound session all get 409 and reach no record at all. Neither verb
+  // reads a body: the program comes from the binding and the entry id from the path, so nothing a
+  // caller can write nominates a Program or an entry outside its own authority. GET is read-only.
+  // The write is one RECEIPT on one entry of the caller's own Program — it stamps who read it,
+  // never overwrites an existing receipt, mints nothing, sends into no pane and moves no status.
+  '= /api/self/inbox',
+  String.raw`~ /^\/api\/self\/inbox\/([0-9a-f]{24})\/read$/`,
   // …and the door that JUDGES one of those rows, deliberately its own route rather than a fold
   // into the event-ack regex: that one is a TRANSPORT receipt for every event kind, this one
   // records what the receiving MAIN did with the work. Who may call it: the exact self principal

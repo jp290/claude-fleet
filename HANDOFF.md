@@ -1,4 +1,72 @@
-# HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 10, Opus 5): beide Zeilen oberhalb der Schnittlinie gelandet UND deployt; EINE gepruefte Lane wartet nur noch aufs Landen; 2026-09-06 09:4x, ctx GEMESSEN 34,7 % — ZU SPAET, §5 sagt warum
+# HANDOFF — Program-MAIN Land-Pipeline 2026-09 (`233e1c2b7eaca3850decf332`, Slot 9, Fable 5.1): beide Denk-Dokumente geschrieben (Merge gelandet `7b43011`, Notizen als naechster Commit), S1 queued, M1–M3 + N1–N2 als Program-Zeilen pending; 2026-09-06 14:4x, ctx GEMESSEN 26,4 %
+
+> **Dieser Abschnitt ERSETZT den aelteren darunter.** Zustand ableiten: `./state.sh`, `./register.sh`,
+> `GET /api/self/program-execution` (Program 233e1c2b). Alles hier sind Behauptungen zum Nachschlagen.
+
+## 1. Was steht — Program-Zeilen (Stand 14:4x, alle Ids aus `fleet.json`)
+
+| Zeile | Id | Status | Was |
+|---|---|---|---|
+| S1 Wellen-Sensor | `1b106a66` | **queued** | `task-land-waves.ts` + Board-Zeile „Lande-Wellen"; Tick startet sie, sobald der Lane-Deckel frei ist (Projektion: `waiting: 3/2 lanes busy` — drei fremde `sent`-Lanes, Slots 1/4/5) |
+| M1 Gate unter Server-Hold + `merge_verdict`-Ledgerzeile | `aa8e5ade` | pending | erster Merge-Schnitt; `docs/messungen/2026-09-06-merge-prozess-robust.md` §3 |
+| M2 `waitedOut` als Wiedervorlage | `64860da8` | pending | setzt M1 voraus |
+| M3 Vorflugpruefung dirty-main | `283f625f` | pending | unabhaengig |
+| N1 Notizen beim Dispatch anhaengen | `3af11665` | pending | `docs/notizen-verarbeitung-2026-09-06.md` §3 |
+| N2 Notiz-Lebenszyklus | `f98facad` | pending | setzt N1 voraus |
+| M4 / N3 unter der Schnittlinie | `4aeeec19` / `f7493755` | notiz | Vorschlaege, keine Lanes |
+
+**Reihenfolge, die ich empfehle (max. EINE Lane dieses Programs gleichzeitig, Lane-Deckel 2 gilt):**
+S1 → M1 → N1 → M3 → M2 → N2. Freigabe je Zeile `POST /api/self/tasks/<id>/release` ERST, wenn die
+vorige gelandet ist. Nach jedem Land mit `server.ts`-Anteil braucht es einen Deploy (Verb 2,
+`POST /api/deploy`; 409 waehrend eines Post-Land-Audits; setzt jede Idle-Uhr auf null — vorher die
+Programs fragen, deren Beweis an einem Idle-Fenster haengt). Der Controller (🎛) deployt/landet auf
+Report-Anforderung; die MAIN darf selbst landen (`POST /api/self/tasks/<id>/land`, dann sofort
+`POST /api/self/watch {kind:"merge"}`, bei landed=YES `{kind:"audit", repo, mainAfter}`).
+
+## 2. Was gelandet ist, und was noch nicht
+
+- `7b43011` — Merge-Dokument (docs-only Direkt-Commit, `bun e2e/pins.ts` ALL PASS, kein Land-Ledger,
+  kein Audit — bewusst, siehe Regelbuch „Direkt-Commit"). Kernbefund: Gate-ARBEIT Median 107 s, nie
+  ueber 186 s seit 01.09.; 8,5 h Warten gegen 2,3 h Arbeit; der erste Gate-Lauf haelt den Suite-Mutex
+  NICHT (nur die ff-Retry-Runde); 6 Lanes in 5 Tagen als `waited` gestorben; die 19 FAILED-Notes sind
+  alle 25.07.–15.08. **Erfolgskriterium (c) des Programs ist an FAILED-Notes nicht messbar** — nach
+  M1 an der `merge_verdict`-Zeile in `audit.jsonl` messen (Doc §4).
+- `docs/notizen-verarbeitung-2026-09-06.md` — GESCHRIEBEN, Commit lag hinter einem laufenden Land
+  (Slot 4, `self_land_start` 14:15:46); ein Hintergrund-Watcher auf den merges-Sensor committet
+  danach. Ist die Datei bei deinem Start noch untracked: sofort committen (pins ist gruen), erst
+  Sensor pruefen. Kernbefund: `compileBriefs` laeuft im Betrieb NICHT (`FLEET_BRIEF_MS` Default 0),
+  der lebende Ort ist `briefAndSend`; Schnittmenge je Auftrag roh 42 Notizen → ohne vier
+  Nabendateien 5 → + Cluster 3; `/api/self/tasks` gibt es nur als POST.
+- **S1-Done-Satz pruefst DU nach dem Land im Haupt-Checkout:** `bun task-land-waves.ts --state
+  fleet.json` muss ausschliesslich Wellen der Groesse 1 mit Grund `flaeche-nur-abgeleitet` liefern;
+  dann in `docs/queue-wellen-2026-09-06.md` §5 S1 die Land-Sha eintragen (die Lane kann sie nicht
+  kennen).
+
+## 3. Befunde und Korrekturen dieser Session (zum Nachziehen)
+
+- **Mein Fehler:** `7b43011` fiel um ~14:19 in ein LAUFENDES Land (Slot 4, Lane `260906075007-3a1b`,
+  Task `76d39cae`, gestartet 14:15:46 von Slot 7). Der Sensor zeigte `merges[4] = interrupted` — das ist
+  die AUF PLATTE persistierte Form eines LAUFENDEN Merge-Jobs, nicht „abgebrochen" — und ich habe
+  ihn neben dem Commit gedruckt statt den Commit damit zu gaten. Folge, GEMESSEN: das Land endete 15:03:11 als
+  `error` bei gruenem Verify (Kandidat `3becc2bf`, 47 min bezahlt), die MAIN von Slot 7 drueckte um
+  15:04:09 neu (Kandidat `7cd9071e`, also auf meinen Commit rebased). R2' hat es NICHT geheilt —
+  warum (Lock im Budget nicht bekommen? Runden erschoepft?) steht in keinem Ledger: genau die
+  Luecke, die M1s `merge_verdict`-Zeile schliesst. Kosten fuer ein fremdes Program: ~48 min. Form fuer jeden Commit ab jetzt: der Sensor als `if python3 -c '… sys.exit(1
+  if live else 0)'; then git commit …; fi` — so lief der zweite Commit.
+- **R2' ist gelandet** (`server.ts#LAND_FF_RETRY_ROUNDS`, Default 2; `ffRounds:1` einmal am 05.09.
+  23:02). Die Regelbuch-Zeile „Die Handregel gilt, bis R2' gelandet ist" ist ueberholt — Vorschlag
+  ans Regelbuch (Fragment unter `rulebook/`, Owner-Promotion), nicht von einer Lane.
+- Der Gruendungs-Rail nennt `GET /api/self/tasks` — die Route existiert nicht (nur POST); die Zeilen
+  liest man aus `fleet.json`.
+- `docs/queue-wellen-2026-09-06.md` §1.3 „p90 1 238 s Gate-Arbeit" ist `verify.ms` OHNE Abzug des
+  Wartens (Korrektur im Merge-Doc §1).
+- Keine Attention offen, keine gestellt; keine Owner-Frage noetig gewesen.
+
+## 4. Kontext
+
+26,4 % gemessen um 14:3x (Erdung + zwei Denk-Dokumente ≈ 26 Punkte). Rechne ~2,5 Punkte je Land.
+
+## (alt, 09:4x) HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 10, Opus 5): beide Zeilen oberhalb der Schnittlinie gelandet UND deployt; EINE gepruefte Lane wartet nur noch aufs Landen; 2026-09-06 09:4x, ctx GEMESSEN 34,7 % — ZU SPAET, §5 sagt warum
 
 > **Dieser Abschnitt ERSETZT meinen aelteren weiter unten** (13:5x, jetzt §alt). Zustand ableiten:
 > `./state.sh`, `./register.sh`, `GET /api/self/program-execution`.

@@ -242,6 +242,7 @@ von heute muss er 31 Wellen der Größe 1 liefern, jede mit dem Grund „Fläche
 *Verify:* Checks in `e2e/tasks.ts` neben den bestehenden `projectTaskWaves`-Checks, mit gepinnten
 Fixtures für R1/R2/R3 und einem Reinheits-Check (zweimal aufgerufen = identisches Ergebnis, wie
 `e2e/tasks.ts:3791`); `bun e2e/pins.ts` grün.
+*Gebaut* als `task-land-waves.ts` (Lane `fleet/260906155855-1a12`; Sha setzt die MAIN nach dem Land ein).
 *Warum zuerst:* Die Faltung ist heute unbekannt. Jeder Knopf, der vor diesem Sensor gebaut wird,
 schneidet auf `derived`-Flächen — also auf dem, was die Zeilen textlich nennen.
 

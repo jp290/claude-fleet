@@ -426,6 +426,37 @@ wartet seit 38 min dahinter. Genau diese Schlange ist, was das Suite-Offer nach 
 Second-host verlegt. Hub-Regel unveraendert: `git push hub main` von Hand nach jedem Land
 (`docs/messungen/2026-09-06-mac-ssd-gesundheit.md` sagt, warum der mac entlastet gehoert).
 
+**W5b gelandet — der Push haengt am Land, nicht mehr an der Hand (Code, keine Host-Akte; aus Lane
+`fleet/260906133225-c1f9`, die Land-Sha traegt die MAIN nach).** Der letzte Satz des Absatzes darueber
+ist damit ueberholt. Nach jedem Land, das `main` BEWEGT hat, pusht der Server selbst:
+`server.ts#pushLandToHub`, gerufen aus `server.ts#recordLand` — dem einen Choke-Point, durch den der
+saubere Auto-Land (`server.ts#mergeJob`), der Confirm-Land des Owners und die Boot-Nachholung
+(`server.ts#finishLandsInFlight`) gleichermassen laufen; ein Land, das `main` nicht bewegt hat, pusht
+darum strukturell nichts. Gepusht wird die GELANDETE Sha (`<sha>:refs/heads/<main>`), nicht das, worauf
+`main` im Moment des Pushes zeigt — ein zweites Land haette den Ref sonst schon weitergeschoben und die
+Note truege fremde Arbeit als ihre eigene. Kein `--force`: ff oder gar nicht ist die einzige
+Schiedsregel, die die Nabe braucht, und sie ist die Regel des Bare-Repos, nicht die dieses Servers.
+**Abwesenheit ist AUS** — ohne `FLEET_HUB_REMOTE` kein Push und KEIN `hubPush`-Feld auf der Note; ein
+Feld, das „kein Hub konfiguriert" sagt, waere auf jedem Commit jedes Ein-Host-Fleets eine Messung von
+nichts. Das Ergebnis steht auf der Land-Note (`server.ts#writeLandNote`; lesbar per
+`git notes --ref=fleet/land show <sha>` und ueber `GET /api/slots/:id/merge`) als
+`hubPush {ok:true, remote, sha}` bzw. `{ok:false, remote, reason}`, reason = git-Stderr auf 500 Zeichen.
+**Ein abgelehnter Push ist ein Notenfeld, kein Fehlschlag des Lands:** `verify.ok` bleibt, was es war,
+`main` bleibt gelandet, und es gibt weder Retry noch Rebase gegen den Hub — das ist W5d. Eigenes Budget
+`HUB_PUSH_TIMEOUT_MS` = 60 s, ausdruecklich nicht `GIT_TIMEOUT_MS` (30 s): dieser eine git-Aufruf redet
+ueber ssh mit einer anderen Maschine, wo 30 s Schweigen eine langsame Leitung sind und noch kein Urteil.
+Der Preis ist benannt und begrenzt: ein haengender Hub verzoegert Note und Tier-2-Audit um hoechstens
+dieses Budget und kann am Gelandeten nichts aendern. Bewiesen in `e2e/land-durability.ts` §G gegen ein
+echtes Bare-Repo (`git init --bare`) und einen zweiten Klon, der es divergieren laesst — drei Checks:
+„FLEET_HUB_REMOTE: a land fast-forwards the hub to the landed commit and says so on the land note" ·
+„a hub that has moved on is a red hubPush field with git's own reason — the land itself still stands" ·
+„with no FLEET_HUB_REMOTE the land carries NO hubPush field, and the hub is not touched". Gepinnt in
+`e2e/pins.ts` unter RULE_LAND: opt-in per Env, kein `--force`, die gelandete Sha, und der Push VOR der
+Note (sonst koennte die Note sein Ergebnis nicht tragen). **Eine Folge fuer W5d, benannt statt entdeckt:** die Variable gilt fleetweit, der Remote-NAME aber je Repo — ein Land in einem Checkout ohne Remote `hub` traegt dann `hubPush {ok:false, reason: "'hub' does not appear to be a git repository"}`. Das ist die ehrliche Lesart (es wurde nichts gepusht) und kein Fehlschlag des Lands; wer das nicht will, legt den Remote dort an oder laesst die Variable aus.
+**Eingeschaltet ist er hier noch nicht** —
+`FLEET_HUB_REMOTE` steht in keinem `.env` und auf keiner Spawn-Zeile; das Umschalten ist W5d und
+Owner-Akt.
+
 ## Was nicht gemessen wurde
 
 - **Kein Slot auf dem Second-host** geoeffnet, nichts getippt, keine Unit angefasst — die

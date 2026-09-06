@@ -1201,6 +1201,16 @@ die zur Attention gehen.
 Pfades trägt keines dieser Felder, aber seit 2026-09-04 `ffRounds`, sobald es die Vorspulung
 mindestens einmal verloren und den Zug wiederholt hat — fehlt das Feld, gelang es im ersten Anlauf.)
 
+**Quer zu beiden Pfaden, seit W5b:** `hubPush` kann auf der Note JEDES Lands stehen, das `main`
+bewegt hat — der Push haengt im Choke-Point (`server.ts#recordLand` ruft `server.ts#pushLandToHub`),
+durch den sauberer Auto-Land, Owner-Confirm und Boot-Nachholung gleichermassen laufen.
+`{ok:true, remote, sha}` heisst: der gelandete Commit liegt ff-only auf der Nabe;
+`{ok:false, remote, reason}` (git-Stderr, auf 500 Zeichen) heisst: er liegt nur auf dieser Maschine.
+**Fehlt das Feld, war kein `FLEET_HUB_REMOTE` gesetzt — nie „der Push ging gut".** Ein rotes
+`hubPush` faellt das Land nicht: `verify` und `landed` bleiben, was sie waren, und es gibt weder
+Retry noch Rebase gegen die Nabe. Begruendung und Beweis:
+`docs/dual-host-topologie-entscheidung-2026-09-05.md` §6.
+
 ### Aktor-Provenienz: wer den Integrations-Branch bewegt hat
 
 Bis 2026-08-23 beantwortete die `fleet/land`-Note nur `confirmedByHuman` — ein Land, das eine

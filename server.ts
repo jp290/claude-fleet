@@ -11343,6 +11343,21 @@ const MERGE_REPAIR_ROUNDS = Math.min(3, Math.max(0, Number(process.env.FLEET_MER
 // NOT the same number as MERGE_REPAIR_ROUNDS above and never to be folded into it: that one counts
 // an agent's attempts to fix a tree it broke, this one counts a race with another lander.
 const LAND_FF_RETRY_ROUNDS = Math.min(5, Math.max(0, Number(process.env.FLEET_LAND_FF_RETRY_ROUNDS ?? 2) | 0));
+// --- THE LANDED COMMIT LEAVES THIS MACHINE (W5b, dual-host topology §6) ------------------------
+// Two hosts land into one history, and the bare repo on the second-host is the nabe that decides who
+// won. It needs no lock to decide it: a non-force push of a branch is fast-forward or nothing, and
+// the ref update in the bare repo is atomic. Until this existed the push was a HAND step the
+// controller ran after each land — which is exactly the kind of step that is skipped on the land
+// nobody was watching, and then the other host rebases onto a main that is missing commits.
+// ABSENCE IS OFF: unset or empty means no push AND no `hubPush` key on the land note. A note field
+// saying "no hub configured" would put a measurement of nothing on every commit of every
+// single-host fleet, and this note is read by eye.
+const HUB_REMOTE = (process.env.FLEET_HUB_REMOTE ?? "").trim();
+// Its own budget, deliberately NOT GIT_TIMEOUT_MS (30s): every other git call here is local, this
+// one talks to another machine over ssh, where 30s of silence is a slow link and not yet a verdict.
+// A timeout is a red `hubPush` on the note, never a failed land — the commit is already on main
+// when this runs, and nothing below may take it back off.
+const HUB_PUSH_TIMEOUT_MS = 60_000;
 // OPT-IN clean-path advisory reviewer (design note §7). Default OFF → production behaviour is
 // byte-for-byte unchanged until the owner sets FLEET_CLEAN_REVIEW. When ON, a reviewer agent looks at
 // a clean+green lane about to AUTO-LAND and may ONLY downgrade it to a stop-and-review — never approve
@@ -12314,6 +12329,49 @@ interface LandProvenance {
   // round that actually landed — the note may not carry an earlier round's verdict for a later
   // round's tree, which is the reason the gate is re-run rather than reused.
   ffRounds?: number;
+  // …and where the landed commit went AFTER this machine's main took it (W5b). Absent means no hub
+  // was configured — never "the push went fine", which is why this is written from the push's own
+  // return value and never defaulted.
+  hubPush?: HubPushResult;
+}
+// The outcome of ONE push attempt, and both halves are terminal: there is no retry and no rebase
+// against the hub (that is W5d). `ok:false` says the fleet's history stopped at this machine, which
+// a human resolves — a fleet that quietly kept pushing at a diverged hub would be the same silence
+// this field exists to end.
+type HubPushResult =
+  | { ok: true; remote: string; sha: string }
+  | { ok: false; remote: string; reason: string };
+// Push the just-landed commit to the hub, fast-forward or not at all (a push without --force is
+// exactly that, and git refuses the rest on the remote side too). Runs AFTER the land and can never
+// undo it: every exit of this function is a FIELD, never a throw, and the caller's land verdict is
+// already written by the time it is called.
+async function pushLandToHub(repo: string, main: string, mainAfter: string): Promise<HubPushResult | null> {
+  if (!HUB_REMOTE) return null;
+  let killed = false;
+  try {
+    // THE LANDED SHA, not `main` as it reads right now: a second land may already have moved the
+    // ref, and pushing whatever it points at would attribute that land's work to this note.
+    const p = Bun.spawn(["git", "-C", repo, "push", HUB_REMOTE, `${mainAfter}:refs/heads/${main}`],
+      // a push that stops to ASK (ssh key prompt, credential helper) would hold the land path for
+      // the whole budget and then fail anyway; refusing the prompt turns that into a fast reason.
+      { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+    const timer = setTimeout(() => { killed = true; try { p.kill(); } catch {} }, HUB_PUSH_TIMEOUT_MS);
+    try {
+      // both pipes drained at once — git push writes its whole story to stderr, and reading one to
+      // the end while the other fills its buffer is how a spawn wrapper deadlocks.
+      const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
+      const code = await p.exited;
+      if (code === 0) return { ok: true, remote: HUB_REMOTE, sha: mainAfter };
+      const said = err.trim() || out.trim() || `git push exited ${code} and said nothing`;
+      return { ok: false, remote: HUB_REMOTE,
+        reason: (killed ? `no answer within ${HUB_PUSH_TIMEOUT_MS}ms, the push was killed: ${said}` : said).slice(0, 500) };
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (e) {
+    return { ok: false, remote: HUB_REMOTE,
+      reason: (e instanceof Error ? e.message : "git push threw").slice(0, 500) };
+  }
 }
 async function writeLandNote(repo: string, branch: string, mainBefore: string, mainAfter: string, prov: LandProvenance): Promise<void> {
   const tip = mainAfter; // the fast-forwarded integration branch IS the landed commit
@@ -12327,6 +12385,7 @@ async function writeLandNote(repo: string, branch: string, mainBefore: string, m
       ...(prov.ffRounds ? { ffRounds: prov.ffRounds } : {}),
       ...(prov.candidateSha ? { candidateSha: prov.candidateSha } : {}),
       ...(prov.verify ? { verify: prov.verify } : {}),
+      ...(prov.hubPush ? { hubPush: prov.hubPush } : {}),
       confirmedByHuman: prov.confirmedByHuman,
       actor: prov.actor,
       at: Date.now(),
@@ -12366,7 +12425,14 @@ async function recordLand(repo: string, main: string, branch: string, mainBefore
   // even for a repo nobody ever clones, and it is a flat one-liner rather than the note's JSON
   // because a trail row is read by eye.
   audit("land_actor", undefined, `${basename(repo)} ${branch} ${mainAfter.slice(0, 8)} ${landActorDetail(prov.actor)}`);
-  await writeLandNote(repo, branch, mainBefore, mainAfter, prov); // best-effort — never throws
+  // THE HUB PUSH, here and only here: this is the choke point every main-MOVING land funnels
+  // through, so the clean auto-land, the owner's confirm-land and the boot recovery all reach the
+  // hub by the same door — and a land that moved nothing pushes nothing. It runs BEFORE the note so
+  // its outcome travels ON the note rather than in a second write nobody would join to it. The
+  // price is honest and bounded: a hub that hangs delays the note (and the tier-2 audit queued a
+  // line below) by at most HUB_PUSH_TIMEOUT_MS. It cannot change what landed.
+  const hubPush = await pushLandToHub(repo, main, mainAfter);
+  await writeLandNote(repo, branch, mainBefore, mainAfter, hubPush ? { ...prov, hubPush } : prov); // best-effort — never throws
   // VERIFICATION TIER 2 — main moved, so there is something new on the integration branch that the
   // fast land gate did not fully check. This is the one choke point every main-MOVING land funnels
   // through (mergeJob's clean auto-land + the confirm-land route), which is exactly the right

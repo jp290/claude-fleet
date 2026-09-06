@@ -3815,6 +3815,41 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     && /\n      actor: prov\.actor,/.test(noteWriter),
     JSON.stringify({ required: /\n  actor: LandActor;/.test(provDecl),
       written: /actor: prov\.actor/.test(noteWriter) }));
+  // --- THE HUB PUSH IS FF-ONLY, OFF BY DEFAULT, AND CANNOT UNDO A LAND (W5b, topology §6) -------
+  // Three properties, none of them visible to a compiler. (1) Absence is OFF: an unset
+  // FLEET_HUB_REMOTE means no push AND no note field — a default remote name would push the
+  // owner's history somewhere nobody chose. (2) The push is a plain non-force push of the LANDED
+  // sha: `--force` anywhere in that line would turn the nabe's one arbitration rule (fast-forward
+  // or nothing) into a silent overwrite of the other host's work. (3) It runs BEFORE the note, or
+  // the note could not carry its outcome and the only record of a refused push would be nowhere.
+  const hubPushBody = server.slice(server.indexOf("async function pushLandToHub("),
+    server.indexOf("\n}", server.indexOf("async function pushLandToHub(")));
+  pin(`${RULE_LAND} — the hub push is opt-in by env, ff-only, and pushes the landed sha with its own timeout`,
+    /const HUB_REMOTE = \(process\.env\.FLEET_HUB_REMOTE \?\? ""\)\.trim\(\);/.test(server)
+      && /const HUB_PUSH_TIMEOUT_MS = 60_000;/.test(server)
+      && hubPushBody.includes("if (!HUB_REMOTE) return null;")
+      && hubPushBody.includes('"git", "-C", repo, "push", HUB_REMOTE, `${mainAfter}:refs/heads/${main}`')
+      && !/--force/.test(hubPushBody)
+      && hubPushBody.includes("}, HUB_PUSH_TIMEOUT_MS);"),
+    JSON.stringify({ env: /FLEET_HUB_REMOTE/.test(server), body: hubPushBody.length,
+      forced: /--force/.test(hubPushBody) }));
+  // …and the land is never the casualty: every exit of the push is a FIELD. The push sits between
+  // the land_actor row and the note write in recordLand — the one choke point every main-MOVING
+  // land funnels through, which is what makes the clean auto-land, the confirm-land and the boot
+  // recovery reach the hub by the same door.
+  const recordBody = server.slice(server.indexOf("async function recordLand("),
+    server.indexOf("\n}", server.indexOf("async function recordLand(")));
+  const pushAt = recordBody.indexOf("const hubPush = await pushLandToHub(repo, main, mainAfter);");
+  pin(`${RULE_LAND} — the push runs at the land choke point, before the note, and only ever answers with a field`,
+    pushAt > recordBody.indexOf('audit("land_actor"')
+      && pushAt < recordBody.indexOf("await writeLandNote(")
+      && recordBody.includes("hubPush ? { ...prov, hubPush } : prov")
+      && (hubPushBody.match(/ok: false, remote: HUB_REMOTE/g) ?? []).length === 2
+      && !/throw /.test(hubPushBody)
+      && /\n      \.\.\.\(prov\.hubPush \? \{ hubPush: prov\.hubPush \} : \{\}\),/.test(noteWriter)
+      && /\n  hubPush\?: HubPushResult;/.test(provDecl),
+    JSON.stringify({ pushAt, note: recordBody.indexOf("await writeLandNote("),
+      redExits: (hubPushBody.match(/ok: false, remote: HUB_REMOTE/g) ?? []).length }));
   // …and the CHANNEL is READ, not guessed. `tokenChannel` mirrors tokenFrom's own precedence
   // (bearer → cookie → query); if the two ever disagree the suspect flag would be stamped on the
   // wrong requests and nothing at runtime would notice. Asserted as "both read the same three

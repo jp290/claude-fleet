@@ -546,6 +546,108 @@ export async function run(): Promise<void> {
     }
   }
 
+  // === G — THE HUB PUSH: a land that stopped at this machine's main is not integrated (W5b) ====
+  // Dual-host topology §6: two hosts land into one history and a bare repo on the second-host is the
+  // nabe. The push after each land was a HAND step of the controller's, and the failure mode of a
+  // hand step is that the land nobody watched never leaves the machine — after which the other
+  // host rebases onto a main that is missing commits. Three facts, against a REAL bare repo:
+  // the push happens and is recorded; a hub that has moved on is a NOTE FIELD and not a failed
+  // land; and with no FLEET_HUB_REMOTE nothing is pushed and nothing is claimed.
+  {
+    const repo = `${REPO}.hubpush`;
+    const hub = `${REPO}.hubpush.git`;
+    const other = `${REPO}.hubpush.other`;
+    for (const d of [repo, hub, other]) rmSync(d, { recursive: true, force: true });
+    const seed = ((): number => {
+      if (spawnSync("git", ["init", "-q", "-b", "main", repo]).status !== 0) return 1;
+      for (const kv of [["user.email", "e2e@fleet.local"], ["user.name", "fleet e2e"], ["commit.gpgsign", "false"]])
+        g(repo, "config", kv[0] as string, kv[1] as string);
+      writeFileSync(`${repo}/base.txt`, "base\n");
+      if (commitAll(repo, "base").code !== 0) return 2;
+      // the hub is a BARE repo, the same shape as ~/git/claude-fleet.git on the second-host: nothing
+      // is checked out there, so a push can never be refused for a dirty tree and the ref update
+      // is the whole transaction.
+      if (spawnSync("git", ["init", "-q", "--bare", "-b", "main", hub]).status !== 0) return 3;
+      return g(repo, "remote", "add", "hub", hub).code === 0 ? 0 : 4;
+    })();
+    check("(setup G) a repo with a remote named `hub` and a bare hub to push into both exist",
+      seed === 0 && existsSync(`${hub}/HEAD`), `step=${seed} remotes=${g(repo, "remote").out}`);
+
+    // one land in this repo, start to finish, plus the note that came out of it. Returns the note
+    // PARSED — an unparseable note is a different fact from an absent field and each check below
+    // says which one it is looking at.
+    const landOnce = async (file: string): Promise<{ before: string; after: string;
+      note: Record<string, unknown> | null; noteRaw: string }> => {
+      const before = g(repo, "rev-parse", "main").out;
+      const lane = (await (await post("/api/lanes", { repo })).json()) as
+        { slot?: number; cwd?: string; branch?: string };
+      if (!lane.slot || !lane.cwd) return { before, after: before, note: null, noteRaw: "no lane" };
+      writeFileSync(`${lane.cwd}/${file}`, `${file}\n`);
+      commitAll(lane.cwd, file);
+      await settleForMerge(lane.slot);
+      await post(`/api/slots/${lane.slot}/merge`, {});
+      await waitMerge(lane.slot);
+      const after = g(repo, "rev-parse", "main").out;
+      const raw = g(repo, "notes", "--ref=fleet/land", "show", after);
+      let note: Record<string, unknown> | null = null;
+      try { note = JSON.parse(raw.out) as Record<string, unknown>; } catch { /* reported as noteRaw */ }
+      return { before, after, note, noteRaw: `${raw.code} ${raw.out.slice(0, 200)}${raw.err.slice(0, 120)}` };
+    };
+    const hubPushOf = (n: Record<string, unknown> | null): Record<string, unknown> | undefined =>
+      (n?.hubPush ?? undefined) as Record<string, unknown> | undefined;
+    const verifyOkOf = (n: Record<string, unknown> | null): unknown =>
+      (n?.verify as { ok?: unknown } | undefined)?.ok;
+
+    await setMergeMode("blocked"); // the clean auto-land path — no agent, no conflict
+    await restartSrv({ FLEET_HUB_REMOTE: "hub" });
+
+    // --- G1: the push happens, and the note is where it is recorded ------------------------
+    const one = await landOnce("hub-one.txt");
+    check("(setup G1) the first land moved this machine's main", one.after !== one.before && !!one.after,
+      `${one.before.slice(0, 8)} -> ${one.after.slice(0, 8)}`);
+    const hubMain = (): string => g(hub, "rev-parse", "main").out;
+    const trackingMain = (): string => g(repo, "rev-parse", "hub/main").out;
+    check("FLEET_HUB_REMOTE: a land fast-forwards the hub to the landed commit and says so on the land note",
+      hubMain() === one.after && trackingMain() === one.after
+        && hubPushOf(one.note)?.ok === true && hubPushOf(one.note)?.remote === "hub"
+        && hubPushOf(one.note)?.sha === one.after,
+      `main=${one.after.slice(0, 8)} hub=${hubMain().slice(0, 8)} tracking=${trackingMain().slice(0, 8)} note=${JSON.stringify(hubPushOf(one.note))} raw=${one.noteRaw}`);
+
+    // --- G2: the hub has moved on. The land STANDS; the push is a red field, not a red land ---
+    const cloned = spawnSync("git", ["clone", "-q", hub, other], { encoding: "utf8" });
+    for (const kv of [["user.email", "e2e@fleet.local"], ["user.name", "fleet e2e"], ["commit.gpgsign", "false"]])
+      g(other, "config", kv[0] as string, kv[1] as string);
+    writeFileSync(`${other}/foreign.txt`, "landed on the OTHER host\n");
+    const foreignCommit = commitAll(other, "foreign work");
+    const foreignPush = g(other, "push", "-q", "origin", "main");
+    const diverged = hubMain();
+    check("(setup G2) another host's commit is on the hub, so this machine's next land is no longer a fast-forward",
+      cloned.status === 0 && foreignCommit.code === 0 && foreignPush.code === 0
+        && diverged !== one.after,
+      `clone=${cloned.status} commit=${foreignCommit.code} push=${foreignPush.code} hub=${diverged.slice(0, 8)} was=${one.after.slice(0, 8)}`);
+    const two = await landOnce("hub-two.txt");
+    const p2 = hubPushOf(two.note);
+    check("a hub that has moved on is a red hubPush field with git's own reason — the land itself still stands",
+      two.after !== one.after && g(repo, "merge-base", "--is-ancestor", one.after, two.after).code === 0
+        && p2?.ok === false && p2?.remote === "hub"
+        && typeof p2?.reason === "string" && /rejected|fetch first|non-fast-forward/i.test(p2.reason as string)
+        && (p2.reason as string).length <= 500
+        && verifyOkOf(two.note) === true && hubMain() === diverged,
+      `main=${two.after.slice(0, 8)} hub=${hubMain().slice(0, 8)} verify.ok=${String(verifyOkOf(two.note))} note=${JSON.stringify(p2)} raw=${two.noteRaw}`);
+
+    // --- G3: no FLEET_HUB_REMOTE, no push and no claim about one -----------------------------
+    // The remote is STILL in .git/config, so what is switched off here is the fleet's behaviour and
+    // not the fixture: absence of the variable is the off switch, and a note with no hubPush key is
+    // the only honest thing to write when nothing was attempted.
+    await restartSrv();
+    const before3 = hubMain();
+    const three = await landOnce("hub-three.txt");
+    check("with no FLEET_HUB_REMOTE the land carries NO hubPush field, and the hub is not touched",
+      three.after !== two.after && three.note !== null && !("hubPush" in (three.note ?? {}))
+        && hubMain() === before3 && g(repo, "remote").out.split("\n").includes("hub"),
+      `keys=${Object.keys(three.note ?? {}).join(",")} hub=${hubMain().slice(0, 8)} was=${before3.slice(0, 8)} raw=${three.noteRaw}`);
+  }
+
   await setMergeMode("blocked"); // leave the shared mode file as the other modules expect it
   if (receiver) await post(`/api/slots/${receiver}/kill`, {});
 }

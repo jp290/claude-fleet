@@ -68,7 +68,18 @@ richtigen Stelle.
 Eine Repo-Zeile je Projekt-Repo mit je einer Karte pro Aktivitätsart (Form nach §2-Nachtrag):
 freie Slots · laufende Programs mit Autonomiegrad, Queue-Zahl und nächster Owner-Entscheidung ·
 Studios vorerst als Verweis auf ihre Docs.
-Darunter die Land-Takt-Zahl des Repos aus den Ledgern. Kein neues Feld am Server, keine neue
+Darunter die Land-Takt-Zahl des Repos aus den Ledgern.
+
+> Nachtrag 19:0x: „Die Ebene sollte letztendlich einfach die darunterliegenden Slots innerhalb
+> von Programmen und Studios abstrahieren. Eine einfache Repo-/Projekt-Liste links, nach
+> Anklicken erscheinen die Möglichkeiten … usw."
+
+Die FORM ist damit Master-Detail: links eine schlichte Repo-Liste (die Wurzel aus §1) · rechts
+das gewählte Repo mit seinen Aktivitäten (freeDev · Studios · Programs) und den Verben, die dort
+möglich sind · die Slots sind kein Element dieser Ebene, sondern das Detail UNTER einem Program
+oder Studio, aufklappbar, sonst unsichtbar. Das Slots-Board bleibt die Fläche darunter; der Hub
+ersetzt es nicht, er verbirgt es, bis man hineinklickt.
+ Kein neues Feld am Server, keine neue
 Route. Done, wenn die Ansicht ausschließlich aus `GET /api/sessions`, `GET /api/tasks`,
 `GET /api/programs` gebaut ist und jeder Klick in eine bestehende Ansicht führt.
 

@@ -922,11 +922,13 @@ export async function run(h: {
     };
     const openJobs = async (): Promise<number> =>
       (await jobsOf()).filter((j) => j.kind === "lane-suite" && !j.claim).length;
-    // the FLEET_SUITE_LOCK each run's child actually got, read out of the run's own suite.log —
-    // the one place the child's environment is legible from here
+    // the FLEET_SUITE_LOCK each run's child actually got, read out of the run's own suite.log — the
+    // one place the child's environment is legible from here. UNORDERED on purpose: a run dir is
+    // `run-<random hex job id>-<ts>`, so sorting these names orders them by a random id and not by
+    // time. Every assertion below is therefore a statement about the SET, never about position.
     const locks = (): string[] => {
       let dirs: string[] = [];
-      try { dirs = readdirSync(WORK).filter((d) => d.startsWith("run-")).sort(); } catch { return []; }
+      try { dirs = readdirSync(WORK).filter((d) => d.startsWith("run-")); } catch { return []; }
       return dirs.map((d) => {
         let text = "";
         try { text = readFileSync(`${WORK}/${d}/suite.log`, "utf8"); } catch { return null; }
@@ -947,7 +949,7 @@ export async function run(h: {
     const oneHeld = await claimsOf(CAP1BOX);
     const oneOpen = await openJobs();
     const oneRow = await devRow(CAP1BOX);
-    const oneLocks = locks();
+    const oneLocks = locks();  // only the slow stand-in prints a `lock=[…]` line, so this set is HD.10's own
     check("(HD.10) AT THE DEFAULT CAP OF 1 A SECOND JOB IS NOT CLAIMED: four polls pass with three jobs open in front of a daemon that already runs one",
       oneHeld === 1 && oneOpen === 3, `held=${oneHeld} stillOpen=${oneOpen}`);
     check("(HD.10) …and the machine SAYS so on its own heartbeat — 1 of 1, the pair no load figure could give",
@@ -959,7 +961,6 @@ export async function run(h: {
     await one.proc.exited;
 
     // --- CAP 2: two run, and the third still waits -----------------------------------------------
-    const before2 = locks().length;
     await writeConfig({ deviceId: CAP2BOX, name: "cap-2 box (e2e)", suiteCmd: SLOW,
       installCmd: "true", pollSec: 1, maxLoad1: null, maxParallelSuites: 2 });
     const two = startDaemon();
@@ -979,7 +980,10 @@ export async function run(h: {
     // behind each other INSIDE the clone: two claims, two processes, one suite at a time and no
     // wall-clock bought. The locks must be present, DIFFERENT from each other, and each under its
     // own run directory.
-    const parallelLocks = locks().slice(before2);
+    // Read as a SET, and the empty one from the cap-1 phase is deliberately not counted here: this
+    // daemon prunes its own run dirs to `keepRuns`, so whether that older run is still on disk is
+    // not a fact this check is entitled to assert.
+    const parallelLocks = locks().filter((l) => l !== "");
     check("(HD.10) …AND EACH PARALLEL RUN GOT ITS OWN SUITE LOCK — two runs on one default lock would serialize inside the clone and buy nothing",
       parallelLocks.length === 2 && new Set(parallelLocks).size === 2
         && parallelLocks.every((l) => l.startsWith(`${WORK}/run-`) && l.endsWith("/e2e.lock")),

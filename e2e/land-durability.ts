@@ -438,19 +438,30 @@ export async function run(): Promise<void> {
   // replaced by a STAND-IN: `bun run build` here would prove the bundler works, which is not the
   // question. The question is WHEN the script reaches for it and what it does when it comes back red.
   {
-    // the script is a tracked file of the tree under test, and a staged instance ($DIR) does not
-    // contain it — only the symlink home does. Same resolution e2e/trail-emit.ts uses.
+    // WHERE THE REAL SCRIPT IS, in the order the two answers are actually reliable.
+    //   1. ${ROOT}/fleet-sync.sh — the instance's own copy, staged by e2e-stage.sh's fixed asset
+    //      list. True in a direct checkout too, where ROOT *is* the tree under test.
+    //   2. the pointer home (node_modules symlink → source tree), the resolution e2e/trail-emit.ts
+    //      uses. It is the FALLBACK now, not the primary, because it answers only when the source
+    //      tree is a git work tree — and the post-land audit's source is a `git archive` extract
+    //      with no `.git` (server.ts#snapshotIntegrationTree). Measured 2026-09-06 on a rebuilt
+    //      audit path: `sourceTree=null`, so this probe failed in every full audit from b224ef8 on
+    //      while passing in every lane. Kept as a fallback so an instance staged by something that
+    //      predates the copy list still resolves instead of accusing the script.
     const sourceTree = ((): string | null => {
       let link: string | null = null;
       try { link = readlinkSync(`${ROOT}/node_modules`); } catch { /* direct checkout: ROOT answers */ }
       return resolveSourceTree(ROOT, link, (c) => g(c, "rev-parse", "--is-inside-work-tree").out === "true");
     })();
-    const script = sourceTree === null ? null : `${sourceTree}/fleet-sync.sh`;
-    // the probe fails as ITSELF: "the tree under test was not resolvable" and "the script misbehaved"
-    // are different answers, and the first one rendered as the second accuses the wrong file.
+    const script = [`${ROOT}/fleet-sync.sh`, sourceTree === null ? null : `${sourceTree}/fleet-sync.sh`]
+      .find((p): p is string => p !== null && existsSync(p)) ?? null;
+    // the probe fails as ITSELF: "the script was not reachable from this instance" and "the script
+    // misbehaved" are different answers, and the first one rendered as the second accuses the wrong
+    // file. On the passing side it NAMES the path it took, so which of the two answers carried the
+    // run is readable from the line rather than inferred from the fact that it passed.
     check("(setup F) PROBE: the tree under test resolves and carries fleet-sync.sh",
-      script !== null && existsSync(script), `sourceTree=${sourceTree}`);
-    if (script !== null && existsSync(script)) {
+      script !== null, `script=${script} root=${ROOT} sourceTree=${sourceTree}`);
+    if (script !== null) {
       const FIX = `${process.env.TMPDIR ?? "/tmp"}/fleet-e2e-sync-${process.pid}`;
       const can = `${FIX}/canonical`;
       const fol = `${FIX}/follower`;

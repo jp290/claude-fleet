@@ -2998,31 +2998,56 @@ Die uebrigen acht `Q6 …`-Zeilen sind in KEINEM Lauf die erste rote — sie sin
 Das ist dieselbe Form wie §11.2p: wer neun rote Q6-Zeilen sieht, hat einen Befund vor sich, nicht
 neun.
 
-**Die Signatur, aus den `detail`-Feldern der elf Laeufe gelesen** — in allen elf steht dieselbe
-Zeile, und sie ist in **zehn von elf** identisch geformt:
+**KORREKTUR 2026-09-06 (Program-MAIN Slot 6, aus denselben Registerzeilen neu gelesen).** Die
+Signatur-Lesung der Registrierung oben ist FALSCH und wird hier ersetzt, nicht ergaenzt: sie las
+`"status":"send-uncertain", "deliveredAt":null` als den Fehler. Das ist der SOLL-Zustand. Der Check
+verlangt woertlich `firstTransport?.status === "send-uncertain" && firstTransport.attempts === 1 &&
+firstTransport.recovery?.state === "retryable"` (`e2e/watch.ts`, der Check bei `Q6 fleet-report cap:
+zero, negative and non-numeric …`). Wer nach `send-uncertain` sucht, sucht nach dem Beweis, dass die
+Fixture funktioniert hat.
 
-```
-"status":"send-uncertain", "deliveredAt":null, "acknowledgedAt":null
-```
+**Und die Familie liegt in `e2e/watch.ts`, nicht in `e2e/programs.ts`** (`grep -n 'Q6 ' e2e/*.ts`).
 
-mit `attempts:1` in den neun Cap-Faellen und `attempts:5` in den zwei Fixture-Faellen. Der elfte
-(`d63bb91`, 2026-09-02) ist der einzige mit einer anderen Form: `rounds` dreimal `[null,null]` bei
-einer bereits `acknowledged`-Zeile.
+**Die wirkliche Signatur, ueber alle zehn roten Laeufe des Cap-Checks gelesen** (142 Laeufe mit
+dieser Sektion im lokalen Register, 10 rot = 7,0 %; die Registrierung oben zaehlt 11/127, weil sie
+den zweiten Eintrittscheck mitzaehlt — die Groessenordnung ist dieselbe): der Zaehler SPRINGT. Die
+Sektion startet den Server dreimal mit den Knopfwerten `0`, `-2`, `abc` und erwartet danach genau
+`attempts` 2, 3, 4. Gemessen:
 
-**Was das heisst, und wo die Grenze der Lesung liegt:** `send-uncertain` ist ein
-TRANSPORT-Ausgang — gepastet wurde, der Annahme-Marker wurde nicht beobachtet. Die Sektion pflanzt
-eine Report-Zeile und misst danach einen Vertrag ueber deren `attempts`-Zaehler; bleibt die Zeile
-schon beim ERSTEN Zustellversuch auf `send-uncertain` stehen, misst der Cap-Check einen Zaehler, der
-nie gelaufen ist. Das ist die Wurzel-KLASSE, nicht die Wurzel: **warum** der Marker unter Last
-ausbleibt, ist hier NICHT gemessen (dieselbe offene Frage wie bei der Acceptance-Sonde, Notizen
-`6c7d98ff`/`ca085489`). Was ohne weitere Messung feststeht: die Sonde faellt heute als der VERTRAG,
-den sie prueft, obwohl ihre Vorbedingung nicht hergestellt war — der Schnitt, den das Regelbuch
-verlangt (*eine Sonde, die nicht laufen konnte, muss als SIE SELBST scheitern*), ist hier noch nicht
-gezogen.
+| gedruckte `rounds` | Laeufe |
+| --- | ---: |
+| `["0",2,… attempt 2 of 5]`, `["-2",3,… attempt 3 of 5]`, `["abc",5,… reached the cap of 5]` | 4 |
+| `["0",2,…]`, `["-2",5,… reached the cap of 5]`, `["abc",null,null]` | 4 |
+| `["0",2,"recovery delivered to the exact bound receiver occupant"]`, danach `null` | 1 |
+| `["0",null,null]`, `["-2",null,null]`, `["abc",null,null]` — Latch nie erreicht, `first` fehlt ganz | 1 |
 
-**Fuer den Leser eines roten Laufs:** eine rote Q6-Zeile mit `send-uncertain` im Detail ist bis auf
-Weiteres diese Familie und kein Regress am `fleet-report`-Pfad. Eine rote Q6-Zeile OHNE
-`send-uncertain` ist es nicht und gehoert dem, der sie sieht.
+In neun von zehn Laeufen ist der ERSTE Rundgang korrekt (`attempts` 2) und erst der zweite oder
+dritte springt auf **5** statt auf 3 bzw. 4. Fuenf ist der Default-Cap: die Zeile ist damit
+`blocked`, wird nie wieder gepastet, und jeder folgende Rundgang steht auf `null` — Kaskade, kein
+zweiter Befund. Mechanisch heisst das: **zwischen zwei Beobachtungen der Fixture faellt mehr als ein
+Zustellversuch.** `waitReportRow` wartet auf eine EXAKTE Zahl (`row.attempts === round.attempts`) und
+pollt alle 50 ms; laufen zwei Versuche innerhalb eines Poll-Fensters, ist die erwartete Zahl fuer
+immer verpasst und der Check faellt nach 10 s Timeout als *Cap-Vertrag verletzt*, obwohl der Vertrag
+nie gemessen wurde. Der Verdaechtige ist der Recovery-Latch: er parkt den Versuch NACH seiner
+Freigabe nicht mehr, der Tick darf also im selben Fenster erneut zustellen. **Das ist eine Vermutung
+am Registerbild, nicht am Code gelesen** — die Zeile, die diese Familie repariert, prueft sie zuerst.
+
+Der Sonderfall `d63bb91` (Latch nie erreicht, `first` fehlt im `detail`, weil `JSON.stringify`
+`undefined` weglaesst) ist derselbe Klassenfehler in seiner reinsten Form: die Sektion hat ihre
+Vorbedingung nie hergestellt und faellt trotzdem als der VERTRAG, den sie pruefen wollte. Der
+Schnitt, den das Regelbuch verlangt (*eine Sonde, die nicht laufen konnte, muss als SIE SELBST
+scheitern*), ist an drei Stellen zu ziehen: der `reachedLatch`-`break` braucht einen eigenen
+`check()`, `waitReportRow` darf nicht auf Gleichheit warten, wo der Zaehler monoton steigt, und die
+zwoelfteilige Konjunktion muss im `detail` sagen, welcher Konjunkt fiel.
+
+**Eine Registergrenze, die man beim Nachrechnen kennen muss:** das `detail` wird im Trail bei
+**2 012 Zeichen abgeschnitten**. Neun der zehn Zeilen enden exakt dort, der `complete`-Teil der
+Konjunktion ist in ihnen also gar nicht enthalten und kann aus dem Register nie beurteilt werden.
+
+**Fuer den Leser eines roten Laufs:** eine rote Q6-Cap-Zeile, deren `rounds` eine **5** vor dem
+dritten Rundgang zeigt, ist diese Familie und kein Regress am `fleet-report`-Pfad. Zeigt sie die
+Folge 2/3/4 und faellt trotzdem, gehoert sie dem, der sie sieht — dann ist wirklich ein anderer
+Konjunkt gefallen, und heute sagt das `detail` nicht welcher.
 
 ### 11.2r Eine zwanzigste Familie: das Watch-Idempotenz-Paar in `e2e/watch.ts` — und die Haelfte der Sichtungen ist per Konstruktion unattribuierbar (2026-09-06 registriert; Mechanismus AM PROBENCODE gelesen; NICHT repariert)
 

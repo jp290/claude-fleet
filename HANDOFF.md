@@ -429,6 +429,14 @@ git und die Sensoren nicht tragen. Abschnitte darunter sind FREMD.
 4. **Objekte:** Repo-Register (winzig, erstes neues Objekt), Game-Maker v2 als `Studio`, ContextPack + Routing (= D1 verallgemeinert), Thread (= L-Workspace). Nicht vor 1.
 Die Rollen: Owner = Richtung/Promotion · Astra = Zielbild/Plan/Charters (Program `e3b3a064`) · Controller = Routing/Deploy/Owner-Gespraech · Fleet-Betrieb = landet Fleet-Zeilen · Land-Pipeline/Audit-Determiniertheit/Fleet-ohne-Owner-Routing = Basis.
 
+## 3b. Letzte Akte dieser Session (19:5x–20:1x) — die Nachfolgerin NUTZT sie, statt sie zu wiederholen
+
+- **Program `e3b3a064` „Fleet-Architektur" ist AKTIV**, MAIN = zweite Astra-Session in **Slot 9** (codex `gpt-6-astra`, high; Gruendungsbrief servergebaut aus der Charter). Slot 3 bleibt Astras Review-Program `eec69528`. Koordination zwischen beiden bis D1 ueber Notizen mit Flaeche. Owner hat es nicht einzeln genickt („wird es nicht von selbst starten?" → unter Delegation gefahren); rueckgaengig = `POST /api/programs/e3b3a0642d5c8106eb545a40/complete` + Slot 9 schliessen.
+- **Kontext-Gesundheitsanalyse, zweigleisig und blind (Owner-Auftrag 19:5x):**
+  - Fable 5.1: `docs/messungen/2026-09-06-kontext-gesundheit-fable.md` (329 Zeilen, committet mit diesem Handoff). Top 3: (1) `HANDOFF.md` ist ein Stapel von 12 H1-Bloecken aus fuenf Rollen (143 KB), und jeder Gruendungs-/Nachfolgebrief sagt „lies nur den obersten Abschnitt" — der gehoert einer FREMDEN Rolle; das Gate `handoffCommittedAfterOpen` prueft Alter, nicht Urheberschaft. (2) Der Controller hat KEINEN servergebauten Rollenbrief: `buildSuccessionBrief` nennt `docs/controller.md` nie, obwohl controller.md:6-8 es verspricht. (3) Der graphify-Hook (`.claude/settings.json`, gitignored) haengt 269–487 B an JEDEN Tool-Aufruf im Haupt-Checkout (≈15–25 k Token je Turn-Kette) und widerspricht dem Regelbuch; dazu Band 60 % (globale CLAUDE.md) vs 25/30 (AGENTS.md).
+  - GLM 5.3: Lane-Zeile **`746513d1`** (pi-zai/glm-5.3/high, queued, Program `eec69528`, blind; Notiz `docs/messungen/2026-09-06-kontext-gesundheit-glm.md`, §5 = Abgleich mit der Fable-Notiz). Report geht an Astra Slot 3.
+  - **Was daraus folgt:** die drei Fable-Befunde sind Rulebook-/Server-Zeilen fuer Fleet-Betrieb oder Fleet-Architektur, KEINE Controller-Arbeit — nach dem GLM-Abgleich als Zeilen filen (Astra `e3b3a064` entscheidet den Schnitt). Bis dahin: die Nachfolgerin liest die Fable-Notiz §2 einmal (≈10 min) und haelt sich an Befund 1 (grep nach dem eigenen Abschnitt, nie „oben").
+
 ## 4. Offen beim Owner (nicht dringend)
 
 Bestaetigung `e3b3a064` und die MAIN-Frage · Deckel 2→3 nach `746500ec` · Analyst an · fuenf tote Programs · die fuenf Fragen in `docs/fleet-hub-overlay-2026-09-06.md` §5 · W5d Second-host-Seite (`FLEET_LANDS=1`, Sync-Timer).

@@ -59,8 +59,42 @@ diese Verweigerung ist das Signal, das ein Mensch sehen muss: sie heißt, dieser
 und unter Weg b darf er das nicht.
 
 Fünf Ausgänge, je mit eigenem Code, damit ein Fehlschlag als er selbst scheitert und nie als der
-falsche: `0` aktuell oder fast-forwarded · `2` Fetch gescheitert · `3` auseinandergelaufen · `4`
-Vorbedingung verweigert (nicht auf `main`, schmutziger Baum, unbekanntes Remote).
+falsche: `0` aktuell oder fast-forwarded (Bundle vorhanden oder frisch gebaut) · `2` Fetch
+gescheitert · `3` auseinandergelaufen · `4` Vorbedingung verweigert (nicht auf `main`, schmutziger
+Baum, unbekanntes Remote) · `5` der Client-Build ist rot.
+
+## Warum der Folger auch BAUT
+
+`public/*.js` ist ein gitignoriertes BUILD-Artefakt. Ein Fetch trägt es nie mit, also bewegt ein
+Fast-Forward `src/` und lässt das JS dahinter stehen — und ein Checkout, der geklont und nie gebaut
+wurde, hat überhaupt keins. **Gemessen am 2026-09-06 04:14 am Folger-Poll:**
+`bundleStale {appJsMtime:null, shareJsMtime:null, helperJsMtime:null, stale:null}`, `ls public/*.js`
+dort nicht gefunden — das Board des Folgers war HTML ohne JS.
+
+Darum baut `fleet-sync.sh` selbst, und zwar in genau zwei Fällen: **nach einem erfolgreichen
+Fast-Forward**, und wenn `main` schon aktuell ist, aber eine der drei Dateien aus
+`server.ts#BUNDLES` (`public/app.js`, `public/share.js`, `public/helper.js`) fehlt. Ist der Folger
+aktuell UND vollständig, läuft kein Build — sonst wäre der 15-Minuten-Timer eine Bundler-Schleife.
+Das Kommando ist `${FLEET_SYNC_BUILD_CMD:-bun run build}`, dieselbe Form wie
+`server.ts#DEPLOY_BUILD_CMD`.
+
+**Nicht in `watchdog.sh`**, und das ist eine Entscheidung: denselben Watchdog booten BEIDE Hosts,
+ein Build im srv-Spawn-Pfad träfe also auch den kanonischen. `fleet-sync.sh` ist das einzige, was
+auf dem Folger läuft und sonst nirgends.
+
+**`5` ist nicht `4`.** Ein `4` heißt, dass nichts passiert ist; bei `5` hat der Fast-Forward
+bereits stattgefunden und **steht** — nur das Bundle dahinter nicht. Die Ausgabezeile sagt beides
+(`… -> … SYNCED, then BUILD FAILED …`), damit ein Leser des Journals nicht raten muss, wo `main`
+gelandet ist.
+
+**Die Naht daemon×PATH, beide Hälften bezahlt.** Ein User-Manager vererbt systemds eigenen PATH,
+und `bun` liegt in keinem Distributionspfad, sondern in `~/.bun/bin` — aus dem Timer ist
+`bun run build` also ein `command not found`, das ein Terminal-Lauf nie reproduziert. Deshalb (1)
+löst `fleet-sync.sh` `bun` selbst auf (`command -v bun`, sonst `$HOME/.bun/bin/bun`) und meldet ein
+fehlendes `bun` als `5` im Klartext, und (2) trägt `fleet-sync.service` `%h/.bun/bin` im
+`Environment=PATH=` — mit dem Grund daneben, wie der Kommentar dort ihn verlangt. Zwei Hälften,
+weil nur eine von beiden durch ein Land reist: eine bereits installierte Unit ist ein Host-Artefakt
+und ändert sich nicht mit dem Repo.
 
 ## Verifikation (2026-09-05, gemessen)
 
@@ -74,6 +108,14 @@ Vorbedingung verweigert (nicht auf `main`, schmutziger Baum, unbekanntes Remote)
 - **`fleet-sync.sh`, alle fünf Ausgänge** gegen ein Paar Wegwerf-Repos auf dem Folger (Linux, `sh`
   ist dort **dash**): aktuell `0` · Fast-Forward `0` · schmutzig `4` · unbekanntes Remote `4` ·
   auseinandergelaufen `3` · nicht auf `main` `4`.
+- **Der Build-Schritt** ist seit dem W2-Bundle-Land maschinell gehalten, nicht nur gemessen:
+  `e2e/pins.ts` hält die Exit-Code-Menge `{0,2,3,4,5}` über drei Seiten deckungsgleich (was das
+  Skript wirklich exit-et, seine eigene Kopfzeilen-Tabelle, die Liste im Kommentar von
+  `fleet-sync.service`) und die Bundle-Liste des Skripts gegen `server.ts#BUNDLES`;
+  `e2e/land-durability.ts` §F fährt das echte Skript gegen ein Wegwerf-Paar aus kanonischem Repo
+  und Folger-Klon, mit einem Stand-in statt `bun run build`: aktuell ohne Bundle → Build und `0` ·
+  aktuell mit Bundle → **kein** Build · Fast-Forward → Build · roter Build → `5`, `main` trotzdem
+  bewegt.
 
 ## Der systemd-Schnitt auf dem Folger (2026-09-05, gemessen)
 

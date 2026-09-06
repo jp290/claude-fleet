@@ -1011,6 +1011,51 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       `watchdog=[${homeEntries}] unit line ${unitPath === "" ? "MISSING" : "present"}, unreachable=[${unreachable}]`);
   }
 
+  // THE FOLLOWER'S TRANSPORT, whose two halves are a POSIX shell script and a systemd unit — no
+  // compiler is ever going to look at either. fleet-sync.sh answers in exit codes and nothing else:
+  // the timer's whole semantics is "anything but 0 leaves the unit failed", so the unit's comment is
+  // the only place a human reads what a code MEANS, and a code the unit does not know about is a
+  // failure nobody can name. Three sides, because two would let prose agree with prose: what the
+  // script CAN exit with, what its own header table promises, and what the unit lists.
+  const SYNC = "fleet-sync.sh";
+  const SYNC_UNIT = "fleet-sync.service";
+  const RULE_SYNC = "fleet-sync's real exits, its header table and the unit's list are one set";
+  const syncSrc = ((): string | null => { try { return read(SYNC); } catch { return null; } })();
+  const syncUnit = ((): string | null => { try { return read(SYNC_UNIT); } catch { return null; } })();
+  // the probe fails as ITSELF (the rule at the head of this file): "no file" and "the two disagree"
+  // send their reader to different places.
+  if (syncSrc === null || syncUnit === null)
+    pin(`${RULE_SYNC} — PROBE: both halves are readable`, false,
+      `${SYNC}=${syncSrc === null ? "MISSING" : "ok"} ${SYNC_UNIT}=${syncUnit === null ? "MISSING" : "ok"}`);
+  else {
+    // a `·`-separated table written across comment lines: fold the continuations away, then take
+    // each item's leading number. Same shape on both sides, so one reader serves both.
+    const codesIn = (table: string): string[] =>
+      [...new Set(table.replace(/\n#/g, " ").split("·")
+        .map((item) => /^\s*(\d+)\b/.exec(item)?.[1] ?? "")
+        .filter((c) => c !== ""))].sort();
+    const declared = codesIn(/# Exit codes:([\s\S]*?)Every non-zero/.exec(syncSrc)?.[1] ?? "");
+    const unitCodes = codesIn(/answers in [a-z]+\n# exits \(([^)]*)\)/.exec(syncUnit)?.[1] ?? "");
+    // what the script can ACTUALLY do — comment lines dropped first, so the table above is not
+    // read back as its own evidence.
+    const real = [...new Set([...syncSrc.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n")
+      .matchAll(/\bexit (\d+)/g)].map((m) => m[1]))].sort();
+    pin(RULE_SYNC,
+      real.length > 0 && declared.join(",") === real.join(",") && unitCodes.join(",") === real.join(","),
+      `real=[${real}] table=[${declared}] unit=[${unitCodes}]`);
+
+    // AND THE BUNDLE LIST. fleet-sync.sh decides whether the follower needs a build by looking for
+    // these three files; server.ts decides whether the board's bundle is stale by timing the same
+    // three. A fourth entry landing in server.ts alone would leave the follower shipping a bundle
+    // that is two thirds built, and bundleStale would report it — from the host that cannot fix it.
+    const serverBundles = [...(/const BUNDLES = \[([^\]]*)\]/.exec(server)?.[1] ?? "")
+      .matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    const syncBundles = (/^BUNDLES="([^"]*)"/m.exec(syncSrc)?.[1] ?? "").split(/\s+/).filter(Boolean);
+    pin("fleet-sync.sh looks for exactly the bundles server.ts calls the client",
+      serverBundles.length > 0 && serverBundles.join(",") === syncBundles.join(","),
+      `server=[${serverBundles}] sync=[${syncBundles}]`);
+  }
+
   const proportionalCmd = /const VERIFY_PROPORTIONAL_CMD = '([^']+)'/.exec(server)?.[1] ?? "";
   const proportionalSteps = stepsOf(proportionalCmd);
   // The REPO GUARD is pinned as a THIRD side of the same sentence, because the short chain is the

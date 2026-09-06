@@ -709,6 +709,30 @@ repo and therefore shared reality, not a lane's to clean (CLAUDE.md).
 *Added while landing the data-saver program (four lanes, `bc4e975`…`f323fb4`). Not a new study —
 §5b's finding reproduced by accident, at cost, plus one thing §5b could not know.*
 
+### 11.0b WARNUNG ZUM INSTRUMENT: `GET /api/self/flakes` ist oberhalb von einem Tag ABGESCHNITTEN (gemessen 2026-09-06)
+
+Wer eine Basisrate aus dieser Route liest, liest sie unterhalb von `days=1` richtig und darueber
+falsch. Gemessen am 2026-09-06 06:1x gegen den Live-Server, dieselbe Route dreimal:
+
+| Aufruf | `runs` | `filesOmitted` |
+| --- | ---: | ---: |
+| `?days=1` | 280 | 0 |
+| `?days=7` | **400** | 1 244 |
+| `?days=30` | **400** | 5 099 |
+
+**`days=7` und `days=30` liefern dieselbe Zahl**, und diese Zahl ist die Deckelung selbst
+(`TRAIL_MAX_FILES`, `server.ts#trailStatsView`): der Deckel schneidet die Dateiliste, BEVOR das
+Zeitfenster angewendet wird, also waechst mit `days` nur die Zahl der weggeworfenen Dateien, nie
+die Stichprobe. Ein direkter Scan ueber `e2e-trail/isolated-*.jsonl` findet zum selben Zeitpunkt
+782 lokale Laeufe.
+
+Ehrlich ist die Route trotzdem: sie NENNT `filesOmitted`. Nur liest das Feld niemand, und ohne es
+sieht eine gedeckelte Stichprobe wie eine vollstaendige aus. **Bis das repariert ist, gilt fuer
+jede Rate in diesem Dokument: sie ist per Direktscan des Registers gerechnet, nicht aus dieser
+Route gezogen** — so auch §11.2q und §11.2r. Die Reparatur ist als Queue-Zeile `76d39cae` gefiled
+(Program „Audit-Determiniertheit 2026-09"); ihre Brief-Fassung nennt die Zahl 40 statt 400, das ist
+die aeltere Messung und hier korrigiert.
+
 ### 11.1 The four runs
 
 All serial on the same machine, each holding a `mkdir /tmp/fleet-e2e.lock` mutex, no foreign suite

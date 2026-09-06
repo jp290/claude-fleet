@@ -90,9 +90,9 @@ Alles gegen `main=793513fbfb04157c2232c5755c8accd9cae83148` und die Live-`fleet.
 git merge-base --is-ancestor e5f3596 main; git diff --name-only e5f3596..main
 for f in SYSTEM.md docs/messungen/2026-09-05-astra-s0-zielbild.md \
          docs/fleet-hub-overlay-2026-09-06.md; do git show main:$f | wc -l; done
+H=http://<fleet-host>:8790     # Host-Literal steht im Regelbuch, nicht in getrackten Dateien
 for r in /api/tasks /api/programs /api/sessions /api/self/programs /api/self/program-execution; do
-  curl -s -o /tmp/o -w '%{http_code}' -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
-    http://100.64.0.1:8790$r; done
+  curl -s -o /tmp/o -w '%{http_code}' -H "x-fleet-self-token: $FLEET_SELF_TOKEN" "$H$r"; done
 sed -n '23350,23372p' server.ts; grep -n 'isBoundSupervisor' server.ts
 grep -n 'const programDigest' -A2 server.ts; grep -n 'function taskDigest' -A12 server.ts
 ```

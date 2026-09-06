@@ -230,107 +230,83 @@ git und die Sensoren nicht tragen. Abschnitte darunter sind FREMD.
 ---
 ---
 
-# HANDOFF — 🎛 Fleet Controller (Slot 6, Fable 5.1): beide Lanes gelandet (Audit-Fix `c8104a2`, E8 `f8babcd`), Deploy `8b59b434` mit Opus fuer alle Wegwerf-Worker, Second-host als Git-Hub + vollwertige Toolchain (W5a/W5c), drei Owner-Richtungen gefilt; 2026-09-06 09:5x, ctx GEMESSEN 26,3 %
+# HANDOFF — 🎛 Fleet Controller (Slot 5, Fable 5.1): Deploy `e1c165e9` auf `bc6f2a5` + Daemon `780d2f5`, Hand-Audit auf dem Second-host GRUEN 3742/0 (steht in keinem Ledger), 129 Scratch-Instanzen gereapt, vier Owner-Richtungen gefilt (eine laeuft als Lane an mich geankert); 2026-09-06 12:0x, ctx GEMESSEN 23,4 %
 
-> **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 2, 06:1x).
-> **Der Controller ist, wer das Label `🎛 Fleet Controller` traegt.** Lineage: … → 7 → 2 → 6 → du.
-> **STRUKTURBEFUND (von der Fleet-Betrieb-MAIN Slot 10, 09:4x, bestaetigt):** „oberster Abschnitt" ist bei
-> drei bis vier MAINs pro Tag KEIN Zeiger mehr auf den richtigen Text — eine Nachfolgerin liest den
-> Abschnitt eines FREMDEN Programs. Offene Frage `docs/handoffs/<program>.md`; bis dahin: such deinen
-> Abschnitt per `grep -n '^# HANDOFF — 🎛' HANDOFF.md`, nicht per „oben".
+> **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 6, 09:5x).
+> **Der Controller ist, wer das Label `🎛 Fleet Controller` traegt.** Lineage: … → 2 → 6 → 5 → du.
+> Such deinen Abschnitt per `grep -n '^# HANDOFF — 🎛' HANDOFF.md`, nicht per „oben" (drei MAINs schreiben hier).
 
 Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, Owner-Poll, Panes.
 
 ## 0. Was du als Erstes tust
 
-1. `GET /api/self/attention` und `GET /api/self/fleet-report`: ich hinterlasse KEINE offene Attention.
-   **Mit mir sterben zwei armierte Audit-Watches:** `d163f863` (mainAfter `c8104a2`, Audit-Fix) und
-   `01de2280` (mainAfter `f8babcd`, E8). Das Audit laeuft koalesziert und REMOTE auf dem Second-host
-   (Helper `secondhostlinux1`, Claim `audit claude-fleet main`, Expiry ~10:31). Eine fehlende
-   Ledger-Zeile heisst „laeuft noch". Armiere `{kind:"audit"}` neu, je Land eine.
-2. **Nach dem Audit-Verdikt, in DIESER Reihenfolge:** (a) `POST /api/deploy` — `codeBehind:true`,
-   E8 `f8babcd` ist Servercode (`server.ts`, `helper-daemon/daemon.ts`); die Route lehnt bei
-   laufendem Audit mit 409 ab. Vorher die MAINs Slot 2/7/8 fragen (ein Deploy nullt jede Idle-Uhr;
-   um 09:40 haben alle drei „Deploy ok" gesagt, das gilt nicht fort). (b) **Daemon-Update auf dem
-   Second-host:** `POST /api/helper/devices/secondhostlinux1/update` (Owner-Token) — E8s Artefakt-Haelfte
-   (Vorschau-Log-Upload) braucht den neuen Daemon; `daemonSha` dort ist `40a55e40` (2026-09-04).
-   NICHT waehrend ein Audit dort laeuft: der Daemon startet sich beim Update neu (exit 75) und wuerde
-   den laufenden Lauf toeten. Beweis, dass es griff: naechster Heartbeat traegt `daemonSha` = main.
-3. **Erwartung ans Audit:** GRUEN, oder rot NUR mit registrierten Familien (§11.2o-Sonde faellt als sie
-   selbst, Q6/§11.2q, §11.2l-Paar). Faellt `(setup F) … sourceTree=null` NOCHMAL, ist der Fix
-   `c8104a2` nicht angekommen — dann ist das ein neuer Befund, kein bekannter.
-4. **Lane in Slot 4 (`76d39cae`, Audit-Determiniertheit Zeile 2, MAIN Slot 7)** und **Slot 1
-   (`fleet/260905150555-2aac`, Land laeuft seit 09:50, MAIN Slot 2)** gehoeren ihren MAINs — nicht landen.
-5. **Queue-Zeile `84cf7335` (Resolver-Sensor) ist `queued`** und startet vom Tick, sobald die Lane-Decke
-   (2) frei ist. Ownerlos, repo-gebunden; Report kommt an den Owner-Inbox oder an den, der einen
-   Lane-Watch haelt — **armiere einen Lane-Watch, sobald sie einen Slot hat**, sonst landet der Report
-   nirgends bei dir.
+1. `GET /api/self/attention` + `/fleet-report`: ich hinterlasse KEINE offene Attention. **Mit mir stirbt
+   ein armierter Lane-Watch `695b6462` auf Slot 6** (Lane `18a31359`, Branch `fleet/260906094200-f064`,
+   Denkauftrag Wellenzusammenlegung, an Slot 5 GEANKERT — der Report ist an den Controller adressiert,
+   nach meinem Ende landet er im Owner-Inbox). Armiere `{target:6}` neu, lies dann den Report: es ist ein
+   DOKUMENT (`docs/queue-wellen-<datum>.md`), kein Code; landen wie eine Docs-Lane (kurze Kette).
+2. **`84cf7335` (Resolver-Sensor) und `d904fb4e` (Second-host zwei Suiten parallel) sind `queued`** — beide
+   starten vom Tick, sobald der Lane-Deckel (2 je Repo) frei ist; Slot 1 (`508dc4bb`) und Slot 4
+   (`76d39cae`) gehoeren der Audit-Determiniertheit-MAIN Slot 7, Slot 6 dem Owner-Handdispatch. Sobald
+   eine der beiden einen Slot hat: Lane-Watch, sonst landet ihr Report nirgends bei dir.
+3. **Kein Deploy offen:** `bootHead bc6f2a5` = main, `codeBehind:false`, `bundleStale:false` (12:0x).
+   Hub steht auf main (`git ls-remote hub main`). **Hub-Regel bis W5b: nach JEDEM Land `git push hub
+   main` von Hand.**
+4. **Zwei Denkauftraege liegen beim Owner:** `187aa1a0` (robuster Merge-Prozess) `pending`; `18a31359`
+   (Wellen) laeuft als Lane. Owner-Wunsch: beide in EIN Program, Fable-MAIN schneidet, Opus-5-high-Lanes
+   bauen. Gruende das Program erst, wenn der Wellen-Report da ist und der Owner `187aa1a0` freigibt.
 
-## 1. Owner-Entscheide dieser Session (09:0x–09:5x, woertlich oder sinngemaess)
+## 1. Owner-Entscheide dieser Session (10:3x–11:5x, woertlich in den Queue-Zeilen)
 
-- **„Second-host sollte vollwertig aufgesetzt sein, je nachdem wie wir das vernuenftig aufsetzen"** und
-  „was wenn wir einen Git-Server auf dem Second-host laufen lassen wuerden?" → Auftrag `1e7765c9` in
-  `cd110019` (W5a Hub · W5b Land-Push · W5c Toolchain+Rulebook · W5d Umschalten), Design in
-  `docs/dual-host-topologie-entscheidung-2026-09-05.md` §6: ff-only-Push auf den Hub IST das Lock,
-  zwei landende Instanzen brauchen kein zweites Lock-Design.
-- **„pi wuerde ich erstmal nicht mitnehmen wollen"**; Codex-Login dort hat der Owner selbst gemacht
-  (mechanisch bestaetigt: `codex login status` → „Logged in using ChatGPT").
-- **Bewerbungsarbeit spaeter auf dem Second-host**, getrennt von Fremdanbietern, Folder-Upload-Anbindung →
-  Notiz `dc9b346e` (Merker, keine Entscheidung).
-- **„gut moeglich, dass Fable 5.1 das sogar besser kann"** (zu Astra auf dem Second-host) → E6 wird UMGEDEUTET:
-  nicht „Astra dorthin", sondern „claude UND codex laufen dort als Lane/MAIN; was fuehrt, entscheidet
-  die Modellpolitik je Program". Default fuer neue Denk-/Review-Programs dort: Fable-MAIN, Codex nur als
-  ausdruecklich gewollter Gegenleser. Astra bleibt bis Program-Ende (`eec69528`, zwei offene Zeilen).
-- **Merge-Resolver:** Frage nach Modell → Antwort: bis `8b59b434` Sonnet 5 (SUMMARY_MODEL-Default,
-  merge/repair ohne eigenes Modell), seit dem Deploy Opus 5. Eskalation auf Fable / Sonnet-Trichter:
-  **Controller-Entscheid ERST MESSEN** — Sensor `84cf7335` (queued), Idee `3d5c87cb` mit Ausloeser.
-  „Ein robuster Merge-Prozess koennte uns einiges ersparen" → Denkauftrag `187aa1a0` (Fable-MAIN, drei
-  Schichten, Ledger-Zahlen im Text), noch `pending`, Owner-Freigabe oder „clarify first".
-- Delegation vom 2026-09-05 20:2x gilt fort (Host-Akte auf dem Folger einzeln benannt; fragen nur bei
-  Geld, fremden Konten, Publikation).
+- Second-host staerker in den Mutex, „doppelt so gut", RAM kaufen → Merker `10540266` (gemessen: Suite ist
+  nicht CPU-gebunden, Load 0,09/16 Kerne; remote p50 26,5 vs lokal 25,6 min, aber remote GLATT 27 gegen
+  lokal 31–42; mac M1 8 GB nicht nachruestbar, Swap 5,3/6,1 GB belegt).
+- „SSD-Gesundheit anschauen", MacBook langfristig head-relevant/lightweight →
+  `docs/messungen/2026-09-06-mac-ssd-gesundheit.md` (`780d2f5`): 8 % used, 111 TB written, PASSED;
+  Treiber ist Swap, nicht die Suiten. `smartctl` ist jetzt per brew da. Zweite Messung ~2026-09-13.
+- „Reap die 174 e2e-Instanzen ausser den aufbewahrten roten" → 129 geloescht, 45 behalten (laufend ·
+  in unadjudizierter roter Audit-Zeile genannt · <24 h). Scratch 4,4 → 1,6 G.
+- „Second-host zwei Suiten (i9)" → Messauftrag `d904fb4e`, vom Owner freigegeben (`queued`).
+- „Wie wird die Queue bewertet … smarte Wellenzusammenlegung … Opus 5 high, Fable Orchestrator" →
+  `18a31359`, vom Owner direkt gestartet (Slot 6).
+- Delegation vom 2026-09-05 20:2x gilt fort (fragen nur bei Geld, fremden Konten, Publikation).
 
-## 2. Was gefallen ist (Belege: Land-Notes, `deploys.jsonl`, Commit-Bodies, Second-host per ssh)
+## 2. Was gefallen ist (Belege: `deploys.jsonl`, `post-land-audits.jsonl`, Second-host per ssh)
 
-- **Audit-Fix `c8104a2`** (Lane Slot 5, Task `6683f4cf`): `fleet-sync.sh` in der `e2e-stage.sh`-Kopierliste,
-  §F loest `${ROOT}` zuerst. Beweis in DREI Laeufen (Kontrolle rot mit exakter Ledger-Signatur, Fix
-  gruen mit `sourceTree=null` in der PASS-Zeile = ROOT-Weg trug, Worktree gruen). Note `verify.ok true`,
-  150 s, `waitMs 0`, volle Kette. Report `e8c839b5` accepted. **Offen aus dem Report:** kein Pin haelt
-  `fleet-sync.sh` in der Kopierliste — faellt sie heraus, ist es dieselbe unsichtbare Form wieder.
-- **E8 `f8babcd`** (Lane Slot 4, Task `34053ec9`): ZWEI Loecher — `reportLaneSuite` warf die Daemon-Fail-
-  Namen weg, `uploadSuiteLog` hing an `auditAt`. Jetzt `fails[]` auf dem Vorschau-Verdikt, ein Parser
-  (`localFailNames`), zwei Aufrufer; `artifactAt` auf jeder Quittung. Mutationslauf bewiesen. Note
-  `verify.ok true`, 143 s. Report `1d076c04` accepted. Zwei rote adjudiziert (Q6 §11.2q; siebtes
-  §11.2j-Mitglied `fleet-e2e-postland-audit.ts:930`, per A/B auf dem Elternbaum bewiesen, UNREPARIERT —
-  macht dort jeden postland-Suite-Lauf rot).
-- **Deploy `8b59b434`** 09:43, `ok:true`, bootHead `e2beeff`, srv pid 96786; `FLEET_SUMMARY_MODEL` im Env
-  (gezaehlt, nicht gelesen), `bundleStale false`. Die drei MAINs vorher gefragt, alle „Deploy ok".
-  **Danach sind DREI Lands gelandet (`c8104a2`, `f8babcd`, und `c4e53f9` = Slot 1, Fleet-Betrieb-MAIN Slot 2,
-  09:5x), also `codeBehind:true` — §0.2. Das koaleszierte Audit deckt alle drei; armiere den dritten
-  Audit-Watch auf `c4e53f9` mit.**
-- **W5a** (Bare-Hub `~/git/claude-fleet.git`, Remote `hub` auf beiden Hosts, Timer bleibt auf `canonical`)
-  und **W5c** (Node 24.20.0 Tarball unter `~/.local`, codex 0.153.4, pi 0.85.0 im mac-Layout, bun/bunx
-  in `~/.local/bin`, `rulebook/` per scp + `CLAUDE.md` byte-identisch gerendert, Pins dort 417/1 —
-  der eine ist der leak-pin = Notiz `25361e42`, Owner-Wahl; `FLEET_SUMMARY_MODEL` in `.env` dort).
-  Messbloecke: `a775cc8`, `e2beeff` (Direkt-Commits, docs-only, Pins von Hand gruen). **Hub-Regel bis
-  W5b: nach JEDEM Land `git push hub main` von Hand** — heute dreimal getan, Hub steht auf `f8babcd`.
-- **Falscher Alarm, selbst korrigiert:** `pgrep -f 'bun server.ts' | head -1` traf eine e2e-Instanz des
-  Land-Gates, nicht den srv; „zweiter Neustart" war keiner. `fleet.pid` + `lsof :8790` sind der Sensor.
-- Zwei Hintergrund-Watcher (meiner, Slot 5s) wurden vom System wegen Speicherknappheit beendet;
-  8 GB, Kompressor bei 3,3 GB. Drei Suiten in Reihe sind hier das Maximum.
+- **Audit `c8104a2` (remote): rot 1/3739**, D2 setup spent-shape = Host-Unterschied-Familie (10/10 remote,
+  0 lokal), adjudiziert `flake` 10:23:58 mit Verweis auf `508dc4bb`. Der Fix `c8104a2` IST angekommen
+  (kein `sourceTree=null`). Astra (Slot 3) bekam denselben Ping per Idle-Auswahl (`tickAuditPing`
+  liefert an die laengste idle Nicht-Lane, NICHT nach Zustaendigkeit) und filte `094e3530` — archiviert.
+  **Befund fuer den Wellen-/Merge-Program:** Ping zuerst an die MAIN des Programs, dem das Land gehoert.
+- **Audit `f8babcd`+`c4e53f9` (lokal): `unknown`**, 2 700 441 ms komplett Warten hinter einer
+  Lane-Vorschau (Budget-Familie `0ac22a00`); keine Requeue-Route. Ersatz von Hand: **Second-host-Checkout
+  `~/claude-fleet`, main `bc6f2a5`, `./e2e-isolated.sh` → ALL PASS 3742/0, ~33 min**, Log
+  `~/audit-manual-bc6f2a5.log` dort, Notiz `bd7c7b8d`. Steht in KEINEM Ledger — das Board-Banner
+  „did not measure" bleibt korrekt stehen. Nebenbefund an MAIN 7 gesendet: die D2-Familie fiel im
+  Hand-Lauf NICHT → Daemon-Umgebung, nicht Hardware. Zweiter: der Wrapper laesst auf Debian nach
+  exit 0 `/tmp/fleet-e2e.lock` (birth+pid) stehen; der Folgelauf reapt es korrekt.
+- **Daemon-Update `secondhostlinux1`** 10:58 `reported ok`, Heartbeat 10:59:14 `daemonSha 780d2f5`.
+- **Deploy `e1c165e9`** 11:2x, `ok:true`, bootHead `bc6f2a5`, srv pid 23744; MAINs 2/7/8 vorher DEPLOY-OK
+  (Pane-Einzeiler). Damit ist E8 beidseitig live: Lane-Vorschauen gehen ab jetzt per Suite-Offer auf den
+  Second-host — genau die Schlange, die das Audit oben getoetet hat.
+- Docs: `bc6f2a5` (§6 E8-Folge in der Dual-Host-Doc), `780d2f5` (SSD). Beide Direkt-Commits, docs-only,
+  Pins von Hand nicht gefahren (reine Prosa, kein Pin-Ziel angefasst).
+- `fugen.md`: ssh-nicht-interaktiv × PATH (`bun: not found` auf dem Second-host) + and-Liste haelt den
+  ssh-Kanal bis zum Suite-Ende.
 
 ## 3. Offen — in dieser Reihenfolge
 
-1. §0.1–0.2: Audit-Verdikt → Deploy → Daemon-Update. Danach `docs/dual-host-topologie-entscheidung`
-   §6 um E8-Folge ergaenzen (Vorschau-Artefakt braucht den neuen Daemon).
-2. `84cf7335` Lane-Watch, sobald gestartet (§0.5). `187aa1a0` liegt beim Owner.
-3. W5b (Lane) → W5d (Host-Akte + Umschalten). Bis dahin Hand-Push auf den Hub.
-4. Dual-Host `cd110019` hat keine lebende MAIN, der Controller faehrt es; `complete` ist Owner-Sache.
-5. Lane-Decke 2, ein Suite-Mutex, 8 GB: nie mehr als zwei Lanes, nie zwei Lands.
+1. §0.1 Wellen-Report ernten und landen; §0.2 Watches auf `84cf7335`/`d904fb4e`, sobald sie Slots haben.
+2. `187aa1a0` liegt beim Owner; danach Program „Queue-Wellen + Merge-Prozess" (Fable-MAIN).
+3. W5b (Land-Push auf den Hub, Lane) → W5d; bis dahin Hand-Push. Dual-Host `cd110019` hat keine lebende
+   MAIN, der Controller faehrt es.
+4. Audit-Ping-Zustaendigkeit (§2, erster Punkt) — eine Zeile im Wellen-Program, kein eigener Schnitt.
+5. Lane-Decke 2, ein Suite-Mutex je Host, 8 GB mac mit 5,3 GB Swap: nie zwei Lands, nie zwei Suiten hier.
 
 ## 4. Was mit dieser Session stirbt
 
-Kein Auto (beide One-Shots verbraucht), keine Mission, keine Attention. Watches §0.1 (die vier
-Lane-/Merge-Watches sind gefeuert, nur die zwei Audit-Watches leben). Kein Hintergrund-Watcher.
+Lane-Watch `695b6462` (Slot 6). Kein Auto, keine Mission, keine Attention. Zwei Monitore dieser Pane
+(84cf7335-Status, Second-host) sterben mit der Pane, sie sind nur meine Wecker.
 
 ---
 ---

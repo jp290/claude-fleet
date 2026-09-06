@@ -175,8 +175,9 @@ grants no capability either — a lane can already open `e2e-trail/` through the
 
 The server reads **both** directories from §3 (`<checkout>/e2e-trail` and the tmpdir fallback),
 because reading either alone silently drops a whole population — the previews or the post-land
-audits. `FLEET_TRAIL_DIRS` overrides. Files are pre-filtered by mtime and capped at the newest 400
-(~28 MB, ~325 ms measured), with `filesOmitted` reporting the cut rather than hiding it — and
+audits. `FLEET_TRAIL_DIRS` overrides. Files are pre-filtered by mtime, **filtered by `?suite=`**,
+and only then capped at the newest 400 (~28 MB, ~325 ms measured), with `filesOmitted` reporting
+the cut rather than hiding it — and
 **handed to `trailStats`, which will not answer `never-failed` while any file went unread** (it
 answers `insufficient-evidence` instead). The cut is newest-first, so the unread remainder is the
 *older* material, which is where a historical flake lives by definition: measured 2026-08-07 on the
@@ -185,6 +186,32 @@ deployed tree, `FIX1` read `never-failed, runs 74, failedRuns 0` over the newest
 — `not-your-diff` rests on clean fails already seen, and unread files can only ever add more.
 `not-in-window` (`runs === 0`) is structurally the same absence claim over the same cap and is
 **not** yet covered.
+
+**The suite filter runs BEFORE the cap, and that ordering is the whole point** (fixed 2026-09-06,
+program "Audit-Determiniertheit 2026-09"). It used to run after, inside `trailStats`, which turned
+a file cap into a suite-skewed *sample*: measured 2026-09-06 with HEAD and the fixed tree reading
+the same real trail directories, `?suite=isolated&days=7` answered over 400 files of which 341
+belonged to other suites and reported 59 isolated runs, where the fixed tree reports 192 — the exact
+count a direct scan of those two directories finds. The skew grew with everything else the machine
+happened to be running. A file's suite is read from its NAME (the name is the run id,
+`${suite}-${stamp}-${pid}`, §2), so it costs no read; a name that does not parse is never excluded,
+and the row's own `suite` field stays the authoritative filter. `filesOtherSuite` counts what the
+name filter dropped. It also sharpens the `never-failed` downgrade above: with `?suite=`, only
+unread files of *that* suite can now falsify the absence claim, where before every unread file of
+every other suite downgraded it too.
+
+**A cut answer says so in a word.** `filesOmitted` alone never closed the hole, because a caller
+comparing `?days=7` with `?days=30` got two identical answers and no field stating that the second
+window had not actually widened. Two fields do:
+
+- **`truncated`** — `filesOmitted > 0`. `runs` is then a sample, not a count.
+- **`coveredFrom`** — the oldest mtime actually opened. The answer describes `[coveredFrom, now]`,
+  never the asked `days`. It equals `window.from` exactly when nothing was cut, so
+  `coveredFrom === window.from` is the machine-readable "this is the register". It is a *floor* on
+  coverage: rows inside the oldest file read may be older still.
+
+Two windows reporting the same `coveredFrom` read the same material. That comparison — not `runs` —
+is how a caller checks whether a wider `days` bought anything.
 
 **It gates nothing and alarms nobody.** A verdict here is evidence *for* a lane's proof order, not
 a substitute for it — the same stance §5's "must never change a run's outcome" takes on the write

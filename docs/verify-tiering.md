@@ -3128,8 +3128,11 @@ sieben Klauseln, dieselbe 60-Runden-Grenze.
 
 **Der Beweis, drei Laeufe auf zwei Hosts** (Baum `472a850f` — die Reparatur, als LANE-Sha auf
 `fleet/260906075319-2fb8`. Das ist der Wert, den die Trail-Zeilen dieser drei Laeufe im Feld
-`tree` tragen, und genau deshalb steht er hier; nach dem Rebase-Land loest er auf `main` NICHT
-mehr auf — die landende MAIN setzt die echte Sha ein, `git merge-base --is-ancestor` als Probe):
+`tree` tragen, und genau deshalb bleibt er hier stehen; auf `main` loest er nach dem Rebase-Land
+NICHT auf. **Gelandet ist dieselbe Arbeit als `2a06185` (Sonde) + `15f0d7e` (dieser Abschnitt),
+2026-09-06, beide per `git merge-base --is-ancestor` gegen `main` geprueft** — ein Rot auf
+`D2 setup …` NACH `2a06185` ist wieder ECHT und gehoert dem, der es sieht. Die Lane-Sha wurde
+ERGAENZT und nicht ersetzt: sie ist der Join-Key ins Trail-Register, kein Reparatur-Zitat):
 
 | Lauf | Host | D2 setup | `msSincePrev` | Suite |
 |---|---|---|---|---|

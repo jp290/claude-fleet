@@ -1652,6 +1652,10 @@ interface HelperDeviceInfo {
   desiredMode?: string; desiredSet?: boolean;
   claims?: HelperDeviceClaim[]; lapses?: number;
   daemonSha?: string; update?: HelperDeviceUpdate | null;
+  // the capacity pair, shipped together or not at all (server.ts#helperDevicesView). Optional for
+  // the usual back-compat reason: a device that never reported them draws no line rather than a
+  // number this page made up.
+  maxParallelSuites?: number; running?: number;
   // the wake rail. `wakeConfigured` is optional here and NOT on the server for the usual reason:
   // an older server sends neither field, and `undefined` has to stay distinguishable from a server
   // that answered "no MAC, no address" — the first draws nothing, the second says so.
@@ -1757,6 +1761,11 @@ function deviceCard(d: HelperDeviceInfo): HTMLElement {
   // only when it actually said something
   const rep: string[] = [];
   if (d.load !== undefined) rep.push(`load ${d.load}`);
+  // THE LINE `load` COULD NEVER GIVE: how many of the runs on that box are this fleet's, and how
+  // many more it will take. Drawn from the device's own count, never derived from the claims list —
+  // a claim is held here, a run happens there, and the gap between them is the thing worth seeing.
+  if (d.maxParallelSuites !== undefined)
+    rep.push(`${d.running ?? 0}/${d.maxParallelSuites} suite slot${d.maxParallelSuites === 1 ? "" : "s"}`);
   if (d.capabilities?.length) rep.push(`can run ${d.capabilities.join(", ")}`);
   if (rep.length) {
     const r = el("div", "bidmeta", rep.join(" · "));

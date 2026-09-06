@@ -9,6 +9,7 @@
   "offRecheckSec": 900,
   "quietHours": { "from": "23:00", "to": "07:00" },
   "maxLoad1": 2,
+  "maxParallelSuites": 1,
   "capabilities": ["bun", "tmux", "git", "zsh"],
   "installCmd": "bun install --frozen-lockfile",
   "suiteCmd": "./e2e-isolated.sh",

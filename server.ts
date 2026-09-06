@@ -12897,6 +12897,10 @@ const isDeviceMode = (v: unknown): v is DeviceMode =>
 const DEVICE_MODE_DEFAULT: DeviceMode = "active";
 const DEVICE_CAPS_KEEP = 8;        // a capability list is a hint, not an inventory
 const DEVICE_CAP_LEN = 24;
+// The widest capacity figure this server will store from a device. Not a policy about how many
+// suites a machine may run — that decision is entirely the other machine's — but a bound on a
+// number that arrives over the wire and is then compared against another one.
+const DEVICE_SLOTS_MAX = 64;
 // ONLINE/OFFLINE IS DERIVED, NEVER STORED — the same reading that makes a claim expire. There is no
 // "offline" event anywhere in this system, only a heartbeat that stopped arriving, and this is the
 // window that separates the two.
@@ -12917,13 +12921,23 @@ interface HelperDevice {
   capabilities?: string[];   // ...and what it says it can run
   desiredMode?: DeviceMode;  // the OWNER's wish. Never written by the helper principal
   daemonSha?: string;        // the commit the daemon says it RUNS FROM (40 hex) — measured there, or absent
+  // THE TWO CAPACITY NUMBERS, and neither is this server's reading of anything: both are the
+  // DEVICE's own words about its own machine, echoed back to the board. `load` says how busy the
+  // box is; these say how much of that is the fleet's and how much more it will take.
+  //   · `maxParallelSuites` is the cap that machine's config sets (helper-daemon/daemon.ts).
+  //   · `running` is how many jobs it had in flight at its last heartbeat.
+  // ABSENT MEANS NEVER SAID, and absence is uncapped: a browser on the portal page and every daemon
+  // older than this slice report neither, and both keep exactly the behaviour they had.
+  maxParallelSuites?: number;
+  running?: number;
   lastWakeAt?: number;       // when a magic packet last LEFT this box for it. Not "it woke up" — see sendWakeFrame
 }
 const helperDevices = new Map<string, HelperDevice>();
 // What a heartbeat is allowed to carry. Keys are present only when the device actually sent them,
 // so a plain lastSeen touch (the claim paths) can spread this over the stored row without erasing
 // the last real report.
-type HelperHeartbeat = { mode?: DeviceMode; load?: number; capabilities?: string[]; daemonSha?: string };
+type HelperHeartbeat = { mode?: DeviceMode; load?: number; capabilities?: string[]; daemonSha?: string;
+  maxParallelSuites?: number; running?: number };
 // Foreign strings land in a ledger row, a console line and an audit detail — same treatment the
 // device name already gets: printable only, and short.
 function printableShort(raw: string, cap: number): string {
@@ -14216,6 +14230,10 @@ interface HelperDeviceView {
   claims: HelperDeviceClaimView[];
   lapses: number;
   daemonSha?: string;              // what the daemon says it runs — absent until a daemon that measures it beats
+  // the capacity pair, and it rides as a PAIR (see helperDevicesView): how many jobs that machine
+  // had running at its last beat, out of how many its own config lets it run at once
+  maxParallelSuites?: number;
+  running?: number;
   update: HelperUpdateView | null; // the owner's standing update wish for it, and how it went
   // the wake rail's two facts, and NEITHER of them is the MAC or the broadcast address: those are
   // env on this host, they never enter a response, and `wakeConfigured` is the whole of what the
@@ -14262,6 +14280,11 @@ function helperDevicesView(): HelperDeviceView[] {
     // identity first, name only for rows written before deviceId was booked (see HelperLapse)
     lapses: helperLapses.filter((l) => (l.deviceId ? l.deviceId === d.id : l.name === d.name)).length,
     ...(d.daemonSha ? { daemonSha: d.daemonSha } : {}),
+    // shipped as a PAIR or not at all: "2 running" with no cap beside it is a number the panel
+    // cannot draw a meaning for, and inventing the missing half here is exactly the lie the
+    // absent-means-never-said rule above exists to prevent
+    ...(d.maxParallelSuites !== undefined
+      ? { maxParallelSuites: d.maxParallelSuites, running: d.running ?? 0 } : {}),
     update: helperUpdateView(d.id),
     ...(d.lastWakeAt ? { lastWakeAt: d.lastWakeAt } : {}),
     wakeConfigured: !!HELPER_WAKE_ADDR && !!wakeMacFor(d.id),
@@ -14562,6 +14585,24 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
   if (!/^[a-f0-9]{12}$/.test(jobId)) return json({ error: "expected jobId" }, 400);
   if (!/^[a-z0-9]{8,32}$/.test(deviceId)) return json({ error: "expected deviceId" }, 400);
   expireHelperClaims();
+  // THE DEVICE'S OWN CAPACITY, READ BEFORE THE KIND IS EVEN RESOLVED — one door for all four kinds,
+  // because a machine that is full is full whatever it is being offered.
+  //
+  // WHAT THIS IS NOT: a capacity cap of this server's. It refuses using nothing but the device's
+  // OWN last words about itself, which is why absence is uncapped rather than 1 — a browser on the
+  // portal page and every daemon older than this slice report neither field and are unaffected. The
+  // daemon's own counter (helper-daemon/daemon.ts#freeSuiteSlots) is the real gate and decides
+  // first; this is the belt for the case that gate is not there, which is precisely the case that
+  // produced three parallel audits on 2026-09-06.
+  //
+  // `running` IS DELIBERATELY NOT PERSISTED (see the restore below), so a server restart forgets it
+  // and this door falls OPEN until the next heartbeat. That direction is chosen: a stale count
+  // refusing a healthy machine is a job nobody runs, and the daemon's own counter still holds.
+  const dev = helperDevices.get(deviceId);
+  if (dev?.maxParallelSuites !== undefined && (dev.running ?? 0) >= dev.maxParallelSuites)
+    return json({ error: `${dev.name} reported itself full at its last heartbeat`
+      + ` (${dev.running ?? 0} of ${dev.maxParallelSuites} slot(s) running) — nothing here is refusing the machine,`
+      + " it said so itself; the next heartbeat with a free slot reopens this" }, 409);
   // THE SECOND SOURCE, resolved before the audit queue's find so a lane-suite job answers with its
   // OWN refusals rather than falling through to "no such open audit job". Everything below the
   // branch is the audit path, byte for byte as it was.
@@ -14961,6 +15002,17 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
       if (typeof body.daemonSha !== "string" || !/^[0-9a-f]{40}$/.test(body.daemonSha))
         return json({ error: "daemonSha must be 40 hex digits" }, 400);
       reported.daemonSha = body.daemonSha;
+    }
+    // THE CAPACITY PAIR. Refused loudly when present and wrong, for the same reason `mode` is: the
+    // claim door below reads these, and a fraction or a negative stored as though it were a count
+    // would make that reading say something nobody meant. Non-negative integers, and a ceiling so a
+    // typo on the other machine cannot describe a box with a million slots.
+    for (const f of ["maxParallelSuites", "running"] as const) {
+      const v = (body as Record<string, unknown> | null)?.[f];
+      if (v === undefined) continue;
+      if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > DEVICE_SLOTS_MAX)
+        return json({ error: `${f} must be an integer between 0 and ${DEVICE_SLOTS_MAX}` }, 400);
+      reported[f] = v;
     }
     const d = setHelperDevice(deviceId, name, reported);
     await saveStateNow();
@@ -20500,6 +20552,14 @@ if (existsSync(STATE_FILE)) {
               : {}),
             ...(isDeviceMode(d.desiredMode) ? { desiredMode: d.desiredMode } : {}),
             ...(typeof d.daemonSha === "string" && /^[0-9a-f]{40}$/.test(d.daemonSha) ? { daemonSha: d.daemonSha } : {}),
+            // the CAP survives a restart (it is a property of that machine's config, and the board
+            // should not go blank over a deploy); the COUNT does not, and that asymmetry is the
+            // point. `running` is a live fact about another machine's processes, and a restored one
+            // would be this server asserting something it cannot know — in the direction that
+            // refuses a healthy helper. Absent, the claim door is open until the next heartbeat.
+            ...(typeof d.maxParallelSuites === "number" && Number.isInteger(d.maxParallelSuites)
+              && d.maxParallelSuites > 0 && d.maxParallelSuites <= DEVICE_SLOTS_MAX
+              ? { maxParallelSuites: d.maxParallelSuites } : {}),
             ...(typeof d.lastWakeAt === "number" && Number.isFinite(d.lastWakeAt) ? { lastWakeAt: d.lastWakeAt } : {}),
           });
     // the update rows, for the same reason the claims are: a deploy here is land-then-restart, and

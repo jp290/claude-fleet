@@ -5719,6 +5719,62 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     `floor=${/1748417c8008224e839f9b944dacb534ce4905a2/.test(floorLine)}`
     + ` mergeBase=${/merge-base/.test(vintageFn)} failClosed=${/=== null \? false/.test(vintageFn)}`
     + ` shaKeyed=${/helperCmdVintage\.get\(sha\)/.test(vintageFn)} calledFromClaim=${/daemonKnowsCommandKind/.test(claimFn)}`);
+
+  // --- PARALLEL SUITES ARE COUNTED, AND THE COUNT IS NOT THE LOAD AVERAGE ------------------------
+  // Three parts, none of them TypeScript's to keep, each one a way this could go back to being a
+  // load reading without a single type moving.
+  //
+  // (a) THE COUNT DECIDES, AND IT DECIDES FIRST. `tick` must consult `freeSuiteSlots` BEFORE it
+  //     asks for the job list, and must launch through `start` (which reserves the slot
+  //     synchronously) rather than awaiting `work` directly. Awaiting it again would still be
+  //     correct at cap 1 and would silently cap the work-horse at one forever.
+  //
+  // (b) EACH PARALLEL RUN GETS ITS OWN LOCK, AND ONLY ABOVE CAP 1. ./e2e-isolated.sh takes
+  //     /tmp/fleet-e2e.lock through e2e-stage.sh INSIDE the clone, so two runs on the default lock
+  //     serialize there and the whole field buys nothing. The `> 1` is the other half: at cap 1 the
+  //     shared lock is what makes a hand-started suite on that machine serialize against the
+  //     daemon's, and moving off it would end that silently for every operator who never touched
+  //     the new field.
+  //
+  // (c) THE SERVER REFUSES A FULL MACHINE WITH THAT MACHINE'S OWN WORDS, AND FORGETS THE COUNT OVER
+  //     A RESTART. `maxParallelSuites` is that box's configuration and is restored; `running` is a
+  //     live fact about another machine's processes, and a restored one would refuse a HEALTHY
+  //     helper until the next heartbeat. The asymmetry is the safety, so it is pinned: `running`
+  //     must not appear in the device restore block at all.
+  const RULE_PAR = "parallel helper runs are COUNTED (not derived from load1), each gets its own suite lock above cap 1, and a restart forgets the count but keeps the cap";
+  const tickFn = /export async function tick\([\s\S]*?\n\}/.exec(daemonSrc)?.[0] ?? "";
+  const workFn = /async function work\(cfg: HelperConfig, job: JobView\)[\s\S]*?\n\}/.exec(daemonSrc)?.[0] ?? "";
+  const devRestore = serverU.span("persisted as { helperDevices?: unknown }).helperDevices", "helperUpdates?: unknown")?.text ?? null;
+  const claimDoor = serverU.span("async function helperClaim(", "\n}")?.text ?? null;
+  if (daemonSrc === "" || tickFn === "" || workFn === "" || devRestore === null || claimDoor === null)
+    pin(RULE_PAR, false,
+      `daemon=${daemonSrc !== ""} tick=${tickFn !== ""} work=${workFn !== ""}`
+      + ` restore=${devRestore !== null} claim=${claimDoor !== null}`);
+  else {
+    const freeAt = tickFn.indexOf("freeSuiteSlots(cfg, runningJobs)");
+    const listAt = tickFn.indexOf("/api/helper/jobs");
+    pin(`${RULE_PAR} (a) the count is consulted before the job list, and work is launched through the reserving start()`,
+      freeAt >= 0 && listAt >= 0 && freeAt < listAt
+        && /for \(const j of open\) start\(cfg, j\);/.test(tickFn)
+        && !/await work\(/.test(tickFn)
+        && /function start\([\s\S]{0,400}?runningJobs\+\+;[\s\S]{0,200}?void work\(/.test(daemonSrc),
+      `freeSlots@${freeAt} jobsList@${listAt} awaitsWork=${/await work\(/.test(tickFn)}`);
+    pin(`${RULE_PAR} (b) a run above cap 1 gets its own FLEET_SUITE_LOCK, and at cap 1 the shared one is left alone`,
+      /cfg\.maxParallelSuites > 1\s*\n?\s*\? \{ FLEET_SUITE_LOCK: `\$\{runDir\}\/e2e\.lock` \} : \{\}/.test(workFn)
+        && /runArgv\(j\.argv!, clone, logPath, timeoutMs, suiteEnv\)/.test(workFn)
+        && /runCmd\(cfg\.suiteCmd, clone, logPath, timeoutMs, suiteEnv\)/.test(workFn),
+      `suiteEnv=${/maxParallelSuites > 1/.test(workFn)} passedToRun=${/, suiteEnv\)/.test(workFn)}`);
+    pin(`${RULE_PAR} (c) the claim door reads the device's own pair, and the restore keeps the cap while forgetting the count`,
+      /dev\?\.maxParallelSuites !== undefined && \(dev\.running \?\? 0\) >= dev\.maxParallelSuites/.test(claimDoor)
+        && claimDoor.indexOf("maxParallelSuites") < claimDoor.indexOf("laneSuiteJobs.get(jobId)")
+        && /maxParallelSuites: d\.maxParallelSuites/.test(devRestore)
+        // the KEY, not the word: the block's own comment explains why the count is absent, and a
+        // bare-word test would be satisfied by deleting that explanation
+        && !/\brunning:/.test(devRestore),
+      `door=${/dev\?\.maxParallelSuites/.test(claimDoor)}`
+      + ` capRestored=${/maxParallelSuites: d\.maxParallelSuites/.test(devRestore)}`
+      + ` countRestored=${/\brunning:/.test(devRestore)}`);
+  }
 }
 
 // --- WAKE-ON-LAN IS THE ONE NAMED EXCEPTION TO "NO PUSH", AND IT STAYS ONE ---------------------

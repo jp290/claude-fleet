@@ -23,8 +23,8 @@ import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
 // STAGE helper-daemon/ into the throwaway instance. The copy list is derived from the entry files'
 // transitive relative imports, so a daemon reached by an import rides along with no wrapper edit
 // and no hand-kept list — the failure mode that killed two harnesses in this repo.
-import { failNamesOf, inQuietHours, localMode, stricter, tailOf, trailIdOf, EXIT_CONFIG, EXIT_UPDATED,
-  type HelperConfig } from "../helper-daemon/daemon";
+import { failNamesOf, freeSuiteSlots, inQuietHours, loadConfig, localMode, stricter, tailOf, trailIdOf,
+  EXIT_CONFIG, EXIT_UPDATED, type HelperConfig } from "../helper-daemon/daemon";
 
 interface Row {
   at: number; ms: number; repo: string; main: string; mainSha: string; result: string; reason?: string;
@@ -45,6 +45,10 @@ interface OwnerDevice {
   id: string; daemonSha?: string;
   update: { id: string; state: string; main: string; mainSha?: string;
     result?: { ok: boolean; exitCode: number | null; mainSha: string; note: string } } | null;
+  // …and the two (HD.10) reads: which jobs that device is holding right now, and its own count of
+  // its own slots. Optional, because a device that never reported the pair is the ordinary case.
+  claims?: { kind: string; repo: string; ref: string; expiresAt: number }[];
+  running?: number; maxParallelSuites?: number;
 }
 
 const DEVICE = "daemonbox0001";           // matches the server's /^[a-z0-9]{8,32}$/
@@ -89,6 +93,35 @@ export async function run(h: {
     localMode(baseCfg, at("12:00"), 9).mode === "quiet" && localMode(baseCfg, at("12:00"), 0.5).mode === "active"
       && localMode({ ...baseCfg, enabled: false }, at("12:00"), 0.1).mode === "off",
     JSON.stringify([localMode(baseCfg, at("12:00"), 9), localMode(baseCfg, at("12:00"), 0.5)]));
+  // THE COUNT, AND THAT IT IS A COUNT. `localMode` above turns the load average into a mode, and
+  // that reading is LAGGING: on the work-horse one ./e2e-isolated.sh sits at load1 0.21 mean, so a
+  // job started twenty seconds ago has barely moved it — which is how three audits ran at once
+  // under maxLoad1 2 on 2026-09-06. `freeSuiteSlots` cannot be fooled that way, and the second half
+  // of each line below is the part that matters: the SAME cfg with NO load cap at all, asked at a
+  // load of 99, still answers zero free slots when the slots are taken. The two conditions are
+  // independent, and the counting one is the one that decides how many jobs run here.
+  const cap = (n: number): HelperConfig =>
+    ({ enabled: true, quietHours: null, maxLoad1: null, maxParallelSuites: n } as unknown as HelperConfig);
+  check("(HD) DEFAULT 1: one job at a time — a second is refused while the first runs, whatever the load average says",
+    freeSuiteSlots(cap(1), 0) === 1 && freeSuiteSlots(cap(1), 1) === 0
+      && localMode(cap(1), at("12:00"), 99).mode === "active",
+    `free@0=${freeSuiteSlots(cap(1), 0)} free@1=${freeSuiteSlots(cap(1), 1)}`
+    + ` modeAtLoad99=${localMode(cap(1), at("12:00"), 99).mode}`);
+  check("(HD) AT 2: two jobs run and the THIRD waits — the cap counts jobs, it does not measure the machine",
+    freeSuiteSlots(cap(2), 0) === 2 && freeSuiteSlots(cap(2), 1) === 1 && freeSuiteSlots(cap(2), 2) === 0
+      && freeSuiteSlots(cap(2), 3) === 0,
+    `free@0..3=${[0, 1, 2, 3].map((n) => freeSuiteSlots(cap(2), n)).join(",")}`);
+  // …and the config door: a value this rail has no reading for must not reach the arithmetic above.
+  // A 0 would make a machine claim nothing forever and silently, which is the failure mode every
+  // other floor in loadConfig exists to refuse.
+  const cfgWith = (v: unknown): number => loadConfig("/x", {
+    fleetUrl: "http://h", token: "t", deviceId: "abcdefgh", name: "n", workDir: "/w",
+    ...(v === undefined ? {} : { maxParallelSuites: v }),
+  }, 0o600).maxParallelSuites;
+  check("(HD) the cap defaults to 1, floors at 1 and takes whole slots — 0, a negative and a fraction cannot describe this machine",
+    cfgWith(undefined) === 1 && cfgWith(0) === 1 && cfgWith(-3) === 1 && cfgWith(2.9) === 2 && cfgWith(2) === 2,
+    `default=${cfgWith(undefined)} zero=${cfgWith(0)} neg=${cfgWith(-3)} frac=${cfgWith(2.9)}`);
+
   check("(HD) the tail and the trail id are taken exactly the way the portal asks a human to take them",
     tailOf("a\nb\nc\nd", 2) === "c\nd" && trailIdOf(`noise ${TRAIL} more`) === TRAIL
       && trailIdOf("no trail here") === undefined,
@@ -824,6 +857,138 @@ export async function run(h: {
       `good=${cachedGood.status} old=${cachedOld.status} ${cachedOldText.slice(0, 200)}`);
 
     await post(`/api/slots/${lane.slot}/kill`, {});
+  }
+
+  // ===== (HD.10) TWO AT ONCE — THE CAP THAT COUNTS, DRIVEN AS REAL PROCESSES ====================
+  // The arithmetic is checked in (HD.1). This is the half arithmetic cannot reach: that the daemon
+  // actually STOPS at its cap and actually STARTS a second job below it, and that each parallel run
+  // gets its own suite lock — without which the field would be wired end to end and buy nothing,
+  // because ./e2e-isolated.sh takes /tmp/fleet-e2e.lock inside the clone and the second slot would
+  // only ever be a place in the waiting line.
+  //
+  // WHY LANE PREVIEW OFFERS AND NOT AUDITS: an audit job is keyed by REPO, one per tree, so more
+  // than one claimable audit needs more than one repo. Four lanes offering their own previews is
+  // the cheapest list with four open jobs on it.
+  //
+  // THE STAND-IN SUITE IS A LATCH, NOT A SLEEP. It spins until a release file appears, so this
+  // section decides when the runs end instead of waiting out a timeout — and a daemon killed
+  // mid-run cannot leave a minute-long orphan behind in the scratch tree.
+  {
+    const CAP1BOX = "e2ecapone00001";
+    const CAP2BOX = "e2ecaptwo00001";
+    const REL = `${ROOT}/slowsuite.release`;
+    rmSync(REL, { force: true });
+    const SLOW = `${ROOT}/fakeslowsuite`;
+    await Bun.write(SLOW, [
+      "#!/bin/sh",
+      `echo "slow suite start pwd=$(pwd) lock=[${"$"}{FLEET_SUITE_LOCK:-}]"`,
+      `i=0; while [ ! -f ${JSON.stringify(REL)} ] && [ "$i" -lt 400 ]; do sleep 0.2; i=$((i + 1)); done`,
+      'echo "PASS  the slow stand-in was released"',
+      "exit 0",
+    ].join("\n"));
+    chmodSync(SLOW, 0o755);
+
+    // the offer door refuses to mint while no helper is inside the online window, so a stand-in
+    // beats first — no daemon is running at this point, and nothing may claim these before they
+    // all exist
+    await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME, mode: "active", load: 0.1 });
+    const capLanes: Lane[] = [];
+    const capJobs: string[] = [];
+    for (const n of ["capa", "capb", "capc", "capd"]) {
+      const ln = await openLane(REPO, n);
+      capLanes.push(ln);
+      const tok = await selfTokenOf(ln.slot);
+      const r = await fetch(BASE + "/api/self/suite-offer", { method: "POST",
+        headers: { "x-fleet-self-token": tok, "content-type": "application/json" }, body: "{}" });
+      capJobs.push(((await r.json()) as { offer?: { id?: string } | null }).offer?.id ?? "");
+    }
+    check("(HD.10) setup: four lanes offer their preview suites — four open jobs, none claimed by anything yet",
+      capJobs.every((id) => /^[0-9a-f]{12}$/.test(id)) && new Set(capJobs).size === 4
+        && (await jobsOf()).filter((j) => j.kind === "lane-suite" && !j.claim).length === 4,
+      `ids=${JSON.stringify(capJobs)}`);
+
+    const devRow = async (deviceId: string): Promise<OwnerDevice | undefined> =>
+      (((await (await get("/api/sessions")).json()) as { helperDevices?: OwnerDevice[] }).helperDevices ?? [])
+        .find((d) => d.id === deviceId);
+    const claimsOf = async (deviceId: string): Promise<number> =>
+      (await devRow(deviceId))?.claims?.length ?? 0;
+    const waitClaims = async (deviceId: string, n: number, timeoutMs = 30_000): Promise<number> => {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const held = await claimsOf(deviceId);
+        if (held >= n || Date.now() >= deadline) return held;
+        await Bun.sleep(200);
+      }
+    };
+    const openJobs = async (): Promise<number> =>
+      (await jobsOf()).filter((j) => j.kind === "lane-suite" && !j.claim).length;
+    // the FLEET_SUITE_LOCK each run's child actually got, read out of the run's own suite.log —
+    // the one place the child's environment is legible from here
+    const locks = (): string[] => {
+      let dirs: string[] = [];
+      try { dirs = readdirSync(WORK).filter((d) => d.startsWith("run-")).sort(); } catch { return []; }
+      return dirs.map((d) => {
+        let text = "";
+        try { text = readFileSync(`${WORK}/${d}/suite.log`, "utf8"); } catch { return null; }
+        return /lock=\[([^\]]*)\]/.exec(text)?.[1] ?? null;
+      }).filter((x): x is string => x !== null);
+    };
+
+    // --- CAP 1 (the default): one job, and the machine stops there -------------------------------
+    // `installCmd` is a no-op here on purpose: this section measures slot counting, and a real
+    // install would put a minute of unrelated failure surface between the claim and the run.
+    await writeConfig({ deviceId: CAP1BOX, name: "cap-1 box (e2e)", suiteCmd: SLOW,
+      installCmd: "true", pollSec: 1, maxLoad1: null });
+    const one = startDaemon();
+    check("(HD.10) setup: the cap-1 daemon starts and claims its first job",
+      await waitLog(one.log, "helper-daemon up") && (await waitClaims(CAP1BOX, 1)) === 1,
+      `claims=${await claimsOf(CAP1BOX)}`);
+    await Bun.sleep(4000); // ~4 polls at pollSec 1, with three jobs sitting open in front of it
+    const oneHeld = await claimsOf(CAP1BOX);
+    const oneOpen = await openJobs();
+    const oneRow = await devRow(CAP1BOX);
+    const oneLocks = locks();
+    check("(HD.10) AT THE DEFAULT CAP OF 1 A SECOND JOB IS NOT CLAIMED: four polls pass with three jobs open in front of a daemon that already runs one",
+      oneHeld === 1 && oneOpen === 3, `held=${oneHeld} stillOpen=${oneOpen}`);
+    check("(HD.10) …and the machine SAYS so on its own heartbeat — 1 of 1, the pair no load figure could give",
+      oneRow?.running === 1 && oneRow.maxParallelSuites === 1,
+      `${JSON.stringify({ running: oneRow?.running, max: oneRow?.maxParallelSuites })}`);
+    check("(HD.10) …and at cap 1 the run keeps the DEFAULT suite lock: a hand-started suite over there still serializes against this one",
+      oneLocks.length === 1 && oneLocks[0] === "", `locks=${JSON.stringify(oneLocks)}`);
+    one.proc.kill();
+    await one.proc.exited;
+
+    // --- CAP 2: two run, and the third still waits -----------------------------------------------
+    const before2 = locks().length;
+    await writeConfig({ deviceId: CAP2BOX, name: "cap-2 box (e2e)", suiteCmd: SLOW,
+      installCmd: "true", pollSec: 1, maxLoad1: null, maxParallelSuites: 2 });
+    const two = startDaemon();
+    check("(HD.10) setup: the cap-2 daemon starts on the same list, three jobs still open",
+      await waitLog(two.log, "helper-daemon up") && (await waitClaims(CAP2BOX, 2)) === 2,
+      `claims=${await claimsOf(CAP2BOX)} open=${await openJobs()}`);
+    await Bun.sleep(4000);
+    const twoHeld = await claimsOf(CAP2BOX);
+    const twoOpen = await openJobs();
+    const twoRow = await devRow(CAP2BOX);
+    check("(HD.10) AT CAP 2 TWO JOBS RUN AND THE THIRD WAITS — the cap counts jobs, and four further polls do not move it",
+      twoHeld === 2 && twoOpen === 1, `held=${twoHeld} stillOpen=${twoOpen}`);
+    check("(HD.10) …and the board reads 2 of 2 off that machine's own heartbeat",
+      twoRow?.running === 2 && twoRow.maxParallelSuites === 2,
+      `${JSON.stringify({ running: twoRow?.running, max: twoRow?.maxParallelSuites })}`);
+    // THE HALF THAT MAKES THE OTHER TWO WORTH ANYTHING. Two runs sharing /tmp/fleet-e2e.lock queue
+    // behind each other INSIDE the clone: two claims, two processes, one suite at a time and no
+    // wall-clock bought. The locks must be present, DIFFERENT from each other, and each under its
+    // own run directory.
+    const parallelLocks = locks().slice(before2);
+    check("(HD.10) …AND EACH PARALLEL RUN GOT ITS OWN SUITE LOCK — two runs on one default lock would serialize inside the clone and buy nothing",
+      parallelLocks.length === 2 && new Set(parallelLocks).size === 2
+        && parallelLocks.every((l) => l.startsWith(`${WORK}/run-`) && l.endsWith("/e2e.lock")),
+      `locks=${JSON.stringify(parallelLocks)}`);
+    await Bun.write(REL, "go\n");
+    two.proc.kill();
+    await two.proc.exited;
+    rmSync(REL, { force: true });
+    for (const ln of capLanes) await post(`/api/slots/${ln.slot}/kill`, {});
   }
 
   up2.proc.kill();

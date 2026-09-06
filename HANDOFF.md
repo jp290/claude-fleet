@@ -304,7 +304,9 @@ Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, Owner-Poll, P
   macht dort jeden postland-Suite-Lauf rot).
 - **Deploy `8b59b434`** 09:43, `ok:true`, bootHead `e2beeff`, srv pid 96786; `FLEET_SUMMARY_MODEL` im Env
   (gezaehlt, nicht gelesen), `bundleStale false`. Die drei MAINs vorher gefragt, alle „Deploy ok".
-  **Danach sind zwei Lands gelandet, also `codeBehind:true` — §0.2.**
+  **Danach sind DREI Lands gelandet (`c8104a2`, `f8babcd`, und `c4e53f9` = Slot 1, Fleet-Betrieb-MAIN Slot 2,
+  09:5x), also `codeBehind:true` — §0.2. Das koaleszierte Audit deckt alle drei; armiere den dritten
+  Audit-Watch auf `c4e53f9` mit.**
 - **W5a** (Bare-Hub `~/git/claude-fleet.git`, Remote `hub` auf beiden Hosts, Timer bleibt auf `canonical`)
   und **W5c** (Node 24.20.0 Tarball unter `~/.local`, codex 0.153.4, pi 0.85.0 im mac-Layout, bun/bunx
   in `~/.local/bin`, `rulebook/` per scp + `CLAUDE.md` byte-identisch gerendert, Pins dort 417/1 —

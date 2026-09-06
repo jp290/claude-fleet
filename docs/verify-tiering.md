@@ -2904,3 +2904,115 @@ Env-Naht ist trotzdem real, nur an einer anderen Stelle (§6, `runVerify` filter
 demselben Tag gestated statt geerbt. **Nachtrag 2026-09-05:** diese zweite Stelle ist geschlossen —
 `runVerify` spawnt jetzt durch `server.ts#verifyChildEnv`, nach derselben Regel; vorher/nachher am
 Kind gemessen (14 `FLEET_*`-Namen → 0, PATH unveraendert), §6.
+
+### 11.2q Eine neunzehnte Familie: die Q6-`fleet-report`-Sektion in `e2e/programs.ts` — die gepflanzte Zeile bleibt auf `send-uncertain` stehen (2026-09-06 registriert; Rate ueber das GANZE lokale Register gerechnet, Mechanismus aus den Trail-Details gelesen; NICHT repariert)
+
+Registriert vom Program-MAIN „Audit-Determiniertheit 2026-09" (Slot 7) als erster Akt nach der
+Uebernahme. Die Vorgaengerin hatte die Familie als „gemessen, aber nicht registriert" uebergeben,
+mit der Zahl **5/83 = 6,0 %**. Diese Zahl ist beim Nachrechnen ueber das ganze Register **nicht
+bestaetigt worden** — sie untertreibt, und sie beschreibt die Familie als EINEN Check, was sie
+nicht ist.
+
+**Gemessen 2026-09-06 ueber das lokale Trail-Register** (`e2e-trail/isolated-*.jsonl` plus die
+Audit-Trails unter `$TMPDIR/fleet-e2e-trail`, 814 Laeufe; gezaehlt nur Laeufe, in denen die
+Q6-Sektion ueberhaupt lief):
+
+| | |
+| --- | ---: |
+| Laeufe mit Q6-Sektion | 127 |
+| Laeufe mit mindestens einem roten Q6-Check | **11 = 8,7 %** |
+| verschiedene Baeume unter den roten Laeufen | 9 (+2 Laeufe mit `tree:null`) |
+| Zeitraum | 2026-09-01 bis **2026-09-06 04:00** |
+
+Damit ist sie zum Zeitpunkt dieser Registrierung die **hoechste Basisrate aller offenen Familien** —
+hoeher als §11.2o (4/11 auf drei Baeumen, inzwischen repariert), §11.2n (2/11) und §11.2m. Neun
+verschiedene Baeume schliessen einen Regress eines einzelnen Commits strukturell aus; der juengste
+Fail liegt auf `a5cfdaf` und ist zwei Stunden vor dieser Zeile entstanden.
+
+**Zehn Checks, aber nur ZWEI Eintrittsstellen.** Pro rotem Lauf den ERSTEN roten Q6-Check gezaehlt:
+
+| erster roter Check | Laeufe |
+| --- | ---: |
+| `Q6 fleet-report cap: zero, negative and non-numeric FLEET_REPORT_RECOVERY_MAX_ATTEMPTS fall back to the default of 5 …` | 9 |
+| `Q6 fixture: the retryable report row parks its fifth attempt at the recovery latch under cap 6` | 2 |
+
+Die uebrigen acht `Q6 …`-Zeilen sind in KEINEM Lauf die erste rote — sie sind Kaskade, nicht Befund.
+Das ist dieselbe Form wie §11.2p: wer neun rote Q6-Zeilen sieht, hat einen Befund vor sich, nicht
+neun.
+
+**Die Signatur, aus den `detail`-Feldern der elf Laeufe gelesen** — in allen elf steht dieselbe
+Zeile, und sie ist in **zehn von elf** identisch geformt:
+
+```
+"status":"send-uncertain", "deliveredAt":null, "acknowledgedAt":null
+```
+
+mit `attempts:1` in den neun Cap-Faellen und `attempts:5` in den zwei Fixture-Faellen. Der elfte
+(`d63bb91`, 2026-09-02) ist der einzige mit einer anderen Form: `rounds` dreimal `[null,null]` bei
+einer bereits `acknowledged`-Zeile.
+
+**Was das heisst, und wo die Grenze der Lesung liegt:** `send-uncertain` ist ein
+TRANSPORT-Ausgang — gepastet wurde, der Annahme-Marker wurde nicht beobachtet. Die Sektion pflanzt
+eine Report-Zeile und misst danach einen Vertrag ueber deren `attempts`-Zaehler; bleibt die Zeile
+schon beim ERSTEN Zustellversuch auf `send-uncertain` stehen, misst der Cap-Check einen Zaehler, der
+nie gelaufen ist. Das ist die Wurzel-KLASSE, nicht die Wurzel: **warum** der Marker unter Last
+ausbleibt, ist hier NICHT gemessen (dieselbe offene Frage wie bei der Acceptance-Sonde, Notizen
+`6c7d98ff`/`ca085489`). Was ohne weitere Messung feststeht: die Sonde faellt heute als der VERTRAG,
+den sie prueft, obwohl ihre Vorbedingung nicht hergestellt war — der Schnitt, den das Regelbuch
+verlangt (*eine Sonde, die nicht laufen konnte, muss als SIE SELBST scheitern*), ist hier noch nicht
+gezogen.
+
+**Fuer den Leser eines roten Laufs:** eine rote Q6-Zeile mit `send-uncertain` im Detail ist bis auf
+Weiteres diese Familie und kein Regress am `fleet-report`-Pfad. Eine rote Q6-Zeile OHNE
+`send-uncertain` ist es nicht und gehoert dem, der sie sieht.
+
+### 11.2r Eine zwanzigste Familie: das Watch-Idempotenz-Paar in `e2e/watch.ts` — und die Haelfte der Sichtungen ist per Konstruktion unattribuierbar (2026-09-06 registriert; Mechanismus AM PROBENCODE gelesen; NICHT repariert)
+
+Ebenfalls aus der Uebergabe („gemessen, aber nicht registriert", dort als ein Paar mit 4/557 auf
+vier Baeumen gefuehrt). Nachgerechnet zerfaellt es in zwei Checks mit verschiedenen Nennern:
+
+| Check | rote Laeufe / Laeufe | Baeume |
+| --- | ---: | ---: |
+| `re-subscribing to the same target returns the SAME watch, never a second` | 4/568 = **0,70 %** | 4 |
+| `delete the spent transport Watch` | 3/461 = **0,65 %** | 2 |
+
+Zwei der drei `delete`-Fails liegen auf EINEM Baum (`9db4b85`, 2026-08-16) und damit vor der ersten
+Sichtung des ersten Checks; der dritte (2026-09-05, `2c40368`) faellt im selben Lauf wie dieser.
+Das stuetzt die Lesung „Folgefehler", beweist sie aber nicht — `delete the spent transport Watch`
+uebergibt `check()` **kein `detail`** und ist daher aus dem Register grundsaetzlich nicht
+attribuierbar. Das ist der erste, billigste Schnitt an dieser Familie.
+
+**Der eigentliche Befund steht im Probencode, nicht in der Rate** (`e2e/watch.ts`, der Check bei
+`re-subscribing to the same target …`): die Bedingung ist eine Konjunktion aus DREI Teilen —
+
+```
+wDup.existing === true && wDup.watch?.id === wAJ.watch.id
+&& (await watchRows()).filter((w) => w.slot === aId && w.armed).length === 1
+```
+
+— und das `detail` druckt **nur den Id-Vergleich**: `` `${wDup.watch?.id} vs ${wAJ.watch.id}` ``.
+Die vier Sichtungen zerfallen damit exakt entlang dieser Luecke:
+
+| Lauf | `detail` | lesbar? |
+| --- | --- | --- |
+| 2026-08-24 `210fcd9` | `4877e0aa vs 4877e0aa` | **nein** — Ids GLEICH, rot |
+| 2026-09-03 `tree:null` | `7b5d1f1e vs 7b5d1f1e` | **nein** — Ids GLEICH, rot |
+| 2026-08-25 `5649879` | `af91e664 vs 56af7474` | ja — echt zweites Watch |
+| 2026-09-05 `2c40368` | `62912fb5 vs 5fc3c077` | ja — echt zweites Watch |
+
+**In zwei von vier Sichtungen ist der gedruckte Vergleich byte-identisch und der Check trotzdem
+rot.** Der Leser schliesst daraus korrekt gar nichts: der fallende Konjunkt ist einer der beiden
+NICHT gedruckten — `existing !== true`, oder die Zaehlung `armed`-Watches dieses Slots ist nicht 1.
+Der dritte Konjunkt ist dabei der Verdaechtige, nicht der zweite: er zaehlt ueber den GESAMTEN
+armed-Bestand des Slots und ist damit von allem abhaengig, was die Sektion vorher an Watches
+liegengelassen hat — eine Zustandsabhaengigkeit, keine Idempotenz-Aussage.
+
+**Der Schnitt ist zweiteilig und beide Haelften sind billig, keine ist eine Abschwaechung:**
+(1) die drei Konjunkte einzeln pruefen und das `detail` das nennen lassen, was tatsaechlich fiel;
+(2) `delete the spent transport Watch` ein `detail` geben. Danach ist die Familie ueberhaupt erst
+messbar — heute ist die Haelfte ihrer Sichtungen ein Loch im Register, kein Datenpunkt.
+
+**Fuer den Leser eines roten Laufs:** steht dort ein Id-Paar mit ZWEI GLEICHEN Ids, ist das keine
+Aussage ueber die Idempotenz und kein Befund am Watch-Pfad — es ist diese Registerluecke. Stehen
+zwei VERSCHIEDENE Ids da, ist wirklich ein zweites Watch entstanden, und das gehoert dem, der es
+sieht.

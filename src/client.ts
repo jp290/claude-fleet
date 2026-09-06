@@ -14,6 +14,8 @@ import {
   matchTaskWaveAnalysis, projectTaskWaves,
   type ProjectedWaveTask, type TaskWaveProjection, type TaskWaveRunningBlock, type TaskWaveUnresolved,
 } from "../task-waves";
+import { projectLandWaves, LAND_WAVE_COSTS_2026_09,
+  type LandWaveCosts, type LandWaveProjection } from "../task-land-waves";
 import { classifyAnalystOffWarning } from "../task-analysis-warning";
 // everything this file and server.ts must say identically — see src/protocol.ts. Importing rather
 // than re-declaring is what makes tsc, which gates every land, the thing that notices a drift.
@@ -7183,6 +7185,24 @@ function qWaveProjection(): TaskWaveProjection {
 
 // Every fact that can change the pure projection. Status does not pay this key's cost; Waves does,
 // so a normal poll that changed only an unrelated slot does not rebuild the queue list.
+// Mediane 2026-09, docs/messungen/2026-09-06-merge-prozess-robust.md §1 — what the board charges
+// for one avoided land. Held in the module both this view and `bun task-land-waves.ts --state`
+// read, so the CLI check the MAIN runs after a land prices a wave exactly as this list showed it.
+const Q_LAND_WAVE_COSTS: LandWaveCosts = LAND_WAVE_COSTS_2026_09;
+
+// The LANDE fold of the same facts: which rows could land TOGETHER (task-land-waves.ts), beside
+// the parallel fold above. Read-only — there is no button here and no dispatch reads it.
+function qLandWaveProjection(): LandWaveProjection {
+  return projectLandWaves({
+    tasks: tasksList.map((t) => ({
+      id: t.id, repo: t.repo, kind: t.kind, status: t.status, created: t.created,
+      files: t.files, filesOrigin: t.filesOrigin,
+    })),
+    dispatchRepo: dispatch.repo,
+    costs: Q_LAND_WAVE_COSTS,
+  });
+}
+
 function qWaveProjectionKey(): string {
   return JSON.stringify([
     dispatch.repo, dispatch.maxLanes, analysisOn,
@@ -8833,6 +8853,30 @@ function renderQueue() {
       for (const item of items) {
         const task = taskById.get(item.id);
         if (task) { addTask(task); visibleRows++; }
+      }
+    }
+    // THE OTHER FOLD, beneath the parallel one. A land wave is a statement about a SET of rows, so
+    // it renders as ONE line per wave and never as task rows — and it stays a sensor: no button,
+    // no dispatch, nothing on the server reads it. qWaveProjectionKey already covers every fact it
+    // consumes (id/repo/kind/status/created/files/filesOrigin and dispatch.repo), so this list
+    // repaints with the view instead of under the cursor.
+    const land = qLandWaveProjection();
+    const landWaves = land.repos.flatMap((repo) => repo.waves
+      .filter((wave) => wave.ids.some((id) => visibleIds.has(id)))
+      .map((wave) => ({ repo: repo.repo, wave })));
+    if (landWaves.length) {
+      addSection("Lande-Wellen", landWaves.length,
+        "Which rows could land TOGETHER in one lane: connected components over CONFIRMED file"
+        + ` surfaces, class-pure, at most ${land.maxWave} rows. The saving is median seconds per`
+        + " avoided land (gate + post-land audit); a wave of one names the reason against bundling.",
+        true);
+      for (const { repo, wave } of landWaves) {
+        // A bundlable row that simply found no partner has no reason AGAINST it — say that, rather
+        // than borrowing one of the three verdicts it did not earn.
+        const reason = wave.reasonAgainst ?? (wave.ids.length > 1 ? "bündelbar" : "kein Partner");
+        shell.list.appendChild(el("div", "qwavehint qwaveland",
+          `${baseName(repo)} · ${wave.ids.join(" + ")} · ${wave.klasse} · ${wave.savingsSec}s · ${reason}`));
+        visibleRows++;
       }
     }
     if (!visibleRows) shell.list.appendChild(el("div", "pknone",

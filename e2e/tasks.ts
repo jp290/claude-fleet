@@ -10,6 +10,8 @@ import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
 import { deriveTaskMetadata, type TaskCluster } from "../task-metadata";
 import { matchTaskWaveAnalysis, projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from "../task-waves";
+import { projectLandWaves,
+  type LandWaveCosts, type LandWaveProjection, type ProjectLandWavesInput } from "../task-land-waves";
 import { classifyAnalystOffWarning } from "../task-analysis-warning";
 import { analysisStaleness } from "../analysis-staleness";
 import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_NAME_RE, INSTANCE_URL_RE, instanceLinksFrom,
@@ -3793,6 +3795,94 @@ export async function run(ctx: Ctx): Promise<void> {
     check("task waves: repeated pure projection is deep-equal and does not mutate input facts",
       JSON.stringify(once) === JSON.stringify(twice) && JSON.stringify(purityInput) === before,
       JSON.stringify({ once, twice, input: purityInput }));
+  }
+
+  // --- LAND Waves: the opposite fold of the same collision facts (task-land-waves.ts). The
+  // parallel projection above asks which rows may run at once; these six checks pin which rows may
+  // LAND together — R1 class purity, R2 the gate changer alone, R3 confirmed surface only — plus
+  // the cap's cut, purity, and the one board surface that consumes it. ---
+  {
+    // Deliberately NOT the board's real medians: a fixture that shared them could not tell a
+    // class mix-up from a correct sum. docs 3 s per land, code 1 100 s.
+    const LAND_COSTS: LandWaveCosts = {
+      fullGateSec: 100, docsGateSec: 1, fullAuditSec: 1000, docsAuditSec: 2,
+    };
+    const CODE_LAND_SEC = LAND_COSTS.fullGateSec + LAND_COSTS.fullAuditSec;
+    const landRow = (id: string, created: number, files: string[],
+      extra: Partial<TaskWaveInput> = {}): TaskWaveInput => ({
+      id, created, files, filesOrigin: "confirmed",
+      repo: "/repo/a", kind: "auftrag", status: "pending", ...extra,
+    });
+    const landProject = (tasks: TaskWaveInput[], maxWave?: number): LandWaveProjection =>
+      projectLandWaves({
+        tasks, dispatchRepo: "/repo/default", costs: LAND_COSTS,
+        ...(maxWave === undefined ? {} : { maxWave }),
+      });
+    const landWavesOf = (p: LandWaveProjection, repo = "/repo/a") =>
+      p.repos.find((r) => r.repo === repo)?.waves ?? [];
+
+    const classSplit = landWavesOf(landProject([
+      landRow("da", 1, ["docs/x.md"]),
+      landRow("cb", 2, ["docs/x.md", "server.ts"]),
+    ]));
+    check("land waves: R1 — a shared file never bundles a docs row with a code row",
+      JSON.stringify(classSplit.map((w) => [w.ids, w.klasse, w.savingsSec]))
+        === JSON.stringify([[["da"], "docs", 0], [["cb"], "code", 0]]),
+      JSON.stringify(classSplit));
+
+    const gate = landWavesOf(landProject([
+      landRow("ga", 1, ["e2e/x.ts"]),
+      landRow("gb", 2, ["e2e/x.ts", "src/b.ts"]),
+    ]));
+    check("land waves: R2 — a gate changer lands alone even when a second confirmed row names its file",
+      JSON.stringify(gate.map((w) => [w.ids, w.reasonAgainst, w.savingsSec]))
+        === JSON.stringify([[["ga"], "gate-aenderer", 0], [["gb"], "gate-aenderer", 0]]),
+      JSON.stringify(gate));
+
+    const surface = landWavesOf(landProject([
+      landRow("sd", 1, ["src/a.ts"], { filesOrigin: "derived" }),
+      landRow("sc1", 2, ["src/a.ts"]),
+      landRow("sc2", 3, ["src/a.ts"]),
+    ]));
+    check("land waves: R3 — only a confirmed surface bundles, and the pair saves exactly one avoided land",
+      JSON.stringify(surface.map((w) => [w.ids, w.reasonAgainst, w.sharedFiles, w.savingsSec]))
+        === JSON.stringify([
+          [["sd"], "flaeche-nur-abgeleitet", [], 0],
+          [["sc1", "sc2"], null, ["src/a.ts"], CODE_LAND_SEC],
+        ]),
+      JSON.stringify(surface));
+
+    const chain = landWavesOf(landProject([
+      landRow("ka", 1, ["src/f1.ts"]),
+      landRow("kb", 2, ["src/f1.ts", "src/f2.ts"]),
+      landRow("kc", 3, ["src/f2.ts", "src/f3.ts"]),
+      landRow("kd", 4, ["src/f3.ts"]),
+    ], 3));
+    check("land waves: a component longer than maxWave is cut in created order, and the remainder carries no verdict",
+      JSON.stringify(chain.map((w) => [w.ids, w.savingsSec, w.reasonAgainst]))
+        === JSON.stringify([[["ka", "kb", "kc"], 2 * CODE_LAND_SEC, null], [["kd"], 0, null]]),
+      JSON.stringify(chain));
+
+    // Scrambled on BOTH axes on purpose — rows out of created order and one file surface out of
+    // sort order: a projector that sorted the caller's arrays in place instead of copies would
+    // leave both scrambles corrected, and this input's own JSON is what proves it did not.
+    const landPurityInput: ProjectLandWavesInput = {
+      tasks: [landRow("pb", 2, ["src/b.ts"]), landRow("pa", 1, ["src/b.ts", "src/a.ts"])],
+      dispatchRepo: "/repo/default", maxWave: 2, costs: LAND_COSTS,
+    };
+    const landBefore = JSON.stringify(landPurityInput);
+    const landOnce = projectLandWaves(landPurityInput);
+    const landTwice = projectLandWaves(landPurityInput);
+    check("land waves: repeated pure projection is deep-equal and does not mutate input facts",
+      JSON.stringify(landOnce) === JSON.stringify(landTwice)
+        && JSON.stringify(landPurityInput) === landBefore,
+      JSON.stringify({ landOnce, landTwice, input: landPurityInput }));
+
+    check("land waves: the board's Waves tab is the one surface that consumes the projector",
+      taskClientSource.includes("projectLandWaves(") && taskClientSource.includes("Lande-Wellen"),
+      taskClientSource.length
+        ? "src/client.ts carries no projectLandWaves( call or no Lande-Wellen section"
+        : taskClientReadError || "client source unreadable");
   }
 
   // --- (j) ↻ refine: the brief compiler on the queue (briefs/task-refine.md). Three properties

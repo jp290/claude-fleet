@@ -709,7 +709,7 @@ repo and therefore shared reality, not a lane's to clean (CLAUDE.md).
 *Added while landing the data-saver program (four lanes, `bc4e975`…`f323fb4`). Not a new study —
 §5b's finding reproduced by accident, at cost, plus one thing §5b could not know.*
 
-### 11.0b DAS INSTRUMENT: `GET /api/self/flakes` — was `runs`, `files` und `filesOmitted` bedeuten (repariert 2026-09-06)
+### 11.0b DAS INSTRUMENT: `GET /api/self/flakes` — was `runs`, `files` und `filesOmitted` bedeuten (repariert 2026-09-06 in `3f58491`)
 
 Diese Route ist das Messinstrument, auf dem das Erfolgskriterium des Programs „Audit-Determiniertheit
 2026-09" definiert ist („je reparierter Familie 0 Fails auf allen Baeumen, die den Fix enthalten, bei

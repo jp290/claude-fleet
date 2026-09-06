@@ -215,6 +215,18 @@ type AuditEvent =
   // default-deny reading of a history, reported rather than repaired. Detail names the program
   // and the parse error, never an entry.
   | "program_lineage_unreadable"
+  // a persisted Program INBOX could not be read and was loaded as ABSENT — the same default-deny
+  // reading of a record the lineage row above states, and reported for the same reason: silently
+  // losing pointers to rows a MAIN still owes an answer to is the failure the inbox exists to end.
+  // Detail names the program and the parse error, never an entry.
+  | "program_inbox_unreadable"
+  // one pointer was appended to a Program's inbox (appendProgramInbox, the one writer). Detail
+  // names the program, the kind and the `ref` it points at — never a line of the referenced row's
+  // text, because the entry itself copies none.
+  | "program_inbox_append"
+  // the bound MAIN stamped its receipt on one inbox entry. Detail names the program and the entry
+  // id; there is no row for a REPEATED read, because a receipt that already exists is not an event.
+  | "program_inbox_read"
   // a terminal land armed the merge subscription its bound Program-MAIN never made
   // (armProgramMainLandWatch), or declined to because that MAIN's return path is full. The second
   // row is the one that matters: a MAIN told nothing must not be told nothing SILENTLY.

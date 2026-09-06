@@ -1207,6 +1207,9 @@ interface Program {
   // existed gets exactly one `backfill-unknown` entry at load, with `boundAt` copied from `main` —
   // never an invented earlier history. Absent = no lineage is known, and the execution view says so.
   lineage?: ProgramLineage;
+  // THE PROGRAM INBOX (see ProgramInbox). Absent = no entry was ever written, the honest legacy
+  // shape. Never backfilled at load; an unreadable record loads as ABSENT and is reported.
+  inbox?: ProgramInbox;
   confirmedAt?: number;
   activatedAt?: number;
   completedAt?: number;
@@ -1611,6 +1614,97 @@ const loadProgramLineage = (value: unknown): ProgramLineageRead => {
   return { ok: true, lineage: { v: 1, entries, dropped: r.dropped as number } };
 };
 
+// THE PROGRAM INBOX — durable, pull-based, bound to the Program and to nothing shorter-lived.
+// An entry is a POINTER to a row that already exists (attention, fleet-report, audit ledger); it
+// copies no text. It names NO receiver: whoever is the bound MAIN of this Program at read time
+// reads it (boundProgramForMain), and a succession changes nothing here. `readBy` is a RECEIPT
+// of who read it — never a key, never a filter.
+type ProgramInboxKind = "attention-answer" | "fleet-report" | "audit-red";
+interface ProgramInboxEntry {
+  id: string;                       // 24 hex, minted by appendProgramInbox
+  kind: ProgramInboxKind;
+  at: number;                       // when the entry was written
+  ref: string;                      // attention id | fleet-report id | String(audit row `at`)
+  readBy: { slot: number; openedAt: number; sessionId: string | null } | null;
+  readAt: number | null;            // null exactly when readBy is null
+}
+interface ProgramInbox { v: 1; entries: ProgramInboxEntry[]; dropped: number }
+// the cap is on the RECORD, so a hand-written file cannot make a Program carry an unbounded
+// history either; past it appendProgramInbox drops and COUNTS, exactly like the lineage
+const PROGRAM_INBOX_MAX = 100;
+const PROGRAM_INBOX_KINDS: ProgramInboxKind[] = ["attention-answer", "fleet-report", "audit-red"];
+const PROGRAM_INBOX_ENTRY_KEYS = ["id", "kind", "at", "ref", "readBy", "readAt"];
+const PROGRAM_INBOX_REF_MAX = 200;
+type ProgramInboxRead = { ok: true; inbox: ProgramInbox } | { ok: false; error: string };
+const loadProgramInboxEntry = (value: unknown, index: number): ProgramInboxEntry | string => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return `entry ${index} must be an object`;
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !PROGRAM_INBOX_ENTRY_KEYS.includes(k))
+    || Object.keys(r).length !== PROGRAM_INBOX_ENTRY_KEYS.length)
+    return `entry ${index} must contain exactly ${PROGRAM_INBOX_ENTRY_KEYS.join(", ")}`;
+  if (typeof r.id !== "string" || !/^[0-9a-f]{24}$/.test(r.id))
+    return `entry ${index} id must be 24 hex characters`;
+  if (typeof r.kind !== "string" || !PROGRAM_INBOX_KINDS.includes(r.kind as ProgramInboxKind))
+    return `entry ${index} kind must be one of ${PROGRAM_INBOX_KINDS.join(", ")}`;
+  if (typeof r.at !== "number" || !Number.isFinite(r.at) || r.at <= 0)
+    return `entry ${index} at must be a positive number`;
+  if (typeof r.ref !== "string" || r.ref === "" || r.ref.length > PROGRAM_INBOX_REF_MAX)
+    return `entry ${index} ref must be a non-empty string of at most ${PROGRAM_INBOX_REF_MAX} chars`;
+  if (r.readBy !== null) {
+    if (!r.readBy || typeof r.readBy !== "object" || Array.isArray(r.readBy))
+      return `entry ${index} readBy must be an object or null`;
+    const by = r.readBy as Record<string, unknown>;
+    if (Object.keys(by).some((k) => !["slot", "openedAt", "sessionId"].includes(k))
+      || Object.keys(by).length !== 3)
+      return `entry ${index} readBy must contain exactly slot, openedAt, sessionId`;
+    if (!Number.isInteger(by.slot) || (by.slot as number) < 1 || (by.slot as number) > MAX_SLOTS)
+      return `entry ${index} readBy slot must be an integer in 1..${MAX_SLOTS}`;
+    if (typeof by.openedAt !== "number" || !Number.isFinite(by.openedAt) || by.openedAt <= 0)
+      return `entry ${index} readBy openedAt must be a positive number`;
+    if (by.sessionId !== null && typeof by.sessionId !== "string")
+      return `entry ${index} readBy sessionId must be a string or null`;
+  }
+  if (r.readAt !== null && (typeof r.readAt !== "number" || !Number.isFinite(r.readAt) || r.readAt <= 0))
+    return `entry ${index} readAt must be a positive number or null`;
+  // the receipt is ONE fact in two fields: half a receipt names a reader without a time or a time
+  // without a reader, and either half alone would let "unread" and "read" be told apart wrongly
+  if ((r.readBy === null) !== (r.readAt === null))
+    return `entry ${index} readBy and readAt must be null together`;
+  const by = r.readBy as { slot: number; openedAt: number; sessionId: string | null } | null;
+  return { id: r.id, kind: r.kind as ProgramInboxKind, at: r.at, ref: r.ref,
+    readBy: by === null ? null : { slot: by.slot, openedAt: by.openedAt, sessionId: by.sessionId },
+    readAt: r.readAt as number | null };
+};
+// CLOSED, VERSIONED, DEFAULT-ABSENT, in loadProgramLineage's discipline and for its reason: an
+// inbox nobody can parse is not a shorter inbox, it is no inbox, and the caller REPORTS that
+// (one audit row, one log line) instead of repairing it field by field. A repair would turn
+// "these pointers were lost" into "there were never any", which is the one answer this record
+// may never give.
+const loadProgramInbox = (value: unknown): ProgramInboxRead => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "must be an object" };
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !["v", "entries", "dropped"].includes(k)) || Object.keys(r).length !== 3)
+    return { ok: false, error: "must contain exactly v, entries, dropped" };
+  if (r.v !== 1) return { ok: false, error: "v must be 1" };
+  if (!Array.isArray(r.entries)) return { ok: false, error: "entries must be an array" };
+  if (r.entries.length > PROGRAM_INBOX_MAX)
+    return { ok: false, error: `entries must hold at most ${PROGRAM_INBOX_MAX} rows` };
+  if (!Number.isInteger(r.dropped) || (r.dropped as number) < 0)
+    return { ok: false, error: "dropped must be a non-negative integer" };
+  const entries: ProgramInboxEntry[] = [];
+  const ids = new Set<string>();
+  for (const [index, raw] of r.entries.entries()) {
+    const entry = loadProgramInboxEntry(raw, index);
+    if (typeof entry === "string") return { ok: false, error: entry };
+    // the id is the ADDRESS the read route resolves; two rows under one address make
+    // POST /api/self/inbox/:id/read a coin toss, so a duplicate is a broken record, not a dup
+    if (ids.has(entry.id)) return { ok: false, error: `entry ${index} repeats id ${entry.id}` };
+    ids.add(entry.id);
+    entries.push(entry);
+  }
+  return { ok: true, inbox: { v: 1, entries, dropped: r.dropped as number } };
+};
+
 type ProgramFoundingMode = "bootstrap" | "succession";
 interface ProgramFoundingOccupant { slot: number; openedAt: number }
 interface ProgramFoundingV1 {
@@ -1685,6 +1779,7 @@ export type {
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
   PromotionSelfLand, PromotionPolicy, ProgramProfileKind, ProgramProfile, ProgramLineageVia,
   ProgramLineageEndedBy, ProgramLineageEntry, ProgramLineage, ProgramLineageRead,
+  ProgramInboxKind, ProgramInboxEntry, ProgramInbox, ProgramInboxRead,
   ProgramFoundingMode, ProgramFoundingOccupant, ProgramFoundingV1, ProgramFoundingProfileKind,
   ProgramFoundingIdentity, ProgramFoundingV2, ProgramFounding, ProgramFoundingRead, ProgramContent,
   ProgramValidation, SupervisorBinding, ProgramDigest, DispatchSpawn, SlotStreamOccupant,
@@ -1703,6 +1798,8 @@ export {
   TASK_KINDS, isTaskKind, loadTaskKind, PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion,
   PROGRAM_PROFILE_KINDS, loadProgramProfile, PROGRAM_LINEAGE_MAX, PROGRAM_LINEAGE_VIA,
   PROGRAM_LINEAGE_ENDED_BY, PROGRAM_LINEAGE_ENTRY_KEYS, loadProgramLineageEntry, loadProgramLineage,
+  PROGRAM_INBOX_MAX, PROGRAM_INBOX_KINDS, PROGRAM_INBOX_ENTRY_KEYS, PROGRAM_INBOX_REF_MAX,
+  loadProgramInboxEntry, loadProgramInbox,
   foundingOccupantFrom, foundingIdentityFrom,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,

@@ -39,12 +39,12 @@ am Baum `37d6e95` gelesen; wer später liest, misst neu.
 |---|---|---|
 | Repo als Wurzel | `repo`/`cwd` an Slot, Task, Program; `GET /api/repo-workers` je Repo | eine repo-first Ansicht; Repo ist Attribut, kein Objekt |
 | freeDevMode | das Slots-Board (`GET /api/sessions`) | nichts |
-| Studio (gameDev, iosDev) | `docs/product-studio-working-circle.md`, `docs/game-maker/workflow-v2.md`, private-repo-p-Programs | ein Objekt; heute nur Docs und je ein Program |
+| Studio (gameDev, iosDev) | **existiert als Serverobjekt** (KORRIGIERT 19:3x): `server/types.ts#Studio` mit Stufen, je Stufe ein Spawn-Tripel `harness/model/effort` (`StudioStageSpawn`), Budget/Stop-Linie/Konsequenz je Rolle, `StudioWorkflowDoc`; Routen `GET/POST /api/studios`; mehrere Programs können ein Studio binden | 0 Studios live registriert (`fleet.json` `studios: []`); keine Ansicht; die Docs (`docs/game-maker/workflow-v2.md`, Studio-Circle) sind noch nicht als Studio-Datensatz eingespielt |
 | Program / AutoDev | `Program` mit MAIN-Bindung, Release-Tür (`/api/self/tasks/:id/release`), Self-Land-Promotion (`selfLand: guarded`), Program-Dispatch-Grant, Lane-Deckel je Program | die Knöpfe sind gesetzt, aber nicht als „Autonomiegrad" sichtbar/setzbar |
 | Ideenfindung | Queue-Zeilen `notiz`/`richtung`, Scout-Zeilen `[idee scout-*]`, Analyst (`tickAnalysisSweep`, im Betrieb AUS) | ein Ausgang, der die Queue schrumpft („verwerfen empfohlen", Plan 2026-08-11 Stufe 2) |
 | ContextPack | ContextPlan/receipt (Studio-Doc), `ContextEnvelope` (ACP Act 5–7, nie gebaut: 0 Treffer im Code) | das Objekt selbst |
 | socialAgenticDiskussionPlatform | Clarifications (`/api/self/clarifications`), Attention, Steward-Arena (Attic) | der Thread, in dem mehrere Agenten ein Pack diskutieren und ein Verdikt liefern (= L-Workspace, Plan 2026-08-11) |
-| Wer arbeitet in welcher ROLLE an welcher Task | Slot trägt `label`, `model`, `harness`, `effort`; Task `sent` trägt `slot`; Lane trägt Branch. Eine Rolle existiert nur als Label-Konvention (🎛, ⚙, Program-MAIN, ⎇ task) | ein `role`-Feld an Slot/Task = ACP Act 6 Role Bootstrap; Modell je Rolle je Studio konfigurieren = ACP Act 7 Harnesswahl |
+| Wer arbeitet in welcher ROLLE an welcher Task | Slot trägt `label`, `model`, `harness`, `effort`; Task `sent` trägt `slot`; Lane trägt Branch. Eine Rolle existiert nur als Label-Konvention (🎛, ⚙, Program-MAIN, ⎇ task) | ein `role`-Feld an Slot/Task = ACP Act 6 Role Bootstrap; Modell je Rolle je Studio ist im `Studio`-Datensatz SCHON vorgesehen (Spawn-Tripel je Stufe) — es fehlt die Ansicht und der Weg vom Studio-Datensatz in den Lane-Spawn |
 | Tasks bei Repo / Studio / Program | `Task.repo` immer, `Task.programId` optional (Owner kann per `POST /api/tasks` mit `programId` filen) | ein optionaler Studio-Bezug derselben Art |
 
 Lesart des Controllers, vom Owner noch nicht bestätigt: die drei Modi sind keine Zustände des
@@ -90,7 +90,7 @@ ersetzt es nicht, er verbirgt es, bis man hineinklickt.
 Route. Done, wenn die Ansicht ausschließlich aus `GET /api/sessions`, `GET /api/tasks`,
 `GET /api/programs` gebaut ist und jeder Klick in eine bestehende Ansicht führt.
 
-Reihenfolge danach: Studio als Vorlage (Felder aus Game-Maker v2 und Studio-Doc) → ContextPack
+Reihenfolge danach: das erste Studio als DATENSATZ einspielen (Game-Maker v2 nach `Studio`, kein neues Objekt nötig) → ContextPack
 und Thread zuletzt, mit Astras Plan-Lücken-Register (`1af3fa1f`) als Input.
 
 > Nachtrag 19:2x: „Bei all dem sollte potenziell auch das Routing der ContextPacks, und was auch

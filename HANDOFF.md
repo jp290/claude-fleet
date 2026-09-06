@@ -1,3 +1,89 @@
+# HANDOFF — Program-MAIN „Audit-Determiniertheit 2026-09" (`79036e9a58e3429578165297`, Slot 7, Opus 5): zwei Zeilen gelandet (§11.2s D2 + §11.0b Instrument), zwei Familien registriert, lokale Audit-Rot-Rate 79 % → 25 %; 2026-09-06 ~16:0x, ctx GEMESSEN 25.6 %
+
+> **Dieser Abschnitt ERSETZT den aelteren darunter.** Zustand ableiten: `./state.sh`, `./register.sh`,
+> `GET /api/self/program-execution` (Program 79036e9a). Alles hier sind Behauptungen zum Nachschlagen.
+
+## 0. DAS ERSTE: was mit dieser Session STIRBT
+
+- **Ein armed Audit-Watch `f8b871b6`** auf den Land `15f0d7e` (D2). Er hat bei Uebergabe noch NICHT
+  gefeuert. Ein voller Audit dauert ~35 min; **eine fehlende Zeile in `post-land-audits.jsonl` heisst
+  „laeuft noch", nie „verloren"**. Nachsehen mit `mainSha` `15f0d7e`; erst wenn deutlich mehr als ein
+  voller Lauf vergangen ist UND keine Zeile da ist, ist es ein Befund.
+- **Meine Attention `333c271010b2f4e1b5928109` ist BEANTWORTET** (Controller Slot 9: Board-Land, ist
+  erfolgt) und braucht nichts mehr.
+- Keine offenen Autos. Kein ungeernteter Lane-Report.
+
+## 1. Was gelandet ist (vier Commits, zwei davon meine eigenen Doc-Akte)
+
+- **§11.2s D2-Host-Unterschied** → `2a06185` (Sonde) + `15f0d7e` (Doc). Wurzel ist NICHT die
+  Idle-Schwelle, die der Brief vermutete, und NICHT der Server: die servierten git-Zahlen sind der
+  ~10-s-Anzeigecache `server.ts#tickGit`; die alte Schleife wartete nur auf die zwei SCHLIESSENDEN
+  Lanes — genau die, deren Fakten die Fixture-Writes nie anfassen — und las die fuenf Refuser aus
+  demselben Schnappschuss, bis zu 10 s bevor er wahr sein konnte. Hostabhaengig, weil Spawn auf Linux
+  billiger ist. Helfer-Beweis ALL PASS 3751/0, lokal ALL PASS, Mutation faellt als sie selbst.
+- **§11.0b Instrument** → `3f58491`. `trailStatsView` deckelte die Dateiliste VOR dem Suite-Filter:
+  `?suite=isolated&days=7` las 400 Dateien, davon 341 fremde Suiten, und meldete 59 Laeufe statt 192.
+  Deckel NICHT erhoeht; Filter namensabgeleitet, fail-open; neu `truncated`/`coveredFrom`.
+  **Gruenes Audit: `ms=2105985` (~35 min), `ran 3756 / failed 0`, volle Kette, lokal.**
+- **§11.2q + §11.2r** → `cb65455`: die zwei uebergebenen, nie registrierten Familien. **Beide Zahlen
+  der Vorgaengerin waren beim Nachrechnen falsch** — Q6 ist nicht 5/83 = 6,0 %, sondern **11/127 = 8,7 %
+  auf NEUN Baeumen** und damit die HOECHSTE offene Basisrate; die Watch-Idempotenz ist nicht ein Paar
+  4/557, sondern zwei Checks mit verschiedenen Nennern (4/568 und 3/461).
+- `e0968b4` + `6052973`: Datierungen mit gelandeter Sha.
+
+## 2. Die drei Dinge, die ich gemessen habe und die sonst verloren gehen
+
+1. **Die Zahl, um die es dem Owner ging, hat sich bewegt** (lokale Post-Land-Audits, `result red`,
+   ohne helper): 09-03 14/21 · 09-04 14/22 · **09-05 19/24 = 79 %** · **09-06 2/8 = 25 %**.
+   **KEINE Erfuellung von Kriterium (b):** Teiltag, n=8, und die 5-Tage-Uhr startet erst nach dem
+   LETZTEN Land des Programs. Wirksam sind die vier echten Reparaturen, nicht die Registrierungen.
+2. **§11.2r hat einen Befund, der nicht in der Rate steht:** der Check
+   `re-subscribing to the same target returns the SAME watch` ist eine Konjunktion aus DREI Teilen,
+   das `detail` druckt nur den Id-Vergleich. **In 2 von 4 Sichtungen sind die gedruckten Ids
+   byte-identisch und der Check trotzdem rot** — die Haelfte der Sichtungen ist per Konstruktion
+   unattribuierbar. Verdaechtig ist der dritte Konjunkt (zaehlt den GESAMTEN armed-Bestand des Slots,
+   also zustandsabhaengig statt Idempotenz-Aussage). Billigster Schnitt der ganzen Rangliste.
+3. **Der Land-Pfad ist heute der teurere Engpass als die Suite.** Vier Anlaeufe fuer EIN gruenes Land,
+   kein einziger Tod am Baum: (1) Gate in der Mutex-Schlange getoetet (`waitedOut`) · (2) `ff-lost`,
+   main zog waehrend des Gates weiter, **verify war gruen** · (3) srv-Neustart mitten im Merge
+   (`interrupted`) · (4) gelandet, vom Server nach dem Boot selbst wieder aufgenommen. Die
+   ff-Retry-Kette konnte in (2) nicht greifen, weil der Suite-Mutex volle 45 min nicht zu bekommen war.
+
+## 3. Der Guard-Defekt, den ich gefunden habe (liegt als M2 `64860da8` bei Land-Pipeline)
+
+`server.ts#selfLandTaskForMain` verwechselt „der Gate hat diese Bytes beurteilt und nein gesagt" mit
+„der Gate hat diese Bytes NIE beurteilt". Bei `waitedOut` ist seine eigene Kommentarbegruendung
+nachweislich falsch, denn es gab gar kein Ergebnis. Die Verdikt-Nachricht sagt zugleich woertlich
+„the run will be started again. Wait." — **es startet nichts neu**; `waitedOut` kommt in `server.ts`
+nur in Verdikt-Feldern und im Nachrichtenbau vor. Eine Lane, deren Gate in der Schlange stirbt, ist
+damit ausgesperrt. Ausweg heute: Board-Land ueber die Owner-Route, der Guard sitzt NUR in der
+Self-Route.
+
+## 4. Die zwei offenen Zeilen — und meine Empfehlung weicht von der Vorgaengerin ab
+
+- `aa3fd660` **Suite-Schnitt A** (Warten auf Bedingung statt Timer) und `5cd2d1b9` **Suite-Schnitt B**
+  (Modulfilter), beide `pending`, beide ungereleast.
+- **Meine Empfehlung: ZUERST eine Zeile fuer Q6 (§11.2q), nicht die Suite-Schnitte.** Q6 ist mit 8,7 %
+  die hoechste offene Basisrate, auf neun Baeumen, juengster Fail 2026-09-06. Zehn rote Checks, aber nur
+  ZWEI Eintrittsstellen; Signatur in zehn von elf Laeufen `status:"send-uncertain"`, `deliveredAt:null`.
+  Die Wurzelklasse ist benannt, die Wurzel nicht: WARUM der Annahme-Marker unter Last ausbleibt, ist
+  NICHT gemessen. Zweitguenstigste Zeile ist §11.2r (Punkt 2 oben) — reine Sondenarbeit.
+- Zu `5cd2d1b9`: die Vorgaengerin zog ihren Einwand teilweise zurueck. Vor der Freigabe den Brief
+  lesen, `fleet-e2e.ts` behauptet selbst, die Ordnung sei tragend.
+
+## 5. Mechanisches, das ich bezahlt habe
+
+- **Eine gelandete Sha wird ERGAENZT, nicht ersetzt, wenn die alte ein MESSPROTOKOLL ist.** In §11.2s
+  ist `472a850f` der `tree`-Wert der drei Beweislaeufe im Trail — der Join-Key ins Register. Ein
+  pauschales Ersetzen haette den Beweis von seinen eigenen Daten abgeschnitten.
+- **Der Deploy von `3f58491` steht noch aus** (Controller: nach dem Land von W5b, er fragt vorher
+  einmal DEPLOY-OK). Bis dahin antwortet die LIVE-Route `/api/self/flakes` weiter nach altem Code —
+  wer damit misst, misst die alte Verzerrung.
+- Es gibt **keine MAIN→Lane-Nachricht** im Self-API. Ein Befund, der eine laufende Lane erreichen soll,
+  geht ueber den Controller (`POST /send`) — oder gar nicht.
+
+---
+---
 # HANDOFF — Program-MAIN Land-Pipeline 2026-09 (`233e1c2b7eaca3850decf332`, Slot 9, Fable 5.1): beide Denk-Dokumente geschrieben (Merge gelandet `7b43011`, Notizen als naechster Commit), S1 queued, M1–M3 + N1–N2 als Program-Zeilen pending; 2026-09-06 14:4x, ctx GEMESSEN 26,4 %
 
 > **Dieser Abschnitt ERSETZT den aelteren darunter.** Zustand ableiten: `./state.sh`, `./register.sh`,

@@ -1,6 +1,6 @@
 ---
 frage: Halten die pruefbaren Behauptungen der ASTRA-Startbefund-Notiz (Task 580cc453) gegen Code und Live-Zustand, und welche Datenquellen traegt Hub-Schnitt 1?
-urteil: Das Program traegt kein repo-Feld, und die einzige beobachtete Ersatzquelle sind seine Task-Zeilen, die capTasks prunt; in einem Snapshot vom 2026-09-06 18:05:22Z ordnen sie 10 von 11 aktiven Programs eindeutig zu, eines bleibt unknown, womit die Repo-Achse eine Datenquellen-Hypothese ist und kein Program-Repo-Vertrag; offen bleiben der Architektur-Lesescope (Attention 2e01154e) und der Renderer, denn src/client.ts wurde nicht gelesen
+urteil: Das Program traegt kein repo-Feld, und die einzige beobachtete Ersatzquelle sind seine Task-Zeilen, die capTasks oberhalb von 200 Zeilen prunen kann; in einem Snapshot vom 2026-09-06 18:05:22Z ordnen sie 10 von 11 aktiven Programs eindeutig zu, eines bleibt unknown, womit die Repo-Achse eine Datenquellen-Hypothese ist und kein Program-Repo-Vertrag; offen bleiben der Architektur-Lesescope (Attention 2e01154e) und der Renderer, denn src/client.ts wurde nicht gelesen
 bereich: [fleet-hub, programs, lesescope]
 belege: [server.ts#programOccupancy, server.ts#capTasks, server.ts#taskDigest, server.ts#programDigest, server.ts#isBoundSupervisor, docs/fleet-hub-overlay-2026-09-06.md]
 nicht-gemessen: src/client.ts und jede Browser-Canary; der Architektur-Lesescope ist eine Owner-Entscheidung und wurde hier nicht beurteilt; 5e3823c7 und 0544306f nicht gelesen
@@ -18,10 +18,13 @@ ohne Imperativ und sagt von sich „Beratung, kein Auftrag". Diese Notiz ist des
 dazu beitragen kann: die Behauptungen mechanisch nachziehen und die eine Frage beantworten, die die
 Notiz offen laesst („Produktcode und Antwortfelder hier nicht voll untersucht").
 
-**Fassung 2, nach dem Review von Astra (Program-MAIN e3b3a064) am 2026-09-06 20:03 lokal.** Drei
-Aussagen der ersten Fassung gingen ueber ihren Beleg hinaus und stehen unten korrigiert (§1, §3,
-§4); eine vierte Zahl war schlicht falsch gemessen und ist in §1 berichtigt. Die Messungen selbst
-sind erhalten, jetzt mit dem ausfuehrbaren Kommando und ihrem Messzeitpunkt.
+**Fassung 3, nach zwei Reviews von Astra (Program-MAIN e3b3a064) am 2026-09-06, 20:03 und
+20:11 lokal.** Drei Aussagen der ersten Fassung gingen ueber ihren Beleg hinaus und stehen unten
+korrigiert (§1, §3, §4); eine vierte Zahl war falsch gemessen und ist in §1 berichtigt. Fassung 2
+fuehrte in §1 einen neuen Fehler ein — sie las aus 200 Zeilen einen stattgefundenen
+`capTasks`-Schnitt und aus `terminal` bereits den Verlust der Zuordnung; der Absatz steht jetzt in
+Astras Wortlaut aus der Korrekturnotiz `b2a90267`. Die Messungen selbst sind erhalten, mit dem
+ausfuehrbaren Kommando und ihrem Messzeitpunkt.
 
 ## Ergebnis
 
@@ -34,12 +37,13 @@ anderen Achsen tragen es: die Slot-Zeile in `GET /api/sessions` sendet `repo` (s
 mit `programId` weiter.
 
 Die Ableitung `repo(Program) = repo seiner Task-Zeilen` ist damit **abgeleitete Evidenz ueber die
-im Snapshot ERHALTENEN Zeilen, kein Program-Repo-Vertrag**. Der Mechanismus, der die Grundlage
-schmaelert, steht im Code: `capTasks` (server.ts:1996) haelt die Liste bei `MAX_TASKS = 200` und
-prunt dabei ausschliesslich terminale Zeilen (`done`, `archived`) von vorn. Die Liste steht heute
-**genau am Deckel** (200 Zeilen, davon 24 terminal), das Pruning ist also aktiv und nicht
-hypothetisch. Wessen repo-tragende Zeilen alle terminal werden, dessen Zuordnung faellt auf
-`unknown` zurueck, ohne dass sich am Program etwas aendert.
+im Snapshot ERHALTENEN Zeilen, kein Program-Repo-Vertrag**. `capTasks` (server.ts:1996) verwendet
+`MAX_TASKS = 200` als Aufbewahrungsschwelle: bis einschliesslich 200 Zeilen bleibt die Liste
+unveraendert. Oberhalb werden aeltere terminale Zeilen entfernt; nichtterminale bleiben erhalten,
+auch wenn sie allein die Schwelle ueberschreiten. Die 200 Zeilen des Snapshots (24 terminal)
+belegen deshalb keinen stattgefundenen Pruning-Schritt. Erst wenn spaeter alle repo-tragenden
+Task-Zeilen eines Programs tatsaechlich entfernt sind, verliert diese Task-basierte Ableitung
+dessen Repo-Zuordnung; terminal allein genuegt nicht.
 
 Die Zahlen des Snapshots 2026-09-06 18:05:22Z (Quelle: `fleet.json`, mtime 18:05:21Z):
 
@@ -62,8 +66,9 @@ Also 10 eindeutig, 0 mehrdeutig, 1 unknown; 140 der 200 Task-Zeilen tragen ueber
 zaehlte die Anwesenheit des Schluessels (`"repo" in t`), nicht einen Wert; 60 Zeilen tragen `null`.
 Ebenfalls snapshot-gebunden ist der Satz, dass die lebende MAIN-Bindung 0 zusaetzliche Faelle loest:
 er gilt fuer diese Zeile-am-2026-09-06-18:05:22Z und begruendet keine allgemeine Rangfolge der
-beiden Quellen. Heute ruht **keine** der zehn Zuordnungen ausschliesslich auf prunebaren Zeilen
-(hoechster Terminal-Anteil: `eec69528` mit 4 von 13) — auch das ist eine Snapshot-Eigenschaft.
+beiden Quellen. Heute ruht **keine** der zehn Zuordnungen ausschliesslich auf terminalen — also
+oberhalb der Schwelle ueberhaupt prunebaren — Zeilen (hoechster Terminal-Anteil: `eec69528` mit
+4 von 13); auch das ist eine Snapshot-Eigenschaft.
 
 Was daraus fuer den Hub folgt, ist eine **Datenquellen-Hypothese, keine Baubarkeitsaussage**:
 `src/client.ts` wurde nicht gelesen und keine Browser-Canary gefahren. Die Regel, die ein
@@ -176,8 +181,8 @@ for (const p of active) {
   console.log([String(p.id).slice(0, 8), occupancy(p), p.main?.slot ?? "-", own.length, kind,
     repos.map((r) => String(r).replace(/^\/Users\/[^/]+\//, "~/")).join(" ") || "-"].join("\t"));
 }
-// Ruht eine Zuordnung nur auf prunebaren (terminalen) Zeilen, ist sie einen capTasks-Schnitt
-// von "unknown" entfernt:
+// Ruht eine Zuordnung nur auf terminalen Zeilen, ist sie der einzige Fall, den ein
+// capTasks-Schnitt OBERHALB der Schwelle nach "unknown" kippen koennte:
 const terminal = (t: any) => t.status === "done" || t.status === "archived";
 for (const p of active) {
   const own = tasks.filter((t) => t.programId === p.id && t.repo);

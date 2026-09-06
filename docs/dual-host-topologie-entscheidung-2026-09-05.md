@@ -457,6 +457,28 @@ Note (sonst koennte die Note sein Ergebnis nicht tragen). **Eine Folge fuer W5d,
 `FLEET_HUB_REMOTE` steht in keinem `.env` und auf keiner Spawn-Zeile; das Umschalten ist W5d und
 Owner-Akt.
 
+**Zwei Suiten gleichzeitig auf dem Second-host — der Deckel ZAEHLT jetzt, statt Last zu messen
+(2026-09-06).** Die Messnotiz `docs/messungen/2026-09-06-second-host-parallel-suiten.md` nannte den
+Mechanismus: der Lastdeckel des Daemons (`helper-daemon/daemon.ts#localMode`, `maxLoad1`) hat
+waehrend der Messung ein DRITTES Audit geclaimt, weil load1 eine nachlaufende Zahl ist — eine Suite
+liegt dort bei 0,21 im Mittel, also sieht ein Deckel von 2 zwanzig Sekunden lang eine leere
+Maschine. Der Daemon hat deshalb ein Feld, das Jobs zaehlt: `maxParallelSuites`, Default 1,
+gelesen von `helper-daemon/daemon.ts#freeSuiteSlots`, das der Tick VOR der Job-Liste fragt. Der
+Lastdeckel bleibt als zweite Bedingung; er ersetzt das Zaehlen nie. Ueber 1 bekommt jeder Lauf
+seinen EIGENEN `FLEET_SUITE_LOCK` unter seinem Run-Verzeichnis — ohne das serialisiert der Mutex in
+`e2e-stage.sh` INNERHALB des Klons, und der zweite Slot waere nur ein Platz in der Warteschlange;
+bei 1 bleibt der geteilte Default-Lock stehen, weil genau er eine handgestartete Suite dort gegen
+die des Daemons serialisiert. Der Heartbeat traegt `running`/`maxParallelSuites`, das Board zeigt
+`1/2 suite slots`, und `server.ts#helperClaim` weist ein Geraet ab, dessen EIGENER letzter
+Heartbeat es voll gemeldet hat (wer beide Felder nie meldet — ein Browser auf der Portalseite,
+jeder aeltere Daemon — ist unveraendert ungedeckelt). Ueber einen Neustart ueberlebt der Deckel
+und der Zaehler NICHT: `running` ist ein Fakt ueber fremde Prozesse, und ein restaurierter wuerde
+eine gesunde Maschine abweisen, bis der naechste Heartbeat kommt. Bewiesen in
+`e2e/helper-daemon.ts` (HD.1) und (HD.10) sowie `e2e/helper-portal.ts` (K8), gepinnt in
+`e2e/pins.ts` unter RULE_PAR. **Der Wert 2 fuer den Second-host ist Konfiguration auf jener Maschine
+und hier nicht gesetzt**; mehr als 2 ist dort nicht gemessen, und der Land-Gate-Pfad (der den Mutex
+dreimal nimmt) ebenfalls nicht.
+
 ## Was nicht gemessen wurde
 
 - **Kein Slot auf dem Second-host** geoeffnet, nichts getippt, keine Unit angefasst — die

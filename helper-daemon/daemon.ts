@@ -55,6 +55,15 @@ export interface HelperConfig {
   offRecheckSec: number;
   quietHours: { from: string; to: string } | null;
   maxLoad1: number | null;
+  // HOW MANY JOBS MAY RUN HERE AT ONCE — a COUNT, and the reason it is not derived from `maxLoad1`
+  // is measured. The 1-minute load average is a LAGGING figure: on the linux work-horse a single
+  // ./e2e-isolated.sh sits at load1 0.21 mean / 0.94 peak, so a suite that started twenty seconds
+  // ago has barely moved it. A daemon that only measures load therefore claims a second and a third
+  // job inside its own blind spot — which is exactly what happened on 2026-09-06 (three audits at
+  // once under maxLoad1 2; docs/messungen/2026-09-06-second-host-parallel-suiten.md). Counting cannot
+  // be fooled that way. The load cap keeps its own job and is the SECOND condition, never the
+  // replacement: it is what says "this machine is busy with something else entirely".
+  maxParallelSuites: number;
   capabilities: string[];
   installCmd: string;
   suiteCmd: string;
@@ -123,6 +132,11 @@ export function loadConfig(path: string, raw: unknown, mode: number): HelperConf
     offRecheckSec: Math.max(60, num(c.offRecheckSec, "offRecheckSec", 900)),
     quietHours: quiet,
     maxLoad1: c.maxLoad1 == null ? null : num(c.maxLoad1, "maxLoad1", 0),
+    // DEFAULT 1 — every machine that does not say otherwise keeps exactly today's behaviour, one
+    // job at a time. The floor is the same typo guard the others carry (a 0 or a NaN would make
+    // this machine claim nothing, forever and silently); the floor of the whole VALUE is an
+    // integer, because "1.5 slots" is a number this rail has no reading for.
+    maxParallelSuites: Math.max(1, Math.floor(num(c.maxParallelSuites, "maxParallelSuites", 1))),
     capabilities: caps.slice(0, 8),
     installCmd: typeof c.installCmd === "string" ? c.installCmd : "bun install --frozen-lockfile",
     suiteCmd: typeof c.suiteCmd === "string" ? c.suiteCmd : "./e2e-isolated.sh",
@@ -221,21 +235,25 @@ function childEnv(): Record<string, string> {
 // that is not cosmetic: `sh -c '<one command>'` execs the command in place, so the pid this holds
 // is the suite itself and the timeout below can actually kill it. With a redirection in the string
 // sh must stay alive to own the pipe, and the kill would land on sh while the suite ran on.
-async function runCmd(cmd: string, cwd: string, logPath: string, timeoutMs: number)
-  : Promise<{ code: number | null; timedOut: boolean }> {
-  return await runArgv(["sh", "-c", cmd], cwd, logPath, timeoutMs);
+async function runCmd(cmd: string, cwd: string, logPath: string, timeoutMs: number,
+  extraEnv: Record<string, string> = {}): Promise<{ code: number | null; timedOut: boolean }> {
+  return await runArgv(["sh", "-c", cmd], cwd, logPath, timeoutMs, extraEnv);
 }
 // THE SAME RUNNER WITHOUT A SHELL, and it is the whole of "no shell interpolation" on this machine.
 // `runCmd` above keeps `sh -c` because its command comes out of THIS machine's own config file
 // (`installCmd`, `suiteCmd`) — a string an owner wrote here, where a shell is the point. A command
 // JOB's line came over the wire, so it arrives pre-split as argv and is exec'd directly: no quoting,
 // no glob, no `&&`, no substitution, and nothing for a crafted string to escape out of.
-async function runArgv(argv: string[], cwd: string, logPath: string, timeoutMs: number)
-  : Promise<{ code: number | null; timedOut: boolean }> {
+// `extraEnv` is the ONE way anything FLEET_-prefixed gets back into a child, and it exists for a
+// single value: this run's own suite lock (see `suiteEnv` in `work`). It is applied AFTER
+// `childEnv()`, so it can only add what this process deliberately puts there — never re-admit
+// something the strip above removed by accident.
+async function runArgv(argv: string[], cwd: string, logPath: string, timeoutMs: number,
+  extraEnv: Record<string, string> = {}): Promise<{ code: number | null; timedOut: boolean }> {
   const fd = openSync(logPath, "a");
   try {
     const proc = Bun.spawn(argv, {
-      cwd, env: childEnv(), stdin: "ignore", stdout: fd, stderr: fd,
+      cwd, env: { ...childEnv(), ...extraEnv }, stdin: "ignore", stdout: fd, stderr: fd,
     });
     let timedOut = false;
     const t = setTimeout(() => { timedOut = true; proc.kill("SIGKILL"); }, timeoutMs);
@@ -357,17 +375,35 @@ const readSlice = async (path: string, from: number, to: number): Promise<string
   try { return await Bun.file(path).slice(from, to).text(); } catch { return ""; }
 };
 
-// THE LOCAL SUITE MUTEX. The loop below is sequential, so this flag can only be false when it is
-// read — it exists so the invariant survives the day a second caller (a timer, a signal handler) is
-// added, which is the shape every "it cannot happen today" comment in this repo eventually meets.
-// The MACHINE-wide mutex is deliberately NOT duplicated here: ./e2e-isolated.sh takes
-// /tmp/fleet-e2e.lock through e2e-stage.sh inside the clone, so a hand-started suite and this one
-// already serialize against each other through the suite's own lock, and a second lock in front of
-// it would only be able to disagree with it.
-let suiteBusy = false;
+// THE LOCAL SUITE COUNTER — what used to be a boolean, and the day the comment above it warned
+// about ("a second caller is added") is this one: `start` below launches `work` WITHOUT awaiting it,
+// so more than one can be in flight. The count is the whole mutex now, and `freeSuiteSlots` is the
+// only place that reads it against the cap.
+//
+// The MACHINE-wide mutex is still deliberately NOT duplicated here: ./e2e-isolated.sh takes its
+// lock through e2e-stage.sh inside the clone. What changed is WHICH lock — see `suiteEnv` in
+// `work`: at cap 1 the runs share the default one (so a hand-started suite on this machine still
+// serializes against this daemon's), and above 1 each run gets its own, or the second slot would
+// only ever be a place in the waiting line.
+let runningJobs = 0;
+// Exported because it is the whole policy in one expression, and a policy nothing can call is a
+// policy nothing can test: e2e/helper-daemon.ts drives it directly at cap 1 and cap 2.
+export function freeSuiteSlots(cfg: HelperConfig, running: number): number {
+  return Math.max(0, cfg.maxParallelSuites - running);
+}
+// LAUNCHED, NOT AWAITED — that is the whole of "two at once", and the reservation is what makes it
+// safe: `runningJobs` is incremented SYNCHRONOUSLY here, before the first await inside `work`, so
+// the rest of this tick and every tick after it already sees the slot as taken. Reserving around
+// the WHOLE call and not (as the old flag did) around the part after the claim is deliberate: two
+// claim POSTs in flight for the same machine is the race this counter exists to refuse.
+function start(cfg: HelperConfig, job: JobView): void {
+  runningJobs++;
+  void work(cfg, job)
+    .catch((e) => onFault(e, `job ${job.id}`))
+    .finally(() => { runningJobs--; });
+}
 
 async function work(cfg: HelperConfig, job: JobView): Promise<void> {
-  if (suiteBusy) { log(`skip ${job.id}: a suite is already running here`); return; }
   const claimRes = await api(cfg, "/api/helper/claim",
     { method: "POST", body: JSON.stringify({ jobId: job.id, deviceId: cfg.deviceId }) });
   const claimed = await bodyOf<{ job?: ClaimedJob }>(claimRes);
@@ -386,9 +422,23 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
   const clone = `${runDir}/tree`;
   const logPath = `${runDir}/suite.log`;
   mkdirSync(runDir, { recursive: true });
-  log(`claimed ${j.kind ?? "audit"} ${j.repo} ${j.main}@${j.mainSha.slice(0, 8)} → ${runDir}`);
+  log(`claimed ${j.kind ?? "audit"} ${j.repo} ${j.main}@${j.mainSha.slice(0, 8)} → ${runDir}`
+    + ` (slot ${runningJobs} of ${cfg.maxParallelSuites})`);
 
-  suiteBusy = true;
+  // EACH PARALLEL RUN NEEDS ITS OWN MUTEX FILE, or `maxParallelSuites` buys nothing at all:
+  // ./e2e-isolated.sh takes /tmp/fleet-e2e.lock through e2e-stage.sh INSIDE the clone, so two runs
+  // pointed at the default lock queue behind each other and the second slot is only a place in the
+  // waiting line — the field would be wired end to end and change no wall-clock. The ticket queue
+  // e2e-stage.sh keeps is derived (`$FLEET_SUITE_LOCK.q`), so it moves with the lock by itself.
+  //
+  // AT CAP 1 THE DEFAULT LOCK IS LEFT ALONE, and that is a decision rather than an omission: it is
+  // the setting under which a hand-started suite on this machine and this daemon's run serialize
+  // against each other through the suite's own lock, and moving the daemon off it would end that
+  // silently for every operator who never touched the new field. Above 1 the operator has said
+  // this machine takes N suites at once, and a hand-started one is then the N+1st.
+  const suiteEnv: Record<string, string> = cfg.maxParallelSuites > 1
+    ? { FLEET_SUITE_LOCK: `${runDir}/e2e.lock` } : {};
+
   try {
     const bundlePath = `${runDir}/job.bundle`;
     const bundleRes = await api(cfg, `/api/helper/bundle/${j.id}`);
@@ -456,8 +506,8 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
       ? j.timeoutMs : cfg.suiteTimeoutSec * 1000;
     const started = Date.now();
     const ran = isCommand
-      ? await runArgv(j.argv!, clone, logPath, timeoutMs)
-      : await runCmd(cfg.suiteCmd, clone, logPath, timeoutMs);
+      ? await runArgv(j.argv!, clone, logPath, timeoutMs, suiteEnv)
+      : await runCmd(cfg.suiteCmd, clone, logPath, timeoutMs, suiteEnv);
     log(`${isCommand ? `command ${j.cmd ?? j.argv!.join(" ")}` : "suite"} finished exit=${ran.code}`
       + ` timedOut=${ran.timedOut} in ${Math.round((Date.now() - started) / 1000)}s`);
     // HASHED BEFORE THE REPORT AND BEFORE THE `finally` BELOW REMOVES THE CLONE — and hashed even on
@@ -477,7 +527,6 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
       ran.timedOut ? `the ${isCommand ? "command" : "suite"} passed ${Math.round(timeoutMs / 1000)}s and was killed here` : "",
       logPath, clonedSha, artifacts, ran.timedOut ? timeoutMs : undefined);
   } finally {
-    suiteBusy = false;
     try { rmSync(clone, { recursive: true, force: true }); } catch { /* the verdict is already sent */ }
     try { rmSync(`${runDir}/job.bundle`, { force: true }); } catch { /* idem */ }
     pruneRuns(cfg);
@@ -593,7 +642,9 @@ async function selfUpdate(cfg: HelperConfig, j: ClaimedJob): Promise<void> {
   const logPath = `${cfg.workDir}/update-${sha.slice(0, 12)}.log`;
   const bundlePath = `${cfg.workDir}/update-${sha.slice(0, 12)}.bundle`;
   const checkOut = `${tree}.check`;
-  suiteBusy = true;
+  // NO RESERVATION HERE ANY MORE: `start` holds the slot around the whole of `work`, and this
+  // function is only ever reached from inside it. The pair that used to live here would now be a
+  // second bookkeeper for one fact.
   try {
     log(`update ${short}: clone ${ref} → ${tree}`);
     const bundleRes = await api(cfg, `/api/helper/bundle/${j.id}`);
@@ -639,7 +690,6 @@ async function selfUpdate(cfg: HelperConfig, j: ClaimedJob): Promise<void> {
     log(`update ${short}: exit ${EXIT_UPDATED} — the unit restarts this daemon from ${cfg.checkoutLink}`);
     process.exit(EXIT_UPDATED);
   } finally {
-    suiteBusy = false;
     try { rmSync(bundlePath, { force: true }); } catch { /* idem */ }
   }
 }
@@ -707,6 +757,11 @@ export async function tick(cfg: HelperConfig, st: LoopState): Promise<void> {
     body: JSON.stringify({
       deviceId: cfg.deviceId, name: cfg.name, mode: local.mode,
       load: Math.round(load1 * 100) / 100, capabilities: cfg.capabilities,
+      // THE TWO NUMBERS THE BOARD COULD NOT OTHERWISE KNOW. `load` is a reading of the machine and
+      // says nothing about how many of the runs on it are the fleet's; these two say exactly that.
+      // Sent from the TOP of the tick, before anything below is claimed, so `running` is always the
+      // count the claim that follows was decided against and never a figure from mid-decision.
+      running: runningJobs, maxParallelSuites: cfg.maxParallelSuites,
       ...(daemonSha ? { daemonSha } : {}),
     }),
   });
@@ -722,9 +777,33 @@ export async function tick(cfg: HelperConfig, st: LoopState): Promise<void> {
     return;
   }
   if (mode === "quiet") return; // reachable, taking no work
+  // THE COUNT DECIDES, AND IT DECIDES BEFORE THE LIST IS EVEN ASKED FOR. A machine with no free
+  // slot has nothing to learn from the job list, and asking anyway would be the request the mode
+  // design spends so much care avoiding. `free` is what the machine may START, so a job already
+  // running here is subtracted whatever the load average happens to say about it.
+  const free = freeSuiteSlots(cfg, runningJobs);
+  if (free <= 0) return;
   const list = await bodyOf<{ jobs?: JobView[] }>(await api(cfg, `/api/helper/jobs?deviceId=${cfg.deviceId}`));
-  const open = (list.jobs ?? []).find((j) => !j.claim && !j.localRunning);
-  if (open) await work(cfg, open);
+  // Sliced to `free`, so a tick that arrives at an empty machine with three open jobs fills every
+  // slot at once rather than one per poll — and one that arrives with one slot left takes one job.
+  const open = (list.jobs ?? []).filter((j) => !j.claim && !j.localRunning).slice(0, free);
+  for (const j of open) start(cfg, j);
+}
+
+// ONE DOOR FOR A FAULT, and it is shared for a reason this slice created: a DETACHED job can now
+// raise the same AuthFault a tick can, and that one must END this process wherever it is thrown.
+// Logging it from a job instead would turn "a rejected credential costs exactly one request" into
+// the retry storm the unit's RestartPreventExitStatus=78 exists to make impossible.
+function onFault(e: unknown, what: string): void {
+  if (e instanceof AuthFault) {
+    // ONE request, then stop. Retrying a rejected credential is a storm that fills the fleet's
+    // audit trail with helper_auth_fail rows and never succeeds.
+    console.error(`helper-daemon: ${e.message} — stopping (fix the token in the config, then start the unit again)`);
+    process.exit(EXIT_CONFIG);
+  }
+  // everything else is the ordinary weather of a machine that talks to another one over Tailscale:
+  // the fleet is down, asleep, or the link dropped. Say so and poll again.
+  log(`${what} failed: ${e instanceof Error ? e.message : String(e)}`);
 }
 
 async function main(): Promise<never> {
@@ -747,16 +826,7 @@ async function main(): Promise<never> {
     try {
       await tick(cfg, st);
     } catch (e) {
-      if (e instanceof AuthFault) {
-        // ONE request, then stop. Retrying a rejected credential is a storm that fills the fleet's
-        // audit trail with helper_auth_fail rows and never succeeds; the unit's
-        // RestartPreventExitStatus=78 makes the stop stick.
-        console.error(`helper-daemon: ${e.message} — stopping (fix the token in the config, then start the unit again)`);
-        process.exit(EXIT_CONFIG);
-      }
-      // everything else is the ordinary weather of a machine that talks to another one over
-      // Tailscale: the fleet is down, asleep, or the link dropped. Say so and poll again.
-      log(`tick failed: ${e instanceof Error ? e.message : String(e)}`);
+      onFault(e, "tick"); // the unit's RestartPreventExitStatus=78 makes an AuthFault's stop stick
     }
     await Bun.sleep(cfg.pollSec * 1000);
   }

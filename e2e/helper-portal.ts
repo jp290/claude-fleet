@@ -19,7 +19,7 @@
 // section seeds one instead of reusing the harness's.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { BASE, ROOT, check, get, post } from "./harness";
 import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
 
@@ -57,6 +57,26 @@ interface OwnerDeviceView {
   // "the board draws no button". `lastWakeAt` is optional because "never woken" is a real state.
   wakeConfigured: boolean;
   lastWakeAt?: number;
+  // the capacity pair, and OPTIONAL here where the two above are not: the server ships it only for
+  // a device that reported it, and "this machine never said" is the state a browser on the portal
+  // page is permanently in
+  maxParallelSuites?: number;
+  running?: number;
+}
+// the lane's own scoped credential, read out of the persisted state — the same poll-for-the-shape
+// helper e2e/lane-suite.ts keeps, and for the same reason: openSlot queues the save before it
+// awaits the pane spawn, so the file can carry the token a hair after the route would answer.
+async function selfTokenOf(slot: number): Promise<string> {
+  let seen = "";
+  for (let i = 0; i < 60; i++) {
+    try {
+      seen = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots?: Record<string, { selfToken?: string }> }).slots?.[String(slot)]?.selfToken ?? "";
+    } catch { /* mid-write */ }
+    if (/^[0-9a-f]{32}$/.test(seen)) return seen;
+    await Bun.sleep(50);
+  }
+  return seen;
 }
 // The row shape this module asserts on. Deliberately its own copy rather than an import from the
 // harness: what is being proven is that a REMOTE row carries `remote`, and a type that made the
@@ -1002,4 +1022,123 @@ export async function run(h: {
     ((await ownerDevices()) ?? []).every((d) => d.wakeConfigured === false),
     JSON.stringify(((await ownerDevices()) ?? []).map((d) => `${d.id}:${d.wakeConfigured}`)));
   wakeRx.close();
+
+  // ===== (K8) THE CAPACITY PAIR — A DEVICE'S OWN COUNT OF ITS OWN SLOTS =========================
+  // The daemon may now run more than one job at a time (helper-daemon/daemon.ts#freeSuiteSlots),
+  // and that is a decision taken ENTIRELY on the other machine. This section measures the two
+  // things this side of the wire owes it, and they pull in opposite directions:
+  //
+  //   · THE PORTAL MUST NOT STAND IN THE WAY. There has never been a "one claim per device" rule
+  //     here — every refusal in `helperClaim` is per-JOB or per-REPO ("nothing may be worked on
+  //     twice") — and the first checks below fasten that absence down, because it is the property
+  //     the whole feature rests on and nothing was previously asserting it. A future `already
+  //     claimed by this device` would pass every type check and silently cap the work-horse at one.
+  //
+  //   · …AND IT MUST REFUSE A MACHINE THAT SAYS IT IS FULL, using nothing but that machine's own
+  //     words. The refusal is not this server's capacity policy: it reads `running` and
+  //     `maxParallelSuites` off the device's last heartbeat and compares them to each other. A
+  //     device that reports NEITHER (a browser on the portal page, every daemon older than this
+  //     slice) is uncapped, exactly as before.
+  //
+  // The bogus job id is the instrument: it answers 404 through the ordinary door, so a 409 in its
+  // place proves the capacity guard ran BEFORE the job was even looked up — and a 404 proves it did
+  // not fire. Same request, two devices, two answers: the difference is the heartbeat, nothing else.
+  {
+    const CAPBOX = "e2ecapacitybox1";
+    const NOJOB = "f".repeat(12);
+    const beatCap = (deviceId: string, extra: Record<string, unknown>): Promise<Response> =>
+      hpost("/api/helper/device", { deviceId, name: `capacity box (e2e)`, mode: "active", ...extra });
+    const claimNoJob = async (deviceId: string): Promise<{ status: number; error: string }> => {
+      const r = await hpost("/api/helper/claim", { jobId: NOJOB, deviceId });
+      return { status: r.status, error: ((await r.json()) as { error?: string }).error ?? "" };
+    };
+
+    // --- two open jobs on one list, from two lanes' preview offers. The cheapest source of more
+    // than one claimable job: an audit job is keyed by REPO (one per tree), so proving "a second
+    // claim" with audits alone would need a third repo and a busy drain.
+    await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME, mode: "active", load: 0.2 });
+    const capA = await openLane(REPO, "capone");
+    const capB = await openLane(REPO, "captwo");
+    const offer = async (slot: number): Promise<string> => {
+      const tok = await selfTokenOf(slot);
+      const r = await fetch(`${BASE}/api/self/suite-offer`, { method: "POST",
+        headers: { "x-fleet-self-token": tok, "content-type": "application/json" }, body: "{}" });
+      return ((await r.json()) as { offer?: { id?: string } | null }).offer?.id ?? "";
+    };
+    const jobA = await offer(capA.slot);
+    const jobB = await offer(capB.slot);
+    check("(K8) setup: two lanes offer their preview suites — two open jobs on one list",
+      /^[0-9a-f]{12}$/.test(jobA) && /^[0-9a-f]{12}$/.test(jobB) && jobA !== jobB,
+      `a=${jobA} b=${jobB}`);
+
+    // --- THE ABSENCE, ASSERTED. `DEVICE` has reported no capacity fields in this whole file, so it
+    // is the uncapped case, and it takes BOTH jobs. This is the check that fails the day somebody
+    // adds a per-device claim cap to the portal.
+    const twoA = await hpost("/api/helper/claim", { jobId: jobA, deviceId: DEVICE });
+    const twoB = await hpost("/api/helper/claim", { jobId: jobB, deviceId: DEVICE });
+    const heldBoth = ((await ownerDevices()) ?? []).find((d) => d.id === DEVICE)?.claims ?? [];
+    check("(K8) A DEVICE THAT REPORTS NO CAPACITY IS UNCAPPED: it claims a SECOND job while holding the first, and the board shows both",
+      twoA.status === 200 && twoB.status === 200 && heldBoth.length === 2,
+      `a=${twoA.status} b=${twoB.status} held=${JSON.stringify(heldBoth.map((c) => `${c.kind}:${c.ref}`))}`);
+
+    // --- the pair on the wire: stored from the heartbeat, and carried to the owner's board
+    const beat2 = await beatCap(CAPBOX, { running: 0, maxParallelSuites: 2, load: 0.1 });
+    const capView = ((await ownerDevices()) ?? []).find((d) => d.id === CAPBOX);
+    check("(K8) the heartbeat's capacity pair is stored and reaches the board — the one thing `load` can never say",
+      beat2.ok && capView?.maxParallelSuites === 2 && capView.running === 0,
+      `${beat2.status} ${JSON.stringify({ max: capView?.maxParallelSuites, running: capView?.running })}`);
+    const freeAnswer = await claimNoJob(CAPBOX);
+    check("(K8) precondition: with a free slot the claim door is OPEN — the bogus id falls through to the ordinary 404",
+      freeAnswer.status === 404, `${freeAnswer.status} ${JSON.stringify(freeAnswer.error).slice(0, 160)}`);
+
+    // --- …and now the same machine says it is full
+    await beatCap(CAPBOX, { running: 2, maxParallelSuites: 2, load: 0.1 });
+    const fullAnswer = await claimNoJob(CAPBOX);
+    const controlAnswer = await claimNoJob(DEVICE);
+    check("(K8) A DEVICE THAT REPORTED ITSELF FULL IS REFUSED 409 BEFORE THE JOB IS EVEN LOOKED UP — and the refusal quotes its own numbers",
+      fullAnswer.status === 409 && fullAnswer.error.includes("2 of 2")
+        && fullAnswer.error.includes("it said so itself"),
+      `${fullAnswer.status} ${JSON.stringify(fullAnswer.error).slice(0, 200)}`);
+    check("(K8) …and it is THAT DEVICE'S OWN WORDS doing the refusing: the identical request from the device that reported nothing is still a plain 404",
+      controlAnswer.status === 404, `${controlAnswer.status} ${JSON.stringify(controlAnswer.error).slice(0, 120)}`);
+    await beatCap(CAPBOX, { running: 1, maxParallelSuites: 2, load: 0.1 });
+    const freedAnswer = await claimNoJob(CAPBOX);
+    check("(K8) …and ONE heartbeat with a free slot reopens the door — the refusal is a live reading, never a latch",
+      freedAnswer.status === 404, `${freedAnswer.status} ${JSON.stringify(freedAnswer.error).slice(0, 120)}`);
+
+    // --- should-reject: the two numbers are compared against each other, so a value that is not a
+    // count would make that comparison say something nobody meant
+    const badFrac = await beatCap(CAPBOX, { maxParallelSuites: 1.5 });
+    const badNeg = await beatCap(CAPBOX, { running: -1 });
+    const badHuge = await beatCap(CAPBOX, { maxParallelSuites: 65 });
+    const afterBad = ((await ownerDevices()) ?? []).find((d) => d.id === CAPBOX);
+    check("(K8) should-reject: a fraction, a negative and an over-cap count are each 400 — and none of them overwrote the stored pair",
+      badFrac.status === 400 && badNeg.status === 400 && badHuge.status === 400
+        && afterBad?.maxParallelSuites === 2 && afterBad.running === 1,
+      `frac=${badFrac.status} neg=${badNeg.status} huge=${badHuge.status}`
+      + ` stored=${JSON.stringify({ max: afterBad?.maxParallelSuites, running: afterBad?.running })}`);
+
+    // --- THE ASYMMETRY ACROSS A RESTART, and it is the whole reason `running` is not persisted.
+    // The CAP is that machine's configuration and should survive a deploy; the COUNT is a live fact
+    // about another machine's processes, and restoring one would be this server asserting something
+    // it cannot know — in the direction that refuses a HEALTHY helper for as long as it takes the
+    // next heartbeat to arrive. So the door must fall OPEN over a restart, not shut.
+    await beatCap(CAPBOX, { running: 2, maxParallelSuites: 2, load: 0.1 });
+    const fullBefore = await claimNoJob(CAPBOX);
+    await killSrv();
+    check("(K8) setup: the server restarts over a device that had just reported itself full",
+      await startSrv({ audit: true, extra: { FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000",
+        FLEET_HELPER_SWEEP_MS: "15000" } }) && fullBefore.status === 409,
+      `beforeRestart=${fullBefore.status}`);
+    await Bun.sleep(750);
+    const rebooted = ((await ownerDevices()) ?? []).find((d) => d.id === CAPBOX);
+    const afterRestart = await claimNoJob(CAPBOX);
+    check("(K8) THE CAP SURVIVES THE RESTART AND THE COUNT DOES NOT: the board still knows the machine's size, and the claim door is open again rather than latched shut on a number nothing measured",
+      rebooted?.maxParallelSuites === 2 && rebooted.running === 0 && afterRestart.status === 404,
+      `stored=${JSON.stringify({ max: rebooted?.maxParallelSuites, running: rebooted?.running })}`
+      + ` claim=${afterRestart.status}`);
+
+    await post(`/api/slots/${capA.slot}/kill`, {});
+    await post(`/api/slots/${capB.slot}/kill`, {});
+  }
 }

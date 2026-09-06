@@ -37,6 +37,26 @@ answer it, and all it does is switch a box on so it can start pulling.
   reporting `active` and beating recently. Unset or `0` is the old behaviour exactly. It never
   starves anything: the moment the grace lapses the local drain takes the job, which is the same
   fallback the expiry rail above provides, one step earlier.
+- **Parallel runs are COUNTED, never derived from the load average.** `maxParallelSuites` (default
+  `1`) is how many jobs this machine will run at once; the daemon claims only while the number of
+  jobs it already has in flight is below it. The load cap stays as a *second* condition and never
+  replaces the count — the 1-minute average is a lagging figure, and a suite that started twenty
+  seconds ago has barely moved it. Measured on the work-horse 2026-09-06
+  (`docs/messungen/2026-09-06-second-host-parallel-suiten.md`): one `./e2e-isolated.sh` sits at load1
+  0.21 mean / 0.94 peak, so `maxLoad1: 2` let a *third* audit through while two were running. Two
+  parallel suites there cost +0.24 %/+0.29 % run time and 224 MB; more than two is not measured, so
+  `2` is the value that fixture supports.
+
+  Above `1`, each run gets its **own** `FLEET_SUITE_LOCK` (under its run directory), because
+  `./e2e-isolated.sh` takes `/tmp/fleet-e2e.lock` through `e2e-stage.sh` *inside* the clone — two
+  runs on one lock would serialize there and the second slot would only be a place in the waiting
+  line. At `1` the shared default lock is deliberately left alone: that is what makes a
+  hand-started suite on that machine serialize against this daemon's.
+
+  The heartbeat carries `running` and `maxParallelSuites`, so the board shows `1/2 suite slots`,
+  and the Fleet's claim door refuses a device whose own last heartbeat said it was full. That
+  refusal uses nothing but the machine's own words — a device that reports neither field (a browser
+  on the portal page, any daemon older than this) is uncapped, exactly as before.
 - **The quieter of the two modes wins.** The owner's `desiredMode`, pulled in the reply to this
   machine's heartbeat, always wins downwards; it never overrides quiet hours or the load threshold
   upwards, because the person who set those is standing next to the machine.

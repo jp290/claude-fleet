@@ -372,6 +372,31 @@ kanonischen Host erreicht, ist negativ und spaet: `fleet-sync.service` `failed` 
 Wer hier ohne Polling erfahren will, dass dort etwas fertig ist, braucht E2 = Nein — oder liest das
 zweite Board. Das ist der Preis von A, ausgesprochen.
 
+## 6. W5 — der Second-host als Git-Nabe und vollwertige zweite Instanz (Owner-Richtung 2026-09-06, W5a gemessen)
+
+Owner 2026-09-06 06:1x/06:2x, woertlich: „was wenn wir einen Git-Server auf dem Second-host laufen
+lassen wuerden?" und „second-host sollte ausserdem vollwertig aufgesetzt sein, je nachdem wie wir das
+vernuenftig aufsetzen". Das ist Topologie A mit dem Second-host als Hub (Weg 1C) — und es ersetzt die
+Praemisse „der Folger landet nie" durch „jeder landet, die Nabe entscheidet". Auftrag mit vier Teilen
+und Kriterium je Teil: Queue-Zeile `1e7765c9` in `cd110019` (W5a Hub · W5b Land-Push · W5c Toolchain
++ Rulebook · W5d Umschalten).
+
+**Warum zwei landende Instanzen kein Lock-Design brauchen:** ein Land endet mit `git push hub main`
+ff-only; das Ref-Update im Bare-Repo ist atomar, und git lehnt Nicht-ff ab. Der abgelehnte Push ist
+genau der Fall, den R2' (`server.ts#mergeJob`, bounded rebase+ff) heute lokal behandelt — W5b richtet
+dieselbe Schleife gegen `hub/main`. Der Post-Land-Audit laeuft dort, wo gelandet wurde.
+
+**W5a, gemessen 2026-09-06 06:2x (Controller Slot 6, mac):** `git init --bare --initial-branch=main`
+unter `~/git/claude-fleet.git` auf dem Second-host; mac: Remote `hub` (ssh, Adresse nur in
+`.git/config`), `git push hub main` → `[new branch] main -> main`; Second-host-Checkout: Remote `hub`
+(lokaler Pfad) ZUSAETZLICH zu `canonical`, Timer unveraendert auf `canonical`. Kriterium erfuellt:
+`git rev-parse main` (mac) = `git ls-remote hub main` (mac) = `git ls-remote hub main` (Second-host) =
+`96326dad1961`; `./fleet-sync.sh hub` auf dem Second-host: `already current at 96326dad`, Exit 0.
+Vorgefunden dort (Login-Shell): `bun` und `claude` vorhanden, `node`/`npm`/`codex`/`pi`/`docker`
+fehlen, kein `CLAUDE.md`, kein `rulebook/` (gitignored, lebt nur auf dem mac) — das ist W5c.
+16 Kerne, 7 GB RAM, 30 GB frei, Debian 13, tmux 3.5a. Ein Bare-Repo im Tailnet ist keine
+Publikation; nach GitHub wird von hier weiterhin nie gepusht.
+
 ## Was nicht gemessen wurde
 
 - **Kein Slot auf dem Second-host** geoeffnet, nichts getippt, keine Unit angefasst — die

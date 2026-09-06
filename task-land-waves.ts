@@ -76,10 +76,14 @@ function classify(task: TaskWaveInput): ClassifiedRow {
   // `proportional:false` for exactly that reason, and the wave must never buy the short chain on
   // an absence.
   const klasse: LandWaveClass = proportion.proportional ? "docs" : "code";
+  // R3 BEFORE R2, decided by the owner (MAIN slot 4) after the first CLI run over the real
+  // fleet.json named 28 of 31 rows "gate-aenderer": a reason must stand on a fact one HAS, and
+  // calling a DERIVED surface a gate changer is a statement about the row's prose, not about the
+  // gate. "keine-flaeche" stays first — no surface at all outranks both.
   const reasonAgainst: LandWaveReasonAgainst | null =
     !files.length ? "keine-flaeche"
-      : proportion.isolatedPreview === true ? "gate-aenderer"
-        : task.filesOrigin !== "confirmed" ? "flaeche-nur-abgeleitet"
+      : task.filesOrigin !== "confirmed" ? "flaeche-nur-abgeleitet"
+        : proportion.isolatedPreview === true ? "gate-aenderer"
           : null;
   return { id: task.id, created: task.created, files, klasse, reasonAgainst };
 }

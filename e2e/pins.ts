@@ -6198,6 +6198,69 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       : `presence guard=${load.includes('hasOwnProperty.call(r, "actor")')} loader=${load.includes("loadLandActor(r.actor)")}`);
 }
 
+// ================================================================================================
+// THE PROGRAM INBOX — the durable back-channel that belongs to the Program, not to an occupant.
+// ================================================================================================
+// Three of these hold invariants a compiler cannot: an entry that grew a receiver key would turn a
+// Program record back into an occupant mailbox (and a succession would lose it again); an inbox
+// counted against the FleetEvent delivery cap would make a MAIN's own backlog close its return
+// path; and a loader that repaired a bad record field by field would report "there were never any
+// pointers" for "these pointers were lost". The fourth is the writer count: the cap and `dropped`
+// are only consistent while ONE function maintains them.
+{
+  const RULE_INBOX = "the program inbox belongs to the Program and names no receiver";
+  const entryIface = server.match(/interface ProgramInboxEntry \{[\s\S]*?\n\}/)?.[0] ?? "";
+  const getBody = server.match(/function programInboxFor\([\s\S]*?\n\}/)?.[0] ?? "";
+  const readBody = server.match(/async function readProgramInboxEntry\([\s\S]*?\n\}\n/)?.[0] ?? "";
+  const scope = server.match(/function inboxProgramFor\([\s\S]*?\n\}/)?.[0] ?? "";
+  // I1 — no receiver key on the entry, and both doors reach their Program through the ONE authority
+  // bracket. A door that read `receiverSlot` would be answering a different question entirely.
+  pin(`${RULE_INBOX} — the entry interface names no receiver or requester key, and both inbox routes derive the program through boundProgramForMain only`,
+    entryIface !== "" && !/\breceiver\b/.test(entryIface) && !/\brequester\b/.test(entryIface)
+      && scope !== "" && scope.includes("boundProgramForMain(")
+      && getBody !== "" && getBody.includes("inboxProgramFor(")
+      && readBody !== "" && readBody.includes("inboxProgramFor(")
+      && !getBody.includes("receiverSlot") && !readBody.includes("receiverSlot")
+      && !getBody.includes("fleetEventReceiver(") && !readBody.includes("fleetEventReceiver("),
+    entryIface === "" ? "interface ProgramInboxEntry not found in the server universe"
+      : scope === "" || getBody === "" || readBody === ""
+        ? "inboxProgramFor, programInboxFor or readProgramInboxEntry not found in the server universe"
+        : `receiver-free=${!/\breceiver\b/.test(entryIface)} bracket=${scope.includes("boundProgramForMain(")}`);
+  // I2 — the delivery cap is about the FleetEvent transport, and the inbox is not on it. If this
+  // ever reads an inbox, a Program with 5 unread pointers stops being able to receive reports.
+  const budget = server.match(/function slotDeliveryBudget\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_INBOX} — slotDeliveryBudget reads fleetEvents and watches and never an inbox`,
+    budget !== "" && budget.includes("fleetEvents.filter(") && budget.includes("watches.filter(")
+      && !budget.includes("inbox"),
+    budget === "" ? "slotDeliveryBudget not found in the server universe"
+      : `events=${budget.includes("fleetEvents.filter(")} watches=${budget.includes("watches.filter(")} inbox=${budget.includes("inbox")}`);
+  // I3 — closed and versioned in loadProgramLineage's exact discipline: an unknown key is a refusal,
+  // not a tolerated extra, and a v2 shape can never be read as a v1 record.
+  const loader = server.match(/const loadProgramInbox = \(value: unknown\): ProgramInboxRead => \{[\s\S]*?\n\};/)?.[0] ?? "";
+  pin(`${RULE_INBOX} — loadProgramInbox is closed and versioned like loadProgramLineage`,
+    loader !== "" && loader.includes('Object.keys(r).some((k) => !["v", "entries", "dropped"]')
+      && loader.includes("r.v !== 1") && loader.includes("PROGRAM_INBOX_MAX"),
+    loader === "" ? "loadProgramInbox not found in the server universe"
+      : `closed=${loader.includes('Object.keys(r).some((k) => !["v", "entries", "dropped"]')} versioned=${loader.includes("r.v !== 1")}`);
+  // …and the ONE writer. `dropped` is only a true count while a single function maintains it, so a
+  // second assignment anywhere in the universe is the violation — not a style question.
+  const writers = (server.match(/program\.inbox = /g) ?? []).length;
+  const append = server.match(/function appendProgramInbox\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_INBOX} — appendProgramInbox is the only writer of the record`,
+    writers === 1 && append !== "" && append.includes("program.inbox = ")
+      && append.includes("PROGRAM_INBOX_MAX") && append.includes('audit("program_inbox_append"'),
+    append === "" ? "appendProgramInbox not found in the server universe"
+      : `assignments=${writers} capped=${append.includes("PROGRAM_INBOX_MAX")}`);
+  // the doc a MAIN is actually sent to must carry the section and both route paths — the same
+  // doc↔route pair RULE_RECEIVER pins for §fleet-report, and for its reason: a route named only in
+  // code is a route no session ever learns to call.
+  const selfApiInbox = read("docs/self-api.md");
+  pin(`${RULE_INBOX} — docs/self-api.md carries §inbox and names both route paths`,
+    /^## inbox/m.test(selfApiInbox) && selfApiInbox.includes("GET /api/self/inbox")
+      && selfApiInbox.includes("/api/self/inbox/:id/read"),
+    `section=${/^## inbox/m.test(selfApiInbox)} get=${selfApiInbox.includes("GET /api/self/inbox")} read=${selfApiInbox.includes("/api/self/inbox/:id/read")}`);
+}
+
 console.log(rows.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

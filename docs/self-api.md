@@ -454,6 +454,54 @@ ein `task_release`-Audit-Event, weil ein späterer beaufsichtigter ▸ start das
     tick start one first`.
 
 
+## inbox — `GET /api/self/inbox`, `POST /api/self/inbox/:id/read`
+
+Der **dauerhafte Rückkanal des PROGRAMS**, nicht der einer Session. Ein Eintrag ist ein ZEIGER auf
+eine Zeile, die es schon gibt (Attention-Antwort, Fleet-Report, rotes Audit); er kopiert keinen Text
+und nennt **keinen Empfänger**. Wer beim Lesen die gebundene MAIN des Programs ist, liest ihn —
+darum überlebt ein Eintrag eine Succession, während ein Watch, ein FleetEvent und eine offene
+Attention mit ihrem Occupant sterben (`CLAUDE.md` §„Eine Succession toetet deine offenen
+Attentions"). `readBy` ist eine **Quittung**, kein Schlüssel: keine Route filtert an ihr.
+
+```
+curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" http://<fleet-host>:<port>/api/self/inbox
+curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
+  http://<fleet-host>:<port>/api/self/inbox/<entry-id>/read
+```
+
+- **Scope: Program-gebunden, Nicht-Lane.** Beide Verben lesen **keinen Body** — das Program kommt aus
+  der Bindung (`boundProgramForMain`), der Eintrag aus dem Pfad. Ein `slot`- oder `programId`-Feld
+  gibt es strukturell nicht zu ignorieren, dieselbe Regel wie bei `/api/self/tasks/:id/release`.
+- **Antwort GET:** `{program, unread, dropped, entries: [{id, kind, at, ref, readBy, readAt,
+  subject}], unknown: []}`, **neueste zuerst**. `kind` ist genau eines von `attention-answer` ·
+  `fleet-report` · `audit-red`. `subject` ist die aufgelöste Zeile selbst (Attention- bzw.
+  Report-Zeile) oder `null`; löst ein `ref` nicht mehr auf, steht daneben eine Zeile in `unknown`
+  (`entry <id> names a <kind> row that is no longer present (retention)`) — beide Zielarten sind
+  beschnittene Enden (`pruneAttention`, `pruneFleetReports`), „der Zeiger hat seine Zeile überlebt"
+  ist also ein erwarteter Zustand und keine Panne. **`audit-red` trägt in dieser Fassung immer
+  `subject: null` und erzeugt KEINE `unknown`-Zeile** — der Ledger-Join kommt mit seinem Schreiber.
+- **Antwort POST read:** `{ok: true, existing: false, entry}` beim ersten Mal, `{ok: true,
+  existing: true, entry}` bei jedem weiteren. Die Quittung ist **kein Lock**: ein zweites Lesen
+  überschreibt `readBy`/`readAt` nie, denn der erste Leser ist die Tatsache.
+- **Deckel: 100 Einträge je Program** (`PROGRAM_INBOX_MAX`). Darüber fällt der **älteste GELESENE**
+  Eintrag zuerst, erst dann der älteste ungelesene, und `dropped` zählt ihn — ein Zeiger, der
+  abfiel, sagt es, statt zu verschwinden.
+- **Ablehnungen** (immer 409, nie 401 — du hast das richtige Token, die Frage ist von dort nicht
+  stellbar):
+  - **Lane** (409): `a lane has no program inbox — a lane files its result, its MAIN reads the inbox`.
+  - **nicht gebunden** (409): `not the current bound MAIN of an active program — attention is raised
+    by a program's own main session`, bzw. `ambiguous Program-MAIN binding: …` — wörtlich die Sätze
+    von `boundProgramForMain`, damit „nicht gebunden" und „mehrdeutig gebunden" zwei verschiedene
+    Dinge bleiben.
+  - **unbekannter Eintrag** (404): `unknown inbox entry`.
+  - **fremdes Program** (409): `inbox entry belongs to another Program — this MAIN reads program <id>`.
+- **Was der Loader mit einem alten `fleet.json` tut:** eine Program-Zeile **ohne** den Key lädt ohne
+  ihn und bekommt **kein** Backfill (Abwesenheit heißt „es wurde nie ein Eintrag geschrieben"); eine
+  Zeile **mit** unlesbarem Record lädt als ABSENT und wird gemeldet (`console.error` +
+  Audit-Zeile `program_inbox_unreadable`) — nie feldweise repariert.
+- **Zahlen ohne Pull:** `GET /api/self/program-execution` trägt je Program `status.inbox =
+  {unread, oldestAt}` (ältester UNGELESENER Eintrag, `null` = nichts ungelesen).
+
 ## jobs — `POST /api/self/jobs`, `GET /api/self/jobs/:id`
 
 Arbeit von hier nach dort auslagern, mit Quittung. Eine Session übergibt ihren **eigenen Baum** und

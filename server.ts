@@ -69,6 +69,7 @@ import {
   validAttentionBranch, MAX_SUPERVISOR_NUDGE_TEXT, TASK_KINDS, isTaskKind, loadTaskKind,
   PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion, PROGRAM_PROFILE_KINDS, loadProgramProfile,
   PROGRAM_LINEAGE_MAX, loadProgramLineage, foundingOccupantFrom, foundingIdentityFrom,
+  PROGRAM_INBOX_MAX, loadProgramInbox,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch, type ProgramDispatch,
   type Studio, type StudioContent, type ProgramStudioBinding, type StudioStage,
@@ -87,6 +88,7 @@ import {
   type Slot, type MainDirectPreflight, type MainDirectOutcome, type ProgramStatus, type Program,
   type PromotionSelfLand, type PromotionPolicy, type ProgramProfileKind, type ProgramProfile,
   type ProgramLineageVia, type ProgramLineageEndedBy, type ProgramLineageEntry, type ProgramLineage,
+  type ProgramInboxKind, type ProgramInboxEntry, type ProgramInbox,
   type ProgramFoundingMode, type ProgramFoundingProfileKind, type ProgramFoundingIdentity,
   type ProgramFoundingV2, type ProgramFounding, type ProgramFoundingRead, type ProgramContent,
   type ProgramValidation, type SupervisorBinding, type ProgramDigest, type DispatchSpawn,
@@ -1454,6 +1456,32 @@ const closeProgramLineageForOccupant = (slot: number, openedAt: number, at: numb
     closeProgramLineage(p, "retire", at);
   }
 };
+
+// THE ONE WRITER. Every kind's producer calls this and nothing else touches `inbox` — pinned as a
+// count of assignments to the field in this file, because a second writer is how a capped
+// record starts disagreeing with its own `dropped`. Capped like the lineage, with one difference
+// the lineage does not need: past PROGRAM_INBOX_MAX the oldest READ entries go first and only then
+// the oldest unread, so a full inbox loses what a MAIN already saw before it loses what it did not.
+// `dropped` counts them — a pointer that fell off says so instead of vanishing.
+//
+// The CALLER saves (saveStateNow), and that is a property rather than an omission: the producer of
+// the referenced row persists its own event and this pointer in ONE write, so a crash between them
+// cannot leave an entry pointing at a row that never existed.
+function appendProgramInbox(program: Program, kind: ProgramInboxKind, ref: string): ProgramInboxEntry {
+  const entry: ProgramInboxEntry = { id: randomBytes(12).toString("hex"), kind, at: Date.now(), ref,
+    readBy: null, readAt: null };
+  const inbox = program.inbox ?? { v: 1 as const, entries: [], dropped: 0 };
+  let entries = [...inbox.entries, entry];
+  let dropped = inbox.dropped;
+  while (entries.length > PROGRAM_INBOX_MAX) {
+    const readIdx = entries.findIndex((e) => e.readBy !== null);
+    entries = readIdx >= 0 ? entries.filter((_, i) => i !== readIdx) : entries.slice(1);
+    dropped++;
+  }
+  program.inbox = { v: 1, entries, dropped };
+  audit("program_inbox_append", undefined, `${program.id} ${kind} ${ref}`);
+  return entry;
+}
 
 const foundingRoot = (founding: ProgramFounding): string =>
   founding.v === 1 ? founding.canonicalRoot : founding.targetRoot;
@@ -6776,6 +6804,8 @@ function programHealth(p: Program): ProgramHealth {
 interface ProgramStatusMemoryView {
   main: { slot: number | null; occupancy: ProgramOccupancy; sessionIdMatch: SessionIdMatch };
   attention: { open: number };
+  // the two numbers of the PROGRAM INBOX, so "something is waiting" is visible without pulling it
+  inbox: { unread: number; oldestAt: number | null };
   lanes: { running: number; queued: number; waiting: number };
 }
 interface ProgramStatusView extends ProgramStatusMemoryView {
@@ -6803,6 +6833,7 @@ function programStatusView(p: Program, ctx?: ProgramStatusContext): ProgramStatu
     main: { slot: p.main?.slot ?? null, ...health },
     attention: { open: attentionRequests.filter((a) => a.programId === p.id
       && (a.status === "open" || a.status === "send-uncertain")).length },
+    inbox: programInboxStatus(p),
     lanes: {
       running: slots.filter((s) => s.cwd && s.programId === p.id).length,
       queued: queued.length,
@@ -6992,6 +7023,100 @@ function boundProgramForMain(s: Slot): BoundMain {
   const bound = program.main!;
   return { ok: true, program,
     sessionIdMatch: sessionIdMatchOf(bound.sessionId, s.sessionId) };
+}
+
+// THE SCOPE OF BOTH INBOX DOORS, in one place because they answer the SAME two questions in the
+// same words. A lane is refused FIRST and by its own sentence: it has no program inbox at all, and
+// letting it fall through to the binding refusal would tell it to go bind itself as a MAIN. Past
+// that the binding answers — verbatim, so "not bound" and "ambiguously bound" stay the two
+// different things boundProgramForMain already separates. 409 throughout, never 401: the caller
+// holds the right token, the question is not askable from where it stands.
+type InboxScope = { ok: true; program: Program } | { ok: false; response: Response };
+function inboxProgramFor(s: Slot): InboxScope {
+  if (s.worktree && s.label !== STEWARD_LABEL)
+    return { ok: false, response: json({ error: "a lane has no program inbox — a lane files its result, its MAIN reads the inbox" }, 409) };
+  const bound = boundProgramForMain(s);
+  if (!bound.ok) return { ok: false, response: json({ error: bound.error }, 409) };
+  return { ok: true, program: bound.program };
+}
+
+// THE JOIN, and the entry copies nothing so this is where the text comes from. A `ref` that no
+// longer resolves is `subject: null` PLUS a named line — the two rows it can point at are both
+// pruned tails (pruneAttention, pruneFleetReports), so "the pointer outlived its row" is an
+// expected state and must read as itself rather than as an empty answer.
+//
+// `audit-red` is null here BY DESIGN and earns no unknown line: its writer and its ledger join
+// arrive together in the audit slice, so a line saying "no longer present" would report a
+// retention loss that never happened.
+function inboxSubject(e: ProgramInboxEntry): { subject: AttentionRequest | FleetReport | null; unknown: string | null } {
+  if (e.kind === "audit-red") return { subject: null, unknown: null };
+  const row: AttentionRequest | FleetReport | undefined = e.kind === "attention-answer"
+    ? attentionRequests.find((a) => a.id === e.ref)
+    : fleetReports.find((r) => r.id === e.ref);
+  return row === undefined
+    ? { subject: null, unknown: `entry ${e.id} names a ${e.kind} row that is no longer present (retention)` }
+    : { subject: row, unknown: null };
+}
+
+// PURE PROJECTION over the persisted record: nothing is written here, which is why the read
+// RECEIPT lives in its own route and not in this function. Newest first, because a MAIN reading
+// this at an idle point wants what arrived while it was working.
+function programInboxView(program: Program): Record<string, unknown> {
+  const inbox = program.inbox ?? { v: 1 as const, entries: [], dropped: 0 };
+  const unknown: string[] = [];
+  const entries = [...inbox.entries].sort((a, b) => b.at - a.at).map((e) => {
+    const joined = inboxSubject(e);
+    if (joined.unknown !== null) unknown.push(joined.unknown);
+    return { ...e, subject: joined.subject };
+  });
+  return { program: program.id,
+    unread: inbox.entries.filter((e) => e.readBy === null).length,
+    dropped: inbox.dropped, entries, unknown };
+}
+
+// The same two numbers on the STATUS projection, so a MAIN (and the owner list) can see that
+// something is waiting without pulling the whole inbox. `oldestAt` is the oldest UNREAD entry —
+// "how long has something been waiting" is the question a count alone cannot answer — and null
+// means nothing is unread, never "we did not look".
+function programInboxStatus(p: Program): { unread: number; oldestAt: number | null } {
+  const unread = (p.inbox?.entries ?? []).filter((e) => e.readBy === null);
+  return { unread: unread.length,
+    oldestAt: unread.reduce<number | null>((m, e) => m === null || e.at < m ? e.at : m, null) };
+}
+
+// GET /api/self/inbox — the pull half. Reads the record, joins the subjects, stamps nothing.
+function programInboxFor(s: Slot): Response {
+  const scope = inboxProgramFor(s);
+  if (!scope.ok) return scope.response;
+  return json(programInboxView(scope.program));
+}
+
+// POST /api/self/inbox/:id/read — the RECEIPT, and it is deliberately not a lock. A second read of
+// an already-receipted entry answers `existing: true` and rewrites nothing: the first reader is the
+// fact, and letting a later occupant overwrite it would erase the one thing the receipt records.
+// Which entry comes from the PATH; the program comes from the binding, so no body is read and none
+// could nominate a Program this caller is not MAIN of.
+async function readProgramInboxEntry(s: Slot, id: string): Promise<Response> {
+  const scope = inboxProgramFor(s);
+  if (!scope.ok) return scope.response;
+  const { program } = scope;
+  const entry = program.inbox?.entries.find((e) => e.id === id);
+  if (!entry) {
+    // NAMED even though it is structurally unreachable from here: the id space is global, so an
+    // entry that exists on ANOTHER Program must not read as "unknown" to a MAIN that simply cannot
+    // reach it — the two answers send the caller to two different places.
+    const foreign = programs.find((p) => p.id !== program.id
+      && p.inbox?.entries.some((e) => e.id === id));
+    if (foreign)
+      return json({ error: `inbox entry belongs to another Program — this MAIN reads program ${program.id}` }, 409);
+    return json({ error: "unknown inbox entry" }, 404);
+  }
+  if (entry.readBy !== null) return json({ ok: true, existing: true, entry });
+  entry.readBy = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
+  entry.readAt = Date.now();
+  audit("program_inbox_read", s.id, `${program.id} ${entry.id}`);
+  await saveStateNow();
+  return json({ ok: true, existing: false, entry });
 }
 
 // ACP-16 · THE SECOND CONSUMER OF THE BRACKET ABOVE. A bound Program-MAIN releases a pending row
@@ -20725,6 +20850,7 @@ if (existsSync(STATE_FILE)) {
     if (Array.isArray((persisted as { programs?: unknown }).programs)) {
       const loaded: Program[] = [];
       const unreadableLineages: { id: string; error: string }[] = [];
+      const unreadableInboxes: { id: string; error: string }[] = [];
       for (const raw of (persisted as { programs: unknown[] }).programs) {
         if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
         const x = raw as Record<string, unknown>;
@@ -20800,6 +20926,16 @@ if (existsSync(STATE_FILE)) {
         } else if (main) {
           lineage = { v: 1, entries: [lineageEntryFromMain(main, "backfill-unknown")], dropped: 0 };
         }
+        // the inbox: the SAME default-absent rule as the lineage, minus the backfill. A legacy row
+        // never had an inbox, and inventing an empty one would persist a record the fleet never
+        // wrote — absence here is the honest "no entry was ever written", and an unreadable record
+        // degrades to exactly that absence and is REPORTED, never repaired field by field.
+        let inbox: ProgramInbox | undefined;
+        if (Object.prototype.hasOwnProperty.call(x, "inbox")) {
+          const read = loadProgramInbox(x.inbox);
+          if (read.ok) inbox = read.inbox;
+          else unreadableInboxes.push({ id: x.id, error: read.error });
+        }
         let founding: ProgramFounding | undefined;
         if (foundingRead?.ok) {
           const markerProfile = foundingProfileKind(foundingRead.founding);
@@ -20829,6 +20965,7 @@ if (existsSync(STATE_FILE)) {
           ...(programDispatch ? { dispatch: programDispatch } : {}),
           ...(founding ? { founding } : {}),
           ...(lineage ? { lineage } : {}),
+          ...(inbox ? { inbox } : {}),
           ...(status !== "proposed" ? { confirmedAt: confirmedAt! } : {}),
           ...(status === "active" || status === "complete" ? { activatedAt: activatedAt! } : {}),
           ...(status === "complete" ? { completedAt: completedAt! } : {}) });
@@ -20845,6 +20982,10 @@ if (existsSync(STATE_FILE)) {
       for (const { id, error } of unreadableLineages) {
         console.error(`Program ${id} lineage unreadable: ${error} — loaded as absent`);
         audit("program_lineage_unreadable", undefined, `${id} ${error}`);
+      }
+      for (const { id, error } of unreadableInboxes) {
+        console.error(`Program ${id} inbox unreadable: ${error} — loaded as absent`);
+        audit("program_inbox_unreadable", undefined, `${id} ${error}`);
       }
     }
     // The Supervisor binding: absent OR malformed loads as null, never as a half-binding — every
@@ -23537,6 +23678,26 @@ Bun.serve<WSData>({
       if (!s.worktree)
         return json({ error: "not a lane — only a worker lane can open a clarification" }, 409);
       return openClarification(s, await readJson(req));
+    }
+
+    // THE PROGRAM INBOX, the pull half of the durable back-channel. NON-lane by the "one edge per
+    // role" rule its neighbours state, and PROGRAM-BOUND on top of it: the entries belong to the
+    // Program, not to an occupant, so the reader is whoever is its bound MAIN at read time and a
+    // succession changes nothing. No body is read on either verb — the program comes from the
+    // binding and the entry from the path, so nothing a caller can write nominates either.
+    if (url.pathname === "/api/self/inbox" && req.method === "GET") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      return programInboxFor(s);
+    }
+
+    const selfInboxRead = /^\/api\/self\/inbox\/([0-9a-f]{24})\/read$/.exec(url.pathname);
+    if (selfInboxRead && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      return await readProgramInboxEntry(s, selfInboxRead[1]!);
     }
 
     // Worker result reports are the immutable sibling of clarifications on the SAME FleetEvent

@@ -27,6 +27,13 @@ interface ProgramLineageEntry { slot: number; openedAt: number; sessionId: strin
   via: "bootstrap" | "rebound" | "succeed" | "backfill-unknown"; endedAt: number | null;
   endedBy: "rebound" | "succeed" | "retire" | "replaced" | null }
 interface ProgramLineage { v: number; entries: ProgramLineageEntry[]; dropped: number }
+// the persisted PROGRAM INBOX (server/types.ts#ProgramInbox): pointers to rows that already exist,
+// owned by the Program and NOT by an occupant — which is the property the succession fixture proves
+interface ProgramInboxEntry { id: string; kind: string; at: number; ref: string;
+  readBy: { slot: number; openedAt: number; sessionId: string | null } | null; readAt: number | null }
+interface ProgramInbox { v: number; entries: ProgramInboxEntry[]; dropped: number }
+interface ProgramInboxView { program: string; unread: number; dropped: number;
+  entries: (ProgramInboxEntry & { subject: Record<string, unknown> | null })[]; unknown: string[] }
 interface Program extends ProgramContent {
   id: string;
   status: ProgramStatus;
@@ -35,6 +42,9 @@ interface Program extends ProgramContent {
     | { kind: "owner" };
   main?: { slot: number; openedAt: number; sessionId: string | null; boundAt: number };
   lineage?: ProgramLineage;
+  // the durable back-channel of the PROGRAM — absent on every row until an entry is written,
+  // and absent is the shape every assertion outside the inbox block reads as
+  inbox?: ProgramInbox;
   // the owner's self-land permission — absent on every Program until the owner grants it, which is
   // the shape every assertion here reads as "owner-only land".
   promotion?: { v: number; selfLand: string; confirmedAt: number };
@@ -212,6 +222,15 @@ const selfExecution = async (token: string | null): Promise<{ response: Response
   const body = await response.json() as ProgramExecutionView | { error: string };
   return { response, view: "programs" in body ? body : null };
 };
+const selfInbox = async (token: string): Promise<{ response: Response; view: ProgramInboxView | null; error: string | null }> => {
+  const response = await fetch(`${BASE}/api/self/inbox`, { headers: { "x-fleet-self-token": token } });
+  const body = await response.json() as ProgramInboxView & { error?: string };
+  return { response, view: typeof body.error === "string" ? null : body, error: body.error ?? null };
+};
+const selfInboxRead = (token: string, id: string): Promise<Response> =>
+  fetch(`${BASE}/api/self/inbox/${id}/read`, { method: "POST", headers: { "x-fleet-self-token": token } });
+const slotToken = (slot: number | null): string =>
+  slot === null ? "" : readState().slots?.[String(slot)]?.selfToken ?? "";
 const selfPropose = (token: string, body: unknown): Promise<Response> => fetch(`${BASE}/api/self/programs`, {
   method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
   body: JSON.stringify(body),
@@ -1718,6 +1737,192 @@ export async function run(ctx: Ctx): Promise<void> {
     readFileSync(outcomePath, "utf8") === outcomeBaseline && readFileSync(receiptPath, "utf8") === receiptBaseline,
     JSON.stringify({ outcomes: readFileSync(outcomePath, "utf8").length, receipts: readFileSync(receiptPath, "utf8").length }));
 
+  // --- THE PROGRAM INBOX: a record of the PROGRAM, read by whoever is its bound MAIN. ---------
+  // Placed immediately BEFORE the succession fixture, because the one property that separates this
+  // record from every other back-channel is exactly what the succession destroys: a FleetEvent, an
+  // armed watch and an open attention all die with their occupant (CLAUDE.md, "Eine Succession
+  // toetet deine offenen Attentions"), and an inbox entry must not. The entries are therefore
+  // planted while the PREDECESSOR is bound, read and receipted by it here, and read again by the
+  // successor after the transfer — the check below the succession.
+  const inboxLegacyProgram = await activateNewProgram("Inbox legacy: no key, no backfill");
+  const inboxUnreadableProgram = await activateNewProgram("Inbox unreadable: an unknown key is ABSENT");
+  const inboxCapProgram = await activateNewProgram("Inbox cap: 101 rows is not a shorter record");
+  const inboxRecycledProgram = await activateNewProgram("Inbox recycled: openedAt is the binding");
+  const inboxOutsiderOpen = await post(`/api/slots/${(await sessions()).slots.find((s) => !s.cwd)?.id ?? 0}/open`,
+    { cwd: REPO, label: "inbox-unbound-outsider" });
+  const inboxOutsiderSlot = (await sessions()).slots.find((s) => s.label === "inbox-unbound-outsider")?.id ?? null;
+  const inboxRecycleOpen = await post(`/api/slots/${(await sessions()).slots.find((s) => !s.cwd)?.id ?? 0}/open`,
+    { cwd: REPO, label: "inbox-recycle-fixture" });
+  const inboxRecycleSlot = (await sessions()).slots.find((s) => s.label === "inbox-recycle-fixture")?.id ?? null;
+  const inboxLaneOpen = await post("/api/lanes", { repo: REPO });
+  const inboxLaneBody = await inboxLaneOpen.json() as { slot?: number };
+  check("program inbox fixture prerequisite: an unbound occupant, a recyclable occupant and a lane are observable",
+    inboxOutsiderOpen.ok && inboxRecycleOpen.ok && inboxLaneOpen.ok
+      && inboxOutsiderSlot !== null && inboxRecycleSlot !== null && !!inboxLaneBody.slot,
+    JSON.stringify({ outsider: inboxOutsiderSlot, recycle: inboxRecycleSlot, lane: inboxLaneBody.slot ?? null }));
+
+  const inboxAttentionId = "aa11".repeat(6);
+  const inboxReportId = "bb22".repeat(6);
+  const inboxEntryAnswer = "1111".repeat(6);   // older, attention-answer, the one that gets receipted
+  const inboxEntryReport = "2222".repeat(6);   // newer, fleet-report, and it stays UNREAD across the succession
+  const inboxDanglingEntry = "3333".repeat(6); // points at a row retention already dropped
+  const inboxPlantAt = Date.now() - 60_000;
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const inboxPlantState = readState();
+  const inboxPlantMain = { slot: mainSlot ?? 0, openedAt: bound?.openedAt ?? 0, sessionId: bound?.sessionId ?? null };
+  const inboxRecycleRow = inboxRecycleSlot === null ? undefined : inboxPlantState.slots?.[String(inboxRecycleSlot)];
+  const inboxMainRow = inboxPlantState.programs?.find((p) => p.id === mainProgram.id);
+  if (inboxMainRow) inboxMainRow.inbox = { v: 1, entries: [
+    { id: inboxEntryAnswer, kind: "attention-answer", at: inboxPlantAt, ref: inboxAttentionId, readBy: null, readAt: null },
+    { id: inboxDanglingEntry, kind: "fleet-report", at: inboxPlantAt + 500, ref: "f".repeat(24), readBy: null, readAt: null },
+    { id: inboxEntryReport, kind: "fleet-report", at: inboxPlantAt + 1000, ref: inboxReportId, readBy: null, readAt: null },
+  ], dropped: 7 };
+  const inboxUnreadableRow = inboxPlantState.programs?.find((p) => p.id === inboxUnreadableProgram.id);
+  if (inboxUnreadableRow) inboxUnreadableRow.inbox =
+    { v: 1, entries: [], dropped: 0, extra: 1 } as unknown as ProgramInbox;
+  const inboxCapRow = inboxPlantState.programs?.find((p) => p.id === inboxCapProgram.id);
+  if (inboxCapRow) inboxCapRow.inbox = { v: 1, dropped: 0, entries: Array.from({ length: 101 },
+    (_, i): ProgramInboxEntry => ({ id: String(100000 + i).padStart(24, "0"), kind: "audit-red",
+      at: inboxPlantAt + i, ref: String(inboxPlantAt + i), readBy: null, readAt: null })) };
+  const inboxRecycledRow = inboxPlantState.programs?.find((p) => p.id === inboxRecycledProgram.id);
+  if (inboxRecycledRow && inboxRecycleSlot !== null && inboxRecycleRow?.openedAt) {
+    inboxRecycledRow.main = { slot: inboxRecycleSlot, openedAt: inboxRecycleRow.openedAt,
+      sessionId: inboxRecycleRow.sessionId ?? null, boundAt: Date.now() };
+    inboxRecycledRow.inbox = { v: 1, dropped: 0, entries: [{ id: "4444".repeat(6), kind: "audit-red",
+      at: inboxPlantAt, ref: String(inboxPlantAt), readBy: null, readAt: null }] };
+  }
+  // the two rows the pointers resolve to. They are PLANTED rather than produced, because this slice
+  // has no writer at all — the producers arrive with the kinds they mint, and a fixture that waited
+  // for one would be testing a slice that has not landed yet.
+  inboxPlantState.attentionRequests = [...(inboxPlantState.attentionRequests ?? []), {
+    id: inboxAttentionId, raisedAt: inboxPlantAt - 1000, kind: "decision",
+    text: "inbox fixture: the question whose answer the pointer names", requester: inboxPlantMain,
+    programId: mainProgram.id, status: "answered",
+    answer: { text: "the owner answered, and the pointer outlives the occupant that asked", at: inboxPlantAt, by: "owner" },
+    refusedReason: null, closedAt: inboxPlantAt,
+  }];
+  inboxPlantState.fleetReports = [...(inboxPlantState.fleetReports ?? []), ({
+    id: inboxReportId, reportedAt: inboxPlantAt - 500, status: "complete",
+    text: "inbox fixture: a worker's typed result, addressed to the program's inbox by pointer.",
+    worker: { slot: 1, openedAt: 1, sessionId: null, cwd: REPO, branch: "fleet/inbox-fixture" },
+    provenance: { taskId: null, originId: null, programId: mainProgram.id },
+    receiver: inboxPlantMain, basis: "program-main", eventId: "e".repeat(24),
+  } as unknown as { id?: string })];
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(inboxPlantState, null, 2), { mode: 0o600 });
+  const inboxAuditFrom = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).length;
+  await restartSrv();
+  const inboxAuditSince = (event: string, id: string): { detail?: string }[] =>
+    readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).slice(inboxAuditFrom)
+      .map((line) => JSON.parse(line) as { event?: string; detail?: string })
+      .filter((row) => row.event === event && row.detail?.startsWith(id) === true);
+  const inboxLoadedRows = await ownerPrograms();
+
+  // BREAKS IF: the loader gives an absent key a `{v:1, entries:[], dropped:0}` default — a record
+  // the fleet never wrote, which would make "no entry was ever written" indistinguishable from
+  // "somebody emptied it".
+  check("program inbox legacy: a persisted Program without the key loads without it and gains no backfill",
+    inboxLoadedRows.find((p) => p.id === inboxLegacyProgram.id) !== undefined
+      && inboxLoadedRows.find((p) => p.id === inboxLegacyProgram.id)?.inbox === undefined
+      && !Object.prototype.hasOwnProperty.call(readState().programs?.find((p) => p.id === inboxLegacyProgram.id) ?? {}, "inbox"),
+    JSON.stringify(inboxLoadedRows.find((p) => p.id === inboxLegacyProgram.id)?.inbox ?? "absent"));
+  // BREAKS IF: the loader repairs field by field (drops the unknown key and keeps the rest) — a
+  // half-read record loading as a whole one is how a pointer loss stops being reported.
+  const inboxUnreadableTrail = inboxAuditSince("program_inbox_unreadable", inboxUnreadableProgram.id);
+  check("program inbox unreadable: a record with an unknown key loads as ABSENT and is reported once",
+    inboxLoadedRows.find((p) => p.id === inboxUnreadableProgram.id)?.inbox === undefined
+      && inboxUnreadableTrail.length === 1
+      && inboxUnreadableTrail[0]?.detail?.includes("must contain exactly v, entries, dropped") === true,
+    JSON.stringify({ record: inboxLoadedRows.find((p) => p.id === inboxUnreadableProgram.id)?.inbox ?? "absent",
+      trail: inboxUnreadableTrail }));
+  // The CAP as the loader enforces it. There is no writer in this slice, so the append cap (oldest
+  // READ entry first) is proved by the first producer; what IS provable here is that a hand-written
+  // 101-row record is not a longer inbox but no inbox — reported, never truncated into a lie.
+  const inboxCapTrail = inboxAuditSince("program_inbox_unreadable", inboxCapProgram.id);
+  check("program inbox cap: a persisted record of 101 rows loads as ABSENT with the cap named, never truncated to 100",
+    inboxLoadedRows.find((p) => p.id === inboxCapProgram.id)?.inbox === undefined
+      && inboxCapTrail.length === 1
+      && inboxCapTrail[0]?.detail?.includes("entries must hold at most 100 rows") === true,
+    JSON.stringify({ record: inboxLoadedRows.find((p) => p.id === inboxCapProgram.id)?.inbox ?? "absent",
+      trail: inboxCapTrail }));
+
+  const inboxMainToken = slotToken(mainSlot);
+  const inboxBoundView = await selfInbox(inboxMainToken);
+  const inboxLaneView = await selfInbox(slotToken(inboxLaneBody.slot ?? null));
+  const inboxOutsiderView = await selfInbox(slotToken(inboxOutsiderSlot));
+  const inboxNewest = inboxBoundView.view?.entries[0];
+  const inboxOldest = inboxBoundView.view?.entries[2];
+  // BREAKS IF: the route filters at `readBy` or at the requester triple of the attention row instead
+  // of at the binding — either would hand this MAIN a subset of its own Program's pointers.
+  check("program inbox scope: the bound MAIN reads the planted entries newest first with subjects joined, a lane and an unbound session are 409 by name",
+    inboxBoundView.response.ok && inboxBoundView.view?.program === mainProgram.id
+      && inboxBoundView.view.entries.length === 3 && inboxBoundView.view.unread === 3
+      && inboxBoundView.view.dropped === 7
+      && inboxNewest?.id === inboxEntryReport && inboxOldest?.id === inboxEntryAnswer
+      && (inboxNewest.subject as { id?: string } | null)?.id === inboxReportId
+      && (inboxOldest.subject as { answer?: { by?: string } } | null)?.answer?.by === "owner"
+      && inboxBoundView.view.entries[1]?.subject === null
+      && inboxBoundView.view.unknown.length === 1
+      && inboxBoundView.view.unknown[0] === `entry ${inboxDanglingEntry} names a fleet-report row that is no longer present (retention)`
+      && inboxLaneView.response.status === 409
+      && inboxLaneView.error === "a lane has no program inbox — a lane files its result, its MAIN reads the inbox"
+      && inboxOutsiderView.response.status === 409
+      && inboxOutsiderView.error === "not the current bound MAIN of an active program — attention is raised by a program's own main session",
+    JSON.stringify({ bound: inboxBoundView.view, lane: inboxLaneView.error, outsider: inboxOutsiderView.error }));
+
+  const inboxFirstRead = await selfInboxRead(inboxMainToken, inboxEntryAnswer);
+  const inboxFirstBody = await inboxFirstRead.json() as { ok?: boolean; existing?: boolean; entry?: ProgramInboxEntry };
+  const inboxSecondRead = await selfInboxRead(inboxMainToken, inboxEntryAnswer);
+  const inboxSecondBody = await inboxSecondRead.json() as { ok?: boolean; existing?: boolean; entry?: ProgramInboxEntry };
+  const inboxUnknownRead = await selfInboxRead(inboxMainToken, "9999".repeat(6));
+  const inboxForeignRead = await selfInboxRead(inboxMainToken, "4444".repeat(6));
+  const inboxReadTrail = inboxAuditSince("program_inbox_read", mainProgram.id);
+  const inboxAfterRead = await selfInbox(inboxMainToken);
+  // BREAKS IF: `readBy` is overwritten on the second read — the receipt records WHO read it first,
+  // and a later occupant rewriting it erases the only fact the field carries.
+  check("program inbox read: the receipt names this occupant, a second read is existing:true and rewrites nothing, an unknown id is 404 and a foreign entry is 409 by name",
+    inboxFirstRead.ok && inboxFirstBody.existing === false
+      && inboxFirstBody.entry?.readBy?.slot === mainSlot
+      && inboxFirstBody.entry.readBy.openedAt === bound?.openedAt
+      && inboxFirstBody.entry.readBy.sessionId === (readState().slots?.[String(mainSlot)]?.sessionId ?? null)
+      && typeof inboxFirstBody.entry.readAt === "number"
+      && inboxSecondRead.ok && inboxSecondBody.existing === true
+      && JSON.stringify(inboxSecondBody.entry) === JSON.stringify(inboxFirstBody.entry)
+      && inboxUnknownRead.status === 404
+      && (await inboxUnknownRead.json() as { error?: string }).error === "unknown inbox entry"
+      && inboxForeignRead.status === 409
+      && (await inboxForeignRead.json() as { error?: string }).error
+        === `inbox entry belongs to another Program — this MAIN reads program ${mainProgram.id}`
+      && inboxReadTrail.length === 1
+      && inboxAfterRead.view?.unread === 2,
+    JSON.stringify({ first: inboxFirstBody, second: inboxSecondBody, unknown: inboxUnknownRead.status,
+      foreign: inboxForeignRead.status, trail: inboxReadTrail.length, unread: inboxAfterRead.view?.unread }));
+
+  const inboxRecycleBoundView = await selfInbox(slotToken(inboxRecycleSlot));
+  if (inboxRecycleSlot !== null) await post(`/api/slots/${inboxRecycleSlot}/kill`, {});
+  await Bun.sleep(2);
+  const inboxRecycleReopen = inboxRecycleSlot === null ? null
+    : await post(`/api/slots/${inboxRecycleSlot}/open`, { cwd: REPO, label: "inbox-recycled-successor" });
+  const inboxRecycledRowAfter = inboxRecycleSlot === null ? undefined : readState().slots?.[String(inboxRecycleSlot)];
+  const inboxRecycledView = await selfInbox(slotToken(inboxRecycleSlot));
+  // BREAKS IF: boundProgramForMain compares only `slot` — the recycled occupant would then inherit
+  // the inbox of a Program it was never bound to, which is precisely the authority the openedAt half
+  // of the triple exists to withhold.
+  check("program inbox recycled slot: the same slot id with a new openedAt and no binding sees no inbox (409), while the bound occupant before it read one",
+    inboxRecycleBoundView.response.ok && inboxRecycleBoundView.view?.program === inboxRecycledProgram.id
+      && inboxRecycleBoundView.view.entries.length === 1
+      && !!inboxRecycleReopen?.ok && inboxRecycledRowAfter?.openedAt !== inboxRecycleRow?.openedAt
+      && inboxRecycledView.response.status === 409
+      && inboxRecycledView.error === "not the current bound MAIN of an active program — attention is raised by a program's own main session",
+    JSON.stringify({ bound: inboxRecycleBoundView.view, before: inboxRecycleRow?.openedAt,
+      after: inboxRecycledRowAfter?.openedAt, recycled: inboxRecycledView.error }));
+
+  if (inboxLaneBody.slot) await post(`/api/slots/${inboxLaneBody.slot}/kill`, {});
+  if (inboxRecycleSlot !== null) await post(`/api/slots/${inboxRecycleSlot}/kill`, {});
+  if (inboxOutsiderSlot !== null) await post(`/api/slots/${inboxOutsiderSlot}/kill`, {});
+  for (const p of [inboxLegacyProgram, inboxUnreadableProgram, inboxCapProgram, inboxRecycledProgram])
+    await programPost(p.id, "complete");
+
   // --- Program-aware succession: HANDOFF gate first, then one active slot+openedAt authority. ---
   const ambiguousProgram = await activateNewProgram("Ambiguous Program-MAIN succession refusal");
   await tmuxOut("kill-session", "-t", "srv");
@@ -1879,6 +2084,29 @@ export async function run(ctx: Ctx): Promise<void> {
       && successionReceipt?.briefHash === briefHashOf(successionPrompt),
     JSON.stringify(successionReceipt ?? null));
 
+  // THE PROPERTY THE WHOLE RECORD EXISTS FOR, measured across the transfer that just happened. The
+  // predecessor is gone; its FleetEvents, its watches and its open attentions went with it. The
+  // inbox did not: the successor holds the SAME two facts, the entry the predecessor receipted is
+  // still receipted with the PREDECESSOR's triple (a receipt is a fact about who read it, not a
+  // key), and the one it never read is still unread.
+  const inboxSuccessorToken = successorSlot === null ? "" : readState().slots?.[String(successorSlot)]?.selfToken ?? "";
+  const inboxSuccessorView = await selfInbox(inboxSuccessorToken);
+  const inboxSurvivedRead = inboxSuccessorView.view?.entries.find((e) => e.id === inboxEntryAnswer);
+  const inboxSurvivedUnread = inboxSuccessorView.view?.entries.find((e) => e.id === inboxEntryReport);
+  // BREAKS IF: any teardown path binds the inbox to the occupant triple, or succeedProgramMain
+  // clears it — either turns a durable Program record back into an occupant mailbox.
+  check("program inbox survives succession: the successor reads the same entries, the receipt still names the PREDECESSOR, and the unread one is still unread",
+    inboxSuccessorView.response.ok && inboxSuccessorView.view?.program === mainProgram.id
+      && inboxSuccessorView.view.entries.length === 3 && inboxSuccessorView.view.unread === 2
+      && inboxSuccessorView.view.dropped === 7
+      && successorSlot !== mainSlot
+      && inboxSurvivedRead?.readBy?.slot === mainSlot
+      && inboxSurvivedRead.readBy.openedAt === bound?.openedAt
+      && inboxSurvivedUnread?.readBy === null && inboxSurvivedUnread.readAt === null,
+    JSON.stringify({ successor: successorSlot, predecessor: mainSlot,
+      view: inboxSuccessorView.view, error: inboxSuccessorView.error }));
+
+
   // --- D1 · A DECIDED REPORT IS VISIBLE TO THE SUCCESSOR, WHICH NEVER RECEIVED IT. -----------
   // A worker's typed report is filed to ONE MAIN occupant, and the only door that occupant had was
   // the event ACK — a transport receipt by contract. So the session reading this Program next could
@@ -1969,17 +2197,27 @@ export async function run(ctx: Ctx): Promise<void> {
   await tmuxOut("kill-session", "-t", "srv");
   await Bun.sleep(500);
   const d1Cleanup = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
-    { tasks?: { id?: string }[]; fleetReports?: { id?: string }[] };
+    { tasks?: { id?: string }[]; fleetReports?: { id?: string }[];
+      attentionRequests?: { id?: string }[]; programs?: { id?: string; inbox?: unknown }[] };
   d1Cleanup.tasks = (d1Cleanup.tasks ?? []).filter((t) => t.id !== d1TaskId);
-  d1Cleanup.fleetReports = (d1Cleanup.fleetReports ?? []).filter((r) => r.id !== decidedReportId);
+  d1Cleanup.fleetReports = (d1Cleanup.fleetReports ?? [])
+    .filter((r) => r.id !== decidedReportId && r.id !== inboxReportId);
+  // …and the inbox fixture takes its own three plants out with them, for the same reason: an
+  // attention row, a report row and an inbox record left on the active Program would ride into
+  // every later module's view of it.
+  d1Cleanup.attentionRequests = (d1Cleanup.attentionRequests ?? [])
+    .filter((a) => a.id !== inboxAttentionId);
+  for (const row of d1Cleanup.programs ?? []) if (row.id === mainProgram.id) delete row.inbox;
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(d1Cleanup, null, 2), { mode: 0o600 });
   await restartSrv();
   const d1CleanView = await selfExecution(successorTokenOf(successorSlot));
-  check("ProgramExecutionView report join cleanup: neither planted row survives into the next block",
+  check("ProgramExecutionView report join cleanup: neither planted row nor the inbox fixture survives into the next block",
     d1CleanView.response.ok
       && !d1CleanView.view?.programs.find((x) => x.program.id === mainProgram.id)
         ?.tasks.rows.some((row) => row.id === d1TaskId)
-      && !(readState().fleetReports ?? []).some((r) => r.id === decidedReportId),
+      && !(readState().fleetReports ?? []).some((r) => r.id === decidedReportId || r.id === inboxReportId)
+      && !(readState().attentionRequests ?? []).some((a) => (a as { id?: string }).id === inboxAttentionId)
+      && readState().programs?.find((p) => p.id === mainProgram.id)?.inbox === undefined,
     JSON.stringify({ ok: d1CleanView.response.ok,
       taskIds: d1CleanView.view?.programs.find((x) => x.program.id === mainProgram.id)
         ?.tasks.rows.map((row) => row.id) ?? null,

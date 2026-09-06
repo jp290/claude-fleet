@@ -5833,11 +5833,14 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     route === null ? "the artefact route was not found in the server universe" : "one writer, the rail");
   // 2. THE KEY IS THE ROW'S `at`, never the job id. An audit job's id is sha256(repo) and repeats
   //    for every audit of that repo — a jobId key would collide by construction, which is exactly
-  //    the mistake the adjudication rail's comment warns about.
+  //    the mistake the adjudication rail's comment warns about. Since 2026-09-06 the rail keys TWO
+  //    kinds of row and the variable is `rowAt`; the property pinned is unchanged — the key comes
+  //    off `?at=`, and each kind resolves ITS OWN row from it with no newest-anything fallback.
   pin(`${RULE_ART} — the route REQUIRES the row key and offers no newest-job fallback`,
     route !== null && /searchParams\.get\("at"\)/.test(route)
       && /expected \?at=/.test(route)
-      && /r\.at === auditAt/.test(route),
+      && /r\.at === rowAt/.test(route)
+      && /lane\.result\.remote\.reportedAt !== rowAt/.test(route),
     route === null ? "not found" : "at is required and resolves the row");
   // 3. THE ORDER, on the daemon's side. `report()` sends the verdict and only then calls the
   //    uploader; a call site that moved above the result POST would make a transfer able to hold a

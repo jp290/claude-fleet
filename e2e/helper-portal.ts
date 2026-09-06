@@ -633,7 +633,8 @@ export async function run(h: {
     artClaim?.ok === true, `${artClaim?.status} ${JSON.stringify(artJob)}`);
   const artReportRes = await hpost("/api/helper/result",
     { jobId: artJob?.id ?? "", exitCode: 1, tail: "FAIL  something remote\n1 FAILURES" });
-  const artReport = (await artReportRes.json()) as { result?: string; auditAt?: number };
+  const artReport = (await artReportRes.json()) as
+    { result?: string; auditAt?: number; artifactAt?: number };
   // THE KEY TRAVELS IN THE RECEIPT. Without it an upload could only name the JOB — and an audit
   // job's id is sha256(repo), the same string for every audit of that repo, so "newest job with
   // this id" would file a log onto whichever row happened to be newest. This is the whole reason
@@ -641,6 +642,13 @@ export async function run(h: {
   check("(K7c) the result receipt hands back the ROW KEY the upload must name",
     artReportRes.ok && artReport.result === "red" && typeof artReport.auditAt === "number",
     `${artReportRes.status} ${JSON.stringify(artReport)}`);
+  // …UNDER BOTH NAMES, and that is what makes ONE uploader serve every kind of job. `artifactAt` is
+  // the key a lane-suite receipt also carries (e2e/lane-suite.ts LS.4b asserts the other half);
+  // `auditAt` stays beside it forever, because a daemon from before the rename is still a daemon
+  // whose logs this box wants and dropping the old key would silence it with no error anywhere.
+  check("(K7c) …under BOTH names, the same number: one uploader, every kind of job",
+    artReport.artifactAt === artReport.auditAt && typeof artReport.artifactAt === "number",
+    `auditAt=${artReport.auditAt} artifactAt=${artReport.artifactAt}`);
   const auditAt = artReport.auditAt ?? 0;
   const artRows = await waitNewRepoRows(rowsBeforeArt + 1);
   const artRow = artRows.find((r) => r.mainSha === artSha);
@@ -658,7 +666,7 @@ export async function run(h: {
     artNoTok.status === 401, `${artNoTok.status}`);
   const noAt = await hpostRaw(`/api/helper/artifact/${artJob?.id ?? ""}`, "x");
   check("(K7c) …and it must NAME the row: no ?at is a 400, never a guess at the newest",
-    noAt.status === 400 && (await noAt.text()).includes("auditAt"), `${noAt.status}`);
+    noAt.status === 400 && (await noAt.text()).includes("artifactAt"), `${noAt.status}`);
   const foreign = await hpostRaw(`/api/helper/artifact/${"f".repeat(12)}?at=${auditAt}`, "x");
   check("(K7c) …a log for ANOTHER job is refused 404 — the row's own jobId is the cross-check",
     foreign.status === 404 && (await foreign.text()).includes("another job"), `${foreign.status}`);

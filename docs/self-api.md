@@ -562,7 +562,8 @@ Dateien reisen NICHT mit**; ihre Zahl steht als `untracked` im Job, damit ein gr
   `result`. Ein abgelaufener Claim liest sich sofort als `lapsed`, ohne auf den Sweep zu warten.
 - `result` (bei `state:"reported"`) — `exitCode` · `result` (`green|red|unknown`) · `reason` (nur
   bei `unknown`) · `tail` (4096 B gedeckelt) · `trail` · `checks{ran,failed}` (`null` = nicht
-  zählbar, nie eine erfundene Null) · **`remote{name,claimedAt,reportedAt}`** · `treeSha` · `ms`.
+  zählbar, nie eine erfundene Null) · **`fails[]`** · **`remote{name,claimedAt,reportedAt}`** ·
+  `treeSha` · `ms`.
   `remote` trägt zusätzlich `reason`/`timeoutMs`, wenn die andere Maschine sagen konnte, WARUM sie
   nichts gemessen hat: geschlossene Menge `timeout|could-not-start` (`server.ts#helperNoMeasureOf`).
   Nicht zu verwechseln mit dem `reason` eine Ebene darüber — das ist die Klassifikation DIESES
@@ -571,16 +572,35 @@ Dateien reisen NICHT mit**; ihre Zahl steht als `untracked` im Job, damit ein gr
   wird hier aus 126/127 abgeleitet, nur `timeout` reist über das Netz; ein Code, den dieser Server
   nicht lesen kann, wird VERWORFEN (Feld fehlt), nie mit 400 quittiert — sonst wäre das Verdikt
   eines neueren Daemons Geisel einer Anmerkung.
-- `remote.artifact{bytes,sha256,url}` (nur auf einer AUDIT-Zeile) — die ganze `suite.log`, die der
-  Helfer NACH dem Verdikt hochgeladen hat. **Sie steht nicht IN der Ledger-Zeile auf Platte**: die
-  ist append-only, und der Fakt trifft später ein. Sie liegt auf einer SEITEN-SCHIENE
-  (`helper-artifacts.jsonl`, Schlüssel = das `at` der Audit-Zeile) und wird an jeder Lesefläche auf
-  die Zeile GEJOINT — dasselbe Muster wie `adjudication` und davor `dispositions.jsonl`, kopiert
-  statt neu erfunden. Konsequenz, die das Muster kauft: ein Upload kann `result` nicht bewegen, weil
+- `fails[]` — **WELCHE Checks gefallen sind, beim Namen.** Zwei Quellen, in dieser Reihenfolge und
+  nie vermischt: was der DAEMON aus dem VOLLSTÄNDIGEN Log und, wo der Lauf eines schrieb, aus dem
+  Per-Check-Trail las (`helper-daemon/daemon.ts#failNamesOf`) — sonst der `tail`, durch denselben
+  Parser, den auch der lokale Audit-Pfad fährt (`server.ts#localFailNames`). Die zweite Quelle ist
+  der Grund, dass auch ein per Hand getippter Portal-Report (`src/helper.ts#doReport` schickt kein
+  `fails`) und ein Daemon von vor dem 2026-09-01 Namen liefern. Deckel 50 Namen à 300 Zeichen
+  (`server.ts#helperFailNames`), Detail-Suffix `  (…)` abgeschnitten. **LEER ist eine Messung, keine
+  Lücke:** ein grüner Lauf nennt keinen, und was grün oder rot sagt, ist `result` — nie diese Liste.
+  Warum es das Feld gibt: der `tail` ist 4096 B, und ein echter `./e2e-isolated.sh` ENDET in seinen
+  Trail-Checks, die FAIL-Zeilen liegen also hunderte Kilobytes darüber. Gemessen am 2026-09-05 an
+  einer Second-host-Vorschau: rot 1/3717 nach 27 min, welcher Check nicht feststellbar — die Lane fuhr
+  die ganze Suite lokal nach, das Angebot kostete genau den Lauf, den es sparen sollte.
+- `remote.artifact{bytes,sha256,url}` — die ganze `suite.log`, die der Helfer NACH dem Verdikt
+  hochgeladen hat; **seit dem 2026-09-06 auch für eine VORSCHAU** und nicht mehr nur für eine
+  Audit-Zeile (der Uploader hing an `auditAt`, dem Schlüssel, den nur die Audit-Quittung trägt;
+  jede Quittung antwortet jetzt zusätzlich mit `artifactAt`, und der Daemon liest
+  `artifactAt ?? auditAt`). **Sie steht nicht IN der Zeile auf Platte**: die Audit-Datei ist
+  append-only, ein Vorschau-Verdikt lebt im Job, und der Fakt trifft später ein. Sie liegt auf einer
+  SEITEN-SCHIENE (`helper-artifacts.jsonl`, Schlüssel `rowAt` = das `at` der Audit-Zeile bzw.
+  `remote.reportedAt` der Vorschau; Zeilen von vor der Umbenennung tragen `auditAt` und werden
+  weiter darunter gelesen) und wird an jeder Lesefläche auf die Zeile GEJOINT — dasselbe Muster wie
+  `adjudication` und davor `dispositions.jsonl`, kopiert statt neu erfunden. Konsequenz, die das Muster kauft: ein Upload kann `result` nicht bewegen, weil
   der Schreiber die Audit-Datei gar nicht anfasst. Fehlt das Feld, ist keine Log-Datei angekommen —
   das ist eine andere Aussage als „der Lauf hat keine erzeugt", und keine wird als die andere
   gezeichnet. Die Bytes selbst holt `GET /api/post-land-audits/artifact?at=<n>` (Owner-Route; 410,
-  wenn die Retention die Bytes weggeräumt hat und nur die Schienen-Zeile sie noch erinnert).
+  wenn die Retention die Bytes weggeräumt hat und nur die Schienen-Zeile sie noch erinnert). Der
+  Routenname bleibt auch für eine Vorschau der post-land-Name: es ist die EINE Route, die diese
+  Bytes ausliefert, und eine zweite Fläche für dieselbe Datei wäre teurer als ein schiefer Pfad.
+  **Eine Lane liest also Id und Größe, die Bytes holt der Owner.**
 - `waitPolicy{freeMs,heldMs}` — die Wartezahlen aus `SUITE_OFFER_WAIT_FREE_MS` /
   `SUITE_OFFER_WAIT_HELD_MS`, damit die Lane sie nicht aus dem Gedächtnis zitiert.
 - `helper{online,name,mode,lastSeenAgeMs}` — dieselbe Präsenz-Lesung wie in `/api/self/gate`, und

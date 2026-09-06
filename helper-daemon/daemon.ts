@@ -511,19 +511,25 @@ async function report(cfg: HelperConfig, j: ClaimedJob, exitCode: number | null,
       ...(clonedSha ? { clonedSha } : {}), ...(artifacts.length ? { artifacts } : {}),
       ...(timedOutMs ? { reason: "timeout", timeoutMs: timedOutMs } : {}) }),
   });
-  const body = await bodyOf<{ result?: string; auditAt?: number }>(res);
+  const body = await bodyOf<{ result?: string; auditAt?: number; artifactAt?: number }>(res);
   log(`reported ${j.id} exit=${exitCode} artifacts=${artifacts.length} → ${res.status} ${body.result ?? body.error ?? ""}`);
   // AND ONLY NOW THE LOG. Strictly after the verdict is in, and never a condition of it: the whole
-  // point of this rail is that a red audit can be read afterwards, which is worth nothing if the
+  // point of this rail is that a red run can be read afterwards, which is worth nothing if the
   // transfer can hold the verdict up. Hence the shape below — no retry, no backoff, no throw, and
   // no effect on anything this function already did.
-  if (logPath) await uploadSuiteLog(cfg, j, body.auditAt, logPath);
+  //
+  // `artifactAt ?? auditAt`, and the ORDER is the whole loosening: the uploader used to hang on
+  // `auditAt`, which only the AUDIT receipt carries — so a lane-suite preview, the one kind whose
+  // red a human is waiting on live, uploaded nothing and its log died in the `finally` below.
+  // `artifactAt` is the key every kind now answers with; `auditAt` stays as the fallback so this
+  // daemon keeps working, unchanged, against a server from before that field.
+  if (logPath) await uploadSuiteLog(cfg, j, body.artifactAt ?? body.auditAt, logPath);
 }
 
 // The suite.log upload. Three refusals to send at all, each of them a fact the server would
 // otherwise have to guess at:
-//   · no `auditAt` in the receipt — the server did not write a ledger row for this kind of job (a
-//     lane-suite or command verdict lives in the job, not in the audit trail), so there is nothing
+//   · no row key in the receipt — that server filed this verdict against nothing it can name (a
+//     command job's, and every kind's on a server from before `artifactAt`), so there is nothing
 //     to file a log against. Silence, not an error.
 //   · nothing on disk, or an empty file: an upload of zero bytes would put a rail row on a red
 //     saying "here is the log" and hand back nothing.
@@ -531,9 +537,9 @@ async function report(cfg: HelperConfig, j: ClaimedJob, exitCode: number | null,
 //     spending the upload to be told so is the one cost that is avoidable here.
 // Everything else is the server's to judge, and its answer is LOGGED and dropped.
 const SUITE_LOG_MAX = 8 * 1024 * 1024; // mirrors FLEET_HELPER_ARTIFACT_MAX's default, deliberately
-async function uploadSuiteLog(cfg: HelperConfig, j: ClaimedJob, auditAt: number | undefined,
+async function uploadSuiteLog(cfg: HelperConfig, j: ClaimedJob, rowAt: number | undefined,
   logPath: string): Promise<void> {
-  if (typeof auditAt !== "number" || !Number.isFinite(auditAt)) return;
+  if (typeof rowAt !== "number" || !Number.isFinite(rowAt)) return;
   let size = 0;
   try { size = existsSync(logPath) ? statSync(logPath).size : 0; } catch { return; }
   if (size === 0) { log(`no suite.log to upload for ${j.id}`); return; }
@@ -542,7 +548,7 @@ async function uploadSuiteLog(cfg: HelperConfig, j: ClaimedJob, auditAt: number 
     return;
   }
   try {
-    const res = await api(cfg, `/api/helper/artifact/${j.id}?at=${auditAt}`, {
+    const res = await api(cfg, `/api/helper/artifact/${j.id}?at=${rowAt}`, {
       method: "POST",
       headers: { "content-type": "text/plain; charset=utf-8" },
       body: await Bun.file(logPath).arrayBuffer(),

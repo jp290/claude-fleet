@@ -16,6 +16,7 @@
 // implementation, and it fails SILENTLY: the suite runs, it passes, and it answers a question about
 // code the lane has not got. (LS.3) is that assertion.
 import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { BASE, REPO, ROOT, check, get, post, restartSrv } from "./harness";
 import { openLane, type Lane } from "./lane-helpers";
@@ -42,7 +43,11 @@ interface OfferView {
   result: {
     exitCode: number | null; result: string; reason?: string; tail?: string; trail?: string;
     checks?: { ran: number; failed: number } | null;
-    remote?: { name: string; claimedAt: number; reportedAt: number; clonedSha?: string };
+    // OPTIONAL for the same reason `remote` is, and it is the field (LS.4b) is about: a server that
+    // stopped writing the names must fail the named check, not take the module down with a TypeError.
+    fails?: string[];
+    remote?: { name: string; claimedAt: number; reportedAt: number; clonedSha?: string;
+      artifact?: { bytes: number; sha256: string; url: string } };
     treeSha?: string; ms?: number;
   } | null;
 }
@@ -119,6 +124,9 @@ export async function run(): Promise<void> {
     post(path, body, { ...HH, "content-type": "application/json" });
   const jobs = async (): Promise<HelperJob[]> =>
     (await bodyOf<HelperJobs>(await hget(`/api/helper/jobs?deviceId=${DEVICE}`))).jobs ?? [];
+  // the artefact rail is the one route on this perimeter that takes BYTES and not JSON
+  const hpostRaw = (path: string, body: string): Promise<Response> =>
+    fetch(BASE + path, { method: "POST", headers: { ...HH, "content-type": "text/plain; charset=utf-8" }, body });
 
   const selfPost = (path: string, token: string | undefined, body: unknown = {}): Promise<Response> =>
     fetch(BASE + path, {
@@ -331,6 +339,10 @@ export async function run(): Promise<void> {
     reported.offer?.state === "reported" && verdict?.result === "green" && verdict.exitCode === 0
       && verdict.checks?.ran === 2 && verdict.checks.failed === 0 && verdict.trail === TRAIL,
     JSON.stringify({ state: reported.offer?.state, r: verdict?.result, e: verdict?.exitCode, c: verdict?.checks, t: verdict?.trail }));
+  // …and a GREEN verdict names no failure. The field is PRESENT and EMPTY, which is the honest pair:
+  // `result` says green, and an empty list is a measurement, not a missing one. (LS.4b) is the twin.
+  check("(LS) a green preview carries an EMPTY fails[] — present, and never an invented name",
+    Array.isArray(verdict?.fails) && verdict.fails.length === 0, JSON.stringify(verdict?.fails));
   // The negative half of the 2026-08-29 class-fix (its positive half is in e2e/helper-portal.ts and
   // e2e/helper-daemon.ts): a clone sha that is not one is DROPPED, and absence is what the reader
   // then sees — never the string that was sent.
@@ -351,6 +363,68 @@ export async function run(): Promise<void> {
     `verdict=${verdict?.treeSha?.slice(0, 8)} claim=${claim.job?.treeSha?.slice(0, 8)} fresh=${freshTree.slice(0, 8)} `
     + `(commit re-derived ${freshCommit.slice(0, 8)} vs claimed ${claim.job?.mainSha.slice(0, 8)} — the commit sha `
     + `carries a whole-second timestamp and may or may not differ; only the tree sha is asserted)`);
+
+  // ===== (LS.4b) A RED PREVIEW MUST NAME WHAT FAILED ============================================
+  // MEASURED 2026-09-05 on S2 (lane slot 5, job c893717a): a Second-host preview came back RED after
+  // 27 minutes — 1 of 3717 checks — and WHICH one was not answerable from this box. `tail` is
+  // HELPER_TAIL_CAP bytes and a real ./e2e-isolated.sh ENDS in its trail checks, so on a run that
+  // size the FAIL lines sit hundreds of kilobytes above the retained window. The lane ran the whole
+  // suite locally to find out, i.e. the offer cost exactly the run it exists to save.
+  //
+  // THE REPORT BELOW CARRIES NO `fails` KEY, deliberately — that is what a portal report typed by a
+  // human sends (src/helper.ts#doReport) and what any daemon from before 3974883 sends. So this
+  // section measures the SERVER's own parser (`localFailNames`, the one the local audit path uses)
+  // and not a field passed through: delete that call in reportLaneSuite and these checks go red.
+  await beat(); // the mint gate wants a machine that is beating NOW (LS.0)
+  const redOfferRes = await selfPost("/api/self/suite-offer", laneTok);
+  const redOffer = await bodyOf<OfferPayload>(redOfferRes);
+  const redJob = redOffer.offer?.id ?? "";
+  check("(LS.4b) setup: the lane offers a tree whose preview will come back RED",
+    redOfferRes.ok && /^[0-9a-f]{12}$/.test(redJob) && redJob !== jobId,
+    `${redOfferRes.status} ${JSON.stringify(redOffer.offer).slice(0, 160)}`);
+  check("(LS.4b) setup: the stand-in device claims it",
+    (await hpost("/api/helper/claim", { jobId: redJob, deviceId: DEVICE })).ok, redJob);
+  // two spaces after FAIL and the harness's `  (detail)` suffix on one of them — the exact shape
+  // e2e/harness.ts prints, because a parser that only handles the tidy line is not the one needed
+  const RED_TAIL = "PASS  a check that held\n"
+    + "FAIL  the land gate refuses a dirty tree  (want=0 got=2)\n"
+    + "FAIL  the drift probe answers UNKNOWN as UNKNOWN\n2 FAILURES";
+  const redRes = await hpost("/api/helper/result", { jobId: redJob, exitCode: 1, tail: RED_TAIL });
+  const redBody = await bodyOf<{ result?: string; artifactAt?: number }>(redRes);
+  check("(LS.4b) the red verdict is accepted and hands back the ROW KEY an upload must name",
+    redRes.ok && redBody.result === "red" && typeof redBody.artifactAt === "number",
+    `${redRes.status} ${JSON.stringify(redBody)}`);
+  const redVerdict = (await offerOf(laneTok)).offer?.result;
+  check("(LS.4b) THE LANE READS THE NAMES: fails[] carries the check names, detail suffix cut",
+    redVerdict?.result === "red" && redVerdict.fails?.length === 2
+      && redVerdict.fails[0] === "the land gate refuses a dirty tree"
+      && redVerdict.fails[1] === "the drift probe answers UNKNOWN as UNKNOWN",
+    JSON.stringify({ r: redVerdict?.result, fails: redVerdict?.fails }));
+  check("(LS.4b) …beside the count, not instead of it — a name and a number about the same run",
+    redVerdict?.checks?.ran === 3 && redVerdict.checks.failed === 2 && redVerdict.exitCode === 1,
+    JSON.stringify(redVerdict?.checks));
+
+  // …AND THE WHOLE LOG BEHIND THEM. `fails[]` names the checks; the artefact rail is where the
+  // output AROUND them lives. Until 2026-09-06 the daemon's uploader hung on `auditAt`, a key only
+  // an AUDIT receipt carries, so a preview's suite.log died in that daemon's own `finally` on the
+  // other machine. Same rail, same route, and still no ledger row — the two facts are independent.
+  const REDLOG = `${RED_TAIL}\n`.repeat(64);
+  const redSha = createHash("sha256").update(Buffer.from(REDLOG, "utf8")).digest("hex");
+  const redUp = await hpostRaw(`/api/helper/artifact/${redJob}?at=${redBody.artifactAt ?? 0}`, REDLOG);
+  const redUpBody = await bodyOf<{ artifact?: { bytes?: number; sha256?: string }; result?: string }>(redUp);
+  check("(LS.4b) THE PREVIEW'S OWN suite.log UPLOADS, and the receipt echoes the verdict UNCHANGED",
+    redUp.ok && redUpBody.artifact?.sha256 === redSha
+      && redUpBody.artifact.bytes === Buffer.byteLength(REDLOG, "utf8") && redUpBody.result === "red",
+    `${redUp.status} ${JSON.stringify(redUpBody)}`);
+  const withArt = (await offerOf(laneTok)).offer?.result?.remote?.artifact;
+  check("(LS.4b) …and the offer NAMES it — size, digest and the one route that serves the bytes",
+    withArt?.sha256 === redSha && withArt.bytes === Buffer.byteLength(REDLOG, "utf8")
+      && withArt.url === `/api/post-land-audits/artifact?at=${redBody.artifactAt ?? 0}`,
+    JSON.stringify(withArt));
+  check("(LS.4b) a log naming a verdict this preview never gave is 404, never filed onto the newest",
+    (await hpostRaw(`/api/helper/artifact/${redJob}?at=1234567890123`, "x")).status === 404);
+  check("(LS.4b) THE AUDIT LEDGER STILL DID NOT MOVE — the rail cannot reach it either",
+    auditLines() === ledgerBefore, `before=${ledgerBefore} after=${auditLines()}`);
 
   // ===== (LS.6) THE MUTEX: withdrawing is what gives the suite back ==============================
   // "I run it locally" must be a transition the server witnessed, not an intention in a pane —

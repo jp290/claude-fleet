@@ -389,43 +389,50 @@ git und die Sensoren nicht tragen. Abschnitte darunter sind FREMD.
 ---
 ---
 
-# HANDOFF — 🎛 Fleet Controller (Slot 9, Fable 5.1): DREI Lands gefahren (508dc4bb `15f0d7e`, W5b `3b286fc`, Resolver-Sensor `1b5f708`), EIN Deploy verifiziert (`0824fd8d` auf `3b286fc`), `FLEET_HUB_REMOTE='hub'` in `.env` wartet auf den naechsten Deploy; 2026-09-06 18:2x, ctx GEMESSEN 22 %
+# HANDOFF — 🎛 Fleet Controller (Slot 7, Fable 5.1): Deploy `5c7553fd` auf `37d6e95` verifiziert (Hub-Push jetzt im Land-Pfad), Fleet-Hub-Richtung des Owners festgehalten (`docs/fleet-hub-overlay-2026-09-06.md`), Program „Fleet-Architektur" `e3b3a064` vorgeschlagen, Betriebsarbeit an Fleet-Betrieb (Slot 2) zurueckgegeben; 2026-09-06 19:5x, ctx GEMESSEN 26,3 %
 
-> **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 6, 15:4x).
-> **Der Controller ist, wer das Label `🎛 Fleet Controller` traegt.** Lineage: … → 6 → 5 → 6 → 9 → du.
-> Such deinen Abschnitt per `grep -n '^# HANDOFF — 🎛' HANDOFF.md`, nicht per „oben" (mehrere MAINs schreiben hier).
-> Label per `GET /api/self` pruefen (wurde einmal still verkuerzt); Fix: `POST /api/slots/:id/rename {"label":"🎛 Fleet Controller"}`.
-
-Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, Owner-Poll, Panes.
+> **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 9, 18:0x).
+> **Der Controller ist, wer das Label `🎛 Fleet Controller` traegt.** Lineage: … → 6 → 9 → 7 → du.
+> Such deinen Abschnitt per `grep -n '^# HANDOFF — 🎛' HANDOFF.md`. Zustand ableiten: `./state.sh`, `./register.sh`, Owner-Poll, Panes.
 
 ## 0. Was du als Erstes tust
 
-1. `GET /api/self/attention` + `/fleet-report` — bei mir: keine offene Attention, beide Reports (`99db48e9` W5b, `b2d8d090` Resolver-Sensor) `accept`ed und gelandet.
-2. **DEPLOY IST WIEDER FAELLIG: `codeBehind:true`, behind 1** — `1b5f708` (Resolver-Sensor) traegt 168 Zeilen `server.ts`. Derselbe Deploy **aktiviert `FLEET_HUB_REMOTE='hub'`** (von mir in `.env` gesetzt, letzte Zeile; `.env` wird vom Watchdog im tmux-String gesourct, ein srv-Restart reicht). `POST /api/deploy` lehnt bei laufendem Post-Land-Audit mit 409 ab — die Audits zu `3b286fc` und `1b5f708` liefen bei meiner Uebergabe (Watches `7b27860a`/`52281060` sterben mit mir; neu armieren mit `{kind:"audit", repo, mainAfter}`). DEPLOY-OK liegt vor von MAIN 2, 4, 8 (17:5x, Pane-Einzeiler) und vom alten MAIN 7; **MAIN 6 ist die Nachfolgerin von MAIN 7 (Succession ~18:1x) und muss NEU gefragt werden.** Nach dem Deploy: `bootHead == target` in `GET /api/deploys`, `deployGap 0`, `bundleStale false` — und beim naechsten Land das Feld `hubPush` auf der Land-Note lesen; ab dann entfaellt der Hand-Push (`git push hub main`, bis dahin nach JEDEM Land von Hand — Hub steht auf `1b5f708`).
-3. **Lanes:** Slot 1 = S1 `1b106a66` (Program Land-Pipeline, MAIN 4 landet SELBST per `POST /api/self/tasks/:id/land`) · Slot 5 = `c3604ce3` (Program Fleet-Betrieb, MAIN 2 landet selbst). Du landest nur Owner-released Zeilen: **`755ef516`** (Daemon „max parallel suites" ZAEHLT) ist queued und wartet am Deckel 2. Nach ihrem Land: `POST /api/helper/devices/secondhostlinux1/update`, wenn dort kein Audit laeuft; danach ist der Lane-Deckel 2→3 eine Owner-Wahl (`watchdog.sh` + kickstart).
-4. **W5d bleibt Owner-Akt** (Second-host-Seite: `FLEET_LANDS=1`, Sync-Timer auf `hub`); die mac-Seite ist mit Punkt 2 erledigt.
+1. `GET /api/self/attention` + `/fleet-report`. Bei mir: nichts offen.
+2. **Du landest NICHTS und briefst keine Fleet-Zeile selbst** (Owner 2026-09-06 18:1x: „wir machen schon wieder alles ueber den Controller, das frisst Token"; Charter Fleet-Betrieb `f170dc46` Kriterium (d)). Eine Owner-Zeile ohne Program geht als EINE Nachricht an Slot 2, der filt sie als eigene Zeile (es gibt keine Route, die einer bestehenden Zeile ein Program gibt; `POST /api/tasks` mit `programId` kann nur NEUE Zeilen filen). Du routest, deployst und sprichst mit dem Owner. Deploy bleibt beim Controller (Astras Charter: Nicht-Ziel).
+3. **Uebergabe-Band, vom Owner heute praezisiert:** 25 % = Handoff vorbereiten, 30–35 % = uebergeben; NIE darunter, eine planbare Restkette vorher zu Ende fahren (Slot 9 bei 22 % war zu frueh und kostete zwei lebende Controllerinnen). Memory `feedback-context-quality-degrades-at-25pct`.
+4. **Watches, die mit mir sterben:** Audit-Watch `7f1275f1` auf `1b5f708` (laeuft LOKAL seit ~19:2x, haelt den Mutex; der Second-host hatte nur den ersten Cover `3b286fc` genommen — gruen, 3762/0). Neu armieren mit `{kind:"audit", repo, mainAfter:<voller sha>}`. Das Ergebnis beurteilen: `unknown` ist nie ein Pass.
 
-## 1. Gemessen in dieser Session (Belege: Panes, `fleet.json`, `post-land-audits.jsonl`, Land-Notes)
+## 1. Die Kette, in Flug (Owner-Delegation gilt: Landen/Deploy/Briefen ohne Rueckfrage, nur Geld/fremde Konten/Publikation fragen)
 
-- **Claude Code reapt Hintergrund-Shells mit „stopped because the system is running low on memory" bei 31–35 % freiem RAM (8 GB)** — meine `until`-Watcher UND die Warteschleifen der Lane Slot 1 starben mehrfach (16:1x–16:2x), die Suiten selbst nicht. Verlaesslich sind nur SERVER-Mechanismen: `POST /api/self/watch` und One-Shot-`autos`. Lane Slot 1 half sich mit 5-min-Polls.
-- **Mutex-Contention ist heute der Engpass, nicht die Arbeit:** Audit (45-min-Timeout → `unknown` fuer `723873b`+`15f0d7e`, koalesziert) + zwei Lane-Vorschauen + Gate-Ketten mit je drei Tickets. W5b-Gate: 550 s, davon 410 s Warten; Slot 1s Kette wartete ~75 min kumuliert, ihr eigener `e2e-isolated` hielt den Lock ~35 min. Ein lokales `e2e-isolated` einer Lane ist unter Last ein Audit-Killer — Stoff fuer M1/M2 (Program Land-Pipeline).
-- **W5b hing 33 min an einem Monitor fuer eine Suite, die um 17:08:44 schon fertig war** (3756/6, Q6-Familie §11.2q). Der Lane-Watch kann das nicht sehen (Praedikat idle+clean+ahead — die Lane hatte noch nicht committet). Ein `POST /send`-Einzeiler mit den Fakten (Log-mtime, pid weg) loeste es sofort.
-- **Second-host claimte Slot 1s Suite-Offer und verstummte** (helper offline ~24 min, ~17:1x–17:4x); die Lane fiel nach dem 800-s-Budget korrekt lokal zurueck. 18:07 war das Geraet wieder online (load 0). Ursache ungeprueft — Befund fuer Program Audit-Determiniertheit / `755ef516`.
-- **Tote Lock-Halter** (pid 82263 ab 15:05, 47780 ~18:0x): werden vom naechsten Anwaerter gereapt, kein Eingriff noetig — aber ein `ls /tmp/fleet-e2e.lock` allein sieht wie „belegt" aus.
-- MAIN 7s `508dc4bb` war seit 12:25 fertig und 3 h ungelandet, weil der Progress-Guard ein `waitedOut` als „gemessen und abgelehnt" liest (Attention `333c2710`, von mir beantwortet, Land von der Board-Seite) — das ist M2 `64860da8`.
+- **Slot 5** Lane `c3604ce3` (D1 Program-Inbox, MAIN 2 landet selbst) und **Slot 1** Lane `1b106a66` (S1 Wellen-Sensor, MAIN 4 landet selbst): beide fahren Vorschau-Suiten und stehen in der Mutex-Schlange hinter dem lokalen Audit.
+- **Queued am Deckel 2 (oldest-first):** `0f127ba2` P6 (MAIN 6) → `746500ec` Second-host-2-parallel (Slot 2, Kopie von `755ef516`, Original archiviert) → `1af3fa1f` Astra-Register (Brief traegt Astras Nachtrag `5e3823c7`, eingearbeitet 19:3x; docs-only).
+- **Nach dem Land von `746500ec`:** Slot 2 soll `POST /api/helper/devices/secondhostlinux1/update` fahren (wenn dort kein Audit laeuft), dann `7d3d29de` (Second-host-Vorschauen, Owner-Zeile ohne Program) uebernehmen und releasen, dann `ff4544f5`. Beides ist Slot 2 mitgeteilt (19:4x). **Danach Lane-Deckel 2→3** (`watchdog.sh` `FLEET_DISPATCH_MAX_LANES` + `launchctl kickstart` + Deploy) — Owner hat „lass uns das sauber angehen" gesagt, nicht explizit genickt; vorher fragen kostet einen Satz.
+- **Program `e3b3a064` „Fleet-Architektur"** liegt `proposed`; der Owner bestaetigt auf dem Board. Offen darin: welche Session MAIN wird (Astra Slot 3 bindet schon `eec69528`).
+- **Hub-Push:** `FLEET_HUB_REMOTE=hub` ist seit Deploy `5c7553fd` live; beim naechsten Land das Feld `hubPush` auf der Land-Note lesen (Slot 2 meldet, falls es fehlt). Direkt-Commits (docs) weiterhin von Hand: `git push hub main`.
 
-## 2. Owner-Entscheide, die fortgelten
+## 2. Gemessen heute (Belege: Ledger, Panes, Code)
 
-- Delegation vom 2026-09-05 20:2x (Landen, Deploy, Briefen; fragen nur bei Geld, fremden Konten, Publikation). Astra (Slot 3) nicht anschreiben.
-- Offen beim Owner, nicht dringend: Lane-Deckel 2→3 · vier `active` Programs mit toter MAIN (`f99e9354`, `07ee8a6d`, `2c073232`, `b2aa5b45`) parken/complete · W5d Second-host-Seite.
+- **Deploy bei Second-host-Audit ist SICHER:** `server.ts#deployBlocker` prueft nur `runningPostLandAudit` (lokal); ein Helfer-Claim ist in `helperClaims` persistiert, wird beim Boot restauriert (`server.ts:20469`) und vom Drain per `helperClaimOf` respektiert. Verifiziert am Deploy 18:12 (Claim `26ea1a205005` ueberlebte).
+- **Der Helfer nimmt je Claim EINEN Baum:** von zwei koaleszierten Covers lief der zweite (`1b5f708`) lokal — 35 min Mac-Mutex. Hebel: `746500ec` + `7d3d29de`.
+- **Audits heute:** mac 4 gruen/1 rot/2 unknown, second-host 2 gruen/1 rot. Gestern second-host 8/8 rot (Host-Unterschieds-Familie, registriert).
+- **Studios EXISTIEREN als Serverobjekt** (`server/types.ts#Studio`, Spawn-Tripel je Stufe, `GET/POST /api/studios`), 0 live registriert. Erster Studio-Schritt = Game-Maker v2 als Datensatz einspielen.
+- **Analyst + Brief-Kompiler sind gebaut und im Betrieb AUS** (`FLEET_ANALYSIS_MS=0`, `FLEET_BRIEF_MS` Default 0); keine Zeile adressiert das Wiedereinschalten. Wiedereinschalten = Owner-Akt (watchdog.sh + kickstart), gedrosselt, nach Phase 1.
+- **Kein adressierter Rueckkanal MAIN→Controller:** Antworten von Slot 2 und Astra lese ich aus der Pane (oder der Owner reicht sie weiter). Das ist D1; Astras dritte Forderung; Owner-Lesart: „sowas ist einfach eine Notiz mit Flaeche, die die naechste Lane mitnimmt" = N1 `3af11665`.
 
-## 3. Was mit dieser Session stirbt
+## 3. Der Plan von hier (Owner-Prioritaet woertlich: „das Wichtigste ist, dass die Tasks und Studios sauber laufen")
 
-Audit-Watches `7b27860a` (`3b286fc`) und `52281060` (`1b5f708`); fuenf abgelaufene One-Shot-Autos. Keine Attention, keine Mission, kein Pane-Monitor.
+1. **Basis robust (laeuft):** Land-Pipeline M1–M3/S1/N1–N2 (Slot 4) · Audit-Determiniertheit P6, Suite-Schnitt A/B (Slot 6) · Fleet-Betrieb D1/D3, `746500ec`, `7d3d29de`, `ff4544f5` (Slot 2). Engpass = Suite-Mutex; die Reihenfolge der Hebel steht in §1.
+2. **Queue-Analyse wieder an:** Analyst/Brief gedrosselt (Owner-Akt), Notiz-Ausgang „verwerfen empfohlen" (Plan 2026-08-11 Stufe 2, in keinem Program — Astras Register `1af3fa1f` entscheidet die Disposition), fuenf Programs mit toter MAIN abschliessen (Owner-Wahl; `complete` ist terminal, kein Pause-Zustand: Private-repo-o 0 offene Zeilen, Dual-Host 10, Private-repo-y 6, Private-repo-j 2, Game-Maker v2 7 — alle offenen sind Messnotizen, keine Arbeitszeilen).
+3. **Hub Schnitt 1:** client-only Projektion (Repo-Liste links, Program-Karten mit Reglern + naechster Owner-Entscheidung, Rollen-Sicht aus Label/Modell/Harness/Task-Slot). Done-Kriterium `docs/fleet-hub-overlay-2026-09-06.md` §4. Kann parallel zu 2.
+4. **Objekte:** Repo-Register (winzig, erstes neues Objekt), Game-Maker v2 als `Studio`, ContextPack + Routing (= D1 verallgemeinert), Thread (= L-Workspace). Nicht vor 1.
+Die Rollen: Owner = Richtung/Promotion · Astra = Zielbild/Plan/Charters (Program `e3b3a064`) · Controller = Routing/Deploy/Owner-Gespraech · Fleet-Betrieb = landet Fleet-Zeilen · Land-Pipeline/Audit-Determiniertheit/Fleet-ohne-Owner-Routing = Basis.
+
+## 4. Offen beim Owner (nicht dringend)
+
+Bestaetigung `e3b3a064` und die MAIN-Frage · Deckel 2→3 nach `746500ec` · Analyst an · fuenf tote Programs · die fuenf Fragen in `docs/fleet-hub-overlay-2026-09-06.md` §5 · W5d Second-host-Seite (`FLEET_LANDS=1`, Sync-Timer).
 
 ---
 ---
-
 # HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 5, Opus 5): VIER Lands, drei deployt — und eines traegt eine Regression, die ich selbst gefunden und gefilt habe; 2026-09-05 11:5x, ctx GEMESSEN 44,1 % (Owner-Poll)
 
 # HANDOFF — Program-MAIN 66499a03 „Fleet-Betrieb ohne manuelles Owner-Routing" (Slot 2, Opus 5): ERFOLGSSATZ 8 IST NICHT UNBELEGT, SONDERN STRUKTURELL UNERREICHBAR — der TUI-Repaint kommt 14 ms vor der Schwelle; der Owner hat (a) gewaehlt, die Schwelle steht auf 20 min, der dritte Beleg-Lauf ist released; 2026-09-05 15:5x, ctx GEMESSEN 29,8 %

@@ -3074,3 +3074,79 @@ messbar — heute ist die Haelfte ihrer Sichtungen ein Loch im Register, kein Da
 Aussage ueber die Idempotenz und kein Befund am Watch-Pfad — es ist diese Registerluecke. Stehen
 zwei VERSCHIEDENE Ids da, ist wirklich ein zweites Watch entstanden, und das gehoert dem, der es
 sieht.
+
+### 11.2s Eine einundzwanzigste Familie — und die ERSTE mit einem gemessenen HOST-Unterschied: die D2-Vorbedingung in `e2e/watch.ts` las den Git-Anzeigecache, bevor er die Fixture-Writes tragen konnte (2026-09-06 — Wurzel aus elf hochgeladenen Helfer-`suite.log` gelesen, REPARIERT auf `fleet/260906075319-2fb8`, auf BEIDEN Hosts gruen bewiesen)
+
+`D2 setup: both closing lanes reached the spent shape, and every refusing lane differs from them in
+exactly one fact` ist die erste Familie dieses Registers, deren Ausgang mit dem HOST korreliert
+statt mit einer Rate:
+
+| Host | rot / Sichtungen | Quelle |
+|---|---|---|
+| dieser Mac | **0 / 40** | Direktscan `e2e-trail/isolated-*.jsonl` |
+| second-host (Debian) | **9 / 11** | die elf `suite.log` unter `streams/helper-artifacts/26ea1a205005/` |
+
+Die 40 lokalen Sichtungen liegen auf 30 verschiedenen Baeumen und sind ausnahmslos gruen; die eine
+rote Sichtung, die §11.2p zu dieser Zeile notiert, gehoert NICHT hierher — sie stammt aus dem Arm
+mit `FLEET_LANE_AUTOCLOSE=1`, den die Praemissen-Sonde daneben korrekt als falsche PRAEMISSE
+ausgewiesen hat.
+
+**Die Wurzel ist KEINE Klausel von `SPENT_RULES`.** `stalled` war in JEDEM der neun roten
+Second-host-Laeufe fuer alle sieben Lanes `true` — anders fielen die GIT-Zahlen der fuenf REFUSER
+aus. Sieben der neun lasen alle sieben Lanes als `dirty:0 ahead:0`:
+
+    FAIL  D2 setup … ([[7,true,{…"dirty":0,"ahead":0}],[8,true,{…"dirty":0,"ahead":0}],
+                       [9,true,{…"dirty":0,"ahead":0}],[10,true,{…"dirty":0,"ahead":0}],
+                       [11,true,{…"dirty":0,"ahead":0}], …])
+
+Erwartet waren dort `9: dirty=1` (die uncommittete Datei) und `10/11: ahead=1` (der
+Kandidaten-Commit).
+
+**Der Mechanismus, und zwei Laeufe nennen ihn woertlich.** Die servierten `git`-Zahlen sind der
+~10-s-Anzeigecache von `server.ts#tickGit`, kein frischer Read. Die alte Schleife wartete
+ausschliesslich auf die zwei SCHLIESSENDEN Lanes — genau die zwei, deren Fakten der
+Fixture-Schreibvorgang nicht anfasst — und war fertig, sobald die 3-s-Idle-Uhr durch war
+(`msSincePrev` liegt in allen 40 lokalen Sichtungen zwischen 3110 und 3195 ms). Die fuenf Refuser
+las sie danach aus demselben Schnappschuss, bis zu 10 s bevor er wahr sein konnte. In den Laeufen
+`1788541056390` und `1788609298225` hat der Tick die Schreibsequenz MITTEN drin erwischt: Slot 9
+noch sauber, waehrend Slot 10 UND 11 `dirty:1 ahead:0` tragen — ein Durchlauf, der die erste Lane
+vor ihrer Datei passierte und die beiden anderen zwischen Datei und Commit.
+
+Ob der Schnappschuss frisch genug war, ist damit ein Rennen zwischen der DURCHLAUFDAUER des
+Boot-Ticks und den Fixture-Writes — und diese Dauer ist genau das, was zwischen den Hosts
+verschieden ist: `tickGit` bezahlt pro Slot rund ein Dutzend Subprozesse (tmux, ps/pgrep, mehrere
+git), und Prozess-Spawn ist auf Linux um ein Vielfaches billiger als auf macOS.
+
+**Die Wurzel liegt NICHT im Server.** `tickGit` ist ein dokumentierter Anzeigecache und verhaelt
+sich wie spezifiziert; die Sonde las ihn und nahm Frische an.
+
+**Der Schnitt:** die Sonde wartet auf die GANZE Form statt auf zwei Siebtel davon. Die Klauselliste
+ist pro Lane benannt (`d2Want`) und IST die Behauptung — es gibt kein zweites, davon abweichendes
+Wartepraedikat mehr —, ausgewertet auf dem Schnappschuss, der sie erfuellt hat, und ein
+Schnappschuss pro Runde statt eines Fetches pro Lane. Nichts geskippt, nichts geloescht, dieselben
+sieben Klauseln, dieselbe 60-Runden-Grenze.
+
+**Der Beweis, drei Laeufe auf zwei Hosts** (Baum `472a850f` — die Reparatur, als LANE-Sha auf
+`fleet/260906075319-2fb8`. Das ist der Wert, den die Trail-Zeilen dieser drei Laeufe im Feld
+`tree` tragen, und genau deshalb steht er hier; nach dem Rebase-Land loest er auf `main` NICHT
+mehr auf — die landende MAIN setzt die echte Sha ein, `git merge-base --is-ancestor` als Probe):
+
+| Lauf | Host | D2 setup | `msSincePrev` | Suite |
+|---|---|---|---|---|
+| `isolated-20260906T084037Z-46610` | Mac | PASS | 3 113 ms | ALL PASS |
+| `isolated-20260906T082246Z-452246` | second-host | PASS | **10 300 ms** | ALL PASS, `ran 3751 / failed 0` |
+| `isolated-20260906T100031Z-48319` | Mac, MUTIERT | FAIL | 62 174 ms | Abbruch nach der Zeile |
+
+Die 10 300 ms des Second-host-Laufs sind die Messung selbst: dort musste die Sonde auf den naechsten
+10-s-Tick warten, lokal war die Form nach den drei Idle-Sekunden schon da. Der Mutationslauf (die
+`Bun.write` der dirty-Lane auskommentiert, danach zurueckgenommen) zeigt, dass die Zeile weiter
+fallen KANN und dabei sich selbst nennt:
+
+    {"unmet":["9: dirty=1 (the uncommitted file is served)"], "slots":[…,[10,false,{…"ahead":1}],
+                                                                        [11,false,{…"ahead":1}],…]}
+
+— nur die mutierte Tatsache fehlt, die beiden ahead-Lanes haben ihre Form erreicht.
+
+**Nebenbefund, NICHT dieser Zeile gehoerend:** `projection nextAction: a REVIEWABLE row of a
+promoted Program …` (§11.2o) faellt in **11 von 11** Second-host-Laeufen gegen 2,9 % lokal. Das ist
+die zweite Familie mit dieser Signatur und die groesste verbleibende Quelle roter Remote-Audits.

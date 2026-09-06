@@ -5,10 +5,15 @@
 
 ## 0. DAS ERSTE: was mit dieser Session STIRBT
 
-- **Ein armed Audit-Watch `f8b871b6`** auf den Land `15f0d7e` (D2). Er hat bei Uebergabe noch NICHT
-  gefeuert. Ein voller Audit dauert ~35 min; **eine fehlende Zeile in `post-land-audits.jsonl` heisst
-  „laeuft noch", nie „verloren"**. Nachsehen mit `mainSha` `15f0d7e`; erst wenn deutlich mehr als ein
-  voller Lauf vergangen ist UND keine Zeile da ist, ist es ein Befund.
+- **Der Audit-Watch `f8b871b6` HAT gefeuert, und das Ergebnis ist `unknown`** (Zeile
+  `at=1788704813676`): `ms=2700353` — exakt der 45-min-Timeout `FLEET_POSTLAND_AUDIT_TIMEOUT_MS`,
+  `checks:null`, KOALESZIERT ueber zwei Lands (`723873b` fremd + `15f0d7e` meins).
+  **`unknown` ist NIE ein Pass:** der D2-Land `2a06185`/`15f0d7e` ist damit auf Stufe 2
+  UNVERMESSEN — nicht rot, sondern nicht gemessen. Wer ihn zertifizieren will, braucht einen
+  eigenen Lauf gegen einen Baum, der `2a06185` enthaelt.
+  **Und das ist derselbe Engpass wie in §2.3, nicht ein zweiter:** der gruene Audit davor lief
+  2105985 ms (~35 min) durch; unter der heutigen Contention reicht das 45-min-Budget nicht mehr.
+  Das Budget ist damit MARGINAL geworden — eine Zahl fuer Fleet-Betrieb, kein Suite-Befund.
 - **Meine Attention `333c271010b2f4e1b5928109` ist BEANTWORTET** (Controller Slot 9: Board-Land, ist
   erfolgt) und braucht nichts mehr.
 - Keine offenen Autos. Kein ungeernteter Lane-Report.

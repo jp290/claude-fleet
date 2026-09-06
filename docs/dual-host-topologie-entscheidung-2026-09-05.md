@@ -397,6 +397,21 @@ fehlen, kein `CLAUDE.md`, kein `rulebook/` (gitignored, lebt nur auf dem mac) �
 16 Kerne, 7 GB RAM, 30 GB frei, Debian 13, tmux 3.5a. Ein Bare-Repo im Tailnet ist keine
 Publikation; nach GitHub wird von hier weiterhin nie gepusht.
 
+**W5c, gemessen 2026-09-06 07:3x (Controller Slot 6, mac; alles Host-Akte per ssh, kein Code):**
+Node `v24.20.0` als Tarball unter `~/.local/node-v24.20.0` (kein apt, kein root — apt haette
+20.19 geliefert), `npm prefix ~/.local`, `@openai/codex@0.153.4` und
+`@earendil-works/pi-coding-agent@0.85.0` global — dieselben Versionen und dasselbe
+`~/.local/lib/node_modules`-Layout wie auf dem mac; `bun`/`bunx` per Symlink in `~/.local/bin`, weil
+`~/.bun/bin` in der Login-Shell dort NICHT im PATH liegt (der srv sah bun nur ueber den Watchdog-Export).
+Kriterium 1 erfuellt: Login-Shell findet 6/6 (`node npm codex claude bun pi`). Die sieben
+`rulebook/`-Fragmente per scp, `CLAUDE.md` dort gerendert: 81 293 B, byte-identisch zum mac, und der
+Byte-Pin §6b ist dort GRUEN. `bun e2e/pins.ts` dort: 417 PASS, 1 FAIL — der leak-pin (287 Treffer,
+`FLEET_HOST`/`FLEET_ALLOWED_HOSTS`/`FLEET_SHARE_HOSTS` gegen getrackte Dateien), das ist Notiz
+`25361e42`, Owner-Wahl, kein W5c-Befund. `.env` dort: `FLEET_SUMMARY_MODEL='claude-opus-5[1m]'`.
+**Offen an W5c:** Kriterium 3 (Codex-Lane erreicht den Accept-Marker) haengt am Codex-Login auf dem
+Second-host — das ist das OpenAI-Konto des Owners, ein Owner-Akt; ebenso ein pi-Provider-Key dort.
+`docker` bleibt draussen (Container-Pfad ist Sonderfall, opt-in).
+
 ## Was nicht gemessen wurde
 
 - **Kein Slot auf dem Second-host** geoeffnet, nichts getippt, keine Unit angefasst — die

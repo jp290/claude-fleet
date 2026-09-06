@@ -709,29 +709,63 @@ repo and therefore shared reality, not a lane's to clean (CLAUDE.md).
 *Added while landing the data-saver program (four lanes, `bc4e975`…`f323fb4`). Not a new study —
 §5b's finding reproduced by accident, at cost, plus one thing §5b could not know.*
 
-### 11.0b WARNUNG ZUM INSTRUMENT: `GET /api/self/flakes` ist oberhalb von einem Tag ABGESCHNITTEN (gemessen 2026-09-06)
+### 11.0b DAS INSTRUMENT: `GET /api/self/flakes` — was `runs`, `files` und `filesOmitted` bedeuten (repariert 2026-09-06)
 
-Wer eine Basisrate aus dieser Route liest, liest sie unterhalb von `days=1` richtig und darueber
-falsch. Gemessen am 2026-09-06 06:1x gegen den Live-Server, dieselbe Route dreimal:
+Diese Route ist das Messinstrument, auf dem das Erfolgskriterium des Programs „Audit-Determiniertheit
+2026-09" definiert ist („je reparierter Familie 0 Fails auf allen Baeumen, die den Fix enthalten, bei
+mindestens 10 solchen Laeufen"). Wer eine Basisrate daraus liest, muss ihre vier Zahlen lesen, nicht
+nur die erste.
 
-| Aufruf | `runs` | `filesOmitted` |
-| --- | ---: | ---: |
-| `?days=1` | 280 | 0 |
-| `?days=7` | **400** | 1 244 |
-| `?days=30` | **400** | 5 099 |
+**Die vier Zahlen.** `runs` = **distinkte Laeufe unter den GELESENEN Zeilen**, nicht Laeufe im
+erfragten Fenster. `files` = wie viele Trail-Dateien wirklich geoeffnet wurden (Deckel:
+`server.ts#TRAIL_MAX_FILES`, 400). `filesOmitted` = wie viele Kandidaten der Deckel wegschnitt, und
+zwar **newest-first**, das abgeschnittene Material ist also das AELTERE. `filesOtherSuite` = wie
+viele Dateien schon am Namen als andere Suite erkannt und gar nicht erst gezaehlt wurden.
 
-**`days=7` und `days=30` liefern dieselbe Zahl**, und diese Zahl ist die Deckelung selbst
-(`TRAIL_MAX_FILES`, `server.ts#trailStatsView`): der Deckel schneidet die Dateiliste, BEVOR das
-Zeitfenster angewendet wird, also waechst mit `days` nur die Zahl der weggeworfenen Dateien, nie
-die Stichprobe. Ein direkter Scan ueber `e2e-trail/isolated-*.jsonl` findet zum selben Zeitpunkt
-782 lokale Laeufe.
+**Woran ein Leser eine abgeschnittene Antwort erkennt — an einem Feld, nicht an einem Bauchgefuehl:**
 
-Ehrlich ist die Route trotzdem: sie NENNT `filesOmitted`. Nur liest das Feld niemand, und ohne es
-sieht eine gedeckelte Stichprobe wie eine vollstaendige aus. **Bis das repariert ist, gilt fuer
-jede Rate in diesem Dokument: sie ist per Direktscan des Registers gerechnet, nicht aus dieser
-Route gezogen** — so auch §11.2q und §11.2r. Die Reparatur ist als Queue-Zeile `76d39cae` gefiled
-(Program „Audit-Determiniertheit 2026-09"); ihre Brief-Fassung nennt die Zahl 40 statt 400, das ist
-die aeltere Messung und hier korrigiert.
+| Feld | bedeutet |
+| --- | --- |
+| `truncated: false` **und** `coveredFrom === window.from` | die Antwort deckt das ERFRAGTE Fenster ab. Das ist das Register. |
+| `truncated: true` | der Deckel hat geschnitten. `runs` ist eine STICHPROBE, keine Zaehlung. |
+| `coveredFrom` | die aelteste `mtime`, die ueberhaupt geoeffnet wurde. Die Antwort beschreibt `[coveredFrom, now]` — nie das erfragte `days`. Es ist eine UNTERGRENZE der Abdeckung: Zeilen INNERHALB der aeltesten gelesenen Datei koennen aelter sein. |
+
+**Zwei Fenster mit gleichem `coveredFrom` haben dasselbe Material gelesen.** Das ist der Handgriff:
+`?days=7` mit `?days=30` vergleichen und **`coveredFrom`** gegeneinanderhalten, nicht `runs`. Sind sie
+gleich, hat das breitere Fenster nichts dazugewonnen, und eine Rate „ueber 30 Tage" ist gelogen, egal
+was `window.days` sagt.
+
+**Was am 2026-09-06 repariert wurde** (Zeile 2 des Programs, Queue-Zeile `76d39cae`; die Sonden
+liegen in `e2e/trailstats.ts`, Block „THE CAP, measured THROUGH the route"). Der Deckel lief VOR dem
+Suite-Filter — nicht vor dem Zeitfenster, die `mtime`-Vorfilterung war immer korrekt. Daraus zwei
+Defekte:
+
+- **Suite-Verzerrung.** Eine suite-genaue Frage wurde aus einer Stichprobe beantwortet, die die
+  ANDEREN Suiten schon aufgefressen hatten. `?suite=isolated&days=7` las 400 Dateien, von denen
+  **341 anderen Suiten gehoerten**, und meldete 59 isolated-Laeufe. Der Suite-Filter sitzt jetzt VOR
+  dem Deckel (am Dateinamen, der die run-id und damit die Suite traegt; ein nicht parsbarer Name
+  wird nie ausgeschlossen, und die Zeile selbst bleibt der autoritative Filter).
+- **Ein stummes Fenster.** `?days=2` und `?days=30` lieferten byte-gleiche `runs`/`rows`/`checks`,
+  jede Antwort druckte aber ihr erfragtes `days`. Es gibt jetzt `truncated` und `coveredFrom`.
+
+Vorher/nachher, **gemessen am 2026-09-06 gegen DIESELBEN echten Trail-Verzeichnisse**, aus zwei
+Wegwerf-Instanzen (eine aus `main`-HEAD, eine aus dem reparierten Baum), Minuten auseinander:
+
+| Aufruf | vorher `runs` | nachher `runs` | nachher zusaetzlich |
+| --- | ---: | ---: | --- |
+| `?days=1` | 283 | 283 | `truncated:false`, `coveredFrom === window.from` |
+| `?days=2` | 400 | 400 | `truncated:true`, `coveredFrom` = 1788547626625 |
+| `?days=7` | 400 | 400 | `truncated:true`, **gleiches `coveredFrom`** |
+| `?days=30` | 400 | 400 | `truncated:true`, **gleiches `coveredFrom`** — das breitere Fenster hat nichts dazugewonnen, und jetzt sagt es das |
+| `?suite=isolated&days=7` | **59** | **192** | `truncated:false`, `filesOtherSuite:5574`. Direktscan derselben zwei Verzeichnisse im selben Moment: **192** |
+| `?suite=isolated&days=30` | 59 | 400 | `truncated:true`, 234 `filesOmitted` — hier beisst der Deckel wirklich, und er sagt es |
+| `?suite=claude-gate&days=7` | 161 | 400 | `truncated:true`, 312 `filesOmitted` (Direktscan: 712) |
+
+**Der Deckel ist NICHT weg.** Er wurde nicht erhoeht — das haette die Grenze verschoben statt sie
+sichtbar zu machen. Eine unsuite-gefilterte Frage ueber viele Tage ist weiterhin abgeschnitten; sie
+sagt es nur jetzt. Praktisch heisst das: **eine Basisrate immer mit `?suite=` erfragen** und danach
+`truncated` lesen. Die Raten in §11.2q und §11.2r sind per Direktscan gerechnet und bleiben es —
+nachgerechnet werden koennen sie ab jetzt auch ueber die Route.
 
 ### 11.1 The four runs
 

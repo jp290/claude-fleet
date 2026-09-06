@@ -22613,28 +22613,58 @@ async function slotStatsView(now: number): Promise<SlotStatsSummary> {
 const TRAIL_DIRS: string[] = (process.env.FLEET_TRAIL_DIRS ?? "").trim()
   ? process.env.FLEET_TRAIL_DIRS!.split(",").map((s) => s.trim()).filter(Boolean)
   : [`${import.meta.dir}/e2e-trail`, `${tmpdir()}/fleet-e2e-trail`];
-// ~220 KB and ~880 rows per run file (docs/e2e-trail.md §2) — 1115 files on this machine already.
+// ~220 KB and ~880 rows per run file (docs/e2e-trail.md §2) — 6386 files on this machine already.
 // Newest-by-mtime first and capped, so the cost of this route is bounded by the cap and not by how
 // long the fleet has been running; `filesOmitted` reports the cut rather than hiding it AND is
 // handed to trailStats, which refuses to answer `never-failed` while any file went unread.
 const TRAIL_MAX_FILES = 400;
 const TRAIL_DEFAULT_DAYS = 14;
 
+// A trail file's name IS its run id (`${suite}-${stamp}-${pid}.jsonl`, e2e/trail-emit.ts#TRAIL_RUN),
+// so a file's suite is readable without opening it. Used for exactly one purpose: keeping the file
+// cap from being spent on suites the caller did not ask about. FAIL-OPEN by construction — a name
+// that does not parse stays a candidate (the fixture runs in e2e/trailstats.ts are named `fx1`),
+// and the row's own `suite` field stays the authoritative filter inside trailStats. If a name ever
+// disagreed with its rows, the reader still discards them and says so in `outOfScope.otherSuite`.
+const TRAIL_NAME_RE = /^(.+)-\d{8}T\d{6}Z-\d+\.jsonl$/;
+const trailFileSuite = (name: string): string | null => TRAIL_NAME_RE.exec(name)?.[1] ?? null;
+
 interface TrailStatsView extends TrailSummary {
   dirs: string[]; files: number; filesOmitted: number; unreadableFiles: number;
+  /** candidates dropped by NAME before any read, because a `suite` was asked for and theirs differs */
+  filesOtherSuite: number;
+  /** `filesOmitted > 0` — the asked window was NOT covered; see `coveredFrom` for what was */
+  truncated: boolean;
+  /**
+   * The window this answer actually describes: no file with an mtime older than this was opened.
+   * Equals `window.from` exactly when nothing was cut, so `coveredFrom === window.from` is the
+   * machine-readable "this is the register" and anything later is "this is a sample".
+   */
+  coveredFrom: number;
 }
 function trailStatsView(now: number, opts: { days?: number; suite?: string | null; check?: string | null }): TrailStatsView {
   const days = Number.isFinite(opts.days) && (opts.days as number) > 0
     ? Math.min(365, opts.days as number) : TRAIL_DEFAULT_DAYS;
   const windowMs = days * 86_400_000;
   const cutoff = now - windowMs;
+  const wantSuite = (opts.suite ?? "") || null;
   const cand: { path: string; mtime: number }[] = [];
   let unreadableFiles = 0;
+  let filesOtherSuite = 0;
   for (const d of TRAIL_DIRS) {
     let names: string[];
     try { names = readdirSync(d); } catch { continue; } // an absent trail dir is not an error
     for (const n of names) {
       if (!n.endsWith(".jsonl")) continue;
+      // THE SUITE FILTER MOVES AHEAD OF THE CAP. It used to sit behind it, inside trailStats, and
+      // that ordering turned a file cap into a SUITE-SKEWED sample. Measured 2026-09-06 against the
+      // real trail dirs, HEAD and this tree side by side: `?suite=isolated&days=7` read 400 files
+      // of which 341 belonged to OTHER suites and reported 59 isolated runs; the same query here
+      // reports 192 over 192 files, which is exactly what a direct scan of the two directories
+      // finds. The skew grew with everything ELSE the machine ran. Name-derived, so it costs no
+      // read; fail-open, so a name it cannot parse is never excluded.
+      const named = trailFileSuite(n);
+      if (wantSuite !== null && named !== null && named !== wantSuite) { filesOtherSuite++; continue; }
       try {
         const st = statSync(`${d}/${n}`);
         // mtime is a PRE-FILTER only, never the window itself: a file is skipped when it cannot
@@ -22648,6 +22678,13 @@ function trailStatsView(now: number, opts: { days?: number; suite?: string | nul
   // the cap is a READ-SIDE fact and the reader cannot see it, so it is handed over the same way
   // `malformed` is — otherwise the summary claims `never-failed` over material nobody opened.
   const filesOmitted = Math.max(0, cand.length - take.length);
+  // ...and the reader of the ROUTE cannot see it either, which is the half `filesOmitted` alone
+  // never fixed: a caller comparing `?days=7` with `?days=30` got two identical answers and no
+  // field saying so in a word. `truncated` says it in a word; `coveredFrom` says how far back the
+  // answer reaches, by file mtime — the rows inside the oldest file read may be older still, so
+  // this is a floor on coverage and never a claim of completeness below it.
+  const truncated = filesOmitted > 0;
+  const coveredFrom = truncated && take.length > 0 ? take[take.length - 1]!.mtime : cutoff;
   const records: TrailRecord[] = [];
   let malformed = 0;
   for (const f of take) {
@@ -22659,8 +22696,9 @@ function trailStatsView(now: number, opts: { days?: number; suite?: string | nul
     }
   }
   return {
-    ...trailStats(records, { now, windowMs, suite: opts.suite ?? null, check: opts.check ?? null, malformed, filesOmitted }),
+    ...trailStats(records, { now, windowMs, suite: wantSuite, check: opts.check ?? null, malformed, filesOmitted }),
     dirs: TRAIL_DIRS, files: take.length, filesOmitted, unreadableFiles,
+    filesOtherSuite, truncated, coveredFrom,
   };
 }
 // the query-string half, shared verbatim by the owner route and the session route so the two can

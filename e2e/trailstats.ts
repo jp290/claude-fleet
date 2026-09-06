@@ -11,7 +11,7 @@
 // evidence at all (a dirty run's sha does not describe the code that ran); the denominator is
 // runs-that-ran-this-check and not all runs (queue row 32c89530 shipped a rate built from two
 // different denominators); and `tree:null` is a third category, never folded into either.
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { BASE, ROOT, TOKEN, check, get } from "./harness";
 import { trailStats, type TrailRecord } from "../trailstats";
 import type { Ctx } from "./ctx";
@@ -206,6 +206,8 @@ export async function run(ctx: Ctx): Promise<void> {
 
   interface Flakes {
     runs: number; rows: number; files: number; dirs: string[];
+    filesOmitted: number; filesOtherSuite: number; truncated: boolean; coveredFrom: number;
+    window: { from: number; to: number; days: number };
     flakes: { check: string; runs: number; failedRuns: number; cleanTrees: number; notYourDiff: boolean }[];
     point: { verdict: string; cleanTrees: { tree: string }[] } | null;
   }
@@ -257,6 +259,95 @@ export async function run(ctx: Ctx): Promise<void> {
     (await selfFlakes(TOKEN)).status === 401);
   check("GET /api/self/flakes: a missing selfToken header is rejected",
     (await selfFlakes(undefined)).status === 401);
+
+  // --- THE CAP, measured THROUGH the route. Program "Audit-Determiniertheit 2026-09", queue row
+  // `76d39cae`. The route is the instrument that program's success criterion is defined on (">= 10
+  // runs on trees containing the fix"), and it had two defects, both from ONE ordering — the file
+  // cap ran before the suite filter and before any window logic could matter:
+  //   (a) SUITE SKEW. A suite-scoped question was answered from a sample the OTHER suites had
+  //       already eaten. Measured 2026-09-06, HEAD and the fixed tree against the same real trail
+  //       dirs: `?suite=isolated&days=7` reported 59 runs over 400 files of which 341 were other
+  //       suites; fixed it reports 192, the exact count a direct scan of those two directories
+  //       finds. The skew grew with everything else the machine ran.
+  //   (b) A SILENT WINDOW. `?days=2` and `?days=30` returned byte-identical runs/rows/checks while
+  //       each printed the `days` it was asked for; only `filesOmitted` differed, and nothing said
+  //       in a word that the answer was a sample.
+  // The checks below measure exactly that, and the FIRST is a PRECONDITION check that fails as
+  // ITSELF — a probe that could not plant enough files must not read as a contract violation
+  // (CLAUDE.md: "eine Sonde, die nicht laufen konnte, muss als SIE SELBST scheitern").
+  //
+  // FLOOD must exceed server.ts#TRAIL_MAX_FILES or nothing here is exercised; raise the cap above
+  // it and the precondition check goes red first, naming the reason.
+  const FLOOD = 402;
+  const P = `capflood-${process.pid}`;   // parseable as `${suite}-${stamp}-${pid}`, unlike fx1..fx3
+  const P2 = `capscoped-${process.pid}`; // planted OLDER than the flood, so pre-fix the flood evicted it
+  const CK = "cap probe: one row per planted run";
+  const stampOf = (ms: number) => new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+  const plant = (suite: string, i: number, atMs: number): void => {
+    const run = `${suite}-${stampOf(atMs)}-${i}`;
+    writeFileSync(`${dir}/${run}.jsonl`,
+      JSON.stringify(row({ run, check: CK, ok: true, tree: A, ts: atMs, suite })) + "\n");
+    utimesSync(`${dir}/${run}.jsonl`, atMs / 1000, atMs / 1000); // mtime is what the route pre-filters and RANKS on
+  };
+  // fx1..fx3 above have served their checks and are dropped here on purpose: their names do not
+  // parse, so they are fail-open candidates for EVERY suite, and the block below asserts an EXACT
+  // planted population (`files + filesOmitted === FLOOD`) to pin `coveredFrom` to a known mtime.
+  for (const r of ["fx1", "fx2", "fx3"]) rmSync(`${dir}/${r}.jsonl`, { force: true });
+  for (let i = 0; i < FLOOD; i++) plant(P, i, now - (i + 1) * 60_000);   // the newest material, one file per minute back
+  for (let i = 0; i < 3; i++) plant(P2, i, now - 2 * day - i * 60_000);  // older than every single flood file
+
+  const capQ = async (suite: string, days: number) =>
+    (await (await get(`/api/flakes?suite=${encodeURIComponent(suite)}&days=${days}`)).json()) as Flakes;
+  const capWide = await capQ(P, 30);
+  const capNarrow = await capQ(P, 1);
+  const capScoped = await capQ(P2, 7);
+
+  check("trail cap probe PRECONDITION: the fixture planted more files than the route's cap, so the cap is exercised",
+    capWide.filesOmitted > 0 && capWide.files + capWide.filesOmitted >= FLOOD,
+    `planted=${FLOOD} read=${capWide.files} omitted=${capWide.filesOmitted}`);
+
+  // (a) the ordering itself: 402 files of another suite, ALL newer than the three asked for, and
+  // the asked suite is still answered in full. Pre-fix this read `runs: 0` — the newest 400 files
+  // were the flood, and the three P2 files never got opened.
+  check("/api/flakes: the file cap is spent on the ASKED suite — newer foreign files never evict it",
+    capScoped.runs === 3 && capScoped.filesOtherSuite >= FLOOD && capScoped.filesOmitted === 0
+      // ...and the same ordering seen from the other side: asking for the flood reaches the flood
+      // and NOTHING else, so the candidate population is exactly what this block planted.
+      && capWide.files + capWide.filesOmitted === FLOOD,
+    JSON.stringify({ scopedRuns: capScoped.runs, scopedFiles: capScoped.files,
+      otherSuite: capScoped.filesOtherSuite, scopedOmitted: capScoped.filesOmitted,
+      widePopulation: capWide.files + capWide.filesOmitted, planted: FLOOD }));
+
+  // (b) two windows that MUST differ and do not: `days=30` and `days=1` return the same material,
+  // because a cap is a cap. The contract is not that they differ — it is that the ANSWER SAYS SO,
+  // in a field, so a caller cannot mistake a sample for the register. `coveredFrom` is the oldest
+  // mtime actually opened: identical across both, while `window.from` is 29 days apart.
+  const expectCovered = now - capWide.files * 60_000; // the oldest flood file that still fits the cap
+  check("/api/flakes: a CUT answer names the window it really covers — `truncated` + `coveredFrom`, not the asked `days`",
+    capWide.truncated === true && capNarrow.truncated === true
+      && capWide.coveredFrom > capWide.window.from && capNarrow.coveredFrom > capNarrow.window.from
+      && capWide.coveredFrom === capNarrow.coveredFrom
+      && capWide.window.from < capNarrow.window.from && capWide.runs === capNarrow.runs
+      && Math.abs(capWide.coveredFrom - expectCovered) <= 1500,
+    JSON.stringify({ wideFrom: capWide.window.from, narrowFrom: capNarrow.window.from,
+      covered: capWide.coveredFrom, expectCovered, runs: [capWide.runs, capNarrow.runs],
+      truncated: [capWide.truncated, capNarrow.truncated] }));
+
+  // ...and the other half, without which "always truncated" would pass the check above: an answer
+  // that fits its window is NOT marked cut, and says so by `coveredFrom === window.from`.
+  check("/api/flakes: a COMPLETE answer is not marked cut — coveredFrom === window.from is the register",
+    capScoped.truncated === false && capScoped.coveredFrom === capScoped.window.from,
+    JSON.stringify({ truncated: capScoped.truncated, covered: capScoped.coveredFrom, from: capScoped.window.from }));
+
+  // the two routes share `trailStatsFromQuery`; this is the check that says so about the NEW fields,
+  // so neither side can ever be repaired alone.
+  const capSelf = (await (await fetch(`${BASE}/api/self/flakes?suite=${encodeURIComponent(P)}&days=30`,
+    { headers: { "x-fleet-self-token": laneTok } })).json()) as Flakes;
+  check("GET /api/self/flakes reports the SAME cut fields as the owner route — one handler, one answer",
+    capSelf.truncated === capWide.truncated && capSelf.files === capWide.files
+      && capSelf.coveredFrom === capWide.coveredFrom && capSelf.filesOtherSuite === capWide.filesOtherSuite,
+    JSON.stringify({ self: { t: capSelf.truncated, f: capSelf.files, c: capSelf.coveredFrom, o: capSelf.filesOtherSuite },
+      owner: { t: capWide.truncated, f: capWide.files, c: capWide.coveredFrom, o: capWide.filesOtherSuite } }));
 
   rmSync(dir, { recursive: true, force: true }); // the fixture leaves nothing behind
 }

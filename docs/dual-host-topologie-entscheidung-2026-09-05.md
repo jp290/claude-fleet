@@ -286,6 +286,37 @@ Notiz; der Land hier laeuft seinen eigenen Gate. *Owner-Gates:* W3, W4, W2b. *Wa
 ist der Satz „ein realer End-to-End-Lauf ist dokumentiert und gemessen" — und er ist erst nach
 S1–S2 ueberhaupt erlaubt.
 
+**S4 — GEMESSEN 2026-09-06 05:17–05:40 (Controller Slot 2 auf der kanonischen Instanz, Owner-Delegation
+vom 2026-09-05 20:2x).** Der reale Lauf ist gefahren und dokumentiert; die Notiz ist
+`docs/messungen/2026-09-06-dual-host-s4-folger-lauf.md` (Commit `56da69f`, geschrieben von der
+Folger-Lane, hier per Richtung R geholt und ueber DIESEN Gate gelandet: Land-Note `verify.ok true`,
+`proportional true`, Schritte `install, pins`, 974 ms). Was auf dem Folger gefallen ist, in Ledger-Zeilen
+dessen `audit.jsonl`: `program_dispatch` (Program `4f6f3144…`, `maxLanes 1`) → `main_task`/`task_release`
+(`cfd49c10`, durch die dortige MAIN, Fable 5.1) → `slot_open` der Lane (Opus 5, Branch
+`fleet/260906032010-5d95`) → `fleet_report_open` (`748dfd0e…`, `basis program-main`, angenommen 05:29:36
+nach eigenem Nachfahren des roten Pins) → `slot_kill 1 handoff` (Succeed der MAIN, HANDOFF-Commit
+`f5a00e2` auf `s4/main`) → `slot_kill 3 handoff` (Retire der Nachfolgerin nach ihrem Nachtrag `27e3b82`).
+Zwei Nahte, die der Entwurf oben nicht benannt hatte:
+
+- **Die Folger-MAIN darf NICHT im main-Checkout leben.** `POST /api/self/succeed` verlangt einen
+  committeten `HANDOFF.md`; ein Commit auf `main` des Folgers waere die Divergenz, die `fleet-sync.sh`
+  mit Exit 3 meldet. Gefahren wurde sie deshalb im Worktree `claude-fleet.worktrees/s4-main` auf der
+  Branch `s4/main` (`preflightProgramMain` klassifiziert einen Worktree als `target-repo`, der Brief
+  liest dann `AGENTS.md` — das reichte). Die Lane der MAIN entstand als Worktree UNTER diesem Worktree;
+  `main` des Folgers blieb unberuehrt und der naechste Sync war ein reiner ff (`b224ef8 -> 56da69f`, mit
+  Build).
+- **Der leak-pin ist auf dem Folger fuer JEDE Lane rot** (`FLEET_ALLOWED_HOSTS` dort traegt den nackten
+  Maschinennamen, der in 252 getrackten Zeilen steht); die Lane hat das als Host-Konfiguration
+  adjudiziert und die MAIN es reproduziert. Owner-Wahl als Queue-Notiz gefilet (drei Wege; Empfehlung:
+  der Pin ueberspringt einlabelige Namen).
+
+Vorbedingung (a) davor: `fleet-sync.sh` baut das Bundle (`b224ef8`, Exit 5 fuer einen roten Build,
+`%h/.bun/bin` im Unit-PATH), am Folger in drei Laeufen gemessen (ff ohne Build mit dem alten Skript-Inode,
+dann Fall A „current, Bundle fehlt → Build", dann ueber die neu installierte Unit ohne Build). Was die
+Ledger-Zeile `lane-outcomes.jsonl` des FOLGERS fuer diese Lane sagt, ist `killed-dirty` — aus SEINER Sicht
+ist die Branch nie gelandet, denn gelandet hat sie die andere Instanz; das ist die erwartete Blindstelle
+von Topologie A, kein Defekt.
+
 Nicht als Schnitt gefuehrt, aber klein und unabhaengig: **C-Guard** — `claimCommandJob` prueft
 `daemonSha` per `merge-base` gegen den S2-Commit statt auf Anwesenheit (Risiko in §1 C).
 

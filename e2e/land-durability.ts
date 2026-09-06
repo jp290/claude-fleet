@@ -11,9 +11,13 @@
 //     it, because recordLand returns early on mainBefore === mainAfter.
 // Both are reproduced here against a REAL kill of the real server, not a simulated one.
 import { spawnSync } from "node:child_process";
-import { chmodSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync,
+  writeFileSync,
+} from "node:fs";
 import { BASE, REPO, ROOT, check, get, post, restartSrv, tmuxOut } from "./harness";
 import { setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
+import { resolveSourceTree } from "./trail-emit";
 
 const g = (dir: string, ...a: string[]): { out: string; err: string; code: number } => {
   const r = spawnSync("git", ["-C", dir, ...a], { encoding: "utf8" });
@@ -421,6 +425,113 @@ export async function run(): Promise<void> {
         oddPoll === true && !oddOwner.includes(LOCK), `${JSON.stringify({ poll: oddPoll })} ${oddOwner}`);
       await restartSrv(); // the flag is a per-restart `extra`, never in process.env — leave it gone
       await post(`/api/slots/${le.slot}/kill`, {});
+    }
+  }
+
+  // === F — the follower's BUNDLE: what a fast-forward invalidates, fleet-sync.sh rebuilds ======
+  // §E's subject is the same rail from the other end. `public/*.js` is a gitignored BUILD artifact,
+  // so `fleet-sync.sh` moving `main` moves `src/` and leaves the JS behind it untouched — or, on a
+  // checkout that was cloned and never built, absent. Measured on the follower 2026-09-06 04:14:
+  // `bundleStale {appJsMtime:null, shareJsMtime:null, helperJsMtime:null}` and no `public/*.js` at
+  // all, i.e. a board served as HTML with no client. Four facts are proven below, against the REAL
+  // script (not a copy of its logic) and a throwaway canonical/follower pair, with the build itself
+  // replaced by a STAND-IN: `bun run build` here would prove the bundler works, which is not the
+  // question. The question is WHEN the script reaches for it and what it does when it comes back red.
+  {
+    // the script is a tracked file of the tree under test, and a staged instance ($DIR) does not
+    // contain it — only the symlink home does. Same resolution e2e/trail-emit.ts uses.
+    const sourceTree = ((): string | null => {
+      let link: string | null = null;
+      try { link = readlinkSync(`${ROOT}/node_modules`); } catch { /* direct checkout: ROOT answers */ }
+      return resolveSourceTree(ROOT, link, (c) => g(c, "rev-parse", "--is-inside-work-tree").out === "true");
+    })();
+    const script = sourceTree === null ? null : `${sourceTree}/fleet-sync.sh`;
+    // the probe fails as ITSELF: "the tree under test was not resolvable" and "the script misbehaved"
+    // are different answers, and the first one rendered as the second accuses the wrong file.
+    check("(setup F) PROBE: the tree under test resolves and carries fleet-sync.sh",
+      script !== null && existsSync(script), `sourceTree=${sourceTree}`);
+    if (script !== null && existsSync(script)) {
+      const FIX = `${process.env.TMPDIR ?? "/tmp"}/fleet-e2e-sync-${process.pid}`;
+      const can = `${FIX}/canonical`;
+      const fol = `${FIX}/follower`;
+      const MARK = `${FIX}/build-ran`;
+      rmSync(FIX, { recursive: true, force: true });
+      mkdirSync(can, { recursive: true });
+      g(can, "init", "-q", "-b", "main");
+      g(can, "config", "user.email", "e2e@fleet.local");
+      g(can, "config", "user.name", "fleet e2e");
+      g(can, "config", "commit.gpgsign", "false");
+      // the same shape as the real repo: the bundle is IGNORED, which is why a fetch can never
+      // carry it and why its absence is not a dirty tree.
+      writeFileSync(`${can}/.gitignore`, "public/*.js\n");
+      writeFileSync(`${can}/README`, "canonical\n");
+      copyFileSync(script, `${can}/fleet-sync.sh`);
+      chmodSync(`${can}/fleet-sync.sh`, 0o755);
+      const seeded = commitAll(can, "seed");
+      const cloned = spawnSync("git", ["clone", "-q", "--origin", "canonical", can, fol], { encoding: "utf8" });
+      check("(setup F) a canonical repo and a follower clone that names it `canonical` exist",
+        seeded.code === 0 && cloned.status === 0 && existsSync(`${fol}/fleet-sync.sh`),
+        `seed=${seeded.code} clone=${cloned.status} ${(cloned.stderr ?? "").trim()}`);
+
+      // The stand-in. It writes the three bundles server.ts calls the client and appends ONE line
+      // to a marker OUTSIDE the repo — outside because a marker inside would be an untracked file,
+      // and the script refuses a dirty tree before it does anything else.
+      const BUILD_OK = `mkdir -p public && for f in app.js share.js helper.js; do echo "// stand-in $f" > public/$f; done && echo ran >> ${MARK}`;
+      const builds = (): number => {
+        try { return readFileSync(MARK, "utf8").split("\n").filter(Boolean).length; } catch { return 0; }
+      };
+      const bundlesHere = (): string[] =>
+        ["app.js", "share.js", "helper.js"].filter((f) => existsSync(`${fol}/public/${f}`));
+      const runSync = (buildCmd: string): { code: number; out: string } => {
+        const r = spawnSync("sh", [`${fol}/fleet-sync.sh`],
+          { cwd: fol, encoding: "utf8", env: { ...process.env, FLEET_SYNC_BUILD_CMD: buildCmd } });
+        return { code: r.status ?? -1, out: `${(r.stdout ?? "").trim()} ${(r.stderr ?? "").trim()}`.trim() };
+      };
+      const moveCanonical = (name: string): string => {
+        writeFileSync(`${can}/${name}`, `${name}\n`);
+        commitAll(can, name);
+        return g(can, "rev-parse", "HEAD").out;
+      };
+
+      // --- A: nothing to fetch, and still something to do. This is the state the follower was
+      // actually found in: current with main, and no client at all.
+      check("(setup F/A) the fresh clone is current with canonical and carries NO bundle",
+        g(fol, "rev-parse", "HEAD").out === g(can, "rev-parse", "HEAD").out && bundlesHere().length === 0,
+        `bundles=[${bundlesHere()}]`);
+      const a = runSync(BUILD_OK);
+      check("a follower that is CURRENT but has no client bundle builds one, and still exits 0",
+        a.code === 0 && bundlesHere().length === 3 && builds() === 1,
+        `exit=${a.code} bundles=[${bundlesHere()}] builds=${builds()} :: ${a.out}`);
+
+      // --- D: …and having built it, it does NOT build again. The counter-proof to A: a script that
+      // simply always builds would pass A and turn a 15-minute timer into a bundler loop.
+      const beforeD = builds();
+      const d = runSync(BUILD_OK);
+      check("a follower that is current WITH its bundle runs no build at all",
+        d.code === 0 && builds() === beforeD && /already current/.test(d.out) && !/build/.test(d.out),
+        `exit=${d.code} builds=${beforeD}->${builds()} :: ${d.out}`);
+
+      // --- B: the fast-forward case. main moved, so `src/` moved, so the bundle is stale even
+      // though all three files are sitting right there — presence is not currency.
+      const headB = moveCanonical("moved-b.txt");
+      const beforeB = builds();
+      const b = runSync(BUILD_OK);
+      check("a fast-forward is followed by a build even when all three bundles already exist",
+        b.code === 0 && g(fol, "rev-parse", "HEAD").out === headB && builds() === beforeB + 1,
+        `exit=${b.code} head=${g(fol, "rev-parse", "HEAD").out.slice(0, 8)} want=${headB.slice(0, 8)} builds=${beforeB}->${builds()} :: ${b.out}`);
+
+      // --- C: the build comes back RED. The sync has already happened by then and it STANDS —
+      // which is the whole reason this is exit 5 and not 4: 4 means nothing moved.
+      const headC = moveCanonical("moved-c.txt");
+      const c = runSync("exit 1");
+      check("a red build is exit 5 — a code of its own — and the fast-forward it followed still stands",
+        c.code === 5 && g(fol, "rev-parse", "HEAD").out === headC,
+        `exit=${c.code} head=${g(fol, "rev-parse", "HEAD").out.slice(0, 8)} want=${headC.slice(0, 8)} :: ${c.out}`);
+      check("…and the failure line says BOTH halves: the sync landed, the bundle did not",
+        /BUILD FAILED/.test(c.out) && c.out.includes(headC.slice(0, 7)),
+        c.out);
+
+      rmSync(FIX, { recursive: true, force: true });
     }
   }
 

@@ -10,12 +10,13 @@
 # follower and never runs this script, so installing this on it would be a category error.
 #
 # ONESHOT, AND ALLOWED TO FAIL LOUDLY — that is the whole design. fleet-sync.sh answers in five
-# exits (0 current or fast-forwarded · 2 fetch failed · 3 DIVERGED · 4 precondition refused), and
-# anything but 0 leaves this unit `failed`, which is what `systemctl --user status fleet-sync` and
-# `systemctl --user list-timers` then show. Exit 3 is the one a human owes an answer to: it means
-# this host has landed something, and under path b it must not. Do NOT add `SuccessExitStatus=` to
-# quieten any of them — a transport that fails silently is the failure this unit exists to make
-# visible.
+# exits (0 current or fast-forwarded · 2 fetch failed · 3 DIVERGED · 4 precondition refused · 5
+# client build failed), and anything but 0 leaves this unit `failed`, which is what
+# `systemctl --user status fleet-sync` and `systemctl --user list-timers` then show. Two of them
+# want a human. Exit 3 means this host has landed something, and under path b it must not. Exit 5
+# means the fast-forward STANDS and only the bundle behind it does not — the board this host serves
+# is then the old JS, or none at all, over new HTML. Do NOT add `SuccessExitStatus=` to quieten any
+# of them — a transport that fails silently is the failure this unit exists to make visible.
 #
 # WHAT IT DOES NOT GUARD, stated rather than implied. The tree it moves is the tree the follower's
 # sessions and suites read, and this unit takes no lock — not the suite mutex at /tmp/fleet-e2e.lock
@@ -48,10 +49,16 @@ WorkingDirectory=FLEET-DIR
 ExecStart=/bin/sh FLEET-DIR/fleet-sync.sh
 
 # EXPLICIT, for the reason its neighbour pays twice over: a service inherits systemd's own default
-# PATH, not a login shell's. What this one has to reach is smaller than the watchdog's — `git` and
-# the `ssh` it shells out to, both from the distribution — so no home-relative entry belongs here.
-# If it ever needs one, it needs it for a reason worth writing down next to it.
-Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# PATH, not a login shell's. Most of what this one reaches is the distribution's — `git` and the
+# `ssh` it shells out to — and for a long time that was the whole list, with a note here saying a
+# home-relative entry would need a reason worth writing down next to it. THE REASON ARRIVED:
+# fleet-sync.sh now builds the client bundle after a fast-forward (`bun run build`), because
+# `public/*.js` is gitignored and a follower that only fetches serves HTML with no JS behind it.
+# `bun` ships from no distribution and installs into `%h/.bun/bin`, so without this entry the build
+# is a `command not found` from the timer that a terminal run can never reproduce. The script
+# resolves `bun` itself as well, so an installed unit older than this line still builds — belt and
+# braces on purpose, because only one of the two travels through a land.
+Environment=PATH=%h/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # THE KEY IS NOT HERE AND MUST NEVER BE, the same sentence helper-daemon/fleet-helper.service makes
 # about its token: an `Environment=` line is readable by every account on the box through

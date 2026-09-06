@@ -27,6 +27,12 @@ am Baum `37d6e95` gelesen; wer später liest, misst neu.
 > effektiv Claude Fleet auf ganzer Ebene benutzen kann. Am Anfang noch nicht alles, aber schon bald
 > denke ich, dass diese Abstraktionen auch wieder Möglichkeiten für Weiteres mit sich bringen."
 
+> Nachtrag 19:1x: „Ich würde in dieser Hub-Ansicht auch überhaupt sehen wollen, welche Tasks
+> gerade in welcher Rolle welche Task bearbeiten usw. So könnte man dann später auch ganz einfach
+> Astra oder welches Modell auch immer in jeder Rolle in jedem Studio, Workflow oder wie auch
+> immer konfigurieren. Wir müssen das Ganze einfach nur einmal robust angehen und aufbauen." Und
+> davor: „Dabei ist natürlich immer noch das Wichtigste, dass die Tasks und Studios sauber laufen."
+
 ## 2. Zuordnung auf das, was existiert
 
 | Owner-Begriff | Heute im Code | Fehlt |
@@ -38,6 +44,7 @@ am Baum `37d6e95` gelesen; wer später liest, misst neu.
 | Ideenfindung | Queue-Zeilen `notiz`/`richtung`, Scout-Zeilen `[idee scout-*]`, Analyst (`tickAnalysisSweep`, im Betrieb AUS) | ein Ausgang, der die Queue schrumpft („verwerfen empfohlen", Plan 2026-08-11 Stufe 2) |
 | ContextPack | ContextPlan/receipt (Studio-Doc), `ContextEnvelope` (ACP Act 5–7, nie gebaut: 0 Treffer im Code) | das Objekt selbst |
 | socialAgenticDiskussionPlatform | Clarifications (`/api/self/clarifications`), Attention, Steward-Arena (Attic) | der Thread, in dem mehrere Agenten ein Pack diskutieren und ein Verdikt liefern (= L-Workspace, Plan 2026-08-11) |
+| Wer arbeitet in welcher ROLLE an welcher Task | Slot trägt `label`, `model`, `harness`, `effort`; Task `sent` trägt `slot`; Lane trägt Branch. Eine Rolle existiert nur als Label-Konvention (🎛, ⚙, Program-MAIN, ⎇ task) | ein `role`-Feld an Slot/Task = ACP Act 6 Role Bootstrap; Modell je Rolle je Studio konfigurieren = ACP Act 7 Harnesswahl |
 | Tasks bei Repo / Studio / Program | `Task.repo` immer, `Task.programId` optional (Owner kann per `POST /api/tasks` mit `programId` filen) | ein optionaler Studio-Bezug derselben Art |
 
 Lesart des Controllers, vom Owner noch nicht bestätigt: die drei Modi sind keine Zustände des

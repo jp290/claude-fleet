@@ -230,365 +230,109 @@ git und die Sensoren nicht tragen. Abschnitte darunter sind FREMD.
 ---
 ---
 
-# HANDOFF — 🎛 Fleet Controller (Slot 2, Fable 5.1): S4 ist GEMESSEN und gelandet (Dual-Host komplett bis auf Owner-Wahlen), Bundle-Luecke des Folgers zu, E8 in Flug; 2026-09-06 06:1x, ctx GEMESSEN 30 % (Owner-Wort: jetzt die Nachfolge)
+# HANDOFF — 🎛 Fleet Controller (Slot 6, Fable 5.1): beide Lanes gelandet (Audit-Fix `c8104a2`, E8 `f8babcd`), Deploy `8b59b434` mit Opus fuer alle Wegwerf-Worker, Second-host als Git-Hub + vollwertige Toolchain (W5a/W5c), drei Owner-Richtungen gefilt; 2026-09-06 09:5x, ctx GEMESSEN 26,3 %
 
-> **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 7, 04:1x).
-> **Der Controller ist, wer das Label `🎛 Fleet Controller` traegt.** Lineage: … → 4 → 7 → 2 → du.
+> **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 2, 06:1x).
+> **Der Controller ist, wer das Label `🎛 Fleet Controller` traegt.** Lineage: … → 7 → 2 → 6 → du.
+> **STRUKTURBEFUND (von der Fleet-Betrieb-MAIN Slot 10, 09:4x, bestaetigt):** „oberster Abschnitt" ist bei
+> drei bis vier MAINs pro Tag KEIN Zeiger mehr auf den richtigen Text — eine Nachfolgerin liest den
+> Abschnitt eines FREMDEN Programs. Offene Frage `docs/handoffs/<program>.md`; bis dahin: such deinen
+> Abschnitt per `grep -n '^# HANDOFF — 🎛' HANDOFF.md`, nicht per „oben".
 
 Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, Owner-Poll, Panes.
 
 ## 0. Was du als Erstes tust
 
 1. `GET /api/self/attention` und `GET /api/self/fleet-report`: ich hinterlasse KEINE offene Attention.
-   Armierte Watches, die mit mir sterben: Audit-Watches auf `b224ef8` und `56da69f` (das Audit laeuft
-   koalesziert, Lock-pid 38043 seit ~05:2x; die Ledger-Zeile entsteht erst am ENDE, ~40 min) und — falls
-   E8 noch nicht gelandet ist — der Lane-Watch auf Slot 4. **Armiere sie neu**, eine fehlende Audit-Zeile
-   heisst „laeuft noch".
-2. **E8 `34053ec9` (Slot 4, Branch `fleet/260906031434-0d8f`, Opus 5 high):** Commit `a5cfdaf` steht
-   (Suite-Offer nennt die Fails; Parser einmal, zwei Aufrufer; Beweis in `e2e/lane-suite.ts` LS.4b statt
-   `helper-portal.ts`, K7c dort als Gegenstueck). Die Lane fuhr `./e2e-isolated.sh` LOKAL (Helfer in
-   Ruhezeit 23–07). **Wenn der Report da ist:** Pane lesen, Report annehmen
-   (`POST /api/self/fleet-report/<id>/accept`), landen ueber `POST /api/slots/4/merge` (Owner-Token —
-   `/api/self/tasks/:id/land` gibt dem Controller 409, er ist nicht die gebundene MAIN von `cd110019`),
-   `{kind:"merge"}`-Watch, danach `{kind:"audit"}`. Ist der Report ROT: die Lane hat die Suite auf
-   derselben Maschine gefahren, auf der das Audit lief — erst Trail lesen, dann urteilen.
-3. **Deploy hier steht aus:** `codeBehind:true` (bootHead `44fb442`, head `bbcad98`; Server-Code aendert
-   sich erst mit E8). `POST /api/deploy` lehnt bei laufendem Audit mit 409 ab — nach dem Audit-Gruen
-   EINMAL deployen (nach E8, nicht davor). Vorher die MAINs Slot 6/8/10 fragen, ob ein Beweis an einem
-   Idle-Fenster haengt (ein Deploy nullt jede Idle-Uhr).
-4. **Notiz `25361e42`** (leak-pin auf dem Folger, drei Wege, Empfehlung: einlabelige Namen ueberspringen)
-   ist Owner-Wahl. Nicht anfassen.
+   **Mit mir sterben zwei armierte Audit-Watches:** `d163f863` (mainAfter `c8104a2`, Audit-Fix) und
+   `01de2280` (mainAfter `f8babcd`, E8). Das Audit laeuft koalesziert und REMOTE auf dem Second-host
+   (Helper `secondhostlinux1`, Claim `audit claude-fleet main`, Expiry ~10:31). Eine fehlende
+   Ledger-Zeile heisst „laeuft noch". Armiere `{kind:"audit"}` neu, je Land eine.
+2. **Nach dem Audit-Verdikt, in DIESER Reihenfolge:** (a) `POST /api/deploy` — `codeBehind:true`,
+   E8 `f8babcd` ist Servercode (`server.ts`, `helper-daemon/daemon.ts`); die Route lehnt bei
+   laufendem Audit mit 409 ab. Vorher die MAINs Slot 2/7/8 fragen (ein Deploy nullt jede Idle-Uhr;
+   um 09:40 haben alle drei „Deploy ok" gesagt, das gilt nicht fort). (b) **Daemon-Update auf dem
+   Second-host:** `POST /api/helper/devices/secondhostlinux1/update` (Owner-Token) — E8s Artefakt-Haelfte
+   (Vorschau-Log-Upload) braucht den neuen Daemon; `daemonSha` dort ist `40a55e40` (2026-09-04).
+   NICHT waehrend ein Audit dort laeuft: der Daemon startet sich beim Update neu (exit 75) und wuerde
+   den laufenden Lauf toeten. Beweis, dass es griff: naechster Heartbeat traegt `daemonSha` = main.
+3. **Erwartung ans Audit:** GRUEN, oder rot NUR mit registrierten Familien (§11.2o-Sonde faellt als sie
+   selbst, Q6/§11.2q, §11.2l-Paar). Faellt `(setup F) … sourceTree=null` NOCHMAL, ist der Fix
+   `c8104a2` nicht angekommen — dann ist das ein neuer Befund, kein bekannter.
+4. **Lane in Slot 4 (`76d39cae`, Audit-Determiniertheit Zeile 2, MAIN Slot 7)** und **Slot 1
+   (`fleet/260905150555-2aac`, Land laeuft seit 09:50, MAIN Slot 2)** gehoeren ihren MAINs — nicht landen.
+5. **Queue-Zeile `84cf7335` (Resolver-Sensor) ist `queued`** und startet vom Tick, sobald die Lane-Decke
+   (2) frei ist. Ownerlos, repo-gebunden; Report kommt an den Owner-Inbox oder an den, der einen
+   Lane-Watch haelt — **armiere einen Lane-Watch, sobald sie einen Slot hat**, sonst landet der Report
+   nirgends bei dir.
 
-0b. **REGRESSION, die ich gelandet habe, und die JEDEN Post-Land-Audit rot macht:** die §F-Setup-Sonde aus
-   `b224ef8` (`e2e/land-durability.ts`, „the tree under test resolves and carries fleet-sync.sh") liefert im
-   Audit-Baum `sourceTree=null` (Audit `b224ef8`: 3732/1, `real` adjudiziert). In einer Lane ist sie gruen
-   (Symlink nach Hause), im Audit nicht (Quelle ist kein Work-Tree). **Fix-Lane `6683f4cf` in Slot 5**
-   (Opus high, Branch `fleet/260906035543-e800`, Lane-Watch `f7278bdd`): `fleet-sync.sh` in die
-   `e2e-stage.sh`-Kopierliste, Sonde loest `${ROOT}` zuerst, Beweis per nachgestelltem Audit-Pfad mit
-   Kontrolle. Bis sie gelandet ist, ist ein rotes Audit mit GENAU diesem einen Fail bekannt und `real`;
-   JEDER weitere Fail-Name ist ein neuer Befund. Dieselbe Sonde faellt auch im E8-Audit.
+## 1. Owner-Entscheide dieser Session (09:0x–09:5x, woertlich oder sinngemaess)
 
-## 1. Owner-Entscheide dieser Session (06:0x–06:1x, woertlich oder sinngemaess)
+- **„Second-host sollte vollwertig aufgesetzt sein, je nachdem wie wir das vernuenftig aufsetzen"** und
+  „was wenn wir einen Git-Server auf dem Second-host laufen lassen wuerden?" → Auftrag `1e7765c9` in
+  `cd110019` (W5a Hub · W5b Land-Push · W5c Toolchain+Rulebook · W5d Umschalten), Design in
+  `docs/dual-host-topologie-entscheidung-2026-09-05.md` §6: ff-only-Push auf den Hub IST das Lock,
+  zwei landende Instanzen brauchen kein zweites Lock-Design.
+- **„pi wuerde ich erstmal nicht mitnehmen wollen"**; Codex-Login dort hat der Owner selbst gemacht
+  (mechanisch bestaetigt: `codex login status` → „Logged in using ChatGPT").
+- **Bewerbungsarbeit spaeter auf dem Second-host**, getrennt von Fremdanbietern, Folder-Upload-Anbindung →
+  Notiz `dc9b346e` (Merker, keine Entscheidung).
+- **„gut moeglich, dass Fable 5.1 das sogar besser kann"** (zu Astra auf dem Second-host) → E6 wird UMGEDEUTET:
+  nicht „Astra dorthin", sondern „claude UND codex laufen dort als Lane/MAIN; was fuehrt, entscheidet
+  die Modellpolitik je Program". Default fuer neue Denk-/Review-Programs dort: Fable-MAIN, Codex nur als
+  ausdruecklich gewollter Gegenleser. Astra bleibt bis Program-Ende (`eec69528`, zwei offene Zeilen).
+- **Merge-Resolver:** Frage nach Modell → Antwort: bis `8b59b434` Sonnet 5 (SUMMARY_MODEL-Default,
+  merge/repair ohne eigenes Modell), seit dem Deploy Opus 5. Eskalation auf Fable / Sonnet-Trichter:
+  **Controller-Entscheid ERST MESSEN** — Sensor `84cf7335` (queued), Idee `3d5c87cb` mit Ausloeser.
+  „Ein robuster Merge-Prozess koennte uns einiges ersparen" → Denkauftrag `187aa1a0` (Fable-MAIN, drei
+  Schichten, Ledger-Zahlen im Text), noch `pending`, Owner-Freigabe oder „clarify first".
+- Delegation vom 2026-09-05 20:2x gilt fort (Host-Akte auf dem Folger einzeln benannt; fragen nur bei
+  Geld, fremden Konten, Publikation).
 
-Die Delegation vom 2026-09-05 20:2x gilt fort (Host-Akte auf dem Folger, einzeln benannt; fragen nur bei
-Geld, fremden Konten, Publikation). NEU:
-- **„Die Wegwerf-Worker sollten wir auf jeden Fall auch auf Opus 5 stellen."** → `FLEET_SUMMARY_MODEL=
-  'claude-opus-5[1m]'` steht in `.env` (Backup `.env.bak-20260906-0615`), scharf ab dem naechsten
-  srv-Start — also mit dem Deploy nach E8. Vorher war der Default Sonnet 5 (`server.ts#SUMMARY_MODEL`).
-  Gegenprobe nach dem Deploy: `ps eww` am srv-Prozess, NUR den Key filtern.
-- **„Slot 6 haette schon laengst die Succession fahren muessen."** → per `POST /send` zugestellt, Slot 6
-  hat sie gefahren: Audit-Determiniertheit-MAIN lebt in Slot 7 (`slot_kill 6 handoff` 06:13). Lehre:
-  eine Program-MAIN ueber 30 % ist einen Anstoss wert, sie stupst sich nicht selbst.
-- **Auslagern auf den Second-host ist gewollt** („Slots/Agenten/Sessions auslagern, damit hier Test- und
-  iOS-Umgebungen laufen koennen"). Der Owner findet die drei Wege (1A Timer-Fetch + Controller landet ·
-  1B Rollen tauschen · 1C gemeinsamer Bare-Remote) „alle echt gut" und fragt: **„was wenn wir einen
-  Git-Server auf dem Second-host laufen lassen wuerden?"** — das ist 1C mit dem Second-host als Hub.
-  Einschaetzung als Ausgangspunkt (NICHT entschieden): ein BARE-Repo auf dem Second-host als Nabe fuer BEIDE
-  Richtungen (mac pusht `main` nach jedem Land dorthin, statt dass der Second-host per ssh in einen lebenden
-  Checkout greift; Second-host-Lanes pushen `fleet/*` dorthin, der Controller holt von dort) ist sauber und
-  braucht keinen Code am Gate — solange GENAU EINE Instanz landet (heute mac; `FLEET_LANDS=0` am Folger
-  bleibt). Zwei landende Instanzen brauchen erst ein Lock-Design. Kein GitHub-Push von hier (Memory: nie
-  von der Dev-Maschine pushen); ein privates Bare-Repo im Tailnet ist keine Publikation. Naechster
-  Schritt: Auftrag in `cd110019` mit Kriterium (Bare-Repo = Host-Akt; `fleet-sync.sh` bekommt den Hub als
-  Remote; Richtung R wird `git fetch hub 'refs/heads/fleet/*'`), danach E6 fuer Astra (node+codex dort).
+## 2. Was gefallen ist (Belege: Land-Notes, `deploys.jsonl`, Commit-Bodies, Second-host per ssh)
 
-## 2. Was gefallen ist (Belege: Land-Notes, `deploys.jsonl` des Folgers nicht, `audit.jsonl` BEIDER Instanzen)
-
-- **(a) Bundle-Luecke `64973151` → `b224ef8`** (Lane Slot 4, Opus): `fleet-sync.sh` baut nach ff oder bei
-  fehlendem Bundle, Exit 5, `%h/.bun/bin` im Unit-Template, Pin Skript↔Kopf↔Unit, e2e §F A–D je unter
-  Mutation rot. Note `verify.ok true`, 141 s, `waitMs 0`. Report `c0f77149` accepted.
-  **Am Folger in drei Laeufen gemessen** (alter Inode ff't ohne Build · Fall A baut · Unit-Lauf ohne
-  Build), danach `bundleStale.stale:false`, `codeBehind:false`. Host-Akte dort: Unit-Template neu
-  installiert + `daemon-reload`; `FLEET_MODEL='claude-opus-5[1m]'` in `.env` (Backup
-  `.env.bak-20260906-0516`); srv 2× neu gestartet; Dispatcher dort AN.
-- **Eigener Fehler, benannt:** ich habe beim Probieren `bun run build` auf dem Folger von Hand gefahren
-  und die Bundles danach wieder geloescht, damit die Timer-Messung echt blieb.
-- **W3 + S4 → `56da69f`:** Program `4f6f3144` auf dem Folger angelegt/bestaetigt/aktiviert, Dispatch-Grant
-  `maxLanes 1`, MAIN (Fable, high) in Worktree `~/claude-fleet.worktrees/s4-main` auf Branch `s4/main`
-  gebootet. Die Kette lief OHNE Hand am Prompt: `main_task`/`task_release` `cfd49c10` → Lane Slot 2 →
-  `fleet_report_open 748dfd0e` → accept 05:29:36 → HANDOFF `f5a00e2` → succeed (`slot_kill 1 handoff`)
-  → Nachfolgerin Nachtrag `27e3b82` → retire (`slot_kill 3 handoff`). W4: beide Branches per
-  `git fetch ssh://… '+refs/heads/fleet/*:refs/remotes/second-host/fleet/*' '+refs/heads/s4/*:…'` geholt,
-  Worktree hier, `POST /api/lanes {attach}` → Slot 5, Land ueber Owner-Route: Note `verify.ok true`,
-  `proportional true` (install+pins), 974 ms. Folger danach per Sync auf `56da69f` mit Build; spent Lane
-  dort per `/kill` geraeumt (Outcome dort `killed-dirty` — aus SEINER Sicht nie gelandet, erwartet).
-  `docs/dual-host-topologie-entscheidung-2026-09-05.md` §3 traegt den Messblock (`bbcad98`, Direkt-Commit,
-  docs-only, `bun e2e/pins.ts` ALL PASS von Hand — fuer die Ledger unsichtbar, darum hier gesagt).
-- **Zwei Nahte, die der S4-Entwurf nicht kannte:** die Folger-MAIN darf nicht im main-Checkout leben
-  (succeed verlangt HANDOFF-Commit, ein main-Commit dort = Sync Exit 3) — Worktree auf eigener Branch ist
-  der Weg; und der leak-pin ist auf dem Folger fuer jede Lane rot (Notiz `25361e42`).
-- Der Folger hat KEIN `CLAUDE.md` (nie gerendert); seine Sessions laufen allein auf `AGENTS.md`. Das hat
-  fuer S4 gereicht. Ob es fuer eine Code-Lane dort reicht, ist ungemessen.
+- **Audit-Fix `c8104a2`** (Lane Slot 5, Task `6683f4cf`): `fleet-sync.sh` in der `e2e-stage.sh`-Kopierliste,
+  §F loest `${ROOT}` zuerst. Beweis in DREI Laeufen (Kontrolle rot mit exakter Ledger-Signatur, Fix
+  gruen mit `sourceTree=null` in der PASS-Zeile = ROOT-Weg trug, Worktree gruen). Note `verify.ok true`,
+  150 s, `waitMs 0`, volle Kette. Report `e8c839b5` accepted. **Offen aus dem Report:** kein Pin haelt
+  `fleet-sync.sh` in der Kopierliste — faellt sie heraus, ist es dieselbe unsichtbare Form wieder.
+- **E8 `f8babcd`** (Lane Slot 4, Task `34053ec9`): ZWEI Loecher — `reportLaneSuite` warf die Daemon-Fail-
+  Namen weg, `uploadSuiteLog` hing an `auditAt`. Jetzt `fails[]` auf dem Vorschau-Verdikt, ein Parser
+  (`localFailNames`), zwei Aufrufer; `artifactAt` auf jeder Quittung. Mutationslauf bewiesen. Note
+  `verify.ok true`, 143 s. Report `1d076c04` accepted. Zwei rote adjudiziert (Q6 §11.2q; siebtes
+  §11.2j-Mitglied `fleet-e2e-postland-audit.ts:930`, per A/B auf dem Elternbaum bewiesen, UNREPARIERT —
+  macht dort jeden postland-Suite-Lauf rot).
+- **Deploy `8b59b434`** 09:43, `ok:true`, bootHead `e2beeff`, srv pid 96786; `FLEET_SUMMARY_MODEL` im Env
+  (gezaehlt, nicht gelesen), `bundleStale false`. Die drei MAINs vorher gefragt, alle „Deploy ok".
+  **Danach sind zwei Lands gelandet, also `codeBehind:true` — §0.2.**
+- **W5a** (Bare-Hub `~/git/claude-fleet.git`, Remote `hub` auf beiden Hosts, Timer bleibt auf `canonical`)
+  und **W5c** (Node 24.20.0 Tarball unter `~/.local`, codex 0.153.4, pi 0.85.0 im mac-Layout, bun/bunx
+  in `~/.local/bin`, `rulebook/` per scp + `CLAUDE.md` byte-identisch gerendert, Pins dort 417/1 —
+  der eine ist der leak-pin = Notiz `25361e42`, Owner-Wahl; `FLEET_SUMMARY_MODEL` in `.env` dort).
+  Messbloecke: `a775cc8`, `e2beeff` (Direkt-Commits, docs-only, Pins von Hand gruen). **Hub-Regel bis
+  W5b: nach JEDEM Land `git push hub main` von Hand** — heute dreimal getan, Hub steht auf `f8babcd`.
+- **Falscher Alarm, selbst korrigiert:** `pgrep -f 'bun server.ts' | head -1` traf eine e2e-Instanz des
+  Land-Gates, nicht den srv; „zweiter Neustart" war keiner. `fleet.pid` + `lsof :8790` sind der Sensor.
+- Zwei Hintergrund-Watcher (meiner, Slot 5s) wurden vom System wegen Speicherknappheit beendet;
+  8 GB, Kompressor bei 3,3 GB. Drei Suiten in Reihe sind hier das Maximum.
 
 ## 3. Offen — in dieser Reihenfolge
 
-1. §0.2 E8 landen (Slot 4 wartet auf Monitore seiner lokalen Suite) UND die Audit-Fix-Lane `6683f4cf`
-   (Slot 5, Branch `fleet/260906035543-e800`, Watch `f7278bdd`; faehrt drei Laeufe: Fix im Archiv-Baum,
-   Kontrolle ohne Fix, Worktree — landen NUR mit beiden Tails im Report). Reihenfolge: erst den Fix,
-   dann E8, sonst ist E8s Audit sicher rot. §0.3 danach EIN Deploy (nimmt `FLEET_SUMMARY_MODEL` mit).
-1b. Hintergrund-Sweep 06:0x: zehn verwaiste `codex`-Prozesse aus toten e2e-Instanzen per PID beendet
-   (Notiz `6a691420`: Mechanismus + Kandidat fuer den `e2e-stage.sh`-Teardown). Im Fleet laeuft nur
-   Slot 3 (Astra) auf OpenAI; alle Wegwerf-Worker sind Claude.
-2. **Dual-Host `cd110019`: S1–S4 sind gefahren.** Offen sind nur Owner-Wahlen (E6 Harnesses auf dem
-   Folger, leak-pin-Weg) — das Program hat keine lebende MAIN, der Controller faehrt es; ein Abschluss
-   (`complete`) ist Owner-Sache. `refs/remotes/second-host/s4/main` (`27e3b82`) traegt die zwei
-   HANDOFF-Abschnitte der Folger-MAINs — NICHT gelandet, Beleg als Ref.
-3. Slot 1 (`02740e69`, Fleet-Betrieb, ctx 32 %) und die MAINs 6/8/10 gehoeren sich selbst — nicht landen.
-   Slot 15 „fable5" ist eine unbeschriftete Session ohne Program (ctx 27 %), nicht meine.
-4. Maschine: 8 GB, ein Suite-Mutex; nicht mehr als zwei Lanes gleichzeitig.
+1. §0.1–0.2: Audit-Verdikt → Deploy → Daemon-Update. Danach `docs/dual-host-topologie-entscheidung`
+   §6 um E8-Folge ergaenzen (Vorschau-Artefakt braucht den neuen Daemon).
+2. `84cf7335` Lane-Watch, sobald gestartet (§0.5). `187aa1a0` liegt beim Owner.
+3. W5b (Lane) → W5d (Host-Akte + Umschalten). Bis dahin Hand-Push auf den Hub.
+4. Dual-Host `cd110019` hat keine lebende MAIN, der Controller faehrt es; `complete` ist Owner-Sache.
+5. Lane-Decke 2, ein Suite-Mutex, 8 GB: nie mehr als zwei Lanes, nie zwei Lands.
 
 ## 4. Was mit dieser Session stirbt
 
-Kein Auto, keine Mission, keine Attention. Watches §0.1. Meine Lane-Plaetze 4 (E8, lebt) und 5 (Audit-Fix, lebt) — beide Watches sterben mit mir, neu armieren.
-Hintergrund-Watcher auf den Folger: keiner mehr aktiv.
+Kein Auto (beide One-Shots verbraucht), keine Mission, keine Attention. Watches §0.1 (die vier
+Lane-/Merge-Watches sind gefeuert, nur die zwei Audit-Watches leben). Kein Hintergrund-Watcher.
 
 ---
 ---
 
-# HANDOFF (§alt, ersetzt durch den Abschnitt ganz oben) — Program-MAIN Fleet-Betrieb 2026-09, Slot 10: die Audit-Regression ist ZU (`93e5460`, ueber die eigene Self-Land-Sprosse), die zweite Lane haengt an einem NIE-GEMESSENEN Gate — und ich habe die Last-Hypothese am Ende mit einer Kontrolle belegt; 2026-09-05 13:5x
-
-Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was git
-und die Sensoren nicht tragen. Lineage 4 → 16 → 10 → 3 → 5 → 2 → 10 → du.
-
-## 0. DAS ERSTE, WAS DU TUST — zwei Zeilen, und beide sind Tueren, keine Fragen
-
-- **`ec0bf175` IST GELANDET: `1d5efb9`** (drei Commits `df41b3c` / `8785f46` / `1d5efb9`),
-  `verify.ok:true`, `exitCode 0`, `ms 188620`, `waitMs 91000`, Land-Note mit
-  `actor{kind:main, slot:10, program:f170dc46, task:ec0bf175, sessionIdMatch:exact}`. **Damit sind
-  BEIDE Zeilen oberhalb der Schnittlinie durch die eigene Sprosse gelandet** — zusammen mit
-  `93e5460` zwei Belege fuer Erfolgskriterium (d). **Der Post-Land-Audit zu `1d5efb9` steht noch
-  aus; ich konnte keinen Watch mehr halten — arm ihn neu**
-  (`{"kind":"audit","repo":"/Users/owner/claude-fleet","mainAfter":"1d5efb95..."}`).
-  Der Weg dorthin ist unten als §0-alt konserviert, weil die MECHANIK wiederkommt:
-
-- ~~**`ec0bf175` ist FERTIG UND GEPRUEFT, aber NICHT gelandet.**~~ (§0-alt, erledigt — Mechanik gilt)
-  Der Gate lief voll durch und starb an `e2e-claude-gate.sh` **Phase 3**: `server did not come up`,
-  **`no server.log exists`** in der aufbewahrten Instanz. Das ist woertlich die NIE-GEMESSEN-Signatur
-  aus dem Regelbuch, kein Regress am Diff — bei `ms 665428 / waitMs 531000` (**80 % Schlange**, 3 von
-  3 Stufen blockiert) unter fuenf lebenden Lanes ist ein 30-s-Server-Boot-Timeout der Normalfall.
-  **Der Diff ist von mir geprueft und getragen** (Details §2). Die Tuer ist jetzt zu: die Self-Land-Route
-  antwortet `no progress since the last verdict — resolved on the same candidate 7173a09b`.
-  **KORREKTUR an meiner ersten Fassung dieses Absatzes, am lebenden System widerlegt:** ich hatte
-  hier geschrieben, es genuege, dass main sich bewegt. **Falsch.** Main ist danach DREIMAL gezogen
-  (`0347f06`, `93e5460`, `a719c5b`), und die Route nannte unveraendert `candidate 7173a09b`. Der
-  Kandidat haengt am TIP DER LANE, und der rebase, der ihn aendern wuerde, laeuft erst INNERHALB des
-  Lands, das der Guard blockiert — eine geschlossene Schleife. Es gibt genau ZWEI Oeffner:
-  **(a) die LANE rebased selbst und committet** (der Weg, den der Guard mit „repair" meint), oder
-  **(b) der Owner landet vom Board**, dessen Route diesen Guard nicht kennt. Ein no-op-Commit auf der
-  Lane waere ein Rail-Trick und ist keiner von beiden.
-  **AUSGANG, zur Bestaetigung der Mechanik: (a) hat funktioniert.** Die Lane rebaste sauber
-  (`7173a09b -> 51e1ef6`, drei Commits neu geschrieben, Diff unveraendert 336/-2), meldete
-  AUSDRUECKLICH „kein Konflikt, kein Leer-Commit" — und der Guard oeffnete, **weil der KANDIDAT
-  sich bewegt hat, nicht main**. Genau die Unterscheidung, die ich oben erst falsch hatte.
-  Nebenbefund der Lane, zweite Kontrolle fuer die Last-These: ihre Kette fuhr ALLE FUENF Phasen von
-  `e2e-claude-gate.sh` inkl. der `harness waiver`-Phase 3, `grep -c 'did not come up'` = 0.
-
-  **STAND BEI DER UEBERGABE (historisch): (a) lief.** Ich habe Slot 4 um 13:5x per `POST /send` (die Route ist
-  `/send`, NICHT `/api/send`) den Repair-Auftrag geschickt — Composer vorher mit `C-u` geleert, weil
-  dort ein ungesendetes `land it` stand und ein Paste damit verschmolzen waere. Die Lane ist **6
-  hinter main**, und ZWEI dieser sechs fassen `server.ts` an, dieselbe Datei wie sie selbst
-  (`93e5460`, `c36c1e9`) — der rebase ist also echte Arbeit mit moeglichen Konflikten, kein
-  Formalakt. Sie hat begonnen (liest die `93e5460`-Hunks). Ich habe ihr ausdruecklich VERBOTEN, einen
-  Leer-Commit zu setzen: geht der rebase sauber durch und ist nichts zu aendern, soll sie genau das
-  melden — dann ist (b) faellig.
-  **Das ist eine LIVE-Instanz deiner eigenen Zeile `6101dbc3` (R5)** — der Guard haelt ein nie
-  gemessenes Gate fuer ein Urteil. Wenn du R5 baust, ist das dein Beleg-Fall.
-- **`35ac0b97` (Audit-Regression) IST GELANDET: `93e5460`**, im zweiten Anlauf, `verify.ok:true`,
-  alle sieben Stufen, `exitCode 0`. Die Land-Note traegt
-  `actor {kind:main, slot:10, program:f170dc46, task:35ac0b97, sessionIdMatch:exact}` — also ein
-  Beleg fuer Erfolgskriterium (d), gelandet ueber die eigene Sprosse, nicht durch den Controller.
-  **OFFEN daran: der Post-Land-Audit.** Ich hatte Watch `9b43fa5b`
-  (`{"kind":"audit","mainAfter":"93e54601..."}`) armiert — **ein Watch stirbt mit meiner Session,
-  arm ihn neu.** Und **DER DEPLOY FEHLT NOCH** (§1): ohne ihn bleibt jedes rein-docs-Land rot.
-
-## 1. Die Kette, die niemand sonst zusammenhaengt: das Audit-Rot ist DREI Schritte tief
-
-Jedes rein-docs-Land ist seit dem Deploy 07:36 rot — fuenf in Folge, immer dieselben sechs
-`fatal: not a git repository`-Fails, `ms ~1000`. Reihenfolge bis das aufhoert:
-**(1)** ~~`35ac0b97` landen~~ **ERLEDIGT: `93e5460`** · **(2)** DEPLOY (der Fix ist Servercode —
-`runPostLandAudit`; ohne Deploy aendert das Land nichts) · **(3)** das naechste rein-docs-Land
-erzeugt erst dann die gruene Zeile. **Schritt 2 ist der einzige, der noch aussteht.**
-**Der Deploy gehoert dem Controller** (Slot 7 hat ihn heute 12:53 gefahren, `bootHead 22b2bf40`) —
-frag ihn, deploy nicht selbst, sonst zwei srv-Neustarts.
-
-## 2. Was ich an den zwei Diffs geprueft habe (damit du es nicht zweimal liest)
-
-- **`ec0bf175` / `7c4dedf`, +336/−2.** Beide Abweichungen vom Brief sind richtig und beide „der Code
-  gewinnt": `executionStatus:` statt `status:` in der Owner-Liste, weil `publicProgram` die ganze
-  Program-Zeile spreadet und `Program.status` dort schon der Lebenszyklus ist (der Brief haette ihn
-  fuer jeden Board-Leser still ueberschrieben); und der Deploy-Guard auf `repoCanon(REPO_DIR)` statt
-  `import.meta.dir`, weil `deployGap()` in `REPO_DIR` zaehlt. Die Overload-Trennung haelt: die
-  Owner-Liste ruft die Ledger-lose Form. Es irrt in Richtung SCHWEIGEN (`landedMainAfter` nur aus
-  `mainAfter`, also eher `lastAudit:null` als ein geratener Join; `codeBehind` bleibt `null`, nie
-  `false`). Jeder Check unter benannter Mutation rot gesehen, Kaskade als Rauschen deklariert.
-- **`35ac0b97` / `9a6592c`, +159/−15.** `gitContext` haengt am `proportional`-Flag, weil das genau
-  die Frage IST. `git init -q -b main && git add -A -f` laeuft VOR dem node_modules-Symlink —
-  `.gitignore`s `node_modules/` matcht keinen SYMLINK, umgekehrt indiziert es 629 Pfade eines
-  628-Pfad-Baums, mit jedem Pin gruen. KEIN Commit, absichtlich: ein erfundener HEAD beantwortete
-  `git rev-parse HEAD` mit einer sha != `mainSha` — eine falsche Messung in richtiger Form. Ein
-  gescheiterter git-Kontext gibt einen Fehlerstring → `unknown`, nie ein rotes Suite-Urteil.
-  Der teuerste Satz des Reports ist der, warum NICHT immer: mit `.git` im Snapshot folgt
-  `e2e/trail-emit.ts#resolveSourceTree` dem node_modules-Symlink, `--is-inside-work-tree` kippt auf
-  YES, und der Trail landete IM Scratch-Verzeichnis, das der Server danach loescht — das
-  Flake-Register verloere still genau die Laeufe, die ein Land adjudizieren.
-
-## 3. Was ich selbst am Host getan habe (`bb96059`, Direkt-Commit)
-
-Der faelligste Posten des Programs, und er kann keine Lane sein (`rulebook/` ist gitignored):
-**acht aufeinanderfolgende Bullets** in `rulebook/lane-discipline.md` ueber EINEN Gegenstand
-(Suite-Mutex, Sensoren, Warten) — 5 398 B, ueber zwei Tage gewachsen — auf **drei** Regeln gezogen.
-Keine Regel gestrichen; die acht Originalbloecke stehen als **§15.30–§15.37** in
-`docs/attic/regelbuch-messgeschichten-2026-08.md`, Gegenprobe an neun tragenden Zeichenketten.
-`bun e2e/pins.ts` ALL PASS, `RULE_RENDER` byte-identisch.
-**Ehrlich: 81 322 → 79 508 B, NICHT < 75 000.** Der Rest ist mit Prosa-Schnitt nicht zu holen — die
-verbliebenen Bullets sind ueberwiegend je eine Regel mit ihrem bezahlten Preis. Wer die 75 000 will,
-verlagert ganze Regelbloecke nach `docs/` und zeigt nur hin. Das ist ein STRUKTUR-Entscheid.
-Mitgenommen: der `FLEET_LANE_AUTOCLOSE`-Absatz trug „scharf, nie ausgeloest" ohne Ursache — die
-Ursache (14-ms-Phasenkopplung des 30-min-Repaints gegen `STALLED_IDLE_MS`) steht jetzt dort, frisch
-nachgezaehlt `0 von 786`.
-
-## 3b. DIE KONTROLLE, die die Last-Hypothese aus der Vermutung holt
-
-Zwei Laeufe DESSELBEN Gates, dieselbe `e2e-claude-gate.sh` Phase 3 (harness waiver):
-
-| Lauf | `waitMs` | `ms` | Phase 3 | Ergebnis |
-|---|---|---|---|---|
-| `ec0bf175`, 13:12 | **531 000** (3 von 3 Stufen blockiert) | 665 428 | `server did not come up`, **kein `server.log`** | RED |
-| `35ac0b97`, 13:32 | **0** (0 von 3 blockiert) | 115 985 | gruen | `ok:true` |
-
-**Der 30-s-Server-Boot der Phase 3 ist lastempfindlich, und die Schlange ist die Last.** Damit ist
-das erste Rot als NIE-GEMESSEN belegt statt nur behauptet — und die Lehre ist nicht „die Maschine
-ist zu langsam" (im selben Fenster landete Slot 1 gruen), sondern: **wer unter Mutex-Andrang landet,
-kauft eine Phase-3-Nichtmessung mit spuerbarer Wahrscheinlichkeit ein, und der Progress-Guard macht
-daraus ein Urteil.** Vor einem Land unter Andrang lohnt der Blick auf `/tmp/fleet-e2e.lock.q`.
-
-## 4. Drei Korrekturen an meinen eigenen Saetzen dieser Session
-
-- **Ich habe `merges: {'4': 'interrupted'}` als „der Land wurde von einem Neustart getoetet" gelesen
-  und das dem Owner so gemeldet. Falsch.** Die Regelbuch-Regel sagt es richtig: `interrupted` OHNE
-  `verify` heisst **ein Land LAEUFT**. Es lief noch elf Minuten und resolvte dann mit `verify.ok:false`.
-  Der `detail`-Text („der Server wurde mitten im Lauf unterbrochen") ist ein pessimistischer
-  Vorab-Eintrag, kein Befund — lies ihn nie als einen.
-- **Ich habe „beide meine Lands liefen in rote Gates" gesagt. Falsch, und die Vermischung war
-  teuer:** NUR `ec0bf175` hatte je ein rotes Gate. `35ac0b97`s Gate war BEIDE Male gruen — sein
-  einziges Hindernis war der geteilte Working Tree (fremde uncommittete `docs/verify-tiering.md`,
-  committet als `0347f06`). Zwei blockierte Lanes, zwei voellig verschiedene Ursachen.
-- **Die Live-Route schlaegt die Zustandsdatei.** `fleet.json` zeigte `interrupted`, `GET
-  /api/slots/:id/merge` zeigte im selben Moment das vollstaendige Verdikt samt `waitMs`, `exitCode`
-  und stderr-Tail. Fuer ein Merge-Urteil immer die Route fragen.
-
-## 4a. EIN FEHLER VON MIR, den du nicht wiederholen sollst
-
-Ich habe um 14:41:25 `63ff7f6` (nur `HANDOFF.md`) auf main committet, **waehrend Slot 5s Land seit
-14:20:53 lief**. Die Ursache ist mechanisch und billig zu vermeiden: ich hatte die `merges`-Probe
-und den `git commit` in DERSELBEN `&&`-Kette — die Probe druckte korrekt `'5': 'interrupted'`
-(= ein Land LAEUFT), aber ihre Ausgabe wurde nie gelesen, weil der Commit im selben Zug lief.
-**Die Probe gehoert in einen EIGENEN Aufruf, dessen Ausgabe du liest, bevor du committest.**
-Ausgang, ehrlich in beide Richtungen: Slot 5 hat **keinen** ff-lost erlitten — sein Verdikt ist
-`resolved, landed=False, verify.ok=None`, „clean rebase, but verify NEVER STARTED", also die dritte
-Queue-Aushungerung des Tages und nicht meine Kollision. Der Fehler bleibt trotzdem einer; er ist
-nur diesmal nicht teuer geworden. Ich habe Slot 3 (MAIN des betroffenen Programs) per `/send`
-gewarnt, statt es ihn entdecken zu lassen.
-
-## 4b. DER TIER-2-BEFUND ZU `93e5460` IST `unknown` — und der Grund ist ein Budget-Defekt
-
-**Das Land ist gruen im Gate, aber vom Post-Land-Audit NIE BESTAETIGT.** Die Ledger-Zeile:
-`result unknown`, `ms 2700498` (das volle 45-min-Budget), **`checks: None`** — nichts gezaehlt.
-Ihr eigenes `out` sagt warum: `waiting 970s … position 2 of 3`, `acquired after 1001s`. **17 Minuten
-des Budgets gingen an die Mutex-Schlange**, danach blieben ~28 min fuer eine Kette, die ~25–35 min
-braucht. (Nebenbei reapte sie eine zerrissene Acquisition: „lock has a process-birth fingerprint but
-NO pid".)
-
-**Der Defekt, benannt, weil der andere Pfad ihn schon geloest hat:** der Land-Gate trennt seit
-`08dc17a` `timeoutMs` (Arbeit) von `waitMs` (Schlange) — darum ist ein `waitedOut`-Gate NIE
-`ok:false`. Der Post-Land-Audit hat nur `FLEET_POSTLAND_AUDIT_TIMEOUT_MS`, EIN Budget fuer beides.
-Unter Andrang verbrennt er es im Warten und meldet `unknown` — **von einem Absturz nicht
-unterscheidbar**. Das Muster fuer die Trennung existiert bereits; der Audit muesste es nur erben.
-Als `notiz` wollte ich es filen, aber die Advisory-Kappe steht auf **10/10** — deshalb hier.
-
-**Konsequenz fuer die Uebergabe:** `93e5460` traegt ein gruenes Pre-Land-Gate und KEIN Tier-2-Urteil.
-`unknown` ist kein Pass. Der naechste Audit auf einem spaeteren Tip deckt es mit ab (`covers`), oder
-jemand faehrt `./e2e-isolated.sh` seriell, wenn die Maschine ruhig ist.
-
-**Zweiter Fall derselben Familie an EINEM Nachmittag:** dasselbe Andraengen liess vorher ein
-Land-Gate in Phase 3 nichts messen (531 von 665 s Warten, kein `server.log`). Der Suite-Mutex ist
-heute nicht langsam — er ist der Grund, warum zwei Messungen keine Messungen wurden.
-
-## 5. Offen, unbeansprucht
-
-- **§11.2o in `docs/verify-tiering.md` traegt eine veraltete Basisrate:** dokumentiert `6/209 = 2,9 %`,
-  heute gemessen `18/221 = 8,1 %`, sieben der Rots von heute vor 08:12. Die S2-Lane hat das korrekt
-  NICHT zu einem zweiten Schnitt gemacht, nur gemeldet. Eine Zeile Register-Pflege.
-- **Vierzehn Zeilen dieses Programs tragen persistent `spawn codex/gpt-5.6-sol`** (S3a-i, S3a-ii, S3b,
-  S3c, S3d, S4, S5a, S5b, S5c, S12, CP-A, CP-B, CP-C, S2-alt). KEINE Route aendert den Spawn: wer eine
-  davon will, **filt sie NEU** (`ec0bf175`/`02740e69` zeigen wie), niemals freigeben. Drei weitere
-  solche Zeilen liegen im Program `79036e9a` — nicht deine, aber der Controller sollte es wissen.
-- **Erfolgskriterium (a) ist EINE Zeile entfernt:** von 95 offenen Fleet-Zeilen haben 11 kein Program,
-  davon sind 10 `notiz` (laufen nie) und genau eine ist ein `auftrag`: **`5c1f831f`**. Eine
-  Program-Zuweisung von aussen gibt es nicht — das ist ein Owner-/Controller-Griff.
-- **Maschinenhygiene, von nichts geerntet:** 3,4 G TMPDIR-Scratch, vier verwaiste e2e-tmux-Sockets.
-  Ich habe sie NICHT angefasst: einer der „strays" hatte sein cwd in einer LEBENDEN Lane, und
-  `state.sh`s Heuristik haengt an TMPDIR. Bei fuenf Lanes und Mutex-Andrang ist das kein Aufraeumen
-  nebenbei, sondern eine eigene Zeile mit notierten PIDs.
-
-# HANDOFF — 🎛 Fleet Controller (Slot 12, Fable 5.1): D1 freigegeben und im zweiten Land, Fleet-Betrieb geschnitten, Second-host per SSH erschlossen, Dual-Host Phase 3 entschieden; 2026-09-05 15:5x, ctx GEMESSEN 32,4 %
-
-> **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 7, 12:5x).
-> **Der Controller ist, wer das Label `🎛 Fleet Controller` traegt.** Lineage: 5 → 6 → 9 → 3 → 9 → 3 → 7 → 12 → du.
-
-Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, Owner-Poll, Panes.
-
-## 0. Was du als Erstes tust
-
-1. `GET /api/self/attention` — ich hatte keine offene Attention; alle vier vom Morgen sind beantwortet.
-2. **D1 IST GELANDET UND DEPLOYT** (Stand 16:0x): zweites Land `merged`, verify ok; main `4d7d60b`; Deploy `86ab66ad` Boot ok,
-   bootHead = main. Damit live: Codex-Zustellfix (kein Hinweis endet mehr auf dem Token-Sigil) und `FLEET_HELPER_WAKE_ADDR`.
-   **Wake-Probe gefahren:** `POST /api/helper/devices/secondhostlinux1/wake` antwortet `{"sent":true}` (vorher 409). Slot 5 raeumen,
-   falls das Land es nicht schon tat.
-3. **Die eine offene Probe: Codex-Zustellung ohne Relais.** Das naechste Event an Slot 3 (Astra) muss `delivered` und von ihr selbst
-   `acknowledged` werden. Bis es kommt, gilt die Relais-Regel unter 4; danach ist der Defekt zu. Das Merge-Terminal-Event `88220bd4`
-   habe ich noch relayt (alter Server-Text). ACHTUNG: das ERSTE Event einer FRISCHEN Codex-Pane kann weiter 409 beim eigenen Ack
-   bekommen (Session-Id lazy gebunden) — das ist D2 `e88884c8`, nicht D1.
-4. **Bis dahin bist DU Astras Relais:** Event in `fleet.json.events` mit `receiverSlot 3` und `status send-uncertain` → in Astras Pane
-   steht der Text mit offenem Picker („no matches / Press enter to insert or esc to close"): `tmux -L claudefleet send-keys -t s3 Escape`
-   leert den Composer (Owner-Entscheid: Composer-Rest ist nie ein Owner-Entwurf), dann `POST /send {slot:3,text}` — Text ohne `$`
-   am Ende, kein `$`/`@`/`/` am Zeilenanfang, Report-Id und Ack-Route in Worten. Vier Relais heute, alle so gelungen.
-5. **Slot 1 (`5c1f831f`, Program-Dispatch, kein Program):** zwei Commits, Gate lokal gruen bis auf die Suiten; ihr isolated-Lauf hielt den
-   Mutex 60+ min. Ihr Verdikt kommt zu DIR. Landen, wenn sie fertig meldet (Pane lesen, nicht den Watch glauben).
-6. **Slot 4 (`cf4a85cd`, Dual-Host Phase 3):** laeuft mit meinem Entscheid (§1). Slot 7 (GLM-Gegenlesung, docs-only, 1 Commit): landet
-   Astra selbst. D2 `e88884c8` pending bei Astra, Start nach D1.
-
-## 1. Owner-Entscheide dieser Session (woertlich oder sinngemaess, Reihenfolge)
-
-- 13:1x „Ja ich hab den effort geändert — sollten bis morgen abend auf jeden Fall bei medium bleiben" → Astra medium bis 2026-09-06 abends. „Ok ich starte die GLMgegenlesung" → er fand sie nicht, ich habe `6a527587` per Owner-Dispatch (pi-zai/glm-5.3/high) gestartet. „Entscheide du für 3 & 4" → Idle-Uhr (a) 20 min in `.env`, Dual-Host (b) parken.
-- 13:5x „ja bitte mach den Schnitt" → 15 Fleet-Betrieb-Zeilen archiviert (reversibel), Regel an Slot 10: keine neuen Auftraege ausser Produkt-Entblocker/Lebenszyklus.
-- 14:0x „Private-repo-j sollten wir noch etwas auf Eis legen … schwere Aufgaben … an Astra geben" → Memory `feedback-heavy-tasks-to-astra-private-repo-j-on-ice`.
-- 15:1x „das repo definitiv auf second-host packen … auto link … volle funktionalität" → Zeile `cf4a85cd`; „entscheide du" → **Weg (b):** oldmac kanonisch, Second-host zieht per git ueber Tailscale, faehrt Sessions+Suiten, landet nicht; Reihenfolge Transport → Gate 3 (watchdog.service) → Gate 4 (zweite Instanz); Zielbild je Repo (Fleet-Repo spaeter kanonisch auf dem Second-host, iOS auf oldmac), Platzierung nach Profil als eigene Zeile. An Slot 4 per `/send` zugestellt.
-- „Codex-ctx ist NIE Succession-Druck" gilt fort (Astra stand bei 54 %).
-
-## 2. Was gefallen ist (Belege: Ledger, Queue, Commit-Bodies)
-
-- Deploy `9b3c0db5` (13:45, Boot ok, bootHead `4761020`): Audit-Fix `93e5460` + `FLEET_STALLED_IDLE_MS=1200000` live. `.env` traegt zwei neue Zeilen (STALLED, WAKE_ADDR), beide kommentiert.
-- Gelandet heute durch die MAINs: `c36c1e9/1db9296/126a82d` (Watch-Tick Lost Update, Slot 6), `93e5460` (Audit-Git-Kontext, Slot 10), `ec0bf175` (Lebenszyklus, Slot 4). Slot 8 (Dual-Host) regulaer retired.
-- Slots 11/13 (leere Codex-`gpt-5.6-sol`-Panes im Haupt-Checkout, seit 07:2x) gekillt; ihre Bindungen gehoerten zwei `complete`n Programs.
-- **Second-host:** SSH `second-hostowner@100.64.0.2` passwortlos + sudo (MacBook-Claude hat die Host-Seite gemacht, von hier verifiziert); WoL-MAC stimmt mit `.env`; Helfer pollt alle 15 s, Last 0, 16 Kerne. **Die „Offline"-Meldung von Slot 8 war falsch:** Quiet Hours 23–07 des Daemons. Referenz-Memory `reference-second-host-ssh-and-power`.
-- **§11.2o ist strukturell rot** (D1-Report `a795f0ff`): seit 09-04 16:42 19 rote isolated-Laeufe in Folge auf 13–14 Baeumen; kein Baum bekommt gruenes isolated. An Slot 6 (Program 79036e9a) gegeben, Ursache offen (Land im Fenster 09-04 13:02–16:42 oder Last).
-- Slot 2 (66499a03) hat (a) angenommen, Preis benannt (Marge 3x → 2x Suite-Stille), startet dritten Beleg-Lauf.
-
-## 3. Offen — Zuege der Nachfolgerin, in dieser Reihenfolge
-
-1. §0 (D1 → Deploy → Wake-Probe → Zustellprobe → Relais beenden).
-2. **Prozess-Dokument aus Richtung `233ee108`** (agentische Analyse + Auto-Dispatch, Rueckkanal an die MAIN, dynamischer Deckel, MAIN-Tod → Nachfolge oder Parken): als Zeile in ASTRAS Program filen (Owner: schwere Denkaufgaben an Astra), nicht an Opus.
-3. **Second-host-Vorschauen:** Lane-isolated-Laeufe blockieren den Mutex hier stundenweise, waehrend der Second-host leer laeuft. Slot 1 bot seinen Lauf an; `GET /api/self/suite-offer` meldete um 14:06 `online:false, lastSeenAgeMs 390552`, obwohl der Daemon alle 15 s pollte → Online-Erkennung pruefen, dann Vorschauen verlaesslich dorthin. Eigene Zeile, kein Program (oder Fleet-Betrieb oberhalb der Linie).
-4. Slot 1 landen (§0.5). Astras GLM-Land und D2 beobachten, nicht uebernehmen.
-5. Owner-Sache, unveraendert: Regelbuch-Drift „GPT-Slot hat ctx null"; `/etc/sudoers.d/second-host` (pauschales NOPASSWD, bewusst).
-
-## 4. Was mit dieser Session stirbt
-
-Alle Hintergrund-Waechter (Relais auf send-uncertain, Pane-Waechter Slot 1) und die gefeuerten Watches (Lane Slot 1, Merge Slot 5). **Slot 2 (66499a03) will succeeden und findet keinen freien Slot** — nach dem Aufraeumen von Slot 5 geht es. Kein Auto, keine Mission, keine offene Attention. **Mechanismus, den Slot 2 belegt hat (`1388caf`, `4d7d60b`):** wir teilen EINEN Checkout; wer HANDOFF.md committet, nimmt fremde uncommittete Abschnitte mit oder ueberschreibt Zeile 1 eines fremden Titels. Regel-Vorschlag (nicht promoviert): eigenen Abschnitt VORANSTELLEN, nie Zeile 1 ersetzen, eigene Aenderung nicht laenger als noetig uncommittet lassen. Genau so ist mein Abschnitt in Slot 2s Commit `4d7d60b` gelandet.
-
----
----
 # HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 5, Opus 5): VIER Lands, drei deployt — und eines traegt eine Regression, die ich selbst gefunden und gefilt habe; 2026-09-05 11:5x, ctx GEMESSEN 44,1 % (Owner-Poll)
 
 # HANDOFF — Program-MAIN 66499a03 „Fleet-Betrieb ohne manuelles Owner-Routing" (Slot 2, Opus 5): ERFOLGSSATZ 8 IST NICHT UNBELEGT, SONDERN STRUKTURELL UNERREICHBAR — der TUI-Repaint kommt 14 ms vor der Schwelle; der Owner hat (a) gewaehlt, die Schwelle steht auf 20 min, der dritte Beleg-Lauf ist released; 2026-09-05 15:5x, ctx GEMESSEN 29,8 %

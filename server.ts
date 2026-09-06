@@ -12906,6 +12906,15 @@ interface LaneSuiteResult {
   tail: string;                     // byte-capped, HELPER_TAIL_CAP, exactly the audit's budget
   trail?: string;
   checks: PostLandAuditChecks | null; // null = the tail was not countable, NEVER an invented zero
+  // WHICH CHECKS FAILED, BY NAME — the half a red preview was missing until 2026-09-06. `tail` is
+  // HELPER_TAIL_CAP bytes and a real ./e2e-isolated.sh ENDS in its trail checks, so on a 3717-check
+  // run the FAIL lines sit hundreds of kilobytes above the retained window: measured on S2's
+  // preview (2026-09-05, job c893717a — red 1/3717, and which one was not answerable from here, so
+  // the lane ran the whole suite locally and the offer cost exactly the run it exists to save).
+  // EMPTY IS LEGITIMATE and is never an invented zero: a green run names none, and `result` — not
+  // this list — is what says green or red. Same field, same shape and same cap as the audit row's
+  // (PostLandAuditRow.fails) and the command job's, so one reader reads all three.
+  fails: string[];
   // The provenance half, and §6 of the design doc makes it non-negotiable: the exit code and the
   // tail are TYPED IN BY A HUMAN on the other machine. A verdict served without a name attached is
   // the one sentence a lane report may never write ("./e2e-isolated.sh green", full stop).
@@ -13795,13 +13804,20 @@ function laneSuiteOfferOf(s: Slot): LaneSuiteJob | null {
 // sha does not — measured M8).
 function laneSuiteView(j: LaneSuiteJob): Record<string, unknown> {
   const c = laneSuiteClaimOf(j);
+  // …and the artefact rail beside it, joined at READ time exactly as the audit surfaces join it
+  // (the rail is a side file; the verdict it belongs to is not rewritten). It rides on `remote`
+  // because that is where the audit row carries it and where it belongs on either: the log is a
+  // fact about the machine that ran the suite. ABSENT means no log arrived — never "there is none".
+  const art = j.result ? artifactViewFor(j.result.remote.reportedAt) : undefined;
   return {
     // an EXPIRED claim reads as lapsed here and not as "claimed", without waiting for the sweep —
     // the same split as helperClaimOf: the clock decides, the sweep only books
     id: j.id, state: j.state === "claimed" && !c ? "lapsed" : j.state, branch: j.branch, offeredAt: j.offeredAt,
     commitSha: j.commitSha, treeSha: j.treeSha, untracked: j.untracked,
     claim: c ? { name: c.name, claimedAt: c.claimedAt, expiresAt: c.expiresAt } : null,
-    result: j.result,
+    result: j.result && art
+      ? { ...j.result, remote: { ...j.result.remote, artifact: art } }
+      : j.result,
   };
 }
 // The one way anything OUTSIDE the land path restarts the drain. `schedulePostLandAudit` owns the
@@ -14537,7 +14553,19 @@ async function reportLaneSuite(j: LaneSuiteJob, body: Record<string, unknown> | 
   const rawExit = body?.exitCode;
   const exitCode = typeof rawExit === "number" && Number.isFinite(rawExit) ? Math.trunc(rawExit) : null;
   const tail = retainRunOutput(typeof body?.tail === "string" ? body.tail : "", "", HELPER_TAIL_CAP).trim();
-  const fails = helperFailNames(body?.fails);
+  // TWO SOURCES FOR THE NAMES, in this order, and never merged:
+  //   · what the DAEMON parsed (helper-daemon/daemon.ts#failNamesOf) — read from the COMPLETE log
+  //     and, where the run wrote one, from the per-check trail jsonl. Strictly stronger than
+  //     anything derivable on this box, which holds only the tail.
+  //   · else the tail, through `localFailNames` — the SAME parser the local audit path uses
+  //     (server.ts#runPostLandAudit), so a preview and an audit name a failure identically and
+  //     there is one parser to keep right. It is what a pre-3974883 daemon, a hand-typed portal
+  //     report (src/helper.ts#doReport sends no `fails`) and any red whose FAIL lines happen to be
+  //     inside the retained window still yield.
+  // An EMPTY list from either source is kept as empty: `result` already says green or red, and
+  // inventing a name for a failure nobody could read would be worse than the absence.
+  const reportedFails = helperFailNames(body?.fails);
+  const fails = reportedFails ?? helperFailNames(localFailNames(tail)) ?? [];
   const trail = typeof body?.trail === "string" && body.trail.trim() ? body.trail.trim().slice(0, 120) : undefined;
   const { result, reason } = remoteVerdictOf(exitCode);
   const measured = result !== "unknown";
@@ -14550,7 +14578,12 @@ async function reportLaneSuite(j: LaneSuiteJob, body: Record<string, unknown> | 
     ? body.clonedSha : undefined;
   j.result = {
     exitCode, result, ...(reason ? { reason } : {}), tail, ...(trail ? { trail } : {}),
-    checks: measured ? postLandAuditChecks(tail, exitCode as number, fails) : null,
+    // `reportedFails` and NOT the fallback list: this argument reconciles an "N FAILURES" summary
+    // against a tail that shows fewer FAIL lines, and only a list read from the COMPLETE log can
+    // do that. A tail-derived list has by construction exactly the lines the tail shows, so
+    // passing it here would answer the reconciliation with the very number it is checking.
+    checks: measured ? postLandAuditChecks(tail, exitCode as number, reportedFails) : null,
+    fails,
     remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now,
       ...(clonedSha ? { clonedSha } : {}), ...helperNoMeasureOf(body, exitCode) },
     treeSha: j.treeSha ?? "", ms: now - claim.claimedAt,
@@ -14560,12 +14593,19 @@ async function reportLaneSuite(j: LaneSuiteJob, body: Record<string, unknown> | 
   try { rmSync(claim.bundle, { force: true }); } catch { /* the helper has its copy */ }
   audit("helper_result", j.slot,
     `${result} preview of ${basename(j.repo)} ${j.branch} tree ${(j.treeSha ?? "").slice(0, 8)} from ${claim.name}`
+    + `${fails.length ? ` — ${fails.slice(0, 3).join(", ")}${fails.length > 3 ? ` +${fails.length - 3}` : ""}` : ""}`
     + `${clonedSha ? ` (ran ${clonedSha.slice(0, 8)})` : " (the helper named no clone sha)"}`
     + `${clonedSha && j.commitSha && clonedSha !== j.commitSha
         ? ` — THE HELPER RAN ${clonedSha.slice(0, 8)}, NOT THE ${j.commitSha.slice(0, 8)} HANDED OVER` : ""}`
     + `${trail ? ` [${trail}]` : ""}${reason ? ` — ${reason}` : ""}`.slice(0, 240));
   await saveStateNow();
-  return json({ ok: true, kind: "lane-suite", result, ...(reason ? { reason } : {}) });
+  // `artifactAt` IS THE ROW KEY, and a preview has one for the same reason an audit row does: the
+  // upload that follows must NAME what it belongs to, and a job id is not it (an audit id is
+  // sha256(repo) and repeats; a lane may offer several trees in a row). `remote.reportedAt` is that
+  // key here — stamped once, present on every verdict including the unmeasurable ones, and already
+  // what the lane sorts by. Deliberately NOT called `auditAt`: a preview writes no ledger row, and
+  // the whole fork above exists so nothing downstream can mistake one for an audit.
+  return json({ ok: true, kind: "lane-suite", result, ...(reason ? { reason } : {}), artifactAt: now });
 }
 // The command verdict. Same shape and same rules as the preview's — it lands in the JOB, no ledger
 // row, no drain kick — plus the ONE thing this kind adds: THE ARTEFACT ROWS ARE VALIDATED, NEVER
@@ -14728,7 +14768,11 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
   // `auditAt` is the ROW KEY, handed back so the artefact upload that follows can name the exact
   // row instead of guessing one. It is the whole reason the upload needs no semantic key: without
   // this the helper could only say "the job", and one job id covers every audit of a repo.
-  return json({ ok: true, result, ...(reason ? { reason } : {}), auditAt: row.at });
+  // `artifactAt` is THE SAME NUMBER under the name every kind of job answers with, so the daemon's
+  // uploader reads ONE field for all of them (helper-daemon/daemon.ts#report). `auditAt` stays
+  // beside it and always will: a daemon from before that field is still a daemon whose logs this
+  // box wants, and dropping the old key would silence it with no error anywhere.
+  return json({ ok: true, result, ...(reason ? { reason } : {}), auditAt: row.at, artifactAt: row.at });
 }
 // The portal's own gate. The owner's own credential opens it too — checked FIRST and synchronously,
 // so opening the page from the board costs nothing — and every other credential pays the same flat
@@ -14821,15 +14865,22 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
   // "newest job with this id" fallback: an audit job id is `sha256(repo)` and repeats for every
   // audit of that repo, so a fallback would file a log onto whichever row happened to be newest —
   // the exact collision the KEY paragraph above exists to prevent. And nothing needs one: only a
-  // daemon new enough to upload at all is new enough to have read `auditAt` out of its own receipt.
+  // daemon new enough to upload at all is new enough to have read `artifactAt` out of its receipt.
+  //
+  // TWO KINDS OF ROW may be named here, and they are resolved in the SAME order helperResult forks
+  // in — the LANE-SUITE job first, because that is the order the id spaces are resolved everywhere
+  // else and one lookup order is the whole reason a 48-bit collision could only misroute, never
+  // corrupt. A preview's row is its own settled `result`, whose `remote.reportedAt` is the key; an
+  // audit's is the ledger line. Both are checked before a byte is written, and both check the same
+  // two things: the row EXISTS, and it is THIS job's.
   const artifact = /^\/api\/helper\/artifact\/([0-9a-f]{12})$/.exec(url.pathname);
   if (artifact && req.method === "POST") {
     const jobId = artifact[1]!;
     const rawAt = url.searchParams.get("at") ?? "";
-    const auditAt = /^\d{10,16}$/.test(rawAt) ? Number(rawAt) : NaN;
-    if (!Number.isFinite(auditAt)) {
+    const rowAt = /^\d{10,16}$/.test(rawAt) ? Number(rawAt) : NaN;
+    if (!Number.isFinite(rowAt)) {
       await drainBody(req);
-      return json({ error: "expected ?at=<the auditAt the result POST returned>" }, 400);
+      return json({ error: "expected ?at=<the artifactAt the result POST returned>" }, 400);
     }
     const capMb = (HELPER_ARTIFACT_BYTES_MAX / 1024 / 1024).toFixed(1);
     // Refuse an oversized body BEFORE buffering it, and DRAIN rather than cancel — the same
@@ -14839,25 +14890,48 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
       await drainBody(req);
       return json({ error: `suite.log is larger than the ${capMb} MB cap` }, 413);
     }
-    // The row must EXIST and must be THIS job's, and both are checked before a byte is written —
-    // an artefact stored for a row that names nothing is a file nothing can ever join back.
-    const { rows } = await readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE);
-    const target = rows.find((r) => r.at === auditAt);
-    if (!target) {
-      await drainBody(req);
-      return json({ error: `no post-land audit row with at=${auditAt}` }, 404);
-    }
-    const rowJob = (target.remote as { jobId?: unknown } | undefined)?.jobId;
-    if (typeof rowJob !== "string" || rowJob !== jobId) {
-      await drainBody(req);
-      return json({ error: "that audit row came from another job — refusing to file this log onto it" }, 404);
+    const lane = laneSuiteJobs.get(jobId);
+    // `verdict` is the word echoed back at the end — the same confirmation the audit half returns,
+    // and for the same reason: the caller sees that handing over a log did not move the result.
+    let verdict: string;
+    let subject: string;
+    if (lane) {
+      // A preview that has not reported has no row to file against, and one that reported at
+      // another moment is a DIFFERENT run of the same lane — both are 404 rather than a log filed
+      // onto the newest verdict, which is the preview-shaped version of the jobId-key mistake.
+      if (!lane.result) {
+        await drainBody(req);
+        return json({ error: "that preview has no verdict yet — a log is filed against a row, and there is none" }, 404);
+      }
+      if (lane.result.remote.reportedAt !== rowAt) {
+        await drainBody(req);
+        return json({ error: "that preview verdict came from another run — refusing to file this log onto it" }, 404);
+      }
+      verdict = lane.result.result;
+      subject = `preview at ${rowAt}`;
+    } else {
+      // The row must EXIST and must be THIS job's, and both are checked before a byte is written —
+      // an artefact stored for a row that names nothing is a file nothing can ever join back.
+      const { rows } = await readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE);
+      const target = rows.find((r) => r.at === rowAt);
+      if (!target) {
+        await drainBody(req);
+        return json({ error: `no post-land audit row with at=${rowAt}` }, 404);
+      }
+      const rowJob = (target.remote as { jobId?: unknown } | undefined)?.jobId;
+      if (typeof rowJob !== "string" || rowJob !== jobId) {
+        await drainBody(req);
+        return json({ error: "that audit row came from another job — refusing to file this log onto it" }, 404);
+      }
+      verdict = String(target.result);
+      subject = `audit at ${rowAt}`;
     }
     const buf = new Uint8Array(await req.arrayBuffer());
     // the authoritative size check: content-length is the client's claim, this is the measurement
     if (buf.byteLength > HELPER_ARTIFACT_BYTES_MAX)
       return json({ error: `suite.log is larger than the ${capMb} MB cap` }, 413);
     if (buf.byteLength === 0) return json({ error: "that suite.log is empty" }, 400);
-    const rel = `helper-artifacts/${jobId}/${auditAt}/suite.log`;
+    const rel = `helper-artifacts/${jobId}/${rowAt}/suite.log`;
     const abs = `${STREAM_DIR}/${rel}`;
     try {
       mkdirSync(dirname(abs), { recursive: true });
@@ -14866,7 +14940,7 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
       return json({ error: `the artefact could not be stored: ${e instanceof Error ? e.message : "write failed"}` }, 500);
     }
     const rec: HelperArtifact = {
-      at: Date.now(), auditAt, jobId, path: rel, bytes: buf.byteLength,
+      at: Date.now(), rowAt, jobId, path: rel, bytes: buf.byteLength,
       // hashed HERE, over the bytes that were actually written. A digest copied off the wire would
       // certify the sender's opinion of its own file rather than what this box now holds.
       sha256: createHash("sha256").update(buf).digest("hex"),
@@ -14875,10 +14949,10 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
     appendEvent(HELPER_ARTIFACT_FILE, rec as unknown as Record<string, unknown>);
     pruneHelperArtifacts();
     audit("helper_result", undefined,
-      `suite.log ${rec.bytes}b for the ${String(target.result)} audit at ${auditAt} from job ${jobId}`.slice(0, 240));
+      `suite.log ${rec.bytes}b for the ${verdict} ${subject} from job ${jobId}`.slice(0, 240));
     // `result` is echoed back UNCHANGED, the same confirmation writeAuditAdjudication returns and
     // for the same reason: the caller sees that handing over a log did not move the verdict.
-    return json({ ok: true, artifact: { bytes: rec.bytes, sha256: rec.sha256 }, result: target.result });
+    return json({ ok: true, artifact: { bytes: rec.bytes, sha256: rec.sha256 }, result: verdict });
   }
   const bundle = /^\/api\/helper\/bundle\/([0-9a-f]{12})$/.exec(url.pathname);
   if (bundle && req.method === "GET") {
@@ -15045,22 +15119,28 @@ async function writeAuditAdjudication(body: Record<string, unknown> | null): Pro
 // in and serves `remote.artifact` ON the row, so a consumer sees the field the brief specified and
 // never the plumbing.
 //
-// KEY = the audit row's `at`, for the reason the adjudication rail states and one this rail makes
+// KEY = the row's `at`, for the reason the adjudication rail states and one this rail makes
 // sharper: an AUDIT job's id is `sha256(repo).slice(0,12)`, i.e. STABLE PER REPO ACROSS BOOTS, so
 // every audit of one repo shares it. A jobId key would therefore collide by construction. `at` is
-// stamped once per row by a globally serialized drain, is present on every row including the
-// unmeasurable ones, and is already every reader's sort key. The jobId is carried on the rail and
-// checked against the row, but it is a CROSS-CHECK, never the key.
+// stamped once per row, is present on every row including the unmeasurable ones, and is already
+// every reader's sort key. The jobId is carried on the rail and checked against the row, but it is
+// a CROSS-CHECK, never the key.
+//
+// TWO KINDS OF ROW hang off this rail since 2026-09-06, and the field is named `rowAt` rather than
+// `auditAt` because of it: an AUDIT row's `at`, or a LANE-SUITE preview's `result.remote.reportedAt`.
+// A preview writes no ledger row at all (helperResult's fork says why), so a key called `auditAt`
+// on a preview's log would invite exactly the join that answers WRONG rather than failing. Rows
+// written before the rename carry `auditAt` and are read under it forever — see rememberHelperArtifact.
 interface HelperArtifact {
   at: number;        // when the upload landed
-  auditAt: number;   // the audit row it belongs to (that row's `at`) — THE KEY
+  rowAt: number;     // the row it belongs to (an audit row's `at`, or a preview's reportedAt) — THE KEY
   jobId: string;     // the claim it came from, cross-checked against the row. Not the key.
   path: string;      // where the bytes are, relative to STREAM_DIR — never an absolute path in a payload
   bytes: number;
   sha256: string;
 }
 // Uploads live under STREAM_DIR, which is already gitignored as a directory — so an artefact can
-// never become the untracked file that blocks a land. `<jobId>/<auditAt>/` and not `<jobId>/`
+// never become the untracked file that blocks a land. `<jobId>/<rowAt>/` and not `<jobId>/`
 // alone: the jobId repeats per repo (see the KEY paragraph), so one directory per job would let
 // the next audit of the same repo silently overwrite the log a rail row still points at.
 const HELPER_ARTIFACT_DIR = `${STREAM_DIR}/helper-artifacts`;
@@ -15075,9 +15155,11 @@ const HELPER_ARTIFACT_KEEP = Math.max(1, Number(process.env.FLEET_HELPER_ARTIFAC
 // sends, so a per-poll ledger read is exactly the cost that route's budget forbids. The file stays
 // the durable truth: this map is built from it ONCE at boot and appended to by the only writer
 // there is (writeHelperArtifact, below). If they could ever disagree, the file wins.
-const helperArtifactByAudit = new Map<number, HelperArtifact>();
+const helperArtifactByRow = new Map<number, HelperArtifact>();
 function rememberHelperArtifact(r: Record<string, unknown>): void {
-  const auditAt = typeof r.auditAt === "number" ? r.auditAt : NaN;
+  // `rowAt` first, `auditAt` second: every row this rail wrote before 2026-09-06 carries the old
+  // key and there is no migration — a ledger this box appends to is read forward, never rewritten.
+  const rowAt = typeof r.rowAt === "number" ? r.rowAt : typeof r.auditAt === "number" ? r.auditAt : NaN;
   const at = typeof r.at === "number" ? r.at : 0;
   const jobId = typeof r.jobId === "string" ? r.jobId : "";
   const path = typeof r.path === "string" ? r.path : "";
@@ -15085,11 +15167,11 @@ function rememberHelperArtifact(r: Record<string, unknown>): void {
   const sha256 = typeof r.sha256 === "string" ? r.sha256 : "";
   // a torn or half-written row is SKIPPED, never repaired into a plausible one: a rail row that
   // names bytes nobody can verify is worse than the absence it replaced
-  if (!Number.isFinite(auditAt) || !jobId || !path || !Number.isFinite(bytes) || !/^[0-9a-f]{64}$/.test(sha256)) return;
-  const prev = helperArtifactByAudit.get(auditAt);
-  // newest-wins per audit row, history kept on the rail — the same append-only-with-latest-reading
+  if (!Number.isFinite(rowAt) || !jobId || !path || !Number.isFinite(bytes) || !/^[0-9a-f]{64}$/.test(sha256)) return;
+  const prev = helperArtifactByRow.get(rowAt);
+  // newest-wins per row, history kept on the rail — the same append-only-with-latest-reading
   // shape adjudicationsByAudit uses, and for the same reason: a re-upload corrects, never duplicates.
-  if (!prev || at >= prev.at) helperArtifactByAudit.set(auditAt, { at, auditAt, jobId, path, bytes, sha256 });
+  if (!prev || at >= prev.at) helperArtifactByRow.set(rowAt, { at, rowAt, jobId, path, bytes, sha256 });
 }
 async function loadHelperArtifacts(): Promise<void> {
   const { rows } = await readLedger<Record<string, unknown>>(HELPER_ARTIFACT_FILE);
@@ -15098,19 +15180,23 @@ async function loadHelperArtifacts(): Promise<void> {
 // What a read surface serves ON the row. `path` is deliberately NOT in it: it is this box's own
 // storage layout, and a consumer's business is that the log exists, how big it is, whether the
 // bytes are the ones the helper hashed, and the ONE route that serves them.
-function artifactViewFor(auditAt: unknown): { bytes: number; sha256: string; url: string } | undefined {
-  const a = typeof auditAt === "number" ? helperArtifactByAudit.get(auditAt) : undefined;
-  return a ? { bytes: a.bytes, sha256: a.sha256, url: `/api/post-land-audits/artifact?at=${a.auditAt}` } : undefined;
+// `url` names the post-land-audits route for BOTH kinds, and that is deliberate rather than sloppy:
+// it is the ONE route that serves these bytes, owner-only by position, and giving a preview its own
+// would be a second pre-auth-adjacent surface for the same file. A lane reads the id and the size
+// off this object; the bytes are the owner's to fetch.
+function artifactViewFor(rowAt: unknown): { bytes: number; sha256: string; url: string } | undefined {
+  const a = typeof rowAt === "number" ? helperArtifactByRow.get(rowAt) : undefined;
+  return a ? { bytes: a.bytes, sha256: a.sha256, url: `/api/post-land-audits/artifact?at=${a.rowAt}` } : undefined;
 }
 // Bounded by JOB DIRECTORY, not by rail row: a re-upload for the same row replaces bytes in place,
 // so counting rows would prune directories that are still pointed at. Newest `HELPER_ARTIFACT_KEEP`
-// audit keys survive; the rail keeps its history either way, and a row whose bytes were pruned
+// row keys survive; the rail keeps its history either way, and a row whose bytes were pruned
 // still says truthfully how big they were and what they hashed to.
 function pruneHelperArtifacts(): void {
   try {
-    const keys = [...helperArtifactByAudit.values()].sort((a, b) => b.auditAt - a.auditAt);
+    const keys = [...helperArtifactByRow.values()].sort((a, b) => b.rowAt - a.rowAt);
     for (const dead of keys.slice(HELPER_ARTIFACT_KEEP)) {
-      const dir = `${HELPER_ARTIFACT_DIR}/${dead.jobId}/${dead.auditAt}`;
+      const dir = `${HELPER_ARTIFACT_DIR}/${dead.jobId}/${dead.rowAt}`;
       try { rmSync(dir, { recursive: true, force: true }); } catch { /* a dir already gone is the goal */ }
     }
   } catch { /* pruning is housekeeping: it never fails an upload that already succeeded */ }
@@ -24081,8 +24167,8 @@ Bun.serve<WSData>({
     // log is exactly that and a guessed content-type is how a log becomes a rendered page.
     if (url.pathname === "/api/post-land-audits/artifact" && req.method === "GET") {
       const rawAt = url.searchParams.get("at") ?? "";
-      const rec = /^\d{10,16}$/.test(rawAt) ? helperArtifactByAudit.get(Number(rawAt)) : undefined;
-      if (!rec) return json({ error: "no suite.log was uploaded for that audit" }, 404);
+      const rec = /^\d{10,16}$/.test(rawAt) ? helperArtifactByRow.get(Number(rawAt)) : undefined;
+      if (!rec) return json({ error: "no suite.log was uploaded for that row" }, 404);
       const abs = `${STREAM_DIR}/${rec.path}`;
       // the rail outlives the bytes on purpose (pruneHelperArtifacts keeps the newest
       // HELPER_ARTIFACT_KEEP), so "the row remembers a log this box no longer holds" is a real and
@@ -24090,7 +24176,7 @@ Bun.serve<WSData>({
       if (!existsSync(abs)) return json({ error: "that suite.log has been pruned — the rail row remembers it, the bytes are gone" }, 410);
       return new Response(Bun.file(abs), {
         headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store",
-          "content-disposition": `inline; filename="suite-${rec.auditAt}.log"` },
+          "content-disposition": `inline; filename="suite-${rec.rowAt}.log"` },
       });
     }
     // VERB 2 (see the deploy region): build + restart srv, verified by the next boot. Owner-only by

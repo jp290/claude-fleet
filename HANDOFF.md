@@ -1,3 +1,123 @@
+# HANDOFF — Program-MAIN „Audit-Determiniertheit 2026-09" (`79036e9a58e3429578165297`, Slot 6, Opus 5): drei Zeilen gelandet, §11.2j formal geschlossen, die Suite von 4 auf 0 Fails; 2026-09-06 06:0x, ctx 43,7 % (Owner-Poll — zu spaet, siehe §5)
+
+Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was
+git und die Sensoren nicht tragen. Abschnitte darunter sind FREMD.
+
+## 0. DAS ERSTE: was mit dieser Session STIRBT
+
+- **Vier armed Watches** (Merge/Audit) und **alle Autos** — der Teardown raeumt sie still. Kein
+  Ergebnis geht dadurch verloren; alle vier haben gefeuert.
+- **Meine Attention `87e554226c9312fd117b630c` ist BEANTWORTET** (Entscheid C+A vom Controller,
+  2026-09-05 00:0x) und braucht nichts mehr.
+- **Sechs Audit-URTEILE, die ich gefaellt, aber NICHT ablegen konnte** —
+  `POST /api/post-land-audits/adjudicate` ist owner-only (401 auf das Self-Token). Sie stehen
+  wortwoertlich in meinen Berichten an den Controller; falls sie nie abgelegt wurden, sind die
+  betroffenen Audits weiter „unbeurteilt", obwohl hingesehen wurde:
+  `1788550781547` flake · `1788565731607` flake · `1788567702804` flake (vom Controller abgelegt) ·
+  `1788573383933` flake · `1788599042471` **stale-test** · `1788601114492` **stale-test** ·
+  `1788609298225` flake · `1788618088618` flake · `1788620497123` flake.
+
+## 1. Was gelandet ist (drei Zeilen, alle mit Server-Wurzel statt Fixture-Kosmetik)
+
+- **Zeile 1 §11.2j** → `c36c1e9` (Server) + `1db9296` (Fixture). Wurzel: LOST UPDATE in
+  `server.ts#tickWatches` — er validiert eine Zeile, AWAITET `canDeliver` (ps/pgrep), und ein Kill
+  der Subjekt-Lane schreibt in diesem Fenster `subject-gone` auf die Zeile, die die Schleife noch
+  haelt; danach ueberschrieb sie den Marker. EIN Lost Update erklaerte BEIDE Faeden (`flippedBack`
+  und `freed:400` sind dieselbe wiederbelebte Zeile). **Kriterium (b) ERFUELLT: 11 Laeufe auf
+  Baeumen mit `c36c1e9`, 0 rot.** Erste formal geschlossene Familie.
+- **Zeile 3 §11.2o Schnitt 1** → `b7480d3`: die Sonde druckt `phaseBasis` und `unknown` statt sie
+  wegzuwerfen. Damit war die Wurzel beim ERSTEN roten Lauf danach lesbar (`R10`, nicht `R6`).
+- **Zeile 5 §11.2o Wurzel** → `4c562e7` (Server) + `21150ac` (Fixture). Wurzel: unter
+  `FLEET_CMD=true` gibt eine Pane GENAU EINEN Ausgabestoss; `ensureSlot` oeffnet ein 1500-ms-
+  Ruhefenster; der Stream-Tick schiebt `s.offset` immer vor, stempelt `lastOutput` aber nur nach
+  dem Fenster — faellt der erste Tick hinein, bleibt `lastOutput` 0 fuer die Lebensdauer der Lane,
+  `observed` false, Projektion R10. Fix ist EINE Klausel (`|| s.lastOutput === 0`), 13 Leser
+  einzeln geprueft. **Danach zwei ALL-PASS-Laeufe und ein GRUENES Post-Land-Audit (3719 Checks,
+  0 Fails, 41,7 min, exit 0) — die Suite ging 4 → 1 → 0.**
+- **§11.2p** neu registriert (`dc7e141`): ein nicht abgeraeumter `requeue-teardown-empty`-Rest
+  reisst zwoelf `backlog nudge`-Checks mit. EIN Fail, siebzehn rote Zeilen.
+- Rangliste + zwei Nachtraege: `docs/messungen/2026-09-04-flake-ranking-trail.md`.
+
+## 2. Die fuenf offenen Zeilen, in DIESER Reihenfolge — und das Warum
+
+1. **`508dc4bb` D2-Host-Unterschied.** `D2 setup: both closing lanes reached the spent shape …`
+   ist **lokal 1/39 = 2,6 %, auf dem Linux-Helfer 3/3**. Solange das steht, ist JEDER Remote-Audit
+   rot und die Entlastung, die der Helfer bringen soll, frisst dieser eine Check wieder auf.
+   **Einzige Zeile des Programs, fuer die das Fremd-Plattform-Verbot NICHT gilt** — hier IST der
+   Helfer der Messgegenstand; steht so im Brief.
+2. **`76d39cae` `/api/self/flakes`-Truncation.** `days` ist oberhalb ~1 Tag WIRKUNGSLOS:
+   `TRAIL_MAX_FILES=400` schneidet VOR dem Suite-Filter (`server.ts#trailStatsView`). days=7 und
+   days=30 liefern beide 40 Laeufe, ein Direktscan findet 191. Ehrlich nur in `filesOmitted`, das
+   niemand liest. **Das ist das Instrument, auf dem Kriterium (b) definiert ist.**
+3. **`aa3fd660` Suite-Schnitt A** (Warten auf Bedingung statt Timer). Ich stufe das als
+   Determiniertheits-Arbeit ein, nicht als Tempo: 461 `sleep`-Aufrufe / 366 s, und JEDE bisher
+   gefundene Wurzel war ein Rennen, das ein Bedingungs-Warten deterministisch gemacht haette.
+4. **`5cd2d1b9` Suite-Schnitt B** (Modulfilter fuer Lane-Vorschau) — **ich hatte ihn zurueckgestellt
+   und ziehe den Einwand teilweise zurueck**: meine Begruendung war Ordnungsabhaengigkeit, und
+   Zeile 5 hat gezeigt, dass die Wurzel ein Rennen war, kein Reihenfolge-Effekt. Der Einwand ist
+   damit schwaecher, aber nicht leer — `fleet-e2e.ts` sagt selbst, die Ordnung sei tragend. Vor der
+   Freigabe den Brief noch einmal lesen.
+5. **`16da0d0f`** — nicht von mir gefiled, nicht von mir gelesen.
+
+## 3. Was OFFEN bleibt und sonst verloren geht
+
+- **Der Regime-Wechsel vom 2026-09-04 ist UNGEKLAERT** und ueber §11.2o nicht mehr beobachtbar.
+  Die Messung dreht die Frage um: auf ruhiger Maschine wird der Anschluss-Stoss in **11 von 11**
+  Oeffnungen IM Fenster verzehrt — erklaerungsbeduerftig sind damit die GRUENEN Laeufe VOR dem
+  09-04, nicht die roten danach. **Last zeigt hier falsch herum** (langsamerer Tick = hinter das
+  Fenster = gruen); wer sie noch einmal anbietet, hat das Vorzeichen nicht geprueft.
+- **`snapshotIntegrationTree` (`server.ts:13016`) baut den Audit-Baum per `git archive | tar -x`,
+  also OHNE `.git`. Das hat ZWEI Folgen, und die zweite ist neu:** (a) die proportionale
+  docs-only-Kette faehrt dort `bun e2e/pins.ts`, dessen sechs git-abhaengige Sonden korrekt als SIE
+  SELBST fallen — **jeder docs-only-Land erzeugt ein rotes Audit**, zweimal deterministisch
+  beobachtet (`1788599042471`, `1788601114492`); (b) lokale Audits schreiben deshalb `tree:null`
+  und **koennen strukturell nicht zu Kriterium (b) zaehlen**, das ueber `merge-base --is-ancestor`
+  definiert ist. Nur Lane-Laeufe und HELFER-Audits tragen Baeume. Gehoert Fleet-Betrieb
+  (Post-Land-Audit-Pfad ist mein Non-Goal), aber die zweite Folge deckelt still, wie schnell
+  irgendeine reparierte Familie zertifiziert werden kann.
+- **Zwei Familien gemessen, aber NICHT registriert:** `re-subscribing to the same target returns
+  the SAME watch` + Folgefehler `delete the spent transport Watch` (4/557 auf vier Baeumen, erste
+  Sichtung 08-24) und **Q6-fleet-report** (5/83 = 6,0 %). Unter dem Owner-Kriterium vom 09-01
+  („gruen nur, wenn jeder FAIL einer registrierten Familie angehoert") macht jede unregistrierte
+  Familie jeden Lauf nicht-gruen — Q6 ist Rang 2 meiner Rangliste und braucht einen §11.2-Eintrag
+  unabhaengig davon, wann ihr Fix kommt.
+- **Kriterium (b) wird durch einen Rebase-Land ZURUECKGESETZT:** die Beweislaeufe einer Lane liegen
+  auf ihrem Vor-Rebase-Baum, der die gelandete Sha nicht enthaelt. Lane-Laeufe sind Evidenz fuer das
+  Review, nie fuer das Kriterium.
+
+## 4. Fuer die Nachfolgerin, mechanisch
+
+- Release-Tuer ist `POST /api/self/tasks/<id>/release`; **Filing-Deckel 5 pending** (409 sonst),
+  und es gibt **keine self-Route zum Loeschen** — archivieren kann nur der Owner.
+- Land: `POST /api/self/tasks/<id>/land` **nur wenn die Projektion `nextAction` es nennt**, danach
+  SOFORT `{kind:"merge",target:<laneSlot>}` abonnieren, bei `landed=YES` dann
+  `{kind:"audit",repo,mainAfter}`.
+- **Nach jedem Land: `<LAND-SHA>`-Platzhalter in `docs/verify-tiering.md` ersetzen.** Die Lane kann
+  ihre Landing-Sha nicht kennen; ich verlange die Platzhalter deshalb im Brief.
+
+## 5. Bezahlte Fehler dieser Session (alle drei im Regelbuch nachgezogen)
+
+- **Ein SCHMUTZIGER Haupt-Checkout toetet ein fremdes Land, nicht nur ein Commit.** Ich hielt einen
+  docs-Fix ~20 min uncommittet, um kein fremdes Land zu stoeren — und toetete damit den Land von
+  Slot 9 NACH gruenem verify (`fast-forwarding main failed: Your local changes … would be
+  overwritten`). **Warten macht es schlimmer.** Kurz halten, schnell committen, vorher
+  `python3 -c 'import json; print({k:v["status"] for k,v in json.load(open("fleet.json")).get("merges",{}).items()})'`.
+- **Reparatur-Zitate wandern auf die gelandete Sha, MESSPROTOKOLLE nicht.** Ein pauschales Ersetzen
+  traf `e897f03` als Teilzeichenkette von `e897f038` (ein VERMESSENER Baum) und haette einen
+  Verweis auf eine Sha erzeugt, die zu nichts aufloest. Vor dem Commit zurueckgenommen.
+- **Eine Vorbedingung, die die Aktion nicht aufhalten kann, ist keine Pruefung.** Ich hatte
+  merges-Sonde und `land` im selben Kommandoblock — die Sonde druckte „in-flight: {'5':
+  'interrupted'}", der Land lief trotzdem. Sequenzieren, nicht buendeln.
+- **Und der Grund fuer diese Uebergabe:** ich bin auf 43,7 % gelaufen statt bei 25 % zu uebergeben.
+  Die Ketten waren einzeln kurz (briefen → warten → Report pruefen → landen), aber sie rissen nie
+  ab, und ich habe die Marke nie gemessen, sondern immer die naechste Zustellung bearbeitet. Der
+  Owner musste es ansagen. **Miss den eigenen Fuellstand aktiv** (Snippet im Regelbuch,
+  Abschnitt Kontext-Band) — eine Kette, die immer weitergeht, verhindert die Uebergabe nicht,
+  sie verdeckt sie nur.
+
+---
+---
+
 # HANDOFF — 🎛 Fleet Controller (Slot 2, Fable 5.1): S4 ist GEMESSEN und gelandet (Dual-Host komplett bis auf Owner-Wahlen), Bundle-Luecke des Folgers zu, E8 in Flug; 2026-09-06 05:5x, ctx GEMESSEN 25,5 %
 
 > **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 7, 04:1x).

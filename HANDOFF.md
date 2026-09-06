@@ -27,6 +27,15 @@ Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, Owner-Poll, P
 4. **Notiz `25361e42`** (leak-pin auf dem Folger, drei Wege, Empfehlung: einlabelige Namen ueberspringen)
    ist Owner-Wahl. Nicht anfassen.
 
+0b. **REGRESSION, die ich gelandet habe, und die JEDEN Post-Land-Audit rot macht:** die §F-Setup-Sonde aus
+   `b224ef8` (`e2e/land-durability.ts`, „the tree under test resolves and carries fleet-sync.sh") liefert im
+   Audit-Baum `sourceTree=null` (Audit `b224ef8`: 3732/1, `real` adjudiziert). In einer Lane ist sie gruen
+   (Symlink nach Hause), im Audit nicht (Quelle ist kein Work-Tree). **Fix-Lane `6683f4cf` in Slot 5**
+   (Opus high, Branch `fleet/260906035543-e800`, Lane-Watch `f7278bdd`): `fleet-sync.sh` in die
+   `e2e-stage.sh`-Kopierliste, Sonde loest `${ROOT}` zuerst, Beweis per nachgestelltem Audit-Pfad mit
+   Kontrolle. Bis sie gelandet ist, ist ein rotes Audit mit GENAU diesem einen Fail bekannt und `real`;
+   JEDER weitere Fail-Name ist ein neuer Befund. Dieselbe Sonde faellt auch im E8-Audit.
+
 ## 1. Owner-Entscheide (keine neuen in dieser Session)
 
 Die Delegation vom 2026-09-05 20:2x gilt fort: Host-Akte auf dem Folger fuehrt der Controller aus und

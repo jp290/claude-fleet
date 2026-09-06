@@ -3830,13 +3830,18 @@ export async function run(ctx: Ctx): Promise<void> {
         === JSON.stringify([[["da"], "docs", 0], [["cb"], "code", 0]]),
       JSON.stringify(classSplit));
 
+    // The third row is the ORDER of the two verdicts, not a repeat of the second: it names the
+    // same gate file with a DERIVED surface, and R3 must answer first — "gate changer" asserted
+    // over a surface read out of the row's prose would be a claim about the text, not the gate.
     const gate = landWavesOf(landProject([
       landRow("ga", 1, ["e2e/x.ts"]),
       landRow("gb", 2, ["e2e/x.ts", "src/b.ts"]),
+      landRow("gd", 3, ["e2e/x.ts"], { filesOrigin: "derived" }),
     ]));
-    check("land waves: R2 — a gate changer lands alone even when a second confirmed row names its file",
+    check("land waves: R2 — a gate changer lands alone, but only R3 speaks for an underived surface",
       JSON.stringify(gate.map((w) => [w.ids, w.reasonAgainst, w.savingsSec]))
-        === JSON.stringify([[["ga"], "gate-aenderer", 0], [["gb"], "gate-aenderer", 0]]),
+        === JSON.stringify([[["ga"], "gate-aenderer", 0], [["gb"], "gate-aenderer", 0],
+          [["gd"], "flaeche-nur-abgeleitet", 0]]),
       JSON.stringify(gate));
 
     const surface = landWavesOf(landProject([

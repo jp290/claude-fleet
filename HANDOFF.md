@@ -1,3 +1,115 @@
+# HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 10, Opus 5): beide Zeilen oberhalb der Schnittlinie gelandet UND deployt; EINE gepruefte Lane wartet nur noch aufs Landen; 2026-09-06 09:4x, ctx GEMESSEN 34,7 % — ZU SPAET, §5 sagt warum
+
+> **Dieser Abschnitt ERSETZT meinen aelteren weiter unten** (13:5x, jetzt §alt). Zustand ableiten:
+> `./state.sh`, `./register.sh`, `GET /api/self/program-execution`.
+
+## 0. DEIN ERSTER ZUG — eine Lane, geprueft, du musst nur landen
+
+**Slot 1, `fleet/260905150555-2aac`, task `02740e69` (Lebenszyklus S5a), tip `7f964e5`, sauber,
+ahead 1.** Ich habe Report UND Diff gelesen und gebe sie frei — **du musst den 209-Zeilen-Diff NICHT
+noch einmal lesen**, nur landen (Gate-Check in einem EIGENEN Aufruf, siehe §5):
+`POST /api/self/tasks/02740e69/land`, danach `{"kind":"merge","target":1}` abonnieren.
+
+**ABER NICHT SOFORT — REIHENFOLGE VOM CONTROLLER (Slot 6, 2026-09-06 09:4x):** er landet zuerst
+**Slot 5 (Audit-Fix)** und direkt danach **Slot 4 (E8)**; dein Land kommt **NACH diesen beiden**.
+Sein Sensor ist derselbe wie deiner: `merges` in `fleet.json` **leer**. Ein `running`/`interrupted`
+OHNE `verify` heisst „ein Land LAEUFT" — dann warten, nicht landen und erst recht nicht auf main
+committen (§5).
+
+Warum ich sie freigebe, damit du es pruefen und nicht glauben musst:
+- `actor?: LandActor` ist OPTIONAL und beim Laden **presence-gated** (`hasOwnProperty`) — eine Zeile
+  ohne den Key bleibt ohne ihn, statt mit einem geratenen `cookie` gestempelt zu werden.
+- `programsForAuditRow` joint ueber **repo + branch + mainAfter zusammen**, newest-wins; ein Cover
+  ohne Treffer bleibt PROGRAMLOS statt der naechsten Vermutung zugeschlagen zu werden.
+- `by:"owner"` ist gestempelt, `actor` gemessen — **keines von beiden aus dem Body**.
+- Der `suspect`-Arm ist eng und benennt seine eigene Grenze: „the absence of the flag always means
+  'not shown', never 'shown to be safe'". Es ist eine Ledger-Zeile, kein Tor.
+- Fuenf Checks + vier RULE_ACTOR-Pins, jeder EINZELN unter Mutation rot gesehen.
+
+**EINE VORBEHALT-ZEILE, kein Blocker, aber schreib sie in die Doku der Zeile:**
+`via = tokenChannel(req) ?? "cookie"` — ein unbekannter Kanal landet im NICHT-suspect-Arm, das Flag
+faellt also **offen** aus. Solange es advisory ist, richtig. **Sobald irgendetwas darauf gated,
+muss der Fallback `unknown` werden, nicht `cookie`.**
+
+**IHR UNBESTELLTER BEFUND ist die wertvollere Haelfte und eine WIEDERHOLUNG:** `reportLaneSuite`
+zaehlt die Fails eines suite-offer-Laufs, legt ihre NAMEN aber nicht auf `j.result` (anders als
+`PostLandAuditRow.fails`) — die Lane musste sie per ssh aus der `suite.log` des Helfers holen, um
+ihr eigenes rotes Vorschau-Verdikt zu adjudizieren. **Exakt der Defekt, den `eb07267` fuer Audits
+schon geschlossen hat**, nur auf dem anderen Ledger. Als `notiz` nicht filbar (§4).
+
+## 1. Was steht (gemessen, nicht erinnert)
+
+- **`93e5460`** — proportionaler Post-Land-Audit bekommt git-Kontext im Snapshot. `verify.ok:true`.
+- **`1d5efb9`** — D2 Program-Status-Projektion (3 Commits). `verify.ok:true`, `ms 188620`.
+- Beide **ueber die eigene guarded Self-Land-Sprosse**, Land-Notes tragen
+  `actor{kind:main, slot:10, program:f170dc46}` — **zwei Belege fuer Erfolgskriterium (d)**.
+- **`bb96059`** — Regelbuch: acht Mutex-Bullets auf drei Regeln, Originale als §15.30–§15.37 im
+  Attic. `81 322 → 79 508 B`, **nicht** die 75 000 (Strukturentscheid, §alt §3).
+- **Deployt.** Mein `25d4940c` (`ok:true`) und danach der Controller-Deploy `8b59b434` (`ok:true`,
+  bootHead `e2beeff4`). `d37f835` (Gate-Kind erbt `FLEET_SELF_TOKEN` nicht mehr) ist damit live.
+
+**DER BEWEIS ZUM AUDIT-FIX STEHT NOCH AUS und ist deiner:** er zeigt sich erst am **naechsten
+rein-docs-Land**. Dann muss die Zeile in `post-land-audits.jsonl` `proportional:true`,
+`checks.failed: 0` und KEINE `not a git repository`-Zeile tragen. Basislinie, die er brechen muss:
+fuenf rote in Folge. Kommt er mit denselben sechs Pin-Namen rot zurueck, hat der Fix nicht
+gegriffen und die Fixture mass etwas Engeres als den Live-Pfad — das willst du schnell wissen.
+
+## 2. Der Mechanismus des Tages, in einer Tabelle
+
+Vier Nicht-Messungen, eine Wurzel — der Suite-Mutex verwandelt Arbeit in Nicht-Antworten, und jede
+Nicht-Antwort wird danach wie ein Urteil verbucht:
+
+| | Beleg |
+|---|---|
+| Gate `ec0bf175` | Phase 3, `waitMs 531000/665428`, **kein `server.log`** → RED |
+| Audit `93e5460` | `ms 2700498`, `checks:None`, 1001 s Schlange → `unknown` |
+| Land Slot 5 | clean rebase, **verify NEVER STARTED** → `landed=False` |
+| gruene Reparatur-Kette | 4 von 5 Stufen in der Schlange (1213+1153+1881 s) |
+
+**Nur der Land-Gate hat gelernt, „ich habe gewartet" von „ich habe gemessen" zu trennen**
+(`waitMs` vs `timeoutMs`, `08dc17a`). Post-Land-Audit und Self-Land-Progress-Guard vermengen beides
+weiter. Das Fix-Muster liegt im Baum. Beides steht UNTER der Schnittlinie — akzeptiert, aber die
+Belege sind hier, damit es eine Lesezeit kostet und keinen Tag.
+
+## 3. Kontrolle statt Erzaehlung (die Zahl, die ich mitgebe)
+
+Zweimal dasselbe Gate, dieselbe `e2e-claude-gate.sh` Phase 3: bei `waitMs 531000` kam der Server
+nicht hoch und es gab **kein `server.log`** (Nie-gemessen-Signatur) — bei `waitMs 0` lief dieselbe
+Phase in **116 s gruen**. Dritte Kontrolle von der Reparatur-Lane: alle fuenf Phasen gefahren,
+`grep -c 'did not come up'` = 0. Die Maschine ist nicht zu langsam (Slot 1 landete im selben Fenster
+gruen) — **wer unter Andrang landet, kauft eine Phase-3-Nichtmessung mit spuerbarer
+Wahrscheinlichkeit**, und der Guard macht daraus ein Urteil.
+
+## 4. Zwei Tueren, die ZU sind
+
+- **Advisory-Kappe `10/10`.** `POST /api/self/tasks` mit `kind:"notiz"` wird abgelehnt: „program
+  advisory filing cap reached … ask the owner to dispose". Dieses Program kann **keine Befunde mehr
+  filen** — deshalb stehen zwei davon in Prosa (§0 und §alt §4b) statt in der Queue. Der Controller
+  hat zugleich verfuegt, Befunde als `notiz` weiterzureichen; **das geht erst nach einer
+  Disposition.** Frag danach, bevor du misst.
+- **Mein HANDOFF-Abschnitt war heute frueh der DRITTE in der Datei**, unter zwei neueren fremden.
+  Der Gruendungsbrief sagt „Read only the top HANDOFF.md section" — eine Nachfolgerin von mir haette
+  also ein FREMDES Program gelesen. Ich habe diesen Abschnitt deshalb neu nach oben geschrieben, aber
+  **das ist ein Pflaster.** Die offene Program-Frage (`docs/handoffs/<program>.md`) hat damit einen
+  konkreten Schaden statt einer Vermutung. An den Controller gemeldet.
+
+## 5. MEIN FEHLER, und er ist der Grund, dass du das hier bei 34,7 % liest
+
+**Ich habe die Nachfolge vierzehn Punkte zu spaet gefahren.** `HANDOFF.md` stand bei **24 %** —
+also punktgenau — und danach habe ich weitergearbeitet, weil jedes eintreffende Ereignis (Report,
+Watch, Land-Verdikt) wie „eine kurze Restkette" aussah. **Das Band ist ein ENTSCHEIDUNGSPUNKT, den
+man EINMAL trifft, kein Schwellwert, den man bei jedem Ereignis neu bewertet.** Zweiter Teil,
+gleich wichtig: ich habe die Uebergabe mehrfach als „bereit auf dein Wort" formuliert. **Sie ist der
+eigene Akt der MAIN.** Der Owner musste mich darauf stossen; in seinem Gedaechtnis steht die Regel
+bereits („Uebergabe fahre ich selbst"). Wenn du dich bei „nur noch dieses eine Ereignis" ertappst:
+das ist genau die Stelle.
+
+**Und der teuerste Einzelfehler kam bei 34 %**, nicht bei 24: ich habe `63ff7f6` auf main committet,
+waehrend Slot 5s Land lief — weil `merges`-Probe und `git commit` in **derselben `&&`-Kette**
+standen und ich die korrekte Ausgabe (`'5': 'interrupted'`) nie gelesen habe. **Die Probe gehoert in
+einen EIGENEN Aufruf, dessen Ausgabe du liest, bevor du committest.** Slot 5 verlor nichts an mir
+(sein Verdikt: „clean rebase, but verify NEVER STARTED"), der Fehler bleibt trotzdem einer.
+
 # HANDOFF — Program-MAIN „Audit-Determiniertheit 2026-09" (`79036e9a58e3429578165297`, Slot 6, Opus 5): drei Zeilen gelandet, §11.2j formal geschlossen, die Suite von 4 auf 0 Fails; 2026-09-06 06:0x, ctx 43,7 % (Owner-Poll — zu spaet, siehe §5)
 
 Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was
@@ -233,7 +345,7 @@ Hintergrund-Watcher auf den Folger: keiner mehr aktiv.
 ---
 ---
 
-# HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 10, Opus 5): die Audit-Regression ist ZU (`93e5460`, ueber die eigene Self-Land-Sprosse), die zweite Lane haengt an einem NIE-GEMESSENEN Gate — und ich habe die Last-Hypothese am Ende mit einer Kontrolle belegt; 2026-09-05 13:5x
+# HANDOFF (§alt, ersetzt durch den Abschnitt ganz oben) — Program-MAIN Fleet-Betrieb 2026-09, Slot 10: die Audit-Regression ist ZU (`93e5460`, ueber die eigene Self-Land-Sprosse), die zweite Lane haengt an einem NIE-GEMESSENEN Gate — und ich habe die Last-Hypothese am Ende mit einer Kontrolle belegt; 2026-09-05 13:5x
 
 Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Hier nur, was git
 und die Sensoren nicht tragen. Lineage 4 → 16 → 10 → 3 → 5 → 2 → 10 → du.

@@ -7338,7 +7338,7 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
     // than behind a shared wrapper on purpose: the pin that matters is that `mergeJob(` has exactly
     // two textual call sites and both are routes, and a wrapper would let a third caller — a tick —
     // hide behind one name.
-    const job: Promise<void> = mergeJob(lane, cwd, repo, branch, integration, carry.carried, carry.carriedBy, actor)
+    const job: Promise<void> = mergeJob(lane, cwd, repo, branch, integration, carry.carried, carry.carriedBy, carry.carriedRuns, actor)
       .finally(() => { if (mergeInflight.get(lane.id) === job) mergeInflight.delete(lane.id); });
     mergeInflight.set(lane.id, job);
     // EVERY non-green outcome — resolved/conflict, verify red, verify unknown — reaches the MAIN
@@ -11932,6 +11932,41 @@ const MERGE_TOOLS = '--setting-sources "" --permission-mode dontAsk --allowedToo
 // owner's allow list, which would hand the write tools straight back.
 // one literal, for the two reasons stated above MERGE_TOOLS
 const REVIEW_TOOLS = '--setting-sources "" --permission-mode dontAsk --allowedTools "Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Read(**)" "Grep(**)" "Glob(**)"';
+// --- WHAT THE TWO MUTATING WORKERS COST, ROUND BY ROUND ----------------------------------------
+// Until 2026-09-06 `runResolve`/`runRepair` were the only runWorker call sites with NO `observe`
+// hook, so every ledger this repo keeps could say THAT a conflict was agent-resolved and never
+// WHICH agent did it, how long it took, or how it answered. The owner's question of that morning —
+// "has Sonnet 5 ever failed on a conflict here?" — was unanswerable from the 11 conflict-resolved
+// lands in 781 outcome rows and from all 470 readable fleet/land notes (./state.sh, 2026-09-06),
+// because not one of them carried a model.
+// ONE ROW PER SPAWN, in spawn order: the resolver run first, then each repair round that actually
+// invoked the worker. A round the loop broke out of before spawning writes nothing, because
+// nothing ran.
+// `status` is the worker's OWN narrative verdict, never git's — the land path believes git and
+// always did (see runMerge's caller). `unparseable` is therefore a first-class value here rather
+// than a fold into "blocked": an answer that missed its contract is a measurement OF THE MODEL,
+// and it is exactly the failure mode this record exists to count. `error` is the fifth: the spawn
+// threw or the worker hit MERGE_TIMEOUT_MS, so there is no answer at all — recorded because a
+// resolver that times out is the loudest way a model can fail a conflict, and the throw's own
+// funnel (mergeJob's catch) says only "merge agent failed".
+// `ms` is wall time around the runWorker call — spawn, model, transport. Not a token cost, and it
+// must never be read as one.
+// `conflictedFiles` is a COUNT, not the list: the list is already on the note once (`conflicted`)
+// and is the SAME set for every round of one job, so a per-round copy would be the same bytes N
+// times over. The count is what makes a round's ms and status readable next to its difficulty.
+// `model` on an `error` row is the model that WOULD have run (SUMMARY_MODEL, or the FLEET_*_MODEL
+// override): both mutating workers are pinned to the claude route in WORKER_ROUTES and pass no
+// per-call model, so summaryViaSession's own `opts.model ?? SUMMARY_MODEL` resolves to exactly
+// this value. That is a derivation, not a guess — but it is the only field here not read back off
+// a completed run, and it is stated so nobody reads an error row as an observation.
+interface ResolverRun {
+  worker: "merge" | "repair";
+  model: string;
+  backend?: "codex-exec";
+  status: "rebased" | "repaired" | "blocked" | "unparseable" | "error";
+  ms: number;
+  conflictedFiles: number;
+}
 // "resolved" = the agent had to make semantic conflict choices; the rebase is git-verified
 // but deliberately NOT landed — it waits for the owner to review the diff and confirm.
 // A clean (script) rebase involves no judgment and still goes straight to "merged".
@@ -12000,6 +12035,14 @@ interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "int
   // settled. >0 means the resolution's first verify was RED and the resolver was fed the failure
   // to repair; `verify` above is the FINAL (post-repair) result. Absent/0 = no repair was needed.
   repairRounds?: number;
+  // …and WHAT each of those rounds actually was: one ResolverRun per worker spawn, resolver first.
+  // Distinct from `repairRounds` and not derivable from it — that number counts rounds that left a
+  // committed, still-rebased tree, while this counts SPAWNS, so a round that answered "blocked" or
+  // whose repair was reset appears here and not there. Absent on every clean rebase (no worker ran)
+  // and on every verdict persisted before 2026-09-06, which is honest absence, never zero rounds.
+  // CARRIED across a re-run exactly as `resolvedBy` is: the lane still holds those lines whichever
+  // run produced them, and this is the one hop where the attribution would otherwise be lost.
+  resolverRuns?: ResolverRun[];
   // HOW MANY TIMES THIS LAND LOST THE FAST-FORWARD AND WENT ROUND AGAIN (clean path only, see
   // LAND_FF_RETRY_ROUNDS). Absent = the first attempt decided it, which is what every verdict
   // written before 2026-09-04 means. >0 says the tree under `verify` is NOT the one the first
@@ -12323,6 +12366,12 @@ interface LandProvenance {
   // confirmed — equal to `mainAfter` on a fast-forward, but only on a fast-forward.
   resolvedBy?: "agent" | "author";
   repairRounds?: number;
+  // …and the per-spawn record behind that count (see ResolverRun). It is on the NOTE and not only
+  // in the outcome row because the note lives at the landed COMMIT: "which model chose these lines"
+  // is a question a reader asks about a diff months later, from a checkout where the lane, its slot
+  // and its outcome row have all been recycled. Absent where no worker ran, which is every clean
+  // land — and absent, not empty, so a reader cannot mistake "no resolver" for "resolver, no rounds".
+  resolverRuns?: ResolverRun[];
   candidateSha?: string;
   // …and the clean path's own count: how many lost fast-forwards this land survived before it took
   // (LAND_FF_RETRY_ROUNDS). Absent = it took on the first attempt. `verify` beside it is always the
@@ -12382,6 +12431,7 @@ async function writeLandNote(repo: string, branch: string, mainBefore: string, m
       ...(prov.resolverDetail ? { resolverDetail: prov.resolverDetail } : {}),
       ...(prov.resolvedBy ? { resolvedBy: prov.resolvedBy } : {}),
       ...(prov.repairRounds ? { repairRounds: prov.repairRounds } : {}),
+      ...(prov.resolverRuns?.length ? { resolverRuns: prov.resolverRuns } : {}),
       ...(prov.ffRounds ? { ffRounds: prov.ffRounds } : {}),
       ...(prov.candidateSha ? { candidateSha: prov.candidateSha } : {}),
       ...(prov.verify ? { verify: prov.verify } : {}),
@@ -15457,6 +15507,13 @@ interface LaneOutcome {
   // without a counter silently becomes the normal case.
   resolvedBy?: "agent" | "author";
   repairRounds: number;      // bounded resolver↔verify repair rounds that ran before this landed (0 = none)
+  // The per-spawn record behind that count (see ResolverRun) — the LANE-side copy of what the
+  // fleet/land note carries at the commit, here for the reason `landedBy` is here: "which model
+  // resolved the conflicts on lanes that later got reverted" is a question about LANES, and the
+  // note is keyed by a commit. Optional and absent (never `[]`) on every clean land, every
+  // non-landed disposition and every row written before 2026-09-06 — absence says "no worker ran
+  // or this row cannot say", which an empty array would quietly turn into "a worker ran zero times".
+  resolverRuns?: ResolverRun[];
   confirmedByHuman: boolean; // did the owner confirm-land it (true) or did it auto-land clean+green (false)?
   review: OutcomeReview;     // what ③ said + whether it described THIS diff (never one without the other)
   // FLEET_CLEAN_REVIEW=shadow only: what the ② clean-path reviewer WOULD have said about this land,
@@ -15528,6 +15585,9 @@ type LandFacts = { resolvedConflict: boolean; repairRounds: number; confirmedByH
   // paired with resolvedConflict above: only the land site knows which resolver produced the tree
   resolvedBy?: "agent" | "author";
   verified: boolean | null; baseSha?: string;
+  // the resolver/repair spawns behind `repairRounds`, carried from the land SITE for the same
+  // reason every other field here is: only the site has read the verdict this land is confirming.
+  resolverRuns?: ResolverRun[];
   // the actor, carried from the land SITE for exactly the reason every other field here is: only
   // the site knows which principal drove this land. Optional because the two already-merged owner
   // paths pass a const shape; each names its own actor explicitly at the call.
@@ -15739,6 +15799,7 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     // appears on every row would make "no conflict" and "resolver unknown" the same reading.
     ...(facts.resolvedConflict && facts.resolvedBy ? { resolvedBy: facts.resolvedBy } : {}),
     repairRounds: facts.repairRounds,
+    ...(facts.resolverRuns?.length ? { resolverRuns: facts.resolverRuns } : {}),
     confirmedByHuman: facts.confirmedByHuman,
     // only a land has an actor; a kill or a shelve moved no integration branch and a key there
     // would be a measurement of nothing.
@@ -16359,7 +16420,12 @@ async function landingAnchorBlock(root: string): Promise<string> {
   }));
 }
 
-async function runMerge(cwd: string, root: string, branch: string, main: string, conflicted: string[], laneTask: string | null, graphs: MergeGraphs): Promise<{ status: "rebased" | "blocked" | "unparseable"; detail: string }> {
+// `onRun` is a SINK, not a return value, and that is the whole reason the record survives a
+// timeout: MERGE_TIMEOUT_MS kills the worker by throwing, the throw funnels into mergeJob's catch,
+// and a fact returned from here would never have been returned at all. The sink is fed on both
+// exits, so "the resolver ran and blew its clock" is a row like any other instead of the single
+// word "merge agent failed".
+async function runMerge(cwd: string, root: string, branch: string, main: string, conflicted: string[], laneTask: string | null, graphs: MergeGraphs, onRun: (r: ResolverRun) => void): Promise<{ status: "rebased" | "blocked" | "unparseable"; detail: string }> {
   const lg = await git(cwd, "log", "--no-color", "--oneline", `${main}..HEAD`);
   // main's intent, deterministically: commits main gained since the fork. Compute the merge-base
   // here (fall back to `main` if it can't be resolved — then mergeBase..main is empty, matching
@@ -16377,9 +16443,25 @@ async function runMerge(cwd: string, root: string, branch: string, main: string,
     mainLog: mlg.code === 0 ? mlg.out : "",
     graphs,
   });
-  const out = await runWorker(
-    { worker: "merge", cmd: MERGE_CMD, tools: MERGE_TOOLS, timeoutMs: MERGE_TIMEOUT_MS },
-    `${prompt}${await landingAnchorBlock(root)}`, cwd);
+  // the anchors are computed BEFORE the clock starts: they are a git+classification read of this
+  // machine, not the model's work, and folding them into `ms` would inflate every resolver run by
+  // a cost no model paid.
+  const anchored = `${prompt}${await landingAnchorBlock(root)}`;
+  let observed: WorkerRunObservation = { model: SUMMARY_MODEL };
+  const startedAt = Date.now();
+  const emit = (status: ResolverRun["status"]): void => onRun({ worker: "merge", model: observed.model,
+    ...(observed.backend ? { backend: observed.backend } : {}),
+    status, ms: Date.now() - startedAt, conflictedFiles: conflicted.length });
+  let out: string;
+  try {
+    out = await runWorker(
+      { worker: "merge", cmd: MERGE_CMD, tools: MERGE_TOOLS, timeoutMs: MERGE_TIMEOUT_MS,
+        observe: (r) => { observed = r; } },
+      anchored, cwd);
+  } catch (e) {
+    emit("error");
+    throw e; // the caller's contract is unchanged — this seam only records on the way past
+  }
   const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   // the JSON is the agent's NARRATIVE, never the authority — a correct rebase answered in
   // prose must not be thrown away (seen live: agent ignored an injected commit subject,
@@ -16387,10 +16469,14 @@ async function runMerge(cwd: string, root: string, branch: string, main: string,
   // mergeJob decides by the same git verification a claimed "rebased" gets.
   try {
     const j = JSON.parse(body) as { status?: unknown; detail?: unknown };
-    if (j.status !== "rebased" && j.status !== "blocked")
+    if (j.status !== "rebased" && j.status !== "blocked") {
+      emit("unparseable");
       return { status: "unparseable", detail: `agent answered without a status: ${body.slice(0, 200)}` };
+    }
+    emit(j.status);
     return { status: j.status, detail: typeof j.detail === "string" ? j.detail.slice(0, 600) : "" };
   } catch {
+    emit("unparseable");
     return { status: "unparseable", detail: `agent answer was not the JSON contract: ${body.slice(0, 200)}` };
   }
 }
@@ -16473,18 +16559,36 @@ async function wakeAuthor(s: Slot, cwd: string, branch: string, main: string,
 // the agent's NARRATIVE only — mergeJob's loop re-establishes the git-verified state and re-runs
 // runVerify to decide, never trusting this word (believe git, not the agent).
 async function runRepair(cwd: string, root: string, branch: string, main: string, conflicted: string[],
-  verify: { cmd: string; out: string }, graphs: MergeGraphs): Promise<{ status: "repaired" | "blocked" | "unparseable"; detail: string }> {
+  verify: { cmd: string; out: string }, graphs: MergeGraphs,
+  onRun: (r: ResolverRun) => void): Promise<{ status: "repaired" | "blocked" | "unparseable"; detail: string }> {
   const prompt = buildRepairPrompt({ branch, main, verifyCmd: verify.cmd, verifyOut: verify.out, conflicted, graphs });
-  const out = await runWorker(
-    { worker: "repair", cmd: MERGE_CMD, tools: MERGE_TOOLS, timeoutMs: MERGE_TIMEOUT_MS },
-    `${prompt}${await landingAnchorBlock(root)}`, cwd);
+  const anchored = `${prompt}${await landingAnchorBlock(root)}`;
+  let observed: WorkerRunObservation = { model: SUMMARY_MODEL };
+  const startedAt = Date.now();
+  const emit = (status: ResolverRun["status"]): void => onRun({ worker: "repair", model: observed.model,
+    ...(observed.backend ? { backend: observed.backend } : {}),
+    status, ms: Date.now() - startedAt, conflictedFiles: conflicted.length });
+  let out: string;
+  try {
+    out = await runWorker(
+      { worker: "repair", cmd: MERGE_CMD, tools: MERGE_TOOLS, timeoutMs: MERGE_TIMEOUT_MS,
+        observe: (r) => { observed = r; } },
+      anchored, cwd);
+  } catch (e) {
+    emit("error");
+    throw e;
+  }
   const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   try {
     const j = JSON.parse(body) as { status?: unknown; detail?: unknown };
-    if (j.status !== "repaired" && j.status !== "blocked")
+    if (j.status !== "repaired" && j.status !== "blocked") {
+      emit("unparseable");
       return { status: "unparseable", detail: `agent answered without a status: ${body.slice(0, 200)}` };
+    }
+    emit(j.status);
     return { status: j.status, detail: typeof j.detail === "string" ? j.detail.slice(0, 600) : "" };
   } catch {
+    emit("unparseable");
     return { status: "unparseable", detail: `agent answer was not the JSON contract: ${body.slice(0, 200)}` };
   }
 }
@@ -17236,6 +17340,10 @@ async function confirmResolvedCandidate(s: Slot, cwd: string, repo: string, main
     verify: verifyProv, confirmedByHuman: opts.byHuman, actor: opts.actor,
     ...(reviewed?.resolvedBy ? { resolvedBy: reviewed.resolvedBy } : {}),
     ...(reviewed?.repairRounds ? { repairRounds: reviewed.repairRounds } : {}),
+    // …and the per-spawn record behind that count. Read off the verdict for the same reason every
+    // other field on this line is: the merge job that spawned those workers ended minutes ago and
+    // this verdict is the only thing that saw them.
+    ...(reviewed?.resolverRuns?.length ? { resolverRuns: reviewed.resolverRuns } : {}),
     ...(currentCandidate ? { candidateSha: currentCandidate.candidateSha } : {}) };
   // same declaration-before-the-advance as the clean auto-land path (see markLandIntent)
   const laneTip = currentCandidate?.candidateSha ?? (await git(repo, "rev-parse", branch)).out;
@@ -17264,6 +17372,9 @@ async function confirmResolvedCandidate(s: Slot, cwd: string, repo: string, main
     // author path entirely, so the default is a fact about them, not a guess.
     resolvedBy: reviewed?.resolvedBy ?? "agent",
     repairRounds: reviewed?.repairRounds ?? 0,
+    // the same rows the note above gets, so the lane-side ledger and the commit-side note answer
+    // "which model chose these lines" identically instead of one of them being the only copy
+    ...(reviewed?.resolverRuns?.length ? { resolverRuns: reviewed.resolverRuns } : {}),
     // FALSE on the MAIN arm, and that is the honest reading of the field rather than a downgrade:
     // `confirmedByHuman` records that a HUMAN took the confirm step. A MAIN's confirm is a machine
     // act under an owner-granted policy — WHO it was is `landedBy`/the note's actor, never this flag.
@@ -17307,7 +17418,7 @@ async function confirmResolvedCandidate(s: Slot, cwd: string, repo: string, main
 // row, which is the fail-safe direction for a guard whose job is to stop unreviewed work landing.
 type MergeCarry =
   | { hold: { last: MergeLast; detail: string } }
-  | { carried: string[]; carriedBy: "agent" | "author" };
+  | { carried: string[]; carriedBy: "agent" | "author"; carriedRuns: ResolverRun[] };
 async function carriedFromPendingVerdict(s: Slot, repo: string, main: string, branch: string): Promise<MergeCarry> {
   const pend = mergeLast.get(s.id);
   const holdsResolution = (pend?.conflicted?.length ?? 0) > 0 || !!pend?.resolvedBy;
@@ -17333,9 +17444,19 @@ async function carriedFromPendingVerdict(s: Slot, repo: string, main: string, br
   // Default "agent" matches every verdict written before resolvedBy existed — those were all
   // worker resolutions, so the default is a fact about the old rows, not a guess.
   const carriedBy = pend?.resolvedBy ?? "agent";
+  // …and WHAT those resolvers cost, for the identical reason: the verdict about to be deleted is
+  // the only record of the spawns behind the lines in this tree. GATED ON `carried`, exactly as
+  // `carriedBy` is gated by its own meaning: these rows travel because the tree still holds lines a
+  // worker chose, and a superseded verdict that holds NONE (a `blocked` run rebased nothing) would
+  // otherwise hand its spawns to a clean auto-land that contains no agent judgment at all. That
+  // run is not lost — it is on the blocked verdict this line is superseding, which is where a
+  // reader asking "did the resolver fail here" looks; it is simply not a fact about the next tree.
+  // `[]` also where the superseded verdict predates this field, or where the AUTHOR resolved it —
+  // the author path spawns no worker, so empty there is the true measurement and not a gap.
+  const carriedRuns = carried.length ? pend?.resolverRuns ?? [] : [];
   mergeLast.delete(s.id); // a new run supersedes the previous verdict
   saveState();
-  return { carried, carriedBy };
+  return { carried, carriedBy, carriedRuns };
 }
 
 // `carried` = conflict files whose resolution is ALREADY committed in this lane and has never been
@@ -17621,7 +17742,7 @@ function cleanVerifyStop(verify: NonNullable<MergeLast["verify"]>, branch: strin
 }
 
 async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main: string,
-  carried: string[] = [], carriedBy: "agent" | "author" = "agent",
+  carried: string[] = [], carriedBy: "agent" | "author" = "agent", carriedRuns: ResolverRun[] = [],
   actor: LandActor = { kind: "owner", via: "cookie" }): Promise<void> {
   // WHO THE VERDICT AT THE END BELONGS TO, decided HERE and not down there: the route that called
   // this has just verified the asker's identity, and the gate below runs for minutes.
@@ -17643,9 +17764,18 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
   // the verdict write, extracted so the ② author path can leave early without duplicating it: a
   // slot recycled onto a DIFFERENT cwd mid-run already had its verdict slate cleared by openSlot,
   // and this lane's verdict must not be written over whatever lives there now.
+  // EVERY worker spawn this run makes, in spawn order, seeded with whatever a superseded verdict
+  // carried (see carriedFromPendingVerdict): the lines in this tree were chosen by those runs
+  // whether or not THIS run spawned anything. Mutable and read at the single verdict write below,
+  // so no exit path — a land, a stop, a thrown worker — can drop it.
+  const resolverRuns: ResolverRun[] = [...carriedRuns];
   const record = async (r: MergeLast): Promise<void> => {
     if (!s.cwd || s.cwd === cwd) {
-      const bound = await bindCandidate(r);
+      // written HERE and not at each `res =` site, because there are eleven of them and the one
+      // that would be forgotten is the failure path — the exact verdict a reader opens to ask
+      // which model failed. Absent, never `[]`: "no worker ran" and "a worker ran zero times"
+      // are different sentences (see ResolverRun).
+      const bound = await bindCandidate(resolverRuns.length ? { ...r, resolverRuns } : r);
       mergeLast.set(s.id, bound);
       // Candidate identity belongs to the on-demand merge row, not the bounded event facts that
       // ride the 2 s /api/sessions hot poll. The event vocabulary is intentionally unchanged.
@@ -17769,7 +17899,8 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
     }
     const r = pre.clean
       ? { status: "rebased" as const, detail: "clean rebase — no conflicts, agent not needed" }
-      : await runMerge(cwd, root, branch, main, pre.conflicted, laneTask, graphs);
+      : await runMerge(cwd, root, branch, main, pre.conflicted, laneTask, graphs,
+          (run) => resolverRuns.push(run));
     if (r.status === "blocked") {
       res = { status: "blocked", detail: r.detail, landed: false, branch, at: Date.now() };
     } else {
@@ -17825,7 +17956,8 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         let repairRounds = 0;
         if (!pre.clean && verify && verify.ok === false && MERGE_REPAIR_ROUNDS > 0) {
           for (let round = 1; round <= MERGE_REPAIR_ROUNDS; round++) {
-            const rep = await runRepair(cwd, root, branch, main, pre.conflicted, { cmd: verify.cmd, out: verify.out }, graphs);
+            const rep = await runRepair(cwd, root, branch, main, pre.conflicted, { cmd: verify.cmd, out: verify.out }, graphs,
+              (run) => resolverRuns.push(run));
             if (rep.status === "blocked") break; // agent aborted, tree left pristine — nothing to re-verify
             const rst = await git(cwd, "status", "--porcelain");
             if (rst.code !== 0 || rst.out) {
@@ -24918,7 +25050,7 @@ Bun.serve<WSData>({
         // …and the job itself, started at the route the way it always was. Deliberately NOT behind
         // a helper: `mergeJob(` having exactly TWO textual call sites, both of them routes, is the
         // property e2e/pins.ts holds — a wrapper would hide a third caller (a tick) behind one name.
-        const job: Promise<void> = mergeJob(s, cwd, repo, branch, main, carry.carried, carry.carriedBy, ownerActor)
+        const job: Promise<void> = mergeJob(s, cwd, repo, branch, main, carry.carried, carry.carriedBy, carry.carriedRuns, ownerActor)
           .finally(() => { if (mergeInflight.get(s.id) === job) mergeInflight.delete(s.id); });
         mergeInflight.set(s.id, job);
         return json({ running: true });

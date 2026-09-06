@@ -1197,9 +1197,25 @@ einer roten Bestätigung zu tun ist, ist das Urteil der MAIN; die fünf Eskalati
 die zur Attention gehen.
 
 **Die Note eines so gelandeten Kandidaten trägt** `conflicted`, `resolvedBy`, `repairRounds`,
-`candidateSha`, das FRISCHE Verify-Ergebnis und `confirmedByHuman:false`. (Ein Land des SAUBEREN
-Pfades trägt keines dieser Felder, aber seit 2026-09-04 `ffRounds`, sobald es die Vorspulung
-mindestens einmal verloren und den Zug wiederholt hat — fehlt das Feld, gelang es im ersten Anlauf.)
+`resolverRuns`, `candidateSha`, das FRISCHE Verify-Ergebnis und `confirmedByHuman:false`. (Ein Land
+des SAUBEREN Pfades trägt keines dieser Felder, aber seit 2026-09-04 `ffRounds`, sobald es die
+Vorspulung mindestens einmal verloren und den Zug wiederholt hat — fehlt das Feld, gelang es im
+ersten Anlauf.)
+
+`resolverRuns` ist seit 2026-09-06 die EINZIGE Stelle, an der ein Ledger dieses Repos das MODELL
+eines Konflikt-Resolvers nennt: eine Zeile pro Worker-SPAWN, in Spawn-Reihenfolge (der Resolver,
+dann jede Repair-Runde, die den Worker wirklich rief), je
+`{worker:"merge"|"repair", model, backend?, status, ms, conflictedFiles}`. `status` ist die
+NARRATIVE des Workers, nie das Urteil von git — `rebased|repaired|blocked|unparseable|error`, wobei
+`unparseable` eine Antwort ohne ihren JSON-Kontrakt zählt und `error` einen Spawn, der warf oder
+`FLEET_MERGE_TIMEOUT_MS` sprengte (dann ist `model` der, der gelaufen WÄRE, und nichts sonst auf der
+Zeile ist beobachtet). `conflictedFiles` ist die ZAHL der Konfliktdateien, nicht die Liste — die
+steht schon einmal als `conflicted` auf der Note. Dieselben Zeilen stehen in
+`lane-outcomes.jsonl` (`LaneOutcome.resolverRuns`), weil „welches Modell hat die Zeilen der Lanes
+gewählt, die später revertet wurden" eine Frage über LANES ist und die Note an einem COMMIT hängt.
+**Abwesend, nie `[]`**: ein sauberer Rebase spawnt keinen Worker, und „kein Worker lief" ist ein
+anderer Satz als „ein Worker lief null mal". Aggregiert liest `./state.sh` sie unter „land health"
+(`resolver: N runs … · first-try k/M`).
 
 **Quer zu beiden Pfaden, seit W5b:** `hubPush` kann auf der Note JEDES Lands stehen, das `main`
 bewegt hat — der Push haengt im Choke-Point (`server.ts#recordLand` ruft `server.ts#pushLandToHub`),

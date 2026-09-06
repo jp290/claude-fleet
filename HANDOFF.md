@@ -298,76 +298,75 @@ git und die Sensoren nicht tragen. Abschnitte darunter sind FREMD.
 ---
 ---
 
-# HANDOFF — 🎛 Fleet Controller (Slot 6, Fable 5.1): Program „Land-Pipeline" `233e1c2b` gegruendet (Fable-MAIN Slot 9), Messauftrag `d904fb4e` von Hand auf Slot 5 gestartet, W5b als Brief auf `1e7765c9` queued, Land von Slot 1 im Wartebudget gestorben (44,7 min Schlange); 2026-09-06 14:0x, ctx GEMESSEN 20,2 %
+# HANDOFF — 🎛 Fleet Controller (Slot 6, Fable 5.1): Program „Land-Pipeline" `233e1c2b` gegruendet und schon auf Slot 4 (MAIN filte M1–M3/N1/N2/S1), Second-host-Parallelmessung GELANDET `723873b` (ja, mit Zaehl-Bedingung → `755ef516`), W5b laeuft auf Slot 5, Deploy FAELLIG (behind 9, `3f58491` fasst server.ts an); 2026-09-06 15:4x, ctx GEMESSEN 24,5 %
 
 > **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 5, 12:2x).
 > **Der Controller ist, wer das Label `🎛 Fleet Controller` traegt.** Lineage: … → 6 → 5 → 6 → du.
 > Such deinen Abschnitt per `grep -n '^# HANDOFF — 🎛' HANDOFF.md`, nicht per „oben" (vier MAINs schreiben hier).
+> **Mein Label wurde einmal still auf `Controller` verkuerzt** (kein Audit-Eintrag, vermutlich Nachfolge-Teardown);
+> pruef deins per `GET /api/self` und setz es per `POST /api/slots/:id/rename {"label":"🎛 Fleet Controller"}`.
 
 Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, Owner-Poll, Panes.
 
 ## 0. Was du als Erstes tust
 
-1. `GET /api/self/attention` + `/fleet-report` — ich hinterlasse keine offene Attention. **Die Program-MAIN
-   Land-Pipeline (Slot 9, Fable) schickt dir Reports**; sie darf selbst landen, du landest nur auf Anforderung.
-2. **Lane-Watch auf Slot 5** (`d904fb4e`, Second-host zwei Suiten parallel — Host-Akte per ssh, kein lokaler
-   Suite-Lauf, deshalb per Hand am Deckel vorbei gestartet). Ergebnis ist eine Mess-Notiz; ihr Satz „zweiter
-   Mutex-Slot tragbar ja/nein" entscheidet den naechsten Zug (Daemon-Feld max parallel claims; Lane-Deckel 2→3).
-3. **Queued, in Dispatch-Reihenfolge (Erstellungszeit):** `1e7765c9` (W5b Hub-Push im Land-Pfad, Brief vom
-   Controller, Opus 5 high) · `84cf7335` (Resolver-Sensor) · `c3604ce3` (MAIN 2, Lebenszyklus S3a-i). Der
-   Deckel 2 ist mit Slots 1/4 (MAIN 7) + 5 voll; sobald zwei davon enden, startet der Tick. **Nach dem Land
-   von W5b: `.env`/`watchdog.sh` mit `FLEET_HUB_REMOTE=hub` ist W5d (Owner-Akt), bis dahin `git push hub main`
-   von Hand nach jedem Land.**
-4. **Slot 1 (`508dc4bb`, MAIN 7) muss neu landen:** Merge 13:01 `resolved`, `landed:false`, `verify.ok null`,
-   `waitMs 2 682 000` — Wartebudget hinter Slot 4s lokalen Flake-Beweislaeufen (regelkonform lokal, vier Laeufe
-   je ~30 min). MAIN 7 hat das Merge-Terminal; nicht deine Sache, aber der Beleg fuer das Program in Slot 9.
-5. **Kein Deploy offen** (`bootHead bc6f2a5`, drei Docs-Commits darueber, `codeBehind:false`). Hub = main.
+1. `GET /api/self/attention` + `/fleet-report` — keine offene Attention, kein unentschiedener Report (Report
+   `01ff6aa9` von `d904fb4e` ist `accept`ed und gelandet).
+2. **Lane-Watch auf Slot 5 = W5b** (`1e7765c9`, Hub-Push im Land-Pfad, Brief vom Controller). Sie landet
+   ueber die MERGE-Route: `POST /api/slots/5/merge {}` — **NICHT `/land`, das ist das Schliessen des
+   Worktrees** (hat mich einmal mit „unpushed commits" 409 gerettet). Ein `resolved`-Verdikt heisst: Diff
+   per `GET /api/slots/:id/merge-diff` lesen, dann `{"confirm":true}`. Nach dem Land: `git push hub main`.
+3. **DEPLOY IST FAELLIG, aber bewusst aufgeschoben:** `codeBehind:true`, behind 9; `3f58491` (MAIN 7, Flake-
+   Deckel) traegt 42 Zeilen server.ts. Plan: EIN Deploy nach dem Land von W5b (das server.ts ebenfalls
+   anfasst), statt zwei. Vorher: MAINs 2/7/8 per Pane-Einzeiler DEPLOY-OK fragen (ein Deploy nullt jede
+   Idle-Uhr), und `POST /api/deploy` lehnt bei laufendem Post-Land-Audit mit 409 ab — das Audit zu `3f58491`
+   lief 15:06 auf dem Second-host (Daemon-Claim), Watch `3a388d86`.
+4. **Queued, in dieser Reihenfolge:** `84cf7335` (Resolver-Sensor) · `c3604ce3` (MAIN 2) · `1b106a66` (S1
+   Wellen-Sensor, Program Slot 4) · `755ef516` (Daemon „max parallel suites" ZAEHLT — Folge der Messung). Der
+   Deckel 2 ist mit Slot 1 (MAIN 7, muss NEU landen: Merge 13:01 `waitedOut`) und Slot 5 voll. **Nach dem
+   Land von `755ef516`: Daemon-Update `POST /api/helper/devices/secondhostlinux1/update`, wenn dort kein Audit
+   laeuft; danach ist der Lane-Deckel 2→3 eine Owner-Wahl (watchdog.sh + kickstart).**
+5. `187aa1a0` und `b7577779` sind ARCHIVIERT — die MAIN hat sie in M1–M3 (`aa8e5ade`, `64860da8`,
+   `283f625f`), N1/N2 (`3af11665`, `f98facad`) und S1 zerlegt; M4 + Notizen-Vorschlaege stehen als
+   `notiz` unter der Linie. Die MAIN released selbst; du landest nur auf ihren Report.
 
-## 1. Owner-Entscheide dieser Session (13:4x–13:5x, woertlich)
+## 1. Owner-Entscheide dieser Session (13:4x, woertlich)
 
 - „Alles klar dann geh das soweit bitte fuer mich an. Mach dir ein Bild von der gesamt situation und ueberlege
   dir den genauen plan mit richtiger reihenfolge, die uns moeglichst schnell ans autonome und effektive
-  arbeiten bekommt" → Program `233e1c2b` (Merge-Prozess `187aa1a0` + Wellen-Report §5 S1–S3 + Notizen
-  `b7577779` in EINEM Program, Fable-MAIN, Opus-Lanes), W5b queued, `d904fb4e` gestartet. **`187aa1a0` und
-  `b7577779` bleiben `pending`, bis die MAIN sie in Program-Zeilen zerlegt hat — dann archivieren.**
-- „Kann es kaum erwarten die volle second-host integrierung und suite mutex optimierung zu nutzen" — die
-  Reihenfolge dahinter steht in §3.
+  arbeiten bekommt" → Program `233e1c2b`, W5b queued/gestartet, `d904fb4e` per Hand-Dispatch am Deckel
+  vorbei (Host-Messung ohne lokale Suite), Folgezeile `755ef516`.
+- „Kann es kaum erwarten die volle second-host integrierung und suite mutex optimierung zu nutzen."
+- Offen beim Owner (nicht dringend, in meinem Bericht gestellt): Lane-Deckel 2→3 · vier `active` Programs mit
+  toter/verrutschter MAIN (`f99e9354`, `07ee8a6d`, `2c073232` Private-repo-j auf Eis, `b2aa5b45`) parken/complete.
 - Delegation vom 2026-09-05 20:2x gilt fort (fragen nur bei Geld, fremden Konten, Publikation). Astra (Slot 3)
   heute nicht anschreiben.
 
-## 2. Gemessen (Belege: `fleet.json`, Panes, `post-land-audits.jsonl`)
+## 2. Gemessen (Belege: `fleet.json`, Panes, Notiz `docs/messungen/2026-09-06-second-host-parallel-suiten.md`)
 
-- E8 TRAEGT: Slot 1 hat seine Vorschau per Suite-Offer auf dem Second-host gefahren (Pane: „Helper (472a850 via
-  suite-offer 7c08a4f09d14): ran 3751 failed 0"). Helfer `secondhostlinux1` active, Heartbeat < 1 min, Daemon
-  `780d2f5`. Zeile `7d3d29de` („Offer-Seite sieht den Helfer nicht") ist damit fuer HEUTE widerlegt — MAIN 2s
-  Zeile, nicht schliessen, aber der Gegenbeleg gehoert in ihren Brief.
-- Host-korrelierte Rot-Familien auf dem Second-host (Pane Slot 1: Helfer 9 rot/11, mac 0/40; §11.2o nextAction
-  11/11 rot dort) — daran arbeiten beide MAIN-7-Lanes. Bis dahin ist ein Second-host-Audit-Rot nicht beweiskraeftig.
-- Audit `d53643b` gruen (Docs-Kurzkette, 2 079 ms, 414/0). Slot 15 (`fable5`) ist eine Opus-Session in einem
-  FREMDEN Repo (`konzept-b`), nicht Fleet — nicht anfassen.
-- Mein Label wurde zwischen 13:2x und 14:0x von `🎛 Fleet Controller` auf `Controller` geaendert (kein
-  Audit-Eintrag; Verdacht: Nachfolge-Teardown von Slot 5). Wiederhergestellt per Label-Route.
+- **Second-host traegt zwei Suiten:** +0,2 % Laufzeit, 224 MB, kein Fail ueber die serielle Baseline hinaus; der
+  Daemon claimte waehrend der Messung ein DRITTES Audit, weil `maxLoad1` Last misst und Suiten nicht zaehlt
+  (Load1 bei einer Suite 0,21). Deshalb `755ef516`: zaehlen, nicht messen.
+- **E8 traegt** (Slot 1 Vorschau per Suite-Offer: 3751/0). Zeile `7d3d29de` (MAIN 2, „Offer-Seite sieht den
+  Helfer nicht") ist damit fuer heute widerlegt — Gegenbeleg gehoert in ihren Brief.
+- **Land von Slot 1 starb 13:01 im Wartebudget** (waitMs 2 682 000, verify nie gelaufen) hinter Slot 4s lokalen
+  Flake-Beweislaeufen — regelkonform, und genau der Fall, den M2 (`64860da8`) zur Wiedervorlage macht.
+- Host-korrelierte Rot-Familien auf dem Second-host (9/11 vs mac 0/40): MAIN 7 arbeitet daran; bis dahin ist ein
+  Second-host-Audit-Rot nicht beweiskraeftig. Slot 15 (`fable5`) ist eine Opus-Session im FREMDEN Repo `konzept-b`.
+- Die Fable-MAIN Slot 9 erreichte 26 % in ~1 h und uebergab an Slot 4 — Fable-MAINs brauchen ihr Band frueh.
 
-## 3. Der Plan — Reihenfolge zum autonomen Arbeiten (Controller-Urteil, Owner hat „geh das an" gesagt)
+## 3. Der Plan — Reihenfolge zum autonomen Arbeiten
 
-1. **Messen, was den Mutex entlastet** (laeuft): `d904fb4e` auf Slot 5. Ja ⇒ Daemon-Feld „max parallel
-   claims" als Zeile in Program Audit-Determiniertheit (MAIN 7) oder Fleet-Betrieb (MAIN 2), dann Deckel 2→3.
-2. **W5b** (queued): Hub-Push im Land-Pfad. Danach **W5d** (Owner-Akt: `FLEET_HUB_REMOTE=hub` beidseitig,
-   `FLEET_LANDS=1` auf dem Second-host, Sync-Timer auf `hub`) — ab da landet der Second-host selbst, mit EIGENEM
-   Suite-Mutex: zwei Land-Pipelines statt einer.
-3. **Program Land-Pipeline (Slot 9):** Merge-Dokument zuerst (Land-Tode), dann S1 Wellen-Sensor, dann
-   Notizen-Dokument. Die MAIN filed eigene Zeilen; max. eine Lane gleichzeitig, solange Deckel 2.
-4. **Vier `active` Programs mit toter/verrutschter MAIN** (`f99e9354` Private-repo-o, `07ee8a6d` Private-repo-y,
-   `2c073232` Private-repo-j — auf Eis laut Owner, `b2aa5b45` Game-Maker v2; `cd110019` Dual-Host faehrt der
-   Controller): Owner-Wahl parken/complete, offen seit 2026-09-05 (HANDOFF-Tabelle Zeile „Vier Programs").
-5. **`c269023d` Provider-Profile** bleibt pending — eigene Denksession nach 1–3.
-6. Lebenszyklus-Codex-Zeilen (`1832c7eb` … `ee47b0f8`, pending owner) gehoeren MAIN 2; sie hat S3a-i schon als
-   Opus-Zeile neu aufgesetzt — die Codex-Fassungen sind vermutlich ueberholt, MAIN 2 fragen, nicht raten.
+1. W5b landen → Deploy (mit `3f58491`) → **W5d** (Owner-Akt: `FLEET_HUB_REMOTE=hub` beidseitig,
+   `FLEET_LANDS=1` auf dem Second-host, Sync-Timer auf `hub`): zwei Land-Pipelines, zwei Mutexe.
+2. `755ef516` landen + Daemon-Update → Second-host haelt zwei Claims → Lane-Deckel 2→3 (Owner).
+3. Program Land-Pipeline (Slot 4): M1–M3 und S1 als Lanes, eine gleichzeitig; MAIN 7 heilt die Rot-Familien.
+4. Danach `c269023d` (Provider-Profile) als eigene Denksession; Lebenszyklus-Codex-Zeilen mit MAIN 2 klaeren.
 
 ## 4. Was mit dieser Session stirbt
 
-Lane-Watch `0531b601` (Slot 5). Ein persistenter Monitor dieser Pane auf `fleet.json` (queued Zeilen, Merges,
-main-Bewegung, Controller-Bestand) — nur mein Wecker. Kein Auto, keine Mission, keine Attention.
+Watches: Lane `a3484637` (Slot 5/W5b), Audit `3a388d86` (3f58491), Audit `023b44b0` (723873b). Ein persistenter
+Pane-Monitor auf `fleet.json`. Kein Auto, keine Mission, keine Attention.
 
 ---
 ---

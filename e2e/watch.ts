@@ -3171,6 +3171,21 @@ export async function run(): Promise<void> {
     // here: `stalled` plus a clean tree IS spent-looking (pinned as a composition three checks
     // above), so a lane that does not reach this shape fails as a SETUP problem instead of making
     // the close look broken. The isolated harness shrinks FLEET_STALLED_IDLE_MS to 3 s.
+    //
+    // EVERY fact this precondition asserts is WAITED FOR, and that is the whole of the repair
+    // (measured 2026-09-06). The served `git` numbers are the ~10 s tickGit DISPLAY cache, not a
+    // fresh read, so the five REFUSING lanes only carry the fixture's writes once a tick has walked
+    // them AFTERWARDS. The old loop waited on the two CLOSING lanes alone — the two whose facts the
+    // writes never touch — so it returned the moment the 3 s idle clock passed (`msSincePrev` was
+    // 3110-3195 ms in all 40 local sightings) and then read the refusers out of that same snapshot,
+    // up to 10 s before it could be true. Whether it happened to be true is a race between the boot
+    // tick's pass length and the fixture writes, and the pass length is exactly what differs by
+    // HOST: 0 red in 40 local (macOS) runs against 9 red in 11 second-host (Linux) runs, whose faster
+    // tick is finished before the writes land. Two of those nine caught the sequence MID-WRITE and
+    // name the mechanism outright — the dirty lane still clean while both ahead lanes read
+    // `dirty:1 ahead:0`, i.e. one tick that passed the first lane before its file and the other two
+    // between their file and their commit. Waiting costs at most one further tick, and it weakens
+    // nothing: the clause list below IS the assertion, evaluated on the snapshot that satisfied it.
     const d2SvTok = ((await (await get("/api/steward/token")).json()) as { token: string }).token;
     type D2Sv = { id: number; stalled: boolean; observed: boolean;
       git: { dirty: number; ahead: number } | null };
@@ -3181,22 +3196,35 @@ export async function run(): Promise<void> {
       const v = (await d2Sv()).find((x) => x.id === slot);
       return v?.stalled === true && v.git?.dirty === 0;
     };
-    let closerSpent = false;
-    for (let i = 0; i < 60 && !closerSpent; i++) {
-      closerSpent = await d2SpentNow(acceptedLane.slot) && await d2SpentNow(rejectedLane.slot);
-      if (!closerSpent) await Bun.sleep(1000);
+    // the whole shape as a NAMED clause per lane, and one snapshot per round rather than a fetch
+    // per lane: a per-lane sentence is what lets a timeout say WHICH fact never arrived instead of
+    // handing the reader the contract it was meant to enable, and a single snapshot cannot be torn
+    // across a tick that lands between two of its own reads.
+    const d2Spent = (v: D2Sv | undefined): boolean => v?.stalled === true && v.git?.dirty === 0;
+    const d2Want: { slot: number; want: string; holds: (v: D2Sv | undefined) => boolean }[] = [
+      { slot: acceptedLane.slot, want: "spent (stalled + dirty=0)", holds: d2Spent },
+      { slot: rejectedLane.slot, want: "spent (stalled + dirty=0)", holds: d2Spent },
+      { slot: dirtyLane.slot, want: "dirty=1 (the uncommitted file is served)", holds: (v) => v?.git?.dirty === 1 },
+      { slot: aheadLane.slot, want: "ahead=1 (the candidate commit is served)", holds: (v) => v?.git?.ahead === 1 },
+      { slot: rejectedAheadLane.slot, want: "ahead=1 (the candidate commit is served)", holds: (v) => v?.git?.ahead === 1 },
+      { slot: undecidedLane.slot, want: "spent (stalled + dirty=0)", holds: d2Spent },
+      { slot: reportlessLane.slot, want: "spent (stalled + dirty=0)", holds: d2Spent },
+    ];
+    const d2Unmet = (snap: D2Sv[]): string[] => d2Want
+      .filter((w) => !w.holds(snap.find((x) => x.id === w.slot)))
+      .map((w) => `${w.slot}: ${w.want}`);
+    let d2SvBefore = await d2Sv();
+    let d2Missing = d2Unmet(d2SvBefore);
+    for (let i = 0; i < 60 && d2Missing.length > 0; i++) {
+      await Bun.sleep(1000);
+      d2SvBefore = await d2Sv();
+      d2Missing = d2Unmet(d2SvBefore);
     }
-    const d2SvBefore = await d2Sv();
-    const svOf = (slot: number): D2Sv | undefined => d2SvBefore.find((x) => x.id === slot);
     check("D2 setup: both closing lanes reached the spent shape, and every refusing lane differs from them in exactly one fact",
-      closerSpent
-        && svOf(dirtyLane.slot)?.git?.dirty === 1
-        && svOf(aheadLane.slot)?.git?.ahead === 1
-        && svOf(rejectedAheadLane.slot)?.git?.ahead === 1
-        && svOf(undecidedLane.slot)?.stalled === true && svOf(undecidedLane.slot)?.git?.dirty === 0
-        && svOf(reportlessLane.slot)?.stalled === true && svOf(reportlessLane.slot)?.git?.dirty === 0,
-      JSON.stringify(d2SvBefore.filter((x) => d2Lanes.some((l) => l.slot === x.id))
-        .map((x) => [x.id, x.stalled, x.git])));
+      d2Missing.length === 0,
+      JSON.stringify({ unmet: d2Missing,
+        slots: d2SvBefore.filter((x) => d2Lanes.some((l) => l.slot === x.id))
+          .map((x) => [x.id, x.stalled, x.git]) }));
 
     // --- (b) THE FLAG'S ABSENCE MEANS DO NOTHING, and this is where it is worth measuring: every
     // fact the close needs is now true for two lanes, and the server was booted without the flag.

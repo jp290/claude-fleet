@@ -118,7 +118,7 @@ git und die Sensoren nicht tragen. Abschnitte darunter sind FREMD.
 ---
 ---
 
-# HANDOFF — 🎛 Fleet Controller (Slot 2, Fable 5.1): S4 ist GEMESSEN und gelandet (Dual-Host komplett bis auf Owner-Wahlen), Bundle-Luecke des Folgers zu, E8 in Flug; 2026-09-06 05:5x, ctx GEMESSEN 25,5 %
+# HANDOFF — 🎛 Fleet Controller (Slot 2, Fable 5.1): S4 ist GEMESSEN und gelandet (Dual-Host komplett bis auf Owner-Wahlen), Bundle-Luecke des Folgers zu, E8 in Flug; 2026-09-06 06:1x, ctx GEMESSEN 30 % (Owner-Wort: jetzt die Nachfolge)
 
 > **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 7, 04:1x).
 > **Der Controller ist, wer das Label `🎛 Fleet Controller` traegt.** Lineage: … → 4 → 7 → 2 → du.
@@ -156,11 +156,29 @@ Zustand ableiten, nicht hier lesen: `./state.sh`, `./register.sh`, Owner-Poll, P
    Kontrolle. Bis sie gelandet ist, ist ein rotes Audit mit GENAU diesem einen Fail bekannt und `real`;
    JEDER weitere Fail-Name ist ein neuer Befund. Dieselbe Sonde faellt auch im E8-Audit.
 
-## 1. Owner-Entscheide (keine neuen in dieser Session)
+## 1. Owner-Entscheide dieser Session (06:0x–06:1x, woertlich oder sinngemaess)
 
-Die Delegation vom 2026-09-05 20:2x gilt fort: Host-Akte auf dem Folger fuehrt der Controller aus und
-benennt sie einzeln; fragen nur bei Geld, fremden Konten, Publikation. Keine Owner-Nachricht in dieser
-Session.
+Die Delegation vom 2026-09-05 20:2x gilt fort (Host-Akte auf dem Folger, einzeln benannt; fragen nur bei
+Geld, fremden Konten, Publikation). NEU:
+- **„Die Wegwerf-Worker sollten wir auf jeden Fall auch auf Opus 5 stellen."** → `FLEET_SUMMARY_MODEL=
+  'claude-opus-5[1m]'` steht in `.env` (Backup `.env.bak-20260906-0615`), scharf ab dem naechsten
+  srv-Start — also mit dem Deploy nach E8. Vorher war der Default Sonnet 5 (`server.ts#SUMMARY_MODEL`).
+  Gegenprobe nach dem Deploy: `ps eww` am srv-Prozess, NUR den Key filtern.
+- **„Slot 6 haette schon laengst die Succession fahren muessen."** → per `POST /send` zugestellt, Slot 6
+  hat sie gefahren: Audit-Determiniertheit-MAIN lebt in Slot 7 (`slot_kill 6 handoff` 06:13). Lehre:
+  eine Program-MAIN ueber 30 % ist einen Anstoss wert, sie stupst sich nicht selbst.
+- **Auslagern auf den Second-host ist gewollt** („Slots/Agenten/Sessions auslagern, damit hier Test- und
+  iOS-Umgebungen laufen koennen"). Der Owner findet die drei Wege (1A Timer-Fetch + Controller landet ·
+  1B Rollen tauschen · 1C gemeinsamer Bare-Remote) „alle echt gut" und fragt: **„was wenn wir einen
+  Git-Server auf dem Second-host laufen lassen wuerden?"** — das ist 1C mit dem Second-host als Hub.
+  Einschaetzung als Ausgangspunkt (NICHT entschieden): ein BARE-Repo auf dem Second-host als Nabe fuer BEIDE
+  Richtungen (mac pusht `main` nach jedem Land dorthin, statt dass der Second-host per ssh in einen lebenden
+  Checkout greift; Second-host-Lanes pushen `fleet/*` dorthin, der Controller holt von dort) ist sauber und
+  braucht keinen Code am Gate — solange GENAU EINE Instanz landet (heute mac; `FLEET_LANDS=0` am Folger
+  bleibt). Zwei landende Instanzen brauchen erst ein Lock-Design. Kein GitHub-Push von hier (Memory: nie
+  von der Dev-Maschine pushen); ein privates Bare-Repo im Tailnet ist keine Publikation. Naechster
+  Schritt: Auftrag in `cd110019` mit Kriterium (Bare-Repo = Host-Akt; `fleet-sync.sh` bekommt den Hub als
+  Remote; Richtung R wird `git fetch hub 'refs/heads/fleet/*'`), danach E6 fuer Astra (node+codex dort).
 
 ## 2. Was gefallen ist (Belege: Land-Notes, `deploys.jsonl` des Folgers nicht, `audit.jsonl` BEIDER Instanzen)
 
@@ -192,7 +210,13 @@ Session.
 
 ## 3. Offen — in dieser Reihenfolge
 
-1. §0.2 E8 landen, §0.3 deployen.
+1. §0.2 E8 landen (Slot 4 wartet auf Monitore seiner lokalen Suite) UND die Audit-Fix-Lane `6683f4cf`
+   (Slot 5, Branch `fleet/260906035543-e800`, Watch `f7278bdd`; faehrt drei Laeufe: Fix im Archiv-Baum,
+   Kontrolle ohne Fix, Worktree — landen NUR mit beiden Tails im Report). Reihenfolge: erst den Fix,
+   dann E8, sonst ist E8s Audit sicher rot. §0.3 danach EIN Deploy (nimmt `FLEET_SUMMARY_MODEL` mit).
+1b. Hintergrund-Sweep 06:0x: zehn verwaiste `codex`-Prozesse aus toten e2e-Instanzen per PID beendet
+   (Notiz `6a691420`: Mechanismus + Kandidat fuer den `e2e-stage.sh`-Teardown). Im Fleet laeuft nur
+   Slot 3 (Astra) auf OpenAI; alle Wegwerf-Worker sind Claude.
 2. **Dual-Host `cd110019`: S1–S4 sind gefahren.** Offen sind nur Owner-Wahlen (E6 Harnesses auf dem
    Folger, leak-pin-Weg) — das Program hat keine lebende MAIN, der Controller faehrt es; ein Abschluss
    (`complete`) ist Owner-Sache. `refs/remotes/second-host/s4/main` (`27e3b82`) traegt die zwei
@@ -203,7 +227,7 @@ Session.
 
 ## 4. Was mit dieser Session stirbt
 
-Kein Auto, keine Mission, keine Attention. Watches §0.1. Meine Lane-Plaetze 4 (E8, lebt) und 5 (frei).
+Kein Auto, keine Mission, keine Attention. Watches §0.1. Meine Lane-Plaetze 4 (E8, lebt) und 5 (Audit-Fix, lebt) — beide Watches sterben mit mir, neu armieren.
 Hintergrund-Watcher auf den Folger: keiner mehr aktiv.
 
 ---

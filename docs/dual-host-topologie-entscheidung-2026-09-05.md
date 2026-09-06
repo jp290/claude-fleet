@@ -412,6 +412,20 @@ Byte-Pin §6b ist dort GRUEN. `bun e2e/pins.ts` dort: 417 PASS, 1 FAIL — der l
 Second-host — das ist das OpenAI-Konto des Owners, ein Owner-Akt; ebenso ein pi-Provider-Key dort.
 `docker` bleibt draussen (Container-Pfad ist Sonderfall, opt-in).
 
+**E8-Folge fuer W5, gemessen 2026-09-06 10:2x–10:59 (Controller Slot 5, mac):** das Vorschau-Artefakt aus
+E8 (`f8babcd`: `fails[]` auf dem Vorschau-Verdikt, `artifactAt` auf jeder Quittung, Log-Upload nicht
+mehr am `auditAt`) hat ZWEI Haelften, und beide muessen einzeln nachgezogen werden — der Server per
+`POST /api/deploy`, der Helfer per `POST /api/helper/devices/secondhostlinux1/update`. Das Daemon-Update
+ist gefahren, waehrend der Second-host auditfrei war (der Daemon startet sich beim Update neu, exit 75,
+und wuerde einen laufenden Lauf toeten): Update-Zeile `state: reported`, `ok: true`, Tail
+`swapped …/work/current → …/work/tree-780d2f546417`; Beweis der naechste Heartbeat 10:59:14 mit
+`daemonSha 780d2f5` (vorher `40a55e40` vom 2026-09-04). Solange der Server dahinter liegt
+(`codeBehind:true`), laeuft jede Lane-Vorschau weiter LOKAL auf dem 8-GB-mac — gemessen um 10:59:
+ein `e2e-isolated.sh` einer Lane haelt den Mutex seit 57 min, das Server-Audit zu `f8babcd`/`c4e53f9`
+wartet seit 38 min dahinter. Genau diese Schlange ist, was das Suite-Offer nach dem Deploy auf den
+Second-host verlegt. Hub-Regel unveraendert: `git push hub main` von Hand nach jedem Land
+(`docs/messungen/2026-09-06-mac-ssd-gesundheit.md` sagt, warum der mac entlastet gehoert).
+
 ## Was nicht gemessen wurde
 
 - **Kein Slot auf dem Second-host** geoeffnet, nichts getippt, keine Unit angefasst — die

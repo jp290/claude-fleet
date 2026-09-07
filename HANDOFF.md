@@ -105,6 +105,27 @@ Zeile gefilt — notiz-Deckel 10/10.** Kein Vorschlag, den Guard zu entfernen; d
 nachweislich unveraenderter Rest nach Karenz als abgestanden gelten darf, oder ob der Fix ein
 Rueckkanal „Composer frei" ist, der das Pollen ueberfluessig macht.
 
+## 3b. Die vier Direkt-Commits dieser Schicht — VON HAND VERIFIZIERT, wie es die Regel verlangt
+
+`d8859ff` · `9908c37` · `1a79e22` · `edda7cf` sind Direkt-Commits aus dem Haupt-Checkout und fassen
+AUSSCHLIESSLICH `HANDOFF.md` an (je `git show --stat` geprueft). Sie sind damit fuer jedes landseitige
+Ledger unsichtbar: keine `fleet/land`-Note, keine Zeile in `lane-outcomes.jsonl`, **und sie bekommen
+strukturell NIE einen Post-Land-Audit** — der Tier-2-Lauf haengt an `landLane`/`drainPostLandAudits`,
+nicht an einer Bewegung von main.
+
+**Verifikation von Hand, 2026-09-07 ~21:1x, nachgeholt auf Owner-Nachfrage:**
+
+    bun install --frozen-lockfile && bun e2e/pins.ts   ->  exit 0, Tail `ALL PASS`, 0 FAIL-Zeilen
+
+Das IST die richtige Kette fuer docs-only: seit `036ff7c` faehrt der Land-Gate fuer rein-docs-Lands
+genau diese kurze Kette (install+pins), und `bun e2e/pins.ts` ist ohnehin seine erste Stufe. Keine
+Suite, kein Mutex, kein Server — Millisekunden.
+
+**Mein Fehler dabei, benannt:** die Regel verlangt, dass wer direkt committet, die Verifikation von
+Hand faehrt UND ES IM HANDOFF SAGT. Ich habe vier Mal direkt committet und es erst gesagt, als der
+Owner nachfragte. Ohne die Nachfrage haette die naechste Session vier ungemessene Direkt-Commits
+vorgefunden und korrekt-aber-falsch geschlossen, sie seien nie geprueft worden.
+
 ## 4a. GEMESSEN AM EIGENEN LEIB: zwei Sessions im Haupt-Checkout, und der Erste nimmt die Arbeit des Zweiten mit
 
 Die drei Korrekturen in §1/§3/§4b habe ich um ~20:4x geschrieben und committen wollen. Der Commit lief ins

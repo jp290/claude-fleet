@@ -59,6 +59,16 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
 
 - `target` = der Slot, auf den du wartest. `idleSec` = DEINE Ruhe-Schwelle (`0` = sofort zustellen; ist deine
   Pane beschäftigt, bleibt der Watch armed und die Nachricht verfällt NICHT).
+- **Für einen ARBEITENDEN Controller oder eine MAIN ist `idleSec:0` der einzige Wert, der zustellt.**
+  Der Default 60 verlangt eine Minute Pane-Ruhe, und eine Session, die zwischen zwei Zügen nie so
+  lange still ist, bekommt nichts — gemessen 2026-09-07 04:47–05:20 an Slot 10: zwei Lane-Watches
+  endeten `subject-gone`, weil die Lane gelandet und ihr Slot geschlossen war, ehe die Pane 60 s
+  ruhig wurde, und ein Merge-Watch blieb `pending`. Dieselbe Messung nennt die zweite Hälfte der
+  Regel: jedes unzugestellte ODER unquittierte Event hält Zustellbudget
+  (`server.ts#slotDeliveryBudget`), weshalb dort „max 5 active watches per slot" stand, während nur
+  drei Watches armiert waren — also die zugestellten Events auch ACKEN
+  (`POST /api/self/events/:id/ack`). `ctl.sh watch` setzt `idleSec` deshalb von sich aus auf 0 und
+  `ctl.sh events --ack` räumt den Deckel (`docs/controller.md` §Werkzeuge).
 - Ein `slot`-/`from`-Feld im Body wird ignoriert — die Route bindet hart an deinen Token-Slot, genau wie
   `/api/self/autos`. Sie kann strukturell in keine fremde Pane tippen.
 - Deckel: **5 armed pro Slot** (`WATCH_MAX_PER_SLOT`, geteilt mit dem Owner-Pfad). Ein zweites noch

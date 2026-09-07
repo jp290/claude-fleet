@@ -1,5 +1,7 @@
 # Index der Messnotizen
 
+- Die Auswahl- und Quittungskette Quelle→Kontext→Empfaenger rekonstruiert sich byte-genau (3/3 Hashes, 293/293 Baumstaende); die zwei echten Luecken sitzen am Rand: die Quittung belegt Bau, nicht Zustellung. — docs/messungen/2026-09-06-astra-s2d-kontextkette.md · bereich: context,briefs,harness,ledger · stand: 2026-09-07
+
 - Zurückgehaltene Notiz, nicht Teil dieses Repos. — docs/messungen/2026-09-07-zurueckgehaltene-notiz.md · bereich: portfolio · stand: 2026-09-07
 
 - Technische Grundlagen und konkrete Reparaturschleifen sind belegt; Produktkern, Workflow-Zustellung und der Nutzen von Workflow v2 bleiben getrennt zu prüfen. — docs/messungen/2026-09-07-gamedev-bestandsaufnahme.md · bereich: game-maker,studio,produkt · stand: 2026-09-07

@@ -165,17 +165,29 @@ while true; do
     # than 37.7, no local run ever faster than 40.4. THE WALL KILLS ONLY LOCAL RUNS.
     # Growth is real but small — the 1706 same-named checks shared by the 40.3 and 42.5 min runs sit
     # at ratio 1.008 (median 1.002), so ~2 min/day, not the 5 the raw times suggest.
-    # And `waitMs: 0` is the SERVER's queue, not the suite's: the 08:42 unknown spent 26.4 min
-    # between audit start and the suite's first check line and only 18.6 min working (2042 of 3835
-    # lines). That prelude — the suite's own wait for the mutex — is spent INSIDE this work budget
-    # and is attributed nowhere.
+    # And `waitMs: 0` is the SERVER's queue, not the suite's — but the number this comment first
+    # carried for that was WRONG, and the correction matters more than the claim. Filed 2026-09-07
+    # by Fleet-Betrieb slot 7 against its OWN measurement, proven by the e407aef5 lane (landed
+    # 6b72d622, docs/messungen/2026-09-07-audit-platzierung-gnadenfrist.md): the 08:42 unknown did
+    # NOT spend 26.4 min in a prelude. It spent SIX SECONDS, then ran 2042 of 3835 checks in 1117 s.
+    # The 26.4 came from attributing a trail file by TIME WINDOW — and lane suites write into the
+    # same trail directory as audits, so "falls inside the window" proves no ownership. The general
+    # claim survives (a suite's own mutex wait is spent inside this work budget and attributed
+    # nowhere); the number never carried it. THE COMMIT BODY OF 61e407d STILL QUOTES 26.4 AND IS
+    # UNEDITABLE — do not reuse that figure from it.
     #
-    # 75 min is sized for the worst OBSERVED case, prelude included: 26.4 + 42.7 = 69.1 min. A 50 min
-    # wall would cover local work plus a small prelude only. THE CEILING IS THE WEAKER HALF OF THE
-    # FIX — the strong lever is forcing audits onto the helper, where they are ~5 min faster and do
-    # not contend for the mutex with lanes and land gates; that is a separate change and is not made
-    # here. The cost of this one, accepted knowingly: a blocked audit can hold the suite mutex 75 min
-    # instead of 45.
+    # 75 min is therefore NOT sized from a measured worst case, and saying so is cheaper than a
+    # retro-fitted rationale: both unknowns of that day would have got a verdict under c7184f85
+    # ALONE (4276 s budget vs ~4082 s need; 3094 vs ~2959). The wall was not needed for them; what
+    # it buys is latency headroom. THE CEILING IS THE WEAKER HALF OF THE FIX — and the strong lever
+    # is not simply "force audits onto the helper": the measured cause is the GRACE CLOCK, not run
+    # length. FLEET_AUDIT_HELPER_GRACE_MS is spent behind a per-repo helper claim and arrives
+    # already used up — server.ts#helperResult deletes the claim and calls kickAuditDrain() in the
+    # same synchronous block while the daemon polls only 15 s later, so in 3 of 5 measured cases
+    # the local drain started 7/5/14 ms after the helper became provably free. Raising the grace
+    # WITHOUT hanging its clock on eligibility instead of cover.at is "the expensive half of the
+    # cheap repair". The cost of this ceiling, accepted knowingly: a blocked audit can hold the
+    # suite mutex 75 min instead of 45.
     if tmux -L claudefleet new-session -d -s srv \
       "umask 077; export PATH='$PATH_Q'; cd '$FLEET_DIR' && { if [ -f .env ]; then set -a; . ./.env; set +a; else echo '[watchdog] no .env — FLEET_HOST/ALLOWED_HOSTS/SHARE_* unset, server falls back to its own defaults (likely unreachable at the deployment address)' >> server.log; fi; } && FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_VERIFY_TIMEOUT_MS=480000 FLEET_VERIFY_WAIT_MS=2700000 FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' FLEET_POSTLAND_AUDIT_TIMEOUT_MS=4500000 FLEET_CLEAN_REVIEW=off FLEET_HARNESS_AUTOMATION=1 FLEET_ANALYSIS_MS=0 FLEET_AUTO_REVIEW_MS=0 FLEET_AUDIT_PING_MS=60000 FLEET_DISPATCH_REPO='$FLEET_DIR' FLEET_DISPATCH_MAX_LANES=1 FLEET_LANE_AUTOCLOSE=1 exec bun server.ts >> server.log 2>&1"; then
       echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv was down, restarted" >> "$FLEET_DIR/server.log"

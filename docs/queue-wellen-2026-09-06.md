@@ -279,8 +279,8 @@ n Queue-Zeilen gehen gemeinsam auf `done`; ein Abbruch lässt alle n auf `queued
 *Verify:* Check im Land-/Merge-Pfad (`e2e/land-durability.ts` + `e2e/tasks.ts`), plus
 `./e2e-clean-review.sh` und `./e2e-isolated.sh` als Vorschau, weil dieser Schnitt den Land-Pfad
 berührt (Regelbuch, Lane discipline); `bun e2e/pins.ts` grün.
-*Gebaut* 2026-09-07 in der Lane `fleet/260907140524-b010` (die Landing-Sha setzt die MAIN nach dem
-Land ein — eine Lane kann ihre eigene nicht kennen). Was davon abweicht, wie es hier steht:
+*Gebaut und gelandet* 2026-09-07 als `74a1cde2`..`eb0f03d3` (acht Commits, Lane
+`fleet/260907140524-b010`; die letzten zwei sind Nachtraege auf dem rebasierten Baum, siehe unten). Was davon abweicht, wie es hier steht:
 
 * **Die N:1-Bindung brauchte kein neues Feld.** `t.slot` war der Kante schon: `landLane` und
   `detachSlotTasks` schleifen beide über `t.slot === s.id`, seit lange vor diesem Schnitt. Also

@@ -629,52 +629,50 @@ git und die Sensoren nicht tragen. Abschnitte darunter sind FREMD.
 ---
 ---
 
-# HANDOFF — 🎛 Fleet Controller (Slot 2, Fable 5.1): M1 deployt und sein Gate-Killer gefixt (b8b5e48), Stau an Slot 11 entschieden aber noch nicht gelandet (dreimal an Fremdursachen gestorben), Astra-Abstimmung mit fuenf Entscheidungen umgesetzt, vier Attentions beantwortet; 2026-09-07 04:4x, ctx GEMESSEN 33,2 % vor dem Handoff
+# HANDOFF — 🎛 Fleet Controller (Slot 10, Fable 5.1): drei Lands vom Board (Slot 11, Astra S2D, c5de54cc) + zwei Docs-Direkt-Commits, dritter toter Suite-Lock gereapt, P6-Audit remote ROT (neue Familie, bei Slot 6), Umgebungs-Programm fuer einen Opus-Controller gestartet (Compact-Regel, Opus-Versuch, ctl.sh-Lane 97c5d469, Denk-Task 21ade485); 2026-09-07 05:3x, ctx GEMESSEN 23,2 % vor dem ERSTEN COMPACT dieser Rolle
 
-> **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 1, 01:4x).
-> **Der Controller ist, wer das Label `🎛 Fleet Controller` traegt.** Lineage: … → 10 → 1 → 2 → du.
+> **Ein Abschnitt je LEBENDEM Prinzipal:** dieser ERSETZT den der Controller-Vorgaengerin (Slot 2, 04:4x).
+> **Der Controller ist, wer das Label `🎛 Fleet Controller` traegt.** Lineage: … → 1 → 2 → 10 (du).
 > Such deinen Abschnitt per `grep -n '^# HANDOFF — 🎛' HANDOFF.md`. Zustand ableiten: `./state.sh`, `./register.sh`, Owner-Poll, Panes.
+> **NEU (Owner-Richtung 2026-09-07 05:2x, Regelbuch §Einstieg Kontext-Band + docs/controller.md §Uebergabe):** bei 25 % ist der Zug HANDOFF schreiben → `/compact` → nur `state.sh`+`register.sh`. Succession nur, wenn die Selbstauskunft nach dem Compact nicht mit `state.sh`/Board stimmt — und DIESE naechste echte Succession spawnt versuchsweise Opus 5 high (`{"model":"claude-opus-5[1m]","effort":"high"}` im succeed-Body).
 
 ## 0. Was du als Erstes tust
 
-1. `GET /api/self/attention` + `/fleet-report`. Bei mir: nichts an mich. Alle vier offenen Attentions der Nacht sind BEANTWORTET (2e01154e Lesescope, 5c5a6613 Briefe, de43e2be Slot-11-Stau, 4a4eb5c3 P6-Gate) — der Owner hat aktuell KEINE offene Attention.
-2. **Owner-Delegation 03:2x gilt fort und ist WEITER als die der Vorgaengerin:** „sprich dich mit Slot 3 (Astra) ab — Stau, Second-host, sonstige Wehwehchen; triff Entscheidungen selbst." Damit darfst du docs-only Lanes von Astras Programs vom Board landen (Astras eigener Entscheid 94fbc8d9: KEINE Self-Land-Sprosse fuer e3b3a064/eec69528, der Controller integriert) und Direkt-Commits fahren, wenn ein Land daran haengt. Fleet-Zeilen briefst du weiterhin nicht selbst — sie gehen als EINE Nachricht an Slot 7.
-3. **Uebergabe-Band 25 / 30–35, nie darunter** (Owner 2026-09-06). Meine Erdung ~8 Punkte, die Astra-Abstimmung ~4, die M1-Nacht (zwei tote Locks, drei ff-Tode, Probe+Fix) ~15.
-4. **Was mit mir stirbt und du NEU ARMIERST (Mechanismen):**
-   - **Re-Queue 746513d1** (GLM-Gegenlesung, Astra) sobald `457511cc` `sent` ist — `POST /api/tasks/746513d1/queue`. Skript-Vorlage: ein 15-s-Poll auf `fleet.json`, der den POST selbst ausfuehrt; als persistenter Monitor aus einer DATEI gestartet (keine verschachtelten Quotes — die stummen Monitore der Vorgaengerin waren ein Quoting-Problem, meine aus Dateien haben jede Aenderung gemeldet).
-   - **Ereignis-Monitor** auf `fleet.json`: neue/geaenderte Attentions, neue Zeilen in eec69528 (Astra antwortet NUR per Notiz), neue Reports + Urteile, `merges`-Eintraege, die Ketten-Zeilen, Doppel-Claim (`helperClaims` aktiv + `laneSuiteJobs claimed` ≥ 2 = Bedingung fuer Deckel 2→3).
-   - **N1 3af11665 NICHT mehr deins:** Land-Pipeline (Slot 5) gibt M5 8d6a3e9e und danach N1 selbst frei, sobald `c5de54cc` dispatcht ist (eigener Watcher dort).
-   - Merge-/Audit-Watches (`POST /api/self/watch`) je Land, das dich interessiert. **Falle:** ein Merge-Watch, der direkt nach einem neuen POST armiert wird, feuert SOFORT aus dem noch persistierten ALTEN Verdikt (level-getriggert) — die Nachricht „status=error, verify green" um 04:26 war das Vorgaenger-Verdikt, nicht der neue Lauf. Erst armieren, wenn `mergeLast` den Platzhalter „interrupted" traegt.
+1. `GET /api/self/attention` + `/fleet-report`: bei mir um 05:3x beides leer. Slot 4 (Owner-Astra-Session, codex) steht bis 06:53 im Usage-Limit.
+2. **Owner-Delegation 03:2x gilt fort** („sprich dich mit Astra ab … triff Entscheidungen selbst") und ist um 05:3x erweitert: „sag mir einfach was ich tun soll wenn du … wirklich wirklich meine Hilfe benoetigst etwas zu entscheiden" — also: entscheiden, nur echte Tore beim Owner. Docs-only Astra-Lanes landest du vom Board (Astra 94fbc8d9: keine Self-Land-Sprosse). Fleet-Betrieb-Lanes landest du nach Slot-7-Akzept ebenfalls vom Board (c5de54cc heute so: Report 05:07, `decision.accepted` durch Slot 7, Land 05:13, Code, 139 s, waitMs 0).
+3. **Mechanismen, die laufen (Datei-Skripte im Scratchpad dieser Session, sterben mit der Pane, NICHT mit einem Compact):**
+   - `mon-dispatch-v2.sh` (bg): wartet auf `⎇ task`-Slots < 2, dispatcht dann **746513d1** (pi-zai/glm-5.3 — `automatable:false`, der TICK STARTET SIE NIE, nur `POST /api/tasks/:id/dispatch`), wartet 20 s, dann `POST /api/tasks/97c5d469/queue` (ctl.sh-Lane) fuer den Tick. Deckel 2 bleibt so gewahrt.
+   - `mon-events.py` (bg, exit beim ersten Unterschied, danach neu starten): attentionRequests · watchlist-Tasks · Program-Zeilen eec69528/e3b3a064 · fleetReports-Decisions · merges · Doppel-Claim (helperClaims + laneSuiteJobs claimed ≥ 2 = Bedingung fuer Deckel 2→3) · `post-land-audits.jsonl`-Zeilenzahl · landPending/mergeParked.
+   - Watches (`GET /api/self`): audit a65fbdd (docs), audit 1004832 (docs), audit 7536702 (Code, `idleSec:0`), Watch 42c23c01. Die drei aelteren sind gefeuert/subject-gone; die Events `538efa57` (merge-terminal Slot 2) und `7f7b660d` (post-land-audit a1f8b65) stehen `pending` und sind NICHT quittierbar, solange nicht zugestellt — Zustellung braucht 60 s Idle (Default). **Ab jetzt jeden Watch mit `idleSec:0` armieren.**
+4. **Band 25 / 30–35, Compact statt Succession** (s. Kopf). Meine Kosten: Erdung ~7, drei Lands+Reap ~5, Umgebungs-Suche+Fragmente+Briefs ~9.
 
 ## 1. Die Kette, in Flug
 
-- **P6 (0f127ba2, Slot 1, Audit-Determiniertheit) IST GELANDET (a1f8b65, 04:42) — der LIVE-BEWEIS fuer b8b5e48:** erster Code-Land mit korrigiertem Wrapper, volle Kette gruen in 139 s, waitMs 0 (vorher: rot nach 71 s am waitMerge). Post-Land-Audit auf a1f8b65 laeuft (~35 min, Watch war bei mir armiert — bei dir neu armieren: `{kind:"audit", repo, mainAfter:"a1f8b65…"}`). Deploy NICHT noetig (server.ts unveraendert seit 26aa068). Ein rotes Audit dort adjudiziert Slot 6 (sein Land); ein Rot in der `waitMerge`-Familie waere neu und meins.
-- **Slot 11 (580cc453, Astras Startbefund, docs-only, HEAD 5d55eb0 auf 71cb49d):** DREI Land-Versuche tot — 04:11 (710 s hinter totem Lock 77910, dann ff-Tod an gestagetem INDEX.md von Slot 4), 04:26 (450 s hinter totem Lock 19458, dann ff-Tod an uncommittetem INDEX.md von Slot 4, zweite Datei). **Naechster Schritt: `git status --porcelain` im Haupt-Checkout LEER ⇒ `POST /api/slots/11/merge {}` (Owner-Token), Merge-Watch danach.** Ist INDEX.md weiter dirty, gehoert es Slot 4 (s. §2) — nicht wegstashen; Slot 4 committen lassen oder, wenn gestaged und in sich fertig, wie 71cb49d als Direkt-Commit uebernehmen.
-- **Queue (Dateireihenfolge = Dispatch):** `c5de54cc` (Second-host-Blindfleck, Owner-Prioritaet) ist seit 04:42 `sent` (Slot frei geworden durch P6) → dann von Slot 7 zu releasende Fleet-Zeilen (pos 178–184) → `457511cc` (Astra S2D, pos 192) → `1c746e96` (pos 193). Pending mit Absicht: `746513d1` (§0.4), `3af11665` N1 und `8d6a3e9e` M5 (Slot 5 released), `d2b69d3d` (bis Review-Ende). Deckel bleibt 2 (Astra + ich: bis c5de54cc gelandet UND Audit+Vorschau gleichzeitig am Second-host beobachtet; dann 3 als ruecknehmbarer Versuch).
-- **Slot 4 = eine Astra-Session, die der OWNER selbst faehrt** (codex, ctx 92 %, Haupt-Checkout). Sie schreibt Docs direkt in den Haupt-Checkout und laesst sie liegen (04:11 fuenf gestagete Dateien; 04:3x `docs/messungen/2026-09-07-zurueckgehaltene-notiz.md` + INDEX-Zeile uncommittet). Jeder Land, der INDEX.md anfasst, stirbt daran am ff. Ich habe ihr per `/send` die Commit-Regel geschickt; ob sie folgt, ist ungemessen. Wenn es wieder passiert: dem Owner sagen, dass diese Session in einen Worktree gehoert.
-- **Astra Slot 3** (Review, effort medium, Budget knapp): hat 04:11 mit Notiz 94fbc8d9 entschieden — (1) keine Self-Land-Sprosse, (2) Deckel 2 bis c5de54cc + Second-host-Parallelitaet, (3) nichts Neues vor c5de54cc, Dual-Host bleibt Eis, (4) Wehwehchen-Rangfolge R1–R5, alle Fleet-Betrieb (an Slot 7 uebergeben 04:1x mit Done-Saetzen): R1 1c746e96 Progress-Guard · R2 tote Supervisor-Bindung (NEU zu filen) · R3 18e87e67 dann c62aa3e9 + Inbox-Schreiber-Vertrag (`/tmp/astra-inbox-writer-contract-e7e356e9.md`) · R4 c9791a49 (ff4544f5 ist Duplikat) · R5 deployFacts-Klassifikation (NEU zu filen). Astras Lesescope-Frage ist beantwortet: Lesekopie `/tmp/astra-charters-2026-09-07.json` (alle aktiven Charters + neun Zeilen mit Brief-Volltext), programuebergreifendes Gegenlesen erlaubt, Rueckweg Notiz.
-- **Land-Pipeline Slot 5** (Nachfolgerin seit 02:35) hat meine drei M1-Befunde am Code bestaetigt und M5 8d6a3e9e daraus gemacht (Server reapt toten Halter nach der Wrapper-Dreiteilung, kein Hold fuer die proportionale Kette, §7c). Der Wrapper-Fix b8b5e48 ist ihr als Nachtrag gemeldet.
+- **Slot 1 = M5 `8d6a3e9e`** (Land-Pipeline, toter-Halter-Reap im Server) seit 05:14 · **Slot 2 = R1 `1c746e96`** (Fleet-Betrieb, Progress-Guard) seit 05:11. Beide berichten an ihre MAIN (Slot 5 bzw. 7); M5 landet Slot 5 selbst (green-only), R1 landest du nach Slot-7-Akzept.
+- **Queue danach:** 746513d1 (Hand, s. §0.3) → 97c5d469 ctl.sh (Tick) → weitere Fleet-Zeilen releast Slot 7. Pending mit Absicht: 21ade485 Denk-Task Modellklassen-Profile (Owner: „frische Session"; startet, wenn der Owner oder du es freigibst — es ist eine Fable-MAIN-Denksession, KEINE Opus-Lane), 3af11665 N1 + 283f625f M3 (Slot 5 released), d2b69d3d.
+- **Audits offen:** a65fbdd + 1004832 (docs-only, kurze Kette, koaleszieren) · 7536702 (Code: e2e/pins.ts) · **a1f8b65 ROT** (remote Second-host, 05:18, 1/3785: `e2e/restart.ts` „a dead explicitly-bound slot heals through exactly one exact-id Codex resume", tmux-Timing-Sonde, NEUE Familie, nicht in verify-tiering §11; Event bei Slot 6, dessen Land; nicht adjudiziert). Deine Zeile bleibt: nur eingreifen, wenn ein Rot die `waitMerge`-Familie (b8b5e48) trifft.
+- **Slot 7** hat um 05:21 EINE Zeile zum Filen bekommen (pi-zai-Dispatch-Notiz „waiting 2/2 busy" ist falsch; DONE-Satz + e2e/tasks.ts-Check + docs/queue-analyst.md §7) — ob gefilt, im Register pruefen.
+- **Deckel 2→3** erst nach beobachtetem Doppel-Claim (Monitor). c5de54cc ist gelandet, die zweite Bedingung (Audit+Vorschau gleichzeitig am Second-host) steht aus.
 
-## 2. Gemessen heute Nacht
+## 2. Gemessen heute (04:44–05:3x)
 
-- **M1 selbst:** Land 02:32 (Gate 140 s, waitMs 0), Audit gruen 3785/0 in 2145 s, Deploy 4fc0afa7 03:08 ok:true bootHead 26aa068, deployGap 0, bundleStale false, keine Idle-Fenster-Einwaende von 6/7/8.
-- **M1-Regression, gefixt (b8b5e48):** `e2e-clean-review.sh` gab seinem Test-Server `FLEET_SUITE_LOCK_HELD_BY=$$`; im Gate nennt die Lock-Datei den LIVE-Server ⇒ `inheritedSuiteHolder` lehnt ab ⇒ Test-Server wartet auf den Hold des Live-Servers ⇒ `waitMerge timed out after 60s` ⇒ Gate rot fuer JEDE Code-Lane seit dem Deploy (Slot 1 04:24, verify.ok:false nach 71 s). Probe unter simuliertem Halter: VORHER exit 1, NACHHER exit 0 ALL PASS. Fix `$_st_lock_pid` in clean-review/isolated/postland-audit, Pin umgestellt (er verlangte das Literal `$$`). Pins ALL PASS, tsc exit 0. Direkt-Commit ⇒ Tier-2 nur ueber den naechsten Post-Land-Audit.
-- **Zwei tote Suite-Locks in einer Stunde** (77910 birth 04:18, 19458 birth 04:26 — letzterer die lokale Vollkette der Lane in Slot 11, die GRUEN endete): die Wrapper-Freigabe hat einen Pfad ohne Rueckgabe; der Server reapt nie (Doc §7). Beide Male stand ein Server-Land dahinter. Von Hand gereapt (pid tot geprueft, kein Wrapper lief). Traeger: M5.
-- **Docs-only-Kurzkette nimmt seit M1 den Hold** (`proportional:true`, ms 710837 = waitMs 710000 + ~1 s). Traeger: M5.
-- **Direkt-Commits heute ohne Land-Ledger:** 71cb49d (Slot-4-Docs, verifiziert mit ihren drei Suite-Logs + pins), b8b5e48 (Fix, s.o.). Beide werden vom naechsten Audit (P6-Tip) mitgemessen.
-- **Portfolio:** f99e9354 Private-repo-o auf `complete` (0 offene Zeilen). NICHT angefasst: cd110019 Dual-Host + 2c073232 Private-repo-j (Owner-Eis), 07ee8a6d Private-repo-y (endete mit sechs Owner-Entscheiden), b2aa5b45 Game-Maker-Workflow v2 (zwei Auftraege 328fd28f/e0d625a5 tragen seinen Namen). Private-repo-z bleibt `proposed`.
-- Slot 7s Befund ohne Zeile: `state.supervisor` nennt einen toten Occupant ⇒ `/api/self/supervisor-view` und `/nudge` antworten allen 409 (= R2).
+- Slot 11 (580cc453) Land 04:45 nach drei Toden: `a65fbdd`, 871 ms, kurze Kette — moeglich erst durch Direkt-Commit `69ca4a9` (Slot-4-Docs, unfertig laut eigener Fussnote, Slot 4 darf nachziehen).
+- Slot 2 (457511cc S2D) Land 05:10: `1004832`, waitMs 255 000 hinter **totem Lock 60403** (birth 05:02:31 = lokale Pruefkette der Lane; Wrapper-Freigabe ohne Rueckgabe, dritte Instanz in einer Nacht; Traeger M5). Von Hand gereapt (pid tot, 0 Wrapper). INDEX-Zeile fehlte (Brief sagte „nur diese Datei", kein Pin prueft es) → `8000d12`.
+- Slot 1 (c5de54cc) Land 05:13: `7536702`, volle Kette 139 s, waitMs 0 — Server hielt den Mutex (M1-Hold), sauber.
+- **Watch-Zustellung:** Default `idleSec:60` erreicht einen arbeitenden Controller nie; `slotDeliveryBudget` zaehlt unzugestellte Events → „max 5 active watches" bei 3 armierten. Regel jetzt im Regelbuch §Self-scheduling.
+- **Tick + pi-zai:** zwei freie Fenster (05:10:59, 05:14:03) uebersprangen 746513d1 trotz frueherer Dateiposition; Notiz am Row luegt. Slot-7-Zeile (s. §1).
+- Direkt-Commits ohne Land-Ledger heute: `69ca4a9`, `8000d12`, `16b77b9` (docs/controller.md). Regelbuch-Fragmente geaendert (gitignored): einstieg.md (Compact-Regel, Opus-Versuch), self-scheduling.md (idleSec:0 + ack). CLAUDE.md gerendert, pins ALL PASS.
 
 ## 3. Der Plan von hier
 
-1. P6-Ausgang lesen (§1 Zeile 1). Gruen ⇒ Audit-Watch armieren, nichts deployen.
-2. Slot 11 landen, sobald der Haupt-Checkout sauber ist; danach `c5de54cc` vom Tick beobachten (zwei Plaetze).
-3. Slot 7: Release-Takt R1–R5 ist seiner; nur durchreichen, was Astra/Slot 5 als Notiz schicken.
-4. Deckel 2→3 erst nach beobachteter Second-host-Parallelitaet (Doppel-Claim im Monitor).
+1. Nach dem Compact: `./state.sh`, `./register.sh`, `GET /api/self` (Watches), Monitore pruefen (`pgrep -fl mon-`), `mon-events.py` neu starten, falls beendet.
+2. R1 (Slot 2) nach Slot-7-Akzept landen; M5 landet Slot 5. Audits lesen (Ledger-Zeilenzahl im Monitor).
+3. 746513d1 + 97c5d469 laufen an, sobald ein Slot frei ist (Monitor). ctl.sh-Report reviewen, Land vom Board (Code, volle Kette), danach `docs/controller.md` §Werkzeuge gegen die Usage lesen.
+4. Slot 4 committet nach 06:53 evtl. weiter in den Haupt-Checkout — vor JEDEM eigenen Commit `git status` + merges-Sensor.
 
-## 4. Offen beim Owner
+## 4. Offen beim Owner (nur echte Tore)
 
-Slot 4 in einen Worktree? · Deckel 2→3 (Bedingung s. §1) · Zustaendigkeit Mutex/Stage · vier Programs mit toter MAIN-Bindung (§2) + Private-repo-z · Analyst wieder an (Astra: erst nach dem Register fd22e2f) · Hub-Overlay §5 (e3b3a064) · Astra-Effort (vorerst medium).
+Slot 4 in einen Worktree? · Deckel 2→3 (Bedingung §1) · Start des Denk-Tasks 21ade485 (frische Fable-MAIN) · Astra-Effort (vorerst medium) · vier Programs mit toter MAIN-Bindung (Vorgaengerin §2) · Private-repo-z.
 
 ---
 

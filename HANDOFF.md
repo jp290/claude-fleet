@@ -1,4 +1,4 @@
-# HANDOFF — P1 Verifikations-Zielbild, Program 29c0f21bf3cc6e37d31f7803, MAIN Slot 11 — Spec gelandet; Audit-Watch offen, noch kein Retire (2026-09-07)
+# HANDOFF — P1 Verifikations-Zielbild, Program 29c0f21bf3cc6e37d31f7803, MAIN Slot 11 — Spec und Audit grün; bereit zum Retire (2026-09-07)
 
 Dieser Abschnitt betrifft ausschließlich P1. Er ersetzt keine Controller-Aufträge darunter.
 Controller Slot 1 verlangt Abschluss ohne Succession, bei offenen Resten jedoch Meldung statt Retire.
@@ -36,10 +36,12 @@ Die Land-Note `git notes --ref=fleet/land show 9e76605` bestätigt `verify.ok:tr
 
 ## Offene Fragen im vollen Wortlaut und Zuständigkeit
 
-1. Welches terminale Audit-Ergebnis deckt den Land-Commit `9e7660503a32f1404039f9fd6e0e9bc4c0b8e6d2`?
-   Zum Abschlusslesen ist `lastAudit:null`; eigener Watch `59ac233f` ist armed. Ein Retire beendet seinen
-   occupantgebundenen Rückweg. Controller muss diesen Rest übernehmen oder das eintreffende Ergebnis abwarten.
-   Keine zweite Beobachtungsschleife starten. Die P1-MAIN hält deshalb vor Retire an.
+1. Erledigt: Welches terminale Audit-Ergebnis deckt den Land-Commit `9e7660503a32f1404039f9fd6e0e9bc4c0b8e6d2`?
+   `post-land-audits.jsonl:519`, Ergebniszeit `1788789016542`: green, Exit 0, 3.853 Checks, 0 fehlgeschlagen,
+   geprüfter Tip exakt dieser Land-SHA. Original-Output selbst gelesen, Tail `ALL PASS`.
+   Das Audit koalesziert zusätzlich Cover `984a4b36f7a171a9ea5f52e265e167bd83316c84` und war daher
+   kein proportionaler Kurzaudit. Land-Gate und Post-Land-Audit bleiben getrennte Belege.
+   Ereignis `9a03bb6dfa3ffc0807af1e44` ist quittiert, Watch `59ac233f` spent; keine offene Audit-Rückgabe.
 2. Unter welchen belegten Ankunfts-, Laufzeit-, Burst- und Ausfallgrenzen kann jedes Land innerhalb von
    900 Sekunden ein vollständiges Tier-2-Urteil erhalten? Diese harte Zusage ist weiterhin unbelegt;
    Unknown, SKIPPED und kleinere Messumfänge erfüllen sie nicht. Zuständig sind die Umsetzungsträger und Owner.
@@ -72,8 +74,10 @@ Spec von Hypothesen getrennt. Der HANDOFF selbst wird nur durch Diff-/Git-Prüfu
 install/pins-Ergebnisse gehören zur bereits gelandeten Opus-Publikation und ihrem Land-Gate.
 
 P1-Entwurfsarbeit ist abgeschlossen. Keine Succession, keine neue Lane und kein automatischer Folgetag.
-Vor Retire bleibt einzig der oben ausdrücklich gemeldete Audit-Rückweg zu entscheiden; keine Report-Abnahme
-ist offen. Prozentualer Kontextfüllstand hier nicht selbst gemessen; ältere fremde Prozentangaben nicht übernehmen.
+Vor Retire sind keine Report-Abnahme, Aufmerksamkeit, ungelesene Inbox oder Audit-Rückgabe offen;
+Live-Projektion: openDebts=0, beide Watches spent, Publikationsreport accepted. Die verbleibenden fachlichen
+Fragen gehören den bestehenden Umsetzungsträgern; P1 eröffnet keinen Folgeauftrag.
+Prozentualer Kontextfüllstand hier nicht selbst gemessen; ältere fremde Prozentangaben nicht übernehmen.
 
 ---
 

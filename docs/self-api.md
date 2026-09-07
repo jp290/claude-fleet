@@ -186,6 +186,14 @@ curl -X POST http://<fleet-host>:<port>/api/self/supervisor-watch/<watchId>/comp
   -d '{"text":"Program X ist seit 14:02 aktiv; seine MAIN hat einen fleet-report (complete) abgelegt."}'
 ```
 
+- **Das 409 der Occupancy-Stufe nennt seit 2026-09-07 seinen Zustand** (`server.ts#supervisorRefusal`,
+  gemeinsame Stufe aller drei Supervisor-Self-Routen): `no Supervisor binding exists …` (nie ernannt) ·
+  `the Supervisor binding is STALE: it names slot N openedAt … whose occupant is gone or was replaced …`
+  (ernannt, Occupant weg — die Rolle ist UNBESETZT, kein Ablehnungs-Urteil über dich) ·
+  `not the bound Supervisor …` (jemand anderes hält sie). Vorher war das EIN Satz für alle drei, und
+  „die Rolle ist vakant" war von innen nicht von „du bist es nicht" unterscheidbar. Neue Offenlegung
+  ist das keine: die Registrierungs-Tür unten sagt jeder Session dieselben zwei Zustände. Die
+  Liveness von aussen: `supervisorHealth` auf `GET /api/programs` (`docs/supervisor-succession.md` §4).
 - Guard-Reihenfolge wie `nudge`: 401 (Token) → 409 (`not the bound Supervisor`) → 400 (Body: fremdes
   Feld namentlich, leerer/zu langer/fehlender `text`) → 409 (Policy): `unknown watch` · fremder Kind
   (`is a lane watch — only a transition watch …`) · `no longer armed` (zweite Vollendung, abgelaufen)

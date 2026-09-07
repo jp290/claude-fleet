@@ -270,6 +270,13 @@ const PRE_AUTH_ROUTES = [
   // calls tokenGate inline before it can mint anything, and it never reads a self-token header —
   // both are pinned as source rules in e2e/pins.ts.
   '= /api/supervisor/bootstrap',
+  // …and the SECOND appointment door, added 2026-09-07: it binds an ALREADY RUNNING session as
+  // Supervisor by explicit slot. Same placement and same reasons as its neighbour one line up, and
+  // REVIEWED rather than merely widened: the block's FIRST statement is the owner tokenGate, it
+  // reads no self-token header (both pinned as source rules in e2e/pins.ts), and the body is closed
+  // to a single `slot` — no label match, no "first idle session", no wildcard, so nothing in the
+  // request can make the route pick a session the caller did not name.
+  '= /api/supervisor/bind',
   '= /favicon.ico',
   '= /intake',            // its own secret (FLEET_INTAKE_SECRET), never the owner token
   String.raw`~ /^\/(s\/[a-z0-9]+(\/(auth|info|send|diff|comments|brief|summary|transcript))?|ws-share\/[a-z0-9]+)$/`,
@@ -604,10 +611,24 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     check("§STN-1 the completion door is a self-principal door: owner, steward, guest and no credential are all 401",
       noCred.status === 401 && ownerTok.status === 401 && stewardTok.status === 401 && guestCookie.status === 401,
       `${noCred.status}/${ownerTok.status}/${stewardTok.status}/${guestCookie.status}`);
-    check("§STN-1 a recognized self principal that is not the bound Supervisor is 409 (plain and lane alike) — no token hunt",
+    // WHAT THIS CHECK IS ABOUT IS THE STATUS, and that is asserted first and unchanged: a
+    // recognized self principal meets 409, never a 401, so nothing here sends anyone looking for a
+    // better credential. The SENTENCE moved on 2026-09-07, when the occupancy stage learned to name
+    // which of its three states it is in (server.ts#supervisorRefusal) — and this suite runs AFTER
+    // e2e/supervisor.ts, which leaves a dead binding behind, so the honest answer here is "the role
+    // is unfilled", not "you are not it". Read the state from the owner side rather than hard-coding
+    // one: a fixed sentence is what made this check fall on a change it was never about, and a bare
+    // `.includes("bound Supervisor")` would pass on all three and assert nothing.
+    const svOccupancy = ((await (await get("/api/programs")).json()) as
+      { supervisorHealth: { occupancy: string } }).supervisorHealth.occupancy;
+    const expectedRefusal = svOccupancy === "unbound" ? "no Supervisor binding exists"
+      : svOccupancy === "stale" ? "the Supervisor binding is STALE"
+      : "not the bound Supervisor";
+    const plainText = await plainSession.text();
+    check("§STN-1 a recognized self principal that is not the bound Supervisor is 409 (plain and lane alike) — no token hunt, and the refusal names the occupancy state the fleet is actually in",
       plainSession.status === 409 && laneSession.status === 409
-        && (await plainSession.text()).includes("not the bound Supervisor"),
-      `${plainSession.status}/${laneSession.status}`);
+        && !/unauthorized/i.test(plainText) && plainText.includes(expectedRefusal),
+      `${plainSession.status}/${laneSession.status} occupancy=${svOccupancy} expected="${expectedRefusal}" got=${plainText}`);
     const register = (tok: string, body: unknown): Promise<Response> =>
       fetch(`${BASE}/api/self/watch`, { method: "POST",
         headers: { "content-type": "application/json", "x-fleet-self-token": tok }, body: JSON.stringify(body) });

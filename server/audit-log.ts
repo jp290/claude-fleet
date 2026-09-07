@@ -207,6 +207,19 @@ type AuditEvent =
   // such a binding, which left the fleet unable to appoint a Supervisor at all. Detail names the
   // REPLACED occupation (slot + openedAt) and nothing else — never a line of the founding brief.
   | "supervisor_rebound"
+  // the owner bound an ALREADY LIVING session as Supervisor (POST /api/supervisor/bind). Its own
+  // word beside the two rebind rows because it is a different act: a bootstrap OPENS the session it
+  // appoints, this one appoints a session that was already working and keeps its context. Detail
+  // names the bound occupation (slot + openedAt) and nothing else — never a line of the brief.
+  | "supervisor_bound"
+  // BOOT read a persisted Supervisor binding whose slot no longer carries the (id, openedAt) it was
+  // bound to. The record is kept, never repaired here: "no Supervisor was ever appointed" and "the
+  // one appointed is gone" are two different facts, and deleting the record would erase the second.
+  // Until this row existed a dead binding was rehydrated SILENTLY and stayed authoritative — every
+  // route it gates answered the same 409 a non-Supervisor gets, so the role was unfilled and
+  // nothing anywhere said so (measured 2026-09-07: slot 5 openedAt 1787497726285, bound 21.08.,
+  // against a slot recycled into a lane). Detail names the dead occupation only.
+  | "supervisor_binding_stale"
   // the recorded MAIN binding learned the session id its pane discovered AFTER the bind
   // (backfillProgramMainSessionId). Detail names the program and the id that filled the `null`;
   // there is no row for the no-op case, because "nothing to fill" is not an event.

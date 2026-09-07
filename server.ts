@@ -49,6 +49,15 @@ import {
   type TaskFilesOrigin, type TrackedSnapshot,
 } from "./task-metadata";
 import { notesForTask, renderNotesBlock, type NoteInput } from "./task-notes";
+// The LAND fold of the collision facts. The wave button does not re-decide R1/R2/R3 or the program
+// boundary: it asks THIS projector whether the ids it was handed are one of its own waves, so the
+// board, `bun task-land-waves.ts --state fleet.json` and the door all answer from one classifier.
+import {
+  LAND_WAVE_COSTS_2026_09, LAND_WAVE_MAX_DEFAULT, projectLandWaves,
+  type LandWave, type LandWaveProjection,
+} from "./task-land-waves";
+import type { TaskWaveInput } from "./task-waves";
+import { renderWaveBrief } from "./wave-brief";
 // the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
 // for what belongs there. tsc gates every land, so a drift in any of them is a compile error.
 import {
@@ -1375,6 +1384,11 @@ const loadTaskSpawn = (value: unknown): DispatchSpawn | undefined => {
 
 const MAX_COMMENTS_PER_TASK = 50;
 const MAX_CRITERION = 4000; // a done-criterion is a short contract, not a design document
+// W3 · the reason a wave lane gives for handing a row back. Sized to the queue note it becomes
+// (every note in this file is sliced to 200) rather than to a paragraph: the returned row carries
+// this sentence into the next dispatcher's reading, and a longer one would be truncated there
+// anyway — a limit that silently cuts is worse than one that refuses.
+const MAX_WAVE_SPLIT_REASON = 200;
 const MAX_REFINE_CHILDREN = 4; // the split cap lives HERE, not in the model's judgment: an answer
 // over it is a worker that ignored its contract, and that fails closed like any other (runRefineJob)
 const MAX_REFINE_FIELD = 2000; // doneCriterion/verify/reason are sentences, not documents
@@ -1682,7 +1696,12 @@ function programPhaseInput(t: Task, programId: string, outcome: PhaseOutcomeFact
   now: number): PhaseInput {
   // I2, the exact triple: a slot that merely shares the cwd is not this row's lane, and a slot
   // whose worktree is gone (`cwd` falsy) is not a lane at all.
-  const lane = slots.find((x) => x.cwd && x.taskId === t.id && x.programId === programId) ?? null;
+  // ...and since the wave button the edge is N:1: `x.taskId` names only the HEAD, so a follower row
+  // read through it alone would render `lane: null` on a board that shows the head as running. The
+  // second arm is the same exact triple, taken over `t.slot` — the slot has to be alive, hold this
+  // row right now, and belong to this Program.
+  const lane = slots.find((x) => x.cwd && x.programId === programId
+    && (x.taskId === t.id || (t.slot === x.id && t.status === "sent"))) ?? null;
   const openAttention = attentionRequests.filter((a) => a.programId === programId
     && a.provenance?.taskId === t.id
     && (a.status === "open" || a.status === "send-uncertain")).length;
@@ -4730,6 +4749,35 @@ function detachSlotTasks(slotId: number, note: string): void {
   }
 }
 
+// THE N:1 LANE→ROW EDGE, and it is `t.slot` — the field landLane and detachSlotTasks above have
+// keyed off since long before the wave button, promoted from an incidental pointer to the contract
+// by it (docs/queue-wellen-2026-09-06.md §5 S3). That is why one land already marks every row of a
+// wave `done` and one abort already returns every one of them: both loops were written over this
+// edge, not over `s.taskId`.
+//
+// `s.taskId` keeps its old meaning exactly: the row that FOUNDED the lane — first in this order,
+// and the one every provenance reader (outcome rows, attention, fleet-reports, the land actor)
+// already binds to. Deliberately NO second field on the Slot naming the wave: two records of one
+// edge are how they come apart across a restart, and this one is persisted on the rows themselves.
+//
+// ORDER is the sensor's own (created, id), the comparator task-land-waves.ts folds by, so the
+// brief, the board and the split door name the n rows in ONE sequence.
+function waveRowsOf(slotId: number): Task[] {
+  return tasks.filter((t) => t.slot === slotId && t.status === "sent")
+    .sort((a, b) => a.created - b.created || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+// The row a lane's own doors attach to when only ONE can be meant (the criterion, the summary
+// line). With a wave that is the HEAD and nothing else: a bare find-by-slot hands back whichever of
+// the n sorts first in the `tasks` array, which is an answer nobody chose. Falls back to that find
+// for a lane whose `s.taskId` is absent — a hand-opened lane, or a row that predates the field.
+function foundingRowOf(s: Slot): Task | undefined {
+  const head = s.taskId
+    ? tasks.find((x) => x.id === s.taskId && x.slot === s.id && x.status === "sent")
+    : undefined;
+  return head ?? tasks.find((x) => x.slot === s.id && x.status === "sent");
+}
+
 // `why` is mandatory: a session's lifetime is uninterpretable without it (slotstats.ts).
 async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   why: Exclude<SlotEnding, "unknown">): Promise<void> {
@@ -7593,7 +7641,14 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
   if (t.status !== "sent")
     return json({ error: `task is ${t.status} — only a running row has a lane to land` }, 409);
   const lane = typeof t.slot === "number" ? slotFrom(t.slot) : null;
-  if (!lane?.cwd || !lane.worktree || lane.taskId !== t.id)
+  // The bind-back test, over the N:1 edge rather than over `s.taskId` alone: a WAVE lane carries n
+  // rows and `lane.taskId` names only the head, so a MAIN landing through a follower would be told
+  // its own running row has no lane. Landing any row of a wave lands the WHOLE wave — that is what
+  // "one lane, one land" means — and every row of it is a row of this same Program by construction
+  // (the sensor never bundles across programs), so clause (3) above has already vouched for all n.
+  const laneCarriesRow = !!lane && (lane.taskId === t.id
+    || waveRowsOf(lane.id).some((row) => row.id === t.id));
+  if (!lane?.cwd || !lane.worktree || !laneCarriesRow)
     return json({ error: "this row names no live lane slot — the lane it ran in is gone, so nothing can be landed for it" }, 409);
   // (5) THE REPO COMES FROM THE BINDING'S CHECKOUT, by the same helper and the same rule as the
   // release door: a MAIN bound in one repository never reaches into another. Failing to derive it
@@ -8274,12 +8329,52 @@ const dispatchingTasks = new Set<string>();
 // `spawn` is the same choice /api/lanes takes — WHICH AGENT runs the lane — carried here so the
 // queue row stays linked (requeue on failed spawn, outcome row). The default is the tick's shape.
 const DEFAULT_SPAWN: DispatchSpawn = { harness: null, model: null, effort: null };
+// WHAT A WAVE HANDS THE DISPATCHER. `followers` are the rows BEHIND the head, in the wave's fixed
+// order; the head travels as `next` exactly as any other dispatched row does, so nothing about the
+// single-row path changes shape. `wasStatus` is the followers' half of `wasStatus` below — captured
+// by the door BEFORE any mutation, for the same reason. `sharedFiles`/`klasse` are the sensor's own
+// verdict on this set, carried so the brief states the evidence the owner bundled on rather than a
+// second derivation of it.
+interface WaveDispatch {
+  followers: Task[];
+  wasStatus: Map<string, Task["status"]>;
+  sharedFiles: string[];
+  klasse: "docs" | "code";
+}
 // THE ONE BRIDGE from a queue row to a spawn choice: the row's own persisted, SET-time-validated
 // field, DEFAULT_SPAWN on absence. Every unattended reader goes through this accessor — never a
 // request value, never an env default (pinned in e2e/pins.ts).
 const taskSpawnOf = (t: Task): DispatchSpawn => t.spawn ?? DEFAULT_SPAWN;
+
+// THE LAND-WAVE SENSOR, SERVER-SIDE, over exactly the facts the board projects: taskView's surface
+// (the owner-confirmed one where there is one, derived otherwise), the row's programId, and the
+// dispatch default for a row that names no repo of its own. ONE classifier for the board line, for
+// `bun task-land-waves.ts --state fleet.json` and for the wave door — a door that re-stated R1, R2,
+// R3 and the program boundary would be a second classifier to keep in step with this one, and the
+// day they disagreed the button would bundle rows the board had already refused to bundle.
+function landWaveProjectionNow(): LandWaveProjection {
+  const rows: TaskWaveInput[] = tasks
+    .filter((t) => t.kind === "auftrag" && (t.status === "queued" || t.status === "pending"))
+    .map((t) => {
+      const view = taskView(t);
+      return { id: t.id, kind: t.kind, status: t.status, created: t.created,
+        ...(t.repo ? { repo: t.repo } : {}),
+        ...(t.programId ? { programId: t.programId } : {}),
+        ...(view.files ? { files: view.files } : {}),
+        ...(view.filesOrigin ? { filesOrigin: view.filesOrigin } : {}) };
+    });
+  return projectLandWaves({
+    tasks: rows,
+    ...(DISPATCH_REPO ? { dispatchRepo: DISPATCH_REPO } : {}),
+    costs: LAND_WAVE_COSTS_2026_09,
+  });
+}
+// `wave` carries the FOLLOWERS of a land wave — the rows behind the head, already validated by the
+// wave door against the sensor's own projection. Empty for every other dispatch, and every dispatch
+// that predates the button therefore produces byte-identical behaviour. The followers ride into the
+// same lane on the same edge the head uses (`t.slot`), which is what makes one land close all n.
 async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify = false,
-  spawn: DispatchSpawn = DEFAULT_SPAWN):
+  spawn: DispatchSpawn = DEFAULT_SPAWN, wave: WaveDispatch | null = null):
   Promise<{ ok: true; slot: number; branch: string; tail: Promise<void> } | { ok: false; error: string }> {
   // Last lock, shared by the tick and the attended route: only an auftrag may ever cross from a
   // queue row into a lane. Callers filter too so they can return the right status/reason, but a
@@ -8294,7 +8389,11 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
   if (spawnH !== CLAUDE_HARNESS && !ownerAct && !(HARNESS_AUTOMATION && spawnH.automatable))
     return { ok: false, error: `harness ${spawnH.id} is not automatable — no unattended path may drive it (FLEET_HARNESS_AUTOMATION off)` };
   if (dispatchingTasks.has(next.id)) return { ok: false, error: "task is already being dispatched" };
-  dispatchingTasks.add(next.id);
+  // EVERY row this call is about, not only the head: the wave door checks this set per row before
+  // it gets here, so a follower left out of it would be startable by a second click while the first
+  // was still materialising the tree.
+  const dispatchIds = [next.id, ...(wave?.followers ?? []).map((t) => t.id)];
+  for (const id of dispatchIds) dispatchingTasks.add(id);
   // captured BEFORE any mutation, restored on every failure path: flipping an eval-auto row from
   // "pending" to "queued" on a failed spawn would promote its RETRY to the owner path — uncounted
   // by the day valve, ungated by the eval disjunct (found 2026-08-05).
@@ -8338,23 +8437,45 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     free.programId = next.programId ?? null;
     next.status = "sent";
     next.slot = free.id;
-    next.note = clarify ? `clarify lane ${wt.branch} — settling the done-criterion with you` : `lane ${wt.branch}`;
+    next.note = clarify ? `clarify lane ${wt.branch} — settling the done-criterion with you`
+      : wave ? `wave lane ${wt.branch} (${wave.followers.length + 1} rows, one land)`
+        : `lane ${wt.branch}`;
+    // THE FOLLOWERS, onto the same edge and in the same tick as the head. `free.taskId` stays the
+    // HEAD alone — every provenance reader in this file binds to it and a wave must not silently
+    // change what "the row this lane is about" means. Their previous status is captured for the
+    // catch below in exactly the shape `wasStatus` captures the head's, and for the same reason.
+    for (const follower of wave?.followers ?? []) {
+      follower.status = "sent";
+      follower.slot = free.id;
+      follower.note = `wave lane ${wt.branch} (with ${next.id})`;
+      // the attended click is a release for EVERY row it started, exactly as it is for the head
+      if (ownerAct) follower.releasedBy = "owner";
+    }
     // the wait is a STATE, not just a sentence in the prompt: while it holds, the steward's send
     // gate refuses this slot, so nothing automated can nudge the lane past the owner's decision
     free.awaiting = clarify ? "owner" : null;
     saveState();
-    return { ok: true, slot: free.id, branch: wt.branch, tail: briefAndSend(next, free, wt, ownerAct, clarify) };
+    return { ok: true, slot: free.id, branch: wt.branch,
+      tail: briefAndSend(next, free, wt, ownerAct, clarify, wave) };
   } catch (e) {
     // spawning failed — mark the task so the owner sees why instead of it silently vanishing
     next.status = wasStatus;
     next.note = `dispatch failed: ${e instanceof Error ? e.message : e}`.slice(0, 200);
+    // ...and every follower with it, to the status IT came from. A wave that half-binds on a failed
+    // spawn would leave rows on `sent` pointing at a slot no lane ever occupied, and the next
+    // restart would read them as running work.
+    for (const follower of wave?.followers ?? []) {
+      follower.status = wave!.wasStatus.get(follower.id) ?? "pending";
+      follower.slot = null;
+      follower.note = next.note;
+    }
     saveState();
     return { ok: false, error: next.note };
   } finally {
     // release the spawn reservation ALWAYS (without this every dispatched slot stayed in laneSpawn
     // until a restart). Safe here: openSlot has set free.cwd, so no picker sees the slot as free.
     laneSpawn.delete(free.id);
-    dispatchingTasks.delete(next.id);
+    for (const id of dispatchIds) dispatchingTasks.delete(id);
   }
 }
 
@@ -8440,12 +8561,25 @@ const LANE_EXIT_FOOTER = `
 `;
 
 async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: string; branch: string; form: LaneForm },
-  ownerAct: boolean, clarify = false): Promise<void> {
+  ownerAct: boolean, clarify = false, wave: WaveDispatch | null = null): Promise<void> {
+  // THE ROWS THIS LANE CARRIES, head first — the wave's fixed order, and a one-element list for
+  // every other dispatch. One list, so nothing below has to ask twice whether this is a wave.
+  const waveRows: Task[] = wave ? [next, ...wave.followers] : [next];
   // clarify mode ignores the compiled brief: a task that reached this button is precisely one whose
   // done-criterion cannot be settled yet. Deterministic frame + raw request, no model call.
+  // A wave is never a clarify lane (the door refuses the combination): settling what done means is
+  // a question about ONE row, and n of them in one pane is n unanswered questions.
   const brief = clarify
     ? buildClarifyBrief(next.text, next.analysis?.reason ?? null, `http://${HOST}:${PORT}`)
-    : next.brief?.text ?? next.text;
+    : wave
+      ? renderWaveBrief({
+        rows: waveRows.map((row) => ({ id: row.id, text: row.text,
+          brief: row.brief?.text ?? null,
+          // the CONFIRMED criterion only: an unconfirmed proposal is the producer's own draft, and
+          // a wave brief that quoted one would hand the lane an anchor nobody promoted
+          criterion: row.criterion?.confirmedAt ? row.criterion.text : null })),
+        sharedFiles: wave.sharedFiles, klasse: wave.klasse, baseUrl: `http://${HOST}:${PORT}` })
+      : next.brief?.text ?? next.text;
   // read HERE, at the same moment the bytes are chosen — not at receipt time. The row is mutable
   // and a later reader cannot tell whether an edit came before or after this delivery.
   const briefSource = briefSourceOf(next, clarify);
@@ -8475,6 +8609,15 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     next.status = "queued";
     next.slot = null;
     next.note = `${note}${kept}`.slice(0, 200);
+    // EVERY row of the wave, not only the head. This path tears the lane down, so a follower left
+    // on `sent` would point at a slot that no longer holds it — and `queued` is right here for the
+    // same reason it is right for the head: a post-spawn hold is transient and the dispatcher picks
+    // the row up again. (An ABORT is the other shape and keeps its own answer: detachSlotTasks.)
+    for (const follower of wave?.followers ?? []) {
+      follower.status = "queued";
+      follower.slot = null;
+      follower.note = next.note;
+    }
     saveState();
   };
   // the owner may have killed/re-opened this slot during the boot sleep — re-verify it
@@ -8552,8 +8695,17 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
       return { id: t.id, repo: repoCanon(t.repo ?? DISPATCH_REPO), kind: t.kind, status: t.status,
         files: view.files, cluster: view.cluster, created: t.created, text: t.text };
     };
+    // A WAVE JOINS ON ITS WHOLE SURFACE, under ONE cap: the block exists so a lane sees the notes
+    // standing on the files it is about to touch, and a wave touches all n surfaces. Joining per row
+    // would multiply the cap by n and blow the byte budget the cap IS; joining on the head alone
+    // would drop every note that stands on a follower's files.
+    const noteJoinFor = (rows: readonly Task[]): NoteInput => {
+      const head = noteJoinRow(rows[0]);
+      if (rows.length === 1) return head;
+      return { ...head, files: [...new Set(rows.flatMap((row) => taskView(row).files ?? []))].sort() };
+    };
     const noteRows = clarify ? []
-      : notesForTask(noteJoinRow(next),
+      : notesForTask(noteJoinFor(waveRows),
         tasks.filter((t) => t.kind === "notiz" && t.status === "pending").map(noteJoinRow));
     const notesBlock = renderNotesBlock(noteRows);
     const deliveredBrief = `${brief}${notesBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : LANE_EXIT_FOOTER}`;
@@ -8929,10 +9081,15 @@ async function tickAnalysisSweep(): Promise<void> {
     // files while being shown none, and the dispatcher then quoted it as "same files, says the
     // analyst". The three-valued list rides through unflattened; the prompt states what each state
     // means, and only laneSurfaces' own caps bound it.
+    // EVERY row the lane carries, not merely its founding one: since the wave button a lane can be
+    // working n rows, and the question this list answers is "what work touches the same files" —
+    // naming one of n would under-report exactly the lane most likely to collide.
     const laneTask = new Map<string, string | null>();
-    for (const s of slots)
-      if (s.worktree) laneTask.set(s.worktree.branch,
-        tasks.find((x) => x.slot === s.id && x.status === "sent")?.text ?? null);
+    for (const s of slots) {
+      if (!s.worktree) continue;
+      const rows = waveRowsOf(s.id);
+      laneTask.set(s.worktree.branch, rows.length ? rows.map((x) => x.text).join(" · ") : null);
+    }
     const lanes = (await laneSurfaces(repo)).map((l) => ({ ...l, task: laneTask.get(l.branch) ?? null }));
 
     let found: Map<string, { verdict: "ready" | "needs-you"; reason: string; blockers: AnalysisBlocker[]; collides: string[] }>;
@@ -24784,6 +24941,78 @@ Bun.serve<WSData>({
       return json({ ok: true, proposal: t.filesProposal, unknownPaths });
     }
 
+    // W3 · THE SELF-SPLIT — the wave's own way back, and the reason S3 is not all-or-nothing.
+    //
+    // A wave is bundled on a DECLARED file surface, and the lane working the rows is the first party
+    // in a position to find out the declaration did not reach. §5 cut S3 all-or-nothing ("an abort
+    // leaves all n on queued"); the owner's addition of 2026-09-07 names the two cases that shape
+    // does not cover — the surface was too SMALL (the gate stays correct, `verifyPlanFor` classifies
+    // the actual rebased diff, but the reader pays the bisect) or too COARSE (the bundle is simply
+    // wrong) — and hands the lane the door to give back exactly the rows that do not belong instead
+    // of abandoning the whole wave or doing them badly.
+    //
+    // LANE-ONLY, and that is the opposite scope from its files-proposal neighbour above, for a
+    // reason that is the same rule read once more: proposing a surface costs a row nothing, while
+    // this writes a QUEUE STATUS — so only the lane that actually HOLDS the rows may write it, and
+    // it reaches no row outside its own wave by construction. It is not an owner route with a self
+    // mirror either: the judgement being recorded is one only the working lane is in a position to
+    // make, and the owner's answer to it is the ordinary queue (the rows come back releasable).
+    //
+    // `queued`, not `pending`, and deliberately unlike an ABORT: these rows were released, the lane
+    // is asserting they are still exactly the work they were, and the only thing it found is that
+    // they do not belong in THIS bundle. detachSlotTasks keeps its own answer for the other shape.
+    if (url.pathname === "/api/self/wave/split" && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      if (!s.worktree) return json({ error: "not a lane — only the lane holding a wave can split it" }, 409);
+      const spBody = await readJson(req);
+      const spRaw: unknown = spBody?.ids;
+      if (!Array.isArray(spRaw) || !spRaw.length || spRaw.some((x) => typeof x !== "string" || !x))
+        return json({ error: "ids must be a non-empty list of the rows you are handing back" }, 400);
+      const spIds = spRaw as string[];
+      if (new Set(spIds).size !== spIds.length) return json({ error: "ids must be distinct" }, 400);
+      // THE REASON IS MANDATORY and it is the point of the record: a row that comes back without
+      // one is indistinguishable from a row the lane simply did not get to, and the next dispatcher
+      // would re-bundle it on the same surface that just failed.
+      const spReason = typeof spBody?.reason === "string" ? spBody.reason.trim() : "";
+      if (!spReason) return json({ error: "reason is required — a row handed back without one would be re-bundled on the same surface that just failed" }, 400);
+      if (spReason.length > MAX_WAVE_SPLIT_REASON) return json({ error: `reason must be at most ${MAX_WAVE_SPLIT_REASON} chars` }, 400);
+      const spWave = waveRowsOf(s.id);
+      if (spWave.length < 2)
+        return json({ error: "this lane carries no wave — there is one row here, and giving it back is an abort, which belongs in your report" }, 409);
+      const spOutside = spIds.filter((id) => !spWave.some((t) => t.id === id));
+      if (spOutside.length)
+        return json({ error: `not rows of this lane's wave: ${spOutside.join(", ")} — this door reaches no row outside it`,
+          wave: spWave.map((t) => t.id) }, 409);
+      if (spIds.length >= spWave.length)
+        return json({ error: `that is an abort, not a split — at least one of the ${spWave.length} rows has to stay with this lane; giving all of them back belongs in your report`,
+          wave: spWave.map((t) => t.id) }, 409);
+      // ...AND NOT AFTER THE LANE HAS ALREADY REPORTED. A fleet-report mints the lane's provenance
+      // from `s.taskId`, and the split below may move that pointer to a new head — so a split filed
+      // behind a report would leave that report naming a row this lane no longer carries. The order
+      // is the natural one anyway (a split is a finding DURING the work), which is why this refuses
+      // rather than trying to repair two records after the fact.
+      if (laneOwnReports(s).length)
+        return json({ error: "this lane has already filed a terminal report — a split is a finding during the work, and moving the wave under a filed report would leave it naming a row this lane no longer carries" }, 409);
+      const spBack = spWave.filter((t) => spIds.includes(t.id));
+      const spKept = spWave.filter((t) => !spIds.includes(t.id));
+      for (const t of spBack) {
+        t.status = "queued";
+        t.slot = null;
+        t.note = `handed back by the wave lane ${s.worktree.branch}: ${spReason}`.slice(0, 200);
+      }
+      // THE HEAD MOVES IF THE HEAD LEFT. `s.taskId` is what every provenance reader in this file
+      // binds to, and it has to name a row the lane still carries — the kept rows are already in
+      // the wave's fixed order, so the new head is the first of them and no order is invented.
+      if (s.taskId && !spKept.some((t) => t.id === s.taskId)) s.taskId = spKept[0].id;
+      saveState();
+      audit("task_wave_split", s.id,
+        `kept ${spKept.map((t) => t.id).join("+")} back ${spBack.map((t) => t.id).join("+")}: ${spReason.slice(0, 120)}`);
+      return json({ ok: true, kept: spKept.map((t) => t.id), returned: spBack.map((t) => t.id),
+        head: s.taskId ?? null });
+    }
+
     // ACP-23 · Program-MAIN filing. Non-lane only, for the same "one edge per role" reason as its
     // two neighbours: a lane EXECUTES the row it was founded on — it does not fill the queue its
     // own MAIN releases from. Placed ABOVE the release route on purpose: that route's pin holds
@@ -24947,8 +25176,11 @@ Bun.serve<WSData>({
       if (!text) return json({ error: "bad text" }, 400);
       if (text.length > MAX_CRITERION) return json({ error: `text must be at most ${MAX_CRITERION} chars` }, 400);
       // slot + status "sent" is the ONE sound way to name a slot's live founding task — the bare
-      // find-by-slot used elsewhere can hit a landed row, because landLane leaves `t.slot` set
-      const t = tasks.find((x) => x.slot === s.id && x.status === "sent");
+      // find-by-slot used elsewhere can hit a landed row, because landLane leaves `t.slot` set.
+      // Through foundingRowOf since the wave button: on a lane carrying n rows that find would hand
+      // back whichever of them sorts first in `tasks`, and a criterion belongs to the row the lane
+      // was founded on, never to an arbitrary one of its siblings.
+      const t = foundingRowOf(s);
       if (!t) return json({ error: "no founding task on this slot to attach a criterion to" }, 409);
       // re-proposing REPLACES an unconfirmed draft (the lane may refine it mid-conversation) but
       // never a confirmed one: that would let the producer edit the anchor after the promotion
@@ -26807,6 +27039,100 @@ Bun.serve<WSData>({
       saveState();
       audit("task_kind", undefined, `${t.id}:${before}->${t.kind}`);
       return json({ ok: true, task: t });
+    }
+    // ▸ START WAVE (S3 of docs/queue-wellen-2026-09-06.md §5): ONE lane, n queue rows, ONE land.
+    // The attended sibling of ▸ start — same spawn triple, same free-slot rule, same "an attended
+    // click outranks every advisory" — with the one addition that is the whole safety of the button:
+    // the ids must form a wave THE SENSOR ITSELF projects at this moment, so the button can never
+    // bundle a set the board has already refused to bundle.
+    //
+    // NOTHING UNATTENDED REACHES HERE. Automatic wave formation in the tick stands explicitly under
+    // the cut line of §5 and is not built; `ownerAct` is hard-coded true for the same reason the
+    // ▸ start button hard-codes it, and there is no self mirror of this route.
+    if (url.pathname === "/api/wave/dispatch" && req.method === "POST") {
+      const wBody = await readJson(req);
+      const wRaw: unknown = wBody?.ids;
+      if (!Array.isArray(wRaw) || wRaw.some((x) => typeof x !== "string" || !x))
+        return json({ error: "ids must be a non-empty list of task ids" }, 400);
+      const wIds = wRaw as string[];
+      if (new Set(wIds).size !== wIds.length)
+        return json({ error: "ids must be distinct — a row cannot be in a wave twice" }, 400);
+      // The two bounds say DIFFERENT things and keep their own words. One row is not a smaller
+      // wave, it is the other button; and the upper bound is the reader's bisect budget, not a
+      // capacity limit (task-land-waves.ts states why it is not UNDO_STACK_MAX).
+      if (wIds.length < 2)
+        return json({ error: "a wave carries at least two rows — for one row the ▸ start button is the door" }, 400);
+      if (wIds.length > LAND_WAVE_MAX_DEFAULT)
+        return json({ error: `a wave carries at most ${LAND_WAVE_MAX_DEFAULT} rows — beyond that a red post-land audit is no longer attributable across it by hand` }, 400);
+      const wRows = wIds.map((id) => tasks.find((x) => x.id === id));
+      const wMissing = wIds.filter((_, i) => !wRows[i]);
+      if (wMissing.length) return json({ error: `unknown task(s): ${wMissing.join(", ")}` }, 404);
+      const wFound = wRows as Task[];
+      // The per-row locks, in the same words the single-row door uses and each naming the row it
+      // refused: a wave that reported one collective "not startable" would make the owner guess.
+      for (const t of wFound) {
+        if (t.kind !== "auftrag")
+          return json({ error: `${t.id} is a ${t.kind} — advisory, and the dispatcher never runs it` }, 409);
+        if (t.status !== "pending" && t.status !== "queued")
+          return json({ error: `${t.id} is ${t.status} — only a pending or queued row can be started` }, 409);
+        if (dispatchingTasks.has(t.id))
+          return json({ error: `${t.id} is already being dispatched` }, 409);
+        if (!DISPATCH_REPO && !t.repo)
+          return json({ error: `${t.id} has no target repo — set FLEET_DISPATCH_REPO or give the row a repo` }, 400);
+      }
+      // THE SENSOR IS THE AUTHORITY. An EXACT set match, not a subset: a caller handing two rows of
+      // a projected three is asking for a bundle the sensor never proposed, and quietly starting the
+      // subset would be the button inventing a wave. The refusal names what the sensor says about
+      // each row instead, because "no" without the projection is a dead end for the owner.
+      const wProjection = landWaveProjectionNow();
+      const wAll = wProjection.repos.flatMap((r) => r.waves);
+      const wWanted = new Set(wIds);
+      const wWave = wAll.find((w) => w.ids.length === wWanted.size && w.ids.every((id) => wWanted.has(id)));
+      if (!wWave) {
+        const wSays = wIds.map((id) => {
+          const w = wAll.find((x) => x.ids.includes(id));
+          if (!w) return `${id}: not projected at all (no repo could be resolved for it)`;
+          if (w.ids.length > 1) return `${id}: the sensor puts it in ${w.ids.join(" + ")}`;
+          return `${id}: alone — ${w.reasonAgainst ?? "bundlable, but the sensor found it no partner"}`;
+        });
+        return json({ error: `these rows are not one of the sensor's land waves right now — ${wSays.join("; ")}`,
+          waves: wAll.filter((w) => w.ids.some((id) => wWanted.has(id))) }, 409);
+      }
+      // ORDER COMES FROM THE SENSOR, never from the request body: the wave's fixed order is
+      // (created, id), the brief states it, and the lane commits in it. A caller-chosen order would
+      // make the same set two different lanes.
+      const wOrdered = wWave.ids.map((id) => wFound.find((t) => t.id === id)!);
+      const [wHead, ...wFollowers] = wOrdered;
+      // the spawn triple, resolved exactly as the single-row door resolves it — body field per
+      // field, else the HEAD row's own persisted choice, else the default adapter. The head's, and
+      // deliberately not a merge across n rows: one lane runs one agent.
+      const wh = harnessIdOf(wBody);
+      if (!wh.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
+      const wNames = (k: "harness" | "model" | "effort"): boolean => {
+        const v = wBody?.[k]; return v !== undefined && v !== null && v !== "";
+      };
+      const wRowSpawn = taskSpawnOf(wHead);
+      const wHarnessId = wNames("harness") ? wh.harness : wRowSpawn.harness;
+      const wHarness = harnessOf(wHarnessId);
+      const wModel = modelOf(wNames("model") ? wBody : { model: wRowSpawn.model }, wHarness);
+      if (!wModel.ok) return json({ error: modelErrFor(wHarness) }, 400);
+      const wEffort = effortOf(wNames("effort") ? wBody : { effort: wRowSpawn.effort }, wHarness);
+      if (!wEffort.ok) return json({ error: effortErrFor(wHarness) }, 400);
+      const wFree = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
+      if (!wFree) return json({ error: "no free slot" }, 409);
+      // captured BEFORE dispatchTask mutates anything, for the reason its own `wasStatus` is: a
+      // failed spawn must put every follower back on the status it came from, and `queued` and
+      // `pending` are not the same row to the tick.
+      const wWas = new Map(wFollowers.map((t) => [t.id, t.status] as const));
+      const wr = await dispatchTask(wHead, wFree, true, false,
+        { harness: wHarnessId, model: wModel.model, effort: wEffort.effort },
+        { followers: wFollowers, wasStatus: wWas, sharedFiles: wWave.sharedFiles, klasse: wWave.klasse });
+      if (!wr.ok) return json({ error: wr.error }, 500);
+      wr.tail.catch(() => {}); // the tail requeues the whole wave on every failure itself
+      audit("task_wave_dispatch", wr.slot,
+        `${wWave.ids.join("+")} ${wWave.klasse} saves=${wWave.savingsSec}s`
+        + (wHarnessId ? ` harness=${wHarnessId}` : ""));
+      return json({ ok: true, slot: wr.slot, branch: wr.branch, wave: wWave });
     }
     // the manual "start now" button. Independent of `dispatchOn` and NOT bound by DISPATCH_MAX_LANES —
     // the cap bounds UNATTENDED fan-out, this is an attended click; master stop / quiet hours don't bind

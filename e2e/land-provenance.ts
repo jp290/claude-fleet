@@ -353,6 +353,122 @@ export async function run(): Promise<void> {
       && docsGate.verify.ok === true && !docsGate.verify.out.includes("verify skipped:"),
       JSON.stringify(docsGate.verify));
 
+    // --- W3 · A WAVE LANDS ONCE ----------------------------------------------------------------
+    // The hard half of the ▸ start wave done-sentence (docs/queue-wellen-2026-09-06.md §5 S3): n
+    // queue rows founded into ONE lane must leave exactly ONE fleet/land note, ONE undo record and
+    // ONE audit cover behind, and all n rows must go to `done` together. Every one of those is a
+    // property of the LAND, so this is where it is measured — the door's own refusals, the N:1
+    // binding and the self-split are checked in e2e/tasks.ts, where the queue lives.
+    //
+    // The cover is measured through the note's `verify.proportional`: `recordLand` passes exactly
+    // `prov.verify?.proportional === true` to schedulePostLandAudit, and `entryRunsShortChain`
+    // reads that same field back off `covers[]`. Tier 2 is OFF in this suite by design (see the
+    // block at the end of this module), so the note is the field's authoritative reading here, and
+    // e2e/pins.ts holds the two source ends of that pass-through together.
+    //
+    // AND THE SURFACE IS NOT THE DIFF, deliberately: both rows declare AGENTS.md, the lane writes
+    // two OTHER docs files. If the gate ever classified the declared surface instead of the actual
+    // rebased diff, this land would still read docs — so the negative half lives in the mixed case
+    // above, and what this proves is that a wave changes nothing about which command is chosen.
+    {
+      const wvProposed = (await (await post("/api/programs", {
+        title: "wave land provenance", brief: "one lane, two rows, one land" })).json()) as
+        { program?: { id?: string } };
+      const wvProg = wvProposed.program?.id ?? "";
+      if (wvProg) {
+        await post(`/api/programs/${wvProg}/confirm`, {});
+        await post(`/api/programs/${wvProg}/activate`, {});
+      }
+      const wvMint = async (text: string): Promise<string> => {
+        const r = (await (await post("/api/tasks", { text, queue: false, repo: REPO, programId: wvProg })).json()) as
+          { task?: { id?: string } };
+        return r.task?.id ?? "";
+      };
+      // Both rows name AGENTS.md — tracked in the fixture repo and docs-or-prose, so the sensor
+      // classes the wave `docs`; a gate-changing path would be refused by R2 and this would then
+      // be measuring R2.
+      const wvA = await wvMint("wave land one: the first half of AGENTS.md");
+      const wvB = await wvMint("wave land two: the second half of AGENTS.md");
+      for (const id of [wvA, wvB]) await post(`/api/tasks/${id}/files`, { files: ["AGENTS.md"] });
+      check("(w3) fixture: two rows of one active Program, both with an owner-CONFIRMED surface",
+        !!wvProg && !!wvA && !!wvB, JSON.stringify({ program: wvProg, a: wvA, b: wvB }));
+
+      const wvSess = async (): Promise<{ slots: { id: number; cwd: string | null }[];
+        tasks: { id: string; status: string; note?: string | null }[];
+        undoLands?: Record<string, unknown[]> }> =>
+        (await (await get("/api/sessions")).json()) as {
+          slots: { id: number; cwd: string | null }[];
+          tasks: { id: string; status: string; note?: string | null }[];
+          undoLands?: Record<string, unknown[]> };
+      const wvUndoTotal = async (): Promise<number> =>
+        Object.values((await wvSess()).undoLands ?? {}).reduce((n, recs) => n + recs.length, 0);
+      const wvNotes = (): number => spawnSync("git", ["-C", REPO, "notes", "--ref=fleet/land", "list"])
+        .stdout.toString().split("\n").filter(Boolean).length;
+      const wvUndoBefore = await wvUndoTotal();
+      const wvNotesBefore = wvNotes();
+
+      const wvRes = await post("/api/wave/dispatch", { ids: [wvA, wvB] });
+      const wvBody = (await wvRes.json()) as { ok?: boolean; slot?: number; branch?: string; error?: string;
+        wave?: { ids: string[]; klasse: string } };
+      check("(w3) the wave started as ONE docs lane on both rows",
+        wvRes.ok && wvBody.wave?.klasse === "docs" && wvBody.wave.ids.length === 2
+        && typeof wvBody.slot === "number",
+        `${wvRes.status} ${JSON.stringify(wvBody)}`);
+      const wvSlot = wvBody.slot ?? 0;
+      const wvCwd = wvSlot ? ((await wvSess()).slots.find((x) => x.id === wvSlot)?.cwd ?? "") : "";
+      // wait for the BRIEF, not for a clock: until it is delivered the dispatch tail can still
+      // requeue the whole wave, and a land raced against that would be measuring the race.
+      let wvBriefed = false;
+      for (let i = 0; i < 120 && wvSlot; i++) {
+        const j = (await (await get("/api/prompts?limit=50&q=WELLE")).json()) as
+          { prompts: { slot?: number; text?: string }[] };
+        if (j.prompts.some((x) => x.slot === wvSlot && (x.text ?? "").includes("EIN LAND"))) { wvBriefed = true; break; }
+        await Bun.sleep(250);
+      }
+      check("(w3) fixture: the wave brief reached the lane before anything was committed into it",
+        wvBriefed && !!wvCwd, `briefed=${wvBriefed} cwd=${wvCwd || "none"}`);
+
+      if (wvCwd && wvBriefed) {
+        // ONE COMMIT PER ROW — the brief's own first rule, and the thing that buys a red audit its
+        // bisect back. Two DOCS files, neither of them the declared surface.
+        for (const [n, id] of (wvBody.wave?.ids ?? []).entries()) {
+          await Bun.write(`${wvCwd}/docs/wave-land-${n + 1}.md`, `wave row ${id}\n`);
+          spawnSync("git", ["-C", wvCwd, "add", `docs/wave-land-${n + 1}.md`]);
+          spawnSync("git", ["-C", wvCwd, "commit", "-qm", `docs(wave): ${id}`]);
+        }
+        const wvMainBefore = headOf(REPO, "main");
+        await landClean(wvSlot);
+        const wvMainAfter = headOf(REPO, "main");
+        const wvNote = readNote(REPO, wvMainAfter);
+        const wvVerify = wvNote.json?.verify as VerifyField | undefined;
+        check("(w3) LAND: the wave lane landed — main moved to the lane tip",
+          wvMainBefore !== wvMainAfter && (await get(`/api/slots/${wvSlot}/merge`)).status === 400,
+          `${wvMainBefore.slice(0, 8)} → ${wvMainAfter.slice(0, 8)}`);
+        check("(w3) ONE fleet/land note for the whole wave — not one per row",
+          wvNotes() === wvNotesBefore + 1 && wvNote.ok,
+          `${wvNotesBefore} → ${wvNotes()} note(s), note readable=${wvNote.ok}`);
+        check("(w3) ONE undo-land record for the whole wave — the wave costs the undo stack what one land costs it",
+          (await wvUndoTotal()) === wvUndoBefore + 1,
+          `${wvUndoBefore} → ${await wvUndoTotal()} record(s)`);
+        // …and the field the audit cover is built from. `proportional` is true because the ACTUAL
+        // diff is docs-only, which is also true of every row in this wave — the two coincide here,
+        // and the mixed/code cases above are what prove the gate reads the diff and not the class.
+        check("(w3) the land note's verify is the SHORT chain — an all-docs wave buys the audit cover its proportional",
+          wvVerify?.proportional === true && wvVerify.ok === true
+          && JSON.stringify(wvVerify.steps) === JSON.stringify(["install", "pins"]),
+          JSON.stringify(wvVerify ?? null));
+        const wvRows = (await wvSess()).tasks;
+        const wvDoneA = wvRows.find((t) => t.id === wvA);
+        const wvDoneB = wvRows.find((t) => t.id === wvB);
+        check("(w3) ALL n rows go to `done` on the one land, both naming the branch that landed them",
+          wvDoneA?.status === "done" && wvDoneB?.status === "done"
+          && (wvDoneA.note ?? "").includes(wvBody.branch ?? "\u0000")
+          && (wvDoneB.note ?? "").includes(wvBody.branch ?? "\u0000"),
+          JSON.stringify({ a: wvDoneA, b: wvDoneB, branch: wvBody.branch }));
+      }
+      for (const id of [wvA, wvB]) await post(`/api/tasks/${id}/delete`, {});
+    }
+
     // --- A DOCS-ONLY CANDIDATE IN A REPO THAT IS NOT THIS ONE -----------------------------------
     // Docs-only is a property of the DIFF; being verifiable by `bun e2e/pins.ts` is a property of
     // the REPO, and until 2026-08-26 `proportional` asked only the first. So any repo whose

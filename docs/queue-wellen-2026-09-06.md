@@ -279,6 +279,39 @@ n Queue-Zeilen gehen gemeinsam auf `done`; ein Abbruch lässt alle n auf `queued
 *Verify:* Check im Land-/Merge-Pfad (`e2e/land-durability.ts` + `e2e/tasks.ts`), plus
 `./e2e-clean-review.sh` und `./e2e-isolated.sh` als Vorschau, weil dieser Schnitt den Land-Pfad
 berührt (Regelbuch, Lane discipline); `bun e2e/pins.ts` grün.
+*Gebaut* 2026-09-07 in der Lane `fleet/260907140524-b010` (die Landing-Sha setzt die MAIN nach dem
+Land ein — eine Lane kann ihre eigene nicht kennen). Was davon abweicht, wie es hier steht:
+
+* **Die N:1-Bindung brauchte kein neues Feld.** `t.slot` war der Kante schon: `landLane` und
+  `detachSlotTasks` schleifen beide über `t.slot === s.id`, seit lange vor diesem Schnitt. Also
+  markiert EIN Land ohne Zutun alle n Zeilen `done` und EIN Abbruch gibt ohne Zutun alle n zurück.
+  `s.taskId` behält seine alte Bedeutung unverändert — die Zeile, die die Lane GEGRÜNDET hat, und
+  die, an die jede Provenienz bindet. Ein zweites Feld auf dem Slot wäre ein zweiter Datensatz
+  derselben Kante gewesen, und zwei kommen über einen Restart auseinander.
+* **Der Knopf entscheidet nichts selbst.** `POST /api/wave/dispatch` fragt den Sensor
+  (`server.ts#landWaveProjectionNow` über `projectLandWaves`) und verlangt eine EXAKTE Mengengleichheit
+  mit einer projizierten Welle. Eine Teilmenge einer projizierten Dreier-Welle wird abgelehnt: das
+  wäre der Knopf, der sich eine Welle ausdenkt. R1, R2, R3 und die Program-Grenze stehen damit
+  weiterhin an genau einer Stelle.
+* **Der Abbruch lässt alle n auf `pending`, nicht auf `queued`** — hier weicht der Bau vom
+  Done-Satz oben ab, und zwar bewusst. `detachSlotTasks` schreibt seit jeher `pending` mit der
+  Begründung „back to owner review, NOT auto-queued — the abort was deliberate", und `queued` würde
+  den Tick die Zeilen sofort neu dispatchen lassen: eine Lane, die zweimal am selben Punkt stirbt,
+  liefe endlos. Was der Done-Satz wirklich verlangt — dass ein Abbruch alle n GEMEINSAM zurückgibt
+  und keine halb erledigt stehen lässt — hält der Bau. Der SPLIT dagegen schreibt `queued`, und das
+  ist dort richtig: diese Zeilen waren freigegeben, die Lane sagt nur, dass sie nicht in dieses
+  Bündel gehören.
+* **`proportional` fällt automatisch richtig**, weil eine Welle EIN Land ist: `verifyPlanFor`
+  klassifiziert den tatsächlichen rebasten Diff. Alle n docs ⇒ Docs-Diff ⇒ kurze Kette; eine
+  Code-Zeile darin ⇒ voller Diff ⇒ volle Kette. Es gibt keine Stelle, an der eine deklarierte
+  Fläche das Kommando wählt.
+* **Ein Commit je Zeile** steht als Regel 1 im Wellen-Brief (`wave-brief.ts`). Das ist der Preis,
+  den die Welle für ihre Ersparnis zahlt, zurückgekauft: n getrennte Lands hätten dem Leser eines
+  roten Stufe-2-Audits den Bisect geschenkt.
+* **`LAND_WAVE_MAX_DEFAULT` ist nicht an `UNDO_STACK_MAX` gekoppelt**, und das steht jetzt
+  ausdrücklich am Konstanten-Kommentar plus als Pin: eine Welle von n ist EIN Land mit EINEM
+  undo-Record, die Zahl 3 ist das Bisect-Budget eines Lesers, und die Übereinstimmung war Zufall.
+
 *Schnittlinie:* Hier hört die Liste auf. Eine automatische Wellenbildung im Tick, eine
 Prioritätsspalte in der Queue und ein Bisect-Assistent für rote Wellen-Audits sind erkennbar
 nächste Schritte — sie stehen bewusst NICHT auf dieser Liste, weil keiner von ihnen ohne die

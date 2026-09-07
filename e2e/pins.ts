@@ -2150,17 +2150,73 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     relRouteBody.length > 0 ? "no body read" : "release route missing");
   // THE TRANSITION HAS ONE WRITER, and the rule is stated in both directions: every release goes
   // through releaseTask (so `by` cannot be forgotten), and the direct writes of "queued" stay the
-  // helper's own line plus the two documented restores that are deliberately NOT releases — the
-  // requeue after a failed post-spawn gate and the boot reconcile of an orphaned `sent` row.
+  // helper's own line plus the documented restores that are deliberately NOT releases:
+  //   1. the requeue after a failed post-spawn gate (briefAndSend#requeue, the HEAD of the lane);
+  //   2. the boot reconcile of an orphaned `sent` row;
+  //   3. the same requeue applied to a wave's FOLLOWERS — one restore, n rows, and it is written
+  //      out rather than folded into (1) because the head and the followers are separate objects;
+  //   4. W3's self-split: a wave lane hands back the rows the bundling surface did not reach.
+  // (3) and (4) are restores for the same reason (1) is: these rows WERE released, the lane simply
+  // is not the place they get done, so `pending` — the abort's answer — would withdraw a release
+  // nobody withdrew.
   const releaseCalls = [...server.matchAll(/(?<!function )releaseTask\(([^)]*)\)/g)].map((m) => m[1].trim());
   pin("releaseTask has exactly the two known call sites — the owner's ▸ queue and the Program-MAIN door",
     releaseCalls.length === 2 && releaseCalls.includes('t, "owner"') && releaseCalls.includes('t, "machine"'),
     releaseCalls.join(" | ") || "no releaseTask call");
   const queuedWrites = (server.match(/\bstatus = "queued";/g) ?? []).length;
-  pin("\"queued\" is written by releaseTask plus exactly the two documented non-release restores",
-    queuedWrites === 3
+  pin("\"queued\" is written by releaseTask plus exactly the documented non-release restores",
+    queuedWrites === 5
       && /function releaseTask\(t: Task, by: "owner" \| "machine"\): void \{\n  t\.status = "queued";/.test(server),
     `${queuedWrites} direct writes of status = "queued"`);
+  // W3 · ▸ START WAVE. Two pairs whose other side is not TypeScript.
+  //
+  // (1) THE BRIEF IS EXECUTABLE BYTES. wave-brief.ts hands a lane a curl line for the self-split
+  // door; if that path is ever renamed on the server side, tsc sees a string on one side and a
+  // string on the other and says nothing — the lane finds out by getting a 404 at the moment it
+  // has already decided a row does not belong in its wave. Same class as LANE_EXIT_FOOTER quoting
+  // the fleet-report statuses, and stated as a rule over EVERY route the brief quotes rather than
+  // as a list of the one it quotes today.
+  const waveBrief = ((): string | null => { try { return read("wave-brief.ts"); } catch { return null; } })();
+  if (waveBrief === null) {
+    skip("every /api/self route the wave brief quotes is registered in server.ts", "wave-brief.ts is not in this tree");
+  } else {
+    const quoted = [...new Set([...waveBrief.matchAll(/\/api\/self\/[a-z0-9/-]+/g)].map((m) => m[0]))];
+    const unregistered = quoted.filter((route) => !server.includes(`"${route}"`));
+    pin("every /api/self route the wave brief quotes is registered in server.ts",
+      quoted.length > 0 && unregistered.length === 0,
+      quoted.length === 0 ? "the brief quotes no self route — the split door went missing from it"
+        : `${quoted.length} quoted: ${quoted.join(", ")}${unregistered.length ? ` · UNREGISTERED: ${unregistered.join(", ")}` : ""}`);
+  }
+  // (2) THE WAVE CAP AND THE UNDO DEPTH ARE INDEPENDENT, and the owner's W3 ask is that this be
+  // NAMED rather than left to coincide at 3 — a future hand that raises one of them must not be
+  // able to believe it has said something about the other. Both halves: the door bounds on the
+  // IDENTIFIER, so there is one definition and no literal to drift from it, and the constant's own
+  // comment carries the disclaimer, so raising it means reading why the number is what it is.
+  const landWaves = ((): string | null => { try { return read("task-land-waves.ts"); } catch { return null; } })();
+  const capDoorAt = server.indexOf('url.pathname === "/api/wave/dispatch"');
+  const capDoor = capDoorAt < 0 ? "" : server.slice(capDoorAt, capDoorAt + 4000);
+  pin("the wave cap has ONE definition, and it says in writing that it is not UNDO_STACK_MAX",
+    landWaves !== null && capDoorAt > 0
+      && /wIds\.length > LAND_WAVE_MAX_DEFAULT/.test(capDoor)
+      && !/wIds\.length > \d/.test(capDoor)
+      && /IT IS NOT COUPLED TO UNDO_STACK_MAX/.test(landWaves ?? "")
+      && /export const LAND_WAVE_MAX_DEFAULT/.test(landWaves ?? ""),
+    `door=${capDoorAt > 0} identifier=${/wIds\.length > LAND_WAVE_MAX_DEFAULT/.test(capDoor)} disclaimer=${/IT IS NOT COUPLED TO UNDO_STACK_MAX/.test(landWaves ?? "")}`);
+
+  // (3) THE AUDIT COVER'S `proportional` IS THE GATE'S OWN, and the whole pass-through is source-
+  // only: recordLand hands `prov.verify?.proportional === true` to schedulePostLandAudit, that
+  // becomes a cover field, and entryRunsShortChain reads it back with an `every`. A wave lands ONCE
+  // and therefore mints ONE cover, so "proportional exactly when all n rows were docs" reduces to
+  // "the gate classified the one rebased diff" — but only while these three ends agree, and no
+  // suite can watch them together (tier 2 is OFF where the lands are, and the tier-2 harness lands
+  // nothing docs-shaped). Both directions: the `every` is what makes ONE non-proportional cover
+  // buy the whole coalesced entry the full chain, and dropping it would silently let a mixed burst
+  // run short.
+  pin("the post-land cover's `proportional` is the land gate's own verdict, and one non-proportional cover buys the full chain",
+    /schedulePostLandAudit\(repo, main, branch, mainAfter, prov\.verify\?\.proportional === true\)/.test(server)
+      && /covers\.length > 0 && covers\.every\(\(c\) => c\.proportional === true\) && repoRunsShortChain\(repo\)/.test(server),
+    `schedule=${/schedulePostLandAudit\(repo, main, branch, mainAfter, prov\.verify\?\.proportional === true\)/.test(server)} every=${/covers\.every\(\(c\) => c\.proportional === true\)/.test(server)}`);
+
   // ACP-23 · THE FILING DOOR, and it gets rules over the SOURCE for the same reason its release
   // neighbour has three: not one of them is visible at runtime on a green fleet. A handler that
   // read `programId` off the request would answer happily on every request that happens not to

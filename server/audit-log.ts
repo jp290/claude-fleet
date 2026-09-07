@@ -46,6 +46,16 @@ type AuditEvent =
   // owner's own body or from a named proposal, and — decisively — which of them the target repo
   // does not track: that finding never gates, so the ledger is where "he could see it" is recorded.
   | "task_files_propose" | "task_files_confirm" | "task_files_dismiss"
+  // W3 · ▸ start wave — n queue rows founded into ONE lane that will land ONCE. Its own event and
+  // not a task_dispatch per row, because the fact being recorded is the BUNDLE: the detail names
+  // every id in the sensor's fixed order, the class the gate will run, and the seconds the avoided
+  // lands were priced at, so a later reader of a red post-land audit can see which rows shared it.
+  | "task_wave_dispatch"
+  // ...and the lane's own answer to it: k of n kept, n-k handed back to `queued` with the lane's
+  // reason. Recorded separately from every abort, because a split is a JUDGEMENT about the surface
+  // the wave was bundled on — the one piece of evidence that says the bundling criterion did not
+  // reach, and the only place the returned rows' reason survives the note being overwritten.
+  | "task_wave_split"
   | "owner_auth_fail"
   | "intake_auth_fail" | "intake_auth_lock"
   | "self_heal_recreate"

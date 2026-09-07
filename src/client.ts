@@ -15,7 +15,10 @@ import {
   type ProjectedWaveTask, type TaskWaveProjection, type TaskWaveRunningBlock, type TaskWaveUnresolved,
 } from "../task-waves";
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09,
-  type LandWaveCosts, type LandWaveProjection } from "../task-land-waves";
+  type LandWave, type LandWaveCosts, type LandWaveProjection } from "../task-land-waves";
+// the same first-sentence reduction the dispatched notes block renders with — imported rather than
+// re-spelled so the wave evidence and the brief's note lines cut a row at the same place
+import { noteFirstSentence } from "../task-notes";
 import { classifyAnalystOffWarning } from "../task-analysis-warning";
 // everything this file and server.ts must say identically — see src/protocol.ts. Importing rather
 // than re-declaring is what makes tsc, which gates every land, the thing that notices a drift.
@@ -7210,6 +7213,12 @@ function qWaveProjection(): TaskWaveProjection {
 // read, so the CLI check the MAIN runs after a land prices a wave exactly as this list showed it.
 const Q_LAND_WAVE_COSTS: LandWaveCosts = LAND_WAVE_COSTS_2026_09;
 
+// WHICH WAVE THE OWNER HAS ACKNOWLEDGED THE CAVEAT FOR, keyed by its id set. Per wave and not a
+// single flag: the caveat is about THESE rows belonging together, so acknowledging one wave must
+// never arm the button on the next. Cleared with the queue pane, like qRawAck beside it.
+let qWaveAck: string | null = null;
+const qWaveKey = (ids: readonly string[]): string => ids.join("+");
+
 // The LANDE fold of the same facts: which rows could land TOGETHER (task-land-waves.ts), beside
 // the parallel fold above. Read-only — there is no button here and no dispatch reads it.
 function qLandWaveProjection(): LandWaveProjection {
@@ -7221,6 +7230,68 @@ function qLandWaveProjection(): LandWaveProjection {
     dispatchRepo: dispatch.repo,
     costs: Q_LAND_WAVE_COSTS,
   });
+}
+
+// ▸ START WAVE (W3) — the evidence, the caveat and the button, in that order, appended to the
+// sensor line of a wave with n>1.
+//
+// WHAT IT SHOWS THE OWNER, and why exactly this. A wave stands on TWO STRUCTURAL criteria — the
+// same Program and a confirmed, overlapping file surface — and Program eec69528's objection to
+// that pairing is correct as far as it goes: neither criterion says anything about the rows having
+// a common CAUSE. The owner decided programId as the second criterion, so the resolution is not to
+// add a third one here but to put the whole basis of the bundle in front of him before he commits
+// n rows to one lane: every row's first sentence, the files at least two of them actually share,
+// the class the gate will run, and the seconds the avoided lands are priced at. The caveat line
+// then says in as many words what nothing in this projection checked, and the checkbox makes
+// acknowledging it a deliberate act rather than a hover title nobody on a phone ever sees.
+function qLandWaveStart(line: HTMLElement, wave: LandWave): void {
+  const key = qWaveKey(wave.ids);
+  const ev = el("div", "qwaveev");
+  for (const id of wave.ids) {
+    // The TEXT rides GET /api/tasks, never the 2 s poll — so a row whose text has not arrived yet
+    // is shown as the absence it is, and the list repaints when it does (`taskText.has` is already
+    // in this view's render key). Inventing an empty line would read as an empty request.
+    const text = qTaskText(id);
+    ev.appendChild(el("div", "", `${id} — ${text ? noteFirstSentence(text, 160) : "(Text noch nicht geladen)"}`));
+  }
+  ev.appendChild(el("div", "qwaveevf", wave.sharedFiles.length
+    ? `gemeinsame Dateien: ${wave.sharedFiles.join(", ")}`
+    : "keine Datei wird von zwei dieser Zeilen genannt"));
+  line.appendChild(ev);
+
+  const ack = el("label", "qrawack");
+  const box = el("input", "") as HTMLInputElement;
+  box.type = "checkbox";
+  box.checked = qWaveAck === key;
+  box.onchange = () => { qWaveAck = box.checked ? key : null; renderQueue(); };
+  ack.appendChild(box);
+  ack.appendChild(el("span", "", "was hier NICHT geprüft wurde: dass diese Aufträge inhaltlich"
+    + " zusammengehören. Gebündelt wird auf Program und bestätigter Datei-Fläche — beides"
+    + " strukturell. Der Gewinn ist EIN Gate und EIN Audit statt " + wave.ids.length + ";"
+    + " der Preis ist, dass ein rotes Stufe-2-Audit über alle " + wave.ids.length
+    + " Zeilen von Hand zuzuordnen ist."));
+  line.appendChild(ack);
+
+  const b = el("button", "shrbtn", "▸ start wave") as HTMLButtonElement;
+  b.disabled = qWaveAck !== key;
+  b.title = b.disabled
+    ? "acknowledge the line above first — the bundle is structural, and only you can judge whether these rows belong together"
+    : `opens ONE lane on ${wave.ids.length} rows; it commits one commit per row and lands once`;
+  b.onclick = () => void qStartWave(wave);
+  line.appendChild(b);
+}
+
+async function qStartWave(wave: LandWave): Promise<void> {
+  const r = await post("/api/wave/dispatch", { ids: wave.ids });
+  if (!r.ok) {
+    // the server's own sentence, never a generic failure: "these rows are not one of the sensor's
+    // land waves right now" is the one refusal a stale board actually produces, and it names why
+    const j = (await r.json().catch(() => null)) as { error?: string } | null;
+    toast(j?.error ?? "couldn't start the wave");
+    return;
+  }
+  qWaveAck = null;
+  await refresh();
 }
 
 function qWaveProjectionKey(): string {
@@ -8703,6 +8774,10 @@ function renderQueue() {
   const now = Date.now();
   const key = JSON.stringify([qView, qPick, qQuery, qProgDone, dispatch.on, dispatch.available, intakeOn,
     Math.floor(now / 60000), qView === "waves" ? qWaveProjectionKey() : null,
+    // the wave caveat's acknowledgment is a RENDER INPUT of this list, unlike qRawAck which lives
+    // in the detail pane: without it here the checkbox flips, renderQueue is called, the key has
+    // not moved, and the early return below leaves the button it unlocks disabled.
+    qView === "waves" ? qWaveAck : null,
     // the lane line is derived from the slots too — a lane going idle or dirty moves no task field
     qLaneKey(laneJoins),
     // the MARK is derived from the slots, so it moves without any program field moving. Leaving
@@ -8913,10 +8988,14 @@ function renderQueue() {
       }
     }
     // THE OTHER FOLD, beneath the parallel one. A land wave is a statement about a SET of rows, so
-    // it renders as ONE line per wave and never as task rows — and it stays a sensor: no button,
-    // no dispatch, nothing on the server reads it. qWaveProjectionKey already covers every fact it
-    // consumes (id/repo/kind/status/created/files/filesOrigin/programId and dispatch.repo), so this
-    // list repaints with the view instead of under the cursor.
+    // it renders as ONE line per wave and never as task rows. qWaveProjectionKey already covers
+    // every fact it consumes (id/repo/kind/status/created/files/filesOrigin/programId and
+    // dispatch.repo), so this list repaints with the view instead of under the cursor.
+    //
+    // A wave of ONE stays exactly the sensor line it has always been — no button, no evidence, no
+    // acknowledgment — because there is nothing to bundle and the reason against it is the whole
+    // message. A wave of n>1 grows the ▸ start wave button of W3, and with it the evidence the
+    // owner is deciding on.
     const land = qLandWaveProjection();
     const landWaves = land.repos.flatMap((repo) => repo.waves
       .filter((wave) => wave.ids.some((id) => visibleIds.has(id)))
@@ -8932,8 +9011,10 @@ function renderQueue() {
         // A bundlable row that simply found no partner has no reason AGAINST it — say that, rather
         // than borrowing one of the three verdicts it did not earn.
         const reason = wave.reasonAgainst ?? (wave.ids.length > 1 ? "bündelbar" : "kein Partner");
-        shell.list.appendChild(el("div", "qwavehint qwaveland",
-          `${baseName(repo)} · ${wave.ids.join(" + ")} · ${wave.klasse} · ${wave.savingsSec}s · ${reason}`));
+        const line = el("div", "qwavehint qwaveland",
+          `${baseName(repo)} · ${wave.ids.join(" + ")} · ${wave.klasse} · ${wave.savingsSec}s · ${reason}`);
+        if (wave.ids.length > 1) qLandWaveStart(line, wave);
+        shell.list.appendChild(line);
         visibleRows++;
       }
     }
@@ -8962,6 +9043,7 @@ function openQueue() {
   qBriefDraft = null;
   qCriterionDraft = null;
   qRawAck = null;
+  qWaveAck = null;
   qSpawnPick.clear(); qSpawnUi = null;
   qBsFor = null; qBsCwd = null; qBsLabel = null; qBsErr = null; qBsBusy = false; qBsSeq++;
   qBsHarness = null; qBsModel = ""; qBsEffort = "";
@@ -8983,7 +9065,7 @@ function openQueue() {
     onSelect: (row) => { if (qRowId.has(row.el)) qSelect(qRowId.get(row.el) ?? null); },
     onClose: () => {
       qShell = null; qCompose = null; qRepoIn = null; qProgSel = null; qCmBox = null; qCmFor = null;
-      qBriefDraft = null; qCriterionDraft = null; qRawAck = null; qRowId = new Map();
+      qBriefDraft = null; qCriterionDraft = null; qRawAck = null; qWaveAck = null; qRowId = new Map();
       qSpawnPick.clear(); qSpawnUi = null;
       qBsFor = null; qBsCwd = null; qBsLabel = null; qBsErr = null; qBsBusy = false; qBsSeq++;
     },

@@ -7205,7 +7205,7 @@ function qLandWaveProjection(): LandWaveProjection {
   return projectLandWaves({
     tasks: tasksList.map((t) => ({
       id: t.id, repo: t.repo, kind: t.kind, status: t.status, created: t.created,
-      files: t.files, filesOrigin: t.filesOrigin,
+      files: t.files, filesOrigin: t.filesOrigin, programId: t.programId,
     })),
     dispatchRepo: dispatch.repo,
     costs: Q_LAND_WAVE_COSTS,
@@ -7218,7 +7218,7 @@ function qWaveProjectionKey(): string {
     fleet.filter((s) => s.cwd && s.worktree).map((s) => s.worktree!.branch).sort(),
     tasksList.map((t) => {
       const analysis = qWaveAnalysis(t);
-      return [t.id, t.repo, t.kind, t.status, t.created, t.files, t.filesOrigin,
+      return [t.id, t.repo, t.kind, t.status, t.created, t.files, t.filesOrigin, t.programId,
         t.analysis?.verdict, t.analysis?.at, t.analysis?.stale, analysis?.collides];
     }),
   ]);
@@ -8867,8 +8867,8 @@ function renderQueue() {
     // THE OTHER FOLD, beneath the parallel one. A land wave is a statement about a SET of rows, so
     // it renders as ONE line per wave and never as task rows — and it stays a sensor: no button,
     // no dispatch, nothing on the server reads it. qWaveProjectionKey already covers every fact it
-    // consumes (id/repo/kind/status/created/files/filesOrigin and dispatch.repo), so this list
-    // repaints with the view instead of under the cursor.
+    // consumes (id/repo/kind/status/created/files/filesOrigin/programId and dispatch.repo), so this
+    // list repaints with the view instead of under the cursor.
     const land = qLandWaveProjection();
     const landWaves = land.repos.flatMap((repo) => repo.waves
       .filter((wave) => wave.ids.some((id) => visibleIds.has(id)))
@@ -8876,8 +8876,9 @@ function renderQueue() {
     if (landWaves.length) {
       addSection("Lande-Wellen", landWaves.length,
         "Which rows could land TOGETHER in one lane: connected components over CONFIRMED file"
-        + ` surfaces, class-pure, at most ${land.maxWave} rows. The saving is median seconds per`
-        + " avoided land (gate + post-land audit); a wave of one names the reason against bundling.",
+        + " surfaces, class-pure and INSIDE ONE PROGRAM (files alone fold almost every row into one"
+        + ` clump), at most ${land.maxWave} rows. The saving is median seconds per avoided land`
+        + " (gate + post-land audit); a wave of one names the reason against bundling.",
         true);
       for (const { repo, wave } of landWaves) {
         // A bundlable row that simply found no partner has no reason AGAINST it — say that, rather

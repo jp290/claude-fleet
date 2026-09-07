@@ -42,6 +42,10 @@ export interface TaskWaveInput {
   created: number;
   files?: readonly string[];
   filesOrigin?: TaskWaveFilesOrigin;
+  // Read by the LAND fold only (task-land-waves.ts), where it is the second bundling criterion
+  // beside the file surface. The parallel projection below ignores it: two rows of different
+  // programs that touch the same file still collide.
+  programId?: string;
   analysis?: TaskWaveAnalysisInput;
 }
 

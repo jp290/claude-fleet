@@ -2,9 +2,15 @@
 //
 // `task-waves.ts` asks which rows may run at the SAME TIME in separate lanes: independent sets over
 // shared files. This module asks the opposite, which rows may LAND TOGETHER in one lane: connected
-// components over shared files, cut by the three rules of docs/queue-wellen-2026-09-06.md §2 (R1
-// class purity · R2 a gate changer lands alone · R3 only a CONFIRMED surface may be bundled). A
-// sensor, not a motor: nothing here dispatches, lands or writes.
+// components over shared files INSIDE ONE PROGRAM, cut by the three rules of
+// docs/queue-wellen-2026-09-06.md §2 (R1 class purity · R2 a gate changer lands alone · R3 only a
+// CONFIRMED surface may be bundled). A sensor, not a motor: nothing here dispatches, lands or writes.
+//
+// The program is the SECOND criterion beside the surface, and it is what keeps the fold from
+// collapsing: over the 31 open auftrag rows measured for docs/queue-wellen-2026-09-06.md §2 R3,
+// server.ts stood in 27 surfaces and file overlap alone folded 30 of the 31 into ONE component.
+// Files are a necessary bundling criterion, not a sufficient one — a confirmed but COARSE surface
+// produces the same clump a derived one does.
 //
 // Browser-safe like its sibling, and deliberately so — src/client.ts imports it. The CLI at the
 // bottom reaches the filesystem and the metadata derivation through Bun globals inside
@@ -15,7 +21,8 @@ import type { TaskWaveInput } from "./task-waves";
 export type LandWaveClass = "docs" | "code";
 // Every reason a row is alone in its wave. `null` is the fourth case and means the opposite of a
 // verdict: the row IS bundlable and found no partner (or the cap cut it off) — not "reason unknown".
-export type LandWaveReasonAgainst = "gate-aenderer" | "flaeche-nur-abgeleitet" | "keine-flaeche";
+export type LandWaveReasonAgainst =
+  "gate-aenderer" | "flaeche-nur-abgeleitet" | "kein-program" | "keine-flaeche";
 
 export interface LandWaveCosts {
   fullGateSec: number; docsGateSec: number; fullAuditSec: number; docsAuditSec: number;
@@ -61,7 +68,7 @@ export const LAND_WAVE_COSTS_2026_09: LandWaveCosts = {
 };
 
 interface ClassifiedRow {
-  id: string; created: number; files: string[];
+  id: string; created: number; files: string[]; programId: string | null;
   klasse: LandWaveClass; reasonAgainst: LandWaveReasonAgainst | null;
 }
 
@@ -71,6 +78,7 @@ const rowOrder = (a: { created: number; id: string }, b: { created: number; id: 
 
 function classify(task: TaskWaveInput): ClassifiedRow {
   const files = [...new Set(task.files ?? [])].sort(textOrder);
+  const programId = task.programId?.trim() || null;
   const proportion = verificationProportionFor(files);
   // An unknown surface is priced as CODE, not as docs: `verificationProportionFor([])` reports
   // `proportional:false` for exactly that reason, and the wave must never buy the short chain on
@@ -80,15 +88,19 @@ function classify(task: TaskWaveInput): ClassifiedRow {
   // fleet.json named 28 of 31 rows "gate-aenderer": a reason must stand on a fact one HAS, and
   // calling a DERIVED surface a gate changer is a statement about the row's prose, not about the
   // gate. "keine-flaeche" stays first — no surface at all outranks both.
+  // "kein-program" (2026-09-07) slots in beneath it and leaves the order of the three older reasons
+  // untouched: it is the second ABSENCE, and a row without a program cannot be bundled at all — so
+  // "its surface is only derived" would answer a question that no longer decides anything.
   const reasonAgainst: LandWaveReasonAgainst | null =
     !files.length ? "keine-flaeche"
-      : task.filesOrigin !== "confirmed" ? "flaeche-nur-abgeleitet"
-        : proportion.isolatedPreview === true ? "gate-aenderer"
-          : null;
-  return { id: task.id, created: task.created, files, klasse, reasonAgainst };
+      : !programId ? "kein-program"
+        : task.filesOrigin !== "confirmed" ? "flaeche-nur-abgeleitet"
+          : proportion.isolatedPreview === true ? "gate-aenderer"
+            : null;
+  return { id: task.id, created: task.created, files, programId, klasse, reasonAgainst };
 }
 
-/** Connected components over shared files, in first-appearance (created, id) order. */
+/** Connected components over shared files within one bucket, in first-appearance (created, id) order. */
 function componentsOf(rows: readonly ClassifiedRow[]): ClassifiedRow[][] {
   const parent = rows.map((_, i) => i);
   const find = (i: number): number => {
@@ -136,11 +148,23 @@ function waveOf(members: readonly ClassifiedRow[], costs: LandWaveCosts): LandWa
 function wavesFor(rows: readonly ClassifiedRow[], maxWave: number, costs: LandWaveCosts): LandWave[] {
   const built: { key: ClassifiedRow; wave: LandWave }[] = [];
   for (const row of rows) if (row.reasonAgainst !== null) built.push({ key: row, wave: waveOf([row], costs) });
-  // R1 is enforced by CONSTRUCTION, not by a later filter: components are computed inside a single
-  // class bucket, so a docs row and a code row sharing a file can never end up in one wave.
+  // R1 and the program boundary are both enforced by CONSTRUCTION, not by a later filter:
+  // components are computed inside a single (class, program) bucket, so neither a docs row and a
+  // code row nor two rows of different programs can end up in one wave however far their files
+  // overlap.
   for (const klasse of ["docs", "code"] as const) {
-    const bundlable = rows.filter((row) => row.reasonAgainst === null && row.klasse === klasse);
-    for (const component of componentsOf(bundlable))
+    const byProgram = new Map<string, ClassifiedRow[]>();
+    for (const row of rows) {
+      if (row.reasonAgainst !== null || row.klasse !== klasse) continue;
+      // A null program is already spoken for by "kein-program" above; this reads the field rather
+      // than asserting it, so the bucket key can never become an empty stand-in.
+      const program = row.programId;
+      if (program === null) continue;
+      const group = byProgram.get(program) ?? [];
+      group.push(row);
+      byProgram.set(program, group);
+    }
+    for (const bundlable of byProgram.values()) for (const component of componentsOf(bundlable))
       for (let at = 0; at < component.length; at += maxWave) {
         const members = component.slice(at, at + maxWave);
         built.push({ key: members[0], wave: waveOf(members, costs) });
@@ -190,7 +214,9 @@ const argAfter = (name: string): string | null => {
   return typeof value === "string" ? value : null;
 };
 
-interface StateTask { id?: unknown; kind?: unknown; status?: unknown; created?: unknown; repo?: unknown }
+interface StateTask {
+  id?: unknown; kind?: unknown; status?: unknown; created?: unknown; repo?: unknown; programId?: unknown;
+}
 
 async function cli(): Promise<void> {
   const statePath = argAfter("--state");
@@ -223,6 +249,7 @@ async function cli(): Promise<void> {
       status: typeof task.status === "string" ? task.status : "",
       created: typeof task.created === "number" ? task.created : 0,
       ...(typeof task.repo === "string" && task.repo ? { repo: task.repo } : {}),
+      ...(typeof task.programId === "string" && task.programId ? { programId: task.programId } : {}),
       ...(derived?.files ? { files: derived.files } : {}),
       ...(derived?.filesOrigin ? { filesOrigin: derived.filesOrigin } : {}),
     });

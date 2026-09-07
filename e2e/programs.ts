@@ -8097,7 +8097,9 @@ exit 0
       return { row, slot: lane.slot, fired, reached, intruder };
     };
     type FfrVerdict = { status?: string; landed?: boolean; errorReason?: string; detail?: string;
-      ffRounds?: number; verify?: { ok?: boolean | null; mainSha?: string } };
+      ffRounds?: number;
+      verify?: { ok?: boolean | null; mainSha?: string; waitedOut?: true; timedOut?: true;
+        ms?: number; waitMs?: number } };
     const ffrSettled = async (slot: number | null, ms = 120_000): Promise<FfrVerdict | null> => {
       const deadline = Date.now() + ms;
       for (;;) {
@@ -8192,10 +8194,18 @@ exit 0
         && ffrANoteJson.verify?.mainSha === ffrA.intruder
         && (ffrANoteJson.verify?.out ?? "").includes("run 2"),
       JSON.stringify({ note: ffrANoteJson, intruder: ffrA.intruder.slice(0, 8) }));
-    check("(iii) the retry round runs inside a hold the server already owns: the lock names the live server while the round is in flight, and its gate was handed that hold instead of queueing for one",
+    // M1 (2026-09-06) MOVED THE FIRST HALF OF THIS. Until then run 1 — the FIRST gate — queued for
+    // the mutex itself (`heldBy=none`) and only the retry round inherited a hold; the queue in
+    // front of that first gate was 79 % of the whole land wall clock. Now the clean path takes the
+    // mutex BEFORE the first gate, so BOTH runs are handed the same hold. That both runs name the
+    // live server, and that run 2 happened at all, is also how "taken once, not twice" is proved:
+    // holdSuiteLock refuses a second take in the same process, so a re-take would have come back
+    // false, set ffLockDenied and cancelled the retry — there would be no run 2 to read.
+    check("(iii) BOTH gates of the chain run inside one hold the server owns: the lock names the live server while the retry round is in flight, and neither the first gate nor the retry queued for it",
       ffrParked && ffrHeldPid === String(ffrSrvPid) && ffrAlive(ffrHeldPid) && ffrHeldBirth !== ""
         && ffrRunsDuring.length === 2
-        && ffrRunsDuring[0]?.heldBy === "none"
+        && ffrRunsDuring[0]?.heldBy === String(ffrSrvPid)
+        && ffrRunsDuring[0]?.lockpid === String(ffrSrvPid)
         && ffrRunsDuring[1]?.heldBy === String(ffrSrvPid)
         && ffrRunsDuring[1]?.lockpid === String(ffrSrvPid),
       JSON.stringify({ parked: ffrParked, lockPid: ffrHeldPid, srvPid: ffrSrvPid,
@@ -8222,6 +8232,10 @@ exit 0
     // would park this machine for good, and a pid-LESS lock dir is by contract never reaped at all.
     // So: kill the holder in the middle of a held chain and read what it left behind. The answer
     // must be the reapable shape (a pid file naming a process that is gone), never the manual park.
+    // SIGKILL, and that is the point of the arm since M1 (2026-09-06): the server now RELEASES on
+    // SIGTERM/SIGINT/SIGHUP, so a `kill-session` would leave nothing behind and this would measure
+    // the handler instead of the hazard. The signalled death is a different claim and has its own
+    // check below; this one is the death no handler can catch.
     ffrReset();
     writeFileSync(`${ROOT}/ffretry.park.2`, "park\n");
     const ffrC = await ffrLand("death", "ffretry-death.txt");
@@ -8229,7 +8243,7 @@ exit 0
     const ffrCPidBefore = ((): string => {
       try { return readFileSync(`${ffrLock}/pid`, "utf8").trim(); } catch { return ""; }
     })();
-    await tmuxOut("kill-session", "-t", "srv"); // the holder dies mid-chain, mid-hold
+    spawnSync("kill", ["-9", String(ffrSrvPid ?? 0)]); // the holder dies mid-chain, mid-hold
     await Bun.sleep(500);
     writeFileSync(`${ROOT}/ffretry.go.2`, "go\n"); // let the orphaned gate child leave
     const ffrCLeft = {
@@ -8242,6 +8256,129 @@ exit 0
         && ffrCLeft.pid === ffrCPidBefore && ffrCLeft.birth && !ffrAlive(ffrCLeft.pid),
       JSON.stringify({ parked: ffrCParked, before: ffrCPidBefore, left: ffrCLeft,
         alive: ffrCLeft.pid === "" ? null : ffrAlive(ffrCLeft.pid) }));
+
+    // --- (8f) M1 · THE GATE THAT NEVER SPAWNED, AND THE VERDICT LEDGER (2026-09-06) -----------
+    // (8e) proved the hold. This proves its OTHER half: what happens when the machine cannot be
+    // taken at all, and that every verdict — landing or not — leaves exactly one machine-readable
+    // row behind. Both are the cut of docs/messungen/2026-09-06-merge-prozess-robust.md §3 M1:
+    // taking the mutex before the chain means a busy machine costs a DENIAL, not a half-run gate,
+    // and a verdict that does not land must stop being invisible to every ledger this repo keeps.
+    // The server is dead here — (v) killed it mid-hold — so these arms boot their own.
+    // (v-b) FIRST, THE OTHER HALF OF (v): the death that IS catchable. The deploy ritual on this box
+    // is `tmux kill-session -t srv` ~10×/day, and while the server held this mutex only between ff
+    // retry rounds a lock leaked that way cost one retry. Since M1 it holds on every clean land, so
+    // a leak denies EVERY following land until an unrelated wrapper contends — inside an instance
+    // like this one, where nothing else ever wants that lock, that is forever. So the signalled
+    // death must give the machine back, and (v) above proves the SIGKILL still leaves the reapable
+    // shape rather than a park.
+    rmSync(ffrLock, { recursive: true, force: true });
+    await restartSrv(ffrEnv);
+    ffrReset();
+    writeFileSync(`${ROOT}/ffretry.park.2`, "park\n");
+    const m1S = await ffrLand("signal", "m1-signal.txt");
+    const m1SParked = await ffrWaitFile(`${ROOT}/ffretry.parked.2`);
+    const m1SHeldPid = ((): string => {
+      try { return readFileSync(`${ffrLock}/pid`, "utf8").trim(); } catch { return ""; }
+    })();
+    await tmuxOut("kill-session", "-t", "srv"); // the holder is SIGNALLED, not killed outright
+    await Bun.sleep(1000);
+    writeFileSync(`${ROOT}/ffretry.go.2`, "go\n"); // let the orphaned gate child leave
+    check("(v-b) M1: a holder that is SIGNALLED gives the machine back — a kill-session mid-hold leaves no lock at all, so the next land is not denied by a corpse",
+      m1SParked && /^\d+$/.test(m1SHeldPid) && !existsSync(ffrLock),
+      JSON.stringify({ fired: m1S.fired, parked: m1SParked, heldBefore: m1SHeldPid,
+        left: existsSync(ffrLock) }));
+
+    // (vi) THE DENIAL. A wait budget floored at the server's own minimum (Math.max(1_000, …)) so it
+    // is measurable in seconds rather than in the 5 s mutex poll.
+    const m1Held = spawnSync("sh", ["-c",
+      `nohup sleep 300 >/dev/null 2>&1 & echo $!`]).stdout.toString().trim();
+    rmSync(ffrLock, { recursive: true, force: true });
+    mkdirSync(ffrLock, { recursive: true });
+    writeFileSync(`${ffrLock}/pid`, `${m1Held}\n`, { mode: 0o600 });
+    writeFileSync(`${ffrLock}/birth`, "e2e-m1-occupant\n", { mode: 0o600 });
+    await restartSrv({ ...ffrEnv, FLEET_VERIFY_WAIT_MS: "1000" });
+    ffrReset();
+    const m1AuditRows = (): Record<string, unknown>[] => {
+      try {
+        return readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+          .map((l) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return {}; } })
+          .filter((r) => r.event === "merge_verdict");
+      } catch { return []; }
+    };
+    // a land WITHOUT the ff latch: the retry chain is never reached (the gate stops the land long
+    // before the fast-forward), so arming it would leave this waiting for a `reached` file that
+    // cannot appear.
+    const m1Land = async (name: string, file: string): Promise<{ row: string; slot: number | null; fired: boolean }> => {
+      for (const f of [ffrLatch, `${ffrLatch}.reached`, `${ffrLatch}.release`]) try { rmSync(f); } catch { /* absent */ }
+      const row = await makeTask({ text: `m1 ${name}`, programId: ffrProgram.id, repo: REPO2 });
+      ffrRows.push(row);
+      const lane = await conflictLane(row);
+      if (lane.cwd) {
+        writeFileSync(`${lane.cwd}/${file}`, `work whose gate never got the machine — ${name}\n`);
+        spawnSync("git", ["-C", lane.cwd, "add", file]);
+        spawnSync("git", ["-C", lane.cwd, "commit", "-qm", `m1 ${name}`]);
+      }
+      if (lane.slot !== null) { ffrLanes.push(lane.slot); await waitDoneLooking(lane.slot); }
+      return { row, slot: lane.slot, fired: ffrTok === "" ? false : (await selfLand(ffrTok, row)).ok };
+    };
+    const m1AuditBefore = m1AuditRows().length;
+    const m1MainBefore = main2Of();
+    const m1D = await m1Land("denied", "m1-denied.txt");
+    const m1Verdict = await ffrSettled(m1D.slot);
+    const m1Runs = ffrLogRuns();
+    const m1LockAfter = ((): string => {
+      try { return readFileSync(`${ffrLock}/pid`, "utf8").trim(); } catch { return "(gone)"; }
+    })();
+    // `gateRuns === 0` IS the "install never ran" sensor and a stronger one than a directory
+    // mtime: FLEET_VERIFY_CMD is the WHOLE chain (install → pins → tsc → build → the three
+    // suites), so a command that was never spawned is a chain none of whose steps existed. The
+    // stand-in appends one line per invocation, so zero lines is a positive measurement of
+    // absence, not a missing file.
+    check("(vi) M1: a gate whose mutex is held by somebody else NEVER SPAWNS — the verdict is the machine's, the chain did not run, and main did not move",
+      m1D.fired && m1Verdict?.status === "resolved" && m1Verdict.landed === false
+        && m1Verdict.verify?.ok === null && m1Verdict.verify?.waitedOut === true
+        && (m1Verdict.verify?.ms ?? 1e9) < 5000
+        && (m1Verdict.verify?.waitMs ?? -1) >= 0
+        && m1Runs.length === 0
+        && (m1Verdict.detail ?? "").includes("NEVER STARTED")
+        && main2Of() === m1MainBefore,
+      JSON.stringify({ fired: m1D.fired, verdict: m1Verdict, gateRuns: m1Runs.length,
+        mainMoved: main2Of() !== m1MainBefore }));
+    check("(vi) M1: the denial gives nothing back that was not ours — the occupant still holds the lock the server could not take",
+      m1LockAfter === m1Held && ffrAlive(m1Held),
+      JSON.stringify({ lockPid: m1LockAfter, occupant: m1Held, alive: ffrAlive(m1Held) }));
+    // THE LEDGER. Three verdict forms have now settled on this instance under M1 — the retry LAND
+    // (8e i), the RED retry gate (8e iv) and the denial just above — plus whatever the earlier
+    // sections of this suite produced. Read as a DELTA from the baseline taken above, so this
+    // measures the rows M1 wrote here rather than a total nobody controls. `appendEvent` is
+    // fire-and-forget, so the count is polled rather than sampled once.
+    let m1Rows = m1AuditRows();
+    for (let i = 0; i < 80 && m1Rows.length <= m1AuditBefore; i++) {
+      await Bun.sleep(100);
+      m1Rows = m1AuditRows();
+    }
+    const m1New = m1Rows.slice(m1AuditBefore);
+    const m1Denial = m1New.filter((r) => r.waitedOut === true);
+    check("(vii) M1: every merge verdict leaves EXACTLY ONE machine-readable ledger row — the denial is one of them, and it names why in fields rather than prose",
+      m1New.length === 1 && m1Denial.length === 1
+        && m1Denial[0]?.status === "resolved" && m1Denial[0]?.landed === false
+        && m1Denial[0]?.actor === "main" && typeof m1Denial[0]?.detail === "string"
+        && typeof m1Denial[0]?.slot === "number" && typeof m1Denial[0]?.ms === "number"
+        && typeof m1Denial[0]?.waitMs === "number" && m1Denial[0]?.errorReason === undefined,
+      JSON.stringify({ before: m1AuditBefore, new: m1New }));
+    // AND the other two forms, from the SAME ledger: (8e) ran a land and a red retry gate on this
+    // instance, so the file must carry one row for each — a `merged/landed:true` with a round
+    // count and a `resolved/landed:false` that is NOT the denial. This is the "one row per verdict
+    // FORM" half of the owner's done criterion, read where the rows actually live.
+    const m1Landed = m1Rows.filter((r) => r.status === "merged" && r.landed === true && r.ffRounds === 1);
+    const m1RedGate = m1Rows.filter((r) => r.status === "resolved" && r.landed === false
+      && r.ffRounds === 1 && r.waitedOut === undefined);
+    check("(vii) M1: the ledger separates the three forms this section produced — one land (with its round count), one red retry gate, one denial — and never merges them into one row",
+      m1Landed.length === 1 && m1RedGate.length === 1 && m1Denial.length === 1
+        && m1Landed[0]?.event === "merge_verdict" && m1Landed[0]?.errorReason === undefined,
+      JSON.stringify({ landed: m1Landed, red: m1RedGate, denied: m1Denial }));
+    spawnSync("kill", [m1Held]);
+    rmSync(ffrLock, { recursive: true, force: true });
 
     for (const f of [`${ffrLatch}`, `${ffrLatch}.reached`, `${ffrLatch}.release`, ffrVerify, ffrCount,
       ffrLog, `${ROOT}/ffretry.park.2`, `${ROOT}/ffretry.red.2`, `${ROOT}/ffretry.parked.2`,

@@ -230,11 +230,25 @@ type AuditEvent =
   // a terminal land armed the merge subscription its bound Program-MAIN never made
   // (armProgramMainLandWatch), or declined to because that MAIN's return path is full. The second
   // row is the one that matters: a MAIN told nothing must not be told nothing SILENTLY.
-  | "program_main_land_watch" | "program_main_land_event_skipped";
-export function audit(event: AuditEvent, slot?: number, detail?: string): void {
+  | "program_main_land_watch" | "program_main_land_event_skipped"
+  // M1 · ONE row per terminal merge verdict, written where mergeJob records it (its `record`).
+  // Not prose and not a delivery record: `merge_verdict_sent` above says a verdict REACHED a pane,
+  // and said nothing about what the verdict was. The measured hole this fills: `MergeLast` lives
+  // only as the LAST verdict per slot in fleet.json, `lane-outcomes.jsonl` carries no merge field,
+  // and a land note exists only for a land — so the 14 `error` and 6 `waited` deaths of 2026-09-02
+  // …-06 could be counted but never explained (docs/messungen/2026-09-06-merge-prozess-robust.md
+  // §1.3). Machine-readable fields, no free prose, nothing about the tree's content.
+  | "merge_verdict";
+// `fields` — machine-readable columns for the rows that need them, beside (not instead of) the
+// prose `detail` every other event uses. The four identity keys are RESERVED: a caller cannot
+// overwrite what row this is, which is why they are filtered rather than merely documented.
+const AUDIT_RESERVED = new Set(["ts", "event", "slot", "detail"]);
+export function audit(event: AuditEvent, slot?: number, detail?: string,
+  fields?: Record<string, string | number | boolean>): void {
   appendEvent(AUDIT_FILE, {
     ts: Date.now(), event,
     ...(slot !== undefined ? { slot } : {}),
     ...(detail !== undefined ? { detail } : {}),
+    ...(fields ? Object.fromEntries(Object.entries(fields).filter(([k]) => !AUDIT_RESERVED.has(k))) : {}),
   });
 }

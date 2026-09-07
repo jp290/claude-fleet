@@ -154,6 +154,22 @@ meldet `dispatch.maxLanes: 3`). Ordnung: **Konstante → env → Repo-Eintrag**,
 `pending`, damit sie keinen Lane-Slot kostet); sie verlangt ausdrücklich, die Overlays AM CODE zu
 enumerieren statt unsere drei Kandidaten abzuschreiben.
 
+## 7d. NACHTRAG 00:2x — MEIN DIREKTCOMMIT IST DOCH VERMESSEN, aber nicht als Land
+
+`9d09cb6b` (Studio-Hub-Disposition, Direktcommit) trägt im Body „KEIN Post-Land-Audit". Das ist
+für die LEDGER-Seite richtig und für die BAUM-Seite falsch: das Audit zum Land `75939cf4` lief,
+nachdem ich committet hatte, und hat als `mainSha` **`9d09cb6b`** gemessen — 457 checks, 0 failed,
+grün, kurze Kette (docs-only). Ein Audit misst den TIP zum Laufzeitpunkt, nicht den Commit, dem es
+zugeordnet ist.
+
+Also präzise: mein Commit hat **keine Land-Provenienz** (keine `fleet/land`-Note, keine
+`lane-outcomes`-Zeile, `state.sh` zählt ihn nicht) — aber der Baum, der ihn enthält, ist mit der
+Kette gemessen, die seinem Inhalt entspricht. Wer den Body allein liest, schließt „nie vermessen",
+und das wäre zu streng. **Verallgemeinert: ein Post-Land-Audit ist eine Aussage über einen BAUM,
+nicht über ein Land** — es deckt fremde Commits mit ab, die zwischen Land und Auditlauf eintreffen,
+und benennt sie nirgends. Das ist die Kehrseite von §5b: dieselbe Verwechslung von Zuordnung und
+Messung, nur in die andere Richtung.
+
 ## 8. WAS ICH NICHT GEPRÜFT HABE
 
 Den Inhalt der 94 advisory-Zeilen (nur Adressat und Deckel-Wirkung). Ob die drei neuen Lanes

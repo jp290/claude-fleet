@@ -46,6 +46,9 @@ type AuditRow = {
   // a server without the proportional audit must fail each assertion on its own rather than throw.
   proportional?: boolean; steps?: string[];
   checks?: { ran: number; failed: number; ranIsLowerBound?: true } | null;
+  // section Q. Optional and deliberately UNDEFINED-able: "the field is absent" is one of the three
+  // states the section asserts, so a server without the split must fail each check on its own.
+  waitMs?: number; waitPartial?: true;
   ping?: { at: number; status: string; updatedAt: number; lastResult: string; deliveredAt?: number; slot?: number };
   covers: { branch: string; mainAfter: string; at: number }[];
 };
@@ -166,6 +169,7 @@ const killSrv = async (): Promise<void> => {
 const startSrv = async (opts: { audit: boolean; auditPing?: boolean; extra?: Record<string, string> }): Promise<boolean> => {
   const env = ["FLEET_CMD", "FLEET_AUTO_REVIEW_MS", "FLEET_VERIFY_CMD", "FLEET_MERGE_CMD",
     "FLEET_CLEAN_REVIEW", "FLEET_CLEAN_REVIEW_CMD", "FLEET_POSTLAND_AUDIT_TIMEOUT_MS",
+    "FLEET_POSTLAND_AUDIT_WAIT_MS",
     ...(opts.audit ? ["FLEET_POSTLAND_AUDIT_CMD"] : [])]
     .map((k) => envArg(k, process.env[k])).join("")
     + (opts.audit ? "" : "FLEET_POSTLAND_AUDIT_CMD='' ")
@@ -1325,6 +1329,109 @@ check("(P) a coalesced entry holding ONE non-docs land runs the FULL configured 
 check("(P) …and it really executed that suite — the stand-in logged a run for it",
   (await runLog()).length === pMixRunsBefore + 1 && pMixRow.result === "green",
   `before=${pMixRunsBefore} after=${(await runLog()).length} result=${pMixRow.result}`);
+
+// ===== (Q) THE SUITE MUTEX IS NOT WORK — two clocks, and a row that says which one ran ==========
+// WHY (measured 2026-09-06/07 against `post-land-audits.jsonl`, 500 rows): the audit spawns
+// `./e2e-isolated.sh`, which takes the machine-wide suite mutex from INSIDE the window the server is
+// already timing. One wall-clock budget therefore contained an unbounded queue: 102 rows `unknown`,
+// 15 of them timeouts, the three most recent sitting at the raised 2 700 000 ms ceiling. The sharpest
+// is 5b676958 (07:57:58 → 08:42:58), whose own retained output ends
+// `[suite-lock] e2e-isolated.sh acquired after 1576s` — the child took the mutex in the same second
+// the server gave up on it, and the row said "timed out", which reads like a run that looked at the
+// tree. It had not looked at anything.
+// Nothing below changes a verdict: every row here is the same `unknown`/`green` it was. What the
+// section asserts is that the two CAUSES of an unknown are tellable apart, and that the run's own
+// account of its queueing survives onto the row.
+// Placed here, in the relative-snapshot half: it adds rows, and every section above (D)…(H) counts
+// them by absolute number. Before (K), which seeds a second repo and must stay last.
+// The wrapper boots this instance with FLEET_POSTLAND_AUDIT_WAIT_MS=12000 against
+// FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 — deliberately the LONGER of the two, so "which clock fired"
+// is answerable from the elapsed time alone and not only from the wording of the reason.
+const qWait = Number(process.env.FLEET_POSTLAND_AUDIT_WAIT_MS ?? 0);
+const qTimeout = Number(process.env.FLEET_POSTLAND_AUDIT_TIMEOUT_MS ?? 0);
+check("(Q) setup: the wait budget is configured and LONGER than the work budget (precondition — otherwise no check below can tell the two clocks apart)",
+  qWait === 12_000 && qTimeout === 10_000, `wait=${qWait} timeout=${qTimeout}`);
+
+// (Q.1) a run that QUEUES and then acquires: the wait is measured by the thing that waited, the clock
+// moves back to the work budget on the acquire, and the run finishes normally.
+await setAuditMode("lockslow");
+const quebec = await makeLane("quebec");
+const qRowsBeforeSlow = (await auditRows()).length;
+await landLane(quebec);
+const qSlow = newest(await waitRows(qRowsBeforeSlow + 1, 60_000));
+check("(Q.1) a run that reported queueing carries its wait on the row — suiteWait's number, not an estimate",
+  qSlow.result === "green" && qSlow.exitCode === 0 && qSlow.waitMs === 3_000
+    && qSlow.waitPartial === undefined && qSlow.covers[0]?.branch === quebec.branch,
+  JSON.stringify({ result: qSlow.result, waitMs: qSlow.waitMs, waitPartial: qSlow.waitPartial, ms: qSlow.ms }));
+check("(Q.1) …and the acquire moved the clock BACK to the work budget — the run outlived a 10s work ceiling it spent queueing under",
+  qSlow.result === "green" && qSlow.ms > 2_000, `ms=${qSlow.ms} result=${qSlow.result}`);
+
+// (Q.2) `acquired after 0s`: the chain DID report its wait and the answer is zero.
+await setAuditMode("lockzero");
+const quito = await makeLane("quito");
+const qRowsBeforeZero = (await auditRows()).length;
+await landLane(quito);
+const qZero = newest(await waitRows(qRowsBeforeZero + 1, 60_000));
+check("(Q.2) a reported wait of ZERO is present as 0, never dropped into the same absence as 'did not report'",
+  qZero.result === "green" && qZero.waitMs === 0 && "waitMs" in qZero,
+  JSON.stringify({ result: qZero.result, waitMs: qZero.waitMs, has: "waitMs" in qZero }));
+
+// (Q.3) …and the other half of that distinction, said as its own check: a command that prints no
+// suite-lock line at all reports NO wait, which is not a measured zero. Every mode above this
+// section is that command, so this is also the guarantee that the field did not appear everywhere.
+await setAuditMode("green");
+const quilt = await makeLane("quilt");
+const qRowsBeforeNone = (await auditRows()).length;
+await landLane(quilt);
+const qNone = newest(await waitRows(qRowsBeforeNone + 1, 60_000));
+check("(Q.3) a command that reports no wait of its own carries NO waitMs — absence is 'did not report', never 0",
+  qNone.result === "green" && qNone.waitMs === undefined && qNone.waitPartial === undefined,
+  JSON.stringify({ result: qNone.result, waitMs: qNone.waitMs }));
+
+// (Q.4) THE CASE THE SPLIT EXISTS FOR: a run that never gets the machine. Under one clock this died
+// at 10s calling itself a timeout; under two it dies at the WAIT budget and says something else.
+await setAuditMode("lockwait");
+const qPidFile = `${import.meta.dir}/auditpids`;
+try { unlinkSync(qPidFile); } catch { /* (I.0b) may not have run in this instance */ }
+const quorum = await makeLane("quorum");
+const qRowsBeforeWait = (await auditRows()).length;
+await landLane(quorum);
+const qWaitStart = Date.now();
+const qOut = newest(await waitRows(qRowsBeforeWait + 1, 90_000));
+check("(Q.4) a run killed while QUEUED is still unknown — this split changes no verdict",
+  qOut.result === "unknown" && qOut.exitCode === null && qOut.checks === null
+    && qOut.covers[0]?.branch === quorum.branch,
+  JSON.stringify(qOut).slice(0, 300));
+check("(Q.4) …and it does NOT say it timed out — a wait and a hang must never read alike",
+  (qOut.reason ?? "").includes("NEVER STARTED") && !(qOut.reason ?? "").includes("timed out"),
+  JSON.stringify(qOut.reason));
+// the elapsed time is the second, independent witness to WHICH clock fired: a server still running
+// one clock kills this at the 10s work budget, ~2s before the wait budget it was actually queued under
+check("(Q.4) …and the WAIT clock is the one that fired — the run outlived the work budget it was never working under",
+  qOut.ms >= qWait && Date.now() - qWaitStart < 40_000,
+  `ms=${qOut.ms} wait=${qWait} timeout=${qTimeout} waited=${Date.now() - qWaitStart}ms`);
+check("(Q.4) …and the wait it can prove is on the row as a LOWER BOUND (a step still queued at the kill was never able to report its total)",
+  qOut.waitMs === 5_000 && qOut.waitPartial === true,
+  JSON.stringify({ waitMs: qOut.waitMs, waitPartial: qOut.waitPartial }));
+// (Q.5) THE KILL STAFFEL ON THE SECOND CLOCK. (I.0b) proves it for the work clock; a wrapper killed
+// while QUEUED holds no mutex yet, but it does hold an e2e-stage.sh queue ticket keyed on its pid,
+// so a survivor would sit in front of every later contender for as long as it lives. Same shape and
+// same question as (I.0b) — are those two processes still alive? — and the same precondition rule.
+const qPids = (() => {
+  try { return readFileSync(qPidFile, "utf8").split("\n").map(Number).filter((n) => n > 0); }
+  catch { return []; }
+})();
+check("(Q.5) setup: the stand-in published its own pid and its term-ignoring child's (precondition — no pids, no measurement)",
+  qPids.length === 2 && qPids[0] !== qPids[1], JSON.stringify(qPids));
+const qAlive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const qDeadline = (qOut.at || Date.now()) + 12_000;
+let qLeft = qPids;
+while (qPids.length > 0 && Date.now() < qDeadline && (qLeft = qPids.filter(qAlive)).length > 0)
+  await Bun.sleep(150);
+check("(Q.5) the WHOLE frozen tree is gone after a WAIT-clock kill too — the staffel is not the work clock's alone",
+  qPids.length === 2 && qLeft.length === 0,
+  JSON.stringify({ pids: qPids, stillAlive: qLeft, waitedMs: Date.now() - (qOut.at || Date.now()) }));
+await setAuditMode("green");
 
 // ===== (K) THE REMOTE HELPER PORTAL =============================================================
 // Runs LAST, and that placement is load-bearing rather than tidy: this section seeds a second repo

@@ -528,3 +528,26 @@ ticket only the fairness). Measured while writing this: the `e2e-claude-gate.sh`
 built the queue sat at `position 1 of 1` for 23 minutes — correctly first among ticket-holders, and
 still behind a holder that had never taken one. `position 1 of 1` therefore means "first in the
 queue", never "next to be served". The property only becomes global when the change is on main.
+
+## 11. …and the POST-LAND AUDIT now speaks for itself too (2026-09-07)
+
+§8 gave the land gate two clocks. The post-land audit kept one for another month, and it cost
+exactly what §8 predicted it would: `5b676958` (2026-09-07) died at 2 700 000 ms with its own output
+ending on `[suite-lock] e2e-isolated.sh acquired after 1576s` — **1 576 s of queueing, 0 s of
+measurement, and a row that said "timed out"**, which reads like a run that looked at the tree.
+
+`runPostLandAudit` now runs the same pair through the same parser: `FLEET_POSTLAND_AUDIT_WAIT_MS`
+(default 2 700 000 — the measured hold of ONE full suite ahead of it, 35–41 min on this machine)
+against `FLEET_POSTLAND_AUDIT_TIMEOUT_MS`, the clock moving between them on the child's
+`[suite-lock]` lines, and the row carrying `waitMs`/`waitPartial`. Both budgets end in the same kill
+staffel, and that is not tidiness: a wrapper killed while QUEUED holds no mutex yet, but it does hold
+a `t<n>.<pid>` ticket (§10), and a survivor would sit in front of every later contender for as long
+as its pid lives.
+
+Two things this does NOT change, said here because §10's two declined items are their neighbours:
+the audit still gates nothing, and `unknown` stays `unknown` — the cut separates two CAUSES of a
+non-measurement, it does not produce a verdict. And it is still not a priority class: an audit that
+loses the queue now says so in its own words instead of jumping it. The measurement, the ledger
+numbers and the counterfactual against `FLEET_DISPATCH_MAX_LANES=1` are in
+`docs/verify-tiering.md` §6.2; the PLACEMENT question (helper grace, re-offer, ticket priority) is
+its own line, `e407aef5`, and deliberately not answered here.

@@ -77,6 +77,21 @@ chmod +x "$DIR/fakemerge"
 #   crash — 25s, for the durability section: long enough that the suite can kill srv with the audit
 #           demonstrably still in flight. It drops the busy lock immediately (an ORPHANED run
 #           outliving its dead server must not make the next run look like an OVERLAP)
+# THE THREE SUITE-MUTEX MODES (section Q). The real audit command is `./e2e-isolated.sh`, which takes
+# the machine-wide mutex from INSIDE the window the server is timing and reports its own queueing on
+# stdout in e2e-stage.sh's `[suite-lock]` format. These three reproduce that wire format — and ONLY
+# these three: every other mode prints no lock line, so the server's wait clock is never armed for
+# them and their timings are unchanged by its existence.
+#   lockwait — two `waiting` heartbeats (0s, then 5s), then 30s that never acquire, with the whole
+#          tree ignoring the term and publishing its pids the way `nokill` does. Against
+#          FLEET_POSTLAND_AUDIT_WAIT_MS=12000 > FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 the two clocks
+#          are TELLABLE APART by when the kill lands as well as by what the row says: a server that
+#          still runs one clock kills this at 10s and calls it a timeout.
+#   lockslow — `waiting`, 2s, then `acquired after 3s`, then a normal green. Proves the clock moves
+#          BACK to the work budget on the acquire, and that the wait is on the row of a run that
+#          finished normally rather than only on a killed one.
+#   lockzero — `acquired after 0s` and nothing else: the chain DID report its wait and the answer is
+#          zero. Absent-vs-zero is the distinction the row's `waitMs` exists to keep.
 cat > "$DIR/fakeaudit" <<'EOF'
 #!/bin/sh
 d="$(dirname "$0")"
@@ -104,6 +119,24 @@ case "$mode" in
     wait
     ;;
   crash)       rm -f "$d/auditbusy"; sleep 25 ;;
+  lockwait)
+    rm -f "$d/auditbusy"
+    echo "[suite-lock] fakeaudit waiting 0s for /tmp/fleet-e2e.lock — position 2 of 2 — held by live pid 1 with proven identity (up 01:00): /bin/sh ./e2e-isolated.sh"
+    sleep 1
+    echo "[suite-lock] fakeaudit waiting 5s for /tmp/fleet-e2e.lock — position 2 of 2 — held by live pid 1 with proven identity (up 01:05): /bin/sh ./e2e-isolated.sh"
+    # the term-ignoring shape of `nokill`, on the WAIT clock: a wrapper killed while queued holds no
+    # mutex yet but does hold an e2e-stage.sh ticket, so the staffel has to reach it there too
+    trap '' TERM
+    sleep 30 </dev/null >/dev/null 2>&1 &
+    printf '%s\n%s\n' "$$" "$!" > "$d/auditpids"
+    wait
+    ;;
+  lockslow)
+    echo "[suite-lock] fakeaudit waiting 0s for /tmp/fleet-e2e.lock — position 2 of 2 — held by live pid 1 with proven identity (up 01:00): /bin/sh ./e2e-isolated.sh"
+    sleep 2
+    echo "[suite-lock] fakeaudit acquired after 3s (pid $$)"
+    ;;
+  lockzero)    echo "[suite-lock] fakeaudit acquired after 0s (pid $$)" ;;
 esac
 rm -f "$d/auditbusy"
 echo "PASS  post-land audit stand-in check"
@@ -152,7 +185,7 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 is the server's own floor (Math.max(10_000, …)) — the `hang`
 # mode sleeps well past it.
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=0 FLEET_AUDIT_PING_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_POSTLAND_AUDIT_CMD='$DIR/fakeaudit' FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=0 FLEET_AUDIT_PING_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_POSTLAND_AUDIT_CMD='$DIR/fakeaudit' FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 FLEET_POSTLAND_AUDIT_WAIT_MS=12000 FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind instead of a fixed sleep
 code=000
 for _ in $(seq 1 60); do
@@ -177,7 +210,7 @@ FLEET_E2E_SUITE=postland-audit \
   FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid \
   FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=0 FLEET_CMD=true \
   FLEET_VERIFY_CMD="$DIR/fakeverify" FLEET_MERGE_CMD="$DIR/fakemerge" \
-  FLEET_POSTLAND_AUDIT_CMD="$DIR/fakeaudit" FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 \
+  FLEET_POSTLAND_AUDIT_CMD="$DIR/fakeaudit" FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 FLEET_POSTLAND_AUDIT_WAIT_MS=12000 \
   FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD="$DIR/fakecleanreview" \
   bun fleet-e2e-postland-audit.ts
 code=$?

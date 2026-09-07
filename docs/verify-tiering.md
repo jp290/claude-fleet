@@ -414,6 +414,57 @@ can live, and tier 1 is the only place prevention and attribution can live. Buil
 retire the question "what does a green gate guarantee" — it answers a *different* question, and
 leaves §3's answer (types, plus 25 checks about `claudeAlive`) exactly where it was.
 
+### 6.1 Die Suite, die Tier 2 beweist, wird von keinem Gate gefahren — und war darum zwei Tage DETERMINISTISCH ROT (`4c562e7` → `<LANDING-SHA>`)
+
+**Kein Flake. Nicht unter §11.2x suchen.** `./e2e-postland-audit.sh` fiel auf main von `4c562e7`
+(2026-09-05) bis `<LANDING-SHA>` (Reparatur auf `fleet/260907003236-ec0e`) in JEDEM Lauf mit
+denselben zwei Checks, beide aus Abschnitt (J) in `fleet-e2e-postland-audit.ts`:
+
+```
+FAIL  (J) the only eligible main opens UNOBSERVED (lastOutput=0)
+      ({"id":4,…,"openedAt":1788741306175,…,"lastOutput":1788741306209,…})
+FAIL  (J) an unobserved pane is UNKNOWN, never idle permission, and no negative recipient fires
+      ({"at":1788741302024,"status":"pending",…,"lastResult":"pending — no deliverable main session (quiet-hours)"})
+```
+
+**Der Mechanismus, und er sitzt in der SONDE, nicht im Server.** `4c562e7` gibt dem Ruhefenster in
+`server.ts#poll` sein Veto über die AKTUALITÄT und nimmt ihm das über die Transition „nie beobachtet
+→ beobachtet" (`if (Date.now() > s.quietUntil || s.lastOutput === 0) s.lastOutput = Date.now();`).
+Das ist richtig: vorher blieb eine Pane, deren einzige Bytes ins Fenster fielen, für den Rest ihres
+Lebens „nie beobachtet". Die Regel selbst steht unverändert im Server und feuert weiter —
+`tickAuditPing` hält einen Kandidaten mit `BACKLOG_IDLE_MS > 0 && s.lastOutput === 0` als
+`unobserved`, VOR `canDeliver`; dieselbe Lesart in `tickBacklogNudge`, `tickMigrate` und auf beiden
+FleetEvent-Pfaden. Verloren ist nicht die Eigenschaft, sondern die VORBEDINGUNG, auf der die Sonde
+sie gemessen hat: eine frisch geöffnete Pane ist keine unbeobachtete mehr. Die Zahl steht in der
+FAIL-Zeile oben — `lastOutput` 34 ms nach `openedAt`.
+
+**Und sie ist nicht bloß verfrüht gemessen, sondern nicht mehr herstellbar.** `ensureSlot` SEEDET den
+Stream mit `capture-pane`-Ausgabe, BEVOR es die Pipe scharfstellt, also gilt `size > offset` beim
+nächsten 100-ms-Tick, egal was die Pane ausführt. Gemessen an einer isolierten Instanz
+(eigener Socket/Port, `FLEET_CMD=true`): `lastOutput` 3 ms nach der Rückkehr des `open`-POST
+ungleich 0, 332 B zsh-Prompt im Stream — und unter einem `FLEET_CMD`, das nie endet und nie zu einem
+Prompt kommt, immer noch gestempelt, bei 2 B. Der Boot stempelt ohnehin (`s.lastOutput = Date.now()`
+für jeden cwd-Slot), und der Self-Heal-Ticker (2 s) repariert eine fehlende Pipe nach. **Damit bleibt
+genau EIN Eingang für die Regel — und es ist die Gestalt, für die sie existiert: eine Pane, deren
+Ausgabe der Server ÜBERHAUPT nicht sehen kann, weil ihr Stream nie entstanden ist.** Die reparierte
+Sonde baut genau die, indem sie dem Instanzverzeichnis `streams/` für die Dauer EINES `open` das
+Schreibrecht nimmt: die Stage-Datei scheitert mit `EACCES`, die Pipe wird nie scharf, `lastOutput`
+bleibt 0 für das ganze Leben dieser Pane (der Self-Heal scheitert alle 2 s am selben Write, darum
+BLEIBT es 0). Das ist strenger als die alte Vorbedingung, denn die alte Pane hatte längst gemalt und
+war nur „unbeobachtet", weil das Fenster den Anstrich verdeckte — der Defekt, den `4c562e7` behob.
+
+**Warum es zwei Tage unbemerkt blieb, und das ist der übertragbare Teil.** Diese Suite fährt KEIN
+Gate: der Land-Gate fährt `e2e-clean-review.sh`, `e2e-security.sh`, `e2e-claude-gate.sh`, der
+Post-Land-Audit fährt `./e2e-isolated.sh`. `./e2e-postland-audit.sh` fährt nur, wer den
+Tier-2-Audit-Pfad anfasst (Regelbuch) — also niemand, solange niemand ihn anfasst. §6(g) sagt, Tier 2
+sei das Zuhause für eine Suite, die nichts gatet; die Kehrseite steht hier: **die Suite, die Tier 2
+beweist, hat selbst kein Zuhause**, und ihr Rot ist von innen nicht von „nie gelaufen" zu
+unterscheiden. Solange sie rot ist, beweist KEIN Lauf von ihr etwas über den Post-Land-Audit-Pfad —
+ein Leser muss zuerst diese zwei Zeilen abziehen, bevor er irgendeine andere Zeile als Befund liest.
+
+**Ein Rot dort NACH `<LANDING-SHA>` ist wieder ECHT** — und dann gilt wieder die normale Regel: es ist
+deins, bis du das Gegenteil beweist.
+
 ## 7. Relative to the `post-land-audit` lane
 
 Read first-hand: `git -C …/post-land-audit diff main...HEAD` (5 lane commits, +892/−21).

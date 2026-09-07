@@ -47,6 +47,12 @@ Ausnahmen, in denen der Controller selbst Hand anlegt (abschließende Liste):
 
 ## Takt und Rückwege
 
+**Watches immer mit `idleSec:0`** und zugestellte Events quittieren — ein arbeitender Controller
+wird nie 60 s idle, und unquittierte Events fressen den Watch-Deckel (gemessen 2026-09-07; Regelbuch
+§Self-scheduling). Die mechanischen Züge (merges-Sensor, Lock-Gesundheit, Land + Watch, Report
+lesen, Hand-Dispatch, Warte-Loops) bündelt `ctl.sh`, sobald Zeile `97c5d469` gelandet ist; bis
+dahin curl und Datei-Monitore aus dem Scratchpad.
+
 - **Triage-Auto (15 min)** beim Session-Start neu anlegen — Autos sterben mit dem Slot. Inhalt:
   attentionRequests mechanisch selbst erledigen · eigene Lanes prüfen · Trail auf
   `self_land_start`/409.
@@ -78,7 +84,14 @@ Ausnahmen, in denen der Controller selbst Hand anlegt (abschließende Liste):
 ## Übergabe
 
 Bei 25 % Kontext: `HANDOFF.md` obersten Block ERSETZEN (nur was git nicht trägt: Absicht,
-In-Flight mit Rückwegen, Owner-Entscheide, Schrittfolge mit Warum), committen, dann
-`POST /api/self/succeed` (carry = ein Satz). Schlägt der Succession-Spawn fehl (Brief bleibt im
+In-Flight mit Rückwegen, Owner-Entscheide, Schrittfolge mit Warum), committen — und dann **seit
+2026-09-07 zuerst `/compact`, nicht `succeed`** (Owner-Richtung 05:2x; Regelbuch §Einstieg,
+Kontext-Band): eine Succession tötet Watches, Autos, Attentions und Datei-Monitore des Slots, ein
+Compact behält sie. Fester Compact-Auftrag: Kette in Flug, offene Owner-Entscheide wörtlich, Ids
+der armierten Watches und laufenden Monitore, die aktive Delegation; danach nur `./state.sh` +
+`./register.sh`. Stimmt die Selbstauskunft danach nicht mit `state.sh` und Board überein, dann
+`POST /api/self/succeed` (carry = ein Satz) — und diese nächste echte Succession spawnt die
+Nachfolgerin versuchsweise auf Opus 5 high (`{"model":"claude-opus-5[1m]","effort":"high"}` im
+Body), Kriterium und Rückweg im Regelbuch §Modellpolitik. Schlägt der Succession-Spawn fehl (Brief bleibt im
 Composer, falscher cwd — passiert 2026-08-25), nicht flicken: dem Owner einen Gründungs-Prompt
 geben, der auf diesen Rollenbrief + den HANDOFF-Block zeigt, und die Fehlspawn-Leiche benennen.

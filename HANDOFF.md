@@ -1,3 +1,94 @@
+# HANDOFF — Program-MAIN 66499a03 „Fleet-Betrieb ohne manuelles Owner-Routing" (Slot 8, Opus 5): SATZ 8 IST BELEGT — die erste `autoClose`-Zeile ueberhaupt, plus ein zweites Self-Land ueber die eigene Sprosse; der Slot wird auf Owner-Entscheid frei gemacht, das Program bleibt aktiv; 2026-09-07 12:2x
+
+Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`.
+Lineage 4 → 16 → 10 → 3 → 5 → 2 → 8. Hier nur, was git und die Sensoren nicht tragen.
+
+## 0. WAS DER NAECHSTE WISSEN MUSS, in drei Zeilen
+
+- **Satz 8 (automatisches Cleanup) ist BELEGT** — `lane-outcomes.jsonl`, 2026-09-05 17:05:54,
+  `killed-empty`, Branch `fleet/260905144235-136c`, Task `9f1dbfb4`, `commitCount 0`,
+  `ownerPrompts 0`, `confirmedByHuman false`, `autoClose{reportId 9814b064…, accepted,
+  decidedAt 16:46:50, decidedBySlot 8}`. Erste solche Zeile in inzwischen 832. Das Regelbuch
+  (`rulebook/deploy.md`) fuehrte bis heute „nie ausgeloest, 0 von 786" — korrigiert, gerendert,
+  `bun e2e/pins.ts` ALL PASS.
+- **Satz 5 ein zweites Mal belegt:** `b7c2cc1` (Task `cb77452a`), Land-Note
+  `actor{kind:"main", slot:8, program:66499a03, task:cb77452a, sessionIdMatch:"exact"}`,
+  `confirmedByHuman false`, `verify.ok true`, exit 0, alle sieben Stufen, `ms 109 031`, `waitMs 0`.
+  Inhalt: `GET /api/programs` traegt nur noch, was der Client rendert — gemessen 106 347 B (47,3 %)
+  weniger je Poll bei 63 Programs.
+- **Satz 11 bleibt offen**, und zwar praezise: die beiden Laeufe vom 09-05 hatten je `ownerPrompts 0`
+  und liefen vollstaendig ueber Self-Tueren (`releasedBy: machine`, Tick-Dispatch, Report, Annahme,
+  Self-Land bzw. Auto-Close). Was fehlt, ist EIN ZUSAMMENHAENGENDER Lauf, der beide Enden in sich
+  traegt — und der ist strukturell unmoeglich, siehe §1.
+
+## 1. DER BEFUND, der das Erfolgskriterium neu liest — am Code, nicht aus Prosa
+
+**Satz 5 (Self-Land) und Satz 8 (Auto-Close) koennen in DERSELBEN Lane nie beide vorkommen.**
+`server.ts#laneAutoCloseRefusal` verweigert, sobald ein Merge-Verdikt auf der Branch dieser Lane
+liegt („this lane's candidate is somebody's to look at"), und `server.ts#tickLaneAutoClose` bricht
+ab, sobald `buildLaneOutcome` etwas anderes als `killed-empty` liefert („a lane with commits is
+never closed automatically"). Wer landet, wird nie auto-geschlossen; wer auto-geschlossen wird, hat
+nie gelandet.
+
+Konsequenz fuer die Bilanz: **„Ein realer Programlauf belegt alle elf Schritte" ist nur erfuellbar,
+wenn „Lauf" das PROGRAM meint, nicht die Lane.** So gelesen sind heute 10 von 11 belegt. Als
+Ein-Lane-Forderung gelesen ist der Satz unerfuellbar — das ist eine Owner-Frage, keine Restarbeit,
+und sie gehoert gestellt, bevor jemand einen dritten Beleglauf ansetzt.
+
+## 2. Werkzeuge und Fallen, teuer gelernt — nimm sie mit
+
+- **Der `accept`-Grund ist auf 500 Zeichen gedeckelt, und ein LEERER Body gilt als gueltige Annahme
+  ohne Grund.** Es gibt keine Re-Decide-Tuer. Bau die Laengenpruefung in DENSELBEN Prozess, der
+  sendet, und sende nur nach bestandener Pruefung — bei mir hat genau das einmal gegriffen
+  (536 > 500, nichts gesendet, gekuerzt, 478). Meiner Vorgaengerin ist der Grund auf diesem Weg
+  verlorengegangen.
+- **`POST /api/self/tasks` ist fuer `notiz` bei 10/10 pending zu, fuer `auftrag` NICHT.** Die
+  Meldung sagt „advisory filing cap"; das Register dieses Programs nimmt also weiter Arbeit an, nur
+  keine Befunde. Meine zwei Befunde stehen deshalb hier statt dort.
+- **Die Adjudikation eines roten Post-Land-Audits ist owner-only BY POSITION** — eine MAIN hat dort
+  keine Tuer (`docs/program-lebenszyklus-architektur-2026-09-04.md`). Der dokumentierte Weg ist eine
+  Attention. Das Rot auf `b7c2cc1` steht unbeurteilt und blockiert nichts.
+- **Ein Rot adjudiziert man an der FAIL-ZEILE, nicht am Wort „bekannte Familie".** Beide Fails auf
+  `b7c2cc1` waren fremd, und beide Male ist es NACHGESEHEN: `projection nextAction` (§11.2o) haengt
+  an `selfExecution`/`selfLand`, nie an `/api/programs`; `D2 setup: both closing lanes reached the
+  spent shape` wohnt in `e2e/watch.ts:3191`, einer Datei, die der Diff nicht beruehrt, wartet dort
+  bounded 60 s auf `stalled` an zwei Fixture-Lanes und ist damit lastempfindlich — 8 Vorkommen in
+  490 Audits, sechs davon an einem Tag.
+- **Eine SETUP-Zeile im Rot heisst: alles darunter ist UNGEMESSEN, nicht verletzt.** Bei `D2 setup`
+  ist das woertlich der Fall.
+- **Der 4096-B-Tail des Helfer-Verdikts verliert bei Lane-Suiten den FAIL-NAMEN** (Befund der Lane
+  `cb77452a`). `checks{ran,failed}` kommt an, der Name nicht — und der Name ist die eine Angabe, die
+  eine Lane zum Adjudizieren braucht. Ungefilt, weil das Advisory-Register zu ist.
+
+## 3. Korrekturen an fremden und eigenen Saetzen
+
+- **Der Auftrag zu diesem Handoff nennt als Grund „40 h ohne Fleet-Akt, 0 Reports". Fuer diese
+  Session ist das gemessen falsch:** zwei Reports empfangen, geprueft und mit Grund angenommen
+  (`9814b064`, `892f5332`), ein Task gefilt und ueber die eigene Tuer released (`cb77452a`), ein
+  Self-Land (`b7c2cc1`), ein Auto-Close-Beleg erarbeitet. Die Zahl beschreibt vermutlich den SLOT
+  vor meiner Uebernahme. Am Entscheid aendert das nichts — er ist der des Owners; die Akte gehoeren
+  nur richtig ins Register.
+- **Ich habe den Audit-Ausgang vorhergesagt und die Zahl verfehlt:** ich sagte EIN Fail an, es waren
+  zwei. Die Attribution stimmte, die Zaehlung nicht — eine Vorhersage ueber eine flakige Suite ist
+  nur so gut wie ihre unbeobachtete Haelfte.
+- **„Ein Auto-Close laesst den Worktree liegen" habe ich am 09-05 gemeldet und kann es NICHT halten:**
+  am 09-07 ist `fleet-260905144235-136c` weg. Wer ihn geraeumt hat, weiss ich nicht — also ist es
+  eine Momentaufnahme gewesen, keine Regel, und es steht bewusst NICHT im Regelbuch.
+
+## 4. Was mit dieser Session stirbt — und was nicht
+
+- **Nichts haengt in der Luft:** keine laufende Lane, keine armierte Watch, kein offener Auto, keine
+  offene Attention, keine Zeile `queued` oder `sent`. Der Beleg von Satz 8 ist deploy-fest, weil er
+  eine Ledger-Zeile ist und kein Idle-Fenster.
+- **Offen im Register, unangetastet:** `6c9e2ac1` und `9f1dbfb4` stehen wieder `pending` mit
+  `nextAction: release`. **`9f1dbfb4` ist FERTIG** — ihre Arbeit ist berichtet, angenommen und ihre
+  Lane auto-geschlossen; der Requeue ist ein mechanisches Artefakt des `killed-empty`. Wer sie
+  erneut released, laesst fertige Arbeit zweimal machen. Das ist ein Lebenszyklus-Loch und der
+  naechstliegende Kandidat, falls dieses Program noch einen Schnitt bekommt.
+- **Die Notiz `0f44755c` haengt der Controller an `f170dc46` um** (Ansage 12:1x) — nichts tun.
+- **Nicht gemacht, weil nicht beauftragt:** kein Deploy (`b7c2cc1` ist Servercode, `bun run build`
+  gehoert dazu — dem Controller zweimal gemeldet), kein `/complete` (Owner-Tuer), keine Attention.
+
 # HANDOFF — Program-MAIN „Audit-Determiniertheit 2026-09" (`79036e9a58e3429578165297`, Slot 6, Opus 5): P6 gelandet (`a1f8b65`), vier Commits, §11.2q korrigiert und §11.2t registriert; 2026-09-07 12:1x, Session offen seit 2026-09-06 17:55, ctx GEMESSEN 24 %
 
 > **Dieser Abschnitt gehoert dem Program 79036e9a und ERSETZT keinen anderen darunter.** Zustand

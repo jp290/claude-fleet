@@ -223,6 +223,17 @@ const PRE_AUTH_ROUTES = [
   // below is unchanged by this feature.
   '= /api/self/suite-offer',
   '= /api/self/suite-offer/withdraw',
+  // W3, 2026-09-07 · THE SELF-SPLIT of a land wave. Lane-only, in the drift/gate/criterion
+  // direction and for the same reason: the answer is about rows the CALLER'S OWN lane is holding.
+  // What bounds it, and why it is on this list rather than behind the owner token: the door
+  // reaches NO row outside the caller's own wave (membership is `t.slot === s.id`, which nothing
+  // in a body can nominate), it must leave at least one row with the lane, it writes into no pane,
+  // it starts nothing and it lands nothing. Its ONE effect is `sent → queued` on rows the caller
+  // already holds — a state the caller could reach anyway by abandoning the lane, only with the
+  // reason recorded instead of lost. The opposite scope from its files-proposal neighbour is
+  // deliberate: proposing a surface costs a row nothing, writing a queue status is the act that
+  // has to be bound to the party actually doing the work.
+  '= /api/self/wave/split',
   // Dual-Host S2/R5, THE REMOTE COMMAND JOB. On this list for the same structural reason as every
   // neighbour — the exact self principal IS the boundary — and it is the first self route whose
   // body carries a COMMAND LINE, so what bounds it is spelled out rather than inherited:

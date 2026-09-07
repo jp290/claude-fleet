@@ -4779,6 +4779,7 @@ export async function run(ctx: Ctx): Promise<void> {
         (w3RowsBefore.find((t) => t.id === id) as { created?: number } | undefined)?.created ?? 0;
       const w3ExpectedHead = w3Created(wA) !== w3Created(wB)
         ? (w3Created(wA) < w3Created(wB) ? wA : wB) : (wA < wB ? wA : wB);
+      const w3Since = Date.now();
       const w3Res = await w3Start({ ids: [wB, wA] }); // deliberately NOT in wave order: the door orders
       const w3Body = (await w3Res.json()) as
         { ok?: boolean; slot?: number; branch?: string; error?: string;
@@ -4799,29 +4800,56 @@ export async function run(ctx: Ctx): Promise<void> {
         w3A?.status === "sent" && w3B?.status === "sent"
         && (w3A as { slot?: number }).slot === w3Slot && (w3B as { slot?: number }).slot === w3Slot,
         JSON.stringify({ slot: w3Slot, a: w3A, b: w3B }));
-      const w3SlotRow = ((await (await get("/api/sessions")).json()) as
-        { slots: { id: number; taskId?: string | null }[] }).slots.find((x) => x.id === w3Slot);
+      // `s.taskId` rides the PERSISTED state, never the 2 s poll — the sessions slot view carries
+      // cwd/label/git/worktree and no provenance at all. Read it where it lives, and let the read
+      // fail as ITSELF: a probe that could not find the slot row must not report "the head is
+      // wrong", which is exactly what an `undefined === head` comparison said on the first run.
+      const w3Disk = async (): Promise<{ taskId?: string | null } | null> => {
+        for (let i = 0; i < 40; i++) {
+          try {
+            const st = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+              { slots?: Record<string, { taskId?: string | null }> };
+            const row = st.slots?.[String(w3Slot)];
+            if (row) return row;
+          } catch { /* saveState writes tmp+rename; a read landing mid-write throws */ }
+          await Bun.sleep(100);
+        }
+        return null;
+      };
+      const w3SlotRow = await w3Disk();
+      check("(w3) probe: the wave lane's persisted slot row is readable (this probe fails as itself, not as the head)",
+        w3SlotRow !== null, `slot ${w3Slot} not in fleet.json`);
       check("(w3) the slot's own taskId names the HEAD alone — the follower rides `t.slot`, not a second slot field",
-        w3SlotRow?.taskId === w3ExpectedHead,
+        !!w3SlotRow && w3SlotRow.taskId === w3ExpectedHead,
         JSON.stringify({ taskId: w3SlotRow?.taskId ?? null, head: w3ExpectedHead }));
 
       // (4) THE BRIEF. Read from the prompt journal, like every other dispatched-brief check in
       // this suite: the dispatch seam calls sendText + logPrompt and pushes nothing into the slot's
       // own history.
+      // SCOPED BY `since`, exactly as e2e/programs.ts scopes its own brief reads and for the reason
+      // stated there: slot ids are RECYCLED, and this harness delivers more than one wave brief per
+      // run. Without the stamp the first poll matched a PREVIOUS wave's brief still sitting on this
+      // slot id, broke out of the loop after one iteration, and then failed on ids it had never
+      // been looking for — a stale hit reported as a feature defect.
       let w3Prompt = "";
-      for (let i = 0; i < 80 && w3Slot; i++) {
+      for (let i = 0; i < 120 && w3Slot; i++) {
         const j = (await (await get("/api/prompts?limit=50&q=WELLE")).json()) as
-          { prompts: { slot?: number; text?: string }[] };
-        const hit = j.prompts.find((x) => x.slot === w3Slot && (x.text ?? "").includes("EIN LAND"));
+          { prompts: { ts?: number; slot?: number; text?: string }[] };
+        const hit = j.prompts.find((x) => x.slot === w3Slot && typeof x.ts === "number"
+          && x.ts >= w3Since && (x.text ?? "").includes("EIN LAND"));
         if (hit) { w3Prompt = hit.text ?? ""; break; }
         await Bun.sleep(250);
       }
+      // …and if it never arrived, the row's own note carries the dispatch tail's reason (every
+      // failure inside briefAndSend requeues WITH a note). Printing it is what turns "no brief"
+      // from a dead end into a diagnosis.
+      const w3HeadNote = (await wDigest(w3ExpectedHead))?.note ?? null;
       check("(w3) the wave brief reached the pane and names both rows in the wave's fixed order",
         w3Prompt.includes(`${w3Body.wave?.ids[0]} → ${w3Body.wave?.ids[1]}`)
         && w3Prompt.indexOf(`ZEILE 1 VON 2 · ${w3Body.wave?.ids[0]}`)
           < w3Prompt.indexOf(`ZEILE 2 VON 2 · ${w3Body.wave?.ids[1]}`)
         && w3Prompt.indexOf(`ZEILE 1 VON 2 · ${w3Body.wave?.ids[0]}`) > 0,
-        w3Prompt.slice(0, 400) || "no wave brief in the prompt journal");
+        w3Prompt.slice(0, 400) || `no wave brief since ${w3Since} — head row note: ${w3HeadNote}`);
       check("(w3) the brief states the three wave rules — one commit per row, ONE land, and the split door",
         w3Prompt.includes("EIN COMMIT JE ZEILE") && w3Prompt.includes("EIN LAND FÜR DIE GANZE LANE")
         && w3Prompt.includes("/api/self/wave/split"),

@@ -8118,7 +8118,7 @@ exit 0
       return { row, slot: lane.slot, fired, reached, intruder };
     };
     type FfrVerdict = { status?: string; landed?: boolean; errorReason?: string; detail?: string;
-      ffRounds?: number; candidateSha?: string;
+      ffRounds?: number; waitRounds?: number; candidateSha?: string;
       verify?: { ok?: boolean | null; mainSha?: string; waitedOut?: true; timedOut?: true;
         ms?: number; waitMs?: number } };
     const ffrSettled = async (slot: number | null, ms = 120_000): Promise<FfrVerdict | null> => {
@@ -8317,7 +8317,10 @@ exit 0
     mkdirSync(ffrLock, { recursive: true });
     writeFileSync(`${ffrLock}/pid`, `${m1Held}\n`, { mode: 0o600 });
     writeFileSync(`${ffrLock}/birth`, "e2e-m1-occupant\n", { mode: 0o600 });
-    await restartSrv({ ...ffrEnv, FLEET_VERIFY_WAIT_MS: "1000" });
+    // FLEET_LAND_WAIT_ROUNDS=0 is not scenery either: it is the way back out of M2's bounded
+    // wiedervorlage (§8i), so this whole section keeps measuring M1's denial as M1 wrote it — one
+    // budget, one take, a terminal verdict. §8i's own arms turn it back on.
+    await restartSrv({ ...ffrEnv, FLEET_VERIFY_WAIT_MS: "1000", FLEET_LAND_WAIT_ROUNDS: "0" });
     ffrReset();
     const m1AuditRows = (): Record<string, unknown>[] => {
       try {
@@ -8368,6 +8371,18 @@ exit 0
     check("(vi) M1: the denial gives nothing back that was not ours — the occupant still holds the lock the server could not take",
       m1LockAfter === m1Held && ffrAlive(m1Held),
       JSON.stringify({ lockPid: m1LockAfter, occupant: m1Held, alive: ffrAlive(m1Held) }));
+    // (vi-b) THE WAY BACK OUT OF §8i, measured on the arm that just ran. M2 makes this denial a
+    // wiedervorlage; FLEET_LAND_WAIT_ROUNDS=0 must keep it byte for byte what M1 wrote, and that is
+    // three separate absences rather than one: no round on the verdict, no round in the words it
+    // hands a reader, and ONE budget spent rather than two — the last is what a cap that silently
+    // defaulted would fail, since it is the only one a wrong default cannot fake.
+    check("(vi-b) M2 counter-proof: at FLEET_LAND_WAIT_ROUNDS=0 the denial is exactly M1's — one budget, no round count on the verdict, no round sentence in its words",
+      m1Verdict?.waitRounds === undefined
+        && (m1Verdict?.verify?.ms ?? 1e9) < 2000
+        && !(m1Verdict?.detail ?? "").includes("asked for the machine")
+        && !(m1Verdict?.detail ?? "").includes("went back for the machine"),
+      JSON.stringify({ waitRounds: m1Verdict?.waitRounds,
+        ms: m1Verdict?.verify?.ms, detail: (m1Verdict?.detail ?? "").slice(0, 200) }));
     // THE LEDGER. Three verdict forms have now settled on this instance under M1 — the retry LAND
     // (8e i), the RED retry gate (8e iv) and the denial just above — plus whatever the earlier
     // sections of this suite produced. Read as a DELTA from the baseline taken above, so this
@@ -8828,6 +8843,125 @@ exit 0
     for (const f of [ffrLatch, `${ffrLatch}.reached`, `${ffrLatch}.release`]) try { rmSync(f); } catch { /* spent */ }
     check("(8h) M3 teardown: REPO2's tree is clean again, so the sections after this one measure the product and not this fixture's dirt",
       m3RepoStatus() === "", m3RepoStatus().slice(0, 200));
+
+    // --- (8i) M2 · A DENIED MACHINE IS A WIEDERVORLAGE, NOT A DEATH (2026-09-07) ---------------
+    // (8f) proved the denial, (8g) proved it is not handed out for nothing. What it still WAS is
+    // terminal: `resolved, landed:false, waitedOut`, and a human or a MAIN pressed the whole move
+    // again. The incident this section is named after is the first land of W3 on 2026-09-07 — it
+    // stood 2 700 004 ms in the queue, exactly the full FLEET_VERIFY_WAIT_MS, behind a foreign
+    // ./e2e-isolated.sh with a foreign clean-review ticketed behind that, and was then swept away
+    // with `verify.ok:null, exitCode:null`. The gate had never looked at the tree
+    // (docs/messungen/2026-09-06-merge-prozess-robust.md §3 M2).
+    // TWO ARMS, and they are each other's control: the same occupied machine, once freed while the
+    // land is between rounds and once never freed at all. The first must land in the second round
+    // and count it; the second must still die — but only after BOTH budgets, which is the half a
+    // slow fixture cannot fake, since a cap that quietly stayed 0 spends exactly one.
+    // The budget is 8 s in the first arm rather than (8f)'s 1 s: the waiting round has to be READ
+    // through the door a MAIN polls while it is genuinely in flight, and the take polls at 5 s.
+    const m2Wait = async (slot: number | null): Promise<{ running?: boolean; waitRound?: number;
+        retryAt?: number } | null> => {
+      // a null slot never reaches the probe (the §8g lesson): `/api/slots/null/merge` parses as
+      // JSON and throws, and a probe that could not run must fail as itself, not as the product.
+      if (slot === null) return null;
+      const deadline = Date.now() + 90_000;
+      for (;;) {
+        const mg = (await (await get(`/api/slots/${slot}/merge`)).json()) as
+          { running?: boolean; waitRound?: number; retryAt?: number };
+        if (mg.waitRound !== undefined || Date.now() >= deadline) return mg;
+        await Bun.sleep(200);
+      }
+    };
+    const m2NoteOf = (sha: string): { waitRounds?: number; ffRounds?: number;
+        verify?: { ok?: boolean | null; out?: string; waitMs?: number } } => {
+      try {
+        return JSON.parse(spawnSync("git", ["-C", REPO2, "notes", "--ref=fleet/land", "show", sha])
+          .stdout.toString()) as { waitRounds?: number };
+      } catch { return {}; }
+    };
+    // (i)+(ii) THE ROUND THAT LANDS. The occupant holds the machine when the land starts, so the
+    // first hold is denied in full; it is released only once the door itself says the job is in
+    // round 1 — a release before that would prove nothing about the second round existing.
+    const m2Occ = m5Spawn();
+    m5Lock(m2Occ, "e2e-m2-occupant");
+    await restartSrv({ ...ffrEnv, FLEET_VERIFY_WAIT_MS: "8000", FLEET_LAND_WAIT_ROUNDS: "1" });
+    ffrReset();
+    const m2AuditBefore = m1AuditRows().length;
+    const m2MainBefore = main2Of();
+    const m2StartedAt = Date.now(); // nothing this land does can have asked for the machine before this
+    const m2W = await m1Land("m2 wait", "m2-wait.txt");
+    const m2Waiting = await m2Wait(m2W.slot);
+    // ZERO gate runs at this instant is the positive half of "nothing was spawned while it waited":
+    // the stand-in appends one line per invocation, so an empty log is a measurement of absence.
+    const m2RunsWhileWaiting = ffrLogRuns().length;
+    const m2LockWhileWaiting = m5LockPid();
+    spawnSync("kill", [m2Occ]);
+    rmSync(ffrLock, { recursive: true, force: true }); // the machine frees up mid-round
+    const m2Landed = await ffrDone(m2W.row);
+    const m2Main = main2Of();
+    const m2Note = m2NoteOf(m2Main);
+    check("(i) M2: a land denied the machine stays RUNNING and says which round it is in — waitRound 1 with the instant it asked, nothing spawned, and the occupant still holding the lock",
+      m2W.fired && m2W.slot !== null && m2Waiting?.running === true && m2Waiting.waitRound === 1
+        && typeof m2Waiting.retryAt === "number" && m2Waiting.retryAt >= m2StartedAt
+        && m2RunsWhileWaiting === 0 && m2LockWhileWaiting === m2Occ,
+      JSON.stringify({ fired: m2W.fired, slot: m2W.slot, waiting: m2Waiting,
+        gateRuns: m2RunsWhileWaiting, lockPid: m2LockWhileWaiting, occupant: m2Occ }));
+    check("(i) M2: …and it LANDS in that round — the second hold takes the freed mutex, the gate runs exactly once, and main moves onto the lane's work",
+      m2Landed && m2Main !== m2MainBefore && ffrLogRuns().length === 1 && !existsSync(ffrLock),
+      JSON.stringify({ done: m2Landed, mainMoved: m2Main !== m2MainBefore,
+        gateRuns: ffrLogRuns().length, lockLeft: existsSync(ffrLock) }));
+    // THE NOTE, for the same reason (8e ii) reads it and not the verdict: the land tore the lane
+    // down, and the note is what outlives it. Three facts, each false on its own if the round was
+    // not really spent — the count, the gate verdict of the round that RAN, and a queue at least
+    // one full budget long charged to it.
+    check("(ii) M2: the land note counts the round it waited — waitRounds:1 beside the green verdict of the gate that finally ran, with the whole queue charged to it",
+      m2Note.waitRounds === 1 && m2Note.verify?.ok === true
+        && (m2Note.verify?.out ?? "").includes("run 1")
+        && (m2Note.verify?.waitMs ?? 0) >= 8000 && m2Note.ffRounds === undefined,
+      JSON.stringify({ note: m2Note }));
+    // …and the ledger row M1 built, carrying the same number in a field rather than in prose
+    let m2Rows = m1AuditRows();
+    for (let i = 0; i < 80 && m2Rows.length <= m2AuditBefore; i++) {
+      await Bun.sleep(100);
+      m2Rows = m1AuditRows();
+    }
+    const m2LandRow = m2Rows.slice(m2AuditBefore).filter((r) => r.status === "merged" && r.landed === true);
+    check("(ii) M2: the merge_verdict row of that land carries waitRounds as a countable field — the six lanes that died `waited` in the five days to 2026-09-06 could not be counted any other way",
+      m2LandRow.length === 1 && m2LandRow[0]?.waitRounds === 1
+        && typeof m2LandRow[0]?.waitMs === "number" && m2LandRow[0]?.waitedOut === undefined,
+      JSON.stringify({ before: m2AuditBefore, rows: m2Rows.slice(m2AuditBefore) }));
+
+    // (iii) THE MACHINE THAT IS NEVER FREED. The bound is the whole safety of the cut: a land that
+    // waits forever holds a slot and a MAIN that is waiting on it. So the terminal verdict must
+    // still arrive — and it must arrive LATE, after two budgets rather than one, which is the only
+    // assertion here that a cap silently stuck at 0 would fail.
+    const m2Occ2 = m5Spawn();
+    m5Lock(m2Occ2, "e2e-m2-occupant-2");
+    await restartSrv({ ...ffrEnv, FLEET_VERIFY_WAIT_MS: "2000", FLEET_LAND_WAIT_ROUNDS: "1" });
+    ffrReset();
+    const m2DeniedBefore = main2Of();
+    const m2AuditBefore2 = m1AuditRows().length;
+    const m2D = await m1Land("m2 denied", "m2-denied.txt");
+    const m2DVerdict = await ffrSettled(m2D.slot);
+    check("(iii) M2: a machine that never frees up still ends terminal — the M1 verdict, but only after BOTH budgets, with the round on the record and nothing ever spawned",
+      m2D.fired && m2D.slot !== null && m2DVerdict?.status === "resolved" && m2DVerdict.landed === false
+        && m2DVerdict.verify?.ok === null && m2DVerdict.verify?.waitedOut === true
+        && m2DVerdict.waitRounds === 1 && (m2DVerdict.verify?.ms ?? 0) >= 4000
+        && ffrLogRuns().length === 0 && main2Of() === m2DeniedBefore,
+      JSON.stringify({ fired: m2D.fired, verdict: m2DVerdict, gateRuns: ffrLogRuns().length,
+        mainMoved: main2Of() !== m2DeniedBefore }));
+    check("(iii) M2: the words a reader gets say how often it asked, and the ledger row says it in a field",
+      (m2DVerdict?.detail ?? "").includes("NEVER STARTED")
+        && (m2DVerdict?.detail ?? "").includes("asked for the machine 2 times in all")
+        && m1AuditRows().slice(m2AuditBefore2)
+          .filter((r) => r.waitedOut === true && r.waitRounds === 1).length === 1,
+      JSON.stringify({ detail: (m2DVerdict?.detail ?? "").slice(0, 400),
+        rows: m1AuditRows().slice(m2AuditBefore2) }));
+    check("(iii) M2: two denied rounds still gave nothing away — the occupant holds the lock it never lost",
+      m5LockPid() === m2Occ2 && ffrAlive(m2Occ2),
+      JSON.stringify({ lockPid: m5LockPid(), occupant: m2Occ2, alive: ffrAlive(m2Occ2) }));
+    spawnSync("kill", [m2Occ2]);
+    rmSync(ffrLock, { recursive: true, force: true });
+    await m5Drop(m2D.slot);
 
     for (const f of [`${ffrLatch}`, `${ffrLatch}.reached`, `${ffrLatch}.release`, ffrVerify, ffrCount,
       ffrLog, `${ROOT}/ffretry.park.2`, `${ROOT}/ffretry.red.2`, `${ROOT}/ffretry.parked.2`,

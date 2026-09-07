@@ -193,13 +193,17 @@ export async function run(): Promise<void> {
   // (e2e-isolated.sh). That verdict IS persisted and the lane stays alive — the exact shape a
   // controller must see before starting another land.
   await setMergeMode("blocked");
+  // ORDER IS THE FIXTURE. The lane must branch FIRST and main must move AFTERWARDS, or the rebase
+  // is a fast-forward and no agent is ever consulted — openLane already commits `ctlconflict.txt`
+  // on the lane side, so main adding the same path with different content is the conflict.
+  const lc = await openLane(REPO, "ctlconflict");
   await Bun.write(`${REPO}/ctlconflict.txt`, "main side\n");
   spawnSync("git", ["-C", REPO, "add", "ctlconflict.txt"]);
-  spawnSync("git", ["-C", REPO, "commit", "-qm", "ctl conflict seed"]);
-  const lc = await openLane(REPO, "ctlconflict");   // same file, different content → conflict
-  await Bun.write(`${lc.cwd}/ctlconflict.txt`, "lane side\n");
-  spawnSync("git", ["-C", lc.cwd, "add", "ctlconflict.txt"]);
-  spawnSync("git", ["-C", lc.cwd, "commit", "-qm", "ctl conflict lane side"]);
+  spawnSync("git", ["-C", REPO, "commit", "-qm", "ctl conflict seed on main"]);
+  check("ctl setup: the lane and main both carry a conflicting ctlconflict.txt",
+    gitOut(REPO, "log", "--oneline", "-1").includes("ctl conflict seed on main")
+      && gitOut(lc.cwd, "log", "--oneline", "-1").includes("ctlconflict lane work"),
+    `main=${gitOut(REPO, "log", "--oneline", "-1")} lane=${gitOut(lc.cwd, "log", "--oneline", "-1")}`);
   await settleForMerge(lc.slot);
   const blockedLand = await landRetry(lc.slot, ["--wait", "--json"]);
   const bj = blockedLand.json as { last?: { status: string; landed: boolean } | null } | null;
@@ -319,11 +323,18 @@ export async function run(): Promise<void> {
         const evJson = ev.json as { events?: { id: string; kind: string; status: string }[] } | null;
         const apiSelf = (await (await fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": selfTok } })).json()) as
           { events: { id: string; kind: string; status: string }[] };
-        check("ctl events: the list is exactly the receiver's own events, by id and status",
+        // ids and kinds, NOT status: a status moves on the server's own tick (pending → delivered)
+        // and comparing it across two reads would be a race dressed as an assertion. The status is
+        // checked as a VALUE instead — it must be one the state machine actually has.
+        const STATUSES = ["pending", "send-uncertain", "delivered", "acknowledged", "receiver-gone",
+          "subject-gone", "inbox", "blocked"];
+        check("ctl events: the list is exactly the receiver's own events, by id and kind",
           ev.code === 0
-            && JSON.stringify((evJson?.events ?? []).map((e) => [e.id, e.kind, e.status]))
-              === JSON.stringify(apiSelf.events.map((e) => [e.id, e.kind, e.status])),
-          `ctl=${(evJson?.events ?? []).length} api=${apiSelf.events.length}`);
+            && JSON.stringify((evJson?.events ?? []).map((e) => [e.id, e.kind]))
+              === JSON.stringify(apiSelf.events.map((e) => [e.id, e.kind]))
+            && (evJson?.events ?? []).length > 0
+            && (evJson?.events ?? []).every((e) => STATUSES.includes(e.status)),
+          `ctl=${JSON.stringify((evJson?.events ?? []).map((e) => [e.id, e.kind, e.status]))} api=${JSON.stringify(apiSelf.events.map((e) => [e.id, e.kind]))}`);
 
         // Ack is only accepted on `delivered` / `send-uncertain`; a pending row was never offered.
         // So the precondition is polled and checked AS ITS OWN ROW — an ack check that ran with
@@ -344,8 +355,11 @@ export async function run(): Promise<void> {
           const after = (await (await fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": selfTok } })).json()) as
             { events: { id: string; status: string }[] };
           const leftOpen = after.events.filter((e) => e.status === "delivered" || e.status === "send-uncertain");
+          // the INVARIANT, not the count: whatever was ackable when the verb ran is closed, every
+          // ack succeeded, and nothing acknowledgeable is left holding delivery budget. A `===
+          // ackable` comparison would race the tick that can make one more event ackable meanwhile.
           check("ctl events --ack: every acknowledgeable event is closed, and none is left holding budget",
-            acked.code === 0 && (aj?.acked ?? []).length === ackable
+            acked.code === 0 && (aj?.acked ?? []).length >= 1
               && (aj?.acked ?? []).every((a) => a.ok) && leftOpen.length === 0,
             `acked=${JSON.stringify(aj?.acked ?? [])} left=${leftOpen.length}`);
         }

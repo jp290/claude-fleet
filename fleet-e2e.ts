@@ -31,6 +31,7 @@ import * as laneRisk from "./e2e/lane-risk";
 import * as explorer from "./e2e/explorer";
 import * as drops from "./e2e/drops";
 import * as landProvenance from "./e2e/land-provenance";
+import * as ctl from "./e2e/ctl";
 import * as concurrency from "./e2e/concurrency";
 import * as selfToken from "./e2e/self-token";
 import * as laneSuite from "./e2e/lane-suite";
@@ -111,6 +112,11 @@ if (REPO) {
   // down again — so it shares no fixture with the sections around it.
   await drops.run();
   await landProvenance.run();
+  // the controller's own verb layer, measured against the routes it wraps. Here because it LANDS
+  // lanes and hand-starts a queued row — the same fixtures the two neighbours above and below use —
+  // and because it must run while a receiver session can still be opened beside them. It opens and
+  // kills every slot it uses and leaves no watch, lock or lane behind.
+  await ctl.run();
   await concurrency.run();
   await selfToken.run(ctx);
   // the LANE-SUITE half of the remote helper portal — right after the self-token family whose

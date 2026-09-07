@@ -6664,6 +6664,79 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   }
 }
 
+// ================================================================================================
+// ctl.sh — the controller's verb layer, and the two files that must agree about it
+// ================================================================================================
+// The other half of both pairs is a SHELL SCRIPT and a DOC, so no compiler can see either. And the
+// failure they guard is the ordinary one: a verb gains a flag, or is renamed, or is added — and
+// docs/controller.md §Werkzeuge keeps describing the fleet as it was. A controller reads that
+// section instead of the script, so a stale paragraph is a wrong instruction, not a stale comment.
+// Both DIRECTIONS, the rule this file states for every set: a verb with no paragraph, and a
+// paragraph naming a verb that does not exist.
+{
+  const RULE_CTL = "ctl.sh's verb list, its usage block and docs/controller.md §Werkzeuge are one set";
+  const ctl = read("ctl.sh");
+  const controllerDoc = read("docs/controller.md");
+  const declared = /^CTL_VERBS="([^"]+)"$/m.exec(ctl)?.[1]?.trim().split(/\s+/).filter(Boolean) ?? [];
+  // a dash in a declared verb is the CLI's space: `wait-merge` is typed `./ctl.sh wait merge`
+  const cliForm = (v: string): string => v.replace("-", " ");
+  const werkzeuge = (() => {
+    const at = controllerDoc.indexOf("\n## Werkzeuge\n");
+    if (at < 0) return "";
+    const rest = controllerDoc.slice(at + 1);
+    const end = rest.indexOf("\n## ", 1);
+    return end < 0 ? rest : rest.slice(0, end);
+  })();
+  // A bullet OPENS a verb's paragraph: `- **\`ctl.sh <cli form>` …`. The character after the form
+  // must be a space or the closing backtick, so `land` cannot be satisfied by a `lands` entry.
+  const namesVerb = (text: string, v: string): boolean => {
+    const head = "- **`ctl.sh " + cliForm(v);
+    const at = text.indexOf(head);
+    return at >= 0 && [" ", "`"].includes(text.charAt(at + head.length));
+  };
+  pin(`${RULE_CTL} — CTL_VERBS is declared in ctl.sh and every verb has a §Werkzeuge paragraph`,
+    declared.length > 0 && werkzeuge !== "" && declared.every((v) => namesVerb(werkzeuge, v)),
+    declared.length === 0 ? "no CTL_VERBS= line in ctl.sh"
+      : werkzeuge === "" ? "no §Werkzeuge section in docs/controller.md"
+        : `undocumented=[${declared.filter((v) => !namesVerb(werkzeuge, v)).join(", ")}]`);
+  // …and back. Every `- **\`ctl.sh …` bullet in the section must be one of the declared verbs —
+  // otherwise the doc teaches a verb the script does not have, which is the more expensive half.
+  const documented = [...werkzeuge.matchAll(/^- \*\*`ctl\.sh ([^`]+)`/gm)].map((m) => m[1]!.trim());
+  const orphan = documented.filter((d) => !declared.some((v) => {
+    const f = cliForm(v);
+    return d === f || d.startsWith(f + " ");
+  }));
+  pin(`${RULE_CTL} — every §Werkzeuge bullet names a verb ctl.sh actually declares`,
+    documented.length > 0 && orphan.length === 0,
+    documented.length === 0 ? "no `ctl.sh <verb>` bullets found in §Werkzeuge"
+      : `documented=${documented.length} orphan=[${orphan.join(", ")}]`);
+  // The usage block is what a session sees when it types the script's name with no argument. A verb
+  // missing THERE is invisible in exactly the moment someone is looking for it.
+  const usage = ctl.slice(ctl.indexOf("usage() {"), ctl.indexOf("USAGE\n"));
+  pin(`${RULE_CTL} — the usage block lists every declared verb`,
+    usage !== "" && declared.every((v) => usage.includes("\n  " + cliForm(v))),
+    `missing=[${declared.filter((v) => !usage.includes("\n  " + cliForm(v))).join(", ")}]`);
+  // TOKEN HYGIENE, as a fastener rather than a habit (CLAUDE.md §Self-scheduling): ensureSlot bakes
+  // every pane's self-credential into its zsh line, so a `ps` that prints COMMANDS prints foreign
+  // slots' tokens into whatever reads the output. ctl.sh may COUNT processes and must never render
+  // one — so `command` may appear in a ps invocation only where it is piped straight into `grep -c`.
+  // COMMENTS ARE NOT CODE, and this file's own prose names the forbidden form to explain it — a
+  // scan that read them would fail the rule for stating it. Shell `#` and the embedded program's
+  // `//` lines are dropped before the scan; nothing else is.
+  const ctlCode = ctl.split("\n").filter((l) => !/^\s*(#|\/\/)/.test(l)).join("\n");
+  const psUses = [...ctlCode.matchAll(/ps [^"'\n]*command[^"'\n]*/g)].map((m) => m[0]);
+  pin(`${RULE_CTL} — ctl.sh counts processes and never renders a command line`,
+    psUses.length > 0 && psUses.every((u) => u.includes("grep -c")),
+    `ps-command uses=${psUses.length} rendering=[${psUses.filter((u) => !u.includes("grep -c")).join(" | ")}]`);
+  // the module that MEASURES the script must be booted by the runner, and beside its family rather
+  // than appended: a check module nothing imports is the vacuum-green shape this file exists for.
+  const runner = read("fleet-e2e.ts");
+  pin(`${RULE_CTL} — e2e/ctl.ts exists and the runner boots it inside the lane block`,
+    exists("e2e/ctl.ts") && runner.includes('import * as ctl from "./e2e/ctl"')
+      && runner.includes("await ctl.run();"),
+    `module=${exists("e2e/ctl.ts")} imported=${runner.includes('import * as ctl from "./e2e/ctl"')} called=${runner.includes("await ctl.run();")}`);
+}
+
 console.log(rows.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

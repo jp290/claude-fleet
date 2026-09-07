@@ -49,18 +49,106 @@ Ausnahmen, in denen der Controller selbst Hand anlegt (abschließende Liste):
 
 **Watches immer mit `idleSec:0`** und zugestellte Events quittieren — ein arbeitender Controller
 wird nie 60 s idle, und unquittierte Events fressen den Watch-Deckel (gemessen 2026-09-07; Regelbuch
-§Self-scheduling). Die mechanischen Züge (merges-Sensor, Lock-Gesundheit, Land + Watch, Report
-lesen, Hand-Dispatch, Warte-Loops) bündelt `ctl.sh`, sobald Zeile `97c5d469` gelandet ist; bis
-dahin curl und Datei-Monitore aus dem Scratchpad.
+§Self-scheduling). Die mechanischen Züge bündelt `ctl.sh` (§Werkzeuge): `ctl.sh watch` setzt
+`idleSec` von sich aus auf 0 und `ctl.sh events --ack` räumt den Deckel.
 
 - **Triage-Auto (15 min)** beim Session-Start neu anlegen — Autos sterben mit dem Slot. Inhalt:
   attentionRequests mechanisch selbst erledigen · eigene Lanes prüfen · Trail auf
   `self_land_start`/409.
-- **Rückweg VOR dem Abwenden, als Mechanismus:** Lane → `POST /api/self/watch` (kind lane/merge/
-  audit). Kein Watch-Platz (Budget 5) → Hintergrund-Watcher auf das EREIGNIS (`until <Bedingung>`),
-  nie ein geratener Timer. Jedes Event wird nach dem Lesen ge-ackt.
+- **Rückweg VOR dem Abwenden, als Mechanismus:** Lane → `ctl.sh watch lane|merge|audit`
+  (`POST /api/self/watch`). Kein Watch-Platz (Budget 5) → `ctl.sh wait change` bzw.
+  `ctl.sh wait merge` detacht starten, nie ein geratener Timer und nie ein handgeschriebener
+  `until`-Loop im Scratchpad: der stirbt mit der Session, das Verb liegt im Repo. Jedes Event wird
+  nach dem Lesen ge-ackt (`ctl.sh events --ack`).
 - **Ernten heißt Pane lesen.** Die Watch-Nachricht ist ein Server-Prädikat, kein Bericht; „idle"
   hat vier Gesichter, nur eines ist landbar.
+
+## Werkzeuge
+
+`./ctl.sh` im Repo-Root ist die mechanische Hälfte dieser Rolle: zehn Verben, jedes ein Zug über
+eine Route, die es **nicht** ändert. Es entscheidet nichts — kein Verb wählt eine Lane, eine Zeile
+oder einen Moment. Was es entfernt, ist das Abtippen und das Raten der Feldform: gemessen in EINER
+Controller-Nacht (2026-09-07 04:44–05:20, Slot 10) kosteten `{"slot":1}` statt `{"target":1}`, eine
+Kurz-Sha in einem Audit-Watch und drei Anläufe an der `fleetReports`-Struktur je einen Turn, und
+drei Scratch-Monitore starben mit dem Scratchpad ihrer Session.
+
+Jedes Verb kennt `--json` (Maschinenform; Default ist Klartext). Credentials, jede fehlende wird
+namentlich gemeldet und exit 2: `FLEET_CTL_URL` (sonst `FLEET_HOST` aus `<home>/.env`, Port 8790) ·
+`FLEET_CTL_TOKEN`, sonst `FLEET_TOKEN`, sonst `token` aus `<home>/fleet.json` (Owner-Verben) ·
+`FLEET_SELF_TOKEN` aus der Pane (Self-Verben) · `FLEET_CTL_HOME` = der Checkout mit
+`fleet.json`/`.env`/den Ledgern, Default der Haupt-Checkout (eine Lane findet ihn über den
+gemeinsamen git-dir, wie `state.sh`). Die drei Overrides sind für die Suite gebaut.
+
+- **`ctl.sh merges`** — der Land-Sensor. LIEST `merges` aus `fleet.json` (persistierte `MergeLast`
+  je Slot) UND, mit Owner-Token, `GET /api/slots/:id/merge` je Slot für das laufende Halb. Schreibt
+  nichts. Exit 1, solange ein Land LÄUFT oder ein `interrupted` OHNE Verdikt steht — beides heißt
+  „warten"; ohne Owner-Token steht `running=UNKNOWN` da und wird nie als „nein" gelesen.
+  Token: Owner (optional — ohne ihn bleibt die Live-Hälfte ungemessen).
+- **`ctl.sh lock`** — Gesundheit des Suite-Mutex, in der Dreiteilung von `e2e-stage.sh`
+  (held · stale · parked) plus FREE und UNKNOWN. Liest `$FLEET_SUITE_LOCK` (Default
+  `/tmp/fleet-e2e.lock`), dessen `pid`/`birth`, die Tickets in `.q` und die Wrapper-ZAHL — nie eine
+  Kommandozeile, denn in `ps` stehen per Konstruktion fremde Self-Tokens. `--reap` schreibt (rmdir)
+  und nur dann: der Halter ist beweisbar tot, und beim MASCHINENWEITEN Default zusätzlich nur, wenn
+  kein Wrapper läuft. Ein selbst benannter Lock-Pfad bekommt diese zweite Bedingung nicht — eine
+  Wrapper-Zahl sagt nichts über einen Lock, den kein Wrapper benutzt. Token: keins.
+- **`ctl.sh ctx [slot]`** — der GEMESSENE Füllstand aus `GET /api/sessions` (`server.ts#contextFill`),
+  Default der eigene Slot (`FLEET_SELF_SLOT`). Schreibt nichts. `null` ist eine ANTWORT — „Fleet kann
+  es für diese Harness/dieses Modell nicht lesen" — und wird als UNMEASURABLE gedruckt und mit
+  exit 1 quittiert, nie als 0 %. Token: Owner.
+- **`ctl.sh report <taskId>`** — der neueste Fleet-Report zu einer Zeile, aus
+  `GET /api/self/fleet-report`. Schreibt nichts. Druckt `reportedAt`, `worker.slot`, den Empfänger
+  (Slot oder `owner-inbox`), `status`, die Entscheidung (`disposition`/`by`/`at`, sonst UNDECIDED)
+  und die ersten 20 Zeilen Text; `--full` gibt alles. Die Route ist auf den EIGENEN Occupant
+  gescoped: ein an die Owner-Inbox gefilter Report hat keinen Empfänger-Occupant und ist hier
+  bauartbedingt unsichtbar. Token: self.
+- **`ctl.sh watch lane|merge <slot>` / `watch audit <sha>`** — ein Self-Watch,
+  `POST /api/self/watch`. SCHREIBT ein Abo. Es setzt die zwei Feldformen richtig, die 2026-09-07
+  je einen Turn kosteten: der Subjekt-Slot heißt `target` (nie `slot`), und eine Audit-Sha wird
+  vorher über `git rev-parse --verify --quiet <sha>^{commit}` (`--repo`, Default `<home>`) zur
+  vollen Objekt-Id aufgelöst — die Route 400t auf alles andere. `idleSec` ist **0** per Default
+  (`--idle N` überschreibt), das Gegenteil des Route-Defaults und der einzige Wert, der einer
+  arbeitenden Session zustellt. Eine Ablehnung wird WÖRTLICH durchgereicht und exit 1. Token: self.
+- **`ctl.sh events [--ack]`** — die eigenen FleetEvents aus `GET /api/self`. `--ack` SCHREIBT:
+  `POST /api/self/events/:id/ack` für jede Zeile, die die Route annimmt (`delivered` und
+  `send-uncertain`; ein `pending` wurde nie angeboten, eine Inbox-Zeile gehört dem Owner). Ohne
+  `--ack` reines Lesen. Wichtig, weil ein unquittiertes Event Zustellbudget hält — daher „max 5
+  active watches" bei nur drei armierten. Token: self.
+- **`ctl.sh land <slot> [--wait]`** — `POST /api/slots/:id/merge`, eine Lane, nichts implizit.
+  SCHREIBT den Land. `--wait` blockiert bis zum Terminalfakt und druckt Status, `landed`, das Verdikt
+  mit BEIDEN Uhren (`ms` = Arbeit, `waitMs` = Schlange vor dem Mutex — nicht austauschbar), sowie
+  `proportional`/`steps`. Die `mainAfter` kommt aus `lane-outcomes.jsonl` (die Quelle, über die der
+  Audit selbst joint) und nur ersatzweise aus einem `git rev-parse` NACH dem Land — die Herkunft
+  steht in der Ausgabe. Bei `landed=YES` armiert es sofort den Audit-Watch für genau dieses Land;
+  ist Tier 2 aus, druckt es die Ablehnung, statt ein Abo zu behaupten. Ein 200, das NICHT
+  `{"running":true}` ist (blocked · „already merged" · ein zurückgereichtes ⏸-Verdikt), ist bereits
+  die ganze Antwort und wird nicht nachgepollt — sonst läse das Verb das Verdikt des VORIGEN Lands
+  als das Ergebnis dieses Aufrufs. Das Warten ist auf `FLEET_CTL_WAIT_MAX_SEC` (Default 3600 s)
+  gedeckelt und läuft es ab, ist das **exit 3 und ein Nicht-Urteil**, nie ein „nicht gelandet".
+  Token: Owner (+ self für den Audit-Watch).
+- **`ctl.sh dispatch <taskId>`** — `POST /api/tasks/:id/dispatch`, der Hand-Start. SCHREIBT eine
+  Lane. Vorher zählt es die Zeilen in `sent` gegen `FLEET_DISPATCH_MAX_LANES` (Default 3) und
+  verweigert mit Zahl und Deckel — der Knopf im Server prüft diesen Deckel NICHT, weil er die
+  unbeaufsichtigte Tick-Zählung umgeht. Die Zählung hier ist fleetweit und damit GRÖBER als die
+  Pro-Repo-Zählung des Servers: sie kann einen Start verweigern, den der Server erlaubt hätte,
+  und `--force` ist das eine Wort, das sie überspringt. Zwei Klartext-Notizen dazu: eine advisory
+  Zeile hat gar keinen Motor, und eine Zeile, deren Harness die Automation ablehnt, ist NUR über
+  diese Tür startbar. Token: Owner.
+- **`ctl.sh wait merge <slot>`** — EIN langer Wait auf den Terminalfakt genau dieses Merges, statt
+  eines Poll-Takts in der Pane. Liest `GET /api/slots/:id/merge`, schreibt nichts, kehrt mit dem
+  Verdikt zurück; derselbe Deckel und dasselbe exit 3 wie bei `land --wait`. Detacht starten
+  (`run_in_background`) — es ist die Controller-Seite derselben Regel, die jeder Lane-Brief trägt.
+  Token: Owner.
+- **`ctl.sh wait change`** — der Datei-Monitor, den das Scratchpad immer wieder verlor. Snapshottet
+  aus `fleet.json` die fünf Fakten, auf die ein Controller tatsächlich wartet — `attentionRequests`
+  je Status, `merges` je Slot, `fleetReports` je Entscheidung, Task-Status (`--tasks a,b,c` verengt)
+  und die Suite-Offer-Zeilen — plus die Zeilenzahl von `post-land-audits.jsonl`, und kehrt beim
+  ERSTEN Unterschied mit der Diff-Zeile zurück. Schreibt nichts. Token: keins (liest `<home>`).
+
+Zwei Grenzen, ausdrücklich: `ctl.sh` fügt **keine** Fähigkeit hinzu (fehlt eine Route, ist das ein
+Befund für den Owner, kein Grund, sie zu bauen), und es ersetzt das Pane-Lesen nicht — ein
+Watch-Signal bleibt ein Server-Prädikat, kein Bericht der Lane. Gepinnt: `e2e/pins.ts` hält die
+Verbliste in `ctl.sh` und die Absätze dieses Abschnitts in BEIDE Richtungen gegeneinander; gemessen
+wird `ctl.sh` in `e2e/ctl.ts` gegen eine isolierte Instanz.
 
 ## Disziplinen (die bezahlten)
 

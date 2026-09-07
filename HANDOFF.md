@@ -114,6 +114,9 @@ unmöglich oder sichtbar machen.
    Platte; W1/W2 sind live, alles danach nicht.
 4. **Zwei neue Zeilen filen — die Mechanismen gegen die Fehlerklasse oben.** Beide klein, beide
    prüfbar, beide schließen einen Fehler, der HEUTE Geld gekostet hat:
+   **BEIDE SIND GEFILT UND FREIGEGEBEN — nicht neu schreiben, nur dispatchen:
+   M-1 = `e219d486`, M-2 = `95d09e33`, beide `auftrag`/`queued`, Repo claude-fleet, ohne Program
+   (absichtlich: eine Zeile ohne Program kann keine Geisterbindung erben).**
    - **(M-1) Die Land-Route verweigert eine Lane, deren `fleetReport` `rejected` trägt.** Heute
      hängt das allein an der Disziplin des Landenden — und die hat genau einmal versagt, mit
      grünem Gate und grünem Audit als Rückendeckung. Done: ein Merge-Versuch auf eine Lane mit

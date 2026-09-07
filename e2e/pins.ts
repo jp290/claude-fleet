@@ -2021,14 +2021,38 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // rows carrying a programId, still passes every behavioural check written with the per-program
   // cap set BELOW the repo cap — which is the only configuration a test ever exercises — while
   // silently permitting programs × per-program lanes on a fixed slot board.
-  const repoCapIdx = tBody.indexOf("if (lanes >= DISPATCH_MAX_LANES)");
+  const repoCapIdx = tBody.indexOf("if (lanes >= repoCap.max)");
   const progGuardIdx = tBody.indexOf("if (next.programId) {");
   const progCapIdx = tBody.indexOf("programLanes >= programCap");
   pin("the repo lane cap is checked UNCONDITIONALLY and BEFORE the per-program one — the second cap can only narrow",
     repoCapIdx > 0 && progGuardIdx > repoCapIdx && progCapIdx > progGuardIdx
     // six spaces = the candidate loop's own body level: the repo check sits under no further `if`
-    && /\n      if \(lanes >= DISPATCH_MAX_LANES\) \{/.test(tBody),
+    && /\n      if \(lanes >= repoCap\.max\) \{/.test(tBody),
     JSON.stringify({ repoCapIdx, progGuardIdx, progCapIdx }));
+  // ...and WHERE that number comes from, which is the rule the per-repo entry adds and the one no
+  // runtime test on a repo WITHOUT an entry can see: the tick reads the cap through repoLaneCap
+  // (entry-then-env) for the ROW'S OWN target repo, never the env constant directly. A refactor
+  // that reaches past the accessor to DISPATCH_MAX_LANES here would make every per-repo entry
+  // silently inert — the value stored, echoed back by the route, and never counted against.
+  // Unlike the per-program cap this one may RAISE the env default, so the ceiling that keeps it
+  // honest is a different one and is asserted as itself: REPO_MAX_LANES_MAX is the slot board.
+  const repoCapFn = server.match(/const repoLaneCap = \(repo: string\): RepoLaneCap => \{[\s\S]*?\n\};/)?.[0] ?? "";
+  pin("the repo cap number is read through repoLaneCap (entry-then-env), and its ceiling is the slot board",
+    /const repoCap = repoLaneCap\(repo\);/.test(tBody)
+    && !/DISPATCH_MAX_LANES\b/.test(tBody)
+    && /repoLaneCaps\[repoCanon\(repo\)\]/.test(repoCapFn)
+    && /\{ max: DISPATCH_MAX_LANES, source: "default" \}/.test(repoCapFn)
+    && /Math\.min\(v, REPO_MAX_LANES_MAX\)/.test(repoCapFn)
+    && /const REPO_MAX_LANES_MAX = MAX_SLOTS;/.test(server),
+    repoCapFn.slice(0, 400) || "repoLaneCap missing");
+  // ...and the note carries the SOURCE next to the number. Two owner actions hide behind one
+  // sentence — the machine default needs an env change and a restart, a repo entry needs one API
+  // call — and a board that prints only "1/1" cannot tell them apart. Pinned as shape because a
+  // fleet with no entry (every suite fixture by default) renders only the default branch.
+  const repoSourceNote = tBody.match(/waiting\(`waiting: \$\{lanes\}[^`]*`\)/)?.[0] ?? "";
+  pin("the repo cap's wait-note names the SOURCE of the number it held against, not just the number",
+    /repoCap\.source === "repo" \? "repo cap" : "machine default"/.test(repoSourceNote),
+    repoSourceNote || "no repo cap note");
   // ...and the NUMBER that second cap uses is now an OWNER-writable one (Program.dispatch.maxLanes),
   // which is exactly the shape that could quietly widen the machine. It cannot, and the reason is one
   // expression: programDispatchCap is a Math.min against DISPATCH_MAX_LANES_PER_PROGRAM, so an owner
@@ -2067,7 +2091,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // structural half, because a fleet with one repo — which is every suite fixture by default —
   // cannot tell `return` from `continue` at all. `no free slot` is deliberately asserted as the
   // OPPOSITE: it is the one genuinely fleet-wide resource here, and it must still stop the tick.
-  const capStmt = tBody.match(/if \(lanes >= DISPATCH_MAX_LANES\) \{[^\n]*\}/)?.[0] ?? "";
+  const capStmt = tBody.match(/if \(lanes >= repoCap\.max\) \{[^\n]*\}/)?.[0] ?? "";
   const freeStmt = tBody.match(/if \(!free\) \{[^\n]*\}/)?.[0] ?? "";
   pin("the repo cap holds only its own row, never the sweep — it continues, while the fleet-wide 'no free slot' still returns",
     /\bcontinue;\s*\}$/.test(capStmt) && !/\breturn;/.test(capStmt)

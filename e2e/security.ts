@@ -384,6 +384,11 @@ const dangerous = (slot: number): Probe[] => [
   { path: "/api/worktrees/discard", method: "POST", body: {}, ownerSafe: true },
   { path: "/api/repos/undo-land", method: "POST", body: {}, ownerSafe: true },
   { path: "/api/repo-base", method: "POST", body: {}, ownerSafe: true },
+  // the per-repo unattended lane cap: the one owner setting that WIDENS how many sessions the
+  // machine starts by itself, so a scoped credential reaching it would be a queue that meters
+  // itself. An empty body answers the owner a side-effect-free 400 (no entry written), which is
+  // what carries the positive control.
+  { path: "/api/repo-lane-cap", method: "POST", body: {}, ownerSafe: true },
   { path: "/api/autos/switch", method: "POST", body: {}, ownerSafe: true },
   { path: "/api/autos/quiet", method: "POST", body: { start: 99, end: 99 }, ownerSafe: true },
   { path: "/api/dispositions", method: "POST", body: {}, ownerSafe: true },

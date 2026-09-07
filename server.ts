@@ -1419,6 +1419,25 @@ let pins: string[] = []; // owner-pinned project roots, surfaced first in the pi
 // sits on the integration branch. Setting it lets the owner park the primary on a working
 // branch (e.g. `desk`) while lanes still land onto `main` without touching that dirty tree.
 let repoBases: Record<string, string> = {};
+// repo root (CANONICAL, like repoWorkers) → how many unattended lanes the dispatcher may hold open
+// in THAT repo. Absent means the machine default, FLEET_DISPATCH_MAX_LANES.
+//
+// WHY A PER-REPO NUMBER AT ALL, and why this one may RAISE where Program.dispatch.maxLanes may only
+// lower: the env default is a statement about a REPOSITORY'S VERIFY, not about the machine's
+// appetite for lanes. This repo's number is 1 because every fleet lane's land-gate runs the full
+// suite against one Mac-wide mutex, so a second lane buys queueing and nothing else. That number
+// was then applied identically to every foreign repo — private-repo-j, whose verify is `bun test` in
+// ~26 s, sat at `waiting: 1/1 lanes busy in astra-main` while nothing was contended at all. One
+// number cannot be right for both, and lowering a wrong number does not help the repo that needs
+// three. Program.dispatch.maxLanes stays a ceiling-only-downward because a per-PROGRAM budget
+// MULTIPLIES by the number of programs (see DISPATCH_MAX_LANES_PER_PROGRAM); this entry does not —
+// it is per REPO, checked against lanes counted in that same repo, and a repo has exactly one.
+// What still bounds the machine is the slot board: REPO_MAX_LANES_MAX is MAX_SLOTS, above which a
+// cap bounds nothing (`no free slot` is the fleet-wide gate and it still stops the tick), and the
+// entry is owner-only, persisted, and one API call — no deploy, because a value that needs a
+// restart is a value the owner cannot correct while the queue is stalled.
+let repoLaneCaps: Record<string, number> = {};
+const REPO_MAX_LANES_MAX = MAX_SLOTS;
 let mainDirectPreflights: Record<string, MainDirectPreflight> = {};
 const isGameMaker = (p: Program | undefined | null): boolean => p?.profile?.kind === "game-maker";
 
@@ -2274,6 +2293,20 @@ function repoCanon(repo: string): string {
 }
 const inRepo = (s: Slot, repo: string): boolean =>
   s.worktree != null && (s.worktree.repo === repoCanon(repo) || s.worktree.repo === repo);
+// THE EFFECTIVE PER-REPO LANE CAP, and it returns its SOURCE with the number because the two facts
+// are read together or not at all: a board that says "1/1 lanes busy" cannot tell the owner whether
+// that 1 is the machine's default (change the env, restart) or this repo's own entry (one API call,
+// no restart), and those are different actions. Entry beats env, exactly the order repoWorkers and
+// VERIFY_CMD_REPOS use, so a repo with no entry computes byte-for-byte the number this line
+// computed before the record existed. Clamped on the way OUT as well as at the door: a state file
+// carrying a stale huge value must not out-promise the slot board.
+type RepoLaneCap = { max: number; source: "repo" | "default" };
+const repoLaneCap = (repo: string): RepoLaneCap => {
+  const v = repo ? repoLaneCaps[repoCanon(repo)] : undefined;
+  return v === undefined
+    ? { max: DISPATCH_MAX_LANES, source: "default" }
+    : { max: Math.max(1, Math.min(v, REPO_MAX_LANES_MAX)), source: "repo" };
+};
 
 // Tracked paths are repository facts, shared by every task in that repo. Cache the `git ls-files`
 // result behind the index stamp: the 2 s sessions poll pays one cheap stat, not one git process per
@@ -2679,7 +2712,7 @@ function queueStateSave(): Promise<void> {
     supervisor,
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
-    repoBases, repoWorkers, shelved, undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
+    repoBases, repoWorkers, repoLaneCaps, shelved, undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
     landPending: Object.fromEntries(landPending), mainDirectPreflights,
   }, null, 2);
   // tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
@@ -9023,9 +9056,14 @@ async function tickDispatch(): Promise<void> {
       // tick for a reason other than "one lane per tick".
       // The note stays on the BLOCKED row (`waiting`), so the reason is still visible where the
       // owner looks for it — the row waits, the sweep does not.
+      // ...and the NUMBER it counts against is the repo's own where the owner set one, the machine
+      // default otherwise (repoLaneCap). The note names BOTH — the value that held and where it
+      // came from — because "1/1 lanes busy" alone leaves the owner unable to tell a default he
+      // must restart to change from an entry he can change with one call.
       const repo = next.repo ?? DISPATCH_REPO;
       const lanes = slots.filter((s) => inRepo(s, repo)).length;
-      if (lanes >= DISPATCH_MAX_LANES) { waiting(`waiting: ${lanes}/${DISPATCH_MAX_LANES} lanes busy in ${basename(repo)} — land or close one`); continue; }
+      const repoCap = repoLaneCap(repo);
+      if (lanes >= repoCap.max) { waiting(`waiting: ${lanes}/${repoCap.max} lanes busy in ${basename(repo)} (${repoCap.source === "repo" ? "repo cap" : "machine default"}) — land or close one`); continue; }
       // ...and then, only for a row that names a Program, the SECOND cap. It runs after the repo
       // cap and can therefore only narrow (see DISPATCH_MAX_LANES_PER_PROGRAM). The wait-note names
       // the PROGRAM, not the repo: both caps write onto the same row, and if they said the same
@@ -9107,8 +9145,10 @@ async function tickDispatch(): Promise<void> {
           await fillMovedSurface(repoCanon(repo), next.analysis.head, tip);
         if (analysisStale(next)) { waiting("waiting: the analysis is older than the tree — re-analysing"); return; }
         // COLLISIONS ARE READ HERE, NOT LEFT TO THE CAP: the only thing that used to keep two
-        // colliding lanes apart was DISPATCH_MAX_LANES, a number that knows nothing about files —
-        // which is exactly why that number could never rise.
+        // colliding lanes apart was the repo lane cap, a number that knows nothing about files —
+        // which is exactly why that number could not rise until this read existed. It can now
+        // (repoLaneCap, per repo, owner-set), and this check is what makes that safe: raising a
+        // repo to 3 lanes says three lanes may run, never that three lanes may touch one file.
         // WHAT `collides` IS WORTH, stated honestly, because this comment used to claim the
         // opposite: until 2026-08-07 the analyst produced it having been shown no files at all —
         // only branch names and a line of task text (its lane block carried nothing else) — while
@@ -21850,6 +21890,21 @@ if (existsSync(STATE_FILE)) {
           (repoWorkers[repo] ??= {})[w] = cmd as string;
         }
       }
+    // Per-repo lane caps, RE-VALIDATED on the way in for the same reason the worker overrides are:
+    // this number decides how many sessions the machine starts unattended, so a state file must not
+    // be able to name a value the door would have refused. A rejected entry is LOUD and then absent —
+    // the repo falls back to the machine default, which is the safe direction and the visible one
+    // (the wait-note then says "machine default").
+    const prlc = (persisted as { repoLaneCaps?: unknown }).repoLaneCaps;
+    if (typeof prlc === "object" && prlc !== null && !Array.isArray(prlc))
+      for (const [repo, v] of Object.entries(prlc as Record<string, unknown>)) {
+        if (!repo) continue;
+        if (typeof v !== "number" || !Number.isInteger(v) || v < 1 || v > REPO_MAX_LANES_MAX) {
+          console.warn(`[dispatch] fleet.json: ${repo} maxLanes=${String(v)} rejected (not a whole number in 1..${REPO_MAX_LANES_MAX}) — dropped, this repo falls back to the machine default`);
+          continue;
+        }
+        repoLaneCaps[repo] = v;
+      }
     if (typeof (persisted as { dispatch?: unknown }).dispatch === "boolean")
       dispatchOn = (persisted as { dispatch: boolean }).dispatch;
     if (typeof (persisted as { autosOn?: unknown }).autosOn === "boolean")
@@ -25143,7 +25198,10 @@ Bun.serve<WSData>({
         // exactly the identity/status label needed to notice a change; full rows live only on the
         // two explicit Program GET routes.
         programs: programs.map(programDigest),
-        dispatch: { available: !!DISPATCH_REPO, on: dispatchOn, maxLanes: DISPATCH_MAX_LANES, repo: DISPATCH_REPO },
+        // `maxLanes` is the EFFECTIVE cap for the dispatch repo, not the env constant: the board
+        // renders it as "up to N lanes in <repo>", and after a per-repo entry the env number is no
+        // longer what the tick counts against — a UI that keeps printing it states a budget nothing uses.
+        dispatch: { available: !!DISPATCH_REPO, on: dispatchOn, maxLanes: repoLaneCap(DISPATCH_REPO).max, repo: DISPATCH_REPO },
         // Global runtime fact, beside dispatch rather than inferred per row from stored verdicts.
         analysis: { on: ANALYSIS_ON },
         // The brief compiler's mode is its OWN fact beside the analyst's — one switch used to imply the
@@ -25839,6 +25897,42 @@ Bun.serve<WSData>({
     // caller can tell "no override" from "that worker was never wired up" without guessing.
     if (url.pathname === "/api/repo-workers" && req.method === "GET")
       return json({ keys: REPO_WORKER_KEYS, workers: repoWorkers });
+    // Per-repo unattended lane cap (see repoLaneCaps): set with a number, clear with 0 or null.
+    // OWNER-ONLY BY POSITION, past the tokenGate above, and here that is the point rather than an
+    // accident of placement: this value decides how many claude sessions the machine may start on
+    // its own in one repository. A lane's self token, the steward token and a guest must all be
+    // structurally unable to reach it — the steward least of all, since it is the principal that
+    // fills the queue this number meters.
+    // ONE CALL, NO DEPLOY, and that is a requirement rather than a convenience: the moment the
+    // owner needs this number is the moment a repo's queue is stalled behind it, and a knob that
+    // needs an edit-and-restart is unreachable exactly then.
+    if (url.pathname === "/api/repo-lane-cap" && req.method === "POST") {
+      const body = await readJson(req);
+      if (!body || typeof body.repo !== "string" || !body.repo.trim()) return json({ error: "expected { repo, maxLanes }" }, 400);
+      const top = await git(resolve(expandCwd(body.repo)), "rev-parse", "--show-toplevel");
+      if (top.code !== 0) return json({ error: "not a git repository" }, 400);
+      const repo = repoCanon(top.out);
+      const raw = body.maxLanes;
+      // `null` and `0` both mean CLEAR — back to the machine default, which is a different state
+      // from "an entry that happens to equal the default": the entry survives an env change, the
+      // absence follows it, and the wait-note says which one the tick used.
+      if (raw === null || raw === 0) {
+        delete repoLaneCaps[repo];
+      } else {
+        // rejected means UNCHANGED: a bad value must not clear a good one on its way to a 400
+        if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 1 || raw > REPO_MAX_LANES_MAX)
+          return json({ error: `maxLanes must be a whole number between 1 and ${REPO_MAX_LANES_MAX} (the slot board), or 0/null to clear back to the machine default` }, 400);
+        repoLaneCaps[repo] = raw;
+      }
+      saveState();
+      audit("repo_lane_cap", undefined, `${repo} maxLanes=${repoLaneCaps[repo] ?? "(cleared)"}`);
+      const eff = repoLaneCap(repo);
+      return json({ ok: true, repo, maxLanes: repoLaneCaps[repo] ?? null, effective: eff.max, source: eff.source });
+    }
+    // ...and the read. `caps` is only what is STORED; `default` is what an unlisted repo gets, so a
+    // caller can tell "no entry" from "an entry equal to the default" without guessing.
+    if (url.pathname === "/api/repo-lane-caps" && req.method === "GET")
+      return json({ default: DISPATCH_MAX_LANES, max: REPO_MAX_LANES_MAX, caps: repoLaneCaps });
     // ↩ undo the last land on a repo: ONE record per call, off the top of the stack (two lands = two
     // calls, each its own git gate and `reverted` ledger row). GIT decides, never optimism: reset ONLY
     // while main is still EXACTLY where that land left it AND no discarded commit has reached a remote.

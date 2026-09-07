@@ -1972,6 +1972,158 @@ export async function run(ctx: Ctx): Promise<void> {
     await restartSrv();
   }
 
+  // --- (e4) THE REPO CAP IS PER REPO, NOT PER MACHINE (server.ts, repoLaneCap). The number the
+  // repo cap counts against used to be ONE env constant for every repository on the board. It was
+  // chosen for THIS repo — a fleet lane's land-gate runs the full suite against one machine-wide
+  // mutex, so a second lane buys queueing — and then applied identically to a foreign repo whose
+  // verify is `bun test` in ~26 s, which sat at `waiting: 1/1 lanes busy` with nothing contended
+  // (private-repo-j, 2026-09-07). Three facts have to hold AT ONCE, and none of them is visible to tsc:
+  //   (a) a repo WITH an owner entry runs past the machine default, and the entry took effect
+  //       through ONE API call — no restart, because the moment the owner needs this knob is the
+  //       moment a queue is stalled behind it;
+  //   (b) in that same window the repo WITHOUT an entry is still held at the machine default —
+  //       the entry is per repo, not a global widening;
+  //   (c) each held row's note names the SOURCE of the number that held it, so the owner can tell
+  //       the two different repair actions apart.
+  // THE MUTATION THIS IS WRITTEN AGAINST: "repo entry ignored" — a tick reading DISPATCH_MAX_LANES
+  // directly again. Then (a) never dispatches and this section is red. The complementary mutation,
+  // "entry applied to every repo", is caught by (b). The structural halves (the tick reads the cap
+  // only through repoLaneCap; the note carries the source) are pinned in e2e/pins.ts. ---
+  {
+    type FRow = { id: string; status: string; note?: string | null; slot?: number | null };
+    type FSlot = { id: number; cwd: string | null; worktree: { repo: string } | null };
+    const fSess = async (): Promise<{ slots: FSlot[]; tasks: FRow[]; dispatch: { on: boolean; maxLanes: number } }> =>
+      (await (await get("/api/sessions")).json()) as
+        { slots: FSlot[]; tasks: FRow[]; dispatch: { on: boolean; maxLanes: number } };
+    const fRow = async (id: string): Promise<FRow | undefined> => (await fSess()).tasks.find((t) => t.id === id);
+    // realpath on both sides for the same reason (e3) does it: the server stores the RESOLVED
+    // toplevel while this process holds the path as written.
+    const fLanesIn = async (repo: string): Promise<number> => {
+      const want = realpathSync(repo);
+      return (await fSess()).slots
+        .filter((x) => !!x.worktree && realpathSync(x.worktree.repo) === want).length;
+    };
+    const fWaitRow = async (id: string, want: string): Promise<FRow | undefined> => {
+      let r = await fRow(id);
+      for (let i = 0; i < 80 && r?.status !== want; i++) { await Bun.sleep(250); r = await fRow(id); }
+      return r;
+    };
+    const fWaitNote = async (id: string, want: string): Promise<string> => {
+      let n = (await fRow(id))?.note ?? "";
+      for (let i = 0; i < 40 && n !== want; i++) { await Bun.sleep(250); n = (await fRow(id))?.note ?? ""; }
+      return n;
+    };
+
+    // machine default 1 — the field private-repo-j was actually stuck in.
+    await restartSrv({ FLEET_DISPATCH_MAX_LANES: "1" });
+    const fCfg = await fSess();
+    // PRECONDITION AS ITSELF #1 — the restart's env reached the server, so "the entry raised it"
+    // is measured against a default that really is 1.
+    check("(e4) fixture: the machine default really is 1 for this block",
+      fCfg.dispatch.maxLanes === 1, JSON.stringify({ maxLanes: fCfg.dispatch.maxLanes }));
+
+    for (const x of (await fSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
+    await Bun.sleep(600);
+    for (const t of (await fSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
+
+    // THE ONE CALL. No restart follows it — that is half of what (a) asserts.
+    const fSet = await post("/api/repo-lane-cap", { repo: REPO2, maxLanes: 2 });
+    const fSetJ = (await fSet.json()) as { ok?: boolean; maxLanes?: number | null; effective?: number; source?: string };
+    check("(e4) the owner raises ONE repo's lane cap with a single API call, and the route echoes the effective value and its source",
+      fSet.ok && fSetJ.ok === true && fSetJ.maxLanes === 2 && fSetJ.effective === 2 && fSetJ.source === "repo",
+      `${fSet.status} ${JSON.stringify(fSetJ)}`);
+    // ...and the read tells "no entry" from "an entry equal to the default": REPO3 must be absent
+    // from `caps` entirely, which is what makes (b) below a statement about the ABSENCE of an entry.
+    const fCaps = (await (await get("/api/repo-lane-caps")).json()) as
+      { default?: number; max?: number; caps?: Record<string, number> };
+    check("(e4) the read separates the stored entries from the machine default — the untouched repo has no entry at all",
+      fCaps.default === 1 && typeof fCaps.max === "number" && fCaps.max >= 2
+      && Object.values(fCaps.caps ?? {}).includes(2)
+      && !Object.keys(fCaps.caps ?? {}).some((k) => realpathSync(k) === realpathSync(REPO3)),
+      JSON.stringify(fCaps));
+
+    // one attended lane in EACH repo: both repos now sit at exactly 1 lane, which is AT the machine
+    // default and BELOW the entry. That single shared field is what makes the two rows below a
+    // controlled pair — same lane count, different answer, and the only difference is the entry.
+    const fLaneA = (await (await post("/api/lanes", { repo: REPO2 })).json()) as { slot?: number };
+    const fLaneB = (await (await post("/api/lanes", { repo: REPO3 })).json()) as { slot?: number };
+    const fClean = await fSess();
+    check("(e4) fixture: both repos hold exactly one lane, and a free slot remains for the raised repo to use",
+      typeof fLaneA.slot === "number" && typeof fLaneB.slot === "number"
+      && (await fLanesIn(REPO2)) === 1 && (await fLanesIn(REPO3)) === 1
+      && fClean.slots.filter((x) => !x.cwd).length >= 1,
+      JSON.stringify({ inRaised: await fLanesIn(REPO2), inDefault: await fLanesIn(REPO3),
+        free: fClean.slots.filter((x) => !x.cwd).length }));
+
+    await post("/api/dispatch", { on: true });
+    const fHeld = (await (await post("/api/tasks", {
+      text: "(e4) row in the repo WITHOUT an entry — the machine default must still hold it",
+      queue: true, repo: REPO3,
+    })).json()) as { task: { id: string } };
+    const fRun = (await (await post("/api/tasks", {
+      text: "(e4) row in the repo WITH a raised entry — it must start past the machine default",
+      queue: true, repo: REPO2,
+    })).json()) as { task: { id: string } };
+
+    const fRunRow = await fWaitRow(fRun.task.id, "sent");
+    check("(e4)(a) a row in a repo whose owner entry raised the cap dispatches past the machine default — one API call, no restart",
+      fRunRow?.status === "sent" && typeof fRunRow?.slot === "number"
+      && (await fLanesIn(REPO2)) === 2,
+      JSON.stringify({ status: fRunRow?.status, slot: fRunRow?.slot, inRaised: await fLanesIn(REPO2) }));
+    // (b) same window, same lane count as the raised repo had a moment ago, no entry: still held —
+    // and (c) its note names the machine default as the number's source.
+    const fHeldRow = await fRow(fHeld.task.id);
+    const fHeldNote = fHeldRow?.note ?? "";
+    check("(e4)(b+c) the repo WITHOUT an entry is still held at the machine default, and its note names that source",
+      fHeldRow?.status === "queued" && fHeldRow?.slot == null
+      && fHeldNote === `waiting: 1/1 lanes busy in ${basename(REPO3)} (machine default) — land or close one`,
+      JSON.stringify({ status: fHeldRow?.status, note: fHeldNote }));
+
+    // ...and the raised repo's OWN ceiling still binds, at ITS number and under ITS name. This is
+    // the assertion that separates "the entry was read" from "the cap was skipped for this repo":
+    // a widening that lost the ceiling would let this third row start too.
+    const fThird = (await (await post("/api/tasks", {
+      text: "(e4) third row in the raised repo — the raised cap must hold it at ITS OWN number",
+      queue: true, repo: REPO2,
+    })).json()) as { task: { id: string } };
+    const fThirdNote = await fWaitNote(fThird.task.id,
+      `waiting: 2/2 lanes busy in ${basename(REPO2)} (repo cap) — land or close one`);
+    const fThirdRow = await fRow(fThird.task.id);
+    check("(e4)(d) the raised repo is capped at ITS OWN number, and the note names the entry as the source",
+      fThirdRow?.status === "queued"
+      && fThirdNote === `waiting: 2/2 lanes busy in ${basename(REPO2)} (repo cap) — land or close one`,
+      JSON.stringify({ status: fThirdRow?.status, note: fThirdNote }));
+
+    // (e) CLEARING is a state of its own, not "an entry equal to the default": zero removes the
+    // entry and the very next tick judges the same row against the machine number, saying so.
+    const fClr = (await (await post("/api/repo-lane-cap", { repo: REPO2, maxLanes: 0 })).json()) as
+      { maxLanes?: number | null; effective?: number; source?: string };
+    const fClrNote = await fWaitNote(fThird.task.id,
+      `waiting: 2/1 lanes busy in ${basename(REPO2)} (machine default) — land or close one`);
+    check("(e4)(e) clearing the entry drops the repo back to the machine default on the next tick, and the note follows",
+      fClr.maxLanes === null && fClr.effective === 1 && fClr.source === "default"
+      && fClrNote === `waiting: 2/1 lanes busy in ${basename(REPO2)} (machine default) — land or close one`,
+      JSON.stringify({ echo: fClr, note: fClrNote }));
+
+    // the door refuses what the tick could not honour, and a refusal leaves the stored value alone
+    for (const [bad, why] of [[0.5, "a fraction"], [-1, "a negative"], [999, "a value above the slot board"], ["3", "a string"]] as [unknown, string][]) {
+      const rb = await post("/api/repo-lane-cap", { repo: REPO2, maxLanes: bad });
+      check(`(e4)(f) repo-lane-cap rejects ${why}`, rb.status === 400, `${rb.status} ${(await rb.text()).slice(0, 120)}`);
+    }
+    const rn = await post("/api/repo-lane-cap", { repo: `${REPO2}/definitely-not-a-repo`, maxLanes: 2 });
+    check("(e4)(f) repo-lane-cap rejects a path that is not a git repository", rn.status === 400, String(rn.status));
+
+    // cleanup — dispatcher OFF first (a killed lane's tail can requeue its task and a live tick
+    // would then leak a fresh lane), then close every lane and retire every row this block made.
+    await post("/api/dispatch", { on: false });
+    for (const x of (await fSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
+    for (const id of [fHeld.task.id, fRun.task.id, fThird.task.id]) {
+      await post(`/api/tasks/${id}/done`, {});
+      await post(`/api/tasks/${id}/delete`, {});
+    }
+    await restartSrv();
+  }
+
   // --- (d3) THE COUNTER-PROOF TO (d). An empty anchor block in a foreign tree is, on its own,
   // equally compatible with a planner that selects nothing anywhere. So the same seam is driven
   // once more with the only difference that may matter: the target repository's git toplevel. ROOT

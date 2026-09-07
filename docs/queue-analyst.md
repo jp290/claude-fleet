@@ -331,6 +331,35 @@ Die Vertrauensgrenzen im Präsens stehen in `CLAUDE.md` §Deploy; hier die Vollr
   - **(b)** Der Lane-Deckel zählt nur noch Lanes im `DISPATCH_REPO` (kanonisiert via realpath — createWorktree
     speichert das Symlink-aufgelöste Toplevel!), und eine wartende Task sagt auf ihrer Row WARUM („waiting:
     N/M lanes busy" / „no free slot").
+    **Und die ZAHL, gegen die er zählt, ist seit 2026-09-07 JE REPO** (`server.ts#repoLaneCap`,
+    Owner-Auftrag 11:2x: „der sollte ueberhaupt hoeher liegen als 1, damit kann man ja nicht
+    arbeiten"). Vorher war es EIN maschinenweites `FLEET_DISPATCH_MAX_LANES` für jedes Repo auf dem
+    Board. Der Wert wurde für DIESES Repo gewählt — jede Fleet-Lane fährt im Land-Gate die volle
+    Suite gegen den einen Mac-Mutex, eine zweite Lane kauft dort nur Schlange — und traf jedes
+    fremde Repo identisch: Private-repo-j (Verify = `bun test`, ~26 s) stand mit
+    `waiting: 1/1 lanes busy in astra-main`, ohne dass irgendetwas contended war.
+    - **Reihenfolge: Eintrag vor Env.** `repoLaneCaps[repoCanon(repo)]` gewinnt, sonst
+      `FLEET_DISPATCH_MAX_LANES`. Ein Repo ohne Eintrag rechnet byte-genau die Zahl von vorher.
+    - **Dieser Eintrag darf HEBEN**, anders als `Program.dispatch.maxLanes` (nur senken). Der
+      Grund ist Arithmetik, nicht Vorsicht: ein Deckel JE PROGRAM multipliziert sich mit der Zahl
+      der Programs gegen ein festes Slot-Board, ein Deckel JE REPO nicht — er wird gegen Lanes
+      GENAU DIESES Repos gezählt, und ein Repo hat genau eines. Die Obergrenze ist darum das Board
+      selbst: `REPO_MAX_LANES_MAX = MAX_SLOTS` (16), und `no free slot` bleibt das einzige
+      fleetweite Gate, das den Tick noch stoppt.
+    - **Ein API-Call, kein Deploy:** `POST /api/repo-lane-cap {repo, maxLanes}` (owner-only;
+      `0`/`null` löscht den Eintrag zurück auf den Maschinen-Default — ein anderer Zustand als
+      „ein Eintrag mit dem Wert des Defaults"), Lesen `GET /api/repo-lane-caps` (`caps` = nur das
+      Gespeicherte, `default` = was ein Repo ohne Eintrag bekommt, `max` = das Board).
+      Persistiert in `fleet.json` und beim Laden RE-VALIDIERT; eine abgelehnte Zeile fällt laut auf
+      den Default zurück. Trail: `repo_lane_cap`.
+    - **Die Wartezeile nennt die Quelle**, weil dahinter zwei verschiedene Owner-Handlungen liegen:
+      `waiting: 1/1 lanes busy in <repo> (machine default) — land or close one` heißt Env ändern und
+      neu starten, `… (repo cap) …` heißt ein API-Call. Beweis: `e2e/tasks.ts` §(e4) (zwei Repos,
+      zwei Deckel, Quellen-Text, Clear-Pfad, Türablehnungen); Form-Pins in `e2e/pins.ts` (der Tick
+      liest die Zahl NUR über `repoLaneCap` und nennt `DISPATCH_MAX_LANES` nirgends mehr selbst).
+    - **Nicht angefasst:** der Hand-Knopf `POST /api/tasks/:id/dispatch` prüft weiterhin KEINEN
+      Deckel — er war der Notweg, solange die Zahl nicht je Repo einstellbar war, und bleibt was er
+      war: manuelles Routing durch den Owner.
   - **(c)** Der Brief entsteht NICHT mehr beim Dispatch: `tickAnalysisSweep` kompiliert ihn einmal pro Entwurf
     und legt ihn als `Task.brief` auf die Zeile — vor dem Start lesbar UND editierbar
     (`POST /api/tasks/:id/brief`; eine Bearbeitung pinnt ihn als `edited` und macht das Urteil stale).

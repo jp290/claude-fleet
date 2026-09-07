@@ -256,6 +256,30 @@ NICHT** — der Weg zu einem fremden Program ist `POST /api/self/tasks` mit `kin
 | 15 | P3 (Fable, 13,3 %) | KEEP — Entwurf 5 nur in /tmp, Rückwege sind session-lokale Monitore |
 
 Ein **Worktree ohne lebenden Slot** liegt auf Platte: `fleet-260907112710-37bb`.
+
+**Von 16/16 auf 11 belegt — fünf Slots sind an diesem Nachmittag zugegangen:** die Biber-Korrekturlane
+(auf Anforderung ihrer MAIN, ohne Land), die drei gelandeten Lanes (`779eb456`, P1, P2, W2) und
+**zwei Program-MAINs, die sich SELBST retired haben** (Slot 11 nach grünem Audit-Verdikt, Slot 12
+nach dem P2-Land und einem eigenen Handoff-Commit `f824657`). Keine wurde von außen geschlossen.
+
+## 6. EINE MESSUNG ÜBER EINEN FEHLER, DEN ICH SELBST GEMACHT HABE
+
+Ich habe um ~16:1x `9942225` committet, während auf Slot 4 seit 15:57:14 das W2-Land lief. Ich hatte
+den Land-Sensor davor abgefragt und seine Antwort ausgedruckt — und dann trotzdem committet, weil ich
+den Commit per `&&` an den Pins-Lauf gekettet hatte statt an die ANTWORT des Sensors. Ein Sensor, dessen
+Ergebnis kein Tor ist, ist Dekoration.
+
+**Die Kosten sind messbar, und die Zahl steht in der Land-Note:** `974ea00` (W2) trägt `ffRounds: 2`
+— es hat den VOLLEN Retry-Vorrat gebraucht (`server.ts#LAND_FF_RETRY_ROUNDS`, Default 2). Die beiden
+anderen Lands des Tages stehen bei `ffRounds: 1` (`984a4b3`, `f781c60`). Zwei Commits legten sich
+unter dieses Land: meiner und Slot 12s Handoff `f824657`. **Ein dritter hätte es nach voll grünem Gate
+an `ff-lost` getötet.**
+
+Das ist zugleich der erste empirische Beleg in diesem Repo, dass R2' (bounded rebase+ff-Neuversuch)
+ein Land wirklich rettet — die Land-Note führt `ffRounds` seit `d120ca4`. **Und `ffRounds` gehört ab
+jetzt in jede Land-Auswertung:** `ffRounds == LAND_FF_RETRY_ROUNDS` heißt „an der Grenze gelandet",
+nicht „sauber gelandet", und nur die Note sagt es — am Verdikt `merged/landed:true` ist es NICHT
+sichtbar.
 # HANDOFF — Program-MAIN Land-Pipeline 2026-09 (`233e1c2b7eaca3850decf332`, Slot 8, Fable 5.1): W1 GELANDET + Audit gruen, W2 in Flug, W3/M2/N2 offen; 2026-09-07 15:5x
 
 > **Dieser Abschnitt ERSETZT die aelteren Land-Pipeline-Abschnitte darunter.** Zustand ableiten:

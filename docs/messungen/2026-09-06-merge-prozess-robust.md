@@ -162,6 +162,8 @@ gescheiterten Holds das heutige Verdikt mit `waitRounds` im Detail.
 *Verify:* Check: Mutex besetzt → Land in Runde 1 wartend → Mutex frei → Land geht durch, Note
 traegt `waitRounds: 1`; Gegenprobe mit Deckel 0 = heutiges Verhalten byte-gleich. Vorschau wie M1.
 
+*Gebaut* in Lane `fleet/260907213640-0c14` (Landing-Sha traegt die MAIN nach).
+
 ### M3 — Vorflugpruefung: schmutziger Haupt-Checkout stirbt in Sekunden, nicht nach einem Gate
 
 *Mechanismus:* Vor dem Hold berechnet `mergeJob` `git diff --name-only <mainSha>..<laneTip>` und

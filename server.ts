@@ -12021,6 +12021,22 @@ const MERGE_REPAIR_ROUNDS = Math.min(3, Math.max(0, Number(process.env.FLEET_MER
 // NOT the same number as MERGE_REPAIR_ROUNDS above and never to be folded into it: that one counts
 // an agent's attempts to fix a tree it broke, this one counts a race with another lander.
 const LAND_FF_RETRY_ROUNDS = Math.min(5, Math.max(0, Number(process.env.FLEET_LAND_FF_RETRY_ROUNDS ?? 2) | 0));
+// --- …AND A DENIED MACHINE IS A WIEDERVORLAGE, NOT A DEATH (M2, owner 2026-09-06) --------------
+// M1 made the clean path take the suite mutex before its gate, so a busy machine costs a DENIAL
+// instead of a half-run chain. What the denial still was, though, is TERMINAL: `resolved,
+// landed:false, waitedOut`, and a human or a MAIN had to push the whole move again. Measured over
+// the five days to 2026-09-06: six lanes died that way, and the incident this cut is named after
+// is the first land of W3 on 2026-09-07 — 2 700 004 ms of queue, exactly the full budget,
+// `verify.ok:null, exitCode:null`, the gate never having looked at the tree; the machine was held
+// by a foreign `./e2e-isolated.sh` with a foreign clean-review ticketed behind it, and a human had
+// to wait for a quiet box and press again.
+// So the job goes back for the machine instead: at most this many EXTRA holds of VERIFY_WAIT_MS
+// each, and only then the verdict M1 already writes. 0 is that behaviour byte for byte and is the
+// way back out. It is NOT another clock over the same wait — each round is a fresh
+// `holdSuiteLock`, so a machine that frees up between them is taken at the next 5 s poll.
+// NOT to be folded into LAND_FF_RETRY_ROUNDS above: that one counts races with another LANDER
+// after a green gate, this one counts denials by another SUITE before any gate at all.
+const LAND_WAIT_ROUNDS = Math.min(3, Math.max(0, Number(process.env.FLEET_LAND_WAIT_ROUNDS ?? 1) | 0));
 // --- THE LANDED COMMIT LEAVES THIS MACHINE (W5b, dual-host topology §6) ------------------------
 // Two hosts land into one history, and the bare repo on the second-host is the nabe that decides who
 // won. It needs no lock to decide it: a non-force push of a branch is fast-forward or nothing, and
@@ -12756,6 +12772,13 @@ interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "int
   // round verified: it was re-rebased onto the main that overtook it and re-gated that many times.
   // A land that succeeded on the second try must not read like one that succeeded on the first.
   ffRounds?: number;
+  // HOW MANY TIMES THIS LAND WENT BACK FOR THE MACHINE BEFORE ITS GATE COULD RUN (clean path only,
+  // see LAND_WAIT_ROUNDS). Absent = the first hold decided it, which is what every verdict written
+  // before 2026-09-07 means. It is a fact about the MACHINE and about nothing else: it rides on a
+  // land that eventually took the mutex, and on a `waitedOut` that never did, so a reader can tell
+  // "denied once" from "denied twice" — the number the six dead lanes of 2026-09-02..06 could not
+  // be counted by. Never folded into `ffRounds`: the two count different races (LAND_WAIT_ROUNDS).
+  waitRounds?: number;
   // OPT-IN clean-path advisory reviewer verdict (present only when FLEET_CLEAN_REVIEW ran on the clean
   // auto-land path). "review" DOWNGRADED an auto-land to a stop-and-review; "ok" rode along on a land.
   // Advisory FACTS for the human, never a gate — the deterministic verify stays the authority.
@@ -12781,6 +12804,15 @@ const mergeInflight = new Map<number, Promise<void>>();
 // quick POSTs would both start a job — two concurrent `git rebase`s on one worktree
 const mergeStart = new Set<number>();
 const mergeLast = new Map<number, MergeLast>();
+// M2 · THE LANDS THAT ARE BETWEEN HOLD ROUNDS RIGHT NOW. A denied hold no longer ends the job, so
+// there is a state the board and a polling MAIN could not see before: running, nothing verified,
+// nothing to show, and the only honest thing to say is which round it is in. Kept HERE and not on
+// `mergeLast` on purpose — that map holds VERDICTS, and the durable-intent write at the top of
+// mergeJob is the one row a restart must find; a "still waiting" row persisted into it would be
+// read at boot as an interrupted verdict that is somehow also fresh.
+// In memory, like the job it describes: a restart takes both, and the land then ends `interrupted`
+// exactly as an interrupted land always has (owner: "nichts Neues").
+const mergeWaiting = new Map<number, { round: number; retryAt: number }>();
 // ⏸ has LANE lifetime, not slot lifetime (2026-08-05). The record "this branch carries
 // agent-chosen conflict resolutions no human reviewed" describes COMMITS on the branch, and the
 // branch survives a kill and a reattach — but the record was keyed by slot and died with it:
@@ -13085,6 +13117,12 @@ interface LandProvenance {
   // round that actually landed — the note may not carry an earlier round's verdict for a later
   // round's tree, which is the reason the gate is re-run rather than reused.
   ffRounds?: number;
+  // …and how many times it was DENIED THE MACHINE before that gate could start (LAND_WAIT_ROUNDS).
+  // Absent = the first hold took it. On the note rather than only in the verdict for the reason
+  // every other field here is: the verdict dies with the lane, and "this land stood in the queue
+  // twice" is a question about the land-path's health that is asked months later, from a checkout
+  // where the slot and its outcome row are long recycled.
+  waitRounds?: number;
   // …and where the landed commit went AFTER this machine's main took it (W5b). Absent means no hub
   // was configured — never "the push went fine", which is why this is written from the push's own
   // return value and never defaulted.
@@ -13140,6 +13178,7 @@ async function writeLandNote(repo: string, branch: string, mainBefore: string, m
       ...(prov.repairRounds ? { repairRounds: prov.repairRounds } : {}),
       ...(prov.resolverRuns?.length ? { resolverRuns: prov.resolverRuns } : {}),
       ...(prov.ffRounds ? { ffRounds: prov.ffRounds } : {}),
+      ...(prov.waitRounds ? { waitRounds: prov.waitRounds } : {}),
       ...(prov.candidateSha ? { candidateSha: prov.candidateSha } : {}),
       ...(prov.verify ? { verify: prov.verify } : {}),
       ...(prov.hubPush ? { hubPush: prov.hubPush } : {}),
@@ -18705,13 +18744,20 @@ function verdictRetryDue(): Slot[] {
 // already counts. The DIFFERENCE from a killed queue is that nothing ran at all: no install, no
 // tsc, no build, no suite — which is the whole point of taking the lock before the chain instead
 // of inside it. `ok: null` + `waitedOut` is what keeps it out of the auto-land, structurally.
-function gateNeverRan(plan: VerifyPlan, mainSha: string, waitedMs: number): NonNullable<MergeLast["verify"]> {
+// M2 · `rounds` is how many EXTRA holds were asked for after the first was denied. It changes no
+// field: `waitedMs` is already the whole queue across all of them, so the sentence would otherwise
+// read as one budget having produced a number that is a multiple of it. Additive and empty at
+// FLEET_LAND_WAIT_ROUNDS=0, where this string is byte for byte the one M1 wrote.
+function gateNeverRan(plan: VerifyPlan, mainSha: string, waitedMs: number, rounds = 0): NonNullable<MergeLast["verify"]> {
   const at = Date.now();
+  const asked = rounds
+    ? ` It went back for the machine ${rounds} more time${rounds === 1 ? "" : "s"} — ${rounds + 1} holds of ${VERIFY_WAIT_MS}ms each (FLEET_LAND_WAIT_ROUNDS=${LAND_WAIT_ROUNDS}) — and was refused every one.`
+    : "";
   return { cmd: plan.cmd, ok: null, waitedOut: true, proportional: plan.proportional, steps: plan.steps,
     startedAt: at - waitedMs, ms: waitedMs, waitMs: waitedMs, exitCode: null, at, mainSha,
-    out: `[verify NEVER STARTED — ${SUITE_LOCK} could not be taken within ${VERIFY_WAIT_MS}ms, so the chain was never spawned: install, tsc, build and the suites did not run. That is a fact about the machine, not about this tree.]` };
+    out: `[verify NEVER STARTED — ${SUITE_LOCK} could not be taken within ${VERIFY_WAIT_MS}ms, so the chain was never spawned: install, tsc, build and the suites did not run.${asked} That is a fact about the machine, not about this tree.]` };
 }
-function cleanVerifyStop(verify: NonNullable<MergeLast["verify"]>, branch: string): MergeLast {
+function cleanVerifyStop(verify: NonNullable<MergeLast["verify"]>, branch: string, waitRounds = 0): MergeLast {
   if (verify.ok === null) {
     // CLEAN path but NO MEASUREMENT — the decision site (see VERIFY_SKIP_EXIT above). THREE
     // ways to get here and they must not be worded alike, but they get the identical stop:
@@ -18732,9 +18778,17 @@ function cleanVerifyStop(verify: NonNullable<MergeLast["verify"]>, branch: strin
     const spent = verify.ms !== undefined
       ? ` It ran ${Math.round(verify.ms / 1000)}s${verify.waitMs !== undefined ? `, ${verify.waitPartial ? "at least " : ""}${Math.round(verify.waitMs / 1000)}s of it queued behind the suite mutex rather than verifying` : ""}.`
       : "";
+    // M2 · ADDITIVE, and empty at FLEET_LAND_WAIT_ROUNDS=0 where this sentence is byte for byte the
+    // one written before the wait rounds existed. Only in the NEVER STARTED arm, and that is the
+    // scope rather than an omission: this number is a fact about the machine, and the other two
+    // arms are verdicts about a tree the gate did look at (the field rides on those anyway — see
+    // `record`, which writes it once for every verdict form).
+    const rounds = waitRounds
+      ? ` It asked for the machine ${waitRounds + 1} times in all (FLEET_LAND_WAIT_ROUNDS=${LAND_WAIT_ROUNDS}).`
+      : "";
     return { status: "resolved", landed: false, branch, at: Date.now(), verify,
       detail: (verify.waitedOut
-        ? `clean rebase, but verify NEVER STARTED (${verify.cmd}) — killed after ${VERIFY_WAIT_MS}ms still queued behind the suite mutex, so it never looked at this tree and this is NOT a verdict about it; it did not auto-land.${spent} Re-run the gate once the machine is free, or land if intended.`
+        ? `clean rebase, but verify NEVER STARTED (${verify.cmd}) — killed after ${VERIFY_WAIT_MS}ms still queued behind the suite mutex, so it never looked at this tree and this is NOT a verdict about it; it did not auto-land.${spent}${rounds} Re-run the gate once the machine is free, or land if intended.`
         : verify.timedOut
         ? `clean rebase, but verify TIMED OUT after ${VERIFY_TIMEOUT_MS}ms of work (${verify.cmd}) — killed mid-run, so nothing was verified and this is NOT a verdict about the tree; it did not auto-land.${spent} Read the output, re-run the gate, or land if intended.`
         : `clean rebase, but verify SKIPPED itself (${verify.cmd}) — nothing was verified, so this did not auto-land; review the output, then land if intended.`).slice(0, 600) };
@@ -18765,6 +18819,11 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
   // it is not ours, and the wrapper that took it gives it back when its own run ends.
   let gateHeld = false;
   let gateHoldPid: number | null = null;
+  // M2 · how many EXTRA holds this job asked for after the first was denied. Out here for the same
+  // reason `resolverRuns` is: it belongs on every verdict form this job can end in, and `record`
+  // below is the ONE place that writes it — a per-`res =` site would be forgotten on exactly the
+  // path that matters. 0 at FLEET_LAND_WAIT_ROUNDS=0 and the field then never appears anywhere.
+  let waitRounds = 0;
   const bindCandidate = async (r: MergeLast): Promise<MergeLast> => {
     const reviewable = r.status === "resolved" || r.status === "awaiting-author"
       || (r.status === "interrupted" && (r.conflicted?.length ?? 0) > 0);
@@ -18791,7 +18850,11 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
       // that would be forgotten is the failure path — the exact verdict a reader opens to ask
       // which model failed. Absent, never `[]`: "no worker ran" and "a worker ran zero times"
       // are different sentences (see ResolverRun).
-      const bound = await bindCandidate(resolverRuns.length ? { ...r, resolverRuns } : r);
+      // …and M2's round count rides in at the same single site, for the same reason: it describes
+      // the LAND, not one of its outcomes, so it belongs on the denial, on the red gate that
+      // finally got the machine, and on the land that took it in round two alike.
+      const withWait = waitRounds ? { ...r, waitRounds } : r;
+      const bound = await bindCandidate(resolverRuns.length ? { ...withWait, resolverRuns } : withWait);
       mergeLast.set(s.id, bound);
       // M1 · ONE LEDGER ROW PER VERDICT, at the one place every verdict form is written. Until
       // this row existed a non-landing verdict left no durable trace at all: `MergeLast` is kept
@@ -18806,6 +18869,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         status: bound.status, landed: bound.landed, actor: actor.kind,
         ...(bound.errorReason ? { errorReason: bound.errorReason } : {}),
         ...(bound.ffRounds !== undefined ? { ffRounds: bound.ffRounds } : {}),
+        ...(bound.waitRounds !== undefined ? { waitRounds: bound.waitRounds } : {}),
         ...(bound.verify?.waitedOut ? { waitedOut: true } : {}),
         ...(bound.verify?.timedOut ? { timedOut: true } : {}),
         ...(bound.verify?.ms !== undefined ? { ms: bound.verify.ms } : {}),
@@ -19031,14 +19095,38 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         // about the machine this job is running inside, and the retry reads it as one.
         const gateProportional = firstVerifyPlan?.proportional === true;
         const gateInherited = cleanPath && firstVerifyPlan ? inheritedSuiteHolder() : null;
+        // --- …AND A DENIAL IS A WIEDERVORLAGE, NOT A DEATH (M2, owner 2026-09-06) -------------
+        // The hold is asked for again instead of ending the job, at most LAND_WAIT_ROUNDS times.
+        // THE JOB STAYS IN FLIGHT for it — no tick, no persisted `waiting` row, no second door:
+        // `mergeInflight` still holds this promise, so the slot goes on saying `merge running`,
+        // the lane is untouched, and the ONE verdict this job will ever write is still written by
+        // the tail below. That is what makes the round count honest at every exit and a restart
+        // mid-wait indistinguishable from any other interrupted land (the durable-intent row at
+        // the top of this function is what a boot finds, unchanged).
+        // A FRESH `holdSuiteLock` PER ROUND, not a longer budget: each take reaps a corpse and
+        // retries at the 5 s poll, so a machine that frees up between rounds is taken at once —
+        // and the round boundary is the only place a reader can be told "still queueing" from.
+        // Nothing is re-read between rounds, deliberately: main may well have moved, and the tree
+        // that answers for that is the ff retry chain below, which re-rebases and re-gates under
+        // the very hold this loop won. Doing it here too would be a second copy of that decision.
+        // At LAND_WAIT_ROUNDS=0 the loop runs its body once and breaks — M1's code path exactly.
         if (gateInherited === null && cleanPath && firstVerifyPlan && !gateProportional && !suiteLockHeldHere()) {
           const askedAt = Date.now();
-          // inside gateRun, so the board keeps saying "running land gate" while this job is
-          // standing in the queue — the queue is the part that takes the minutes.
-          gateHeld = await gateRun(() => holdSuiteLock(VERIFY_WAIT_MS));
+          for (;;) {
+            // inside gateRun, so the board keeps saying "running land gate" while this job is
+            // standing in the queue — the queue is the part that takes the minutes.
+            gateHeld = await gateRun(() => holdSuiteLock(VERIFY_WAIT_MS));
+            if (gateHeld || waitRounds >= LAND_WAIT_ROUNDS) break;
+            waitRounds++;
+            // the only place this state is visible: running, nothing measured, round N of the
+            // queue. Written BEFORE the next hold is asked for, so a poller that catches this job
+            // between two budgets reads the round it is actually about to spend.
+            mergeWaiting.set(s.id, { round: waitRounds, retryAt: Date.now() });
+          }
+          mergeWaiting.delete(s.id);
           gateWaitMs = Date.now() - askedAt;
           if (gateHeld) gateHoldPid = process.pid;
-          else gateDenied = gateNeverRan(firstVerifyPlan, mainSha, gateWaitMs);
+          else gateDenied = gateNeverRan(firstVerifyPlan, mainSha, gateWaitMs, waitRounds);
         }
         const gateHoldBy = gateInherited ?? gateHoldPid;
         const gateChildHold = gateProportional ? null : gateHoldBy;
@@ -19131,7 +19219,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
           // that never started, or a red gate. All four stop for the owner and none of them lands;
           // the sentences that tell them apart live in cleanVerifyStop, which the ff retry chain
           // below reuses so a retried tree is judged in exactly the same words as a first one.
-          res = cleanVerifyStop(verify, branch);
+          res = cleanVerifyStop(verify, branch, waitRounds);
         } else {
           // CLEAN path, verify green or unconfigured: git rebased with zero conflicts and verification
           // passed — or no verify command is configured at all, the owner's standing decision (the
@@ -19192,7 +19280,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
               // EVERY round, not just the first: a retry moves main from a different commit, so the
               // marker a crash leaves behind has to describe the round that is actually in flight.
               const prov: LandProvenance = { verify, confirmedByHuman: false, actor,
-                ...(ffRounds ? { ffRounds } : {}) };
+                ...(ffRounds ? { ffRounds } : {}), ...(waitRounds ? { waitRounds } : {}) };
               await markLandIntent(root, main, branch, mainBefore, (await git(root, "rev-parse", branch)).out, prov);
               await waitForLandFfTestLatch(); // TEST-ONLY, inert in production (see LAND_FF_LATCH)
               // --- M3 · THE SECOND LOOK, and it is not a repetition of the first ---------------
@@ -19333,6 +19421,11 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
     // TOOK (`gateHoldPid`), never a hold a wrapper is keeping for us. `releaseSuiteLock` also never
     // removes a lock this process no longer owns, so this cannot take one away from anyone else.
     if (gateHoldPid !== null) releaseSuiteLock();
+    // M2 · and the "still queueing" row goes with it on every exit, thrown ones included: the loop
+    // that set it clears it on its own way out, and this is the second owner for the paths that
+    // never get there — a slot left claiming it is waiting for a machine no job is asking for is
+    // the one lie this row can tell. `delete` on an absent key is a no-op, so it is safe twice.
+    mergeWaiting.delete(s.id);
   }
   await record(res);
   // THE VERDICT GOES BACK TO WHOEVER ASKED. After `record`, never before: the fact is on disk
@@ -26467,9 +26560,19 @@ Bun.serve<WSData>({
     if (mgMatch && (req.method === "GET" || req.method === "POST")) {
       const s = slotFrom(mgMatch[1]);
       if (!s || !s.cwd || !s.worktree) return json({ error: "not a fleet-created worktree lane" }, 400);
-      if (req.method === "GET")
+      if (req.method === "GET") {
+        // M2 · a land that was denied the suite mutex is RUNNING, not settled, and until the round
+        // count was here the two were indistinguishable from outside: `running:true` with a `last`
+        // that is still the durable-intent row says "a job is going on", never "it is queueing for
+        // the machine and will ask again". Both fields absent is the normal case (the gate is
+        // running, or nothing is), so this adds nothing to the poll of a fleet that is not waiting.
+        // `retryAt` is when the round now being spent ASKED — the budget it will spend is
+        // `waitMs` on /api/self/gate, which is where every other land clock is already read.
+        const waiting = mergeWaiting.get(s.id);
         return json({ running: mergeInflight.has(s.id) || mergeStart.has(s.id), last: mergeLast.get(s.id) ?? null,
+          ...(waiting ? { waitRound: waiting.round, retryAt: waiting.retryAt } : {}),
           undoable: undoableFor(s.worktree.repo) });
+      }
       // DOOR 1 OF 2 ONTO THE LAND PATH, and the follower's lock sits FIRST — before the inflight
       // reservation, before the body is read, before a single git call. A refusal further down
       // would still be a refusal, but it would have written something on the way: `mergeStart`,

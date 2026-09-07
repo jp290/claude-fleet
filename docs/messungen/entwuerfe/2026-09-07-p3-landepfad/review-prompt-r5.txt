@@ -1,0 +1,30 @@
+ROLLE: Du bist die unabhaengige ZWEITE ASTRA-ABNAHME fuer ein Messdokument des Programs 6360c361 (Astra-Tagesmandat P3 „Der Landepfad als Puzzle — adversarial", Sub-Program von e3b3a064). Du bist nicht die Autorin. Deine Aufgabe ist adversarial: finde jede falsche, unbelegte oder falsch zitierte Aussage, jede Zahl ohne Quelle, jede Fix-Skizze ohne pruefbaren Done-Satz, jeden fehlenden „nicht gemessen"-Vermerk. Massstab ist die Ablehnung von heute 07:31 (sechs belegte Maengel), nicht Hoeflichkeit.
+
+DOKUMENT (vollstaendig lesen): /tmp/astra-p3-2026-09-07/2026-09-07-landepfad-adversarial.md
+Versiegelte Bytes: sha256 = 6b931dc39c0a92d1c866bf96501a0ed5e38b79601c4088257f48c994a850460e (pruefe mit `shasum -a 256` bzw. `sha256sum`; weicht der Hash ab, brich mit REJECT „hash mismatch" ab).
+
+QUELLBAUM: dein cwd ist der Haupt-Checkout von claude-fleet. Der Quell-Pin ist c7184f853a3501a4f97e48df3d35e60ed0476b5b; der Working Tree kann einen docs-only-Commit weiter sein. Lies gepinnte Bytes IMMER so: `git show c7184f853a3501a4f97e48df3d35e60ed0476b5b:<pfad> | sed -n '<a>,<b>p'`. Relevante Symbole: server.ts#mergeJob (~18267), #verifyPlanFor (~11920), #runVerify (~12005), #advanceIntegration (~3876), #markLandIntent/#recordLand (~12676/12689), #pushUndo/#killUndoStack/#remoteHoldsLandedRange (~12423/12444/12457), Undo-Route (~25720), #deployRun/#judgeDeploy/#deployBlocker/#resolveDeployMarker (~23294/23161/23212/23198), #runPostLandAudit (~13845), #helperResult (~15175), #entryRunsShortChain (~12879), #suiteLockTryTake/#holdSuiteLock (~17363/17490), verify-proportion.ts (ganz), e2e-stage.sh 1–330, context-packs.ts 90–175, e2e-isolated.sh 60–75.
+
+REGELN: Nur lesen (die Sandbox ist read-only). Keinen Server starten, keine Suite (e2e-*.sh), kein tmux, das Repro-Skript NICHT ausfuehren — beurteile es am Text und am Code. Keine Hostnamen/IPs/Tokens/Klarnamen in deiner Antwort; keine Prozess-Kommandozeilen ausgeben. Lies aus fleet.json hoechstens die Schluessel undoLands und undoDrops. Nichts schreiben ausser deiner Antwort.
+
+PRUEFE IN DIESER REIHENFOLGE:
+1. Jede Zeilenangabe in §1–§8 gegen den gepinnten Baum: enthaelt die Zeile, was das Dokument behauptet?
+2. Jede Zahl (482/396/7 Notes; 60 proportional; 344 undoDrops; 14/14 hubPush; Stack-Tiefe 1; Range 1; 2 Remote-Branches) — die git-seitigen kannst du read-only nachrechnen (git notes --ref=fleet/land list/show; git rev-list <a>..<b> --not --remotes; git branch -r --contains).
+3. Logik je Finding: F1 (keine Tip-Bindung zwischen runVerify und advanceIntegration — lies den Clean-Pfad selbst), F2 (killUndoStack auch auf den fail-closed-Rueckgaben), F3 (Deploy liest nur rev-parse HEAD; Blocker-Menge; Marker-Verdikt ohne Alterscheck), F4 (rev-parse main zur Laufzeit; clonedSha nur Log; Remote-Reihenfolge Splice vor Append; ran:0 gruen), F5 (landPending je Repo ohne Guard), F6, F7.1 (suiteLockTryTake laesst pid-loses Verzeichnis zurueck, wenn die erste writeFileSync wirft), F8 (Context-Pack-Anker in DOC_RULE-Dateien, nur die volle Suite prueft sie).
+4. Repro-Transkript §1.3: beweist es die Behauptung, oder gibt es eine alternative Lesart (z. B. der Fixture-Kurzketten-Lauf im Worktree)? Nenne die staerkste Alternative und ob das Transkript sie ausschliesst.
+5. Done-Saetze: ist jeder falsifizierbar (ein Check, der rot wuerde)? Kosten je Finding benannt? „Nicht gemessen"-Abschnitt vollstaendig gegenueber dem, was das Dokument NICHT gelesen hat?
+6. Public-Repo-Hygiene: grep im Dokument nach `100\.`, `owner`, `Bearer `, `FLEET_SELF_TOKEN=`.
+
+ANTWORTFORMAT (genau so, als Markdown; das wird byteidentisch als independent-review.md abgelegt):
+# Independent review — P3 landepfad-adversarial (2026-09-07)
+Reviewer: codex gpt-6-astra (zweite Astra, unabhaengig)
+Draft sha256 geprueft: <hash>
+## Maengel (nach Schwere; leer, wenn keine)
+1. [<schwer|mittel|leicht>] §<n> — <Satz kurz zitiert> — Quelle sagt: <Zeile zitiert, datei:zeile @c7184f8>
+## Geprueft und korrekt (nur, was du wirklich gelesen hast)
+- ...
+## Nicht geprueft
+- ...
+## Verdict
+ACCEPT sha256:<hash>   ODER   REJECT — <ein Satz, welche Maengel eine Annahme verhindern>
+Eine Annahme nur, wenn KEIN schwerer Mangel offen ist. Ein mittlerer Mangel kann mit ACCEPT plus Auflage benannt werden, dann steht die Auflage unter Verdict in einer Zeile.

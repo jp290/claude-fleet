@@ -1,0 +1,65 @@
+# Independent review — P3 landepfad-adversarial (2026-09-07)
+Reviewer: codex gpt-6-astra (zweite Astra, unabhaengig)
+Draft sha256 geprueft: 027deaa5932b7095e6b87b8479439e5747a67be1d676655da081b3c143b9ce9f
+
+## Maengel (nach Schwere; leer, wenn keine)
+
+1. [schwer] §6 — „`e2e-security.sh` durch `exit 0` ersetzt → Verdict `resolved` mit `checksBelowMain`“ — Quelle sagt: `const missingFromDisk = [...table.keys()].filter((f) => !claimed.has(f));` und verlangt `missingFromDisk.length === 0` (`e2e/pins.ts:398`, `e2e/pins.ts:400 @c7184f8`). Die Tabelle nennt diesen Wrapper weiterhin (`e2e-isolated.sh:33 @c7184f8`). Ein vollständiger Ersatz entfernt seine PORT-Deklaration; damit scheitert bereits der vorgelagerte Pin. Die Behauptung, diese konkrete Änderung erhalte heute ein grünes Gate, ist falsch. Der vorgeschlagene Done-Test isoliert den neuen PASS-Zähler nicht und erreicht die manipulierte Wrapper-Ausführung nicht. Kosten: Zentraler F6-Gegenbeleg und Reparaturabnahme sind nicht tragfähig.
+
+2. [mittel] §6 — „ein Vergleichswert, der **nicht** im Kandidaten liegt“ — Quelle sagt: `Bun.spawn(["sh", "-c", cmd], { cwd, … })` führt weiterhin Kandidatendateien aus (`server.ts:12011 @c7184f8`); die Wrapper-Zuordnung soll aus einer ebenfalls vom Kandidaten erzeugten Ausgabe entstehen (`e2e-stage.sh:348 @c7184f8`). Eine historische Baseline liegt außerhalb des aktuellen Kandidaten, die dagegen verglichene Messung jedoch nicht: Ein Wrapper kann passende Erwerbs- und PASS-Zeilen ohne Checks ausgeben. Die 80-Prozent-Schwelle erlaubt außerdem ausdrücklich Prüfungsverlust. Kosten: L6 ist höchstens ein Mengenindikator; der adversariale Vertrauensbruch bleibt offen und braucht einen entsprechenden Nicht-behoben-Vermerk sowie einen Fälschungsgegencheck.
+
+3. [mittel] §1.3 — „die Fixture-Kette ist inhaltsblind, das echte `pins.ts` gegenüber `server.ts` ebenfalls“ — Quelle sagt: `const serverU = universe("server", ["server.ts", …])` und liest beispielsweise `VERIFY_PROPORTIONAL_CMD` aus diesem Text (`e2e/pins.ts:111`, `e2e/pins.ts:1135 @c7184f8`). Nicht ausführen bedeutet nicht inhaltsblind prüfen. **Stärkste Alternative für B:** Ein regulärer Fixture-Kurzkettenlauf läuft im veränderlichen Worktree weiter und meldet erwartungsgemäß PASS, obwohl C2 inzwischen auf Platte liegt. Das Transkript schließt diese Alternative nicht aus. Es belegt die übernommene Kettenwahl, keine allgemeine Inhaltsblindheit der echten Pins. Kosten: Die präziseren Einschränkungen anderer Absätze werden durch diesen Satz wieder aufgehoben.
+
+4. [mittel] §1.7 — „volle Kette nennt **oder der Land abgelehnt wurde**“ — Quelle sagt: Die Audit-Auswahl hängt heute ausschließlich von den Cover-Stempeln und dem Repo-Sentinel ab (`server.ts:12879 @c7184f8`). Nach Einführung der Tip-Ablehnung können beide vorgeschlagenen Commit-während-Gate-Checks bestehen, obwohl diese Audit-Auswahl unverändert bleibt. Auch das Repro-Exitkriterium unterscheidet dann keinen implementierten Audit-Fix von einem fehlenden. Kosten: L1 Schritt 4 hat keinen unabhängigen falsifizierenden Abnahmecheck.
+
+5. [mittel] §5 — „Repro-Skizze, deterministisch“; „B's `markLandIntent` überschreibt A's Marker … B ist schneller am Marker“ — Quelle sagt: Der Marker wird erst nach dem Gate geschrieben (`server.ts:18693 @c7184f8`). Wenn B zuerst dort ankommt, kann es noch keinen Marker des weiterhin prüfenden A überschreiben. Die anschließende umgedrehte Variante ist plausibel, aber eine feste Pause ist keine deterministische Kill-Steuerung: `if (LAND_PAUSE_MS) await Bun.sleep(LAND_PAUSE_MS)` läuft selbständig ab (`server.ts:18764 @c7184f8`). Es fehlt ein bestätigter Eintritt und ein kontrollierter Halt nach dem zweiten Advance. Kosten: Der Test kann den behaupteten Verlust verfehlen; „kontrolliert erzeugt“ widerspricht zudem „nicht reproduziert“.
+
+6. [mittel] §2.5 — „genau einer der beiden Züge wird abgewiesen“ — Quelle sagt: Der bestehende Startguard ist slotbezogen: `mergeInflight.has(s.id) || mergeStart.has(s.id)` (`server.ts:25782 @c7184f8`). Die vorgeschlagene Reparatur erlaubt ausdrücklich, dass ein Land unter dem neuen Repo-Mutex **wartet oder abgewiesen wird**. Der Done-Satz akzeptiert ausschließlich Abweisung und beschreibt damit nicht alle erlaubten Implementierungen. Kosten: Korrekte Serialisierung kann den Abnahmetest verletzen; Warte- und Ablehnungsmodell müssen konsistent festgelegt werden.
+
+7. [mittel] §3.1 — „`ok` … fällt nur auf `bootHead !== head` oder `bundle.stale`“ — Quelle sagt: Bei unbekanntem HEAD oder unbekanntem Bundle-Zustand wird `ok = null` (`server.ts:23168`, `server.ts:23176 @c7184f8`). Ein erfolgreicher später Boot nach einem Crash-Loop schreibt deshalb nicht zwangsläufig `ok:true`. Die behauptete Erfolgsspur benötigt zusätzlich bekannte, passende HEADs und bekannte, frische Bundles. Kosten: Der vorhandene Unknown-Zweig wird unterschlagen; das zulässige Gegenbeispiel wird als allgemeines Verhalten dargestellt.
+
+8. [mittel] §3.4 — „Land während des Builds … → kein Restart, 409“ — Quelle sagt: `deployBlocker` prüft ausschließlich **aktuell** reservierte/laufende Lands (`server.ts:23213 @c7184f8`); `target` wird vor dem Build gelesen (`server.ts:23314`, `server.ts:23319 @c7184f8`). Ein Land kann vollständig innerhalb eines längeren Builds beginnen und enden. Dann findet auch der vorgeschlagene zweite Blockeraufruf nichts. Kosten: L3(e) garantiert seinen Done-Satz nicht und lässt einen während des Builds veränderten Zielzustand passieren. Erforderlich ist ein Gegencheck mit einem vor Build-Ende abgeschlossenen Land.
+
+9. [mittel] §3.4 — „über `newestAuditFor(repo, target)` … `result === "red" && !adjudicated`“ — Quelle sagt: `newestAuditFor` gibt die rohe Audit-Zeile zurück (`server.ts:5651 @c7184f8`); Adjudikationen werden separat durch `adjudicationsByAudit()` gelesen (`server.ts:15562 @c7184f8`). Die genannte Funktion liefert keinen adjudizierten Zustand. Kosten: Der vorgeschlagenen Bedingung fehlt der Join; eine direkte Umsetzung blockiert auch bereits adjudizierte rote Zeilen. Der Done-Satz prüft diesen Gegenfall nicht.
+
+10. [mittel] §4.3 — „`POSTLAND_AUDIT_FILE` in ein nicht existierendes Elternverzeichnis zeigen lassen“; „`POST /api/helper/result {exitCode:0}`“ — Quelle sagt: Der Dateipfad ist eine feste Konstante unter `import.meta.dir` (`server.ts:155 @c7184f8`), kein konfigurierbarer Testknopf. Der Helper-Handler verlangt außerdem eine gültige `jobId` und antwortet sonst mit 400 (`server.ts:15176`, `server.ts:15177 @c7184f8`). Kosten: Die Repro-Skizzen sind in der angegebenen Form nicht ausführbar; Dateisystemmanipulation beziehungsweise Test-Seam und vollständiger Claim-Bezug fehlen.
+
+11. [mittel] §8 — „Was sonst DOC_RULE-Dateien liest … das ist gedeckt“ — Quelle sagt: Pins lesen zusätzlich Dokumentinhalte für Konfigurationsmarker (`e2e/pins.ts:1481 @c7184f8`), Indexverweise (`e2e/pins.ts:1608 @c7184f8`) und Aussagen über vorhandene Quellsymbole (`e2e/pins.ts:1656`, `e2e/pins.ts:1680 @c7184f8`). Die dargestellte Leserabdeckung aus AGENTS-Regeln und bloßer Pfadexistenz ist unvollständig. Kosten: Die Schlussfolgerung über sämtliche DOC_RULE-Konsumenten ist breiter als die belegte Untersuchung. F8s konkrete Seed-Anker-Lücke bleibt bestehen.
+
+12. [mittel] §12 — „ob ein echter Audit … Variante-C-Baum rot gemessen hätte (**er hätte**)“ — Quelle sagt: Der Audit verwendet `const cmd = proportional ? VERIFY_PROPORTIONAL_CMD : chosen.cmd` (`server.ts:13853 @c7184f8`), nicht automatisch das Land-Gate-Kommando. Das bloße Vorhandensein von `red.marker` garantiert daher kein Rot der echten Audit-Suite. Kosten: Im Nicht-gemessen-Abschnitt wird das ungemessene Ergebnis trotzdem behauptet. Belegt ist nur das rote Ergebnis des eigens definierten Marker-Kommandos.
+
+13. [mittel] §7.2/§7.3/§10 — „Vorschlag … kein Done-Satz“ — Quelle sagt: Ererbte Holds werden je Job ausgewertet (`server.ts:18536 @c7184f8`), die zweite eigene Hold-Anfrage wird sofort abgewiesen (`server.ts:17491 @c7184f8`), und das Audit-Event enthält keine Bindungsfelder (`server.ts:5665 @c7184f8`). Für die dazu vorgeschlagenen Änderungen fehlen weiterhin falsifizierbare Done-Sätze. Die ausdrückliche Einordnung unter die Schnittlinie macht die Lücke sichtbar, erfüllt aber nicht den Abnahmemaßstab „jede Fix-Skizze“. Kosten: Diese Vorschläge sind noch keine abnahmefähigen Arbeitsaufträge.
+
+14. [leicht] §3.1/§3.4/§8 — ungenaue Quellenanker — Quelle sagt: `server.ts:23319 @c7184f8` enthält `const build = await runDeployBuild();`; der Spawn mit Checkout-CWD steht bei `server.ts:23231 @c7184f8`. `server.ts:11128 @c7184f8` ist ein Aufruf von `newestAuditFor`, dessen Definition bei `server.ts:5651 @c7184f8` steht. Der Modul-Aufruf von `claimInstanceLock` steht bei `server.ts:21191 @c7184f8`. `attic/steward-arena.sh:6 @c7184f8` ist Kommentar, kein Sourcen von `e2e-stage.sh`. Kosten: Die angekündigte präzise Zeilenprüfung ist weiterhin nicht vollständig eingelöst.
+
+## Geprueft und korrekt (nur, was du wirklich gelesen hast)
+
+- Dokument vollständig gelesen; SHA-256 vor und nach der Prüfung identisch. Keine Dateien geschrieben.
+- F1: Clean-Pfad einschließlich erster Gate-Auswahl, Hold, Verify, Retry und Advance gelesen. Keine Bindung eines vor dem Gate ermittelten Lane-Tips an den späteren Branch-Advance. Der Confirm-Pfad enthält zusätzliche Identitätsvergleiche.
+- F2: Remote-Bereichsprüfung und Undo-Route bestätigt. Auch die beiden fail-closed-Fehlertexte führen zur Stack-Löschung; Reset-Fehler behalten den Eintrag.
+- Nachgerechnet: **482** Notes mit Verify, **396** mit Zeitinformation, **7** zeitliche Treffer; alle menschlich bestätigt, davon drei rot, zwei `waitedOut`, zwei grün mit `stale:true`. **60** Notes sind proportional.
+- Am Quell-Pin: **14/14** Land-Notes innerhalb der letzten 60 Commits mit erfolgreichem Hub-Push. Am inzwischen weitergezogenen HEAD sind es **13/13**; das widerlegt die historische Messung nicht.
+- Erlaubte Zustandsfelder: Stack-Tiefe **1**, Drop-Zähler **344**, jüngster Grund Kettenbruch. Angegebener Bereich: **1** Commit, **0** außerhalb der Remote-Tracking-Refs. Die Contains-Ausgabe nennt einen Remote-Branch und dessen symbolischen HEAD-Verweis, keine zwei unabhängigen Branches.
+- Arbeitsmediane seit Septemberbeginn nachvollzogen: proportional **807 ms**, nicht proportional **109411 ms**, berechnet als `ms - waitMs`.
+- F3: Keine Land-Note-/Audit-Bindung im normalen Deploy-Pfad; vollständige aktive Blocker-Menge gelesen; keine Altersprüfung beim Boot und keine erneute Blockerprüfung nach dem Build.
+- F4: Laufzeit-Tip, unveränderte Covers, optionales `clonedSha` ohne Verdict-Einfluss, Remote-Cover-Verbrauch vor Append, geschluckte Append-Fehler und mögliche grüne Zeile mit `ran:0` bestätigt.
+- F5: Repo-keyed Intent-Map ohne Belegtheitsguard; drei Boot-Recovery-Zweige und Pause nach Advance gelesen.
+- F6: Ausführung von Kandidatenskripten bestätigt; die konkrete `exit 0`-Behauptung ist durch den oben genannten Pin eingeschränkt.
+- F7: `suiteLockTryTake`, beide Reaper, Hold-Vererbung, Freigabe und Shell-Ticketlogik gelesen. Der fehlgeschlagene erste Schreibversuch kann den beschriebenen permanenten Park hinterlassen.
+- `verify-proportion.ts` vollständig und `e2e-stage.sh:1–330` vollständig gelesen. Rename-Klassifikation bestätigt.
+- F8: Sieben Seed-Anker in fünf DOC_RULE-Dateien bestätigt; Auswahlregeln, zitierter Fleet-Frame-Check und relevante Pins gelesen. Die nachgewiesene Fleet-Frame-Abdeckung betrifft drei Anker.
+- Quelldiff vom Pin zum geprüften HEAD für die im Dokument angegebene Dateimenge leer.
+- Hygieneprüfung: Drei vorgegebene Suchmuster ohne Treffer. Das Auth-Header-Muster trifft auf zwei variable Vorlagen in Dokumentzeilen **247** und **249**; dort steht kein konkreter Credentialwert.
+
+## Nicht geprueft
+
+- Keine Repro-Ausführung, Suite, Serveroperation, Fehlerinjektion, kein Deploy und kein Undo.
+- Ursprüngliche Rohartefakte und tatsächlich ausgeführte Skriptbytes der behaupteten Scratch-Läufe; geprüft wurden eingebettetes Skript und Transkript.
+- Die ursprüngliche Ablehnung von 07:31 mit sechs Mängeln lag nicht vor. Die gelesene frühere Review-Datei mit 13 Punkten ersetzt diesen Abgleich nicht.
+- Live-Prozessumgebung, Live-Konfiguration, tatsächliche Remote-Serverstände, historische Undo-Versuche und Ursachenhistorie der Drops.
+- Vollständige Implementierungen sämtlicher Harnesse, Wrapper und Konfliktpfade; insbesondere keine vollständige Bestätigung sämtlicher negativen Existenzbehauptungen des Dokuments.
+- Experimentelle Auswirkungen von Ankeränderungen, produktive Häufigkeit der Rennen sowie Dateisystem-, Signal-, Zombie- und PID-Recycling-Verhalten.
+
+## Verdict
+
+REJECT — Der widerlegte konkrete F6-Gegenbeleg und seine nicht isolierende Reparaturabnahme verhindern die Annahme; zusätzlich bleiben unbelegte Wirkungsbehauptungen und unvollständige Done-Sätze offen.

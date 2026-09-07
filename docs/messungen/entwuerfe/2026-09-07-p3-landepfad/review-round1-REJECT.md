@@ -1,0 +1,73 @@
+# Independent review — P3 landepfad-adversarial (2026-09-07)
+Reviewer: codex gpt-6-astra (zweite Astra, unabhaengig)
+Draft sha256 geprueft: cc02cc5ac9131dd97679080ec405c9892c8303bc06465e39b802d2f9767b0dc5
+
+## Maengel (nach Schwere; leer, wenn keine)
+
+1. [schwer] §8 — „das Pack fällt still von `selected` nach `omitted`“ — Quelle sagt: `selected.push(…)`, nachdem ausschließlich Verfügbarkeit, Status, Harness, Modus, Trigger und Fähigkeiten geprüft wurden (`context-plan.ts:78`, `context-plan.ts:110 @c7184f8`). Die Seed-Auswahl liest keine Ankerbytes. `stampObservedSourceHashes` ergänzt lediglich Hashes (`context-manifest.ts:188 @c7184f8`). Der behauptete Zustandswechsel ist falsch. Außerdem prüft `receipt.selected.every(…)` nur ausgewählte Packs (`e2e/programs.ts:639 @c7184f8`); der Bootstrap setzt `["always", "verification"]` (`server.ts:18896 @c7184f8`). Damit belegt dieser Test insbesondere keinen späteren roten Lauf nach dem vorgeschlagenen Rename in `docs/container.md`. Kosten: falsche Fehlerursache und unbewiesene Repro-Erwartung.
+
+2. [schwer] §2.5 — „Hub-Tip noch `mainAfter` (`ls-remote`)“ und anschließend erzwungener Push — Quelle sagt: Der bestehende Push verwendet `${mainAfter}:refs/heads/${main}` ohne Force (`server.ts:12625 @c7184f8`). Die Skizze ersetzt das durch einen erzwungenen Ref-Update nach einer separaten Vorprüfung. Zwischen beiden kann ein weiterer Commit auf dem Hub ankommen und überschrieben werden. Es fehlen eine atomare Erwartungsprüfung beim Push, die Reihenfolge gegenüber dem lokalen Reset und ein entsprechender Konkurrenztest. Kosten: Der vorgeschlagene Undo-Fix kann selbst fremde Commits vom Branch entfernen.
+
+3. [schwer] §6 — „`grep -c 'check('` als Untergrenze, ±20 %“ — Quelle sagt: `function pin(name: string, ok: boolean, …)` (`e2e/pins.ts:128 @c7184f8`). Die vorgeschlagene Suche ergibt über die vollständige gepinnte Datei **0**, Exitcode **1**. Eine daraus berechnete Untergrenze bleibt null; außerdem liefert sie keine Vergleichszahl je Wrapper. Der versprochene Done-Fall `checksBelowMain` folgt aus dieser Skizze nicht. Kosten: wirkungsloser Schutz oder ein Fehler der Messung selbst.
+
+4. [schwer] §4.1/§4.4 — „Lokal … ausdrücklich at-least-once“; Fix „`appendEvent` vor dem Splice“ — Quelle sagt: `return queueEventWrite(file, obj).catch(() => undefined)` (`server/persist.ts:35 @c7184f8`). Ein abgeschlossener Await beweist hier keinen erfolgreichen Append. Auch lokal kann nach fehlgeschriebenem Ledger-Eintrag die Queue verbraucht werden (`server.ts:14063`, `server.ts:13656 @c7184f8`). Die umgestellte Reihenfolge schließt das Prozessabbruchfenster, nicht den Schreibfehlerfall. Der Ausschluss von `appendEvent` aus der Lektüre in §12 begrenzt die starke Haltbarkeitsaussage nicht ausreichend. Kosten: Ein Land kann weiterhin ohne dauerhaften Audit-Eintrag verschwinden.
+
+5. [mittel] §0/§1.3 — „roter Baum auf main“ und „gelandet ist ein Commit, den das Gate nie sah“ — Quelle sagt: Der Verify-Prozess läuft mit `{ cwd, … }` im Lane-Arbeitsbaum (`server.ts:12012 @c7184f8`). **Stärkste Alternative:** Die Fixture-Kurzkette lief tatsächlich über den währenddessen veränderten Worktree; sie prüfte `code.txt` lediglich grundsätzlich nicht. Das Transkript schließt diese Lesart nicht aus, sondern beschreibt genau eine solche Fixture. Auch Variante A verwendet einen inhaltsblinden Platzhalter. Nachgewiesen sind der bewegliche Tip und die veraltete Klassifikation; ein tatsächlich roter Kandidat wurde nicht demonstriert. Das muss als nicht gemessen ausgewiesen werden.
+
+6. [mittel] §1.3/§1.6 — „2/2 Varianten … exit 0“ — Das Skript druckt bei falschem Ergebnis lediglich `RESULT … main != C2`; der abschließende erfolgreiche Ausgabebefehl kann auch nach fehlgeschlagenen Varianten Exitcode 0 liefern. Zusätzlich ist `running:true` kein belegter Spawn-Zeitpunkt: Vor `runVerify` liegen Rebase, Git-Lesungen und gegebenenfalls Lock-Warten (`server.ts:18464`, `server.ts:18540`, `server.ts:18547 @c7184f8`). Kosten: Der Skript-Exit ist kein falsifizierbarer Abnahmetest; „+4 s während des Gates“ benötigt eine echte Spawn-/Latch-Beobachtung.
+
+7. [mittel] §2.2 — „seit Aktivierung des Hub-Pushes nie ausführbar“ — Quelle sagt: `pushLandToHub` kann `ok:false` zurückgeben (`server.ts:12634 @c7184f8`); der Undo-Eintrag entsteht davor (`server.ts:12691 @c7184f8`). Die bestätigten 14 erfolgreichen Pushes und der aktuelle Remote-Befund beweisen weder sämtliche historischen Pushes noch sämtliche Undo-Zeitfenster. Auch die 344 Drops haben keine individuelle Ursachenhistorie: `n` wird kumuliert, `why` überschrieben (`server.ts:12406 @c7184f8`). Kosten: Ein aktueller Befund wird zur unbelegten Betriebsgeschichte.
+
+8. [mittel] §1.4/§12 — „nach dem Gate-Start … nach dem Spawn erzeugt“; „2-s-Auflösung“ — Quelle sagt: Persistiert wird `startedAt: startedAt - heldWait` (`server.ts:12114 @c7184f8`). Dieser Zeitpunkt kann vor dem Spawn liegen. Die sieben Treffer sind nachzählbar, ihre behauptete zeitliche Bedeutung folgt daraus nicht allgemein. Eine feste Zwei-Sekunden-Auflösung wird durch die angegebene Sonde ebenfalls nicht definiert. Kosten: Queue-Zeit kann als Laufzeit des Prüfprozesses interpretiert werden.
+
+9. [mittel] §5 — „B's Merge-POST 2 s nach A's … Boot → … neither …“ — Quelle sagt: Die Pause liegt **nach** dem Advance (`server.ts:18764 @c7184f8`); ein gescheiterter Advance löscht den Marker (`server.ts:18697 @c7184f8`). Zwei zeitversetzte Starts erzwingen nicht die benötigte Reihenfolge der beiden Intent-Schreibungen und Advances. Der vorhandene Latch vor dem Advance steht dagegen bei `server.ts:18694 @c7184f8`. Die Map-Lücke ist real, die konkrete Repro-Skizze beweist ihren behaupteten Ablauf nicht. Auch B muss wegen der Retry-Schleife nicht zwingend mit `ff-lost` enden. Kosten: nicht deterministische Gegenprobe.
+
+10. [mittel] §7.1 — „unbeschreibbares Verzeichnis … nach `holdSuiteLock` kein Verzeichnis“ — Quelle sagt: Schon `mkdirSync(SUITE_LOCK)` kann mit `false` abbrechen (`server.ts:17364 @c7184f8`). Ein bereits vorhandenes unbeschreibbares Verzeichnis erreicht die erste `writeFileSync` nicht; ein unbeschreibbarer Elternpfad kann ebenfalls vorher scheitern. Benötigt wird ein erfolgreicher Claim mit gezielt fehlschlagender erster Dateischreibung. Kosten: Der vorgeschlagene Check kann den Fehlerpfad verfehlen.
+
+11. [mittel] §7.1 — „die Shell hat dieses Fenster nicht“; „jede folgende Land-Kette stirbt“ — Quelle sagt: Die Shell führt erst `mkdir "$FLEET_SUITE_LOCK"` aus und schreibt später die PID (`e2e-stage.sh:268`, `e2e-stage.sh:330 @c7184f8`). Sie verkleinert das Fenster durch die vorgezogene Birth-Ermittlung, beseitigt es aber nicht. Außerdem überspringt ein proportionaler Erstlauf die Lock-Akquisition (`server.ts:18537 @c7184f8`). Kosten: Sowohl die behauptete Vergleichssicherheit als auch der Ausfallumfang sind überzeichnet.
+
+12. [mittel] §1.7 — „`oldestCover.mainBefore`“ — Quelle sagt: `interface AuditCover { branch: string; mainAfter: string; at: number; proportional?: true }` (`server.ts:12853 @c7184f8`). Das benötigte Feld existiert nicht; seine Ermittlung, Persistierung und Behandlung alter Covers fehlen. Zudem friert ein SHA-Pin den weiterhin gelesenen Arbeitsbaum nicht ein (`server.ts:12012 @c7184f8`). Kosten: L1 beschreibt weder die Reklassifikation vollständig noch den Umgang mit uncommittierten Änderungen während der Messung.
+
+13. [mittel] §2.5/§3.4/§7.2–3 — „je Done-Satz oben“ — Die Vorprüfung des Board-Knopfs, der Branch-Check beim Deploy, das Marker-Alter sowie L7b und L7c haben keine jeweils zugeordnete Gegenprobe. Beispielsweise führt `resolveDeployMarker` direkt `judgeDeploy(m, "boot")` aus (`server.ts:23202 @c7184f8`), doch keiner der vier Deploy-Done-Checks setzt einen überalterten Marker. `inheritedSuiteHolder` und die sofortige Hold-Absage sind getrennte Pfade (`server.ts:17398`, `server.ts:17491 @c7184f8`), für deren Änderungen ebenfalls Done-Checks fehlen. Kosten: Teile der vorgeschlagenen Reparaturen können ungeprüft bleiben.
+
+14. [mittel] §4.1 — „Tests posten absichtlich divergente `clonedSha` und erwarten weiterhin `green`“ — Quelle sagt am ersten Beleg `job?.kind === "command"` (`e2e/watch.ts:4069 @c7184f8`); der zweite steht ebenfalls im Command-Job-Vintage-Test (`e2e/helper-daemon.ts:837 @c7184f8`). `helperResult` leitet solche Jobs vor dem Audit-Zweig an `reportCommandJob` weiter (`server.ts:15188 @c7184f8`). Diese Belege testen nicht das behauptete Audit-Verhalten. Der Audit-Befund bleibt durch den gelesenen Servercode gestützt, seine angegebene Testabdeckung nicht.
+
+15. [mittel] §3.2 — „`bundleStale` misst den committeten Baum“ — Quelle sagt: `const srcRaw = newestMtime(…)` und anschließend einen Mtime-Vergleich (`server.ts:23025`, `server.ts:23030 @c7184f8`). `newestMtime` liest Dateisystem-Mtimes (`server.ts:22983 @c7184f8`), einschließlich uncommittierter Änderungen. Der zitierte Kommentar ist selbst unpräzise. Kosten: Die Messgrenze wird falsch erklärt; richtig ist „kein Inhalts- oder Commitnachweis“.
+
+16. [mittel] §8 — „server.ts liest zur Laufzeit nur … als Größe“ — Quelle sagt: `const blob = await gitRead(repoRoot, "show", …)` (`server.ts:19021 @c7184f8`); Manifestquellen werden in `sourceBytes` übernommen (`server.ts:19066 @c7184f8`). Auch die Kurzkette liest DOC_RULE-Dateien, beispielsweise `AGENTS.md` (`e2e/pins.ts:906 @c7184f8`). Die pauschalen Aussagen zur Laufzeitlektüre und zur Irrelevanz solcher Pfade für die Kurzkette sind falsch. Kosten: Eine unvollständige Leseabdeckung erscheint als vollständiger Ausschluss.
+
+17. [mittel] §7.2/§12 — „kein Live-Loch heute“ — Quelle sagt: `const named = process.env.FLEET_SUITE_LOCK_HELD_BY` (`server.ts:17399 @c7184f8`). Keine Zuweisung an `process.env` im Server beweist nicht, dass der gestartete Prozess die Variable nicht geerbt hat. §12 nennt hierfür keine Live-Messung. Dasselbe gilt für „heute unerreichbar“ bei fremden UIDs und „praktisch ausgeschlossen“ beim PID-Recycling. Kosten: Unbeobachtete Betriebsbedingungen werden als ausgeschlossen dargestellt.
+
+18. [leicht] §1.1/§1.7/§2.1 — falsche Fundstellen und verkürzter Confirm-Kontrast — Quelle sagt: Der Confirm-Aufruf von `advanceIntegration` steht bei `server.ts:17860 @c7184f8`, nicht 17845; der Tracking-Ref-Test bei `e2e/land-durability.ts:611 @c7184f8`, nicht 551–553. Die Self-Land-Variable `candidate` dient auch der Duplikatprüfung (`server.ts:7366 @c7184f8`), nicht nur der Antwort. Nach dem zweiten Confirm-Identitätsvergleich kann außerdem noch ein frischer Verify laufen (`server.ts:17819 @c7184f8`); „unmittelbar vor `markLandIntent`“ gilt daher nicht uneingeschränkt. Kosten: Die Zitate führen zu anderen Aussagen als behauptet.
+
+19. [leicht] §1.5/§4.1/§11 — unzureichend definierte Zahlen — Die vollständige Suche im gepinnten `server.ts` ergibt **zwölf** `is-ancestor`-Aufrufe, nicht zehn; darunter `server.ts:23392`, `server.ts:23435`, `server.ts:23444 @c7184f8`. Für das behauptete Fenster „~1–10 s“ und den Umfang „~60 Zeilen + 2 Checks + 3 Pins“ fehlen Ableitung und belastbare Begrenzung. Die Zahl 60 proportionaler Notes allein misst kein Race-Fenster. Kosten: Schätzungen lesen sich wie Messergebnisse.
+
+## Geprueft und korrekt (nur, was du wirklich gelesen hast)
+
+- Dokument vollständig gelesen; SHA-256 vor und nach der Prüfung identisch.
+- F1: Der gelesene Clean-Pfad bindet den geprüften Lane-Tip nicht an den späteren Branch-Advance. Die proportionale Audit-Auswahl übernimmt die Cover-Stempel ohne erneute Diff-Klassifikation.
+- F2: Jede nichtleere Rückgabe von `remoteHoldsLandedRange`, einschließlich der Fehlertexte, führt in der Undo-Route zum Löschen des Stacks.
+- Nachgerechnet: **482** Notes mit Verify, **396** mit Zeitdaten, **7** zeitliche Treffer; alle sieben menschlich bestätigt, davon drei rote, zwei `waitedOut` und zwei grüne mit `stale:true`. **60** Notes sind proportional.
+- Über die letzten 60 Commits am Quell-Pin: **14** Land-Notes, sämtliche mit erfolgreichem Hub-Push.
+- Erlaubte Zustandsfelder gelesen: Stack-Tiefe **1**, Drop-Zähler **344**. Genannter Commitbereich: **1** Commit, **0** davon außerhalb sämtlicher Remote-Tracking-Refs, Tip auf **2** Remote-Branches enthalten.
+- F3: Keine Bindung des Deploy-Ziels an Land-Note oder Audit; Blocker umfasst reservierte/laufende Lands und lokale Audit-Aktivität. Keine Altersprüfung bei der Boot-Auflösung des Markers; keine erneute Blockerprüfung nach dem Build.
+- F4: Audit-Tip zur Laufzeit, unveränderte Covers, optionales `clonedSha` ohne Einfluss auf das Audit-Verdikt, Remote-Verbrauch vor Ledger-Append und mögliche grüne Zeile mit `ran:0`.
+- F5: Repo-weise Intent-Map ohne Belegtheitsprüfung. F6: Prüfkommandos führen Dateien des Kandidaten aus.
+- F7.1: Fehler der ersten Dateischreibung kann ein PID- und Birth-loses Verzeichnis hinterlassen; beide Reaper behalten diesen Zustand.
+- `verify-proportion.ts` vollständig und `e2e-stage.sh:1–330` gelesen. Rename-Klassifikation mit `--no-renames`, Ticket-Tie-Break und vorgezogene Birth-Ermittlung stimmen.
+- Sechs Dokumentanker in fünf DOC_RULE-Dateien bestätigt; die beschriebenen Seed-Ankerprüfungen fehlen in der Kurzkette. Die weitergehenden F8-Schlussfolgerungen sind oben eingeschränkt.
+- Genannter Quell-Diff bis zum nachfolgenden Docs-Commit ist leer.
+- Hygieneprüfung: drei Suchmuster ohne Treffer; das Authentifizierungsheader-Muster trifft zweimal auf variable Vorlagen in Dokumentzeilen 169 und 171. Dabei ist kein konkreter Credentialwert ausgeschrieben.
+
+## Nicht geprueft
+
+- Keine Ausführung des Repro-Skripts, keine Suite, kein Serverstart, kein Deploy, kein Undo und keine Fehlereinbringung. Keine Dateien geschrieben.
+- Ursprüngliche Rohartefakte des behaupteten Repro-Laufs und dessen tatsächlich verwendete Skriptbytes; geprüft wurde das eingebettete Transkript.
+- Der Originaltext der Ablehnung von 07:31 lag nicht vor; kein Abgleich ihrer sechs Einzelmängel.
+- Live-Prozessumgebung, tatsächliche Remote-Serverstände, historische Hub-Konfiguration, historische Undo-Versuche und historische Ursachen sämtlicher Drops.
+- Vollständige Laufzeitabdeckung aller Wrapper und Harnesse; insbesondere kein experimenteller Nachweis, welche einzelnen Dokument-Renames welche Suite rot machen.
+- Produktionshäufigkeit der Race-Fenster sowie Verhalten bei Dateisystemfehlern, Signalunterbrechungen, fremden UIDs oder PID-Recycling.
+
+## Verdict
+
+REJECT — Der falsche F8-Mechanismus, die fehlerhafte L6-Untergrenze, das neue Überschreibfenster in L2 und die unvollständige Haltbarkeitsreparatur in L4 verhindern die Annahme.

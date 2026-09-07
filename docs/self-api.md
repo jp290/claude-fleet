@@ -943,14 +943,23 @@ curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report/<report-id>/acc
   wird auf seiner EIGENEN Uhr gepruned (`pruneFleetEvents`, je Empfänger); der Report ist das
   BEURTEILTE Objekt mit eigener Retention. Ein Urteil auf dem Event verschwände, während die Zeile,
   die es beurteilt, noch da ist — und es überlüde ein Wort (`acknowledged`) mit zwei Bedeutungen.
-- **`decision` ist EIN Objekt oder es ist nicht da**: `{disposition, at, by:{slot,openedAt,sessionId},
+- **`decision` ist EIN Objekt oder es ist nicht da**: `{disposition, at, by:{slot,openedAt,sessionId}|"owner",
   reason}`. `disposition` ist genau einer von zwei (`FLEET_REPORT_DISPOSITIONS` in `server/types.ts`):
   `accepted` · `rejected`. Fehlt der Schlüssel oder ist er `null`, ist die Zeile UNBEURTEILT — eine
   vor dieser Tür persistierte Zeile bleibt beobachtbar unbeurteilt und wird nie zu einem Urteil
   repariert, das niemand gefällt hat. `reason` ist optionale Prosa ≤ 500 Zeichen oder `null`.
-- **Nur der EXAKTE gebundene Empfänger-Occupant entscheidet** (`slot` + `openedAt` + `sessionId`),
-  und `fleetReportFrom` prüft `decision.by` gegen `receiver` zusammen: eine Zeile kann strukturell
-  kein Urteil eines Prinzipals tragen, an den sie nie gefilet wurde.
+  `by: "owner"` ist die Owner-Tür unten — dieselbe Prinzipal-Asymmetrie wie
+  `AttentionRequest.answer.by`, und sie ist von einem Occupant-Urteil UNTERSCHEIDBAR, weil sie ein
+  Urteil von AUSSERHALB des Programs ist.
+- **Die gebundene Empfänger-OCCUPATION entscheidet** — `slot` + `openedAt`, und `sessionId` wird
+  getragen, nie verglichen. Das ist exakt die Regel, mit der `clarificationReceiverFor` den
+  Empfänger AUFLÖST („deliberately reported, never gated": ein Codex-Bind darf die Session-Id
+  innerhalb EINER Occupation bewegen). Bis zum 2026-09-07 verglich diese Tür alle drei Felder und
+  war damit strenger als die Auflösung: gemessen an Slot 12, dessen `Program.main` `sessionId: null`
+  trug, während die lebende Pane längst eine gebunden hatte — die MAIN bekam den Report und konnte
+  ihn nie beurteilen, und die Owner-Tür griff nicht, weil der Occupant LEBTE. `fleetReportFrom`
+  prüft `decision.by` gegen `receiver` auf derselben Occupation: eine Zeile kann strukturell kein
+  Occupant-Urteil eines Prinzipals tragen, an den sie nie gefilet wurde.
 - **Die erste Entscheidung gewinnt.** Ein zweiter Aufruf ist 409 (`fleet report was already
   accepted|rejected`, die stehende `decision` im Body) und die Zeile bleibt unverändert — auch bei
   identischer Wiederholung. Ein Report wird EINMAL beurteilt; sonst überschriebe eine spätere
@@ -981,6 +990,72 @@ bereits beurteilten Report erneut pasten. Ein BEREITS terminales Event bleibt ex
 terminale Zeile). Kein Tick ruft sie — sie hat genau eine Aufrufstelle, und die ist die Route.
 Eine Ablehnung schickt der Lane KEINE Nachricht; ob das ein Transport braucht, ist offen und
 bewusst nicht gebaut.
+
+### Die OWNER-Tür — `POST /api/fleet-report/:id/accept` · `/reject`
+
+**Die Tür oben ist an einen Occupant gebunden, und ein Occupant kann sterben.** Gemessen am
+2026-09-07 über sechs Panes: eine Program-MAIN mit einem gefileten, unbeurteilten Report war an
+ihren Stuhl genagelt — ein Retire machte die Abnahme nicht schwer, sondern DAUERHAFT UNMÖGLICH,
+weil `clarificationReceiverFor` den Empfänger aus dem LEBENDEN Occupant auflöst und
+`decideFleetReport` gegen ihn vergleicht. Drei von sechs Sessions waren allein deshalb nicht
+schließbar. Das ist der Grund, warum diese Flotte Panes ansammelte.
+
+```
+curl -s -X POST http://<fleet-host>:<port>/api/fleet-report/<report-id>/accept \
+  -H "x-fleet-token: $FLEET_TOKEN" -H 'content-type: application/json' \
+  -d '{"reason":"Die MAIN ist weg; Diff gelesen, Scheibe uebernommen"}'
+```
+
+- **Sie gilt NUR, wenn kein Occupant mehr lebt.** Lebt der Empfänger-Slot in der gebundenen
+  Occupation, ist die Antwort 409 mit der Adresse der Tür, die OFFEN ist — die Abnahme bleibt
+  fachlich bei der MAIN, und diese Tür wäre sonst ein Weg, sie zu übergehen. Die Lebendigkeit
+  entscheidet EINE Funktion (`server.ts#reportReceiverLiveness`), die beide Türen lesen: eine
+  zweite Kopie wäre eine zweite Antwort, die auseinanderdriftet — und die Drift wäre still in der
+  schlimmsten Richtung (zwei Prinzipale dürfen, oder keiner).
+- **Eine Owner-Inbox-Zeile (`receiver: null`) gehört hierher**, und zwar von Geburt an: die
+  Self-Tür sagt ihr wörtlich „belongs to the owner, who has no session to bind a decision to" — bis
+  zu diesem Schnitt gab es diese Tür nicht, und der Satz zeigte ins Leere.
+- **Das Urteil wird als OWNER-Urteil gestempelt** (`decision.by: "owner"`), nie als das der toten
+  MAIN. Zusätzlich schreibt sie — anders als ihre Self-Zwillingstür — eine Trail-Zeile
+  (`fleet_report_owner_decision`): das Urteil einer MAIN ist über deren eigenes
+  `GET /api/self/fleet-report` und die Program-Sicht rücklesbar, ein Owner-Urteil hat keine Session,
+  aus der man es lesen könnte.
+- **Die erste Entscheidung gewinnt über BEIDE Türen.** Ein Report, den seine MAIN vor ihrem Ende
+  beurteilt hat, ist beurteilt; der Owner liest danach das stehende Urteil (409), er überschreibt
+  es nicht.
+- **Sie aktuiert nichts**, in der Disziplin der Self-Tür: kein `Task.status`, kein Land, kein
+  Lane-Schluss, kein Text in eine Pane. Und **kein Tick ruft sie** — ein Report, den der Owner nie
+  beurteilt, bleibt sichtbar unbeurteilt, statt in ein Urteil hineinzualtern, das niemand gefällt hat.
+- **Der automatische Lane-Schluss wird davon NICHT bewaffnet.** `laneAutoCloseRefusal` lehnt ein
+  Owner-Urteil ausdrücklich ab (`a report of this lane was judged by the owner, not by its MAIN`):
+  dieser Schluss liest ein Urteil als Beleg, dass die koordinierende MAIN die Arbeit gelesen hat und
+  mit der Lane fertig ist — ein Fakt, den ein Owner-Urteil nicht trägt.
+
+| Fall | Antwort |
+|---|---|
+| unbekannte id | 404 `unknown fleet report` |
+| Empfänger-Occupant LEBT | 409 `fleet report receiver slot <n> is live — the verdict belongs to that MAIN through POST /api/self/fleet-report/<id>/accept\|reject` |
+| bereits beurteilt | 409 `fleet report was already accepted\|rejected` (die stehende `decision` im Body) |
+| Body mit anderem Schlüssel | 400 `body must contain only reason` |
+| `reason` kein String / > 500 | 400 mit der Grenze im Text |
+
+**Und die Sichtbarkeit, die die Tür allein nicht herstellt.** Ein verwaister Report war nicht nur
+unbeurteilbar, er war UNSICHTBAR: sein FleetEvent geht beim Teardown auf `receiver-gone` — terminal,
+und damit in KEINER der beiden Klassen, die die Operations-Inbox rendert (`opsOpen` will eine
+Inbox-Zeile, `opsUnacked` eine lebende Pane-Schuld). Die Zeile lag still da, und eine Absenz las sich
+exakt wie „niemand hat hingesehen". Darum:
+
+- **`GET /api/fleet-report`** (Owner) liefert alle Report-Zeilen, wartende zuerst, jede mit einem
+  pro Request ABGELEITETEN `liveness: "live" | "gone" | "owner-inbox"` aus derselben einen Funktion.
+  Nie gespeichert — eine gespeicherte Kopie wäre eine Behauptung über einen Slot, der inzwischen neu
+  geöffnet wurde.
+- **`reportsAwaitingOwner`** reitet auf `/api/sessions` als EINE Zahl (bei 0 weggelassen, wie
+  `attentionOpen`, `docs/data-saver.md`) und lässt das 📥 im Board erscheinen; die Zeilen holt das
+  Panel beim Öffnen und wenn die Zahl SICH BEWEGT.
+- **Die Retention hält eine wartende Zeile fest.** `pruneFleetReports` schneidet den terminalen
+  Schwanz auf `FLEET_REPORT_KEEP`, und das Event einer verwaisten Zeile wurde genau in dem Moment
+  terminal, in dem der Owner zuständig wurde — sie wegzupruen hätte das einzige Objekt gelöscht, auf
+  das die Tür wirkt. Die Grenze ist die Tür: eine beurteilte Zeile pruned wie jede andere.
 
 **Sichtbarkeit, zwei Sichten für zwei Leser:**
 

@@ -413,10 +413,17 @@ type FleetReportDisposition = typeof FLEET_REPORT_DISPOSITIONS[number];
 // would be a half-decision no reader could adjudicate. `reason` is optional PROSE and stays null
 // when the deciding MAIN gave none — an empty string would read as "they wrote nothing", which is
 // a different claim from "they were not asked to".
+//
+// `by` is the OCCUPANT that judged it, or the literal "owner" — the same principal asymmetry
+// AttentionRequest.answer.by carries, and for the same reason: the owner is a principal, not a
+// slot, so no occupant triple is invented for him. The two are not interchangeable and no reader
+// may collapse them: an owner decision was taken from OUTSIDE the program, after the bound MAIN
+// could no longer take it, and a row that recorded it as the MAIN's would claim a judgement by a
+// session that had already ended.
 interface FleetReportDecision {
   disposition: FleetReportDisposition;
   at: number;
-  by: { slot: number; openedAt: number; sessionId: string | null };
+  by: { slot: number; openedAt: number; sessionId: string | null } | "owner";
   reason: string | null;
 }
 
@@ -783,23 +790,36 @@ function fleetReportFrom(raw: unknown): FleetReport | null {
     || !["program-main", "lane-watch", "program-main+lane-watch", "owner-inbox"].includes(String(r.basis))
     || typeof r.eventId !== "string" || !/^[0-9a-f]{24}$/.test(r.eventId)) return null;
   // The decision half, default-deny like every other half of this row. Absent and null are the
-  // same undecided fact and both pass; anything present must be COMPLETE and must name the exact
-  // receiver occupant this row was filed to. A row that could claim a decider it never had would
+  // same undecided fact and both pass; anything present must be COMPLETE and must name a principal
+  // that could actually have judged this row. A row that could claim a decider it never had would
   // hydrate quietly and then lie to the successor view that reads it — the same failure the
   // receiver/basis pair above exists to prevent, one field further in.
+  //
+  // TWO SHAPES, and the union is checked as two, never as one loose object:
+  //  · the literal "owner" — valid on ANY row, because the owner door opens exactly where no
+  //    session can walk (an owner-inbox row has no receiver at all; a bound row whose occupant
+  //    ended has one that no longer exists). There is nothing to compare it against and nothing
+  //    is invented to compare.
+  //  · an OCCUPANT, which must be the OCCUPATION this row was filed to: slot + openedAt. sessionId
+  //    is carried and never compared, exactly as clarificationReceiverFor never gates it — a Codex
+  //    bind may change the session id inside one occupation, and a row whose receiver was recorded
+  //    with a null session id would otherwise be unjudgeable by the very pane that received it
+  //    (measured on slot 12, 2026-09-07). The occupation is the binding; the session id is a fact
+  //    about it, and the decision half stores the one that was live when the verdict was taken.
   const decision = r.decision;
   if (decision !== undefined && decision !== null) {
     if (typeof decision !== "object" || Array.isArray(decision)) return null;
     const d = decision as Partial<FleetReportDecision>;
-    if (!occupant(d.by, false)) return null;
-    const by = d.by as { slot: number; openedAt: number; sessionId: string | null };
     if (!FLEET_REPORT_DISPOSITIONS.includes(d.disposition as FleetReportDisposition)
       || typeof d.at !== "number" || !Number.isFinite(d.at) || d.at <= 0
       || !(d.reason === null || (typeof d.reason === "string" && !!d.reason.trim()
-        && d.reason.length <= MAX_FLEET_REPORT_DECISION_REASON))
-      || r.receiver === null || r.receiver === undefined
-      || by.slot !== r.receiver.slot || by.openedAt !== r.receiver.openedAt
-      || by.sessionId !== r.receiver.sessionId) return null;
+        && d.reason.length <= MAX_FLEET_REPORT_DECISION_REASON))) return null;
+    if (d.by !== "owner") {
+      if (!occupant(d.by, false)) return null;
+      const by = d.by as { slot: number; openedAt: number; sessionId: string | null };
+      if (r.receiver === null || r.receiver === undefined
+        || by.slot !== r.receiver.slot || by.openedAt !== r.receiver.openedAt) return null;
+    }
   }
   return raw as FleetReport;
 }

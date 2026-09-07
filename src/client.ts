@@ -5372,6 +5372,7 @@ async function refresh() {
       // the window those rows are judged against, and it rides with them — see deviceOnlineMs
       helperOnlineMs?: number;
       attentionOpen?: number;
+      reportsAwaitingOwner?: number;
       events?: FleetEventRow[];
       deployGap?: DeployGapInfo | null; bundleStale?: BundleStaleInfo | null };
     if (data.v) {
@@ -5427,6 +5428,7 @@ async function refresh() {
     // the attention inbox's whole share of the 2s poll: one number. It paints the badge, and while
     // the panel is open a CHANGE in it is what re-fetches the rows — the panel never polls itself.
     setAttentionOpen(data.attentionOpen ?? 0);
+    setReportsAwaitingOwner(data.reportsAwaitingOwner ?? 0);
     // the operations inbox reads the events the poll already carries — no extra request, and the
     // 📥 badge counts only rows that were minted FOR it (delivery inbox, still awaiting the owner)
     setOpsEvents(data.events ?? []);
@@ -10910,14 +10912,49 @@ const opsdlg = $("opsdlg"), opspanel = $("opspanel"), opsbtn = $("opsbtn");
 let opsRows: FleetEventRow[] = [];
 let opsBusy = false;
 
+// --- the THIRD class in this panel, and the one whose rows are not events at all: worker reports
+// that no session can judge any more. A bound report's FleetEvent goes `receiver-gone` the moment
+// its MAIN is torn down — terminal, and therefore in NEITHER class above (opsOpen wants an inbox
+// row, opsUnacked wants a live pane debt). The row was the owner's to settle and nothing showed it
+// to him, which is why a fleet accumulated panes: retiring a MAIN with an unjudged report made the
+// verdict permanently unreachable instead of merely inconvenient.
+//
+// It costs one number on the 2s poll (`reportsAwaitingOwner`); the rows come from
+// GET /api/fleet-report when this panel opens and again when that number MOVES while it is open —
+// the attention panel's rule exactly, for its reason.
+interface OwnerReportRow {
+  id: string; reportedAt: number; status: "complete" | "needs-main" | "failed"; text: string;
+  worker: { slot: number; openedAt: number; sessionId: string | null; cwd: string; branch: string };
+  provenance: { taskId: string | null; originId: string | null; programId: string | null;
+    instance?: string | null };
+  receiver: { slot: number; openedAt: number; sessionId: string | null } | null;
+  basis: string; eventId: string;
+  // derived server-side per request from the one rule both decision doors read
+  liveness: "live" | "gone" | "owner-inbox";
+  decision?: { disposition: "accepted" | "rejected"; at: number;
+    by: { slot: number; openedAt: number; sessionId: string | null } | "owner";
+    reason: string | null } | null;
+}
+let reportsAwaitingOwner = 0;
+let ownerReportRows: OwnerReportRow[] = [];
+let ownerReportErr: string | null = null;
+// typed-but-unsent reasons survive a repaint, for attnDraft's reason: the rows are rebuilt whenever
+// the count moves, and losing a half-written reason to an unrelated arrival is its own deterrent.
+const ownerReportDraft = new Map<string, string>();
+const ownerReportAwaiting = (r: OwnerReportRow): boolean => !r.decision && r.liveness !== "live";
+
 function renderOpsBtn() {
-  const n = opsOpen(opsRows).length;
+  // FILED FOR THE OWNER, one meaning, two carriers: an inbox event and a report whose receiver
+  // occupant is gone. Both are rows that want the OWNER to close them, so they are one number —
+  // this is not the forbidden sum below, which would add a count that wants nobody.
+  const n = opsOpen(opsRows).length + reportsAwaitingOwner;
   // TWO NUMBERS, NEVER A SUM. Filed operations want the owner to close them; unacknowledged pane
   // transport wants nobody — it is a report. Adding them would make one count mean two things.
   const m = opsUnacked(opsRows, Date.now()).length;
   opsbtn.textContent = `📥${n > 0 ? n : ""}${m > 0 ? ` ⚠${m}` : ""}`;
   opsbtn.classList.toggle("hot", n > 0);
-  opsbtn.title = `${n} filed for you · ${m} pane event(s) sent without a session acknowledgement`;
+  opsbtn.title = `${n} filed for you (${reportsAwaitingOwner} worker report(s) no session can judge)`
+    + ` · ${m} pane event(s) sent without a session acknowledgement`;
   // same rule as 📣: no affordance while nothing is filed, so the icon means something when it appears
   opsbtn.style.display = n > 0 || m > 0 || opsdlg.style.display === "flex" ? "" : "none";
 }
@@ -10926,6 +10963,22 @@ function setOpsEvents(rows: FleetEventRow[]) {
   opsRows = rows;
   renderOpsBtn();
   if (opsdlg.style.display === "flex") renderOpsDlg();
+}
+
+function setReportsAwaitingOwner(n: number) {
+  const moved = n !== reportsAwaitingOwner;
+  reportsAwaitingOwner = n;
+  renderOpsBtn();
+  if (moved && opsdlg.style.display === "flex") void loadOwnerReports();
+}
+
+async function loadOwnerReports() {
+  const res = await api("/api/fleet-report");
+  if (!res.ok) { ownerReportErr = `could not load the reports (${res.status})`; renderOpsDlg(); return; }
+  const data = (await res.json()) as { reports?: OwnerReportRow[] };
+  ownerReportRows = data.reports ?? [];
+  ownerReportErr = null;
+  renderOpsDlg();
 }
 
 function closeOpsDlg() {
@@ -11042,12 +11095,70 @@ function opsUnackedRow(e: FleetEventRow, now: number): HTMLElement {
   return row;
 }
 
+// One awaiting report, with the two acts that were missing. The verdict is the OWNER'S — the row
+// says so, and the panel says so — because the MAIN it was filed to is gone; stamping it as that
+// MAIN's would record a judgement by a session that had already ended.
+function ownerReportRowEl(r: OwnerReportRow): HTMLElement {
+  const row = el("div", "attnrow open");
+  const head = el("div", "attnhead");
+  const chip = r.status === "failed" ? "k-blocked" : r.status === "needs-main" ? "k-decision" : "k-review-ready";
+  head.appendChild(el("span", `attnkind ${chip}`, r.status));
+  head.appendChild(el("span", "attnprog", `slot ${r.worker.slot} · ${r.worker.branch}`));
+  head.appendChild(el("span", "attnmeta", `${fmtSince(r.reportedAt)}`));
+  row.appendChild(head);
+  // WHY THIS ROW IS HERE AT ALL, stated rather than left to be inferred from an empty receiver
+  // field: an absence that looks like "nobody has looked at it" is the state this section removes.
+  row.appendChild(el("div", "shrhint", r.liveness === "owner-inbox"
+    ? "Filed to you directly — the lane had no coordinating session to report to."
+    : `Filed to slot ${r.receiver?.slot}, whose session has since ended. No session can judge it any more.`));
+  row.appendChild(el("div", "attntext", r.text));
+  const ta = document.createElement("textarea");
+  ta.className = "attnta";
+  ta.rows = 2;
+  ta.value = ownerReportDraft.get(r.id) ?? "";
+  ta.placeholder = "Reason (optional) — it is recorded on the row, not sent anywhere.";
+  ta.addEventListener("input", () => ownerReportDraft.set(r.id, ta.value));
+  row.appendChild(ta);
+  const btns = el("div", "shrbtns");
+  for (const verdict of ["accept", "reject"] as const) {
+    const b = el("button", `shrbtn${verdict === "accept" ? " primary" : ""}`, verdict) as HTMLButtonElement;
+    b.title = "your verdict, recorded as the owner's — this records a judgement and starts nothing";
+    b.disabled = opsBusy;
+    b.onclick = async () => {
+      opsBusy = true;
+      const text = (ownerReportDraft.get(r.id) ?? "").trim();
+      const res = await post(`/api/fleet-report/${r.id}/${verdict}`, text ? { reason: text } : {});
+      opsBusy = false;
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { error?: string };
+        toast(err.error ?? "the verdict did not stick");
+      } else ownerReportDraft.delete(r.id);
+      await refresh();
+      await loadOwnerReports();
+    };
+    btns.appendChild(b);
+  }
+  row.appendChild(btns);
+  return row;
+}
+
 function renderOpsDlg() {
   opspanel.replaceChildren();
   opspanel.appendChild(el("h2", "", "Operations — completions filed instead of typed into a pane"));
   const live = opsOpen(opsRows);
   if (!live.length) opspanel.appendChild(el("div", "shrhint", "Nothing is filed."));
   for (const e of live) opspanel.appendChild(opsRow(e));
+  const awaiting = ownerReportRows.filter(ownerReportAwaiting);
+  if (reportsAwaitingOwner > 0 || awaiting.length) {
+    opspanel.appendChild(el("h2", "", "Worker reports no session can judge — your verdict"));
+    opspanel.appendChild(el("div", "shrhint",
+      "The MAIN each of these was filed to is gone, so the acceptance door inside a session is closed "
+      + "for good. Accepting or rejecting here is recorded as YOUR decision, not as that MAIN's; it "
+      + "moves no task, lands nothing and closes no lane."));
+    if (ownerReportErr) opspanel.appendChild(el("div", "shrhint", ownerReportErr));
+    else if (!awaiting.length) opspanel.appendChild(el("div", "shrhint", "Loading…"));
+    for (const r of awaiting) opspanel.appendChild(ownerReportRowEl(r));
+  }
   const now = Date.now();
   const unacked = opsUnacked(opsRows, now);
   if (unacked.length) {
@@ -11069,6 +11180,8 @@ opsbtn.onclick = () => {
   setDrawer(false);
   opsdlg.style.display = "flex";
   renderOpsDlg();
+  // the rows, never on a timer: the count on the poll is what says whether there is anything to load
+  if (reportsAwaitingOwner > 0) void loadOwnerReports();
 };
 renderOpsBtn();
 

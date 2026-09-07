@@ -179,6 +179,10 @@ type AuditEvent =
   | "clarification_open" | "clarification_answered" | "clarification_refused" | "clarification_prune"
   | "clarification_reply_send_uncertain"
   | "fleet_report_open" | "fleet_report_prune"
+  // the OWNER half of the report rail. Its self twin writes no trail line on purpose (the row it
+  // wrote is the record, readable back by the deciding MAIN); an owner verdict has no session to
+  // read it from, so this line and the row are the only places it surfaces.
+  | "fleet_report_owner_decision"
   // the owner-facing twin: a bound Program-MAIN raised something, and what the owner did about it.
   // `attention_refused` is a RECEIPT that the owner saw it and declined — the silent closure this
   // channel exists to make impossible.

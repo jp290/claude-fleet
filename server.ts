@@ -6508,8 +6508,37 @@ function fleetReportsFor(s: Slot): FleetReport[] {
   return fleetReports.filter((r) => bound(r.worker) || bound(r.receiver));
 }
 
+// WHO, IF ANYONE, CAN STILL JUDGE THIS ROW. ONE function, because the SELF door and the OWNER door
+// are the two halves of one rule and must not be able to disagree: the owner door opens EXACTLY
+// where the self door can never be walked again. A second copy of this ternary is a second answer
+// waiting to drift from the first, and the drift would be silent in the worst direction — either
+// two principals could judge one row, or neither could.
+//
+// The rule is clarificationReceiverFor's, verbatim: reachable means the named slot is occupied and
+// its openedAt is the one that was bound. sessionId is not read here for the reason the door above
+// no longer reads it either.
+type ReportReceiverLiveness = "live" | "gone" | "owner-inbox";
+function reportReceiverLiveness(report: FleetReport): ReportReceiverLiveness {
+  if (report.receiver === null) return "owner-inbox";
+  const live = slotFrom(report.receiver.slot);
+  return live?.cwd && live.id === report.receiver.slot && live.openedAt === report.receiver.openedAt
+    ? "live" : "gone";
+}
+
+// A row that is UNDECIDED and has no living receiver is the owner's to judge and nobody else's.
+const reportAwaitsOwner = (report: FleetReport): boolean =>
+  !report.decision && reportReceiverLiveness(report) !== "live";
+
 function pruneFleetReports(): void {
   const terminal = fleetReports.filter((report) => {
+    // …EXCEPT a row the owner still owes a verdict. The predicate below is "transport is finished
+    // with this row", which for every other row means nothing more will happen to it — but an
+    // orphaned undecided report is precisely a row where something more IS owed, and its event went
+    // terminal (`receiver-gone`) at the exact moment that became true. Pruning it would delete the
+    // only object the owner door can act on and would put the absence back where this cut found it:
+    // indistinguishable from "nobody ever filed anything". The bound on the tail is the door — a
+    // judged row prunes like any other.
+    if (reportAwaitsOwner(report)) return false;
     const event = fleetEvents.find((e) => e.id === report.eventId);
     return !event || FLEET_EVENT_TERMINAL.includes(event.status);
   }).sort((a, b) => a.reportedAt - b.reportedAt);
@@ -6791,8 +6820,17 @@ async function decideFleetReport(s: Slot, id: string, disposition: FleetReportDi
   // session that cannot exist. The owner is a principal, and none is invented for him here either.
   if (report.receiver === null)
     return json({ error: "owner-inbox report — accepting or rejecting it belongs to the owner, who has no session to bind a decision to" }, 409);
-  if (report.receiver.slot !== s.id || report.receiver.openedAt !== s.openedAt
-    || report.receiver.sessionId !== s.sessionId)
+  // THE OCCUPATION, NOT THE SESSION ID — and this is the one place the two halves of the report
+  // rail used to disagree. clarificationReceiverFor RESOLVES the receiver on slot + openedAt and
+  // says in its own words that sessionId is "deliberately reported, never gated" (a Codex bind may
+  // change it inside one occupant). This door compared all three, so a MAIN that legitimately
+  // RECEIVED a report could be refused when it came to judge it: measured 2026-09-07 on slot 12,
+  // whose Program.main carried sessionId null while the live pane had since bound one. That row
+  // was unjudgeable by its own receiver AND unreachable by the owner door below, because the
+  // occupant was alive — a report with no principal at all. Resolution and judgement now read the
+  // same rule; the session id that was live at the verdict is recorded on `decision.by`, where it
+  // is evidence rather than a gate.
+  if (report.receiver.slot !== s.id || report.receiver.openedAt !== s.openedAt)
     return json({ error: "fleet report belongs to another or replaced MAIN session" }, 409);
   // The body may say ONE thing or nothing, in openFleetReport's own discipline: what a request
   // cannot name, it cannot smuggle. Disposition comes from the PATH, everything else from the row.
@@ -6827,6 +6865,85 @@ async function decideFleetReport(s: Slot, id: string, disposition: FleetReportDi
   // carry is the transport half above, under the same word the explicit ack route writes.
   await saveStateNow();
   return json({ ok: true, report });
+}
+
+// THE OWNER DOOR FOR A REPORT NO SESSION CAN JUDGE ANY MORE, and it exists because the door above
+// is bound to an occupant that can die. Measured 2026-09-07 across six panes: a Program-MAIN with a
+// filed-but-unjudged report was NAILED TO ITS CHAIR — retiring it did not make the acceptance hard,
+// it made it permanently impossible, because clarificationReceiverFor resolves the receiver from
+// the LIVING occupant and decideFleetReport compares against it. Three of six sessions could not be
+// closed for that reason alone. The fleet was accumulating panes to keep a decision reachable.
+//
+// WHAT IT IS NOT, and each of these is a check rather than a promise:
+//  · it is NOT a way around the bound MAIN. While the receiver occupant is alive the verdict is
+//    the MAIN's fachlich, and this door refuses with the address of the one that is. The binding
+//    was never the defect — the missing exit was.
+//  · it is NOT automatic. No tick calls it; an owner act is what closes a report, and a report the
+//    owner never judges stays visibly unjudged rather than being aged into a verdict nobody gave.
+//  · it moves NOTHING else, in decideFleetReport's own discipline: no Task.status, no land, no
+//    lane teardown, no pane text, no retention pass of its own.
+//
+// The verdict is stamped `by: "owner"` — the AttentionRequest.answer.by asymmetry, for its reason:
+// the owner is a principal with no occupant triple, and stamping the dead MAIN's would record a
+// judgement by a session that had already ended.
+async function ownerDecideFleetReport(id: string, disposition: FleetReportDisposition,
+  body: Record<string, unknown> | null): Promise<Response> {
+  const report = fleetReports.find((r) => r.id === id);
+  if (!report) return json({ error: "unknown fleet report" }, 404);
+  // BEFORE anything else, because it is the whole boundary of this door: a live receiver keeps the
+  // verdict, and the refusal names the door that IS open rather than leaving the owner to find it.
+  if (reportReceiverLiveness(report) === "live")
+    return json({ error: `fleet report receiver slot ${report.receiver?.slot} is live — the verdict belongs to that MAIN through POST /api/self/fleet-report/${report.id}/accept|reject`,
+      receiver: report.receiver }, 409);
+  if (body && Object.keys(body).some((key) => key !== "reason"))
+    return json({ error: "body must contain only reason" }, 400);
+  let reason: string | null = null;
+  if (body && body.reason !== undefined) {
+    if (typeof body.reason !== "string") return json({ error: "reason must be a string" }, 400);
+    if (body.reason.length > MAX_FLEET_REPORT_DECISION_REASON)
+      return json({ error: `reason must be at most ${MAX_FLEET_REPORT_DECISION_REASON} chars` }, 400);
+    reason = body.reason.trim() || null;
+  }
+  // FIRST DECISION WINS across BOTH doors, and this is the one rule the pair must share: a report
+  // judged by its MAIN before that MAIN ended is judged, and an owner arriving afterwards reads the
+  // standing verdict instead of writing a second one over it.
+  if (report.decision)
+    return json({ error: `fleet report was already ${report.decision.disposition}`,
+      decision: report.decision }, 409);
+
+  const at = Date.now();
+  report.decision = { disposition, at, by: "owner", reason };
+  // The transport half, through the ack route's own writer, exactly as the self door does it. For
+  // an orphaned bound row the event is already terminal (`receiver-gone`) and is left byte-for-byte
+  // as it is — that status is evidence of a loss, not an open debt. For an OWNER-INBOX row it is
+  // still `inbox`, and settling it is what takes the judged row out of the owner's operations inbox
+  // rather than leaving it there as a debt the owner has already paid.
+  const event = fleetEvents.find((e) => e.id === report.eventId);
+  if (event && !FLEET_EVENT_TERMINAL.includes(event.status)) settleFleetEventAcknowledged(event);
+  // THE ONE PLACE THIS DOOR WRITES A TRAIL LINE WHERE ITS SELF TWIN DOES NOT, and the asymmetry is
+  // the point rather than an inconsistency: a MAIN's verdict is readable back through its own
+  // GET /api/self/fleet-report and through the Program view, while an owner verdict has no session
+  // to read it from — the row and this line are the only places it surfaces.
+  audit("fleet_report_owner_decision", report.worker.slot,
+    `${report.id} ${disposition} receiver=${report.receiver ? report.receiver.slot : "owner-inbox"}`);
+  await saveStateNow();
+  return json({ ok: true, report });
+}
+
+// THE OWNER'S SIGHT OF THE SAME ROWS, and it exists for the half of the finding the door alone does
+// not close: an orphaned report was not merely undecidable, it was INVISIBLE. Its FleetEvent turns
+// `receiver-gone` on teardown, which is terminal and therefore in neither class the operations
+// inbox renders (opsOpen wants an inbox row, opsUnacked wants a live pane debt) — so the row lay
+// there silently and an absence read exactly like "nobody has looked at it yet".
+//
+// Awaiting-first, then newest first, in attentionOwnerView's order and for its reason. `liveness`
+// is DERIVED per request from the same one function the two doors use — never stored, because a
+// stored copy would be a claim about a slot that has since been reopened.
+function fleetReportOwnerView(): (FleetReport & { liveness: ReportReceiverLiveness })[] {
+  return [...fleetReports]
+    .map((r) => ({ ...r, liveness: reportReceiverLiveness(r) }))
+    .sort((a, b) => (reportAwaitsOwner(a) ? 0 : 1) - (reportAwaitsOwner(b) ? 0 : 1)
+      || b.reportedAt - a.reportedAt);
 }
 
 // The same teardown act for the OTHER promise a slot can leave behind: an open suite offer in the
@@ -10787,11 +10904,19 @@ function laneAutoCloseRefusal(s: Slot, now: number): string | null {
     if (r.receiver === null) return "an owner-inbox report carries no MAIN verdict to close on";
     const d = r.decision;
     if (!d) return "a report of this lane is undecided";
-    // the decision names the EXACT receiver occupant. fleetReportFrom enforces this on the way in
-    // and decideFleetReport on the way through, which is precisely why it is re-tested here: a
-    // guarantee an actuator inherits from two other files is a guarantee it stops noticing.
-    if (d.by.slot !== r.receiver.slot || d.by.openedAt !== r.receiver.openedAt
-      || d.by.sessionId !== r.receiver.sessionId)
+    // AN OWNER VERDICT DOES NOT ARM THIS ACTUATOR. The owner door exists for a report whose MAIN is
+    // GONE, and this close reads a verdict as evidence that the coordinating MAIN read the work and
+    // is finished with the lane — a fact an owner verdict does not carry, because it was taken from
+    // outside the Program precisely when nobody inside it could. Widening the trigger here would
+    // let a door built to UNBLOCK an owner start killing panes unattended on his behalf.
+    if (d.by === "owner")
+      return "a report of this lane was judged by the owner, not by its MAIN";
+    // the decision names the receiver OCCUPATION. fleetReportFrom enforces this on the way in and
+    // decideFleetReport on the way through, which is precisely why it is re-tested here: a
+    // guarantee an actuator inherits from two other files is a guarantee it stops noticing. Like
+    // both of them it reads slot + openedAt and not the session id — a Codex bind may move that
+    // inside one occupation, and the verdict records the id that was live when it was taken.
+    if (d.by.slot !== r.receiver.slot || d.by.openedAt !== r.receiver.openedAt)
       return "a report's verdict does not name its exact receiver occupant";
     if (r.provenance.taskId !== s.taskId || r.provenance.programId !== s.programId)
       return "a report's provenance does not match this lane's own task and Program";
@@ -10829,7 +10954,10 @@ async function tickLaneAutoClose(): Promise<void> {
       // not reachable past the refusal list, and deliberately not written as a non-null assertion:
       // an actuator that could ever close a lane without naming its authority is the one shape this
       // whole slice exists to make impossible.
-      if (!report || !decision) continue;
+      // …and the owner-verdict arm of the same rule, unreachable past the refusal list for the same
+      // reason and written out for it: an actuator that could close a lane on a verdict taken from
+      // outside its Program is the one shape the branch above exists to make impossible.
+      if (!report || !decision || decision.by === "owner") continue;
       const occupant = { openedAt: s.openedAt, sessionId: s.sessionId, cwd: s.cwd };
       // the ledger's OWN recorder, with its own git reads — never a second count of this lane's
       // commits. buildLaneOutcome resolves killed-dirty vs killed-empty from `commitCount` itself.
@@ -25300,6 +25428,14 @@ Bun.serve<WSData>({
             && programOccupancy(p) === "stale").length;
           return stale > 0 ? { programsStale: stale } : {};
         })(),
+        // ONE NUMBER, like attentionOpen and for its budget reason: worker reports that no session
+        // can judge any more and that nobody has judged. The bodies are behind GET /api/fleet-report.
+        // OMITTED AT ZERO; absent reads as zero. It is the count that makes the 📥 affordance appear
+        // for a row whose FleetEvent went terminal on teardown and therefore lights nothing itself.
+        ...(() => {
+          const awaiting = fleetReports.filter(reportAwaitsOwner).length;
+          return awaiting > 0 ? { reportsAwaitingOwner: awaiting } : {};
+        })(),
         // digests only — the prompt texts live behind GET /api/tasks (see TaskDigest)
         tasks: tasks.map(taskDigest),
         // Program bodies are owner-decision documents and never ride the 2 s poll. This digest is
@@ -26572,6 +26708,16 @@ Bun.serve<WSData>({
     const attentionRefuse = /^\/api\/attention\/([0-9a-f]{24})\/refuse$/.exec(url.pathname);
     if (attentionRefuse && req.method === "POST")
       return refuseAttentionRequest(attentionRefuse[1], await readJson(req));
+    // --- the report rail's OWNER half. GET carries the full rows with their derived `liveness`
+    // (the 2 s poll carries only the count, docs/data-saver.md); the two POSTs are the exit that was
+    // missing for a report whose bound MAIN is gone. They refuse while that MAIN is alive — there
+    // the verdict is still its own, and this door would be a way around it.
+    if (url.pathname === "/api/fleet-report" && req.method === "GET")
+      return json({ reports: fleetReportOwnerView() });
+    const ownerReportDecision = /^\/api\/fleet-report\/([0-9a-f]{24})\/(accept|reject)$/.exec(url.pathname);
+    if (ownerReportDecision && req.method === "POST")
+      return ownerDecideFleetReport(ownerReportDecision[1],
+        ownerReportDecision[2] === "accept" ? "accepted" : "rejected", await readJson(req));
     // --- the OPERATIONS inbox (owner side), separate from attention: completion FACTS a subscription
     // asked for with delivery:"inbox". No new payload — the rows ride /api/sessions as `events`. Its
     // twin is POST /api/self/events/:id/ack, which refuses exactly the rows this route accepts.

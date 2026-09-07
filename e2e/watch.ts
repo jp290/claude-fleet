@@ -94,10 +94,19 @@ interface FleetReportRow {
   // null exactly when basis is "owner-inbox" — the owner is a principal, not an occupant
   receiver: { slot: number; openedAt: number; sessionId: string | null } | null;
   basis: "program-main" | "lane-watch" | "program-main+lane-watch" | "owner-inbox"; eventId: string;
-  // absent or null = undecided; present = the receiving MAIN judged the work (D1)
+  // absent or null = undecided; present = the receiving MAIN judged the work (D1) — or, when the
+  // occupant it was filed to is gone, the OWNER through the door beside it (D3). "owner" is a
+  // principal and carries no occupant triple, exactly as AttentionRequest.answer.by does not.
   decision?: { disposition: "accepted" | "rejected"; at: number;
-    by: { slot: number; openedAt: number; sessionId: string | null }; reason: string | null } | null;
+    by: { slot: number; openedAt: number; sessionId: string | null } | "owner";
+    reason: string | null } | null;
 }
+// `decision.by` is an OCCUPANT or the literal "owner" (D3). Every check that asserts an occupant
+// verdict reads it through here, so an owner stamp landing where a MAIN's belongs fails as a
+// missing occupant instead of quietly comparing against an absent field.
+const decisionOccupant = (d: FleetReportRow["decision"]):
+  { slot: number; openedAt: number; sessionId: string | null } | null =>
+  !d || d.by === "owner" ? null : d.by;
 interface FleetReportEventRow {
   id: string; watchId: null; receiverSlot: number | null; receiverOpenedAt: number | null;
   receiverSessionId: string | null; receiverIdleSec: number; subjectSlot: number; subjectBranch: string;
@@ -149,6 +158,14 @@ const ackEvent = (tok: string | null, id: string): Promise<Response> =>
     method: "POST",
     headers: tok === null ? {} : { "x-fleet-self-token": tok },
   });
+// the OWNER half of the report rail: the view that shows a row no session can judge, and the two
+// acts that settle it. Both carry the owner token like every other owner route in this file.
+const ownerReports = async (): Promise<(FleetReportRow & { liveness: string })[]> =>
+  ((await (await get("/api/fleet-report")).json()) as
+    { reports?: (FleetReportRow & { liveness: string })[] }).reports ?? [];
+const ownerDecideReport = (id: string, verdict: "accept" | "reject",
+  body?: unknown): Promise<Response> =>
+  post(`/api/fleet-report/${id}/${verdict}`, body === undefined ? {} : body);
 const decideReport = (tok: string | null, id: string, verdict: "accept" | "reject",
   body?: unknown, raw?: string): Promise<Response> =>
   fetch(`${BASE}/api/self/fleet-report/${id}/${verdict}`, {
@@ -2907,9 +2924,9 @@ export async function run(): Promise<void> {
       acceptRes.ok && acceptBody.ok === true
         && acceptBody.report?.decision?.disposition === "accepted"
         && typeof acceptBody.report.decision.at === "number" && acceptBody.report.decision.at > 0
-        && acceptBody.report.decision.by.slot === d1Main
-        && acceptBody.report.decision.by.openedAt === d1MainRowAfter?.openedAt
-        && acceptBody.report.decision.by.sessionId === (d1MainRowAfter?.sessionId ?? null)
+        && decisionOccupant(acceptBody.report.decision)?.slot === d1Main
+        && decisionOccupant(acceptBody.report.decision)?.openedAt === d1MainRowAfter?.openedAt
+        && decisionOccupant(acceptBody.report.decision)?.sessionId === (d1MainRowAfter?.sessionId ?? null)
         && acceptBody.report.decision.reason === "Diff read, verify quoted, slice taken.",
       JSON.stringify(acceptBody.report?.decision ?? null));
     check("D1 accept settles transport: a still-open FleetEvent becomes acknowledged, so recovery stops re-pasting a judged report",
@@ -2930,7 +2947,7 @@ export async function run(): Promise<void> {
     check("D1 reject: the opposite verdict is recorded the same way, and an omitted reason is null rather than empty prose",
       rejectRes.ok && rejectBody.report?.decision?.disposition === "rejected"
         && rejectBody.report.decision.reason === null
-        && rejectBody.report.decision.by.slot === d1Main,
+        && decisionOccupant(rejectBody.report.decision)?.slot === d1Main,
       JSON.stringify(rejectBody.report?.decision ?? null));
     const terminalRes = await decideReport(d1MainTok, terminalReport?.id ?? "", "accept");
     const terminalBody = await terminalRes.json() as { ok?: boolean; report?: FleetReportRow };
@@ -3005,7 +3022,7 @@ export async function run(): Promise<void> {
     const workerView = (await selfFleetReports(acceptTok)).reports.find((r) => r.id === acceptReport?.id);
     check("D1 visibility: the deciding MAIN and the reporting worker both read the verdict off GET /api/self/fleet-report",
       workerView?.decision?.disposition === "accepted"
-        && workerView.decision.by.slot === d1Main
+        && decisionOccupant(workerView.decision)?.slot === d1Main
         && hydrated.find((r) => r.id === acceptReport?.id)?.decision?.disposition === "accepted",
       JSON.stringify(workerView?.decision ?? null));
 
@@ -3161,7 +3178,7 @@ export async function run(): Promise<void> {
         && d2Report.get(acceptedLane.slot)?.decision?.disposition === "accepted"
         && d2Report.get(rejectedLane.slot)?.decision?.disposition === "rejected"
         && d2Report.get(rejectedAheadLane.slot)?.decision?.disposition === "rejected"
-        && d2Report.get(acceptedLane.slot)?.decision?.by.slot === d2Main
+        && decisionOccupant(d2Report.get(acceptedLane.slot)?.decision)?.slot === d2Main
         && (undecidedRow?.decision ?? null) === null
         && (await selfFleetReports(d2Tok.get(reportlessLane.slot) ?? "")).reports.length === 0,
       JSON.stringify({ decided: d2Verdicts, undecided: undecidedRow?.id ?? null,
@@ -3375,6 +3392,339 @@ export async function run(): Promise<void> {
     d2Cleaned.fleetReports = [];
     d2Cleaned.programs = (d2Cleaned.programs ?? []).filter((p) => p.id !== d2ProgramId);
     writeFileSync(d2Path, JSON.stringify(d2Cleaned, null, 2), { mode: 0o600 });
+    await restartSrv();
+  }
+
+  // === RESULT-RAIL D3 · THE OWNER DOOR FOR A REPORT NO SESSION CAN JUDGE =======================
+  // D1 gave a bound MAIN the verdict. This block proves the exit that was missing beside it, and
+  // the finding is measured rather than argued: on 2026-09-07 six panes were read and NONE was
+  // closable; three of them for this one mechanism. A Program-MAIN with a filed-but-unjudged report
+  // is nailed to its chair — clarificationReceiverFor resolves the receiver from the LIVING
+  // occupant, decideFleetReport compares against it, and the only route is SELF-only. Retiring that
+  // MAIN did not make the acceptance hard, it made it PERMANENTLY IMPOSSIBLE. That is why the fleet
+  // accumulated panes.
+  //
+  // Four facts are under test, and each fails silently in its own direction: the door must refuse
+  // while the MAIN lives (or it is a way around a binding that is RIGHT), it must open when the
+  // MAIN is gone, it must stamp the OWNER and not the dead session, and the row must be VISIBLE —
+  // an orphan whose event went terminal on teardown lights nothing in either inbox class.
+  {
+    // DELTAS off a baseline, never absolutes: this suite has written report rows and trail lines
+    // long before this block, and both ledgers are append-only across the whole run.
+    const d3AuditEvents = (): string[] => {
+      try {
+        return readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+          .map((l) => { try { return String((JSON.parse(l) as { event?: string }).event ?? ""); } catch { return ""; } });
+      } catch { return []; }
+    };
+    const d3AwaitingCount = async (): Promise<number> =>
+      ((await (await get("/api/sessions")).json()) as { reportsAwaitingOwner?: number })
+        .reportsAwaitingOwner ?? 0;
+
+    const d3Main = await freeSlot();
+    const d3MainOpen = d3Main ? await post(`/api/slots/${d3Main}/open`, { cwd: REPO, label: "d3-owner-door-main" }) : null;
+    const d3SessMain = await freeSlot();
+    const d3SessOpen = d3SessMain ? await post(`/api/slots/${d3SessMain}/open`, { cwd: REPO, label: "d3-sessionid-main" }) : null;
+    const d3NewLane = async (): Promise<{ slot: number; cwd: string; branch: string }> =>
+      (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    const orphanLane = await d3NewLane();     // its report outlives its MAIN — the owner's to judge
+    const judgedLane = await d3NewLane();     // judged by the MAIN first, THEN orphaned
+    const sessionLane = await d3NewLane();    // the sessionId-divergence arm (criterion 4)
+    const inboxLane = await d3NewLane();      // no Program, no watch — the owner-inbox fallback
+    check("D3 fixtures: two MAIN occupants and four distinct lanes exist",
+      !!d3MainOpen?.ok && !!d3SessOpen?.ok
+        && new Set([d3Main, d3SessMain, orphanLane.slot, judgedLane.slot, sessionLane.slot,
+          inboxLane.slot]).size === 6,
+      JSON.stringify({ d3Main, d3SessMain,
+        lanes: [orphanLane.slot, judgedLane.slot, sessionLane.slot, inboxLane.slot] }));
+    const d3MainTok = await paneEnv(`s${d3Main}`, "FLEET_SELF_TOKEN") ?? "";
+    const d3SessTok = await paneEnv(`s${d3SessMain}`, "FLEET_SELF_TOKEN") ?? "";
+    const orphanTok = await paneEnv(`s${orphanLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const judgedTok = await paneEnv(`s${judgedLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const sessionTok = await paneEnv(`s${sessionLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const inboxTok3 = await paneEnv(`s${inboxLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const d3Toks = [d3MainTok, d3SessTok, orphanTok, judgedTok, sessionTok, inboxTok3];
+    check("D3 fixtures: every participant carries its own exact scoped credential",
+      d3Toks.every((t) => /^[0-9a-f]{32}$/.test(t)) && new Set(d3Toks).size === 6,
+      `lengths=${d3Toks.map((t) => t.length).join("/")}`);
+
+    // Two Programs, planted with srv down like every binding fixture in this file. The second one
+    // exists only so the sessionId arm has a MAIN of its OWN: killing the first one is the act
+    // under test, and a shared MAIN would make one arm the teardown of the other.
+    const d3Path = `${ROOT}/fleet.json`;
+    const d3ProgramId = "c".repeat(24);
+    const d3SessProgramId = "d".repeat(24);
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const d3Plant = JSON.parse(readFileSync(d3Path, "utf8")) as {
+      slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
+    };
+    const d3MainRow = d3Plant.slots[String(d3Main)] ?? {};
+    const d3SessRow = d3Plant.slots[String(d3SessMain)] ?? {};
+    const programShell = (id: string, slot: number, row: Record<string, unknown>) => ({
+      id, title: "Owner acceptance door fixture",
+      intent: "Judge a typed worker result whose MAIN may be gone",
+      successCriterion: "A report always has exactly one principal that may judge it", nonGoals: [],
+      decisions: [], evidence: [], openQuestions: [], status: "active",
+      createdAt: Date.now() - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: Date.now() - 900, activatedAt: Date.now() - 800,
+      main: { slot, openedAt: row.openedAt, sessionId: row.sessionId, boundAt: Date.now() - 700 },
+    });
+    d3Plant.programs = [...(d3Plant.programs ?? []),
+      programShell(d3ProgramId, d3Main, d3MainRow),
+      programShell(d3SessProgramId, d3SessMain, d3SessRow)];
+    for (const lane of [orphanLane, judgedLane]) {
+      d3Plant.slots[String(lane.slot)].programId = d3ProgramId;
+      d3Plant.slots[String(lane.slot)].taskId = `d3task${String(lane.slot).padStart(6, "0")}`;
+    }
+    d3Plant.slots[String(sessionLane.slot)].programId = d3SessProgramId;
+    d3Plant.slots[String(sessionLane.slot)].taskId = "d3task-sessionid";
+    // the B4 shape: a task dispatched it, nothing bound it — the owner-inbox fallback
+    d3Plant.slots[String(inboxLane.slot)].taskId = "d3task-owner-inbox";
+    writeFileSync(d3Path, JSON.stringify(d3Plant, null, 2), { mode: 0o600 });
+    await restartSrv();
+
+    const d3Filed = await Promise.all([
+      selfFleetReport(orphanTok, { status: "complete", text: "D3: the slice is done; my MAIN is about to end." }),
+      selfFleetReport(judgedTok, { status: "complete", text: "D3: judged before the MAIN ended." }),
+      selfFleetReport(sessionTok, { status: "needs-main", text: "D3: filed while the pane carried no session id." }),
+      selfFleetReport(inboxTok3, { status: "failed", text: "D3: filed to the owner inbox, nobody bound me." }),
+    ]);
+    const [orphanReport, judgedReport, sessionReport, inboxReport3] = await Promise.all(
+      d3Filed.map(async (r) => (await r.json() as { report?: FleetReportRow }).report));
+    check("D3 fixtures: three bound reports and one owner-inbox report exist, all undecided",
+      d3Filed.every((r) => r.ok)
+        && orphanReport?.receiver?.slot === d3Main && judgedReport?.receiver?.slot === d3Main
+        && sessionReport?.receiver?.slot === d3SessMain
+        && [orphanReport, judgedReport, sessionReport].every((r) => r?.basis === "program-main"
+          && (r?.decision ?? null) === null)
+        && inboxReport3?.receiver === null && inboxReport3.basis === "owner-inbox",
+      JSON.stringify([orphanReport, judgedReport, sessionReport, inboxReport3]
+        .map((r) => [r?.id, r?.basis, r?.receiver?.slot ?? null])));
+
+    // --- (a) THE BOUNDARY. While the MAIN lives the verdict is ITS OWN, and the owner door says so
+    // with the address of the door that is open. The binding was never the defect.
+    const liveRefusal = await ownerDecideReport(orphanReport?.id ?? "", "accept");
+    const liveRefusalText = await liveRefusal.text();
+    check("D3 live receiver: the owner door refuses a report whose MAIN is alive, and names the door that is open",
+      liveRefusal.status === 409
+        && liveRefusalText.includes(`fleet report receiver slot ${d3Main} is live`)
+        && liveRefusalText.includes(`POST /api/self/fleet-report/${orphanReport?.id}/accept|reject`)
+        && ((await selfFleetReports(d3MainTok)).reports.find((r) => r.id === orphanReport?.id)?.decision ?? null) === null,
+      `${liveRefusal.status} ${liveRefusalText}`);
+    const unknownOwner = await ownerDecideReport("0".repeat(24), "accept");
+    const unknownOwnerText = await unknownOwner.text();
+    check("D3 unknown id: an id that names no row is 404, not a 409 about a liveness it cannot read",
+      unknownOwner.status === 404 && unknownOwnerText.includes("unknown fleet report"),
+      `${unknownOwner.status} ${unknownOwnerText}`);
+    const d3BadBodies = await Promise.all([
+      ownerDecideReport(orphanReport?.id ?? "", "accept", { reason: "ok", disposition: "accepted" }),
+      ownerDecideReport(orphanReport?.id ?? "", "accept", { reason: 5 }),
+      ownerDecideReport(orphanReport?.id ?? "", "accept", { reason: "x".repeat(501) }),
+    ]);
+    const d3BadTexts = await Promise.all(d3BadBodies.map((r) => r.text()));
+    check("D3 body shape: the owner door takes {reason} or nothing, in the self door's own discipline",
+      d3BadBodies.every((r) => r.status === 400 || r.status === 409)
+        && d3BadTexts.some((t) => t.includes("body must contain only reason")),
+      JSON.stringify({ statuses: d3BadBodies.map((r) => r.status), texts: d3BadTexts }));
+
+    // --- (c) THE sessionId DIVERGENCE, the second defect the same measurement found. Slot 12 held a
+    // Program.main with sessionId null while its live pane had since bound one: the MAIN RECEIVED
+    // the report (clarificationReceiverFor never gates sessionId) and could never judge it (this
+    // door compared all three), and the owner door could not help because the occupant was ALIVE —
+    // a report with no principal at all. Planted from BOTH sides so the arm does not depend on how
+    // this harness happens to assign session ids.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const sessPlant = JSON.parse(readFileSync(d3Path, "utf8")) as {
+      slots: Record<string, Record<string, unknown>>;
+      fleetReports?: { id?: string; receiver?: { sessionId?: string | null } }[];
+    };
+    sessPlant.slots[String(d3SessMain)].sessionId = "d3-live-session";
+    for (const r of sessPlant.fleetReports ?? [])
+      if (r.id === sessionReport?.id && r.receiver) r.receiver.sessionId = null;
+    writeFileSync(d3Path, JSON.stringify(sessPlant, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const sessSlotAfter = ((await (await get("/api/sessions")).json()) as
+      { slots: { id: number; sessionId?: string | null }[] }).slots.find((x) => x.id === d3SessMain);
+    const sessRowAfter = (await selfFleetReports(d3SessTok)).reports.find((r) => r.id === sessionReport?.id);
+    const sessDecide = await decideReport(d3SessTok, sessionReport?.id ?? "", "accept",
+      { reason: "The pane that received this is the pane judging it." });
+    const sessBody = await sessDecide.json() as { ok?: boolean; report?: FleetReportRow };
+    const sessDecidedBy = sessBody.report?.decision?.by;
+    check("D3 sessionId divergence: the receiving OCCUPATION judges its own report even after its session id moved",
+      sessSlotAfter?.sessionId === "d3-live-session" && (sessRowAfter?.receiver?.sessionId ?? "x") === null
+        && sessDecide.ok && sessBody.report?.decision?.disposition === "accepted"
+        && sessDecidedBy !== "owner" && sessDecidedBy?.slot === d3SessMain
+        && sessDecidedBy?.sessionId === "d3-live-session",
+      JSON.stringify({ liveSession: sessSlotAfter?.sessionId,
+        rowSession: sessRowAfter?.receiver?.sessionId ?? "ABSENT",
+        status: sessDecide.status, decision: sessBody.report?.decision ?? null }));
+    // …and the owner door stays SHUT on it: that occupant is alive, and the verdict was its own.
+    const sessOwnerRefusal = await ownerDecideReport(sessionReport?.id ?? "", "reject");
+    check("D3 sessionId divergence: the owner door never opens for a live occupant, whatever its session id says",
+      sessOwnerRefusal.status === 409,
+      `${sessOwnerRefusal.status} ${await sessOwnerRefusal.text()}`);
+    // the verdict SURVIVES a restart — a parser that still demanded the receiver's exact triple
+    // would discard this row whole at the next boot, silently, one judgement at a time.
+    await restartSrv();
+    const sessAfterBoot = (await selfFleetReports(d3SessTok)).reports.find((r) => r.id === sessionReport?.id);
+    check("D3 sessionId divergence: the judged row hydrates, verdict intact, instead of being discarded at boot",
+      sessAfterBoot?.decision?.disposition === "accepted"
+        && sessAfterBoot.decision.by !== "owner" && sessAfterBoot.decision.by?.slot === d3SessMain,
+      JSON.stringify(sessAfterBoot?.decision ?? null));
+
+    // --- the MAIN judges ONE of its two reports and is then torn down. That is the live shape the
+    // finding describes: the owner arrives at a rail carrying one settled row and one orphan.
+    const preKillJudge = await decideReport(d3MainTok, judgedReport?.id ?? "", "accept",
+      { reason: "Read it while I was still here." });
+    check("D3 pre-kill: the MAIN judges one of its own reports through the door that is properly its",
+      preKillJudge.ok, `${preKillJudge.status} ${await preKillJudge.text()}`);
+    const auditBefore = d3AuditEvents();
+    const awaitingBefore = await d3AwaitingCount();
+    await post(`/api/slots/${d3Main}/kill`, {});
+    await Bun.sleep(1000);
+
+    // --- (3) VISIBILITY. The orphan's FleetEvent went `receiver-gone` at teardown — terminal, and
+    // therefore in NEITHER class the operations inbox renders. Before this cut the row simply lay
+    // there and an absence read exactly like "nobody has looked at it yet".
+    const orphanEvent = (await fleetReportEventRows()).find((e) => e.id === orphanReport?.eventId);
+    const viewAfterKill = await ownerReports();
+    const orphanSeen = viewAfterKill.find((r) => r.id === orphanReport?.id);
+    const judgedSeen = viewAfterKill.find((r) => r.id === judgedReport?.id);
+    const awaitingAfter = await d3AwaitingCount();
+    check("D3 visibility: the orphaned row is served to the owner as `gone`, sorted ahead of the judged one, and counted on the poll",
+      orphanEvent?.status === "receiver-gone"
+        && orphanSeen?.liveness === "gone" && (orphanSeen.decision ?? null) === null
+        && judgedSeen?.liveness === "gone" && judgedSeen.decision?.disposition === "accepted"
+        && viewAfterKill.findIndex((r) => r.id === orphanReport?.id)
+          < viewAfterKill.findIndex((r) => r.id === judgedReport?.id)
+        && awaitingAfter > awaitingBefore,
+      JSON.stringify({ event: orphanEvent?.status, orphan: orphanSeen?.liveness,
+        judged: judgedSeen?.liveness, awaiting: `${awaitingBefore}→${awaitingAfter}` }));
+
+    // --- (1)+(2) THE DOOR ITSELF, and the stamp. `by` is the literal "owner": a principal, never
+    // the triple of a session that had already ended.
+    const ownerAccept = await ownerDecideReport(orphanReport?.id ?? "", "accept",
+      { reason: "The MAIN is gone; I read the branch and took the work." });
+    const ownerAcceptBody = await ownerAccept.json() as { ok?: boolean; report?: FleetReportRow };
+    const orphanEventAfter = (await fleetReportEventRows()).find((e) => e.id === orphanReport?.eventId);
+    check("D3 owner accept: the verdict lands stamped `owner`, with its time and reason, on a row no session could judge",
+      ownerAccept.ok && ownerAcceptBody.ok === true
+        && ownerAcceptBody.report?.decision?.disposition === "accepted"
+        && ownerAcceptBody.report.decision.by === "owner"
+        && typeof ownerAcceptBody.report.decision.at === "number" && ownerAcceptBody.report.decision.at > 0
+        && ownerAcceptBody.report.decision.reason === "The MAIN is gone; I read the branch and took the work.",
+      JSON.stringify(ownerAcceptBody.report?.decision ?? null));
+    check("D3 owner accept: an already-terminal event is left byte-for-byte as it was — receiver-gone is loss evidence, not an open debt",
+      orphanEventAfter?.status === "receiver-gone"
+        && orphanEventAfter.acknowledgedAt === orphanEvent?.acknowledgedAt,
+      JSON.stringify({ before: orphanEvent?.status, after: orphanEventAfter?.status }));
+    const auditAfter = d3AuditEvents();
+    check("D3 owner accept: the trail carries its OWN word, so an owner verdict is distinguishable from a MAIN's",
+      auditAfter.filter((e) => e === "fleet_report_owner_decision").length
+        === auditBefore.filter((e) => e === "fleet_report_owner_decision").length + 1,
+      `before=${auditBefore.filter((e) => e === "fleet_report_owner_decision").length}`
+        + ` after=${auditAfter.filter((e) => e === "fleet_report_owner_decision").length}`);
+    const ownerSecond = await ownerDecideReport(orphanReport?.id ?? "", "reject");
+    const ownerSecondText = await ownerSecond.text();
+    check("D3 first decision wins across BOTH doors: a second owner call is 409 and the row is unchanged",
+      ownerSecond.status === 409 && ownerSecondText.includes("fleet report was already accepted")
+        && JSON.stringify((await ownerReports()).find((r) => r.id === orphanReport?.id)?.decision)
+          === JSON.stringify(ownerAcceptBody.report?.decision),
+      `${ownerSecond.status} ${ownerSecondText}`);
+    const ownerOverJudged = await ownerDecideReport(judgedReport?.id ?? "", "reject");
+    const ownerOverJudgedText = await ownerOverJudged.text();
+    check("D3 the owner never overwrites a MAIN: a row judged before its MAIN ended reads back as that MAIN's verdict",
+      ownerOverJudged.status === 409 && ownerOverJudgedText.includes("fleet report was already accepted")
+        && (await ownerReports()).find((r) => r.id === judgedReport?.id)?.decision?.by !== "owner",
+      `${ownerOverJudged.status} ${ownerOverJudgedText}`);
+
+    // --- (4b) THE OWNER-INBOX ROW, whose refusal on the self door has always said the verdict
+    // "belongs to the owner". Until this cut that sentence pointed at a door that did not exist.
+    const inboxSelfRefusal = await decideReport(d3SessTok, inboxReport3?.id ?? "", "accept");
+    const inboxSelfText = await inboxSelfRefusal.text();
+    const inboxEventBefore = (await fleetReportEventRows()).find((e) => e.id === inboxReport3?.eventId);
+    const inboxOwner = await ownerDecideReport(inboxReport3?.id ?? "", "reject", { reason: "Not the work I asked for." });
+    const inboxOwnerBody = await inboxOwner.json() as { ok?: boolean; report?: FleetReportRow };
+    const inboxEventAfter = (await fleetReportEventRows()).find((e) => e.id === inboxReport3?.eventId);
+    check("D3 owner-inbox: the sentence the self door has always spoken now points at a door that exists",
+      inboxSelfRefusal.status === 409
+        && inboxSelfText.includes("belongs to the owner, who has no session to bind a decision to")
+        && inboxOwner.ok && inboxOwnerBody.report?.decision?.disposition === "rejected"
+        && inboxOwnerBody.report.decision.by === "owner"
+        && inboxOwnerBody.report.decision.reason === "Not the work I asked for.",
+      JSON.stringify({ self: inboxSelfRefusal.status, owner: inboxOwner.status,
+        decision: inboxOwnerBody.report?.decision ?? null }));
+    check("D3 owner-inbox: the still-open inbox event settles through the ack writer, so a paid debt leaves the inbox",
+      inboxEventBefore?.status === "inbox" && inboxEventAfter?.status === "acknowledged"
+        && typeof inboxEventAfter.acknowledgedAt === "number" && (inboxEventAfter.acknowledgedAt ?? 0) > 0,
+      JSON.stringify({ before: inboxEventBefore?.status, after: inboxEventAfter?.status }));
+
+    // --- (3b) RETENTION. The door is decorative if the row it acts on can vanish first: an orphan's
+    // event is terminal, so pruneFleetReports would have dropped it off the tail like any settled
+    // row. Planted past the ceiling with srv down, then a fresh report is filed — that is the ONLY
+    // caller of the prune — and the awaiting row must still be there afterwards.
+    const holdLane = await d3NewLane();
+    const holdTok = await paneEnv(`s${holdLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const keepPlant = JSON.parse(readFileSync(d3Path, "utf8")) as {
+      fleetReports?: Record<string, unknown>[];
+    };
+    // an orphan with NO receiver occupant left in the slots map at all: the shape the owner door
+    // exists for, and the one the tail would otherwise eat first (it is the oldest row here).
+    const heldId = "9".repeat(24);
+    const filler = Array.from({ length: 30 }, (_unused, i) => ({
+      id: `${(i + 10).toString(16).padStart(2, "0")}`.repeat(12), reportedAt: Date.now() - 500_000 + i,
+      status: "complete", text: `D3 filler ${i}`,
+      worker: { slot: 1, openedAt: 1, sessionId: null, cwd: REPO, branch: `d3-filler-${i}` },
+      provenance: { taskId: null, originId: null, programId: null, instance: null },
+      receiver: null, basis: "owner-inbox", eventId: "0".repeat(24),
+      // decided, and by the one principal an owner-inbox row can carry a verdict from
+      decision: { disposition: "accepted", at: Date.now() - 400_000, by: "owner", reason: null },
+    }));
+    keepPlant.fleetReports = [
+      { id: heldId, reportedAt: Date.now() - 900_000, status: "needs-main",
+        text: "D3: an orphan older than the whole retention tail.",
+        worker: { slot: 1, openedAt: 1, sessionId: null, cwd: REPO, branch: "d3-held-orphan" },
+        provenance: { taskId: null, originId: null, programId: null, instance: null },
+        // a slot id no occupant carries in this fixture, with an openedAt no live row can match:
+        // reportReceiverLiveness must answer `gone` on both legs, not on a coincidence of one
+        receiver: { slot: 1, openedAt: 4242, sessionId: null }, basis: "program-main",
+        eventId: "1".repeat(24) },
+      ...filler,
+      ...(keepPlant.fleetReports ?? []),
+    ];
+    writeFileSync(d3Path, JSON.stringify(keepPlant, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const beforePrune = await ownerReports();
+    await selfFleetReport(holdTok, { status: "complete", text: "D3: the file that runs the prune." });
+    const afterPrune = await ownerReports();
+    check("D3 retention: the prune drops settled rows past the ceiling and HOLDS the one the owner still owes a verdict",
+      beforePrune.some((r) => r.id === heldId)
+        && afterPrune.some((r) => r.id === heldId)
+        && afterPrune.find((r) => r.id === heldId)?.liveness === "gone"
+        && afterPrune.filter((r) => filler.some((f) => f.id === r.id)).length
+          < filler.filter((f) => beforePrune.some((r) => r.id === f.id)).length,
+      JSON.stringify({ heldBefore: beforePrune.some((r) => r.id === heldId),
+        heldAfter: afterPrune.some((r) => r.id === heldId),
+        fillerBefore: filler.filter((f) => beforePrune.some((r) => r.id === f.id)).length,
+        fillerAfter: afterPrune.filter((r) => filler.some((f) => f.id === r.id)).length }));
+
+    for (const l of [orphanLane, judgedLane, sessionLane, inboxLane, holdLane])
+      await post(`/api/slots/${l.slot}/kill`, {});
+    if (d3SessMain) await post(`/api/slots/${d3SessMain}/kill`, {});
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const d3Cleaned = JSON.parse(readFileSync(d3Path, "utf8")) as {
+      events?: { kind?: string }[]; fleetReports?: unknown[]; programs?: { id?: string }[];
+    };
+    d3Cleaned.events = (d3Cleaned.events ?? []).filter((e) => e.kind !== "fleet-report");
+    d3Cleaned.fleetReports = [];
+    d3Cleaned.programs = (d3Cleaned.programs ?? [])
+      .filter((p) => p.id !== d3ProgramId && p.id !== d3SessProgramId);
+    writeFileSync(d3Path, JSON.stringify(d3Cleaned, null, 2), { mode: 0o600 });
     await restartSrv();
   }
 

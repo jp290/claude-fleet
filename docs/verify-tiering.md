@@ -414,10 +414,10 @@ can live, and tier 1 is the only place prevention and attribution can live. Buil
 retire the question "what does a green gate guarantee" — it answers a *different* question, and
 leaves §3's answer (types, plus 25 checks about `claudeAlive`) exactly where it was.
 
-### 6.1 Die Suite, die Tier 2 beweist, wird von keinem Gate gefahren — und war darum zwei Tage DETERMINISTISCH ROT (`4c562e7` → `<LANDING-SHA>`)
+### 6.1 Die Suite, die Tier 2 beweist, wird von keinem Gate gefahren — und war darum zwei Tage DETERMINISTISCH ROT (`4c562e7` → `a1f8b65`)
 
 **Kein Flake. Nicht unter §11.2x suchen.** `./e2e-postland-audit.sh` fiel auf main von `4c562e7`
-(2026-09-05) bis `<LANDING-SHA>` (Reparatur auf `fleet/260907003236-ec0e`) in JEDEM Lauf mit
+(2026-09-05) bis `a1f8b65` (gelandet 2026-09-07) in JEDEM Lauf mit
 denselben zwei Checks, beide aus Abschnitt (J) in `fleet-e2e-postland-audit.ts`:
 
 ```
@@ -462,7 +462,7 @@ beweist, hat selbst kein Zuhause**, und ihr Rot ist von innen nicht von „nie g
 unterscheiden. Solange sie rot ist, beweist KEIN Lauf von ihr etwas über den Post-Land-Audit-Pfad —
 ein Leser muss zuerst diese zwei Zeilen abziehen, bevor er irgendeine andere Zeile als Befund liest.
 
-**Ein Rot dort NACH `<LANDING-SHA>` ist wieder ECHT** — und dann gilt wieder die normale Regel: es ist
+**Ein Rot dort NACH `a1f8b65` ist wieder ECHT** — und dann gilt wieder die normale Regel: es ist
 deins, bis du das Gegenteil beweist.
 
 ## 7. Relative to the `post-land-audit` lane

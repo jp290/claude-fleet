@@ -4406,8 +4406,14 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && server.includes("/^\\/api\\/fleet-report\\/([0-9a-f]{24})\\/(accept|reject)$/")
       && server.includes('url.pathname === "/api/fleet-report" && req.method === "GET"')
       && ownerSection !== "" && ownerSection.includes("POST /api/fleet-report/:id/accept")
-      && ownerSection.includes("GET /api/fleet-report"),
-    `door=${ownerDoor !== ""} route=${server.includes("(accept|reject)$/")} doc=${ownerSection !== ""}`);
+      && ownerSection.includes("GET /api/fleet-report")
+      // …and the doc hands the OWNER credential, not a self token. The route sits behind the plain
+      // owner gate (tokenFrom: Bearer, the fleet cookie, ?token=), so a curl teaching
+      // `x-fleet-self-token` here would send the reader to a 401 that looks like a broken door.
+      && /-H "authorization: Bearer \$FLEET_TOKEN"/.test(ownerSection)
+      && !/x-fleet-self-token/.test(ownerSection.slice(0, ownerSection.indexOf("**Sichtbarkeit"))),
+    `door=${ownerDoor !== ""} route=${server.includes("(accept|reject)$/")} doc=${ownerSection !== ""}`
+      + ` bearer=${/-H "authorization: Bearer \$FLEET_TOKEN"/.test(ownerSection)}`);
   // THE BOUNDARY, as source: the owner door refuses a LIVE receiver, and it is the FIRST thing it
   // does. A door that checked liveness after the already-decided branch would still be correct
   // today and would stop being correct the first time somebody reordered the two.

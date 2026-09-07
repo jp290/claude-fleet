@@ -1002,7 +1002,7 @@ schließbar. Das ist der Grund, warum diese Flotte Panes ansammelte.
 
 ```
 curl -s -X POST http://<fleet-host>:<port>/api/fleet-report/<report-id>/accept \
-  -H "x-fleet-token: $FLEET_TOKEN" -H 'content-type: application/json' \
+  -H "authorization: Bearer $FLEET_TOKEN" -H 'content-type: application/json' \
   -d '{"reason":"Die MAIN ist weg; Diff gelesen, Scheibe uebernommen"}'
 ```
 

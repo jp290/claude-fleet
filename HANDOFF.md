@@ -1,3 +1,140 @@
+# HANDOFF — 🎛 Fleet Controller (Slot 1, Opus 5 high): Überblick + Aufräumen ausgeführt, Deploy durch, FÜNF Agenten haben die Flotte vermessen — der Abarbeitungsplan steht in §2; 2026-09-07 ~16:0x, ctx GEMESSEN 31 %
+
+> Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/attention`, Board. Alles hier sind
+> Behauptungen zum Nachschlagen. **Lies §0 zuerst — es ist die Lehre des Tages und sie hat heute
+> zweimal Schaden verhindert.** Die Owner-Delegation gilt fort: Lands nach `decision.accepted`,
+> Deploy über Verb 2, Reaps, Owner-Entscheide weiterreichen.
+
+## 0. DIE LEHRE, VOR DER LISTE — eine §E-Liste ist eine BEHAUPTUNGSLISTE, keine Arbeitsanweisung
+
+Zweimal an einem Tag hat dieselbe Form Schaden angerichtet, beide Male abgewendet, indem jemand die
+zitierten Texte AUFGEMACHT hat statt die Liste abzuarbeiten:
+
+- §E des Vorgänger-Handoffs führte `65358fef` unter „Inhalt nachweislich gelandet, archivieren". Es ist
+  der ÜBERLEBENDE Nachtrag (es trägt wörtlich „NACHTRAG zu 35cf0c23", 215 statt 214 Läufe, 10/27 statt
+  9/26). Archiviert habe ich `35cf0c23`, den überholten Vorgänger — das Gegenteil der Liste.
+- Dieselbe §E führte „`ff4544f5` archivieren — R4s Dublette". **Es gibt keine R4-Dublette.** Ich habe
+  alle 244 Zeilen über alle Status durchsucht: genau eine Zeile trägt diesen Gegenstand. Slot 7 hat es
+  dann zu Ende recherchiert: R4 ist `d51e02ca` (anderer Defekt, heute keine Task-Id mehr), die gemeinte
+  Dublette war `c9791a49` — **die ist ebenfalls tot, wird aber von 8 offenen Zeilen zitiert, `d51e02ca`
+  von 3.** Elf hängende Verweise, und das ist eine Untergrenze. Nachgezogen in `d8859ff` (Slot 7).
+
+**`.git/fleet-betrieb-R4-strich.json`** (6935 B, 09-04 10:20) ist ein vollständiger, filbarer
+`auftrag`-Body, der nie gefiled wurde. `.git/` ist ein schlechteres Versteck als `/tmp`: `git status`
+sieht es nie, `rg` sieht es nie, ein frischer Klon hat es nicht, und keine `/tmp`-Sonde greift dort.
+Als neuer Fall der Klasse in `docs/ungoverned-artifacts.md` (Slot 7).
+
+## 1. WAS HEUTE PASSIERT IST (meine Schicht, ~14:53–16:0x)
+
+**Gelandet:** `984a4b36` (`779eb456`, Lane-Deckel je Repo, volle Kette, 150 s/0 s) · `9e76605`
+(P1-Publikation, docs-only Kurzkette) · P2-Publikation im Land beim Schreiben (Slot 5, `a92d4aa`).
+**Direkt-Commits** (für JEDES land-seitige Ledger unsichtbar, von Hand verifiziert mit
+`bun install --frozen-lockfile && bun e2e/pins.ts` → ALL PASS): `b1f1131` (Astra-Briefbaustein),
+`61e407d` (Audit-Decke 45→75 min). Dazu Slot 7s `d8859ff`.
+
+**Deploy `c3274fdd` durch:** `bootHead == head == 61e407d`, `behindCount 0`, `bundleStale false`.
+Damit sind LIVE: die 75-min-Audit-Decke und `POST /api/repo-lane-cap` (repo-keyed).
+
+**Slots geschlossen:** Slot 5 alt (Biber-Korrekturlane, auf Anforderung ihrer MAIN ohne Land; Branch
+`fleet/260907121431-8510 @ 41bd398a` nachweislich erhalten) · **Slot 11 hat sich SELBST retired**,
+nachdem sein Audit-Verdikt grün war — vorbildlich: es hatte den Retire beim ersten Mal VERWEIGERT,
+weil sein Watch noch offen war.
+
+**pi-zai/glm-5.3 ist erstmals als Fleet-Lauf belegt** (Slots 6 und 13), beaufsichtigt dispatcht,
+Panes angesehen. Der erlaubte Startweg ist `POST /api/tasks/:id/dispatch` (Owner-Pfad waivt das
+harness-Gate), NICHT `release`/Tick.
+
+## 2. DER ABARBEITUNGSPLAN — was wann wie
+
+**Sofort, in dieser Reihenfolge (jeder Schritt macht den nächsten möglich):**
+1. **P2-Land abwarten** (Watch `4c4e1156` auf Slot 5). Danach **Attention `67e9da86` beantworten** —
+   die einzige offene Attention der Flotte, Slot 12s Land-Bitte. **Reihenfolge zwingend:** erst landen,
+   dann antworten, sonst geht die Bitte als `refused` verloren. Danach ist **Slot 12 schließbar**.
+2. **Slot 6 (GLM-Schnittliste) ist blockiert und weiß es nicht.** Ihr Report wurde 15:14:56 von Slot 9
+   REJECTED („kein Land"), Korrekturbrief `c9683f04` ist gefiled. Ein Reject stößt keine Pane an — das
+   ist die Live-Instanz der offenen Zeile `18e87e67`. **Zug:** Slot 9 fragen, ob ich `c9683f04`
+   zustelle, oder es selbst tun lassen.
+3. **Slot 4 (W2)** wartet auf ein Fern-Suite-Verdikt. Danach landen — aber **main ist ihr 10 Commits
+   voraus, vier davon in ihren Dateien** (`984a4b3`, `652d872`, `064b455`, `d120ca4`): das Fern-Grün
+   beweist ihren Baum, nicht den rebasierten. Danach W3 `05611418`.
+4. **`e407aef5` dispatchen**, sobald ein Lane-Platz frei ist (Slot 7s erste Zeile; ihr Bericht ist das
+   Release-Tor für die Helfer-Erzwingung). Danach `c464af30` (S3a-ii), dann `18e87e67`.
+
+**Owner-Entscheide, offen:**
+- **`POST /api/repo-lane-cap {"repo":"<pfad>","maxLanes":N}`** ist jetzt live. Welche Zahl für
+  `astra-main`? **Vorsicht:** repo-keyed, der Pfad heißt `astra-main`, ein Verzeichnis `private-repo-j` gibt
+  es nicht; Fleet bleibt bei 1, wenn es keinen Eintrag bekommt. Und Slot 7s Befund:
+  `FLEET_DISPATCH_MAX_LANES_PER_PROGRAM` kommt in `watchdog.sh` NULLMAL vor — der Program-Deckel fiel
+  still auf den Maschinendeckel.
+- **P3 (`997f0f05`)**: fünf REJECT-Runden, kein ACCEPT — darf die MAIN mit dokumentiertem Rest-REJECT
+  selbst annehmen, oder bleibt das ACCEPT der zweiten Astra Pflicht?
+
+## 3. DIE DREI MESSUNGEN, DIE DEN TAG TRAGEN (fünf parallele Opus-Leseagenten, ~780k Subagent-Tokens)
+
+**(a) Die Stufe-2-Deckungslücke: 25 von 206 gelandeten Bäumen (12,1 %) haben KEIN Urteil.** Gegen ZWEI
+Ledger unabhängig geprüft (`post-land-audits.jsonl` und `lane-outcomes.jsonl`), gleiches Ergebnis,
+gleiche Branch-Namen. Fast alle sind Timeouts. Namentlich in der Messung; die zwei jüngsten waren
+„läuft noch", nicht verloren.
+
+**(b) Neun rote Audits sind UNBEURTEILT (9,8 %) — und vier davon sind vermutlich ein echter Regress.**
+Bei einer Adjudikationslatenz von sonst Median ~5 min sind die nicht „noch nicht dran", sondern
+durchgefallen. **Vier aufeinanderfolgende Rots über zwei Tage teilen denselben Fail-Kern:**
+`D2 setup: both closing lanes reached the spent shape …` + `projection nextAction: a REVIEWABLE row of
+a promoted Program names the MAIN's OWN land door …` — 09-04 21:01 (`10ba7afd`), 09-05 13:54
+(`126a82dc`), 09-05 15:46 (`1d5efb95`), 09-05 16:21 (`cba88078`). Eine Viererserie erzeugt keine
+Basisrate von 1–3 %. Und `D2 setup` ist eine SETUP-Zeile: alles darunter ist UNGEMESSEN, nicht
+bestanden. **Das ist der wichtigste ungehobene Befund des Tages.** Adjudikationen liegen in
+`audit-adjudications.jsonl`, nicht in `audit.jsonl`.
+
+**(c) Die Audit-Platzierung ist die Ursache, und der Ledger trug sie die ganze Zeit.** Zwei Sensoren:
+`remote: {name, …}` (seit 08-29, `name` ausnahmslos `second-host`) und die run-id `isolated-<ts>Z-<pid>`
+— macOS deckelt PIDs bei 99999, siebenstellig beweist also Helfer (43/43, null Fehlalarme), **eine
+kleine PID beweist NICHTS** (drei Helferläufe haben PID 3208/4337/13106). Über 14 Tage:
+- **Alle 18 Timeout-Unknowns sind LOKAL. Kein Helferlauf ist je in eine Decke gelaufen.**
+- Der Helfer ist an 8 von 8 Doppelbetriebs-Tagen schneller, Medianabstand 2,8–5,3 min.
+- **Die Decke zu heben hat beim letzten Mal NICHT geholfen:** Budget 09-05 von 1,8M auf 2,7M (+50 %) —
+  die Timeout-Rate pro Tag hat sich VERDOPPELT. Meine 45→75-Anhebung (`61e407d`, Owner-Entscheid) ist
+  auf den schlechtesten beobachteten Fall gerechnet (26,4 min Vorlauf + 42,7 min Arbeit = 69,1), aber
+  sie ist ausdrücklich die schwächere Hälfte. **Der starke Hebel ist die Helfer-Erzwingung** — Slot 7
+  hat den Brief fertig, hinter einem selbstgesetzten Release-Tor bis `e407aef5` abgenommen ist.
+- **ABER: `checks.ran` ist für JEDEN Helferlauf blind.** `out` wird bei ~4 KB gekappt (`… [10 lines
+  elided]`), `ran` daraus abgeleitet: 22 von 49 Helferzeilen melden `ran < 100` bei 21–24 min echter
+  Laufzeit, 0 von 111 lokalen. **Acht Helfer-ROTS sind deshalb als `unknowable` beurteilt worden.** Wer
+  Audits auf den Helfer zwingt, muss den Transport-Schnitt mitnehmen, sonst tauscht er Timeouts gegen
+  Unbeurteilbarkeit. Diskriminator bleibt `ms`.
+
+## 4. DER /tmp-BESTAND WÄCHST, ER SCHRUMPFT NICHT
+
+**23 offene Queue-Zeilen zeigen auf `/tmp/astra-*`** (nachgemessen 15:44), 27 auf irgendeinen
+`/tmp`-Artefaktpfad. Die im Briefbaustein genannte Zahl 14 ist überholt — **+9, Richtung steigend**.
+Am teuersten: Slot 3s Übergaben-Review (11 848 B + 37 885 B Evidence, 14:52) ist in **keiner** Queue-Zeile
+gefiled und hat keine getrackte Entsprechung; P3s Entwurf 5 (81 154 B, sha256 `6b931dc3…`) liegt
+ausschließlich in `/tmp`, samt 3,9 MB Rohtranskripten aller fünf REJECT-Runden.
+
+Gegenmittel liegt seit heute im Baum: **`docs/astra-briefbaustein-2026-09-07.md`** (`b1f1131`), fünf
+Regeln mit ausführbarem Zug — R1 erlaubte Züge beim Warten, R2 Verstetigen (mess-notiz-Template
+ausgeschrieben, weil `.claude/skills/` codex nicht erreicht), R3 HANDOFF als 409-Gate, R4 mechanische
+Abbruchbedingung, R5 Selbstauskunft statt Sensor. **Korrekturbefund daraus: `/api/self/notes` GIBT ES
+NICHT** — der Weg zu einem fremden Program ist `POST /api/self/tasks` mit `kind:"notiz"`.
+
+## 5. SLOT-BILD (16:0x, gemessen)
+
+| Slot | Wer | Urteil |
+|---|---|---|
+| 2 | Biber-MAIN (Astra) | KEEP — Slot 13 hält Report-Adresse; **8 Reports stehen auf `decision: null`**, obwohl die Pane „akzeptiert" sagt |
+| 3 | Codebase-Review (Astra, 63,6 %) | KEEP — offene Owner-Direktkonversation, jüngstes Ergebnis nur in /tmp und Pane |
+| 4 | Lane W2 | wartet auf Fern-Suite |
+| 5 | Lane P2 | im Land |
+| 6 | Lane GLM | **blockiert, weiß es nicht** (Reject + Korrekturbrief `c9683f04`) |
+| 7 | Fleet-Betrieb (23,1 %) | schließbar, bleibt aus Arbeit stehen; übergibt an der 25er-Marke |
+| 8 | Land-Pipeline (17 %) | KEEP — Report-Adresse für W2; **HANDOFF ist ÄLTER als seine Sessioneröffnung** |
+| 9 | Fleet-Architektur (Astra, 84,6 %) | KEEP — Report-Empfängerin Slot 6, Auto `ca8e863d` (Checkpoint 17:45) |
+| 10, 16 | **OWNER SELBST** | **NIE ANFASSEN** |
+| 12 | Astra P2 (`ctx: null`) | schließbar nach P2-Land + Attention `67e9da86`. **`sessionId: null` bei `codexRecoveryState: "ambiguous"` ist NOCH SCHARF** für jeden künftigen Report |
+| 13 | Lane GLM-M1 | liegt in **private-repo-j**, nicht hier — Land gehört Astra |
+| 15 | P3 (Fable, 13,3 %) | KEEP — Entwurf 5 nur in /tmp, Rückwege sind session-lokale Monitore |
+
+Ein **Worktree ohne lebenden Slot** liegt auf Platte: `fleet-260907112710-37bb`.
 # HANDOFF — Program-MAIN Land-Pipeline 2026-09 (`233e1c2b7eaca3850decf332`, Slot 8, Fable 5.1): W1 GELANDET + Audit gruen, W2 in Flug, W3/M2/N2 offen; 2026-09-07 15:5x
 
 > **Dieser Abschnitt ERSETZT die aelteren Land-Pipeline-Abschnitte darunter.** Zustand ableiten:

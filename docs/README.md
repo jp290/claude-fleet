@@ -91,6 +91,8 @@ One line per doc — its *purpose*, not its contents, so this index points witho
   and cut the list where it is satisfied.
 
 **Product working circles**
+- [GameDev-Einstieg](game-maker/README.md) — Private-repo-j und Private-repo-o: datierte Bestandsaufnahme,
+  bereits erfolgte Reparaturen, offene Beweise und ein vorgeschlagener Anschlussplan für neue Sessions.
 - **`product-studio-working-circle.md`** — the active Product-Studio direction, its composed
   Game-Studio profile, the measured private-repo-h visual lesson, the communication prerequisite,
   Pi/GLM calibration and the first small artillery-game corridor. Read before turning a product

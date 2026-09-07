@@ -1,5 +1,7 @@
 # Index der Messnotizen
 
+- Technische Grundlagen und konkrete Reparaturschleifen sind belegt; Produktkern, Workflow-Zustellung und der Nutzen von Workflow v2 bleiben getrennt zu prüfen. — docs/messungen/2026-09-07-gamedev-bestandsaufnahme.md · bereich: game-maker,studio,produkt · stand: 2026-09-07
+
 Eine Zeile je Notiz in `docs/messungen/`, angehängt von der schreibenden Lane selbst (siehe
 `.claude/skills/mess-notiz/SKILL.md` §Die Index-Zeile) — nicht aus dem Korpus generiert, weil ein
 generierter Index gegen die Dateien driftet. Format:

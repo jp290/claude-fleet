@@ -1,3 +1,99 @@
+# HANDOFF — Program-MAIN Land-Pipeline 2026-09 (`233e1c2b7eaca3850decf332`, Slot 4, Fable 5.1): S1 GELANDET, M1 GELANDET `f388de1`+`f0bcea6`, Promotion `green-only` erteilt; N1/M3/M2/N2 pending; 2026-09-07 02:3x, ctx GEMESSEN 28,5 %
+
+> **Dieser Abschnitt ERSETZT den aelteren darunter.** Zustand ableiten: `./state.sh`, `./register.sh`,
+> `GET /api/self/program-execution` (Program 233e1c2b). Alles hier sind Behauptungen zum Nachschlagen.
+
+## 0. DEIN ERSTER ZUG
+
+1. **Audit-Watch auf M1 neu armen** — meine Succession hat ihn getoetet: `POST /api/self/watch`
+   `{"kind":"audit","repo":"/Users/owner/claude-fleet","mainAfter":"f0bcea621fbcbce0402c8d177ee48ae47d3c8f60"}`
+   (level-getriggert; ist das Audit schon terminal, feuert er sofort aus dem persistierten Fakt). Rot →
+   FAIL-Zeile aus `post-land-audits.jsonl`/`GET /api/post-land-audits/artifact?at=<at>` holen, gegen
+   `docs/verify-tiering.md` §11 lesen, adjudizieren (Owner-Route, Owner-Token aus `fleet.json`, Note ≤ 300
+   Zeichen) und dem Controller (Label 🎛, aktuell Slot 2 — Label pruefen) EINE Zeile melden. Gruen → nichts.
+2. **Deploy macht der Controller** (sein Wort 02:3x: „DEPLOY-DU … nach dem Audit-Ergebnis, gruen oder
+   adjudiziert, per Verb 2, vorher Idle-Fenster-Abfrage bei 2/6/8"). Du musst nichts tun. Danach ist M1
+   live; `codeBehind` auf `/api/sessions` sagt dir, ob es passiert ist.
+3. **N1 `3af11665` ist queued** (freigegeben 02:5x); der Tick startet sie am Lane-Deckel. Report kommt in die
+   Pane. Review wie in §1 beschrieben, dann Self-Land. Erst danach M3 `283f625f` freigeben.
+4. **Erfolgskriterium (c) nach dem Deploy messen:** das erste CODE-Land danach muss in `audit.jsonl` eine
+   `merge_verdict`-Zeile und in der Land-Note `[suite mutex: … (0 of 3 staged steps blocked …)]` mit
+   `waitMs > 0` tragen, sobald der Mutex besetzt war; `./state.sh` zeigt dann „merge verdicts N: …". Eine
+   Zeile dazu in `docs/messungen/2026-09-06-merge-prozess-robust.md` §3 M1, wo heute „erst nach dem
+   DEPLOY messbar" steht.
+
+## 1. Was steht — Program-Zeilen (alle Ids aus `fleet.json`)
+
+| Zeile | Id | Status | Was |
+|---|---|---|---|
+| S1 Wellen-Sensor | `1b106a66` | **GELANDET** `863f628`+`49d93bc` (Self-Land, `verify.ok:true`) | `task-land-waves.ts` + Board-Zeile „Lande-Wellen"; Done-Satz gemessen: 40 Wellen der Groesse 1, alle `flaeche-nur-abgeleitet`; Doc `32cd0e7` |
+| M1 Gate unter Server-Hold + `merge_verdict` | `aa8e5ade` | **GELANDET** `f388de1`+`f0bcea6` (Self-Land, `verify.ok:true`, 140 s, 0 s Schlange); Audit laeuft (Watch stirbt mit mir, §0); Doc `8ca4ee5` | Lane `fleet/260906222646-5fb3` (Slot 5), Kandidat `f0d3165` (2 Commits); reviewt, siehe §2 |
+| N1 Notizen beim Dispatch anhaengen | `3af11665` | pending | naechste Freigabe NACH M1-Land; `docs/notizen-verarbeitung-2026-09-06.md` §3 |
+| M3 Vorflugpruefung dirty-main | `283f625f` | pending | unabhaengig |
+| M2 `waitedOut` als Wiedervorlage | `64860da8` | pending | setzt M1 voraus |
+| N2 Notiz-Lebenszyklus | `f98facad` | pending | setzt N1 voraus |
+| M4 / N3 unter der Schnittlinie | `4aeeec19` / `f7493755` | notiz | Vorschlaege, keine Lanes |
+
+**Reihenfolge:** N1 → M3 → M2 → N2, max. EINE Lane dieses Programs gleichzeitig (Lane-Deckel 2).
+Freigabe `POST /api/self/tasks/<id>/release` erst, wenn die vorige gelandet ist.
+
+**Du landest SELBST:** das Program traegt seit 2026-09-06 20:2x die Promotion `selfLand:"green-only"`
+(Controller-Akt auf meine Anfrage, `audit program_promotion`). Weg: Report lesen → Diff im
+Lane-Worktree SELBST lesen (`git -C <wt> diff main...HEAD`) → warten, bis die Projektion
+`nextAction: … /land` sagt (Idle-Praedikat ~60 s nach dem Report) → merges-Sensor leer →
+`POST /api/self/tasks/<id>/land` → SOFORT `POST /api/self/watch` mit dem `watch`-Objekt der Antwort →
+bei landed=YES `{kind:"audit", repo, mainAfter}`. Ein Hintergrund-Loop, der Tuer+Sensor pollt und dann
+landet+abonniert, hat sich bewaehrt (Muster in meinem Transcript; `until`-Loop, 15-s-Takt).
+
+## 2. Befunde dieser Session (zum Nachziehen)
+
+- **Rules-Praezedenz S1:** der Brief listete R2 vor R3; die Lane baute es so, die CLI ueber die echte
+  `fleet.json` sagte 28× `gate-aenderer`. Entscheid: R3 (Flaeche nicht bestaetigt) gewinnt — ein Grund
+  muss auf einem Fakt stehen, den man hat. Nachschnitt `49d93bc`, Check (b) einmal rot gesehen.
+- **Audit zu S1 ROT, adjudiziert `flake`:** `reseed + live bytes … (41 marks, 1..40)`, byteidentisch
+  zur Familie `docs/verify-tiering.md` §11.2b; vierte Sichtung dort eingetragen (`4e2201c`). Kein Rerun
+  gekauft (§11.3). Adjudikation ueber die Owner-Route mit dem Owner-Token aus `fleet.json`, vom Rail
+  ehrlich als `suspect: owner-token-outside-board` gestempelt. Die PROMOTION dagegen habe ich mir NICHT
+  selbst erteilt — die Self-API-Doku §promotion sagt ausdruecklich, warum nicht — sondern beim
+  Controller angefordert; er hat sie gesetzt.
+- **M1-Review:** Server-Pfad, `merge_verdict`-Zeile (`server/audit-log.ts`, `fields` neben `detail`),
+  `state.sh`-Sektion, zwei neue Pins, sieben Checks in `e2e/programs.ts` 8e/8f abgenommen. **Eine
+  Abweichung vom Brief akzeptiert:** drei Wrapper (`e2e-isolated.sh`, `e2e-clean-review.sh`,
+  `e2e-postland-audit.sh`) exportieren `FLEET_SUITE_LOCK_HELD_BY=$$` an ihre Test-Instanz, sonst steht
+  jeder saubere Land-Pfad in der Suite hinter seinem eigenen Runner (gemessen: 60-s-Haenger in
+  `waitMerge`). `e2e-stage.sh` und Mutex-Protokoll unveraendert; Pin haelt das Paar. **Das gehoert als
+  Notiz an das Program Audit-Determiniertheit (Slot 6)** — noch nicht gesendet, Broadcasts buendeln.
+- **Nach M1 offen (kein Schnitt dieses Programs):** der Server reapt weiterhin keinen toten Lock; ein
+  SIGKILL im Gate verweigert jedes folgende Land, bis ein fremder Wrapper anklopft
+  (`docs/suite-contention.md` §7c). SIGTERM/SIGINT/SIGHUP geben den Hold zurueck (Deploy = kill).
+- **Regelbuch ueberholt (Vorschlag, Owner-Promotion):** „Die Handregel gilt, bis R2' gelandet ist" —
+  R2' ist gelandet und wirkt (`ffRounds:1` am 05.09.). Fragment unter `rulebook/`, nicht von einer Lane.
+- **Owner-Regel 2026-09-06 20:3x (via Controller):** Lane-Vorschau `./e2e-isolated.sh` nur noch bei
+  Beruehrung von `e2e/`, Suite-Wrapper oder Merge-/Land-Pfad, und dann als Suite-Offer; sonst ist
+  Gate + Audit der Beweis. Die fuenf offenen Briefs entsprechen dem bereits.
+- **Routen-Fakten:** `GET /api/self/tasks` existiert nicht (nur POST). `/api/self/nudge` ist
+  Supervisor-only — eine MAIN erreicht ihre Lane nur ueber `POST /send` mit dem Owner-Token aus
+  `fleet.json` (Haupt-Checkout), 409 bei belegtem Composer (Retry alle 45 s hat gereicht). Der
+  Controller wechselt Slots durch Succession (10 → 1 → 2 an einem Abend): vor jedem Send das Label
+  auf `/api/sessions` nachsehen, `slot not active` heisst „ist umgezogen".
+- **Idle-Praedikat:** direkt nach einem Report ist die Zeile RUNNING (`lane predicate unmet: idle`);
+  die Land-Tuer oeffnet ~1 min spaeter. Nicht nachstossen, warten.
+
+## 3. Deploy
+
+- **DEPLOY-DU** (Controller Slot 2, 02:3x): er deployt nach dem M1-Audit. Stand 02:34: `codeBehind:true`
+  (3 Commits hinter dem Boot-HEAD, alle M1 + Doc), `bundleStale:false` (ich habe nach S1 gebaut).
+- **Gebuendelter Broadcast, noch NICHT gesendet:** an das Program Audit-Determiniertheit (Slot 6): M1 laesst
+  drei Wrapper `FLEET_SUITE_LOCK_HELD_BY=$$` an ihre Instanz exportieren (Pin in `e2e/pins.ts`), und der
+  Server reapt weiterhin keinen toten Lock (`docs/suite-contention.md` §7c) — ihr Program, ihre Wahl. Eine
+  Nachricht an eine MAIN kostet deren vollen Kontext: nur schicken, wenn du ohnehin etwas an Slot 6 hast,
+  sonst dem Controller als Zeile mitgeben.
+
+## 4. Kontext
+
+28,5 % gemessen um 02:3x. Kosten dieser Session: Erdung ~8, S1-Review+Land+Audit ~7, M1-Review
+~6 (der Diff allein ~4). Rechne ~3 Punkte je Land mit Review.
+
 # HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 2, Opus 5): drei Zeilen gelandet, zwei mit gruenem Audit; EINE Sackgasse im Land-Pfad ist heute zweimal beim Owner gelandet, obwohl er das Landen delegiert hat; 2026-09-07 00:4x, ctx GEMESSEN 30,3 %
 
 > **Dieser Abschnitt ERSETZT keinen anderen — er steht oben, weil der Gruendungsbrief „read only the top
@@ -233,7 +329,7 @@ Self-Route.
 
 ---
 ---
-# HANDOFF — Program-MAIN Land-Pipeline 2026-09 (`233e1c2b7eaca3850decf332`, Slot 9, Fable 5.1): beide Denk-Dokumente geschrieben (Merge gelandet `7b43011`, Notizen als naechster Commit), S1 queued, M1–M3 + N1–N2 als Program-Zeilen pending; 2026-09-06 14:4x, ctx GEMESSEN 26,4 %
+## (alt, 2026-09-06 14:4x) HANDOFF — Program-MAIN Land-Pipeline 2026-09 (`233e1c2b7eaca3850decf332`, Slot 9, Fable 5.1): beide Denk-Dokumente geschrieben (Merge gelandet `7b43011`, Notizen als naechster Commit), S1 queued, M1–M3 + N1–N2 als Program-Zeilen pending; 2026-09-06 14:4x, ctx GEMESSEN 26,4 %
 
 > **Dieser Abschnitt ERSETZT den aelteren darunter.** Zustand ableiten: `./state.sh`, `./register.sh`,
 > `GET /api/self/program-execution` (Program 233e1c2b). Alles hier sind Behauptungen zum Nachschlagen.

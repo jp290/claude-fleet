@@ -2384,12 +2384,20 @@ export async function run(): Promise<void> {
     };
     if (pruneImage.slots?.[String(noReceiverLane.slot)])
       pruneImage.slots[String(noReceiverLane.slot)].taskId = "task-report-prune-owner-inbox";
+    // DECIDED, and that is not decoration. Since the owner door exists, an UNDECIDED row whose
+    // receiver occupant is gone is held OUT of this tail by construction (pruneFleetReports): it is
+    // the one object that door can act on, and dropping it would put the absence back where the
+    // finding of 2026-09-07 found it. These clones inherit a receiver that was killed two lines up,
+    // so without a verdict every one of them would be held and this pass would have nothing to do —
+    // measured exactly that way. The retention under test is the SETTLED tail; the HOLD is D3's.
     const oldReports: FleetReportRow[] = completeReport ? Array.from({ length: 21 }, (_, index) => ({
       ...completeReport,
       id: (0xa000 + index).toString(16).padStart(24, "0"),
       eventId: (0xb000 + index).toString(16).padStart(24, "0"),
       reportedAt: Math.max(1, completeReport.reportedAt - 100_000 + index),
       text: `old terminal report ${index}`,
+      decision: { disposition: "accepted" as const, at: Math.max(1, completeReport.reportedAt - 50_000),
+        by: "owner" as const, reason: null },
     })) : [];
     pruneImage.fleetReports?.push(...oldReports);
     writeFileSync(reportStatePath, JSON.stringify(pruneImage, null, 2), { mode: 0o600 });
@@ -2403,14 +2411,21 @@ export async function run(): Promise<void> {
     const pruneTrigger = await selfFleetReport(noReceiverTok,
       { status: "complete", text: "Trigger the bounded report retention pass." });
     await Bun.sleep(300);
-    const expectedPruned = oldReports.slice(0, 3).map((r) => r.id);
     const pruneAudits = auditRows().slice(pruneAuditStart).filter((row) => row.event === "fleet_report_prune");
     const afterPruneIds = (await selfFleetReports(completeTok)).reports.map((r) => r.id);
+    // PROPERTIES, not a fixed count: how many rows this pass may drop depends on how many OTHER
+    // settled rows the section left behind, and a hard 3 would break every time an unrelated check
+    // above files or judges one more report. What must hold is what the audit word exists for —
+    // 21 planted rows against a ceiling of 20 means at least one MUST go, every id that went is on
+    // the trail AND out of state, and the drop set is a PREFIX of the planted order (oldest first),
+    // never an arbitrary subset.
+    const droppedClones = oldReports.filter((old) => !afterPruneIds.includes(old.id));
     check("fleet-report audit: retention records every removed report id and keeps those ids out of state",
-      pruneTrigger.ok && expectedPruned.length === 3
-        && expectedPruned.every((id) => pruneAudits.some((row) => row.detail === id)
-          && !afterPruneIds.includes(id)),
-      JSON.stringify({ trigger: pruneTrigger.status, expectedPruned, pruneAudits }));
+      pruneTrigger.ok && oldReports.length === 21 && droppedClones.length >= 1
+        && droppedClones.every((old) => pruneAudits.some((row) => row.detail === old.id))
+        && droppedClones.every((old, i) => old.id === oldReports[i]?.id),
+      JSON.stringify({ trigger: pruneTrigger.status,
+        dropped: droppedClones.map((r) => r.id), audits: pruneAudits.map((r) => r.detail) }));
 
     for (const slot of [completeLane.slot, needsLane.slot, failedLane.slot, noReceiverLane.slot,
       stewardLane.slot, main, foreignMain]) await post(`/api/slots/${slot}/kill`, {});
@@ -3574,12 +3589,15 @@ export async function run(): Promise<void> {
     const sessBody = await sessDecide.json() as { ok?: boolean; report?: FleetReportRow };
     const sessDecidedBy = sessBody.report?.decision?.by;
     check("D3 sessionId divergence: the receiving OCCUPATION judges its own report even after its session id moved",
-      sessSlotAfter?.sessionId === "d3-live-session" && (sessRowAfter?.receiver?.sessionId ?? "x") === null
+      // `?? ` must not appear on this leg: null IS the fact under test, and a nullish default here
+      // turned the arm's own subject into its failure (measured on the first run of this section).
+      sessSlotAfter?.sessionId === "d3-live-session"
+        && !!sessRowAfter?.receiver && sessRowAfter.receiver.sessionId === null
         && sessDecide.ok && sessBody.report?.decision?.disposition === "accepted"
         && sessDecidedBy !== "owner" && sessDecidedBy?.slot === d3SessMain
         && sessDecidedBy?.sessionId === "d3-live-session",
       JSON.stringify({ liveSession: sessSlotAfter?.sessionId,
-        rowSession: sessRowAfter?.receiver?.sessionId ?? "ABSENT",
+        rowFound: !!sessRowAfter, rowReceiver: sessRowAfter?.receiver ?? "ABSENT",
         status: sessDecide.status, decision: sessBody.report?.decision ?? null }));
     // …and the owner door stays SHUT on it: that occupant is alive, and the verdict was its own.
     const sessOwnerRefusal = await ownerDecideReport(sessionReport?.id ?? "", "reject");
@@ -5171,12 +5189,15 @@ export async function run(): Promise<void> {
       // adding a report to `m` would make the ⚠ badge claim a transport fact about a row that has
       // no live transport at all. The non-report filter is what stops an owner-inbox report — which
       // is BOTH an inbox event and an unjudged row — from being counted and shown twice.
+      // The `m` EXPRESSION is what may not carry it — the title beside it names the number in prose
+      // on purpose, so the owner can read what the badge is counting, and a probe over the whole
+      // function body failed on exactly that sentence.
+      const mExpr = btn.slice(btn.indexOf("const m ="), btn.indexOf(";", btn.indexOf("const m =")));
       check("client: a worker report awaiting the owner counts as FILED and is never mixed into the pane-transport count",
         /opsOpenNonReport\(opsRows\)\.length \+ reportsAwaitingOwner/.test(btn)
-          && !/reportsAwaitingOwner/.test(btn.slice(btn.indexOf("const m ="))
-            .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n"))
+          && mExpr !== "" && !/reportsAwaitingOwner/.test(mExpr)
           && /e\.kind !== "fleet-report"/.test(cliSrc),
-        btn.split("\n").filter((l) => !l.trim().startsWith("//")).join(" ").slice(0, 240));
+        `mExpr=${mExpr}`);
     }
   }
 

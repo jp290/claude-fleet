@@ -268,7 +268,7 @@ Die Vertrauensgrenzen im Präsens stehen in `CLAUDE.md` §Deploy; hier die Vollr
   gilt. Der **Hand-Knopf**
   `POST /api/tasks/:id/dispatch` läuft unabhängig davon weiter — er prüft weder Master-Stop noch Deckel noch
   Quiet Hours (`server.ts`, grep `taskDispatch`); `dispatchOn` ist ein persistierter Laufzeit-Schalter,
-  `POST /api/dispatch {on:true|false}`; Env: `FLEET_DISPATCH_REPO`, `FLEET_DISPATCH_MAX_LANES=2`, dazu
+  `POST /api/dispatch {on:true|false}`; Env: `FLEET_DISPATCH_REPO`, `FLEET_DISPATCH_MAX_LANES=1` (Owner-Entscheid 2026-09-07 09:3x, vorher 2 — „fuer vernuenftige Suiten"), dazu
   seit 2026-08-22 zwei weitere Knöpfe: `FLEET_DISPATCH_MAX_LANES_PER_PROGRAM` (`server.ts#DISPATCH_MAX_LANES_PER_PROGRAM`,
   Default = `DISPATCH_MAX_LANES`, ein ZWEITER Lane-Deckel je Program, der nach dem Repo-Deckel geprüft
   wird und darum ausschließlich verengen kann — beim Default kann er nie derjenige sein, der hält) und

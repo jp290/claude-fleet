@@ -57,8 +57,16 @@ const MERGE_BLOCKING = ["blocked", "error"];
 // enum, in the same direction every clause in this file argues for: an absent, unknown or legacy
 // `errorReason` is UNKNOWN and blocks exactly as every error always has. Widening this list is
 // therefore a deliberate act per value, never a side effect.
-export type MergeErrorReason = "ff-lost";
-export const MERGE_ERROR_REASONS: readonly MergeErrorReason[] = ["ff-lost"];
+//
+// THE SECOND VALUE, and it is the same sentence about a different half of the machine (M3, owner
+// 2026-09-06, docs/messungen/2026-09-06-merge-prozess-robust.md §3 M3): `dirty-main` means the
+// MAIN CHECKOUT holds uncommitted changes to a file this land touches, so `git merge --ff-only`
+// there cannot succeed. Twice on 2026-09-05 a lane paid a full gate plus its queue to be told
+// that in a git error string. Nothing in the LANE is wrong — it is idle, clean and ahead, and the
+// moment the human commits or stashes in their own checkout the same land goes through — so it
+// belongs on this list for exactly the reason `ff-lost` does, and for no weaker one.
+export type MergeErrorReason = "ff-lost" | "dirty-main";
+export const MERGE_ERROR_REASONS: readonly MergeErrorReason[] = ["ff-lost", "dirty-main"];
 
 export function mergeBlocksLane(m: LaneSignalView["merge"]): boolean {
   if (!MERGE_BLOCKING.includes(m?.status ?? "")) return false;
@@ -67,7 +75,14 @@ export function mergeBlocksLane(m: LaneSignalView["merge"]): boolean {
   // ever reached a lane. `blocked` is a merge the owner must look at whatever any persisted row
   // claims about it, and the loader (server.ts#withValidErrorReason) validates the SAME pair, so
   // the two halves cannot disagree about which shape the exemption belongs to.
-  return !(m?.status === "error" && m.errorReason === "ff-lost");
+  // THE LIST ITSELF is the exemption, not a literal repeated here (M3, 2026-09-06). When there was
+  // one value the two spellings were the same test; with two they are not, and the difference is a
+  // reason that the loader keeps across a boot while this predicate silently goes on blocking —
+  // a lane the enum says is fine that no clause would ever let finish. So both halves read
+  // MERGE_ERROR_REASONS, and widening it stays what its own note says: a deliberate act per value.
+  // `!== undefined` first, in this file's direction: an ABSENT reason is UNKNOWN and blocks.
+  return !(m?.status === "error" && m.errorReason !== undefined
+    && MERGE_ERROR_REASONS.includes(m.errorReason));
 }
 
 export interface LaneRule {

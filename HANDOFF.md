@@ -1,4 +1,4 @@
-# HANDOFF — Program-MAIN P3 Landepfad adversarial (`6360c36105e50a705db275c1`, Slot 4, Fable 5.1, dritte Insassin): ENTWURF FERTIG, Abnahme in Flug; 2026-09-07 13:2x, ctx GEMESSEN 37,7 %
+# HANDOFF — Program-MAIN P3 Landepfad adversarial (`6360c36105e50a705db275c1`, Slot 4, Fable 5.1, dritte Insassin): 2. ENTWURF FERTIG, Astra-Runde 2 in Flug; 2026-09-07 12:4x, ctx GEMESSEN 46,1 %
 
 > Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution` (Program 6360c361). Charter =
 > Program-JSON, fachlicher Startbrief = Notiz `52285f8f` (byteidentisch `/tmp/astra-tagesmandat-2026-09-07/P3-startbrief.txt`).
@@ -6,18 +6,21 @@
 > Lesen von `mergeJob`; Owner-Entscheid: derselbe Auftrag auf Fable. Rahmen fuer dich: Zuverlaessigkeitsarbeit am
 > eigenen Land-Pfad, Repro nur in Scratch-Instanzen.
 
-## 0. Wo es steht
+## 0. Wo es steht (Stand 12:4x, ctx GEMESSEN 46,1 %)
 
-- **Entwurf fertig:** `/tmp/astra-p3-2026-09-07/2026-09-07-landepfad-adversarial.md` (592 Zeilen), versiegelt
-  **sha256 `cc02cc5ac9131dd97679080ec405c9892c8303bc06465e39b802d2f9767b0dc5`**. Acht Findings, gerankt (§0.1); F1 reproduziert (Skript im Doc §1.6, Lauf-Log
-  im Scratchpad `repro-f1.log`, Instanz `p3-f1/` — beide sterben mit der Session, das Doc traegt Transkript + Skript).
-  F2 am Live-Repo read-only gemessen. Quell-Pin `c7184f8` (main ist seit dem Pin nur docs-only weitergezogen: `a273332`, `9a736da`).
-- **In Flug (zwei unabhaengige Abnahmen auf denselben Bytes):** (a) zweite Astra per headless `codex exec -m gpt-6-astra`
-  (read-only-Sandbox, kein Slot) — Prompt `/tmp/astra-p3-2026-09-07/review-prompt-cc02cc5ac913….txt`, Antwort landet in
-  `/tmp/astra-p3-2026-09-07/independent-review-candidate.md` (Stream `review-run.jsonl`, Exit in `review-run.err`);
-  (b) Opus-Sub-Agent als Gegenleser (Zitate/Zahlen/Logik) — Ergebnis kommt in meine Pane. Beide sind Claims:
-  jeden genannten Mangel am gepinnten Baum nachlesen, bevor du ihn uebernimmst.
-- **Noch nicht getan:** Publikationszeile, Checkpoint-Notiz, Index-Satz.
+- **Zweiter Entwurf fertig:** `/tmp/astra-p3-2026-09-07/2026-09-07-landepfad-adversarial.md` (744 Zeilen), versiegelt
+  **sha256 `88746f13ba89b36e58fa0ee936b952f7651ac85763b5dd95e3be5b5c91d2d4e6`**. Acht Findings; F1 in DREI Varianten
+  reproduziert (Skript + Transkript im Doc §1.3/§1.6; Variante C: inhaltssensitives Gate, danach ist dasselbe
+  Gate-Kommando auf main rot). F2 am Live-Repo read-only gemessen. Quell-Pin `c7184f8`.
+- **Runde 1:** Astra (codex exec gpt-6-astra) REJECT mit 19 Punkten (`review-round1-REJECT.md`), Opus-Gegenleser
+  ACCEPT-WITH-FIXES mit 19 Punkten; beide eingearbeitet (F8-Mechanismus korrigiert, L2 mit `--force-with-lease`, L4
+  `appendEvent`-Fehlerpfad, L6 ohne `grep -c 'check('`, §1.3-Lesart praezise, ~15 Zeilenzitate).
+- **In Flug:** Astra-Review Runde 2 auf `88746f13…` — Prompt `review-prompt-88746f13….txt`, Antwort
+  `independent-review-candidate.md`, Exit in `review-run2.err` (`codex exit N`). Ein REJECT hat Punkte → fixen →
+  neuer Hash → Runde 3 mit demselben Prompt (Hash ersetzen).
+- **Index-Satz liegt:** `/tmp/astra-p3-2026-09-07/index-line.txt` (1 289 B; Stil `docs/messungen/INDEX.md`).
+- **Controller ist seit `9a736da` Slot 6** (Label 🎛 Fleet Controller, Opus 5); Ober-Orchestratorin e3b3a064: Bindung
+  in `fleet.json#programs[].main.slot` frisch lesen, nie nach Slot allein routen.
 
 ## 1. Naechste Zuege, in Reihenfolge
 

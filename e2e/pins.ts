@@ -6682,11 +6682,18 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     // neighbours make), a module under server/, and the one src/ file it imports
     ["server.ts", "server"], ["merge-prompt.ts", "server"], ["server/types.ts", "server"],
     ["src/protocol.ts", "server"],
+    // …and a module that CHANGED ROLE, which is the case a hand-kept list could never survive:
+    // task-land-waves.ts was the client's sensor alone until W3 (2026-09-07) gave the wave door in
+    // server.ts the same classifier the board and the CLI read, so one import moved it into the
+    // process. The derivation noticed on the very next land; this row followed it, and that is the
+    // whole reason the roles stopped being written down by hand.
+    ["task-land-waves.ts", "server"],
     // server by deliberate rule, not by graph: no import graph can answer either of these
     ["watchdog.sh", "server"], ["package.json", "server"],
-    // non-server — the finding this replaced (imported only by src/client.ts, named in no line of
-    // server.ts), the bundle entries the old list forgot, the SIXTH runner it never grew to hold
-    ["task-land-waves.ts", "non-server"], ["src/client.ts", "non-server"],
+    // non-server — a module the bundle imports and no line of server.ts names (src/backoff.ts, the
+    // finding the old list got wrong until 2026-09-01), the bundle entries that list forgot, and
+    // the SIXTH runner it never grew to hold
+    ["src/client.ts", "non-server"],
     ["src/helper.ts", "non-server"], ["src/backoff.ts", "non-server"],
     ["fleet-e2e-harness.ts", "non-server"], ["fleet-e2e.ts", "non-server"],
     ["e2e/harness.ts", "non-server"], ["public/index.html", "non-server"], ["AGENTS.md", "non-server"],

@@ -6021,6 +6021,48 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
 }
 
 {
+  // THE HEARTBEAT IS NEVER SUSPENDED BY A JOB. Measured 2026-09-05: the daemon took a lane's
+  // preview at 14:01:17 and did not POST /api/helper/device again until 14:31:03 — 1789 s of
+  // silence around a 1768 s run, because `tick()` then ended in `await work(cfg, open)`. The whole
+  // register is derived from that one timestamp (server.ts#helperPresence, 90 s window), so for
+  // half an hour every lane asking "is another machine there?" was told NO by a machine that was
+  // at that moment running that lane's own suite — and the audit rail never noticed, because its
+  // remote assignment is a pull queue that asks no presence question at all. 84c16f2 fixed it by
+  // launching the job instead of awaiting it. This pin is here rather than in a suite because the
+  // property is a SHAPE of one file, costs a millisecond, and its loss is invisible for exactly as
+  // long as nobody looks. docs/messungen/2026-09-05-suite-offer-online-divergenz.md
+  const RULE_BEAT = "the helper daemon's heartbeat is never suspended by a job it is running";
+  const src = exists("helper-daemon/daemon.ts") ? read("helper-daemon/daemon.ts") : "";
+  if (src === "") skip(`${RULE_BEAT} — tick() launches a job instead of awaiting it`, "helper-daemon/daemon.ts is not in this tree");
+  else {
+    // FAILS AS ITSELF when it cannot measure: a renamed tick() or start() must make this pin red on
+    // its own terms, never pass because the regex found nothing to object to.
+    const tickFn = /export async function tick\(cfg: HelperConfig, st: LoopState\)[\s\S]*?\n\}/.exec(src)?.[0] ?? "";
+    const startFn = /function start\(cfg: HelperConfig, job: JobView\): void \{[\s\S]*?\n\}/.exec(src)?.[0] ?? "";
+    pin(`${RULE_BEAT} — tick() and start() are both still there to be read`,
+      tickFn !== "" && startFn !== "",
+      `tick=${tickFn.split("\n").length} lines start=${startFn.split("\n").length} lines`);
+    // 1. THE LAUNCH IS NOT AWAITED. `await work(` anywhere in tick() is the 2026-09-05 regression
+    //    byte for byte; the job goes through start(), which returns void.
+    pin(`${RULE_BEAT} — tick() hands the job to start() and never awaits work()`,
+      tickFn !== "" && /start\(cfg, j\);/.test(tickFn) && !/await work\(/.test(tickFn),
+      tickFn === "" ? "tick() was not found" : `awaitWork=${/await work\(/.test(tickFn)}`);
+    pin(`${RULE_BEAT} — start() launches work() fire-and-forget (void, with catch and finally)`,
+      startFn !== "" && /void work\(cfg, job\)/.test(startFn) && !/await work\(/.test(startFn)
+        && /\.finally\(/.test(startFn),
+      startFn === "" ? "start() was not found" : "void work(...) with a finally");
+    // 2. THE BEAT COMES FIRST. A machine at its cap returns from tick() before it reads the job
+    //    list; if the heartbeat sat below that return, a busy daemon would go dark by a second
+    //    route and this rule would be worth nothing.
+    const beatAt = tickFn.indexOf('"/api/helper/device"');
+    const capAt = tickFn.indexOf("freeSuiteSlots(");
+    pin(`${RULE_BEAT} — the heartbeat is sent BEFORE the capacity return, so a machine at its cap stays visible`,
+      beatAt >= 0 && capAt > beatAt,
+      tickFn === "" ? "tick() was not found" : `beat@${beatAt} capReturn@${capAt}`);
+  }
+}
+
+{
   const RULE_D2 = "program status is a read-only projection and the poll derives only stale active Programs";
   const sessionsAt = server.indexOf('url.pathname === "/api/sessions"');
   const tasksAt = sessionsAt < 0 ? -1 : server.indexOf("tasks: tasks.map(taskDigest)", sessionsAt);

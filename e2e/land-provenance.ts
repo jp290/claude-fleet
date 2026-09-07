@@ -470,6 +470,51 @@ export async function run(): Promise<void> {
           JSON.stringify({ a: wvDoneA, b: wvDoneB, branch: wvBody.branch }));
       }
       for (const id of [wvA, wvB]) await post(`/api/tasks/${id}/delete`, {});
+
+      // ...AND THE OTHER HALF OF "genau dann wenn". The done sentence says the cover's
+      // `proportional` is true EXACTLY when all n rows were docs — so a wave that DECLARES docs and
+      // whose lane then touches a code file has to come out false, or the field would be a
+      // statement about the declaration instead of about the tree. This is the owner's case (ii)
+      // of 2026-09-07 ("die Flaeche war zu klein"): the gate stays correct, and the price is the
+      // bisect, which is exactly why the split door exists beside it.
+      const wvC = await wvMint("wave land three: AGENTS.md again, but the work reaches further");
+      const wvD = await wvMint("wave land four: AGENTS.md once more");
+      for (const id of [wvC, wvD]) await post(`/api/tasks/${id}/files`, { files: ["AGENTS.md"] });
+      const wvRes2 = await post("/api/wave/dispatch", { ids: [wvC, wvD] });
+      const wvBody2 = (await wvRes2.json()) as { ok?: boolean; slot?: number; error?: string;
+        wave?: { ids: string[]; klasse: string } };
+      const wvSlot2 = wvBody2.slot ?? 0;
+      const wvCwd2 = wvSlot2 ? ((await wvSess()).slots.find((x) => x.id === wvSlot2)?.cwd ?? "") : "";
+      check("(w3) fixture: a second wave, declared `docs` by the sensor exactly like the first",
+        wvRes2.ok && wvBody2.wave?.klasse === "docs" && !!wvCwd2,
+        `${wvRes2.status} ${JSON.stringify(wvBody2)} cwd=${wvCwd2 || "none"}`);
+      let wvBriefed2 = false;
+      for (let i = 0; i < 120 && wvSlot2; i++) {
+        const j = (await (await get("/api/prompts?limit=50&q=WELLE")).json()) as
+          { prompts: { slot?: number; text?: string }[] };
+        if (j.prompts.some((x) => x.slot === wvSlot2 && (x.text ?? "").includes("EIN LAND"))) { wvBriefed2 = true; break; }
+        await Bun.sleep(250);
+      }
+      if (wvCwd2 && wvBriefed2) {
+        await Bun.write(`${wvCwd2}/docs/wave-land-3.md`, `wave row ${wvC}\n`);
+        spawnSync("git", ["-C", wvCwd2, "add", "docs/wave-land-3.md"]);
+        spawnSync("git", ["-C", wvCwd2, "commit", "-qm", `docs(wave): ${wvC}`]);
+        await Bun.write(`${wvCwd2}/src/wave-land-4.ts`, "export const surfaceWasTooSmall = true;\n");
+        spawnSync("git", ["-C", wvCwd2, "add", "src/wave-land-4.ts"]);
+        spawnSync("git", ["-C", wvCwd2, "commit", "-qm", `feat(wave): ${wvD}`]);
+        await landClean(wvSlot2);
+        const wvVerify2 = readNote(REPO, headOf(REPO, "main")).json?.verify as VerifyField | undefined;
+        check("(w3) a wave that DECLARED docs but touched code runs the FULL chain — the gate reads the diff, never the declaration",
+          wvVerify2?.proportional === false && wvVerify2.ok === true
+          && wvVerify2.cmd === process.env.FLEET_VERIFY_CMD,
+          JSON.stringify(wvVerify2 ?? null));
+        const wvRows2 = (await wvSess()).tasks;
+        check("(w3) …and both rows of that wave still go to `done` on the one land",
+          wvRows2.find((t) => t.id === wvC)?.status === "done"
+          && wvRows2.find((t) => t.id === wvD)?.status === "done",
+          JSON.stringify(wvRows2.filter((t) => t.id === wvC || t.id === wvD)));
+      }
+      for (const id of [wvC, wvD]) await post(`/api/tasks/${id}/delete`, {});
     }
 
     // --- A DOCS-ONLY CANDIDATE IN A REPO THAT IS NOT THIS ONE -----------------------------------

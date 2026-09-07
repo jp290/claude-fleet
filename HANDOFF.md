@@ -1,3 +1,56 @@
+# HANDOFF — Program-MAIN P3 Landepfad adversarial (`6360c36105e50a705db275c1`, Slot 4, Fable 5.1, dritte Insassin): ENTWURF FERTIG, Abnahme in Flug; 2026-09-07 13:2x, ctx GEMESSEN 37,7 %
+
+> Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution` (Program 6360c361). Charter =
+> Program-JSON, fachlicher Startbrief = Notiz `52285f8f` (byteidentisch `/tmp/astra-tagesmandat-2026-09-07/P3-startbrief.txt`).
+> Zwei Astra-Vorgaengerinnen (Slot 13, Slot 4) starben ohne Artefakt an einer Provider-Sperre beim adversarialen
+> Lesen von `mergeJob`; Owner-Entscheid: derselbe Auftrag auf Fable. Rahmen fuer dich: Zuverlaessigkeitsarbeit am
+> eigenen Land-Pfad, Repro nur in Scratch-Instanzen.
+
+## 0. Wo es steht
+
+- **Entwurf fertig:** `/tmp/astra-p3-2026-09-07/2026-09-07-landepfad-adversarial.md` (592 Zeilen), versiegelt
+  **sha256 `cc02cc5ac9131dd97679080ec405c9892c8303bc06465e39b802d2f9767b0dc5`**. Acht Findings, gerankt (§0.1); F1 reproduziert (Skript im Doc §1.6, Lauf-Log
+  im Scratchpad `repro-f1.log`, Instanz `p3-f1/` — beide sterben mit der Session, das Doc traegt Transkript + Skript).
+  F2 am Live-Repo read-only gemessen. Quell-Pin `c7184f8` (main ist seit dem Pin nur docs-only weitergezogen: `a273332`, `9a736da`).
+- **In Flug (zwei unabhaengige Abnahmen auf denselben Bytes):** (a) zweite Astra per headless `codex exec -m gpt-6-astra`
+  (read-only-Sandbox, kein Slot) — Prompt `/tmp/astra-p3-2026-09-07/review-prompt-cc02cc5ac913….txt`, Antwort landet in
+  `/tmp/astra-p3-2026-09-07/independent-review-candidate.md` (Stream `review-run.jsonl`, Exit in `review-run.err`);
+  (b) Opus-Sub-Agent als Gegenleser (Zitate/Zahlen/Logik) — Ergebnis kommt in meine Pane. Beide sind Claims:
+  jeden genannten Mangel am gepinnten Baum nachlesen, bevor du ihn uebernimmst.
+- **Noch nicht getan:** Publikationszeile, Checkpoint-Notiz, Index-Satz.
+
+## 1. Naechste Zuege, in Reihenfolge
+
+1. Opus-Gegenlesung lesen → echte Maengel im Entwurf fixen → NEUER Hash. Astra-Review lesen: ACCEPT auf dem ALTEN Hash
+   gilt nur fuer unveraenderte Teile — bei jeder Byteaenderung die geaenderten Teile erneut per `codex exec` abnehmen
+   lassen (gleicher Prompt, Hash ersetzen, Abschnittsliste nennen). Finales Receipt als
+   `/tmp/astra-p3-2026-09-07/independent-review.md` ablegen (byteidentisch aus `-o`), `ACCEPT sha256:<final>` muss drinstehen.
+2. `index-line.txt` neben den Draft legen (EIN Satz im Stil von `docs/messungen/INDEX.md`, Muster P2-Zeile 180d3c92).
+3. Publikationszeile filen: `POST /api/self/tasks` `{kind:"auftrag", harness:"claude", model:"claude-opus-5[1m]", effort:"high", text:…}`
+   nach dem Muster der P1/P2-Zeilen `34c0d050`/`180d3c92` (Write-Set: genau die Doc-Datei + ein Index-Satz; Draft-Bytes
+   unveraendert; `bun install --frozen-lockfile` dann `bun e2e/pins.ts` mit Original-Logs; Report via fleet-report;
+   kein Land) → `POST /api/self/tasks/<id>/release`. Deckel ist 1, P1/P2-Publikationen sind queued — Wartezeit erwartbar.
+4. Nach dem Lane-Report: Datei-Hash und Commit-SHA GETRENNT gegen das Receipt pruefen, dann `decision.accepted`
+   ueber den Report-Entscheid; Land macht der Controller (Slot 10 — seit 9a736da eine Opus-5-Nachfolgerin, Label pruefen).
+5. **Checkpoint +4 h (~13:45) und +8 h (~17:45):** Notiz in MEINEM Program (`POST /api/self/tasks`, kind notiz) mit Kopf
+   „AN CONTROLLER SLOT 10 · AN ASTRA SLOT 9 (e3b3a064) · CHECKPOINT P3": Pfad, Hash, Reviewbefund, Schnitte L1–L7a
+   (Doc §11), Querverweise P1/P2 (Doc §10), ctx. Der Controller liest fleet.json ueber einen Datei-Monitor.
+
+## 2. Was ich entschieden habe (und warum)
+
+- Rangliste nach Verlust: F1 Tip-Bindung (beide Stufen blind bei docs-only) > F2 undo tot auf hub-Flotte > F3 Deploy
+  Working-Tree > F4 Audit-Bindung > F5 Land-Intent-Ueberschreibung > F6 Kandidat-Skripte > F7 Mutex-Park > F8 Pack-Anker.
+- Repro nur fuer F1 gefahren (Scratch, eigener Socket `fleetp3f1`, Port 8931, eigener Lock); alle anderen als
+  „nicht reproduziert, Argument am Code" mit Skizze — Charter erlaubt beides, Zeit und Kontext sprachen dagegen.
+- Zweite Astra ueber `codex exec` statt Lane: Regel 4 des Mandats (native Sub-Agents kosten keinen Slot), Deckel 1 ist
+  von P1/P2 belegt. Zusaetzlich ein Opus-Gegenleser, weil die Astra-Lesung selbst ein Claim ist.
+- Rename-Verdacht („nach docs/ umbenennen") ist am Code geschlossen (`--no-renames`, 11925) — im Doc §8, nicht Finding.
+
+## 3. Offene Fragen an Owner/Controller (keine Attention gestellt)
+
+- F2: soll undo-land auf den eigenen Hub zurueckspiegeln duerfen (Doc §2.5 b)? Das ist eine Richtungsfrage, kein Fix.
+- F3: Deploy-Preflight (schmutziger Tree / Tip ohne Note → 409) gehoert Fleet-Betrieb, nicht Land-Pipeline.
+
 # HANDOFF — 🎛 Fleet Controller (Slot 10, Fable 5.1) → Nachfolgerin: Private-repo-j gegruendet und in M1, Astra-Tag P1–P3 laufen, Slots 6/8 im Retire, Deploy c7184f8 gruen — DEIN NEUER OWNER-AUFTRAG: TASK-WELLENMODUS
 
 > Geschrieben 2026-09-07 12:2x bei ctx 39,5 % (gemessen). Zustand ableiten: `./state.sh`,

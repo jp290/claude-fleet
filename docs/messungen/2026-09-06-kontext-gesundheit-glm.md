@@ -1,9 +1,9 @@
 ---
 frage: Was laedt jede Rolle in Claude Fleet beim Start an Dateien und Kontext-Anreicherungen, was widerspricht sich, ist tot, aufgeblaest oder fehlt — nach Kosten fuer den Owner rangiert?
-urteil: Die servergebauten Briefs sind klein und sauber (7,3–9,5 kB gemessen, Anchor-Block nur Pointer), aber die Regelbuch-Schicht verbrennt pro MAIN ~114,5 kB (~28,6 k Tok, ~11 % von 258 400) vor dem ersten Toolcall, enthaelt einen echten Widerspruch (graphify-in-Lane) und Drift (lane-signals-Zeilen, 97c5d469, b7d449a0), und der Steward liest mit docs/verify-tiering.md ein 241-kB-Dokument voll.
+urteil: Die servergebauten Briefs sind klein und sauber (7,3–9,5 kB gemessen, Anchor-Block nur Pointer), aber die Regelbuch-Schicht verbrennt pro MAIN ~106,4 kB (~26,6 k Tok, ~10,3 % von 258 400; korrigiert in §0, urspruenglich ~114,5 kB) vor dem ersten Toolcall, enthaelt einen echten Widerspruch (graphify-in-Lane) und Drift (lane-signals-Zeilen, Task-Id 97c5d469, tote Sha b7d449a0), und der Steward liest mit docs/verify-tiering.md ein 241-kB-Dokument voll.
 bereich: [kontext, rollen, rulebook, briefs]
 belege: [rulebook.ts#FRAGMENTS_FOR, server.ts#buildProgramMainBrief, server.ts#LANE_EXIT_FOOTER, context-receipts.jsonl, docs/steward.md, /Users/owner/claude-fleet/rulebook/einstieg.md]
-nicht-gemessen: gemessener Tokenverbrauch (Bytes÷4 ist Schaetzung); welche CLAUDE.md-Kopie im Steward-Worktree liegt; Program-JSON-Groesse einer echten Founding; ob Claude Code AGENTS.md neben CLAUDE.md laedt (nur Loader-Anweisung gelesen)
+nicht-gemessen: gemessener Tokenverbrauch (Bytes÷4 ist Schaetzung); welche CLAUDE.md-Kopie im Steward-Worktree liegt; Program-JSON-Groesse einer echten Founding; ob Claude Code AGENTS.md neben CLAUDE.md laedt (nur Loader-Anweisung gelesen); Log-Pfad des Originalverifys (Scratchpad der Lane geloescht, §0 Punkt 5); MEMORY.md und der oberste HANDOFF.md-Block fehlen in JEDER Rollenzeile von §1 (§4)
 stand: 2026-09-07
 ---
 
@@ -13,6 +13,69 @@ stand: 2026-09-07
 kontextkritische Gegenlesung aller Rollen-Dateien durch Fable 5.1 UND GLM, unabhaengig. Diese
 Notiz ist die GLM-Haelfte; die Fable-Notiz wurde bis Abschluss von §2 NICHT gelesen.
 
+## §0 Nachtrag 2026-09-07 — sechs Korrekturen nach Rueckgabe
+
+Diese Notiz wurde am 2026-09-07 07:29 gelandet (`f781c60`), bevor ihr Empfaenger sie geprueft
+hatte; die Rueckgabe (Program-MAIN Slot 3, Zeilen `f70e70dd` + `a3878547`) traf eine bereits
+geschlossene Lane. Dieser Nachtrag arbeitet ihre sechs Punkte ab — eine Textkorrektur, kein
+zweiter Sweep. Korrigiert wird IM TEXT unten; die Originalwerte stehen hier, weil ein datierter
+Snapshot nicht still umgeschrieben werden darf.
+
+Messbasis des Nachtrags: main `0352148e`, 2026-09-07. Jede Zahl unten steht neben dem Kommando,
+das sie reproduziert.
+
+| # | Rueckgabe-Punkt | Original | Korrigiert |
+|---|---|---|---|
+| 1 | AGENTS.md-Basis | 21 368 B als "portabler Kontrakt" | **13 242 B** — 21 368 ist die GANZE Datei; der Abschnitt ist Zeile 22–171 |
+| 2 | graphify in der Lane | fehlendes `graphify-out/` ⇒ Trigger nutzlos | lokal richtig, aber die Read-only-Query gegen den Main-Graphen traegt (§2 #14) |
+| 3 | `97c5d469` | "SHA loest nicht auf" | **Task-Id**, kein Commit — der Status ist abfragbar (§2 #9) |
+| 4 | `estimatedBytes` | Nutzer und Kosten behauptet, nicht belegt | Nutzer benannt, Kostenaussage auf das Gemessene zurueckgenommen (§2 #11) |
+| 5 | Verify-Beleg | "ALL PASS" ohne Baum-Sha und ohne Log-Pfad | Sha gefunden, Log-Pfad **unknown** (unten) |
+| 6 | Abdeckung | §4 nennt Luecken, trennt aber nicht gemessen/abgeleitet | §4 trennt beides ausdruecklich |
+
+**Punkt 1 — die Basis war eine ganze Datei statt eines Abschnitts.**
+`AGENTS.md` ist im Ganzen 21 368 B. Der Abschnitt, den eine Claude-Session laut Loader-Vertrag
+liest ("read the **Portable operating contract** section once", `AGENTS.md` §Loader boundary),
+reicht von `## Portable operating contract` bis vor `## Before you start`:
+
+    git rev-parse main                                    # 0352148e
+    git show main:AGENTS.md | wc -c                       # 21368   ganze Datei
+    git show main:AGENTS.md | sed -n '22,171p' | wc -c    # 13242   der Abschnitt
+
+13 242 B, unabhaengig bestaetigt: die Fable-Haelfte misst denselben Wert
+(`docs/messungen/2026-09-06-kontext-gesundheit-fable.md:27`). Die 13 241 B der Rueckgabe sind
+derselbe Wert bis auf den Schluss-Newline, kein Messstreit.
+
+Der Fehler verschob die Zeilen von §1 in BEIDE Richtungen:
+- **Controller/MAIN** zaehlte 21 368 statt 13 242: **8 126 B zuviel**.
+- **Supervisor**, **Lane (claude)** und **Steward** zaehlten den Abschnitt GAR NICHT, obwohl
+  derselbe Loader-Vertrag jede Claude-Session bindet: je **13 242 B zuwenig**. Der Nachtrag
+  zaehlt ihn dort jetzt mit — Konsistenz-Korrektur, keine Neumessung.
+- **Lane (pi/codex)** bleibt bei 21 368 und war richtig: ein Codex-/Pi-Harness laedt `AGENTS.md`
+  GANZ ("Interactive Codex and Pi sessions load it automatically"). Genau diese Asymmetrie hatte
+  die Originalfassung eingeebnet, indem sie beiden Rollen dieselbe Zahl gab.
+- Unveraendert fehlt in ALLEN Zeilen, was §1 nie gezaehlt hat: `MEMORY.md` und der oberste
+  `HANDOFF.md`-Block. Das folgt nicht aus der falschen Basis, sondern ist eine Quellenluecke —
+  sie steht darum in §4.
+
+**Punkt 5 — drei Verify-Belege, getrennt gehalten.**
+1. **Originallauf der Lane 746513d1 (der Beleg dieser Notiz):** Baum `fb470c67`
+   (`docs: Kontext-Gesundheitsanalyse GLM (blind, Gegenlesung zu Fable)`, 2026-09-07 07:28:41 +0200),
+   Kommando `bun install --frozen-lockfile && bun e2e/pins.ts`, Tail `ALL PASS`.
+   **Log-Pfad: unknown.** Der Lane-Report sagt nur "Log ausserhalb des Baums"
+   (`fleet.json`, `events[56].payload.text`), und das Scratchpad der toten Lane
+   (`/private/tmp/claude-501/…-fleet-260907052117-ca39/`) existiert nicht mehr. Ein Pfad wird
+   hier nicht geraten.
+   Zu `fb470c67` gehoert eine Warnung: das ist der PRE-REBASE-Commit der Lane. Er loest in der
+   Object-DB dieses Checkouts auf, ist aber **kein Ancestor von main**
+   (`git merge-base --is-ancestor fb470c67 main` → nein); ein frischer Klon findet ihn nicht.
+   Der gelandete Zwilling heisst `f781c600`.
+2. **Land-Gate, serverseitig — NICHT der Lane-Beleg:** Land-Note zu `f781c60` trägt
+   `verify.mainSha` `2dfaa814`, `proportional:true`, `steps:["install","pins"]`, `ok:true`,
+   748 ms (`git notes --ref=fleet/land show f781c60`). Er misst den Baum NACH dem Rebase, nicht
+   den, auf dem die Lane gearbeitet hat.
+3. **Lauf dieses Nachtrags:** §6.
+
 ## §1 Groessenbild je Rolle
 
 Token = Bytes÷4 (Schaetzung, kein gemessener Verbrauch). Prozent gegen 258 400 (GPT-Abo-Fenster,
@@ -21,18 +84,20 @@ laedt plus was die Rolle laut eigenem Vertrag im ERSTEN Turn lesen soll.
 
 | Rolle | Startladung (Bytes, gemessen) | ~Tok | % 258 400 | % 1 M |
 |---|---|---|---|---|
-| Controller / Program-MAIN (claude, Haupt-Checkout) | 8 090 (global `~/.claude/CLAUDE.md`) + 84 830 (CLAUDE.md main-Render, 7/7 Fragmente) + 226 (`.claude/CLAUDE.md`) + 21 368 (AGENTS.md portabler Kontrakt, per Loader-Anweisung e i n Abschnitt) ≈ **114 514** | ~28 600 | ~11,1 % | ~2,9 % |
-| Supervisor (claude, Haupt-Checkout) | 93 146 (dieselbe Basis) + ~2 kB Supervisor-Brief (servergebaut) ≈ **95 100** | ~23 800 | ~9,2 % | ~2,4 % |
-| Lane, claude-Harness (Worktree) | 8 090 + 37 226 (CLAUDE.md lane-Render, 3/7 Fragmente) + Dispatch-Brief 7 278–9 478 (5 Receipts vom 09-07) ≈ **52 600–54 800** | ~13 500 | ~5,2 % | ~1,3 % |
+| Controller / Program-MAIN (claude, Haupt-Checkout) | 8 090 (global `~/.claude/CLAUDE.md`) + 84 830 (CLAUDE.md main-Render, 7/7 Fragmente) + 226 (`.claude/CLAUDE.md`) + 13 242 (AGENTS.md §Portable operating contract — der ABSCHNITT, korrigiert §0) ≈ **106 388** | ~26 600 | ~10,3 % | ~2,7 % |
+| Supervisor (claude, Haupt-Checkout) | 93 146 (dieselbe Basis) + 13 242 (§contract, in der Originalfassung vergessen — §0) + ~2 kB Supervisor-Brief (servergebaut) ≈ **108 400** | ~27 100 | ~10,5 % | ~2,7 % |
+| Lane, claude-Harness (Worktree) | 8 090 + 37 226 (CLAUDE.md lane-Render, 3/7 Fragmente) + 13 242 (§contract, in der Originalfassung vergessen — §0) + Dispatch-Brief 7 278–9 478 (5 Receipts vom 09-07) ≈ **65 800–68 000** | ~16 500–17 000 | ~6,4–6,6 % | ~1,7 % |
 | Lane, pi/codex-Harness (Worktree) | 8 082 (global `~/AGENTS.md`) + 21 368 (Projekt-AGENTS.md) + Dispatch-Brief ~7 360 (pi-zai-Receipt) ≈ **36 800** | ~9 200 | ~3,6 % | ~0,9 % |
-| Steward (claude, Steward-Worktree, volles Laderitual) | 8 090 + CLAUDE.md-Kopie (Groesse n.g.) + 16 561 (README) + 11 671 (tailored-context) + 241 085 (verify-tiering) + 11 711 (steward.md) ≈ **>289 000** | >72 000 | >28 % | >7,2 % |
+| Steward (claude, Steward-Worktree, volles Laderitual) | 8 090 + CLAUDE.md-Kopie (Groesse n.g.) + 16 561 (README) + 11 671 (tailored-context) + 241 085 (verify-tiering) + 11 711 (steward.md) + 13 242 (§contract, in der Originalfassung vergessen — §0) ≈ **>302 000** | >75 000 | >29 % | >7,6 % |
 | Skills (bei Trigger, on demand) | graphify 40 495 · unslop 4 121 · mess-notiz 5 534 · kriterium-grill 3 361 | 10 100 max | 3,9 % max | 1,0 % max |
 
 Einzelmessungen: Fragmente loader 3 264 / einstieg 22 891 / lane-discipline 23 126 / supervisor
 3 916 / self-scheduling 10 006 / deploy 19 935 / graphify 1 670 (Summe 84 808; main-Render 84 830,
 lane-Render 37 226 — reconciliert mit `rulebook.ts` `FRAGMENTS_FOR`: lane = loader+lane-discipline+
 self-scheduling). SYSTEM.md 13 120 · README 16 561 · controller.md 6 818 · steward.md 11 711 ·
-lane-brief-template.md 9 331 · context-packs.json 1 441 · AGENTS.md 21 368.
+lane-brief-template.md 9 331 · context-packs.json 1 441 · AGENTS.md 21 368 GANZ, davon
+§Portable operating contract 13 242 (Zeile 22–171 am main `0352148e`; die Tabelle oben nutzt
+seit §0 den Abschnittswert — ausser fuer pi/codex, die die ganze Datei laden).
 
 ## §2 Befunde, nach Kosten fuer den Owner rangiert
 
@@ -47,6 +112,13 @@ Entscheidungen. Jeder Befund: Beleg (datei:zeile) · Fix · Verify-Kommando. VER
    MAIN, die nach der Checkliste briefet, verweigert Lanes das staerkste Orientierungswerkzeug.
    Fix: einstieg.md:203 auf „nicht lokal, aber read-only gegen den Main-Graph (graphify.md)".
    Verify: `rg -n 'gibt es in einer Lane nicht' rulebook/einstieg.md` (leer).
+   NACHTRAG (§0 Punkt 2): der Widerspruch bleibt, die Folgerung war zu weit. Das FEHLENDE lokale
+   `graphify-out/` macht die Main-Graph-Query nicht nutzlos — mechanisch geprueft aus dieser Lane:
+   `graphify` liegt auf dem PATH (`/Users/owner/.local/bin/graphify`), `ls -d graphify-out`
+   schlaegt im Worktree fehl, und
+   `"$(dirname "$(git rev-parse --git-common-dir)")/graphify-out/graph.json"` loest auf eine
+   lesbare 10,6-MB-Datei im Haupt-Checkout auf. Eine Lane verliert also nur `update`/`save-result`,
+   nicht die Abfrage.
 
 2. **[F] Zeilenverweise im UNDATIERTEN einstieg.md gedriftet.** `einstieg.md:34` nennt
    `laneWatchSignal` (`lane-signals.ts:92`) und `einstieg.md:36` `host-commit-looking`
@@ -55,9 +127,12 @@ Entscheidungen. Jeder Befund: Beleg (datei:zeile) · Fix · Verify-Kommando. VER
    „Symbolverweise statt Zeilenverweise in undatierten Docs" (lane-discipline.md, 2026-08-25).
    Fix: `datei#symbol`. Verify: `rg -n 'laneWatchSignal|host-commit-looking' lane-signals.ts`.
 
-3. **[V] Controller/MAIN-Startlast ~114,5 kB ≈ 28,6 k Tok ≈ 11 % des GPT-Fensters vor dem ersten
-   Toolcall.** 8 090 global + 84 830 main-Render + 226 + 21 368 portabler Kontrakt (Loader-Vertrag
-   ordnet das Lesen des Abschnitts an). Jede Nachricht an die MAIN zahlt das erneut als Input
+3. **[V] Controller/MAIN-Startlast ~106,4 kB ≈ 26,6 k Tok ≈ 10,3 % des GPT-Fensters vor dem
+   ersten Toolcall** (korrigiert §0; urspruenglich ~114,5 kB / 28,6 k Tok / 11 %).
+   8 090 global + 84 830 main-Render + 226 + 13 242 portabler Kontrakt (Loader-Vertrag ordnet das
+   Lesen des ABSCHNITTS an, nicht der Datei). Die Rangfolge des Befundes aendert sich nicht — der
+   groesste Einzelposten bleibt der main-Render mit 84 830 B (80 % der Startlast), und der
+   korrigierte Kontrakt ist mit 13 242 B nur noch der drittgroesste Posten. Jede Nachricht an die MAIN zahlt das erneut als Input
    (Regelbuch §Modellpolitik: ~96 % des Verbrauchs ist Input). Ladeannahme, nicht beobachtete
    Zustellung. Fix (Owner-Entscheid): Audience-Partition feiner schneiden — supervisor.md,
    deploy.md sind fuer die meisten MAINs nicht erste-Turn-relevant. Verify: `wc -c` nach Re-Render.
@@ -95,10 +170,20 @@ Entscheidungen. Jeder Befund: Beleg (datei:zeile) · Fix · Verify-Kommando. VER
    Belegbarkeit einer Inspektion. Fix: SHA korrigieren oder als verloren markieren. Verify:
    `git cat-file -e b7d449a0`.
 
-9. **[E] Pending-Verweis `97c5d469` + `ctl.sh` in docs/controller.md:34.** SHA loest nicht auf,
-   `ctl.sh` existiert nicht (`test -e` fehlgeschlagen); Formulierung „sobald Zeile `97c5d469`
-   gelandet ist" ist ehrlich, aber eine Nachfolge-Controllerin kann den Land-Status nicht pruefen.
-   Fix: Land-Vermerk nachtragen. Verify: `test -e ctl.sh && echo da || echo fehlt`.
+9. **[E] Pending-Verweis `97c5d469` + `ctl.sh` in docs/controller.md:53** (nicht `:34` — die
+   Originalfassung nannte die falsche Zeile; schon am Land-Commit `f781c60` stand der Satz auf
+   53). `ctl.sh` existiert nicht (`test -e` fehlgeschlagen).
+   KORREKTUR (§0 Punkt 3): `97c5d469` ist **keine SHA, sondern eine Task-Id** — die
+   Originalfassung stufte sie als „tote SHA"-Verwandte ein und schloss daraus, der Status sei
+   nicht pruefbar. Beides ist falsch. `git cat-file -t 97c5d469` scheitert genau deshalb, weil es
+   nie ein git-Objekt war; die Zeile steht als `tasks[].id` in `fleet.json` (Stand dieses
+   Nachtrags: `kind:"auftrag"`, `status:"sent"`, `slot:11`, Titel „CONTROLLER-WERKZEUGE · `ctl.sh`
+   MIT ACHT VERBEN"). Eine Nachfolge-Controllerin KANN den Status also pruefen — ueber die
+   Task-Queue, nicht ueber git. Das Restrisiko ist kleiner und anders: die Formulierung „Zeile"
+   laesst offen, in welchem Register man nachschlaegt.
+   Fix: in controller.md als `Task-Id 97c5d469` ausschreiben. Verify:
+   `git cat-file -t 97c5d469` (scheitert, ist KEIN Defekt) und
+   `python3 -c "import json;print([t['status'] for t in json.load(open('fleet.json'))['tasks'] if t['id']=='97c5d469'])"`.
 
 10. **[V] `einstieg.md` nennt „`server.ts` sind 24 603 Zeilen (gemessen 2026-09-04)" — heute
     26 748** (WC, dieser Baum; +8,7 %). Datiert, also ehrlich, aber die Zahl ist
@@ -106,10 +191,27 @@ Entscheidungen. Jeder Befund: Beleg (datei:zeile) · Fix · Verify-Kommando. VER
     unter. Fix: „aktuell `wc -l` nachmessen" als Klausel daneben. Verify: `wc -l server.ts`.
 
 11. **[F] context-packs.json `messnotiz-index` estimatedBytes 11 700 vs. real 34 733**
-    (`docs/messungen/INDEX.md`, Faktor 3). `estimatedBytes` ist, was der Planer ueber Ladekosten
-    glaubt (Anchor-Block selbst kopiert keine Bytes — server.ts:8266 nur Pointer, verifiziert);
-    `rulebook-generat` 25 900 vs. 28 894 (rulebook.ts 6 503 + inventar 22 391) ist nur ~10 % zu
-    klein. Fix: nachmessen und eintragen. Verify: `wc -c docs/messungen/INDEX.md`.
+    (`docs/messungen/INDEX.md`, Faktor 3); `rulebook-generat` 25 900 vs. 28 894 (rulebook.ts
+    6 503 + inventar 22 391) ist nur ~10 % zu klein. Die Abweichung selbst steht.
+    KORREKTUR der Kostenaussage (§0 Punkt 4): die Originalfassung nannte `estimatedBytes` „was der
+    Planer ueber Ladekosten glaubt", ohne einen Nutzer zu benennen. Nachgemessen — und das
+    Ergebnis ist schwaecher als der Satz:
+    `rg -n estimatedBytes server.ts src/client.ts rulebook.ts` findet **NICHTS**. Die einzigen
+    Fundstellen im Baum sind vier Dateien:
+    `context-packs.ts` (die sechs Literale selbst) · `context-plan.ts#planContext` und
+    `#planRepoContext` (kopieren das Feld in die Selektion) ·
+    `context-manifest.ts#readContextManifest` (kopiert es aus einem Repo-Manifest) ·
+    `context-pack-validator.ts` (prueft nur `finite && >= 0`, Fehlercode `ESTIMATED_BYTES_INVALID`).
+    **Kein Codepfad rechnet, vergleicht oder budgetiert damit**, und weder
+    `server.ts#renderContextAnchorBlock` noch `server.ts#contextReceiptSelections` traegt das Feld
+    in einen zugestellten Brief oder ein Receipt (beide Funktionen voll gelesen).
+    Damit ist die Kostenaussage zurueckzunehmen: eine falsche `estimatedBytes` verbrennt heute
+    **keine Tokens** ([V] trifft nicht zu) und aendert **keine Auswahl**. Das [F] im Kopf dieses
+    Befundes bleibt, schrumpft aber auf einen Weg: ein MENSCH (oder eine Session), der die
+    Packliste liest und den Faktor 3 fuer eine Ladekostenangabe haelt, plant falsch. Der Befund
+    wird erst wieder teuer, sobald ein Budget-Konsument gebaut wird — heute existiert keiner.
+    Fix: nachmessen und eintragen. Verify: `wc -c docs/messungen/INDEX.md` und
+    `rg -n 'estimatedBytes' context-packs.ts context-plan.ts context-manifest.ts context-pack-validator.ts`.
 
 12. **[V] Messgeschichten-Anteil der Fragmente.** einstieg.md (22 891 B) und deploy.md (19 935 B)
     erzahlen bezahlte Vorfaelle inline (Sessions 34/35/44, 2026-09-05-Vorfaelle, Update-Clock-
@@ -129,14 +231,27 @@ Entscheidungen. Jeder Befund: Beleg (datei:zeile) · Fix · Verify-Kommando. VER
 
 14. **[V] graphify-SKILL.md 40 495 B getrackt in `.claude/skills/`** — groesster Skill, externe
     Adaption, Trigger-Beschreibung „any question about a codebase" ist so breit, dass er in einer
-    Fleet-Lane schnell feuert — wo `graphify-out/` per Konstruktion nie existiert (graphify.md-
-    Fragment sagt das der Lane). ~10 k Tok bei nutzlosem Trigger. Fix: lane-seitige Trigger-
-    Beschreibung abschaerfen oder Skill fuer Lane-Audience weglassen (Owner-Entscheid). Verify:
-    `wc -c .claude/skills/graphify/SKILL.md`.
+    Fleet-Lane schnell feuert. ~10 k Tok.
+    KORREKTUR (§0 Punkt 2): die Originalfassung nannte den Trigger „nutzlos", weil `graphify-out/`
+    im Worktree per Konstruktion nie existiert. Das Fehlen ist richtig, die Folgerung war falsch —
+    seit `49e35f6` (2026-08-31, „docs(agents): graphify in a lane queries the main checkout's
+    graph read-only") befragt eine Lane den Main-Graphen read-only:
+    `graphify query "<frage>" --graph "$(dirname "$(git rev-parse --git-common-dir)")/graphify-out/graph.json"`
+    (`AGENTS.md:274-285`, `rulebook/graphify.md`). Aus dieser Lane geprueft: Binary auf dem PATH,
+    kein lokales `graphify-out`, Zieldatei 10 560 987 B lesbar.
+    Der Befund verkleinert sich damit auf seinen echten Kern: 40 495 B fuer einen Skill, dessen
+    lane-relevanter Teil ein einziges Query-Kommando ist, waehrend die uebrigen Regeln
+    (`update`, `save-result`, `wiki/index.md`, `GRAPH_REPORT.md`) in einer Lane nicht greifen.
+    Fix: lane-seitige Trigger-/Regelbeschreibung auf den Read-only-Pfad kuerzen (Owner-Entscheid).
+    Verify: `wc -c .claude/skills/graphify/SKILL.md` und der Query-Einzeiler aus einem Worktree.
 
-15. **[V] AGENTS.md Game-Maker-Preflight-Prosa (~3,3 kB des portablen Kerns) laedt JEDE
-    pi/codex-Lane**, bindet aber nur Game-Program-MAINs und deren Reviewer. ~800 Tok x jede
-    Fleet-Lane. VERMUTET als Bloat — die Autoritaet ist die Owner-Promotion, nicht dieses Urteil;
+15. **[V] AGENTS.md Game-Maker-Preflight-Prosa laedt JEDE Fleet-Session** (nicht nur pi/codex —
+    korrigiert §0), bindet aber nur Game-Program-MAINs und deren Reviewer. Nachgemessen:
+    `git show main:AGENTS.md | sed -n '79,109p' | wc -c` = **2 818 B von 13 242 B = 21 % des
+    portablen Kerns** (~700 Tok), nicht die urspruenglich geschaetzten ~3,3 kB. Die Fable-Haelfte
+    misst denselben Block unabhaengig auf 2 818 B (`…-fable.md:193-203`). Weil der Block INNERHALB
+    von Zeile 22–171 liegt, laedt ihn auch jede Claude-Session, die den Abschnitt laut
+    Loader-Vertrag liest — die Originalfassung schrieb ihn nur den pi/codex-Lanes zu. VERMUTET als Bloat — die Autoritaet ist die Owner-Promotion, nicht dieses Urteil;
     Gegenargument (ein Vertrag, keine forkenden Fassungen) steht daneben. Fix nur per Owner.
 
 16. **[F] Rollenklarheit Controller: genau eine operative Definitionsstelle (docs/controller.md,
@@ -180,9 +295,54 @@ Entscheidungen. Jeder Befund: Beleg (datei:zeile) · Fix · Verify-Kommando. VER
   supervisor-watch, suite-offer alle vorhanden); Supervisor-Brief nennt strukturelle
   Unmoeglichkeiten statt Verhaltensprosa.
 
-## §4 Nicht geprueft
+## §4 Abdeckung — was gemessen, was abgeleitet, was nicht geprueft
 
-- Fable-Notiz (bis §5 faellig); gemessener Tokenverbrauch irgendwo (alles §1 ist Bytes÷4).
+Ausdrueckliche Ausweisung nach §0 Punkt 6. Die Originalfassung nannte nur Luecken; sie trennte
+nicht, welche Aussage auf einer eigenen Messung steht und welche aus Prosa abgeleitet ist.
+
+**GEMESSEN — Datei ganz gelesen oder mit `wc -c`/`wc -l` vermessen:**
+`AGENTS.md` (ganz gelesen und vermessen; §contract im Nachtrag neu abgegrenzt) · alle sieben
+`rulebook/`-Fragmente (Groesse; loader/einstieg/lane-discipline/supervisor/graphify inhaltlich) ·
+`CLAUDE.md` main- und lane-Render (Groesse; Rekonziliation gegen `rulebook.ts#FRAGMENTS_FOR`) ·
+`~/.claude/CLAUDE.md` (nur Groesse 8 090, Inhalt NICHT gelesen) · `.claude/CLAUDE.md` (226) ·
+`README.md` 16 561 · `docs/tailored-context.md` 11 671 · `docs/verify-tiering.md` 241 085 (nur
+Groesse) · `docs/steward.md` 11 711 (gelesen) · `docs/controller.md` (gelesen) ·
+`docs/lane-brief-template.md` 9 331 · `SYSTEM.md` 13 120 (nur Groesse) ·
+`.claude/skills/{graphify,unslop,mess-notiz,kriterium-grill}/SKILL.md` (Groessen; graphify nur
+Kopf bis Zeile 60) · `context-packs.json` 1 441 · `context-receipts.jsonl` (5 Receipts vom 09-07,
+`deliveredBytes` je Zustellung — die einzige BEOBACHTETE Zustellgroesse dieser Notiz) ·
+`docs/messungen/INDEX.md` 34 733 · `deploys.jsonl` (1 Treffer-Grep).
+Im Nachtrag zusaetzlich gemessen: `fleet.json` `tasks[]`/`events[]` (zwei gezielte Lookups),
+Land-Note zu `f781c60`, `lane-outcomes.jsonl` Zeile 825, `context-packs.ts`, `context-plan.ts`,
+`context-manifest.ts`, `context-pack-validator.ts`, `server.ts#renderContextAnchorBlock` und
+`#contextReceiptSelections` (beide ganz).
+
+**NUR IN FENSTERN GELESEN (Aussage traegt nur fuer das Fenster):** `server.ts`, ~600 von 26 748
+Zeilen — `laneOwnerPrompts`, `briefAndSend`, `LANE_EXIT_FOOTER`, `buildProgramMainBrief`,
+`buildSupervisorBrief`, `succeedSupervisor`, `renderContextAnchorBlock`, plus die zwei
+409-Stichproben (`nudge`, `isBoundSupervisor`).
+
+**ABGELEITET, NICHT BEOBACHTET — der schwaechste Teil dieser Notiz:** die ZUORDNUNG Datei→Rolle
+in §1. Gemessen sind Datei-GROESSEN; dass eine Rolle genau diese Dateien beim Start traegt, ist
+aus Loader-Prosa abgeleitet (`AGENTS.md` §Loader boundary, `rulebook/loader.md`, `docs/steward.md`
+Session-Start-Sequenz), nicht aus einem Zustell-Sensor. Einzige Ausnahme: die Dispatch-Briefe,
+die als `deliveredBytes` in `context-receipts.jsonl` wirklich beobachtet sind. Konkret UNBELEGT
+bleiben damit: ob der Harness `AGENTS.md` neben `CLAUDE.md` selbst laedt oder erst der Vertrag es
+anordnet · ob der Steward sein Ritual je voll gefahren ist · ob eine MAIN den obersten
+`HANDOFF.md`-Block tatsaechlich liest. §1 ist ein VERTRAGS-Groessenbild, kein Verbrauchsbild.
+
+**Rollen: gemessen vs. abgeleitet.** Keine Rolle wurde an einer laufenden Session beobachtet.
+Am dichtesten belegt ist die Lane (Receipts + eigener Worktree), am duennsten der Steward
+(fremder Worktree, CLAUDE.md-Kopie dort nie gesehen — die Zeile ist deshalb ein `>`-Wert) und
+der Supervisor (nur Brief-Code gelesen, keine Zustellung).
+
+**Nicht geprueft (unveraendert aus der Originalfassung):**
+
+- Gemessener Tokenverbrauch irgendwo — alles in §1 ist Bytes÷4. (Die Fable-Notiz war bis §5
+  faellig und ist dort abgeglichen.)
+- `MEMORY.md` (4 337 B laut Fable-Haelfte) und der oberste `HANDOFF.md`-Block (6 896 B ebenda)
+  waren nie in meiner Quellenliste und fehlen darum in JEDER Zeile von §1 — die Zahlen dort sind
+  entsprechend zu niedrig, siehe die Rekonziliation in §5.
 - Steward-Worktree selbst (liegt ausserhalb dieses Baums): welche CLAUDE.md-Kopie dort liegt, ob
   das Ritual je voll gelaufen ist.
 - server.ts vollstaendig (~26 748 Zeilen; gelesen: Fenster um laneOwnerPrompts/briefAndSend/
@@ -209,7 +369,21 @@ Entscheidungen. Jeder Befund: Beleg (datei:zeile) · Fix · Verify-Kommando. VER
   Faktor 3, Fable rulebook-generat gegen den Render — gleiche Fehlerklasse).
 - Game-Maker-Prosa im portablen Kern, den jede fremde Lane mitlaedt (GLM #15 = Fable #12).
 - Zeiger auf 241-kB-Dokument (verify-tiering) ohne Abschnittsanker (GLM #4 = Fable #13).
-- Groessenbild konvergent: Controller ~114 kB / ~28,5–28,6 k Tok / ~11 % — unabhaengig gleich.
+- Groessenbild konvergent: Controller ~114 kB / ~28,5–28,6 k Tok / ~11 %.
+  **KORREKTUR (§0 Punkt 1): die Uebereinstimmung war ein Zufall zweier gegenlaeufiger Fehler,
+  und ohne sie ist die Konvergenz staerker, nicht schwaecher.** Beide Haelften kamen auf ~114 kB,
+  aber mit unterschiedlicher Zusammensetzung: ich zaehlte `AGENTS.md` GANZ (21 368 statt 13 242,
+  +8 126) und liess `MEMORY.md` und den obersten `HANDOFF.md`-Block ganz weg (−11 233); Fable
+  zaehlte den Abschnitt richtig und beide Dateien mit, mass aber den main-Render einen Tag frueher
+  (81 293 statt 84 830, −3 537). Rechnet man beide auf dieselbe Zusammensetzung und denselben
+  Render:
+  GLM korrigiert 106 388 + `MEMORY.md` 4 337 + `HANDOFF.md`-Block 6 896 = **117 621**;
+  Fable 114 084 + Render-Zuwachs 3 537 = **117 621**. Byte-genau dieselbe Zahl.
+  Die belastbare gemeinsame Aussage lautet also nicht „~114 kB", sondern: **eine
+  Controller-Startladung von ~117,6 kB ≈ 29,4 k Tok ≈ 11,4 % des 258-400-Fensters**, zweimal
+  unabhaengig erreicht. Die Zeile in `docs/messungen/INDEX.md:90` traegt noch die alte Zahl
+  (~114,5 kB) — sie wurde in diesem Nachtrag bewusst nicht angefasst (Auftrag: keine
+  INDEX-Aenderung).
 
 **Wo uneinig oder ergaenzend**:
 - Fable #1 (HANDOFF.md-Stapel: „lies nur den obersten Abschnitt" liest eine fremde Rolle) liegt
@@ -221,7 +395,8 @@ Entscheidungen. Jeder Befund: Beleg (datei:zeile) · Fix · Verify-Kommando. VER
 - Fable #3/#4 (graphify-Hook je Tool-Aufruf; Kontext-Band 60 % in globaler CLAUDE.md): gitignoriert
   bzw. ausserhalb meiner Quellenliste — nur der Große nach nichts geprueft.
 - Nur GLM: graphify-in-Lane-Widerspruch einstieg:203 vs graphify.md:8 (GLM #1), tote SHA b7d449a0
-  (GLM #8), Pending-Verweis 97c5d469/ctl.sh (GLM #9), fehlende Fuellstand-Selbstmeldung im
+  (GLM #8), Pending-Verweis Task-Id 97c5d469/ctl.sh (GLM #9 — im Nachtrag als Task-Id korrigiert,
+  keine tote SHA), fehlende Fuellstand-Selbstmeldung im
   servergebauten Footer (GLM #5), fehlender MAIN→Controller-Rueckkanal gegen nudge-409 am Code
   verifiziert (GLM #6), Begriff „codex-MAIN" nirgends definiert (GLM #17), Deploy-Id 82f55be0
   keine tote SHA (GLM #20 — Klasse, die Fable nicht pruefte).
@@ -230,3 +405,20 @@ Entscheidungen. Jeder Befund: Beleg (datei:zeile) · Fix · Verify-Kommando. VER
   halten zusammen: die Audience-Partition ist an beiden Enden zu grob geschnitten.
 - Render-Groessen differieren (Fable 81 293/35 209 B am 09-06, HEAD 6c089dd; GLM 84 830/37 226 B
   am 09-07 am Haupt-Checkout) — das Regelbuch wuchs ~3,5 kB an einem Tag; keine Widerlegung.
+  Genau dieser Zuwachs von 3 537 B ist der Rest, der die Rekonziliation oben aufgehen laesst.
+
+## §6 Verify-Lauf dieses Nachtrags
+
+Eigener Beleg, getrennt vom Originallauf in §0. Diff-Datei: ausschliesslich diese Notiz.
+
+    Baum:     Branch fleet/260907203323-0331, Basis main 0352148e
+              (Lane-Sha bewusst NICHT eingetragen: eine Lane kennt ihren Landing-Sha nicht,
+              und ihr pre-rebase-Commit loest nach dem Land nirgends mehr auf — die MAIN
+              setzt ihn ein und prueft mit `git merge-base --is-ancestor <sha> main`)
+    Kommando: bun install --frozen-lockfile && bun e2e/pins.ts
+    Log:      <scratchpad>/verify-nachtrag.log (ausserhalb des Baums, stirbt mit der Session)
+    Tail:     "ALL PASS" (exit 0)
+    Umfang:   proportional install+pins — die einzige Diff-Datei ist diese Notiz (docs-or-prose)
+
+Wie in §0 Punkt 5: der Lane-Sha oben ist der PRE-REBASE-Commit; nach dem Land heisst derselbe
+Inhalt anders, und nur die MAIN kann den gelandeten Sha nachtragen.

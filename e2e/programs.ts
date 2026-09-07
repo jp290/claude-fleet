@@ -8380,6 +8380,163 @@ exit 0
     spawnSync("kill", [m1Held]);
     rmSync(ffrLock, { recursive: true, force: true });
 
+    // --- (8g) M5 · THE CORPSE IS REAPED, AND THE SHORT CHAIN NEVER ASKS FOR THE MACHINE ---------
+    // (8f) proved the denial. M5 is about the two ways that denial was being handed out for
+    // nothing, both measured on 2026-09-07 and both created by M1 itself:
+    //   (a) NOBODY REAPED A DEAD HOLDER ANY MORE. Before M1 the server took this lock only between
+    //       ff retry rounds, so a corpse cost one lost retry and the next WRAPPER contender cleared
+    //       it. Since M1 every clean land takes it — and on a quiet box no wrapper ever contends,
+    //       so a corpse denies EVERY land until a human runs `rmdir`. Measured: pid 77910 dead, no
+    //       wrapper running, a docs-only land polling 710 s until the owner cleared it by hand.
+    //   (b) THE DOCS-ONLY SHORT CHAIN TOOK THE HOLD TOO, for `bun install && bun e2e/pins.ts` —
+    //       no socket, no port, no suite, about a second of work. Its land note reads
+    //       `proportional:true, steps:[install,pins], ms 710837`.
+    // Five arms, and the two GEGENPROBEN are the point of the shape: a reaper that removes a
+    // human's manual park, or one that removes a live holder whose identity it merely could not
+    // measure, is worse than the corpse it was built for. Each arm is a REAL land through the same
+    // door as (8f)'s — self-land on a bound MAIN — with the lock dir shaped by hand beforehand.
+    // The wait budget is small on purpose: every arm that is SUPPOSED to be denied must be denied
+    // in seconds, and every arm that is supposed to run must not be able to hide behind a long one.
+    const m5Env = { ...ffrEnv, FLEET_VERIFY_WAIT_MS: "2000" };
+    const m5Birth = (pid: string): string =>
+      spawnSync("sh", ["-c", `LC_ALL=C ps -o lstart= -p ${pid}`]).stdout.toString()
+        .trim().replace(/\s+/g, " ");
+    const m5Spawn = (): string =>
+      spawnSync("sh", ["-c", "nohup sleep 300 >/dev/null 2>&1 & echo $!"]).stdout.toString().trim();
+    const m5Lock = (pid: string | null, birth: string | null): void => {
+      rmSync(ffrLock, { recursive: true, force: true });
+      mkdirSync(ffrLock, { recursive: true });
+      if (pid !== null) writeFileSync(`${ffrLock}/pid`, `${pid}\n`, { mode: 0o600 });
+      if (birth !== null) writeFileSync(`${ffrLock}/birth`, `${birth}\n`, { mode: 0o600 });
+    };
+    const m5LockPid = (): string => {
+      try { return readFileSync(`${ffrLock}/pid`, "utf8").trim(); } catch { return "(none)"; }
+    };
+    type M5Verdict = { status?: string; landed?: boolean; detail?: string;
+      verify?: { ok?: boolean | null; waitedOut?: true; proportional?: boolean; steps?: string[];
+        cmd?: string; out?: string; ms?: number; waitMs?: number } };
+    const m5Settled = async (slot: number | null): Promise<M5Verdict | null> =>
+      (await ffrSettled(slot)) as M5Verdict | null;
+
+    // A CORPSE, made rather than waited for: a real process, killed, and its death asserted before
+    // anything is built on it — a pid that merely "should" be gone would make every arm below a
+    // guess about the machine instead of a measurement of the server.
+    const m5Corpse = m5Spawn();
+    spawnSync("kill", ["-9", m5Corpse]);
+    await Bun.sleep(400);
+    const m5CorpseBirth = "Sun Sep  7 04:11:00 2026"; // the shape a real holder records; irrelevant to a DEAD pid's triage, and that is the claim
+    check("(8g) M5 fixture: a suite-mutex corpse exists — a process that was alive, is now gone, and whose pid the lock file can name",
+      /^\d+$/.test(m5Corpse) && !ffrAlive(m5Corpse),
+      JSON.stringify({ corpse: m5Corpse, alive: m5Corpse === "" ? null : ffrAlive(m5Corpse) }));
+
+    // (i) THE REAP. A dead holder is cleared by the SERVER and the lock retaken in the same pass:
+    // the gate runs, the land happens, and the machine is given back. `gateRuns === 1` is the
+    // positive half — before M5 this arm ends with zero runs and a `waitedOut` verdict, because
+    // nothing on a quiet box ever removes that dir.
+    m5Lock(m5Corpse, m5CorpseBirth);
+    await restartSrv(m5Env);
+    ffrReset();
+    const m5MainBeforeReap = main2Of();
+    const m5R = await m1Land("m5 reap", "m5-reap.txt");
+    const m5RLanded = await ffrDone(m5R.row);
+    const m5RMain = main2Of();
+    const m5RNote = ((): M5Verdict => {
+      try {
+        return JSON.parse(spawnSync("git", ["-C", REPO2, "notes", "--ref=fleet/land", "show", m5RMain])
+          .stdout.toString()) as M5Verdict;
+      } catch { return {}; }
+    })();
+    const m5RRuns = ffrLogRuns().length;
+    check("(i) M5: the server reaps a DEAD suite-mutex holder and takes the lock in the same pass — the gate spawns, the land happens, and the corpse is gone",
+      m5R.fired && m5RLanded && m5RMain !== m5MainBeforeReap && m5RRuns === 1
+        && m5RNote.verify?.ok === true && m5RNote.verify?.waitedOut === undefined
+        && !existsSync(ffrLock),
+      JSON.stringify({ fired: m5R.fired, done: m5RLanded, gateRuns: m5RRuns,
+        mainMoved: m5RMain !== m5MainBeforeReap, note: m5RNote.verify, lockLeft: existsSync(ffrLock) }));
+
+    // (ii) GEGENPROBE — THE MANUAL PARK. A dir with NO pid file is a human taking this machine off
+    // the board, and it is the one lock state that never resolves on its own. The reaper must walk
+    // past it: a land is denied, the park is still there afterwards, and it still has no pid.
+    m5Lock(null, null);
+    ffrReset();
+    const m5P = await m1Land("m5 park", "m5-park.txt");
+    const m5PVerdict = await m5Settled(m5P.slot);
+    const m5PRuns = ffrLogRuns().length;
+    check("(ii) M5 GEGENPROBE: a pid-LESS lock dir is a human's manual park and is NEVER reaped — the land is denied, the chain never spawns, and the park survives untouched",
+      m5P.fired && m5PVerdict?.status === "resolved" && m5PVerdict.landed === false
+        && m5PVerdict.verify?.waitedOut === true && m5PRuns === 0
+        && existsSync(ffrLock) && !existsSync(`${ffrLock}/pid`),
+      JSON.stringify({ fired: m5P.fired, verdict: m5PVerdict?.verify, gateRuns: m5PRuns,
+        dirLeft: existsSync(ffrLock), pidLeft: existsSync(`${ffrLock}/pid`) }));
+
+    // (iii) GEGENPROBE — THE UNPROVEN LIVE HOLDER. A live pid with NO birth fingerprint is
+    // `unknown` in e2e-stage.sh and in suiteLockView alike: possibly a legacy holder, possibly a
+    // contender one syscall from writing its own birth. Neither may be reaped on a guess, and a
+    // reaper that treats "I could not measure it" as "it is dead" would kill a running suite.
+    const m5Unproven = m5Spawn();
+    m5Lock(m5Unproven, null);
+    ffrReset();
+    const m5U = await m1Land("m5 unproven", "m5-unproven.txt");
+    const m5UVerdict = await m5Settled(m5U.slot);
+    const m5URuns = ffrLogRuns().length;
+    check("(iii) M5 GEGENPROBE: a LIVE holder whose identity cannot be proven (pid, no birth) is kept, not reaped — the land is denied and the holder still holds the lock",
+      m5U.fired && m5UVerdict?.status === "resolved" && m5UVerdict.landed === false
+        && m5UVerdict.verify?.waitedOut === true && m5URuns === 0
+        && m5LockPid() === m5Unproven && ffrAlive(m5Unproven),
+      JSON.stringify({ fired: m5U.fired, verdict: m5UVerdict?.verify, gateRuns: m5URuns,
+        lockPid: m5LockPid(), holder: m5Unproven, alive: ffrAlive(m5Unproven) }));
+    spawnSync("kill", [m5Unproven]);
+
+    // (iv)+(v) THE SHORT CHAIN DOES NOT QUEUE, AND THE FULL ONE STILL DOES. One occupant, PROVEN
+    // — a live pid whose recorded birth is the one `ps` reports for it, i.e. the shape both the
+    // shell and suiteLockView call `held` — and two lands against it, differing in nothing but the
+    // file they touch. A docs-only diff selects VERIFY_PROPORTIONAL_CMD, which guards on the
+    // fleet sentinel: the REPO carries it (so verifyPlanFor may choose the short chain at all)
+    // while this fixture's lane worktree does not, so the chain SKIPS in milliseconds instead of
+    // running a real `bun install` against a stand-in repo. That is deliberate: the claim being
+    // measured is "it never queued", not "it passed", and a skip proves the chain was SPAWNED —
+    // which under a denial it never is.
+    // The control arm is what makes the first one a measurement rather than a coincidence: same
+    // occupant, same budget, a code file instead — and it must still be denied. Without it, a
+    // silently freed lock would let both arms pass.
+    const m5Occupant = m5Spawn();
+    const m5OccBirth = m5Birth(m5Occupant);
+    m5Lock(m5Occupant, m5OccBirth);
+    const m5Sentinel = `${REPO2}/fleet-e2e.ts`;
+    writeFileSync(m5Sentinel, "// short-chain sentinel for e2e/programs.ts \u00a78g\n");
+    check("(8g) M5 fixture: the occupant is a live, PROVEN holder (the birth it records is the one ps reports) and the repo carries the short-chain sentinel",
+      /^\d+$/.test(m5Occupant) && ffrAlive(m5Occupant)
+        && /^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/.test(m5OccBirth)
+        && existsSync(m5Sentinel),
+      JSON.stringify({ occupant: m5Occupant, birth: m5OccBirth, sentinel: existsSync(m5Sentinel) }));
+
+    ffrReset();
+    const m5D = await m1Land("m5 docs", "m5-docs.md");
+    const m5DVerdict = await m5Settled(m5D.slot);
+    check("(iv) M5: a DOCS-ONLY land does not take the suite mutex at all — its short chain runs while somebody else holds the machine, says so in the note, and never reports a wait",
+      m5D.fired && m5DVerdict?.verify?.proportional === true
+        && m5DVerdict.verify?.waitedOut === undefined
+        && (m5DVerdict.verify?.cmd ?? "").includes("bun e2e/pins.ts")
+        && (m5DVerdict.verify?.out ?? "").includes("suite mutex: NOT TAKEN")
+        && m5DVerdict.verify?.waitMs === undefined
+        && m5LockPid() === m5Occupant && ffrAlive(m5Occupant),
+      JSON.stringify({ fired: m5D.fired, verify: m5DVerdict?.verify,
+        lockPid: m5LockPid(), occupant: m5Occupant }));
+
+    ffrReset();
+    const m5C = await m1Land("m5 code", "m5-code.txt");
+    const m5CVerdict = await m5Settled(m5C.slot);
+    check("(v) M5 CONTROL: the FULL chain still queues behind that same occupant and is still denied — so (iv) measured the plan, not a lock that had quietly gone free",
+      m5C.fired && m5CVerdict?.status === "resolved" && m5CVerdict.landed === false
+        && m5CVerdict.verify?.waitedOut === true && m5CVerdict.verify?.proportional === false
+        && ffrLogRuns().length === 0
+        && m5LockPid() === m5Occupant && ffrAlive(m5Occupant),
+      JSON.stringify({ fired: m5C.fired, verify: m5CVerdict?.verify, gateRuns: ffrLogRuns().length,
+        lockPid: m5LockPid(), occupant: m5Occupant }));
+    spawnSync("kill", [m5Occupant]);
+    try { rmSync(m5Sentinel); } catch { /* already gone */ }
+    rmSync(ffrLock, { recursive: true, force: true });
+
     for (const f of [`${ffrLatch}`, `${ffrLatch}.reached`, `${ffrLatch}.release`, ffrVerify, ffrCount,
       ffrLog, `${ROOT}/ffretry.park.2`, `${ROOT}/ffretry.red.2`, `${ROOT}/ffretry.parked.2`,
       `${ROOT}/ffretry.go.2`]) try { rmSync(f); } catch { /* spent */ }

@@ -1,23 +1,19 @@
-# HANDOFF — Program-MAIN Land-Pipeline 2026-09 (`233e1c2b7eaca3850decf332`, Slot 5, Fable 5.1): M5 + N1 GELANDET und LIVE, M3 in Flug (Land steht aus), W1–W3 (Wellenmodus, Owner-Tagesarbeit) pending; 2026-09-07 13:0x, ctx GEMESSEN 25,3 % beim Schreiben
+# HANDOFF — Program-MAIN Land-Pipeline 2026-09 (`233e1c2b7eaca3850decf332`, Slot 5, Fable 5.1): M5 + N1 GELANDET und LIVE, M3 GELANDET `6c70f01`+`79e1c36`+`94a8840` (Deploy beim Controller), W1–W3 (Wellenmodus, Owner-Tagesarbeit) pending; 2026-09-07 14:0x, ctx GEMESSEN 26,7 %
 
 > **Dieser Abschnitt ERSETZT den aelteren darunter.** Zustand ableiten: `./state.sh`, `./register.sh`,
 > `GET /api/self/program-execution` (Program 233e1c2b). Alles hier sind Behauptungen zum Nachschlagen.
 
 ## 0. DEIN ERSTER ZUG
 
-1. **M3 `283f625f` (Vorflugpruefung dirty-main) — Lane `fleet/260907091244-2e44`, zuletzt Slot 1, Tip
-   `3b117c0` (3 Commits, Baum sauber).** Ich habe den Diff GELESEN und abgenommen (§2). Was fehlte, als
-   ich ging: der Report der Lane — sie fuhr ihren ZWEITEN `./e2e-isolated.sh`-Lauf LOKAL (pid 78336,
-   nohup, Monitor in der Pane), weil ihr erster Lauf einen Sondenfehler (Arm iii fragte die Tuer vor
-   dem Re-Observe nach dem Boot) zeigte; der Fix ist `3b117c0`. Die Projektion sagt seit Stunden
-   REVIEWABLE — das ist das done-looking-Praedikat, NICHT der Report; die Pane sagt „I'll report when
-   the re-run lands". Also: Report abwarten (kommt in die Pane), ALL-PASS-Tail lesen, dann
-   `POST /api/self/tasks/283f625f/land` (Promotion `green-only` traegt das Program), sofort
-   `POST /api/self/watch` mit dem `watch`-Objekt der Antwort, bei landed=YES `{kind:"audit", repo,
-   mainAfter}`. Vorher merges-Sensor pruefen; ein toter Suite-Halter ist seit dem M5-Deploy KEIN
-   Thema mehr (der Server reapt selbst). Nach dem Land: die zwei `<sha>`-Stellen der Lane
-   (`docs/self-api.md` §ff-lost/dirty-main, Messnotiz §3 M3 — `grep -n '<sha>'`) mit den echten Shas
-   fuellen (`git merge-base --is-ancestor` je Sha), Direkt-Commit docs-only mit `bun e2e/pins.ts`.
+1. **M3 `283f625f` IST GELANDET** (`6c70f01`+`79e1c36`+`94a8840`, Self-Land `verify.ok:true` 141 s / 0 s,
+   Report gelesen, Vorschau §8h 7/7 gruen). Audit-Watch `10ef7c6e` auf `94a8840` stirbt mit meiner
+   Succession — **neu armen:** `POST /api/self/watch` `{"kind":"audit","repo":"/Users/owner/claude-fleet","mainAfter":"94a8840…"}`
+   (`git rev-parse 94a8840` fuer die volle Sha). Rot → gegen `docs/verify-tiering.md` §11 lesen,
+   adjudizieren, Controller eine Zeile. Zwei fremde Rots aus dem Vorschaulauf, NICHT M3s: die
+   registrierte succession-pane-Familie und eine ERSTSICHTUNG „a second call on the same landed row is
+   refused already landed" (sieht `queued` statt `done`, Requeue-Pfad, 0/28 im lokalen Trail) — dem
+   Program Audit-Determiniertheit als Registereintrag mitgeben, wenn du ohnehin an Slot 7 schreibst.
+   Die Sha-Nachtraege in der Messnotiz §3 M3 sind gemacht; `docs/self-api.md` nennt keine Sha.
 2. **Deploy nach M3 beim Controller (Slot 6, Opus 5 high — Label `🎛` auf `/api/sessions` pruefen,
    er zieht per Succession um: 2 → 10 → 6 an einem Vormittag).** Eine Zeile per `POST /send`
    `{slot, text}` mit Owner-Token aus `fleet.json` (NICHT `/api/slots/:id/send` — 404). Er will nur
@@ -44,7 +40,7 @@
 | M1 Gate unter Server-Hold + `merge_verdict` | `aa8e5ade` | GELANDET `f388de1`+`f0bcea6`, Audit gruen 3785/0, Deploy `4fc0afa7` 03:08 | |
 | **M5 Hold-Hygiene** (neu, aus 4 Controller-Befunden) | `8d6a3e9e` | **GELANDET `94dd5e4`+`a15b59a`+`b2ab2cf`**, `verify.ok:true` 139 s / 0 s Schlange, Audit **gruen 3792/0** (2 196 s), Deploy `7941664b`/`1a3ed209` | Server reapt toten Suite-Halter nach der Wrapper-Dreiteilung; docs-only-Kette nimmt keinen Hold |
 | **N1 Notizen beim Dispatch** | `3af11665` | **GELANDET `24cd54e`+`189f815`**, `verify.ok:true` 149 s / 0 s, Audit `unknown` (Timeout, §0.4), Deploy `1a3ed209` (bootHead `0a0da52`) | `task-notes.ts` + `briefAndSend`-Naht + Receipt `notes` |
-| M3 Vorflugpruefung dirty-main | `283f625f` | **sent, Lane fertig, Report steht aus** (§0.1) | `dirtyMainStop` + zweiter Blick vor dem ff + `MergeErrorReason "dirty-main"` |
+| M3 Vorflugpruefung dirty-main | `283f625f` | **GELANDET `6c70f01`+`79e1c36`+`94a8840`**, `verify.ok:true` 141 s / 0 s, Audit laeuft (§0.1) | `dirtyMainStop` + zweiter Blick vor dem ff + `MergeErrorReason "dirty-main"` |
 | W1 programId-Schnitt in der Landefaltung | `e0113460` | pending | Controller-Brief, Owner-Entscheid 12:4x |
 | W2 Bestaetigungstuer fuer die Flaeche einer bestehenden Zeile | `0f5019ac` | pending | unabhaengig von W1 |
 | W3 „▸ start wave" mit Selbst-Split | `05611418` | pending | NACH W1+W2 |
@@ -87,14 +83,15 @@ weiter: der Owner hat den Wellenmodus (W1–W3) hier eingehaengt.
 
 ## 3. Deploy / Controller
 
-- Live ist bootHead `0a0da52` (Deploy `1a3ed209`, `ok:true`): M5 und N1 drin. M3 braucht nach dem
-  Land einen Deploy (server.ts) — Controller-Akt, eine Zeile an ihn.
+- Live ist bootHead `0a0da52` (Deploy `1a3ed209`, `ok:true`): M5 und N1 drin. M3 braucht einen Deploy
+  (server.ts + lane-signals.ts) — Controller-Akt; meine Deploy-Bitte an Slot 6 bekam 409 (Composer
+  belegt) und wurde 45 s spaeter wiederholt — pruefe an `deploys.jsonl`/`codeBehind`, ob sie ankam.
 - Der Controller (Slot 6) hat meine Absprache: die MAIN landet ihre Zeilen selbst, er deployt; W-Zeilen
   starte ich per Dispatch-Knopf mit Tripel.
 
 ## 4. Kontext
 
-25,3 % gemessen beim Schreiben. Kosten dieser Session: Erdung ~4, M5 (Brief+Review+Land+Doc) ~6, N1
+26,7 % gemessen nach dem M3-Land (25,3 % beim ersten Schreiben). Kosten dieser Session: Erdung ~4, M5 (Brief+Review+Land+Doc) ~6, N1
 (Review+Land) ~4, M3-Review ~3, Controller-Verkehr ~3. Rechne ~3 Punkte je Land mit Review.
 
 # HANDOFF — Program-MAIN P3 Landepfad adversarial (`6360c36105e50a705db275c1`, Slot 4, Fable 5.1, dritte Insassin): 2. ENTWURF FERTIG, Astra-Runde 2 in Flug; 2026-09-07 12:4x, ctx GEMESSEN 46,1 %

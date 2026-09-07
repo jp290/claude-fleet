@@ -123,9 +123,15 @@ gemessen: die e2e-Instanzen teilten sich bis dahin den Maschinen-Mutex `/tmp/fle
 dem Wrapper, der sie startet — mit dem Hold vor dem Gate stand jeder saubere Land-Pfad in einer
 Schlange hinter seinem EIGENEN Runner (gemessen 2026-09-06: `./e2e-clean-review.sh` haengt in
 `waitMerge`, 60 s Timeout). Drei Wrapper (`e2e-isolated.sh`, `e2e-clean-review.sh`,
-`e2e-postland-audit.sh`) sagen ihrer Instanz darum per `FLEET_SUITE_LOCK_HELD_BY=$$`, in wessen
-Hold sie laeuft; `server.ts#inheritedSuiteHolder` honoriert das nur unter den drei Bedingungen von
-e2e-stage.sh (pid genannt · Lock-Datei nennt dieselbe · Prozess lebt). Am Mutex-Protokoll selbst
+`e2e-postland-audit.sh`) sagen ihrer Instanz darum per `FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid`, in
+wessen Hold sie laeuft; `server.ts#inheritedSuiteHolder` honoriert das nur unter den drei Bedingungen
+von e2e-stage.sh (pid genannt · Lock-Datei nennt dieselbe · Prozess lebt). **Dort stand zuerst das
+literale `$$`, und das kostete nach dem M1-Deploy JEDE Code-Lane** (Fix 2026-09-07, `b8b5e48`): im
+Land-Gate ist so ein Wrapper selbst ein GEERBTER Schritt, die Lock-Datei nennt den LIVE-Server, also
+scheiterte `$$` an genau der zweiten Bedingung, der Test-Server stellte sich hinter den Hold des
+Live-Servers und das Land starb nach 60 s in `waitMerge` (gemessen am ersten Code-Land nach dem
+Deploy, Slot 1, 04:24; unter simuliertem Halter vor und nach dem Fix reproduziert). Ausserhalb eines
+Holds IST `$_st_lock_pid` gleich `$$` — darum sah es kein Standalone-Lauf. Am Mutex-Protokoll selbst
 ist nichts geaendert; die Alternative eines privaten Locks je Instanz wurde gebaut und verworfen,
 weil sie `e2e/verify-queue.ts` §1/§2 die Grundlage naehme.
 
@@ -167,7 +173,67 @@ laesst das Land durch.
 *Verify:* zwei Checks im Land-Pfad genau mit diesen beiden Faellen; `lane-signals.ts#mergeBlocksLane`
 behandelt `dirty-main` wie `ff-lost` (die Lane bleibt done-looking); Vorschau wie M1.
 
-**Schnittlinie.** Nach M1–M3 stirbt ein Land nur noch an rotem Verify, an einem Konflikt, den der
+### M5 — Hold-Hygiene: der tote Halter wird gereapt, die proportionale Kette nimmt keinen Hold
+
+*Warum, zwei Messungen vom 2026-09-07 (Controller, 04:11–04:23, am docs-only-Land von Slot 11,
+Task `580cc453`; am Code gegengelesen):*
+
+1. **Niemand reapte den toten Halter mehr.** `/tmp/fleet-e2e.lock` trug pid 77910 (birth 04:18:16),
+   der Prozess war tot, kein Wrapper lief (Prozess-Zaehler 0). Vor M1 traf so ein Leichnam nur die
+   Wrapper-Schlange, und die reapt selbst; seit M1 nimmt JEDES saubere Land den Hold, und
+   `holdSuiteLock` reapte per Konstruktion nie (`docs/suite-contention.md` §7/§7b/§7c nannten das
+   ausdruecklich als Entscheidung). Folge: das Land pollte **710 s**, bis ein Mensch die Lock-Dir
+   raeumte. Ohne diesen Menschen haette es die vollen `FLEET_VERIFY_WAIT_MS` (2 700 000 ms)
+   verbrannt und waere `waitedOut` gestorben, **ohne den Baum je angesehen zu haben** — und jedes
+   folgende Land ebenso, bis zufaellig ein Wrapper-Kontender reapt.
+2. **Die proportionale Kette nahm denselben Hold.** Ein docs-only-Land faehrt
+   `VERIFY_PROPORTIONAL_CMD` = `bun install --frozen-lockfile && bun e2e/pins.ts` (zwei Schritte,
+   `install`+`pins`; `verify-proportion.ts`, `server.ts#verifyPlanFor`). Sie braucht weder Socket
+   noch Port noch Maschinenlast — aber seit M1 stand sie in derselben Schlange. Die Land-Note dieses
+   Lands: `verify.proportional:true`, `steps [install,pins]`, **`ms 710837`** = `waitMs 710000` +
+   ~1 s Arbeit. Hinter einem Post-Land-Audit wartet ein docs-Land damit bis zu 35 min fuer eine
+   Sekunde Arbeit.
+
+*Ein vierter Datenpunkt zu (1) am selben Morgen:* die lokale Vollkette einer Lane (Slot 11, 04:26,
+laut ihrem Report gruen) hinterliess einen Lock mit toter PID 19458 — die Wrapper-Freigabe hat also
+einen Pfad, der den Lock nicht zurueckgibt. Der Controller reapte an diesem Morgen zweimal von Hand
+(77910, 19458), beide Male hing ein Server-Land dahinter. **Dieser Wrapper-Pfad ist hier NICHT
+gefixt** (Nicht-Ziel; er gehoert dem Program Audit-Determiniertheit) — der Server-Reap macht ihn
+fuer Lands folgenlos, und genau das ist Done-Satz (a).
+
+*Mechanismus:* `server.ts#suiteLockReapStale`, aus `holdSuiteLock` vor jedem Poll gerufen, spiegelt
+die Dreiteilung von `e2e-stage.sh` (Kopf, `_st_`-Wartschleife) **ohne sie zu aendern**: pid tot oder
+unlesbar ⇒ Waise, reapen · pid lebt mit ANDERER birth ⇒ recycelte pid, reapen · pid-lose Dir MIT
+birth ⇒ zerrissene Akquise, reapen · pid-lose Dir OHNE birth ⇒ **manueller Park, nie reapen** · pid
+lebt mit fehlender/malformter/unmessbarer birth ⇒ unbekannt, behalten. Vor dem `rm` werden pid- UND
+birth-WERT erneut gelesen (dieselbe Fensterverengung wie im Wrapper), und ein gereapter Leichnam
+wird im selben Zug genommen statt nach einem Poll. Zweitens: ist `firstVerifyPlan.proportional`,
+ruft der clean-Pfad `holdSuiteLock` gar nicht und mintet `FLEET_SUITE_LOCK_HELD_BY` nicht ins
+Gate-Kind; die Note sagt das positiv (`[suite mutex: NOT TAKEN — …]`) statt als Abwesenheit.
+
+*Nicht angefasst:* `e2e-stage.sh` und das Mutex-Protokoll (mkdir = Claim, pid/birth = Identitaet,
+Reap-Dreiteilung) · die ff-Retry-Kette, die einen ANDEREN Baum klassifiziert und den Mutex nimmt wie
+vor M1 · der pid-lose Park.
+
+*Done (beide gebaut und geprueft):*
+(a) Ein `waitedOut`-Verdikt kann nur noch entstehen, wenn ein LEBENDER Halter die ganze Zeit hielt.
+(b) Bei `proportional === true` wird kein Hold genommen, nichts gemintet, und die Note sagt es.
+
+*Verify:* `e2e/programs.ts` §8g, fuenf Arme am echten Land-Pfad (Self-Land einer gebundenen MAIN,
+Lock-Dir vorher von Hand geformt): (i) toter Halter ⇒ gereapt, Gate spawnt (`gateRuns === 1`), Land
+faellt, Lock danach weg · (ii) **Gegenprobe** pid-lose Dir ⇒ Land verweigert, Park unberuehrt ·
+(iii) **Gegenprobe** lebende pid ohne birth ⇒ nicht gereapt, Halter haelt weiter · (iv) docs-only-Land
+bei BESETZTEM Lock (lebende pid, bewiesene birth) laeuft ohne zu warten und traegt den Marker ·
+(v) **Kontrollarm** Code-Land gegen denselben Halter wird weiter verweigert (`waitedOut`), sonst
+haette (iv) nichts gemessen. Dazu zwei Pins in `e2e/pins.ts` (Reap-Dreiteilung gegen die des
+Wrappers; Kein-Hold plus die Eigenschaft, die es sicher macht: das proportionale Kommando nennt
+keinen `e2e-*.sh`-Wrapper).
+
+*Gebaut* in Lane `fleet/260907031403-3744`, gelandet als `<sha>` (MAIN traegt die echte Sha nach dem
+Land nach).
+
+**Schnittlinie.** Nach M1–M3 (M5 repariert eine M1-Regression und fuegt der Liste
+keine neue Todesart hinzu) stirbt ein Land nur noch an rotem Verify, an einem Konflikt, den der
 Resolver nicht loest, oder an 90 Minuten durchgehend besetzter Maschine — alles drei Aussagen ueber
 den Baum oder ueber eine Entscheidung, die ein Mensch sehen soll. Das ist die Vorgabe. Was folgt,
 sind getrennte Vorschlaege, keine Lanes dieses Programs.

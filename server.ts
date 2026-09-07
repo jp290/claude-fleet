@@ -12023,6 +12023,12 @@ async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null,
       : "the chain reported no staged wait of its own";
     const heldNote = heldWait ? `; ${Math.round(heldWait / 1000)}s of that was this server taking ${SUITE_LOCK} before the chain started, which is why the steps inherited the hold instead of queueing for it` : "";
     if (wait || heldWait) notes.push(`[suite mutex: ${wait?.partialMs ? "at least " : ""}${Math.round(waitTotalMs / 1000)}s of this ${Math.round(ms / 1000)}s run was spent waiting for ${SUITE_LOCK}, not verifying (${staged}${heldNote})]`);
+    // …and the OTHER honest answer (M5, 2026-09-07), said POSITIVELY rather than left as an
+    // absence: a short chain neither queues for the machine nor holds it, and a reader must be
+    // able to tell that from a full chain that happened to get the lock instantly. `else if`, so
+    // the two can never both be written: a chain that reported a wait of its own is by definition
+    // not this one.
+    else if (proportional && heldSuiteLock === null) notes.push(`[suite mutex: NOT TAKEN — this gate is the docs-only short chain (${steps.join(", ")}), which spawns no suite and needs no machine, so it neither queued for ${SUITE_LOCK} nor held it]`);
     const note = notes.length ? `\n${notes.join("\n")}` : "";
     // the skip test runs over the FULL output, not the retained window: a command that declines
     // early and then prints past the cap would otherwise have its own declaration truncated away
@@ -17216,27 +17222,101 @@ function inheritedSuiteHolder(): number | null {
   } catch { return null; } // the named holder is gone — its lock is stale, not ours to run inside
   return Number(named);
 }
-// Take it, or say honestly that we could not. `false` is a fact about the MACHINE, never about the
-// tree, and the caller words it that way.
+// --- AND SINCE M5 IT REAPS (owner 2026-09-07) --------------------------------------------------
+// It MIRRORS e2e-stage.sh's triage; it does not extend it. Same vocabulary as the shell's wait loop
+// and as suiteLockView (held · stale · parked), same five outcomes, in the same order:
+//   pid file empty/missing + a birth file        → STALE, a torn acquisition          → reaped
+//   pid file empty/missing + no birth either     → PARKED, a human took the machine    → KEPT, always
+//   recorded pid gone (or unreadable content)    → STALE, nothing is running           → reaped
+//   recorded pid alive, birth PROVABLY different → STALE, a recycled pid               → reaped
+//   recorded pid alive, birth missing/malformed/
+//     unmeasurable/equal                         → HELD or UNKNOWN                     → KEPT
+// and the removal re-checks the pid AND birth VALUES immediately before the `rm`, which is the
+// window-narrowing e2e-stage.sh does and the reason docs/suite-contention.md §7 could once argue a
+// second reaper would be pure added race.
 //
-// AND IT DOES NOT REAP — deliberately, against the obvious temptation. docs/suite-contention.md §7
-// rejected a second reaper by name: reaping belongs to the wrappers, which re-check the pid VALUE
-// immediately before removing the dir, and every further participant enlarges exactly the window
-// that design shrank to microseconds. A holder becoming stale is a crashed suite, and the next
-// wrapper contender clears it; this waiter simply waits, and gives up honestly if nothing does.
-// The cost is real and accepted: a stale lock with no other contender means the retry does not
-// happen at all, and the verdict says the machine could not be taken. That is one lost retry
-// against a class of race in the one mechanism this whole box's serialization rests on.
+// WHY THAT ARGUMENT NO LONGER HOLDS. §7 was written when this server took the lock only BETWEEN ff
+// retry rounds: a stale holder cost one lost retry, and the next WRAPPER contender cleared it.
+// Since M1 every clean land takes it, and there is often no wrapper contender at all — so a stale
+// holder is not a lost retry, it is a land that polls until FLEET_VERIFY_WAIT_MS runs out, dies
+// `waitedOut` having never looked at the tree, and hands the same fate to every land behind it.
+// Measured twice in one morning (2026-09-07, docs/messungen/2026-09-06-merge-prozess-robust.md
+// §3 M5): pid 77910 was dead, no wrapper was running, and a docs-only land polled 710 s until a
+// human ran `rmdir`; a lane's own green full chain then left pid 19458 behind the same way. From
+// here on a `waitedOut` may only mean a LIVE holder held the machine for the whole budget — the
+// corpse case is this function's, not a human's.
+// The residual §7 named is real and unchanged in KIND: one more participant inside the
+// reap/re-acquire window. It is bounded by the same re-check the wrappers use, and it is bought
+// against a failure mode that stops every land on the box rather than one retry round.
+//
+// `""` for missing, empty AND unreadable — exactly the shell's `$(cat … || true)`, which cannot
+// tell those three apart either and must not be made to here.
+const readSuiteLockFile = (name: string): string => {
+  try { return readFileSync(`${SUITE_LOCK}/${name}`, "utf8").trim(); } catch { return ""; }
+};
+// `kill -0` over the RAW recorded content, as the shell does. Garbage is not a pid and `kill -0`
+// fails on it, so it reads GONE — the same answer suiteLockView gives ("a garbage pid file is a
+// lost holder, not a deliberate park"). An all-zero pid is the ONE place this keeps the shell's
+// blind spot instead of correcting it: `kill -0 0` addresses the caller's own process group and
+// answers ALIVE, so no wrapper ever reaps such a lock — and reaping something the wrapper would
+// keep is the one direction a mirror of it must never take.
+const suiteLockHolderAlive = (raw: string): boolean => {
+  if (/^0+$/.test(raw)) return true;
+  if (!/^[1-9]\d*$/.test(raw)) return false;
+  try { process.kill(Number(raw), 0); return true; }
+  catch (e: unknown) { return (e as { code?: string }).code === "EPERM"; } // EPERM: it exists, it is someone else's
+};
+function suiteLockReapStale(): boolean {
+  if (!existsSync(SUITE_LOCK)) return false; // FREE, not stale: the next mkdir is the whole answer
+  const hp = readSuiteLockFile("pid");
+  const hb = readSuiteLockFile("birth");
+  let reap: boolean;
+  if (hp === "") {
+    // A pid-LESS dir with no birth either is the MANUAL PARK. Never reaped — not here, not by any
+    // budget, not ever: it is the one state a human uses to take this machine off the board, and
+    // the only state that does not resolve on its own.
+    reap = hb !== "";
+  } else if (suiteLockHolderAlive(hp)) {
+    const current = processBirthFingerprint(Number(hp));
+    const stored = normalizeProcessBirth(hb);
+    // Only a PROVEN mismatch is a recycled pid. Missing, malformed or unmeasurable identity is
+    // `unknown` in the shell and in suiteLockView alike, and unknown is KEPT — a possibly live
+    // legacy holder may not be reaped on a guess.
+    reap = PROCESS_BIRTH_RE.test(stored) && current !== null && current !== stored;
+  } else {
+    reap = true; // the recorded holder is gone; nothing is running
+  }
+  if (!reap) return false;
+  // THE RE-CHECK, and the whole safety of doing this at all: between the classification above and
+  // the `rm` below a wrapper may have reaped the same corpse and somebody live may have taken the
+  // lock. Both files must still say what they said, or this acquisition is not the one we judged
+  // and we touch nothing.
+  if (readSuiteLockFile("pid") !== hp || readSuiteLockFile("birth") !== hb) return false;
+  try {
+    rmSync(`${SUITE_LOCK}/pid`, { force: true });
+    rmSync(`${SUITE_LOCK}/birth`, { force: true });
+    rmdirSync(SUITE_LOCK);
+  } catch { return false; } // lost the race to another reaper: the dir is theirs now, not ours
+  return true;
+}
+// Take it, or say honestly that we could not. `false` is a fact about the MACHINE, never about the
+// tree, and the caller words it that way. Since M5 a `false` additionally means what it says: a
+// LIVE holder was there the whole time, because a corpse is reaped above and the lock retaken in
+// the same pass rather than waited out.
 async function holdSuiteLock(budgetMs: number): Promise<boolean> {
   if (suiteLockHeld) return false; // one hold per process: a second land must not nest inside the first
   const deadline = Date.now() + budgetMs;
   for (;;) {
     if (suiteLockTryTake()) return true;
+    // A reaped corpse is retaken IMMEDIATELY, not after a poll: the dir is gone the instant the
+    // rmdir returns, and sleeping first would hand it to whoever polls next. `Bun.sleep(0)` all the
+    // same, so a pathological reap/re-create cycle can never starve this server's event loop.
+    const reaped = suiteLockReapStale();
     // never sleep PAST our own deadline: a budget shorter than the poll used to cost a full poll
     // anyway, so a denial could not be reported inside the budget it was given.
     const left = deadline - Date.now();
     if (left <= 0) return false;
-    await Bun.sleep(Math.min(SUITE_LOCK_POLL_MS, left));
+    await Bun.sleep(reaped ? 0 : Math.min(SUITE_LOCK_POLL_MS, left));
   }
 }
 // GIVE THE MACHINE BACK ON THE WAY OUT (M1, 2026-09-06). The `finally` in mergeJob is structural
@@ -18252,8 +18332,25 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         // the machine is held ON THIS SERVER'S BEHALF by the wrapper that started it, and taking it
         // again is the deadlock this check exists to avoid. Validated against the lock file and the
         // process table, so a stale export cannot fake it.
+        // --- …BUT THE SHORT CHAIN NEVER ASKS FOR THE MACHINE (M5, owner 2026-09-07) -----------
+        // A docs-only candidate runs VERIFY_PROPORTIONAL_CMD — `bun install --frozen-lockfile &&
+        // bun e2e/pins.ts`. It sources no e2e-stage.sh, boots no server, opens no socket, binds no
+        // port, and finishes in about a second: there is nothing in it for this mutex to
+        // serialize, and the command is a CONSTANT, so that is a property of the code rather than
+        // a hope about a configured string (e2e/pins.ts holds it). Under M1 it took the hold
+        // anyway and paid the full queue for it — the docs-only land of 2026-09-07 04:11 records
+        // `proportional:true, steps:[install,pins], ms 710837`, of which 710 000 ms was this take
+        // standing behind a DEAD holder for one second of work.
+        // So the PLAN decides: proportional ⇒ no take, no wait, and nothing minted into the child
+        // (that chain has no staged step to inherit a hold, and telling it about one would be a
+        // claim no reader of it could act on). Everything else about M1 is unchanged.
+        // NOT touched, deliberately: the ff retry chain below. A retry classifies a DIFFERENT tree
+        // (main moved under it), so it asks for the mutex exactly as it did before M1 — which is
+        // also why `gateInherited` is still computed here for a proportional plan: it is a FACT
+        // about the machine this job is running inside, and the retry reads it as one.
+        const gateProportional = firstVerifyPlan?.proportional === true;
         const gateInherited = cleanPath && firstVerifyPlan ? inheritedSuiteHolder() : null;
-        if (gateInherited === null && cleanPath && firstVerifyPlan && !suiteLockHeldHere()) {
+        if (gateInherited === null && cleanPath && firstVerifyPlan && !gateProportional && !suiteLockHeldHere()) {
           const askedAt = Date.now();
           // inside gateRun, so the board keeps saying "running land gate" while this job is
           // standing in the queue — the queue is the part that takes the minutes.
@@ -18263,8 +18360,9 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
           else gateDenied = gateNeverRan(firstVerifyPlan, mainSha, gateWaitMs);
         }
         const gateHoldBy = gateInherited ?? gateHoldPid;
+        const gateChildHold = gateProportional ? null : gateHoldBy;
         let verify = gateDenied
-          ?? await gateRun(() => runVerify(cwd, mainSha, firstVerifyPlan, gateHoldBy, gateHeld ? gateWaitMs : 0));
+          ?? await gateRun(() => runVerify(cwd, mainSha, firstVerifyPlan, gateChildHold, gateHeld ? gateWaitMs : 0));
         // Bounded resolver↔verify repair loop (CONFLICT path only). A conflict resolution can
         // rebase cleanly yet fail the deterministic verify (a dropped symbol, a broken type). Rather
         // than dead-end at a red verdict, feed the exact failure back to the resolver for up to

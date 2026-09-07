@@ -170,6 +170,8 @@ holder of a lock nobody holds.
 
 - **The server never reaps.** Reaping belongs to the wrappers, which re-check the pid VALUE before
   removing the dir; a second reaper would race exactly the window that design shrank to microseconds.
+  *(Held until M5, 2026-09-07, and reversed there — not because the race argument was wrong but
+  because its cost basis was: see §7c.)*
 - **The server starts and stops nothing.** Queue *ownership* is a different feature and needs the
   data this one produces before it can be argued for at all.
 - **No scheduling, priorities, or merge train.** ~6 lands/day does not pay for it (`lane-outcomes`).
@@ -190,7 +192,9 @@ Three lines of the design above are deliberately kept, and one is deliberately e
 - **It still never reaps.** The bullet above is not softened by this: `holdSuiteLock` takes a free
   dir or waits, and a stale lock is left for the next *wrapper* contender to clear. The accepted
   cost is one lost retry whenever a crashed suite's lock sits there with nobody else contending —
-  paid rather than enlarging the reap window this section shrank to microseconds.
+  paid rather than enlarging the reap window this section shrank to microseconds. *(That price was
+  right while the server held the lock only between retry rounds. M1 changed what a stale lock
+  costs, and M5 changed this sentence — §7c.)*
 - **A holder that dies leaves the reapable shape, never a park.** A `bun server.ts` outlives its own
   merge job, so a hold it lost track of would park the box for the life of the process; the release
   is therefore structural (`finally`), and the two writes are synchronous and **pid-first**, so the
@@ -205,7 +209,7 @@ Three lines of the design above are deliberately kept, and one is deliberately e
   (`after 0s`), because a second format would be summed twice by `runVerify` and would fall
   `e2e/pins.ts`'s "exactly one acquire" rule.
 
-### 7c. …and since M1 (2026-09-06) it holds on EVERY clean land — which moved two of the sentences above
+### 7c. …and since M1 (2026-09-06) it holds on EVERY clean land — and since M5 (2026-09-07) it REAPS, and does not hold at all for the short chain
 
 M1 (`docs/messungen/2026-09-06-merge-prozess-robust.md` §3) pulled the hold forward from *between
 the retry rounds* to *before the first gate*, because that is where the queue actually was: 79 % of
@@ -221,17 +225,66 @@ and do not survive that:
   gate inside that hold instead of queueing for it. The variable still grants nothing on its own.
   Without this every clean land inside a suite queues behind its own runner: measured on
   2026-09-06, `./e2e-clean-review.sh` hung at `waitMerge` for its full 60 s the first time the hold
-  was pulled forward. The three wrappers that configure a gate for their server say `$$`; a pin
-  holds the pair.
+  was pulled forward. The three wrappers that configure a gate for their server hand it
+  `$_st_lock_pid` — **the holder `e2e-stage.sh` RESOLVED, never the literal `$$`**, and the
+  difference cost every code land on this box for one morning (fixed 2026-09-07, `b8b5e48`). Inside
+  the live land gate those wrappers are themselves *inherited* steps: the lock file names the LIVE
+  SERVER, so `$$` failed the server's "the lock file names this pid" test, the test server queued
+  behind the outer hold, and the land died at `waitMerge` after 60 s. Outside a hold `$_st_lock_pid`
+  *is* `$$`, so the standalone case never showed it. A pin holds the pair.
 - **A death now gives the machine back on a signal.** The `finally` is structural against every path
   *through* the code and powerless against the process being killed — and the deploy ritual on this
   box IS a kill (`tmux kill-session -t srv`, ~10×/day). While the exposure was one lost ff-retry
   that was an accepted cost; with a hold on every land, a leaked lock denies **every** land until
   some unrelated wrapper contends, so `SIGTERM`/`SIGINT`/`SIGHUP` release before exiting. A SIGKILL
-  or a crash still leaves the reapable shape, and **the server still never reaps** — that bullet
-  stands, but its cost basis has changed and is now the open question this section names rather than
-  a settled trade: measured inside a suite instance, where no wrapper ever contends for that lock, a
-  leaked hold wedged 232 server restarts' worth of lands until the run ended.
+  or a crash still leaves the reapable shape — and **since M5 the server REAPS that shape itself**,
+  which is the open question this section named being settled rather than a new idea. Measured
+  inside a suite instance, where no wrapper ever contends for that lock, a leaked hold wedged 232
+  server restarts' worth of lands until the run ended.
+
+**M5 (2026-09-07, landed as `<sha>` — MAIN: replace with the real sha after the land):
+`server.ts#suiteLockReapStale`, called from `holdSuiteLock` before every poll.** It MIRRORS
+`e2e-stage.sh`'s triage; it does not extend it, and the wrapper protocol is untouched (mkdir stays
+the claim, pid/birth stay the identity):
+
+| lock dir | classification | server |
+|---|---|---|
+| pid file empty/missing, birth file present | `stale` — a torn acquisition | reaps |
+| pid file empty/missing, no birth either | `parked` — a human took the machine off the board | **never** reaps |
+| recorded pid gone, or unreadable content | `stale` — nothing is running | reaps |
+| recorded pid alive, birth PROVABLY different | `stale` — a recycled pid | reaps |
+| recorded pid alive, birth missing / malformed / unmeasurable / equal | `held` or `unknown` | keeps |
+
+The removal re-checks the pid AND birth VALUES immediately before the `rm`, exactly as the wrapper's
+own reap does, and a reaped corpse is retaken in the same pass rather than after a poll. One
+deliberate blind spot is kept rather than corrected: an all-zero pid file reads ALIVE here, because
+`kill -0 0` addresses the caller's own process group and no wrapper would reap such a lock either —
+**reaping something the wrapper would keep is the one direction a mirror of it must never take.**
+
+*Why the §7 bullet was right and is now wrong.* It was written when a stale holder cost one lost
+retry and the next wrapper contender cleared it. Since M1 every clean land takes this lock, and on a
+quiet box **no wrapper ever contends** — so a corpse denies every land, one after another, until a
+human runs `rmdir`. Measured twice in one morning (2026-09-07,
+`docs/messungen/2026-09-06-merge-prozess-robust.md` §3 M5): pid 77910 dead with no wrapper running,
+a docs-only land polling 710 s until the owner cleared it by hand; then a lane's own green full
+chain leaving pid 19458 behind the same way. The added participant in the reap/re-acquire window is
+real and unchanged in KIND — it is bounded by the same re-check, and it is bought against a failure
+mode that stops **every** land on the box rather than one retry round. **A `waitedOut` verdict may
+from here on only mean that a LIVE holder held the machine for the whole budget.**
+
+*And the second half of M5: the docs-only short chain does not take this lock at all.* A docs-only
+candidate runs `VERIFY_PROPORTIONAL_CMD` — `bun install --frozen-lockfile && bun e2e/pins.ts`. It
+sources no `e2e-stage.sh`, boots no server, opens no socket, binds no port, and finishes in about a
+second: there is nothing in it for this mutex to serialize. Under M1 it took the hold anyway and
+paid the full queue for it — the docs-only land of 2026-09-07 04:11 records `proportional:true,
+steps:[install,pins], ms 710837`, of which 710 000 ms was that take standing behind the dead holder
+above. So the PLAN decides: `proportional` ⇒ no take, no wait, and **nothing minted into the gate
+child** (that chain has no staged step to inherit a hold). The note says it positively rather than
+by absence — `[suite mutex: NOT TAKEN — …]` — so a reader can tell it apart from a full chain that
+happened to get the lock instantly. The command is a constant and a pin holds that it names no
+`e2e-*.sh`, which is what keeps "safe to skip" mechanical rather than remembered. **Not touched:**
+the ff retry chain, which classifies a different tree (main moved under it) and asks for the mutex
+exactly as it did before M1.
 
 **Consequence for anyone reading the machine:** `ps -eo command | grep -c '^/bin/sh ./e2e-'` can now
 read **0 while the mutex is genuinely held** for a third reason — not only during the gate chain's

@@ -666,7 +666,9 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
     // takes, asked for BEFORE the gate rather than between its rounds. Both call sites pinned, so
     // deleting the first one silently restores the queue this cut removed.
     const m1Take = server.includes("gateHeld = await gateRun(() => holdSuiteLock(VERIFY_WAIT_MS));");
-    const m1Hand = server.includes("runVerify(cwd, mainSha, firstVerifyPlan, gateHoldBy, gateHeld ? gateWaitMs : 0)");
+    // `gateChildHold` since M5 (2026-09-07), not `gateHoldBy` — same hand-down, one filter in
+    // front of it (the short chain is minted nothing; see the M5 rows below).
+    const m1Hand = server.includes("runVerify(cwd, mainSha, firstVerifyPlan, gateChildHold, gateHeld ? gateWaitMs : 0)");
     const m1Retry = server.includes("let ffHeld = gateHoldBy !== null;");
     // and the machine goes back even when the process is killed rather than returned from: the
     // deploy ritual on this box IS a kill, and before M1 a leaked hold cost one retry — now it
@@ -676,6 +678,41 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
     pin("the clean land path asks for the suite mutex BEFORE the first gate, hands that hold to the gate, and gives it back on a signal as well as on every code path",
       m1Take && m1Hand && m1Retry && m1Signal,
       `take=${m1Take} handDown=${m1Hand} retryInherits=${m1Retry} signalRelease=${m1Signal}`);
+    // M5 (2026-09-07) — THE SERVER REAPS NOW, AND ONLY THE THREE WAYS THE WRAPPER DOES.
+    // Another pair with no compiler between its halves, and a nastier one than most: the shell's
+    // reap and the server's reap must agree about WHICH lock dirs may be removed, and the state
+    // they must both refuse — the pid-LESS dir, a human's manual park — is the one no suite will
+    // ever produce on its own, so nothing but this row notices if the server starts eating it.
+    // Held as the four decisions that make the mirror a mirror, each falsifiable alone; the
+    // shell's own triage and its reap-time re-check are pinned in their own rows above, so a
+    // divergence fails on whichever side moved.
+    {
+      const m5Fn = server.includes("function suiteLockReapStale(): boolean {");
+      const m5Called = server.includes("const reaped = suiteLockReapStale();");
+      // the park: a dir with a pid file is judged, a dir with NEITHER pid nor birth is not touched
+      const m5Park = server.includes('reap = hb !== "";');
+      // only a PROVEN birth mismatch is a recycled pid — missing/malformed/unmeasurable is kept
+      const m5Unknown = server.includes("reap = PROCESS_BIRTH_RE.test(stored) && current !== null && current !== stored;");
+      // and the window-narrowing the wrappers do, done here too
+      const m5Recheck = server.includes('if (readSuiteLockFile("pid") !== hp || readSuiteLockFile("birth") !== hb) return false;');
+      pin("the server reaps a dead suite-mutex holder itself, by the wrapper's own triage — a manual park (pid-less dir) is never touched, an unproven identity is kept, and the pid/birth VALUES are re-checked immediately before the rm",
+        m5Fn && m5Called && m5Park && m5Unknown && m5Recheck,
+        `fn=${m5Fn} calledFromHold=${m5Called} parkKept=${m5Park} unknownKept=${m5Unknown} recheck=${m5Recheck}`);
+      // M5's other half: THE SHORT CHAIN DOES NOT TAKE THE MACHINE. Two sides again — the take is
+      // skipped in server.ts, and the reason it is SAFE to skip is a property of the proportional
+      // COMMAND itself: it sources no suite wrapper, so there is no staged step that could need a
+      // hold handed down to it. Pinning the command keeps that argument mechanical rather than
+      // remembered: the day someone puts an `e2e-*.sh` into the short chain, this row fails
+      // instead of a docs-only land quietly running a suite beside somebody else's.
+      const shortCmd = /const VERIFY_PROPORTIONAL_CMD = '([^']+)'/.exec(server)?.[1] ?? "";
+      const m5Plan = server.includes("const gateProportional = firstVerifyPlan?.proportional === true;");
+      const m5Skip = server.includes("&& !gateProportional && !suiteLockHeldHere()");
+      const m5NoMint = server.includes("const gateChildHold = gateProportional ? null : gateHoldBy;");
+      const m5CmdIsSuiteless = shortCmd !== "" && !/e2e-[a-z0-9-]*\.sh|e2e-stage/.test(shortCmd);
+      pin("a docs-only land does not take the suite mutex at all: the short chain spawns no suite (its command names no wrapper), so the gate neither queues for the machine nor is minted a hold it has no staged step to inherit",
+        m5Plan && m5Skip && m5NoMint && m5CmdIsSuiteless,
+        `planFlag=${m5Plan} takeSkipped=${m5Skip} noMint=${m5NoMint} cmdSuiteless=${m5CmdIsSuiteless} cmd=${JSON.stringify(shortCmd)}`);
+    }
   }
   // THE FIFO SEAM (2026-09-05). The mutex used to be a race: `sleep 15` + retry `mkdir`, no order,
   // so waiting longer bought nothing — measured, slot 7's post-land audit waited 2h45m and lost

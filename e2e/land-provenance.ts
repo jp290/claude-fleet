@@ -371,14 +371,17 @@ export async function run(): Promise<void> {
     // rebased diff, this land would still read docs — so the negative half lives in the mixed case
     // above, and what this proves is that a wave changes nothing about which command is chosen.
     {
+      // CONFIRMED is enough and `activate` is deliberately not called: the sensor's second
+      // bundling criterion is that the rows carry the SAME programId, and it reads no status —
+      // activating one here would add a moving part this check has no opinion about.
       const wvProposed = (await (await post("/api/programs", {
-        title: "wave land provenance", brief: "one lane, two rows, one land" })).json()) as
-        { program?: { id?: string } };
+        title: "Wave land provenance program",
+        intent: "Two rows of one program that land together in one lane.",
+        successCriterion: "One land leaves one note, one undo record and both rows done.",
+        nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+      })).json()) as { program?: { id?: string } };
       const wvProg = wvProposed.program?.id ?? "";
-      if (wvProg) {
-        await post(`/api/programs/${wvProg}/confirm`, {});
-        await post(`/api/programs/${wvProg}/activate`, {});
-      }
+      if (wvProg) await post(`/api/programs/${wvProg}/confirm`, {});
       const wvMint = async (text: string): Promise<string> => {
         const r = (await (await post("/api/tasks", { text, queue: false, repo: REPO, programId: wvProg })).json()) as
           { task?: { id?: string } };
@@ -390,7 +393,7 @@ export async function run(): Promise<void> {
       const wvA = await wvMint("wave land one: the first half of AGENTS.md");
       const wvB = await wvMint("wave land two: the second half of AGENTS.md");
       for (const id of [wvA, wvB]) await post(`/api/tasks/${id}/files`, { files: ["AGENTS.md"] });
-      check("(w3) fixture: two rows of one active Program, both with an owner-CONFIRMED surface",
+      check("(w3) fixture: two rows of one Program, both with an owner-CONFIRMED surface",
         !!wvProg && !!wvA && !!wvB, JSON.stringify({ program: wvProg, a: wvA, b: wvB }));
 
       const wvSess = async (): Promise<{ slots: { id: number; cwd: string | null }[];

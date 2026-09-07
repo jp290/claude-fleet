@@ -1,7 +1,7 @@
 // One-gesture land, ↩ undo-land and its refusals, V2 git-note provenance, the G1 guarantees that
 // provenance survives a failed teardown or a stale verify, and the resolver↔verify repair loop.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { REPO, REPO2, ROOT, check, get, post } from "./harness";
 import { VerifyField, exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
@@ -397,19 +397,33 @@ export async function run(): Promise<void> {
         !!wvProg && !!wvA && !!wvB, JSON.stringify({ program: wvProg, a: wvA, b: wvB }));
 
       const wvSess = async (): Promise<{ slots: { id: number; cwd: string | null }[];
-        tasks: { id: string; status: string; note?: string | null }[];
-        undoLands?: Record<string, unknown[]> }> =>
+        tasks: { id: string; status: string; note?: string | null }[] }> =>
         (await (await get("/api/sessions")).json()) as {
           slots: { id: number; cwd: string | null }[];
-          tasks: { id: string; status: string; note?: string | null }[];
-          undoLands?: Record<string, unknown[]> };
-      const wvUndoTotal = async (): Promise<number> =>
-        Object.values((await wvSess()).undoLands ?? {}).reduce((n, recs) => n + recs.length, 0);
+          tasks: { id: string; status: string; note?: string | null }[] };
+      // THE UNDO STACK IS PERSISTED STATE, not poll payload: `/api/sessions` carries no `undoLands`
+      // key at all, so reading it there returned 0 before AND 0 after and the check reported "no
+      // undo record was written" for a land that had written one. A probe that could not measure
+      // must fail as ITSELF — so this returns null on an unreadable state file, and its own check
+      // below says so, rather than letting an absence read as a count.
+      const wvUndoTotal = async (): Promise<number | null> => {
+        for (let i = 0; i < 40; i++) {
+          try {
+            const st = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+              { undoLands?: Record<string, unknown[]> };
+            if (st.undoLands) return Object.values(st.undoLands).reduce((n, recs) => n + recs.length, 0);
+            return 0; // the key is absent while no land is undoable — a real zero, not an unreadable one
+          } catch { /* saveState writes tmp+rename; a read landing mid-write throws */ }
+          await Bun.sleep(100);
+        }
+        return null;
+      };
       const wvNotes = (): number => spawnSync("git", ["-C", REPO, "notes", "--ref=fleet/land", "list"])
         .stdout.toString().split("\n").filter(Boolean).length;
       const wvUndoBefore = await wvUndoTotal();
       const wvNotesBefore = wvNotes();
 
+      const wvSince1 = Date.now();
       const wvRes = await post("/api/wave/dispatch", { ids: [wvA, wvB] });
       const wvBody = (await wvRes.json()) as { ok?: boolean; slot?: number; branch?: string; error?: string;
         wave?: { ids: string[]; klasse: string } };
@@ -419,15 +433,22 @@ export async function run(): Promise<void> {
         `${wvRes.status} ${JSON.stringify(wvBody)}`);
       const wvSlot = wvBody.slot ?? 0;
       const wvCwd = wvSlot ? ((await wvSess()).slots.find((x) => x.id === wvSlot)?.cwd ?? "") : "";
-      // wait for the BRIEF, not for a clock: until it is delivered the dispatch tail can still
-      // requeue the whole wave, and a land raced against that would be measuring the race.
-      let wvBriefed = false;
-      for (let i = 0; i < 120 && wvSlot; i++) {
-        const j = (await (await get("/api/prompts?limit=50&q=WELLE")).json()) as
-          { prompts: { slot?: number; text?: string }[] };
-        if (j.prompts.some((x) => x.slot === wvSlot && (x.text ?? "").includes("EIN LAND"))) { wvBriefed = true; break; }
-        await Bun.sleep(250);
-      }
+      // WAIT FOR THE BRIEF, not for a clock: until it is delivered the dispatch tail can still
+      // requeue the whole wave, and a land raced against that would be measuring the race. Scoped
+      // by `since` for the reason e2e/programs.ts states — slot ids are recycled and this run
+      // delivers more than one wave brief, so an unscoped poll returns on the PREVIOUS wave's
+      // prompt and the wait it was supposed to perform never happens.
+      const wvWaitBrief = async (slot: number, since: number): Promise<boolean> => {
+        for (let i = 0; i < 120 && slot; i++) {
+          const j = (await (await get("/api/prompts?limit=50&q=WELLE")).json()) as
+            { prompts: { ts?: number; slot?: number; text?: string }[] };
+          if (j.prompts.some((x) => x.slot === slot && typeof x.ts === "number" && x.ts >= since
+            && (x.text ?? "").includes("EIN LAND"))) return true;
+          await Bun.sleep(250);
+        }
+        return false;
+      };
+      const wvBriefed = await wvWaitBrief(wvSlot, wvSince1);
       check("(w3) fixture: the wave brief reached the lane before anything was committed into it",
         wvBriefed && !!wvCwd, `briefed=${wvBriefed} cwd=${wvCwd || "none"}`);
 
@@ -450,9 +471,12 @@ export async function run(): Promise<void> {
         check("(w3) ONE fleet/land note for the whole wave — not one per row",
           wvNotes() === wvNotesBefore + 1 && wvNote.ok,
           `${wvNotesBefore} → ${wvNotes()} note(s), note readable=${wvNote.ok}`);
+        const wvUndoAfter = await wvUndoTotal();
+        check("(w3) probe: the undo stack was readable on BOTH sides of the land (a delta over an absence is not a measurement)",
+          wvUndoBefore !== null && wvUndoAfter !== null, `${wvUndoBefore} → ${wvUndoAfter}`);
         check("(w3) ONE undo-land record for the whole wave — the wave costs the undo stack what one land costs it",
-          (await wvUndoTotal()) === wvUndoBefore + 1,
-          `${wvUndoBefore} → ${await wvUndoTotal()} record(s)`);
+          wvUndoBefore !== null && wvUndoAfter === wvUndoBefore + 1,
+          `${wvUndoBefore} → ${wvUndoAfter} record(s)`);
         // …and the field the audit cover is built from. `proportional` is true because the ACTUAL
         // diff is docs-only, which is also true of every row in this wave — the two coincide here,
         // and the mixed/code cases above are what prove the gate reads the diff and not the class.
@@ -480,6 +504,7 @@ export async function run(): Promise<void> {
       const wvC = await wvMint("wave land three: AGENTS.md again, but the work reaches further");
       const wvD = await wvMint("wave land four: AGENTS.md once more");
       for (const id of [wvC, wvD]) await post(`/api/tasks/${id}/files`, { files: ["AGENTS.md"] });
+      const wvSince2 = Date.now();
       const wvRes2 = await post("/api/wave/dispatch", { ids: [wvC, wvD] });
       const wvBody2 = (await wvRes2.json()) as { ok?: boolean; slot?: number; error?: string;
         wave?: { ids: string[]; klasse: string } };
@@ -488,13 +513,9 @@ export async function run(): Promise<void> {
       check("(w3) fixture: a second wave, declared `docs` by the sensor exactly like the first",
         wvRes2.ok && wvBody2.wave?.klasse === "docs" && !!wvCwd2,
         `${wvRes2.status} ${JSON.stringify(wvBody2)} cwd=${wvCwd2 || "none"}`);
-      let wvBriefed2 = false;
-      for (let i = 0; i < 120 && wvSlot2; i++) {
-        const j = (await (await get("/api/prompts?limit=50&q=WELLE")).json()) as
-          { prompts: { slot?: number; text?: string }[] };
-        if (j.prompts.some((x) => x.slot === wvSlot2 && (x.text ?? "").includes("EIN LAND"))) { wvBriefed2 = true; break; }
-        await Bun.sleep(250);
-      }
+      const wvBriefed2 = await wvWaitBrief(wvSlot2, wvSince2);
+      check("(w3) fixture: the second wave's brief reached its lane before anything was committed",
+        wvBriefed2, `slot=${wvSlot2} since=${wvSince2}`);
       if (wvCwd2 && wvBriefed2) {
         await Bun.write(`${wvCwd2}/docs/wave-land-3.md`, `wave row ${wvC}\n`);
         spawnSync("git", ["-C", wvCwd2, "add", "docs/wave-land-3.md"]);

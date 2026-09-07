@@ -115,8 +115,10 @@ ff-Retry-Runde schon hat. Und die Familien aus §1.3 werden zaehlbar.
 *Done:* Eine Land-Note eines Code-Lands nach M1 traegt im `[suite mutex: …]`-Tail „0 of 3 staged
 steps blocked" bei `verify.waitMs > 0` (das Warten lag im Hold, nicht in den Stufen), und
 `audit.jsonl` traegt fuer jedes Merge-Verdikt seit M1 genau eine `merge_verdict`-Zeile.
-*Gebaut* in Lane `fleet/260906222646-5fb3` (Sha setzt die MAIN nach dem Land ein — eine Lane kann
-ihre eigene Landing-Sha nicht kennen). Eine Abweichung von der Nicht-Liste war noetig und ist
+*Gebaut* in Lane `fleet/260906222646-5fb3`, gelandet 2026-09-07 02:5x als `f388de1` + `f0bcea6` (Self-Land
+der Program-MAIN Slot 4, `verify.ok:true`, 140 s Arbeit, 0 s Schlange). **Der Done-Satz ist erst nach dem
+DEPLOY messbar:** die Land-Note dieses Lands stammt noch vom Vor-M1-Server, `audit.jsonl` traegt bis zum
+Deploy keine `merge_verdict`-Zeile — das erste Code-Land NACH dem Deploy ist die Messung. Eine Abweichung von der Nicht-Liste war noetig und ist
 gemessen: die e2e-Instanzen teilten sich bis dahin den Maschinen-Mutex `/tmp/fleet-e2e.lock` mit
 dem Wrapper, der sie startet — mit dem Hold vor dem Gate stand jeder saubere Land-Pfad in einer
 Schlange hinter seinem EIGENEN Runner (gemessen 2026-09-06: `./e2e-clean-review.sh` haengt in

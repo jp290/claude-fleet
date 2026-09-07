@@ -76,15 +76,22 @@ Ledger unabhängig geprüft (`post-land-audits.jsonl` und `lane-outcomes.jsonl`)
 gleiche Branch-Namen. Fast alle sind Timeouts. Namentlich in der Messung; die zwei jüngsten waren
 „läuft noch", nicht verloren.
 
-**(b) Neun rote Audits sind UNBEURTEILT (9,8 %) — und vier davon sind vermutlich ein echter Regress.**
-Bei einer Adjudikationslatenz von sonst Median ~5 min sind die nicht „noch nicht dran", sondern
-durchgefallen. **Vier aufeinanderfolgende Rots über zwei Tage teilen denselben Fail-Kern:**
-`D2 setup: both closing lanes reached the spent shape …` + `projection nextAction: a REVIEWABLE row of
-a promoted Program names the MAIN's OWN land door …` — 09-04 21:01 (`10ba7afd`), 09-05 13:54
-(`126a82dc`), 09-05 15:46 (`1d5efb95`), 09-05 16:21 (`cba88078`). Eine Viererserie erzeugt keine
-Basisrate von 1–3 %. Und `D2 setup` ist eine SETUP-Zeile: alles darunter ist UNGEMESSEN, nicht
-bestanden. **Das ist der wichtigste ungehobene Befund des Tages.** Adjudikationen liegen in
-`audit-adjudications.jsonl`, nicht in `audit.jsonl`.
+**(b) Neun rote Audits sind UNBEURTEILT (9,7 %, n=93) — und das ist der Befund, nicht ihr Inhalt.**
+Adjudikationslatenz sonst Median 3,7 min bei n=84 (Join auf `audit-adjudications.jsonl` über den
+Schlüssel `auditAt`; die Adjudikationen liegen NICHT in `audit.jsonl`, und ein Join aufs Ledger-Feld
+gibt 136/136 — ein Messfehler, kein Befund). Diese neun sind also nicht „noch nicht dran", sondern
+durchgefallen.
+
+> **KORREKTUR AN MIR SELBST, Slot 7 am 2026-09-07 ~16:1x:** ich hatte vier dieser Rots als
+> „vermutlich ein echter, unentdeckter Regress" geführt. Das ist ÜBERZOGEN. Der dominante Fail
+> (`projection nextAction: a REVIEWABLE row of a promoted Program …`, 20 von 33 Fehlschlägen im
+> Fenster 09-04 20:00–09-05 17:00, ausgezählt über `e2e-trail/`) IST die dokumentierte Familie
+> **§11.2o** in `docs/verify-tiering.md` — dort steht sie bereits als „KEIN Flake um eine feste Rate,
+> sondern ein REGIME-WECHSEL am 2026-09-04", 1,1 % davor gegen 37 % seither (Zahlen in `65358fef`).
+> Der zweite Fail (`D2 setup`) taucht in den Top 6 gar nicht auf — die „Viererserie mit demselben
+> Fail-Kern" trägt nicht. **Was bleibt und stimmt: die Rots dieser dokumentierten Familie hat seit
+> dem 09-04 niemand beurteilt.** Gefilt als schmale Zeile `6d7ff117` (Slot 7) mit genau einer Frage —
+> welche Regel feuert, welcher Fakt fehlt ihr — und ausdrücklich OHNE Reparaturauftrag.
 
 **(c) Die Audit-Platzierung ist die Ursache, und der Ledger trug sie die ganze Zeit.** Zwei Sensoren:
 `remote: {name, …}` (seit 08-29, `name` ausnahmslos `second-host`) und die run-id `isolated-<ts>Z-<pid>`

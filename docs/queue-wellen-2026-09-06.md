@@ -259,6 +259,13 @@ sieht auf der Zeile, was ihm die Bestätigung einbringt (die Ersparnis-Zahl aus 
 gegenüberstellt und beweist, dass nur die zweite in eine n>1-Welle gerät; `bun e2e/pins.ts` grün.
 *Kosten, offen benannt:* Das ist Owner-Arbeit je Zeile. Sie lohnt erst, wenn S1 die Ersparnis
 beziffert — deshalb steht S1 davor und nicht daneben.
+*Gebaut* 2026-09-07 in der Lane `fleet/260907121743-4336` — aber NICHT als „der bestehende
+`refine-confirm`-Pfad wird sichtbar gemacht": §7.3 unten hat gemessen, dass dieser Pfad für eine
+BESTEHENDE Zeile gar nicht existiert. Gebaut wurde stattdessen das Paar aus §7.1.3, propose/promote
+wie bei `criterion` und `refine`: `POST /api/self/tasks/:id/files-proposal` (self-token, eine Lane
+darf) parkt einen Vorschlag NEBEN der Fläche, `POST /api/tasks/:id/files` (Owner-Token) schreibt
+`{files, filesOrigin:"confirmed"}` auf dieselbe Zeile — ohne Kinder, ohne Archivierung.
+Pfad-Findings melden, sie gaten nicht; `audit.jsonl` hält fest, dass der Owner sie sehen konnte.
 
 ### S3 — „▸ start wave": ein Owner-Knopf, eine Lane, n Zeilen
 
@@ -348,6 +355,10 @@ Zeile ohne `programId` bleibt Größe 1 mit eigenem, benanntem Grund.
   Pfad `↻ refine → promote`; die **Kinder** eines Splits erben die vom Refiner gegen den Baum
   geprüften Pfade. Eine bestehende Zeile kann ihre Fläche nicht bestätigt bekommen. Das ist der
   eigentliche Inhalt von S2, nicht „der bestehende `refine-confirm`-Pfad wird sichtbar gemacht".
+  **NACHTRAG 2026-09-07:** genau so gebaut (Lane `fleet/260907121743-4336`, siehe S2 oben). Der
+  Satz „eine bestehende Zeile kann ihre Fläche nicht bestätigt bekommen" ist damit HISTORIE — er
+  beschreibt den Baum, den §7 vermaß, nicht den heutigen. `filesOrigin:"confirmed"` hat jetzt zwei
+  Schreiber: den refine-promote und die neue Owner-Tür.
 - **S3s Rückweg ist all-or-nothing und damit der falsche.** Das Done-Kriterium in §5 sagt „ein
   Abbruch lässt alle n auf `queued` zurück". Für Fall zwei und drei aus §7.2 — die Fläche reichte
   nicht, und das zeigt sich erst IN der Lane — muss die Lane sich **selbst teilen** dürfen: k von n

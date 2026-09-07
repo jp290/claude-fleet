@@ -84,7 +84,8 @@ import {
   type FleetEvent, type ClarificationRequest, type FleetReport, type FleetReportDisposition,
   type AttentionKind,
   type AttentionRequest, type TaskKind, type Task, type TaskBrief, type TaskComment,
-  type TaskAnalysis, type AnalysisBlocker, type TaskCriterion, type RefineChild, type RefineProposal,
+  type TaskAnalysis, type AnalysisBlocker, type TaskCriterion, type TaskFilesProposal,
+  type RefineChild, type RefineProposal,
   type TaskRefine, type LaneForm, type LaneRef, type SuccessionRetirement, type CodexRecoveryState,
   type Slot, type MainDirectPreflight, type MainDirectOutcome, type ProgramStatus, type Program,
   type PromotionSelfLand, type PromotionPolicy, type ProgramProfileKind, type ProgramProfile,
@@ -1377,6 +1378,8 @@ const MAX_REFINE_CHILDREN = 4; // the split cap lives HERE, not in the model's j
 // over it is a worker that ignored its contract, and that fails closed like any other (runRefineJob)
 const MAX_REFINE_FIELD = 2000; // doneCriterion/verify/reason are sentences, not documents
 const MAX_REFINE_FILES = 20;
+// display-only provenance on a parked file-surface proposal (server-derived, see filesProposalBy)
+const MAX_FILES_PROPOSAL_BY = 120;
 
 
 const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
@@ -2085,6 +2088,12 @@ interface AnalysisDigest {
 }
 type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
   & Partial<Pick<Task, "from" | "slot" | "note" | "repo" | "programId" | "files" | "filesOrigin" | "cluster">>
+  // …and the PROPOSED surface beside the confirmed one. Carried WHOLE rather than as a shape
+  // digest, unlike `refine` and `comments` beside it: `files` itself already rides this poll, so a
+  // proposal reduced to a count would be the one file list on the row a reader could not compare
+  // against the one below it — and comparing them is the entire act the confirm button ends. The
+  // list is capped at MAX_REFINE_FILES like every other declared surface here.
+  & Partial<Pick<Task, "filesProposal">>
   // A brief's timestamp is its bounded top-level generation even when no analysis exists. The
   // text stays exclusively on GET /api/tasks; every polling client can still invalidate stale full
   // data before claiming which bytes release will send.
@@ -2110,6 +2119,7 @@ function taskDigest(t: Task): TaskDigest {
     ...(view.files ? { files: view.files } : {}),
     ...(view.filesOrigin ? { filesOrigin: view.filesOrigin } : {}),
     ...(view.cluster ? { cluster: view.cluster } : {}),
+    ...(t.filesProposal ? { filesProposal: t.filesProposal } : {}),
     ...(t.brief ? { briefAt: t.brief.at } : {}),
     ...(t.analysis ? {
       analysis: {
@@ -8887,6 +8897,42 @@ const normFileList = (v: unknown): string[] | undefined => {
     .map((e) => e.trim().slice(0, 300)).slice(0, MAX_REFINE_FILES);
   return f.length ? f : undefined;
 };
+// The same shape read back off disk, where anything may have been hand-edited. A proposal that
+// cannot be read degrades to ABSENT rather than to a smaller proposal: this field sits ONE owner
+// click from `filesOrigin:"confirmed"`, so a half-parsed hand-edit must not survive as something
+// confirmable. `unknownPaths` keeps its three states — absent (never checked / index unreadable),
+// [] (checked, all tracked) and a list — because collapsing the first two would turn "not measured"
+// into a pass, which is the one direction this repo never lets a reading fall.
+const normFilesProposal = (v: unknown): TaskFilesProposal | undefined => {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const raw = v as Partial<TaskFilesProposal>;
+  const files = normFileList(raw.files);
+  if (!files) return undefined;
+  const unknownPaths = Array.isArray(raw.unknownPaths)
+    ? raw.unknownPaths.filter((e): e is string => typeof e === "string" && !!e.trim())
+      .map((e) => e.trim().slice(0, 300)).slice(0, MAX_REFINE_FILES)
+    : undefined;
+  return { files, at: Number(raw.at) || 0, by: clampStr(raw.by, MAX_FILES_PROPOSAL_BY),
+    ...(unknownPaths ? { unknownPaths } : {}) };
+};
+// The tracked-tree reading a DECLARED surface gets, computed in exactly one place because both
+// doors below must answer it the same way. `null` is "the index could not be read" and is a third
+// value on purpose — an unreadable tree that answered `[]` would say "every path is tracked", which
+// is the collapse refineValidationFor already refuses one screen above. Neither door GATES on this:
+// the owner may confirm a surface this reading flags, and the audit line records that he could see
+// it — the same bargain the refine promote strikes with its validation.
+function untrackedAmong(files: readonly string[], repoRaw: string | null): string[] | null {
+  const snapshot = repoRaw ? trackedSnapshotFor(repoRaw) : null;
+  if (!snapshot) return null;
+  return files.filter((f) => !snapshot.paths.has(f));
+}
+// WHO proposed, derived from the caller's own slot and never from its body — a provenance the
+// caller can dictate is not provenance. A lane is named by its branch (the thing a reader can
+// actually chase), any other session by its label.
+const filesProposalBy = (s: Slot): string => clampStr(
+  s.worktree ? `slot ${s.id} \u00b7 ${s.worktree.branch}` : `slot ${s.id}${s.label ? ` \u00b7 ${s.label}` : ""}`,
+  MAX_FILES_PROPOSAL_BY);
+
 // The row text the owner actually promotes, composed from the child's fields in a fixed order.
 // Deterministic on purpose: it becomes the DRAFT of a fresh row, so the analysis sweep compiles a
 // brief from it and the analyst then judges both against the repo — and a person reads it in the
@@ -21540,6 +21586,11 @@ if (existsSync(STATE_FILE)) {
           // collision check. A persisted `derived` value is recomputed, never promoted to "confirmed".
           files: t.filesOrigin === "derived" ? undefined : normFileList(t.files),
           filesOrigin: t.filesOrigin === "derived" || !normFileList(t.files) ? undefined : "confirmed",
+          // A parked PROPOSAL survives the reload as a proposal and by no path becomes the surface:
+          // it is restored into its own field, and the two lines above read `t.files`/`t.filesOrigin`
+          // alone. Malformed degrades to ABSENT — a proposal nobody can read is not a weaker
+          // proposal, and inventing one here would put a hand-edit one owner click from `confirmed`.
+          filesProposal: normFilesProposal(t.filesProposal),
           cluster: undefined, // always projected from the current repo index; never trusted off disk
           // malformed degrades to "not yet analysed", never to a "ready" pass. The predecessor
           // `eval` field is deliberately NOT migrated — its criteria were judged under a different contract.
@@ -24560,6 +24611,43 @@ Bun.serve<WSData>({
       return openAttention(s, await readJson(req));
     }
 
+    // W2 · the PROPOSE half of the file-surface pair. Deliberately open to a LANE as well as to a
+    // MAIN — the opposite scope from its four neighbours below, and for a reason that is the same
+    // rule read the other way: a lane may not fill the queue it is founded on, but the lane reading
+    // the repository IS the cheapest honest source for which files a row stands on. Proposing costs
+    // the row nothing (the surface stays exactly as it was, and the parked proposal sits BESIDE it),
+    // so the "one edge per role" bound falls on the CONFIRM, which is an owner route behind the
+    // owner token — a self token reaches it with a 401, and there is no self mirror of it.
+    // Placed ABOVE the release route's pinned region on purpose: this handler reads a body, and
+    // that pin holds "no readJson" over the source between selfTaskRelease and selfEventAck.
+    const selfTaskFilesProposal = /^\/api\/self\/tasks\/([a-z0-9]+)\/files-proposal$/.exec(url.pathname);
+    if (selfTaskFilesProposal && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      const t = tasks.find((x) => x.id === selfTaskFilesProposal[1]);
+      if (!t) return json({ error: "unknown task" }, 404);
+      if (t.kind !== "auftrag")
+        return json({ error: `${t.kind} is advisory — only an auftrag row carries a work surface to bundle by` }, 409);
+      if (t.status !== "pending" && t.status !== "queued")
+        return json({ error: `task is ${t.status} — a surface is proposed while the row is still open` }, 409);
+      const files = normFileList((await readJson(req))?.files);
+      if (!files?.length) return json({ error: "files must be a non-empty list of repo-relative paths" }, 400);
+      // the same reading the confirm door takes, taken HERE too so the owner sees the finding at
+      // the moment he decides rather than only in the reply to his own click
+      const unknownPaths = untrackedAmong(files, t.repo ?? (DISPATCH_REPO || null));
+      // ONE standing proposal per row: a second overwrites the first, exactly as a second ↻ refine
+      // run overwrites the proposal it parked. The row's own `files`/`filesOrigin` are NOT touched —
+      // that is the whole propose/promote boundary, and the audit line names who proposed.
+      t.filesProposal = { files, at: Date.now(), by: filesProposalBy(s),
+        ...(unknownPaths ? { unknownPaths } : {}) };
+      saveState();
+      audit("task_files_propose", s.id, `${t.id} ${files.length} path(s)`
+        + (unknownPaths === null ? " (tracked tree unreadable)"
+          : unknownPaths.length ? ` (untracked: ${unknownPaths.join(",")})` : ""));
+      return json({ ok: true, proposal: t.filesProposal, unknownPaths });
+    }
+
     // ACP-23 · Program-MAIN filing. Non-lane only, for the same "one edge per role" reason as its
     // two neighbours: a lane EXECUTES the row it was founded on — it does not fill the queue its
     // own MAIN releases from. Placed ABOVE the release route on purpose: that route's pin holds
@@ -26723,6 +26811,62 @@ Bun.serve<WSData>({
         + (rValidation && rValidation.verdict !== "pass"
           ? ` (validation: ${rValidation.verdict}, ${rValidation.findings.length} finding${rValidation.findings.length === 1 ? "" : "s"})` : ""));
       return json({ ok: true, tasks: kids.map(taskDigest), validation: rValidation });
+    }
+    // W2 · THE OWNER'S DOOR ONTO AN EXISTING ROW'S FILE SURFACE. Until this route there was exactly
+    // ONE writer of `filesOrigin:"confirmed"` — the refine promote directly above, which can only
+    // mint that surface on rows it is CREATING. Measured 2026-09-07 on the live queue: 0 of 48 open
+    // auftrag rows carried a confirmed surface, all 48 derived, and the land-wave sensor therefore
+    // returned 44 waves of size one, every one of them for the reason "flaeche-nur-abgeleitet",
+    // total saving 0 s. The gap was never a policy: there was no door.
+    //
+    // What this route deliberately is NOT: it mints no children, archives nothing, and touches no
+    // other field on the row — a refine SPLITS a request, this only says which files the request
+    // already there stands on. And it never promotes `derived` on its own: the paths come from the
+    // owner's body or from a proposal a person confirms, because lifting a prose reading to a fact
+    // by machine is exactly the variant the owner rejected when this door was specified.
+    const taskFiles = /^\/api\/tasks\/([a-z0-9]+)\/files$/.exec(url.pathname);
+    if (req.method === "POST" && taskFiles) {
+      const t = tasks.find((x) => x.id === taskFiles[1]);
+      if (!t) return json({ error: "unknown task" }, 404);
+      const body = await readJson(req);
+      // discarding a proposal is allowed in EVERY status and on every kind, for the same reason
+      // deleting a comment is: it removes something a producer parked, and a row it can no longer
+      // be confirmed on is precisely a row whose stale proposal should be clearable.
+      if (body?.accept === false) {
+        if (!t.filesProposal) return json({ error: "no proposed file surface on this task" }, 409);
+        const dropped = t.filesProposal;
+        t.filesProposal = undefined;
+        saveState();
+        audit("task_files_dismiss", undefined, `${t.id} \u2190 ${dropped.by}`);
+        return json({ ok: true, dismissed: true });
+      }
+      if (t.kind !== "auftrag")
+        return json({ error: `${t.kind} is advisory — only an auftrag row carries a work surface to bundle by` }, 409);
+      if (t.status !== "pending" && t.status !== "queued")
+        return json({ error: `task is ${t.status} — a surface is confirmed while the row is still open` }, 409);
+      // "the body named files" and "the body was empty" are different requests: an explicit list
+      // that normalises to nothing is a malformed request (400), not a silent fall-back onto a
+      // proposal the owner did not mention.
+      const named = body !== null && "files" in body;
+      const files = named ? normFileList(body.files) : t.filesProposal?.files;
+      if (!files?.length)
+        return json({ error: named
+          ? "files must be a non-empty list of repo-relative paths"
+          : "no file list given and no proposal is parked on this task" }, 400);
+      const repoRaw = t.repo ?? (DISPATCH_REPO || null);
+      // REPORTS, never gates — the owner may confirm a path this repo does not track (a file the
+      // work will CREATE is the ordinary case), and the audit line below records that the finding
+      // was on the screen when he did.
+      const unknownPaths = untrackedAmong(files, repoRaw);
+      const via = named ? "owner" : `proposal by ${t.filesProposal?.by ?? "unknown"}`;
+      t.files = files;
+      t.filesOrigin = "confirmed";
+      t.filesProposal = undefined;
+      saveState();
+      audit("task_files_confirm", undefined, `${t.id} ${files.length} path(s) via ${via}`
+        + (unknownPaths === null ? " (tracked tree unreadable)"
+          : unknownPaths.length ? ` (untracked: ${unknownPaths.join(",")})` : ""));
+      return json({ ok: true, files, filesOrigin: "confirmed", unknownPaths });
     }
     // the brief is the one model output the owner may overwrite — it is the exact text a lane will
     // receive. An edited brief is PINNED (`edited`; the sweep never recompiles over it) and invalidates

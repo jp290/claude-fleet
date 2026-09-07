@@ -931,6 +931,12 @@ interface Task {
   // server projection from exact path tokens. A legacy persisted `files` field is confirmed by the
   // old field's contract. The two values must never collapse: dispatch/model consumers prefer the
   // confirmed surface, and derived metadata is recomputed from the current tracked tree.
+  filesProposal?: TaskFilesProposal; // a PROPOSED surface for this row, parked BESIDE `files` and
+  // never merged into it. Written by a lane or another self-principal through
+  // POST /api/self/tasks/:id/files-proposal; only the owner's POST /api/tasks/:id/files turns one
+  // into the confirmed surface. The same propose/promote boundary as `criterion` and `refine`, and
+  // for the same reason: the producer must not confirm the surface its own work is later bundled
+  // by. Absent means nobody has proposed one — never an empty proposal.
   cluster?: TaskCluster; // read-only projection from the known file surface. Not persisted: its
   // process map and the repository index can move while the task text remains unchanged.
   status: "pending" | "queued" | "sent" | "done" | "archived";
@@ -1005,6 +1011,14 @@ interface TaskAnalysis {
 }
 type AnalysisBlocker = (typeof ANALYSIS_BLOCKERS)[number];
 interface TaskCriterion { text: string; proposedAt: number; confirmedAt: number | null }
+
+// One standing proposal per row — a second one overwrites it, exactly as a second ↻ refine run
+// overwrites the proposal it parked. `by` is a DISPLAY label the server derives from the proposing
+// slot (its label and, for a lane, its branch); it is never read off the request body, because a
+// provenance a caller can dictate is not provenance. `unknownPaths` is the tracked-tree finding at
+// PROPOSE time, kept beside the paths rather than over them: it reports, it does not gate, and an
+// empty array means "checked, all tracked" while ABSENCE means the index could not be read at all.
+interface TaskFilesProposal { files: string[]; at: number; by: string; unknownPaths?: string[] }
 
 // One compiled child. `text` is the request in its own words; the other three are what a hand-
 // written brief carries and a raw task usually does not. They are stored SEPARATELY rather than
@@ -1774,7 +1788,7 @@ export type {
   HelperCmdCheck,
   SupervisorTransitionEventPayload, SupervisorTransitionFleetEvent, FleetEvent, ClarificationStatus,
   ClarificationRequest, FleetReportDisposition, FleetReportDecision, FleetReport, AttentionKind, AttentionStatus, AttentionRequest, TaskKind,
-  Task, TaskBrief, TaskComment, TaskAnalysis, AnalysisBlocker, TaskCriterion, RefineChild,
+  Task, TaskBrief, TaskComment, TaskAnalysis, AnalysisBlocker, TaskCriterion, TaskFilesProposal, RefineChild,
   RefineProposal, TaskRefine, LaneForm, LaneRef, SuccessionRetirement, CodexRecoveryState, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
   PromotionSelfLand, PromotionPolicy, ProgramProfileKind, ProgramProfile, ProgramLineageVia,

@@ -462,6 +462,59 @@ ein `task_release`-Audit-Event, weil ein späterer beaufsichtigter ▸ start das
     tick start one first`.
 
 
+## files-proposal — `POST /api/self/tasks/:id/files-proposal`
+
+**Die VORSCHLAGS-Hälfte des Datei-Flächen-Paares (W2, 2026-09-07).** Du schlägst vor, welche
+Dateien eine BESTEHENDE `auftrag`-Zeile anfasst; bestätigen kann das nur der Owner am Board. Die
+Zeile wird dabei nicht gesplittet, nicht archiviert und in keinem anderen Feld angefasst — der
+Vorschlag liegt NEBEN der Fläche, nie darin.
+
+```
+curl -X POST http://<fleet-host>:<port>/api/self/tasks/<taskId>/files-proposal \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"files":["server.ts","src/client.ts"]}'
+```
+
+**Diese Route ist NICHT lane-only und NICHT nicht-lane-only — eine Lane darf sie, und das ist
+Absicht.** Sie ist die eine Ausnahme neben `tasks`, `release`, `land` und `attention`, und der
+Grund ist dieselbe Regel andersherum gelesen: eine Lane füllt nicht die Queue, auf die sie
+gegründet wurde, aber die Lane, die das Repository liest, ist die billigste ehrliche Quelle dafür,
+auf welchen Dateien eine Zeile steht. Vorschlagen kostet die Zeile nichts. Die „one edge per
+role"-Grenze liegt darum auf dem BESTÄTIGEN, und das ist eine Owner-Route hinter dem Owner-Token
+(`POST /api/tasks/:id/files`): ein Self-Token bekommt dort 401, und ein Self-Spiegel davon
+existiert nicht.
+
+- **Ein einziger stehender Vorschlag pro Zeile.** Ein zweiter Aufruf überschreibt den ersten,
+  genau wie ein zweiter `↻ refine`-Lauf seinen geparkten Vorschlag überschreibt.
+- **`by` kommt vom Server, nie aus dem Body**: eine Lane wird nach ihrer Branch benannt, jede
+  andere Session nach ihrem Label. Eine Provenienz, die der Aufrufer diktieren kann, ist keine.
+- **`unknownPaths` MELDET, es gated nicht.** Drei Zustände, und sie dürfen nie kollabieren:
+  fehlend = der getrackte Baum des Ziel-Repos war nicht lesbar (NICHT „alles getrackt"), `[]` =
+  geprüft und alles getrackt, eine Liste = genau diese Pfade trackt das Repo nicht. Ein Pfad, den
+  die Arbeit erst ANLEGT, ist der normale Fall dafür — deshalb lehnt die Route nicht ab.
+- Antwort bei Erfolg: `{ok:true, proposal:{files,at,by,unknownPaths?}, unknownPaths}`.
+- Ablehnungen:
+  - **unbekannter Self-Token** (401, mit der flachen 400-ms-Verzögerung wie überall).
+  - **unbekannte Zeile** (404): `unknown task`.
+  - **`kind != auftrag`** (409): `<kind> is advisory — only an auftrag row carries a work surface
+    to bundle by`.
+  - **Status weder `pending` noch `queued`** (409): `task is <status> — a surface is proposed while
+    the row is still open`.
+  - **leere oder unbrauchbare Liste** (400): `files must be a non-empty list of repo-relative
+    paths`. Gekappt wird auf `MAX_REFINE_FILES` (20) Pfade à 300 Zeichen, wie jede andere
+    deklarierte Fläche hier.
+
+Die Owner-Seite (`POST /api/tasks/:id/files`, Owner-Token) schreibt `{files, filesOrigin:
+"confirmed"}` auf dieselbe Zeile: mit leerem Body bestätigt sie den stehenden Vorschlag, mit
+`{"files":[…]}` die eigene Liste des Owners, mit `{"accept":false}` verwirft sie den Vorschlag und
+lässt die Fläche unberührt. Warum das überhaupt eine Tür braucht: `filesOrigin:"confirmed"` hatte
+bis dahin genau EINEN Schreiber (den refine-promote, der nur NEUE Kinder so stempeln kann) —
+gemessen am 2026-09-07 trugen 0 von 48 offenen `auftrag`-Zeilen `confirmed`, und der
+Landewellen-Sensor lieferte darum 44 Wellen der Größe 1, jede mit dem Grund
+`flaeche-nur-abgeleitet` und 0 s Ersparnis. Eine Fläche wird NIE automatisch von `derived` nach
+`confirmed` gehoben; das tauft eine Prosa-Vermutung in einen Fakt um.
+
+
 ## inbox — `GET /api/self/inbox`, `POST /api/self/inbox/:id/read`
 
 Der **dauerhafte Rückkanal des PROGRAMS**, nicht der einer Session. Ein Eintrag ist ein ZEIGER auf

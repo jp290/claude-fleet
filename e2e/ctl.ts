@@ -16,7 +16,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { BASE, REPO, ROOT, TOKEN, check, get, post } from "./harness";
-import { openLane, settleForMerge } from "./lane-helpers";
+import { openLane, setMergeMode, settleForMerge } from "./lane-helpers";
 import { resolveSourceTree } from "./trail-emit";
 
 interface CtlRun { code: number; out: string; err: string; json: unknown }
@@ -146,7 +146,8 @@ export async function run(): Promise<void> {
   // way lane-helpers#driveMerge does, so a refused first try never reads as a broken verb.
   const landRetry = async (slot: number, args: string[]): Promise<CtlRun> => {
     let r = await ctl(["land", String(slot), ...args]);
-    for (let i = 0; i < 8 && /"status": "blocked"|status blocked|blocked/.test(r.out) && r.code !== 0; i++) {
+    // only the IDLE-GATE refusal is retried; a conflict verdict is a result, not a flaky start
+    for (let i = 0; i < 8 && r.code !== 0 && r.out.includes("actively working right now"); i++) {
       await settleForMerge(slot);
       await Bun.sleep(800);
       r = await ctl(["land", String(slot), ...args]);
@@ -169,12 +170,14 @@ export async function run(): Promise<void> {
   check("ctl land --wait: the mainAfter it reports is the sha main now carries, and it names its source",
     lj?.mainAfter === mainAfter && typeof lj?.mainAfterFrom === "string",
     `ctl=${lj?.mainAfter?.slice(0, 12) ?? "null"} git=${mainAfter.slice(0, 12)} from=${lj?.mainAfterFrom ?? "-"}`);
-  const persisted = (stateFile().merges as Record<string, { status: string; landed: boolean; verify?: { ok: boolean | null } }>)?.[String(la.slot)];
-  check("ctl land --wait: the verdict it printed is the verdict fleet.json persisted for that slot",
-    !!persisted && (lj?.gone === true || (lj?.last?.status === persisted.status
-      && lj?.last?.landed === persisted.landed
-      && (lj?.last?.verify?.ok ?? null) === (persisted.verify?.ok ?? null))),
-    `ctl=${JSON.stringify(lj?.last ?? null).slice(0, 160)} state=${JSON.stringify(persisted ?? null).slice(0, 160)}`);
+  // …and a GREEN land leaves NO row behind: server.ts deletes mergeLast[slot] with the lane it
+  // landed. So the honest assertion is that ctl reported the terminal fact AND that the state file
+  // now has nothing for that slot — the pair is what makes `merges` a register of UNFINISHED lands
+  // rather than a land history somebody could read an empty map as contradicting.
+  const persistedAfter = (stateFile().merges as Record<string, unknown>)?.[String(la.slot)];
+  check("ctl land --wait: it names the terminal fact, and the landed slot leaves no verdict row behind",
+    (lj?.gone === true || lj?.last?.landed === true) && persistedAfter === undefined,
+    `gone=${lj?.gone} landed=${lj?.last?.landed} row=${JSON.stringify(persistedAfter ?? null)}`);
   // TIER 2 IS OFF IN THIS INSTANCE (FLEET_POSTLAND_AUDIT_CMD unset — server.ts, "DEFAULT OFF"), so
   // the audit watch CANNOT be armed. What is asserted is that the script says so instead of
   // reporting a watch it does not hold: a claimed-but-absent return path is the failure mode.
@@ -184,14 +187,39 @@ export async function run(): Promise<void> {
       && lj.auditWatch.id === undefined,
     JSON.stringify(lj?.auditWatch ?? null).slice(0, 200));
 
-  // === merges, after ============================================================================
+  // === merges, over a land that did NOT finish ==================================================
+  // The sensor is only worth anything on an UNFINISHED land, so one is produced deliberately: a
+  // lane whose rebase conflicts reaches the fake merge agent, whose default mode answers `blocked`
+  // (e2e-isolated.sh). That verdict IS persisted and the lane stays alive — the exact shape a
+  // controller must see before starting another land.
+  await setMergeMode("blocked");
+  await Bun.write(`${REPO}/ctlconflict.txt`, "main side\n");
+  spawnSync("git", ["-C", REPO, "add", "ctlconflict.txt"]);
+  spawnSync("git", ["-C", REPO, "commit", "-qm", "ctl conflict seed"]);
+  const lc = await openLane(REPO, "ctlconflict");   // same file, different content → conflict
+  await Bun.write(`${lc.cwd}/ctlconflict.txt`, "lane side\n");
+  spawnSync("git", ["-C", lc.cwd, "add", "ctlconflict.txt"]);
+  spawnSync("git", ["-C", lc.cwd, "commit", "-qm", "ctl conflict lane side"]);
+  await settleForMerge(lc.slot);
+  const blockedLand = await landRetry(lc.slot, ["--wait", "--json"]);
+  const bj = blockedLand.json as { last?: { status: string; landed: boolean } | null } | null;
+  check("ctl setup: the conflicting lane produced a persisted, NOT-landed verdict",
+    bj?.last?.landed === false && typeof bj.last.status === "string",
+    `exit ${blockedLand.code} ${JSON.stringify(bj?.last ?? null).slice(0, 200)}`);
   const mergesAfter = await ctl(["merges", "--json"]);
-  const rowsAfter = (mergesAfter.json as { rows?: { slot: number; landed: boolean; verify: string }[] })?.rows ?? [];
-  const landedRow = rowsAfter.find((r) => r.slot === la.slot);
-  check("ctl merges: the land it just drove shows up as landed with a named verify state",
-    !!landedRow && landedRow.landed === true
-      && ["ok", "FAILED", "skipped", "timedOut", "waitedOut", "none"].includes(landedRow.verify),
-    JSON.stringify(landedRow ?? null));
+  const rowsAfter = (mergesAfter.json as
+    { rows?: { slot: number; status: string; landed: boolean; hasVerify: boolean; verify: string; running: boolean | null }[] })?.rows ?? [];
+  const stAfter = stateFile().merges as Record<string, { status: string; landed: boolean; verify?: unknown }> ?? {};
+  const stuck = rowsAfter.find((r) => r.slot === lc.slot);
+  check("ctl merges: the unfinished land is a row, with the state file's own status and landed=no",
+    !!stuck && stuck.status === stAfter[String(lc.slot)]?.status && stuck.landed === false
+      && stuck.hasVerify === !!stAfter[String(lc.slot)]?.verify
+      && ["ok", "FAILED", "skipped", "timedOut", "waitedOut", "none"].includes(stuck.verify),
+    `ctl=${JSON.stringify(stuck ?? null)} state=${JSON.stringify(stAfter[String(lc.slot)] ?? null).slice(0, 160)}`);
+  check("ctl merges: a settled-but-unlanded verdict is NOT counted as in flight — exit 0, running=no",
+    mergesAfter.code === 0 && stuck?.running === false,
+    `exit ${mergesAfter.code} running=${stuck?.running}`);
+  await post(`/api/slots/${lc.slot}/kill`, {});
 
   // === watch merge + wait merge =================================================================
   const lb = await openLane(REPO, "ctlwatch");

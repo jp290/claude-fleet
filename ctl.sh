@@ -202,7 +202,11 @@ const rows = Object.entries(merges).map(([slot, m]) => ({
 // was landing died mid-flight, so the tree state is exactly what nobody knows). An `interrupted`
 // row that DOES carry a verify was at least measured and is reported, not counted as in-flight.
 const busy = rows.filter((r) => r.running === true || (r.status === "interrupted" && !r.hasVerify));
-const lines = rows.length === 0 ? ["no merge verdict is persisted for any slot"]
+// A GREEN LAND LEAVES NO ROW. server.ts deletes `mergeLast[slot]` together with the lane it landed
+// (grep `mergeLast.delete`), so this map is a register of lands that did NOT finish plus, with the
+// live half, the ones running right now — never a land history. The history is lane-outcomes.jsonl
+// and the fleet/land notes, and reading an empty map as "nothing has landed" is backwards.
+const lines = rows.length === 0 ? ["no unfinished land is persisted for any slot (a completed land leaves no row — see lane-outcomes.jsonl for the history)"]
   : rows.map((r) => `slot ${r.slot}  ${r.status}  landed=${r.landed ? "YES" : "no"}  verify=${r.verify}`
     + `  running=${r.running === null ? "UNKNOWN" : r.running ? "YES" : "no"}  ${r.branch ?? ""}`);
 if (!live) lines.push("live half UNKNOWN — no owner token, so `running` was never asked (not the same as no)");
@@ -498,9 +502,14 @@ const lane = row?.worktree ? { repo: row.worktree.repo, branch: row.worktree.bra
 
 const started = await api(`/api/slots/${slot}/merge`, { method: "POST", headers: ownerH(), body: "{}" });
 const lines = [`land slot ${slot}: ${started.status} ${JSON.stringify(started.body).slice(0, 300)}`];
-if (!started.ok || process.env.CTL_WAIT !== "1") {
-  out({ started: started.body, status: started.status, lane }, lines);
-  process.exit(started.ok ? 0 : 1);
+// A BLOCKED LAND IS A 200, and calling that a success is the mistake this line exists to stop: the
+// door answers `{"status":"blocked", …}` with HTTP 200 for an uncommitted tree, a busy pane, a
+// git op in progress or a collision. Exit 0 means "a job is running" or "it landed", nothing else.
+const startedOk = started.ok && (started.body?.running === true || started.body?.landed === true);
+if (!startedOk || process.env.CTL_WAIT !== "1") {
+  if (started.ok && !startedOk) lines.push(`  NOT STARTED — ${started.body?.status ?? "the door refused"}: nothing was merged`);
+  out({ started: started.body, status: started.status, startedOk, lane }, lines);
+  process.exit(startedOk ? 0 : 1);
 }
 // `{running:true}` is the ONLY answer that means a job was started. Every other 200 this door gives
 // is already terminal — `blocked` (the tree, the pane or a collision refused it), `already merged`,

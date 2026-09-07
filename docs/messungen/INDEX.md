@@ -1,5 +1,7 @@
 # Index der Messnotizen
 
+- F1 ist zwischen Abnahmetuer, Rueckmeldung und Herkunft aufgeteilt; F5 gehoert N2. F2/F3 und Teile von F4 brauchen begrenzte Restarbeiten, keine neue Gesamtreview und keine stillen Studio-Gates. — docs/messungen/2026-09-07-studio-hub-disposition-astra.md · bereich: studio,hub,reports,kontext,lifecycle · stand: 2026-09-07
+
 - Die Auswahl- und Quittungskette Quelle→Kontext→Empfaenger rekonstruiert sich byte-genau (3/3 Hashes, 293/293 Baumstaende); die zwei echten Luecken sitzen am Rand: die Quittung belegt Bau, nicht Zustellung. — docs/messungen/2026-09-06-astra-s2d-kontextkette.md · bereich: context,briefs,harness,ledger · stand: 2026-09-07
 
 - Zurückgehaltene Notiz, nicht Teil dieses Repos. — docs/messungen/2026-09-07-zurueckgehaltene-notiz.md · bereich: portfolio · stand: 2026-09-07

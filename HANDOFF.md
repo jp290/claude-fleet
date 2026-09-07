@@ -1,3 +1,101 @@
+# HANDOFF — Program-MAIN „Audit-Determiniertheit 2026-09" (`79036e9a58e3429578165297`, Slot 6, Opus 5): P6 gelandet (`a1f8b65`), vier Commits, §11.2q korrigiert und §11.2t registriert; 2026-09-07 12:1x, Session offen seit 2026-09-06 17:55, ctx GEMESSEN 24 %
+
+> **Dieser Abschnitt gehoert dem Program 79036e9a und ERSETZT keinen anderen darunter.** Zustand
+> ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Alles hier sind
+> Behauptungen zum Nachschlagen. Retirement auf Owner-Entscheid 12:1x (Slot fuer die Dual-Host-MAIN);
+> das Program bleibt AKTIV, die Restarbeit lebt als Zeilen.
+
+## 1. Was diese Session gelandet hat (vier Commits)
+
+| Sha | Was |
+| --- | --- |
+| `a1f8b65` | **P6** — `./e2e-postland-audit.sh` war seit `4c562e7` DETERMINISTISCH rot (zwei (J)-Checks) und **kein Gate faehrt sie**; solange sie rot war, bewies kein Lauf von ihr etwas ueber den Audit-Pfad. Land-Note: `actor{kind:"main", slot:6, task:"0f127ba2"}`, verify gruen, volle Kette, `waitMs:0`, `hubPush.ok:true`. |
+| `37d6e95` | **§11.2q-Korrektur** — die uebergebene Signatur (`send-uncertain`) war der SOLL-Zustand, nicht der Fehler. Wirkliche Signatur: der `attempts`-Zaehler springt auf 5 (Default-Cap), danach ist die Zeile `blocked` und alle Folgerunden sind `null` = Kaskade. 10/142 = 7,0 %. Familie liegt in `e2e/watch.ts`, NICHT in `e2e/programs.ts`. |
+| `fdf165c` | §6.1 traegt die gelandete Sha statt `<LANDING-SHA>` — **dreimal**, nicht zweimal wie der Lane-Report meldete. Beide zitierten Shas per `git merge-base --is-ancestor` gegengeprueft. |
+| `d4a378d` | **§11.2t** — siehe §3. |
+
+**P6s Wurzel, am Code entschieden (Lesart A):** die Eigenschaft lebt (`tickAuditPing` haelt
+`lastOutput === 0` als `unobserved` VOR `canDeliver`, gleiche Lesart in `tickBacklogNudge`,
+`tickMigrate`, beiden FleetEvent-Pfaden). Verloren war die VORBEDINGUNG: `ensureSlot` seedet den
+Stream mit `capture-pane`, BEVOR es die Pipe scharfstellt — gemessen 3 ms / 34 ms / 2 B. Die Sonde
+baut jetzt die einzige verbliebene Gestalt (Pane ohne Stream, `streams/` kurz schreibgeschuetzt).
+Kein Check geloescht oder geweitet; die Aussage ist woertlich unveraendert und wird STRENGER
+gemessen.
+
+## 2. Was der naechste Occupant ZUERST tut
+
+1. **`6488292a` releasen** (`POST /api/self/tasks/6488292a/release`). Sie ist freigabereif: Q6
+   (§11.2q) + §11.2r in EINER Lane, weil beide in `e2e/watch.ts` liegen und derselbe Klassenfehler
+   sind. Zwei Commits, einer je Familie.
+2. **`6334dd01` IST TOT und darf nie dispatcht werden** — alter Brief, verlangt fuenf lokale
+   Vollsuite-Laeufe und VERBIETET den Suite-Offer. Es gibt keine Self-Tuer zum Loeschen oder
+   Editieren einer Zeile; nur der Owner/Controller kann sie wegraeumen. `6488292a` ersetzt sie.
+3. Danach `aa3fd660` (Suite-Schnitt A), dann `5cd2d1b9` (Schnitt B, dessen Brief vor der Freigabe
+   lesen — `fleet-e2e.ts` behauptet selbst, die Modul-ORDNUNG sei tragend).
+
+**Fuer den Q6-Brief nachgeprueft** (am Code, nicht aus der Doc): `e2e/watch.ts:3775-3778` ist eine
+Konjunktion aus DREI Teilen, deren `detail` nur das Id-Paar druckt, und der dritte Konjunkt zaehlt
+den GESAMTEN armed-Bestand des Slots. `e2e/watch.ts:4300` (`delete the spent transport Watch`)
+uebergibt `check()` **kein detail** und ist aus dem Register grundsaetzlich unattribuierbar. Die
+beiden liegen ~525 Zeilen auseinander — die Doc-Lesung „Paar/Folgefehler" ist schwaecher, als sie
+sich liest.
+
+## 3. Das Rot, das noch offen steht — und warum es NICHT adjudiziert ist
+
+Der Post-Land-Audit zu `a1f8b65` ist **rot**: `ran 3785 / failed 1`, `ms 2146177` (echter Lauf, kein
+Null-Check-Rot). Der eine Fehlschlag ist `a dead explicitly-bound slot heals through exactly one
+exact-id Codex resume` (`e2e/restart.ts`). **Basisrate 0 Fails auf 395 Laeufe — erste Sichtung
+ueberhaupt**, deshalb als `§11.2t` ausdruecklich als SICHTUNG, nicht als Familie registriert: 1/396
+trennt einen frischen Regress nicht von einem seltenen Flake.
+
+**Dem Land gehoert es strukturell nicht** (`a1f8b65` = postland-Harness + Doc; der Check prueft
+`tickCodexRecovery`). `f388de1` (M1) ist der einzige Server-Anfasser des Tages und der
+naechstliegende Kandidat — **ungeprueft**.
+
+**Der teurere Befund ist das Instrument: der Beleg war weg.** Keine Trail-Datei fuer die Run-Id des
+Audits (`isolated-20260907T024245Z-1907687`), die aufbewahrte Instanz
+(`/tmp/fleet-e2e-instance-1905862`) existiert nicht mehr, und die Ledger-Zeile traegt `fails` mit dem
+NAMEN, aber kein `detail`. Ein rotes Audit kann heute also ohne rekonstruierbaren Beleg ankommen —
+das ist die Owner-Frage („ein rotes Audit hat keinen Signalwert") in einer bisher unbenannten Form.
+Die Gegenprobe steht im Abschnitt: dieser Check UEBERGIBT ein `detail`, die zweite Sichtung ist also
+attribuierbar, wenn jemand die Trail-Zeile sichert.
+
+## 4. Kriterium (b) ist ersetzt — Provenienz ausdruecklich
+
+Laut Controller Slot 10 (Owner-Entscheid, **Attention `87e55422`**) ist Kriterium (b) ersetzt durch:
+**«je Familie 0 Fails auf allen Baeumen mit dem Fix, ≥10 Laeufe»**. **Ich habe diese Attention NICHT
+gesehen** — `GET /api/self/attention` dieses Programs fuehrt genau EINE Zeile (`4a4eb5c3`, answered).
+Also: als Vorgabe uebernehmen, aber vor dem Bauen einer Beweiskette am Original gegenlesen.
+
+Die alte Rate bleibt als Kontext ableitbar (nicht aufschreiben, `post-land-audits.jsonl` rechnen):
+lokal rot ohne helper 09-05 79 % · 09-06 23 % · 09-07 (Teiltag) niedrig. **`unknown` ist nie ein
+Pass** — 09-02 trug 10 unknowns auf 24.
+
+## 5. Drei Mechanik-Lehren dieser Session (jede hat Zeit gekostet)
+
+- **Der Progress-Guard ist enger, als er wirkt — und meine Attention hat ihn zu breit gefasst.**
+  `server.ts:7369-7402` verweigert NUR einen literal unveraenderten Retry (bewusst kein Zaehler;
+  Owner-Policy 2026-08-23 = Fortschritts-BUDGET). Der Kandidat ist die **HEAD der Lane**, gelesen
+  BEVOR `mergeJob` rebast — ein bewegtes main aendert ihn nicht. Die ehrliche Loesung bei einem Rot,
+  das der MASCHINE gehoert, ist deshalb **die Lane auf main rebasen** (echte Integrationsarbeit,
+  kein Fake-Commit): `ed46df50 → a1f8b65`, behind 0, Diff unveraendert, Guard offen.
+- **Ein `{kind:"merge"}`-Watch ist level-getriggert und SPIELT EINEN TERMINALFAKT NACH.** Mein Watch
+  lieferte das Rot von 04:24 ein zweites Mal; wer das als frisch liest, zaehlt zwei gescheiterte
+  Lands, wo einer war. Gegenprobe: `at`/`candidateSha` in `fleet.json#merges` vergleichen.
+- **Ein `nohup … &`-Hintergrundlauf meldet den Exit der WRAPPER-Shell, nicht den der Suite** — und
+  ein Marker-Watcher trifft bei `e2e-clean-review.sh` das ZWISCHEN-`ALL PASS` der ersten Phase
+  (`gate`, dann `shadow`). Warte auf den Exit der notierten PID, nicht auf einen Marker.
+- **Die Attention-Route** nimmt max. **2000 Zeichen** und verlangt `kind` ∈
+  `decision|blocked|review-ready`. Beides steht nicht in `docs/self-api.md` §attention.
+
+## 6. Was mit dieser Session stirbt
+
+Nichts Ungeerntetes: Lane-Report von `0f127ba2` ist geerntet und gelandet, alle Events acked, keine
+Autos, keine armed Watches mit offenem Ziel (`c38e9bdd` und `d0524971` haben beide gefeuert).
+Attention `4a4eb5c3` ist `answered` und braucht nichts mehr.
+
+---
+---
 # HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 7, Opus 5): vier Lands, drei davon mit `actor{kind:"main"}` — Kriterium (d) ist von null auf drei; 2026-09-07 12:0x, ctx GEMESSEN 42,5 %
 
 > Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Alles hier

@@ -7396,13 +7396,56 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
   // refusal. Under `guarded` the exclusion does NOT apply: there the confirm IS the act, so once it
   // has been spent on these bytes an identical call really is a retry with nothing new, and the
   // guard is the right answer.
+  // …and ONE more exclusion, measured on the live fleet 2026-09-06: A GATE THAT NEVER MEASURED THE
+  // TREE IS NOT AN ANSWER ABOUT IT. The land of `c3604ce3` came back `resolved, landed:false` with
+  // `verify {ok:null, waitedOut:true, ms:2782909, waitMs:2656000}` — 44 of 46 minutes queued behind
+  // the suite mutex, then killed. The next call was refused as no-progress, and the refusal was
+  // structurally permanent: the lane was finished and clean, so the tree could never move again,
+  // and main moving does not open this guard either (`4761020`). A clean rebase whose gate was
+  // waited out was a DEAD END on this rung, for a row whose landing the owner had delegated.
+  // The guard's own premise names the defect: "re-running the same gate over the same bytes cannot
+  // produce a different answer". For a killed clock that is FALSE — the gate never produced an
+  // answer at all, so the second run does not repeat one, it makes the first. Both kills are that
+  // same non-measurement in runVerify's own words (`waitedOut` — "says nothing whatever about the
+  // tree"; `timedOut` — "this is not a verdict: nothing was measured"), so both are excluded, and
+  // for the same reason rather than by two rules. A SKIP is deliberately NOT excluded: it is the
+  // command's own deterministic decision about these bytes (`exit 42` outside the fleet repo), and
+  // identical bytes skip identically — there the premise holds.
+  // The widening is ONE dimension and nothing else: `ok:false` (a measured red) and a green verdict
+  // that did not land are refused exactly as before, and a verdict holding an unreviewed
+  // resolution keeps whatever answer it had — that refusal is about lines nobody has read, which is
+  // untouched by whether the gate ran.
+  const lastVerify = pending?.verify ?? null;
+  const unmeasuredGate = lastVerify !== null && lastVerify.ok === null;
+  const killedGate = unmeasuredGate
+    && (lastVerify.waitedOut === true || lastVerify.timedOut === true);
   const unchangedRetry = pending !== null && pending.landed !== true
     && pending.candidateSha === candidate && !resolvedCandidate
-    && !(holdsResolution && !guardedRung);
-  if (unchangedRetry)
-    return json({ error: `no progress since the last verdict — repair or escalate: ${pending.status} on the same candidate ${candidate.slice(0, 8)}, and nothing has been recorded since`,
-      candidate, last: { status: pending.status, at: pending.at,
-        verify: pending.verify ? { ok: pending.verify.ok } : null } }, 409);
+    && !(holdsResolution && !guardedRung)
+    && !(killedGate && !holdsResolution);
+  if (unchangedRetry) {
+    // WHAT THE REFUSAL SAYS is decided by the same fact, and it is decided here rather than in the
+    // guard's condition because the two questions differ: whether to refuse, and what the caller is
+    // being sent to do. "Repair or escalate" is the right instruction for a verdict that MEASURED
+    // this tree and rejected it. It is a lie about one that never measured it — there is no defect
+    // to fix and nothing has stalled, so an unmeasured verdict names its own state instead of
+    // sending a MAIN to hunt a fault in a tree no gate ever looked at.
+    const gate = !unmeasuredGate ? "measured"
+      : lastVerify.waitedOut === true ? "never-started"
+      : lastVerify.timedOut === true ? "timed-out" : "skipped";
+    const why = gate === "never-started"
+      ? "NEVER STARTED — it was queued behind the suite mutex for its whole wait budget and was killed there"
+      : gate === "timed-out"
+        ? "was KILLED mid-run at the work budget"
+        : "DECLINED to measure this tree — a self-declared skip, which is never green";
+    return json({ error: unmeasuredGate
+        ? `no progress since the last verdict, and that verdict's gate ${why}: ${pending.status} on the same candidate ${candidate.slice(0, 8)}, verify ok:null, and nothing has been recorded since — nothing about this tree was ever measured, so there is no defect here to fix`
+        : `no progress since the last verdict — repair or escalate: ${pending.status} on the same candidate ${candidate.slice(0, 8)}, and nothing has been recorded since`,
+      candidate, gate, last: { status: pending.status, at: pending.at,
+        verify: lastVerify ? { ok: lastVerify.ok,
+          ...(lastVerify.waitedOut ? { waitedOut: true as const } : {}),
+          ...(lastVerify.timedOut ? { timedOut: true as const } : {}) } : null } }, 409);
+  }
   // (11) THE LANE MUST LOOK DONE. `done-looking` and nothing weaker: host-commit-looking is the
   // disjoint predicate for an uncommitted tree, and there is nothing there to fast-forward. This is
   // a server predicate over facts, not a claim that the work is good — the MAIN supplies that

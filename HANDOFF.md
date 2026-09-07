@@ -280,7 +280,7 @@ ein Land wirklich rettet — die Land-Note führt `ffRounds` seit `d120ca4`. **U
 jetzt in jede Land-Auswertung:** `ffRounds == LAND_FF_RETRY_ROUNDS` heißt „an der Grenze gelandet",
 nicht „sauber gelandet", und nur die Note sagt es — am Verdikt `merged/landed:true` ist es NICHT
 sichtbar.
-# HANDOFF — Program-MAIN Land-Pipeline 2026-09 (`233e1c2b7eaca3850decf332`, Slot 8, Fable 5.1): W1 GELANDET + Audit gruen, W2 in Flug, W3/M2/N2 offen; 2026-09-07 15:5x
+# HANDOFF — Program-MAIN Land-Pipeline 2026-09 (`233e1c2b7eaca3850decf332`, Slot 8, Fable 5.1): W1 `01c3b35` + W2 `974ea00` GELANDET (Gates und W1-Audit gruen), W3 in Flug, M2/N2 offen; 2026-09-07 16:1x
 
 > **Dieser Abschnitt ERSETZT die aelteren Land-Pipeline-Abschnitte darunter.** Zustand ableiten:
 > `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Alles hier sind Behauptungen zum
@@ -288,27 +288,33 @@ sichtbar.
 
 ## 0. DEIN ERSTER ZUG
 
-1. **W2 `0f5019ac` laeuft auf Slot 4** (Branch `fleet/260907121743-4336`, Commit `5caf6a2`, Baum
-   sauber, ahead 1). Sie ist `done-looking`, aber NICHT fertig: sie haelt ihren Report zurueck, bis
-   ihr Fern-Suite-Verdikt da ist (Offer `7e0b9362` auf `5caf6a2`, geclaimt von `secondhostlinux1`).
-   Ihr erster Offer auf dem Vor-Amend-Commit `5b9860a` kam ROT zurueck mit EINEM Fail von 3861
-   (`§1 the pre-auth route set equals the reviewed allowlist`), den sie in `e2e/security.ts`
-   geschlossen und in den Commit amendiert hat; alle W2-Checks waren schon dort gruen (gemessen vom
-   Controller Slot 1, 2026-09-07 15:0x).
-2. **VOR dem Land von W2:** main ist ihr ~10 Commits voraus, vier davon fassen ihre Dateien an
-   (`984a4b3` in `e2e/`, `652d872`/`064b455`/`d120ca4` am Lane-Deckel je Repo in `server.ts` +
-   `e2e/tasks.ts`). `merge-tree` sagt exit 0, also kein Textkonflikt — aber das Fern-Gruen beweist
-   IHREN Baum, nicht den rebasierten. Der Land-Gate misst den rebasierten neu; dort kann es kippen.
-3. **Danach W3 `05611418`** (setzt W1 UND W2 voraus), dann M2 `64860da8`, dann N2 `f98facad`.
-   Start per Hand-Knopf mit Tripel, nicht per `release`: die W-Zeilen tragen keinen `Task.spawn`.
-   `POST /api/tasks/<id>/dispatch` Body `{"harness":"claude","model":"claude-opus-5[1m]","effort":"high"}`
-   (Owner-Token aus `fleet.json`). Der Knopf prueft weder Deckel noch Quiet Hours: nur druecken,
-   wenn ein Slot frei ist und keine Lane dieses Programs laeuft. **Max. EINE Lane gleichzeitig**,
-   solange `FLEET_DISPATCH_MAX_LANES=1`.
-4. **Watches: `idleSec:0`, immer.** Watch `5fe54020` feuerte 14:38:20 und erzeugte Event
-   `795dbb1e`, das `send-uncertain` blieb — in meine Pane kam nie etwas. Danach standen alle fuenf
-   Watches auf `armed:false`. Neu armiert ist `48d8ac3c` (lane, Slot 4). Nach jedem Feuern ODER
-   Server-Neustart pruefen: `GET /api/self` zeigt `armed`.
+1. **W3 `05611418` LAEUFT auf Slot 4** (Branch `fleet/260907140524-b010`, Opus 5 high, Lane-Watch
+   `27ef9ec2` mit `idleSec:0`). Letzte Wellen-Zeile; danach M2 `64860da8`, dann N2 `f98facad` —
+   beide Vorbedingungen am Baum geprueft (M1 `f388de1`; N1 `24cd54e`+`189f815` sind Ancestor von
+   main). W3s Report muss EINEN Absatz dazu tragen, was der Knopf dem Owner zeigt, bevor er n
+   Zeilen in eine Lane gibt: dort loest sich der Einwand von Program `eec69528` auf (§2) oder
+   bleibt sichtbar offen.
+2. **NIMM `ffRounds` IN DIE LAND-AUSWERTUNG AUF** (Controller-Befund, von mir am Baum
+   nachgemessen): die Note von `974ea00` traegt `ffRounds: 2`, den VOLLEN Retry-Vorrat
+   (`server.ts#LAND_FF_RETRY_ROUNDS`, Default 2). Zwei Commits legten sich unter das laufende Land
+   (`9942225`, `f824657`); ein dritter haette es nach voll gruenem Gate an `ff-lost` getoetet. Die
+   Notes von `01c3b35` und `94a8840` tragen KEIN `ffRounds` — Absenz heisst „der erste Versuch
+   entschied". **Am Verdikt `merged`/`landed:true` ist das NICHT sichtbar, nur die Note sagt es.**
+   Jede Runde faehrt den Gate NEU, das gruene Verdikt gilt also dem zuletzt rebasierten Baum.
+3. **Start immer per Hand-Knopf mit Tripel, nie per `release`:** die W-Zeilen tragen keinen
+   `Task.spawn`, ein `release` gaebe der Lane `FLEET_MODEL` ohne `--effort`.
+   `POST /api/tasks/<id>/dispatch` Body
+   `{"harness":"claude","model":"claude-opus-5[1m]","effort":"high"}` (Owner-Token aus
+   `fleet.json`). Der Knopf prueft weder Deckel noch Quiet Hours: nur druecken, wenn ein Slot frei
+   ist und keine Lane dieses Programs laeuft. **Max. EINE Lane gleichzeitig**, solange
+   `FLEET_DISPATCH_MAX_LANES=1`.
+4. **Watches: `idleSec:0`, immer — und nach jedem Feuern neu armen.** Watch `5fe54020` feuerte
+   14:38:20 und erzeugte Event `795dbb1e`, das `send-uncertain` blieb; in meine Pane kam nie etwas,
+   und danach standen alle fuenf Watches auf `armed:false`. Ich habe von W2s Fertigwerden nur
+   erfahren, weil der Controller es von Hand brachte. `GET /api/self` zeigt `armed`.
+5. **Ein Server-Neustart laesst laufende `curl`s LEER zurueckkommen** — das sieht wie eine tote
+   Route aus und ist keine. Einmal wiederholen, bevor du etwas anderes vermutest (Deploy
+   `c3274fdd`, 15:11).
 
 ## 1. Program-Zeilen (Ids aus `fleet.json`)
 
@@ -320,8 +326,8 @@ sichtbar.
 | N1 Notizen beim Dispatch | `3af11665` | GELANDET `24cd54e`+`189f815` | Audit `unknown` (Timeout), mitgemessen im M3-Audit |
 | M3 Vorflugpruefung dirty-main | `283f625f` | GELANDET `6c70f01`+`79e1c36`+`94a8840`, **Audit gruen 3832/0, 2262 s**, Deploy `f6a69ac5` LIVE | |
 | **W1 programId-Schnitt** | `e0113460` | **GELANDET `01c3b35`**, Gate gruen 143 s Arbeit / 0 s Schlange, **Audit gruen 3835/0, 2559 s** | |
-| W2 Bestaetigungstuer Flaeche | `0f5019ac` | **sent**, Slot 4, `5caf6a2` | §0.1 |
-| W3 „▸ start wave" | `05611418` | pending | nach W1+W2 |
+| **W2 Bestaetigungstuer Flaeche** | `0f5019ac` | **GELANDET `974ea00`**, Gate gruen 139 s / 0 s, `ffRounds: 2`, Audit laeuft (Watch `55c77205`) | Fern-Suite 3862/0 auf `5caf6a2` |
+| W3 „▸ start wave" | `05611418` | **sent**, Slot 4, `fleet/260907140524-b010` | letzte Wellen-Zeile |
 | M2 `waitedOut` als Wiedervorlage | `64860da8` | pending | nach W3 |
 | N2 Notiz-Lebenszyklus | `f98facad` | pending | **startbar** (N1 auf main, geprueft), aber nach W3 |
 | M4 / N3 unter der Schnittlinie | `4aeeec19` / `f7493755` | notiz | Vorschlaege |

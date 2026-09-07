@@ -1,3 +1,136 @@
+# HANDOFF — 🎛 Fleet Controller (Slot 6, Opus 5 high — der Regelbuch-VERSUCH) → Nachfolgerin: DEIN ERSTER AUFTRAG IST EIN ÜBERBLICK UND EIN AUFRÄUMEN, nicht eine Kette. Sechs Panes vermessen, zwei systemische Löcher benannt, Wellenmodus geklärt und gefilet; 2026-09-07 ~14:4x, ctx ~36 % (gemessen)
+
+> Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/attention`, Board. Alles hier sind
+> Behauptungen zum Nachschlagen. Die Owner-Delegation gilt fort: Lands nach `decision.accepted`,
+> Deploy über Verb 2, Reaps, Owner-Entscheide weiterreichen; keine eigene Grabung.
+> **Zum Modellversuch:** ich bin die erste Controller-Schicht auf Opus 5 high. Kriterium war „gleiche
+> Zahl Lands/Reaps ohne zusätzliche Owner-Attentions, HANDOFF in gleicher Dichte". Meine Bilanz steht
+> in §4 — mit den Fehlern, nicht nur den Lands. Der Owner hat den Versuch nicht abgebrochen.
+
+## 0. DEIN AUFTRAG VOM OWNER (14:4x, sinngemäß): „ich hoffe dass die neue Session sich auch einmal einen Überblick verschafft — und ggf. Slots & Sessions schließt"
+
+Das ist **kein** Nebensatz. Fang damit an, nicht mit der Kette in §2.
+
+**Der Überblick, den ich heute gebaut habe — bau ihn nicht neu, prüfe ihn nach.** Ich habe fünf
+parallele Opus-Lese-Agenten auf die Panes gesetzt (Slots 3, 7, 9, 10, 11+12), je mit vier
+Bedingungen: Dauerhaftigkeit · stirbt still etwas mit dem Occupant · ist die offene Arbeit
+wiederaufnehmbar · ist etwas in Flug. Ergebnis, Stand 14:4x:
+
+| Slot | Urteil | Der eine entscheidende Fakt |
+|---|---|---|
+| 3 Codebase-Review (Astra, ctx 64,7 %) | **SUCCEED, aber erst nach Verstetigung** | Zielregister `docs/messungen/2026-09-review-aussen-nach-innen.md` existiert NICHT auf main; kein HANDOFF-Abschnitt in 2711 Zeilen. Auflage `82ae9cc4` gefilet — **prüfe, ob sie sie ausgeführt hat** |
+| 7 Fleet-Betrieb (Opus, 44,9 %) | **SUCCEED** — Nudge ist raus | Retire kappt die Report-Adresse der lebenden Lane auf Slot 14 |
+| 9 Fleet-Architektur (Astra, **68,2 %**) | **KEEP**, aber bald fällig | Abnahme-Instanz für P1/P2/P3; P2-Abnahme `86936ddc` seit 11:56 offen; 0 Commits, kein Handoff |
+| 10 „analyse" | **KEEP — das ist der OWNER SELBST** | Von Hand geöffnet 12:49:44, kein Gründungsbrief, `model:null`; hält eine unbeantwortete Frage an ihn. **NIE schließen** |
+| 11 P1 (Astra, **75,1 %**) | **KEEP bis Publikation abgenommen** | Retire macht die Abnahme DAUERHAFT unmöglich (§1 M1) |
+| 12 P2 (Astra, ctx unmessbar) | **KEEP**, dazu ein Extra-Risiko | `sessionId: null` bei `codexRecoveryState: "ambiguous"` — `decideFleetReport` gated sessionId, `clarificationReceiverFor` nicht: bindet codex später eine Session, fällt die Abnahme auf 409. Das ist P2s eigener Defekt D2 |
+| 8 Land-Pipeline (Opus, 15,9 %) | **KEEP** | fährt W1; eine Stunde alt |
+
+**Was du daran tun sollst:** Slot 11 und 12 werden schließbar, **sobald ihre Publikationen
+angenommen sind** — `34c0d050` läuft gerade auf Slot 13, `180d3c92` steht `queued`. Fahr sie
+zu Ende, dann sind das zwei Slots. Slot 3 und 7 sollten inzwischen succeeded haben; wenn nicht,
+nachfassen. **Slot 10 fasst du nicht an.**
+
+## 1. DIE ZWEI SYSTEMISCHEN LÖCHER — das ist die eigentliche Ausbeute des Tages
+
+**M1 — es gibt keine Owner-Tür für die Report-Abnahme, und das ist der Grund, warum diese Flotte
+Panes ansammelt.** `server.ts#clarificationReceiverFor` löst den Empfänger eines Lane-Reports aus dem
+LEBENDEN Occupant von `program.main` auf; `decideFleetReport` vergleicht das volle Tripel
+{slot, openedAt, sessionId}; die einzige Route ist `POST /api/self/fleet-report/:id/(accept|reject)`
+— **self-only**. Eine MAIN mit offener Lane ist damit an ihren Stuhl genagelt: schließt du sie, fällt
+ihr eigener Report auf NO_RECEIVER_EVIDENCE und **niemand darf ihn je entscheiden**. Nicht schwer —
+unmöglich. Gefilet als **`89279f1f`** (Program f170dc46) mit vier harten Done-Kriterien.
+
+**M2 — die Arbeit liegt in `/tmp`.** P1s Spec (412 Z.) und P2s Vertrag (514 Z.), beide sha256 exakt
+wie zitiert, lagen `-rw-------` unter `/tmp` statt im Repo. Slot 3s C0–C5-Plan (16 690 B): nur C0 ist
+gefilet, **C1–C5 existieren nirgends sonst**. **Fleetweit hängen 14 Queue-Zeilen an
+`/tmp/astra-*`-Pfaden** — nach einem Reboot sind das Zeilen ohne Inhalt.
+
+Zwei weitere, kleiner aber real: **Geisterbindungen** (`66499a03`, `cd110019`, `b2aa5b45`,
+`f99e9354` zeigen auf tote Occupants — sie sehen aktiv aus, können nichts empfangen, und haben mich
+heute zweimal in die Irre geführt; Owner-Entscheid: als Zeile filen, nicht von Hand reparieren) und
+**der Send-Kanal** (`POST /send` pastet ohne Clearing; einmal `acceptance: not-observed`, „composer
+still holds 24 chars after 3000ms"; an einer zweiten Pane erreichten vier Tastensequenzen den
+Composer nicht).
+
+**Der Owner hat daraus eine Zeile bestellt: `012fe6b9`** — eine GLM-Lane (`pi-zai` / `glm-5.3` /
+high), die **keinen Report** schreibt, sondern eine gerankte, kostenbezifferte **Schnittliste**
+main-direkt nach `docs/`, höchstens 8 Posten, jeder mit Done-Kriterium. Sie bekommt M1–M4 als
+EINGABE, damit sie nicht die Codebase neu entdeckt. **Vor dem Dispatch lesen:** es ist KEIN Fleet-Lauf
+auf `pi-zai` belegt; die Schlüsseldatei ist 49 B und passiert nur den `[ -s ]`-Guard. Nach dem
+Dispatch die **Pane ansehen** — bei Fehlschlag fällt der Slot in eine nackte Shell, in der ein Brief
+als Kommando liefe.
+
+## 2. Kette in Flug (Stand 14:4x, am Board gemessen)
+
+- **Wellenmodus** (Owner-Tagesarbeit): W1 `e0113460` läuft auf Slot 4. W2 `0f5019ac` und W3
+  `05611418` pending in 233e1c2b (Slot 8, jetzt **Opus 5 high** — Modellwechsel in place, beide
+  Hälften verifiziert). Reihenfolge: W1/W2 unabhängig, **W3 setzt beide voraus**. Slot 8 landet
+  selbst (`green-only`), **du deployst**.
+- **P1-Publikation `34c0d050`** läuft auf Slot 13 (`fleet/260907114304-2109`); Commit `d05244e5`
+  gemeldet. Danach **`180d3c92`** (P2) dispatchen — das macht Slot 11 und 12 schließbar.
+- **`779eb456`** (Lane-Deckel je Repo) steht weiter `sent` auf Slot 14 und wartet auf ein
+  Helfer-Suite-Verdikt. Landet sie, steigt der Deckel je Repo — **das löst die Serialisierung**, an
+  der heute fast alles hing.
+- **Biber M1 ist NICHT akzeptiert**: das Quellenaudit fand 31 ungedeckte/widerlegte Gruppen und
+  6 Prüflücken. Korrektur `0610f3a5` läuft auf Slot 5. Danach Nachprüfung auf `glm-5.3/high` —
+  **`medium` gibt es dort nicht** (thinkingLevelMap: nur low/high/max).
+- **P3** (Slot 15, Fable): fünf Astra-Abnahmen, alle REJECT (19→13→14→12→10), kein ACCEPT. Zeile
+  `6b61a7bf` (Opus high) fährt max. 3 weitere Runden und stoppt dann mit `needs-main`. **Offene
+  Owner-Frage von P3:** was passiert, wenn die Lane ohne ACCEPT endet.
+- **Deploy `f6a69ac5` grün**, M3 live (`bootHead = c45ebebc`). `codeBehind:false` beim Schreiben.
+
+## 3. Owner-Entscheide dieser Schicht (wörtlich/sinngemäß, damit niemand sie neu stellt)
+
+- **Wellenmodus = Landewelle S2+S3**, nicht die Parallelwelle. · **`programId` ist das zweite
+  Bündel-Kriterium** neben der Datei-Fläche. · **S2 bekommt eine NEUE Tür** (Lane schlägt Fläche vor,
+  Owner bestätigt am Board) — ausdrücklich NICHT auf `refine` aufsatteln und NICHT `derived →
+  confirmed` automatisch heben.
+- **F2 undo-land** darf auf den eigenen Hub zurückspiegeln, **mit `--force-with-lease`**.
+- **F3 Deploy** („sowas geht auf jeden Fall nicht"): Preflight **409 bei schmutzigem Tree ODER Tip
+  ohne fleet/land-Note**. Beide liegen als `notiz` (`59ffeda0`, `4fc1f438`), **bewusst nicht als
+  auftrag** — die P3-Analyse dahinter hat fünf REJECT-Runden und kein ACCEPT.
+- **Slot 8:** Modellwechsel in place statt Succession. **Geisterbindungen:** als Zeile filen.
+- **GLM-Einsatz:** Schnittliste statt Report, main-direkt.
+- **Meine Einschätzung zur Modellpolitik, vom Owner nicht widersprochen:** die Regel „Fable für alle
+  Orchestratoren" war eine **Limit-Reaktion** (80 % des Fable-Limits bei 13 parallelen Fable-Sessions),
+  kein Fähigkeitsurteil. Heute laufen 2 Fable-Sessions. Eine selbst landende MAIN gräbt und gehört auf
+  die Opus-Seite der eigenen Trennlinie der Politik. **Eine Umformulierung des Regelbuch-Fragments
+  („Fable, solange Fable-Limitdruck gemessen ist") ist vorbereitet, aber NICHT promoviert** — das ist
+  ein Owner-Akt. Mein Argument hat eine benannte Lücke: ich habe **keinen Sensor für den
+  Opus-Verbrauch**, die Aussage ist nur an der Session-Zahl gemessen.
+
+## 4. Meine Fehler dieser Schicht — lies die, nicht die Lands
+
+- **Ich habe einen Watcher auf `main` gelegt und dann selbst auf `main` committet.** Er fing meinen
+  eigenen Commit. Ein Watcher auf ein Prädikat, das du selbst auslöst, ist kein Watcher.
+- **Ich habe Slot 3s Kanal-Auflage beim ersten Gebrauch gebrochen.** Ihr Plan sagt „Controller-Inbox/
+  Notizroute verwenden; keine tmux-Injection" — ich habe per `POST /send` in ihre Pane gepastet.
+  Korrigiert über Notiz `e229aa2f`. **Merke: die „Controller-Inbox" gibt es nicht** —
+  `/api/self/inbox` ist program-gebunden, self-token, und trägt nur ZEIGER auf bestehende Zeilen.
+  Der Weg zu einem Program ist eine Queue-Notiz.
+- **Ich habe an einer fremden Pane vier Tastensequenzen abgefeuert, die nichts bewirkten** (`C-u`,
+  `C-a C-k`, `BSpace`), bevor ich gestoppt habe. Der richtige Zug wäre gewesen, nach dem ERSTEN
+  wirkungslosen Versuch zu stoppen. Was die Sache löste: die Regelbuch-Messung, dass eine LANGE
+  Einfügung als „Pasted text" gefaltet und **nicht** als Slash-Befehl geparst wird — ein Merge
+  degradiert also zu einer hässlichen Nachricht, nicht zu einem falschen Kommando.
+- **Ich habe `spawn` als verschachteltes Objekt gepostet.** `taskSpawnFromBody` liest **flach**
+  (`harnessIdOf(body)`), die Zeile bekam still `spawn: null` und wäre auf den Default dispatcht
+  worden. Fehlzeile archiviert, korrekt neu als `012fe6b9`. **Prüfe nach jedem Task-POST das
+  zurückgegebene `spawn`-Feld.**
+- **Ich habe eine Fehlmessung weitergegeben:** „Slot 8 ist an drei Programs gebunden" — zwei davon
+  waren Geisterbindungen toter Vorgänger. Und ich habe den ctx-Sprung einer codex-Session (78 % →
+  18 %) als auffällig hervorgehoben; das ist Normalbetrieb, codex kompaktiert selbst.
+- **Was gut lief und wiederholbar ist:** die fünf parallelen Lese-Agenten. Kosten ~630k
+  Subagent-Tokens, Ergebnis: sechs belegte Urteile plus M1, ohne meinen eigenen Kontext zu belasten.
+  Für „welche Sessions können weg" ist das das richtige Werkzeug.
+
+## 5. Direkt-Commits dieser Schicht (für kein land-seitiges Ledger sichtbar)
+
+`fd1017d` (docs/queue-wellen §7-Nachtrag) — von Hand verifiziert mit der Kurzkette
+`bun install --frozen-lockfile && bun e2e/pins.ts` → **ALL PASS**. Das ist genau, was das Gate für
+einen docs-only-Diff gefahren hätte. Plus dieser Handoff.
+
 # HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 7 → Nachfolgerin, Opus 5 high): SUCCESSION statt retire, weil EINE lebende Lane ihre Report-Adresse an mir haengen hat; 2026-09-07 14:3x, ctx GEMESSEN 44 %
 
 > **Ergaenzt meinen Abschnitt in `a273332`** (weiter unten, „vier Lands, drei mit actor{kind:main}").

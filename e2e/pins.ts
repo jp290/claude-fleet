@@ -690,12 +690,12 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
     // at all — which is exactly the condition no unit test has. The cap's declaration is pinned
     // with it, because the way back out of this cut is `FLEET_LAND_WAIT_ROUNDS=0` and it has to
     // keep meaning byte-for-byte M1: one take, no round, no field, no sentence.
-    const m2Loop = server.includes("if (gateHeld || waitRounds >= LAND_WAIT_ROUNDS) break;")
+    const m2Loop = server.includes("if (gateHeld || waitRounds >= LAND_WAIT_ROUNDS || suiteLockHeldHere()) break;")
       && server.includes("mergeWaiting.set(s.id, { round: waitRounds, retryAt: Date.now() });");
     const m2Cap = /const LAND_WAIT_ROUNDS = Math\.min\(3, Math\.max\(0, Number\(process\.env\.FLEET_LAND_WAIT_ROUNDS \?\? 1\) \| 0\)\);/.test(server);
     // the counter-proof lives in the suite, exactly as the ff retry's `"0"` arm does
     const m2Zero = read("e2e/programs.ts").includes('FLEET_LAND_WAIT_ROUNDS: "0"');
-    pin("a land denied the suite mutex goes back for it a BOUNDED number of rounds — the loop leaves only on a grant or on FLEET_LAND_WAIT_ROUNDS, whose 0 is the way back to M1",
+    pin("a land denied the suite mutex goes back for it a BOUNDED number of rounds — the loop leaves on a grant, on FLEET_LAND_WAIT_ROUNDS (whose 0 is the way back to M1), or on this server already holding the machine for another land",
       m2Loop && m2Cap && m2Zero, `loop=${m2Loop} cap=${m2Cap} zeroArm=${m2Zero}`);
     // M5 (2026-09-07) — THE SERVER REAPS NOW, AND ONLY THE THREE WAYS THE WRAPPER DOES.
     // Another pair with no compiler between its halves, and a nastier one than most: the shell's

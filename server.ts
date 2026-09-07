@@ -19116,7 +19116,16 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             // inside gateRun, so the board keeps saying "running land gate" while this job is
             // standing in the queue — the queue is the part that takes the minutes.
             gateHeld = await gateRun(() => holdSuiteLock(VERIFY_WAIT_MS));
-            if (gateHeld || waitRounds >= LAND_WAIT_ROUNDS) break;
+            // THE THIRD EXIT, and it is not a cap: ANOTHER LAND OF THIS SERVER now holds the
+            // machine. `mergeInflight` is keyed per slot, so two clean paths can be in flight at
+            // once (the pre-loop guard reads this same fact and lets the second one run UNHELD,
+            // M1's fallback) — but the race is winnable AFTER that read: both jobs enter here with
+            // nobody holding, one wins the mkdir, and from that moment `holdSuiteLock` refuses the
+            // loser at its first line, instantly, for as long as we hold it. Going round again
+            // then waits for nothing and buys nothing; it would only write `waitRounds: N` onto a
+            // verdict whose rounds cost 0 ms — a false number in the very ledger M1 built to count
+            // this class. So this land stops with M1's verdict, which is the true one.
+            if (gateHeld || waitRounds >= LAND_WAIT_ROUNDS || suiteLockHeldHere()) break;
             waitRounds++;
             // the only place this state is visible: running, nothing measured, round N of the
             // queue. Written BEFORE the next hold is asked for, so a poller that catches this job

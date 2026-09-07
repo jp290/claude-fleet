@@ -39,9 +39,9 @@ gelesen wird mit `python3`/`grep`, nie mit `rg`.
 **Nenner sind definiert, nicht impliziert.** `fleet.json` hält einen *Speicherbestand*, keine
 Vollhistorie: `server.ts#pruneFleetReports` schneidet terminale Report-Zeilen auf
 `FLEET_REPORT_KEEP = 20` (`server.ts:2465`). Eine Aussage »je eingereicht« ist aus dieser Datei
-strukturell nicht ableitbar und steht nirgends mehr in diesem Dokument. Ausgenommen von der Prune
-sind genau die Zeilen, die der Owner noch schuldet (`reportAwaitsOwner`) — für die ist der
-Speicherbestand vollständig, für alle anderen nicht.
+strukturell nicht ableitbar und steht nirgends mehr in diesem Dokument. Die aktuelle Prune-Regel
+nimmt `reportAwaitsOwner`-Zeilen aus. Ob vor ihrer Einführung passende Zeilen verloren gingen, ist
+nicht rekonstruiert; Vollständigkeit wird nicht behauptet.
 
 **Probe A — Reports (Posten 1).** Spiegelt `server.ts#reportReceiverLiveness` und
 `reportAwaitsOwner`. Entscheidend: unentschieden heißt **fehlender Schlüssel ODER explizites null**
@@ -266,14 +266,11 @@ voraussetzte, den niemand gefahren hat.
    (`/tmp/astra-p3-2026-09-07/independent-review-candidate.md`). Rückverweis genügt; ein Verlust
    kostet Kontext, nicht die Zeile.
 3. **Temporäres Verify-Log** — `astra-disposition-verify.log`, `astra-plan-luecken-verify.log`,
-   `astra-disposition-probe-final.log`, `p1-publication-…-install.log`. Hier ist nicht die Datei
-   der Liefergegenstand, sondern der **Beweis**, und der wird an einem haltbaren Ort gesichert
-   statt im Log: Kommando, **absoluter** Logpfad, Exitcode und der wörtliche Tail gehören in die
-   Land-Note des Commits (`git notes --ref=fleet/land show <sha>`) und in den Commit-Body, ein
-   Messergebnis zusätzlich in eine Notiz unter `docs/messungen/`. Steht das dort, ist der Beweis
-   auch dann noch prüfbar, wenn die Datei nicht mehr existiert; steht es nicht dort, ist der Beweis
-   mit der Datei verloren — dann fehlt die Sicherung, nicht das Log. Die Logdatei selbst ins Repo zu
-   committen ersetzt diese Sicherung nicht und wäre der falsche Fix.
+   `astra-disposition-probe-final.log`, `p1-publication-…-install.log`. Kommando, Logpfad,
+   Exitcode und wörtlicher Tail sichern einen Kurzbeleg. Für die Nachprüfung erforderliche
+   Originalausgaben oder Messdaten sind an einem haltbaren, autorisierten Ort zu erhalten. Fehlen
+   sie, bleibt diese Nachprüfung eingeschränkt oder unknown. Keine pauschale Pflicht zur
+   Publikation privater Logs oder zusätzlicher Mess-Docs.
 
 Eine pauschale Verpflichtung, alle privaten Scratch-Ziele in dieses Repo zu committen, steht deshalb
 nicht mehr in dieser Zeile.
@@ -355,5 +352,5 @@ dieser Messrunde nicht gefunden — als Absenz festgehalten, nicht als Lücke: g
 | 1 (M1) | Nebenbeleg »10 von 10 Clarifications unbeantwortet« datiert nachgetragen: alle 10 tragen `answer.at`, die jüngste Antwort 2026-09-05 21:22 und damit ~41 h vor der 15:15-Messung — er war schon zum Messzeitpunkt nicht zutreffend, nicht erst seither überholt; Probe A erfasst beide Unentschieden-Formen und trennt Null-Receiver von ersetztem Occupant; IDs statt Gesamtzähler; »je eingereicht/je entschieden« gestrichen und durch den Speicherbestand mit `FLEET_REPORT_KEEP`-Vorbehalt ersetzt; keine automatische Entscheidung als VERIFY; Testfamilie auf `e2e/watch.ts` + `e2e/programs.ts` korrigiert (`e2e/security.ts` trägt nur Routen-Pins); die vier DONE-Sätze von `89279f1f` ausgeschrieben. **Zusätzlich, weil es die Aussage kippt:** die Lücke ist seit `7a20eead` (`ownerDecideFleetReport`) geschlossen und `89279f1f` steht auf `done` — der Posten beschreibt jetzt den Rückstand von 12 Zeilen, nicht mehr eine fehlende Tür. Occupant-Rechte unverändert. |
 | 2 (M3) | `programHealth` präzise als Paar `occupancy` (`stale`/`unbound`/`live`) + `sessionIdMatch` (`unknown`) beschrieben statt »health unknown«; **ein** Vertrag: sichtbar stale/unbound mit Wiederaufnahmeweg, keine automatische Complete-Markierung, andere Statuspolitik als offener Owner-Vorschlag benannt; der Widerspruch zwischen DONE (Unbinding erlaubt) und VERIFY (`live` verlangt) aufgelöst; Negativfall active+unerledigt+Retire ausdrücklich geschützt. |
 | 3 (M4) | »Composer deterministisch räumen« gestrichen — `sendText` verweigert per Design vor dem Tippen; DONE verlangt Erhalt des fremden Entwurfs und `refusing`/`no-send`-Nachweis, Rücknahme nur eigenen Payloads; 7-Tage-`uncertain == 0` als Beleg ausgeschlossen, ersetzt durch Positiv-/Negativprobe je Harness mit ehrlichem `unsupported`/`unknown`. |
-| 4 (M2) | Dreiteilung Pflichtartefakt / optionale Referenz / temporäres Verify-Log eingeführt, für die dritte Sorte mit der Beweissicherung statt der Datei (Kommando, absoluter Logpfad, Exitcode, wörtlicher Tail in Land-Note und Commit-Body, Messergebnis in `docs/messungen/`); pauschale Commit-Pflicht für alle privaten Scratch-Ziele entfernt; Reboot als fehlende Haltbarkeitsgarantie statt ungeprüftem Totalverlust; »ein verlorener Pfad leert nicht die Zeile«; »C1–C5 existieren nirgends sonst« datiert widerlegt (C5 = Task `eec64457`, gefiled; C3–C5 auch in `506fdce6`). |
+| 4 (M2) | Dreiteilung Pflichtartefakt / optionale Referenz / temporäres Verify-Log eingeführt; für die dritte Sorte sichern Kommando, Logpfad, Exitcode und wörtlicher Tail einen **Kurzbeleg**, während für die Nachprüfung erforderliche Originalausgaben oder Messdaten an einem haltbaren, autorisierten Ort zu erhalten sind — fehlen sie, bleibt die Nachprüfung eingeschränkt oder `unknown`; keine pauschale Pflicht zur Publikation privater Logs oder zusätzlicher Mess-Docs; pauschale Commit-Pflicht für alle privaten Scratch-Ziele entfernt; Reboot als fehlende Haltbarkeitsgarantie statt ungeprüftem Totalverlust; »ein verlorener Pfad leert nicht die Zeile«; »C1–C5 existieren nirgends sonst« datiert widerlegt (C5 = Task `eec64457`, gefiled; C3–C5 auch in `506fdce6`). |
 | 5 (Beweise) | Posten 5 unter die Schnittlinie verschoben, mit `AGENTS.md:118–129` als Grund; `0a8d2f13` als historischer Ausfallbeleg eingeordnet, keine neue Invariante; kein fünfter Posten erzwungen. Methodenteil trägt jetzt die tatsächlichen Lesekommandos, Filter, Zeitfenster und getrennte Nenner; »derselbe Dreizeiler« ohne Dreizeiler ist ersetzt; die Nenner-Verwechslung 571 vs. 604 in Posten 3 korrigiert; ausdrücklich vermerkt, dass das Gate-Originallog zur Land-Note gehört und »ALL PASS im Report« kein Prüfbeleg ist. |

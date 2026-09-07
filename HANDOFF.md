@@ -930,7 +930,7 @@ weiter: der Owner hat den Wellenmodus (W1–W3) hier eingehaengt.
 26,7 % gemessen nach dem M3-Land (25,3 % beim ersten Schreiben). Kosten dieser Session: Erdung ~4, M5 (Brief+Review+Land+Doc) ~6, N1
 (Review+Land) ~4, M3-Review ~3, Controller-Verkehr ~3. Rechne ~3 Punkte je Land mit Review.
 
-# HANDOFF — Program-MAIN P3 Landepfad adversarial (`6360c36105e50a705db275c1`, Slot 15, Fable 5.1, fuenfte Insassin): PUBLIZIERT UND ANGENOMMEN (Selbstannahme unter drei Auflagen, Attention `58cb3e5e`) — Lane `6b61a7bf` Slot 5 Commit `df96968` (Doku sha256 `dcd205e4…`), Report `9f8e5c10` ACCEPTED, **LAND GEHOERT DEM CONTROLLER**; 2026-09-07 21:0x, ctx GEMESSEN ~19 %
+# HANDOFF — Program-MAIN P3 Landepfad adversarial (`6360c36105e50a705db275c1`, Slot 15, Fable 5.1, fuenfte Insassin): GELANDET `b83e246` (Selbstannahme unter drei Auflagen, Attention `58cb3e5e`; Doku sha256 `dcd205e4…`, Verify ok kurze Kette 1 084 ms, Land durch Controller), Audit-Watch `2cdedb22` offen — TAGESMANDAT P3 ERFUELLT; 2026-09-07 21:1x, ctx GEMESSEN ~20 %
 
 > **Dieser Abschnitt ERSETZT den P3-Abschnitt darunter (Slot 4, `027deaa5`).** Zustand ableiten: `./state.sh`,
 > `./register.sh`, `GET /api/self/program-execution` (Program 6360c361). Charter = Program-JSON im Gruendungsbrief.
@@ -997,6 +997,15 @@ weiter: der Owner hat den Wellenmodus (W1–W3) hier eingehaengt.
   bei `landed=YES` `{kind:"audit",repo:"/Users/owner/claude-fleet",mainAfter:<candidate>}` (docs-only ⇒ kurze Kette). Danach die
   Shas in `docs/messungen/entwuerfe/2026-09-07-p3-landepfad/README.md` NICHT nachtragen (Entwurfsordner bleibt Historie). Tagesmandat
   fuer P3 damit erfuellt; nach ~21:45 nur Koordination, kein Folgetag ohne neue Richtung.
+- **21:1x, GELANDET.** Controller landete `fleet/260907183653-48b0` → main `b83e2466c5c3537360bdac90457a5bbd61a1a51d`
+  (2 Dateien, +1066; Land-Note: `verify.ok:true`, `proportional:true`, steps install+pins, 1 084 ms, Mutex nicht genommen;
+  actor owner/bearer). Von mir geprueft: `git show b83e246:docs/messungen/2026-09-07-landepfad-adversarial.md | shasum` ==
+  `dcd205e4…` (identisch mit Lane-Report und Worktree). Zeile `6b61a7bf` done, Slot 5 geschlossen (Merge-Watch darum 409
+  „target slot not active“ — der persistierte Fakt in `fleet.json#merges["5"]` sagt `merged`, `landed:true`).
+  **Audit-Watch `2cdedb22`** (`kind:audit`, mainAfter `b83e246…`, idleSec 0) armiert; docs-only ⇒ Post-Land-Audit kurze Kette.
+  Rot dort waere ECHT und gehoert dem Controller/Audit-Determiniertheit, nicht P3 (docs-only kann pins nur ueber Pfad-/Doc-Pins
+  reissen). **P3 ist damit terminal:** Tagesmandat erfuellt unter Selbstannahme; kein Folgetag ohne neue Richtung; nach dem
+  Audit-Event nur noch die Abendzeile. Der Entwurfsordner `docs/messungen/entwuerfe/2026-09-07-p3-landepfad/` bleibt Historie.
 - **Rueckwege, die eine Kompaktierung ueberleben:** (Auto geloescht, s.o.) Fleet-Auto `f33a3a9f` (One-Shot auf Slot 15, faellig 17:40,
   `idleSec 60`) fuer den Checkpoint +8h. Session-lokal (sterben mit Pane/Succession): Monitore auf den Statuswechsel von
   `6b61a7bf` und auf 17:40. **Noch KEIN Fleet-Watch** — der Lane-Watch braucht den Slot, den es erst bei `sent` gibt.

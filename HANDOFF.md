@@ -129,6 +129,34 @@ unmöglich oder sichtbar machen.
      Lauf mit erzwungener Mutex-Wartezeit zeigt zwei verschiedene Zahlen.
 5. **Slot 7 schließen** (Schicht abgeschlossen, Handoff committet, Watches bei mir dupliziert).
 
+### ÄNDERUNG NACH 22:0x — DER ERSTE ZUG HAT EINE VORBEDINGUNG BEKOMMEN
+
+**Slot 7 hat sich zurückgezogen, und damit ist Program `f170dc46` (Fleet-Betrieb, 30 offene Zeilen)
+HEADLESS** — `main=slot7`, Bindung STALE, am Zustand geprüft, nicht aus einer Meldung übernommen.
+Das ist das größte Program der Flotte.
+
+**Die Pointe, und sie ist der Grund, warum §7 Zug 1 nicht mehr direkt ausführbar ist:** die Lane
+`89279f1f` auf Slot 6 baut genau die Owner-Tür für Reports, deren Empfänger gestorben ist — und
+**ihr eigener Empfänger ist während ihrer Arbeit gestorben.** Sobald ihre Vorschau grün ist, kann
+sie ihren Report an niemanden abgeben. Der Defekt hat seinen eigenen Fix eingeholt.
+
+**Was ich gesucht und NICHT gefunden habe:** eine Owner-Tür, die `program.main` neu bindet. In
+`server.ts` setzen genau zwei Pfade `program.main` — die Succession (braucht eine LEBENDE
+Vorgängerin, hier also unmöglich) und der Gründungspfad („Program-MAIN slot changed after founding
+delivery"). **Ob der Gründungspfad auf ein BESTEHENDES Program anwendbar ist, ist NICHT geklärt** —
+mein Kontext reichte dafür nicht mehr. Das ist ein Befund, keine Fertigmeldung.
+
+**Damit lautet Zug 1 neu:** erst die Empfängerlücke von `f170dc46` schließen (Gründungspfad prüfen;
+falls er nicht trägt, ist das selbst eine Zeile — und zwar dieselbe Klasse wie M-1/M-2, ein
+fehlender Ausgang), DANN Slot 6 landen. Nicht umgekehrt, und nicht mit einer fingierten
+Receiver-Watch: Codex Slot 16 hat das in der Betriebszeile `7de5bb6a` ausdrücklich verboten, und es
+wäre auch ohne dieses Verbot falsch.
+
+**Der Deploy wartet bewusst.** Live `codeBehind: true`, inzwischen 16 Commits Rückstand — aber
+Slot 6 und Slot 11 hängen an laufenden Verdikten, Slot 11 an einem GECLAIMTEN Helferlauf in dritter
+Runde. Ein srv-Neustart setzt jede Idle-Uhr auf null und unterbricht die Self-API-Kette mittendrin.
+Deploy also NACH der Integration der drei Lanes, nicht davor.
+
 ### AUSDRÜCKLICH UNTER DER SCHNITTLINIE — echt, aber heute nicht dran
 
 Der `/tmp`-Sweep (29 Zeilen), die sechs Waisen-Worktrees unter `astra-main.worktrees/`, und

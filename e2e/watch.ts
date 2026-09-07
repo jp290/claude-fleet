@@ -5148,8 +5148,17 @@ export async function run(): Promise<void> {
       // COMMENT LINES ARE STRIPPED FIRST: these are checks about the words the OWNER reads. A
       // comment is free to name the phrasing it forbids — the row's own does — and a probe that
       // counted those mentions would fail on its own documentation.
-      const unackedRow = cliSrc.slice(cliSrc.indexOf("function opsUnackedRow"),
-        cliSrc.indexOf("function renderOpsDlg"))
+      // ANCHORED AT A LINE START, and that is not tidiness. `indexOf("function opsUnackedRow")`
+      // matches the first occurrence ANYWHERE — including inside a COMMENT that names the function,
+      // which is what a comment explaining this very slice did: the window collapsed to two lines of
+      // prose and every assertion below passed vacuously in the negative direction (no ack, no post,
+      // no `failed` — because there was no code in it at all). A `\nfunction ` anchor cannot match a
+      // `//` line, so the probe now fails LOUDLY if either anchor moves instead of measuring prose.
+      const sliceAt = (name: string): number => cliSrc!.indexOf(`\nfunction ${name}`);
+      check("client: both source anchors of the pane-transport slice resolve to a real definition, not to prose about one",
+        sliceAt("opsUnackedRow") > 0 && sliceAt("renderOpsDlg") > sliceAt("opsUnackedRow"),
+        `opsUnackedRow@${sliceAt("opsUnackedRow")} renderOpsDlg@${sliceAt("renderOpsDlg")}`);
+      const unackedRow = cliSrc.slice(sliceAt("opsUnackedRow"), sliceAt("renderOpsDlg"))
         .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
       check("client: the unacknowledged-pane row says transport reported sent, no session acknowledgement",
         /transport reported sent; no session acknowledgement/.test(unackedRow)
@@ -5180,7 +5189,7 @@ export async function run(): Promise<void> {
       check("client: the row carries no acknowledge affordance and posts nothing at all",
         !/\/ack\b/.test(unackedRow) && !/\bpost\(/.test(unackedRow) && !/onclick/.test(unackedRow),
         unackedRow.slice(0, 200));
-      const btn = cliSrc.slice(cliSrc.indexOf("function renderOpsBtn"), cliSrc.indexOf("function setOpsEvents"));
+      const btn = cliSrc.slice(sliceAt("renderOpsBtn"), sliceAt("setOpsEvents"));
       check("client: the badge prints the two counts side by side and never adds them",
         /opsUnacked\(opsRows, Date\.now\(\)\)\.length/.test(btn) && !/n \+ m|m \+ n/.test(btn),
         btn.slice(0, 200));

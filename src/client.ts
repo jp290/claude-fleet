@@ -11068,11 +11068,13 @@ function opsRow(e: FleetEventRow): HTMLElement {
   return row;
 }
 
-// PLACED BEFORE opsUnackedRow ON PURPOSE, and it must stay there: e2e/watch.ts proves the
-// read-only pane-transport row by SLICING this file from `function opsUnackedRow` to
-// `function renderOpsDlg` and asserting the slice contains no ack, no post and no `failed`.
-// A row with buttons sitting inside that window fails those checks as if the read-only row
-// had grown affordances — measured, on the first run of this cut.
+// PLACED AHEAD OF THE READ-ONLY TRANSPORT ROW ON PURPOSE, and it must stay ahead of it:
+// e2e/watch.ts proves that row by slicing this file between the two definitions that bracket it
+// and asserting the window holds no ack, no post and no "failed". A row with buttons sitting
+// inside that window fails those checks as if the read-only row had grown affordances — measured
+// on the first run of this cut. (The probe now anchors on a line start, so this paragraph can
+// name neither definition without becoming the slice itself — which is how it broke the second
+// time. Both halves of that lesson are load-bearing.)
 //
 // One awaiting report, with the two acts that were missing. The verdict is the OWNER'S — the row
 // says so, and the panel says so — because the MAIN it was filed to is gone; stamping it as that

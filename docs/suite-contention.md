@@ -242,7 +242,7 @@ and do not survive that:
   inside a suite instance, where no wrapper ever contends for that lock, a leaked hold wedged 232
   server restarts' worth of lands until the run ended.
 
-**M5 (2026-09-07, landed as `<sha>` — MAIN: replace with the real sha after the land):
+**M5 (2026-09-07, landed as `94dd5e4`, on main since `b2ab2cf`):
 `server.ts#suiteLockReapStale`, called from `holdSuiteLock` before every poll.** It MIRRORS
 `e2e-stage.sh`'s triage; it does not extend it, and the wrapper protocol is untouched (mkdir stays
 the claim, pid/birth stay the identity):

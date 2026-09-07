@@ -10943,11 +10943,19 @@ let ownerReportErr: string | null = null;
 const ownerReportDraft = new Map<string, string>();
 const ownerReportAwaiting = (r: OwnerReportRow): boolean => !r.decision && r.liveness !== "live";
 
+// EVERY inbox row EXCEPT a worker report. The report rail counts its own rows and renders them in
+// its own section below, and it counts BOTH carriers — the owner-inbox row that arrives here as an
+// inbox event, and the orphaned bound row whose event went terminal on teardown and arrives here as
+// nothing at all. Leaving fleet-report rows in this class would count the first kind twice and show
+// it in two places, with an `acknowledge` button beside a `reject` one for the same row.
+const opsOpenNonReport = (rows: FleetEventRow[]): FleetEventRow[] =>
+  opsOpen(rows).filter((e) => e.kind !== "fleet-report");
+
 function renderOpsBtn() {
-  // FILED FOR THE OWNER, one meaning, two carriers: an inbox event and a report whose receiver
-  // occupant is gone. Both are rows that want the OWNER to close them, so they are one number —
-  // this is not the forbidden sum below, which would add a count that wants nobody.
-  const n = opsOpen(opsRows).length + reportsAwaitingOwner;
+  // FILED FOR THE OWNER, one meaning, two carriers: an inbox event of any other kind, and a worker
+  // report no session can judge. Both are rows that want the OWNER to close them, so they are one
+  // number — this is not the forbidden sum below, which would add a count that wants nobody.
+  const n = opsOpenNonReport(opsRows).length + reportsAwaitingOwner;
   // TWO NUMBERS, NEVER A SUM. Filed operations want the owner to close them; unacknowledged pane
   // transport wants nobody — it is a report. Adding them would make one count mean two things.
   const m = opsUnacked(opsRows, Date.now()).length;
@@ -11145,16 +11153,17 @@ function ownerReportRowEl(r: OwnerReportRow): HTMLElement {
 function renderOpsDlg() {
   opspanel.replaceChildren();
   opspanel.appendChild(el("h2", "", "Operations — completions filed instead of typed into a pane"));
-  const live = opsOpen(opsRows);
-  if (!live.length) opspanel.appendChild(el("div", "shrhint", "Nothing is filed."));
-  for (const e of live) opspanel.appendChild(opsRow(e));
+  const live = opsOpenNonReport(opsRows);
   const awaiting = ownerReportRows.filter(ownerReportAwaiting);
+  if (!live.length && !awaiting.length && reportsAwaitingOwner === 0)
+    opspanel.appendChild(el("div", "shrhint", "Nothing is filed."));
+  for (const e of live) opspanel.appendChild(opsRow(e));
   if (reportsAwaitingOwner > 0 || awaiting.length) {
     opspanel.appendChild(el("h2", "", "Worker reports no session can judge — your verdict"));
     opspanel.appendChild(el("div", "shrhint",
-      "The MAIN each of these was filed to is gone, so the acceptance door inside a session is closed "
-      + "for good. Accepting or rejecting here is recorded as YOUR decision, not as that MAIN's; it "
-      + "moves no task, lands nothing and closes no lane."));
+      "Either the MAIN each of these was filed to is gone, or none was ever bound — so the acceptance "
+      + "door inside a session is closed for good. Accepting or rejecting here is recorded as YOUR "
+      + "decision, not as that MAIN's; it moves no task, lands nothing and closes no lane."));
     if (ownerReportErr) opspanel.appendChild(el("div", "shrhint", ownerReportErr));
     else if (!awaiting.length) opspanel.appendChild(el("div", "shrhint", "Loading…"));
     for (const r of awaiting) opspanel.appendChild(ownerReportRowEl(r));

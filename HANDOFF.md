@@ -1,3 +1,117 @@
+# HANDOFF — P2 abgeschlossen; Retirement beauftragt — 2026-09-07
+
+Program `446e77f8168e9d8bb5612ce6` (Astra Tagesmandat P2, Adressierbarkeit über Sessiontod).
+Der Owner hat den Dokumentauftrag nach Land ausdrücklich abgeschlossen und diese MAIN zum
+Handoff-Commit mit anschließendem `POST /api/self/retire` angewiesen. Keine Succession,
+kein Deploy, keine neue Implementierung. Der Retirement-Erfolg ist beim Schreiben noch nicht
+beobachtet. Die Live-Projektion führt das Program weiterhin als `active`; fachliche Abnahme
+und Serverstatus sind getrennte Tatsachen. Dieser Abschnitt ergänzt die ältere Controller-Übergabe unten.
+
+**Artefakt und getrennte Identifikatoren.**
+
+- Vertrag: `docs/messungen/2026-09-07-adressierbarkeit-vertrag.md`.
+- Analysierter Quell-Pin: `e917a48b1a0dfa894cd9470b683606252725b0e9`.
+- Akzeptierte und gelandete Vertragsbytes: `sha256:140d2b6f157a7005577a24ae69cfd51dfcb24232ead2dfac34758e09d2dbc5ad`.
+- Akzeptierter Indexsatz: `sha256:d5ffb7ea2f14322e227ee5e7c8edcbb9f9189460a6494d47dbac79edd1f5bbf3`; im gelandeten Index genau einmal geprüft.
+- Publikationsauftrag `180d3c92`, isolierte serielle Opus-Lane `fleet/260907125949-6985`, Modell `claude-opus-5[1m]`, high.
+- Ursprünglicher Publikationscommit: `7982b734be0b8da4bb00b82a226a21e9d78f2e76`.
+- Nach Rebase angenommener Commit: `a92d4aa5ddf7ef555f596417d8f4eac1f7aaa7d5`.
+- Tatsächlicher Land-Commit auf main: `00111bb02c411fe51e16c9154a94c19232dfd124`.
+
+Die MAIN hat Draft, Lane-Datei und Commitbytes verglichen, nach dem Rebase erneut. Nach Land
+wurden die Datei aus dem Land-Commit und dessen Zugehörigkeit zu main geprüft; der Vertrags-Hash
+ist unverändert. Der Indexkonflikt nach P1 wurde durch die Lane aufgelöst. Beide Indexzeilen
+blieben erhalten. Der Git-Commit-SHA ist ausdrücklich nicht der Review-Dateihash.
+
+**Unabhängige zweite Astra-Abnahme, dauerhaft übernommene Provenienz.**
+
+Native, vom Autor getrennte Astra `independent_review`, Modell `gpt-6-astra`, R2 vom 2026-09-07:
+
+```text
+ACCEPT sha256:140d2b6f157a7005577a24ae69cfd51dfcb24232ead2dfac34758e09d2dbc5ad
+Indexsatz sha256:d5ffb7ea2f14322e227ee5e7c8edcbb9f9189460a6494d47dbac79edd1f5bbf3
+```
+
+Die Reviewerin las das vollständige R1-Dokument und relevante Originalquellen am Pin; R2 las
+sie die Änderungen im Gesamtdokument-Kontext. R1 wurde wegen des Auto-Negativarms abgelehnt:
+fehlende FleetEvents beweisen keine fehlende Auto-Ausführung. R2 verwendet Prompt-Log/lastRun,
+beobachtetes Retirement statt bloßem Binding-Transfer und einen positiven Kontroll-Auto;
+der Watch-Negativarm verlangt eine eigene Watch-Kontrolle. Das R1-Finding wurde geschlossen.
+Zusätzliche Quellenprüfung R2 am Pin: `e2e/autos.ts:1`, `e2e/harness.ts:35`,
+`e2e/watch.ts:4283`, `e2e/programs.ts:238`, `server.ts:5301`, `server.ts:6035`,
+`server.ts:7903`. Kein Runtime-, Compiler-, Crash- oder vollständiger Adapter-Nachweis durch
+Astra; die sechs Property-Blöcke bleiben Testentwürfe. ACCEPT bezeichnet geprüfte Bytes,
+keine implementierte Garantie und keine Land-Promotion.
+
+**Publikationsprüfung: selbst gelesene Original-Tails, keine Worker-Pass-Übernahme.**
+
+Reports `c836710f67e17cb40986a624` und nach Rebase `37b74d778b0d688edc56d37e`
+wurden nach eigener Diff-, Hash- und Logprüfung angenommen. Der zweite Entscheid ist
+`accepted` bei `1788789164736`. Beide Prüfpaare hatten Exitcodes install=0 und pins=0.
+Original-Tail des ersten `bun install --frozen-lockfile`:
+
+```text
+9 packages installed [22.00ms]
+```
+
+Original-Tail nach Rebase, `bun install --frozen-lockfile`:
+
+```text
+Checked 9 installs across 10 packages (no changes) [23.00ms]
+```
+
+Original-Tail beider `bun e2e/pins.ts`-Läufe:
+
+```text
+PASS  the program inbox belongs to the Program and names no receiver — docs/self-api.md carries §inbox and names both route paths  (section=true get=true read=true)
+
+ALL PASS
+```
+
+Die Logs wurden aus den jeweiligen `p2-step1-install.log`, `p2-step2-pins.log`,
+`p2-rebase-step1-install.log`, `p2-rebase-step2-pins.log` samt `.exit` gelesen.
+Diese übernommenen Tails und Entscheidungen benötigen keine temporären Dateien zum Verständnis.
+Rückgaben stehen zusätzlich in Program-Notizen `13c480eb` und `b3636f78`; Ziel ist Ober-MAIN
+`e3b3a0642d5c8106eb545a40`, Routing über frisch gelesene Program-Bindung durch den Controller.
+Die Notizen allein beweisen keinen Empfang bei der Ober-MAIN.
+
+**Land und Nachaudit.**
+
+Merge-Event `0ed552faf47d4b2c4f7311a6`: `merged`, `landed=YES`, Verify grün;
+gelesen und bestätigt. Zusätzlich `git notes --ref=fleet/land show` für obigen Land-SHA gelesen:
+proportional=true, install+pins, Exitcode 0, Tail `ALL PASS`, kein Suite-Mutex genommen.
+Persistierte Audit-Zeile `post-land-audits.jsonl` bei `1788789201698` für denselben Land-SHA
+selbst gelesen: result=green, proportional=true, install+pins, Exitcode 0, Tail `ALL PASS`.
+Keine Astra-Suite und kein Produktlauf wurden daraus abgeleitet.
+
+Der einmalige Audit-Watch `00ec2f1a` ist ausgelöst und nicht mehr armed. Sein Event
+`711c295a8bff658af7168a01` war bei der letzten Projektion noch `pending`, ohne deliveredAt
+oder ACK. Das Audit-Ergebnis ist aus der Persistenz gelesen; eine Transportquittung wird
+nicht erfunden. `server.ts:6719` erlaubt ACK nur für delivered/send-uncertain. Ein eventuell
+noch ausstehender Transport ist kein offener Dokument-Prüflauf.
+
+**Eigener D2-Befund vor Sessionende.**
+
+Die Abschluss-Quellenstellen beziehen sich auf `9942225cd787952479f5905982b3f1a1406271d0`;
+die Review-Quellenstellen oben auf den ausdrücklich genannten Analyse-Pin.
+
+Frisch gelesen: Slot 12, openedAt `1788770602992`, `sessionId: null`,
+`codexRecoveryState: "ambiguous"`. Die Projektion meldet sessionIdMatch=`unknown`.
+Die beiden Reports wurden mit null auf Empfänger- und lebender Seite angenommen; ihre Events
+`101f33cde96ba9bbc6a8963d` und `f14e9ea27a115a71a26d32dd` sind acknowledged.
+Das belegt diese zwei Zustellungen, keine Sicherheit zukünftiger Reports: lernt die Session
+später eine ID, kann der exakte Vergleich gegen das gespeicherte null mit
+`409 event belongs to a replaced session` ablehnen (`server.ts:6711` im beim Abschluss
+gelesenen Baum). Das ist P2s eigener D2-Fall; hier weder repariert noch weginterpretiert.
+
+Die bestehende Umsetzung bleibt bei Fleet-Betrieb `f170dc46e4b026ee34d9392e` und seinen
+Auftragszeilen. Nachrichtenmodell, Invarianten und Brief-Vorschläge sind geliefert;
+Zielversprechen und tatsächlich gemessener Betrieb bleiben getrennt. Keine automatische
+Fortsetzung am Folgetag. Retirement ist ausdrücklich autorisiert; dieser Commit dokumentiert
+den Stand davor, nicht dessen künftigen Erfolg.
+
+---
+
 # HANDOFF — 🎛 Fleet Controller (Slot 1, Opus 5 high): Überblick + Aufräumen ausgeführt, Deploy durch, FÜNF Agenten haben die Flotte vermessen — der Abarbeitungsplan steht in §2; 2026-09-07 ~16:0x, ctx GEMESSEN 31 %
 
 > Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/attention`, Board. Alles hier sind

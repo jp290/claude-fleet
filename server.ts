@@ -6501,8 +6501,12 @@ function clarificationsFor(s: Slot): ClarificationRequest[] {
 }
 
 function fleetReportsFor(s: Slot): FleetReport[] {
+  // THE OCCUPATION, matching the door that judges these rows. It used to compare the session id
+  // too, which made the slot-12 shape worse than it looked: a MAIN whose session id moved inside
+  // one occupation could neither READ its report back nor judge it, and a door that could be
+  // walked but whose result could not be read would be its own defect.
   const bound = (b: { slot: number; openedAt: number; sessionId: string | null } | null): boolean =>
-    !!b && b.slot === s.id && b.openedAt === s.openedAt && b.sessionId === s.sessionId;
+    !!b && b.slot === s.id && b.openedAt === s.openedAt;
   // An owner-inbox row still reaches its WORKER through the first arm — the lane can read back
   // what it filed — and reaches no session at all through the second, which is the point.
   return fleetReports.filter((r) => bound(r.worker) || bound(r.receiver));

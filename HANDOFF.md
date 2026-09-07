@@ -1,3 +1,85 @@
+# HANDOFF — Program-MAIN Land-Pipeline 2026-09 (`233e1c2b7eaca3850decf332`, Slot 8, Fable 5.1): W1 GELANDET + Audit gruen, W2 in Flug, W3/M2/N2 offen; 2026-09-07 15:5x
+
+> **Dieser Abschnitt ERSETZT die aelteren Land-Pipeline-Abschnitte darunter.** Zustand ableiten:
+> `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Alles hier sind Behauptungen zum
+> Nachschlagen.
+
+## 0. DEIN ERSTER ZUG
+
+1. **W2 `0f5019ac` laeuft auf Slot 4** (Branch `fleet/260907121743-4336`, Commit `5caf6a2`, Baum
+   sauber, ahead 1). Sie ist `done-looking`, aber NICHT fertig: sie haelt ihren Report zurueck, bis
+   ihr Fern-Suite-Verdikt da ist (Offer `7e0b9362` auf `5caf6a2`, geclaimt von `secondhostlinux1`).
+   Ihr erster Offer auf dem Vor-Amend-Commit `5b9860a` kam ROT zurueck mit EINEM Fail von 3861
+   (`§1 the pre-auth route set equals the reviewed allowlist`), den sie in `e2e/security.ts`
+   geschlossen und in den Commit amendiert hat; alle W2-Checks waren schon dort gruen (gemessen vom
+   Controller Slot 1, 2026-09-07 15:0x).
+2. **VOR dem Land von W2:** main ist ihr ~10 Commits voraus, vier davon fassen ihre Dateien an
+   (`984a4b3` in `e2e/`, `652d872`/`064b455`/`d120ca4` am Lane-Deckel je Repo in `server.ts` +
+   `e2e/tasks.ts`). `merge-tree` sagt exit 0, also kein Textkonflikt — aber das Fern-Gruen beweist
+   IHREN Baum, nicht den rebasierten. Der Land-Gate misst den rebasierten neu; dort kann es kippen.
+3. **Danach W3 `05611418`** (setzt W1 UND W2 voraus), dann M2 `64860da8`, dann N2 `f98facad`.
+   Start per Hand-Knopf mit Tripel, nicht per `release`: die W-Zeilen tragen keinen `Task.spawn`.
+   `POST /api/tasks/<id>/dispatch` Body `{"harness":"claude","model":"claude-opus-5[1m]","effort":"high"}`
+   (Owner-Token aus `fleet.json`). Der Knopf prueft weder Deckel noch Quiet Hours: nur druecken,
+   wenn ein Slot frei ist und keine Lane dieses Programs laeuft. **Max. EINE Lane gleichzeitig**,
+   solange `FLEET_DISPATCH_MAX_LANES=1`.
+4. **Watches: `idleSec:0`, immer.** Watch `5fe54020` feuerte 14:38:20 und erzeugte Event
+   `795dbb1e`, das `send-uncertain` blieb — in meine Pane kam nie etwas. Danach standen alle fuenf
+   Watches auf `armed:false`. Neu armiert ist `48d8ac3c` (lane, Slot 4). Nach jedem Feuern ODER
+   Server-Neustart pruefen: `GET /api/self` zeigt `armed`.
+
+## 1. Program-Zeilen (Ids aus `fleet.json`)
+
+| Zeile | Id | Status | Beleg |
+|---|---|---|---|
+| S1 Wellen-Sensor | `1b106a66` | GELANDET `863f628`+`49d93bc` | |
+| M1 Gate unter Server-Hold | `aa8e5ade` | GELANDET `f388de1`+`f0bcea6`, Audit gruen | |
+| M5 Hold-Hygiene | `8d6a3e9e` | GELANDET `94dd5e4`+`a15b59a`+`b2ab2cf`, Audit gruen 3792/0 | |
+| N1 Notizen beim Dispatch | `3af11665` | GELANDET `24cd54e`+`189f815` | Audit `unknown` (Timeout), mitgemessen im M3-Audit |
+| M3 Vorflugpruefung dirty-main | `283f625f` | GELANDET `6c70f01`+`79e1c36`+`94a8840`, **Audit gruen 3832/0, 2262 s**, Deploy `f6a69ac5` LIVE | |
+| **W1 programId-Schnitt** | `e0113460` | **GELANDET `01c3b35`**, Gate gruen 143 s Arbeit / 0 s Schlange, **Audit gruen 3835/0, 2559 s** | |
+| W2 Bestaetigungstuer Flaeche | `0f5019ac` | **sent**, Slot 4, `5caf6a2` | §0.1 |
+| W3 „▸ start wave" | `05611418` | pending | nach W1+W2 |
+| M2 `waitedOut` als Wiedervorlage | `64860da8` | pending | nach W3 |
+| N2 Notiz-Lebenszyklus | `f98facad` | pending | **startbar** (N1 auf main, geprueft), aber nach W3 |
+| M4 / N3 unter der Schnittlinie | `4aeeec19` / `f7493755` | notiz | Vorschlaege |
+
+## 2. Befunde dieser Session
+
+- **W1 misst heute NULL Buendel, und das ist der erwartete Zustand.** Ueber 48 offene
+  auftrag-Zeilen: 43 Wellen im Fleet-Repo, davon 8 mit dem neuen Grund `kein-program` (deckungs-
+  gleich mit den 8 Zeilen ohne programId) und 35 `flaeche-nur-abgeleitet`. Solange keine Flaeche
+  bestaetigt ist, kann keine Welle groesser als eins werden — genau das oeffnet W2.
+- **Das Suite-Offer von W1 wurde nie geclaimt**, obwohl der Helfer als online galt: 213 s gegen
+  `SUITE_OFFER_WAIT_FREE_MS` 180 s, danach lokaler Fallback; das Angebot blieb ~44 min offen und
+  unbeansprucht. W2s Offer wurde dagegen geclaimt. Befund am Helfer-Pfad, gehoert dem Program
+  Fleet-Betrieb, noch NICHT dorthin gesendet.
+- **Einwand von Program `eec69528` (Slot 3), offen gefuehrt:** programId + Flaeche sei semantisch
+  nicht genug, es brauche gemeinsame Ursache/Proof je Buendel. Der Owner hat programId als zweites
+  Kriterium entschieden (W1). **In W3s Review aufnehmen, sobald zum ersten Mal wirklich n>1
+  entsteht.**
+- **Owner-Entscheid F2 (Controller, 2026-09-07):** `undo-land` darf mit `--force-with-lease` auf den
+  eigenen Hub zurueckspiegeln. Bewusst noch KEIN auftrag — die P3-Analyse hat drei Astra-REJECTs und
+  kein ACCEPT. Weitere P3-Schnitte, die laut eigener Zuordnung an dieses Program gehen: L1
+  (Tip-Bindung + `verify.candidateSha` + Audit-Reklassifikation), L5 (repo-weiter
+  Land-Intent-Guard), L7a (`suiteLockTryTake` raeumt im Fehlerpfad), L6 (`checksBelowMain`).
+- **Brief-Zusaetze zahlen sich aus.** Beiden W-Lanes habe ich vor dem Dispatch angehaengt: die
+  `fleet.json` liegt nur im Haupt-Checkout, Suite-Offer statt lokalem Lauf, Drift-Check vor dem
+  Report, Verify woertlich zitieren. W2 zusaetzlich: sein Wirkungsnachweis braucht seit W1 zwei
+  Zeilen mit DEMSELBEN programId, sonst trennt der Sensor sie zu Recht.
+
+## 3. Arbeitsweise, die getragen hat
+
+- Report als Claim behandeln: bei W1 habe ich das Suite-Log der Lane selbst gelesen (3835 PASS,
+  0 FAIL, Trail-Zeilen `tree 5b9ad59 dirty:false`, ein einziger Run) statt der Zusammenfassung zu
+  glauben.
+- Vor jedem `POST /send` an den Controller mit 409 rechnen (Composer belegt): ein
+  Hintergrund-Retry im Minutentakt mit Label-Pruefung hat nach 4 Versuchen zugestellt.
+- Ein Server-Neustart (Deploy) laesst laufende `curl`s leer zurueckkommen — das sieht wie eine tote
+  Route aus und ist keine. Einmal wiederholen, bevor man etwas anderes vermutet.
+
+---
+
 # HANDOFF — P1 Verifikations-Zielbild, Program 29c0f21bf3cc6e37d31f7803, MAIN Slot 11 — Spec und Audit grün; bereit zum Retire (2026-09-07)
 
 Dieser Abschnitt betrifft ausschließlich P1. Er ersetzt keine Controller-Aufträge darunter.

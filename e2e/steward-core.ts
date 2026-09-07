@@ -64,7 +64,13 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   // server.ts is in that diff every later read is true and would pass for the wrong reason.
   mkdirSync(`${ctx.gapRepo}/src`, { recursive: true });
   mkdirSync(`${ctx.gapRepo}/public`, { recursive: true });
-  writeFileSync(`${ctx.gapRepo}/src/client.ts`, "// the bundle's source changed\n");
+  // src/client.ts is a bundle entry by package.json (planted with the repo in restart.ts), and it
+  // is the only route by which src/backoff.ts becomes client code two commits down — the same shape
+  // the real repo has at src/client.ts:7. Assembled, not spelled: e2e-stage.sh would resolve a
+  // literal relative specifier in THIS file against e2e/ and refuse to boot the instance.
+  const gapImport = (spec: string): string => `import ${JSON.stringify(spec)};`;
+  writeFileSync(`${ctx.gapRepo}/src/client.ts`,
+    `${gapImport("./backoff")}\n// the bundle's source changed\n`);
   writeFileSync(`${ctx.gapRepo}/public/index.html`, "<!-- and the page it is served from -->\n");
   gapGit("add", "-A");
   gapGit("commit", "-qm", "feat(client): touch the bundle sources only");
@@ -72,11 +78,12 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   check("deploy-gap: a CLIENT-only commit counts as behind but NOT code-behind (bundleStale's job)",
     gapC?.behindCount === 2 && gapC.codeBehind === false && gapC.head !== gapC.bootHead,
     JSON.stringify(gapC));
-  // The two the allowlist was MISSING until 2026-09-01, in their own commit so the claim is about
-  // them and not carried by client.ts: src/helper.ts is the third bundle entry (package.json
-  // builds public/helper.js from it) and src/backoff.ts rides into app.js through src/client.ts:7.
-  // server.ts imports neither — its only src/ import is ./src/protocol — so a land of either read
-  // codeBehind:true and asked for a restart that would have changed nothing.
+  // The two the hand-kept allowlist was MISSING until 2026-09-01, in their own commit so the claim
+  // is about them and not carried by client.ts: src/helper.ts is a bundle entry (package.json builds
+  // public/helper.js from it) and src/backoff.ts rides into app.js through src/client.ts. server.ts
+  // imports neither — its only src/ import is the protocol — so a land of either read codeBehind:true
+  // and asked for a restart that would have changed nothing. Since 2026-09-07 neither is WRITTEN
+  // DOWN anywhere: the graph places both, which is why the fixture had to grow one.
   writeFileSync(`${ctx.gapRepo}/src/helper.ts`, "// the portal bundle's own entry\n");
   writeFileSync(`${ctx.gapRepo}/src/backoff.ts`, "// bundled into app.js through src/client.ts\n");
   gapGit("add", "-A");
@@ -85,12 +92,13 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   check("deploy-gap: src/helper.ts and src/backoff.ts are CLIENT sources too, not a server restart",
     gapH?.behindCount === 3 && gapH.codeBehind === false && gapH.head !== gapH.bootHead,
     JSON.stringify(gapH));
-  // …and the allowlist is an allowlist: an unrecognized src/ file is code until someone says so
+  // …and the counter-proof: the one src/ file the fixture's server.ts imports IS a deploy. Without
+  // this row the section only proves that everything can be classified away.
   writeFileSync(`${ctx.gapRepo}/src/protocol.ts`, "// shared with the server\n");
   gapGit("add", "-A");
   gapGit("commit", "-qm", "feat: a src file the server imports");
   const gapP = await readGap("/api/steward/sessions");
-  check("deploy-gap: a src/ file that is NOT on the client allowlist still flags code-behind",
+  check("deploy-gap: a src/ file the fixture's server.ts imports still flags code-behind",
     gapP?.behindCount === 4 && gapP.codeBehind === true, JSON.stringify(gapP));
   writeFileSync(`${ctx.gapRepo}/server.ts`, "// changed after the server booted\n");
   gapGit("add", "-A");

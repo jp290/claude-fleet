@@ -99,6 +99,7 @@ import {
 import { ERROR_KEEP, SERVER_BOOT_AT, serverErrors, errorTotal, logError, errorsView } from "./server/errors";
 import { appendEvent, appendEventStrict, readLedger, readEventLog } from "./server/persist";
 import { audit, AUDIT_FILE } from "./server/audit-log";
+import { repoGraph, roleOf } from "./server/deploy-classify";
 import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
 import { STATIC, bundleV, staticResponse, finishHttp, transportWs, transportSince, transportPeers, transportPaths } from "./server/transport";
 import { DIRS_CAP, FIND_MAX_DEPTH, FIND_MAX_VISIT, FIND_MAX_HITS, FIND_MAX_MS, FIND_FANOUT, FIND_MAX_SLOW,
@@ -23124,63 +23125,66 @@ function stewardSlotsView(now: number) {
 //   2. codeBehind is the NET tree diff bootHead..HEAD, not a per-commit path walk: `git log
 //      --name-only` lists NO paths for a true merge commit, which would hide real code behind a
 //      false `false`. A path counts as code unless it is KNOWN not to be — an unrecognized path
-//      must flag a gap, not hide one. Three ALLOWLISTS say what is known:
-//        · docs — `*.md` (docs/*.md, HANDOFF.md, BACKLOG.md).
-//        · client — public/** and the bundle sources below. Landing these does not put the
-//          RUNNING SERVER behind: they reach a browser through `bun run build`, which is exactly
-//          what bundleStale (this fact's twin, further down) reports. Counting them here made the
-//          server claim a gap for work that had already shipped — measured on the live instance
-//          2026-08-02: codeBehind:true whose whole diff was src/client.ts + public/index.html,
-//          with bundleStale:false saying the same bytes were serving.
-//        · harness — e2e/** and the runners below. The suites load them, this process never does,
-//          so restarting srv would change nothing. Same measurement, one day later: 2026-08-04 the
-//          line read codeBehind:true over a range of HANDOFF.md + e2e/verify-queue.ts — a warning
-//          surface that cries wolf on its own routine traffic gets learned as noise, which is the
-//          disease 163839b treated one layer down (a lock whose resting state was the alarm).
-//      Allowlists, not a denylist, so the fail-safe survives: a NEW src/ file is code until
-//      someone puts it here, and so is a SIXTH top-level runner. src/protocol.ts is deliberately
-//      absent — server.ts imports it. A false warning costs one restart; a hidden gap cost a day.
-//      Deliberately still code: `e2e-*.sh` and every other shell script. `watchdog.sh` is not
-//      redeployed by an srv restart at all, so no shell file has one honest answer here.
+//      must flag a gap, not hide one. WHICH paths are known is not decided here any more: since
+//      2026-09-07 `server/deploy-classify.ts` reads the role off the checkout's own IMPORT GRAPH
+//      (server-reachable / bundle- or harness-reachable / neither), because the two hand-kept
+//      allowlists this replaced went unmaintained four times in five weeks — src/helper.ts,
+//      src/backoff.ts, task-land-waves.ts and fleet-e2e-harness.ts each read codeBehind:true for
+//      work that never touched this process. The measurements those lists were built from stand
+//      unchanged: 2026-08-02 codeBehind:true whose whole diff was src/client.ts + public/index.html
+//      with bundleStale:false saying the same bytes were serving, and 2026-08-04 codeBehind:true
+//      over HANDOFF.md + e2e/verify-queue.ts — the deploy line warning about the suite files edited
+//      to check it. A warning surface that cries wolf on its own routine traffic gets learned as
+//      noise, which is the disease 163839b treated one layer down (a lock whose resting state was
+//      the alarm). What the graph cannot derive it says so about, and `codeBehindUnknown` names
+//      those paths: they still count toward codeBehind, exactly as the old default-deny counted
+//      them, but they are no longer ASSERTED to be server code. A false warning costs one restart;
+//      a hidden gap cost a day, so unknown keeps failing toward the warning.
 // FLEET_REPO_DIR exists because the server's own dir is the repo in production but not in a
 // throwaway test copy; unset it and the fact is about the code actually running.
 const REPO_DIR = process.env.FLEET_REPO_DIR || import.meta.dir;
-// the sources that become public/app.js, public/share.js and public/helper.js, and nothing
-// server.ts imports (its only src/ import is `./src/protocol`, which is deliberately absent above).
-// src/helper.ts and src/backoff.ts were MISSING until 2026-09-01, and each cost the same way round:
-// a land whose whole diff was one of them read codeBehind:true — the exact false gap the 2026-08-02
-// measurement above is a record of paying for, for work that had already shipped through the build.
-const CLIENT_ONLY_FILES = ["src/client.ts", "src/share.ts", "src/helper.ts", "src/shell.ts",
-  "src/md.ts", "src/backoff.ts", "src/pollplan.ts", "src/gitpath.ts", "src/filetree.ts", "src/plaudit.ts",
-  "src/opsevents.ts"];
-// the five single-file harnesses the e2e-*.sh wrappers boot; e2e/** below is the runner's modules
-const HARNESS_ONLY_FILES = ["fleet-e2e.ts", "fleet-e2e-claude-gate.ts", "fleet-e2e-clean-review.ts",
-  "fleet-e2e-security.ts", "fleet-e2e-postland-audit.ts"];
-const isServerCode = (p: string): boolean =>
-  !p.endsWith(".md") && !p.startsWith("public/") && !p.startsWith("e2e/") &&
-  !CLIENT_ONLY_FILES.includes(p) && !HARNESS_ONLY_FILES.includes(p);
+// the unknown paths are a diagnosis, not a payload — the whole point of naming them is that the
+// list is short. A range that somehow holds hundreds is already saying "cannot tell" at the first
+// twenty, and this fact rides the poll every client makes (see the data-saver note further down).
+const CODE_BEHIND_UNKNOWN_CAP = 20;
 let BOOT_HEAD: string | null = null;
 const bootHeadReady = git(REPO_DIR, "rev-parse", "HEAD")
   .then((r) => { BOOT_HEAD = r.code === 0 && /^[0-9a-f]{40}$/.test(r.out) ? r.out : null; })
   .catch(() => { BOOT_HEAD = null; }); // a boot-time throw must leave the fact unknown, not kill the server
-interface DeployGap { bootHead: string | null; head: string | null; behindCount: number | null; codeBehind: boolean | null }
+interface DeployGap {
+  bootHead: string | null; head: string | null; behindCount: number | null;
+  codeBehind: boolean | null;
+  // the third value made visible: paths in the range that the import graph could place on NEITHER
+  // side. They are counted in codeBehind (unknown is never an all-clear) but are not claimed to be
+  // server code. `null` wherever codeBehind itself is null — an unmeasured range names nothing.
+  codeBehindUnknown: string[] | null;
+}
 async function deployGap(): Promise<DeployGap> {
   await bootHeadReady;
-  const unknown: DeployGap = { bootHead: BOOT_HEAD, head: null, behindCount: null, codeBehind: null };
+  const unknown: DeployGap = {
+    bootHead: BOOT_HEAD, head: null, behindCount: null, codeBehind: null, codeBehindUnknown: null,
+  };
   if (!BOOT_HEAD) return unknown;
   const hd = await git(REPO_DIR, "rev-parse", "HEAD");
   if (hd.code !== 0 || !/^[0-9a-f]{40}$/.test(hd.out)) return unknown;
   const head = hd.out;
-  if (head === BOOT_HEAD) return { bootHead: BOOT_HEAD, head, behindCount: 0, codeBehind: false };
+  if (head === BOOT_HEAD) {
+    return { bootHead: BOOT_HEAD, head, behindCount: 0, codeBehind: false, codeBehindUnknown: [] };
+  }
   const [cnt, names] = await Promise.all([
     git(REPO_DIR, "rev-list", "--count", `${BOOT_HEAD}..${head}`),
     git(REPO_DIR, "diff", "--name-only", BOOT_HEAD, head),
   ]);
   const n = Number(cnt.out);
   if (cnt.code !== 0 || !Number.isInteger(n) || names.code !== 0) return { ...unknown, head };
+  // keyed on `head`, so the graph is walked once per land and not once per 10 s git tick
+  const graph = repoGraph(REPO_DIR, head);
+  const roles = names.out.split("\n").filter(Boolean).map((p) => [p, roleOf(p, graph)] as const);
   return {
     bootHead: BOOT_HEAD, head, behindCount: n,
-    codeBehind: names.out.split("\n").filter(Boolean).some(isServerCode),
+    codeBehind: roles.some(([, role]) => role !== "non-server"),
+    codeBehindUnknown: roles.filter(([, role]) => role === "unknown")
+      .map(([p]) => p).slice(0, CODE_BEHIND_UNKNOWN_CAP),
   };
 }
 

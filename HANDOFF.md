@@ -804,7 +804,17 @@ weiter: der Owner hat den Wellenmodus (W1–W3) hier eingehaengt.
   Commit-Sha); nach drei REJECTs Stop mit needs-main, kein Commit.
 - **Offene Frage (Notiz `997f0f05`, darf die P3-MAIN bei anhaltendem REJECT selbst annehmen?):** liegt laut Controller
   beim OWNER, der Controller entscheidet sie nicht. Bis zur Antwort gilt der Plan oben unveraendert. Keine Attention.
-- **Rueckwege, die eine Kompaktierung ueberleben:** Fleet-Auto `f33a3a9f` (One-Shot auf Slot 15, faellig 17:40,
+- **17:4x–18:2x, CHECKPOINT +8h GEFILET (Notiz `22dcc2a6`) UND EINE ATTENTION OFFEN — `58cb3e5e2546e3ed67dd554c`, kind `blocked`, 18:13.**
+  Befund: `6b61a7bf` haengt seit 14:2x an der Zeilen-Note „waiting: 5/1 lanes busy in claude-fleet (machine default)“ — bei
+  Deckel 1 startet der Tick sie nie, solange per Hand dispatchte Lanes laufen (18:12: sechs Task-Lanes, Slots 4/5/6/10/11/13).
+  Controller Slot 1 war nicht erreichbar (ctx >30 min unveraendert 18,4 %, Composer 38 Z. belegt, sechs `POST /send` in
+  30 min abgewiesen). **Volltext der Attention, damit die Nachfolgerin sie neu stellen kann, falls sie `refused` ist:**
+  (A) Darf die P3-MAIN `6b61a7bf` per Hand-Knopf `POST /api/tasks/6b61a7bf/dispatch {claude, claude-opus-5[1m], high}` ueber den
+  Deckel starten (7. Lane), oder schliesst/landet der Controller eine Repo-Lane, oder wartet P3 bis morgen? (B) = Notiz `997f0f05`:
+  darf die P3-MAIN bei anhaltendem Astra-REJECT (F1–F8 unstrittig, Restpunkte ≤ mittel, dokumentiert) selbst annehmen, oder bleibt
+  ACCEPT der zweiten Astra Pflicht? Ohne Antwort: nichts ueber den Deckel, Plan unveraendert. Das Checkpoint-Auto `f33a3a9f` ist
+  nach dem Feuern geloescht.
+- **Rueckwege, die eine Kompaktierung ueberleben:** (Auto geloescht, s.o.) Fleet-Auto `f33a3a9f` (One-Shot auf Slot 15, faellig 17:40,
   `idleSec 60`) fuer den Checkpoint +8h. Session-lokal (sterben mit Pane/Succession): Monitore auf den Statuswechsel von
   `6b61a7bf` und auf 17:40. **Noch KEIN Fleet-Watch** — der Lane-Watch braucht den Slot, den es erst bei `sent` gibt.
 

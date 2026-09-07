@@ -87,3 +87,4 @@ Scope and sources, so the omissions are not silent:
 - `trailstats.ts` — The flake question — answered from the trail instead of from a seven-minute re-run.
 - `verify-proportion.ts` — Local proof is deliberately conservative: an empty or unfamiliar footprint expands to the
 - `watchdog.sh` — claude-fleet watchdog: keep the `srv` tmux session (the fleet server) alive.
+- `wave-brief.ts` — The founding brief of a WAVE lane — n queue rows, one lane, one land (S3 of

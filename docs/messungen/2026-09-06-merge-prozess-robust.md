@@ -116,9 +116,14 @@ ff-Retry-Runde schon hat. Und die Familien aus §1.3 werden zaehlbar.
 steps blocked" bei `verify.waitMs > 0` (das Warten lag im Hold, nicht in den Stufen), und
 `audit.jsonl` traegt fuer jedes Merge-Verdikt seit M1 genau eine `merge_verdict`-Zeile.
 *Gebaut* in Lane `fleet/260906222646-5fb3`, gelandet 2026-09-07 02:5x als `f388de1` + `f0bcea6` (Self-Land
-der Program-MAIN Slot 4, `verify.ok:true`, 140 s Arbeit, 0 s Schlange). **Der Done-Satz ist erst nach dem
-DEPLOY messbar:** die Land-Note dieses Lands stammt noch vom Vor-M1-Server, `audit.jsonl` traegt bis zum
-Deploy keine `merge_verdict`-Zeile — das erste Code-Land NACH dem Deploy ist die Messung. Eine Abweichung von der Nicht-Liste war noetig und ist
+der Program-MAIN Slot 4, `verify.ok:true`, 140 s Arbeit, 0 s Schlange). **Der Done-Satz war erst nach dem
+DEPLOY messbar, und ist es seit dem Deploy `4fc0afa7` (03:08, Id in `deploys.jsonl`) — GEMESSEN 2026-09-07 07:2x von der Program-MAIN
+Slot 5:** `audit.jsonl` traegt 8 `merge_verdict`-Zeilen fuer 8 Verdikte seit dem Deploy (4 `merged`
+per MAIN/Owner, 2 `error ff-lost`, 1 `resolved`, 1 Owner-Land mit `waitMs null`); drei tragen
+`waitMs > 0` — 710 000, 450 000, 255 000 ms — und jede dieser drei Land-Noten sagt „0 of 3 staged steps
+blocked": das Warten lag im Hold, hinter einem TOTEN Halter (der Befund, den M5 schliesst). Das erste
+Code-Land der MAIN nach dem Deploy (M5 selbst, `b2ab2cf`) traegt `merge_verdict … ms 139475 waitMs 0`;
+`./state.sh` zaehlt weiterhin 19 FAILED-Notes, keine neue. Eine Abweichung von der Nicht-Liste war noetig und ist
 gemessen: die e2e-Instanzen teilten sich bis dahin den Maschinen-Mutex `/tmp/fleet-e2e.lock` mit
 dem Wrapper, der sie startet — mit dem Hold vor dem Gate stand jeder saubere Land-Pfad in einer
 Schlange hinter seinem EIGENEN Runner (gemessen 2026-09-06: `./e2e-clean-review.sh` haengt in
@@ -229,8 +234,9 @@ haette (iv) nichts gemessen. Dazu zwei Pins in `e2e/pins.ts` (Reap-Dreiteilung g
 Wrappers; Kein-Hold plus die Eigenschaft, die es sicher macht: das proportionale Kommando nennt
 keinen `e2e-*.sh`-Wrapper).
 
-*Gebaut* in Lane `fleet/260907031403-3744`, gelandet als `<sha>` (MAIN traegt die echte Sha nach dem
-Land nach).
+*Gebaut* in Lane `fleet/260907031403-3744`, gelandet 2026-09-07 07:2x als `94dd5e4` + `a15b59a` + `b2ab2cf` (Self-Land der
+Program-MAIN Slot 5, `verify.ok:true`, 139 s Arbeit, 0 s Schlange — der Lock trug beim Land den DRITTEN toten
+Halter des Tages, pid 22947, birth 06:28:40, von der MAIN vor dem Land von Hand gereapt; fuenfter Datenpunkt).
 
 **Schnittlinie.** Nach M1–M3 (M5 repariert eine M1-Regression und fuegt der Liste
 keine neue Todesart hinzu) stirbt ein Land nur noch an rotem Verify, an einem Konflikt, den der

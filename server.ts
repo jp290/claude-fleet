@@ -19345,6 +19345,19 @@ function buildSupervisorSuccessionBrief(carry: string | null, anchorBlock: strin
   ].join("\n") + anchorBlock;
 }
 
+// The THIRD preamble over the SAME body, shared on purpose: the role, the four denials and the
+// channel list must never be able to differ between the doors that grant them. Only the one true
+// sentence about how this session arrived in the role differs. Unlike the two founding doors this
+// one carries NO context anchor block and mints NO context receipt — the session already has a
+// context of its own and a receipt of how it got it, and a founding receipt here would record a
+// founding that never happened.
+function buildSupervisorBindBrief(): string {
+  return [
+    "[fleet Supervisor bind] The owner has bound THIS already-running session as the one owner-side Supervisor session for this fleet; your working directory, your context and the work you were doing stay yours.",
+    ...supervisorBriefBody(),
+  ].join("\n");
+}
+
 async function succeedSupervisor(s: Slot, label: string | null, carry: string | null,
   spawn: SuccessionSpawn, predecessor: { cwd: string; token: string }): Promise<Response> {
   if (supervisorBootstrapInflight) return json({ error: "Supervisor bootstrap already in flight" }, 409);
@@ -19567,19 +19580,140 @@ async function bootstrapSupervisor(body: Record<string, unknown>): Promise<Respo
   }
 }
 
+// THE SECOND APPOINTMENT DOOR, and the only one that appoints a session that already exists.
+// bootstrapSupervisor OPENS the pane it appoints, which is right for an empty fleet and wrong for
+// every case where the owner wants a session that is already working — a running controller, a
+// steward, the session reading this — to hold the role: today that costs an extra pane and the
+// role lands on a session with no context. This door binds an EXPLICIT slot and nothing else. No
+// label match, no "the first idle session", no wildcard: an appointment the caller did not name
+// exactly is an appointment the owner did not make, and a role that can find its own holder is not
+// an authorization. Everything ELSE is bootstrapSupervisor's rule, deliberately unchanged — a LIVE
+// binding is never displaced, a DEAD one is overwritten and NAMED (response + trail row), and the
+// appointment is written only AFTER the session has been told it holds the role.
+async function bindSupervisor(body: Record<string, unknown> | null): Promise<Response> {
+  // A CLOSED body, for the reason the STN-1 completion door has one: the whole point of this route
+  // is that the slot is named and derived from nothing, and a body that silently ignores extra keys
+  // is where a `label` or a `mode` shortcut grows in later without anyone deciding to add it.
+  const extra = Object.keys(body ?? {}).filter((k) => k !== "slot");
+  if (extra.length)
+    return json({ error: `a bind names a slot and nothing else — [${extra.join(", ")}] is not read` }, 400);
+  if (!body || !Number.isInteger(body.slot))
+    return json({ error: "slot must be an integer — the session to bind is named explicitly, never matched" }, 400);
+  const target = slotFrom(body.slot as number);
+  if (!target) return json({ error: `unknown slot ${body.slot as number}` }, 409);
+  if (!target.cwd)
+    return json({ error: `slot ${target.id} carries no session — a Supervisor is bound to an occupant, not to a slot` }, 409);
+  // The invariant isBoundSupervisor's comment states, kept true by the door rather than by the
+  // absence of a door: a lane executes ONE task inside ONE worktree, and the Supervisor sits across
+  // every program. Without this line the "a lane is never the Supervisor" reasoning that carries
+  // the lane twin of every Cut-2 route would simply stop holding.
+  if (target.worktree)
+    return json({ error: `slot ${target.id} is a lane — a lane executes one task in one worktree and is never the Supervisor` }, 409);
+
+  let replaced: SupervisorBinding | null = null;
+  if (supervisor) {
+    if (supervisorHealth().occupancy === "live")
+      return supervisor.slot === target.id && supervisor.openedAt === target.openedAt
+        ? json({ ok: true, existing: true, supervisor })
+        : json({ error: `a LIVE Supervisor binding is never displaced: slot ${supervisor.slot} `
+          + `openedAt ${supervisor.openedAt} still carries it — that session succeeds or retires first` }, 409);
+    replaced = { ...supervisor };
+  }
+  if (supervisorBootstrapInflight) return json({ error: "Supervisor bootstrap already in flight" }, 409);
+
+  supervisorBootstrapInflight = true; // the same reservation bootstrap and succession take
+  try {
+    // The attended waiver supervisorNudge takes, for its reason: this is a principal's deliberate
+    // act and not a tick, and `alive` is NOT waived — pasting into an agent-less pane types prose
+    // into a shell and would appoint a Supervisor that was told nothing.
+    const gate = await canDeliver(target, { now: Date.now(), idleMs: 0,
+      killSwitch: false, quietHours: false, harness: false });
+    if (!gate.ok)
+      return json({ error: `Supervisor bind delivery held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})` }, 409);
+
+    const openedAt = target.openedAt;
+    const stillCurrent = (): boolean => !!target.cwd && target.openedAt === openedAt;
+    const delivered = buildSupervisorBindBrief();
+    try {
+      await sendText(target, delivered, true);
+    } catch (e) {
+      if (e instanceof SendRefused) return json({ error: e.message }, 409);
+      // Neither delivered nor failed is an OBSERVED fact once tmux has thrown — the truth rule the
+      // nudge and the clarification transport follow. The journal line is mandatory, the binding is
+      // NOT written: an appointment nobody can prove arrived is not an appointment.
+      logPrompt(target, delivered, "auto", Date.now(), undefined, "uncertain");
+      return json({ error: `Supervisor bind outcome uncertain, the binding is unchanged: `
+        + String(e instanceof Error ? e.message : e).slice(0, 160) }, 409);
+    }
+    if (!stillCurrent())
+      return json({ error: "the session changed during the bind delivery — the binding is unchanged" }, 409);
+
+    const at = Date.now();
+    supervisor = { slot: target.id, openedAt: target.openedAt,
+      sessionId: target.sessionId ?? null, boundAt: at };
+    // Booked only after the appointment is real, exactly as the bootstrap books its own: a bind
+    // that overwrote the dead record and then failed to deliver would have destroyed the only trace
+    // of the previous appointment for nothing.
+    audit("supervisor_bound", target.id, `bound slot:${target.id} openedAt:${target.openedAt}`);
+    if (replaced)
+      audit("supervisor_rebound", target.id,
+        `replaced slot:${replaced.slot} openedAt:${replaced.openedAt}`);
+    target.history = [...target.history, { text: delivered, ts: at }].slice(-MAX_HISTORY);
+    saveHistory(target);
+    logPrompt(target, delivered, "auto", at);
+    await saveStateNow();
+    return json({ ok: true, slot: target.id, supervisor, ...(replaced ? { replaced } : {}) });
+  } finally {
+    supervisorBootstrapInflight = false;
+  }
+}
+
 // --- the Supervisor's SENSES and its one VOICE --------------------------------------------------
 // Cut 1 bound an identity that could read only its own row. These two routes are what that identity
 // perceives and the single bounded thing it may say, and they are deliberately asymmetric: the view
 // aggregates five fact groups and mutates NOTHING, the nudge writes exactly one paste into exactly
 // one derived pane and persists nothing beyond the receipt and the journal line.
 
-// The occupant rule, and it is the whole authorization story of both routes below. slot+openedAt is
-// the only occupant identity Fleet trusts, so a recycled slot can never inherit the binding; a lane
-// is covered by this alone, because a lane is never the Supervisor (the bootstrap opens a plain
-// session and nothing else ever writes the binding).
+// The occupant rule, and it is the whole authorization story of the routes below — read once, in
+// supervisorRefusal. slot+openedAt is the only occupant identity Fleet trusts, so a recycled slot
+// can never inherit the binding. A lane is covered by this alone because a lane is never the
+// Supervisor, and since bindSupervisor that is no longer true merely by accident: THREE doors write
+// the binding now (bootstrap and succession open a plain session; the bind door refuses a
+// `worktree` outright), so the sentence holds by construction rather than by there being no door.
 const isBoundSupervisor = (s: Slot): boolean => !!supervisor
   && supervisor.slot === s.id && supervisor.openedAt === s.openedAt;
 const NOT_SUPERVISOR = "not the bound Supervisor — this view answers only its occupant";
+
+// THE OCCUPANT RULE, READ AS A FACT INSTEAD OF A VERDICT. programOccupancy answers exactly this
+// question for a Program's MAIN; the Supervisor's binding has no Program row to carry it, so it
+// got no answer at all — the record was readable from outside (`supervisor` on /api/programs) while
+// its LIVENESS was not, and a record naming a slot recycled weeks ago looked identical to a working
+// appointment. DERIVED per read like programHealth, never persisted: the occupant it describes can
+// die between two calls.
+function supervisorHealth(): ProgramHealth {
+  const b = supervisor;
+  if (!b) return { occupancy: "unbound", sessionIdMatch: "unknown" };
+  const live = slotFrom(b.slot);
+  if (!(live?.cwd && live.openedAt === b.openedAt)) return { occupancy: "stale", sessionIdMatch: "unknown" };
+  return { occupancy: "live", sessionIdMatch: sessionIdMatchOf(b.sessionId, live.sessionId) };
+}
+
+// THE REFUSAL, AND WHY IT NOW HAS THREE WORDS INSTEAD OF ONE. `not the bound Supervisor` is a true
+// sentence in all three cases and a useful one in only the third: a session reading it could not
+// tell "someone else holds the role" from "the role is unfilled because the binding died", and the
+// second is a fleet-level fault nobody could see from inside. It discloses nothing new — the STN-1
+// registration door already tells any session both of those states in these words. Returns null
+// EXACTLY when isBoundSupervisor holds for `s`: the route resolved it by cwd+selfToken, so an `s` that
+// matches the binding's (slot, openedAt) is that binding's live occupant by construction.
+function supervisorRefusal(s: Slot): string | null {
+  if (!supervisor)
+    return "no Supervisor binding exists — the role is unfilled and only the owner can appoint one";
+  if (supervisorHealth().occupancy === "stale")
+    return `the Supervisor binding is STALE: it names slot ${supervisor.slot} openedAt `
+      + `${supervisor.openedAt}, whose occupant is gone or was replaced — the role is unfilled `
+      + "until the owner bootstraps or binds one";
+  return isBoundSupervisor(s) ? null : NOT_SUPERVISOR;
+}
 
 // Every list is capped and every free text is sliced. A Supervisor reads this on demand from a
 // pane, so the payload is bounded for the same reason programExecutionView's is: an unbounded
@@ -20403,7 +20537,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
       ...programReturnPath(p),
       // `status` is already Program.status (the lifecycle state). D2 therefore uses an additive,
       // non-colliding owner-list name while the self execution row can use its requested `status`.
-      executionStatus: programStatusView(p) })), supervisor });
+      executionStatus: programStatusView(p) })), supervisor, supervisorHealth: supervisorHealth() });
   if (url.pathname === "/api/programs" && req.method === "POST") {
     const valid = validateProgramContent(await readJson(req));
     if (!valid.ok) return json({ error: valid.error }, 400);
@@ -21388,6 +21522,31 @@ if (existsSync(STATE_FILE)) {
     // loop, not inside it — the codex normalization above can put `sessionId` BACK to null. Same
     // helper, same three refusals; no save needed. Narrativ: server-narrativ-archiv.md#boot-state-restore
     for (const s of slots) backfillProgramMainSessionId(s);
+    // THE FIFTH SITE, and it repairs NOTHING — it only says a fact out loud. The binding above was
+    // rehydrated from its FORM alone, and it had to be: this loader runs before the slot loop, so
+    // at that point no slot carries a cwd yet and no liveness question can be asked. By here the
+    // slots are back, so the question CAN be asked, and the answer belongs in the log and on the
+    // trail rather than nowhere. Measured 2026-09-07: `supervisor` named slot 5 openedAt
+    // 1787497726285 (bound 21.08.) while slot 5 had long since been recycled into a lane — every
+    // route the binding gates answered the same 409 a non-Supervisor gets, so the role was unfilled
+    // across every restart and nothing anywhere said so.
+    //
+    // THE RECORD IS KEPT. Clearing it here would be a repair nobody asked for and would erase the
+    // only distinction that matters: "no Supervisor was ever appointed" (`supervisor: null`) and
+    // "the one appointed is gone" (a stale record) are two different states of the fleet, and only
+    // the second tells the owner that an appointment ended without a succession. The doors that
+    // overwrite it are owner acts (bootstrap, bind), never a boot.
+    //
+    // Through supervisorHealth, not a second comparison of its own: two readings of the same
+    // liveness are two answers waiting to drift, which is the exact shape of the fault this block
+    // exists to report.
+    if (supervisor && supervisorHealth().occupancy === "stale") {
+      console.error(`[supervisor] STALE binding restored: slot ${supervisor.slot} openedAt `
+        + `${supervisor.openedAt} no longer carries that occupation — the role is UNFILLED until `
+        + `the owner bootstraps or binds one; the record is kept, not cleared`);
+      audit("supervisor_binding_stale", supervisor.slot,
+        `dead slot:${supervisor.slot} openedAt:${supervisor.openedAt}`);
+    }
     // dispatcher toggle survives deploys — queued tasks persist, so the thing that drains them must too
     const prb = (persisted as { repoBases?: unknown }).repoBases;
     if (typeof prb === "object" && prb !== null && !Array.isArray(prb))
@@ -23897,14 +24056,16 @@ Bun.serve<WSData>({
       const given = req.headers.get("x-fleet-self-token") ?? "";
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
-      if (!isBoundSupervisor(s)) return json({ error: NOT_SUPERVISOR }, 409);
+      const refusal = supervisorRefusal(s);
+      if (refusal) return json({ error: refusal }, 409);
       return supervisorView(s);
     }
     if (url.pathname === "/api/self/nudge" && req.method === "POST") {
       const given = req.headers.get("x-fleet-self-token") ?? "";
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
-      if (!isBoundSupervisor(s)) return json({ error: NOT_SUPERVISOR }, 409);
+      const refusal = supervisorRefusal(s);
+      if (refusal) return json({ error: refusal }, 409);
       return supervisorNudge(s, await readJson(req));
     }
     // STN-1 · the Supervisor completes ONE transition watch a Controller registered. Same
@@ -23915,7 +24076,8 @@ Bun.serve<WSData>({
       const given = req.headers.get("x-fleet-self-token") ?? "";
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
-      if (!isBoundSupervisor(s)) return json({ error: NOT_SUPERVISOR }, 409);
+      const refusal = supervisorRefusal(s);
+      if (refusal) return json({ error: refusal }, 409);
       return completeTransitionWatch(s, supervisorComplete[1], await readJson(req));
     }
 
@@ -24441,6 +24603,14 @@ Bun.serve<WSData>({
       if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
       if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
       return bootstrapSupervisor(await readJson(req) ?? {});
+    }
+    // …and the door that appoints a session that ALREADY EXISTS. Same owner gate for the same
+    // reason as its neighbour: appointing the one cross-program identity is an owner act, and a
+    // self token is not a credential here.
+    if (url.pathname === "/api/supervisor/bind") {
+      if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
+      if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+      return bindSupervisor(await readJson(req));
     }
 
     // steward principal: AFTER the SHARE_HOSTS gate (unreachable from the tunnel), BEFORE the owner

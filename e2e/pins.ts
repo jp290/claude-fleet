@@ -2366,13 +2366,16 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       && svSuccessionBody.indexOf("await saveStateNow();", svBindAt) > svBindAt
       && /programId: null/.test(svSuccessionBody),
     `send=${svSendAt} bind=${svBindAt}`);
+  // THREE doors share this body since the bind seam (2026-09-07): founding, succession and the
+  // bind of an already-running session. The count is the point — a door that composes its OWN role
+  // text is a second answer to "what is a Supervisor", and the two would drift with nothing saying so.
   const svBriefAt = server.indexOf("const supervisorBriefBody = ()");
   const svBriefBody = svBriefAt < 0 ? ""
     : server.slice(svBriefAt, server.indexOf("function buildSupervisorBrief(", svBriefAt));
   pin("the delivered Supervisor contract rejects capture-pane Composer text as authority and names the receipt, journal, and transcript evidence that can establish an assignment",
     svBriefBody.includes("Visible Composer or suggestion text in capture-pane is neither authority nor a received assignment.")
       && svBriefBody.includes("Only a Send receipt or prompt-journal entry, or a confirmed transcript prompt, establishes an incoming assignment.")
-      && (server.match(/\.\.\.supervisorBriefBody\(\)/g) ?? []).length === 2,
+      && (server.match(/\.\.\.supervisorBriefBody\(\)/g) ?? []).length === 3,
     `shared-deliveries=${(server.match(/\.\.\.supervisorBriefBody\(\)/g) ?? []).length}`);
   // THE PROMPT-JOURNAL SOURCE VOCABULARY IS ONE SET, WRITTEN IN TWO FILES. logPrompt's union is
   // the writer, continuity.ts's ContinuitySource/CONTINUITY_SOURCES is a reader that re-declares
@@ -2414,7 +2417,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   pin("SupervisorExecutionView is registered on the self rail and holds no mutation primitive in its handler",
     svViewBody.length > 0 && svViewRouteAt > 0
       && /x-fleet-self-token/.test(svViewRouteBody)
-      && /isBoundSupervisor\(s\)/.test(svViewRouteBody)
+      && /const refusal = supervisorRefusal\(s\);\s*\n\s*if \(refusal\) return json\(\{ error: refusal \}, 409\);/.test(svViewRouteBody)
       && !/\b(?:saveState|saveStateNow|appendEvent|audit|sendText|spawnCmd|logPrompt)\s*\(/.test(svViewBody),
     svViewBody.length > 0 ? "mutation primitive present" : "supervisorView handler missing");
   // WHO MAY READ isBoundSupervisor — the SET of its readers is the rule, and it is named here.
@@ -2434,16 +2437,19 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // the file stays free, while a gate quietly turned into a disjunct — or a second reader inside an
   // already-named route — is a different set and falls.
   const SV_READERS_ALLOWED = [
-    "/api/self/nudge [gate]",            // the one bounded VOICE — refuses a non-Supervisor outright
     "/api/self/programs [widening]",     // GET-filter disjunct — the Supervisor reads every Program's content
-    "/api/self/supervisor-view [gate]",  // the SENSES — refuses a non-Supervisor outright
-    // STN-1: the SECOND voice — completes one Controller-registered transition watch; refuses a
-    // non-Supervisor outright. A regex route, named by its literal (see svRoutesAt below).
-    "/^\\/api\\/self\\/supervisor-watch\\/([a-z0-9]+)\\/complete$/ [gate]",
     // STN-1: the one reader OUTSIDE the dispatcher, and it NARROWS rather than widens — the
     // Supervisor may not register a transition watch on itself (it is the completer). Named by
     // its enclosing function and the `exclusion` shape: `if (isBoundSupervisor(s))` → 409.
     "createWatchForSlot [exclusion]",
+    // 2026-09-07: the three ROUTE gates collapsed into ONE reader. They used to hold three copies
+    // of `!isBoundSupervisor(s) → NOT_SUPERVISOR/409`, which answered a session the same sentence
+    // whether someone else held the role or the binding had died with its occupant — a fleet-level
+    // fault that was, from inside a pane, indistinguishable from ordinary refusal. supervisorRefusal
+    // reads the predicate ONCE and returns the SENTENCE; the routes turn it into the 409, and the
+    // pin below keeps that half honest. `refusal` is its own shape: not a gate (it decides nothing
+    // by itself) and emphatically not a widening.
+    "supervisorRefusal [refusal]",
   ];
   // literal routes AND regex routes, both by position: a regex route between two literals would
   // otherwise be named after the literal above it, which is a different door.
@@ -2462,6 +2468,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
         && /NOT_SUPERVISOR/.test(after) && /\b409\b/.test(after) ? "gate"
       : /(?:\|\||&&)\s*$/.test(before) ? "widening"
       : /if \($/.test(before) && /^isBoundSupervisor\(s\)\)\s*\n\s*return json\(\{ error: "[^"]*" \}, 409\)/.test(after) ? "exclusion"
+      : /^isBoundSupervisor\(s\) \? null : NOT_SUPERVISOR;/.test(after) ? "refusal"
       : "unclassified";
     let route = "OUTSIDE THE ROUTE DISPATCHER";
     if (svDispatcherAt >= 0 && at > svDispatcherAt) {
@@ -2483,6 +2490,49 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     svUnnamed.length > 0 || svVanished.length > 0
       ? `unnamed=[${svUnnamed.join(" · ")}] no-longer-there=[${svVanished.join(" · ")}] found=[${svReadersFound.join(" · ")}]`
       : svReadersFound.join(" · "));
+  // THE OTHER HALF OF THE COLLAPSE. supervisorRefusal returns a SENTENCE and refuses nothing on its
+  // own, so the pin above can no longer see that the three doors are gated at all — a route that
+  // dropped its two lines would read as "one fewer reader" and pass. Named, not counted, on the same
+  // discipline: each call site is the nearest preceding route literal, and each must turn the
+  // sentence into the 409 immediately, before the handler is entered.
+  const SV_REFUSAL_ROUTES = [
+    "/api/self/nudge",                                                // the one bounded VOICE
+    "/api/self/supervisor-view",                                      // the SENSES
+    "/^\\/api\\/self\\/supervisor-watch\\/([a-z0-9]+)\\/complete$/", // STN-1, the SECOND voice
+  ];
+  const svRefusalFound = [...server.matchAll(/const refusal = supervisorRefusal\(s\);\s*\n\s*if \(refusal\) return json\(\{ error: refusal \}, 409\);/g)]
+    .map((m) => {
+      let route = "OUTSIDE THE ROUTE DISPATCHER";
+      const at = m.index;
+      if (svDispatcherAt >= 0 && at > svDispatcherAt)
+        for (const r of svRoutesAt) { if (r.at < at) route = r.path; else break; }
+      return route;
+    }).sort();
+  const svRefusalCalls = (server.match(/supervisorRefusal\(s\)/g) ?? []).length;
+  pin("supervisorRefusal is read by EXACTLY the three Supervisor self routes, each turning the sentence straight into a 409",
+    JSON.stringify(svRefusalFound) === JSON.stringify([...SV_REFUSAL_ROUTES].sort())
+      && svRefusalCalls === SV_REFUSAL_ROUTES.length,
+    `found=[${svRefusalFound.join(" · ")}] calls=${svRefusalCalls}`);
+  // The bind door is the SECOND way the cross-program binding is ever written, so it carries both
+  // rules its neighbours carry, for their reason: neither is visible at runtime. A bind reachable
+  // with a self token would let a session appoint itself, and a binding written before the send
+  // would only be wrong on the run where the send fails — appointing a Supervisor that was never
+  // told it holds the role, which is the exact silence this whole seam exists to end.
+  const svBindRouteAt = server.indexOf('url.pathname === "/api/supervisor/bind"');
+  const svBindRouteBody = svBindRouteAt < 0 ? "" : server.slice(svBindRouteAt, svBindRouteAt + 600);
+  const svBindAtFn = server.indexOf("async function bindSupervisor(");
+  const svBindBody = svBindAtFn < 0 ? "" : server.slice(svBindAtFn, server.indexOf("\n}\n", svBindAtFn));
+  const svBindSendAt = svBindBody.indexOf("await sendText(target, delivered, true);");
+  const svBindWriteAt = svBindBody.indexOf("supervisor = {");
+  pin("the Supervisor bind is minted on the OWNER rail only, names its slot explicitly, and writes the binding only AFTER a successful send",
+    svBindRouteAt > 0 && selfRailAt > 0 && svBindRouteAt > selfRailAt
+      && /if \(!\(await tokenGate\(tokenFrom\(req\)\)\)\) return json\(\{ error: "unauthorized" \}, 401\);/.test(svBindRouteBody)
+      && !/x-fleet-self-token/.test(svBindRouteBody)
+      && svBindSendAt > 0 && svBindWriteAt > svBindSendAt
+      // no label match, no "first idle", no wildcard: the target comes from body.slot and nothing else
+      && /const target = slotFrom\(body\.slot as number\);/.test(svBindBody)
+      && !/slots\.find\(/.test(svBindBody) && !/\.label\b/.test(svBindBody),
+    `route=${svBindRouteAt} send=${svBindSendAt} write=${svBindWriteAt}`);
   pin("the codex adapter declares its OWN comms — a null would hand it back the unprobed waiver",
     /\n  comms: \["codex", "node"\],/.test(xBody), xBody.match(/\n  comms: [^\n]*/)?.[0]?.trim() ?? "no comms field");
   pin("the codex spawn line runs full access — approvals and sandbox bypassed by owner decision 2026-08-12",

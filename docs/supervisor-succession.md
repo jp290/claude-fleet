@@ -269,8 +269,16 @@ Host literal `http://100.64.0.1:8790`. Owner-Token aus `fleet.json` als
 
 ```sh
 curl -s -H "authorization: Bearer $TOK" http://100.64.0.1:8790/api/programs \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["supervisor"])'
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["supervisor"], d["supervisorHealth"])'
 ```
+
+`supervisorHealth` (seit 2026-09-07, `server.ts#supervisorHealth`) ist die **Lebendprobe neben dem
+Record** und wird pro Lesung abgeleitet, nie persistiert: `occupancy` ist `unbound` (nie ernannt) ·
+`live` (der Slot trägt noch dasselbe `openedAt`) · `stale` (ernannt, Occupant weg oder ersetzt), und
+`sessionIdMatch` ist die zweite Hälfte derselben Frage, exakt in der Vokabel von `programHealth`.
+Vorher trug die Route den Record OHNE seine Liveness — eine Bindung auf einen längst recycelten Slot
+las sich wie eine funktionierende Ernennung. Gemessen an genau diesem Fall: `{slot:5,
+openedAt:1787497726285}` vom 21.08. gegen einen Slot, der zu diesem Zeitpunkt eine Lane war.
 
 ### 4.1 Frische Supervisor-Session erzeugen
 
@@ -292,7 +300,7 @@ entscheidet der Owner. Vorbedingungen, jede mit eigener Antwort:
 | `label` fehlt | Default `SUPERVISOR_LABEL = "🧿 Supervisor"` (`server.ts#SUPERVISOR_LABEL`, gesetzt in `server.ts#bootstrapSupervisor`) | — |
 | Kein freier Slot | `server.ts#bootstrapSupervisor` | 409 `no free slot` |
 | Bindung existiert und ihr Occupant lebt | `server.ts#bootstrapSupervisor` | **200** `{ok:true, existing:true}` — idempotent, kein zweiter Supervisor |
-| Bindung existiert, Occupant tot (*stale*) | `server.ts#bootstrapSupervisor` | 409 mit Slot + `openedAt` — **und es gibt keinen Clear-Weg** (§5.1) |
+| Bindung existiert, Occupant tot (*stale*) | `server.ts#bootstrapSupervisor` | **200** — die tote Bindung wird ÜBERSCHRIEBEN, die Antwort nennt sie als `replaced`, eine Trail-Zeile `supervisor_rebound` ebenso. (Die frühere Fassung dieser Zeile nannte ein 409 ohne Clear-Weg; das ist seit der Rebind-Naht überholt, §5.1.) |
 | Ein Bootstrap läuft bereits | `server.ts#bootstrapSupervisor` (Riegel `server.ts#supervisorBootstrapInflight`) | 409 |
 
 Danach: Slot öffnen, 4 s Boot-Ruhe, `canDeliver`-Gate, `waitForFoundingReadiness`, Brief senden,
@@ -306,6 +314,49 @@ während die belieferte Nachfolgerin eine gewöhnliche ungebundene Session bleib
 entscheidet dann. Die *Nachfolge* (§4.2) hat dagegen eine echte alte Bindung und einen im Code
 benannten Kommentar dazu (`server.ts#succeedSupervisor`, „Same one-way crash boundary as the
 Program-MAIN rail").
+
+### 4.1b Eine LAUFENDE Session als Supervisor binden
+
+`POST /api/supervisor/bootstrap` ÖFFNET die Session, die es ernennt. Soll die Rolle an eine Session
+gehen, die es schon gibt — einen arbeitenden Controller, den `⚙ steward`, die Session, die gerade
+liest — gab es dafür bis 2026-09-07 keine Tür: der Owner bekam eine zusätzliche Pane ohne Kontext.
+
+```sh
+curl -s -X POST http://100.64.0.1:8790/api/supervisor/bind \
+  -H "authorization: Bearer $TOK" -H "content-type: application/json" \
+  -d '{"slot":7}'
+```
+
+**Owner-only** (`server.ts#"/api/supervisor/bind"`), gleiche Begründung wie beim Bootstrap: ein
+Self-Token ist hier gar keine Kredenz (401). Der Body ist **geschlossen und nennt genau einen Slot** —
+kein Label-Match, kein „erste idle Session", kein Wildcard. Eine Rolle, die ihren eigenen Halter
+finden kann, ist keine Autorisierung.
+
+| Bedingung | Naht | Antwort, wenn verletzt |
+|---|---|---|
+| Body trägt ein weiteres Feld | `server.ts#bindSupervisor` | 400 `a bind names a slot and nothing else — [label] is not read` |
+| `slot` fehlt oder ist keine ganze Zahl | ebd. | 400 `slot must be an integer …` |
+| Slot existiert nicht | ebd. | 409 `unknown slot N` |
+| Slot ist leer | ebd. | 409 `carries no session — a Supervisor is bound to an occupant, not to a slot` |
+| Slot ist eine **Lane** | ebd. | 409 `is a lane — a lane executes one task in one worktree and is never the Supervisor` |
+| Bindung lebt und ist genau dieser Occupant | ebd. | **200** `{ok:true, existing:true}` — idempotent, kein zweiter Brief, keine zweite Trail-Zeile |
+| Bindung lebt und ist eine ANDERE Session | ebd. | 409 `a LIVE Supervisor binding is never displaced …` — die Vorgängerin nachfolgt oder retired zuerst |
+| Bindung existiert, Occupant tot | ebd. | **200**, überschrieben, `replaced` im Body + Trail `supervisor_rebound` |
+| Ein Bootstrap/Bind läuft bereits | Riegel `server.ts#supervisorBootstrapInflight` (geteilt mit Bootstrap und Nachfolge) | 409 |
+| Zustell-Gate zu (`canDeliver`) | ebd. | 409 `Supervisor bind delivery held (…)` |
+
+Die Tür **liefert**, bevor sie bindet: eine still verliehene Rolle ist dieselbe Fehlerklasse wie eine
+still verlorene. Der Text ist die **gemeinsame** `supervisorBriefBody()` der beiden Founding-Türen
+unter einer eigenen ersten Zeile (`server.ts#buildSupervisorBindBrief`) — eine zweite Kopie des
+Rollentexts wäre eine zweite Antwort auf „was ist ein Supervisor". Was diese Tür NICHT tut: sie
+öffnet keinen Slot, hängt keinen Context-Anchor-Block an und prägt **keinen Context-Receipt** — die
+Session hat ihren eigenen Kontext und einen Receipt darüber, wie sie ihn bekam; ein Founding-Receipt
+hier würde eine Gründung behaupten, die nie stattfand. Die Bindung wird strukturell erst NACH dem
+erfolgreichen Send geschrieben (Pin in `e2e/pins.ts`); ein Send-Ausgang, den tmux offen lässt, ist
+409 mit unveränderter Bindung und einer `uncertain`-Zeile im Prompt-Journal.
+
+Trail: `supervisor_bound` (die Ernennung, mit Slot + `openedAt`) und zusätzlich `supervisor_rebound`,
+wenn eine tote Bindung überschrieben wurde.
 
 ### 4.2 Nachfolge auslösen (aus der Pane des Supervisors)
 
@@ -352,7 +403,7 @@ Supervisor ist, bekommt dort 409** (§5.2). Bis das ein Cut schließt gilt:
 
 ## 5. Bekannte Lücken — ehrlich, mit ihren Kosten
 
-### 5.1 Keine Supervisor-Lineage, und ein Stale-Binding hat keinen Clear-Weg
+### 5.1 Keine Supervisor-Lineage (der Stale-Clear-Weg ist geschlossen)
 
 Die Bindung ist ein **Singleton**, kein Verlauf: `supervisor = {…}` wird bei Bootstrap
 (`server.ts#bootstrapSupervisor`) und Nachfolge (`server.ts#succeedSupervisor`) **überschrieben**.
@@ -361,11 +412,24 @@ Frühere Occupants sind nicht rekonstruierbar; die `supervisor-view` sagt es üb
 `context-receipts.jsonl`-Zeilen mit `programId:null` **und** `taskId:null` — das ist die Signatur, an
 der ich §1.3 gemessen habe, aber sie ist ein Nebenprodukt, kein Register.
 
-**Kosten:** Stirbt der Prozess zwischen Send und `saveStateNow`, oder wird der Slot recycelt, bleibt
-eine *stale* Bindung stehen. `bootstrapSupervisor` verweigert sie dann mit 409 — und es gibt **keine
-Route, die eine stale Bindung löscht**. Der Ausweg ist heute ein Eingriff in `fleet.json` (Handarbeit
-am Zustand des laufenden Servers), also genau die Klasse Handgriff, die dieses Repo sonst vermeidet.
-Geerbt vom Program-MAIN-Modell und in beiden Cut-Reviews benannt.
+**Die zweite Hälfte dieser Lücke ist geschlossen, und der Absatz sagt, wie.** Stirbt der Prozess
+zwischen Send und `saveStateNow`, oder wird der Slot recycelt, bleibt eine *stale* Bindung stehen —
+das gilt weiter. Was nicht mehr gilt: dass sie den Fleet dauerhaft ohne Supervisor lässt. Zwei
+Owner-Türen überschreiben sie und NENNEN, was sie ersetzt haben (`replaced` + Trail-Zeile):
+`bootstrapSupervisor` seit der Rebind-Naht, `bindSupervisor` (§4.1b) seit 2026-09-07. Ein Eingriff in
+`fleet.json` ist dafür nicht mehr nötig.
+
+**Und seit 2026-09-07 wird eine tote Bindung beim BOOT benannt statt still autoritativ.** Der Loader
+liest den Record vor der Slot-Schleife und musste ihn deshalb aus seiner FORM allein rehydrieren; die
+Lebendprobe läuft jetzt danach (`server.ts`, direkt hinter `backfillProgramMainSessionId`) und
+schreibt eine Log-Zeile plus die Trail-Zeile `supervisor_binding_stale`. **Der Record wird dabei nicht
+gelöscht** — „nie ernannt" (`supervisor: null`) und „der Ernannte ist weg" (stale) sind zwei
+verschiedene Zustände des Fleets, und nur der zweite sagt, dass eine Ernennung ohne Nachfolge endete.
+
+**Was als Kosten bleibt:** der Verlauf. Die Bindung ist ein Singleton, frühere Occupants sind nicht
+rekonstruierbar, und ein Rebind ersetzt lautstark, ohne eine Lineage anzulegen — anders als
+`Program.lineage` auf der Program-MAIN-Schiene. Geerbt vom Program-MAIN-Modell und in beiden
+Cut-Reviews benannt.
 
 ### 5.2 Der Attention-Kanal stirbt mit dem Programm-Abschluss
 

@@ -51,6 +51,7 @@ const BRIEF_BODY = [
   "Begin: run ./state.sh, then ./register.sh, then observe and, if something needs the owner, say so in your own visible pane report - the only channel that reaches them.",
 ];
 const FOUNDING_FIRST = "[fleet Supervisor] You are the one owner-side Supervisor session for this fleet.";
+const BIND_FIRST = "[fleet Supervisor bind] The owner has bound THIS already-running session as the one owner-side Supervisor session for this fleet; your working directory, your context and the work you were doing stay yours.";
 const SUCCESSION_FIRST = "[fleet Supervisor succession] You are the CONTINUED owner-side Supervisor session; your predecessor is retiring; everything handed over is in HANDOFF.md.";
 
 const readState = (): FleetState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as FleetState;
@@ -976,4 +977,209 @@ export async function run(): Promise<void> {
       && rebindReceipt?.briefHash === briefHashOf(rebindPrompt),
     `${rebindPrompt.slice(0, 120)} | ${JSON.stringify(rebindReceipt ?? null)}`);
   await post(`/api/slots/${rebindSlot}/kill`, {});
+
+  // ============================================================================================
+  // Cut 4 — THE BINDING OUTLIVES ITS OCCUPANT AND SAYS SO, AND A RUNNING SESSION CAN HOLD THE ROLE.
+  //
+  // Cut 3 above proved the RECOVERY door. What it could not prove is that anyone ever finds out the
+  // door is needed. Measured on the live fleet 2026-09-07: `supervisor` named slot 5 openedAt
+  // 1787497726285 (bound 21.08.) while slot 5 had long since been recycled into a lane. Boot
+  // rehydrated that record from its FORM alone and it stayed authoritative across every restart;
+  // `/api/programs` carried the binding but never its liveness; and every self-side route it gates
+  // answered the SAME 409 a non-Supervisor gets, so from inside a pane "the role is unfilled" and
+  // "someone else holds it" were one sentence. The role was vacant and nothing anywhere said so.
+  //
+  // The third gap is the shape of the recovery itself: bootstrap OPENS the session it appoints, so
+  // there was no way to give the role to a session that already exists — the owner got an extra
+  // pane with no context instead of the controller they meant. `POST /api/supervisor/bind` is that
+  // door, and it names its slot explicitly: no label match, no "first idle session", no wildcard.
+  // ============================================================================================
+  const supervisorHealthRead = async (): Promise<{ occupancy: string; sessionIdMatch: string }> =>
+    ((await (await get("/api/programs")).json()) as
+      { supervisorHealth: { occupancy: string; sessionIdMatch: string } }).supervisorHealth;
+  const bindPost = (body: unknown): Promise<Response> =>
+    fetch(`${BASE}/api/supervisor/bind`, { method: "POST", headers: H, body: JSON.stringify(body) });
+  const auditLines = (): string[] => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean);
+  const auditRows = (from: number): { event?: string; slot?: number; detail?: string }[] =>
+    auditLines().slice(from).map((line) => JSON.parse(line) as { event?: string; slot?: number; detail?: string });
+  const bindHistoryLen = async (slot: number): Promise<number> =>
+    ((await (await get(`/api/slots/${slot}/history`)).json()) as { history: unknown[] }).history.length;
+
+  // The kill one line up left the binding dead in exactly the live fleet's shape.
+  const deadBinding = (await ownerRead()).supervisor;
+  const deadHealth = await supervisorHealthRead();
+  check("supervisor sensor: the owner read carries the binding's LIVENESS beside the record — a dead one reads stale, and its identity half is honestly unknown",
+    sameBinding(deadBinding, rebindBody.supervisor ?? null)
+      && deadHealth.occupancy === "stale" && deadHealth.sessionIdMatch === "unknown",
+    `${JSON.stringify(deadBinding)} health=${JSON.stringify(deadHealth)}`);
+
+  // GAP (a). Boot read the record's FORM and set it, full stop — and it had to, because that loader
+  // runs BEFORE the slot loop, where no liveness question can be asked yet. The naming now runs
+  // after the slots are back. Mutation: drop the audit()/console.error at the boot site and this
+  // finds no row. The record is KEPT on purpose — "never appointed" and "the appointed one is gone"
+  // are two different states of the fleet, and only the second says an appointment ended unheld.
+  const auditBeforeBoot = auditLines().length;
+  await restartSrv();
+  let bootRows: { event?: string; slot?: number; detail?: string }[] = [];
+  for (let i = 0; i < 24 && bootRows.length === 0; i++) { // audit() is fire-and-forget
+    bootRows = auditRows(auditBeforeBoot).filter((r) => r.event === "supervisor_binding_stale");
+    if (bootRows.length === 0) await Bun.sleep(250);
+  }
+  const afterBoot = await ownerRead();
+  check("supervisor boot: a dead binding is NAMED on the trail instead of being restored as silently authoritative — and the record itself is kept, not repaired",
+    bootRows.length === 1 && bootRows[0]?.slot === deadBinding?.slot
+      && bootRows[0]?.detail === `dead slot:${deadBinding?.slot} openedAt:${deadBinding?.openedAt}`
+      && sameBinding(afterBoot.supervisor, deadBinding)
+      && (await supervisorHealthRead()).occupancy === "stale",
+    `${JSON.stringify(bootRows)} binding=${JSON.stringify(afterBoot.supervisor)}`);
+
+  // Two ordinary sessions: one to be bound, one to stay a twin for every "and nobody else" half.
+  const bindId = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
+  const bindOpen = await post(`/api/slots/${bindId}/open`, { cwd: ROOT, label: "supervisor-bind-target" });
+  const twinId = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
+  const twinOpen = await post(`/api/slots/${twinId}/open`, { cwd: ROOT, label: "supervisor-bind-twin" });
+  const bindTok = readState().slots?.[String(bindId)]?.selfToken ?? "";
+  const twinTok = readState().slots?.[String(twinId)]?.selfToken ?? "";
+  check("cut4 setup: two ordinary sessions are open, neither bound to anything, each with its own credential",
+    bindOpen.ok && twinOpen.ok && bindId > 0 && twinId > 0 && bindId !== twinId
+      && /^[0-9a-f]{32}$/.test(bindTok) && /^[0-9a-f]{32}$/.test(twinTok) && bindTok !== twinTok,
+    `bind=${bindId}:${bindOpen.status} twin=${twinId}:${twinOpen.status}`);
+
+  // GAP (b) from inside a pane. The refusal used to be one constant for all three states, so a
+  // session could not tell a vacant role from someone else's. Mutation: collapse supervisorRefusal
+  // back into `NOT_SUPERVISOR` and this reads the wrong sentence.
+  const staleView = await selfGet("/api/self/supervisor-view", bindTok);
+  const staleViewText = await staleView.text();
+  check("supervisor sensor from inside: while the binding is STALE the refusal names that state and the dead occupation, instead of the sentence a non-Supervisor gets",
+    staleView.status === 409 && staleViewText.includes("STALE")
+      && staleViewText.includes(`slot ${deadBinding?.slot} openedAt ${deadBinding?.openedAt}`)
+      && !staleViewText.includes("not the bound Supervisor"),
+    `${staleView.status} ${staleViewText}`);
+
+  // GAP (c), and the whole point is the two things bootstrap cannot do: appoint a session that
+  // already exists, and do it WITHOUT opening a pane. Mutation: open a free slot instead of the
+  // named one and `occupied` grows while `slot` stops being the one asked for. No context receipt
+  // is minted either — this session already has one for the context it actually has.
+  const occupiedBeforeBind = await occupied();
+  const receiptsBeforeBind = await receipts();
+  const auditBeforeBind = auditLines().length;
+  const bind = await bindPost({ slot: bindId });
+  const bindBody = await bind.json() as { ok?: boolean; existing?: boolean; slot?: number;
+    supervisor?: SupervisorBinding; replaced?: SupervisorBinding };
+  const bindState = readState().slots?.[String(bindId)];
+  const occupiedAfterBind = await occupied();
+  check("supervisor bind: an ALREADY RUNNING session is bound by explicit slot — no pane is opened, no founding receipt is minted, and the dead binding it replaced is named",
+    bind.ok && bindBody.ok === true && bindBody.existing !== true && bindBody.slot === bindId
+      && sameBinding(bindBody.replaced ?? null, deadBinding)
+      && bindBody.supervisor?.slot === bindId
+      && bindBody.supervisor?.openedAt === bindState?.openedAt
+      && sameBinding((await ownerRead()).supervisor, bindBody.supervisor ?? null)
+      && occupiedAfterBind === occupiedBeforeBind
+      && (await receipts()).total === receiptsBeforeBind.total,
+    `${bind.status} ${JSON.stringify(bindBody)} occupied=${occupiedBeforeBind}→${occupiedAfterBind}`);
+
+  // A role granted silently is the same class of fault as a role lost silently, so the bind
+  // DELIVERS — over the SAME shared body the two founding doors use, because a second copy of the
+  // role text is a second answer waiting to drift. Mutation: fork the body for this door and the
+  // tail stops matching BRIEF_BODY.
+  const bindPrompt = await historyOf(bindId);
+  const bindTrail = auditRows(auditBeforeBind).filter((r) => r.event === "supervisor_bound");
+  check("supervisor bind: the bound session is TOLD it holds the role, in the founding doors' own body under a bind-specific first line, and one trail row names the appointment",
+    bindPrompt.split("\n")[0] === BIND_FIRST
+      && bindPrompt.split("\n").slice(1).join("\n") === BRIEF_BODY.join("\n")
+      && bindTrail.length === 1 && bindTrail[0]?.slot === bindId
+      && bindTrail[0]?.detail === `bound slot:${bindId} openedAt:${bindState?.openedAt}`,
+    `${bindPrompt.slice(0, 140)} | ${JSON.stringify(bindTrail)}`);
+
+  // The done-criterion's own sentence: after the bind the senses answer THIS occupant. The nudge is
+  // asserted through its NEXT guard on purpose — every fixture Program is gone by now, so "unknown
+  // program" is the proof that the occupancy gate was passed, and it is the only proof available
+  // that does not re-erect a Program merely to say so.
+  const [boundView, twinView, boundNudge, twinNudge] = await Promise.all([
+    selfGet("/api/self/supervisor-view", bindTok),
+    selfGet("/api/self/supervisor-view", twinTok),
+    selfPost("/api/self/nudge", bindTok, { programId: "0".repeat(24), text: "past the gate" }),
+    selfPost("/api/self/nudge", twinTok, { programId: "0".repeat(24), text: "not yours" }),
+  ]);
+  const [twinViewText, boundNudgeText, twinNudgeText] =
+    await Promise.all([twinView.text(), boundNudge.text(), twinNudge.text()]);
+  check("supervisor bind: supervisor-view and nudge now answer exactly the bound occupant, and an ordinary live session is still refused by the occupancy gate",
+    boundView.status === 200 && (await supervisorHealthRead()).occupancy === "live"
+      && boundNudge.status === 409 && boundNudgeText.includes("unknown program")
+      && twinView.status === 409 && twinViewText.includes("not the bound Supervisor")
+      && twinNudge.status === 409 && twinNudgeText.includes("not the bound Supervisor"),
+    `bound=${boundView.status}/${boundNudge.status} twin=${twinView.status}/${twinNudge.status} ${twinNudgeText}`);
+
+  // bootstrap's rule, unchanged and now enforced by a second door: a LIVE binding is never
+  // displaced, and asking again for the session that already holds it is idempotent — no second
+  // brief, no second trail row.
+  const historyBeforeIdem = await bindHistoryLen(bindId);
+  const auditBeforeIdem = auditLines().length;
+  const displace = await bindPost({ slot: twinId });
+  const displaceText = await displace.text();
+  const rebindAgain = await bindPost({ slot: bindId });
+  const againBody = await rebindAgain.json() as { ok?: boolean; existing?: boolean; supervisor?: SupervisorBinding };
+  check("supervisor bind: a LIVE binding is never displaced (named 409) and re-binding its own occupant is idempotent — no second brief, no second row",
+    displace.status === 409 && displaceText.includes("never displaced")
+      && displaceText.includes(`slot ${bindId}`)
+      && rebindAgain.ok && againBody.existing === true
+      && sameBinding(againBody.supervisor ?? null, bindBody.supervisor ?? null)
+      && (await bindHistoryLen(bindId)) === historyBeforeIdem
+      && auditRows(auditBeforeIdem).filter((r) => r.event === "supervisor_bound").length === 0
+      && (await selfGet("/api/self/supervisor-view", twinTok)).status === 409,
+    `displace=${displace.status}:${displaceText} again=${rebindAgain.status}:${JSON.stringify(againBody)}`);
+
+  // THE TRIPLE DECIDES, NEVER THE NUMBER. Same slot id, new occupant: not the Supervisor, and the
+  // binding reads stale rather than live. Mutation: compare only `slot` in isBoundSupervisor /
+  // supervisorHealth and the recycled occupant answers 200 to senses it never earned.
+  await post(`/api/slots/${bindId}/kill`, {});
+  const recycled = await post(`/api/slots/${bindId}/open`, { cwd: ROOT, label: "supervisor-recycled" });
+  const recycledState = readState().slots?.[String(bindId)];
+  const recycledTok = recycledState?.selfToken ?? "";
+  const recycledView = await selfGet("/api/self/supervisor-view", recycledTok);
+  const recycledText = await recycledView.text();
+  check("supervisor recycled slot: the same slot NUMBER carrying a new openedAt is NOT the Supervisor — it is refused, and the binding reads stale again",
+    recycled.ok && (recycledState?.openedAt ?? 0) > 0
+      && recycledState?.openedAt !== bindBody.supervisor?.openedAt
+      && /^[0-9a-f]{32}$/.test(recycledTok) && recycledTok !== bindTok
+      && recycledView.status === 409 && recycledText.includes("STALE")
+      && (await supervisorHealthRead()).occupancy === "stale"
+      && sameBinding((await ownerRead()).supervisor, bindBody.supervisor ?? null),
+    `openedAt ${bindBody.supervisor?.openedAt}→${recycledState?.openedAt} view=${recycledView.status} ${recycledText}`);
+
+  // Every refusal the door owes, and the pair that keeps it an APPOINTMENT: the session must be
+  // named exactly (400 on a body that names nothing or names more), and it must be a live non-lane
+  // occupant (409 each). The lane refusal is what keeps "a lane is never the Supervisor" — the
+  // sentence every Cut-2 lane twin rests on — true by construction rather than by there being no door.
+  const laneSlot = REPO ? ((await (await post("/api/lanes", { repo: REPO })).json()) as { slot?: number }).slot ?? 0 : 0;
+  const emptyId = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
+  const bindingBeforeRefusals = (await ownerRead()).supervisor;
+  const occupiedBeforeRefusals = await occupied();
+  const [noSlot, extraKey, notInt, unknownSlot, emptySlot, laneBind] = await Promise.all([
+    bindPost({}),
+    bindPost({ slot: bindId, label: SUPERVISOR_LABEL }),
+    bindPost({ slot: "5" }),
+    bindPost({ slot: 99_999 }),
+    bindPost({ slot: emptyId }),
+    laneSlot ? bindPost({ slot: laneSlot }) : Promise.resolve(new Response("lane skipped", { status: 409 })),
+  ]);
+  const rt = await Promise.all([noSlot, extraKey, notInt, unknownSlot, emptySlot, laneBind].map((r) => r.text()));
+  const occupiedAfterRefusals = await occupied();
+  check("supervisor bind: the body names a slot and nothing else (400), and the target must be a live non-lane occupant (409 each) — no label, no wildcard, no lane",
+    noSlot.status === 400 && rt[0]!.includes("slot must be an integer")
+      && extraKey.status === 400 && rt[1]!.includes("[label] is not read")
+      && notInt.status === 400 && rt[2]!.includes("slot must be an integer")
+      && unknownSlot.status === 409 && rt[3]!.includes("unknown slot")
+      && emptyId > 0 && emptySlot.status === 409 && rt[4]!.includes("carries no session")
+      && (!laneSlot || (laneBind.status === 409 && rt[5]!.includes("is a lane"))),
+    `${[noSlot, extraKey, notInt, unknownSlot, emptySlot, laneBind].map((r) => r.status).join("|")} empty=${emptyId} lane=${laneSlot} ‖ ${rt.join(" ‖ ")}`);
+  check("supervisor bind: not one refused bind moved the binding, opened a session or appointed anything",
+    sameBinding((await ownerRead()).supervisor, bindingBeforeRefusals)
+      && occupiedAfterRefusals === occupiedBeforeRefusals
+      && (await supervisorHealthRead()).occupancy === "stale",
+    `${JSON.stringify((await ownerRead()).supervisor)} occupied=${occupiedBeforeRefusals}→${occupiedAfterRefusals}`);
+
+  if (laneSlot) await post(`/api/slots/${laneSlot}/kill`, {});
+  await post(`/api/slots/${bindId}/kill`, {});
+  await post(`/api/slots/${twinId}/kill`, {});
 }

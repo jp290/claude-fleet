@@ -1,3 +1,166 @@
+# HANDOFF — 🎛 Fleet Controller (Slot 7, Opus 5 high), 2026-09-07 ~22:20–00:0x, ctx GEMESSEN 29,4 %
+
+Diese Sitzung kompaktiert (Regelbuch: Compact ist der Normalfall des Controllers). Slot, Self-Token
+und die armierten Watches bleiben; dieser Abschnitt ist die dauerhafte Wahrheit.
+
+## 1. DREI KORREKTUREN AN DER VORGÄNGERIN — alle drei am Code gemessen, nicht erschlossen
+
+**(a) Die Rebind-Tür EXISTIERT.** §7 des vorigen Handoffs schloss: „Was ich gesucht und NICHT
+gefunden habe: eine Owner-Tür, die `program.main` neu bindet." Falsch. `POST
+/api/programs/:id/bootstrap-main` fällt bei einer STALEN Bindung ausdrücklich durch in die
+Neugründung und **nennt in der Antwort, was sie ersetzt hat** (`server.ts`, Kommentar „never a
+silent rebind"; gemessen 2026-08-21: 9 von 13 aktiven Programs standen auf staler Bindung — genau
+dafür gebaut). Live benutzt: Program `f170dc46` (Fleet-Betrieb, 30 offene Zeilen) war headless und
+hat wieder eine MAIN — **Slot 6, Opus 5 high**, `replaced` nannte den toten Slot-7-Occupant.
+Lehre: zwei Controller nacheinander haben eine Route für nicht existent erklärt, die es gibt. Der
+Suchfehler war, `program.main =` zu greppen statt die Route zu lesen.
+
+**(b) Der Empfänger eines Reports ist die SLOT-NUMMER, nicht die Session.** Report `b4f6158a`
+(Slot 6s Owner-Tür-Lane) kam bei MIR an, weil ich zufällig Slot 7 bekommen hatte — dem Slot, auf
+dem die tote Fleet-Betrieb-MAIN gesessen hatte. Ich habe ihn angenommen und die Umstände in der
+`reason` benannt. Das ist dieselbe Geisterbindungs-Klasse wie (a), nur von der Filing-Seite.
+
+**(c) `522701c` ist repariert, nicht übermalt.** Der offene Korrekturweg aus §0(a) der Vorgängerin
+läuft als Lane `fleet/260907212539-3dfa` (Task `51f551ba`, Slot 11) — siehe §4.
+
+## 2. WAS GELANDET IST (25 Commits seit `f5bdf98`, main jetzt `83856c6a`)
+
+- **`0352148e`** — Owner-Tür für Reports, deren Empfänger tot ist (Slot 6, Lane `89279f1f`).
+  Post-Land-Audit **grün, 3907/0, 45,3 min** (`ms 2 719 467` — an `ms` UND Check-Count geprüft).
+- **`51565db4`** — **`ctl.sh`**, zehn Controller-Verben über bestehende Routen, 41 Checks in
+  `e2e/ctl.ts`, 5 Pins. Gate grün, volle Kette, 46,5 min. **Benutz es** statt handgetippter curls;
+  `docs/controller.md` §Werkzeuge nennt je Verb liest/schreibt/Token. Sein Audit lief bei
+  Redaktionsschluss noch — eine fehlende Ledger-Zeile heißt „läuft", nie „verloren".
+- **`74a1cde2..eb0f03d3`** — W3 (Wellen) über Slot 8s Program, nicht von mir gelandet.
+- **Deploy `ce7c73fb` ok** (nächster Boot schrieb `ok:true`, nicht das `null` vom Anstoß).
+  **ABER: main ist inzwischen wieder 9 Commits voraus, `bundleStale:true`** — der nächste Deploy
+  ist fällig, sobald keine Audit-Kette läuft.
+
+## 3. DER BEFUND DIESER SCHICHT: EIN KANAL OHNE LESER
+
+**94 pending advisory-Zeilen in 16 Programs** (`source:"main"`, gemessen 2026-09-07 23:xx). Fast
+alle adressiert an Controller-Slots, die es nicht mehr gibt — „AN CONTROLLER SLOT 6", „SLOT 10",
+„SLOT 1". Der Deckel ist 10 je Program (`PROGRAM_MAX_PENDING_ADVISORY`), und er hat in EINER
+Schicht **dreimal** eine Astra-MAIN blockiert: Slot 3 einmal, Slot 9 zweimal — beim zweiten Mal
+konnte sie ihren eigenen Landentscheid nicht filen und musste ihn über meine Pane geben.
+
+**Wie ich freigeräumt habe, und warum das die Hälfte der Arbeit war:** die vier Zeilen von
+`eec69528` waren Audit-URTEILE, die auf Eintragung warteten. Ich habe nachgesehen: **keine einzige
+war eingetragen.** `done` zu setzen wäre exakt der Fehler von §0(a) gewesen — grüne Mechanik für
+eine fachliche Aussage. Stattdessen die Urteile über `POST /api/post-land-audits/adjudicate`
+eingetragen (`unknowable`, je mit Astras Begründung und Zuschreibung), DANN die Notizen geschlossen.
+`eec69528` 10/10 → 6/10. Bei `e3b3a064` ebenso: nur `c9683f04` und `9f2ef109` geschlossen, deren
+Handlung nachweislich ausgeführt ist; 10/10 → 8/10.
+
+**Regel für die Nachfolgerin: eine Notiz zu schließen ist keine Aufräumarbeit, sondern eine
+Behauptung, ihre Handlung sei erledigt. Prüf sie, oder führ sie aus.**
+
+## 4. WAS IN FLUG IST
+
+- **GELANDET als `75939cf4`** (war: Lane `fleet/260907212539-3dfa`, Task `51f551ba`) — die Korrektur an
+  `docs/schnittliste-kommunikation-datenschichten-2026-09-07.md` AUF MAIN. Trägt Astras Brief
+  `c9683f04` wörtlich (5339 Z., sha256 `be90c1b91524…`, vor dem Filen nachgerechnet). Commit
+  rein-docs, Land-Note `verify.ok true`, `proportional`, `steps [install,pins]`. Post-Land-Audit läuft.
+  **DREI ABNAHMERUNDEN mit der Architektur-MAIN, und jede fand einen echten Fehler — zwei davon
+  meine.** (1) Ich schlug der Lane eine Datierung vor („am 07.09. 15:15 offen, inzwischen
+  beantwortet"); die Lane hat die `answer.at`-Werte nachgerechnet, WIDERSPROCHEN und sie nicht
+  geschrieben — alle 10 waren schon ~41 h VOR der Messung beantwortet, meine Fassung wäre eine NEUE
+  Falschaussage gewesen. Astra hat unabhängig nachgerechnet und ihr recht gegeben. (2) Astra fand in
+  Runde 3 eine Stelle, die sie schon in Runde 2 genannt hatte und die die Lane übersehen hatte.
+  (3) Die Lane hat zwei typografische Abweichungen von Astras ASCII-Vorgabe BENANNT statt sie
+  stillschweigend zu machen. **Lehre: eine Lane, die einer Controller-Anweisung widerspricht statt
+  sie auszuführen, ist das gesündeste Signal des Tages.**
+  Der Report hatte mechanisch keinen Empfänger (`programId:null` — meine bewusste Wahl, damit die
+  Zeile keine Geisterbindung erbt; der Preis war Handzustellung, und Slot 9 hatte ihn in `e291979b`
+  vorhergesagt).
+- **Ein Befund der Lane, der über sie hinausgeht:** die M1-Lücke existiert am Baum nicht mehr —
+  `7a20eead` (17:07) baute `server.ts#ownerDecideFleetReport`, `89279f1f` steht auf `done`. Zwei
+  Zahlen des Originaldokuments sind widerlegt: „10/10 Clarifications unbeantwortet" (alle 10
+  beantwortet) und „31 von 571 = 5,4 %" (rechnete den Zähler aus dem Nenner; richtig 31/604 = 5,1 %).
+
+## 5. SLOT 13 IST NEU: 👁 ASTRA-WACHE (Opus 5 high, perpetual auto `06b10625`, alle 300 s)
+
+Owner-Auftrag: die Astra-Sessions (2, 3, 9) am Arbeiten halten. Ihr Brief macht **Zurückhaltung zur
+Hauptregel** — vier Zustände, nur „(d) idle, nichts armiert, Arbeit offen" rechtfertigt eine
+Nachricht; Begründung im Brief: jede Nachricht an eine MAIN kostet deren vollen Kontext erneut.
+Sie liest Panes, nicht den Poll. Bisher: drei Durchgänge, **null unnötige Pings**, zwei echte
+Blockaden gefunden, eine Selbstkorrektur (82 → 354 min) und **eigenständig erkannt, dass der Deploy
+jede Idle-Uhr auf null setzt** — sie hat den Sensor daraufhin verworfen und nur mit Pane-Text
+gerechnet. Genau die Unterscheidung, an der heute vier Sessions gescheitert sind.
+Eine Korrektur habe ich ihr geschickt: „lesen, nicht glauben" gilt auch für jede ZAHL aus einer
+fremden Pane oder Attention — nachmessen oder als Zitat mit Zeitstempel kennzeichnen.
+
+## 6. WAS BEIM OWNER LIEGT
+
+1. **Slot 2 (Private-repo-j, Astra):** spielbare Bachwiese fertig, Port 4173, 129 Tests, zwei eigene
+   Browserrunden. Sie wartet auf das **erste Owner-Urteil** und auf die Freigabe „MAIN darf selbst
+   implementieren und im Browser prüfen, kleiner spielbarer Erstbeweis vor M2/M3, Art-Director-
+   Auftrag nicht starten" — das widerspricht ihrem `AGENTS.md`, deshalb fragt sie statt zu handeln.
+2. **Program `f9dc8e10` „Leichtgewicht 2026-09"** steht auf `proposed`. Gründungsprompt für eine
+   Astra-MAIN, aus der Owner-Richtung „das System entrümpeln": Rollen als Karten, Datenschichten
+   nur mit benanntem Leser, eine Uhr, Doc-Flut, Compaction/Succession-Problem der Claude-Code-
+   Sessions. Vier Phasen P0–P3, sechs Done-Kriterien mit Vorher/Nachher-Tabelle, drei offene Fragen
+   (Slot · effort · ob der Controller auf einen selbstkompaktierenden Harness darf).
+   Gründung nach Bestätigung: `POST /api/programs/f9dc8e10.../bootstrap-main`
+   `{"harness":"codex","model":"gpt-6-astra","effort":"medium","cwd":"/Users/owner/claude-fleet",
+   "label":"Program-MAIN: Leichtgewicht (Astra)"}`.
+   **§3 ist sein stärkster Beleg** — der Advisory-Kanal ist die reinste Instanz von „geschrieben,
+   nie gelesen".
+3. **Slot 3s Studio-Hub-Disposition** (`a130231c`, tag `review/studio-hub-disposition-20260907`)
+   ist fertig und nicht gelandet; ich habe sie um Freigabe gebeten. Ihr ctx lag bei 86,5 % → 30,5 %
+   (sie hat selbst kompaktiert).
+
+## 7. GEMESSENE ZAHLEN FÜR DAS LEICHTGEWICHT-PROGRAM (nicht neu erheben, nur nachprüfen)
+
+CLAUDE.md 944 Z./85 KB · AGENTS.md 291 Z./21 KB · HANDOFF.md 3884 Z./314 KB/31 Abschnitte ·
+108 Commits an einem Tag, 84 mit Subject `docs*` · fleet.json 1,6 MB, 38 Schichten (tasks 748 KB,
+programs 256 KB, events 168 KB) · audit.jsonl 8677 Z., davon **6005 in 4 h EIN** `fleet_event_held`-
+Retry alle 5 s an einen Slot · 17 `setInterval`, 73 `_MS`, 119 `FLEET_*`, 153 Routen ·
+94 pending advisory in 16 Programs · Erdung einer MAIN ~7,6 % ctx.
+
+## 7b. ROTES POST-LAND-AUDIT AUF `51565db4` — delegiert, NICHT adjudiziert
+
+`3953 ran / 2 failed`, 39 min. Beide Fails in `e2e/watch.ts:4694/4697` (`deleting a Watch does not
+delete its acknowledged event` · `subject teardown after event creation leaves the event trail
+intact`), dokumentierte Flake-Familie mit 1,4 %/1,6 % Basisrate — aber `docs/verify-tiering.md` sagt
+für diese Naht: ab `7d089c1` ist ein Rot wieder ECHT. An die Fleet-Betrieb-MAIN (Slot 6) übergeben,
+Lane `cac29de6` gefilt (queued, hinter fünf Zeilen). Instanz aufbewahrt:
+`/tmp/fleet-e2e-instance-623856`.
+**Mein Mechanismus-Verdacht war falsch und ist widerlegt** (Slot 6): `fleet-e2e.ts:99 watch.run()`
+läuft VOR `:119 ctl.run()` — was in watch fällt, kann ctl nicht verursacht haben. Ihre Hypothese:
+Retention-Decke `FLEET_EVENT_KEEP_TERMINAL = WATCH_KEEP_SPENT = 5` (`server.ts:2456/2461`), Slot 6
+stand im roten Lauf auf sechs terminalen Events, der älteste war `eventA`. Entschieden wird das
+nicht durch einen Wiederholungslauf (1,4 % beweist nichts), sondern durch die Zahl terminaler
+Events unmittelbar vor der Sonde.
+
+## 7c. ZWEI PROVENIENZ-REGELN, heute mit Slot 6 ausgehandelt
+
+**(1) Eine Autorität, die man technisch hat, ist keine Herkunft, die man benutzen darf.** Slot 6
+wollte meine Präzisierung nicht per `POST /api/tasks/:id/brief` nachtragen: die Route ist
+owner-authentifiziert und stempelt `model:"owner", edited:true` — der Text stünde als
+OWNER-Vorgabe im Datensatz. Dieselbe Klasse wie `suspect: owner-token-outside-board`, nur schlechter,
+weil sie nicht als Verdacht sichtbar wird. Ich habe es aus demselben Grund auch nicht getan. Die
+Präzisierung lebt jetzt als Annahmebedingung beim Review. **Gleiches gilt für den Hand-Dispatch:**
+er prüft weder Deckel noch Reihenfolge — ihn zu benutzen, um an vier Zeilen vorbeizukommen, wäre
+derselbe Griff.
+
+**(2) `ps eww` misst nur die unterste von drei Schichten.** Ich habe die Regelbuch-Vorsicht
+angewandt (nicht die Konstante glauben, den Prozess messen) und war trotzdem falsch:
+`FLEET_DISPATCH_MAX_LANES=1` im Env, effektiv aber **3** — ein persistierter Repo-Eintrag schlägt
+das Env (`GET /api/repo-lane-caps` → `{"default":1,"caps":{"…claude-fleet":3}}`, `/api/sessions`
+meldet `dispatch.maxLanes: 3`). Ordnung: **Konstante → env → Repo-Eintrag**, dieselbe wie bei
+`repoWorkers` und `VERIFY_CMD_REPOS`. **`state.sh`s config sensor kann das strukturell nicht sehen**
+— er liest vier Quellen, alle dieselbe Schicht. Zeile dafür: `bb563b63` (Fleet-Betrieb, bewusst
+`pending`, damit sie keinen Lane-Slot kostet); sie verlangt ausdrücklich, die Overlays AM CODE zu
+enumerieren statt unsere drei Kandidaten abzuschreiben.
+
+## 8. WAS ICH NICHT GEPRÜFT HABE
+
+Den Inhalt der 94 advisory-Zeilen (nur Adressat und Deckel-Wirkung). Ob die drei neuen Lanes
+(Slots 1, 4, 10) sauber laufen — sie kamen vom Dispatcher, nicht von mir. Ob Slot 15 (P3) und Slot 8 (Land-Pipeline) offene Reports haben.
+
+---
+
 # HANDOFF — 🎛 Fleet Controller (Slot 1, Opus 5 high), 2026-09-07 ~14:30–21:1x, ctx GEMESSEN 29,8 %
 
 **Diese Sitzung KOMPAKTIERT, sie succeedet nicht** (Regelbuch: Compact ist der Normalfall des

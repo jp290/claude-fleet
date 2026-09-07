@@ -2059,12 +2059,24 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // record can only ever LOWER the env budget and a program without a grant computes the env number
   // itself. No runtime test can see this — every suite runs with the env default, where a widening
   // record and a narrowing one produce the same board.
-  const progCapFn = server.match(/const programDispatchCap = [^;]+;/)?.[0] ?? "";
-  pin("the per-program cap number can only be LOWERED by an owner record — programDispatchCap is a min against the env cap",
-    /const programCap = programDispatchCap\(pd\);/.test(tBody)
-    && /Math\.min\(pd\?\.maxLanes \?\? DISPATCH_MAX_LANES_PER_PROGRAM, DISPATCH_MAX_LANES_PER_PROGRAM\)/.test(progCapFn)
+  const progCapFn = server.match(/const programDispatchCap = [\s\S]*?\n\};/)?.[0] ?? "";
+  pin("the per-program cap number can only be LOWERED by an owner record — programDispatchCap is a min against the machine number",
+    /const programCap = programDispatchCap\(pd, repoCap\.max\);/.test(tBody)
+    && /const machine = DISPATCH_MAX_LANES_PER_PROGRAM \?\? repoMax;/.test(progCapFn)
+    && /Math\.min\(pd\?\.maxLanes \?\? machine, machine\)/.test(progCapFn)
     && !/DISPATCH_MAX_LANES_PER_PROGRAM/.test(tBody.slice(progGuardIdx, progCapIdx + 60)),
     progCapFn || "programDispatchCap missing");
+  // ...and what that machine number FALLS BACK TO when the operator configured none: the ROW'S OWN
+  // repo cap, never the env repo constant. This is the rule that keeps an unconfigured knob inert
+  // now that repo caps differ per repo — anchored to FLEET_DISPATCH_MAX_LANES, raising one repo to 3
+  // would leave every Program row in it held at 1/1 by a budget nobody set, under a note naming the
+  // program. Invisible to every suite: with no repo entry the two anchors compute the same number,
+  // which is exactly the configuration every fixture runs in.
+  pin("an UNCONFIGURED per-program cap follows the ROW'S repo cap, so it stays inert when one repo is raised",
+    /const DISPATCH_MAX_LANES_PER_PROGRAM: number \| null =\n  process\.env\.FLEET_DISPATCH_MAX_LANES_PER_PROGRAM\n/.test(server)
+    && /\n    : null;/.test(server.slice(server.indexOf("const DISPATCH_MAX_LANES_PER_PROGRAM: number | null ="), server.indexOf("const DISPATCH_MAX_LANES_PER_PROGRAM: number | null =") + 400))
+    && /\(pd: ProgramDispatch \| undefined, repoMax: number\)/.test(progCapFn),
+    server.match(/const DISPATCH_MAX_LANES_PER_PROGRAM: number \| null =[\s\S]*?\n(?:    : null;|.*\n)/)?.[0] ?? "constant missing");
   // NO NULL BUCKET. `s.programId === next.programId` alone is true for every unbracketed row against
   // every unbracketed lane, so without the truthy guard the cap would silently bind rows whose only
   // shared property is that nobody bracketed them. The `s.cwd &&` is the second half of the same

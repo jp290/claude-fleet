@@ -2124,6 +2124,108 @@ export async function run(ctx: Ctx): Promise<void> {
     await restartSrv();
   }
 
+  // --- (e5) AN UNCONFIGURED PER-PROGRAM CAP MUST STAY INERT WHEN A REPO IS RAISED (server.ts,
+  // DISPATCH_MAX_LANES_PER_PROGRAM + programDispatchCap). The second cap's own contract is that with
+  // no operator value it can never be the check that holds anything — it is checked AFTER the repo
+  // cap and defaults to the same number. That default used to be anchored to FLEET_DISPATCH_MAX_LANES,
+  // which was fine while one number served every repo and silently wrong the moment one repo was
+  // raised: lift private-repo-j to 2 with the API call (e4) proves, and its rows — every one of them
+  // Program rows — are held at 1/1 by a per-program budget nobody configured, under a note naming the
+  // PROGRAM, i.e. pointing the owner at the wrong knob entirely.
+  // THE MUTATION THIS IS WRITTEN AGAINST: `DISPATCH_MAX_LANES_PER_PROGRAM ?? repoMax` reverted to the
+  // env constant. Then the second bracketed row never starts and this section is red. On a fleet with
+  // NO repo entry — every other fixture in this file — both anchors compute the same number and
+  // nothing here can be seen at all, which is why the raised repo is part of the fixture. ---
+  {
+    type GRow = { id: string; status: string; note?: string | null; slot?: number | null };
+    type GSlot = { id: number; cwd: string | null; worktree: { repo: string } | null };
+    const gSess = async (): Promise<{ slots: GSlot[]; tasks: GRow[]; dispatch: { maxLanes: number } }> =>
+      (await (await get("/api/sessions")).json()) as
+        { slots: GSlot[]; tasks: GRow[]; dispatch: { maxLanes: number } };
+    const gRow = async (id: string): Promise<GRow | undefined> => (await gSess()).tasks.find((t) => t.id === id);
+    const gTill = async (id: string, ok: (r: GRow | undefined) => boolean): Promise<GRow | undefined> => {
+      let last = await gRow(id);
+      for (let i = 0; i < 80 && !ok(last); i++) { await Bun.sleep(250); last = await gRow(id); }
+      return last;
+    };
+    // the quantity the per-program cap actually counts — occupied slots carrying the program — read
+    // from the persisted rows, the same source (e2) uses, because /api/sessions carries neither field.
+    const gLanesOf = (programId: string): number => {
+      const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots?: Record<string, { cwd?: string | null; programId?: string | null }> };
+      return Object.values(state.slots ?? {}).filter((s) => s.cwd && s.programId === programId).length;
+    };
+
+    await restartSrv({ FLEET_DISPATCH_MAX_LANES: "1" });
+    // PRECONDITION AS ITSELF #1 — and it is the one that DATES this section: restartSrv copies the
+    // runner's own FLEET_* env, so the runner's env IS the operator's configuration. If a future
+    // wrapper sets a per-program budget, this block stops measuring what it claims to and says so
+    // here rather than passing for the wrong reason.
+    check("(e5) fixture: the operator configured NO per-program budget for this run, and the machine default is 1",
+      !process.env.FLEET_DISPATCH_MAX_LANES_PER_PROGRAM && (await gSess()).dispatch.maxLanes === 1,
+      JSON.stringify({ perProgram: process.env.FLEET_DISPATCH_MAX_LANES_PER_PROGRAM ?? null,
+        maxLanes: (await gSess()).dispatch.maxLanes }));
+
+    for (const x of (await gSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
+    await Bun.sleep(600);
+    for (const t of (await gSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
+
+    const gSet = await post("/api/repo-lane-cap", { repo: REPO2, maxLanes: 2 });
+    const gClean = await gSess();
+    // PRECONDITION AS ITSELF #2 — the entry is in place, the bracket is empty and two slots are free.
+    // Without all three, "the second row did not start" could mean "nothing could have started".
+    check("(e5) fixture: the repo is raised to 2, the probe program holds no lane, and two slots are free",
+      gSet.ok && !!provenanceProgramId && gLanesOf(provenanceProgramId) === 0
+      && gClean.slots.filter((x) => !x.cwd).length >= 2,
+      JSON.stringify({ set: gSet.status, programLanes: gLanesOf(provenanceProgramId),
+        free: gClean.slots.filter((x) => !x.cwd).length }));
+
+    await post("/api/dispatch", { on: true });
+    const gFirst = (await (await post("/api/tasks", {
+      text: "(e5) first Program row in the RAISED repo — the bracket's first lane",
+      queue: true, repo: REPO2, programId: provenanceProgramId,
+    })).json()) as { task: { id: string } };
+    const gFirstRow = await gTill(gFirst.task.id, (r) => r?.status === "sent");
+    // PRECONDITION AS ITSELF #3 — the bracket really is at 1, measured the way the cap measures.
+    check("(e5) fixture: the bracket's first lane runs and the SLOT carries the program",
+      gFirstRow?.status === "sent" && gLanesOf(provenanceProgramId) === 1,
+      JSON.stringify({ status: gFirstRow?.status, programLanes: gLanesOf(provenanceProgramId) }));
+
+    const gSecond = (await (await post("/api/tasks", {
+      text: "(e5) second Program row in the RAISED repo — an unconfigured per-program cap must NOT hold it",
+      queue: true, repo: REPO2, programId: provenanceProgramId,
+    })).json()) as { task: { id: string } };
+    const gSecondRow = await gTill(gSecond.task.id, (r) => r?.status === "sent");
+    check("(e5) a second Program row starts in a repo the owner raised — the unconfigured per-program cap followed the REPO's number, not the env constant",
+      gSecondRow?.status === "sent" && gLanesOf(provenanceProgramId) === 2,
+      JSON.stringify({ status: gSecondRow?.status, note: gSecondRow?.note ?? null,
+        programLanes: gLanesOf(provenanceProgramId) }));
+
+    // ...and it is still a CAP, at the raised number: the third row is held, and by the REPO cap —
+    // the two caps compute the same number here, and the repo one is checked first, so its sentence
+    // is the one the owner must see. A note naming the program would mean the order flipped.
+    const gThird = (await (await post("/api/tasks", {
+      text: "(e5) third Program row — the raised repo cap must hold it, and say so as itself",
+      queue: true, repo: REPO2, programId: provenanceProgramId,
+    })).json()) as { task: { id: string } };
+    const gThirdRow = await gTill(gThird.task.id,
+      (r) => (r?.note ?? "") === `waiting: 2/2 lanes busy in ${basename(REPO2)} (repo cap) — land or close one`);
+    check("(e5) the raised number still caps, and the REPO cap's own sentence is what the held row shows",
+      gThirdRow?.status === "queued"
+      && (gThirdRow?.note ?? "") === `waiting: 2/2 lanes busy in ${basename(REPO2)} (repo cap) — land or close one`,
+      JSON.stringify({ status: gThirdRow?.status, note: gThirdRow?.note ?? null }));
+
+    // cleanup — dispatcher OFF first, then the entry, the lanes and the rows.
+    await post("/api/dispatch", { on: false });
+    await post("/api/repo-lane-cap", { repo: REPO2, maxLanes: 0 });
+    for (const x of (await gSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
+    for (const id of [gFirst.task.id, gSecond.task.id, gThird.task.id]) {
+      await post(`/api/tasks/${id}/done`, {});
+      await post(`/api/tasks/${id}/delete`, {});
+    }
+    await restartSrv();
+  }
+
   // --- (d3) THE COUNTER-PROOF TO (d). An empty anchor block in a foreign tree is, on its own,
   // equally compatible with a planner that selects nothing anywhere. So the same seam is driven
   // once more with the only difference that may matter: the target repository's git toplevel. ROOT

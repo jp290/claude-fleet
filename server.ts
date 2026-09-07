@@ -2242,11 +2242,22 @@ const DISPATCH_MAX_LANES = Math.max(1, Number(process.env.FLEET_DISPATCH_MAX_LAN
 // standing ALONE would nominally permit 16×2 = 32 concurrent lanes against 16 physical places. The
 // slots would stop the 17th lane, but the intended machine-load cap would have stopped binding long
 // before that. Only a cap that is ALSO checked globally keeps that product off the machine.
-// The honest price of the default: it is DISPATCH_MAX_LANES, so out of the box this check can never
-// be the one that holds anything — the repo cap runs first and refuses at the same number or lower.
-// The knob is inert until the owner sets it SMALLER than the repo cap. It prevents nothing today.
-const DISPATCH_MAX_LANES_PER_PROGRAM = Math.max(1,
-  Number(process.env.FLEET_DISPATCH_MAX_LANES_PER_PROGRAM ?? DISPATCH_MAX_LANES) | 0);
+// The honest price of the default: it is the ROW'S OWN repo cap, so out of the box this check can
+// never be the one that holds anything — the repo cap runs first and refuses at the same number or
+// lower. The knob is inert until the owner sets it SMALLER than that. It prevents nothing today.
+// THE DEFAULT IS THE REPO CAP, NOT THE ENV CONSTANT, and that distinction only became load-bearing
+// on 2026-09-07 when the repo cap became per-repo (repoLaneCap). Anchored to the env constant, an
+// UNSET knob stops being inert the moment one repo is raised: raise private-repo-j to 3 with one API
+// call and its rows — every one of them Program rows — are held at 1/1 by a per-program budget the
+// owner never configured, under a note naming the program. The knob would have silently become the
+// binding cap, which is the exact opposite of what the paragraph above promises it does. `null`
+// here means UNCONFIGURED (follow the repo), a distinct state from any number the owner may set.
+// The multiplication argument above is untouched by this: what keeps the product off the machine is
+// that the repo cap is checked FIRST and UNCONDITIONALLY, not the size of this second number.
+const DISPATCH_MAX_LANES_PER_PROGRAM: number | null =
+  process.env.FLEET_DISPATCH_MAX_LANES_PER_PROGRAM
+    ? Math.max(1, Number(process.env.FLEET_DISPATCH_MAX_LANES_PER_PROGRAM) | 0)
+    : null;
 // ACP-16: how many rows ONE Program-MAIN may hold released-but-not-yet-started through its own
 // door. Unlike STEWARD_MAX_PENDING this IS a per-object cap, so the number that reaches the machine
 // is a PRODUCT and naming it is part of the cap — a per-program cap whose sum is never stated is
@@ -8992,12 +9003,16 @@ const programDispatchOn = (t: Task): ProgramDispatch | undefined => {
   const p = programs.find((x) => x.id === t.programId);
   return p ? programDispatchGrant(p) : undefined;
 };
-// ...and the CEILING that record may LOWER, never raise. FLEET_DISPATCH_MAX_LANES_PER_PROGRAM stays
-// the machine's number and this Math.min is the whole safety property: a `maxLanes` above the env
-// cap is legal, stored and inert. A row whose program carries no active grant gets the env cap
-// exactly — byte for byte the number this line computed before the record existed.
-const programDispatchCap = (pd: ProgramDispatch | undefined): number =>
-  Math.min(pd?.maxLanes ?? DISPATCH_MAX_LANES_PER_PROGRAM, DISPATCH_MAX_LANES_PER_PROGRAM);
+// ...and the CEILING that record may LOWER, never raise. The machine's number is
+// FLEET_DISPATCH_MAX_LANES_PER_PROGRAM where the operator set one and the ROW'S OWN repo cap where
+// nobody did (see the constant: unconfigured must stay inert, and after per-repo caps only the repo
+// number can do that), and this Math.min is the whole safety property: a `maxLanes` above the
+// machine number is legal, stored and inert. A row whose program carries no active grant gets the
+// machine number exactly — byte for byte what this line computed before the record existed.
+const programDispatchCap = (pd: ProgramDispatch | undefined, repoMax: number): number => {
+  const machine = DISPATCH_MAX_LANES_PER_PROGRAM ?? repoMax;
+  return Math.min(pd?.maxLanes ?? machine, machine);
+};
 let dispatchBusy = false;
 async function tickDispatch(): Promise<void> {
   if (dispatchBusy || !DISPATCH_REPO) return;
@@ -9081,7 +9096,7 @@ async function tickDispatch(): Promise<void> {
       // note prints the number that actually held, so the board never names a budget the tick did
       // not use.
       if (next.programId) {
-        const programCap = programDispatchCap(pd);
+        const programCap = programDispatchCap(pd, repoCap.max);
         const programLanes = slots.filter((s) => s.cwd && s.programId === next.programId).length;
         if (programLanes >= programCap) {
           const title = programs.find((p) => p.id === next.programId)?.title ?? next.programId;

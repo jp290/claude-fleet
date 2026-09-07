@@ -270,8 +270,9 @@ Die Vertrauensgrenzen im Präsens stehen in `CLAUDE.md` §Deploy; hier die Vollr
   Quiet Hours (`server.ts`, grep `taskDispatch`); `dispatchOn` ist ein persistierter Laufzeit-Schalter,
   `POST /api/dispatch {on:true|false}`; Env: `FLEET_DISPATCH_REPO`, `FLEET_DISPATCH_MAX_LANES=1` (Owner-Entscheid 2026-09-07 09:3x, vorher 2 — „fuer vernuenftige Suiten"), dazu
   seit 2026-08-22 zwei weitere Knöpfe: `FLEET_DISPATCH_MAX_LANES_PER_PROGRAM` (`server.ts#DISPATCH_MAX_LANES_PER_PROGRAM`,
-  Default = `DISPATCH_MAX_LANES`, ein ZWEITER Lane-Deckel je Program, der nach dem Repo-Deckel geprüft
-  wird und darum ausschließlich verengen kann — beim Default kann er nie derjenige sein, der hält) und
+  UNGESETZT = der Repo-Deckel DIESER Zeile (nicht `FLEET_DISPATCH_MAX_LANES` — siehe (b) unten), ein
+  ZWEITER Lane-Deckel je Program, der nach dem Repo-Deckel geprüft
+  wird und darum ausschließlich verengen kann — ungesetzt kann er nie derjenige sein, der hält) und
   `FLEET_PROGRAM_MAX_RELEASED` (`server.ts#PROGRAM_MAX_RELEASED`, Default 5, Deckel für Pfad (3) oben: freigegebene,
   vom Tick noch nicht gestartete Zeilen je Program)). Er wählt
   aus, spawnt und brieft — **landen kann er nichts**, kein Tick ruft `mergeJob` (nur die Route;
@@ -307,8 +308,15 @@ Die Vertrauensgrenzen im Präsens stehen in `CLAUDE.md` §Deploy; hier die Vollr
     dann startet der Tick die freigegebenen Zeilen GENAU dieses Programs auch bei `"dispatch": false`.
     Fünf Sätze, die man braucht:
     - **Der Deckel des Owners kann nur VERENGEN.** `server.ts#programDispatchCap` ist ein
-      `Math.min` gegen `FLEET_DISPATCH_MAX_LANES_PER_PROGRAM`; der Repo-Deckel
-      `FLEET_DISPATCH_MAX_LANES` steht unverändert darüber und wird zuerst geprüft.
+      `Math.min` gegen die MASCHINENZAHL; der Repo-Deckel steht unverändert darüber und wird zuerst
+      geprüft. **Die Maschinenzahl ist seit 2026-09-07 `FLEET_DISPATCH_MAX_LANES_PER_PROGRAM`, WENN
+      der Operator eine gesetzt hat, sonst der Repo-Deckel DIESER Zeile** (`?? repoMax`). Vorher war
+      der Default an `FLEET_DISPATCH_MAX_LANES` verankert, und genau das machte den unkonfigurierten
+      Knopf beim ersten gehobenen Repo bindend: Private-repo-j auf 3 heben und die Zeilen — allesamt
+      Program-Zeilen — stünden bei 1/1 unter einer Notiz, die das PROGRAM nennt, also den falschen
+      Knopf. Der Vertrag des Deckels („inert, bis der Operator ihn KLEINER setzt") ist damit wieder
+      wahr. Beweis: `e2e/tasks.ts` §(e5); die Multiplikations-Sicherheit hängt unverändert daran,
+      dass der Repo-Deckel ZUERST und UNBEDINGT geprüft wird, nicht an der Größe dieser Zahl.
     - **Der Zuschlag wird nur ausgegeben, solange das Program `active` ist**
       (`server.ts#programDispatchGrant`) — die liegengebliebenen `queued`-Zeilen eines
       abgeschlossenen Programs starten nichts.

@@ -8415,8 +8415,20 @@ exit 0
     type M5Verdict = { status?: string; landed?: boolean; detail?: string;
       verify?: { ok?: boolean | null; waitedOut?: true; proportional?: boolean; steps?: string[];
         cmd?: string; out?: string; ms?: number; waitMs?: number } };
+    // A NULL SLOT NEVER REACHES THE VERDICT PROBE. Measured on the first run of this section
+    // (2026-09-07): five extra lands on top of (8e)/(8f)'s left all 16 slots occupied, the last
+    // arm's `conflictLane` handed back `slot: null`, and `ffrSettled` parsed `/api/slots/null/merge`
+    // as JSON and threw — the SECTION died inside a probe, reading like a product fault. A probe
+    // that could not run must fail as ITSELF, so this returns null and every arm asserts its own
+    // slot, and `m5Drop` below gives each kept lane straight back so the pool cannot run dry.
     const m5Settled = async (slot: number | null): Promise<M5Verdict | null> =>
-      (await ffrSettled(slot)) as M5Verdict | null;
+      slot === null ? null : (await ffrSettled(slot)) as M5Verdict | null;
+    // Each denied arm keeps its lane (nothing landed), and there are five of them against a
+    // 16-slot machine that (8e) and (8f) have already filled. Read the verdict, then give the slot
+    // back — the final cleanup still kills them, and a second kill is a no-op.
+    const m5Drop = async (slot: number | null): Promise<void> => {
+      if (slot !== null) await post(`/api/slots/${slot}/kill`, {});
+    };
 
     // A CORPSE, made rather than waited for: a real process, killed, and its death asserted before
     // anything is built on it — a pid that merely "should" be gone would make every arm below a
@@ -8462,8 +8474,9 @@ exit 0
     const m5P = await m1Land("m5 park", "m5-park.txt");
     const m5PVerdict = await m5Settled(m5P.slot);
     const m5PRuns = ffrLogRuns().length;
+    await m5Drop(m5P.slot);
     check("(ii) M5 GEGENPROBE: a pid-LESS lock dir is a human's manual park and is NEVER reaped — the land is denied, the chain never spawns, and the park survives untouched",
-      m5P.fired && m5PVerdict?.status === "resolved" && m5PVerdict.landed === false
+      m5P.fired && m5P.slot !== null && m5PVerdict?.status === "resolved" && m5PVerdict.landed === false
         && m5PVerdict.verify?.waitedOut === true && m5PRuns === 0
         && existsSync(ffrLock) && !existsSync(`${ffrLock}/pid`),
       JSON.stringify({ fired: m5P.fired, verdict: m5PVerdict?.verify, gateRuns: m5PRuns,
@@ -8479,8 +8492,9 @@ exit 0
     const m5U = await m1Land("m5 unproven", "m5-unproven.txt");
     const m5UVerdict = await m5Settled(m5U.slot);
     const m5URuns = ffrLogRuns().length;
+    await m5Drop(m5U.slot);
     check("(iii) M5 GEGENPROBE: a LIVE holder whose identity cannot be proven (pid, no birth) is kept, not reaped — the land is denied and the holder still holds the lock",
-      m5U.fired && m5UVerdict?.status === "resolved" && m5UVerdict.landed === false
+      m5U.fired && m5U.slot !== null && m5UVerdict?.status === "resolved" && m5UVerdict.landed === false
         && m5UVerdict.verify?.waitedOut === true && m5URuns === 0
         && m5LockPid() === m5Unproven && ffrAlive(m5Unproven),
       JSON.stringify({ fired: m5U.fired, verdict: m5UVerdict?.verify, gateRuns: m5URuns,
@@ -8513,8 +8527,9 @@ exit 0
     ffrReset();
     const m5D = await m1Land("m5 docs", "m5-docs.md");
     const m5DVerdict = await m5Settled(m5D.slot);
+    await m5Drop(m5D.slot);
     check("(iv) M5: a DOCS-ONLY land does not take the suite mutex at all — its short chain runs while somebody else holds the machine, says so in the note, and never reports a wait",
-      m5D.fired && m5DVerdict?.verify?.proportional === true
+      m5D.fired && m5D.slot !== null && m5DVerdict?.verify?.proportional === true
         && m5DVerdict.verify?.waitedOut === undefined
         && (m5DVerdict.verify?.cmd ?? "").includes("bun e2e/pins.ts")
         && (m5DVerdict.verify?.out ?? "").includes("suite mutex: NOT TAKEN")
@@ -8526,8 +8541,9 @@ exit 0
     ffrReset();
     const m5C = await m1Land("m5 code", "m5-code.txt");
     const m5CVerdict = await m5Settled(m5C.slot);
+    await m5Drop(m5C.slot);
     check("(v) M5 CONTROL: the FULL chain still queues behind that same occupant and is still denied — so (iv) measured the plan, not a lock that had quietly gone free",
-      m5C.fired && m5CVerdict?.status === "resolved" && m5CVerdict.landed === false
+      m5C.fired && m5C.slot !== null && m5CVerdict?.status === "resolved" && m5CVerdict.landed === false
         && m5CVerdict.verify?.waitedOut === true && m5CVerdict.verify?.proportional === false
         && ffrLogRuns().length === 0
         && m5LockPid() === m5Occupant && ffrAlive(m5Occupant),

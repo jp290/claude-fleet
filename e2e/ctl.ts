@@ -111,12 +111,25 @@ export async function run(): Promise<void> {
   // === merges (before any land of ours) =========================================================
   const mergesBefore = await ctl(["merges", "--json"]);
   const stBefore = stateFile().merges as Record<string, { status: string; landed: boolean; verify?: unknown }> ?? {};
-  const rowsBefore = (mergesBefore.json as { rows?: { slot: number; status: string; hasVerify: boolean }[] })?.rows ?? [];
-  const agreeBefore = rowsBefore.length === Object.keys(stBefore).length
-    && rowsBefore.every((r) => stBefore[String(r.slot)]?.status === r.status
-      && (!!stBefore[String(r.slot)]?.verify) === r.hasVerify);
-  check("ctl merges: every row it prints is the fleet.json row for that slot, status and hasVerify",
-    agreeBefore, `ctl=${rowsBefore.length} state=${Object.keys(stBefore).length} exit=${mergesBefore.code}`);
+  const rowsBefore = (mergesBefore.json as { rows?: { slot: number; status: string | null; hasVerify: boolean }[] })?.rows ?? [];
+  // BOTH DIRECTIONS over the persisted half: every fleet.json verdict is a row with that status and
+  // that hasVerify, and every row claiming a status has a fleet.json verdict behind it. Rows with a
+  // null status are the OPEN LANES the union adds — they are counted separately, below.
+  const verdictRows = rowsBefore.filter((r) => r.status !== null);
+  const agreeBefore = Object.keys(stBefore).every((k) =>
+      verdictRows.some((r) => String(r.slot) === k && r.status === stBefore[k]!.status
+        && r.hasVerify === !!stBefore[k]!.verify))
+    && verdictRows.every((r) => stBefore[String(r.slot)]?.status === r.status);
+  check("ctl merges: the persisted verdicts and its rows are the same set, status and hasVerify",
+    agreeBefore, `verdictRows=${verdictRows.length} state=${Object.keys(stBefore).length} exit=${mergesBefore.code}`);
+  // …and the union half: a lane whose FIRST land is running has no persisted verdict yet, so an
+  // open lane must be a row on its own or the sensor would answer "nothing is running" about
+  // exactly the case it exists for.
+  const openLanes = ((await (await get("/api/sessions")).json()) as
+    { slots: { id: number; worktree: unknown | null }[] }).slots.filter((s) => s.worktree).map((s) => s.id);
+  check("ctl merges: every OPEN LANE is a row, verdict or not — the first land of a lane has none",
+    openLanes.every((id) => rowsBefore.some((r) => r.slot === id)),
+    `lanes=${JSON.stringify(openLanes)} rows=${JSON.stringify(rowsBefore.map((r) => r.slot))}`);
   check("ctl merges: the live half is asked, not inferred (liveKnown with an owner token)",
     (mergesBefore.json as { liveKnown?: boolean })?.liveKnown === true
       && rowsBefore.every((r) => (r as { running?: boolean | null }).running !== null),

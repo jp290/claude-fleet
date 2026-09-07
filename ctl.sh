@@ -183,20 +183,32 @@ merges)
   cat >> "$CTL_TMP" <<'EOF'
 const st = readState();
 const merges = st.merges ?? {};
+// THE UNION, and the reason it is a union and not the merges map: a lane's FIRST land has no
+// persisted verdict while it runs (mergeLast is written when the job settles), so a rows list built
+// from `merges` alone would probe that lane live and then drop it — the sensor would answer "nothing
+// is running" about the exact case it exists for. Every open LANE is therefore a row too, carrying
+// `status: null` until a verdict exists.
 const live = process.env.CTL_TOKEN ? {} : null;
+const subjects = new Set(Object.keys(merges));
+for (const [id, s] of Object.entries(st.slots ?? {})) if (s.worktree) subjects.add(id);
 if (live) {
-  const slots = new Set(Object.keys(merges));
-  for (const [id, s] of Object.entries(st.slots ?? {})) if (s.worktree) slots.add(id);
-  for (const id of slots) {
+  for (const id of subjects) {
     const r = await api("/api/slots/" + id + "/merge", { headers: ownerH() });
-    live[id] = r.status === 400 ? { gone: true } : { running: r.body?.running === true };
+    live[id] = r.status === 400 ? { gone: true, running: false } : { running: r.body?.running === true };
   }
 }
-const rows = Object.entries(merges).map(([slot, m]) => ({
-  slot: Number(slot), status: m.status, landed: m.landed === true,
-  hasVerify: !!m.verify, verify: verifyWord(m.verify), branch: m.branch ?? null, at: m.at ?? null,
-  running: live ? (live[slot]?.running ?? false) : null,
-})).sort((a, b) => a.slot - b.slot);
+const rows = [...subjects].map((slot) => {
+  const m = merges[slot] ?? null;
+  return {
+    slot: Number(slot),
+    status: m ? m.status : null,
+    landed: m ? m.landed === true : false,
+    hasVerify: !!m?.verify, verify: verifyWord(m?.verify),
+    branch: m?.branch ?? st.slots?.[slot]?.worktree?.branch ?? null,
+    at: m?.at ?? null,
+    running: live ? (live[slot]?.running ?? false) : null,
+  };
+}).sort((a, b) => a.slot - b.slot);
 // EXIT 1 = "a land is in flight or unfinished — wait". Two facts feed it, and both are honest
 // about what they saw: a LIVE running job, and a persisted `interrupted` verdict (the process that
 // was landing died mid-flight, so the tree state is exactly what nobody knows). An `interrupted`
@@ -206,8 +218,8 @@ const busy = rows.filter((r) => r.running === true || (r.status === "interrupted
 // (grep `mergeLast.delete`), so this map is a register of lands that did NOT finish plus, with the
 // live half, the ones running right now — never a land history. The history is lane-outcomes.jsonl
 // and the fleet/land notes, and reading an empty map as "nothing has landed" is backwards.
-const lines = rows.length === 0 ? ["no unfinished land is persisted for any slot (a completed land leaves no row — see lane-outcomes.jsonl for the history)"]
-  : rows.map((r) => `slot ${r.slot}  ${r.status}  landed=${r.landed ? "YES" : "no"}  verify=${r.verify}`
+const lines = rows.length === 0 ? ["no lane is open and no unfinished land is persisted (a completed land leaves no row — see lane-outcomes.jsonl for the history)"]
+  : rows.map((r) => `slot ${r.slot}  ${r.status ?? "no verdict yet"}  landed=${r.landed ? "YES" : "no"}  verify=${r.verify}`
     + `  running=${r.running === null ? "UNKNOWN" : r.running ? "YES" : "no"}  ${r.branch ?? ""}`);
 if (!live) lines.push("live half UNKNOWN — no owner token, so `running` was never asked (not the same as no)");
 if (busy.length) lines.push(`WAIT: ${busy.map((r) => r.slot).join(", ")} — a land is running or was interrupted without a verdict`);

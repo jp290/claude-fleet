@@ -81,7 +81,11 @@ gemeinsamen git-dir, wie `state.sh`). Die drei Overrides sind für die Suite geb
 
 - **`ctl.sh merges`** — der Land-Sensor. LIEST `merges` aus `fleet.json` (persistierte `MergeLast`
   je Slot) UND, mit Owner-Token, `GET /api/slots/:id/merge` je Slot für das laufende Halb. Schreibt
-  nichts. Exit 1, solange ein Land LÄUFT oder ein `interrupted` OHNE Verdikt steht — beides heißt
+  nichts. Die Zeilen sind die VEREINIGUNG aus persistierten Verdikten und OFFENEN Lanes, und das ist
+  kein Komfort: der ERSTE Land einer Lane hat, solange er läuft, gar kein Verdikt (`mergeLast` wird
+  erst beim Settle geschrieben) — eine Liste nur aus `merges` hätte genau diese Lane live gefragt und
+  dann weggeworfen, also „es läuft nichts" über den einen Fall geantwortet, für den das Verb da ist.
+  Eine Lane ohne Verdikt steht als `no verdict yet` da, nie als etwas Gemessenes. Exit 1, solange ein Land LÄUFT oder ein `interrupted` OHNE Verdikt steht — beides heißt
   „warten"; ohne Owner-Token steht `running=UNKNOWN` da und wird nie als „nein" gelesen.
   **Ein GELUNGENER Land hinterlässt hier KEINE Zeile**: `server.ts` löscht `mergeLast[slot]`
   zusammen mit der Lane, die er gelandet hat (`rg -n "mergeLast.delete" server.ts`). Diese Karte ist

@@ -1,3 +1,107 @@
+# HANDOFF — Program-MAIN Land-Pipeline 2026-09 (`233e1c2b7eaca3850decf332`, Slot 8, Fable 5.1): ALLE Merge- und Wellen-Zeilen GELANDET (M2 `15108892` zuletzt), NUR N2 `f98facad` ist offen; 2026-09-08 00:2x, ctx GEMESSEN 31,6 %
+
+> **Dieser Abschnitt ERSETZT die aelteren Land-Pipeline-Abschnitte darunter.** Zustand ableiten:
+> `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Alles hier sind Behauptungen
+> zum Nachschlagen.
+
+## 0. DEIN ERSTER ZUG
+
+1. **Es ist genau EINE Zeile offen: N2 `f98facad`** (Notiz-Lebenszyklus: beruehrt · beurteilt ·
+   erledigt-durch-Land). Ihre Vorbedingung N1 (`24cd54e`+`189f815`) ist auf main, am Baum geprueft.
+   Ich habe sie NICHT mehr gestartet, weil ich im Uebergabefenster stand — nicht weil etwas fehlt.
+   **Start per Hand-Knopf mit Tripel, nie per `release`** (die Zeile traegt keinen `Task.spawn`,
+   ein `release` gaebe der Lane `FLEET_MODEL` ohne `--effort`):
+   `POST /api/tasks/f98facad/dispatch` Body
+   `{"harness":"claude","model":"claude-opus-5[1m]","effort":"high"}` (Owner-Token aus `fleet.json`).
+   Der Knopf prueft weder Deckel noch Quiet Hours: nur druecken, wenn ein Slot frei ist.
+2. **Haeng dem Brief vier Zeilen an, bevor du dispatchst** — das hat bei allen vier Lanes getragen:
+   (a) die `fleet.json` liegt nur im Haupt-Checkout, eine CLI-Zeile im Worktree braucht den vollen
+   Pfad; (b) `./e2e-isolated.sh` ueber den Suite-Offer statt lokal, solange `GET /api/self/gate`
+   einen `helper` nennt; (c) **nach JEDEM Rebase Stufe 1 (`bun e2e/pins.ts`) fahren, bevor sie
+   fertigmeldet** — das hat heute zwei Rots gefunden, die ein gruener Pre-Rebase-Lauf verdeckt
+   haette; (d) keine eigenen Landing-Shas in Docs, nur die Branch nennen — **die MAIN setzt die Sha
+   nach dem Land ein und prueft sie mit `git merge-base --is-ancestor <sha> main`.**
+3. **Watches: `idleSec:0`, und nach JEDEM Feuern neu armen.** Ein Watch feuert genau einmal; ein
+   Event kann `send-uncertain` bleiben und dann kommt NICHTS in die Pane (heute einmal passiert,
+   Event `795dbb1e` — ich erfuhr von W2s Fertigwerden nur, weil der Controller es von Hand brachte).
+   `GET /api/self` zeigt `armed`.
+4. **Offen, gehoert NICHT dir:** das lokale Post-Land-Audit ist an `ctl setup: the source tree
+   resolves and carries an executable ctl.sh` rot (Detail `src=unresolved`). Von mir als
+   `stale-test` adjudiziert (auditAt 1788821143810), Ursache gemessen, Zeile beim Controller gefilt
+   (`8f14a22b`). **Betrifft nur LOKALE Audits** — auf dem Helfer besteht die Sonde, weil er in ein
+   echtes Work-Tree klont. Wenn dein N2-Audit daran rot wird und es der EINZIGE Fail ist: dieselbe
+   Adjudikation, nicht suchen.
+
+## 1. Program-Zeilen — Stand (Ids aus `fleet.json`)
+
+| Zeile | Id | Stand |
+|---|---|---|
+| S1 Wellen-Sensor | `1b106a66` | GELANDET `863f628`+`49d93bc` |
+| M1 Gate unter Server-Hold | `aa8e5ade` | GELANDET `f388de1`+`f0bcea6`, Audit gruen |
+| M5 Hold-Hygiene | `8d6a3e9e` | GELANDET `94dd5e4`+`a15b59a`+`b2ab2cf`, Audit gruen 3792/0 |
+| N1 Notizen beim Dispatch | `3af11665` | GELANDET `24cd54e`+`189f815`, im M3-Audit mitgemessen |
+| M3 Vorflugpruefung dirty-main | `283f625f` | GELANDET `6c70f01`+`79e1c36`+`94a8840`, **Audit gruen 3832/0** |
+| W1 programId-Schnitt | `e0113460` | GELANDET `01c3b35`, **Audit gruen 3835/0** |
+| W2 Bestaetigungstuer Flaeche | `0f5019ac` | GELANDET `974ea00`, **Audit gruen 3880/0**, Note `ffRounds: 2` |
+| W3 „▸ start wave" | `05611418` | GELANDET `74a1cde2`..`eb0f03d3` (8 Commits), Audit ROT nur an der ctl-Zeile (§0.4) |
+| M2 waitedOut als Wiedervorlage | `64860da8` | **GELANDET `15108892`**, Gate 148 s / 0 s, Audit-Watch war `3a4bf304` |
+| **N2 Notiz-Lebenszyklus** | `f98facad` | **pending — die einzige offene Zeile** |
+| M4 / N3 unter der Schnittlinie | `4aeeec19` / `f7493755` | notiz, Vorschlaege |
+
+**Erfolgskriterien des Programs:** (a) beide Dokumente gelandet mit Schnittliste, Zeilen in der
+Queue — erfuellt · (b) S1 gelandet und gepinnt — erfuellt · (c) erster Merge-Schnitt gelandet ohne
+neue FAILED-Note — erfuellt. Der Wellenmodus (W1–W3) war die Owner-Erweiterung und ist vollstaendig.
+
+## 2. Was heute gelernt wurde (Mechanismen, keine Meinungen)
+
+- **`ffRounds` und `waitRounds` sind ZWEI Zaehler ueber verschiedene Rennen**, und keiner ist am
+  Verdikt `merged/landed:true` sichtbar — nur die Land-Note sagt es.
+  `server.ts#LAND_FF_RETRY_ROUNDS` (Default 2, Deckel 5) zaehlt Rennen mit einem anderen LANDER
+  nach gruenem Gate; `server.ts#LAND_WAIT_ROUNDS` (seit M2, `Math.min(3, … ?? 1)`, also Default 1,
+  Deckel 3) zaehlt Absagen durch eine andere SUITE, bevor ein Gate laeuft. Der Code sagt woertlich
+  „NOT to be folded into LAND_FF_RETRY_ROUNDS". **Wartebudget-Formel, am Code gerechnet:**
+  `(LAND_WAIT_ROUNDS + 1) × FLEET_VERIFY_WAIT_MS` = `(1+1) × 2 700 000` = 2 × 45 min. Das „+1" ist
+  der erste Hold aus M1. Wer die falsche Konstante nimmt, rechnet 3 × 45 min.
+  `W2`s Note traegt `ffRounds: 2`, also den vollen Vorrat — zwei fremde Commits legten sich unter
+  das laufende Land, ein dritter haette es nach gruenem Gate getoetet.
+- **Ein Land kann dreimal scheitern, ohne dass die Arbeit schuld ist.** W3 brauchte drei Versuche:
+  (1) 2 700 004 ms in der Mutex-Schlange, `verify.ok:null` — der Gate hat den Baum nie gesehen;
+  (2) echtes Rot, weil ein fremdes Land waehrend der Wartezeit die Deploy-Rollen-Tabelle
+  umgeschrieben hatte (`task-land-waves.ts` wurde durch W3s eigene Wellen-Tuer ein SERVER-Pfad);
+  (3) durch. Ein vierter Rot derselben Klasse kam beim Rebase dazu (Zahl in der generierten
+  Repo-Karte, 54 statt 53). **Alle vier fand `bun e2e/pins.ts` in Millisekunden.**
+- **Warten auf eine freie Maschine schlaegt Landen in die Schlange.** Mein Hintergrund-Waechter
+  las drei Sensoren zusammen (laufende Wrapper · Halter der Lock-PID · `merges` mit `running`) und
+  landete beim ersten ruhigen Fenster. Ein blindes Nachlanden haette ein zweites 45-min-Loch gekauft.
+- **Eine Null aus dem FALSCHEN Ledger sieht aus wie eine echte Null.** Ich habe behauptet, die
+  Beurteilungstuer sei nie benutzt worden, weil ich `adjudication` auf den Audit-Zeilen suchte; die
+  Urteile leben in `audit-adjudications.jsonl` (174 Zeilen: flake 82 · unknowable 41 · stale-test 27
+  · real 24). Selbst korrigiert, bevor der Controller darauf baute.
+- **Der Sensor bildet weiterhin NULL Buendel** (Stand W1): 43 Wellen im Fleet-Repo, 8 `kein-program`,
+  35 `flaeche-nur-abgeleitet`. Ein n>1 entsteht erst, wenn jemand ueber W2 zwei Flaechen desselben
+  Programs bestaetigt. **Der Knopf aus W3 ist bis dahin korrekt, aber ohne Wirkung.**
+
+## 3. Offene Punkte, die ich weitergebe
+
+- **Der Einwand von Program `eec69528` bleibt sichtbar offen:** programId + Flaeche sei semantisch
+  nicht genug, es brauche gemeinsame Ursache je Buendel. W3 loest das NICHT durch strengere
+  Maschine, sondern zeigt vor dem Klick die geteilten Dateien, die Klasse, die Ersparnis und eine
+  Quittung, die woertlich sagt, was NICHT geprueft wurde. **Beim ersten echten n>1 neu bewerten.**
+- **Die echte `land-durability`-Frage ist NICHT gebaut** (W3-Report): ueberlebt ein halb gelandetes
+  Wellen-Land einen Server-Neustart und markiert danach alle n? Waere die naechste Zeile.
+- **`docs/suite-contention.md` ist an drei Stellen falsch** (Z. ~344, ~500, ~535) — Controller-Zeile
+  `e53716b9`, gefilt, mit der Auflage, dass die korrigierte Stelle BEIDE Konstanten nennt.
+- **Zwei Registerzeilen, nicht meine, beim Controller abgeliefert:** (1) `self-land: a second call on
+  the same landed row is refused 'already landed'` faellt mit `409 task is queued`, 3 von 269 Laeufen
+  ueber 14 Tage und drei Baeume — `requeue()` schreibt nach `identityLost()` `queued` ueber ein
+  terminales `done`. (2) Ein Suite-Offer kann unbeansprucht liegen bleiben, obwohl der Helfer online
+  gemeldet ist (W1: ~44 min ohne Claim, lokaler Fallback; W2/M2: geclaimt).
+- **Deploy:** M3 ist live (`f6a69ac5`). W1/W2/W3/M2 sind seither gelandet und NICHT deployt —
+  `deployGap.codeBehind` pruefen und den Controller bitten, wenn der Wellen-Knopf sichtbar sein soll
+  (Board-Teil braucht ausserdem `bun run build`).
+
+---
+
 # HANDOFF — 🎛 Fleet Controller (Slot 7, Opus 5 high), 2026-09-07 ~22:20–00:0x, ctx GEMESSEN 29,4 %
 
 Diese Sitzung kompaktiert (Regelbuch: Compact ist der Normalfall des Controllers). Slot, Self-Token

@@ -83,6 +83,11 @@ gemeinsamen git-dir, wie `state.sh`). Die drei Overrides sind für die Suite geb
   je Slot) UND, mit Owner-Token, `GET /api/slots/:id/merge` je Slot für das laufende Halb. Schreibt
   nichts. Exit 1, solange ein Land LÄUFT oder ein `interrupted` OHNE Verdikt steht — beides heißt
   „warten"; ohne Owner-Token steht `running=UNKNOWN` da und wird nie als „nein" gelesen.
+  **Ein GELUNGENER Land hinterlässt hier KEINE Zeile**: `server.ts` löscht `mergeLast[slot]`
+  zusammen mit der Lane, die er gelandet hat (`rg -n "mergeLast.delete" server.ts`). Diese Karte ist
+  also das Register der NICHT fertig gewordenen Lands plus der gerade laufenden — keine
+  Land-Historie. Wer eine leere Karte als „es ist nichts gelandet" liest, liest sie verkehrt herum;
+  die Historie steht in `lane-outcomes.jsonl` und in den `fleet/land`-Notes.
   Token: Owner (optional — ohne ihn bleibt die Live-Hälfte ungemessen).
 - **`ctl.sh lock`** — Gesundheit des Suite-Mutex, in der Dreiteilung von `e2e-stage.sh`
   (held · stale · parked) plus FREE und UNKNOWN. Liest `$FLEET_SUITE_LOCK` (Default
@@ -122,7 +127,9 @@ gemeinsamen git-dir, wie `state.sh`). Die drei Overrides sind für die Suite geb
   ist Tier 2 aus, druckt es die Ablehnung, statt ein Abo zu behaupten. Ein 200, das NICHT
   `{"running":true}` ist (blocked · „already merged" · ein zurückgereichtes ⏸-Verdikt), ist bereits
   die ganze Antwort und wird nicht nachgepollt — sonst läse das Verb das Verdikt des VORIGEN Lands
-  als das Ergebnis dieses Aufrufs. Das Warten ist auf `FLEET_CTL_WAIT_MAX_SEC` (Default 3600 s)
+  als das Ergebnis dieses Aufrufs. **Ein `blocked` ist ein 200 und trotzdem exit 1** (unsauberer
+  Baum, arbeitende Pane, laufender git-Vorgang, Kollision): exit 0 heißt „ein Job läuft" oder „es
+  ist gelandet", sonst nichts. Das Warten ist auf `FLEET_CTL_WAIT_MAX_SEC` (Default 3600 s)
   gedeckelt und läuft es ab, ist das **exit 3 und ein Nicht-Urteil**, nie ein „nicht gelandet".
   Token: Owner (+ self für den Audit-Watch).
 - **`ctl.sh dispatch <taskId>`** — `POST /api/tasks/:id/dispatch`, der Hand-Start. SCHREIBT eine

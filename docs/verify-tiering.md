@@ -3157,6 +3157,61 @@ Aussage ueber die Idempotenz und kein Befund am Watch-Pfad — es ist diese Regi
 zwei VERSCHIEDENE Ids da, ist wirklich ein zweites Watch entstanden, und das gehoert dem, der es
 sieht.
 
+### 11.2t EINE SICHTUNG, keine Familie: der Codex-Resume-Heal in `e2e/restart.ts` — und das erste Rot, dessen Beleg NICHT MEHR AUFFINDBAR war (2026-09-07)
+
+Registriert vom Program-MAIN „Audit-Determiniertheit 2026-09" (Slot 6) direkt nach dem Land
+`a1f8b65`. **Das ist ausdruecklich KEINE Familie** — eine Sichtung ist ein Datenpunkt. Der
+Abschnitt steht hier, damit eine ZWEITE Sichtung erkannt wird, und aus keinem anderen Grund.
+
+**Der Fakt:** der Post-Land-Audit zu `a1f8b65` ist ROT mit `ran 3785 / failed 1`, `ms 2146177`
+(~36 min, also ein echter Lauf — kein Null-Check-Rot). Der eine Fehlschlag:
+
+```
+a dead explicitly-bound slot heals through exactly one exact-id Codex resume
+```
+
+`e2e/restart.ts`, der Check nach dem `kill-session -t s15`.
+
+**Basisrate im lokalen Register: 0 Fails auf 395 Laeufe** (`e2e-trail/*.jsonl` plus
+`$TMPDIR/fleet-e2e-trail`, alle Laeufe, in denen der Check lief). Damit ist dies die ERSTE
+Sichtung ueberhaupt. Genau deshalb ist ein Flake-Urteil hier nicht zulaessig: eine Rate von
+1/396 unterscheidet einen frischen Regress nicht von einem seltenen Flake.
+
+**Dem gelandeten Diff gehoert es strukturell nicht:** `a1f8b65` aendert `fleet-e2e-postland-audit.ts`
+und `docs/verify-tiering.md`; der Check ueberprueft `tickCodexRecovery` und den Self-Heal-Pfad. Es
+gibt keinen Pfad vom einen zum anderen. Was am selben Tag den SERVER angefasst hat, ist `f388de1`
+(M1, Merge-Pfad) — geprueft ist das NICHT, es ist nur der naechstliegende Kandidat fuer den, der
+eine zweite Sichtung untersucht.
+
+**Der Mechanismus ist NICHT gemessen.** Was ohne Messung am Code sichtbar ist, und mehr steht hier
+nicht: der Check ist eine Konjunktion aus zwei Teilen — die geheilte Pane traegt
+`codex resume '<id>'` in `pane_start_command`, UND es ist genau EIN neues `self_heal_recreate`
+im Audit-Log dazugekommen. Davor liegt eine Warteschleife von 7 000 ms und danach ein
+`Bun.sleep(2500)`. Beides sind Zeitmargen, also ist der Check unter Maschinenlast per Konstruktion
+empfindlich. Das ist eine HYPOTHESE ueber die Bauart, kein Befund ueber diesen Lauf.
+
+**Und der eigentliche Grund fuer diesen Abschnitt — das Instrument.** Der Beleg dieses Rots ist
+NICHT MEHR DA:
+- Im Trail-Register existiert **keine Datei** fuer die Run-Id des Audits
+  (`isolated-20260907T024245Z-1907687`); die Zeile des gefallenen Checks steht in keinem der
+  395 gefundenen Laeufe.
+- Die vom Audit selbst genannte aufbewahrte Instanz (`/tmp/fleet-e2e-instance-1905862`) existiert
+  nicht mehr.
+- Die Ledger-Zeile in `post-land-audits.jsonl` traegt den Check-NAMEN (`fails: [...]`), aber kein
+  `detail`.
+
+Damit war ueber den Namen hinaus nichts attribuierbar. **Die gute Nachricht, und sie entscheidet
+ueber die naechste Sichtung:** der Check UEBERGIBT ein `detail`
+(`${attendedHealCmd.slice(-220)} / heals ${healsBefore}->${healsAfter}`), er ist also nicht
+strukturell blind wie `delete the spent transport Watch` in §11.2r. Wer die zweite Sichtung im
+Trail erwischt, sieht sofort, WELCHER der beiden Konjunkte fiel — fehlendes `codex resume` oder
+eine Heal-Zaehlung ungleich +1.
+
+**Fuer den Leser eines roten Laufs:** diese Zeile ist bis zu einer zweiten Sichtung KEIN
+Freifahrtschein. Sie sagt nur: am 2026-09-07 fiel dieser Check einmal, ohne auffindbaren Beleg,
+auf einem Baum, der ihn nicht beruehrt. Faellt er dir erneut, ist die Detailzeile aus dem Trail
+das Erste, was du sicherst — und dann ist es ein Befund, kein Eintrag mehr.
+
 ### 11.2s Eine einundzwanzigste Familie — und die ERSTE mit einem gemessenen HOST-Unterschied: die D2-Vorbedingung in `e2e/watch.ts` las den Git-Anzeigecache, bevor er die Fixture-Writes tragen konnte (2026-09-06 — Wurzel aus elf hochgeladenen Helfer-`suite.log` gelesen, REPARIERT auf `fleet/260906075319-2fb8`, auf BEIDEN Hosts gruen bewiesen)
 
 `D2 setup: both closing lanes reached the spent shape, and every refusing lane differs from them in

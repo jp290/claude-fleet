@@ -7770,6 +7770,21 @@ export async function run(ctx: Ctx): Promise<void> {
         blocked: ffLooks({ status: "blocked" }),
         blockedWithReason: ffLooks({ status: "blocked", errorReason: "ff-lost" }) }));
 
+    // …AND THE SECOND MEMBER, in the same pure form (M3, 2026-09-06). `dirty-main` says the MAIN
+    // CHECKOUT holds uncommitted work in a path this land writes — a fact about the owner's own
+    // tree, not about the lane, which is idle, clean and ahead and lands the moment that tree is
+    // committed or stashed. It therefore has to reach the exemption exactly as `ff-lost` does, and
+    // exactly as narrowly: the pair, never the reason alone. This is where the widening is a
+    // DECISION rather than a side effect of the predicate reading the list.
+    check("done-looking: the dirty main checkout is the SECOND exempted typed fact, and it is exempted as narrowly as the first",
+      ffLooks({ status: "error", errorReason: "dirty-main" }) === true
+        && ffLooks({ status: "blocked", errorReason: "dirty-main" }) === false
+        && ffLooks({ status: "error", errorReason: "dirty main" as never }) === false
+        && ffLooks({ status: "error", errorReason: undefined }) === false,
+      JSON.stringify({ dirtyMain: ffLooks({ status: "error", errorReason: "dirty-main" }),
+        blockedWithReason: ffLooks({ status: "blocked", errorReason: "dirty-main" }),
+        misspelled: ffLooks({ status: "error", errorReason: "dirty main" as never }) }));
+
     // (8b) THE RACE, made deterministic. FLEET_TEST_LAND_FF_LATCH is the product's own TEST-ONLY
     // knob (the shape the Game-Maker open latch uses) and it stops the merge job at the ONE await
     // boundary no external probe can hit by timing: after the land is declared, before
@@ -8636,6 +8651,171 @@ exit 0
     spawnSync("kill", [m5Occupant]);
     try { rmSync(m5Sentinel); } catch { /* already gone */ }
     rmSync(ffrLock, { recursive: true, force: true });
+
+    // --- (8h) M3 · THE DIRTY MAIN CHECKOUT DIES IN SECONDS, AND UNDER ITS OWN NAME ------------
+    // `git merge --ff-only` runs in the checkout that HOLDS main, and git refuses it over
+    // uncommitted work in a file the merge would write. Until M3 that refusal arrived at the END:
+    // the lane rebased, the gate ran the whole chain, the fast-forward was refused, and the verdict
+    // was `ff-lost` with a git error string — twice on 2026-09-05
+    // (docs/messungen/2026-09-06-merge-prozess-robust.md §2.3, §3 M3). The name was wrong (main had
+    // not moved, so the retry chain correctly refused to repeat it) and the seconds were wasted:
+    // the answer was already true before the job started.
+    // Five arms, and the CONTROL is what makes the first one a measurement rather than a
+    // coincidence — a checkout that is dirty in a file this land does NOT touch must still land,
+    // or "dirty-main" would just be "somebody has unsaved work" and would stop every land in the
+    // fleet. The gate-run counter is the sensor throughout: FLEET_VERIFY_CMD here is a scripted
+    // stand-in that appends one line per invocation, so ZERO lines is a positive measurement that
+    // no chain was spawned, and ONE is a positive measurement that it was.
+    rmSync(ffrLock, { recursive: true, force: true });
+    await restartSrv(ffrEnv);
+    type M3Verdict = { status?: string; landed?: boolean; errorReason?: string; detail?: string;
+      verify?: { ok?: boolean | null; waitedOut?: true } };
+    const m3Settled = async (slot: number | null): Promise<M3Verdict | null> =>
+      slot === null ? null : (await ffrSettled(slot)) as M3Verdict | null;
+    const m3RepoStatus = (): string =>
+      spawnSync("git", ["-C", REPO2, "status", "--porcelain"]).stdout.toString().trim();
+    // REPO2 back to pristine between arms, by measurement rather than by hope: an arm that starts
+    // on somebody else's dirt would pass for the wrong reason, and one that starts on its own
+    // previous dirt would never reach its control.
+    const m3Clean = (extra: string[] = []): void => {
+      for (const f of extra) try { rmSync(`${REPO2}/${f}`); } catch { /* absent */ }
+      spawnSync("git", ["-C", REPO2, "checkout", "--", "."]);
+    };
+    // SPLIT IN TWO on purpose, and it is not tidiness: the dirt has to arrive AFTER the lane
+    // exists. A worktree spawned out of a dirty REPO2 would mix "does the preflight see it" with
+    // "can a lane even be created here" — two questions, one red check. Preparing first also makes
+    // the timing honest: the done criterion is about what the SERVER spends on a land, and lane
+    // creation is the fixture's spend, not the server's.
+    const m3Prepare = async (name: string, file: string): Promise<{ row: string; slot: number | null; cwd: string }> => {
+      for (const f of [ffrLatch, `${ffrLatch}.reached`, `${ffrLatch}.release`]) try { rmSync(f); } catch { /* absent */ }
+      const row = await makeTask({ text: `m3 ${name}`, programId: ffrProgram.id, repo: REPO2 });
+      ffrRows.push(row);
+      const lane = await conflictLane(row);
+      if (lane.cwd) {
+        writeFileSync(`${lane.cwd}/${file}`, `the lane's own version of this file — ${name}\n`);
+        spawnSync("git", ["-C", lane.cwd, "add", file]);
+        spawnSync("git", ["-C", lane.cwd, "commit", "-qm", `m3 ${name}`]);
+      }
+      if (lane.slot !== null) { ffrLanes.push(lane.slot); await waitDoneLooking(lane.slot); }
+      return { row, slot: lane.slot, cwd: lane.cwd };
+    };
+    const m3Fire = async (row: string): Promise<{ fired: boolean; at: number }> => {
+      const at = Date.now();
+      return { fired: ffrTok === "" ? false : (await selfLand(ffrTok, row)).ok, at };
+    };
+
+    // THE CONTESTED FILE exists on main first, so the overlap is the incident's own shape: a
+    // tracked file both sides edit. (An untracked file at a path the land ADDS blocks the same
+    // fast-forward and is covered by arm (v); this arm is the one that was actually measured.)
+    const m3Contested = "m3-contested.txt";
+    const m3Bystander = "m3-bystander.txt";
+    for (const f of [m3Contested, m3Bystander]) {
+      writeFileSync(`${REPO2}/${f}`, `base ${f}\n`);
+      spawnSync("git", ["-C", REPO2, "add", f]);
+    }
+    spawnSync("git", ["-C", REPO2, "commit", "-qm", "m3 base files"]);
+    check("(8h) M3 fixture: REPO2 carries both base files on main and its tree is clean before the first arm",
+      existsSync(`${REPO2}/${m3Contested}`) && existsSync(`${REPO2}/${m3Bystander}`)
+        && m3RepoStatus() === "",
+      JSON.stringify({ contested: existsSync(`${REPO2}/${m3Contested}`),
+        bystander: existsSync(`${REPO2}/${m3Bystander}`), status: m3RepoStatus().slice(0, 200) }));
+
+    // (i) THE HIT. The owner is editing the contested file in their own checkout and has not
+    // committed. The land must stop before the plan is even computed: no gate, no mutex, a typed
+    // reason, and no `verify` at all — nothing was measured about this tree, and an absent verdict
+    // is the honest shape for that.
+    ffrReset();
+    const m3H = await m3Prepare("dirty hit", m3Contested);
+    writeFileSync(`${REPO2}/${m3Contested}`, "the owner is editing this right now\n");
+    const m3MainBefore = main2Of();
+    const m3HFire = await m3Fire(m3H.row);
+    const m3HVerdict = await m3Settled(m3H.slot);
+    const m3HMs = Date.now() - m3HFire.at;
+    check("(i) M3: a land whose files the MAIN CHECKOUT holds uncommitted stops in seconds with errorReason 'dirty-main' — no gate spawned, no verify claimed, main unmoved, lane kept",
+      m3HFire.fired && m3H.slot !== null && m3HVerdict?.status === "error"
+        && m3HVerdict.landed === false && m3HVerdict.errorReason === "dirty-main"
+        && m3HVerdict.verify === undefined
+        && (m3HVerdict.detail ?? "").includes("uncommitted changes to files this land touches")
+        && (m3HVerdict.detail ?? "").includes(m3Contested)
+        && ffrLogRuns().length === 0 && m3HMs < 5000 && main2Of() === m3MainBefore,
+      JSON.stringify({ fired: m3HFire.fired, ms: m3HMs, gateRuns: ffrLogRuns().length,
+        verdict: m3HVerdict, mainMoved: main2Of() !== m3MainBefore }));
+
+    // (ii) THE LOADER. The reason is the ONE field that can make a lane done-looking again, so it
+    // has to survive a boot through the closed-enum validation — a loader that still knew only
+    // `ff-lost` would DROP this field and put the lane straight back in the 2026-09-02 dead end,
+    // silently and with the verdict row still looking right.
+    await restartSrv(ffrEnv);
+    const m3Hydrated = await m3Settled(m3H.slot);
+    check("(ii) M3: a persisted 'dirty-main' verdict survives the boot — the closed enum carries it, so the lane does not silently go back to blocked",
+      m3Hydrated?.status === "error" && m3Hydrated.landed === false
+        && m3Hydrated.errorReason === "dirty-main",
+      JSON.stringify({ hydrated: m3Hydrated }));
+
+    // (iii) THE PROMISE ITSELF, through the real door rather than through the pure predicate: the
+    // fix named in `detail` is "commit or stash them in the main checkout, then land again", and
+    // that only works if the verdict never blocked done-looking. Rung 10 is what would refuse it
+    // ("the lane is not done-looking (no signal)"), and the gate counter says the chain ran this
+    // time — so nothing here is a re-read of the first arm's cached refusal.
+    m3Clean();
+    ffrReset();
+    const m3Reland = ffrTok === "" ? null : await selfLand(ffrTok, m3H.row);
+    const m3RelandDone = m3Reland?.ok === true && await ffrDone(m3H.row);
+    check("(iii) M3: with the main checkout committed clean the SAME lane lands through the SAME door — 'dirty-main' never blocked done-looking",
+      m3RepoStatus() === "" && m3Reland?.ok === true && m3RelandDone
+        && ffrLogRuns().length === 1 && main2Of() !== m3MainBefore,
+      JSON.stringify({ status: m3RepoStatus().slice(0, 120), reland: m3Reland?.status,
+        done: m3RelandDone, gateRuns: ffrLogRuns().length }));
+
+    // (iv) THE CONTROL, and without it arm (i) proves nothing worth having: a main checkout that
+    // is dirty in a file this land does NOT touch has never stopped a fast-forward and must not
+    // start now. Same dirt, same door, different path — the land goes all the way through.
+    ffrReset();
+    const m3C = await m3Prepare("bystander", "m3-clear.txt");
+    writeFileSync(`${REPO2}/${m3Bystander}`, "unrelated unsaved work in the owner's checkout\n");
+    const m3ControlBefore = main2Of();
+    const m3CFire = await m3Fire(m3C.row);
+    const m3CDone = await ffrDone(m3C.row);
+    check("(iv) M3 CONTROL: uncommitted work in a file the land does NOT touch lets the land through — the gate runs and main moves, so (i) measured the OVERLAP and not merely a dirty tree",
+      m3CFire.fired && m3CDone && ffrLogRuns().length === 1 && main2Of() !== m3ControlBefore
+        && m3RepoStatus().includes(m3Bystander),
+      JSON.stringify({ fired: m3CFire.fired, done: m3CDone, gateRuns: ffrLogRuns().length,
+        mainMoved: main2Of() !== m3ControlBefore, status: m3RepoStatus().slice(0, 200) }));
+    m3Clean();
+
+    // (v) THE SECOND LOOK. Minutes of gate stand between the preflight and the fast-forward, and
+    // the main checkout belongs to a human working in it — so the edit that arrives INSIDE that
+    // window is a real case, and the ff latch is the only way to make it deterministic. Without
+    // the second check this arm comes back `ff-lost` with a git error string: the same verdict the
+    // whole cut exists to stop handing out, and the one a reader cannot act on. `verify.ok === true`
+    // is the other half — this land DID earn its gate, and the verdict says so while still naming
+    // the checkout as the reason nothing landed.
+    ffrReset();
+    const m3Window = "m3-window.txt";
+    try { rmSync(`${REPO2}/${m3Window}`); } catch { /* absent */ }
+    const m3WindowBefore = main2Of();
+    const m3W = await m3Prepare("window", m3Window);
+    writeFileSync(ffrLatch, "armed\n", { mode: 0o600 });
+    const m3WFired = (await m3Fire(m3W.row)).fired;
+    const m3WReached = await ffrWaitFile(`${ffrLatch}.reached`);
+    // the owner's editor lands on that exact path while the job waits at the latch — untracked
+    // here, which is the shape that blocks a fast-forward for a file the land ADDS
+    writeFileSync(`${REPO2}/${m3Window}`, "the owner started this file too, mid-gate\n");
+    writeFileSync(`${ffrLatch}.release`, "go\n", { mode: 0o600 });
+    const m3WVerdict = await m3Settled(m3W.slot);
+    check("(v) M3: a checkout that goes dirty DURING the gate is caught immediately before the fast-forward — named 'dirty-main' with the green gate it earned, not 'ff-lost' with a git error string",
+      m3WFired && m3WReached && m3W.slot !== null
+        && m3WVerdict?.status === "error" && m3WVerdict.landed === false
+        && m3WVerdict.errorReason === "dirty-main" && m3WVerdict.verify?.ok === true
+        && (m3WVerdict.detail ?? "").includes(m3Window)
+        && ffrLogRuns().length === 1 && main2Of() === m3WindowBefore,
+      JSON.stringify({ fired: m3WFired, reached: m3WReached, verdict: m3WVerdict,
+        gateRuns: ffrLogRuns().length, mainMoved: main2Of() !== m3WindowBefore }));
+    await m5Drop(m3W.slot);
+    m3Clean([m3Window]);
+    for (const f of [ffrLatch, `${ffrLatch}.reached`, `${ffrLatch}.release`]) try { rmSync(f); } catch { /* spent */ }
+    check("(8h) M3 teardown: REPO2's tree is clean again, so the sections after this one measure the product and not this fixture's dirt",
+      m3RepoStatus() === "", m3RepoStatus().slice(0, 200));
 
     for (const f of [`${ffrLatch}`, `${ffrLatch}.reached`, `${ffrLatch}.release`, ffrVerify, ffrCount,
       ffrLog, `${ROOT}/ffretry.park.2`, `${ROOT}/ffretry.red.2`, `${ROOT}/ffretry.parked.2`,

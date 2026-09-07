@@ -4091,12 +4091,18 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   // the three clause lists go through the one helper rather than the raw list
   const blocksAt = signals.indexOf("export function mergeBlocksLane(");
   const blocksBody = blocksAt < 0 ? "" : signals.slice(blocksAt, signals.indexOf("\n}", blocksAt) + 2);
-  pin(`${RULE_FF} — mergeBlocksLane tests the closed STATUS+field pair and never parses \`detail\``,
-    blocksBody.includes('m?.status === "error" && m.errorReason === "ff-lost"')
+  // …and it tests the LIST, not a literal. With one value the two were the same test; with two
+  // they are not, and a predicate that kept the literal would go on blocking a lane whose reason
+  // the loader happily carries across a boot — an exemption the enum grants and no clause spends.
+  // The `!== undefined` clause is pinned with it: it is what keeps an ABSENT reason UNKNOWN.
+  pin(`${RULE_FF} — mergeBlocksLane tests the closed STATUS+field pair against the ENUM and never parses \`detail\``,
+    blocksBody.includes('m?.status === "error" && m.errorReason !== undefined')
+      && blocksBody.includes("MERGE_ERROR_REASONS.includes(m.errorReason)")
+      && !/"ff-lost"|"dirty-main"/.test(blocksBody)
       && !/detail/.test(blocksBody)
       && (signals.match(/!mergeBlocksLane\(v\.merge\)/g) ?? []).length === 3
       && (signals.match(/MERGE_BLOCKING\.includes/g) ?? []).length === 1,
-    `body=${blocksBody.replace(/\s+/g, " ").slice(0, 120)}`);
+    `body=${blocksBody.replace(/\s+/g, " ").slice(0, 160)}`);
   // ONE runtime writer on the clean path, plus ONE loader-only legacy backfill. The latter has to
   // prove every old-writer field before it can mint the exemption; an invalid present reason takes
   // the validation/drop arm and can never fall through into migration.
@@ -4148,6 +4154,34 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && server.includes('const mainMoved = /^[0-9a-f]{40,64}$/.test(mainNow) && mainNow !== mainBefore;')
       && read("e2e/programs.ts").includes('FLEET_LAND_FF_RETRY_ROUNDS: "0"'),
     `retry=${ffRetry} rebase=${ffReRebase} verify=${ffReVerify} stop=${ffReStop} mint=${ffMint}`);
+  // --- M3 · AND THE OTHER REASON IS AN ORDERING, WHICH NO COMPILER CAN SEE ---------------------
+  // `dirty-main` buys exactly one thing: the gate never runs for a land that cannot fast-forward.
+  // That is not a property of the check, it is a property of WHERE it sits — an edit that moved it
+  // below `verifyPlanFor` would leave every assertion about the verdict true and the whole cut
+  // spent (median 107 s of work behind a p90 1 784 s queue, §2.2). The second look has the mirror
+  // ordering: after the land declaration, before the advance, so a checkout that went dirty during
+  // the gate is named rather than re-read as the ff race. Both mints go through ONE builder, so
+  // the two sites cannot word the same fact differently.
+  const m3Pre = server.indexOf("const dirtyStop = cleanPath ? await dirtyMainStop(");
+  const m3Plan = server.indexOf("const firstVerifyPlan = dirtyStop ? null : await verifyPlanFor(");
+  const m3Second = server.indexOf("const dirtyNow = await dirtyMainStop(");
+  pin(`${RULE_FF} — the dirty-main preflight precedes the verify PLAN, and the second look precedes the advance`,
+    m3Pre > 0 && m3Plan > m3Pre && m3Second > m3Plan && ffAdvance > m3Second
+      && ffIntent < m3Second
+      && (server.match(/errorReason: "dirty-main"/g) ?? []).length === 1
+      && (server.match(/await dirtyMainStop\(/g) ?? []).length === 2
+      && server.includes("if (dirtyNow) { clearLandIntent(root); res = dirtyNow; break; }"),
+    `pre=${m3Pre} plan=${m3Plan} second=${m3Second} intent=${ffIntent} advance=${ffAdvance}`);
+  // …and the probe cannot MINT what it could not MEASURE: an unreadable status or diff returns
+  // null and the land goes on exactly as it did before M3, where the ff-merge still catches it.
+  const m3Body = server.match(/async function dirtyMainOverlap\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_FF} — dirtyMainOverlap fails to null on an unreadable read, reads status where the ff runs, and keeps both sides of a rename`,
+    m3Body.includes("if (st.code !== 0) return null;") && m3Body.includes("if (diff.code !== 0) return null;")
+      && m3Body.includes('const holder = (await listWorktrees(repo)).find((w) => w.branch === main);')
+      && m3Body.includes('gitReadRaw(holder.path, "status", "--porcelain", "-z")')
+      && m3Body.includes('"--no-renames"')
+      && read("server.ts").includes("if (/[RC]/.test(entry.slice(0, 2))) {"),
+    `body=${m3Body.replace(/\s+/g, " ").slice(0, 200)}`);
   pin(`${RULE_FF} — the default-off E2E latch sits between the land declaration and the fast-forward, and a fixture arms it`,
     server.includes("process.env.FLEET_TEST_LAND_FF_LATCH ?? null")
       && ffIntent >= 0 && ffLatch > ffIntent && ffAdvance > ffLatch

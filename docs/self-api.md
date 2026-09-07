@@ -1155,6 +1155,49 @@ Seit 2026-09-03 trägt genau dieses Verdikt eine **getypte, geschlossene** Zusat
   reviewable Verdikte binden die Kandidaten-Identität) — ein rotes Verify oder eine geblockte
   Auflösung auf demselben Kandidaten wird also weiterhin als `no progress` abgelehnt.
 
+### Der schmutzige Haupt-Checkout: `errorReason: "dirty-main"` (M3, seit 2026-09-07)
+
+**Gemessen 2026-09-05, zweimal** (`docs/messungen/2026-09-06-merge-prozess-robust.md` §2.3, §3 M3):
+`git merge --ff-only` läuft im Checkout, der `main` hält, und git verweigert das Vorspulen, wenn
+dort **uncommittete Änderungen an einer Datei liegen, die der Land schreibt**. Bis M3 kam diese
+Absage erst am ENDE: die Lane rebaste, das Gate fuhr die volle Kette (Median 107 s Arbeit hinter
+p90 1 784 s Schlange), und das Verdikt hieß `ff-lost` mit einem git-Fehlertext im `detail` — der
+falsche Name, denn main hatte sich nicht bewegt, und die Retry-Kette wiederholt so etwas
+richtigerweise NICHT. Jede dieser Sekunden bezahlte eine Antwort, die schon vor dem Start feststand.
+
+Seit M3 wird derselbe Fakt **zuerst** gemessen, in zwei git-Reads und ohne Gate:
+
+```
+{"status":"error","landed":false,"errorReason":"dirty-main",
+ "detail":"main checkout holds uncommitted changes to files this land touches: a.ts, b.ts
+           — commit or stash them in the main checkout, then land again — lane kept"}
+```
+
+- **Zwei Prüfstellen, ein Schreiber** (`server.ts#dirtyMainStop`): einmal VOR dem Verify-Plan (also
+  vor Hold, Gate und Mutex — das ist der ganze Gewinn) und einmal unmittelbar vor
+  `advanceIntegration`, weil zwischen beiden Minuten Gate liegen und der Haupt-Checkout einem
+  Menschen gehört, der darin arbeitet. Die zweite Stelle läuft **vor** der Vorspulung und damit vor
+  dem `ff-lost`-Zweig: ein main, das sich bewegt UND schmutzig ist, wäre sonst als das Rennen
+  gelesen worden, und die Retry-Kette hätte ein zweites volles Gate unter dem Mutex gekauft, um bei
+  genau diesem Verdikt anzukommen.
+- **Nur der saubere Pfad.** Der Konfliktpfad hält vor `advanceIntegration` ohnehin zur Review an;
+  dort wäre `dirty-main` eine Aussage über einen fremden Baum, die ungeprüfte Auflösungen verdeckt.
+- **Was gemessen wird:** die schmutzige Seite aus `git status --porcelain -z` des Checkouts, der
+  main HÄLT (kein Halter ⇒ `branch -f` bewegt eine Ref, kein Baum steht im Weg ⇒ leer, nie
+  unbekannt), geschnitten mit `git diff --name-only --no-renames -z <mainSha>..<branch>`.
+  `--no-renames` mit Absicht: die Vorspulung muss den neuen Pfad schreiben UND den alten entfernen.
+- **Eine Sonde, die nicht laufen konnte, mintet nichts.** Ein unlesbarer Status oder Diff gibt
+  `null` und der Land läuft wie vor M3 weiter — die Vorspulung selbst fängt den Fall dann immer
+  noch. Der Schnitt ist eine Abkürzung, kein neues Tor.
+- **`verify` fehlt auf dem Verdikt der ersten Prüfstelle** — es wurde nichts gemessen, und das ist
+  Absenz, nicht `null`. Die zweite Prüfstelle trägt das Verdikt, das der Baum verdient hat, plus
+  `ffRounds`.
+- **Wirkung wie bei `ff-lost`:** der Wert steht in `MERGE_ERROR_REASONS`, also blockiert er
+  `done-looking` NICHT (`lane-signals.ts#mergeBlocksLane` testet seit M3 das PAAR aus `status ===
+  "error"` und Mitgliedschaft in der Liste, nie einen einzelnen Literalwert). Die Lane hat nichts
+  falsch gemacht: sobald im Haupt-Checkout committet oder gestasht ist, geht derselbe Land durch
+  dieselbe Tür durch. Ein **abwesender** Grund bleibt UNKNOWN und blockiert.
+
 ### Wohin das Verdikt geht: an den, der gelandet hat (seit 2026-09-04)
 
 **Gemessen am 2026-09-04:** genau das `ff-lost`-Verdikt von oben wurde in die **LANE**-Pane

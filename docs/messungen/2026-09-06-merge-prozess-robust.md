@@ -178,6 +178,8 @@ laesst das Land durch.
 *Verify:* zwei Checks im Land-Pfad genau mit diesen beiden Faellen; `lane-signals.ts#mergeBlocksLane`
 behandelt `dirty-main` wie `ff-lost` (die Lane bleibt done-looking); Vorschau wie M1.
 
+*Gebaut* in Lane `fleet/260907091244-2e44` (die Lane kann ihre eigenen Land-Shas nicht kennen — die MAIN setzt sie nach dem Land ein).
+
 ### M5 — Hold-Hygiene: der tote Halter wird gereapt, die proportionale Kette nimmt keinen Hold
 
 *Warum, zwei Messungen vom 2026-09-07 (Controller, 04:11–04:23, am docs-only-Land von Slot 11,

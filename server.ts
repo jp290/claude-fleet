@@ -2789,6 +2789,23 @@ async function statusLines(cwd: string): Promise<{ code: number; lines: string[]
     clearTimeout(timer);
   }
 }
+// git READ with the BYTES INTACT — the same hazard statusLines exists for, one layer lower.
+// `git()`/`gitRead()` trim, and for a NUL-separated read that is not cosmetic: `status --porcelain
+// -z` puts the two status columns first, so an unstaged " M path" loses its leading space and with
+// it a status column and the first character of the name; and on either side of a path comparison
+// a name that legitimately begins or ends with whitespace stops matching itself. Read-only, so it
+// runs lock-free for exactly the reason gitRead does (GIT_READ_ENV).
+async function gitReadRaw(dir: string, ...args: string[]): Promise<{ out: string; code: number }> {
+  const p = Bun.spawn(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "pipe", env: GIT_READ_ENV });
+  const timer = setTimeout(() => { try { p.kill(); } catch {} }, GIT_TIMEOUT_MS);
+  try {
+    const out = await new Response(p.stdout).text();
+    const code = await p.exited;
+    return { out, code };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 // a mutating git op (add/commit, and the merge pre-pass's rebase/abort) in a lane races the live
 // session's OWN git — if it holds .git/index.lock we back off and retry rather than fail. Initial
 // attempt + up to 5 retries. GIT_READ_ENV removes Fleet's own polls from the field of colliders;
@@ -3887,6 +3904,81 @@ async function advanceIntegration(repo: string, main: string, branch: string): P
   if (anc.code !== 0) return { error: `${main} is not an ancestor of ${branch} — not a fast-forward` };
   const upd = await git(repo, "branch", "-f", main, branch);
   return upd.code === 0 ? null : { error: (upd.err || upd.out).slice(0, 300) };
+}
+
+// --- M3 · THE PREFLIGHT: A DIRTY MAIN CHECKOUT IS NOT A VERDICT ABOUT THE LANE ----------------
+// `git merge --ff-only` above refuses when the checkout holding main has uncommitted changes to a
+// file the merge would write. Until this existed that refusal arrived at the END of the land: the
+// lane rebased, the gate ran the full chain (median 107 s of work behind a p90 1 784 s queue),
+// the fast-forward was refused, and the verdict was `ff-lost` carrying a git error string —
+// twice on 2026-09-05 (docs/messungen/2026-09-06-merge-prozess-robust.md §2.3, §3 M3). Every one
+// of those seconds was spent to learn something that was already true before the job started, and
+// `ff-lost` was the wrong name for it: main had not moved, and the retry chain correctly refuses
+// to re-roll it, so the land simply died with the machine's reason written as the tree's.
+//
+// So the same fact is measured FIRST, in two git reads and no gate, and it is named.
+// WHAT IT ANSWERS, and nothing wider: does the checkout that holds main hold uncommitted work in
+// a path this land writes? Both halves are read where the ff would read them —
+//   · the dirty side from the HOLDER of main, found exactly as advanceIntegration finds it. No
+//     holder means `branch -f` moves a ref with no working tree in the way, so there is nothing
+//     to be dirty: that is an EMPTY answer (measured absence), never an unknown.
+//   · the touched side from `mainSha..branch`, the commits this land is about to put on main.
+//     `--no-renames` on purpose: with rename detection a moved file reports only its NEW name,
+//     and the ff has to write the new path AND remove the old one — the old name is exactly the
+//     kind of path a stale editor buffer is sitting on.
+// A PROBE THAT COULD NOT RUN RETURNS null AND CHANGES NOTHING. This is an early-out for a state
+// the ff-merge still detects on its own, so an unreadable status or diff must fall back to the
+// path that existed before it — never mint a reason it did not measure.
+// The overlap is a NECESSARY, not a sufficient, condition for the refusal: git also lets an
+// ff-merge through when the local change happens to be byte-identical to the landing one. The
+// verdict says what was measured — the checkout holds uncommitted changes to these files — and
+// that sentence is true in the false-positive case too, with the same fix.
+const DIRTY_MAIN_NAMED = 5; // how many paths the verdict names before it counts the rest
+// `git status --porcelain -z`: NUL-terminated entries, `XY <path>`, and NO C-quoting (which is
+// the whole reason for -z — the quoted form would have to be un-quoted identically on both sides
+// to compare, and porcelain v1's " -> " rename separator is ambiguous for a path containing it).
+function porcelainZPaths(out: string): Set<string> {
+  const fields = out.split("\0");
+  const paths = new Set<string>();
+  for (let i = 0; i < fields.length; i++) {
+    const entry = fields[i];
+    if (entry === undefined || entry.length < 4) continue; // the trailing empty field, and anything malformed
+    paths.add(entry.slice(3));
+    // A RENAME OR COPY CARRIES TWO PATHS AND BOTH MATTER: the merge writes the destination and
+    // removes the source. In -z form the source is a field of its OWN, after the destination.
+    if (/[RC]/.test(entry.slice(0, 2))) {
+      const from = fields[++i];
+      if (from) paths.add(from);
+    }
+  }
+  return paths;
+}
+async function dirtyMainOverlap(repo: string, main: string, mainSha: string, branch: string): Promise<string[] | null> {
+  const holder = (await listWorktrees(repo)).find((w) => w.branch === main);
+  if (!holder) return [];
+  const st = await gitReadRaw(holder.path, "status", "--porcelain", "-z");
+  if (st.code !== 0) return null;
+  const dirty = porcelainZPaths(st.out);
+  if (dirty.size === 0) return [];
+  const diff = await gitReadRaw(repo, "diff", "--name-only", "--no-renames", "-z", `${mainSha}..${branch}`);
+  if (diff.code !== 0) return null;
+  const hit = new Set<string>();
+  for (const path of diff.out.split("\0")) if (path && dirty.has(path)) hit.add(path);
+  return [...hit].sort();
+}
+// The verdict, built in ONE place so the two call sites cannot word the same fact differently —
+// and so the reason itself has a single writer, exactly as `ff-lost` does. `extra` is what the
+// site knows and the probe does not: the preflight has no gate verdict yet, the second look has
+// the one the tree earned plus its round count.
+async function dirtyMainStop(repo: string, main: string, mainSha: string, branch: string,
+  extra: Partial<Pick<MergeLast, "verify" | "ffRounds">>): Promise<MergeLast | null> {
+  const paths = await dirtyMainOverlap(repo, main, mainSha, branch);
+  if (paths === null || paths.length === 0) return null;
+  const named = paths.slice(0, DIRTY_MAIN_NAMED).join(", ");
+  const more = paths.length > DIRTY_MAIN_NAMED ? ` (+${paths.length - DIRTY_MAIN_NAMED} more)` : "";
+  return { status: "error", landed: false, branch, at: Date.now(), errorReason: "dirty-main", ...extra,
+    detail: (`main checkout holds uncommitted changes to files this land touches: ${named}${more}`
+      + " — commit or stash them in the main checkout, then land again — lane kept").slice(0, 600) };
 }
 
 // advanceIntegration in reverse: move main from its current tip (mainAfter) back to mainBefore.
@@ -12245,13 +12337,15 @@ interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "int
   // failed afterwards; distinct from `detail` so "landed but not torn down" is machine-readable
   landError?: string;
   // WHY an "error" verdict happened, where the answer changes what the LANE is rather than only
-  // what the reader should know. Today exactly one value, and it is a closed enum for that reason:
+  // what the reader should know. A closed enum for that reason, with two values today:
   // "ff-lost" — the rebase was clean, the gate authorised the land, and `git merge --ff-only` was
   // refused because main moved underneath it (see lane-signals.ts#mergeBlocksLane for the incident
-  // and for why that ONE error stops blocking done-looking). `detail` above stays prose and is
-  // never parsed by a runtime predicate; this is its machine-readable half, and it is written ONLY
-  // at a site that has already passed the gate. Absent is UNKNOWN and blocks exactly as every error
-  // always has, except for the loader-only migration of the exact old writer shape below.
+  // and for why those errors stop blocking done-looking); and "dirty-main" — the checkout holding
+  // main has uncommitted changes to a file this land writes, so that same fast-forward cannot
+  // succeed until a human commits or stashes THERE (dirtyMainStop). `detail` above stays prose and
+  // is never parsed by a runtime predicate; this is its machine-readable half. Absent is UNKNOWN
+  // and blocks exactly as every error always has, except for the loader-only migration of the
+  // exact old writer shape below.
   errorReason?: MergeErrorReason;
   // how many bounded resolver↔verify repair rounds ran (conflict path only) before this verdict
   // settled. >0 means the resolution's first verify was RED and the resolver was fed the failure
@@ -18477,6 +18571,17 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         // rebased onto, reused below as mainBefore for the clean-path land.
         const mainSha = (await git(root, "rev-parse", main)).out;
         candidateMainSha = mainSha;
+        const cleanPath = pre.clean && unreviewed.length === 0;
+        // --- M3 · THE VORFLUGPRUEFUNG, BEFORE ANYTHING IS SPENT (owner 2026-09-06) ------------
+        // Two git reads, no gate, no mutex: if the checkout holding main has uncommitted work in a
+        // path this land writes, the fast-forward at the far end cannot succeed, and running the
+        // chain first only buys the same answer 107 s and a queue later, under the wrong name
+        // (dirtyMainStop for the measurement and for why a probe that could not run changes
+        // nothing). CLEAN PATH ONLY, and that is the same scope as the hold below for the same
+        // reason: the conflict path stops for review before it ever reaches advanceIntegration, so
+        // there the owner's own checkout is not yet the question — and answering `dirty-main`
+        // there would hide unreviewed resolutions behind a fact about somebody else's tree.
+        const dirtyStop = cleanPath ? await dirtyMainStop(root, main, mainSha, branch, {}) : null;
         // WRITE SITE 1 of 2 (the verify GATE made visible — see that region). Every runVerify on
         // this path goes through here, the repair loop's re-runs included, so the board says
         // "slot N · running land gate · <branch>" for as long as the gate is actually holding the
@@ -18486,7 +18591,9 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         // a sub-millisecond row and stays true while it is up: the gate step DID run, it declined.
         const gateRun = <T,>(fn: () => Promise<T>): Promise<T> =>
           reportServerRun(`land:${s.id}`, { slot: s.id, label: s.label, branch, suite: "land gate", cwd }, fn);
-        const firstVerifyPlan = await verifyPlanFor(cwd, root, mainSha);
+        // `null` on the M3 stop: no plan is even computed, so nothing below can take the machine,
+        // spawn a chain, or write a verify verdict about a land that is not going to happen.
+        const firstVerifyPlan = dirtyStop ? null : await verifyPlanFor(cwd, root, mainSha);
         // --- THE GATE RUNS UNDER A HOLD THIS SERVER TAKES (M1, owner 2026-09-06) --------------
         // Measured over the 75 full-chain lands since 2026-09-01: the gate's WORK is a median of
         // 107 s and never exceeded 186 s, while the QUEUE in front of it was p90 1 784 s and 79 %
@@ -18509,7 +18616,6 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         // retry rounds, the ff-merge and the land record. That is deliberate for the retry (the
         // whole point is not to give the machine back between rounds) and it is the price of the
         // reviewer being on: a fleet that enables ② holds the mutex across an agent call.
-        const cleanPath = pre.clean && unreviewed.length === 0;
         let gateWaitMs = 0;
         let gateDenied: NonNullable<MergeLast["verify"]> | null = null;
         // ALREADY INSIDE SOMEBODY'S HOLD? Then there is nothing to take and nothing to wait for —
@@ -18545,7 +18651,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         }
         const gateHoldBy = gateInherited ?? gateHoldPid;
         const gateChildHold = gateProportional ? null : gateHoldBy;
-        let verify = gateDenied
+        let verify = dirtyStop ? undefined : gateDenied
           ?? await gateRun(() => runVerify(cwd, mainSha, firstVerifyPlan, gateChildHold, gateHeld ? gateWaitMs : 0));
         // Bounded resolver↔verify repair loop (CONFLICT path only). A conflict resolution can
         // rebase cleanly yet fail the deterministic verify (a dropped symbol, a broken type). Rather
@@ -18585,7 +18691,13 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             if (verify && verify.ok) break; // repaired to green — done
           }
         }
-        if (unreviewed.length) {
+        if (dirtyStop) {
+          // M3 · nothing ran and nothing is claimed about this tree: the verdict carries no
+          // `verify` at all, because none was measured. It is an error the LANE did not cause, so
+          // it is a member of MERGE_ERROR_REASONS and the lane stays done-looking — re-land it the
+          // moment the main checkout is clean, from the same door, with no repair and no rebase.
+          res = dirtyStop;
+        } else if (unreviewed.length) {
           // CONFLICT path: an agent made semantic choices resolving conflicts. The rebase is
           // git-verified, but a human hasn't seen those choices — so we STOP here (no ff-merge,
           // no land) and record a reviewable "resolved" verdict. The lane stays exactly as the
@@ -18692,6 +18804,20 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                 ...(ffRounds ? { ffRounds } : {}) };
               await markLandIntent(root, main, branch, mainBefore, (await git(root, "rev-parse", branch)).out, prov);
               await waitForLandFfTestLatch(); // TEST-ONLY, inert in production (see LAND_FF_LATCH)
+              // --- M3 · THE SECOND LOOK, and it is not a repetition of the first ---------------
+              // Minutes of gate stand between the preflight and this line, and the main checkout
+              // belongs to a human who is working in it. An edit that arrives inside that window
+              // reaches exactly here, and without this the refusal comes back as `ff-lost` with a
+              // git error string — the name that made this class unreadable in the first place.
+              // BEFORE the advance and AFTER the intent, so the round in flight is the one being
+              // withdrawn: the declaration is voided the same way the lost-ff arm voids it.
+              // FIRST, ahead of the ff itself, because it also settles the ORDER of two true
+              // facts: a main that has both moved and gone dirty would otherwise be read as the
+              // race, and the retry chain would buy a second full gate under the mutex to arrive
+              // at this same verdict — main moving cannot make a dirty checkout land.
+              const dirtyNow = await dirtyMainStop(root, main, mainBefore, branch,
+                { verify, ...(ffRounds ? { ffRounds } : {}) });
+              if (dirtyNow) { clearLandIntent(root); res = dirtyNow; break; }
               const adv = await advanceIntegration(root, main, branch);
               if (adv) {
                 clearLandIntent(root); // main never moved — the declaration is void, not pending

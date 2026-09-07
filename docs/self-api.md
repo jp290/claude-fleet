@@ -1061,6 +1061,20 @@ unterscheidbar, weil sie den Aufrufer an verschiedene Stellen schicken):
    Reparatur ist durch ein PROGRESS-BUDGET begrenzt, und wiederholte Nicht-Bewegung ist eine
    ESKALATIONSKLASSE — ein fester Versuchs-Deckel stoppt die reparierende MAIN und sagt nichts über
    die kreisende.
+   **AUSNAHME seit 2026-09-06: ein Gate, das den Baum NIE ANGESEHEN hat, bindet den nächsten Aufruf
+   nicht.** Trägt das letzte Verdikt `verify.ok:null` mit `waitedOut` (nie gestartet, die ganze
+   Wartezeit am Suite-Mutex, dann gekillt) oder `timedOut` (mitten in der Arbeit gekillt), dann hat
+   es über diese Bytes nichts ausgesagt — der zweite Lauf wiederholt keine Antwort, er erzeugt die
+   erste. Die Ausnahme gilt nur für Verdikte OHNE ungeprüfte Konfliktlösung (die ⏸-Ablehnung von
+   Sprosse 12 ist eine andere Frage und bleibt). Gemessen am Land von `c3604ce3`: `resolved,
+   landed:false`, `waitedOut`, 44 von 46 Minuten Schlange — die Lane war fertig und sauber, konnte
+   ihre Bytes also nicht mehr bewegen, und main-Bewegung öffnet den Guard nicht (`4761020`); der
+   Kandidat war auf dieser Sprosse dauerhaft tot. **Ein SKIP (`ok:null` ohne beide Flags) ist
+   ausgenommen von der Ausnahme:** er ist die eigene Entscheidung des Kommandos über genau diese
+   Bytes, identische Bytes überspringen identisch — die Prämisse des Guards hält.
+   **Die Ablehnung nennt ihren Zustand:** das Feld `gate` trägt `measured` · `never-started` ·
+   `timed-out` · `skipped`, und nur bei `measured` heißt der Satz noch „repair or escalate". Ein
+   unvermessenes Verdikt schickt niemanden auf Fehlersuche in einem Baum, den kein Gate gelesen hat.
 10. Lane nicht `done-looking` (`laneWatchSignal`, `MERGE_IDLE_MS`) — lebendig, idle, sauber, ahead.
     Ein Server-Prädikat über Fakten, keine Aussage über die Qualität: die liefert die MAIN, indem
     sie überhaupt ruft.

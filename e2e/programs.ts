@@ -8016,6 +8016,12 @@ if [ -f "$d/ffretry.red.$n" ]; then
   echo "verify FAIL: scripted red on run $n"
   exit 1
 fi
+# \`skip\` makes the run DECLINE to measure (VERIFY_SKIP_EXIT), which is the third unmeasured
+# verdict beside the two kills and the one the progress guard still refuses.
+if [ -f "$d/ffretry.skip.$n" ]; then
+  echo "verify declined: scripted skip on run $n"
+  exit 42
+fi
 echo "verify OK: scripted green on run $n"
 exit 0
 `, { mode: 0o755 });
@@ -8097,7 +8103,7 @@ exit 0
       return { row, slot: lane.slot, fired, reached, intruder };
     };
     type FfrVerdict = { status?: string; landed?: boolean; errorReason?: string; detail?: string;
-      ffRounds?: number;
+      ffRounds?: number; candidateSha?: string;
       verify?: { ok?: boolean | null; mainSha?: string; waitedOut?: true; timedOut?: true;
         ms?: number; waitMs?: number } };
     const ffrSettled = async (slot: number | null, ms = 120_000): Promise<FfrVerdict | null> => {
@@ -8380,6 +8386,84 @@ exit 0
     spawnSync("kill", [m1Held]);
     rmSync(ffrLock, { recursive: true, force: true });
 
+    // --- (viii) THE DEAD END THE DENIAL USED TO BE (live fleet, 2026-09-06) -------------------
+    // The denial in (vi) is the machine's verdict, not the tree's — and until this cut it was also
+    // PERMANENT on this rung. Measured that evening: the land of `c3604ce3` came back
+    // `verify {ok:null, waitedOut:true, waitMs:2656000}`, and the next call was refused as
+    // "no progress since the last verdict — repair or escalate". A finished clean lane cannot move
+    // its bytes and main moving does not open that guard, so the row could only be landed by the
+    // owner at the board — for work whose landing the owner had delegated to this MAIN.
+    // Three arms, and the middle one is what keeps the widening to ONE dimension: a gate that never
+    // measured re-runs, a gate that measured and said NO does not, and the refusal a MAIN reads is
+    // the state it is actually in. The lock the denial waited on is released above, so the retry
+    // here meets a free machine — which is exactly the situation in which the old refusal was
+    // wrong: nothing had changed except that a measurement had become possible.
+    const m1RetryReady = m1D.slot === null ? false : await waitDoneLooking(m1D.slot);
+    const m1Retry = ffrTok === "" ? null : await selfLand(ffrTok, m1D.row);
+    const m1RetryBody = m1Retry === null ? null : await m1Retry.json() as
+      { running?: boolean; candidate?: string; error?: string; gate?: string };
+    const m1RetryDone = await ffrDone(m1D.row);
+    const m1RetryRuns = ffrLogRuns();
+    // the SAME bytes: `candidate` is the lane HEAD this call read, and the denial recorded its own
+    // in `candidateSha`. Equal is the whole precondition — a retry on a moved tree would have
+    // passed the old guard too and would prove nothing about this one.
+    check("(viii-a) a gate that NEVER STARTED does not bind the next call: the identical candidate is admitted, the chain finally runs, and the land the machine had blocked completes",
+      m1RetryReady && m1Retry?.ok === true && m1RetryBody?.running === true
+        && typeof m1Verdict?.candidateSha === "string"
+        && m1RetryBody.candidate === m1Verdict.candidateSha
+        && m1RetryRuns.length === 1 && m1RetryDone && main2Of() !== m1MainBefore,
+      JSON.stringify({ ready: m1RetryReady, res: m1Retry?.status, body: m1RetryBody,
+        deniedCandidate: m1Verdict?.candidateSha?.slice(0, 8), gateRuns: m1RetryRuns,
+        done: m1RetryDone, mainMoved: main2Of() !== m1MainBefore }));
+
+    // (viii-b) THE OTHER DIRECTION, and the reason (viii-a) cannot be bought with `ok !== true`:
+    // a gate that RAN and said no is a verdict about these bytes, and re-running it over the same
+    // bytes really cannot say anything new. This arm is the mutation test for the clause above —
+    // widen it past the two kills and this refusal disappears.
+    ffrReset();
+    writeFileSync(`${ROOT}/ffretry.red.1`, "red\n");
+    const m1Red = await m1Land("red", "m1-red.txt");
+    const m1RedVerdict = await ffrSettled(m1Red.slot);
+    const m1RedReady = m1Red.slot === null ? false : await waitDoneLooking(m1Red.slot);
+    const m1RedAgain = ffrTok === "" ? null : await selfLand(ffrTok, m1Red.row);
+    const m1RedText = m1RedAgain === null ? "" : await m1RedAgain.text();
+    check("(viii-b) a gate that MEASURED and said no still binds the next call — the widening is the killed clock, not `ok !== true`",
+      m1RedVerdict?.verify?.ok === false && m1RedVerdict.landed === false && m1RedReady
+        && m1RedAgain?.status === 409
+        && m1RedText.includes("no progress since the last verdict — repair or escalate"),
+      JSON.stringify({ verdict: m1RedVerdict, res: m1RedAgain?.status, text: m1RedText.slice(0, 220) }));
+    rmSync(`${ROOT}/ffretry.red.1`, { force: true });
+    // the arm landed nothing, so its lane is still standing. Given back for the same reason §8g
+    // gives its denied arms back (m5Drop): five kept lanes against a 16-slot machine once ran the
+    // pool dry and killed a probe rather than a product. The final cleanup kills it again; a second
+    // kill is a no-op.
+    if (m1Red.slot !== null) await post(`/api/slots/${m1Red.slot}/kill`, {});
+
+    // (viii-c) THE WORDS. A SKIP is the third unmeasured verdict and is deliberately still refused:
+    // it is the command's own decision about these bytes, so identical bytes skip identically and
+    // the guard's premise holds. What must NOT hold is the instruction — "repair or escalate" sends
+    // a MAIN to hunt a defect in a tree no gate ever looked at. The refusal names the state instead.
+    ffrReset();
+    writeFileSync(`${ROOT}/ffretry.skip.1`, "skip\n");
+    const m1Skip = await m1Land("skip", "m1-skip.txt");
+    const m1SkipVerdict = await ffrSettled(m1Skip.slot);
+    const m1SkipReady = m1Skip.slot === null ? false : await waitDoneLooking(m1Skip.slot);
+    const m1SkipAgain = ffrTok === "" ? null : await selfLand(ffrTok, m1Skip.row);
+    const m1SkipText = m1SkipAgain === null ? "" : await m1SkipAgain.text();
+    const m1SkipBody = ((): { gate?: string; error?: string } => {
+      try { return JSON.parse(m1SkipText) as { gate?: string; error?: string }; } catch { return {}; }
+    })();
+    check("(viii-c) an unmeasured verdict is refused in ITS OWN words: the gate declined, so the refusal names that and never sends the MAIN to repair or escalate a tree nothing looked at",
+      m1SkipVerdict?.verify?.ok === null && m1SkipVerdict.verify?.waitedOut === undefined
+        && m1SkipVerdict.verify?.timedOut === undefined && m1SkipReady
+        && m1SkipAgain?.status === 409 && m1SkipBody.gate === "skipped"
+        && !/repair|escalate/.test(m1SkipText)
+        && m1SkipText.includes("DECLINED to measure this tree")
+        && m1SkipText.includes("no defect here to fix"),
+      JSON.stringify({ verdict: m1SkipVerdict, res: m1SkipAgain?.status, text: m1SkipText.slice(0, 320) }));
+    rmSync(`${ROOT}/ffretry.skip.1`, { force: true });
+    if (m1Skip.slot !== null) await post(`/api/slots/${m1Skip.slot}/kill`, {});
+
     // --- (8g) M5 · THE CORPSE IS REAPED, AND THE SHORT CHAIN NEVER ASKS FOR THE MACHINE ---------
     // (8f) proved the denial. M5 is about the two ways that denial was being handed out for
     // nothing, both measured on 2026-09-07 and both created by M1 itself:
@@ -8555,7 +8639,8 @@ exit 0
 
     for (const f of [`${ffrLatch}`, `${ffrLatch}.reached`, `${ffrLatch}.release`, ffrVerify, ffrCount,
       ffrLog, `${ROOT}/ffretry.park.2`, `${ROOT}/ffretry.red.2`, `${ROOT}/ffretry.parked.2`,
-      `${ROOT}/ffretry.go.2`]) try { rmSync(f); } catch { /* spent */ }
+      `${ROOT}/ffretry.go.2`, `${ROOT}/ffretry.red.1`, `${ROOT}/ffretry.skip.1`,
+      ]) try { rmSync(f); } catch { /* spent */ }
     rmSync(ffrLock, { recursive: true, force: true });
     await restartSrv();
     for (const slot of ffrLanes) await post(`/api/slots/${slot}/kill`, {});

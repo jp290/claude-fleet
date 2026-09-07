@@ -48,6 +48,7 @@ import {
   deriveTaskMetadata, readTrackedSnapshot, trackedIndexStamp,
   type TaskFilesOrigin, type TrackedSnapshot,
 } from "./task-metadata";
+import { notesForTask, renderNotesBlock, type NoteInput } from "./task-notes";
 // the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
 // for what belongs there. tsc gates every land, so a drift in any of them is a compile error.
 import {
@@ -8265,7 +8266,29 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // role from the harness or the task text would be a second, quieter source for an owner choice.
     const laneProgram = free.programId ? programs.find((p) => p.id === free.programId) : undefined;
     const studioLaneBlock = laneProgram ? studioBlockFor(laneProgram, "lane") : "";
-    const deliveredBrief = `${brief}${studioLaneBlock}${anchorBlock}${clarify ? "" : LANE_EXIT_FOOTER}`;
+    // N1, "Notizen auf deiner Flaeche" (docs/notizen-verarbeitung-2026-09-06.md §3). Until this
+    // seam a `notiz` had exactly one consumer — the owner. No tick reads one, `capTasks` never
+    // retires one, and a lane has no route to fetch one, so 127 pending notes reached nobody whose
+    // work stood on their files. The join is set arithmetic over the SAME projection the board
+    // shows (taskView: derived surface, derived cluster), never a model call.
+    //
+    // POSITION: before the studio block, and therefore before the anchors, for the anchors' own
+    // reason — the context receipt hashes the anchor block ALONE, so anything appended after it
+    // would be hashed as if it were an anchor. A no-hit dispatch renders the empty string and its
+    // bytes are unchanged, which is what makes the addition invisible where it has nothing to say.
+    //
+    // CLARIFY GETS NONE, like the exit footer and for the same reason: that lane was told to settle
+    // what done means and stop, and five notes about neighbouring files are work it must not start.
+    const noteJoinRow = (t: Task): NoteInput => {
+      const view = taskView(t);
+      return { id: t.id, repo: repoCanon(t.repo ?? DISPATCH_REPO), kind: t.kind, status: t.status,
+        files: view.files, cluster: view.cluster, created: t.created, text: t.text };
+    };
+    const noteRows = clarify ? []
+      : notesForTask(noteJoinRow(next),
+        tasks.filter((t) => t.kind === "notiz" && t.status === "pending").map(noteJoinRow));
+    const notesBlock = renderNotesBlock(noteRows);
+    const deliveredBrief = `${brief}${notesBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : LANE_EXIT_FOOTER}`;
     const selected = contextReceiptSelections(plan.selected);
     const omitted = plan.omitted.map((entry) => ({ ...entry }));
     await sendText(free, deliveredBrief, true);
@@ -8285,6 +8308,10 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
       mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
       deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength,
       truncated: false,
+      // WHICH notes this brief carried, so the block is auditable from the ledger instead of from
+      // pane scrollback. Empty is a real answer (no hit, or a clarify lane) and is written as one:
+      // an absent field would mean "this receipt predates the join", which is a different fact.
+      notes: noteRows.map((row) => row.id),
       renderer: CONTEXT_ANCHOR_RENDERER,
       // The join key — the SAME function LaneOutcome.briefHash uses over the lane's first logged
       // prompt, so a receipt and the outcome it founded meet exactly. `hash` above keys a different question.

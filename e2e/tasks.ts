@@ -9,6 +9,8 @@ import { buildAnalysisPrompt } from "../analysis-prompt";
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
 import { deriveTaskMetadata, type TaskCluster } from "../task-metadata";
+import { noteFirstSentence, notesForTask, renderNotesBlock,
+  NOTE_HUB_FILES, NOTES_READ_ROUTES_EXIST, NOTES_SENTENCE_MAX, type NoteInput } from "../task-notes";
 import { matchTaskWaveAnalysis, projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from "../task-waves";
 import { projectLandWaves,
   type LandWaveCosts, type LandWaveProjection, type ProjectLandWavesInput } from "../task-land-waves";
@@ -32,6 +34,9 @@ export async function run(ctx: Ctx): Promise<void> {
     selected: { id: string; useWhen?: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string }[];
     omitted: { id: string; why: string }[];
     deliveredBytes: number; truncated: boolean;
+    // the ids of the queue notes the block carried. `[]` is a real answer (no hit, or a clarify
+    // lane); ABSENT means the row predates the join, which is a different fact.
+    notes?: string[];
     // absent renderer means the row predates the field and its block was written by v1 — a date,
     // never an unknown renderer
     renderer?: string;
@@ -2027,12 +2032,308 @@ export async function run(ctx: Ctx): Promise<void> {
       : null;
     if (typeof fdJ.slot === "number") await post(`/api/slots/${fdJ.slot}/kill`, {});
     await post(`/api/tasks/${fT.task.id}/delete`, {});
-    // kill never removes a worktree, and this one is the only lane the suite spawns from ROOT —
+    // kill never removes a worktree, and a lane spawned from ROOT (this one and (d5-live)'s four) —
     // it lands NEXT TO the instance directory (`<DIR>.worktrees/…`), outside the wrapper's `rm -rf`
     if (fLane) {
       spawnSync("git", ["-C", ROOT, "worktree", "remove", "--force", fLane]);
       rmSync(`${ROOT}.worktrees`, { recursive: true, force: true }); // the parent dir createWorktree mkdir'd
     }
+  }
+
+  // --- (d5) N1: THE PENDING NOTES STANDING ON THIS LANE'S FILES
+  // (docs/notizen-verarbeitung-2026-09-06.md §3 N1). Until this seam a `notiz` had exactly one
+  // consumer, the owner: no tick reads one, `capTasks` never retires one, and a lane has no route
+  // to fetch one — 127 pending notes reached nobody whose work stood on their files. The join is
+  // set arithmetic over the projection the board already shows, and its whole product is the
+  // RANKING: raw, the median open task shares a file with 42 notes; without the four hub files
+  // with 5; and the cluster cuts that to 3. So the pure half below is not a unit-test courtesy —
+  // it is where the four ordering rules are each made to decide exactly once, which a live fixture
+  // cannot do for the id tiebreak (two rows created in the same millisecond are not schedulable).
+  {
+    const pureTask = { id: "T0", repo: "/r", cluster: { prozess: "server" },
+      // server.ts is a HUB and is in the surface on purpose: it must contribute nothing.
+      files: ["server.ts", "a.ts", "b.ts", "c.ts", "d.ts"] };
+    const mkNote = (id: string, files: string[], prozess: string, created: number,
+      text = `${id} erster Satz. zweiter Satz.`, over: Partial<NoteInput> = {}): NoteInput =>
+      ({ id, repo: "/r", kind: "notiz", status: "pending", files, cluster: { prozess }, created, text, ...over });
+    const pureNotes: NoteInput[] = [
+      // the five that must survive, deliberately handed over in the WRONG order
+      mkNote("p5", ["a.ts", "b.ts", "c.ts", "d.ts"], "docs", 900),     // 4 shared, foreign cluster
+      mkNote("nb", ["b.ts", "c.ts"], "server", 100),                    // ties na on cluster+count+age
+      mkNote("p1", ["a.ts", "b.ts", "c.ts"], "server", 50),             // 3 shared, same cluster
+      mkNote("na", ["a.ts", "c.ts"], "server", 100),                    // id decides against nb
+      mkNote("p2", ["a.ts", "b.ts"], "server", 200),                    // newer than na/nb
+      // …and the one the cap must cut, which is also the proof the cap is not the input length
+      mkNote("p6", ["a.ts"], "docs", 999),
+      // every rejection, one row each
+      mkNote("x-kind", ["a.ts", "b.ts", "c.ts", "d.ts"], "server", 999, "x. y.", { kind: "auftrag" }),
+      mkNote("x-status", ["a.ts", "b.ts", "c.ts", "d.ts"], "server", 999, "x. y.", { status: "queued" }),
+      mkNote("x-repo", ["a.ts", "b.ts", "c.ts", "d.ts"], "server", 999, "x. y.", { repo: "/other" }),
+      mkNote("x-hubs", ["server.ts", "AGENTS.md", "e2e/pins.ts", "CLAUDE.md"], "server", 999),
+      mkNote("x-nofiles", [], "server", 999, "x. y.", { files: undefined }),
+      mkNote("x-disjoint", ["z.ts"], "server", 999),
+    ];
+    const pureBefore = JSON.stringify({ pureTask, pureNotes });
+    const pureFirst = notesForTask(pureTask, pureNotes);
+    const pureSecond = notesForTask(pureTask, pureNotes);
+    // (c) PURITY. Mutation that breaks it: sorting `notizen` in place (the obvious way to write the
+    // ranking), or reusing/mutating the caller's `files` arrays instead of copying them.
+    check("(d5-c) notesForTask is pure — same answer twice and neither input touched",
+      JSON.stringify(pureFirst) === JSON.stringify(pureSecond)
+      && JSON.stringify({ pureTask, pureNotes }) === pureBefore,
+      `${JSON.stringify(pureFirst.map((r) => r.id))} inputsEqual=${JSON.stringify({ pureTask, pureNotes }) === pureBefore}`);
+    // THE ORDER, with each rule decisive exactly once. Mutation that breaks it: dropping any one
+    // comparator term, or flipping a direction — p1>p2 needs the count, p2>na the age, na>nb the
+    // id, and p5 last is the only thing proving the cluster outranks a STRICTLY larger overlap.
+    check("(d5-order) rank is cluster → shared count → newer → id, and the cap cuts the tail",
+      JSON.stringify(pureFirst.map((r) => r.id)) === JSON.stringify(["p1", "p2", "na", "nb", "p5"]),
+      JSON.stringify(pureFirst));
+    // Mutation that breaks it: intersecting BEFORE removing the hubs (which is the shape that makes
+    // every task match every note), or removing hubs from the note side only.
+    check("(d5-hubs) the four hub files are cut out of the intersection, never out of the note",
+      pureFirst.every((r) => r.sharedFiles.every((f) => !(NOTE_HUB_FILES as readonly string[]).includes(f)))
+      && JSON.stringify(pureFirst.find((r) => r.id === "p5")?.sharedFiles) === JSON.stringify(["a.ts", "b.ts", "c.ts", "d.ts"])
+      && !pureFirst.some((r) => r.id === "x-hubs"),
+      JSON.stringify(pureFirst.map((r) => [r.id, r.sharedFiles])));
+    // Mutation that breaks it: treating a missing cluster on either side as a match (absence read
+    // as sameness), which would float exactly the rows nothing is known about to the top.
+    check("(d5-cluster) sameCluster needs BOTH clusters present and equal",
+      pureFirst.filter((r) => r.sameCluster).map((r) => r.id).join(",") === "p1,p2,na,nb"
+      && notesForTask({ ...pureTask, cluster: undefined }, pureNotes).every((r) => !r.sameCluster),
+      JSON.stringify(pureFirst.map((r) => [r.id, r.sameCluster])));
+    // An unknown surface and an unknown repo are ABSENCE, not "matches everything". Mutation that
+    // breaks it: defaulting a missing files list to `[]` and letting the empty intersection through,
+    // or joining two rows that both merely mean "the dispatcher default" without one being resolved.
+    check("(d5-absence) a task without a surface or without a repo joins nothing",
+      notesForTask({ ...pureTask, files: undefined }, pureNotes).length === 0
+      && notesForTask({ ...pureTask, files: ["server.ts"] }, pureNotes).length === 0
+      && notesForTask({ ...pureTask, repo: null }, pureNotes).length === 0
+      && notesForTask({ ...pureTask, repo: null }, pureNotes, { dispatchRepo: "/r" }).length === 5,
+      `${notesForTask({ ...pureTask, files: undefined }, pureNotes).length}/${notesForTask({ ...pureTask, repo: null }, pureNotes).length}`);
+    // The first sentence is ONE line by contract — a note's text is free-form prose with newlines,
+    // and a second line would silently turn a 5-note block into a 9-line one. Mutation that breaks
+    // it: collapsing whitespace before splitting (the newline boundary disappears), or dropping the
+    // `$` alternative (a text whose last sentence has no trailing space returns the whole text).
+    check("(d5-sentence) the first sentence stops at the first .!? boundary, on one line, capped at 300",
+      noteFirstSentence("Erster Satz.\nZweiter Satz.") === "Erster Satz."
+      && noteFirstSentence("Frage?  Rest") === "Frage?"
+      && noteFirstSentence("Kein Satzende") === "Kein Satzende"
+      && noteFirstSentence("a\nb\n\nc") === "a b c"
+      && noteFirstSentence(`${"x".repeat(400)}. rest`).length === NOTES_SENTENCE_MAX,
+      JSON.stringify([noteFirstSentence("Erster Satz.\nZweiter Satz."), noteFirstSentence("Frage?  Rest")]));
+    // THE FEATURE TEST, not a date. The closing sentence names two routes N2 builds; today neither
+    // exists, so rendering it would put dead curls in a founding brief. Mutation that breaks it:
+    // writing the sentence unconditionally, or wiring the flag to a constant a caller cannot flip
+    // (which would make the N2 half unprovable until N2 ships).
+    const pureBlock = renderNotesBlock(pureFirst);
+    const pureBlockWithRoutes = renderNotesBlock(pureFirst, true);
+    check("(d5-render) the block is empty at zero rows, one line per note, and names the read routes only when they exist",
+      renderNotesBlock([]) === ""
+      && pureBlock.startsWith("\n\nNotizen auf deiner Flaeche (5, Deckel 5):\n- notiz p1 · ")
+      && pureBlock.split("\n").filter((l) => l.startsWith("- notiz ")).length === 5
+      && pureBlock.split("\n").length === 8 // two leading empties + heading + five rows
+      && !pureBlock.includes("/api/self/notes")
+      && NOTES_READ_ROUTES_EXIST === false
+      && pureBlockWithRoutes.includes("GET /api/self/notes")
+      && pureBlockWithRoutes.includes("POST /api/self/notes/<id>/verdict"),
+      JSON.stringify(pureBlock));
+    // the file list is a hint, not the surface: three names, then a count. Mutation that breaks it:
+    // rendering all shared files (a cross-cutting note would push a 400-char line into the brief).
+    check("(d5-render-files) a line shows at most three shared files and says how many it withheld",
+      pureBlock.includes("[a.ts, b.ts, c.ts +1]") && pureBlock.includes("[a.ts, b.ts]"),
+      JSON.stringify(pureBlock.split("\n").filter((l) => l.startsWith("- notiz "))));
+  }
+
+  // --- (d5-live) THE SAME JOIN AT THE DELIVERY SEAM. Dispatches into ROOT, the instance's own
+  // checkout, because that is the only tree here whose tracked files carry a cluster map at all
+  // (task-metadata.ts#processesForPath) — testrepo's surface is `code.txt` and friends, which map
+  // to no process and would leave every cluster undefined. Four attended dispatches, each lane
+  // killed and its worktree removed before the next, so the lane cap is never the reason a probe
+  // fails. The dispatcher is off here (the (d) section turned it off), so no tick can consume a
+  // row underneath these probes.
+  {
+    const rootReal = realpathSync(ROOT);
+    const tracked = new Set(spawnSync("git", ["-C", ROOT, "ls-files"], { encoding: "utf8" })
+      .stdout.split("\n").filter(Boolean));
+    const FIXTURE_PATHS = ["server.ts", "AGENTS.md", "HANDOFF.md", "task-metadata.ts",
+      "continuity.ts", "lane-signals.ts", "slotstats.ts", "trailstats.ts", "docs/verify-tiering.md"];
+    // Precondition, not a check of the feature: every path below has to BE a tracked file of ROOT,
+    // or deriveTaskMetadata drops it and the whole section would pass by measuring nothing.
+    check("(d5-live) precondition: every fixture path is tracked in the instance checkout",
+      FIXTURE_PATHS.every((p) => tracked.has(p)),
+      JSON.stringify(FIXTURE_PATHS.filter((p) => !tracked.has(p))));
+    type QueueRow = { id: string; kind: string; status: string; repo?: string | null;
+      created: number; text: string; files?: string[]; cluster?: TaskCluster };
+    const taskRows = async (): Promise<QueueRow[]> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: QueueRow[] }).tasks;
+    // `realpathSync` THROWS on a path that no longer exists, and earlier sections leave rows behind
+    // whose fixture repo was removed — an unreadable repo is "not this checkout", never a crash.
+    const sameAsRoot = (repo: string | null | undefined): boolean => {
+      if (!repo) return false;
+      try { return realpathSync(repo) === rootReal; } catch { return false; }
+    };
+    const rootNotes = async (): Promise<string[]> => (await taskRows())
+      .filter((t) => t.kind === "notiz" && t.status === "pending" && sameAsRoot(t.repo))
+      .map((t) => t.id);
+    // The control below is dispatched into a world with ZERO candidate notes, and that has to be a
+    // measured fact: an earlier section leaving a ROOT-scoped note behind would make the byte
+    // comparison compare two blocks instead of a block and its absence.
+    check("(d5-live) precondition: no pending notiz targets the instance checkout yet",
+      (await rootNotes()).length === 0, JSON.stringify(await rootNotes()));
+
+    const mkTask = async (text: string, kind: "auftrag" | "notiz"): Promise<string> =>
+      ((await (await post("/api/tasks", { text, kind, queue: false, repo: ROOT })).json()) as { task: { id: string } }).task.id;
+    // one dispatch, read back off the two ledgers the delivery writes: the prompt journal (the
+    // exact bytes sendText received) and the context receipt (what the row says it delivered).
+    // Joined on SLOT and taken newest-first, because two probes here carry the same brief bytes on
+    // purpose and `startsWith` alone could not tell their prompts apart.
+    const autoPromptSince = async (slot: number | null, since: number): Promise<string> =>
+      (((await (await get("/api/prompts?limit=100")).json()) as
+        { prompts: { ts?: number; slot?: number; source?: string; text?: string }[] }).prompts)
+        .find((p) => p.source === "auto" && p.slot === slot && (p.ts ?? 0) >= since)?.text ?? "";
+    const dispatchAndRead = async (taskId: string, briefText: string):
+      Promise<{ prompt: string; receipt?: ContextReceipt; slot: number | null }> => {
+      await post(`/api/tasks/${taskId}/brief`, { text: briefText });
+      // the floor for the prompt read below. A slot NUMBER is recycled, so a probe that only
+      // matched on slot+prefix could read the PREVIOUS occupant's prompt — and two probes here
+      // carry identical brief bytes on purpose, which is exactly when that would go unnoticed.
+      const since = Date.now();
+      const res = await post(`/api/tasks/${taskId}/dispatch`, {});
+      const slot = ((await res.json()) as { slot?: number }).slot ?? null;
+      let receipt: ContextReceipt | undefined;
+      let prompt = "";
+      for (let i = 0; i < 24; i++) { // same window as (d): sendText lands after the boot sleep
+        receipt = (await contextReceipts()).receipts.find((r) => r.taskId === taskId);
+        prompt = await autoPromptSince(slot, since);
+        if (receipt && prompt) break;
+        await Bun.sleep(500);
+      }
+      return { prompt, receipt, slot };
+    };
+    const rootLanes: string[] = [];
+    const closeLane = async (slot: number | null): Promise<void> => {
+      if (slot === null) return;
+      const cwd = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+        .slots.find((s) => s.id === slot)?.cwd ?? null;
+      await post(`/api/slots/${slot}/kill`, {});
+      if (cwd) { spawnSync("git", ["-C", ROOT, "worktree", "remove", "--force", cwd]); rootLanes.push(cwd); }
+    };
+
+    // (b1) THE CONTROL: the same brief, the same task text, in a world with no notes at all.
+    const HUB_TEXT = "N1 hub probe over server.ts, AGENTS.md and task-metadata.ts";
+    const HUB_BRIEF = "N1-HUB-FIXTURE — these bytes must not move when only hub files overlap";
+    const ctlId = await mkTask(HUB_TEXT, "auftrag");
+    const ctl = await dispatchAndRead(ctlId, HUB_BRIEF);
+    await closeLane(ctl.slot);
+    check("(d5-live-control) a dispatch with no candidate note carries no block and receipts notes:[]",
+      ctl.prompt.startsWith(`${HUB_BRIEF}\n\nContextPlan v2 anchors`)
+      && !ctl.prompt.includes("Notizen auf deiner Flaeche")
+      && Array.isArray(ctl.receipt?.notes) && ctl.receipt.notes.length === 0,
+      `${JSON.stringify(ctl.receipt?.notes ?? null)} ${ctl.prompt.slice(0, 160)}`);
+
+    // the eight fixture notes. `nC` is created BEFORE `nB` and the gap is asserted, because the
+    // age rule can only decide between them if their timestamps actually differ.
+    const nA = await mkTask("Notiz A: continuity.ts, lane-signals.ts und slotstats.ts teilen einen Zustand. Zweiter Satz, der nicht erscheinen darf.", "notiz");
+    const nC = await mkTask("Notiz C: continuity.ts und slotstats.ts. Rest.", "notiz");
+    await Bun.sleep(20);
+    const nB = await mkTask("Notiz B: continuity.ts und lane-signals.ts. Rest.", "notiz");
+    const nD = await mkTask("Notiz D: nur continuity.ts. Rest.", "notiz");
+    const nE = await mkTask("Notiz E: continuity.ts, lane-signals.ts, slotstats.ts, trailstats.ts und docs/verify-tiering.md. Rest.", "notiz");
+    const nF = await mkTask("Notiz F: continuity.ts, lane-signals.ts und HANDOFF.md. Rest.", "notiz");
+    const nG = await mkTask("Notiz G: continuity.ts und HANDOFF.md. Rest.", "notiz");
+    const nHub = await mkTask("Notiz Nabe: server.ts, AGENTS.md und HANDOFF.md sind Naben. Rest.", "notiz");
+    const fixtureIds = [nA, nB, nC, nD, nE, nF, nG, nHub];
+    const rows = await taskRows();
+    const rowOf = (id: string): QueueRow | undefined => rows.find((t) => t.id === id);
+    // Precondition again, and the sharper half: the SERVER's own projection has to have derived the
+    // surfaces and clusters this ranking is built on. Without it a green ranking could just mean
+    // "nothing matched anything".
+    check("(d5-live) precondition: the queue projection derived the fixture surfaces and clusters",
+      rowOf(nA)?.cluster?.prozess === "server" && rowOf(nE)?.cluster?.prozess === "cross-cutting"
+      && rowOf(nHub)?.files?.join(",") === "AGENTS.md,HANDOFF.md,server.ts"
+      && (rowOf(nB)?.created ?? 0) > (rowOf(nC)?.created ?? 0),
+      JSON.stringify([rowOf(nA)?.cluster, rowOf(nE)?.cluster, rowOf(nHub)?.files,
+        (rowOf(nB)?.created ?? 0) - (rowOf(nC)?.created ?? 0)]));
+
+    // (b2) HUB-ONLY OVERLAP. This task's surface meets `nHub` on server.ts and AGENTS.md and
+    // nothing else — the exact shape that made the raw intersection useless (42 notes per task).
+    // Mutation that breaks it: dropping NOTE_HUB_FILES from the intersection.
+    const hubId = await mkTask(HUB_TEXT, "auftrag");
+    const hub = await dispatchAndRead(hubId, HUB_BRIEF);
+    await closeLane(hub.slot);
+    check("(d5-live-b) a hub-only overlap adds nothing — the delivered bytes equal the no-note control exactly",
+      hub.prompt === ctl.prompt && hub.prompt.length > 0
+      && Array.isArray(hub.receipt?.notes) && hub.receipt.notes.length === 0,
+      `equal=${hub.prompt === ctl.prompt} notes=${JSON.stringify(hub.receipt?.notes ?? null)}`);
+
+    // (a) SEVEN CANDIDATES, FIVE LINES, IN THE RANKED ORDER.
+    const RANK_BRIEF = "N1-RANK-FIXTURE — seven candidates, five lines";
+    const rankId = await mkTask("Auftrag: server.ts, continuity.ts, lane-signals.ts, slotstats.ts und trailstats.ts.", "auftrag");
+    const rank = await dispatchAndRead(rankId, RANK_BRIEF);
+    const rankBlock = rank.prompt.slice(RANK_BRIEF.length,
+      rank.prompt.indexOf("\n\nContextPlan v2 anchors") >= 0
+        ? rank.prompt.indexOf("\n\nContextPlan v2 anchors") : undefined);
+    const rankLines = rankBlock.split("\n").filter((l) => l.startsWith("- notiz "));
+    await closeLane(rank.slot);
+    // Mutation that breaks it: any comparator term (nA>nB count, nB>nC age, nD>nE cluster), the
+    // cap (nF/nG would appear), or moving the block after the anchors (the slice would be empty).
+    check("(d5-live-a) seven candidates deliver exactly five lines, ranked cluster → count → age",
+      rankLines.length === 5
+      && rankLines.map((l) => l.split(" ")[2]).join(",") === [nA, nB, nC, nD, nE].join(",")
+      && rankBlock.startsWith("\n\nNotizen auf deiner Flaeche (5, Deckel 5):\n")
+      && !rankBlock.includes(nF) && !rankBlock.includes(nG) && !rankBlock.includes(nHub),
+      `bytes=${new TextEncoder().encode(rankBlock).byteLength} ${JSON.stringify(rankLines)}`);
+    // The line carries the note's FIRST sentence and stops there — the whole reason the block costs
+    // ~1.4 KB and not the 211 KB of note text the queue holds. Mutation that breaks it: rendering
+    // `text` instead of the first sentence.
+    check("(d5-live-a-line) a line is the id, the first sentence and the shared files — never the whole note",
+      rankLines[0] === `- notiz ${nA} · Notiz A: continuity.ts, lane-signals.ts und slotstats.ts teilen einen Zustand. [continuity.ts, lane-signals.ts, slotstats.ts]`
+      && !rankBlock.includes("der nicht erscheinen darf"),
+      JSON.stringify(rankLines[0] ?? ""));
+    // (d) THE RECEIPT. Mutation that breaks it: writing the block into the brief but not the ids
+    // into the row, or computing deliveredBytes before the block is appended.
+    check("(d5-live-d) the receipt names the five delivered notes and counts the block into deliveredBytes",
+      JSON.stringify(rank.receipt?.notes) === JSON.stringify([nA, nB, nC, nD, nE])
+      && rank.receipt?.deliveredBytes === new TextEncoder().encode(rank.prompt).byteLength
+      && rank.receipt.briefHash === briefHashOf(rank.prompt),
+      `${JSON.stringify(rank.receipt?.notes ?? null)} bytes=${rank.receipt?.deliveredBytes ?? null}/${new TextEncoder().encode(rank.prompt).byteLength}`);
+
+    // (e) CLARIFY GETS NONE — same task text as the ranking probe, so the five candidates are
+    // there and only the mode withholds them. Mutation that breaks it: computing the block before
+    // the clarify branch, or appending it outside the `clarify ? "" :` guard.
+    const CLARIFY_BRIEF_UNUSED = "N1-CLARIFY-FIXTURE";
+    const clarifyId = await mkTask("Auftrag clarify: server.ts, continuity.ts, lane-signals.ts, slotstats.ts und trailstats.ts.", "auftrag");
+    await post(`/api/tasks/${clarifyId}/brief`, { text: CLARIFY_BRIEF_UNUSED });
+    const cSince = Date.now();
+    const cRes = await post(`/api/tasks/${clarifyId}/dispatch`, { clarify: true });
+    const cSlot = ((await cRes.json()) as { slot?: number }).slot ?? null;
+    let cReceipt: ContextReceipt | undefined;
+    let cPrompt = "";
+    for (let i = 0; i < 24; i++) {
+      cReceipt = (await contextReceipts()).receipts.find((r) => r.taskId === clarifyId);
+      cPrompt = await autoPromptSince(cSlot, cSince);
+      if (cReceipt && cPrompt) break;
+      await Bun.sleep(500);
+    }
+    await closeLane(cSlot);
+    // …and "five candidates match it" is MEASURED, not assumed: the same pure join is run over the
+    // live queue rows as they stood, so an empty block cannot be explained by an empty queue.
+    const afterRows = await taskRows();
+    const clarifyRow = afterRows.find((t) => t.id === clarifyId);
+    const liveCandidates = notesForTask(
+      { id: clarifyId, repo: rootReal, files: clarifyRow?.files, cluster: clarifyRow?.cluster },
+      afterRows.filter((t) => sameAsRoot(t.repo))
+        .map((t) => ({ id: t.id, repo: rootReal, kind: t.kind, status: t.status,
+          files: t.files, cluster: t.cluster, created: t.created, text: t.text })));
+    check("(d5-live-e) precondition: the same five notes are candidates for the clarify row's own surface",
+      liveCandidates.length === 5, JSON.stringify(liveCandidates.map((r) => r.id)));
+    check("(d5-live-e) a clarify dispatch carries no note block although five candidates match it",
+      cPrompt.length > 0 && !cPrompt.includes("Notizen auf deiner Flaeche")
+      && Array.isArray(cReceipt?.notes) && cReceipt.notes.length === 0,
+      `${JSON.stringify(cReceipt?.notes ?? null)} ${cPrompt.slice(0, 120)}`);
+
+    for (const id of [...fixtureIds, ctlId, hubId, rankId, clarifyId]) await post(`/api/tasks/${id}/delete`, {});
+    if (rootLanes.length) rmSync(`${ROOT}.worktrees`, { recursive: true, force: true });
   }
 
   // --- (d4) THE DISPATCH SEAM READS THE TARGET REPOSITORY'S OWN MANIFEST. Until 2026-08-19 only

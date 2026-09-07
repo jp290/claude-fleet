@@ -5,6 +5,8 @@
 - Zurückgehaltene Notiz, nicht Teil dieses Repos. — docs/messungen/2026-09-07-zurueckgehaltene-notiz.md · bereich: portfolio · stand: 2026-09-07
 
 - Technische Grundlagen und konkrete Reparaturschleifen sind belegt; Produktkern, Workflow-Zustellung und der Nutzen von Workflow v2 bleiben getrennt zu prüfen. — docs/messungen/2026-09-07-gamedev-bestandsaufnahme.md · bereich: game-maker,studio,produkt · stand: 2026-09-07
+- Die gequeueten Objekt-Fixes treffen die richtige Wurzel (Occupant- statt Program-Bindung), aber nur fuer Program/Task: fuer Studio und Repo gibt es keinen Auftrag, die D1-Freigabekette ist seit S2/S3a-i-Land stale (30383e62 Duplikat, c464af30/f98facad startbar), und der Slot-Flaschenhals ist FLEET_DISPATCH_MAX_LANES=1 — drei von vier Lanes sind Hand-Dispatches. — docs/messungen/2026-09-07-datenlayer-ordnung-bericht.md · bereich: datenlayer,queue,program,studio,dispatch · stand: 2026-09-07
+
 
 Eine Zeile je Notiz in `docs/messungen/`, angehängt von der schreibenden Lane selbst (siehe
 `.claude/skills/mess-notiz/SKILL.md` §Die Index-Zeile) — nicht aus dem Korpus generiert, weil ein

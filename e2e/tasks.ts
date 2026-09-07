@@ -3686,13 +3686,20 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(i) clarify start spawns a lane and reports the mode back",
       iRes.ok && iJ.ok === true && iJ.clarify === true && typeof iJ.slot === "number", `${iRes.status} ${JSON.stringify(iJ)}`);
     let iAuto: { source?: string; text?: string }[] = [];
+    // ITS OWN prompt, identified by ITS OWN marker. `<<<REQUEST` alone is the shape EVERY clarify
+    // frame has, and this suite now dispatches a second clarify lane ((d5-live-e), ~1500 lines
+    // above): with the loose predicate the poll ended on the FIRST pass against that older frame,
+    // before this probe's own send had landed, and the two checks below then measured a stranger's
+    // prompt — red under their own names for a reason that had nothing to do with what they pin.
+    const isOwnFrame = (p: { text?: string }): boolean =>
+      (p.text ?? "").includes("<<<REQUEST") && (p.text ?? "").includes(MARK);
     for (let i = 0; i < 24; i++) { // the send lands after the 4s boot sleep; no compile on this path
       iAuto = (((await (await get("/api/prompts?limit=100")).json()) as { prompts: { source?: string; text?: string }[] }).prompts)
         .filter((p) => p.source === "auto");
-      if (iAuto.some((p) => (p.text ?? "").includes("<<<REQUEST"))) break;
+      if (iAuto.some(isOwnFrame)) break;
       await Bun.sleep(500);
     }
-    const iSent = iAuto.find((p) => (p.text ?? "").includes("<<<REQUEST"));
+    const iSent = iAuto.find(isOwnFrame);
     check("(i) the founding prompt is the clarify frame with the request verbatim, and NOT the compiled brief",
       !!iSent && (iSent.text ?? "").includes(MARK) && (iSent.text ?? "").includes("not to implement it yet")
       && !(iSent.text ?? "").includes("enhanced prompt. own your work!"),

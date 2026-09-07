@@ -50,6 +50,9 @@ how the shelf grew to 52 docs whose claims nobody re-derived.
   und Ende-zu-Ende-Lebenszyklus. Es ist kein Runtime-Inventar.
 - **`agentic-control-plane-program-2026-08-20.md`** — datierter Outside-in-Program Brief mit
   Journeys, Acts, Agentenbriefing, Write-Leases und Canaries. Nach Umsetzung bleibt er Snapshot.
+- **`kontextschicht-analyse-2026-08-20.md`** — gemessener Ist-Befund, Korrekturen und offene
+  Grenzen, nicht die laufende Systemwahrheit.
+
 ## Curated operative docs
 
 One line per doc — its *purpose*, not its contents, so this index points without rotting.
@@ -84,6 +87,11 @@ One line per doc — its *purpose*, not its contents, so this index points witho
   and cut the list where it is satisfied.
 
 **Product working circles**
+- **`product-studio-working-circle.md`** — the active Product-Studio direction, its composed
+  Game-Studio profile, the measured private-repo-h visual lesson, the communication prerequisite,
+  Pi/GLM calibration and the first small artillery-game corridor. Read before turning a product
+  idea into roles, Context Packs or a domain-specific harness.
+
 **Knowledge hygiene**
 - **`knowledge-currency.md`** — a worktree delivers the shelf as of *spawn time*. A lane
   reads main's newest knowledge with `git show main:docs/x.md`. Read before proposing a

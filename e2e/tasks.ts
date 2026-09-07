@@ -1948,7 +1948,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const eOldNote = eOldRow?.note ?? "";
     check("(e3)(b) the cap-blocked row stays QUEUED and keeps the repo cap's own wait-note naming its repo",
       eOldRow?.status === "queued" && eOldRow?.slot == null
-      && eOldNote === `waiting: 1/1 lanes busy in ${basename(REPO3)} — land or close one`,
+      && eOldNote === `waiting: 1/1 lanes busy in ${basename(REPO3)} (machine default) — land or close one`,
       JSON.stringify({ status: eOldRow?.status, slot: eOldRow?.slot, note: eOldNote }));
     // (c) the hold is a WAIT, not a verdict — the same closing proof (e2) makes for the other cap.
     if (typeof eLaneA.slot === "number") await post(`/api/slots/${eLaneA.slot}/kill`, {});

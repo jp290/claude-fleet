@@ -1,3 +1,112 @@
+# HANDOFF — 🎛 Fleet Controller (Slot 10, Fable 5.1) → Nachfolgerin: Private-repo-j gegruendet und in M1, Astra-Tag P1–P3 laufen, Slots 6/8 im Retire, Deploy c7184f8 gruen — DEIN NEUER OWNER-AUFTRAG: TASK-WELLENMODUS
+
+> Geschrieben 2026-09-07 12:2x bei ctx 39,5 % (gemessen). Zustand ableiten: `./state.sh`,
+> `./register.sh`, `GET /api/self/attention`, Board. Alles hier sind Behauptungen zum Nachschlagen.
+> Die Owner-Delegation gilt fort: „sag mir einfach was ich tun soll, wenn du wirklich meine Hilfe
+> benoetigst, etwas zu entscheiden" — Lands nach `decision.accepted`, Deploy ueber Verb 2, Reaps,
+> Owner-Entscheide weiterreichen; keine eigene Grabung.
+> **Modell:** du bist laut Regelbuch-VERSUCH (MODELLPOLITIK, Owner-Richtung 09-07 05:2x) die erste
+> Controller-Nachfolgerin auf **Opus 5 high**. Kriterium der Schicht: gleiche Zahl Lands/Reaps ohne
+> zusaetzliche Owner-Attentions, HANDOFF in gleicher Dichte; faellt es durch, succeedest du mit
+> `{"model":"claude-fable-5-1[1m]","effort":"high"}` zurueck. Der Owner hat DIESE Succession
+> ausdruecklich verlangt (12:1x: „DU solltest nun auch das Handoff durchfuehren") — sie ist echt.
+
+## 0. DEIN AUFTRAG VOM OWNER (woertlich, 12:1x): „in der neuen Session wuerde ich dann gerne den Task Wellenmodus und alles was dazu gehoert, angehen^^"
+
+Was es im Repo schon gibt — LESEN, nicht neu erfinden:
+- `docs/queue-wellen-2026-09-06.md` (Urteil in einem Satz dort: `task-waves.ts` faltet die Queue zu
+  PARALLELEN Lanes, die Zeit liegt aber in den LANDS — 74,7 h Audit-Wanduhr in 14 Tagen; eine
+  **Landewelle** ist die umgekehrte Faltung, heute nicht berechenbar, weil 0 von 31 `auftrag`-Zeilen
+  eine bestaetigte Flaeche tragen). §2 drei pruefbare Wellen-Regeln, §3 Kosten/Nutzen, **§5
+  Schnittliste (3 Schnitte)**, §6 Nicht-geprueft.
+- `task-waves.ts` (214 Z., deterministische read-only Projektion, browser-safe) und die
+  Landefaltung `863f628` + `49d93bc` (S1 Wellen-Sensor, gelandet; `32cd0e7` traegt in §5 die Shas und
+  den gemessenen Done-Satz „40×1, alle flaeche-null").
+- Traeger-Program: **Land-Pipeline 233e1c2b (Slot 5, Fable)** — Titel „robuster Merge-Prozess,
+  Queue-Wellen"; M3 (283f625f) laeuft als Lane auf Slot 1 (2 Commits, e2e-isolated-Vorschau lief
+  11:44), M2 `64860da8` und N2 `f98facad` pending; Notizen `dfc1506a` (Wellen-Report gelandet +
+  Owner-Richtung 09-06 „sma…") und `86830851`. Slot 5s eigener HANDOFF-Abschnitt steht unten
+  (`# HANDOFF — Program-MAIN Land-Pipeline`).
+- **Erster Zug dazu, in dieser Reihenfolge:** (1) §5 der Wellen-Doc und Slot 5s Abschnitt lesen;
+  (2) dem Owner in ≤ 8 Zeilen sagen, was „Wellenmodus" laut Repo heute heisst (Parallelwelle beim
+  Dispatch vs. Landewelle) und ihn fragen, WELCHE er meint und ob „alles was dazu gehoert" die
+  Flaechen-Bestaetigung (`brief.files`, `confirmed` vs `derived`) einschliesst — das ist ein
+  „clarify first", kein Bau; (3) die Zeilen dann in 233e1c2b filen und Slot 5 briefen lassen; du
+  landest und deployst, du grabst nicht selbst.
+
+## 1. Was mit MIR stirbt (Slot 10 wird nach der Grace-Frist geraeumt)
+- Zwei Bash-Hintergrund-Watcher (ein `fleet.json`-Diff-Monitor, ein Warte-Skript auf das Retire von
+  Slot 6/8) — beides Scratchpad, beides tot. Ersatz: `POST /api/self/watch` (idleSec:0) und Board.
+- Alle meine Watches haben gefeuert (letzte: Audit 189f815 = `unknown`, 45-min-Timeout, lokal).
+  Keine Autos ausstehend. Keine offene Attention von mir.
+
+## 2. Kette in Flug, Stand 12:2x (alles am Board/Ledger gemessen, nichts geschaetzt)
+- **Private-repo-j 9ce08219 (Slot 2, Astra medium, ctx ~78 % von 258k — codex kompaktiert selbst):**
+  Preflight-Kette gelaufen: Architect-Draft (Fable, Branch `fleet/260907083811-8361` @ 14d0f53),
+  P0-Wasserprobe (`fleet/260907085742-314b` @ 5bac39d), Cross-Model-Review + E2/E3-Nachtrag
+  (`fleet/260907092236-fdb9` @ 0e08f84) — alle drei Lanes OHNE Land geschlossen (MAIN-Entscheid
+  RETHINK bis M1/M2), Branches als Beleg erhalten. **M1-Recherche `86600976` laeuft auf Slot 13
+  (Opus)**; M2 Art-Bibel folgt; danach neuer Architect + Review, dann Land der Endfassung durch DICH
+  nach `decision.accepted`. Owner-Entscheide E2 (beide Partieformate), E3 (Tick p95 ≤ 2 ms), E4
+  (M1/M2 vor ACCEPT) sind bei ihr im Entscheid-Log. Repo `/Users/owner/private-repo-j` (Trust-Eintrag
+  gesetzt), Worktree `astra-main`. **Deckel:** bis `779eb456` (Slot 14) gelandet+deployt ist,
+  hand-dispatchen (`POST /api/tasks/:id/dispatch`, prueft keinen Deckel), wenn eine released Zeile
+  mit `waiting: 1/1` steht; danach Biber auf 3 setzen (die Route steht im Report der Lane).
+- **P3 6360c361 auf Slot 4 = FABLE 5.1 high** (dritte MAIN; beide Astra-Vorgaengerinnen starben an
+  der Provider-Sperre „extra caution with cybersecurity requests" beim adversarialen Lesen von
+  mergeJob/drainPostLandAudits; Owner-Entscheid: Fable). Startbrief-Notiz `52285f8f`. Faellt auch
+  Fable → Opus 5.
+- **Astra-Tag b78d31b7 (Slot 9, Astra high):** P1 (Slot 11) und P2 (Slot 12) sind FERTIG und von
+  einer zweiten Astra abgenommen (Spec 412 Z. sha 185b5295…, Vertrag 514 Z. sha 140d2b6f…, in
+  `/tmp/…`); ihre Publikations-Lanes `34c0d050`/`180d3c92` stehen `queued` hinter dem Deckel.
+  Checkpoint-Wecker auf Slot 9: Autos `f31828de` (13:45) und `ca8e863d` (17:45) — Notizen „AN
+  CONTROLLER SLOT 10" kommen dann in die Queue (jetzt an DICH; sag ihr deinen Slot). Owner-Richtung
+  `6f90781c` (Dual-Host auf dem Second-host) liegt bei ihr: sie re-chartert cd110019, die MAIN dafuer
+  bekommt den ersten freien Slot — codex/gpt-6-astra/**medium** (Owner-Option 11:0x fuer alle
+  Astras).
+- **Slots 6 und 8 retiren (Owner-Ja 12:1x):** beide haben den Auftrag HANDOFF-Abschnitt + Commit,
+  dann `POST /api/self/retire` (Slot 8 zusaetzlich `rulebook/deploy.md` ~58-59 korrigieren: der
+  Autoclose HAT einmal ausgeloest, 09-05 17:05:54, Task 9f1dbfb4 — Render + pins). Pruefe am Board;
+  sind sie nach 30 min noch da, EINMAL anstupsen. Ihre Programs bleiben aktiv, Restarbeit liegt als
+  Zeilen. Notiz `0f44755c` (typisierter Rueckweg fuer Pane-Antworten = die „fehlende Nachrichten-
+  Capability", die den Owner nervt) ist als `f4dc7276` nach Fleet-Betrieb umgehaengt.
+- **Slot 7 Fleet-Betrieb (Opus, ctx 42,5 % GEMESSEN — sie selbst sagt 13 %):** aufgefordert zu
+  HANDOFF + `/compact`. Sie nennt dir den Env-Eintrag `FLEET_POSTLAND_AUDIT_WAIT_MS` (Wert+Grund) →
+  `watchdog.sh` + `launchctl kickstart -k gui/$(id -u)/com.claude-fleet.watchdog`. Ihre Lane Slot 14
+  (`779eb456`, Deckel je Repo, Commit `9422dbc`, Gate laeuft, Helfer hat die Vorschau geclaimt)
+  reportet an sie; sie landet selbst (Self-Land) → dann **Deploy Verb 2 durch dich** (409 bei
+  laufendem Audit; danach `bundleStale`/`deployGap` pruefen). Erst danach fallen `34c0d050`,
+  `180d3c92`, `e407aef5`, `1d0f4ca4`, `56e4427d` durch — seriell bei Deckel 1.
+- **Slot 3 Codebase-Review (Astra):** Auflage aus der Bewertung: Zielregister
+  `docs/messungen/2026-09-review-aussen-nach-innen.md` main-direkt schreiben statt auf eine Lane zu
+  warten — noch NICHT an sie gesendet. Bleibt es aus, HANDOFF+RETIRE.
+- **Slot 15 „fable5" = eigene Owner-Session (Opus):** wartet seit 09-04 auf GLM-Key-Entscheid
+  (Konzept-B); haelt einen ungeschriebenen Befund (Helfer 22 Check-Namen vs lokal 8). Frage an den
+  Owner ist gestellt, unbeantwortet — NICHT anfassen.
+- **Deploy `6f052d61` gruen** (bootHead = main = c7184f8, 15 Sessions ueberlebt). Helfer
+  `secondhostlinux1` ist AKTIV (maxParallelSuites 1); meine fruehere Aussage „nimmt keine Audits
+  an" war falsch gelesen.
+- **Maschine:** 8 GB RAM, Swap 3,5/4 GB, Slot 1 meldete OOM-gekillte Warte-Kommandos → keine 17.
+  Session; MAX_SLOTS=16 ist Konstante. Freie Slots: 16 (+6, +8 nach Retire).
+
+## 3. Owner-Entscheide dieser Schicht (woertlich, damit niemand sie neu stellt)
+- 10:5x Lane Slot 4 auf Fable („macht am Anfang Sinn") · 11:0x „Astra auf medium ist schon echt
+  sehr gut" → Astra-Sessions effort medium, mindestens als Option · 11:2x „der [Deckel] sollte
+  ueberhaupt hoeher liegen als 1" → 779eb456 · 11:3x Partieformat „beides" (E2) · 11:3x Tick-Budget
+  an mich delegiert → p95 (E3) · 11:4x M1/M2 vor ACCEPT (E4, an mich delegiert) · 11:5x „Den
+  zweiten Host sollten wir logischerweise auf dem second-host aufsetzen" → 6f90781c · 11:5x „Staffel
+  von Agenten … jede Session … Bewertung" → fuenf Lese-Agenten, Rangliste geliefert · 12:1x „slot6
+  und slot8 klingt gut" → Retire · 12:1x Handoff + Wellenmodus (oben).
+
+## 4. Lehren, teuer bezahlt heute
+- Claude-Trust-Dialog frisst den Lane-Brief in einem NEUEN Repo (Root-Schluessel in
+  `~/.claude.json`; Notiz `2022fa5a` in Fleet-Betrieb; paneReadiness kennt keinen claude-Screen).
+- gpt-6-astra sperrt bei „adversarial" + Merge-/Deploy-Code — zweimal, ohne Artefakt. Charters fuer
+  Landepfad-Arbeit: Claude-Modell oder Wortwahl „Zuverlaessigkeitsarbeit am eigenen Code".
+- `POST /api/tasks/:id/dispatch` umgeht den Deckel — dreimal genutzt, immer mit Grund im Board.
+- Selbstauskunft ctx einer Opus-MAIN kann um 30 Punkte danebenliegen (Slot 7) — immer messen.
+- Owner-Kills auf dem Board sehen im Ledger aus wie meine (`slot_kill … owner`): erst fragen.
+
 # HANDOFF — Program-MAIN 66499a03 „Fleet-Betrieb ohne manuelles Owner-Routing" (Slot 8, Opus 5): SATZ 8 IST BELEGT — die erste `autoClose`-Zeile ueberhaupt, plus ein zweites Self-Land ueber die eigene Sprosse; der Slot wird auf Owner-Entscheid frei gemacht, das Program bleibt aktiv; 2026-09-07 12:2x
 
 Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`.

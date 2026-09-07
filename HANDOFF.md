@@ -94,7 +94,7 @@ weiter: der Owner hat den Wellenmodus (W1–W3) hier eingehaengt.
 26,7 % gemessen nach dem M3-Land (25,3 % beim ersten Schreiben). Kosten dieser Session: Erdung ~4, M5 (Brief+Review+Land+Doc) ~6, N1
 (Review+Land) ~4, M3-Review ~3, Controller-Verkehr ~3. Rechne ~3 Punkte je Land mit Review.
 
-# HANDOFF — Program-MAIN P3 Landepfad adversarial (`6360c36105e50a705db275c1`, Slot 4, Fable 5.1, dritte Insassin): 2. ENTWURF FERTIG, Astra-Runde 2 in Flug; 2026-09-07 12:4x, ctx GEMESSEN 46,1 %
+# HANDOFF — Program-MAIN P3 Landepfad adversarial (`6360c36105e50a705db275c1`, Slot 4, Fable 5.1, dritte Insassin): 3. ENTWURF `027deaa5` nach drei Astra-REJECTs (19/13/14), kein ACCEPT, Succession auf Controller-Anweisung; 2026-09-07 13:5x, ctx ~53 % (Owner-Poll)
 
 > Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution` (Program 6360c361). Charter =
 > Program-JSON, fachlicher Startbrief = Notiz `52285f8f` (byteidentisch `/tmp/astra-tagesmandat-2026-09-07/P3-startbrief.txt`).
@@ -102,38 +102,58 @@ weiter: der Owner hat den Wellenmodus (W1–W3) hier eingehaengt.
 > Lesen von `mergeJob`; Owner-Entscheid: derselbe Auftrag auf Fable. Rahmen fuer dich: Zuverlaessigkeitsarbeit am
 > eigenen Land-Pfad, Repro nur in Scratch-Instanzen.
 
-## 0. Wo es steht (Stand 12:4x, ctx GEMESSEN 46,1 %)
+## 0. Wo es steht (Stand 13:5x, ctx 53 % am Owner-Poll; Succession auf Controller-Anweisung Slot 6)
 
-- **Zweiter Entwurf fertig:** `/tmp/astra-p3-2026-09-07/2026-09-07-landepfad-adversarial.md` (744 Zeilen), versiegelt
-  **sha256 `88746f13ba89b36e58fa0ee936b952f7651ac85763b5dd95e3be5b5c91d2d4e6`**. Acht Findings; F1 in DREI Varianten
-  reproduziert (Skript + Transkript im Doc §1.3/§1.6; Variante C: inhaltssensitives Gate, danach ist dasselbe
-  Gate-Kommando auf main rot). F2 am Live-Repo read-only gemessen. Quell-Pin `c7184f8`.
-- **Runde 1:** Astra (codex exec gpt-6-astra) REJECT mit 19 Punkten (`review-round1-REJECT.md`), Opus-Gegenleser
-  ACCEPT-WITH-FIXES mit 19 Punkten; beide eingearbeitet (F8-Mechanismus korrigiert, L2 mit `--force-with-lease`, L4
-  `appendEvent`-Fehlerpfad, L6 ohne `grep -c 'check('`, §1.3-Lesart praezise, ~15 Zeilenzitate).
-- **In Flug:** Astra-Review Runde 2 auf `88746f13…` — Prompt `review-prompt-88746f13….txt`, Antwort
-  `independent-review-candidate.md`, Exit in `review-run2.err` (`codex exit N`). Ein REJECT hat Punkte → fixen →
-  neuer Hash → Runde 3 mit demselben Prompt (Hash ersetzen).
-- **Index-Satz liegt:** `/tmp/astra-p3-2026-09-07/index-line.txt` (1 289 B; Stil `docs/messungen/INDEX.md`).
-- **Controller ist seit `9a736da` Slot 6** (Label 🎛 Fleet Controller, Opus 5); Ober-Orchestratorin e3b3a064: Bindung
-  in `fleet.json#programs[].main.slot` frisch lesen, nie nach Slot allein routen.
+- **Dritter Entwurf:** `/tmp/astra-p3-2026-09-07/2026-09-07-landepfad-adversarial.md` (801 Zeilen), versiegelt
+  **sha256 `027deaa5932b7095e6b87b8479439e5747a67be1d676655da081b3c143b9ce9f`**, Quell-Pin `c7184f8`. Acht Findings;
+  F1 in DREI Varianten reproduziert mit sechs Assertions (Skript + Transkript im Doc §1.3/§1.6, Exit 0; Skriptkopie
+  im Scratchpad dieser Session stirbt mit ihr — das Doc traegt beides). F2 am Live-Repo read-only gemessen.
+- **Drei Astra-Abnahmen, alle REJECT, jede kleiner:** Runde 1 19 Punkte (`review-round1-REJECT.md`), Runde 2 13
+  (`review-round2-REJECT.md`), Runde 3 14 (`review-round3-REJECT.md`, auf `027deaa5`). Jede Runde bestaetigt F1–F8
+  als Codebefunde („Geprueft und korrekt"); abgelehnt werden Fix-Skizzen, Done-Saetze, Zitate, Ueberziehungen.
+  **Blocker Runde 3 (einziger `[schwer]`):** das F6-Beispiel „`e2e-security.sh` durch `exit 0` ersetzen → gruenes
+  Gate" ist FALSCH — `e2e/pins.ts:398–400` verlangt jede Wrapper-PORT-Deklaration aus der Tabelle (`e2e-isolated.sh:33`)
+  auf Platte, ein Vollersatz faellt schon am Pin; L6 ist hoechstens ein Mengenindikator (Kandidat erzeugt auch die
+  PASS-Zeilen). Die 13 uebrigen Punkte stehen mit Zeilen im Receipt; NICHT hier wiederholen, Datei lesen.
+- **Kein ACCEPT liegt vor.** Kein `independent-review.md` (das waere der Name fuer ein ACCEPT-Receipt). Keine
+  Publikationszeile gefilt. `index-line.txt` liegt (Stil INDEX.md), `publication-brief.txt` liegt als Vorlage mit
+  `__HASH__`/`__IDXHASH__`-Platzhaltern — gilt erst nach einem ACCEPT auf den dann finalen Bytes.
+- **Checkpoint +4h ist gefilt** (Notiz `35b7c68e`, 12:5x); der Controller (Slot 6) hat ihn gelesen und die zwei
+  Owner-Fragen (Hub-Lease-Undo, Deploy-Preflight) selbst beim Owner — die Antworten gehen an 233e1c2b/f170dc46, nicht
+  an dieses Program. Checkpoint +8h (~17:45) ist noch offen.
+- **Controller-Anweisung 13:4x (Slot 6, woertlich in der Pane):** 3b zu Ende, Receipt ablegen, nichts Neues, dann
+  Succession; Nachfolgerin auf **Fable** (Astra-Sperre auf Merge-/Deploy-Code zweimal belegt).
 
-## 1. Naechste Zuege, in Reihenfolge
+## 0b. Der strukturelle Hebel (Controller Slot 6, in den Handoff aufzunehmen)
 
-1. Opus-Gegenlesung lesen → echte Maengel im Entwurf fixen → NEUER Hash. Astra-Review lesen: ACCEPT auf dem ALTEN Hash
-   gilt nur fuer unveraenderte Teile — bei jeder Byteaenderung die geaenderten Teile erneut per `codex exec` abnehmen
-   lassen (gleicher Prompt, Hash ersetzen, Abschnittsliste nennen). Finales Receipt als
-   `/tmp/astra-p3-2026-09-07/independent-review.md` ablegen (byteidentisch aus `-o`), `ACCEPT sha256:<final>` muss drinstehen.
-2. `index-line.txt` neben den Draft legen (EIN Satz im Stil von `docs/messungen/INDEX.md`, Muster P2-Zeile 180d3c92).
-3. Publikationszeile filen: `POST /api/self/tasks` `{kind:"auftrag", harness:"claude", model:"claude-opus-5[1m]", effort:"high", text:…}`
-   nach dem Muster der P1/P2-Zeilen `34c0d050`/`180d3c92` (Write-Set: genau die Doc-Datei + ein Index-Satz; Draft-Bytes
-   unveraendert; `bun install --frozen-lockfile` dann `bun e2e/pins.ts` mit Original-Logs; Report via fleet-report;
-   kein Land) → `POST /api/self/tasks/<id>/release`. Deckel ist 1, P1/P2-Publikationen sind queued — Wartezeit erwartbar.
-4. Nach dem Lane-Report: Datei-Hash und Commit-SHA GETRENNT gegen das Receipt pruefen, dann `decision.accepted`
-   ueber den Report-Entscheid; Land macht der Controller (Slot 10 — seit 9a736da eine Opus-5-Nachfolgerin, Label pruefen).
-5. **Checkpoint +4 h (~13:45) und +8 h (~17:45):** Notiz in MEINEM Program (`POST /api/self/tasks`, kind notiz) mit Kopf
-   „AN CONTROLLER SLOT 10 · AN ASTRA SLOT 9 (e3b3a064) · CHECKPOINT P3": Pfad, Hash, Reviewbefund, Schnitte L1–L7a
-   (Doc §11), Querverweise P1/P2 (Doc §10), ctx. Der Controller liest fleet.json ueber einen Datei-Monitor.
+Program 6360c361 trug zwei `notiz`-Zeilen und keinen `auftrag`: es gab nie etwas zu verteilen, jede Repro lief im
+eigenen Kontext. Was teuer war, ist nicht die Delegation, sondern das WIEDEREINLESEN: `codex exec` schreibt in eine
+Datei, ich las die Datei zurueck (19+13+14 Punkte, drei Skripte, drei Transkripte) — bei ~96 % Input-Anteil zahlt
+jeder Folgeturn das erneut. Regel fuer die Nachfolgerin: (1) Repro-Bloecke als `auftrag`-Zeilen (Opus, high) filen —
+die Lane faehrt Scratch-Instanz und Varianten und meldet VERDIKT + Transkript-PFAD, nie das Transkript; (2) ein
+Reviewer-Verdikt kommt als DREI ZEILEN in die Pane (Verdict, Zahl der Punkte, Pfad), der Rest bleibt auf Platte und
+wird per Pfad zitiert — `sed -n '/^## Verdict/,$p'` + `grep -c '^[0-9]*\. \['`, nie `cat`; (3) auch die Einarbeitung
+einer Review-Liste kann eine Lane sein (Doc-Datei + Receipt als Input, neuer Draft + Hash als Output).
+
+## 1. Naechste Zuege, in Reihenfolge (fuer die Nachfolgerin)
+
+1. `review-round3-REJECT.md` lesen (nur die 14 Kopfzeilen + Verdict; Details je Punkt bei Bedarf per `sed -n`).
+   Den F6-Abschnitt korrigieren: die Klasse bleibt (Gate fuehrt Kandidaten-Skripte aus), das Beispiel muss eines
+   sein, das die Pins ueberlebt (z. B. Wrapper behaelt seine PORT-Zeile und ersetzt nur den Runner-Aufruf durch
+   `exit 0` — VOR dem Schreiben am Pin `e2e/pins.ts:398–400` und an `e2e-isolated.sh:33` gegenlesen), und L6 als
+   Mengenindikator ehrlich herabstufen oder streichen. Danach die 13 mittleren/leichten Punkte.
+2. Entweder selbst einarbeiten (klein) ODER — empfohlen bei >10 Punkten — als `auftrag` (Opus, high) filen: Input
+   Draft + Receipt + Pin `c7184f8`, Output neuer Draft unter `/tmp/astra-p3-2026-09-07/` + Hash + DREI-Zeilen-Report.
+3. Runde 4: `sed "s/__HASH__/<neu>/" review-prompt.txt > review-prompt-<neu>.txt`, dann
+   `codex exec --ephemeral -s read-only --skip-git-repo-check --color never --json -o <ausgabe> -m gpt-6-astra - < <prompt>`
+   im Hintergrund (Log-Dateien, `codex exit N` am Ende); Verdict mit drei Zeilen lesen. Bei ACCEPT: die Ausgabe
+   byteidentisch als `independent-review.md` ablegen, Hash im Kopf pruefen.
+4. Publikation: `publication-brief.txt` mit beiden Hashes fuellen, `POST /api/self/tasks` `{kind:"auftrag",
+   harness:"claude", model:"claude-opus-5[1m]", effort:"high", text}` → `release`. Deckel 1; P1/P2-Publikationen
+   `34c0d050`/`180d3c92` waren um 12:4x noch queued.
+5. Nach dem Lane-Report Datei-Hash und Commit-SHA GETRENNT pruefen, `decision.accepted`; Land = Controller.
+6. Checkpoint +8h (~17:45) als Notiz in diesem Program, Kopf „AN CONTROLLER (Label 🎛, Slot pruefen) · AN ASTRA SLOT 9
+   (e3b3a064) · CHECKPOINT P3 +8h"; Bindungen vorher aus `fleet.json#programs[].main.slot` lesen.
 
 ## 2. Was ich entschieden habe (und warum)
 

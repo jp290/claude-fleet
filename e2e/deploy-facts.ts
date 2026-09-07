@@ -16,7 +16,10 @@ import { BASE, check, get, paneEnv, post, restartSrv, ROOT } from "./harness";
 const TMP = process.env.TMPDIR ?? "/tmp";
 const FIX = `${TMP}/fleet-e2e-deploy-${process.pid}`;
 
-interface Gap { bootHead: string | null; head: string | null; behindCount: number | null; codeBehind: boolean | null }
+interface Gap {
+  bootHead: string | null; head: string | null; behindCount: number | null;
+  codeBehind: boolean | null; codeBehindUnknown: string[] | null;
+}
 interface Bundle {
   appJsMtime: number | null; shareJsMtime: number | null; helperJsMtime: number | null;
   srcNewestMtime: number | null; stale: boolean | null;
@@ -68,7 +71,22 @@ export async function run(): Promise<void> {
   writeFileSync(`${FIX}/public/app.js`, "// bundle");
   writeFileSync(`${FIX}/public/share.js`, "// bundle");
   writeFileSync(`${FIX}/public/helper.js`, "// bundle");
-  writeFileSync(`${FIX}/src/client.ts`, "// source");
+  // The fixture carries a real IMPORT GRAPH, not just file names, because that is what the roles
+  // are read off since 2026-09-07 (server/deploy-classify.ts). package.json#scripts.build names the
+  // bundle entries — the same derivation the real repo uses, so a check here fails for the reason
+  // the production classifier would fail. src/helper.ts and task-land-waves.ts do not exist yet;
+  // they are committed further down, and the graph picks them up when they do.
+  writeFileSync(`${FIX}/package.json`, JSON.stringify({
+    scripts: { build: "bun build src/client.ts --outfile public/app.js && bun build src/helper.ts --outfile public/helper.js" },
+  }));
+  // The fixture's own import lines are ASSEMBLED from these, never spelled out below: e2e-stage.sh
+  // scans every staged file for a relative specifier and refuses, fatally, to boot an instance
+  // where one resolves to nothing. These specifiers are about ANOTHER repo, so they must not look
+  // like this file's — and the scanner would be right to say so if they did.
+  const WAVES_SPEC = "../task-land-waves";
+  const MERGE_SPEC = "./merge-prompt";
+  const sideEffect = (spec: string): string => `import ${JSON.stringify(spec)};`;
+  writeFileSync(`${FIX}/src/client.ts`, `${sideEffect(WAVES_SPEC)}\n// source`);
   git("init", "-q");
   commit("server.ts", "// v1");
 
@@ -95,7 +113,8 @@ export async function run(): Promise<void> {
     check("§2 a docs-only commit is NOT a deploy — restarting srv would change nothing",
       f.deployGap?.codeBehind === false, JSON.stringify(f.deployGap));
   }
-  commit("server.ts", "// v2");
+  // the import is what makes merge-prompt.ts server code in §2b below; it resolves to nothing yet
+  commit("server.ts", `${sideEffect(MERGE_SPEC)}\n// v2`);
   {
     const f = await settle((x) => x.deployGap?.codeBehind === true);
     check("§2 a server-code commit IS a deploy — this is the line the owner never saw",
@@ -116,13 +135,53 @@ export async function run(): Promise<void> {
     const f = await settle((x) => x.deployGap?.behindCount === 1);
     check("§2b an e2e-only commit is NOT a deploy — the wrappers load the harness, srv never does",
       f.deployGap?.behindCount === 1 && f.deployGap.codeBehind === false, JSON.stringify(f.deployGap));
-    // The near miss, and the reason the runners are allowlisted BY NAME: merge-prompt.ts is a
-    // top-level module sitting right next to them, and server.ts imports it. Any rule of the shape
-    // "a top-level .ts is harness" would pass the check above and silence a real gap here.
+    // THE COUNTER-PROOF, and the near miss it guards: merge-prompt.ts is a top-level module sitting
+    // right next to the runners, and server.ts imports it (planted in §2 above). Any rule of the
+    // shape "a top-level .ts is harness" would pass the check above and silence a real gap here.
     commit("merge-prompt.ts", "// v2");
     const g = await settle((x) => x.deployGap?.codeBehind === true);
     check("§2b a top-level module the server imports is still a deploy, harness neighbours or not",
       g.deployGap?.codeBehind === true && g.deployGap.behindCount === 2, JSON.stringify(g.deployGap));
+    // and it is a deploy because the graph PROVED it, not because nothing could be said about it:
+    // an unknown path would set the same codeBehind, so the counter-proof is only worth something
+    // while the unknown list is empty.
+    check("§2b ...and it is PROVEN server code, not merely unclassifiable — the unknown list is empty",
+      Array.isArray(g.deployGap?.codeBehindUnknown) && g.deployGap.codeBehindUnknown.length === 0,
+      JSON.stringify(g.deployGap?.codeBehindUnknown));
+  }
+
+  // ===== §2c the roles are DERIVED from the import graph, and what cannot be derived says so =====
+  // The maintenance form this replaced (two hand-kept allowlists) went unmaintained four times in
+  // five weeks: src/helper.ts and src/backoff.ts until 2026-09-01, then task-land-waves.ts, then
+  // fleet-e2e-harness.ts — every one a land whose whole diff was one file, reading codeBehind:true
+  // for work that never touched the process. Fresh boot, then ONE cumulative range: the three
+  // derivable paths must all leave it false, and only the underivable one may flip it.
+  await restartSrv({ FLEET_REPO_DIR: FIX });
+  {
+    // (1) the file the finding was filed about: no line of server.ts mentions it, src/client.ts
+    // imports it. Nobody wrote its name down anywhere — the graph is the whole reason it is known.
+    commit("task-land-waves.ts", "// waves");
+    const a = await settle((x) => x.deployGap?.behindCount === 1);
+    check("§2c a module only the client bundle imports is NOT a deploy — derived, not listed",
+      a.deployGap?.behindCount === 1 && a.deployGap.codeBehind === false, JSON.stringify(a.deployGap));
+    // (2) regression on the two shapes the old lists DID carry: a bundle entry named by
+    // package.json#scripts.build, and a single-file runner — here the SIXTH one, the name the
+    // five-name list never grew to hold.
+    commit("src/helper.ts", "// bundle entry");
+    commit("fleet-e2e-harness.ts", "// the sixth runner");
+    const b = await settle((x) => x.deployGap?.behindCount === 3);
+    check("§2c a bundle entry and a sixth single-file runner are still NOT a deploy",
+      b.deployGap?.behindCount === 3 && b.deployGap.codeBehind === false, JSON.stringify(b.deployGap));
+    // (3) the third value. An orphan module is reachable from nothing nameable, and the honest
+    // answer is neither "server" nor "fresh": it counts toward codeBehind exactly as the old
+    // default-deny counted it, AND it is named, so the warning can be read as unproven.
+    commit("orphan-tool.ts", "// imported by nobody");
+    const c = await settle((x) => x.deployGap?.codeBehind === true);
+    check("§2c an unreachable new module is never silently fresh — it still counts as a gap",
+      c.deployGap?.codeBehind === true && c.deployGap.behindCount === 4, JSON.stringify(c.deployGap));
+    check("§2c ...and it is named as UNKNOWN, not asserted to be server code — and it alone is",
+      JSON.stringify(c.deployGap?.codeBehindUnknown) === JSON.stringify(["orphan-tool.ts"]),
+      JSON.stringify(c.deployGap?.codeBehindUnknown));
   }
 
   // ===== §3 the bundle half: mtimes, not commits =====
@@ -165,7 +224,10 @@ export async function run(): Promise<void> {
     await restartSrv({ FLEET_REPO_DIR: bare });
     const f = await settle((x) => x.deployGap != null && x.deployGap.bootHead === null);
     check("§4 no git repo → the gap is UNKNOWN (null), never a reassuring false",
-      f.deployGap?.bootHead === null && f.deployGap.codeBehind === null && f.deployGap.behindCount === null,
+      f.deployGap?.bootHead === null && f.deployGap.codeBehind === null && f.deployGap.behindCount === null
+        // an unmeasured range names no unknown paths either: an EMPTY list would read as "we looked
+        // and everything classified", which is the same reassuring lie one level down
+        && f.deployGap.codeBehindUnknown === null,
       JSON.stringify(f.deployGap));
     check("§4 no bundle on disk → staleness is UNKNOWN too, and the mtimes say why",
       f.bundleStale?.stale === null && f.bundleStale.appJsMtime === null, JSON.stringify(f.bundleStale));

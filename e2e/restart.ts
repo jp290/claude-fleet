@@ -536,7 +536,21 @@ export async function run(ctx: Ctx): Promise<void> {
   gapGit("init", "-q", "-b", "main"); // the default branch is a platform accident, not ours
   gapGit("config", "user.email", "t@t");
   gapGit("config", "user.name", "t");
-  writeFileSync(`${GAP_REPO}/server.ts`, "// the build the server boots from\n");
+  // The throwaway repo needs an IMPORT GRAPH, not just file names: since 2026-09-07 the deploy-gap
+  // reads each path's role off the measured checkout's own graph (server/deploy-classify.ts), so
+  // package.json names the bundle entries and server.ts imports the one src/ file it owns. Both
+  // targets are committed later by the steward-core checks; a specifier that resolves to nothing
+  // yet simply carries no edge, and gains one the moment the file appears.
+  // ASSEMBLED, never spelled: e2e-stage.sh scans this file for relative specifiers and would try to
+  // resolve them against e2e/, where neither exists — a fatal refusal to boot, and it would be right.
+  const gapImport = (spec: string): string => `import ${JSON.stringify(spec)};`;
+  writeFileSync(`${GAP_REPO}/package.json`, JSON.stringify({
+    scripts: {
+      build: "bun build src/client.ts --outfile public/app.js && bun build src/helper.ts --outfile public/helper.js",
+    },
+  }));
+  writeFileSync(`${GAP_REPO}/server.ts`,
+    `${gapImport("./src/protocol")}\n// the build the server boots from\n`);
   gapGit("add", "-A");
   gapGit("commit", "-qm", "init");
   const gapEnv = `FLEET_REPO_DIR='${GAP_REPO}' `;

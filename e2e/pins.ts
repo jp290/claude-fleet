@@ -21,7 +21,7 @@
 // NOT what this file is for: e2e/dirs-pins.ts, an unrelated neighbour, tests the directory picker's
 // bookmark list. "Pin" there is a UI feature; "pin" here is a fastener between two files.
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import {
@@ -45,6 +45,10 @@ import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck } from "../serve
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
 // re-implemented the validator would only pin its own copy of the rules.
+// the deploy-gap's path classifier is IMPORTED and RUN over this very tree: the whole finding it
+// replaces was a hand-kept copy of the roles going stale, so a pin that re-spelled them would be
+// the same defect one layer up.
+import { buildRepoGraph, roleOf, type PathRole } from "../server/deploy-classify";
 import { CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS } from "../context-packs";
 import { readContextManifest } from "../context-manifest";
 import { validUseWhen, validateContextPacks } from "../context-pack-validator";
@@ -6510,6 +6514,62 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     /^## inbox/m.test(selfApiInbox) && selfApiInbox.includes("GET /api/self/inbox")
       && selfApiInbox.includes("/api/self/inbox/:id/read"),
     `section=${/^## inbox/m.test(selfApiInbox)} get=${selfApiInbox.includes("GET /api/self/inbox")} read=${selfApiInbox.includes("/api/self/inbox/:id/read")}`);
+}
+
+// ================================================================================================
+// 20. deployGap's path roles, run over THIS tree
+// ================================================================================================
+// The counter-proof the e2e fixture cannot give: e2e/deploy-facts.ts drives a synthetic repo, so it
+// proves the RULE. This proves the rule still answers correctly about the real checkout — which is
+// the half that went wrong four times when the roles were a hand-kept list (src/helper.ts and
+// src/backoff.ts until 2026-09-01, then task-land-waves.ts, then fleet-e2e-harness.ts, each a land
+// whose whole diff was one file reading codeBehind:true for work that never touched the process).
+// One representative per rule, not an inventory: a table that listed every file would rot the same
+// way the list did, and would fail on every rename instead of on a broken derivation.
+{
+  const RULE_ROLES = "deployGap's path roles are derived from this tree's own import graph";
+  const graph = buildRepoGraph(ROOT);
+  const EXPECT: Array<[string, PathRole]> = [
+    // server — the entry itself, a top-level module it imports (the near miss the harness
+    // neighbours make), a module under server/, and the one src/ file it imports
+    ["server.ts", "server"], ["merge-prompt.ts", "server"], ["server/types.ts", "server"],
+    ["src/protocol.ts", "server"],
+    // server by deliberate rule, not by graph: no import graph can answer either of these
+    ["watchdog.sh", "server"], ["package.json", "server"],
+    // non-server — the finding this replaced (imported only by src/client.ts, named in no line of
+    // server.ts), the bundle entries the old list forgot, the SIXTH runner it never grew to hold
+    ["task-land-waves.ts", "non-server"], ["src/client.ts", "non-server"],
+    ["src/helper.ts", "non-server"], ["src/backoff.ts", "non-server"],
+    ["fleet-e2e-harness.ts", "non-server"], ["fleet-e2e.ts", "non-server"],
+    ["e2e/harness.ts", "non-server"], ["public/index.html", "non-server"], ["AGENTS.md", "non-server"],
+  ];
+  // A probe that could not run must fail as ITSELF: a missing file classifies as `unknown` and a
+  // table full of absent paths would read as a broken derivation, which is a different report.
+  const absent = EXPECT.map(([p]) => p).filter((p) => !existsSync(`${ROOT}/${p}`));
+  if (graph === null) {
+    pin(`${RULE_ROLES} — PROBE: the graph was built from the repo root`, false,
+      "buildRepoGraph returned null: server.ts unreadable at the root this pin measures");
+  } else if (absent.length > 0) {
+    pin(`${RULE_ROLES} — PROBE: every path the table names still exists`, false, absent.join(", "));
+  } else {
+    const wrong = EXPECT.filter(([p, want]) => roleOf(p, graph) !== want)
+      .map(([p, want]) => `${p}: ${roleOf(p, graph)} ≠ ${want}`);
+    pin(RULE_ROLES, wrong.length === 0, wrong.join("; ") || `${EXPECT.length} paths`);
+    // …and it is genuinely THREE-valued over this tree. A classifier that collapsed `unknown` into
+    // either neighbour would pass the table above — the table has no unknown row it could ask for,
+    // because which files are underivable is exactly what must not be written down by hand.
+    const tracked = spawnSync("git", ["-C", ROOT, "ls-files", "-z"],
+      { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, maxBuffer: 16 * 1024 * 1024 });
+    if (tracked.error || tracked.status !== 0) {
+      pin(`${RULE_ROLES} — PROBE: git enumerated the tracked tree`, false,
+        (tracked.error?.message || tracked.stderr || `git ls-files exited ${String(tracked.status)}`).trim().slice(0, 160));
+    } else {
+      const seen = new Set(tracked.stdout.split("\0").filter(Boolean).map((p) => roleOf(p, graph)));
+      pin(`${RULE_ROLES} — all three roles occur, so none is a dead branch`,
+        seen.has("server") && seen.has("non-server") && seen.has("unknown"),
+        [...seen].sort().join(", "));
+    }
+  }
 }
 
 console.log(rows.join("\n"));

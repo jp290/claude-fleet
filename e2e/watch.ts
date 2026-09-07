@@ -3512,6 +3512,18 @@ export async function run(): Promise<void> {
         && liveRefusalText.includes(`POST /api/self/fleet-report/${orphanReport?.id}/accept|reject`)
         && ((await selfFleetReports(d3MainTok)).reports.find((r) => r.id === orphanReport?.id)?.decision ?? null) === null,
       `${liveRefusal.status} ${liveRefusalText}`);
+    // …and the owner door is not a BACK DOOR for the principal the self door excludes. A lane's
+    // scoped credential is not an owner credential at the token gate at all, so this is a 401 and
+    // not a 409: the lane never reaches the row, which is stronger than being refused at it.
+    const laneAtOwnerDoor = await fetch(`${BASE}/api/fleet-report/${orphanReport?.id}/accept`, {
+      method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": orphanTok },
+      body: "{}",
+    });
+    const laneAtOwnerDoorText = await laneAtOwnerDoor.text();
+    check("D3 lane exclusion: a worker's scoped credential is not an owner credential — the owner door is unreachable from a lane",
+      laneAtOwnerDoor.status === 401
+        && ((await ownerReports()).find((r) => r.id === orphanReport?.id)?.decision ?? null) === null,
+      `${laneAtOwnerDoor.status} ${laneAtOwnerDoorText}`);
     const unknownOwner = await ownerDecideReport("0".repeat(24), "accept");
     const unknownOwnerText = await unknownOwner.text();
     check("D3 unknown id: an id that names no row is 404, not a 409 about a liveness it cannot read",

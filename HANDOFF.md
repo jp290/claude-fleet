@@ -274,6 +274,43 @@ nicht über ein Land** — es deckt fremde Commits mit ab, die zwischen Land und
 und benennt sie nirgends. Das ist die Kehrseite von §5b: dieselbe Verwechslung von Zuordnung und
 Messung, nur in die andere Richtung.
 
+## 9. NACHTRAG 00:5x–01:3x — was nach dem Handoff-Commit noch lief
+
+**Zwei weitere Lands, beide regulär, beide grün auditiert:**
+- **`f03745ec`** (S2D-Kontextkette, Lane `fleet/260907225501-11db`, Slot 4). Review-MAIN hatte um ein
+  REGULÄRES Land statt eines Direktcommits gebeten — es war eine echte Fleet-Lane, also ging es
+  ohne Ausnahme. Report `14602e0e` stand `accepted`, vor dem Land geprüft. Audit grün 458/0 unter
+  EIGENER `mainSha`.
+- (Davor: `75939cf4`, Audit grün 457/0 — aber **koalesziert unter `mainSha 9d09cb6b`**, meinem
+  Direktcommit. Ich habe es 55 min lang nicht an Slot 9 weitergegeben, obwohl ich es quittiert
+  hatte; die Astra-Wache hat die Lücke gefunden. **Join immer über `covers[].mainAfter`.**)
+
+**Drei Zeilen gefilt, alle mit selbstdokumentierter Provenienz im Brieftext:**
+- `8f14a22b` — `ctl setup`-Sonde fällt in LOKALEN Audits strukturell (`e2e-stage.sh:447` legt den
+  node_modules-Symlink nur bei fehlendem Verzeichnis an). Nur lokal: auf dem Helfer besteht sie.
+  Done-Kriterium verlangt den Beleg aus einem Lauf mit `remote: None`.
+- `e53716b9` — `docs/suite-contention.md` an drei Stellen falsch. **Mein eigener Auftragstext nannte
+  die falsche Konstante**: es ist `LAND_WAIT_ROUNDS` (Default 1), nicht `LAND_FF_RETRY_ROUNDS`
+  (Default 2); `server.ts:12037` sagt wörtlich „NOT to be folded into". Formel
+  `(LAND_WAIT_ROUNDS+1) × 2 700 000 = 2×45 min`. Aus der falschen Konstante wären 3×45 geworden —
+  eine Doku-Korrektur mit neuem Fehler.
+- `6e1caad8` — GLM-Kontextnotiz, Wortlaut der Review-MAIN unverändert. **Ich hatte ihr zweimal
+  falsch gemeldet, ihre Korrekturen seien mit `75939cf4` erledigt** — das war Astras Schnittliste,
+  nicht ihre Notiz. Sie hat es gefunden.
+
+**Advisory-Cap zweimal freigeräumt**, beide Male nur Zeilen, deren Handlung AUSGEFÜHRT ist
+(`eec69528` 10/10 → 7/10, `e3b3a064` → 8/10). Nie „sieht alt aus".
+
+**Die Zahl der Schicht: sechs gegenseitige Korrekturen, fünf davon an mir** — Reichweite
+(„jedes Audit" → nur lokale) · Ledger-Ort (Adjudikationen leben in eigener Datei) · Deckel-Schicht
+(`ps eww` sieht nur env; Repo-Eintrag schlägt ihn, `GET /api/repo-lane-caps`) · Provenienz
+(`brief.edited` rendert als „edited by the owner", `src/client.ts:8456`/`:10273`) · falsche
+Konstante. Jede kam mit einer Messung, keine mit einem Argument.
+
+**Slot 6 hat `3ea89f71` gefilt:** es gibt keine Tür, durch die eine Session einen Brief schärfen
+kann, ohne sich als Owner auszugeben. Bis dahin gilt: **selbstdokumentierte Provenienz schlägt eine
+Flagge, die wir nicht richtig setzen können** — erste Briefzeile nennt den Autor.
+
 ## 8. WAS ICH NICHT GEPRÜFT HABE
 
 Den Inhalt der 94 advisory-Zeilen (nur Adressat und Deckel-Wirkung). Ob die drei neuen Lanes

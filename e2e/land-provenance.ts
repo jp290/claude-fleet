@@ -402,17 +402,22 @@ export async function run(): Promise<void> {
           slots: { id: number; cwd: string | null }[];
           tasks: { id: string; status: string; note?: string | null }[] };
       // THE UNDO STACK IS PERSISTED STATE, not poll payload: `/api/sessions` carries no `undoLands`
-      // key at all, so reading it there returned 0 before AND 0 after and the check reported "no
-      // undo record was written" for a land that had written one. A probe that could not measure
-      // must fail as ITSELF — so this returns null on an unreadable state file, and its own check
-      // below says so, rather than letting an absence read as a count.
-      const wvUndoTotal = async (): Promise<number | null> => {
+      // key at all, so reading it there returned 0 before AND 0 after and reported "no undo record
+      // was written" for a land that had written one.
+      //
+      // AND A DELTA OVER THE STACK IS THE WRONG MEASUREMENT ANYWAY — the second thing this probe
+      // got wrong. The stack is CAPPED at UNDO_STACK_MAX (3) per repo, so a land into a full stack
+      // pushes one record and drops one, and the count does not move. The claim being tested is
+      // "ONE record for the whole wave", so count the records that NAME this land: a `mainAfter`
+      // is unique per land, and the count of records carrying it is exactly the claim, cap or no
+      // cap. `null` stays the unreadable answer and keeps its own check below.
+      const wvUndoRecords = async (): Promise<{ mainAfter?: string }[] | null> => {
         for (let i = 0; i < 40; i++) {
           try {
             const st = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
-              { undoLands?: Record<string, unknown[]> };
-            if (st.undoLands) return Object.values(st.undoLands).reduce((n, recs) => n + recs.length, 0);
-            return 0; // the key is absent while no land is undoable — a real zero, not an unreadable one
+              { undoLands?: Record<string, { mainAfter?: string }[]> };
+            // the key is absent while nothing is undoable — an empty list, not an unreadable one
+            return Object.values(st.undoLands ?? {}).flat();
           } catch { /* saveState writes tmp+rename; a read landing mid-write throws */ }
           await Bun.sleep(100);
         }
@@ -420,7 +425,7 @@ export async function run(): Promise<void> {
       };
       const wvNotes = (): number => spawnSync("git", ["-C", REPO, "notes", "--ref=fleet/land", "list"])
         .stdout.toString().split("\n").filter(Boolean).length;
-      const wvUndoBefore = await wvUndoTotal();
+      const wvUndoBefore = await wvUndoRecords();
       const wvNotesBefore = wvNotes();
 
       const wvSince1 = Date.now();
@@ -471,12 +476,16 @@ export async function run(): Promise<void> {
         check("(w3) ONE fleet/land note for the whole wave — not one per row",
           wvNotes() === wvNotesBefore + 1 && wvNote.ok,
           `${wvNotesBefore} → ${wvNotes()} note(s), note readable=${wvNote.ok}`);
-        const wvUndoAfter = await wvUndoTotal();
-        check("(w3) probe: the undo stack was readable on BOTH sides of the land (a delta over an absence is not a measurement)",
-          wvUndoBefore !== null && wvUndoAfter !== null, `${wvUndoBefore} → ${wvUndoAfter}`);
+        const wvUndoAfter = await wvUndoRecords();
+        check("(w3) probe: the undo stack was readable on BOTH sides of the land (a count over an absence is not a measurement)",
+          wvUndoBefore !== null && wvUndoAfter !== null,
+          `${wvUndoBefore?.length ?? "unreadable"} → ${wvUndoAfter?.length ?? "unreadable"}`);
+        const wvForThisLand = (wvUndoAfter ?? []).filter((r) => r.mainAfter === wvMainAfter);
         check("(w3) ONE undo-land record for the whole wave — the wave costs the undo stack what one land costs it",
-          wvUndoBefore !== null && wvUndoAfter === wvUndoBefore + 1,
-          `${wvUndoBefore} → ${wvUndoAfter} record(s)`);
+          wvUndoBefore !== null && wvUndoAfter !== null
+          && wvForThisLand.length === 1
+          && !(wvUndoBefore).some((r) => r.mainAfter === wvMainAfter),
+          `${wvForThisLand.length} record(s) naming ${wvMainAfter.slice(0, 8)}; stack ${wvUndoBefore?.length ?? "?"} → ${wvUndoAfter?.length ?? "?"} (capped at UNDO_STACK_MAX)`);
         // …and the field the audit cover is built from. `proportional` is true because the ACTUAL
         // diff is docs-only, which is also true of every row in this wave — the two coincide here,
         // and the mixed/code cases above are what prove the gate reads the diff and not the class.

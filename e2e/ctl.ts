@@ -187,10 +187,18 @@ export async function run(): Promise<void> {
   // landed. So the honest assertion is that ctl reported the terminal fact AND that the state file
   // now has nothing for that slot — the pair is what makes `merges` a register of UNFINISHED lands
   // rather than a land history somebody could read an empty map as contradicting.
-  const persistedAfter = (stateFile().merges as Record<string, unknown>)?.[String(la.slot)];
+  // …and POLLED, not read once: `mergeLast.delete` is followed by the DEBOUNCED `saveState()`, so
+  // fleet.json can still carry the verdict for a moment after the route has stopped serving it. A
+  // single read there is a race dressed as an assertion — measured red on the helper, 2026-09-07.
+  let persistedAfter: unknown = null;
+  for (let i = 0; i < 80; i++) {
+    persistedAfter = (stateFile().merges as Record<string, unknown>)?.[String(la.slot)] ?? null;
+    if (persistedAfter === null) break;
+    await Bun.sleep(100);
+  }
   check("ctl land --wait: it names the terminal fact, and the landed slot leaves no verdict row behind",
-    (lj?.gone === true || lj?.last?.landed === true) && persistedAfter === undefined,
-    `gone=${lj?.gone} landed=${lj?.last?.landed} row=${JSON.stringify(persistedAfter ?? null)}`);
+    (lj?.gone === true || lj?.last?.landed === true) && persistedAfter === null,
+    `gone=${lj?.gone} landed=${lj?.last?.landed} row=${JSON.stringify(persistedAfter)}`);
   // TIER 2 IS OFF IN THIS INSTANCE (FLEET_POSTLAND_AUDIT_CMD unset — server.ts, "DEFAULT OFF"), so
   // the audit watch CANNOT be armed. What is asserted is that the script says so instead of
   // reporting a watch it does not hold: a claimed-but-absent return path is the failure mode.
@@ -205,6 +213,12 @@ export async function run(): Promise<void> {
   // lane whose rebase conflicts reaches the fake merge agent, whose default mode answers `blocked`
   // (e2e-isolated.sh). That verdict IS persisted and the lane stays alive — the exact shape a
   // controller must see before starting another land.
+  // the mode file is SHARED with every other lane module, so it is restored below rather than left
+  // on this probe's setting — "blocked" happens to be the fake agent's own default, and relying on
+  // that instead of saying it is how a fixture becomes load-bearing without anyone noticing.
+  const modeFile = `${REPO.replace(/\/[^/]+$/, "")}/mergemode`;
+  let modeBefore: string | null = null;
+  try { modeBefore = readFileSync(modeFile, "utf8"); } catch { modeBefore = null; }
   await setMergeMode("blocked");
   // ORDER IS THE FIXTURE. The lane must branch FIRST and main must move AFTERWARDS, or the rebase
   // is a fast-forward and no agent is ever consulted — openLane already commits `ctlconflict.txt`
@@ -237,6 +251,7 @@ export async function run(): Promise<void> {
     mergesAfter.code === 0 && stuck?.running === false,
     `exit ${mergesAfter.code} running=${stuck?.running}`);
   await post(`/api/slots/${lc.slot}/kill`, {});
+  if (modeBefore !== null) await Bun.write(modeFile, modeBefore);
 
   // === watch merge + wait merge =================================================================
   const lb = await openLane(REPO, "ctlwatch");
@@ -294,9 +309,16 @@ export async function run(): Promise<void> {
     const overCap = await ctl(["dispatch", capRow, "--json"], { FLEET_DISPATCH_MAX_LANES: "1" });
     const oj = overCap.json as { ok?: boolean; refused?: string; openLanes?: number; cap?: number } | null;
     check("ctl dispatch: over FLEET_DISPATCH_MAX_LANES it refuses before the POST, with the count and the cap",
-      overCap.code === 1 && oj?.refused === "lane cap" && oj.cap === 1 && (oj.openLanes ?? 0) >= 1
-        && overCap.out.includes("--force"),
+      overCap.code === 1 && oj?.refused === "lane cap" && oj.cap === 1 && (oj.openLanes ?? 0) >= 1,
       `exit ${overCap.code} ${JSON.stringify(oj).slice(0, 220)}`);
+    // `--json` prints the machine form and NOTHING else, so the human sentence is a second call —
+    // and it has to be asked for, not assumed: a refusal that does not name the way out is a
+    // refusal a session cannot act on. Safe to repeat: the cap is checked before any POST.
+    const overCapText = await ctl(["dispatch", capRow], { FLEET_DISPATCH_MAX_LANES: "1" });
+    check("ctl dispatch: the plain refusal names the cap, the count and --force",
+      overCapText.code === 1 && overCapText.out.includes("REFUSED")
+        && overCapText.out.includes("FLEET_DISPATCH_MAX_LANES") && overCapText.out.includes("--force"),
+      overCapText.out.slice(0, 240));
 
     if (laneSlot) {
       // receiver evidence for the report: a watch on that exact lane occupant (server.ts,
@@ -379,6 +401,24 @@ export async function run(): Promise<void> {
       }
       await post(`/api/slots/${laneSlot}/kill`, {});
     }
+    // A PROBE MUST LEAVE THE QUEUE AS IT FOUND IT. Two later families read the WHOLE task list as
+    // their own precondition — e2e/tasks.ts's backlog-nudge setup asserts "the only open row is a
+    // pending kind:notiz", and the task-spawn tick fixture wants free slots and room under the lane
+    // cap. Two rows left behind here took both of those down and, with them, 13 checks that were
+    // never measured (helper run 2026-09-07: 17 red, 15 of them downstream of this). The delete
+    // door refuses a `sent` row, so the row is polled off `sent` first — and the cleanup is its own
+    // CHECK, because a tidy-up that silently did not happen is exactly the failure being removed.
+    for (let i = 0; i < 80; i++) {
+      const st = ((await (await get("/api/tasks")).json()) as { tasks: { id: string; status: string }[] })
+        .tasks.find((t) => t.id === taskId)?.status;
+      if (st !== "sent") break;
+      await Bun.sleep(100);
+    }
+    for (const id of [taskId, capRow]) await post(`/api/tasks/${id}/delete`, {});
+    const left = ((await (await get("/api/tasks")).json()) as { tasks: { id: string }[] })
+      .tasks.filter((t) => t.id === taskId || t.id === capRow);
+    check("ctl teardown: both probe rows are gone from the queue this module borrowed",
+      left.length === 0, `still present: ${JSON.stringify(left.map((t) => t.id))}`);
   }
 
   // === lock =====================================================================================

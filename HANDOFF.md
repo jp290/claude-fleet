@@ -1,3 +1,114 @@
+# HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 7, Opus 5): vier Lands, drei davon mit `actor{kind:"main"}` — Kriterium (d) ist von null auf drei; 2026-09-07 12:0x, ctx GEMESSEN 42,5 %
+
+> Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution`. Alles hier
+> sind Behauptungen zum Nachschlagen. Der Abschnitt darunter gehoert einem FREMDEN Program.
+
+## 0. MEIN GROESSTER FEHLER, damit du ihn nicht erbst
+
+**Ich habe sieben Turns lang „Context 13,x %" gemeldet. Gemessen waren 42,5 %.** Ich hatte das
+API-Token-Budget der Harness abgelesen und es als Kontext-Fuellstand ausgegeben — zwei verschiedene
+Groessen. Der Controller hat es gemessen, nicht ich. **Fahre die Zeile aus dem Regelbuch
+(`GET /api/sessions`, `ctx` am eigenen Slot) und schaetze NIE**; eine geschaetzte Zahl ohne Tilde
+liest sich wie eine Messung und wird als eine weiterverwendet. Drei weitere Fehler derselben Klasse
+in dieser Session, alle selbst korrigiert: `main` HEAD als eigene Land-Sha gelesen (main war
+weitergezogen — die Autoritaet ist `mainAfter` in der Land-Note), `git merge-tree` als
+Rebase-Konflikt-Probe benutzt (es simuliert einen MERGE; gelandet wird per REBASE), und „drei
+Lane-Suiten standen vor dem Audit" als Fakt weitergegeben (R4 mass `position 2 of 2` — EIN Halter).
+
+## 1. Was gelandet ist (Shas ueber die Land-Note verifiziert, nicht ueber main HEAD)
+
+| Sha | Zeile | Gate | Tier-2 |
+|---|---|---|---|
+| `7536702` | Suite-Offer-Divergenz (Messnotiz + 4 Pins) | gruen, 7 Schritte | gruen (koalesziert ueber 3) |
+| `2dfaa81` | R1 Progress-Guard: ein nie gemessenes Gate bindet nicht mehr | gruen, `ms 141772` | **`unknown`** (45-min-Deckel), nur per CONTAINMENT gedeckt |
+| `19ddef5` | R2 Supervisor-Bindung ueberlebt ihren Occupant und sagt es | gruen, `ms 140128` | gruen `3806/0`, second-host |
+| `c7184f85` | R4 Audit: Warten und Arbeit sind zwei Uhren | gruen, `ms 139731` | gruen `3824/0`, second-host |
+
+**Kriterium (d):** `2dfaa81`, `19ddef5`, `c7184f85` tragen `actor{kind:"main", slot:7, program:f170dc46,
+sessionIdMatch:"exact"}`. Davor trugen ALLE Lands (auch die meines Programs) `owner via=bearer
+suspect=owner-token-outside-board`. Der Unterschied ist die Self-Tuer.
+**`2dfaa81` bleibt im Ledger `unknown`** — der gruene Audit auf `19ddef5` mass einen Baum, der
+`2dfaa81` ENTHAELT (`merge-base --is-ancestor` = YES), aber kein Urteil war je an seine Landung
+adressiert. Nicht als „gruen" weiterreichen.
+
+## 2. Der eine Befund des Tages, achtfach gemessen: DIE PLATZIERUNG ENTSCHEIDET
+
+  tip       result   dauer     wo          covers  ran
+  f0bcea62  green    35.8 min  second-host   1       3785
+  a1f8b65f  red      35.8 min  second-host   1       3785
+  7536702   green    40.4 min  LOKAL       3       3785
+  b2ab2cf   green    36.6 min  second-host   1       3792
+  5b67695   unknown  45.0 min  LOKAL       2       null
+  19ddef5   green    36.9 min  second-host   1       3806
+  1846a268  unknown  45.0 min  LOKAL       1       null
+  c7184f85  green    37.1 min  second-host   1       3824
+
+Fuenf von fuenf Helfer-Laeufen erreichten ein Urteil (inkl. EINEM ROT — die Platzierung verzerrt
+also nicht, sie beschafft ueberhaupt erst eines), Band 35,8-37,1 min. Zwei von drei LOKALEN starben
+am Deckel. `1846a268` (covers=1) widerlegt „lokal ist nur wegen Koaleszenz toedlich". `ran` waechst
+monoton 3785 -> 3824 an EINEM Tag; R4 mass den lokalen Puffer mit 200-314 s. Jede Option, die den
+lokalen Lauf nur beschleunigt statt ihn zu vermeiden, kauft Wochen.
+**Diese Tabelle steht bereits im Brief von `e407aef5`** (Platzierungs-Diagnose, queued) — nicht
+doppelt erheben.
+
+## 3. Die Queue, in Rangfolge (Deckel ist 1 Lane, seit 09:3x)
+
+- **queued:** `e407aef5` Platzierungs-Diagnose (Brief mit der Tabelle oben armiert; Option (iv)
+  „Deckel 1 reicht" ist von R4 WIDERLEGT und steht so im Brief).
+- **pending:** R3 `18e87e67` (abgelehnte Lane erfaehrt ihre Ablehnung nicht) → dann `c62aa3e9`
+  (adressierter Rueckweg; Brief zweimal geschaerft) · R5 `d3f7c11d` (deployFacts-Klassifikation) ·
+  R6 `201d0240` (nicht-automatisierbare Zeile meldet Backpressure statt Harness).
+- **`c62aa3e9` haengt an R2:** ihre Rolle-Adresse ist erst baubar, wenn eine autorisierte
+  Controller-Zuordnung existiert. `19ddef5` hat `POST /api/supervisor/bind` gebracht — pruefe, ob
+  das die Adresse jetzt hergibt, BEVOR du sie freigibst.
+- **Deckel:** `auftrag` 5/5 pending ist der bindende. `ff4544f5` ist R4s DUBLETTE, nie freigegeben,
+  Dateiposition **150** — unter Deckel 1 wuerde sie die ganze Queue ueberholen. Ihre Archivierung
+  ist seit Stunden die einzige offene Bitte an den Controller und blockiert ZWEI Filings.
+
+## 4. Unbefilte Befunde (Cap voll — sie existieren nur hier)
+
+1. **`descendantPids` wirft den Fehlerkanal weg.** `pgrep -P` laeuft mit `stderr:"ignore"` und der
+   Exit-Code wird ignoriert — ein FEHLGESCHLAGENES pgrep ist von „keine Kinder" nicht
+   unterscheidbar und degradiert die Kill-Staffel still auf die direct-child-Form, die der
+   Kommentar dort als repariert beschreibt. Beleg: **30x** `pgrep: Cannot get process list` in
+   `server.log`. Tiefe ist NICHT die Ursache (`KILL_TREE_MAX_DEPTH=8` laeuft). `server/proc.ts` ist
+   mit `runVerify` geteilt ⇒ eigene Zeile, nicht in einen fremden Schnitt.
+2. **`SUITE_OFFER_WAIT_HELD_MS` = 800 s ist auf die LOKALE Audit-p50 kalibriert**, die FERN-Laufzeit
+   ist p50 1448 s / p90 2101 s (n=75, 68 ueber 800 s; 45 Angebote, 26 geclaimt, 6 am Deckel
+   aufgegeben). ZWEI Lanes haben den Deckel heute bewusst ueberschritten, weil lokal schaedlicher
+   gewesen waere. Eine Grenze, um die herum gearbeitet wird, ist keine Grenze.
+3. **Ein Angebot bleibt ungeclaimt, obwohl `helper.online:true`** — der Second-host meldet
+   `maxParallelSuites: 1`, ein mit einem Audit belegter Helfer kann nichts claimen. Der zweite
+   Mutex-Slot aus `394a066` ist also NICHT nutzbar.
+
+## 5. Was nur der Owner/Controller kann (Stand 12:0x offen)
+
+- **`ff4544f5` archivieren** (siehe §3) — plus Notizen `7a2fcbce`, `35cf0c23`, `65358fef`, deren
+  Inhalt nachweislich in `rulebook/deploy.md` bzw. `docs/verify-tiering.md` §11.2o gelandet ist.
+- **Deploy von `c7184f85`** — drei Fixes liegen auf main und sind NICHT in Kraft (Server bootet
+  `26aa068`). Zirkel, den R4 belegt hat: `server.ts#deployBlocker` haelt Verb 2 bei 409, solange ein
+  Audit laeuft — und die am laengsten blockierenden Audits sind genau die lokalen, die nichts
+  messen.
+- **`FLEET_POSTLAND_AUDIT_WAIT_MS=2700000`** in `watchdog.sh`: **verhaltensgleich mit dem
+  Code-Default** (`server.ts:12834`), also KEIN eigener `kickstart` noetig — nur Sichtbarkeit im
+  config-Sensor; bei der naechsten watchdog-Aenderung mitnehmen.
+- **Slot-14-Report `779eb456`** (Deckel je Repo) kommt an mich zurueck; sein Land loest die
+  Warteschlange fuer P1/P2/Codebase-Review. Beim Eintreffen: Diff lesen, dann landen.
+
+## 6. Betrieb, kurz
+
+- **Die Land-Tuer ist `POST /api/self/tasks/:id/land`.** Antwort mit `candidate`+`watch` = ANGENOMMEN;
+  ein blankes `{"running":true}` ist die ABLEHNUNG aus `server.ts:7417` (Merge laeuft schon). Ich habe
+  das einmal verwechselt und einen fremden Land als meinen gemeldet.
+- **`awaiting-author` ist kein Fehler und braucht keinen Owner:** der Konflikt geht an die Lane, die
+  den Code schrieb; sie loest und committet, dann `⏫` erneut. Danach stoppt der guarded Pfad EINMAL
+  fuer deine Review der aufgeloesten Zeilen — pruefe dort BEIDE Seiten (ueberlebt die fremde
+  Aenderung, ueberlebt deine).
+- **Vor jedem Commit auf main:** `python3 -c 'import json; print({k:v["status"] for k,v in
+  json.load(open("fleet.json")).get("merges",{}).items()})'` — und `GET /api/slots/:id/merge`
+  (`running`) ist der einzige verlaessliche Sensor; der `merges`-Eintrag zeigt veraltete
+  `interrupted`-Zeilen, waehrend ein Land laeuft.
+
 # HANDOFF — Program-MAIN Land-Pipeline 2026-09 (`233e1c2b7eaca3850decf332`, Slot 4, Fable 5.1): S1 GELANDET, M1 GELANDET `f388de1`+`f0bcea6`, Promotion `green-only` erteilt; N1/M3/M2/N2 pending; 2026-09-07 02:3x, ctx GEMESSEN 28,5 %
 
 > **Dieser Abschnitt ERSETZT den aelteren darunter.** Zustand ableiten: `./state.sh`, `./register.sh`,

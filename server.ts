@@ -7295,7 +7295,7 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   if (t.status !== "pending")
     return json({ error: `task is ${t.status} — only a pending row can be released` }, 409);
   // (2) THE REPO COMES FROM THE BINDING'S CHECKOUT. A released row spawns an unattended lane in its
-  // target repo and eats that repo's DISPATCH_MAX_LANES budget, so a MAIN bound in one repository
+  // target repo and eats that repo's own lane budget (repoLaneCap), so a MAIN bound in one repository
   // must not be able to reach into another — the ONE fact this route derives from the machine
   // rather than from the row, and it is derived from the caller's own cwd, never from a request.
   // Failing to derive it fails as ITSELF: an underivable repo is refused under its own sentence,
@@ -24156,7 +24156,8 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     // Program hull a Program-MAIN releases its own rows, so those rows never enter an owner review
     // buffer at all, and this number would still read 10 while binding nothing about them
     // (docs/attic/harvest-critic-J-2026-08-21.md:114-120, CONFIRMED). The resource that actually bounds
-    // unattended execution is DISPATCH_MAX_LANES (live 2) — lanes, not rows.
+    // unattended execution is the repo's lane cap (repoLaneCap — per repo since 2026-09-07; this
+    // repo's is 1) — lanes, not rows.
     const open = tasks.filter((t) => t.source === "steward" && t.status === "pending").length;
     if (open >= STEWARD_MAX_PENDING) return json({ error: `steward pending cap reached (${STEWARD_MAX_PENDING})` }, 409);
     // A steward filing defaults to notiz. An explicit category is accepted only through the same

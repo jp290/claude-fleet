@@ -4106,9 +4106,10 @@ export async function run(ctx: Ctx): Promise<void> {
   }
 
   // --- LAND Waves: the opposite fold of the same collision facts (task-land-waves.ts). The
-  // parallel projection above asks which rows may run at once; these six checks pin which rows may
-  // LAND together — R1 class purity, R2 the gate changer alone, R3 confirmed surface only — plus
-  // the cap's cut, purity, and the one board surface that consumes it. ---
+  // parallel projection above asks which rows may run at once; these checks pin which rows may
+  // LAND together — R1 class purity, R2 the gate changer alone, R3 confirmed surface only, and the
+  // PROGRAM as the second bundling criterion beside the surface — plus the cap's cut, purity, and
+  // the one board surface that consumes it. ---
   {
     // Deliberately NOT the board's real medians: a fixture that shared them could not tell a
     // class mix-up from a correct sum. docs 3 s per land, code 1 100 s.
@@ -4116,9 +4117,12 @@ export async function run(ctx: Ctx): Promise<void> {
       fullGateSec: 100, docsGateSec: 1, fullAuditSec: 1000, docsAuditSec: 2,
     };
     const CODE_LAND_SEC = LAND_COSTS.fullGateSec + LAND_COSTS.fullAuditSec;
+    // programId is part of the DEFAULT row, not of the individual fixtures below: since
+    // 2026-09-07 a row without one is never bundlable, so the older checks would otherwise stop
+    // measuring the rule each of them is named for.
     const landRow = (id: string, created: number, files: string[],
       extra: Partial<TaskWaveInput> = {}): TaskWaveInput => ({
-      id, created, files, filesOrigin: "confirmed",
+      id, created, files, filesOrigin: "confirmed", programId: "prog-a",
       repo: "/repo/a", kind: "auftrag", status: "pending", ...extra,
     });
     const landProject = (tasks: TaskWaveInput[], maxWave?: number): LandWaveProjection =>
@@ -4176,11 +4180,53 @@ export async function run(ctx: Ctx): Promise<void> {
         === JSON.stringify([[["ka", "kb", "kc"], 2 * CODE_LAND_SEC, null], [["kd"], 0, null]]),
       JSON.stringify(chain));
 
+    // (a) the whole point of the second criterion: an IDENTICAL confirmed surface is not enough.
+    // Two rows that overlap perfectly but belong to different programs must stay two waves, or the
+    // fold collapses exactly as it does on files alone — 27 of the 31 real surfaces measured for
+    // docs/queue-wellen-2026-09-06.md §2 R3 name server.ts.
+    const acrossPrograms = landWavesOf(landProject([
+      landRow("xa", 1, ["src/shared.ts"], { programId: "prog-a" }),
+      landRow("xb", 2, ["src/shared.ts"], { programId: "prog-b" }),
+    ]));
+    check("land waves: an identical confirmed surface never bundles across two programs",
+      JSON.stringify(acrossPrograms.map((w) => [w.ids, w.sharedFiles, w.savingsSec, w.reasonAgainst]))
+        === JSON.stringify([[["xa"], [], 0, null], [["xb"], [], 0, null]]),
+      JSON.stringify(acrossPrograms));
+
+    // (b) the same two rows under ONE program — the control for the check above. Without it a
+    // projector that simply refused to bundle anything would pass (a) and prove nothing.
+    const insideProgram = landWavesOf(landProject([
+      landRow("ya", 1, ["src/shared.ts"], { programId: "prog-a" }),
+      landRow("yb", 2, ["src/shared.ts"], { programId: "prog-a" }),
+    ]));
+    check("land waves: the same surface inside ONE program bundles to a wave of two that saves a land",
+      JSON.stringify(insideProgram.map((w) => [w.ids, w.sharedFiles, w.savingsSec, w.reasonAgainst]))
+        === JSON.stringify([[["ya", "yb"], ["src/shared.ts"], CODE_LAND_SEC, null]])
+        && insideProgram[0].savingsSec > 0,
+      JSON.stringify(insideProgram));
+
+    // (c) the missing program is its OWN verdict and outranks the surface verdicts beneath it: the
+    // second row has a derived surface too, and a row that cannot be bundled at all must not be
+    // told that its surface was the problem. A row with no files at all keeps "keine-flaeche" —
+    // that absence stays the owner's first reason.
+    const noProgram = landWavesOf(landProject([
+      landRow("za", 1, ["src/solo.ts"], { programId: undefined }),
+      landRow("zb", 2, ["src/solo.ts"], { programId: undefined, filesOrigin: "derived" }),
+      landRow("zc", 3, ["src/solo.ts"], { programId: "   " }),
+      landRow("zd", 4, [], { programId: undefined }),
+    ]));
+    check("land waves: a row without a program stands alone under its own reason, above the surface verdicts",
+      JSON.stringify(noProgram.map((w) => [w.ids, w.reasonAgainst, w.savingsSec]))
+        === JSON.stringify([[["za"], "kein-program", 0], [["zb"], "kein-program", 0],
+          [["zc"], "kein-program", 0], [["zd"], "keine-flaeche", 0]]),
+      JSON.stringify(noProgram));
+
     // Scrambled on BOTH axes on purpose — rows out of created order and one file surface out of
     // sort order: a projector that sorted the caller's arrays in place instead of copies would
     // leave both scrambles corrected, and this input's own JSON is what proves it did not.
     const landPurityInput: ProjectLandWavesInput = {
-      tasks: [landRow("pb", 2, ["src/b.ts"]), landRow("pa", 1, ["src/b.ts", "src/a.ts"])],
+      tasks: [landRow("pb", 2, ["src/b.ts"]), landRow("pa", 1, ["src/b.ts", "src/a.ts"]),
+        landRow("pc", 3, ["src/b.ts"], { programId: "prog-b" })],
       dispatchRepo: "/repo/default", maxWave: 2, costs: LAND_COSTS,
     };
     const landBefore = JSON.stringify(landPurityInput);

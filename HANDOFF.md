@@ -1,3 +1,109 @@
+# HANDOFF — 🎛 Fleet Controller (Slot 1, Opus 5 high), 2026-09-07 ~14:30–21:1x, ctx GEMESSEN 29,8 %
+
+**Diese Sitzung KOMPAKTIERT, sie succeedet nicht** (Regelbuch: Compact ist der Normalfall des
+Controllers). Slot, Self-Token, beide armierten Audit-Watches und die Delegationen bleiben also
+bestehen — der Abschnitt hier ist die dauerhafte Wahrheit, der Compact-Auslöser zeigt nur auf ihn.
+
+## 0. ZWEI EIGENE FEHLER, beide von anderen gefunden — und sie haben DIESELBE Form
+
+Beide Male habe ich eine **grüne Mechanik für eine fachliche Aussage gehalten.**
+
+**(a) Ich habe ein ABGELEHNTES Dokument gelandet.** `522701c` ist byte-gleich mit `a87eae3`, dessen
+Report `e351772b` auf `rejected` steht (Slot 9, Program e3b3a064). Ich hatte `ahead=1`, sauberen
+Baum und docs-only geprüft und daraus „landbar" geschlossen. Gate und Post-Land-Audit waren grün —
+und beweisen exakt: die Datei ist eine Doc. **Nicht: jemand hat sie fachlich angenommen.**
+Die Lane-Disziplin sagt „Land erst nach dem Akzept der MAIN"; ich habe die Report-Lage nie
+abgefragt. **Regel für die Nachfolgerin: vor JEDEM Land die Frage stellen, ob ein `fleetReport`
+dieser Lane existiert und ob sein `decision.disposition` `accepted` ist.** Bei `6b61a7bf` (P3) und
+`e119a715` (M1) habe ich es danach getan, und beide Male war es die richtige Reihenfolge — bei M1
+kam das Verdikt sogar als `resolved / landed=NO` zurück und musste geprüft werden.
+OFFEN: der Korrekturweg. Brief `c9683f04` liegt gefilt, `9f2ef109` gibt den Transport frei — aber
+der adressierte Worker existiert nicht mehr (Task `012fe6b9` ist `done`, der Slot recycelt). Das
+braucht eine NEUE Lane, keine Zustellung. Nicht von mir erledigt.
+
+**(b) Die 26,4-min-Vorlaufzahl war widerlegt, und ich hatte die Deckelhöhe aus ihr abgeleitet.**
+Slot 7 hatte sie ausdrücklich als „geschlossen, nicht bewiesen" markiert; ich habe sie trotzdem in
+den Body von `61e407d` UND in den `watchdog.sh`-Kommentar genommen („26.4 + 42.7 = 69.1 min").
+Echt waren **6 Sekunden** Vorlauf (Lane `e407aef5`, gelandet `6b72d622`). Korrigiert in `409bd2b`.
+**Was damit auch fällt: die 75 min waren für die beiden Timeout-Fälle nicht nötig** — beide hätten
+unter `c7184f85` allein ein Urteil bekommen. Der Deckel bleibt (er kostet nur Latenz), aber er ist
+NICHT der Fix. Die gemessene Ursache ist die **Uhr** der Gnadenfrist, nicht die Laufzeit.
+
+## 1. WAS IN FLUG IST (Stand 21:1x)
+
+- **Slot 4** (W3, `fleet/260907140524-b010`, 6 ahead): ihr dritter Isolated-Lauf ist **grün** —
+  `iso3.log` mtime 20:13, `ALL PASS`, 3917/0, Tree-SHA == HEAD `fd5e3fa`, `dirty:false`. Die Lane
+  wusste es nicht (sie hat nach dem Start nicht mehr nachgesehen, ~2 h Leerlauf); ich habe es ihr
+  mit Beleg geschickt. **Nächster Schritt ist IHRER: den `fleetReport` an Slot 8 filen** — in
+  fleet.json existiert bisher keiner für diesen Branch. Ich lande erst nach Slot 8s Annahme.
+  Slot 8 prüft dabei zwei benannte Abweichungen vom Done-Satz (`pending` statt `queued` nach
+  Abbruch; Checks in `land-provenance.ts` statt `land-durability.ts`) — beides ist ihr zugesagt.
+- **Slot 6** (`89279f1f`, Owner-Tür für die Report-Abnahme, 7 ahead, sauber): wartet legitim auf
+  ihren `iso5`-Vorschaulauf, den sie selbst hält. **Sie hatte die Wrapper-ELAPSED (1h41) für die
+  Laufzeit gehalten — der bekannte Messfehler**; korrigiert, sie misst jetzt das `bun`-Kind.
+  Diese Lane ist der Fix für die Geisterbindungen und damit die wertvollste offene Arbeit.
+- **Slot 11** (`97c5d469`, `ctl.sh`, 8 ahead): wartet auf ihr drittes Helfer-Verdikt zu `1adfa02`.
+  Vorlauf 17 → 1 rote Checks; der letzte Rot war ihre eigene falsche Prämisse zur `mergeLast`-
+  Semantik, von ihr selbst gefunden und in drei Stellen korrigiert.
+- **Ein Post-Land-Audit läuft mit zwei Wartenden.** Der Server ist 12 Commits hinter der Platte
+  (`codeBehind: true`) — ein Deploy ist fällig, sobald die Audit-Kette leer ist (er 409t sonst).
+
+## 2. DIE ZWEI ARMIERTEN WATCHES (überleben das Compact, stürben bei einer Succession)
+
+`f38a28f6` → Audit von `61156ac5` (R5) · `628d4879` → Audit von `6b72d622` (Audit-Diagnose).
+Beide `idleSec:0` — mit dem Default 60 bekommt ein arbeitender Controller NIE eine Zustellung
+(zweimal gemessen am 2026-09-07). Slot 7 hatte dieselben Watches; sie sterben mit ihrer Übergabe,
+deshalb liegen sie parallel bei mir.
+
+## 3. WAS BEIM OWNER LIEGT (nicht von mir zu entscheiden)
+
+1. **Slot 7 kann geschlossen werden** — Schicht abgeschlossen, Handoff committet, Watches
+   dupliziert, ihre eigene Aussage: „Everything's closed on your side." Ihr Program `f170dc46`
+   bleibt mit 30 offenen Zeilen aktiv; ein Retire fasst die nicht an.
+2. **Sechs Waisen-Worktrees** unter `astra-main.worktrees/` (6600, 8361, 314b, fdb9, 509b, c1fc).
+   Gehören Slot 2s Program; ich habe angeboten aufzuräumen und warte auf ihr Wort.
+3. **`41bd398` (`fleet/260907121431-8510`, 6 Dateien / 2154 Zeilen M1-Recherche)** ist von Slot 2
+   ausdrücklich zum Landen freigegeben, hat aber KEINEN lebenden Slot mehr. Zwei Wege in ihrer
+   Nachricht angeboten: Worktree adoptieren und über die Route landen, oder sie macht es selbst.
+
+## 4. DER STRUKTURELLE BEFUND, gemessen, nicht geschätzt
+
+**Zehn Programme tragen eine tote MAIN-Bindung und halten 69 von 231 offenen Zeilen (30 %).**
+Zwei davon stehen auf `complete` und halten trotzdem 20 Zeilen. Der Bestand WÄCHST bei jeder
+sauberen Fertigmeldung: P1 (`29c0f21b`) und P2 (`446e77f8`) wurden heute zu Geistern, weil ihre
+MAINs sich nach grünem Audit korrekt zurückgezogen haben. Ein Retire macht die Report-Abnahme
+nicht schwer, sondern dauerhaft unmöglich. **Der Fix ist `89279f1f` und läuft auf Slot 6.**
+
+Und eine zweite Zahl derselben Art: **29 offene Queue-Zeilen verweisen auf einen `/tmp`-Pfad**,
+sieben davon aus Program `eec69528`. Eine Zeile, deren Inhalt in `/tmp` liegt, ist inhaltslos,
+sobald die Maschine aufräumt — und der Leser sieht dem Verweis nicht an, dass etwas fehlte.
+Slot 3 ist deswegen angeschrieben (ihr 23-KB-Umsetzungsplan liegt unversioniert in `/tmp`); ich
+habe ihn ausdrücklich NICHT selbst verstetigt, weil ein Controller, der fremde Analyse eigenmächtig
+committet, genau die Urheberschaftslücke erzeugt, die dieser Tag schon einmal bezahlt hat.
+
+## 5. EINE NEUE REGEL, von Slot 7 gemessen und hier übernommen
+
+**Ein schmutziger Haupt-Checkout hat ZWEI Todesarten, nicht eine.** Bekannt war: er tötet ein
+fremdes Land am fast-forward. Neu: **er lässt fremde uncommittete Arbeit unter fremder
+Urheberschaft und ohne ihre Begründung landen.** P3s Commit `b4d01b5` hat 34 Zeilen von Slot 7
+mitgenommen; der Inhalt überlebte, die Commit-Message existierte nirgends. In einem Repo, das sein
+Befundregister in den Commit-BODIES führt, ist das der stillere und teurere Verlust. Gegenmaßnahme
+ist dieselbe wie bisher und war schon notiert: kurz halten, sofort committen. Slot 7 hatte zwischen
+Edit und Commit genau EINEN Sensor-Aufruf gelegt — das reichte.
+
+## 6. WAS ICH NICHT GEPRÜFT HABE
+
+Den Inhalt der acht verbliebenen advisory-Zeilen unter `e3b3a064` (ich habe nur die zwei
+disponiert, deren Handlung nachweislich erledigt war — Deckel 10/10 → 8/10). Ob die 69
+Geister-Zeilen inhaltlich noch gebraucht werden; ich habe nur die Bindung geprüft, nicht die
+Aufgaben. Den Byte-Vergleich `522701c` ↔ `a87eae3` hatte ich zunächst von Slot 9 übernommen und
+dann doch selbst nachgerechnet — **bestätigt: beide Fassungen von
+`docs/schnittliste-kommunikation-datenschichten-2026-09-07.md` tragen sha256
+`c74331e8b8553000e32db400e18f7394513fd9bb1dee6216a32f0c86348fe8f6`, byte-identisch.** Ein Befund
+gegen einen selbst ist der letzte, den man auf fremde Autorität glauben sollte.
+
+---
+
 # HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 7, Opus 5 high): zweite Schicht, 2026-09-07 ~15:00–17:4x, ctx GEMESSEN 28,x %
 
 ## 0. LIES DAS ZUERST — vier eigene Fehler dieser Schicht, weil sie eine METHODE zeigen
@@ -1027,6 +1133,9 @@ weiter: der Owner hat den Wellenmodus (W1–W3) hier eingehaengt.
   Rot dort waere ECHT und gehoert dem Controller/Audit-Determiniertheit, nicht P3 (docs-only kann pins nur ueber Pfad-/Doc-Pins
   reissen). **P3 ist damit terminal:** Tagesmandat erfuellt unter Selbstannahme; kein Folgetag ohne neue Richtung; nach dem
   Audit-Event nur noch die Abendzeile. Der Entwurfsordner `docs/messungen/entwuerfe/2026-09-07-p3-landepfad/` bleibt Historie.
+- **21:2x, AUDIT GRUEN (Event `5635c3f3`, ack):** Post-Land-Audit auf koalesziertem Tip `116fdf36` (covers `6b72d62`+`b83e246`,
+  `b83e246` ist Ancestor), `result:green`, 441/0 Checks, 1 914 ms, `proportional:true` — kurze Docs-Kette, KEINE volle Suite
+  (beide Cover docs-only). Merge-Event `3c2c1b45` ebenfalls ack. **P3 ist abgeschlossen; keine Watches, Autos, Attentions offen.**
 - **Rueckwege, die eine Kompaktierung ueberleben:** (Auto geloescht, s.o.) Fleet-Auto `f33a3a9f` (One-Shot auf Slot 15, faellig 17:40,
   `idleSec 60`) fuer den Checkpoint +8h. Session-lokal (sterben mit Pane/Succession): Monitore auf den Statuswechsel von
   `6b61a7bf` und auf 17:40. **Noch KEIN Fleet-Watch** — der Lane-Watch braucht den Slot, den es erst bei `sent` gibt.

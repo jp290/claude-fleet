@@ -214,11 +214,14 @@ const rows = [...subjects].map((slot) => {
 // was landing died mid-flight, so the tree state is exactly what nobody knows). An `interrupted`
 // row that DOES carry a verify was at least measured and is reported, not counted as in-flight.
 const busy = rows.filter((r) => r.running === true || (r.status === "interrupted" && !r.hasVerify));
-// A GREEN LAND LEAVES NO ROW. server.ts deletes `mergeLast[slot]` together with the lane it landed
-// (grep `mergeLast.delete`), so this map is a register of lands that did NOT finish plus, with the
-// live half, the ones running right now — never a land history. The history is lane-outcomes.jsonl
-// and the fleet/land notes, and reading an empty map as "nothing has landed" is backwards.
-const lines = rows.length === 0 ? ["no lane is open and no unfinished land is persisted (a completed land leaves no row — see lane-outcomes.jsonl for the history)"]
+// A LANDED LANE'S ROW OUTLIVES ITS SLOT, and it took two red runs to establish rather than assume
+// it. The land path does delete the verdict (`mergeLast.delete`), but the merge job's own final
+// write comes after the teardown and its guard is `if (!s.cwd || s.cwd === cwd)` — a torn-down slot
+// has no cwd, so the FIRST disjunct passes and `{status:"merged", landed:true}` is written back for
+// a slot that no longer exists. It is cleared when that slot is next opened. So a landed=YES row
+// here is HISTORY, not work in flight, and `busy` deliberately ignores it: what this map answers is
+// "may I start a land now", never "what has landed" (that is lane-outcomes.jsonl and the notes).
+const lines = rows.length === 0 ? ["no lane is open and no merge verdict is persisted"]
   : rows.map((r) => `slot ${r.slot}  ${r.status ?? "no verdict yet"}  landed=${r.landed ? "YES" : "no"}  verify=${r.verify}`
     + `  running=${r.running === null ? "UNKNOWN" : r.running ? "YES" : "no"}  ${r.branch ?? ""}`);
 if (!live) lines.push("live half UNKNOWN — no owner token, so `running` was never asked (not the same as no)");

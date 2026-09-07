@@ -87,11 +87,15 @@ gemeinsamen git-dir, wie `state.sh`). Die drei Overrides sind für die Suite geb
   dann weggeworfen, also „es läuft nichts" über den einen Fall geantwortet, für den das Verb da ist.
   Eine Lane ohne Verdikt steht als `no verdict yet` da, nie als etwas Gemessenes. Exit 1, solange ein Land LÄUFT oder ein `interrupted` OHNE Verdikt steht — beides heißt
   „warten"; ohne Owner-Token steht `running=UNKNOWN` da und wird nie als „nein" gelesen.
-  **Ein GELUNGENER Land hinterlässt hier KEINE Zeile**: `server.ts` löscht `mergeLast[slot]`
-  zusammen mit der Lane, die er gelandet hat (`rg -n "mergeLast.delete" server.ts`). Diese Karte ist
-  also das Register der NICHT fertig gewordenen Lands plus der gerade laufenden — keine
-  Land-Historie. Wer eine leere Karte als „es ist nichts gelandet" liest, liest sie verkehrt herum;
-  die Historie steht in `lane-outcomes.jsonl` und in den `fleet/land`-Notes.
+  **Die Zeile eines GELANDETEN Lanes überlebt ihren Slot** — zwei rote Läufe haben das
+  festgestellt, statt es anzunehmen. Der Land-Pfad löscht das Verdikt zwar (`mergeLast.delete`),
+  aber der abschliessende Schreibvorgang des Merge-Jobs kommt NACH dem Teardown, und seine Wache
+  lautet `if (!s.cwd || s.cwd === cwd)`: ein abgeräumter Slot hat kein `cwd`, also greift der ERSTE
+  Zweig und `{status:"merged", landed:true}` wird für einen Slot zurückgeschrieben, den es nicht
+  mehr gibt (`server.ts#record` im Merge-Job). Geräumt wird sie erst, wenn dieser Slot das nächste
+  Mal geöffnet wird. Eine `landed=YES`-Zeile hier ist also HISTORIE, kein laufender Vorgang, und
+  `busy` ignoriert sie bewusst. Was diese Karte beantwortet, ist „darf ich jetzt landen" — nie
+  „was ist gelandet"; das steht in `lane-outcomes.jsonl` und in den `fleet/land`-Notes.
   Token: Owner (optional — ohne ihn bleibt die Live-Hälfte ungemessen).
 - **`ctl.sh lock`** — Gesundheit des Suite-Mutex, in der Dreiteilung von `e2e-stage.sh`
   (held · stale · parked) plus FREE und UNKNOWN. Liest `$FLEET_SUITE_LOCK` (Default

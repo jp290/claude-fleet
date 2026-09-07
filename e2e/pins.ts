@@ -644,17 +644,24 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
   // clean land in that suite then dies `waitedOut` without ever looking at a tree. Measured, not
   // predicted: ./e2e-clean-review.sh hung at waitMerge for its full 60 s on 2026-09-06 the first
   // time the hold was pulled forward. So every wrapper that hands its server a FLEET_VERIFY_CMD
-  // must tell it whose hold it is in, with `$$` — the same pid e2e-stage.sh wrote into the lock
-  // file. A pair no compiler and no single suite can see, because the wrapper that breaks it is the
-  // one whose own runner holds the lock.
+  // must tell it whose hold it is in — with `$_st_lock_pid`, the holder e2e-stage.sh RESOLVED, and
+  // never the literal `$$` (2026-09-07): inside the live land gate the wrapper is itself an
+  // inherited step and the lock file names the LIVE SERVER, so `$$` fails the server's "lock file
+  // names this pid" check, the test server queues behind the outer hold, and every code land dies
+  // at waitMerge after 60 s (measured on the first code land after M1 was deployed, slot 1,
+  // 2026-09-07 04:24; reproduced under a simulated holder before and after the fix). Outside a
+  // hold `_st_lock_pid` IS `$$`, so the standalone case is unchanged. A pair no compiler and no
+  // single suite can see, because the wrapper that breaks it is the one whose own runner holds
+  // the lock.
   {
     const wrappersWithGate = ["e2e-isolated.sh", "e2e-clean-review.sh", "e2e-postland-audit.sh"];
     const missing = wrappersWithGate.filter((w) => {
       const src = read(w);
-      return src.includes("FLEET_VERIFY_CMD") && !src.includes("FLEET_SUITE_LOCK_HELD_BY=$$");
+      return src.includes("FLEET_VERIFY_CMD")
+        && (!src.includes("FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid") || src.includes("FLEET_SUITE_LOCK_HELD_BY=$$"));
     });
-    pin("every wrapper that configures a land gate for its server tells that server whose suite-mutex hold it is running inside — a test server never queues behind its own runner",
-      missing.length === 0, `missing FLEET_SUITE_LOCK_HELD_BY=$$: ${missing.join(", ") || "(none)"}`);
+    pin("every wrapper that configures a land gate for its server tells that server whose suite-mutex hold it is running inside — the holder e2e-stage.sh resolved ($_st_lock_pid), never the literal $$, so a test server never queues behind its own runner nor behind the live server's hold",
+      missing.length === 0, `wrappers not handing $_st_lock_pid across (or still handing $$): ${missing.join(", ") || "(none)"}`);
     // …and the server half: the hold the clean path takes is the SAME primitive the retry chain
     // takes, asked for BEFORE the gate rather than between its rounds. Both call sites pinned, so
     // deleting the first one silently restores the queue this cut removed.

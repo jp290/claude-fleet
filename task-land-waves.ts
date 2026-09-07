@@ -54,9 +54,17 @@ export interface LandWaveProjection {
   unresolved: LandWaveUnresolved[];
 }
 
-// The owner's own bound in docs/queue-wellen-2026-09-06.md §5 S3, and the same order of magnitude
-// UNDO_STACK_MAX already carries: a wave must stay small enough for one person to attribute a red
-// audit across it by hand.
+// The owner's own bound in docs/queue-wellen-2026-09-06.md §5 S3: a wave must stay small enough for
+// one person to attribute a red post-land audit across its rows BY HAND, because the wave buys its
+// saving by giving up the per-row bisect that n separate lands would have handed the reader for
+// free. That is the whole reason for the number, and it is a reader's budget, not a stack depth.
+//
+// IT IS NOT COUPLED TO UNDO_STACK_MAX, and the two agreeing on 3 is a coincidence this line exists
+// to disarm (owner ask, W3 2026-09-07). The undo stack counts LANDS, and a wave of n rows is ONE
+// land with ONE undo record — so a wave of 3 costs the undo stack exactly what a wave of 1 costs
+// it, and raising either bound says nothing about the other. Pinned in e2e/pins.ts so a future
+// change to this number is a deliberate one rather than a silent widening of the bisect a red
+// audit leaves behind.
 export const LAND_WAVE_MAX_DEFAULT = 3;
 
 // Mediane 2026-09, docs/messungen/2026-09-06-merge-prozess-robust.md §1.

@@ -326,6 +326,12 @@
   /* Visible rather than title-only: touch screens have no hover, and the evidence caveat is the
      difference between “no known collision” and a promise of safety. It is not a row fact. */
   .qwavehint { padding: 0 7px 6px; color: var(--faint); font-size: 10.5px; line-height: 1.4; }
+  /* W3 · the evidence a ▸ start wave button is pressed ON. Indented under its own wave line so the
+     rows it lists read as that wave's members and not as further waves; the shared-file line is the
+     one FACT the bundling stands on, so it is the one that is not dimmed further. */
+  .qwaveev { margin: 3px 0 0 10px; border-left: 2px solid #2c2c2c; padding-left: 7px; }
+  .qwaveev > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qwaveevf { color: #8a8a8a; margin-top: 2px; }
   /* the completed-programs fold. A control, not a row: it never enters the shell's row list, so
      keyboard navigation still steps only over selectable programs and tasks. */
   .qfold { width: 100%; padding: 3px 7px 4px; border: 0; background: transparent; text-align: left;

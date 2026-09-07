@@ -4731,7 +4731,188 @@ export async function run(ctx: Ctx): Promise<void> {
       && wAfter.savingsSec === LAND_WAVE_COSTS_2026_09.docsGateSec + LAND_WAVE_COSTS_2026_09.docsAuditSec,
       JSON.stringify({ before: wBeforeA, after: wAfter }));
 
+    // --- W3 · ▸ START WAVE: one owner click, ONE lane, n rows, ONE land. Runs on the pair the
+    // impact proof above just measured — the only rows in this harness that ARE a wave — so a
+    // failure here is about the button and not about a fixture that stopped folding. The lane the
+    // propose half used is closed first: the door needs a free slot, and a 409 about capacity would
+    // otherwise read as a refusal of the wave. ---
     if (wFree) await post(`/api/slots/${wFree.id}/kill`, {});
+    {
+      const w3Start = (body: Record<string, unknown>) => post("/api/wave/dispatch", body);
+      const w3Err = async (r: Response): Promise<string> =>
+        ((await r.json().catch(() => null)) as { error?: string } | null)?.error ?? "";
+
+      // (1) THE BOUNDS, each in its own words. One row is not a smaller wave — it is the other
+      // button — and the upper bound is the reader's bisect budget, so the two refusals must not
+      // collapse into one sentence.
+      const w3One = await w3Start({ ids: [wA] });
+      check("(w3) one id is refused as the OTHER button, not as a wave that is too small",
+        w3One.status === 400 && (await w3Err(w3One)).includes("▸ start button"),
+        `${w3One.status} ${await w3Err(w3One)}`);
+      const w3Many = await w3Start({ ids: [wA, wB, wC, wParked] });
+      check("(w3) more rows than the cap is refused, and the refusal names the bisect it protects",
+        w3Many.status === 400 && (await w3Err(w3Many)).includes("attributable"),
+        `${w3Many.status} ${await w3Err(w3Many)}`);
+      const w3Dup = await w3Start({ ids: [wA, wA] });
+      check("(w3) a repeated id is refused before anything else reads it",
+        w3Dup.status === 400 && (await w3Err(w3Dup)).includes("distinct"),
+        `${w3Dup.status} ${await w3Err(w3Dup)}`);
+      const w3Unknown = await w3Start({ ids: [wA, "nosuchtaskid"] });
+      check("(w3) an unknown id is a 404 that names it, not a 409 about the sensor",
+        w3Unknown.status === 404 && (await w3Err(w3Unknown)).includes("nosuchtaskid"),
+        `${w3Unknown.status} ${await w3Err(w3Unknown)}`);
+
+      // (2) THE SENSOR IS THE AUTHORITY, and this is the check that proves the door does not carry
+      // its own copy of R1/R2/R3: `wParked` shares NO confirmed surface (its is derived), so the
+      // sensor puts it alone — and the door must refuse the pair by quoting exactly that verdict.
+      const w3NotAWave = await w3Start({ ids: [wA, wParked] });
+      const w3NotAWaveErr = await w3Err(w3NotAWave);
+      check("(w3) a set the sensor does not project is refused, and the refusal QUOTES the sensor's own reason",
+        w3NotAWave.status === 409 && w3NotAWaveErr.includes("not one of the sensor's land waves")
+        && w3NotAWaveErr.includes("flaeche-nur-abgeleitet") && w3NotAWaveErr.includes(wParked),
+        `${w3NotAWave.status} ${w3NotAWaveErr}`);
+
+      // (3) THE START. The order is the SENSOR'S, (created, id) — asserted against the rows' own
+      // timestamps rather than against the reply, or the check would agree with whatever came back.
+      const w3RowsBefore = (await wSessions()).tasks;
+      const w3Created = (id: string): number =>
+        (w3RowsBefore.find((t) => t.id === id) as { created?: number } | undefined)?.created ?? 0;
+      const w3ExpectedHead = w3Created(wA) !== w3Created(wB)
+        ? (w3Created(wA) < w3Created(wB) ? wA : wB) : (wA < wB ? wA : wB);
+      const w3Res = await w3Start({ ids: [wB, wA] }); // deliberately NOT in wave order: the door orders
+      const w3Body = (await w3Res.json()) as
+        { ok?: boolean; slot?: number; branch?: string; error?: string;
+          wave?: { ids: string[]; klasse: string; sharedFiles: string[]; savingsSec: number } };
+      check("(w3) the owner button opens ONE lane on both rows and answers with the sensor's own wave",
+        w3Res.ok && w3Body.ok === true && typeof w3Body.slot === "number"
+        && w3Body.wave?.ids.length === 2 && w3Body.wave.klasse === "docs"
+        && w3Body.wave.sharedFiles.join(" ") === WFILE && (w3Body.wave.savingsSec ?? 0) > 0,
+        `${w3Res.status} ${JSON.stringify(w3Body)}`);
+      check("(w3) the wave's order is the SENSOR'S (created, id) and not the order the body listed",
+        w3Body.wave?.ids[0] === w3ExpectedHead,
+        JSON.stringify({ sent: [wB, wA], got: w3Body.wave?.ids, expectedHead: w3ExpectedHead }));
+
+      const w3Slot = w3Body.slot ?? 0;
+      const w3A = await wDigest(wA);
+      const w3B = await wDigest(wB);
+      check("(w3) N:1 — BOTH rows are `sent` and both name the SAME slot",
+        w3A?.status === "sent" && w3B?.status === "sent"
+        && (w3A as { slot?: number }).slot === w3Slot && (w3B as { slot?: number }).slot === w3Slot,
+        JSON.stringify({ slot: w3Slot, a: w3A, b: w3B }));
+      const w3SlotRow = ((await (await get("/api/sessions")).json()) as
+        { slots: { id: number; taskId?: string | null }[] }).slots.find((x) => x.id === w3Slot);
+      check("(w3) the slot's own taskId names the HEAD alone — the follower rides `t.slot`, not a second slot field",
+        w3SlotRow?.taskId === w3ExpectedHead,
+        JSON.stringify({ taskId: w3SlotRow?.taskId ?? null, head: w3ExpectedHead }));
+
+      // (4) THE BRIEF. Read from the prompt journal, like every other dispatched-brief check in
+      // this suite: the dispatch seam calls sendText + logPrompt and pushes nothing into the slot's
+      // own history.
+      let w3Prompt = "";
+      for (let i = 0; i < 80 && w3Slot; i++) {
+        const j = (await (await get("/api/prompts?limit=50&q=WELLE")).json()) as
+          { prompts: { slot?: number; text?: string }[] };
+        const hit = j.prompts.find((x) => x.slot === w3Slot && (x.text ?? "").includes("EIN LAND"));
+        if (hit) { w3Prompt = hit.text ?? ""; break; }
+        await Bun.sleep(250);
+      }
+      check("(w3) the wave brief reached the pane and names both rows in the wave's fixed order",
+        w3Prompt.includes(`${w3Body.wave?.ids[0]} → ${w3Body.wave?.ids[1]}`)
+        && w3Prompt.indexOf(`ZEILE 1 VON 2 · ${w3Body.wave?.ids[0]}`)
+          < w3Prompt.indexOf(`ZEILE 2 VON 2 · ${w3Body.wave?.ids[1]}`)
+        && w3Prompt.indexOf(`ZEILE 1 VON 2 · ${w3Body.wave?.ids[0]}`) > 0,
+        w3Prompt.slice(0, 400) || "no wave brief in the prompt journal");
+      check("(w3) the brief states the three wave rules — one commit per row, ONE land, and the split door",
+        w3Prompt.includes("EIN COMMIT JE ZEILE") && w3Prompt.includes("EIN LAND FÜR DIE GANZE LANE")
+        && w3Prompt.includes("/api/self/wave/split"),
+        w3Prompt.slice(0, 200));
+
+      // (5) THE SELF-SPLIT. Its refusals first, so the success below is measured against a door
+      // that was actually closed.
+      let w3Persisted: { slots?: Record<string, { selfToken?: string }> } = {};
+      for (let i = 0; i < 40; i++) {
+        try { w3Persisted = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as typeof w3Persisted; }
+        catch { /* saveState writes tmp+rename; a read landing mid-write throws */ }
+        if (w3Persisted.slots?.[String(w3Slot)]?.selfToken) break;
+        await Bun.sleep(100);
+      }
+      const w3Tok = w3Persisted.slots?.[String(w3Slot)]?.selfToken ?? "";
+      check("(w3) fixture: the wave lane carries a scoped self token (the split door takes nothing else)",
+        !!w3Tok, w3Tok ? "present" : `no token on slot ${w3Slot}`);
+      const w3Split = (body: Record<string, unknown>, token = w3Tok) =>
+        fetch(`${BASE}/api/self/wave/split`, { method: "POST",
+          headers: { "content-type": "application/json", "x-fleet-self-token": token },
+          body: JSON.stringify(body) });
+      const w3Follower = w3Body.wave?.ids[1] ?? "";
+      const w3Head = w3Body.wave?.ids[0] ?? "";
+
+      const w3NoReason = await w3Split({ ids: [w3Follower] });
+      check("(w3) a split without a reason is refused — a row back without one would be re-bundled on the same surface",
+        w3NoReason.status === 400 && (await w3Err(w3NoReason)).includes("reason is required"),
+        `${w3NoReason.status} ${await w3Err(w3NoReason)}`);
+      const w3Foreign = await w3Split({ ids: [wC], reason: "not mine" });
+      check("(w3) the split door reaches NO row outside this lane's own wave",
+        w3Foreign.status === 409 && (await w3Err(w3Foreign)).includes("not rows of this lane's wave"),
+        `${w3Foreign.status} ${await w3Err(w3Foreign)}`);
+      const w3All = await w3Split({ ids: [w3Head, w3Follower], reason: "all of them" });
+      check("(w3) handing back EVERY row is refused as the abort it is, not accepted as a split",
+        w3All.status === 409 && (await w3Err(w3All)).includes("that is an abort, not a split"),
+        `${w3All.status} ${await w3Err(w3All)}`);
+
+      const W3REASON = "die Flaeche reichte nicht: diese Zeile fasst auch server.ts an";
+      const w3Ok = await w3Split({ ids: [w3Follower], reason: W3REASON });
+      const w3OkBody = (await w3Ok.json()) as { ok?: boolean; kept?: string[]; returned?: string[]; head?: string };
+      check("(w3) SELF-SPLIT: k stay with the lane, n-k go back, and the reply names both sides",
+        w3Ok.ok && w3OkBody.ok === true
+        && JSON.stringify(w3OkBody.kept) === JSON.stringify([w3Head])
+        && JSON.stringify(w3OkBody.returned) === JSON.stringify([w3Follower])
+        && w3OkBody.head === w3Head,
+        `${w3Ok.status} ${JSON.stringify(w3OkBody)}`);
+      const w3BackRow = await wDigest(w3Follower);
+      const w3KeptRow = await wDigest(w3Head);
+      check("(w3) the returned row is `queued` — not `pending` — and carries the lane's reason in its note",
+        w3BackRow?.status === "queued" && (w3BackRow as { slot?: number | null }).slot == null
+        && (w3BackRow?.note ?? "").includes(W3REASON),
+        JSON.stringify(w3BackRow));
+      check("(w3) the kept row is untouched — still `sent`, still on the lane",
+        w3KeptRow?.status === "sent" && (w3KeptRow as { slot?: number }).slot === w3Slot,
+        JSON.stringify(w3KeptRow));
+      const w3Again = await w3Split({ ids: [w3Head], reason: "and now the rest" });
+      check("(w3) after the split the lane carries ONE row, so a second split is refused as an abort",
+        w3Again.status === 409 && (await w3Err(w3Again)).includes("this lane carries no wave"),
+        `${w3Again.status} ${await w3Err(w3Again)}`);
+
+      // (6) THE ABORT, over a WHOLE wave: every row comes back TOGETHER. `pending` and not
+      // `queued` is the deliberate departure from §5's done sentence — detachSlotTasks has written
+      // that since long before waves ("back to owner review, NOT auto-queued"), and `queued` here
+      // would have the tick re-dispatch a lane that just died. What the sentence is FOR — no row
+      // silently left behind, none half-done — is what this measures.
+      await post(`/api/slots/${w3Slot}/kill`, {});
+      const w3AfterKill = await wDigest(w3Head);
+      check("(w3) killing the lane returns its remaining row, detached from the slot",
+        w3AfterKill?.status === "pending" && (w3AfterKill as { slot?: number | null }).slot == null,
+        JSON.stringify(w3AfterKill));
+      const w3SplitSurvivor = await wDigest(w3Follower);
+      check("(w3) the row that was split off earlier is NOT dragged back by the abort — it is already queued",
+        w3SplitSurvivor?.status === "queued",
+        JSON.stringify(w3SplitSurvivor));
+
+      // ...and the same abort over an INTACT wave of two, which is the shape §5's sentence is about.
+      const w3Res2 = await w3Start({ ids: [wA, wB] });
+      const w3Body2 = (await w3Res2.json()) as { ok?: boolean; slot?: number; error?: string };
+      check("(w3) fixture: the pair is startable again as a wave (a split and an abort left both rows open)",
+        w3Res2.ok && typeof w3Body2.slot === "number", `${w3Res2.status} ${JSON.stringify(w3Body2)}`);
+      if (typeof w3Body2.slot === "number") {
+        await post(`/api/slots/${w3Body2.slot}/kill`, {});
+        const [w3EndA, w3EndB] = [await wDigest(wA), await wDigest(wB)];
+        check("(w3) an abort leaves ALL n rows returned together — neither is left on `sent`",
+          w3EndA?.status === "pending" && w3EndB?.status === "pending"
+          && (w3EndA as { slot?: number | null }).slot == null
+          && (w3EndB as { slot?: number | null }).slot == null,
+          JSON.stringify({ a: w3EndA, b: w3EndB }));
+      }
+    }
+
     for (const id of [wA, wB, wC, wParked, wNotiz, wDone]) await post(`/api/tasks/${id}/delete`, {});
   }
 

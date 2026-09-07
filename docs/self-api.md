@@ -525,6 +525,61 @@ Landewellen-Sensor lieferte darum 44 Wellen der Größe 1, jede mit dem Grund
 `confirmed` gehoben; das tauft eine Prosa-Vermutung in einen Fakt um.
 
 
+
+## wave/split — `POST /api/self/wave/split`
+
+**Der Rückweg einer WELLEN-Lane (W3, 2026-09-07).** Du trägst n Queue-Zeilen und landest EINMAL.
+Diese Tür gibt genau die Zeilen zurück, die nicht in diese Welle gehören — der Rest bleibt bei dir
+und landet wie geplant.
+
+```
+curl -X POST http://<fleet-host>:<port>/api/self/wave/split \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"ids":["<zeile>"],"reason":"<warum sie nicht in diese Welle gehört>"}'
+```
+
+**Lane-only**, und das ist die entgegengesetzte Reichweite zu `files-proposal` darüber, aus einem
+Grund, der dieselbe Regel noch einmal ist: einen Vorschlag zu parken kostet die Zeile nichts,
+diese Tür schreibt einen QUEUE-STATUS. Also darf nur die Lane, die die Zeilen tatsächlich HÄLT,
+ihn schreiben — und sie erreicht über diese Tür keine Zeile außerhalb ihrer eigenen Welle.
+
+**Warum es sie gibt.** `docs/queue-wellen-2026-09-06.md` §5 schneidet S3 all-or-nothing („ein
+Abbruch lässt alle n auf `queued`"). Der Owner hat am 2026-09-07 die zwei Fälle benannt, die diese
+Form nicht deckt, weil sie erst IN der Lane sichtbar werden: die Fläche war zu KLEIN (das Gate
+bleibt korrekt — `server.ts#verifyPlanFor` klassifiziert den tatsächlichen rebasten Diff, nicht die
+deklarierte Fläche — aber der Leser bezahlt den Bisect) oder zu GROB (das Bündel ist schlicht
+falsch). Für beide ist Abbrechen die falsche Antwort und Mitmachen auch.
+
+- **`queued`, nicht `pending`, und anders als bei einem ABBRUCH.** Diese Zeilen WAREN freigegeben;
+  die Lane behauptet nur, dass sie hier nicht hingehören, nicht dass sie neu zu beurteilen wären.
+  Ein Lane-Abbruch (`detachSlotTasks`) behält seine eigene Antwort — `pending`, zurück zum Owner —
+  weil dort niemand für die Zeilen spricht.
+- **`reason` ist Pflicht** (max. 200 Zeichen, die Länge der Queue-note, in die er wandert). Eine
+  Zeile, die ohne Grund zurückkommt, ist von einer nicht zu unterscheiden, zu der die Lane nicht
+  gekommen ist — und würde auf derselben Fläche neu gebündelt, die gerade nicht gereicht hat.
+- **Mindestens eine Zeile bleibt.** Alle zurückzugeben ist kein Split, sondern ein Abbruch, und der
+  gehört in den Report.
+- **Der Kopf wandert mit**, falls er selbst zurückgeht: `s.taskId` benennt die Zeile, an die jede
+  Provenienz dieser Lane bindet, also muss sie eine sein, die die Lane noch trägt — die nächste in
+  der festen Reihenfolge der Welle.
+- Antwort bei Erfolg: `{ok:true, kept:[…], returned:[…], head:"<taskId>"}`.
+- Ablehnungen:
+  - **unbekannter Self-Token** (401, flache 400-ms-Verzögerung wie überall).
+  - **keine Lane** (409): `not a lane — only the lane holding a wave can split it`.
+  - **leere/doppelte ids oder fehlender Grund** (400).
+  - **keine Welle** (409): `this lane carries no wave — there is one row here, and giving it back
+    is an abort, which belongs in your report`.
+  - **eine id außerhalb der eigenen Welle** (409), mit der Welle im Body.
+  - **alle Zeilen** (409): `that is an abort, not a split`.
+  - **die Lane hat schon berichtet** (409): ein Fleet-Report mintet die Provenienz aus `s.taskId`,
+    und ein Split hinter einem Report ließe ihn eine Zeile benennen, die die Lane nicht mehr trägt.
+
+Die Owner-Seite ist `POST /api/wave/dispatch` (Owner-Token, kein Self-Spiegel): `{"ids":[…]}` mit
+2 bis `LAND_WAVE_MAX_DEFAULT` (3) Zeilen. Sie prüft die Menge gegen den Sensor selbst — die ids
+müssen EXAKT eine Welle sein, die `task-land-waves.ts` in diesem Moment projiziert, sonst 409 mit
+dem, was der Sensor stattdessen sagt. Automatische Wellenbildung im Tick gibt es NICHT; sie steht
+ausdrücklich unter der Schnittlinie von §5.
+
 ## inbox — `GET /api/self/inbox`, `POST /api/self/inbox/:id/read`
 
 Der **dauerhafte Rückkanal des PROGRAMS**, nicht der einer Session. Ein Eintrag ist ein ZEIGER auf

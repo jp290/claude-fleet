@@ -1110,17 +1110,20 @@ Seit 2026-09-03 trägt genau dieses Verdikt eine **getypte, geschlossene** Zusat
  "detail":"rebase ok, but fast-forwarding main failed: … — lane kept"}
 ```
 
-- **Das Enum ist geschlossen und hat heute GENAU EINEN Wert:** `ff-lost`
-  (`lane-signals.ts#MERGE_ERROR_REASONS`). Es wird an EINER Stelle geschrieben — dem sauberen
-  Land-Zweig in `mergeJob`, den ein rotes, übersprungenes oder abgelaufenes Verify und jeder
-  Konflikt gar nicht erst erreichen. `detail` bleibt Prosa und wird **nie geparst**: eine
-  umformulierte Prosa-Zeile hätte die Lane sonst still wieder blockiert.
-- **Nur dieser eine Fakt hebt die Blockade auf** (`lane-signals.ts#mergeBlocksLane`): die Klausel
-  „no blocked/errored merge (a lost fast-forward is not one)" der drei Prädikate testet POSITIV
-  gegen das PAAR `status === "error"` UND `errorReason === "ff-lost"` — nie gegen den Grund allein.
-  Ein `blocked` (auch eines, das den Grund trägt), ein `error` aus einem geworfenen Merge-Lauf, ein
-  rotes Verify, ein ungelöster Konflikt, ein **abwesender** oder unbekannter `errorReason` — alle
-  blockieren unverändert. Abwesend heißt UNKNOWN, nie „war wohl ein Rennen".
+- **Das Enum ist geschlossen und trägt seit M3 (2026-09-07) ZWEI Werte:** `ff-lost` und
+  `dirty-main` (`lane-signals.ts#MERGE_ERROR_REASONS`; der zweite hat seinen eigenen Abschnitt
+  unten). `ff-lost` wird an EINER Stelle geschrieben — dem sauberen Land-Zweig in `mergeJob`, den
+  ein rotes, übersprungenes oder abgelaufenes Verify und jeder Konflikt gar nicht erst erreichen.
+  `detail` bleibt Prosa und wird **nie geparst**: eine umformulierte Prosa-Zeile hätte die Lane
+  sonst still wieder blockiert.
+- **Nur die Werte DIESER LISTE heben die Blockade auf** (`lane-signals.ts#mergeBlocksLane`): die
+  Klausel „no blocked/errored merge (a lost fast-forward is not one)" der drei Prädikate testet
+  POSITIV gegen das PAAR `status === "error"` UND Mitgliedschaft in `MERGE_ERROR_REASONS` — nie
+  gegen den Grund allein, und seit M3 gegen die LISTE statt gegen ein Literal, damit Loader und
+  Prädikat nicht über verschiedene Mengen entscheiden können. Ein `blocked` (auch eines, das einen
+  Grund trägt), ein `error` aus einem geworfenen Merge-Lauf, ein rotes Verify, ein ungelöster
+  Konflikt, ein **abwesender** oder unbekannter `errorReason` — alle blockieren unverändert.
+  Abwesend heißt UNKNOWN, nie „war wohl ein Rennen".
 - **Der Loader validiert ihn und datiert genau die alte Schreiberform**
   (`server.ts#withValidErrorReason`): ein persistierter Wert überlebt den Neustart nur, wenn er im
   Enum steht UND auf einem `error`-Verdikt sitzt; sonst wird das FELD fallengelassen (nicht die

@@ -80,12 +80,14 @@ nicht noetig. Was bleibt: lokale Suite-ARBEIT 2418–2551 s liegt ueber dem GESA
    `phaseBasis` und die feuernde Regel, und niemand hat das je gelesen. Schmale Zeile, genau eine
    Frage, zwei erlaubte Antworten. **Nicht** als Regressjagd aufblasen: die Familie ist in
    `docs/verify-tiering.md` §11.2o dokumentiert, die Basisraten sind in `65358fef` gemessen.
-4. **Die Helfer-Zeile ist GESCHRIEBEN, aber NICHT gefilt** — Volltext liegt im Scratchpad dieser
-   Session (`helperline.txt`). **Vor dem Filen auf Option (v) umschreiben**: die Uhr an die
-   WAEHLBARKEIT haengen statt an `cover.at` (deckt alle drei F1-Faelle fuer hoechstens 60 s, deckt F2
-   nicht). Die Lane sagt ausdruecklich: `FLEET_AUDIT_HELPER_GRACE_MS` zu erhoehen OHNE (v) waere
-   „die teure Haelfte der billigen Reparatur". Done-Kriterium ueber `remote.name`, nicht ueber PID.
-   Release-Tor ist entfallen — `e407aef5` ist angenommen.
+4. **Die Helfer-Zeile IST GEFILT: `d49dd776`** (pending, auftrag). Sie steht auf Option (v) — die
+   Gnadenfrist-Uhr an die WAEHLBARKEIT haengen statt an `cover.at`; deckt alle drei F1-Faelle fuer
+   hoechstens 60 s, deckt F2 bewusst nicht. Done-Kriterium ueber `remote.name`, PID nur als
+   Gegenprobe. Zwei harte Randbedingungen stehen drin: kein Helfer online ⇒ sofort lokal, und kein
+   Doppelclaim. Kein `.env`/`watchdog.sh`-Edit.
+   (Korrigiert 2026-09-07 ~21:0x. Die vorige Fassung sagte „geschrieben, Volltext im
+   Session-Scratchpad" — das war GENAU der Fehler, den §6 als `.git/`-Fall fuehrt: ein fertiges
+   Artefakt an einem Ort, den nach dem Sessionende strukturell niemand findet. Deshalb gefilt.)
 
 ## 4. WAS NIE ANGEKOMMEN IST (und was das ueber den Kanal sagt)
 

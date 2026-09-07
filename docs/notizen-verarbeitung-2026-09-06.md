@@ -90,7 +90,8 @@ Der Block ist Teil von `deliveredBytes` im Receipt; die angehaengten Ids stehen 
 *Done:* Der Gruendungsprompt eines Dispatches, dessen Auftrag mit ≥ 1 Notiz eine Nicht-Naben-Datei
 teilt, traegt den Block mit ≤ 5 Zeilen in der Rangordnung oben; ein Dispatch ohne Treffer traegt
 keinen Block; der Receipt nennt die Ids und die Bytes.
-*Gebaut* in Lane `fleet/260907054253-88b6` (`task-notes.ts` + der Einbau in `server.ts#briefAndSend`
+*Gebaut* in Lane `fleet/260907054253-88b6`, gelandet 2026-09-07 09:4x als `24cd54e` + `189f815` (Self-Land der
+Program-MAIN Slot 5, `verify.ok:true`, 149 s Arbeit, 0 s Schlange) (`task-notes.ts` + der Einbau in `server.ts#briefAndSend`
 und das Receipt-Feld `notes`); die Checks stehen in `e2e/tasks.ts` als Sektion `(d5)`/`(d5-live)`.
 *Verify:* Checks in `e2e/tasks.ts` (Dispatch-Familie, `FLEET_CMD=true`, Prompt aus
 `streams/prompts.jsonl` bzw. Pane lesen): (a) 7 passende Notizen ⇒ genau 5 Zeilen, Reihenfolge

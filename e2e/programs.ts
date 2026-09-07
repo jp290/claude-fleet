@@ -8759,13 +8759,25 @@ exit 0
     // time — so nothing here is a re-read of the first arm's cached refusal.
     m3Clean();
     ffrReset();
+    // WAIT FOR THE SERVER TO HAVE LOOKED, and it is a fixture precondition rather than a sleep:
+    // arm (ii) restarted the server, and after a boot a pane's output has not been observed and the
+    // slow tick has not refreshed the lane's git facts yet — `observed:false` reads as NOT
+    // done-looking by design (lane-signals.ts). Firing the door into that window cost this arm a
+    // red check on its first run: a 409 that looked like the exemption failing and was the probe
+    // asking before the machine had an answer. (8b) waits the same way after its own restart.
+    const m3Ready = m3H.slot === null ? false : await waitDoneLooking(m3H.slot);
     const m3Reland = ffrTok === "" ? null : await selfLand(ffrTok, m3H.row);
+    // the REFUSAL TEXT, not just its number: rung 10 (no progress) and rung 11 (not done-looking)
+    // are the same 409, and only one of them would mean the exemption did not hold. A red check
+    // here has to name which rung answered instead of leaving the next reader to guess.
+    const m3RelandText = m3Reland ? (m3Reland.ok ? "" : (await m3Reland.text()).slice(0, 200)) : "no token";
     const m3RelandDone = m3Reland?.ok === true && await ffrDone(m3H.row);
     check("(iii) M3: with the main checkout committed clean the SAME lane lands through the SAME door — 'dirty-main' never blocked done-looking",
-      m3RepoStatus() === "" && m3Reland?.ok === true && m3RelandDone
+      m3RepoStatus() === "" && m3Ready && m3Reland?.ok === true && m3RelandDone
         && ffrLogRuns().length === 1 && main2Of() !== m3MainBefore,
-      JSON.stringify({ status: m3RepoStatus().slice(0, 120), reland: m3Reland?.status,
-        done: m3RelandDone, gateRuns: ffrLogRuns().length }));
+      JSON.stringify({ status: m3RepoStatus().slice(0, 120), ready: m3Ready,
+        reland: m3Reland?.status, refusal: m3RelandText, done: m3RelandDone,
+        gateRuns: ffrLogRuns().length, why: doneLookingWhy }));
 
     // (iv) THE CONTROL, and without it arm (i) proves nothing worth having: a main checkout that
     // is dirty in a file this land does NOT touch has never stopped a fast-forward and must not

@@ -924,17 +924,57 @@ check("(J) pending survives restart; lane, ⚙ steward and awaiting-owner remain
     slots: loadedNegatives.filter((s) => [negativeLane.slot, stewardId, awaitingId].includes(s.id)) }));
 
 free = loadedNegatives.filter((s) => !s.cwd).map((s) => s.id);
-const receiver = free[0] ?? 0;
-const receiverOpen = receiver ? await post(`/api/slots/${receiver}/open`, { cwd: REPO }) : null;
-const freshReceiver = (await pingSlots()).find((s) => s.id === receiver);
-check("(J) the only eligible main opens UNOBSERVED (lastOutput=0)",
-  receiverOpen?.ok === true && freshReceiver?.worktree === null && freshReceiver.lastOutput === 0,
-  JSON.stringify(freshReceiver));
+// A FRESHLY OPENED PANE IS NO LONGER AN UNOBSERVED ONE, so this fixture stopped building itself.
+// The version that opened a slot and asserted `lastOutput === 0` failed here deterministically from
+// 4c562e7 on — measured on the red tree: openedAt 1788741306175, lastOutput 1788741306209, stamped
+// 34 ms after the open, with the ping row already held for `quiet-hours` instead. That server
+// change is right (server.ts, poll): the repaint quiet window keeps its veto over RECENCY and loses
+// it over the transition "never observed → observed", because a pane whose only bytes fall inside
+// the window used to read as never-observed for the rest of its life.
+// A first byte is unavoidable, which is what makes the old fixture unbuildable rather than merely
+// mistimed: ensureSlot SEEDS the stream with capture-pane output before it arms the pipe, so
+// `size > offset` holds on the next 100 ms poll tick no matter what the pane runs. Measured on an
+// isolated instance: non-zero 3 ms after the open POST returned (332 B of zsh prompt), and still
+// stamped under a FLEET_CMD that never exits and never reaches a prompt (2 B).
+// So the one input the rule still has is the shape the rule exists for — a pane whose output the
+// server cannot see AT ALL because its stream was never created. This builds exactly that, by
+// taking write permission off the instance's streams directory for the duration of one open:
+// ensureSlot cannot write the stage file, the pipe is never armed, and `lastOutput` stays 0 for
+// that pane's whole life — the 2 s self-heal keeps failing on the same write, which is why it
+// STAYS 0 rather than being repaired a tick later. Stricter than the fixture it replaces: that
+// pane had already painted and was "unobserved" only because the window hid the paint.
+const blind = free[0] ?? 0;
+const streamsDir = `${import.meta.dir}/streams`;
+spawnSync("chmod", ["500", streamsDir]);
+const blindOpen = blind ? await post(`/api/slots/${blind}/open`, { cwd: REPO }) : null;
+const blindWhy = blindOpen ? ((await blindOpen.json()) as { error?: string }).error ?? "" : "";
+await Bun.sleep(2500); // past two self-heal rounds: a pane the server COULD observe would be by now
+const blindSlot = (await pingSlots()).find((s) => s.id === blind);
+check("(J) the fixture receiver is a pane the server can NEVER observe — no stream, lastOutput=0",
+  blindOpen?.ok === false && /EACCES|permission denied/i.test(blindWhy) && blindWhy.includes("/streams/")
+    && !!blindSlot?.cwd && blindSlot.worktree === null && blindSlot.lastOutput === 0,
+  JSON.stringify({ why: blindWhy, slot: blindSlot }));
 const unobserved = await waitPing(precheck.at,
   (p) => p.status === "pending" && p.lastResult.includes("unobserved"), 5000);
 check("(J) an unobserved pane is UNKNOWN, never idle permission, and no negative recipient fires",
   unobserved?.ping?.status === "pending" && unobserved.ping.lastResult.includes("unobserved")
     && (await pingPrompts()).length === 0, JSON.stringify(unobserved?.ping));
+
+// The blind pane has said what it is here for; the rest of (J) needs a receiver the server CAN
+// observe. Quiet hours are still armed, so the self-heal repairing the blind pane's pipe in the
+// gap between the chmod and the kill can never turn it into a recipient.
+spawnSync("chmod", ["700", streamsDir]);
+if (blind) await post(`/api/slots/${blind}/kill`, {});
+await Bun.sleep(300);
+const receiver = (await pingSlots()).filter((s) => !s.cwd).map((s) => s.id)[0] ?? 0;
+const receiverOpen = receiver ? await post(`/api/slots/${receiver}/open`, { cwd: REPO }) : null;
+// the seed lands at the END of ensureSlot, so the stamp can be up to one 100 ms poll tick behind
+// the open response — this wait is about the harness reading, not about the pane doing anything.
+await Bun.sleep(500);
+const freshReceiver = (await pingSlots()).find((s) => s.id === receiver);
+check("(J) the only eligible main opens, and this one the server can see",
+  receiverOpen?.ok === true && freshReceiver?.worktree === null && freshReceiver.lastOutput > 0,
+  JSON.stringify(freshReceiver));
 
 // Let openSlot's repaint quiet window pass, then make observation deterministic through paneEnv.
 // Quiet hours still hold, so a now-observed and idle receiver must remain pending for THAT reason.

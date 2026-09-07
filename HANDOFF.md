@@ -29,7 +29,14 @@ nennst nur das Praedikat ohne Zahl.
 | Zeile | Sha | Verify | Audit |
 |---|---|---|---|
 | `779eb456` Lane-Deckel je Repo | `984a4b36` | ok, 150 448 ms, waitMs 0, volle Kette | **gruen**, 3853/0, 42,6 min, covers 984a4b36+9e766050 |
-| `e407aef5` Audit-Platzierung (docs) | `21d03cf` (Lane-Sha) | pins ALL PASS | — |
+| `e407aef5` Audit-Platzierung (docs) | `6b72d622` | proportional, steps [install,pins], 950 ms | Watch `ead207a7` |
+
+**`e407aef5` hat NICHT diese MAIN gelandet:** actor `{kind:owner, via:bearer, suspect:owner-token-outside-board}`.
+Der Controller hat es auf Nachfrage ausdruecklich als SEINEN Land bestaetigt (`POST /api/slots/5/merge` mit dem
+Owner-Bearer aus dem Haupt-Checkout, ~20:36, in Unkenntnis meiner schon erfolgten Report-Annahme). Die Signatur
+ist damit erklaert und harmlos, aber sie ist DIESELBE, die mich heute frueh eine Fehlzuschreibung gekostet hat.
+**Merksatz: `suspect: owner-token-outside-board` heisst NICHT unbefugt, sondern NICHT VOM BOARD.** Und WER es war,
+beantwortet nur eine Rueckfrage, nie das Ledger.
 | `d3f7c11d` R5 Deploy-Klassifikation | `61156ac5` | ok, ms 1 698 996 davon **waitMs 1 557 000** (92 % Schlange) | Audit-Watch `9c8b73c9` armiert |
 | `d8859ff` §E-Korrektur (Direkt-Commit) | `d8859ff` | — | **nie** (Direkt-Commits bekommen keinen Audit) |
 
@@ -65,7 +72,10 @@ nicht noetig. Was bleibt: lokale Suite-ARBEIT 2418–2551 s liegt ueber dem GESA
 1. **Merge-Watch `491d5018`** (Land `d3f7c11d`) abwarten; bei `landed=YES` die Sha ueber die
    Land-Note (`mainAfter`) suchen, **nie ueber `git rev-parse main`** — main bewegt sich zwischendurch,
    das ist mir heute zweimal passiert. Dann Audit-Watch armieren.
-2. **`89279f1f` ist queued** und dispatcht als naechstes (Pos. 218, nach `e407aef5`).
+2. **`89279f1f` IST NICHT MEHR DEINE** — der Controller hat sie um 14:52 auf Slot 6 dispatcht; sie
+   ist fertig (7 Commits, sauber, 6 ahead) und **er landet sie**. Nicht doppelt aufziehen.
+   (Korrigiert 2026-09-07 ~20:4x; die vorige Fassung -dispatcht als naechstes- war beim Schreiben
+   schon ueberholt, weil ich den Queue-Zustand nicht gegen den Controller abgeglichen hatte.)
 3. **`6d7ff117` (pending) filen-bereit:** §11.2o — die Sonde druckt seit dem Diagnose-Commit
    `phaseBasis` und die feuernde Regel, und niemand hat das je gelesen. Schmale Zeile, genau eine
    Frage, zwei erlaubte Antworten. **Nicht** als Regressjagd aufblasen: die Familie ist in
@@ -92,6 +102,13 @@ Zwei Messungen heute: 33 Ablehnungen / 16 min (zugestellt), 55 / 30 min (aufgege
 Zeile gefilt — notiz-Deckel 10/10.** Kein Vorschlag, den Guard zu entfernen; die Frage ist, ob ein
 nachweislich unveraenderter Rest nach Karenz als abgestanden gelten darf, oder ob der Fix ein
 Rueckkanal „Composer frei" ist, der das Pollen ueberfluessig macht.
+
+## 4b. Der Lane-Deckel fuer `claude-fleet` steht seit ~20:20 auf 3
+
+Owner-Entscheid, gesetzt ueber `POST /api/repo-lane-cap` — also genau die Tuer, die `779eb456` heute gebaut hat.
+**Meine 92-%-Schlangenzahl auf dem Land-Pfad ist dadurch NICHT geheilt**, aber sie ist ab jetzt gegen einen
+GESETZTEN Deckel gemessen statt gegen den machine default. Wer die Zahl neu erhebt, muss das dazusagen, sonst
+vergleicht er zwei Regime miteinander.
 
 ## 5. Deckel-Mechanik — die Tuer, die ich zu spaet gefunden habe
 
@@ -930,6 +947,21 @@ weiter: der Owner hat den Wellenmodus (W1–W3) hier eingehaengt.
   darf die P3-MAIN bei anhaltendem Astra-REJECT (F1–F8 unstrittig, Restpunkte ≤ mittel, dokumentiert) selbst annehmen, oder bleibt
   ACCEPT der zweiten Astra Pflicht? Ohne Antwort: nichts ueber den Deckel, Plan unveraendert. Das Checkpoint-Auto `f33a3a9f` ist
   nach dem Feuern geloescht.
+- **20:3x–20:4x, BEIDE ENTSCHEIDE DA (Controller Slot 1, owner-delegiert, auf Attention `58cb3e5e`):** (A) Repo-Deckel
+  claude-fleet auf 3 (`POST /api/repo-lane-cap`), `6b61a7bf` vom Controller per Hand dispatcht → **Slot 5, Branch
+  `fleet/260907183653-48b0`, Opus 5, gestartet 20:36:54**. Lane-Watch `4f2e591c` (`idleSec 0`) armiert. (B) **DIE P3-MAIN DARF SELBST
+  ANNEHMEN** — Begruendung: fuenf REJECT-Runden = strukturell (Regelbuch ~5x-Schleife); drei HARTE Auflagen, sonst gilt der Entscheid
+  nicht: (1) jeder verbleibende REJECT-Punkt NAMENTLICH im Dokument als offener Punkt, keine Fussnote/Zusammenfassung; (2) sichtbarer
+  Stempel „MAIN-SELBSTANNAHME nach fuenf Astra-REJECT-Runden, KEIN Astra-ACCEPT“ + Datum + Attention-Id 58cb3e5e, das Dokument darf sich
+  nirgends als angenommen lesen; (3) KEINE Runde 6 — hebt das Einarbeiten von Runde 5 einen Restpunkt ueber „mittel“, Abbruch und
+  Meldung, der Entscheid wird zurueckgenommen. **Der Lane per `POST /send` (sendId `6debb38e…`, acceptance observed, 20:38) als
+  Auftragsaenderung zugestellt**, bevor sie eine Runde 6 starten konnte (sie verifizierte gerade die Runde-5-Zitate): Runde 5
+  einarbeiten, Sektion „Offene Punkte — NICHT angenommen“, Stempel unter H1, Indexzeile „Selbstannahme, kein ACCEPT“, dann Phase B
+  (cp+cmp, install+pins, eigener Commit), kein `independent-review.md`. Report-Pflicht: Datei-Hash getrennt vom Commit-Sha, Zahl
+  offener Punkte, Original-Tails, grep auf Annahme-Woerter leer. **Bei der Abnahme des Reports pruefen:** Stempel wortgleich, Sektion
+  vorhanden und vollstaendig gegen review-round1..5, Hash der Datei == Report, `cmp` Draft/Datei, Indexzeile genau einmal, Pins-Tail;
+  erst dann `decision.accepted` (Attention 58cb3e5e schliessen) und Land beim Controller anmelden. Controller-Fehler zur Kenntnis:
+  `522701c` wurde mit REJECTED Report gelandet — unser Fall ist bewusst anders (benannter Entscheid mit Auflagen, kein Gate-Gruen).
 - **Rueckwege, die eine Kompaktierung ueberleben:** (Auto geloescht, s.o.) Fleet-Auto `f33a3a9f` (One-Shot auf Slot 15, faellig 17:40,
   `idleSec 60`) fuer den Checkpoint +8h. Session-lokal (sterben mit Pane/Succession): Monitore auf den Statuswechsel von
   `6b61a7bf` und auf 17:40. **Noch KEIN Fleet-Watch** — der Lane-Watch braucht den Slot, den es erst bei `sent` gibt.

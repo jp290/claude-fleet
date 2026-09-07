@@ -1,10 +1,10 @@
 ---
 frage: Welche Quelle wird bei welchem Trigger ausgewaehlt oder ausgelassen, was davon steht im Brief, was in der Quittung, und laesst sich Empfaenger/Rolle/Repo/Baum/Briefversion/Aktualitaet verbinden?
-urteil: Die Auswahl- und Quittungskette rekonstruiert sich byte-genau und driftet nicht (3/3 Hashes, 293/293 Baumstaende). Die zwei echten Luecken sitzen am Rand: die Quittung belegt BAU, nicht ZUSTELLUNG, obwohl derselbe Aufruf die Annahme misst; und die Auslassungs-Begruendung ist die erste gefallene Sprosse, nicht der Grund.
+urteil: Die Auswahl- und Quittungskette rekonstruiert sich byte-genau (3/3 Hashes reproduziert, 934/934 Bytes am eigenen Gruendungsprompt gemessen). Ob die Quelle zwischen Spawn und Auslieferung driftet, ist UNKNOWN — die frueher hier gemeldeten 293/293 Baumstaende messen Vorfahrschaft, nicht den Spawn-Baum (korrigiert 2026-09-08, §3). Die eine belastbare Luecke sitzt am Rand: die Quittung belegt BAU, nicht ZUSTELLUNG, obwohl derselbe Aufruf die Annahme misst (B1). Dass die Auslassungs-Begruendung nur die erste von mehreren zutreffenden Sprossen nennt, ist der ausgesprochene Vertrag und ein ungekosteter Darstellungswunsch, kein Fehler (B2, korrigiert 2026-09-08).
 bereich: [context, briefs, harness, ledger]
 belege: [context-receipts.jsonl, .fleet/context-packs.json, context-packs.ts, context-plan.ts, context-manifest.ts, server.ts, e2e/pins.ts, fleet.json]
-nicht-gemessen: Keine Live-UI, kein Modellstart, keine Live-Injektion, keine isolierte Suite; kein Fremdrepo-Manifest (nur `claude-fleet` selbst); die 157 Fremdbaum-Zeilen nur aggregiert; ob ein Empfaenger den Ankerblock GELESEN hat, bleibt strukturell unknown.
-stand: 2026-09-07
+nicht-gemessen: Keine Live-UI, kein Modellstart, keine Live-Injektion, keine isolierte Suite; kein Fremdrepo-Manifest (nur `claude-fleet` selbst); die 157 Fremdbaum-Zeilen nur aggregiert; ob ein Empfaenger den Ankerblock GELESEN hat, bleibt strukturell unknown; der SPAWN-Baum einer Lane wurde nie unabhaengig belegt — der Drift-Ausschluss in §3 ist damit unknown, nicht widerlegt und nicht bestaetigt.
+stand: 2026-09-07 (korrigiert 2026-09-08, siehe Korrekturvermerk)
 ---
 
 # Quelle → Kontext → Empfaenger: die reale Kette, an drei Quittungen nachgerechnet
@@ -15,6 +15,22 @@ Astra-Lane S2D, Program `eec695280b9ca5a84824eec0`, Task `457511cc`, Branch
 `a65fbdd`, alle Symbole am neueren Baum gegengeprueft, Zeilenangaben gelten fuer `a65fbdd`).
 Lokale Uhr der Datenprobe: `2026-09-07T05:0x`. Dateiname aus dem Auftrag beibehalten.
 Nur diese Datei; kein Code, kein Regelbuch, kein Land, kein Deploy.
+
+> **Korrekturvermerk 2026-09-08 (Owner-Einspruch, eigene Lane, nur diese Datei).** Zwei Aussagen
+> dieser Notiz waren zu stark und sind hier zurueckgenommen, mit Gegenprobe statt Formulierung:
+> **(1) Der Drift-Ausschluss in §3.** `branch~$(git rev-list --count head..branch)` rekonstruiert
+> auf einer linearen Historie genau den `head`, mit dem die Sonde gefuettert wurde; sie
+> identifiziert keinen unabhaengigen Spawn-Baum. Eine synthetische Git-Historie ausserhalb des
+> Repos zeigt, dass auch ein NACH dem Spawn gewaehlter `head` die Gleichheit erfuellt. Die
+> historischen 293/293 werden nicht mehr als Drift-Beweis gefuehrt; der Punkt ist **unknown**.
+> **(2) B2.** Die erste gueltige Ausschlussursache ist nicht falsch, nur weil weitere zutreffen;
+> ein Gegenvertrag wurde gesucht und nicht gefunden. B2 ist als optionaler Darstellungswunsch mit
+> ungekosteter Beobachtung gekennzeichnet, nicht als Routingfehler.
+> **Was NICHT entwertet wird:** die drei reproduzierten Ankerblock-Hashes, die gemessenen 934/934
+> Bytes gegen den eigenen Gruendungsprompt, der Feld-Zensus ueber 582 Ledger-Zeilen und die
+> Befunde B1, B3, B4, B5 — sie haengen an keiner der zwei korrigierten Aussagen. Der Rest der
+> Notiz steht unveraendert; keine Code-, Regel- oder Vertragsaenderung geht von dieser Korrektur
+> aus.
 
 **Warum diese Abstraktion existieren soll — die Frage vor der Kritik.** Zeiger statt Kopien: ein
 Brief nennt Pfad und Anker plus eine Zweckzeile, und die Quelle bleibt in der Quelle. Das ist der
@@ -151,22 +167,105 @@ Adressatenfrage (§4, B2/B3).
 | **Zustellung** | **nein** | `deliveredBytes` ist die Laenge des Strings, den Fleet an tmux uebergab (§B1) |
 | **Lesen/Verstehen** | **nein, und darf es nie sein** | ausdruecklich `unknown` |
 
-**Der Baum-Join stimmt — gemessen, nicht angenommen.** Der Verdacht „Quelle aendert sich zwischen
-Auswahl und Auslieferung" ist strukturell moeglich: der Worktree entsteht bei
-`server.ts:8001#createWorktree` am Integrations-Tip, der quittierte `head` wird erst
-`server.ts:8196` nach 4 s Boot-Grace plus Readiness-Wartezeit gelesen. Ueber alle 293
+**Der Baum-Join ist UNKNOWN — die urspruengliche Sonde hat ihn nie gemessen (Korrektur
+2026-09-08).** Der Verdacht „Quelle aendert sich zwischen Auswahl und Auslieferung" ist
+strukturell moeglich: der Worktree entsteht bei `server.ts:8001#createWorktree` am
+Integrations-Tip, der quittierte `head` wird erst `server.ts:8196` nach 4 s Boot-Grace plus
+Readiness-Wartezeit gelesen. Die urspruengliche Fassung dieser Notiz meldete dazu ueber alle 293
 Quittungszeilen, deren Lane-Branch heute noch existiert:
 
 ```
 lane base == receipt.head: 293  differs: 0  unresolvable: 0  (of 293)
 ```
-(Basis = `<branch>~$(git rev-list --count <head>..<branch>)`.) **Grenze der Messung:** eine
-spaeter auf `main` rebasete Branch haette eine andere Basis, faellt also nicht als Drift auf,
-sondern verschwindet aus der Gleichheit — dass 293/293 gleich sind, heisst folglich: unter den
-noch existierenden, nicht-rebasten Branches gab es nie eine Drift. Ein sauber funktionierender
-Pfad, und er darf das Ergebnis sein.
+mit Basis = `<branch>~$(git rev-list --count <head>..<branch>)` — und las das als „keine Drift".
+**Das traegt nicht.** Die Formel rekonstruiert auf einer linearen Kette genau den `head`, mit dem
+sie gefuettert wurde: `n := |head..branch|` ist auf einer linearen Kette die Distanz von der
+Branch-Spitze zu `head`, und `branch~n` ist damit per Konstruktion wieder `head`. Was der Test
+entscheidet, ist deshalb „liegt `head` als Vorfahr auf der heutigen First-Parent-Kette der
+Branch?" — nicht „war `head` der Baum, auf dem die Lane gespawnt wurde". Ein unabhaengiger
+Spawn-Beleg wurde nie danebengelegt.
+
+*Gegenprobe, synthetisch und ausserhalb des Repos gefahren* (Original-Log im Scratchpad der
+korrigierenden Lane, Pfad im Report; kein Fleet-Zustand beruehrt, keine Live-Lane, kein Prozess
+angefasst). Vier Commits `c0→c1→c2→c3` auf `main`, eine Lane per `git worktree add` auf `c2`
+gespawnt, zwei Lane-Commits; `git reflog` haelt den wahren Spawn fest, die Sonde wird gegen alle
+vier Kandidaten gefahren. **Vollstaendig reproduzierbar in einem leeren Verzeichnis:**
+
+```sh
+R=$(mktemp -d); cd "$R"; git init -q -b main .
+for n in 0 1 2 3; do echo $n > m$n.txt; git add .; git commit -qm "c$n"; done
+C0=$(git rev-parse main~3); C2=$(git rev-parse main~1); C3=$(git rev-parse main)
+git branch lane "$C2"; git worktree add -q wt lane
+( cd wt; for n in 1 2; do echo $n > l$n.txt; git add .; git commit -qm "lane$n"; done )
+probe() { n=$(git rev-list --count "$1"..lane); echo "$1 -> $(git rev-parse lane~$n)"; }  # Sonde
+for H in "$C0" "$C2" "$C3"; do probe "$H"; done      # A: c0 und c2 reproduzieren sich, c3 nicht
+( cd wt; git rebase -q main )
+for H in "$C0" "$C2" "$C3"; do probe "$H"; done      # B: jetzt reproduziert sich AUCH c3
+```
+
+Gelaufene Ausgabe (Kurz-Shas, aus dem Original-Log):
+
+```
+== A: Lane spawnt auf c2, zwei Lane-Commits, NIE umgeschrieben ==
+  wahrer Spawn: branch: Created from 3af97e2a09e2577944a7db0464f9209fe9abe7ea
+  head=45d9bbc1 n=4 basis=45d9bbc1 -> PASS  (Basis==head)
+  head=6e6b1479 n=3 basis=6e6b1479 -> PASS  (Basis==head)
+  head=3af97e2a n=2 basis=3af97e2a -> PASS  (Basis==head)
+  head=30e54b2f n=2 basis=3af97e2a -> differs
+== B: dieselbe Lane, spaeter auf main (c3) rebased — was der Land-Pfad tut ==
+  head=45d9bbc1 n=5 basis=45d9bbc1 -> PASS  (Basis==head)
+  head=6e6b1479 n=4 basis=6e6b1479 -> PASS  (Basis==head)
+  head=3af97e2a n=3 basis=3af97e2a -> PASS  (Basis==head)
+  head=30e54b2f n=2 basis=30e54b2f -> PASS  (Basis==head)
+== C: Kontrolle — andere Lane, Spawn erst auf c3, identische Probe-Ausgabe wie B ==
+  head=45d9bbc1 n=5 basis=45d9bbc1 -> PASS ... head=30e54b2f n=2 basis=30e54b2f -> PASS
+== D: Kontrolle — head liegt NICHT auf der Kette der Branch ==
+  head=40b62696 n=4 basis=6e6b1479 -> differs
+```
+
+Drei Saetze daraus:
+
+- **Schon ohne jedes Umschreiben bestehen drei von vier Kandidaten die Probe** (Fall A): jeder
+  VORFAHR des Spawn-Baums besteht sie. Ein PASS benennt also nie einen Baum, sondern eine Menge.
+- **Ein NACH dem Spawn gewaehlter `head` besteht sie ebenfalls**, sobald die Branch einmal
+  umgeschrieben wurde (Fall B: Spawn `c2`, nach `git rebase` auf `c3` besteht auch `c3`) — und
+  genau das tut der Land-Pfad dieses Repos, und genau dazu weist `CLAUDE.md` eine Lane vor dem
+  Done-Report bei `wouldConflict` an. **Die frueher hier notierte „Grenze der Messung" war damit
+  falsch herum:** eine rebasete Branch verschwindet NICHT aus der Gleichheit, sie erfuellt sie mit
+  der falschen Basis. Fall C zeigt die Konsequenz — „Spawn auf c2, dann rebased" und „Spawn auf
+  c3" liefern Zeile fuer Zeile dieselbe Ausgabe.
+- **Was die Sonde wirklich kann**, zeigt Fall D: sie trennt „Vorfahr auf der Kette" von „nicht auf
+  der Kette". Das ist ein echtes, aber schwaecheres Ergebnis, und in dieser Lesart bleiben die
+  293/293 gueltig: fuer 293 Quittungszeilen liegt der quittierte `head` auf der heutigen
+  First-Parent-Kette der zugehoerigen Lane-Branch, in der aufgezeichneten Tiefe. **Als
+  Drift-Ausschluss wird diese Zahl hier nicht weitergefuehrt.**
+
+*Status:* **unknown**. Nicht „Drift widerlegt", nicht „Drift belegt" — nie gemessen.
+
+*Was ihn entscheiden wuerde (nicht gefahren, per Auftrag kein neuer Sweep).* Ein Spawn-Zeit-Fakt
+existiert im Code: `server.ts#dispatchTask` haelt `baseSha = laneForkSha(wt.path,
+integrationBranch)` fest, also den Fork-Punkt UNMITTELBAR nach `createWorktree` und damit vor dem
+Lesen des Quittungs-`head`; er liegt auf `Slot.worktree.baseSha` (`fleet.json`, nur fuer lebende
+Slots) und laeuft ueber `server.ts#buildLaneOutcome` in `lane-outcomes.jsonl.base` (853 Zeilen, 31
+mit `base: null`). **Mit einer benannten Einschraenkung, die den Join nicht trivial macht:**
+`buildLaneOutcome` nimmt `facts.baseSha ?? s.worktree.baseSha ?? laneBaseRef(s)` — die erste
+Quelle ist der vom Land-Ort nach einem Rebase uebergebene Fork-Punkt, nicht der Spawn (der
+Kommentar dort sagt es: „handed over by the land site when a rebase moved it"). Ein belastbarer
+Test joint also `context-receipts.jsonl.head` gegen den SPAWN-Zweig und muss Zeilen, die nur den
+Land-Zweig tragen, als `unknown` fuehren statt als Treffer.
+
+*Baum der Korrektur.* Die in diesem Korrektur-Abschnitt und in B2 NEU hinzugekommenen
+Code-Aussagen sind an `15108892f6d450856780399cdc692e2cac8f8224` gelesen, nicht an `a65fbdd` —
+darum stehen sie als Symbolverweise. Die Zeilenverweise der ersten Fassung gelten unveraendert
+fuer `a65fbdd` und wurden nicht angefasst.
 
 ## 4. Fuenf Befunde, rangiert
+
+**Rangfolge nach der Korrektur vom 2026-09-08:** die Reihenfolge B1…B5 ist die der ersten Fassung
+und bleibt hier stehen, damit Verweise auf „B2" nicht ins Leere zeigen. Nach Kosten rangiert sie
+heute anders: **B1** ist der einzige Befund mit belegten Kosten, dann **B4** (belegte Rotungsrate,
+heute unverletzt), dann **B3** (Kosten null heute, Sperre vor CP-A). **B2** und **B5** sind
+ungekostete Beobachtungen und tragen keine Empfehlung.
 
 ### B1 — Die Quittung belegt den BAU des Briefs, nicht seine ZUSTELLUNG — obwohl derselbe Aufruf die Annahme misst und zurueckgibt
 
@@ -202,11 +301,25 @@ liest. Die Sonde muss als SIE SELBST scheitern, wenn die Attrappe nicht rendert.
 „Anker-Block oder Receipt-Hash aendern"; ein zusaetzliches Feld NEBEN dem Hash faellt nicht darunter,
 sollte aber nach N1 laufen, nicht daneben.
 
-### B2 — Die Auslassungs-Begruendung ist die ERSTE gefallene Sprosse, nicht der Grund — und das trifft genau den bereits empfohlenen Schnitt
+### B2 — Die Auslassungs-Begruendung nennt EINE gueltige Sprosse, wo mehrere zutreffen — ein Darstellungswunsch fuer den Fall, dass Omissions je gerendert werden (ungekostet)
 
-`contextOmissionFor` (`context-plan.ts:78-86`) gibt die erste verletzte Regel zurueck; das ist als
-Vertrag ausgesprochen („Ladder order is the contract"). An den zwei historischen Stichproben wird
-daraus ein messbarer Unterschied: dieselbe Nicht-Zustellung von `land-mechanics` heisst
+**Korrektur 2026-09-08 gegenueber der ersten Fassung dieser Notiz:** dort stand „die erste
+gefallene Sprosse, nicht der Grund", also die Behauptung eines Routing-/Korrektheitsfehlers. Das
+traegt nicht. Die erste gueltige Ausschlussursache wird nicht dadurch falsch, dass weitere
+zutreffen — sie ist eine wahre Aussage ueber das Pack, nur nicht die vollstaendige. Und sie ist
+der ausgesprochene Vertrag: `context-plan.ts#CONTEXT_PLAN_OMISSION_REASONS` traegt woertlich den Kopfkommentar
+„Ladder order is the contract: the FIRST rule a pack fails is the reason it is omitted", und
+`contextOmissionFor` (`context-plan.ts:78-86`) implementiert genau das. **Ein Gegenvertrag, der die VOLLSTAENDIGE
+Ursachenmenge oder eine bestimmte Ursache verlangt, wurde gesucht und nicht gefunden:**
+`SYSTEM.md` §`ContextEnvelope` verlangt „ausgewaehlte **und ausgelassene** Kontextquellen" — die
+QUELLEN, kein Wort ueber die Begruendungssemantik; `AGENTS.md` kennt den Begriff nicht
+(`rg -n "ausgelassen|omitted|omission" SYSTEM.md AGENTS.md` → genau ein Treffer, jene Zeile); und
+der empfohlene erste Schnitt der 2026-09-04-Notiz (§D) sagt „Omissions im Ankerblock rendern",
+nicht „alle Gruende nennen". Der Befund bleibt damit ein **optionaler Darstellungswunsch**, kein
+Fehler.
+
+Der beobachtete Sachverhalt selbst steht: an den zwei historischen Stichproben heisst dieselbe
+Nicht-Zustellung von `land-mechanics`
 
 - `harness-unsupported` in `7ceb87fd…` (Gruendung, `codex`), und
 - `trigger-not-matched` in `a6ebedb8…` und `5ba5eb36…` (claude).
@@ -218,21 +331,30 @@ P3 land-mechanics @codex,  bootstrap triggers → harness-unsupported
 P3 land-mechanics @claude, bootstrap triggers → trigger-not-matched
 ```
 
-Beide Male ist das Pack unzustellbar; nur der Satz unterscheidet sich. **Kosten entstehen genau
-dann, wenn der schon empfohlene erste Schnitt gebaut wird**
-(`docs/messungen/2026-09-04-context-pack-routing.md` §C.2 und §D: „Omissions im Ankerblock
-rendern"). Ein codex-Empfaenger, dem der Brief `land-mechanics: harness-unsupported` zeigt, zieht
-den naheliegenden und falschen Schluss, ein claude-Empfaenger bekaeme das Pack — er bekommt es
-auch nicht, aus einem anderen Grund. Eine gerenderte Zeile ist ein Entscheidungsinput; die
-Leiterreihenfolge ist fuer Ledger-Statistik gebaut, nicht fuer eine Erklaerung an den Empfaenger.
+Beide Male ist das Pack unzustellbar; nur der Satz unterscheidet sich — beide Saetze sind wahr.
 
-*Verify:* eine reine Tabelle in `e2e/context-plan.ts` — je Pack die MENGE der verletzten Regeln
-gegen den heutigen Einzelwert; die Sonde faellt, sobald ein Pack aus zwei Gruenden faellt und nur
-einer genannt wird.
-*Disposition:* **bestehende Task zuordnen** — Eingabe fuer CP-A („Trigger als Funktion des Akts +
-Omissions rendern"), heute nur in Task `d5e6c26b` benannt und **ohne eigene Queue-Zeile**
-(`fleet.json`, Stand 2026-09-07: keine Zeile nennt CP-A/CP-B/CP-C ausser dieser Notiz-Zeile).
-Kein neuer Vorschlag, keine Owner-Promotion behauptet.
+*Kosten: **ungekostete Beobachtung**.* Heute keine: die Begruendung erreicht keinen Empfaenger
+(`renderContextAnchorBlock` iteriert `plan.selected` und beruehrt `plan.omitted` nicht, §3), sie
+steht ausschliesslich im Ledger, und dort ist die Leiterreihenfolge genau das gewuenschte
+Merkmal — eine stabile, vergleichbare Statistik-Achse. Die frueher hier notierte Kosten-Erzaehlung
+(ein codex-Empfaenger schliesse aus `land-mechanics: harness-unsupported`, ein claude-Empfaenger
+bekaeme das Pack) setzt einen gerenderten Omission-Block voraus, den es nicht gibt, und einen
+Leser, der aus einer Zeile eine Negativ-Implikation zieht — beides unbelegt. Sie wird hier nicht
+als Kosten weitergefuehrt, sondern als **Hinweis fuer den Entwurf**, falls CP-A gebaut wird: wer
+Omissions an einen EMPFAENGER rendert, sollte vorher entscheiden, ob die Zeile die erste oder alle
+verletzten Regeln nennt. Das ist eine Entwurfsentscheidung des Owners, kein Defekt am heutigen
+Stand.
+
+*Verify (nur falls der Darstellungswunsch je angenommen wird):* eine reine Tabelle in
+`e2e/context-plan.ts` — je Pack die MENGE der verletzten Regeln neben dem heutigen Einzelwert. Sie
+darf den Einzelwert NICHT als falsch behaupten; sie haelt fest, bei welchen Packs beide Groessen
+auseinanderfallen, und dokumentiert damit die Entscheidung. Am heutigen Vertrag ist nichts zu
+pinnen, was `e2e/context-plan.ts` nicht schon pinnt.
+*Disposition:* **Eingabefakt fuer eine bestehende Reservierung, kein Vorschlag** — Notiz an CP-A
+(„Trigger als Funktion des Akts + Omissions rendern"), heute nur in Task `d5e6c26b` benannt und
+**ohne eigene Queue-Zeile** (`fleet.json`, Stand 2026-09-07: keine Zeile nennt CP-A/CP-B/CP-C
+ausser dieser Notiz-Zeile). Kein neuer Vorschlag, keine Owner-Promotion behauptet, keine
+Code-Aenderung empfohlen.
 
 ### B3 — `audience` ist deklariert und wird von der Leiter nie gelesen: die Rollen-Dimension ist unverbunden, nicht abwesend
 
@@ -322,7 +444,7 @@ waere teurer als die Zeile in dieser Notiz.
 |---|---|---|
 | Harness-Adapter (`server.ts` HARNESSES) | **apply** fuer B1 — 5 von 7 deklarieren einen Composer, sind also beobachtbar; `pi-unfenced`/`container` `not-applicable` (kein Composer → `acceptance: "not-applicable"`, ehrlich) | `server.ts:493, 609, 687, 740, 1135` |
 | Protokoll/Wire | **not-applicable** — die Kette hat keine Wire-Flaeche; Zustellung ist tmux-Paste | `server.ts#sendText` |
-| Server | **apply** fuer B1–B4 | fuenf Naehte, eine Leiter, eine Pin-Datei |
+| Server | **apply** fuer B1 und B4; **fuer B2 kein apply** (Darstellungswunsch am Vertrag, ungekostet — korrigiert 2026-09-08); B3 owner-reserviert | fuenf Naehte, eine Leiter, eine Pin-Datei |
 | Client (`src/client.ts`, `public/`) | **not-applicable fuer diese Notiz** — kein Aufrufer von `/api/context-receipts` existiert; das ist Befund 5 der 2026-09-04-Notiz und wird hier nicht wiederholt | `rg` ueber `src/client.ts` → 0 Treffer |
 | Doku (`AGENTS.md`, `rulebook/`) | **unsupported hier** — die Doku-Blindheit des Pack-Systems ist Befund 6 der 2026-09-04-Notiz; mein Write-Set schliesst Regelbuch und AGENTS aus | Auftrag |
 | Ledger `context-receipts.jsonl` | **apply** — B1 und B5 sind Feld-Fragen der Zeile | 582 Zeilen gelesen |
@@ -364,6 +486,14 @@ keinen Umbau der Zustellwege — diese Notiz schlaegt auch keinen vor.
   Zeile. `deliveredBytes` ist eine Stringlaenge und darf nie anders gelesen werden.
 - **Hub-UI und Inbox-Code**, per Auftrag ausgeschlossen. Ebenso die allgemeine Kontext-Gesundheit
   (GLM `746513d1`).
+- **Der SPAWN-Baum einer Lane** (Korrektur 2026-09-08). Kein unabhaengiger Spawn-Fakt wurde gegen
+  `context-receipts.jsonl.head` gejoint; die alte Sonde konnte es strukturell nicht (§3). Der Join
+  gegen `Slot.worktree.baseSha` / `lane-outcomes.jsonl.base` ist der benannte Weg und wurde per
+  Auftrag (kein neuer Sweep) NICHT gefahren. Bis dahin: **unknown**.
+- **Die Kandidatenquelle fuer diesen Join selbst.** Dass `lane-outcomes.jsonl.base` fuer eine
+  GELANDETE Lane den vom Land-Ort uebergebenen (post-Rebase) Fork-Punkt tragen kann, ist am Code
+  gelesen (`server.ts:16645`, `facts.baseSha ?? s.worktree.baseSha ?? laneBaseRef(s)`), nicht an
+  den Daten geprueft — der Anteil solcher Zeilen ist ungemessen.
 
 ## 8. Entscheidungs-Trail
 
@@ -382,7 +512,10 @@ keinen Umbau der Zustellwege — diese Notiz schlaegt auch keinen vor.
    (`context-plan.ts:73`) — der Pin an `e2e/pins.ts:2493` pinnt das `HARNESSES`-Literal, ein
    achter Harness bricht also das Gate ohnehin, und heute traegt kein Seam einen Trigger, der die
    Differenz sichtbar machen wuerde. Latente Null-Kosten-Beobachtung, kein Befund.
-7. Der Drift-Verdacht (Baum bewegt sich zwischen `createWorktree` und `integrationHead`) wurde
-   **gemessen und ausgeraeumt**, nicht weggeargumentiert — mit benannter Grenze.
+7. Der Drift-Verdacht (Baum bewegt sich zwischen `createWorktree` und `integrationHead`) galt in
+   der ersten Fassung als **gemessen und ausgeraeumt**. **Korrigiert 2026-09-08:** die Sonde war
+   auf linearer Historie eine Identitaet und hat den Verdacht nie beruehrt; er steht auf
+   **unknown**, mit benanntem Weg, ihn zu entscheiden (§3). Der Fehler war nicht die Zahl, sondern
+   der Schluss von einer Vorfahr-Probe auf einen Spawn-Baum.
 8. Dispositionen gegen `fleet.json` gehaengt statt neue vorzuschlagen; die Owner-Reservierung in
    `d5e6c26b` (2) ist der Grund, warum B3 keine Empfehlung ist.

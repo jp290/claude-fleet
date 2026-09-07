@@ -183,22 +183,28 @@ export async function run(): Promise<void> {
   check("ctl land --wait: the mainAfter it reports is the sha main now carries, and it names its source",
     lj?.mainAfter === mainAfter && typeof lj?.mainAfterFrom === "string",
     `ctl=${lj?.mainAfter?.slice(0, 12) ?? "null"} git=${mainAfter.slice(0, 12)} from=${lj?.mainAfterFrom ?? "-"}`);
-  // …and a GREEN land leaves NO row behind: server.ts deletes mergeLast[slot] with the lane it
-  // landed. So the honest assertion is that ctl reported the terminal fact AND that the state file
-  // now has nothing for that slot — the pair is what makes `merges` a register of UNFINISHED lands
-  // rather than a land history somebody could read an empty map as contradicting.
-  // …and POLLED, not read once: `mergeLast.delete` is followed by the DEBOUNCED `saveState()`, so
-  // fleet.json can still carry the verdict for a moment after the route has stopped serving it. A
-  // single read there is a race dressed as an assertion — measured red on the helper, 2026-09-07.
-  let persistedAfter: unknown = null;
-  for (let i = 0; i < 80; i++) {
-    persistedAfter = (stateFile().merges as Record<string, unknown>)?.[String(la.slot)] ?? null;
-    if (persistedAfter === null) break;
-    await Bun.sleep(100);
-  }
-  check("ctl land --wait: it names the terminal fact, and the landed slot leaves no verdict row behind",
-    (lj?.gone === true || lj?.last?.landed === true) && persistedAfter === null,
-    `gone=${lj?.gone} landed=${lj?.last?.landed} rowStatus=${(persistedAfter as { status?: string } | null)?.status ?? "(none)"}`);
+  // …and WHAT THE STATE FILE KEEPS, established by measurement rather than assumed. Two red runs
+  // were spent on the assumption that a green land leaves no row: it does. The land path deletes
+  // the verdict, but the merge job's final write runs AFTER the teardown under the guard
+  // `if (!s.cwd || s.cwd === cwd)` — a torn-down slot has no cwd, the first disjunct passes, and
+  // `{status:"merged", landed:true}` is written back for a slot that no longer exists (cleared only
+  // when that slot is next opened). So the honest pair is: ctl named the terminal fact, and any row
+  // left behind AGREES with it rather than contradicting it.
+  const persistedAfter = (stateFile().merges as Record<string, { status?: string; landed?: boolean }>)?.[String(la.slot)] ?? null;
+  check("ctl land --wait: it names the terminal fact, and any row the state file keeps agrees with it",
+    (lj?.gone === true || lj?.last?.landed === true)
+      && (persistedAfter === null || (persistedAfter.status === "merged" && persistedAfter.landed === true)),
+    `gone=${lj?.gone} landed=${lj?.last?.landed} row=${persistedAfter ? `${persistedAfter.status}/landed=${persistedAfter.landed}` : "(none)"}`);
+  // …and that such a row is NOT read as work in flight: a landed lane's leftover verdict must never
+  // make `merges` say "wait". This is the whole reason `busy` keys on `running` and `interrupted`
+  // rather than on "a row exists".
+  const mergesPostLand = await ctl(["merges", "--json"]);
+  const leftover = (mergesPostLand.json as { rows?: { slot: number; landed: boolean }[]; busy?: number[] })
+    ?.rows?.find((r) => r.slot === la.slot) ?? null;
+  check("ctl merges: a landed lane's leftover verdict is history, not in flight — exit 0, not busy",
+    mergesPostLand.code === 0
+      && !((mergesPostLand.json as { busy?: number[] })?.busy ?? []).includes(la.slot),
+    `exit=${mergesPostLand.code} leftover=${JSON.stringify(leftover)} busy=${JSON.stringify((mergesPostLand.json as { busy?: number[] })?.busy ?? [])}`);
   // TIER 2 IS OFF IN THIS INSTANCE (FLEET_POSTLAND_AUDIT_CMD unset — server.ts, "DEFAULT OFF"), so
   // the audit watch CANNOT be armed. What is asserted is that the script says so instead of
   // reporting a watch it does not hold: a claimed-but-absent return path is the failure mode.

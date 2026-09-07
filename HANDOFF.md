@@ -490,60 +490,59 @@ weiter: der Owner hat den Wellenmodus (W1–W3) hier eingehaengt.
 26,7 % gemessen nach dem M3-Land (25,3 % beim ersten Schreiben). Kosten dieser Session: Erdung ~4, M5 (Brief+Review+Land+Doc) ~6, N1
 (Review+Land) ~4, M3-Review ~3, Controller-Verkehr ~3. Rechne ~3 Punkte je Land mit Review.
 
-# HANDOFF — Program-MAIN P3 Landepfad adversarial (`6360c36105e50a705db275c1`, Slot 1, Fable 5.1, vierte Insassin): 5. ENTWURF `6b931dc3`, FUENF Astra-REJECTs (19/13/14/12/10), Schleife als strukturell gestoppt, Einarbeitung+Review+Publikation an Opus-Lane `6b61a7bf` delegiert; 2026-09-07 14:2x, ctx GEMESSEN 25 %
+# HANDOFF — Program-MAIN P3 Landepfad adversarial (`6360c36105e50a705db275c1`, Slot 15, Fable 5.1, fuenfte Insassin): Entwurf 5 `6b931dc3` + fuenf REJECT-Runden ins Repo VERSTETIGT (`17d4eb7`), Opus-Lane `6b61a7bf` weiter queued (Brief mit Repo-Fallback gepatcht), Checkpoint +8h als Fleet-Auto `f33a3a9f` armiert; 2026-09-07 16:0x, ctx GEMESSEN ~12 %
 
 > **Dieser Abschnitt ERSETZT den P3-Abschnitt darunter (Slot 4, `027deaa5`).** Zustand ableiten: `./state.sh`,
 > `./register.sh`, `GET /api/self/program-execution` (Program 6360c361). Charter = Program-JSON im Gruendungsbrief.
 
-## 0. Wo es steht (14:2x)
+## 0. Wo es steht (16:0x)
 
-- **Entwurf 5:** `/tmp/astra-p3-2026-09-07/2026-09-07-landepfad-adversarial.md`, sha256
-  `6b931dc39c0a92d1c866bf96501a0ed5e38b79601c4088257f48c994a850460e`, 910 Zeilen, Quell-Pin `c7184f8`. Vorgaenger
-  als `draft-027deaa5.md` (3.) und `draft-eb9adb85.md` (4.) daneben; die Ersetzungs-Skripte (`r4-edits.py`,
-  `r5-edits.py`) lagen im Scratchpad dieser Session und sterben mit ihr — die Diffs sind `diff draft-*.md <doc>`.
-- **Fuenf Abnahmen, alle REJECT:** `review-round1-REJECT.md` (19) · `round2` (13) · `round3` (14, auf `027deaa5`) ·
-  `review-round4.md` (12, auf `eb9adb85`) · `review-round5.md` (10, 2 schwer, auf `6b931dc3`). Alle 14 Punkte aus
-  Runde 3 und alle 12 aus Runde 4 habe ich am Pin gegengelesen (jedes Zitat stimmte) und eingearbeitet; Runde 5
-  ist NICHT eingearbeitet. Ihre zwei schweren Punkte: (1) §3.4(c) `!(adjudicationsByAudit()).has(row.at)` gibt auch
-  `verdict:"real"` frei — richtig: blocken, wenn keine Adjudikation ODER `real` (`ADJUDICATION_VERDICTS`,
-  `server.ts:15536`); (2) §1.6 das Repro-Skript schuetzt `rm -rf "$DIR"` nur mit `[ "$DIR" = "$SRC" ]`.
-- **Kein ACCEPT, kein `independent-review.md`, keine Publikation.** `index-line.txt` sagt jetzt „zehn serielle
-  Opus-Schnitte" (nach §11 des 4./5. Entwurfs); `publication-brief.txt` ist die Vorlage mit `__HASH__`.
-- **Delegiert:** auftrag **`6b61a7bf`** (Opus 5 `claude-opus-5[1m]` high, released 14:2x, queued; Deckel 1, davor
-  P1/P2-Publikationen `34c0d050`/`180d3c92`, drei Lanes liefen um 14:1x auf Slots 4/13/14). Brief: Runde 5
-  einarbeiten, max. DREI weitere `codex exec`-Runden, bei ACCEPT Receipt als `independent-review.md` + Phase B
-  (cp+cmp nach `docs/messungen/`, Indexzeile, install+pins, eigener Commit, Report mit Datei-Hash GETRENNT von
+- **Der P3-Stand ist jetzt GETRACKT:** `docs/messungen/entwuerfe/2026-09-07-p3-landepfad/` (Commit `17d4eb7`,
+  docs-only, Direkt-Commit aus dem Haupt-Checkout auf Anweisung des Controllers Slot 1 — Verifikation von Hand:
+  Hash der Kopie == `6b931dc39c0a92d1c866bf96501a0ed5e38b79601c4088257f48c994a850460e`, Scan auf
+  Hostnamen/IPs/Klarnamen leer, `bun e2e/pins.ts` ALL PASS, `merges` leer). Inhalt: `entwurf5-6b931dc3.md`
+  (== `/tmp/astra-p3-2026-09-07/2026-09-07-landepfad-adversarial.md`), Entwuerfe 3/4, `review-round1..5-REJECT.md`
+  (19/13/14/12/10), `review-prompt-r5.txt`, `index-line.txt`, `publication-brief.txt` (Domain gescrubbt), README mit
+  Status „NICHT ABGENOMMEN" und den zwei Runde-5-Blockern. `/tmp/astra-p3-2026-09-07/` liegt unveraendert daneben;
+  die Lane arbeitet primaer dort.
+- **Kein ACCEPT, kein `independent-review.md`, keine Publikation.** Zieldokument
+  `docs/messungen/2026-09-07-landepfad-adversarial.md` entsteht NUR ueber die Publikationslane nach ACCEPT.
+- **Delegiert:** auftrag **`6b61a7bf`** (Opus 5 `claude-opus-5[1m]` high) — `queued`, letzte von sechs queued Zeilen
+  bei Deckel 1 (`FLEET_DISPATCH_MAX_LANES=1`); der Controller sagt, das loest sich nach dem laufenden Deploy.
+  **Brief per `POST /api/tasks/6b61a7bf/brief` gepatcht** (Volltext + Nachtrag, 5 581 Zeichen; Dispatch sendet
+  `brief.text` statt `text`, `server.ts:8316`): Fallback auf die Repo-Kopie, falls `/tmp` nach einem Reboot fehlt;
+  der Entwurfsordner ist NICHT Teil ihres Schreibscopes. Auftrag unveraendert: Runde 5 einarbeiten, max. DREI weitere
+  `codex exec`-Runden, bei ACCEPT Phase B (cp+cmp, Indexzeile, install+pins, eigener Commit, Datei-Hash GETRENNT von
   Commit-Sha); nach drei REJECTs Stop mit needs-main, kein Commit.
-- **Zwischenmeldung an Controller (Label 🎛, Slot 6) und Astra e3b3a064 (Slot 9):** Notiz `997f0f05` — enthaelt
-  die Owner-/Controller-Frage, ob die P3-MAIN bei anhaltendem REJECT mit dokumentiertem Rest selbst annehmen darf.
-  Keine Attention gestellt. **Checkpoint +8h (~17:45) ist OFFEN** und gehoert dir: Notiz in diesem Program, Kopf
-  „AN CONTROLLER (Label 🎛, Slot pruefen) · AN ASTRA SLOT <fleet.json#programs[e3b3a064].main.slot> (e3b3a064) ·
-  CHECKPOINT P3 +8h".
+- **Offene Frage (Notiz `997f0f05`, darf die P3-MAIN bei anhaltendem REJECT selbst annehmen?):** liegt laut Controller
+  beim OWNER, der Controller entscheidet sie nicht. Bis zur Antwort gilt der Plan oben unveraendert. Keine Attention.
+- **Rueckwege, die eine Kompaktierung ueberleben:** Fleet-Auto `f33a3a9f` (One-Shot auf Slot 15, faellig 17:40,
+  `idleSec 60`) fuer den Checkpoint +8h. Session-lokal (sterben mit Pane/Succession): Monitore auf den Statuswechsel von
+  `6b61a7bf` und auf 17:40. **Noch KEIN Fleet-Watch** — der Lane-Watch braucht den Slot, den es erst bei `sent` gibt.
 
 ## 1. Naechste Zuege
 
-1. **Warten, nicht polen:** `POST /api/self/watch {kind:"lane", target:<slot von 6b61a7bf>, idleSec:0}` sobald die
-   Zeile `sent` ist (Slot aus `fleet.json#tasks`), sonst kommt der Report ohnehin in die Pane.
-2. **Beim Lane-Report:** Verdict-Verlauf lesen; bei ACCEPT `shasum -a 256` der publizierten Datei == Hash im Receipt-Kopf
-   == Hash im Report, `cmp` gegen den akzeptierten Draft, Indexzeile genau einmal, Pins-Log-Tail „ALL PASS" —
-   erst dann `decision.accepted`; Land = Controller (kein Self-Land in diesem Program). Bei needs-main: Frage aus
-   `997f0f05` beim Controller/Owner einholen (Attention nur, wenn der Controller sie nicht beantwortet).
-3. **Runde 6+ NICHT aus der MAIN drehen** — jede Runde kostet hier ~6 Punkte Kontext (Receipt 13 kB + betroffene
-   Abschnitte + Quellzeilen), die Lane hat 1M.
-4. Checkpoint +8h (oben). Nach dem Tagesmandat (~21:45) nur Koordination.
+1. **Sobald `6b61a7bf` `sent` ist:** `POST /api/self/watch {kind:"lane", target:<slot aus fleet.json#tasks>, idleSec:0}`;
+   zugestellte Events quittieren (`POST /api/self/events/:id/…`). Report kommt ohnehin in die Pane.
+2. **Beim Lane-Report (Claim, kein Beweis):** bei ACCEPT `shasum -a 256` der publizierten Datei == Hash im Receipt-Kopf ==
+   Hash im Report, `cmp` gegen den akzeptierten Draft, Indexzeile genau einmal, Pins-Log-Tail „ALL PASS" — erst dann
+   `decision.accepted`; Land = Controller (kein Self-Land in diesem Program). Bei needs-main: Owner-Antwort auf
+   `997f0f05` abwarten bzw. beim Controller nachfragen; Attention nur, wenn sonst nichts kommt.
+3. **Runde 6+ NICHT aus der MAIN drehen** (~6 Punkte Kontext je Runde; die Lane hat 1M).
+4. **Checkpoint +8h (~17:45):** Notiz in diesem Program, Kopf „AN CONTROLLER (Label 🎛, Slot pruefen — er zog 10 → 6 → 1 um)
+   · AN ASTRA SLOT <fleet.json#programs[e3b3a064].main.slot> (e3b3a064) · CHECKPOINT P3 +8h": Pfad, Reviewbefund
+   (5× REJECT), Schnitte (Verstetigung `17d4eb7`, Delegation `6b61a7bf`), Kontextfuellung gemessen. Nach dem
+   Tagesmandat (~21:45) nur Koordination.
 
-## 2. Was ich entschieden habe
+## 2. Was ich entschieden habe (Slot 15)
 
-- Runde 3+4 selbst eingearbeitet (Deckel 1 war belegt, Lane haette Stunden gewartet); ab Runde 5 Delegation, weil
-  fuenf Runden dieselbe Form haben: Befunde bestaetigt, neue Punkte in altem UND frisch geschriebenem Text.
-- F6-Beispiel jetzt `process.exit(0)` nach den Imports in `fleet-e2e-security.ts` bei byteidentischem Wrapper —
-  mechanisch geprueft: kein Pin liest diesen Runner (`e2e/pins.ts` liest von Runnern nur `fleet-e2e-clean-review.ts`
-  4394/4410 und `fleet-e2e-postland-audit.ts` 4443 — letzteres fehlt noch im Doc, Runde-5-Punkt 9), `tsc --strict`
-  akzeptiert unerreichbaren Code (Probe Exit 0). Tier 2 faehrt einen ANDEREN Runner (`fleet-e2e.ts` importiert
-  `e2e/security`), das steht seit Entwurf 5 drin.
-- Mutex-Modell einmal festgelegt (§2.5/§5): Land wartet, Undo 409; ein wartendes Land liest main neu und endet
-  `main-rewound`, wenn ein Undo dazwischenlag — Re-Rebase wuerde die zurueckgenommenen Commits wieder einspielen.
-- Gate-Medianwerte selbst nachgerechnet (n=91 nicht-proportionale Notes seit 01.09.): Arbeit 109 s, gesamt 140 s.
+- Verstetigung als ENTWURF unter `docs/messungen/entwuerfe/`, nicht am Zielpfad — damit die Publikationslane weiter
+  „neu, cp + cmp" fahren kann und kein Hash-Vergleich gegen eine halb-publizierte Datei entsteht.
+- Brief-Patch statt neuer Zeile: die Queue-Position bleibt, `edited:true` macht nur ein (nicht vorhandenes)
+  Analyse-Urteil stale.
+- Deckel/Queue nicht angefasst (Charter: keine Deckel-Aenderung durch diese MAIN).
+
+Alles darunter (Slot 1, 4): Verlauf der Runden 1–5, Mutex-Modell, Gate-Mediane — bleibt gueltig als Historie.
 
 # HANDOFF — Program-MAIN P3 Landepfad adversarial (`6360c36105e50a705db275c1`, Slot 4, Fable 5.1, dritte Insassin): 3. ENTWURF `027deaa5` nach drei Astra-REJECTs (19/13/14), kein ACCEPT, Succession auf Controller-Anweisung; 2026-09-07 13:5x, ctx ~53 % (Owner-Poll)
 

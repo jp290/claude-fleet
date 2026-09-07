@@ -145,14 +145,39 @@ while true; do
     # harness (verified against fleet.json), so it arms a capability rather than changing behaviour.
     # Turning it back off is this one word; nothing else depends on it.
     #
-    # FLEET_POSTLAND_AUDIT_TIMEOUT_MS=2700000 — the audit's WORK budget (server.ts, grep
+    # FLEET_POSTLAND_AUDIT_TIMEOUT_MS=4500000 — the audit's WORK budget (server.ts, grep
     # POSTLAND_AUDIT_TIMEOUT_MS; default 1800000). Measured 2026-09-02 (queue note aecd5f89): under
     # load (three lanes running local proof chains beside it) the isolated suite ran ~2x slower than
     # its green runs (1545-1729 s) and the 1800 s wall killed the 67b2265 audit ~380 checks short —
-    # `unknown`, not red, and nothing measured. 45 min is the gate's own wait budget, reused as the
-    # audit's work budget; a slow audit that finishes is a verdict, one the wall cuts off is not.
+    # `unknown`, not red, and nothing measured. A slow audit that finishes is a verdict, one the wall
+    # cuts off is not.
+    # RAISED 45 -> 75 min on 2026-09-07 (owner decision; measured by Fleet-Betrieb slot 7, re-checked
+    # by the controller against post-land-audits.jsonl). Of 11 runs that day TWO died exactly on the
+    # wall (2700347 ms, 2700643 ms), leaving THREE landed trees with no tier-2 verdict, and the last
+    # green run finished with 2.3 min to spare.
+    #
+    # THE CAUSE IS PLACEMENT, NOT SUITE SIZE — and the ledger does carry it, in a field nobody had
+    # read as one: the run-id in the kept stdout is `isolated-<ts>Z-<pid>`, and macOS caps PIDs at
+    # 99999. Seven of that day's audits carry SEVEN-digit pids (1575199 … 3278619) and structurally
+    # cannot have run on this Mac. The split is clean, no overlap: helper runs 35.2 / 35.8 / 35.8 /
+    # 36.6 / 36.9 / 37.1 / 37.7 min, all seven with a verdict; local runs 40.4 and 42.7 min; the two
+    # unknowns carry no run-id at all (killed before the PASS line). No helper run was ever slower
+    # than 37.7, no local run ever faster than 40.4. THE WALL KILLS ONLY LOCAL RUNS.
+    # Growth is real but small — the 1706 same-named checks shared by the 40.3 and 42.5 min runs sit
+    # at ratio 1.008 (median 1.002), so ~2 min/day, not the 5 the raw times suggest.
+    # And `waitMs: 0` is the SERVER's queue, not the suite's: the 08:42 unknown spent 26.4 min
+    # between audit start and the suite's first check line and only 18.6 min working (2042 of 3835
+    # lines). That prelude — the suite's own wait for the mutex — is spent INSIDE this work budget
+    # and is attributed nowhere.
+    #
+    # 75 min is sized for the worst OBSERVED case, prelude included: 26.4 + 42.7 = 69.1 min. A 50 min
+    # wall would cover local work plus a small prelude only. THE CEILING IS THE WEAKER HALF OF THE
+    # FIX — the strong lever is forcing audits onto the helper, where they are ~5 min faster and do
+    # not contend for the mutex with lanes and land gates; that is a separate change and is not made
+    # here. The cost of this one, accepted knowingly: a blocked audit can hold the suite mutex 75 min
+    # instead of 45.
     if tmux -L claudefleet new-session -d -s srv \
-      "umask 077; export PATH='$PATH_Q'; cd '$FLEET_DIR' && { if [ -f .env ]; then set -a; . ./.env; set +a; else echo '[watchdog] no .env — FLEET_HOST/ALLOWED_HOSTS/SHARE_* unset, server falls back to its own defaults (likely unreachable at the deployment address)' >> server.log; fi; } && FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_VERIFY_TIMEOUT_MS=480000 FLEET_VERIFY_WAIT_MS=2700000 FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' FLEET_POSTLAND_AUDIT_TIMEOUT_MS=2700000 FLEET_CLEAN_REVIEW=off FLEET_HARNESS_AUTOMATION=1 FLEET_ANALYSIS_MS=0 FLEET_AUTO_REVIEW_MS=0 FLEET_AUDIT_PING_MS=60000 FLEET_DISPATCH_REPO='$FLEET_DIR' FLEET_DISPATCH_MAX_LANES=1 FLEET_LANE_AUTOCLOSE=1 exec bun server.ts >> server.log 2>&1"; then
+      "umask 077; export PATH='$PATH_Q'; cd '$FLEET_DIR' && { if [ -f .env ]; then set -a; . ./.env; set +a; else echo '[watchdog] no .env — FLEET_HOST/ALLOWED_HOSTS/SHARE_* unset, server falls back to its own defaults (likely unreachable at the deployment address)' >> server.log; fi; } && FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_VERIFY_TIMEOUT_MS=480000 FLEET_VERIFY_WAIT_MS=2700000 FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' FLEET_POSTLAND_AUDIT_TIMEOUT_MS=4500000 FLEET_CLEAN_REVIEW=off FLEET_HARNESS_AUTOMATION=1 FLEET_ANALYSIS_MS=0 FLEET_AUTO_REVIEW_MS=0 FLEET_AUDIT_PING_MS=60000 FLEET_DISPATCH_REPO='$FLEET_DIR' FLEET_DISPATCH_MAX_LANES=1 FLEET_LANE_AUTOCLOSE=1 exec bun server.ts >> server.log 2>&1"; then
       echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv was down, restarted" >> "$FLEET_DIR/server.log"
     else
       # log the truth: an unconditional "restarted" here used to fill the log with

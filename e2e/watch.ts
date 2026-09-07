@@ -5141,6 +5141,17 @@ export async function run(): Promise<void> {
       check("client: the badge prints the two counts side by side and never adds them",
         /opsUnacked\(opsRows, Date\.now\(\)\)\.length/.test(btn) && !/n \+ m|m \+ n/.test(btn),
         btn.slice(0, 200));
+      // …and the THIRD carrier joins the FILED count, never the pane-transport one. Both halves of
+      // `n` are rows that want the owner to close them, which is why adding them keeps one meaning;
+      // adding a report to `m` would make the ⚠ badge claim a transport fact about a row that has
+      // no live transport at all. The non-report filter is what stops an owner-inbox report — which
+      // is BOTH an inbox event and an unjudged row — from being counted and shown twice.
+      check("client: a worker report awaiting the owner counts as FILED and is never mixed into the pane-transport count",
+        /opsOpenNonReport\(opsRows\)\.length \+ reportsAwaitingOwner/.test(btn)
+          && !/reportsAwaitingOwner/.test(btn.slice(btn.indexOf("const m ="))
+            .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n"))
+          && /e\.kind !== "fleet-report"/.test(cliSrc),
+        btn.split("\n").filter((l) => !l.trim().startsWith("//")).join(" ").slice(0, 240));
     }
   }
 

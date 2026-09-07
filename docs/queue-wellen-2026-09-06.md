@@ -292,3 +292,74 @@ gemessene Wellengröße aus S1/S2 zu bewerten ist.
   `exit 42`-Pfad für Produkt-Repos sind ungemessen geblieben.
 - Die Wirkung des Helfers: 49 der 500 Audits liefen remote. Ob eine Welle die Helfer-Auslastung
   verbessert oder verschlechtert, ist offen.
+
+---
+
+## 7. Nachtrag 2026-09-07 — Owner-Entscheide und zwei Befunde, die §5 verschieben
+
+*Geschrieben vom Controller (Slot 6) nach der Clarify-Runde mit dem Owner, 12:4x. §1–§6 oben
+bleiben unverändert: sie sind der Snapshot vom 06.09. und ihre Zahlen zeigen auf den Baum, den sie
+vermaßen. Was hier steht, ändert die SCHNITTLISTE, nicht die Messung.*
+
+### 7.1 Die drei Entscheide
+
+1. **Umfang = Landewelle, S2 + S3.** Nicht die Parallelwelle beim Dispatch. Begründung, die der
+   Owner angenommen hat: die Zeit liegt in den Lands (107 s Gate + 1 608 s Audit ≈ 28 min je
+   vermiedenem Land, `LAND_WAVE_COSTS_2026_09`), nicht im Start.
+2. **`programId` ist das zweite Bündel-Kriterium**, neben der Datei-Fläche. Auslöser war die
+   Owner-Frage „was wenn die Dateifläche nicht ausreicht?" — siehe §7.2.
+3. **S2 bekommt eine NEUE Tür:** eine Lane schlägt eine Fläche vor, der Owner bestätigt sie am
+   Board. Ausdrücklich verworfen: auf `↻ refine` aufsatteln (ein Split ist keine Bestätigung) und
+   `derived → confirmed` automatisch heben (das tauft eine Prosa-Vermutung in einen Fakt um).
+
+### 7.2 Warum die Fläche allein nicht reicht
+
+Die Frage zerfällt in zwei Risiken, und nur eines ist offen.
+
+**Das Verifikations-Risiko ist geschlossen — durch Konstruktion.**
+`server.ts#verifyPlanFor` klassifiziert nicht die deklarierte Fläche, sondern den **tatsächlichen
+rebasten Diff** (`git diff <mainSha>...HEAD --name-only`); ein leerer *und* ein fehlgeschlagener
+Diff fallen beide auf die volle Kette. Eine falsche Fläche kann nie eine zu kurze Beweiskette
+erkaufen. Was eine unzureichende Fläche kaputtmacht, ist das **Bündel**, nicht der Beweis.
+
+**Drei Arten „reicht nicht", und nur eine ist ein Problem:**
+
+| Fall | Was passiert | Urteil |
+|---|---|---|
+| Fläche *unbekennbar* (Erkundungszeile) | `reasonAgainst: "keine-flaeche"`, Wellengröße 1 | korrekt, kein Defekt |
+| Fläche *zu klein* (Lane fasst mehr an) | Gate bleibt korrekt; der Preis ist der Bisect — ein Audit nennt jetzt n Zeilen | tragbar, siehe §7.3 |
+| Fläche *zu grob* | falsches Bündel | **der wunde Punkt** |
+
+Der dritte Fall ist bereits gemessen, und §2 R3 enthält die Zahlen: `server.ts` steht in 27 von 31
+Flächen, und unter Datei-Überlappung falten 30 von 31 Zeilen zu EINER Komponente. **Wer eine grobe
+Fläche bestätigt, bestätigt genau diesen Klumpen** — die Bestätigung allein macht die Faltung nicht
+brauchbar. Dateien sind ein notwendiges, kein hinreichendes Kriterium.
+
+Das fehlende semantische Kriterium liegt schon in den Daten: **40 von 48** offenen `auftrag`-Zeilen
+tragen ein `programId` (gemessen 2026-09-07 12:4x an `fleet.json`: `f170dc46` 16 · `9ce08219` 5 ·
+`eec69528` 4 · `79036e9a` 4 · `233e1c2b` 3 · `b2aa5b45` 2 · `66499a03` 2 · vier weitere je 1 ·
+8 ohne). Gebündelt wird künftig nur INNERHALB eines Programs und über gemeinsame Dateien; eine
+Zeile ohne `programId` bleibt Größe 1 mit eigenem, benanntem Grund.
+
+### 7.3 Zwei Befunde, die die Schnittliste korrigieren
+
+- **S2 hat heute keine Tür — die Doc nennt einen Pfad, den es für eine BESTEHENDE Zeile nicht
+  gibt.** `filesOrigin: "confirmed"` wird an genau einer Stelle geschrieben: `server.ts:26472`, im
+  Pfad `↻ refine → promote`; die **Kinder** eines Splits erben die vom Refiner gegen den Baum
+  geprüften Pfade. Eine bestehende Zeile kann ihre Fläche nicht bestätigt bekommen. Das ist der
+  eigentliche Inhalt von S2, nicht „der bestehende `refine-confirm`-Pfad wird sichtbar gemacht".
+- **S3s Rückweg ist all-or-nothing und damit der falsche.** Das Done-Kriterium in §5 sagt „ein
+  Abbruch lässt alle n auf `queued` zurück". Für Fall zwei und drei aus §7.2 — die Fläche reichte
+  nicht, und das zeigt sich erst IN der Lane — muss die Lane sich **selbst teilen** dürfen: k von n
+  erledigt, n−k gehen als `queued` zurück, und die `note` sagt welche und warum.
+- **Nebenbefund, unbewertet:** `maxWave` ist 3 (`task-land-waves.ts`) und `UNDO_STACK_MAX` ist 3
+  (`server.ts`). Die beiden stimmen heute überein, aber **zufällig** — nichts koppelt sie. Wenn eine
+  Welle immer in einen `undo-land`-Schritt passen soll, gehört das benannt; sonst hebt der Nächste,
+  der einen der Werte anfasst, still die Rückfalltür aus.
+
+### 7.4 Was daraus gefilet wurde
+
+Drei Zeilen im Program **Land-Pipeline `233e1c2b`**, jede mit hartem Done-Kriterium, wörtlichem
+Verify-Kommando und Verbotsliste: **W1 `e0113460`** (`programId`-Schnitt) · **W2 `0f5019ac`**
+(Bestätigungstür) · **W3 `05611418`** (`▸ start wave` samt Selbst-Split). W1 und W2 sind
+voneinander unabhängig; W3 setzt beide voraus.

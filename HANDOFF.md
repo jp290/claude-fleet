@@ -661,7 +661,7 @@ git und die Sensoren nicht tragen. Abschnitte darunter sind FREMD.
 - Slot 1 (c5de54cc) Land 05:13: `7536702`, volle Kette 139 s, waitMs 0 — Server hielt den Mutex (M1-Hold), sauber.
 - **Watch-Zustellung:** Default `idleSec:60` erreicht einen arbeitenden Controller nie; `slotDeliveryBudget` zaehlt unzugestellte Events → „max 5 active watches" bei 3 armierten. Regel jetzt im Regelbuch §Self-scheduling.
 - **Tick + pi-zai:** zwei freie Fenster (05:10:59, 05:14:03) uebersprangen 746513d1 trotz frueherer Dateiposition; Notiz am Row luegt. Slot-7-Zeile (s. §1).
-- **Erster Compact der Controller-Rolle 05:5x: BESTANDEN** — ctx 24,5 % → 9,6 %, sieben Watches, Autos und vier Monitore ueberlebt, Selbstauskunft = `state.sh`/Board. Befund: nur ein KURZER `/compact` (119 Z.) wirkt ueber den send-Pfad; der lange (~1 000 Z., Auto 5af43c81) kam als Nachricht an (`sendText` = `paste-buffer -p`, „Pasted text“ wird nicht als Befehl geparst). Im Regelbuch §Einstieg eingetragen.
+- **Erster Compact der Controller-Rolle 05:3x: BESTANDEN** — ctx 24,5 % → 9,6 %, sieben Watches, Autos und vier Monitore ueberlebt, Selbstauskunft = `state.sh`/Board. Befund: nur ein KURZER `/compact` (119 Z.) wirkt ueber den send-Pfad; der lange (~1 000 Z., Auto 5af43c81) kam als Nachricht an (`sendText` = `paste-buffer -p`, „Pasted text“ wird nicht als Befehl geparst). Im Regelbuch §Einstieg eingetragen.
 - Direkt-Commits ohne Land-Ledger heute: `69ca4a9`, `8000d12`, `16b77b9` (docs/controller.md). Regelbuch-Fragmente geaendert (gitignored): einstieg.md (Compact-Regel, Opus-Versuch), self-scheduling.md (idleSec:0 + ack). CLAUDE.md gerendert, pins ALL PASS.
 
 ## 3. Der Plan von hier

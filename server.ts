@@ -12808,10 +12808,30 @@ function auditCmdFor(repo: string): { cmd: string; source: AuditCmdSource } | nu
 // repo-worker alone arms it — for its repo; the per-repo question is auditCmdFor's.
 const auditConfiguredAnywhere = (): boolean =>
   POSTLAND_AUDIT_CMD !== null || Object.values(repoWorkers).some((w) => typeof w.audit === "string");
-// Generous on purpose: the suite this tier exists to run takes minutes, and NOTHING waits on it —
-// the only cost of a long ceiling is a late row. A timeout is a failed MEASUREMENT (unknown), not
-// a failure — see the classification below.
+// The WORK budget: how long the audit may spend actually measuring. Generous on purpose — the suite
+// this tier exists to run takes minutes, and NOTHING waits on it, so the only cost of a long ceiling
+// is a late row. A timeout is a failed MEASUREMENT (unknown), not a failure — see the classification
+// below. Since the wait budget below exists, this is all it is: the queueing in front of the suite
+// is charged there, exactly as runVerify has split the two since 2026-08-07.
 const POSTLAND_AUDIT_TIMEOUT_MS = Math.max(10_000, Number(process.env.FLEET_POSTLAND_AUDIT_TIMEOUT_MS ?? 1_800_000) | 0);
+// The WAIT budget, and why it had to be separated out (measured 2026-09-06/07, `post-land-audits.jsonl`).
+// The audit spawns `./e2e-isolated.sh`, which takes the machine-wide suite mutex from INSIDE the
+// window this server is already timing — so a single wall-clock budget silently contains an unbounded
+// queue behind whatever else is on the box. What that cost: 102 of 500 rows `unknown`, 15 of them
+// timeouts with `checks: null`; the three most recent sat at the raised 2 700 000 ms ceiling. The
+// sharpest one is 5b676958 (2026-09-07 07:57:58 → 08:42:58): its own output ends
+// `[suite-lock] e2e-isolated.sh acquired after 1576s` — 1 576 s of the 2 700 s were queueing, and the
+// child took the mutex in the same second the server gave up on it. Nothing about that tree was
+// measured, and the row said "timed out", which reads like a run that looked.
+// THE DEFAULT IS THE MEASURED HOLD OF ONE SUITE AHEAD, not a taste. A full suite holds this mutex
+// 35–41 min here (2026-09-06: a wrapper held it 19:14→19:55:40; 2026-09-07: the holder in front of
+// 5b676958 was ≥41 min old and still holding). A budget under ~41 min therefore cannot outlast a
+// single suite that acquired just before the audit arrived, and 45 min covers exactly one such hold
+// with minutes to spare. Two holds ahead would need ~82 min — and that is the case where waiting is
+// worse than saying "the machine was busy", because the tip this row is about has moved on by then.
+// A run can last at most POSTLAND_AUDIT_WAIT_MS + POSTLAND_AUDIT_TIMEOUT_MS: the work clock is
+// credited only for wait the child can PROVE, and that credit is capped at this budget (see `arm`).
+const POSTLAND_AUDIT_WAIT_MS = Math.max(1_000, Number(process.env.FLEET_POSTLAND_AUDIT_WAIT_MS ?? 2_700_000) | 0);
 const POSTLAND_AUDIT_OUT_CAP = 4096; // byte budget for the retained stdout/stderr, same helper as verify.out
 const POSTLAND_AUDIT_KILL_GRACE_MS = 5_000; // SIGTERM → this long → SIGKILL, on the timeout path
 // the lands one audit run followed — a run is coalesced (below), so it can cover more than one
@@ -12891,6 +12911,19 @@ interface PostLandAuditRow {
   fails?: string[];    // validated and capped names: remote rows carry what the helper reported, local rows what localFailNames read from the complete output; absent on unknown rows and on rows written before either existed
   trail?: string;      // local check-trail filename parsed from the suite's own PASS line; absent if unmeasured
   checks: PostLandAuditChecks | null; // null = output was incomplete/inconsistent, NEVER an invented zero
+  // HOW MUCH OF `ms` WAS NOT MEASURING — parsed by suiteWait from the child's own `[suite-lock]`
+  // lines, the same parser and the same authority rule runVerify's note uses. Absent means the
+  // command reported no wait OF ITS OWN, which is a different answer from "it waited 0s" and is
+  // never to be read as one: the short chain spawns no suite and queues for nothing, and a remote
+  // or historical row never carried the field at all.
+  // A LOWER BOUND IN TWO WAYS, both stated rather than smoothed over: `waitPartial` marks the case
+  // where a step was still queued when the run ended (its wait is known only to the last heartbeat,
+  // which is a minute coarse) — and beyond that, the audit's own prelude (the snapshot, `bun
+  // install`, everything the wrapper does before it sources e2e-stage.sh) happens OUTSIDE any mutex
+  // question, so it is in `ms` and in neither of these. Measured on 5b676958: 1 124 s of prelude the
+  // suite-lock lines cannot see, in front of 1 576 s they can.
+  waitMs?: number;
+  waitPartial?: true;
   covers: AuditCover[];
   // Present ONLY on a row a remote helper produced (see THE REMOTE HELPER PORTAL). Its absence is
   // the statement "this machine measured it itself" — which is why the field is optional rather
@@ -13835,6 +13868,8 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
   let fails: string[] | undefined;
   let trail: string | undefined;
   let checks: PostLandAuditChecks | null = null;
+  let waitMs: number | null = null;
+  let waitPartial = false;
   try {
     // the CURRENT tip, not the triggering land's mainAfter: coalescing means this run stands for
     // every land folded into it, and the row must name the tree it actually measured.
@@ -13853,20 +13888,68 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
         reason = snapErr;
       } else {
         const p = Bun.spawn(["sh", "-c", cmd], { cwd: dir, env: auditChildEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+        const spawnedAt = Date.now();
         // Read the pipes as PROMISES and race the EXIT against the deadline — never `await` the
         // streams first. A suite is a process TREE (it boots a server, drives tmux), and the pipe's
         // write end stays open while any descendant holds it: awaiting the text of a wedged child
         // would hang this function forever, which would also stall the drain loop and silently kill
         // tier 2 for every later land. Bounded by construction instead. (runVerify can await its
         // streams — it holds a land, so something upstream always notices.)
+        // stdout additionally feeds the live clock through drain()'s per-line hand-over, for the same
+        // reason runVerify reads it that way: `new Response(…).text()` cannot report anything until
+        // the process is done, so the line that says "the queue is behind me, the work starts here"
+        // would arrive one kill too late — which is precisely how 5b676958 died.
         let outputReadable = true;
-        const outP = new Response(p.stdout).text().catch(() => { outputReadable = false; return ""; });
-        const errP = new Response(p.stderr).text().catch(() => { outputReadable = false; return ""; });
-        let timedOut = false;
-        let timer: ReturnType<typeof setTimeout> | undefined;
+        // everything stdout has produced SO FAR. On a kill the pipe may never close (a descendant
+        // holds the write end), so the promise below can only ever hand back "" — this is what makes
+        // the retained tail of a killed run its real output rather than silence.
+        let outSeen = "";
+        let timedOut = false, waitedOut = false;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        // wait the chain has finished and REPORTED (its `acquired after Ns` lines); the report
+        // supersedes our own observation of that step, the authority rule suiteWait applies too
+        let waitedMs = 0;
+        // wall time at which the chain told us it is blocked, null while it is working — our own
+        // clock, not the heartbeat's number, because the heartbeats are a minute coarse
+        let queuedSince: number | null = null;
+        // assigned synchronously inside the executor below, before anything can call it
+        let fire: (kind: "work" | "wait") => void = () => { /* replaced */ };
         const deadline = new Promise<"timeout">((res) => {
-          timer = setTimeout(() => { timedOut = true; res("timeout"); }, POSTLAND_AUDIT_TIMEOUT_MS);
+          fire = (kind: "work" | "wait"): void => {
+            if (timedOut || waitedOut) return; // whichever clock got here first owns the kill
+            if (kind === "work") timedOut = true; else waitedOut = true;
+            res("timeout");
+          };
         });
+        const arm = (): void => {
+          if (timer) clearTimeout(timer);
+          const now = Date.now();
+          timer = queuedSince !== null
+            // QUEUED: this run has spent `waitedMs` waiting in earlier steps plus however long the
+            // current one has been blocked. Running that out is `waitedOut` — it never measured.
+            ? setTimeout(() => fire("wait"),
+                Math.max(0, POSTLAND_AUDIT_WAIT_MS - waitedMs - (now - queuedSince)))
+            // WORKING: elapsed minus the wait it can prove is what it actually spent auditing. The
+            // credit is capped at the wait budget, which is what bounds a whole run at
+            // POSTLAND_AUDIT_WAIT_MS + POSTLAND_AUDIT_TIMEOUT_MS however the command reports itself.
+            : setTimeout(() => fire("work"),
+                Math.max(0, POSTLAND_AUDIT_TIMEOUT_MS - (now - spawnedAt)
+                  + Math.min(waitedMs, POSTLAND_AUDIT_WAIT_MS)));
+        };
+        const onLine = (line: string): void => {
+          outSeen += `${line}\n`;
+          const m = SUITE_LOCK_LINE.exec(line);
+          if (!m) return;
+          const s = Number(m[2]);
+          if (!Number.isFinite(s)) return;
+          if (m[1] === "acquired after") { waitedMs += s * 1000; queuedSince = null; }
+          else if (queuedSince === null) queuedSince = Date.now();
+          else return; // a heartbeat of a queue we are already timing tells us nothing new
+          arm();
+        };
+        const outP = drain(p.stdout, onLine).catch(() => { outputReadable = false; return ""; });
+        const errP = drain(p.stderr).catch(() => { outputReadable = false; return ""; });
+        arm();
         try {
           const settled = await Promise.race([p.exited, deadline]);
           if (settled === "timeout") {
@@ -13883,8 +13966,12 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
             // Residual, unchanged and stated rather than defined away: a process the chain forks
             // between the walk and the signal still outlives both. What is NOT residual any more is
             // the tree that existed when the deadline fired — nor the server, which stops waiting here.
-            // This changes no verdict: `timedOut` is already set, so the row below stays
-            // unknown/timed-out whichever signal ends the process. A killed run is not a measurement.
+            // This changes no verdict: `timedOut`/`waitedOut` is already set, so the row below stays
+            // unknown whichever signal ends the process. A killed run is not a measurement.
+            // BOTH CLOCKS END HERE, unchanged and deliberately: a run killed for queueing has the
+            // same tree as one killed for working — a wrapper sitting in e2e-stage.sh's poll loop
+            // holds no mutex yet, but it does hold a QUEUE TICKET, and leaving it alive would put a
+            // ghost in front of every later contender for as long as its pid lives.
             const doomed = p.pid > 0 ? descendantPids(p.pid) : Promise.resolve([]);
             void killProcessTree(p, 15, doomed);
             setTimeout(() => { void killProcessTree(p, 9, doomed); }, POSTLAND_AUDIT_KILL_GRACE_MS);
@@ -13893,9 +13980,14 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
           }
           // best-effort output, bounded: on a timeout the pipes may never close, so give them a
           // moment and take what came out rather than waiting on a process we just killed
+          const killed = timedOut || waitedOut;
           const grab = (pr: Promise<string>): Promise<string> =>
-            timedOut ? Promise.race([pr, Bun.sleep(1000).then(() => "")]) : pr;
-          const gotOut = await grab(outP);
+            killed ? Promise.race([pr, Bun.sleep(1000).then(() => "")]) : pr;
+          // `|| outSeen`: drain() resolves only at EOF, so on a kill the race hands back "" — the
+          // lines the child already wrote are in outSeen and are the only account of itself a killed
+          // run will ever give (on 5b676958 that is the `acquired after 1576s` line, i.e. the whole
+          // point of the row).
+          const gotOut = (await grab(outP)) || outSeen;
           const gotErr = await grab(errP);
           const completeOutput = `${gotOut}\n${gotErr}`;
           out = retainRunOutput(gotOut, gotErr, POSTLAND_AUDIT_OUT_CAP).trim();
@@ -13903,9 +13995,14 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
           // 42/126/127 and timeouts are named NON-runs below; their absence is not a measured zero.
           // Every other settled process yielded complete pipes, so zero anchored result lines is the
           // exact pre-check-crash fact this field exists to preserve.
-          if (!timedOut && outputReadable && exitCode !== null && exitCode !== VERIFY_SKIP_EXIT
+          if (!killed && outputReadable && exitCode !== null && exitCode !== VERIFY_SKIP_EXIT
             && exitCode !== 126 && exitCode !== 127)
             checks = postLandAuditChecks(completeOutput, exitCode, undefined, true);
+          // parsed over the FULL output for the same reason runVerify parses it there: the lock
+          // lines are printed FIRST, so on any run long enough to matter they are the first thing
+          // the byte cap on `out` drops.
+          const wait = suiteWait(completeOutput);
+          if (wait) { waitMs = wait.waitMs; waitPartial = wait.partialMs > 0; }
           // CLASSIFICATION. The fail direction here is the INVERSE of runVerify's, and deliberately:
           // runVerify gates a land, so its timeout must read as "do not land" (red). This gates
           // nothing, so its failure modes must read as "no measurement happened" (unknown) — a
@@ -13913,15 +14010,27 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
           // fabricated green would be the one thing A4 forbids.
           // 126/127 are the shell's "could not execute / not found": a command that never ran is a
           // non-measurement, not a failing suite. A real suite reports its failures with its own code.
-          if (timedOut) { reason = `audit timed out after ${POSTLAND_AUDIT_TIMEOUT_MS}ms — no verdict`; }
+          // TWO KILLS, NEVER NAMED ALIKE (the same discipline runVerify's timedOut/waitedOut pair
+          // has carried since 2026-08-07). Both stay `unknown` — this separates two CAUSES of a
+          // non-measurement, it does not change a verdict, make a run green, or recolour anything:
+          //   timedOut  — the audit was WORKING and overran the work budget. It measured nothing,
+          //               but it did at least get to look at the tree.
+          //   waitedOut — the audit never got the machine at all. It says nothing whatever about the
+          //               tree, and a reader who cannot tell it from the case above will go hunting
+          //               a suite defect that was never observed (5b676958 read exactly that way).
+          if (waitedOut) {
+            reason = `audit NEVER STARTED — killed after ${POSTLAND_AUDIT_WAIT_MS}ms still queued behind ${SUITE_LOCK};`
+              + ` it was waiting, not auditing, so this says nothing whatever about the tree`;
+          }
+          else if (timedOut) { reason = `audit timed out after ${POSTLAND_AUDIT_TIMEOUT_MS}ms of work — no verdict`; }
           else if (exitCode === VERIFY_SKIP_EXIT) { reason = `the audit command declined to run (exit ${VERIFY_SKIP_EXIT})`; }
           else if (exitCode === 126 || exitCode === 127) { reason = `the audit command could not be started (exit ${exitCode})`; }
           else if (exitCode === 0) { result = "green"; reason = undefined; }
           else { result = "red"; reason = undefined; }
-          if (!timedOut && outputReadable && result === "red")
+          if (!killed && outputReadable && result === "red")
             fails = helperFailNames(localFailNames(completeOutput));
         } finally {
-          clearTimeout(timer);
+          if (timer) clearTimeout(timer);
         }
       }
     }
@@ -13935,7 +14044,12 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
   const row: PostLandAuditRow = {
     at: Date.now(), startedAt, ms: Date.now() - startedAt,
     repo, main, mainSha, result, ...(reason ? { reason } : {}),
-    cmd, cmdSource, exitCode, out, ...(fails !== undefined ? { fails } : {}), ...(trail ? { trail } : {}), checks, covers,
+    cmd, cmdSource, exitCode, out, ...(fails !== undefined ? { fails } : {}), ...(trail ? { trail } : {}), checks,
+    // `waitMs !== null`, not a truthiness test: a chain that reported `acquired after 0s` DID report
+    // its wait and its answer is zero, which is a different statement from a chain that reports no
+    // waits at all (the short chain, a remote row, anything that never sources e2e-stage.sh).
+    ...(waitMs !== null ? { waitMs, ...(waitPartial ? { waitPartial: true as const } : {}) } : {}),
+    covers,
     ...(proportional ? { proportional: true as const, steps: [...VERIFY_PROPORTIONAL_STEPS] } : {}),
   };
   lastPostLandAudit = row;

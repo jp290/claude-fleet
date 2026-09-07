@@ -465,6 +465,59 @@ ein Leser muss zuerst diese zwei Zeilen abziehen, bevor er irgendeine andere Zei
 **Ein Rot dort NACH `a1f8b65` ist wieder ECHT** — und dann gilt wieder die normale Regel: es ist
 deins, bis du das Gegenteil beweist.
 
+### 6.2 Der Post-Land-Audit zaehlte Warten als Arbeit — zwei Uhren statt einer (2026-09-07)
+
+**Gemessen** an `post-land-audits.jsonl` (500 Zeilen, gitignored — `rg` sieht sie NICHT, `grep`/python
+nehmen): `unknown` ist **102 von 500** (20 %), **15 davon Timeouts** mit `checks: null`. Die 392
+Laeufe, die ein Verdikt erreichten, brauchten p50 1 001 454 ms, p90 1 634 153 ms, max 2 500 382 ms.
+Die Suite ist also nicht auf 45 min gewachsen — die Zeit ging woanders hin.
+
+**Die schaerfste Zeile ist `5b676958`** (2026-09-07 07:57:58 → 08:42:58, Deckel 2 700 000 ms). Ihre
+eigene aufbewahrte Ausgabe endet auf `[suite-lock] e2e-isolated.sh acquired after 1576s` — das Kind
+bekam den Mutex in der Sekunde, in der der Server aufgab. Die Aufteilung ist damit ohne Schaetzung
+lesbar: **1 124 s Vorlauf** (Snapshot + `bun install`, alles VOR dem ersten Wrapper und damit vor
+jeder Mutex-Frage) **+ 1 576 s Schlange + 0 s Messung**. Die Zeile sagte „timed out", was sich liest
+wie ein Lauf, der den Baum angesehen hat. Er hat nichts angesehen.
+
+**Die Wurzel** war eine einzige Uhr: `runPostLandAudit` startete `POSTLAND_AUDIT_TIMEOUT_MS` beim
+`Bun.spawn`, das Kind stellte sich erst INNERHALB dieses Fensters ueber `e2e-stage.sh` an. Genau die
+Vermengung, die der Land-Gate am 2026-08-07 hinter sich gelassen hat (`runVerify`, `VERIFY_WAIT_MS`
+gegen `VERIFY_TIMEOUT_MS`).
+
+**Der Schnitt** (`server.ts#runPostLandAudit`) baut dasselbe Muster nach, mit demselben Parser:
+`FLEET_POSTLAND_AUDIT_WAIT_MS` (Default 2 700 000) neben `FLEET_POSTLAND_AUDIT_TIMEOUT_MS`; die Uhr
+wandert an den `[suite-lock]`-Zeilen des Kindes zwischen beiden Budgets; ein Lauf dauert hoechstens
+die Summe. Der Default ist die **gemessene Haltezeit EINER Suite**, nicht Geschmack: ein voller Lauf
+haelt diesen Mutex hier 35–41 min (2026-09-06 hielt ein Wrapper 19:14→19:55:40; der Halter vor
+`5b676958` war beim Tod ≥41 min alt und hielt noch). Weniger als ~41 min kann eine Suite, die kurz
+vor dem Audit zugegriffen hat, nicht ueberleben; 45 min deckt genau eine solche Haltung.
+
+**Was die Zeile jetzt trennt** — und mehr trennt sie nicht, `unknown` bleibt in JEDEM Fall `unknown`:
+
+| Ursache | `reason` | `result` |
+|---|---|---|
+| gearbeitet und ueberzogen | `audit timed out after <N>ms of work — no verdict` | `unknown` |
+| nie drangekommen | `audit NEVER STARTED — killed after <N>ms still queued behind <lock>; …` | `unknown` |
+
+**`waitMs` auf der Zeile ist eine UNTERE SCHRANKE, und zwar zweifach.** `waitPartial` markiert den
+bekannten Fall (eine Stufe stand beim Ende noch in der Schlange, ihr Wert ist nur bis zum letzten
+Heartbeat bekannt, und der ist minutengrob). Der zweite ist strukturell und wird hier ausdruecklich
+NICHT geglaettet: **der Vorlauf des Kindes liegt ausserhalb jeder Mutex-Frage** und damit ausserhalb
+dessen, was `suiteWait` sehen kann — bei `5b676958` sind das 1 124 s in `ms`, die in keinem `waitMs`
+je auftauchen werden.
+
+**Was dieser Schnitt NICHT ist.** Er aendert kein Verdikt, faerbt nichts um und macht keinen Lauf
+gruen. Er entscheidet auch die PLATZIERUNG nicht (Helfer-Gnadenfrist, Re-Offer eines laufenden
+Eintrags, Ticket-Prioritaet) — das ist die eigene Diagnosezeile `e407aef5`.
+
+**Und ein Deckel ersetzt ihn nicht.** Nachgerechnet fuer `FLEET_DISPATCH_MAX_LANES=1` (`521e397`,
+Owner 2026-09-07 09:25, also NACH diesem Vorfall): ein lokaler voller Audit kostet auf dieser
+Maschine 2 386–2 500 s **ohne** nennenswerte Schlange (vier Zeilen: 2 386 / 2 397 / 2 408 / 2 424 s)
+gegen ein Budget von 2 700 s — es bleiben ~200–314 s Luft. Eine EINZIGE Lane-Vorschau haelt den
+Mutex 35–41 min. Im gemessenen Fall genuegt der eine Halter allein: er lief ab ~08:01 und hielt noch
+um 08:43, das Audit fragte um 08:16:42 — auch als einziger Konkurrent haette es das Budget gerissen.
+Deckel 1 senkt die HAEUFIGKEIT, er schliesst den Fall nicht aus.
+
 ## 7. Relative to the `post-land-audit` lane
 
 Read first-hand: `git -C …/post-land-audit diff main...HEAD` (5 lane commits, +892/−21).

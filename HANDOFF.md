@@ -268,14 +268,49 @@ Deploy `f6a69ac5` gruen, M3 live, `bootHead == head == c45ebebc`. **Meine drei F
 bindet den naechsten Self-Land-Aufruf nicht mehr, die Supervisor-Bindung meldet ihre Leiche, und
 Warten und Arbeit sind zwei Uhren.
 
-## E. Was weiterhin NUR der Controller/Owner kann (unveraendert offen)
+## E. Was weiterhin NUR der Controller/Owner kann
 
-`ff4544f5` archivieren — R4s Dublette, nie freigegeben, Dateiposition **150**, ueberholt unter
-Deckel 1 die ganze Queue und haelt den letzten `auftrag`-Cap-Platz. Sie blockiert ZWEI Filings:
-die `SUITE_OFFER_WAIT_HELD_MS`-Rekalibrierung (800 s gegen gemessene Fern-p50 1448 s; zwei Lanes
-haben den Deckel heute BEWUSST ueberschritten) und den `descendantPids`-Befund (`pgrep -P` mit
-`stderr:"ignore"` und verworfenem Exit-Code; **30x** `pgrep: Cannot get process list` in
-`server.log`). Dazu die Notizen `7a2fcbce`, `35cf0c23`, `65358fef` — Inhalt nachweislich gelandet.
+**LIES DIESEN ABSATZ, BEVOR DU DIE LISTE DARUNTER BENUTZT.** Eine Liste in einem Handoff ist eine
+BEHAUPTUNGSLISTE, keine Arbeitsanweisung. Die urspruengliche Fassung dieses §E hat an EINEM Tag
+zweimal Schaden angerichtet, weil sie gelesen aussah: sie schlug `65358fef` zum Archivieren vor —
+das ist der UEBERLEBENDE Nachtrag, nicht der ueberholte — und sie trug „`ff4544f5` = R4s Dublette"
+ueber mehrere Sessions, obwohl es diese Dublette nicht gibt. Beide Male war die Rettung dieselbe
+Handlung: die zitierten Texte AUFMACHEN, statt die Liste abzuarbeiten. Wer hier etwas disponiert,
+liest vorher beide Seiten und prueft jede Id gegen den lebenden Bestand.
+
+**KORRIGIERT 2026-09-07 ~16:0x (Slot 7, am Baum und an der Live-Queue nachgeprueft; die frueheren
+zwei Saetze waren FALSCH):**
+- **`ff4544f5` bleibt und ist NICHT zu archivieren.** Sie ist die EINZIGE lebende Zeile ihres
+  Gegenstands („der Post-Land-Audit zaehlt Warten als Arbeit"). R4 ist `d51e02ca` und ein ANDERER
+  Defekt (ein vorhandenes Urteil geht an den falschen Empfaenger — Beleg: Notiz `7a2fcbce`);
+  `d51e02ca` ist heute ueberhaupt keine Task-Id mehr. Die vermeintlich neuere Fassung `c9791a49`
+  ist EBENFALLS tot. Was `ff4544f5` braucht, ist eine AKTUALISIERUNG: ihre Zahlen (15 Timeouts in
+  500 Zeilen, p50 1 001 454 ms gegen 45 min) sind seit `61e407d` ueberholt — die Decke steht auf
+  75 min.
+- **`65358fef` NICHT archivieren** — es ist der Nachtrag, der `35cf0c23` korrigiert (215 statt 214
+  Laeufe, 10/27 statt 9/26) und zusaetzlich eine Hypothese widerlegt. `35cf0c23` ist am 2026-09-07
+  vom Controller archiviert worden, nachdem er BEIDE Texte gelesen hatte. `7a2fcbce` ist ungeprueft
+  und bleibt.
+- **`b55059a1` und `5c9c7ab6` NICHT archivieren**, auch nicht zum Deckel-Freimachen: beide sind
+  Evidenz zu nicht adjudizierten ROTEN Post-Land-Audits (`programId: null`, „keine
+  Fremd-Adjudikationen"). Sie zu opfern hiesse, die Buchhaltung zu faelschen, um Platz in der
+  Buchhaltung zu schaffen.
+
+WEITERHIN OFFEN und echt: die `SUITE_OFFER_WAIT_HELD_MS`-Rekalibrierung (800 s gegen gemessene
+Fern-p50 1448 s) und der `descendantPids`-Befund (`pgrep -P` mit `stderr:"ignore"` und verworfenem
+Exit-Code; **30x** `pgrep: Cannot get process list` in `server.log`). Beide sind ungefilt, weil der
+`auftrag`-Deckel 5/5 steht — nicht, weil sie erledigt waeren.
+
+ELF HAENGENDE VERWEISE, gefilt als `7081f072`: acht offene Zeilen zitieren `c9791a49`, drei
+`d51e02ca` — beide existieren nicht mehr. Zehn davon stehen in `notiz`/`richtung`, die keine Lane
+ausfuehrt; die eine ausfuehrbare (`e407aef5`) ist per Brief-Nachtrag entschaerft. Die Zahl ist eine
+UNTERGRENZE — nur diese zwei Ids wurden aufgeloest, nicht der ganze Bestand.
+
+NIE GEFILT UND STRUKTURELL UNAUFFINDBAR: `.git/fleet-betrieb-R4-strich.json` (6935 B, 2026-09-04
+10:20) ist ein vollstaendiger, filbarer `auftrag`-Body („R4' · ZWEI TICKS WAEHLEN IHREN EMPFAENGER
+OHNE REPO-FILTER") und ersetzt laut eigenem Text `d51e02ca`. `.git/` liegt ausserhalb des
+Arbeitsbaums: `git status` sieht es nie, `rg` sieht es nie, ein frischer Klon hat es nicht. Neuer
+Fall der Klasse in `docs/ungoverned-artifacts.md`.
 
 # HANDOFF — Program-MAIN Land-Pipeline 2026-09 (`233e1c2b7eaca3850decf332`, Slot 5, Fable 5.1): M5 + N1 GELANDET und LIVE, M3 GELANDET `6c70f01`+`79e1c36`+`94a8840` (Deploy beim Controller), W1–W3 (Wellenmodus, Owner-Tagesarbeit) pending; 2026-09-07 14:0x, ctx GEMESSEN 26,7 %
 

@@ -1,3 +1,102 @@
+# HANDOFF — Program-MAIN Land-Pipeline 2026-09 (`233e1c2b7eaca3850decf332`, Slot 5, Fable 5.1): M5 + N1 GELANDET und LIVE, M3 in Flug (Land steht aus), W1–W3 (Wellenmodus, Owner-Tagesarbeit) pending; 2026-09-07 13:0x, ctx GEMESSEN 25,3 % beim Schreiben
+
+> **Dieser Abschnitt ERSETZT den aelteren darunter.** Zustand ableiten: `./state.sh`, `./register.sh`,
+> `GET /api/self/program-execution` (Program 233e1c2b). Alles hier sind Behauptungen zum Nachschlagen.
+
+## 0. DEIN ERSTER ZUG
+
+1. **M3 `283f625f` (Vorflugpruefung dirty-main) — Lane `fleet/260907091244-2e44`, zuletzt Slot 1, Tip
+   `3b117c0` (3 Commits, Baum sauber).** Ich habe den Diff GELESEN und abgenommen (§2). Was fehlte, als
+   ich ging: der Report der Lane — sie fuhr ihren ZWEITEN `./e2e-isolated.sh`-Lauf LOKAL (pid 78336,
+   nohup, Monitor in der Pane), weil ihr erster Lauf einen Sondenfehler (Arm iii fragte die Tuer vor
+   dem Re-Observe nach dem Boot) zeigte; der Fix ist `3b117c0`. Die Projektion sagt seit Stunden
+   REVIEWABLE — das ist das done-looking-Praedikat, NICHT der Report; die Pane sagt „I'll report when
+   the re-run lands". Also: Report abwarten (kommt in die Pane), ALL-PASS-Tail lesen, dann
+   `POST /api/self/tasks/283f625f/land` (Promotion `green-only` traegt das Program), sofort
+   `POST /api/self/watch` mit dem `watch`-Objekt der Antwort, bei landed=YES `{kind:"audit", repo,
+   mainAfter}`. Vorher merges-Sensor pruefen; ein toter Suite-Halter ist seit dem M5-Deploy KEIN
+   Thema mehr (der Server reapt selbst). Nach dem Land: die zwei `<sha>`-Stellen der Lane
+   (`docs/self-api.md` §ff-lost/dirty-main, Messnotiz §3 M3 — `grep -n '<sha>'`) mit den echten Shas
+   fuellen (`git merge-base --is-ancestor` je Sha), Direkt-Commit docs-only mit `bun e2e/pins.ts`.
+2. **Deploy nach M3 beim Controller (Slot 6, Opus 5 high — Label `🎛` auf `/api/sessions` pruefen,
+   er zieht per Succession um: 2 → 10 → 6 an einem Vormittag).** Eine Zeile per `POST /send`
+   `{slot, text}` mit Owner-Token aus `fleet.json` (NICHT `/api/slots/:id/send` — 404). Er will nur
+   Lands, Rot und Owner-Entscheide hoeren.
+3. **Dann W1 `e0113460` und W2 `0f5019ac` (unabhaengig, beide zuerst moeglich), danach W3 `05611418`
+   (setzt BEIDE voraus, nie vorher).** Owner-Tagesarbeit 2026-09-07 12:1x/12:4x, vom Controller mit
+   harten Done-Kriterien gefilet (Texte in `fleet.json`, ich habe sie gelesen: scharf, Verbotslisten,
+   Verify woertlich). Sie gehen VOR M2 `64860da8` und N2 `f98facad`. **Die drei Zeilen tragen KEINEN
+   Spawn-Tripel** (`Task.spawn` fehlt ⇒ `DEFAULT_SPAWN` alles null ⇒ Lane bekommt `FLEET_MODEL`, aber
+   KEIN `--effort`). Darum nicht per `release` in den Tick geben, sondern per Hand-Knopf mit Tripel:
+   `POST /api/tasks/<id>/dispatch` Body `{"harness":"claude","model":"claude-opus-5[1m]","effort":"high"}`
+   (Owner-Token; `server.ts`, grep `dRowSpawn` — der Knopf liest den Body vor dem Row-Spawn). Der
+   Knopf prueft weder Deckel noch Quiet Hours: nur druecken, wenn ein Slot frei ist und keine Lane
+   dieses Programs laeuft. Max. EINE Lane des Programs gleichzeitig.
+4. **Ein `unknown`-Audit ist NICHT rot:** das N1-Audit (`189f815`, koalesziert auf `1846a26`) lief
+   lokal in den 2 700-s-Timeout, weil die M3-Lane den Mutex hielt — nie gemessen, nichts zu
+   adjudizieren. Das naechste Audit (M3-Land) misst N1 mit.
+
+## 1. Was steht — Program-Zeilen (Ids aus `fleet.json`)
+
+| Zeile | Id | Status | Was |
+|---|---|---|---|
+| S1 Wellen-Sensor | `1b106a66` | GELANDET `863f628`+`49d93bc` (Slot 4) | `task-land-waves.ts` |
+| M1 Gate unter Server-Hold + `merge_verdict` | `aa8e5ade` | GELANDET `f388de1`+`f0bcea6`, Audit gruen 3785/0, Deploy `4fc0afa7` 03:08 | |
+| **M5 Hold-Hygiene** (neu, aus 4 Controller-Befunden) | `8d6a3e9e` | **GELANDET `94dd5e4`+`a15b59a`+`b2ab2cf`**, `verify.ok:true` 139 s / 0 s Schlange, Audit **gruen 3792/0** (2 196 s), Deploy `7941664b`/`1a3ed209` | Server reapt toten Suite-Halter nach der Wrapper-Dreiteilung; docs-only-Kette nimmt keinen Hold |
+| **N1 Notizen beim Dispatch** | `3af11665` | **GELANDET `24cd54e`+`189f815`**, `verify.ok:true` 149 s / 0 s, Audit `unknown` (Timeout, §0.4), Deploy `1a3ed209` (bootHead `0a0da52`) | `task-notes.ts` + `briefAndSend`-Naht + Receipt `notes` |
+| M3 Vorflugpruefung dirty-main | `283f625f` | **sent, Lane fertig, Report steht aus** (§0.1) | `dirtyMainStop` + zweiter Blick vor dem ff + `MergeErrorReason "dirty-main"` |
+| W1 programId-Schnitt in der Landefaltung | `e0113460` | pending | Controller-Brief, Owner-Entscheid 12:4x |
+| W2 Bestaetigungstuer fuer die Flaeche einer bestehenden Zeile | `0f5019ac` | pending | unabhaengig von W1 |
+| W3 „▸ start wave" mit Selbst-Split | `05611418` | pending | NACH W1+W2 |
+| M2 `waitedOut` als Wiedervorlage | `64860da8` | pending | nach W3; Fleet-Betrieb `1c746e96` koordiniert nur |
+| N2 Notiz-Lebenszyklus | `f98facad` | pending | nach W3, setzt N1 voraus |
+| M4 / N3 unter der Schnittlinie | `4aeeec19` / `f7493755` | notiz | Vorschlaege |
+
+**Erfolgskriterien:** (a) beide Dokumente gelandet mit Schnittliste, Zeilen in der Queue — erfuellt.
+(b) S1 gelandet, gepinnt — erfuellt. (c) erster Merge-Schnitt gelandet, keine neue FAILED-Note —
+erfuellt und GEMESSEN (`e7b1c1e`, Messnotiz §3 M1: 8 `merge_verdict`-Zeilen seit Deploy, drei mit
+`waitMs` 710000/450000/255000 hinter toten Haltern; FAILED weiterhin 19). Das Program laeuft trotzdem
+weiter: der Owner hat den Wellenmodus (W1–W3) hier eingehaengt.
+
+## 2. Befunde dieser Session
+
+- **Vier M1-Regressionen an EINEM Vormittag, alle vom Controller gemessen, alle am Code bestaetigt:**
+  (1) toter Suite-Halter ⇒ jedes Land wartet bis 45 min (`holdSuiteLock` reapte nie) — M5 (a);
+  (2) docs-only-Kette nahm den Hold (710 837 ms fuer 1 s Arbeit) — M5 (b); (3) die drei Gate-Wrapper
+  reichten `$$` statt `$_st_lock_pid` ⇒ jede Code-Lane starb am clean-review-Gate — vom Controller
+  DIREKT gefixt `b8b5e48` (kein Land-Ledger); (4) die Wrapper-Freigabe hat einen Pfad ohne Rueckgabe
+  (pids 19458, 22947 aus GRUEN geendeten Lane-Vollketten) — NICHT gefixt, gehoert dem Program
+  Audit-Determiniertheit; M5 macht es fuer Lands folgenlos. Ich habe pid 22947 vor dem M5-Land von
+  Hand gereapt (Dreiteilung, Re-Check). Alles in `docs/suite-contention.md` §7c und Messnotiz §3 M5.
+- **M3-Review (abgenommen):** `gitReadRaw` (NUL-Reads ungetrimmt), `porcelainZPaths` (Renames beide
+  Pfade), `dirtyMainOverlap` (Holder von main wie `advanceIntegration`; kein Holder ⇒ leer, Probe-
+  Fehler ⇒ null ⇒ alter Pfad), `dirtyMainStop` als einziger Schreiber; Preflight VOR `verifyPlanFor`
+  (kein Plan, kein Hold, kein Verify), zweiter Blick nach `markLandIntent` und VOR `advanceIntegration`
+  (Intent wird gecleart); `MERGE_ERROR_REASONS` traegt `dirty-main`, `mergeBlocksLane` liest die LISTE
+  statt des Literals. `let verify = dirtyStop ? undefined : gateDenied ?? await …` parst als Ternary
+  ueber dem `??` — korrekt. Pins 40+, Checks 192+ in `e2e/programs.ts`, `docs/self-api.md` 68+.
+- **Routen-Fakten:** `POST /send {slot,text}` ist die Sende-Route (Owner-Token); `/api/slots/:id/send`
+  gibt 404. `POST /api/tasks/:id/brief {text}` setzt den Brief einer pending Zeile (`edited:true`,
+  `briefAndSend` liefert `brief.text`). Ein Hintergrund-`until`-Loop, der Tuer + merges-Sensor pollt
+  und dann landet + abonniert, hat dreimal getragen (Muster: 15-s-Takt, Deckel 600 s).
+- **Der Controller hat N1 einmal von queued auf pending zurueckgesetzt** (Owner-Prioritaet
+  Second-host-Entlastung zuerst) und per Monitor wieder freigegeben — eine MAIN darf das erwarten.
+- **Nicht gesendet (Broadcast-Buendelung):** ans Program Audit-Determiniertheit die Notiz zum
+  Wrapper-Freigabepfad (Befund 4) und zum `FLEET_SUITE_LOCK_HELD_BY`-Export — steht im M5-Report und
+  in §7c; wer ohnehin an Slot 7 schreibt, nimmt es mit.
+
+## 3. Deploy / Controller
+
+- Live ist bootHead `0a0da52` (Deploy `1a3ed209`, `ok:true`): M5 und N1 drin. M3 braucht nach dem
+  Land einen Deploy (server.ts) — Controller-Akt, eine Zeile an ihn.
+- Der Controller (Slot 6) hat meine Absprache: die MAIN landet ihre Zeilen selbst, er deployt; W-Zeilen
+  starte ich per Dispatch-Knopf mit Tripel.
+
+## 4. Kontext
+
+25,3 % gemessen beim Schreiben. Kosten dieser Session: Erdung ~4, M5 (Brief+Review+Land+Doc) ~6, N1
+(Review+Land) ~4, M3-Review ~3, Controller-Verkehr ~3. Rechne ~3 Punkte je Land mit Review.
+
 # HANDOFF — Program-MAIN P3 Landepfad adversarial (`6360c36105e50a705db275c1`, Slot 4, Fable 5.1, dritte Insassin): 2. ENTWURF FERTIG, Astra-Runde 2 in Flug; 2026-09-07 12:4x, ctx GEMESSEN 46,1 %
 
 > Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/program-execution` (Program 6360c361). Charter =

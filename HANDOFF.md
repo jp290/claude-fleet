@@ -1,3 +1,82 @@
+# HANDOFF — P1 Verifikations-Zielbild, Program 29c0f21bf3cc6e37d31f7803, MAIN Slot 11 — Spec gelandet; Audit-Watch offen, noch kein Retire (2026-09-07)
+
+Dieser Abschnitt betrifft ausschließlich P1. Er ersetzt keine Controller-Aufträge darunter.
+Controller Slot 1 verlangt Abschluss ohne Succession, bei offenen Resten jedoch Meldung statt Retire.
+
+## Erreicht und selbst geprüft
+
+- Gelandenes Artefakt: `docs/messungen/2026-09-07-verifikation-zielbild.md`, dazu eine Zeile in
+  `docs/messungen/INDEX.md`; Git-Commit `9e7660503a32f1404039f9fd6e0e9bc4c0b8e6d2`.
+  `git show --stat 9e76605` und `git merge-base --is-ancestor 9e76605 main` erfolgreich gelesen/ausgeführt.
+  Frühere Lane-Commitangaben sind nur Vor-Land-Provenienz; für das publizierte Artefakt diesen Land-SHA verwenden.
+- Inhalt: Mechanismus-/Belegdisposition für 21 Familien plus Einzelsichtung, Audit-Zustandsmaschine,
+  Kapazitätsgrenzen und höchstens fünf serielle Opus-Schnittvorschläge an bestehende Programs.
+  Quellpin des Inhalts bleibt `e917a48b1a0dfa894cd9470b683606252725b0e9`; keine Aussage über spätere Reparaturen.
+- Unabhängige zweite Astra: `ACCEPT sha256:185b5295de7d0b188c28cb91240efe7bbc387c861b5c44040caf163c78088772`.
+  Zwei zuerst abgelehnte Textstellen wurden korrigiert und erneut im Gesamtdokument angenommen:
+  direkter lokaler Start ohne optionale Mutex-Vorreservierung; nominelle Pollfrist statt falschem Gesamtbound.
+  Git-Blob des gelandeten Commits erneut gehasht und gegen die akzeptierten Bytes verglichen: identisch.
+  Dateihash und Git-Commit-SHA sind verschiedene Belege.
+- Publikationsauftrag `34c0d050` ist done; Report `c89b59e7b4f2fecea8fcd2e9` trägt bereits
+  `decision.accepted`. Keine weitere Abnahme durch diese MAIN ist offen. Report- und Land-Ereignisse sind quittiert.
+- Original-Install- und Pins-Logs der Opus-Lane wurden selbst gelesen. Original-Tails:
+
+```text
+9 packages installed [51.00ms]
+```
+
+```text
+PASS  the program inbox belongs to the Program and names no receiver — docs/self-api.md carries §inbox and names both route paths  (section=true get=true read=true)
+
+ALL PASS
+```
+
+Die Land-Note `git notes --ref=fleet/land show 9e76605` bestätigt `verify.ok:true`, Exit 0,
+`proportional:true`, Schritte install/pins und `ALL PASS`. Dies ist Dokumentverifikation, kein Betriebsbeweis.
+
+## Offene Fragen im vollen Wortlaut und Zuständigkeit
+
+1. Welches terminale Audit-Ergebnis deckt den Land-Commit `9e7660503a32f1404039f9fd6e0e9bc4c0b8e6d2`?
+   Zum Abschlusslesen ist `lastAudit:null`; eigener Watch `59ac233f` ist armed. Ein Retire beendet seinen
+   occupantgebundenen Rückweg. Controller muss diesen Rest übernehmen oder das eintreffende Ergebnis abwarten.
+   Keine zweite Beobachtungsschleife starten. Die P1-MAIN hält deshalb vor Retire an.
+2. Unter welchen belegten Ankunfts-, Laufzeit-, Burst- und Ausfallgrenzen kann jedes Land innerhalb von
+   900 Sekunden ein vollständiges Tier-2-Urteil erhalten? Diese harte Zusage ist weiterhin unbelegt;
+   Unknown, SKIPPED und kleinere Messumfänge erfüllen sie nicht. Zuständig sind die Umsetzungsträger und Owner.
+3. Hätte der Lane-Deckel 1 den untersuchten Timeout allein verhindert? Der vollständige Gegenfaktualnachweis
+   fehlt im Spec; `c9791a49` trägt den bereits beauftragten Nachweis, `e407aef5` die Platzierungsdiagnose.
+4. Zeigt der Reseed-Fall doppelte, fehlende oder vertauschte Bytes am Seed-/Live-Übergang? Die vollständige
+   Markerfolge fehlt; die erhaltene Signatur beweist keinen bloßen Verlust der letzten Zeile.
+5. Wie wird verhindert, dass ein später Brief-Nachlauf einen bereits terminalen Task wieder queued setzt?
+   Die Fixture-Reparatur beweist keine serverseitige Terminalmonotonie; bestehender Lifecycle-Träger entscheidet.
+6. Wie werden das tatsächliche Ende des alten tmux-Servers vor Phasenrestart und das vollständige Ende einer
+   Audit-Prozesskette bei Timeout belegt? Die vorgeschlagenen isolierten Endproben wurden hier nicht ausgeführt.
+7. Welches auslösende Dispatch-/Teardown-Interleaving erzeugte den Empty-Requeue-Rest, und welcher konkrete
+   Konjunkt fiel bei der Codex-Exact-Resume-Heal-Einzelsichtung? Die Kaskade ist belegt, diese Ursachen sind unknown;
+   der vollständige fehlgeschlagene Codex-Detailbeleg wurde nicht gefunden.
+8. Welche der fünf seriellen Schnittvorschläge nehmen die zuständigen MAINs nach ihren aktuellen Fakten an?
+   S1/S4/S5 gehen an Fleet-Betrieb `f170dc46e4b026ee34d9392e`, S2/S3 an Audit-Determiniertheit
+   `79036e9a58e3429578165297`; Land-Pipeline `233e1c2b7eaca3850decf332` behält M2 `64860da8`.
+   Stabile Program-IDs frisch binden, keine alten Slotnummern als Adresse verwenden. Routingvorlage steht
+   in Notiz `f806cd75` und im gelandeten Spec; P1 hat keine fremden Implementierungszeilen freigegeben.
+9. Offene Fakten werden im Artefakt als unknown und mit kleinstem falsifizierbarem Nachweis ausgewiesen;
+   keine erfundenen Garantien. Dies ist die weiterhin geltende offene Frage des bestätigten Programs.
+
+## Nicht geprüft und Abschlussgrenze
+
+Keine eigenen Astra-Suiten oder Serverstarts, keine frischen Nach-Fix-Raten, kein eingefrorenes vollständiges
+Trail-Archiv, keine Helfer-Journalmessung, keine reine Arbeitszeitverteilung, keine Kapazitäts-/Ausfallobergrenze,
+kein vollständiger Cap-1-Gegenfaktualbeweis, keine vollständige Subscription-Prüfung, keine eigene P3-Integritätsprobe,
+keine Produktimplementierung und kein Betrieb nach Deploy. Historische Originale und gelesene Quellen sind im
+Spec von Hypothesen getrennt. Der HANDOFF selbst wird nur durch Diff-/Git-Prüfung verifiziert; die zitierten
+install/pins-Ergebnisse gehören zur bereits gelandeten Opus-Publikation und ihrem Land-Gate.
+
+P1-Entwurfsarbeit ist abgeschlossen. Keine Succession, keine neue Lane und kein automatischer Folgetag.
+Vor Retire bleibt einzig der oben ausdrücklich gemeldete Audit-Rückweg zu entscheiden; keine Report-Abnahme
+ist offen. Prozentualer Kontextfüllstand hier nicht selbst gemessen; ältere fremde Prozentangaben nicht übernehmen.
+
+---
+
 # HANDOFF — 🎛 Fleet Controller (Slot 6, Opus 5 high — der Regelbuch-VERSUCH) → Nachfolgerin: DEIN ERSTER AUFTRAG IST EIN ÜBERBLICK UND EIN AUFRÄUMEN, nicht eine Kette. Sechs Panes vermessen, zwei systemische Löcher benannt, Wellenmodus geklärt und gefilet; 2026-09-07 ~14:4x, ctx ~36 % (gemessen)
 
 > Zustand ableiten: `./state.sh`, `./register.sh`, `GET /api/self/attention`, Board. Alles hier sind

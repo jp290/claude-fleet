@@ -198,7 +198,7 @@ export async function run(): Promise<void> {
   }
   check("ctl land --wait: it names the terminal fact, and the landed slot leaves no verdict row behind",
     (lj?.gone === true || lj?.last?.landed === true) && persistedAfter === null,
-    `gone=${lj?.gone} landed=${lj?.last?.landed} row=${JSON.stringify(persistedAfter)}`);
+    `gone=${lj?.gone} landed=${lj?.last?.landed} rowStatus=${(persistedAfter as { status?: string } | null)?.status ?? "(none)"}`);
   // TIER 2 IS OFF IN THIS INSTANCE (FLEET_POSTLAND_AUDIT_CMD unset — server.ts, "DEFAULT OFF"), so
   // the audit watch CANNOT be armed. What is asserted is that the script says so instead of
   // reporting a watch it does not hold: a claimed-but-absent return path is the failure mode.
@@ -308,9 +308,12 @@ export async function run(): Promise<void> {
     // …and now one row IS `sent`, so a cap of 1 must stop the second row before any POST is made.
     const overCap = await ctl(["dispatch", capRow, "--json"], { FLEET_DISPATCH_MAX_LANES: "1" });
     const oj = overCap.json as { ok?: boolean; refused?: string; openLanes?: number; cap?: number } | null;
+    // the DECIDING fields by name, not the whole object: the trail caps a detail at 2000 chars and
+    // the row's own `task` payload ate the budget on the first red — the answer was truncated away
+    // exactly where it was needed (helper + local run, 2026-09-07).
     check("ctl dispatch: over FLEET_DISPATCH_MAX_LANES it refuses before the POST, with the count and the cap",
       overCap.code === 1 && oj?.refused === "lane cap" && oj.cap === 1 && (oj.openLanes ?? 0) >= 1,
-      `exit ${overCap.code} ${JSON.stringify(oj).slice(0, 220)}`);
+      `exit=${overCap.code} refused=${oj?.refused} cap=${oj?.cap} openLanes=${oj?.openLanes} ok=${oj?.ok}`);
     // `--json` prints the machine form and NOTHING else, so the human sentence is a second call —
     // and it has to be asked for, not assumed: a refusal that does not name the way out is a
     // refusal a session cannot act on. Safe to repeat: the cap is checked before any POST.

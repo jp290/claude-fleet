@@ -278,9 +278,13 @@ export async function run(): Promise<void> {
     check("§2 a hand-parked lock is `parked`, told apart from `stale` — nothing ever reaps it",
       parked?.state === "parked", JSON.stringify(parked));
 
-    // the server only ever READS the lock — the reaping contract lives in the wrappers, and a
-    // second reaper would race the one place that re-checks the pid value before removing it
-    check("§2 the server never removed the lock it was reporting on",
+    // THE REPORTING PATH only ever READS. Since M5 (2026-09-07) the server does reap — but in
+    // exactly one function, `holdSuiteLock`, i.e. only while a land gate is asking for the machine,
+    // and by e2e-stage.sh's own triage (docs/suite-contention.md §7c). Nothing on the
+    // /api/sessions path may touch this dir: a poll that reaped would remove a lock while nobody
+    // was contending for it, which is neither the wrapper's contract nor the server's.
+    // Every state above was left in place by a REPORT, and the deliberately stale ones survived it.
+    check("§2 the reporting path never removed the lock it was reporting on — the reap lives in holdSuiteLock alone",
       ((): boolean => { try { return statSync(OWN_LOCK).isDirectory(); } catch { return false; } })());
 
     rmSync(OWN_LOCK, { recursive: true, force: true });

@@ -11068,41 +11068,12 @@ function opsRow(e: FleetEventRow): HTMLElement {
   return row;
 }
 
-// the read-only twin of opsRow: same facts, no affordance. It carries no acknowledge button because
-// the owner is not the principal who could have read the pane text, and the server refuses him here.
-function opsUnackedRow(e: FleetEventRow, now: number): HTMLElement {
-  const row = el("div", "attnrow uncertain");
-  const head = el("div", "attnhead");
-  head.appendChild(el("span", "attnkind", e.kind));
-  head.appendChild(el("span", "attnprog", opsSubject(e)));
-  const since = e.deliveredAt ?? e.createdAt;
-  head.appendChild(el("span", "attnmeta", `${opsReceiver(e)} · ${fmtSince(since)} without an ack`));
-  row.appendChild(head);
-  // THE TWO STATES KNOW DIFFERENT AMOUNTS, so both lines branch, headline and detail alike. A
-  // `delivered` row knows tmux took the keystrokes and nothing beyond that. A `send-uncertain` row
-  // does not even know that: it is persisted BEFORE tmux is touched, so whether a send was ever
-  // accepted is itself unknown. Saying "tmux took the keystrokes" on that row would be a false
-  // statement of the one fact this whole class exists to stop overstating.
-  const uncertain = e.status === "send-uncertain";
-  const secs = Math.round((now - since) / 1000);
-  row.appendChild(el("div", "attntext", uncertain
-    ? `transport outcome uncertain; recovery ${e.recovery?.state ?? "unavailable"}`
-    : "transport reported sent; no session acknowledgement"));
-  if (uncertain && e.recovery) {
-    row.appendChild(el("div", "shrhint", `state: ${e.recovery.state}`));
-    row.appendChild(el("div", "shrhint", `next: ${e.recovery.nextAction}`));
-    row.appendChild(el("div", "shrhint", `reason: ${e.recovery.reason}`));
-    row.appendChild(el("div", "shrhint", `effect: ${e.recovery.effect}`));
-  } else {
-    row.appendChild(el("div", "shrhint", uncertain
-      ? `Recorded uncertain ${secs}s ago, before Fleet could prove whether tmux accepted anything. The `
-        + "text may or may not be in the pane, and no session acknowledgement has arrived either way."
-      : `tmux took the keystrokes ${secs}s ago. Whether the session read them is not known — only its `
-        + "own acknowledgement can say so, and none has arrived."));
-  }
-  return row;
-}
-
+// PLACED BEFORE opsUnackedRow ON PURPOSE, and it must stay there: e2e/watch.ts proves the
+// read-only pane-transport row by SLICING this file from `function opsUnackedRow` to
+// `function renderOpsDlg` and asserting the slice contains no ack, no post and no `failed`.
+// A row with buttons sitting inside that window fails those checks as if the read-only row
+// had grown affordances — measured, on the first run of this cut.
+//
 // One awaiting report, with the two acts that were missing. The verdict is the OWNER'S — the row
 // says so, and the panel says so — because the MAIN it was filed to is gone; stamping it as that
 // MAIN's would record a judgement by a session that had already ended.
@@ -11147,6 +11118,41 @@ function ownerReportRowEl(r: OwnerReportRow): HTMLElement {
     btns.appendChild(b);
   }
   row.appendChild(btns);
+  return row;
+}
+
+// the read-only twin of opsRow: same facts, no affordance. It carries no acknowledge button because
+// the owner is not the principal who could have read the pane text, and the server refuses him here.
+function opsUnackedRow(e: FleetEventRow, now: number): HTMLElement {
+  const row = el("div", "attnrow uncertain");
+  const head = el("div", "attnhead");
+  head.appendChild(el("span", "attnkind", e.kind));
+  head.appendChild(el("span", "attnprog", opsSubject(e)));
+  const since = e.deliveredAt ?? e.createdAt;
+  head.appendChild(el("span", "attnmeta", `${opsReceiver(e)} · ${fmtSince(since)} without an ack`));
+  row.appendChild(head);
+  // THE TWO STATES KNOW DIFFERENT AMOUNTS, so both lines branch, headline and detail alike. A
+  // `delivered` row knows tmux took the keystrokes and nothing beyond that. A `send-uncertain` row
+  // does not even know that: it is persisted BEFORE tmux is touched, so whether a send was ever
+  // accepted is itself unknown. Saying "tmux took the keystrokes" on that row would be a false
+  // statement of the one fact this whole class exists to stop overstating.
+  const uncertain = e.status === "send-uncertain";
+  const secs = Math.round((now - since) / 1000);
+  row.appendChild(el("div", "attntext", uncertain
+    ? `transport outcome uncertain; recovery ${e.recovery?.state ?? "unavailable"}`
+    : "transport reported sent; no session acknowledgement"));
+  if (uncertain && e.recovery) {
+    row.appendChild(el("div", "shrhint", `state: ${e.recovery.state}`));
+    row.appendChild(el("div", "shrhint", `next: ${e.recovery.nextAction}`));
+    row.appendChild(el("div", "shrhint", `reason: ${e.recovery.reason}`));
+    row.appendChild(el("div", "shrhint", `effect: ${e.recovery.effect}`));
+  } else {
+    row.appendChild(el("div", "shrhint", uncertain
+      ? `Recorded uncertain ${secs}s ago, before Fleet could prove whether tmux accepted anything. The `
+        + "text may or may not be in the pane, and no session acknowledgement has arrived either way."
+      : `tmux took the keystrokes ${secs}s ago. Whether the session read them is not known — only its `
+        + "own acknowledgement can say so, and none has arrived."));
+  }
   return row;
 }
 

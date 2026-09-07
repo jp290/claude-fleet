@@ -633,11 +633,43 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
   // scrubbed of FLEET_* now, so this one has to be MINTED rather than left in place) — same name,
   // same must-pair, an assignment instead of an object-literal entry.
   pin("the inherited suite-mutex hold is one name on both sides, and the shell honours it only over a LIVE pid the lock file itself records",
-    server.includes("env.FLEET_SUITE_LOCK_HELD_BY = String(process.pid)")
+    server.includes("env.FLEET_SUITE_LOCK_HELD_BY = String(heldSuiteLock)")
       && stage.includes('_st_held_by="${FLEET_SUITE_LOCK_HELD_BY:-}"')
       && stage.includes('kill -0 "$_st_held_by" 2>/dev/null')
       && stage.includes('"$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)" = "$_st_held_by"'),
-    `server=${server.includes("env.FLEET_SUITE_LOCK_HELD_BY = String(process.pid)")} shellVar=${stage.includes('_st_held_by="${FLEET_SUITE_LOCK_HELD_BY:-}"')} alive=${stage.includes('kill -0 "$_st_held_by" 2>/dev/null')} onDisk=${stage.includes('"$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)" = "$_st_held_by"')}`);
+    `server=${server.includes("env.FLEET_SUITE_LOCK_HELD_BY = String(heldSuiteLock)")} shellVar=${stage.includes('_st_held_by="${FLEET_SUITE_LOCK_HELD_BY:-}"')} alive=${stage.includes('kill -0 "$_st_held_by" 2>/dev/null')} onDisk=${stage.includes('"$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)" = "$_st_held_by"')}`);
+  // THE HAND-DOWN GOES ONE LEVEL FURTHER UP (M1, 2026-09-06). Since the clean land path takes this
+  // mutex IN THE SERVER before it spawns the gate, a test server that does not know it is running
+  // inside its own wrapper's hold queues for a lock that wrapper owns for the whole run — every
+  // clean land in that suite then dies `waitedOut` without ever looking at a tree. Measured, not
+  // predicted: ./e2e-clean-review.sh hung at waitMerge for its full 60 s on 2026-09-06 the first
+  // time the hold was pulled forward. So every wrapper that hands its server a FLEET_VERIFY_CMD
+  // must tell it whose hold it is in, with `$$` — the same pid e2e-stage.sh wrote into the lock
+  // file. A pair no compiler and no single suite can see, because the wrapper that breaks it is the
+  // one whose own runner holds the lock.
+  {
+    const wrappersWithGate = ["e2e-isolated.sh", "e2e-clean-review.sh", "e2e-postland-audit.sh"];
+    const missing = wrappersWithGate.filter((w) => {
+      const src = read(w);
+      return src.includes("FLEET_VERIFY_CMD") && !src.includes("FLEET_SUITE_LOCK_HELD_BY=$$");
+    });
+    pin("every wrapper that configures a land gate for its server tells that server whose suite-mutex hold it is running inside — a test server never queues behind its own runner",
+      missing.length === 0, `missing FLEET_SUITE_LOCK_HELD_BY=$$: ${missing.join(", ") || "(none)"}`);
+    // …and the server half: the hold the clean path takes is the SAME primitive the retry chain
+    // takes, asked for BEFORE the gate rather than between its rounds. Both call sites pinned, so
+    // deleting the first one silently restores the queue this cut removed.
+    const m1Take = server.includes("gateHeld = await gateRun(() => holdSuiteLock(VERIFY_WAIT_MS));");
+    const m1Hand = server.includes("runVerify(cwd, mainSha, firstVerifyPlan, gateHoldBy, gateHeld ? gateWaitMs : 0)");
+    const m1Retry = server.includes("let ffHeld = gateHoldBy !== null;");
+    // and the machine goes back even when the process is killed rather than returned from: the
+    // deploy ritual on this box IS a kill, and before M1 a leaked hold cost one retry — now it
+    // would deny every land until an unrelated wrapper contended for the lock.
+    const m1Signal = server.includes('for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const)')
+      && server.includes("process.on(sig, () => { releaseSuiteLock(); process.exit(0); });");
+    pin("the clean land path asks for the suite mutex BEFORE the first gate, hands that hold to the gate, and gives it back on a signal as well as on every code path",
+      m1Take && m1Hand && m1Retry && m1Signal,
+      `take=${m1Take} handDown=${m1Hand} retryInherits=${m1Retry} signalRelease=${m1Signal}`);
+  }
   // THE FIFO SEAM (2026-09-05). The mutex used to be a race: `sleep 15` + retry `mkdir`, no order,
   // so waiting longer bought nothing — measured, slot 7's post-land audit waited 2h45m and lost
   // three races to younger contenders. The fix is one ticket per contender, and it is exactly the
@@ -4006,7 +4038,10 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   // the one thing this retry must never do, and a change that reads as a harmless simplification.
   const ffRetry = server.indexOf("if (mainMoved && ffRounds < LAND_FF_RETRY_ROUNDS && ffHeld) {");
   const ffReRebase = server.indexOf("const again = await tryScriptRebase(cwd, main);", ffRetry);
-  const ffReVerify = server.indexOf("verify = await gateRun(() => runVerify(cwd, landMain, retryPlan, true));", ffRetry);
+  // the retry gate names the HOLDER it runs under rather than a bare `true` since M1: the hold may
+  // be one this job took or one the wrapper above it is keeping, and the child has to be told which
+  // pid the lock file records (e2e-stage.sh compares them).
+  const ffReVerify = server.indexOf("verify = await gateRun(() => runVerify(cwd, landMain, retryPlan, gateInherited ?? gateHoldPid));", ffRetry);
   const ffReStop = server.indexOf("res = { ...cleanVerifyStop(verify, branch), ffRounds }; break;", ffRetry);
   const ffMint = server.indexOf('errorReason: "ff-lost"', ffRetry);
   pin(`${RULE_FF} — the bounded retry re-rebases, RE-RUNS THE GATE and stops on any non-green before it may advance again`,
@@ -4242,16 +4277,25 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   //   · exactly the SUITE-MUTEX knobs survive it: this server holds the same lock and hands its
   //     hold across, so scrubbing FLEET_SUITE_LOCK would have the child queue for a lock this
   //     process is holding — a silent deadlock, never a red check
-  //   · FLEET_SUITE_LOCK_HELD_BY is MINTED under a real hold, not kept; an inherited one is a
-  //     licence to skip a mutex nobody is holding for that child
+  //   · FLEET_SUITE_LOCK_HELD_BY is MINTED under a real hold, never carried across from
+  //     `process.env`: a value kept blind is a licence to skip a mutex nobody is holding for that
+  //     child. What is minted is the pid that ACTUALLY holds the lock — ours when we took it, and
+  //     since M1 the wrapper's when this server was started inside one and validated the claim
+  //     against the lock file and the process table (inheritedSuiteHolder). Naming ourselves there
+  //     would fail e2e-stage.sh's own pid comparison and queue the child behind its own hold.
   // The measurement is pinned beside the rule for the same reason the D2 probe is above it: a
   // source-text rule with no run behind it is an assumption with a green box around it.
   const verifyEnvBody = serverU.span("// PATH IS NOT TOUCHED", "// `heldSuiteLock` —")?.text ?? "";
   const verifyEnvKeeps = 'const VERIFY_CHILD_KEEPS = new Set(["FLEET_SUITE_LOCK", "FLEET_SUITE_POLL_SEC"]);';
   const verifyEnvSpawn = server.includes("env: verifyChildEnv(heldSuiteLock) });");
   const verifyEnvRule = verifyEnvBody.includes('!k.startsWith("FLEET_") || VERIFY_CHILD_KEEPS.has(k)');
-  const verifyEnvMint = verifyEnvBody.includes("if (heldSuiteLock) env.FLEET_SUITE_LOCK_HELD_BY = String(process.pid);")
-    && !verifyEnvBody.includes('"FLEET_SUITE_LOCK_HELD_BY"');
+  const verifyEnvMint = verifyEnvBody.includes("if (heldSuiteLock !== null) env.FLEET_SUITE_LOCK_HELD_BY = String(heldSuiteLock);")
+    && !verifyEnvBody.includes('"FLEET_SUITE_LOCK_HELD_BY"')
+    // and the holder is PROVEN, never taken from the variable: the three conditions e2e-stage.sh
+    // applies, in this server too — the lock file names it and the process is alive.
+    && server.includes("function inheritedSuiteHolder(): number | null {")
+    && server.includes('if (readFileSync(`${SUITE_LOCK}/pid`, "utf8").trim() !== named) return null;')
+    && server.includes("process.kill(Number(named), 0);");
   const verifyEnvProbe = read("e2e-clean-review.sh").includes('} > "$0.env"')
     && read("fleet-e2e-clean-review.ts").includes('srvEnv("FLEET_CLEAN_REVIEW")');
   pin("the land gate's chain is spawned with a SCRUBBED env — the same FLEET_* rule auditChildEnv applies to the tier-2 child",

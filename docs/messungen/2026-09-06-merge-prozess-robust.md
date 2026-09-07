@@ -115,6 +115,14 @@ ff-Retry-Runde schon hat. Und die Familien aus §1.3 werden zaehlbar.
 *Done:* Eine Land-Note eines Code-Lands nach M1 traegt im `[suite mutex: …]`-Tail „0 of 3 staged
 steps blocked" bei `verify.waitMs > 0` (das Warten lag im Hold, nicht in den Stufen), und
 `audit.jsonl` traegt fuer jedes Merge-Verdikt seit M1 genau eine `merge_verdict`-Zeile.
+*Gebaut* in Lane `fleet/260906222646-5fb3` (Sha setzt die MAIN nach dem Land ein — eine Lane kann
+ihre eigene Landing-Sha nicht kennen). Eine Abweichung von der Nicht-Liste war noetig und ist
+gemessen: die e2e-Instanzen teilten sich bis dahin den Maschinen-Mutex `/tmp/fleet-e2e.lock` mit
+dem Wrapper, der sie startet — mit dem Hold vor dem Gate stand jeder saubere Land-Pfad in einer
+Schlange hinter seinem EIGENEN Runner (gemessen 2026-09-06: `./e2e-clean-review.sh` haengt in
+`waitMerge`, 60 s Timeout). Drei Wrapper geben ihrer Instanz darum ein eigenes
+`FLEET_SUITE_LOCK=$DIR/suite.lock`; am Mutex-Protokoll selbst ist nichts geaendert.
+
 *Verify:* Checks im Merge-/Land-Pfad (`e2e/land-durability.ts` oder die Datei, in der
 `LAND_FF_RETRY_ROUNDS` heute geprueft wird): (a) ein Gate unter besetztem Mutex und Budget 0 endet
 `waitedOut` mit `steps` leer bzw. `ms` < 5 s; (b) ein Gate unter freiem Mutex laeuft mit gesetztem

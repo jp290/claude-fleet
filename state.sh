@@ -200,6 +200,45 @@ else:
               + f" · first-try {first}/{len(jobs)} = {first*100//len(jobs)}%")
         print("      statuses: " + " ".join(f"{k} {v}" for k, v in st.most_common())
               + "  — unparseable/error are the model failing its contract or its clock, not git")
+
+# M1 · EVERY merge verdict, not only the ones that landed. A land note exists only for a land and
+# fleet.json keeps only the LAST verdict per slot, so until `merge_verdict` (2026-09-06) the deaths
+# were the one class this whole section could not see. Both generations, because audit.jsonl
+# rotates and a single-file reader would report the history as young rather than truncated.
+# Read directly rather than through rows(): audit.jsonl is appended to constantly, a torn
+# mid-append line is the documented hazard (server/persist.ts#readLedger counts them), and a
+# json.loads that throws would take this whole section down with it. A hole is REPORTED.
+mv, torn = [], 0
+for gen in ('audit.jsonl.1', 'audit.jsonl'):
+    fp = os.path.join(MAIN, gen)
+    if not os.path.isfile(fp):
+        continue
+    for line in open(fp):
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+        except Exception:
+            torn += 1
+            continue
+        if r.get('event') == 'merge_verdict':
+            mv.append(r)
+if torn:
+    print(f"  audit.jsonl: {torn} torn line(s) — the counts below are over what parsed, not over the file")
+if not mv:
+    print("  merge verdicts UNKNOWN — no merge_verdict row in audit.jsonl yet (the event postdates"
+          " 2026-09-06; absence is not 'no verdicts happened')")
+else:
+    waited = sum(1 for r in mv if r.get('waitedOut'))
+    timed = sum(1 for r in mv if r.get('timedOut'))
+    st = Counter(f"{r.get('status')}{'' if r.get('landed') else '/kept'}" for r in mv)
+    print(f"  merge verdicts {len(mv)}: " + " · ".join(f"{k} {v}" for k, v in st.most_common())
+          + f"  — {waited} never started (suite mutex), {timed} timed out")
+    why = Counter(r.get('errorReason') for r in mv if r.get('status') == 'error')
+    if why:
+        print("    error verdicts by reason: "
+              + " ".join(f"{k or 'UNNAMED'} {v}" for k, v in why.most_common())
+              + "  — UNNAMED is an error the writer could not type, not one nobody looked at")
 PY
 echo
 echo "=== is the running server the code on disk?  (main checkout: $MAIN_CHECKOUT) ==="

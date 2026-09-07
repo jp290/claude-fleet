@@ -40,6 +40,13 @@ cat > "$DIR/fakeverify" <<'EOF'
 { env | grep '^FLEET_' | cut -d= -f1 | sort | tr '\n' ' '
   echo
   printf 'PATH=%s\n' "$PATH"
+  # M1 (2026-09-06): the clean-path gate runs inside a hold the SERVER took before spawning this
+  # chain. The variable alone proves nothing — e2e-stage.sh honours it only when the lock on disk
+  # names that same pid — so both halves are recorded and the check compares them.
+  printf 'HELD_BY=%s\n' "${FLEET_SUITE_LOCK_HELD_BY:-none}"
+  # same default e2e-stage.sh and server.ts both use when the knob is unset — this instance does
+  # not set it, so a /nonexistent fallback would report "none" for a lock that is genuinely held
+  printf 'LOCKPID=%s\n' "$(cat "${FLEET_SUITE_LOCK:-/tmp/fleet-e2e.lock}/pid" 2>/dev/null || echo none)"
 } > "$0.env"
 echo "verify OK"
 exit 0
@@ -120,11 +127,19 @@ wait_bound() {
   sleep 0.5
 }
 
+# FLEET_SUITE_LOCK_HELD_BY: this server runs INSIDE the hold this wrapper is already holding, and
+# saying so is load-bearing since M1 (2026-09-06). The land gate's clean path now takes the suite
+# mutex IN THE SERVER before it spawns the gate — and this wrapper holds that very lock for its
+# whole run, so without this the server would queue behind its own runner and every clean land in
+# this suite would die `waitedOut` (measured: e2e-clean-review.sh hung at waitMerge for its full
+# 60 s, 2026-09-06). This is the SAME hand-down e2e-stage.sh already honours for its own steps, in
+# the same direction: the variable grants nothing on its own — server.ts checks that the lock file
+# on disk names this pid and that the process is alive, exactly as the shell does.
 # FLEET_AUTO_REVIEW_MS=0 turns the auto-③ tick OFF here: this harness configures no
 # FLEET_REVIEW_CMD stand-in, so an auto-review of a done-looking lane would spawn a REAL
 # claude session. Auto-③ is proven in the main suite, which has the stand-in.
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=1 FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && FLEET_SUITE_LOCK_HELD_BY=$$ FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=1 FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
 wait_bound "phase 1 gate (FLEET_CLEAN_REVIEW=1)" || exit $?
 
 cd "$DIR" || exit 1
@@ -147,7 +162,7 @@ if [ "$code" = 0 ]; then
   # deny; the isolated suite owns the stale-lock behaviour itself.
   rm -f "$DIR/fleet.pid"
   tmux -L "$SOCK" new-session -d -s srv \
-    "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
+    "cd '$DIR' && FLEET_SUITE_LOCK_HELD_BY=$$ FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
   wait_bound "phase 2 shadow (FLEET_CLEAN_REVIEW=shadow)" || exit $?
   echo "--- phase: shadow (FLEET_CLEAN_REVIEW=shadow) ---"
   FLEET_E2E_SUITE=clean-review FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CR_PHASE=shadow bun fleet-e2e-clean-review.ts

@@ -205,6 +205,34 @@ Three lines of the design above are deliberately kept, and one is deliberately e
   (`after 0s`), because a second format would be summed twice by `runVerify` and would fall
   `e2e/pins.ts`'s "exactly one acquire" rule.
 
+### 7c. …and since M1 (2026-09-06) it holds on EVERY clean land — which moved two of the sentences above
+
+M1 (`docs/messungen/2026-09-06-merge-prozess-robust.md` §3) pulled the hold forward from *between
+the retry rounds* to *before the first gate*, because that is where the queue actually was: 79 % of
+the land wall clock since 2026-09-01 was spent in it, and six gates in 75 stood in it two or three
+times, once per wrapper. Two sentences above were written when the server was an occasional holder
+and do not survive that:
+
+- **The hold is inheritable UPWARDS as well** (`server.ts#inheritedSuiteHolder`). A `bun server.ts`
+  started from inside a suite wrapper is in the position that wrapper's own staged steps are in:
+  the machine is already held on its behalf. It therefore reads `FLEET_SUITE_LOCK_HELD_BY` from the
+  environment it was started with and, **only** when the lock file on disk names that pid and the
+  process is alive — the same three conditions `e2e-stage.sh` applies, in the same order — runs its
+  gate inside that hold instead of queueing for it. The variable still grants nothing on its own.
+  Without this every clean land inside a suite queues behind its own runner: measured on
+  2026-09-06, `./e2e-clean-review.sh` hung at `waitMerge` for its full 60 s the first time the hold
+  was pulled forward. The three wrappers that configure a gate for their server say `$$`; a pin
+  holds the pair.
+- **A death now gives the machine back on a signal.** The `finally` is structural against every path
+  *through* the code and powerless against the process being killed — and the deploy ritual on this
+  box IS a kill (`tmux kill-session -t srv`, ~10×/day). While the exposure was one lost ff-retry
+  that was an accepted cost; with a hold on every land, a leaked lock denies **every** land until
+  some unrelated wrapper contends, so `SIGTERM`/`SIGINT`/`SIGHUP` release before exiting. A SIGKILL
+  or a crash still leaves the reapable shape, and **the server still never reaps** — that bullet
+  stands, but its cost basis has changed and is now the open question this section names rather than
+  a settled trade: measured inside a suite instance, where no wrapper ever contends for that lock, a
+  leaked hold wedged 232 server restarts' worth of lands until the run ended.
+
 **Consequence for anyone reading the machine:** `ps -eo command | grep -c '^/bin/sh ./e2e-'` can now
 read **0 while the mutex is genuinely held** for a third reason — not only during the gate chain's
 `bun install`/`pins`/`tsc`/`build` prologue and the audit's, but for the whole gap between two retry

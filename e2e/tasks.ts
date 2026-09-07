@@ -12,7 +12,7 @@ import { deriveTaskMetadata, type TaskCluster } from "../task-metadata";
 import { noteFirstSentence, notesForTask, renderNotesBlock,
   NOTE_HUB_FILES, NOTES_READ_ROUTES_EXIST, NOTES_SENTENCE_MAX, type NoteInput } from "../task-notes";
 import { matchTaskWaveAnalysis, projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from "../task-waves";
-import { projectLandWaves,
+import { projectLandWaves, LAND_WAVE_COSTS_2026_09,
   type LandWaveCosts, type LandWaveProjection, type ProjectLandWavesInput } from "../task-land-waves";
 import { classifyAnalystOffWarning } from "../task-analysis-warning";
 import { analysisStaleness } from "../analysis-staleness";
@@ -4496,6 +4496,243 @@ export async function run(ctx: Ctx): Promise<void> {
       taskClientSource.length
         ? "src/client.ts carries no projectLandWaves( call or no Lande-Wellen section"
         : taskClientReadError || "client source unreadable");
+  }
+
+  // --- W2 · the file surface of an EXISTING row: PROPOSE (self) / CONFIRM (owner). The pair that
+  // finally gives the land fold above something to fold. Until 2026-09-07 `filesOrigin:"confirmed"`
+  // had exactly ONE writer — the refine promote, which can only stamp rows it is itself creating —
+  // so on the live queue 0 of 48 open auftrag rows carried a confirmed surface and the sensor
+  // returned 44 waves of size one, every one of them for the reason "flaeche-nur-abgeleitet".
+  // These checks run the whole chain on REAL rows: propose, refuse, confirm, reload, and finally
+  // the W1 projector over the same digest the board feeds it. ---
+  {
+    interface WProposal { files: string[]; at: number; by: string; unknownPaths?: string[] }
+    interface WRow { id: string; kind?: string; status: string; note?: string | null; repo?: string;
+      programId?: string; files?: string[]; filesOrigin?: string; cluster?: TaskCluster;
+      filesProposal?: WProposal }
+    const wSessions = async (): Promise<{ tasks: WRow[]; slots: { id: number; cwd: string | null }[];
+      dispatch: { repo: string } }> =>
+      (await (await get("/api/sessions")).json()) as
+        { tasks: WRow[]; slots: { id: number; cwd: string | null }[]; dispatch: { repo: string } };
+    const wDigest = async (id: string): Promise<WRow | undefined> =>
+      (await wSessions()).tasks.find((t) => t.id === id);
+    const wFull = async (id: string): Promise<WRow | undefined> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: WRow[] }).tasks.find((t) => t.id === id);
+    // A mint that did not mint must fail as ITSELF, not as the property the row was made to carry:
+    // this block hangs its whole impact proof on two rows of ONE program, and a 409 from the
+    // Program door (a status that moved under us) would otherwise surface as a wave check.
+    const wMint = async (text: string, extra: Record<string, unknown> = {}): Promise<string> => {
+      const r = await post("/api/tasks", { text, queue: false, repo: REPO, ...extra });
+      const j = (await r.json()) as { task?: { id?: string } };
+      return typeof j.task?.id === "string" ? j.task.id : "";
+    };
+    // AGENTS.md is tracked in the fixture repo AND classifies as docs-or-prose, which is what makes
+    // the impact proof at the end of this block a wave at all: a gate-changing path (e2e/pins.ts)
+    // would be refused by R2 however well it was confirmed, and the check would then measure R2.
+    const WFILE = "AGENTS.md";
+    const WGHOST = "docs/this-path-is-not-tracked.md";
+    // Both rows NAME the file in their prose, so each one carries a DERIVED surface before anything
+    // is confirmed. That is the control the impact proof needs: the pair goes from two waves of one
+    // to one wave of two because the ORIGIN changed, not because a surface appeared.
+    const wA = await wMint(`wave part one: rewrite ${WFILE} for the portable contract`,
+      { programId: provenanceProgramId });
+    const wB = await wMint(`wave part two: the second half of ${WFILE}`,
+      { programId: provenanceProgramId });
+    check("(w2) fixture: both impact rows were minted into the SAME active Program",
+      !!wA && !!wB && wA !== wB
+      && (await wDigest(wA))?.programId === provenanceProgramId
+      && (await wDigest(wB))?.programId === provenanceProgramId,
+      JSON.stringify({ wA, wB, program: provenanceProgramId }));
+    const wBaseA = await wDigest(wA);
+    check("(w2) baseline: a row whose prose names a tracked path carries a DERIVED surface and no proposal",
+      wBaseA?.filesOrigin === "derived" && wBaseA.files?.join(" ") === WFILE
+      && !("filesProposal" in (wBaseA ?? {})), JSON.stringify(wBaseA));
+    // …and the sensor's verdict on that pair BEFORE the confirm — captured here rather than
+    // asserted from memory later, so the "after" below is a measured change and not a claim.
+    const wLandWaves = async (): Promise<LandWaveProjection> => {
+      const s = await wSessions();
+      return projectLandWaves({
+        tasks: s.tasks.map((t) => ({ id: t.id, kind: t.kind, status: t.status,
+          created: 0, ...(t.repo ? { repo: t.repo } : {}),
+          ...(t.programId ? { programId: t.programId } : {}),
+          ...(t.files ? { files: t.files } : {}),
+          ...(t.filesOrigin ? { filesOrigin: t.filesOrigin as "confirmed" | "derived" } : {}) })),
+        dispatchRepo: s.dispatch.repo, costs: LAND_WAVE_COSTS_2026_09,
+      });
+    };
+    const wWaveWith = (p: LandWaveProjection, id: string) =>
+      p.repos.flatMap((r) => r.waves).find((w) => w.ids.includes(id));
+    const wBeforeA = wWaveWith(await wLandWaves(), wA);
+    check("(w2) impact control: before any confirm the two rows are two waves of ONE, for the derived reason",
+      wBeforeA?.ids.length === 1 && wBeforeA.reasonAgainst === "flaeche-nur-abgeleitet"
+      && wBeforeA.savingsSec === 0, JSON.stringify(wBeforeA ?? null));
+
+    // --- the PROPOSE half, from a real LANE (the scope that separates this route from its four
+    // self neighbours: propose is open to a lane, confirm is not open to anyone but the owner) ---
+    const wFree = (await wSessions()).slots.find((s) => !s.cwd);
+    const wLaneOpen = wFree
+      ? await post(`/api/slots/${wFree.id}/open-worktree`, { repo: REPO, branch: "e2e-w2-surface" })
+      : null;
+    let wPersisted: { slots?: Record<string, { selfToken?: string }> } = {};
+    if (wFree && wLaneOpen?.ok) for (let i = 0; i < 40; i++) {
+      try { wPersisted = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as typeof wPersisted; }
+      catch { /* saveState writes tmp+rename; a read landing mid-write throws */ }
+      if (wPersisted.slots?.[String(wFree.id)]?.selfToken) break;
+      await Bun.sleep(100);
+    }
+    const wLaneTok = wPersisted.slots?.[String(wFree?.id ?? 0)]?.selfToken ?? "";
+    check("(w2) fixture: a real lane with its own scoped token (the propose route's whole point)",
+      !!wFree && wLaneOpen?.ok === true && !!wLaneTok,
+      `${wFree?.id ?? "no free slot"} ${wLaneOpen?.status ?? "-"}`);
+    const wPropose = (id: string, files: unknown, token = wLaneTok) =>
+      fetch(`${BASE}/api/self/tasks/${id}/files-proposal`, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": token },
+        body: JSON.stringify({ files }) });
+
+    const wP1 = await wPropose(wA, [WFILE, WGHOST]);
+    const wP1J = (await wP1.json()) as { ok?: boolean; proposal?: WProposal; unknownPaths?: string[] | null };
+    const wAfterPropose = await wFull(wA);
+    check("(w2) a LANE may propose a file surface onto an existing row, and the untracked path is REPORTED, not gated",
+      wP1.ok && wP1J.ok === true && wP1J.proposal?.files.join(" ") === `${WFILE} ${WGHOST}`
+      && JSON.stringify(wP1J.unknownPaths) === JSON.stringify([WGHOST])
+      && (wP1J.proposal?.by ?? "").includes("e2e-w2-surface"),
+      `${wP1.status} ${JSON.stringify(wP1J)}`);
+    check("(w2) a proposal is parked BESIDE the surface — files and filesOrigin do not move",
+      wAfterPropose?.filesOrigin === "derived" && wAfterPropose.files?.join(" ") === WFILE
+      && wAfterPropose.filesProposal?.files.join(" ") === `${WFILE} ${WGHOST}`
+      && JSON.stringify(wAfterPropose.filesProposal?.unknownPaths) === JSON.stringify([WGHOST]),
+      JSON.stringify(wAfterPropose));
+    check("(w2) the parked proposal reaches the 2 s poll whole — the board must compare it against the surface below it",
+      (await wDigest(wA))?.filesProposal?.files.join(" ") === `${WFILE} ${WGHOST}`,
+      JSON.stringify((await wDigest(wA))?.filesProposal ?? null));
+    // one standing proposal per row: the second overwrites the first, exactly as a second refine run does
+    const wP2 = await wPropose(wA, [WFILE]);
+    check("(w2) a second proposal REPLACES the first (one standing proposal per row) and reports a clean tree as []",
+      wP2.ok && (await wFull(wA))?.filesProposal?.files.join(" ") === WFILE
+      && JSON.stringify((await wFull(wA))?.filesProposal?.unknownPaths) === JSON.stringify([]),
+      JSON.stringify((await wFull(wA))?.filesProposal ?? null));
+    check("(w2) an unknown self token cannot propose (401)", (await wPropose(wA, [WFILE], "0".repeat(32))).status === 401);
+    check("(w2) an empty path list is a malformed proposal (400), never a surface that touches nothing",
+      (await wPropose(wA, [])).status === 400 && (await wPropose(wA, "server.ts")).status === 400);
+
+    // --- the CONFIRM half is the OWNER's, and there is no self mirror of it ---
+    const wLaneConfirm = await fetch(`${BASE}/api/tasks/${wA}/files`, { method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": wLaneTok },
+      body: JSON.stringify({}) });
+    check("(w2) the CONFIRM door is behind the owner token — a lane's self credential gets 401, never a 409 scope note",
+      wLaneConfirm.status === 401 && (await wFull(wA))?.filesOrigin === "derived",
+      `${wLaneConfirm.status}`);
+
+    const wTasksBefore = (await wSessions()).tasks.length;
+    const wC1 = await post(`/api/tasks/${wA}/files`, {});
+    const wC1J = (await wC1.json()) as { ok?: boolean; files?: string[]; filesOrigin?: string; unknownPaths?: string[] | null };
+    const wConfirmed = await wFull(wA);
+    check("(w2) a bodyless confirm promotes the STANDING PROPOSAL to the confirmed surface",
+      wC1.ok && wC1J.filesOrigin === "confirmed" && wC1J.files?.join(" ") === WFILE
+      && wConfirmed?.filesOrigin === "confirmed" && wConfirmed.files?.join(" ") === WFILE,
+      `${wC1.status} ${JSON.stringify(wC1J)} ${JSON.stringify(wConfirmed)}`);
+    check("(w2) the confirm consumes the proposal and changes NOTHING else — no children, no archive, same status",
+      wConfirmed?.filesProposal === undefined && wConfirmed?.status === "pending"
+      && wConfirmed?.note == null && (await wSessions()).tasks.length === wTasksBefore,
+      JSON.stringify({ row: wConfirmed, before: wTasksBefore, after: (await wSessions()).tasks.length }));
+
+    // the owner may also type the list himself, and may confirm a path the repo does not track (a
+    // file the work will CREATE is the ordinary case) — the finding rides the LEDGER, not a refusal
+    const wC2 = await post(`/api/tasks/${wB}/files`, { files: [WFILE, WGHOST] });
+    const wC2J = (await wC2.json()) as { ok?: boolean; unknownPaths?: string[] | null };
+    check("(w2) an explicit owner list wins over prose and an untracked path does not gate the confirm",
+      wC2.ok && JSON.stringify(wC2J.unknownPaths) === JSON.stringify([WGHOST])
+      && (await wFull(wB))?.files?.join(" ") === `${WFILE} ${WGHOST}`
+      && (await wFull(wB))?.filesOrigin === "confirmed",
+      `${wC2.status} ${JSON.stringify(wC2J)}`);
+    const wAudit = ((await (await get("/api/audit?limit=300")).json()) as
+      { events: { event?: string; detail?: string }[] }).events;
+    check("(w2) the ledger records both halves, and the confirm's line names the untracked path the owner overrode",
+      wAudit.some((e) => e.event === "task_files_propose" && (e.detail ?? "").startsWith(wA))
+      && wAudit.some((e) => e.event === "task_files_confirm" && (e.detail ?? "").startsWith(wB)
+        && (e.detail ?? "").includes(WGHOST)),
+      JSON.stringify(wAudit.filter((e) => (e.event ?? "").startsWith("task_files")).slice(0, 4)));
+    // and re-confirming the owner's own narrower list is a plain overwrite: this door is not a
+    // one-shot, because a surface learned late is the case it exists for
+    const wC3 = await post(`/api/tasks/${wB}/files`, { files: [WFILE] });
+    check("(w2) a confirmed surface can be corrected — the door overwrites rather than refusing",
+      wC3.ok && (await wFull(wB))?.files?.join(" ") === WFILE, `${wC3.status}`);
+
+    // --- discard, and the refusals ---
+    const wC = await wMint(`third row: also about ${WFILE}`, { programId: provenanceProgramId });
+    await wPropose(wC, [WGHOST]);
+    const wDis = await post(`/api/tasks/${wC}/files`, { accept: false });
+    const wDisRow = await wFull(wC);
+    check("(w2) discarding drops the proposal and leaves the row's own surface exactly as it was",
+      wDis.ok && wDisRow?.filesProposal === undefined
+      && wDisRow?.filesOrigin === "derived" && wDisRow.files?.join(" ") === WFILE,
+      JSON.stringify(wDisRow));
+    check("(w2) discarding when nothing is parked is 409, not a silent ok",
+      (await post(`/api/tasks/${wC}/files`, { accept: false })).status === 409);
+    check("(w2) an explicit but unusable list is 400, and an empty body with no proposal is 400 too",
+      (await post(`/api/tasks/${wC}/files`, { files: [] })).status === 400
+      && (await post(`/api/tasks/${wC}/files`, {})).status === 400);
+    const wNotiz = await wMint("advisory row naming AGENTS.md", { kind: "notiz" });
+    check("(w2) an advisory kind carries no work surface — both doors refuse it (409)",
+      (await post(`/api/tasks/${wNotiz}/files`, { files: [WFILE] })).status === 409
+      && (await wPropose(wNotiz, [WFILE])).status === 409);
+    const wDone = await wMint(`terminal row about ${WFILE}`);
+    await post(`/api/tasks/${wDone}/done`, {});
+    check("(w2) a terminal row is past the point of confirming a surface — both doors refuse it (409)",
+      (await post(`/api/tasks/${wDone}/files`, { files: [WFILE] })).status === 409
+      && (await wPropose(wDone, [WFILE])).status === 409);
+    check("(w2) an unknown task id is 404 at both doors, before any status or kind reading",
+      (await post("/api/tasks/deadbeef/files", { files: [WFILE] })).status === 404
+      && (await wPropose("deadbeef", [WFILE])).status === 404);
+
+    // --- (4) THE RELOAD REGRESSION. The one promotion this feature must never perform is the one
+    // a restart could make for free: a persisted `derived` surface becoming `confirmed` because it
+    // was simply read back. Proven in BOTH directions in one reload — the derived row stays
+    // derived, the confirmed rows stay confirmed, and a parked proposal comes back as a PROPOSAL
+    // rather than as the surface it is one owner click away from. ---
+    const wParked = await wMint(`parked row about ${WFILE}`, { programId: provenanceProgramId });
+    await wPropose(wParked, [WGHOST]);
+    await restartSrv();
+    const [wRelA, wRelB, wRelDerived, wRelParked] =
+      await Promise.all([wFull(wA), wFull(wB), wFull(wC), wFull(wParked)]);
+    check("(w2) reload: a persisted DERIVED surface is re-derived and never promoted to confirmed",
+      wRelDerived?.filesOrigin === "derived" && wRelDerived.files?.join(" ") === WFILE,
+      JSON.stringify(wRelDerived));
+    check("(w2) reload: a confirmed surface survives as confirmed on both rows",
+      wRelA?.filesOrigin === "confirmed" && wRelA.files?.join(" ") === WFILE
+      && wRelB?.filesOrigin === "confirmed" && wRelB.files?.join(" ") === WFILE,
+      JSON.stringify({ a: wRelA, b: wRelB }));
+    check("(w2) reload: a parked proposal comes back as a PROPOSAL — it never becomes the surface",
+      wRelParked?.filesProposal?.files.join(" ") === WGHOST
+      && wRelParked.filesOrigin === "derived" && wRelParked.files?.join(" ") === WFILE,
+      JSON.stringify(wRelParked));
+    const wPersistedRows = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { tasks?: { id?: string; files?: string[]; filesOrigin?: string; filesProposal?: WProposal }[] }).tasks ?? [];
+    const wDiskParked = wPersistedRows.find((r) => r.id === wParked);
+    const wDiskA = wPersistedRows.find((r) => r.id === wA);
+    check("(w2) on disk the two states are separate fields — the proposal is never written into files/filesOrigin",
+      // the presence guard is load-bearing: `undefined` for a MISSING row would let this read as a
+      // pass for a state file that lost the row entirely
+      !!wDiskParked && !!wDiskA
+      && wDiskParked.filesOrigin === undefined && wDiskParked.files === undefined
+      && wDiskParked.filesProposal?.files.join(" ") === WGHOST
+      && wDiskA.filesOrigin === "confirmed" && wDiskA.files?.join(" ") === WFILE
+      && wDiskA.filesProposal === undefined,
+      JSON.stringify({ parked: wDiskParked ?? null, confirmed: wDiskA ?? null }));
+
+    // --- (5) THE IMPACT PROOF: the same two rows, now confirmed, fold into ONE land wave. Read
+    // back through the DIGEST the board itself feeds projectLandWaves, and priced with the board's
+    // own constant — a fixture cost table here would prove the projector and not the wiring. ---
+    const wAfter = wWaveWith(await wLandWaves(), wA);
+    check("(w2) IMPACT: two confirmed rows of ONE program sharing a file fold into a wave of two with savings > 0",
+      wAfter?.ids.length === 2 && wAfter.ids.includes(wA) && wAfter.ids.includes(wB)
+      && wAfter.sharedFiles.join(" ") === WFILE && wAfter.reasonAgainst === null
+      && wAfter.savingsSec > 0
+      && wAfter.savingsSec === LAND_WAVE_COSTS_2026_09.docsGateSec + LAND_WAVE_COSTS_2026_09.docsAuditSec,
+      JSON.stringify({ before: wBeforeA, after: wAfter }));
+
+    if (wFree) await post(`/api/slots/${wFree.id}/kill`, {});
+    for (const id of [wA, wB, wC, wParked, wNotiz, wDone]) await post(`/api/tasks/${id}/delete`, {});
   }
 
   // --- (j) ↻ refine: the brief compiler on the queue (briefs/task-refine.md). Three properties

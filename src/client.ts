@@ -275,6 +275,12 @@ interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: 
     retry?: { at: number; attempts: number } };
   // deterministic file/cluster facts from taskDigest. Absence is UNKNOWN, never an empty surface.
   files?: string[]; filesOrigin?: "confirmed" | "derived";
+  // the PROPOSED surface (W2), carried WHOLE on the poll rather than as a shape digest: `files`
+  // above already rides it, and a proposal reduced to a count would be the one list on this row a
+  // reader could not hold against the one it is meant to replace — which is the entire act the
+  // confirm button ends. `unknownPaths` keeps its three states: absent = the tracked tree could not
+  // be read, [] = checked and all tracked, a list = these paths this repo does not track.
+  filesProposal?: { files: string[]; at: number; by: string; unknownPaths?: string[] };
   cluster?: { projekt: string; prozess: string; unterprozess?: string };
   // the poll carries only the timestamps; the text rides the queue overlay's /api/tasks fetch
   criterion?: { text?: string; proposedAt: number; confirmedAt: number | null };
@@ -5489,6 +5495,9 @@ async function refresh() {
       const dk = t ? JSON.stringify([t.id, t.status, t.kind, t.note, t.repo,
         t.files?.join("\n"), t.filesOrigin, t.cluster, t.briefAt, t.analysis?.at,
         t.analysis?.stale, t.analysis?.retry?.at, t.criterion?.proposedAt, t.criterion?.confirmedAt,
+        // a parked file-surface proposal arrives on a poll exactly as the criterion does, and the
+        // confirm button removes it — without this the pane would keep offering a spent click
+        t.filesProposal?.at, t.filesProposal?.files.join("\n"),
         // the refine proposal arrives on a poll exactly like the criterion does, and the button
         // spends minutes in `refining` before it — both have to move the key or the pane lies.
         // In Waves, another row or active branch can move this row's advisory placement too.
@@ -8214,11 +8223,48 @@ function renderQueueDetail() {
   // File and cluster provenance belongs in the selected detail, never as a fifth row fact. Missing
   // files is said as UNKNOWN because an absent surface is exactly what Waves must keep outside.
   overview.appendChild(el("div", "rvhead", "file surface & cluster"));
-  const origin = t.filesOrigin === "confirmed" ? "confirmed by refinement"
+  // "by refinement" until 2026-09-07, when it stopped being true: the refine promote is no longer
+  // the only writer of a confirmed surface, and naming the wrong door would send a reader looking
+  // for a split that never happened. WHO confirmed it is in audit.jsonl, which is where a
+  // provenance question belongs.
+  const origin = t.filesOrigin === "confirmed" ? "confirmed by the owner"
     : t.filesOrigin === "derived" ? "mechanically derived" : "origin unavailable";
   overview.appendChild(el("div", "shellhint", t.files?.length
     ? `known files · ${origin}: ${t.files.join(", ")}`
     : "file surface unknown — absence is not an empty surface"));
+  // The PROPOSED surface, drawn UNDER the standing one and never merged into it: holding those two
+  // lines against each other is exactly the act the button below ends, so a rendering that showed
+  // only the winner would remove the reason to click. Only the owner sees this button — the propose
+  // door is a self route, and there is no self mirror of the confirm.
+  const fprop = t.filesProposal;
+  if (fprop) {
+    overview.appendChild(el("div", "shellhint",
+      `proposed · ${fprop.by || "unknown"} (${fmtTs(fprop.at)}): ${fprop.files.join(", ")}`));
+    // two severities, two colours, never merged — the same distinction the refine validation draws
+    // one section below: "this repo does not track it" is a measured finding, "the tree could not
+    // be read" is an absent measurement, and only the first is evidence against the proposal.
+    if (fprop.unknownPaths === undefined)
+      overview.appendChild(el("div", "qdfind unk",
+        "? the target repo's tracked tree could not be read — not measured is not a pass"));
+    else if (fprop.unknownPaths.length)
+      overview.appendChild(el("div", "qdfind err",
+        `✕ not tracked in the target repo: ${fprop.unknownPaths.join(", ")}`));
+    const facts = el("div", "pkdacts");
+    // the button follows the route's own two statuses: a surface is confirmed while the row is
+    // still open, and an advisory kind carries none at all
+    if (t.kind === "auftrag" && (t.status === "pending" || t.status === "queued")) {
+      const cb = el("button", "shrbtn primary", "✓ confirm this file surface") as HTMLButtonElement;
+      cb.title = "writes these paths onto THIS row as its confirmed surface — no children, no archive."
+        + " Only a confirmed surface may be bundled into a land wave";
+      cb.onclick = () => void qAct(t.id, "files", {});
+      facts.appendChild(cb);
+    }
+    const fdb = el("button", "shrbtn", "✕ discard proposal") as HTMLButtonElement;
+    fdb.title = "drops the proposed surface — the row's own surface is untouched either way";
+    fdb.onclick = () => void qAct(t.id, "files", { accept: false });
+    facts.appendChild(fdb);
+    overview.appendChild(facts);
+  }
   if (t.cluster) overview.appendChild(el("div", "shellhint",
     `cluster projection: ${[t.cluster.projekt, t.cluster.prozess, t.cluster.unterprozess].filter(Boolean).join(" / ")}`));
   else overview.appendChild(el("div", "shellhint", "cluster projection unavailable"));

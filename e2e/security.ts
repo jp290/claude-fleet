@@ -162,6 +162,16 @@ const PRE_AUTH_ROUTES = [
   // other's filing door. It writes into no pane, starts nothing and reaches no foreign slot.
   '= /api/self/tasks',
   String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/release$/`,
+  // W2 · the PROPOSE half of the file-surface pair, added 2026-09-07. REVIEWED, and the review is
+  // the entry: it is the one self route in this family that answers a LANE, and it is deliberate.
+  // What bounds it is that it writes NOTHING the owner has not confirmed — the row's own
+  // `files`/`filesOrigin` are untouched, the proposal is parked in its own field, the caller's
+  // provenance (`by`) is derived from its slot rather than read off the body, and the CONFIRM that
+  // turns a proposal into a surface is an owner route BELOW the gate (POST /api/tasks/:id/files),
+  // with no self mirror. It reaches no foreign slot, starts nothing, writes into no pane, and its
+  // path-validation finding REPORTS rather than gates — a proposal is at worst noise on a row that
+  // an owner click can drop.
+  String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/files-proposal$/`,
   // ACP · THE LAND DOOR, and it is by a distance the most consequential entry on this list: it is
   // the only pre-auth route that can move an INTEGRATION BRANCH. It is here for the same structural
   // reason as its neighbours — the exact self principal IS the boundary — but what bounds it is a
@@ -448,6 +458,11 @@ const taskSurface = (fix: string): Probe[] => [
   // carry the positive control while every other principal must be denied outright
   { path: `/api/tasks/${fix}/refine`, method: "POST", body: {}, ownerSafe: true },
   { path: `/api/tasks/${fix}/refine-confirm`, method: "POST", body: {}, ownerSafe: true },
+  // W2 · the CONFIRM of a row's file surface — the only writer of `filesOrigin:"confirmed"` that a
+  // request can reach, and therefore the door a scoped credential must never open (its lane-facing
+  // twin, /api/self/tasks/:id/files-proposal, deliberately cannot promote). On this DONE fixture
+  // the owner gets a side-effect-free 409, which is what lets it carry the positive control.
+  { path: `/api/tasks/${fix}/files`, method: "POST", body: {}, ownerSafe: true },
   { path: `/api/tasks/${fix}/adopt`, method: "POST", body: {} },
   { path: `/api/tasks/${fix}/queue`, method: "POST", body: {} },
   { path: `/api/tasks/${fix}/archive`, method: "POST", body: {} },

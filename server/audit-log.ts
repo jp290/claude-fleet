@@ -39,6 +39,13 @@ type AuditEvent =
   // and the owner either promoted the proposal into new rows or discarded it. The confirm's detail
   // carries the children's ids — the archived original is otherwise the only place they are named
   | "task_refine" | "task_refine_confirm" | "task_refine_dismiss"
+  // W2 · the FILE SURFACE of an existing row, the same propose/promote pair once more: a lane or
+  // MAIN parks a proposal (task_files_propose, with the proposing slot), and the owner either
+  // confirms a surface onto the row (task_files_confirm) or drops the proposal
+  // (task_files_dismiss). The confirm's detail names how many paths, whether they came from the
+  // owner's own body or from a named proposal, and — decisively — which of them the target repo
+  // does not track: that finding never gates, so the ledger is where "he could see it" is recorded.
+  | "task_files_propose" | "task_files_confirm" | "task_files_dismiss"
   | "owner_auth_fail"
   | "intake_auth_fail" | "intake_auth_lock"
   | "self_heal_recreate"

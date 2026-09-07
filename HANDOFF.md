@@ -103,6 +103,23 @@ Zeile gefilt — notiz-Deckel 10/10.** Kein Vorschlag, den Guard zu entfernen; d
 nachweislich unveraenderter Rest nach Karenz als abgestanden gelten darf, oder ob der Fix ein
 Rueckkanal „Composer frei" ist, der das Pollen ueberfluessig macht.
 
+## 4a. GEMESSEN AM EIGENEN LEIB: zwei Sessions im Haupt-Checkout, und der Erste nimmt die Arbeit des Zweiten mit
+
+Die drei Korrekturen in §1/§3/§4b habe ich um ~20:4x geschrieben und committen wollen. Der Commit lief ins
+Leere (`nothing to commit`), weil eine ANDERE Session (P3, Slot 15) 20:38:41 ihren eigenen HANDOFF-Abschnitt
+committete und dabei meine noch uncommitteten Zeilen MITGENOMMEN hat: sie stehen heute in `b4d01b5`, einem
+Commit, dessen Body von P3-Entscheiden handelt und meine Korrekturen mit keinem Wort erwaehnt.
+
+**Der Inhalt ist nicht verloren, die BEGRUENDUNG schon** — meine Commit-Message, die erklaerte, warum die drei
+Zeilen sich aendern, existiert nirgends. Genau das ist der Schaden: dieses Repo fuehrt sein Befundregister in
+den Commit-BODIES, und ein Body, der den halben Inhalt seines Commits nicht kennt, ist eine stille Luecke.
+
+**Regel daraus, und sie ergaenzt die bekannte:** das Regelbuch warnt vor dem schmutzigen Haupt-Checkout, weil er
+ein fremdes LAND toetet. Der zweite, unbenannte Fall ist dieser: er laesst fremde Arbeit unter falscher
+Urheberschaft landen. Beide Male ist die Gegenmassnahme dieselbe und steht schon da — **kurz halten und sofort
+committen**, nie einen Edit im Haupt-Checkout liegen lassen. Ich habe zwischen Edit und Commit einen
+Sensor-Aufruf gelegt; das reichte.
+
 ## 4b. Der Lane-Deckel fuer `claude-fleet` steht seit ~20:20 auf 3
 
 Owner-Entscheid, gesetzt ueber `POST /api/repo-lane-cap` — also genau die Tuer, die `779eb456` heute gebaut hat.

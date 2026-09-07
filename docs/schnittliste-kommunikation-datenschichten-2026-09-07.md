@@ -142,16 +142,32 @@ die der toten MAIN; (3) ein Report mit gestorbenem Occupant ist als solcher sich
 begründet. Alle vier sind am Code belegt (Symbole oben). Ausdrücklich verboten war und bleibt: die
 Abnahme automatisieren, die Self-Route aufweichen, den Occupant-Vergleich lockern.
 
-**Kosten heute (23:3x, Probe A): 12** unentschiedene Zeilen, die auf den Owner warten — 11 davon
-Owner-Inbox-Zeilen (die eine eigene Ablehnung in `decideFleetReport` haben, weil der Owner kein
-Occupant-Tripel hat), 1 mit ersetztem Occupant. **0 Owner-Verdikte sind bisher gefallen:** die Tür
-ist gebaut und ungenutzt.
+**Kosten heute (23:3x, Probe A): 12** unentschiedene Zeilen, die auf den Owner warten. **0
+Owner-Verdikte sind bisher gefallen:** die Tür ist gebaut und ungenutzt. Die Zeilen namentlich, weil
+ein Zähler hier nichts adressiert:
 
-**Ein Nebenbeleg der Erstfassung fällt dabei ganz:** dort stand »10 von 10 Clarifications sind
-unbeantwortet, 6 davon mit totem Receiver«. Nachgemessen 23:3x trägt **jede** der 10
-Clarification-Zeilen `status: "answered"` und ein vollständiges `answer`-Objekt mit Antwortendem —
-unbeantwortet ist keine. Der Fehler ist derselbe Probentyp wie `decision === null` in Probe A: eine
-Prüfung auf das falsche Feld, deren Null wie ein Befund aussieht. Die Owner-Tür für Attention
+```
+ersetzter Occupant (1): 79fa8885
+Owner-Inbox (11)      : 303a0d8c 6a8db675 4ed8e3f6 ccdaabb8 f7efb7aa 14f483e2
+                        dd3ec74d 1815ff0f 2dcf8221 a846d563 d9afe4cc
+```
+
+Die 11 Owner-Inbox-Zeilen haben in `decideFleetReport` eine **eigene** Ablehnung, weil der Owner
+kein Occupant-Tripel hat; nur die eine übrige ist ein Report an eine MAIN, deren Occupant ersetzt
+wurde. Die Liste ist ein **Snapshot**, kein Bestand: ein Wiederholungslauf um 23:57 liefert 13 — die
+dreizehnte ist der Report dieser Korrektur selbst (`c334a674`, Owner-Inbox, unentschieden). Wer die
+Zeilen abarbeitet, misst also zuerst neu und arbeitet dann die IDs ab, die er dabei liest.
+
+**Ein Nebenbeleg der Erstfassung ist datiert nachzutragen.** Dort stand »10 von 10 Clarifications
+sind unbeantwortet, 6 davon mit totem Receiver«. Nachgemessen 23:3x trägt jede der 10
+Clarification-Zeilen `status: "answered"` mit vollständigem `answer`-Objekt. **Eine Messung von
+heute widerlegt für sich genommen keinen früheren offenen Zustand** — sie datiert ihn nur. Hier
+entscheidet deshalb nicht der Zählstand, sondern der Zeitstempel: jede der 10 Zeilen trägt ihr
+`answer.at`, und die **jüngste Antwort liegt am 2026-09-05 21:22**, rund 41 Stunden **vor** der
+15:15-Messung; die älteste am 2026-08-15 20:08. Zum Messzeitpunkt der Erstfassung waren die 10
+Zeilen also bereits beantwortet, und der Nebenbeleg war schon damals nicht zutreffend — nicht erst
+seither überholt. Was ihn erzeugt hat, ist derselbe Probentyp wie `decision === null` in Probe A:
+eine Prüfung auf das falsche Feld, deren Null wie ein Befund aussieht. Die Owner-Tür für Attention
 funktioniert dagegen wie behauptet (21 Zeilen: 19 `answered`, 1 `refused`, 1 `open`).
 
 Der Rest-Schnitt ist damit kein Bau mehr, sondern ein Rückstand — er verdient eine Zeile, aber eine
@@ -250,8 +266,14 @@ voraussetzte, den niemand gefahren hat.
    (`/tmp/astra-p3-2026-09-07/independent-review-candidate.md`). Rückverweis genügt; ein Verlust
    kostet Kontext, nicht die Zeile.
 3. **Temporäres Verify-Log** — `astra-disposition-verify.log`, `astra-plan-luecken-verify.log`,
-   `astra-disposition-probe-final.log`, `p1-publication-…-install.log`. Diese sind Beweismittel
-   ihres Laufs und **sollen** vergehen; sie ins Repo zu committen wäre der falsche Fix.
+   `astra-disposition-probe-final.log`, `p1-publication-…-install.log`. Hier ist nicht die Datei
+   der Liefergegenstand, sondern der **Beweis**, und der wird an einem haltbaren Ort gesichert
+   statt im Log: Kommando, **absoluter** Logpfad, Exitcode und der wörtliche Tail gehören in die
+   Land-Note des Commits (`git notes --ref=fleet/land show <sha>`) und in den Commit-Body, ein
+   Messergebnis zusätzlich in eine Notiz unter `docs/messungen/`. Steht das dort, ist der Beweis
+   auch dann noch prüfbar, wenn die Datei nicht mehr existiert; steht es nicht dort, ist der Beweis
+   mit der Datei verloren — dann fehlt die Sicherung, nicht das Log. Die Logdatei selbst ins Repo zu
+   committen ersetzt diese Sicherung nicht und wäre der falsche Fix.
 
 Eine pauschale Verpflichtung, alle privaten Scratch-Ziele in dieses Repo zu committen, steht deshalb
 nicht mehr in dieser Zeile.
@@ -330,8 +352,8 @@ dieser Messrunde nicht gefunden — als Absenz festgehalten, nicht als Lücke: g
 
 | Gruppe | Was geändert wurde |
 |---|---|
-| 1 (M1) | Nebenbeleg »10 von 10 Clarifications unbeantwortet« als Probenfehler widerlegt (alle 10 `answered`); Probe A erfasst beide Unentschieden-Formen und trennt Null-Receiver von ersetztem Occupant; IDs statt Gesamtzähler; »je eingereicht/je entschieden« gestrichen und durch den Speicherbestand mit `FLEET_REPORT_KEEP`-Vorbehalt ersetzt; keine automatische Entscheidung als VERIFY; Testfamilie auf `e2e/watch.ts` + `e2e/programs.ts` korrigiert (`e2e/security.ts` trägt nur Routen-Pins); die vier DONE-Sätze von `89279f1f` ausgeschrieben. **Zusätzlich, weil es die Aussage kippt:** die Lücke ist seit `7a20eead` (`ownerDecideFleetReport`) geschlossen und `89279f1f` steht auf `done` — der Posten beschreibt jetzt den Rückstand von 12 Zeilen, nicht mehr eine fehlende Tür. Occupant-Rechte unverändert. |
+| 1 (M1) | Nebenbeleg »10 von 10 Clarifications unbeantwortet« datiert nachgetragen: alle 10 tragen `answer.at`, die jüngste Antwort 2026-09-05 21:22 und damit ~41 h vor der 15:15-Messung — er war schon zum Messzeitpunkt nicht zutreffend, nicht erst seither überholt; Probe A erfasst beide Unentschieden-Formen und trennt Null-Receiver von ersetztem Occupant; IDs statt Gesamtzähler; »je eingereicht/je entschieden« gestrichen und durch den Speicherbestand mit `FLEET_REPORT_KEEP`-Vorbehalt ersetzt; keine automatische Entscheidung als VERIFY; Testfamilie auf `e2e/watch.ts` + `e2e/programs.ts` korrigiert (`e2e/security.ts` trägt nur Routen-Pins); die vier DONE-Sätze von `89279f1f` ausgeschrieben. **Zusätzlich, weil es die Aussage kippt:** die Lücke ist seit `7a20eead` (`ownerDecideFleetReport`) geschlossen und `89279f1f` steht auf `done` — der Posten beschreibt jetzt den Rückstand von 12 Zeilen, nicht mehr eine fehlende Tür. Occupant-Rechte unverändert. |
 | 2 (M3) | `programHealth` präzise als Paar `occupancy` (`stale`/`unbound`/`live`) + `sessionIdMatch` (`unknown`) beschrieben statt »health unknown«; **ein** Vertrag: sichtbar stale/unbound mit Wiederaufnahmeweg, keine automatische Complete-Markierung, andere Statuspolitik als offener Owner-Vorschlag benannt; der Widerspruch zwischen DONE (Unbinding erlaubt) und VERIFY (`live` verlangt) aufgelöst; Negativfall active+unerledigt+Retire ausdrücklich geschützt. |
 | 3 (M4) | »Composer deterministisch räumen« gestrichen — `sendText` verweigert per Design vor dem Tippen; DONE verlangt Erhalt des fremden Entwurfs und `refusing`/`no-send`-Nachweis, Rücknahme nur eigenen Payloads; 7-Tage-`uncertain == 0` als Beleg ausgeschlossen, ersetzt durch Positiv-/Negativprobe je Harness mit ehrlichem `unsupported`/`unknown`. |
-| 4 (M2) | Dreiteilung Pflichtartefakt / optionale Referenz / temporäres Verify-Log eingeführt; pauschale Commit-Pflicht für alle privaten Scratch-Ziele entfernt; Reboot als fehlende Haltbarkeitsgarantie statt ungeprüftem Totalverlust; »ein verlorener Pfad leert nicht die Zeile«; »C1–C5 existieren nirgends sonst« datiert widerlegt (C5 = Task `eec64457`, gefiled; C3–C5 auch in `506fdce6`). |
+| 4 (M2) | Dreiteilung Pflichtartefakt / optionale Referenz / temporäres Verify-Log eingeführt, für die dritte Sorte mit der Beweissicherung statt der Datei (Kommando, absoluter Logpfad, Exitcode, wörtlicher Tail in Land-Note und Commit-Body, Messergebnis in `docs/messungen/`); pauschale Commit-Pflicht für alle privaten Scratch-Ziele entfernt; Reboot als fehlende Haltbarkeitsgarantie statt ungeprüftem Totalverlust; »ein verlorener Pfad leert nicht die Zeile«; »C1–C5 existieren nirgends sonst« datiert widerlegt (C5 = Task `eec64457`, gefiled; C3–C5 auch in `506fdce6`). |
 | 5 (Beweise) | Posten 5 unter die Schnittlinie verschoben, mit `AGENTS.md:118–129` als Grund; `0a8d2f13` als historischer Ausfallbeleg eingeordnet, keine neue Invariante; kein fünfter Posten erzwungen. Methodenteil trägt jetzt die tatsächlichen Lesekommandos, Filter, Zeitfenster und getrennte Nenner; »derselbe Dreizeiler« ohne Dreizeiler ist ersetzt; die Nenner-Verwechslung 571 vs. 604 in Posten 3 korrigiert; ausdrücklich vermerkt, dass das Gate-Originallog zur Land-Note gehört und »ALL PASS im Report« kein Prüfbeleg ist. |

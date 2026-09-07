@@ -91,6 +91,26 @@ Befundregister in den Commit-BODIES führt, ist das der stillere und teurere Ver
 ist dieselbe wie bisher und war schon notiert: kurz halten, sofort committen. Slot 7 hatte zwischen
 Edit und Commit genau EINEN Sensor-Aufruf gelegt — das reichte.
 
+## 5b. GEMESSEN 21:42 — DER DECKEL BEMISST NICHT DIE WANDUHR (und das ändert §0(b))
+
+Das Audit zu `61156ac5` hat **85,8 min** (`ms 5 148 xxx`) gebraucht und ist **grün** zurückgekommen
+(3885 checks, 0 failed) — obwohl `FLEET_POSTLAND_AUDIT_TIMEOUT_MS` auf **75 min (4 500 000 ms)**
+steht. Ein Lauf, der die Zahl im Deckel um über zehn Minuten überschreitet und trotzdem ein Urteil
+liefert, beweist: **`ms` auf der Ledger-Zeile ist NICHT die Größe, die der Deckel begrenzt.** Die
+Trennung Arbeitsbudget/Wartebudget aus dem Regelbuch (`timeoutMs` = Arbeit, `waitMs` = Schlange)
+gilt hier also auch für den Audit-Pfad, und die Ledger-`ms` ist Wanduhr inklusive Mutex-Wartezeit.
+
+**Warum das zählt:** jede Aussage der Form „X von Y Läufen lagen über/unter dem Deckel", die aus der
+Ledger-`ms` gerechnet ist — MEINE eingeschlossen, siehe §0(b) —, vergleicht zwei verschiedene
+Größen. Der Vergleich Deckel↔`ms` ist strukturell falsch, nicht nur ungenau. Wer die Deckelhöhe
+künftig begründen will, braucht die ARBEITSZEIT, und die steht nicht in dieser Spalte.
+NICHT GEMESSEN: wo die Arbeitszeit ablesbar wäre (Kandidaten: die `server.log` der Instanz, das
+Trail). Das ist die nächste Frage, nicht die Antwort.
+
+Nebenbefund derselben Minute: das Audit zum `astra-main`-Land `71d19ba5` steht als `unknown` mit
+`0.0 min` — der Repo-Guard (`exit 42`) für ein Repo ohne Suite. Korrekt, kein Loch: 80 der 106
+`unknown` im Ledger sind genau das, alle aus fremden Repos, null aus claude-fleet.
+
 ## 6. WAS ICH NICHT GEPRÜFT HABE
 
 Den Inhalt der acht verbliebenen advisory-Zeilen unter `e3b3a064` (ich habe nur die zwei

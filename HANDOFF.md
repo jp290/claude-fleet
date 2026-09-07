@@ -1,3 +1,66 @@
+# HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 7 → Nachfolgerin, Opus 5 high): SUCCESSION statt retire, weil EINE lebende Lane ihre Report-Adresse an mir haengen hat; 2026-09-07 14:3x, ctx GEMESSEN 44 %
+
+> **Ergaenzt meinen Abschnitt in `a273332`** (weiter unten, „vier Lands, drei mit actor{kind:main}").
+> Dort stehen die Lands, die Rangfolge, die unbefilten Befunde und §5 „was nur der Owner kann".
+> Hier steht NUR, was seitdem dazugekommen ist. Zustand ableiten: `./state.sh`, `./register.sh`,
+> `GET /api/self/program-execution`.
+
+## A. DEIN ERSTER ZUG: Slot 14 / `779eb456` — die einzige teure Sache
+
+**Slot 14 ist eine LEBENDE Lane dieses Programs** (Task `779eb456`, „Lane-Deckel JE REPO statt
+maschinenweit", Owner-Zeile 11:2x, `status: sent`, vier Commits, Baum sauber, wartet auf ein
+Suite-Offer-Verdikt; Worktree `claude-fleet.worktrees/fleet-260907094547-ced0`).
+
+**Genau deshalb bin ich per `succeed` gegangen und nicht per `retire`** (Controller Slot 6,
+am Code gelesen): der Report-Empfaenger wird ueber `server.ts#clarificationReceiverFor` aus dem
+LEBENDEN Occupant von `program.main` aufgeloest, und `decideFleetReport` vergleicht das volle
+Tripel `{slot, openedAt, sessionId}`. Ein Retire haette den Occupant getoetet, der Report waere auf
+`NO_RECEIVER_EVIDENCE` gefallen — und es gibt KEINE Owner-Tuer, die ihn dann noch annehmen koennte
+(einzige Route: `POST /api/self/fleet-report/:id/(accept|reject)`, self-only). Die Abnahme waere
+dauerhaft unmoeglich, nicht bloss schwer. **Die Succession hat `program.main` auf DICH verschoben —
+die Adresse gehoert jetzt dir.**
+
+**Wenn ihr Report kommt:** wie bei allen vier Lands heute — Diff und zitierte Verify-Ausgabe SELBST
+lesen (ein Report ist eine BEHAUPTUNG), dann `accept` mit einer Begruendung (**Deckel 500 Zeichen**,
+zweimal dagegen gelaufen), dann `POST /api/self/tasks/779eb456/land`. Ihr Land loest laut Controller
+die Warteschlange fuer P1/P2/Codebase-Review.
+
+## B. Zwei Zeilen, die heute neu dazukamen — nicht neu herleiten
+
+- **`89279f1f`** (`auftrag`, pending): die fehlende Owner-Tuer fuer die Report-Abnahme — genau die
+  Luecke aus §A, mit vier harten Done-Kriterien. Sie ist die strukturelle Reparatur dafuer, dass
+  eine fertige Program-MAIN sich heute nicht schliessen kann, ohne die Annahme ihrer eigenen
+  Lane-Reports unmoeglich zu machen.
+- **`4fc1f438`** (`notiz`, pending): Owner-Entscheid F3 — Deploy-Preflight soll 409 geben bei
+  schmutzigem Tree oder einem Tip ohne Land-Note. **Noch KEIN `auftrag`**, weil die P3-Analyse
+  dahinter drei REJECT-Runden und kein ACCEPT hat. Nicht voreilig in einen Auftrag wandeln.
+
+## C. Die Env-Antwort, die der Controller zweimal angefordert hat
+
+`FLEET_POSTLAND_AUDIT_WAIT_MS=2700000` — der gemessenen Haltezeit EINER fremden Lane-Suite
+(35-41 min) entsprechend, damit die Warte-Uhr des Audits einen vollen fremden Halter abdeckt.
+**ABER: `server.ts:12834` defaultet bereits auf exakt `2_700_000`** — der Eintrag ist heute
+verhaltensgleich und damit KEIN eigener `launchctl kickstart` wert. Sein einziger Gewinn ist
+Sichtbarkeit im config-Sensor von `./state.sh`; bei der naechsten `watchdog.sh`-Aenderung mitnehmen.
+(Ich hatte das Slot 10 schon geantwortet; die Antwort ist mit dessen Succession verlorengegangen —
+ein Beleg fuer §A und fuer `89279f1f`.)
+
+## D. Stand, den du nicht abfragen musst (Controller 14:2x)
+
+Deploy `f6a69ac5` gruen, M3 live, `bootHead == head == c45ebebc`. **Meine drei Fixes sind IN KRAFT**
+(gemessen: `2dfaa81`, `19ddef5`, `c7184f8` alle Ancestor des bootHead) — ein ausgewartetes Gate
+bindet den naechsten Self-Land-Aufruf nicht mehr, die Supervisor-Bindung meldet ihre Leiche, und
+Warten und Arbeit sind zwei Uhren.
+
+## E. Was weiterhin NUR der Controller/Owner kann (unveraendert offen)
+
+`ff4544f5` archivieren — R4s Dublette, nie freigegeben, Dateiposition **150**, ueberholt unter
+Deckel 1 die ganze Queue und haelt den letzten `auftrag`-Cap-Platz. Sie blockiert ZWEI Filings:
+die `SUITE_OFFER_WAIT_HELD_MS`-Rekalibrierung (800 s gegen gemessene Fern-p50 1448 s; zwei Lanes
+haben den Deckel heute BEWUSST ueberschritten) und den `descendantPids`-Befund (`pgrep -P` mit
+`stderr:"ignore"` und verworfenem Exit-Code; **30x** `pgrep: Cannot get process list` in
+`server.log`). Dazu die Notizen `7a2fcbce`, `35cf0c23`, `65358fef` — Inhalt nachweislich gelandet.
+
 # HANDOFF — Program-MAIN Land-Pipeline 2026-09 (`233e1c2b7eaca3850decf332`, Slot 5, Fable 5.1): M5 + N1 GELANDET und LIVE, M3 GELANDET `6c70f01`+`79e1c36`+`94a8840` (Deploy beim Controller), W1–W3 (Wellenmodus, Owner-Tagesarbeit) pending; 2026-09-07 14:0x, ctx GEMESSEN 26,7 %
 
 > **Dieser Abschnitt ERSETZT den aelteren darunter.** Zustand ableiten: `./state.sh`, `./register.sh`,

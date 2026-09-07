@@ -3517,15 +3517,21 @@ export async function run(): Promise<void> {
     check("D3 unknown id: an id that names no row is 404, not a 409 about a liveness it cannot read",
       unknownOwner.status === 404 && unknownOwnerText.includes("unknown fleet report"),
       `${unknownOwner.status} ${unknownOwnerText}`);
+    // …on the OWNER-INBOX row, not the orphan-to-be: the liveness guard runs first by design, so a
+    // bad body aimed at a live receiver would be answered 409 and this arm would measure that guard
+    // a second time instead of the validators behind it.
     const d3BadBodies = await Promise.all([
-      ownerDecideReport(orphanReport?.id ?? "", "accept", { reason: "ok", disposition: "accepted" }),
-      ownerDecideReport(orphanReport?.id ?? "", "accept", { reason: 5 }),
-      ownerDecideReport(orphanReport?.id ?? "", "accept", { reason: "x".repeat(501) }),
+      ownerDecideReport(inboxReport3?.id ?? "", "accept", { reason: "ok", disposition: "accepted" }),
+      ownerDecideReport(inboxReport3?.id ?? "", "accept", { reason: 5 }),
+      ownerDecideReport(inboxReport3?.id ?? "", "accept", { reason: "x".repeat(501) }),
     ]);
     const d3BadTexts = await Promise.all(d3BadBodies.map((r) => r.text()));
     check("D3 body shape: the owner door takes {reason} or nothing, in the self door's own discipline",
-      d3BadBodies.every((r) => r.status === 400 || r.status === 409)
-        && d3BadTexts.some((t) => t.includes("body must contain only reason")),
+      d3BadBodies.every((r) => r.status === 400)
+        && d3BadTexts[0]?.includes("body must contain only reason") === true
+        && d3BadTexts[1]?.includes("reason must be a string") === true
+        && d3BadTexts[2]?.includes("reason must be at most 500 chars") === true
+        && ((await ownerReports()).find((r) => r.id === inboxReport3?.id)?.decision ?? null) === null,
       JSON.stringify({ statuses: d3BadBodies.map((r) => r.status), texts: d3BadTexts }));
 
     // --- (c) THE sessionId DIVERGENCE, the second defect the same measurement found. Slot 12 held a
@@ -3545,8 +3551,11 @@ export async function run(): Promise<void> {
       if (r.id === sessionReport?.id && r.receiver) r.receiver.sessionId = null;
     writeFileSync(d3Path, JSON.stringify(sessPlant, null, 2), { mode: 0o600 });
     await restartSrv();
-    const sessSlotAfter = ((await (await get("/api/sessions")).json()) as
-      { slots: { id: number; sessionId?: string | null }[] }).slots.find((x) => x.id === d3SessMain);
+    // read from the PERSISTED row, D1's own technique: /api/sessions carries `sessionId` only for a
+    // codex-harness slot, and this suite runs FLEET_CMD=true — a probe through the poll would be
+    // measuring the projection's harness branch instead of the fact it is here for.
+    const sessSlotAfter = (JSON.parse(readFileSync(d3Path, "utf8")) as
+      { slots?: Record<string, { sessionId?: string | null }> }).slots?.[String(d3SessMain)];
     const sessRowAfter = (await selfFleetReports(d3SessTok)).reports.find((r) => r.id === sessionReport?.id);
     const sessDecide = await decideReport(d3SessTok, sessionReport?.id ?? "", "accept",
       { reason: "The pane that received this is the pane judging it." });
@@ -3670,8 +3679,11 @@ export async function run(): Promise<void> {
     await tmuxOut("kill-session", "-t", "srv");
     await Bun.sleep(500);
     const keepPlant = JSON.parse(readFileSync(d3Path, "utf8")) as {
-      fleetReports?: Record<string, unknown>[];
+      slots: Record<string, Record<string, unknown>>; fleetReports?: Record<string, unknown>[];
     };
+    // the filing lane needs a queue identity: without a taskId the owner-inbox fallback refuses,
+    // and a 409 here would leave the prune unrun and the check measuring nothing.
+    keepPlant.slots[String(holdLane.slot)].taskId = "d3task-hold";
     // an orphan with NO receiver occupant left in the slots map at all: the shape the owner door
     // exists for, and the one the tail would otherwise eat first (it is the oldest row here).
     const heldId = "9".repeat(24);
@@ -3699,15 +3711,16 @@ export async function run(): Promise<void> {
     writeFileSync(d3Path, JSON.stringify(keepPlant, null, 2), { mode: 0o600 });
     await restartSrv();
     const beforePrune = await ownerReports();
-    await selfFleetReport(holdTok, { status: "complete", text: "D3: the file that runs the prune." });
+    const pruneTrigger = await selfFleetReport(holdTok, { status: "complete", text: "D3: the file that runs the prune." });
     const afterPrune = await ownerReports();
     check("D3 retention: the prune drops settled rows past the ceiling and HOLDS the one the owner still owes a verdict",
-      beforePrune.some((r) => r.id === heldId)
+      pruneTrigger.ok
+        && beforePrune.some((r) => r.id === heldId)
         && afterPrune.some((r) => r.id === heldId)
         && afterPrune.find((r) => r.id === heldId)?.liveness === "gone"
         && afterPrune.filter((r) => filler.some((f) => f.id === r.id)).length
           < filler.filter((f) => beforePrune.some((r) => r.id === f.id)).length,
-      JSON.stringify({ heldBefore: beforePrune.some((r) => r.id === heldId),
+      JSON.stringify({ trigger: pruneTrigger.status, heldBefore: beforePrune.some((r) => r.id === heldId),
         heldAfter: afterPrune.some((r) => r.id === heldId),
         fillerBefore: filler.filter((f) => beforePrune.some((r) => r.id === f.id)).length,
         fillerAfter: afterPrune.filter((r) => filler.some((f) => f.id === r.id)).length }));

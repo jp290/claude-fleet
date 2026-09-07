@@ -91,6 +91,58 @@ Befundregister in den Commit-BODIES führt, ist das der stillere und teurere Ver
 ist dieselbe wie bisher und war schon notiert: kurz halten, sofort committen. Slot 7 hatte zwischen
 Edit und Commit genau EINEN Sensor-Aufruf gelegt — das reichte.
 
+## 7. DER PLAN FÜR DIE NÄCHSTE SITZUNG (Owner-Auftrag 2026-09-07 ~21:5x: „überlege wie wir darauf reagieren sollten und dann geh alles soweit in der nächsten Session an")
+
+**Die Diagnose zuerst, weil sie die Reihenfolge bestimmt.** Die vier Vorfälle dieses Tages sind
+EIN Befund, nicht vier: §0(a) Gate-grün für Annahme gehalten · §0(b) Trail-Datei per Zeitfenster
+zugeordnet · Slot 6: Wrapper-ELAPSED für Arbeitszeit gehalten (Faktor 4,7) · §5b: Wanduhr-`ms`
+gegen ein Arbeitsbudget verglichen. **Jedes Mal wurde ein Signal benutzt, ohne zu prüfen, WAS es
+misst.** Vier verschiedene Sessions, vier verschiedene Signale — also kein Personenfehler, sondern
+eine fehlende Naht. Ermahnungen helfen dagegen nicht; nur Mechanismen, die die falsche Benutzung
+unmöglich oder sichtbar machen.
+
+### ÜBER DER SCHNITTLINIE — in dieser Reihenfolge abarbeiten
+
+1. **Slot 6 landen, sobald ihre Vorschau grün ist** (`89279f1f`, 7 Commits, volle Kette). Das ist
+   die einzige laufende Arbeit, die einen 30-%-Bestand bewegt: sie baut die Owner-Tür, ohne die
+   jede saubere MAIN-Fertigmeldung einen neuen Geist erzeugt. VORHER: Report-Lage prüfen
+   (`decision.disposition == accepted`), Empfänger ist Program `f170dc46`.
+2. **Slot 4 und Slot 11 einsammeln.** Slot 4 muss ZUERST ihren `fleetReport` an Slot 8 filen (ihr
+   Beweis liegt seit 20:13 grün, sie weiß es jetzt); Slot 11 wartet auf ihr Helfer-Verdikt zu
+   `1adfa02`. Beide erst nach Annahme landen.
+3. **Deploy**, sobald die Audit-Kette leer ist. Der Server war um 21:1x zwölf Commits hinter der
+   Platte; W1/W2 sind live, alles danach nicht.
+4. **Zwei neue Zeilen filen — die Mechanismen gegen die Fehlerklasse oben.** Beide klein, beide
+   prüfbar, beide schließen einen Fehler, der HEUTE Geld gekostet hat:
+   - **(M-1) Die Land-Route verweigert eine Lane, deren `fleetReport` `rejected` trägt.** Heute
+     hängt das allein an der Disziplin des Landenden — und die hat genau einmal versagt, mit
+     grünem Gate und grünem Audit als Rückendeckung. Done: ein Merge-Versuch auf eine Lane mit
+     abgelehntem Report wird mit benanntem Grund abgelehnt; ein Land ohne Report bleibt erlaubt
+     (sonst bricht der Owner-Pfad). Verify: Check in `e2e/programs.ts` neben den Report-Checks,
+     beide Richtungen, plus die Mutation.
+   - **(M-2) Das Audit-Ledger trennt Arbeitszeit von Wartezeit.** Solange `ms` Wanduhr ist, ist
+     JEDE Deckel-Begründung aus dieser Spalte falsch gerechnet (§5b) — auch künftige. Done: die
+     Ledger-Zeile trägt beide Größen getrennt und benennt, welche der Deckel bindet. Verify: ein
+     Lauf mit erzwungener Mutex-Wartezeit zeigt zwei verschiedene Zahlen.
+5. **Slot 7 schließen** (Schicht abgeschlossen, Handoff committet, Watches bei mir dupliziert).
+
+### AUSDRÜCKLICH UNTER DER SCHNITTLINIE — echt, aber heute nicht dran
+
+Der `/tmp`-Sweep (29 Zeilen), die sechs Waisen-Worktrees unter `astra-main.worktrees/`, und
+`41bd398` (M1-Lane ohne lebenden Slot, Slot 2 hat zwei Wege angeboten und wählt selbst). Alle drei
+sind aufgeschrieben und keiner davon bewegt die Zahlen, die heute weh taten. Nicht mitziehen, nur
+weil sie sichtbar sind — genau so entstehen 231 offene Zeilen.
+
+### EINE HYPOTHESE, NICHT MEHR
+
+Um 21:11 wurde ein Merge auf Slot 4 als `interrupted` verbucht („never produced a verdict"),
+während der Server nachweislich seit 16:51 durchlief; in derselben Phase hat das OS zwei meiner
+Hintergrund-Watcher wegen Speichermangel getötet (73 MB frei, 4,8 von 6 GB Swap belegt).
+**Möglich, dass Speicherdruck einen Merge-Teilprozess erschlagen hat — bewiesen ist es NICHT**
+(kein OOM-Beleg gesucht, kein Log gelesen). Wenn in der nächsten Sitzung ein Land ohne Grund
+`interrupted` wird, ist DAS die erste Spur — und dann ist der Lane-Deckel 3 zu prüfen, nicht der
+Land-Pfad.
+
 ## 5b. GEMESSEN 21:42 — DER DECKEL BEMISST NICHT DIE WANDUHR (und das ändert §0(b))
 
 Das Audit zu `61156ac5` hat **85,8 min** (`ms 5 148 xxx`) gebraucht und ist **grün** zurückgekommen

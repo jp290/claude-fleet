@@ -4394,6 +4394,89 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && /return decideFleetReport\(s, selfReportDecision\[1\],/.test(server),
     `forbidden=[${decisionForbidden.join(",")}] callSites=${decisionCallSites}`);
 
+  // --- D1b · THE OWNER DOOR beside it, and the four halves that drift the same way. The finding it
+  // closes was measured, not imagined: a Program-MAIN with an unjudged report could not be retired
+  // without making the verdict permanently unreachable, so the fleet accumulated panes to keep a
+  // decision alive. Everything here is a SOURCE rule, because each failure is silent at runtime.
+  const ownerDoor = server.match(/async function ownerDecideFleetReport\([\s\S]*?\n\}/)?.[0] ?? "";
+  const livenessFn = server.match(/function reportReceiverLiveness\([\s\S]*?\n\}/)?.[0] ?? "";
+  const ownerSection = selfApi.slice(selfApi.indexOf("### Die OWNER-Tür — `POST /api/fleet-report/:id/accept`"));
+  pin(`${RULE_RECEIVER} — the owner decision route exists in the route table and in the doc (D1b)`,
+    ownerDoor !== ""
+      && server.includes("/^\\/api\\/fleet-report\\/([0-9a-f]{24})\\/(accept|reject)$/")
+      && server.includes('url.pathname === "/api/fleet-report" && req.method === "GET"')
+      && ownerSection !== "" && ownerSection.includes("POST /api/fleet-report/:id/accept")
+      && ownerSection.includes("GET /api/fleet-report"),
+    `door=${ownerDoor !== ""} route=${server.includes("(accept|reject)$/")} doc=${ownerSection !== ""}`);
+  // THE BOUNDARY, as source: the owner door refuses a LIVE receiver, and it is the FIRST thing it
+  // does. A door that checked liveness after the already-decided branch would still be correct
+  // today and would stop being correct the first time somebody reordered the two.
+  const ownerLivenessGuardAt = ownerDoor.indexOf('reportReceiverLiveness(report) === "live"');
+  const ownerDecidedGuardAt = ownerDoor.indexOf("if (report.decision)");
+  pin(`${RULE_RECEIVER} — the owner door refuses a live receiver, before any other branch (D1b)`,
+    ownerDoor !== "" && ownerLivenessGuardAt > 0 && ownerDecidedGuardAt > ownerLivenessGuardAt
+      && ownerDoor.includes("the verdict belongs to that MAIN through POST /api/self/fleet-report/"),
+    `liveGuardAt=${ownerLivenessGuardAt} decidedGuardAt=${ownerDecidedGuardAt}`);
+  // ONE rule for both doors. Two copies is how "two principals may judge one row" and "neither may"
+  // are both reachable from an edit that looked local — and neither shows up as a red check.
+  const livenessReaders = server.split("reportReceiverLiveness(").length - 2; // declaration excluded
+  pin(`${RULE_RECEIVER} — receiver liveness is ONE function, resolving the occupation and not the session id (D1b)`,
+    livenessFn !== "" && livenessReaders >= 3
+      && /live\.openedAt === report\.receiver\.openedAt/.test(livenessFn)
+      && !/sessionId/.test(livenessFn)
+      && ownerDoor.includes("reportReceiverLiveness(report)")
+      && server.includes("const reportAwaitsOwner = (report: FleetReport): boolean =>"),
+    `fn=${livenessFn !== ""} readers=${livenessReaders} gatesSession=${/sessionId/.test(livenessFn)}`);
+  // …and the self door reads the SAME occupation. This is the sessionId divergence that made slot
+  // 12 unjudgeable by anyone: resolution never gated it, judgement did, and the owner door could
+  // not help because the occupant was alive.
+  const selfDoorGate = server.match(/if \(report\.receiver\.slot !== s\.id[\s\S]*?\n/)?.[0] ?? "";
+  pin(`${RULE_RECEIVER} — the self door gates the occupation only, like clarificationReceiverFor (D1b)`,
+    selfDoorGate.includes("report.receiver.openedAt !== s.openedAt")
+      && !selfDoorGate.includes("sessionId")
+      && (server.match(/function clarificationReceiverFor\([\s\S]*?\n\}/)?.[0] ?? "")
+        .includes("sessionId is deliberately reported, never gated"),
+    `gate=${selfDoorGate.trim().slice(0, 80)}`);
+  // THE STAMP, both halves: the row records the owner as a principal (never the dead MAIN's
+  // triple), and the parser admits that shape on the way back in. A parser that still demanded an
+  // occupant would DISCARD every owner verdict at the next boot — silently, one whole row at a time.
+  pin(`${RULE_RECEIVER} — an owner verdict is stamped "owner" and survives hydration (D1b)`,
+    ownerDoor.includes('by: "owner"') && !/by: \{ slot/.test(ownerDoor)
+      && reportRowParser.includes('if (d.by !== "owner")')
+      && /by\.openedAt !== r\.receiver\.openedAt/.test(reportRowParser)
+      && !/by\.sessionId !== r\.receiver\.sessionId/.test(reportRowParser),
+    `stamp=${ownerDoor.includes('by: "owner"')} parser=${reportRowParser.includes('if (d.by !== "owner")')}`);
+  // The owner door actuates nothing either, and no TICK may reach it: an owner act is what closes a
+  // report, and a scheduled one would age an absence into a verdict nobody gave.
+  const ownerForbidden = ["sendText", "mergeJob", "killSlot", "landLane", "detachSlotTasks",
+    "releaseTask", "pruneFleetReports"].filter((t) => new RegExp(`\\b${t}\\b`).test(ownerDoor));
+  const ownerCallSites = server.split("ownerDecideFleetReport(").length - 2; // declaration excluded
+  pin(`${RULE_RECEIVER} — the owner door actuates nothing and has exactly one call site, the route (D1b)`,
+    ownerDoor !== "" && ownerForbidden.length === 0 && ownerCallSites === 1
+      && !/\.status = /.test(ownerDoor)
+      && ownerDoor.includes("settleFleetEventAcknowledged(event)"),
+    `forbidden=[${ownerForbidden.join(",")}] callSites=${ownerCallSites}`);
+  // VISIBILITY, the half the door cannot buy: an orphaned row must not be prunable, and the count
+  // that lights the board must exist. Both fail silently — a pruned row is simply not there any
+  // more, and a missing counter renders as "nothing is filed".
+  const pruneFn = server.match(/function pruneFleetReports\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_RECEIVER} — a report awaiting the owner is held out of the retention tail and counted on the poll (D1b)`,
+    pruneFn.includes("if (reportAwaitsOwner(report)) return false;")
+      && server.includes("const awaiting = fleetReports.filter(reportAwaitsOwner).length;")
+      && server.includes("reportsAwaitingOwner: awaiting")
+      && clientU.text.includes("reportsAwaitingOwner")
+      && clientU.text.includes('api("/api/fleet-report")'),
+    `prune=${pruneFn.includes("reportAwaitsOwner")} poll=${server.includes("reportsAwaitingOwner: awaiting")}`);
+  // …and the unattended actuator stays where it was. The auto-close reads a verdict as "the
+  // coordinating MAIN is finished with this lane" — a fact an owner verdict does not carry, and
+  // widening it here would let a door built to UNBLOCK an owner start killing panes on his behalf.
+  const autoCloseRefusalFn = server.match(/function laneAutoCloseRefusal\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_RECEIVER} — an owner verdict does not arm the unattended lane auto-close (D1b)`,
+    autoCloseRefusalFn.includes('if (d.by === "owner")')
+      && autoCloseRefusalFn.includes("a report of this lane was judged by the owner, not by its MAIN")
+      && server.includes('if (!report || !decision || decision.by === "owner") continue;'),
+    `refusal=${autoCloseRefusalFn.includes('d.by === "owner"')}`);
+
   // --- D2 · THE AUTOMATIC LANE CLOSE, the acceptance door's only consumer. Three halves can drift
   // without a compiler noticing, and each one is a behaviour that closes panes unattended: the
   // FLAG NAME (env string vs the doc that tells an owner how to arm it), the DISPOSITION WORD (the
@@ -4558,7 +4641,10 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       // would refuse forever on a slot whose PREVIOUS occupant merged
       && autoCloseRefusal.includes("verdict.branch !== s.worktree.branch")
       && autoCloseRefusal.includes("laneSpentLooking(laneSignalView(s, now), STALLED_IDLE_MS)")
-      && autoCloseRefusal.includes("d.by.sessionId !== r.receiver.sessionId")
+      // the receiver OCCUPATION, matching both decision doors and fleetReportFrom — and the arm
+      // that keeps this unattended actuator out of the owner door's reach entirely
+      && autoCloseRefusal.includes("d.by.openedAt !== r.receiver.openedAt")
+      && autoCloseRefusal.includes('if (d.by === "owner")')
       && autoCloseRefusal.includes('program.status !== "active"'),
     `nulls=${(autoCloseRefusal.match(/return null;/g) ?? []).length}`
       + ` refusals=${(autoCloseRefusal.match(/return "/g) ?? []).length}`);

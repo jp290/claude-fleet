@@ -1,5 +1,6 @@
 # Index der Messnotizen
 
+- Eine Queue-Zeile bekommt ihre `programId` nur bei der Geburt durch die program-gebundene Self-Tuer; keine Route ordnet eine bestehende Zeile nachtraeglich zu — Erfolgskriterium (a) von „Fleet-Betrieb 2026-09" ist so nicht schliessbar, nur vorwaerts. — docs/messungen/2026-09-08-program-zuordnung-nachtraeglich.md · bereich: queue,programs,kriterien · stand: 2026-09-08
 - F1 ist zwischen Abnahmetuer, Rueckmeldung und Herkunft aufgeteilt; F5 gehoert N2. F2/F3 und Teile von F4 brauchen begrenzte Restarbeiten, keine neue Gesamtreview und keine stillen Studio-Gates. — docs/messungen/2026-09-07-studio-hub-disposition-astra.md · bereich: studio,hub,reports,kontext,lifecycle · stand: 2026-09-07
 
 - Die Auswahl- und Quittungskette Quelle→Kontext→Empfaenger rekonstruiert sich byte-genau (3/3 Hashes, 293/293 Baumstaende); die zwei echten Luecken sitzen am Rand: die Quittung belegt Bau, nicht Zustellung. — docs/messungen/2026-09-06-astra-s2d-kontextkette.md · bereich: context,briefs,harness,ledger · stand: 2026-09-07

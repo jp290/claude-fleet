@@ -120,8 +120,12 @@ ihre eigene Landing-Sha nicht kennen). Eine Abweichung von der Nicht-Liste war n
 gemessen: die e2e-Instanzen teilten sich bis dahin den Maschinen-Mutex `/tmp/fleet-e2e.lock` mit
 dem Wrapper, der sie startet — mit dem Hold vor dem Gate stand jeder saubere Land-Pfad in einer
 Schlange hinter seinem EIGENEN Runner (gemessen 2026-09-06: `./e2e-clean-review.sh` haengt in
-`waitMerge`, 60 s Timeout). Drei Wrapper geben ihrer Instanz darum ein eigenes
-`FLEET_SUITE_LOCK=$DIR/suite.lock`; am Mutex-Protokoll selbst ist nichts geaendert.
+`waitMerge`, 60 s Timeout). Drei Wrapper (`e2e-isolated.sh`, `e2e-clean-review.sh`,
+`e2e-postland-audit.sh`) sagen ihrer Instanz darum per `FLEET_SUITE_LOCK_HELD_BY=$$`, in wessen
+Hold sie laeuft; `server.ts#inheritedSuiteHolder` honoriert das nur unter den drei Bedingungen von
+e2e-stage.sh (pid genannt · Lock-Datei nennt dieselbe · Prozess lebt). Am Mutex-Protokoll selbst
+ist nichts geaendert; die Alternative eines privaten Locks je Instanz wurde gebaut und verworfen,
+weil sie `e2e/verify-queue.ts` §1/§2 die Grundlage naehme.
 
 *Verify:* Checks im Merge-/Land-Pfad (`e2e/land-durability.ts` oder die Datei, in der
 `LAND_FF_RETRY_ROUNDS` heute geprueft wird): (a) ein Gate unter besetztem Mutex und Budget 0 endet

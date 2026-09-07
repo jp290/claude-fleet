@@ -930,7 +930,7 @@ weiter: der Owner hat den Wellenmodus (W1–W3) hier eingehaengt.
 26,7 % gemessen nach dem M3-Land (25,3 % beim ersten Schreiben). Kosten dieser Session: Erdung ~4, M5 (Brief+Review+Land+Doc) ~6, N1
 (Review+Land) ~4, M3-Review ~3, Controller-Verkehr ~3. Rechne ~3 Punkte je Land mit Review.
 
-# HANDOFF — Program-MAIN P3 Landepfad adversarial (`6360c36105e50a705db275c1`, Slot 15, Fable 5.1, fuenfte Insassin): Entwurf 5 `6b931dc3` + fuenf REJECT-Runden ins Repo VERSTETIGT (`17d4eb7`), Opus-Lane `6b61a7bf` weiter queued (Brief mit Repo-Fallback gepatcht), Checkpoint +8h als Fleet-Auto `f33a3a9f` armiert; 2026-09-07 16:0x, ctx GEMESSEN ~12 %
+# HANDOFF — Program-MAIN P3 Landepfad adversarial (`6360c36105e50a705db275c1`, Slot 15, Fable 5.1, fuenfte Insassin): PUBLIZIERT UND ANGENOMMEN (Selbstannahme unter drei Auflagen, Attention `58cb3e5e`) — Lane `6b61a7bf` Slot 5 Commit `df96968` (Doku sha256 `dcd205e4…`), Report `9f8e5c10` ACCEPTED, **LAND GEHOERT DEM CONTROLLER**; 2026-09-07 21:0x, ctx GEMESSEN ~19 %
 
 > **Dieser Abschnitt ERSETZT den P3-Abschnitt darunter (Slot 4, `027deaa5`).** Zustand ableiten: `./state.sh`,
 > `./register.sh`, `GET /api/self/program-execution` (Program 6360c361). Charter = Program-JSON im Gruendungsbrief.
@@ -981,6 +981,22 @@ weiter: der Owner hat den Wellenmodus (W1–W3) hier eingehaengt.
   vorhanden und vollstaendig gegen review-round1..5, Hash der Datei == Report, `cmp` Draft/Datei, Indexzeile genau einmal, Pins-Tail;
   erst dann `decision.accepted` (Attention 58cb3e5e schliessen) und Land beim Controller anmelden. Controller-Fehler zur Kenntnis:
   `522701c` wurde mit REJECTED Report gelandet — unser Fall ist bewusst anders (benannter Entscheid mit Auflagen, kein Gate-Gruen).
+- **21:0x, REPORT DA UND ANGENOMMEN.** Lane-Report `9f8e5c10` (Event `7a4e86e2`, ack) — Lane hat Runde 5 eingearbeitet,
+  KEINE Runde 6, publiziert: Lane-Commit `df96968` = genau 2 Dateien, `docs/messungen/2026-09-07-landepfad-adversarial.md` NEU
+  (1065 Z., sha256 `dcd205e4761b28f898a17663af0341a3d90e06f6e45b90cfbebd5a35bf7e2538`) + 1 Zeile `INDEX.md`. **Von mir mechanisch
+  geprueft im Worktree `claude-fleet.worktrees/fleet-260907183653-48b0`:** Hash == Report; `cmp` gegen `/tmp/...adversarial.md`
+  byteidentisch; Stempel wortgleich als Blockquote unter H1 mit Attention-Id; Annahme-Grep 7 Treffer, alle Verneinung/Stempel;
+  §13 „Offene Punkte — NICHT angenommen“ mit fuenf namentlichen Restpunkten (R2#1+R3#2 · R1#5+R2#5+R3#3 · R3#12 · R4#10 · R1#17,
+  keiner ueber mittel) + zwei benannte Abweichungen (blockt zusaetzlich `unknowable`; A/B/C nach Guard-Reparatur nicht neu gefahren);
+  alle zehn Runde-5-Punkte im Text belegt (drei davon in anderem Wortlaut: §1.7 `cwd`, §8 `read("docs/self-api.md")`, §1.6 `pwd -P`+Marker);
+  install Exit 0, pins ALL PASS (`/tmp/p3-publication-6b61a7bf-{install,pins}.log`); Sensitive-Grep 0; drift `wouldConflict:false`,
+  behind 4 (nur HANDOFF/watchdog auf main), overlap []. → `POST /api/self/fleet-report/9f8e5c10…/accept` (Body `{reason}`), ok.
+  Watch `4f2e591c` gefeuert (Event `2f9da434`, ack). **Projektion: REVIEWABLE, kein Self-Land — Land durch den Controller** (Notiz
+  `4d346f3c` an Controller+Astra; Pane-Zeile an Slot 1 erneut am belegten Composer abgewiesen, Retry im Hintergrund).
+  **Naechster Zug der Nachfolgerin:** sobald `fleet.json#merges["5"]` existiert, `POST /api/self/watch {kind:"merge",target:5,idleSec:0}`;
+  bei `landed=YES` `{kind:"audit",repo:"/Users/owner/claude-fleet",mainAfter:<candidate>}` (docs-only ⇒ kurze Kette). Danach die
+  Shas in `docs/messungen/entwuerfe/2026-09-07-p3-landepfad/README.md` NICHT nachtragen (Entwurfsordner bleibt Historie). Tagesmandat
+  fuer P3 damit erfuellt; nach ~21:45 nur Koordination, kein Folgetag ohne neue Richtung.
 - **Rueckwege, die eine Kompaktierung ueberleben:** (Auto geloescht, s.o.) Fleet-Auto `f33a3a9f` (One-Shot auf Slot 15, faellig 17:40,
   `idleSec 60`) fuer den Checkpoint +8h. Session-lokal (sterben mit Pane/Succession): Monitore auf den Statuswechsel von
   `6b61a7bf` und auf 17:40. **Noch KEIN Fleet-Watch** — der Lane-Watch braucht den Slot, den es erst bei `sent` gibt.

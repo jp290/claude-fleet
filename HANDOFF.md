@@ -1,3 +1,119 @@
+# HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 7, Opus 5 high): zweite Schicht, 2026-09-07 ~15:00–17:4x, ctx GEMESSEN 28,x %
+
+## 0. LIES DAS ZUERST — vier eigene Fehler dieser Schicht, weil sie eine METHODE zeigen
+
+Alle vier sind derselbe Fehler: **aus EINEM Fall eine Bestandsaussage gemacht, und die Unsicherheit
+zwar benannt, dann aber trotzdem als Zahl weitergereicht.**
+
+1. **„Der Audit-Ledger fuehrt kein Geraetefeld."** FALSCH. `remote{name,claimedAt,reportedAt,clonedSha,jobId}`
+   existiert in 60 von 519 Zeilen seit 2026-08-29 11:54, `name` immer `second-host`. Ich hatte die Keys
+   EINER frischen Zeile gelesen. Richtig ist nur: vor dem 08-29 gab es keines.
+2. **„26,4 min Vorlauf im 08:42-unknown."** WIDERLEGT von Lane `e407aef5`: 6 s Vorlauf, dann 2042 von
+   3835 Checks in 1117 s. Ich hatte eine Trail-Datei einer Audit-Zeile zugeordnet, WEIL sie in deren
+   Zeitfenster fiel — **Lane-Suiten schreiben in dasselbe Trail-Verzeichnis**, „faellt ins Fenster"
+   beweist nichts. Ich hatte es als „geschlossen, nicht bewiesen" markiert und die Zahl dann doch
+   benutzt; der Controller hat sie in den Body von `61e407d` uebernommen. **DIESE KORREKTUR IST NIE
+   ANGEKOMMEN** — siehe §4.
+3. **„ff4544f5 ist R4s Dublette."** FALSCH, aus meinem eigenen §E uebernommen. R4 ist `d51e02ca`
+   (anderer Defekt, heute keine Task-Id), die vermeintlich neuere Fassung `c9791a49` ist ebenfalls tot.
+4. **„136 von 136 roten Audits unbeurteilt."** MESSFEHLER, kein Befund — Adjudikationen stehen in
+   `audit-adjudications.jsonl` mit Schluessel `auditAt`, nicht am Ledger-Eintrag. Richtig: 9 von 93
+   im 14-Tage-Fenster (9,7 %), Latenz sonst Median 3,7 min (n=84).
+
+**Die Gegenmassnahme, die zweimal funktioniert hat:** eine Zahl, die du „geschlossen, nicht bewiesen"
+nennst, gehoert NICHT in eine Nachricht an jemanden, der handelt. Entweder du beweist sie, oder du
+nennst nur das Praedikat ohne Zahl.
+
+## 1. Was gelandet ist
+
+| Zeile | Sha | Verify | Audit |
+|---|---|---|---|
+| `779eb456` Lane-Deckel je Repo | `984a4b36` | ok, 150 448 ms, waitMs 0, volle Kette | **gruen**, 3853/0, 42,6 min, covers 984a4b36+9e766050 |
+| `e407aef5` Audit-Platzierung (docs) | `21d03cf` (Lane-Sha) | pins ALL PASS | — |
+| `d3f7c11d` R5 Deploy-Klassifikation | `61156ac5` | ok, ms 1 698 996 davon **waitMs 1 557 000** (92 % Schlange) | Audit-Watch `9c8b73c9` armiert |
+| `d8859ff` §E-Korrektur (Direkt-Commit) | `d8859ff` | — | **nie** (Direkt-Commits bekommen keinen Audit) |
+
+`actor` auf beiden Lands: `{kind:"main", slot:7, program:f170dc46…}` — **Erfolgskriterium (d) haelt,
+der Controller hat in dieser Schicht keinen Merge gefahren.**
+
+## 2. Der Platzierungs-Befund und was davon UEBERLEBT
+
+**Der PID-Sensor (meiner, haelt):** die run-id im `out` traegt die PID der Suite
+(`isolated-<ts>Z-<pid>`); macOS deckelt bei 99999. Siebenstellig ⇒ Helfer, und das ist SAUBER
+(43/43 tragen auch `remote:second-host`). **Aber es ist HINREICHEND, nicht NOTWENDIG** — die
+Helferzeilen mit PID 3208 / 13106 / 4337 wuerden als lokal fehlgelesen. **Jedes Done-Kriterium
+formuliert man ueber `remote.name`, PID nur als Gegenprobe.**
+
+**Die Trennung (Controller-Agent ueber 14 Tage bestaetigt):** Helfer an 8 von 8 Doppelbetriebs-Tagen
+schneller, Median 2,8–5,3 min. **Alle 18 Timeout-unknowns des Fensters sind LOKAL**, kein Helferlauf
+lief je in eine Zeitdecke.
+
+**Die Ursache ist die UHR, nicht die Laenge** (Lane `e407aef5`, angenommen): F1 (3/5) — der Drain
+startet 7/5/14 ms nach dem `helper_result` DESSELBEN Repos; `helperClaimOf` sperrt pro Repo, der
+Eintrag verbringt seine 60 s hinter dem Claim und bringt sie aufgebraucht mit, weil `helperResult`
+den Claim loescht und `kickAuditDrain()` synchron ruft, waehrend der Daemon erst 15 s spaeter pollt.
+F2 (2/5) — `graceRest` −14 ms / −1 ms, Helfer haelt eine Lane-Vorschau und kehrt bei
+`freeSuiteSlots<=0` zurueck, bevor er die Jobliste anfragt.
+
+**Und: beide unknown haetten unter `c7184f85` ALLEIN ein Urteil bekommen** (4276 s gegen ~4082 s;
+3094 gegen ~2959). Die Decke auf 75 min (`61e407d`) ist nicht falsch, war fuer diese Faelle aber
+nicht noetig. Was bleibt: lokale Suite-ARBEIT 2418–2551 s liegt ueber dem GESAMTEN Helfer-Rundlauf
+2145–2295 s.
+
+## 3. Die naechsten Zuege, in dieser Reihenfolge
+
+1. **Merge-Watch `491d5018`** (Land `d3f7c11d`) abwarten; bei `landed=YES` die Sha ueber die
+   Land-Note (`mainAfter`) suchen, **nie ueber `git rev-parse main`** — main bewegt sich zwischendurch,
+   das ist mir heute zweimal passiert. Dann Audit-Watch armieren.
+2. **`89279f1f` ist queued** und dispatcht als naechstes (Pos. 218, nach `e407aef5`).
+3. **`6d7ff117` (pending) filen-bereit:** §11.2o — die Sonde druckt seit dem Diagnose-Commit
+   `phaseBasis` und die feuernde Regel, und niemand hat das je gelesen. Schmale Zeile, genau eine
+   Frage, zwei erlaubte Antworten. **Nicht** als Regressjagd aufblasen: die Familie ist in
+   `docs/verify-tiering.md` §11.2o dokumentiert, die Basisraten sind in `65358fef` gemessen.
+4. **Die Helfer-Zeile ist GESCHRIEBEN, aber NICHT gefilt** — Volltext liegt im Scratchpad dieser
+   Session (`helperline.txt`). **Vor dem Filen auf Option (v) umschreiben**: die Uhr an die
+   WAEHLBARKEIT haengen statt an `cover.at` (deckt alle drei F1-Faelle fuer hoechstens 60 s, deckt F2
+   nicht). Die Lane sagt ausdruecklich: `FLEET_AUDIT_HELPER_GRACE_MS` zu erhoehen OHNE (v) waere
+   „die teure Haelfte der billigen Reparatur". Done-Kriterium ueber `remote.name`, nicht ueber PID.
+   Release-Tor ist entfallen — `e407aef5` ist angenommen.
+
+## 4. WAS NIE ANGEKOMMEN IST (und was das ueber den Kanal sagt)
+
+**Meine Korrektur zu `61e407d`s Commit-Body liegt unzugestellt.** 55 Zustellversuche ueber 30 min,
+jedes Mal `composer occupied (38 chars) — nothing typed`, Zeichenzahl konstant. Ein zweiter Versuch
+laeuft. **Der Inhalt steht in §0.2 dieses Abschnitts** — wer ihn liest, hat ihn, auch wenn die
+Nachricht nie ankommt.
+
+**Der Kanal-Befund selbst, gemessen:** `POST /send` wird abgelehnt, solange die Ziel-Pane
+ungesendeten Composer-Text traegt. Der Fehlertext sagt SELBST `nothing typed`, der Server
+unterscheidet also „waechst" von „liegt unveraendert" — benutzt die Unterscheidung aber nicht.
+Gleichzeitig gilt die Owner-Regel vom 2026-08-19: Composer-Rest ist **nie** ein Owner-Entwurf.
+Zwei Messungen heute: 33 Ablehnungen / 16 min (zugestellt), 55 / 30 min (aufgegeben). **Nicht als
+Zeile gefilt — notiz-Deckel 10/10.** Kein Vorschlag, den Guard zu entfernen; die Frage ist, ob ein
+nachweislich unveraenderter Rest nach Karenz als abgestanden gelten darf, oder ob der Fix ein
+Rueckkanal „Composer frei" ist, der das Pollen ueberfluessig macht.
+
+## 5. Deckel-Mechanik — die Tuer, die ich zu spaet gefunden habe
+
+Der `auftrag`-Deckel zaehlt **pending-NICHT-freigegebene** Zeilen. Man loest ihn durch **RELEASEN**,
+nicht durch Archivieren: `POST /api/self/tasks/:id/release`. **Dateiposition = Dispatch-Reihenfolge**,
+also nur Zeilen freigeben, deren Position HINTER der schon queued stehenden liegt, sonst draengelt
+man die eigene Prioritaet um. So gemacht mit `89279f1f` (218) und `d3f7c11d` (178), beide hinter
+`e407aef5` (177). **Ich habe daraus zuerst einen Archivierungsvorschlag gemacht und mich mit dem
+Controller darueber gestritten — das war unnoetig.**
+
+## 6. Offene Owner-/Controller-Sachen
+
+- **`ff4544f5` bleibt** (keine Dublette) und braucht eine AKTUALISIERUNG ihrer Zahlen: 15 Timeouts in
+  500 Zeilen, p50 1 001 454 ms — gegen eine Decke, die seit `61e407d` 75 min ist.
+- **Neun rote Audits unbeurteilt** (9,7 %). Fremd-Adjudikationen sind untersagt, das gehoert Owner/Controller.
+- **Elf haengende Verweise** (`7081f072`), Untergrenze — nur zwei Ids wurden aufgeloest.
+- **`.git/fleet-betrieb-R4-strich.json`** (6935 B, 09-04 10:20): vollstaendiger, nie gefilter
+  R4'-auftrag-Body. `.git/` ist ausserhalb des Arbeitsbaums — `git status`, `rg` und ein frischer Klon
+  sehen ihn NIE. Neuer Fall der Klasse in `docs/ungoverned-artifacts.md`.
+- **Vier Direkt-Commits ueber `9e76605`** (`b1f1131`, `02ebb87`, `61e407d`, `d8859ff`) tragen keine
+  `fleet/land`-Note und bekommen daher **nie** einen Post-Land-Audit.
+
 # HANDOFF — P2 abgeschlossen; Retirement beauftragt — 2026-09-07
 
 Program `446e77f8168e9d8bb5612ce6` (Astra Tagesmandat P2, Adressierbarkeit über Sessiontod).

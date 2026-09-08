@@ -8,13 +8,28 @@
 // compares the script's own `--json` against the API or the state file it claims to be reporting,
 // and every WRITE verb also has a check that its refusal is a refusal (non-zero exit AND the reason).
 //
-// The script under test is the one in the SOURCE tree, not in the staged instance: e2e-stage.sh
-// copies the import closure of the entry files plus a fixed asset list, and ctl.sh is neither — it
-// is reached through the same pointer home (`node_modules` → SRC) that the trail uses, and pointed
-// at this instance through FLEET_CTL_URL / FLEET_CTL_TOKEN / FLEET_CTL_HOME. Those three env
-// overrides exist for exactly this, and their absence is what a real controller runs with.
+// WHERE THE SCRIPT COMES FROM. The instance CARRIES the script it exercises: e2e-isolated.sh names
+// ctl.sh in $STAGE_EXTRA, the one staging channel for an asset that is read by PATH and that no
+// import scan can see. The pointer home (`node_modules` → SRC), which is how this probe used to
+// reach it, is only the FALLBACK now — it resolves through `rev-parse --is-inside-work-tree`, and
+// the post-land audit's source is a `git archive` extract with NO `.git`
+// (server.ts#snapshotIntegrationTree builds a git context only for the proportional short chain).
+// So the setup check below read `src=unresolved` and failed in every LOCALLY run full audit while
+// passing on the helper, whose source is a real clone. Measured 2026-09-08 in the tree:null trail
+// ($TMPDIR/fleet-e2e-trail, where a local audit's rows land precisely BECAUSE no tree resolves):
+// both runs since this module landed carry exactly ONE failing row out of 3973 and 3945, and it is
+// this line, `detail: "src=unresolved ctl=-"`. The four rows in the repo-side trail — lanes, where
+// the pointer home is a work tree — are all green. That the helper's run of the same tip passes it
+// is REPORTED, not measured here: post-land-audits.jsonl truncates `out` at ~4 KB, so its row for
+// mainSha 51565db4 proves only remote=second-host and 2 failures, neither named in the kept text.
+// It is the same trap that had e2e/land-durability.ts §F red in every full audit from b224ef8 on,
+// and the same fix.
+// Wherever it is found, the script is pointed at this instance through FLEET_CTL_URL /
+// FLEET_CTL_TOKEN / FLEET_CTL_HOME. Those three env overrides exist for exactly this, and their
+// absence is what a real controller runs with.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { BASE, REPO, ROOT, TOKEN, check, get, post } from "./harness";
 import { openLane, setMergeMode, settleForMerge } from "./lane-helpers";
 import { resolveSourceTree } from "./trail-emit";
@@ -29,6 +44,16 @@ const sourceTree = (): string | null => {
   try { linked = readlinkSync(`${ROOT}/node_modules`); } catch { /* direct checkout */ }
   return resolveSourceTree(ROOT, linked,
     (c) => gitOut(c, "rev-parse", "--is-inside-work-tree") === "true");
+};
+
+// …and the script itself, in the order the two answers are actually reliable: the instance's own
+// staged copy first (true in a direct checkout too, where ROOT *is* the tree under test), the
+// pointer home second, so an instance staged by something that predates $STAGE_EXTRA still
+// resolves instead of accusing the script. `X_OK`, not mere existence: the check below says
+// "executable", and a copy that lost its mode bit must fail as the SETUP it is, not forty lines
+// later as an EACCES inside a verb nobody broke.
+const executable = (p: string): boolean => {
+  try { accessSync(p, constants.X_OK); return true; } catch { return false; }
 };
 
 const stateFile = (): Record<string, unknown> =>
@@ -50,14 +75,15 @@ const selfTokenOf = async (slot: number): Promise<string> => {
 
 export async function run(): Promise<void> {
   const SRC = sourceTree();
-  const CTL = SRC ? `${SRC}/ctl.sh` : "";
+  const CTL = [`${ROOT}/ctl.sh`, SRC === null ? null : `${SRC}/ctl.sh`]
+    .find((p): p is string => p !== null && executable(p)) ?? null;
   // THE PROBE FAILS AS ITSELF. A missing script must not be reported as a broken verb — every check
   // below would then accuse ctl.sh of behaviour nobody measured (CLAUDE.md, "eine Sonde, die nicht
-  // laufen konnte, muss als SIE SELBST scheitern").
-  const reachable = !!CTL && existsSync(CTL);
+  // laufen konnte, muss als SIE SELBST scheitern"). On the passing side it NAMES the path it took,
+  // so which of the two answers carried the run is readable from the line rather than inferred.
   check("ctl setup: the source tree resolves and carries an executable ctl.sh",
-    reachable, `src=${SRC ?? "unresolved"} ctl=${CTL || "-"}`);
-  if (!reachable) return;
+    CTL !== null, `ctl=${CTL ?? "unreachable"} root=${ROOT} sourceTree=${SRC ?? "unresolved"}`);
+  if (CTL === null) return;
 
   // the receiver: an ordinary non-lane session, which is what a controller IS. It owns the self
   // token every self verb below runs with.
@@ -84,7 +110,10 @@ export async function run(): Promise<void> {
   };
   const ctl = async (args: string[], extra: Record<string, string> = {}): Promise<CtlRun> => {
     const p = Bun.spawn([CTL, ...args], {
-      cwd: SRC!, stdout: "pipe", stderr: "pipe",
+      // run it where it lives, whichever of the two answers resolved it. ctl.sh reads nothing
+      // relative to cwd (it locates its home through FLEET_CTL_HOME, set below), so this is
+      // orientation, not a dependency.
+      cwd: dirname(CTL), stdout: "pipe", stderr: "pipe",
       env: { ...process.env, ...env, ...extra } as Record<string, string>,
     });
     const out = await new Response(p.stdout).text();

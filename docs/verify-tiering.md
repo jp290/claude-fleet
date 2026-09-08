@@ -405,9 +405,16 @@ that asked for the change, read off `post-land-audits.jsonl` rather than quoted:
 1530 s, both RED, 9 and 1 failed of 3633 checks, both adjudicated flake. Both of those two ran on
 the helper, so the cost was 52 minutes of the OTHER machine plus its claim window; run locally the
 same pair would have held this machine's suite mutex for that long.
-A proportional entry is also never offered to a remote helper and never held in the helper grace
-(`helperJobsView`, `helperClaim`): the daemon runs the full fleet suite, so taking the job would
-measure something other than the question, and the local answer costs seconds.
+A proportional entry is also never offered to a remote helper and never held in the helper grace:
+the daemon runs the full fleet suite, so taking the job would measure something other than the
+question, and the local answer costs seconds. Since 2026-09-08 that is not a rule of its own but one
+arm of `server.ts#helperClaimBar` — the single predicate the claim door, the job list, the wake rail
+and the drain's grace all ask. Its other two arms are a repo whose audit is its own repo-worker
+executable and a parked entry with no command at all, and the general rule is the one sentence that
+covers all three: **an entry no helper could ever claim is never held for one.** The list used to be
+hand-copied at those four sites and had already drifted both ways — the wake rail packeted a machine
+awake for a short-chain job the door then refused, and the drain held a repo-worker entry for the
+full `AUDIT_HELPER_GRACE_MS` waiting on an offer that structurally never comes.
 
 **The honest statement:** tier 2 is not a stronger tier 1. It is the only place a 5.6-minute suite
 can live, and tier 1 is the only place prevention and attribution can live. Building tier 2 does not

@@ -375,6 +375,21 @@ exit 0
     `queue=${queueHas(REPO, ctl3.branch)} rows=${(await rowsFor(REPO)).length} live=${JSON.stringify((await live()).postLandAuditLive)}`);
   check("(RW) …and the portal does not offer it either (nobody's work until something is configured)",
     !(await jobs()).jobs.some((j) => j.repo === base(REPO)), JSON.stringify((await jobs()).jobs));
+  // …and the DOOR, not only the list — the same pairing (RW.5) makes for the repo-worker arm. The
+  // job id is a public shape (sha256 of the canonical path), so a client that guesses it must be
+  // refused with the reason, and this is the only place in the suite where a PARKED entry exists at
+  // all: on a server booted WITH the env default, `auditCmdFor` never falls through. Both arms of
+  // server.ts#helperClaimBar are therefore measured at the door, which is what lets the predicate be
+  // one function instead of one hand-copied list per site.
+  const parkedKey = Object.keys(queueFile() ?? {}).find((k) => base(k) === base(REPO)) ?? "";
+  const parkedId = createHash("sha256").update(parkedKey).digest("hex").slice(0, 12);
+  const parkedClaim = parkedKey === "" ? null
+    : await fetch(`${BASE}/api/helper/claim`, { method: "POST", headers: HH,
+      body: JSON.stringify({ jobId: parkedId, deviceId: DEVICE }) });
+  const parkedText = parkedClaim ? await parkedClaim.text() : "";
+  check("(RW) …and a claim on the parked entry's id is refused (409) naming it parked, not offered",
+    parkedClaim?.status === 409 && parkedText.includes("parked"),
+    `key=${parkedKey} ${parkedClaim?.status} ${parkedText.slice(0, 160)}`);
   const rwF = await openLane(RW, "rw-foxtrot");
   const fHad = (await rowsFor(RW)).length;
   await land(rwF);

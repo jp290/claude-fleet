@@ -1538,7 +1538,7 @@ await setAuditMode("green");
 // server booted with a generous claim timeout and NO grace key (its (K.7) section ends on the
 // default), which is why only (HD) may follow it — that section restarts the server with its own
 // env as its first act, and every row count it makes is relative.
-await helperPortal.run({ REPO, setAuditMode, killSrv, startSrv, auditRows, headOf });
+await helperPortal.run({ REPO, shortChainRepo: PREPO, setAuditMode, killSrv, startSrv, auditRows, headOf });
 
 // ===== (HD) THE HELPER DAEMON — the other machine's half, as a real process ======================
 // Same fixture, one step further: instead of a human reading a bootstrap and pasting an exit code,

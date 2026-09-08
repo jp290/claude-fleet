@@ -6037,6 +6037,47 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       `runArgv=${/async function runArgv\(/.test(daemonSrc)} shCallSites=${shSites}`);
   }
 
+  // --- ONE PREDICATE FOR "NO HELPER COULD EVER TAKE THIS", AND NO SECOND COPY OF ITS REASONS ------
+  // Four readers ask whether an audit entry is offerable at all: the claim door, the job list, the
+  // wake rail, and the drain (which must know whether waiting out AUDIT_HELPER_GRACE_MS buys
+  // anything). Until 2026-09-08 each carried the list by hand and TWO had already drifted — the wake
+  // rail packeted a machine awake for a short-chain job the claim door then refused, and the drain
+  // held a repo-worker entry the full grace for an offer that structurally never comes. TypeScript
+  // cannot see that: every copy type-checks, and a fifth reason added to helperClaimBar would leave
+  // whichever site re-derived it silently offering the job.
+  //
+  // So the rule is mechanical: each of the four must CALL the predicate, and none of them may
+  // re-derive an arm of it. The drain is allowed exactly ONE `entryRunsShortChain` — the argument
+  // that chooses the chain for the run it is about to start, a different question from "may anyone
+  // else run this" — so the count is pinned, not the absence.
+  const RULE_BAR = "the four readers of 'no helper could ever claim this' call helperClaimBar and none re-derives its reasons";
+  const barFn = serverU.span("function helperClaimBar(", "\n}")?.text ?? null;
+  const barReasons = serverU.span("const HELPER_CLAIM_BAR_REASON:", "\n};")?.text ?? null;
+  const drainFn = serverU.span("async function drainPostLandAudits(", "\n}")?.text ?? null;
+  const jobsViewFn = serverU.span("function helperJobsView(", "// --- THE OWNER'S HALF OF THE REGISTER")?.text ?? null;
+  const wakeFn = serverU.span("function helperWorkAwaitingClaim(", "\n}")?.text ?? null;
+  const claimAudit = serverU.span("async function helperClaim(", "\n}")?.text ?? null;
+  const barReaders: [string, string | null][] =
+    [["drain", drainFn], ["jobsView", jobsViewFn], ["wake", wakeFn], ["claim", claimAudit]];
+  if (barFn === null || barReasons === null || barReaders.some(([, t]) => t === null))
+    pin(RULE_BAR, false,
+      `predicate=${barFn !== null} reasons=${barReasons !== null} `
+      + barReaders.map(([n, t]) => `${n}=${t !== null}`).join(" "));
+  else {
+    const noCall = barReaders.filter(([, t]) => !t!.includes("helperClaimBar(")).map(([n]) => n);
+    // a re-derivation is either arm of the predicate spelled out again in a reader
+    const reDerived = barReaders.filter(([n, t]) =>
+      /source === "repo-worker"/.test(t!)
+      || (t!.split("entryRunsShortChain(").length - 1) > (n === "drain" ? 1 : 0)
+      || (n !== "drain" && /auditCmdFor\(/.test(t!))).map(([n]) => n);
+    pin(RULE_BAR,
+      noCall.length === 0 && reDerived.length === 0
+        // the three arms live in the predicate, each with a sentence the claim door can print
+        && ["unconfigured", "repo-worker", "short-chain"].every((a) =>
+          barFn.includes(`"${a}"`) && barReasons.includes(a)),
+      `notCalling=[${noCall}] reDeriving=[${reDerived}]`);
+  }
+
   // --- THE WIRE. Three fields, and each must exist on BOTH sides or a job is claimed and then run
   // with a default nobody asked for. This is exactly the failure the S1 handshake exists to prevent,
   // so it is fastened here too rather than trusted to a running suite.

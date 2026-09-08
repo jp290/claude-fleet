@@ -995,13 +995,22 @@ enthaelt kein `Promise.all`/`Promise.race`. Der einzige Pfad, der `state.sh` ber
 sechzig Modulschritte NACH dem fehlgeschlagenen Check und kann ihn nicht erreicht haben.
 
 *Die Signatur fehlt, und das ist selbst ein Befund.* Diese Instanz ist die erste der Familie ohne
-das `N marks, 1..N-1`-Detail: der Audit-Lauf hat **nirgends ein Trail geschrieben**. Auf dem Helfer
-ist `~/claude-fleet/e2e-trail` bei vier Zeilen stehengeblieben (juengste 2026-09-06 09:16Z), ein
-`fleet-e2e-trail` existiert dort ueberhaupt nicht, und `$TMPDIR` ist auf dem Helfer LEER. Zwei
-volle Audits vom 2026-09-08 sind damit im Register unsichtbar. Das ist dieselbe Schadensklasse wie
-`b09cd2f9` (Lauf verliert sein Trail), aber ueber einen ANDEREN Mechanismus — dort ein
-unaufloesbares SRC auf dem Mac, hier der Helfer-Host — und die Kosten sind hier live vorgefuehrt:
-**das Register kann genau den Lauf nicht sehen, ueber den geurteilt werden muss.**
+das `N marks, 1..N-1`-Detail: der Audit-Lauf hat auf DIESER Maschine kein Trail hinterlassen. Auf
+dem Helfer ist `~/claude-fleet/e2e-trail` bei vier Zeilen stehengeblieben (juengste 2026-09-06
+09:16Z), ein `fleet-e2e-trail` existiert dort nicht, und `$TMPDIR` ist auf dem Helfer LEER.
+
+> **KORRIGIERT 2026-09-08 durch die Lane von `b09cd2f9` (Commit `01a66a1f`), und die Korrektur
+> trifft mich.** Hier stand: „das ist dieselbe Schadensklasse wie `b09cd2f9`, ein Lauf verliert
+> sein Trail … das Register kann genau den Lauf nicht sehen". **Fuer den LOKALEN Fall ist das
+> falsch.** `server.ts#TRAIL_DIRS` liest per Default BEIDE Verzeichnisse
+> (`<repo>/e2e-trail` UND `${tmpdir()}/fleet-e2e-trail`); der tmpdir-Fallback ist die
+> dokumentierte Absicht — der Kommentar dort sagt „TWO DIRECTORIES, TWO POPULATIONS, and reading
+> one alone silently drops the other", weil der Post-Land-Audit gegen einen `git archive`-Snapshot
+> laeuft, der gar kein Repository ist. Ein lokaler Audit-Lauf ist also NICHT unsichtbar.
+> Was bleibt, ist enger und gilt weiter: (1) ein Lauf auf dem **HELFER** schreibt sein Trail auf
+> DESSEN Platte, und `TRAIL_DIRS` erreicht keine fremde Maschine — genau dieser Fall hier; (2) eine
+> Zeile mit `tree: null` war ANONYM und nannte ihren Grund nicht, taugte also nie als Flake-Beleg
+> (`trailStats unknownRows`). `01a66a1f` behebt (2) mit `treeWhy`; (1) ist offen.
 
 *Lesart fuer den Urteilenden:* `flake`, getragen von Ordnung und Flaeche, NICHT von der Signatur.
 Wer eine Signatur verlangt, bekommt sie fuer diese Instanz nicht mehr — sie ist verloren, nicht

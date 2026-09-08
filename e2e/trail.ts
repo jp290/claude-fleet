@@ -12,10 +12,15 @@ import {
   TRAIL_DIRTY,
   TRAIL_RUN,
   TRAIL_SCHEMA,
+  TRAIL_POINTER,
+  TRAIL_SOURCE,
   TRAIL_SUITE,
   TRAIL_TREE,
+  TRAIL_TREE_WHY,
   TRAIL_TRUNCATED,
+  probeSourceTree,
   resolveSourceTree,
+  workTreeVerdictOf,
   trailFile,
   trailRow,
   type TrailRow,
@@ -60,7 +65,8 @@ export async function run(): Promise<void> {
   const s = readRows().find((r) => r.check === SENTINEL);
   check("trail: a known check's row carries the full shape (v/run/suite/tree/check/ok/msSincePrev/ts)",
     !!s && s.v === TRAIL_SCHEMA && s.run === TRAIL_RUN && s.suite === TRAIL_SUITE && s.tree === TRAIL_TREE
-      && s.dirty === (TRAIL_DIRTY ?? undefined) && s.ok === true && s.detail === undefined
+      && s.dirty === (TRAIL_DIRTY ?? undefined) && s.treeWhy === (TRAIL_TREE_WHY ?? undefined)
+      && s.ok === true && s.detail === undefined
       && typeof s.msSincePrev === "number" && s.msSincePrev >= 0 && typeof s.ts === "number" && s.ts > 0,
     JSON.stringify(s ?? null));
 
@@ -75,6 +81,45 @@ export async function run(): Promise<void> {
   check("trail: rows name the tree under test as a git sha, or null when no repo is resolvable",
     TRAIL_TREE === null ? TRAIL_DIRTY === null : /^[0-9a-f]{40}$/.test(TRAIL_TREE),
     `tree=${TRAIL_TREE} dirty=${TRAIL_DIRTY}`);
+
+  // …AND IT SAYS WHY, IN THE ROW. `tree:null` is legitimate, so it must never be red — asserting
+  // only the happy path made every audit red once already (2026-07-27, tip d6d77a8, the paragraph
+  // above). But legitimate is not the same as legible: an anonymous row can never serve as flake
+  // evidence (trailstats counts it under `unknownRows`), and a reader opening a trail file months
+  // later has no tail left to consult. So the LOSS IS NAMED where the loss is — non-null exactly
+  // when `tree` is null, which is the pairing this asserts in both directions.
+  check("trail: a run that can name no tree says WHY, in the row itself",
+    TRAIL_TREE === null
+      ? typeof TRAIL_TREE_WHY === "string" && TRAIL_TREE_WHY.length > 0
+      : TRAIL_TREE_WHY === null,
+    `tree=${TRAIL_TREE} treeWhy=${TRAIL_TREE_WHY} source=${JSON.stringify(TRAIL_SOURCE)} pointer=${TRAIL_POINTER}`);
+
+  // THREE ANSWERS, NOT TWO — on the pure probe, so it is measured on every run rather than only on
+  // the box that happens to be missing a git. "This directory is not a work tree" describes the
+  // post-land audit's `git archive` snapshot CORRECTLY; "git could not be asked at all" describes a
+  // probe that measured nothing. Folded together they read as the same null, and the second then
+  // wears the first's legitimacy.
+  const notWorkTree = probeSourceTree("/staged-wrapper", "/snapshot/node_modules", () => "no");
+  const noGit = probeSourceTree("/staged-wrapper", "/snapshot/node_modules", () => "git-unavailable");
+  const direct = probeSourceTree("/checkout", null, () => "yes");
+  check("trail: the source-tree probe tells 'not a work tree' apart from 'git could not be asked'",
+    notWorkTree.tree === null && notWorkTree.why === "not-a-work-tree" && notWorkTree.via === "pointer"
+      && notWorkTree.candidate === "/snapshot"
+      && noGit.tree === null && noGit.why === "git-unavailable"
+      && direct.tree === "/checkout" && direct.via === "root" && direct.why === null,
+    `notWorkTree=${JSON.stringify(notWorkTree)} noGit=${JSON.stringify(noGit)} direct=${JSON.stringify(direct)}`);
+
+  // …and the same three answers where they are actually PRODUCED, on the classification split off
+  // the git spawn. Exit 0 saying `false` is a real answer too (a bare repo), so it must not become
+  // "git could not be asked" either.
+  check("trail: a git that never RAN is not classified as 'not a work tree'",
+    workTreeVerdictOf(null, false, "") === "git-unavailable"
+      && workTreeVerdictOf(null, true, "") === "git-unavailable"
+      && workTreeVerdictOf(128, false, "") === "no"
+      && workTreeVerdictOf(0, false, "false\n") === "no"
+      && workTreeVerdictOf(0, false, "true\n") === "yes",
+    `null=${workTreeVerdictOf(null, false, "")} 128=${workTreeVerdictOf(128, false, "")}`
+      + ` bare=${workTreeVerdictOf(0, false, "false\n")} yes=${workTreeVerdictOf(0, false, "true\n")}`);
 
   // detail is the only unbounded field: kept for a failing check, capped, dropped for a pass
   const long = trailRow("x", false, "d".repeat(TRAIL_DETAIL_MAX + 500), 5, 1);

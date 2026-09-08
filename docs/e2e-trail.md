@@ -30,6 +30,7 @@ One JSON object per line, one line per `check()` call. `e2e/trail-emit.ts` owns 
 | `suite` | `FLEET_E2E_SUITE`, default `isolated` |
 | `tree` | git sha of the tree under test, or `null` when none was resolvable |
 | `dirty` | whether that tree had uncommitted changes; omitted when `tree` is `null` |
+| `treeWhy` | **only** when `tree` is `null`: why no tree could be named, capped at 300 chars |
 | `check` | the check name, verbatim — the join key with the printed tail |
 | `ok` | pass/fail |
 | `msSincePrev` | wall-clock ms since the **previous** check returned (see §4) |
@@ -42,6 +43,24 @@ cap. Everything else is bounded by construction. Measured 2026-07-27: 887 rows, 
 
 `dirty` is not decoration: two runs on the same sha with different uncommitted work are different
 code, and that is exactly the distinction a flake query turns on.
+
+`treeWhy` is the other half of `tree:null`. An anonymous row is **legitimate** — the post-land
+audit measures a `git archive` snapshot that is a tree and not a repository — but it can never
+serve as evidence in §7's query (`trailstats` counts it under `unknownRows`), and a reader opening
+a trail file months later has no tail left to consult. So the loss is *named where the loss is*,
+in the row: `no source tree: via=pointer candidate=… why=not-a-work-tree pointer=symlink`, or
+`source tree … resolves but has no HEAD`. Three answers are kept apart, because they call for three
+different repairs and only the first is not a defect:
+
+| `why` | means |
+| --- | --- |
+| `not-a-work-tree` | the candidate directory is not a git work tree — the audit snapshot, correctly described |
+| `git-unavailable` | git never ran (missing binary, killed) — nothing was measured at all |
+| `pointer=unreadable:<errno>` | a staged instance whose `node_modules` pointer home is not a symlink; it must not read as a direct-checkout run |
+
+Measured 2026-09-08 on a stand-in built exactly as `server.ts#snapshotIntegrationTree` builds the
+full chain's source: the pointer home reads fine (`pointer=symlink`), and it is
+`git rev-parse --is-inside-work-tree` on the extract — exit 128, no `.git` — that says no.
 
 ## 3. Where it lives, and why not next to the run
 
@@ -144,7 +163,9 @@ number somewhere:
   the row's sha does not describe the code that ran. A dirty fail can never count toward the ≥2
   proof; it is its own category and it is reported (`dirtyFailRuns`), never dropped.
 - **`tree:null`** (the post-land audit's `git archive` snapshot, §2) is a third category, never
-  folded into either of the other two.
+  folded into either of the other two. Since 2026-09-08 such a row carries `treeWhy` (§2), so a
+  reader can tell the legitimate anonymous run from a broken pointer home or an absent git without
+  the run's tail.
 - **The denominator is "runs that ran THIS check", not "all runs".** A check added last week has a
   small denominator and would otherwise read as catastrophic. Queue row `32c89530` shipped a
   published "4 of 69 (~6 %)" built from two different denominators for exactly this reason.

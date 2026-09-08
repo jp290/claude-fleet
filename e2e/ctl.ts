@@ -30,20 +30,44 @@
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { BASE, REPO, ROOT, TOKEN, check, get, post } from "./harness";
+import { BASE, REPO, ROOT, TOKEN, check, get, post, results } from "./harness";
 import { openLane, setMergeMode, settleForMerge } from "./lane-helpers";
-import { resolveSourceTree } from "./trail-emit";
+import { gitWorkTreeVerdict, probeSourceTree, type SourceTreeProbe } from "./trail-emit";
 
 interface CtlRun { code: number; out: string; err: string; json: unknown }
 
 const gitOut = (dir: string, ...a: string[]): string =>
   (spawnSync("git", ["-C", dir, ...a], { encoding: "utf8" }).stdout ?? "").trim();
 
-const sourceTree = (): string | null => {
+const sourceTree = (): SourceTreeProbe => {
   let linked: string | null = null;
   try { linked = readlinkSync(`${ROOT}/node_modules`); } catch { /* direct checkout */ }
-  return resolveSourceTree(ROOT, linked,
-    (c) => gitOut(c, "rev-parse", "--is-inside-work-tree") === "true");
+  // the same probe the trail resolves its own tree with, and for the same reason it grew a third
+  // answer: "this is not a work tree" (the audit's `git archive` snapshot, correctly described)
+  // and "git could not be asked" are different facts, and only the second accuses the environment.
+  return probeSourceTree(ROOT, linked, gitWorkTreeVerdict);
+};
+
+// THE SKIP MUST BE COUNTED. This module returns early after a failed setup line, and until now
+// that left every check below neither green nor red but ABSENT: the post-land audits at
+// 1788843000681 and 1788821143810 each reported exactly ONE failure while running 3973 checks
+// against a neighbouring green run's 4018 — a 45-check hole nothing on the ledger named. The count
+// is read from this module's OWN source rather than kept as a constant, because a constant rots on
+// the next check added and the number is the entire point of the line. Call SITES, said as such:
+// every check here is straight-line today, so sites equal calls, and a check placed inside a loop
+// would make this a floor rather than an equality.
+const CHECK_SITES = ((): number => {
+  try { return (readFileSync(import.meta.path, "utf8").match(/^\s*(?:await\s+)?check\(/gm) ?? []).length; }
+  catch { return 0; }
+})();
+
+const unreached = (from: number, why: string): void => {
+  // `results.length` is read BEFORE this check pushes its own row, and the line below is itself one
+  // of the counted sites — hence the -1. An unreadable source says so instead of guessing a number.
+  const emitted = results.length - from;
+  const missing = CHECK_SITES > 0 ? `${CHECK_SITES - emitted - 1} of ${CHECK_SITES}` : "an unknown number of";
+  check("ctl: the verb checks below this module's setup were reached", false,
+    `${missing} check() call sites in e2e/ctl.ts did NOT run — ${why}`);
 };
 
 // …and the script itself, in the order the two answers are actually reliable: the instance's own
@@ -54,6 +78,31 @@ const sourceTree = (): string | null => {
 // later as an EACCES inside a verb nobody broke.
 const executable = (p: string): boolean => {
   try { accessSync(p, constants.X_OK); return true; } catch { return false; }
+};
+
+export interface CtlHome {
+  /** every path that could hold the script, in preference order */
+  candidates: string[];
+  /** those that exist */
+  present: string[];
+  /** the first present one that is also executable — what the verbs below actually run */
+  ctl: string | null;
+}
+
+// The resolution, split off the filesystem so its three failure cases can be asserted without
+// building three instances. `present.find(executable)` and not `candidates.find(…)`: an instance
+// copy that exists but lost its mode bit must not silently shadow a good copy in the source tree,
+// and it must still be NAMED — which is why `present` is carried rather than folded into `ctl`.
+export const resolveCtl = (
+  root: string,
+  sourceTree: string | null,
+  exists: (p: string) => boolean,
+  isExecutable: (p: string) => boolean,
+): CtlHome => {
+  const candidates = [`${root}/ctl.sh`, sourceTree === null ? null : `${sourceTree}/ctl.sh`]
+    .filter((p): p is string => p !== null);
+  const present = candidates.filter(exists);
+  return { candidates, present, ctl: present.find(isExecutable) ?? null };
 };
 
 const stateFile = (): Record<string, unknown> =>
@@ -74,16 +123,43 @@ const selfTokenOf = async (slot: number): Promise<string> => {
 };
 
 export async function run(): Promise<void> {
-  const SRC = sourceTree();
-  const CTL = [`${ROOT}/ctl.sh`, SRC === null ? null : `${SRC}/ctl.sh`]
-    .find((p): p is string => p !== null && executable(p)) ?? null;
-  // THE PROBE FAILS AS ITSELF. A missing script must not be reported as a broken verb — every check
-  // below would then accuse ctl.sh of behaviour nobody measured (CLAUDE.md, "eine Sonde, die nicht
-  // laufen konnte, muss als SIE SELBST scheitern"). On the passing side it NAMES the path it took,
-  // so which of the two answers carried the run is readable from the line rather than inferred.
-  check("ctl setup: the source tree resolves and carries an executable ctl.sh",
-    CTL !== null, `ctl=${CTL ?? "unreachable"} root=${ROOT} sourceTree=${SRC ?? "unresolved"}`);
-  if (CTL === null) return;
+  const entered = results.length;
+  const src = sourceTree();
+  const srcNote = src.tree ?? `unresolved (via=${src.via} candidate=${src.candidate} why=${src.why})`;
+  const instanceCopy = `${ROOT}/ctl.sh`;
+  const home = resolveCtl(ROOT, src.tree, existsSync, executable);
+  const CTL = home.ctl;
+
+  // the resolution itself, on the pure function and BEFORE the three environment lines below, so
+  // the cases those lines report are proven reachable on every run rather than only on the run
+  // that happens to be broken.
+  const noHome = resolveCtl("/inst", null, () => false, () => false);
+  const srcOnly = resolveCtl("/inst", "/src", (p) => p === "/src/ctl.sh", () => true);
+  const modeBitLost = resolveCtl("/inst", "/src", () => true, (p) => p === "/src/ctl.sh");
+  check("ctl setup: the resolution keeps 'no file', 'only the source tree has it' and 'present but not executable' apart",
+    noHome.present.length === 0 && noHome.ctl === null && noHome.candidates.length === 1
+      && srcOnly.present.join() === "/src/ctl.sh" && srcOnly.ctl === "/src/ctl.sh"
+      && modeBitLost.present.join() === "/inst/ctl.sh,/src/ctl.sh" && modeBitLost.ctl === "/src/ctl.sh",
+    `noHome=${JSON.stringify(noHome)} srcOnly=${JSON.stringify(srcOnly)} modeBitLost=${JSON.stringify(modeBitLost)}`);
+
+  // THE PROBE FAILS AS ITSELF, AND IN THREE PIECES. A missing script must not be reported as a
+  // broken verb — every check below would then accuse ctl.sh of behaviour nobody measured
+  // (CLAUDE.md, "eine Sonde, die nicht laufen konnte, muss als SIE SELBST scheitern"). One line for
+  // all of it was not enough: `src=unresolved ctl=-` and `ctl.sh lost its mode bit` are different
+  // repairs by different people, and the FIRST of them is not even a defect — since STAGE_EXTRA the
+  // instance carries its own copy, so an unresolved source tree only matters when that copy is
+  // absent. Each case therefore gets the line it needs, and each can fail on its own.
+  check("ctl setup: a home for ctl.sh is reachable — the instance's own copy, else a resolved source tree",
+    existsSync(instanceCopy) || src.tree !== null,
+    `instance=${instanceCopy} exists=${existsSync(instanceCopy)} sourceTree=${srcNote}`);
+  check("ctl setup: one of those homes contains ctl.sh",
+    home.present.length > 0, `present=[${home.present.join(", ")}] looked=[${home.candidates.join(", ")}]`);
+  check("ctl setup: the ctl.sh that answers is executable",
+    CTL !== null,
+    home.present.length === 0
+      ? `NOT MEASURED — no ctl.sh exists at any candidate path (sourceTree=${srcNote})`
+      : `ctl=${CTL ?? `${home.present.join(", ")} — present, but no execute bit`}`);
+  if (CTL === null) { unreached(entered, `no executable ctl.sh (sourceTree=${srcNote})`); return; }
 
   // the receiver: an ordinary non-lane session, which is what a controller IS. It owns the self
   // token every self verb below runs with.
@@ -91,11 +167,11 @@ export async function run(): Promise<void> {
     .slots.find((s) => s.cwd === null)?.id ?? 0;
   const opened = free ? await post(`/api/slots/${free}/open`, { cwd: REPO }) : null;
   check("ctl setup: a non-lane receiver session is open", !!opened?.ok, `slot ${free} ${opened?.status}`);
-  if (!free || !opened?.ok) return;
+  if (!free || !opened?.ok) { unreached(entered, `no receiver session (slot ${free}, ${opened?.status})`); return; }
   const selfTok = await selfTokenOf(free);
   check("ctl setup: the receiver's self token is persisted", /^[0-9a-f]{32}$/.test(selfTok),
     `${selfTok.length} chars`);
-  if (!/^[0-9a-f]{32}$/.test(selfTok)) return;
+  if (!/^[0-9a-f]{32}$/.test(selfTok)) { unreached(entered, "the receiver's self token never appeared"); return; }
 
   const LOCK = `${ROOT}/ctl-lock-probe`;   // NEVER /tmp/fleet-e2e.lock — a probe owns its own lock
   const env = {

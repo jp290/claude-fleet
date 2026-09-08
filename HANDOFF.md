@@ -630,7 +630,8 @@ Erfolgskriterien sind am Baum geprueft, nicht nur behauptet (§1). Was bleibt, s
 advisory, 66 flaechenlose Notizen, Fremd-Repo-Snapshot) · `59ffeda0` (Controller: Owner-Entscheid F2
 undo-land→hub mit `--force-with-lease`, plus die P3-Schnitte L1/L5/L6/L7a, die laut eigener Zuordnung
 an dieses Program gehen — **wird erst eine Zeile, wenn Astras P3-Analyse ein ACCEPT hat**).
-Dazu neu von mir: `fb26a472` (Speicherdruck der Maschine, §3).
+Dazu neu von mir: `fb26a472` (Speicherdruck der Maschine, §3) und **`800c965b`** (Entscheid zu den
+Wellen, siehe unten).
 
 **Wenn du dieses Program fortsetzt, ist der naechste Schnitt L1 oder M4** — beide haben ein Dokument
 hinter sich, keiner braucht neues Denken.
@@ -717,7 +718,22 @@ werden recycelt). `from` kommt aus der Token-Zeile, nie aus dem Body. Fremde Id 
   NICHT live, der Wellen-Knopf ist unsichtbar. Controller-Akt; ein Deploy setzt ausserdem JEDE
   Idle-Uhr auf null, also vorher die Programs fragen, deren Beweis an einem Idle-Fenster haengt.
 - **Der Einwand von Program `eec69528`** (programId + Flaeche ist nicht „gemeinsame Ursache") bleibt
-  offen und ist beim ersten echten n>1 neu zu bewerten. Der Sensor bildet weiterhin NULL Buendel.
+  offen und ist beim ersten echten n>1 neu zu bewerten.
+- **WARUM ES NIE ZU EINEM n>1 KOMMT — beantwortet, Zeile `800c965b`.** Befund von Controller Slot 8,
+  von mir nachgemessen: von 241 offenen Zeilen tragen **0** ein `filesOrigin` UND **0** ein
+  `confirmedFiles`; R3 ist also nie erfuellt worden, nicht bloss selten. Die einzige Tuer dorthin
+  (`POST /api/tasks/:id/files`) ist per Konstruktion ein menschlicher Akt, den der Zeilen-
+  Lebenszyklus nie ausloest. **Entschieden: die angebotene Lockerung von R3 fuer die docs-Klasse ist
+  VERWORFEN** — aus der Kostentabelle des Sensors selbst: ein gebuendeltes Paar spart im CODE-Fall
+  107+1608 = 1715 s, im DOCS-Fall 1+2 = **3 s** (572:1), weil ein docs-Land laengst die proportionale
+  kurze Kette faehrt. Das haette die Sicherheitseigenschaft fuer drei Sekunden hergegeben. Einziger
+  verbleibender Weg ist der Bestaetigungsschritt im Lebenszyklus, und selbst der laesst die 10
+  `kein-program`-Zeilen unbuendelbar.
+- **Wellen loesen das Docs-Commit-Problem des Owners NICHT** (26 h: 105 rein-docs-Commits, 18 ueber
+  eine Land-Range, 87 direkt = 83 %). Die 87 waren nie Queue-Zeilen. **Methodenhinweis, der beide
+  bisherigen Zaehlungen korrigiert:** eine Land-Note haengt nur am `mainAfter` — pro Commit gezaehlt
+  ergibt das 12, ueber die `mainBefore..mainAfter`-Ranges 18. Wer Land-Anteile per Note-Praesenz
+  zaehlt, untertreibt sie systematisch.
 
 ---
 

@@ -234,6 +234,10 @@ Your work reaches `main` through a server-side land, not through anything you ru
 - Leave NO untracked files in the tree — they block the land. Scratch files belong outside the repo.
 - Do not touch anything outside this working copy. Other repos, shared config, ports and sockets are
   shared reality: stop and report instead.
+- If a report you filed was REJECTED, the land door refuses that work by name — the refusal quotes
+  the report id and the receiver's reason. A rejection is never re-decided, so the way on is: repair,
+  file a NEW report, and let the receiver accept that one. A lane that filed nothing, or whose report
+  is still unjudged, lands exactly as before.
 
 ## A red check is yours
 

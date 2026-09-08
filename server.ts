@@ -6682,6 +6682,96 @@ function reportReceiverLiveness(report: FleetReport): ReportReceiverLiveness {
 const reportAwaitsOwner = (report: FleetReport): boolean =>
   !report.decision && reportReceiverLiveness(report) !== "live";
 
+// THE ACCEPTANCE PRECONDITION AT THE LAND — a precondition, never a judgement. This function
+// decides nothing about any work: it reads a verdict a receiving MAIN already wrote and answers
+// whether the land door may open at all. Nothing about it runs on a tick, and no automation can
+// produce or flip the verdict it reads — the acceptance itself stays exactly where it was, at
+// decideFleetReport, walked by a session.
+//
+// MEASURED AND PAID FOR ON 2026-09-07: report e351772b (lane fleet/260907130645-7592, task
+// 012fe6b9) was REJECTED by its Program-MAIN — "kein Land" in the verdict's own reason — and the
+// same bytes landed 87 minutes later as 522701c, byte-identical to the refused candidate (both
+// sha256 c74331e8…). The lander had TWO green signals behind it, and both were CORRECTLY green:
+// the land gate and the post-land audit prove "this is a doc and the tree holds", never "a reader
+// took this work". So the acceptance check hung entirely on the attention of whoever pressed the
+// button, and no part of the machine asked it. This is that missing question, asked once, at the
+// door — not a second reviewer and not a widening of what any gate claims.
+//
+// WHAT IS JOINED, and deliberately NOT the occupant triple: a land moves a BRANCH, so the row is
+// found by the WORK it names — the lane's worktree path and its branch, exactly the pair `worker`
+// stamps at filing time. That survives the lane being re-occupied or re-spawned on the same branch,
+// which the occupant triple would not, and `cwd` being absolute means the pair can never collide
+// across repos. The occupant comparison every other report door makes is untouched: this is a
+// different question asked of the same rows.
+//
+// WHICH ROW ANSWERS — and this is the answer to "what about `decision: null`", written down because
+// a silent choice here would be the worse defect:
+//  · The newest DECIDED row of that work. An undecided row — filed, not yet judged — neither blocks
+//    nor clears. A report is a MESSAGE and never a state change, so requiring a verdict before a
+//    land would forbid the ordinary case where a MAIN reads the diff and lands without pressing
+//    accept, forbid the owner path, and forbid the lane that files nothing at all (a pure
+//    measurement row, a lane with no Program). A gate that mis-refuses those is worse than the
+//    defect it fixes.
+//  · …and for the SAME reason an undecided row does not CLEAR a standing rejection: if it did, one
+//    more row nobody has read yet would walk any "kein Land" verdict past this door. So the newest
+//    DECIDED row answers, and a later undecided row is transparent to it.
+//  · The way out is therefore the way the rejecting MAIN already asks for: the lane repairs, files
+//    again, and THAT row is accepted — the newest decided row then says accepted and this
+//    precondition is silent. A rejection is never re-decided (decideFleetReport refuses a row that
+//    already carries a decision), which is why the exit is a NEW row rather than a second verdict.
+//
+// ABSENCE IS NEVER PROOF: pruneFleetReports drops decided rows past FLEET_REPORT_KEEP, so an old
+// rejection can be gone from memory and this function then answers null. It is a precondition over
+// the rows the server still holds, never a claim that no verdict was ever written.
+function rejectedReportForLand(cwd: string, branch: string): {
+  id: string; at: number; reason: string | null;
+  by: { slot: number; openedAt: number; sessionId: string | null } | "owner";
+} | null {
+  let newest: FleetReport | null = null;
+  let newestAt = -1;
+  for (const r of fleetReports) {
+    const d = r.decision;
+    if (!d || r.worker.cwd !== cwd || r.worker.branch !== branch) continue;
+    if (d.at > newestAt) { newest = r; newestAt = d.at; }
+  }
+  const decision = newest?.decision;
+  if (!newest || !decision || decision.disposition !== "rejected") return null;
+  return { id: newest.id, at: decision.at, reason: decision.reason, by: decision.by };
+}
+
+// THE SENTENCE, one function because the two land doors must not name one fact two ways. It NAMES
+// the row and the principal that refused it — a generic "blocked" would send the reader hunting
+// through fleet.json for the verdict that is the whole content of the refusal. `exit` is the only
+// part that differs between the doors, because what a caller can DO about it differs.
+function rejectedReportRefusal(v: NonNullable<ReturnType<typeof rejectedReportForLand>>,
+  exit: string): string {
+  const who = v.by === "owner" ? "the owner" : `slot ${v.by.slot}`;
+  // the receiver's own words, collapsed and capped: the reason IS the refusal's content, and a
+  // reader who has to go find it will land instead of reading it.
+  const why = v.reason
+    ? ` — "${v.reason.replace(/\s+/g, " ").trim().slice(0, 240)}"` : "";
+  return `this lane's work was REJECTED and not accepted: report ${v.id} was rejected by ${who} `
+    + `at ${new Date(v.at).toISOString()}${why}. Landing it would put refused work on the `
+    + `integration branch. ${exit}`;
+}
+
+// THE TWO EXITS, and they differ because the two callers can do different things about the fact.
+//  · The OWNER keeps an override, and it is not a courtesy: a rejection can never be re-decided, so
+//    without one a wrongly-refused branch — a MAIN that misread it, a MAIN that is gone — would be
+//    unlandable by ANY principal for as long as the row survives. That is walling off the owner
+//    path, which is a worse defect than the one this guard closes. It is explicit, one-shot per
+//    request and audited, so the accident this exists to prevent (an ordinary land, no flag) still
+//    cannot happen by inattention.
+//  · A bound Program-MAIN gets NO override. It is the principal whose own door wrote the verdict:
+//    the act available to it is to have the lane repair and file again, and then to decide THAT row.
+//    An override there would be the MAIN overruling itself in one step, with nothing recorded
+//    between the refusal and the land.
+const REJECTED_LAND_EXIT_OWNER = 'The lane repairs and files a report its receiver accepts; to land '
+  + 'it anyway, POST again with {"overrideRejectedReport": true} — an explicit, audited override.';
+const REJECTED_LAND_EXIT_MAIN = "Have the lane repair and file again, then decide THAT row: an "
+  + "accepted report clears this. A rejection is never re-decided, and this route has no override — "
+  + "if the rejection itself was wrong, the owner lands from the board.";
+
 function pruneFleetReports(): void {
   const terminal = fleetReports.filter((report) => {
     // …EXCEPT a row the owner still owes a verdict. The predicate below is "transport is finished
@@ -7871,14 +7961,23 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
           ...(lastVerify.waitedOut ? { waitedOut: true as const } : {}),
           ...(lastVerify.timedOut ? { timedOut: true as const } : {}) } : null } }, 409);
   }
-  // (11) THE LANE MUST LOOK DONE. `done-looking` and nothing weaker: host-commit-looking is the
+  // (11) THE WORK MUST NOT ALREADY HAVE BEEN REFUSED — the precondition this ladder presupposed and
+  // never asked (rejectedReportForLand; measured 2026-09-07, and the incident is written down at that
+  // function). Placed ahead of the lane-state rungs on purpose: those two name things a MAIN can
+  // repair and call again, while a rejection is not repairable from this side at all, so the
+  // unfixable fact is said first instead of after two repairs that would change nothing.
+  const refusedWork = rejectedReportForLand(lane.cwd, lane.worktree.branch);
+  if (refusedWork)
+    return json({ error: rejectedReportRefusal(refusedWork, REJECTED_LAND_EXIT_MAIN),
+      rejectedReport: { id: refusedWork.id, at: refusedWork.at, by: refusedWork.by } }, 409);
+  // (12) THE LANE MUST LOOK DONE. `done-looking` and nothing weaker: host-commit-looking is the
   // disjoint predicate for an uncommitted tree, and there is nothing there to fast-forward. This is
   // a server predicate over facts, not a claim that the work is good — the MAIN supplies that
   // judgement by calling at all.
   const signal = laneWatchSignal(laneSignalView(lane, Date.now()), MERGE_IDLE_MS);
   if (signal !== "done-looking")
     return json({ error: `the lane is not done-looking (${signal ?? "no signal"}) — it must be alive, idle, clean and ahead of its base; let it finish, or commit its work, then call again`, signal }, 409);
-  // (12) NOT BUSY, exactly as the owner route asks it, and the reservation is taken BEFORE the
+  // (13) NOT BUSY, exactly as the owner route asks it, and the reservation is taken BEFORE the
   // first await inside the block for the same reason: two parallel calls would otherwise both start
   // a rebase. It is the SAME reservation pair the owner route holds, so the two doors cannot start
   // two jobs on one lane between them.
@@ -26851,6 +26950,25 @@ Bun.serve<WSData>({
         const body = await readJson(req);
         const { repo, branch } = s.worktree;
         const cwd = s.cwd;
+        // DOOR 1'S ACCEPTANCE PRECONDITION (rejectedReportForLand, 2026-09-07). Asked HERE — after
+        // the body, before the first git call — for two reasons. It is where the override flag first
+        // exists to be read; and every branch below this line lands the same work, so one question
+        // at the door covers the ordinary ff, the ⏸ confirm and the already-merged teardown alike
+        // rather than three copies that could disagree. Nothing durable has been written yet: the
+        // refusal leaves no `mergeLast`, no verdict the board would render, no land record — the
+        // same property the follower's lock above is placed for.
+        const refusedWork = rejectedReportForLand(cwd, branch);
+        if (refusedWork) {
+          if (body?.overrideRejectedReport !== true)
+            return json({ status: "blocked",
+              detail: rejectedReportRefusal(refusedWork, REJECTED_LAND_EXIT_OWNER),
+              rejectedReport: { id: refusedWork.id, at: refusedWork.at, by: refusedWork.by } });
+          // the override is a RECORD, not a shrug: which row was overridden, on which branch, and
+          // over which channel the owner token arrived — the one line an after-the-fact audit needs
+          // to tell a deliberate override from the inattention this guard exists to catch.
+          audit("land_rejected_report_override", s.id,
+            `${refusedWork.id} branch=${branch} via=${ownerActor.via}`);
+        }
         const st = await git(cwd, "status", "--porcelain");
         if (st.code !== 0) return json({ error: "git status failed — worktree gone?" }, 400);
         if (st.out) return json({ status: "blocked",

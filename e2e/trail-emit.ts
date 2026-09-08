@@ -35,31 +35,86 @@ const git = (cwd: string, ...args: string[]): string | null => {
   return p.status === 0 ? p.stdout.trim() : null;
 };
 
+// THREE ANSWERS, NOT TWO. `isWorkTree` returning false folded "this directory is not a work tree"
+// together with "git could not be asked at all", and those are not the same fact: the first
+// describes the environment correctly, the second means the probe never measured anything. The
+// post-land audit is the live instance of the first — its source is a `git archive` extract with
+// no `.git` (server.ts#snapshotIntegrationTree builds a git context ONLY for the proportional
+// short chain), so `rev-parse --is-inside-work-tree` exits 128 there. Measured 2026-09-08 on a
+// stand-in built the same way: the pointer home reads fine, the rev-parse is what says no.
+export type WorkTreeVerdict = "yes" | "no" | "git-unavailable";
+
+// How ROOT's `node_modules` answered. The pointer home is the ONLY way a staged instance can name
+// the tree under test, so "there is none" (a direct checkout) and "there is one and it is broken"
+// (a staged instance whose link is a real directory, or unreadable) must not collapse into one
+// word — the second would otherwise read as a direct-checkout run and blame ROOT.
+export type PointerState = "symlink" | "absent" | `unreadable:${string}`;
+
+export interface SourceTreeProbe {
+  /** the tree under test, or null when none could be named */
+  tree: string | null;
+  /** the single directory that was asked */
+  candidate: string;
+  /** whose answer was consulted: the instance's pointer home, or ROOT itself */
+  via: "pointer" | "root";
+  /** why `tree` is null — null exactly when it is not */
+  why: "not-a-work-tree" | "git-unavailable" | null;
+}
+
 // The tree under test. A node_modules symlink marks ROOT as a staged wrapper instance, whose own
 // git identity belongs to the fixture and must never answer for the tree under test; only the
 // symlink target may answer. Without that symlink this is a direct checkout run and ROOT answers.
+export const probeSourceTree = (
+  root: string,
+  linkedNodeModules: string | null,
+  verdict: (candidate: string) => WorkTreeVerdict,
+): SourceTreeProbe => {
+  const via = linkedNodeModules === null ? "root" : "pointer";
+  const candidate = linkedNodeModules === null ? root : dirname(linkedNodeModules);
+  const v = verdict(candidate);
+  return {
+    tree: v === "yes" ? candidate : null,
+    candidate,
+    via,
+    why: v === "yes" ? null : v === "git-unavailable" ? "git-unavailable" : "not-a-work-tree",
+  };
+};
+
+// the boolean face of the same probe, for the caller that wants the tree and not the verdict union
 export const resolveSourceTree = (
   root: string,
   linkedNodeModules: string | null,
   isWorkTree: (candidate: string) => boolean,
-): string | null => {
-  const candidates = linkedNodeModules === null ? [root] : [dirname(linkedNodeModules)];
-  for (const c of candidates) if (isWorkTree(c)) return c;
-  return null;
+): string | null =>
+  probeSourceTree(root, linkedNodeModules, (c) => (isWorkTree(c) ? "yes" : "no")).tree;
+
+// the classification, split off the spawn so all three answers are reachable without a box that
+// happens to be missing a git. `status === null` is the binary never having RUN (ENOENT, or killed
+// by a signal); every other exit is git's own answer about the directory, and `false` on exit 0 is
+// a real answer too (a bare repo). Reading the first as "no" reports a missing git as a
+// correctly-described non-repository — the fold this type exists to undo.
+export const workTreeVerdictOf = (status: number | null, spawnFailed: boolean, stdout: string): WorkTreeVerdict =>
+  spawnFailed || status === null ? "git-unavailable"
+    : status === 0 && stdout.trim() === "true" ? "yes" : "no";
+
+export const gitWorkTreeVerdict = (cwd: string): WorkTreeVerdict => {
+  const p = spawnSync("git", ["-C", cwd, "rev-parse", "--is-inside-work-tree"], { encoding: "utf8" });
+  return workTreeVerdictOf(p.status, !!p.error, p.stdout ?? "");
 };
 
-const sourceTree = (): string | null => {
-  let linkedNodeModules: string | null = null;
+const pointerHome = (): { link: string | null; state: PointerState } => {
   try {
-    linkedNodeModules = readlinkSync(`${ROOT}/node_modules`);
-  } catch {
-    // no symlink → not a staged wrapper instance; ROOT is the direct checkout
+    return { link: readlinkSync(`${ROOT}/node_modules`), state: "symlink" };
+  } catch (e) {
+    const code = (e as { code?: string }).code ?? "unknown";
+    return { link: null, state: code === "ENOENT" ? "absent" : `unreadable:${code}` };
   }
-  return resolveSourceTree(ROOT, linkedNodeModules,
-    (candidate) => git(candidate, "rev-parse", "--is-inside-work-tree") === "true");
 };
 
-const SRC = sourceTree();
+const POINTER = pointerHome();
+export const TRAIL_SOURCE: SourceTreeProbe = probeSourceTree(ROOT, POINTER.link, gitWorkTreeVerdict);
+export const TRAIL_POINTER: PointerState = POINTER.state;
+const SRC = TRAIL_SOURCE.tree;
 
 export const TRAIL_SCHEMA = 1;
 // the detail string is the only unbounded field in a row — a check is free to hand check() a
@@ -73,6 +128,19 @@ export const TRAIL_TREE = SRC ? git(SRC, "rev-parse", "HEAD") : null;
 // are different code, and that is exactly the distinction a flake query turns on. null when no
 // tree was resolvable at all (then `tree` is null too and the row claims nothing).
 export const TRAIL_DIRTY = SRC && TRAIL_TREE ? (git(SRC, "status", "--porcelain") ?? "") !== "" : null;
+
+// WHY A ROW CLAIMS NOTHING — the other half of `tree:null`, and the reason this module now keeps a
+// probe instead of a boolean. `tree:null` is LEGITIMATE (a post-land audit measures a tree that is
+// not a repository, docs/e2e-trail.md §7) and must never be red; but a reader of an anonymous trail
+// file could not tell that correctly-described run from a broken pointer home or a missing git,
+// and an anonymous row can never serve as flake evidence (trailstats: `unknownRows`). So the loss
+// is NAMED rather than removed. Non-null exactly when TRAIL_TREE is null: one statement, two halves.
+export const TRAIL_TREE_WHY: string | null = TRAIL_TREE !== null ? null
+  : (SRC === null
+    ? `no source tree: via=${TRAIL_SOURCE.via} candidate=${TRAIL_SOURCE.candidate}`
+      + ` why=${TRAIL_SOURCE.why} pointer=${TRAIL_POINTER}`
+    : `source tree ${SRC} resolves but has no HEAD (an indexed snapshot with no commit)`
+  ).slice(0, 300);
 
 // a linked worktree's common dir is the MAIN checkout's .git, so every lane's runs land in ONE
 // trail — which is what makes "has this check failed on trees that do not contain my change?"
@@ -94,6 +162,10 @@ export interface TrailRow {
   suite: string;
   tree: string | null;
   dirty?: boolean;
+  // present exactly when `tree` is null: the reason no tree could be named. A row that claims
+  // nothing now says why it claims nothing, in the row itself — a trail file is read long after
+  // the tail that produced it is gone.
+  treeWhy?: string;
   check: string;
   ok: boolean;
   // NOT the check's own runtime: check() is handed an already-computed boolean, so the only
@@ -111,6 +183,7 @@ export const trailRow = (check: string, ok: boolean, detail: string, msSincePrev
   suite: TRAIL_SUITE,
   tree: TRAIL_TREE,
   ...(TRAIL_DIRTY === null ? {} : { dirty: TRAIL_DIRTY }),
+  ...(TRAIL_TREE_WHY === null ? {} : { treeWhy: TRAIL_TREE_WHY }),
   check,
   ok,
   msSincePrev,

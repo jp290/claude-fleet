@@ -340,14 +340,42 @@ acquire line parsed after the process is dead cannot stop it from being killed:
 
 | | budget | ran out while | records |
 |---|---|---|---|
-| work | `FLEET_VERIFY_TIMEOUT_MS` (live 300 000) | verifying | `ok:null` + `timedOut` |
-| wait | `FLEET_VERIFY_WAIT_MS` (live 900 000) | queued behind the mutex | `ok:null` + `waitedOut` |
+| work | `FLEET_VERIFY_TIMEOUT_MS` (code default 120 000; live 480 000) | verifying | `ok:null` + `timedOut` |
+| wait | `FLEET_VERIFY_WAIT_MS` (code default 900 000; live 2 700 000) | queued behind the mutex | `ok:null` + `waitedOut` |
+
+Both live numbers are read off the `exec bun server.ts` line in `watchdog.sh`, and both are
+**env, not repo state**: those prefix assignments are applied *after* `.env` is sourced in the same
+command, so watchdog's value wins over any `.env` overlay, and a server started by hand carries the
+code defaults beside them (`server.ts#VERIFY_TIMEOUT_MS`, `server.ts#VERIFY_WAIT_MS`). This table
+said `300 000` / `900 000` until 2026-09-08; neither was ever a code default, and the wait figure
+was the one the paragraphs below were still reasoning with.
 
 Never both, never `ok:false`, and both inside the never-auto-land group by construction. The work
 budget is *credited* the queueing the chain reported, capped at the wait budget — so a gate gets its
 full budget regardless of who else was on the machine, and a run still cannot outlast the sum of the
 two. The two kills are deliberately not worded alike anywhere the owner reads them: a timeout at
 least looked at the tree, a wait-out never did. `e2e/merge.ts` (C2) and (C3) hold the pair apart.
+
+**One budget, but it may be spent more than once — and TWO round counters decide that, counting
+different races.** Reading the wait budget as the ceiling on a land is the mistake this section
+invited, so both are named here:
+
+| counter | code default / cap | counts | spends |
+|---|---|---|---|
+| `server.ts#LAND_WAIT_ROUNDS` | 1 / 3 (`FLEET_LAND_WAIT_ROUNDS`) | being refused **the machine** by another *suite*, before any gate has run | one more hold of `VERIFY_WAIT_MS` |
+| `server.ts#LAND_FF_RETRY_ROUNDS` | 2 / 5 (`FLEET_LAND_FF_RETRY_ROUNDS`) | losing the fast-forward to another *lander* **after a green gate** | a re-verified retry |
+
+They are not interchangeable and must never be folded together — the code says so in as many words
+beside `LAND_WAIT_ROUNDS` ("NOT to be folded into `LAND_FF_RETRY_ROUNDS` above: that one counts races
+with another LANDER"). One counts *never got to look at the tree*; the other counts *looked, passed,
+and got beaten to `main`*.
+
+So the real wall-clock ceiling on a land denied the machine is `(LAND_WAIT_ROUNDS + 1) ×
+VERIFY_WAIT_MS` — the `+ 1` being the first hold, with the counter naming only the *extra* ones; the
+server writes that arithmetic into its own verdict as `${rounds + 1} holds of ${VERIFY_WAIT_MS}ms
+each` (`server.ts#gateNeverRan`). Neither variable appears in `.env` or in `watchdog.sh`, so
+live both stand at their code defaults, and the live ceiling is **(1 + 1) × 2 700 000 ms =
+5 400 000 ms, i.e. two holds of 45 min** — not one, and not the 15 min this table used to imply.
 
 **The orphan, found while reconstructing the above and NOT fixed here.** `p.kill()` SIGTERMs the
 `sh -c` that fronts the chain; the suite it had already started keeps running — `security` wrote
@@ -360,6 +388,13 @@ process *group* would be the cure and is a behaviour change, not a message chang
 construction (one queued `isolated` ≈ 8 min, two ≈ 16), so any fixed number only moves the
 threshold. Giving the land gate priority on the mutex is the structurally cleaner cure and is the
 owner's call, not a lane's.
+
+> **Superseded on the first half (2026-08-20, `e19c80ff`).** The budget *was* raised after all —
+> `watchdog.sh` moved `FLEET_VERIFY_WAIT_MS` from 900 000 to 2 700 000, recording that the live
+> server had been running the higher value since the day before. The reasoning above still holds
+> (the wait is unbounded by construction, so the number only moves the threshold); what changed is
+> that the threshold was moved deliberately, and §10 later replaced the race itself with a queue.
+> The second half — mutex priority for the land gate — is still open.
 
 ## 9. …and fleet's OWN two suite runs say so too (2026-08-19)
 
@@ -502,8 +537,13 @@ the holder's pid, and release nothing.
   down in the shell would produce an abort the server cannot classify: a wait that reads like a red
   gate, which is the precise failure §8 exists to prevent. FIFO also removes the reason to want one —
   a waiter's remaining wait is now bounded by the suites ahead of it, and its position is printed.
-  (The brief for this cut named `server.ts#holdSuiteLock`; no function of that name exists — the
-  budget lives in `runVerify`'s `waitedOut` branch.)
+  (**Corrected 2026-09-08.** This bullet used to add: *"the brief for this cut named
+  `server.ts#holdSuiteLock`; no function of that name exists."* It does exist — `async function
+  holdSuiteLock(budgetMs)`, landed 2026-09-04 in `c249911d`, a day before that sentence was written.
+  Both are real and they are different holds: `runVerify` owns the budget for the gate's *own*
+  queueing, which is what this bullet is about, while `holdSuiteLock` is the server taking the mutex
+  around the land path — the wait rounds and the ff retry of §8. `rg -n 'holdSuiteLock' server.ts`
+  settles it.)
 - **A priority class ("land gate before preview/audit").** It was offered and is declined, because
   the measurement argues against it: the contender that starved was a **post-land audit**, not a land
   gate. A class that lets gates jump would starve audits harder and re-import the very unfairness

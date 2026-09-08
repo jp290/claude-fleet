@@ -5303,16 +5303,30 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
     `observe=${bootObserveAt} adopt=${bootAdoptAt} recover=${bootRecoverAt} ensure=${ensureBootAt} serve=${server.indexOf("Bun.serve<WSData>")}`);
   const identityCaptureAt = selfSucceedBody.indexOf("const predecessorIdentity");
   const firstSucceedAwaitAt = selfSucceedBody.indexOf("await readJson(req)");
+  const bindingClassifyAt = selfSucceedBody.indexOf("const bound = programs.filter");
   const handoffAwaitAt = selfSucceedBody.indexOf("await handoffCommittedAfterOpen(s)");
   const identityRecheckAt = selfSucceedBody.indexOf("sameSuccessionOccupant(s, predecessorIdentity)", handoffAwaitAt);
-  const bindingClassifyAt = selfSucceedBody.indexOf("const bound = programs.filter");
-  pin(`${RULE_GM_FOUNDING} — self succession captures the exact occupant before its first await and revalidates after HANDOFF before classification`,
+  const dispatchAt = selfSucceedBody.indexOf("await succeedProgramMain(", identityRecheckAt);
+  // THE ORDER INVERTED on 2026-09-08, and the inversion is the property: classification used to
+  // sit AFTER the HANDOFF read, which made the post-await recheck the only thing standing between
+  // an owner recycle and a Program succession silently downgraded to the generic rail. It now
+  // joins the CAPTURED occupant and runs first, so that downgrade is structurally unreachable —
+  // and the recheck, still here and still before any transfer, refuses the recycled caller
+  // outright. The file gate is asked only on the rails it still proves something for, and only an
+  // explicit `false` refuses, so a rail added later cannot inherit the permissive answer.
+  pin(`${RULE_GM_FOUNDING} — self succession captures the exact occupant before its first await, classifies the rail from THAT identity, and revalidates before any transfer`,
     identityCaptureAt >= 0 && identityCaptureAt < firstSucceedAwaitAt
-      && handoffAwaitAt > firstSucceedAwaitAt && identityRecheckAt > handoffAwaitAt
-      && bindingClassifyAt > identityRecheckAt
+      && bindingClassifyAt > firstSucceedAwaitAt
+      && selfSucceedBody.includes("p.main.slot === predecessorIdentity.slot && p.main.openedAt === predecessorIdentity.openedAt")
+      && !selfSucceedBody.includes("p.main.slot === s.id")
+      && handoffAwaitAt > bindingClassifyAt
+      && selfSucceedBody.includes("const standard = bound.length === 1 && !isGameMaker(bound[0]!);")
+      && selfSucceedBody.includes("const handoffReady = standard ? null : await handoffCommittedAfterOpen(s);")
+      && selfSucceedBody.includes("if (handoffReady === false)")
+      && identityRecheckAt > handoffAwaitAt && dispatchAt > identityRecheckAt
       && selfRetireBody.includes("successionInflight.has(s.selfToken)")
       && read("e2e/programs.ts").includes("retire is refused in flight, owner recycle cannot downgrade Program succession"),
-    `capture=${identityCaptureAt} firstAwait=${firstSucceedAwaitAt} handoff=${handoffAwaitAt} recheck=${identityRecheckAt} classify=${bindingClassifyAt} retireGate=${selfRetireBody.includes("successionInflight.has(s.selfToken)")}`);
+    `capture=${identityCaptureAt} firstAwait=${firstSucceedAwaitAt} classify=${bindingClassifyAt} handoff=${handoffAwaitAt} recheck=${identityRecheckAt} dispatch=${dispatchAt} retireGate=${selfRetireBody.includes("successionInflight.has(s.selfToken)")}`);
   const proveStopAt = server.indexOf("async function proveFoundingCandidateStopped");
   const proveStopBody = proveStopAt < 0 ? "" : server.slice(proveStopAt,
     server.indexOf("const exactFoundingPredecessor", proveStopAt));

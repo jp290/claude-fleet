@@ -129,6 +129,13 @@ type AuditEvent =
   // PROCEEDS (the owner's own scripts use Bearer); this row is what makes the actor class countable
   // at all. Prevention is UNSUPPORTED and documented as such — see docs/self-api.md.
   | "owner_token_ambient_use"
+  // the owner landed a lane whose work a receiving MAIN had REJECTED, by passing the explicit
+  // `overrideRejectedReport` flag (server.ts#rejectedReportForLand). The land PROCEEDS — a rejection
+  // can never be re-decided, so without an override a wrongly-refused branch would be unlandable by
+  // anyone — and this row is the only place that says the refusal was seen and overruled rather than
+  // never asked about. The ordinary land carries no flag and is refused, so an absent row here means
+  // no override happened, not that one was unrecorded.
+  | "land_rejected_report_override"
   // a steward filing whose `ref` matched a live proposal — answered with the existing row, so the
   // trail shows the pulse KEPT seeing the condition without the queue growing a duplicate
   | "steward_task_dedup"

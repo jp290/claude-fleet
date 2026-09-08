@@ -1317,7 +1317,7 @@ unterscheidbar, weil sie den Aufrufer an verschiedene Stellen schicken):
    Wartezeit am Suite-Mutex, dann gekillt) oder `timedOut` (mitten in der Arbeit gekillt), dann hat
    es über diese Bytes nichts ausgesagt — der zweite Lauf wiederholt keine Antwort, er erzeugt die
    erste. Die Ausnahme gilt nur für Verdikte OHNE ungeprüfte Konfliktlösung (die ⏸-Ablehnung von
-   Sprosse 12 ist eine andere Frage und bleibt). Gemessen am Land von `c3604ce3`: `resolved,
+   Sprosse 13 ist eine andere Frage und bleibt). Gemessen am Land von `c3604ce3`: `resolved,
    landed:false`, `waitedOut`, 44 von 46 Minuten Schlange — die Lane war fertig und sauber, konnte
    ihre Bytes also nicht mehr bewegen, und main-Bewegung öffnet den Guard nicht (`4761020`); der
    Kandidat war auf dieser Sprosse dauerhaft tot. **Ein SKIP (`ok:null` ohne beide Flags) ist
@@ -1326,23 +1326,46 @@ unterscheidbar, weil sie den Aufrufer an verschiedene Stellen schicken):
    **Die Ablehnung nennt ihren Zustand:** das Feld `gate` trägt `measured` · `never-started` ·
    `timed-out` · `skipped`, und nur bei `measured` heißt der Satz noch „repair or escalate". Ein
    unvermessenes Verdikt schickt niemanden auf Fehlersuche in einem Baum, den kein Gate gelesen hat.
-10. Lane nicht `done-looking` (`laneWatchSignal`, `MERGE_IDLE_MS`) — lebendig, idle, sauber, ahead.
+10. **Die Arbeit darf nicht schon ABGELEHNT sein** (`server.ts#rejectedReportForLand`, seit
+    2026-09-08). Trägt der neueste ENTSCHIEDENE `fleetReport` dieser Arbeit — gefunden über
+    `worker.cwd` + `worker.branch`, nicht über das Occupant-Tripel, weil ein Land einen BRANCH
+    bewegt — `decision.disposition === "rejected"`, dann 409, und der Satz NENNT Report-Id,
+    Ablehnenden und dessen `reason`. **Kein Override an dieser Tür:** die MAIN ist der Prinzipal,
+    dessen eigene Tür das Verdikt geschrieben hat; ihr Weg ist „Lane repariert, filet neu, DIESE
+    Zeile entscheiden" — eine angenommene Zeile macht die Vorbedingung still. Der Owner behält
+    seinen Override an `POST /api/slots/:id/merge` (`{"overrideRejectedReport": true}`, Trail-Zeile
+    `land_rejected_report_override`), weil eine Ablehnung nie zweitentschieden wird und ein
+    fälschlich abgelehnter Branch sonst für JEDEN Prinzipal unlandbar wäre.
+    **Drei Fälle, die ausdrücklich NICHT blocken** (die Vorbedingung ist eng gebaut, weil ein
+    Fehl-Nein hier schlimmer wäre als der Befund): KEIN Report (Owner-Pfad, reine Messzeile, Lane
+    ohne Program) · eine gefilete, noch UNENTSCHIEDENE Zeile (ein Report ist eine Nachricht, keine
+    Zustandsänderung — die gewöhnliche Annahme ist, dass die MAIN den Diff liest und landet, ohne
+    „accept" zu drücken) · eine Ablehnung, auf die eine ANGENOMMENE Zeile folgt. Umgekehrt CLEART
+    eine unentschiedene Zeile eine stehende Ablehnung nicht: sonst käme jedes „kein Land" mit einer
+    weiteren ungelesenen Zeile an dieser Tür vorbei. **Abwesenheit ist kein Beweis:**
+    `pruneFleetReports` verwirft entschiedene Zeilen über `FLEET_REPORT_KEEP` — die Vorbedingung
+    liest die Zeilen, die der Server noch hält, und behauptet nie, es habe nie ein Verdikt gegeben.
+    Anlass, gemessen 2026-09-07: Report `e351772b` war `rejected` („kein Land" im Verdikt selbst),
+    dieselben Bytes landeten 87 min später als `522701c`, byte-identisch zum abgelehnten Kandidaten
+    — Land-Gate UND Post-Land-Audit waren dabei grün und zu Recht grün: sie beweisen „der Baum
+    hält", nie „ein Leser hat die Arbeit angenommen".
+11. Lane nicht `done-looking` (`laneWatchSignal`, `MERGE_IDLE_MS`) — lebendig, idle, sauber, ahead.
     Ein Server-Prädikat über Fakten, keine Aussage über die Qualität: die liefert die MAIN, indem
     sie überhaupt ruft.
-11. Nicht inflight — dieselbe Reservierung (`mergeStart`/`mergeInflight`), die die Owner-Route
+12. Nicht inflight — dieselbe Reservierung (`mergeStart`/`mergeInflight`), die die Owner-Route
     hält, plus `commitInflight`. Zwei Türen, ein Job pro Lane.
-12. Ungeprüfte Konfliktlösungen in der Lane (die ⏸-Sperre) sind unter `green-only` eine
+13. Ungeprüfte Konfliktlösungen in der Lane (die ⏸-Sperre) sind unter `green-only` eine
     ABLEHNUNG, und die Ablehnung NENNT die Sprosse, die sie nähme (`guarded`). Unter `guarded`
     greift stattdessen die bestätigte Konflikt-Bestätigung unten.
 
-### Das verlorene Fast-Forward: `errorReason: "ff-lost"` (Sprosse 10, die Ausnahme)
+### Das verlorene Fast-Forward: `errorReason: "ff-lost"` (Sprosse 11, die Ausnahme)
 
 **Gemessen 2026-09-02, 06:09–07:20 CEST** (Programm `66499a03`, MAIN Slot 4, Lane Slot 8): ein
 Self-Land rebaste sauber, das Gate lief GRÜN (110 s Arbeit nach 1838 s Wartezeit am Suite-Mutex),
 und dann verweigerte `git merge --ff-only` das Vorspulen, weil inzwischen ein reiner Docs-Commit
 auf main gelandet war. `mergeJob` schreibt dafür `status:"error"`, `"error"` steht in
 `MERGE_BLOCKING` — und ab da war die Lane **strukturell nie wieder `done-looking`**: der
-lane-ready-Watch konnte nicht feuern, und Sprosse 10 antwortete auf JEDEN weiteren Aufruf
+lane-ready-Watch konnte nicht feuern, und Sprosse 11 antwortete auf JEDEN weiteren Aufruf
 `the lane is not done-looking (no signal)`. Der Owner musste landen; Schritt 5 des Programms war
 still zu einem Owner-Land degradiert.
 

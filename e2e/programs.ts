@@ -8,7 +8,7 @@ import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check,
 import { phaseOf, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import { laneDoneLooking, type LaneSignalView } from "../lane-signals";
 import { observedSourceHash } from "../context-manifest";
-import { setMergeMode } from "./lane-helpers";
+import { setMergeMode, settleForMerge } from "./lane-helpers";
 import type { Ctx } from "./ctx";
 
 type ProgramStatus = "proposed" | "confirmed" | "active" | "complete";
@@ -2222,6 +2222,209 @@ export async function run(ctx: Ctx): Promise<void> {
       taskIds: d1CleanView.view?.programs.find((x) => x.program.id === mainProgram.id)
         ?.tasks.rows.map((row) => row.id) ?? null,
       reportIds: (readState().fleetReports ?? []).map((r) => r.id) }));
+
+  // --- D2 · THE ACCEPTANCE PRECONDITION AT THE LAND DOOR (server.ts#rejectedReportForLand) ------
+  // WHAT WENT WRONG, measured 2026-09-07: report e351772b was REJECTED by its Program-MAIN ("kein
+  // Land" in the verdict's own reason) and the same bytes landed 87 minutes later as 522701c,
+  // byte-identical to the refused candidate. The land gate and the post-land audit were both green
+  // and both CORRECTLY green — they prove the tree holds, never that a reader took the work — so the
+  // lander had two green signals behind exactly the wrong act. Nothing in the machine asked the one
+  // question that mattered.
+  //
+  // WHAT IS PROVEN HERE, one lane per case, each with the mutation that turns it red:
+  //  (a) a lane whose newest DECIDED report is `rejected` is refused at the door, and the refusal
+  //      NAMES the row and the principal that rejected it — mutation: drop the precondition from the
+  //      merge route, and the lane lands instead of being refused.
+  //  (a') …and the owner is not walled in: the explicit override lands the same lane and books its
+  //      own audit row — mutation: honour the flag silently (no audit line), or refuse it.
+  //  (b) a lane with NO report lands exactly as before — mutation: turn the precondition into
+  //      "a report is required", and this land is refused.
+  //  (c1) a lane whose ONLY report is UNDECIDED lands: a report is a message, not a gate — mutation:
+  //      block on a filed-but-unjudged row, and this land is refused.
+  //  (c2) …and an undecided row does not CLEAR a standing rejection: a rejection with a LATER
+  //      unjudged row beside it is still refused, and the sentence names the REJECTED id, not the
+  //      newer one — mutation: read the newest row instead of the newest DECIDED row, and this lane
+  //      lands (which is the escape hatch that would make (a) worthless).
+  //  (d) the documented way out works: a rejection followed by an ACCEPTED row lands — mutation:
+  //      make any rejection permanent, and this lane is refused with no exit for anyone.
+  //
+  // The rows are PLANTED with srv down, the technique every binding fixture in this file uses, and
+  // for the same reason: what is under test is the LAND door, not the filing path (the live filing
+  // and the live rejection are driven end-to-end in the self-land section below). Each lane is opened
+  // with no commit, so its branch is already merged and the allowed cases land through the route's
+  // own already-merged arm — a real land, with no agent and no verify run.
+  const guardLaneOf = async (): Promise<{ slot: number; cwd: string; branch: string; openedAt: number } | null> => {
+    const r = await post("/api/lanes", { repo: REPO });
+    if (!r.ok) return null;
+    const b = await r.json() as { slot?: number; cwd?: string; branch?: string };
+    if (typeof b.slot !== "number" || !b.cwd || !b.branch) return null;
+    const openedAt = readState().slots?.[String(b.slot)]?.openedAt ?? 0;
+    return openedAt > 0 ? { slot: b.slot, cwd: b.cwd, branch: b.branch, openedAt } : null;
+  };
+  const gLaneRejected = await guardLaneOf();
+  const gLaneRejectedUndecided = await guardLaneOf();
+  const gLaneRejectedAccepted = await guardLaneOf();
+  const gLaneUndecided = await guardLaneOf();
+  // …and the fixture fails as ITSELF when a lane could not be opened (a full slot table, a git
+  // failure): without this line every check below would read as "the guard did nothing", which is
+  // the shape that costs an isolated rerun to diagnose.
+  check("land acceptance fixture: four lanes are open on REPO, each with a cwd, a branch and an occupation",
+    !!gLaneRejected && !!gLaneRejectedUndecided && !!gLaneRejectedAccepted && !!gLaneUndecided,
+    JSON.stringify({ rejected: gLaneRejected, rejectedUndecided: gLaneRejectedUndecided,
+      rejectedAccepted: gLaneRejectedAccepted, undecided: gLaneUndecided }));
+
+  const gRejectedId = "e1".repeat(12);
+  const gRejUndecidedRejId = "e2".repeat(12);
+  const gRejUndecidedNewId = "e3".repeat(12);
+  const gRejAcceptedRejId = "e4".repeat(12);
+  const gRejAcceptedAccId = "e5".repeat(12);
+  const gUndecidedId = "e6".repeat(12);
+  const gPlantIds = [gRejectedId, gRejUndecidedRejId, gRejUndecidedNewId, gRejAcceptedRejId,
+    gRejAcceptedAccId, gUndecidedId];
+  const gRejectReason = "the diff was read and refused — kein Land";
+  if (gLaneRejected && gLaneRejectedUndecided && gLaneRejectedAccepted && gLaneUndecided) {
+    const gBase = Date.now() - 600_000;
+    // a receiver occupation that is NOT live: the verdict is a fact on the row, and this precondition
+    // reads the row — it must not depend on the judging MAIN still sitting in its chair (which is
+    // exactly the state the incident's rejector was in by the time the land happened).
+    const gReceiver = { slot: 1, openedAt: 1, sessionId: null };
+    const gRow = (id: string, lane: { slot: number; cwd: string; branch: string; openedAt: number },
+      reportedAt: number, decision: { disposition: string; at: number } | null): Record<string, unknown> => ({
+      id, reportedAt, status: "complete",
+      text: "D2 land-acceptance fixture: the typed result a land door has to read before it opens.",
+      worker: { slot: lane.slot, openedAt: lane.openedAt, sessionId: null, cwd: lane.cwd, branch: lane.branch },
+      provenance: { taskId: null, originId: null, programId: null },
+      receiver: gReceiver, basis: "program-main", eventId: id.replace(/^e/, "f"),
+      ...(decision === null ? {} : { decision: { disposition: decision.disposition, at: decision.at,
+        by: gReceiver, reason: decision.disposition === "rejected" ? gRejectReason : "read the diff and took the work" } }),
+    });
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const gPlant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { fleetReports?: unknown[] };
+    gPlant.fleetReports = [...(gPlant.fleetReports ?? []),
+      gRow(gRejectedId, gLaneRejected, gBase, { disposition: "rejected", at: gBase + 1000 }),
+      gRow(gRejUndecidedRejId, gLaneRejectedUndecided, gBase, { disposition: "rejected", at: gBase + 1000 }),
+      // NEWER than the rejection and unjudged — the shape a lane produces by filing again
+      gRow(gRejUndecidedNewId, gLaneRejectedUndecided, gBase + 2000, null),
+      gRow(gRejAcceptedRejId, gLaneRejectedAccepted, gBase, { disposition: "rejected", at: gBase + 1000 }),
+      gRow(gRejAcceptedAccId, gLaneRejectedAccepted, gBase + 2000, { disposition: "accepted", at: gBase + 3000 }),
+      gRow(gUndecidedId, gLaneUndecided, gBase, null),
+    ];
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(gPlant, null, 2), { mode: 0o600 });
+    await restartSrv();
+    // the plant travels through fleetReportFrom, so a row that could not hydrate must be visible as
+    // THAT rather than as a guard that did nothing: the owner view is the live list of what the
+    // server actually holds.
+    const gOwnerView = await (await get("/api/fleet-report")).json() as
+      { reports?: { id: string; decision?: { disposition?: string } | null }[] };
+    const gHeld = new Map((gOwnerView.reports ?? []).map((r) => [r.id, r.decision?.disposition ?? null]));
+    check("land acceptance fixture: all six planted rows hydrated, with the dispositions the cases need",
+      gPlantIds.every((id) => gHeld.has(id))
+        && gHeld.get(gRejectedId) === "rejected" && gHeld.get(gRejUndecidedRejId) === "rejected"
+        && gHeld.get(gRejUndecidedNewId) === null && gHeld.get(gRejAcceptedRejId) === "rejected"
+        && gHeld.get(gRejAcceptedAccId) === "accepted" && gHeld.get(gUndecidedId) === null,
+      JSON.stringify({ held: gPlantIds.map((id) => [id.slice(0, 4), gHeld.has(id), gHeld.get(id) ?? null]) }));
+
+    type LandAttempt = { http: number; status?: string; detail?: string; landed?: boolean;
+      running?: boolean; error?: string; rejectedReport?: { id?: string } };
+    // ONE retry class and no other: the route's idle gate refuses a lane whose pane produced output
+    // inside MERGE_IDLE_MS, and a freshly spawned pane emits its prompt. Retried on THAT sentence
+    // alone — every other outcome, refusal or land, is returned as it came, so no retry can paper
+    // over the precondition under test (which is asked BEFORE the idle gate anyway and is therefore
+    // unaffected by this loop in the blocked cases).
+    const landAttempt = async (slot: number, body: Record<string, unknown> = {}): Promise<LandAttempt> => {
+      let last: LandAttempt = { http: 0 };
+      for (let i = 0; i < 8; i++) {
+        await settleForMerge(slot);
+        const r = await post(`/api/slots/${slot}/merge`, body);
+        last = { http: r.status, ...(await r.json() as Omit<LandAttempt, "http">) };
+        if (!(last.status === "blocked" && (last.detail ?? "").includes("actively working"))) return last;
+        await Bun.sleep(800);
+      }
+      return last;
+    };
+    const auditRowsFrom = (from: number): string[] =>
+      readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).slice(from);
+    const gAuditFrom = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).length;
+    const gMainBefore = spawnSync("git", ["-C", REPO, "rev-parse", "main"]).stdout.toString().trim();
+
+    // (a) THE REFUSAL, and it has to be READABLE: a generic "blocked" would send the owner into
+    // fleet.json to find the verdict that is the entire content of the refusal.
+    const gRejAttempt = await landAttempt(gLaneRejected.slot);
+    const gRejStillThere = (await get(`/api/slots/${gLaneRejected.slot}/merge`)).status === 200;
+    check("land acceptance (a): a lane whose report was REJECTED is refused at the land door, and the sentence names the report id, the rejector and the reason",
+      gRejAttempt.status === "blocked" && gRejAttempt.landed !== true && gRejAttempt.running !== true
+        && (gRejAttempt.detail ?? "").includes(gRejectedId)
+        && (gRejAttempt.detail ?? "").includes("REJECTED")
+        && (gRejAttempt.detail ?? "").includes("slot 1")
+        && (gRejAttempt.detail ?? "").includes(gRejectReason)
+        && gRejAttempt.rejectedReport?.id === gRejectedId
+        && gRejStillThere
+        && spawnSync("git", ["-C", REPO, "rev-parse", "main"]).stdout.toString().trim() === gMainBefore,
+      JSON.stringify({ attempt: gRejAttempt, laneAlive: gRejStillThere }));
+
+    // (c2) THE ESCAPE HATCH THAT MUST NOT EXIST: one more unread row does not clear a "kein Land".
+    const gRejUndAttempt = await landAttempt(gLaneRejectedUndecided.slot);
+    check("land acceptance (c2): a LATER undecided report does not clear a standing rejection — the refusal still names the REJECTED row, not the unjudged one",
+      gRejUndAttempt.status === "blocked" && gRejUndAttempt.landed !== true
+        && gRejUndAttempt.rejectedReport?.id === gRejUndecidedRejId
+        && (gRejUndAttempt.detail ?? "").includes(gRejUndecidedRejId)
+        && !(gRejUndAttempt.detail ?? "").includes(gRejUndecidedNewId),
+      JSON.stringify(gRejUndAttempt));
+
+    // …and NEITHER refusal may look like an override on the trail: an absent row has to mean
+    // "no override happened", or the ledger cannot tell inattention from a deliberate act.
+    check("land acceptance: a refused land books NO override row on the trail",
+      !auditRowsFrom(gAuditFrom).some((l) => l.includes("land_rejected_report_override")),
+      auditRowsFrom(gAuditFrom).filter((l) => l.includes("rejected_report")).join(" | ").slice(0, 300));
+
+    // (a') THE OWNER IS NOT WALLED IN. A rejection is never re-decided, so without this door a
+    // wrongly-refused branch would be unlandable by ANY principal for as long as the row lives.
+    const gOverrideFrom = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).length;
+    const gOverride = await landAttempt(gLaneRejected.slot, { overrideRejectedReport: true });
+    const gOverrideRows = auditRowsFrom(gOverrideFrom).filter((l) => l.includes("land_rejected_report_override"));
+    check("land acceptance (a'): the explicit override lands the same lane and books exactly one audit row naming the row it overrode",
+      gOverride.status === "merged" && gOverride.landed === true
+        && gOverrideRows.length === 1 && gOverrideRows[0].includes(gRejectedId)
+        && gOverrideRows[0].includes(gLaneRejected.branch),
+      JSON.stringify({ attempt: gOverride, rows: gOverrideRows.map((l) => l.slice(0, 200)) }));
+
+    // (d) THE DOCUMENTED WAY OUT: repair, file again, get THAT row accepted.
+    const gAccAttempt = await landAttempt(gLaneRejectedAccepted.slot);
+    check("land acceptance (d): a rejection followed by an ACCEPTED report lands — the exit the refusal names is real",
+      gAccAttempt.status === "merged" && gAccAttempt.landed === true,
+      JSON.stringify(gAccAttempt));
+
+    // (c1) A FILED, UNJUDGED ROW IS TRANSPARENT: a report is a message and never a state change.
+    const gUndAttempt = await landAttempt(gLaneUndecided.slot);
+    check("land acceptance (c1): a lane whose ONLY report is UNDECIDED lands — the precondition never demands a verdict",
+      gUndAttempt.status === "merged" && gUndAttempt.landed === true,
+      JSON.stringify(gUndAttempt));
+
+    // (b) AND THE CASE THE GUARD MUST NEVER TOUCH — the owner path, the pure measurement lane, the
+    // lane with no Program: no report at all, and the land is unchanged. Opened AFTER the plant on
+    // purpose, so it carries no row by construction rather than by a filter.
+    const gLaneNoReport = await guardLaneOf();
+    const gNoReportAttempt = gLaneNoReport === null ? null : await landAttempt(gLaneNoReport.slot);
+    check("land acceptance (b): a lane with NO report lands exactly as before — absence is never treated as a missing acceptance",
+      gLaneNoReport !== null && gNoReportAttempt?.status === "merged" && gNoReportAttempt.landed === true,
+      JSON.stringify({ lane: gLaneNoReport, attempt: gNoReportAttempt }));
+
+    // D2 takes its own plants back out, in the D1 block's discipline: six report rows left on the
+    // ledger would ride into every later module's reading of it.
+    await post(`/api/slots/${gLaneRejectedUndecided.slot}/kill`, {});
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const gCleanup = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { fleetReports?: { id?: string }[] };
+    gCleanup.fleetReports = (gCleanup.fleetReports ?? []).filter((r) => !gPlantIds.includes(r.id ?? ""));
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(gCleanup, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const gAfterCleanup = await (await get("/api/fleet-report")).json() as { reports?: { id: string }[] };
+    check("land acceptance cleanup: no planted row survives into the next block, and the refused lane is closed",
+      !(gAfterCleanup.reports ?? []).some((r) => gPlantIds.includes(r.id))
+        && !(await sessions()).slots.find((x) => x.id === gLaneRejectedUndecided.slot)?.cwd,
+      JSON.stringify({ ids: (gAfterCleanup.reports ?? []).map((r) => r.id.slice(0, 4)) }));
+  }
 
   // --- THE UNBOUND SUCCESSION RAIL — the one founding delivery that had no gate. ------------
   // Everything above proves the BOUND rail: succeedProgramMain holds the boot grace, the delivery
@@ -6899,6 +7102,67 @@ export async function run(ctx: Ctx): Promise<void> {
         phase: nextWith?.phase, phaseWithout: nextWithout?.phase,
         basis: nextWith?.phaseBasis ?? null, basisWithout: nextWithout?.phaseBasis ?? null,
         unknown: unknownFor(progWith), unknownWithout: unknownFor(progWithout) }));
+
+    // --- THE ACCEPTANCE PRECONDITION ON THIS DOOR TOO (server.ts, rung 11), driven LIVE: the lane
+    // files its own result through the real route, its bound MAIN judges it through the real door,
+    // and only then does the MAIN try to land. This is the half the planted D2 fixture above cannot
+    // buy — that the rows this precondition reads are the rows the filing and judging doors actually
+    // write, occupant comparisons and all.
+    //
+    // WHY THIS DOOR HAS NO OVERRIDE, and it is asserted rather than described: the MAIN is the
+    // principal whose own verdict this is. What it may do is have the lane repair and file again and
+    // then decide THAT row — which is what the second half here drives, and the land below proceeds
+    // on the accepted row. An override here would be the MAIN overruling itself in one request with
+    // nothing recorded in between; the owner's board keeps that exit (D2 case a').
+    //
+    // Mutation: delete rung 11 and the first land attempt starts a land on a REJECTED candidate,
+    // which is exactly the 2026-09-07 incident with a MAIN's credential instead of the owner's.
+    const greenLaneTok = greenLaneSlot === null ? ""
+      : readState().slots?.[String(greenLaneSlot)]?.selfToken ?? "";
+    const fileLaneReport = async (text: string): Promise<{ ok: boolean; id: string | null; body: string }> => {
+      const r = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": greenLaneTok },
+        body: JSON.stringify({ status: "complete", text }) });
+      const raw = await r.text();
+      const parsed = JSON.parse(raw) as { report?: { id?: string } };
+      return { ok: r.ok, id: parsed.report?.id ?? null, body: raw.slice(0, 200) };
+    };
+    const mainDecides = async (id: string, verdict: "accept" | "reject", reason: string): Promise<{ ok: boolean; body: string }> => {
+      const r = await fetch(`${BASE}/api/self/fleet-report/${id}/${verdict}`, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": landTok },
+        body: JSON.stringify({ reason }) });
+      return { ok: r.ok, body: (await r.text()).slice(0, 200) };
+    };
+    const slRejectReason = "read the diff: the criterion is not met — repair and file again, kein Land";
+    const slFirstReport = await fileLaneReport("self-land acceptance fixture: the first attempt at this slice.");
+    const slRejectRes = slFirstReport.id === null ? null
+      : await mainDecides(slFirstReport.id, "reject", slRejectReason);
+    check("self-land acceptance fixture: the lane files its result and the bound MAIN REJECTS it through the live doors",
+      /^[0-9a-f]{32}$/.test(greenLaneTok) && slFirstReport.ok && slFirstReport.id !== null
+        && slRejectRes?.ok === true,
+      JSON.stringify({ laneTok: greenLaneTok !== "", filed: slFirstReport, decided: slRejectRes }));
+
+    const slAuditBeforeRefusal = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).length;
+    const slLandRefused = await selfLand(landTok, greenRowId);
+    const slLandRefusedText = await slLandRefused.text();
+    const slRefusalAudit = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+      .slice(slAuditBeforeRefusal);
+    check("self-land: the MAIN's own door refuses the row whose report IT rejected — 409, the report id named, no override offered, and nothing started",
+      slLandRefused.status === 409 && slFirstReport.id !== null
+        && slLandRefusedText.includes(slFirstReport.id)
+        && slLandRefusedText.includes("REJECTED")
+        && slLandRefusedText.includes(slRejectReason)
+        && !slLandRefusedText.includes("overrideRejectedReport")
+        && !slRefusalAudit.some((l) => l.includes("self_land_start")),
+      `${slLandRefused.status} ${slLandRefusedText.slice(0, 320)} audit=${slRefusalAudit.length}`);
+
+    const slSecondReport = await fileLaneReport("self-land acceptance fixture: repaired, filed again.");
+    const slAcceptRes = slSecondReport.id === null ? null
+      : await mainDecides(slSecondReport.id, "accept", "the repair holds — taking the work");
+    check("self-land acceptance fixture: the lane files AGAIN and the MAIN accepts that row — the exit the refusal names, before the land below uses it",
+      slSecondReport.ok && slSecondReport.id !== null && slSecondReport.id !== slFirstReport.id
+        && slAcceptRes?.ok === true,
+      JSON.stringify({ filed: slSecondReport, decided: slAcceptRes }));
 
     const landRes = await selfLand(landTok, greenRowId);
     const landRespBody = await landRes.json() as { running?: boolean; candidate?: string; laneSlot?: number;

@@ -23,6 +23,9 @@ import { composerArrival, composerHoldsExactly, composerResidue, composerRows,
   type ComposerArrival } from "../composer";
 import { FLEET_REPORT_STATUSES, type FleetReportEventPayload, type FleetReportStatus } from "../src/protocol";
 import { PANE_ACK_STALE_MS, opsOpen, opsUnacked } from "../src/opsevents";
+// the terminal status words, taken from the one place that defines them rather than re-listed here:
+// the retention check below counts exactly the rows pruneFleetEvents counts.
+import { FLEET_EVENT_TERMINAL } from "../server/types";
 import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, srvEnv, tmuxOut } from "./harness";
 
 interface WatchRow {
@@ -4520,7 +4523,26 @@ export async function run(): Promise<void> {
       lateR.ok && late.watch?.armed === false && lateEvent?.kind === "command-job"
         && late.watch.id !== sub.watch?.id,
       `${JSON.stringify(late)} ${lateEvent?.id as string ?? "(no event)"}`);
-    if (lateEvent) await ackEvent(aTok, lateEvent.id as string);
+    // ACKED FROM `delivered`, AND ASSERTED — the old line was `if (lateEvent) await ackEvent(...)`
+    // with the response thrown away. `waitJobEvent` returns the row the moment it EXISTS, which for
+    // a freshly minted event is `pending`, and an ack on a pending row is refused 409
+    // (server.ts#acknowledgeFleetEvent). Whether this receiver ended the section with FIVE or SIX
+    // terminal events was therefore decided by a transport tick, and the six-event outcome evicted
+    // its oldest row under the per-receiver retention ceiling — the two durability checks ~350
+    // lines below were red on exactly those runs (5/367 and 6/367,
+    // docs/messungen/2026-09-08-watch-event-retention-51565db4.md).
+    const lateId = (lateEvent?.id as string | undefined) ?? "";
+    let lateRow: FleetEventRow | undefined;
+    for (let i = 0; i < 120; i++) {
+      lateRow = lateId ? (await eventRows()).find((e) => e.id === lateId) : undefined;
+      if (lateRow?.status === "delivered") break;
+      await Bun.sleep(250);
+    }
+    const lateAck = lateId ? await ackEvent(aTok, lateId) : new Response(null, { status: 599 });
+    check("job watch: the late verdict's event is acknowledged FROM delivered, never silently refused while pending",
+      lateRow?.status === "delivered" && lateAck.ok
+        && (await eventRows()).find((e) => e.id === lateId)?.status === "acknowledged",
+      `${lateRow?.status} -> ${lateAck.status} ${await lateAck.text()}`);
 
     const readBack = await fetch(`${BASE}/api/self/jobs/${jobId}`, { headers: { "x-fleet-self-token": aTok } });
     const readBody = (await readBack.json()) as { job?: { state?: string; result?: { result?: string } } };
@@ -4640,6 +4662,28 @@ export async function run(): Promise<void> {
     resolveUncertain.ok && (await eventRows()).find((e) => e.id === crashId)?.status === "acknowledged",
     `${resolveUncertain.status} ${await resolveUncertain.text()}`);
 
+  // THE RETENTION CEILING IS REAL, AND THIS FIXTURE SPENDS IT. Receiver aId has now been driven
+  // through SIX terminal events — lane-ready eventA, two deploy-terminal rows, two command-job
+  // rows, and the crash boundary the ack above just resolved — against a ceiling of five
+  // (server.ts, FLEET_EVENT_KEEP_TERMINAL = WATCH_KEEP_SPENT). So that ack did two things: it
+  // settled the sixth row AND, inside server.ts#settleFleetEventAcknowledged -> pruneFleetEvents,
+  // evicted the OLDEST terminal row of this receiver, which is eventA. Measured directly on
+  // 2026-09-08: `{"event":"fleet_event_ack",...}` and `{"event":"fleet_event_prune",...}` land in
+  // audit.jsonl in the same millisecond for the same slot.
+  //
+  // It is pinned here rather than raced against, because until 2026-09-08 the two durability checks
+  // below asserted eventA's SURVIVAL and passed only when the late job verdict's ack had been
+  // silently refused — five terminal rows instead of six. Retention is per RECEIVER SLOT NUMBER,
+  // not per occupant, and it drops by acknowledgedAt: the oldest goes, whatever it was proving.
+  const EVENT_KEEP_TERMINAL = 5; // server.ts, FLEET_EVENT_KEEP_TERMINAL — a red here names the drift
+  const terminalForA = (await eventRows()).filter((e) => e.receiverSlot === aId
+    && FLEET_EVENT_TERMINAL.includes(e.status));
+  check("per-receiver retention keeps exactly the newest five terminal events and evicts the oldest",
+    terminalForA.length === EVENT_KEEP_TERMINAL && !terminalForA.some((e) => e.id === eventA?.id)
+      && terminalForA.some((e) => e.id === crashId)
+      && terminalForA.some((e) => e.id === successEvent?.id),
+    JSON.stringify(terminalForA.map((e) => `${e.id}:${e.status}`)));
+
   // the engineered busy-ness ends HERE, and not one check earlier: everything above this line reads
   // the event while it must still be pending. What follows deliberately lets the pane fall quiet.
   busyKeeperOn = false;
@@ -4689,13 +4733,28 @@ export async function run(): Promise<void> {
     && !replacementSelf.events?.some((e) => e.id === gone?.id),
     `${replacementAck.status} ${await replacementAck.text()}`);
 
-  // Watch deletion and subject teardown do not erase the durable completion object.
-  check("delete the spent transport Watch", (await post(`/api/watches/${wAJ.watch.id}/delete`, {})).ok);
+  // Watch deletion and subject teardown do not erase the durable completion object. Both claims are
+  // asserted on rows the ceiling above RETAINS: the spent deploy Watch and ITS acknowledged event,
+  // and — for the teardown — the resolved crash-boundary row, whose subjectSlot is the very lane
+  // killed below. Until 2026-09-08 both pointed at eventA, i.e. at the one row this receiver's
+  // retention is guaranteed to have dropped; that made them assert a survival guarantee the server
+  // legitimately does not give, and they went red whenever the count actually reached six. Two
+  // Watches are deleted, not one, so the claim still covers the lane-transport kind it was written
+  // for as well as the deploy kind it is now read on.
+  const delLaneWatch = await post(`/api/watches/${wAJ.watch.id}/delete`, {});
+  const delDeployWatch = await post(`/api/watches/${successSub.watch?.id ?? "missing"}/delete`, {});
+  check("delete the spent transport Watch", delLaneWatch.ok && delDeployWatch.ok,
+    `${delLaneWatch.status}/${delDeployWatch.status}`);
   check("deleting a Watch does not delete its acknowledged event",
-    !(await watchRow(wAJ.watch.id)) && (await eventRows()).some((e) => e.id === eventA?.id));
+    !(await watchRow(wAJ.watch.id)) && !(await watchRow(successSub.watch?.id ?? "missing"))
+      && (await eventRows()).some((e) => e.id === successEvent?.id && e.status === "acknowledged"),
+    JSON.stringify((await eventRows()).filter((e) => e.receiverSlot === aId).map((e) => `${e.id}:${e.status}`)));
+  const crashBoundaryRow = (await eventRows()).find((e) => e.id === crashId);
   await post(`/api/slots/${tgt.slot}/kill`, {});
   check("subject teardown after event creation leaves the event trail intact",
-    (await eventRows()).some((e) => e.id === eventA?.id && e.status === "acknowledged"));
+    crashBoundaryRow?.subjectSlot === tgt.slot
+      && (await eventRows()).some((e) => e.id === crashId && e.status === "acknowledged"),
+    JSON.stringify((await eventRows()).find((e) => e.id === crashId) ?? null));
   await post(`/api/slots/${bId}/kill`, {});
   await post(`/api/slots/${aId}/kill`, {});
   const reopenA = await post(`/api/slots/${aId}/open`, { cwd: REPO });

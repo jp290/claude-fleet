@@ -397,7 +397,10 @@ owner's call, not a lane's.
 > server had been running the higher value since the day before. The reasoning above still holds
 > (the wait is unbounded by construction, so the number only moves the threshold); what changed is
 > that the threshold was moved deliberately, and §10 later replaced the race itself with a queue.
-> The second half — mutex priority for the land gate — is still open.
+> The second half is **not** still open either: §10 (2026-09-05) put a priority class for the land
+> gate to the owner and it was *declined*, on the measurement that the contender which actually
+> starved was a post-land audit, not a land gate. Read that bullet, not this sentence, for the
+> standing answer.
 
 ## 9. …and fleet's OWN two suite runs say so too (2026-08-19)
 
@@ -542,7 +545,10 @@ the holder's pid, and release nothing.
   a waiter's remaining wait is now bounded by the suites ahead of it, and its position is printed.
   (**Corrected 2026-09-08.** This bullet used to add: *"the brief for this cut named
   `server.ts#holdSuiteLock`; no function of that name exists."* It does exist — `async function
-  holdSuiteLock(budgetMs)`, landed 2026-09-04 in `c249911d`, a day before that sentence was written.
+  holdSuiteLock(budgetMs)`, present in commit `c249911d` — which precedes `d633a3b2` on both clocks
+  (authored 2026-09-04 21:27 vs 2026-09-05 01:41, committed 03:07 vs 06:00 on 2026-09-05), so the
+  function existed hours before that sentence was written, not the "day" first claimed here and not
+  on any evidence of when it reached `main`.
   Both are real and they are different holds: `runVerify` owns the budget for the gate's *own*
   queueing, which is what this bullet is about, while `holdSuiteLock` is the server taking the mutex
   around the land path — the wait rounds and the ff retry of §8. `rg -n 'holdSuiteLock' server.ts`

@@ -106,9 +106,16 @@ Dublette, die hier verboten ist) noch landen. §1 gilt.
 
 ## 6. Was ich NICHT geprueft habe
 
-Ob die 17 Buendel unter `f9dc8e10` inhaltlich decken, was die 137 Quellen trugen (ich habe nur
-verifiziert, dass meine 16 `notiz`-Zeilen `archived` sind und **keine** meiner `auftrag`-Zeilen
-angefasst wurde). Den Inhalt der sieben restlichen Lebenszyklus-Zeilen ausser §3-ii/§4/§6/§8-b.
+Ob die 17 Buendel unter `f9dc8e10` inhaltlich decken, was die 137 Quellen trugen. **KORRIGIERT
+09:3x auf Controller-Meldung, und der Satz, der hier stand, war schon falsch, als ich ihn schrieb:**
+die 17 Buendel sind *vorlaeufige Triage, keine kanonischen Ersatzquellen*; die Archivierung nahm die
+Originale aus `notesForTask`, und `capTasks` entfernte dabei **34 der 137** referenzierten Quellen.
+103 vorhandene Originale sind text- und programtreu wieder `pending`. **Fuer dieses Program: kein
+Verlust, nachgemessen.** 34 Zeilen unveraendert; meine 16 `notiz`-Zeilen stehen wieder `pending`
+(nicht mehr `archived`) mit erhaltener `programId`; alle 15 offenen `auftrag`-Zeilen da, Status
+unveraendert; beide geparkten `filesProposal` (`417d2be5`, `74319808`) byte-gleich erhalten.
+Quellenrettung und die Pruefkette Anheftung→Retention→Hub→Arbeitsbrief laufen beim Controller —
+**diesen Reparaturkern nicht doppelt bauen und aus jener Sammelweisung nichts weiter archivieren.** Den Inhalt der sieben restlichen Lebenszyklus-Zeilen ausser §3-ii/§4/§6/§8-b.
 Ob `30383e62` (S3a-i) je eine Outcome-Zeile hatte — es steht in der Projektions-`unknown`-Liste;
 mein Beleg ist der CODE, nicht der Status.
 

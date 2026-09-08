@@ -85,9 +85,24 @@ else:
         # twice. What separates a measurement from a phantom is the duration and the check count:
         # a real run is ~680-700s with PASS lines; `checks` exists only since 54ea616, so absent
         # is "old row", never zero. Printed next to the word so nobody has to know that story.
+        # TWO CLOCKS, NAMED. `ms` is WALL CLOCK — the queue in front of the suite mutex is inside
+        # it, and holding it against FLEET_POSTLAND_AUDIT_TIMEOUT_MS compares two different
+        # quantities. Measured 2026-09-07 on the row covering 61156ac5: ms 5 149 164 (85.8 min)
+        # against a 75-min ceiling, and GREEN with 3885/0 — because waitMs 2 561 000 of it was
+        # queueing. `workMs` is what that ceiling actually binds. ABSENT IS UNKNOWN, never 0: a
+        # row from before the field, a remote row, a run that never spawned a child. Same rule
+        # as everything else in this section — absence is not a measurement.
         ms = last.get('ms')
+        wk = last.get('workMs')
+        wt = last.get('waitMs')
         ck = last.get('checks')
-        shape = f" {round(ms/1000)}s" if isinstance(ms, (int, float)) else " ?s"
+        shape = f" {round(ms/1000)}s wall" if isinstance(ms, (int, float)) else " ?s wall"
+        if isinstance(wk, (int, float)):
+            q = f"queue {round(wt/1000)}s" if isinstance(wt, (int, float)) else "queue not reported"
+            shape += f" (work {round(wk/1000)}s · {q})"
+        else:
+            shape += " (work UNKNOWN — this row carries no workMs, so the wall figure is all"
+            shape += " there is and it contains the mutex queue)"
         if isinstance(ck, dict):
             shape += f" · checks {ck.get('ran')}/{ck.get('failed')} failed"
         elif ck is None:
@@ -99,12 +114,17 @@ else:
         prop = last.get('proportional') is True
         if prop:
             shape += f" · proportional [{','.join(last.get('steps') or [])}]"
-        suspect = not prop and isinstance(ms, (int, float)) and ms < 60_000
+        # …and the phantom test asks the WORK clock when there is one. A run that queued 40 min and
+        # then exited instantly has a large `ms` and no measurement in it at all — the exact shape
+        # the wall figure hides. Falls back to `ms` for a row without `workMs`, which is the old
+        # behaviour for old rows and is weaker rather than wrong.
+        dur = wk if isinstance(wk, (int, float)) else ms
+        suspect = not prop and isinstance(dur, (int, float)) and dur < 60_000
         print(f"  newest audit: {last.get('result')} on {str(last.get('mainSha'))[:8]}{shape}"
               f" covering {[c.get('branch','')[-9:] for c in last.get('covers',[])]}")
         if suspect:
-            print("    ^ under a minute: a full isolated run is ~11 min. This may be a suite that"
-                  " never ran — read the row's out, do not trust the colour")
+            print("    ^ under a minute of WORK: a full isolated run is ~11 min. This may be a"
+                  " suite that never ran — read the row's out, do not trust the colour")
 td = os.path.join(MAIN, 'e2e-trail')
 tail = "  — audits write to $TMPDIR/fleet-e2e-trail instead; see docs/e2e-trail.md"
 if not os.path.isdir(td):

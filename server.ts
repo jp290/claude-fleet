@@ -13648,6 +13648,25 @@ interface PostLandAuditRow {
   // suite-lock lines cannot see, in front of 1 576 s they can.
   waitMs?: number;
   waitPartial?: true;
+  // …AND ITS COMPLEMENT, THE ONE THE WORK CEILING ACTUALLY BINDS. `ms` above is WALL CLOCK from the
+  // moment the drain picked this entry up — snapshot, queue, suite, teardown, all of it. The work
+  // budget POSTLAND_AUDIT_TIMEOUT_MS is charged against THIS number and against nothing else (the
+  // arithmetic is `arm`'s, taken once more at the end of the run so the row can carry it).
+  // WHY IT HAD TO BECOME A FIELD (measured 2026-09-07, the row covering 61156ac5 at `mainSha
+  // ae53722e`): `ms 5 149 164` — 85.8 min under a 75-min ceiling — GREEN, exit 0, 3885 checks
+  // 0 failed. A wall clock that overshoots the ceiling by ten minutes and still returns a verdict
+  // is the proof that the two are different quantities: 2 561 000 ms of that run was queueing.
+  // Until this field existed the work figure was nowhere — not in `server.log` (it logs deliveries
+  // only), not in `out` (byte-capped, and the `[suite-lock]` lines print FIRST, so they are the
+  // first thing retention drops — on that very row the retained tail begins `… [3217 lines
+  // elided]`), and derivable as `ms - waitMs` on 5 of 533 rows at best. That derivation is also
+  // WRONG here in a way it is not for a land note: runVerify's `ms` starts at the spawn, this
+  // row's starts before the tip resolve and the snapshot, so `ms - waitMs` over-books the prelude
+  // as work. The number is measured rather than derived for exactly that reason.
+  // ABSENT MEANS NOT MEASURED — never 0 and never null: a run that never reached `Bun.spawn` (tip
+  // unresolved, snapshot failed) has no work clock at all, a remote row's work happened on another
+  // machine, and every row written before this field existed says nothing whatever about it.
+  workMs?: number;
   covers: AuditCover[];
   // Present ONLY on a row a remote helper produced (see THE REMOTE HELPER PORTAL). Its absence is
   // the statement "this machine measured it itself" — which is why the field is optional rather
@@ -14274,6 +14293,13 @@ function auditCounts(row: PostLandAuditRow): boolean {
   if (row.exitCode !== null && row.exitCode > 128 && row.exitCode <= 165) return false;
   return typeof row.ms === "number" && row.ms > 0;
 }
+// `row.ms` — WALL CLOCK, and deliberately so, which is worth saying out loud next to a row that now
+// also carries `workMs`. This distribution exists to answer one question for a watching owner:
+// "this audit has run 4:12 — keep waiting?" The number it is compared against is the LIVE elapsed
+// time, which is wall clock too, queue included; sampling work here would answer a question nobody
+// asked with a number that is smaller than every observation the reader can make. What it must
+// therefore never be read as is the audit's COST or its distance from POSTLAND_AUDIT_TIMEOUT_MS —
+// that ceiling binds `workMs` alone (see `arm`).
 function recordAuditDuration(row: PostLandAuditRow): void {
   if (!auditCounts(row)) return;
   const d = auditDurations.get(row.repo) ?? [];
@@ -14644,6 +14670,9 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
   let checks: PostLandAuditChecks | null = null;
   let waitMs: number | null = null;
   let waitPartial = false;
+  // the work clock, closed once at the settle below. null until a child has actually been spawned,
+  // which is what makes its absence on the row the honest "no work clock exists for this run".
+  let workMs: number | null = null;
   try {
     // the CURRENT tip, not the triggering land's mainAfter: coalescing means this run stands for
     // every land folded into it, and the row must name the tree it actually measured.
@@ -14706,6 +14735,17 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
             // WORKING: elapsed minus the wait it can prove is what it actually spent auditing. The
             // credit is capped at the wait budget, which is what bounds a whole run at
             // POSTLAND_AUDIT_WAIT_MS + POSTLAND_AUDIT_TIMEOUT_MS however the command reports itself.
+            // THIS EXPRESSION IS WHAT POSTLAND_AUDIT_TIMEOUT_MS BINDS, and it is the ONLY thing it
+            // binds: `elapsed since spawn − credited wait`. Not the row's `ms`, which is wall clock
+            // from the drain's pick-up and therefore contains the queue, the snapshot and the
+            // teardown as well. The row carries this quantity as `workMs` so a reader never has to
+            // reconstruct it — and so the comparison that motivated the split cannot be made again
+            // by accident. THE MEASUREMENT (2026-09-07, the row covering 61156ac5 at `mainSha
+            // ae53722e`): `ms 5 149 164` = 85.8 min against a 75-min (4 500 000 ms) ceiling, and it
+            // came back GREEN — exit 0, 3885 checks, 0 failed. Ten minutes over the number that is
+            // supposed to have killed it, because `waitMs 2 561 000` of it never touched the tree.
+            // A ceiling argued from the `ms` column — "N runs sat over the cap" — is an argument
+            // about a quantity no cap has ever bound.
             : setTimeout(() => fire("work"),
                 Math.max(0, POSTLAND_AUDIT_TIMEOUT_MS - (now - spawnedAt)
                   + Math.min(waitedMs, POSTLAND_AUDIT_WAIT_MS)));
@@ -14726,6 +14766,22 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
         arm();
         try {
           const settled = await Promise.race([p.exited, deadline]);
+          // THE WORK CLOCK, CLOSED — `arm`'s own arithmetic, run once at the moment the run ended
+          // rather than reconstructed later from `ms` (which starts before the snapshot) or from
+          // `waitMs` (which a killed run cannot finish reporting). Taken HERE, before the kill
+          // staffel and the pipe grabbing: the grace period and the drain are teardown, and booking
+          // them as measurement is the same error one level down.
+          // `queuedSince` is folded in on purpose: a run killed while still queued never got to
+          // print its `acquired after Ns`, so `waitedMs` alone is 0 for it and the whole queue would
+          // be booked as work — the exact sentence the split exists to stop the record from telling.
+          // `settledAt` rather than the obvious end-time name: that other identifier is pinned to
+          // exactly two occurrences in this file (e2e/pins.ts, RULE_RECEIPT — the suite-offer
+          // withdrawal's "one declaration, one write, no product reader" rule counts it across the
+          // whole module, comments included). A third would fail that pin as a phantom reader.
+          const settledAt = Date.now();
+          workMs = Math.max(0, (settledAt - spawnedAt)
+            - Math.min(waitedMs + (queuedSince !== null ? Math.max(0, settledAt - queuedSince) : 0),
+              POSTLAND_AUDIT_WAIT_MS));
           if (settled === "timeout") {
             // SIGTERM, then SIGKILL after a grace period, and BOTH over the whole process tree —
             // the same staffel runVerify runs, through the same two helpers, because this path has
@@ -14823,6 +14879,10 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
     // its wait and its answer is zero, which is a different statement from a chain that reports no
     // waits at all (the short chain, a remote row, anything that never sources e2e-stage.sh).
     ...(waitMs !== null ? { waitMs, ...(waitPartial ? { waitPartial: true as const } : {}) } : {}),
+    // `workMs !== null`, the same rule and for the same reason: 0 is a measured statement ("it got
+    // the machine and did nothing with it", which is what a wait-clock kill looks like), and the
+    // absence is the different statement "no child ever ran, so no work clock exists".
+    ...(workMs !== null ? { workMs } : {}),
     covers,
     ...(proportional ? { proportional: true as const, steps: [...VERIFY_PROPORTIONAL_STEPS] } : {}),
   };

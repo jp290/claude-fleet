@@ -588,7 +588,14 @@ measurement, and a row that said "timed out"**, which reads like a run that look
 `runPostLandAudit` now runs the same pair through the same parser: `FLEET_POSTLAND_AUDIT_WAIT_MS`
 (default 2 700 000 — the measured hold of ONE full suite ahead of it, 35–41 min on this machine)
 against `FLEET_POSTLAND_AUDIT_TIMEOUT_MS`, the clock moving between them on the child's
-`[suite-lock]` lines, and the row carrying `waitMs`/`waitPartial`. Both budgets end in the same kill
+`[suite-lock]` lines, and the row carrying `waitMs`/`waitPartial` — and, since 2026-09-08, `workMs`:
+the quantity the work ceiling actually binds, measured at the settle rather than derived. Why it had
+to be its own field: the row covering `61156ac5` (`mainSha ae53722e`) carries `ms 5 149 164` — 85.8
+min under a 75-min ceiling — and came back **green**, 3885 checks, 0 failed, because 2 561 000 ms of
+it was queueing. A wall figure that outlives the ceiling and still returns a verdict is the proof
+that it is not the thing the ceiling measures, and it had already been used to argue that ceiling's
+height. `ms - waitMs` does not close the gap here the way it does for a land note: `runVerify`
+counts from the spawn, this row from before the snapshot. Both budgets end in the same kill
 staffel, and that is not tidiness: a wrapper killed while QUEUED holds no mutex yet, but it does hold
 a `t<n>.<pid>` ticket (§10), and a survivor would sit in front of every later contender for as long
 as its pid lives.

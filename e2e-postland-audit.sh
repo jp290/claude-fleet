@@ -19,7 +19,11 @@ mkdir -p "$DIR"
 # and this one was not, so the suite died at boot on every run for weeks, unnoticed because no
 # gate drives it. There is no longer a list here to forget.
 . "$SRC/e2e-stage.sh"
+# state.sh is read BY PATH, not imported: section (Q.7) runs its ledger reader against a fixture
+# ledger to prove that a row without the work/wait fields reads as UNKNOWN rather than as zero.
+STAGE_EXTRA="state.sh"
 stage_instance "$SRC" "$DIR" server.ts fleet-e2e-postland-audit.ts || exit 1
+unset STAGE_EXTRA
 
 # green verify stand-in (no sabotage marker → clean+green → the lane auto-lands, which is what the
 # audit hangs off)
@@ -92,6 +96,10 @@ chmod +x "$DIR/fakemerge"
 #          finished normally rather than only on a killed one.
 #   lockzero — `acquired after 0s` and nothing else: the chain DID report its wait and the answer is
 #          zero. Absent-vs-zero is the distinction the row's `waitMs` exists to keep.
+#   lockwork — `waiting`, 2s, `acquired after 2s`, 3s of WORK, green. The only mode whose three
+#          clocks are all different and all non-trivial: wall ~5s, queue 2s, work ~3s. It exists so
+#          the row's `workMs` can be shown to be neither of the other two — a field filled from
+#          `ms` or from `waitMs` fails section (Q.6) on the numbers alone.
 cat > "$DIR/fakeaudit" <<'EOF'
 #!/bin/sh
 d="$(dirname "$0")"
@@ -137,6 +145,14 @@ case "$mode" in
     echo "[suite-lock] fakeaudit acquired after 3s (pid $$)"
     ;;
   lockzero)    echo "[suite-lock] fakeaudit acquired after 0s (pid $$)" ;;
+  lockwork)
+    echo "[suite-lock] fakeaudit waiting 0s for /tmp/fleet-e2e.lock — position 2 of 2 — held by live pid 1 with proven identity (up 01:00): /bin/sh ./e2e-isolated.sh"
+    sleep 2
+    # reports the wait it really had, unlike `lockslow` — so the work clock below is the elapsed
+    # time minus a credit that does NOT swallow it, and the row carries three distinct numbers
+    echo "[suite-lock] fakeaudit acquired after 2s (pid $$)"
+    sleep 3
+    ;;
 esac
 rm -f "$d/auditbusy"
 echo "PASS  post-land audit stand-in check"

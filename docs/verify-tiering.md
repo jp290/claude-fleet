@@ -506,6 +506,39 @@ NICHT geglaettet: **der Vorlauf des Kindes liegt ausserhalb jeder Mutex-Frage** 
 dessen, was `suiteWait` sehen kann — bei `5b676958` sind das 1 124 s in `ms`, die in keinem `waitMs`
 je auftauchen werden.
 
+**`workMs` ist die Groesse, die der Deckel bindet — `ms` ist es nicht.** Die Trennung stand seit
+`c7184f85` im TIMER, aber nicht in der Zeile: die Zeile trug `ms` (Wanduhr) und `waitMs` (Schlange),
+und die Arbeitszeit war nirgends. **Der Beleg (gemessen 2026-09-07, Zeile ueber `61156ac5`,
+`mainSha ae53722e`):** `ms 5 149 164` = 85,8 min gegen einen 75-min-Deckel (4 500 000 ms), Ergebnis
+**gruen**, exit 0, 3885 Checks, 0 failed. Ein Lauf, der den Deckel um zehn Minuten ueberschreitet
+und trotzdem ein Urteil liefert, beweist, dass die `ms`-Spalte nicht das ist, was der Deckel
+begrenzt: `waitMs 2 561 000` davon war Schlange. Am selben Tag wurde die Deckelhoehe **an dieser
+Spalte begruendet** („N Laeufe lagen ueber dem Deckel") — eine Rechnung ueber zwei verschiedene
+Groessen. Seither traegt die Zeile `workMs`, gemessen statt abgeleitet, denn:
+
+- **`ms − waitMs` ist hier NICHT die Arbeit** (anders als bei einer `fleet/land`-Note, wo genau
+  diese Differenz gilt und wo `state.sh` und die Messnotizen sie zu Recht rechnen): `runVerify`
+  zaehlt `ms` ab dem Spawn, die Audit-Zeile ab `startedAt` — also VOR Tip-Aufloesung und
+  `snapshotIntegrationTree`. Der Vorlauf wird sonst als Arbeit verbucht.
+- **Ablesbar war die Arbeitszeit vorher nirgends** (gemessen am selben Tag): `server.log` fuehrt nur
+  `delivered post-land-audit to slot N` und keine Zeiten; die `[suite-lock]`-Zeilen im `out` stehen
+  ZUERST und fallen als Erstes aus dem 4096-Byte-Fenster (bei genau dieser Zeile beginnt der
+  aufbewahrte Rest mit `… [3217 lines elided]`); `waitMs` trugen 5 von 533 Zeilen. Das Naechste war
+  die Trail-Datei (`$TMPDIR/fleet-e2e-trail/<trail>.jsonl`): erster bis letzter `ts` = 2 580 426 ms,
+  aber sie liegt in `$TMPDIR`, existiert nur fuer volle Laeufe und deckt nur die Check-Phase.
+- **Abwesenheit heisst NICHT GEMESSEN, nie 0**: eine Zeile, die nie ein Kind gespawnt hat (Tip
+  unaufloesbar, Snapshot gescheitert), eine Remote-Zeile und jede Zeile aus der Zeit vor dem Feld
+  sagen ueber die Arbeitszeit gar nichts. `./state.sh` schreibt dafuer `work UNKNOWN` und markiert
+  die Wanduhr als Wanduhr; ein Lauf mit Arbeit, aber ohne gemeldete Schlange, bekommt
+  `queue not reported`. Beides ist als ausfuehrbarer Check gepinnt (`fleet-e2e-postland-audit.ts`
+  §Q.7 faehrt den Ledger-Leser aus `state.sh` gegen fabrizierte Zeilen).
+- **Der Phantom-Alarm fragt seither die Arbeitsuhr**: 40 min Schlange vor einem Sofort-Exit hat eine
+  grosse Wanduhr und keine Messung darin — genau die Form, die `613faa3` erzeugte.
+
+Was die Verteilung im Board (`recordAuditDuration`) angeht: die sammelt weiter **Wanduhr**, und das
+ist richtig — sie beantwortet „dieser Audit laeuft 4:12, weiterwarten?", und die Vergleichsgroesse
+auf dem Board ist ebenfalls Wanduhr. Sie ist deshalb nie die Kosten- oder Deckelgroesse.
+
 **Was dieser Schnitt NICHT ist.** Er aendert kein Verdikt, faerbt nichts um und macht keinen Lauf
 gruen. Er entscheidet auch die PLATZIERUNG nicht (Helfer-Gnadenfrist, Re-Offer eines laufenden
 Eintrags, Ticket-Prioritaet) — das ist die eigene Diagnosezeile `e407aef5`.

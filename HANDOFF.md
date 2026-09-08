@@ -169,6 +169,39 @@ Stoppen einer laufenden, owner-gefilten Lane genau die Bewegung, die man nicht m
 BENANNTE Ausnahme von der Modellpolitik, kein Drift — wer sie anders will, aendert `t.spawn` der
 sieben noch nicht gestarteten Zeilen.
 
+## 5e. DIE OFFENE OWNER-FRAGE — sie stirbt mit meiner Succession, hier ist ihr VOLLER Text
+
+Attention **`6d51202e451b5e3166d24c8d`** (kind `decision`), gestellt 2026-09-08 07:5x. **Eine
+Succession toetet sie still** (`refused`, `requesterReason: "requester session ended"`). Findest du
+sie als `refused`, ist sie UNBEANTWORTET, nicht abgelehnt — **stell sie neu**, woertlich:
+
+----- BEGINN ATTENTION-TEXT -----
+S12 (Program-Blick im Board) ist blockiert, und die Entscheidung ist eine Wire-Autoritaet, keine Umsetzung.
+
+GEMESSEN, live gegen den laufenden Server: GET /api/programs liefert executionStatus mit genau vier Feldern — main, attention, inbox, lanes. lastLand, lastAudit und deploy sind ABSENT. Sie entstehen nur mit Ledger-Kontext und werden ausschliesslich ueber die occupant-gebundene Self-Token-Route geliefert; src/client.ts hat keinen Self-Token-Pfad. S2 hat diese Trennung ABSICHTLICH gelandet (df41b3ce: Owner-Liste nur Speicherhaelfte).
+
+DER WIDERSPRUCH: S12s Brief verlangt, dass ein rotes unadjudiziertes Audit im Board sichtbar wird, verbietet aber jede Routen-/Server-Aenderung. Beides zusammen ist nicht erfuellbar. Die Codex-Lane hat das erkannt und KEINEN Code geschrieben — richtig: ein Check, den die geforderte Mutation faellt, waehrend in Produktion nie ein rotes Audit sichtbar werden koennte, waere eine Luege im Register.
+
+DEINE ENTSCHEIDUNG, zwei Wege:
+(A) GET /api/programs darf um den Ledger-Kontext erweitert werden (S2s Trennung wird bewusst zurueckgenommen). Dann ist S12 baubar wie gebrieft.
+(B) Die Trennung bleibt. Dann rendert S12 nur, was die Route traegt (die stale Bindung ueber main.occupancy ist drin und beweisbar), und die Audit-Sicht faellt aus dem Auftrag — der Brief muss entsprechend gekuerzt werden.
+
+MEINE EMPFEHLUNG: (A), aber nur fuer lastAudit, nicht fuer alle drei Felder — die Rot-Sichtbarkeit ist der eigentliche Anlass. EINSCHRAENKUNG, ausdruecklich: ich habe die Kosten NICHT gemessen. /api/programs ist der Board-Poll, und ob der Ledger-Kontext dort gecacht ist oder je Poll von Platte liest, weiss ich nicht. Wenn er liest, ist (A) teurer als es aussieht und (B) die ehrlichere Wahl.
+----- ENDE ATTENTION-TEXT -----
+
+**Anlass war der Report von `7ed73694`** (S12 Program-Blick, Codex-Lane auf Slot 1), Status
+`needs-main`, **kein Commit, 0 Diff-Zeilen — und das war richtig.** Die Lane hat sich geweigert,
+eine produktions-unmoegliche Fixture zu schreiben: ein Check, den die im Brief geforderte Mutation
+faellt, waehrend in Produktion nie ein rotes Audit sichtbar werden koennte. Ich habe ihre zentrale
+Behauptung SELBST am laufenden Server nachgemessen, statt sie zu glauben —
+`GET /api/programs` liefert `executionStatus` mit genau vier Feldern (`main`, `attention`, `inbox`,
+`lanes`); `lastLand`, `lastAudit`, `deploy` sind ABSENT. Report ist `accepted` mit Begruendung.
+
+**Was das fuer den Brief heisst:** `7ed73694`s Brief ist in sich widerspruechlich (er verlangt die
+Audit-Sicht UND verbietet jede Routen-/Server-Aenderung). Er ist NICHT ohne die Owner-Antwort neu
+dispatchbar — und wenn die Antwort (B) lautet, muss der Brief gekuerzt werden, wofuer es an meiner
+Tuer kein Werkzeug gibt (`3ea89f71`).
+
 ## 6. Was ich NICHT geprueft habe
 
 Ob die Sonden aus (c) heute gruen LAUFEN (kein eigener `./e2e-isolated.sh`). Den Inhalt der sieben

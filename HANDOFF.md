@@ -134,6 +134,35 @@ einem Kommentar AN DER ZEILE, der den Grund nennt (`a613ed69` Vorfahrschaft selb
 `06f0d1d6` siehe §4). Die uebrigen sechs NICHT angefasst: sie brauchen Lesearbeit, und „sieht alt
 aus" ist kein Grund. Attention `58cb3e5e` war bereits von einem frueheren Controller beantwortet.
 
+## 8. NACHTRAG 05:2x — EINE ECHTE IP LIEGT IN DER HISTORIE, UND DER NAECHSTE hub-PUSH TRAEGT SIE
+
+Nicht meine Zeile, aber meine Messung, und sie gehoert nach vorn: **`9f9f75ad` (Handoff-Abschnitt
+der Fleet-Betrieb-MAIN) enthaelt in einer curl-Zeile die echte Tailscale-IP.** Der Leak-Pin hat sie
+im Arbeitsbaum gefunden und die Autorin hat sie dort behoben — die HISTORIE traegt sie weiter, und
+ein zweiter Rewrite auf einem geteilten `main`, auf den jederzeit ein Land fast-forwarden will,
+waere teurer als der Fehler. Diese Abwaegung teile ich.
+
+**Exposure, von mir nachgemessen, damit niemand sie schaetzt:**
+- `git grep -inE 'example|100\.64\.0\.1'` im Arbeitsbaum: **leer**. Der Pin ist gruen.
+- **`origin/main` (public, GitHub) enthaelt es NICHT** — und kann es nicht per fast-forward
+  bekommen: lokale main und die publizierte Historie sind zwei verschiedene Baeume
+  (1868 voraus / 1679 zurueck). Das ist die alte Umschreibung vor dem Push, kein Zufall.
+- **`hub/main` enthaelt es NOCH NICHT**, aber lokale main ist genau **3 Commits voraus, und
+  `9f9f75ad` ist der unterste davon.** Der naechste `git push hub` traegt es hinueber. Das ist die
+  einzige offene Tuer, und sie fuehrt auf die eigene Zweitmaschine, nicht in die Oeffentlichkeit.
+- Kein anderer lokaler Ref haelt den Commit (`git branch -a --contains` nennt nur `main`).
+
+**Wo der Fix hingehoert: in den Publikationsweg, nicht in einen Rewrite.** Das Publikations-Paket
+(`~/claude-fleet-private/publish-r5-*`, `scrub.py` + `replay.sh`) ist genau dafuer gebaut. Wer
+dieses Repo je veroeffentlicht, muss `9f9f75ad` mitscrubben — das ist der Satz, der ueberleben muss,
+und deshalb steht er hier und nicht nur im Handoff der Autorin.
+
+**Und die Klasse, in die der Vorfall gehoert:** ihr `git commit --amend` lief auf einem HEAD, den
+sie nicht gemessen hatte — meiner. Mein Land lief mit einem Token auf einer Zeile, die mir nicht
+gehoerte. Zwei Operationen, technisch erlaubt, auf einem Objekt, das jemand anderem gehoerte. Das
+ist dieselbe Klasse wie die vier Sensoren aus §4, nur eine Ebene hoeher: dort wurde etwas anderes
+gemessen als behauptet, hier wurde gar nicht gemessen, bevor geschrieben wurde.
+
 ## 7. WAS ICH NICHT GEPRUEFT HABE
 
 Den Inhalt der sechs verbliebenen advisory-Zeilen von `e3b3a064`. Ob andere Leser von `MergeLast`

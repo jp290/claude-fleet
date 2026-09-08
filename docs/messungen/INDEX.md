@@ -1,9 +1,12 @@
 # Index der Messnotizen
 
+- S2D ist angenommen, regulaer gelandet und gruen auditiert; das Gesamt-Review bleibt wegen offener GLM-Korrektur, Server-/Gate-Abdeckung und unvollstaendigem Briefnachweis offen. — docs/messungen/2026-09-review-aussen-nach-innen.md · bereich: review,datenlayer,rollen,kontext,gates · stand: 2026-09-08
+- Bestehende Rueckwege, Rollen-/Kontextuebergaben und gemeinsame Evidenzprojektionen schliessen; C0-C5 sind abgegrenzte Umsetzungsvorschlaege, keine erledigten oder automatisch freigegebenen Arbeiten. — docs/messungen/2026-09-07-datenvertraege-umsetzungsplan.md · bereich: datenlayer,kontext,briefs,workflow,hub · stand: 2026-09-07
+
 - Eine Queue-Zeile bekommt ihre `programId` nur bei der Geburt durch die program-gebundene Self-Tuer; keine Route ordnet eine bestehende Zeile nachtraeglich zu — Erfolgskriterium (a) von „Fleet-Betrieb 2026-09" ist so nicht schliessbar, nur vorwaerts. — docs/messungen/2026-09-08-program-zuordnung-nachtraeglich.md · bereich: queue,programs,kriterien · stand: 2026-09-08
 - F1 ist zwischen Abnahmetuer, Rueckmeldung und Herkunft aufgeteilt; F5 gehoert N2. F2/F3 und Teile von F4 brauchen begrenzte Restarbeiten, keine neue Gesamtreview und keine stillen Studio-Gates. — docs/messungen/2026-09-07-studio-hub-disposition-astra.md · bereich: studio,hub,reports,kontext,lifecycle · stand: 2026-09-07
 
-- Die Auswahl- und Quittungskette Quelle→Kontext→Empfaenger rekonstruiert sich byte-genau (3/3 Hashes, 293/293 Baumstaende); die zwei echten Luecken sitzen am Rand: die Quittung belegt Bau, nicht Zustellung. — docs/messungen/2026-09-06-astra-s2d-kontextkette.md · bereich: context,briefs,harness,ledger · stand: 2026-09-07
+- Die Auswahl- und Quittungskette rekonstruiert sich byte-genau (3/3 Hashes reproduziert, 934/934 Bytes am eigenen Gruendungsprompt gemessen). Ob die Quelle zwischen Spawn und Auslieferung driftet, ist UNKNOWN — die frueher hier gemeldeten 293/293 Baumstaende messen Vorfahrschaft, nicht den Spawn-Baum (korrigiert 2026-09-08, §3). Die eine belastbare Luecke sitzt am Rand: die Quittung belegt BAU, nicht ZUSTELLUNG, obwohl derselbe Aufruf die Annahme misst (B1). Dass die Auslassungs-Begruendung nur die erste von mehreren zutreffenden Sprossen nennt, ist der ausgesprochene Vertrag und ein ungekosteter Darstellungswunsch, kein Fehler (B2, korrigiert 2026-09-08). — docs/messungen/2026-09-06-astra-s2d-kontextkette.md · bereich: context,briefs,harness,ledger · stand: 2026-09-07 (korrigiert 2026-09-08, siehe Korrekturvermerk)
 
 - Zurückgehaltene Notiz, nicht Teil dieses Repos. — docs/messungen/2026-09-07-zurueckgehaltene-notiz.md · bereich: portfolio · stand: 2026-09-07
 

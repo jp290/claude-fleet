@@ -1272,6 +1272,13 @@ interface Program {
   // THE PROGRAM INBOX (see ProgramInbox). Absent = no entry was ever written, the honest legacy
   // shape. Never backfilled at load; an unreadable record loads as ABSENT and is reported.
   inbox?: ProgramInbox;
+  // …and the SCAR that degradation leaves (see ProgramInboxLoss). Absent = no inbox record of this
+  // Program was ever unreadable. Written by the loader alone and never cleared.
+  inboxLost?: ProgramInboxLoss;
+  // WHAT THE LAST RETIRING MAIN OWED (see ProgramHandover). Absent = no succession has happened,
+  // or the one that did left nothing dying behind it. Written by the succession's own state cut,
+  // read through the execution view, never backfilled and never re-armed.
+  handover?: ProgramHandover;
   confirmedAt?: number;
   activatedAt?: number;
   completedAt?: number;
@@ -1773,6 +1780,186 @@ const loadProgramInbox = (value: unknown): ProgramInboxRead => {
   return { ok: true, inbox: { v: 1, entries, dropped: r.dropped as number } };
 };
 
+// --- THE PROGRAM HANDOVER RECORD (the seventh) --------------------------------------------------
+// WHAT A RETIRING MAIN OWED, kept because nothing else keeps it. A succession kills the
+// predecessor's slot, and that teardown deletes its autos and its watches outright and refuses its
+// open attentions; the attention ROWS survive the refusal but are a pruned tail
+// (ATTENTION_KEEP_TERMINAL), so even they are not a place a successor can come back to. Until
+// 2026-09-08 the successor was handed a COUNT and a 200-character preview of each — which is how a
+// decision whose condition sat in its last clause arrived without its condition, an attention
+// arrived without the id that names it, and a watch arrived without the target that defines it.
+//
+// So the obligations are RETAINED as data, verbatim, with the id and the parameters a successor
+// would need to re-register them, and the founding brief keeps only a preview that says where the
+// full row is. Three properties this record deliberately does NOT have:
+//   · it re-arms NOTHING. It is evidence, never a lease: an auto that fires again because a
+//     session was handed over is a schedule nobody chose, and a re-armed watch would resubscribe a
+//     successor to a subject it never picked. Re-registration is a deliberate act through the
+//     ordinary doors, and the preview says so.
+//   · it is not a queue and carries no receipt. Who read it is not a fact this record needs; the
+//     inbox already answers that question for the things that ARE addressed to a Program.
+//   · it holds ONE succession — the newest. A second succession replaces it, and the founding
+//     brief says so in as many words, because a bound that is stated is a bound and a bound that is
+//     silent is a loss. The route caps make one succession's worth naturally small: at most five
+//     open attentions per requester, five watches and five autos per slot.
+type ProgramHandoverKind = "attention" | "watch" | "auto";
+const PROGRAM_HANDOVER_KINDS: ProgramHandoverKind[] = ["attention", "watch", "auto"];
+// 15 = the three route caps summed (5 + 5 + 5). Stated as the sum rather than a round number so a
+// raised route cap shows up here as an arithmetic mismatch instead of as a silent drop.
+const PROGRAM_HANDOVER_MAX = 15;
+const PROGRAM_HANDOVER_TEXT_MAX = 10_000;   // the auto route's own text ceiling; attentions cap at 2000
+const PROGRAM_HANDOVER_DETAIL_KEYS_MAX = 16;
+const PROGRAM_HANDOVER_DETAIL_VALUE_MAX = 500;
+// The row's own reconstruction parameters, flat and scalar: `everySec`/`idleSec`/`runsLeft` for an
+// auto, `kind`/`target`/`targetCwd`/`targetBranch` (or `repo`/`mainAfter`, or `deployId`, or
+// `jobId`) for a watch, `kind`/`status`/`taskId`/`branch` for an attention. Flat and scalar on
+// purpose: a nested bag would be a second schema nobody validates, and the successor reads these
+// to TYPE a new request, not to replay an object.
+type ProgramHandoverDetail = Record<string, string | number | boolean | null>;
+interface ProgramHandoverObligation {
+  kind: ProgramHandoverKind;
+  id: string;      // the row's own id, verbatim — the address a human names it by
+  at: number;      // raisedAt for an attention, created for a watch or an auto
+  text: string;    // the attention's question or the auto's check-in, COMPLETE. "" for a watch.
+  detail: ProgramHandoverDetail;
+}
+interface ProgramHandover {
+  v: 1;
+  at: number;
+  from: { slot: number; openedAt: number; sessionId: string | null };
+  to: { slot: number; openedAt: number };
+  obligations: ProgramHandoverObligation[];
+  dropped: number;
+}
+type ProgramHandoverRead = { ok: true; handover: ProgramHandover } | { ok: false; error: string };
+const PROGRAM_HANDOVER_KEYS = ["v", "at", "from", "to", "obligations", "dropped"];
+const PROGRAM_HANDOVER_OBLIGATION_KEYS = ["kind", "id", "at", "text", "detail"];
+const loadProgramHandoverDetail = (value: unknown, index: number): ProgramHandoverDetail | string => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return `obligation ${index} detail must be an object`;
+  const r = value as Record<string, unknown>;
+  const keys = Object.keys(r);
+  if (keys.length > PROGRAM_HANDOVER_DETAIL_KEYS_MAX)
+    return `obligation ${index} detail must hold at most ${PROGRAM_HANDOVER_DETAIL_KEYS_MAX} keys`;
+  const detail: ProgramHandoverDetail = {};
+  for (const key of keys) {
+    if (!/^[A-Za-z][A-Za-z0-9]{0,39}$/.test(key))
+      return `obligation ${index} detail key ${JSON.stringify(key.slice(0, 40))} is not a plain field name`;
+    const v = r[key];
+    if (v === null || typeof v === "boolean") { detail[key] = v; continue; }
+    if (typeof v === "number") {
+      if (!Number.isFinite(v)) return `obligation ${index} detail ${key} must be a finite number`;
+      detail[key] = v; continue;
+    }
+    if (typeof v !== "string" || v.length > PROGRAM_HANDOVER_DETAIL_VALUE_MAX)
+      return `obligation ${index} detail ${key} must be a string of at most ${PROGRAM_HANDOVER_DETAIL_VALUE_MAX} chars, a finite number, a boolean or null`;
+    detail[key] = v;
+  }
+  return detail;
+};
+const loadProgramHandoverObligation = (value: unknown, index: number): ProgramHandoverObligation | string => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return `obligation ${index} must be an object`;
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !PROGRAM_HANDOVER_OBLIGATION_KEYS.includes(k))
+    || Object.keys(r).length !== PROGRAM_HANDOVER_OBLIGATION_KEYS.length)
+    return `obligation ${index} must contain exactly ${PROGRAM_HANDOVER_OBLIGATION_KEYS.join(", ")}`;
+  if (typeof r.kind !== "string" || !PROGRAM_HANDOVER_KINDS.includes(r.kind as ProgramHandoverKind))
+    return `obligation ${index} kind must be one of ${PROGRAM_HANDOVER_KINDS.join(", ")}`;
+  if (typeof r.id !== "string" || !/^[0-9a-zA-Z_-]{1,64}$/.test(r.id))
+    return `obligation ${index} id must be 1-64 id characters`;
+  if (typeof r.at !== "number" || !Number.isFinite(r.at) || r.at <= 0)
+    return `obligation ${index} at must be a positive number`;
+  // "" IS a legal text and is the honest shape for a watch, which has no prose of its own. A loader
+  // that demanded a non-empty string here would force an invented sentence onto exactly the kind
+  // whose whole content is its parameters.
+  if (typeof r.text !== "string" || r.text.length > PROGRAM_HANDOVER_TEXT_MAX)
+    return `obligation ${index} text must be a string of at most ${PROGRAM_HANDOVER_TEXT_MAX} chars`;
+  const detail = loadProgramHandoverDetail(r.detail, index);
+  if (typeof detail === "string") return detail;
+  return { kind: r.kind as ProgramHandoverKind, id: r.id, at: r.at, text: r.text, detail };
+};
+// CLOSED, VERSIONED, DEFAULT-ABSENT, in loadProgramInbox's discipline and for its reason: a
+// handover nobody can parse is not a shorter handover, it is no handover, and the caller REPORTS
+// that instead of repairing it field by field. Repairing would turn "these obligations were lost"
+// into "there were none", which is the one answer this record may never give.
+const loadProgramHandover = (value: unknown): ProgramHandoverRead => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "must be an object" };
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !PROGRAM_HANDOVER_KEYS.includes(k))
+    || Object.keys(r).length !== PROGRAM_HANDOVER_KEYS.length)
+    return { ok: false, error: `must contain exactly ${PROGRAM_HANDOVER_KEYS.join(", ")}` };
+  if (r.v !== 1) return { ok: false, error: "v must be 1" };
+  if (typeof r.at !== "number" || !Number.isFinite(r.at) || r.at <= 0)
+    return { ok: false, error: "at must be a positive number" };
+  const occupant = (raw: unknown, name: string, withSession: boolean): string | null => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return `${name} must be an object`;
+    const o = raw as Record<string, unknown>;
+    const want = withSession ? ["slot", "openedAt", "sessionId"] : ["slot", "openedAt"];
+    if (Object.keys(o).some((k) => !want.includes(k)) || Object.keys(o).length !== want.length)
+      return `${name} must contain exactly ${want.join(", ")}`;
+    if (!Number.isInteger(o.slot) || (o.slot as number) < 1 || (o.slot as number) > MAX_SLOTS)
+      return `${name} slot must be an integer in 1..${MAX_SLOTS}`;
+    if (typeof o.openedAt !== "number" || !Number.isFinite(o.openedAt) || o.openedAt <= 0)
+      return `${name} openedAt must be a positive number`;
+    if (withSession && o.sessionId !== null && typeof o.sessionId !== "string")
+      return `${name} sessionId must be a string or null`;
+    return null;
+  };
+  const fromErr = occupant(r.from, "from", true);
+  if (fromErr) return { ok: false, error: fromErr };
+  const toErr = occupant(r.to, "to", false);
+  if (toErr) return { ok: false, error: toErr };
+  if (!Array.isArray(r.obligations)) return { ok: false, error: "obligations must be an array" };
+  if (r.obligations.length > PROGRAM_HANDOVER_MAX)
+    return { ok: false, error: `obligations must hold at most ${PROGRAM_HANDOVER_MAX} rows` };
+  if (!Number.isInteger(r.dropped) || (r.dropped as number) < 0)
+    return { ok: false, error: "dropped must be a non-negative integer" };
+  const obligations: ProgramHandoverObligation[] = [];
+  const seen = new Set<string>();
+  for (const [index, raw] of r.obligations.entries()) {
+    const row = loadProgramHandoverObligation(raw, index);
+    if (typeof row === "string") return { ok: false, error: row };
+    // ids are unique per kind, never across kinds — an auto id is 8 hex and an attention id 24,
+    // but nothing guarantees that forever, so the pair is what must not repeat
+    const key = `${row.kind}/${row.id}`;
+    if (seen.has(key)) return { ok: false, error: `obligation ${index} repeats ${key}` };
+    seen.add(key);
+    obligations.push(row);
+  }
+  const from = r.from as { slot: number; openedAt: number; sessionId: string | null };
+  const to = r.to as { slot: number; openedAt: number };
+  return { ok: true, handover: { v: 1, at: r.at,
+    from: { slot: from.slot, openedAt: from.openedAt, sessionId: from.sessionId },
+    to: { slot: to.slot, openedAt: to.openedAt },
+    obligations, dropped: r.dropped as number } };
+};
+
+// --- THE INBOX LOSS SCAR ------------------------------------------------------------------------
+// A record of the one degradation the inbox loader performs, and it exists because that
+// degradation is otherwise INVISIBLE and PERMANENT. loadProgramInbox refuses to repair a broken
+// record field by field — correct — so the Program loads with no inbox at all, which is
+// byte-identical to a Program that never had an entry written. The console line and the audit row
+// the loader emits are prose in files no reader of the inbox opens, and a boot-scoped in-memory
+// flag dies at the next restart while the LOSS does not.
+//
+// So the fact is written onto the Program in the same shape as every other record here (closed,
+// versioned, default-absent) and reported by the inbox's own reader. It is a SCAR, never cleared:
+// the pointers written before `at` are gone, and a later valid inbox does not bring them back.
+interface ProgramInboxLoss { v: 1; at: number; error: string }
+const PROGRAM_INBOX_LOSS_ERROR_MAX = 300;
+type ProgramInboxLossRead = { ok: true; loss: ProgramInboxLoss } | { ok: false; error: string };
+const loadProgramInboxLoss = (value: unknown): ProgramInboxLossRead => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "must be an object" };
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !["v", "at", "error"].includes(k)) || Object.keys(r).length !== 3)
+    return { ok: false, error: "must contain exactly v, at, error" };
+  if (r.v !== 1) return { ok: false, error: "v must be 1" };
+  if (typeof r.at !== "number" || !Number.isFinite(r.at) || r.at <= 0)
+    return { ok: false, error: "at must be a positive number" };
+  if (typeof r.error !== "string" || r.error === "" || r.error.length > PROGRAM_INBOX_LOSS_ERROR_MAX)
+    return { ok: false, error: `error must be a non-empty string of at most ${PROGRAM_INBOX_LOSS_ERROR_MAX} chars` };
+  return { ok: true, loss: { v: 1, at: r.at, error: r.error } };
+};
+
 type ProgramFoundingMode = "bootstrap" | "succession";
 interface ProgramFoundingOccupant { slot: number; openedAt: number }
 interface ProgramFoundingV1 {
@@ -1848,6 +2035,8 @@ export type {
   PromotionSelfLand, PromotionPolicy, ProgramProfileKind, ProgramProfile, ProgramLineageVia,
   ProgramLineageEndedBy, ProgramLineageEntry, ProgramLineage, ProgramLineageRead,
   ProgramInboxKind, ProgramInboxEntry, ProgramInbox, ProgramInboxRead,
+  ProgramHandoverKind, ProgramHandoverDetail, ProgramHandoverObligation, ProgramHandover,
+  ProgramHandoverRead, ProgramInboxLoss, ProgramInboxLossRead,
   ProgramFoundingMode, ProgramFoundingOccupant, ProgramFoundingV1, ProgramFoundingProfileKind,
   ProgramFoundingIdentity, ProgramFoundingV2, ProgramFounding, ProgramFoundingRead, ProgramContent,
   ProgramValidation, SupervisorBinding, ProgramDigest, DispatchSpawn, SlotStreamOccupant,
@@ -1867,7 +2056,10 @@ export {
   PROGRAM_PROFILE_KINDS, loadProgramProfile, PROGRAM_LINEAGE_MAX, PROGRAM_LINEAGE_VIA,
   PROGRAM_LINEAGE_ENDED_BY, PROGRAM_LINEAGE_ENTRY_KEYS, loadProgramLineageEntry, loadProgramLineage,
   PROGRAM_INBOX_MAX, PROGRAM_INBOX_KINDS, PROGRAM_INBOX_ENTRY_KEYS, PROGRAM_INBOX_REF_MAX,
+  PROGRAM_INBOX_LOSS_ERROR_MAX,
   loadProgramInboxEntry, loadProgramInbox,
+  PROGRAM_HANDOVER_MAX, PROGRAM_HANDOVER_TEXT_MAX, PROGRAM_HANDOVER_KINDS,
+  loadProgramHandover, loadProgramInboxLoss,
   foundingOccupantFrom, foundingIdentityFrom,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,

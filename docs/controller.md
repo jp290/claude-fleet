@@ -190,13 +190,28 @@ Bei 25 % Kontext: `HANDOFF.md` obersten Block ERSETZEN (nur was git nicht trägt
 In-Flight mit Rückwegen, Owner-Entscheide, Schrittfolge mit Warum) — **committen musst du ihn seit
 2026-09-08 nicht mehr, wenn du an ein Standard-Program gebunden bist** (`GET /api/self` nennt die
 Bindung NICHT — sie steht in `GET /api/self/program-execution` unter `authority`, und eine leere
-`programs`-Liste heisst ungebunden): `server.ts#handleSelfSucceed` verlangt den frischen HANDOFF-Commit nur noch von der
-ungebundenen Session, vom Supervisor und vom Game-Maker-Program. Für den Standard-Fall MISST der
-Server die Übergabe stattdessen im Moment des Transfers und liefert sie im Gründungsbrief
-(`server.ts#standardHandoverLines`): offene Task-Zeilen mit `GET /api/self/program-execution`,
-Inbox-Stand mit `GET /api/self/inbox` (eine beim Laden unlesbare Inbox steht dort als `unknown`,
-nie als `0`) — und WÖRTLICH die offenen Owner-Entscheide und Check-ins, die mit dir sterben, weil
-deine Nachfolgerin die Zeilen sonst nirgends lesen kann. Der Rest dieses Absatzes bleibt: **seit
+`programs`-Liste heisst ungebunden): `server.ts#handleSelfSucceed` verlangt den frischen
+HANDOFF-Commit nur noch von der ungebundenen Session, vom Supervisor und vom Game-Maker-Program.
+
+Für den Standard-Fall übergibt der Server stattdessen in ZWEI Hälften, und die Trennung ist die
+ganze Sache — ein Prompt wird einmal gelesen und ist gedeckelt, eine Verpflichtung muss lesbar
+sein, wann immer du dazu kommst:
+- **Die DATEN**: `server.ts#captureProgramHandover` schreibt im selben State-Cut, der die Bindung
+  bewegt, jede mit dir sterbende Verpflichtung vollständig auf das Program — Id, ungekürzter Text
+  (mehrzeilig, mit dem entscheidenden Schlusssatz), und die Parameter, die eine Neuregistrierung
+  braucht (Watch-Ziel samt Branch, `everySec`/`idleSec`/`runsLeft` eines Autos). Deine Nachfolgerin
+  liest sie als `handover` in `GET /api/self/program-execution`. **Nichts wird neu armiert** —
+  Neuregistrieren ist ihr Akt, nicht der des Servers — und die NÄCHSTE Succession ersetzt den
+  Datensatz, also lies ihn, bevor du weitergibst.
+- **Die VORSCHAU**: `server.ts#standardHandoverLines` im Gründungsbrief — gemessene Zahlen neben
+  der Tür, die sie neu liest (offene Task-Zeilen → `program-execution`, Inbox-Stand →
+  `GET /api/self/inbox`), plus eine kurze Zeile je Verpflichtung, die sie bei ihrer Id NENNT und
+  sagt, wo die volle Zeile steht. Sie kürzt, sie sagt das, und sie ist nie die Quelle.
+
+Eine beim Laden unlesbare Inbox ist dabei kein `0`: der Loader schreibt eine dauerhafte Narbe
+(`Program.inboxLost`), und `GET /api/self/inbox` meldet sie in seiner eigenen `unknown`-Liste —
+über Speichern und Neustart hinweg, denn nach dem ersten Save sind die kaputten Bytes weg und
+nur der Datensatz weiss es noch. Der Rest dieses Absatzes bleibt: **seit
 2026-09-07 zuerst `/compact`, nicht `succeed`** (Owner-Richtung 05:2x; Regelbuch §Einstieg,
 Kontext-Band): eine Succession tötet Watches, Autos, Attentions und Datei-Monitore des Slots, ein
 Compact behält sie. Fester Compact-Auftrag: Kette in Flug, offene Owner-Entscheide wörtlich, Ids

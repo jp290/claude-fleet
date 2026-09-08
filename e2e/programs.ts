@@ -34,6 +34,18 @@ interface ProgramInboxEntry { id: string; kind: string; at: number; ref: string;
 interface ProgramInbox { v: number; entries: ProgramInboxEntry[]; dropped: number }
 interface ProgramInboxView { program: string; unread: number; dropped: number;
   entries: (ProgramInboxEntry & { subject: Record<string, unknown> | null })[]; unknown: string[] }
+// server.ts#ProgramHandover — the retained obligations of the last succession. `detail` is a flat
+// scalar bag on purpose (the row's own reconstruction parameters), so it is read here as one.
+interface ProgramHandoverObligation {
+  kind: "attention" | "watch" | "auto"; id: string; at: number; text: string;
+  detail: Record<string, string | number | boolean | null>;
+}
+interface ProgramHandover {
+  v: number; at: number;
+  from: { slot: number; openedAt: number; sessionId: string | null };
+  to: { slot: number; openedAt: number };
+  obligations: ProgramHandoverObligation[]; dropped: number;
+}
 interface Program extends ProgramContent {
   id: string;
   status: ProgramStatus;
@@ -45,6 +57,11 @@ interface Program extends ProgramContent {
   // the durable back-channel of the PROGRAM — absent on every row until an entry is written,
   // and absent is the shape every assertion outside the inbox block reads as
   inbox?: ProgramInbox;
+  // the SCAR that an unreadable inbox leaves. Absent on every healthy row; present it is the only
+  // thing that tells "the pointers were lost" from "there never were any".
+  inboxLost?: { v: number; at: number; error: string };
+  // what the last retiring MAIN owed — the durable half of the succession handover
+  handover?: ProgramHandover;
   // the owner's self-land permission — absent on every Program until the owner grants it, which is
   // the shape every assertion here reads as "owner-only land".
   promotion?: { v: number; selfLand: string; confirmedAt: number };
@@ -130,6 +147,9 @@ interface ProgramExecutionRow {
     // the persisted lineage verbatim, or null when no record exists (the unknown list then says so)
     lineage: { entries: ProgramLineageEntry[]; dropped: number } | null };
   status: ProgramStatusView;
+  // the durable half of the succession handover: null until a Standard succession has happened
+  // here, and an EMPTY obligations list where one has and measured nothing owed
+  handover: ProgramHandover | null;
   tasks: { rows: { id: string; kind: string; status: string; releasedBy: string | null;
     slot: number | null; originId: string | null; text: string;
     // derived per request, stored nowhere (program-phase.ts)
@@ -859,8 +879,52 @@ export async function run(ctx: Ctx): Promise<void> {
       && !Object.prototype.hasOwnProperty.call(
         readState().programs?.find((p) => p.id === fleetProgram.id) ?? {}, "inbox"),
     JSON.stringify(readState().programs?.find((p) => p.id === fleetProgram.id)?.inbox ?? "absent"));
+
+  // --- THE LOSS MUST SURVIVE THE READER AND THE RESTART, in that order. ------------------------
+  // Corrupt -> boot -> the inbox's OWN reader -> an ordinary save -> a second boot -> the same
+  // reader. The second half is the one a boot-scoped flag cannot pass: the first save writes the
+  // repaired record back, so the broken bytes are GONE from the file, and from then on there is
+  // nothing left for any later boot to observe. A reader that only knew what this boot saw would
+  // tell the truth exactly once and a comfortable "0 unread of 0 entries" forever after.
+  let fleetToken = readState().slots?.[String(fleetSlot)]?.selfToken ?? "";
+  const lossLine = (view: ProgramInboxView | null): string | undefined =>
+    (view?.unknown ?? []).find((line) => line.includes("inbox record was unreadable"));
+  const lossAfterFirstBoot = await selfInbox(fleetToken);
+  check("program inbox loss: the inbox's OWN reader reports the degradation, instead of rendering it as an empty inbox",
+    lossAfterFirstBoot.response.ok && lossAfterFirstBoot.view?.entries.length === 0
+      && lossAfterFirstBoot.view.unread === 0
+      && lossLine(lossAfterFirstBoot.view) !== undefined
+      && lossLine(lossAfterFirstBoot.view)!.includes("must contain exactly v, entries, dropped"),
+    JSON.stringify({ unknown: lossAfterFirstBoot.view?.unknown ?? null,
+      entries: lossAfterFirstBoot.view?.entries.length ?? null, error: lossAfterFirstBoot.error }));
+
+  // an ORDINARY save through an ordinary door — openAttention's own `await saveStateNow()`. The
+  // disk assertion below is what makes this step fail as ITSELF: if no save happened, the check
+  // says so instead of the next one failing for a reason that reads like a loader bug.
+  const fleetSaveText = "fleet-frame probe: an ordinary write, so the repaired record reaches disk";
+  const fleetSaveRes = await selfPost("/api/self/attention", fleetToken,
+    { kind: "blocked", text: fleetSaveText });
+  const fleetOnDisk = readState().programs?.find((p) => p.id === fleetProgram.id);
+  check("program inbox loss: an ordinary save persists the SCAR and erases the broken bytes it was minted from",
+    fleetSaveRes.ok && !!fleetOnDisk?.inboxLost && fleetOnDisk.inboxLost.v === 1
+      && typeof fleetOnDisk.inboxLost.at === "number"
+      && !Object.prototype.hasOwnProperty.call(fleetOnDisk, "inbox"),
+    JSON.stringify({ save: fleetSaveRes.status, inboxLost: fleetOnDisk?.inboxLost ?? null,
+      inboxKey: fleetOnDisk !== undefined && Object.prototype.hasOwnProperty.call(fleetOnDisk, "inbox") }));
+
+  await restartSrv();
+  fleetToken = readState().slots?.[String(fleetSlot)]?.selfToken ?? "";
+  const lossAfterSecondBoot = await selfInbox(fleetToken);
+  // BREAKS IF: the loss is tracked in memory instead of on the record. This boot never saw a
+  // broken byte — the only reason it can still answer is that the scar is persisted state.
+  check("program inbox loss: the SAME reader still reports it after the save and a second boot, with no broken bytes left to observe",
+    lossAfterSecondBoot.response.ok && lossLine(lossAfterSecondBoot.view) !== undefined
+      && lossLine(lossAfterSecondBoot.view) === lossLine(lossAfterFirstBoot.view)
+      && lossAfterSecondBoot.view?.entries.length === 0,
+    JSON.stringify({ first: lossLine(lossAfterFirstBoot.view) ?? null,
+      second: lossLine(lossAfterSecondBoot.view) ?? null }));
+
   const fleetHeadBefore = spawnSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
-  const fleetToken = readState().slots?.[String(fleetSlot)]?.selfToken ?? "";
   const fleetCarry = "Continue the bounded Fleet-control act.";
   const fleetSuccessionLabel = "program-main-fleet-successor";
   const fleetSuccessionPending = selfSucceed(fleetToken, { label: fleetSuccessionLabel, carry: fleetCarry });
@@ -889,13 +953,23 @@ export async function run(ctx: Ctx): Promise<void> {
   // BREAKS IF: an unreadable source is printed as a zero. `0 unread of 0 entries` is what a block
   // that trusted the loaded record would say here, and it is the one sentence in the handover a
   // successor could not possibly catch — the record it would check against is the lost one.
-  check("Program-MAIN Fleet succession: a lost inbox record is handed over as unknown, never as a zero, and the transfer moved no commit",
+  check("Program-MAIN Fleet succession: a lost inbox record is handed over as LOST, never as a zero, and the transfer moved no commit",
     fleetSuccessionResponse.ok
-      && fleetSuccessionPrompt.includes("- Program inbox: unknown. The persisted record could not be read at load and degraded to absent")
+      && fleetSuccessionPrompt.includes("- Program inbox: LOST at")
+      && fleetSuccessionPrompt.includes("every pointer written before then is gone for good")
       && !fleetSuccessionPrompt.includes("- Program inbox: 0 unread")
       && spawnSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim() === fleetHeadBefore
       && /^[0-9a-f]{40}$/.test(fleetHeadBefore),
     `head=${fleetHeadBefore} ${JSON.stringify(fleetSuccessionPrompt.split("\n").filter((line) => line.startsWith("- Program inbox")))}`);
+  // the retention record exists on the Fleet frame too, and it holds the decision this fixture
+  // raised two steps up — the one whose only purpose was to force a save. It dies with the
+  // predecessor like any other, and it is in the record like any other.
+  const fleetRetained = (readState().programs ?? []).find((p) => p.id === fleetProgram.id)?.handover ?? null;
+  check("Program-MAIN Fleet succession: the retention record is written on this frame as well, holding the predecessor's open decision in full",
+    !!fleetRetained && fleetRetained.v === 1 && fleetRetained.dropped === 0
+      && fleetRetained.from.slot === fleetSlot && fleetRetained.to.slot === fleetSuccessionBody.slot
+      && fleetRetained.obligations.some((o) => o.kind === "attention" && o.text === fleetSaveText),
+    JSON.stringify(fleetRetained));
   if (fleetBody.slot) await post(`/api/slots/${fleetBody.slot}/kill`, {});
   if (fleetSuccessionBody.slot) await post(`/api/slots/${fleetSuccessionBody.slot}/kill`, {});
   await programPost(fleetProgram.id, "complete");
@@ -2051,26 +2125,66 @@ export async function run(ctx: Ctx): Promise<void> {
     `${failureSuccession.status} ${failureSuccessionText}`);
 
   // WHAT THE PREDECESSOR IS ABOUT TO LOSE, minted through its OWN doors rather than planted, so
-  // the block under test quotes rows the fleet really wrote. The attention is the one that matters:
-  // its retirement refuses it as "requester session ended" — unanswered, not declined — and
-  // attentionFor binds to the occupant, so the successor has no route that reads the text back.
-  // If it is not in the founding brief, it is gone, and this fixture is the only reader that says so.
-  const lostQuestion = "Does the K7d probe measure the deadline or the candidate's expiry?";
+  // the record under test holds rows the fleet really wrote. All three kinds, because each is lost
+  // a different way: killSlot DELETES the autos and the armed watches outright, while the open
+  // attention is stamped refused/"requester session ended" on a row that is itself a pruned tail
+  // (ATTENTION_KEEP_TERMINAL). None of the three is reachable by the successor afterwards.
+  //
+  // THE DECISION IS LONG AND MULTI-LINE ON PURPOSE, and its condition sits in the LAST clause.
+  // That is the exact shape the first version of this cut destroyed: a 200-character preview was
+  // the only thing handed over, so a 249-character decision arrived without the condition that
+  // made it a decision. The preview may still truncate — it is a preview — but the RECORD must
+  // carry this string byte for byte, newlines and suffix included, or the handover is a loss that
+  // reported itself as a success.
+  const lostQuestion = [
+    "Soll die K7d-Sonde die Frist messen oder das Erloeschen des Kandidaten?",
+    "Belege: der Mutationslauf vom 2026-09-07 hat die Frist-Fassung ueberlebt, die Kandidaten-Fassung nicht;",
+    "der Trail zeigt beide Faelle als denselben Fehlschlag, weil die Setup-Zeile darueber rot war.",
+    "ENTSCHEIDEND, und genau darum steht es zuletzt: nur wenn der Post-Land-Audit weiterhin die kurze Kette faehrt.",
+  ].join("\n");
+  const lostQuestionSuffix = "nur wenn der Post-Land-Audit weiterhin die kurze Kette faehrt.";
   const lostCheckIn = "re-read the post-land audit for the branch that was still integrating";
   const lostAttention = await selfPost("/api/self/attention", mainSelfTokenAfterRestart,
     { kind: "decision", text: lostQuestion });
   const lostAttentionId = (await lostAttention.clone().json() as { request?: { id?: string } }).request?.id ?? "";
+  // a COMPLETE auto configuration: recurring, with a run cap and a non-default idle gate. Three
+  // values a re-registration needs and none of which a text alone carries. inSec parks the first
+  // firing an hour out so the schedule cannot go off inside this run.
   const lostAuto = await selfPost("/api/self/autos", mainSelfTokenAfterRestart,
-    { text: lostCheckIn, everySec: null, inSec: 3600, idleSec: 0 });
-  check("Program-MAIN succession handover setup: one open owner decision and one scheduled check-in belong to the predecessor occupant",
-    lostAttention.ok && lostAuto.ok
+    { text: lostCheckIn, everySec: 600, runs: 3, inSec: 3600, idleSec: 42 });
+  const lostAutoId = (await lostAuto.clone().json() as { auto?: { id?: string } }).auto?.id ?? "";
+  // a NAMED armed watch — it needs a live subject, so the fixture gives it one and takes it away
+  // again below. Without the target triple a watch hands over as the number 1, which is what the
+  // rejected version did.
+  const watchLane = await post("/api/lanes", { repo: REPO });
+  const watchLaneSlot = (await watchLane.json() as { slot?: number }).slot ?? 0;
+  const lostWatch = await selfPost("/api/self/watch", mainSelfTokenAfterRestart,
+    { kind: "lane", target: watchLaneSlot });
+  const lostWatchId = (await lostWatch.clone().json() as { watch?: { id?: string } }).watch?.id ?? "";
+  // …and a REAL open task row. The first version of this probe compared two empty sets: its green
+  // log printed "0 of 0", so the one line that carries the Program's actual work was never
+  // measured against anything. Filed through the MAIN's own door, so it lands pending by contract.
+  const handoverTaskText = "handover probe: a real open row, so the count is measured and not merely formatted";
+  const openedTask = await selfPost("/api/self/tasks", mainSelfTokenAfterRestart,
+    { text: handoverTaskText, kind: "auftrag" });
+  const openedTaskId = (await openedTask.clone().json() as { task?: { id?: string } }).task?.id ?? "";
+  check("Program-MAIN succession handover setup: a long multi-line decision, a named armed watch, a full auto config and a REAL open task belong to the predecessor",
+    lostAttention.ok && lostAuto.ok && watchLane.ok && lostWatch.ok && openedTask.ok
+      && lostQuestion.length > 200 && lostQuestion.includes("\n")
+      && lostQuestion.endsWith(lostQuestionSuffix)
+      && /^[0-9a-f]{24}$/.test(lostAttentionId) && !!lostAutoId && !!lostWatchId && !!openedTaskId
       && (readState().attentionRequests ?? [])
-        .map((a) => a as { text?: string; status?: string; requester?: { slot?: number; openedAt?: number } })
-        .some((a) => a.text === lostQuestion && a.status === "open"
+        .map((a) => a as { id?: string; status?: string; requester?: { slot?: number; openedAt?: number } })
+        .some((a) => a.id === lostAttentionId && a.status === "open"
           && a.requester?.slot === bound?.slot && a.requester?.openedAt === bound?.openedAt)
-      && (readState().autos ?? []).map((a) => a as { text?: string; slot?: number })
-        .some((a) => a.text === lostCheckIn && a.slot === mainSlot),
-    `attention=${lostAttention.status} auto=${lostAuto.status}`);
+      && (readState().autos ?? []).map((a) => a as { id?: string; slot?: number })
+        .some((a) => a.id === lostAutoId && a.slot === mainSlot)
+      && (readState().watches ?? [])
+        .map((w) => w as { id?: string; armed?: boolean; slot?: number; slotOpenedAt?: number })
+        .some((w) => w.id === lostWatchId && w.armed === true && w.slot === mainSlot
+          && w.slotOpenedAt === bound?.openedAt),
+    `attention=${lostAttention.status}/${lostAttentionId} auto=${lostAuto.status}/${lostAutoId} `
+      + `lane=${watchLane.status}/${watchLaneSlot} watch=${lostWatch.status}/${lostWatchId} task=${openedTask.status}/${openedTaskId}`);
 
   // and what it hands over that does NOT die: the same numbers the block must print, read from
   // state here rather than hard-coded, so a later fixture that adds a row moves both sides at once
@@ -2082,6 +2196,12 @@ export async function run(ctx: Ctx): Promise<void> {
   const handoverInbox = (readState().programs ?? []).find((p) => p.id === mainProgram.id)?.inbox;
   const handoverUnread = (handoverInbox?.entries ?? []).filter((e) => e.readBy === null);
   const handoverOldest = handoverUnread.reduce<number | null>((m, e) => m === null || e.at < m ? e.at : m, null);
+  // BREAKS IF: the open-row count goes back to comparing empty sets. The rejected version's own
+  // green log read "0 of 0"; this line is what makes the next one an assertion instead of a format
+  // check, and it fails as ITSELF rather than letting the count check pass vacuously.
+  check("Program-MAIN succession handover setup: the open-task count under test is non-zero",
+    handoverOpenRows.length >= 1 && handoverTaskRows.length >= handoverOpenRows.length,
+    `open=${handoverOpenRows.length} total=${handoverTaskRows.length}`);
 
   const carry = "Continue with the first bounded Program move.";
   const successorLabel = "program-succession-success";
@@ -2168,37 +2288,82 @@ export async function run(ctx: Ctx): Promise<void> {
       && successionPrompt.includes("GET /api/self/inbox reads them; POST /api/self/inbox/<id>/read receipts one."),
     JSON.stringify({ expectedOpenLine, expectedInboxLine,
       got: successionPrompt.split("\n").filter((line) => line.startsWith("- ")) }));
-  // BREAKS IF: the dying obligations are counted instead of quoted. A count tells the successor
-  // that something was lost and gives it no way to re-ask — and this row's text exists nowhere it
-  // can reach: attentionFor binds to the occupant, so the check below proves the route is shut.
-  const handoverArmedWatches = (readState().watches ?? [])
-    .map((w) => w as { armed?: boolean; slot?: number; slotOpenedAt?: number })
-    .filter((w) => w.armed === true && w.slot === bound?.slot && w.slotOpenedAt === bound?.openedAt).length;
+  // --- THE OBLIGATIONS ARE RETAINED, NOT PREVIEWED. ---------------------------------------------
+  // This is the half the first version of the cut did not have. The successor asks the door the
+  // brief names and gets the rows back COMPLETE: the id that addresses each one, the text with its
+  // decisive last clause and its newlines intact, and the parameters a re-registration needs.
+  // Everything asserted here was DELETED with the predecessor's slot, so the record is the only
+  // place it still exists — and the two falsifiers below prove that from both sides.
+  const handoverSuccessorView = await selfExecution(slotToken(successorSlot));
+  const handoverSuccessorProgram = handoverSuccessorView.view?.programs
+    .find((x) => x.program.id === mainProgram.id);
+  const handoverSuccessorRows = handoverSuccessorProgram?.tasks.rows ?? [];
+  const retained = handoverSuccessorProgram?.handover ?? null;
+  const retainedOf = (kind: string, id: string): ProgramHandoverObligation | undefined =>
+    (retained?.obligations ?? []).find((o) => o.kind === kind && o.id === id);
+  const retainedAttention = retainedOf("attention", lostAttentionId);
+  const retainedWatch = retainedOf("watch", lostWatchId);
+  const retainedAuto = retainedOf("auto", lostAutoId);
+  const watchLaneBranch = (readState().slots?.[String(watchLaneSlot)] ?? {}) as { cwd?: string };
+  // BREAKS IF: the record starts truncating, drops the ids, or stores a summary. Each assertion
+  // names a value the successor cannot obtain any other way once the predecessor's slot is gone.
+  check("Program-MAIN succession handover: the dying obligations are RETAINED in full — id, complete multi-line text with its decisive last clause, and the parameters a re-registration needs",
+    !!retained && retained.v === 1 && retained.dropped === 0
+      && retained.from.slot === bound?.slot && retained.from.openedAt === bound?.openedAt
+      && retained.to.slot === successorSlot
+      && retained.obligations.length === 3
+      // the decision, byte for byte — not a 200-character preview of it
+      && retainedAttention?.text === lostQuestion
+      && retainedAttention.text.endsWith(lostQuestionSuffix)
+      && retainedAttention.text.includes("\n")
+      && retainedAttention.detail.kind === "decision" && retainedAttention.detail.status === "open"
+      && retainedAttention.detail.reAsk === "POST /api/self/attention"
+      // the watch, with the target that defines it — a count could never be re-registered
+      && retainedWatch?.detail.kind === "lane" && retainedWatch.detail.target === watchLaneSlot
+      && typeof retainedWatch.detail.targetBranch === "string"
+      && retainedWatch.detail.targetCwd === watchLaneBranch.cwd
+      && retainedWatch.text === ""
+      // the whole auto configuration, not just its sentence
+      && retainedAuto?.text === lostCheckIn && retainedAuto.detail.everySec === 600
+      && retainedAuto.detail.idleSec === 42 && retainedAuto.detail.runsLeft === 3
+      && retainedAuto.detail.enabled === true && retainedAuto.detail.perpetual === false
+      && typeof retainedAuto.detail.nextAt === "number",
+    JSON.stringify({ handover: retained, ids: [lostAttentionId, lostWatchId, lostAutoId] }));
+  // …and BOTH falsifiers. The predecessor's rows are gone from the live state the moment its slot
+  // is torn down, and the successor's own attention door is scoped to its occupant — so if the
+  // record did not hold them, nothing would.
   const successorAttention = await (await fetch(`${BASE}/api/self/attention`,
     { headers: { "x-fleet-self-token": slotToken(successorSlot) } })).json() as { requests?: { text?: string }[] };
-  check("Program-MAIN Standard succession handover: the owner decision and check-in that die with the predecessor are quoted verbatim in the successor's brief, and no route hands them back",
-    successionPrompt.includes("- Owner decisions your predecessor had open: 1.")
-      && successionPrompt.includes(`  · [decision] ${lostQuestion}`)
-      && successionPrompt.includes(`- Subscriptions and check-ins that end with your predecessor: ${handoverArmedWatches} armed watches, 1 scheduled check-ins.`)
-      && successionPrompt.includes(`  · check-in: ${lostCheckIn}`)
-      // the falsifier for WHY the brief has to carry them: the successor's own attention door is
-      // scoped to its occupant and answers it nothing about its predecessor's row
-      && !(successorAttention.requests ?? []).some((r) => r.text === lostQuestion),
-    JSON.stringify({ armed: handoverArmedWatches,
-      quoted: successionPrompt.split("\n").filter((line) => line.startsWith("  · ")),
-      viaAttentionRoute: (successorAttention.requests ?? []).map((r) => r.text ?? null) }));
-  // …AND THE READER IS REAL. The counts above are a snapshot; this is the successor asking the
-  // door the block named and getting the same open rows back, from its own different occupant.
-  const handoverSuccessorView = await selfExecution(slotToken(successorSlot));
-  const handoverSuccessorRows = handoverSuccessorView.view?.programs
-    .find((x) => x.program.id === mainProgram.id)?.tasks.rows ?? [];
+  check("Program-MAIN succession handover: no live row and no self route hands the successor its predecessor's obligations — the retained record is the only source",
+    !(successorAttention.requests ?? []).some((r) => r.text === lostQuestion)
+      && !!retainedAttention && !!retainedWatch && !!retainedAuto,
+    JSON.stringify({ viaAttentionRoute: (successorAttention.requests ?? []).length,
+      retained: (retained?.obligations ?? []).map((o) => [o.kind, o.id]) }));
+  // BREAKS IF: the preview and the record can disagree about which rows exist, or the preview
+  // stops saying that it IS a preview. It may truncate — that is its job — and the check asserts
+  // exactly that: the ids are in the brief, the decisive suffix is NOT, and the brief names the
+  // door where it is.
+  check("Program-MAIN succession handover: the brief previews every retained row by id and points at the record instead of pretending to be it",
+    successionPrompt.includes("- Obligations that END with your predecessor: 1 open owner decisions, 1 armed watches, 1 scheduled check-ins.")
+      && successionPrompt.includes("NOTHING was re-armed")
+      && successionPrompt.includes("RETAINED IN FULL (id, complete text, reconstruction parameters) as `handover` in GET /api/self/program-execution")
+      && successionPrompt.includes(`  · attention ${lostAttentionId}`)
+      && successionPrompt.includes(`  · watch ${lostWatchId}`)
+      && successionPrompt.includes(`  · auto ${lostAutoId}`)
+      && !successionPrompt.includes(lostQuestionSuffix)
+      && successionPrompt.includes("THE LINES BELOW ARE PREVIEWS"),
+    JSON.stringify(successionPrompt.split("\n").filter((line) => line.startsWith("  · ")
+      || line.startsWith("- Obligations"))));
+  // …AND THE READER IS REAL for the counted half too: the successor asks the door the block named
+  // and gets back the same open rows — this time with a non-zero count behind them.
   check("Program-MAIN Standard succession handover: the successor reads the same open rows back through the door the block named",
-    handoverSuccessorView.response.ok
+    handoverSuccessorView.response.ok && handoverOpenRows.length >= 1
       && handoverSuccessorRows.filter((r) => r.status === "pending" || r.status === "queued" || r.status === "sent").length
         === handoverOpenRows.length
       && handoverSuccessorRows.length === handoverTaskRows.length,
     JSON.stringify({ expectedOpen: handoverOpenRows.length, expectedTotal: handoverTaskRows.length,
       got: handoverSuccessorRows.map((r) => [r.id, r.status]) }));
+  if (watchLaneSlot) await post(`/api/slots/${watchLaneSlot}/kill`, {});
   const successionAnchorAt = successionPrompt.indexOf("\n\nContextPlan v2 anchors");
   const successionAnchor = successionAnchorAt >= 0 ? successionPrompt.slice(successionAnchorAt) : "";
   const successionHash = successionReceipt ? createHash("sha256").update(JSON.stringify({
@@ -2339,7 +2504,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // …and the succession-handover fixture's own open decision goes with them: it is REFUSED by the
   // predecessor's retirement rather than removed, and a refused row left on the active Program
   // would ride into every later module's view of it exactly as the three plants below would.
-  d1Cleanup.tasks = (d1Cleanup.tasks ?? []).filter((t) => t.id !== d1TaskId);
+  d1Cleanup.tasks = (d1Cleanup.tasks ?? []).filter((t) => t.id !== d1TaskId && t.id !== openedTaskId);
   d1Cleanup.fleetReports = (d1Cleanup.fleetReports ?? [])
     .filter((r) => r.id !== decidedReportId && r.id !== inboxReportId);
   // …and the inbox fixture takes its own three plants out with them, for the same reason: an
@@ -2354,7 +2519,7 @@ export async function run(ctx: Ctx): Promise<void> {
   check("ProgramExecutionView report join cleanup: neither planted row nor the inbox fixture survives into the next block",
     d1CleanView.response.ok
       && !d1CleanView.view?.programs.find((x) => x.program.id === mainProgram.id)
-        ?.tasks.rows.some((row) => row.id === d1TaskId)
+        ?.tasks.rows.some((row) => row.id === d1TaskId || row.id === openedTaskId)
       && !(readState().fleetReports ?? []).some((r) => r.id === decidedReportId || r.id === inboxReportId)
       && !(readState().attentionRequests ?? []).some((a) => (a as { id?: string }).id === inboxAttentionId)
       && /^[0-9a-f]{24}$/.test(lostAttentionId)

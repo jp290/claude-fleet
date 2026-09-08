@@ -3535,6 +3535,19 @@ zwei Zeilen mit `tree:null`). Das ist die hoechste Rate, die ich ueber dieses Re
 habe — die uebrigen hier registrierten Familien liegen bei 0,6–3 % lokal; ich habe sie fuer diesen
 Vergleich NICHT alle neu gerechnet, die Zahl gilt gegen die in ihren Abschnitten notierten Raten.
 
+**DIESE 13,8 % SIND EINE MAC-RATE, KEINE FLEET-RATE — und der Grund ist strukturell, nicht
+zufaellig.** Ein Audit auf dem second-host-Helfer schreibt KEIN Trail (bekannte Luecke, dieselbe, die
+`73195c20` fuer den lokalen Fall geschlossen hat), also traegt kein Helfer-Lauf zu Zaehler ODER
+Nenner bei. Belegt an einem Paar vom selben Tag: das Audit auf `1d45e6b4` (`at=1788889098546`,
+gruen, `ran 4046 / failed 0`, `ms 2 452 519`) traegt `remote {name:"second-host", clonedSha ===
+mainSha, jobId 26ea1a205005}`, dazu `waitMs:null` (kein lokaler Mutex) und `trail:null` — waehrend
+das lokale Audit auf `73195c20` eine Trail-Datei nennt. Wer die Familien nach Ausloesehaeufigkeit
+RANGT (Hebel (1) der Owner-Zeile `3f7363bf`), muss das wissen: das Register misst heute genau die
+Laeufe, die auf dem langsamen Host lagen. Ob die Familie auf dem Helfer seltener, gleich oft oder
+haeufiger feuert, ist damit NICHT unbeantwortet, sondern mit dem heutigen Instrument
+UNBEANTWORTBAR — und §11.2s hat fuer eine andere Familie bereits einen echten Host-Unterschied
+gemessen, die Frage ist also nicht akademisch.
+
 **DER MESSDEFEKT, und er ist die Klasse, die das Regelbuch selbst benennt.** `plantScreen` ruft
 `check()` **ausschliesslich in seinen beiden Fehlerzweigen** (`e2e/harness.ts`, die Zeilen
 `accepted the harness screen` und `rendered the harness screen`); ein Erfolg schreibt gar keine

@@ -15,11 +15,12 @@ export const NOTES_CAP_DEFAULT = 5;
 // The first sentence is the whole point of the line — a note's median text is 1 397 B and its
 // median first sentence 267 B, so this bound clips the p90 tail rather than the normal case.
 export const NOTES_SENTENCE_MAX = 300;
-// Whether a lane can DO anything with an id it is shown. Today it cannot: `/api/self/tasks` exists
-// as a POST only, so there is no route that hands a lane the full text of a note or takes its
-// verdict (N2 builds both). A feature test rather than a date: the closing sentence appears when
-// the routes do, and never one deploy early.
-export const NOTES_READ_ROUTES_EXIST = false;
+// Whether a lane can DO anything with an id it is shown. TRUE since N2 built both doors:
+// `GET /api/self/notes` hands a lane the full text of exactly the ids its own receipt names, and
+// `POST /api/self/notes/:id/verdict` takes its report on them. A feature test rather than a date —
+// the closing sentence appears when the routes do, and never one deploy early. Set it back to
+// `false` and the block loses its last line without any other change, which is what the flag is for.
+export const NOTES_READ_ROUTES_EXIST = true;
 
 export interface NoteTaskInput {
   id: string;

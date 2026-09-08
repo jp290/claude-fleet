@@ -48,7 +48,7 @@ import {
   deriveTaskMetadata, readTrackedSnapshot, trackedIndexStamp,
   type TaskFilesOrigin, type TrackedSnapshot,
 } from "./task-metadata";
-import { notesForTask, renderNotesBlock, type NoteInput } from "./task-notes";
+import { notesForTask, renderNotesBlock, NOTE_HUB_FILES, type NoteInput } from "./task-notes";
 // The LAND fold of the collision facts. The wave button does not re-decide R1/R2/R3 or the program
 // boundary: it asks THIS projector whether the ids it was handed are one of its own waves, so the
 // board, `bun task-land-waves.ts --state fleet.json` and the door all answer from one classifier.
@@ -93,6 +93,7 @@ import {
   type FleetEvent, type ClarificationRequest, type FleetReport, type FleetReportDisposition,
   type AttentionKind,
   type AttentionRequest, type TaskKind, type Task, type TaskBrief, type TaskComment,
+  isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
   type TaskAnalysis, type AnalysisBlocker, type TaskCriterion, type TaskFilesProposal,
   type RefineChild, type RefineProposal,
   type TaskRefine, type LaneForm, type LaneRef, type SuccessionRetirement, type CodexRecoveryState,
@@ -2126,7 +2127,9 @@ type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
   & { refine?: { at: number; unchanged: boolean; count: number }; refining?: true }
   // …and for comments: how many and how recent. That is everything the row chip needs and
   // everything the overlay needs to notice a new one; the texts ride GET /api/tasks.
-  & { comments?: { n: number; at: number } };
+  & { comments?: { n: number; at: number } }
+  // …and the lands that moved this row's surface, WHOLE and newest first (see taskDigest).
+  & Partial<Pick<Task, "touched">>;
 function taskDigest(t: Task): TaskDigest {
   const view = taskView(t);
   return {
@@ -2161,6 +2164,10 @@ function taskDigest(t: Task): TaskDigest {
     ...(refineInflight.has(t.id) ? { refining: true as const } : {}),
     ...(t.comments?.length
       ? { comments: { n: t.comments.length, at: t.comments[t.comments.length - 1].ts } } : {}),
+    // WHOLE, not a count: the row line names the newest land's sha, and a digest that carried only
+    // "3 lands" would leave the board unable to say which one — the same reason `filesProposal`
+    // rides this poll whole. Capped at five by the writer, so the size is bounded at the source.
+    ...(t.touched?.length ? { touched: t.touched } : {}),
   };
 }
 // Last known integration tip per repo, refreshed by the analysis sweep. DISPLAY ONLY: it answers
@@ -3908,6 +3915,92 @@ async function removeWorktreeSafe(repo: string, path: string, branch: string, fo
 // deterministic lane teardown: safety-checked worktree removal FIRST, while the slot is
 // still intact — a failed remove leaves the lane fully recoverable instead of a torn-down
 // slot pointing at an orphaned tree. Shared by the ⏏ land endpoint and the merge agent.
+// WHICH NOTES THIS LANE WAS SHOWN — read off the context receipt ledger, which is the only place
+// the answer exists. The block is rendered into the founding brief and then gone: the pane holds
+// bytes, not ids, and a `/clear` takes even those. The receipt is what makes the delivery auditable
+// after the fact, and it is therefore also the permission boundary for both note doors.
+//
+// JOINED ON BRANCH **AND** SLOT. Either alone would be wrong in a way that matters here: a slot
+// number is recycled, so slot-only would hand a lane its predecessor's notes; a branch is unique in
+// practice but is a name a caller could once have chosen, and pairing it with the slot the token
+// already binds costs nothing. Every matching receipt is unioned rather than only the newest — a
+// wave split re-dispatches into the same lane, and the notes of the first delivery were no less
+// delivered than those of the second.
+//
+// `receipts` travels with the set so the caller can tell "no receipt" from "no hit": both render as
+// an empty list, and only one of them is about the join.
+async function laneNoteIds(s: Slot): Promise<{ ids: Set<string>; receipts: number }> {
+  const branch = s.worktree?.branch;
+  if (!branch) return { ids: new Set(), receipts: 0 };
+  const { rows } = await readLedger<Record<string, unknown>>(CONTEXT_RECEIPT_FILE);
+  const ids = new Set<string>();
+  let receipts = 0;
+  for (const row of rows) {
+    if (row.branch !== branch || row.slot !== s.id) continue;
+    receipts++;
+    if (Array.isArray(row.notes))
+      for (const id of row.notes) if (typeof id === "string") ids.add(id);
+  }
+  return { ids, receipts };
+}
+
+// THE NOTE LIFECYCLE AT THE LAND SITE (docs/notizen-verarbeitung-2026-09-06.md §3 N2).
+//
+// Two writes over the pending `notiz` rows of the repo that just moved, and neither is a report:
+//   · TOUCHED — the note's surface shares a NON-HUB file with what this land moved. The hubs are
+//     cut out here for exactly the reason task-notes.ts cuts them out of the dispatch join, and it
+//     is the same constant: `server.ts` stands in almost every surface, so an uncut intersection
+//     would stamp every open note on every land and the field would carry no information at all.
+//   · CLOSED — this BRANCH left an `erledigt` verdict on the note. The verdict alone never moves a
+//     status (a lane can be wrong); the land is what makes it wirksam, which is why this lives here
+//     and not in the verdict route. `widerlegt` and `offen` are read by a human and change nothing.
+//
+// The two shas come from LandFacts because only the land SITE knows them — reading main here would
+// name whatever it has reached by now. Their ABSENCE is honest and common: both owner ⏏ paths land
+// work that was already integrated, so nothing moved at this instant and nothing is stamped. An
+// unreadable or failing git is the same answer as an empty diff — no stamp, never a guess — but it
+// must not swallow the CLOSE: a note this branch reported finished is closed by the land whether or
+// not the diff could be read, because the evidence for that half is the verdict plus the land, and
+// neither is a git question.
+async function applyLandToNotes(repo: string, branch: string,
+  mainBefore: string | undefined, mainAfter: string | undefined): Promise<void> {
+  const canon = repoCanon(repo);
+  const notes = tasks.filter((t) => t.kind === "notiz" && t.status === "pending"
+    && repoCanon(t.repo ?? DISPATCH_REPO) === canon);
+  if (notes.length === 0) return;
+  let changed = false;
+  if (mainBefore && mainAfter && mainBefore !== mainAfter) {
+    let moved: Set<string> | null = null;
+    try {
+      const r = await gitRead(repo, "diff", "--name-only", "--no-renames", "-z", mainBefore, mainAfter);
+      if (r.code === 0 && r.out) moved = new Set(r.out.split("\u0000").filter(Boolean));
+    } catch { moved = null; }
+    if (moved) {
+      for (const hub of NOTE_HUB_FILES) moved.delete(hub);
+      if (moved.size > 0) {
+        const at = Date.now();
+        for (const t of notes) {
+          const surface = surfaceOfView(taskView(t))?.paths ?? null;
+          if (!surface?.some((path) => moved.has(path))) continue;
+          t.touched = [{ sha: mainAfter, branch, at }, ...(t.touched ?? [])].slice(0, TASK_TOUCHED_MAX);
+          changed = true;
+        }
+      }
+    }
+  }
+  for (const t of notes) {
+    // the LAST word of this branch on this note, not merely "an erledigt exists": a lane that
+    // reported `erledigt` and then corrected itself to `offen` must not have the first verdict
+    // resurrected by its own land.
+    const mine = (t.comments ?? []).filter((c) => c.from === branch && c.verdict);
+    if (mine[mine.length - 1]?.verdict !== "erledigt") continue;
+    t.status = "done";
+    t.note = `erledigt durch Land ${(mainAfter ?? "").slice(0, 7) || "?"} (${branch})`;
+    audit("note_closed_by_land", undefined, `${t.id} ${branch}`);
+    changed = true;
+  }
+  if (changed) saveState();
+}
 async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS,
   beforeTeardown?: () => Promise<void>): Promise<{ error: string; code: number } | { removed: string; branch: string }> {
   if (!s.cwd || !s.worktree) return { error: "not a fleet-created worktree lane", code: 400 };
@@ -3937,6 +4030,14 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS,
       t.note = `landed (${branch})`;
     }
   }
+  // N2, the note lifecycle (docs/notizen-verarbeitung-2026-09-06.md §3 N2). Two writes, and they
+  // are deliberately independent of each other: a land STAMPS every pending note whose surface it
+  // moved, and it CLOSES every note this branch reported `erledigt` on. The second is the one that
+  // needed the land — a lane may claim a note is finished, but the claim only becomes a status
+  // change when the work carrying it reaches main. `killed` and `shelved` never reach this line, so
+  // an abandoned lane leaves its verdict standing as a readable comment and the note pending, which
+  // is what makes the claim falsifiable rather than authoritative.
+  await applyLandToNotes(repo, branch, facts.baseSha, facts.mainAfter);
   // A merge terminal event binds to the lane identity that is about to disappear. Its caller
   // persists that event here, after removal succeeded (so landed:true is known) but before
   // killSlot/dropWatchesFor can disarm the subscription as target-gone.
@@ -22020,8 +22121,22 @@ if (existsSync(STATE_FILE)) {
           comments: Array.isArray(t.comments)
             ? t.comments.filter((c): c is TaskComment => typeof c === "object" && c !== null
               && typeof c.id === "string" && typeof c.text === "string" && !!c.text)
-              .map((c) => ({ id: c.id, ts: Number(c.ts) || 0, text: c.text.slice(0, MAX_COMMENT_TEXT) }))
+              // the two lane fields degrade INDEPENDENTLY and both toward the owner shape: a
+              // malformed verdict leaves a plain remark rather than a fourth verdict value, and a
+              // branch nobody can read leaves an unsigned one. Neither may be repaired into the
+              // other — an invented `from` would let a hand-edited state file close a note.
+              .map((c) => ({ id: c.id, ts: Number(c.ts) || 0, text: c.text.slice(0, MAX_COMMENT_TEXT),
+                ...(typeof c.from === "string" && c.from ? { from: c.from.slice(0, 200) } : {}),
+                ...(isTaskVerdict(c.verdict) ? { verdict: c.verdict } : {}) }))
               .slice(-MAX_COMMENTS_PER_TASK)
+            : undefined,
+          // read back in the order it was written (newest first) and re-capped on the way IN, so a
+          // hand-edit cannot widen the field past what the land site would have written
+          touched: Array.isArray(t.touched)
+            ? t.touched.filter((x): x is TaskTouch => typeof x === "object" && x !== null
+              && typeof x.sha === "string" && !!x.sha && typeof x.branch === "string" && !!x.branch)
+              .map((x) => ({ sha: x.sha.slice(0, 64), branch: x.branch.slice(0, 200), at: Number(x.at) || 0 }))
+              .slice(0, TASK_TOUCHED_MAX)
             : undefined }));
       tasks = capTasks(tasks);
     // THE STUDIO INVENTORY, read back with the discipline the Program loader states one comment
@@ -25466,6 +25581,75 @@ Bun.serve<WSData>({
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — verify-intent reports a lane's own gate run" }, 409);
       return recordVerifyIntent(s, await readJson(req));
+    }
+
+    // THE NOTE DOORS (N2, docs/notizen-verarbeitung-2026-09-06.md §3). Lane-only for this family's
+    // one reason: both answers are defined by the lane's OWN context receipt, and a session that
+    // never received a founding brief has no receipt and therefore no note to read or judge.
+    //
+    // THE PERMISSION BOUNDARY IS THE RECEIPT, NOT THE QUEUE. A lane may read and judge exactly the
+    // ids its own dispatch delivered — never the 127 pending rows, never another lane's five. That
+    // is what makes the verdict attributable: the branch saw this note in its own founding brief.
+    // An id outside that set answers 409 with the reason, not 404: hiding the row's existence would
+    // read as "the note is gone" and send the lane looking for a deletion that never happened.
+    if (url.pathname === "/api/self/notes" && req.method === "GET") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      if (!s.worktree) return json({ error: "not a lane — the notes are the ones this lane's own brief delivered" }, 409);
+      const ids = await laneNoteIds(s);
+      // ABSENCE IS TWO DIFFERENT FACTS AND THE ROUTE SAYS WHICH. `notes: []` with `receipts: 0` is
+      // "no dispatch of this lane is on the ledger" (an owner-opened worktree, a pre-N1 receipt);
+      // `notes: []` with `receipts: n` is "the join found nothing on your surface". A lane that
+      // cannot tell them apart would read a plumbing failure as an empty queue.
+      const rows = [...ids.ids].map((id) => tasks.find((t) => t.id === id))
+        .filter((t): t is Task => !!t)
+        .map((t) => ({ id: t.id, status: t.status, created: t.created, text: t.text,
+          ...(t.note ? { note: t.note } : {}),
+          ...(taskView(t).files ? { files: taskView(t).files } : {}),
+          ...(t.touched?.length ? { touched: t.touched } : {}),
+          comments: (t.comments ?? []).map((c) => ({ id: c.id, ts: c.ts, text: c.text,
+            ...(c.from ? { from: c.from } : {}), ...(c.verdict ? { verdict: c.verdict } : {}) })) }));
+      // …and an id the receipt names but the queue no longer holds is REPORTED, never dropped: a
+      // note deleted or capped away under the lane is the one case where a shorter list would be
+      // read as "you were shown fewer notes than you were".
+      const gone = [...ids.ids].filter((id) => !tasks.some((t) => t.id === id));
+      return json({ notes: rows, receipts: ids.receipts, ...(gone.length ? { gone } : {}),
+        verdicts: TASK_VERDICTS });
+    }
+
+    // THE VERDICT. It writes a comment and NOTHING ELSE — the status change is the land's
+    // (applyLandToNotes), which is the whole design: a lane may claim a note is finished, and the
+    // claim becomes true only when the work carrying it reaches main. So this route is safe to call
+    // from a lane that later dies, and its 200 is never a promise that the note will close.
+    const selfNoteVerdict = /^\/api\/self\/notes\/([a-z0-9]+)\/verdict$/.exec(url.pathname);
+    if (selfNoteVerdict && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      if (!s.worktree) return json({ error: "not a lane — a verdict is a lane's report on a note it was shown" }, 409);
+      const body = await readJson(req);
+      const verdict = body?.verdict;
+      if (!isTaskVerdict(verdict))
+        return json({ error: `verdict must be one of ${TASK_VERDICTS.join(" | ")}` }, 400);
+      const text = typeof body?.text === "string" ? body.text.slice(0, MAX_COMMENT_TEXT).trim() : "";
+      if (!text) return json({ error: "bad text — a verdict without a sentence is not a report" }, 400);
+      const id = selfNoteVerdict[1]!;
+      const ids = await laneNoteIds(s);
+      if (!ids.ids.has(id))
+        return json({ error: "this note was not delivered to this lane — a lane may only judge the notes its own brief carried" }, 409);
+      const t = tasks.find((x) => x.id === id);
+      if (!t) return json({ error: "the note this lane was shown is no longer on the queue" }, 409);
+      // the branch comes from the TOKEN's row and can never be named in the body — the same rule
+      // TaskFilesProposal.by states, and for the same reason: provenance a caller dictates is none.
+      const c: TaskComment = { id: randomBytes(4).toString("hex"), ts: Date.now(), text,
+        from: s.worktree.branch, verdict };
+      t.comments = [...(t.comments ?? []), c].slice(-MAX_COMMENTS_PER_TASK);
+      saveState();
+      audit("note_verdict", s.id, `${t.id} ${verdict} (${s.worktree.branch})`);
+      // said out loud on every answer, because the one thing a lane could get wrong here is
+      // believing the note is now closed.
+      return json({ ok: true, comment: c, effective: verdict === "erledigt" ? "on this lane's land" : "never — read by the owner" });
     }
 
     // the disposition rail's hard rule, enforced HERE because the owner gate below would answer a lane's

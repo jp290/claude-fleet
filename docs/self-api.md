@@ -526,6 +526,55 @@ Landewellen-Sensor lieferte darum 44 Wellen der Größe 1, jede mit dem Grund
 
 
 
+## notes — `GET /api/self/notes`, `POST /api/self/notes/:id/verdict`
+
+**Die Notizen, die DEIN Gründungsbrief mitgebracht hat, im Volltext — und dein Urteil darüber**
+(N2, `docs/notizen-verarbeitung-2026-09-06.md` §3). Der Brief nennt sie als eine Zeile je Notiz (Id
++ erster Satz + geteilte Dateien); hier stehen sie ganz.
+
+```
+curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
+  http://<fleet-host>:<port>/api/self/notes
+curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"verdict":"erledigt","text":"<ein Satz, warum>"}' \
+  http://<fleet-host>:<port>/api/self/notes/<id>/verdict
+```
+
+**Lane-only** (409 `not a lane — …`, nie 401) wie `drift`/`gate`/`criterion`/`verify-intent`/
+`suite-offer`, und aus demselben Grund: beide Antworten sind über den EIGENEN Kontext-Receipt
+definiert, und eine Session ohne Gründungs-Dispatch hat keinen.
+
+**Die Berechtigungsgrenze ist der RECEIPT, nicht die Queue.** Du liest und beurteilst genau die
+Ids, die dein eigener Dispatch geliefert hat — nie die 127 pending Zeilen, nie die fünf einer
+anderen Lane. Eine fremde Id antwortet **409** (nicht 404: die Existenz zu verschweigen läse sich
+als „die Notiz ist weg" und schickte dich eine Löschung suchen, die nie stattfand).
+
+`GET` antwortet `{notes, receipts, gone?, verdicts}`. **`receipts` trennt zwei Abwesenheiten, die
+beide als leere Liste erscheinen:** `notes: []` mit `receipts: 0` heißt „kein Dispatch dieser Lane
+steht im Ledger" (ein vom Owner geöffneter Worktree, ein Receipt von vor N1), `notes: []` mit
+`receipts: n` heißt „der Join hat auf deiner Fläche nichts gefunden". `gone` nennt Ids, die der
+Receipt trägt und die Queue nicht mehr hält.
+
+`POST` nimmt `verdict` (`erledigt` | `widerlegt` | `offen`; alles andere **400**) und `text`
+(ein Satz, Pflicht, max. 2 000 Zeichen — ein Urteil ohne Satz ist kein Bericht). Er schreibt einen
+`TaskComment` auf die Notiz mit `from: <deine Branch>` und dem Verdikt. **Die Branch kommt aus der
+Token-Zeile und kann im Body nie benannt werden** — dieselbe Regel wie `filesProposal.by`.
+
+**Er ändert KEINEN Status, und die Antwort sagt das** (`effective`). Ein `erledigt` wird erst
+wirksam, wenn die Lane, die es geschrieben hat, LANDET: dann setzt der Land-Pfad die Notiz auf
+`done` mit `note: "erledigt durch Land <sha7> (<branch>)"`. Stirbt die Lane (`killed`, `shelved`),
+bleibt die Notiz pending und das Urteil als lesbarer Kommentar stehen. `widerlegt` und `offen`
+bewegen nie einen Status — sie sind Lesestoff für den Owner.
+
+**Und unabhängig davon stempelt jedes Land die pending Notizen desselben Repos, deren Fläche eine
+Nicht-Naben-Datei seines Diffs enthält**: `touched: [{sha, branch, at}]`, neueste zuerst, Deckel 5.
+Naben (`server.ts`, `e2e/pins.ts`, `AGENTS.md`, `CLAUDE.md`) sind ausgeschnitten, sonst stempelte
+jedes Land jede offene Notiz. Ein Land ohne bekannte Integrations-Shas (beide Owner-⏏-Pfade landen
+bereits integrierte Arbeit) misst nichts und schreibt nichts — **Abwesenheit heißt „nichts
+aufgezeichnet", nie „unberührt".**
+
+
+
 ## wave/split — `POST /api/self/wave/split`
 
 **Der Rückweg einer WELLEN-Lane (W3, 2026-09-07).** Du trägst n Queue-Zeilen und landest EINMAL.
@@ -644,9 +693,10 @@ curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   http://<fleet-host>:<port>/api/self/jobs/<jobId>        # Zustand + Quittung
 ```
 
-**Nicht lane-only, und das ist eine Entscheidung, kein Versehen.** Die vier lane-only Routen sind es,
+**Nicht lane-only, und das ist eine Entscheidung, kein Versehen.** Die lane-only Routen sind es,
 weil ihre Antwort außerhalb einer Lane undefiniert ist (`drift`, `gate`, `criterion`,
-`verify-intent`); `watch` ist nicht-lane-only, weil eine Lane, die auf eine Lane wartet, eine
+`verify-intent`, `suite-offer`, `wave/split`, `clarifications`, `notes` + `notes/:id/verdict`);
+`watch` ist nicht-lane-only, weil eine Lane, die auf eine Lane wartet, eine
 Kopplung ist, die nur der Owner sichtbar machen kann. **Beides trifft hier nicht zu:** eine Lane, die
 ihre eigene Suite auslagert, ist genau der Fall, den der Owner gewollt hat, und eine MAIN, die einen
 Build auslagert, ist derselbe Akt mit anderem cwd. Beide übergeben ihren EIGENEN Baum und warten auf
@@ -684,7 +734,7 @@ Deckel: **3 offene Command-Jobs pro Session** (409), 20 settled Zeilen im Regist
 
 ## suite-offer — `POST/GET /api/self/suite-offer`, `POST /api/self/suite-offer/withdraw`
 
-**Die fünfte lane-only Route** (Scope-Regel wie `drift`/`gate`/`criterion`/`verify-intent`: eine
+**Eine lane-only Route** (Scope-Regel wie `drift`/`gate`/`criterion`/`verify-intent`/`notes`: eine
 Nicht-Lane bekommt 409 `not a lane — a suite offer hands over a lane's own working tree`, nie 401).
 Sie bietet den eigenen `./e2e-isolated.sh`-VORSCHAULAUF dem Remote-Helfer-Portal an, statt den
 einen Suite-Mutex dieser Maschine dafür zu halten. Anlass und Messungen:

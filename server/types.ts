@@ -993,6 +993,12 @@ interface Task {
   // NOT the same object as `refine`, and the difference is the point: ↻ refine proposes a new
   // REQUEST (attended, all-or-nothing, may split one row into several), while this is the prompt
   // the request compiles down to. Refine rewrites what you asked for; the brief is how it is said.
+  touched?: TaskTouch[]; // WHICH lands moved a file this row's surface names, newest first, capped
+  // at TASK_TOUCHED_MAX. Advisory like `cluster` and `analysis`: it changes no status and gates
+  // nothing — it answers "has the ground under this observation moved since it was written". ABSENT
+  // means nothing has been recorded, never "no land touched it": the two owner ⏏ paths land work
+  // that is already integrated and carry no integration shas at all, so they measure nothing and
+  // say so by writing nothing.
   comments?: TaskComment[]; // the owner's own words ON this row, addressed to whoever picks it up
   // (the gap it closed: server-narrativ-archiv.md#task). Deliberately NOT folded into the brief:
   // the brief is the exact bytes a lane receives and is approved as such, so appending to it behind
@@ -1008,7 +1014,29 @@ interface Task {
 interface TaskBrief { text: string; at: number; model: string; edited: boolean }
 // One remark, timestamped and individually deletable. `id` exists for the delete: an index would
 // name a different comment the moment an earlier one goes.
-interface TaskComment { id: string; ts: number; text: string }
+//
+// `from` and `verdict` are the LANE half of the same thread (N2). A comment the owner wrote carries
+// neither, and that absence is the provenance: an unsigned remark is the owner's, a signed one is a
+// worker lane's report on a note it was shown. The branch is written from the TOKEN's row, never
+// from the body, for the reason every other provenance field here states — a `by` a caller can
+// dictate is not provenance. `verdict` is the three-valued answer the lifecycle reads: only
+// `erledigt` is ever ACTED on, and only by a land of the branch that wrote it, so a lane can claim
+// a note is finished but cannot close it by claiming so.
+const TASK_VERDICTS = ["erledigt", "widerlegt", "offen"] as const;
+type TaskVerdict = typeof TASK_VERDICTS[number];
+const isTaskVerdict = (value: unknown): value is TaskVerdict =>
+  typeof value === "string" && (TASK_VERDICTS as readonly string[]).includes(value);
+// How many lands a note remembers. Five like the note block's own cap and for the same reason: the
+// answer to "has this moved lately" does not improve with the sixth entry.
+const TASK_TOUCHED_MAX = 5;
+interface TaskComment { id: string; ts: number; text: string; from?: string; verdict?: TaskVerdict }
+
+// One land that moved a file this note's surface names. Written ONLY by the land site, which is the
+// only place that knows both integration shas — reading them at record time would name whatever
+// main had reached by then, not what this land moved. Newest FIRST and capped: the interesting
+// question is "did anything touch this lately", and an unbounded list would grow with the repo
+// rather than with the note.
+interface TaskTouch { sha: string; branch: string; at: number }
 
 // Three-valued on purpose: "unknown" is the analyst failing to ANSWER, which is an absence and must
 // never be able to read as either judgement (the two-valued collapse this replaced:
@@ -1808,7 +1836,7 @@ export type {
   HelperCmdCheck,
   SupervisorTransitionEventPayload, SupervisorTransitionFleetEvent, FleetEvent, ClarificationStatus,
   ClarificationRequest, FleetReportDisposition, FleetReportDecision, FleetReport, AttentionKind, AttentionStatus, AttentionRequest, TaskKind,
-  Task, TaskBrief, TaskComment, TaskAnalysis, AnalysisBlocker, TaskCriterion, TaskFilesProposal, RefineChild,
+  Task, TaskBrief, TaskComment, TaskVerdict, TaskTouch, TaskAnalysis, AnalysisBlocker, TaskCriterion, TaskFilesProposal, RefineChild,
   RefineProposal, TaskRefine, LaneForm, LaneRef, SuccessionRetirement, CodexRecoveryState, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
   PromotionSelfLand, PromotionPolicy, ProgramProfileKind, ProgramProfile, ProgramLineageVia,
@@ -1829,7 +1857,7 @@ export {
   FLEET_REPORT_DISPOSITIONS, MAX_FLEET_REPORT_DECISION_REASON,
   MAX_ATTENTION_TEXT, MAX_ATTENTION_ANSWER, MAX_ATTENTION_PROVENANCE_TEXT,
   ATTENTION_CANDIDATE_SHA_RE, ATTENTION_BRANCH_RE, validAttentionBranch, MAX_SUPERVISOR_NUDGE_TEXT,
-  TASK_KINDS, isTaskKind, loadTaskKind, PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion,
+  TASK_KINDS, isTaskKind, loadTaskKind, TASK_VERDICTS, isTaskVerdict, TASK_TOUCHED_MAX, PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion,
   PROGRAM_PROFILE_KINDS, loadProgramProfile, PROGRAM_LINEAGE_MAX, PROGRAM_LINEAGE_VIA,
   PROGRAM_LINEAGE_ENDED_BY, PROGRAM_LINEAGE_ENTRY_KEYS, loadProgramLineageEntry, loadProgramLineage,
   PROGRAM_INBOX_MAX, PROGRAM_INBOX_KINDS, PROGRAM_INBOX_ENTRY_KEYS, PROGRAM_INBOX_REF_MAX,

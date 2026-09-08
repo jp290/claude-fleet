@@ -648,6 +648,177 @@ export async function run(): Promise<void> {
       `keys=${Object.keys(three.note ?? {}).join(",")} hub=${hubMain().slice(0, 8)} was=${before3.slice(0, 8)} raw=${three.noteRaw}`);
   }
 
+  // === H — THE NOTE LIFECYCLE AT THE LAND SITE (N2) =====================================
+  // docs/notizen-verarbeitung-2026-09-06.md §3 N2. Three facts only a real land can establish, so
+  // they live here rather than beside the pure join in e2e/tasks.ts:
+  //   · a land STAMPS the pending notes whose surface it actually moved — and only those
+  //   · a land CLOSES the notes this branch reported `erledigt` on. The verdict alone never does.
+  //   · a KILLED lane closes nothing. The verdict stays readable and the note stays pending, which
+  //     is what keeps the claim falsifiable instead of authoritative.
+  // `code.txt` is the moved file, `ctx-mod.txt` the untouched control, `AGENTS.md` the HUB control:
+  // the land moves it too, and a note standing only on it must still come back unstamped.
+  {
+    await setMergeMode("blocked"); // the clean auto-land path — no agent, no conflict
+    type NRow = { id: string; kind: string; status: string; note?: string | null; files?: string[];
+      touched?: { sha: string; branch: string; at: number }[];
+      comments?: { text: string; from?: string; verdict?: string }[] };
+    const nRows = async (): Promise<NRow[]> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: NRow[] }).tasks;
+    const nRow = async (id: string): Promise<NRow | undefined> => (await nRows()).find((t) => t.id === id);
+    const mkRow = async (text: string, kind: "auftrag" | "notiz"): Promise<string> =>
+      ((await (await post("/api/tasks", { text, kind, queue: false, repo: REPO })).json()) as
+        { task: { id: string } }).task.id;
+
+    const nTouch = await mkRow("Notiz: code.txt traegt den Zustand doppelt. Zweiter Satz.", "notiz");
+    const nOther = await mkRow("Notiz: ctx-mod.txt ist unberuehrt. Zweiter Satz.", "notiz");
+    const nHubOnly = await mkRow("Notiz: AGENTS.md allein ist eine Nabe. Zweiter Satz.", "notiz");
+    // A PRECONDITION, not a check of the feature: without a derived surface the whole section would
+    // pass by measuring nothing — every note would simply fail to intersect anything.
+    check("(setup H) the queue derived a surface for each of the three fixture notes",
+      (await nRow(nTouch))?.files?.join(",") === "code.txt"
+      && (await nRow(nOther))?.files?.join(",") === "ctx-mod.txt"
+      && (await nRow(nHubOnly))?.files?.join(",") === "AGENTS.md",
+      JSON.stringify([(await nRow(nTouch))?.files, (await nRow(nOther))?.files, (await nRow(nHubOnly))?.files]));
+
+    // --- (n2-touched) ONE LAND THAT MOVES code.txt AND AGENTS.md -------------------------
+    const hLane = await openLane();
+    check("(setup H) a lane for the touched-stamp case opened", !!hLane, JSON.stringify(hLane));
+    let mainAfter1 = "";
+    if (hLane) {
+      await Bun.write(`${hLane.cwd}/code.txt`, "root\nH-touched\n");
+      await Bun.write(`${hLane.cwd}/AGENTS.md`, "# Throwaway repository contract\nH-touched\n");
+      check("(setup H) the touched-stamp lane committed its two files",
+        commitAll(hLane.cwd, "H: move code.txt and AGENTS.md").code === 0);
+      await settleForMerge(hLane.slot);
+      await post(`/api/slots/${hLane.slot}/merge`, {});
+      await waitMerge(hLane.slot);
+      mainAfter1 = g(REPO, "rev-parse", MAIN).out;
+    }
+    const tTouched = await nRow(nTouch);
+    // Mutation that breaks it: dropping the surface intersection (nOther would be stamped), keeping
+    // the hub files in it (nHubOnly would be stamped), or writing `mainBefore` as the sha.
+    check("(n2-touched) a land stamps the pending note whose NON-HUB surface it moved — and only that one",
+      !!mainAfter1 && tTouched?.touched?.length === 1
+      && tTouched.touched[0].sha === mainAfter1
+      && tTouched.touched[0].branch === hLane?.branch
+      && (await nRow(nOther))?.touched === undefined
+      && (await nRow(nHubOnly))?.touched === undefined,
+      `${JSON.stringify(tTouched?.touched)} want=${mainAfter1.slice(0, 8)}/${hLane?.branch}`
+      + ` other=${JSON.stringify((await nRow(nOther))?.touched)} hub=${JSON.stringify((await nRow(nHubOnly))?.touched)}`);
+
+    // A SECOND land on the same file: newest FIRST is what the board line reads ("zuletzt <sha7>"),
+    // so an append-at-the-end writer would put the oldest land in the row's own summary.
+    const hLane2 = await openLane();
+    let mainAfter2 = "";
+    if (hLane2) {
+      await Bun.write(`${hLane2.cwd}/code.txt`, "root\nH-touched\nH-touched-2\n");
+      check("(setup H) the second touched-stamp lane committed",
+        commitAll(hLane2.cwd, "H: move code.txt again").code === 0);
+      await settleForMerge(hLane2.slot);
+      await post(`/api/slots/${hLane2.slot}/merge`, {});
+      await waitMerge(hLane2.slot);
+      mainAfter2 = g(REPO, "rev-parse", MAIN).out;
+    }
+    const tTouched2 = await nRow(nTouch);
+    check("(n2-touched-order) a second land is prepended — newest first, and the older entry survives",
+      !!mainAfter2 && mainAfter2 !== mainAfter1 && tTouched2?.touched?.length === 2
+      && tTouched2.touched[0].sha === mainAfter2 && tTouched2.touched[1].sha === mainAfter1,
+      `${JSON.stringify(tTouched2?.touched?.map((x) => x.sha.slice(0, 8)))} want=[${mainAfter2.slice(0, 8)},${mainAfter1.slice(0, 8)}]`);
+
+    // --- (n2-closed) THE VERDICT BECOMES WIRKSAM AT THE LAND ------------------------------
+    // A DISPATCHED lane, because the verdict door's permission boundary is the context receipt —
+    // a hand-opened worktree has none and could not post a verdict at all.
+    const nDone = await mkRow("Notiz: code.txt haelt einen erledigten Zustand. Zweiter Satz.", "notiz");
+    const aDone = await mkRow("Auftrag: code.txt anfassen.", "auftrag");
+    const dRes = await post(`/api/tasks/${aDone}/dispatch`, {});
+    const dSlot = ((await dRes.json()) as { slot?: number }).slot ?? null;
+    let dCwd = ""; let dBranch = ""; let dTok = "";
+    if (dSlot !== null) {
+      for (let i = 0; i < 60; i++) {
+        const sl = ((await (await get("/api/sessions")).json()) as
+          { slots: { id: number; cwd: string | null; worktree?: { branch: string } | null }[] })
+          .slots.find((x) => x.id === dSlot);
+        dCwd = sl?.cwd ?? ""; dBranch = sl?.worktree?.branch ?? "";
+        dTok = await selfTokenOf(dSlot);
+        if (dCwd && dBranch && dTok) break;
+        await Bun.sleep(100);
+      }
+    }
+    const dNotes = dTok
+      ? (await (await fetch(`${BASE}/api/self/notes`, { headers: { "x-fleet-self-token": dTok } })).json()) as
+        { notes?: { id: string }[]; receipts?: number }
+      : { notes: [], receipts: 0 };
+    check("(setup H) the dispatched lane's own receipt delivered the note it is about to judge",
+      !!dTok && !!dBranch && (dNotes.notes ?? []).some((x) => x.id === nDone) && (dNotes.receipts ?? 0) >= 1,
+      `slot=${dSlot} branch=${dBranch} notes=${JSON.stringify((dNotes.notes ?? []).map((x) => x.id))} receipts=${dNotes.receipts}`);
+    const dVerdict = dTok
+      ? await fetch(`${BASE}/api/self/notes/${nDone}/verdict`, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": dTok },
+        body: JSON.stringify({ verdict: "erledigt", text: "H: mit diesem Land erledigt." }) })
+      : null;
+    // The verdict on its own must leave the row exactly where it was — otherwise the land below
+    // would prove nothing, because the status would already have moved.
+    check("(n2-verdict-inert) the verdict is accepted and the note is STILL pending before the land",
+      dVerdict?.status === 200 && (await nRow(nDone))?.status === "pending",
+      `${dVerdict?.status} ${(await nRow(nDone))?.status}`);
+    let mainAfter3 = "";
+    if (dSlot !== null && dCwd) {
+      await Bun.write(`${dCwd}/code.txt`, "root\nH-touched\nH-touched-2\nH-done\n");
+      check("(setup H) the judging lane committed its work",
+        commitAll(dCwd, "H: the work carrying the erledigt verdict").code === 0);
+      await settleForMerge(dSlot);
+      await post(`/api/slots/${dSlot}/merge`, {});
+      await waitMerge(dSlot);
+      mainAfter3 = g(REPO, "rev-parse", MAIN).out;
+    }
+    const rDone = await nRow(nDone);
+    // Mutation that breaks it: closing on ANY erledigt rather than one from THIS branch, closing in
+    // the verdict route instead of at the land, or writing the branch's tip instead of main's.
+    check("(n2-closed) the land of the branch that reported `erledigt` closes the note, naming its own land sha",
+      !!mainAfter3 && rDone?.status === "done"
+      && rDone.note === `erledigt durch Land ${mainAfter3.slice(0, 7)} (${dBranch})`,
+      `${rDone?.status} ${JSON.stringify(rDone?.note)} want sha=${mainAfter3.slice(0, 7)} branch=${dBranch}`);
+
+    // --- (n2-killed) A LANE THAT DIES CLOSES NOTHING --------------------------------------
+    const nKill = await mkRow("Notiz: code.txt bleibt offen, wenn die Lane stirbt. Zweiter Satz.", "notiz");
+    const aKill = await mkRow("Auftrag: code.txt erneut anfassen.", "auftrag");
+    const kRes = await post(`/api/tasks/${aKill}/dispatch`, {});
+    const kSlot = ((await kRes.json()) as { slot?: number }).slot ?? null;
+    let kCwd = ""; let kBranch = ""; let kTok = "";
+    if (kSlot !== null) {
+      for (let i = 0; i < 60; i++) {
+        const sl = ((await (await get("/api/sessions")).json()) as
+          { slots: { id: number; cwd: string | null; worktree?: { branch: string } | null }[] })
+          .slots.find((x) => x.id === kSlot);
+        kCwd = sl?.cwd ?? ""; kBranch = sl?.worktree?.branch ?? "";
+        kTok = await selfTokenOf(kSlot);
+        if (kCwd && kBranch && kTok) break;
+        await Bun.sleep(100);
+      }
+    }
+    const kVerdict = kTok
+      ? await fetch(`${BASE}/api/self/notes/${nKill}/verdict`, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": kTok },
+        body: JSON.stringify({ verdict: "erledigt", text: "H: behauptet erledigt, landet aber nie." }) })
+      : null;
+    check("(setup H) the lane that will be killed did post an `erledigt` verdict",
+      kVerdict?.status === 200, `${kVerdict?.status} slot=${kSlot} tok=${!!kTok}`);
+    if (kSlot !== null) {
+      await post(`/api/slots/${kSlot}/kill`, {});
+      if (kCwd) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", kCwd]);
+    }
+    const rKill = await nRow(nKill);
+    // Mutation that breaks it: moving applyLandToNotes into killSlot or the teardown path, where it
+    // would close on the claim alone — the exact shape this whole design exists to refuse.
+    check("(n2-killed) a killed lane closes nothing — the note stays pending and the claim stays readable",
+      rKill?.status === "pending"
+      && (rKill.comments ?? []).some((c) => c.verdict === "erledigt" && c.from === kBranch),
+      `${rKill?.status} ${JSON.stringify(rKill?.comments ?? [])}`);
+
+    for (const id of [nTouch, nOther, nHubOnly, nDone, aDone, nKill, aKill])
+      await post(`/api/tasks/${id}/delete`, {});
+  }
+
   await setMergeMode("blocked"); // leave the shared mode file as the other modules expect it
   if (receiver) await post(`/api/slots/${receiver}/kill`, {});
 }

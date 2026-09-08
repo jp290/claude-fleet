@@ -293,7 +293,11 @@ interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: 
   refine?: { at: number; unchanged: boolean; count: number }; refining?: boolean;
   // comments: the poll carries only how many and how recent — enough for the row chip and to
   // notice a new one; the texts ride /api/tasks like every other body on this row
-  comments?: { n: number; at: number } }
+  comments?: { n: number; at: number };
+  // N2: the lands that moved a file this row's surface names, newest first, capped at five by the
+  // server. Advisory — it changes no action and no status. ABSENT is "nothing recorded", never
+  // "untouched": the two owner ⏏ paths land already-integrated work and measure nothing.
+  touched?: { sha: string; branch: string; at: number }[] }
 // the proposal itself, as GET /api/tasks serves it (server.ts TaskRefine)
 interface RefineChildView { text: string; doneCriterion?: string; verify?: string; files?: string[] }
 interface TaskRefineFull { at: number; model: string;
@@ -5506,7 +5510,8 @@ async function refresh() {
         // the refine proposal arrives on a poll exactly like the criterion does, and the button
         // spends minutes in `refining` before it — both have to move the key or the pane lies.
         // In Waves, another row or active branch can move this row's advisory placement too.
-        t.refine?.at, t.refining, t.comments?.n, t.comments?.at, analysisOn, briefCompilerOn,
+        t.refine?.at, t.refining, t.comments?.n, t.comments?.at, t.touched?.length, t.touched?.[0]?.sha,
+        analysisOn, briefCompilerOn,
         // the lane line moves with the SLOTS (state, dirty, a recycled pointer), not with the row
         qLaneKey(new Map([[t.id, qLaneJoinOf(t.id)]])),
         qView === "waves" ? qWaveProjectionKey() : null]) : "gone";
@@ -6043,7 +6048,10 @@ const taskCriterionFull = new Map<string, NonNullable<TaskInfo["criterion"]>>();
 const taskRefineFull = new Map<string, TaskRefineFull>();
 // …and the comment thread. Same split for the same reason: a comment is free text of unbounded
 // length, and the 2 s poll is the one place in this client where bytes are a standing cost.
-interface TaskCommentView { id: string; ts: number; text: string }
+// `from`/`verdict` are the LANE half of the thread (N2). Their absence is the owner's own remark,
+// so the two populations are told apart by presence, never by a flag that could be forged.
+interface TaskCommentView { id: string; ts: number; text: string; from?: string;
+  verdict?: "erledigt" | "widerlegt" | "offen" }
 const taskCommentsFull = new Map<string, TaskCommentView[]>();
 let taskTextKey = ""; // the id+full-data-generation set this cache was last filled for
 let taskTextBusy = false;
@@ -7080,6 +7088,14 @@ function qTaskListModel(tasks: TaskInfo[], texts: ReadonlyMap<string, string>,
 // facts, in the owner-confirmed order. Keeping placement DOM-free makes both completeness and
 // order directly testable without opening the dashboard.
 type QRowFacts = readonly [verdict: string, age: string, slot: string, sourceTag: string];
+// "beruehrt von n Lands, zuletzt <sha7>" — the note's own line on the queue. Only for a `notiz`:
+// on an auftrag the same field would compete with the analyst's verdict, which is the fact that
+// decides whether that row can start.
+const qTouchedLine = (t: TaskInfo): string => {
+  const n = t.touched?.length ?? 0;
+  if (t.kind !== "notiz" || n === 0) return "";
+  return `beruehrt von ${n} Land${n === 1 ? "" : "s"}, zuletzt ${t.touched![0].sha.slice(0, 7)}`;
+};
 function qTaskSummary(t: TaskInfo, text: string, now: number): { title: string; facts: QRowFacts } {
   const source = t.source === "intake" ? `✉ ${t.from ?? "intake"}`
     : t.source === "steward" ? "⚙ steward" : "owner";
@@ -7087,7 +7103,11 @@ function qTaskSummary(t: TaskInfo, text: string, now: number): { title: string; 
   return {
     title: qFirstLine(text),
     facts: [
-      qVerdictLine(t) || "— advisory",
+      // A NOTE'S FIRST FACT IS ITS LIFECYCLE, not the analyst's silence. `qVerdictLine` is empty
+      // for every advisory row by construction, so "— advisory" was the whole column — and after
+      // N2 there is something to say there: whether any land has moved the ground this observation
+      // stands on. Absence keeps the old word, because "nothing recorded" is not "untouched".
+      qTouchedLine(t) || qVerdictLine(t) || "— advisory",
       `${fmtDur(Math.max(0, now - t.created))} ago`,
       t.slot ? `slot ${t.slot}` : "no slot",
       tag ? `${source} / ${tag}` : source,
@@ -8363,6 +8383,11 @@ function renderQueueDetail() {
   for (const c of cms) {
     overview.appendChild(el("div", "qdtext", c.text));
     const cline = el("div", "pkdacts");
+    // WHO said it and WHAT they claimed, beside the timestamp. Only `erledigt` ever moves this row,
+    // and only when the branch that wrote it lands — said here rather than left to be inferred,
+    // because a `widerlegt` sitting under a still-pending note otherwise reads as an ignored report.
+    if (c.verdict) cline.appendChild(el("div", "shellhint",
+      `${c.verdict} · ${c.from ?? "lane"}${c.verdict === "erledigt" ? " — closes this note when that branch lands" : ""}`));
     cline.appendChild(el("div", "shellhint", fmtTs(c.ts)));
     const cx = el("button", "shrbtn", "✕") as HTMLButtonElement;
     cx.title = "delete this comment";

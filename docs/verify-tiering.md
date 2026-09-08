@@ -2409,6 +2409,33 @@ Commit. Wer eine Adjudikation auf „das gelandete Commit ist docs-only" stützt
 aus der Land-Note lesen — ein Land trägt oft mehr als einen Commit, und genau dann ist die
 bequeme Begründung die falsche.
 
+**NACHTRAG 2026-09-08: die beiden SELTENEN Mitglieder der Vierer-Familie sind mechanisch geklärt
+und an der Sonde repariert — sie teilen die Naht, aber NICHT die Vorbedingung der beiden anderen.**
+Gemessen am roten Post-Land-Audit `isolated-20260907T212226Z-625727` (Baum `51565db4`) gegen den
+grünen `isolated-20260907T225519Z-871545` (Baum `15108892`), an dem `e2e/watch.ts`, `server/types.ts`
+und jeder `pruneFleetEvents`-Pfad byte-identisch sind. Beide Checks behaupteten das ÜBERLEBEN von
+eventA, der ältesten terminalen Zeile ihres Receivers; `server.ts#pruneFleetEvents` hält pro
+Receiver `FLEET_EVENT_KEEP_TERMINAL = WATCH_KEEP_SPENT = 5` terminale Events und wirft beim
+sechsten die älteste weg. Die Fixture erzeugt sechs. Rot war also der KORREKTE Ausgang; grün war
+der Zufall: der Ack des LATEN Job-Verdikts (`if (lateEvent) await ackEvent(...)`, Antwort
+verworfen) traf die Zeile meist noch als `pending` und wurde mit 409 abgewiesen — im grünen Log
+steht an derselben Stelle `…:delivered` statt `…:acknowledged`, also nur fünf terminale Zeilen.
+Die Aufrufstelle ist in einer eigenen Scratch-Instanz direkt gemessen (`fleet_event_ack` und
+`fleet_event_prune` in derselben Millisekunde, `settleFleetEventAcknowledged`); der `prune`-Eintrag
+des roten Laufs selbst war aus `audit.jsonl` herausrotiert. Vollmessung, Urteil (a) und die
+ausdrückliche Liste des Nicht-Gemessenen:
+`docs/messungen/2026-09-08-watch-event-retention-51565db4.md`.
+
+**Repariert an der Sonde in `fix(e2e): die Watch/Event-Sonde kennt die Retention-Decke` (Lane
+`fleet/260908030537-52af`, 2026-09-08; die Landing-Sha trägt MAIN nach — eine Lane kann ihre
+eigene nicht kennen).** Drei Teile: der späte Job-Ack wartet auf `delivered` und wird assertiert
+(neuer Check, der den stillen 409 schließt); die Decke ist mit einem eigenen Check gepinnt, der
+`FLEET_EVENT_TERMINAL` aus `server/types.ts` zählt; und beide Haltbarkeitsaussagen hängen jetzt an
+Zeilen, die die Decke BEHÄLT (das acknowledged Deploy-Event zu einer gelöschten Watch, und die
+aufgelöste Crash-Boundary-Zeile, deren `subjectSlot` die gekillte Lane ist). **Ein Rot dieser
+beiden Checks nach diesem Land ist wieder ECHT** — und es ist dann deterministisch, nicht
+1,4-prozentig. Für die anderen beiden Familienmitglieder gilt das unverändert ab `7d089c1`.
+
 
 **REPARIERT 2026-09-04 in `7d089c1` — die Fixture stellt ihre Vorbedingung jetzt selbst her, statt
 sie zu erben.** (Die Sha ist die des Lane-Commits `fix(e2e): the busy-receiver fixture inherited

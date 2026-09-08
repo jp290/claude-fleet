@@ -380,6 +380,78 @@ gehoerte. Zwei Operationen, technisch erlaubt, auf einem Objekt, das jemand ande
 ist dieselbe Klasse wie die vier Sensoren aus §4, nur eine Ebene hoeher: dort wurde etwas anderes
 gemessen als behauptet, hier wurde gar nicht gemessen, bevor geschrieben wurde.
 
+## 9. NACHTRAG 05:3x-06:0x — ZWEI OWNER-RICHTUNGEN UND EIN ROTES AUDIT
+
+### 9a. Rotes Post-Land-Audit auf `40ee5965` — als `stale-test` adjudiziert, DRITTE Instanz
+
+`3973 ran / 1 failed`, 85 min Laufzeit, davon 41 min Schlange, LOKAL (`remote: null`).
+Einziger Fail: die SETUP-Zeile `ctl setup: the source tree resolves and carries an executable
+ctl.sh`. Mechanismus wie im Praezedenzfall (auditAt 1788821143810): `e2e/ctl.ts:27-31` verlangt ein
+Git-Worktree, die volle Audit-Kette stellt den Baum per `git archive` OHNE `.git` bereit
+(`server.ts:14371`) — der Resolver kann nur `null` liefern. Auf dem HELFER besteht die Sonde.
+**Weil es eine SETUP-Zeile ist, ist alles darunter UNGEMESSEN, nicht verletzt** — die ctl-Verben
+sind von diesem Lauf nicht abgedeckt (`ran 3973` gegen 4011 im Lane-Lauf, 38 Checks weniger, passend
+zu den 41 in `e2e/ctl.ts`). Adjudiziert auditAt 1788843000681. Das Rot bleibt rot. Kein Rerun: bei
+einem strukturellen Setup-Fail beweist ein Wiederholungslauf nichts.
+
+### 9b. OWNER-RICHTUNG „zusammenlegen und in Wellen packen" — und warum der Wellen-Sensor das nicht kann
+
+Gemessen: von 145 Commits seit 2026-09-07 06:00 sind **98 (68 %) rein docs/prosa**, 11 164
+hinzugefuegte Zeilen; 27 (19 %) rein Code. **Der eingebaute Wellen-Sensor kann hier strukturell
+keine Buendel bilden:** er gruppiert nach `programId` + geteilter Flaeche, und die Flaeche ist
+`server.ts` in **36 von 50** offenen Zeilen (dazu `AGENTS.md` 24x, `e2e-isolated.sh` 21x,
+`e2e/pins.ts` 21x). Die vorhandene Cluster-Ableitung wirft entsprechend 16 Zeilen in einen Topf
+„cross-cutting/docs+e2e-gates+server" — das ist keine Welle, das ist eine Beschreibung des Repos.
+**Die tragfaehige Buendelachse ist der Serien-Marker im TITEL, und den liest keine Maschine.**
+Danach gruppiert (Skript: `$SCRATCH/b3.py`-Muster, Praefix bis zum ersten `·`):
+
+| Buendel | n | was es ist |
+|---|---|---|
+| LEBENSZYKLUS S3a-ii…S5c | 7 | Phasen EINES Entwurfs, identischer Doc-Satz |
+| Land-/Audit-Naht (FLEET-BETRIEB) | 11 | sechs davon aus der Nacht 07./08.09. |
+| Private-repo-j Rollenkette | 5 | Architect→P0→Reviewer→M1→M2, sequenziell |
+| steward-brief | 4 | vier Sensor-Luegen der Steward-View |
+| Audit-Determiniertheit | 3 | Schnitt A, Schnitt B, Q6+R |
+| BELEG-LANE 1+2 · DENKAUFTRAG-Profile | 2+2 | offensichtliche Paare |
+
+~31 von 47 Zeilen liegen in sieben Buendeln. **Der Owner hat ausdruecklich NUR Buendel 2
+freigegeben** („mach bitte erstmal einfach Buendel 2"); Buendel 1 und 3 (zusammen 12 Zeilen → 2)
+liegen unangetastet und warten auf sein Wort. Nicht vorgreifen.
+
+**Getan:** `fa8ac047` + `950d614d` → **`e9c47a54`** („die Merge-Zustandsflaeche luegt oder haengt —
+zwei Befunde, ein Objekt"), beide alten Zeilen mit Begruendungskommentar geschlossen.
+**Gefunden, noch nicht vollzogen:** `8f14a22b` (meins, programlos) und `b09cd2f9` (Fleet-Betrieb)
+sind DERSELBE Defekt; ihre Fassung ist die bessere. Ich schliesse meine erst, wenn Slot 4 zustimmt.
+**Vorschlag fuer die acht program-gebundenen Zeilen ist an Slot 4 raus** (zwei Naehte statt sechs
+Zeilen; `c62aa3e9`/`201d0240`/`bb563b63` bleiben einzeln) — 8 → 4 bei ihnen, 11 → 5 im Buendel.
+
+### 9c. OWNER-RICHTUNG „docs sollen keine suite und keinen git-head mehr erzeugen"
+
+**TEIL 1 IST BEREITS ERFUELLT — nachgemessen, damit niemand daran baut.** Ein docs-only-Land faehrt
+`install`+`pins` (`verify-proportion.ts#DOC_STEPS`), und `bun e2e/pins.ts` nimmt den Suite-Mutex
+NICHT (nur die `e2e-*.sh`-Wrapper). Land-Notes der letzten 60 Commits: **docs-only median 1 s gegen
+148 s bei voller Kette**. Seit `036ff7c` faehrt auch der Post-Land-Audit fuer solche Lands die kurze
+Kette (~2 s). Wer hier etwas abschaltet, mauert eine geschlossene Tuer zu.
+
+**TEIL 2 ist der echte und teurere.** Was ein docs-Land kostet, ist die Bewegung von `main`: ein
+ff-Rennen gegen jedes Land in Flug (zwei bezahlte Faelle im Regelbuch) · eine Sprosse des DREI
+tiefen Undo-Stacks, bei 98 docs-Commits am Tag · ein Lane-Platz von drei fuer die Dauer der Lane
+(Median 117 min). Als reine ENTWURFSZEILE gefilt: **`0694cb78`**, programlos, baut nichts ohne
+zweite Owner-Bestaetigung. Drei Bauformen mit Kosten, Empfehlung **docs-WELLEN** (N docs-Lanes
+koaleszieren zu EINEM Commit — erhaelt die Commit-Bodies, die hier das Befund-Register sind, macht
+aus ~98 Kopfbewegungen ~10-15, und waere die erste echte Aufgabe fuer W1-W3, das seit dieser Nacht
+live ist und null Buendel bildet). Alternativen mit Preis: docs ungetrackt (Befund-Register weg) ·
+docs ohne Land-Pfad (verlagert das ff-Rennen in den Haupt-Checkout, statt es zu loesen).
+
+### 9d. Zwei Betriebsdetails
+
+- **Die 409-Falle aus §0b ist erneut zugeschlagen**, diesmal an Slot 4: `composer occupied
+  (33 chars) — nothing typed` war KEIN Entwurf, sondern ein offenes Claude-Code-Auswahlmenue
+  („Enter to select · Esc to cancel"). `tmux -L claudefleet send-keys -t s4 Escape`, dann ging die
+  Zustellung. **Immer erst die Pane ansehen, bevor man die Zahl in Klammern als Text deutet.**
+- **Die Fleet-Betrieb-MAIN sitzt jetzt auf Slot 4** (Succession waehrend meiner Schicht); ihr
+  cross-session-Socket ist tot, Zustellung nur noch ueber `POST /send` an Slot 4.
+
 ## 7. WAS ICH NICHT GEPRUEFT HABE
 
 Den Inhalt der sechs verbliebenen advisory-Zeilen von `e3b3a064`. Ob andere Leser von `MergeLast`

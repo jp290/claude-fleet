@@ -7617,40 +7617,6 @@ export async function run(ctx: Ctx): Promise<void> {
         await Bun.sleep(120);
       }
     };
-    // …and the MAIN's RETURN PATH, drained before each arm that files. MEASURED, not assumed
-    // (isolated run `isolated-20260908T102821Z-95901`): the accepted-report arm answered 409 with
-    // `drained: 0` — every land of a program lane ARMS a merge subscription on this MAIN
-    // (`server.ts#armProgramMainLandWatch`), those reservations count against
-    // FLEET_EVENT_MAX_OPEN_PER_SLOT exactly like open events, and a FLEET_CMD=true pane never gets
-    // idle enough to spend them. So BOTH halves of `slotDeliveryBudget` are cleared here: the
-    // events through the MAIN's own ack door, the armed watches through the owner's delete route.
-    // Without it the arm goes red for a reason that has nothing to do with what it measures.
-    const drainMainBudget = async (): Promise<{ acked: number; unwatched: number; saw: number }> => {
-      // READ LIVE, never `readState()`. Measured in `isolated-20260908T112729Z-25092`: the disk
-      // read answered `{acked:0, unwatched:0}` while the budget was in fact full, because
-      // `server.ts#saveState` is DEBOUNCED and an armed watch reaches fleet.json later than the
-      // land that armed it. `GET /api/self` serves this MAIN's own watches and events out of
-      // memory, which is the same array the door reads.
-      const mine = await (await fetch(`${BASE}/api/self`,
-        { headers: { "x-fleet-self-token": landTok } })).json() as
-        { watches?: { id?: string; armed?: boolean }[];
-          events?: { id?: string; status?: string }[] };
-      const open = (mine.events ?? []).filter((e) =>
-        !["acknowledged", "receiver-gone", "subject-gone"].includes(e.status ?? ""));
-      let acked = 0;
-      for (const e of open) {
-        if (!e.id) continue;
-        const r = await fetch(`${BASE}/api/self/events/${e.id}/ack`,
-          { method: "POST", headers: { "x-fleet-self-token": landTok } });
-        if (r.ok) acked++;
-      }
-      let unwatched = 0;
-      for (const w of (mine.watches ?? [])) {
-        if (w.armed !== true || !w.id) continue;
-        if ((await post(`/api/watches/${w.id}/delete`, {})).ok) unwatched++;
-      }
-      return { acked, unwatched, saw: (mine.watches ?? []).length + (mine.events ?? []).length };
-    };
     // …and the OTHER fixture hazard this neighbourhood carries, measured in the same run: the
     // founding brief is delivered by a DETACHED tail that sleeps 4000 ms and REQUEUES the row on
     // any failure in that window (`server.ts#briefAndSend`, and the block comment above says so).
@@ -7675,7 +7641,6 @@ export async function run(ctx: Ctx): Promise<void> {
     // Filed BEFORE the done-looking wait: the row goes to the MAIN's pane, not this lane's, but a
     // POST after the wait would still be one more thing happening between the gate and the land.
     const suspectLaneTok = slotToken(suspectLane.slot);
-    const suspectDrained = await drainMainBudget();
     const suspectReport = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
       headers: { "content-type": "application/json", "x-fleet-self-token": suspectLaneTok },
       body: JSON.stringify({ status: "complete", text: "ambient-land probe: filed, awaiting judgement." }) });
@@ -7700,10 +7665,10 @@ export async function run(ctx: Ctx): Promise<void> {
     // wait for the same reason the note is: reading the instant main moves measures the observer.
     type AmbientEntry = { id: string; kind: string; ref: string; readBy: unknown;
       subject: { sha?: string; note?: OwnerNote; door?: string } | null };
-    const ambientEntry = async (sha: string, ms = 20_000): Promise<AmbientEntry | null> => {
+    const ambientEntry = async (sha: string, ms = 20_000, tok = landTok): Promise<AmbientEntry | null> => {
       const deadline = Date.now() + ms;
       for (;;) {
-        const view = (await selfInbox(landTok)).view;
+        const view = (await selfInbox(tok)).view;
         // the ref is the ADDRESS `<sha> <repo>` — matched on the sha half, so this stays right
         // whichever repo the land happened in
         const hit = view?.entries.find((e) => e.kind === "ambient-land" && e.ref.startsWith(`${sha} `));
@@ -7730,8 +7695,8 @@ export async function run(ctx: Ctx): Promise<void> {
           && suspectNote.actor.bypassed.task === suspectRowId
           && suspectNote.actor.bypassed.main === landMainSlot
           && suspectNote.actor.bypassed.report === "undecided",
-        JSON.stringify({ filed: suspectReportOk, drained: JSON.stringify(suspectDrained),
-          bypassed: suspectNote?.actor?.bypassed, wantTask: suspectRowId, wantMain: landMainSlot }));
+        JSON.stringify({ filed: suspectReportOk, bypassed: suspectNote?.actor?.bypassed,
+          wantTask: suspectRowId, wantMain: landMainSlot }));
       // THE DONE-CRITERION ITSELF: the MAIN finds the land through its OWN door, with no human in
       // the loop and nothing to poll — the pointer is in the Program's inbox and the note it names
       // resolves. `unread` proves it is not merely present but WAITING.
@@ -7749,7 +7714,26 @@ export async function run(ctx: Ctx): Promise<void> {
     // (5b) THE SECOND ARM, and it is the one that keeps the entry from becoming noise: the SAME
     // ambient land over work the MAIN had already ACCEPTED must be distinguishable from the arm
     // above without asking anyone. If both read alike, a MAIN learns to skip the kind.
-    const acceptRowId = await makeTask({ text: "ambient-land accepted-report row", programId: landProgram.id, repo: REPO2 });
+    // …ON ITS OWN PROGRAM AND ITS OWN MAIN, and that is the correction of a measured probe error
+    // (`isolated-20260908T122507Z-10530`): the arm answered 409 `fleet-report receiver has no
+    // FleetEvent delivery budget` with `saw: 11`. `slotDeliveryBudget` counts every event whose
+    // `receiverSlot` is the slot, while `GET /api/self` serves only those matching the FULL
+    // occupant triple — so a drain built on the self view is structurally blind to part of the
+    // very sum it is trying to lower, and no amount of acking would have fixed it. A FRESH binding
+    // has an empty budget by construction, which is the property this arm actually needs; it also
+    // makes the accepted/undecided distinction independent of everything the green fixture's MAIN
+    // accumulated on the way here.
+    const acceptProgram = await activateNewProgram("Ambient-land accepted-report arm");
+    const acceptBoot = await beginBootstrap(acceptProgram.id, { cwd: REPO2, label: "ambient-accept-main" });
+    const acceptBootBody = await acceptBoot.json() as { slot?: number; error?: string };
+    const acceptMainSlot = acceptBootBody.slot ?? null;
+    const acceptTok = acceptMainSlot === null ? "" : slotToken(acceptMainSlot);
+    if (acceptMainSlot !== null) landFixtureMains.push(acceptMainSlot);
+    check("ambient land fixture: the accepted-report arm has its OWN bound MAIN, with an empty return path",
+      acceptBoot.ok && acceptMainSlot !== null && /^[0-9a-f]{32}$/.test(acceptTok),
+      JSON.stringify({ boot: acceptBoot.status, slot: acceptMainSlot,
+        err: acceptBoot.ok ? "" : JSON.stringify(acceptBootBody) }));
+    const acceptRowId = await makeTask({ text: "ambient-land accepted-report row", programId: acceptProgram.id, repo: REPO2 });
     const acceptDispatchedAt = Date.now();
     const acceptLane = await conflictLane(acceptRowId);
     await settleBrief(acceptDispatchedAt);
@@ -7759,7 +7743,6 @@ export async function run(ctx: Ctx): Promise<void> {
       spawnSync("git", ["-C", acceptLane.cwd, "commit", "-qm", "ambient accepted work"]);
     }
     const acceptLaneTok = slotToken(acceptLane.slot);
-    const acceptDrained = await drainMainBudget();
     const acceptFiled = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
       headers: { "content-type": "application/json", "x-fleet-self-token": acceptLaneTok },
       body: JSON.stringify({ status: "complete", text: "ambient-land probe: judged before anyone landed it." }) });
@@ -7770,7 +7753,10 @@ export async function run(ctx: Ctx): Promise<void> {
     const acceptReportId = acceptFiled.ok
       ? (JSON.parse(acceptFiledRaw) as { report?: { id?: string } }).report?.id ?? null : null;
     const acceptDecided = acceptReportId === null ? null
-      : await mainDecides(acceptReportId, "accept", "read the diff — this is what the row asked for");
+      : await fetch(`${BASE}/api/self/fleet-report/${acceptReportId}/accept`, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": acceptTok },
+        body: JSON.stringify({ reason: "read the diff — this is what the row asked for" }) })
+        .then(async (r) => ({ ok: r.ok, body: (await r.text()).slice(0, 200) }));
     const acceptReady = acceptLane.slot === null ? false : await waitDoneLooking(acceptLane.slot);
     const acceptBefore = main2Of();
     const acceptDrive = await driveLand(acceptLane.slot, acceptBefore,
@@ -7779,17 +7765,19 @@ export async function run(ctx: Ctx): Promise<void> {
     const acceptLanded = acceptReady && acceptLane.branch !== "" && acceptMain !== acceptBefore;
     check("ambient land fixture: the accepted-report arm LANDED — the MAIN decided the row first, then a BEARER merge moved main",
       acceptLanded && acceptDecided?.ok === true,
-      JSON.stringify({ ready: acceptReady, decided: acceptDecided, drained: JSON.stringify(acceptDrained),
+      JSON.stringify({ ready: acceptReady, decided: acceptDecided,
         filed: acceptFiled.status, filedBody: acceptFiledBody, reportId: acceptReportId,
         before: acceptBefore.slice(0, 8),
         after: acceptMain.slice(0, 8), drive: acceptDrive.log }));
     if (acceptLanded) {
       const acceptNote = await landNote(acceptMain);
-      const acceptEntry = await ambientEntry(acceptMain);
+      const acceptEntry = await ambientEntry(acceptMain, 20_000, acceptTok);
       check("ambient land: an accepted report reads as ACCEPTED on both the note and the inbox entry — the benign case is legible as benign",
         acceptNote?.actor?.suspect === "owner-token-outside-board"
           && acceptNote.actor.bypassed?.report === "accepted"
           && acceptNote.actor.bypassed.task === acceptRowId
+          && acceptNote.actor.bypassed.program === acceptProgram.id
+          && acceptNote.actor.bypassed.main === acceptMainSlot
           // the sha half is asserted literally; the repo half is asserted by CONSEQUENCE — the
           // subject below only resolves if that path reached the right object database. Comparing
           // it to REPO2 by string would fail on this platform's /var → /private/var symlink, which
@@ -7813,7 +7801,10 @@ export async function run(ctx: Ctx): Promise<void> {
       spawnSync("git", ["-C", plainLane.cwd, "commit", "-qm", "programless work"]);
     }
     const plainReady = plainLane.slot === null ? false : await waitDoneLooking(plainLane.slot);
+    // BOTH program inboxes, because there are now two live bindings on this fleet and a writer
+    // keyed on the channel rather than on the binding would land its entry in either one.
     const plainInboxBefore = (await selfInbox(landTok)).view?.entries.length ?? -1;
+    const plainAcceptInboxBefore = (await selfInbox(acceptTok)).view?.entries.length ?? -1;
     const plainAmbientBefore = ambientCount();
     const plainBefore = main2Of();
     const plainDrive = await driveLand(plainLane.slot, plainBefore,
@@ -7828,14 +7819,19 @@ export async function run(ctx: Ctx): Promise<void> {
       // give the writer the same window the two arms above got, so "nothing appeared" is a waited
       // answer and not a read that outran the append it is claiming did not happen
       const plainRace = await ambientEntry(plainMain, 3000);
+      const plainRaceAccept = await ambientEntry(plainMain, 3000, acceptTok);
       const plainInboxAfter = (await selfInbox(landTok)).view?.entries.length ?? -1;
+      const plainAcceptInboxAfter = (await selfInbox(acceptTok)).view?.entries.length ?? -1;
       check("ambient land: a BEARER land on a lane with NO program is unflagged and adds NOTHING to any program inbox",
         plainNote?.branch === plainLane.branch && plainNote.actor?.kind === "owner"
           && plainNote.actor.via === "bearer" && plainNote.actor.suspect === undefined
           && plainNote.actor.bypassed === undefined
-          && plainRace === null && plainInboxAfter === plainInboxBefore
+          && plainRace === null && plainRaceAccept === null
+          && plainInboxAfter === plainInboxBefore
+          && plainAcceptInboxAfter === plainAcceptInboxBefore
           && ambientCount() === plainAmbientBefore,
         JSON.stringify({ note: plainNote, entriesBefore: plainInboxBefore, entriesAfter: plainInboxAfter,
+          acceptBefore: plainAcceptInboxBefore, acceptAfter: plainAcceptInboxAfter,
           ambientBefore: plainAmbientBefore, ambientAfter: ambientCount() }));
     }
     // …and BOTH new rows leave the register, whatever happened to them. This block's own three
@@ -9442,7 +9438,8 @@ exit 0
     await programPost(ffProgram.id, "complete");
 
     for (const slot of [redLaneSlot, greenLaneSlot, cfLane.slot, cf2Lane.slot, suspectLane.slot,
-      cookieLane.slot, landMainSlot, ladderSlot]) if (slot !== null) await post(`/api/slots/${slot}/kill`, {});
+      cookieLane.slot, landMainSlot, ladderSlot,
+      acceptLane.slot, plainLane.slot, acceptMainSlot]) if (slot !== null) await post(`/api/slots/${slot}/kill`, {});
     for (const id of [ladderRowId, landForeignRowId, landNotizRowId, greenRowId, redRowId, cfRowId,
       cf2RowId, suspectRowId, cookieRowId]) {
       await post(`/api/tasks/${id}/done`, {});
@@ -9453,6 +9450,7 @@ exit 0
     await programPost(ladderProgram.id, "complete");
     await programPost(landForeignProgram.id, "complete");
     await programPost(landProgram.id, "complete");
+    await programPost(acceptProgram.id, "complete"); // ACP-17's own binding, closed with its siblings
     await restartSrv();
   }
 

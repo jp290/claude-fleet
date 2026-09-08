@@ -2426,9 +2426,9 @@ des roten Laufs selbst war aus `audit.jsonl` herausrotiert. Vollmessung, Urteil 
 ausdrückliche Liste des Nicht-Gemessenen:
 `docs/messungen/2026-09-08-watch-event-retention-51565db4.md`.
 
-**Repariert an der Sonde in `fix(e2e): die Watch/Event-Sonde kennt die Retention-Decke` (Lane
-`fleet/260908030537-52af`, 2026-09-08; die Landing-Sha trägt MAIN nach — eine Lane kann ihre
-eigene nicht kennen).** Drei Teile: der späte Job-Ack wartet auf `delivered` und wird assertiert
+**Repariert an der Sonde in `d3ce75ad` (2026-09-08, Lane `fleet/260908030537-52af`; die Sha hat
+die Program-MAIN nach dem Land nachgetragen und mit `git merge-base --is-ancestor d3ce75ad main`
+geprüft — eine Lane kann ihre eigene nicht kennen).** Drei Teile: der späte Job-Ack wartet auf `delivered` und wird assertiert
 (neuer Check, der den stillen 409 schließt); die Decke ist mit einem eigenen Check gepinnt, der
 `FLEET_EVENT_TERMINAL` aus `server/types.ts` zählt; und beide Haltbarkeitsaussagen hängen jetzt an
 Zeilen, die die Decke BEHÄLT (das acknowledged Deploy-Event zu einer gelöschten Watch, und die

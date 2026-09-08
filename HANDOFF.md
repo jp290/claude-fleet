@@ -1,3 +1,119 @@
+# HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 6, Opus 5 high): eine Owner-Frage gerettet, ein rotes Audit widerlegt, ein Wellen-Paar verworfen und ersetzt; 2026-09-08 ~08:0x–09:2x, ctx GEMESSEN 28,8 % beim Schreiben
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **KEIN armierter Watch.** `3af07620` (Audit auf `ba8c068a`) hat gefeuert und ist quittiert. Armiere
+  erst wieder, wenn du selbst landest.
+- **OFFEN BEIM OWNER: Attention `04f4b7e6e37ef7ed9545fae5`** (S12 Wire-Autoritaet, kind `decision`).
+  **Sie stirbt mit deiner Succession.** Ihr Inhalt ist reproduzierbar aus
+  `docs/messungen/2026-09-08-fleet-betrieb-erfolgskriterien.md` §Nachtrag 08:1x — dort stehen alle
+  Messungen, aus denen sie gebaut ist. Findest du sie `refused`, ist sie UNBEANTWORTET: neu stellen.
+  Die Fassung meiner Vorgaengerin (`6d51202e`) ist genau so gestorben; ich habe sie mit ~10 min
+  Vorsprung ersetzt.
+- **Drei eigene Zeilen queued am Repo-Deckel 3/3:** `f6778de1`, `fa8f6220`, `b09cd2f9`. Nichts zu
+  tun — der Tick startet sie, sobald eine Lane frei wird.
+- **Zwei Flaechen geparkt, warten auf Owner-Confirm:** `417d2be5` (S3b) und `74319808` (S3d), als
+  Wellen-Paar begruendet in §3. `filesProposal` gesetzt, `files`/`filesOrigin` unberuehrt.
+- **Zwei programlose Owner-Zeilen sind von mir BEURTEILT, aber nicht eintragbar:** `95d09e33` und
+  `e53716b9`. Siehe §4 — das ist kein offener Arbeitspunkt, sondern eine Owner-Tuer.
+
+## 1. Die drei Waende, die ich am Code gelesen (nicht angeklopft) habe
+
+Sie kosten jede Nachfolgerin sonst dieselbe Stunde. Alle drei betreffen **programlose Zeilen**:
+
+| Akt | Tuer | Absage im Code |
+|---|---|---|
+| Landen | `server.ts#selfLandTaskForMain` Klausel (3) | „task belongs to no program of this MAIN" — Kommentar: *„an unbracketed row is nobody's — for those the owner's board stays the only door."* |
+| Report-Urteil eintragen | `server.ts#decideFleetReport` | „owner-inbox report — accepting or rejecting it belongs to the owner, who has no session to bind a decision to" (`receiver: null`) |
+| `POST /send` an einen Slot | `tokenGate` | Owner-Token. Die Route journalisiert den Text **als „owner"** — eine Meldung von hier stuende als seine im Register. |
+
+**Ich habe den Owner-Token nicht gelesen.** Nicht Formalismus: `owner_token_ambient_use` ist der
+Vorfall, den Controller Slot 8 bei `40ee5965` bezahlt hat, und `fa8f6220` (meine Zeile) existiert,
+um genau das mechanisch zu schliessen. Eine Bevollmaechtigung durch den Controller deckt den Token
+des Owners nicht. Die Lane von `e53716b9` ist unabhaengig zum selben Schluss gekommen und hat ihn
+ebenfalls nicht gesucht (Report `15ded62e3ba9789d304f700a`) — zwei unabhaengige Messungen derselben
+Wand.
+
+## 2. Das rote Audit auf `ba8c068a` — widerlegt, aber NICHT adjudiziert
+
+`at=1788850070444`, second-host-Helfer, **4020 ran / 1 failed**: `e2e/slots.ts:650`
+„reseed + live bytes …". Fuenfte Sichtung der Familie **§11.2b**, eingetragen in
+`docs/verify-tiering.md` (`7ff56eab`). Zwei Saetze, die die naechste Leserin braucht:
+
+- **Der Beweis ist die ORDNUNG, nicht die Flaeche.** Ich wollte „`state.sh` ist keine Testflaeche"
+  schreiben — **falsch**, `e2e/outcomes.ts:118-126` kopiert und FUEHRT es AUS. Was traegt:
+  `slots.run()` = `fleet-e2e.ts:78`, `outcomes.run()` = `:138`, strikt sequentielle `await`s, kein
+  `Promise.all`/`race`. Der einzige `state.sh`-Pfad laeuft sechzig Modulschritte nach dem Check.
+- **Diese Instanz hat KEINE `N marks`-Signatur**, weil der Lauf nirgends ein Trail schrieb: auf dem
+  Helfer ist `~/claude-fleet/e2e-trail` seit 2026-09-06 09:16Z leer, ein `fleet-e2e-trail` existiert
+  dort nicht, `$TMPDIR` ist leer. Dieselbe Schadensklasse wie `b09cd2f9`, **anderer Mechanismus**
+  (Helfer-Host statt unaufloesbares SRC). Meine Lesart fuer den Urteilenden: `flake`, getragen von
+  Ordnung und Flaeche, NICHT von der Signatur — wer eine verlangt, bekommt sie nicht mehr.
+
+## 3. Wellen-Paarpruefung: `c464af30`+`ee47b0f8` VERWORFEN, `417d2be5`+`74319808` vorgeschlagen
+
+Beurteilt an den EFFEKTIVEN Briefen (§3-ii und §8-b in
+`docs/program-lebenszyklus-architektur-2026-09-04.md`), nicht an den Queue-Zeigern.
+
+**Gegen das vorgeschlagene Paar** — Symbolschnittmenge leer, Beweisschnittmenge leer; §9-Matrix sagt
+zu 3a-ii woertlich **„allein"**; die drei gemeinsamen Dateien sind genau die, die §9 als
+konfliktfrei konstruiert erklaert (`e2e/pins.ts` Append, `docs/self-api.md` je eigener Abschnitt) —
+also ein Argument, dass **seriell schon billig ist**; 400+170 = ~570 reisst die ~400-Grenze, wegen
+der §9 ueberhaupt geteilt hat.
+
+**Fuer `417d2be5`+`74319808`** — das Dokument empfiehlt es zweimal woertlich („gern in derselben
+Lane als zweiter Commit", „ideal: 3d als zweiter Commit derselben Lane wie 3b"). Echte gemeinsame
+Ursache: **dieselbe Funktion** `server.ts#openFleetReport`, und 3d's Block liest
+`report.basis === "program"` — **das Feld, das 3b erst einfuehrt**. Gemeinsamer Beweis: eine
+Fixture-Menge in `e2e/watch.ts` Section `RESULT-RAIL B-D`. Ersparnis ist ein GARANTIERTER Rebase
+plus eine zweite Gate-Kette, nicht ein hypothetischer. Ehrlich dagegen: 370+125 = ~495, auch ueber
+400. Und: es haengt NICHT hinter 3a-ii — die Matrix nennt kein gemeinsames Symbol, 3b's Inbox-Bedarf
+kommt aus 3a-i (gelandet).
+
+**Zwei Brief-Abweichungen, gemessen, die die Flaeche VERKLEINERN:**
+- **`src/client.ts` ist keine Schreibflaeche.** §4 verlangt „jede geschlossene Fallunterscheidung im
+  Client bekommt `program`" — es gibt keine: `src/client.ts:11038` typt `basis: string` (offen), und
+  alle sechs `basis`-Treffer sind anderes. **Folge: kein `bun run build`, Demo-Warnung entfaellt.**
+  Willst du das „Program"-Badge trotzdem, ist das ein Owner-Entscheid, keine Brief-Pflicht.
+- **`src/protocol.ts` ist read-only** und der Brief hat recht: die Union in `:45` bleibt ohne
+  `"program"`, weil ein Program-Report gar kein FleetEvent mintet.
+- `dropWatchesFor` steht in §6 unter DATEIEN, aber die VERBOTE sagen „unveraendert" — Muster zum
+  Abschauen, kein Ziel. Nicht in der Flaeche.
+
+## 4. Urteil zu `e53716b9` (Report `8e629cc8c4337c7f6b398972`): ANNEHMEN
+
+Sechs pruefbare Behauptungen, alle am Baum gehalten: `server.ts:12423 ?? 900_000` · `:12407
+?? 120_000` · `docs/suite-contention.md:507` „offered and is declined" · `c249911d` 21:27/03:07 ·
+`d633a3b2` 01:41/06:00 · Diff docs-only, eine Datei, 53+/4−. Die Lane hat ausserdem ihre eigene
+erste Fassung als zu stark verworfen, bevor sie committete. `95d09e33` ist bereits owner-`accepted`.
+**Beide Lands fassen `docs/suite-contention.md` an** — einzeln je `merge-tree`-sauber, nach dem
+ersten Land muss die zweite NEU geprueft werden.
+
+## 5. Traegerpruefung ctl `wait merge` — NICHT NEU BAUEN, der Traeger existiert
+
+Controller-Beleg in `b60b50f2` (Kommentar `fd8e4103`): `ctl.sh` Block `wait-merge` bindet nur die
+Slotnummer, tritt nur bei `!running && last` aus; nach einem Recycling ist `last` null und die
+Schleife pollt bis `FLEET_CTL_WAIT_MAX_SEC` (3600 s). Am Code nachgeprueft.
+
+**Der bestehende Traeger ist `e9c47a54`** („DIE MERGE-ZUSTANDSFLAECHE LUEGT ODER HAENGT — ZWEI
+BEFUNDE, EIN OBJEKT", Controller Slot 8): sein **BEFUND B ist woertlich dieser Defekt**, am selben
+Block, mit demselben Mechanismus, und traegt bereits ein Done-Kriterium in der Fassung dieser MAIN.
+Die neue Ledger-Messung (`d832a679`, ts 1788855458937 → Recycling 1788855467463, ~8,5-s-Fenster) ist
+eine ZWEITE Instanz und gehoert AUF diese Zeile, nicht in eine neue. `e9c47a54` ersetzt selbst schon
+`fa8ac047` und `950d614d` — eine dritte Zeile waere die dritte Verdopplung desselben Objekts.
+**Aber `e9c47a54` ist programlos** — ich kann sie weder adoptieren (Adoption = Neu-Filen = die
+Dublette, die hier verboten ist) noch landen. §1 gilt.
+
+## 6. Was ich NICHT geprueft habe
+
+Ob die 17 Buendel unter `f9dc8e10` inhaltlich decken, was die 137 Quellen trugen (ich habe nur
+verifiziert, dass meine 16 `notiz`-Zeilen `archived` sind und **keine** meiner `auftrag`-Zeilen
+angefasst wurde). Den Inhalt der sieben restlichen Lebenszyklus-Zeilen ausser §3-ii/§4/§6/§8-b.
+Ob `30383e62` (S3a-i) je eine Outcome-Zeile hatte — es steht in der Projektions-`unknown`-Liste;
+mein Beleg ist der CODE, nicht der Status.
+
+---
+
 # HANDOFF — 🎛 Fleet Controller (Slot 8, Opus 5, `6cf2d43b`): Uebergabe an den ASTRA-Controller (Program `f9dc8e10`); 2026-09-08 02:15–08:5x, ctx GEMESSEN 18,4 % beim Schreiben
 
 ## 0. Was beim Antritt gilt

@@ -6,7 +6,7 @@
 // green), a burst of lands never spawns two concurrent suites, and — sections E–G, which restart the
 // server and therefore run last — a pending audit survives the death of the process that owed it.
 // Run via ./e2e-postland-audit.sh — never against a live fleet.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 // Plumbing — IP/PORT/SOCK/BASE, the owner token read out of the instance's fleet.json, get/check,
@@ -49,6 +49,10 @@ type AuditRow = {
   // section Q. Optional and deliberately UNDEFINED-able: "the field is absent" is one of the three
   // states the section asserts, so a server without the split must fail each check on its own.
   waitMs?: number; waitPartial?: true;
+  // section (Q.6) — the work clock, the quantity POSTLAND_AUDIT_TIMEOUT_MS actually binds. Optional
+  // for the same reason: absent is one of the states, and a server that writes it unconditionally
+  // (or fills it from `ms`) must fail on the numbers rather than throw.
+  workMs?: number;
   ping?: { at: number; status: string; updatedAt: number; lastResult: string; deliveredAt?: number; slot?: number };
   covers: { branch: string; mainAfter: string; at: number }[];
 };
@@ -1365,6 +1369,12 @@ check("(Q.1) a run that reported queueing carries its wait on the row — suiteW
   JSON.stringify({ result: qSlow.result, waitMs: qSlow.waitMs, waitPartial: qSlow.waitPartial, ms: qSlow.ms }));
 check("(Q.1) …and the acquire moved the clock BACK to the work budget — the run outlived a 10s work ceiling it spent queueing under",
   qSlow.result === "green" && qSlow.ms > 2_000, `ms=${qSlow.ms} result=${qSlow.result}`);
+// the work clock is on an ORDINARY completed row too, not only on the pathological ones below.
+// No band here on purpose: this stand-in reports a longer wait (3s) than it actually had (2s), so
+// the credit swallows the whole run and 0 is the correct floor — the interesting numbers are (Q.6).
+check("(Q.1) …and the row carries the WORK clock as its own field, floored at zero when the reported credit exceeds the run",
+  typeof qSlow.workMs === "number" && qSlow.workMs >= 0 && qSlow.workMs < qSlow.ms,
+  JSON.stringify({ workMs: qSlow.workMs, waitMs: qSlow.waitMs, ms: qSlow.ms }));
 
 // (Q.2) `acquired after 0s`: the chain DID report its wait and the answer is zero.
 await setAuditMode("lockzero");
@@ -1413,6 +1423,13 @@ check("(Q.4) …and the WAIT clock is the one that fired — the run outlived th
 check("(Q.4) …and the wait it can prove is on the row as a LOWER BOUND (a step still queued at the kill was never able to report its total)",
   qOut.waitMs === 5_000 && qOut.waitPartial === true,
   JSON.stringify({ waitMs: qOut.waitMs, waitPartial: qOut.waitPartial }));
+// …and the OTHER half of that sentence, on the work clock: this run held the machine for zero of
+// its 12 seconds. The wall figure (`ms`) is 12s and says the opposite; a `workMs` derived from it,
+// or one that ignored the still-open queue because no `acquired after` line ever arrived, would
+// book the entire queue as measurement — which is the reading this whole split exists to stop.
+check("(Q.4) …and its WORK clock is ~zero — a run that never got the machine measured nothing, whatever the wall clock says",
+  typeof qOut.workMs === "number" && qOut.workMs < 1_000 && qOut.ms >= qWait,
+  JSON.stringify({ workMs: qOut.workMs, waitMs: qOut.waitMs, ms: qOut.ms }));
 // (Q.5) THE KILL STAFFEL ON THE SECOND CLOCK. (I.0b) proves it for the work clock; a wrapper killed
 // while QUEUED holds no mutex yet, but it does hold an e2e-stage.sh queue ticket keyed on its pid,
 // so a survivor would sit in front of every later contender for as long as it lives. Same shape and
@@ -1431,6 +1448,87 @@ while (qPids.length > 0 && Date.now() < qDeadline && (qLeft = qPids.filter(qAliv
 check("(Q.5) the WHOLE frozen tree is gone after a WAIT-clock kill too — the staffel is not the work clock's alone",
   qPids.length === 2 && qLeft.length === 0,
   JSON.stringify({ pids: qPids, stillAlive: qLeft, waitedMs: Date.now() - (qOut.at || Date.now()) }));
+
+// (Q.6) THREE CLOCKS, THREE DIFFERENT NUMBERS — the row says which one the ceiling binds.
+// WHY (measured 2026-09-07, the row covering 61156ac5 at `mainSha ae53722e`): `ms 5 149 164` =
+// 85.8 min under a 75-min ceiling, and it came back GREEN — exit 0, 3885 checks, 0 failed. A wall
+// clock ten minutes past the number that is supposed to kill a run, and a verdict anyway, because
+// `waitMs 2 561 000` of it was queueing. The `ms` column is therefore NOT the quantity
+// FLEET_POSTLAND_AUDIT_TIMEOUT_MS bounds — and that column had already been used, the same day, to
+// argue the ceiling's height ("N runs sat over the cap"). The stand-in reports a wait it really
+// had (2s) and then works (3s), so wall ≈ 5s, queue = 2s, work ≈ 3s are three separable numbers:
+// a `workMs` filled from `ms` fails the upper bound and the `< ms` clause; one filled from
+// `waitMs` fails the lower bound.
+await setAuditMode("lockwork");
+const quebec2 = await makeLane("quebec2");
+const qRowsBeforeWork = (await auditRows()).length;
+await landLane(quebec2);
+const qWork = newest(await waitRows(qRowsBeforeWork + 1, 60_000));
+check("(Q.6) the row carries the WORK clock as its own field — not the wall clock and not the queue",
+  qWork.result === "green" && qWork.waitMs === 2_000
+    && typeof qWork.workMs === "number" && qWork.workMs >= 2_500 && qWork.workMs <= 5_000,
+  JSON.stringify({ ms: qWork.ms, workMs: qWork.workMs, waitMs: qWork.waitMs, result: qWork.result }));
+check("(Q.6) …and it is provably neither of the other two: strictly under the wall clock by at least the queue it reported",
+  typeof qWork.workMs === "number" && qWork.workMs !== qWork.waitMs
+    && qWork.workMs < qWork.ms - 1_900,
+  JSON.stringify({ ms: qWork.ms, workMs: qWork.workMs, waitMs: qWork.waitMs,
+    wallMinusWork: qWork.ms - (qWork.workMs ?? 0) }));
+
+// (Q.7) THE OTHER HALF OF THE FIELD'S CONTRACT: a row that does NOT carry it must read as UNKNOWN,
+// never as zero — and the reader that has to honour that is `./state.sh`, which is the summary a
+// session reads before it starts arguing about ceilings. Shell + python on that side, so this is
+// the pins-shaped case: extract state.sh's ledger reader and RUN it against fixture ledgers rather
+// than grep it. Three rows, three sentences the reader must produce, and the same absence rule the
+// rest of that section already follows (`absent (not the same as none)`).
+const qPy = (() => {
+  const src = readFileSync(`${import.meta.dir}/state.sh`, "utf8");
+  const blocks = [...src.matchAll(/python3 - <<'PY'\n([\s\S]*?)\nPY\n/g)].map((m) => m[1]);
+  return blocks.filter((b) => b.includes("post-land audits"));
+})();
+check("(Q.7) setup: state.sh's ledger reader is findable as exactly one python block (precondition — no block, no measurement)",
+  qPy.length === 1, `blocks=${qPy.length}`);
+// the probe must fail AS ITSELF when its interpreter is missing, rather than as the rule it meant to check
+const qPyOk = spawnSync("python3", ["-c", "print(1)"], { encoding: "utf8" }).status === 0;
+check("(Q.7) setup: python3 runs here (precondition — without it the checks below measure nothing)",
+  qPyOk, `python3 status=${spawnSync("python3", ["-c", "print(1)"], { encoding: "utf8" }).status}`);
+const qLedger = (row: Record<string, unknown>): string => {
+  const dir = `${import.meta.dir}/q7ledger`;
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(`${dir}/post-land-audits.jsonl`, `${JSON.stringify(row)}\n`);
+  const r = spawnSync("python3", ["-c", qPy[0] ?? "raise SystemExit(9)"],
+    { encoding: "utf8", env: { ...process.env, MAIN_CHECKOUT: dir } });
+  return `${r.stdout ?? ""}${r.stderr ?? ""}`;
+};
+// the real 61156ac5 row, with the two fields it would carry today
+const qNew = qLedger({ at: 1, startedAt: 0, ms: 5_149_164, workMs: 2_588_164, waitMs: 2_561_000,
+  result: "green", mainSha: "ae53722e2abd", checks: { ran: 3885, failed: 0 },
+  covers: [{ branch: "fleet/260907150306-c549", mainAfter: "61156ac5" }] });
+check("(Q.7) the summary names the WORK clock and the queue separately, and marks the wall figure as wall",
+  qNew.includes("5149s wall") && qNew.includes("work 2588s") && qNew.includes("queue 2561s"),
+  JSON.stringify(qNew.split("\n").filter((l) => l.includes("newest audit"))));
+// …the same row as an OLD one: the fields simply are not there
+const qOld = qLedger({ at: 1, startedAt: 0, ms: 5_149_164, result: "green", mainSha: "ae53722e2abd",
+  checks: { ran: 3885, failed: 0 }, covers: [{ branch: "fleet/260907150306-c549", mainAfter: "61156ac5" }] });
+check("(Q.7) a row WITHOUT the fields reads as work UNKNOWN — never as 'work 0s', and it says the wall figure contains the queue",
+  qOld.includes("work UNKNOWN") && !qOld.includes("work 0s") && !qOld.includes("queue 0s")
+    && qOld.includes("5149s wall"),
+  JSON.stringify(qOld.split("\n").filter((l) => l.includes("newest audit"))));
+// …and absence on ONE of the two is its own sentence: a chain that reported no wait is not a chain
+// that waited zero, exactly as the row's own contract has said since the split
+const qHalf = qLedger({ at: 1, startedAt: 0, ms: 700_000, workMs: 699_000, result: "green",
+  mainSha: "ae53722e2abd", checks: { ran: 3885, failed: 0 },
+  covers: [{ branch: "fleet/260907150306-c549", mainAfter: "61156ac5" }] });
+check("(Q.7) a row with work but NO reported wait says so — 'queue not reported', not 'queue 0s'",
+  qHalf.includes("work 699s") && qHalf.includes("queue not reported") && !qHalf.includes("queue 0s"),
+  JSON.stringify(qHalf.split("\n").filter((l) => l.includes("newest audit"))));
+// …and the phantom alarm asks the WORK clock: 40 minutes of queue in front of an instant exit is
+// the case the wall figure hides, and it is exactly the shape 613faa3 produced.
+const qPhantom = qLedger({ at: 1, startedAt: 0, ms: 2_400_000, workMs: 3_000, waitMs: 2_396_000,
+  result: "green", mainSha: "ae53722e2abd", checks: { ran: 4, failed: 0 },
+  covers: [{ branch: "fleet/260907150306-c549", mainAfter: "61156ac5" }] });
+check("(Q.7) the phantom alarm fires on a run that QUEUED for 40 minutes and then measured 3 seconds",
+  qPhantom.includes("under a minute of WORK") && qPhantom.includes("work 3s"),
+  JSON.stringify(qPhantom.split("\n").filter((l) => l.includes("^") || l.includes("newest audit"))));
 await setAuditMode("green");
 
 // ===== (K) THE REMOTE HELPER PORTAL =============================================================

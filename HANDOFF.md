@@ -443,6 +443,25 @@ aus ~98 Kopfbewegungen ~10-15, und waere die erste echte Aufgabe fuer W1-W3, das
 live ist und null Buendel bildet). Alternativen mit Preis: docs ungetrackt (Befund-Register weg) ·
 docs ohne Land-Pfad (verlagert das ff-Rennen in den Haupt-Checkout, statt es zu loesen).
 
+### 9e. OWNER-RICHTUNG „die Pruefapparatur muss deterministisch und leichter werden"
+
+Frisch aus den Ledgern gerechnet, nicht aus einem Doc zitiert: **536 Post-Land-Audits — 289 gruen
+(54 %), 140 rot (26 %), 107 unknown (20 %).** 177 gefaellte Urteile: flake 82 · unknowable 41 ·
+stale-test 30 · **real 24**. **Von 177 Urteilen fanden 24 einen echten Defekt = 14 %.** Laufzeit der
+letzten 40 Audits median 37 min (max 86), davon **median 21 min SCHLANGE**. 21 Flake-Familien in
+`docs/verify-tiering.md` §11.2a-u.
+
+Gefilt als **`3f7363bf`** (programlos, ENTWURF, baut nichts ohne zweite Bestaetigung) mit vier
+geordneten Hebeln: (1) die 21 Familien nach Ausloesehaeufigkeit RANGIEREN und einzeln toeten — die
+Daten liegen im Trail, gerechnet hat sie nie jemand, und es ist der einzige Hebel, der die 14 %
+direkt bewegt · (2) die Schlange statt der Arbeit (21 von 37 min; nur 7 von 20 Audits gehen auf den
+Helfer) · (3) `unknown` ehrlich machen — ein Lauf, der nichts gemessen hat, muss als SICH SELBST
+scheitern · (4) weniger Checks: ~4 000 je Lauf, und wie viele je einen echten Regress gefangen
+haben, ist aus dem Trail rechenbar und nie gerechnet worden.
+
+**Randbedingung, die in der Zeile steht und nicht verhandelbar ist:** der Land-Gate bleibt
+autoritativ, ein Rot bleibt rot, und Abwesenheit von Messung wird nie als Harmlosigkeit gerendert.
+
 ### 9d. Zwei Betriebsdetails
 
 - **Die 409-Falle aus §0b ist erneut zugeschlagen**, diesmal an Slot 4: `composer occupied

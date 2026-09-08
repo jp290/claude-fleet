@@ -1,10 +1,10 @@
 ---
 frage: Was laedt jede Rolle in Claude Fleet beim Start an Dateien und Kontext-Anreicherungen, was widerspricht sich, ist tot, aufgeblaest oder fehlt — nach Kosten fuer den Owner rangiert?
-urteil: Die servergebauten Briefs sind klein und sauber (7,3–9,5 kB gemessen, Anchor-Block nur Pointer), aber die Regelbuch-Schicht verbrennt pro MAIN ~106,4 kB (~26,6 k Tok, ~10,3 % von 258 400; korrigiert in §0, urspruenglich ~114,5 kB) vor dem ersten Toolcall, enthaelt einen echten Widerspruch (graphify-in-Lane) und Drift (lane-signals-Zeilen, Task-Id 97c5d469, tote Sha b7d449a0), und der Steward liest mit docs/verify-tiering.md ein 241-kB-Dokument voll.
+urteil: Die servergebauten Briefs sind klein und sauber (7,3–9,5 kB gemessen, Anchor-Block nur Pointer). Die Regelbuch-Schicht einer MAIN summiert sich auf ~106,4 kB GEMESSENE Quellbytes (korrigiert in §0, urspruenglich ~114,5 kB; ohne MEMORY.md und HANDOFF-Block — mit ihnen ~117,6 kB, §5) — dass eine MAIN genau diese Dateien vor dem ersten Toolcall traegt, ist aus dem Loader-Vertrag ABGELEITET, und die ~26,6 k Tok / ~10,3 % von 258 400 sind Bytes÷4 daraus; der reale Verbrauch ist an keiner laufenden Session BEOBACHTET (§4). Die Schicht enthaelt einen echten Widerspruch (graphify-in-Lane) und Drift (lane-signals-Zeilen, Task-Id 97c5d469, tote Sha b7d449a0), und der Steward liest mit docs/verify-tiering.md ein 241-kB-Dokument voll.
 bereich: [kontext, rollen, rulebook, briefs]
 belege: [rulebook.ts#FRAGMENTS_FOR, server.ts#buildProgramMainBrief, server.ts#LANE_EXIT_FOOTER, context-receipts.jsonl, docs/steward.md, /Users/owner/claude-fleet/rulebook/einstieg.md]
-nicht-gemessen: gemessener Tokenverbrauch (Bytes÷4 ist Schaetzung); welche CLAUDE.md-Kopie im Steward-Worktree liegt; Program-JSON-Groesse einer echten Founding; ob Claude Code AGENTS.md neben CLAUDE.md laedt (nur Loader-Anweisung gelesen); Log-Pfad des Originalverifys (Scratchpad der Lane geloescht, §0 Punkt 5); MEMORY.md und der oberste HANDOFF.md-Block fehlen in JEDER Rollenzeile von §1 (§4)
-stand: 2026-09-07
+nicht-gemessen: REALER Verbrauch — keine Rolle wurde an einer laufenden Session am Fenster beobachtet; §1 ist ein Vertrags-Groessenbild aus gemessenen QUELLBYTES plus ABGELEITETER Zuordnung Datei→Rolle (§4), die einzige beobachtete Zustellgroesse sind die deliveredBytes der Dispatch-Briefe; gemessener Tokenverbrauch (Bytes÷4 ist Schaetzung); welche CLAUDE.md-Kopie im Steward-Worktree liegt; Program-JSON-Groesse einer echten Founding; ob Claude Code AGENTS.md neben CLAUDE.md laedt (nur Loader-Anweisung gelesen); Log-Pfad des Originalverifys (Scratchpad der Lane geloescht, §0 Punkt 5); MEMORY.md und der oberste HANDOFF.md-Block fehlen in JEDER Rollenzeile von §1 (§4)
+stand: 2026-09-08
 ---
 
 # Kontext-Gesundheit der Rollen — Groessenbild, Widersprueche, Drift, Luecken (GLM-Haelfte, blind)
@@ -78,11 +78,25 @@ Der Fehler verschob die Zeilen von §1 in BEIDE Richtungen:
 
 ## §1 Groessenbild je Rolle
 
-Token = Bytes÷4 (Schaetzung, kein gemessener Verbrauch). Prozent gegen 258 400 (GPT-Abo-Fenster,
-Regelbuch §Modellpolitik) und 1 000 000. Ladeannahme: was der Harness beim Start automatisch
-laedt plus was die Rolle laut eigenem Vertrag im ERSTEN Turn lesen soll.
+**Drei Schichten, die diese Tabelle NICHT vermischt** (die Originalfassung nannte die ganze
+Spalte "gemessen" und widersprach damit §4):
 
-| Rolle | Startladung (Bytes, gemessen) | ~Tok | % 258 400 | % 1 M |
+1. **GEMESSEN — Quellbytes.** Jeder Summand in der Spalte ist eine Datei- oder Abschnittsgroesse,
+   mit `wc -c` am benannten Baum genommen. Diese Zahlen sind reproduzierbar.
+2. **ABGELEITET — die Zuordnung Datei→Rolle.** Dass eine Rolle genau diese Dateien beim Start
+   traegt, stammt aus Loader-Prosa (`AGENTS.md` §Loader boundary, `rulebook/loader.md`,
+   `docs/steward.md`), nicht aus einem Zustell-Sensor. Einzige Ausnahme sind die Dispatch-Briefe:
+   ihre `deliveredBytes` in `context-receipts.jsonl` sind wirklich beobachtet. Die Summen (`≈`)
+   sind darum Vertragswerte, keine Messwerte.
+3. **UNBEOBACHTET — der reale Verbrauch.** Keine Rolle wurde an einer laufenden Session am
+   Fenster gemessen. Token = Bytes÷4 ist eine Umrechnung der Schicht-1-Zahlen, keine
+   Verbrauchsmessung; die Prozente erben diese Eigenschaft. Prozent gegen 258 400
+   (GPT-Abo-Fenster, Regelbuch §Modellpolitik) und 1 000 000.
+
+Ladeannahme (Schicht 2): was der Harness beim Start automatisch laedt plus was die Rolle laut
+eigenem Vertrag im ERSTEN Turn lesen soll.
+
+| Rolle | Startladung (Quellbytes GEMESSEN, Zuordnung ABGELEITET) | ~Tok (Bytes÷4, kein Verbrauch) | % 258 400 | % 1 M |
 |---|---|---|---|---|
 | Controller / Program-MAIN (claude, Haupt-Checkout) | 8 090 (global `~/.claude/CLAUDE.md`) + 84 830 (CLAUDE.md main-Render, 7/7 Fragmente) + 226 (`.claude/CLAUDE.md`) + 13 242 (AGENTS.md §Portable operating contract — der ABSCHNITT, korrigiert §0) ≈ **106 388** | ~26 600 | ~10,3 % | ~2,7 % |
 | Supervisor (claude, Haupt-Checkout) | 93 146 (dieselbe Basis) + 13 242 (§contract, in der Originalfassung vergessen — §0) + ~2 kB Supervisor-Brief (servergebaut) ≈ **108 400** | ~27 100 | ~10,5 % | ~2,7 % |
@@ -370,20 +384,40 @@ der Supervisor (nur Brief-Code gelesen, keine Zustellung).
 - Game-Maker-Prosa im portablen Kern, den jede fremde Lane mitlaedt (GLM #15 = Fable #12).
 - Zeiger auf 241-kB-Dokument (verify-tiering) ohne Abschnittsanker (GLM #4 = Fable #13).
 - Groessenbild konvergent: Controller ~114 kB / ~28,5–28,6 k Tok / ~11 %.
-  **KORREKTUR (§0 Punkt 1): die Uebereinstimmung war ein Zufall zweier gegenlaeufiger Fehler,
-  und ohne sie ist die Konvergenz staerker, nicht schwaecher.** Beide Haelften kamen auf ~114 kB,
+  **KORREKTUR (§0 Punkt 1): die Uebereinstimmung der ~114 kB war ein Zufall zweier
+  gegenlaeufiger Fehler.** (Der Nachtrag §0 schloss daraus „ohne sie ist die Konvergenz
+  staerker" — das war zu viel; siehe die Aufloesung nach der Rechnung und §7 Punkt 2.)
+  Beide Haelften kamen auf ~114 kB,
   aber mit unterschiedlicher Zusammensetzung: ich zaehlte `AGENTS.md` GANZ (21 368 statt 13 242,
   +8 126) und liess `MEMORY.md` und den obersten `HANDOFF.md`-Block ganz weg (−11 233); Fable
   zaehlte den Abschnitt richtig und beide Dateien mit, mass aber den main-Render einen Tag frueher
   (81 293 statt 84 830, −3 537). Rechnet man beide auf dieselbe Zusammensetzung und denselben
   Render:
   GLM korrigiert 106 388 + `MEMORY.md` 4 337 + `HANDOFF.md`-Block 6 896 = **117 621**;
-  Fable 114 084 + Render-Zuwachs 3 537 = **117 621**. Byte-genau dieselbe Zahl.
+  Fable 114 084 + Render-Zuwachs 3 537 = **117 621**.
+  **Diese Byte-Gleichheit ist KEINE unabhaengige Zweitmessung, sondern eine Additions-Identitaet
+  — und die Originalfassung („zweimal unabhaengig erreicht") hat sie als Bestaetigung gelesen.**
+  Beide Seiten sind derselbe Satz von sechs Summanden, nur in anderer Reihenfolge notiert:
+  8 090 + 84 830 + 226 + 13 242 + 4 337 + 6 896. Fables 114 084 enthaelt bereits 8 090, 81 293,
+  226, 4 337, 13 242 und 6 896; die 3 537, die ich addiere, sind genau die Differenz
+  84 830 − 81 293 aus MEINER Messung. Es wird also einmal gerechnet und zweimal aufgeschrieben;
+  die Gleichheit koennte gar nicht ausbleiben und traegt darum kein Bestaetigungsgewicht.
+  Was je Summand wirklich vorliegt:
+  - **Von beiden Haelften unabhaengig gemessen und uebereinstimmend:** `~/.claude/CLAUDE.md`
+    8 090 · `.claude/CLAUDE.md` 226 · `AGENTS.md` §Portable operating contract 13 242 (§0 Punkt 1).
+    Nur diese drei sind doppelt belegt.
+  - **Von beiden gemessen, aber an verschiedenen TAGEN:** der main-Render (Fable 81 293 am 09-06,
+    ich 84 830 am 09-07). Die 3 537 sind die datumsuebergreifende Normalisierung dieses einen
+    Summanden — der eigentliche Zweck der Rechnung.
+  - **Nur von Fable gemessen, von mir UNGEPRUEFT uebernommen:** `MEMORY.md` 4 337 und der oberste
+    `HANDOFF.md`-Block 6 896 (`docs/messungen/2026-09-06-kontext-gesundheit-fable.md:27`). Beide
+    Dateien standen nie in meiner Quellenliste (§4) — ich habe sie nicht nachgemessen.
   Die belastbare gemeinsame Aussage lautet also nicht „~114 kB", sondern: **eine
-  Controller-Startladung von ~117,6 kB ≈ 29,4 k Tok ≈ 11,4 % des 258-400-Fensters**, zweimal
-  unabhaengig erreicht. Die Zeile in `docs/messungen/INDEX.md:90` traegt noch die alte Zahl
-  (~114,5 kB) — sie wurde in diesem Nachtrag bewusst nicht angefasst (Auftrag: keine
-  INDEX-Aenderung).
+  Controller-Startladung von ~117,6 kB ≈ 29,4 k Tok ≈ 11,4 % des 258-400-Fensters** — eine EINZIGE
+  auf denselben Tag und dieselbe Zusammensetzung normalisierte Rechnung aus beiden Haelften, von
+  der drei Summanden doppelt, einer datumsbereinigt und zwei nur einfach belegt sind. Die Zeile in
+  `docs/messungen/INDEX.md:90` traegt noch die alte Zahl (~114,5 kB) — sie wurde in diesem
+  Nachtrag bewusst nicht angefasst (Auftrag: keine INDEX-Aenderung).
 
 **Wo uneinig oder ergaenzend**:
 - Fable #1 (HANDOFF.md-Stapel: „lies nur den obersten Abschnitt" liest eine fremde Rolle) liegt
@@ -412,14 +446,72 @@ der Supervisor (nur Brief-Code gelesen, keine Zustellung).
 Eigener Beleg, getrennt vom Originallauf in §0. Diff-Datei: ausschliesslich diese Notiz.
 
     Baum:     Branch fleet/260907203323-0331, Basis main 0352148e
+    Lane-Sha: d11235fe (der Commit, auf dem dieser Lauf lief — der Lane BEKANNT, siehe unten)
     Gelandet: 7539985d (Rebase-Land 2026-09-08 02:2x; nachgetragen vom Controller, nicht
-              von der Lane — `git merge-base --is-ancestor 7539985d main` sagt JA. Der
-              pre-rebase-Commit der Lane loest auf main nicht mehr auf und steht deshalb
-              hier nicht.)
+              von der Lane)
     Kommando: bun install --frozen-lockfile && bun e2e/pins.ts
     Log:      <scratchpad>/verify-nachtrag.log (ausserhalb des Baums, stirbt mit der Session)
     Tail:     "ALL PASS" (exit 0)
     Umfang:   proportional install+pins — die einzige Diff-Datei ist diese Notiz (docs-or-prose)
 
-Wie in §0 Punkt 5: der Lane-Sha oben ist der PRE-REBASE-Commit; nach dem Land heisst derselbe
-Inhalt anders, und nur die MAIN kann den gelandeten Sha nachtragen.
+**Was die Lane wusste und was nicht — die Originalfassung hat das eine mit dem anderen begruendet.**
+Sie liess den Lane-Sha weg mit der Begruendung, er „loest nach dem Land nirgends mehr auf"; die
+Nachfolgefassung schrieb dasselbe als „loest auf main nicht mehr auf". Beides ist falsch, und §0
+Punkt 5 sagt es fuer `fb470c67` bereits richtig:
+
+- **Bekannt war der eigene Sha immer.** `d11235fe` stand der Lane waehrend des Laufs zur
+  Verfuegung (`git rev-parse HEAD`). Unbekannt war ausschliesslich der KUENFTIGE Landing-Sha, den
+  der Rebase erst beim Land vergibt — genau er ist der Grund, warum nur die MAIN `7539985d`
+  nachtragen kann.
+- **Ein Rebase macht das Objekt nicht unaufloesbar.** `d11235fe` existiert in der Object-DB dieses
+  Checkouts weiter und ist nur nicht mehr erreichbar von `main`:
+
+      git cat-file -t d11235fe                                  # commit
+      git merge-base --is-ancestor d11235fe main; echo $?        # 1  → kein Ancestor
+      git cat-file -t 7539985d                                   # commit
+      git merge-base --is-ancestor 7539985d main; echo $?        # 0  → Ancestor
+
+  Was nach dem Land wirklich gilt: der pre-rebase-Commit ist **nicht Teil der main-Historie**, und
+  ein FRISCHER Klon findet ihn nicht, weil er nie gepusht wurde — nicht, weil der Rebase ihn
+  geloescht haette. Unerreichbar heisst hier: irgendwann `gc`-faehig, heute vorhanden.
+- **`--is-ancestor` beantwortet nicht die Existenzfrage.** Es prueft ABSTAMMUNG und setzt voraus,
+  dass beide Objekte aufloesen; auf ein fehlendes Objekt antwortet es mit einem FEHLER, nicht mit
+  „nein" — gemessen am 2026-09-08 an main `d832a679`: `git merge-base --is-ancestor
+  0000000000000000000000000000000000000001 main` gibt `fatal: Not a valid commit name` und
+  **exit 128**, waehrend ein echtes Nicht-Ancestor-Objekt exit **1** gibt. Wer nur auf „exit != 0"
+  prueft, verwechselt beide Faelle. Existenz fragt man mit `git cat-file -t <sha>`. Die Aussagen
+  sind darum getrennt zu fuehren: `7539985d` loest auf UND ist Ancestor; `d11235fe` loest auf UND
+  ist es nicht.
+
+Der Sha des Laufs, der DIESE Korrektur belegt, steht nicht in diesem Dokument: er waere
+selbstreferenziell (der Commit kann seinen eigenen Hash nicht enthalten) und nach dem Rebase
+ohnehin ein anderer. Kandidaten-Sha und absoluter Log-Pfad gehen im Lane-Report an die MAIN;
+eingetragen wird hier nichts, was die Lane nicht wissen kann.
+
+## §7 Nachtrag 2026-09-08 — drei Widersprueche nach zweiter Rueckgabe
+
+Die Fassung von §0 wurde am 2026-09-08 02:2x als `7539985d` gelandet, obwohl der zugehoerige
+Report (`5aa233ab`) zu diesem Zeitpunkt **rejected** war; die Rueckgabe der Review-MAIN blieb
+damit unbearbeitet im gelandeten Text stehen. Dieser Nachtrag arbeitet ihre drei Punkte ab —
+wieder eine Textkorrektur, kein neuer Sweep, wieder nur diese eine Datei. Wie in §0 gilt: die
+Originalformulierungen stehen hier, weil ein datierter Snapshot nicht still umgeschrieben wird.
+Die **sechs Korrekturen aus §0 bleiben unangetastet** und sind auf den heutigen main-Stand
+uebernommen worden, nicht auf die alte Fassung.
+
+Messbasis dieses Nachtrags: main `d832a679`, 2026-09-08. Die Zahlen aus §0 und §1 wurden NICHT
+neu erhoben — korrigiert ist, was ueber sie behauptet wird.
+
+| # | Rueckgabe-Punkt | Original | Korrigiert |
+|---|---|---|---|
+| 1 | Frontmatter + §1-Tabelle | `urteil` sagt „verbrennt pro MAIN ~106,4 kB", Spaltenkopf sagt „Bytes, gemessen" — beides behauptet Verbrauchsmessung, waehrend §4 die Zuordnung ausdruecklich als abgeleitet und unbeobachtet ausweist | drei Schichten getrennt: **gemessene Quellbytes** (Schicht 1) · **abgeleitete Zuordnung Datei→Rolle** (Schicht 2, Ausnahme `deliveredBytes`) · **unbeobachteter realer Verbrauch** (Schicht 3). Spaltenkopf, `urteil` und `nicht-gemessen` tragen die Trennung jetzt |
+| 2 | §5, die Zahl 117 621 | „Byte-genau dieselbe Zahl … zweimal unabhaengig erreicht" | Additions-Identitaet aus **einem** Satz von sechs Summanden. Drei davon (8 090 · 226 · 13 242) sind doppelt gemessen, einer (main-Render) datumsbereinigt, **zwei (`MEMORY.md` 4 337, `HANDOFF.md`-Block 6 896) stammen allein aus der Fable-Notiz und wurden von mir nie nachgemessen**. Es ist eine datumsuebergreifende Normalisierung, keine unabhaengige Zweitmessung |
+| 3 | §6, die Sha-Begruendung | „der pre-rebase-Commit loest auf main nicht mehr auf" — und der Lane-Sha fehlte mit ebendieser Begruendung | getrennt: der eigene Sha war der Lane **bekannt** (`d11235fe`, jetzt eingetragen), unbekannt war nur der kuenftige Landing-Sha · ein Rebase macht Objekte **nicht unaufloesbar** (`git cat-file -t d11235fe` → `commit`) · `--is-ancestor` prueft **Abstammung, nicht Existenz** (exit 1 = kein Ancestor, exit 128 = Objekt fehlt) |
+
+Punkt 3 hatte eine zweite Haelfte: die Rueckgabe verlangt ausdruecklich **keine
+selbstreferenzielle Sha im Dokument**. Der Kandidaten-Sha dieses Nachtrags und der absolute
+Log-Pfad seines Verify-Laufs gehen darum in den Lane-Report an die Review-MAIN, nicht in diesen
+Text — ein Commit kann seinen eigenen Hash nicht enthalten, und nach dem Rebase-Land traegt
+derselbe Inhalt ohnehin einen anderen.
+
+Verify-Lauf dieses Nachtrags: Kette und Ergebnis stehen im Lane-Report; Umfang ist erneut
+proportional (`install`+`pins`), da die einzige Diff-Datei diese Notiz ist (docs-or-prose).

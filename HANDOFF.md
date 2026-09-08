@@ -2,16 +2,47 @@
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT
 
-- **KEIN armierter Watch.** `3af07620` (Audit auf `ba8c068a`) hat gefeuert und ist quittiert. Armiere
-  erst wieder, wenn du selbst landest.
+- **KEIN armierter Watch mehr.** Alle drei sind gefeuert und quittiert: `3af07620` (Audit
+  `ba8c068a`, ROT — §2), `479f7252` (Merge Slot 3) und `1fe3c319` (Audit `a285e19b`, GRUEN).
+- **GELANDET IN DIESER SCHICHT, mein einziger Land-Zyklus:** `f6778de1` → **`a285e19b`**
+  (Lane-Shas `adee6c82`/`dc91e689` existieren nach dem Rebase NICHT auf main; auf main heissen sie
+  `be2dbeb6`/`a285e19b`, je mit `merge-base --is-ancestor` geprueft). Report `9991f0e8` von mir am
+  Diff geprueft und `accepted`; **gefahren hat den Land der Controller** (`ctl land 3`), die
+  Land-Note traegt darum `actor {kind: owner, via: bearer, suspect: owner-token-outside-board}` —
+  die REIHENFOLGE war richtig (mein Urteil vor dem Land), und genau das soll `fa8f6220` von einem
+  Vorsatz in einen Mechanismus verwandeln. Verify volle Kette gruen, `ms 2 062 325` bei
+  `waitMs 1 921 000` = **93 % Schlange**. Post-Land-Audit **gruen und echt geprueft**: `ran 4033 /
+  failed 0`, `exitCode 0`, **46,0 min**, `ALL PASS` — nicht am Wort „green" geglaubt (Regelbuch:
+  ein Gruen ohne `ms` und PASS-Zeilen kann „nichts gemessen" heissen).
+- **Ein Audit bleibt OFFEN und unadjudiziert: `at=1788864534029`** auf `0ec5f149` (Land von
+  `95d09e33`), rot 4033/1, Zeile `(iii) the hold is given back …` (`e2e/programs.ts:8498`).
+  **Kein Flake behauptet, und Maschinenlast scheidet strukturell aus:** der Lock ist
+  instanz-eigen (`ffrLock = ${ROOT}/ffretry.lock`, `:8275`, per `FLEET_SUITE_LOCK` an den
+  Fixture-Server), nicht `/tmp/fleet-e2e.lock`. Trail: **88 Laeufe, 0 Fails** — erster Fehlschlag
+  ueberhaupt. Der Land-Diff fasst den Freigabepfad NICHT an (alle sechs `server.ts`-Hunks liegen in
+  `PostLandAuditRow`/`auditCounts`/`runPostLandAudit`). Der Diskriminator ist weg: Helfer-Lauf ohne
+  Trail plus `out`-Kappung bei ~4 KB. **Kein passender vorhandener Traeger** (Queue nach
+  `holdSuiteLock`/Mutex durchsucht: 24 Treffer, alle P6-Notizen zu Budgets/Kontext). Der Hebel ist
+  Ziel (c) von `b09cd2f9` — dem im Brief der HELFER-Pfad und die Kappung fehlen.
 - **OFFEN BEIM OWNER: Attention `04f4b7e6e37ef7ed9545fae5`** (S12 Wire-Autoritaet, kind `decision`).
   **Sie stirbt mit deiner Succession.** Ihr Inhalt ist reproduzierbar aus
   `docs/messungen/2026-09-08-fleet-betrieb-erfolgskriterien.md` §Nachtrag 08:1x — dort stehen alle
   Messungen, aus denen sie gebaut ist. Findest du sie `refused`, ist sie UNBEANTWORTET: neu stellen.
   Die Fassung meiner Vorgaengerin (`6d51202e`) ist genau so gestorben; ich habe sie mit ~10 min
   Vorsprung ersetzt.
-- **Drei eigene Zeilen queued am Repo-Deckel 3/3:** `f6778de1`, `fa8f6220`, `b09cd2f9`. Nichts zu
-  tun — der Tick startet sie, sobald eine Lane frei wird.
+- **`fa8f6220` laeuft auf Slot 1 und ist UNENTSCHIEDEN** — kein Report. Die Projektion zeigt sie als
+  `REVIEWABLE` mit Land-Tuer; das ist der Zwillingszustand, kein Urteil (Regelbuch: „idle heisst
+  nicht fertig"). Nicht landen, bevor ein Report da ist und du den Diff gelesen hast.
+- **`b09cd2f9` laeuft auf Slot 4** (neue Identitaet `openedAt 1788877488058`, Worktree
+  `fleet-260908142447-91df`) — **mit halb veraltetem Brief.** `d832a679` hat seine Ziele (a) und (d)
+  bereits erledigt, und die zwei im Brief genannten Ursachen-Kandidaten sind BEIDE falsch: die
+  Wurzel ist `server.ts#snapshotIntegrationTree` (`git archive`-Extrakt ohne `.git`). Der echte Rest
+  ist EINE Datei — `e2e/trail-emit.ts`: `resolveSourceTree` bestaetigt nur ueber `isWorkTree`,
+  `defaultDir` leitet daraus ab und legt das Trail des GANZEN Laufs nach `$TMPDIR` mit `tree: null`.
+  Dazu der zweite, im Brief fehlende Verlustpfad: ein HELFER-Lauf schreibt heute gar kein Trail.
+  **Ich konnte die Lane nicht erreichen** (keine MAIN→Lane-Tuer, `3ea89f71`; fuer `files-proposal`
+  ist die Zeile nicht mehr `pending`). Oeffnet sie eine Clarification, bist DU der Empfaenger —
+  dann gib ihr diesen Absatz.
 - **Zwei Flaechen geparkt, warten auf Owner-Confirm:** `417d2be5` (S3b) und `74319808` (S3d), als
   Wellen-Paar begruendet in §3. `filesProposal` gesetzt, `files`/`filesOrigin` unberuehrt.
 - **Zwei programlose Owner-Zeilen sind von mir BEURTEILT, aber nicht eintragbar:** `95d09e33` und

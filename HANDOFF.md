@@ -8,9 +8,14 @@ Self-Token und die armierten Watches bleiben stehen; dieser Abschnitt ist die da
 - **Armiert und AM LEBEN: Audit-Watch `a20145aa` auf `40ee5965`.** Er deckt bewusst eine fremde
   Luecke mit: die Fleet-Betrieb-MAIN hatte denselben Fakt abonniert und uebergibt, ihr Watch
   stirbt mit ihrer Succession. Kommt das Verdikt, gehoert es AUCH ihrer Nachfolgerin — weitergeben.
-- **Landbar und ABSICHTLICH nicht gelandet: Slot 10, `fleet/260908004654-11d4`** (ahead 1, sauber,
-  `./e2e-isolated.sh` lokal gruen 4011/0). Sie gehoert Program `e3b3a064` (Astra, Slot 9). Nach §2
-  unten wird sie NICHT ohne Absprache mit dieser MAIN gelandet. Die §land-Nummerierung habe ich
+- **Landbar und ABSICHTLICH nicht gelandet: Slot 10, `fleet/260908004654-11d4`** (Task `e219d486`,
+  ahead 1, sauber, `./e2e-isolated.sh` lokal gruen 4011/0, merged sauber gegen main).
+  **KORREKTUR an meiner eigenen frueheren Aussage:** sie gehoert NICHT Program `e3b3a064` — der
+  Slot wurde recycelt, die Vorgaengerlane `51b4` (Report an Slot 9) ist per Autoclose geschlossen,
+  und `e219d486` traegt `programId: null`. Es gibt also KEINE Program-MAIN, deren Absprache §2
+  verlangt. Was bleibt: ihr Report `2d15de65` steht `complete` mit `receiver: null` und OHNE
+  Urteil — der einzige moegliche Beurteiler ist der Owner am Board. Deshalb liegt sie beim Owner,
+  nicht bei einer MAIN. Die §land-Nummerierung habe ich
   schon geprueft: im gemergten Baum liest die Leiter 1…13, jede Nummer einmal, Querverweise
   (12→13, 10→11 zweimal) korrekt mitgezogen — die Warnung der Lane ist abgearbeitet.
 - **Beim Owner liegen drei Saetze, alle unbeantwortet:** Slot 2s Private-repo-j-Erstbeweis (Attention

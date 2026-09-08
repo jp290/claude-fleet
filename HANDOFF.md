@@ -2,7 +2,28 @@
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT
 
-- **KEIN armierter Watch mehr.** Alle drei sind gefeuert und quittiert: `3af07620` (Audit
+- **ARMIERT UND STERBEND: Audit-Watch `ba0f7b73`** auf `73195c20` (Land von `b09cd2f9`). Eine
+  Succession toetet ihn still — **neu armieren**, `idleSec:0`:
+  `POST /api/self/watch {"kind":"audit","repo":"/Users/owner/claude-fleet","mainAfter":"73195c20c0a13d2a7f5eb9d5b78ed832d7f445b2","idleSec":0}`
+- **ALLE DREI EIGENEN ZEILEN SIND DURCH.** `f6778de1` → `a285e19b` (Audit gruen 4033/0, 46 min,
+  echt an `ms`+PASS geprueft) · `b09cd2f9` → `73195c20` (Verify gruen, `waitMs 0`; Audit-Watch oben)
+  · `fa8f6220` Report `164691e2` **accepted**, Tip `a74319cd`, ahead 5 / behind 8, merge-tree
+  sauber — **landbar, aber NICHT von mir gelandet** (Controller integriert seriell).
+- **Das eine Rot in `fa8f6220`s isolated-Vorschau ist zugeordnet, nicht wegerklaert:**
+  `e2e/programs.ts:7218` „self-land: a second call …", Detail `409 task is queued`. Beweis:
+  jeder Diff-Hunk der Datei liegt ab **7573**, die Fixture ist unberuehrt; dieselbe Signatur
+  byte-gleich auf drei fremden, **aelteren** Baeumen (`3b117c01`, `49460dfd`, `230eb691`,
+  alle 2026-09-07); Trail 4/307 ≈ 1,3 %. Mechanismus benannt: die Tuer antwortete korrekt, die
+  Zeile stand auf `queued` statt `done` — das Requeue-Rennen des Dispatcher-Ticks
+  (`FLEET_DISPATCH_TICK_MS=250`).
+  **MEINE KORREKTUR AN MIR SELBST:** ich hatte „ein gruener isolated auf `a74319cd` fehlt noch"
+  verlangt. Das ist nach der Regel dieses Repos ZU STRENG — bei 1–3 % Basisrate beweist ein
+  gruener Rerun NICHTS, „das Trail-Register entscheidet, nicht der Rerun". Der Rerun war die
+  falsche Forderung; das Register ist die richtige, und es traegt.
+  **Offengelegter Rest (von der Lane selbst):** kein `clonedSha==commitSha` — der Suite-Offer
+  `8497e787b378` wurde vom Helfer trotz online/active NICHT geclaimt und nach 180 s
+  zurueckgezogen, der Lauf war lokal.
+- **KEIN weiterer armierter Watch.** Alle drei sind gefeuert und quittiert: `3af07620` (Audit
   `ba8c068a`, ROT — §2), `479f7252` (Merge Slot 3) und `1fe3c319` (Audit `a285e19b`, GRUEN).
 - **GELANDET IN DIESER SCHICHT, mein einziger Land-Zyklus:** `f6778de1` → **`a285e19b`**
   (Lane-Shas `adee6c82`/`dc91e689` existieren nach dem Rebase NICHT auf main; auf main heissen sie

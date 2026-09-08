@@ -583,6 +583,63 @@ export async function run(h: {
       && graceRows.find((r) => r.mainSha === graceSha)?.remote?.name === DEVICE_NAME,
     `${graceReport.status} ${JSON.stringify(graceRows.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`))}`);
 
+  // ===== (K7a2) THE GRACE'S CLOCK IS CLAIMABILITY, NOT THE LAND =================================
+  // The repair of 2026-09-07 (server.ts, grep `auditClaimableSince`). The grace above measures from
+  // `cover.at`; a claim locks PER REPO, so a land that arrives BEHIND a live claim spends its whole
+  // grace unofferable and reaches the drain with it already spent. Measured three times in five
+  // local runs: the drain started 7 / 5 / 14 ms after the `helper_result` of the same repo — the
+  // one instant the helper was provably free. The offset now runs from the moment the entry became
+  // CLAIMABLE, so the seconds it stood behind the claim are not counted as an offer it had.
+  //
+  // FIVE checks: two setups that build the state, then three that measure it. The third — "THE
+  // GRACE RESTARTS" — is the whole regression: WITHOUT the fix the second land is taken by the
+  // local drain within a second of the result below, because its cover is 9.5 s old against an
+  // 8 s grace. The last two keep it from passing for a cheap reason — "nothing ran locally" is
+  // also what a parked or dropped entry looks like, so the helper must still be able to take that
+  // exact tree and close it remote. Measured against the mutation: reverting the one line in the
+  // drain fails exactly those three and neither setup.
+  const rowsBeforeQ = (await newRepoRows()).length;
+  const qLane1 = await openLane(REPO, "clockahead");
+  await driveMerge(qLane1, qLane1.branch);
+  await Bun.sleep(2500);                        // inside the grace, so the job is the helper's
+  const qJob1 = await jobFor(REPO);
+  const qClaim1 = qJob1 ? await hpost("/api/helper/claim", { jobId: qJob1.id, deviceId: DEVICE }) : null;
+  check("(K7a2) setup: a helper holds this repo's audit",
+    qClaim1?.ok === true, `${JSON.stringify(qJob1)} claim=${qClaim1?.status}`);
+  // …and a SECOND land arrives BEHIND that claim and waits the grace out while nobody could take it
+  const qLane2 = await openLane(REPO, "clockbehind");
+  const qLanded2 = await driveMerge(qLane2, qLane2.branch);
+  const qSha2 = headOf();
+  await Bun.sleep(GRACE_MS + 1500);
+  const qBlocked = await jobFor(REPO);
+  check("(K7a2) setup: the second land is queued behind the live claim, its cover older than the grace",
+    qLanded2.gone && !!qBlocked && qBlocked.claim?.name === DEVICE_NAME
+      && (await liveRepo()) === null && (await newRepoRows()).length === rowsBeforeQ,
+    `${JSON.stringify(qBlocked)} live=${await liveRepo()} rows=${(await newRepoRows()).length}/${rowsBeforeQ}`);
+  const qReport1 = await hpost("/api/helper/result",
+    { jobId: qJob1?.id ?? "", exitCode: 0, tail: "PASS  the claim ahead\nALL PASS" });
+  await waitNewRepoRows(rowsBeforeQ + 1);       // the first land's remote row — the claim is now gone
+  const rowsAfterFirst = (await newRepoRows()).length;
+  await Bun.sleep(2500);                        // a (wrong) local run has had 2.5 s to appear
+  const qFreed = await jobFor(REPO);
+  check("(K7a2) THE GRACE RESTARTS WHEN THE CLAIM ENDS — the drain does not pounce on the queued land",
+    qReport1.ok && !!qFreed && qFreed.claim === null && qFreed.localRunning === false
+      && (await liveRepo()) === null && (await newRepoRows()).length === rowsAfterFirst,
+    `${qReport1.status} ${JSON.stringify(qFreed)} live=${await liveRepo()}`
+    + ` rows=${(await newRepoRows()).length}/${rowsAfterFirst}`);
+  const qClaim2 = qFreed ? await hpost("/api/helper/claim", { jobId: qFreed.id, deviceId: DEVICE }) : null;
+  const qBody2 = (await qClaim2?.json()) as { job?: { mainSha: string } } | undefined;
+  check("(K7a2) …and the tree it held back is really the helper's to take, on the sha that landed",
+    qClaim2?.ok === true && qBody2?.job?.mainSha === qSha2,
+    `${qClaim2?.status} ${JSON.stringify(qBody2)} want=${qSha2}`);
+  const qReport2 = await hpost("/api/helper/result",
+    { jobId: qFreed?.id ?? "", exitCode: 0, tail: "PASS  the land behind it\nALL PASS" });
+  const qRows = await waitNewRepoRows(rowsAfterFirst + 1);
+  check("(K7a2) …and it closes REMOTE, with no local twin for that tree",
+    qReport2.ok && qRows.filter((r) => r.mainSha === qSha2).length === 1
+      && qRows.find((r) => r.mainSha === qSha2)?.remote?.name === DEVICE_NAME,
+    `${qReport2.status} ${JSON.stringify(qRows.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`))}`);
+
   // ===== (K7b) A NON-MEASUREMENT SAYS WHICH ONE IT WAS ==========================================
   // `exitCode: null` reaches this server identically whether the run was KILLED at its budget or
   // simply produced no code, and the shared classifier turns both into the same `unknown` with the

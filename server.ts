@@ -13638,6 +13638,46 @@ const HELPER_SWEEP_MS = Math.max(500, Number(process.env.FLEET_HELPER_SWEEP_MS ?
 // Zero — the default, and what an unset or unparseable value falls to — is today's behaviour byte
 // for byte: the skip below is not reached, no timer is armed, no path changes.
 const AUDIT_HELPER_GRACE_MS = Math.max(0, Number(process.env.FLEET_AUDIT_HELPER_GRACE_MS ?? 0) | 0);
+// THE GRACE'S CLOCK — repo toplevel -> the moment this entry last became CLAIMABLE, and the whole
+// of the 2026-09-07 repair (docs/messungen/2026-09-07-audit-platzierung-gnadenfrist.md).
+//
+// THE MEASUREMENT. The grace was failing on its CLOCK, not its length: five local full runs, and in
+// THREE of them the drain started 7 / 5 / 14 ms after the `helper_result` of the SAME repo — the
+// instant the helper became provably free. `helperClaimOf` locks PER REPO, so the new entry had
+// spent its whole 60 s standing behind a claim nobody could take it from, and arrived with the
+// grace already spent (`graceRest` −204 806 / −848 351 / −1 846 864 ms). Raising the number does
+// not touch that: a grace measured from `cover.at` is consumed while the entry is UNOFFERABLE, so
+// any length large enough to survive a 45-minute claim would be a length that idles this box for
+// 45 minutes on every land nobody takes. The empirical half of the same argument: the audit work
+// budget was raised twice in early September and the per-day timeout rate DOUBLED rather than fell.
+//
+// SO THE OFFSET RUNS FROM CLAIMABILITY. `readyAt` below is `max(youngest cover, this) + GRACE`:
+// seconds an entry spent behind a blocker were never seconds anyone was offered it, and only the
+// seconds after the blocker fell are a promise this box actually kept. Two blockers release into
+// here, and they are the two the drain's own selection and helperClaim both name — a helper CLAIM
+// ending (lapsed in expireHelperClaims, reported in helperResult) and a LOCAL run of that repo
+// finishing. There is no third state and no new persisted phase: an entry is claimed, running here,
+// or claimable, exactly as before; this is a timestamp about the last transition, nothing else.
+//
+// NOT PERSISTED, deliberately. Across a restart the clock is simply absent, `?? 0` falls back to
+// the cover time, and the boot drain behaves byte for byte as it does today — the failure direction
+// is "too much local work", never a tree nobody audited. A restored claim still blocks and still
+// marks when it ends, which is the case that matters.
+//
+// WHAT THIS DOES NOT COVER, stated rather than left to be rediscovered: the other two of those five
+// runs (`graceRest` −14 ms and −1 ms) had a helper that was holding a LANE PREVIEW and returns in
+// helper-daemon/daemon.ts#tick at `freeSuiteSlots<=0` before it ever asks for the job list. That
+// machine is a claim candidate by every register this box owns, so no clock here can see it. It
+// stays open.
+const auditClaimableSince = new Map<string, number>();
+// …and the one writer. Self-pruning against the queue so no caller has to pair a delete with it:
+// the map may only ever hold keys the queue holds, and both places that drop an entry call this
+// immediately after. With the grace off it stays empty and nothing below it is reached.
+function markAuditClaimable(repo: string, now = Date.now()): void {
+  if (AUDIT_HELPER_GRACE_MS <= 0) return;
+  if (!auditQueue.has(repo)) { auditClaimableSince.delete(repo); return; }
+  auditClaimableSince.set(repo, now);
+}
 // …and how long a heartbeat still means "that machine is there". Derived from the sweep clock
 // rather than written as its own number so the two cannot drift apart: HELPER_SWEEP_MS is this
 // server's helper clock and the daemon polls at the same 15 s cadence, so three of them survives
@@ -14236,7 +14276,11 @@ async function drainPostLandAudits(): Promise<void> {
         // promise about the newest land in it, not about the oldest. An entry with no covers is
         // not fresh in any sense — it is nothing to audit — and falls through unchanged.
         const youngest = q.covers.reduce((m, c) => Math.max(m, c.at), 0);
-        const readyAt = youngest + AUDIT_HELPER_GRACE_MS;
+        // …and the offset runs from whichever came LATER, the newest land or the moment this entry
+        // stopped being somebody else's (auditClaimableSince, and see its comment for the three
+        // measured cases this line is). Absent — the entry was never blocked — is the cover time,
+        // which is today's behaviour unchanged.
+        const readyAt = Math.max(youngest, auditClaimableSince.get(r) ?? 0) + AUDIT_HELPER_GRACE_MS;
         if (readyAt <= Date.now()) return true;
         graceUntil = graceUntil ? Math.min(graceUntil, readyAt) : readyAt;
         return false;
@@ -14280,6 +14324,12 @@ async function drainPostLandAudits(): Promise<void> {
       // direction is chosen: a duplicate row is visible and cheap, a silent miss is the bug.
       q.covers.splice(0, covers.length);
       if (!q.covers.length) auditQueue.delete(repo);
+      // …and whatever REMAINS — a land that arrived while this suite ran — starts its grace here,
+      // not at its own `at`. No helper could have claimed it while this machine held the tree
+      // (helperJobsView reports `localRunning`, helperClaim answers 409), so those minutes were
+      // never an offer. Same rule as the two claim-release sites, third blocker. On the empty
+      // branch above this prunes the clock instead of setting it — see markAuditClaimable.
+      markAuditClaimable(repo);
       auditRunningRepo = null; // same synchronous block that consumes the covers — see the mark above
       savePostLandAuditQueue();
     }
@@ -14764,6 +14814,7 @@ function expireHelperClaims(): boolean {
   for (const [repo, c] of [...helperClaims]) {
     if (now < c.expiresAt) continue;
     helperClaims.delete(repo);
+    markAuditClaimable(repo, now); // the entry becomes offerable again HERE — see auditClaimableSince
     helperLapses = [{ id: c.id, repo, name: c.name, deviceId: c.deviceId,
       claimedAt: c.claimedAt, expiredAt: now, covers: c.covers.length },
       ...helperLapses].slice(0, HELPER_LAPSE_KEEP);
@@ -14922,8 +14973,13 @@ function kickAuditDrain(): void {
 // …and the THIRD moment, the one the grace invented: a job the drain deliberately left lying. One
 // timer, never one per skip — `auditGraceTimer` is the armed-guard, and it is cleared before the
 // kick so the pass it triggers can arm the next one. Arming the earliest ready moment is enough
-// even when a later skip is armed first: the grace is a fixed offset from a cover's time, so the
-// oldest entry is always the first to become drainable and a newly queued one can only be later.
+// even when a later skip is armed first, and the argument is no longer "a fixed offset from a
+// cover's time" (auditClaimableSince made that sentence false): the pass that arms takes the MIN
+// over every entry it skipped, and nothing that appears afterwards can undercut it. A new cover
+// and a new repo both stamp `at` = now, so their readyAt is now+GRACE and every armed one was
+// computed from a moment no later than now; an entry that was BLOCKED during that pass never
+// reached the grace math and stamps its claimability at release, so its readyAt is now+GRACE too.
+// Both cases are ≥ the armed moment, which is exactly what the single guard needs.
 function armAuditGraceKick(readyAt: number): void {
   if (auditGraceTimer) return;
   auditGraceTimer = setTimeout(() => {
@@ -15863,6 +15919,11 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
     savePostLandAuditQueue();
   }
   helperClaims.delete(repo);
+  // THE MEASURED CASE. Three of five local runs had the drain start 7 / 5 / 14 ms after this very
+  // line, on a cover whose 60 s had run out behind the claim it was standing in — so a cover left
+  // over here gets its grace from NOW, and the kickAuditDrain at the end of this handler finds it
+  // held rather than spent. See auditClaimableSince.
+  markAuditClaimable(repo, now);
   try { rmSync(claim.bundle, { force: true }); } catch { /* the helper has its copy */ }
   await appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
   await mintAuditEvents(row);

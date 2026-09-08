@@ -32,11 +32,21 @@ answer it, and all it does is switch a box on so it can start pulling.
 - **A fresh audit job may be held for this machine — `FLEET_AUDIT_HELPER_GRACE_MS`, on the Fleet
   side.** A land kicks the Fleet's own drain synchronously, so without it an audit is already the
   Fleet's before this daemon's 15 s poll has seen it exist (measured 2026-08-29,
-  `docs/messungen/second-host-baseline-2026-08-29.md`). Set above zero, the Fleet's drain leaves an
-  entry that young alone for that long — but only while a device is registered, wished `active`,
-  reporting `active` and beating recently. Unset or `0` is the old behaviour exactly. It never
-  starves anything: the moment the grace lapses the local drain takes the job, which is the same
-  fallback the expiry rail above provides, one step earlier.
+  `docs/messungen/second-host-baseline-2026-08-29.md`). Set above zero, the Fleet's drain leaves such
+  an entry alone for that long — but only while a device is registered, wished `active`, reporting
+  `active` and beating recently. Unset or `0` is the old behaviour exactly. It never starves
+  anything: the moment the grace lapses the local drain takes the job, which is the same fallback
+  the expiry rail above provides, one step earlier.
+  **THE OFFSET RUNS FROM CLAIMABILITY, NOT FROM THE LAND** (2026-09-07, `server.ts`, grep
+  `auditClaimableSince`; `docs/messungen/2026-09-07-audit-platzierung-gnadenfrist.md`). Claims lock
+  per REPO, so a land that arrives behind a live claim — or behind a local run of the same repo —
+  is unofferable for as long as that lasts, and measuring the grace from the land's own time spent
+  it while nobody could take the job. Measured: in three of five local runs the drain started
+  7 / 5 / 14 ms after the `helper_result` of the same repo. The clock now starts when the blocker
+  ends, so the grace is time this daemon really had. It is deliberately NOT persisted across a
+  Fleet restart, and a machine that is beating but busy with a lane preview is still counted as a
+  candidate — that daemon returns at `freeSuiteSlots<=0` before it asks for the job list, which no
+  clock on the Fleet side can see.
 - **Parallel runs are COUNTED, never derived from the load average.** `maxParallelSuites` (default
   `1`) is how many jobs this machine will run at once; the daemon claims only while the number of
   jobs it already has in flight is below it. The load cap stays as a *second* condition and never

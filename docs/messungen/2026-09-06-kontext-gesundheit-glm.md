@@ -412,9 +412,10 @@ der Supervisor (nur Brief-Code gelesen, keine Zustellung).
 Eigener Beleg, getrennt vom Originallauf in §0. Diff-Datei: ausschliesslich diese Notiz.
 
     Baum:     Branch fleet/260907203323-0331, Basis main 0352148e
-              (Lane-Sha bewusst NICHT eingetragen: eine Lane kennt ihren Landing-Sha nicht,
-              und ihr pre-rebase-Commit loest nach dem Land nirgends mehr auf — die MAIN
-              setzt ihn ein und prueft mit `git merge-base --is-ancestor <sha> main`)
+    Gelandet: 7539985d (Rebase-Land 2026-09-08 02:2x; nachgetragen vom Controller, nicht
+              von der Lane — `git merge-base --is-ancestor 7539985d main` sagt JA. Der
+              pre-rebase-Commit der Lane loest auf main nicht mehr auf und steht deshalb
+              hier nicht.)
     Kommando: bun install --frozen-lockfile && bun e2e/pins.ts
     Log:      <scratchpad>/verify-nachtrag.log (ausserhalb des Baums, stirbt mit der Session)
     Tail:     "ALL PASS" (exit 0)

@@ -2305,30 +2305,59 @@ export async function run(ctx: Ctx): Promise<void> {
   const retainedWatch = retainedOf("watch", lostWatchId);
   const retainedAuto = retainedOf("auto", lostAutoId);
   const watchLaneBranch = (readState().slots?.[String(watchLaneSlot)] ?? {}) as { cwd?: string };
-  // BREAKS IF: the record starts truncating, drops the ids, or stores a summary. Each assertion
-  // names a value the successor cannot obtain any other way once the predecessor's slot is gone.
-  check("Program-MAIN succession handover: the dying obligations are RETAINED in full — id, complete multi-line text with its decisive last clause, and the parameters a re-registration needs",
-    !!retained && retained.v === 1 && retained.dropped === 0
+  const retainedOnDisk = (readState().programs ?? []).find((p) => p.id === mainProgram.id)?.handover ?? null;
+  // FOUR CHECKS, NOT ONE CONJUNCTION, and the split is a lesson this probe paid for: the first
+  // version asserted all of it in one line, so its remote red named only the line — and the detail
+  // that would have said WHICH clause sits in an owner-only artifact. A probe whose failure is not
+  // self-naming costs a full suite cycle to read. Each kind is now its own check with its own
+  // detail, and the record's identity is its own too.
+  //
+  // `v` is asserted ON DISK and never through the view: the projection omits it exactly as the
+  // lineage and inbox projections do, so a probe that read it there was asserting a value the
+  // server structurally cannot produce — which is what the first run measured.
+  check("Program-MAIN succession handover: the retention record is persisted, versioned, complete, and names both occupants of the transfer",
+    !!retainedOnDisk && retainedOnDisk.v === 1 && !!retained && retained.dropped === 0
       && retained.from.slot === bound?.slot && retained.from.openedAt === bound?.openedAt
       && retained.to.slot === successorSlot
       && retained.obligations.length === 3
-      // the decision, byte for byte — not a 200-character preview of it
-      && retainedAttention?.text === lostQuestion
+      && retained.obligations.filter((o) => o.kind === "attention").length === 1
+      && retained.obligations.filter((o) => o.kind === "watch").length === 1
+      && retained.obligations.filter((o) => o.kind === "auto").length === 1,
+    JSON.stringify({ diskV: retainedOnDisk?.v ?? null, dropped: retained?.dropped ?? null,
+      from: retained?.from ?? null, to: retained?.to ?? null, predecessor: bound?.slot ?? null,
+      successor: successorSlot, rows: (retained?.obligations ?? []).map((o) => [o.kind, o.id]) }));
+  // BREAKS IF: the text is truncated again. 200 characters was the whole defect — this decision is
+  // longer than that and its condition is the LAST clause, so a preview stored as data loses
+  // exactly the part that makes it a decision.
+  check("Program-MAIN succession handover: the open decision is retained byte for byte — multi-line, with its decisive last clause, under its own id",
+    !!retainedAttention && retainedAttention.id === lostAttentionId
+      && retainedAttention.text === lostQuestion
       && retainedAttention.text.endsWith(lostQuestionSuffix)
-      && retainedAttention.text.includes("\n")
+      && retainedAttention.text.includes("\n") && retainedAttention.text.length > 200
       && retainedAttention.detail.kind === "decision" && retainedAttention.detail.status === "open"
-      && retainedAttention.detail.reAsk === "POST /api/self/attention"
-      // the watch, with the target that defines it — a count could never be re-registered
-      && retainedWatch?.detail.kind === "lane" && retainedWatch.detail.target === watchLaneSlot
+      && retainedAttention.detail.reAsk === "POST /api/self/attention",
+    JSON.stringify({ id: lostAttentionId, retained: retainedAttention ?? null,
+      expectedLength: lostQuestion.length }));
+  // BREAKS IF: a watch hands over as a number again. The target triple IS the watch — without it
+  // there is nothing to re-register, which is why the count-only version was a loss.
+  check("Program-MAIN succession handover: the armed watch is retained with the target that defines it, not as a count",
+    !!retainedWatch && retainedWatch.id === lostWatchId && retainedWatch.text === ""
+      && retainedWatch.detail.kind === "lane" && retainedWatch.detail.target === watchLaneSlot
       && typeof retainedWatch.detail.targetBranch === "string"
       && retainedWatch.detail.targetCwd === watchLaneBranch.cwd
-      && retainedWatch.text === ""
-      // the whole auto configuration, not just its sentence
-      && retainedAuto?.text === lostCheckIn && retainedAuto.detail.everySec === 600
-      && retainedAuto.detail.idleSec === 42 && retainedAuto.detail.runsLeft === 3
-      && retainedAuto.detail.enabled === true && retainedAuto.detail.perpetual === false
-      && typeof retainedAuto.detail.nextAt === "number",
-    JSON.stringify({ handover: retained, ids: [lostAttentionId, lostWatchId, lostAutoId] }));
+      && retainedWatch.detail.reArm === "POST /api/self/watch",
+    JSON.stringify({ id: lostWatchId, laneSlot: watchLaneSlot, laneCwd: watchLaneBranch.cwd ?? null,
+      retained: retainedWatch ?? null }));
+  // BREAKS IF: only the auto's sentence survives. A check-in is its cadence, its run cap and its
+  // idle gate; the text alone cannot be re-registered as the same schedule.
+  check("Program-MAIN succession handover: the check-in is retained with its whole configuration, not just its text",
+    !!retainedAuto && retainedAuto.id === lostAutoId && retainedAuto.text === lostCheckIn
+      && retainedAuto.detail.everySec === 600 && retainedAuto.detail.idleSec === 42
+      && retainedAuto.detail.runsLeft === 3 && retainedAuto.detail.enabled === true
+      && retainedAuto.detail.perpetual === false
+      && typeof retainedAuto.detail.nextAt === "number"
+      && retainedAuto.detail.reArm === "POST /api/self/autos",
+    JSON.stringify({ id: lostAutoId, retained: retainedAuto ?? null }));
   // …and BOTH falsifiers. The predecessor's rows are gone from the live state the moment its slot
   // is torn down, and the successor's own attention door is scoped to its occupant — so if the
   // record did not hold them, nothing would.

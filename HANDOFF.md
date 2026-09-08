@@ -1,3 +1,43 @@
+# HANDOFF — 🎛 Fleet Controller (Slot 8, Opus 5, `6cf2d43b`): Uebergabe an den ASTRA-Controller (Program `f9dc8e10`); 2026-09-08 02:15–08:5x, ctx GEMESSEN 18,4 % beim Schreiben
+
+## 0. Was beim Antritt gilt
+
+- **Keine armierten Watches, keine Autos.** Alle drei Watches dieser Schicht sind gefeuert und quittiert; Audit zu `42b92af7` GRUEN (4033/0, second-host).
+- **Server = Platte** (Deploy `2dcbed0f`, `behindCount 0`), Bundle frisch. Lanes: Slot 1/3/4 je `ahead=1 dirty=0` — FERTIG, ungelandet. Vor jedem Land: Program-Bindung UND Empfaenger-Disposition pruefen (§3).
+- **Owner-Entscheide heute, woertlich:**
+  - „den naechsten controller einfach auf Astra legen … Wir brauchen jetzt wirklich mal eine Session die den Ueberblick ueber alles relevante haelt"
+  - „ich will nur nicht das astra gleich notis bekommt zu jedem Merge" → **KEINE Watches/Autos auf jedes Land/Audit in die Astra-Pane.** Verdikte aus `fleet.json`/Ledgern lesen, wenn gebraucht.
+  - „docs sollen keine suite mehr kriegen und am besten auch keinen git-head erzeugen" · „tools und checks muessen deterministisch und leichter werden" · „erstmal einfach buendel2"
+  - Aufraeumen: „gruendlich aufraeumen, infos parsen, zusammenlegen"; Prompts/Auftraege kuerzer und formatiert (Schablone: Scratch `astra-leichtgewicht-prompt.md`, 49 Zeilen — ROLLE·BEFUND·FRAGE·AUFTRAG·GRENZEN·DONE·MELDUNG).
+- **Regelbuch ueberholt, nicht editiert (Promotion noetig):** „Fable orchestriert" und „naechste Controller-Succession auf Opus 5" — der Controller ist ab jetzt Astra (codex/gpt-6-astra/medium) UND Program-MAIN von `f9dc8e10`. Grund: nur eine gebundene MAIN empfaengt Fleet-Reports und filet Zeilen mit `programId`.
+
+## 1. Der Befund der Schicht (alles reproduzierbar, Befehle im Astra-Prompt)
+
+- Task-Schema 25 Felder; **8 in 296 Zeilen NIE geschrieben** (from·files·filesOrigin·filesProposal·cluster·criterion·refine·analysis). Analyst, auto-③, clean-review AUS. Das System laeuft auf 9 Feldern + Status-Uebergang.
+- **Wellen: Sensor+Motor fertig (`task-land-waves.ts`, `POST /api/wave/dispatch`), 0 Buendel** — R3 verlangt `filesOrigin=confirmed`, nie gesetzt; 11 Zeilen ohne Program. Befund liegt bei Slot 11.
+- **Suite ist NICHT der Hebel:** ~130 von 4 112 Checks (3 %) bewachen inerte Flaechen.
+- **Docs-Git-Heads:** 124 rein-docs-Commits seit 07.09 06:00 — **106 DIREKT** aus dem Haupt-Checkout, 18 Lanes; **HANDOFF.md 66×**. Docs-Wellen treffen 15 %. `succeed` verlangt EINEN HANDOFF-Commit; im 15-h-Ledger 18 Commits bei ≤6 Slot-Enden. Schnitt: **ein Handoff-Commit je Schicht** (dieser hier ist einer). HANDOFF ungetrackt geht NICHT ohne Gate-Aenderung (`server.ts:6224`).
+- Korrektur an `0694cb78` als Brief angeheftet (`edited:true`). `3f7363bf` (Determinismus) steht unveraendert.
+- **Slot 13 (Astra, medium)** hat die 8-Flaechen-Tabelle FUETTERN/ENTFERNEN fertig (Pane), 0 Zeilen gefilt — keine Program-Bindung. Rueckbauanker fuer alle ENTFERNEN: `7ff56eab`. Der neue Controller filet sie program-gebunden.
+
+## 2. Aufraeumen — drei Schichten (Stand 08:4x)
+
+- **Slots:** 15 belegt · 5 lebende MAINs (2,6,7,9,11) · 3 fertige Lanes (1,3,4) · 6 ohne Label (5,12,13,14,15,16; 12 und 16 `ctx null`). **Supervisor-Bindung Slot 5 TOT** (`openedAt` 2026-08-19 vs. Insasse heute).
+- **Programs:** 68 gesamt; 14 „active", **nur 5 mit lebender MAIN** (f170dc46, eec69528, 233e1c2b, e3b3a064, 9ce08219). 9 Zombies: cd110019, 66499a03 (beide an Slot 8 = ich, nie meine), 07ee8a6d, 2c073232, b2aa5b45, 79036e9a, 29c0f21b, 446e77f8, 6360c361 — zusammen 59 offene Zeilen, davon 9 auftrag. 2 „complete" halten 20 Zeilen (b9c1e0d9, b2a14b54).
+- **Queue:** 252 offen — 184 notiz (131 > 24 h), 50 auftrag, 7 richtung; 125 ≥ 3 Tage; 78 ohne Program. Ziel: ≤ 20 Buendel.
+- Reihenfolge: Lanes landen → Zombies `complete` (notiz mit dem Program schliessen, 9 auftrag neu filen — `programId` gibt es nur bei der Geburt) → notiz parsen mit Sol-Agenten, ein Agent je Program-Cluster, Tabellenformat, KEIN Dokument.
+
+## 3. Meine Fehler dieser Schicht (Klasse, nicht Liste)
+
+- **Feldnamen behauptet statt gelesen — dreimal:** `state`≠`status` (Attentions), `/api/sessions` traegt kein `lane` (es heisst `git`), `audit.jsonl` hat `ts`/`event`. Jedes Mal eine falsche Messung, die als Messung gelesen worden waere. Erst `sorted(x.keys())`, dann zaehlen.
+- Owner-Token-Land auf fremder Program-Zeile (`d49dd776`, Marge 2 s) — ein Land auf gebundener Zeile ist eine Zusage oder nichts.
+- Deckel-Empfehlung aus der falschen Ressource (Zeit statt RAM: swap 86 %). Zurueckgezogen.
+- IP in `9f9f75ad` ist jetzt auf dem PRIVATEN hub (mit dem Land von 11d4), NICHT auf origin. Fix gehoert in `publish-r5-*`/`scrub.py`.
+
+## 4. Ungeprueft
+
+Ob die Phasenkopplung des Autoclose fuer codex gilt · die sechs Label-losen Slots einzeln · die 184 notiz inhaltlich · ob `bootstrap-main` auf codex die Readiness-Naht sauber nimmt (erster Astra-Controller ueberhaupt).
+
 # HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 4, Opus 5 high): ein Land gruen, zwei Erfolgskriterien geschlossen, ein rotes Audit als Sondendefekt entlarvt; 2026-09-08 ~05:1x–07:0x, ctx GEMESSEN 25,7 % beim Schreiben
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

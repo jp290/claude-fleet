@@ -114,6 +114,61 @@ baut, die eine Laengengrenze hat: erst pruefen, dann schreiben.
   (`POST /api/self/succeed {"model":"claude-opus-5[1m]","effort":"high"}`), sonst faellt die
   Nachfolgerin still auf Fable zurueck.
 
+## 5b. NACHTRAG 07:4x — das Audit MEINES Lands ist ROT, und ich halte es NICHT fuer sauber
+
+Post-Land-Audit `at=1788846214285` auf `1a7c53ea` (mein Land): **4020 ran / 2 failed**, beide in
+`e2e/watch.ts` — der Datei, die dieses Land geaendert hat. Nach Regelbuch gehoert ein Fail mir, bis
+ich das Gegenteil beweise. Was ich belegen kann und was offen bleibt:
+
+- **`re-subscribing to the same target returns the SAME watch, never a second` (Zeile 4171) kann
+  der Diff nicht verursacht haben** — die frueheste Aenderung der Lane steht in Zeile 4523, der
+  Lauf ist sequentiell. Trail: **573 Laeufe, 3 Fails** (~0,5 %), alle auf fremden Baeumen.
+- **`delete the spent transport Watch` (Zeile 4746) IST eine geaenderte Zeile** — die Lane hat sie
+  VERSCHAERFT (zwei Watch-Loeschungen statt einer). Trail: 464 Laeufe, 3 Fails, zwei davon auf
+  `9db4b85b`, also schon vor der Aenderung.
+- **Der entscheidende Beleg: derselbe PAAR-Fehlschlag ist am 2026-09-05 auf Baum `2c40368f` schon
+  einmal gemeinsam aufgetreten** (ts 1788604102510 und 1788604113274, elf Sekunden auseinander) —
+  ein Baum, der mit diesem Land nichts zu tun hat. Zwei Symptome, eine vorgelagerte
+  Nichtdeterminiertheit in der armed-Watch-Buchfuehrung.
+- **WAS DAGEGEN SPRICHT und offen bleibt:** Zeile 4746 ist strenger als vorher, also koennte sie
+  neu ENTBLOESSEN statt bloss wieder gefallen sein. Das ist mit einem Lauf nicht zu trennen.
+  **Nicht adjudiziert** (owner-positioniert, keine Self-Tuer). Meine Lesart fuer den Urteilenden:
+  ein Fail `flake`, einer offen — kein pauschales Gruen.
+- **NEU UND UNERKLAERT, gehoert zu `b09cd2f9`:** die Trail-Zeilen dieses Audits stehen in KEINEM
+  der beiden Trail-Verzeichnisse (weder `<repo>/e2e-trail` noch `$TMPDIR/fleet-e2e-trail` hat eine
+  Zeile nach ts 1788843776363). Der Lauf hat 4020 Checks gefahren, `ctl` also inklusive — SRC war
+  aufgeloest. Trotzdem ist sein Trail nicht auffindbar. Damit kann das Register genau den Lauf
+  nicht sehen, ueber den hier geurteilt werden muss. `b09cd2f9` ist breiter als dort beschrieben.
+
+## 5c. Antwort an den Controller (Slot 8) und die Owner-Richtung „lightweight / Buendel 2"
+
+- **`8f14a22b` schliessen: JA.** Er ist derselbe Defekt wie mein `b09cd2f9`; meine Fassung nennt
+  Mechanismus und die 45 uebersprungenen Checks. Ich kann seine Zeile nicht selbst schliessen.
+- **Die 8→4-Buendelung kann ich MECHANISCH NICHT ausfuehren.** Meine Self-Tueren sind genau vier:
+  `POST /api/self/tasks`, `/files-proposal`, `/release`, `/land` (`server.ts:25194/25313/25328`).
+  Es gibt **keine Tuer zum Schliessen und keine zum Schaerfen eines Briefs** — das ist woertlich
+  der Defekt, den `3ea89f71` beschreibt. Ein Buendel waere also: neue Zeile filen (Deckel 5/5) und
+  die alten offen stehen lassen, d.h. mehr Zeilen statt weniger. **Ich habe es deshalb nicht getan**
+  und arbeite Buendel 2 stattdessen in der Reihenfolge ab, in der die Zeilen ohnehin stehen:
+  `f6778de1` und `fa8f6220` sind queued, `b09cd2f9` pending.
+- **`0694cb78` (docs-Wellen) adoptieren: ja, aber erst wenn der Deckel aufgeht** — Adoption heisst
+  Neu-Filen an meiner Tuer, und die ist bei 5/5 zu.
+
+## 5d. Der Codex-Punkt, vom Owner angestossen — ENTSCHIEDEN, nicht gefragt
+
+Slot 1 lief auf `codex` / `gpt-5.6-sol` / `high`, obwohl die Modellpolitik fuer LANES
+`claude-opus-5[1m]` sagt. **Mechanismus:** die Zeile traegt eine gespeicherte Spawn-Triple in
+`t.spawn` (NICHT in den flachen Feldern `harness`/`model`/`effort` — dort steht `null`, und genau
+das habe ich zuerst falsch gelesen und daraus eine falsche Vorhersage gemacht).
+`taskSpawnOf = (t) => t.spawn ?? DEFAULT_SPAWN` (`server.ts:8448`) reicht sie an `dispatchTask`;
+`FLEET_HARNESS_AUTOMATION=1` plus `codex.automatable` erlauben dem Tick, sie unbeaufsichtigt zu
+fahren. Alle ACHT LEBENSZYKLUS-Zeilen tragen sie, `source: owner`, gefilt 2026-09-04 20:53:30 als
+Stapel — also zwei Tage NACH dem Opus-5-Entscheid und mit auf Codex zugeschnittenen Briefs
+(„ARBEITSREGELN (Codex-Worker …)"). **Entscheidung: nicht angefasst.** Unter „lightweight" ist das
+Stoppen einer laufenden, owner-gefilten Lane genau die Bewegung, die man nicht macht. Es ist eine
+BENANNTE Ausnahme von der Modellpolitik, kein Drift — wer sie anders will, aendert `t.spawn` der
+sieben noch nicht gestarteten Zeilen.
+
 ## 6. Was ich NICHT geprueft habe
 
 Ob die Sonden aus (c) heute gruen LAUFEN (kein eigener `./e2e-isolated.sh`). Den Inhalt der sieben

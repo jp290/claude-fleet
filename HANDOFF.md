@@ -386,9 +386,11 @@ werden recycelt). `from` kommt aus der Token-Zeile, nie aus dem Body. Fremde Id 
 - **`/api/post-land-audits/artifact` ist owner-only** (401 fuer Self-Token): N2 konnte die
   Detail-Strings ihres eigenen roten Vorschaulaufs nicht lesen und musste die Ursache aus der
   Fail-Namensliste plus Code ableiten. Eine Lane, die ihr eigenes Rot nicht lesen darf, raet.
-- **Post-Land-Audit zu `dea2d837` laeuft** — Watch `784a2f9b` armiert, gehoert dieser Session. Eine
-  FEHLENDE Ledger-Zeile heisst „laeuft", nie „verloren" (voller Lauf ~25-35 min). Bekanntes,
-  adjudiziertes Rot lokaler Audits: `ctl setup: … executable ctl.sh` (`src=unresolved`).
+- **Post-Land-Audit zu `dea2d837`: GRUEN**, an `ms` und Zaehlern geprueft, nicht am Wort — `ms
+  2 425 832` (40,4 min), `checks{ran 4018, failed 0}`, `covers ["fleet/260907235032-17ed"]`,
+  `mainSha dea2d837`. Damit ist N2 auch auf Stufe 2 vermessen. Das frueher bekannte lokale Rot
+  `ctl setup: … executable ctl.sh` (`src=unresolved`, als `stale-test` adjudiziert) ist in diesem
+  Lauf NICHT gefallen — wenn es wiederkommt, ist es weiterhin dieselbe adjudizierte Familie.
 - **Deploy:** `deployGap.codeBehind` true, `bundleStale` true — W1/W2/W3/M2/N2 sind gelandet und
   NICHT live, der Wellen-Knopf ist unsichtbar. Controller-Akt; ein Deploy setzt ausserdem JEDE
   Idle-Uhr auf null, also vorher die Programs fragen, deren Beweis an einem Idle-Fenster haengt.

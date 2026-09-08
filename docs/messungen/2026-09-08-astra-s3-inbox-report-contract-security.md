@@ -4,7 +4,7 @@ urteil: Der Record- und Entscheidungsvertrag traegt; zwei Naehte nicht — die A
 bereich: [contract, security, program-inbox, fleet-report, attention, succession]
 stand: 2026-09-08
 nicht-gemessen: Keine ausgefuehrte Security-Suite an diesem Baum, kein Live- oder Scratch-Probelauf, keine Schreib-/Angriffsprobe, kein vollstaendiger Client- oder Blattmodul-Sweep, kein S4-Flake-/Mutex-Anteil, kein Auswerten der Live-`fleet.json`.
-revision: 2026-09-08, nach Rueckgabe durch die Review-MAIN (Slot 7). Korrigiert: Gate am fertigen Diff neu gefragt und dessen Schritte protokolliert; „jedes Program leer" zurueckgezogen; „dauerhaft" gegen den Boot-Reconcile begrenzt; ein Mutationssatz, der dem eigenen Positionspin widersprach; die Folgekosten von B3 an ihre ungelesene Bedingung gebunden; B3 nach Lesung von docs/self-api.md stark abgeschwaecht; B4 als erklaerte Staffelung eingeordnet; B5 auf eine Datei eingegrenzt; alle sechs Flaechen entschieden; die uebersprungenen Pflichtquellen nachgelesen und belegt.
+revision: 2026-09-08, zwei Rueckgaben durch die Review-MAIN (Slot 7). Zweite Rueckgabe: drei widerspruechliche Textreste der ersten Korrektur beseitigt (B3-Mutationssatz gegen die neue Gegenprobe, Abdeckungs-Restsatz gegen die Flaechenmatrix, B4-Kostensatz gegen restore=unknown) plus die beiden Matrixzeilen zu audit-red. Erste Rueckgabe: Korrigiert: Gate am fertigen Diff neu gefragt und dessen Schritte protokolliert; „jedes Program leer" zurueckgezogen; „dauerhaft" gegen den Boot-Reconcile begrenzt; ein Mutationssatz, der dem eigenen Positionspin widersprach; die Folgekosten von B3 an ihre ungelesene Bedingung gebunden; B3 nach Lesung von docs/self-api.md stark abgeschwaecht; B4 als erklaerte Staffelung eingeordnet; B5 auf eine Datei eingegrenzt; alle sechs Flaechen entschieden; die uebersprungenen Pflichtquellen nachgelesen und belegt.
 ---
 
 # S3 — Contract/Security an den Inbox-/Report-Naehten
@@ -37,9 +37,13 @@ Vollstaendig gelesen (kein Ueberfliegen, kein Namensschluss):
   - `server/types.ts:761–830` (`fleetReportFrom`) und `server.ts:24910–25050` (Steward-/Self-Routenkopf) nachgelesen.
 - Vor eigenem Urteil aus `main:` gelesen: `docs/messungen/2026-09-07-adressierbarkeit-vertrag.md` (vollstaendig, Pin `e917a48b`), `docs/messungen/2026-09-review-aussen-nach-innen.md` (vollstaendig), `docs/messungen/2026-09-07-datenvertraege-umsetzungsplan.md` §Mindestform/C0/C1/C2, `docs/messungen/INDEX.md` gezielt.
 
-Nicht gelesen und darum ohne Aussage: `src/client.ts`-Rueckleseseite der Inbox/Report-Zeilen,
-`e2e/programs.ts` ausser den in der Vorgaengernotiz zitierten Fixture-Zeilen, `context-plan.ts`,
-`program-phase.ts`, die uebrigen Blattmodule, der Land-/Deploy-Pfad.
+Nicht gelesen und darum ohne Aussage: `context-plan.ts`, `program-phase.ts`, die uebrigen
+Blattmodule, der Land-/Deploy-Pfad. **Nach Rueckgabe berichtigt:** dieser Satz zaehlte urspruenglich
+auch `src/client.ts` und `e2e/programs.ts` auf. Beide sind inzwischen gezielt gelesen — die
+Rueckleseseite bei `src/client.ts:11036–11070` und `:11190–11215`, die Inbox-Familie bei
+`e2e/programs.ts:1770–1905` — und stehen mit ihrem Urteil im Flaechenentscheid unten. Was von
+beiden Dateien UNGELESEN bleibt, ist dort je Zeile als `unknown` benannt; pauschal „ungelesen" sind
+sie nicht mehr.
 
 ## Was seit `e917a48b` geschlossen ist (nicht erneut als Befund gezaehlt)
 
@@ -69,7 +73,7 @@ strukturell nicht aus Quelllesung entscheidbar oder ohne Laufbeleg.
 | **Erstellung Report** | Identitaeten serverseitig abgeleitet, kein Body-Feld nominiert Empfaenger, geschlossene Feldmenge, Deckel | ja — `#openFleetReport:6815` (nur `status`+`text`), `:6817` Enum, `:6821–6823` leer/Laenge, Empfaenger nur ueber `#clarificationReceiverFor:6387`, Budget `:6850` (Owner-Inbox) / `:6852` (Slot) | Der Empfaenger einer **program-losen** Lane stammt aus Watch-Zeilen, die jede Nicht-Lane selbst schreiben darf → **B2** |
 | **Erstellung Inbox-Zeiger** | genau ein Schreiber, gedeckelt, `dropped` zaehlt | Schreiber existiert und ist gepinnt (`e2e/pins.ts:6667`) | **kein Aufrufer am Baum** → Erstellung produktiv NIE ausgefuehrt → **B4** |
 | **Sichtbarkeit Report** | nur exakter Worker oder Receiver | ja — `#fleetReportsFor:6652`, Doppelscope Worker/Receiver bei `:6661`, `openedAt`-gebunden | Nachfolge-MAIN sieht nur 4 abgeleitete Felder (`#latestReportFor:1748`), nie den Text; nach Retirement ist die Zeile **owner-only** und das steht in keiner Regel → **B5** |
-| **Sichtbarkeit Inbox** | Program-gebunden, Succession aendert nichts, fremdes Program benannt verweigert | ja — `#inboxProgramFor:7543` (Lane 409, dann `#boundProgramForMain:7524` mit Aktiv- und Eindeutigkeitspruefung), `#readProgramInboxEntry:7616–7620` trennt „fremdes Program" von „unbekannt" | `audit-red` rendert `subject:null` **ohne** `unknown`-Zeile und hat keinen Join → **B3** |
+| **Sichtbarkeit Inbox** | Program-gebunden, Succession aendert nichts, fremdes Program benannt verweigert | ja — `#inboxProgramFor:7543` (Lane 409, dann `#boundProgramForMain:7524` mit Aktiv- und Eindeutigkeitspruefung), `#readProgramInboxEntry:7616–7620` trennt „fremdes Program" von „unbekannt" | `audit-red` rendert `subject:null` ohne `unknown`-Zeile und hat keinen Join — dokumentierte Ausnahme (`docs/self-api.md` §inbox), aber ungepinnt → **B3** |
 | **Zustellung (Event-Schiene)** | vor jedem Send nach einem Await der exakte Occupant neu bewiesen | ja fuer Recovery — `#recoverFleetReportDelivery:11735–11737` Latch → `receiverStillMatchesFleetEvent` → Send, **gepinnt** in `e2e/pins.ts:3761`. FACT 2 liest nach seinem Latch (`:11940`) `event.status` (`:11941`) und `laneEventSubject` (`:11942`) neu, was einen Receiver-Teardown ueber `markFleetEventReceiverGone` mitfaengt | Restfenster in FACT 2 ist nur das `saveStateNow` bei `:11954` — sub-ms, hier **nicht** als Befund gezaehlt |
 | **Zustellung (Anfrage-Schiene)** | dieselbe Regel | **nein** — `#answerAttention:8294` und `#replyClarification:6933` awaiten `canDeliver` und senden danach ohne jede Neupruefung → **B1** |
 | **Receipt** | Receipt ist kein ACCEPT; erster Leser gewinnt; kein Ueberschreiben | ja — `#readProgramInboxEntry:7621` gibt `existing:true` zurueck und schreibt nichts; `#acknowledgeFleetEvent` ist Transport, `#decideFleetReport` ist fachlich, zwei Routen | — |
@@ -79,7 +83,7 @@ strukturell nicht aus Quelllesung entscheidbar oder ohne Laufbeleg.
 | **Restart** | malformed/leer faellt geschlossen aus, Verlust bleibt unterscheidbar | ja — `loadProgramInbox`/`loadProgramInboxEntry` (server/types.ts:1701–1767); Boot terminalisiert Events mit totem Receiver (`server.ts:22807–22815`), reconciled Clarifications/Attentions (`:22819`, `:22823`) | Codex-Slot mit nicht-UUID-`sessionId` wird beim Boot genullt (`:22512`) und verliert danach Event **und** Attention — bekannte D2-Familie, Traeger `e88884c8` |
 | **malformed/null/empty** | benannt verweigert, nie stillschweigend repariert | ja — Report-Body (`:6815–6823`), Decision-Body (`:7079–7087`), Inbox-Id ueber Pfad-Regex `[0-9a-f]{24}` (`:25218`), Watch-Ids/Shas in `#createWatchForSlot` | — |
 | **fehlender Empfaenger** | benannt, kein erfundener Principal | ja — owner-inbox-Fallback eng geschnitten (`:6845–6853`), Owner-Zeile bekommt keine Session (`:7064`, `:7158` `by: "owner"`) | Fallback wird durch **eine einzige** fremde Watch-Zeile unterdrueckt → **B2** |
-| **fehlendes referenziertes Objekt** | als `unknown` benannt, nie als Leere | ja fuer `attention-answer`/`fleet-report` (`#inboxSubject:7565`) | nein fuer `audit-red` (`:7560`) → **B3** |
+| **fehlendes referenziertes Objekt** | als `unknown` benannt, nie als Leere | ja fuer `attention-answer`/`fleet-report` (`#inboxSubject:7565`); fuer `audit-red` gilt eine **benannte Ausnahme** statt der Regel (`:7560`, in `docs/self-api.md` §inbox woertlich angesagt) | die Ausnahme haelt keine Probe → **B3** |
 | **fremdes Program/Repo** | benannt verweigert | ja — `#readProgramInboxEntry:7616`, `#releaseTaskForMain` Program-Vergleich, `#latestReportFor:1755` joint auf `taskId` **und** `programId` | — |
 | **Doppelentscheidung** | zweite Entscheidung 409, Zeile unveraendert | ja, ueber beide Tueren | — |
 | **Doppelzustellung** | ein Event, ein Versuchszaehler, gedeckelte Recovery | ja — `FLEET_REPORT_RECOVERY_MAX_ATTEMPTS` an einer Stelle definiert (`:2478`) und ueber `fleetReportRecoveryExhausted` (`:6481`) einmal gefragt, Rollback nur bei `cleared` (`:6504`) | — |
@@ -285,9 +289,13 @@ ihn zu aendern: ein `audit-red`-Eintrag mit unaufloesbarem `ref` liefert `subjec
 keine `unknown`-Zeile. Damit wird der Tag sichtbar, an dem ein Schreiber landet und der Leser sich
 mitbewegen muss — heute wuerde diese Aenderung nichts rot machen.
 
-**Falsifizierende Mutation.** Die `unknown`-Zeile fuer `audit-red` wieder entfernen ⇒ rot. Den
-Join einbauen und die `unknown`-Zeile fuer den Fall „Ledgerzeile vorhanden" weglassen ⇒ der
-Positivarm bleibt gruen, der Negativarm rot — das trennt „gejoint" von „stumm".
+**Falsifizierende Mutation.** Der Check nagelt den HEUTIGEN Vertrag fest, also toetet ihn genau die
+Aenderung dieses Vertrags: `#inboxSubject:7560` so umbauen, dass `audit-red` eine `unknown`-Zeile
+erzeugt ⇒ rot. Das ist die Umkehrung des Satzes, der hier zuerst stand („die `unknown`-Zeile wieder
+entfernen ⇒ rot") — der gehoerte zu der Fassung, die eine `unknown`-Zeile FORDERTE, und ist mit der
+abgeschwaechten Lesart oben unvereinbar. Landet spaeter ein `audit-red`-Schreiber mit seinem Join,
+ist dieser Check die Stelle, die mitgezogen werden MUSS, und sein Rotwerden ist dann das erwuenschte
+Signal, kein Regress.
 
 **Traeger.** `288f6359` (Audit → Program). Diese Notiz **schlaegt vor**, den Leser-Fix in dessen
 Brief aufzunehmen, statt einen eigenen Task zu eroeffnen.
@@ -316,8 +324,11 @@ koennen sie strukturell nicht sehen. Das ist kein Vorwurf an diesen Baum, sonder
 die der erste Producer-Schnitt in seinem Brief mitnehmen sollte.
 
 **Kosten.** Die gesamte Kette Erstellung → Sichtbarkeit ist produktiv **unbewiesen**, nicht bewiesen-
-gut. Jede Aussage der Form „die Program-Inbox traegt die Nachricht ueber die Succession" ist heute
-eine Aussage ueber eine leere Flaeche. **Korrigiert nach Rueckgabe:** die erste Fassung schloss daraus „`GET /api/self/inbox` liefert fuer
+gut: keine Aussage der Form „die Program-Inbox traegt die Nachricht ueber die Succession" hat an
+diesem SHA einen produktiven Beleg, weil die Erzeugung nie ausgefuehrt wurde. Ob die Flaeche LEER
+ist, ist damit ausdruecklich NICHT gesagt — das waere derselbe Fehlschluss, den der naechste Absatz
+zurueckzieht: die Leseseite kann sehr wohl Eintraege zeigen, die aus dem Zustand kommen statt aus
+einem Producer, und ein Restore ist von hier aus `unknown`. **Korrigiert nach Rueckgabe:** die erste Fassung schloss daraus „`GET /api/self/inbox` liefert fuer
 jedes Program `entries:[]`". Das ist falsch und verletzt die Invariante „Missing or failed evidence
 is `unknown`, never zero" (`AGENTS.md` §Hard invariants). Belegt ist nur: an diesem SHA kann kein
 Codepfad einen Eintrag ERZEUGEN. Was nach einem Restore DA ist, kommt aus `fleet.json`, und der

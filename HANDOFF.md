@@ -1,3 +1,127 @@
+# HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 4, Opus 5 high): ein Land gruen, zwei Erfolgskriterien geschlossen, ein rotes Audit als Sondendefekt entlarvt; 2026-09-08 ~05:1x–07:0x, ctx GEMESSEN 25,7 % beim Schreiben
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **ARMIERT UND STERBEND: Audit-Watch `66708edc` auf `1a7c53ea`** (das Land von `cac29de6`).
+  Eine Succession toetet ihn still. Neu armieren, `idleSec:0` ist kein Detail:
+
+      curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+        -d '{"kind":"audit","repo":"/Users/owner/claude-fleet","mainAfter":"1a7c53ea9db49c6a2191509e942ec8ae72740ead","idleSec":0}' \
+        "http://$FH:8790/api/self/watch"     # FH = FLEET_HOST aus .env, NIE literal in eine getrackte Datei
+
+  (Der Leak-Pin faellt sonst — genau daran ist die Vorgaengerin am 2026-09-08 05:0x haengengeblieben.)
+- **LAEUFT: `7ed73694` (S12 Program-Blick, Client) auf Slot 1.** Vom Tick gestartet, nachdem ich sie
+  freigegeben hatte. Ihr Report kommt von selbst in die Pane; nicht pollen.
+- **BEIM OWNER LIEGT EINE SACHE, die ich NICHT tun durfte:** die Adjudikation des roten
+  Post-Land-Audits `at=1788843000681`. `POST /api/post-land-audits/adjudicate` ist
+  owner-positioniert, es gibt KEINE Self-Tuer, und der Griff zum Owner-Token waere genau der
+  Fehler, den `fa8f6220` abstellen soll. Sachlage steht in
+  `docs/messungen/2026-09-08-fleet-betrieb-erfolgskriterien.md` §Nachtrag: es ist `stale-test`,
+  nicht `real`.
+- **Deckel: 5/5 pending `auftrag` (source=main), 4 released.** Filen geht erst nach einer Freigabe;
+  die Route sagt es mechanisch („program auftrag filing cap reached (5/5 …)").
+
+## 0b. EINE REGELBUCH-AENDERUNG, DIE GIT NICHT SIEHT — lies das, bevor du dem Regelbuch glaubst
+
+`CLAUDE.md` und `rulebook/` sind gitignored. Ich habe **`rulebook/einstieg.md` geaendert und neu
+gerendert** (`bun e2e/pins.ts` ALL PASS). Das ueberlebt auf DIESER Maschine, aber in keinem Commit —
+wer aus einem frischen Klon liest, sieht die alte Fassung. Zwei Absaetze, beide waren FALSCH:
+
+1. **„Die Handregel gilt, bis R2' (bounded rebase+ff-Neuversuch) gelandet ist" — R2' IST gelandet
+   und LIVE.** `ded6c34e`, im Code des Servers, der seit 2026-09-08 02:21:01 laeuft (Sensor:
+   `lsof -nP -iTCP:8790 -sTCP:LISTEN`, NICHT `pgrep`). Bewegt sich main unter einem Land, re-rebast
+   und re-verifiziert `server.ts#mergeJob` bis zu `LAND_FF_RETRY_ROUNDS` mal
+   (`FLEET_LAND_FF_RETRY_ROUNDS`, Default 2, in `watchdog.sh` nicht gesetzt) auf dem Suite-Mutex,
+   den es dafuer selbst haelt. Ein Commit unter einem Land ist also ein PREIS (eine volle Gate-Kette
+   je Runde auf der einzigen Suite), kein Tod. Zwei Tode bleiben: Mutex nicht binnen
+   `FLEET_VERIFY_WAIT_MS` (live 45 min) zu bekommen, oder die Lane rebast nicht mehr sauber.
+2. **„Ein schmutziger Haupt-Checkout … das Land ist tot NACH gruenem verify" — seit M3
+   (`6c70f01c`) nicht mehr.** Eine Vorflugpruefung aus zwei git-Lesungen (kein Gate, kein Mutex)
+   haelt `git status --porcelain -z` des main-Checkouts gegen `<mainSha>..<branch>` und verweigert
+   in Sekunden unter eigenem Namen (`errorReason: "dirty-main"`). **Nur UEBERLAPPENDE Pfade
+   zaehlen** — ein schmutziges `src/` blockiert kein docs-Land. Die alte Fassung gilt nur noch fuer
+   den Zweitblick kurz vor dem ff.
+
+## 1. Gelandet in dieser Schicht
+
+| Zeile | Sha auf main | Verify | Audit |
+|---|---|---|---|
+| `cac29de6` Watch/Event-Retention (e2e/watch.ts + 3 docs) | `d3ce75ad` + `1a7c53ea` | ok, VOLLE Kette | Watch `66708edc` armiert, siehe §0 |
+| (Direkt-Commit) Erfolgskriterien-Messung | `6207182d` | von Hand: install + pins, ALL PASS, exit 0 | keins |
+| (Direkt-Commit) Nachtrag rotes Audit | `6a3133f6` | von Hand: pins ALL PASS | keins |
+| (Direkt-Commit) Landing-Sha im §11.2l-Nachtrag | `d2f15fe2` | von Hand: pins ALL PASS | keins |
+
+Drei Direkt-Commits, alle docs-only, alle mit leerem `git status` und geprueft leerem `merges`
+davor. **Sie tragen keine Land-Provenienz** (keine `fleet/land`-Note, keine `lane-outcomes`-Zeile,
+kein Post-Land-Audit); `state.sh`s Land-Health untertreibt heute entsprechend.
+
+## 2. Was ich am Baum NACHGEMESSEN habe (`docs/messungen/2026-09-08-fleet-betrieb-erfolgskriterien.md`, `6207182d`+`6a3133f6`)
+
+- **Erfolgskriterium (c) IST ERFUELLT und war es unbemerkt.** Beide Reparaturen sind gelandet UND
+  geprobt: `server.ts#deliverMergeVerdict` pinnt den Empfaenger aus dem AKTOR und faellt auf dem
+  MAIN-Zweig NICHT auf die Lane zurueck (neun `check()` der Familie „land verdict receiver" in
+  `e2e/merge.ts`); der ff-Neuversuch `ded6c34e` haengt an der Latch-Sonde `e2e/programs.ts:8054ff`,
+  die `ffRounds===1`, `verify.ok`, den intruder-`mainSha` und „run 2" prueft. **Gemessen ist die
+  EXISTENZ der Sonden, nicht ein eigener gruener Lauf.**
+- **(b): die zwei zitierten Ids sind tot** (`0555828b`, `74d90c5e`) — dritte Instanz der Klasse aus
+  `7081f072`, und die teuerste, weil die tote Referenz im BESTAETIGTEN Program-Inhalt steht. Die
+  Sache ist erledigt: S2 ist `940887dc` auf main, sein rotes Audit als `flake` adjudiziert
+  (`audit-adjudications.jsonl at=1788541978493`, by owner, kausaler Ausschluss), die Program-Ansicht
+  lebt als `7ed73694`, deren Bedingung „FREIGABE erst nach Land von S2" damit erfuellt war.
+- **(a)** unveraendert unerreichbar ohne Owner-Entscheid. **(d)** einmal verletzt, als `fa8f6220`
+  gefilt und von mir released.
+
+## 3. Der Befund, der eine neue Zeile wurde: `b09cd2f9`
+
+Der Post-Land-Audit `at=1788843000681` war ROT mit genau einer Zeile, und die ist eine SETUP-Zeile:
+`e2e/ctl.ts` konnte seinen Quellbaum nicht aufloesen (Trail-Detail `src=unresolved ctl=-`). Folgen,
+alle gemessen: **45 Checks sind ABWESEND** statt gruen oder rot (4018 ran gegen 3973;
+`grep -c 'check(' e2e/ctl.ts` = 46), und **der ganze Lauf schreibt sein Trail mit `tree: null` nach
+`$TMPDIR`** statt ins repo-seitige Register — genau die Laeufe, in denen etwas schiefging, fehlen
+also im Register, das das Regelbuch zum Schiedsrichter jeder Flake-Frage macht. 2 von 11 vollen
+Audits seit `fbe44b3d`.
+
+**Hostlast ist NACHWEISLICH nicht die Ursache** — ein 85,8-min-Audit war gruen (`at=1788810175324`),
+ein 44,4-min-Audit war ctl-rot (`at=1788821143810`). Ich hatte Last zuerst vermutet; die Widerlegung
+steht mit im Text, damit sie niemand neu aufstellt.
+
+## 4. Wie ich den einen Report behandelt habe
+
+`cac29de6` lieferte eine ungewoehnlich gute Messung (Retention-Decke `FLEET_EVENT_KEEP_TERMINAL=5`
+evictet genau die Zeile, deren UEBERLEBEN zwei Checks assertierten; ob der Lauf bei fuenf oder sechs
+terminalen Events landete, entschied ein Transport-Tick, weil `if (lateEvent) await ackEvent(...)`
+die 409-Antwort wegwarf). **Ich habe den Diff selbst gelesen, nicht den Report geglaubt:** die
+Reparatur assertiert MEHR, nicht weniger, und die zwei Haltbarkeits-Checks zeigen jetzt auf Zeilen,
+die die Decke BEHAELT. Das eine verbliebene Rot habe ich selbst nachgeprueft — `e2e/slots.ts:650`,
+und `slots.run()` steht in `fleet-e2e.ts:78` VOR `watch.run()` in `:99`, die Aenderung laeuft also
+danach und kann den Check nicht erreicht haben; Signatur `41 marks, 1..40` buchstabengleich §11.2b.
+
+**MEIN FEHLER dabei, damit ihn niemand fuer eine Bewertung haelt:** mein Accept ging mit LEERER
+Begruendung durch. Ein Heredoc mit `python3 - > datei` truncatet die Datei, BEVOR die eigene
+Laengenpruefung wirft — curl schickte dann einen leeren Body, und die Route nimmt ihn. Die
+Disposition ist `accepted` und richtig, die Lane bekam nur keinen Text zurueck. Wer eine Begruendung
+baut, die eine Laengengrenze hat: erst pruefen, dann schreiben.
+
+## 5. Kleinkram, gemessen statt vermutet
+
+- **`state.sh`s „leaked e2e tmux sockets" zaehlt Socket-DATEIEN, nicht Server.** Alle vier hier
+  hatten null Panes und keinen Prozess — sie halten kein Byte Speicher. Kein Aufraeumgrund.
+- **Der Lane-Deckel dieser Maschine ist `FLEET_DISPATCH_MAX_LANES=1`** (watchdog.sh, live), nicht 3.
+  Die „3" in aelteren Handoffs ist etwas anderes. Ein released Row wartet also, bis die laufende
+  Lane fertig ist — das ist kein Haenger.
+- **Mein Slot-Label sagt „(Fable)", die Program-Politik sagt Opus 5.** `succeedProgramMain` reicht
+  `s.model`/`s.effort` woertlich weiter. **Also beim Succeed `model`/`effort` EXPLIZIT mitgeben**
+  (`POST /api/self/succeed {"model":"claude-opus-5[1m]","effort":"high"}`), sonst faellt die
+  Nachfolgerin still auf Fable zurueck.
+
+## 6. Was ich NICHT geprueft habe
+
+Ob die Sonden aus (c) heute gruen LAUFEN (kein eigener `./e2e-isolated.sh`). Den Inhalt der sieben
+verbliebenen Lebenszyklus-Zeilen und der drei `[FLEET-BETRIEB]`-pending-Zeilen. Ob `7ed73694`s
+Brief-Anker gegen das heutige `src/client.ts` noch stimmen. Die beiden orphan-Worktrees `2e88`/`51b4`.
+
+---
+
 # HANDOFF — 🎛 Fleet Controller (Slot 8, Opus 5 high), 2026-09-08 ~02:15–05:2x, ctx GEMESSEN 30 %
 
 Diese Sitzung KOMPAKTIERT (Regelbuch: Compact ist der Normalfall des Controllers). Slot 8,

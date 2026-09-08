@@ -1,3 +1,148 @@
+# HANDOFF — 🎛 Fleet Controller (Slot 8, Opus 5 high), 2026-09-08 ~02:15–05:2x, ctx GEMESSEN 30 %
+
+Diese Sitzung KOMPAKTIERT (Regelbuch: Compact ist der Normalfall des Controllers). Slot 8,
+Self-Token und die armierten Watches bleiben stehen; dieser Abschnitt ist die dauerhafte Wahrheit.
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **Armiert und AM LEBEN: Audit-Watch `a20145aa` auf `40ee5965`.** Er deckt bewusst eine fremde
+  Luecke mit: die Fleet-Betrieb-MAIN hatte denselben Fakt abonniert und uebergibt, ihr Watch
+  stirbt mit ihrer Succession. Kommt das Verdikt, gehoert es AUCH ihrer Nachfolgerin — weitergeben.
+- **Landbar und ABSICHTLICH nicht gelandet: Slot 10, `fleet/260908004654-11d4`** (ahead 1, sauber,
+  `./e2e-isolated.sh` lokal gruen 4011/0). Sie gehoert Program `e3b3a064` (Astra, Slot 9). Nach §2
+  unten wird sie NICHT ohne Absprache mit dieser MAIN gelandet. Die §land-Nummerierung habe ich
+  schon geprueft: im gemergten Baum liest die Leiter 1…13, jede Nummer einmal, Querverweise
+  (12→13, 10→11 zweimal) korrekt mitgezogen — die Warnung der Lane ist abgearbeitet.
+- **Beim Owner liegen drei Saetze, alle unbeantwortet:** Slot 2s Private-repo-j-Erstbeweis (Attention
+  `c95dc0c8`, die EINZIGE offene im ganzen Fleet, seit ~5 h) · Program `f9dc8e10` „Leichtgewicht"
+  (`proposed`) · Prioritaet von `8f14a22b`.
+- **Der Lane-Deckel bleibt 3.** Ich hatte 3→4 empfohlen und die Empfehlung ZURUECKGEZOGEN, siehe §3.
+
+## 1. WAS GELANDET IST
+
+- **`7539985d`** (Slot 1, docs-only) — GLM-Kontextnotiz, sechs Korrekturen. Audit gruen 458/0,
+  kurze Kette. Dazu mein Direktcommit **`5ba3a635`**: §6 der Notiz trug bewusst keinen Landing-Sha,
+  weil eine Lane ihren eigenen nicht kennen kann; nachgetragen und mit
+  `git merge-base --is-ancestor 7539985d main` geprueft. **Direktcommit ohne Land-Provenienz** —
+  keine `fleet/land`-Note, keine `lane-outcomes`-Zeile, `state.sh` zaehlt ihn nicht; ich habe die
+  Kette, die er kaufen wuerde, selbst gefahren (`install` + `pins`, ALL PASS, exit 0).
+- **`40ee5965`** (Slot 1, Code-Land, volle Kette, verify gruen, 522 s Arbeit / 380 s Warten) —
+  Helfer-Gnadenfrist misst ab Claimbarkeit statt ab `cover.at`. **Siehe §2, ich haette ihn nicht
+  fahren duerfen.**
+- **Deploy `af8e1294`** (`ok:true`, `hitTarget:true`, `bundleStale:false`): der Server war 22
+  Commits hinter main. Damit sind W1/W2/W3 und **M2** erstmals live — die Contention-Maschinerie
+  war gebaut und wirkungslos. Ausserdem ein staler Suite-Mutex gereapt (pid 59983 tot, 897 s).
+
+## 2. MEIN TEUERSTER FEHLER: OWNER-TOKEN AUF EINER FREMDEN PROGRAM-ZEILE
+
+`40ee5965` gehoerte zu `d49dd776`, Program **Fleet-Betrieb `f170dc46`** — mit eigener MAIN
+(Slot 6) und eigener Self-Land-Tuer. Ich habe die Lane als „fertig, sauber, Pane sagt Ready to
+land" gelesen, dazu die Queue-Note „land or close one", und `POST /api/slots/1/merge` gefeuert.
+Der Server hat es benannt:
+
+    04:56:46  owner_token_ambient_use  slot 1
+              task=d49dd776 program=f170dc46e4b026ee34d9392e via=bearer
+
+Die Outcome-Zeile traegt `landedBy {kind:owner, via:bearer, suspect:owner-token-outside-board}`.
+Erfolgskriterium (d) jenes Programs zaehlt den Land korrekt als NICHT von der MAIN gefahren.
+**Und die Marge war zwei Sekunden:** Report `0d4d8646` wurde 04:56:44 auf `accepted` gesetzt, mein
+Land lief 04:56:46. Ich hatte Pane und Baum geprueft, aber NICHT die Disposition des Empfaengers —
+drei Sekunden anders, und ich haette unbeurteilte Arbeit gelandet, dieselbe Kopplung, die ich zwei
+Stunden vorher bei Slot 10 ausdruecklich geschont hatte.
+
+**Regel, die daraus folgt und die NICHT von meinem Vorsatz abhaengen darf:** ein Land auf einer
+program-gebundenen Zeile ist eine Absprache oder gar nichts — und vor JEDEM Land steht die
+Disposition des Report-Empfaengers, nicht nur Pane und Baum. Die Fleet-Betrieb-MAIN hat daraus
+`fa8f6220` gefilt („eine Zusage ist kein Mechanismus"): heute sagt der Zeile nichts an, dass sie
+jemandem gehoert. Die Zeile laesst Verweigern / Benachrichtigen / nur Markieren offen und hat als
+harte Randbedingung, dass der Mensch am Board nie ausgesperrt wird.
+
+## 3. DIE DECKEL-FRAGE — EMPFOHLEN UND ZURUECKGEZOGEN
+
+Ich habe dem Owner 3→4 empfohlen, begruendet in ZEIT: 45 Lanes mit Ausgang in 36 h, Median 117 min,
+p90 341 min, 87,2 Lane-Stunden von 108 = **81 % Auslastung**, Suite-Mutex im Mittel frei (241 von
+346 Lands warteten 0 s). **Zurueckgezogen**, nachdem eine fremde Session Speicher-Kills gemeldet
+hatte und ich nachmass:
+
+    RAM 8 GB · Pages free 3888 × 16384 = ~62 MB · wired ~2,6 GB
+    Swap 6199 von 7168 MB = 86 % · load 3,65 / 4,38 / 4,72 auf 8 Kernen
+
+Die bindende Ressource ist **Speicher, nicht Zeit**. Ein vierter Opus-Platz kauft keine
+Parallelitaet, er kauft Shell-Kills. Die Fleet-Panes sind dabei NICHT der Hauptverbraucher
+(~1,1 GB), aber mehrere CoreSimulator-Prozesse halten ~1 GB — dem Owner als billigster Gewinn
+genannt, nicht angefasst (ausserhalb des Repos). Dass die gemeldete 1 h 15 min lange Mutex-Halte
+eine FOLGE des Swap-Drucks war, ist **Beobachtung, nicht gemessen** — das Wort „wahrscheinlich"
+gehoert dazu, es gibt keinen ungestressten Vergleichslauf.
+
+## 4. VIER SENSOREN, DIE ETWAS ANDERES MESSEN ALS IHR NAME VERSPRICHT
+
+Alle vier haben mich oder eine Nachbarsession heute Nacht fast einen falschen Bericht gekostet.
+Keiner war ein kaputtes System.
+
+1. **`ps -o lstart= -p $(pgrep -f 'bun server.ts' | head -1)`** — greift irgendwann den Server einer
+   laufenden `e2e-isolated`-Instanz statt des Live-Servers und meldet „vor 7 Sekunden gestartet".
+   Ich war einen Schritt vor einem Absturzbericht. **Wer den Live-Server misst, nimmt den LISTENER:**
+   `lsof -nP -iTCP:8790 -sTCP:LISTEN`. Die Nachbarsession hatte dieselbe Zeile benutzt und aus
+   Glueck den richtigen Prozess erwischt.
+2. **`GET /api/attention` hat `status`, kein `state`.** Mein Triage-Skript las das falsche Feld und
+   zeigte 20 offene Attentions; tatsaechlich ist genau EINE offen. Gefunden erst, weil ein
+   Antwortversuch mit „already answered with different text" abgewiesen wurde.
+3. **`mergeLast.detail` ist eine VORAB geschriebene durable intent, keine Diagnose**
+   (`server.ts#mergeJob`, das `mergeLast.set` VOR dem ersten await). „the server was interrupted
+   mid-run" steht da, WAEHREND der Lauf gesund laeuft. Der Diskriminator ist das Paar mit
+   `running`: `running:true` + `interrupted` = in Flug · `running:false` + `interrupted` = echt.
+   Gefilt als **`950d614d`**.
+4. **`git diff main..<lane>` an den SPITZEN zeigt Phantom-Loeschungen**, sobald die Lane hinter main
+   liegt — bei mir einmal „733 Zeilen ctl.sh geloescht", tatsaechlich eine Datei geaendert. Der
+   belastbare Blick ist `git show <lane-commit>` und fuer das Ergebnis
+   `git merge-tree --write-tree main <branch>`, dann aus DEM Baum lesen.
+
+Dazu die Ledger-Verwechslung, die zwei Sessions vor mir schon bezahlt hatten und die heute eine
+dritte traf (Astra, Slot 9): **Audit-Urteile leben in `audit-adjudications.jsonl`**, das Feld
+`adjudication` auf der Auditzeile bleibt null. Sie beantragte ein `unknowable` fuer
+auditAt 1788722188641, wo seit 2,5 min nach dem Bericht ein `flake` stand. Ich habe es NICHT
+ueberschrieben (verschiedene Fragen: kausaler Ausschluss ueber den Diff vs. fehlender gruener
+Gegenlauf / §11.2b „No free pass") und ihr geschrieben; sie hat sich selbst korrigiert und
+beantragt keine Revision.
+
+## 5. ZWEI ZEILEN VON MIR SIND HEIMATLOS — und das ist mechanisch, nicht schlampig
+
+**`fa8ac047`** (`ctl.sh land --wait` wird nach einem ERFOLGREICHEN Land zur einstuendigen
+Nicht-Antwort: die Schleife tritt nur bei `!running && last` aus, und wenn der Tick den Slot sofort
+neu belegt, ist `last` fuer den recycelten Slot null — kein Verdikt, KEINE armierte Audit-Wache,
+1 h blockierter Prozess. **Umgehung, zweimal sauber getragen:** `POST /api/slots/:id/merge`, dann
+`./ctl.sh watch merge <slot>`.)
+
+**`950d614d`** (§4.3; Done-Kriterium auf Vorschlag der Fleet-Betrieb-MAIN ueber die FRAGE DES
+LESERS formuliert, nicht ueber die Bauform — so praejudiziert es keine Datenmodell-Aenderung im
+Land-Pfad, der der Land-Pipeline gehoert.)
+
+**Beide tragen `programId: null`, `source: owner`, trotz `[FLEET-BETRIEB]` im Titel.** Eine Zeile
+bekommt ihr Program AUSSCHLIESSLICH bei der Entstehung durch die program-gebundene Self-Tuer; die
+Owner-Tuer setzt das Feld nicht, und es gibt keine Route, die es nachtraeglich vergibt (`/adopt`
+ist das Kategorie-Verb notiz→auftrag). Beleg: `docs/messungen/2026-09-08-program-zuordnung-
+nachtraeglich.md`, gelandet als `48f2ea48`. Konsequenz: sie stehen in KEINER Program-Projektion.
+Die Fleet-Betrieb-MAIN hat ein Neu-Filen ausdruecklich ABGELEHNT — ihr `auftrag`-Deckel ist 5/5,
+und zwei Freigaben haetten eine Prioritaetsreihenfolge umsortiert, die ihr nicht gehoert. Beide
+Ids stehen auch in ihrem Handoff; wessen Nachfolgerin zuerst Platz hat, adoptiert.
+
+## 6. WAS ICH SONST DISPONIERT HABE
+
+Advisory-Deckel von Program `e3b3a064` von **10/10 auf 6/10** geraeumt — vier Zeilen, jede mit
+einem Kommentar AN DER ZEILE, der den Grund nennt (`a613ed69` Vorfahrschaft selbst nachgerechnet ·
+`e291979b` Receipt erfuellt, `75939cf4` auf main · `d6d19176` Handlung war „keine neue Lane" ·
+`06f0d1d6` siehe §4). Die uebrigen sechs NICHT angefasst: sie brauchen Lesearbeit, und „sieht alt
+aus" ist kein Grund. Attention `58cb3e5e` war bereits von einem frueheren Controller beantwortet.
+
+## 7. WAS ICH NICHT GEPRUEFT HABE
+
+Den Inhalt der sechs verbliebenen advisory-Zeilen von `e3b3a064`. Ob andere Leser von `MergeLast`
+(Client, Watches) die Verwechslung aus §4.3 machen koennen — `./ctl.sh merges` zeigt beide Felder
+nebeneinander und ist korrekt. Ob die 1 h 15 min Mutex-Halte wirklich am Swap-Druck lag (§3). Die
+zwei orphan-Worktrees `2e88` und `51b4` (beide ahead 0, sauber) habe ich gesehen und stehen lassen.
+
+---
+
 # HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 6, Fable → Opus 5): zwei Zeilen gelandet, beide gruen; ein fremdes Land auf einer meiner Zeilen; 2026-09-08 ~05:0x, ctx GEMESSEN 35,3 %
 
 ## 0. ZUERST: was du SOFORT tun musst
@@ -7,7 +152,7 @@ Autos und Attentions still). Das Audit zum letzten Land lief beim Schreiben noch
 
     curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
       -d '{"kind":"audit","repo":"/Users/owner/claude-fleet","mainAfter":"40ee596582a5dcbf9aa223469b9d2a88f22c644a","idleSec":0}' \
-      http://100.64.0.1:8790/api/self/watch
+      "http://$FH:8790/api/self/watch"   # FH = FLEET_HOST aus .env, nie literal in eine getrackte Datei
 
 **`idleSec:0` ist kein Detail:** mit dem Default 60 bekommt eine arbeitende MAIN nie eine Zustellung.
 Und quittiere jedes zugestellte Event (`POST /api/self/events/:id/ack`), sonst frisst der eigene

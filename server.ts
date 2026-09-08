@@ -7593,37 +7593,38 @@ function inboxProgramFor(s: Slot): InboxScope {
 // and leaving it out sends the reader looking for a route that would undo the land (there is none
 // at this door; ↩ is the owner's).
 type AmbientLandSubject = { sha: string; note: Record<string, unknown>; door: string };
-async function ambientLandSubject(program: Program, e: ProgramInboxEntry):
+async function ambientLandSubject(e: ProgramInboxEntry):
     Promise<{ subject: AmbientLandSubject | null; unknown: string | null }> {
-  // WHERE the note is read: the Program's own root. The land was on a lane of a task of THIS
-  // Program, so the note is in this repo's object database. A Program with no founding record names
-  // no repo at all, and guessing one would send the read at the wrong database and then report "not
-  // readable" about a note that is perfectly fine where it lives — so that case says ITSELF.
-  const root = program.founding ? foundingRoot(program.founding) : null;
+  // THE ADDRESS, split back into its two halves. A ref without the repo half is one this reader
+  // cannot follow and says so — it never guesses a repo, because a `notes show` in the wrong object
+  // database answers "not readable" about a note that is perfectly fine where it lives.
+  const sp = e.ref.indexOf(" ");
+  const sha = sp < 0 ? e.ref : e.ref.slice(0, sp);
+  const root = sp < 0 ? null : e.ref.slice(sp + 1);
   if (root === null)
     return { subject: null,
-      unknown: `entry ${e.id} names land ${e.ref.slice(0, 8)}, but this program carries no founding record to name a repo` };
+      unknown: `entry ${e.id} names land ${sha.slice(0, 8)} without a repo to read its land note from` };
   // …and an unreadable note is reported as UNREADABLE, never as absent: the note write is
   // best-effort by contract, so "the pointer stands and its record does not" is an expected shape
   // and a different fact from the retention loss the other kinds report.
-  const raw = await git(root, "notes", "--ref=fleet/land", "show", e.ref);
+  const raw = await git(root, "notes", "--ref=fleet/land", "show", sha);
   if (raw.code !== 0)
     return { subject: null,
-      unknown: `entry ${e.id} names land ${e.ref.slice(0, 8)}, whose land note is not readable in ${basename(root)}` };
+      unknown: `entry ${e.id} names land ${sha.slice(0, 8)}, whose land note is not readable in ${basename(root)}` };
   try {
     const note = JSON.parse(raw.out) as Record<string, unknown>;
-    return { subject: { sha: e.ref, note,
+    return { subject: { sha, note,
       door: "this land already moved the integration branch — read the diff and judge it; reverting is the owner's (\u21a9 on the board)" },
       unknown: null };
   } catch {
-    return { subject: null, unknown: `entry ${e.id} names land ${e.ref.slice(0, 8)}, whose land note is not JSON` };
+    return { subject: null, unknown: `entry ${e.id} names land ${sha.slice(0, 8)}, whose land note is not JSON` };
   }
 }
 
-async function inboxSubject(program: Program, e: ProgramInboxEntry):
+async function inboxSubject(e: ProgramInboxEntry):
     Promise<{ subject: AttentionRequest | FleetReport | AmbientLandSubject | null; unknown: string | null }> {
   if (e.kind === "audit-red") return { subject: null, unknown: null };
-  if (e.kind === "ambient-land") return await ambientLandSubject(program, e);
+  if (e.kind === "ambient-land") return await ambientLandSubject(e);
   const row: AttentionRequest | FleetReport | undefined = e.kind === "attention-answer"
     ? attentionRequests.find((a) => a.id === e.ref)
     : fleetReports.find((r) => r.id === e.ref);
@@ -7642,7 +7643,7 @@ async function programInboxView(program: Program): Promise<Record<string, unknow
   const unknown: string[] = [];
   const entries = [];
   for (const e of [...inbox.entries].sort((a, b) => b.at - a.at)) {
-    const joined = await inboxSubject(program, e);
+    const joined = await inboxSubject(e);
     if (joined.unknown !== null) unknown.push(joined.unknown);
     entries.push({ ...e, subject: joined.subject });
   }
@@ -13564,9 +13565,17 @@ async function recordLand(repo: string, main: string, branch: string, mainBefore
       // trail is the only place left that can say the pointer was owed and not written.
       audit("program_inbox_skip", undefined,
         `ambient-land ${mainAfter.slice(0, 8)} program=${bypassed.program} ${p ? p.status : "gone"}`);
-    } else if (!(p.inbox?.entries ?? []).some((e) => e.kind === "ambient-land" && e.ref === mainAfter)) {
-      appendProgramInbox(p, "ambient-land", mainAfter);
-      await saveStateNow();
+    } else {
+      // THE REF IS AN ADDRESS, `<sha> <repo>` — and the repo half is load-bearing rather than
+      // decorative: a Program carries NO durable repo pointer of its own (`founding` is a crash
+      // marker for one transition and is absent on every settled Program), so a sha alone would be
+      // a pointer the read side cannot follow. It is still an ADDRESS and not a copy: nothing of
+      // the note's content travels here, only where to find it.
+      const ref = `${mainAfter} ${repo}`;
+      if (!(p.inbox?.entries ?? []).some((e) => e.kind === "ambient-land" && e.ref === ref)) {
+        appendProgramInbox(p, "ambient-land", ref);
+        await saveStateNow();
+      }
     }
   }
   // VERIFICATION TIER 2 — main moved, so there is something new on the integration branch that the

@@ -7617,14 +7617,17 @@ export async function run(ctx: Ctx): Promise<void> {
         await Bun.sleep(120);
       }
     };
-    // …and the MAIN's RETURN PATH, drained before each arm that files. Measured reason: every land
-    // of a program lane arms a merge subscription on this MAIN (`server.ts#armProgramMainLandWatch`),
-    // and a FLEET_CMD=true pane acknowledges nothing — so armed watches plus unacked events walk the
-    // slot toward FLEET_EVENT_MAX_OPEN_PER_SLOT, and the fleet-report door refuses at zero free.
-    // Without this the accepted-report arm would go red for a reason that has nothing to do with
-    // what it measures. Acking is the MAIN's OWN act through its own door, not fixture surgery.
-    const drainMainEvents = async (): Promise<number> => {
-      const open = (readState().events ?? []).filter((e) =>
+    // …and the MAIN's RETURN PATH, drained before each arm that files. MEASURED, not assumed
+    // (isolated run `isolated-20260908T102821Z-95901`): the accepted-report arm answered 409 with
+    // `drained: 0` — every land of a program lane ARMS a merge subscription on this MAIN
+    // (`server.ts#armProgramMainLandWatch`), those reservations count against
+    // FLEET_EVENT_MAX_OPEN_PER_SLOT exactly like open events, and a FLEET_CMD=true pane never gets
+    // idle enough to spend them. So BOTH halves of `slotDeliveryBudget` are cleared here: the
+    // events through the MAIN's own ack door, the armed watches through the owner's delete route.
+    // Without it the arm goes red for a reason that has nothing to do with what it measures.
+    const drainMainBudget = async (): Promise<{ acked: number; unwatched: number }> => {
+      const st = readState();
+      const open = (st.events ?? []).filter((e) =>
         (e as { receiverSlot?: number }).receiverSlot === landMainSlot
         && !["acknowledged", "receiver-gone", "subject-gone"].includes((e as { status?: string }).status ?? ""));
       let acked = 0;
@@ -7635,7 +7638,24 @@ export async function run(ctx: Ctx): Promise<void> {
           { method: "POST", headers: { "x-fleet-self-token": landTok } });
         if (r.ok) acked++;
       }
-      return acked;
+      let unwatched = 0;
+      for (const w of (st.watches ?? [])) {
+        const row = w as { id?: string; slot?: number; armed?: boolean };
+        if (row.slot !== landMainSlot || row.armed !== true || !row.id) continue;
+        if ((await post(`/api/watches/${row.id}/delete`, {})).ok) unwatched++;
+      }
+      return { acked, unwatched };
+    };
+    // …and the OTHER fixture hazard this neighbourhood carries, measured in the same run: the
+    // founding brief is delivered by a DETACHED tail that sleeps 4000 ms and REQUEUES the row on
+    // any failure in that window (`server.ts#briefAndSend`, and the block comment above says so).
+    // A lane that lands faster than that window leaves its row `queued` — which is an OPEN register
+    // row, and the `backlog nudge` section a thousand checks later asserts the register holds
+    // exactly one. That is how three probe failures became seventeen. Waiting the window out is
+    // the cheap half; deleting the row afterwards is the half that holds even if the wait is wrong.
+    const settleBrief = async (dispatchedAt: number): Promise<void> => {
+      const until = dispatchedAt + 7000;
+      while (Date.now() < until) await Bun.sleep(200);
     };
     const suspectRowId = await makeTask({ text: "self-land suspect probe row", programId: landProgram.id, repo: REPO2 });
     const suspectLane = await conflictLane(suspectRowId);
@@ -7650,7 +7670,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // Filed BEFORE the done-looking wait: the row goes to the MAIN's pane, not this lane's, but a
     // POST after the wait would still be one more thing happening between the gate and the land.
     const suspectLaneTok = slotToken(suspectLane.slot);
-    const suspectDrained = await drainMainEvents();
+    const suspectDrained = await drainMainBudget();
     const suspectReport = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
       headers: { "content-type": "application/json", "x-fleet-self-token": suspectLaneTok },
       body: JSON.stringify({ status: "complete", text: "ambient-land probe: filed, awaiting judgement." }) });
@@ -7679,7 +7699,9 @@ export async function run(ctx: Ctx): Promise<void> {
       const deadline = Date.now() + ms;
       for (;;) {
         const view = (await selfInbox(landTok)).view;
-        const hit = view?.entries.find((e) => e.kind === "ambient-land" && e.ref === sha);
+        // the ref is the ADDRESS `<sha> <repo>` — matched on the sha half, so this stays right
+        // whichever repo the land happened in
+        const hit = view?.entries.find((e) => e.kind === "ambient-land" && e.ref.startsWith(`${sha} `));
         if (hit) return hit as unknown as AmbientEntry;
         if (Date.now() >= deadline) return null;
         await Bun.sleep(150);
@@ -7703,7 +7725,7 @@ export async function run(ctx: Ctx): Promise<void> {
           && suspectNote.actor.bypassed.task === suspectRowId
           && suspectNote.actor.bypassed.main === landMainSlot
           && suspectNote.actor.bypassed.report === "undecided",
-        JSON.stringify({ filed: suspectReportOk, drained: suspectDrained,
+        JSON.stringify({ filed: suspectReportOk, drained: JSON.stringify(suspectDrained),
           bypassed: suspectNote?.actor?.bypassed, wantTask: suspectRowId, wantMain: landMainSlot }));
       // THE DONE-CRITERION ITSELF: the MAIN finds the land through its OWN door, with no human in
       // the loop and nothing to poll — the pointer is in the Program's inbox and the note it names
@@ -7723,14 +7745,16 @@ export async function run(ctx: Ctx): Promise<void> {
     // ambient land over work the MAIN had already ACCEPTED must be distinguishable from the arm
     // above without asking anyone. If both read alike, a MAIN learns to skip the kind.
     const acceptRowId = await makeTask({ text: "ambient-land accepted-report row", programId: landProgram.id, repo: REPO2 });
+    const acceptDispatchedAt = Date.now();
     const acceptLane = await conflictLane(acceptRowId);
+    await settleBrief(acceptDispatchedAt);
     if (acceptLane.cwd) {
       writeFileSync(`${acceptLane.cwd}/accepted.txt`, "an owner-token land on work the MAIN had blessed\n");
       spawnSync("git", ["-C", acceptLane.cwd, "add", "accepted.txt"]);
       spawnSync("git", ["-C", acceptLane.cwd, "commit", "-qm", "ambient accepted work"]);
     }
     const acceptLaneTok = slotToken(acceptLane.slot);
-    const acceptDrained = await drainMainEvents();
+    const acceptDrained = await drainMainBudget();
     const acceptFiled = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
       headers: { "content-type": "application/json", "x-fleet-self-token": acceptLaneTok },
       body: JSON.stringify({ status: "complete", text: "ambient-land probe: judged before anyone landed it." }) });
@@ -7746,7 +7770,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const acceptLanded = acceptReady && acceptLane.branch !== "" && acceptMain !== acceptBefore;
     check("ambient land fixture: the accepted-report arm LANDED — the MAIN decided the row first, then a BEARER merge moved main",
       acceptLanded && acceptDecided?.ok === true,
-      JSON.stringify({ ready: acceptReady, decided: acceptDecided, drained: acceptDrained,
+      JSON.stringify({ ready: acceptReady, decided: acceptDecided, drained: JSON.stringify(acceptDrained),
         filed: acceptFiled.status, reportId: acceptReportId, before: acceptBefore.slice(0, 8),
         after: acceptMain.slice(0, 8), drive: acceptDrive.log }));
     if (acceptLanded) {
@@ -7756,7 +7780,11 @@ export async function run(ctx: Ctx): Promise<void> {
         acceptNote?.actor?.suspect === "owner-token-outside-board"
           && acceptNote.actor.bypassed?.report === "accepted"
           && acceptNote.actor.bypassed.task === acceptRowId
-          && acceptEntry !== null && acceptEntry.ref === acceptMain
+          // the sha half is asserted literally; the repo half is asserted by CONSEQUENCE — the
+          // subject below only resolves if that path reached the right object database. Comparing
+          // it to REPO2 by string would fail on this platform's /var → /private/var symlink, which
+          // is a fact about macOS and not about the pointer.
+          && acceptEntry !== null && acceptEntry.ref.startsWith(`${acceptMain} /`)
           && acceptEntry.subject?.note?.actor?.bypassed?.report === "accepted",
         JSON.stringify({ note: acceptNote?.actor, entry: acceptEntry }));
     }
@@ -7766,7 +7794,9 @@ export async function run(ctx: Ctx): Promise<void> {
     // no bypassed binding, and NOT ONE entry added to any program's inbox. A writer keyed on the
     // channel alone (bearer) instead of on the binding would fail exactly here.
     const plainRowId = await makeTask({ text: "ambient-land programless counter-proof row", repo: REPO2 });
+    const plainDispatchedAt = Date.now();
     const plainLane = await conflictLane(plainRowId);
+    await settleBrief(plainDispatchedAt);
     if (plainLane.cwd) {
       writeFileSync(`${plainLane.cwd}/plain.txt`, "a bearer land on a lane with no program at all\n");
       spawnSync("git", ["-C", plainLane.cwd, "add", "plain.txt"]);
@@ -7798,6 +7828,11 @@ export async function run(ctx: Ctx): Promise<void> {
         JSON.stringify({ note: plainNote, entriesBefore: plainInboxBefore, entriesAfter: plainInboxAfter,
           ambientBefore: plainAmbientBefore, ambientAfter: ambientCount() }));
     }
+    // …and BOTH new rows leave the register, whatever happened to them. This block's own three
+    // checks are already made above; what is left is the debt they could otherwise hand a section
+    // a thousand checks later. `/delete` on a row that is already `done` is a no-op refusal and
+    // costs nothing — the case that matters is the requeued one.
+    for (const id of [acceptRowId, plainRowId]) await post(`/api/tasks/${id}/delete`, {});
     // the counter-proof, and it doubles as THE LEGACY PROBE: the promotion is revoked first, so this
     // is a Program with NO policy at all — the shape every Program has until the owner says
     // otherwise. It must behave exactly as it did before this slice existed: the owner's board

@@ -234,6 +234,19 @@ const PRE_AUTH_ROUTES = [
   // deliberate: proposing a surface costs a row nothing, writing a queue status is the act that
   // has to be bound to the party actually doing the work.
   '= /api/self/wave/split',
+  // N2, 2026-09-08 · THE NOTE DOORS. On this list for the same structural reason as every
+  // neighbour — the exact self principal IS the boundary — and what bounds it is NARROWER than
+  // lane-only: the caller reaches exactly the note ids its OWN context receipt names, joined on
+  // the token row's branch AND slot. Nothing in a body can nominate WHICH notes (`GET` reads no
+  // body at all; the verdict door reads only `verdict` and `text`, and the branch it signs with
+  // comes from the token's row), so a lane cannot reach the 127 pending rows, another lane's five,
+  // or a row of another repo. The verdict door WRITES, and its write is one capped `TaskComment` on
+  // a row the caller was already shown — it moves no status, starts nothing, lands nothing and
+  // reaches no pane. The status change it can eventually cause belongs to the LAND path below the
+  // owner gate (landLane#applyLandToNotes), which is the whole design: a lane may claim a note is
+  // finished, and only work that reaches main makes the claim true.
+  '= /api/self/notes',
+  String.raw`~ /^\/api\/self\/notes\/([a-z0-9]+)\/verdict$/`,
   // Dual-Host S2/R5, THE REMOTE COMMAND JOB. On this list for the same structural reason as every
   // neighbour — the exact self principal IS the boundary — and it is the first self route whose
   // body carries a COMMAND LINE, so what bounds it is spelled out rather than inherited:

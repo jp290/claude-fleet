@@ -46,7 +46,8 @@ wer aus einem frischen Klon liest, sieht die alte Fassung. Zwei Absaetze, beide 
 
 | Zeile | Sha auf main | Verify | Audit |
 |---|---|---|---|
-| `cac29de6` Watch/Event-Retention (e2e/watch.ts + 3 docs) | `d3ce75ad` + `1a7c53ea` | ok, VOLLE Kette | Watch `66708edc` armiert, siehe §0 |
+| `cac29de6` Watch/Event-Retention (e2e/watch.ts + 3 docs) | `d3ce75ad` + `1a7c53ea` | ok, VOLLE Kette | **ROT 4020/2 — siehe §5b, nicht freigesprochen** |
+| `bb563b63` config sensor zeigt die Overlay-Schicht (state.sh) | `ba8c068a` | ok, VOLLE Kette, keine ff-Runden | Watch `52e91107` armiert |
 | (Direkt-Commit) Erfolgskriterien-Messung | `6207182d` | von Hand: install + pins, ALL PASS, exit 0 | keins |
 | (Direkt-Commit) Nachtrag rotes Audit | `6a3133f6` | von Hand: pins ALL PASS | keins |
 | (Direkt-Commit) Landing-Sha im §11.2l-Nachtrag | `d2f15fe2` | von Hand: pins ALL PASS | keins |
@@ -106,9 +107,17 @@ baut, die eine Laengengrenze hat: erst pruefen, dann schreiben.
 
 - **`state.sh`s „leaked e2e tmux sockets" zaehlt Socket-DATEIEN, nicht Server.** Alle vier hier
   hatten null Panes und keinen Prozess — sie halten kein Byte Speicher. Kein Aufraeumgrund.
-- **Der Lane-Deckel dieser Maschine ist `FLEET_DISPATCH_MAX_LANES=1`** (watchdog.sh, live), nicht 3.
-  Die „3" in aelteren Handoffs ist etwas anderes. Ein released Row wartet also, bis die laufende
-  Lane fertig ist — das ist kein Haenger.
+- **KORRIGIERT (durch `bb563b63`, meine eigene Zeile, an mir vorgefuehrt): der Lane-Deckel ist 3,
+  nicht 1.** Ich hatte `FLEET_DISPATCH_MAX_LANES live=1` aus dem config sensor gelesen und als
+  ANTWORT hier hingeschrieben. Ueber dem Env liegt eine zweite Schicht, die ihn schlaegt:
+  `fleet.json` `repoLaneCaps` = `{"/Users/owner/claude-fleet": 3}` (`server.ts#repoLaneCap`,
+  woertlich kommentiert „entry beats env"). Seit `ba8c068a` zeigt `./state.sh` das selbst
+  („↳ Repo-Overlay … EFFEKTIV 3 — schlaegt env"). **Die Lehre ist allgemeiner als die Zahl:** vier
+  Variablen dieser Maschine haben ein Overlay (`FLEET_DISPATCH_MAX_LANES`, `FLEET_COMMIT_CMD`,
+  `FLEET_POSTLAND_AUDIT_CMD` ueber `fleet.json`; `FLEET_VERIFY_CMD` ueber `FLEET_VERIFY_CMD_REPOS`) —
+  ein gedruckter Env-Wert ist bei ihnen NIE die Antwort. Folge fuer die Disposition: Freigeben kauft
+  hier echte Parallelitaet, meine Begruendung „mehr Freigaben vertiefen nur die Schlange" war
+  falsch.
 - **Mein Slot-Label sagt „(Fable)", die Program-Politik sagt Opus 5.** `succeedProgramMain` reicht
   `s.model`/`s.effort` woertlich weiter. **Also beim Succeed `model`/`effort` EXPLIZIT mitgeben**
   (`POST /api/self/succeed {"model":"claude-opus-5[1m]","effort":"high"}`), sonst faellt die

@@ -1,3 +1,98 @@
+# HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 6, Fable → Opus 5): zwei Zeilen gelandet, beide gruen; ein fremdes Land auf einer meiner Zeilen; 2026-09-08 ~05:0x, ctx GEMESSEN 35,3 %
+
+## 0. ZUERST: was du SOFORT tun musst
+
+**Mein Audit-Watch auf `40ee5965` stirbt mit dieser Succession** (eine Succession toetet Watches,
+Autos und Attentions still). Das Audit zum letzten Land lief beim Schreiben noch. Armiere ihn neu:
+
+    curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+      -d '{"kind":"audit","repo":"/Users/owner/claude-fleet","mainAfter":"40ee596582a5dcbf9aa223469b9d2a88f22c644a","idleSec":0}' \
+      http://100.64.0.1:8790/api/self/watch
+
+**`idleSec:0` ist kein Detail:** mit dem Default 60 bekommt eine arbeitende MAIN nie eine Zustellung.
+Und quittiere jedes zugestellte Event (`POST /api/self/events/:id/ack`), sonst frisst der eigene
+Rueckkanal seinen Deckel.
+
+## 1. Gelandet in dieser Schicht
+
+| Zeile | Sha auf main | Verify | Audit |
+|---|---|---|---|
+| `6d7ff117` §11.2o Projektions-Sonde (docs) | `3720da34` + `323b7059` | ok, proportional [install,pins] | **gruen** 458/0 |
+| `d49dd776` Audit-Gnadenfrist ab Claimbarkeit | `40ee5965` | ok, VOLLE Kette, 522 s Arbeit / 380 s Warten | Watch war armiert, siehe §0 |
+| (Direkt-Commit) Messnotiz Program-Zuordnung | `48f2ea48` | von Hand: install+pins, ALL PASS, 0 FAIL | keins — Direkt-Commits bekommen nie eins |
+
+**`d49dd776` hat NICHT diese MAIN gelandet.** Die Outcome-Zeile traegt
+`landedBy {kind:owner, via:bearer, suspect:owner-token-outside-board}` bei `programId f170dc46`.
+Der Controller (Slot 8) hat es **selbst gemeldet, bevor ich es fand**, mit Beleg
+(`audit.jsonl` 04:56:46, `owner_token_ambient_use`, `task=d49dd776 program=f170dc46…`): er las die
+Lane als fertig, sah die Queue-Note „land or close one" und feuerte `POST /api/slots/1/merge`, ohne
+zu pruefen, ob die Zeile einem Program mit lebender MAIN gehoert. **Die Marge war 2 Sekunden** — mein
+Akzept des Reports lief 04:56:44, sein Land 04:56:46. Drei Sekunden anders und es waere unbeurteilte
+Arbeit gelandet. Erfolgskriterium (d) zaehlt diesen Land korrekt als NICHT von der MAIN gefahren.
+Daraus ist `fa8f6220` geworden (unten). **Kein Vorwurf im Handoff und keiner im Umgang:** die Meldung
+kam von ihm, mit Zahlen, und das ist der Grund, warum daraus eine Zeile statt eines Verdachts wurde.
+
+## 2. Der Queue-Stand meines Programs, und die Deckel-Mechanik dahinter
+
+**queued** (warten auf einen Lane-Platz): `cac29de6` (rotes Audit 51565db4 diagnostizieren) ·
+`bb563b63` (config sensor zeigt nur die env-Schicht) · `f6778de1` (Eintrag, den kein Helfer nehmen kann).
+**pending**: `fa8f6220` (Owner-Bearer-Land auf program-gebundener Zeile) · `3ea89f71` (keine Tuer fuer
+einen Brief ohne Owner-Flagge) · `18e87e67` · `c62aa3e9` (Brief ungeschaerft) · `201d0240`.
+
+**Der `auftrag`-Deckel ist 5 und zaehlt NUR `source:"main"`-Zeilen deines Programs, die noch nicht
+released sind.** Er loest sich durch RELEASEN, nicht durch Archivieren. Die acht geerbten
+Codex-Lebenszyklus-Zeilen zaehlen nicht mit (fremde Quelle). **Der ADVISORY-Deckel ist 10 und war
+voll** — deshalb ist der Befund unten eine Doc statt einer `notiz`-Zeile.
+
+## 3. Befunde dieser Schicht, die du nicht neu herleiten musst
+
+- **Erfolgskriterium (a) ist mit den heutigen Tueren NICHT erreichbar.** Eine Zeile bekommt ihre
+  `programId` ausschliesslich bei der Entstehung durch die program-gebundene Self-Tuer; es gibt keine
+  Route, die sie nachtraeglich zuordnet (`/adopt` ist der Kategorie-Verb notiz→auftrag). 75 von 238
+  offenen Zeilen sind heimatlos, davon 10 `auftrag`. Beleg und drei Wege: `48f2ea48`,
+  `docs/messungen/2026-09-08-program-zuordnung-nachtraeglich.md`. **Owner-Entscheid noetig.**
+- **Zwei Fleet-Betrieb-Zeilen leben AUSSERHALB des Programs**, trotz `[FLEET-BETRIEB …]`-Titel:
+  `950d614d` (der `interrupted`-Platzhalter ist in `last` allein nicht von „laeuft gerade"
+  unterscheidbar; Done-Kriterium ist meines, Wahl der Bauform offen) und `fa8ac047`
+  (`ctl.sh land --wait` haengt eine Stunde, wenn der Tick den Slot sofort neu belegt). Beide
+  `programId: null`, vom Controller gefilt. Ich habe sie bewusst NICHT neu gefilt (Deckel voll, und
+  Neu-Filen haette die Prioritaetsreihenfolge umsortiert). Du kannst sie adoptieren, wenn du Platz hast.
+- **Der `interrupted`-Text im Merge-Record ist KEINE Fehldiagnose**, sondern eine vorab geschriebene
+  durable intent: `mergeJob` schreibt sie VOR dem ersten await, damit ein Neustart nicht gar kein
+  Verdikt hinterlaesst. Waehrend eines gesunden Laufs ist sie die Grabinschrift eines Lebenden. Der
+  Diskriminator ist das PAAR: `running:true` + `interrupted` = in Flug · `running:false` + `interrupted`
+  = echt. Ich hatte das zuerst als Fehldiagnose gemeldet — falsch, vom Controller korrigiert.
+- **Die bindende Ressource dieser Maschine ist SPEICHER, nicht Zeit** (zweimal unabhaengig gemessen):
+  8,0 GB gesamt · ~62 MB frei · Swap 6199/7168 MB = 86 % · load ~3. Der Controller hat seine
+  Empfehlung, den Lane-Deckel von 3 auf 4 zu heben, deswegen ZURUECKGEZOGEN; der Deckel bleibt 3.
+  Eine meiner Lanes verlor dreimal ihre wartenden Shells an den OOM-Killer. **Erhoehe den Deckel nicht.**
+- **`ps ... $(pgrep -f 'bun server.ts' | head -1)` ist ein kaputter Sensor** — er greift oft den Server
+  einer laufenden e2e-Instanz. Der Live-Server ist der LISTENER: `lsof -nP -iTCP:8790 -sTCP:LISTEN`.
+  Meine 02:21:01 war aus Glueck richtig.
+
+## 4. Wie ich Reports behandelt habe — bitte weiterfuehren
+
+Beide Lanes lieferten gute Arbeit, und BEIDE Reports gingen einmal zurueck. Das war jedes Mal richtig:
+- `6d7ff117`: zwei Tabellenzellen reproduzierten nicht (107/72 gegen meine 401/131). Ursache war ein
+  unbegruendeter Zeitschnitt plus stilles Durchfallenlassen von 93 Zeilen. Beim Korrigieren fand die
+  Lane SELBST den groesseren Fehler: die Sonden-Spalte ist nur an Zeilen mit `fails`-Feld lesbar, 107
+  der 131 Vor-Fix-Rots sind **ungemessen, nicht sauber**.
+- `d49dd776`: ein unmessener Zusatz bediente EINE von DREI Ablehnungen in `helperClaim`. Geschnitten,
+  die vollstaendige Regel als `f6778de1` gefilt. Der haeufigste Fall ist `entryRunsShortChain`
+  (docs-only) — die warten heute 60 s auf ein Angebot, das strukturell nie kommt.
+
+**Die Methode, die beide Male getragen hat: die zentrale Zahl selbst nachrechnen, bevor du annimmst.**
+Beide Male reproduzierte der Kern, und beide Male war der Rand falsch.
+
+## 5. Der naechste Zug
+
+`cac29de6` ist die aelteste unerledigte Zeile mit echtem Anlass (rotes Audit auf `51565db4`, zwei
+Watch/Event-Checks). Meine Hypothese steht IM Brief und ist ausdruecklich als solche markiert:
+Retention-Decke (`FLEET_EVENT_KEEP_TERMINAL` = 5 pro Receiver), nicht Kaskade, nicht das neue
+`e2e/ctl.ts` (das laeuft NACH `e2e/watch.ts`, kann die Nachbarn also nicht stoeren). Der Brief
+verlangt die Messung der terminalen Events fuer Slot 6 als Diskriminator — der Wiederholungslauf
+allein entscheidet bei 1,4 % Basisrate nichts.
+
 # HANDOFF — Program-MAIN Land-Pipeline 2026-09 (`233e1c2b7eaca3850decf332`, Slot 11, Opus 5 high): PROGRAM VOLLSTAENDIG — N2 gelandet als `661df41f`+`dea2d837`, KEINE offene auftrag-Zeile mehr; 2026-09-08 ~02:4x, ctx GEMESSEN 19,4 % bei Land-Beginn
 
 > **Ersetzt die Land-Pipeline-Abschnitte darunter.** Zustand ableiten: `./state.sh`, `./register.sh`,

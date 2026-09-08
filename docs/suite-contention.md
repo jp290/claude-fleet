@@ -347,8 +347,11 @@ Both live numbers are read off the `exec bun server.ts` line in `watchdog.sh`, a
 **env, not repo state**: those prefix assignments are applied *after* `.env` is sourced in the same
 command, so watchdog's value wins over any `.env` overlay, and a server started by hand carries the
 code defaults beside them (`server.ts#VERIFY_TIMEOUT_MS`, `server.ts#VERIFY_WAIT_MS`). This table
-said `300 000` / `900 000` until 2026-09-08; neither was ever a code default, and the wait figure
-was the one the paragraphs below were still reasoning with.
+said `300 000` / `900 000` until 2026-09-08. Both were real live values once, each superseded by a
+dated commit — the work budget went 300 s → 480 s on 2026-09-02 (`fc389a16`), the wait budget
+900 000 → 2 700 000 on 2026-08-20 (`e19c80ff`) — and they differ only in this: `900 000` is *also*
+the code default, exactly as the row above states, while `300 000` was never a default at all (that
+is 120 000). The wait figure was the one the paragraphs below were still reasoning with.
 
 Never both, never `ok:false`, and both inside the never-auto-land group by construction. The work
 budget is *credited* the queueing the chain reported, capped at the wait budget — so a gate gets its

@@ -57,12 +57,26 @@ ueber ‚nie beobachtet'", Committer-Zeit 2026-09-05T20:59:51Z; Ahn von `main`, 
 | ohne `4c562e7` | 235 | 28 (11,9 %) |
 | Baum unbekannt/`null` | 33 | 12 |
 
-Und dieselbe Trennung am Audit-Ledger, das auch die Second-host-Laeufe enthaelt:
+Und dieselbe Trennung am Audit-Ledger, das auch die Second-host-Laeufe enthaelt. **Legende, und sie
+ist Teil der Zahl:** gezaehlt sind ALLE 532 Zeilen von `post-land-audits.jsonl`, ohne Zeitfilter;
+die 93 Zeilen, deren `mainSha` in diesem Checkout nicht aufloest (`git cat-file -e` scheitert;
+2026-08-16 bis 2026-09-07, Fremd-Repos und weggeraeumte Objekte), stehen als **eigene Zeile** und
+gehen in keine der beiden Seiten ein. Die Sonden-Spalte ist NUR an Zeilen lesbar, die ueberhaupt ein
+`fails`-Feld fuehren — das aeltere Zeilenformat hat keins:
 
-| `mainSha` des Audits | Audits | rot | davon mit dieser Sonde im `fails` |
-| --- | ---: | ---: | ---: |
-| traegt `4c562e7` | **38** | 6 | **0** |
-| ohne `4c562e7` | 107 | 72 | 12 |
+| `mainSha` des Audits | Audits | rot | rot MIT `fails`-Feld | davon mit dieser Sonde |
+| --- | ---: | ---: | ---: | ---: |
+| traegt `4c562e7` | **38** | 6 | 6 | **0** |
+| ohne `4c562e7` | 401 | 131 | 24 | **12** |
+| lokal nicht aufloesbar | 93 | 1 | 0 | — |
+| Summe | 532 | 138 | 30 | 12 |
+
+**Die vierte Spalte ist die ehrliche Vergleichsbasis, nicht die dritte.** 107 der 131 roten
+Vor-Fix-Audits nennen ihre Fails im Ledger gar nicht — sie sind fuer diese Frage **UNGEMESSEN, nicht
+sauber**. Lesbar ist also: 12 von 24 benannten Vor-Fix-Rots tragen die Sonde (50 %), 0 von 6
+benannten Nach-Fix-Rots. Mit n=6 traegt das Ledger-Bein die Schlussfolgerung allein NICHT; sie ruht
+auf dem Trail-Bein oben (37 Laeufe, 0 rot), das vollstaendig ist. Das Ledger ist die unabhaengige
+Bestaetigung, die zusaetzlich die Second-host-Laeufe abdeckt — mehr nicht.
 
 Die einzige rote Sonden-Zeile nach der Landezeit des Fixes ist die aus §1: sie laeuft um 22:50Z auf
 `b4ed0848` + `dirty`, einem Baum von 20:36Z, also **23 Minuten VOR** dem Fix. Kein einziger roter
@@ -93,10 +107,15 @@ Anzufuegen am Ende von `docs/verify-tiering.md` §11.2o, und die Kopfzeile der S
 +**NACHGEMESSEN 2026-09-08, und damit ist die Familie geschlossen.** Vorfahren-Test gegen `4c562e7`
 +ueber das lokale Trail-Register und `post-land-audits.jsonl` (das auch die Second-host-Laeufe fuehrt):
 +
-+| Baum | Sonden-Laeufe | rot | | Audits | rot | mit dieser Sonde |
-+| --- | ---: | ---: | --- | ---: | ---: | ---: |
-+| traegt `4c562e7` | 37 | **0** | | 38 | 6 | **0** |
-+| ohne `4c562e7` | 235 | 28 | | 107 | 72 | 12 |
++| Baum | Sonden-Laeufe | rot | | Audits | rot | rot MIT `fails` | davon mit dieser Sonde |
++| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
++| traegt `4c562e7` | 37 | **0** | | 38 | 6 | 6 | **0** |
++| ohne `4c562e7` | 235 | 28 | | 401 | 131 | 24 | **12** |
++| Baum nicht aufloesbar | 33 | 12 | | 93 | 1 | 0 | — |
++
++Audit-Zahlen ueber ALLE 532 Ledger-Zeilen ohne Zeitfilter; die Sonden-Spalte ist nur an Zeilen mit
++`fails`-Feld lesbar, die uebrigen 107 roten Vor-Fix-Audits sind dafuer UNGEMESSEN. Das tragende
++Bein ist das Trail-Bein (37/0), das Ledger bestaetigt es und deckt zusaetzlich den Second-host ab.
 +
 +Die letzte rote Zeile ueberhaupt ist `isolated-20260905T223238Z-91124` (2026-09-05T22:50:30Z) auf
 +`b4ed0848`+dirty — einem Baum von 23 min VOR dem Fix. Auch die Setup-Zeile davor ist auf
@@ -120,6 +139,14 @@ Anzufuegen am Ende von `docs/verify-tiering.md` §11.2o, und die Kopfzeile der S
   liegen auf dem Helfergeraet, das Ledger fuehrt fuer sie nur Check-Namen. Die Aussage „auf dem
   Second-host feuert die Familie seit dem Fix nicht mehr" stuetzt sich auf das `fails`-Feld
   (0 von 38 Fix-Baum-Audits), nicht auf eine gelesene `basis`.
+- **107 der 131 roten Vor-Fix-Audits fuehren kein `fails`-Feld** und sind fuer die Sonden-Frage
+  ungemessen; die Nach-Fix-Seite steht auf n=6 benannten Rots. Das Ledger-Bein ist damit schwach —
+  tragend ist das vollstaendige Trail-Bein.
+- **93 Ledger-Zeilen haben eine hier nicht aufloesbare `mainSha`** und sind ausgewiesen ausgeschlossen,
+  nicht stillschweigend. Eine erste Fassung dieser Notiz zaehlte sie stillschweigend heraus UND
+  schnitt zusaetzlich bei `at >= 1788000000000` (2026-08-29T10:40:00Z) ab — daher die falschen Zellen
+  107/72; der Schnitt war willkuerlich und ist ersatzlos entfallen (Reproduktion durch eine zweite
+  Session, 2026-09-08).
 - **Der Regime-Wechsel vom 2026-09-04 bleibt unerklaert.** Diese Notiz sagt nichts darueber; §11.2o
   haelt bereits fest, dass er ueber diesen Check nicht mehr beobachtbar ist.
 - **`tree: null` in 33 Laeufen (12 rot) ist nicht aufgeloest** — diese Laeufe konnten dem Split

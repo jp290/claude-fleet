@@ -116,8 +116,19 @@ Verlust, nachgemessen.** 34 Zeilen unveraendert; meine 16 `notiz`-Zeilen stehen 
 unveraendert; beide geparkten `filesProposal` (`417d2be5`, `74319808`) byte-gleich erhalten.
 Quellenrettung und die Pruefkette Anheftung→Retention→Hub→Arbeitsbrief laufen beim Controller —
 **diesen Reparaturkern nicht doppelt bauen und aus jener Sammelweisung nichts weiter archivieren.** Den Inhalt der sieben restlichen Lebenszyklus-Zeilen ausser §3-ii/§4/§6/§8-b.
-Ob `30383e62` (S3a-i) je eine Outcome-Zeile hatte — es steht in der Projektions-`unknown`-Liste;
-mein Beleg ist der CODE, nicht der Status.
+**`30383e62` (S3a-i) EXISTIERT NICHT MEHR — nachgetragen 11:5x, und die Vorsicht im alten Satz
+hat sich ausgezahlt.** Ich schrieb hier „mein Beleg ist der CODE, nicht der Status"; genau das
+traegt jetzt. Bei der Notizrettung hat `capTasks` acht terminale `auftrag`-Zeilen dieses Programs
+aus `fleet.json` evakuiert (Program 34 → 31 Zeilen; `fleet.json` fuehrt noch 220 Tasks). **Sechs
+sind rekonstruierbar** aus `lane-outcomes.jsonl` + `git notes --ref=fleet/land` (`bb563b63`,
+`cac29de6`, `d49dd776`, `6d7ff117`, `89279f1f`, `e407aef5`, je `landed` mit `mainAfter`).
+**Zwei sind es NICHT: `30383e62` und `ff4544f5`** — beide hatten nie eine Outcome-Zeile (die
+Projektion fuehrte sie schon als `unknown`), die Task-Zeile war ihr einziger Traeger, und der ist
+weg. Praktische Folge: die Freigabe-Bedingung von `c464af30` („erst nach Land von S3a-i") ist aus
+der Queue allein nicht mehr pruefbar — der Beleg ist der Code (`appendProgramInbox`,
+`GET /api/self/inbox`, `POST /api/self/inbox/:id/read`, `programInboxStatus`). **Gemeldet an den
+Controller, NICHT hier repariert:** Retention ist eines der vier Felder seiner Zeile `c64481e3`,
+und eine zweite Implementierung desselben Kerns ist ausdruecklich untersagt.
 
 ---
 

@@ -3446,3 +3446,78 @@ fallen KANN und dabei sich selbst nennt:
 **Nebenbefund, NICHT dieser Zeile gehoerend:** `projection nextAction: a REVIEWABLE row of a
 promoted Program …` (§11.2o) faellt in **11 von 11** Second-host-Laeufen gegen 2,9 % lokal. Das ist
 die zweite Familie mit dieser Signatur und die groesste verbleibende Quelle roter Remote-Audits.
+
+### 11.2u Eine zweiundzwanzigste Familie: die `unbound succession`-Pane in `e2e/programs.ts` stirbt, statt zu langsam zu malen — und die Sonde, die das melden soll, ist im Register unzaehlbar (2026-09-08 registriert; Rate ueber das GANZE lokale Register gerechnet, Signatur aus den Trail-Details gelesen; NICHT repariert)
+
+Gefunden beim Adjudizieren des roten Post-Land-Audits `at=1788886481632` auf `73195c20` (Lauf
+`isolated-20260908T160943Z-27371`, **4 040 Checks, 2 FAILURES**), Program Fleet-Betrieb 2026-09.
+
+**Zwei Fails, EIN Befund.** Die Familie war in §11.2j (Lauf 1 der Verifikationstabelle) und in
+§11.2p (Gruppe C) schon je einmal namentlich genannt — beide Male als „die
+succession-pane-Familie", beide Male ohne eigenen Abschnitt und ohne Rate. Sie bekommt hier zum
+ersten Mal beides.
+
+Die Mitglieder, in kausaler Ordnung:
+
+- `unbound succession: pane s8 rendered the harness screen` — die WURZEL, gemuenzt von
+  `e2e/harness.ts#plantScreen` (der zweite Aufruf des Blocks, der den Codex-Accept-Marker
+  `>_ OpenAI Codex (v0.147.0)` pflanzt).
+- `…and delivers it WHOLE once that marker appears — response, brief head and carry tail all on
+  the late pane` (`e2e/programs.ts`, Block `unbound succession`) — der FOLGEFEHLER: sein erster
+  Konjunkt ist der Rueckgabewert genau dieses `plantScreen`.
+
+**Die Signatur ist INVARIANT, und sie widerlegt die naheliegende Lesart.** Alle zwoelf
+Wurzel-Zeilen des lokalen Registers tragen woertlich dasselbe Detail — `the pane died with the
+command` — und **nie** den anderen Arm `pane alive but the screen never rendered`. Das ist kein
+Render-Timeout: `plantScreen` hat den `respawn-pane` mit `code === 0` bekommen, pollt danach
+100 × 50 ms auf `capture-pane`, findet die Zeile nicht, fragt `has-session` — und die Pane ist
+WEG. Der Folgefehler sagt dazu jedes Mal `marker at 430x ms; 500 {"error":"successor delivery held
+(not-alive)"}`: die Fixture hat ihr Zeitfenster (Marker nach ~4 300 ms, innerhalb des Readiness-
+Budgets) in JEDEM roten Lauf getroffen. Die Zeit ist nicht die Variable, die Pane-LEBENSDAUER ist es.
+
+**Was damit NICHT bewiesen ist, und das bleibt hier stehen:** warum sie stirbt. Zwei Kandidaten,
+keiner gemessen — (a) das `exec '<standInBin>' 100000` im respawn-Kommando scheitert in dieser
+einen Pane, (b) der Server fasst dieselbe Pane zwischen dem `respawn-pane` der Fixture und ihrem
+`capture-pane` selbst an; dies ist die einzige `plantScreen`-Aufrufstelle, deren Slot der Server
+gleichzeitig als Nachfolge-Reservierung oeffnet. Wer sie jagt, faengt bei (b) an.
+
+**Basisrate, aus dem lokalen Trail-Register** (`e2e-trail/` + `$TMPDIR/fleet-e2e-trail`, gezaehlt
+nur Laeufe, in denen der Block ueberhaupt lief; Join ueber den Namen des FOLGEFEHLERS, weil nur er
+auch gruene Zeilen schreibt — siehe den Messdefekt unten):
+
+| Tag | Laeufe | rot |
+|---|---:|---:|
+| 2026-09-03 | 1 | 1 |
+| 2026-09-04 | 21 | 3 |
+| 2026-09-05 | 33 | 2 |
+| 2026-09-06 | 26 | 5 |
+| 2026-09-07 | 23 | 2 |
+| 2026-09-08 | 12 | 3 |
+| **gesamt** | **116** | **16 = 13,8 %** |
+
+Die sechzehn roten Laeufe verteilen sich auf **vierzehn verschiedene Baeume** (`ad75273a` zweimal,
+zwei Zeilen mit `tree:null`). Das ist die hoechste Rate, die ich ueber dieses Register gerechnet
+habe — die uebrigen hier registrierten Familien liegen bei 0,6–3 % lokal; ich habe sie fuer diesen
+Vergleich NICHT alle neu gerechnet, die Zahl gilt gegen die in ihren Abschnitten notierten Raten.
+
+**DER MESSDEFEKT, und er ist die Klasse, die das Regelbuch selbst benennt.** `plantScreen` ruft
+`check()` **ausschliesslich in seinen beiden Fehlerzweigen** (`e2e/harness.ts`, die Zeilen
+`accepted the harness screen` und `rendered the harness screen`); ein Erfolg schreibt gar keine
+Zeile. Der Name der Wurzel hat im Trail damit **keine gruene Zeile, je** — eine naive Rate
+liest `12 rot / 12 Laeufe = 100 %` und sieht wie ein harter Regress aus, obwohl der Nenner per
+Konstruktion gleich dem Zaehler ist. Zweite Haelfte desselben Defekts: der Name traegt die
+SLOT-NUMMER (`pane s8`), derselbe Fehlschlag auf einem anderen Slot muenzt also einen anderen
+Check-Namen und spaltet die Familie im Register. Beides trifft direkt Hebel (1) der Owner-Zeile
+`3f7363bf` („die Rangliste nach Ausloesehaeufigkeit"): diese Familie wird dort ohne den Umweg ueber
+den Folgefehler falsch einsortiert.
+
+**Warum das trotz eines roten Audits KEIN Regress von `73195c20` ist, ohne einen Rerun** (§11.7 aus
+dem Register erfuellt): die Sichtungen liegen auf vierzehn Baeumen ueber sechs Tage, elf davon
+VOR diesem Baum; und der Land-Diff von `73195c20` ist `docs/e2e-trail.md` · `e2e/ctl.ts` ·
+`e2e/trail-emit.ts` · `e2e/trail.ts` — er fasst weder `e2e/harness.ts` noch `e2e/programs.ts` noch
+den Nachfolge-Pfad des Servers an. Verdikt **flake**, hergeleitet aus Diff und Register.
+
+**NICHT adjudiziert.** `POST /api/post-land-audits/adjudicate` ist owner-only by POSITION (unter
+`tokenGate`, `server.ts` beim Handler `writeAuditAdjudication`); eine Program-MAIN hat dafuer keine
+Self-Tuer, und den Owner-Token liest sie nicht. Das Rot auf `at=1788886481632` steht also weiter
+unbeurteilt im Ledger — dieser Abschnitt ist die Vorarbeit, nicht das Urteil.

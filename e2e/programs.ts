@@ -7573,7 +7573,8 @@ export async function run(ctx: Ctx): Promise<void> {
       // has already moved, so "the slot is gone" is a line in the log, never a verdict on the land.
       return { main: main2Of(), log };
     };
-    type OwnerNote = { branch?: string; actor?: { kind?: string; via?: string; suspect?: string } };
+    type OwnerNote = { branch?: string; actor?: { kind?: string; via?: string; suspect?: string;
+      bypassed?: { program?: string; task?: string; main?: number; report?: string } } };
     // the second fact, waited for rather than sampled — see the note above. `null` after the cap is
     // a real answer (the note write is best-effort by contract), and the checks below say so.
     const landNote = async (sha: string, ms = 20_000): Promise<OwnerNote | null> => {
@@ -7616,6 +7617,26 @@ export async function run(ctx: Ctx): Promise<void> {
         await Bun.sleep(120);
       }
     };
+    // …and the MAIN's RETURN PATH, drained before each arm that files. Measured reason: every land
+    // of a program lane arms a merge subscription on this MAIN (`server.ts#armProgramMainLandWatch`),
+    // and a FLEET_CMD=true pane acknowledges nothing — so armed watches plus unacked events walk the
+    // slot toward FLEET_EVENT_MAX_OPEN_PER_SLOT, and the fleet-report door refuses at zero free.
+    // Without this the accepted-report arm would go red for a reason that has nothing to do with
+    // what it measures. Acking is the MAIN's OWN act through its own door, not fixture surgery.
+    const drainMainEvents = async (): Promise<number> => {
+      const open = (readState().events ?? []).filter((e) =>
+        (e as { receiverSlot?: number }).receiverSlot === landMainSlot
+        && !["acknowledged", "receiver-gone", "subject-gone"].includes((e as { status?: string }).status ?? ""));
+      let acked = 0;
+      for (const e of open) {
+        const id = (e as { id?: string }).id;
+        if (!id) continue;
+        const r = await fetch(`${BASE}/api/self/events/${id}/ack`,
+          { method: "POST", headers: { "x-fleet-self-token": landTok } });
+        if (r.ok) acked++;
+      }
+      return acked;
+    };
     const suspectRowId = await makeTask({ text: "self-land suspect probe row", programId: landProgram.id, repo: REPO2 });
     const suspectLane = await conflictLane(suspectRowId);
     if (suspectLane.cwd) {
@@ -7623,6 +7644,17 @@ export async function run(ctx: Ctx): Promise<void> {
       spawnSync("git", ["-C", suspectLane.cwd, "add", "suspect.txt"]);
       spawnSync("git", ["-C", suspectLane.cwd, "commit", "-qm", "selfland suspect work"]);
     }
+    // ACP-17 · THIS ARM IS THE UNJUDGED ONE, and the report is what makes it so. Filed by the lane
+    // through the live door and left UNDECIDED — the exact 2026-09-08 shape, where a report was two
+    // seconds from acceptance and nothing distinguished it from one that would never be accepted.
+    // Filed BEFORE the done-looking wait: the row goes to the MAIN's pane, not this lane's, but a
+    // POST after the wait would still be one more thing happening between the gate and the land.
+    const suspectLaneTok = slotToken(suspectLane.slot);
+    const suspectDrained = await drainMainEvents();
+    const suspectReport = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": suspectLaneTok },
+      body: JSON.stringify({ status: "complete", text: "ambient-land probe: filed, awaiting judgement." }) });
+    const suspectReportOk = suspectReport.ok;
     const suspectReady = suspectLane.slot === null ? false : await waitDoneLooking(suspectLane.slot);
     const ambientBefore = ambientCount();
     const suspectBefore = main2Of();
@@ -7639,6 +7671,20 @@ export async function run(ctx: Ctx): Promise<void> {
     check("owner-token ambient use fixture: the BEARER merge LANDED — main moved off the tip this probe recorded",
       suspectLanded, JSON.stringify({ ready: suspectReady, before: suspectBefore.slice(0, 8),
         after: suspectMain.slice(0, 8), branch: suspectLane.branch, drive: suspectDrive.log }));
+    // ACP-17 · the pointer is written in `server.ts#recordLand` AFTER the note, so it is its own
+    // wait for the same reason the note is: reading the instant main moves measures the observer.
+    type AmbientEntry = { id: string; kind: string; ref: string; readBy: unknown;
+      subject: { sha?: string; note?: OwnerNote; door?: string } | null };
+    const ambientEntry = async (sha: string, ms = 20_000): Promise<AmbientEntry | null> => {
+      const deadline = Date.now() + ms;
+      for (;;) {
+        const view = (await selfInbox(landTok)).view;
+        const hit = view?.entries.find((e) => e.kind === "ambient-land" && e.ref === sha);
+        if (hit) return hit as unknown as AmbientEntry;
+        if (Date.now() >= deadline) return null;
+        await Bun.sleep(150);
+      }
+    };
     if (suspectLanded) {
       const suspectNote = await landNote(suspectMain);
       const ambientNow = await ambientReach(ambientBefore + 1);
@@ -7650,6 +7696,107 @@ export async function run(ctx: Ctx): Promise<void> {
           && ambientNow === ambientBefore + 1
           && (ambientRows[ambientRows.length - 1]?.detail ?? "").includes(`program=${landProgram.id}`),
         JSON.stringify({ note: suspectNote, ambient: ambientRows.slice(-2) }));
+      // …and the half the flag could not carry: WHICH binding was gone past, and whether the work
+      // had been judged when it happened. `undecided` is the incident's own shape.
+      check("ambient land: the note NAMES the bypassed binding and the report standing measured at the door — here UNDECIDED",
+        suspectReportOk && suspectNote?.actor?.bypassed?.program === landProgram.id
+          && suspectNote.actor.bypassed.task === suspectRowId
+          && suspectNote.actor.bypassed.main === landMainSlot
+          && suspectNote.actor.bypassed.report === "undecided",
+        JSON.stringify({ filed: suspectReportOk, drained: suspectDrained,
+          bypassed: suspectNote?.actor?.bypassed, wantTask: suspectRowId, wantMain: landMainSlot }));
+      // THE DONE-CRITERION ITSELF: the MAIN finds the land through its OWN door, with no human in
+      // the loop and nothing to poll — the pointer is in the Program's inbox and the note it names
+      // resolves. `unread` proves it is not merely present but WAITING.
+      const suspectInboxEntry = await ambientEntry(suspectMain);
+      const suspectUnread = (await selfInbox(landTok)).view?.unread ?? 0;
+      check("ambient land: the bypassed MAIN finds the land in its OWN program inbox, unread, with the land note joined onto it",
+        suspectInboxEntry !== null && suspectInboxEntry.readBy === null
+          && suspectInboxEntry.subject?.sha === suspectMain
+          && suspectInboxEntry.subject.note?.actor?.bypassed?.report === "undecided"
+          && (suspectInboxEntry.subject.door ?? "").includes("already moved the integration branch")
+          && suspectUnread >= 1,
+        JSON.stringify({ entry: suspectInboxEntry, unread: suspectUnread, sha: suspectMain.slice(0, 8) }));
+    }
+
+    // (5b) THE SECOND ARM, and it is the one that keeps the entry from becoming noise: the SAME
+    // ambient land over work the MAIN had already ACCEPTED must be distinguishable from the arm
+    // above without asking anyone. If both read alike, a MAIN learns to skip the kind.
+    const acceptRowId = await makeTask({ text: "ambient-land accepted-report row", programId: landProgram.id, repo: REPO2 });
+    const acceptLane = await conflictLane(acceptRowId);
+    if (acceptLane.cwd) {
+      writeFileSync(`${acceptLane.cwd}/accepted.txt`, "an owner-token land on work the MAIN had blessed\n");
+      spawnSync("git", ["-C", acceptLane.cwd, "add", "accepted.txt"]);
+      spawnSync("git", ["-C", acceptLane.cwd, "commit", "-qm", "ambient accepted work"]);
+    }
+    const acceptLaneTok = slotToken(acceptLane.slot);
+    const acceptDrained = await drainMainEvents();
+    const acceptFiled = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": acceptLaneTok },
+      body: JSON.stringify({ status: "complete", text: "ambient-land probe: judged before anyone landed it." }) });
+    const acceptReportId = acceptFiled.ok
+      ? ((await acceptFiled.json()) as { report?: { id?: string } }).report?.id ?? null : null;
+    const acceptDecided = acceptReportId === null ? null
+      : await mainDecides(acceptReportId, "accept", "read the diff — this is what the row asked for");
+    const acceptReady = acceptLane.slot === null ? false : await waitDoneLooking(acceptLane.slot);
+    const acceptBefore = main2Of();
+    const acceptDrive = await driveLand(acceptLane.slot, acceptBefore,
+      () => post(`/api/slots/${acceptLane.slot}/merge`, {}));
+    const acceptMain = acceptDrive.main;
+    const acceptLanded = acceptReady && acceptLane.branch !== "" && acceptMain !== acceptBefore;
+    check("ambient land fixture: the accepted-report arm LANDED — the MAIN decided the row first, then a BEARER merge moved main",
+      acceptLanded && acceptDecided?.ok === true,
+      JSON.stringify({ ready: acceptReady, decided: acceptDecided, drained: acceptDrained,
+        filed: acceptFiled.status, reportId: acceptReportId, before: acceptBefore.slice(0, 8),
+        after: acceptMain.slice(0, 8), drive: acceptDrive.log }));
+    if (acceptLanded) {
+      const acceptNote = await landNote(acceptMain);
+      const acceptEntry = await ambientEntry(acceptMain);
+      check("ambient land: an accepted report reads as ACCEPTED on both the note and the inbox entry — the benign case is legible as benign",
+        acceptNote?.actor?.suspect === "owner-token-outside-board"
+          && acceptNote.actor.bypassed?.report === "accepted"
+          && acceptNote.actor.bypassed.task === acceptRowId
+          && acceptEntry !== null && acceptEntry.ref === acceptMain
+          && acceptEntry.subject?.note?.actor?.bypassed?.report === "accepted",
+        JSON.stringify({ note: acceptNote?.actor, entry: acceptEntry }));
+    }
+
+    // (5c) THE COUNTER-PROOF, and it is the one that costs something if it is wrong: a lane whose
+    // task belongs to NO program must land byte-identically to before this slice — no suspect flag,
+    // no bypassed binding, and NOT ONE entry added to any program's inbox. A writer keyed on the
+    // channel alone (bearer) instead of on the binding would fail exactly here.
+    const plainRowId = await makeTask({ text: "ambient-land programless counter-proof row", repo: REPO2 });
+    const plainLane = await conflictLane(plainRowId);
+    if (plainLane.cwd) {
+      writeFileSync(`${plainLane.cwd}/plain.txt`, "a bearer land on a lane with no program at all\n");
+      spawnSync("git", ["-C", plainLane.cwd, "add", "plain.txt"]);
+      spawnSync("git", ["-C", plainLane.cwd, "commit", "-qm", "programless work"]);
+    }
+    const plainReady = plainLane.slot === null ? false : await waitDoneLooking(plainLane.slot);
+    const plainInboxBefore = (await selfInbox(landTok)).view?.entries.length ?? -1;
+    const plainAmbientBefore = ambientCount();
+    const plainBefore = main2Of();
+    const plainDrive = await driveLand(plainLane.slot, plainBefore,
+      () => post(`/api/slots/${plainLane.slot}/merge`, {}));
+    const plainMain = plainDrive.main;
+    const plainLanded = plainReady && plainLane.branch !== "" && plainMain !== plainBefore;
+    check("ambient land fixture: the programless counter-proof LANDED over the same BEARER channel",
+      plainLanded, JSON.stringify({ ready: plainReady, before: plainBefore.slice(0, 8),
+        after: plainMain.slice(0, 8), drive: plainDrive.log }));
+    if (plainLanded) {
+      const plainNote = await landNote(plainMain);
+      // give the writer the same window the two arms above got, so "nothing appeared" is a waited
+      // answer and not a read that outran the append it is claiming did not happen
+      const plainRace = await ambientEntry(plainMain, 3000);
+      const plainInboxAfter = (await selfInbox(landTok)).view?.entries.length ?? -1;
+      check("ambient land: a BEARER land on a lane with NO program is unflagged and adds NOTHING to any program inbox",
+        plainNote?.branch === plainLane.branch && plainNote.actor?.kind === "owner"
+          && plainNote.actor.via === "bearer" && plainNote.actor.suspect === undefined
+          && plainNote.actor.bypassed === undefined
+          && plainRace === null && plainInboxAfter === plainInboxBefore
+          && ambientCount() === plainAmbientBefore,
+        JSON.stringify({ note: plainNote, entriesBefore: plainInboxBefore, entriesAfter: plainInboxAfter,
+          ambientBefore: plainAmbientBefore, ambientAfter: ambientCount() }));
     }
     // the counter-proof, and it doubles as THE LEGACY PROBE: the promotion is revoked first, so this
     // is a Program with NO policy at all — the shape every Program has until the owner says

@@ -276,6 +276,11 @@ type AuditEvent =
   // names the program, the kind and the `ref` it points at — never a line of the referenced row's
   // text, because the entry itself copies none.
   | "program_inbox_append"
+  // ACP-17 · an `ambient-land` pointer was OWED and not written: the Program the land-door named as
+  // bypassed was gone or no longer active by the time recordLand ran. Detail names the landed sha
+  // and the program's state, because the alternative to this row is a MAIN that is never told and
+  // a trail on which nothing says it should have been.
+  | "program_inbox_skip"
   // the bound MAIN stamped its receipt on one inbox entry. Detail names the program and the entry
   // id; there is no row for a REPEATED read, because a receipt that already exists is not an event.
   | "program_inbox_read"

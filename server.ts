@@ -6723,10 +6723,10 @@ const reportAwaitsOwner = (report: FleetReport): boolean =>
 // ABSENCE IS NEVER PROOF: pruneFleetReports drops decided rows past FLEET_REPORT_KEEP, so an old
 // rejection can be gone from memory and this function then answers null. It is a precondition over
 // the rows the server still holds, never a claim that no verdict was ever written.
-function rejectedReportForLand(cwd: string, branch: string): {
-  id: string; at: number; reason: string | null;
-  by: { slot: number; openedAt: number; sessionId: string | null } | "owner";
-} | null {
+// THE JOIN ITSELF, cut out so the guard below and the standing beside it read ONE loop. Two copies
+// of "which row answers for this lane" is how a precondition and the record of that precondition
+// start disagreeing about the same land.
+function newestDecidedReportForLand(cwd: string, branch: string): FleetReport | null {
   let newest: FleetReport | null = null;
   let newestAt = -1;
   for (const r of fleetReports) {
@@ -6734,9 +6734,38 @@ function rejectedReportForLand(cwd: string, branch: string): {
     if (!d || r.worker.cwd !== cwd || r.worker.branch !== branch) continue;
     if (d.at > newestAt) { newest = r; newestAt = d.at; }
   }
+  return newest;
+}
+function rejectedReportForLand(cwd: string, branch: string): {
+  id: string; at: number; reason: string | null;
+  by: { slot: number; openedAt: number; sessionId: string | null } | "owner";
+} | null {
+  const newest = newestDecidedReportForLand(cwd, branch);
   const decision = newest?.decision;
   if (!newest || !decision || decision.disposition !== "rejected") return null;
   return { id: newest.id, at: decision.at, reason: decision.reason, by: decision.by };
+}
+
+// ACP-17 · THE SAME QUESTION ASKED FOR THE RECORD RATHER THAN FOR A GUARD, and the two extra words
+// are the whole reason it is a separate function: the guard only ever needed "rejected or not",
+// while a MAIN reading an ambient land afterwards needs to tell the three innocent shapes apart.
+//  · `accepted`  — the work HAD been judged and blessed; someone else pressed the button on a
+//                  verdict this Program had already reached. The benign case, and it must be
+//                  legible as benign or the entry becomes noise the MAIN learns to skip.
+//  · `undecided` — a report was filed and no verdict stands. This is the 2026-09-08 shape: judged
+//                  work and unjudged work were three seconds apart and nothing said which it was.
+//  · `none`      — no report for this work at all (a lane that files nothing, a pure measurement
+//                  row). Not the same as `undecided`, and reporting it as one would invent a row.
+//  · `rejected`  — reachable only through the audited override, which is a deliberate act; the
+//                  entry says so rather than leaving the strongest case out of the vocabulary.
+// ABSENCE IS NOT PROOF here either (pruneFleetReports drops decided rows past FLEET_REPORT_KEEP):
+// this is a standing over the rows the server still holds, measured at the door, never a claim
+// about everything that was ever filed.
+function reportStandingForLand(cwd: string, branch: string): LandReportStanding {
+  const decided = newestDecidedReportForLand(cwd, branch);
+  if (decided?.decision) return decided.decision.disposition;
+  return fleetReports.some((r) => r.worker.cwd === cwd && r.worker.branch === branch)
+    ? "undecided" : "none";
 }
 
 // THE SENTENCE, one function because the two land doors must not name one fact two ways. It NAMES
@@ -7556,8 +7585,45 @@ function inboxProgramFor(s: Slot): InboxScope {
 // `audit-red` is null here BY DESIGN and earns no unknown line: its writer and its ledger join
 // arrive together in the audit slice, so a line saying "no longer present" would report a
 // retention loss that never happened.
-function inboxSubject(e: ProgramInboxEntry): { subject: AttentionRequest | FleetReport | null; unknown: string | null } {
+// `ambient-land` joins to the LAND NOTE at the commit its ref names — the server-authored record of
+// exactly this land, written one line earlier in recordLand. Read from git rather than copied into
+// the entry for the reason stated above: the entry is a pointer, and a copy would be a second
+// authority on who landed what. `door` is rendered beside it because a MAIN reading this is being
+// told about work that already went out — what it can DO is a separate sentence from what happened,
+// and leaving it out sends the reader looking for a route that would undo the land (there is none
+// at this door; ↩ is the owner's).
+type AmbientLandSubject = { sha: string; note: Record<string, unknown>; door: string };
+async function ambientLandSubject(program: Program, e: ProgramInboxEntry):
+    Promise<{ subject: AmbientLandSubject | null; unknown: string | null }> {
+  // WHERE the note is read: the Program's own root. The land was on a lane of a task of THIS
+  // Program, so the note is in this repo's object database. A Program with no founding record names
+  // no repo at all, and guessing one would send the read at the wrong database and then report "not
+  // readable" about a note that is perfectly fine where it lives — so that case says ITSELF.
+  const root = program.founding ? foundingRoot(program.founding) : null;
+  if (root === null)
+    return { subject: null,
+      unknown: `entry ${e.id} names land ${e.ref.slice(0, 8)}, but this program carries no founding record to name a repo` };
+  // …and an unreadable note is reported as UNREADABLE, never as absent: the note write is
+  // best-effort by contract, so "the pointer stands and its record does not" is an expected shape
+  // and a different fact from the retention loss the other kinds report.
+  const raw = await git(root, "notes", "--ref=fleet/land", "show", e.ref);
+  if (raw.code !== 0)
+    return { subject: null,
+      unknown: `entry ${e.id} names land ${e.ref.slice(0, 8)}, whose land note is not readable in ${basename(root)}` };
+  try {
+    const note = JSON.parse(raw.out) as Record<string, unknown>;
+    return { subject: { sha: e.ref, note,
+      door: "this land already moved the integration branch — read the diff and judge it; reverting is the owner's (\u21a9 on the board)" },
+      unknown: null };
+  } catch {
+    return { subject: null, unknown: `entry ${e.id} names land ${e.ref.slice(0, 8)}, whose land note is not JSON` };
+  }
+}
+
+async function inboxSubject(program: Program, e: ProgramInboxEntry):
+    Promise<{ subject: AttentionRequest | FleetReport | AmbientLandSubject | null; unknown: string | null }> {
   if (e.kind === "audit-red") return { subject: null, unknown: null };
+  if (e.kind === "ambient-land") return await ambientLandSubject(program, e);
   const row: AttentionRequest | FleetReport | undefined = e.kind === "attention-answer"
     ? attentionRequests.find((a) => a.id === e.ref)
     : fleetReports.find((r) => r.id === e.ref);
@@ -7568,15 +7634,18 @@ function inboxSubject(e: ProgramInboxEntry): { subject: AttentionRequest | Fleet
 
 // PURE PROJECTION over the persisted record: nothing is written here, which is why the read
 // RECEIPT lives in its own route and not in this function. Newest first, because a MAIN reading
-// this at an idle point wants what arrived while it was working.
-function programInboxView(program: Program): Record<string, unknown> {
+// this at an idle point wants what arrived while it was working. Async only because of the
+// `ambient-land` join — and that join runs ONLY for an entry of that kind, so an inbox without one
+// still touches no disk.
+async function programInboxView(program: Program): Promise<Record<string, unknown>> {
   const inbox = program.inbox ?? { v: 1 as const, entries: [], dropped: 0 };
   const unknown: string[] = [];
-  const entries = [...inbox.entries].sort((a, b) => b.at - a.at).map((e) => {
-    const joined = inboxSubject(e);
+  const entries = [];
+  for (const e of [...inbox.entries].sort((a, b) => b.at - a.at)) {
+    const joined = await inboxSubject(program, e);
     if (joined.unknown !== null) unknown.push(joined.unknown);
-    return { ...e, subject: joined.subject };
-  });
+    entries.push({ ...e, subject: joined.subject });
+  }
   return { program: program.id,
     unread: inbox.entries.filter((e) => e.readBy === null).length,
     dropped: inbox.dropped, entries, unknown };
@@ -7593,10 +7662,10 @@ function programInboxStatus(p: Program): { unread: number; oldestAt: number | nu
 }
 
 // GET /api/self/inbox — the pull half. Reads the record, joins the subjects, stamps nothing.
-function programInboxFor(s: Slot): Response {
+async function programInboxFor(s: Slot): Promise<Response> {
   const scope = inboxProgramFor(s);
   if (!scope.ok) return scope.response;
-  return json(programInboxView(scope.program));
+  return json(await programInboxView(scope.program));
 }
 
 // POST /api/self/inbox/:id/read — the RECEIPT, and it is deliberately not a lock. A second read of
@@ -13234,8 +13303,18 @@ function undoableFor(repo: string): { branch: string; at: number } | null {
 // uid, and fleet.json is 0600 but same-uid readable from any worktree. Stopping acquisition needs
 // host sandboxing, which the owner excluded. What exists is this field, the `suspect` flag and the
 // `owner_token_ambient_use` audit row — a ledger that can NAME the class, never a barrier.
+//
+// ACP-17 · WHAT `suspect` COULD NOT SAY. Until 2026-09-08 the flag named a CLASS ("an owner token
+// arrived off the board on a program-bound lane") and nothing about WHICH binding it went past, so
+// the one reader who needed it — the Program-MAIN whose own self-land door was skipped — could not
+// be told. `bypassed` is that missing half, and it carries the report standing MEASURED AT THE DOOR
+// rather than re-derived later: "was this work judged when someone else landed it" is a question
+// about the moment of the land, and the rows it is read from are prunable.
+type LandReportStanding = "accepted" | "rejected" | "undecided" | "none";
+interface LandBypassedBinding { program: string; task: string; main: number; report: LandReportStanding }
 type LandActor =
-  | { kind: "owner"; via: "cookie" | "bearer" | "query"; suspect?: "owner-token-outside-board" }
+  | { kind: "owner"; via: "cookie" | "bearer" | "query"; suspect?: "owner-token-outside-board";
+      bypassed?: LandBypassedBinding }
   | { kind: "main"; slot: number; program: string; task: string;
       sessionIdMatch: "exact" | "divergent" | "unknown" }
   // THE THIRD ARM IS NOT A DEFAULT — it is reachable from exactly one place: a land-intent marker
@@ -13265,10 +13344,26 @@ function ownerLandActor(req: Request, lane: Slot): Extract<LandActor, { kind: "o
   const t = lane.taskId ? tasks.find((x) => x.id === lane.taskId) : undefined;
   const program = t?.programId ? programs.find((p) => p.id === t.programId) : undefined;
   const ambient = !!program && program.status === "active" && programOccupancy(program) === "live";
-  return ambient ? { kind: "owner", via, suspect: "owner-token-outside-board" } : { kind: "owner", via };
+  // …and the pair the standing is joined on. `/api/slots/:id/land` (⏏) reaches this function
+  // without the worktree check the merge door makes, so a slot that is not a lane keeps exactly
+  // today's shape: the class is still flagged, and no binding is named for a land that names no
+  // branch. Inventing "none" there would report "nothing was filed" for "nothing was askable".
+  if (!ambient || !lane.cwd || !lane.worktree) return { kind: "owner", via, ...(ambient ? { suspect: "owner-token-outside-board" as const } : {}) };
+  // …and NAME the binding, in the same breath as the inference that found it. The three ids come
+  // from the join that already ran; the standing is read HERE because the door is the honest
+  // measuring point — by the time the land is recorded a MAIN may have judged the row, and a
+  // record saying "accepted" for a land that went out unjudged would be the exact reassurance
+  // this entry exists to withhold. `main` is the slot the binding names, not a live occupant:
+  // `ambient` has just established that it IS live, and the slot number is what a reader needs
+  // to find the session that was skipped.
+  return { kind: "owner", via, suspect: "owner-token-outside-board",
+    bypassed: { program: program!.id, task: t!.id, main: program!.main!.slot,
+      report: reportStandingForLand(lane.cwd, lane.worktree.branch) } };
 }
 const landActorDetail = (a: LandActor): string => a.kind === "owner"
-  ? `owner via=${a.via}${a.suspect ? ` suspect=${a.suspect}` : ""}`
+  ? `owner via=${a.via}${a.suspect ? ` suspect=${a.suspect}` : ""}${a.bypassed
+    ? ` bypassed=program:${a.bypassed.program},task:${a.bypassed.task},main:${a.bypassed.main},report:${a.bypassed.report}`
+    : ""}`
   : a.kind === "unknown" ? `unknown (${a.why})`
   : `main slot=${a.slot} program=${a.program} task=${a.task} sessionIdMatch=${a.sessionIdMatch}`;
 // the load-time reader of a persisted marker's actor, in loadPromotion's discipline: anything that
@@ -13276,10 +13371,23 @@ const landActorDetail = (a: LandActor): string => a.kind === "owner"
 // half an attribution is a different claim, not a weaker one.
 const loadLandActor = (value: unknown): LandActor => {
   const r = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-  if (r?.kind === "owner" && (r.via === "cookie" || r.via === "bearer" || r.via === "query"))
-    return r.suspect === "owner-token-outside-board"
-      ? { kind: "owner", via: r.via, suspect: "owner-token-outside-board" }
-      : { kind: "owner", via: r.via };
+  if (r?.kind === "owner" && (r.via === "cookie" || r.via === "bearer" || r.via === "query")) {
+    if (r.suspect !== "owner-token-outside-board") return { kind: "owner", via: r.via };
+    // WHOLE OR NOTHING, in this loader's own discipline: half a binding names a Program without a
+    // report standing (or a standing without the row it is about), and either half alone would let
+    // a reader draw a conclusion the record never carried. An unreadable `bypassed` therefore drops
+    // to the plain flag — the class, which is what the record said before this field existed — and
+    // never to an invented binding.
+    const b = r.bypassed && typeof r.bypassed === "object" && !Array.isArray(r.bypassed)
+      ? r.bypassed as Record<string, unknown> : null;
+    const standing = ["accepted", "rejected", "undecided", "none"] as const;
+    if (b && typeof b.program === "string" && b.program && typeof b.task === "string" && b.task
+      && Number.isInteger(b.main) && standing.includes(b.report as LandReportStanding))
+      return { kind: "owner", via: r.via, suspect: "owner-token-outside-board",
+        bypassed: { program: b.program, task: b.task, main: b.main as number,
+          report: b.report as LandReportStanding } };
+    return { kind: "owner", via: r.via, suspect: "owner-token-outside-board" };
+  }
   if (r?.kind === "main" && Number.isInteger(r.slot) && typeof r.program === "string" && r.program
     && typeof r.task === "string" && r.task
     && (r.sessionIdMatch === "exact" || r.sessionIdMatch === "divergent" || r.sessionIdMatch === "unknown"))
@@ -13429,6 +13537,38 @@ async function recordLand(repo: string, main: string, branch: string, mainBefore
   // line below) by at most HUB_PUSH_TIMEOUT_MS. It cannot change what landed.
   const hubPush = await pushLandToHub(repo, main, mainAfter);
   await writeLandNote(repo, branch, mainBefore, mainAfter, hubPush ? { ...prov, hubPush } : prov); // best-effort — never throws
+  // ACP-17 · THE ONE READER WHO IS NOT AT THE BOARD. Everything written above this line is a PULL
+  // surface: the note lives at the commit, the trail row in audit.jsonl, and both are found by
+  // someone who already suspects there is something to find. The Program-MAIN whose self-land door
+  // was skipped is in the opposite position — it is waiting for the verdict of a land it did not
+  // start, and nothing it polls would ever mention that the land already happened. So the fact is
+  // PUSHED into the one durable surface it owns.
+  //
+  // HERE, and not at the route door, is deliberate: the door's `owner_token_ambient_use` row fires
+  // on ENTRY and therefore also for every land the guards below it then refuse. This is the choke
+  // point every main-MOVING land funnels through, so an entry exists exactly when main moved.
+  //
+  // AFTER the note, because the note is what the entry POINTS AT (inboxSubject). A note write that
+  // failed (best-effort by contract) leaves the entry standing with an unresolvable ref — which the
+  // read side reports as itself. That is the right order: the pointer to a land that happened must
+  // not depend on a best-effort write succeeding.
+  //
+  // Idempotent by the same at-least-once reasoning as the rest of this function: boot re-runs it
+  // whole after a death in the window, and a capped mailbox must not pay for that with a duplicate.
+  const bypassed = prov.actor.kind === "owner" ? prov.actor.bypassed : undefined;
+  if (bypassed) {
+    const p = programs.find((x) => x.id === bypassed.program);
+    if (!p || p.status !== "active") {
+      // named rather than swallowed: the Program was active when the door measured it, so an
+      // absent or retired one here is a real state change between the door and the land, and the
+      // trail is the only place left that can say the pointer was owed and not written.
+      audit("program_inbox_skip", undefined,
+        `ambient-land ${mainAfter.slice(0, 8)} program=${bypassed.program} ${p ? p.status : "gone"}`);
+    } else if (!(p.inbox?.entries ?? []).some((e) => e.kind === "ambient-land" && e.ref === mainAfter)) {
+      appendProgramInbox(p, "ambient-land", mainAfter);
+      await saveStateNow();
+    }
+  }
   // VERIFICATION TIER 2 — main moved, so there is something new on the integration branch that the
   // fast land gate did not fully check. This is the one choke point every main-MOVING land funnels
   // through (mergeJob's clean auto-land + the confirm-land route), which is exactly the right
@@ -25304,7 +25444,7 @@ Bun.serve<WSData>({
       const given = req.headers.get("x-fleet-self-token") ?? "";
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
-      return programInboxFor(s);
+      return await programInboxFor(s);
     }
 
     const selfInboxRead = /^\/api\/self\/inbox\/([0-9a-f]{24})\/read$/.exec(url.pathname);

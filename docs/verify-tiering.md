@@ -3475,11 +3475,46 @@ WEG. Der Folgefehler sagt dazu jedes Mal `marker at 430x ms; 500 {"error":"succe
 (not-alive)"}`: die Fixture hat ihr Zeitfenster (Marker nach ~4 300 ms, innerhalb des Readiness-
 Budgets) in JEDEM roten Lauf getroffen. Die Zeit ist nicht die Variable, die Pane-LEBENSDAUER ist es.
 
-**Was damit NICHT bewiesen ist, und das bleibt hier stehen:** warum sie stirbt. Zwei Kandidaten,
-keiner gemessen — (a) das `exec '<standInBin>' 100000` im respawn-Kommando scheitert in dieser
-einen Pane, (b) der Server fasst dieselbe Pane zwischen dem `respawn-pane` der Fixture und ihrem
-`capture-pane` selbst an; dies ist die einzige `plantScreen`-Aufrufstelle, deren Slot der Server
-gleichzeitig als Nachfolge-Reservierung oeffnet. Wer sie jagt, faengt bei (b) an.
+**DIE WURZEL, am Code gelesen (Nachtrag 2026-09-08, nach der Zuweisung „Ursachenpruefung bei
+Fleet-Betrieb" in der Adjudikation `at=1788887479736`). Sie ist die Kandidatin (b), und die
+Richtung ist die UMGEKEHRTE des Check-Namens: die Pane stirbt nicht am Kommando der Fixture — der
+SERVER toetet sie, und das `500 not-alive` ist die URSACHE des toten Panes, nicht seine Folge.**
+
+Die Kette, beide Seiten in ihrer eigenen Zeitrechnung:
+
+| | Server (`server.ts`, generischer Nachfolge-Zweig in `handleSelfSucceed`) | Fixture (`e2e/programs.ts`, Block `unbound succession`) |
+|---|---|---|
+| t0 | `s.openedAt = Date.now()` **innerhalb** von `openSlot` | — |
+| t0+… | `await ensureSlot(s, "open")` — hier entsteht die Pane erst | Fixture liest `openedAt` aus `/api/sessions` und ankert darauf |
+| ~250 ms | — | `plantScreen` #1 (`booting, no marker yet`) |
+| ~4 300 ms | — | `plantScreen` #2 (`>_ OpenAI Codex …`), `respawn-pane -k` |
+| nach `openSlot` **+ `FOUNDING_BOOT_GRACE_MS` (4 000)** | EIN `canDeliver` → `claudeAlive`, ohne Retry | — |
+| bei `not-alive` | `cleanup()` ⇒ **`killSlot(free, "handoff")`** ⇒ `500 successor delivery held (not-alive)` | `plantScreen` #2 pollt 100 × 50 ms `capture-pane` ins Leere, fragt `has-session` ⇒ **`the pane died with the command`** |
+
+**Die beiden Uhren haben verschiedene Nullpunkte, und das ist der ganze Defekt.** Die Fixture zaehlt
+ihre 4 300 ms ab dem `openedAt`-Stempel, der VOR dem Pane-Spawn gesetzt wird; der Server zaehlt
+seine 4 000 ms ab der RUECKKEHR von `openSlot`, also NACH dem Pane-Spawn. Der nominale Vorsprung
+von 300 ms ist damit in Wahrheit `300 ms − (ensureSlot + Rest von openSlot)`. Ein tmux-Pane-Spawn
+ueberschreitet 300 ms auf einem belasteten Host muehelos — und belastet ist der Host genau dann,
+wenn ein Audit laeuft. Faellt die Alive-Probe in das `respawn-pane`-Fenster der Fixture, liest sie
+weder das alte noch das neue Kommando, urteilt `not-alive` und RAEUMT den Nachfolge-Slot ab.
+
+Das erklaert alle drei Beobachtungen ohne Zusatzannahme: die stabile Rate (die zwei Ereignisse
+liegen per Konstruktion ~300 ms auseinander, der Rest ist Jitter), die INVARIANTE Signatur (wer
+verliert, verliert immer durch einen `killSlot`, nie durch langsames Malen — deshalb nie
+`pane alive but the screen never rendered`), und das konstante `marker at 430x ms` (die Fixture
+trifft ihre Marke jedes Mal; die Varianz sitzt auf der Serverseite).
+
+**Der Schnitt ist damit FIXTURE-seitig** — sie hat 300 ms Marge gegen eine Serverkonstante gewaehlt
+und ankert dabei auf einem frueheren Nullpunkt als der Server. Wer repariert: Marge weiten ODER
+beide Seiten auf dasselbe Ereignis ankern.
+
+**Eine PRODUKT-Beobachtung daneben, benannt und ausdruecklich NICHT gebaut:** eine EINZELNE
+Alive-Stichprobe ohne Retry entscheidet hier ueber das Toeten eines Gruendungs-Slots. Ein
+`respawn-pane`-Fenster ist ein Moment, in dem die Probe nichts lesen KANN — nach der Regel dieses
+Repos muesste das als „nicht messbar" ausfallen und nicht als bewiesener Tod. Das ist eine
+Aenderung am Nachfolge-Pfad und gehoert in eine eigene Zeile mit eigener Sonde, nicht in diesen
+Abschnitt.
 
 **Basisrate, aus dem lokalen Trail-Register** (`e2e-trail/` + `$TMPDIR/fleet-e2e-trail`, gezaehlt
 nur Laeufe, in denen der Block ueberhaupt lief; Join ueber den Namen des FOLGEFEHLERS, weil nur er
@@ -3517,7 +3552,18 @@ VOR diesem Baum; und der Land-Diff von `73195c20` ist `docs/e2e-trail.md` · `e2
 `e2e/trail-emit.ts` · `e2e/trail.ts` — er fasst weder `e2e/harness.ts` noch `e2e/programs.ts` noch
 den Nachfolge-Pfad des Servers an. Verdikt **flake**, hergeleitet aus Diff und Register.
 
-**NICHT adjudiziert.** `POST /api/post-land-audits/adjudicate` ist owner-only by POSITION (unter
+**ADJUDIZIERT — vom Controller, nicht von dieser MAIN, und mit einem anderen Verdikt als dem hier
+hergeleiteten.** `POST /api/post-land-audits/adjudicate` ist owner-only by POSITION (unter
 `tokenGate`, `server.ts` beim Handler `writeAuditAdjudication`); eine Program-MAIN hat dafuer keine
-Self-Tuer, und den Owner-Token liest sie nicht. Das Rot auf `at=1788886481632` steht also weiter
-unbeurteilt im Ledger — dieser Abschnitt ist die Vorarbeit, nicht das Urteil.
+Self-Tuer, und den Owner-Token nimmt sie dafuer nicht. Der Controller hat `at=1788886481632` als
+**`unknowable`** eingetragen (`audit-adjudications.jsonl`, `at=1788887479736`) mit der Begruendung,
+die historische Rate sei „Hinweis, kein hier geprueter kausaler Beweis oder gruener Same-Tree-Lauf",
+und die Ursachenpruefung dem Program Fleet-Betrieb zugewiesen. Zwei Saetze dazu, damit die naechste
+Leserin die Differenz nicht neu aufrollt:
+
+- **Der fehlende gruene Same-Tree-Lauf ist kein Beweisloch, sondern die Regel dieses Repos.** Bei
+  Basisraten dieser Groessenordnung entscheidet das Trail-Register, nicht der Rerun — genau diese
+  Selbstkorrektur steht in `HANDOFF.md` §0 vom selben Tag.
+- **Der fehlende KAUSALE Beweis war zutreffend** und ist mit dem Nachtrag oben nachgeliefert. Am
+  Handeln aendert die Differenz `flake`/`unknowable` nichts: das Rot bleibt rot, und der Schnitt
+  liegt in der Fixture.

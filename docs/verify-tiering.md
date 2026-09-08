@@ -940,6 +940,33 @@ the client's Waves tab, six checks in `e2e/tasks.ts`, two docs) touches neither 
 nor any pane/WebSocket path. Adjudicated `flake` on the rail by the Land-Pipeline MAIN; no rerun was bought —
 at this base rate a green rerun proves nothing (§11.3), the signature and the surface carry the verdict.
 
+**Fifth sighting 2026-09-08** (post-land audit `at=1788850070444` of `ba8c068a`, again on the
+second-host helper, 4020 checks / 1 failed). Dies ist die Instanz mit der SAUBERSTEN Flaeche und der
+SCHLECHTESTEN Beweislage — beides gehoert hierher.
+
+*Die Flaeche schliesst den Diff aus, und zwar durch Ordnung statt durch Behauptung.* Das gelandete
+Diff ist **`state.sh`, sonst nichts** (`git show --name-only ba8c068a`). Die naheliegende Aussage
+„`state.sh` ist keine Testflaeche" waere FALSCH und ist beim Nachmessen gefallen: `e2e/outcomes.ts`
+kopiert es in ein Fixture-Repo und FUEHRT es aus (`spawnSync("sh", ["state.sh"], …)`, die einzige
+Ausfuehrungsstelle der Suite; die drei anderen Treffer in `e2e/` sind String-Literale in einer
+Verbotsliste und einer Ritual-Liste). Was trotzdem traegt, ist die REIHENFOLGE: `slots.run()` steht
+in `fleet-e2e.ts:78`, `outcomes.run()` in `:138`, der Runner `await`et strikt sequentiell und
+enthaelt kein `Promise.all`/`Promise.race`. Der einzige Pfad, der `state.sh` beruehrt, laeuft also
+sechzig Modulschritte NACH dem fehlgeschlagenen Check und kann ihn nicht erreicht haben.
+
+*Die Signatur fehlt, und das ist selbst ein Befund.* Diese Instanz ist die erste der Familie ohne
+das `N marks, 1..N-1`-Detail: der Audit-Lauf hat **nirgends ein Trail geschrieben**. Auf dem Helfer
+ist `~/claude-fleet/e2e-trail` bei vier Zeilen stehengeblieben (juengste 2026-09-06 09:16Z), ein
+`fleet-e2e-trail` existiert dort ueberhaupt nicht, und `$TMPDIR` ist auf dem Helfer LEER. Zwei
+volle Audits vom 2026-09-08 sind damit im Register unsichtbar. Das ist dieselbe Schadensklasse wie
+`b09cd2f9` (Lauf verliert sein Trail), aber ueber einen ANDEREN Mechanismus — dort ein
+unaufloesbares SRC auf dem Mac, hier der Helfer-Host — und die Kosten sind hier live vorgefuehrt:
+**das Register kann genau den Lauf nicht sehen, ueber den geurteilt werden muss.**
+
+*Lesart fuer den Urteilenden:* `flake`, getragen von Ordnung und Flaeche, NICHT von der Signatur.
+Wer eine Signatur verlangt, bekommt sie fuer diese Instanz nicht mehr — sie ist verloren, nicht
+ungelesen.
+
 **No free pass.** Three sightings make the family real; they do not make the next red one a flake.
 The proof order in §11.3 applies unchanged, and it is what cleared the 2026-08-01 instance: the
 same tree, re-run serially on an idle machine, came back 993 PASS / 0 FAIL.

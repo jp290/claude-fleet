@@ -272,6 +272,8 @@ type AuditEvent =
   // losing pointers to rows a MAIN still owes an answer to is the failure the inbox exists to end.
   // Detail names the program and the parse error, never an entry.
   | "program_inbox_unreadable"
+  | "program_inbox_loss_unreadable"
+  | "program_handover_unreadable"
   // one pointer was appended to a Program's inbox (appendProgramInbox, the one writer). Detail
   // names the program, the kind and the `ref` it points at — never a line of the referenced row's
   // text, because the entry itself copies none.

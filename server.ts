@@ -79,7 +79,10 @@ import {
   validAttentionBranch, MAX_SUPERVISOR_NUDGE_TEXT, TASK_KINDS, isTaskKind, loadTaskKind,
   PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion, PROGRAM_PROFILE_KINDS, loadProgramProfile,
   PROGRAM_LINEAGE_MAX, loadProgramLineage, foundingOccupantFrom, foundingIdentityFrom,
-  PROGRAM_INBOX_MAX, loadProgramInbox,
+  PROGRAM_INBOX_MAX, loadProgramInbox, type ProgramInboxLoss, loadProgramInboxLoss,
+  PROGRAM_INBOX_LOSS_ERROR_MAX,
+  PROGRAM_HANDOVER_MAX, PROGRAM_HANDOVER_TEXT_MAX, loadProgramHandover,
+  type ProgramHandover, type ProgramHandoverObligation, type ProgramHandoverDetail,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch, type ProgramDispatch,
   type Studio, type StudioContent, type ProgramStudioBinding, type StudioStage,
@@ -1842,6 +1845,13 @@ async function programExecutionView(s: Slot): Promise<Response> {
       unknown.push(`${auditLedger.malformed} malformed audit ledger rows make reconstruction incomplete.`);
     if (p.status !== "active")
       unknown.push(`1 program has status ${p.status}; executionState is not-executing.`);
+    // the two records that can DEGRADE. Both are named only where the degradation actually
+    // happened, so an ordinary Program grows no noise — and neither can be told from its healthy
+    // shape without these lines, which is the whole reason they exist.
+    if (p.inboxLost)
+      unknown.push(`the program inbox record was unreadable at ${new Date(p.inboxLost.at).toISOString()} (${p.inboxLost.error}); every pointer written before then is gone and an empty inbox proves nothing.`);
+    if (p.handover && p.handover.dropped > 0)
+      unknown.push(`${p.handover.dropped} obligations of the last succession exceeded the retention cap of ${PROGRAM_HANDOVER_MAX} and were not retained.`);
     // The one honest caveat the per-row report fact carries: report retention is a bounded tail
     // (pruneFleetReports over FLEET_REPORT_KEEP terminal rows), so once the tail is full a row's
     // `report: null` can mean "dropped by retention" as well as "never filed". Named only while
@@ -1870,6 +1880,16 @@ async function programExecutionView(s: Slot): Promise<Response> {
       },
       status: programStatusView(p, { outcomeRows: outcomeLedger.rows,
         auditRows: auditLedger.rows, judged }),
+      // WHAT THE LAST RETIRING MAIN OWED, verbatim. This is the durable half of the succession
+      // handover: the founding brief carries a PREVIEW of these rows and a prompt is read once,
+      // while an obligation that has to be re-registered has to be readable whenever the session
+      // gets to it. Complete on purpose — id, full text, and the parameters a re-registration
+      // needs — because everything here was DELETED with the predecessor's slot and this record is
+      // the only place it still exists. It re-arms nothing: reading it is not acting on it.
+      // `null` means no Standard succession has happened here; `obligations: []` means one has and
+      // measured nothing owed. Newest succession only, and the brief says so.
+      handover: p.handover ? { at: p.handover.at, from: p.handover.from, to: p.handover.to,
+        obligations: p.handover.obligations, dropped: p.handover.dropped } : null,
       tasks: {
         rows: programTasks.map((t) => {
           // DERIVED per request, stored nowhere. `phase` says where the row sits on the rail; it
@@ -2038,13 +2058,6 @@ let fleetEvents: FleetEvent[] = [];
 let clarifications: ClarificationRequest[] = [];
 let fleetReports: FleetReport[] = [];
 let attentionRequests: AttentionRequest[] = [];
-// WHICH Programs lost their inbox record while loading. The loader degrades an unreadable inbox to
-// an ABSENT one on purpose (it never repairs a record field by field), which makes "no entry was
-// ever written" and "the record could not be read" the same bytes to every later reader. That is
-// the right storage rule and the wrong answer to give a session that is being handed the Program:
-// this set is what keeps the two apart, so the succession handover can say `unknown` where it
-// cannot say a number. Boot-scoped, like the load it records.
-const programInboxUnreadable = new Set<string>();
 let tasks: Task[] = [];
 // Delivery is an EVENT keyed by the audit row's `at`, not a per-session nudge. Keep its marker in
 // fleet.json rather than rewriting the append-only audit ledger: that makes "nobody was available"
@@ -7670,6 +7683,15 @@ async function inboxSubject(e: ProgramInboxEntry):
 async function programInboxView(program: Program): Promise<Record<string, unknown>> {
   const inbox = program.inbox ?? { v: 1 as const, entries: [], dropped: 0 };
   const unknown: string[] = [];
+  // THE ONE DEGRADATION THIS READER MUST NEVER RENDER AS HEALTH. loadProgramInbox refuses to
+  // repair a broken record, so the Program arrives here with no inbox at all — and `entries: []`
+  // with `unread: 0` is then indistinguishable from a Program nobody ever wrote to. The scar is a
+  // persisted record (never a boot-scoped flag), so this line survives the save that erases the
+  // broken bytes and every restart after it; a reader that only saw the flag would be told the
+  // truth exactly once and a comfortable lie forever after. FIRST in the list on purpose: it is
+  // the one line that says the entries below may not be the whole history.
+  if (program.inboxLost)
+    unknown.push(`the inbox record was unreadable at ${new Date(program.inboxLost.at).toISOString()} (${program.inboxLost.error}) and loaded as absent; every pointer written before then is gone, so the entries below are what was written AFTER that, never the whole history.`);
   const entries = [];
   for (const e of [...inbox.entries].sort((a, b) => b.at - a.at)) {
     const joined = await inboxSubject(e);
@@ -20576,73 +20598,164 @@ const gameMakerSuccessionSteps = (): string[] => [
 // that. A Standard Program-MAIN is not like that: its open work, its unread mail and the owner
 // decisions it is waiting on are ALREADY typed records this server owns, reachable by the
 // successor through doors it holds from its first second. Making it commit a prose file as well
-// bought the same facts twice, and the tree paid for it: at 178eb78d, 114 of the commits are
-// docs-only and 71 of those are HANDOFF commits.
+// bought the same facts twice.
 //
-// So this block replaces that commit for the Standard rail, and it has to be worth more than the
-// commit was. Three rules hold it honest:
-//  · Every count is MEASURED at the moment of transfer and stands beside the door that re-reads
-//    it. The numbers age within seconds; the doors do not. A successor that trusts a number here
-//    instead of re-reading has misread the block.
-//  · A source that cannot be read says `unknown` and why — never a zero. An unreadable inbox
-//    loads as an absent one, so `programInboxUnreadable` is the only thing that can tell a lost
-//    record from an empty one, and a `0 unread` printed over a lost record is a lie the successor
-//    has no way to catch.
-//  · The obligations that DIE with the predecessor are quoted, not counted. An attention refused
-//    by `requester session ended` is UNANSWERED, not declined, and its row is one the successor
-//    has no route to read back (attentionFor binds to the occupant). A count alone would tell it
-//    that something was lost and give it no way to re-ask — which is precisely the hand-work
-//    CLAUDE.md still prescribes, and precisely what a handover is for.
-const HANDOVER_QUOTE_MAX = 5;
-const HANDOVER_TEXT_MAX = 200;
-// One line, always: a quoted row must never be able to introduce a line of its own. The fleet
-// frame pins its grounding steps by matching `^\d+\.` over the delivered lines, so a newline
-// inside a predecessor's own attention text would be a foreign step in a pinned list.
-const handoverQuote = (text: string): string => {
+// Two halves, and the split is the whole correction of 2026-09-08's first attempt. That version
+// put the obligations INTO THE PROMPT and nowhere else, capped at 200 characters and without the
+// row ids: a decision whose condition sat in its last clause arrived without its condition, an
+// attention arrived without the id that names it, and a watch arrived as a number. A prompt is a
+// preview surface — it is bounded, it is read once, and it is not a place data can live.
+//   · THE DATA is captureProgramHandover -> program.handover: every dying obligation verbatim,
+//     with its id and the parameters a successor would need to re-register it, persisted in the
+//     succession's own state cut and read back through GET /api/self/program-execution.
+//   · THE PREVIEW is these lines: measured counts beside the door that re-reads them, and one
+//     short line per obligation that NAMES it and says where the full row is.
+// Neither half may claim to be the other. The preview says "preview" and points; the record is
+// complete or the succession does not report success (handoverCaptureRefusal below).
+//
+// And a third rule the record does NOT break: it re-arms nothing. An auto that fires again because
+// a session was handed over is a schedule nobody chose. Re-registration is the successor's own act.
+const HANDOVER_PREVIEW_MAX = 5;      // rows previewed per kind; the record holds all of them
+const HANDOVER_PREVIEW_TEXT_MAX = 120;
+const HANDOVER_PREVIEW_DETAIL_MAX = 120;
+// ONE LINE, ALWAYS, and it is a PREVIEW — the caller has already said so in the sentence above it.
+// Newlines are collapsed because the fleet frame pins its grounding steps by matching `^\d+\.`
+// over the delivered lines, so a predecessor's own multi-line text could otherwise inject a step
+// into a pinned list. The unabridged text, newlines and all, is in the record.
+const handoverPreview = (text: string, cap: number): string => {
   const one = text.replace(/\s+/g, " ").trim();
-  return one.length > HANDOVER_TEXT_MAX ? `${one.slice(0, HANDOVER_TEXT_MAX)}…` : one;
+  return one.length > cap ? `${one.slice(0, cap)}…` : one;
 };
-const handoverRest = (total: number): string[] =>
-  total > HANDOVER_QUOTE_MAX ? [`  · …and ${total - HANDOVER_QUOTE_MAX} more, not quoted here`] : [];
+// The preview of an obligation is DERIVED FROM THE STORED ROW, never from the live one: that is
+// what makes it structurally impossible for the preview to name a row the record does not hold.
+const handoverPreviewLine = (o: ProgramHandoverObligation): string => {
+  const detail = handoverPreview(Object.entries(o.detail)
+    .map(([k, v]) => `${k}=${v === null ? "null" : String(v)}`).join(" "), HANDOVER_PREVIEW_DETAIL_MAX);
+  const text = o.text === "" ? "" : ` — "${handoverPreview(o.text, HANDOVER_PREVIEW_TEXT_MAX)}"`;
+  return `  · ${o.kind} ${o.id}${detail ? ` — ${detail}` : ""}${text}`;
+};
 
-function standardHandoverLines(program: Program, predecessor: SuccessionPredecessorIdentity): string[] {
-  const rows = tasks.filter((t) => t.programId === program.id);
-  const open = rows.filter((t) => t.status === "pending" || t.status === "queued" || t.status === "sent");
-  const inState = (want: Task["status"]): number => open.filter((t) => t.status === want).length;
-  const inbox = programInboxStatus(program);
-  const entries = program.inbox?.entries.length ?? 0;
-  // the predecessor's OWN rows, joined on the full occupant pair rather than the slot: the slot is
-  // reused, and a successor told about a stranger's obligations would re-ask a stranger's question.
+// --- THE CAPTURE. Runs while the predecessor is still whole -------------------------------------
+// Everything here is about to be destroyed by killSlot: `autos` and the armed `watches` are
+// deleted outright, and the open attentions are stamped refused/"requester session ended" — which
+// is UNANSWERED, not declined — on rows that are themselves a pruned tail
+// (ATTENTION_KEEP_TERMINAL). So this is the last moment any of it can be written down, and it is
+// written down COMPLETE. Slicing is defensive only: the three route caps already bound every
+// value, and a slice here exists so a hand-edited fleet.json can never make this function emit a
+// record its own loader would refuse.
+const handoverDetailValue = (v: unknown): string | number | boolean | null => {
+  if (v === null || v === undefined) return null;
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "boolean") return v;
+  return String(v).slice(0, 500);
+};
+const handoverDetail = (fields: Record<string, unknown>): ProgramHandoverDetail => {
+  const detail: ProgramHandoverDetail = {};
+  for (const [k, v] of Object.entries(fields)) if (v !== undefined) detail[k] = handoverDetailValue(v);
+  return detail;
+};
+function captureProgramHandover(program: Program, predecessor: SuccessionPredecessorIdentity,
+  successor: { slot: number; openedAt: number }, at: number): ProgramHandover {
+  // joined on the full occupant PAIR, never the slot alone: slot ids are recycled, and a successor
+  // told about a stranger's obligations would re-ask a stranger's question. `autos` is the one
+  // exception and it is the row's own shape, not a shortcut — an Auto carries no openedAt, and
+  // teardown deletes every row of the SLOT, so the slot is exactly what dies with it.
   const attention = attentionRequests.filter((a) => a.programId === program.id
     && (a.status === "open" || a.status === "send-uncertain")
     && a.requester.slot === predecessor.slot && a.requester.openedAt === predecessor.openedAt);
   const armed = watches.filter((w) => w.armed && w.slot === predecessor.slot
     && w.slotOpenedAt === predecessor.openedAt);
-  // autos carry no openedAt — teardown drops every row of the SLOT, so that is the honest join
   const checkIns = autos.filter((a) => a.slot === predecessor.slot);
+  const rows: ProgramHandoverObligation[] = [
+    ...attention.map((a): ProgramHandoverObligation => ({
+      kind: "attention", id: a.id, at: a.raisedAt,
+      text: a.text.slice(0, PROGRAM_HANDOVER_TEXT_MAX),
+      detail: handoverDetail({ kind: a.kind, status: a.status,
+        taskId: a.provenance?.taskId ?? null, originId: a.provenance?.originId ?? null,
+        branch: a.provenance?.branch ?? null, candidateSha: a.provenance?.candidateSha ?? null,
+        reAsk: "POST /api/self/attention" }),
+    })),
+    ...armed.map((w): ProgramHandoverObligation => ({
+      kind: "watch", id: w.id, at: w.created, text: "",
+      detail: handoverDetail({ kind: watchKind(w), idleSec: w.idleSec, delivery: w.delivery ?? "pane",
+        ...("target" in w ? { target: w.target, targetCwd: w.targetCwd, targetBranch: w.targetBranch } : {}),
+        ...("repo" in w ? { repo: w.repo, mainAfter: w.mainAfter } : {}),
+        ...("deployId" in w ? { deployId: w.deployId } : {}),
+        ...("jobId" in w ? { jobId: w.jobId } : {}),
+        ...("awaiting" in w ? { awaiting: w.awaiting, deadlineAt: w.deadlineAt } : {}),
+        reArm: "POST /api/self/watch" }),
+    })),
+    ...checkIns.map((a): ProgramHandoverObligation => ({
+      kind: "auto", id: a.id, at: a.created,
+      text: a.text.slice(0, PROGRAM_HANDOVER_TEXT_MAX),
+      detail: handoverDetail({ everySec: a.everySec, idleSec: a.idleSec, runsLeft: a.runsLeft,
+        perpetual: a.perpetual ?? false, enabled: a.enabled, nextAt: a.nextAt,
+        reArm: "POST /api/self/autos" }),
+    })),
+  ];
+  // ALWAYS a record, even with zero rows. `handover: null` then means "no Standard succession has
+  // happened here", and `obligations: []` means "one has, and it measured nothing owed" — two
+  // different facts that an absent record would collapse into one.
+  return { v: 1, at,
+    from: { slot: predecessor.slot, openedAt: predecessor.openedAt, sessionId: null },
+    to: { slot: successor.slot, openedAt: successor.openedAt },
+    obligations: rows.slice(0, PROGRAM_HANDOVER_MAX),
+    dropped: Math.max(0, rows.length - PROGRAM_HANDOVER_MAX) };
+}
+
+// THE LOSSLESS EXCEPTION PATH, and it is a refusal. If the record this succession would persist is
+// one its own loader would not read back, then the obligations are NOT retained — and a succession
+// that reported success would have destroyed them while saying it had handed them over. That is
+// the one outcome this whole cut exists to prevent, so it refuses instead, loudly, before a slot
+// opens; the predecessor stays standing, which is the recoverable state, and the owner is named a
+// concrete reason. Structurally unreachable through the ordinary doors (the route caps bound every
+// field) — which is exactly why it must be checked rather than assumed.
+function handoverCaptureRefusal(handover: ProgramHandover): string | null {
+  const read = loadProgramHandover(JSON.parse(JSON.stringify(handover)) as unknown);
+  if (!read.ok)
+    return `succession handover could not be retained (${read.error}) — refusing rather than reporting a handover that would be lost`;
+  if (handover.dropped > 0)
+    return `succession handover holds ${handover.obligations.length + handover.dropped} obligations and at most ${PROGRAM_HANDOVER_MAX} are retained — refusing rather than dropping ${handover.dropped} of them silently`;
+  return null;
+}
+
+function standardHandoverLines(program: Program, handover: ProgramHandover): string[] {
+  const rows = tasks.filter((t) => t.programId === program.id);
+  const open = rows.filter((t) => t.status === "pending" || t.status === "queued" || t.status === "sent");
+  const inState = (want: Task["status"]): number => open.filter((t) => t.status === want).length;
+  const inbox = programInboxStatus(program);
+  const entries = program.inbox?.entries.length ?? 0;
+  const of = (kind: ProgramHandoverObligation["kind"]): ProgramHandoverObligation[] =>
+    handover.obligations.filter((o) => o.kind === kind);
+  const preview = (kind: ProgramHandoverObligation["kind"]): string[] => {
+    const all = of(kind);
+    return [...all.slice(0, HANDOVER_PREVIEW_MAX).map(handoverPreviewLine),
+      ...(all.length > HANDOVER_PREVIEW_MAX
+        ? [`  · …and ${all.length - HANDOVER_PREVIEW_MAX} more ${kind} rows, all of them in the record`] : [])];
+  };
   return [
     ``,
     `YOUR HANDOVER IS THIS PROGRAM'S OWN RECORD, measured at the moment of transfer. Every count below ages immediately; the door beside it does not, so re-read rather than trust the number.`,
     `- Open task rows: ${open.length} of ${rows.length} (pending ${inState("pending")}, queued ${inState("queued")}, sent ${inState("sent")}). GET /api/self/program-execution gives each row its phase and the one door that belongs to it.`,
-    programInboxUnreadable.has(program.id)
-      ? `- Program inbox: unknown. The persisted record could not be read at load and degraded to absent, so an empty answer here proves nothing. GET /api/self/inbox says what survived.`
+    program.inboxLost
+      ? `- Program inbox: LOST at ${new Date(program.inboxLost.at).toISOString()} — the persisted record could not be read (${program.inboxLost.error}) and every pointer written before then is gone for good. An empty answer from GET /api/self/inbox proves nothing about what was there; the same loss is on that route's own \`unknown\` list.`
       : `- Program inbox: ${inbox.unread} unread of ${entries} entries${inbox.oldestAt === null ? "" : `, oldest unread ${new Date(inbox.oldestAt).toISOString()}`}. GET /api/self/inbox reads them; POST /api/self/inbox/<id>/read receipts one.`,
-    `- Owner decisions your predecessor had open: ${attention.length}. Its retirement refuses each as "requester session ended", which means UNANSWERED, not declined — and no route hands you another occupant's rows, so each is quoted once here. Re-ask what still matters through POST /api/self/attention.`,
-    ...attention.slice(0, HANDOVER_QUOTE_MAX).map((a) => `  · [${a.kind}] ${handoverQuote(a.text)}`),
-    ...handoverRest(attention.length),
-    `- Subscriptions and check-ins that end with your predecessor: ${armed.length} armed watches, ${checkIns.length} scheduled check-ins. Nothing re-arms them; re-register what you still need through POST /api/self/watch and POST /api/self/autos.`,
-    ...checkIns.slice(0, HANDOVER_QUOTE_MAX).map((a) => `  · check-in: ${handoverQuote(a.text)}`),
-    ...handoverRest(checkIns.length),
+    `- Obligations that END with your predecessor: ${of("attention").length} open owner decisions, ${of("watch").length} armed watches, ${of("auto").length} scheduled check-ins. NOTHING was re-armed — that is deliberate; re-registering is your act. Each row is RETAINED IN FULL (id, complete text, reconstruction parameters) as \`handover\` in GET /api/self/program-execution. THE LINES BELOW ARE PREVIEWS, truncated on purpose, and the NEXT succession replaces that record — so read it before you hand this Program on.`,
+    ...preview("attention"),
+    ...preview("watch"),
+    ...preview("auto"),
+    `  (An open decision is refused by the retirement as "requester session ended": UNANSWERED, not declined. Re-ask what still matters through POST /api/self/attention.)`,
   ];
 }
 
 function buildProgramMainSuccessionBrief(program: Program, carry: string | null, frame: ProgramMainFrame,
-  anchorBlock: string, predecessor: SuccessionPredecessorIdentity): string {
+  anchorBlock: string, retained: ProgramHandover | null): string {
   const next = carry ? [``, `The first thing the predecessor would do next (max. ${MAX_SUCCESSION_CARRY} characters):`, carry] : [];
-  // the Standard rail only. A game-maker successor is told to read its checkpoint and NOTHING else
-  // (step 7 of its order), so handing it a second source here would create the exact second
-  // handover channel the carry refusal above exists to prevent.
-  const handover = isGameMaker(program) ? [] : standardHandoverLines(program, predecessor);
+  // the Standard rail only, and it PREVIEWS the record that is about to be persisted — never the
+  // live rows. A game-maker successor is told to read its checkpoint and NOTHING else (step 7 of
+  // its order), so it is handed `null` here: a second source would be the exact second handover
+  // channel the carry refusal above exists to prevent.
+  const handover = retained === null ? [] : standardHandoverLines(program, retained);
   const body = isGameMaker(program) ? [
     "[fleet Program-MAIN succession] You are the CONTINUED authoritative MAIN session for the owner-confirmed Program below. Your predecessor is retiring; continue from what you observe yourself and the checkpoint it committed.",
     ...gameMakerSuccessionSteps(),
@@ -21557,7 +21670,22 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
       }
       if (!transferCurrent()) return await revoked("during context planning");
       const anchorBlock = renderContextAnchorBlock(plan);
-      const deliveredBrief = buildProgramMainSuccessionBrief(program, carry, preflight.value.frame, anchorBlock, predecessor);
+      // THE OBLIGATIONS ARE CAPTURED HERE, before the brief that previews them and before the
+      // state cut that persists them — one read, two consumers, so the preview can never name a
+      // row the record does not hold. `null` on the game-maker rail: its handover is the committed
+      // checkpoint and nothing else. Both identity brackets still hold at this point, so the rows
+      // this reads belong to the occupant this request authenticated.
+      const retained = isGameMaker(program)
+        ? null : captureProgramHandover(program, predecessor, { slot: free.id, openedAt: free.openedAt }, Date.now());
+      // …and if that record would not survive its own loader, the succession stops instead of
+      // reporting a handover it is about to destroy. Before the brief, before the receipt, before
+      // the binding move: the predecessor stays standing, which is the recoverable state.
+      const retentionRefusal = retained === null ? null : handoverCaptureRefusal(retained);
+      if (retentionRefusal) {
+        await cleanup();
+        return json({ error: `Program-MAIN ${retentionRefusal}` }, 409);
+      }
+      const deliveredBrief = buildProgramMainSuccessionBrief(program, carry, preflight.value.frame, anchorBlock, retained);
       const selected = contextReceiptSelections(plan.selected);
       const omitted = plan.omitted.map((entry) => ({ ...entry }));
       const repo = free.cwd!;
@@ -21626,10 +21754,18 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
       };
       const oldMain = program.main ? { ...program.main } : undefined;
       const oldLineage = program.lineage;
+      const oldHandover = program.handover;
       const oldRetirement = s.successionRetirement;
       const oldStarted = successionStarted.get(s.id);
       program.main = { slot: free.id, openedAt: free.openedAt,
         sessionId: free.sessionId ?? null, boundAt: at };
+      // THE SAME CUT that moves the authority retains what the outgoing session owed. One save, so
+      // there is no window in which the binding has moved and the obligations have not been written
+      // down — the window in which a crash would destroy them with nothing recorded. `sessionId` is
+      // filled in here rather than at capture time for one reason: it is a fact about the occupant
+      // this save is closing out, and the capture ran before the last identity re-check.
+      if (retained) program.handover = { ...retained,
+        from: { ...retained.from, sessionId: s.sessionId } };
       // the same save moves the authority and records the move: predecessor closed by `succeed`,
       // successor appended via `succeed`
       appendProgramLineage(program, lineageEntryFromMain(program.main, "succeed"),
@@ -21644,6 +21780,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
       } catch (e) {
         if (oldMain) program.main = oldMain; else delete program.main;
         if (oldLineage) program.lineage = oldLineage; else delete program.lineage;
+        if (oldHandover) program.handover = oldHandover; else delete program.handover;
         program.founding = founding;
         if (sameSuccessionOccupant(s, predecessor)) {
           s.successionRetirement = oldRetirement;
@@ -22669,6 +22806,8 @@ if (existsSync(STATE_FILE)) {
       const loaded: Program[] = [];
       const unreadableLineages: { id: string; error: string }[] = [];
       const unreadableInboxes: { id: string; error: string }[] = [];
+      const unreadableInboxLosses: { id: string; error: string }[] = [];
+      const unreadableHandovers: { id: string; error: string }[] = [];
       for (const raw of (persisted as { programs: unknown[] }).programs) {
         if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
         const x = raw as Record<string, unknown>;
@@ -22749,10 +22888,38 @@ if (existsSync(STATE_FILE)) {
         // wrote — absence here is the honest "no entry was ever written", and an unreadable record
         // degrades to exactly that absence and is REPORTED, never repaired field by field.
         let inbox: ProgramInbox | undefined;
+        // …and the SCAR that degradation leaves. An unreadable record degrades to ABSENT, which is
+        // byte-identical to "no entry was ever written" — so the loss is written down HERE, at the
+        // one moment anything can still see it, and from then on it is an ordinary persisted record
+        // that survives the next save and the next boot. An existing scar is loaded, never
+        // recomputed: the second boot has no broken bytes left to observe, and a fact that
+        // evaporated at exactly that point would be worse than no fact at all.
+        let inboxLost: ProgramInboxLoss | undefined;
+        if (Object.prototype.hasOwnProperty.call(x, "inboxLost")) {
+          const read = loadProgramInboxLoss(x.inboxLost);
+          if (read.ok) inboxLost = read.loss;
+          else unreadableInboxLosses.push({ id: x.id, error: read.error });
+        }
         if (Object.prototype.hasOwnProperty.call(x, "inbox")) {
           const read = loadProgramInbox(x.inbox);
           if (read.ok) inbox = read.inbox;
-          else unreadableInboxes.push({ id: x.id, error: read.error });
+          else {
+            unreadableInboxes.push({ id: x.id, error: read.error });
+            // the FIRST loss wins: `at` dates when the pointers stopped being reconstructible, and
+            // a later boot that re-broke an already-scarred record would move that date forward
+            // onto entries that were already gone.
+            inboxLost ??= { v: 1, at: Date.now(),
+              error: read.error.slice(0, PROGRAM_INBOX_LOSS_ERROR_MAX) };
+          }
+        }
+        // the handover: default-absent and never backfilled, like the lineage and the inbox. An
+        // unreadable record loads as absent and is reported — a repaired one would answer "the
+        // predecessor owed nothing", which is the one answer it may never give.
+        let handover: ProgramHandover | undefined;
+        if (Object.prototype.hasOwnProperty.call(x, "handover")) {
+          const read = loadProgramHandover(x.handover);
+          if (read.ok) handover = read.handover;
+          else unreadableHandovers.push({ id: x.id, error: read.error });
         }
         let founding: ProgramFounding | undefined;
         if (foundingRead?.ok) {
@@ -22784,6 +22951,8 @@ if (existsSync(STATE_FILE)) {
           ...(founding ? { founding } : {}),
           ...(lineage ? { lineage } : {}),
           ...(inbox ? { inbox } : {}),
+          ...(inboxLost ? { inboxLost } : {}),
+          ...(handover ? { handover } : {}),
           ...(status !== "proposed" ? { confirmedAt: confirmedAt! } : {}),
           ...(status === "active" || status === "complete" ? { activatedAt: activatedAt! } : {}),
           ...(status === "complete" ? { completedAt: completedAt! } : {}) });
@@ -22801,11 +22970,17 @@ if (existsSync(STATE_FILE)) {
         console.error(`Program ${id} lineage unreadable: ${error} — loaded as absent`);
         audit("program_lineage_unreadable", undefined, `${id} ${error}`);
       }
-      programInboxUnreadable.clear();
       for (const { id, error } of unreadableInboxes) {
-        console.error(`Program ${id} inbox unreadable: ${error} — loaded as absent`);
+        console.error(`Program ${id} inbox unreadable: ${error} — loaded as absent, scar recorded`);
         audit("program_inbox_unreadable", undefined, `${id} ${error}`);
-        programInboxUnreadable.add(id);
+      }
+      for (const { id, error } of unreadableInboxLosses) {
+        console.error(`Program ${id} inboxLost unreadable: ${error} — loaded as absent`);
+        audit("program_inbox_loss_unreadable", undefined, `${id} ${error}`);
+      }
+      for (const { id, error } of unreadableHandovers) {
+        console.error(`Program ${id} handover unreadable: ${error} — loaded as absent`);
+        audit("program_handover_unreadable", undefined, `${id} ${error}`);
       }
     }
     // The Supervisor binding: absent OR malformed loads as null, never as a half-binding — every

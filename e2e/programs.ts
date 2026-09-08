@@ -7625,26 +7625,31 @@ export async function run(ctx: Ctx): Promise<void> {
     // idle enough to spend them. So BOTH halves of `slotDeliveryBudget` are cleared here: the
     // events through the MAIN's own ack door, the armed watches through the owner's delete route.
     // Without it the arm goes red for a reason that has nothing to do with what it measures.
-    const drainMainBudget = async (): Promise<{ acked: number; unwatched: number }> => {
-      const st = readState();
-      const open = (st.events ?? []).filter((e) =>
-        (e as { receiverSlot?: number }).receiverSlot === landMainSlot
-        && !["acknowledged", "receiver-gone", "subject-gone"].includes((e as { status?: string }).status ?? ""));
+    const drainMainBudget = async (): Promise<{ acked: number; unwatched: number; saw: number }> => {
+      // READ LIVE, never `readState()`. Measured in `isolated-20260908T112729Z-25092`: the disk
+      // read answered `{acked:0, unwatched:0}` while the budget was in fact full, because
+      // `server.ts#saveState` is DEBOUNCED and an armed watch reaches fleet.json later than the
+      // land that armed it. `GET /api/self` serves this MAIN's own watches and events out of
+      // memory, which is the same array the door reads.
+      const mine = await (await fetch(`${BASE}/api/self`,
+        { headers: { "x-fleet-self-token": landTok } })).json() as
+        { watches?: { id?: string; armed?: boolean }[];
+          events?: { id?: string; status?: string }[] };
+      const open = (mine.events ?? []).filter((e) =>
+        !["acknowledged", "receiver-gone", "subject-gone"].includes(e.status ?? ""));
       let acked = 0;
       for (const e of open) {
-        const id = (e as { id?: string }).id;
-        if (!id) continue;
-        const r = await fetch(`${BASE}/api/self/events/${id}/ack`,
+        if (!e.id) continue;
+        const r = await fetch(`${BASE}/api/self/events/${e.id}/ack`,
           { method: "POST", headers: { "x-fleet-self-token": landTok } });
         if (r.ok) acked++;
       }
       let unwatched = 0;
-      for (const w of (st.watches ?? [])) {
-        const row = w as { id?: string; slot?: number; armed?: boolean };
-        if (row.slot !== landMainSlot || row.armed !== true || !row.id) continue;
-        if ((await post(`/api/watches/${row.id}/delete`, {})).ok) unwatched++;
+      for (const w of (mine.watches ?? [])) {
+        if (w.armed !== true || !w.id) continue;
+        if ((await post(`/api/watches/${w.id}/delete`, {})).ok) unwatched++;
       }
-      return { acked, unwatched };
+      return { acked, unwatched, saw: (mine.watches ?? []).length + (mine.events ?? []).length };
     };
     // …and the OTHER fixture hazard this neighbourhood carries, measured in the same run: the
     // founding brief is delivered by a DETACHED tail that sleeps 4000 ms and REQUEUES the row on
@@ -7758,8 +7763,12 @@ export async function run(ctx: Ctx): Promise<void> {
     const acceptFiled = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
       headers: { "content-type": "application/json", "x-fleet-self-token": acceptLaneTok },
       body: JSON.stringify({ status: "complete", text: "ambient-land probe: judged before anyone landed it." }) });
+    // the BODY, not just the status: a refusal here has half a dozen distinct sentences and the
+    // one it chose is the whole diagnosis — a status alone sent the last run hunting.
+    const acceptFiledRaw = await acceptFiled.text();
+    const acceptFiledBody = acceptFiledRaw.slice(0, 240); // for the message only — parse the WHOLE body
     const acceptReportId = acceptFiled.ok
-      ? ((await acceptFiled.json()) as { report?: { id?: string } }).report?.id ?? null : null;
+      ? (JSON.parse(acceptFiledRaw) as { report?: { id?: string } }).report?.id ?? null : null;
     const acceptDecided = acceptReportId === null ? null
       : await mainDecides(acceptReportId, "accept", "read the diff — this is what the row asked for");
     const acceptReady = acceptLane.slot === null ? false : await waitDoneLooking(acceptLane.slot);
@@ -7771,7 +7780,8 @@ export async function run(ctx: Ctx): Promise<void> {
     check("ambient land fixture: the accepted-report arm LANDED — the MAIN decided the row first, then a BEARER merge moved main",
       acceptLanded && acceptDecided?.ok === true,
       JSON.stringify({ ready: acceptReady, decided: acceptDecided, drained: JSON.stringify(acceptDrained),
-        filed: acceptFiled.status, reportId: acceptReportId, before: acceptBefore.slice(0, 8),
+        filed: acceptFiled.status, filedBody: acceptFiledBody, reportId: acceptReportId,
+        before: acceptBefore.slice(0, 8),
         after: acceptMain.slice(0, 8), drive: acceptDrive.log }));
     if (acceptLanded) {
       const acceptNote = await landNote(acceptMain);

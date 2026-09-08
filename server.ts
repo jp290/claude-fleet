@@ -13602,6 +13602,45 @@ const coverKey = (c: AuditCover): string => `${c.branch}\u0000${c.mainAfter}\u00
 // window; run locally, the same two would have held this machine's suite mutex for that long.
 const entryRunsShortChain = (repo: string, covers: AuditCover[]): boolean =>
   covers.length > 0 && covers.every((c) => c.proportional === true) && repoRunsShortChain(repo);
+// COULD ANY HELPER EVER TAKE THIS ENTRY — one predicate, four readers, and the reason it is not
+// four lists. The answer is "no" for three different reasons, they sit at three different doors
+// (the claim, the job list, the wake rail) and a fourth reader — the drain's grace — has to ask the
+// same question to know whether waiting for an offer buys anything. Until 2026-09-08 each site
+// carried its own hand-copy of the reasons, and BOTH directions of that drift were already live:
+// `helperWorkAwaitingClaim` never learned the short-chain arm (a magic packet for a job the woken
+// machine is then refused), and the drain never learned the repo-worker arm (an entry held the full
+// AUDIT_HELPER_GRACE_MS for an offer that structurally never comes). So the CONDITION is one
+// function and the reasons travel WITH it as a value: a boolean would have made every 409 re-derive
+// which arm it hit, which is the second copy again under another name.
+//
+// `null` IS "a helper could take it" — the ok case is the empty one, so a new arm added here is
+// refused everywhere at once instead of silently offered by whichever door forgot it.
+type HelperClaimBar = "unconfigured" | "repo-worker" | "short-chain";
+function helperClaimBar(repo: string, covers: AuditCover[]): HelperClaimBar | null {
+  const chosen = auditCmdFor(repo);
+  // nobody's work until something is configured — parked, and (in the drain) not runnable HERE either
+  if (!chosen) return "unconfigured";
+  // the daemon runs exactly one command, `cfg.suiteCmd` (fleet's suite), against whatever it clones:
+  // handing it a repo's OWN audit executable would measure the wrong suite and file it under the
+  // right repo
+  if (chosen.source === "repo-worker") return "repo-worker";
+  // …and the same argument in the other direction: this tree's measurement is install+pins, seconds
+  // here, and a helper would spend ~9 minutes of another machine running the FULL suite and file the
+  // result as if the short chain had been the question
+  if (entryRunsShortChain(repo, covers)) return "short-chain";
+  return null;
+}
+// …and the sentence each arm says at the claim door. A `Record` rather than three literals at the
+// door: adding an arm to the type above without a sentence here is a compile error, which is the
+// only kind of coupling that does not rot. The texts are load-bearing — e2e/repo-worker-audit.ts
+// matches "repo-worker" and the postland harness's (P) matches "short chain" — so they stay
+// distinguishable; what is shared is the CONDITION, never the prose.
+const HELPER_CLAIM_BAR_REASON: Record<HelperClaimBar, string> = {
+  unconfigured: "no audit command is configured for this repo — the entry is parked, not offered",
+  "repo-worker": "this repo's audit is its own repo-worker command — it runs on this machine only, never offered",
+  "short-chain": "every land in this entry passed the docs-only gate — it is audited by the short chain"
+    + " (install+pins) on this machine only, never offered",
+};
 // The durable row. `mainSha` is the integration tip actually audited and `covers` names every land
 // since the previous run, so the two questions this tier exists to answer are plain joins over the
 // trail: "which land was the last GREEN audit" = the newest green row's covers/mainSha, and "which
@@ -14384,18 +14423,21 @@ async function drainPostLandAudits(): Promise<void> {
       let graceUntil = 0;
       const entry = [...auditQueue.entries()].find(([r, q]) => {
         if (helperClaimOf(r)) return false;
-        // …and SKIPPING an entry whose repo has no command any more (the worker was cleared after
-        // the land queued, on a deployment without the env default). Left where it is, durably:
-        // unconfigured is not skipped, and configuring it again — or a boot — drains it.
-        if (!auditCmdFor(r)) return false;
-        // …and NEVER holding a short-chain entry back for a helper. The grace exists to give
-        // another machine first refusal on a ~9-minute suite; this entry is install+pins, seconds,
-        // and it is not offered to the portal at all (helperJobsView / helperClaim refuse it for
-        // the same reason a repo-worker job is refused: the daemon runs the fleet SUITE, which is
-        // the wrong measurement for this tree). Waiting would be pure latency for a job nobody can
-        // take. Placed after the claim and command checks so an already-claimed or parked entry
-        // still answers with its own state.
-        if (entryRunsShortChain(r, q.covers)) return true;
+        // …and the ONE question the portal's three doors ask too (helperClaimBar), asked here for
+        // the grace's sake. Two consequences fall out of the same answer, and they are opposite:
+        //   · `unconfigured` — the repo has no command any more (the worker was cleared after the
+        //     land queued, on a deployment without the env default). Not offerable AND not runnable
+        //     here: left where it is, durably. Configuring it again — or a boot — drains it.
+        //   · any OTHER bar — this entry is local-only work, so waiting for an offer is pure latency
+        //     for a job nobody can take. The grace exists to give another machine first refusal on a
+        //     ~9-minute suite; a repo-worker's own command and an install+pins short chain are never
+        //     put in front of one at all, and until 2026-09-08 the repo-worker arm was missing from
+        //     exactly this line while the short-chain arm was present — the drift the shared
+        //     predicate exists to end.
+        // Placed after the claim check so an already-claimed entry still answers with its own state.
+        const bar = helperClaimBar(r, q.covers);
+        if (bar === "unconfigured") return false;
+        if (bar) return true;
         if (!graceOn) return true;
         // the YOUNGEST cover: a coalesced entry keeps growing while it waits, and the grace is a
         // promise about the newest land in it, not about the oldest. An entry with no covers is
@@ -15314,19 +15356,12 @@ function helperJobsView(forDevice?: string): {
   }
   for (const [repo, q] of auditQueue) {
     if (!q.covers.length) continue;
-    // NOT OFFERED: a repo whose audit is its own repo-worker executable. The daemon runs exactly
-    // one command, `cfg.suiteCmd` (fleet's suite), against whatever it clones — handing it this
-    // job would produce a verdict measured by the wrong suite and record it under the right repo.
-    // The job stays local; nothing is dropped, the drain runs it here. A PARKED entry (no command
-    // at all) is not offered either — it is nobody's work until something is configured.
-    // …and NOT OFFERED: an entry every one of whose lands passed the docs-only gate. Same reason
-    // as the repo-worker skip, in the other direction: the daemon runs `cfg.suiteCmd` — the FULL
-    // fleet suite — so taking this job would spend a remote machine's ~9 minutes on a tree whose
-    // proportional measurement is install+pins here, and file the result as if the short chain had
-    // been the question. The job stays local; the drain runs it in seconds and skips the grace.
-    const chosen = auditCmdFor(repo);
-    if (!chosen || chosen.source === "repo-worker") continue;
-    if (entryRunsShortChain(repo, q.covers)) continue;
+    // NOT OFFERED: an entry no helper could ever take — a repo whose audit is its own repo-worker
+    // executable, one with no command at all, one every land of which passed the docs-only gate.
+    // The three reasons and the argument for each are helperClaimBar's; this door only has to
+    // refuse them. The job stays local; nothing is dropped, the drain runs it here and, since it
+    // asks the same predicate, does not hold it for a helper first.
+    if (helperClaimBar(repo, q.covers)) continue;
     const c = helperClaimOf(repo);
     jobs.push({
       id: helperJobId(repo), kind: "audit", repo: basename(repo), main: q.main,
@@ -15519,8 +15554,10 @@ async function sendWakeFrame(mac: Uint8Array): Promise<{ sent: true } | { sent: 
 // IS THERE WORK NO MACHINE HAS TAKEN? The auto-wake's first condition, and it deliberately reads
 // the same three registers helperJobsView offers a device from — a wake for work that is already
 // claimed, already running here, or not offerable at all would be a packet for nothing.
-//   · an AUDIT entry that has covers, has a command that is not a repo-worker's (those are never
-//     offered), is unclaimed and is not the local drain's right now.
+//   · an AUDIT entry that has covers, is offerable at all (helperClaimBar — the SAME predicate the
+//     job list and the claim door ask, not a copy of its reasons; a copy here is what packeted a
+//     machine awake for a short-chain job it was then refused), is unclaimed, and is not the local
+//     drain's right now.
 //   · a lane PREVIEW or a COMMAND job still `open` — `claimed` is somebody else's already.
 //   · and this device's OWN queued daemon-update, which no other machine can take.
 // Deliberately NOT asked: whether the job is fresh. The wake rail's clock is the device's silence,
@@ -15528,8 +15565,7 @@ async function sendWakeFrame(mac: Uint8Array): Promise<{ sent: true } | { sent: 
 function helperWorkAwaitingClaim(deviceId: string): boolean {
   for (const [repo, q] of auditQueue) {
     if (!q.covers.length) continue;
-    const chosen = auditCmdFor(repo);
-    if (!chosen || chosen.source === "repo-worker") continue;
+    if (helperClaimBar(repo, q.covers)) continue;
     if (helperClaimOf(repo)) continue;
     if (auditRunningRepo === repo || runningPostLandAudit?.repo === repo) continue;
     return true;
@@ -15793,12 +15829,8 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
   const [repo, q] = hit;
   // the same rule as helperJobsView's, on the door and not only on the list: a job that was never
   // offered must not be claimable by a client that knows the id shape
-  const chosen = auditCmdFor(repo);
-  if (!chosen) return json({ error: "no audit command is configured for this repo — the entry is parked, not offered" }, 409);
-  if (chosen.source === "repo-worker")
-    return json({ error: "this repo's audit is its own repo-worker command — it runs on this machine only, never offered" }, 409);
-  if (entryRunsShortChain(repo, q.covers))
-    return json({ error: "every land in this entry passed the docs-only gate — it is audited by the short chain (install+pins) on this machine only, never offered" }, 409);
+  const bar = helperClaimBar(repo, q.covers);
+  if (bar) return json({ error: HELPER_CLAIM_BAR_REASON[bar] }, 409);
   // …the two ways this tree could already be somebody's work. Reported apart, not merged: they are
   // different facts, and the helper deserves to know which one it hit.
   const held = helperClaimOf(repo);

@@ -37,6 +37,12 @@ answer it, and all it does is switch a box on so it can start pulling.
   `active` and beating recently. Unset or `0` is the old behaviour exactly. It never starves
   anything: the moment the grace lapses the local drain takes the job, which is the same fallback
   the expiry rail above provides, one step earlier.
+  **AND IT ONLY EVER HOLDS A JOB THIS DAEMON COULD ACTUALLY TAKE** (2026-09-08, `server.ts`, grep
+  `helperClaimBar`). Three kinds of audit entry are never offered — a repo whose audit is its own
+  repo-worker executable, an entry whose every land passed the docs-only gate (the Fleet audits that
+  one with install+pins in seconds), and a parked entry with no command — and the Fleet's drain asks
+  the same predicate the job list and the claim door do, so none of them waits out the grace for an
+  offer that could never arrive.
   **THE OFFSET RUNS FROM CLAIMABILITY, NOT FROM THE LAND** (2026-09-07, `server.ts`, grep
   `auditClaimableSince`; `docs/messungen/2026-09-07-audit-platzierung-gnadenfrist.md`). Claims lock
   per REPO, so a land that arrives behind a live claim — or behind a local run of the same repo —

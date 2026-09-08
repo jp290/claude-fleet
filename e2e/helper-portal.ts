@@ -19,7 +19,7 @@
 // section seeds one instead of reusing the harness's.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { BASE, ROOT, check, get, post } from "./harness";
 import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
 
@@ -84,7 +84,15 @@ async function selfTokenOf(slot: number): Promise<string> {
 interface Row {
   at: number; ms: number; repo: string; main: string; mainSha: string; result: string; reason?: string;
   cmd: string; exitCode: number | null; out: string; checks?: { ran: number; failed: number } | null;
-  covers: { branch: string; mainAfter: string }[];
+  // WHEN THE RUN STARTED, and the cover's own `at` beside it — the pair (K7d) subtracts. Both are
+  // written on every row, so both are mandatory here: a server that stopped writing one must fail
+  // that named check rather than have this module read `undefined` as a zero-length wait.
+  startedAt: number;
+  // which command measured the tree, in the audit's own vocabulary — `proportional` is the short
+  // chain the server chose for itself, and it is the arm (K7d) needs to name. Optional because a
+  // row that is not proportional carries neither field.
+  cmdSource?: string; proportional?: boolean;
+  covers: { branch: string; mainAfter: string; at: number }[];
   remote?: { name: string; claimedAt: number; reportedAt: number; trail?: string; clonedSha?: string;
     // the other machine's own account of a NON-measurement. Optional and typed as a plain string
     // for the same reason every other remote field here is: what is under test is that the server
@@ -106,13 +114,18 @@ const DEVICE_NAME = "e2e helper box";
 
 export async function run(h: {
   REPO: string;
+  // the harness's proportional fixture (a repo carrying `fleet-e2e.ts` and a runnable `e2e/pins.ts`,
+  // so its docs-only lands really run the short chain). Passed in rather than seeded here: building
+  // it a second time would be a second manifest for `bun install --frozen-lockfile` to disagree
+  // with, which is the exact breakage that gave it its own repo in the first place.
+  shortChainRepo: string;
   setAuditMode: (m: string) => Promise<number>;
   killSrv: () => Promise<void>;
   startSrv: (opts: { audit: boolean; auditPing?: boolean; extra?: Record<string, string> }) => Promise<boolean>;
   auditRows: () => Promise<Row[]>;
   headOf: (ref?: string) => string;
 }): Promise<void> {
-  const { REPO, setAuditMode, killSrv, startSrv, auditRows, headOf } = h;
+  const { REPO, shortChainRepo, setAuditMode, killSrv, startSrv, auditRows, headOf } = h;
   // the decoy: a second repo whose audit occupies the drain while the checks work on REPO's job
   const DECOY = `${REPO}-helperdecoy`;
   await seedRepo(DECOY);
@@ -857,6 +870,144 @@ export async function run(h: {
   await setAuditMode("green");
   check("(K7) …and that run finished, leaving the queue empty for whatever follows",
     await waitNoLocalRun() && (await jobs()).jobs.length === 0, JSON.stringify((await jobs()).jobs));
+
+  // ===== (K7d) AN ENTRY NO HELPER COULD EVER TAKE DOES NOT WAIT FOR ONE =========================
+  // The grace above is a promise made to another MACHINE: for AUDIT_HELPER_GRACE_MS this box leaves
+  // a fresh entry alone so the portal gets first refusal. Three kinds of entry are never offered at
+  // all (server.ts#helperClaimBar) — a repo whose audit is its own repo-worker executable, an entry
+  // whose every land passed the docs-only gate, and a parked one with no command — and holding one
+  // of those is a promise made to nobody: pure latency on this box's own work.
+  //
+  // WHY IT IS ONE PREDICATE AND NOT THREE SKIPS, which is what this section really pins: the same
+  // list was hand-copied at four sites and had ALREADY drifted in both directions. The drain knew
+  // the short-chain arm and not the repo-worker one (so a repo-worker entry waited out the full
+  // grace for an offer that structurally never comes — the defect measured here), and the wake rail
+  // knew the repo-worker arm and not the short-chain one (a magic packet for a job the woken
+  // machine is then refused at the door). Both are now the one call.
+  //
+  // THE MEASUREMENT IS A DIFFERENCE ON THE ROW ITSELF — `startedAt - covers[0].at`, the very clock
+  // the grace is computed from (`readyAt = max(youngest cover, claimable-since) + GRACE`). No
+  // harness stopwatch is in it, so a slow box makes the run late, never the verdict wrong.
+  //
+  // AND THE CONTROL IS THE OTHER HALF, taken at the SAME instant: without it "nothing waited" is
+  // equally what a dead grace, a dropped entry or an offline device looks like. So an ordinary,
+  // offerable entry of the SAME AGE must still be sitting there, unrun and offered, at the moment
+  // the un-offerable one has already been measured.
+  //
+  // THE PARKED ARM IS NOT HERE, and that is a statement rather than an omission: `auditCmdFor`
+  // falls back to the env default, so on a server booted WITH FLEET_POSTLAND_AUDIT_CMD no repo can
+  // be parked at all. Its two doors are measured where a parked entry actually exists — the list
+  // and the claim in e2e/repo-worker-audit.ts (RW.8) — and it has no grace question of its own: a
+  // parked entry is never drained locally either, with or without a helper.
+  const RWG = `${REPO}-rwgrace`;
+  await seedRepo(RWG);
+  // the repo's OWN audit command: one absolute executable, the only shape /api/repo-worker stores.
+  // Fast on purpose — what is under test is WHEN it started, not how long it ran.
+  const RWG_CMD = `${REPO}-rwgrace-audit`;
+  await Bun.write(RWG_CMD, "#!/bin/sh\necho \"PASS  rwgrace repo-worker audit\"\necho \"ALL PASS\"\nexit 0\n");
+  chmodSync(RWG_CMD, 0o755);
+  const rwgSet = await post("/api/repo-worker", { repo: RWG, worker: "audit", cmd: RWG_CMD });
+  check("(K7d) setup: the second repo audits with its OWN repo-worker command",
+    rwgSet.ok && ((await rwgSet.json()) as { cmd?: string }).cmd === RWG_CMD,
+    `${rwgSet.status} ${RWG_CMD}`);
+  // A LONGER GRACE THAN (K7)'s 8 s, and that is the fixture, not a convenience. This section drives
+  // three lands, and the control has to be observably UNRUN while the other two are measured — with
+  // an 8 s grace the control's own timer fires during the second land's merge and the drain takes it
+  // legitimately, which would read as the defect. A long grace also makes each measurement sharper:
+  // "started 0.2 s after its cover" against a 120 s promise says the promise was never consulted.
+  const K7D_GRACE_MS = 120_000;
+  await killSrv();
+  check("(K7d) setup: the server restarts with a grace long enough to observe one entry waiting inside it",
+    await startSrv({ audit: true, extra: { FLEET_AUDIT_HELPER_GRACE_MS: String(K7D_GRACE_MS),
+      FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000", FLEET_HELPER_SWEEP_MS: "15000" } }));
+  await Bun.sleep(750);
+  // the device must be a live claim CANDIDATE right now, or `graceOn` is false and every check
+  // below passes for the wrong reason — "the drain took it" is also what a correct grace does when
+  // nobody can claim. A fresh beat, not a formality: the register came back from disk.
+  await post(`/api/helper/devices/${DEVICE}/mode`, { mode: "active" });
+  const k7dBeat = await hpost("/api/helper/device",
+    { deviceId: DEVICE, name: DEVICE_NAME, mode: "active", load: 0.2 });
+  check("(K7d) setup: the helper is beating and active, so the grace has somebody to hold work for",
+    k7dBeat.ok && (await jobs()).device?.mode === "active"
+      && await waitNoLocalRun(30_000) && (await jobs()).jobs.length === 0,
+    `${k7dBeat.status} device=${JSON.stringify((await jobs()).device)} jobs=${JSON.stringify((await jobs()).jobs)}`);
+
+  // THE CONTROL LANDS FIRST, so its cover is the OLDER one: if the drain ran on age it would take
+  // this one, and the check below would fail in the direction that matters.
+  const k7dCtlRows = (await newRepoRows()).length;
+  const k7dCtl = await openLane(REPO, "gracecontrol");
+  const k7dCtlLanded = await driveMerge(k7dCtl, k7dCtl.branch);
+  const k7dRwLane = await openLane(RWG, "rwgracework");
+  const k7dRwLanded = await driveMerge(k7dRwLane, k7dRwLane.branch);
+  const k7dRwRow = (await waitRowsFor(RWG, 1, 60_000))[0];
+  const k7dRwCover = k7dRwRow?.covers[0]?.at ?? 0;
+  check("(K7d) A REPO-WORKER ENTRY IS AUDITED AT ONCE — the grace never holds it for a portal that would refuse it",
+    k7dRwLanded.gone && !!k7dRwRow && k7dRwRow.result === "green"
+      && k7dRwRow.cmd === RWG_CMD && k7dRwRow.covers[0]?.branch === k7dRwLane.branch
+      && k7dRwCover > 0 && k7dRwRow.startedAt - k7dRwCover < K7D_GRACE_MS,
+    `waited=${k7dRwRow ? k7dRwRow.startedAt - k7dRwCover : "no row"}ms grace=${K7D_GRACE_MS}`
+    + ` cmd=${k7dRwRow?.cmd} result=${k7dRwRow?.result}`);
+  // …and the same instant from the other side. Read AFTER the row above so there is no doubt about
+  // the order: by the time the un-offerable entry had been measured, the offerable one had not.
+  const k7dCtlJob = await jobFor(REPO);
+  // NO ABSOLUTE BOUND HERE, deliberately: a loaded box makes any millisecond threshold a flake. The
+  // comparison is between the two entries — the offerable one has ALREADY been queued longer than
+  // the un-offerable one ever waited, and is still sitting there.
+  const k7dCtlWaited = k7dCtlJob ? Date.now() - k7dCtlJob.oldestAt : 0;
+  const k7dRwWaited = k7dRwRow ? k7dRwRow.startedAt - k7dRwCover : Number.POSITIVE_INFINITY;
+  check("(K7d) …while an OFFERABLE entry landed BEFORE it is still waiting, unrun and on the portal",
+    k7dCtlLanded.gone && !!k7dCtlJob && k7dCtlJob.claim === null && k7dCtlJob.localRunning === false
+      && k7dCtlJob.oldestAt <= k7dRwCover
+      && k7dCtlWaited > k7dRwWaited
+      && (await liveRepo()) === null && (await newRepoRows()).length === k7dCtlRows,
+    `${JSON.stringify(k7dCtlJob)} ctlWaited=${k7dCtlWaited}ms`
+    + ` rwWaited=${k7dRwRow ? k7dRwWaited : "no row"}ms`
+    + ` live=${await liveRepo()} rows=${(await newRepoRows()).length}/${k7dCtlRows}`);
+  // and it really was the helper's: claimed and closed remote, so "nobody ran it here" cannot be
+  // read out of an entry that was quietly dropped
+  const k7dCtlClaim = k7dCtlJob ? await hpost("/api/helper/claim", { jobId: k7dCtlJob.id, deviceId: DEVICE }) : null;
+  const k7dCtlReport = await hpost("/api/helper/result",
+    { jobId: k7dCtlJob?.id ?? "", exitCode: 0, tail: "PASS  the control, taken remote\nALL PASS" });
+  const k7dCtlAfter = await waitNewRepoRows(k7dCtlRows + 1);
+  check("(K7d) …and that waiting entry was really claimable: the helper took it and closed it REMOTE",
+    k7dCtlClaim?.ok === true && k7dCtlReport.ok
+      && k7dCtlAfter.filter((r) => r.covers.some((c) => c.branch === k7dCtl.branch)).length === 1
+      && k7dCtlAfter.find((r) => r.covers.some((c) => c.branch === k7dCtl.branch))?.remote?.name === DEVICE_NAME,
+    `claim=${k7dCtlClaim?.status} report=${k7dCtlReport.status}`
+    + ` rows=${JSON.stringify(k7dCtlAfter.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`))}`);
+
+  // THE SHORT-CHAIN ARM, in the repo that carries the `fleet-e2e.ts` sentinel the short chain is
+  // guarded by (the harness's proportional fixture — a second repo exists for exactly this reason).
+  // Its land gate runs install+pins, which is what stamps the cover `proportional`, which is what
+  // makes the entry un-offerable. Same difference, same grace, and the arm the drain already knew:
+  // this pins it against the unification, which routed it through a predicate it did not use before.
+  check("(K7d) setup: the machine is idle again before the short-chain arm",
+    await waitNoLocalRun(60_000) && (await jobs()).jobs.length === 0,
+    `jobs=${JSON.stringify((await jobs()).jobs)}`);
+  const k7dDocsBefore = (await rowsFor(shortChainRepo)).length;
+  const k7dDocs = (await (await post("/api/lanes", { repo: shortChainRepo })).json()) as Lane;
+  mkdirSync(`${k7dDocs.cwd}/docs`, { recursive: true });
+  await Bun.write(`${k7dDocs.cwd}/docs/gracedocs.md`, "grace measurement note\n");
+  spawnSync("git", ["-C", k7dDocs.cwd, "add", "-A"]);
+  for (let i = 0; i < 12; i++) {   // the index-lock retry openLane pays, for a lane it does not build
+    spawnSync("git", ["-C", k7dDocs.cwd, "commit", "-qm", "gracedocs docs-only lane work"]);
+    if (spawnSync("git", ["-C", k7dDocs.cwd, "log", "--oneline", "-1"]).stdout.toString()
+      .includes("gracedocs docs-only lane work")) break;
+    await Bun.sleep(300);
+  }
+  const k7dDocsLanded = await driveMerge(k7dDocs, k7dDocs.branch);
+  const k7dDocsRow = (await waitRowsFor(shortChainRepo, k7dDocsBefore + 1, 120_000))[0];
+  const k7dDocsCover = k7dDocsRow?.covers[0]?.at ?? 0;
+  check("(K7d) A SHORT-CHAIN ENTRY IS AUDITED AT ONCE TOO — install+pins is never held for a portal either",
+    k7dDocsLanded.gone && !!k7dDocsRow && k7dDocsRow.proportional === true
+      && k7dDocsRow.cmdSource === "proportional" && k7dDocsRow.covers[0]?.branch === k7dDocs.branch
+      && k7dDocsCover > 0 && k7dDocsRow.startedAt - k7dDocsCover < K7D_GRACE_MS,
+    `waited=${k7dDocsRow ? k7dDocsRow.startedAt - k7dDocsCover : "no row"}ms grace=${K7D_GRACE_MS}`
+    + ` proportional=${k7dDocsRow?.proportional} source=${k7dDocsRow?.cmdSource}`);
+  await post("/api/repo-worker", { repo: RWG, worker: "audit", cmd: "" }); // leave the register as found
+  check("(K7d) …and the machine is left idle with an empty queue for what follows",
+    await waitNoLocalRun(120_000) && (await jobs()).jobs.length === 0,
+    JSON.stringify((await jobs()).jobs));
 
   // ===== (W) WAKE-ON-LAN — THE ONE NAMED EXCEPTION TO "NO PUSH" ===================================
   // Everything else in this portal is a pull: the Fleet answers, the other machine asks. A magic

@@ -659,7 +659,11 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   entsteht ausschließlich, wenn ein Land die Integrationsbranch bewegt hat, das mit einem
   Owner-Token **nicht vom Board** (`bearer`/`?token=`) an der Self-Land-Tür des Programs vorbeigefahren
   ist — also genau der Fall vom 2026-09-08 04:56, in dem beurteilte und unbeurteilte Arbeit drei
-  Sekunden auseinander lagen und nichts sagte, welche es war. `ref` ist die **gelandete Sha**;
+  Sekunden auseinander lagen und nichts sagte, welche es war. `ref` ist eine **Adresse**,
+  `"<gelandete-sha> <repo-toplevel>"` — beide Haelften, weil ein Program KEINEN dauerhaften
+  Repo-Zeiger traegt (`founding` ist ein Crash-Marker fuer einen Uebergang und fehlt auf jedem
+  gesetzten Program), eine Sha allein also ein Zeiger waere, dem die Leseseite nicht folgen kann.
+  Es bleibt eine Adresse und keine Kopie: vom Inhalt der Note wandert nichts in den Eintrag.
   `subject` ist `{sha, note, door}`, wobei `note` die Server-geschriebene Land-Note an diesem Commit
   ist (`git log --notes=fleet/land`). Die Frage, die die MAIN wirklich hat, steht in
   `note.actor.bypassed`:
@@ -676,6 +680,8 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   ist die Sichtbarkeit, die ihm bisher fehlte. Lässt sich die Note nicht lesen (der Note-Schreiber
   ist best-effort), trägt `unknown` die eigene Zeile dafür (`… whose land note is not readable in
   <repo>`) — der Zeiger auf ein Land, das stattfand, hängt nie an einem best-effort-Schreiben.
+  Fehlt die Repo-Haelfte ganz, sagt die `unknown`-Zeile genau das (`… without a repo to read its
+  land note from`) statt in ein fremdes Object-Database zu greifen und „nicht lesbar" zu melden.
 - **Antwort POST read:** `{ok: true, existing: false, entry}` beim ersten Mal, `{ok: true,
   existing: true, entry}` bei jedem weiteren. Die Quittung ist **kein Lock**: ein zweites Lesen
   überschreibt `readBy`/`readAt` nie, denn der erste Leser ist die Tatsache.

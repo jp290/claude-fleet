@@ -7645,6 +7645,8 @@ export async function run(ctx: Ctx): Promise<void> {
       headers: { "content-type": "application/json", "x-fleet-self-token": suspectLaneTok },
       body: JSON.stringify({ status: "complete", text: "ambient-land probe: filed, awaiting judgement." }) });
     const suspectReportOk = suspectReport.ok;
+    const suspectReportId = suspectReportOk
+      ? ((await suspectReport.json()) as { report?: { id?: string } }).report?.id ?? null : null;
     const suspectReady = suspectLane.slot === null ? false : await waitDoneLooking(suspectLane.slot);
     const ambientBefore = ambientCount();
     const suspectBefore = main2Of();
@@ -7710,6 +7712,12 @@ export async function run(ctx: Ctx): Promise<void> {
           && suspectUnread >= 1,
         JSON.stringify({ entry: suspectInboxEntry, unread: suspectUnread, sha: suspectMain.slice(0, 8) }));
     }
+    // …and the row is SETTLED now that both checks have read it. It had to be undecided at the
+    // moment of the land — that is the whole content of this arm — but leaving it undecided past
+    // that point makes it a row `reportAwaitsOwner` counts for the rest of the run, on a slot this
+    // module is about to kill. The verdict is the realistic one: a MAIN told about an ambient land
+    // of unjudged work refuses it.
+    if (suspectReportId) await mainDecides(suspectReportId, "reject", "landed past this program's door before I had read it");
 
     // (5b) THE SECOND ARM, and it is the one that keeps the entry from becoming noise: the SAME
     // ambient land over work the MAIN had already ACCEPTED must be distinguishable from the arm
@@ -9469,11 +9477,25 @@ exit 0
   // budget, 11 of 18 event rows). Dropped by RECEIVER SLOT and only for slots this module founded
   // a MAIN into, and only for rows whose receiver is already gone: nothing live is touched, and a
   // merge-terminal another module minted into a slot it owns survives.
+  //
+  // ACP-17 EXTENDS THE SAME RULE TO `fleet-report`, and by the same measurement: `/api/sessions`
+  // ships `events: fleetEvents` WHOLE, so every residual row is paid on the 2 s poll. The
+  // ambient-land arms file two reports into fixture MAINs (one left undecided until the land, which
+  // is their subject), and those two rows put the budget check at 14 895 B against 14 336 —
+  // measured in `isolated-20260908T131451Z-10722`, and red on nothing but this module's residue.
+  // Same guard as above: only rows whose receiver is one of the MAIN slots this module founded and
+  // killed a few lines up, and only TERMINAL ones, so nothing live is touched.
   const fixtureMainSlots = new Set(landFixtureMains);
   cleaned.events = (cleaned.events ?? []).filter((e) => {
     const row = e as { receiverSlot?: number; kind?: string; status?: string };
-    return !(row.kind === "merge-terminal" && row.status === "receiver-gone"
-      && typeof row.receiverSlot === "number" && fixtureMainSlots.has(row.receiverSlot));
+    const ownSlot = typeof row.receiverSlot === "number" && fixtureMainSlots.has(row.receiverSlot);
+    if (!ownSlot) return true;
+    // the original rule, unchanged
+    if (row.kind === "merge-terminal" && row.status === "receiver-gone") return false;
+    // …and ACP-17's, which needs both terminal words: one arm's report is ACKNOWLEDGED (its MAIN
+    // decided it) and the other's is `receiver-gone` (settled, then its slot killed).
+    return !(row.kind === "fleet-report"
+      && ["receiver-gone", "acknowledged"].includes(row.status ?? ""));
   });
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(cleaned, null, 2), { mode: 0o600 });
   await restartSrv();

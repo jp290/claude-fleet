@@ -46,6 +46,12 @@ type AuditEvent =
   // owner's own body or from a named proposal, and — decisively — which of them the target repo
   // does not track: that finding never gates, so the ledger is where "he could see it" is recorded.
   | "task_files_propose" | "task_files_confirm" | "task_files_dismiss"
+  // THE NOTE LIFECYCLE (N2). A lane reports a verdict on a note its own founding brief delivered
+  // (note_verdict, detail: note id, verdict, branch) and a land makes an `erledigt` one wirksam by
+  // closing the row (note_closed_by_land, detail: note id and the branch that claimed it). Booked
+  // separately on purpose: the claim and the act that makes it true are days apart, and a lane that
+  // died between them leaves only the first line — which is exactly the state to be able to read.
+  | "note_verdict" | "note_closed_by_land"
   // W3 · ▸ start wave — n queue rows founded into ONE lane that will land ONCE. Its own event and
   // not a task_dispatch per row, because the fact being recorded is the BUNDLE: the detail names
   // every id in the sensor's fixed order, the class the gate will run, and the seconds the avoided

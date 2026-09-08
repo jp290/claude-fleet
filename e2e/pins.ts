@@ -6672,6 +6672,41 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   // the doc a MAIN is actually sent to must carry the section and both route paths — the same
   // doc↔route pair RULE_RECEIVER pins for §fleet-report, and for its reason: a route named only in
   // code is a route no session ever learns to call.
+{
+  // THE LANE-ONLY SCOPE LIST IS A MUST-AGREE PAIR whose other side is markdown. The refusal lives in
+  // server.ts as `409 not a lane — …`; the LIST of which routes carry it lives only in a sentence in
+  // docs/self-api.md, and CLAUDE.md sends every session to that sentence for the complete scope
+  // ("Vollstaendige Scope-Liste: docs/self-api.md"). A route that gains or loses the guard without
+  // the sentence following leaves a lane either hunting for a token it already holds, or believing a
+  // door is open that answers 409 — the same failure the exit-footer pin exists to prevent.
+  //
+  // DERIVED, never listed here: the routes are read out of server.ts by walking each `not a lane`
+  // refusal back to the route guard above it, so a new lane-only door is covered the day it is
+  // written. A sub-route is represented by its parent (`suite-offer/withdraw` by `suite-offer`,
+  // `notes/:id/verdict` by `notes`) — the sentence names doors, not every method on one.
+  const RULE_LANE_ONLY = "every lane-only self route is named in docs/self-api.md's lane-only scope sentence";
+  const selfSrc = read("server.ts");
+  const laneOnly = new Set<string>();
+  let currentRoute = "";
+  for (const line of selfSrc.split("\n")) {
+    const literal = /url\.pathname === "\/api\/self\/([^"]+)"/.exec(line);
+    if (literal) currentRoute = literal[1]!;
+    const pattern = /= \/\^\\\/api\\\/self\\\/(.+?)\$\/\.exec/.exec(line);
+    if (pattern) currentRoute = pattern[1]!.replace(/\\\//g, "/").replace(/\([^)]*\)/g, ":id");
+    if (currentRoute && /error: "not a lane/.test(line)) laneOnly.add(currentRoute);
+  }
+  // a sub-route is covered by its parent door
+  const doors = [...laneOnly].filter((r) => ![...laneOnly].some((other) => other !== r && r.startsWith(`${other}/`)))
+    .sort();
+  const scopeSentence = /\*\*Nicht lane-only[\s\S]{0,1400}?\n\n/.exec(read("docs/self-api.md"))?.[0] ?? "";
+  const unnamed = doors.filter((d) => !scopeSentence.includes(`\`${d}\``));
+  // The derivation must fail as ITSELF: an empty door set would make "every door is named" trivially
+  // true, and the four oldest doors are the ones the sentence has always claimed.
+  pin(`${RULE_LANE_ONLY} — the derivation finds the known doors and the sentence names every one of them`,
+    doors.length >= 6 && ["criterion", "drift", "gate", "verify-intent"].every((d) => doors.includes(d))
+      && scopeSentence !== "" && unnamed.length === 0,
+    `doors=[${doors.join(",")}] unnamed=[${unnamed.join(",")}] sentence=${scopeSentence.length}B`);
+}
   const selfApiInbox = read("docs/self-api.md");
   pin(`${RULE_INBOX} — docs/self-api.md carries §inbox and names both route paths`,
     /^## inbox/m.test(selfApiInbox) && selfApiInbox.includes("GET /api/self/inbox")

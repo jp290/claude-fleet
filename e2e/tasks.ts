@@ -2380,16 +2380,22 @@ export async function run(ctx: Ctx): Promise<void> {
     // writing the sentence unconditionally, or wiring the flag to a constant a caller cannot flip
     // (which would make the N2 half unprovable until N2 ships).
     const pureBlock = renderNotesBlock(pureFirst);
-    const pureBlockWithRoutes = renderNotesBlock(pureFirst, true);
+    const pureBlockNoRoutes = renderNotesBlock(pureFirst, false);
+    // The flag flipped to TRUE with N2, so the two arms swapped: the DEFAULT render now names the
+    // doors and the explicit-false render is the one that must stay silent. Both arms are still
+    // asserted, because the whole point of the flag is that it can move in either direction without
+    // any other change — and a check that only measured the live value would go quiet the moment it
+    // flipped, which is precisely when the block's last line is at risk of naming a 404.
     check("(d5-render) the block is empty at zero rows, one line per note, and names the read routes only when they exist",
       renderNotesBlock([]) === ""
       && pureBlock.startsWith("\n\nNotizen auf deiner Flaeche (5, Deckel 5):\n- notiz p1 · ")
       && pureBlock.split("\n").filter((l) => l.startsWith("- notiz ")).length === 5
-      && pureBlock.split("\n").length === 8 // two leading empties + heading + five rows
-      && !pureBlock.includes("/api/self/notes")
-      && NOTES_READ_ROUTES_EXIST === false
-      && pureBlockWithRoutes.includes("GET /api/self/notes")
-      && pureBlockWithRoutes.includes("POST /api/self/notes/<id>/verdict"),
+      && pureBlock.split("\n").length === 9 // two leading empties + heading + five rows + the routes line
+      && NOTES_READ_ROUTES_EXIST === true
+      && pureBlock.includes("GET /api/self/notes")
+      && pureBlock.includes("POST /api/self/notes/<id>/verdict")
+      && pureBlockNoRoutes.split("\n").length === 8
+      && !pureBlockNoRoutes.includes("/api/self/notes"),
       JSON.stringify(pureBlock));
     // the file list is a hint, not the surface: three names, then a count. Mutation that breaks it:
     // rendering all shared files (a cross-cutting note would push a 400-char line into the brief).
@@ -2528,6 +2534,125 @@ export async function run(ctx: Ctx): Promise<void> {
       rank.prompt.indexOf("\n\nContextPlan v2 anchors") >= 0
         ? rank.prompt.indexOf("\n\nContextPlan v2 anchors") : undefined);
     const rankLines = rankBlock.split("\n").filter((l) => l.startsWith("- notiz "));
+
+    // --- (n2-routes) THE TWO NOTE DOORS, ON THE LANE THAT WAS ACTUALLY SHOWN THE FIVE NOTES.
+    // (docs/notizen-verarbeitung-2026-09-06.md §3 N2.) Run BEFORE the lane is closed, against its
+    // own scoped token, because the permission boundary under test IS this lane's context receipt —
+    // a lane opened by hand has none and could only ever measure the empty answer.
+    const rankLaneSlot = rank.slot;
+    let n2Persisted: { slots?: Record<string, { selfToken?: string }> } = {};
+    if (rankLaneSlot !== null) for (let i = 0; i < 40; i++) {
+      try { n2Persisted = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as typeof n2Persisted; }
+      catch { /* saveState writes tmp+rename; a read landing mid-write throws */ }
+      if (n2Persisted.slots?.[String(rankLaneSlot)]?.selfToken) break;
+      await Bun.sleep(100);
+    }
+    const n2Tok = n2Persisted.slots?.[String(rankLaneSlot ?? 0)]?.selfToken ?? "";
+    const n2Branch = ((await (await get("/api/sessions")).json()) as
+      { slots: { id: number; worktree?: { branch: string } | null }[] })
+      .slots.find((x) => x.id === rankLaneSlot)?.worktree?.branch ?? "";
+    check("(n2-routes) fixture: the ranked lane is alive with its own scoped token and a branch",
+      !!n2Tok && !!n2Branch, `slot=${rankLaneSlot} tok=${!!n2Tok} branch=${n2Branch}`);
+    const n2Get = (token: string) =>
+      fetch(`${BASE}/api/self/notes`, { headers: { "x-fleet-self-token": token } });
+    const n2Verdict = (id: string, body: unknown, token: string) =>
+      fetch(`${BASE}/api/self/notes/${id}/verdict`, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": token },
+        body: JSON.stringify(body) });
+    type N2Note = { id: string; status: string; text: string; files?: string[];
+      comments: { id: string; text: string; from?: string; verdict?: string }[] };
+    type N2Read = { notes?: N2Note[]; receipts?: number; gone?: string[]; verdicts?: string[]; error?: string };
+    const n2Read = async (token = n2Tok): Promise<N2Read> =>
+      (await (await n2Get(token)).json()) as N2Read;
+
+    // (d-GET) THE FULL TEXT OF EXACTLY THE FIVE IDS THE RECEIPT NAMES — and the whole note, not
+    // the first sentence the block carried. Mutation that breaks it: joining the ids off the queue
+    // instead of off the receipt (nF/nG/nHub would appear), or serving the block line as the text.
+    const n2First = await n2Read();
+    check("(n2-a) GET /api/self/notes serves exactly the receipt's five ids, in full text",
+      JSON.stringify((n2First.notes ?? []).map((x) => x.id).sort())
+        === JSON.stringify([nA, nB, nC, nD, nE].sort())
+      && (n2First.receipts ?? 0) >= 1
+      && (n2First.notes ?? []).find((x) => x.id === nA)?.text.includes("der nicht erscheinen darf") === true
+      && JSON.stringify(n2First.verdicts) === JSON.stringify(["erledigt", "widerlegt", "offen"]),
+      `${JSON.stringify((n2First.notes ?? []).map((x) => x.id))} receipts=${n2First.receipts}`);
+
+    // (d-POST) THE VERDICT IS A COMMENT AND NOTHING ELSE. `widerlegt` on purpose: it is the arm
+    // that must NEVER move a status, so a green here is also the proof that the route itself does
+    // not close rows. Mutation that breaks it: writing the status in the route, or taking `from`
+    // from the body (the branch is asserted against the lane's real branch).
+    const n2Ok = await n2Verdict(nA, { verdict: "widerlegt", text: "N2-Probe: die Notiz beschreibt einen anderen Baum." }, n2Tok);
+    const n2OkJ = (await n2Ok.json()) as { ok?: boolean; effective?: string;
+      comment?: { text: string; from?: string; verdict?: string } };
+    const n2AfterRow = (await taskRows()).find((t) => t.id === nA);
+    check("(n2-b) a verdict writes a signed comment and moves NO status — the branch comes from the token",
+      n2Ok.status === 200 && n2OkJ.ok === true
+      && n2OkJ.comment?.verdict === "widerlegt" && n2OkJ.comment.from === n2Branch
+      && n2OkJ.effective === "never — read by the owner"
+      && n2AfterRow?.status === "pending",
+      `${n2Ok.status} ${JSON.stringify(n2OkJ)} status=${n2AfterRow?.status}`);
+    // …and it is READABLE BACK through the same door, which is the whole point of the thread.
+    const n2Second = await n2Read();
+    const n2SeenA = (n2Second.notes ?? []).find((x) => x.id === nA);
+    check("(n2-b2) the verdict comes back on the note, signed with the branch and the verdict",
+      (n2SeenA?.comments ?? []).some((c) => c.verdict === "widerlegt" && c.from === n2Branch
+        && c.text.startsWith("N2-Probe:")),
+      JSON.stringify(n2SeenA?.comments ?? []));
+
+    // (e) THE 409 BOUNDARY. nF is a REAL pending note of this repo that the ranking cut at the cap —
+    // the sharpest possible falsifier, because a route joining on the queue rather than the receipt
+    // would answer 200 here and be indistinguishable from a correct one on every other input.
+    const n2Foreign = await n2Verdict(nF, { verdict: "erledigt", text: "darf nicht durchgehen" }, n2Tok);
+    const n2ForeignJ = (await n2Foreign.json()) as { error?: string };
+    const n2ForeignRow = (await taskRows()).find((t) => t.id === nF);
+    check("(n2-c) a verdict on a note this lane was NOT shown is 409, and nothing is written",
+      n2Foreign.status === 409 && (n2ForeignJ.error ?? "").includes("not delivered to this lane")
+      && n2ForeignRow?.status === "pending"
+      && !(n2Second.notes ?? []).some((x) => x.id === nF),
+      `${n2Foreign.status} ${JSON.stringify(n2ForeignJ)}`);
+
+    // (f) THE 400s. A fourth verdict value and a verdict without a sentence are both refused, and
+    // the refusal NAMES the closed list. Mutation that breaks it: taking the body's verdict raw.
+    const n2Bad = await n2Verdict(nA, { verdict: "erledigt!", text: "x" }, n2Tok);
+    const n2BadJ = (await n2Bad.json()) as { error?: string };
+    const n2NoText = await n2Verdict(nA, { verdict: "offen", text: "   " }, n2Tok);
+    const n2CountAfter = ((await n2Read()).notes ?? []).find((x) => x.id === nA)?.comments.length ?? 0;
+    check("(n2-d) a foreign verdict value and a verdict without a sentence are both 400, and neither writes",
+      n2Bad.status === 400 && (n2BadJ.error ?? "").includes("erledigt | widerlegt | offen")
+      && n2NoText.status === 400
+      && n2CountAfter === (n2SeenA?.comments.length ?? 0),
+      `${n2Bad.status}/${n2NoText.status} ${JSON.stringify(n2BadJ)} comments=${n2CountAfter}`);
+
+    // (g) THE SCOPE RULE. A plain checkout carries a VALID self credential and still cannot ask:
+    // 409 with the reason, never 401 — the same distinction the whole self family draws, so nobody
+    // goes looking for a token they already hold.
+    const n2Free = ((await (await get("/api/sessions")).json()) as
+      { slots: { id: number; cwd: string | null }[] }).slots.find((x) => !x.cwd);
+    const n2Opened = n2Free ? await post(`/api/slots/${n2Free.id}/open`, { cwd: ROOT }) : null;
+    let n2NonLanePersisted: { slots?: Record<string, { selfToken?: string }> } = {};
+    if (n2Free && n2Opened?.ok) for (let i = 0; i < 40; i++) {
+      try { n2NonLanePersisted = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as typeof n2NonLanePersisted; }
+      catch { /* mid-write */ }
+      if (n2NonLanePersisted.slots?.[String(n2Free.id)]?.selfToken) break;
+      await Bun.sleep(100);
+    }
+    const n2PlainTok = n2NonLanePersisted.slots?.[String(n2Free?.id ?? 0)]?.selfToken ?? "";
+    const n2PlainGet = await n2Get(n2PlainTok);
+    const n2PlainGetJ = (await n2PlainGet.json()) as { error?: string };
+    const n2PlainPost = await n2Verdict(nA, { verdict: "offen", text: "aus einer Nicht-Lane" }, n2PlainTok);
+    const n2PlainPostJ = (await n2PlainPost.json()) as { error?: string };
+    check("(n2-e) a NON-LANE with a valid self token gets 409 on both doors — recognized credential, wrong scope",
+      !!n2PlainTok && n2PlainGet.status === 409 && n2PlainPost.status === 409
+      && (n2PlainGetJ.error ?? "").startsWith("not a lane")
+      && (n2PlainPostJ.error ?? "").startsWith("not a lane"),
+      `tok=${!!n2PlainTok} ${n2PlainGet.status}/${n2PlainPost.status} ${JSON.stringify([n2PlainGetJ, n2PlainPostJ])}`);
+    // …and an unknown credential is still a plain 401 on the same doors: the 409 above is about
+    // SCOPE, and it must not have widened the family's authentication in the process.
+    const n2Anon = await n2Get("0".repeat(32));
+    check("(n2-e2) an unrecognized credential stays 401 on the note door — the 409 is about scope, not auth",
+      n2Anon.status === 401, String(n2Anon.status));
+    if (n2Free) await post(`/api/slots/${n2Free.id}/kill`, {});
+
     await closeLane(rank.slot);
     // Mutation that breaks it: any comparator term (nA>nB count, nB>nC age, nD>nE cluster), the
     // cap (nF/nG would appear), or moving the block after the anchors (the slice would be empty).

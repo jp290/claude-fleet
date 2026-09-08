@@ -916,36 +916,57 @@ export async function run(h: {
   // legitimately, which would read as the defect. A long grace also makes each measurement sharper:
   // "started 0.2 s after its cover" against a 120 s promise says the promise was never consulted.
   const K7D_GRACE_MS = 120_000;
+  // …AND A FRESHNESS WINDOW WIDER THAN THE GRACE, which is the half a mutation run taught us
+  // (2026-09-08). `graceOn` is `AUDIT_HELPER_GRACE_MS > 0 && helperClaimCandidateExists()`, and that
+  // second half goes false once the device's heartbeat ages past HELPER_FRESH_MS (3 × the sweep).
+  // With (K7)'s 15 s sweep that is 45 s — so under the mutation the short-chain entry did NOT run at
+  // once, it ran after 51 995 ms, when the grace simply switched itself off, and a check bounded by
+  // the 120 s grace passed for that wrong reason. A sweep of 120 s makes the window 360 s, wider than
+  // anything this section holds, so "it started at once" can only mean the drain never consulted the
+  // grace. The claim timeout is longer still: nothing here tests a lapse.
+  const K7D_SWEEP_MS = 120_000;
+  const K7D_FRESH_MS = 3 * K7D_SWEEP_MS;
   await killSrv();
   check("(K7d) setup: the server restarts with a grace long enough to observe one entry waiting inside it",
     await startSrv({ audit: true, extra: { FLEET_AUDIT_HELPER_GRACE_MS: String(K7D_GRACE_MS),
-      FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000", FLEET_HELPER_SWEEP_MS: "15000" } }));
+      FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000", FLEET_HELPER_SWEEP_MS: String(K7D_SWEEP_MS) } }));
   await Bun.sleep(750);
   // the device must be a live claim CANDIDATE right now, or `graceOn` is false and every check
   // below passes for the wrong reason — "the drain took it" is also what a correct grace does when
   // nobody can claim. A fresh beat, not a formality: the register came back from disk.
   await post(`/api/helper/devices/${DEVICE}/mode`, { mode: "active" });
-  const k7dBeat = await hpost("/api/helper/device",
+  const k7dBeat = async (): Promise<Response> => hpost("/api/helper/device",
     { deviceId: DEVICE, name: DEVICE_NAME, mode: "active", load: 0.2 });
+  // WHEN THE DEVICE LAST SPOKE — so each measurement below can say the grace was ARMED at the moment
+  // the drain decided, rather than leaving "it started at once" and "nobody was there to hold it for"
+  // indistinguishable. A probe that could not measure must fail as ITSELF.
+  const k7dLastSeen = async (): Promise<number> => (await jobs()).device?.lastSeen ?? 0;
+  const k7dFirstBeat = await k7dBeat();
   check("(K7d) setup: the helper is beating and active, so the grace has somebody to hold work for",
-    k7dBeat.ok && (await jobs()).device?.mode === "active"
+    k7dFirstBeat.ok && (await jobs()).device?.mode === "active"
       && await waitNoLocalRun(30_000) && (await jobs()).jobs.length === 0,
-    `${k7dBeat.status} device=${JSON.stringify((await jobs()).device)} jobs=${JSON.stringify((await jobs()).jobs)}`);
+    `${k7dFirstBeat.status} device=${JSON.stringify((await jobs()).device)} jobs=${JSON.stringify((await jobs()).jobs)}`);
 
   // THE CONTROL LANDS FIRST, so its cover is the OLDER one: if the drain ran on age it would take
   // this one, and the check below would fail in the direction that matters.
   const k7dCtlRows = (await newRepoRows()).length;
+  await k7dBeat();
   const k7dCtl = await openLane(REPO, "gracecontrol");
   const k7dCtlLanded = await driveMerge(k7dCtl, k7dCtl.branch);
   const k7dRwLane = await openLane(RWG, "rwgracework");
   const k7dRwLanded = await driveMerge(k7dRwLane, k7dRwLane.branch);
   const k7dRwRow = (await waitRowsFor(RWG, 1, 60_000))[0];
   const k7dRwCover = k7dRwRow?.covers[0]?.at ?? 0;
+  const k7dRwSeen = await k7dLastSeen();
   check("(K7d) A REPO-WORKER ENTRY IS AUDITED AT ONCE — the grace never holds it for a portal that would refuse it",
     k7dRwLanded.gone && !!k7dRwRow && k7dRwRow.result === "green"
       && k7dRwRow.cmd === RWG_CMD && k7dRwRow.covers[0]?.branch === k7dRwLane.branch
-      && k7dRwCover > 0 && k7dRwRow.startedAt - k7dRwCover < K7D_GRACE_MS,
+      && k7dRwCover > 0 && k7dRwRow.startedAt - k7dRwCover < K7D_GRACE_MS
+      // …and the grace was ARMED when the drain decided: a stale device makes `graceOn` false, and
+      // then "it ran at once" says nothing about this line at all
+      && k7dRwRow.startedAt - k7dRwSeen < K7D_FRESH_MS,
     `waited=${k7dRwRow ? k7dRwRow.startedAt - k7dRwCover : "no row"}ms grace=${K7D_GRACE_MS}`
+    + ` deviceAge=${k7dRwRow ? k7dRwRow.startedAt - k7dRwSeen : "?"}ms fresh=${K7D_FRESH_MS}`
     + ` cmd=${k7dRwRow?.cmd} result=${k7dRwRow?.result}`);
   // …and the same instant from the other side. Read AFTER the row above so there is no doubt about
   // the order: by the time the un-offerable entry had been measured, the offerable one had not.
@@ -981,9 +1002,10 @@ export async function run(h: {
   // Its land gate runs install+pins, which is what stamps the cover `proportional`, which is what
   // makes the entry un-offerable. Same difference, same grace, and the arm the drain already knew:
   // this pins it against the unification, which routed it through a predicate it did not use before.
-  check("(K7d) setup: the machine is idle again before the short-chain arm",
-    await waitNoLocalRun(60_000) && (await jobs()).jobs.length === 0,
-    `jobs=${JSON.stringify((await jobs()).jobs)}`);
+  check("(K7d) setup: the machine is idle again before the short-chain arm, with the helper still beating",
+    await waitNoLocalRun(60_000) && (await jobs()).jobs.length === 0
+      && (await k7dBeat()).ok && (await jobs()).device?.mode === "active",
+    `jobs=${JSON.stringify((await jobs()).jobs)} device=${JSON.stringify((await jobs()).device)}`);
   const k7dDocsBefore = (await rowsFor(shortChainRepo)).length;
   const k7dDocs = (await (await post("/api/lanes", { repo: shortChainRepo })).json()) as Lane;
   mkdirSync(`${k7dDocs.cwd}/docs`, { recursive: true });
@@ -996,13 +1018,16 @@ export async function run(h: {
     await Bun.sleep(300);
   }
   const k7dDocsLanded = await driveMerge(k7dDocs, k7dDocs.branch);
-  const k7dDocsRow = (await waitRowsFor(shortChainRepo, k7dDocsBefore + 1, 120_000))[0];
+  const k7dDocsRow = (await waitRowsFor(shortChainRepo, k7dDocsBefore + 1, K7D_GRACE_MS))[0];
   const k7dDocsCover = k7dDocsRow?.covers[0]?.at ?? 0;
+  const k7dDocsSeen = await k7dLastSeen();
   check("(K7d) A SHORT-CHAIN ENTRY IS AUDITED AT ONCE TOO — install+pins is never held for a portal either",
     k7dDocsLanded.gone && !!k7dDocsRow && k7dDocsRow.proportional === true
       && k7dDocsRow.cmdSource === "proportional" && k7dDocsRow.covers[0]?.branch === k7dDocs.branch
-      && k7dDocsCover > 0 && k7dDocsRow.startedAt - k7dDocsCover < K7D_GRACE_MS,
+      && k7dDocsCover > 0 && k7dDocsRow.startedAt - k7dDocsCover < K7D_GRACE_MS
+      && k7dDocsRow.startedAt - k7dDocsSeen < K7D_FRESH_MS,   // …the grace was armed here too
     `waited=${k7dDocsRow ? k7dDocsRow.startedAt - k7dDocsCover : "no row"}ms grace=${K7D_GRACE_MS}`
+    + ` deviceAge=${k7dDocsRow ? k7dDocsRow.startedAt - k7dDocsSeen : "?"}ms fresh=${K7D_FRESH_MS}`
     + ` proportional=${k7dDocsRow?.proportional} source=${k7dDocsRow?.cmdSource}`);
   await post("/api/repo-worker", { repo: RWG, worker: "audit", cmd: "" }); // leave the register as found
   check("(K7d) …and the machine is left idle with an empty queue for what follows",

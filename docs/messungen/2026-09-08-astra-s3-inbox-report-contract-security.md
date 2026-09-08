@@ -1,9 +1,10 @@
 ---
 frage: Tragen Erstellung, Sichtbarkeit, Zustellung, Receipt und Entscheidung an den Inbox-/Report-Naehten denselben autorisierten Gegenstand ueber Succession, Recycle und Restart?
-urteil: Der Record- und Entscheidungsvertrag traegt; die Anfrage-Schiene (Attention-Antwort, Clarification-Reply) beweist ihren Occupant nach dem canDeliver-Await nicht neu und ueberschreibt dabei ein nebenlaeufiges refused, und der Empfaenger einer program-losen Lane wird aus einer self-beschreibbaren Tabelle nominiert.
+urteil: Der Record- und Entscheidungsvertrag traegt; zwei Naehte nicht — die Anfrage-Schiene (Attention-Antwort, Clarification-Reply) beweist ihren Occupant nach dem canDeliver-Await nicht neu und ueberschreibt dabei ein nebenlaeufiges refused (Verstoss gegen eine benannte harte Invariante in AGENTS.md), und der Empfaenger einer program-losen Lane wird aus einer self-beschreibbaren Tabelle nominiert. Die drei kleineren Befunde sind nach Rueckgabe auf Dokumentations- und Probenluecken zurueckgestuft.
 bereich: [contract, security, program-inbox, fleet-report, attention, succession]
 stand: 2026-09-08
-nicht-gemessen: Keine ausgefuehrte Security-Suite an diesem Baum, kein Live- oder Scratch-Probelauf, keine Schreib-/Angriffsprobe, kein vollstaendiger Blattmodul-Sweep, kein S4-Flake-/Mutex-Anteil.
+nicht-gemessen: Keine ausgefuehrte Security-Suite an diesem Baum, kein Live- oder Scratch-Probelauf, keine Schreib-/Angriffsprobe, kein vollstaendiger Client- oder Blattmodul-Sweep, kein S4-Flake-/Mutex-Anteil, kein Auswerten der Live-`fleet.json`.
+revision: 2026-09-08, nach Rueckgabe durch die Review-MAIN (Slot 7). Korrigiert: Gate am fertigen Diff neu gefragt und dessen Schritte protokolliert; „jedes Program leer" zurueckgezogen; „dauerhaft" gegen den Boot-Reconcile begrenzt; ein Mutationssatz, der dem eigenen Positionspin widersprach; die Folgekosten von B3 an ihre ungelesene Bedingung gebunden; B3 nach Lesung von docs/self-api.md stark abgeschwaecht; B4 als erklaerte Staffelung eingeordnet; B5 auf eine Datei eingegrenzt; alle sechs Flaechen entschieden; die uebersprungenen Pflichtquellen nachgelesen und belegt.
 ---
 
 # S3 — Contract/Security an den Inbox-/Report-Naehten
@@ -27,6 +28,13 @@ Vollstaendig gelesen (kein Ueberfliegen, kein Namensschluss):
 - `e2e/pins.ts`: Clarification-/Attention-Ordnungs-Pins (470–511) · Recovery-Ordnungspin latch<guard<send (3751–3775) · `clarificationReceiverFor`-Pins (4306–4330) · Boot-Reconcile-Pin (4350–4360) · D1b-Receiver-Pin (4511–4515) · Inbox-Loader- und Writer-Pin (6655–6672).
 - `e2e/security.ts`: Routenliste mit ihren Vertragskommentaren (60–150).
 - `e2e/watch.ts`: lane-watch-Empfaengerfamilie (1390–1570), Report-/Recovery-Fixtures (1860–2340) gezielt.
+- **Pflicht-Vorgaengerquellen des Briefs** (nach der Rueckgabe nachgeholt und hier einzeln belegt):
+  - `AGENTS.md` §Portable operating contract, Gliederung `:1–291`, davon `§Hard invariants:59–137` vollstaendig. Traegt die Invariante, gegen die B1 misst, und die Flaechenpflicht, die den Abschnitt oben erzwingt.
+  - `main:docs/agentic-control-plane-program-2026-08-20.md` — Gliederung `:1–483`, davon `§Act 4 Proof:316–317`, `§Act 5:319–332`, `§9 Gefaehrliche Abkuerzungen:441–453` gelesen. Liefert „Slot als Agentenidentitaet behandeln", „`sent` mit gelesen oder verstanden gleichsetzen", „Owner-Frage ohne Subject, Receiver und Reply-Ziel".
+  - `main:docs/messungen/2026-09-04-generalsanierung-abschlussmessung.md` — Gliederung `:1–394`, davon `§Zwei offene Zeilen:289–310` und `§Vier Saetze:375–394` gelesen. Liefert den belegten Umfang von `src/client.ts` (11 067 Zeilen, P5 nie gelaufen) und damit die Begruendung, dort gezielt statt flaechig zu lesen.
+  - `docs/self-api.md` — §inbox `:632–679`, §fleet-report `:869–919`, §Annahme `:1043–1074`. Die Zeilenanker des Briefs (`583–625`, `819–1090`) sind gedriftet; `:583–625` liegt heute in §wave/split. Lokalisiert wurde ueber die Abschnittsueberschriften, und die tatsaechlich gelesenen Bereiche stehen hier.
+  - `e2e/programs.ts:1770–1905` — **selbst gelesen**. In der ersten Fassung hatte ich die Fixture-Zeilen aus der Vorgaengernotiz uebernommen statt sie aufzuschlagen; das war ein Verstoss gegen „erst Datei lesen" und ist der Grund, warum mir die erklaerte Staffelung bei `:1794–1796` und die `audit-red`-Pflanzungen bei `:1785–1792` zunaechst entgangen sind.
+  - `server/types.ts:761–830` (`fleetReportFrom`) und `server.ts:24910–25050` (Steward-/Self-Routenkopf) nachgelesen.
 - Vor eigenem Urteil aus `main:` gelesen: `docs/messungen/2026-09-07-adressierbarkeit-vertrag.md` (vollstaendig, Pin `e917a48b`), `docs/messungen/2026-09-review-aussen-nach-innen.md` (vollstaendig), `docs/messungen/2026-09-07-datenvertraege-umsetzungsplan.md` §Mindestform/C0/C1/C2, `docs/messungen/INDEX.md` gezielt.
 
 Nicht gelesen und darum ohne Aussage: `src/client.ts`-Rueckleseseite der Inbox/Report-Zeilen,
@@ -76,14 +84,35 @@ strukturell nicht aus Quelllesung entscheidbar oder ohne Laufbeleg.
 | **Doppelentscheidung** | zweite Entscheidung 409, Zeile unveraendert | ja, ueber beide Tueren | — |
 | **Doppelzustellung** | ein Event, ein Versuchszaehler, gedeckelte Recovery | ja — `FLEET_REPORT_RECOVERY_MAX_ATTEMPTS` an einer Stelle definiert (`:2478`) und ueber `fleetReportRecoveryExhausted` (`:6481`) einmal gefragt, Rollback nur bei `cleared` (`:6504`) | — |
 
-Client-/Ruecklese-Seite (`src/client.ts`) und die Probes ausserhalb der oben genannten Bereiche:
-**nicht geprueft**, kein apply/unsupported-Urteil.
+### Flaechenentscheid — jede Flaeche `apply` / `unsupported` / `not-applicable`
+
+`AGENTS.md` §Hard invariants verlangt fuer lifecycle-/client-foermige Arbeit eine Entscheidung je
+Flaeche, „silence is not a decision". Die erste Fassung liess Client und Probes ohne Urteil stehen;
+das wird hier nachgeholt. Ein Urteil ist die Entscheidung ueber die FLAECHE, die Spalte daneben sagt,
+wie weit ich sie tatsaechlich gelesen habe.
+
+| Flaeche | Entscheid | Abdeckung dieser Lesung |
+|---|---|---|
+| **Protokoll/Wire** (Route-Formen, Bodies, Statuscodes) | **apply** | vollstaendig fuer die sechs Routen dieses Schnitts: geschlossene Feldmengen (`#openFleetReport:6815`, `#decideFleetReport:7079`), Pfad-Regexes `[0-9a-f]{24}` (`:25218`), 409-statt-401-Regel. Kein eigener Befund; was hier auffiel, laeuft ueber B1/B2. |
+| **Server** (Handler, Ticks, Teardown) | **apply** | Traeger von B1–B4. Gelesen wie oben aufgelistet; ungelesen bleiben die Blattmodule ausserhalb `server/types.ts`. |
+| **Client / Rueckleseseite** (`src/client.ts`) | **apply fuer die Owner-Report-Schiene, `not-applicable` fuer die Program-Inbox** | Gezielt gelesen `:11036–11070` und `:11190–11215`. Die Owner-Schiene ist da und deckungsgleich: `liveness` wird als server-abgeleitet konsumiert statt nachgerechnet, die zwei Traeger sind getrennt (`opsOpenNonReport`), die Owner-Tuer traegt „records a judgement and starts nothing". Die **Program-Inbox** hat hier bewusst keine Flaeche — `rg 'self/inbox' src/client.ts` = 0 Treffer, sie ist eine Self-Route fuer eine MAIN-Pane, kein Board-Objekt. Ein vollstaendiger Client-Sweep ist ausdruecklich NICHT gefahren: die Datei hat 11 684 Zeilen, und ihr ungeteilter Zustand ist eine bekannte offene Zeile (`docs/messungen/2026-09-04-generalsanierung-abschlussmessung.md` §„Zwei offene Zeilen", 11 067 Zeilen zum Messzeitpunkt). |
+| **Reverse-State / Restore** (Loader) | **apply** | `loadProgramInbox` + `loadProgramInboxEntry` (server/types.ts:1701–1767) und `fleetReportFrom:761–830` gelesen. Letzterer erzwingt beim Laden, dass ein Nicht-Owner-`decision.by` slot+openedAt des Receivers trifft (`:820–821`) — die Entscheidungsregel gilt also auch ueber den Neustart. Kein Befund. |
+| **Docs** (`docs/self-api.md`) | **apply** | §inbox und §fleet-report inkl. §Annahme gelesen. Sie sind an den geprueften Punkten KORREKT und praeziser als die Suiten-Prosa — das ist der Grund, warum B3 abgeschwaecht und B5 auf eine Datei eingegrenzt wurde. |
+| **Probes** (`e2e/*`) | **apply** | Pins, Security-Routenliste, `e2e/programs.ts`-Inbox-Familie und `e2e/watch.ts`-Empfaengerfamilie gelesen. Traeger der Rest-Befunde von B3, B4 und B5. Nicht gelesen: `e2e/security.ts` ausserhalb `:60–150`, `e2e/watch.ts` ausserhalb `:1390–1570` und `:1860–2340` — dort daher `unknown`, nicht „keine Abdeckung". |
 
 ## Fuenf Befunde, rangiert
 
 ### B1 — Die Anfrage-Schiene beweist ihren Occupant nach dem Await nicht neu und ueberschreibt dabei ein nebenlaeufiges `refused`
 
 `server.ts#answerAttention:8284–8310` und `server.ts#replyClarification:6923–6950`.
+
+**Der erwartete Vertrag steht woertlich im portablen Regelwerk**, nicht in meiner Ableitung:
+`AGENTS.md` §Hard invariants — „After an external await, a continuation that can spawn or write a
+reusable Slot must re-prove its exact occupant identity; teardown and recycle must join any spawn
+already in flight." Dieselbe Regel in ihrer Negativform steht in
+`docs/agentic-control-plane-program-2026-08-20.md` §9 („Gefaehrliche Abkuerzungen") als
+„Slot als Agentenidentitaet behandeln". Dies ist damit ein Verstoss gegen eine benannte harte
+Invariante, keine aus dem Code abgeleitete Vertragsvermutung.
 
 Beide pruefen das Occupant-Tripel (`:8285`, `:6924`), awaiten dann `canDeliver` (`:8294`, `:6933`)
 — das schreibt zu `ps`/`pgrep` aus, also ein echtes, nicht sub-ms-Fenster — und senden danach
@@ -102,10 +131,13 @@ weg, laeuft im Teardown `#dropWatchesFor:7220–7221` → `#reconcileAttention:8
 `refusedReason:"requester session ended"`. Danach kehrt `answerAttention` zurueck, sieht bei `:8302`
 nur `status !== "send-uncertain"` und schreibt `status="send-uncertain"`, `refusedReason=null`,
 `closedAt=null` (`:8303–8306`). `sendText` wirft anschliessend („slot unavailable for send",
-`:5354`), der Handler antwortet 409 „stays send-uncertain" — und die Zeile bleibt **dauerhaft**
-nicht-terminal: `#pruneAttention` raeumt nur `answered|refused`, und `#reconcileAttention` laeuft
-nur beim Boot und beim Teardown, der fuer diesen Slot schon vorbei ist. In `#attentionOwnerView:8256`
-zaehlt `send-uncertain` als Rang 0, also als offen. `replyClarification` ist zeichengleich
+`:5354`), der Handler antwortet 409 „stays send-uncertain" — und die Zeile bleibt nicht-terminal
+**bis zum naechsten Serverneustart**: `#pruneAttention` raeumt nur `answered|refused`, und
+`#reconcileAttention` laeuft nur beim Teardown (fuer diesen Slot schon vorbei) und beim BOOT.
+**Korrigiert nach Rueckgabe:** die erste Fassung schrieb „dauerhaft". Der Boot-Reconcile
+(`server.ts:22823`, ohne `teardownSlotId`) findet den Requester tot oder ersetzt und refuest die
+Zeile dann korrekt — die Lebensdauer des Falschzustands ist also ein Serverlauf, nicht unbegrenzt.
+Bis dahin zaehlt `send-uncertain` in `#attentionOwnerView:8256` als Rang 0, also als offen. `replyClarification` ist zeichengleich
 (`refuseClarification` → Ueberschreibung bei `:6941–6947`, `pruneClarifications` terminalisiert
 ebenfalls nur `answered|refused`).
 
@@ -118,9 +150,10 @@ prueft nur noch Aenderungen ab da. Dann geht der Antworttext in eine fremde Pane
 `replyClarification:6969` schreibt zusaetzlich `worker.awaiting = null` auf den Fremden.
 
 **Kosten.** Ohne Neubelegung: eine offene Owner-Frage, die die Maschine bereits korrekt als tot
-abgeschlossen hatte, steht dauerhaft als „Antwort ist vielleicht in der Pane" in der Owner-Sicht und
-ist von keiner Route mehr zu schliessen — genau die Ununterscheidbarkeit von „wartet noch" und
-„kommt nie", gegen die dieser Kanal gebaut wurde. Mit Neubelegung: Zustellung an einen Ersatz allein
+abgeschlossen hatte, steht bis zum naechsten Serverneustart als „Antwort ist vielleicht in der Pane"
+in der Owner-Sicht und ist bis dahin von keiner Route zu schliessen — die Ununterscheidbarkeit von
+„wartet noch" und „kommt nie", gegen die dieser Kanal gebaut wurde, gilt also fensterweise statt
+endgueltig. Der Owner kann in diesem Fenster auf eine Frage antworten, die niemand mehr liest. Mit Neubelegung: Zustellung an einen Ersatz allein
 wegen gleicher Slotnummer, plus ein Statusschreiben (`awaiting`) auf einen fremden Principal.
 
 **Gegenprobe.** Zwei Schnitte, beide klein:
@@ -136,9 +169,13 @@ sitzt **innerhalb** von `sendText`, also nach dem Schnappschuss, und `FLEET_TEST
 liegt vor `dropWatchesFor`.
 
 **Falsifizierende Mutation.** Guard entfernen ⇒ (a) rot. Guard nur auf `request.status` statt auch
-auf das Tripel ⇒ der Recycle-Arm von (b) rot. Guard vor statt nach `canDeliver` ⇒ beide gruen,
-obwohl nichts gewonnen ist — deshalb muss (a) die **Position** relativ zum `await` pruefen, nicht
-nur die Existenz.
+auf das Tripel ⇒ der Recycle-Arm von (b) rot. Guard VOR statt nach `canDeliver` ⇒ **(a) rot und
+(b) rot**: (a) ist als Positionspin definiert (der Re-Read muss zwischen `await canDeliver(` und
+`await sendText(` stehen), und (b) bleibt rot, weil das Rennen unveraendert ist.
+**Korrigiert nach Rueckgabe:** die erste Fassung behauptete hier „beide gruen, obwohl nichts
+gewonnen ist" und widersprach damit ihrer eigenen Pin-Definition zwei Absaetze hoeher. Dass Pin und
+Probe bei dieser Mutation UEBEREINSTIMMEND rot werden, ist der Grund, (a) ueberhaupt an die Position
+statt an die blosse Existenz zu binden.
 
 **Traeger.** Kein bestehender Task deckt das ab: `18e87e67` ist die Report-Rueckgabe, `e88884c8` die
 Codex-Identitaet, `c62aa3e9` der adressierte Rueckweg. Enger Folgebrief-Schnitt: *„Anfrage-Schiene
@@ -167,6 +204,14 @@ greift nur bei **mehreren** verschiedenen Abonnenten (`:6421`, „lane-watch evi
 receiver occupants") — ein einzelner Fremder gewinnt sauber und still. Zusaetzlich unterdrueckt seine
 blosse Anwesenheit den Owner-Inbox-Fallback, denn der verlangt exakt `NO_RECEIVER_EVIDENCE`
 (`:6848`): der Owner faellt aus dem Pfad, den dieser Fallback fuer ihn gebaut hat.
+
+**Die Doku benennt die fremde Subscription — und begrenzt sie nur fuer die GEBUNDENE Lane.**
+`docs/self-api.md` §fleet-report: „die Program-Bindung gewinnt, bevor Watch-Evidenz ueberhaupt
+gelesen wird … also kann eine **fremde**, abgelaufene oder doppelte Watch-Subscription daran nichts
+korrigieren, nur stoeren." Fuer die Lane OHNE Program sagt derselbe Absatz nur, die Ablehnungen
+blieben „exakt wie sie war" — und das sind die beiden Mehrdeutigkeits-409er, nicht eine
+Beziehungspruefung. Die Kategorie „fremder Abonnent" ist also erkannt und genau dort ungeloest, wo
+sie allein entscheidet.
 
 Das ist **kein unbemerkter Defekt** — `e2e/watch.ts:1530` prueft das Verhalten als gewollt
 („a non-program lane routes to its fresh exact Watch subscriber"). Der Befund ist, dass die
@@ -200,33 +245,45 @@ Lane sein? Regel festlegen (Owner-Inbox als Default, Abonnement nur mit belegter
 Probe, kein zweites Ledger."* Vorher ist eine **Owner-Entscheidung** faellig, denn die heutige
 Weite kann gewollt sein.
 
-### B3 — `audit-red` ist die eine Inbox-Art, deren fehlender Gegenstand als Schweigen rendert
+### B3 — `audit-red`s dokumentierte Stille traegt keine Probe (nach Rueckgabe stark abgeschwaecht)
 
 `server.ts#inboxSubject:7559–7568`, Zeile `:7560`.
 
 Fuer `attention-answer` und `fleet-report` gibt der Join bei fehlender Zeile
 `{subject:null, unknown:"entry … names a … row that is no longer present (retention)"}` zurueck —
 richtig, weil beide Quellen gedeckelte Tails sind. Fuer `audit-red` gibt er
-`{subject:null, unknown:null}` zurueck, begruendet mit: „its writer and its ledger join arrive
-together in the audit slice, so a line saying 'no longer present' would report a retention loss that
-never happened."
+`{subject:null, unknown:null}` zurueck. `rg -n 'audit-red' server.ts src/client.ts` liefert genau
+zwei Treffer, beide in diesem Zweig: kein Schreiber, kein Audit-Slice-Join, keine Client-Darstellung.
 
-An diesem Baum existiert weder das eine noch das andere. `rg -n 'audit-red' server.ts src/client.ts`
-liefert **genau zwei** Treffer, beide in diesem einen Zweig (`:7556` Kommentar, `:7560` Code) — kein
-Schreiber, kein Audit-Slice-Join, keine Client-Darstellung. Ein `audit-red`-Zeiger rendert heute
-also als Eintrag ohne Gegenstand und ohne Erklaerung: ununterscheidbar von „da ist nichts". Das ist
-exakt die Antwort, die `loadProgramInbox` in seinem eigenen Kopfkommentar (server/types.ts:1740–1744)
-verbietet: „A repair would turn 'these pointers were lost' into 'there were never any', which is the
-one answer this record may never give."
+**Was die erste Fassung falsch machte, und die Korrektur.** Ich schrieb, der Zeiger rendere „ohne
+Erklaerung" und das sei „exakt die Antwort, die `loadProgramInbox` verbietet". Beides ist nach
+Lesung von `docs/self-api.md` §inbox nicht haltbar. Die Doku sagt es woertlich und von sich aus:
+„**`audit-red` traegt in dieser Fassung immer `subject: null` und erzeugt KEINE `unknown`-Zeile** —
+der Ledger-Join kommt mit seinem Schreiber." Das ist eine benannte, versionsgebundene Entscheidung,
+kein Schweigen. Und mein Zitat aus `loadProgramInbox` traf daneben: dessen Kopfkommentar verbietet,
+dass der LOADER einen unlesbaren Record feldweise repariert — er sagt nichts ueber den Join in der
+Projektion. Das war ein Zitat gegen die falsche Funktion.
 
-**Kosten.** Solange kein Schreiber existiert, ist der Schaden latent. Er wird beim Landen des
-Audit→Program-Schreibers (`288f6359`) sofort real: dessen Zeilen kommen an einem Leser an, der sie
-stumm schluckt, und der erste Beleg dafuer waere eine MAIN, die einen roten Audit nicht sieht.
+**Was uebrig bleibt, und nur das.** Die Entscheidung ist dokumentiert und im Code begruendet, aber
+von KEINER Probe gehalten: in `e2e/programs.ts` kommt `audit-red` nur als Deckel-Fuellung
+(`:1785–1787`, 101 Eintraege) und als Fremd-Eintrag der Recycle-Probe (`:1792`) vor; kein Check
+behauptet, dass ein `audit-red` mit unaufloesbarem `ref` KEINE `unknown`-Zeile erzeugt. Die
+gegenteilige Zeile ist gepinnt (`:1866–1867` verlangt `unknown.length === 1` fuer den haengenden
+`fleet-report`), diese nicht. Der API-Leser sieht die Unterscheidung ausserdem nicht: im JSON ist
+„absichtlich null" von „Zeile verloren" nicht zu trennen, waehrend die Doku es trennt.
 
-**Gegenprobe.** Fixture in `e2e/programs.ts` neben den bestehenden gepflanzten Inbox-Eintraegen
-(`:1776–1812`): ein `audit-red`-Eintrag mit einem `ref`, zu dem kein Ledgerbeleg existiert.
-`GET /api/self/inbox` muss ihn mit einer benannten `unknown`-Zeile ausliefern — oder mit einem
-gejointen Audit-Fakt. `unknown:[]` bei `subject:null` ist der rote Fall.
+**Kosten.** Solange kein Schreiber existiert, ist kein Schaden eingetreten. Ob er beim Landen des
+Audit→Program-Schreibers (`288f6359`) eintritt, ist **bedingt und von mir nicht entschieden**:
+er tritt nur ein, wenn dieser Schnitt `audit-red`-Zeiger mintet, OHNE den Ledger-Join derselben
+Fassung mitzuliefern — und genau das kuendigt die Doku als gemeinsame Lieferung an („der Ledger-Join
+kommt mit seinem Schreiber"). Den Brief von `288f6359` habe ich nicht gelesen; ob er den Leser
+einschliesst, bleibt `unknown`. **Korrigiert nach Rueckgabe:** die erste Fassung schrieb „wird beim
+Landen sofort real" und behauptete damit eine Folge, die an einer ungelesenen Bedingung haengt.
+
+**Gegenprobe.** Ein Check neben `e2e/programs.ts:1866`, der den HEUTIGEN Vertrag festnagelt statt
+ihn zu aendern: ein `audit-red`-Eintrag mit unaufloesbarem `ref` liefert `subject:null` UND erzeugt
+keine `unknown`-Zeile. Damit wird der Tag sichtbar, an dem ein Schreiber landet und der Leser sich
+mitbewegen muss — heute wuerde diese Aenderung nichts rot machen.
 
 **Falsifizierende Mutation.** Die `unknown`-Zeile fuer `audit-red` wieder entfernen ⇒ rot. Den
 Join einbauen und die `unknown`-Zeile fuer den Fall „Ledgerzeile vorhanden" weglassen ⇒ der
@@ -243,18 +300,34 @@ findet ausser dieser Definition nur Kommentare (`server/audit-log.ts:275`, `serv
 `:1695`) und den Pin selbst. Der Befund der Vorgaengernotiz vom 2026-09-07 (Pin `e917a48b`) gilt am
 2026-09-08 unveraendert.
 
-Neu ist die Beobachtung zum **Beweismittel**: der einzige Pin ueber diesem Record
-(`e2e/pins.ts:6667`, `RULE_INBOX — appendProgramInbox is the only writer`) prueft
+**Nach Rueckgabe praezisiert: das ist eine ERKLAERTE Staffelung, kein uebersehener Defekt.** Die
+Suite sagt es an der Pflanzstelle selbst (`e2e/programs.ts:1794–1796`): „They are PLANTED rather
+than produced, because this slice has no writer at all — the producers arrive with the kinds they
+mint, and a fixture that waited for one would be testing a slice that has not landed yet." Die
+Leseseite ist damit bewusst vor der Schreibseite gebaut und ihre Fixtures sind kein Notbehelf.
+
+Was als Beobachtung bleibt, ist enger und betrifft das **Beweismittel**: der einzige Pin ueber
+diesem Record (`e2e/pins.ts:6667`, `RULE_INBOX — appendProgramInbox is the only writer`) prueft
 `writers === 1`, also die Zahl der `program.inbox = `-Zuweisungen im Server-Universum. Diese
 Bedingung ist bei **null** Aufrufern genauso gruen wie bei einem korrekten Producer: der Pin sichert
-Einzigkeit, nicht Erreichbarkeit. Ebenso beweisen die Succession-/Scope-Fixtures in
-`e2e/programs.ts` den Leser gegen **gepflanzte** Eintraege — sie koennen einen Producer, der das
-falsche `kind`, den falschen `ref` oder das falsche Program schreibt, strukturell nicht sehen.
+Einzigkeit, nicht Erreichbarkeit. Und die Reader-Fixtures pruefen gegen GEPFLANZTE Eintraege — einen
+Producer, der spaeter das falsche `kind`, den falschen `ref` oder das falsche Program schreibt,
+koennen sie strukturell nicht sehen. Das ist kein Vorwurf an diesen Baum, sondern die eine Zeile,
+die der erste Producer-Schnitt in seinem Brief mitnehmen sollte.
 
 **Kosten.** Die gesamte Kette Erstellung → Sichtbarkeit ist produktiv **unbewiesen**, nicht bewiesen-
 gut. Jede Aussage der Form „die Program-Inbox traegt die Nachricht ueber die Succession" ist heute
-eine Aussage ueber eine leere Flaeche. Konkret heisst das fuer die Pruefrage dieses Schnitts:
-`GET /api/self/inbox` liefert an `178eb78d` fuer jedes Program `entries:[]`, `unread:0`, `dropped:0`.
+eine Aussage ueber eine leere Flaeche. **Korrigiert nach Rueckgabe:** die erste Fassung schloss daraus „`GET /api/self/inbox` liefert fuer
+jedes Program `entries:[]`". Das ist falsch und verletzt die Invariante „Missing or failed evidence
+is `unknown`, never zero" (`AGENTS.md` §Hard invariants). Belegt ist nur: an diesem SHA kann kein
+Codepfad einen Eintrag ERZEUGEN. Was nach einem Restore DA ist, kommt aus `fleet.json`, und der
+Loader nimmt einen wohlgeformten Record an — `e2e/programs.ts:1775–1793` pflanzt genau so drei
+Eintraege plus `dropped: 7` in eine Program-Zeile und liest sie ueber die Route zurueck. Ein aus
+einem aelteren Build oder von Hand geschriebener Bestand ist damit moeglich und von hier aus
+`unknown`; ich habe die Live-`fleet.json` fuer diese Notiz nicht ausgewertet. Nur fuer eine
+Program-Zeile OHNE den Key ist `entries:[]` belegt — der Loader gibt ihr kein Backfill
+(`e2e/programs.ts:1825–1831`), und die Leere entsteht erst in der Projektion
+`#programInboxView:7573`.
 
 **Gegenprobe.** Beim Landen des ersten Producers: derselbe fachliche Akt (Attention beantworten bzw.
 Report entscheiden) muss genau einen Eintrag mit dem richtigen `kind` und einem aufloesbaren `ref`
@@ -275,6 +348,11 @@ vergleicht alle drei einschliesslich `sessionId`. Die beiden Tueren folgen seit 
 (2026-09-07) **verschiedenen** Regeln, und das ist gewollt und im Code ausfuehrlich begruendet
 (`:7065–7075`). Die Sicherheitsaussage des Satzes („a replaced MAIN session at the same slot is
 refused") bleibt wahr — ein Ersatz-Occupant traegt ein neues `openedAt`. Falsch ist die Begruendung.
+**Der Umfang ist eine Datei:** `docs/self-api.md` §Annahme sagt die Regel korrekt und mit ihrem
+Messanlass („Die gebundene Empfaenger-OCCUPATION entscheidet — `slot` + `openedAt`, und `sessionId`
+wird getragen, nie verglichen … gemessen an Slot 12"), und `server/types.ts#fleetReportFrom:805–822`
+erzwingt beim LADEN dieselbe Paarung fuer `decision.by`. Es driftet also nur der Vertragskommentar
+der Security-Suite, nicht die Doku und nicht der Restore.
 
 (b) `server.ts:6832` schreibt `b6956c9` eine Verweigerung zu, die dieser Commit nicht enthaelt
 (siehe B2).
@@ -315,18 +393,37 @@ dieser Naht (B1 oder B2), nicht in eine eigene Lane.
 Security-Test; die Befunde oben sind Vertrags- und Abdeckungsluecken, mit denen eine gruene Suite
 vollstaendig vertraeglich ist.
 
-Ausgefuehrt in dieser Lane (Kurzkette, reine Docs-Aenderung — `GET /api/self/gate` meldete
-`localProof.steps` voll bei leerem `classifiedAs`, weil zum Abfragezeitpunkt kein Diff existierte;
-der serverseitige Gate klassifiziert am Diff):
+**Gate am FERTIGEN Diff neu gefragt (nach Rueckgabe).** Die erste Fassung hatte `GET /api/self/gate`
+gefragt, BEVOR ein Diff existierte; die Route meldete darum die volle Kette bei leerem
+`classifiedAs`, und ich habe die Kurzkette aus der Regel abgeleitet statt sie mir sagen zu lassen.
+Am fertigen, gestageten Diff antwortet dieselbe Route:
 
 ```
-$ bun install --frozen-lockfile
-9 packages installed [56.00ms]
+localProof.steps      : ["install", "pins"]
+localProof.classifiedAs: {"docs/messungen/2026-09-08-astra-s3-inbox-report-contract-security.md": "docs-or-prose"}
+localProof.isolatedPreview: false          rulebookDrifted: false
+```
 
-$ bun e2e/pins.ts
+Genau diese zwei Schritte sind in dieser Reihenfolge ausgefuehrt worden. Originallog ausserhalb des
+Repos:
+`/private/tmp/claude-501/-Users-owner-claude-fleet-worktrees-fleet-260908100252-6767/636d1795-466b-4e12-bb4d-cbbca317721a/scratchpad/verify-s3-return.log`
+Baum: `ab6d01b913317c2d437259df696f6ee20fdd063e` plus die gestagete Korrektur dieser Datei; Host
+`Clawds-Air-2`, `2026-09-08T11:24:39Z`. Woertliche Zeilen aus dem Log (Kopf, Uebergang, Ende):
+
+```
+# verify per GET /api/self/gate localProof.steps = [install, pins]
+# tree: ab6d01b913317c2d437259df696f6ee20fdd063e (+ staged note); host: Clawds-Air-2; at: 2026-09-08T11:24:39Z
+### step 1/2: install
+bun install v1.3.9 (cf6cdbbb)
+Checked 9 installs across 10 packages (no changes) [17.00ms]
+### step 2/2: pins
 …
 ALL PASS
+### exit=0
 ```
+
+467 `PASS`-Zeilen, `exit=0`. Die frueher zitierte Zeile „9 packages installed [56.00ms]" stammt aus
+dem ersten Lauf in den leeren Worktree; der zweite Lauf findet `node_modules` vor und sagt das auch.
 
 Fremdbeleg, an SHA/Host/Lauf gebunden — **nicht** meiner: der letzte Post-Land-Audit mit voller
 Kette lief am Tree `d832a679cfe2d79ff1402f95bb31f404767be576` auf dem Helfer `second-host`

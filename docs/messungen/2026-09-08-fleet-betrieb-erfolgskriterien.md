@@ -61,3 +61,46 @@ Ledger-Zeile ist ein proportionaler Kurzketten-Audit). Den Inhalt der uebrigen s
 Lebenszyklus-Zeilen. Ob `7ed73694`s Brief-Anker (`docs/program-lebenszyklus-architektur-2026-09-04.md`)
 gegenueber dem heutigen `src/client.ts` noch stimmen — der Brief traegt die richtige Vorsichtsregel
 („was der Code widerspricht, gewinnt der Code"), aber geprueft ist sie nicht.
+
+---
+
+## Nachtrag 06:5x — der Post-Land-Audit dieses Lands ist ROT, und der Befund ist ein MESSFEHLER, kein Baumfehler
+
+Waehrend dieser Messung feuerte der oben armierte Watch: Audit `at=1788843000681` auf Tip
+`6207182d` (covers Land `40ee5965`) — **rot, 3973 ran / 1 failed**, und die eine Zeile ist eine
+SETUP-Zeile: „ctl setup: the source tree resolves and carries an executable ctl.sh".
+
+**Der Detailstring, aus dem Trail:** `src=unresolved ctl=-`. `e2e/ctl.ts#sourceTree` ruft
+`resolveSourceTree(ROOT, readlinkSync(ROOT/node_modules), isWorkTree)` und bekam `null`.
+
+Drei gemessene Folgen, aufsteigend nach Schaden:
+
+1. **45 Checks sind ABWESEND, nicht gruen und nicht rot.** Nach der roten Setup-Zeile steht
+   `if (!reachable) return;`. `grep -c 'check(' e2e/ctl.ts` = 46, und die Laufdifferenz zum
+   benachbarten gruenen Audit ist exakt 45 (4018 ran gegen 3973 ran). Am Ledger steht „1 failed" —
+   die 45 ungemessenen sieht dort niemand.
+2. **Der ganze Lauf verliert sein Trail.** `trail-emit.ts#defaultDir` leitet das
+   Trail-VERZEICHNIS aus demselben `SRC` ab. Loest SRC nicht auf, gehen die Zeilen nach
+   `$TMPDIR/fleet-e2e-trail` mit `"tree": null` statt nach `<repo>/e2e-trail`. Damit fehlen
+   **genau die Laeufe, in denen etwas schiefging, im Register**, das das Regelbuch zum
+   Schiedsrichter jeder Flake-Frage macht. Beide Seiten belegt: die zwei Fehl-Laeufe
+   (`isolated-20260907T220214Z-95830`, `isolated-20260908T040518Z-23356`) liegen in TMPDIR mit
+   `tree: null`, die erfolgreichen im Repo mit echter Sha.
+3. **Haeufigkeit 2 von 11** vollen Post-Land-Audits, seit `e2e/ctl.ts` am 2026-09-07 17:25 mit
+   `fbe44b3d` landete.
+
+**Was es NACHWEISLICH NICHT ist: Hostlast.** Die Laufzeit trennt die beiden Populationen nicht —
+ein 85,8-min-Audit war gruen (`at=1788810175324`), ein 44,4-min-Audit war ctl-rot
+(`at=1788821143810`). Ich hatte Last zuerst vermutet und die Vermutung an diesen zwei Zeilen
+verworfen; sie steht hier, damit die naechste Leserin sie nicht neu aufstellt.
+
+**Nebenbefund:** der Check-Name behauptet „an executable ctl.sh", das Praedikat ist aber nur
+`existsSync(CTL)` — das execute-Bit wird nie geprueft.
+
+**Stand:** als Zeile `b09cd2f9` gefilt (pending; der `auftrag`-Deckel stand auf 5/5 und wurde durch
+die Freigabe von `fa8f6220` geoeffnet). **Die Adjudikation des roten Audits steht aus und ist
+NICHT meine** — `POST /api/post-land-audits/adjudicate` ist owner-positioniert, es gibt keine
+Self-Tuer, und ein Griff zum Owner-Token waere genau der Fehler, den `fa8f6220` abstellen soll.
+Sachlage fuer den Urteilenden: die Zeile ist `stale-test`-artig (die Sonde konnte ihre eigene
+Voraussetzung nicht aufloesen), NICHT `real` — der Baum ist auf diesen 46 Checks nie gemessen
+worden.

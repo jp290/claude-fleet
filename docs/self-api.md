@@ -632,7 +632,7 @@ ausdrücklich unter der Schnittlinie von §5.
 ## inbox — `GET /api/self/inbox`, `POST /api/self/inbox/:id/read`
 
 Der **dauerhafte Rückkanal des PROGRAMS**, nicht der einer Session. Ein Eintrag ist ein ZEIGER auf
-eine Zeile, die es schon gibt (Attention-Antwort, Fleet-Report, rotes Audit); er kopiert keinen Text
+eine Zeile, die es schon gibt (Attention-Antwort, Fleet-Report, rotes Audit, fremd gelandetes Commit); er kopiert keinen Text
 und nennt **keinen Empfänger**. Wer beim Lesen die gebundene MAIN des Programs ist, liest ihn —
 darum überlebt ein Eintrag eine Succession, während ein Watch, ein FleetEvent und eine offene
 Attention mit ihrem Occupant sterben (`CLAUDE.md` §„Eine Succession toetet deine offenen
@@ -649,12 +649,33 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   gibt es strukturell nicht zu ignorieren, dieselbe Regel wie bei `/api/self/tasks/:id/release`.
 - **Antwort GET:** `{program, unread, dropped, entries: [{id, kind, at, ref, readBy, readAt,
   subject}], unknown: []}`, **neueste zuerst**. `kind` ist genau eines von `attention-answer` ·
-  `fleet-report` · `audit-red`. `subject` ist die aufgelöste Zeile selbst (Attention- bzw.
+  `fleet-report` · `audit-red` · `ambient-land`. `subject` ist die aufgelöste Zeile selbst (Attention- bzw.
   Report-Zeile) oder `null`; löst ein `ref` nicht mehr auf, steht daneben eine Zeile in `unknown`
   (`entry <id> names a <kind> row that is no longer present (retention)`) — beide Zielarten sind
   beschnittene Enden (`pruneAttention`, `pruneFleetReports`), „der Zeiger hat seine Zeile überlebt"
   ist also ein erwarteter Zustand und keine Panne. **`audit-red` trägt in dieser Fassung immer
   `subject: null` und erzeugt KEINE `unknown`-Zeile** — der Ledger-Join kommt mit seinem Schreiber.
+- **`ambient-land` — jemand anders hat eine Zeile DIESES Programs gelandet** (ACP-17). Der Eintrag
+  entsteht ausschließlich, wenn ein Land die Integrationsbranch bewegt hat, das mit einem
+  Owner-Token **nicht vom Board** (`bearer`/`?token=`) an der Self-Land-Tür des Programs vorbeigefahren
+  ist — also genau der Fall vom 2026-09-08 04:56, in dem beurteilte und unbeurteilte Arbeit drei
+  Sekunden auseinander lagen und nichts sagte, welche es war. `ref` ist die **gelandete Sha**;
+  `subject` ist `{sha, note, door}`, wobei `note` die Server-geschriebene Land-Note an diesem Commit
+  ist (`git log --notes=fleet/land`). Die Frage, die die MAIN wirklich hat, steht in
+  `note.actor.bypassed`:
+  - `program` · `task` · `main` — welche Bindung übergangen wurde, und welchen Slot sie nannte.
+  - `report` — der **an der Tür gemessene** Stand des Reports dieser Arbeit: `accepted` (die MAIN
+    hatte bereits geurteilt — der harmlose Fall), `undecided` (ein Report lag, kein Urteil stand),
+    `none` (überhaupt kein Report zu dieser Arbeit), `rejected` (nur über das ausdrückliche,
+    auditierte `overrideRejectedReport` erreichbar). Gemessen an der Tür, nicht später neu
+    abgeleitet: „war das beurteilt, als jemand anders es landete" ist eine Frage über den Moment.
+  - **Abwesenheit ist nie Beweis:** `pruneFleetReports` schneidet entschiedene Zeilen ab, `report`
+    ist also ein Stand über die Zeilen, die der Server noch hielt — nie eine Aussage über alles je
+    Eingereichte.
+  Die Route **verweigert nichts**: der Owner-Pfad bleibt der ausdrückliche Notweg, und der Eintrag
+  ist die Sichtbarkeit, die ihm bisher fehlte. Lässt sich die Note nicht lesen (der Note-Schreiber
+  ist best-effort), trägt `unknown` die eigene Zeile dafür (`… whose land note is not readable in
+  <repo>`) — der Zeiger auf ein Land, das stattfand, hängt nie an einem best-effort-Schreiben.
 - **Antwort POST read:** `{ok: true, existing: false, entry}` beim ersten Mal, `{ok: true,
   existing: true, entry}` bei jedem weiteren. Die Quittung ist **kein Lock**: ein zweites Lesen
   überschreibt `readBy`/`readAt` nie, denn der erste Leser ist die Tatsache.

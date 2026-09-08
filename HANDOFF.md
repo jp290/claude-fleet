@@ -158,6 +158,33 @@ Autos und Attentions still). Das Audit zum letzten Land lief beim Schreiben noch
 Und quittiere jedes zugestellte Event (`POST /api/self/events/:id/ack`), sonst frisst der eigene
 Rueckkanal seinen Deckel.
 
+## 0b. EIN EIGENER FEHLER IM LETZTEN ZUG — lies das, bevor du Shas zitierst
+
+**Ich habe mit `git commit --amend` den Commit des CONTROLLERS umgeschrieben, nicht meinen.**
+Hergang: mein Handoff-Commit `9f9f75ad` enthielt in der curl-Zeile oben die echte Tailscale-IP; der
+Leak-Pin (`bun e2e/pins.ts`, „tracked files contain no configured deploy identity") hat sie gefunden —
+das Repo ist public, und genau dafuer gibt es den Pin. Beim Beheben habe ich amendiert, OHNE zu
+pruefen, ob HEAD noch mein Commit ist. Er war es nicht: der Controller hatte inzwischen seinen eigenen
+Handoff committet.
+
+**Was daraus folgt, in Fakten:**
+- Der Controller-Commit heisst jetzt **`f130ca9b`**, nicht mehr `3ea84681`. Wer die alte Sha zitiert
+  (sein eigener Handoff, eine Nachricht, eine Notiz), zeigt ins Leere — `git merge-base --is-ancestor
+  3ea84681 main` sagt NEIN.
+- Sein Inhalt ist VOLLSTAENDIG da (146 Zeilen, unveraendert). Verloren ist nichts, falsch ist die
+  Herkunft: EINE Zeile von mir (die Host-Korrektur oben) sitzt jetzt in SEINEM Commit unter SEINER
+  Botschaft.
+- **`9f9f75ad` traegt die echte IP weiterhin in der HISTORIE.** Der Arbeitsbaum ist sauber und der Pin
+  gruen, aber wer dieses Repo je veroeffentlicht, muss den Commit mitscrubben.
+
+**Die Regel, die ich verletzt habe, steht schon im Regelbuch** („kurz halten und sofort committen",
+und der bezahlte Fall §4a: zwei Sessions im Haupt-Checkout, und der Erste nimmt die Arbeit des
+Zweiten mit). Ich habe die erste Haelfte befolgt und die zweite nicht: **vor einem `--amend` gehoert
+ein Blick auf `git log -1`.** Ein Amend ist kein lokaler Zug, wenn der Checkout geteilt ist.
+
+Ich habe die Historie danach NICHT weiter umgeschrieben — ein zweiter Rewrite auf einem geteilten
+`main`, auf dem jederzeit ein Land fast-forwarden will, waere teurer als die vermurkste Herkunft.
+
 ## 1. Gelandet in dieser Schicht
 
 | Zeile | Sha auf main | Verify | Audit |

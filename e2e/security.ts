@@ -196,7 +196,9 @@ const PRE_AUTH_ROUTES = [
   // route calls — there is no second merge implementation.
   String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/land$/`,
   '~ /^\\/api\\/self\\/events\\/([a-z0-9]+)\\/ack$/', // same slot+session credential; idempotent receipt only
-  '= /api/self/succeed',  // non-lane only: committed HANDOFF → one successor; caller retires on grace
+  '= /api/self/succeed',  // non-lane only: one successor, caller retires on grace. The committed
+  // HANDOFF gate still holds the unbound, Supervisor and game-maker rails; a Standard Program-MAIN
+  // hands over the Program's own measured record in the founding brief instead (2026-09-08).
   '= /api/self/retire',   // non-lane only: immediately retire the token's own slot after reporting
   // added 2026-08-07. The widest READ on the every-session tier —
   // it is the only self route whose payload is not this slot's own row but a fleet-wide ledger

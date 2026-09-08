@@ -187,7 +187,16 @@ wird `ctl.sh` in `e2e/ctl.ts` gegen eine isolierte Instanz.
 ## Übergabe
 
 Bei 25 % Kontext: `HANDOFF.md` obersten Block ERSETZEN (nur was git nicht trägt: Absicht,
-In-Flight mit Rückwegen, Owner-Entscheide, Schrittfolge mit Warum), committen — und dann **seit
+In-Flight mit Rückwegen, Owner-Entscheide, Schrittfolge mit Warum) — **committen musst du ihn seit
+2026-09-08 nicht mehr, wenn du an ein Standard-Program gebunden bist** (`GET /api/self` nennt die
+Bindung NICHT — sie steht in `GET /api/self/program-execution` unter `authority`, und eine leere
+`programs`-Liste heisst ungebunden): `server.ts#handleSelfSucceed` verlangt den frischen HANDOFF-Commit nur noch von der
+ungebundenen Session, vom Supervisor und vom Game-Maker-Program. Für den Standard-Fall MISST der
+Server die Übergabe stattdessen im Moment des Transfers und liefert sie im Gründungsbrief
+(`server.ts#standardHandoverLines`): offene Task-Zeilen mit `GET /api/self/program-execution`,
+Inbox-Stand mit `GET /api/self/inbox` (eine beim Laden unlesbare Inbox steht dort als `unknown`,
+nie als `0`) — und WÖRTLICH die offenen Owner-Entscheide und Check-ins, die mit dir sterben, weil
+deine Nachfolgerin die Zeilen sonst nirgends lesen kann. Der Rest dieses Absatzes bleibt: **seit
 2026-09-07 zuerst `/compact`, nicht `succeed`** (Owner-Richtung 05:2x; Regelbuch §Einstieg,
 Kontext-Band): eine Succession tötet Watches, Autos, Attentions und Datei-Monitore des Slots, ein
 Compact behält sie. Fester Compact-Auftrag: Kette in Flug, offene Owner-Entscheide wörtlich, Ids

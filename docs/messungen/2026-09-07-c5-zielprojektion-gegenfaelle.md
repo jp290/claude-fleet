@@ -1,7 +1,7 @@
 # C5 — Zielprojektion: Gegenfälle
 
 Stand: 2026-09-08. Zugeordnet zu Task `eec64457`, Program `e3b3a064`.
-Dieser Eintrag liefert den positiven Kontrollfall für C5-Fall 2 sowie Fall 4 mit
+Dieser Eintrag liefert den grünen und den unknown-Kontrollfall für C5-Fall 2 sowie Fall 4 mit
 einem realen Annahmebeleg und einer synthetischen Änderung. Die übrigen C5-Fälle
 und die vollständige Zielprojektion sind damit nicht erledigt.
 
@@ -70,6 +70,88 @@ Originalausgabe der selbst ausgeführten Probe:
 ```text
 PASS: covers-Join trifft; mainSha-Gleichheit verfehlt; fehlende Coverage und anderes Repo treffen nicht; Ancestry bestätigt
 ```
+
+## Fall 2b: Coverage vorhanden, Audit ohne Urteil
+
+Der historische Land `f781c600c7a4c4c46a01f721d83cc997c447c639` steht in
+`covers` der Auditzeile bei `1788763378705`. Deren `mainSha` ist
+`5b676958d3054c5c617904f06468855a10c96fda`, und ihr Ergebnis ist **unknown**.
+Das ist eine vorhandene Auditzuordnung mit fehlendem Urteil, keine fehlende
+Auditzeile und kein gemessener Regressionsfehler.
+
+| Dimension | Originalrecord |
+|---|---|
+| Weitere abgedeckte Veröffentlichung | `2dfaa814fe07e1b4553d3dd38584e82fe329e539` |
+| Ergebnis / Grund | `unknown` / `audit timed out after 2700000ms — no verdict` |
+| Start / Abschluss | `1788760678358` / `1788763378705` |
+| Dauerfeld | `ms: 2700347`; hier keine daraus abgeleitete reine Arbeitszeit |
+| Exitcode / Checks | jeweils explizit `null`; keine Null-Fehler-Messung |
+| Konfigurierte Kette | `cmdSource: env`, Kommando enthält `./e2e-isolated.sh` |
+| Proportionalität | Nur der Cover-Eintrag für `f781c60` trägt `proportional: true`; daraus folgt keine Kurzkette für den koaleszierten Audit. |
+
+Selbst geprüft: Ledgerzeile und aufgezeichneter Ausgaberest sowie Git-Ancestry
+Land → Auditbaum (`git merge-base --is-ancestor`, Exit 0). Der Ausgaberest nennt
+`acquired after 1576s`, enthält aber keinen abschließenden `ALL PASS`-Beleg.
+Weder die aufgezeichnete Wartezeit noch das vorhandene Kommando beweisen hier eine
+vollständig gefahrene Suite. Die Ursache des Timeouts wird in diesem C5-Fall nicht
+neu diagnostiziert. Ein späterer grüner Audit ersetzt dieses historische unknown
+nicht stillschweigend; er wäre ein weiterer Beleg mit eigener Identität.
+
+### Gegenprobe: Zuordnung und Urteil getrennt lesen
+
+Der Reader ist eine C5-Fixture. Er verändert weder den historischen Record noch
+Live-Zustand. Die synthetischen Varianten entfernen Coverage oder setzen einen
+roten Befund, um die drei unterschiedlichen Aussagen zu prüfen.
+
+```python
+import json
+import subprocess
+from pathlib import Path
+
+land = "f781c600c7a4c4c46a01f721d83cc997c447c639"
+repo = subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip()
+rows = [json.loads(line) for line in Path("post-land-audits.jsonl").read_text().splitlines()]
+found = [r for r in rows if r.get("at") == 1788763378705]
+assert len(found) == 1, "Historische Auditquelle fehlt oder ist nicht eindeutig"
+r = found[0]
+assert r["mainSha"] == "5b676958d3054c5c617904f06468855a10c96fda"
+assert r["mainSha"] != land
+assert r["result"] == "unknown" and r["checks"] is None and r["exitCode"] is None
+assert r["reason"] == "audit timed out after 2700000ms — no verdict"
+assert r["ms"] == 2700347
+assert "./e2e-isolated.sh" in r["cmd"]
+assert "acquired after 1576s" in r["out"]
+assert "ALL PASS" not in r["out"]
+assert any(c.get("mainAfter") == land and c.get("proportional") is True for c in r["covers"])
+subprocess.run(["git", "merge-base", "--is-ancestor", land, r["mainSha"]], check=True)
+
+def audit_relation(row, target_repo, target_land):
+    matches = row.get("repo") == target_repo and any(
+        c.get("mainAfter") == target_land for c in row.get("covers", [])
+    )
+    if not matches:
+        return {"coverage": "unknown", "verdict": "unknown", "reason": "no matching cover in supplied record"}
+    return {"coverage": "present", "verdict": row.get("result", "unknown"), "reason": row.get("reason")}
+
+assert audit_relation(r, repo, land) == {"coverage": "present", "verdict": "unknown", "reason": r["reason"]}
+assert audit_relation({**r, "covers": []}, repo, land)["coverage"] == "unknown"
+red = {**r, "result": "red", "reason": "synthetic failing check", "exitCode": 1, "checks": {"ran": 1, "failed": 1}}
+assert audit_relation(red, repo, land) == {"coverage": "present", "verdict": "red", "reason": "synthetic failing check"}
+assert audit_relation(r, "synthetic-other-repo", land)["coverage"] == "unknown"
+print("PASS: vorhandene Coverage mit unknown bleibt getrennt von fehlender Coverage und synthetischem Rot; null ist kein Pass")
+```
+
+Originalausgabe der selbst ausgeführten Probe:
+
+```text
+PASS: vorhandene Coverage mit unknown bleibt getrennt von fehlender Coverage und synthetischem Rot; null ist kein Pass
+```
+
+Ein Reader, der vorhandene Coverage automatisch als Erfolg behandelt, scheitert
+am ersten Vergleich; ein Reader, der jedes unknown auf fehlende Coverage reduziert,
+ebenfalls. Ein Fehlerzähler-Fallback `checks?.failed ?? 0` würde ungemessene Checks
+als null Fehler darstellen. Die Fixture liest deshalb das vorhandene Urteil direkt
+und erfindet aus `checks: null` kein grünes Ergebnis.
 
 ## Fall 4: Annahme von A ist kein Annahmebeleg für geänderte Bytes B
 
@@ -155,4 +237,4 @@ Kein Hub, kein neuer Agenten-Reader und kein Produktcode wurden implementiert od
 getestet. Ein fehlender Cover-Treffer beweist allein keine historische Nichtabdeckung;
 die Beziehung bleibt ohne weiteren Beleg `unknown`. Die synthetischen Negativfälle
 prüfen den hier abgedruckten Reader, nicht die vollständige Serverprojektion.
-Der zusätzliche C5-Fall eines Audits mit Urteil `unknown` bleibt offen.
+Der unknown-Auditfall ist als Fall 2b geprüft; die übrigen C5-Fälle bleiben offen.

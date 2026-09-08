@@ -122,8 +122,9 @@ Notiz `touched[0].sha == mainAfter`; nach einem Land einer Lane mit `erledigt`-U
 *Gebaut* in Lane `fleet/260907235032-17ed` (`server/types.ts` `TaskVerdict`/`TaskTouch`/`touched`,
 `server.ts#applyLandToNotes` + `#laneNoteIds` + die zwei `/api/self/notes`-Routen, `task-notes.ts`
 `NOTES_READ_ROUTES_EXIST: true`, die Queue-Zeile in `src/client.ts#qTouchedLine`); die Checks stehen
-als `(n2-*)` in `e2e/land-durability.ts` §H und `e2e/tasks.ts` §(d5-live). Die Land-Sha setzt die
-MAIN nach dem Land ein.
+als `(n2-*)` in `e2e/land-durability.ts` §H und `e2e/tasks.ts` §(d5-live). *Gelandet* am
+2026-09-08 als `661df41f` (Bau) + `dea2d837` (Reparatur aus dem ersten Vorschaulauf), Land-Note
+`verify.ok true`, volle Kette, 142 s Gate bei `waitMs 0`.
 
 **Schnittlinie.** Nach N1 erreicht jede Notiz die Lanes, die ihre Dateien anfassen; nach N2 sieht
 der Owner je Notiz, ob sie beruehrt, widerlegt oder erledigt ist, und erledigte verschwinden von

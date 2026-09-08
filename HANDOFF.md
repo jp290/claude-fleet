@@ -1,3 +1,106 @@
+# HANDOFF — Program-MAIN Land-Pipeline 2026-09 (`233e1c2b7eaca3850decf332`, Slot 11, Opus 5 high): PROGRAM VOLLSTAENDIG — N2 gelandet als `661df41f`+`dea2d837`, KEINE offene auftrag-Zeile mehr; 2026-09-08 ~02:4x, ctx GEMESSEN 19,4 % bei Land-Beginn
+
+> **Ersetzt die Land-Pipeline-Abschnitte darunter.** Zustand ableiten: `./state.sh`, `./register.sh`,
+> `GET /api/self/program-execution`. Alles hier sind Behauptungen zum Nachschlagen.
+
+## 0. DEIN ERSTER ZUG
+
+**Es ist KEINE auftrag-Zeile dieses Programs mehr offen.** Alle zehn sind terminal; die drei
+Erfolgskriterien sind am Baum geprueft, nicht nur behauptet (§1). Was bleibt, sind drei
+`notiz`-Zeilen unter der Schnittlinie — sie sind die Uebergabe, nicht Prosa:
+`4aeeec19` (M4 Audit-Ping an die MAIN, der das Land gehoert) · `f7493755` (N3 Notizen: Dispatcher-
+advisory, 66 flaechenlose Notizen, Fremd-Repo-Snapshot) · `59ffeda0` (Controller: Owner-Entscheid F2
+undo-land→hub mit `--force-with-lease`, plus die P3-Schnitte L1/L5/L6/L7a, die laut eigener Zuordnung
+an dieses Program gehen — **wird erst eine Zeile, wenn Astras P3-Analyse ein ACCEPT hat**).
+Dazu neu von mir: `fb26a472` (Speicherdruck der Maschine, §3).
+
+**Wenn du dieses Program fortsetzt, ist der naechste Schnitt L1 oder M4** — beide haben ein Dokument
+hinter sich, keiner braucht neues Denken.
+
+## 1. STAND — jede Zeile am Baum geprueft
+
+| Zeile | Id | Stand |
+|---|---|---|
+| S1 Wellen-Sensor | `1b106a66` | GELANDET `863f628`+`49d93bc` |
+| M1 Gate unter Server-Hold | `aa8e5ade` | GELANDET `f388de1`+`f0bcea6` |
+| M5 Hold-Hygiene | `8d6a3e9e` | GELANDET `94dd5e4`+`a15b59a`+`b2ab2cf` |
+| N1 Notizen beim Dispatch | `3af11665` | GELANDET `24cd54e`+`189f815` |
+| M3 Vorflugpruefung dirty-main | `283f625f` | GELANDET `6c70f01`+`79e1c36`+`94a8840` |
+| W1/W2/W3 Wellen | `e0113460`/`0f5019ac`/`05611418` | GELANDET `01c3b35` / `974ea00` / `74a1cde2..eb0f03d3` |
+| M2 waitedOut als Wiedervorlage | `64860da8` | GELANDET `15108892` |
+| **N2 Notiz-Lebenszyklus** | `f98facad` | **GELANDET `661df41f`+`dea2d837`**, Gate 142 s, `waitMs 0`, hubPush ok |
+
+Alle zitierten Shas mit `git merge-base --is-ancestor <sha> main` geprueft (das ist der Grund, warum
+hier keine Lane-Shas stehen: eine Lane kann ihre eigene Landing-Sha nicht kennen).
+**Erfolgskriterien:** (a) beide Dokumente gelandet mit Schnittliste, Zeilen in der Queue — erfuellt ·
+(b) S1 gelandet UND gepinnt (`e2e/tasks.ts:4213-4261`, `e2e/pins.ts:2186-2198`) — erfuellt ·
+(c) erster Merge-Schnitt gelandet ohne neue FAILED-Note: `./state.sh` liest FAILED **19**,
+byte-gleich mit der Ausgangszahl des Programs vom 2026-09-06 — erfuellt.
+
+## 2. WAS N2 GEBAUT HAT (gelesen, nicht aus dem Report uebernommen)
+
+`server.ts#applyLandToNotes`, aufgerufen aus `landLane` mit `facts.baseSha`/`mainAfter` — nur die
+Land-STELLE kennt beide Shas. Zwei unabhaengige Schreibvorgaenge: **touched** (Notiz-Flaeche
+schneidet den Land-Diff ohne Naben ⇒ `touched:[{sha,branch,at}]` vorn, Deckel 5) und **closed**
+(diese Branch hat als LETZTES `erledigt` gesagt ⇒ `done`). Der Verdict allein bewegt nie einen
+Status — erst das Land macht ihn wirksam; `killed`/`shelved` erreichen die Zeile nie, die Notiz
+bleibt pending und das Urteil steht als lesbarer Kommentar. Dazu zwei lane-only Tueren
+(`GET /api/self/notes`, `POST /api/self/notes/:id/verdict`).
+
+**Die Berechtigungsgrenze ist der CONTEXT RECEIPT, nicht die Queue** — eine Lane liest und beurteilt
+genau die Ids, die ihr eigener Gruendungsbrief geliefert hat, Join auf **branch UND slot** (Slots
+werden recycelt). `from` kommt aus der Token-Zeile, nie aus dem Body. Fremde Id 409, fremder verdict
+400, Nicht-Lane 409.
+
+## 3. MECHANISMEN, DIE DIESE SCHICHT BEZAHLT HAT
+
+- **Ein STALE Suite-Lock sieht exakt aus wie eine ausgelastete Maschine.** Ich habe den Halter
+  ueber fuenf Checkins verfolgt (pid 27975, bun-Kind 10,5 → 19,9 → 30,5 → 40,8 min). Beim sechsten
+  war er weg — und das Lock-Verzeichnis gehoerte einem ANDEREN, bereits toten pid (88357, 4,5 min
+  alt), bei **null** laufenden Wrappern. `./ctl.sh lock --reap` raeumte es, danach landete N2 mit
+  **`waitMs 0`**. Ohne den Blick haette das naechste Land dreimal 45 min gegen eine freie Maschine
+  gewartet. Reap-Regel unveraendert: pid tot ⇒ raeumen · pid lebt mit ANDERER birth ⇒ raeumen ·
+  pid lebt mit FEHLENDER birth ⇒ BEHALTEN · pid-LOSE Lock-Dir ⇒ nie raeumen (Park-Halt).
+- **Zwei Uhren, und nur eine ist die Laufzeit.** Der Wrapper zeigte 01:01:29, sein `bun`-Kind 19:54 —
+  die Differenz war Schlange. Wer den Wrapper liest, haelt ein gesundes Audit fuer haengend und
+  reapt einen LEBENDEN Halter. Sensor: `ps -eo pid,ppid,etime,comm | awk '$2==<wrapper>'`, Besitzer
+  ueber `lsof -a -p <pid> -d cwd` (nie eine Kommandozeile drucken — Token-Hygiene).
+- **`release` traegt den Spawn-Tripel; die Hand-Knopf-Empfehlung meiner Vorgaengerin war auf einer
+  falschen Praemisse gebaut.** `f98facad` trug `spawn{model:claude-opus-5[1m], effort:high}`, und
+  `server.ts#taskSpawnOf` ist die EINE Bruecke, die der Tick liest. Live gegengeprueft: Slot 4
+  entstand mit genau diesem Modell und Effort. Nimm `release` — der Hand-Knopf prueft weder Deckel
+  noch Quiet Hours.
+- **`cleanTrees` ist der Beweis, den ein Lane-Report nicht ersetzen kann.** Der eine rote Check
+  (`…delivers it WHOLE once that marker appears`, succession-pane-Familie) ist in 14 Tagen dreimal
+  auf einem Baum OHNE Diff gefallen (`GET /api/self/flakes`: runs 35, failedRuns 6, cleanTrees 3).
+  Das, nicht die Behauptung der Lane, entlastet den Diff. Kein Fix-Sha registriert ⇒ ein Rot dort
+  bleibt vorerst zulaessig.
+- **Lokale Hintergrund-Waechter sind auf dieser Maschine derzeit unzuverlaessig.** Zwei wurden vom
+  OS getoetet, bevor ihre Bedingung eintrat — auch die leichte ~1-KB-Fassung. Gemessen:
+  `vm.swapusage` 5349 MB von 6144 MB (87 %), 31 % freier Systemspeicher. Rueckweg deshalb
+  vollstaendig serverseitig: self-watch + one-shot `POST /api/self/autos`. Zeile `fb26a472`.
+  **Warum das ueber mich hinausgeht:** derselbe Reaper kann eine Suite mitten im Lauf treffen und
+  erzeugt ein Rot, dessen Ursache nicht im Baum steht.
+
+## 4. OFFEN, WEITERGEGEBEN
+
+- **Suite-Offer wird nicht zuverlaessig geclaimt:** zweite Sichtung. N2s zweites Angebot lag **633 s**
+  ungeclaimt bei `helper.online=true`/`mode=active` (das erste: 9 s), danach lokaler Fallback. W1
+  hatte dasselbe (~44 min). Warum der Second-host nicht nimmt, ist unuersucht.
+- **`/api/post-land-audits/artifact` ist owner-only** (401 fuer Self-Token): N2 konnte die
+  Detail-Strings ihres eigenen roten Vorschaulaufs nicht lesen und musste die Ursache aus der
+  Fail-Namensliste plus Code ableiten. Eine Lane, die ihr eigenes Rot nicht lesen darf, raet.
+- **Post-Land-Audit zu `dea2d837` laeuft** — Watch `784a2f9b` armiert, gehoert dieser Session. Eine
+  FEHLENDE Ledger-Zeile heisst „laeuft", nie „verloren" (voller Lauf ~25-35 min). Bekanntes,
+  adjudiziertes Rot lokaler Audits: `ctl setup: … executable ctl.sh` (`src=unresolved`).
+- **Deploy:** `deployGap.codeBehind` true, `bundleStale` true — W1/W2/W3/M2/N2 sind gelandet und
+  NICHT live, der Wellen-Knopf ist unsichtbar. Controller-Akt; ein Deploy setzt ausserdem JEDE
+  Idle-Uhr auf null, also vorher die Programs fragen, deren Beweis an einem Idle-Fenster haengt.
+- **Der Einwand von Program `eec69528`** (programId + Flaeche ist nicht „gemeinsame Ursache") bleibt
+  offen und ist beim ersten echten n>1 neu zu bewerten. Der Sensor bildet weiterhin NULL Buendel.
+
+---
+
 # HANDOFF — Astra Review-MAIN, Program eec695280b9ca5a84824eec0 — 2026-09-08
 
 Diese Uebergabe gehoert dem Outside-in-Review, NICHT Fleet-Architektur e3b3a064. Eigene aktuelle Fuellstandsmessung fehlt; historische Controller-Prozentwerte sind keine heutige Messung. Keine Program-Abschlussbehauptung.

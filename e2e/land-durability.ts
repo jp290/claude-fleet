@@ -744,10 +744,19 @@ export async function run(): Promise<void> {
         await Bun.sleep(100);
       }
     }
-    const dNotes = dTok
-      ? (await (await fetch(`${BASE}/api/self/notes`, { headers: { "x-fleet-self-token": dTok } })).json()) as
-        { notes?: { id: string }[]; receipts?: number }
-      : { notes: [], receipts: 0 };
+    // POLLED FOR THE RECEIPT, not for the pane. The lane's cwd, branch and token all exist the
+    // instant the slot is created, but the context receipt is appended AFTER the boot sleep and the
+    // brief is sent — so a probe that stopped at "the lane exists" read an empty note set and made
+    // every check below it fail as a permission bug. Same window (12 s) e2e/tasks.ts waits on the
+    // receipt ledger. The timeout returns the last reading, so a genuine absence still fails the
+    // setup check as itself instead of hiding inside the loop.
+    let dNotes: { notes?: { id: string }[]; receipts?: number } = { notes: [], receipts: 0 };
+    if (dTok) for (let i = 0; i < 24; i++) {
+      dNotes = (await (await fetch(`${BASE}/api/self/notes`, { headers: { "x-fleet-self-token": dTok } })).json()) as
+        typeof dNotes;
+      if ((dNotes.notes ?? []).some((x) => x.id === nDone)) break;
+      await Bun.sleep(500);
+    }
     check("(setup H) the dispatched lane's own receipt delivered the note it is about to judge",
       !!dTok && !!dBranch && (dNotes.notes ?? []).some((x) => x.id === nDone) && (dNotes.receipts ?? 0) >= 1,
       `slot=${dSlot} branch=${dBranch} notes=${JSON.stringify((dNotes.notes ?? []).map((x) => x.id))} receipts=${dNotes.receipts}`);
@@ -795,6 +804,14 @@ export async function run(): Promise<void> {
         if (kCwd && kBranch && kTok) break;
         await Bun.sleep(100);
       }
+    }
+    // the same receipt wait as above — the verdict door's 409 boundary IS the receipt, so posting
+    // before it is written is refused for a reason that has nothing to do with what is under test
+    if (kTok) for (let i = 0; i < 24; i++) {
+      const seen = (await (await fetch(`${BASE}/api/self/notes`, { headers: { "x-fleet-self-token": kTok } })).json()) as
+        { notes?: { id: string }[] };
+      if ((seen.notes ?? []).some((x) => x.id === nKill)) break;
+      await Bun.sleep(500);
     }
     const kVerdict = kTok
       ? await fetch(`${BASE}/api/self/notes/${nKill}/verdict`, { method: "POST",

@@ -2,12 +2,17 @@
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT
 
-- **ARMIERT UND STERBEND: Audit-Watch `66708edc` auf `1a7c53ea`** (das Land von `cac29de6`).
+- **ARMIERT UND STERBEND: Audit-Watch `52e91107` auf `ba8c068a`** (das Land von `bb563b63`).
   Eine Succession toetet ihn still. Neu armieren, `idleSec:0` ist kein Detail:
 
       curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
-        -d '{"kind":"audit","repo":"/Users/owner/claude-fleet","mainAfter":"1a7c53ea9db49c6a2191509e942ec8ae72740ead","idleSec":0}' \
+        -d '{"kind":"audit","repo":"/Users/owner/claude-fleet","mainAfter":"<sha von ba8c068a, voll>","idleSec":0}' \
         "http://$FH:8790/api/self/watch"     # FH = FLEET_HOST aus .env, NIE literal in eine getrackte Datei
+
+  (Der Audit-Watch auf `1a7c53ea` ist bereits gefeuert: ROT 4020/2, siehe §5b — unadjudiziert.)
+- **OFFEN BEIM OWNER: Attention `6d51202e451b5e3166d24c8d`** (Wire-Autoritaet fuer S12).
+  Sie stirbt mit meiner Succession. **Ihr VOLLER Text steht in §5e** — findest du sie `refused`,
+  ist sie unbeantwortet, nicht abgelehnt: neu stellen.
 
   (Der Leak-Pin faellt sonst — genau daran ist die Vorgaengerin am 2026-09-08 05:0x haengengeblieben.)
 - **LAEUFT: `7ed73694` (S12 Program-Blick, Client) auf Slot 1.** Vom Tick gestartet, nachdem ich sie

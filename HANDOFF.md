@@ -107,6 +107,26 @@ neue FAILED-Note — erfuellt. Der Wellenmodus (W1–W3) war die Owner-Erweiteru
 Diese Sitzung kompaktiert (Regelbuch: Compact ist der Normalfall des Controllers). Slot, Self-Token
 und die armierten Watches bleiben; dieser Abschnitt ist die dauerhafte Wahrheit.
 
+## 0b. WAS BEIM ANTRITT SOFORT GILT (Succession 2026-09-08 ~02:1x)
+
+**Ein OWNER-FENSTER laeuft: bis 03:02 sollen die drei Astra-Sessions genudged werden** („in 45min
+sollte alles done sein"). Die 👁 Astra-Wache auf **Slot 13** fuehrt es aus und meldet um 03:02 EINE
+Zeile je Muendel an DICH (sie weiss, dass sie an das Label `🎛 Fleet Controller` melden muss, nicht
+an Slot 7). Ihre Autos ueberleben meine Succession, meine Watches nicht — **du hast beim Antritt
+KEINE armierten Watches**; die Audits zu `f03745ec` und `9d09cb6b` sind bereits gruen zurueck, offen
+ist nur das rote zu `51565db4` (bei Slot 6, Lane `cac29de6`).
+
+**Eine Falle, gerade bezahlt:** Slot 13 stand in einem Claude-Code-Auswahlmenue („Enter to select"),
+und JEDE Zustellung starb an `409 composer occupied (33 chars) — nothing typed`. Sechs Versuche, alle
+tot. Der Fix ist `tmux -L claudefleet send-keys -t s<N> Escape`. **Ein 409 „composer occupied" heisst
+nicht immer Resttext — es kann ein offener Screen sein**, und die Zahl in Klammern ist dann die
+Menuezeile, nicht ein Entwurf.
+
+**Beim Owner liegen drei Saetze, alle unbeantwortet:** Slot 2s Erstbeweis `c744bb1` + Tastenanfrage
+`c95dc0c` (seit ~2 h) · Program `f9dc8e10` „Leichtgewicht" (`proposed`, Gruendungsprompt fertig) ·
+Prioritaet von `8f14a22b` (vor die queued Zeilen ziehen oder nicht — ich habe es NICHT von Hand
+getan, obwohl Slot 8 mit Zahlen dafuer argumentiert hat).
+
 ## 1. DREI KORREKTUREN AN DER VORGÄNGERIN — alle drei am Code gemessen, nicht erschlossen
 
 **(a) Die Rebind-Tür EXISTIERT.** §7 des vorigen Handoffs schloss: „Was ich gesucht und NICHT

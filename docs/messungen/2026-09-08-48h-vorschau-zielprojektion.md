@@ -148,3 +148,75 @@ Diese Vorschau ersetzt die Wartegründe der Eingangsnotiz, nicht das noch offene
 Gesamtreview von `eec69528`. Die historischen Quellen wurden nicht rückwirkend
 umgeschrieben. Der nächste Architekturakt bleibt ein fehlender C5-Gegenfall oder
 eine konkrete Rückgabe aus der Tabelle, nicht eine weitere allgemeine Bilanz.
+
+
+## Ausgeführter erster Abschlussakt — 2026-09-08
+
+Die Architektur-MAIN hat den noch unentschiedenen Report
+`bf2d079f6480e73f2cc76dcb` zu Checkpoint-Task `f5ce8012` fachlich entschieden:
+`rejected`, bei `1788828410350`. Die Ablehnung gilt seiner Behauptung eines noch
+fehlenden P3-Owner-Entscheids; Attention `58cb3e5e` hatte die Selbstannahme vorher
+unter Auflagen erlaubt. Die bestätigten P1/P2-/GLM-Belege bleiben bestätigt.
+Der Arbeitsbaum der ursprünglichen Checkpoint-Lane war sauber, `main..HEAD` leer.
+Es gibt daraus keinen zu landenden Kandidaten und keine verlangte Nacharbeit.
+Ein später gelesener Slot-10-Occupant gehört bereits einer anderen Lane; aus der
+Slotnummer wird deshalb kein weiterer Eingriff in die alte Lane abgeleitet.
+
+Der Audit-Dokumentauftrag `6d7ff117` ist in der Queue `done`. Sein korrigierter
+Report `a36891ec0d58766ab8ec6ede` trägt ein `accepted` der zuständigen MAIN bei
+`1788827823931`; die erste Fassung `36cfd4ba` ist ausdrücklich superseded/rejected.
+Die Architektur-MAIN hat die Dokumentbytes von Kandidat `ab76a0af` und Land
+`323b70595ec23710ffdd8a2689e860dc7de00728` für
+`docs/messungen/2026-09-07-projektionssonde-basis.md` verglichen: kein Diff.
+Audit `1788827850316` deckt diesen Land explizit über `covers` ab: `green`,
+458 Checks, 0 Fehler, Exitcode 0, `proportional`, `install+pins`, Originaltail
+`ALL PASS`. Damit ist die geprüfte Publikationskette geschlossen; die umfangreiche
+historische Auswertung wurde in diesem Abschlussakt nicht erneut voll vermessen.
+
+**Zwei andere rote Belege bleiben getrennt offen:**
+
+| Auditbaum / Ledgerzeit | Originalbefund | Zugeordnete bestehende Arbeit |
+|---|---|---|
+| `51565db4`, `1788818482644` | `red`, 3953/2, Remote-Record vorhanden; `deleting a Watch does not delete its acknowledged event` und `subject teardown after event creation leaves the event trail intact`; Originaltail `2 FAILURES` | `cac29de6`, bei Aufnahme queued |
+| `83856c6a`, `1788821143810` | `red`, 3945/1, kein Remote-Record; `ctl setup: the source tree resolves and carries an executable ctl.sh`; Originaltail `1 FAILURES` vor stderr | `8f14a22b`, bei Aufnahme queued; sein verlangter lokaler Folgebeweis bleibt offen |
+
+Fehlender Remote-Record allein beweist keine Host-Identität. Der aktuelle Befund
+wird über Auditzeit, Baum und benannten Check identifiziert. Ein späterer grüner
+Docs-Audit auf einem anderen Baum löst keinen dieser zwei Fehlernachweise ab.
+Die inzwischen gestartete Platzierungsarbeit `d49dd776` wird nicht verdoppelt.
+
+Reproduktion dieser Abschlussbelege im Haupt-Checkout:
+
+```python
+import json
+import subprocess
+from pathlib import Path
+
+rows = [json.loads(line) for line in Path("post-land-audits.jsonl").read_text().splitlines()]
+def audit(at):
+    found = [r for r in rows if r.get("at") == at]
+    assert len(found) == 1, "Auditquelle fehlt oder ist nicht eindeutig"
+    return found[0]
+land = "323b70595ec23710ffdd8a2689e860dc7de00728"
+a = audit(1788827850316)
+assert any(c.get("mainAfter") == land for c in a.get("covers", []))
+assert a["result"] == "green" and a["exitCode"] == 0
+assert a["checks"] == {"ran": 458, "failed": 0}
+assert a["steps"] == ["install", "pins"] and a["proportional"] is True
+assert a["out"].rstrip().endswith("ALL PASS")
+path = "docs/messungen/2026-09-07-projektionssonde-basis.md"
+assert subprocess.check_output(["git", "show", f"ab76a0af:{path}"]) == subprocess.check_output(["git", "show", f"{land}:{path}"])
+w = audit(1788818482644)
+c = audit(1788821143810)
+assert w["result"] == c["result"] == "red"
+assert w["fails"] == ["deleting a Watch does not delete its acknowledged event", "subject teardown after event creation leaves the event trail intact"]
+assert c["fails"] == ["ctl setup: the source tree resolves and carries an executable ctl.sh"]
+assert "2 FAILURES" in w["out"] and "1 FAILURES" in c["out"]
+print("PASS: korrigierte Dokumentbytes und Audit-Coverage bestätigt; zwei separate rote Auditbefunde bleiben erhalten")
+```
+
+Selbst ausgeführter Originaltail:
+
+```text
+PASS: korrigierte Dokumentbytes und Audit-Coverage bestätigt; zwei separate rote Auditbefunde bleiben erhalten
+```

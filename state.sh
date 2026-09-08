@@ -258,9 +258,9 @@ echo "  leaked e2e tmux sockets: $(ls /private/tmp/tmux-501/ 2>/dev/null | grep 
 echo "  TMPDIR e2e scratch:      $(du -shc "${TMPDIR:-/tmp}"/fleet-e2e-instance-* 2>/dev/null | tail -1 | cut -f1)"
 echo "  suites running now:      $(ps -eo command | grep -c '^/bin/sh ./e2e-isolated.sh')"
 echo
-echo "=== config sensor (Ring 1.1: Wert+Quelle je FLEET_*; vorher hatten 31/42 Werte keinen Sensor) ==="
+echo "=== config sensor (Wert+Quelle je FLEET_*, und ob ein Repo-Overlay den env-Wert schlaegt) ==="
 python3 - <<'PY'
-import subprocess, re, os
+import subprocess, re, os, json
 def sh(cmd):
     try: return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10).stdout
     except Exception: return ''
@@ -283,11 +283,98 @@ wd = {}
 try:
     for m in re.finditer(r'(FLEET_[A-Z_]+)=', open('watchdog.sh').read()): wd.setdefault(m.group(1), True)
 except FileNotFoundError: pass
+# ── Ring 1.2a: die Schicht ÜBER dem Env ───────────────────────────────────────────────────
+# Ring 1.1 gab jedem FLEET_* Wert+Quelle (vorher hatten 31/42 Werte gar keinen Sensor). Der Fehler,
+# den das übrig ließ: die vier Quellen oben sind ALLE dieselbe Schicht. Darüber liegt eine zweite, die sie SCHLÄGT:
+# ein in fleet.json persistierter Repo-Eintrag (server.ts#repoLaneCap, #workerCmdFor — beide
+# kommentiert mit "entry beats env") und die env-getragene Pro-Repo-Karte FLEET_VERIFY_CMD_REPOS
+# (server.ts#verifyCmdFor). Bis 2026-09-08 war dieser Sensor dafür strukturell blind: er druckte
+# FLEET_DISPATCH_MAX_LANES=1 aus `ps eww`, effektiv sind es 3 (repoLaneCaps-Eintrag), und zwei
+# Sessions haben aus der 1 falsche Wartevorhersagen abgeleitet.
+# ENUMERIERT AM CODE, nicht abgeschrieben: die repo-geschlüsselten Karten in server.ts#saveState
+# (`repoBases, repoWorkers, repoLaneCaps`) plus `grep -n '_REPOS' server.ts`. repoBases steht
+# NICHT in der Tabelle — es überlagert kein FLEET_*, sondern den HEAD des Haupt-Checkouts
+# (server.ts#integrationBranch), macht also keine Zeile hier falsch.
+# UND: ein Sensor, der nicht messen konnte, scheitert als ER SELBST — fehlt fleet.json, sagt die
+# Zeile UNBEKANNT und nennt die Route. Nie ein stilles Zurückfallen auf den env-Wert.
+FLEET_JSON = os.path.join(main_checkout, 'fleet.json')
+state, state_err = None, None
+try:
+    with open(FLEET_JSON) as f: state = json.load(f)
+except Exception as e:
+    state_err = type(e).__name__
+# (env-Variable, Karte in fleet.json, Unterschlüssel, Route für den, der die Datei nicht hat)
+PERSISTED_OVERLAYS = [
+    ('FLEET_DISPATCH_MAX_LANES', 'repoLaneCaps', None,        'GET /api/repo-lane-caps'),
+    ('FLEET_COMMIT_CMD',         'repoWorkers',  'commitMsg', 'GET /api/repo-workers'),
+    ('FLEET_POSTLAND_AUDIT_CMD', 'repoWorkers',  'audit',     'GET /api/repo-workers'),
+]
+def entries_for(mapname, sub):
+    m = state.get(mapname) if isinstance(state, dict) else None
+    if not isinstance(m, dict): return {}
+    out = {}
+    for repo, v in m.items():
+        if sub is None:
+            if isinstance(v, (int, float, str)): out[repo] = v
+        elif isinstance(v, dict) and sub in v: out[repo] = v[sub]
+    return out
+def verify_repos():
+    """FLEET_VERIFY_CMD_REPOS ist selbst env — die EXISTENZ sieht der Sensor immer, den INHALT nur
+    aus einer ungekürzten Quelle (`ps eww` schneidet am ersten Leerzeichen). Kein Inhalt heißt hier
+    unbekannt, nicht leer."""
+    raw = next((d['FLEET_VERIFY_CMD_REPOS'] for d in (env, tmx) if 'FLEET_VERIFY_CMD_REPOS' in d), None)
+    if raw is None:
+        return ({}, 'nur gekürzt aus `ps eww` lesbar') if 'FLEET_VERIFY_CMD_REPOS' in live else (None, None)
+    v = raw.strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"": v = v[1:-1]
+    try: d = json.loads(v)
+    except Exception: return {}, 'unparsbar'
+    return (d, None) if isinstance(d, dict) else ({}, 'kein JSON-Objekt')
+def others(e):
+    n = len(e) - (1 if main_checkout in e else 0)
+    return f'; +{n} andere Repo(s)' if n else ''
+def overlay_lines(k):
+    out = []
+    for var, mapname, sub, route in PERSISTED_OVERLAYS:
+        if var != k: continue
+        where = f'fleet.json {mapname}' + (f'[…].{sub}' if sub else '')
+        if state is None:
+            out.append(f"↳ hat Repo-Overlay ({where}) — UNBEKANNT: fleet.json nicht lesbar "
+                       f"({state_err}). Env ist NICHT die Antwort, frag {route}")
+            continue
+        e = entries_for(mapname, sub)
+        if main_checkout in e:
+            out.append(f"↳ Repo-Overlay {where}: EFFEKTIV {clip(str(e[main_checkout]))} — "
+                       f"Quelle 'repo entry', schlägt env{others(e)}")
+        elif e:
+            out.append(f"↳ Repo-Overlay {where}: {len(e)} Eintrag/Einträge, keiner für diesen "
+                       f"Checkout — hier gilt der env-Wert ({clip(', '.join(sorted(e)))})")
+        else:
+            out.append(f"↳ Repo-Overlay {where} gelesen: kein Eintrag — env gilt")
+    if k == 'FLEET_VERIFY_CMD':
+        d, why = verify_repos()
+        if d is None: pass
+        elif why:
+            out.append(f"↳ hat Repo-Overlay (env FLEET_VERIFY_CMD_REPOS) — UNBEKANNT: {why}. "
+                       f"Env ist NICHT die Antwort")
+        elif main_checkout in d:
+            out.append(f"↳ Repo-Overlay FLEET_VERIFY_CMD_REPOS: EFFEKTIV {clip(str(d[main_checkout]))} — "
+                       f"Quelle 'repo entry', schlägt env{others(d)}")
+        elif d:
+            out.append(f"↳ Repo-Overlay FLEET_VERIFY_CMD_REPOS: {len(d)} Eintrag/Einträge, keiner für "
+                       f"diesen Checkout — hier gilt der env-Wert")
+    return out
+# Eine Variable, die NUR ein Overlay hat und in keiner der vier Quellen steht, hätte sonst gar
+# keine Zeile — genau der Fall, in dem die Überlagerung am unsichtbarsten ist.
+ov_keys = {var for var, mapname, sub, _ in PERSISTED_OVERLAYS
+           if state is None or entries_for(mapname, sub)}
+if verify_repos()[0] is not None: ov_keys.add('FLEET_VERIFY_CMD')
 srcs = [('live', live), ('tmux-global', tmx), ('.env', env)]
-for k in sorted(set(live) | set(tmx) | set(env) | set(wd)):
+for k in sorted(set(live) | set(tmx) | set(env) | set(wd) | ov_keys):
     parts = [f"{n}={clip(d[k])}" for n, d in srcs if k in d]
     if k in wd: parts.append('watchdog.sh')
-    print(f"  {k:32s} {' | '.join(parts)}")
+    print(f"  {k:32s} {' | '.join(parts) if parts else '(in keiner der vier Env-Quellen)'}")
+    for ln in overlay_lines(k): print(f"  {'':32s}   {ln}")
 for k, v in tmx.items():
     if k in live and live[k] != v and not k.endswith('_CMD'):
         print(f"  ⚠ {k}: tmux-global={clip(v)} != live={clip(live[k])}")
@@ -297,7 +384,9 @@ for k, v in env.items():
 if not live: print('  (kein LIVE-Server im Haupt-Checkout — live-Spalte leer)')
 PY
 echo "  (watchdog.sh-Spalte = kommt in der Spawn-Zeile vor, eingefroren bis launchctl kickstart;"
-echo "   Werte, die NUR in server.ts-Defaults leben, haben weiterhin keinen Sensor — Ring 1.2)"
+echo "   Werte, die NUR in server.ts-Defaults leben, haben weiterhin keinen Sensor — Ring 1.2.)"
+echo "  (eine Zeile OHNE ↳ hat keinen bekannten Repo-Overlay; ein ↳ UNBEKANNT heisst NICHT 'kein"
+echo "   Overlay', sondern 'diese Maschine konnte die zweite Schicht nicht lesen' — dann gilt die Route.)"
 echo
 echo "Health check (the server binds ONLY the Tailscale IP; 127.0.0.1 never answers):"
 echo "  curl http://100.64.0.1:8790/"

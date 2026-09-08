@@ -104,3 +104,54 @@ Self-Tuer, und ein Griff zum Owner-Token waere genau der Fehler, den `fa8f6220` 
 Sachlage fuer den Urteilenden: die Zeile ist `stale-test`-artig (die Sonde konnte ihre eigene
 Voraussetzung nicht aufloesen), NICHT `real` — der Baum ist auf diesen 46 Checks nie gemessen
 worden.
+
+## Nachtrag 08:1x (Nachfolge-MAIN, Slot 6) — die Kosten der S12-Wire-Frage, jetzt GEMESSEN
+
+Die Vorgaengerin hat die Owner-Frage zu S12 mit einer ausdruecklichen Luecke gestellt: „ich habe
+die Kosten NICHT gemessen. `/api/programs` ist der Board-Poll, und ob der Ledger-Kontext dort
+gecacht ist oder je Poll von Platte liest, weiss ich nicht." Nachgemessen, mit dem Ergebnis, dass
+ihre eigene Empfehlung faellt.
+
+**1. Die Trennung selbst, unabhaengig nachgeprueft.** `GET /api/programs` liefert
+`executionStatus` mit genau vier Feldern (`main`, `attention`, `inbox`, `lanes`); `lastLand`,
+`lastAudit`, `deploy` sind absent. Mechanismus ist keine Auslassung, sondern eine benannte
+Ueberladung: `server.ts#programStatusView` hat zwei Signaturen, und die Owner-Liste ruft die
+kontextlose — der Kommentar dort sagt es woertlich („the owner list calls the no-context overload,
+so its … reader gets only the in-memory half and never opens a ledger").
+
+**2. `readLedger` hat KEINEN Cache** (`server/persist.ts#readLedger`): jeder Aufruf liest die
+Datei ganz und `JSON.parse`t sie zeilenweise, ueber beide Rotationsgenerationen. Heutige Groessen:
+`lane-outcomes.jsonl` 1 186 581 B, `post-land-audits.jsonl` 2 103 941 B, `audit-adjudications.jsonl`
+61 951 B. Append-only, also wachsend.
+
+**3. Laufzeit, je drei Laeufe gegen den laufenden Server:** `GET /api/programs` 0,01 s,
+`GET /api/self/program-execution` (dieselben zwei Ledger, ein `Promise.all`) 0,02 s. Der Aufschlag
+ist heute also **~10 ms je Poll** und haengt am LEDGER-WACHSTUM, nicht am Takt.
+
+**4. Der Takt ist niedriger als befuerchtet:** `src/client.ts#PROGRAMS_FLOOR_MS` = 30 000, und
+`loadPrograms` kehrt zusaetzlich frueh um, solange der Digest aus `[id, status, title]` unveraendert
+ist. Der Board-Poll von `/api/programs` ist damit kein 2-s-Reader.
+
+**5. WIDERLEGT — „nur `lastAudit` statt aller drei Felder" spart nichts.** Die Empfehlung der
+Vorgaengerin setzte voraus, dass ein einzelnes Feld billiger ist. Der Audit-Join baut
+`landedMainAfter` aus den GELANDETEN `outcome`-Zeilen und filtert die Audit-Zeilen dagegen;
+`lastAudit` braucht also BEIDE Ledger. Billiger wird nur, wer gar keinen Ledger anfasst.
+
+**6. Eine dritte Option, die die Vorgaengerin nicht hatte.** Eine Detail-Route
+`GET /api/programs/:id` existiert heute NICHT (die Regex-Routen unter `/api/programs/` sind
+ausschliesslich `profile` · `promotion` · `studio` · `dispatch` · die fuenf Aktionen). Sie waere der
+natuerliche Ort fuer den Ledger-Kontext: bezahlt wird beim Oeffnen einer Zeile, nicht bei jedem
+Poll. Groesser als (A), aber die Kosten haengen dann am Klick.
+
+Die Frage steht als Attention `04f4b7e6e37ef7ed9545fae5` neu beim Owner. Die Fassung der
+Vorgaengerin (`6d51202e451b5e3166d24c8d`) ist inzwischen `refused` mit
+`requester session ended` — genau der stille Tod, den §5e ihres Handoffs vorhergesagt hat; sie war
+unbeantwortet, nicht abgelehnt.
+
+## Nachtrag 08:1x — (a) hat jetzt eine ZAHL
+
+`13 von 49` offenen `auftrag`-Zeilen tragen keine `programId`. Alle DREI gerade laufenden
+Fleet-Lanes sind darunter (`8f14a22b`, `95d09e33`, `e53716b9`), alle drei `source: owner`. Das
+bestaetigt den Mechanismus aus §(a) von der Betriebsseite: die Zeilen, die der Owner selbst filt und
+der Tick startet, entstehen ohne Bindung, und es gibt keine Tuer, die sie nachtraeglich vergibt.
+Adoption an der MAIN-Tuer waere Neu-Filen, also eine ZWEITE Zeile fuer dieselbe Arbeit.

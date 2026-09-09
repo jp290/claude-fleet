@@ -1020,6 +1020,40 @@ ungelesen.
 The proof order in §11.3 applies unchanged, and it is what cleared the 2026-08-01 instance: the
 same tree, re-run serially on an idle machine, came back 993 PASS / 0 FAIL.
 
+**NACHTRAG 2026-09-09 — die sechste Sichtung, und mit ihr das ZWEITE gemessene HOST-Signal dieses
+Registers.** Anlass: das rote Post-Land-Audit `at=1788932671950` auf `a24a88eb` (Controller-Land von
+`fleet/260908150008-7c57`), **1 Fail von 4 070**, und dieser Check war der einzige.
+
+*Diesem Land nicht zuzurechnen, ohne Rerun:* der Diff `1d45e6b4..a24a88eb` fasst `e2e/slots.ts`
+NICHT an, und in `server.ts` trifft
+`grep -cE '^[+-].*(reseed|liveBytes|streamFor|paneStream|scrollback)'` **null** Zeilen. Das Subjekt
+des Checks ist strukturell unberuehrt.
+
+*Das Neue ist die Verteilung.* Alle **drei** Sichtungen, die das Audit-Ledger ueberhaupt fuehrt,
+liegen auf dem **second-host** — und nur 13 % der Ledger-Zeilen sind remote (72 von 547):
+
+| Datum | Baum | fails/ran | Host |
+|---|---|---:|---|
+| 2026-09-06 21:16 | `49d93bcd` | 1/3772 | second-host |
+| 2026-09-08 08:47 | `ba8c068a` | 1/4020 | second-host |
+| 2026-09-09 07:44 | `a24a88eb` | 1/4070 | second-host |
+
+Unter der Nullhypothese „host-unabhaengig" ist 3 von 3 remote bei 13 % Grundrate rund 1:450. Und die
+Familie ist auf dem Mac nicht etwa abwesend: das lokale Trail-Register zaehlt **8 rot / 814 Laeufe
+= 0,98 %**. Sie feuert lokal also messbar, hat aber KEINE der drei Ledger-Roten dort erzeugt.
+
+*Warum das ueber diese Familie hinausgeht:* §11.2s hat den ersten echten Host-Unterschied gemessen,
+dies ist der zweite. Hebel (2) der Owner-Zeile `3f7363bf` will mehr Audits auf den Helfer schieben,
+weil er nicht auf den Suite-Mutex wartet — dieser Nachtrag sagt, dass der Helfer dabei sein EIGENES
+Fehlerprofil mitbringt, und dass der Preis dafuer bisher nicht eingepreist war. Dazu kommt die in
+§11.2u notierte Blindstelle: ein Helfer-Lauf schreibt kein Trail (`trail: null` auch in dieser
+Zeile), das lokale Register kann diese Sichtungen also gar nicht sehen. **Wer Familien nach
+Ausloesehaeufigkeit rangt, misst heute den Mac und nennt es die Flotte.**
+
+*NICHT adjudiziert:* `POST /api/post-land-audits/adjudicate` ist owner-only by POSITION. Meine
+Lesart fuer den Urteilenden ist **flake**, getragen von Diff und Verteilung — nicht von einem
+gruenen Rerun, den §11.3 hier auch nicht verlangt.
+
 ### 11.2c A sixth family: the `stalled` fixture's pane-observation race (2026-08-06 → 2026-08-07)
 
 Signature: up to four FAILs inside `e2e/review.ts`'s `stalled` block with **one** root —

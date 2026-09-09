@@ -34,6 +34,47 @@
   (`owner_token_ambient_use slot 1 task=9af79ae2 program=f9dc8e10`, 08:34:18, dieselbe Sekunde wie der
   Marker).
 
+## 0b. NACHTRAG 09:2x — DER RE-LAND-ANTRAG IST ABGELEHNT, UND DIE LANE KANN ICH NICHT FREIGEBEN
+
+**Was der Controller entschieden hat (nicht ich):** Report `4f52c4cc` der Lane in Slot 1 bat nach
+zwei gruenen Reruns um ein Re-Land von `a254824a`. Der Controller hat ihn **`rejected`**
+(2026-09-09 09:21, `by slot 10`) mit der Begruendung „Durch Owner-Entscheid `c597cc40` ueberholt …
+Belege erhalten; **kein fachliches Urteil ueber die unreviewten Rerun-Nachweise**" und der Lane STOP
+zugestellt. **Die Rerun-Nachweise sind damit ein CLAIM der Lane, nicht adjudiziert** — von niemandem.
+So und nicht anders weitergeben.
+
+**ICH KANN DIE LANE NICHT SCHLIESSEN, und das ist keine Bequemlichkeit.** Zwei Wege, beide zu:
+- `POST /api/slots/1/shelve` (der Nicht-Land-Abschlussweg: `shelved[cwd]={at,note}`, Lane-Outcome
+  `shelved`, dann `killSlot(s,"shelved")` — **der Worktree bleibt auf Platte**, genau die
+  Belegerhaltung, die verlangt ist). Er steht unter `tokenGate`: mit Self-Token **401, gemessen**.
+  Es gibt kein `/api/self/shelve` und kein `/api/self/kill`.
+- `FLEET_LANE_AUTOCLOSE` ist live **scharf** (`=1`), aber er verweigert diese Lane **per
+  Konstruktion**: `server.ts#laneAutoCloseRefusal` gibt „a merge verdict is on record — this lane's
+  candidate is somebody's to look at", sobald `mergeLast[slot]` auf dieselbe Branch zeigt. Genau das
+  ist hier der Fall (`resolved`). **Wer auf den Autoclose wartet, wartet ewig.**
+Der Zug gehoert also dem Controller (Owner-Token), ein Aufruf: `POST /api/slots/1/shelve` mit
+`{"note":"Auto-Compact zurueckgezogen, Owner-Entscheid c597cc40; Kandidat a254824a erhalten"}`.
+
+**BELEGERHALTUNG, von mir geprueft statt zugesichert.** Was die Lane produziert hat, haengt NICHT an
+ihrem Worktree und nicht an `fleet.json`:
+- Branch `fleet/260908171345-3941` = **`a254824afffa7d2d158dd5f5ed01d1c867a0f148`**, darunter
+  `5a1eae19` („feat(agentCmd): eine 1M-Pane bekommt native Auto-Compact — aber nur, wenn drei Beine
+  BEWIESEN sind"), Fork-Punkt `93953b26`. Beide Commits liegen in der Object-DB des Haupt-Checkouts
+  und ueberleben jedes `shelve`/`kill`. **Das ist die Aufbewahrung** — der Rest ist fluechtig.
+- **Fluechtig, und das muss jemand wissen:** der Reporttext `4f52c4cc` lebt in `fleet.json` unter
+  `FLEET_REPORT_KEEP` (die Projektion meldet „report retention holds 43 rows at the ceiling of 20").
+  Er wird gepruned. Die Trail-Zeilen liegen in `e2e-trail/` des Haupt-Checkouts, gitignored.
+
+**WAS ICH SELBST NACHGEMESSEN HABE (an `e2e-trail/`, nicht aus dem Report uebernommen):** alle sieben
+claude-gate-Laeufe von heute 07:1x–07:19Z tragen `tree a254824aff` und **0 fails**. Ein
+VOLLSTAENDIGER Wrapper-Lauf schreibt DREI Dateien — 87 / 65 / 6 Zeilen, das Muster erscheint zweimal
+sauber (071358+071439+071506 und 071833+071915+071941). **Der Lauf des Lands schrieb genau EINE
+Datei, 65 Zeilen, 0 fails** (`claude-gate-20260909T071208Z-95254.jsonl`). Damit ist gesichert: das ROT
+des Lands trug **null gefallene Checks** und der Lauf war **unvollstaendig**. Ob die 65 Zeilen eine
+abgeschnittene Phase 1 sind (so liest es der Report) oder eine vollstaendige Phase 2 mit fehlender
+Phase 1, habe ich **nicht bestimmt** — fuer die Aussage „keine Assertion wurde verletzt" ist es
+gleichgueltig, fuer eine Ursachensuche nicht.
+
 ## 1. DER BEFUND DIESER SCHICHT: EIN ROTES GATE MIT NULL GEFALLENEN CHECKS
 
 Die Verify-Kette dieses Lands lief bis einschliesslich `./e2e-security.sh` mit `ALL PASS`. Dann

@@ -6066,7 +6066,8 @@ const taskCommentsFull = new Map<string, TaskCommentView[]>();
 // `taskVerdictsFull` by the NOTIZ (which task-scoped reports stand on it) — the same two ends of
 // the assignment the server keeps apart, kept apart here for the same reason.
 interface TaskNotePinView { noteId: string; at: number; by: "owner" | "main" }
-interface TaskNoteVerdictView { taskId: string; branch: string; verdict: string; text: string; at: number }
+interface TaskNoteVerdictView { taskId: string; branch: string; verdict: string; text: string;
+  at: number; landedAt?: number; landedSha?: string }
 const taskNotesFull = new Map<string, TaskNotePinView[]>();
 const taskVerdictsFull = new Map<string, TaskNoteVerdictView[]>();
 let taskTextKey = ""; // the id+full-data-generation set this cache was last filled for
@@ -7129,7 +7130,7 @@ function qNoteSourceRows(pins: readonly TaskNotePinView[], rows: readonly TaskIn
   });
 }
 interface QNoteVerdictRow { taskId: string; branch: string; verdict: string; text: string; at: number;
-  taskKnown: boolean }
+  taskKnown: boolean; settled: boolean; landedSha?: string }
 function qNoteVerdictRows(verdicts: readonly TaskNoteVerdictView[],
   rows: readonly TaskInfo[]): QNoteVerdictRow[] {
   // newest first, and the tie broken on the KEY so the order is total — two reports written in the
@@ -7139,7 +7140,11 @@ function qNoteVerdictRows(verdicts: readonly TaskNoteVerdictView[],
       || (a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : 0)
       || (a.branch < b.branch ? -1 : a.branch > b.branch ? 1 : 0))
     .map((v) => ({ taskId: v.taskId, branch: v.branch, verdict: v.verdict, text: v.text, at: v.at,
-      taskKnown: rows.some((r) => r.id === v.taskId) }));
+      taskKnown: rows.some((r) => r.id === v.taskId),
+      // SETTLED means the land of that row happened and this USAGE is finished. It is never a
+      // statement about the note's own status — the row below says so in as many words, because
+      // "erledigt" beside an open note is exactly the pair a reader would otherwise misread.
+      settled: !!v.landedAt, ...(v.landedSha ? { landedSha: v.landedSha } : {}) }));
 }
 
 // "beruehrt von n Lands, zuletzt <sha7>" — the note's own line on the queue. Only for a `notiz`:
@@ -8483,7 +8488,11 @@ function renderQueueDetail() {
       // order not to read it as the old global claim.
       overview.appendChild(el("div", "pkdacts", `${v.verdict} · ${v.branch} · zu ${v.taskId}`
         + (v.taskKnown ? "" : " (Zeile nicht mehr auf der Queue)")
-        + (v.verdict === "erledigt" ? " — schliesst diese Notiz mit dem Land GENAU DIESER Zeile" : "")
+        + (v.verdict === "erledigt"
+          ? v.settled
+            ? ` — diese VERWENDUNG ist mit dem Land ${(v.landedSha ?? "").slice(0, 7) || "?"} erledigt; die Notiz selbst bleibt deine Entscheidung`
+            : " — wird mit dem Land GENAU DIESER Zeile wirksam, und dann nur fuer sie"
+          : "")
         + ` · ${fmtTs(v.at)}`));
     }
   }

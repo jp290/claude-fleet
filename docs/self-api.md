@@ -498,8 +498,14 @@ Detach nähme ihr Arbeit weg, die sie schon tut) · der Deckel von 20 Quellen je
 wiederholtes Anheften derselben Id ist idempotent.
 
 **Ein Detach ist kein Löschen.** Die Notiz behält ihre Zeile, ihren Text, ihren Status und jedes
-Urteil, das unter dieser Aufgabe schon gefällt wurde; nur die Zuordnung geht. Und eine angeheftete
-Quelle bleibt eine Quelle: `capTasks` räumt sie nicht weg, solange eine offene Zeile sie nennt.
+Urteil, das unter dieser Aufgabe schon gefällt wurde; nur die Zuordnung geht.
+
+**Und eine angeheftete Quelle ist gegen JEDEN Weg geschützt, der ihren Text verschwinden ließe** —
+eine Prüfung (`sourceHolders`), drei Türen: `capTasks` räumt sie nicht weg, solange eine
+ÜBERLEBENDE Zeile sie nennt (auch eine terminale — die gelandete `done`-Zeile zeigt weiter auf die
+Quelle, gegen die sie gearbeitet wurde); `POST /api/tasks/:id/delete` und `/archive` antworten
+**409** und nennen die haltenden Zeilen; `POST /api/tasks/:id/kind` verweigert die Umwandlung
+`notiz → …` aus demselben Grund. Freigegeben wird eine Quelle ausschließlich durch Detach.
 
 Die OWNER-Tür daneben ist `POST /api/tasks/:id/notes` mit demselben Body und derselben Prüfkette —
 eine Funktion hinter zwei Türen, damit die beiden nie zu zwei Politiken auseinanderlaufen.
@@ -623,14 +629,31 @@ Notiz nicht geliefert hat, ist **409**; eine Zeile, die deine Lane nicht mehr TR
 ist Geschichte, und Geschichte bleibt lesbar), nur neu beurteilen nicht. `GET` sagt beides:
 `taskIds` ist die Zuordnung des Receipts, `judgeableUnder` die Teilmenge, die noch offen ist.
 
-**Er ändert KEINEN Status, und die Antwort sagt das** (`effective`). Ein `erledigt` wird erst
-wirksam, wenn die Lane, die es geschrieben hat, LANDET — bei einem Task-Urteil beim Land **genau
-dieser Zeile**: dann setzt der Land-Pfad die Notiz auf `done` mit
-`note: "erledigt durch Land <sha7> (<branch>, Aufgabe <taskId>)"`, und ohne `taskId` wie bisher mit
-`note: "erledigt durch Land <sha7> (<branch>)"`. Ein Urteil unter einer Zeile, die dieses Land nicht
-trägt, bewegt nichts. Stirbt die Lane (`killed`, `shelved`), bleibt die Notiz pending und das Urteil
-als lesbarer Datensatz stehen. `widerlegt` und `offen` bewegen nie einen Status — sie sind Lesestoff
-für den Owner.
+**Er ändert KEINEN Status, und die Antwort sagt das** (`effective`). Was ein `erledigt` bewirkt,
+hängt davon ab, welche der beiden Arten es ist — und das ist der Kern:
+
+- **Task-Urteil:** wirksam wird es beim Land **genau dieser Zeile**, und dann trifft es **nur diese
+  VERWENDUNG**. Der Land-Pfad stempelt `landedAt` + `landedSha` auf den Eintrag; die Notiz behält
+  ihre eigene Zeile, ihren Status und jede andere Zuordnung. **Eine angeheftete Quelle wird nie
+  automatisch geschlossen** — sie ist EIN Text, an dem mehrere Arbeiten hängen, und „A ist damit
+  fertig" sagt nichts über B. Ob die QUELLE erledigt ist, entscheidet der Owner auf der Zeile.
+- **Globales Urteil** (unangeheftete Notiz, Flächen-Treffer): unverändert die alte Bedeutung — das
+  nächste Land dieser Branch setzt die Notiz auf `done` mit
+  `note: "erledigt durch Land <sha7> (<branch>)"`.
+
+**Und der globale Weg kommt nie am Scope vorbei:** trägt eine Notiz eine Zuordnung ODER irgendein
+Task-Urteil, ist der Legacy-Abschluss für sie gesperrt. Sonst könnte dieselbe Branch, die eine Zeile
+bewusst per Aufgabe beurteilt hat, dieselbe Notiz über einen älteren globalen Kommentar doch noch
+für alle schließen.
+
+Ein Urteil unter einer Zeile, die dieses Land nicht trägt, bewegt nichts. Stirbt die Lane
+(`killed`, `shelved`), bleibt alles stehen und der Eintrag bleibt ungestempelt. `widerlegt` und
+`offen` bewegen nie einen Status — sie sind Lesestoff für den Owner.
+
+**Der Deckel VERWEIGERT, er verdrängt nicht.** Eine Notiz hält höchstens 50 Task-Urteile. Derselbe
+Schlüssel `(taskId, branch)` ist immer schreibbar; ein NEUER Schlüssel auf vollem Bestand antwortet
+**409** und nennt die Zahlen. Weichen darf nur nachweislich entbehrliche Historie: ein Eintrag,
+dessen Zeile gar nicht mehr auf der Queue steht und den darum kein Land je wirksam machen kann.
 
 **Und unabhängig davon stempelt jedes Land die pending Notizen desselben Repos, deren Fläche eine
 Nicht-Naben-Datei seines Diffs enthält**: `touched: [{sha, branch, at}]`, neueste zuerst, Deckel 5.

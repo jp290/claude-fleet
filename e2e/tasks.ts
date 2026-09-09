@@ -3100,6 +3100,30 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify((await n3RowOf(n3Holder))?.notes?.map((x) => x.noteId)) === JSON.stringify([n3Keep]),
       JSON.stringify((await n3RowOf(n3Holder))?.notes ?? null));
 
+    // (i3) THE SAME RETENTION TEST BEHIND EVERY DOOR. The cap was only one way a source could
+    // vanish; ✕ delete, ⏏ archive and the kind conversion are three more, and each was open. All
+    // four now ask `sourceHolders`, so this is one property measured at four entrances — and the
+    // fourth arm proves the release path still works: after the DETACH, the same delete goes
+    // through. Mutation that breaks it: giving any one door its own copy of the rule.
+    // its OWN pair, so the detach at the end of it does not disturb (n3-j)'s reading of n3Holder
+    const n3Src = await mkTask("Notiz N3 Tueren: docs/verify-tiering.md. Rest.", "notiz");
+    const n3Own = await mkTask("Auftrag N3 Tueren-Halter: docs/verify-tiering.md.", "auftrag");
+    await n3AssignRes(n3Own, { note: n3Src, attach: true });
+    const n3DelHeld = await post(`/api/tasks/${n3Src}/delete`, {});
+    const n3ArcHeld = await post(`/api/tasks/${n3Src}/archive`, {});
+    const n3KindHeld = await post(`/api/tasks/${n3Src}/kind`, { kind: "auftrag" });
+    const n3StillThere = await n3Has(n3Src);
+    await n3AssignRes(n3Own, { note: n3Src, attach: false });
+    const n3DelFree = await post(`/api/tasks/${n3Src}/delete`, {});
+    check("(n3-i3) delete, archive and the kind change all refuse a held source with the same test — and a detach releases it",
+      n3DelHeld.status === 409 && (await n3Err(n3DelHeld)).includes("assigned SOURCE")
+      && n3ArcHeld.status === 409 && n3KindHeld.status === 409
+      && (await n3Err(n3KindHeld)).includes("not a way to release an assignment")
+      && n3StillThere === true
+      && n3DelFree.ok && (await n3Has(n3Src)) === false,
+      `${n3DelHeld.status}/${n3ArcHeld.status}/${n3KindHeld.status} still=${n3StillThere}`
+      + ` afterDetach=${n3DelFree.status}`);
+
     // (j) RESTART. Both fields are persisted-and-rehydrated or they are decorations: a pin that
     // dies at the first boot cannot found a brief, and a verdict that does cannot close a note.
     // Read from the state FILE the server has written, which is what the loader will read back.
@@ -3115,7 +3139,10 @@ export async function run(ctx: Ctx): Promise<void> {
       && n3SavedNote.verdicts[0].branch.startsWith("fleet/"),
       `${JSON.stringify(n3SavedHolder?.notes ?? null)} ${JSON.stringify(n3SavedNote?.verdicts ?? null)}`);
 
-    for (const id of [n3Task, n3Cap, n3Keep, n3Holder, ...n3Filler]) await post(`/api/tasks/${id}/delete`, {});
+    // holders FIRST: a held source now refuses its own delete, which is the retention this section
+    // proved — so the cleanup has to release before it removes, exactly as a human would.
+    for (const id of [n3Task, n3Cap, n3Holder, n3Own, n3Keep, n3Src, ...n3Filler])
+      await post(`/api/tasks/${id}/delete`, {});
     for (const id of [...fixtureIds, ctlId, hubId, rankId, clarifyId]) await post(`/api/tasks/${id}/delete`, {});
     if (rootLanes.length) rmSync(`${ROOT}.worktrees`, { recursive: true, force: true });
   }

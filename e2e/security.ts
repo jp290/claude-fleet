@@ -172,6 +172,17 @@ const PRE_AUTH_ROUTES = [
   // path-validation finding REPORTS rather than gates — a proposal is at worst noise on a row that
   // an owner click can drop.
   String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/files-proposal$/`,
+  // N3, 2026-09-09 · THE ASSIGNMENT DOOR — a bound Program-MAIN pins a `notiz` as the SOURCE a row
+  // is to be worked against. Non-lane only, like its release neighbour and for the same "one edge
+  // per role" reason. What bounds it: the program comes from the caller's exact MAIN binding and
+  // the target repo from the caller's own checkout, so a row of another Program or another
+  // repository is refused before the body is looked at; the body carries `note` and the boolean
+  // `attach` and nothing else; the pinned row must be a `notiz` of that same repo; the assignment
+  // is refused outright once the row is `sent`, so it can never reach a lane that is already
+  // running. It starts nothing, lands nothing, writes into no pane and moves no status — the ONE
+  // thing it changes is which text a FUTURE founding brief will carry, which is a decision the
+  // owner can see on the row and undo with one click.
+  String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/notes$/`,
   // ACP · THE LAND DOOR, and it is by a distance the most consequential entry on this list: it is
   // the only pre-auth route that can move an INTEGRATION BRANCH. It is here for the same structural
   // reason as its neighbours — the exact self principal IS the boundary — but what bounds it is a
@@ -247,6 +258,14 @@ const PRE_AUTH_ROUTES = [
   // reaches no pane. The status change it can eventually cause belongs to the LAND path below the
   // owner gate (landLane#applyLandToNotes), which is the whole design: a lane may claim a note is
   // finished, and only work that reaches main makes the claim true.
+  //
+  // N3, 2026-09-09 widened the verdict door's BODY by one optional field and NARROWED what a
+  // verdict can do. `taskId` names the row the source was delivered under, and it is checked
+  // against the caller's OWN receipt (the pairing the receipt records) and against the rows the
+  // lane still carries — so it can nominate neither a foreign row nor a row handed back by a
+  // split. A source that was explicitly assigned may ONLY be judged that way: the global door is
+  // refused for it, which is a narrowing, not a widening. The write is one entry keyed
+  // (taskId, branch) on the row the caller was already shown, replacing its own previous one.
   '= /api/self/notes',
   String.raw`~ /^\/api\/self\/notes\/([a-z0-9]+)\/verdict$/`,
   // Dual-Host S2/R5, THE REMOTE COMMAND JOB. On this list for the same structural reason as every

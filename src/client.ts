@@ -294,6 +294,11 @@ interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: 
   // comments: the poll carries only how many and how recent — enough for the row chip and to
   // notice a new one; the texts ride /api/tasks like every other body on this row
   comments?: { n: number; at: number };
+  // N3: how many SOURCES this row pins (auftrag) and how many task-scoped verdicts stand on this
+  // note (notiz). Counts only, like `comments` and for its reason — the pins and the verdicts
+  // themselves ride /api/tasks. Absent means none, which is the same fact on both fields.
+  notes?: { n: number; at: number };
+  verdicts?: { n: number; at: number };
   // N2: the lands that moved a file this row's surface names, newest first, capped at five by the
   // server. Advisory — it changes no action and no status. ABSENT is "nothing recorded", never
   // "untouched": the two owner ⏏ paths land already-integrated work and measure nothing.
@@ -5511,6 +5516,10 @@ async function refresh() {
         // spends minutes in `refining` before it — both have to move the key or the pane lies.
         // In Waves, another row or active branch can move this row's advisory placement too.
         t.refine?.at, t.refining, t.comments?.n, t.comments?.at, t.touched?.length, t.touched?.[0]?.sha,
+        // N3: attaching or detaching a source, and every verdict a lane writes, arrive on a poll
+        // exactly as a comment does — without them the sources section would keep showing a spent
+        // detach button and a verdict list that is one report behind.
+        t.notes?.n, t.notes?.at, t.verdicts?.n, t.verdicts?.at,
         analysisOn, briefCompilerOn,
         // the lane line moves with the SLOTS (state, dirty, a recycled pointer), not with the row
         qLaneKey(new Map([[t.id, qLaneJoinOf(t.id)]])),
@@ -6053,6 +6062,13 @@ const taskRefineFull = new Map<string, TaskRefineFull>();
 interface TaskCommentView { id: string; ts: number; text: string; from?: string;
   verdict?: "erledigt" | "widerlegt" | "offen" }
 const taskCommentsFull = new Map<string, TaskCommentView[]>();
+// N3 · the two full lists. `taskNotesFull` is keyed by the AUFTRAG (which sources it names),
+// `taskVerdictsFull` by the NOTIZ (which task-scoped reports stand on it) — the same two ends of
+// the assignment the server keeps apart, kept apart here for the same reason.
+interface TaskNotePinView { noteId: string; at: number; by: "owner" | "main" }
+interface TaskNoteVerdictView { taskId: string; branch: string; verdict: string; text: string; at: number }
+const taskNotesFull = new Map<string, TaskNotePinView[]>();
+const taskVerdictsFull = new Map<string, TaskNoteVerdictView[]>();
 let taskTextKey = ""; // the id+full-data-generation set this cache was last filled for
 let taskTextBusy = false;
 // The poll's briefAt invalidates every browser. This local epoch still prevents a brief save in
@@ -6353,7 +6369,7 @@ let qRowId = new Map<HTMLElement, string | null>();
 // announce a new analysis or top-level briefAt while the old full cache is still present; treating
 // that cache as current would briefly call a stored analysis or brief absent.
 const qTaskFullKey = () => tasksList.map((t) =>
-  `${t.id}:${t.briefAt ?? 0}:${t.analysis?.at ?? 0}:${t.analysis?.hasBrief ? 1 : 0}:${t.analysis?.retry?.at ?? 0}:${t.criterion?.proposedAt ?? 0}:${t.criterion?.confirmedAt ?? 0}:${t.refine?.at ?? 0}:${t.comments?.n ?? 0}:${t.comments?.at ?? 0}`
+  `${t.id}:${t.briefAt ?? 0}:${t.analysis?.at ?? 0}:${t.analysis?.hasBrief ? 1 : 0}:${t.analysis?.retry?.at ?? 0}:${t.criterion?.proposedAt ?? 0}:${t.criterion?.confirmedAt ?? 0}:${t.refine?.at ?? 0}:${t.comments?.n ?? 0}:${t.comments?.at ?? 0}:${t.notes?.n ?? 0}:${t.notes?.at ?? 0}:${t.verdicts?.n ?? 0}:${t.verdicts?.at ?? 0}`
 ).join(",");
 const qTaskFullLoaded = (id: string) => taskText.has(id) && taskTextKey === qTaskFullKey();
 
@@ -6373,7 +6389,8 @@ async function loadTaskTexts() {
     if (res.ok) {
       const data = (await res.json()) as { tasks: { id: string; text: string; analysis?: FullAnalysis;
         brief?: FullBrief; criterion?: NonNullable<TaskInfo["criterion"]>;
-        refine?: TaskRefineFull; comments?: TaskCommentView[]; spawn?: NonNullable<QSpawnRow> }[] };
+        refine?: TaskRefineFull; comments?: TaskCommentView[]; spawn?: NonNullable<QSpawnRow>;
+        notes?: TaskNotePinView[]; verdicts?: TaskNoteVerdictView[] }[] };
       // A brief save can complete while this GET (started before it) is in flight. Never publish
       // that older response under the post-save generation; the retry below fetches the new truth.
       if (epoch === taskTextEpoch) {
@@ -6383,6 +6400,8 @@ async function loadTaskTexts() {
         taskCriterionFull.clear();
         taskRefineFull.clear();
         taskCommentsFull.clear();
+        taskNotesFull.clear();
+        taskVerdictsFull.clear();
         taskSpawnFull.clear();
         for (const t of data.tasks) {
           taskText.set(t.id, t.text);
@@ -6392,6 +6411,8 @@ async function loadTaskTexts() {
           if (t.criterion) taskCriterionFull.set(t.id, t.criterion);
           if (t.refine) taskRefineFull.set(t.id, t.refine);
           if (t.comments?.length) taskCommentsFull.set(t.id, t.comments);
+          if (t.notes?.length) taskNotesFull.set(t.id, t.notes);
+          if (t.verdicts?.length) taskVerdictsFull.set(t.id, t.verdicts);
         }
         taskTextKey = key;
         filled = true;
@@ -7088,6 +7109,39 @@ function qTaskListModel(tasks: TaskInfo[], texts: ReadonlyMap<string, string>,
 // facts, in the owner-confirmed order. Keeping placement DOM-free makes both completeness and
 // order directly testable without opening the dashboard.
 type QRowFacts = readonly [verdict: string, age: string, slot: string, sourceTag: string];
+// N3 · THE TWO ENDS OF AN ASSIGNMENT, as pure functions — DOM-free for the reason qTaskSummary and
+// qTaskListModel are: e2e/tasks.ts executes them against the same rows the server would send, so
+// completeness and ordering are checkable without opening a browser.
+//
+// ABSENCE IS RENDERED AS ITSELF in both. A pinned id no queue row answers is `known: false`, not a
+// shorter list; a verdict naming a row that has been capped away keeps its `taskKnown: false`. The
+// alternative — dropping either — makes "you were assigned fewer sources" indistinguishable from
+// "one of them is unresolvable", and only the second is ever true.
+interface QNoteSourceRow { noteId: string; text: string; status: string; by: "owner" | "main"; known: boolean }
+function qNoteSourceRows(pins: readonly TaskNotePinView[], rows: readonly TaskInfo[],
+  texts: ReadonlyMap<string, string>): QNoteSourceRow[] {
+  return pins.map((pin) => {
+    const row = rows.find((r) => r.id === pin.noteId);
+    const text = texts.get(pin.noteId);
+    return { noteId: pin.noteId, by: pin.by, known: !!row, status: row?.status ?? "unknown",
+      text: !row ? "(nicht mehr auf der Queue)"
+        : text ? noteFirstSentence(text, 160) : "(Text noch nicht geladen)" };
+  });
+}
+interface QNoteVerdictRow { taskId: string; branch: string; verdict: string; text: string; at: number;
+  taskKnown: boolean }
+function qNoteVerdictRows(verdicts: readonly TaskNoteVerdictView[],
+  rows: readonly TaskInfo[]): QNoteVerdictRow[] {
+  // newest first, and the tie broken on the KEY so the order is total — two reports written in the
+  // same millisecond must not depend on the order the server happened to serialise them in
+  return [...verdicts]
+    .sort((a, b) => b.at - a.at
+      || (a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : 0)
+      || (a.branch < b.branch ? -1 : a.branch > b.branch ? 1 : 0))
+    .map((v) => ({ taskId: v.taskId, branch: v.branch, verdict: v.verdict, text: v.text, at: v.at,
+      taskKnown: rows.some((r) => r.id === v.taskId) }));
+}
+
 // "beruehrt von n Lands, zuletzt <sha7>" — the note's own line on the queue. Only for a `notiz`:
 // on an auftrag the same field would compete with the analyst's verdict, which is the fact that
 // decides whether that row can start.
@@ -8372,6 +8426,65 @@ function renderQueueDetail() {
         : location.item.reason === "unknown-repo" ? "target repo unknown" : "lane capacity is zero";
       overview.appendChild(el("div", "shellhint",
         `Waves: outside — ${why}; ${qWaveModelHint(location.item.modelEdges)}.`));
+    }
+  }
+  // N3 · SOURCES / VERDICTS — above the comments, because an assignment is an INSTRUCTION and a
+  // comment is a remark: the section that decides what a lane will be handed belongs over the one
+  // that decides how it should feel about it. Only one of the two ever shows on a row — an auftrag
+  // NAMES sources, a notiz IS one and carries the reports given under each task.
+  if (t.kind === "auftrag" || (t.notes?.n ?? 0) > 0) {
+    const pins = taskNotesFull.get(t.id) ?? [];
+    const rows = qNoteSourceRows(pins, tasksList, taskText);
+    overview.appendChild(el("div", "rvhead", rows.length ? `Quellen · ${rows.length}` : "Quellen"));
+    if (rows.length === 0) overview.appendChild(el("div", "shellhint",
+      "keine — diese Zeile bekommt Notizen nur ueber die Datei-Flaeche, als Hinweis, nicht als Auftrag"));
+    for (const row of rows) {
+      overview.appendChild(el("div", "qdtext", `${row.noteId} — ${row.text}`));
+      const line = el("div", "pkdacts");
+      // "unknown" is rendered as itself. A pinned id the queue no longer answers is not an empty
+      // assignment: the lane's own brief will report it the same way, and hiding it here would
+      // make the two surfaces disagree about the one fact this section exists to show.
+      line.appendChild(el("div", "shellhint", row.known
+        ? `${row.status} · angeheftet von ${row.by}`
+        : "unbekannt — keine Queue-Zeile traegt diese Id mehr"));
+      const rx = el("button", "shrbtn", "\u2715") as HTMLButtonElement;
+      rx.title = "detach this source — the note keeps its row, its text and every verdict already given under this task";
+      rx.onclick = () => void qAct(t.id, "notes", { note: row.noteId, attach: false });
+      line.appendChild(rx);
+      overview.appendChild(line);
+    }
+    if (t.status === "pending" || t.status === "queued") {
+      const abox = el("input", "qdcrit") as HTMLInputElement;
+      abox.placeholder = "notiz-Id anheften…";
+      const aacts = el("div", "pkdacts");
+      const ab = el("button", "shrbtn", "\ud83d\udcce anheften") as HTMLButtonElement;
+      ab.title = "assign a notiz as a SOURCE of this task: its full text reaches the lane, and the lane"
+        + " reports on it per task — an `erledigt` closes the note only when THIS row lands";
+      ab.onclick = () => {
+        const id = abox.value.trim();
+        if (!id) return;
+        void qAct(t.id, "notes", { note: id, attach: true }).then((ok) => { if (ok) abox.value = ""; });
+      };
+      aacts.appendChild(ab);
+      overview.appendChild(abox);
+      overview.appendChild(aacts);
+    } else overview.appendChild(el("div", "shellhint",
+      `die Zuordnung ist eingefroren: ein Land-Brief ist aus ihr gebaut worden (${t.status})`));
+  }
+  if (t.kind === "notiz") {
+    const vs = qNoteVerdictRows(taskVerdictsFull.get(t.id) ?? [], tasksList);
+    overview.appendChild(el("div", "rvhead", vs.length ? `Urteile je Aufgabe · ${vs.length}` : "Urteile je Aufgabe"));
+    if (vs.length === 0) overview.appendChild(el("div", "shellhint",
+      "keins — diese Notiz wurde noch unter keiner Aufgabe beurteilt"));
+    for (const v of vs) {
+      overview.appendChild(el("div", "qdtext", v.text));
+      // WHICH ROW'S LAND makes it wirksam, named in full: a task-scoped `erledigt` closes this note
+      // at the land of THAT row and of no other, which is exactly the sentence a reader needs in
+      // order not to read it as the old global claim.
+      overview.appendChild(el("div", "pkdacts", `${v.verdict} · ${v.branch} · zu ${v.taskId}`
+        + (v.taskKnown ? "" : " (Zeile nicht mehr auf der Queue)")
+        + (v.verdict === "erledigt" ? " — schliesst diese Notiz mit dem Land GENAU DIESER Zeile" : "")
+        + ` · ${fmtTs(v.at)}`));
     }
   }
   // COMMENTS — sits directly under the chips, above the analyst, because it is the only text on

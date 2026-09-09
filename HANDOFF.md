@@ -75,6 +75,57 @@ abgeschnittene Phase 1 sind (so liest es der Report) oder eine vollstaendige Pha
 Phase 1, habe ich **nicht bestimmt** — fuer die Aussage „keine Assertion wurde verletzt" ist es
 gleichgueltig, fuer eine Ursachensuche nicht.
 
+## 0c. STAND-TABELLE 2026-09-09 09:3x — TASK/KANDIDAT → PROOF → LAND/AUDIT → LAUFKONFIGURATION
+
+Fuer die gemeinsame Pruefung „Fix + Second-host-Setup" (Controller-Anforderung 09:3x). Jede Zelle ist
+gelesen, nicht erinnert; **fehlender Beleg steht als „—" mit Grund**, nie als Annahme.
+
+| Task / Kandidat | lokaler Proof | remote Proof (second-host) | Land / Audit | fehlender Beleg |
+|---|---|---|---|---|
+| `9af79ae2` · Auto-Compact, Kandidat `a254824a` (Branch `fleet/260908171345-3941`) | Gate-Kette lief bis `e2e-security.sh` ALL PASS; claude-gate-Lauf **unvollstaendig, 1 Trail-Datei, 65 Zeilen, 0 fails** | **gruene Vorschau** 07:44–08:25Z, `tree fe3e78fe (ran c4936fc3)`, job `893e1f79da1a` | **kein Land** (`resolved · landed false · verify.ok false`), danach vom Controller `shelve`d, Task `archived` | Ursache des abgebrochenen Gate-Laufs **nicht bestimmt** (Crash vs. Kill — kein Sensor an der Stelle). Die zwei gruenen Reruns der Lane sind ein **CLAIM**, von niemandem adjudiziert |
+| `430850e4` · §11.2u-Fixture-Rennen | — (Lane laeuft seit 09:35, Slot 1, Branch `fleet/260909073520-e02a`) | — | — | alles noch offen; Kriterium verlangt **drei** serielle isolated-Laeufe + Mutationsbeweis |
+| `3b1b2edf` · K1, `FLEET_STEWARD_MIN_IDLE_MS` in `e2e-isolated.sh` | Befund am Baum belegt (`server.ts:23722`/`:23797`, `e2e-claude-gate.sh:214`, vier `settleForSteward`-Stellen) | — | — | **queued am Lane-Deckel** (3/3 belegt). Ersparnis **behauptet ≥4 min, nicht gemessen** — der Vorher/Nachher-Lauf ist Teil des Auftrags |
+| `531bab26` · Suite-Schnitt A (`until()` in `e2e/harness.ts`) | — | — | — | nicht gestartet; Program `f9dc8e10`, **nicht meins**, von mir **nicht released** |
+| `67abe12c` · Suite-Schnitt B (`FLEET_E2E_MODULES`-Vorschaufilter) | — | — | — | dito; Brief sagt selbst „START ERST NACH abgeschlossenem Schnitt A" |
+| `3f7363bf` · Owner-Messauftrag „deterministischer und leichter" | — | — | — | programlos = Owner-Tuer; enthaelt die Ledger-Zahlen (177 Urteile, **24 echte Defekte = 14 %**) |
+
+**LAUFKONFIGURATION, gelesen am laufenden Prozess und an `fleet.json`:**
+
+| Sache | Wert | Beleg |
+|---|---|---|
+| Live-Server | pid 36397, Boot **2026-09-08 08:09:20** | `ps -o lstart` |
+| **Deploy-Rueckstand** | `deployGap.behindCount = 41`, `codeBehind: true`, bootHead `76b3cdde` vs. head `9e911aaf`, `codeBehindUnknown: []` | `GET /api/sessions` |
+| Client-Bundles | `bundleStale.stale = false` | dito |
+| Letzter Deploy | `1788847761111`, `ok: true` | `deploys.jsonl` |
+| Helfer | `secondhostlinux1` „second-host", `mode active`, `load 0.01`, `running 0`, daemonSha `fed0a414`, caps `[bun,tmux,git,zsh]` | `fleet.json#helperDevices` |
+| **Helfer-Kapazitaet** | **`maxParallelSuites: 1`** | dito |
+| Zweites Geraet | `mainMacbook`, `desiredMode: off`, lastSeen 2026-08-… | dito |
+| Helfer-Knoepfe | `FLEET_AUDIT_PING_MS=60000`, `FLEET_AUDIT_HELPER_GRACE_MS=60000`, `FLEET_HELPER_WAKE_ADDR=192.0.2.255` | Prozess-Env |
+| Verify-Budgets | `FLEET_VERIFY_TIMEOUT_MS=480000` (Arbeit), `FLEET_VERIFY_WAIT_MS=2700000` (Schlange) | Prozess-Env |
+| Lane-Deckel | env 1, **Repo-Overlay `repoLaneCaps` = 3 (effektiv)**; heute 3/3 belegt | `state.sh` config sensor |
+
+**DIE KAUSALKETTE VON HEUTE, vollstaendig belegt — sie ist der eigentliche Befund fuer das
+Second-host-Setup:** der Helfer hat `maxParallelSuites 1` und war 06:14–08:25Z durchgehend belegt
+(Vorschau `7c57` 06:14–06:55, Audit `a24a88eb` 07:03–07:44, Vorschau `3941` 07:44–08:25). Die Lane in
+Slot 3 bot ihre Vorschau um 07:23 an und **zog das Angebot 07:26 zurueck** (`helper_result withdrew
+the preview offer`), fuhr also lokal — 07:49 bis ~09:10, >80 min auf dem Mac-Mutex. Der Land von
+Slot 1 startete 08:34:18 und verbrachte daraufhin **2 181 s von 2 299 s in der Schlange (94,9 %)**,
+118 s Arbeit. **Der Fernpfad war nicht ungenutzt, er war ausgebucht.** Mehr Audits auf den Helfer zu
+schieben (Hebel 2 aus `3f7363bf`) trifft damit auf eine Kapazitaet von genau 1 — und laut
+`docs/verify-tiering.md` §11.2b bringt der Helfer zusaetzlich sein EIGENES Fehlerprofil mit (alle
+drei Ledger-Sichtungen dieser Familie liegen remote, bei 13 % Remote-Grundrate).
+
+**K1 (`3b1b2edf`) IST KEINE DOPPLUNG VON `531bab26`, und auch keine Teilmenge davon.** Schnitt A
+ersetzt TIMER durch Praedikat-Warten (`until(pred,…)` in `e2e/harness.ts`).
+`settleForSteward` (`e2e/steward-core.ts:314-322`) **ist bereits ein Praedikat-Poller** — es fragt
+`now - lastOutput >= stewardMinIdleMs` in einer Schleife. Ein `until()` kann daran nichts kuerzen:
+das Praedikat KANN vor 60 s Pane-Stille nicht wahr werden. Nur die SCHWELLE kann es, und genau die
+setzt K1 — im `SRV_ENV` von `e2e-isolated.sh`, nicht in `e2e/harness.ts`. **Disjunkte Flaechen,
+disjunkte Mechanismen.** Kein doppelter Release: `531bab26` ist `pending`, gehoert Program
+`f9dc8e10` und wurde von mir nie angefasst. **Die eine echte Kopplung ist die MESSUNG:** beide
+Zeilen verlangen serielle isolated-Laeufe und beide messen Laufzeit — wer zuerst landet, verschiebt
+die Basis der anderen. Wer sie parallel fahren laesst, bekommt zwei Zahlen, die keine mehr sind.
+
 ## 1. DER BEFUND DIESER SCHICHT: EIN ROTES GATE MIT NULL GEFALLENEN CHECKS
 
 Die Verify-Kette dieses Lands lief bis einschliesslich `./e2e-security.sh` mit `ALL PASS`. Dann

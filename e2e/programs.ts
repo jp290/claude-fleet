@@ -975,22 +975,29 @@ export async function run(ctx: Ctx): Promise<void> {
       && spawnSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim() === fleetHeadBefore
       && /^[0-9a-f]{40}$/.test(fleetHeadBefore),
     `head=${fleetHeadBefore} ${JSON.stringify(fleetSuccessionPrompt.split("\n").filter((line) => line.startsWith("- Program inbox")))}`);
-  // the retention record exists on the Fleet frame too, and it holds the decision this fixture
-  // raised two steps up — the one whose only purpose was to force a save. It dies with the
-  // predecessor like any other, and it is in the record like any other.
+  // the retention record exists on the Fleet frame too. The watch dies with A and is retained;
+  // the open decision belongs to the Program and stays live instead of being copied into it.
   const fleetRetained = (readState().programs ?? []).find((p) => p.id === fleetProgram.id)?.handover ?? null;
   // A's occupant key, taken while A is unambiguously alive. Read at assertion time it would be 0
   // the moment the grace timer had retired A — and the check would then compare against a key the
   // capture never wrote, i.e. fail for a reason that has nothing to do with what it measures.
   const fleetOwnedByA = `slot ${fleetSlot}@${fleetAOpenedAt}`;
-  check("Program-MAIN Fleet succession: the retention record is written on this frame as well, holding A's open decision and armed watch in full",
+  const fleetSuccessorAttention = fleetSuccessionBody.slot === undefined
+    ? { requests: [] as { id?: string; text?: string; status?: string }[] }
+    : await (await fetch(`${BASE}/api/self/attention`, { headers: {
+      "x-fleet-self-token": readState().slots?.[String(fleetSuccessionBody.slot)]?.selfToken ?? "",
+    } })).json() as { requests?: { id?: string; text?: string; status?: string }[] };
+  // BREAKS IF: captureProgramHandover copies live attention again, or attentionFor remains bound
+  // only to A's occupant triple. The successor must have one live source and no retained twin.
+  check("Program-MAIN Fleet succession: A's watch is retained while its open decision stays live for B without a handover twin",
     !!fleetRetained && fleetRetained.v === 1 && fleetRetained.dropped === 0
       && fleetRetained.from.slot === fleetSlot && fleetRetained.to.slot === fleetSuccessionBody.slot
-      && fleetRetained.obligations.some((o) => o.kind === "attention" && o.text === fleetSaveText
-        && o.detail.owedBy === fleetOwnedByA)
+      && !fleetRetained.obligations.some((o) => o.kind === "attention")
       && fleetRetained.obligations.some((o) => o.kind === "watch" && o.id === fleetWatchId
-        && o.detail.target === fleetWatchLaneSlot && o.detail.owedBy === fleetOwnedByA),
-    JSON.stringify(fleetRetained));
+        && o.detail.target === fleetWatchLaneSlot && o.detail.owedBy === fleetOwnedByA)
+      && (fleetSuccessorAttention.requests ?? []).some((a) => a.text === fleetSaveText
+        && a.status === "open"),
+    JSON.stringify({ handover: fleetRetained, attention: fleetSuccessorAttention.requests ?? [] }));
 
   // --- A → B → C: THE SECOND SUCCESSION MUST NOT ERASE THE FIRST ONE'S OBLIGATIONS. ------------
   // The defect this replaces, found in review of 4810d4ae: captureProgramHandover read only the
@@ -1030,14 +1037,18 @@ export async function run(ctx: Ctx): Promise<void> {
     (chainRetained?.obligations ?? []).find((o) => o.kind === kind && pick(o));
   const chainAttention = chainRow("attention", (o) => o.text === fleetSaveText);
   const chainWatch = chainRow("watch", (o) => o.id === fleetWatchId);
-  // BREAKS IF: the record is replaced instead of carried forward. Under 4810d4ae this reads
-  // `obligations: []` — B owed nothing, so the overwrite was total and silent.
-  check("Program-MAIN chain: C reads A's open decision and armed watch, carried across a succession in which B re-created nothing",
+  const chainAttentionView = await (await fetch(`${BASE}/api/self/attention`,
+    { headers: { "x-fleet-self-token": chainToken } })).json() as
+    { requests?: { text?: string; status?: string }[] };
+  // BREAKS IF: the record is replaced instead of carried forward, or live Program attention is
+  // reconciled by B's handoff. The two kinds travel through their respective single sources.
+  check("Program-MAIN chain: C reads A's live decision and retained watch after B re-created nothing",
     chainRes.ok && !!chainRetained && !!chainOnDisk
       && chainRetained.from.slot === fleetSuccessionBody.slot
       && chainRetained.to.slot === chainSlot
-      && !!chainAttention && chainAttention.text === fleetSaveText
-      && chainAttention.detail.owedBy === fleetOwnedByA
+      && !chainAttention
+      && (chainAttentionView.requests ?? []).some((a) => a.text === fleetSaveText
+        && a.status === "open")
       && !!chainWatch && chainWatch.detail.target === fleetWatchLaneSlot
       && chainWatch.detail.owedBy === fleetOwnedByA
       && chainRetained.dropped === 0,
@@ -1048,7 +1059,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const chainPrompt = chainSlot === null ? "" : ((await (await get(`/api/slots/${chainSlot}/history`))
     .json() as { history: { text: string }[] }).history.at(-1)?.text ?? "");
   check("Program-MAIN chain: C's brief counts B's own obligations as zero, names the carried rows apart, and no longer promises replacement",
-    chainPrompt.includes("- Obligations that END with your predecessor: 0 open owner decisions, 0 armed watches, 0 scheduled check-ins, plus 2 still unsettled from earlier sessions of this Program.")
+    chainPrompt.includes("- Obligations that END with your predecessor: 0 historical owner decisions, 0 armed watches, 0 scheduled check-ins, plus 1 still unsettled from earlier sessions of this Program.")
       && chainPrompt.includes("CARRIED FORWARD by the next succession too — handing this Program on loses none of it")
       && !chainPrompt.includes("the NEXT succession replaces that record"),
     JSON.stringify(chainPrompt.split("\n").filter((line) => line.startsWith("- Obligations"))));
@@ -2250,11 +2261,10 @@ export async function run(ctx: Ctx): Promise<void> {
       && !(await sessions()).slots.some((s) => s.id === failureSuccessorSlot && s.cwd),
     `${failureSuccession.status} ${failureSuccessionText}`);
 
-  // WHAT THE PREDECESSOR IS ABOUT TO LOSE, minted through its OWN doors rather than planted, so
-  // the record under test holds rows the fleet really wrote. All three kinds, because each is lost
-  // a different way: killSlot DELETES the autos and the armed watches outright, while the open
-  // attention is stamped refused/"requester session ended" on a row that is itself a pruned tail
-  // (ATTENTION_KEEP_TERMINAL). None of the three is reachable by the successor afterwards.
+  // WHAT THE PREDECESSOR OWNS, minted through its OWN doors rather than planted. Two kinds die in
+  // different ways: killSlot deletes autos and armed watches outright, so handover retains them.
+  // The open attention belongs to the active Program and must instead remain live for the
+  // successor. The fixture measures both channels together so neither can silently duplicate it.
   //
   // THE DECISION IS LONG AND MULTI-LINE ON PURPOSE, and its condition sits in the LAST clause.
   // That is the exact shape the first version of this cut destroyed: a 200-character preview was
@@ -2414,12 +2424,10 @@ export async function run(ctx: Ctx): Promise<void> {
       && successionPrompt.includes("GET /api/self/inbox reads them; POST /api/self/inbox/<id>/read receipts one."),
     JSON.stringify({ expectedOpenLine, expectedInboxLine,
       got: successionPrompt.split("\n").filter((line) => line.startsWith("- ")) }));
-  // --- THE OBLIGATIONS ARE RETAINED, NOT PREVIEWED. ---------------------------------------------
-  // This is the half the first version of the cut did not have. The successor asks the door the
-  // brief names and gets the rows back COMPLETE: the id that addresses each one, the text with its
-  // decisive last clause and its newlines intact, and the parameters a re-registration needs.
-  // Everything asserted here was DELETED with the predecessor's slot, so the record is the only
-  // place it still exists — and the two falsifiers below prove that from both sides.
+  // --- DYING OBLIGATIONS ARE RETAINED; PROGRAM ATTENTION STAYS LIVE. ----------------------------
+  // Watches and autos disappear with the predecessor, so the successor reads their complete rows
+  // from handover. Attention now belongs to the Program across a deliberate succession and is read
+  // from its live door; copying it into handover would create two sources for the same decision.
   const handoverSuccessorView = await selfExecution(slotToken(successorSlot));
   const handoverSuccessorProgram = handoverSuccessorView.view?.programs
     .find((x) => x.program.id === mainProgram.id);
@@ -2427,7 +2435,6 @@ export async function run(ctx: Ctx): Promise<void> {
   const retained = handoverSuccessorProgram?.handover ?? null;
   const retainedOf = (kind: string, id: string): ProgramHandoverObligation | undefined =>
     (retained?.obligations ?? []).find((o) => o.kind === kind && o.id === id);
-  const retainedAttention = retainedOf("attention", lostAttentionId);
   const retainedWatch = retainedOf("watch", lostWatchId);
   const retainedAuto = retainedOf("auto", lostAutoId);
   const watchLaneBranch = (readState().slots?.[String(watchLaneSlot)] ?? {}) as { cwd?: string };
@@ -2445,25 +2452,13 @@ export async function run(ctx: Ctx): Promise<void> {
     !!retainedOnDisk && retainedOnDisk.v === 1 && !!retained && retained.dropped === 0
       && retained.from.slot === bound?.slot && retained.from.openedAt === bound?.openedAt
       && retained.to.slot === successorSlot
-      && retained.obligations.length === 3
-      && retained.obligations.filter((o) => o.kind === "attention").length === 1
+      && retained.obligations.length === 2
+      && retained.obligations.filter((o) => o.kind === "attention").length === 0
       && retained.obligations.filter((o) => o.kind === "watch").length === 1
       && retained.obligations.filter((o) => o.kind === "auto").length === 1,
     JSON.stringify({ diskV: retainedOnDisk?.v ?? null, dropped: retained?.dropped ?? null,
       from: retained?.from ?? null, to: retained?.to ?? null, predecessor: bound?.slot ?? null,
       successor: successorSlot, rows: (retained?.obligations ?? []).map((o) => [o.kind, o.id]) }));
-  // BREAKS IF: the text is truncated again. 200 characters was the whole defect — this decision is
-  // longer than that and its condition is the LAST clause, so a preview stored as data loses
-  // exactly the part that makes it a decision.
-  check("Program-MAIN succession handover: the open decision is retained byte for byte — multi-line, with its decisive last clause, under its own id",
-    !!retainedAttention && retainedAttention.id === lostAttentionId
-      && retainedAttention.text === lostQuestion
-      && retainedAttention.text.endsWith(lostQuestionSuffix)
-      && retainedAttention.text.includes("\n") && retainedAttention.text.length > 200
-      && retainedAttention.detail.kind === "decision" && retainedAttention.detail.status === "open"
-      && retainedAttention.detail.reAsk === "POST /api/self/attention",
-    JSON.stringify({ id: lostAttentionId, retained: retainedAttention ?? null,
-      expectedLength: lostQuestion.length }));
   // BREAKS IF: a watch hands over as a number again. The target triple IS the watch — without it
   // there is nothing to re-register, which is why the count-only version was a loss.
   check("Program-MAIN succession handover: the armed watch is retained with the target that defines it, not as a count",
@@ -2484,14 +2479,18 @@ export async function run(ctx: Ctx): Promise<void> {
       && typeof retainedAuto.detail.nextAt === "number"
       && retainedAuto.detail.reArm === "POST /api/self/autos",
     JSON.stringify({ id: lostAutoId, retained: retainedAuto ?? null }));
-  // …and BOTH falsifiers. The predecessor's rows are gone from the live state the moment its slot
-  // is torn down, and the successor's own attention door is scoped to its occupant — so if the
-  // record did not hold them, nothing would.
+  // …and the split is observable from both doors. The predecessor's watch and auto are gone from
+  // live state, while the successor's Program-scoped attention door exposes the exact live row.
   const successorAttention = await (await fetch(`${BASE}/api/self/attention`,
-    { headers: { "x-fleet-self-token": slotToken(successorSlot) } })).json() as { requests?: { text?: string }[] };
-  check("Program-MAIN succession handover: no live row and no self route hands the successor its predecessor's obligations — the retained record is the only source",
-    !(successorAttention.requests ?? []).some((r) => r.text === lostQuestion)
-      && !!retainedAttention && !!retainedWatch && !!retainedAuto,
+    { headers: { "x-fleet-self-token": slotToken(successorSlot) } })).json() as
+    { requests?: { id?: string; text?: string; status?: string }[] };
+  // BREAKS IF: attentionFor remains requester-only, reconcileAttention refuses on handoff, or
+  // captureProgramHandover restores the duplicate retained attention row.
+  check("Program-MAIN succession handover: live attention reaches the successor exactly through its Program door while only dying rows are retained",
+    (successorAttention.requests ?? []).some((r) => r.id === lostAttentionId
+      && r.text === lostQuestion && r.status === "open")
+      && !(retained?.obligations ?? []).some((o) => o.kind === "attention" && o.id === lostAttentionId)
+      && !!retainedWatch && !!retainedAuto,
     JSON.stringify({ viaAttentionRoute: (successorAttention.requests ?? []).length,
       retained: (retained?.obligations ?? []).map((o) => [o.kind, o.id]) }));
   // BREAKS IF: the preview and the record can disagree about which rows exist, or the preview
@@ -2499,10 +2498,11 @@ export async function run(ctx: Ctx): Promise<void> {
   // exactly that: the ids are in the brief, the decisive suffix is NOT, and the brief names the
   // door where it is.
   check("Program-MAIN succession handover: the brief previews every retained row by id and points at the record instead of pretending to be it",
-    successionPrompt.includes("- Obligations that END with your predecessor: 1 open owner decisions, 1 armed watches, 1 scheduled check-ins.")
+    successionPrompt.includes("- Obligations that END with your predecessor: 0 historical owner decisions, 1 armed watches, 1 scheduled check-ins.")
       && successionPrompt.includes("NOTHING was re-armed")
       && successionPrompt.includes("RETAINED IN FULL (id, complete text, reconstruction parameters) as `handover` in GET /api/self/program-execution")
-      && successionPrompt.includes(`  · attention ${lostAttentionId}`)
+      && successionPrompt.includes("Live attention is Program state and remains on GET /api/self/attention instead of being copied here.")
+      && !successionPrompt.includes(`  · attention ${lostAttentionId}`)
       && successionPrompt.includes(`  · watch ${lostWatchId}`)
       && successionPrompt.includes(`  · auto ${lostAutoId}`)
       && !successionPrompt.includes(lostQuestionSuffix)

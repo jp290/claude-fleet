@@ -8,8 +8,9 @@
 // Every state assertion reads the instance's fleet.json. /api/sessions carries the open COUNT and
 // nothing else about this channel, so casting a row field onto that payload would be the exact
 // mistake two earlier probes died of (8e2b3e5).
-import { readFileSync, writeFileSync } from "node:fs";
-import { BASE, REPO, ROOT, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut } from "./harness";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { BASE, REPO, ROOT, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, tmuxOut } from "./harness";
 
 interface AttentionRow {
   id: string; raisedAt: number; kind: "decision" | "blocked" | "review-ready"; text: string;
@@ -20,6 +21,14 @@ interface AttentionRow {
   status: "open" | "send-uncertain" | "answered" | "refused";
   answer: { text: string; at: number; by: "owner" } | null;
   refusedReason: string | null; closedAt: number | null;
+}
+interface InboxEntry {
+  id: string; kind: "attention-answer" | "fleet-report" | "audit-red"; at: number; ref: string;
+  readBy: { slot: number; openedAt: number; sessionId: string | null } | null; readAt: number | null;
+  subject: AttentionRow | null;
+}
+interface InboxView {
+  program: string; unread: number; dropped: number; entries: InboxEntry[]; unknown: string[];
 }
 const statePath = `${ROOT}/fleet.json`;
 const readRows = (): AttentionRow[] =>
@@ -43,12 +52,39 @@ const ownerRows = async (): Promise<AttentionRow[]> =>
   ((await (await get("/api/attention")).json()) as { requests?: AttentionRow[] }).requests ?? [];
 const attentionOpenCount = async (): Promise<number | undefined> =>
   ((await (await get("/api/sessions")).json()) as { attentionOpen?: number }).attentionOpen;
+const sessions = async (): Promise<{ slots: { id: number; cwd: string | null; label: string | null }[] }> =>
+  (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null; label: string | null }[] };
+const selfInbox = async (tok: string): Promise<{ response: Response; view: InboxView | null }> => {
+  const response = await fetch(`${BASE}/api/self/inbox`, { headers: { "x-fleet-self-token": tok } });
+  return { response, view: response.ok ? await response.json() as InboxView : null };
+};
+const selfSucceed = (tok: string, body: unknown): Promise<Response> => fetch(`${BASE}/api/self/succeed`, {
+  method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": tok },
+  body: JSON.stringify(body),
+});
+const waitForLabel = async (label: string): Promise<number | null> => {
+  let seen: number | undefined;
+  for (let i = 0; i < 60; i++) {
+    const slot = (await sessions()).slots.find((s) => s.cwd && s.label === label)?.id;
+    if (slot) {
+      seen = slot;
+      if ((await tmuxOut("has-session", "-t", `s${slot}`)).code === 0) return slot;
+    }
+    await Bun.sleep(50);
+  }
+  check(`attention succession fixture: a slot labelled ${label} came up with a live pane`, false,
+    seen === undefined ? "no slot ever carried the label" : `slot ${seen} never grew a pane`);
+  return null;
+};
 const freeSlot = async (): Promise<number> =>
   ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
     .slots.find((x) => x.cwd === null)?.id ?? 0;
 
 export async function run(): Promise<void> {
   // === ATTENTION-CHANNEL-V1 ====================================================================
+  // The production default is intentionally on; this isolated process carries the explicit opt-out
+  // through every later restart except the one block that measures the timer itself.
+  process.env.FLEET_INBOX_NUDGE_MS = "0";
   const mainA = await freeSlot();
   const openA = mainA ? await post(`/api/slots/${mainA}/open`, { cwd: REPO, label: "attention-main" }) : null;
   const mainB = await freeSlot();
@@ -209,32 +245,36 @@ export async function run(): Promise<void> {
       && !pollRaw.includes(decision?.text ?? " ") && !pollRaw.includes("requester"),
     `${openBefore} ${pollRaw.length} B`);
 
-  // --- 4. the owner answer, full circle ---------------------------------------------------------
-  // BREAKS IF: the typed message stops naming the request id (the receipt stops being exact), or
-  // answered is assigned without a successful sendText.
+  // --- 4. the owner answer becomes a Program pointer, never a pane paste -------------------------
+  // BREAKS IF: sendText remains, the entry is missing, or one answer appends two pointers.
   const answerText = "Land it after the audit — I will hold the deploy.";
+  const paneBeforeAnswer = (await tmuxOut("capture-pane", "-J", "-t", `s${mainA}`, "-p")).out;
   const answered = await post(`/api/attention/${decision?.id}/answer`, { text: answerText });
-  const answeredBody = await answered.json() as { request?: AttentionRow };
-  const pane = (await tmuxOut("capture-pane", "-t", `s${mainA}`, "-p")).out;
-  const prompts = (await plogRead()).filter((p) => p.slot === mainA
-    && p.text.includes(`[fleet] OWNER ANSWER [attention ${decision?.id}]`));
-  check("attention answer full circle: the requester pane receives the id-bearing message and the row is answered",
+  const answeredBody = await answered.json() as { request?: AttentionRow; inbox?: string };
+  const paneAfterAnswer = (await tmuxOut("capture-pane", "-J", "-t", `s${mainA}`, "-p")).out;
+  const inboxAfterAnswer = await selfInbox(tokA);
+  const answerEntries = inboxAfterAnswer.view?.entries.filter((e) => e.kind === "attention-answer"
+    && e.ref === decision?.id) ?? [];
+  check("attention answer: the owner's answer becomes exactly one program inbox entry, the row is answered, and the requester pane receives no paste",
     answered.ok && answeredBody.request?.status === "answered"
       && answeredBody.request.answer?.by === "owner" && answeredBody.request.closedAt !== null
-      && pane.includes(`OWNER ANSWER [attention ${decision?.id}]`) && pane.includes("hold the deploy")
-      && prompts.length === 1
+      && inboxAfterAnswer.response.ok && answerEntries.length === 1
+      && answerEntries[0]?.id === answeredBody.inbox && answerEntries[0]?.subject?.answer?.text === answerText
+      && paneAfterAnswer === paneBeforeAnswer
+      && !(await plogRead()).some((p) => p.slot === mainA && p.text.includes(answerText))
       && readRow(decision?.id)?.status === "answered"
       && readRow(decision?.id)?.answer?.text === answerText,
-    `${answered.status} ${JSON.stringify(answeredBody.request)} prompts=${prompts.length}`);
+    `${answered.status} ${JSON.stringify(answeredBody)} entries=${answerEntries.length} pane=${paneAfterAnswer === paneBeforeAnswer}`);
 
   const sameAnswer = await post(`/api/attention/${decision?.id}/answer`, { text: answerText });
   const sameAnswerBody = await sameAnswer.json() as { existing?: boolean };
   const otherAnswer = await post(`/api/attention/${decision?.id}/answer`, { text: "no, ship it now" });
-  check("attention answered idempotency: identical text is existing:true, different text is 409 unchanged",
+  const inboxAfterRetry = await selfInbox(tokA);
+  // BREAKS IF: the existing:true path calls appendProgramInbox again.
+  check("attention answer idempotency: identical text is existing:true and mints no second entry; different text is 409",
     sameAnswer.ok && sameAnswerBody.existing === true && otherAnswer.status === 409
       && readRow(decision?.id)?.answer?.text === answerText
-      && (await plogRead()).filter((p) => p.slot === mainA
-        && p.text.includes(`[attention ${decision?.id}]`)).length === 1,
+      && inboxAfterRetry.view?.entries.filter((e) => e.ref === decision?.id).length === 1,
     `${sameAnswer.status} ${otherAnswer.status}`);
 
   // --- 5. refusal is the RECEIPT, and terminal is terminal ---------------------------------------
@@ -253,55 +293,181 @@ export async function run(): Promise<void> {
       && refuseAgain.status === 409 && answerRefused.status === 409 && refuseAnswered.status === 409,
     `${noReason.status} ${refused.status} ${refuseAgain.status} ${answerRefused.status} ${refuseAnswered.status}`);
 
-  // --- 6. the crash boundary: an unresolved send is a PERSISTED state --------------------------
-  // A pane death without occupant replacement must not become success. sendText supplies the
-  // deterministic failure; the marker must already be on disk when it does.
-  // BREAKS IF: answerAttention assigns send-uncertain after sendText, or drops the pre-send
-  // saveStateNow, or treats send-uncertain as terminal.
-  await tmuxOut("kill-session", "-t", `s${mainA}`);
-  const deadAnswer = await post(`/api/attention/${reviewReady?.id}/answer`, { text: "answer to a dead pane" });
-  const deadAnswerText = await deadAnswer.text();
-  const uncertain = readRow(reviewReady?.id);
-  check("attention unresolved send persists send-uncertain with the pending answer and is not closed",
-    deadAnswer.status === 409 && /stays send-uncertain/.test(deadAnswerText)
-      && uncertain?.status === "send-uncertain" && uncertain.answer?.text === "answer to a dead pane"
-      && uncertain.answer?.by === "owner" && uncertain.closedAt === null && uncertain.refusedReason === null,
-    `${deadAnswer.status} ${deadAnswerText} ${JSON.stringify(uncertain)}`);
-
-  const uncertainCount = await attentionOpenCount();
-  check("attentionOpen counts a send-uncertain row as still wanting the owner",
-    uncertainCount === readRows().filter((a) => a.status === "open" || a.status === "send-uncertain").length
-      && readRows().some((a) => a.status === "send-uncertain"),
-    `${uncertainCount}`);
-
+  // --- 6. historical send-uncertain rows keep their one safe retry ------------------------------
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const legacyPending = JSON.parse(readFileSync(statePath, "utf8")) as { attentionRequests?: AttentionRow[] };
+  const legacyPendingRow = legacyPending.attentionRequests?.find((a) => a.id === reviewReady?.id);
+  if (legacyPendingRow) {
+    legacyPendingRow.status = "send-uncertain";
+    legacyPendingRow.answer = { text: "answer from the old transport", at: Date.now(), by: "owner" };
+    legacyPendingRow.closedAt = null;
+  }
+  writeFileSync(statePath, JSON.stringify(legacyPending, null, 2), { mode: 0o600 });
+  await restartSrv();
   const differentRetry = await post(`/api/attention/${reviewReady?.id}/answer`, { text: "a different answer entirely" });
   const differentRetryText = await differentRetry.text();
-  check("attention send-uncertain retry with different text is 409 and never replaces the pending answer",
+  const legacyRetry = await post(`/api/attention/${reviewReady?.id}/answer`, { text: "answer from the old transport" });
+  const legacyRetryBody = await legacyRetry.json() as { request?: AttentionRow; inbox?: string };
+  const legacyInbox = await selfInbox(tokA);
+  // BREAKS IF: the legacy send-uncertain arm is removed or identical text no longer reaches appendProgramInbox.
+  check("attention answer legacy send-uncertain row: identical text lands in the inbox, different text stays 409",
     differentRetry.status === 409 && differentRetryText.includes("different pending text")
-      && readRow(reviewReady?.id)?.status === "send-uncertain"
-      && readRow(reviewReady?.id)?.answer?.text === "answer to a dead pane",
-    `${differentRetry.status} ${differentRetryText}`);
+      && legacyRetry.ok && legacyRetryBody.request?.status === "answered"
+      && legacyInbox.view?.entries.filter((e) => e.ref === reviewReady?.id).length === 1
+      && legacyInbox.view?.entries.find((e) => e.ref === reviewReady?.id)?.id === legacyRetryBody.inbox,
+    `${differentRetry.status} ${legacyRetry.status} ${JSON.stringify(legacyRetryBody)}`);
 
-  // BREAKS IF: the identical retry short-circuits to answered without re-running sendText — the
-  // healed pane below would then never contain the message.
-  let healed = 1;
-  for (let i = 0; i < 60 && healed !== 0; i++) {
-    await Bun.sleep(250);
-    healed = (await tmuxOut("has-session", "-t", `s${mainA}`)).code;
+  // --- 7. a Program question and its answer cross a real MAIN succession -------------------------
+  const successorLabel = "attention-program-successor";
+  const successionPending = selfSucceed(tokA, { label: successorLabel, carry: "Continue the attention fixture." });
+  const successorSlot = await waitForLabel(successorLabel);
+  if (successorSlot !== null)
+    await plantScreen(successorSlot, ">_ OpenAI Codex (v0.147.0)", "attention succession fixture");
+  const successionResponse = await successionPending;
+  const successionResponseText = await successionResponse.clone().text();
+  let predecessorGone = false;
+  for (let i = 0; i < 40 && !predecessorGone; i++) {
+    predecessorGone = !(await sessions()).slots.some((s) => s.id === mainA && s.cwd);
+    if (!predecessorGone) await Bun.sleep(100);
   }
-  const sameRetry = await post(`/api/attention/${reviewReady?.id}/answer`, { text: "answer to a dead pane" });
-  const sameRetryBody = await sameRetry.json() as { request?: AttentionRow };
-  const healedPane = (await tmuxOut("capture-pane", "-t", `s${mainA}`, "-p")).out;
-  check("attention identical retry re-attempts the send and only a successful one answers",
-    healed === 0 && sameRetry.ok && sameRetryBody.request?.status === "answered"
-      && sameRetryBody.request.closedAt !== null
-      && healedPane.includes(`OWNER ANSWER [attention ${reviewReady?.id}]`)
-      && readRow(reviewReady?.id)?.status === "answered",
-    `healed=${healed} ${sameRetry.status} ${JSON.stringify(sameRetryBody.request)}`);
+  const successorToken = successorSlot === null ? "" :
+    (JSON.parse(readFileSync(statePath, "utf8")) as { slots?: Record<string, { selfToken?: string }> })
+      .slots?.[String(successorSlot)]?.selfToken ?? "";
+  const successorRows = successorToken ? await selfAttention(successorToken) : [];
+  const survived = readRow(secondDecision?.id);
+  const successionAnswer = await post(`/api/attention/${secondDecision?.id}/answer`, { text: "The successor can read this answer." });
+  const successionInbox = successorToken ? await selfInbox(successorToken) : null;
+  // BREAKS IF: reconcileAttention ignores why, or attentionFor filters only by requester triple.
+  check("attention survives succession: after POST /api/self/succeed the open row is still open, the successor lists it, and the owner's answer reaches the successor's inbox",
+    successionResponse.ok && predecessorGone && successorSlot !== null && successorSlot !== mainA
+      && survived?.status === "open" && successorRows.some((a) => a.id === secondDecision?.id)
+      && successionAnswer.ok
+      && successionInbox?.view?.entries.some((e) => e.ref === secondDecision?.id
+        && e.kind === "attention-answer" && e.subject?.answer?.text === "The successor can read this answer.") === true,
+    JSON.stringify({ succession: successionResponse.status, predecessorGone, successorSlot,
+      survived: survived?.status, listed: successorRows.some((a) => a.id === secondDecision?.id),
+      response: successionResponseText }));
 
-  // --- 7. reconcile: a row never reroutes to a recycled slot -------------------------------------
-  // BREAKS IF: reconcileAttention stops running on slot teardown, or binds by slot id alone — the
-  // successor below would then see, and be able to answer, a question it never asked.
+  // --- 8. one-line idle nudge, process-local dedupe, explicit opt-out -----------------------------
+  const inboxLineCount = (text: string): number => text.split("\n").filter((line) => line.includes("[fleet inbox]")).length;
+  const inboxStandInDir = mkdtempSync(`${tmpdir()}/fleet-inbox-standin-`);
+  const inboxStandIn = `${inboxStandInDir}/codex`;
+  const cat = Bun.which("cat");
+  if (cat) symlinkSync(cat, inboxStandIn);
+  const echoScreen = successorSlot === null || !cat ? { code: 1, out: "stand-in unavailable" }
+    : await tmuxOut("respawn-pane", "-k", "-t", `s${successorSlot}`,
+      `printf '%s\\n' '>_ OpenAI Codex (v0.147.0)'; stty -echo; exec '${inboxStandIn}'`);
+  let echoScreenReady = false;
+  for (let i = 0; i < 40 && !echoScreenReady; i++) {
+    const captured = successorSlot === null ? { code: 1, out: "" }
+      : await tmuxOut("capture-pane", "-J", "-t", `s${successorSlot}`, "-p");
+    echoScreenReady = captured.code === 0 && captured.out.includes(">_ OpenAI Codex (v0.147.0)");
+    if (!echoScreenReady) await Bun.sleep(50);
+  }
+  const lineReaderProbe = "inbox-nudge-line-reader-ready";
+  if (successorSlot !== null && echoScreenReady) {
+    await tmuxOut("send-keys", "-t", `s${successorSlot}`, "-l", "--", lineReaderProbe);
+    await tmuxOut("send-keys", "-t", `s${successorSlot}`, "Enter");
+  }
+  let lineReaderReady = false;
+  for (let i = 0; i < 40 && !lineReaderReady; i++) {
+    const captured = successorSlot === null ? { code: 1, out: "" }
+      : await tmuxOut("capture-pane", "-J", "-t", `s${successorSlot}`, "-p");
+    lineReaderReady = captured.code === 0 && captured.out.includes(lineReaderProbe);
+    if (!lineReaderReady) await Bun.sleep(50);
+  }
+  // BREAKS IF: the pane stand-in cannot both satisfy the codex liveness probe and render one accepted input line.
+  check("inbox nudge fixture: the bound MAIN pane has a live codex-named line reader",
+    echoScreen.code === 0 && echoScreenReady && lineReaderReady,
+    `${echoScreen.code} marker=${echoScreenReady} reader=${lineReaderReady} ${echoScreen.out}`);
+  const nudgeBefore = successorSlot === null ? "" :
+    (await tmuxOut("capture-pane", "-J", "-t", `s${successorSlot}`, "-p")).out;
+  await restartSrv({ FLEET_INBOX_NUDGE_MS: "100", FLEET_BACKLOG_NUDGE_IDLE_MS: "0" });
+  let nudgeAfter = nudgeBefore;
+  for (let i = 0; i < 40 && inboxLineCount(nudgeAfter) === inboxLineCount(nudgeBefore); i++) {
+    await Bun.sleep(100);
+    if (successorSlot !== null)
+      nudgeAfter = (await tmuxOut("capture-pane", "-J", "-t", `s${successorSlot}`, "-p")).out;
+  }
+  await Bun.sleep(400);
+  const nudgeStable = successorSlot === null ? "" :
+    (await tmuxOut("capture-pane", "-J", "-t", `s${successorSlot}`, "-p")).out;
+  const nudgedPrompts = (await plogRead()).filter((p) => p.slot === successorSlot && p.text.startsWith("[fleet inbox]"));
+  await restartSrv({ FLEET_INBOX_NUDGE_MS: "0", FLEET_BACKLOG_NUDGE_IDLE_MS: "0" });
+  const noNudgeRow = await raised(await selfRaise(successorToken, { kind: "decision", text: "No nudge while disabled." }));
+  const noNudgeAnswer = await post(`/api/attention/${noNudgeRow?.id}/answer`, { text: "Recorded without a timer." });
+  await Bun.sleep(400);
+  const nudgeDisabled = successorSlot === null ? "" :
+    (await tmuxOut("capture-pane", "-J", "-t", `s${successorSlot}`, "-p")).out;
+  // BREAKS IF: a tick does not retain the unread-set key, emits a multiline payload, or registers when the interval is zero.
+  check("inbox nudge: one line per unread set reaches the bound MAIN pane, a second tick repeats nothing, and the zero interval emits nothing",
+    inboxLineCount(nudgeAfter) === inboxLineCount(nudgeBefore) + 1
+      && inboxLineCount(nudgeStable) === inboxLineCount(nudgeAfter)
+      && inboxLineCount(nudgeDisabled) === inboxLineCount(nudgeStable)
+      && nudgedPrompts.length === 1 && !nudgedPrompts[0]?.text.includes("\n") && noNudgeAnswer.ok,
+    JSON.stringify({ before: inboxLineCount(nudgeBefore), after: inboxLineCount(nudgeAfter),
+      stable: inboxLineCount(nudgeStable), disabled: inboxLineCount(nudgeDisabled), prompts: nudgedPrompts.length }));
+  rmSync(inboxStandInDir, { recursive: true, force: true });
+
+  // --- 9. the writer cap drops the oldest read pointer before any unread pointer ------------------
+  const capRow = await raised(await selfRaise(successorToken, { kind: "decision", text: "Append the 101st inbox pointer." }));
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const capState = JSON.parse(readFileSync(statePath, "utf8")) as {
+    programs?: { id: string; inbox?: { v: 1; entries: Omit<InboxEntry, "subject">[]; dropped: number } }[];
+    slots?: Record<string, { openedAt?: number; sessionId?: string | null }>;
+  };
+  const capProgram = capState.programs?.find((p) => p.id === programA);
+  const capMain = successorSlot === null ? undefined : capState.slots?.[String(successorSlot)];
+  const capOpenedAt = capMain?.openedAt;
+  const readEntryId = (50).toString(16).padStart(24, "0");
+  if (capProgram && successorSlot !== null && capOpenedAt) capProgram.inbox = {
+    v: 1, dropped: 0, entries: Array.from({ length: 100 }, (_, i) => ({
+      id: i.toString(16).padStart(24, "0"), kind: "audit-red" as const,
+      at: Date.now() - 10_000 + i, ref: String(Date.now() - 10_000 + i),
+      readBy: i === 50 ? { slot: successorSlot, openedAt: capOpenedAt, sessionId: capMain.sessionId ?? null } : null,
+      readAt: i === 50 ? Date.now() - 5000 : null,
+    })),
+  };
+  writeFileSync(statePath, JSON.stringify(capState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const capAnswer = await post(`/api/attention/${capRow?.id}/answer`, { text: "This is pointer 101." });
+  const capAnswerText = await capAnswer.text();
+  let capAnswerBody: { inbox?: string } = {};
+  try { capAnswerBody = JSON.parse(capAnswerText) as { inbox?: string }; } catch { /* the check reports the route body */ }
+  const cappedInbox = await selfInbox(successorToken);
+  // BREAKS IF: appendProgramInbox slices the oldest row without preferring a read receipt.
+  check("inbox append cap: the 101st entry drops the oldest READ entry first and dropped counts it",
+    capAnswer.ok && cappedInbox.view?.entries.length === 100 && cappedInbox.view.dropped === 1
+      && !cappedInbox.view.entries.some((e) => e.id === readEntryId)
+      && cappedInbox.view.entries.some((e) => e.id === capAnswerBody.inbox && e.ref === capRow?.id)
+      && cappedInbox.view.entries.filter((e) => e.readBy === null).length === 100,
+    JSON.stringify({ status: capAnswer.status, length: cappedInbox.view?.entries.length,
+      dropped: cappedInbox.view?.dropped, readEntry: cappedInbox.view?.entries.some((e) => e.id === readEntryId),
+      body: capAnswerText }));
+
+  // --- 10. completed Programs cannot receive another pointer -------------------------------------
+  const inactiveRow = await raised(await selfRaise(successorToken, { kind: "blocked", text: "Complete before answering me." }));
+  const inactiveBefore = await selfInbox(successorToken);
+  const completeProgram = await post(`/api/programs/${programA}/complete`, {});
+  const inactiveAnswer = await post(`/api/attention/${inactiveRow?.id}/answer`, { text: "Too late for this Program." });
+  const inactiveText = await inactiveAnswer.text();
+  const inactiveAfterState = JSON.parse(readFileSync(statePath, "utf8")) as {
+    programs?: { id: string; inbox?: { entries: unknown[]; dropped: number } }[];
+  };
+  const inactiveAfter = inactiveAfterState.programs?.find((p) => p.id === programA)?.inbox;
+  // BREAKS IF: answerAttention accepts any persisted Program regardless of active status.
+  check("attention answer inactive program: 409 by name and nothing written",
+    completeProgram.ok && inactiveAnswer.status === 409
+      && inactiveText.includes("the Program of this attention is complete — no bound MAIN can read an answer to it")
+      && inactiveAfter?.entries.length === inactiveBefore.view?.entries.length
+      && inactiveAfter?.dropped === inactiveBefore.view?.dropped,
+    `${completeProgram.status} ${inactiveAnswer.status} ${inactiveText}`);
+  await post(`/api/attention/${inactiveRow?.id}/refuse`, { reason: "Program completed before the answer." });
+
+  // --- 11. owner kill still refuses; a recycled slot does not inherit ----------------------------
+  // BREAKS IF: survives does not require why === "handoff".
   const beforeKill = readRows().filter((a) => a.requester.slot === mainC && a.status === "open").length;
   await post(`/api/slots/${mainC}/kill`, {});
   const afterKill = readRows().filter((a) => a.requester.slot === mainC);
@@ -310,7 +476,7 @@ export async function run(): Promise<void> {
   const successorSees = await selfAttention(successorTok);
   const successorAnswer = await post(`/api/attention/${capped[0]?.id}/answer`, { text: "must not reach the successor" });
   const successorPane = (await tmuxOut("capture-pane", "-t", `s${mainC}`, "-p")).out;
-  check("attention reconcile: a dead requester's open rows are refused by name and no successor inherits them",
+  check("attention owner kill still refuses: a killed requester's open rows read requester session ended, and a recycled slot inherits nothing",
     beforeKill === 5 && afterKill.length === 5
       && afterKill.every((a) => a.status === "refused" && a.refusedReason === "requester session ended"
         && a.closedAt !== null && a.answer === null)
@@ -318,7 +484,8 @@ export async function run(): Promise<void> {
       && successorAnswer.status === 409 && !successorPane.includes("must not reach the successor"),
     JSON.stringify({ beforeKill, statuses: afterKill.map((a) => a.status) }));
 
-  for (const slot of [mainA, mainB, mainC, lane.slot]) await post(`/api/slots/${slot}/kill`, {});
+  for (const slot of [mainA, mainB, mainC, successorSlot, lane.slot])
+    if (slot !== null) await post(`/api/slots/${slot}/kill`, {});
 
   // Pre-provenance rows are a distinct historical shape: absence means UNKNOWN and must stay
   // absent on both disk and the owner route. Normalizing it to a five-null object would invent an

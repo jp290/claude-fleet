@@ -7,7 +7,7 @@ import type { ServerWebSocket } from "bun";
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt, type MergeGraphs } from "./merge-prompt";
 import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessage,
   mergeWatchMessage, auditWatchMessage, deployWatchMessage, laneWatchEventKind, laneWatchPayload,
-  clarificationWatchMessage, clarificationReplyMessage, attentionAnswerMessage,
+  clarificationWatchMessage, clarificationReplyMessage,
   type MergeWatchEventPayload,
   type AuditWatchEventPayload, type DeployWatchEventPayload,
   commandJobWatchMessage, type CommandJobWatchEventPayload, type CommandJobArtifactPayload,
@@ -4835,6 +4835,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   gitInfo.delete(s.id);
   repoInfo.delete(s.id); // canonical repo belongs to this occupant/cwd just as much as gitInfo does
   backlogNudgeTried.delete(s.id); // a dead pane reopened in place is still a new main session
+  inboxNudgeTried.delete(s.id);
   autos = autos.filter((x) => x.slot !== s.id); // and no inherited schedules
   dropWatchesFor(s.id); // nor an inherited subscription, in either direction
   reapLaneSuiteOffersFor(s.id); // …nor an offer of a tree the previous occupant held
@@ -4938,6 +4939,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   reviewCache.delete(s.id);
   reviewAutoTried.delete(s.id);
   backlogNudgeTried.delete(s.id);
+  inboxNudgeTried.delete(s.id);
   migrateTried.delete(s.id);
   successionStarted.delete(s.id);
   harvest.delete(s.id);
@@ -4956,7 +4958,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   for (const sh of shares) if (sh.slot === s.id) closeShareClients(s, sh.id);
   shares = shares.filter((x) => x.slot !== s.id);
   autos = autos.filter((x) => x.slot !== s.id);
-  dropWatchesFor(s.id);
+  dropWatchesFor(s.id, why);
   reapLaneSuiteOffersFor(s.id);
   s.history = [];
   s.offset = 0;
@@ -7282,7 +7284,7 @@ function reapLaneSuiteOffersFor(slotId: number): void {
 //     deleting, because a watch that vanishes silently is indistinguishable from one that is still
 //     waiting, and "still waiting" is the state this feature exists to make impossible to believe
 //     falsely. The owner sees "target session ended" on /api/sessions instead of an empty list.
-function dropWatchesFor(slotId: number): void {
+function dropWatchesFor(slotId: number, why?: SlotEnding): void {
   // Events are durable independently of their transport Watch. A dead/replaced receiver turns
   // every still-open delivery into an explicit terminal fact; it is never deleted with the Watch.
   markFleetEventReceiverGone(slotId);
@@ -7291,7 +7293,7 @@ function dropWatchesFor(slotId: number): void {
   // for a composer to clear. Receiver first: a row that lost both ends is a row nobody can read.
   markFleetEventsSubjectGone();
   reconcileClarifications(slotId);
-  reconcileAttention(slotId);
+  reconcileAttention(slotId, why);
   watches = watches.filter((w) => w.slot !== slotId);
   for (const w of watches) {
     if (!("target" in w) || w.target !== slotId || !w.armed) continue;
@@ -8339,10 +8341,13 @@ async function openAttention(s: Slot, body: Record<string, unknown> | null): Pro
   return json({ ok: true, existing: false, request, sessionIdMatch });
 }
 
-// Role-scoped exactly like clarificationsFor: the caller sees the rows it is bound to as requester,
-// and worktree-ness appears nowhere in the predicate.
+// A live binding sees its Program's rows across succession; an unbound or foreign occupant sees
+// only rows addressed to its own exact requester triple. The open cap and dedupe stay requester-
+// scoped in openAttention, so inheriting sight never inherits the predecessor's raise budget.
 function attentionFor(s: Slot): AttentionRequest[] {
-  return attentionRequests.filter((a) => attentionBound(a, s));
+  const bound = boundProgramForMain(s);
+  return attentionRequests.filter((a) => attentionBound(a, s)
+    || (bound.ok && a.programId === bound.program.id));
 }
 
 function refuseAttention(a: AttentionRequest, reason: string, at = Date.now()): void {
@@ -8354,17 +8359,19 @@ function refuseAttention(a: AttentionRequest, reason: string, at = Date.now()): 
   audit("attention_refused", a.requester.slot, `${a.id} ${reason}`);
 }
 
-// THE FAIL-SAFE THE PROGRAM DEMANDS. A row must never reroute to a recycled slot: once the
-// requester occupant is gone or replaced, the answer has nobody it was written for, and the
-// successor MAIN re-raises from its own grounding instead of inheriting a question it never asked.
-function reconcileAttention(teardownSlotId?: number): boolean {
+// A deliberate handoff of an active Program preserves its question for the successor. Every other
+// disappearance still fails closed: an owner kill, land, boot reconcile or recycled slot may not
+// turn the row into somebody else's question merely because the slot number came back.
+function reconcileAttention(teardownSlotId?: number, why?: SlotEnding): boolean {
   let dirty = false;
   for (const a of attentionRequests) {
     if (a.status === "answered" || a.status === "refused") continue;
     const requester = slotFrom(a.requester.slot);
     const gone = teardownSlotId === a.requester.slot || !requester?.cwd
       || requester.openedAt !== a.requester.openedAt || requester.sessionId !== a.requester.sessionId;
-    if (!gone) continue;
+    const program = programs.find((p) => p.id === a.programId);
+    const survives = why === "handoff" && program?.status === "active";
+    if (!gone || survives) continue;
     refuseAttention(a, "requester session ended");
     dirty = true;
   }
@@ -8404,51 +8411,20 @@ async function answerAttention(id: string, body: Record<string, unknown> | null)
     return json({ error: "attention answer send is unresolved with different pending text — retry the identical text or leave it",
       status: request.status }, 409);
 
-  const requester = slotFrom(request.requester.slot);
-  if (!requester?.cwd || requester.openedAt !== request.requester.openedAt
-    || requester.sessionId !== request.requester.sessionId) {
-    refuseAttention(request, "requester session ended");
-    pruneAttention();
-    await saveStateNow();
-    return json({ error: "requester occupant ended or was replaced; attention request refused" }, 409);
-  }
-  // The owner asked for this delivery by hand. That waives only the unattended harness policy —
-  // kill-switch, fresh liveness, blocked-screen and quiet hours remain in the shared choke-point.
-  const deliverable = await canDeliver(requester, { now: Date.now(), harness: false, idleMs: 0 });
-  if (!deliverable.ok)
-    return json({ error: `attention answer delivery blocked by ${deliverable.gate}`,
-      ...(deliverable.detail ? { detail: deliverable.detail } : {}) }, 409);
-  const text = attentionAnswerMessage(request.id, request.kind, request.text, answer);
-  // THE TRANSPORT MARKER, the same order and for the same reason as the clarification reply:
-  // persisted (awaited) BEFORE tmux is touched, so a process death anywhere below is visible after
-  // restart instead of vanishing, and no tick ever replays it.
-  if (request.status !== "send-uncertain") {
-    request.status = "send-uncertain";
-    request.answer = { text: answer, at: Date.now(), by: "owner" };
-    request.refusedReason = null;
-    request.closedAt = null;
-    await saveStateNow();
-  }
-  try {
-    await sendText(requester, text, true);
-  } catch (e) {
-    audit("attention_answer_send_uncertain", requester.id,
-      `${request.id} ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
-    return json({ error: `attention answer send failed and stays send-uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}`,
-      status: "send-uncertain" }, 409);
-  }
+  const program = programs.find((p) => p.id === request.programId);
+  if (!program || program.status !== "active")
+    return json({ error: `the Program of this attention is ${program?.status ?? "missing"} — no bound MAIN can read an answer to it` }, 409);
   const at = Date.now();
-  requester.history = [...requester.history, { text, ts: at }].slice(-MAX_HISTORY);
-  saveHistory(requester);
-  logPrompt(requester, text, "auto", at);
+  const entry = appendProgramInbox(program, "attention-answer", request.id);
   request.status = "answered";
   request.answer = { text: answer, at, by: "owner" };
   request.refusedReason = null;
   request.closedAt = at;
-  audit("attention_answered", requester.id, `${request.id} kind=${request.kind}`);
+  audit("attention_answered", request.requester.slot,
+    `${request.id} kind=${request.kind} inbox=${entry.id}`);
   pruneAttention();
   await saveStateNow();
-  return json({ ok: true, existing: false, request });
+  return json({ ok: true, existing: false, request, inbox: entry.id });
 }
 
 // Dismissal WITH a reason. The reason is mandatory because the whole point of this row is that the
@@ -11224,6 +11200,8 @@ const AUTO_REVIEW_IDLE_MS = Number(process.env.FLEET_AUTO_REVIEW_IDLE_MS ?? 60_0
 // Opt-in only: a backlog is advisory and must never wake a deployment whose owner did not arm it.
 const BACKLOG_NUDGE_MS = Math.max(0, Number(process.env.FLEET_BACKLOG_NUDGE_MS ?? 0) | 0);
 const AUDIT_PING_MS = Math.max(0, Number(process.env.FLEET_AUDIT_PING_MS ?? 0) | 0);
+const INBOX_NUDGE_MS = Math.max(0, Number(process.env.FLEET_INBOX_NUDGE_MS ?? 60_000) | 0);
+const INBOX_NUDGE_COOLDOWN_MS = 10 * 60_000;
 const BACKLOG_IDLE_MS = Math.max(0, Number(process.env.FLEET_BACKLOG_NUDGE_IDLE_MS ?? 300_000) | 0);
 const BACKLOG_COOLDOWN_MS = Math.max(0, Number(process.env.FLEET_BACKLOG_COOLDOWN_MS ?? 1_800_000) | 0);
 const BACKLOG_NUDGE_MAX = Math.max(0, Number(process.env.FLEET_BACKLOG_NUDGE_MAX ?? 3) | 0);
@@ -11497,9 +11475,11 @@ async function tickLaneAutoClose(): Promise<void> {
 interface BacklogNudgeMarker {
   session: string; openKey: string; lastAt: number; count: number;
 }
+interface InboxNudgeMarker { key: string; lastAt: number }
 // One entry per SLOT, with the session identity inside it: slot ids recycle, session identities do
 // not. The self-token fallback gives unpinned/custom harness sessions that same lifecycle boundary.
 const backlogNudgeTried = new Map<number, BacklogNudgeMarker>();
+const inboxNudgeTried = new Map<number, InboxNudgeMarker>();
 const backlogSessionKey = (s: Slot): string => s.sessionId ?? `unbound:${s.selfToken}`;
 
 // The prompt is a pointer to the register, never an assignment. Task text is flattened and capped
@@ -11689,6 +11669,51 @@ async function tickAuditPing(): Promise<void> {
     if (dirty) await saveStateNow();
   } finally {
     auditPingBusy = false;
+  }
+}
+
+let inboxNudgeBusy = false;
+async function tickInboxNudge(): Promise<void> {
+  if (inboxNudgeBusy) return;
+  inboxNudgeBusy = true;
+  try {
+    const now = Date.now();
+    for (const program of programs) {
+      if (program.status !== "active" || programOccupancy(program) !== "live" || !program.main) continue;
+      const unreadIds = (program.inbox?.entries ?? [])
+        .filter((entry) => entry.readBy === null).map((entry) => entry.id).sort();
+      if (!unreadIds.length) continue;
+      const s = slotFrom(program.main.slot);
+      if (!s?.cwd || s.lastOutput === 0) continue;
+      const session = backlogSessionKey(s);
+      const key = `${session}|${unreadIds.join(",")}`;
+      const prior = inboxNudgeTried.get(s.id);
+      if (prior?.key === key) continue;
+      if (prior && now - prior.lastAt < INBOX_NUDGE_COOLDOWN_MS) continue;
+      const verdict = await canDeliver(s, { now, idleMs: BACKLOG_IDLE_MS, quietHours: true });
+      if (!verdict.ok) continue;
+      const currentUnreadIds = (program.inbox?.entries ?? [])
+        .filter((entry) => entry.readBy === null).map((entry) => entry.id).sort();
+      if (program.status !== "active" || programOccupancy(program) !== "live"
+        || program.main?.slot !== s.id || backlogSessionKey(s) !== session
+        || `${session}|${currentUnreadIds.join(",")}` !== key) continue;
+      const text = `[fleet inbox] ${unreadIds.length} ungelesene Eintraege in der Inbox deines Programs ${program.id} — `
+        + "GET /api/self/inbox, dann POST /api/self/inbox/<id>/read (x-fleet-self-token aus $FLEET_SELF_TOKEN).";
+      try {
+        await sendText(s, text, true);
+      } catch (e) {
+        logError("inboxNudgeSend", e);
+        continue;
+      }
+      const sentAt = Date.now();
+      inboxNudgeTried.set(s.id, { key, lastAt: sentAt });
+      s.history = [...s.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
+      saveHistory(s);
+      logPrompt(s, text, "auto", sentAt);
+      return;
+    }
+  } finally {
+    inboxNudgeBusy = false;
   }
 }
 
@@ -20607,7 +20632,8 @@ const gameMakerSuccessionSteps = (): string[] => [
 // row ids: a decision whose condition sat in its last clause arrived without its condition, an
 // attention arrived without the id that names it, and a watch arrived as a number. A prompt is a
 // preview surface — it is bounded, it is read once, and it is not a place data can live.
-//   · THE DATA is captureProgramHandover -> program.handover: every dying obligation verbatim,
+//   · THE DATA is captureProgramHandover -> program.handover: every dying session-bound
+//     obligation verbatim,
 //     with its id and the parameters a successor would need to re-register it, persisted in the
 //     succession's own state cut and read back through GET /api/self/program-execution.
 //   · THE PREVIEW is these lines: measured counts beside the door that re-reads them, and one
@@ -20638,11 +20664,13 @@ const handoverPreviewLine = (o: ProgramHandoverObligation): string => {
 };
 
 // --- THE CAPTURE. Runs while the predecessor is still whole -------------------------------------
-// Everything here is about to be destroyed by killSlot: `autos` and the armed `watches` are
-// deleted outright, and the open attentions are stamped refused/"requester session ended" — which
-// is UNANSWERED, not declined — on rows that are themselves a pruned tail
-// (ATTENTION_KEEP_TERMINAL). So this is the last moment any of it can be written down, and it is
-// written down COMPLETE. Slicing is defensive only: the three route caps already bound every
+// Everything freshly captured here is about to be destroyed by killSlot: `autos` and the armed
+// `watches` are deleted outright. Open attention belongs to the Program across a deliberate
+// succession and stays live through attentionFor/reconcileAttention, so copying it here would give
+// the successor two sources for the same question. Historical attention already retained by an
+// older server is carried below; it may be the only surviving copy. This is the last moment the
+// session-bound rows can be written down, and they are written down COMPLETE. Slicing is defensive
+// only: the three route caps already bound every
 // value, and a slice here exists so a hand-edited fleet.json can never make this function emit a
 // record its own loader would refuse.
 // NO TRUNCATION. A value is carried verbatim or it is not carried at all: a silent slice here
@@ -20667,9 +20695,6 @@ function captureProgramHandover(program: Program, predecessor: SuccessionPredece
   // told about a stranger's obligations would re-ask a stranger's question. `autos` is the one
   // exception and it is the row's own shape, not a shortcut — an Auto carries no openedAt, and
   // teardown deletes every row of the SLOT, so the slot is exactly what dies with it.
-  const attention = attentionRequests.filter((a) => a.programId === program.id
-    && (a.status === "open" || a.status === "send-uncertain")
-    && a.requester.slot === predecessor.slot && a.requester.openedAt === predecessor.openedAt);
   const armed = watches.filter((w) => w.armed && w.slot === predecessor.slot
     && w.slotOpenedAt === predecessor.openedAt);
   const checkIns = autos.filter((a) => a.slot === predecessor.slot);
@@ -20678,13 +20703,6 @@ function captureProgramHandover(program: Program, predecessor: SuccessionPredece
   // reader could no longer tell whose question it is looking at.
   const owedBy = `slot ${predecessor.slot}@${predecessor.openedAt}`;
   const fresh: ProgramHandoverObligation[] = [
-    ...attention.map((a): ProgramHandoverObligation => ({
-      kind: "attention", id: a.id, at: a.raisedAt, text: a.text,
-      detail: handoverDetail({ kind: a.kind, status: a.status,
-        taskId: a.provenance?.taskId ?? null, originId: a.provenance?.originId ?? null,
-        branch: a.provenance?.branch ?? null, candidateSha: a.provenance?.candidateSha ?? null,
-        owedBy, reAsk: "POST /api/self/attention" }),
-    })),
     ...armed.map((w): ProgramHandoverObligation => ({
       kind: "watch", id: w.id, at: w.created, text: "",
       detail: handoverDetail({ kind: watchKind(w), idleSec: w.idleSec, delivery: w.delivery ?? "pane",
@@ -20710,9 +20728,9 @@ function captureProgramHandover(program: Program, predecessor: SuccessionPredece
   // forward instead, de-duplicated by (kind, id) so a row still live under this occupant keeps its
   // FRESH measurement rather than a stale copy of itself.
   //
-  // This is a property of the RECORD and of nothing else: no attention is re-opened, no watch or
-  // auto is re-armed, and no session is notified. Carrying the row forward is what lets C read
-  // what A owed; acting on it stays C's own deliberate act through the ordinary doors.
+  // This is a property of the RECORD and of nothing else: no historical attention is re-opened,
+  // no watch or auto is re-armed, and no session is notified. Carrying the row forward is what
+  // lets C read what A owed; acting on it stays C's own deliberate act through the ordinary doors.
   const held = new Set(fresh.map((o) => `${o.kind}/${o.id}`));
   const carried = (program.handover?.obligations ?? []).filter((o) => !held.has(`${o.kind}/${o.id}`));
   // ALWAYS a record, even with zero rows. `handover: null` then means "no Standard succession has
@@ -20777,11 +20795,11 @@ function standardHandoverLines(program: Program, handover: ProgramHandover): str
     program.inboxLost
       ? `- Program inbox: LOST at ${new Date(program.inboxLost.at).toISOString()} — the persisted record could not be read (${program.inboxLost.error}) and every pointer written before then is gone for good. An empty answer from GET /api/self/inbox proves nothing about what was there; the same loss is on that route's own \`unknown\` list.`
       : `- Program inbox: ${inbox.unread} unread of ${entries} entries${inbox.oldestAt === null ? "" : `, oldest unread ${new Date(inbox.oldestAt).toISOString()}`}. GET /api/self/inbox reads them; POST /api/self/inbox/<id>/read receipts one.`,
-    `- Obligations that END with your predecessor: ${ofOwn("attention")} open owner decisions, ${ofOwn("watch")} armed watches, ${ofOwn("auto")} scheduled check-ins${carried === 0 ? "" : `, plus ${carried} still unsettled from earlier sessions of this Program`}. NOTHING was re-armed — that is deliberate; re-registering is your act. Each row is RETAINED IN FULL (id, complete text, reconstruction parameters) as \`handover\` in GET /api/self/program-execution, and every row still open is CARRIED FORWARD by the next succession too — handing this Program on loses none of it. THE LINES BELOW ARE PREVIEWS, truncated on purpose; \`owedBy\` on each says which session owed it.`,
+    `- Obligations that END with your predecessor: ${ofOwn("attention")} historical owner decisions, ${ofOwn("watch")} armed watches, ${ofOwn("auto")} scheduled check-ins${carried === 0 ? "" : `, plus ${carried} still unsettled from earlier sessions of this Program`}. NOTHING was re-armed — that is deliberate; re-registering is your act. Each row is RETAINED IN FULL (id, complete text, reconstruction parameters) as \`handover\` in GET /api/self/program-execution, and every row still open is CARRIED FORWARD by the next succession too — handing this Program on loses none of it. Live attention is Program state and remains on GET /api/self/attention instead of being copied here. THE LINES BELOW ARE PREVIEWS, truncated on purpose; \`owedBy\` on each says which session owed it.`,
     ...preview("attention"),
     ...preview("watch"),
     ...preview("auto"),
-    `  (An open decision is refused by the retirement as "requester session ended": UNANSWERED, not declined. Re-ask what still matters through POST /api/self/attention.)`,
+    `  (Any attention previewed above is a historical retained row. Current open attention survives a deliberate Program succession on GET /api/self/attention.)`,
   ];
 }
 
@@ -23569,6 +23587,7 @@ if (AUTO_REVIEW_MS > 0) setInterval(() => void tickAutoReview().catch((e: unknow
 if (LANE_AUTOCLOSE_ON) setInterval(() => void tickLaneAutoClose().catch((e: unknown) => logError("tickLaneAutoClose", e)), AUTOS_TICK_MS);
 if (BACKLOG_NUDGE_MS > 0) setInterval(() => void tickBacklogNudge().catch((e: unknown) => logError("tickBacklogNudge", e)), BACKLOG_NUDGE_MS);
 if (AUDIT_PING_MS > 0) setInterval(() => void tickAuditPing().catch((e: unknown) => logError("tickAuditPing", e)), AUDIT_PING_MS);
+if (INBOX_NUDGE_MS > 0) setInterval(() => void tickInboxNudge().catch((e: unknown) => logError("tickInboxNudge", e)), INBOX_NUDGE_MS);
 if (MIGRATE_PCT > 0) setInterval(() => void tickMigrate().catch((e: unknown) => logError("tickMigrate", e)), MIGRATE_TICK_MS);
 // self-heal: recreate any activated slot whose pane died (crash, accidental kill-session).
 // ensureSlot is a cheap no-op (three tmux queries) per healthy slot
@@ -27990,8 +28009,8 @@ Bun.serve<WSData>({
       return json({ ok: true, pins });
     }
     // --- the attention inbox (owner side). Full rows live here, /api/sessions carries only the COUNT
-    // (docs/data-saver.md). Answering is a delivery into the requester's pane (send-uncertain crash
-    // boundary); refusing is the receipt that the owner declined, which is why its reason is mandatory.
+    // (docs/data-saver.md). An answer appends a Program-inbox pointer in the same durable state cut;
+    // refusing is the receipt that the owner declined, which is why its reason is mandatory.
     if (url.pathname === "/api/attention" && req.method === "GET")
       return json({ requests: attentionOwnerView() });
     const attentionAnswer = /^\/api\/attention\/([0-9a-f]{24})\/answer$/.exec(url.pathname);

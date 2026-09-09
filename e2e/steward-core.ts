@@ -10,6 +10,7 @@ import { CONTINUITY_REGIME_START, CONTINUITY_SOURCES, CONTINUITY_WINDOW_MS, type
 import { BASE, REPO, ROOT, check, get, paneEnv, plogRead, post, readText, restartSrv, tmuxOut } from "./harness";
 import type { Ctx, StewardCtx } from "./ctx";
 import { settleForMerge } from "./lane-helpers";
+import { newPlantedSid } from "./restart";
 
 export type DigJ = {
   now?: number; prior?: { kind?: string } | null; slots?: { id: number }[];
@@ -138,6 +139,51 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   check("transcript fact: an empty slot is null and the field is present on every slot",
     tfSlots.every((s) => "transcriptFact" in s) && tfSlots.filter((s) => !s.cwd).every((s) => s.transcriptFact === null),
     JSON.stringify(tfSlots.map((s) => [s.id, s.transcriptFact?.bytes ?? null])));
+
+  // --- the fixture's IDENTITY, asserted as itself rather than through the fact above. The uuid in
+  //     restart.ts was a CONSTANT until 2026-09-09, and the path it names is built from slot 2's
+  //     cwd — which on a helper IS $HOME. Two suite runs on one host therefore shared ONE file, and
+  //     whichever reached the rmSync below first deleted the other's fixture; the loser read
+  //     transcriptFact = null and failed the check above with a detail that could only say "null".
+  //     These probe the property directly, so a regression fails HERE and names which half broke. ---
+  {
+    const sid = ctx.plantedTranscript?.match(/\/([0-9a-f-]{36})\.jsonl$/)?.[1] ?? null;
+    // (a) the identity SURVIVED THE RESTART: the uuid in the path is the one the server restored
+    //     onto slot 2 from the state file — under FLEET_CMD=true that door is the only way in.
+    const stSid = ((): string | null => {
+      try {
+        return (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+          { slots?: Record<string, { sessionId?: string }> }).slots?.["2"]?.sessionId ?? null;
+      } catch { return null; }
+    })();
+    check("transcript fixture: the planted uuid is a real uuid and still names slot 2 after the restart",
+      sid !== null && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(sid)
+        && stSid === sid,
+      `path=${sid} state=${stSid}`);
+    // The uuid SOURCE, not the uuid: the old constant is itself v4-shaped, so the shape assertion
+    // above would wave a revert straight through. Two calls differing is the property that made
+    // the collision impossible, and it is the one a revert breaks.
+    const s1 = newPlantedSid(), s2 = newPlantedSid();
+    check("transcript fixture: the uuid source yields a FRESH uuid per call (a constant is what made two runs share one file)",
+      s1 !== s2, `${s1} vs ${s2}`);
+    // (b) two runs under the SAME HOME and the SAME cwd must not meet. Derived in that very
+    //     directory, so this fails if the derivation ever loses its per-run half again.
+    if (ctx.plantedTranscript) {
+      const dir = dirname(ctx.plantedTranscript);
+      const a = `${dir}/${crypto.randomUUID()}.jsonl`;
+      const b = `${dir}/${crypto.randomUUID()}.jsonl`;
+      check("transcript fixture: two runs under one HOME/cwd derive DIFFERENT paths", a !== b, `${a} vs ${b}`);
+      writeFileSync(a, `${"a".repeat(11)}\n`); // 12 B
+      writeFileSync(b, `${"b".repeat(21)}\n`); // 22 B — distinct, so a swapped subject cannot pass
+      rmSync(a, { force: true }); // run A finishes and cleans up ONLY its own file
+      const bBytes = existsSync(b) ? statSync(b).size : null;
+      check("transcript fixture: A's cleanup leaves B readable with B's own exact bytes",
+        bBytes === 22, `${bBytes}`);
+      rmSync(b, { force: true });
+      check("transcript fixture: the probe leaves neither file behind",
+        !existsSync(a) && !existsSync(b), `${existsSync(a)}/${existsSync(b)}`);
+    }
+  }
 
   // --- context FILL: the same question one field further, on the OWNER's poll. The proxy above is
   //     bytes and says so ("can never be turned into a percentage"); this reads claude's own

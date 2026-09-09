@@ -79,6 +79,18 @@ const codexTokenCount = (total: number, window: number | null): string => JSON.s
   },
 });
 
+/**
+ * The session uuid the context-size fixture plants on slot 2 — a FRESH one per suite run.
+ *
+ * It is its own function so the property can be probed instead of trusted: the transcript this
+ * uuid names lives at projDir(slot 2's cwd), and that cwd is $HOME on a helper. A constant here
+ * therefore makes the fixture ONE machine-global file that every concurrent run shares, and
+ * whichever run reaches its cleanup first deletes the other's (measured 2026-09-09 on the
+ * second-host: two runs 14 s apart, the winner green, the loser reading transcriptFact = null).
+ * `e2e/steward-core.ts` asserts two calls differ — a constant put back here fails THERE, by name.
+ */
+export const newPlantedSid = (): string => crypto.randomUUID();
+
 export async function run(ctx: Ctx): Promise<void> {
   let persistedCodex: { anchor: number; disconnectSeenAt: number; id: string } | null = null;
   // --- file permissions ---
@@ -642,7 +654,8 @@ export async function run(ctx: Ctx): Promise<void> {
   // same door the server itself uses on a deploy — restore from the state file — so a uuid is
   // planted for the surviving slot 2 while the server is down, and the transcript that uuid names
   // is written after the restart (its cwd is only known from the API).
-  const PLANTED_SID = "e2e0feed-0000-4000-8000-000000000001";
+  // PER RUN, never a constant — see newPlantedSid above for what a constant here cost.
+  const PLANTED_SID = newPlantedSid();
   const PLANTED_MODEL = "claude-sonnet-5"; // no [1m] suffix → a 200k window, unlike the fleet default
   {
     const stFile = `${ROOT}/fleet.json`;

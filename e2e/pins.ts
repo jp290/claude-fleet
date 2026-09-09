@@ -492,24 +492,6 @@ const server = serverU.text;
     && prune.includes('c.status === "answered" || c.status === "refused"'),
     `uncertain=${uncertain} saved=${uncertainSaved} send=${send} prune=${prune.includes('c.status === "answered" || c.status === "refused"')}`);
 
-  // The owner-facing twin inherits the same crash boundary, so it inherits the same pin: the
-  // send-uncertain marker is assigned and AWAITED to disk textually before its sendText, and only
-  // answered|refused count as terminal for the prune. An answer that reached the pane while the row
-  // said "open" — or a prune that swallowed send-uncertain — would each be invisible in exactly the
-  // way this channel exists to prevent. Moving either assignment below sendText makes this red.
-  const answer = server.slice(server.indexOf("async function answerAttention("),
-    server.indexOf("async function refuseAttentionRequest("));
-  const aSend = answer.indexOf("await sendText(requester, text, true);");
-  const aUncertain = answer.indexOf('request.status = "send-uncertain";');
-  const aSaved = answer.indexOf("await saveStateNow();", aUncertain);
-  const aAnswered = answer.indexOf('request.status = "answered";');
-  const aPrune = server.slice(server.indexOf("function pruneAttention("),
-    server.indexOf("function boundProgramForMain("));
-  pin("attention answer persists send-uncertain before sendText and only answered|refused are terminal",
-    aUncertain >= 0 && aSaved > aUncertain && aSend > aSaved && aAnswered > aSend
-    && aPrune.includes('a.status === "answered" || a.status === "refused"'),
-    `uncertain=${aUncertain} saved=${aSaved} send=${aSend} answered=${aAnswered} prune=${aPrune.includes('a.status === "answered" || a.status === "refused"')}`);
-
   // The owner's own send inherits the same crash boundary and therefore the same rule: exactly one
   // sendText, inside a try, whose catch JOURNALS the attempt as uncertain. A bare `await sendText`
   // here is an untyped 500 that leaves no trace at all — the silent loss Cut 3 removes — and a
@@ -6736,6 +6718,34 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && append.includes("PROGRAM_INBOX_MAX") && append.includes('audit("program_inbox_append"'),
     append === "" ? "appendProgramInbox not found in the server universe"
       : `assignments=${writers} capped=${append.includes("PROGRAM_INBOX_MAX")}`);
+  // I4 — the row and its pointer are one state cut, and no occupant transport remains. Appending
+  // after the answered assignment or adding a second save would reopen a crash window between the
+  // subject and its only durable address.
+  const answer = server.match(/async function answerAttention\([\s\S]*?\n\}/)?.[0] ?? "";
+  const appendAt = answer.indexOf("appendProgramInbox(");
+  const answeredAt = answer.indexOf('request.status = "answered";');
+  const savedAt = answer.indexOf("await saveStateNow();", answeredAt);
+  const answerSaves = (answer.match(/await saveStateNow\(\);/g) ?? []).length;
+  const prune = server.match(/function pruneAttention\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_INBOX} — attention answer appends before answered and persists both once without pane delivery`,
+    answer !== "" && appendAt >= 0 && answeredAt > appendAt && savedAt > answeredAt
+      && answerSaves === 1 && !answer.includes("sendText(")
+      && prune.includes('a.status === "answered" || a.status === "refused"'),
+    answer === "" ? "answerAttention not found in server.ts"
+      : `append=${appendAt} answered=${answeredAt} saved=${savedAt} saves=${answerSaves} send=${answer.includes("sendText(")}`);
+  // I5 — one positive-only timer, and the exact teardown reason reaches the attention reconciler.
+  // A second timer can duplicate a paste before the first async tick records its process-local key.
+  const inboxTimers = server.split("\n").filter((line) => line.includes("setInterval")
+    && line.includes("tickInboxNudge"));
+  const teardown = server.match(/async function teardownSlotOccupant\([\s\S]*?\n\}/)?.[0] ?? "";
+  const drop = server.match(/function dropWatchesFor\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_INBOX} — the inbox nudge is one positive-only timer and teardown carries its reason to attention reconcile`,
+    /const INBOX_NUDGE_MS = [^;\n]*process\.env\.FLEET_INBOX_NUDGE_MS \?\? 60_000[^;\n]*;/.test(server)
+      && inboxTimers.length === 1
+      && /if \(INBOX_NUDGE_MS > 0\) setInterval\([^\n]*tickInboxNudge/.test(server)
+      && teardown.includes("dropWatchesFor(s.id, why)")
+      && drop.includes("reconcileAttention(slotId, why)"),
+    `timers=${inboxTimers.length} teardown=${teardown.includes("dropWatchesFor(s.id, why)")} reconcile=${drop.includes("reconcileAttention(slotId, why)")}`);
   // the doc a MAIN is actually sent to must carry the section and both route paths — the same
   // doc↔route pair RULE_RECEIVER pins for §fleet-report, and for its reason: a route named only in
   // code is a route no session ever learns to call.

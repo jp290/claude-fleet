@@ -635,8 +635,9 @@ Der **dauerhafte Rückkanal des PROGRAMS**, nicht der einer Session. Ein Eintrag
 eine Zeile, die es schon gibt (Attention-Antwort, Fleet-Report, rotes Audit, fremd gelandetes Commit); er kopiert keinen Text
 und nennt **keinen Empfänger**. Wer beim Lesen die gebundene MAIN des Programs ist, liest ihn —
 darum überlebt ein Eintrag eine Succession, während ein Watch, ein FleetEvent und eine offene
-Attention mit ihrem Occupant sterben (`CLAUDE.md` §„Eine Succession toetet deine offenen
-Attentions"). `readBy` ist eine **Quittung**, kein Schlüssel: keine Route filtert an ihr.
+Attention eines **aktiven** Programs ebenfalls an die Nachfolgerin übergeht. Ein Owner-Kill
+refused die offene Attention dagegen weiter mit `requester session ended`. `readBy` ist eine
+**Quittung**, kein Schlüssel: keine Route filtert an ihr.
 
 ```
 curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" http://<fleet-host>:<port>/api/self/inbox
@@ -682,6 +683,9 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   <repo>`) — der Zeiger auf ein Land, das stattfand, hängt nie an einem best-effort-Schreiben.
   Fehlt die Repo-Haelfte ganz, sagt die `unknown`-Zeile genau das (`… without a repo to read its
   land note from`) statt in ein fremdes Object-Database zu greifen und „nicht lesbar" zu melden.
+- **Schreiber:** Eine Owner-Antwort über `POST /api/attention/:id/answer` schreibt genau einen
+  `attention-answer`-Zeiger zusammen mit dem `answered`-Status. `fleet-report` und `audit-red`
+  sind reservierte Kinds; in diesem Baum haben sie noch keinen Producer-Aufruf.
 - **Antwort POST read:** `{ok: true, existing: false, entry}` beim ersten Mal, `{ok: true,
   existing: true, entry}` bei jedem weiteren. Die Quittung ist **kein Lock**: ein zweites Lesen
   überschreibt `readBy`/`readAt` nie, denn der erste Leser ist die Tatsache.

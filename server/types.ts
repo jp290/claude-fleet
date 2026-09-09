@@ -1072,7 +1072,16 @@ interface TaskNotePin {
 // store rather than a rule every reader must remember. Its own cap is therefore reached only by a
 // note judged under many (task, branch) pairs, and evicts the OLDEST — never a comment's cap.
 const NOTE_VERDICTS_MAX = 50;
-interface TaskNoteVerdict { taskId: string; branch: string; verdict: TaskVerdict; text: string; at: number }
+interface TaskNoteVerdict {
+  taskId: string; branch: string; verdict: TaskVerdict; text: string; at: number;
+  // WHEN THIS USAGE WAS SETTLED — written by the land of exactly this taskId, and by nothing else.
+  // It is the whole effect a task-scoped `erledigt` has: the USE of the source under that row is
+  // finished. The source ROW is never closed by it, because a note pinned to A and to B is one
+  // text serving two pieces of work, and "A is done with it" says nothing about B. Absent means
+  // the verdict stands but no land has made it wirksam yet (the lane may still die).
+  landedAt?: number;
+  landedSha?: string;
+}
 
 // One land that moved a file this note's surface names. Written ONLY by the land site, which is the
 // only place that knows both integration shas — reading them at record time would name whatever

@@ -58,6 +58,12 @@ type AuditEvent =
   // greppable on its own. A DETACH IS NOT A DELETE: the note row survives it untouched, and the
   // ledger line is the only record that the assignment ever existed.
   | "task_note_attach" | "task_note_detach"
+  // …and what a land does to an ASSIGNED source: it settles the USAGE, never the source row.
+  // note_usage_settled, detail `<noteId> <branch> task=<taskId>`. Its own event and deliberately
+  // NOT note_closed_by_land, because it is not a close: the note keeps its row and every other
+  // assignment of it. A reader who conflated the two would read "A is finished with this source"
+  // as "this source is finished", which is the global closure N3 exists to end.
+  | "note_usage_settled"
   // W3 · ▸ start wave — n queue rows founded into ONE lane that will land ONCE. Its own event and
   // not a task_dispatch per row, because the fact being recorded is the BUNDLE: the detail names
   // every id in the sensor's fixed order, the class the gate will run, and the seconds the avoided

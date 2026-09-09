@@ -844,6 +844,11 @@ export async function run(): Promise<void> {
     const nShared = await mkRow("Notiz N3: code.txt wird von zwei Zeilen beansprucht. Zweiter Satz.", "notiz");
     const nBown = await mkRow("Notiz N3: code.txt, unter Zeile B erledigt. Zweiter Satz.", "notiz");
     const nBopen = await mkRow("Notiz N3: code.txt, unter Zeile B offen. Zweiter Satz.", "notiz");
+    // The legacy-scope fixture. It is created LAST so the ranking puts it first among the surface
+    // hits (same shared count, newer wins), and it stays UNPINNED until lane B has already been
+    // founded — that is the only way this state can arise at all, and it is the state the fix is
+    // about: a note judged GLOBALLY by a branch and assigned to a row afterwards.
+    const nLegacyGuard = await mkRow("Notiz N3: code.txt, global beurteilt und spaeter angeheftet. Zweiter Satz.", "notiz");
     const aTaskA = await mkRow("Auftrag N3 A: code.txt.", "auftrag");
     const aTaskB = await mkRow("Auftrag N3 B: code.txt.", "auftrag");
     const pin = (task: string, note: string) => post(`/api/tasks/${task}/notes`, { note, attach: true });
@@ -904,10 +909,29 @@ export async function run(): Promise<void> {
     const vBopen = laneB.tok
       ? await n3Judge(laneB.tok, nBopen, { taskId: aTaskB, verdict: "offen", text: "N3: unter Zeile B noch offen." })
       : null;
-    check("(setup n3) lane B received both of its own sources and judged them differently",
+    // the shared source is judged under B as well — that is what makes (n3-usage-ab) a comparison
+    // of two usages of ONE text rather than of two different notes
+    const vBshared = laneB.tok
+      ? await n3Judge(laneB.tok, nShared, { taskId: aTaskB, verdict: "erledigt", text: "N3: unter Zeile B erledigt." })
+      : null;
+    // …and the GLOBAL door, on a note that reached this lane by file surface alone. It is accepted
+    // here precisely because nothing had assigned it yet.
+    const vBglobal = laneB.tok
+      ? await n3Judge(laneB.tok, nLegacyGuard, { verdict: "erledigt", text: "N3: global behauptet erledigt." })
+      : null;
+    check("(setup n3) lane B received its three sources plus the unpinned one, and judged them per row and globally",
       laneB.delivered.includes(nBown) && laneB.delivered.includes(nBopen)
-      && vBdone?.status === 200 && vBopen?.status === 200,
-      `delivered=${JSON.stringify(laneB.delivered)} ${vBdone?.status}/${vBopen?.status}`);
+      && laneB.delivered.includes(nShared) && laneB.delivered.includes(nLegacyGuard)
+      && vBdone?.status === 200 && vBopen?.status === 200
+      && vBshared?.status === 200 && vBglobal?.status === 200,
+      `delivered=${JSON.stringify(laneB.delivered)} ${vBdone?.status}/${vBopen?.status}/${vBshared?.status}/${vBglobal?.status}`);
+    // ASSIGNED ONLY NOW, while lane B is running: aTaskA went back to `pending` when its lane was
+    // killed, so it is the one row that can still take an assignment. From this instant the note
+    // carries a global `erledigt` from the landing branch AND an assignment — the exact pair the
+    // legacy door must no longer close.
+    const guardPin = await post(`/api/tasks/${aTaskA}/notes`, { note: nLegacyGuard, attach: true });
+    check("(setup n3) the globally-judged note is assigned to the OTHER row after lane B was founded",
+      guardPin.ok, `${guardPin.status}`);
     let mainAfterB = "";
     if (laneB.slot !== null && laneB.cwd) {
       await Bun.write(`${laneB.cwd}/code.txt`, "root\nH-touched\nH-touched-2\nH-done\nN3-B\n");
@@ -917,26 +941,53 @@ export async function run(): Promise<void> {
       await waitMerge(laneB.slot);
       mainAfterB = g(REPO, "rev-parse", MAIN).out;
     }
-    const rBown = await nRow(nBown);
-    const rBopen = await nRow(nBopen);
-    const rShared = await nRow(nShared) as (NRow & { verdicts?: { taskId: string; branch: string; verdict: string }[] }) | undefined;
-    // Mutation that breaks it: closing on ANY erledigt of the branch (nShared would close on lane
-    // B's land although lane B never judged it), or dropping the task id from the note text.
-    check("(n3-scoped) two sources under one row are judged INDEPENDENTLY, and the close names the row that landed",
-      !!mainAfterB && rBown?.status === "done"
-      && rBown.note === `erledigt durch Land ${mainAfterB.slice(0, 7)} (${laneB.branch}, Aufgabe ${aTaskB})`
+    type VRow = NRow & { verdicts?: { taskId: string; branch: string; verdict: string;
+      landedAt?: number; landedSha?: string }[] };
+    const rBown = await nRow(nBown) as VRow | undefined;
+    const rBopen = await nRow(nBopen) as VRow | undefined;
+    const rShared = await nRow(nShared) as VRow | undefined;
+    const vOf = (r: VRow | undefined, task: string) =>
+      (r?.verdicts ?? []).find((v) => v.taskId === task);
+    // THE LAND SETTLES THE USAGE AND DOES NOT CLOSE THE SOURCE. Two sources under one row, judged
+    // differently: the `erledigt` one gets its land stamp, the `offen` one gets none — and NEITHER
+    // note leaves `pending`, because a pinned note is one text several pieces of work hang on and
+    // "this row is finished with it" is not "this note is finished".
+    // Mutation that breaks it: writing `t.status = "done"` on a task verdict (the shape this check
+    // was corrected FROM — it asserted exactly that global close, which the contract forbids).
+    check("(n3-usage) a landed task verdict settles THAT USAGE — stamped with the land sha — and closes no source",
+      !!mainAfterB
+      && vOf(rBown, aTaskB)?.verdict === "erledigt"
+      && vOf(rBown, aTaskB)?.landedSha === mainAfterB
+      && typeof vOf(rBown, aTaskB)?.landedAt === "number"
+      && rBown?.status === "pending"
+      && vOf(rBopen, aTaskB)?.verdict === "offen"
+      && vOf(rBopen, aTaskB)?.landedAt === undefined
       && rBopen?.status === "pending",
-      `${rBown?.status}/${JSON.stringify(rBown?.note)} open=${rBopen?.status} want sha=${mainAfterB.slice(0, 7)} branch=${laneB.branch} task=${aTaskB}`);
-    // …and the source whose only verdict names ANOTHER row is untouched by this land. This is the
-    // sentence the whole cut is for: a task verdict never widens back into a global one.
-    check("(n3-scoped-negative) a verdict given under a row this land does not carry closes nothing — and survives as a record",
+      `done-usage=${JSON.stringify(vOf(rBown, aTaskB))} row=${rBown?.status}`
+      + ` open-usage=${JSON.stringify(vOf(rBopen, aTaskB))} row=${rBopen?.status} sha=${mainAfterB.slice(0, 7)}`);
+    // A+B ON THE SAME SOURCE. `nShared` is pinned to BOTH rows and judged `erledigt` under A by a
+    // lane that never landed, then judged `erledigt` under B by the lane that DID land. Only B's
+    // usage may carry a stamp; A's must stand unsettled — and the note itself must serve on.
+    check("(n3-usage-ab) one source under two rows: only the LANDED row's usage is settled, the other stands, and the source stays open",
       rShared?.status === "pending"
-      && JSON.stringify(rShared.verdicts?.map((v) => [v.taskId, v.verdict])) === JSON.stringify([[aTaskA, "erledigt"]])
+      && vOf(rShared, aTaskB)?.landedSha === mainAfterB
+      && vOf(rShared, aTaskA)?.verdict === "erledigt"
+      && vOf(rShared, aTaskA)?.landedAt === undefined
       && (rShared.comments ?? []).every((c) => !c.verdict),
-      `${rShared?.status} ${JSON.stringify(rShared?.verdicts ?? null)} comments=${JSON.stringify(rShared?.comments ?? [])}`);
+      `${rShared?.status} A=${JSON.stringify(vOf(rShared, aTaskA))} B=${JSON.stringify(vOf(rShared, aTaskB))}`);
+    // …AND THE LEGACY DOOR CANNOT WALK AROUND THE SCOPE. `nLegacyGuard` carries a GLOBAL comment
+    // verdict from the landing branch AND an assignment. Before the fix the comment path closed it
+    // outright, which is the pre-N3 global closure re-entered through the side door.
+    const rGuard = await nRow(nLegacyGuard) as VRow | undefined;
+    check("(n3-legacy-scope) a GLOBAL erledigt cannot close a note that carries an assignment — the per-usage rule owns it",
+      rGuard?.status === "pending"
+      && (rGuard.comments ?? []).some((c) => c.verdict === "erledigt" && c.from === laneB.branch),
+      `${rGuard?.status} ${JSON.stringify(rGuard?.comments ?? [])}`);
 
-    for (const id of [nTouch, nOther, nHubOnly, nDone, aDone, nKill, aKill,
-      nShared, nBown, nBopen, aTaskA, aTaskB])
+    // the auftrag rows go FIRST: they hold the assignments, and a held source now refuses its own
+    // delete — which is the retention this section also proves, exercised here as cleanup.
+    for (const id of [aTaskA, aTaskB, nTouch, nOther, nHubOnly, nDone, aDone, nKill, aKill,
+      nShared, nBown, nBopen, nLegacyGuard])
       await post(`/api/tasks/${id}/delete`, {});
   }
 

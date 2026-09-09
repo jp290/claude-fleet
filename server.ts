@@ -2094,12 +2094,26 @@ const taskTerminal = (t: Task): boolean => t.status === "done" || t.status === "
 // an entry for it is REPLACED in place rather than appended, which is why this list grows with the
 // number of (row, lane) pairs a note was judged under and not with the number of reports.
 //
-// The cap evicts the OLDEST — a bound this list reaches only after 50 distinct pairs, and it is
-// deliberately NOT the comment cap: an authoritative verdict must not be destroyable by an owner
-// deleting an unrelated remark, which is the whole reason it does not live in `comments`.
-function upsertNoteVerdict(list: TaskNoteVerdict[], entry: TaskNoteVerdict): TaskNoteVerdict[] {
-  const kept = list.filter((v) => !(v.taskId === entry.taskId && v.branch === entry.branch));
-  return [...kept, entry].slice(-NOTE_VERDICTS_MAX);
+// THE CAP REFUSES, IT DOES NOT EVICT. `slice(-50)` was wrong in the one way that matters here: at
+// the 51st distinct key it silently dropped the OLDEST verdict — an authoritative record that a
+// land still needs in order to know which usage was settled. A bound that quietly destroys the
+// thing it bounds is worse than a bound that says no, so:
+//   · the SAME key is always writable — a lane correcting its own report can never be refused;
+//   · a NEW key on a full store is refused OUT LOUD (the door answers 409 with the numbers);
+//   · the only history that may go is history PROVEN dispensable — an entry whose task no longer
+//     exists on the queue at all, and therefore no land can ever make wirksam. Oldest such first.
+// Deliberately not "raise the cap": a bigger number would hide all three cases again.
+type VerdictUpsert = { ok: true; list: TaskNoteVerdict[] } | { ok: false; error: string };
+function upsertNoteVerdict(list: readonly TaskNoteVerdict[], entry: TaskNoteVerdict): VerdictUpsert {
+  const at = list.findIndex((v) => v.taskId === entry.taskId && v.branch === entry.branch);
+  // in PLACE, so arrival order survives — it is what "oldest dispensable" is measured on
+  if (at >= 0) { const next = [...list]; next[at] = entry; return { ok: true, list: next }; }
+  if (list.length < NOTE_VERDICTS_MAX) return { ok: true, list: [...list, entry] };
+  const dispensable = list.filter((v) => !tasks.some((t) => t.id === v.taskId))
+    .sort((a, b) => a.at - b.at)[0];
+  if (!dispensable)
+    return { ok: false, error: `this note already carries ${list.length}/${NOTE_VERDICTS_MAX} task verdicts and every one of them names a row still on the queue — none can be dropped without losing a record a land needs` };
+  return { ok: true, list: [...list.filter((v) => v !== dispensable), entry] };
 }
 // --- N3 · THE ASSIGNMENT ITSELF, one function behind two doors (owner, bound Program-MAIN), so
 // the two can never drift into two policies about the same act. It returns the ANSWER, not a
@@ -2155,19 +2169,36 @@ function pinNoteToTask(t: Task, noteId: string, attach: boolean, by: "owner" | "
   audit("task_note_attach", undefined, `${t.id} \u2190 ${noteId} (${by})`);
   return { ok: true, pins, attached: true };
 }
+// --- N3 · THE ONE ANSWER TO "IS THIS ROW STILL NEEDED AS A SOURCE", shared by every path that
+// could make it disappear: the retention cap, the owner's ✕ delete, and the notiz→auftrag
+// conversion. One predicate, because three copies of it are three chances for one of them to be
+// the door a needed source vanishes through — which is exactly what happened: the cap protected
+// only the pins of NON-terminal rows and the delete route did not look at all.
+//
+// A HOLDER IS ANY ROW THAT NAMES THE ID, whatever its own status. A `done` auftrag still points at
+// the source its lane was worked against, and its context receipt is the record of what that lane
+// was handed; dropping the text under it turns a delivered assignment into an id nobody can read.
+// The holder set shrinks the honest way: when a holder itself goes, it releases what it named.
+const sourceHoldersIn = (list: readonly Task[], id: string): string[] =>
+  list.filter((t) => (t.notes ?? []).some((p) => p.noteId === id)).map((t) => t.id);
+const sourceHolders = (id: string): string[] => sourceHoldersIn(tasks, id);
+
 function capTasks(list: Task[]): Task[] {
   if (list.length <= MAX_TASKS) return list;
   const live = new Set(list.filter((t) => !taskTerminal(t)));
-  // N3: A SOURCE A LIVE ROW NAMES IS NOT SPARE CAPACITY. The cap may evict terminal rows, and a
-  // CLOSED `notiz` that an open auftrag still pins is exactly one — evicting it would leave the pin
-  // pointing at nothing, and the next dispatch of that row would report a source the owner assigned
-  // as `unknown`. Detach is the only act that releases a source; a retention bound is not a second
-  // one. Live rows can therefore exceed the cap, exactly as they already can on their own.
-  const pinned = new Set([...live].flatMap((t) => (t.notes ?? []).map((p) => p.noteId)));
-  for (const t of list) if (pinned.has(t.id)) live.add(t);
   const keepDone = Math.max(0, MAX_TASKS - live.size);
   const keptDone = new Set(list.filter(taskTerminal).slice(-keepDone));
-  return list.filter((t) => live.has(t) || keptDone.has(t));
+  // N3: A SOURCE A SURVIVING ROW NAMES IS NOT SPARE CAPACITY. Computed AFTER the two sets above and
+  // over BOTH of them — a terminal holder keeps its source exactly as long as it is itself kept,
+  // which is the property that makes the retention shrink honestly instead of never. Evicting a
+  // held source would leave the assignment pointing at nothing and the next dispatch reporting a
+  // source the owner chose as `unknown`. Detach is the only act that releases one; a retention
+  // bound is not a second one. Live rows can therefore exceed the cap, as they already can alone.
+  const survivors = [...live, ...keptDone];
+  // …through the SAME predicate the delete, archive and kind doors ask — not a fourth inline copy
+  // of "who names this id", which is exactly the shape that let three of the four doors disagree.
+  return list.filter((t) => live.has(t) || keptDone.has(t)
+    || sourceHoldersIn(survivors, t.id).length > 0);
 }
 // pending → queued: the RELEASE. A function, not a bare assignment, for one reason — it is the
 // transition a future UNATTENDED promote will make, and `by` must not be forgettable there. A new
@@ -4128,30 +4159,41 @@ async function applyLandToNotes(repo: string, branch: string,
     }
   }
   const landed = new Set(landedTaskIds);
-  for (const t of notes) {
-    // (1) THE TASK-SCOPED CLOSE. Only the rows this land actually carries, and per key only the
-    // newest verdict — which the store guarantees by replacing in place, so this reads one entry.
-    // A verdict given under a row that was SPLIT OFF this lane, or under a row of another lane,
-    // is simply not in `landed` and therefore has no effect here: a return never widens a scope.
-    const scoped = (t.verdicts ?? []).filter((v) => v.branch === branch && landed.has(v.taskId));
-    if (scoped.length > 0) {
-      // THE MORE SPECIFIC STATEMENT IS THE BRANCH'S WORD, and the legacy path below is skipped
-      // whether or not it closes. Otherwise a lane that reported `offen` under the row it is
-      // landing could still be closed by its OWN older global claim from an earlier delivery —
-      // the newer, narrower report silently overruled by the wider one it was meant to replace.
-      const done = scoped.filter((v) => v.verdict === "erledigt").sort((a, b) => b.at - a.at)[0];
-      if (done) {
-        t.status = "done";
-        t.note = `erledigt durch Land ${(mainAfter ?? "").slice(0, 7) || "?"} (${branch}, Aufgabe ${done.taskId})`;
-        audit("note_closed_by_land", undefined, `${t.id} ${branch} task=${done.taskId}`);
-        changed = true;
-      }
-      continue;
+  const at = Date.now();
+  // (1) THE USAGE IS SETTLED, THE SOURCE IS NOT CLOSED.
+  //
+  // A pinned note is ONE TEXT SERVING SEVERAL PIECES OF WORK. "A is finished with it" says nothing
+  // about B, so a task-scoped `erledigt` may not touch the note's own status — that would close the
+  // source for every other assignment at once, which is precisely the global closure N3 exists to
+  // end. What the land settles is the ENTRY: this usage, under this row, by this branch, at this
+  // sha. Whether the SOURCE itself is finished stays the owner's call, on the row, as it was.
+  //
+  // Runs over every `notiz` of the repo, not only the pending ones: a source the owner already
+  // closed can still be the thing a landing row was worked against, and the record of that is true
+  // either way. Only entries not yet settled are stamped, so a re-land writes nothing new.
+  for (const t of tasks) {
+    if (t.kind !== "notiz" || repoCanon(t.repo ?? DISPATCH_REPO) !== canon) continue;
+    for (const v of t.verdicts ?? []) {
+      if (v.branch !== branch || !landed.has(v.taskId)) continue;
+      if (v.verdict !== "erledigt" || v.landedAt) continue;
+      v.landedAt = at;
+      if (mainAfter) v.landedSha = mainAfter;
+      audit("note_usage_settled", undefined, `${t.id} ${branch} task=${v.taskId}`);
+      changed = true;
     }
-    // (2) THE LEGACY CLOSE, byte-identical to the pre-N3 rule and reached only when no task verdict
-    // of this branch closed the note. The LAST word of this branch, not merely "an erledigt
-    // exists": a lane that reported `erledigt` and then corrected itself to `offen` must not have
-    // the first verdict resurrected by its own land.
+  }
+  // (2) THE LEGACY CLOSE — unchanged in what it does and NARROWED in where it may do it.
+  //
+  // It is the pre-N3 rule and it still closes a note outright, which is right for a note nobody
+  // ever assigned: it reached its lane by file surface alone, no row is working against it, and the
+  // branch that reported it finished is the only party with a claim. But it must never be the way
+  // AROUND the scope: a note that carries an assignment, or any task verdict at all, belongs to the
+  // per-usage rule above, and a global comment on it — from this branch or an older delivery —
+  // cannot be allowed to close what a per-task report deliberately did not.
+  for (const t of notes) {
+    if (sourceHolders(t.id).length > 0 || (t.verdicts?.length ?? 0) > 0) continue;
+    // the LAST word of this branch, not merely "an erledigt exists": a lane that reported
+    // `erledigt` and then corrected itself to `offen` must not have the first verdict resurrected.
     const mine = (t.comments ?? []).filter((c) => c.from === branch && c.verdict);
     if (mine[mine.length - 1]?.verdict !== "erledigt") continue;
     t.status = "done";
@@ -22947,6 +22989,8 @@ if (existsSync(STATE_FILE)) {
     if (Array.isArray(persisted.recents)) recents = persisted.recents.filter((r): r is string => typeof r === "string");
     if (Array.isArray((persisted as { pins?: unknown }).pins))
       pins = ((persisted as { pins: unknown[] }).pins).filter((r): r is string => typeof r === "string").slice(0, MAX_PINS);
+    // N3: how many task verdicts a hand-edited file carried past the cap. Counted, then said.
+    let overCappedVerdicts = 0;
     if (Array.isArray((persisted as { tasks?: unknown }).tasks))
       tasks = ((persisted as { tasks: unknown[] }).tasks).filter((x): x is Task =>
         typeof x === "object" && x !== null
@@ -23049,8 +23093,23 @@ if (existsSync(STATE_FILE)) {
                 && typeof (v as TaskNoteVerdict).text === "string" && !!(v as TaskNoteVerdict).text
                 && isTaskVerdict((v as TaskNoteVerdict).verdict))
               .map((v) => ({ taskId: v.taskId.slice(0, 64), branch: v.branch.slice(0, 200),
-                verdict: v.verdict, text: v.text.slice(0, MAX_COMMENT_TEXT), at: Number(v.at) || 0 }))
-              .reduce(upsertNoteVerdict, [])
+                verdict: v.verdict, text: v.text.slice(0, MAX_COMMENT_TEXT), at: Number(v.at) || 0,
+                // the land's own stamp rides back or it is absent — never invented, because its
+                // presence is what says "this usage was actually settled by a land"
+                ...(Number(v.landedAt) ? { landedAt: Number(v.landedAt) } : {}),
+                ...(typeof v.landedSha === "string" && v.landedSha
+                  ? { landedSha: v.landedSha.slice(0, 64) } : {}) }))
+              // ONE entry per (taskId, branch), newest kept. Not the runtime writer: that one
+              // REFUSES a new key on a full store, and a loader cannot refuse — a file is already
+              // written. A file carrying more than the writer can produce is a hand-edit, so the
+              // excess is dropped and SAID, never dropped silently.
+              .reduce((acc: TaskNoteVerdict[], v) => {
+                const at = acc.findIndex((x) => x.taskId === v.taskId && x.branch === v.branch);
+                if (at >= 0) { if (v.at >= acc[at]!.at) acc[at] = v; return acc; }
+                if (acc.length >= NOTE_VERDICTS_MAX) { overCappedVerdicts++; return acc; }
+                acc.push(v);
+                return acc;
+              }, [])
             : undefined,
           // read back in the order it was written (newest first) and re-capped on the way IN, so a
           // hand-edit cannot widen the field past what the land site would have written
@@ -23060,6 +23119,11 @@ if (existsSync(STATE_FILE)) {
               .map((x) => ({ sha: x.sha.slice(0, 64), branch: x.branch.slice(0, 200), at: Number(x.at) || 0 }))
               .slice(0, TASK_TOUCHED_MAX)
             : undefined }));
+      // said out loud rather than swallowed: the runtime writer cannot produce a store past the
+      // cap (it refuses a new key instead), so an over-full one is a hand-edit and the operator
+      // has to know a record was dropped — the exact silence this cap was rewritten to end.
+      if (overCappedVerdicts > 0)
+        console.log(`loadState: dropped ${overCappedVerdicts} task verdict(s) past NOTE_VERDICTS_MAX=${NOTE_VERDICTS_MAX} — a store this large cannot come from the write door`);
       tasks = capTasks(tasks);
     // THE STUDIO INVENTORY, read back with the discipline the Program loader states one comment
     // down: absent stays [], and a row this build cannot parse is SKIPPED WHOLE — never repaired
@@ -26623,8 +26687,13 @@ Bun.serve<WSData>({
             explicit: assigned.length > 0,
             taskIds: assigned,
             judgeableUnder: assigned.filter((taskId) => carried.has(taskId)),
+            // WHOLE, including the land stamp: `landedAt`/`landedSha` are how a lane sees that a
+            // usage was actually settled, and their absence is the honest "the verdict stands, no
+            // land has made it wirksam yet". Neither ever means the SOURCE is closed.
             verdicts: (t.verdicts ?? []).map((v) => ({ taskId: v.taskId, branch: v.branch,
-              verdict: v.verdict, text: v.text, at: v.at })),
+              verdict: v.verdict, text: v.text, at: v.at,
+              ...(v.landedAt ? { landedAt: v.landedAt } : {}),
+              ...(v.landedSha ? { landedSha: v.landedSha } : {}) })),
             comments: (t.comments ?? []).map((c) => ({ id: c.id, ts: c.ts, text: c.text,
               ...(c.from ? { from: c.from } : {}), ...(c.verdict ? { verdict: c.verdict } : {}) })) };
         });
@@ -26682,11 +26751,17 @@ Bun.serve<WSData>({
       // TaskFilesProposal.by states, and for the same reason: provenance a caller dictates is none.
       if (named) {
         const v: TaskNoteVerdict = { taskId, branch: s.worktree.branch, verdict, text, at: Date.now() };
-        t.verdicts = upsertNoteVerdict(t.verdicts ?? [], v);
+        const up = upsertNoteVerdict(t.verdicts ?? [], v);
+        // the cap REFUSES rather than evicting, so the refusal has to reach the caller: a 200 here
+        // would tell a lane its report is on record while an older one had just been destroyed.
+        if (!up.ok) return json({ error: up.error }, 409);
+        t.verdicts = up.list;
         saveState();
         audit("note_verdict", s.id, `${t.id} ${verdict} task=${taskId} (${s.worktree.branch})`);
         return json({ ok: true, verdictRecord: v, scope: { taskId, branch: v.branch },
-          effective: verdict === "erledigt" ? `on the land of ${taskId} by this lane` : "never — read by the owner" });
+          effective: verdict === "erledigt"
+            ? `settles THIS USAGE at the land of ${taskId} — the note keeps its own row and every other assignment of it`
+            : "never — read by the owner" });
       }
       const c: TaskComment = { id: randomBytes(4).toString("hex"), ts: Date.now(), text,
         from: s.worktree.branch, verdict };
@@ -28390,6 +28465,14 @@ Bun.serve<WSData>({
         return json({ error: `kind must be one of: ${TASK_KINDS.join(", ")}` }, 400);
       const before = t.kind;
       if (before === body.kind) return json({ ok: true, task: t, unchanged: true });
+      // N3 · THE SAME RETENTION TEST THE CAP AND THE DELETE ASK. A `notiz` that rows are working
+      // AGAINST is a source, and a source that turns into an auftrag stops being one: the pin would
+      // still name it while the assignment door refuses that kind, and the next founding brief
+      // would report an id the owner deliberately chose as `unknown`. Detach is the act that
+      // releases a source — not a category change made somewhere else on the board.
+      const kindHolders = before === "notiz" ? sourceHolders(t.id) : [];
+      if (kindHolders.length > 0)
+        return json({ error: `this note is an assigned SOURCE of ${kindHolders.join(", ")} — detach it there first; a kind change is not a way to release an assignment` }, 409);
       const oldStandingNote = taskKindNote(before);
       t.kind = body.kind;
       // A queued advisory row must always explain why it stays put. If a prior promote left that
@@ -28804,6 +28887,16 @@ Bun.serve<WSData>({
       // (incident 2026-08-05: server-narrativ-archiv.md#fetch-task-actions).
       if ((taskAct[2] === "archive" || taskAct[2] === "delete") && t.status === "sent")
         return json({ error: "task is running in a lane — land or kill the lane first" }, 409);
+      // N3 · …and the same for a row other rows are working AGAINST. `delete` was the hole the cap
+      // could not cover: the retention protects a source from being EVICTED and said nothing about
+      // being removed by hand, so one ✕ took the text out from under every assignment naming it.
+      // `archive` is refused with it: capTasks may evict an archived row, so archiving a held
+      // source is a delete with one more step. Detach is the only act that releases a source.
+      if (taskAct[2] === "delete" || taskAct[2] === "archive") {
+        const holders = sourceHolders(t.id);
+        if (holders.length > 0)
+          return json({ error: `this note is an assigned SOURCE of ${holders.join(", ")} — detach it there first (a detach removes the assignment and keeps the note; this would remove the text those rows are worked against)` }, 409);
+      }
       // B1 (F-C): the owner's promote/dismiss of a STEWARD-origin proposal is a deterministic
       // `propose`-class outcome. Fire ONCE, gated on the pending→ transition ONLY: deleting an already-
       // promoted row is cleanup, not a dismissal; archiving a PENDING proposal IS one. Read the class

@@ -4736,6 +4736,57 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   // unchanged), the anchors, and the footer LAST. The order is not cosmetic: the context receipt
   // hashes the anchor block alone, so anything appended after it would be hashed as if it were an
   // anchor, and the three closing acts must be the last thing a lane reads.
+  // N3 · THE THREE BOUNDS THAT MUST NOT SILENTLY DESTROY WHAT THEY BOUND. None of the three is
+  // drivable from a suite — 50 distinct (task, branch) verdicts would need 50 dispatches of one
+  // note — so the property is pinned from the SOURCE, which is also where each of them went wrong:
+  //   · upsertNoteVerdict used `slice(-N)` and dropped the OLDEST record at the 51st key;
+  //   · capTasks/delete/archive/kind each decided retention for themselves, and three of the four
+  //     did not decide it at all.
+  // A raised cap would make every one of these green again while changing nothing, which is why
+  // the pins are about the SHAPE of the refusal and not about any number.
+  {
+    const upsertBody = server.match(/function upsertNoteVerdict\([\s\S]*?\n\}/)?.[0] ?? "";
+    pin(`${RULE_RECEIVER} — the task-verdict cap REFUSES a new key and never truncates the store (N3)`,
+      upsertBody !== ""
+        && !/\.slice\(/.test(upsertBody)
+        // the same key is answered before the cap is ever consulted
+        && upsertBody.indexOf("findIndex") < upsertBody.indexOf("NOTE_VERDICTS_MAX")
+        && /return \{ ok: false, error:/.test(upsertBody)
+        // …and the ONE eviction is proven dispensable: its task is not on the queue at all
+        && /!tasks\.some\(\(t\) => t\.id === v\.taskId\)/.test(upsertBody),
+      upsertBody === "" ? "upsertNoteVerdict not found"
+        : `slice=${/\.slice\(/.test(upsertBody)} refuses=${/ok: false/.test(upsertBody)}`);
+    // …and the refusal has to REACH the caller. A door that ignored the false arm would answer 200
+    // while a record had just been lost, which is the failure the whole rewrite is about.
+    pin(`${RULE_RECEIVER} — the verdict door answers the cap's refusal with 409 instead of a silent 200 (N3)`,
+      /if \(!up\.ok\) return json\(\{ error: up\.error \}, 409\);/.test(server));
+    // ONE retention test, four entrances. Derived: every call site of sourceHolders is counted, so
+    // a fifth door added without it shows up as a missing entrance rather than as a silent hole.
+    const holderCalls = (server.match(/sourceHolders(?:In)?\(/g) ?? []).length;
+    const capBody = server.match(/function capTasks\([\s\S]*?\n\}/)?.[0] ?? "";
+    pin(`${RULE_RECEIVER} — capTasks, delete/archive and the kind change all ask the ONE source-retention test (N3)`,
+      /const sourceHoldersIn = /.test(server) && /const sourceHolders = /.test(server)
+        && holderCalls >= 5
+        && /taskAct\[2\] === "delete" \|\| taskAct\[2\] === "archive"/.test(server)
+        && /const kindHolders = before === "notiz" \? sourceHolders\(t\.id\) : \[\];/.test(server)
+        // the cap protects what a SURVIVOR names — computed after the two keep-sets, or a terminal
+        // holder would keep its source alive forever instead of releasing it when it goes itself
+        && /const survivors = \[\.\.\.live, \.\.\.keptDone\];/.test(capBody)
+        && /sourceHoldersIn\(survivors, t\.id\)/.test(capBody),
+      `sourceHolders call sites=${holderCalls}`);
+    // …and the LAND may not close a source at all. `t.status = "done"` inside applyLandToNotes is
+    // allowed exactly once — the legacy path for a note nobody assigned — and that path is itself
+    // gated on there being no holder and no task verdict.
+    const landBody = server.match(/async function applyLandToNotes\([\s\S]*?\n\}\nasync function landLane/)?.[0] ?? "";
+    pin(`${RULE_RECEIVER} — a task verdict settles the USAGE; only the unassigned legacy path closes a note (N3)`,
+      landBody !== ""
+        && (landBody.match(/t\.status = "done";/g) ?? []).length === 1
+        && /v\.landedAt = at;/.test(landBody)
+        && /if \(sourceHolders\(t\.id\)\.length > 0 \|\| \(t\.verdicts\?\.length \?\? 0\) > 0\) continue;/.test(landBody),
+      landBody === "" ? "applyLandToNotes not found"
+        : `closes=${(landBody.match(/t\.status = "done";/g) ?? []).length} settles=${/v\.landedAt = at;/.test(landBody)}`);
+  }
+
   pin(`${RULE_RECEIVER} — the exit footer is appended to mutating briefs only, clarify exempted at the seam`,
     /const deliveredBrief = `\$\{brief\}\$\{notesBlock\}\$\{studioLaneBlock\}\$\{anchorBlock\}\$\{clarify \? "" : LANE_EXIT_FOOTER\}`;/.test(server)
       && (server.split("LANE_EXIT_FOOTER").length - 1) === 2,

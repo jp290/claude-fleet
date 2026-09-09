@@ -2445,6 +2445,18 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     foundingSends === 6 && foundingWaits === 6 && foundingGraces === 6
       && !/await Bun\.sleep\(4000\);/.test(server),
     `sends=${foundingSends} waits=${foundingWaits} graces=${foundingGraces}`);
+  // ...and the ONE fixture that has to place a marker on the far side of that grace mirrors its
+  // value. `unbound succession` proves the generic rail withholds a founding brief until the ready
+  // marker appears, which only holds as a statement about READINESS if the marker lands after the
+  // grace expires. The mirror is a source-level pair with no compiler between its halves: raising
+  // FOUNDING_BOOT_GRACE_MS without moving the fixture would silently demote that block to a proof
+  // of the grace, and lowering it would leave the marker inside the readiness budget by luck.
+  const serverGraceMs = /const FOUNDING_BOOT_GRACE_MS = (\d+);/.exec(server)?.[1] ?? "";
+  const fixtureGraceMs = /const UNBOUND_GRACE_MS = (\d+); \/\/ mirrors server\.ts FOUNDING_BOOT_GRACE_MS/
+    .exec(read("e2e/programs.ts"))?.[1] ?? "";
+  pin("the unbound-succession fixture mirrors the server's founding boot grace, so its late marker stays late",
+    serverGraceMs !== "" && serverGraceMs === fixtureGraceMs,
+    `server=${serverGraceMs || "missing"} fixture=${fixtureGraceMs || "missing"}`);
   const executionStart = server.indexOf("async function programExecutionView(");
   const executionBody = executionStart < 0 ? ""
     : server.slice(executionStart, server.indexOf("\n}\n", executionStart));

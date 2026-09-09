@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rena
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
-import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, tmuxOut } from "./harness";
+import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, tmuxOut, typeScreen } from "./harness";
 import { phaseOf, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import { laneDoneLooking, type LaneSignalView } from "../lane-signals";
 import { observedSourceHash } from "../context-manifest";
@@ -2976,9 +2976,25 @@ export async function run(ctx: Ctx): Promise<void> {
   const unboundSuccOpenedAt = unboundSuccSlot === null ? Date.now()
     : (await sessions()).slots.find((s) => s.id === unboundSuccSlot)?.openedAt ?? Date.now();
   const unboundAcceptWaitMs = Number(process.env.FLEET_ACCEPT_WAIT_MS ?? 3000);
+  // THE ANCHOR THE TWO CLOCKS SHARE, and the whole repair of 2026-09-08's §11.2u. The server's
+  // founding grace runs from the RETURN of openSlot, i.e. from AFTER ensureSlot's tmux
+  // new-session; `openedAt` is stamped INSIDE openSlot, BEFORE that spawn. A late marker anchored
+  // on `openedAt` therefore pays the pane spawn out of its own margin, and this block's nominal
+  // 300 ms was in truth `300 ms − pane spawn` — negative on a loaded host, which is exactly when
+  // an audit runs. It cost 16 of 116 local runs. The pane's EXISTENCE is the closest thing to
+  // openSlot's return that a fixture can observe, so the marker is anchored there instead.
+  // `=s<n>` is tmux's EXACT session match: a bare `s1` prefix-matches `s10` while `s1` does not
+  // exist yet — the shape of the pane-target bug server.ts#paneAgentAt names in its own comment.
+  let unboundPaneAt = 0;
+  for (let i = 0; i < 200 && unboundSuccSlot !== null && unboundPaneAt === 0; i++) {
+    if ((await tmuxOut("has-session", "-t", `=s${unboundSuccSlot}`)).code === 0) unboundPaneAt = Date.now();
+    else await Bun.sleep(50);
+  }
+  check("unbound succession setup: the successor's pane exists, so the late marker has an anchor the server shares",
+    unboundPaneAt > 0, `pane observed ${unboundPaneAt - unboundSuccOpenedAt}ms after openedAt`);
   let unboundMuteRendered = false;
   if (unboundSuccSlot !== null) {
-    await Bun.sleep(250); // let openSlot's ensureSlot finish before the pane is replaced
+    await Bun.sleep(250); // let openSlot's ensureSlot finish its pipe-pane before the pane is replaced
     unboundMuteRendered = await plantScreen(unboundSuccSlot, "booting, no marker yet", "unbound succession");
   }
   // read the pane PAST the accept window — the window whose expiry is the live error's own text
@@ -2992,11 +3008,23 @@ export async function run(ctx: Ctx): Promise<void> {
       && unboundWithheldAfterMs > unboundAcceptWaitMs,
     `withheld ${unboundWithheldAfterMs}ms > accept ${unboundAcceptWaitMs}ms; pane=${unboundDuringCap.out.slice(-160)}`);
 
-  // the marker appears LATE — after the accept window, inside the bounded readiness budget
-  await Bun.sleep(Math.max(0, unboundSuccOpenedAt + 4300 - Date.now()));
+  // The marker appears LATE — after the server's founding grace has expired, so what withholds the
+  // brief past this point is the READINESS gate and not the grace, and still well inside the
+  // bounded readiness budget after it. Anchored on the pane (above), not on `openedAt`, and given a
+  // margin that covers the tail of ensureSlot between the pane spawn and openSlot's return rather
+  // than the 300 ms that used to have to cover the spawn itself.
+  const UNBOUND_GRACE_MS = 4000; // mirrors server.ts FOUNDING_BOOT_GRACE_MS — pinned in e2e/pins.ts
+  const UNBOUND_MARKER_MARGIN_MS = 1200;
+  await Bun.sleep(Math.max(0,
+    (unboundPaneAt || unboundSuccOpenedAt) + UNBOUND_GRACE_MS + UNBOUND_MARKER_MARGIN_MS - Date.now()));
   const unboundReadyAtMs = Date.now() - unboundSuccOpenedAt;
+  // TYPED, not respawned. `respawn-pane -k` leaves a window in which the pane runs neither command,
+  // and the single un-retried claudeAlive probe on this rail answers such a window by KILLING the
+  // founding slot — the invariant `the pane died with the command` / `500 (not-alive)` pair of
+  // §11.2u. The pane already runs the stand-in and only needs a different SCREEN; typeScreen moves
+  // the screen without ever moving the process the probe reads.
   const unboundReadyRendered = unboundSuccSlot === null ? false
-    : await plantScreen(unboundSuccSlot, ">_ OpenAI Codex (v0.147.0)", "unbound succession");
+    : await typeScreen(unboundSuccSlot, ">_ OpenAI Codex (v0.147.0)", "unbound succession");
   const unboundSuccRes = await unboundPending;
   const unboundBody = await unboundSuccRes.json() as { ok?: boolean; slot?: number; label?: string | null };
   let unboundCap = { out: "" };

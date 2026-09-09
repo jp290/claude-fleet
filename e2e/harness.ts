@@ -277,8 +277,18 @@ export function standInBin(): string {
 //   · respawn-pane answers ZERO for a command the shell then fails to run, which is how a missing
 //     interpreter used to pass for a planted screen. So the screen is read back off the pane.
 // Returns false when the fixture could not be arranged, having filed its own red row.
+//
+// EXACTLY ONE ROW PER CALL, AND THE SLOT NUMBER IS NOT IN THE NAME. Until 2026-09-09 this probe
+// called check() only in its two failure branches: its names carried no green row, EVER, so a rate
+// computed over the register read 12 red / 12 rows = 100 % and looked like a hard regress with the
+// denominator equal to the numerator by construction — and `pane s8` in the name split the same
+// family across a name per slot (docs/verify-tiering.md §11.2u, the measurement defect). The
+// success row is what makes the family countable; the slot moves into the detail, which is where a
+// per-instance fact belongs. The respawn failure still files under its OWN name and writes NO
+// rendered row: a probe that could not run must fail as ITSELF, not as the thing it would measure.
 export async function plantScreen(slot: number, screen: string, family = "founding fixture"): Promise<boolean> {
   const cmd = `printf '%s\\n' '${screen.replaceAll("'", "'\\''")}'; exec '${standInBin()}' 100000`;
+  const started = Date.now();
   let last: { out: string; code: number } = { out: "", code: -1 };
   for (let i = 0; i < 60; i++) {
     last = await tmuxOut("respawn-pane", "-k", "-t", `s${slot}`, cmd);
@@ -286,17 +296,54 @@ export async function plantScreen(slot: number, screen: string, family = "foundi
     await Bun.sleep(50);
   }
   if (last.code !== 0) {
-    check(`${family}: pane s${slot} accepted the harness screen`, false, `respawn-pane exited ${last.code}`);
+    check(`${family}: pane accepted the harness screen`, false, `s${slot}: respawn-pane exited ${last.code}`);
     return false;
   }
   const firstLine = screen.split("\n")[0] ?? screen;
   for (let i = 0; i < 100; i++) {
     const cap = await tmuxOut("capture-pane", "-t", `s${slot}`, "-p", "-J");
-    if (cap.code === 0 && cap.out.includes(firstLine)) return true;
+    if (cap.code === 0 && cap.out.includes(firstLine)) {
+      check(`${family}: pane rendered the harness screen`, true,
+        `s${slot} after ${i + 1} round(s), ${Date.now() - started}ms`);
+      return true;
+    }
     await Bun.sleep(50);
   }
   const alive = (await tmuxOut("has-session", "-t", `s${slot}`)).code === 0;
-  check(`${family}: pane s${slot} rendered the harness screen`, false,
-    alive ? "pane alive but the screen never rendered" : "the pane died with the command");
+  check(`${family}: pane rendered the harness screen`, false,
+    `s${slot}: ${alive ? "pane alive but the screen never rendered" : "the pane died with the command"}`);
+  return false;
+}
+
+// The SAME read-back as plantScreen, WITHOUT its kill — for a pane that already runs the stand-in
+// and only needs a different screen on it. `respawn-pane -k` opens a window in which the pane runs
+// neither the old command nor the new one, and every founding rail answers ONE un-retried
+// claudeAlive probe by killing the slot (server.ts#handleSelfSucceed, generic branch): a fixture
+// that plants a LATE screen with a respawn is racing that probe, and it lost 16 of 116 local runs
+// doing so (docs/verify-tiering.md §11.2u). A running process is not needed to change the SCREEN:
+// the pane's tty echoes send-keys (measured 2026-09-09 against the stand-in), so the screen moves
+// while the process the probe reads stays exactly where it was. Same one-row-per-call rule as
+// plantScreen, and the same reason for it.
+export async function typeScreen(slot: number, screen: string, family = "founding fixture"): Promise<boolean> {
+  const started = Date.now();
+  const typed = await tmuxOut("send-keys", "-l", "-t", `s${slot}`, screen);
+  if (typed.code !== 0) {
+    check(`${family}: pane accepted the typed harness screen`, false, `s${slot}: send-keys exited ${typed.code}`);
+    return false;
+  }
+  await tmuxOut("send-keys", "-t", `s${slot}`, "Enter");
+  const firstLine = screen.split("\n")[0] ?? screen;
+  for (let i = 0; i < 100; i++) {
+    const cap = await tmuxOut("capture-pane", "-t", `s${slot}`, "-p", "-J");
+    if (cap.code === 0 && cap.out.includes(firstLine)) {
+      check(`${family}: pane rendered the typed harness screen`, true,
+        `s${slot} after ${i + 1} round(s), ${Date.now() - started}ms`);
+      return true;
+    }
+    await Bun.sleep(50);
+  }
+  const alive = (await tmuxOut("has-session", "-t", `s${slot}`)).code === 0;
+  check(`${family}: pane rendered the typed harness screen`, false,
+    `s${slot}: ${alive ? "pane alive but the typed screen never echoed" : "the pane died before the screen was typed"}`);
   return false;
 }

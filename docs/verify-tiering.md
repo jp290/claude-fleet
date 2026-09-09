@@ -2209,9 +2209,10 @@ hier mit Namen und Detail genannt statt weggelassen:
 
 - `projection nextAction: a REVIEWABLE row of a promoted Program names the MAIN's OWN land door…`
   `{"with":null,"without":null,"phase":"UNKNOWN"}` — in ALLEN DREI Laeufen. Die Projection-Familie.
-- `unbound succession: pane s8 rendered the harness screen` (`the pane died with the command`) und
+- `unbound succession: pane rendered the harness screen` (`the pane died with the command`) und
   `…and delivers it WHOLE once that marker appears…` (`500 successor delivery held (not-alive)`) —
-  Lauf 1. Die succession-pane-Familie.
+  Lauf 1. Die succession-pane-Familie. (Die Zeile hiess damals `… pane s8 rendered …`; die
+  Slotnummer steht seit der §11.2u-Reparatur im Detail — siehe dort.)
 - `re-subscribing to the same target returns the SAME watch, never a second` (`62912fb5 vs
   5fc3c077`) und sein Folgefehler `delete the spent transport Watch` — Lauf 3. **Das ist eine
   bislang UNREGISTRIERTE seltene Familie, keine Regression dieser Lane:** 3 Fails / 519 Laeufe
@@ -3525,7 +3526,7 @@ fallen KANN und dabei sich selbst nennt:
 promoted Program …` (§11.2o) faellt in **11 von 11** Second-host-Laeufen gegen 2,9 % lokal. Das ist
 die zweite Familie mit dieser Signatur und die groesste verbleibende Quelle roter Remote-Audits.
 
-### 11.2u Eine zweiundzwanzigste Familie: die `unbound succession`-Pane in `e2e/programs.ts` stirbt, statt zu langsam zu malen — und die Sonde, die das melden soll, ist im Register unzaehlbar (2026-09-08 registriert; Rate ueber das GANZE lokale Register gerechnet, Signatur aus den Trail-Details gelesen; NICHT repariert)
+### 11.2u Eine zweiundzwanzigste Familie: die `unbound succession`-Pane in `e2e/programs.ts` stirbt, statt zu langsam zu malen — und die Sonde, die das melden soll, ist im Register unzaehlbar (2026-09-08 registriert; Rate ueber das GANZE lokale Register gerechnet, Signatur aus den Trail-Details gelesen; REPARIERT 2026-09-09, siehe „Geschlossen" am Ende)
 
 Gefunden beim Adjudizieren des roten Post-Land-Audits `at=1788886481632` auf `73195c20` (Lauf
 `isolated-20260908T160943Z-27371`, **4 040 Checks, 2 FAILURES**), Program Fleet-Betrieb 2026-09.
@@ -3537,9 +3538,13 @@ ersten Mal beides.
 
 Die Mitglieder, in kausaler Ordnung:
 
-- `unbound succession: pane s8 rendered the harness screen` — die WURZEL, gemuenzt von
-  `e2e/harness.ts#plantScreen` (der zweite Aufruf des Blocks, der den Codex-Accept-Marker
-  `>_ OpenAI Codex (v0.147.0)` pflanzt).
+- die WURZEL, gemuenzt von `e2e/harness.ts#plantScreen` (der zweite Aufruf des Blocks, der den
+  Codex-Accept-Marker `>_ OpenAI Codex (v0.147.0)` pflanzt). **ZWEI NAMEN, EIN JOIN, und der alte
+  war nie EIN Name:** im Register bis zum 2026-09-09 heisst die Zeile
+  `unbound succession: pane s<n> rendered the harness screen` — pro Slot ein eigener String, ohne
+  je eine gruene Zeile (genau der Messdefekt weiter unten). Seither heisst sie
+  `unbound succession: pane rendered the typed harness screen`, mit dem Slot im Detail. Wer ueber
+  die Familie rechnet, muss beide Formen joinen; siehe die Reparatur am Ende dieses Abschnitts.
 - `…and delivers it WHOLE once that marker appears — response, brief head and carry tail all on
   the late pane` (`e2e/programs.ts`, Block `unbound succession`) — der FOLGEFEHLER: sein erster
   Konjunkt ist der Rueckgabewert genau dieses `plantScreen`.
@@ -3626,9 +3631,11 @@ haeufiger feuert, ist damit NICHT unbeantwortet, sondern mit dem heutigen Instru
 UNBEANTWORTBAR — und §11.2s hat fuer eine andere Familie bereits einen echten Host-Unterschied
 gemessen, die Frage ist also nicht akademisch.
 
-**DER MESSDEFEKT, und er ist die Klasse, die das Regelbuch selbst benennt.** `plantScreen` ruft
+**DER MESSDEFEKT, und er ist die Klasse, die das Regelbuch selbst benennt.** (Behoben am
+2026-09-09, siehe „Geschlossen" unten; der Absatz beschreibt den Zustand, in dem die Familie
+diagnostiziert wurde.) `plantScreen` rief
 `check()` **ausschliesslich in seinen beiden Fehlerzweigen** (`e2e/harness.ts`, die Zeilen
-`accepted the harness screen` und `rendered the harness screen`); ein Erfolg schreibt gar keine
+`accepted the harness screen` und `rendered the harness screen`); ein Erfolg schrieb gar keine
 Zeile. Der Name der Wurzel hat im Trail damit **keine gruene Zeile, je** — eine naive Rate
 liest `12 rot / 12 Laeufe = 100 %` und sieht wie ein harter Regress aus, obwohl der Nenner per
 Konstruktion gleich dem Zaehler ist. Zweite Haelfte desselben Defekts: der Name traegt die
@@ -3658,3 +3665,97 @@ Leserin die Differenz nicht neu aufrollt:
 - **Der fehlende KAUSALE Beweis war zutreffend** und ist mit dem Nachtrag oben nachgeliefert. Am
   Handeln aendert die Differenz `flake`/`unknowable` nichts: das Rot bleibt rot, und der Schnitt
   liegt in der Fixture.
+
+**GESCHLOSSEN — repariert am 2026-09-09 auf `fleet/260909073520-e02a`. Nichts oberhalb dieses
+Absatzes wurde umgeschrieben:** der Code, den die Diagnose zitiert, ist der Code, wie er bei der
+Diagnose stand, und der Nachtrag ist die ganze Aenderung. **Der Nachfolge-Pfad des Servers wurde
+NICHT angefasst** — die Produkt-Beobachtung oben (eine einzelne Alive-Stichprobe ohne Retry
+entscheidet ueber `killSlot` eines Gruendungs-Slots) bleibt offen und braucht ihre eigene Zeile.
+
+Der Schnitt liegt an drei Stellen, und die erste ist die eigentliche:
+
+1. **DAS RENNEN IST NICHT GEWONNEN, SONDERN ABGESCHAFFT.** Der Marker wird nicht mehr mit einem
+   `respawn-pane -k` gepflanzt, sondern in die LEBENDE Pane getippt (`e2e/harness.ts#typeScreen`,
+   neben `plantScreen`): das tty echot `send-keys`, der Bildschirm bewegt sich also, waehrend der
+   Prozess, den `claudeAlive` liest, exakt stehen bleibt. Damit gibt es kein Fenster mehr, in dem
+   die Pane weder das alte noch das neue Kommando fuehrt — und genau dieses Fenster war das, was
+   die einzelne Alive-Probe des Servers mit `not-alive` beantwortete und mit `killSlot` bestrafte.
+   Gemessen 2026-09-09 gegen die Stand-in-Pane, bevor der Umbau geschrieben wurde: `send-keys -l`
+   + `Enter` erscheint als eigene Zeile in `capture-pane -J` und traegt die Accept-Regex
+   `/>_ OpenAI Codex \(v/`, waehrend `ps -o comm=` auf der Pane-PID durchgehend den Stand-in nennt.
+2. **BEIDE SEITEN HAENGEN JETZT AM SELBEN EREIGNIS.** Der Marker ankert nicht mehr auf `openedAt`
+   (gestempelt VOR dem Pane-Spawn), sondern auf der beobachteten EXISTENZ der Pane — das Naechste
+   zu `openSlot`s Rueckkehr, das eine Fixture sehen kann — und die Marge ist von 300 ms auf 1 200 ms
+   gewachsen, weil sie nur noch den Rest von `ensureSlot` zwischen Pane-Spawn und Rueckkehr decken
+   muss statt den Spawn selbst. Der Wert der Gnade ist gespiegelt (`UNBOUND_GRACE_MS`) und der
+   Spiegel ist gepinnt (`e2e/pins.ts`, „mirrors the server's founding boot grace"), weil kein
+   Compiler zwischen den beiden Haelften steht. Die BEHAUPTUNG des Blocks ist unveraendert: der
+   Brief wird ohne Marker jenseits des Accept-Fensters zurueckgehalten und NACH dem Marker WHOLE
+   zugestellt; verschoben ist nur das Zeitfenster. Und die Richtung, in die eine Fehlschaetzung
+   jetzt faellt, ist die harmlose: ein zu FRUEHER Marker beweist weniger (die Gnade haelte den
+   Brief ohnehin), er faellt nicht rot.
+3. **DER MESSDEFEKT IST BEHOBEN, UND ZWAR AN BEIDEN HAELFTEN.** `plantScreen` schreibt jetzt
+   GENAU EINE Zeile pro Aufruf — im Erfolgsfall `<family>: pane rendered the harness screen`
+   `ok:true` — statt nur in seinen zwei Fehlerzweigen; die Familie hat damit zum ersten Mal einen
+   Nenner, der nicht per Konstruktion gleich dem Zaehler ist. Die SLOTNUMMER ist aus dem Namen
+   heraus und ins Detail gewandert, die Familie zerfaellt also nicht mehr in einen String pro Slot.
+   Der Respawn-Fehlschlag behaelt seinen EIGENEN Namen und schreibt KEINE `rendered`-Zeile: eine
+   Sonde, die nicht laufen konnte, faellt als sie selbst. **Ein Preis, benannt:** eine gruene
+   Trail-Zeile traegt per Konstruktion kein Detail (`e2e/trail-emit.ts`, `!ok && detail`), die
+   Slotnummer eines ERFOLGS steht also nur noch in der Suite-Ausgabe. Zaehlbarkeit gegen
+   Slot-Attribution im Gruenen — das ist der Tausch, und er ist beabsichtigt.
+
+**Beweis, in dieser Reihenfolge gefahren.** Zuerst die MUTATION, damit die Zeile nicht als
+tautologisch gruen durchgeht: `UNBOUND_MARKER_MARGIN_MS` auf 6 000 ms gesetzt, sodass der Marker
+hinter dem Readiness-Budget (`FLEET_READY_WAIT_MS=3000` in `e2e-isolated.sh`) landet. Lauf
+`isolated-20260909T074725Z-22238`, **2 FAILURES**, und es sind genau die zwei:
+
+> `FAIL  unbound succession: pane accepted the typed harness screen  (s7: send-keys exited 1)`
+> `FAIL  …and delivers it WHOLE once that marker appears — response, brief head and carry tail all on the late pane  (marker at 10042ms; 500 {"error":"successor pane never showed its ready marker within 3s"} pane=)`
+
+Die Zurueckhalte-Zeile blieb dabei GRUEN — die Mutation trifft die Zustellung, nicht die
+Behauptung. Und die erste rote Zeile ist selbst ein Beleg der Regel: der Server hatte den Slot
+schon geraeumt, `send-keys` kam auf eine tote Pane, und die Sonde fiel als SIE SELBST
+(`accepted the typed harness screen`) statt als das, was sie messen sollte. Warum nicht die
+woertliche Ruecknahme des alten Ankers gemessen wurde: die alte Form faellt mit 13,8 % und ist
+per Konstruktion nicht auf Kommando rot zu bekommen — dass sie eine Muenze war, IST der Defekt.
+
+Danach die drei aufeinanderfolgenden gruenen Laeufe auf dem reparierten Baum:
+
+| Lauf | run-id | Tail | Block `unbound succession` |
+|---|---|---|---|
+| 1 | `isolated-20260909T083608Z-34611` | **ALL PASS** (4 108 Checks) | 7/7 gruen |
+| 2 | `isolated-20260909T100727Z-57847` | **ALL PASS** (4 108 Checks) | 7/7 gruen |
+| 3 | `isolated-20260909T105444Z-83621` | **2 FAILURES** (4 106 PASS) | 7/7 gruen |
+
+**Die zwei roten Zeilen von Lauf 3 gehoeren §11.2o, nicht dieser Reparatur, und das ist
+MECHANISCH gezeigt statt behauptet:** sie stehen auf den Trail-Zeilen **446 und 447**
+(`probe: slot 3's only burst arrived early …` samt seiner abhaengigen Invariante, `e2e/slots.ts`),
+und die erste Zeile, die ueberhaupt von geaendertem Code dieser Lane geschrieben wird, steht auf
+Zeile **1909**. Zum Zeitpunkt des Fehlschlags hatte kein Byte dieses Diffs ausgefuehrt — die
+Ausfuehrungsreihenfolge schliesst die Lane aus, ohne dass ein gruener Rerun sie freisprechen
+muesste. Die Signatur ist ausserdem die, die §11.2o selbst als un-steuerbares Rennen beschreibt
+(vier Runden, `established:false` in jeder, `stamp` VOR dem ersten Byte jenseits des Seeds): die
+Vorbedingung liess sich nicht herstellen, gemessen wurde die Invariante also nie.
+
+Drei Laeufe sind gegen eine Basisrate von 13,8 % kein Zufall (die Wahrscheinlichkeit, dass die
+alte Form dreimal hintereinander haelt, liegt bei 64 %), und sie sind hier auch nicht der Beweis:
+der Beweis ist der Mechanismus in Punkt 1 — es gibt kein Fenster mehr, das die Probe verlieren
+koennte. Die drei Laeufe zeigen, dass der Umbau nichts anderes gebrochen hat.
+
+**Ein SIEBZEHNTER Beleg fiel dabei nebenbei an, auf einem fremden Baum.** Waehrend dieser drei
+Laeufe fuhr die Lane `fleet/260909050303-abd3` ihre eigene `./e2e-isolated.sh` auf demselben Mac
+(Lauf `isolated-20260909T092121Z-13672`, seriell hinter dem Mutex, also ohne Wechselwirkung) — auf
+einem Baum OHNE diese Reparatur, und die Familie feuerte dort erneut, mit exakt der Signatur
+dieses Abschnitts:
+
+> `FAIL  …and delivers it WHOLE once that marker appears …  (marker at 4303ms; 500 {"error":"successor delivery held (not-alive)"} pane=)`
+
+`marker at 4303ms` ist der alte Anker (`openedAt + 4300`) und ist auf dem reparierten Baum
+strukturell unerreichbar — dort steht `marker at 5300ms`. Das Paar aus derselben Stunde, derselben
+Maschine und zwei Baeumen ist die beste Kontrolle, die dieser Beweis bekommen konnte.
+
+**Lokal gefahren, nicht ueber den Suite-Offer** — die Regel des Regelbuchs fuer genau diesen Fall:
+Flake-Beweislaeufe fuer eine Reparatur AN DEN SUITEN bleiben auf dieser Maschine, weil die 13,8 %
+oben eine Mac-Rate sind (ein Helfer-Lauf schreibt kein Trail) und ein Fremd-Plattform-Gruen fuer
+diese Maschine nichts beweist.

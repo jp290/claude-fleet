@@ -93,6 +93,15 @@ auf EINEM Baum" und machte daraus das Tor vor allem anderen. Am Register korrigi
 succession-pane steht mit 5,6 % auf Rang 3 und wird in ihrer eigenen Zeile bearbeitet, nicht vor
 allen anderen.
 
+> **Nachtrag 2026-09-09 (der Rest dieser Notiz ist unveraendert der Stand vom 2026-09-04).** Die
+> Wurzel ist inzwischen bestimmt und repariert: `docs/verify-tiering.md` §11.2u. Zwei Saetze fuer
+> jeden, der ueber diese Namen rechnet — der Nenner-Defekt, den der zweite Punkt oben beschreibt,
+> ist behoben (`plantScreen` schreibt seit dem 2026-09-09 auch im Erfolgsfall eine Zeile), und die
+> hier zitierten Zeilennamen mit Slotnummer existieren nicht mehr: die Slotnummer steht im Detail,
+> und der Marker-Pflanzer dieses Blocks heisst jetzt
+> `unbound succession: pane rendered the typed harness screen`. Die Zahlen oben bleiben gueltig
+> fuer die Laeufe, die sie vermessen haben.
+
 ## 5. Was diese Erhebung NICHT sagt
 
 - Sie misst Laeufe, nicht Audits. Dass 59 % der isolierten Laeufe rot sind, erklaert die Rot-Rate

@@ -9,7 +9,7 @@ import { buildAnalysisPrompt } from "../analysis-prompt";
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
 import { deriveTaskMetadata, type TaskCluster } from "../task-metadata";
-import { noteFirstSentence, notesForTask, laneNoteSources, renderNotesBlock,
+import { noteFirstSentence, notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict,
   NOTE_HUB_FILES, NOTES_READ_ROUTES_EXIST, NOTES_SENTENCE_MAX, type NoteInput } from "../task-notes";
 import { matchTaskWaveAnalysis, projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from "../task-waves";
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09,
@@ -2544,6 +2544,72 @@ export async function run(ctx: Ctx): Promise<void> {
       renderNotesBlock([], undefined, []) === ""
       && renderNotesBlock([], undefined, [{ id: "x", firstSentence: "s", sharedFiles: [], sameCluster: false, taskIds: ["T6"] }])
         .includes("+ 1 weitere angeheftete Quelle"));
+  }
+
+  // --- (d7) N3: THE VERDICT CAP, DRIVEN — all three arms, at and across the bound.
+  // Not a source reading. The bound cannot be reached through the doors (50 distinct
+  // (task, branch) keys on ONE note would need 50 dispatches of it), so the RULE was made pure and
+  // is executed here directly: task-notes.ts#upsertKeyedVerdict takes the bound and the one fact it
+  // cannot derive (`taskExists`) as arguments. What it must never do again is what its first
+  // version did — `slice(-max)` silently dropped the OLDEST entry at the max+1st key, destroying
+  // exactly the record the bound exists to protect.
+  {
+    type V = { taskId: string; branch: string; at: number; verdict: string };
+    const v = (n: number, verdict = "erledigt"): V =>
+      ({ taskId: `t${n}`, branch: "fleet/b", at: 1000 + n, verdict });
+    // FIFTY LIVE KEYS, built through the function itself — so the fill is the rule's own output and
+    // not a hand-made array the rule has never seen.
+    const live = new Set<string>();
+    let store: V[] = [];
+    for (let i = 0; i < 50; i++) {
+      live.add(`t${i}`);
+      const r = upsertKeyedVerdict(store, v(i), 50, (id) => live.has(id));
+      if (!r.ok) break;
+      store = r.list;
+    }
+    check("(d7-fill) fifty distinct keys go in and every one of them is there, in arrival order",
+      store.length === 50 && store[0]!.taskId === "t0" && store[49]!.taskId === "t49"
+      && new Set(store.map((x) => `${x.taskId}|${x.branch}`)).size === 50,
+      `${store.length} keys, first=${store[0]?.taskId} last=${store[49]?.taskId}`);
+    const before = JSON.stringify(store);
+    // (a) THE 51st NEW KEY IS REFUSED, and the store is byte-identical afterwards. Mutation that
+    // breaks it: any `slice`, which would answer ok and quietly return a list without `t0`.
+    const full = upsertKeyedVerdict(store, v(50), 50, (id) => live.has(id));
+    check("(d7-refuse) a 51st NEW key on a full store is refused, names the numbers, and destroys nothing",
+      full.ok === false
+      && full.error.includes("50/50")
+      && full.error.includes("still on the queue")
+      && JSON.stringify(store) === before,
+      full.ok ? `accepted, list=${full.list.length}` : full.error.slice(0, 120));
+    // (b) AN EXISTING KEY IS STILL WRITABLE AT THE BOUND — in place, so nothing else moves. This is
+    // the arm a plain "refuse when full" would have broken: a lane could then never correct itself.
+    const upd = upsertKeyedVerdict(store, { ...v(7), verdict: "offen", at: 9999 }, 50, (id) => live.has(id));
+    check("(d7-update) the SAME key updates at a full store, in place, and the other 49 are untouched",
+      upd.ok === true
+      && upd.list.length === 50
+      && upd.list[7]!.verdict === "offen" && upd.list[7]!.at === 9999
+      && upd.list.filter((x, i) => i !== 7).every((x, i) => JSON.stringify(x) === JSON.stringify(store.filter((_, j) => j !== 7)[i])),
+      upd.ok ? `len=${upd.list.length} at7=${JSON.stringify(upd.list[7])}` : upd.error);
+    // (c) THE ONE PERMITTED EVICTION IS PROVEN DISPENSABLE. `t3`'s row is gone from the queue, so
+    // no land can ever make its verdict wirksam — and it is the OLDEST such, so it is the one that
+    // goes. Everything else stays. Mutation that breaks it: evicting by age alone.
+    const gone = new Set(live); gone.delete("t3"); gone.delete("t20");
+    const eviction = upsertKeyedVerdict(store, v(50), 50, (id) => gone.has(id));
+    check("(d7-dispensable) with two rows gone from the queue the OLDEST of them makes room — and only it",
+      eviction.ok === true
+      && eviction.list.length === 50
+      && !eviction.list.some((x) => x.taskId === "t3")
+      && eviction.list.some((x) => x.taskId === "t20")
+      && eviction.list[49]!.taskId === "t50",
+      eviction.ok ? `dropped=${store.filter((x) => !eviction.list.includes(x)).map((x) => x.taskId)}` : eviction.error);
+    // (d) BELOW the bound nothing is ever refused, and purity: the input list is never mutated.
+    const small = store.slice(0, 49);
+    const smallBefore = JSON.stringify(small);
+    const added = upsertKeyedVerdict(small, v(99), 50, () => true);
+    check("(d7-below) below the bound a new key is simply appended, and no call mutates its input",
+      added.ok === true && added.list.length === 50 && added.list[49]!.taskId === "t99"
+      && JSON.stringify(small) === smallBefore && JSON.stringify(store) === before,
+      `${added.ok} inputsIntact=${JSON.stringify(small) === smallBefore && JSON.stringify(store) === before}`);
   }
 
   // --- (d5-live) THE SAME JOIN AT THE DELIVERY SEAM. Dispatches into ROOT, the instance's own

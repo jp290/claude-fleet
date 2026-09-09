@@ -226,3 +226,32 @@ export function renderNotesBlock(rows: readonly NoteRow[], readRoutesExist = NOT
   }
   return `\n\n${lines.join("\n")}`;
 }
+
+
+// --- N3 · THE KEYED VERDICT STORE, pure so it can be DRIVEN rather than only read.
+//
+// It lives here and not beside its caller for the reason every other rule in this module does: it
+// decides what happens to an authoritative record, and a rule about records must be executable
+// without a server. Its first version was `[...kept, entry].slice(-max)` — which at the max+1st
+// distinct key silently dropped the OLDEST entry, i.e. destroyed exactly the thing the bound
+// exists to protect. The rule now has three arms and each one is reachable from a test:
+//   · the SAME key is always writable, at any fill level — a lane correcting its own report can
+//     never be refused, and the entry keeps its position so arrival order stays meaningful;
+//   · a NEW key below the bound is appended;
+//   · a NEW key AT the bound is refused, unless some stored entry is PROVEN dispensable — its task
+//     no longer exists, so no land can ever make it wirksam. Oldest such first, one at a time.
+// `taskExists` is a parameter and not a module import on purpose: it is the only fact this rule
+// cannot derive, and passing it in is what keeps the whole thing pure.
+export interface KeyedVerdict { taskId: string; branch: string; at: number }
+export type KeyedUpsert<T> = { ok: true; list: T[] } | { ok: false; error: string };
+export function upsertKeyedVerdict<T extends KeyedVerdict>(
+  list: readonly T[], entry: T, max: number, taskExists: (taskId: string) => boolean,
+): KeyedUpsert<T> {
+  const at = list.findIndex((v) => v.taskId === entry.taskId && v.branch === entry.branch);
+  if (at >= 0) { const next = [...list]; next[at] = entry; return { ok: true, list: next }; }
+  if (list.length < max) return { ok: true, list: [...list, entry] };
+  const dispensable = [...list].filter((v) => !taskExists(v.taskId)).sort((a, b) => a.at - b.at)[0];
+  if (!dispensable)
+    return { ok: false, error: `this note already carries ${list.length}/${max} task verdicts and every one of them names a row still on the queue — none can be dropped without losing a record a land needs` };
+  return { ok: true, list: [...list.filter((v) => v !== dispensable), entry] };
+}

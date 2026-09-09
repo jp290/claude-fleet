@@ -1272,13 +1272,17 @@ interface Program {
   // THE PROGRAM INBOX (see ProgramInbox). Absent = no entry was ever written, the honest legacy
   // shape. Never backfilled at load; an unreadable record loads as ABSENT and is reported.
   inbox?: ProgramInbox;
-  // …and the SCAR that degradation leaves (see ProgramInboxLoss). Absent = no inbox record of this
-  // Program was ever unreadable. Written by the loader alone and never cleared.
-  inboxLost?: ProgramInboxLoss;
+  // …and the SCAR that degradation leaves (see ProgramRecordLoss). Absent = no inbox record of
+  // this Program was ever unreadable. Written by the loader alone and never cleared.
+  inboxLost?: ProgramRecordLoss;
   // WHAT THE LAST RETIRING MAIN OWED (see ProgramHandover). Absent = no succession has happened,
   // or the one that did left nothing dying behind it. Written by the succession's own state cut,
   // read through the execution view, never backfilled and never re-armed.
   handover?: ProgramHandover;
+  // …and ITS scar, for the same reason and in the same shape as `inboxLost`. Absent = no handover
+  // record of this Program was ever unreadable. Written by the loader alone and never cleared: the
+  // obligations a lost handover held are not recoverable from anywhere, because it WAS the copy.
+  handoverLost?: ProgramRecordLoss;
   confirmedAt?: number;
   activatedAt?: number;
   completedAt?: number;
@@ -1804,12 +1808,17 @@ const loadProgramInbox = (value: unknown): ProgramInboxRead => {
 //     open attentions per requester, five watches and five autos per slot.
 type ProgramHandoverKind = "attention" | "watch" | "auto";
 const PROGRAM_HANDOVER_KINDS: ProgramHandoverKind[] = ["attention", "watch", "auto"];
-// 15 = the three route caps summed (5 + 5 + 5). Stated as the sum rather than a round number so a
-// raised route cap shows up here as an arithmetic mismatch instead of as a silent drop.
-const PROGRAM_HANDOVER_MAX = 15;
+// (5 + 5 + 5) is ONE occupant's worth — the three route caps summed, stated as the sum so a raised
+// route cap shows up here as an arithmetic mismatch. Times three because the record CARRIES
+// FORWARD what the previous succession still owed (captureProgramHandover), so a chain of three
+// fully-loaded handovers fits. Past that the succession REFUSES; this record never drops.
+const PROGRAM_HANDOVER_MAX = 3 * (5 + 5 + 5);
 const PROGRAM_HANDOVER_TEXT_MAX = 10_000;   // the auto route's own text ceiling; attentions cap at 2000
 const PROGRAM_HANDOVER_DETAIL_KEYS_MAX = 16;
-const PROGRAM_HANDOVER_DETAIL_VALUE_MAX = 500;
+// Wide enough that nothing a route can produce reaches it (the longest fields are a worktree path
+// and TRANSITION_AWAITING_MAX = 500), because the capture no longer TRUNCATES to fit: a value that
+// does not fit refuses the succession instead of arriving silently shortened.
+const PROGRAM_HANDOVER_DETAIL_VALUE_MAX = 2000;
 // The row's own reconstruction parameters, flat and scalar: `everySec`/`idleSec`/`runsLeft` for an
 // auto, `kind`/`target`/`targetCwd`/`targetBranch` (or `repo`/`mainAfter`, or `deployId`, or
 // `jobId`) for a watch, `kind`/`status`/`taskId`/`branch` for an attention. Flat and scalar on
@@ -1933,21 +1942,23 @@ const loadProgramHandover = (value: unknown): ProgramHandoverRead => {
     obligations, dropped: r.dropped as number } };
 };
 
-// --- THE INBOX LOSS SCAR ------------------------------------------------------------------------
-// A record of the one degradation the inbox loader performs, and it exists because that
-// degradation is otherwise INVISIBLE and PERMANENT. loadProgramInbox refuses to repair a broken
-// record field by field — correct — so the Program loads with no inbox at all, which is
-// byte-identical to a Program that never had an entry written. The console line and the audit row
-// the loader emits are prose in files no reader of the inbox opens, and a boot-scoped in-memory
+// --- THE RECORD LOSS SCAR -----------------------------------------------------------------------
+// A record of the degradation THIS FILE'S loaders perform, and it exists because that degradation
+// is otherwise INVISIBLE and PERMANENT. loadProgramInbox and loadProgramHandover refuse to repair
+// a broken record field by field — correct — so the Program loads with no such record at all,
+// which is byte-identical to a Program that never had one. The console line and the audit row the
+// loader emits are prose in files no reader of those records opens, and a boot-scoped in-memory
 // flag dies at the next restart while the LOSS does not.
 //
 // So the fact is written onto the Program in the same shape as every other record here (closed,
-// versioned, default-absent) and reported by the inbox's own reader. It is a SCAR, never cleared:
-// the pointers written before `at` are gone, and a later valid inbox does not bring them back.
-interface ProgramInboxLoss { v: 1; at: number; error: string }
-const PROGRAM_INBOX_LOSS_ERROR_MAX = 300;
-type ProgramInboxLossRead = { ok: true; loss: ProgramInboxLoss } | { ok: false; error: string };
-const loadProgramInboxLoss = (value: unknown): ProgramInboxLossRead => {
+// versioned, default-absent) and reported by that record's OWN reader. It is a SCAR, never
+// cleared: what was written before `at` is gone, and a later valid record does not bring it back.
+// ONE shape for both fields (`inboxLost`, `handoverLost`): the question each answers is the same
+// question, and two loaders for one question is how the second one drifts.
+interface ProgramRecordLoss { v: 1; at: number; error: string }
+const PROGRAM_RECORD_LOSS_ERROR_MAX = 300;
+type ProgramRecordLossRead = { ok: true; loss: ProgramRecordLoss } | { ok: false; error: string };
+const loadProgramRecordLoss = (value: unknown): ProgramRecordLossRead => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "must be an object" };
   const r = value as Record<string, unknown>;
   if (Object.keys(r).some((k) => !["v", "at", "error"].includes(k)) || Object.keys(r).length !== 3)
@@ -1955,8 +1966,8 @@ const loadProgramInboxLoss = (value: unknown): ProgramInboxLossRead => {
   if (r.v !== 1) return { ok: false, error: "v must be 1" };
   if (typeof r.at !== "number" || !Number.isFinite(r.at) || r.at <= 0)
     return { ok: false, error: "at must be a positive number" };
-  if (typeof r.error !== "string" || r.error === "" || r.error.length > PROGRAM_INBOX_LOSS_ERROR_MAX)
-    return { ok: false, error: `error must be a non-empty string of at most ${PROGRAM_INBOX_LOSS_ERROR_MAX} chars` };
+  if (typeof r.error !== "string" || r.error === "" || r.error.length > PROGRAM_RECORD_LOSS_ERROR_MAX)
+    return { ok: false, error: `error must be a non-empty string of at most ${PROGRAM_RECORD_LOSS_ERROR_MAX} chars` };
   return { ok: true, loss: { v: 1, at: r.at, error: r.error } };
 };
 
@@ -2036,7 +2047,7 @@ export type {
   ProgramLineageEndedBy, ProgramLineageEntry, ProgramLineage, ProgramLineageRead,
   ProgramInboxKind, ProgramInboxEntry, ProgramInbox, ProgramInboxRead,
   ProgramHandoverKind, ProgramHandoverDetail, ProgramHandoverObligation, ProgramHandover,
-  ProgramHandoverRead, ProgramInboxLoss, ProgramInboxLossRead,
+  ProgramHandoverRead, ProgramRecordLoss, ProgramRecordLossRead,
   ProgramFoundingMode, ProgramFoundingOccupant, ProgramFoundingV1, ProgramFoundingProfileKind,
   ProgramFoundingIdentity, ProgramFoundingV2, ProgramFounding, ProgramFoundingRead, ProgramContent,
   ProgramValidation, SupervisorBinding, ProgramDigest, DispatchSpawn, SlotStreamOccupant,
@@ -2056,10 +2067,10 @@ export {
   PROGRAM_PROFILE_KINDS, loadProgramProfile, PROGRAM_LINEAGE_MAX, PROGRAM_LINEAGE_VIA,
   PROGRAM_LINEAGE_ENDED_BY, PROGRAM_LINEAGE_ENTRY_KEYS, loadProgramLineageEntry, loadProgramLineage,
   PROGRAM_INBOX_MAX, PROGRAM_INBOX_KINDS, PROGRAM_INBOX_ENTRY_KEYS, PROGRAM_INBOX_REF_MAX,
-  PROGRAM_INBOX_LOSS_ERROR_MAX,
+  PROGRAM_RECORD_LOSS_ERROR_MAX,
   loadProgramInboxEntry, loadProgramInbox,
   PROGRAM_HANDOVER_MAX, PROGRAM_HANDOVER_TEXT_MAX, PROGRAM_HANDOVER_KINDS,
-  loadProgramHandover, loadProgramInboxLoss,
+  loadProgramHandover, loadProgramRecordLoss,
   foundingOccupantFrom, foundingIdentityFrom,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,

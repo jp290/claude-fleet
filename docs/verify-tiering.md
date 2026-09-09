@@ -959,7 +959,7 @@ This is the merge/resolver family and it is distinct from §5b's three (the `"in
 the `"inflight"` check in `e2e/review.ts` in. Recorded so the next person does not re-derive it: nothing in the four
 landed lanes touches the merge path, and the same checks pass on the same tree on a re-run.
 
-### 11.2b A fifth family: the reseed + live-bytes check (2026-07-28, third sighting 2026-08-01, fourth 2026-09-06)
+### 11.2b A fifth family: the reseed + live-bytes check (2026-07-28, third sighting 2026-08-01, fourth 2026-09-06, fifth 2026-09-08, sixth 2026-09-09)
 
 Signature, generic on purpose because that is all it has: **`N marks, 1..N-1`** in
 
@@ -971,7 +971,8 @@ in lane `7234` (2026-07-28, 2 of 22 trail runs), and byte-identically `42 marks,
 stream. The 2026-07-28 pair was additionally shown on ancestor tree `4df2898`.
 
 The shape says one mark is missing from the end of the sequence, i.e. the check reads the stream
-one write before it settles. **Not root-caused**, same as the fourth family. Recorded here because
+one write before it settles. **Diese Lesart ist bei der sechsten Sichtung gefallen — sie war
+arithmetisch falsch; die Form heisst DOPPELT, nicht fehlend (siehe unten).** **Not root-caused**, same as the fourth family. Recorded here because
 `CLAUDE.md` carried it alone and its instance count was already stale.
 
 **Fourth sighting 2026-09-06** (post-land audit of `49d93bc`, run on the second-host helper, 3772 checks / 1
@@ -1016,7 +1017,50 @@ dem Helfer ist `~/claude-fleet/e2e-trail` bei vier Zeilen stehengeblieben (jueng
 Wer eine Signatur verlangt, bekommt sie fuer diese Instanz nicht mehr — sie ist verloren, nicht
 ungelesen.
 
-**No free pass.** Three sightings make the family real; they do not make the next red one a flake.
+**Sechste Sichtung 2026-09-09** (Post-Land-Audit `at=1788932671950` von `a24a88eb`, wieder auf dem
+Second-host-Helfer, 4070 Checks / 1 gefallen, `remote.jobId 26ea1a205005`). Sie bringt den Beleg
+zurueck, den die fuenfte verloren gab — und sie korrigiert die Signatur-Lesart dieses Abschnitts.
+
+*Der Originalbeleg ist nicht verloren, er liegt woanders.* Dass ein Helferlauf sein Trail auf
+DESSEN Platte schreibt und `TRAIL_DIRS` keine fremde Maschine erreicht, gilt unveraendert. Aber der
+Helfer behaelt neben dem aufgeraeumten `tree/` das **`suite.log` des Jobs** unter
+`/var/lib/fleet-helper/work/run-<jobId>-<claimedAt>/suite.log` (hier 1 156 571 B, Zeile 386):
+
+    FAIL  reseed + live bytes are the pane's output exactly once — no duplicated, no missing line  (41 marks, 1..40)
+
+`remote.jobId` und `remote.claimedAt` aus `post-land-audits.jsonl` nennen also das Verzeichnis; das
+ist der allgemeine Weg zur Signatur eines Helfer-Rots. Die Ledger-Zeile selbst traegt
+`artifact: null` — hochgeladen wurde nichts.
+
+*Die Signatur-Lesart oben ist arithmetisch falsch, und der Check sagt es selbst.* Dort steht, eine
+Marke fehle am Ende der Folge, der Check lese den Strom eine Schreibung zu frueh. Das Detail baut
+`e2e/slots.ts` als `${nums.length} marks, ${nums[0]}..${nums[last]}`, und geprueft wird
+`nums[0] === 1` UND jeder Schritt exakt `+1`. **41 Marken, die bei 1 beginnen und bei 40 enden,
+koennen keine fehlende Marke sein** — eine fehlende ergaebe `40 marks, 1..41`. Laenge = letzter
+Wert + 1 heisst: genau eine Marke kommt DOPPELT. Jede Sichtung mit Detail traegt diese Form
+(`41 marks, 1..40`, `42 marks, 1..41`), es ist also die Signatur der ganzen Familie. Der Kommentar
+ueber dem Check nennt sie beim Namen: „a resent overlap shows up as a step back".
+
+*Und die Fixture kann das Duplikat nicht erzeugen.* `e2e/slots.ts#seedFrame` haelt EINE
+WebSocket-Verbindung, setzt `seed` auf den ersten Frame und haengt jeden Frame an `all` (`all += t`)
+— es dedupliziert nirgends und liest keine zweite Quelle. Ein Duplikat in `all` ist damit eine
+Zeile, die der SERVER zweimal geschickt hat: einmal in der Reseed-Aufnahme, einmal in den Live-Bytes
+danach. Der Nachbarcheck derselben Instanz ist gruen und lokalisiert die Naht
+(`seed 1..16 of 21452 B, live to 40`).
+
+*Und die Familie ist nicht Helfer-only.* Im lokalen Trail dieses Checkouts tragen **799** Zeilen
+diesen Checknamen, davon **8 mit `ok:false`** — Basisrate 1,0 %, auf acht verschiedenen Trees und
+fuenf Tagen (2026-07-28 dreimal, 08-01, 08-16, 08-18, 09-02). Der Eindruck „alle Sichtungen liegen
+remote" entsteht nur beim Zaehlen in `post-land-audits.jsonl` allein (dort drei, alle remote).
+
+*Lesart fuer den Urteilenden, praeziser als vorher:* fuer das gelandete Diff `a24a88eb`
+(Succession-, Inbox-, Land-Pfad) ist das Rot **kein Regress** — es beruehrt weder `e2e/slots.ts`
+noch den Pane-Stream. Als LAND-Urteil traegt `flake`. Als FAMILIEN-Urteil traegt es nicht mehr: das
+ist ein reproduzierbares Ein-Zeilen-Duplikat an der Reseed-Live-Naht mit ~1 % Rate, dessen Ursache
+im Server noch nicht isoliert ist. „Nicht root-caused" bleibt richtig, „nichts ist passiert" war es
+nie.
+
+**No free pass.** Six sightings make the family real; they do not make the next red one a flake.
 The proof order in §11.3 applies unchanged, and it is what cleared the 2026-08-01 instance: the
 same tree, re-run serially on an idle machine, came back 993 PASS / 0 FAIL.
 

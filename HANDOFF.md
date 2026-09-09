@@ -1,3 +1,44 @@
+# HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (Slot 2, Opus 5 high): Abnahme Slot 1, Suite-Cap 2 live, Deploy-Kandidat gruen bewiesen; 2026-09-09 ~13:5x, ctx GEMESSEN 38,2 %
+
+## 0. UEBERGABE — was beim Antritt sofort gilt
+
+**Dieser Commit ist nicht der uebliche Status-Handoff.** Der laufende Server bootete auf `76b3cdde`, also VOR `b11a1a1c`; `handleSelfSucceed` verlangt dort von jeder Session einen frischen, sauberen HANDOFF-Commit, sonst 409. Er ist die einzige Tuer zu der Nachfolge, die der Controller angeordnet hat, und er entfaellt mit dem Deploy von `969ac48c`. Die Program-/Task-Sichten konnten den Text nicht aufnehmen: beide Ablagequoten sind voll (auftrag 5/5, advisory 10/10) — das ist der technische Nachfolgefehler, den ich melde.
+
+[UEBERGABE Fleet-Betrieb MAIN, Slot 2 -> Nachfolgerin, 2026-09-09 ~13:5x. Operative Pflichten. KEINE neuen Jobs/Waiter erzeugen, die hier schon stehen.]
+
+1) OFFENE REPORTS/URTEILE
+- Slot 1 / 430850e4, Report 4e330915a9713ee03d5a21d8: VON MIR ABGENOMMEN. Kandidat cae7d42a (+214/-17, 5 Dateien, server.ts unberuehrt, Baum sauber). Belege selbst nachgemessen: Mutationslauf T074725Z-22238 = 4108/2 mit exakt den zwei benannten Checks; T083608Z-34611 und T100727Z-57847 je 4108/0; T105444Z-83621 4108/2, beide Rote in e2e/slots.ts:1453/1455 auf Trail-Zeile 447/448, waehrend slots.run() (fleet-e2e.ts:78) vor programs.run() (:128) und tasks.run() (:147) laeuft und slots.ts weder plantScreen noch typeScreen benutzt -> mechanisch ausgeschlossen, Familie 11.2o. Erste der zwei roten Zeilen ist die VORBEDINGUNG -> die Invariante war UNGEMESSEN, nicht verletzt. LAND liegt beim Controller (seine ausdrueckliche Disposition), nicht bei dir; Projektion wuerde dir POST /api/self/tasks/430850e4/land anbieten.
+- Slot 4 / c464af30: Controller meldet sauberen Stand 08fcf09c. Das aeltere Rot auf 2c244136 (1 Fail, 'Program-MAIN succession handover: no live row...', e2e/programs.ts:2492) ist UEBERHOLT und darf NICHT als aktuelles Verdikt ausgegeben werden. Ihr Report steht noch aus; Abnahme ist deine.
+
+2) CLARIFICATIONS (beide beantwortet, Auflagen gelten fort)
+- a324ed84b4b238044bb96e53: Suite-Koordination. Ein offenes Suite-Angebot verfaellt serverseitig NIE (Reaper ueberspringt open/claimed); die 180 s sind nur die Geduld der Lane.
+- a4ed9c3f9a0971d2f2d1d0b4: Mutations-Fire-Drill ist NICHT ausgesetzt. Auflage: eigener REMOTE-Lauf, temporaerer Mutations-Commit, danach reset --hard, und im Report muss die finale Kandidaten-Sha byte-gleich der des Abnahmelaufs sein (beide Shas + beide Job-Ids nennen).
+
+3) K1 3b1b2edf - DISPATCHABSICHT, NICHT AUSGEFUEHRT
+Status pending, gespeicherter Spawn ist noch claude-opus-5[1m]/high. Owner: KEIN Start mit altem Default, kein Release, keine Doppelzeile. Start ausschliesslich per POST /api/tasks/3b1b2edf/dispatch mit {"harness":"codex","model":"gpt-5.6-sol","effort":"medium"} (Owner-Route; Ambient-Token aus fleet.json, wird als owner_token_ambient_use auditiert). ERST bei freier Lane: Repo-Cap 3, aktuell 3/3 (Slots 1,3,4) - die Route prueft den Repo-Cap NICHT, Umgehung ist ausdruecklich untersagt. MEIN WAITER IST TOT (OOM) UND NICHT ERSETZT: es weckt dich niemand. Alle 5 pending auftrag-Zeilen des Programs tragen den alten Opus-Spawn, die Ablagequote ist damit 5/5 voll; K1s Dispatch gibt den Platz frei.
+
+4) WATCHES/AUTOS
+Keine armed Watches. Auto 832e811b (one-shot 'WEITERMACHEN Suite-Cap') ist GEFEUERT UND SEINE ARBEIT IST ERLEDIGT - nicht erneut ausfuehren. Alle Events quittiert. Hintergrund-Waiter auf diesem Mac sterben an OOM (zweite belegte Instanz, siehe Notiz 0a8d2f13); nimm POST /api/self/autos statt eines lokalen Prozesses.
+
+5) REMOTEJOBS
+- 7dcacd847e5a: reported, exit 0, ALL PASS, 0 Fails, tree 969ac48c. Das ist der Volldeckungsbeweis des Deploy-Kandidaten.
+- 9d3dfb2dec28 (Slot 4 Abnahme): reported exit 1 - ueberholt durch 08fcf09c.
+Originalbeleg-Pfad fuer JEDES Helfer-Rot: /var/lib/fleet-helper/work/run-<jobId>-<claimedAt>/suite.log auf second-host (das tree/ wird geraeumt, die suite.log bleibt).
+
+6) AUDIT-GRENZE
+Audit 1788932671950 (rot, 1 Fail 'reseed + live bytes...') UNADJUDIZIERT, Route ist owner-only. Beleg: obige suite.log von run-26ea1a205005-1788930193078, Zeile 386, '41 marks, 1..40'. Disposition steht in docs/verify-tiering.md 11.2b (Commit 969ac48c): flake als LAND-Urteil, NICHT als Familienurteil. Empfohlener Aufruf steht dort.
+
+7) DEPLOY-GRENZE
+Ziel 969ac48c, gruen bewiesen. Laufender Server bootete auf 76b3cdde = VOR b11a1a1c, deshalb verlangt handleSelfSucceed heute noch einen frischen HANDOFF-Commit. 8 Server-Commits schlafen; 0 Client-Commits, bundleStale false. ZWEI BLOCKADEN, die deployBlocker() (server.ts:24710) NICHT kennt: offene Remote-Command-Jobs und Lane-Suite-Angebote. Die Helfer-Quittung ist EINSCHUESSIG (daemon.ts report(): 'no retry, no backoff') - ein srv-Neustart im Meldemoment verliert das Verdikt. Also nie deployen, solange ein Job claimed ist. Deploy bleibt beim Controller.
+
+8) HELFER
+maxParallelSuites steht seit 13:28 auf 2 (Schluessel in /etc/fleet-helper/config.json ERGAENZT, vorher ABSENT; Backup config.json.bak-20260909; Rueckweg = Schluessel entfernen + systemctl restart). Heartbeat bestaetigt. CAP 2 IST GESETZT, ABER UNBEWIESEN: es gab noch keinen Doppellauf. Messkriterium: Jobs/h + Fehlerrate ueber ein gleich langes Fenster, plus MemoryPeak der Cgroup (systemd meldete 1,7 G ueber 8 h - meine 405-MB-Stichprobe ist die schwaechere Zahl). Bei Verschlechterung zurueck auf 1.
+
+9) OFFEN BEIM OWNER
+Attention c7bd3ceaaac1aae72b86bc70 steht weiter 'open', obwohl der Controller sie muendlich disponiert hat (Slot 4 behalten). Terra hat in diesem Baum KEINE Modell-ID - nicht erfinden, HARNESS_MODEL_RE winkt jede durch.
+
+---
+
 # HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (Slot 5, Opus 5 high): der Auto-Compact-Schnitt ist zurueckgezogen, der Land ist tot, und ein Land kann ROT werden ohne einen einzigen gefallenen Check; 2026-09-09 08:58 – 09:2x, ctx GEMESSEN 21,7 % beim Schreiben
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

@@ -112,6 +112,29 @@ koordinieren) · keine Freigabe von `417d2be5`/`74319808`/`c62aa3e9`/`430850e4` 
 keine neue Mess-Doku (alles ging in den bestehenden Traeger §11.2u) · keinen Owner-Token fuer einen
 AKT benutzt (nur den im Regelbuch ausgeschriebenen `GET /api/sessions`-Poll fuer den eigenen `ctx`).
 
+## 5. Second-host-Routing: gemessen, und es ist KEIN Beschleunigungshebel (2026-09-09)
+
+Auf Controller-Frage aus den letzten **40** Audit-Zeilen gerechnet, damit die naechste Session es
+nicht neu erhebt:
+- **19 remote / 21 lokal.** Von den 21 lokalen sind **12 Kurzketten** (`ran` 457–459, 2,1–3,2 s) —
+  die sind KORREKT lokal: `server.ts#helperClaimBar` sperrt sie unter dem Arm `short-chain`. Die
+  routbare Population sind die **9 lokalen Vollketten**.
+- **Der Helfer ist nicht schneller:** Median Arbeit remote 2 343 880 ms vs. lokal-Vollkette
+  2 424 150 ms — **~3 %**. Was er kauft, ist die SCHLANGE, nicht die Zeit.
+- **Und die Schlange ist kein stetiger Tribut, sondern ein Schwanz:** die neun Wartezeiten sind
+  `[0, 0, 0, 0, 15 000, 46 000, 91 000, 2 456 000, 2 561 000]` ms. Summe **86,2 min**, davon
+  **83,6 min in ZWEI Laeufen** (einer davon `6207182d`, 09-08 06:50, ms 5 145 559 bei 41 min Warten).
+  Sieben von neun warteten ≤ 91 s.
+- **Die Claim-Bar ist eine Funktion mit drei benannten Armen** (`helperClaimBar`, `null` = ein Helfer
+  duerfte): `unconfigured` · `repo-worker` · `short-chain`. Wer Routing ausweiten will, aendert einen
+  dieser Arme — nicht ein Gefuehl.
+- **Kostenseite, jetzt gemessen:** der Helfer hat sein EIGENES Fehlerprofil (§11.2b-Nachtrag: 3 von 3
+  Ledger-Sichtungen remote bei 13 % Remote-Grundrate) und schreibt KEIN Trail (§11.2u) — jeder
+  geroutete Lauf ist fuer das Flake-Register unsichtbar.
+**Folgerung:** Second-host-Routing ist ein Schwanzlatenz-Hebel, kein Suite-Beschleuniger. Die
+Beschleunigung ist Hebel (4) der Owner-Zeile `3f7363bf` (weniger/schnellere Checks) und davon
+getrennt zu fuehren.
+
 ---
 
 # HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 6, Opus 5 high): eine Owner-Frage gerettet, ein rotes Audit widerlegt, ein Wellen-Paar verworfen und ersetzt; 2026-09-08 ~08:0x–09:2x, ctx GEMESSEN 28,8 % beim Schreiben

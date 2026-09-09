@@ -4745,17 +4745,24 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   // A raised cap would make every one of these green again while changing nothing, which is why
   // the pins are about the SHAPE of the refusal and not about any number.
   {
+    // The RULE is pure and lives in task-notes.ts, where e2e/tasks.ts (d7) DRIVES all three of its
+    // arms — that is the proof, and this pin is not a substitute for it. What a test cannot see is
+    // whether the fleet still routes through that one rule instead of growing a second copy beside
+    // it, so this pin is about the BINDING: server.ts owns the bound and the `taskExists` fact and
+    // nothing else, and no `slice` survives anywhere on the path.
     const upsertBody = server.match(/function upsertNoteVerdict\([\s\S]*?\n\}/)?.[0] ?? "";
-    pin(`${RULE_RECEIVER} — the task-verdict cap REFUSES a new key and never truncates the store (N3)`,
-      upsertBody !== ""
-        && !/\.slice\(/.test(upsertBody)
-        // the same key is answered before the cap is ever consulted
-        && upsertBody.indexOf("findIndex") < upsertBody.indexOf("NOTE_VERDICTS_MAX")
-        && /return \{ ok: false, error:/.test(upsertBody)
-        // …and the ONE eviction is proven dispensable: its task is not on the queue at all
-        && /!tasks\.some\(\(t\) => t\.id === v\.taskId\)/.test(upsertBody),
-      upsertBody === "" ? "upsertNoteVerdict not found"
-        : `slice=${/\.slice\(/.test(upsertBody)} refuses=${/ok: false/.test(upsertBody)}`);
+    const ruleBody = read("task-notes.ts").match(/export function upsertKeyedVerdict[\s\S]*?\n\}/)?.[0] ?? "";
+    pin(`${RULE_RECEIVER} — the task-verdict cap is ONE pure rule; server.ts binds it and adds no second copy (N3)`,
+      upsertBody !== "" && ruleBody !== ""
+        && !/\.slice\(/.test(upsertBody) && !/\.slice\(/.test(ruleBody)
+        && /return upsertKeyedVerdict\(list, entry, NOTE_VERDICTS_MAX,/.test(upsertBody)
+        && /tasks\.some\(\(t\) => t\.id === taskId\)/.test(upsertBody)
+        // the rule's own three arms, in order: same key first, then the bound, then the refusal
+        && ruleBody.indexOf("findIndex") < ruleBody.indexOf("list.length < max")
+        && /return \{ ok: false, error:/.test(ruleBody)
+        && /!taskExists\(v\.taskId\)/.test(ruleBody),
+      upsertBody === "" ? "upsertNoteVerdict not found" : ruleBody === "" ? "upsertKeyedVerdict not found"
+        : `binds=${/upsertKeyedVerdict\(list, entry/.test(upsertBody)} slice=${/\.slice\(/.test(ruleBody)}`);
     // …and the refusal has to REACH the caller. A door that ignored the false arm would answer 200
     // while a record had just been lost, which is the failure the whole rewrite is about.
     pin(`${RULE_RECEIVER} — the verdict door answers the cap's refusal with 409 instead of a silent 200 (N3)`,

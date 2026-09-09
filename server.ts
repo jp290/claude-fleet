@@ -48,8 +48,8 @@ import {
   deriveTaskMetadata, readTrackedSnapshot, trackedIndexStamp,
   type TaskFilesOrigin, type TrackedSnapshot,
 } from "./task-metadata";
-import { notesForTask, laneNoteSources, renderNotesBlock, NOTE_HUB_FILES,
-  type NoteInput, type NoteRow } from "./task-notes";
+import { notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict, NOTE_HUB_FILES,
+  type NoteInput, type NoteRow, type KeyedUpsert } from "./task-notes";
 // The LAND fold of the collision facts. The wave button does not re-decide R1/R2/R3 or the program
 // boundary: it asks THIS projector whether the ids it was handed are one of its own waves, so the
 // board, `bun task-land-waves.ts --state fleet.json` and the door all answer from one classifier.
@@ -2103,18 +2103,13 @@ const taskTerminal = (t: Task): boolean => t.status === "done" || t.status === "
 //   · the only history that may go is history PROVEN dispensable — an entry whose task no longer
 //     exists on the queue at all, and therefore no land can ever make wirksam. Oldest such first.
 // Deliberately not "raise the cap": a bigger number would hide all three cases again.
-type VerdictUpsert = { ok: true; list: TaskNoteVerdict[] } | { ok: false; error: string };
-function upsertNoteVerdict(list: readonly TaskNoteVerdict[], entry: TaskNoteVerdict): VerdictUpsert {
-  const at = list.findIndex((v) => v.taskId === entry.taskId && v.branch === entry.branch);
-  // in PLACE, so arrival order survives — it is what "oldest dispensable" is measured on
-  if (at >= 0) { const next = [...list]; next[at] = entry; return { ok: true, list: next }; }
-  if (list.length < NOTE_VERDICTS_MAX) return { ok: true, list: [...list, entry] };
-  const dispensable = list.filter((v) => !tasks.some((t) => t.id === v.taskId))
-    .sort((a, b) => a.at - b.at)[0];
-  if (!dispensable)
-    return { ok: false, error: `this note already carries ${list.length}/${NOTE_VERDICTS_MAX} task verdicts and every one of them names a row still on the queue — none can be dropped without losing a record a land needs` };
-  return { ok: true, list: [...list.filter((v) => v !== dispensable), entry] };
+// The rule itself is pure and lives in task-notes.ts, where a test can DRIVE all three of its arms
+// without a server (task-notes.ts#upsertKeyedVerdict). This is the one line that binds it to the
+// fleet: the bound, and the only fact the rule cannot derive — whether a row still exists.
+function upsertNoteVerdict(list: readonly TaskNoteVerdict[], entry: TaskNoteVerdict): KeyedUpsert<TaskNoteVerdict> {
+  return upsertKeyedVerdict(list, entry, NOTE_VERDICTS_MAX, (taskId) => tasks.some((t) => t.id === taskId));
 }
+
 // --- N3 · THE ASSIGNMENT ITSELF, one function behind two doors (owner, bound Program-MAIN), so
 // the two can never drift into two policies about the same act. It returns the ANSWER, not a
 // Response, because only the doors know which sentence their caller needs first.

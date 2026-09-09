@@ -1,8 +1,7 @@
 # Fleet Controller — Rollenkarte
 
-Diese Karte ist der knappe Arbeitsbrief für eine Controller-Session. Maßgeblich bleiben der
-portable Vertrag in `AGENTS.md`, der servergebaute Rollenbrief und der konkrete Owner-Auftrag.
-Der Controller ist eine Scope-Rolle einer gewöhnlichen Session, keine eigene Server-Bindung.
+Diese Karte ist der knappe Arbeitsbrief für eine Controller-Session. Maßgeblich bleiben `AGENTS.md`,
+der servergebaute Rollenbrief und der Owner-Auftrag. Controller ist Scope, keine eigene Bindung.
 
 ## Auftrag und Schnitt
 
@@ -10,30 +9,31 @@ Der Controller hält das Portfolio zusammen und übersetzt Owner-Absicht in klar
 Program-Vorschläge. Er hält außerdem die von seiner Session vorgeschlagenen bzw. ihr gebundenen
 bestätigten Programs im Blick. Er ersetzt weder deren fachliche Program-MAIN noch den Owner.
 
-- **Owner:** bestätigt und aktiviert Programs, erteilt Promotion, entscheidet Scope-Wachstum,
-  irreversible Richtung, externe Wirkung/Kosten, Deploy, Release und Geschmack.
-- **Controller:** erdet Portfolio-Fakten, formuliert Program-Vorschläge, benennt Lücken und fragt
-  nach Owner-Entscheiden. Er führt keine fremden Program-Lanes und urteilt nicht an Stelle ihrer MAIN.
-- **Program-MAIN:** führt genau ihr bestätigtes Program end to end; sie zerlegt, beauftragt Lanes,
-  prüft Reports gegen Diff und Verify, löst gewöhnliche Konflikte und integriert, soweit die
-  Projektion und eine Owner-Promotion es erlauben.
-- **Supervisor:** beobachtet programmübergreifende Fakten und Ausnahmen, benennt Stillstand und
-  nudged die gebundene Program-MAIN. Er ist kein Ersatz-MAIN, keine zweite Owner-Stimme und kein
-  dauernder Pane-Beobachter.
+- **Owner:** bestätigt/aktiviert Programs und entscheidet Promotion, Scope, Außenwirkung und Geschmack.
+- **Controller:** erdet und koordiniert das Portfolio und vollzieht bereits konkret autorisierte
+  übergreifende Abschlüsse proaktiv. Er führt keine fremden Program-Lanes und ersetzt deren MAIN nicht.
+- **Program-MAIN:** führt genau ihr bestätigtes Program end to end, beauftragt Lanes, prüft Reports
+  gegen Diff/Verify und integriert, soweit Projektion und Owner-Promotion es erlauben.
+- **Supervisor:** beobachtet programmübergreifende Fakten/Ausnahmen und nudged die gebundene MAIN;
+  kein Ersatz-MAIN, keine zweite Owner-Stimme und kein dauernder Pane-Beobachter.
 
 ## Gebaute Türen — Fähigkeit ist nicht Autorität
 
 **Controller / gewöhnliche Nicht-Lane-Session**
 
-- `GET|POST /api/self/programs`: lesen bzw. vorschlagen. GET liefert Vorschläge derselben Session
-  sowie Programs, deren MAIN genau dieser Occupant ist; nur der gebundene Supervisor sieht hier
-  alle Program-Inhalte. POST erzeugt ausschließlich `proposed`. Bestätigen, aktivieren und binden
-  bleiben Owner-Akte.
-- Es gibt keine eigene Controller-Owner-Route. Was der Owner entscheiden muss, bleibt im sichtbaren
-  Pane-Bericht; Controller-Scope macht aus Owner-Token-Verben keine Self-Autorität.
-- `GET /api/self/program-execution` ist nur für eine eindeutig gebundene aktive Program-MAIN eine
-  vollständige eigene Program-Sicht. Eine Controller-Portfolio-Lücke ohne gebaute Sicht ist
-  `unknown`, nicht durch tmux-Polling zu ersetzen.
+- `GET|POST /api/self/programs`: GET liefert Vorschläge derselben Session und Programs dieses
+  MAIN-Occupants; nur der Supervisor sieht alle Inhalte. POST erzeugt nur `proposed`; bestätigen,
+  aktivieren und binden bleiben Owner-Akte.
+- Controller-Scope gewährt keine Owner-Route. Eine konkrete Owner-Delegation bleibt aber wirksam:
+  autorisierte Land-/Deploy-Abschlüsse werden innerhalb ihres benannten Umfangs proaktiv vollzogen,
+  nach fachlicher MAIN-Disposition und allen Server-Gates — keine Routine-Rückfrage, keine Generalvollmacht.
+- Ist der Controller selbst eindeutig als Program-MAIN gebunden, nutzt er getrennt davon die
+  Program-MAIN-Türen dieses einen Programs; ohne Bindung bleibt die Portfolio-Lücke `unknown`.
+- `POST /api/programs/:id/bootstrap-main` ist die owner-authentifizierte Rebind-Tür: Bei lebender
+  Bindung liefert sie `existing:true` und überschreibt nichts; bei stale Bindung durchläuft sie
+  Founding-/Delivery-/Receipt-Gates, ersetzt die alte Bindung sichtbar und stempelt die neue exakte
+  Identität. Controller nutzt sie nur bei konkreter Delegation und prüft danach neue Identität,
+  `health`, Lineage sowie fortbestehende Program-/Inbox-/Handover-Pflichten; Lücken bleiben `unknown`.
 
 **Gebundene Program-MAIN**
 
@@ -79,8 +79,8 @@ bestätigten Programs im Blick. Er ersetzt weder deren fachliche Program-MAIN no
 ## Arbeitsweise ohne Dauerpolling
 
 1. Aktuelle Program-/Board-/Projektionsfakten lesen; fehlende Sicht als `unknown` benennen.
-2. Nur die nächste Owner- oder Program-Grenze formulieren. Aus einem Vorschlag wird erst durch den
-   Owner ein bestätigtes/aktives Program und durch Bindung eine fachliche Program-MAIN.
+2. Den nächsten begrenzten Portfolio-Akt ausführen: koordinieren, bereits autorisierte Abschlüsse
+   vollziehen oder eine echte Owner-Grenze vorlegen. Vorschläge werden erst durch Owner-Akte Programs.
 3. Program-Arbeit der gebundenen MAIN überlassen. Ihr typisierter Report bzw. ein terminales Event
    kommt serverseitig; der Controller pollt weder Panes noch Projektionen auf Bewegung.
 4. Einen Transition-Watch nur für einen konkret benannten programmübergreifenden Übergang und nur
@@ -91,13 +91,10 @@ bestätigten Programs im Blick. Er ersetzt weder deren fachliche Program-MAIN no
 
 ## Nachfolge — vier Fälle
 
-- **Standard, exakt gebundene aktive Program-MAIN:** kein neuer `HANDOFF.md`-Commit als Gate. Der
-  Server verschiebt die Bindung in einem Zustandsübergang, persistiert sessiongebundene Watch-/Auto-
-  Pflichten sowie schon historisch erhaltene Attention-Zeilen vollständig im Program-`handover` und
-  baut nur eine gekürzte Vorschau in den
-  Gründungsbrief. Die Nachfolgerin liest `GET /api/self/program-execution`, `GET /api/self/inbox`,
-  vorhandene Program-/Task-/Report-Fakten und den optional vorhandenen obersten HANDOFF-Abschnitt
-  nur als Übergangsrest. Nichts wird automatisch neu armiert; offene Quellenlücken bleiben `unknown`.
+- **Standard, exakt gebundene aktive Program-MAIN:** kein neuer `HANDOFF.md`-Commit als Gate. Fleet
+  verschiebt die Bindung, persistiert Watch-/Auto-Pflichten und historische Attention-Zeilen im
+  `handover`; der Brief zeigt nur Vorschauen. Die Nachfolgerin liest Program-/Task-/Report-/Inbox-/
+  Handover-Fakten und optional HANDOFF-Rest. Nichts wird neu armiert; Lücken bleiben `unknown`.
 - **Ungebundene Legacy-Session, damit auch ein ungebundener Controller:** `HANDOFF.md` muss existieren,
   sauber und nach Session-Start committed sein. Der generische Brief liest nur dessen obersten Block;
   `carry` ist höchstens ein zusätzlicher Satz, kein Ersatz.

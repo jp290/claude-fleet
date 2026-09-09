@@ -1,3 +1,119 @@
+# HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (Slot 2, Opus 5 high): ein Land, eine Flake-Familie mit Wurzel, zwei bestaetigte Buendel-Grenzen; 2026-09-08 16:1x – 2026-09-09 06:2x, ctx GEMESSEN 31 % beim Schreiben
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **ARMIERT UND STERBEND: Merge-Watch `229f9462` auf Slot 3** (`fleet/260908150008-7c57`, Controller-Land
+  `ctl land 3`, Kandidat `a24a88eb`, Docs-Report `0f9d17a1` vom Controller fachlich accepted). Eine
+  Succession toetet ihn still — **neu armieren**, `idleSec:0`:
+  `POST /api/self/watch {"kind":"merge","target":3,"idleSec":0}`
+  Feuert er `landed=YES`, sofort den Audit-Watch auf den neuen `mainAfter` armieren. **Der Controller
+  armiert keine Watches** (seine Ansage) — der operative Abschluss Land/Audit liegt bei DIR.
+- **DIESES LAND VORAB ADJUDIZIERT, damit du es nicht neu erarbeitest:** kommt sein Post-Land-Audit
+  ROT auf der §11.2u-Familie (`unbound succession: pane s8 rendered the harness screen` +
+  `…delivers it WHOLE once that marker appears…`), ist das NICHT dieses Land. Beleg, vor dem Audit
+  erhoben: der Diff aendert 502 Zeilen in `e2e/programs.ts`, aber sein letzter Hunk dort endet bei
+  Zeile ~2088, und der `unbound succession`-Block beginnt auf main bei **2477**; `grep -c 'unbound
+  succession'` ueber den Diff = **0**.
+- **KEIN MAIN-COMMIT, SOLANGE DAS LAND LAEUFT.** Ich habe `HANDOFF.md` deshalb bewusst NICHT waehrend
+  des Lands committet. Der Diff des Lands beruehrt `HANDOFF.md` nicht, ein `dirty-main` waere also
+  nicht gefallen — aber ein COMMIT bewegt main unter dem Land und kauft eine volle Gate-Kette als
+  ff-Retry (1 095 Zeilen, `server.ts` + `e2e/programs.ts`) auf der einzigen Suite dieser Maschine.
+- **OFFEN BEIM OWNER: Attention `716a097d`** (S12 Wire-Autoritaet, kind `decision`). **Dritte
+  Stellung derselben Frage** — `6d51202e` und `04f4b7e6` sind beide mit `requester session ended`
+  refused gestorben. Sie stirbt auch mit DEINER Succession: findest du sie `refused`, ist sie
+  UNBEANTWORTET, nicht abgelehnt — neu stellen. Inhalt ist aus ihr selbst reproduzierbar; die zwei
+  tragenden Messungen habe ich am Baum nachgeprueft (`server.ts:21653` ruft die kontextlose
+  `programStatusView`-Ueberladung; `GET /api/programs/:id` existiert nicht).
+- **GELANDET IN DIESER SCHICHT:** `fa8f6220` → **`1d45e6b4`** (self-land guarded, `sessionIdMatch
+  exact`). Post-Land-Audit **gruen und echt geprueft**: `ms 2 452 519` (40,9 min), `exitCode 0`,
+  `ran 4046 / failed 0`, Tail `ALL PASS`. Er lief auf dem **second-host** (`remote {name:"second-host",
+  clonedSha === mainSha, jobId 26ea1a205005}`).
+- **DREI DIREKT-COMMITS AUF MAIN, fuer jedes land-seitige Ledger unsichtbar** — `25460d69`,
+  `9cc61326`, `c5def764`, alle `docs/verify-tiering.md` §11.2u. Kein Land-Gate, kein Post-Land-Audit;
+  gefahren wurde je die kurze Kette (`bun install --frozen-lockfile` + `bun e2e/pins.ts`, ALL PASS).
+  Sag das weiter — sonst schliesst die naechste Session korrekt-aber-falsch, sie seien vermessen.
+- **`c464af30` (S3a-ii) LAEUFT IN SLOT 4 UND IST FERTIG, ABER UNERREICHBAR.** Codex-Lane
+  (`spawn {harness: codex, model: gpt-5.6-sol, effort: high}` — NICHT Opus 5). Ihr isolierter Lauf ist
+  seit **2026-09-08 20:42:39** fertig: `/tmp/fleet-s3aii-r3.T6EehZ/isolated.log`, **4041 PASS / 2 FAIL**,
+  beide FAIL die §11.2u-Familie, und ihr Diff fasst weder `e2e/programs.ts` noch `e2e/harness.ts` an.
+  Ihre eigene Arbeit ist belegt: sie schreibt 11 `check(` + 2 `pin(`, **10 der 11 laufen und bestehen**
+  (der elfte ist der Fehlerzweig ihres `waitForLabel`-Fixtures und kann per Konstruktion nur rot
+  erscheinen). Zustand: `ahead 0`, `behind 8`, **339+/134− uncommitted**. Sie wurde angewiesen, nicht
+  mehr aktiv zu warten, und pollt seither nicht — Regelbuch-Zustand (c), sie wartet ewig.
+  **Fehlende Arbeit ist rein mechanisch:** committen · rebasen · Gate-Kette · `fleet-report`.
+  **Ich habe keine Tuer zu ihr** (`POST /send` ist Owner-Token; die MAIN→Lane-Tuer ist `3ea89f71`,
+  offen in diesem Program). Der Send-Text liegt fertig in meiner letzten Rueckgabe an den Controller.
+
+## 1. Die neue Flake-Familie §11.2u — Wurzel gefunden, Richtung umgekehrt
+
+`docs/verify-tiering.md` §11.2u (drei Commits oben). Kurzform, damit du sie nicht neu liest:
+`handleSelfSucceed` wartet `FOUNDING_BOOT_GRACE_MS=4000` ab der RUECKKEHR von `openSlot`, faehrt EINE
+`claudeAlive`-Probe ohne Retry und ruft bei `not-alive` → `cleanup()` → `killSlot(free,"handoff")`.
+Die Fixture pflanzt ihren Marker bei `openedAt+4300` — und `openedAt` wird INNERHALB von `openSlot`
+gestempelt, 62 Zeilen vor `await ensureSlot(s,"open")`, also vor dem Pane-Spawn. Die Marge ist real
+`300 ms − Pane-Spawn` und wird unter Last negativ. **Der Server toetet die Pane; das `500 not-alive`
+ist Ursache, nicht Folge.** Rate **16/116 = 13,8 % auf dem MAC** (Helfer-Laeufe schreiben kein Trail
+und fehlen strukturell im Nenner — das steht in `c5def764`).
+Reparatur gefilt als **`430850e4`** (pending, NICHT freigegeben: kollidiert mit `c464af30` auf
+`e2e/programs.ts`), mit hartem Done-Kriterium inkl. Mutationsbeweis.
+
+## 2. Zwei Buendel-Grenzen, beide vom Owner/Controller bestaetigt
+
+- **`417d2be5` (S3b) + `74319808` (S3d) sind als Gruppe bestaetigt**, mit gemeinsamem Audit. Die
+  Architektur sanktioniert es zweimal woertlich (§4 KOLLISIONSFLAECHE, §6 „ideal: 3d als zweiter
+  Commit derselben Lane"). Der Widerspruch sitzt in den ZEILEN-MAENTELN: `74319808`s „FREIGABE erst
+  nach Land von S3b" und das „Kein zweiter Schnitt" beider ARBEITSREGELN. **Ausfuehrungsform:** eine
+  Lane, gegruendet auf `417d2be5`; `74319808` NIE freigeben (sonst zweite Lane); 3b-Commit vor 3d;
+  EIN Land, EIN Audit. **Die Flaeche waechst um null Dateien** (74319808s `filesProposal` ist echte
+  Teilmenge von 417d2be5s). Grenzen: Umfang ~495 gegen ~400 aus §9; und `74319808` bliebe `pending`,
+  waehrend seine Arbeit unter fremder `taskId` landet — Queue-Luege, bis der Owner sie schliesst.
+- **BLOCKIERT durch R2** (`docs/queue-wellen-2026-09-06.md`): beide Flaechen enthalten `e2e/pins.ts`
+  + `e2e/watch.ts` ⇒ `isolatedPreview:true` ⇒ Wellengroesse 1. Meine Evidenz fuer die
+  R2-Praezisierung liegt in meiner Rueckgabe an den Controller (adressiert an `f6db3487`): `ruleFor`
+  ist ein reiner Pfad-Praefix-Test und kann Gate von Audit nicht unterscheiden · `e2e/watch.ts` hat
+  GENAU EINEN Importeur, `fleet-e2e.ts:26`, liegt also nicht in der Vorland-Kette · R2s Begruendung
+  ist eine Eigenschaft der ZEILE, nicht der Wellengroesse · beide Pin-Aenderungen sind additive
+  Eintraege unter EINER Regel (`RULE_INBOX`, `e2e/pins.ts:6670`). **Ehrliche Grenze:** unter meinem
+  eigenen Vorschlag R2' blieben beide Zeilen Gate-Aenderer, weil sie `e2e/pins.ts` anfassen — die
+  Promotion braucht entweder eine Diff-Probe fuer Additivitaet oder einen ausdruecklichen
+  Owner-Entscheid fuer diesen Fall. **Promotion ist Owner-Sache; nicht vorwegnehmen.**
+- **`c62aa3e9` ist NICHT freigabereif, und der Widerspruch ist INTERN.** Der Brief IST laengst
+  geschaerft (2026-09-07, `edited:true`) — der Zeilentitel „BRIEF IST NOCH NICHT GESCHAERFT" ist
+  veraltet. §2 erklaert MAIN→Controller fuer nicht baubar und schreibt `{kind:"role"}` als benannt
+  nicht-adressierbares Mitglied vor, das NICHTS speichert; §4 (1) — das tragende Kriterium — verlangt
+  aber „Eine MAIN sendet AN DIE ROLLE … der NACHFOLGER liest dieselbe Nachricht". Am 2026-09-09
+  nachgemessen: `state.supervisor` = `{slot:5, openedAt:1787497726285}` loest auf KEINEN lebenden
+  Occupant auf, es existiert kein `🧿 Supervisor`-Slot, der Controller haelt `programId: null`.
+  **Konsistente Schliessung:** Kriterium (1) auf `{kind:"program", id}` umlegen (ueberlebt die
+  Succession per Konstruktion), Rolle bleibt §2s benanntes Nicht-Mitglied unter (4b). **Preis:** die
+  Zeile liefert dann den Mechanismus, nicht ihren Anlass. **Ich kann es nicht eintragen** —
+  `/api/tasks/:id/brief` liegt unter `tokenGate`, eine Self-Tuer existiert nicht. `3ea89f71` ist der
+  Entsperrer dieser Klasse.
+
+## 3. Zwei Waende und eine Legibilitaets-Falle, neu gemessen
+
+- **Der Advisory-Deckel ist ZU:** `POST /api/self/tasks` mit `kind:"notiz"` antwortet
+  `program advisory filing cap reached (10/10 pending advisory rows awaiting owner disposition)`.
+  Zwei Versuche, beide abgelehnt, KEINE Zeile angelegt (nachgeprueft). Mein Program haelt 16 pendente
+  `notiz`-Zeilen, aelteste `68fd2395` vom 2026-09-04. Disposition ist ein Owner-Akt.
+- **Adjudikation ist owner-only by POSITION** (`writeAuditAdjudication` unter `tokenGate`). Ich habe
+  das rote Audit `at=1788886481632` hergeleitet, aber nicht eingetragen; der Controller hat es als
+  `unknowable` gefaellt (`at=1788887479736`). Differenz dokumentiert in §11.2u, nicht offen.
+- **FALLE, kostet sonst jede Nachfolgerin zehn Minuten:** ein LAUFENDES Land steht in
+  `fleet.json#merges` als `"status":"interrupted"` mit dem Detailtext „a merge run started here and
+  never produced a verdict — the server was interrupted mid-run." Das ist der DURABLE INTENT MARKER,
+  den `mergeJob` VOR dem Start schreibt (`server.ts:19400`), keine Meldung ueber einen Tod. Wer ihn
+  waehrend eines normalen Lands liest, haelt das Land fuer kaputt. Gegenprobe, die ich gefahren habe:
+  die Server-PID und ihre Startzeit (kein Neustart) — dann ist `interrupted` schlicht „laeuft".
+
+## 4. Was ich NICHT getan habe
+Kein Deploy (`codeBehind` steht; der Controller will ihn mit zusammenhaengendem Kandidaten-/Auditstand
+koordinieren) · keine Freigabe von `417d2be5`/`74319808`/`c62aa3e9`/`430850e4` · keine Wave-Dispatch ·
+keine neue Mess-Doku (alles ging in den bestehenden Traeger §11.2u) · keinen Owner-Token fuer einen
+AKT benutzt (nur den im Regelbuch ausgeschriebenen `GET /api/sessions`-Poll fuer den eigenen `ctx`).
+
+---
+
 # HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (`f170dc46e4b026ee34d9392e`, Slot 6, Opus 5 high): eine Owner-Frage gerettet, ein rotes Audit widerlegt, ein Wellen-Paar verworfen und ersetzt; 2026-09-08 ~08:0x–09:2x, ctx GEMESSEN 28,8 % beim Schreiben
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

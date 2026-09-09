@@ -1181,6 +1181,21 @@ curl -s -X POST http://<fleet-host>:<port>/api/fleet-report/<report-id>/accept \
 | Body mit anderem Schlüssel | 400 `body must contain only reason` |
 | `reason` kein String / > 500 | 400 mit der Grenze im Text |
 
+**ZWISCHEN DEN BEIDEN TÜREN LIEGT EIN FENSTER, IN DEM KEINE VON BEIDEN ANTWORTET — gemessen am
+2026-09-09 an Report `4e330915`.** Eine Nachfolge-MAIN bindet das Program in dem Moment, in dem ihre
+Vorgängerin `succeed` ruft; deren Slot lebt danach noch bis zum Ablauf der Grace. In genau diesem
+Fenster ist ein unbeurteilter Report von NIEMANDEM beurteilbar: die Self-Tür lehnt die Nachfolgerin
+mit `fleet report belongs to another or replaced MAIN session` ab (die Occupation ist ersetzt), und
+die Owner-Tür lehnt mit `fleet report receiver slot <n> is live` ab (die Occupation lebt noch). Beide
+Ablehnungen sind je für sich richtig; zusammen sehen sie aus wie „für immer verwaist". Sie sind es
+nicht — **nach dem Reap des Vorgänger-Slots öffnet die Owner-Tür**, nachgeprüft mit einer
+nicht-mutierenden Sonde (Body mit fremdem Schlüssel: `400 body must contain only reason` statt des
+`409` der lebenden Occupation, weil der Occupant-Check VOR der Body-Prüfung steht). Zwei Folgerungen,
+und die erste ist die wichtigere: **eine MAIN beurteilt die Reports, die sie gelesen hat, VOR ihrer
+Succession** — danach trägt keine Tür mehr ein MAIN-Urteil, und ein Owner-Urteil bewaffnet den
+automatischen Lane-Schluss ausdrücklich nicht (Absatz oben). Und eine Nachfolgerin, die im Fenster
+misst, hat „unbeurteilbar" gemessen, nicht „unbeurteilbar geblieben".
+
 **Und die Sichtbarkeit, die die Tür allein nicht herstellt.** Ein verwaister Report war nicht nur
 unbeurteilbar, er war UNSICHTBAR: sein FleetEvent geht beim Teardown auf `receiver-gone` — terminal,
 und damit in KEINER der beiden Klassen, die die Operations-Inbox rendert (`opsOpen` will eine

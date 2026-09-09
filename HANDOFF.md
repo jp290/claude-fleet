@@ -2,6 +2,62 @@
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT
 
+- **STEHENDE ROLLE, DIR VOM OWNER UEBERTRAGEN (2026-09-09, ueber den Controller): Lead fuer
+  Suite-Durchsatz und Host-Platzierung (Mac + Second-host), autonom mit eigenen Lanes.** Der
+  Controller behaelt Portfolio und die serielle Land-/Deploy-Koordination. Vorhandene Rails ZUERST
+  nutzen, keine neue Planrunde: `3f7363bf` (Messauftrag, programlos = Owner-Tuer) · `531bab26`
+  (Testwartezeiten) · `67abe12c` (abhaengige Modulvorschau). **`531bab26` und `67abe12c` gehoeren
+  Leichtgewicht — KEINE stillen Doppelauftraege, keine Releaseversuche;** brauchst du eine
+  mechanische Bindung/Freigabe, nenne dem Controller EINMAL die exakte Id und den fertigen Brief.
+  Grenzen: keine zweite MAIN auf dem Second-host, keine neue Parallel-Queue, Remote-Coding-Vertrag ist
+  ein spaeterer eigener Schnitt, kein Push/Deploy ohne Controller, **keine Vollgate-/Audit-Auslassung
+  als Nebenwirkung eines Vorschaufilters (no silent skipped)**, keine Tests wegen seltenem Rot
+  streichen, keine neuen Mess-Docs (Nachweise an bestehende Tasks/Commit-Bodies). Lanes
+  `claude/claude-opus-5[1m]/high`.
+- **ERSTER KANDIDAT, VON MIR SCHON MECHANISCH BELEGT — der Brief ist fertig, du musst nur die
+  Bindung klaeren.** Der Knopf EXISTIERT bereits und ein Wrapper benutzt ihn:
+  `server.ts:23722` `STEWARD_MIN_IDLE_MS = Number(process.env.FLEET_STEWARD_MIN_IDLE_MS ?? 60_000)`,
+  Gate bei `:23797`; **`e2e-claude-gate.sh:214` setzt ihn auf 800** — `e2e-isolated.sh` setzt ihn
+  NICHT, dort gilt die Produktions-60 s. Gewartet wird an VIER Stellen
+  (`e2e/steward-core.ts:326`, `:351`, `e2e/steward-outcomes.ts:288`, `:333`) ueber
+  `settleForSteward` (`e2e/steward-core.ts:314`, Deadline `stewardMinIdleMs + 30_000`).
+  4 × ≥60 s ⇒ **≥4 min je Isolated-Lauf, und jeder Post-Land-Audit IST ein Isolated-Lauf.**
+  **Der Schnitt ist EINE Zeile** in `e2e-isolated.sh`s `SRV_ENV` (Zeile 828):
+  `FLEET_STEWARD_MIN_IDLE_MS=800`, woertlich das Muster aus `e2e-claude-gate.sh:214`. Produktions-
+  default bleibt unberuehrt. **Gegen den naheliegenden Einwand:** die kleinere Schwelle macht
+  `settleForSteward` robuster, nicht fragiler — das 30-s-Fenster gibt heute ~0,5 Versuche auf 60 s,
+  bei 800 ms rund 37. DONE-Kriterium, das ich dem Brief gegeben habe: (1) Vorher/Nachher-Laufzeit
+  desselben Baums, Tails woertlich, erwartet ≥4 min · (2) die vier Stellen danach GRUEN, nicht
+  uebersprungen, Check-Namen aus dem Trail · (3) **Mutationsbeweis:** `FLEET_STEWARD_MIN_IDLE_MS=0`
+  ⇒ die Sends muessen 409 am Idle-Gate bekommen, danach zuruecknehmen · (4)
+  `rg -n 'FLEET_STEWARD_MIN_IDLE_MS' e2e-*.sh` nennt genau zwei Wrapper.
+- **DANACH, noch ungelesen (die Lesefenster stehen, die Arbeit nicht):** `localProof`/`isolated`/
+  `audit` EINZELN auf Remote-Faehigkeit pruefen und den Code-Lane-Host vom Pruefhost entkoppeln —
+  `helper-daemon/daemon.ts:493-560`, `maxParallelSuites`/claim/per-run locks, `verify-proportion.ts`
+  und `fleet-e2e.ts` fuer die Pruefauswahl samt Fixture-Abhaengigkeiten. Platzierung nach
+  Hostfaehigkeit, Slots, laufenden/queued Jobs und ALTER — nicht nach CPU-Load. Claim/Lease/
+  Heartbeat/Result-SHA und Artefakte erhalten. Parallelitaet erst MESSEN, dann erhoehen.
+  **Meine Messung dazu steht schon in §5 dieses Handoffs und sagt: Routing ist ein
+  Schwanzlatenz-Hebel, kein Beschleuniger.**
+- **SOFORT NEU ARMIEREN (stirbt mit meiner Succession): Merge-Watch auf Slot 1** —
+  `POST /api/self/watch {"kind":"merge","target":1,"idleSec":0}`, Controller-Land des Compact-
+  Kandidaten `c4936fc3` (`fleet/260908171345-3941`), gestartet 2026-09-09 ~07:54Z. Der Ruecklauf
+  Land+Audit liegt bei DIR. **Vorab-Adjudikation, von mir erhoben:** beide registrierten Familien
+  sind unberuehrt (`grep -c 'unbound succession'` = 0, `e2e/slots.ts` nicht im Diff,
+  reseed/liveBytes/stream in `server.ts` = 0) — ein Rot auf §11.2u/§11.2b ist NICHT dieses Land.
+  **Aber:** dieser Land aendert das GATE selbst (`e2e-claude-gate.sh` +51, `fleet-e2e-claude-gate.ts`
+  +108, `e2e/pins.ts` +114, `fleet-e2e-harness.ts` +13). Das Land-Gate hat sich hier selbst
+  verifiziert, und der Post-Land-Audit faehrt den Wrapper GAR NICHT (`e2e-isolated.sh:849` ruft
+  `bun fleet-e2e.ts`) — fuer die Gate-Dateien gibt es in KEINER Stufe eine unabhaengige Probe. Wer
+  eine will, faehrt `./e2e-claude-gate.sh` auf dem gelandeten Tip.
+- **MEIN EIGENER FEHLER, damit du ihn nicht erbst:** ich habe meinen Kontextstand viermal mit „32 %"
+  angegeben, ohne zu messen — die letzte echte Messung war 31 %, der wahre Wert 37,3 %. Der Sensor
+  ist in Ordnung (UI/API und `message.usage` stimmen ueberein). **Miss ihn, schaetze ihn nie**, und
+  sag „ich uebergebe jetzt" erst, wenn der `succeed`-Aufruf abgesetzt ist — ich habe die Absicht
+  mehrfach als Handlung gemeldet, und das ist derselbe Fehler in einer anderen Waehrung.
+- **Env schlaegt CLI** (Controller, live korrigiert 2026-09-09). Deploy steht aus; die neue
+  Compact-Startregel wird erst mit dem Deploy wirksam.
+
 - **ARMIERT UND STERBEND: Merge-Watch `229f9462` auf Slot 3** (`fleet/260908150008-7c57`, Controller-Land
   `ctl land 3`, Kandidat `a24a88eb`, Docs-Report `0f9d17a1` vom Controller fachlich accepted). Eine
   Succession toetet ihn still — **neu armieren**, `idleSec:0`:

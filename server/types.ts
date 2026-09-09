@@ -999,6 +999,14 @@ interface Task {
   // means nothing has been recorded, never "no land touched it": the two owner ⏏ paths land work
   // that is already integrated and carry no integration shas at all, so they measure nothing and
   // say so by writing nothing.
+  notes?: TaskNotePin[]; // AUFTRAG rows only: the `notiz` rows explicitly pinned to this task, so
+  // its lane receives them as SOURCES rather than as a surface coincidence. Absent means nobody
+  // pinned one — never an empty pin list, and never backfilled from the file-surface join, because
+  // "the join would have found it" and "someone chose it" are the two facts N3 separates.
+  verdicts?: TaskNoteVerdict[]; // NOTIZ rows only: the task-scoped reports on THIS note, keyed
+  // (taskId, branch) and replaced in place. Absent means none was ever given. The legacy global
+  // verdict lives on as a signed TaskComment and is deliberately NOT migrated into this field: it
+  // was given under a different scope, and relabelling it would narrow a closure retroactively.
   comments?: TaskComment[]; // the owner's own words ON this row, addressed to whoever picks it up
   // (the gap it closed: server-narrativ-archiv.md#task). Deliberately NOT folded into the brief:
   // the brief is the exact bytes a lane receives and is approved as such, so appending to it behind
@@ -1030,6 +1038,41 @@ const isTaskVerdict = (value: unknown): value is TaskVerdict =>
 // answer to "has this moved lately" does not improve with the sixth entry.
 const TASK_TOUCHED_MAX = 5;
 interface TaskComment { id: string; ts: number; text: string; from?: string; verdict?: TaskVerdict }
+
+// --- THE EXPLICIT TASK→NOTIZ ASSIGNMENT (N3) ---------------------------------------------------
+// Until N3 a note reached a lane by FILE-SURFACE INTERSECTION alone (task-notes.ts). That join is a
+// good hint and a useless instruction: nobody could say "work THIS source under THAT task", so the
+// same note stood on every neighbouring lane's brief and its verdict closed it for all of them.
+// A PIN is that missing sentence.
+//
+// IT LIVES ON THE AUFTRAG ROW, never on the note, for the reason every other join here states once:
+// two homes for one fact are two answers to one question. Being pinned does not change the note —
+// it stays a pending `notiz` with its own lifecycle, and several tasks may pin the same one
+// ("angeheftete Quellen bleiben Quellen"). Detaching removes the pin and NOTHING else: the note is
+// not deleted, not closed, and not stripped of the verdicts already given under that task.
+const TASK_NOTES_MAX = 20;
+interface TaskNotePin {
+  noteId: string;
+  at: number;
+  by: "owner" | "main"; // WHO pinned. The owner's door is POST /api/tasks/:id/notes; "main" is a
+  // bound Program-MAIN acting inside its own exact binding. Never taken from a body — provenance a
+  // caller dictates is none, the same rule TaskFilesProposal.by states.
+}
+
+// --- THE TASK-SCOPED VERDICT (N3) --------------------------------------------------------------
+// Keyed (noteId, taskId, branch): the note it is about, the task it was given under, the branch
+// that gave it. Stored on the NOTIZ row in its OWN field and never as a TaskComment — and that
+// separation is a contract, not tidiness:
+//   · a comment is capped (MAX_COMMENTS_PER_TASK) and individually deletable, so an authoritative
+//     verdict stored as one could be destroyed by an unrelated act;
+//   · applyLandToNotes's LEGACY close reads `comments`, so a task verdict landing there would
+//     silently widen back into a GLOBAL verdict — closing the note at any land of that branch,
+//     which is precisely the closure N3 exists to narrow.
+// REPLACED IN PLACE per key, so "only the newest verdict of a key counts" is a property of the
+// store rather than a rule every reader must remember. Its own cap is therefore reached only by a
+// note judged under many (task, branch) pairs, and evicts the OLDEST — never a comment's cap.
+const NOTE_VERDICTS_MAX = 50;
+interface TaskNoteVerdict { taskId: string; branch: string; verdict: TaskVerdict; text: string; at: number }
 
 // One land that moved a file this note's surface names. Written ONLY by the land site, which is the
 // only place that knows both integration shas — reading them at record time would name whatever
@@ -2040,7 +2083,7 @@ export type {
   HelperCmdCheck,
   SupervisorTransitionEventPayload, SupervisorTransitionFleetEvent, FleetEvent, ClarificationStatus,
   ClarificationRequest, FleetReportDisposition, FleetReportDecision, FleetReport, AttentionKind, AttentionStatus, AttentionRequest, TaskKind,
-  Task, TaskBrief, TaskComment, TaskVerdict, TaskTouch, TaskAnalysis, AnalysisBlocker, TaskCriterion, TaskFilesProposal, RefineChild,
+  Task, TaskBrief, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskAnalysis, AnalysisBlocker, TaskCriterion, TaskFilesProposal, RefineChild,
   RefineProposal, TaskRefine, LaneForm, LaneRef, SuccessionRetirement, CodexRecoveryState, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
   PromotionSelfLand, PromotionPolicy, ProgramProfileKind, ProgramProfile, ProgramLineageVia,
@@ -2063,7 +2106,8 @@ export {
   FLEET_REPORT_DISPOSITIONS, MAX_FLEET_REPORT_DECISION_REASON,
   MAX_ATTENTION_TEXT, MAX_ATTENTION_ANSWER, MAX_ATTENTION_PROVENANCE_TEXT,
   ATTENTION_CANDIDATE_SHA_RE, ATTENTION_BRANCH_RE, validAttentionBranch, MAX_SUPERVISOR_NUDGE_TEXT,
-  TASK_KINDS, isTaskKind, loadTaskKind, TASK_VERDICTS, isTaskVerdict, TASK_TOUCHED_MAX, PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion,
+  TASK_KINDS, isTaskKind, loadTaskKind, TASK_VERDICTS, isTaskVerdict, TASK_TOUCHED_MAX,
+  TASK_NOTES_MAX, NOTE_VERDICTS_MAX, PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion,
   PROGRAM_PROFILE_KINDS, loadProgramProfile, PROGRAM_LINEAGE_MAX, PROGRAM_LINEAGE_VIA,
   PROGRAM_LINEAGE_ENDED_BY, PROGRAM_LINEAGE_ENTRY_KEYS, loadProgramLineageEntry, loadProgramLineage,
   PROGRAM_INBOX_MAX, PROGRAM_INBOX_KINDS, PROGRAM_INBOX_ENTRY_KEYS, PROGRAM_INBOX_REF_MAX,

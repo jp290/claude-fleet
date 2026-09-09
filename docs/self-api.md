@@ -472,6 +472,44 @@ ein `task_release`-Audit-Event, weil ein späterer beaufsichtigter ▸ start das
     tick start one first`.
 
 
+## notes-assign — `POST /api/self/tasks/:id/notes`
+
+**Eine Notiz als QUELLE an eine Zeile hängen (N3, 2026-09-09).** Bis dahin erreichte eine `notiz`
+eine Lane nur über die Datei-Fläche: ein Hinweis, nie ein Auftrag — und ein `erledigt` schloss sie
+für JEDE benachbarte Lane. Eine Anheftung ist der fehlende Satz: *diese Quelle, unter dieser Zeile.*
+
+```
+curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"note":"<notiz-id>","attach":true}' \
+  http://<fleet-host>:<port>/api/self/tasks/<taskId>/notes
+```
+
+**Keine lane-only Route** (409 `a lane may not assign a source — …`), wie `release` und aus
+demselben Grund. Der Rahmen ist die EXAKTE Bindung: das Program kommt aus ihr (eine Zeile eines anderen
+Programs ist 409), das Repo aus dem eigenen Checkout (über Repo-Grenzen reicht die Tür nie), und
+`by` wird als `"main"` gestempelt statt aus dem Body gelesen.
+
+Body: `note` (Pflicht) und `attach` (Default `true`; `false` löst die Zuordnung). Ablehnungen, jede
+mit ihrem eigenen Satz: eine Id, die keine Queue-Zeile trägt · eine Zeile, die keine `notiz` ist ·
+eine archivierte Notiz · ein Ziel, das kein `auftrag` ist · ein Ziel, dessen Status nicht mehr
+`pending`/`queued` ist (**die Zuordnung ist eingefroren, sobald eine Lane auf der Zeile gegründet
+wurde** — sonst benennte ein später Anhang eine Quelle, die die Lane nie bekam, und ein später
+Detach nähme ihr Arbeit weg, die sie schon tut) · der Deckel von 20 Quellen je Zeile. Ein
+wiederholtes Anheften derselben Id ist idempotent.
+
+**Ein Detach ist kein Löschen.** Die Notiz behält ihre Zeile, ihren Text, ihren Status und jedes
+Urteil, das unter dieser Aufgabe schon gefällt wurde; nur die Zuordnung geht. Und eine angeheftete
+Quelle bleibt eine Quelle: `capTasks` räumt sie nicht weg, solange eine offene Zeile sie nennt.
+
+Die OWNER-Tür daneben ist `POST /api/tasks/:id/notes` mit demselben Body und derselben Prüfkette —
+eine Funktion hinter zwei Türen, damit die beiden nie zu zwei Politiken auseinanderlaufen.
+
+Der Deckel der Vorschau im Gründungsbrief (5 Zeilen) begrenzt nur die ANZEIGE: jede angeheftete
+Quelle steht im Receipt und ist über `GET /api/self/notes` im Volltext erreichbar, die überzähligen
+werden im Brief als blanke Ids genannt.
+
+
+
 ## files-proposal — `POST /api/self/tasks/:id/files-proposal`
 
 **Die VORSCHLAGS-Hälfte des Datei-Flächen-Paares (W2, 2026-09-07).** Du schlägst vor, welche
@@ -549,22 +587,50 @@ Ids, die dein eigener Dispatch geliefert hat — nie die 127 pending Zeilen, nie
 anderen Lane. Eine fremde Id antwortet **409** (nicht 404: die Existenz zu verschweigen läse sich
 als „die Notiz ist weg" und schickte dich eine Löschung suchen, die nie stattfand).
 
-`GET` antwortet `{notes, receipts, gone?, verdicts}`. **`receipts` trennt zwei Abwesenheiten, die
+`GET` antwortet `{notes, receipts, gone?, verdicts}`; jede Notiz trägt zusätzlich `explicit`,
+`taskIds`, `judgeableUnder` und ihre `verdicts` (die Task-Urteile, die auf ihr stehen). **`receipts` trennt zwei Abwesenheiten, die
 beide als leere Liste erscheinen:** `notes: []` mit `receipts: 0` heißt „kein Dispatch dieser Lane
 steht im Ledger" (ein vom Owner geöffneter Worktree, ein Receipt von vor N1), `notes: []` mit
 `receipts: n` heißt „der Join hat auf deiner Fläche nichts gefunden". `gone` nennt Ids, die der
 Receipt trägt und die Queue nicht mehr hält.
 
 `POST` nimmt `verdict` (`erledigt` | `widerlegt` | `offen`; alles andere **400**) und `text`
-(ein Satz, Pflicht, max. 2 000 Zeichen — ein Urteil ohne Satz ist kein Bericht). Er schreibt einen
-`TaskComment` auf die Notiz mit `from: <deine Branch>` und dem Verdikt. **Die Branch kommt aus der
-Token-Zeile und kann im Body nie benannt werden** — dieselbe Regel wie `filesProposal.by`.
+(ein Satz, Pflicht, max. 2 000 Zeichen — ein Urteil ohne Satz ist kein Bericht). **Die Branch kommt
+aus der Token-Zeile und kann im Body nie benannt werden** — dieselbe Regel wie `filesProposal.by`.
+
+**ZWEI ARTEN VON QUELLE, ZWEI ARTEN VON URTEIL (N3, 2026-09-09).** Der Brief liefert dir Notizen auf
+zwei ganz verschiedene Weisen, und die Antwort auf sie ist nicht dieselbe:
+
+- **Datei-Fläche** (die Notiz teilt eine Nicht-Naben-Datei mit deiner Fläche — niemand hat sie
+  gewählt): du berichtest wie bisher OHNE `taskId`. Der Server schreibt einen `TaskComment` mit
+  `from: <deine Branch>`, und ein `erledigt` schließt die Notiz beim nächsten Land dieser Branch.
+  Das ist die alte, GLOBALE Bedeutung, und sie bleibt für diese Notizen unverändert.
+- **Angeheftete Quelle** (der Owner oder eine gebundene Program-MAIN hat die Notiz an EINE Zeile
+  gehängt; der Brief schreibt `- notiz <id> · zu <zeile> · …`): du berichtest **mit `taskId`**, und
+  zwar mit einer der Zeilen, unter denen dein eigener Receipt sie geliefert hat. Ohne `taskId`
+  antwortet die Route **409** und nennt die Zeilen — ein per-Aufgabe gemeinter Bericht darf nie
+  still zu einem globalen Urteil werden.
+
+Der Schlüssel ist `(noteId, taskId, branch)`. Ein zweiter Bericht unter demselben Schlüssel
+**ersetzt** den ersten (nur das jüngste zählt, und das ist eine Eigenschaft des Speichers, keine
+Regel für Leser). Ein Task-Urteil landet in `Task.verdicts` der Notiz, NIE in `comments` — damit
+kann weder der Kommentar-Deckel noch ein Löschen eines fremden Kommentars ein maßgebliches Urteil
+zerstören, und der Legacy-Abschluss kann es nie als globales lesen.
+
+**Zwei Ablehnungen, die dasselbe sagen wie das Land:** eine `taskId`, unter der dein Receipt die
+Notiz nicht geliefert hat, ist **409**; eine Zeile, die deine Lane nicht mehr TRÄGT (ein
+`wave/split` hat sie zurückgegeben), ebenfalls **409** — LESEN darfst du sie weiter (der Receipt
+ist Geschichte, und Geschichte bleibt lesbar), nur neu beurteilen nicht. `GET` sagt beides:
+`taskIds` ist die Zuordnung des Receipts, `judgeableUnder` die Teilmenge, die noch offen ist.
 
 **Er ändert KEINEN Status, und die Antwort sagt das** (`effective`). Ein `erledigt` wird erst
-wirksam, wenn die Lane, die es geschrieben hat, LANDET: dann setzt der Land-Pfad die Notiz auf
-`done` mit `note: "erledigt durch Land <sha7> (<branch>)"`. Stirbt die Lane (`killed`, `shelved`),
-bleibt die Notiz pending und das Urteil als lesbarer Kommentar stehen. `widerlegt` und `offen`
-bewegen nie einen Status — sie sind Lesestoff für den Owner.
+wirksam, wenn die Lane, die es geschrieben hat, LANDET — bei einem Task-Urteil beim Land **genau
+dieser Zeile**: dann setzt der Land-Pfad die Notiz auf `done` mit
+`note: "erledigt durch Land <sha7> (<branch>, Aufgabe <taskId>)"`, und ohne `taskId` wie bisher mit
+`note: "erledigt durch Land <sha7> (<branch>)"`. Ein Urteil unter einer Zeile, die dieses Land nicht
+trägt, bewegt nichts. Stirbt die Lane (`killed`, `shelved`), bleibt die Notiz pending und das Urteil
+als lesbarer Datensatz stehen. `widerlegt` und `offen` bewegen nie einen Status — sie sind Lesestoff
+für den Owner.
 
 **Und unabhängig davon stempelt jedes Land die pending Notizen desselben Repos, deren Fläche eine
 Nicht-Naben-Datei seines Diffs enthält**: `touched: [{sha, branch, at}]`, neueste zuerst, Deckel 5.
@@ -727,6 +793,8 @@ curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
 **Nicht lane-only, und das ist eine Entscheidung, kein Versehen.** Die lane-only Routen sind es,
 weil ihre Antwort außerhalb einer Lane undefiniert ist (`drift`, `gate`, `criterion`,
 `verify-intent`, `suite-offer`, `wave/split`, `clarifications`, `notes` + `notes/:id/verdict`);
+`tasks/:id/notes` ist nicht-lane-only, weil eine Lane die Zeile AUSFÜHRT, auf die sie gegründet
+wurde — sie wählt nicht, wogegen die Zeilen gearbeitet werden, die ihre eigene MAIN freigibt;
 `watch` ist nicht-lane-only, weil eine Lane, die auf eine Lane wartet, eine
 Kopplung ist, die nur der Owner sichtbar machen kann. **Beides trifft hier nicht zu:** eine Lane, die
 ihre eigene Suite auslagert, ist genau der Fall, den der Owner gewollt hat, und eine MAIN, die einen

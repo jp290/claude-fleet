@@ -48,7 +48,8 @@ import {
   deriveTaskMetadata, readTrackedSnapshot, trackedIndexStamp,
   type TaskFilesOrigin, type TrackedSnapshot,
 } from "./task-metadata";
-import { notesForTask, renderNotesBlock, NOTE_HUB_FILES, type NoteInput } from "./task-notes";
+import { notesForTask, laneNoteSources, renderNotesBlock, NOTE_HUB_FILES,
+  type NoteInput, type NoteRow } from "./task-notes";
 // The LAND fold of the collision facts. The wave button does not re-decide R1/R2/R3 or the program
 // boundary: it asks THIS projector whether the ids it was handed are one of its own waves, so the
 // board, `bun task-land-waves.ts --state fleet.json` and the door all answer from one classifier.
@@ -97,6 +98,7 @@ import {
   type AttentionKind,
   type AttentionRequest, type TaskKind, type Task, type TaskBrief, type TaskComment,
   isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
+  TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
   type TaskAnalysis, type AnalysisBlocker, type TaskCriterion, type TaskFilesProposal,
   type RefineChild, type RefineProposal,
   type TaskRefine, type LaneForm, type LaneRef, type SuccessionRetirement, type CodexRecoveryState,
@@ -2087,9 +2089,82 @@ const MAX_TASKS = 200;
 // must never be evicted just because 200 terminal tasks piled up — only the terminal
 // statuses (done, archived) are prunable
 const taskTerminal = (t: Task): boolean => t.status === "done" || t.status === "archived";
+// THE ONE WRITER OF A TASK-SCOPED VERDICT, so "only the newest verdict of a key counts" is a
+// property of the store and not a rule every reader has to remember. The key is (taskId, branch);
+// an entry for it is REPLACED in place rather than appended, which is why this list grows with the
+// number of (row, lane) pairs a note was judged under and not with the number of reports.
+//
+// The cap evicts the OLDEST — a bound this list reaches only after 50 distinct pairs, and it is
+// deliberately NOT the comment cap: an authoritative verdict must not be destroyable by an owner
+// deleting an unrelated remark, which is the whole reason it does not live in `comments`.
+function upsertNoteVerdict(list: TaskNoteVerdict[], entry: TaskNoteVerdict): TaskNoteVerdict[] {
+  const kept = list.filter((v) => !(v.taskId === entry.taskId && v.branch === entry.branch));
+  return [...kept, entry].slice(-NOTE_VERDICTS_MAX);
+}
+// --- N3 · THE ASSIGNMENT ITSELF, one function behind two doors (owner, bound Program-MAIN), so
+// the two can never drift into two policies about the same act. It returns the ANSWER, not a
+// Response, because only the doors know which sentence their caller needs first.
+//
+// Every refusal names what it refused and why, and none of them is a 404 on the note: hiding a
+// row's existence reads as "the source is gone" and sends the caller looking for a deletion that
+// never happened — the same rule the verdict door states.
+type PinResult = { ok: true; pins: TaskNotePin[]; attached: boolean } | { ok: false; error: string; code: number };
+function pinNoteToTask(t: Task, noteId: string, attach: boolean, by: "owner" | "main"): PinResult {
+  // AN ASSIGNMENT IS FROZEN AT THE DISPATCH. The founding brief is the bytes a lane executes, and a
+  // pin added after those bytes were chosen would name a source the lane never received — while a
+  // detach would un-assign work it has already been told to do. Both windows close at `sent`, which
+  // is also what makes the receipt an honest record of the assignment.
+  if (t.kind !== "auftrag")
+    return { ok: false, code: 409, error: `${t.kind} is advisory — only an auftrag row carries sources to work under` };
+  if (t.status !== "pending" && t.status !== "queued")
+    return { ok: false, code: 409, error: `task is ${t.status} — an assignment is settled while the row is still open, and frozen once its lane was founded on it` };
+  const held = t.notes ?? [];
+  if (!attach) {
+    if (!held.some((p) => p.noteId === noteId))
+      return { ok: false, code: 409, error: "this source is not assigned to this task" };
+    // DETACH IS NOT DELETE, and the answer says so: the note keeps its row, its text, its own
+    // lifecycle and every verdict already given under this task. Only the assignment goes.
+    const pins = held.filter((p) => p.noteId !== noteId);
+    t.notes = pins.length ? pins : undefined;
+    saveState();
+    audit("task_note_detach", undefined, `${t.id} \u2190 ${noteId} (${by})`);
+    return { ok: true, pins, attached: false };
+  }
+  const notiz = tasks.find((x) => x.id === noteId);
+  if (!notiz)
+    return { ok: false, code: 409, error: "unknown source — no queue row carries this id" };
+  if (notiz.kind !== "notiz")
+    return { ok: false, code: 409, error: `${noteId} is a ${notiz.kind}, not a notiz — only an observation is assigned as a source` };
+  if (notiz.status === "archived")
+    return { ok: false, code: 409, error: "this note is archived — unarchive it before assigning it as a source" };
+  if (notiz.id === t.id)
+    return { ok: false, code: 409, error: "a row cannot be its own source" };
+  // THE REPO IS THE ACCESS CHECK. A lane is founded in ONE repository and reads its sources there;
+  // an assignment across repositories would hand a lane text about a tree it cannot see, and the
+  // resolution is the same `repo ?? DISPATCH_REPO` every other join in this file applies.
+  const target = repoCanon(t.repo ?? DISPATCH_REPO);
+  if (repoCanon(notiz.repo ?? DISPATCH_REPO) !== target)
+    return { ok: false, code: 409, error: `${noteId} targets another repository — an assignment never reaches across repositories` };
+  if (held.some((p) => p.noteId === noteId))
+    return { ok: true, pins: held, attached: true }; // idempotent: a repeat is the same assignment
+  if (held.length >= TASK_NOTES_MAX)
+    return { ok: false, code: 409, error: `this task already names ${held.length}/${TASK_NOTES_MAX} sources — detach one first` };
+  const pins = [...held, { noteId, at: Date.now(), by }];
+  t.notes = pins;
+  saveState();
+  audit("task_note_attach", undefined, `${t.id} \u2190 ${noteId} (${by})`);
+  return { ok: true, pins, attached: true };
+}
 function capTasks(list: Task[]): Task[] {
   if (list.length <= MAX_TASKS) return list;
   const live = new Set(list.filter((t) => !taskTerminal(t)));
+  // N3: A SOURCE A LIVE ROW NAMES IS NOT SPARE CAPACITY. The cap may evict terminal rows, and a
+  // CLOSED `notiz` that an open auftrag still pins is exactly one — evicting it would leave the pin
+  // pointing at nothing, and the next dispatch of that row would report a source the owner assigned
+  // as `unknown`. Detach is the only act that releases a source; a retention bound is not a second
+  // one. Live rows can therefore exceed the cap, exactly as they already can on their own.
+  const pinned = new Set([...live].flatMap((t) => (t.notes ?? []).map((p) => p.noteId)));
+  for (const t of list) if (pinned.has(t.id)) live.add(t);
   const keepDone = Math.max(0, MAX_TASKS - live.size);
   const keptDone = new Set(list.filter(taskTerminal).slice(-keepDone));
   return list.filter((t) => live.has(t) || keptDone.has(t));
@@ -2150,6 +2225,9 @@ type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
   // …and for comments: how many and how recent. That is everything the row chip needs and
   // everything the overlay needs to notice a new one; the texts ride GET /api/tasks.
   & { comments?: { n: number; at: number } }
+  // …and the same shape for N3's two lists: how many sources this row PINS, and how many
+  // task-scoped verdicts stand on this note. Counts only, for the reason directly above.
+  & { notes?: { n: number; at: number }; verdicts?: { n: number; at: number } }
   // …and the lands that moved this row's surface, WHOLE and newest first (see taskDigest).
   & Partial<Pick<Task, "touched">>;
 function taskDigest(t: Task): TaskDigest {
@@ -2186,6 +2264,14 @@ function taskDigest(t: Task): TaskDigest {
     ...(refineInflight.has(t.id) ? { refining: true as const } : {}),
     ...(t.comments?.length
       ? { comments: { n: t.comments.length, at: t.comments[t.comments.length - 1].ts } } : {}),
+    // N3, the two-tier rule again: the poll carries only HOW MANY sources this row names and how
+    // many verdicts stand on this note — enough for a row chip and to invalidate the detail pane's
+    // key. The pins and the verdicts themselves ride GET /api/tasks, which the overlay fetches when
+    // it opens, because both carry text and the poll is where 200 rows' text once was the payload.
+    ...(t.notes?.length ? { notes: { n: t.notes.length, at: t.notes[t.notes.length - 1].at } } : {}),
+    ...(t.verdicts?.length
+      ? { verdicts: { n: t.verdicts.length,
+        at: t.verdicts.reduce((acc, v) => (v.at > acc ? v.at : acc), 0) } } : {}),
     // WHOLE, not a count: the row line names the newest land's sha, and a digest that carried only
     // "3 lands" would leave the board unable to say which one — the same reason `filesProposal`
     // rides this poll whole. Capped at five by the writer, so the size is bounded at the source.
@@ -3951,19 +4037,39 @@ async function removeWorktreeSafe(repo: string, path: string, branch: string, fo
 //
 // `receipts` travels with the set so the caller can tell "no receipt" from "no hit": both render as
 // an empty list, and only one of them is about the join.
-async function laneNoteIds(s: Slot): Promise<{ ids: Set<string>; receipts: number }> {
+//
+// `sources` is the N3 half: which of the lane's ROWS each delivered id was pinned to. It is read
+// from the SAME receipts and unioned the same way, and it is what makes a verdict addressable —
+// a lane judges a source under the task it was given for, and the receipt is the only record of
+// that pairing. An id present in `ids` but absent from `sources` reached this lane by the file
+// surface alone; the two populations must stay distinguishable, because only the first can carry
+// a task-scoped verdict and only the second still carries the legacy global one.
+async function laneNoteIds(s: Slot): Promise<{ ids: Set<string>; receipts: number;
+  sources: Map<string, Set<string>> }> {
   const branch = s.worktree?.branch;
-  if (!branch) return { ids: new Set(), receipts: 0 };
+  if (!branch) return { ids: new Set(), receipts: 0, sources: new Map() };
   const { rows } = await readLedger<Record<string, unknown>>(CONTEXT_RECEIPT_FILE);
   const ids = new Set<string>();
+  const sources = new Map<string, Set<string>>();
   let receipts = 0;
   for (const row of rows) {
     if (row.branch !== branch || row.slot !== s.id) continue;
     receipts++;
     if (Array.isArray(row.notes))
       for (const id of row.notes) if (typeof id === "string") ids.add(id);
+    if (Array.isArray(row.noteSources))
+      for (const raw of row.noteSources) {
+        if (!raw || typeof raw !== "object") continue;
+        const entry = raw as { id?: unknown; taskIds?: unknown };
+        if (typeof entry.id !== "string" || !Array.isArray(entry.taskIds)) continue;
+        // a receipt names the pairing; a pairing never grants an id the receipt did not deliver
+        ids.add(entry.id);
+        const held = sources.get(entry.id) ?? new Set<string>();
+        for (const taskId of entry.taskIds) if (typeof taskId === "string") held.add(taskId);
+        sources.set(entry.id, held);
+      }
   }
-  return { ids, receipts };
+  return { ids, receipts, sources };
 }
 
 // THE NOTE LIFECYCLE AT THE LAND SITE (docs/notizen-verarbeitung-2026-09-06.md §3 N2).
@@ -3984,8 +4090,19 @@ async function laneNoteIds(s: Slot): Promise<{ ids: Set<string>; receipts: numbe
 // must not swallow the CLOSE: a note this branch reported finished is closed by the land whether or
 // not the diff could be read, because the evidence for that half is the verdict plus the land, and
 // neither is a git question.
+//
+// N3 SPLIT THE SECOND WRITE IN TWO, and the split is the whole point of the task-scoped verdict:
+//   · a TASK verdict (`Task.verdicts`, keyed taskId+branch) closes the note only when the task it
+//     was given under is one of the rows THIS land is carrying — `landedTaskIds`, captured by the
+//     caller BEFORE it moves those rows to `done`, because after that move they are indistinguish-
+//     able from every other finished row of the branch;
+//   · a LEGACY verdict (a signed `TaskComment`) keeps its old, wider meaning for the notes that
+//     reached a lane by file surface alone. It is not migrated and not narrowed retroactively.
+// A note carrying both is decided by the TASK verdict: it is the more specific statement, and the
+// two can disagree honestly ("erledigt für Zeile A" while a global `offen` still stands).
 async function applyLandToNotes(repo: string, branch: string,
-  mainBefore: string | undefined, mainAfter: string | undefined): Promise<void> {
+  mainBefore: string | undefined, mainAfter: string | undefined,
+  landedTaskIds: readonly string[] = []): Promise<void> {
   const canon = repoCanon(repo);
   const notes = tasks.filter((t) => t.kind === "notiz" && t.status === "pending"
     && repoCanon(t.repo ?? DISPATCH_REPO) === canon);
@@ -4010,10 +4127,31 @@ async function applyLandToNotes(repo: string, branch: string,
       }
     }
   }
+  const landed = new Set(landedTaskIds);
   for (const t of notes) {
-    // the LAST word of this branch on this note, not merely "an erledigt exists": a lane that
-    // reported `erledigt` and then corrected itself to `offen` must not have the first verdict
-    // resurrected by its own land.
+    // (1) THE TASK-SCOPED CLOSE. Only the rows this land actually carries, and per key only the
+    // newest verdict — which the store guarantees by replacing in place, so this reads one entry.
+    // A verdict given under a row that was SPLIT OFF this lane, or under a row of another lane,
+    // is simply not in `landed` and therefore has no effect here: a return never widens a scope.
+    const scoped = (t.verdicts ?? []).filter((v) => v.branch === branch && landed.has(v.taskId));
+    if (scoped.length > 0) {
+      // THE MORE SPECIFIC STATEMENT IS THE BRANCH'S WORD, and the legacy path below is skipped
+      // whether or not it closes. Otherwise a lane that reported `offen` under the row it is
+      // landing could still be closed by its OWN older global claim from an earlier delivery —
+      // the newer, narrower report silently overruled by the wider one it was meant to replace.
+      const done = scoped.filter((v) => v.verdict === "erledigt").sort((a, b) => b.at - a.at)[0];
+      if (done) {
+        t.status = "done";
+        t.note = `erledigt durch Land ${(mainAfter ?? "").slice(0, 7) || "?"} (${branch}, Aufgabe ${done.taskId})`;
+        audit("note_closed_by_land", undefined, `${t.id} ${branch} task=${done.taskId}`);
+        changed = true;
+      }
+      continue;
+    }
+    // (2) THE LEGACY CLOSE, byte-identical to the pre-N3 rule and reached only when no task verdict
+    // of this branch closed the note. The LAST word of this branch, not merely "an erledigt
+    // exists": a lane that reported `erledigt` and then corrected itself to `offen` must not have
+    // the first verdict resurrected by its own land.
     const mine = (t.comments ?? []).filter((c) => c.from === branch && c.verdict);
     if (mine[mine.length - 1]?.verdict !== "erledigt") continue;
     t.status = "done";
@@ -4044,6 +4182,11 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS,
   mergeParked.delete(branch);
   mergeLast.delete(s.id);
   emitLaneOutcome(landed);
+  // MEMBERSHIP IS READ BEFORE THE STATUS MOVES. The loop below turns every row this lane carries
+  // into a plain `done` row of the branch, at which point nothing distinguishes it from the rows of
+  // every earlier land — so the one question N3's close depends on ("which tasks is THIS land
+  // carrying") is answerable only here, one statement earlier.
+  const landedTaskIds = tasks.filter((t) => t.slot === s.id && t.status === "sent").map((t) => t.id);
   // landing completes the lane's task — mark it BEFORE killSlot so detachSlotTasks
   // (which handles aborts) sees nothing left to detach
   for (const t of tasks) {
@@ -4059,7 +4202,7 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS,
   // change when the work carrying it reaches main. `killed` and `shelved` never reach this line, so
   // an abandoned lane leaves its verdict standing as a readable comment and the note pending, which
   // is what makes the claim falsifiable rather than authoritative.
-  await applyLandToNotes(repo, branch, facts.baseSha, facts.mainAfter);
+  await applyLandToNotes(repo, branch, facts.baseSha, facts.mainAfter, landedTaskIds);
   // A merge terminal event binds to the lane identity that is about to disappear. Its caller
   // persists that event here, after removal succeeded (so landed:true is known) but before
   // killSlot/dropWatchesFor can disarm the subscription as target-gone.
@@ -7768,6 +7911,38 @@ async function readProgramInboxEntry(s: Slot, id: string): Promise<Response> {
 // this handler reads neither — the program comes from boundProgramForMain, the repo from the
 // caller's own checkout. /api/self/autos ignores a `slot` field for the same reason; here there is
 // no body to ignore in the first place (pinned in e2e/pins.ts).
+// N3 · A BOUND MAIN'S ASSIGNMENT, with releaseTaskForMain's authority bracket and for its reasons:
+// the Program comes from the BINDING (never from a body), the repository from the caller's own
+// checkout, and a row of another Program — or an unbracketed row — stays the owner's alone.
+// Everything after the bracket is the shared `pinNoteToTask`, so the two doors cannot drift.
+async function assignNoteForMain(s: Slot, id: string, body: Record<string, unknown> | null): Promise<Response> {
+  const bound = boundProgramForMain(s);
+  if (!bound.ok) return json({ error: bound.error }, 409);
+  const { program, sessionIdMatch } = bound;
+  const t = tasks.find((x) => x.id === id);
+  if (!t) return json({ error: "unknown task" }, 404);
+  if (t.programId !== program.id)
+    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN assigns sources only to rows of program ${program.id}` }, 409);
+  const mainRepo = await repoKeyOf(s);
+  if (!mainRepo)
+    return json({ error: "this session's checkout is not a git repository — the assignment's target repo cannot be derived" }, 409);
+  const target = t.repo ?? DISPATCH_REPO;
+  if (!target)
+    return json({ error: "no dispatch repo is configured" }, 409);
+  if (repoCanon(target) !== mainRepo)
+    return json({ error: `task targets ${basename(repoCanon(target))} and this MAIN is bound in ${basename(mainRepo)} — an assignment never reaches across repositories` }, 409);
+  const noteId = typeof body?.note === "string" ? body.note.trim() : "";
+  if (!/^[a-z0-9]{1,64}$/.test(noteId)) return json({ error: "bad note id" }, 400);
+  if (body !== null && "attach" in body && typeof body.attach !== "boolean")
+    return json({ error: "attach must be true or false" }, 400);
+  const r = pinNoteToTask(t, noteId, body?.attach !== false, "main");
+  if (!r.ok) return json({ error: r.error }, r.code);
+  await saveStateNow();
+  // sessionIdMatch is REPORTED, never gated — ACP-13's doctrine, as at every neighbouring door.
+  return json({ ok: true, sessionIdMatch, attached: r.attached, notes: r.pins,
+    task: { id: t.id, kind: t.kind, status: t.status, programId: t.programId } });
+}
+
 async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // The authority bracket answers first and IN ITS OWN WORDS — "not bound" and "ambiguously bound"
   // stay two different refusals, because they tell the caller to go fix two different things.
@@ -8998,15 +9173,33 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // standing on the files it is about to touch, and a wave touches all n surfaces. Joining per row
     // would multiply the cap by n and blow the byte budget the cap IS; joining on the head alone
     // would drop every note that stands on a follower's files.
+    // the ids this lane's rows currently pin, as one set — so the candidate filter can let a
+    // NON-pending pinned note through without widening the surface join's own population
+    const pinnedIds = (rows: readonly Task[]): Set<string> =>
+      new Set(rows.flatMap((row) => (row.notes ?? []).map((pin) => pin.noteId)));
     const noteJoinFor = (rows: readonly Task[]): NoteInput => {
       const head = noteJoinRow(rows[0]);
       if (rows.length === 1) return head;
       return { ...head, files: [...new Set(rows.flatMap((row) => taskView(row).files ?? []))].sort() };
     };
-    const noteRows = clarify ? []
-      : notesForTask(noteJoinFor(waveRows),
-        tasks.filter((t) => t.kind === "notiz" && t.status === "pending").map(noteJoinRow));
-    const notesBlock = renderNotesBlock(noteRows);
+    // N3, THE EXPLICIT SOURCES. The pins are read HERE — at the seam that chooses the bytes, not at
+    // release and not at receipt time. A row's assignment is mutable right up to the dispatch: an
+    // owner who pins a source between the release and the tick's pick must have it delivered, and
+    // one who detaches in that window must not. Reading `tasks` live at this line is what makes
+    // "current assignment, immediately before dispatch" a property of the code rather than a hope.
+    //
+    // The CANDIDATE population differs between the two joins on purpose: the surface join sees only
+    // pending notes (an already-closed coincidence is noise), while a PIN resolves against any
+    // `notiz` row of this repo — a source stays a source after it has been judged, and pretending a
+    // named id does not exist would report a chosen source as missing.
+    const noteCandidates = tasks.filter((t) => t.kind === "notiz").map(noteJoinRow);
+    const laneSources = clarify
+      ? { reachable: [] as NoteRow[], shown: [] as NoteRow[], overflow: [] as NoteRow[], unknown: [] as string[] }
+      : laneNoteSources(noteJoinFor(waveRows),
+        waveRows.map((row) => ({ id: row.id, noteIds: (row.notes ?? []).map((pin) => pin.noteId) })),
+        noteCandidates.filter((n) => n.status === "pending" || pinnedIds(waveRows).has(n.id)));
+    const noteRows = laneSources.reachable;
+    const notesBlock = renderNotesBlock(laneSources.shown, undefined, laneSources.overflow);
     const deliveredBrief = `${brief}${notesBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : LANE_EXIT_FOOTER}`;
     const selected = contextReceiptSelections(plan.selected);
     const omitted = plan.omitted.map((entry) => ({ ...entry }));
@@ -9031,6 +9224,13 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
       // pane scrollback. Empty is a real answer (no hit, or a clarify lane) and is written as one:
       // an absent field would mean "this receipt predates the join", which is a different fact.
       notes: noteRows.map((row) => row.id),
+      // …and WHICH ROW named each explicit source. The flat `notes` list above stays the delivery
+      // fact (it is what the read door's permission boundary is built on); this is the ASSIGNMENT,
+      // and it is the only place a later reader can learn under which task a source was given. A
+      // wave names one source once, carrying every row that pinned it.
+      noteSources: noteRows.filter((row) => row.taskIds?.length)
+        .map((row) => ({ id: row.id, taskIds: row.taskIds! })),
+      ...(laneSources.unknown.length ? { noteSourcesUnknown: laneSources.unknown } : {}),
       renderer: CONTEXT_ANCHOR_RENDERER,
       // The join key — the SAME function LaneOutcome.briefHash uses over the lane's first logged
       // prompt, so a receipt and the outcome it founded meet exactly. `hash` above keys a different question.
@@ -22825,6 +23025,33 @@ if (existsSync(STATE_FILE)) {
                 ...(isTaskVerdict(c.verdict) ? { verdict: c.verdict } : {}) }))
               .slice(-MAX_COMMENTS_PER_TASK)
             : undefined,
+          // N3 · THE PINS. A malformed entry is DROPPED, never repaired: an invented `by` would let
+          // a hand-edited state file claim the owner assigned a source, and an unreadable noteId is
+          // a pointer to nothing. Re-capped on the way in, like every other list here.
+          notes: Array.isArray(t.notes)
+            ? (t.notes as unknown[])
+              .filter((n): n is TaskNotePin => typeof n === "object" && n !== null
+                && typeof (n as TaskNotePin).noteId === "string" && !!(n as TaskNotePin).noteId
+                && ((n as TaskNotePin).by === "owner" || (n as TaskNotePin).by === "main"))
+              .map((n) => ({ noteId: n.noteId.slice(0, 64), at: Number(n.at) || 0, by: n.by }))
+              .filter((n, at, all) => all.findIndex((x) => x.noteId === n.noteId) === at)
+              .slice(0, TASK_NOTES_MAX)
+            : undefined,
+          // N3 · THE TASK-SCOPED VERDICTS. Dropped whole when malformed, for the reason the comment
+          // loader gives about `from`: a verdict is what CLOSES a note at a land, so a field this
+          // build cannot read must never degrade into a weaker-but-still-acting one. Deduplicated
+          // on the way in by (taskId, branch), newest kept — the same key the writer replaces on.
+          verdicts: Array.isArray(t.verdicts)
+            ? (t.verdicts as unknown[])
+              .filter((v): v is TaskNoteVerdict => typeof v === "object" && v !== null
+                && typeof (v as TaskNoteVerdict).taskId === "string" && !!(v as TaskNoteVerdict).taskId
+                && typeof (v as TaskNoteVerdict).branch === "string" && !!(v as TaskNoteVerdict).branch
+                && typeof (v as TaskNoteVerdict).text === "string" && !!(v as TaskNoteVerdict).text
+                && isTaskVerdict((v as TaskNoteVerdict).verdict))
+              .map((v) => ({ taskId: v.taskId.slice(0, 64), branch: v.branch.slice(0, 200),
+                verdict: v.verdict, text: v.text.slice(0, MAX_COMMENT_TEXT), at: Number(v.at) || 0 }))
+              .reduce(upsertNoteVerdict, [])
+            : undefined,
           // read back in the order it was written (newest first) and re-capped on the way IN, so a
           // hand-edit cannot widen the field past what the land site would have written
           touched: Array.isArray(t.touched)
@@ -26005,6 +26232,20 @@ Bun.serve<WSData>({
       return createTaskForMain(s, await readJson(req));
     }
 
+    // N3 · Program-MAIN assignment. Non-lane only for its neighbours' reason — a lane EXECUTES the
+    // row it was founded on and does not choose the sources of the rows its own MAIN releases — and
+    // bounded by the EXACT binding: a MAIN assigns sources only inside its own Program's rows, in
+    // its own repository. Same body as the owner door, same one function behind it.
+    const selfTaskNotes = /^\/api\/self\/tasks\/([a-z0-9]+)\/notes$/.exec(url.pathname);
+    if (selfTaskNotes && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not assign a source — a lane executes the row it was founded on, it does not choose what the rows its own MAIN releases are worked against" }, 409);
+      return assignNoteForMain(s, selfTaskNotes[1]!, await readJson(req));
+    }
+
     // ACP-16 · Program-MAIN release. Non-lane only, like its attention neighbour above and for the
     // same "one edge per role" reason: a lane executes the row it was founded on, it does not fill
     // the queue its own MAIN releases from. No body is read here or in the handler — the id comes
@@ -26362,14 +26603,31 @@ Bun.serve<WSData>({
       // "no dispatch of this lane is on the ledger" (an owner-opened worktree, a pre-N1 receipt);
       // `notes: []` with `receipts: n` is "the join found nothing on your surface". A lane that
       // cannot tell them apart would read a plumbing failure as an empty queue.
+      // WHICH ROWS THIS LANE STILL CARRIES. A source stays READABLE for the whole life of the lane
+      // — the receipt is the permission and a receipt never shrinks — but it is JUDGEABLE only
+      // while the row it was given under is still this lane's to land. A wave split hands a row
+      // back, and from that instant a verdict under it would be a claim about work this lane will
+      // not carry. Both facts are served, so "still open" and "handed back" are not one absence.
+      const carried = new Set(tasks.filter((t) => t.slot === s.id && t.status === "sent").map((t) => t.id));
       const rows = [...ids.ids].map((id) => tasks.find((t) => t.id === id))
         .filter((t): t is Task => !!t)
-        .map((t) => ({ id: t.id, status: t.status, created: t.created, text: t.text,
-          ...(t.note ? { note: t.note } : {}),
-          ...(taskView(t).files ? { files: taskView(t).files } : {}),
-          ...(t.touched?.length ? { touched: t.touched } : {}),
-          comments: (t.comments ?? []).map((c) => ({ id: c.id, ts: c.ts, text: c.text,
-            ...(c.from ? { from: c.from } : {}), ...(c.verdict ? { verdict: c.verdict } : {}) })) }));
+        .map((t) => {
+          const assigned = [...(ids.sources.get(t.id) ?? [])];
+          return { id: t.id, status: t.status, created: t.created, text: t.text,
+            ...(t.note ? { note: t.note } : {}),
+            ...(taskView(t).files ? { files: taskView(t).files } : {}),
+            ...(t.touched?.length ? { touched: t.touched } : {}),
+            // N3: the assignment as the receipt recorded it, and the half of it still judgeable.
+            // An EXPLICIT source must be judged under one of `judgeableUnder`; a source with an
+            // empty `taskIds` reached this lane by file surface alone and keeps the global door.
+            explicit: assigned.length > 0,
+            taskIds: assigned,
+            judgeableUnder: assigned.filter((taskId) => carried.has(taskId)),
+            verdicts: (t.verdicts ?? []).map((v) => ({ taskId: v.taskId, branch: v.branch,
+              verdict: v.verdict, text: v.text, at: v.at })),
+            comments: (t.comments ?? []).map((c) => ({ id: c.id, ts: c.ts, text: c.text,
+              ...(c.from ? { from: c.from } : {}), ...(c.verdict ? { verdict: c.verdict } : {}) })) };
+        });
       // …and an id the receipt names but the queue no longer holds is REPORTED, never dropped: a
       // note deleted or capped away under the lane is the one case where a shorter list would be
       // read as "you were shown fewer notes than you were".
@@ -26400,8 +26658,36 @@ Bun.serve<WSData>({
         return json({ error: "this note was not delivered to this lane — a lane may only judge the notes its own brief carried" }, 409);
       const t = tasks.find((x) => x.id === id);
       if (!t) return json({ error: "the note this lane was shown is no longer on the queue" }, 409);
+      // N3 · WHICH SCOPE THIS REPORT HAS, decided by the RECEIPT and never by the body alone.
+      const assigned = ids.sources.get(id) ?? new Set<string>();
+      const named = body !== null && typeof body === "object" && "taskId" in body;
+      if (named && (typeof body.taskId !== "string" || !body.taskId))
+        return json({ error: "taskId must be the id of a row this lane carries" }, 400);
+      const taskId = named ? (body.taskId as string) : "";
+      // An EXPLICIT source is judged under a row or not at all. Letting it fall through to the
+      // global door would turn a per-task report into a verdict that closes the note at ANY land of
+      // this branch — the exact widening the assignment exists to prevent, and it would happen
+      // silently, on the one call a lane makes when it is finished.
+      if (!named && assigned.size > 0)
+        return json({ error: `this note was delivered as a SOURCE of ${[...assigned].join(", ")} — name the row in \`taskId\`: a source is judged per task, never globally` }, 409);
+      if (named && !assigned.has(taskId))
+        return json({ error: `this note was not delivered under ${taskId} — a lane judges a source only under the row its own brief named it for` }, 409);
+      // …and the row must still be THIS lane's to land. A wave split hands a row back; from that
+      // instant a verdict under it would be a claim about work this lane will not carry, so the
+      // door closes while the READ door stays open (the receipt is history and history is readable).
+      const carrier = named ? tasks.find((x) => x.id === taskId) : undefined;
+      if (named && (carrier?.slot !== s.id || carrier.status !== "sent"))
+        return json({ error: `row ${taskId} is no longer carried by this lane (${carrier ? carrier.status : "gone"}) — a returned row takes its verdict door with it, and this lane's earlier reports stand unchanged` }, 409);
       // the branch comes from the TOKEN's row and can never be named in the body — the same rule
       // TaskFilesProposal.by states, and for the same reason: provenance a caller dictates is none.
+      if (named) {
+        const v: TaskNoteVerdict = { taskId, branch: s.worktree.branch, verdict, text, at: Date.now() };
+        t.verdicts = upsertNoteVerdict(t.verdicts ?? [], v);
+        saveState();
+        audit("note_verdict", s.id, `${t.id} ${verdict} task=${taskId} (${s.worktree.branch})`);
+        return json({ ok: true, verdictRecord: v, scope: { taskId, branch: v.branch },
+          effective: verdict === "erledigt" ? `on the land of ${taskId} by this lane` : "never — read by the owner" });
+      }
       const c: TaskComment = { id: randomBytes(4).toString("hex"), ts: Date.now(), text,
         from: s.worktree.branch, verdict };
       t.comments = [...(t.comments ?? []), c].slice(-MAX_COMMENTS_PER_TASK);
@@ -28379,6 +28665,25 @@ Bun.serve<WSData>({
     // already there stands on. And it never promotes `derived` on its own: the paths come from the
     // owner's body or from a proposal a person confirms, because lifting a prose reading to a fact
     // by machine is exactly the variant the owner rejected when this door was specified.
+    // N3 · THE OWNER'S ASSIGNMENT DOOR. `{"note":"<id>","attach":true|false}` — one source per
+    // call, because the interesting failure is per source and a batch would answer with one code
+    // for several different refusals.
+    const taskNotes = /^\/api\/tasks\/([a-z0-9]+)\/notes$/.exec(url.pathname);
+    if (req.method === "POST" && taskNotes) {
+      const t = tasks.find((x) => x.id === taskNotes[1]);
+      if (!t) return json({ error: "unknown task" }, 404);
+      const body = await readJson(req);
+      const noteId = typeof body?.note === "string" ? body.note.trim() : "";
+      if (!/^[a-z0-9]{1,64}$/.test(noteId)) return json({ error: "bad note id" }, 400);
+      // ATTACH IS THE DEFAULT and detach must be asked for explicitly: a malformed `attach` must
+      // never silently remove an assignment the owner meant to make.
+      if (body !== null && "attach" in body && typeof body.attach !== "boolean")
+        return json({ error: "attach must be true or false" }, 400);
+      const r = pinNoteToTask(t, noteId, body?.attach !== false, "owner");
+      if (!r.ok) return json({ error: r.error }, r.code);
+      return json({ ok: true, attached: r.attached, notes: r.pins,
+        ...(r.attached ? {} : { kept: "the note keeps its row, its text and every verdict already given under this task — a detach removes the assignment only" }) });
+    }
     const taskFiles = /^\/api\/tasks\/([a-z0-9]+)\/files$/.exec(url.pathname);
     if (req.method === "POST" && taskFiles) {
       const t = tasks.find((x) => x.id === taskFiles[1]);

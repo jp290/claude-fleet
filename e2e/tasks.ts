@@ -9,7 +9,7 @@ import { buildAnalysisPrompt } from "../analysis-prompt";
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
 import { deriveTaskMetadata, type TaskCluster } from "../task-metadata";
-import { noteFirstSentence, notesForTask, renderNotesBlock,
+import { noteFirstSentence, notesForTask, laneNoteSources, renderNotesBlock,
   NOTE_HUB_FILES, NOTES_READ_ROUTES_EXIST, NOTES_SENTENCE_MAX, type NoteInput } from "../task-notes";
 import { matchTaskWaveAnalysis, projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from "../task-waves";
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09,
@@ -90,13 +90,24 @@ export async function run(ctx: Ctx): Promise<void> {
     };
     type SearchProgram = { id: string; title: string };
     type TaskModel = { work: SearchTask[]; history: SearchTask[]; showHistoryInWork: boolean };
-    const modelFns = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(taskModelSource)
-      + "\nreturn { qGroupOf, qTaskListModel, qLaneJoins, qLaneState, qRepoRelation };")() as {
+    // `noteFirstSentence` is the module's one IMPORT the cut-out block calls — handed in as a
+    // parameter rather than re-implemented, so the probe measures the client's own rendering and
+    // not a second copy of the sentence rule that could drift from it.
+    const modelFns = new Function("noteFirstSentence",
+      new Bun.Transpiler({ loader: "ts" }).transformSync(taskModelSource)
+      + "\nreturn { qGroupOf, qTaskListModel, qLaneJoins, qLaneState, qRepoRelation,"
+      + " qNoteSourceRows, qNoteVerdictRows };")(noteFirstSentence) as {
         qGroupOf: (task: SearchTask) => string | null;
         qTaskListModel: (tasks: SearchTask[], texts: Map<string, string>, programs: SearchProgram[], query: string) => TaskModel;
         qLaneJoins: LaneJoinFn;
         qLaneState: (slot: LaneSlot, now: number) => { state: string; quietMs: number | null; dirty: number | null; ahead: number | null };
         qRepoRelation: (taskRepo: string | null, laneRepo: string) => string;
+        qNoteSourceRows: (pins: { noteId: string; at: number; by: string }[],
+          rows: { id: string; status: string }[], texts: Map<string, string>) =>
+          { noteId: string; text: string; status: string; by: string; known: boolean }[];
+        qNoteVerdictRows: (verdicts: { taskId: string; branch: string; verdict: string; text: string; at: number }[],
+          rows: { id: string }[]) =>
+          { taskId: string; branch: string; verdict: string; at: number; taskKnown: boolean }[];
       };
     laneJoinFn = modelFns.qLaneJoins;
     const programs: SearchProgram[] = [
@@ -160,6 +171,40 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(workGroups) === JSON.stringify(["backlog", "released", "running", "needs"])
         && new Set(workGroups).size === 4
         && closed.every((task) => modelFns.qGroupOf(task) === null), JSON.stringify(workGroups));
+
+    // --- N3 · THE ASSIGNMENT AS THE DETAIL PANE RENDERS IT (qNoteSourceRows / qNoteVerdictRows).
+    // The suite has no browser DOM, so the two models are cut out of the REAL client source and
+    // run here. What they must never do is round an ABSENCE off: a pinned id the queue no longer
+    // answers, and a verdict naming a row that has been capped away, both stay visible AS
+    // unresolvable. Dropping either would make the pane disagree with the founding brief, which
+    // reports exactly the same absence to the lane.
+    const n3Rows = [{ id: "n-live", status: "pending" }, { id: "n-done", status: "done" }];
+    const n3Texts = new Map([["n-live", "Erster Satz der Notiz. Zweiter Satz."],
+      ["n-done", "Geschlossene Quelle. Rest."]]);
+    const n3Src = modelFns.qNoteSourceRows(
+      [{ noteId: "n-live", at: 1, by: "owner" }, { noteId: "n-done", at: 2, by: "main" },
+        { noteId: "n-gone", at: 3, by: "owner" }, { noteId: "n-live2", at: 4, by: "owner" }],
+      [...n3Rows, { id: "n-live2", status: "pending" }], n3Texts);
+    check("(n3-ui) the sources model keeps every pin, renders the first sentence, and marks an unresolvable id as unknown",
+      n3Src.length === 4
+      && n3Src[0]!.text === "Erster Satz der Notiz." && n3Src[0]!.known && n3Src[0]!.by === "owner"
+      && n3Src[1]!.status === "done" && n3Src[1]!.known && n3Src[1]!.by === "main"
+      && n3Src[2]!.known === false && n3Src[2]!.status === "unknown"
+      && n3Src[2]!.text === "(nicht mehr auf der Queue)"
+      // a row the queue HAS but whose text has not arrived yet is a THIRD state, and it must not
+      // read as the deletion above — the pane paints before /api/tasks answers on every open
+      && n3Src[3]!.known === true && n3Src[3]!.text === "(Text noch nicht geladen)",
+      JSON.stringify(n3Src));
+    const n3V = modelFns.qNoteVerdictRows([
+      { taskId: "t-b", branch: "fleet/two", verdict: "offen", text: "b", at: 200 },
+      { taskId: "t-a", branch: "fleet/one", verdict: "erledigt", text: "a", at: 300 },
+      { taskId: "t-c", branch: "fleet/three", verdict: "widerlegt", text: "c", at: 200 },
+      { taskId: "t-gone", branch: "fleet/four", verdict: "offen", text: "d", at: 100 },
+    ], [{ id: "t-a" }, { id: "t-b" }, { id: "t-c" }]);
+    check("(n3-ui2) the verdict model is newest first with a TOTAL order, and names a row the queue no longer holds",
+      n3V.map((v) => v.taskId).join(",") === "t-a,t-b,t-c,t-gone"
+      && n3V[0]!.taskKnown && n3V[3]!.taskKnown === false,
+      JSON.stringify(n3V.map((v) => [v.taskId, v.at, v.taskKnown])));
 
     // --- LANE ↔ TASK JOIN (qLaneJoins). The 2 s poll carries the dispatcher's pointer on the TASK
     // side only (task.slot; no taskId/originId/programId per slot), so the fixtures below are the
@@ -2404,6 +2449,103 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(pureBlock.split("\n").filter((l) => l.startsWith("- notiz "))));
   }
 
+  // --- (d6) N3: THE EXPLICIT ASSIGNMENT, pure half.
+  // N1 delivered notes by FILE SURFACE alone. That join is a hint and cannot be an instruction:
+  // nobody could say "work THIS source under THAT row", so a verdict on a shared note closed it for
+  // every neighbouring lane at once. A PIN is the missing sentence, and the rules below are what
+  // separate the two populations — which is the only reason a task-scoped verdict can exist.
+  {
+    const t6 = { id: "T6", repo: "/r", cluster: { prozess: "server" },
+      files: ["server.ts", "a.ts", "b.ts", "c.ts", "d.ts"] };
+    const n6 = (id: string, files: string[], over: Partial<NoteInput> = {}): NoteInput =>
+      ({ id, repo: "/r", kind: "notiz", status: "pending", files, cluster: { prozess: "server" },
+        created: 100, text: `${id} erster Satz. zweiter Satz.`, ...over });
+    const pop: NoteInput[] = [
+      n6("s1", ["a.ts"]), n6("s2", ["zzz.ts"]), n6("j1", ["a.ts", "b.ts", "c.ts"]),
+      n6("j2", ["a.ts", "b.ts"]), n6("j3", ["a.ts"]), n6("j4", ["b.ts"]), n6("j5", ["c.ts"]),
+      n6("j6", ["d.ts"]),
+      // the three that must never resolve as a source: a closed note is still a SOURCE, but a
+      // foreign repo, a foreign kind and an id nobody carries are three distinct absences
+      n6("closed", ["a.ts"], { status: "done" }),
+      n6("foreign", ["a.ts"], { repo: "/other" }),
+      n6("notanote", ["a.ts"], { kind: "auftrag" }),
+    ];
+    // (a) THE TWO POPULATIONS. `s2` shares NO file with T6 and must still arrive, because it was
+    // chosen; the join hits must arrive without a `taskIds` field, because nobody chose them.
+    // Mutation that breaks it: resolving a pin through notesForTask (s2 would vanish).
+    const one = laneNoteSources(t6, [{ id: "T6", noteIds: ["s1", "s2"] }], pop);
+    check("(d6-a) an explicit pin is delivered whatever the surface says, and carries the row that named it",
+      one.shown.slice(0, 2).map((r) => r.id).join(",") === "s1,s2"
+      && one.shown[0]!.taskIds?.join(",") === "T6" && one.shown[1]!.taskIds?.join(",") === "T6"
+      && one.shown[1]!.sharedFiles.length === 0
+      && one.shown.slice(2).every((r) => r.taskIds === undefined)
+      && one.unknown.length === 0,
+      JSON.stringify(one.shown.map((r) => [r.id, r.taskIds ?? null, r.sharedFiles])));
+    // (b) A NOTE THAT IS BOTH is EXPLICIT. A coincidence does not un-choose a source, and the
+    // deduplication must not leave it in the join half as a second, taskId-less line.
+    const both = laneNoteSources(t6, [{ id: "T6", noteIds: ["j1"] }], pop);
+    check("(d6-b) a note that is pinned AND on the surface appears once, as the explicit one",
+      both.shown.filter((r) => r.id === "j1").length === 1
+      && both.shown[0]!.id === "j1" && both.shown[0]!.taskIds?.join(",") === "T6"
+      && both.reachable.filter((r) => r.id === "j1").length === 1,
+      JSON.stringify(both.shown.map((r) => [r.id, r.taskIds ?? null])));
+    // (c) A WAVE NAMES TASK IDS PER SOURCE AND THE FULL TEXT ONCE. Mutation that breaks it:
+    // rendering per row (the same sentence twice, and the byte budget spent on agreement).
+    const wave = laneNoteSources(t6,
+      [{ id: "R1", noteIds: ["s1", "j1"] }, { id: "R2", noteIds: ["s1"] }], pop);
+    check("(d6-c) a wave delivers a doubly-pinned source ONCE, naming both rows in the lane's row order",
+      wave.shown.filter((r) => r.id === "s1").length === 1
+      && wave.shown.find((r) => r.id === "s1")?.taskIds?.join(",") === "R1,R2"
+      && wave.shown.find((r) => r.id === "j1")?.taskIds?.join(",") === "R1",
+      JSON.stringify(wave.shown.map((r) => [r.id, r.taskIds ?? null])));
+    // (d) THE PREVIEW CAP BOUNDS THE PREVIEW, NEVER THE REACH. Seven pins under a cap of five:
+    // five get a sentence, two are NAMED, and all seven are reachable. Mutation that breaks it:
+    // slicing `reachable` by the cap — the lane would then be unable to read a source it was
+    // assigned, and neither surface would say so.
+    const seven = ["s1", "s2", "j1", "j2", "j3", "j4", "j5"];
+    const capped = laneNoteSources(t6, [{ id: "T6", noteIds: seven }], pop);
+    const cappedBlock = renderNotesBlock(capped.shown, undefined, capped.overflow);
+    check("(d6-d) the cap limits the PREVIEW to five and leaves all seven explicit sources reachable",
+      capped.shown.length === 5 && capped.overflow.length === 2 && capped.reachable.length === 7
+      && capped.reachable.map((r) => r.id).join(",") === seven.join(",")
+      && cappedBlock.includes("+ 2 weitere angeheftete Quellen")
+      && cappedBlock.includes("j4 zu T6") && cappedBlock.includes("j5 zu T6")
+      && cappedBlock.split("\n").filter((l) => l.startsWith("- notiz ")).length === 5,
+      `shown=${capped.shown.length} overflow=${capped.overflow.length} reach=${capped.reachable.length}`);
+    // (e) ABSENCE STAYS UNKNOWN — and the three kinds of absence are all unknown, none of them a
+    // silently shorter list. Mutation that breaks it: `.filter(Boolean)` over the resolved pins.
+    const miss = laneNoteSources(t6,
+      [{ id: "T6", noteIds: ["nope", "foreign", "notanote", "closed"] }], pop);
+    check("(d6-e) an unresolvable pin is reported as unknown, and a CLOSED note is still a source",
+      miss.unknown.join(",") === "nope,foreign,notanote"
+      && miss.shown.some((r) => r.id === "closed" && r.taskIds?.join(",") === "T6"),
+      `unknown=${JSON.stringify(miss.unknown)} shown=${JSON.stringify(miss.shown.map((r) => r.id))}`);
+    // (f) PURITY, the same property notesForTask carries: two calls agree and neither input moved.
+    const before6 = JSON.stringify([t6, pop]);
+    const p1 = laneNoteSources(t6, [{ id: "T6", noteIds: ["s1", "j1"] }], pop);
+    const p2 = laneNoteSources(t6, [{ id: "T6", noteIds: ["s1", "j1"] }], pop);
+    check("(d6-f) laneNoteSources is pure — same answer twice and neither input touched",
+      JSON.stringify(p1) === JSON.stringify(p2) && JSON.stringify([t6, pop]) === before6);
+    // (g) THE RENDER. The pin is said BEFORE the sentence (it is the instruction), and the
+    // per-task verdict line appears ONLY when a pin exists — so a lane whose notes are all surface
+    // hits reads byte-identically to what N1 delivered. Mutation that breaks it: printing the
+    // taskId sentence unconditionally, which would tell every lane to name a row it has none of.
+    const pinnedBlock = renderNotesBlock(one.shown, undefined, one.overflow);
+    const joinOnly = renderNotesBlock(laneNoteSources(t6, [{ id: "T6", noteIds: [] }], pop).shown);
+    check("(d6-g) a pinned line names its row before the sentence, and the per-task verdict sentence rides ONLY on a pin",
+      pinnedBlock.includes(`- notiz s1 · zu T6 · s1 erster Satz. [a.ts]`)
+      && pinnedBlock.includes('"taskId"') && pinnedBlock.includes("GENAU DIESER Aufgabe")
+      && !joinOnly.includes('"taskId"') && joinOnly.includes("POST /api/self/notes/<id>/verdict")
+      && joinOnly.split("\n").filter((l) => l.startsWith("- notiz ")).every((l) => !l.includes(" zu ")),
+      JSON.stringify(pinnedBlock.split("\n").slice(0, 4)));
+    // (h) A CLARIFY-SHAPED EMPTY. Zero rows AND zero overflow is the only empty block — an
+    // overflow-only render must still say the sources exist, or the cap would hide them whole.
+    check("(d6-h) the block is empty only when nothing at all was delivered",
+      renderNotesBlock([], undefined, []) === ""
+      && renderNotesBlock([], undefined, [{ id: "x", firstSentence: "s", sharedFiles: [], sameCluster: false, taskIds: ["T6"] }])
+        .includes("+ 1 weitere angeheftete Quelle"));
+  }
+
   // --- (d5-live) THE SAME JOIN AT THE DELIVERY SEAM. Dispatches into ROOT, the instance's own
   // checkout, because that is the only tree here whose tracked files carry a cluster map at all
   // (task-metadata.ts#processesForPath) — testrepo's surface is `code.txt` and friends, which map
@@ -2711,6 +2853,269 @@ export async function run(ctx: Ctx): Promise<void> {
       && Array.isArray(cReceipt?.notes) && cReceipt.notes.length === 0,
       `${JSON.stringify(cReceipt?.notes ?? null)} ${cPrompt.slice(0, 120)}`);
 
+    // --- (n3-live) N3: THE EXPLICIT ASSIGNMENT AT THE LIVE SEAM.
+    // Everything above measures a join the machine makes. This measures a CHOICE a human makes and
+    // the four surfaces that must then agree about it: the owner API, the founding brief, the
+    // context receipt, and the lane's own read door. The counter-cases are what the feature is
+    // actually for — a source that cannot be assigned per row cannot be judged per row either.
+    const n3AssignRes = (taskId: string, body: Record<string, unknown>) =>
+      post(`/api/tasks/${taskId}/notes`, body);
+    const n3Err = async (r: Response): Promise<string> =>
+      ((await r.clone().json().catch(() => ({}))) as { error?: string }).error ?? "";
+    const n3RowOf = async (id: string): Promise<{ notes?: { noteId: string; by: string }[] } | undefined> =>
+      (await taskRows()).find((t) => t.id === id) as
+        { notes?: { noteId: string; by: string }[] } | undefined;
+
+    // (a) ATTACH / DETACH / RE-ATTACH — the LAST detach in particular, because an empty pin list is
+    // the shape a writer is most likely to leave behind as `[]` and a reader most likely to read as
+    // "assigned nothing on purpose". Re-attaching afterwards proves the detach removed the
+    // assignment and NOT the note: the same id has to resolve again.
+    const n3Task = await mkTask("Auftrag N3: continuity.ts und trailstats.ts.", "auftrag");
+    const n3A1 = await n3AssignRes(n3Task, { note: nF, attach: true });
+    const n3A2 = await n3AssignRes(n3Task, { note: nG, attach: true });
+    const n3AfterAttach = await n3RowOf(n3Task);
+    const n3D1 = await n3AssignRes(n3Task, { note: nG, attach: false });
+    const n3D2 = await n3AssignRes(n3Task, { note: nF, attach: false });
+    const n3AfterDetach = await n3RowOf(n3Task);
+    const n3R1 = await n3AssignRes(n3Task, { note: nF, attach: true });
+    const n3R2 = await n3AssignRes(n3Task, { note: nG, attach: true });
+    check("(n3-a) attach, detach and re-attach are all reversible, and the LAST detach leaves no assignment behind",
+      n3A1.ok && n3A2.ok && n3D1.ok && n3D2.ok && n3R1.ok && n3R2.ok
+      && JSON.stringify(n3AfterAttach?.notes?.map((x) => x.noteId)) === JSON.stringify([nF, nG])
+      && n3AfterAttach?.notes?.every((x) => x.by === "owner") === true
+      && n3AfterDetach?.notes === undefined
+      && JSON.stringify((await n3RowOf(n3Task))?.notes?.map((x) => x.noteId)) === JSON.stringify([nF, nG]),
+      `${JSON.stringify(n3AfterAttach?.notes)} → ${JSON.stringify(n3AfterDetach?.notes)}`);
+    // …and a DETACH IS NOT A DELETE, which is the sentence the answer has to carry: the note row
+    // still stands, pending, with its text. Mutation that breaks it: detaching by deleting the row.
+    const n3Detached = (await taskRows()).find((t) => t.id === nG);
+    check("(n3-a2) a detach removes the assignment and nothing else — the note keeps its row, status and text",
+      n3Detached?.status === "pending" && n3Detached.text.startsWith("Notiz G:")
+      && (await n3Err(n3D1)) === "" && (await n3D1.clone().json() as { kept?: string }).kept?.includes("detach removes the assignment only") === true,
+      JSON.stringify({ row: n3Detached?.status, kept: (await n3D1.clone().json() as { kept?: string }).kept }));
+
+    // (b) THE REFUSALS, each naming what it refused. A 404 on the note is deliberately NOT among
+    // them: hiding a row's existence reads as "the source is gone".
+    const n3Bad = await n3AssignRes(n3Task, { note: "nosuchid" });
+    const n3NotANote = await n3AssignRes(n3Task, { note: rankId });
+    const n3OntoNote = await n3AssignRes(nF, { note: nG });
+    const n3Malformed = await n3AssignRes(n3Task, { note: "" });
+    const n3BadFlag = await n3AssignRes(n3Task, { note: nF, attach: "yes" });
+    const n3UnknownTask = await n3AssignRes("nosuchtask", { note: nF });
+    check("(n3-b) unknown source, wrong kind, an advisory target, a malformed id and a malformed flag are each refused as themselves",
+      n3Bad.status === 409 && (await n3Err(n3Bad)).includes("unknown source")
+      && n3NotANote.status === 409 && (await n3Err(n3NotANote)).includes("not a notiz")
+      && n3OntoNote.status === 409 && (await n3Err(n3OntoNote)).includes("advisory")
+      && n3Malformed.status === 400 && n3BadFlag.status === 400
+      && n3UnknownTask.status === 404,
+      [n3Bad.status, n3NotANote.status, n3OntoNote.status, n3Malformed.status, n3BadFlag.status,
+        n3UnknownTask.status].join("/"));
+
+    // (c) THE DISPATCH. Two pinned sources, one of which (`nG`) shares NOTHING with this task's
+    // surface — the whole point: a source arrives because it was chosen, not because a file
+    // coincided. `nHub` is pinned too and would be invisible to the join for the same reason the
+    // (d5-live-b) control is. Mutation that breaks it: resolving pins through the surface join.
+    await n3AssignRes(n3Task, { note: nHub, attach: true });
+    const N3BRIEF = "N3-SOURCES-FIXTURE";
+    await post(`/api/tasks/${n3Task}/brief`, { text: N3BRIEF });
+    const n3Disp = await dispatchAndRead(n3Task, N3BRIEF);
+    const n3Block = n3Disp.prompt.slice(N3BRIEF.length,
+      n3Disp.prompt.indexOf("\n\nContextPlan v2 anchors") >= 0
+        ? n3Disp.prompt.indexOf("\n\nContextPlan v2 anchors") : undefined);
+    check("(n3-c) the brief names each pinned source with the ROW it was pinned to, whatever the file surface says",
+      n3Block.includes(`- notiz ${nF} · zu ${n3Task} · `)
+      && n3Block.includes(`- notiz ${nG} · zu ${n3Task} · `)
+      && n3Block.includes(`- notiz ${nHub} · zu ${n3Task} · `)
+      && n3Block.includes("Wirksam wird ein `erledigt` erst mit dem Land GENAU DIESER Aufgabe"),
+      JSON.stringify(n3Block.split("\n").filter((l) => l.startsWith("- notiz "))));
+    // (d) THE RECEIPT records the ASSIGNMENT, not only the delivery. Mutation that breaks it:
+    // writing the flat id list alone — no later reader could then say under which row a source was
+    // given, and the verdict door's whole permission boundary rests on that pairing.
+    type N3Receipt = ContextReceipt & { noteSources?: { id: string; taskIds: string[] }[] };
+    const n3Receipt = n3Disp.receipt as N3Receipt | undefined;
+    check("(n3-d) the receipt names each explicit source WITH its row, beside the flat delivered list",
+      JSON.stringify(n3Receipt?.noteSources) === JSON.stringify(
+        [nF, nG, nHub].map((id) => ({ id, taskIds: [n3Task] })))
+      && [nF, nG, nHub].every((id) => (n3Receipt?.notes ?? []).includes(id)),
+      `${JSON.stringify(n3Receipt?.noteSources ?? null)} notes=${JSON.stringify(n3Receipt?.notes ?? null)}`);
+
+    // (e) THE LANE'S OWN READ. The four surfaces must hand back the SAME ids and the SAME original
+    // texts — that is the done-criterion of this cut, so it is asserted as one statement.
+    let n3Tok = "";
+    let n3Persisted: { slots?: Record<string, { selfToken?: string }> } = {};
+    if (n3Disp.slot !== null) for (let i = 0; i < 40; i++) {
+      try { n3Persisted = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as typeof n3Persisted; }
+      catch { /* saveState writes tmp+rename */ }
+      if (n3Persisted.slots?.[String(n3Disp.slot)]?.selfToken) break;
+      await Bun.sleep(100);
+    }
+    n3Tok = n3Persisted.slots?.[String(n3Disp.slot ?? 0)]?.selfToken ?? "";
+    type N3SelfNote = { id: string; text: string; status: string; explicit?: boolean;
+      taskIds?: string[]; judgeableUnder?: string[];
+      verdicts?: { taskId: string; branch: string; verdict: string; text: string }[];
+      comments: { text: string; from?: string; verdict?: string }[] };
+    const n3Self = async (): Promise<{ notes?: N3SelfNote[]; receipts?: number }> =>
+      (await (await fetch(`${BASE}/api/self/notes`, { headers: { "x-fleet-self-token": n3Tok } })).json()) as
+        { notes?: N3SelfNote[]; receipts?: number };
+    let n3Read = await n3Self();
+    for (let i = 0; i < 24 && !(n3Read.notes ?? []).some((x) => x.id === nF); i++) {
+      await Bun.sleep(500); n3Read = await n3Self();
+    }
+    const n3Texts = new Map((await taskRows()).map((t) => [t.id, t.text]));
+    const n3SeenF = (n3Read.notes ?? []).find((x) => x.id === nF);
+    check("(n3-e) API, brief, receipt and the lane's read door name the same sources — and the door serves the ORIGINAL text",
+      !!n3Tok
+      && [nF, nG, nHub].every((id) => (n3Read.notes ?? []).some((x) => x.id === id))
+      && n3SeenF?.explicit === true
+      && JSON.stringify(n3SeenF?.taskIds) === JSON.stringify([n3Task])
+      && JSON.stringify(n3SeenF?.judgeableUnder) === JSON.stringify([n3Task])
+      && n3SeenF?.text === n3Texts.get(nF)
+      && n3Texts.get(nF)!.includes("Rest."),
+      `tok=${!!n3Tok} seen=${JSON.stringify((n3Read.notes ?? []).map((x) => x.id))} F=${JSON.stringify(n3SeenF?.taskIds ?? null)}`);
+
+    // (f) THE VERDICT SCOPE. Three doors in one check, because they are one rule: a chosen source
+    // is judged UNDER A ROW, never globally, and never under a row this lane does not carry.
+    const n3Judge = (id: string, body: unknown, token = n3Tok) =>
+      fetch(`${BASE}/api/self/notes/${id}/verdict`, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": token },
+        body: JSON.stringify(body) });
+    const n3Global = await n3Judge(nF, { verdict: "erledigt", text: "ohne Zeile" });
+    const n3Foreign = await n3Judge(nF, { taskId: rankId, verdict: "erledigt", text: "fremde Zeile" });
+    const n3Ok = await n3Judge(nF, { taskId: n3Task, verdict: "erledigt", text: "N3: unter dieser Zeile erledigt." });
+    const n3OkBody = (await n3Ok.clone().json()) as
+      { verdictRecord?: { taskId: string; branch: string; verdict: string }; effective?: string; comment?: unknown };
+    const n3RowF = (await taskRows()).find((t) => t.id === nF) as
+      { status?: string; verdicts?: { taskId: string; branch: string; verdict: string }[];
+        comments?: { verdict?: string }[] } | undefined;
+    check("(n3-f) an explicit source is judged per ROW: a global report and a foreign row are both 409, and the accepted one writes a VERDICT and no comment",
+      n3Global.status === 409 && (await n3Err(n3Global)).includes("name the row")
+      && n3Foreign.status === 409 && (await n3Err(n3Foreign)).includes("not delivered under")
+      && n3Ok.ok && n3OkBody.verdictRecord?.taskId === n3Task
+      && n3OkBody.comment === undefined
+      && (n3OkBody.effective ?? "").includes(n3Task)
+      && JSON.stringify(n3RowF?.verdicts?.map((v) => [v.taskId, v.verdict])) === JSON.stringify([[n3Task, "erledigt"]])
+      && (n3RowF?.comments ?? []).every((c) => !c.verdict)
+      && n3RowF?.status === "pending",
+      `${n3Global.status}/${n3Foreign.status}/${n3Ok.status} ${JSON.stringify(n3RowF?.verdicts ?? null)}`);
+    // …and the NEWEST verdict of a key REPLACES the older one rather than piling up beside it, so
+    // "only the last word counts" is a property of the store. Mutation that breaks it: appending.
+    await n3Judge(nF, { taskId: n3Task, verdict: "offen", text: "N3: doch noch offen." });
+    const n3RowF2 = (await taskRows()).find((t) => t.id === nF) as
+      { verdicts?: { taskId: string; verdict: string; text: string }[] } | undefined;
+    check("(n3-f2) a second report on the same (row, branch) REPLACES the first — one entry, the newest one",
+      n3RowF2?.verdicts?.length === 1 && n3RowF2.verdicts[0].verdict === "offen"
+      && n3RowF2.verdicts[0].text.includes("doch noch offen"),
+      JSON.stringify(n3RowF2?.verdicts ?? null));
+
+    // (g) THE ASSIGNMENT IS FROZEN ONCE A LANE WAS FOUNDED ON THE ROW — in both directions, since
+    // a late detach would un-assign work the lane has already been told to do.
+    const n3LateAttach = await n3AssignRes(n3Task, { note: nA, attach: true });
+    const n3LateDetach = await n3AssignRes(n3Task, { note: nF, attach: false });
+    check("(n3-g) neither an attach nor a detach reaches a row whose lane is already founded on it",
+      n3LateAttach.status === 409 && n3LateDetach.status === 409
+      && (await n3Err(n3LateAttach)).includes("frozen once its lane was founded"),
+      `${n3LateAttach.status}/${n3LateDetach.status} ${await n3Err(n3LateAttach)}`);
+    await closeLane(n3Disp.slot);
+
+    // (h) THE PREVIEW CAP BOUNDS THE PREVIEW, NEVER THE REACH — live. Seven sources on one row:
+    // five get a sentence, two are named, and the lane's read door serves all seven in full.
+    const n3Cap = await mkTask("Auftrag N3 Deckel: docs/verify-tiering.md.", "auftrag");
+    const sevenIds = [nA, nB, nC, nD, nE, nF, nG];
+    for (const id of sevenIds) await n3AssignRes(n3Cap, { note: id, attach: true });
+    const CAPBRIEF = "N3-CAP-FIXTURE";
+    await post(`/api/tasks/${n3Cap}/brief`, { text: CAPBRIEF });
+    const n3CapDisp = await dispatchAndRead(n3Cap, CAPBRIEF);
+    let n3CapTok = "";
+    if (n3CapDisp.slot !== null) for (let i = 0; i < 40; i++) {
+      try {
+        const st = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+          { slots?: Record<string, { selfToken?: string }> };
+        n3CapTok = st.slots?.[String(n3CapDisp.slot)]?.selfToken ?? "";
+      } catch { /* mid-write */ }
+      if (n3CapTok) break;
+      await Bun.sleep(100);
+    }
+    let n3CapRead: { notes?: { id: string }[] } = {};
+    for (let i = 0; i < 24; i++) {
+      n3CapRead = (await (await fetch(`${BASE}/api/self/notes`,
+        { headers: { "x-fleet-self-token": n3CapTok } })).json()) as typeof n3CapRead;
+      if ((n3CapRead.notes ?? []).length >= 7) break;
+      await Bun.sleep(500);
+    }
+    const n3CapBlock = n3CapDisp.prompt.slice(CAPBRIEF.length,
+      n3CapDisp.prompt.indexOf("\n\nContextPlan v2 anchors") >= 0
+        ? n3CapDisp.prompt.indexOf("\n\nContextPlan v2 anchors") : undefined);
+    check("(n3-h) seven sources under a cap of five: five previewed, two NAMED, all seven readable in full",
+      n3CapBlock.split("\n").filter((l) => l.startsWith("- notiz ")).length === 5
+      && n3CapBlock.includes("+ 2 weitere angeheftete Quellen")
+      && sevenIds.every((id) => (n3CapRead.notes ?? []).some((x) => x.id === id))
+      && (n3CapRead.notes ?? []).length === 7,
+      `lines=${n3CapBlock.split("\n").filter((l) => l.startsWith("- notiz ")).length}`
+      + ` read=${JSON.stringify((n3CapRead.notes ?? []).map((x) => x.id))}`);
+    await closeLane(n3CapDisp.slot);
+
+    // (i) RETENTION. A CLOSED note an open row still names is not spare capacity: `capTasks` may
+    // evict terminal rows, and evicting THIS one would leave the assignment pointing at nothing.
+    // Measured across the cap boundary itself (199 / 200 / 201 rows), because a bound is exactly
+    // where an off-by-one lives. Mutation that breaks it: the pre-N3 `live` set alone.
+    const n3Keep = await mkTask("Notiz N3 Retention: docs/verify-tiering.md. Rest.", "notiz");
+    const n3Holder = await mkTask("Auftrag N3 Retention-Halter: docs/verify-tiering.md.", "auftrag");
+    await n3AssignRes(n3Holder, { note: n3Keep, attach: true });
+    await post(`/api/tasks/${n3Keep}/done`, {}); // terminal, and therefore prunable but for the pin
+    const n3Filler: string[] = [];
+    const n3Count = async (): Promise<number> => (await taskRows()).length;
+    const n3Has = async (id: string): Promise<boolean> => (await taskRows()).some((t) => t.id === id);
+    const n3At: Record<string, boolean> = {};
+    // COUNT WHAT WAS MINTED, never what the list still holds. The list length is the CAP — it stops
+    // at MAX_TASKS by construction — so a loop that waits for the list to reach 201 waits forever
+    // (measured: it did, on the first run of this check, and it hung the suite for 80 minutes while
+    // minting a task per iteration). `minted` is the honest quantity: how many rows this queue has
+    // been ASKED to hold. The guard is a second answer to the same lesson — a probe that cannot
+    // reach its own precondition must fail as ITSELF rather than run out of wall clock.
+    let minted = await n3Count();
+    let n3Stuck = "";
+    for (const want of [199, 200, 201]) {
+      let guard = 0;
+      while (minted < want && guard++ < 400) {
+        const id = await mkTask(`N3 filler ${n3Filler.length}: docs/e2e-trail.md.`, "notiz");
+        if (!id) { n3Stuck = `mkTask returned no id at minted=${minted}`; break; }
+        await post(`/api/tasks/${id}/done`, {});
+        n3Filler.push(id);
+        minted++;
+      }
+      if (guard >= 400) n3Stuck = `guard tripped at minted=${minted}, want=${want}`;
+      n3At[String(want)] = await n3Has(n3Keep);
+    }
+    // …and the cap has to have BITTEN, or the survival above is vacuous: 201 minted rows against a
+    // list of exactly MAX_TASKS is the proof that eviction ran and still kept the pinned source.
+    const n3Held = await n3Count();
+    check("(n3-i) a CLOSED note an open row still names survives the retention cap — measured across 199, 200 and 201 minted rows",
+      n3Stuck === "" && minted >= 201 && n3Held === 200
+      && n3At["199"] === true && n3At["200"] === true && n3At["201"] === true,
+      `${JSON.stringify(n3At)} minted=${minted} held=${n3Held} ${n3Stuck}`);
+    // …and the assignment itself survives it, which is the half a "the row is still there" check
+    // would miss: the pin lives on the HOLDER and the holder is non-terminal, so this measures that
+    // nothing rewrote it while the cap ran.
+    check("(n3-i2) the assignment survives the cap with it — the holder still names the source",
+      JSON.stringify((await n3RowOf(n3Holder))?.notes?.map((x) => x.noteId)) === JSON.stringify([n3Keep]),
+      JSON.stringify((await n3RowOf(n3Holder))?.notes ?? null));
+
+    // (j) RESTART. Both fields are persisted-and-rehydrated or they are decorations: a pin that
+    // dies at the first boot cannot found a brief, and a verdict that does cannot close a note.
+    // Read from the state FILE the server has written, which is what the loader will read back.
+    const n3Saved = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { tasks?: { id: string; notes?: { noteId: string; by: string }[];
+        verdicts?: { taskId: string; branch: string; verdict: string }[] }[] };
+    const n3SavedHolder = (n3Saved.tasks ?? []).find((t) => t.id === n3Holder);
+    const n3SavedNote = (n3Saved.tasks ?? []).find((t) => t.id === nF);
+    check("(n3-j) the assignment and the task-scoped verdict are both on disk, in the shape the loader reads back",
+      JSON.stringify(n3SavedHolder?.notes?.map((x) => [x.noteId, x.by])) === JSON.stringify([[n3Keep, "owner"]])
+      && n3SavedNote?.verdicts?.length === 1
+      && n3SavedNote.verdicts[0].taskId === n3Task
+      && n3SavedNote.verdicts[0].branch.startsWith("fleet/"),
+      `${JSON.stringify(n3SavedHolder?.notes ?? null)} ${JSON.stringify(n3SavedNote?.verdicts ?? null)}`);
+
+    for (const id of [n3Task, n3Cap, n3Keep, n3Holder, ...n3Filler]) await post(`/api/tasks/${id}/delete`, {});
     for (const id of [...fixtureIds, ctlId, hubId, rankId, clarifyId]) await post(`/api/tasks/${id}/delete`, {});
     if (rootLanes.length) rmSync(`${ROOT}.worktrees`, { recursive: true, force: true });
   }
@@ -4816,6 +5221,8 @@ export async function run(ctx: Ctx): Promise<void> {
     // derived, the confirmed rows stay confirmed, and a parked proposal comes back as a PROPOSAL
     // rather than as the surface it is one owner click away from. ---
     const wParked = await wMint(`parked row about ${WFILE}`, { programId: provenanceProgramId });
+    // N3's wave fixture source, declared out here so the block's own cleanup can reach it
+    let w3Note = "";
     await wPropose(wParked, [WGHOST]);
     await restartSrv();
     const [wRelA, wRelB, wRelDerived, wRelParked] =
@@ -4904,6 +5311,15 @@ export async function run(ctx: Ctx): Promise<void> {
         (w3RowsBefore.find((t) => t.id === id) as { created?: number } | undefined)?.created ?? 0;
       const w3ExpectedHead = w3Created(wA) !== w3Created(wB)
         ? (w3Created(wA) < w3Created(wB) ? wA : wB) : (wA < wB ? wA : wB);
+      // N3 · one SOURCE, pinned to both rows of the wave before it starts. It is the fixture for
+      // the sentence a returned row has to obey: a split hands the row back, and from that instant
+      // a verdict under it would be a claim about work this lane will not carry.
+      w3Note = await wMint(`Notiz zur Welle: ${WFILE} traegt zwei Behauptungen. Zweiter Satz.`,
+        { kind: "notiz", programId: provenanceProgramId });
+      const w3PinA = await post(`/api/tasks/${wA}/notes`, { note: w3Note, attach: true });
+      const w3PinB = await post(`/api/tasks/${wB}/notes`, { note: w3Note, attach: true });
+      check("(w3-n3) fixture: the same source is assigned to BOTH rows of the wave",
+        w3PinA.ok && w3PinB.ok, `${w3PinA.status}/${w3PinB.status} note=${w3Note}`);
       const w3Since = Date.now();
       const w3Res = await w3Start({ ids: [wB, wA] }); // deliberately NOT in wave order: the door orders
       const w3Body = (await w3Res.json()) as
@@ -5030,6 +5446,28 @@ export async function run(ctx: Ctx): Promise<void> {
       check("(w3) the kept row is untouched — still `sent`, still on the lane",
         w3KeptRow?.status === "sent" && (w3KeptRow as { slot?: number }).slot === w3Slot,
         JSON.stringify(w3KeptRow));
+      // N3 · THE SPLIT NARROWS THE VERDICT DOOR AND NOTHING ELSE. The lane may still READ the
+      // source (the receipt is history and history stays readable), it may still judge it under the
+      // row it KEPT, and it may no longer judge it under the row it handed back. Mutation that
+      // breaks it: keying the door on the receipt alone, which never shrinks.
+      const w3JudgeAs = (taskId: string) =>
+        fetch(`${BASE}/api/self/notes/${w3Note}/verdict`, { method: "POST",
+          headers: { "content-type": "application/json", "x-fleet-self-token": w3Tok },
+          body: JSON.stringify({ taskId, verdict: "offen", text: "N3: Bericht nach dem Split." }) });
+      const w3StillReads = (((await (await fetch(`${BASE}/api/self/notes`,
+        { headers: { "x-fleet-self-token": w3Tok } })).json()) as
+        { notes?: { id: string; judgeableUnder?: string[] }[] }).notes ?? [])
+        .find((x) => x.id === w3Note);
+      const w3Returned = await w3JudgeAs(w3Follower);
+      const w3Kept = await w3JudgeAs(w3Head);
+      check("(w3-n3) after the split the source is still READABLE, still judgeable under the KEPT row, and refused under the returned one",
+        !!w3StillReads
+        && JSON.stringify(w3StillReads.judgeableUnder) === JSON.stringify([w3Head])
+        && w3Returned.status === 409
+        && (await w3Err(w3Returned)).includes("no longer carried by this lane")
+        && w3Kept.status === 200,
+        `read=${JSON.stringify(w3StillReads ?? null)} returned=${w3Returned.status} kept=${w3Kept.status}`);
+
       const w3Again = await w3Split({ ids: [w3Head], reason: "and now the rest" });
       check("(w3) after the split the lane carries ONE row, so a second split is refused as an abort",
         w3Again.status === 409 && (await w3Err(w3Again)).includes("this lane carries no wave"),
@@ -5066,7 +5504,8 @@ export async function run(ctx: Ctx): Promise<void> {
       }
     }
 
-    for (const id of [wA, wB, wC, wParked, wNotiz, wDone]) await post(`/api/tasks/${id}/delete`, {});
+    for (const id of [wA, wB, wC, wParked, wNotiz, wDone, w3Note].filter(Boolean))
+      await post(`/api/tasks/${id}/delete`, {});
   }
 
   // --- (j) ↻ refine: the brief compiler on the queue (briefs/task-refine.md). Three properties

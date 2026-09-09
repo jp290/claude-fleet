@@ -832,7 +832,111 @@ export async function run(): Promise<void> {
       && (rKill.comments ?? []).some((c) => c.verdict === "erledigt" && c.from === kBranch),
       `${rKill?.status} ${JSON.stringify(rKill?.comments ?? [])}`);
 
-    for (const id of [nTouch, nOther, nHubOnly, nDone, aDone, nKill, aKill])
+    // --- (n3-scoped) N3: THE VERDICT IS WIRKSAM ONLY AT THE LAND OF *ITS OWN* ROW ----------
+    // The pre-N3 close was GLOBAL: one `erledigt` from a branch closed the note at that branch's
+    // next land, whatever the land was carrying. That made a note usable exactly once, by exactly
+    // one lane. The three facts below are what an explicit assignment buys, and only a real land
+    // can establish them:
+    //   · two sources under ONE row are judged INDEPENDENTLY — "A is finished" is not "B is";
+    //   · the close names the ROW, so a reader can see which work made the claim true;
+    //   · a verdict given under a row this land is NOT carrying does nothing — which is also why a
+    //     row handed back by a wave split cannot close anything: it is not in `landedTaskIds`.
+    const nShared = await mkRow("Notiz N3: code.txt wird von zwei Zeilen beansprucht. Zweiter Satz.", "notiz");
+    const nBown = await mkRow("Notiz N3: code.txt, unter Zeile B erledigt. Zweiter Satz.", "notiz");
+    const nBopen = await mkRow("Notiz N3: code.txt, unter Zeile B offen. Zweiter Satz.", "notiz");
+    const aTaskA = await mkRow("Auftrag N3 A: code.txt.", "auftrag");
+    const aTaskB = await mkRow("Auftrag N3 B: code.txt.", "auftrag");
+    const pin = (task: string, note: string) => post(`/api/tasks/${task}/notes`, { note, attach: true });
+    await pin(aTaskA, nShared);
+    await pin(aTaskB, nShared);
+    await pin(aTaskB, nBown);
+    await pin(aTaskB, nBopen);
+    // one dispatched lane, its self token and its receipt — the same wait the (n2) fixtures make,
+    // and for the same reason: the verdict door's permission boundary IS the context receipt.
+    const n3Lane = async (taskId: string, wantNotes: string[]): Promise<
+      { slot: number | null; cwd: string; branch: string; tok: string; delivered: string[] }> => {
+      const res = await post(`/api/tasks/${taskId}/dispatch`, {});
+      const slot = ((await res.json()) as { slot?: number }).slot ?? null;
+      let cwd = ""; let branch = ""; let tok = "";
+      if (slot !== null) for (let i = 0; i < 60; i++) {
+        const sl = ((await (await get("/api/sessions")).json()) as
+          { slots: { id: number; cwd: string | null; worktree?: { branch: string } | null }[] })
+          .slots.find((x) => x.id === slot);
+        cwd = sl?.cwd ?? ""; branch = sl?.worktree?.branch ?? "";
+        tok = await selfTokenOf(slot);
+        if (cwd && branch && tok) break;
+        await Bun.sleep(100);
+      }
+      let delivered: string[] = [];
+      if (tok) for (let i = 0; i < 24; i++) {
+        delivered = (((await (await fetch(`${BASE}/api/self/notes`,
+          { headers: { "x-fleet-self-token": tok } })).json()) as { notes?: { id: string }[] }).notes ?? [])
+          .map((x) => x.id);
+        if (wantNotes.every((id) => delivered.includes(id))) break;
+        await Bun.sleep(500);
+      }
+      return { slot, cwd, branch, tok, delivered };
+    };
+    const n3Judge = (tok: string, note: string, body: Record<string, unknown>) =>
+      fetch(`${BASE}/api/self/notes/${note}/verdict`, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": tok },
+        body: JSON.stringify(body) });
+
+    // Lane A: claims the SHARED source finished under row A — and then dies without landing. Its
+    // verdict must survive as a record and act on nothing.
+    const laneA = await n3Lane(aTaskA, [nShared]);
+    const vA = laneA.tok
+      ? await n3Judge(laneA.tok, nShared, { taskId: aTaskA, verdict: "erledigt", text: "N3: unter Zeile A erledigt." })
+      : null;
+    check("(setup n3) lane A received the shared source and judged it under its own row",
+      laneA.delivered.includes(nShared) && vA?.status === 200,
+      `slot=${laneA.slot} delivered=${JSON.stringify(laneA.delivered)} verdict=${vA?.status}`);
+    if (laneA.slot !== null) {
+      await post(`/api/slots/${laneA.slot}/kill`, {});
+      if (laneA.cwd) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", laneA.cwd]);
+    }
+
+    // Lane B: two sources, two DIFFERENT verdicts, then a real land.
+    const laneB = await n3Lane(aTaskB, [nBown, nBopen, nShared]);
+    const vBdone = laneB.tok
+      ? await n3Judge(laneB.tok, nBown, { taskId: aTaskB, verdict: "erledigt", text: "N3: unter Zeile B erledigt." })
+      : null;
+    const vBopen = laneB.tok
+      ? await n3Judge(laneB.tok, nBopen, { taskId: aTaskB, verdict: "offen", text: "N3: unter Zeile B noch offen." })
+      : null;
+    check("(setup n3) lane B received both of its own sources and judged them differently",
+      laneB.delivered.includes(nBown) && laneB.delivered.includes(nBopen)
+      && vBdone?.status === 200 && vBopen?.status === 200,
+      `delivered=${JSON.stringify(laneB.delivered)} ${vBdone?.status}/${vBopen?.status}`);
+    let mainAfterB = "";
+    if (laneB.slot !== null && laneB.cwd) {
+      await Bun.write(`${laneB.cwd}/code.txt`, "root\nH-touched\nH-touched-2\nH-done\nN3-B\n");
+      check("(setup n3) lane B committed its work", commitAll(laneB.cwd, "N3: the work carrying the B verdicts").code === 0);
+      await settleForMerge(laneB.slot);
+      await post(`/api/slots/${laneB.slot}/merge`, {});
+      await waitMerge(laneB.slot);
+      mainAfterB = g(REPO, "rev-parse", MAIN).out;
+    }
+    const rBown = await nRow(nBown);
+    const rBopen = await nRow(nBopen);
+    const rShared = await nRow(nShared) as (NRow & { verdicts?: { taskId: string; branch: string; verdict: string }[] }) | undefined;
+    // Mutation that breaks it: closing on ANY erledigt of the branch (nShared would close on lane
+    // B's land although lane B never judged it), or dropping the task id from the note text.
+    check("(n3-scoped) two sources under one row are judged INDEPENDENTLY, and the close names the row that landed",
+      !!mainAfterB && rBown?.status === "done"
+      && rBown.note === `erledigt durch Land ${mainAfterB.slice(0, 7)} (${laneB.branch}, Aufgabe ${aTaskB})`
+      && rBopen?.status === "pending",
+      `${rBown?.status}/${JSON.stringify(rBown?.note)} open=${rBopen?.status} want sha=${mainAfterB.slice(0, 7)} branch=${laneB.branch} task=${aTaskB}`);
+    // …and the source whose only verdict names ANOTHER row is untouched by this land. This is the
+    // sentence the whole cut is for: a task verdict never widens back into a global one.
+    check("(n3-scoped-negative) a verdict given under a row this land does not carry closes nothing — and survives as a record",
+      rShared?.status === "pending"
+      && JSON.stringify(rShared.verdicts?.map((v) => [v.taskId, v.verdict])) === JSON.stringify([[aTaskA, "erledigt"]])
+      && (rShared.comments ?? []).every((c) => !c.verdict),
+      `${rShared?.status} ${JSON.stringify(rShared?.verdicts ?? null)} comments=${JSON.stringify(rShared?.comments ?? [])}`);
+
+    for (const id of [nTouch, nOther, nHubOnly, nDone, aDone, nKill, aKill,
+      nShared, nBown, nBopen, aTaskA, aTaskB])
       await post(`/api/tasks/${id}/delete`, {});
   }
 

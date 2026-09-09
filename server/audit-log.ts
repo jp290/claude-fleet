@@ -52,6 +52,12 @@ type AuditEvent =
   // separately on purpose: the claim and the act that makes it true are days apart, and a lane that
   // died between them leaves only the first line — which is exactly the state to be able to read.
   | "note_verdict" | "note_closed_by_land"
+  // …and N3's ASSIGNMENT, which is the act that decides what a lane is even shown as a source:
+  // task_note_attach / task_note_detach, detail `<taskId> ← <noteId> (owner|main)`. Two events, not
+  // one with a flag, because a detach is the act that can silently un-assign work and it must be
+  // greppable on its own. A DETACH IS NOT A DELETE: the note row survives it untouched, and the
+  // ledger line is the only record that the assignment ever existed.
+  | "task_note_attach" | "task_note_detach"
   // W3 · ▸ start wave — n queue rows founded into ONE lane that will land ONCE. Its own event and
   // not a task_dispatch per row, because the fact being recorded is the BUNDLE: the detail names
   // every id in the sensor's fixed order, the class the gate will run, and the seconds the avoided

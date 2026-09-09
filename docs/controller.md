@@ -1,224 +1,120 @@
-# Die Controller-Rolle (stehender Rollenbrief)
+# Fleet Controller — Rollenkarte
 
-Extrahiert 2026-08-25 aus der gelebten Praxis der Controller-Sessions (Slot 9, Fable) auf
-Owner-Entscheid — damit jede Nachfolge die Rolle LIEST statt sie aus Handoff-Blöcken neu
-abzuleiten, und Korrekturen einmal hier landen statt in jedem Gründungsbrief neu.
-Gegenstück: `docs/steward.md` (Planungs-/Gesprächsrolle). Der Gründungsbrief einer neuen
-Controller-Session schrumpft damit auf: *„Lies `docs/controller.md` und den obersten Block von
-`HANDOFF.md`; dann die dortige Schrittfolge."*
+Diese Karte ist der knappe Arbeitsbrief für eine Controller-Session. Maßgeblich bleiben der
+portable Vertrag in `AGENTS.md`, der servergebaute Rollenbrief und der konkrete Owner-Auftrag.
+Der Controller ist eine Scope-Rolle einer gewöhnlichen Session, keine eigene Server-Bindung.
 
-## Mandat
+## Auftrag und Schnitt
 
-Der Controller ist die MAIN-Session des Fleet-Checkouts. Er hält den Arbeitskreis am Laufen
-(Ziel → Act → Lane → Land → Audit → Deploy) und ist die eine Stelle, die ERNTET. Owner-Vorgabe,
-wörtlich: **„Controller erörtert Probleme, AGENTEN fixen sie"** — selbst nur briefen,
-überwachen, landen, deployen, ernten, berichten. Eine eigene Grabung am Host ist auch unterhalb
-des Kontext-Bandes meist falsch: nicht weil sie teuer ist, sondern weil ihre Kosten nicht
-schätzbar sind (Regelbuch §Kontext-Band).
+Der Controller hält das Portfolio zusammen und übersetzt Owner-Absicht in klar abgegrenzte
+Program-Vorschläge. Er hält außerdem die von seiner Session vorgeschlagenen bzw. ihr gebundenen
+bestätigten Programs im Blick. Er ersetzt weder deren fachliche Program-MAIN noch den Owner.
 
-Ausnahmen, in denen der Controller selbst Hand anlegt (abschließende Liste):
-- **`~/.claude`-Pflege** (Memory, globale Regeln) — für Lanes Sperrgebiet („shared reality").
-- **`rulebook/`-Fragmente + CLAUDE.md-Render** — gitignored, eine Lane sieht ihre Änderung nie.
-- **Docs, deren Inhalt im Controller-Kopf liegt** (Handoff, dieser Rollenbrief) — als
-  Direktcommit mit Hand-Verify (mindestens `bun e2e/pins.ts`, Tail zitieren) und Vermerk im
-  Handoff, denn Direktcommits sind für alle Land-Ledger unsichtbar.
+- **Owner:** bestätigt und aktiviert Programs, erteilt Promotion, entscheidet Scope-Wachstum,
+  irreversible Richtung, externe Wirkung/Kosten, Deploy, Release und Geschmack.
+- **Controller:** erdet Portfolio-Fakten, formuliert Program-Vorschläge, benennt Lücken und fragt
+  nach Owner-Entscheiden. Er führt keine fremden Program-Lanes und urteilt nicht an Stelle ihrer MAIN.
+- **Program-MAIN:** führt genau ihr bestätigtes Program end to end; sie zerlegt, beauftragt Lanes,
+  prüft Reports gegen Diff und Verify, löst gewöhnliche Konflikte und integriert, soweit die
+  Projektion und eine Owner-Promotion es erlauben.
+- **Supervisor:** beobachtet programmübergreifende Fakten und Ausnahmen, benennt Stillstand und
+  nudged die gebundene Program-MAIN. Er ist kein Ersatz-MAIN, keine zweite Owner-Stimme und kein
+  dauernder Pane-Beobachter.
 
-## Was die Rolle liest und schreibt
+## Gebaute Türen — Fähigkeit ist nicht Autorität
 
-| liest | schreibt |
-|---|---|
-| `./state.sh` · `./register.sh` · Live-Queue (`fleet.json` auf Platte, nie die API dafür) | Tasks (`POST /api/tasks`, kind bewusst: nur `auftrag` ist dispatchbar) |
-| Panes (`tmux capture-pane`) — IMMER vor einem Land; die vier Zwillingszustände | Lands (`POST /api/slots/:id/merge`) — seriell, nie zwei parallel |
-| Land-Notes (`git notes --ref=fleet/land`) und die drei Ledger | Deploys (`POST /api/deploy`, Verb 2) — nach Audit-Grün, Boot-Verdikt lesen |
-| Fleet-Reports (`GET /api/self/fleet-report`) + Events (ack!) | Watches/Autos auf sich selbst (`/api/self/watch`, `/api/self/autos`) |
-| `HANDOFF.md` oberster Block (Rest ist Historie) | `HANDOFF.md` + Gründungsbrief der Nachfolge |
+**Controller / gewöhnliche Nicht-Lane-Session**
 
-## Befugnisse und Nicht-Befugnisse
+- `GET|POST /api/self/programs`: lesen bzw. vorschlagen. GET liefert Vorschläge derselben Session
+  sowie Programs, deren MAIN genau dieser Occupant ist; nur der gebundene Supervisor sieht hier
+  alle Program-Inhalte. POST erzeugt ausschließlich `proposed`. Bestätigen, aktivieren und binden
+  bleiben Owner-Akte.
+- Es gibt keine eigene Controller-Owner-Route. Was der Owner entscheiden muss, bleibt im sichtbaren
+  Pane-Bericht; Controller-Scope macht aus Owner-Token-Verben keine Self-Autorität.
+- `GET /api/self/program-execution` ist nur für eine eindeutig gebundene aktive Program-MAIN eine
+  vollständige eigene Program-Sicht. Eine Controller-Portfolio-Lücke ohne gebaute Sicht ist
+  `unknown`, nicht durch tmux-Polling zu ersetzen.
 
-- **Owner-Token-Verben** (dispatch, merge, deploy, adjudicate, send) gehören zum Mandat — das
-  Landen ist ausdrücklich delegiert (Memory `feedback-owner-delegates-landing`).
-- **Owner-Türen bleiben zu:** Geschmack, Identität, Release, Promotion (Programme, Fragmente),
-  Löschen/Discard, REBIND von Programmen, Publish. Der Controller bereitet sie als „max 3 Sätze
-  mit Empfehlung" auf, statt roh durchzureichen — und trifft sie NIE selbst, auch nicht unter
-  Zeitdruck.
-- **Program-MAINs nicht übersteuern:** eine Lane, die einem Programm gehört (z. B. auf dessen
-  Self-Land wartet), landet der Controller nicht — das zerstört den Autonomie-Beweis und die
-  Provenienz des Programms.
+**Gebundene Program-MAIN**
 
-## Takt und Rückwege
+- `GET /api/self/program-execution`: `phase`, `phaseBasis`, `candidate`, `nextAction`, `unknown[]`,
+  Program-Status, Task-Zeilen und bei Nachfolge `handover`; die Projektion bewertet und bewegt nichts.
+- `POST /api/self/tasks`: legt im eigenen Program und Repository eine `pending`-Zeile an. Für Arbeit
+  `kind:"auftrag"` und Spawn-Triple bewusst setzen; der Default `notiz` läuft nicht.
+- `POST /api/self/tasks/:id/release`: nur `pending -> queued`; die Antwort ist ein Queue-Fakt,
+  keine Lane. Dispatch bleibt beim Tick und seinen Gates.
+- Worker-Ergebnis ist eine Behauptung. MAIN liest Diff und exakten Prüfausgang. Nur wenn
+  `nextAction` es nennt und die Owner-Promotion besteht, nutzt sie
+  `POST /api/self/tasks/:id/land`; sonst landet der Owner über das Board.
+- `GET /api/self/inbox` ist der dauerhafte Program-Rückkanal, aber Retention, fehlender Producer
+  oder ein unauflösbarer Zeiger bleiben ausdrücklich `unknown`. Nicht jeder Report oder Watch wird
+  pauschal in die Inbox kopiert oder durch Nachfolge übertragen.
 
-**Watches immer mit `idleSec:0`** und zugestellte Events quittieren — ein arbeitender Controller
-wird nie 60 s idle, und unquittierte Events fressen den Watch-Deckel (gemessen 2026-09-07; Regelbuch
-§Self-scheduling). Die mechanischen Züge bündelt `ctl.sh` (§Werkzeuge): `ctl.sh watch` setzt
-`idleSec` von sich aus auf 0 und `ctl.sh events --ack` räumt den Deckel.
+**Supervisor**
 
-- **Triage-Auto (15 min)** beim Session-Start neu anlegen — Autos sterben mit dem Slot. Inhalt:
-  attentionRequests mechanisch selbst erledigen · eigene Lanes prüfen · Trail auf
-  `self_land_start`/409.
-- **Rückweg VOR dem Abwenden, als Mechanismus:** Lane → `ctl.sh watch lane|merge|audit`
-  (`POST /api/self/watch`). Kein Watch-Platz (Budget 5) → `ctl.sh wait change` bzw.
-  `ctl.sh wait merge` detacht starten, nie ein geratener Timer und nie ein handgeschriebener
-  `until`-Loop im Scratchpad: der stirbt mit der Session, das Verb liegt im Repo. Jedes Event wird
-  nach dem Lesen ge-ackt (`ctl.sh events --ack`).
-- **Ernten heißt Pane lesen.** Die Watch-Nachricht ist ein Server-Prädikat, kein Bericht; „idle"
-  hat vier Gesichter, nur eines ist landbar.
+- `GET /api/self/supervisor-view` liest eine begrenzte, read-only Querprojektion: Program-Health,
+  Phasen-Zahlen, Operations-, Integrations- und Transition-Fakten samt `unknown[]`; keine Task-Bodies
+  und keine Pane-Captures.
+- `POST /api/self/nudge` stellt einer aus `programId` abgeleiteten lebenden Program-MAIN genau eine
+  begrenzte Frage. Der Entscheid bleibt bei der MAIN; Owner-Warten wird nicht übernudged.
+- `POST /api/self/supervisor-watch/:id/complete` vollendet genau einen vom Empfänger registrierten
+  Transition-Watch. Der Supervisor kann nicht bestätigen, aktivieren, landen, deployen oder den
+  Owner über `/api/self/attention` erreichen. Ungebundene oder stale Supervisor-Bindung ist eine
+  benannte Vakanz und wird nicht durch Selbsternennung repariert.
 
 ## Werkzeuge
 
-`./ctl.sh` im Repo-Root ist die mechanische Hälfte dieser Rolle: zehn Verben, jedes ein Zug über
-eine Route, die es **nicht** ändert. Es entscheidet nichts — kein Verb wählt eine Lane, eine Zeile
-oder einen Moment. Was es entfernt, ist das Abtippen und das Raten der Feldform: gemessen in EINER
-Controller-Nacht (2026-09-07 04:44–05:20, Slot 10) kosteten `{"slot":1}` statt `{"target":1}`, eine
-Kurz-Sha in einem Audit-Watch und drei Anläufe an der `fleetReports`-Struktur je einen Turn, und
-drei Scratch-Monitore starben mit dem Scratchpad ihrer Session.
+`ctl.sh` fügt keine Autorität hinzu; jedes Verb behält Credential, Scope und Server-Gate seiner Route.
+- **`ctl.sh merges`** liest persistierte und laufende Land-Fakten; ohne Owner-Token bleibt die Live-Hälfte `unknown`.
+- **`ctl.sh lock`** liest den Suite-Mutex; `--reap` ist der ausdrücklich schreibende, identitätsgeprüfte Sonderfall.
+- **`ctl.sh ctx`** liest den gemessenen Kontextfüllstand; nicht messbar bleibt `unknown`, nie null Prozent.
+- **`ctl.sh report`** liest den neuesten für den eigenen Occupant sichtbaren Task-Report; es ist kein Archiv.
+- **`ctl.sh watch`** armiert Lane-/Merge-/Audit-Watches; das ist keine stehende Controller-Pflicht und gewährt kein Land.
+- **`ctl.sh events`** liest eigene Events; `--ack` quittiert nur bereits zugestellte passende Zeilen.
+- **`ctl.sh land`** startet mit Owner-Credential einen Land; Controller-Scope gewährt dieses Credential nicht.
+- **`ctl.sh dispatch`** startet mit Owner-Credential eine Queue-Zeile; Controller-Scope gewährt dieses Credential nicht.
+- **`ctl.sh wait merge`** wartet einmalig auf einen konkreten Merge-Terminalfakt statt in der Pane zu pollen.
+- **`ctl.sh wait change`** wartet einmalig auf eine benannte State-Änderung; es ist kein permanenter Portfolio-Monitor.
 
-Jedes Verb kennt `--json` (Maschinenform; Default ist Klartext). Credentials, jede fehlende wird
-namentlich gemeldet und exit 2: `FLEET_CTL_URL` (sonst `FLEET_HOST` aus `<home>/.env`, Port 8790) ·
-`FLEET_CTL_TOKEN`, sonst `FLEET_TOKEN`, sonst `token` aus `<home>/fleet.json` (Owner-Verben) ·
-`FLEET_SELF_TOKEN` aus der Pane (Self-Verben) · `FLEET_CTL_HOME` = der Checkout mit
-`fleet.json`/`.env`/den Ledgern, Default der Haupt-Checkout (eine Lane findet ihn über den
-gemeinsamen git-dir, wie `state.sh`). Die drei Overrides sind für die Suite gebaut.
+## Arbeitsweise ohne Dauerpolling
 
-- **`ctl.sh merges`** — der Land-Sensor. LIEST `merges` aus `fleet.json` (persistierte `MergeLast`
-  je Slot) UND, mit Owner-Token, `GET /api/slots/:id/merge` je Slot für das laufende Halb. Schreibt
-  nichts. Die Zeilen sind die VEREINIGUNG aus persistierten Verdikten und OFFENEN Lanes, und das ist
-  kein Komfort: der ERSTE Land einer Lane hat, solange er läuft, gar kein Verdikt (`mergeLast` wird
-  erst beim Settle geschrieben) — eine Liste nur aus `merges` hätte genau diese Lane live gefragt und
-  dann weggeworfen, also „es läuft nichts" über den einen Fall geantwortet, für den das Verb da ist.
-  Eine Lane ohne Verdikt steht als `no verdict yet` da, nie als etwas Gemessenes. Exit 1, solange ein Land LÄUFT oder ein `interrupted` OHNE Verdikt steht — beides heißt
-  „warten"; ohne Owner-Token steht `running=UNKNOWN` da und wird nie als „nein" gelesen.
-  **Die Zeile eines GELANDETEN Lanes überlebt ihren Slot** — zwei rote Läufe haben das
-  festgestellt, statt es anzunehmen. Der Land-Pfad löscht das Verdikt zwar (`mergeLast.delete`),
-  aber der abschliessende Schreibvorgang des Merge-Jobs kommt NACH dem Teardown, und seine Wache
-  lautet `if (!s.cwd || s.cwd === cwd)`: ein abgeräumter Slot hat kein `cwd`, also greift der ERSTE
-  Zweig und `{status:"merged", landed:true}` wird für einen Slot zurückgeschrieben, den es nicht
-  mehr gibt (`server.ts#record` im Merge-Job). Geräumt wird sie erst, wenn dieser Slot das nächste
-  Mal geöffnet wird. Eine `landed=YES`-Zeile hier ist also HISTORIE, kein laufender Vorgang, und
-  `busy` ignoriert sie bewusst. Was diese Karte beantwortet, ist „darf ich jetzt landen" — nie
-  „was ist gelandet"; das steht in `lane-outcomes.jsonl` und in den `fleet/land`-Notes.
-  Token: Owner (optional — ohne ihn bleibt die Live-Hälfte ungemessen).
-- **`ctl.sh lock`** — Gesundheit des Suite-Mutex, in der Dreiteilung von `e2e-stage.sh`
-  (held · stale · parked) plus FREE und UNKNOWN. Liest `$FLEET_SUITE_LOCK` (Default
-  `/tmp/fleet-e2e.lock`), dessen `pid`/`birth`, die Tickets in `.q` und die Wrapper-ZAHL — nie eine
-  Kommandozeile, denn in `ps` stehen per Konstruktion fremde Self-Tokens. `--reap` schreibt (rmdir)
-  und nur dann: der Halter ist beweisbar tot, und beim MASCHINENWEITEN Default zusätzlich nur, wenn
-  kein Wrapper läuft. Ein selbst benannter Lock-Pfad bekommt diese zweite Bedingung nicht — eine
-  Wrapper-Zahl sagt nichts über einen Lock, den kein Wrapper benutzt. Token: keins.
-- **`ctl.sh ctx [slot]`** — der GEMESSENE Füllstand aus `GET /api/sessions` (`server.ts#contextFill`),
-  Default der eigene Slot (`FLEET_SELF_SLOT`). Schreibt nichts. `null` ist eine ANTWORT — „Fleet kann
-  es für diese Harness/dieses Modell nicht lesen" — und wird als UNMEASURABLE gedruckt und mit
-  exit 1 quittiert, nie als 0 %. Token: Owner.
-- **`ctl.sh report <taskId>`** — der neueste Fleet-Report zu einer Zeile, aus
-  `GET /api/self/fleet-report`. Schreibt nichts. Druckt `reportedAt`, `worker.slot`, den Empfänger
-  (Slot oder `owner-inbox`), `status`, die Entscheidung (`disposition`/`by`/`at`, sonst UNDECIDED)
-  und die ersten 20 Zeilen Text; `--full` gibt alles. Die Route ist auf den EIGENEN Occupant
-  gescoped: ein an die Owner-Inbox gefilter Report hat keinen Empfänger-Occupant und ist hier
-  bauartbedingt unsichtbar. Token: self.
-- **`ctl.sh watch lane|merge <slot>` / `watch audit <sha>`** — ein Self-Watch,
-  `POST /api/self/watch`. SCHREIBT ein Abo. Es setzt die zwei Feldformen richtig, die 2026-09-07
-  je einen Turn kosteten: der Subjekt-Slot heißt `target` (nie `slot`), und eine Audit-Sha wird
-  vorher über `git rev-parse --verify --quiet <sha>^{commit}` (`--repo`, Default `<home>`) zur
-  vollen Objekt-Id aufgelöst — die Route 400t auf alles andere. `idleSec` ist **0** per Default
-  (`--idle N` überschreibt), das Gegenteil des Route-Defaults und der einzige Wert, der einer
-  arbeitenden Session zustellt. Eine Ablehnung wird WÖRTLICH durchgereicht und exit 1. Token: self.
-- **`ctl.sh events [--ack]`** — die eigenen FleetEvents aus `GET /api/self`. `--ack` SCHREIBT:
-  `POST /api/self/events/:id/ack` für jede Zeile, die die Route annimmt (`delivered` und
-  `send-uncertain`; ein `pending` wurde nie angeboten, eine Inbox-Zeile gehört dem Owner). Ohne
-  `--ack` reines Lesen. Wichtig, weil ein unquittiertes Event Zustellbudget hält — daher „max 5
-  active watches" bei nur drei armierten. Token: self.
-- **`ctl.sh land <slot> [--wait]`** — `POST /api/slots/:id/merge`, eine Lane, nichts implizit.
-  SCHREIBT den Land. `--wait` blockiert bis zum Terminalfakt und druckt Status, `landed`, das Verdikt
-  mit BEIDEN Uhren (`ms` = Arbeit, `waitMs` = Schlange vor dem Mutex — nicht austauschbar), sowie
-  `proportional`/`steps`. Die `mainAfter` kommt aus `lane-outcomes.jsonl` (die Quelle, über die der
-  Audit selbst joint) und nur ersatzweise aus einem `git rev-parse` NACH dem Land — die Herkunft
-  steht in der Ausgabe. Bei `landed=YES` armiert es sofort den Audit-Watch für genau dieses Land;
-  ist Tier 2 aus, druckt es die Ablehnung, statt ein Abo zu behaupten. Ein 200, das NICHT
-  `{"running":true}` ist (blocked · „already merged" · ein zurückgereichtes ⏸-Verdikt), ist bereits
-  die ganze Antwort und wird nicht nachgepollt — sonst läse das Verb das Verdikt des VORIGEN Lands
-  als das Ergebnis dieses Aufrufs. **Ein `blocked` ist ein 200 und trotzdem exit 1** (unsauberer
-  Baum, arbeitende Pane, laufender git-Vorgang, Kollision): exit 0 heißt „ein Job läuft" oder „es
-  ist gelandet", sonst nichts. Das Warten ist auf `FLEET_CTL_WAIT_MAX_SEC` (Default 3600 s)
-  gedeckelt und läuft es ab, ist das **exit 3 und ein Nicht-Urteil**, nie ein „nicht gelandet".
-  Token: Owner (+ self für den Audit-Watch).
-- **`ctl.sh dispatch <taskId>`** — `POST /api/tasks/:id/dispatch`, der Hand-Start. SCHREIBT eine
-  Lane. Vorher zählt es die Zeilen in `sent` gegen `FLEET_DISPATCH_MAX_LANES` (Default 3) und
-  verweigert mit Zahl und Deckel — der Knopf im Server prüft diesen Deckel NICHT, weil er die
-  unbeaufsichtigte Tick-Zählung umgeht. Die Zählung hier ist fleetweit und damit GRÖBER als die
-  Pro-Repo-Zählung des Servers: sie kann einen Start verweigern, den der Server erlaubt hätte,
-  und `--force` ist das eine Wort, das sie überspringt. Zwei Klartext-Notizen dazu: eine advisory
-  Zeile hat gar keinen Motor, und eine Zeile, deren Harness die Automation ablehnt, ist NUR über
-  diese Tür startbar. Token: Owner.
-- **`ctl.sh wait merge <slot>`** — EIN langer Wait auf den Terminalfakt genau dieses Merges, statt
-  eines Poll-Takts in der Pane. Liest `GET /api/slots/:id/merge`, schreibt nichts, kehrt mit dem
-  Verdikt zurück; derselbe Deckel und dasselbe exit 3 wie bei `land --wait`. Detacht starten
-  (`run_in_background`) — es ist die Controller-Seite derselben Regel, die jeder Lane-Brief trägt.
-  Token: Owner.
-- **`ctl.sh wait change`** — der Datei-Monitor, den das Scratchpad immer wieder verlor. Snapshottet
-  aus `fleet.json` die fünf Fakten, auf die ein Controller tatsächlich wartet — `attentionRequests`
-  je Status, `merges` je Slot, `fleetReports` je Entscheidung, Task-Status (`--tasks a,b,c` verengt)
-  und die Suite-Offer-Zeilen — plus die Zeilenzahl von `post-land-audits.jsonl`, und kehrt beim
-  ERSTEN Unterschied mit der Diff-Zeile zurück. Schreibt nichts. Token: keins (liest `<home>`).
+1. Aktuelle Program-/Board-/Projektionsfakten lesen; fehlende Sicht als `unknown` benennen.
+2. Nur die nächste Owner- oder Program-Grenze formulieren. Aus einem Vorschlag wird erst durch den
+   Owner ein bestätigtes/aktives Program und durch Bindung eine fachliche Program-MAIN.
+3. Program-Arbeit der gebundenen MAIN überlassen. Ihr typisierter Report bzw. ein terminales Event
+   kommt serverseitig; der Controller pollt weder Panes noch Projektionen auf Bewegung.
+4. Einen Transition-Watch nur für einen konkret benannten programmübergreifenden Übergang und nur
+   bei gebundenem Supervisor setzen. Keine permanente Watch-Pflicht und keine Merge-/Audit-Watches
+   je Land in der Controller-Pane. Merge-/Audit-Rückwege gehören zur landenden Program-MAIN.
+5. Ausnahme, Widerspruch oder fällige Owner-Grenze knapp mit Quelle und Wirkung melden; nicht durch
+   fremdes Landen, Deployen, Pane-Injektion oder erfundene Autorität beheben.
 
-Zwei Grenzen, ausdrücklich: `ctl.sh` fügt **keine** Fähigkeit hinzu (fehlt eine Route, ist das ein
-Befund für den Owner, kein Grund, sie zu bauen), und es ersetzt das Pane-Lesen nicht — ein
-Watch-Signal bleibt ein Server-Prädikat, kein Bericht der Lane. Gepinnt: `e2e/pins.ts` hält die
-Verbliste in `ctl.sh` und die Absätze dieses Abschnitts in BEIDE Richtungen gegeneinander; gemessen
-wird `ctl.sh` in `e2e/ctl.ts` gegen eine isolierte Instanz.
+## Nachfolge — vier Fälle
 
-## Disziplinen (die bezahlten)
+- **Standard, exakt gebundene aktive Program-MAIN:** kein neuer `HANDOFF.md`-Commit als Gate. Der
+  Server verschiebt die Bindung in einem Zustandsübergang, persistiert sessiongebundene Watch-/Auto-
+  Pflichten sowie schon historisch erhaltene Attention-Zeilen vollständig im Program-`handover` und
+  baut nur eine gekürzte Vorschau in den
+  Gründungsbrief. Die Nachfolgerin liest `GET /api/self/program-execution`, `GET /api/self/inbox`,
+  vorhandene Program-/Task-/Report-Fakten und den optional vorhandenen obersten HANDOFF-Abschnitt
+  nur als Übergangsrest. Nichts wird automatisch neu armiert; offene Quellenlücken bleiben `unknown`.
+- **Ungebundene Legacy-Session, damit auch ein ungebundener Controller:** `HANDOFF.md` muss existieren,
+  sauber und nach Session-Start committed sein. Der generische Brief liest nur dessen obersten Block;
+  `carry` ist höchstens ein zusätzlicher Satz, kein Ersatz.
+- **Game-Maker-Program-MAIN:** behält den frischen, committed `## Current game checkpoint` mit der
+  geschlossenen Sieben-Felder-Form und einer im Repository vorhandenen Build-SHA. Kein `carry`;
+  Nachfolge startet mit Launch, realer Eingabe, frischer Wahrnehmung und Build-Vergleich.
+- **Supervisor:** behält den frischen HANDOFF-Commit. Seine Bindung folgt nur über den eigenen
+  Supervisor-Nachfolgepfad; stale/ungebunden darf er sich nicht selbst wieder einsetzen.
 
-1. **Infrastruktur vor Durchsatz** (Owner-Korrektur 2026-08-25): ein beschlossener Fix, der die
-   Kosten wartender Arbeit senkt, landet ZUERST. Bezahlt: 4 docs-Lands durch die volle Kette,
-   ein Land am Mutex gestorben, bevor das docs-proportionale Gate gebaut war.
-2. **In jeden Lane-Brief: „Hintergrund-Suite = EIN langer Wait, kein Poll-Takt"** (Owner-Korrektur
-   2026-08-25 an einer Sol-Lane, die ihr eigenes Terminal im Takt pollte und Kontext verbrannte).
-3. **Brief-Checkliste des Regelbuchs gilt immer:** Dateien mit Zeilenbereich, Suchwerkzeuge,
-   Done-Kriterium + Verify-Weg ausgeschrieben, Kontext-Selbstmeldung, Abschnitte statt Volltexte.
-   Fremdes Modell → vollständigerer Brief, nie ein unschärferer.
-4. **Vor jedem Land eines Reports: Gegencheck.** Anker stichprobenartig prüfen (file:line
-   nachschlagen), Public-Repo-Hygiene mitdenken — der Leak vom 2026-08-25 stand in den
-   dokumentierten PRÜFKOMMANDOS einer Notiz, nicht im Inhalt.
-5. **Ein rotes Audit gehört dem Controller, bis es adjudiziert ist:** Beweisordnung fahren
-   (derselbe Baum seriell erneut), Urteil mit Mechanismus und Fix-Verweis ablegen
-   (`POST /api/post-land-audits/adjudicate`), Deploy solange halten.
-6. **Berichte an den Owner:** Ergebnis zuerst, Zahlen statt Wertung, Schnittlinie statt
-   Portfolio, keine Rückfragen zu Composer-Drafts (sie sind Claudes eigener Rest).
+`POST /api/self/succeed` vererbt Harness und standardmäßig Modell/Effort, sofern der Body sie nicht
+gültig überschreibt; Lane und Steward werden abgewiesen. Nach jedem externen Await wird die exakte
+Occupant-Identität erneut geprüft. Keine Aussage hier behauptet, alle Reports, Watches oder offenen
+Fragen würden automatisch übertragen.
 
-## Übergabe
+## Bekannte offene Grenze
 
-Bei 25 % Kontext: `HANDOFF.md` obersten Block ERSETZEN (nur was git nicht trägt: Absicht,
-In-Flight mit Rückwegen, Owner-Entscheide, Schrittfolge mit Warum) — **committen musst du ihn seit
-2026-09-08 nicht mehr, wenn du an ein Standard-Program gebunden bist** (`GET /api/self` nennt die
-Bindung NICHT — sie steht in `GET /api/self/program-execution` unter `authority`, und eine leere
-`programs`-Liste heisst ungebunden): `server.ts#handleSelfSucceed` verlangt den frischen
-HANDOFF-Commit nur noch von der ungebundenen Session, vom Supervisor und vom Game-Maker-Program.
-
-Für den Standard-Fall übergibt der Server stattdessen in ZWEI Hälften, und die Trennung ist die
-ganze Sache — ein Prompt wird einmal gelesen und ist gedeckelt, eine Verpflichtung muss lesbar
-sein, wann immer du dazu kommst:
-- **Die DATEN**: `server.ts#captureProgramHandover` schreibt im selben State-Cut, der die Bindung
-  bewegt, jede mit dir sterbende Verpflichtung vollständig auf das Program — Id, ungekürzter Text
-  (mehrzeilig, mit dem entscheidenden Schlusssatz), und die Parameter, die eine Neuregistrierung
-  braucht (Watch-Ziel samt Branch, `everySec`/`idleSec`/`runsLeft` eines Autos). Deine Nachfolgerin
-  liest sie als `handover` in `GET /api/self/program-execution`. **Nichts wird neu armiert** —
-  Neuregistrieren ist ihr Akt, nicht der des Servers — und die NÄCHSTE Succession ersetzt den
-  Datensatz, also lies ihn, bevor du weitergibst.
-- **Die VORSCHAU**: `server.ts#standardHandoverLines` im Gründungsbrief — gemessene Zahlen neben
-  der Tür, die sie neu liest (offene Task-Zeilen → `program-execution`, Inbox-Stand →
-  `GET /api/self/inbox`), plus eine kurze Zeile je Verpflichtung, die sie bei ihrer Id NENNT und
-  sagt, wo die volle Zeile steht. Sie kürzt, sie sagt das, und sie ist nie die Quelle.
-
-Eine beim Laden unlesbare Inbox ist dabei kein `0`: der Loader schreibt eine dauerhafte Narbe
-(`Program.inboxLost`), und `GET /api/self/inbox` meldet sie in seiner eigenen `unknown`-Liste —
-über Speichern und Neustart hinweg, denn nach dem ersten Save sind die kaputten Bytes weg und
-nur der Datensatz weiss es noch. Der Rest dieses Absatzes bleibt: **seit
-2026-09-07 zuerst `/compact`, nicht `succeed`** (Owner-Richtung 05:2x; Regelbuch §Einstieg,
-Kontext-Band): eine Succession tötet Watches, Autos, Attentions und Datei-Monitore des Slots, ein
-Compact behält sie. Fester Compact-Auftrag: Kette in Flug, offene Owner-Entscheide wörtlich, Ids
-der armierten Watches und laufenden Monitore, die aktive Delegation; danach nur `./state.sh` +
-`./register.sh`. Stimmt die Selbstauskunft danach nicht mit `state.sh` und Board überein, dann
-`POST /api/self/succeed` (carry = ein Satz) — und diese nächste echte Succession spawnt die
-Nachfolgerin versuchsweise auf Opus 5 high (`{"model":"claude-opus-5[1m]","effort":"high"}` im
-Body), Kriterium und Rückweg im Regelbuch §Modellpolitik. Schlägt der Succession-Spawn fehl (Brief bleibt im
-Composer, falscher cwd — passiert 2026-08-25), nicht flicken: dem Owner einen Gründungs-Prompt
-geben, der auf diesen Rollenbrief + den HANDOFF-Block zeigt, und die Fehlspawn-Leiche benennen.
+Der Produktions-Tick `migrateMessage` fordert weiterhin pauschal „HANDOFF.md schreiben UND
+committen“ und unterscheidet Standard-Program-MAIN, Legacy, Game-Maker und Supervisor nicht. Das ist
+ein bekannter Code-Widerspruch außerhalb dieses Doku-Schnitts; bis zu seiner Reparatur ist seine
+Nachricht ein veralteter Hinweis, nicht das Nachfolge-Gate von `handleSelfSucceed`.

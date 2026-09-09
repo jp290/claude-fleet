@@ -430,6 +430,11 @@ interface FleetReportDecision {
 // A report is the immutable result sibling of a ClarificationRequest. Transport state belongs to
 // its FleetEvent; this row carries only the lane-stamped report and the exact two endpoint
 // occupants. In particular there is no attempt/task lifecycle identity here.
+// THE FOURTH BASIS. "program" means the report was filed to the PROGRAM, not to an occupant:
+// receiver is null, no FleetEvent was minted (eventId null), and the bound MAIN of
+// provenance.programId reads it through the program inbox. The three older values keep their
+// exact meaning; "program-main" is no longer minted for reports and stays for persisted rows.
+type FleetReportBasis = FleetReportEventPayload["basis"] | "program";
 interface FleetReport {
   id: string;
   reportedAt: number;
@@ -443,11 +448,12 @@ interface FleetReport {
   // is the named fact "this instance has no name", distinct from "we did not know to ask".
   provenance: { taskId: string | null; originId: string | null; programId: string | null;
     instance?: string | null };
-  // null exactly when `basis` is "owner-inbox": the report was filed to the owner principal, who
-  // has no occupant triple. The two fields are one fact and fleetReportFrom checks them together.
+  // null exactly when `basis` is "owner-inbox" or "program": neither principal is an occupant.
+  // The basis distinguishes which durable authority owns the report.
   receiver: { slot: number; openedAt: number; sessionId: string | null } | null;
-  basis: FleetReportEventPayload["basis"];
-  eventId: string;
+  basis: FleetReportBasis;
+  // null exactly when basis is "program" — a program-addressed report has no transport event.
+  eventId: string | null;
   // THE ACCEPTANCE FACT, and undecided is the ABSENCE of the key or an explicit null: a row
   // persisted before this door existed carries neither and stays observably undecided rather than
   // being repaired into a judgement nobody made. It is bound to the RECEIVER half above and
@@ -778,8 +784,9 @@ function fleetReportFrom(raw: unknown): FleetReport | null {
     || typeof r.text !== "string" || !r.text.trim() || r.text.length > MAX_FLEET_REPORT_TEXT
     || !occupant(r.worker, true)
     // The receiver half and the basis half are checked TOGETHER, so a row can never claim a
-    // principal it was not filed to: owner-inbox means no occupant, every other basis means one.
-    || (r.basis === "owner-inbox" ? r.receiver !== null : !occupant(r.receiver, false))
+    // principal it was not filed to: program and owner-inbox mean no occupant, older bases one.
+    || (r.basis === "program" || r.basis === "owner-inbox"
+      ? r.receiver !== null : !occupant(r.receiver, false))
     || !provenance || !nullableString(provenance.taskId) || !nullableString(provenance.originId)
     || !nullableString(provenance.programId)
     // additive and default-deny in the same breath: absent passes (pre-field row), null passes
@@ -787,8 +794,10 @@ function fleetReportFrom(raw: unknown): FleetReport | null {
     // carrying junk there would travel as provenance and be read as one.
     || !(provenance.instance === undefined || provenance.instance === null
       || (typeof provenance.instance === "string" && INSTANCE_NAME_RE.test(provenance.instance)))
-    || !["program-main", "lane-watch", "program-main+lane-watch", "owner-inbox"].includes(String(r.basis))
-    || typeof r.eventId !== "string" || !/^[0-9a-f]{24}$/.test(r.eventId)) return null;
+    || !["program-main", "lane-watch", "program-main+lane-watch", "owner-inbox", "program"].includes(String(r.basis))
+    || (r.basis === "program"
+      ? (r.eventId !== null || typeof provenance.programId !== "string")
+      : (typeof r.eventId !== "string" || !/^[0-9a-f]{24}$/.test(r.eventId)))) return null;
   // The decision half, default-deny like every other half of this row. Absent and null are the
   // same undecided fact and both pass; anything present must be COMPLETE and must name a principal
   // that could actually have judged this row. A row that could claim a decider it never had would
@@ -817,8 +826,8 @@ function fleetReportFrom(raw: unknown): FleetReport | null {
     if (d.by !== "owner") {
       if (!occupant(d.by, false)) return null;
       const by = d.by as { slot: number; openedAt: number; sessionId: string | null };
-      if (r.receiver === null || r.receiver === undefined
-        || by.slot !== r.receiver.slot || by.openedAt !== r.receiver.openedAt) return null;
+      if (r.basis !== "program" && (r.receiver === null || r.receiver === undefined
+        || by.slot !== r.receiver.slot || by.openedAt !== r.receiver.openedAt)) return null;
     }
   }
   return raw as FleetReport;
@@ -2091,7 +2100,7 @@ export type {
   DeployFleetEvent, CommandJobFleetEvent, ClarificationFleetEvent, FleetReportFleetEvent,
   HelperCmdCheck,
   SupervisorTransitionEventPayload, SupervisorTransitionFleetEvent, FleetEvent, ClarificationStatus,
-  ClarificationRequest, FleetReportDisposition, FleetReportDecision, FleetReport, AttentionKind, AttentionStatus, AttentionRequest, TaskKind,
+  ClarificationRequest, FleetReportDisposition, FleetReportDecision, FleetReportBasis, FleetReport, AttentionKind, AttentionStatus, AttentionRequest, TaskKind,
   Task, TaskBrief, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskAnalysis, AnalysisBlocker, TaskCriterion, TaskFilesProposal, RefineChild,
   RefineProposal, TaskRefine, LaneForm, LaneRef, SuccessionRetirement, CodexRecoveryState, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,

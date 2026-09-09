@@ -6384,14 +6384,26 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && /job\.claimWas\s*=\s*\{\s*deviceId:\s*held\.deviceId,\s*name:\s*held\.name,\s*claimedAt:\s*held\.claimedAt,\s*expiresAt:\s*held\.expiresAt\s*\}/s.test(route),
     route === null ? "the suite-offer withdraw route was not found"
       : `claimWas@${claimWasAt} endedAt@${endedAt} clear@${clearAt}`);
-  const suiteJob = serverU.module("server.ts").match(/interface LaneSuiteJob \{[\s\S]*?\n\}/)?.[0] ?? "";
-  const claimWasWrites = (serverU.module("server.ts").match(/job\.claimWas\s*=/g) ?? []).length;
-  const endedAtWrites = (serverU.module("server.ts").match(/job\.endedAt\s*=/g) ?? []).length;
-  pin(`${RULE_RECEIPT} — claimWas and endedAt have one type declaration and one withdraw write, with NO product reader`,
+  // THE NO-READER HALF, and it is asymmetric on purpose — the two field names are not equally
+  // provable by text. `claimWas` is unique in this tree, so counting every mention in server.ts
+  // proves there is no reader ANYWHERE in it. `endedAt` is not: `ProgramLineageEntry` carries a
+  // field of the same name and reads it legitimately (the auto-close authority join added in
+  // 42692a0a is one such reader). A whole-file count of `endedAt` therefore measures the lineage,
+  // not the receipt — that is why it went red on a correct tree and was dropped. What replaces it
+  // is the reachable half: the receipt field is only ever touched through the `job` binding, so
+  // `job.endedAt` occurring exactly once means the one occurrence is the write. The title says
+  // that asymmetry out loud rather than claiming a proof this pin does not carry.
+  const srvText = serverU.module("server.ts");
+  const suiteJob = srvText.match(/interface LaneSuiteJob \{[\s\S]*?\n\}/)?.[0] ?? "";
+  const claimWasMentions = (srvText.match(/\bclaimWas\b/g) ?? []).length;
+  const endedAtOnJob = (srvText.match(/\bjob\.endedAt\b/g) ?? []).length;
+  const endedAtWrites = (srvText.match(/\bjob\.endedAt\s*=/g) ?? []).length;
+  pin(`${RULE_RECEIPT} — claimWas has one declaration and one write and NO reader in server.ts, and endedAt none through the job binding`,
     suiteJob !== "" && (suiteJob.match(/\bclaimWas\??:/g) ?? []).length === 1
       && (suiteJob.match(/\bendedAt\??:/g) ?? []).length === 1
-      && claimWasWrites === 1 && endedAtWrites === 1,
-    `suite job=${suiteJob !== ""}; claimWas writes=${claimWasWrites} endedAt writes=${endedAtWrites}`);
+      && claimWasMentions === 2 && endedAtOnJob === 1 && endedAtWrites === 1,
+    `suite job=${suiteJob !== ""}; claimWas mentions=${claimWasMentions} (declaration+write=2); `
+      + `job.endedAt uses=${endedAtOnJob} writes=${endedAtWrites}`);
 }
 
 // ================================================================================================

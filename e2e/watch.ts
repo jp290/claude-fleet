@@ -94,9 +94,10 @@ interface FleetReportRow {
   // `instance` absent = a row persisted before the field existed (dual-host Schnitt 2)
   provenance: { taskId: string | null; originId: string | null; programId: string | null;
     instance?: string | null };
-  // null exactly when basis is "owner-inbox" — the owner is a principal, not an occupant
+  // null exactly when basis is "owner-inbox" or "program" — neither principal is an occupant
   receiver: { slot: number; openedAt: number; sessionId: string | null } | null;
-  basis: "program-main" | "lane-watch" | "program-main+lane-watch" | "owner-inbox"; eventId: string;
+  basis: "program-main" | "lane-watch" | "program-main+lane-watch" | "owner-inbox" | "program";
+  eventId: string | null;
   // absent or null = undecided; present = the receiving MAIN judged the work (D1) — or, when the
   // occupant it was filed to is gone, the OWNER through the door beside it (D3). "owner" is a
   // principal and carries no occupant triple, exactly as AttentionRequest.answer.by does not.
@@ -1911,7 +1912,7 @@ export async function run(): Promise<void> {
     const reportStatePath = `${ROOT}/fleet.json`;
     const planted = JSON.parse(readFileSync(reportStatePath, "utf8")) as {
       slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
-      fleetReports?: unknown[];
+      fleetReports?: unknown[]; watches?: Record<string, unknown>[];
     };
     const programId = "f".repeat(24);
     const mainRow = planted.slots[String(main)];
@@ -1923,8 +1924,14 @@ export async function run(): Promise<void> {
       confirmedAt: Date.now() - 900, activatedAt: Date.now() - 800,
       main: { slot: main, openedAt: mainRow.openedAt, sessionId: mainRow.sessionId, boundAt: Date.now() - 700 },
     }];
-    for (const lane of [completeLane, needsLane, failedLane])
-      planted.slots[String(lane.slot)].programId = programId;
+    // Q4-Q6 exercise the legacy FleetEvent transport. Spent lane watches keep exact receiver
+    // evidence without reserving budget, so these rows stay intentionally program-less.
+    planted.watches = [...(planted.watches ?? []), ...[completeLane, needsLane, failedLane].map((lane, index) => ({
+      id: `reporttransport${index}`, slot: main, slotOpenedAt: mainRow.openedAt,
+      idleSec: 0, armed: false, created: Date.now(), firedAt: Date.now(),
+      lastResult: "transport fixture still names coordinating occupant", kind: "lane",
+      target: lane.slot, targetCwd: lane.cwd, targetBranch: lane.branch,
+    }))];
     planted.slots[String(completeLane.slot)].taskId = "task-server-report";
     planted.slots[String(completeLane.slot)].originId = "origin-server-report";
     planted.slots[String(stewardLane.slot)].label = "⚙ steward";
@@ -1981,7 +1988,7 @@ export async function run(): Promise<void> {
         && completeReport?.worker.slot === completeLane.slot && completeReport.worker.branch === completeLane.branch
         && completeReport.provenance.taskId === "task-server-report"
         && completeReport.provenance.originId === "origin-server-report"
-        && completeReport.provenance.programId === programId && completeReport.receiver?.slot === main
+        && completeReport.provenance.programId === null && completeReport.receiver?.slot === main
         && completeEvent?.watchId === null && completeEvent.receiverSlot === main
         && completeEvent.payload.reportId === completeReport.id,
       JSON.stringify({ completeReport, completeEvent }));
@@ -2829,6 +2836,9 @@ export async function run(): Promise<void> {
       createdAt: Date.now() - 1000, proposedBy: { kind: "owner" },
       confirmedAt: Date.now() - 900, activatedAt: Date.now() - 800,
       main: { slot: d1Main, openedAt: d1MainRow.openedAt, sessionId: d1MainRow.sessionId, boundAt: Date.now() - 700 },
+      lineage: { v: 1, entries: [{ slot: d1Main, openedAt: d1MainRow.openedAt,
+        sessionId: d1MainRow.sessionId, boundAt: Date.now() - 700, via: "bootstrap",
+        endedAt: null, endedBy: null }], dropped: 0 },
     }];
     for (const lane of [acceptLane, rejectLane, terminalLane])
       d1Plant.slots[String(lane.slot)].programId = d1ProgramId;
@@ -2838,6 +2848,9 @@ export async function run(): Promise<void> {
     writeFileSync(d1Path, JSON.stringify(d1Plant, null, 2), { mode: 0o600 });
     await restartSrv();
 
+    const d1BudgetBefore = await programBudget(d1ProgramId);
+    const d1EventsBefore = (await fleetReportEventRows()).filter((e) => e.receiverSlot === d1Main).length;
+    const d1ArmedBefore = (await watchRows()).filter((w) => w.slot === d1Main && w.armed).length;
     const filed = await Promise.all([
       selfFleetReport(acceptTok, { status: "complete", text: "D1: the slice is done and verified." }),
       selfFleetReport(rejectTok, { status: "needs-main", text: "D1: a decision is owed here." }),
@@ -2846,32 +2859,35 @@ export async function run(): Promise<void> {
     ]);
     const [acceptReport, rejectReport, terminalReport, inboxReport] = await Promise.all(
       filed.map(async (r) => (await r.json() as { report?: FleetReportRow }).report));
-    check("D1 fixtures: three bound reports and one owner-inbox report exist, all undecided",
+    const d1Inbox = await (await fetch(`${BASE}/api/self/inbox`,
+      { headers: { "x-fleet-self-token": d1MainTok } })).json() as
+      { unread?: number; entries?: { kind?: string; ref?: string; readBy?: unknown }[] };
+    const d1Self = await selfGet(d1MainTok).then((r) => r.json() as Promise<{ events?: FleetReportEventRow[] }>);
+    const d1BudgetAfter = await programBudget(d1ProgramId);
+    check("Q3 fleet-report scope: the bound MAIN reads all three program rows, its inbox holds three unread pointers, no FleetEvent exists, the worker sees its row, and a foreign MAIN sees neither",
       filed.every((r) => r.ok)
-        && [acceptReport, rejectReport, terminalReport].every((r) => r?.receiver?.slot === d1Main
-          && r?.basis === "program-main" && (r?.decision ?? null) === null)
+        && [acceptReport, rejectReport, terminalReport].every((r) => r?.receiver === null
+          && r?.basis === "program" && r.eventId === null && (r?.decision ?? null) === null)
         && inboxReport?.receiver === null && inboxReport.basis === "owner-inbox"
-        && (inboxReport.decision ?? null) === null,
+        && (inboxReport.decision ?? null) === null
+        && (await selfFleetReports(d1MainTok)).reports.filter((r) => r.basis === "program").length === 3
+        && (await selfFleetReports(d1OtherTok)).reports.length === 0
+        && d1Inbox.unread === 3
+        && d1Inbox.entries?.filter((e) => e.kind === "fleet-report" && e.readBy === null
+          && [acceptReport?.id, rejectReport?.id, terminalReport?.id].includes(e.ref)).length === 3
+        && !(d1Self.events ?? []).some((e) => e.kind === "fleet-report")
+        && (await selfFleetReports(acceptTok)).reports.some((r) => r.id === acceptReport?.id),
       JSON.stringify({ filed: filed.map((r) => r.status),
         rows: [acceptReport, rejectReport, terminalReport, inboxReport]
-          .map((r) => [r?.id, r?.basis, r?.decision ?? null]) }));
-
-    // The already-terminal arm needs a row that is terminal AND carries a timestamp a second write
-    // would change. Planted with srv down rather than driven through the composer: what is under
-    // test here is the door's branch, not the transport that produced the terminal state.
-    const acknowledgedAtPlant = Date.now() - 60_000;
-    await tmuxOut("kill-session", "-t", "srv");
-    await Bun.sleep(500);
-    const d1TerminalPlant = JSON.parse(readFileSync(d1Path, "utf8")) as {
-      events?: { id?: string; status?: string; acknowledgedAt?: number | null }[];
-    };
-    for (const event of d1TerminalPlant.events ?? []) {
-      if (event.id !== terminalReport?.eventId) continue;
-      event.status = "acknowledged";
-      event.acknowledgedAt = acknowledgedAtPlant;
-    }
-    writeFileSync(d1Path, JSON.stringify(d1TerminalPlant, null, 2), { mode: 0o600 });
-    await restartSrv();
+          .map((r) => [r?.id, r?.basis, r?.decision ?? null]), inbox: d1Inbox }));
+    // BREAKS IF: the Program branch consults slotDeliveryBudget or mints a FleetEvent.
+    check("fleet-report program budget: three program reports leave the MAIN's delivery budget and FleetEvent count untouched",
+      JSON.stringify(d1BudgetAfter?.deliveryBudget) === JSON.stringify(d1BudgetBefore?.deliveryBudget)
+        && (await fleetReportEventRows()).filter((e) => e.receiverSlot === d1Main).length === d1EventsBefore
+        && (await watchRows()).filter((w) => w.slot === d1Main && w.armed).length === d1ArmedBefore,
+      JSON.stringify({ before: d1BudgetBefore?.deliveryBudget, after: d1BudgetAfter?.deliveryBudget,
+        events: [d1EventsBefore, (await fleetReportEventRows()).filter((e) => e.receiverSlot === d1Main).length],
+        armed: [d1ArmedBefore, (await watchRows()).filter((w) => w.slot === d1Main && w.armed).length] }));
 
     // --- who may NOT open the door. Each refusal names its own reason: a lane is refused as a
     // lane (route level, before any row is looked at), a foreign MAIN as a foreign occupant, an
@@ -2884,10 +2900,33 @@ export async function run(): Promise<void> {
       `${laneJudge.status} ${laneJudgeText}`);
     const wrongOccupant = await decideReport(d1OtherTok, acceptReport?.id ?? "", "accept");
     const wrongOccupantText = await wrongOccupant.text();
-    check("D1 occupant binding: a MAIN that is not this report's exact receiver is refused in the replyClarification form",
+    check("fleet-report decision on a program row: a foreign MAIN is refused by the Program binding",
       wrongOccupant.status === 409
-        && wrongOccupantText.includes("fleet report belongs to another or replaced MAIN session"),
+        && wrongOccupantText.includes("not the current bound MAIN of an active program"),
       `${wrongOccupant.status} ${wrongOccupantText}`);
+    // Same numeric slot, different occupation: boundProgramForMain must compare openedAt too.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const recycledPlant = JSON.parse(readFileSync(d1Path, "utf8")) as
+      { programs?: { id?: string; main?: { openedAt?: number } }[] };
+    const recycledProgram = recycledPlant.programs?.find((p) => p.id === d1ProgramId);
+    if (recycledProgram?.main) recycledProgram.main.openedAt = Number(d1MainRow.openedAt) + 1;
+    writeFileSync(d1Path, JSON.stringify(recycledPlant, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const recycledSameSlot = await decideReport(d1MainTok, acceptReport?.id ?? "", "accept");
+    const recycledSameSlotText = await recycledSameSlot.text();
+    check("fleet-report decision on a program row: the recycled same numeric MAIN slot is refused by openedAt",
+      recycledSameSlot.status === 409
+        && recycledSameSlotText.includes("not the current bound MAIN of an active program"),
+      `${recycledSameSlot.status} ${recycledSameSlotText}`);
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const restoredBinding = JSON.parse(readFileSync(d1Path, "utf8")) as
+      { programs?: { id?: string; main?: { openedAt?: number } }[] };
+    const restoredProgram = restoredBinding.programs?.find((p) => p.id === d1ProgramId);
+    if (restoredProgram?.main) restoredProgram.main.openedAt = Number(d1MainRow.openedAt);
+    writeFileSync(d1Path, JSON.stringify(restoredBinding, null, 2), { mode: 0o600 });
+    await restartSrv();
     const inboxJudge = await decideReport(d1MainTok, inboxReport?.id ?? "", "accept");
     const inboxJudgeText = await inboxJudge.text();
     check("D1 owner-inbox: a report filed to the owner principal is refused with its own sentence, never silently accepted",
@@ -2917,18 +2956,7 @@ export async function run(): Promise<void> {
         && ((await selfFleetReports(d1MainTok)).reports.find((r) => r.id === acceptReport?.id)?.decision ?? null) === null,
       JSON.stringify({ statuses: badBodies.map((r) => r.status), texts: badBodyTexts }));
 
-    // --- the door itself, both verdicts, and what each one does to the transport row beside it.
-    // …and the twin door is UNCHANGED, which is the half a source pin cannot measure: the ACK is a
-    // transport receipt and still refuses a row that was never offered. That refusal is also the
-    // sharpest statement of the difference between the two doors — the judgement settles from
-    // `pending`, because a MAIN that read the row through GET /api/self/fleet-report received it
-    // without any paste, while the ack route by design has nothing to receipt yet.
-    const pendingAck = await ackEvent(d1MainTok, acceptReport?.eventId ?? "");
-    const pendingAckText = await pendingAck.text();
-    check("D1 the event ACK keeps its meaning: a pending row is still not acknowledgeable through it",
-      pendingAck.status === 409 && pendingAckText.includes("event is not acknowledgeable")
-        && pendingAckText.includes("pending"),
-      `${pendingAck.status} ${pendingAckText}`);
+    // --- the door itself, both verdicts, and the absence of an occupant transport beside it.
     const plogBeforeDecision = (await plogRead()).length;
     const eventsBeforeDecision = await fleetReportEventRows();
     const reportsBeforeDecision = (await selfFleetReports(d1MainTok)).reports.length;
@@ -2937,7 +2965,6 @@ export async function run(): Promise<void> {
     const acceptBody = await acceptRes.json() as { ok?: boolean; report?: FleetReportRow };
     const d1MainRowAfter = (JSON.parse(readFileSync(d1Path, "utf8")) as
       { slots?: Record<string, { openedAt?: number; sessionId?: string | null }> }).slots?.[String(d1Main)];
-    const acceptEvent = (await fleetReportEventRows()).find((e) => e.id === acceptReport?.eventId);
     check("D1 accept: the verdict, its time, its deciding occupant and its reason land on the report row",
       acceptRes.ok && acceptBody.ok === true
         && acceptBody.report?.decision?.disposition === "accepted"
@@ -2947,19 +2974,11 @@ export async function run(): Promise<void> {
         && decisionOccupant(acceptBody.report.decision)?.sessionId === (d1MainRowAfter?.sessionId ?? null)
         && acceptBody.report.decision.reason === "Diff read, verify quoted, slice taken.",
       JSON.stringify(acceptBody.report?.decision ?? null));
-    check("D1 accept settles transport: a still-open FleetEvent becomes acknowledged, so recovery stops re-pasting a judged report",
-      eventsBeforeDecision.find((e) => e.id === acceptReport?.eventId)?.status === "pending"
-        && acceptEvent?.status === "acknowledged" && typeof acceptEvent.acknowledgedAt === "number"
-        && (acceptEvent.acknowledgedAt ?? 0) > 0,
-      JSON.stringify({ before: eventsBeforeDecision.find((e) => e.id === acceptReport?.eventId)?.status,
-        after: acceptEvent }));
-    const ackAfterDecision = await ackEvent(d1MainTok, acceptReport?.eventId ?? "");
-    const ackAfterBody = await ackAfterDecision.json() as { ok?: boolean; existing?: boolean;
-      event?: { acknowledgedAt?: number | null } };
-    check("D1 the event ACK keeps its meaning: after the decision settled the row it reports the existing acknowledgement and rewrites nothing",
-      ackAfterDecision.ok && ackAfterBody.ok === true && ackAfterBody.existing === true
-        && ackAfterBody.event?.acknowledgedAt === acceptEvent?.acknowledgedAt,
-      JSON.stringify({ status: ackAfterDecision.status, body: ackAfterBody }));
+    check("D1 program decision mints and settles no FleetEvent: judgement stays on the report row",
+      eventsBeforeDecision.length === (await fleetReportEventRows()).length
+        && !eventsBeforeDecision.some((e) => [acceptReport?.id, rejectReport?.id, terminalReport?.id]
+          .includes(e.payload.reportId)),
+      JSON.stringify({ before: eventsBeforeDecision.length, after: (await fleetReportEventRows()).length }));
     const rejectRes = await decideReport(d1MainTok, rejectReport?.id ?? "", "reject");
     const rejectBody = await rejectRes.json() as { ok?: boolean; report?: FleetReportRow };
     check("D1 reject: the opposite verdict is recorded the same way, and an omitted reason is null rather than empty prose",
@@ -2967,20 +2986,45 @@ export async function run(): Promise<void> {
         && rejectBody.report.decision.reason === null
         && decisionOccupant(rejectBody.report.decision)?.slot === d1Main,
       JSON.stringify(rejectBody.report?.decision ?? null));
-    const terminalRes = await decideReport(d1MainTok, terminalReport?.id ?? "", "accept");
+
+    // The measured succession window is the decisive counterexample: the row belongs to the
+    // Program, so a successor may judge it while the predecessor slot is still live in grace.
+    const reboundAt = Date.now();
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const d1Rebound = JSON.parse(readFileSync(d1Path, "utf8")) as {
+      programs?: { id?: string; main?: Record<string, unknown>;
+        lineage?: { entries?: Record<string, unknown>[] } }[];
+      slots?: Record<string, Record<string, unknown>>;
+    };
+    const reboundProgram = d1Rebound.programs?.find((p) => p.id === d1ProgramId);
+    const reboundMain = d1Rebound.slots?.[String(d1Other)] ?? {};
+    const oldHolding = reboundProgram?.lineage?.entries?.at(-1);
+    if (oldHolding) { oldHolding.endedAt = reboundAt; oldHolding.endedBy = "succeed"; }
+    if (reboundProgram) {
+      reboundProgram.main = { slot: d1Other, openedAt: reboundMain.openedAt,
+        sessionId: reboundMain.sessionId, boundAt: reboundAt };
+      reboundProgram.lineage?.entries?.push({ slot: d1Other, openedAt: reboundMain.openedAt,
+        sessionId: reboundMain.sessionId, boundAt: reboundAt, via: "succeed",
+        endedAt: null, endedBy: null });
+    }
+    writeFileSync(d1Path, JSON.stringify(d1Rebound, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const terminalRes = await decideReport(d1OtherTok, terminalReport?.id ?? "", "accept");
     const terminalBody = await terminalRes.json() as { ok?: boolean; report?: FleetReportRow };
     const terminalEvent = (await fleetReportEventRows()).find((e) => e.id === terminalReport?.eventId);
-    check("D1 already-terminal event: the verdict is recorded and the settled row is left byte-for-byte as it was",
+    check("fleet-report decision on a program row: the live successor accepts while the predecessor slot still lives, and no event exists",
       terminalRes.ok && terminalBody.report?.decision?.disposition === "accepted"
-        && terminalEvent?.status === "acknowledged"
-        && terminalEvent.acknowledgedAt === acknowledgedAtPlant,
-      JSON.stringify({ planted: acknowledgedAtPlant, after: terminalEvent }));
-    const secondAccept = await decideReport(d1MainTok, acceptReport?.id ?? "", "accept",
+        && decisionOccupant(terminalBody.report.decision)?.slot === d1Other
+        && terminalEvent === undefined,
+      JSON.stringify({ predecessorLive: !!d1MainRowAfter, decision: terminalBody.report?.decision,
+        event: terminalEvent ?? null }));
+    const secondAccept = await decideReport(d1OtherTok, acceptReport?.id ?? "", "accept",
       { reason: "a second, later opinion" });
     const secondAcceptText = await secondAccept.text();
-    const secondReject = await decideReport(d1MainTok, acceptReport?.id ?? "", "reject");
+    const secondReject = await decideReport(d1OtherTok, acceptReport?.id ?? "", "reject");
     const secondRejectText = await secondReject.text();
-    const afterSecond = (await selfFleetReports(d1MainTok)).reports.find((r) => r.id === acceptReport?.id);
+    const afterSecond = (await selfFleetReports(d1OtherTok)).reports.find((r) => r.id === acceptReport?.id);
     check("D1 first decision wins: a second call — same verdict or the opposite — is 409 and the row is unchanged",
       secondAccept.status === 409 && secondAcceptText.includes("fleet report was already accepted")
         && secondReject.status === 409 && secondRejectText.includes("fleet report was already accepted")
@@ -3002,31 +3046,31 @@ export async function run(): Promise<void> {
     check("D1 the decision actuates nothing: Task.status, the lanes, the worker panes and report retention are untouched",
       d1TaskId !== "" && d1TaskAfter?.status === d1TaskStatusBefore
         && laneStillOpen === 3 && laneWritesAfter === 0
-        && (await selfFleetReports(d1MainTok)).reports.length === reportsBeforeDecision,
+        && (await selfFleetReports(d1OtherTok)).reports.length === reportsBeforeDecision,
       JSON.stringify({ task: [d1TaskStatusBefore, d1TaskAfter?.status], lanes: laneStillOpen,
         paneWrites: laneWritesAfter, reports: reportsBeforeDecision }));
 
     // --- and it is the ROW's fact, not this process's memory. The malformed plants ride the same
-    // restart: a decision naming a session other than the receiver, and one missing its verdict,
-    // must be DISCARDED whole rather than repaired into a judgement nobody made.
+    // restart: a Program row that invents either transport half, and an incomplete decision, must
+    // be DISCARDED whole rather than repaired into a different principal or judgement.
     await tmuxOut("kill-session", "-t", "srv");
     await Bun.sleep(500);
     const d1Hydrate = JSON.parse(readFileSync(d1Path, "utf8")) as { fleetReports?: FleetReportRow[] };
     const forgedBase = d1Hydrate.fleetReports?.find((r) => r.id === rejectReport?.id);
     const forged: FleetReportRow[] = forgedBase ? [
-      { ...forgedBase, id: "d1".padEnd(24, "0"), eventId: "d2".padEnd(24, "0"),
-        decision: { disposition: "accepted", at: Date.now(), reason: null,
-          by: { slot: d1Other, openedAt: 1, sessionId: null } } },
-      { ...forgedBase, id: "d3".padEnd(24, "0"), eventId: "d4".padEnd(24, "0"),
+      { ...forgedBase, id: "d1".padEnd(24, "0"), eventId: "d2".padEnd(24, "0") } as FleetReportRow,
+      { ...forgedBase, id: "d3".padEnd(24, "0"),
+        receiver: { slot: d1Other, openedAt: Number(reboundMain.openedAt), sessionId: null } },
+      { ...forgedBase, id: "d5".padEnd(24, "0"),
         decision: { at: Date.now(), reason: null,
           by: forgedBase.receiver } as unknown as FleetReportRow["decision"] },
     ] : [];
     d1Hydrate.fleetReports?.push(...forged);
     writeFileSync(d1Path, JSON.stringify(d1Hydrate, null, 2), { mode: 0o600 });
     await restartSrv();
-    const hydrated = (await selfFleetReports(d1MainTok)).reports;
-    check("D1 durability: both verdicts reconstruct field-for-field from disk, and a decision that names a foreign or incomplete principal is discarded",
-      forged.length === 2
+    const hydrated = (await selfFleetReports(d1OtherTok)).reports;
+    check("fleet-report durability: program rows reconstruct field-for-field, while a receiver, eventId or incomplete decision discards the row",
+      forged.length === 3
         && JSON.stringify(hydrated.find((r) => r.id === acceptReport?.id)?.decision)
           === JSON.stringify(acceptBody.report?.decision)
         && JSON.stringify(hydrated.find((r) => r.id === rejectReport?.id)?.decision)
@@ -3043,6 +3087,51 @@ export async function run(): Promise<void> {
         && decisionOccupant(workerView.decision)?.slot === d1Main
         && hydrated.find((r) => r.id === acceptReport?.id)?.decision?.disposition === "accepted",
       JSON.stringify(workerView?.decision ?? null));
+
+    // BREAKS IF: pruneFleetReports treats an eventless Program row as terminal before it has a
+    // decision. Twenty-one decided clones cross the cap; the older undecided counterexample must
+    // survive while decided rows are eligible for the bounded tail.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const d1Retention = JSON.parse(readFileSync(d1Path, "utf8")) as { fleetReports?: FleetReportRow[] };
+    const retentionBase = d1Retention.fleetReports?.find((r) => r.id === acceptReport?.id);
+    const heldId = "e0".padEnd(24, "0");
+    const heldProgramRow = retentionBase ? { ...retentionBase, id: heldId,
+      reportedAt: Math.max(1, retentionBase.reportedAt - 200_000), decision: null } : null;
+    const decidedProgramRows = retentionBase ? Array.from({ length: 21 }, (_, index) => ({
+      ...retentionBase, id: (0xe100 + index).toString(16).padStart(24, "0"),
+      reportedAt: Math.max(1, retentionBase.reportedAt - 100_000 + index),
+      decision: { disposition: "accepted" as const, at: retentionBase.reportedAt - 50_000,
+        by: { slot: d1Main, openedAt: Number(d1MainRow.openedAt), sessionId: null }, reason: null },
+    })) : [];
+    if (heldProgramRow) d1Retention.fleetReports?.push(heldProgramRow, ...decidedProgramRows);
+    writeFileSync(d1Path, JSON.stringify(d1Retention, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const retentionTrigger = await selfFleetReport(terminalTok,
+      { status: "complete", text: "D1 retention trigger stays undecided." });
+    const retained = (await selfFleetReports(d1OtherTok)).reports;
+    check("fleet-report retention: an undecided program row survives the cap while decided program rows are terminal",
+      retentionTrigger.ok && !!heldProgramRow && retained.some((r) => r.id === heldId)
+        && decidedProgramRows.some((r) => !retained.some((standing) => standing.id === r.id))
+        && decidedProgramRows.some((r) => retained.some((standing) => standing.id === r.id)),
+      JSON.stringify({ held: retained.some((r) => r.id === heldId), decidedStanding: decidedProgramRows
+        .filter((r) => retained.some((standing) => standing.id === r.id)).length }));
+
+    // BREAKS IF: openFleetReport branches on programId presence rather than ACTIVE status.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const d1Inactive = JSON.parse(readFileSync(d1Path, "utf8")) as
+      { programs?: { id?: string; status?: string }[] };
+    const inactiveProgram = d1Inactive.programs?.find((p) => p.id === d1ProgramId);
+    if (inactiveProgram) inactiveProgram.status = "complete";
+    writeFileSync(d1Path, JSON.stringify(d1Inactive, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const inactiveReport = await selfFleetReport(terminalTok,
+      { status: "complete", text: "A complete Program does not own this new row." });
+    const inactiveText = await inactiveReport.text();
+    check("fleet-report inactive program: a lane whose Program is complete falls back to exact receiver evidence or the named 409",
+      inactiveReport.status === 409 && inactiveText.includes("no exact clarification receiver evidence"),
+      `${inactiveReport.status} ${inactiveText}`);
 
     for (const slot of [acceptLane.slot, rejectLane.slot, terminalLane.slot, inboxLane.slot,
       d1Main, d1Other]) await post(`/api/slots/${slot}/kill`, {});
@@ -3114,19 +3203,21 @@ export async function run(): Promise<void> {
     const rejectedAheadLane = await d2NewLane();
     const undecidedLane = await d2NewLane();
     const reportlessLane = await d2NewLane();
+    const outsideLineageLane = await d2NewLane();
     const d2Lanes = [acceptedLane, rejectedLane, dirtyLane, aheadLane, rejectedAheadLane,
-      undecidedLane, reportlessLane];
-    const d2Refusers = [dirtyLane, aheadLane, rejectedAheadLane, undecidedLane, reportlessLane];
-    check("D2 fixtures: one MAIN occupant and seven distinct lanes exist",
+      undecidedLane, reportlessLane, outsideLineageLane];
+    const d2Refusers = [dirtyLane, aheadLane, rejectedAheadLane, undecidedLane, reportlessLane,
+      outsideLineageLane];
+    check("D2 fixtures: one MAIN occupant and eight distinct lanes exist",
       !!d2MainOpen?.ok && d2Lanes.every((l) => typeof l.slot === "number" && !!l.cwd && !!l.branch)
-        && new Set([d2Main, ...d2Lanes.map((l) => l.slot)]).size === 8,
+        && new Set([d2Main, ...d2Lanes.map((l) => l.slot)]).size === 9,
       JSON.stringify({ d2Main, lanes: d2Lanes.map((l) => l.slot) }));
     const d2MainTok = await paneEnv(`s${d2Main}`, "FLEET_SELF_TOKEN") ?? "";
     const d2Tok = new Map<number, string>();
     for (const l of d2Lanes) d2Tok.set(l.slot, await paneEnv(`s${l.slot}`, "FLEET_SELF_TOKEN") ?? "");
     check("D2 fixtures: every participant carries its own exact scoped credential",
       /^[0-9a-f]{32}$/.test(d2MainTok) && [...d2Tok.values()].every((t) => /^[0-9a-f]{32}$/.test(t))
-        && new Set([d2MainTok, ...d2Tok.values()]).size === 8,
+        && new Set([d2MainTok, ...d2Tok.values()]).size === 9,
       `lengths=${[d2MainTok, ...d2Tok.values()].map((t) => t.length).join("/")}`);
 
     // The Program binding and the per-lane queue identity, planted with srv down — the technique
@@ -3151,6 +3242,9 @@ export async function run(): Promise<void> {
       confirmedAt: Date.now() - 900, activatedAt: Date.now() - 800,
       main: { slot: d2Main, openedAt: d2MainRow.openedAt, sessionId: d2MainRow.sessionId,
         boundAt: Date.now() - 700 },
+      lineage: { v: 1, entries: [{ slot: d2Main, openedAt: d2MainRow.openedAt,
+        sessionId: d2MainRow.sessionId, boundAt: Date.now() - 700, via: "bootstrap",
+        endedAt: null, endedBy: null }], dropped: 0 },
     }];
     for (const l of d2Lanes) {
       d2Plant.slots[String(l.slot)].programId = d2ProgramId;
@@ -3191,12 +3285,32 @@ export async function run(): Promise<void> {
       { status: "needs-main", text: "D2 fixture: a decision is owed on this one and never given." });
     const undecidedRow = (await undecidedFiled.json() as { report?: FleetReportRow }).report;
     if (undecidedRow) d2Report.set(undecidedLane.slot, undecidedRow);
-    check("D2 fixtures: five reports carry a verdict by the exact receiver, one is filed and undecided, one lane filed nothing",
+    const outsideFiled = await selfFleetReport(d2Tok.get(outsideLineageLane.slot) ?? "",
+      { status: "complete", text: "D2 fixture: this planted verdict names no lineage holder." });
+    const outsideRow = (await outsideFiled.json() as { report?: FleetReportRow }).report;
+    if (outsideRow) {
+      await tmuxOut("kill-session", "-t", "srv");
+      await Bun.sleep(500);
+      const outsidePlant = JSON.parse(readFileSync(d2Path, "utf8")) as {
+        fleetReports?: FleetReportRow[]; slots?: Record<string, { openedAt?: number; sessionId?: string | null }>;
+      };
+      const row = outsidePlant.fleetReports?.find((r) => r.id === outsideRow.id);
+      const nonHolder = outsidePlant.slots?.[String(acceptedLane.slot)];
+      if (row && nonHolder?.openedAt) row.decision = { disposition: "accepted", at: Date.now(),
+        by: { slot: acceptedLane.slot, openedAt: nonHolder.openedAt,
+          sessionId: nonHolder.sessionId ?? null }, reason: "not a Program authority" };
+      writeFileSync(d2Path, JSON.stringify(outsidePlant, null, 2), { mode: 0o600 });
+      await restartSrv();
+      const plantedOutside = (await selfFleetReports(d2MainTok)).reports.find((r) => r.id === outsideRow.id);
+      if (plantedOutside) d2Report.set(outsideLineageLane.slot, plantedOutside);
+    }
+    check("D2 fixtures: five reports carry a verdict by the exact lineage holder, one names a non-holder, one is undecided, and one lane filed nothing",
       d2Verdicts.length === 5
         && d2Report.get(acceptedLane.slot)?.decision?.disposition === "accepted"
         && d2Report.get(rejectedLane.slot)?.decision?.disposition === "rejected"
         && d2Report.get(rejectedAheadLane.slot)?.decision?.disposition === "rejected"
         && decisionOccupant(d2Report.get(acceptedLane.slot)?.decision)?.slot === d2Main
+        && decisionOccupant(d2Report.get(outsideLineageLane.slot)?.decision)?.slot === acceptedLane.slot
         && (undecidedRow?.decision ?? null) === null
         && (await selfFleetReports(d2Tok.get(reportlessLane.slot) ?? "")).reports.length === 0,
       JSON.stringify({ decided: d2Verdicts, undecided: undecidedRow?.id ?? null,
@@ -3244,6 +3358,7 @@ export async function run(): Promise<void> {
       { slot: rejectedAheadLane.slot, want: "ahead=1 (the candidate commit is served)", holds: (v) => v?.git?.ahead === 1 },
       { slot: undecidedLane.slot, want: "spent (stalled + dirty=0)", holds: d2Spent },
       { slot: reportlessLane.slot, want: "spent (stalled + dirty=0)", holds: d2Spent },
+      { slot: outsideLineageLane.slot, want: "spent (stalled + dirty=0)", holds: d2Spent },
     ];
     const d2Unmet = (snap: D2Sv[]): string[] => d2Want
       .filter((w) => !w.holds(snap.find((x) => x.id === w.slot)))
@@ -3364,6 +3479,12 @@ export async function run(): Promise<void> {
     check("D2 refusal: a lane that filed NO report is never closed — absent evidence is not a verdict",
       stillOpen[4] === true && refusalRows[4]?.length === 0,
       JSON.stringify({ open: stillOpen[4], rows: refusalRows[4]?.length }));
+    // BREAKS IF: the Program-lineage membership test is removed or compares slot without openedAt.
+    check("D2 autoclose program row: a verdict by an occupant this Program's lineage never held is refused",
+      stillOpen[5] === true && refusalRows[5]?.length === 0
+        && decisionOccupant(d2Report.get(outsideLineageLane.slot)?.decision)?.slot === acceptedLane.slot,
+      JSON.stringify({ open: stillOpen[5], rows: refusalRows[5]?.length,
+        decision: d2Report.get(outsideLineageLane.slot)?.decision ?? null }));
 
     // --- (d) what the close must never do, measured rather than asserted in prose: it moves no
     // integration branch, it types nothing into any lane, and it takes no slot it was not entitled
@@ -3476,6 +3597,7 @@ export async function run(): Promise<void> {
     await Bun.sleep(500);
     const d3Plant = JSON.parse(readFileSync(d3Path, "utf8")) as {
       slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
+      watches?: Record<string, unknown>[];
     };
     const d3MainRow = d3Plant.slots[String(d3Main)] ?? {};
     const d3SessRow = d3Plant.slots[String(d3SessMain)] ?? {};
@@ -3491,12 +3613,22 @@ export async function run(): Promise<void> {
     d3Plant.programs = [...(d3Plant.programs ?? []),
       programShell(d3ProgramId, d3Main, d3MainRow),
       programShell(d3SessProgramId, d3SessMain, d3SessRow)];
-    for (const lane of [orphanLane, judgedLane]) {
-      d3Plant.slots[String(lane.slot)].programId = d3ProgramId;
+    for (const lane of [orphanLane, judgedLane])
       d3Plant.slots[String(lane.slot)].taskId = `d3task${String(lane.slot).padStart(6, "0")}`;
-    }
-    d3Plant.slots[String(sessionLane.slot)].programId = d3SessProgramId;
     d3Plant.slots[String(sessionLane.slot)].taskId = "d3task-sessionid";
+    // D3 continues to prove the legacy occupant-bound owner door. Program lanes now use the new
+    // Program principal, so spent exact Watches supply the old transport evidence without taking
+    // delivery budget or changing the D3 subject.
+    d3Plant.watches = [...(d3Plant.watches ?? []), ...[
+      { lane: orphanLane, slot: d3Main, row: d3MainRow },
+      { lane: judgedLane, slot: d3Main, row: d3MainRow },
+      { lane: sessionLane, slot: d3SessMain, row: d3SessRow },
+    ].map(({ lane, slot, row }, index) => ({
+      id: `d3legacyreport${index}`, slot, slotOpenedAt: row.openedAt,
+      idleSec: 0, armed: false, created: Date.now(), firedAt: Date.now(),
+      lastResult: "legacy occupant-bound report fixture", kind: "lane",
+      target: lane.slot, targetCwd: lane.cwd, targetBranch: lane.branch,
+    }))];
     // the B4 shape: a task dispatched it, nothing bound it — the owner-inbox fallback
     d3Plant.slots[String(inboxLane.slot)].taskId = "d3task-owner-inbox";
     writeFileSync(d3Path, JSON.stringify(d3Plant, null, 2), { mode: 0o600 });
@@ -3514,7 +3646,7 @@ export async function run(): Promise<void> {
       d3Filed.every((r) => r.ok)
         && orphanReport?.receiver?.slot === d3Main && judgedReport?.receiver?.slot === d3Main
         && sessionReport?.receiver?.slot === d3SessMain
-        && [orphanReport, judgedReport, sessionReport].every((r) => r?.basis === "program-main"
+        && [orphanReport, judgedReport, sessionReport].every((r) => r?.basis === "lane-watch"
           && (r?.decision ?? null) === null)
         && inboxReport3?.receiver === null && inboxReport3.basis === "owner-inbox",
       JSON.stringify([orphanReport, judgedReport, sessionReport, inboxReport3]
@@ -3801,9 +3933,9 @@ export async function run(): Promise<void> {
         && new Set([bMainTok, ...laneToks]).size === 5,
       `lengths=${[bMainTok, ...laneToks].map((t) => t.length).join("/")}`);
 
-    // The binding is the ONE server fact clarificationReceiverFor reads to name the receiver, and
-    // it is planted with srv down — the technique every binding fixture in this file uses. No body
-    // below names a receiver, a program or a slot.
+    // The Program binding exists only so the projection can expose this MAIN's budget. The lanes
+    // deliberately remain program-less after S3b: the four Watches below are both reservations and
+    // exact legacy receiver evidence, so these older doors still exercise their FleetEvent cap.
     await tmuxOut("kill-session", "-t", "srv");
     await Bun.sleep(500);
     const budgetStatePath = `${ROOT}/fleet.json`;
@@ -3822,7 +3954,6 @@ export async function run(): Promise<void> {
       main: { slot: bMain, openedAt: bMainRow.openedAt, sessionId: bMainRow.sessionId,
         boundAt: Date.now() - 700 },
     }];
-    for (const l of budgetLanes) budgetPlant.slots[String(l.slot)].programId = budgetProgramId;
     writeFileSync(budgetStatePath, JSON.stringify(budgetPlant, null, 2), { mode: 0o600 });
     await restartSrv();
 

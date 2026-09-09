@@ -11157,7 +11157,8 @@ interface OwnerReportRow {
   provenance: { taskId: string | null; originId: string | null; programId: string | null;
     instance?: string | null };
   receiver: { slot: number; openedAt: number; sessionId: string | null } | null;
-  basis: string; eventId: string;
+  basis: "program-main" | "lane-watch" | "program-main+lane-watch" | "owner-inbox" | "program";
+  eventId: string | null;
   // derived server-side per request from the one rule both decision doors read
   liveness: "live" | "gone" | "owner-inbox";
   decision?: { disposition: "accepted" | "rejected"; at: number;
@@ -11312,15 +11313,18 @@ function ownerReportRowEl(r: OwnerReportRow): HTMLElement {
   const row = el("div", "attnrow open");
   const head = el("div", "attnhead");
   const chip = r.status === "failed" ? "k-blocked" : r.status === "needs-main" ? "k-decision" : "k-review-ready";
+  if (r.basis === "program") head.appendChild(el("span", "attnkind", "Program"));
   head.appendChild(el("span", `attnkind ${chip}`, r.status));
   head.appendChild(el("span", "attnprog", `slot ${r.worker.slot} · ${r.worker.branch}`));
   head.appendChild(el("span", "attnmeta", `${fmtSince(r.reportedAt)}`));
   row.appendChild(head);
   // WHY THIS ROW IS HERE AT ALL, stated rather than left to be inferred from an empty receiver
   // field: an absence that looks like "nobody has looked at it" is the state this section removes.
-  row.appendChild(el("div", "shrhint", r.liveness === "owner-inbox"
-    ? "Filed to you directly — the lane had no coordinating session to report to."
-    : `Filed to slot ${r.receiver?.slot}, whose session has since ended. No session can judge it any more.`));
+  row.appendChild(el("div", "shrhint", r.basis === "program"
+    ? `Filed to Program ${r.provenance.programId}; it currently has no live bound MAIN, so the owner may judge it.`
+    : r.liveness === "owner-inbox"
+      ? "Filed to you directly — the lane had no coordinating session to report to."
+      : `Filed to slot ${r.receiver?.slot}, whose session has since ended. No session can judge it any more.`));
   row.appendChild(el("div", "attntext", r.text));
   const ta = document.createElement("textarea");
   ta.className = "attnta";

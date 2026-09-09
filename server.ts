@@ -6880,11 +6880,14 @@ function fleetReportsFor(s: Slot): FleetReport[] {
   // too, which made the slot-12 shape worse than it looked: a MAIN whose session id moved inside
   // one occupation could neither READ its report back nor judge it, and a door that could be
   // walked but whose result could not be read would be its own defect.
-  const bound = (b: { slot: number; openedAt: number; sessionId: string | null } | null): boolean =>
+  const occupantBound = (b: { slot: number; openedAt: number; sessionId: string | null } | null): boolean =>
     !!b && b.slot === s.id && b.openedAt === s.openedAt;
+  const programBound = boundProgramForMain(s);
   // An owner-inbox row still reaches its WORKER through the first arm — the lane can read back
   // what it filed — and reaches no session at all through the second, which is the point.
-  return fleetReports.filter((r) => bound(r.worker) || bound(r.receiver));
+  return fleetReports.filter((r) => occupantBound(r.worker) || occupantBound(r.receiver)
+    || (r.basis === "program" && programBound.ok
+      && r.provenance.programId === programBound.program.id));
 }
 
 // WHO, IF ANYONE, CAN STILL JUDGE THIS ROW. ONE function, because the SELF door and the OWNER door
@@ -6898,6 +6901,12 @@ function fleetReportsFor(s: Slot): FleetReport[] {
 // no longer reads it either.
 type ReportReceiverLiveness = "live" | "gone" | "owner-inbox";
 function reportReceiverLiveness(report: FleetReport): ReportReceiverLiveness {
+  if (report.basis === "program") {
+    const program = programs.find((p) => p.status === "active" && p.id === report.provenance.programId);
+    const main = program?.main;
+    const live = main ? slotFrom(main.slot) : null;
+    return live?.cwd && live.openedAt === main?.openedAt ? "live" : "gone";
+  }
   if (report.receiver === null) return "owner-inbox";
   const live = slotFrom(report.receiver.slot);
   return live?.cwd && live.id === report.receiver.slot && live.openedAt === report.receiver.openedAt
@@ -7029,6 +7038,7 @@ const REJECTED_LAND_EXIT_MAIN = "Have the lane repair and file again, then decid
 
 function pruneFleetReports(): void {
   const terminal = fleetReports.filter((report) => {
+    if (report.basis === "program") return !!report.decision;
     // …EXCEPT a row the owner still owes a verdict. The predicate below is "transport is finished
     // with this row", which for every other row means nothing more will happen to it — but an
     // orphaned undecided report is precisely a row where something more IS owed, and its event went
@@ -7076,6 +7086,28 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
   if (!text) return json({ error: "text must not be empty" }, 400);
   if (text.length > MAX_FLEET_REPORT_TEXT)
     return json({ error: `text must be at most ${MAX_FLEET_REPORT_TEXT} chars` }, 400);
+
+  const program = s.programId ? programs.find((p) => p.id === s.programId) : undefined;
+  if (program?.status === "active") {
+    const reportedAt = Date.now();
+    const id = randomBytes(12).toString("hex");
+    const status = body.status as FleetReportStatus;
+    const report: FleetReport = {
+      id, reportedAt, status, text,
+      worker: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId,
+        cwd: s.cwd!, branch: s.worktree!.branch },
+      provenance: { taskId: s.taskId, originId: s.originId, programId: s.programId,
+        instance: INSTANCE_NAME },
+      receiver: null, basis: "program", eventId: null,
+    };
+    const entry = appendProgramInbox(program, "fleet-report", id);
+    fleetReports = [...fleetReports, report];
+    audit("fleet_report_open", s.id,
+      `${id} receiver=program:${program.id} status=${status} basis=program inbox=${entry.id}`);
+    pruneFleetReports();
+    await saveStateNow();
+    return json({ ok: true, report, inbox: entry.id });
+  }
 
   // THE OWNER-INBOX FALLBACK, and it is the narrowest one that closes the hole it was cut for.
   //
@@ -7132,7 +7164,7 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
     subjectSlot: s.id, subjectBranch: s.worktree!.branch,
     kind: "fleet-report",
     payload: { reportId: id, status, text, taskId: s.taskId, originId: s.originId,
-      programId: s.programId, basis: report.basis },
+      programId: s.programId, basis: bound?.basis ?? "owner-inbox" },
     createdAt: reportedAt,
     // A bound row keeps its historical shape byte-for-byte. The owner row is `inbox` from birth —
     // not a pending state, so FACT 2 never selects it and no tmux send, history append or prompt
@@ -7312,11 +7344,17 @@ async function decideFleetReport(s: Slot, id: string, disposition: FleetReportDi
   body: Record<string, unknown> | null): Promise<Response> {
   const report = fleetReports.find((r) => r.id === id);
   if (!report) return json({ error: "unknown fleet report" }, 404);
+  if (report.basis === "program") {
+    const bound = boundProgramForMain(s);
+    if (!bound.ok) return json({ error: bound.error }, 409);
+    if (bound.program.id !== report.provenance.programId)
+      return json({ error: `fleet report belongs to another Program — only the bound MAIN of program ${report.provenance.programId} may judge it` }, 409);
+  }
   // FIRST, ahead of the occupant comparison, for acknowledgeFleetEvent's reason verbatim: an
   // owner-inbox row has no receiver occupant at all, so comparing it against this session would
   // answer "belongs to another or replaced MAIN session" — the wrong reason, pointing a MAIN at a
   // session that cannot exist. The owner is a principal, and none is invented for him here either.
-  if (report.receiver === null)
+  if (report.basis !== "program" && report.receiver === null)
     return json({ error: "owner-inbox report — accepting or rejecting it belongs to the owner, who has no session to bind a decision to" }, 409);
   // THE OCCUPATION, NOT THE SESSION ID — and this is the one place the two halves of the report
   // rail used to disagree. clarificationReceiverFor RESOLVES the receiver on slot + openedAt and
@@ -7328,7 +7366,8 @@ async function decideFleetReport(s: Slot, id: string, disposition: FleetReportDi
   // occupant was alive — a report with no principal at all. Resolution and judgement now read the
   // same rule; the session id that was live at the verdict is recorded on `decision.by`, where it
   // is evidence rather than a gate.
-  if (report.receiver.slot !== s.id || report.receiver.openedAt !== s.openedAt)
+  if (report.basis !== "program" && report.receiver
+    && (report.receiver.slot !== s.id || report.receiver.openedAt !== s.openedAt))
     return json({ error: "fleet report belongs to another or replaced MAIN session" }, 409);
   // The body may say ONE thing or nothing, in openFleetReport's own discipline: what a request
   // cannot name, it cannot smuggle. Disposition comes from the PATH, everything else from the row.
@@ -7356,7 +7395,7 @@ async function decideFleetReport(s: Slot, id: string, disposition: FleetReportDi
   // recoverFleetReportDelivery re-paste a report already decided. An already-terminal event is left
   // exactly as it is: `receiver-gone` and `subject-gone` are evidence of a loss, not an open debt,
   // and overwriting them would erase the one record that says what happened to that delivery.
-  const event = fleetEvents.find((e) => e.id === report.eventId);
+  const event = report.eventId === null ? undefined : fleetEvents.find((e) => e.id === report.eventId);
   if (event && !FLEET_EVENT_TERMINAL.includes(event.status)) settleFleetEventAcknowledged(event);
   // No audit word of its own: the durable record of this act is the row it just wrote — persisted,
   // hydrated and projected — and a trail line would be the weaker copy of it. What the trail does
@@ -7390,9 +7429,12 @@ async function ownerDecideFleetReport(id: string, disposition: FleetReportDispos
   if (!report) return json({ error: "unknown fleet report" }, 404);
   // BEFORE anything else, because it is the whole boundary of this door: a live receiver keeps the
   // verdict, and the refusal names the door that IS open rather than leaving the owner to find it.
-  if (reportReceiverLiveness(report) === "live")
+  if (reportReceiverLiveness(report) === "live") {
+    if (report.basis === "program")
+      return json({ error: `fleet report belongs to program ${report.provenance.programId}, whose live bound MAIN judges it through POST /api/self/fleet-report/${report.id}/accept|reject` }, 409);
     return json({ error: `fleet report receiver slot ${report.receiver?.slot} is live — the verdict belongs to that MAIN through POST /api/self/fleet-report/${report.id}/accept|reject`,
       receiver: report.receiver }, 409);
+  }
   if (body && Object.keys(body).some((key) => key !== "reason"))
     return json({ error: "body must contain only reason" }, 400);
   let reason: string | null = null;
@@ -7423,7 +7465,9 @@ async function ownerDecideFleetReport(id: string, disposition: FleetReportDispos
   // GET /api/self/fleet-report and through the Program view, while an owner verdict has no session
   // to read it from — the row and this line are the only places it surfaces.
   audit("fleet_report_owner_decision", report.worker.slot,
-    `${report.id} ${disposition} receiver=${report.receiver ? report.receiver.slot : "owner-inbox"}`);
+    `${report.id} ${disposition} receiver=${report.basis === "program"
+      ? `program:${report.provenance.programId}`
+      : report.receiver?.slot ?? "owner-inbox"}`);
   await saveStateNow();
   return json({ ok: true, report });
 }
@@ -11600,7 +11644,7 @@ function laneAutoCloseRefusal(s: Slot, now: number): string | null {
   // still reading, and "never closes a lane whose report is undecided" has to mean every row the
   // lane filed — the newest-only reading would close a lane over an unanswered question.
   for (const r of own) {
-    if (r.receiver === null) return "an owner-inbox report carries no MAIN verdict to close on";
+    if (r.basis === "owner-inbox") return "an owner-inbox report carries no MAIN verdict to close on";
     const d = r.decision;
     if (!d) return "a report of this lane is undecided";
     // AN OWNER VERDICT DOES NOT ARM THIS ACTUATOR. The owner door exists for a report whose MAIN is
@@ -11610,13 +11654,22 @@ function laneAutoCloseRefusal(s: Slot, now: number): string | null {
     // let a door built to UNBLOCK an owner start killing panes unattended on his behalf.
     if (d.by === "owner")
       return "a report of this lane was judged by the owner, not by its MAIN";
+    const by = d.by;
     // the decision names the receiver OCCUPATION. fleetReportFrom enforces this on the way in and
     // decideFleetReport on the way through, which is precisely why it is re-tested here: a
     // guarantee an actuator inherits from two other files is a guarantee it stops noticing. Like
     // both of them it reads slot + openedAt and not the session id — a Codex bind may move that
     // inside one occupation, and the verdict records the id that was live when it was taken.
-    if (d.by.slot !== r.receiver.slot || d.by.openedAt !== r.receiver.openedAt)
+    if (r.basis === "program") {
+      if (!program.lineage) return "no lineage to check the verdict against";
+      const held = program.lineage.entries.some((e) => e.slot === by.slot
+        && e.openedAt === by.openedAt && e.boundAt <= d.at
+        && (e.endedAt === null || e.endedAt >= d.at));
+      if (!held)
+        return "a report's verdict does not name a MAIN this Program's lineage records as holding authority at decision time";
+    } else if (!r.receiver || by.slot !== r.receiver.slot || by.openedAt !== r.receiver.openedAt) {
       return "a report's verdict does not name its exact receiver occupant";
+    }
     if (r.provenance.taskId !== s.taskId || r.provenance.programId !== s.programId)
       return "a report's provenance does not match this lane's own task and Program";
   }

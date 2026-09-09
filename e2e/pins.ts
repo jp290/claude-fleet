@@ -4395,10 +4395,11 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   pin(`${RULE_RECEIVER} — every carrier of "filed to the owner" is bound to the receiver, in the parser (B4)`,
     ownerEquivalences.every((clause) => eventParser.includes(clause))
       && eventParser.includes('"program-main+lane-watch", "owner-inbox"')
-      && reportRowParser.includes('(r.basis === "owner-inbox" ? r.receiver !== null : !occupant(r.receiver, false))'),
+      && reportRowParser.includes('r.basis === "program" || r.basis === "owner-inbox"')
+      && reportRowParser.includes('? r.receiver !== null : !occupant(r.receiver, false)'),
     `missing=[${ownerEquivalences.filter((c) => !eventParser.includes(c)).map((c) => c.slice(3, 40)).join(" | ")}]`
       + ` allowlist=${eventParser.includes('"program-main+lane-watch", "owner-inbox"')}`
-      + ` reportRow=${reportRowParser.includes('r.basis === "owner-inbox" ? r.receiver !== null')}`);
+      + ` reportRow=${reportRowParser.includes('r.basis === "program" || r.basis === "owner-inbox"')}`);
   // --- D1 · THE ACCEPTANCE DOOR. The event ACK is a TRANSPORT receipt by contract, so the
   // judgement had to get its own door and its own persisted word. Four halves can drift without a
   // compiler noticing: the closed disposition vocabulary (server/types.ts vs the doc), the two
@@ -4501,7 +4502,7 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   // …and the self door reads the SAME occupation. This is the sessionId divergence that made slot
   // 12 unjudgeable by anyone: resolution never gated it, judgement did, and the owner door could
   // not help because the occupant was alive.
-  const selfDoorGate = server.match(/if \(report\.receiver\.slot !== s\.id[\s\S]*?\n/)?.[0] ?? "";
+  const selfDoorGate = server.match(/if \(report\.basis !== "program" && report\.receiver\n\s*&&[\s\S]*?\n/)?.[0] ?? "";
   pin(`${RULE_RECEIVER} — the self door gates the occupation only, like clarificationReceiverFor (D1b)`,
     selfDoorGate.includes("report.receiver.openedAt !== s.openedAt")
       && !selfDoorGate.includes("sessionId")
@@ -4714,7 +4715,8 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && autoCloseRefusal.includes("laneSpentLooking(laneSignalView(s, now), STALLED_IDLE_MS)")
       // the receiver OCCUPATION, matching both decision doors and fleetReportFrom — and the arm
       // that keeps this unattended actuator out of the owner door's reach entirely
-      && autoCloseRefusal.includes("d.by.openedAt !== r.receiver.openedAt")
+      && autoCloseRefusal.includes("by.openedAt !== r.receiver.openedAt")
+      && autoCloseRefusal.includes("program.lineage.entries.some(")
       && autoCloseRefusal.includes('if (d.by === "owner")')
       && autoCloseRefusal.includes('program.status !== "active"'),
     `nulls=${(autoCloseRefusal.match(/return null;/g) ?? []).length}`
@@ -6382,16 +6384,14 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && /job\.claimWas\s*=\s*\{\s*deviceId:\s*held\.deviceId,\s*name:\s*held\.name,\s*claimedAt:\s*held\.claimedAt,\s*expiresAt:\s*held\.expiresAt\s*\}/s.test(route),
     route === null ? "the suite-offer withdraw route was not found"
       : `claimWas@${claimWasAt} endedAt@${endedAt} clear@${clearAt}`);
-  const lineageRuntime = serverU.span("const lineageEntryFromMain", "const foundingRoot")?.text ?? null;
-  const lineageTypes = serverU.span("\ntype ProgramLineageVia =", "\ntype ProgramFoundingMode =")?.text ?? null;
-  const receiptUniverse = lineageRuntime === null || lineageTypes === null ? ""
-    : serverU.text.replace(lineageRuntime, "").replace(lineageTypes, "");
-  const claimWasMentions = [...receiptUniverse.matchAll(/\bclaimWas\b/g)].length;
-  const endedAtMentions = [...receiptUniverse.matchAll(/\bendedAt\b/g)].length;
+  const suiteJob = serverU.module("server.ts").match(/interface LaneSuiteJob \{[\s\S]*?\n\}/)?.[0] ?? "";
+  const claimWasWrites = (serverU.module("server.ts").match(/job\.claimWas\s*=/g) ?? []).length;
+  const endedAtWrites = (serverU.module("server.ts").match(/job\.endedAt\s*=/g) ?? []).length;
   pin(`${RULE_RECEIPT} — claimWas and endedAt have one type declaration and one withdraw write, with NO product reader`,
-    lineageRuntime !== null && lineageTypes !== null && claimWasMentions === 2 && endedAtMentions === 2,
-    `lineage runtime=${lineageRuntime !== null} types=${lineageTypes !== null}; `
-      + `claimWas mentions=${claimWasMentions} endedAt mentions=${endedAtMentions}`);
+    suiteJob !== "" && (suiteJob.match(/\bclaimWas\??:/g) ?? []).length === 1
+      && (suiteJob.match(/\bendedAt\??:/g) ?? []).length === 1
+      && claimWasWrites === 1 && endedAtWrites === 1,
+    `suite job=${suiteJob !== ""}; claimWas writes=${claimWasWrites} endedAt writes=${endedAtWrites}`);
 }
 
 // ================================================================================================
@@ -6804,6 +6804,33 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && teardown.includes("dropWatchesFor(s.id, why)")
       && drop.includes("reconcileAttention(slotId, why)"),
     `timers=${inboxTimers.length} teardown=${teardown.includes("dropWatchesFor(s.id, why)")} reconcile=${drop.includes("reconcileAttention(slotId, why)")}`);
+  // I6 — Program reports are a fourth persisted basis but NEVER a FleetEvent payload: all three
+  // carrier facts are checked together on hydration, and the open door spends budget only in the
+  // older transport branch. A missing symbol fails as itself rather than making an empty body pass.
+  const reportParser = server.match(/function fleetReportFrom\([\s\S]*?\n\}/)?.[0] ?? "";
+  const reportOpen = server.match(/async function openFleetReport\([\s\S]*?\n\}/)?.[0] ?? "";
+  const reportDecide = server.match(/async function decideFleetReport\([\s\S]*?\n\}/)?.[0] ?? "";
+  const programDecisionAt = reportDecide.indexOf('report.basis === "program"');
+  const nullReceiverAt = reportDecide.indexOf("report.receiver === null");
+  pin(`${RULE_INBOX} — fleetReportFrom binds basis program to a null receiver, null eventId and programId`,
+    reportParser !== "" && reportParser.includes('r.basis === "program" || r.basis === "owner-inbox"')
+      && reportParser.includes('r.basis === "program"') && reportParser.includes("r.eventId !== null")
+      && reportParser.includes('typeof provenance.programId !== "string"')
+      && reportOpen !== "" && reportOpen.includes('basis: "program", eventId: null')
+      && (reportOpen.match(/slotDeliveryBudget\(/g) ?? []).length === 1
+      && programDecisionAt >= 0 && nullReceiverAt > programDecisionAt,
+    reportParser === "" ? "fleetReportFrom not found in the server universe"
+      : reportOpen === "" || reportDecide === "" ? "openFleetReport or decideFleetReport not found in server.ts"
+        : `receiver+event=${reportParser.includes("r.eventId !== null")} budgets=${(reportOpen.match(/slotDeliveryBudget\(/g) ?? []).length} decisionOrder=${programDecisionAt}/${nullReceiverAt}`);
+  // I7 — the unattended actuator accepts the decision only from the Program's durable authority
+  // history. Reading the current binding here would reject a valid verdict after succession.
+  const autoClose = server.match(/function laneAutoCloseRefusal\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_INBOX} — the auto-close authority of a program-addressed report is read from Program.lineage`,
+    autoClose !== "" && autoClose.includes('r.basis === "owner-inbox"')
+      && autoClose.includes('r.basis === "program"') && autoClose.includes("program.lineage.entries.some(")
+      && autoClose.includes("e.boundAt <= d.at") && autoClose.includes("e.endedAt >= d.at"),
+    autoClose === "" ? "laneAutoCloseRefusal not found in server.ts"
+      : `program=${autoClose.includes('r.basis === "program"')} lineage=${autoClose.includes("program.lineage.entries.some(")}`);
   // the doc a MAIN is actually sent to must carry the section and both route paths — the same
   // doc↔route pair RULE_RECEIVER pins for §fleet-report, and for its reason: a route named only in
   // code is a route no session ever learns to call.

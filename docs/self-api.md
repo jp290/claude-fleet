@@ -1015,18 +1015,22 @@ curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report \
 - **`text` ist PROSA für einen menschlichen Leser**, nicht-leer und ≤ `MAX_FLEET_REPORT_TEXT`
   (4000 Zeichen). Es gibt bewusst keinen JSON-Ergebniskörper: der Empfänger ist eine Session, die
   liest, kein Reducer.
-- **Ein Report bewegt NIE `Task.status`.** Er legt eine `FleetReport`-Zeile plus ein
-  `fleet-report`-FleetEvent an und sonst nichts — er landet nicht, deployt nicht und schließt
-  keine Zeile. Wer den Status bewegt, ist der bestehende Schreiber (Tick, `landLane`, der Owner).
-  Ein Report ist eine NACHRICHT.
+- **Ein Report bewegt NIE `Task.status`.** Für eine Lane eines aktiven Programs legt er eine
+  `FleetReport`-Zeile plus einen `fleet-report`-Zeiger in dessen Program-Inbox an; alle anderen
+  erfolgreichen Pfade behalten den FleetEvent-Transport unten. Er landet nicht, deployt nicht und
+  schließt keine Zeile. Ein Report ist eine NACHRICHT.
 
-**Empfänger-Ableitung, in dieser Reihenfolge** (`clarificationReceiverFor`, geteilt mit
-`/api/self/clarifications`): **die Program-Bindung gewinnt, bevor Watch-Evidenz überhaupt gelesen
-wird.** Eine gebundene Lane hat per Konstruktion genau einen koordinierenden Occupant — der Owner
-hat ihn bei der Aktivierung bestätigt — also kann eine fremde, abgelaufene oder doppelte
-Watch-Subscription daran nichts korrigieren, nur stören. Vorher taten genau das drei 409er, die
-eine Lane von innen weder sehen noch reparieren konnte. Erst für eine Lane **ohne** Program werden
-die Watch-Zeilen gelesen, und dort bleibt die Ablehnung exakt wie sie war:
+**Program zuerst.** Trägt die Lane die ID eines aktiven Programs, wird der Report an DAS PROGRAM
+adressiert: `basis:"program"`, `receiver:null`, `eventId:null`, genau ein ungelesener
+`fleet-report`-Eintrag in `Program.inbox`. Das gilt bei lebender wie staler MAIN-Bindung; es wird
+kein FleetEvent gemintet und kein Occupant-Zustellbudget gelesen. Die jeweils durch
+`boundProgramForMain` gebundene MAIN liest die Zeile, also auch eine Nachfolgerin mit anderem
+Tripel. `clarificationReceiverFor` bleibt für Fragen unverändert, weil eine Frage einen lebenden
+Antwortenden braucht.
+
+Nur wenn das genannte Program nicht aktiv ist oder die Lane kein Program trägt, gilt die bisherige
+Empfänger-Ableitung aus Watch-Evidenz beziehungsweise der Owner-Inbox-Rückfall. Dort bleiben die
+Ablehnungen exakt wie sie waren:
 
 - `lane-watch evidence names multiple receiver occupants` — zwei verschiedene Watch-Occupants sind
   kein Empfänger, sondern ein Münzwurf. Bleibt wortgleich (`e2e/pins.ts`, B2).
@@ -1034,10 +1038,9 @@ die Watch-Zeilen gelesen, und dort bleibt die Ablehnung exakt wie sie war:
   evidence` — unverändert **als Sätze**; die zweite ist für den Report seit B4 kein Endpunkt mehr,
   siehe unten.
 
-`basis` steht danach auf `"program-main"` (gebunden) oder `"lane-watch"` (ungebunden) und reitet in
-die `fleet_report_open`-Audit-Zeile. `"program-main+lane-watch"` bleibt im `ClarificationBasis`-Typ,
-weil vor dem Schnitt persistierte Zeilen ihn tragen und `loadState` gegen diese Liste validiert —
-neu vergeben wird er nicht mehr.
+`"program-main"` und `"program-main+lane-watch"` bleiben für persistierte Report-Zeilen lesbar,
+werden für neue Reports aber nicht mehr vergeben. Die Event-Payload-Union bleibt unverändert, denn
+`basis:"program"` besitzt gerade kein Event.
 
 ### B4 — der Owner-Inbox-Rückfall: ein Report muss LANDEN können
 
@@ -1125,7 +1128,8 @@ Pane-Transport ohne Session-Ack zeigt die Operations-Fläche zusätzlich `recove
 **Weitere Ablehnungen:** MAIN und `⚙ steward` sind 409 (`not a worker lane — MAIN and the steward
 cannot file a fleet report`) — es berichtet, wer ARBEITET. Hat der Empfänger kein
 Zustellbudget mehr (offene Events + armed Watches ≥ `FLEET_EVENT_MAX_OPEN_PER_SLOT`, heute 5), ist
-es 409 `fleet-report receiver has no FleetEvent delivery budget`.
+es 409 `fleet-report receiver has no FleetEvent delivery budget`. Der Program-Pfad kennt diese
+Ablehnung nicht: Program-Inbox-Einträge zählen nicht gegen das FleetEvent-Budget.
 
 ### Das Zustellbudget ist sichtbar, bevor du dagegen läufst (V1b)
 
@@ -1154,9 +1158,12 @@ zwischen zwei Reads ändert. Beweise: `e2e/watch.ts` (die 4-Watches-plus-1-Debt-
 echte Ablehnung, plus der zurückgegebene Platz) und `e2e/programs.ts` (Zuordnungsregeln und die
 Byte-Gleichheit beider Sichten).
 
-**`GET /api/self/fleet-report`** liefert die Zeilen, in denen der Aufrufer Worker ODER Empfänger
-ist — exakt an Slot, `openedAt` und `sessionId` gebunden. **Retention: `FLEET_REPORT_KEEP = 20`**
-terminale Zeilen, älteste zuerst verworfen. Terminal heißt: das zugehörige Event steht auf
+**`GET /api/self/fleet-report`** liefert die Zeilen, in denen der Aufrufer Worker oder
+Occupant-Empfänger ist, plus alle `basis:"program"`-Zeilen des Programs, dessen aktuelle MAIN der
+Aufrufer laut `boundProgramForMain` ist. **Retention: `FLEET_REPORT_KEEP = 20`** terminale Zeilen,
+älteste zuerst verworfen. Bei `basis:"program"` heißt terminal: `decision` ist vorhanden; eine
+unbeurteilte Program-Zeile altert nie allein aus der offenen Schuld. Sonst heißt terminal wie zuvor:
+das zugehörige Event steht auf
 `acknowledged` oder `receiver-gone` — **oder es existiert nicht mehr** (`pruneFleetReports`
 behandelt ein fehlendes Event als terminal, sonst hielte eine Zeile ohne Event die Liste ewig).
 Eine Zeile mit noch offenem Event wird nie gepruned. Ein Report ist also kein Archiv — was bleiben soll, gehört in den
@@ -1188,7 +1195,7 @@ curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report/<report-id>/acc
   `by: "owner"` ist die Owner-Tür unten — dieselbe Prinzipal-Asymmetrie wie
   `AttentionRequest.answer.by`, und sie ist von einem Occupant-Urteil UNTERSCHEIDBAR, weil sie ein
   Urteil von AUSSERHALB des Programs ist.
-- **Die gebundene Empfänger-OCCUPATION entscheidet** — `slot` + `openedAt`, und `sessionId` wird
+- **Bei den alten Event-Basen entscheidet die gebundene Empfänger-OCCUPATION** — `slot` + `openedAt`, und `sessionId` wird
   getragen, nie verglichen. Das ist exakt die Regel, mit der `clarificationReceiverFor` den
   Empfänger AUFLÖST („deliberately reported, never gated": ein Codex-Bind darf die Session-Id
   innerhalb EINER Occupation bewegen). Bis zum 2026-09-07 verglich diese Tür alle drei Felder und
@@ -1197,6 +1204,9 @@ curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report/<report-id>/acc
   ihn nie beurteilen, und die Owner-Tür griff nicht, weil der Occupant LEBTE. `fleetReportFrom`
   prüft `decision.by` gegen `receiver` auf derselben Occupation: eine Zeile kann strukturell kein
   Occupant-Urteil eines Prinzipals tragen, an den sie nie gefilet wurde.
+- **Bei `basis:"program"` entscheidet die aktuell gebundene MAIN des Programs.** Die Self-Tür
+  leitet das Program mit `boundProgramForMain` aus ihrem Token ab und vergleicht dessen ID mit
+  `provenance.programId`; kein gespeichertes Empfänger-Tripel kann eine Nachfolgerin aussperren.
 - **Die erste Entscheidung gewinnt.** Ein zweiter Aufruf ist 409 (`fleet report was already
   accepted|rejected`, die stehende `decision` im Body) und die Zeile bleibt unverändert — auch bei
   identischer Wiederholung. Ein Report wird EINMAL beurteilt; sonst überschriebe eine spätere
@@ -1209,11 +1219,13 @@ curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report/<report-id>/acc
 | Lane als Aufrufer | 409 `a lane may not judge a fleet report — a lane files its own result, it does not accept the results its own MAIN is owed` (Route-Ebene, wie bei `release`/`attention`/`tasks`) |
 | unbekannte id | 404 `unknown fleet report` |
 | Owner-Inbox-Zeile (`receiver: null`) | 409 `owner-inbox report — accepting or rejecting it belongs to the owner, who has no session to bind a decision to` — **vor** dem Occupant-Vergleich, aus demselben Grund wie beim Self-ACK: eine Owner-Zeile HAT keinen Occupant, und „belongs to another session" wäre der falsche Grund |
+| Program-Zeile, Aufrufer an anderes Program gebunden | 409 `fleet report belongs to another Program — only the bound MAIN of program <id> may judge it` |
 | fremde oder ersetzte MAIN | 409 `fleet report belongs to another or replaced MAIN session` (dieselbe Form wie `replyClarification`) |
 | Body mit anderem Schlüssel | 400 `body must contain only reason` — dieselbe Disziplin wie `body must contain only status and text` |
 | `reason` kein String / > 500 | 400 mit der Grenze im Text |
 
-**Der Transport wird mitgeschlossen, durch den SCHREIBER der ACK-Route, nicht durch einen zweiten.**
+**Wo ein Event existiert, wird der Transport mitgeschlossen, durch den SCHREIBER der ACK-Route,
+nicht durch einen zweiten.** Eine Program-Zeile besitzt kein Event und schreibt nur ihr Urteil.
 Ist das Event der Zeile noch nicht terminal, setzt die Entscheidung es auf `acknowledged`
 (`settleFleetEventAcknowledged`, Audit-Wort `fleet_event_ack`) — eine MAIN, die geurteilt hat, hat
 den Report per Konstruktion bekommen, und ein offenes Event ließe `recoverFleetReportDelivery` einen
@@ -1249,6 +1261,9 @@ curl -s -X POST http://<fleet-host>:<port>/api/fleet-report/<report-id>/accept \
   entscheidet EINE Funktion (`server.ts#reportReceiverLiveness`), die beide Türen lesen: eine
   zweite Kopie wäre eine zweite Antwort, die auseinanderdriftet — und die Drift wäre still in der
   schlimmsten Richtung (zwei Prinzipale dürfen, oder keiner).
+- **Für eine Program-Zeile meint „lebt" die aktuelle Program-Bindung.** Solange
+  `boundProgramForMain` eine lebende MAIN des Programs ergibt, bleibt das Urteil dort; bei staler
+  oder fehlender Bindung öffnet die Owner-Tür wie für einen gegangenen alten Empfänger.
 - **Eine Owner-Inbox-Zeile (`receiver: null`) gehört hierher**, und zwar von Geburt an: die
   Self-Tür sagt ihr wörtlich „belongs to the owner, who has no session to bind a decision to" — bis
   zu diesem Schnitt gab es diese Tür nicht, und der Satz zeigte ins Leere.
@@ -1276,20 +1291,14 @@ curl -s -X POST http://<fleet-host>:<port>/api/fleet-report/<report-id>/accept \
 | Body mit anderem Schlüssel | 400 `body must contain only reason` |
 | `reason` kein String / > 500 | 400 mit der Grenze im Text |
 
-**ZWISCHEN DEN BEIDEN TÜREN LIEGT EIN FENSTER, IN DEM KEINE VON BEIDEN ANTWORTET — gemessen am
-2026-09-09 an Report `4e330915`.** Eine Nachfolge-MAIN bindet das Program in dem Moment, in dem ihre
-Vorgängerin `succeed` ruft; deren Slot lebt danach noch bis zum Ablauf der Grace. In genau diesem
-Fenster ist ein unbeurteilter Report von NIEMANDEM beurteilbar: die Self-Tür lehnt die Nachfolgerin
-mit `fleet report belongs to another or replaced MAIN session` ab (die Occupation ist ersetzt), und
-die Owner-Tür lehnt mit `fleet report receiver slot <n> is live` ab (die Occupation lebt noch). Beide
-Ablehnungen sind je für sich richtig; zusammen sehen sie aus wie „für immer verwaist". Sie sind es
-nicht — **nach dem Reap des Vorgänger-Slots öffnet die Owner-Tür**, nachgeprüft mit einer
-nicht-mutierenden Sonde (Body mit fremdem Schlüssel: `400 body must contain only reason` statt des
-`409` der lebenden Occupation, weil der Occupant-Check VOR der Body-Prüfung steht). Zwei Folgerungen,
-und die erste ist die wichtigere: **eine MAIN beurteilt die Reports, die sie gelesen hat, VOR ihrer
-Succession** — danach trägt keine Tür mehr ein MAIN-Urteil, und ein Owner-Urteil bewaffnet den
-automatischen Lane-Schluss ausdrücklich nicht (Absatz oben). Und eine Nachfolgerin, die im Fenster
-misst, hat „unbeurteilbar" gemessen, nicht „unbeurteilbar geblieben".
+**ZWISCHEN DEN BEIDEN TÜREN LAG FÜR OCCUPANT-GEBUNDENE ZEILEN EIN FENSTER — gemessen am
+2026-09-09 an Report `4e330915`.** Während die Vorgängerin nach `succeed` noch in der Grace lebte,
+war ihre Zeile für die Nachfolgerin wegen des alten Empfänger-Tripels und für den Owner wegen des
+noch lebenden Slots zugleich 409; erst der Reap öffnete die Owner-Tür. Das bleibt richtig für
+`basis:"owner-inbox"` und für jede Lane, deren Program nicht aktiv ist: ihre Zeile bleibt an den
+damals abgeleiteten Principal beziehungsweise Occupant gebunden. Für `basis:"program"` ist dagegen
+`boundProgramForMain` der Empfänger: die neue MAIN liest und beurteilt dieselbe Program-Zeile sofort,
+auch solange der Vorgänger-Slot noch lebt. **Succession verliert ihre Beurteilbarkeit nicht mehr.**
 
 **Und die Sichtbarkeit, die die Tür allein nicht herstellt.** Ein verwaister Report war nicht nur
 unbeurteilbar, er war UNSICHTBAR: sein FleetEvent geht beim Teardown auf `receiver-gone` — terminal,
@@ -1311,8 +1320,8 @@ exakt wie „niemand hat hingesehen". Darum:
 
 **Sichtbarkeit, zwei Sichten für zwei Leser:**
 
-- **`GET /api/self/fleet-report`** liefert die volle Zeile inklusive `decision` — an den Worker und
-  an den Empfänger, exakt occupant-gebunden wie zuvor.
+- **`GET /api/self/fleet-report`** liefert die volle Zeile inklusive `decision` — an den Worker,
+  an alte Occupant-Empfänger und bei Program-Zeilen an die aktuell gebundene MAIN.
 - **`GET /api/self/program-execution`** trägt den Fakt je Task-Zeile als
   `report: {id, status, disposition, decidedAt}` oder `null`. Der Join läuft über die persistierte
   `provenance` (`taskId` + `programId`), NICHT über einen Occupant — genau darum sieht ihn auch eine
@@ -1356,12 +1365,13 @@ ihren eigenen Satz):
 | `spent-looking` | `lane-signals.ts#laneSpentLooking` | `stalled` + sauberer Baum: alive · beobachtet · idle · kein Git-Op · kein blockierender Merge · `awaiting:null` · `ahead===0` · `dirty===0` |
 | `taskId` + `programId`, Program `active` | Slot + `programs` | geschlossen wird Arbeit, die eine Program-MAIN beurteilt hat |
 | **JEDER eigene Report beurteilt** | `fleetReports` (Worker-Tripel) | „unbeurteilt" heißt jede Zeile, nicht nur die neueste |
-| `decision.by` === `receiver` | dieselbe Zeile | der EXAKTE Empfänger-Occupant, hier nochmal geprüft |
+| `decision.by` hielt bei `decision.at` Autorität | `Program.lineage` bei Program-Zeilen, sonst `receiver` | Succession ändert die heutige Bindung, nicht die persistierte Autoritätsgeschichte |
 | `disposition === "killed-empty"` | `buildLaneOutcome` | frischer `rev-list --count`, nicht der Cache |
 
 **Beide Verdikte schließen.** Die Tür heißt „beurteilt", nicht „angenommen": ein `rejected` Report
 ist eine gelesene Antwort und beendet die Lane genauso wie ein `accepted`. Was NICHT schließt, ist
-eine Zeile ohne Urteil — und eine `owner-inbox`-Zeile kann strukturell keins tragen.
+eine Zeile ohne Urteil. Eine `owner-inbox`-Zeile trägt kein MAIN-Urteil; eine Program-Zeile schließt
+nur, wenn `Program.lineage` den urteilenden Occupant zur Urteilszeit als Autorität belegt.
 
 **Die letzte Linie ist eine ZUSICHERUNG, keine Formalität.** `ahead` im Prädikat ist der ~10-s-Cache
 von `tickGit`; `buildLaneOutcome` zählt die Commits frisch. Eine Lane, die in diesem Fenster

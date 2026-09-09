@@ -274,6 +274,7 @@ type AuditEvent =
   | "program_inbox_unreadable"
   | "program_inbox_loss_unreadable"
   | "program_handover_unreadable"
+  | "program_handover_loss_unreadable"
   // one pointer was appended to a Program's inbox (appendProgramInbox, the one writer). Detail
   // names the program, the kind and the `ref` it points at — never a line of the referenced row's
   // text, because the entry itself copies none.

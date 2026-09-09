@@ -62,6 +62,9 @@ interface Program extends ProgramContent {
   inboxLost?: { v: number; at: number; error: string };
   // what the last retiring MAIN owed — the durable half of the succession handover
   handover?: ProgramHandover;
+  // …and ITS scar, same shape and same reason as inboxLost: this record is the only copy, so a
+  // silent absence would read as "nothing was ever owed"
+  handoverLost?: { v: number; at: number; error: string };
   // the owner's self-land permission — absent on every Program until the owner grants it, which is
   // the shape every assertion here reads as "owner-only land".
   promotion?: { v: number; selfLand: string; confirmedAt: number };
@@ -914,6 +917,17 @@ export async function run(ctx: Ctx): Promise<void> {
 
   await restartSrv();
   fleetToken = readState().slots?.[String(fleetSlot)]?.selfToken ?? "";
+  // A's SECOND obligation, and it needs a live subject: a watch handed over as a number is the
+  // defect this whole record exists for, so the chain regression below has to carry a real one.
+  const fleetAOpenedAt = readState().slots?.[String(fleetSlot)]?.openedAt ?? 0;
+  const fleetWatchLane = await post("/api/lanes", { repo: REPO });
+  const fleetWatchLaneSlot = (await fleetWatchLane.json() as { slot?: number }).slot ?? 0;
+  const fleetWatchRes = await selfPost("/api/self/watch", fleetToken,
+    { kind: "lane", target: fleetWatchLaneSlot });
+  const fleetWatchId = (await fleetWatchRes.clone().json() as { watch?: { id?: string } }).watch?.id ?? "";
+  check("Program-MAIN Fleet chain setup: A holds one open decision and one armed watch",
+    fleetWatchLane.ok && fleetWatchRes.ok && !!fleetWatchId && fleetAOpenedAt > 0,
+    `lane=${fleetWatchLane.status}/${fleetWatchLaneSlot} watch=${fleetWatchRes.status}/${fleetWatchId}`);
   const lossAfterSecondBoot = await selfInbox(fleetToken);
   // BREAKS IF: the loss is tracked in memory instead of on the record. This boot never saw a
   // broken byte — the only reason it can still answer is that the scar is persisted state.
@@ -965,11 +979,123 @@ export async function run(ctx: Ctx): Promise<void> {
   // raised two steps up — the one whose only purpose was to force a save. It dies with the
   // predecessor like any other, and it is in the record like any other.
   const fleetRetained = (readState().programs ?? []).find((p) => p.id === fleetProgram.id)?.handover ?? null;
-  check("Program-MAIN Fleet succession: the retention record is written on this frame as well, holding the predecessor's open decision in full",
+  // A's occupant key, taken while A is unambiguously alive. Read at assertion time it would be 0
+  // the moment the grace timer had retired A — and the check would then compare against a key the
+  // capture never wrote, i.e. fail for a reason that has nothing to do with what it measures.
+  const fleetOwnedByA = `slot ${fleetSlot}@${fleetAOpenedAt}`;
+  check("Program-MAIN Fleet succession: the retention record is written on this frame as well, holding A's open decision and armed watch in full",
     !!fleetRetained && fleetRetained.v === 1 && fleetRetained.dropped === 0
       && fleetRetained.from.slot === fleetSlot && fleetRetained.to.slot === fleetSuccessionBody.slot
-      && fleetRetained.obligations.some((o) => o.kind === "attention" && o.text === fleetSaveText),
+      && fleetRetained.obligations.some((o) => o.kind === "attention" && o.text === fleetSaveText
+        && o.detail.owedBy === fleetOwnedByA)
+      && fleetRetained.obligations.some((o) => o.kind === "watch" && o.id === fleetWatchId
+        && o.detail.target === fleetWatchLaneSlot && o.detail.owedBy === fleetOwnedByA),
     JSON.stringify(fleetRetained));
+
+  // --- A → B → C: THE SECOND SUCCESSION MUST NOT ERASE THE FIRST ONE'S OBLIGATIONS. ------------
+  // The defect this replaces, found in review of 4810d4ae: captureProgramHandover read only the
+  // CURRENT occupant's rows and the state cut wrote its result over the record. So the moment B
+  // succeeded without having re-asked A's question, A's question was gone — and the only thing
+  // standing between the fleet and that loss was a sentence in B's founding brief telling it to
+  // read the record first. A warning the reader must act on is not preservation.
+  //
+  // B DELIBERATELY DOES NOTHING HERE. It raises no attention, arms no watch, schedules no check-in
+  // and never reads the record. That is the whole point: C must still be able to read what A owed.
+  const chainLabel = "program-main-fleet-third";
+  const bToken = fleetSuccessionBody.slot === undefined
+    ? "" : readState().slots?.[String(fleetSuccessionBody.slot)]?.selfToken ?? "";
+  const bFresh = {
+    attention: (readState().attentionRequests ?? []).filter((a) =>
+      (a as { requester?: { slot?: number } }).requester?.slot === fleetSuccessionBody.slot).length,
+    autos: (readState().autos ?? []).filter((a) =>
+      (a as { slot?: number }).slot === fleetSuccessionBody.slot).length,
+  };
+  const chainPending = selfSucceed(bToken, { label: chainLabel });
+  const chainSlot = await waitForLabel(chainLabel);
+  if (chainSlot !== null) {
+    await Bun.sleep(250);
+    await respawnScreen(chainSlot, ">_ OpenAI Codex (v0.147.0)");
+  }
+  const chainRes = await chainPending;
+  const chainBody = await chainRes.json() as { ok?: boolean; slot?: number };
+  check("Program-MAIN chain setup: B succeeds to C without having raised or re-created anything of its own",
+    chainRes.ok && chainBody.ok === true && chainSlot !== null && chainBody.slot === chainSlot
+      && /^[0-9a-f]{32}$/.test(bToken) && bFresh.attention === 0 && bFresh.autos === 0,
+    `${chainRes.status} slot=${chainSlot} bFresh=${JSON.stringify(bFresh)}`);
+  const chainToken = chainSlot === null ? "" : readState().slots?.[String(chainSlot)]?.selfToken ?? "";
+  const chainOnDisk = (readState().programs ?? []).find((p) => p.id === fleetProgram.id)?.handover ?? null;
+  const chainView = await selfExecution(chainToken);
+  const chainRetained = chainView.view?.programs.find((x) => x.program.id === fleetProgram.id)?.handover ?? null;
+  const chainRow = (kind: string, pick: (o: ProgramHandoverObligation) => boolean): ProgramHandoverObligation | undefined =>
+    (chainRetained?.obligations ?? []).find((o) => o.kind === kind && pick(o));
+  const chainAttention = chainRow("attention", (o) => o.text === fleetSaveText);
+  const chainWatch = chainRow("watch", (o) => o.id === fleetWatchId);
+  // BREAKS IF: the record is replaced instead of carried forward. Under 4810d4ae this reads
+  // `obligations: []` — B owed nothing, so the overwrite was total and silent.
+  check("Program-MAIN chain: C reads A's open decision and armed watch, carried across a succession in which B re-created nothing",
+    chainRes.ok && !!chainRetained && !!chainOnDisk
+      && chainRetained.from.slot === fleetSuccessionBody.slot
+      && chainRetained.to.slot === chainSlot
+      && !!chainAttention && chainAttention.text === fleetSaveText
+      && chainAttention.detail.owedBy === fleetOwnedByA
+      && !!chainWatch && chainWatch.detail.target === fleetWatchLaneSlot
+      && chainWatch.detail.owedBy === fleetOwnedByA
+      && chainRetained.dropped === 0,
+    JSON.stringify({ from: chainRetained?.from ?? null, to: chainRetained?.to ?? null,
+      rows: (chainRetained?.obligations ?? []).map((o) => [o.kind, o.id, o.detail.owedBy]) }));
+  // …and the brief tells C the truth about both halves: none of these rows is B's, and the record
+  // is carried on rather than replaced — the sentence the old version had exactly backwards.
+  const chainPrompt = chainSlot === null ? "" : ((await (await get(`/api/slots/${chainSlot}/history`))
+    .json() as { history: { text: string }[] }).history.at(-1)?.text ?? "");
+  check("Program-MAIN chain: C's brief counts B's own obligations as zero, names the carried rows apart, and no longer promises replacement",
+    chainPrompt.includes("- Obligations that END with your predecessor: 0 open owner decisions, 0 armed watches, 0 scheduled check-ins, plus 2 still unsettled from earlier sessions of this Program.")
+      && chainPrompt.includes("CARRIED FORWARD by the next succession too — handing this Program on loses none of it")
+      && !chainPrompt.includes("the NEXT succession replaces that record"),
+    JSON.stringify(chainPrompt.split("\n").filter((line) => line.startsWith("- Obligations"))));
+
+  // --- AND THE HANDOVER'S OWN LOSS IS AS VISIBLE AS THE INBOX'S. -------------------------------
+  // Same disease, same cure, same proof: the loader drops an unreadable handover to absent, which
+  // reads as "nothing was ever owed" — and here that is worse than for the inbox, because this
+  // record IS the only copy. Corrupt → boot → the Program's own reader → an ordinary save → a
+  // second boot → the same reader. The second boot never sees a broken byte.
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const handoverPlant = readState();
+  const handoverRow = handoverPlant.programs?.find((p) => p.id === fleetProgram.id);
+  if (handoverRow) handoverRow.handover =
+    { v: 1, at: Date.now(), obligations: [], dropped: 0 } as unknown as ProgramHandover;
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(handoverPlant, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const handoverLossLine = (view: ProgramExecutionView | null): string | undefined =>
+    (view?.programs.find((x) => x.program.id === fleetProgram.id)?.unknown ?? [])
+      .find((line) => line.includes("succession handover record was unreadable"));
+  const hlFirst = await selfExecution(chainToken);
+  check("program handover loss: the Program's OWN reader reports the degradation instead of rendering it as `nothing was owed`",
+    hlFirst.response.ok
+      && hlFirst.view?.programs.find((x) => x.program.id === fleetProgram.id)?.handover === null
+      && handoverLossLine(hlFirst.view) !== undefined
+      && handoverLossLine(hlFirst.view)!.includes("only copy"),
+    JSON.stringify(hlFirst.view?.programs.find((x) => x.program.id === fleetProgram.id)?.unknown ?? null));
+  const hlSave = await selfPost("/api/self/attention", chainToken,
+    { kind: "blocked", text: "handover-loss probe: an ordinary write, so the repaired record reaches disk" });
+  const hlDisk = readState().programs?.find((p) => p.id === fleetProgram.id);
+  check("program handover loss: an ordinary save persists the SCAR and erases the broken bytes it was minted from",
+    hlSave.ok && !!hlDisk?.handoverLost && hlDisk.handoverLost.v === 1
+      && !Object.prototype.hasOwnProperty.call(hlDisk, "handover"),
+    JSON.stringify({ save: hlSave.status, handoverLost: hlDisk?.handoverLost ?? null,
+      handoverKey: hlDisk !== undefined && Object.prototype.hasOwnProperty.call(hlDisk, "handover") }));
+  await restartSrv();
+  const hlSecond = await selfExecution(chainSlot === null ? ""
+    : readState().slots?.[String(chainSlot)]?.selfToken ?? "");
+  // BREAKS IF: the loss lives in memory. This boot has no broken bytes left to observe.
+  check("program handover loss: the SAME reader still reports it after the save and a second boot",
+    hlSecond.response.ok && handoverLossLine(hlSecond.view) !== undefined
+      && handoverLossLine(hlSecond.view) === handoverLossLine(hlFirst.view),
+    JSON.stringify({ first: handoverLossLine(hlFirst.view) ?? null,
+      second: handoverLossLine(hlSecond.view) ?? null }));
+
+  if (fleetWatchLaneSlot) await post(`/api/slots/${fleetWatchLaneSlot}/kill`, {});
+  if (chainSlot !== null) await post(`/api/slots/${chainSlot}/kill`, {});
   if (fleetBody.slot) await post(`/api/slots/${fleetBody.slot}/kill`, {});
   if (fleetSuccessionBody.slot) await post(`/api/slots/${fleetSuccessionBody.slot}/kill`, {});
   await programPost(fleetProgram.id, "complete");

@@ -1,3 +1,122 @@
+# HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (Slot 5, Opus 5 high): der Auto-Compact-Schnitt ist zurueckgezogen, der Land ist tot, und ein Land kann ROT werden ohne einen einzigen gefallenen Check; 2026-09-09 08:58 – 09:2x, ctx GEMESSEN 21,7 % beim Schreiben
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **OWNER-ENTSCHEID 2026-09-09 (er ERSETZT die 500k-Vorgabe von wenige Minuten davor):** KEINE
+  zusaetzliche Fleet-Auto-Compact-Schwelle, weder 250k noch 500k; das native Claude-Standardverhalten
+  wird weder deaktiviert noch veraendert. Codex behaelt sein eigenes funktionierendes Auto-Compaction,
+  daraus folgt KEINE Claude-Nachfolgepflicht. **Fuer langes autonomes Claude-Arbeiten ist Succession
+  der regulaere Qualitaets-/Uebergabeweg** — und sie muss AUSGEFUEHRT oder mit technischem Fehler
+  gemeldet werden, nie nur angekuendigt. Kontextmeldungen sind datierte Messungen. Kein zweiter
+  Compaction-Regelkreis. Rollen lean; Wissen und offene Verpflichtungen gehoeren in Task/Program mit
+  echtem Leser.
+- **DER AUTO-COMPACT-KANDIDAT IST NICHT GELANDET UND DARF NICHT NACHGEHOLT WERDEN.** Zeile `9af79ae2`
+  (Program `f9dc8e10`, NICHT unseres), Lane Slot 1, Branch `fleet/260908171345-3941`. Verdikt am
+  2026-09-09 09:12: `status resolved · landed false · verify.ok false`, `mainSha 93953b26`,
+  `candidateSha a254824a`. **`resolved` heisst hier NICHT, dass ein Resolver-Agent entschieden hat** —
+  `conflicted: null`, die Note sagt woertlich „clean rebase, but verify failed". Der Slot steht damit
+  auf ⏸ und wartet auf eine Bestaetigung, die nach dem Owner-Entscheid **nie kommen darf**. Nichts ist
+  auf main: `AUTOCOMPACT_*` existiert ausschliesslich auf der Lane-Branch (`server.ts:206
+  AUTOCOMPACT_WINDOW_TOKENS = 250_000`). Es gibt also **nichts zurueckzunehmen**, solange niemand
+  bestaetigt. Meine Attention dazu: `e7c7f91a` (kind `blocked`, offen).
+- **ICH HABE KEINE TUER ZU DIESEM LAND UND KEINE ZUR LANE.** Es gibt in diesem Code keinen
+  cancel/abort auf `mergeJob`; `POST /send` ist Owner-Token; die MAIN→Lane-Tuer ist die ungebaute
+  Zeile `3ea89f71`. Der Abschluss (Lane schliessen, ihr sagen, dass der Schnitt entfaellt) gehoert dem
+  Controller.
+- **WIE MAN „laeuft ein Land?" MECHANISCH BEANTWORTET — ohne Prozessliste und ohne Raten.**
+  `merges[<slot>].status = "interrupted"` ist der DURABLE-INTENT-Marker, den `mergeJob` vor dem ersten
+  await schreibt (`server.ts:19446-19454`); er sieht bei einem LEBENDEN und bei einem GESTORBENEN Lauf
+  identisch aus, und die Prozessliste hilft nicht, weil ein Land seine Mutex-Wartezeit IM SERVER
+  verbringt (kein Kindprozess). Der Diskriminator: **`POST /api/self/watch {"kind":"merge",...}`.**
+  Die Route akzeptiert nur bei `mergeInflight`/`mergeStart` **oder** einem TERMINALEN Verdikt
+  (`server.ts:5744-5746`), und ein terminales feuert level-getriggert SOFORT. Wird der Watch also
+  ARMIERT statt zu feuern, laeuft ein Job. Gegenprobe im Ledger: `audit.jsonl` traegt den Ausloeser
+  (`owner_token_ambient_use slot 1 task=9af79ae2 program=f9dc8e10`, 08:34:18, dieselbe Sekunde wie der
+  Marker).
+
+## 1. DER BEFUND DIESER SCHICHT: EIN ROTES GATE MIT NULL GEFALLENEN CHECKS
+
+Die Verify-Kette dieses Lands lief bis einschliesslich `./e2e-security.sh` mit `ALL PASS`. Dann
+`[suite-lock] e2e-claude-gate.sh acquired after 0s`, `--- phase: claude (FLEET_CMD=claude) ---`, und
+als einziger Fehler auf stderr:
+
+    error: Unable to connect. Is the computer able to access the url?
+      path: "http://127.0.0.1:11906/api/sessions"   code: "ConnectionRefused"
+
+**Keine FAIL-Zeile, nirgends.** Und es ist NICHT der bekannte Fall „die Phase wartet 30 s auf ihren
+Server und laeuft dann ohne ihn weiter": die aufbewahrte Instanz
+`$TMPDIR/fleet-e2e-gate-instance-93106/server.log` hat 29 Zeilen, ihre Zeile 2 nennt genau
+`http://127.0.0.1:11906`, und sie laeuft bis `slot 5: created tmux session 's5' …
+dispatchrepo.worktrees/fleet-260909071235-5be8`. **Danach bricht das Log ohne Fehlerzeile ab** — der
+Server ist mitten im Lauf gestorben. **Ob Crash oder Kill, habe ich NICHT bestimmt; dafuer gibt es an
+dieser Stelle keinen Sensor.**
+
+Warum das zaehlt: das Verdikt liest sich als „verify failed" und ist von einem echten Regress nicht zu
+unterscheiden. Es ist die Spiegelklasse zu `docs/verify-tiering.md` §13 („ein gruenes Audit mit
+`ran:0` heisst, dass nichts gemessen wurde") — hier ein ROTES Gate mit NULL gemessenen Fehlern. Der
+naechste Leser haette den Diff verdaechtigt. **Die Zeile dazu konnte ich nicht filen** (siehe §3).
+
+## 2. SUITE-DURCHSATZ — DIE ROLLE, UND DIE ERSTE ZAHL VON DER LIVE-SCHIENE
+
+Dieselbe Land-Note traegt den Beleg fuer die ganze Rolle in einer Zeile:
+
+> `[suite mutex: 2181s of this 2299s run was spent waiting for /tmp/fleet-e2e.lock, not verifying]`
+
+**94,9 % Schlange, 118 s Arbeit.** Halter war ein `./e2e-isolated.sh`-Vorschaulauf einer anderen Lane
+(Slot 3, `fleet/260909050303-abd3`), von 07:49 bis ~09:10, >80 min.
+
+**Zwei Zeilen sind daraufhin gefilt UND released:**
+- **`3b1b2edf` — K1, der Ein-Zeilen-Schnitt.** `e2e-isolated.sh` setzt `FLEET_STEWARD_MIN_IDLE_MS`
+  nicht, also gilt dort die Produktions-60 s (`server.ts:23722`, Gate `:23797`), waehrend
+  `e2e-claude-gate.sh:214` laengst auf 800 steht. Gewartet wird an VIER Stellen
+  (`e2e/steward-core.ts:326`, `:351`, `e2e/steward-outcomes.ts:288`, `:333`) ueber `settleForSteward`
+  (`e2e/steward-core.ts:314`, Deadline `stewardMinIdleMs + 30_000`). Nur `fleet-e2e.ts` faehrt die
+  beiden Steward-Module (`:47/:48`, `:177/:178`) — darum genau ZWEI Wrapper. **Selbst gemessener
+  Zusatzbeleg, der im Brief steht:** derselbe `SRV_ENV` (Zeile 828) komprimiert bereits JEDE andere
+  Idle-Schwelle (`STALLED_IDLE_MS=3000`, `MIGRATE_IDLE_MS=0`, `AUTO_REVIEW_IDLE_MS=1500`) — die
+  Steward-Schwelle ist die einzige, die nie mitgezogen wurde. `SRV_ENV` speist BEIDE Seiten (srv-Spawn
+  UND `eval … bun fleet-e2e.ts`), Server-Gate und Harness sehen also denselben Wert.
+- **`430850e4` — die §11.2u-Fixture-Wurzel** (Brief meiner Vorgaengerin, unveraendert released):
+  13,8 % Flake ueber 14 Baeume, drei gruene Laeufe + Mutationsbeweis als Kriterium.
+
+**EINE GRENZE, DIE DIE ROLLE DIREKT TRIFFT:** `POST /api/self/suite-offer` ist **lane-only** (409 fuer
+eine MAIN). Eine MAIN kann einen Suite-Lauf also NICHT an den Helfer routen — sie kann nur lokal
+fahren und damit genau den Mutex belegen, den sie freimachen soll. Das ist der Grund, warum K1 als
+LANE gefilt ist und nicht hier gemacht wurde, obwohl es eine einzige Zeile ist.
+
+## 3. ZWEI DECKEL HABEN MICH HEUTE GESTOPPT — BEIDE SIND ECHTE BEFUNDE, KEINE UNFAELLE
+
+- `POST /api/self/tasks` (auftrag) gab **409 `filing cap reached (5/5)`**. Gezaehlt werden genau die
+  `source:"main"`-Zeilen dieses Programs, die nie released wurden — `18e87e67`, `c62aa3e9`,
+  `201d0240`, `3ea89f71`, `430850e4` (`server.ts:8252-8256`, `PROGRAM_MAX_PENDING` default 5). Ich
+  habe `430850e4` released, um Platz fuer K1 zu machen. **`c62aa3e9` NICHT releasen**: ihr Text sagt
+  selbst „BRIEF IST NOCH NICHT GESCHAERFT" und sie braucht den gelandeten Baum von S3a-i (`c3604ce3`).
+- `POST /api/self/tasks` (notiz) gibt **409 `advisory filing cap reached (10/10)`**. Damit kann diese
+  MAIN derzeit **keinen Befund mehr filen** — genau deshalb steht §1 hier in der Prosa statt in einer
+  Zeile. Der fertige Text liegt in meinem Scratchpad; wer ihn filen will, muss vorher zehn advisory
+  Zeilen vom Owner disponieren lassen. Das ist die „Notizen+Buendel"-Prioritaet, konkret geworden.
+
+## 4. WEITERHIN OFFEN, UNVERAENDERT
+
+- **`716a097d` (S12 Wire-Autoritaet) ist beim VIERTEN Mal an `requester session ended` gestorben** —
+  unbeantwortet, nicht abgelehnt. Ich habe sie bewusst NICHT ein fuenftes Mal neben die Lage von §0
+  gestellt. Wer sie stellt, stellt sie ALLEIN und mit einem genannten Default, sonst stirbt sie ein
+  fuenftes Mal. Inhalt ist aus der Attention selbst reproduzierbar.
+- **Das rote Post-Land-Audit auf `a24a88eb`** (1 Fail von 4 070, Check „reseed + live bytes …") ist in
+  `docs/verify-tiering.md` §11.2b als **sechste Sichtung** bereits abgehandelt (gelandet als
+  `f08fd88f`). Die Adjudikation auf der Schiene ist **Owner-only** (`POST
+  /api/post-land-audits/adjudicate` steht unter `tokenGate`) — eine MAIN kann sie nicht setzen.
+- **Maschinen-Hygiene, ungetan:** 2 verwaiste e2e-tmux-Sockets, 943 MB TMPDIR-Scratch, drei
+  `bun server.ts`-Streuner ausserhalb des Fleets (`state.sh` nennt sie).
+
+## 5. MEIN EIGENER FEHLER IN DIESER SCHICHT
+
+Ich habe beim Diagnostizieren `ps -o pid,ppid,etime,command` ungefiltert ausgegeben und damit den
+`FLEET_SELF_TOKEN` von Slot 1 in meinen Kontext gedruckt — genau der Weg, vor dem das Regelbuch unter
+TOKEN-HYGIENE warnt, und er entsteht per Konstruktion, nicht durch ein Versehen im Kommando. Ich habe
+den Token nicht benutzt. **Wer Prozesse zaehlen muss, zaehlt (`grep -c`) oder schneidet
+(`cut -c1-40`) — nie eine ungefilterte Kommandozeile.**
+
 # HANDOFF — Program-MAIN Fleet-Betrieb 2026-09 (Slot 2, Opus 5 high): ein Land, eine Flake-Familie mit Wurzel, zwei bestaetigte Buendel-Grenzen; 2026-09-08 16:1x – 2026-09-09 06:2x, ctx GEMESSEN 31 % beim Schreiben
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

@@ -36,6 +36,7 @@ public/app.js
 .env
 public/share.js
 public/helper.js
+public/hub.js
 CLAUDE.md
 OWNER.md
 # CLAUDE.md is a GENERAT of the seven fragments in rulebook/ — they carry the same deploy

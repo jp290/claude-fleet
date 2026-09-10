@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet Hub</title>
+<style>
+  :root{
+    --bg:#141414; --raised:#1c1c1c; --card:#202020; --line:#333; --line2:#2a2a2a;
+    --text:#ccc; --dim:#888; --faint:#666;
+    --accent:#7aa2f7; --sel:#2c3a5e; --focus:#3a4a7a;
+    --amber:#e0af68; --add:#9ece6a; --del:#f7768e;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--text);
+    font-family:ui-monospace,Menlo,Consolas,"DejaVu Sans Mono",monospace;font-size:12px;line-height:1.45}
+  .wrap{max-width:1280px;margin:0 auto;padding:12px 14px 40px}
+  .lbl{font-size:8.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--faint)}
+
+  header{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;
+         border-bottom:1px solid var(--line);padding-bottom:9px;margin-bottom:12px}
+  header h1{margin:0;font-size:14px;font-weight:600;color:#e6e6e6}
+  header h1 b{color:var(--accent);font-weight:600}
+  header .sp{flex:1}
+  select,button{font:inherit;font-size:11px;background:var(--raised);color:var(--text);
+                border:1px solid var(--line);padding:3px 7px}
+  button{cursor:pointer}
+  button:hover{border-color:#4a4a4a}
+  button:focus-visible,select:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+  .err{color:var(--del)}
+
+  .cols{display:grid;grid-template-columns:1fr 380px;gap:12px;align-items:start}
+  @media(max-width:900px){.cols{grid-template-columns:1fr}}
+
+  section{border:1px solid var(--line2);margin-bottom:12px}
+  section>h2{margin:0;padding:6px 9px;background:#1a1a1a;border-bottom:1px solid var(--line2);
+             font-size:8.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--dim);font-weight:600;
+             display:flex;gap:8px;align-items:center}
+  section>h2 .n{margin-left:auto;color:var(--faint);letter-spacing:0;text-transform:none;font-size:10px}
+  section>.body{padding:9px}
+
+  .prog{border:1px solid var(--line2);background:var(--card);margin-bottom:8px}
+  .prog>.t{padding:6px 9px;border-bottom:1px solid var(--line2);color:#ddd;display:flex;gap:8px;align-items:baseline}
+  .prog>.t .id{color:var(--faint);font-size:10px}
+  .prog>.t .st{margin-left:auto;font-size:10px;color:var(--faint)}
+
+  .slot{display:flex;width:100%;gap:9px;align-items:baseline;text-align:left;
+        background:none;border:0;border-top:1px solid #242424;color:inherit;padding:6px 9px;cursor:pointer}
+  .slot:first-of-type{border-top:0}
+  .slot:hover{background:#262626}
+  .slot[aria-pressed=true]{background:var(--sel)}
+  .slot .k{flex:none;width:78px;color:var(--accent);font-size:10.5px}
+  .slot.lane .k{color:var(--dim);padding-left:12px}
+  .slot .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .slot .mdl{flex:none;font-size:10px;color:var(--faint)}
+  .slot .ctx{flex:none;font-size:10px;color:var(--dim);font-variant-numeric:tabular-nums;width:42px;text-align:right}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#3a3a3a;margin-right:5px}
+  .dot.on{background:#3fb950}
+  .dot.dirty{background:var(--amber)}
+
+  .kv{display:flex;gap:9px;align-items:baseline;padding:4px 0;border-bottom:1px solid #222}
+  .kv:last-child{border-bottom:0}
+  .kv .k{flex:none;width:96px;color:var(--faint);font-size:10px}
+  .kv .v{flex:1;min-width:0;color:var(--text);word-break:break-word}
+  pre.brief{margin:0;padding:8px;background:#181818;border:1px solid var(--line2);
+            white-space:pre-wrap;word-break:break-word;max-height:280px;overflow:auto;
+            color:var(--dim);font-size:11px}
+  .chips{display:flex;gap:5px;flex-wrap:wrap}
+  .chip{border:1px solid var(--line2);background:var(--raised);padding:1px 6px;font-size:10px;color:var(--dim)}
+  .chip.none{border-style:dashed;color:var(--faint)}
+
+  .cm{display:flex;gap:8px;align-items:baseline;padding:4px 0;border-bottom:1px solid #222}
+  .cm:last-child{border-bottom:0}
+  .cm .h{flex:none;color:var(--accent);font-size:10.5px}
+  .cm .s{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim)}
+  .cm .d{flex:none;color:var(--faint);font-size:10px}
+  .empty{color:var(--faint);padding:4px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Fleet <b>Hub</b></h1>
+    <select id="repo" aria-label="Repo"></select>
+    <span class="lbl" id="branch"></span>
+    <span class="sp"></span>
+    <span class="lbl" id="stamp"></span>
+    <button id="reload" type="button">neu laden</button>
+  </header>
+
+  <div id="error" class="err" hidden></div>
+
+  <div class="cols">
+    <div>
+      <section>
+        <h2>Arbeit <span class="n" id="workN"></span></h2>
+        <div class="body" id="work"></div>
+      </section>
+      <section>
+        <h2>Detail <span class="n" id="detN"></span></h2>
+        <div class="body" id="detail"></div>
+      </section>
+    </div>
+    <div>
+      <section>
+        <h2>Commits <span class="n" id="cmN"></span></h2>
+        <div class="body" id="commits"></div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script src="/hub.js"></script>
+</body>
+</html>

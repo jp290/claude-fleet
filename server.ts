@@ -24877,9 +24877,10 @@ async function deployGap(): Promise<DeployGap> {
 // own accounting a false fresh is the expensive direction (a false stale costs one rebuild; the
 // 2026-07-25 false fresh cost an invisible hour). A new bundle belongs in this list and in the
 // named mtimes below, so a `stale:null` can still say WHICH side could not be stat'd.
-const BUNDLES = ["app.js", "share.js", "helper.js"] as const;
+const BUNDLES = ["app.js", "share.js", "helper.js", "hub.js"] as const;
 interface BundleStale {
   appJsMtime: number | null; shareJsMtime: number | null; helperJsMtime: number | null;
+  hubJsMtime: number | null;
   srcNewestMtime: number | null; stale: boolean | null;
 }
 function newestMtime(dir: string): number | null {
@@ -24940,13 +24941,14 @@ function bundleStale(): BundleStale {
   const appJsMtime = bundleMtime(BUNDLES[0]);
   const shareJsMtime = bundleMtime(BUNDLES[1]);
   const helperJsMtime = bundleMtime(BUNDLES[2]);
+  const hubJsMtime = bundleMtime(BUNDLES[3]);
   const srcRaw = newestMtime(`${REPO_DIR}/src`);
   const srcNewestMtime = srcRaw === null ? null : Math.round(srcRaw);
-  const bundles = [appJsMtime, shareJsMtime, helperJsMtime].filter((m): m is number => m !== null);
+  const bundles = [appJsMtime, shareJsMtime, helperJsMtime, hubJsMtime].filter((m): m is number => m !== null);
   const stale = srcNewestMtime === null || bundles.length !== BUNDLES.length
     ? null
     : !bundles.every((m) => m >= srcNewestMtime);
-  return { appJsMtime, shareJsMtime, helperJsMtime, srcNewestMtime, stale };
+  return { appJsMtime, shareJsMtime, helperJsMtime, hubJsMtime, srcNewestMtime, stale };
 }
 
 // --- VERB 2, DEPLOY: the two facts above, given a hand ------------------------------------------

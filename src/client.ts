@@ -6161,10 +6161,16 @@ interface QLifecycle { stations: readonly QLifeStation[]; current: QLifeMark; re
 // The one act offered in the head. `none` is a state, not a missing field: a closed row and a
 // `sent` row with no attachable lane both have nothing to offer, and each says why in its own
 // words rather than showing an empty slot.
+// `clarify` is a PLACEMENT key only since 2026-09-10: no head path produces it any more (see
+// qMainActionOf). It stays in the union because place()/isMain()/mainCls() address the ▸ clarify
+// first button by it, and an act nothing selects simply renders that button in the Actions row.
 type QMainAct = "adopt" | "clarify" | "release" | "start" | "open-lane" | "none";
 interface QMainSlot { act: QMainAct; label: string | null; why: string; slot: number | null }
-interface QHeadRow { status: string; kind?: string; slot?: number; repo?: string; programId?: string;
-  hasCriterion: boolean }
+// `hasCriterion` stood here until 2026-09-10: the head consulted it to decide between ▸ clarify
+// first and release ▸, and only in combination with the retired analyst's `criterion` blocker.
+// With the blocker gone the criterion's presence decides nothing in the head, so the field is not
+// carried — a fact the head reads but never acts on is the shape this cut is removing.
+interface QHeadRow { status: string; kind?: string; slot?: number; repo?: string; programId?: string }
 // the lane join, reduced to what the head needs: `lane` carries the slot its ▸ open lane names.
 interface QHeadLane { kind: "lane" | "refused" | "none"; slot?: number }
 interface QHeadPlan { status: string; program: string; repo: string; life: QLifecycle; main: QMainSlot }
@@ -6208,18 +6214,15 @@ function qMainActionOf(row: QHeadRow, lane: QHeadLane): QMainSlot {
         why: "an observation assigns no work — adopting turns it into a brief, which you then release" }
       : none("an advisory row assigns no work — change its Kind in Actions below to enter the workflow");
   }
-  if (row.status === "pending") {
-    // CLARIFY FIRST is offered while NO criterion exists yet: once one has been proposed, a second
-    // clarify lane would settle a question that is already on this pane awaiting confirmation.
-    // Until 2026-09-10 it was gated on the retired analyst's `criterion` blocker as well; with the
-    // reader gone the criterion's own absence is the whole condition, which is the fact the act was
-    // ever about — never "a model said so".
-    if (!row.hasCriterion)
-      return { act: "clarify", label: "▸ clarify first", slot: null,
-        why: "nothing says what done means yet — this lane settles it WITH you and waits; no code until you confirm" };
+  // A PENDING ROW'S ONE NEXT ACTION IS THE RELEASE. ▸ clarify first was the head's answer here
+  // while the retired queue analyst could flag a row as having no derivable done-criterion — a
+  // SIGNAL about this row. With the reader gone the only fact left is "no criterion is stored",
+  // which is true of nearly every draft: promoting it to the one next action would make the head
+  // recommend a clarify lane for the whole queue. So clarify keeps its place in the Actions row,
+  // where it is offered unconditionally for a startable row, and the head says what it always did.
+  if (row.status === "pending")
     return { act: "release", label: "release ▸", slot: null,
       why: "hands it to the dispatcher, which runs released tasks in order" };
-  }
   if (row.status === "queued")
     return { act: "start", label: "▸ start by hand", slot: null,
       why: "released — the dispatcher takes released tasks in order; this starts it now, whether it is on or off" };
@@ -8226,7 +8229,6 @@ function renderQueueDetail() {
   const laneJoin = qLaneJoinOf(t.id);
   const head = qHeadPlan({
     status: t.status, kind: t.kind, slot: t.slot, repo: t.repo, programId: t.programId,
-    hasCriterion: crit !== undefined,
   }, programsList.find((x) => x.id === t.programId)?.title ?? null,
   laneJoin.kind === "lane" ? { kind: "lane", slot: laneJoin.lane.slot } : { kind: laneJoin.kind });
   shell.detail.appendChild(el("div", "rvhead qdhead-status", head.status));

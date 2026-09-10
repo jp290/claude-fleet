@@ -22681,7 +22681,14 @@ if (existsSync(STATE_FILE)) {
         && ["pending", "queued", "sent", "done", "archived"].includes((x as Task).status))
         // kind migration as load normalisation: legacy lane/note rows become auftrag/notiz,
         // migrated rows stay byte-stable on reload, malformed rows keep the source-based default.
-        .map((t) => ({ ...t,
+        //
+        // THE SPREAD IS WHY `analysis` IS DESTRUCTURED OUT rather than merely left unlisted below.
+        // Every field this map does not name rides through UNTOUCHED — which is right for the
+        // fields nobody has retired, and was a silent hole for the retired queue analyst's verdict
+        // (2026-09-10): dropping the `analysis:` line from the field list left a persisted one
+        // passing straight into memory, onto GET /api/tasks, and back out to disk on the next save.
+        // Caught by e2e/tasks.ts §(h6), which writes one into fleet.json by hand and reloads.
+        .map(({ analysis: _retiredAnalysis, ...t }: Task & { analysis?: unknown }) => ({ ...t,
           kind: loadTaskKind((t as { kind?: unknown }).kind, t.source),
           repo: typeof t.repo === "string" ? t.repo : null,
           // the persisted agent choice comes back through loadTaskSpawn: registered harness only,

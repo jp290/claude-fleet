@@ -9,7 +9,9 @@ const PUB = resolve(import.meta.dir, "..");
 
 export const STATIC: Record<string, { path: string; type: string }> = {
   "/": { path: `${PUB}/public/index.html`, type: "text/html; charset=utf-8" },
+  "/hub": { path: `${PUB}/public/hub.html`, type: "text/html; charset=utf-8" },
   "/app.js": { path: `${PUB}/public/app.js`, type: "text/javascript" },
+  "/hub.js": { path: `${PUB}/public/hub.js`, type: "text/javascript" },
   "/share.js": { path: `${PUB}/public/share.js`, type: "text/javascript" },
   "/helper.js": { path: `${PUB}/public/helper.js`, type: "text/javascript" },
   "/xterm.css": { path: `${PUB}/node_modules/@xterm/xterm/css/xterm.css`, type: "text/css" },

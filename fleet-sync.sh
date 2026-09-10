@@ -40,7 +40,7 @@ cd "$FLEET_DIR"
 
 # = server.ts#BUNDLES, the three the board actually loads. `sh` cannot read that constant, so the
 # list is spelled here and the pin in e2e/pins.ts is what keeps the two from drifting apart.
-BUNDLES="app.js share.js helper.js"
+BUNDLES="app.js share.js helper.js hub.js"
 BUILD_CMD="${FLEET_SYNC_BUILD_CMD:-bun run build}"
 if [ -n "${FLEET_SYNC_BUILD_CMD:-}" ]; then BUILD_IS_DEFAULT=0; else BUILD_IS_DEFAULT=1; fi
 

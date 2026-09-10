@@ -3796,6 +3796,10 @@ export async function run(ctx: Ctx): Promise<void> {
     const legacyId = await mkTask("legacy probe: a persisted analyst verdict must not survive a reload");
     await till(() => hFull(legacyId), (r) => !!r?.brief);
     await post("/api/dispatch", { on: false });
+    // the hand-edit races the LIVE server's own saveState, which would silently write the field
+    // back out and leave the reload check passing for the wrong reason. So the compiler is stopped
+    // first: with no sweep due and the dispatcher off, nothing on this instance writes state.
+    await restartSrv({ ...hEnv, FLEET_BRIEF_MS: "0" });
     const stateFile = `${ROOT}/fleet.json`;
     const state = JSON.parse(readFileSync(stateFile, "utf8")) as { tasks: Record<string, unknown>[] };
     const legacyRow = state.tasks.find((t) => t.id === legacyId);
@@ -3806,7 +3810,7 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(h6) fixture: the state file really carries a legacy analysis before the reload",
       JSON.parse(readFileSync(stateFile, "utf8")).tasks
         .find((t: { id: string }) => t.id === legacyId)?.analysis?.verdict === "ready", "");
-    await restartSrv(hEnv);
+    await restartSrv({ ...hEnv, FLEET_BRIEF_MS: "0" });
     const legacyFull = await hFull(legacyId);
     const legacyDigest = await hRow(legacyId);
     check("(h6) a persisted analysis is DROPPED at load — neither the full row nor the poll carries it",
@@ -3826,8 +3830,8 @@ export async function run(ctx: Ctx): Promise<void> {
 
     // (h7) COMPILER OFF IS THE LIVE DEPLOYMENT, and it must stay byte-for-byte what it was: the
     // draft keeps its raw text and the mode is OMITTED rather than sent as false. A non-event, so
-    // it out-waits three of the cadences (h1) proved the compiler runs at.
-    await restartSrv({ ...hEnv, FLEET_BRIEF_MS: "0" });
+    // it out-waits three of the cadences (h1) proved the compiler runs at. The server is already on
+    // the compiler-off env from (h6).
     const offPoll = await hSess();
     check("(h7) with the compiler off its fact is omitted entirely (absent = off), and still no analyst fact",
       offPoll.briefCompiler === undefined && !("analysis" in offPoll),

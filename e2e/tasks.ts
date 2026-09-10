@@ -341,8 +341,7 @@ export async function run(ctx: Ctx): Promise<void> {
     check("task detail head: the executable block is cut out of src/client.ts",
       headSource.includes("function qHeadPlan") && headSource.includes("function qMainActionOf")
         && headSource.includes("function qLifecycleOf"), headSource.slice(0, 140) || "block missing");
-    type HeadRow = { status: string; kind?: string; slot?: number; repo?: string; programId?: string;
-      hasCriterion: boolean };
+    type HeadRow = { status: string; kind?: string; slot?: number; repo?: string; programId?: string };
     type HeadLane = { kind: "lane" | "refused" | "none"; slot?: number };
     type MainSlot = { act: string; label: string | null; why: string; slot: number | null };
     type Life = { stations: string[]; current: string; reached: number };
@@ -356,7 +355,7 @@ export async function run(ctx: Ctx): Promise<void> {
         Q_LIFE_STATIONS: string[];
       } : null;
     if (headFns) {
-      const row = (over: Partial<HeadRow> = {}): HeadRow => ({ status: "pending", hasCriterion: false, ...over });
+      const row = (over: Partial<HeadRow> = {}): HeadRow => ({ status: "pending", ...over });
       const noLane: HeadLane = { kind: "none" };
       const life = (status: string, kind?: string) => headFns.qLifecycleOf(status, kind);
       const station = (status: string, kind?: string) => `${life(status, kind).current}:${life(status, kind).reached}`;
@@ -402,19 +401,18 @@ export async function run(ctx: Ctx): Promise<void> {
       check("main action NEGATIVE: no advisory row is ever offered a start, a release or a lane — only pending notiz gets adopt",
         advisoryActs.every((a) => a.endsWith("=none") || a === "notiz/pending=adopt")
           && advisoryActs.includes("notiz/pending=adopt"), advisoryActs.join(" "));
-      // the criterion's own ABSENCE is the whole condition since 2026-09-10: it was gated on the
-      // retired analyst's `criterion` blocker as well, which made a real state depend on a reader
-      check("main action: clarify-first is the standing answer to a MISSING done-criterion, and steps aside once one is proposed",
-        headFns.qMainActionOf(row({}), noLane).act === "clarify"
-          && headFns.qMainActionOf(row({ hasCriterion: true }), noLane).act === "release",
-        JSON.stringify([headFns.qMainActionOf(row({}), noLane).act,
-          headFns.qMainActionOf(row({ hasCriterion: true }), noLane).act]));
-      // NEGATIVE: no pending row is ever offered an "override" release. The rename existed only to
-      // say a verdict was being contradicted, and there is no verdict left to contradict.
-      check("main action NEGATIVE: a pending release is never renamed to an override",
-        headFns.qMainActionOf(row({ hasCriterion: true }), noLane).label === "release ▸"
-          && !headFns.qMainActionOf(row({ hasCriterion: true }), noLane).why.includes("override"),
-        String(headFns.qMainActionOf(row({ hasCriterion: true }), noLane).label));
+      // NEGATIVE, and both halves are the retirement (2026-09-10). ▸ clarify first was the head's
+      // pending action while the queue analyst could flag a row as having no derivable
+      // done-criterion — a SIGNAL about that row; and a flagged release renamed itself to
+      // "release anyway ▸" to say a verdict was being contradicted. Neither reader exists, so the
+      // head offers exactly one pending act with exactly one label, whatever else the row carries.
+      // (Clarify itself is untouched — it is offered unconditionally in the Actions row.)
+      const pendingActs = [row(), row({ repo: "/repo/x" }), row({ programId: "p1" })]
+        .map((r) => `${headFns.qMainActionOf(r, noLane).act}/${headFns.qMainActionOf(r, noLane).label ?? ""}`);
+      check("main action NEGATIVE: a pending row is always plain release — never clarify-first, never an override rename",
+        pendingActs.every((a) => a === "release/release ▸")
+          && !headFns.qMainActionOf(row(), noLane).why.includes("override"),
+        pendingActs.join(" "));
       check("main action NEGATIVE: a sent row whose pointer attaches nothing offers NO button — never a foreign slot",
         headFns.qMainActionOf(row({ status: "sent", slot: 4 }), { kind: "refused", slot: 4 }).act === "none"
           && headFns.qMainActionOf(row({ status: "sent" }), { kind: "none" }).why.includes("no lane is attached"),

@@ -1544,17 +1544,31 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   // 4. LEGACY STATE IS DROPPED, NOT CARRIED. A fleet.json written before the retirement still holds
   // `analysis` on its rows. The normalizer must not restore it — the load-bearing half of the cut,
   // because a restored verdict is a claim about a tree that has since moved and nothing refreshes.
-  const normStart = server.indexOf("filesProposal: normFilesProposal(t.filesProposal)");
+  //
+  // THE RULE IS POSITIVE, and it has to be. This pin first asserted the ABSENCE of an `analysis:`
+  // line in the normalizer's field list — and passed while the hole was wide open, because that
+  // map SPREADS the persisted row (`{ ...t, … }`): an unlisted field rides through untouched.
+  // Absence of a line is not absence of the field. So the explicit strip is what is pinned, and
+  // the spread it defends against is named beside it. (Found by e2e/tasks.ts §(h6) on a live
+  // server, 2026-09-10 — a source rule that cannot see a spread needs a driven twin.)
+  const normStart = server.indexOf("// kind migration as load normalisation");
   const normBody = normStart < 0 ? "" : server.slice(normStart, server.indexOf("criterion: t.criterion &&", normStart));
-  pin("the task normalizer restores no persisted analysis onto a reloaded row",
-    normBody !== "" && !normBody.includes("analysis:") && normBody.includes("brief: t.brief"),
+  pin("the task normalizer STRIPS a persisted analysis rather than leaving it to the spread",
+    normBody !== ""
+      && /\.map\(\(\{ analysis: _retiredAnalysis, \.\.\.t \}[^)]*\) => \(\{ \.\.\.t,/.test(normBody)
+      && normBody.includes("brief: t.brief"),
     normBody === "" ? "the normalizer slice was not found" : `${normBody.split("\n").length} lines`);
 
   // 5. THE WIRE CARRIES NEITHER THE PER-ROW READING NOR THE MODE. Both directions: the poll must not
   // send them, and the client must not read them — a client that kept reading an absent field would
   // silently degrade to whatever `undefined` means at that site.
+  // The ONE legitimate `analysis:` left in executable server code is the normalizer's STRIP (rule 4
+  // above) — a destructure that removes the field, not a carrier that transports it. It is excluded
+  // by its exact binding name so a second, differently-named use cannot slip through with it.
+  const analysisCarriers = executableServer.split("\n")
+    .filter((l) => /\banalysis\??:/.test(l) && !l.includes("analysis: _retiredAnalysis"));
   pin("neither the 2 s poll nor GET /api/tasks carries an analysis field",
-    !/\banalysis:/.test(executableServer) && !/analysis\?:/.test(executableServer), "");
+    analysisCarriers.length === 0, analysisCarriers.map((l) => l.trim()).join(" | ") || "none");
   pin("the client reads no analysis digest, cache or runtime mode",
     !executableClient.includes("analysisOn") && !executableClient.includes("taskAnalysisFull")
       && !/t\.analysis/.test(executableClient) && !executableClient.includes("classifyAnalystOffWarning"), "");

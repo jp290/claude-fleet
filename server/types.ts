@@ -5,7 +5,6 @@
 // (docs/sanierung-2026-09/plan-2026-08-31.md §P4 Punkt 1) — a MOVE, every declaration byte-identical
 // to the server.ts line it came from.
 import type { ServerWebSocket } from "bun";
-import { ANALYSIS_BLOCKERS } from "../analysis-prompt";
 import type { LaneWatchEventKind, LaneWatchEventPayload, MergeWatchEventPayload, AuditWatchEventPayload,
   DeployWatchEventPayload, CommandJobArtifactPayload, CommandJobWatchEventPayload, ClarificationEventPayload,
   ClarificationBasis } from "../lane-signals";
@@ -997,13 +996,13 @@ interface Task {
   // what mints the children. Propose/promote like `criterion`, for the same reason: the producer
   // must not be the one who rewrites the work order it was measured against.
   brief?: TaskBrief;       // the compiled work brief — the EXACT bytes a lane will receive.
-  // Compiled once per draft in the analysis sweep, from then on stored, shown and editable (why it
+  // Compiled once per draft by the brief sweep, from then on stored, shown and editable (why it
   // is stored rather than compiled at spawn: server-narrativ-archiv.md#task).
   // NOT the same object as `refine`, and the difference is the point: ↻ refine proposes a new
   // REQUEST (attended, all-or-nothing, may split one row into several), while this is the prompt
   // the request compiles down to. Refine rewrites what you asked for; the brief is how it is said.
   touched?: TaskTouch[]; // WHICH lands moved a file this row's surface names, newest first, capped
-  // at TASK_TOUCHED_MAX. Advisory like `cluster` and `analysis`: it changes no status and gates
+  // at TASK_TOUCHED_MAX. Advisory like `cluster`: it changes no status and gates
   // nothing — it answers "has the ground under this observation moved since it was written". ABSENT
   // means nothing has been recorded, never "no land touched it": the two owner ⏏ paths land work
   // that is already integrated and carry no integration shas at all, so they measure nothing and
@@ -1021,13 +1020,12 @@ interface Task {
   // the brief is the exact bytes a lane receives and is approved as such, so appending to it behind
   // the owner's back would break the one contract that makes it reviewable. A comment is read, not
   // executed.
-  analysis?: TaskAnalysis; // what the queue analyst found ABOUT that brief. ADVISORY: it gates
-  // nothing — the owner's promote is the decision and this is the evidence he decides on (the eval
-  // gate it replaced, and why: server-narrativ-archiv.md#task). Written only by tickAnalysisSweep.
 }
-// The brief and the verdict are deliberately SEPARATE records with separate lifetimes: a brief is
-// compiled once per draft (a fresh lane's git-fact block is empty by construction, so nothing about
-// it improves by recompiling), while its analysis is re-run whenever the tree moves under it.
+// A brief is compiled ONCE per draft: a fresh lane's git-fact block is empty by construction, so
+// nothing about it improves by recompiling. The row carried a second record beside it until
+// 2026-09-10 — `analysis`, the retired queue analyst's verdict, re-run whenever the tree moved
+// under the row. Nothing reads or writes it any more, and a persisted one is DROPPED at load
+// (server.ts, the task normalizer) rather than carried as a fact nothing refreshes.
 interface TaskBrief { text: string; at: number; model: string; edited: boolean }
 // One remark, timestamped and individually deletable. `id` exists for the delete: an index would
 // name a different comment the moment an earlier one goes.
@@ -1099,26 +1097,6 @@ interface TaskNoteVerdict {
 // rather than with the note.
 interface TaskTouch { sha: string; branch: string; at: number }
 
-// Three-valued on purpose: "unknown" is the analyst failing to ANSWER, which is an absence and must
-// never be able to read as either judgement (the two-valued collapse this replaced:
-// server-narrativ-archiv.md#taskanalysis).
-interface TaskAnalysis {
-  verdict: "ready" | "needs-you" | "unknown";
-  reason: string;                  // decisive factor first; for "unknown" it is the failure
-  blockers: AnalysisBlocker[];     // which criterion failed — the row tags; empty when ready
-  collides: string[];              // other task ids / open lane branches touching the same files
-  at: number;
-  model: string;
-  head: string | null;             // integration tip this was judged against; a moved tip = stale
-  briefAt: number | null;          // the brief revision this judged; the owner editing it = stale
-  attempts: number;                // consecutive analyst failures, for the backoff (0 once answered)
-  retry?: { at: number; reason: string }; // the last re-reading that FAILED, recorded beside the
-  // verdict instead of over it (analysisFailed). Absent is the normal state and means "the verdict
-  // above is the last thing that happened to this row". Written on every `attempts` bump, but not
-  // guaranteed to accompany the counter — a hand-edited state file can carry one without the
-  // other, which is why analysisDue falls back to `at` for the backoff clock rather than assuming.
-}
-type AnalysisBlocker = (typeof ANALYSIS_BLOCKERS)[number];
 interface TaskCriterion { text: string; proposedAt: number; confirmedAt: number | null }
 
 // One standing proposal per row — a second one overwrites it, exactly as a second ↻ refine run
@@ -1143,7 +1121,7 @@ interface TaskRefine { at: number; model: string; proposal: RefineProposal;
   // local proof chain. READ-ONLY PROJECTION, like `cluster` on the row above it — written by
   // taskView from the CURRENT tracked tree and never by the worker, so it is always a statement
   // about today rather than about the minute the compile finished, and it needs no staleness
-  // anchor the way `analysis.head` does. Never persisted: normRefine rebuilds this record field by
+  // anchor of its own. Never persisted: normRefine rebuilds this record field by
   // field, so a hand-edited state file cannot smuggle a verdict in either direction.
   validation?: RefineValidation }
 
@@ -2101,7 +2079,7 @@ export type {
   HelperCmdCheck,
   SupervisorTransitionEventPayload, SupervisorTransitionFleetEvent, FleetEvent, ClarificationStatus,
   ClarificationRequest, FleetReportDisposition, FleetReportDecision, FleetReportBasis, FleetReport, AttentionKind, AttentionStatus, AttentionRequest, TaskKind,
-  Task, TaskBrief, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskAnalysis, AnalysisBlocker, TaskCriterion, TaskFilesProposal, RefineChild,
+  Task, TaskBrief, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskFilesProposal, RefineChild,
   RefineProposal, TaskRefine, LaneForm, LaneRef, SuccessionRetirement, CodexRecoveryState, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
   PromotionSelfLand, PromotionPolicy, ProgramProfileKind, ProgramProfile, ProgramLineageVia,

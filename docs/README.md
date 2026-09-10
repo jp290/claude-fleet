@@ -145,8 +145,8 @@ One line per doc — its *purpose*, not its contents, so this index points witho
   the substance.
 
 **Queue and autonomy**
-- **`queue-analyst.md`** — the live contract for how the dispatcher reads queue rows, keeps
-  `unknown` distinct from a verdict, and holds collisions without turning analysis into a gate.
+- **`queue-analyst.md`** — the queue analyst's RETIREMENT (2026-09-10) and the contract that
+  outlived it: which bytes a lane receives, who releases a row, and what the dispatcher checks.
 - **`autonomy-bausteine-2026-08-06.md`** — the still-live decision basis for machine release:
   why `queued` has machine writers, which evidence must precede auto-promotion, and why the
   ordering of the autonomy verbs changed. Read before extending unattended dispatch.

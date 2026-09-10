@@ -391,9 +391,10 @@
   .shellrow.q-queued { border-left: 3px solid var(--accent); }
   .shellrow.q-sent { border-left: 3px solid var(--add); }
   .shellrow.q-done { border-left: 3px solid var(--line); opacity: 0.55; }
-  /* ...and, overriding it, what the analyst made of the row. Status is a mechanism; these two are
-     the reasons a row is where it is, so they win the accent. `q-flag` = it wants your eyes,
-     `q-obs` = an observation, which is not work at all and should not read like a queued task. */
+  /* ...and, overriding it, what the row IS. Status is a mechanism; these two are the reasons a row
+     is where it is, so they win the accent. `q-flag` = it wants your eyes (today: a program mark
+     that is stale or unknown), `q-obs` = an observation, which is not work at all and should not
+     read like a queued task. */
   .shellrow.q-flag { border-left: 3px solid var(--amber); }
   .shellrow.q-obs { border-left: 3px dotted #9d7cd8; }
   .shellrow.q-obs .shrname { color: #c0caf5; }
@@ -752,10 +753,12 @@
      own so it sits directly under the button, with clarify/refine on the line below it. */
   .shrbtn.qraw { border-color: #5a4a2a; color: var(--amber); background: #2a2320; }
   .shrbtn.qraw:disabled { opacity: .5; cursor: not-allowed; }
-  /* Analyst-off visibility sits with release, never over it: the button stays enabled and keeps its
-     existing click path while the row truth remains visible before the click. */
+  /* WHICH BYTES a release will send sits with the button, never over it: it stays enabled and keeps
+     its existing click path while the row truth remains visible before the click. (This carried the
+     retired queue analyst's off-mode warning until 2026-09-10, in the same place for the same
+     reason.) */
   .qrelease { flex-basis: 100%; display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .qanalysiswarn { flex: 1 1 300px; min-width: 0; color: var(--amber); background: #2a2320;
+  .qreleasenote { flex: 1 1 300px; min-width: 0; color: var(--amber); background: #2a2320;
     border: 1px solid #5a4a2a; border-radius: 7px; padding: 7px 9px; font-size: 11.5px; line-height: 1.45; }
   .qrawack { flex-basis: 100%; display: flex; align-items: flex-start; gap: 7px; cursor: pointer;
     font-size: 12px; line-height: 1.45; color: var(--amber); margin: -2px 0 1px; }
@@ -1431,7 +1434,7 @@
     .panel { max-width: 96vw; max-height: 86vh; padding: 13px; }
     .pkrow { padding: 11px 9px; font-size: 13px; }
     .qrelease { align-items: stretch; flex-wrap: wrap; }
-    .qanalysiswarn { flex-basis: 100%; font-size: 12px; }
+    .qreleasenote { flex-basis: 100%; font-size: 12px; }
     .qrelease .shrbtn { min-height: 44px; }
     /* the ▸ is the one control that must NOT push the detail pane — it is how you walk the tree
        without leaving the list — so on touch it gets a target worth aiming at. Widening it shifts

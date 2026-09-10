@@ -6966,8 +6966,9 @@ export async function run(ctx: Ctx): Promise<void> {
     // --- THE LANE HALF, one seam over. briefAndSend never passes through railBlockFor, so a worker
     // lane reads its half of the record there, through the slot's programId. Two rows with
     // IDENTICAL text — one inside the bound Program, one inside no Program at all — and the same
-    // splice equality decides it. (The analyst is off in this suite, FLEET_ANALYSIS_MS=0, so
-    // neither row can acquire a compiled brief and diverge for a reason that is not the studio.)
+    // splice equality decides it. (No brief compiler is configured in this suite — FLEET_BRIEF_MS
+    // is unset — so neither row can acquire a compiled brief and diverge for a reason that is not
+    // the studio.)
     const laneStudioProgram = await activateNewProgram("Studio lane brief carrier");
     await bindTo(laneStudioProgram.id, { id: "brief-studio" });
     const laneProbeText = "studio lane brief byte-identity probe";

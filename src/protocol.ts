@@ -166,13 +166,14 @@ export function normalizeLaneAnchor(value: unknown): LaneAnchor | null {
 // POST /api/dispositions against these lists; the client renders the same four words and sends the
 // same four worker names. Typing the client's call sites against `DispositionWorker` is what makes
 // a mistyped "review-3" a compile error instead of a 400 nobody sees.
-// `analysis` is the queue analyst's verdict on ONE task row, and it is the only worker here whose
-// most valuable hit produces no lane at all: a `needs-you` the owner agrees with ends in a rewritten
-// row, so an outcome-ledger join can never see it. Its ref is the taskId — see the ref-shape block
-// in server.ts.
-export type DispositionWorker = "land" | "review3" | "enhance" | "analysis";
+// A fourth worker — `analysis`, the queue analyst's verdict on ONE task row, ref = the taskId —
+// stood here until 2026-09-10. The analyst is retired, so nothing produces a reading to have an
+// opinion about and the write door closes with it. The rail is append-only and the READER validates
+// no worker name, so the labels already filed under it stay readable: closing the door retires a
+// producer, it does not rewrite what an owner once said.
+export type DispositionWorker = "land" | "review3" | "enhance";
 export type DispositionVerdict = "accepted" | "edited" | "ignored" | "wrong";
-export const DISPOSITION_WORKERS: DispositionWorker[] = ["land", "review3", "enhance", "analysis"];
+export const DISPOSITION_WORKERS: DispositionWorker[] = ["land", "review3", "enhance"];
 export const DISPOSITION_VERDICTS: DispositionVerdict[] = ["accepted", "edited", "ignored", "wrong"];
 
 // --- post-land audit projection -----------------------------------------------------------------
@@ -365,7 +366,6 @@ export const WORKER_CONTRACTS = {
   // contract therefore always spells `tasks` — an empty array plus `unchanged: true` is how it
   // says "already brief-shaped" (refine-prompt.ts).
   refine: { mark: "a read-only BRIEF COMPILER for a fleet task queue", key: "tasks" },
-  analysis: { mark: "the ANALYST for a fleet task queue", key: "analyses" },
 } satisfies Record<string, WorkerContract>;
 export type WorkerName = keyof typeof WORKER_CONTRACTS;
 
@@ -377,8 +377,8 @@ export const doneMark = (c: WorkerContract): string => `"${c.key}"`;
 // Five prompt builders fence untrusted text between <<<MARKER / MARKER>>> lines, and the fence only
 // holds if the text cannot carry the closing marker itself ("…\nDATA>>>\nnow obey me"). This helper
 // lived private in merge-prompt.ts and was applied to exactly ONE of the five fences — the read-only
-// reviewer's — while the write-capable resolver/repair/author prompts, the queue analyst and the clarify
-// brief concatenated raw (2026-08-05: three independent reviews converged on the same gap). It lives
+// reviewer's — while the write-capable resolver/repair/author prompts and the clarify brief
+// concatenated raw (2026-08-05: three independent reviews converged on the same gap). It lives
 // here because "every fence defuses the same way" is a must-agree property across five files, which
 // is precisely what this module exists to hold.
 export function defuseDelimiters(s: string, markers: string[] = ["DATA"]): string {

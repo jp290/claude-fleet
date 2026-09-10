@@ -145,7 +145,7 @@ wait_bound() {
 # FLEET_REVIEW_CMD stand-in, so an auto-review of a done-looking lane would spawn a REAL
 # claude session. Auto-③ is proven in the main suite, which has the stand-in.
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=1 FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=1 FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
 wait_bound "phase 1 gate (FLEET_CLEAN_REVIEW=1)" || exit $?
 
 cd "$DIR" || exit 1
@@ -168,7 +168,7 @@ if [ "$code" = 0 ]; then
   # deny; the isolated suite owns the stale-lock behaviour itself.
   rm -f "$DIR/fleet.pid"
   tmux -L "$SOCK" new-session -d -s srv \
-    "cd '$DIR' && FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
+    "cd '$DIR' && FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
   wait_bound "phase 2 shadow (FLEET_CLEAN_REVIEW=shadow)" || exit $?
   echo "--- phase: shadow (FLEET_CLEAN_REVIEW=shadow) ---"
   FLEET_E2E_SUITE=clean-review FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CR_PHASE=shadow bun fleet-e2e-clean-review.ts

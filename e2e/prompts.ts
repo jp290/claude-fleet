@@ -2,7 +2,6 @@
 // the `done-looking` and `stalled` predicates (lane-signals.ts) and the continuity derivation
 // (continuity.ts), each clause asserted by its negation.
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt } from "../merge-prompt";
-import { buildAnalysisPrompt } from "../analysis-prompt";
 import { buildEnhancePrompt } from "../enhance-prompt";
 import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessage, laneWatchEventKind,
   laneWatchPayload, laneQuietSince,
@@ -137,9 +136,6 @@ export async function run(): Promise<void> {
       { worker: "cleanReview", profile: "REVIEW_TOOLS", text: buildCleanReviewPrompt({ branch: "fleet/probe",
           main: "main", laneFiles: ["server.ts"], laneStat: "1 file changed", mainLog: "b", mainFiles: ["x.ts"],
           mainCommitCount: 2, laneBrief: "t", otherLanes: [] }) },
-      { worker: "analysis", profile: "REVIEW_TOOLS", text: buildAnalysisPrompt("/repo",
-          [{ id: "t1", source: "owner", text: "do the thing", brief: null, files: null }],
-          [{ branch: "fleet/other", task: "other", files: [] }]) },
       { worker: "enhance", profile: "TEXT_ONLY_TOOLS", text: buildEnhancePrompt("draft", null) },
     ];
 

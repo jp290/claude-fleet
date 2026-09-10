@@ -9600,16 +9600,9 @@ async function tickDispatch(): Promise<void> {
     // from blocking an executable one behind it; dispatchTask repeats the lock for every caller.
     const candidates = tasks.filter((t) => t.kind === "auftrag" && t.status === "queued" && !dispatchingTasks.has(t.id));
     if (!candidates.length) return;
-    // WHAT IS RUNNING RIGHT NOW, in the two shapes running work is named by: task ids and the
-    // branch names of the open lanes. Both are needed and neither is the rare one — a row is a
-    // queued ID until it is dispatched, and a BRANCH afterwards. A consumer that compared only ids
-    // would miss half the field and look like it worked.
-    // Mid-spawn rows count as running: dispatchTask reserves the id before its first await, so the
-    // task is a lane in all but status. No repo filter — both key spaces are globally unique, and
-    // narrowing them could only ever drop a match, i.e. weaken the very check this is.
-    const runningIds = new Set<string>(dispatchingTasks);
-    for (const t of tasks) if (t.status === "sent") runningIds.add(t.id);
-    const runningBranches = new Set(slots.filter((s) => s.cwd && s.worktree).map((s) => s.worktree!.branch));
+    // TWO SETS were derived here — the running task ids and the open lanes' branch names — for the
+    // queue analyst's collision read alone, and they went with it on 2026-09-10. Nothing else in
+    // this tick asked what is running by NAME; the caps count lanes, they do not identify them.
     for (const next of candidates) {
       // THE MASTER STOP, READ PER ROW — and read FIRST, above every `waiting` note below, which is
       // not a stylistic choice: under a stopped fleet this tick used to return before the loop, so

@@ -143,7 +143,7 @@ const PRE_AUTH_ROUTES = [
   // pre-auth surface for the same reason as its neighbours — the exact self principal IS the
   // boundary — and what bounds it is that RELEASING IS NOT STARTING: the route never dispatches, so
   // every gate on unattended execution stays with the tick (master stop, quiet hours,
-  // DISPATCH_MAX_LANES, DISPATCH_MAX_LANES_PER_PROGRAM, the analysis gate, the collision read).
+  // DISPATCH_MAX_LANES, DISPATCH_MAX_LANES_PER_PROGRAM, the harness-automation bolt).
   // Non-lane only. The program is derived from the caller's MAIN binding and the target repo from
   // the caller's own checkout — the handler reads no request body at all (pinned in e2e/pins.ts) —
   // the row must be an `auftrag`, and PROGRAM_MAX_RELEASED caps how many rows one Program may hold
@@ -487,13 +487,12 @@ const dangerous = (slot: number): Probe[] => [
 // protected only by §1's structural pin (tokenGate last in the chain). §2 is the mechanism that
 // catches a handler regressing to its own weaker inline check — the way /api/dispositions already
 // special-cases one principal inline — and it was silent on exactly the newest clarify-adjacent
-// surface. `fix` is a DONE fixture task: criterion-confirm / reanalyse / brief / dispatch answer a
+// surface. `fix` is a DONE fixture task: criterion-confirm / brief / dispatch answer a
 // side-effect-free 409 to the owner (proving the route exists) and must answer 401/403 to every
 // other principal. The mutating task actions and the guest routes ride matrix-only (no ownerSafe
 // control), same stance as /api/dispatch.
 const taskSurface = (fix: string): Probe[] => [
   { path: `/api/tasks/${fix}/criterion-confirm`, method: "POST", body: {}, ownerSafe: true },
-  { path: `/api/tasks/${fix}/reanalyse`, method: "POST", body: {}, ownerSafe: true },
   // the brief is a PROMPT a lane will execute — an unauthenticated write here would be arbitrary
   // remote code execution through the back door, so it belongs on this matrix more than most
   { path: `/api/tasks/${fix}/brief`, method: "POST", body: { text: "probe" }, ownerSafe: true },

@@ -73,7 +73,7 @@ export async function run(lc: LaneCtx): Promise<void> {
         try {
           const src = readFileSync(`${resolve(realpathSync(`${ROOT}/node_modules`), "..")}/src/client.ts`, "utf8");
           const a = src.indexOf("type QGroup =");
-          const b = src.indexOf("function qWaveAnalysis", a);
+          const b = src.indexOf("function qWaveProjection", a);
           joinFns = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(src.slice(a, b))
             + "\nreturn { qLaneJoins, qLaneState };")() as JoinFns;
         } catch (e) { joinErr = e instanceof Error ? e.message : String(e); }

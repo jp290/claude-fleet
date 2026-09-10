@@ -5,9 +5,11 @@
 untracked file makes the lane permanently dirty and blocks `land`
 (`tailored-context.md` §6). This template is the source a HUMAN launcher fills in
 per task. The dispatcher briefs differently since 2026-08-04, and since 2026-08-05 it
-does so EARLIER: the enhancer now runs in the analysis sweep (`tickAnalysisSweep`), the
-compiled brief is stored on the task (`Task.brief`), and `briefAndSend` sends exactly
-those bytes with no model call of its own. Two consequences worth knowing: the brief is
+does so EARLIER: the enhancer runs in its own sweep (`tickBriefSweep`, cadence
+`FLEET_BRIEF_MS`, off by default — it shared the retired analyst's sweep and switch until
+2026-08-18 and stands alone since the analyst went on 2026-09-10), the compiled brief is
+stored on the task (`Task.brief`), and `briefAndSend` sends exactly those bytes with no
+model call of its own. Two consequences worth knowing: the brief is
 readable and editable in the queue before the lane starts, and an owner edit pins it
 (`edited`) so nothing recompiles over it. Keep every filled brief under ~40 lines; curation is the point
 (`tailored-context.md` §5).*

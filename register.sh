@@ -71,11 +71,8 @@ git worktree list --porcelain 2>/dev/null | awk '
     >> "$TMPL"
 done
 
-MAINSHA=$(git rev-parse main 2>/dev/null || echo "")
-
-STATE="$STATE" METADATA="$TMPM" LANES="$TMPL" \
-MAINSHA="$MAINSHA" python3 - <<'PY'
-import json, os, re, shlex, subprocess, sys, time
+STATE="$STATE" METADATA="$TMPM" LANES="$TMPL" python3 - <<'PY'
+import json, os, re, subprocess, sys, time
 from pathlib import Path
 
 STATE   = os.environ["STATE"]
@@ -84,7 +81,6 @@ try:
 except Exception:
     METADATA = {}
 LANES   = [l.split("\t", 1) for l in Path(os.environ["LANES"]).read_text().splitlines() if l.strip()]
-MAINSHA = os.environ.get("MAINSHA", "")
 
 def age(ms):
     if not ms:
@@ -98,20 +94,10 @@ def sh(cmd):
     except Exception:
         return ""
 
-# Files that moved between the tree a verdict judged and today's main, or None when that cannot be
-# read. ONE rule for staleness across the two readers: the server decides it in
-# analysis-staleness.ts, and a second, looser meaning rendered here would be the exact drift this
-# repo keeps paying for. None is UNKNOWN — an unreadable diff, or an empty one where the two tips
-# genuinely differ — and UNKNOWN falls to stale, never to fresh. Cached per head: one git per
-# distinct judged tree, not one per row. That stance also decides the degraded case for free: if
-# `bun task-metadata.ts` above failed, every row arrives with no surface and every `!head` comes
-# back — the render falls to the OLD, louder behaviour rather than to a quiet "all fresh".
-_moved = {}
-def moved_since(head):
-    if head not in _moved:
-        out = sh(f"git diff --name-only --no-renames -z {shlex.quote(head)} {shlex.quote(MAINSHA)}")
-        _moved[head] = set(p for p in out.split("\0") if p) or None
-    return _moved[head]
+# A `moved_since(head)` reader stood here until 2026-09-10: the second half of the queue analyst's
+# staleness rule, intersecting what a land moved with a row's own file surface so this render and
+# the server (analysis-staleness.ts) could not drift apart. The analyst is retired, no row carries a
+# verdict to age, and a renderer for a fact nothing produces is drift waiting to happen.
 
 def clip(s, n):
     s = " ".join((s or "").split())
@@ -136,38 +122,18 @@ if tasks is not None:
     for t in tasks:
         if t.get("status") not in OPEN:
             continue
-        a = t.get("analysis") or {}
         brief = t.get("brief") or {}
         meta = METADATA.get(t.get("id"), {})
         surface = meta.get("files") if isinstance(meta.get("files"), list) else []
         origin = meta.get("filesOrigin") if meta.get("filesOrigin") in ("confirmed", "derived") else None
         cluster = meta.get("cluster") if isinstance(meta.get("cluster"), dict) else None
-        # Question 5 of briefs/work-register.md §1: does the claim still hold? A verdict is stale
-        # when the tree it judged has moved UNDER THIS ROW'S OWN FILES, or the brief it judged has
-        # been rewritten — both are recorded on the analysis for exactly this, and both are
-        # mechanical. A bare tip comparison stood here until 2026-08-18 and marked every open row
-        # after every land, docs-only lands included.
-        stale = []
-        if a and MAINSHA and a.get("head") and a["head"] != MAINSHA and not t.get("repo"):
-            moved = moved_since(a["head"])
-            known = surface if origin else []
-            if not known or moved is None or (set(known) & moved):
-                stale.append("head")
-        if a and brief.get("at") and a.get("briefAt") and a["briefAt"] != brief["at"]:
-            stale.append("brief")
         rows.append({
             "id": t.get("id", "?"),
             "kind": t.get("kind", "auftrag"),
             "src": (t.get("source") or "?")[:6],
             "status": t.get("status"),
-            "verdict": a.get("verdict"),
-            "vage": age(a.get("at")) if a else "",
-            "stale": stale,
-            # how often re-reading this row has failed since the verdict beside it came back. Before
-            # 2026-08-07 this could not be nonzero on a row that still HAD a verdict — a failure
-            # overwrote it — so the register showed an absence where a reading existed.
-            "retries": (a.get("attempts") or 0) if a.get("retry") else 0,
-            "collides": [c for c in (a.get("collides") or [])],
+            "bage": age(brief.get("at")) if brief else "",
+            "edited": bool(brief.get("edited")),
             "brief": bool(brief),
             "crit": bool((t.get("criterion") or {}).get("confirmedAt")),
             "text": t.get("text", ""),
@@ -186,13 +152,13 @@ if tasks is not None:
             "b" if r["brief"] else "-",       # a compiled brief exists and is readable before the start
             "c" if r["crit"] else "-",        # a done-criterion the owner has confirmed
         ])
-        v = (r["verdict"] or "no-analysis") + (f"({r['vage']})" if r["vage"] else "")
-        if r["stale"]:
-            v += "!" + "+".join(r["stale"])
-        if r["retries"]:
-            v += f"?x{r['retries']}"
+        # WHICH BYTES a lane would receive — the one fact left that decides that, now that the
+        # queue analyst's verdict column is retired. "raw-request" is not a defect: it is what the
+        # row says, and Question 5 (does the claim still hold?) is answered by the surface below.
+        v = (("owner-brief" if r["edited"] else "brief") + (f"({r['bage']})" if r["bage"] else "")) \
+            if r["brief"] else "raw-request"
         # Question 4: whose decision is it? Mechanical, from the row itself — never a guess.
-        waits = "owner" if (r["kind"] == "notiz" or r["verdict"] == "needs-you") else \
+        waits = "owner" if r["kind"] == "notiz" else \
                 "slot" if r["status"] == "sent" else "—"
         print(f"  {r['id']}  {r['kind']:<4} {r['status']:<7} {r['src']:<6} {flags} {v:<22} {waits:<5} {clip(r['text'], 66)}")
         if r["surface"]:
@@ -203,20 +169,14 @@ if tasks is not None:
                 print(f"        cluster: {r['cluster'].get('projekt', '?')} / {r['cluster'].get('prozess', '?')}{sub}")
         else:
             print("        surface: UNBEKANNT — no exact tracked path in task/brief and no confirmed field")
-        if r["collides"]:
-            print(f"        analyst says collides: {' '.join(r['collides'])}")
     if not rows:
         print("  (no open rows)")
     print()
     print("  flags: b=compiled brief on the row   c=owner-confirmed done-criterion")
-    print("  verdict(age)!stale?xN — !head = the tree moved UNDER THIS ROW'S FILES since it judged")
-    print("  (or its file surface could not be read at all, which counts the same way), !brief = the")
-    print("  brief was rewritten since. A stale verdict is not wrong, it is UNVERIFIED: POST reanalyse.")
-    print("  ?xN = re-reading this row has FAILED N times since that verdict came back; the verdict")
-    print("  is the last one that arrived, and it is not being refreshed. At N=3 the sweep gives up")
-    print("  and only POST reanalyse restarts it.")
-    print("  The verdict is ADVISORY and gates nothing; 'unknown' is the analyst failing to answer,")
-    print("  which is an absence and never one of the two judgements (server.ts, TaskAnalysis).")
+    print("  brief(age) = the machine compiled these bytes; owner-brief(age) = the owner wrote or")
+    print("  edited them and nothing recompiles over them; raw-request = the row carries no brief")
+    print("  and a lane would receive the draft as it stands. None of the three gates anything —")
+    print("  releasing is the owner's act (server.ts, releaseTask).")
 
 # ── 2. collision surface ────────────────────────────────────────────────────────────────────────
 print()
@@ -224,7 +184,6 @@ print("=== 2. collision surface — what may NOT run beside what ===")
 print("  Truth values stay separate (briefs/work-register.md §3):")
 print("    [bestätigt/mechanisch] owner-confirmed refine `files`, or a running lane's git diff")
 print("    [abgeleitet]           exact tracked paths read from task/brief; deterministic but weaker")
-print("    [modell]               the analyst's `collides`, which judged the work and may be wrong")
 print("    UNBEKANNT              no resolvable surface. Not 'no collision' — absence of an answer.")
 print("  Only kind=auftrag rows appear: advisory rows are never dispatched and cannot collide as work.")
 print()
@@ -267,35 +226,10 @@ if lanerows:
     if blind:
         print(f"  UNBEKANNT vs everything: {' '.join(blind)} — named no resolvable file.")
         print("            `files` missing ⇒ collision is unknown, never 'no' (briefs/work-register.md §4).")
-    print()
-    # The analyst's own graph, which judges the work rather than the filenames.
-    ids = {r["id"] for r in lanerows}
-    edges = {}
-    for r in lanerows:
-        for c in r["collides"]:
-            if c in ids:
-                edges.setdefault(r["id"], set()).add(c)
-                edges.setdefault(c, set()).add(r["id"])
-    seen, comps = set(), []
-    for i in sorted(ids):
-        if i in seen or i not in edges:
-            continue
-        stack, comp = [i], []
-        while stack:
-            x = stack.pop()
-            if x in seen:
-                continue
-            seen.add(x)
-            comp.append(x)
-            stack.extend(edges.get(x, ()))
-        comps.append(sorted(comp))
-    if comps:
-        print("  [modell] the analyst's own collision graph — it judged the work, not the filenames,")
-        print("  so where it disagrees with the file listing above, THAT is the information:")
-        for c in comps:
-            print(f"    SERIALIZE {' + '.join(c)}")
-    free = sorted(ids - seen)
-    print(f"  unconnected in that graph: {' '.join(free) if free else 'none'}")
+    # A second graph stood here until 2026-09-10 — [modell], the queue analyst's own `collides`,
+    # which judged the WORK rather than the filenames and was worth printing precisely where it
+    # disagreed with the file listing above. It retired with the analyst; no model edge is drawn
+    # anywhere in this fleet now, and the file listing is the whole answer.
     print()
     for r in lanerows:
         for br, fs in occupied.items():

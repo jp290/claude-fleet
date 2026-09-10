@@ -32,12 +32,10 @@ Scope and sources, so the omissions are not silent:
 - `server/` — The server's own modules, cut out of `server.ts` by the Generalsanierung (P4): `types.ts` holds the persisted domain model and its `*From`/`load*` parsers, `errors.ts` the in-memory error channel (`logError`/`errorsView`), `persist.ts` the append-only JSONL event log and its rotation-aware ledger readers, `tmux.ts` the tmux socket and process wrappers, `transport.ts` the gzip/byte-ledger wrappers and the static-asset table (anchored on `PUB`, one level up from this directory), `dir-explorer.ts` the folder picker's caps, its slow-folder memory and the file readability and write-deny rules, `audit-log.ts` the security event trail — the `AuditEvent` vocabulary, `audit()` and `AUDIT_FILE` (anchored on `PUB` like `transport.ts`, so the ledger stays at the repo root), `http.ts` the leaf every other module may import — the `json()` response helper plus `HOST`/`PORT`, binding nothing from the core, `auth.ts` the token and share-credential surface (`tokenFrom`, `secretEq`, the share cookie gates, `ALLOWED_HOSTS` and the `guard` that answers the DNS-rebinding and cross-origin checks); `server.ts` stays the entry and keeps the state holders — including `transportReport` and `listDirs`/`findDirs`/`dirInfo`, which read core state the modules may not import.
 - `src/` — Modules shared across the server, the browser bundle and the suites — protocol types, the client, share rendering, shell quoting, markdown, backoff.
 
-## Top-level `.ts` and `.sh` files (54)
+## Top-level `.ts` and `.sh` files (51)
 
 - `acceptance-probe.sh` — ACP-25 REAL-TUI ACCEPTANCE PROBE — not a gate. It boots an isolated Fleet instance on its own
 - `acceptance-probe.ts` — ACP-25 real-TUI acceptance probe (driver: acceptance-probe.sh). Every check below is against the
-- `analysis-prompt.ts` — The queue analyst's prompt, extracted as a PURE function for the same reason as buildMergePrompt,
-- `analysis-staleness.ts` — WHEN A VERDICT EXPIRES — one rule, pure, so every case is decidable without a server.
 - `briefstats.ts` — The brief question — is a compiled brief worth more than the draft it replaced?
 - `capability-map.ts` — capability-map.ts — the executable source for Fleet's smallest capability vocabulary.
 - `clarify-prompt.ts` — The clarify lane's founding prompt, extracted as a PURE function for the same reason as the
@@ -79,7 +77,6 @@ Scope and sources, so the omissions are not silent:
 - `server.ts` — **no sentence** — this file opens with no header comment; add one as its first line so this row stops reading as empty.
 - `slotstats.ts` — The slot fact — whether a slot is the thing it claims to be.
 - `state.sh` — Fleet's derivable state, computed at read time — never written down, so it cannot rot.
-- `task-analysis-warning.ts` — Pure queue warning classification for a disabled analyst.
 - `task-land-waves.ts` — Deterministic, read-only LAND wave projection — the other fold of the same collision data.
 - `task-metadata.ts` — Deterministic, read-only task surface projection.
 - `task-notes.ts` — Deterministic, read-only join: the pending `notiz` rows standing on a task's file surface.

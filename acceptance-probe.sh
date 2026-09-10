@@ -28,7 +28,7 @@ TOKEN=acceptance-probe-token
 export PATH="$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:$PATH"
 tmux -L "$SOCK" new-session -d -s srv \
   "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_TOKEN=$TOKEN \
-   FLEET_CMD=claude FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=0 \
+   FLEET_CMD=claude FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 \
    FLEET_HARNESS_AUTOMATION=0 \
    exec bun server.ts >> server.log 2>&1"
 code=000

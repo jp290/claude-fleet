@@ -17,8 +17,6 @@ import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessa
   MERGE_ERROR_REASONS, type MergeErrorReason } from "./lane-signals";
 import { phaseOf, type Phase, type PhaseInput, type PhaseOutcomeFacts } from "./program-phase";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
-import { buildAnalysisPrompt, ANALYSIS_BLOCKERS } from "./analysis-prompt";
-import { analysisStaleness } from "./analysis-staleness";
 import { buildClarifyBrief } from "./clarify-prompt";
 import { buildRefinePrompt } from "./refine-prompt";
 import { LOCAL_PROOF_STEPS, localProofFor, verificationProportionFor,
@@ -99,7 +97,7 @@ import {
   type AttentionRequest, type TaskKind, type Task, type TaskBrief, type TaskComment,
   isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
-  type TaskAnalysis, type AnalysisBlocker, type TaskCriterion, type TaskFilesProposal,
+  type TaskCriterion, type TaskFilesProposal,
   type RefineChild, type RefineProposal,
   type TaskRefine, type LaneForm, type LaneRef, type SuccessionRetirement, type CodexRecoveryState,
   type Slot, type MainDirectPreflight, type MainDirectOutcome, type ProgramStatus, type Program,
@@ -159,14 +157,10 @@ const CONTEXT_ANCHOR_RENDERER = "v2";
 // the owner disposition rail — one append-only label per advisory output the owner ruled on
 // (see the DISPOSITION region below). Same appendEvent discipline/rotation as the two above.
 const DISPOSITION_FILE = `${import.meta.dir}/dispositions.jsonl`;
-// the analyst's verdict trail — one append-only line per ASSIGNMENT of Task.analysis, `unknown`
-// included. `Task.analysis` lives only in the mutable state file: the next sweep overwrites it and
-// capTasks evacuates the row, so a verdict nobody overrode left no trace at all — ex-post scoring
-// of the analyst could structurally only ever see the OVERRULED minority (audit.jsonl
-// `task_override`) and never the majority it agreed with. A measurement gap that goes unwritten
-// reads back as an abstention, which is the one thing it is not, so failures are written too. Same
-// appendEvent discipline/rotation as the trails above.
-const ANALYSIS_VERDICT_FILE = `${import.meta.dir}/analysis-verdicts.jsonl`;
+// A fourth trail stood here until 2026-09-10: `analysis-verdicts.jsonl`, one line per assignment
+// of the retired queue analyst's `Task.analysis`. The file on disk is left where it is — an
+// append-only trail is history, and deleting it would erase what the analyst actually produced.
+// Nothing writes it any more, and no route reads it.
 // the post-land audit trail (verification tier 2) — one row per full-suite run against the
 // integration branch after a land. Same appendEvent discipline/rotation as the trails above.
 const POSTLAND_AUDIT_FILE = `${import.meta.dir}/post-land-audits.jsonl`;
@@ -284,7 +278,7 @@ const AUTHOR_COMMS = [...new Set([...HARNESS_COMMS, "claude"])];
 // mistake this whole change exists to undo, and it is not less wrong for models than it was for
 // liveness. (Measured: with the widening keyed on "not claude", fleet-e2e-security.ts §2 accepted a
 // 65-character model under FLEET_CMD=true, because the foreign charset's cap is 96. The suite
-// caught it.) Worker-tier Claude models (SUMMARY fallback/ANALYSIS/REFINE) keep MODEL_RE
+// caught it.) Worker-tier Claude models (SUMMARY fallback/REFINE) keep MODEL_RE
 // unconditionally — those spawn through runWorker/summaryViaSession no matter what FLEET_CMD is.
 // The summary's codex-exec route names its closed model constant at that transport boundary.
 const SLOT_MODEL_RE = DECLARED_HARNESS ? HARNESS_MODEL_RE : MODEL_RE;
@@ -2218,18 +2212,9 @@ const MAX_TASK_TEXT = 20_000;
 // on the poll path reads the text (the queue button reads status+source); the queue overlay
 // fetches GET /api/tasks once when it opens. Null-valued fields are omitted rather than sent as
 // null — with 200 tasks (MAX_TASKS) even the digest is the payload's biggest term.
-// the analysis as the 2 s poll carries it: enough to GROUP and label a row, never the brief and
-// never the full reason. Both of those ride GET /api/tasks, which the queue overlay fetches when
-// it opens — the same two-tier rule the task texts themselves follow.
-interface AnalysisDigest {
-  verdict: TaskAnalysis["verdict"]; blockers: AnalysisBlocker[]; reason: string;
-  stale: boolean; hasBrief: boolean; at: number;
-  // "what you are reading is the last verdict that came back, and re-reading it keeps failing" is
-  // a ROW LABEL, so it rides the poll; the failure's own text rides GET /api/tasks like every
-  // other body. `attempts` comes along because the count is the whole point — one failed sweep
-  // and three of them are different situations, and only the second is worth a hand `reanalyse`.
-  retry?: { at: number; attempts: number };
-}
+// An `analysis` digest rode this poll until 2026-09-10 — the retired queue analyst's verdict,
+// blockers and staleness, enough to GROUP and label a row. It is gone with its producer, and so is
+// the per-row git process its staleness arm asked for on every poll.
 type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
   & Partial<Pick<Task, "from" | "slot" | "note" | "repo" | "programId" | "files" | "filesOrigin" | "cluster">>
   // …and the PROPOSED surface beside the confirmed one. Carried WHOLE rather than as a shape
@@ -2238,11 +2223,11 @@ type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
   // against the one below it — and comparing them is the entire act the confirm button ends. The
   // list is capped at MAX_REFINE_FILES like every other declared surface here.
   & Partial<Pick<Task, "filesProposal">>
-  // A brief's timestamp is its bounded top-level generation even when no analysis exists. The
-  // text stays exclusively on GET /api/tasks; every polling client can still invalidate stale full
-  // data before claiming which bytes release will send.
+  // A brief's timestamp is its bounded top-level generation. The text stays exclusively on
+  // GET /api/tasks; every polling client can still invalidate stale full data before claiming
+  // which bytes release will send.
   // deliberately NOT Pick<Task, "criterion">: the poll carries the two timestamps, never the text
-  & { briefAt?: number; criterion?: { proposedAt: number; confirmedAt: number | null }; analysis?: AnalysisDigest }
+  & { briefAt?: number; criterion?: { proposedAt: number; confirmedAt: number | null } }
   // same two-tier rule for the refine proposal: the poll says THAT one exists, how it turned out
   // and how many children it holds — the texts ride GET /api/tasks with everything else.
   // `refining` is derived from the in-flight map, never persisted: it is a fact about this
@@ -2270,19 +2255,7 @@ function taskDigest(t: Task): TaskDigest {
     ...(view.cluster ? { cluster: view.cluster } : {}),
     ...(t.filesProposal ? { filesProposal: t.filesProposal } : {}),
     ...(t.brief ? { briefAt: t.brief.at } : {}),
-    ...(t.analysis ? {
-      analysis: {
-        verdict: t.analysis.verdict, blockers: t.analysis.blockers,
-        // a bounded SLICE for the poll (same size discipline that took task texts off this
-        // endpoint). The 140-char cap is display-only and must never be the STORED reason: a
-        // 200-char store once beheaded a verdict's decisive "— but …" clause and left a review
-        // reading as its own opposite.
-        reason: t.analysis.reason.slice(0, 140),
-        stale: analysisStale(t, view), hasBrief: !!t.brief, at: t.analysis.at,
-        ...(t.analysis.retry ? { retry: { at: t.analysis.retry.at, attempts: t.analysis.attempts } } : {}),
-      },
-    } : {}),
-    // same two-tier rule as `analysis`: the poll carries only whether a criterion exists and
+    // the two-tier rule: the poll carries only whether a criterion exists and
     // whether it is confirmed — the text itself rides GET /api/tasks, which the overlay fetches
     ...(t.criterion ? { criterion: { proposedAt: t.criterion.proposedAt, confirmedAt: t.criterion.confirmedAt } } : {}),
     ...(t.refine ? { refine: { at: t.refine.at, unchanged: t.refine.proposal.unchanged,
@@ -2304,103 +2277,11 @@ function taskDigest(t: Task): TaskDigest {
     ...(t.touched?.length ? { touched: t.touched } : {}),
   };
 }
-// Last known integration tip per repo, refreshed by the analysis sweep. DISPLAY ONLY: it answers
-// "is this verdict still about today's tree" for a row badge and for the sweep's re-analysis rule.
-// The DISPATCH path must never read it — it takes a fresh integrationHead() before starting a lane,
-// because a cache that lags by one land is exactly a cache that green-lights the stale case.
-const integrationTips = new Map<string, string>();
-
-// THE FILES A LAND MOVED, between the tree a verdict judged and today's — the second half of the
-// staleness rule (analysis-staleness.ts carries the first, and the why).
-//
-// MECHANISM: `git diff --name-only <head> <tip>`, not a join over LaneOutcome.filesTouched. The
-// ledger was the tempting choice and it is the wrong one: a DIRECT COMMIT in the main checkout is
-// invisible to every land-side ledger — no fleet/land note, no lane-outcomes line, no post-land
-// audit (measured 2026-08-07 on 0e2a672 and 4955444) — so a ledger join would report "nothing
-// moved" for exactly the commits nobody supervised, and report it as a licence to keep a verdict.
-// git sees every commit, whoever wrote it. Two-dot on purpose (`git diff A B`, tree-vs-tree): the
-// tip need not descend from `head` at all after a rebase or a rewritten history, and a merge-base
-// form would then diff against a commit neither side ever had. `--no-renames` so a moved file
-// answers under BOTH names — a row still naming the old path must not slip through a rename.
-//
-// UNKNOWN NEVER READS AS FRESH. A non-zero git (a head GC'd away, an unreadable repo) and an empty
-// output where the two tips genuinely differ both store `null`, and `null` is stale at the call
-// site. The empty case is not paranoia about git: two distinct commits CAN share a tree (an empty
-// commit, a revert-and-reapply), and "the diff is empty" is indistinguishable here from "the diff
-// did not run".
-//
-// One process per (repo, head, tip) — the poll asks this per row at 2 s, and a spawn per row per
-// tick is the shape of a machine that stops answering. The sync reader is what taskDigest and
-// analysisDue need; a miss kicks the fill off ONCE (movedSurfaceInflight) and answers UNKNOWN in
-// the meantime, so a row is briefly conservative rather than briefly wrong. Read-only, so it runs
-// through gitRead's GIT_OPTIONAL_LOCKS=0 environment like every other poll against a repo whose
-// git Fleet shares with live sessions.
-const MOVED_SURFACE_MAX = 256; // insertion-ordered; the oldest pair is evicted, never the whole map
-// …and an UNKNOWN answer is retried rather than sealed. A (head,tip) pair is content-addressed, so
-// a KNOWN answer can never go stale and is kept forever; an unknown one can be a permanent fact (a
-// head GC'd away) or a passing one (the repo momentarily unreadable), and caching the second shape
-// for the life of the process would pin a row as stale with nothing left to heal it.
-const MOVED_SURFACE_UNKNOWN_TTL_MS = 60000;
-type MovedSurface = { paths: Set<string> | null; at: number };
-const movedSurfaces = new Map<string, MovedSurface>();
-const movedSurfaceInflight = new Set<string>();
-const movedSurfaceKey = (repo: string, head: string, tip: string): string => `${repo}\u0000${head}\u0000${tip}`;
-function movedSurfaceCached(key: string, now: number): MovedSurface | undefined {
-  const hit = movedSurfaces.get(key);
-  if (!hit) return undefined;
-  return hit.paths || now - hit.at < MOVED_SURFACE_UNKNOWN_TTL_MS ? hit : undefined;
-}
-async function fillMovedSurface(repo: string, head: string, tip: string): Promise<Set<string> | null> {
-  const key = movedSurfaceKey(repo, head, tip);
-  const hit = movedSurfaceCached(key, Date.now());
-  if (hit) return hit.paths;
-  let paths: Set<string> | null = null;
-  try {
-    const r = await gitRead(repo, "diff", "--name-only", "--no-renames", "-z", head, tip);
-    if (r.code === 0 && r.out) paths = new Set(r.out.split("\u0000").filter(Boolean));
-  } catch { paths = null; }
-  movedSurfaces.delete(key); // re-insert, so the eviction order below is by last measurement
-  if (movedSurfaces.size >= MOVED_SURFACE_MAX) {
-    const oldest = movedSurfaces.keys().next().value;
-    if (oldest !== undefined) movedSurfaces.delete(oldest);
-  }
-  movedSurfaces.set(key, { paths, at: Date.now() });
-  return paths;
-}
-function movedSurfaceBetween(repo: string, head: string, tip: string): Set<string> | null {
-  const key = movedSurfaceKey(repo, head, tip);
-  const hit = movedSurfaceCached(key, Date.now());
-  if (hit) return hit.paths;
-  if (!movedSurfaceInflight.has(key)) {
-    movedSurfaceInflight.add(key);
-    void fillMovedSurface(repo, head, tip).finally(() => movedSurfaceInflight.delete(key));
-  }
-  return null; // not yet measured — the same conservative answer as "could not be measured"
-}
-// An analysis is STALE, not wrong, when the ground IT stood on has moved. The rule and its four
-// arms live in analysis-staleness.ts; this gathers the facts it decides on. `view` is the
-// caller's already-computed taskView where it has one (taskDigest) — the projection is the same
-// one the analyst is fed, and deriving it twice per row per 2 s poll would be pure waste.
-function analysisStale(t: Task, view?: Task): boolean {
-  const a = t.analysis;
-  if (!a) return false;
-  const repo = repoCanon(t.repo ?? DISPATCH_REPO);
-  const tip = integrationTips.get(repo) ?? null;
-  // Both surfaces are gathered ONLY where the rule can reach them. This mirrors the rule's two
-  // early returns (no head · no or unmoved tip), and it is sound for exactly as long as they
-  // stand: a view derived and a git process asked per row per 2 s poll, for an answer those two
-  // lines already give, would BE the cost this cut exists to remove.
-  let surface: string[] | null = null;
-  let moved: ReadonlySet<string> | null = null;
-  if (a.head && tip && tip !== a.head) {
-    surface = surfaceOfView(view ?? taskView(t))?.paths ?? null;
-    moved = movedSurfaceBetween(repo, a.head, tip);
-  }
-  return analysisStaleness({
-    analysedBriefAt: a.briefAt, currentBriefAt: t.brief?.at ?? null,
-    head: a.head, tip, surface, moved,
-  }).stale;
-}
+// THE STALENESS MACHINERY STOOD HERE until 2026-09-10 and went with the reader it served: a
+// per-repo integration-tip cache, the `git diff --name-only --no-renames` moved-surface reader with
+// its own cache and unknown-TTL, and `analysisStale`, which decided through analysis-staleness.ts
+// whether a verdict was still about today's tree. Nothing else consulted any of it — the dispatch
+// path always read a FRESH `integrationHead()` rather than the cache, and still does.
 // the dispatcher is OFF unless the owner sets a repo to spawn lanes from — an idle machine
 // auto-spawning claude sessions from external email is exactly the footgun we refuse by default
 const DISPATCH_REPO = process.env.FLEET_DISPATCH_REPO ?? "";
@@ -2548,23 +2429,9 @@ function refineValidationFor(t: Task, snapshot: TrackedSnapshot | null): { valid
       : FLEET_REPO_ROOT !== null && snapshot.repo === FLEET_REPO_ROOT ? "fleet" : "foreign",
   }) };
 }
-// THE ANALYST'S READ OF THE SAME PROJECTION — deliberately taskView itself and not a second
-// derivation beside it, which is the mistake laneSurfaces' own comment records having made once on
-// this very surface. The note that stood at the call site until 2026-08-18 read: "The analyst
-// prompt's existing wording calls these DECLARED paths and has no provenance field. Feed it only
-// the stronger persisted refine-confirm surface; projecting weaker text-derived paths into that
-// shape would silently relabel them as confirmed." That was a true statement about the PROMPT
-// FORMAT and never about the data — the prompt now names the provenance per row, so the weaker
-// surface rides along as ITSELF. It matters because Task.files is written only by a confirmed
-// ↻ refine: nearly every row reached the analyst carrying nothing, while its own contract
-// ("anything you could not verify is needs-you") obliges a blind reader to answer "attribution".
-function analysisSurfaceOf(t: Task): { paths: string[]; origin: TaskFilesOrigin } | null {
-  return surfaceOfView(taskView(t));
-}
-// ONE reading of "this projection carries a KNOWN surface", because two consumers now depend on
-// the same distinction and they must never drift apart: the analyst is shown it, and staleness is
-// decided by it. Absence and an empty list are the same fact — deriveTaskMetadata returns absence
-// rather than an invented `[]`, and a reader that flattened the two would say "touches nothing".
+// ONE reading of "this projection carries a KNOWN surface". Absence and an empty list are the same
+// fact — deriveTaskMetadata returns absence rather than an invented `[]`, and a reader that
+// flattened the two would say "touches nothing".
 function surfaceOfView(v: Task): { paths: string[]; origin: TaskFilesOrigin } | null {
   return v.files?.length && v.filesOrigin ? { paths: v.files, origin: v.filesOrigin } : null;
 }
@@ -2627,7 +2494,7 @@ const ATTENTION_KEEP_TERMINAL = 20;
 // An unanswered pile is an attention FAILURE, not a queue: past this the MAIN must resolve what it
 // already raised instead of adding to a list nobody can act on.
 const ATTENTION_MAX_OPEN_PER_REQUESTER = 5;
-// THE TWO SCHEDULER TICKS, deployment parameters like ANALYSIS_TICK_MS / AUTO_REVIEW_MS rather
+// THE TWO SCHEDULER TICKS, deployment parameters like BRIEF_TICK_MS / AUTO_REVIEW_MS rather
 // than laws. They were literals at the setInterval calls, and that made them the floor under every
 // suite that has to prove a NON-event: "the dispatcher does not take a pending task", "no auto
 // fires while the kill-switch is off". A non-event cannot be polled for — you wait a window wide
@@ -8017,7 +7884,7 @@ async function readProgramInboxEntry(s: Slot, id: string): Promise<Response> {
 // with the tick, so every gate that decides whether a queued row may actually RUN is untouched and
 // still the tick's: the master stop and quiet hours (canDeliver, called before dispatchTask), the
 // repo cap DISPATCH_MAX_LANES, the per-program lane cap DISPATCH_MAX_LANES_PER_PROGRAM, the
-// analysis gate and the collision read. This widens WHO may release. It widens nothing about what
+// harness-automation bolt. This widens WHO may release. It widens nothing about what
 // may run unattended, and a row released here waits in exactly the queue the owner's ▸ queue
 // button fills.
 //
@@ -8479,7 +8346,7 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
 // and no body field this handler reads can reach the status at all. Releasing therefore remains
 // exactly one separate deliberate act through releaseTaskForMain, which is untouched — so every
 // gate that decides whether a row may RUN unattended (the master stop and quiet hours, both
-// dispatch caps, the analysis gate, the collision read, the release cap) is reached through the
+// dispatch caps, the harness-automation bolt, the release cap) is reached through the
 // same door as before. This widens WHO MAY WRITE A ROW. It widens nothing about what may run.
 //
 // WHAT THE BODY MAY SAY — and unlike the release door next to it, this one has to read a body at
@@ -9069,8 +8936,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
 }
 
 // the dispatch tail: deliver the brief once claude is up.
-// NO MODEL CALL LIVES HERE: the brief is compiled and judged together in the analysis sweep and
-// stored on the task; here it is sent with a freshly derived ContextPlan anchor block, and the
+// NO MODEL CALL LIVES HERE: the brief is compiled in the brief sweep and stored on the task; here it is sent with a freshly derived ContextPlan anchor block, and the
 // stored brief is never rewritten with that projection. Fallback is the raw text. `ownerAct`
 // relaxes the AUTOMATION stops only (master stop, quiet hours — the "owner acts" carve-out
 // canDeliver documents); the claude-alive gate ALWAYS holds, because a claude that failed to boot
@@ -9098,7 +8964,7 @@ async function dispatchSourceTree(repo: string): Promise<"fleet" | "foreign"> {
 // WHERE THE DELIVERED TEXT CAME FROM — a closed set on every context receipt beside briefHash, so
 // an empty-lane rate per brief origin is computable from the rows. Derived at the delivery seam,
 // never from a later re-read of the mutable row.
-//   compiled — the analysis sweep's brief (TaskBrief, edited:false)
+//   compiled — the brief sweep's brief (TaskBrief, edited:false)
 //   owner    — a brief the owner wrote/edited by hand (TaskBrief, edited:true / model "owner")
 //   raw      — no brief on the row: the draft text itself was delivered
 //   clarify  — buildClarifyBrief's deterministic frame; NOT folded into "raw" (a clarify lane
@@ -9159,7 +9025,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   // A wave is never a clarify lane (the door refuses the combination): settling what done means is
   // a question about ONE row, and n of them in one pane is n unanswered questions.
   const brief = clarify
-    ? buildClarifyBrief(next.text, next.analysis?.reason ?? null, `http://${HOST}:${PORT}`)
+    ? buildClarifyBrief(next.text, `http://${HOST}:${PORT}`)
     : wave
       ? renderWaveBrief({
         rows: waveRows.map((row) => ({ id: row.id, text: row.text,
@@ -9400,53 +9266,34 @@ function contextReceiptSelections(selected: readonly ContextPlanSelection[]): Co
   });
 }
 
-// --- the queue analyst (owner decision 2026-08-05, round 2 — it REPLACES the eval gate).
+// --- THE BRIEF COMPILER, and the reader that used to stand in front of it.
 //
-// What changed and why. The gate ran on `pending` lane tasks and its positive verdict let the
-// dispatcher start one with no owner promote. Measured before this rewrite: it had produced exactly
-// ONE verdict ever, and never a positive one — because its population was empty by construction.
-// Lane tasks have two producers, the owner and /intake; intake is off on the live deployment, the
-// steward files `note`, and a task the owner wants run gets promoted, which bypassed the gate
-// entirely. Its only real subject was the owner's own un-promoted drafts and its only power was
-// starting them behind his back.
+// Until 2026-09-10 this region held TWO tools. The QUEUE ANALYST (owner decision 2026-08-05, round
+// 2) read every dispatchable row against the tree and filed an advisory verdict — ready/needs-you/
+// unknown, with blockers and a collision list — which the dispatcher then required before starting
+// anything unattended, the board rendered as a chip, and `POST /api/tasks/:id/reanalyse` could
+// force. It decided nothing: the owner's promote was always the decision.
 //
-// So the two jobs that had been fused are now separate. The ANALYSIS runs on every dispatchable
-// task in `pending` AND `queued`, and decides nothing. The DECISION is the owner's promote. The
-// consequences, each closing a finding from the audit that prompted this:
-//   · no per-day auto valve, because there is no unattended selection left to meter
-//   · no priority inversion between pending and queued, because they no longer compete for a tick
-//   · what is judged IS what runs: the brief is compiled here, stored, and sent verbatim later
-//   · a worker failure is a TRANSIENT "unknown" with backoff, never a permanent verdict
-//   · the analyst sees the open lanes, so "collides" can mean the running fleet
-const ANALYSIS_CMD = process.env.FLEET_ANALYSIS_CMD ?? null; // tests: subprocess stand-in
-// the analyst runs on the interactive tier, not the summary tier (owner decision: "opus5") — it is
-// the one worker whose reading the owner delegates his own critical look to
-const ANALYSIS_MODEL = process.env.FLEET_ANALYSIS_MODEL && MODEL_RE.test(process.env.FLEET_ANALYSIS_MODEL)
-  ? process.env.FLEET_ANALYSIS_MODEL : "claude-opus-5";
-const ANALYSIS_TICK_MS = Math.max(0, Number(process.env.FLEET_ANALYSIS_MS ?? 60_000) | 0); // 0 = off
-// One runtime fact for every analyst consumer. Stored verdicts are history, not evidence that the
-// reader is configured now; cadence alone decides whether the mode is on.
-const ANALYSIS_ON = ANALYSIS_TICK_MS > 0;
-// its OWN timeout, not the summarizer's 180 s. This worker reads files to verify attribution for a
-// whole batch, and under that borrowed cap the honest outcome was a timeout — which the gate then
-// recorded as a permanent verdict for every task in it.
-const ANALYSIS_TIMEOUT_MS = Math.max(60_000, Number(process.env.FLEET_ANALYSIS_TIMEOUT_MS ?? 420_000) | 0);
-const ANALYSIS_BATCH_CAP = 6;   // one call judges at most this many — each carries draft AND brief
-const ANALYSIS_MAX_ATTEMPTS = 3; // consecutive failures before the batch stops retrying itself
-const ANALYSIS_BACKOFF_MS = 60_000; // × 2^attempts — a broken worker must not hammer the machine
-const ANALYSIS_ENHANCE_LIMIT = 3;   // concurrent brief compiles; each is a throwaway claude session
-
-// --- ONE NUMBER USED TO SWITCH TWO TOOLS, and only one of them was ever refuted. The sweep above
-// does two jobs: the ANALYST reads a row and files a verdict (advisory, it decides nothing), and
-// the BRIEF COMPILER turns a raw draft into the bytes a lane is founded on (production — what it
-// writes is what runs). Both hung off FLEET_ANALYSIS_MS, so switching the analyst off on
-// 2026-08-08 for its measured false-alarm rate took the compiler with it: untested, not judged.
-// FLEET_BRIEF_MS is the compiler's own cadence so the four states are separable — both off (the
-// default, and today's live behaviour byte for byte), compiler only, analyst only, both.
+// It is retired. What it was measured to be worth, and the shape of the retirement, is the same
+// argument it once made against the eval gate it replaced: it had been switched OFF since
+// 2026-08-08 for its false-alarm rate (FLEET_ANALYSIS_MS default 60_000, but the live deployment
+// set 0), which is to say the fleet's real behaviour for a month was the one this cut makes the
+// only behaviour. A reader nobody runs is not a safety property; it is a vocabulary that keeps
+// promising one. The restore anchor is 7ff56eab83f64b0826142139c7f4d1be274ebd2d.
+//
+// The BRIEF COMPILER stays, and it is now the only tool here. It turns a raw draft into the bytes a
+// lane is founded on — production, what it writes is what runs — and it never reads a row against
+// anything. The two hung off one number (FLEET_ANALYSIS_MS) until the switches were split on
+// 2026-08-08; with the analyst gone the split has one side left, and FLEET_BRIEF_MS is simply the
+// compiler's cadence.
 const BRIEF_TICK_MS = Math.max(0, Number(process.env.FLEET_BRIEF_MS ?? 0) | 0); // 0 = off, the default
-// Same shape as ANALYSIS_ON and for the same reason: briefs already on the rows are history, and
-// only the configured cadence answers whether a compiler is running NOW.
+// ONE runtime fact for every compiler consumer: briefs already on the rows are history, and only
+// the configured cadence answers whether a compiler is running NOW.
 const BRIEF_ON = BRIEF_TICK_MS > 0;
+const BRIEF_BATCH_CAP = 6;    // one tick compiles at most this many, so a fan-out is bounded here
+const BRIEF_MAX_ATTEMPTS = 3; // consecutive failures before the row stops retrying itself
+const BRIEF_BACKOFF_MS = 60_000; // × 2^attempts — a broken worker must not hammer the machine
+const BRIEF_ENHANCE_LIMIT = 3;   // concurrent compiles; each is a throwaway claude session
 
 // the fact block for a lane that does not exist yet. Verified, not assumed: createWorktree forks
 // with `worktree add -b <branch> <path> <integration-tip>`, so the lane starts clean AT the tip —
@@ -9465,108 +9312,34 @@ async function integrationHead(repo: string): Promise<string | null> {
   const r = await git(repo, "rev-parse", br);
   return r.code === 0 && r.out ? r.out : null;
 }
-// a task's target repo, canonical, or null when there is none to ground an analysis in
+// a task's target repo, canonical, or null when there is none to compile against
 const taskRepoOf = (t: Task): string | null => {
   const raw = t.repo ?? (DISPATCH_REPO || null);
   return raw === null ? null : repoCanon(raw);
 };
-// A reading that FAILED is recorded BESIDE the verdict, never over it. Until 2026-08-07 a worker
-// failure rewrote `t.analysis` wholesale for every row of the batch — verdict, reason, blockers and
-// collides gone, only `attempts` carried over — so a row somebody had read as "needs-you" became
-// indistinguishable from one nobody had ever read. Measured on the live queue that morning: one
-// batch of six lost four `needs-you` and two `ready` to `analyst returned no JSON` at 09:41, and
-// the register was blind for ~80 minutes until a backoff retry happened to succeed. At
-// ANALYSIS_MAX_ATTEMPTS it would have stayed that way until a hand `reanalyse`.
-//
-// What survives is not thereby claimed to be FRESH: `at`, `head` and `briefAt` stay the old
-// reading's own, so the row keeps answering about the tree and the brief it was actually read
-// against — the row gains information, not permission. What SCHEDULES it is `analysisDue`'s
-// failure arm (`attempts > 0`), which owns the clock whatever staleness says; since 2026-08-18
-// staleness itself is bound to the row's own file surface, so a preserved verdict whose files
-// nobody has touched is correctly not expired by a land somewhere else in the tree. With nothing to keep — never analysed, or the previous attempt already an absence —
-// this is the old behaviour unchanged, because "unknown" is what an unread row must say.
-function analysisFailed(t: Task, reason: string, head: string | null): TaskAnalysis {
-  const at = Date.now();
-  // reason cap 2000, not 200 — a 200-char cap once beheaded a verdict's decisive "— but …" clause
-  // and left it arguing for its own opposite.
-  const retry = { at, reason: reason.slice(0, 2000) };
-  const prev = t.analysis;
-  const attempts = (prev?.attempts ?? 0) + 1;
-  return prev && prev.verdict !== "unknown"
-    ? { ...prev, attempts, retry }
-    : { verdict: "unknown", reason: retry.reason, blockers: [], collides: [], at,
-      model: ANALYSIS_MODEL, head, briefAt: t.brief?.at ?? null, attempts, retry };
-}
-// ONE rule for "this row needs the analyst", so there is one place to read and one place to test:
-// never analysed · answered but the ground moved · or a failed reading whose backoff has elapsed.
-function analysisDue(t: Task, now: number): boolean {
-  if (t.kind !== "auftrag" || dispatchingTasks.has(t.id)) return false;
-  if (t.status !== "pending" && t.status !== "queued") return false;
-  const a = t.analysis;
-  if (!a) return true;
-  // A FAILING RE-READ OWNS THE SCHEDULE, whatever verdict the row still shows. This used to test
-  // `verdict === "unknown"`, which named the same set only because a failure erased the verdict;
-  // now that it doesn't, the attempt counter is the honest test (the verdict clause stays for a
-  // hand-edited state file that has one without the other). And the clock is the last FAILURE's,
-  // not `at`: with a preserved verdict `at` belongs to the older, successful reading, so keying
-  // the backoff on it would make the row hammer every tick or freeze, purely by that age.
-  if (a.verdict === "unknown" || a.attempts > 0)
-    return a.attempts < ANALYSIS_MAX_ATTEMPTS
-      && now - (a.retry?.at ?? a.at) >= ANALYSIS_BACKOFF_MS * 2 ** a.attempts;
-  return analysisStale(t);
-}
-// One line per assignment above. Only server-stamped facts, the same choke-point discipline as
-// audit.jsonl and lane-outcomes.jsonl: nothing here comes off a wire, and there is deliberately no
-// route that accepts a verdict from outside. `at` is when the LINE was written, not `a.at` — with a
-// preserved verdict (analysisFailed) the reading's own clock belongs to an older, successful read,
-// and a trail that stamped that would date the event to before it happened. `retry` rides along for
-// exactly that case, so a preserved `needs-you` cannot read as a fresh one.
-function recordAnalysisVerdict(t: Task, a: TaskAnalysis): void {
-  void appendEvent(ANALYSIS_VERDICT_FILE, {
-    at: Date.now(),
-    taskId: t.id,
-    originId: t.originId ?? null,
-    verdict: a.verdict,
-    reason: a.reason.slice(0, 500),
-    blockers: a.blockers,
-    collides: a.collides,
-    head: a.head,
-    briefAt: a.briefAt,
-    model: a.model,
-    route: workerRouteFor("analysis").route,
-    attempts: a.attempts,
-    retry: a.retry ? { at: a.retry.at, reason: a.retry.reason.slice(0, 500) } : null,
-  });
-}
-// ONE flag for BOTH sweeps below (named for what it guards, not for who owns it): they write the
-// same field on the same rows, so they must never overlap. Whichever is running, the other skips
-// its round and comes back on its own cadence.
+// ONE flag for the sweep below. It guarded TWO sweeps writing the same field on the same rows until
+// the analyst went; it stays because it is what makes "no row is handed to two enhancers at once"
+// structural rather than a property of there happening to be one caller.
 let sweepBusy = false;
-// THE ONE PLACE THE MACHINE WRITES A Task.brief. Both sweeps below call it, so a compiled brief
-// has a single shape and a single failure mode wherever it came from. Returns the ids whose compile
-// FAILED, which the two callers use differently on purpose: the analyst ignores them (its own
-// due-rule already paces that row), the compiler backs off on them, because nothing else would.
-// `consequence` names what happens NEXT for the caller — the analyst judges the draft, the
-// compiler leaves the row raw — so one server.log line stays true from both sites.
+// THE ONE PLACE THE MACHINE WRITES A Task.brief, so a compiled brief has a single shape and a
+// single failure mode. Returns the ids whose compile FAILED, which the caller backs off on —
+// nothing else would. `consequence` names what happens NEXT, so one server.log line stays true.
 async function compileBriefs(rows: Task[], repo: string, laneBase: string | null,
   consequence: string): Promise<string[]> {
   const failed: string[] = [];
-  for (let i = 0; i < rows.length; i += ANALYSIS_ENHANCE_LIMIT) {
-    await Promise.all(rows.slice(i, i + ANALYSIS_ENHANCE_LIMIT).map(async (t) => {
+  for (let i = 0; i < rows.length; i += BRIEF_ENHANCE_LIMIT) {
+    await Promise.all(rows.slice(i, i + BRIEF_ENHANCE_LIMIT).map(async (t) => {
       try {
         const text = await runEnhance(t.text, repo, freshLaneFacts(laneBase));
         t.brief = { text, at: Date.now(), model: SUMMARY_MODEL, edited: false };
       } catch (e) {
-        // no brief is a legitimate state — the lane gets the raw draft, and the analyst is told
-        // to judge THAT as the brief. A failed compile must not stall the analysis behind it.
-        // Both records, because they answer different questions and neither replaces the other:
-        // the line names WHICH draft (server.log, one per draft), the channel groups by REASON
-        // so eighteen of these read as one broken compiler counted 18× instead of eighteen
-        // unread lines. That exact number is why this site is wired at all — the queue rows said
-        // `no-analysis`, which is what "not judged yet" also looks like.
+        // no brief is a legitimate state — the lane gets the raw draft. Both records, because they
+        // answer different questions and neither replaces the other: the line names WHICH draft
+        // (server.log, one per draft), the channel groups by REASON so eighteen of these read as
+        // one broken compiler counted 18× instead of eighteen unread lines.
         failed.push(t.id);
-        console.log(`analysis: brief compile failed for ${t.id}, ${consequence}: ${e instanceof Error ? e.message : e}`);
-        logError("analysisBrief", e);
+        console.log(`brief compiler: compile failed for ${t.id}, ${consequence}: ${e instanceof Error ? e.message : e}`);
+        logError("compileBriefs", e);
       }
     }));
   }
@@ -9576,24 +9349,16 @@ async function compileBriefs(rows: Task[], repo: string, laneBase: string | null
 // work. Nothing about a failed compile deserves to survive a restart — the row already carries the
 // honest state (no brief), and a fresh server may well have a working enhancer.
 const briefRetry = new Map<string, { attempts: number; at: number }>();
-// ONE rule for "this row needs the compiler", the sibling of analysisDue and deliberately NOT it:
-// the compiler's schedule is a property of the DRAFT (compiled once, never again — a land does not
-// invalidate a brief), the analyst's is a property of the TREE. Sharing analysisDue would have
-// coupled the compiler to a reader that may not exist, which is the very fusion this splits.
+// ONE rule for "this row needs the compiler": the compiler's schedule is a property of the DRAFT —
+// compiled once, never again, because a land does not invalidate a brief.
 function briefDue(t: Task, now: number): boolean {
   if (t.kind !== "auftrag" || dispatchingTasks.has(t.id)) return false;
   if (t.status !== "pending" && t.status !== "queued") return false;
   if (t.brief) return false; // machine-written or owner-edited: both mean "compiled, hands off"
   const r = briefRetry.get(t.id);
   if (!r) return true;
-  return r.attempts < ANALYSIS_MAX_ATTEMPTS && now - r.at >= ANALYSIS_BACKOFF_MS * 2 ** r.attempts;
+  return r.attempts < BRIEF_MAX_ATTEMPTS && now - r.at >= BRIEF_BACKOFF_MS * 2 ** r.attempts;
 }
-// A SECOND TICK, not a second gate inside the first, and the reason is that the two tools differ in
-// both of the things a tick is made of: cadence (each switch carries its own interval — one tick
-// would have had to pick a number for the other tool) and selection (briefDue vs analysisDue). What
-// they DO share is the busy flag, because they write the same field on the same rows: without it a
-// row could be handed to two enhancers at once, which is the only interaction the split creates.
-// The analyst's own compile step stays exactly where it was, so analyst-only mode is unchanged.
 async function tickBriefSweep(): Promise<void> {
   if (sweepBusy || !BRIEF_ON) return;
   sweepBusy = true;
@@ -9601,10 +9366,10 @@ async function tickBriefSweep(): Promise<void> {
     const now = Date.now();
     const due = tasks.filter((t) => briefDue(t, now) && taskRepoOf(t) !== null);
     if (!due.length) return;
-    // one repo batch per tick, same bound as the analyst: the enhancer READS this repo, and a
-    // fan-out that is not bounded here is bounded by nothing.
+    // one repo batch per tick: the enhancer READS this repo, and a fan-out that is not bounded here
+    // is bounded by nothing.
     const repo = taskRepoOf(due[0])!;
-    const batch = due.filter((t) => taskRepoOf(t) === repo).slice(0, ANALYSIS_BATCH_CAP);
+    const batch = due.filter((t) => taskRepoOf(t) === repo).slice(0, BRIEF_BATCH_CAP);
     const bump = (t: Task): void => {
       briefRetry.set(t.id, { attempts: (briefRetry.get(t.id)?.attempts ?? 0) + 1, at: Date.now() });
     };
@@ -9623,142 +9388,9 @@ async function tickBriefSweep(): Promise<void> {
     // otherwise this map is the one thing here that grows for the life of the process
     if (briefRetry.size) for (const id of [...briefRetry.keys()])
       if (!tasks.some((t) => t.id === id)) briefRetry.delete(id);
-    // …and NOTHING ELSE. No verdict, no attempt counter on t.analysis, no line on the verdict
-    // ledger: this sweep compiles, it does not read. A row it touched is still an unread row.
+    // …and NOTHING ELSE. No verdict, no reading: this sweep compiles. A row it touched is still an
+    // unread row, and since 2026-09-10 nothing in this fleet claims to have read one.
     if (failed.size < batch.length) saveState();
-  } finally {
-    sweepBusy = false;
-  }
-}
-async function tickAnalysisSweep(): Promise<void> {
-  if (sweepBusy || !ANALYSIS_ON) return;
-  sweepBusy = true;
-  try {
-    const live = tasks.filter((t) => t.kind === "auftrag" && (t.status === "pending" || t.status === "queued"));
-    if (!live.length) return;
-    // refresh the tips FIRST, before anything asks what is stale. Staleness that only a sweep can
-    // notice, computed from a cache only that same sweep updates, is staleness nobody ever notices.
-    for (const repo of new Set(live.map(taskRepoOf).filter((r): r is string => r !== null))) {
-      const head = await integrationHead(repo);
-      if (head) integrationTips.set(repo, head);
-    }
-    // …AND THE MOVED SURFACES, in the same breath and for the same reason. Staleness is an
-    // intersection since 2026-08-18, and its git side fills asynchronously: the sync reader answers
-    // UNKNOWN — conservatively stale — until the one process per (head,tip) returns. On a row badge
-    // that is a 2 s flicker. HERE it would be the entire cut undone: `analysisDue` would read that
-    // UNKNOWN on the first tick after every land, mark every open row due, and re-read the whole
-    // queue exactly as the bare tip comparison did. Not a hypothetical — e2e/tasks.ts (h9s) failed
-    // on precisely this, with the row re-read against a land that had moved one unrelated file.
-    // One git per DISTINCT (repo, head, tip); every row after the first is a map lookup.
-    for (const t of live) {
-      const repo = taskRepoOf(t);
-      const head = t.analysis?.head;
-      const tip = repo ? integrationTips.get(repo) : undefined;
-      if (repo && head && tip && tip !== head) await fillMovedSurface(repo, head, tip);
-    }
-    const now = Date.now();
-    // RELEASED ROWS FIRST. Every land moves the tip and makes every verdict stale at once, so a
-    // busy afternoon can hand this sweep more work than one batch holds. What actually needs to be
-    // fresh is what is about to RUN — a backlog row's verdict only has to be fresh by the time the
-    // owner looks at it. Without this the queue could sit behind a re-read of rows nobody released.
-    const due = live.filter((t) => analysisDue(t, now) && taskRepoOf(t) !== null)
-      .sort((a, b) => (a.status === "queued" ? 0 : 1) - (b.status === "queued" ? 0 : 1));
-    if (!due.length) return;
-    // one repo batch per tick, serial like the dispatcher — bounded fan-out, bounded prompt
-    const repo = taskRepoOf(due[0])!;
-    const batch = due.filter((t) => taskRepoOf(t) === repo).slice(0, ANALYSIS_BATCH_CAP);
-    // the batch could not be read. That is never storable as a finding about the work — and since
-    // 2026-08-07 it is never storable OVER one either: analysisFailed keeps whatever verdict the
-    // row already carried and files the failure next to it.
-    const unknown = (reason: string): void => {
-      for (const t of batch) {
-        t.analysis = analysisFailed(t, reason, integrationTips.get(repo) ?? null);
-        recordAnalysisVerdict(t, t.analysis);
-      }
-      saveState();
-    };
-    if (!existsSync(repo) || !statSync(repo).isDirectory()) { unknown(`repo not found: ${repo}`); return; }
-
-    // --- compile the missing briefs. Once per draft, never again: the brief depends on the draft,
-    // not on the tree, so a re-analysis after a land must not re-spend a worker per task. An
-    // owner-edited brief is pinned forever (`edited`), which is what makes editing it meaningful.
-    // No backoff is applied here on purpose: this sweep's own schedule (analysisDue) already paces
-    // the row, and adding a second clock would change what the analyst-only mode does today.
-    const laneBase = await integrationBranch(repo);
-    await compileBriefs(batch.filter((t) => !t.brief), repo, laneBase, "judging the draft");
-    saveState(); // briefs survive even if the analyst below then fails — they cost a worker each
-
-    // --- the open lanes in this repo, so a collision can mean the running fleet and not merely
-    // the other rows of this batch. Through laneSurfaces, which is the SAME derivation ② and the
-    // drift payload read: this used to be a second, inline one that carried a branch name and a
-    // line of task text and no files at all — so the analyst was asked which work touches the same
-    // files while being shown none, and the dispatcher then quoted it as "same files, says the
-    // analyst". The three-valued list rides through unflattened; the prompt states what each state
-    // means, and only laneSurfaces' own caps bound it.
-    // EVERY row the lane carries, not merely its founding one: since the wave button a lane can be
-    // working n rows, and the question this list answers is "what work touches the same files" —
-    // naming one of n would under-report exactly the lane most likely to collide.
-    const laneTask = new Map<string, string | null>();
-    for (const s of slots) {
-      if (!s.worktree) continue;
-      const rows = waveRowsOf(s.id);
-      laneTask.set(s.worktree.branch, rows.length ? rows.map((x) => x.text).join(" · ") : null);
-    }
-    const lanes = (await laneSurfaces(repo)).map((l) => ({ ...l, task: laneTask.get(l.branch) ?? null }));
-
-    let found: Map<string, { verdict: "ready" | "needs-you"; reason: string; blockers: AnalysisBlocker[]; collides: string[] }>;
-    try {
-      const out = await runWorker(
-        { worker: "analysis", cmd: ANALYSIS_CMD, tools: REVIEW_TOOLS, model: ANALYSIS_MODEL, timeoutMs: ANALYSIS_TIMEOUT_MS },
-        buildAnalysisPrompt(repo, batch.map((t) => ({
-          id: t.id, source: t.source, text: t.text, brief: t.brief?.text ?? null,
-          // the deterministic surface WITH its provenance — see analysisSurfaceOf for what this
-          // used to be and why the reason it was withheld expired
-          files: analysisSurfaceOf(t),
-        })), lanes), repo);
-      const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
-      let j: { analyses?: unknown };
-      try { j = JSON.parse(body) as { analyses?: unknown }; }
-      catch {
-        const obj = extractJsonObject(out); // same rescue as runEnhance: a wrapped answer is not a failed one
-        if (!obj) throw new Error("analyst returned no JSON");
-        j = JSON.parse(obj) as { analyses?: unknown };
-      }
-      if (!Array.isArray(j.analyses)) throw new Error("analyst returned no analyses array");
-      found = new Map();
-      const strList = (x: unknown, cap: number): string[] => Array.isArray(x)
-        ? x.filter((e): e is string => typeof e === "string").slice(0, cap).map((e) => e.slice(0, 200)) : [];
-      for (const v of j.analyses as { id?: unknown; verdict?: unknown; reason?: unknown; blockers?: unknown; collides?: unknown }[]) {
-        if (typeof v?.id !== "string" || (v.verdict !== "ready" && v.verdict !== "needs-you")) continue;
-        found.set(v.id, {
-          verdict: v.verdict,
-          reason: typeof v.reason === "string" ? v.reason : "",
-          // clamp to the closed set — a blocker is a row tag, and an invented one paints nothing
-          blockers: strList(v.blockers, 8).filter((b): b is AnalysisBlocker => (ANALYSIS_BLOCKERS as readonly string[]).includes(b)),
-          collides: strList(v.collides, 8),
-        });
-      }
-    } catch (e) {
-      // TRANSIENT, and that is the whole difference to the gate this replaces: the batch is marked
-      // unreadable, the attempt counter ticks, and the backoff lets it try again. Only after
-      // ANALYSIS_MAX_ATTEMPTS does it stop — still visibly "unknown", never a verdict about work
-      // nobody managed to read.
-      unknown(`analyst failed: ${e instanceof Error ? e.message : e}`);
-      return;
-    }
-    for (const t of batch) {
-      const v = found.get(t.id);
-      t.analysis = v
-        ? { ...v, reason: (v.reason || (v.verdict === "ready" ? "no blockers found" : "flagged")).slice(0, 2000),
-          at: Date.now(), model: ANALYSIS_MODEL, head: integrationTips.get(repo) ?? null,
-          briefAt: t.brief?.at ?? null, attempts: 0 }
-        // answered, but not about this row: an absent entry is an absent reading, so it takes the
-        // same shape as a dead worker rather than quietly reading as either verdict — including
-        // the part that matters most, that it does not erase the last reading that did arrive
-        : analysisFailed(t, "the analyst returned no entry for this task", integrationTips.get(repo) ?? null);
-      recordAnalysisVerdict(t, t.analysis);
-    }
-    saveState();
   } finally {
     sweepBusy = false;
   }
@@ -9770,8 +9402,8 @@ async function tickAnalysisSweep(): Promise<void> {
 // in v1: no tick calls this, the owner's button does, and the result is a PROPOSAL on the row.
 // The task itself is never rewritten by the worker; only the owner's confirm mints anything.
 const REFINE_CMD = process.env.FLEET_REFINE_CMD ?? null; // tests: subprocess stand-in
-// the compiler runs on the interactive tier like the queue analyst, and for the same reason: it
-// reads a repository and writes the text a fresh session will be founded on
+// the refiner runs on the interactive tier rather than the summary one: it reads a repository and
+// writes the text a fresh session will be founded on
 const REFINE_MODEL = process.env.FLEET_REFINE_MODEL && MODEL_RE.test(process.env.FLEET_REFINE_MODEL)
   ? process.env.FLEET_REFINE_MODEL : "claude-opus-5";
 // refines currently running, by task id. Keyed on the task rather than a slot (there is no slot —
@@ -9781,7 +9413,7 @@ const refineInflight = new Map<string, Promise<void>>();
 
 const clampStr = (v: unknown, max: number): string => (typeof v === "string" ? v : "").slice(0, max).trim();
 // A declared path list off the wire or off disk, clamped exactly like the refine proposal it comes
-// from so a hand-edited fleet.json cannot flood the analyst's prompt. An empty result is
+// from so a hand-edited fleet.json cannot flood the prompt. An empty result is
 // `undefined` and NOT `[]`: on Task.files those two say different things — "not declared" versus
 // "declares it touches nothing" — and only the first is safe to infer from malformed input.
 const normFileList = (v: unknown): string[] | undefined => {
@@ -9827,8 +9459,8 @@ const filesProposalBy = (s: Slot): string => clampStr(
   MAX_FILES_PROPOSAL_BY);
 
 // The row text the owner actually promotes, composed from the child's fields in a fixed order.
-// Deterministic on purpose: it becomes the DRAFT of a fresh row, so the analysis sweep compiles a
-// brief from it and the analyst then judges both against the repo — and a person reads it in the
+// Deterministic on purpose: it becomes the DRAFT of a fresh row, so the brief sweep compiles a
+// brief from it — and a person reads it in the
 // queue. All of them benefit more from one predictable shape than from whatever layout the model
 // felt like emitting. (A refined child arrives with no brief and no verdict, which is exactly
 // right: the sweep's uniform rule is "never analysed → analyse", and it applies here unchanged.)
@@ -9968,11 +9600,10 @@ async function tickDispatch(): Promise<void> {
     // from blocking an executable one behind it; dispatchTask repeats the lock for every caller.
     const candidates = tasks.filter((t) => t.kind === "auftrag" && t.status === "queued" && !dispatchingTasks.has(t.id));
     if (!candidates.length) return;
-    // WHAT IS RUNNING RIGHT NOW, in the two shapes `collides` speaks (analysis-prompt.ts: "the ids
-    // of other tasks in this batch, and the branch names of the open lanes"). Both are needed and
-    // neither is the rare one: a row analysed while its neighbour was still queued names that
-    // neighbour's ID, and once the neighbour is dispatched it is a BRANCH the next sweep names
-    // instead. A consumer that compared only ids would miss half the field and look like it worked.
+    // WHAT IS RUNNING RIGHT NOW, in the two shapes running work is named by: task ids and the
+    // branch names of the open lanes. Both are needed and neither is the rare one — a row is a
+    // queued ID until it is dispatched, and a BRANCH afterwards. A consumer that compared only ids
+    // would miss half the field and look like it worked.
     // Mid-spawn rows count as running: dispatchTask reserves the id before its first await, so the
     // task is a lane in all but status. No repo filter — both key spaces are globally unique, and
     // narrowing them could only ever drop a match, i.e. weaken the very check this is.
@@ -10059,75 +9690,19 @@ async function tickDispatch(): Promise<void> {
       }
       const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
       if (!free) { waiting("waiting: no free slot"); return; }
-      // THE UNATTENDED INVARIANT: nothing starts on its own that has not been read against the tree
-      // it will actually run on, with the exact brief it will receive. `analysisStale` covers both —
-      // a moved integration tip and a brief the owner edited after the verdict. Fresh here means
-      // fresh NOW: the tip is re-read rather than taken from integrationTips, because a cache that
-      // lags by one land is exactly the cache that would green-light the case this guards.
-      // NARROWED 2026-08-18, and the narrowing is worth stating where the gate is rather than only
-      // where the rule is: "the tree it will run on" is now read as the part of that tree the row
-      // itself touches (analysis-staleness.ts). A land that moved no file on this row's surface no
-      // longer expires its verdict. The residual is the surface's own strength — a DERIVED surface
-      // is the paths the row's text names exactly, so a row that will also touch a file it never
-      // named is judged on the narrower list. Absence of a surface is not that case: it falls to
-      // stale, as does an unreadable diff.
-      // ...but only while there IS an analyst. With FLEET_ANALYSIS_MS=0 nobody would ever clear this
-      // gate, and a released queue that silently never drains is worse than an unread one: the guard
-      // would have become a deadlock dressed as a safety property. No reader configured, no read
-      // required — the same stance as an absent FLEET_VERIFY_CMD, which does not gate either.
-      // BRIEF_ON is deliberately not consulted here, and that is the whole point of splitting the
-      // two switches: a compiler writes the bytes a lane receives, it never reads the row against
-      // the tree. Letting it satisfy this gate would hand the unattended queue a permission that
-      // nothing had earned — the invariant is about a READING, not about a well-worded prompt.
-      if (ANALYSIS_ON) {
-        const a = next.analysis;
-        if (!a || a.verdict === "unknown") { waiting("waiting: not analysed yet — the analyst runs on its own"); return; }
-        // A row may now show a real verdict while its re-reading keeps failing (analysisFailed), so
-        // this gate no longer sees every failure. It does not need to: a failed re-read leaves the
-        // OLD `head`/`briefAt` in place, so the row still answers about the tree and the brief it
-        // was genuinely read against, and the staleness check two lines down is the gate that was
-        // always the right one for "read against a tree that has since moved".
-        const tip = await integrationHead(repoCanon(repo));
-        if (tip) integrationTips.set(repoCanon(repo), tip);
-        // …and the moved surface is AWAITED here rather than read out of the cache. Staleness is
-        // bound to the files a land touched (analysis-staleness.ts), and the sync reader answers
-        // UNKNOWN — conservatively stale — until its one git process returns. For a row badge that
-        // is a tick of caution; for the unattended gate it would be a spurious "re-analysing" on
-        // the first tick after every land, i.e. the queue pausing on a measurement nobody waited
-        // for. This path already re-reads the tip fresh for the same reason.
-        if (tip && next.analysis?.head && tip !== next.analysis.head)
-          await fillMovedSurface(repoCanon(repo), next.analysis.head, tip);
-        if (analysisStale(next)) { waiting("waiting: the analysis is older than the tree — re-analysing"); return; }
-        // COLLISIONS ARE READ HERE, NOT LEFT TO THE CAP: the only thing that used to keep two
-        // colliding lanes apart was the repo lane cap, a number that knows nothing about files —
-        // which is exactly why that number could not rise until this read existed. It can now
-        // (repoLaneCap, per repo, owner-set), and this check is what makes that safe: raising a
-        // repo to 3 lanes says three lanes may run, never that three lanes may touch one file.
-        // WHAT `collides` IS WORTH, stated honestly, because this comment used to claim the
-        // opposite: until 2026-08-07 the analyst produced it having been shown no files at all —
-        // only branch names and a line of task text (its lane block carried nothing else) — while
-        // this row-note told the owner "same files". It now sees each running lane's in-flight
-        // surface and each task's declared paths, so the field has evidence behind it where that
-        // evidence exists. It remains the analyst's JUDGEMENT and not a computed intersection:
-        // a queued row's future files are a prediction, and where a list is missing the prompt is
-        // told to treat it as unknown rather than as "touches nothing".
-        // Three properties this check is built on:
-        //   · held ONLY against work that is actually running, never against another queued row.
-        //     Two rows naming each other would otherwise wait for each other forever, both of them
-        //     politely displaying why, and nobody would see a deadlock in two rows saying "waiting".
-        //   · held only on a FRESH analysis. This sits BELOW the staleness gate and inside the
-        //     "is there an analyst at all" block on purpose: a collision list nobody refreshes
-        //     would pin a row indefinitely on a fact that has expired — invisibly wrong, which is
-        //     worse than not checking. With ANALYSIS_TICK_MS = 0 there is no collision data being
-        //     produced, so none is read.
-        //   · it SKIPS rather than returns, like the two caps and the harness gate above. Only a
-        //     genuinely fleet-wide condition — `no free slot` — still stops the tick; this one is a
-        //     property of one row, and a collision clears on lane-land timescales. Blocking the
-        //     queue head for hours on it would have replaced a cap that starts too little with a
-        //     check that starts nothing.
-        const hit = a.collides.find((c) => runningIds.has(c) || runningBranches.has(c));
-        if (hit) { waiting(`waiting: collides with running work (${hit}) — same files, says the analyst`.slice(0, 200)); continue; }
-      }
+      // THE UNATTENDED INVARIANT STOOD HERE, and it is gone with the reader that satisfied it.
+      // Until 2026-09-10 an unattended start required a queue-analyst verdict on this row, fresh
+      // against the tree it would run on (analysis-staleness.ts) and against the exact brief it
+      // would receive, plus a collision read over the analyst's `collides` against the running
+      // fleet. The block was already inert on this deployment — it ran only `if (ANALYSIS_ON)`, and
+      // the analyst has been switched off since 2026-08-08 — so what an unattended release has
+      // actually met for a month is what it meets now: the master stop and quiet hours (canDeliver),
+      // the repo lane cap, the per-program lane cap, the harness-automation bolt, the free-slot
+      // requirement, and the owner's own release, which is and always was the decision.
+      //
+      // The collision read went with it and nothing replaced it: it was a MODEL judgement, and a
+      // computed intersection of predicted file surfaces is a different check with a different
+      // failure mode — proposing one is a separate decision, not a consequence of this cut.
       // the autos kill-switch and quiet hours gate the dispatcher BEFORE a lane is spawned (was
       // synergy-findings.md Tier-0 #1 — neither reached this path) — a paused or quiet fleet leaves
       // the task queued for the next eligible tick. No idle/alive gate: the target lane does not
@@ -10933,7 +10508,7 @@ async function summaryViaSession(prompt: string, cwd: string, doneMark: string,
   // binary, a session flag or a model flag of its own, which is the point: there were two spawn
   // implementations in this file and the harness registry covered one.
   // opts.model: a MODEL_RE-validated override for the workers whose judgment the owner priced
-  // above the summary tier (today: analysis → ANALYSIS_MODEL, refine → REFINE_MODEL). It is
+  // above the summary tier (today: refine → REFINE_MODEL). It is
   // single-quoted inside the adapter, like every model interpolation (the [1m] variants glob
   // under zsh) — MODEL_RE forbids `'`, so the quote wrap stays closed.
   const w = WORKER_HARNESS.worker({ sessionId: sid, model: opts.model ?? SUMMARY_MODEL, tools: opts.tools });
@@ -11002,7 +10577,7 @@ async function summaryViaSession(prompt: string, cwd: string, doneMark: string,
 
 // Every throwaway agent in this file is spawned through here. The call sites (summary, 🔍 review,
 // commit message, ✨ enhance, ⏫ merge resolver, its repair round, ② clean review, 🧭 steward
-// digest, the queue analyst, ↻ refine — deliberately unnumbered here, the count decayed twice)
+// digest, ↻ refine — deliberately unnumbered here, the count decayed three times)
 // differ in exactly four things — the FLEET_*_CMD stand-in, the tool profile,
 // the done-mark and the timeout — and shared the same four lines otherwise, which had already
 // drifted apart (one site passed no explicit timeout where its sibling did). Collapsed so a fix
@@ -11043,7 +10618,6 @@ const WORKER_ROUTES = {
   cleanReview: { route: "claude" },
   digest: codexSparkRoute(process.env.FLEET_WORKER_ROUTE_DIGEST),
   refine: { route: "claude" },
-  analysis: { route: "claude" },
 } satisfies Record<WorkerName, WorkerRouteConfig>;
 function workerRouteFor(worker: WorkerName): WorkerRouteConfig {
   return WORKER_ROUTES[worker];
@@ -17260,7 +16834,7 @@ async function backfillUnknowableAudits(): Promise<void> {
 // --- per-lane attributed-outcome RECORDER. Appends ONE server-stamped fact at each of a lane's
 // terminal events (land / kill / shelve / revert), so the fleet can eventually learn which
 // model + brief + task-class produces landable work — from REAL lanes, not a synthetic eval set.
-// Deliberately a RECORDER: it never ranks, gates, promotes, or renders a verdict; analysis is a
+// Deliberately a RECORDER: it never ranks, gates, promotes, or renders a verdict; scoring is a
 // LATER, higher-volume consumer. Every field is assembled SERVER-SIDE from git + slot state, so a
 // pane/client can never write into this trail (same choke-point stance as audit + the prompt log).
 // The fingerprint (shortstat/commitCount/filesTouched/e2eTouched) reuses briefPayload's base...HEAD
@@ -17871,7 +17445,7 @@ async function readLandNote(repo: string, sha: string): Promise<LandNoteRead> {
 type TaskMatch = "slot" | "outcome-task-id" | "brief-hash" | "text-hash";
 interface DossierTask { id: string; text: string; kind: Task["kind"]; source: Task["source"];
   status: Task["status"]; releasedBy?: Task["releasedBy"]; note: string | null; repo: string | null;
-  files?: string[]; brief?: TaskBrief; criterion?: TaskCriterion; analysis?: TaskAnalysis;
+  files?: string[]; brief?: TaskBrief; criterion?: TaskCriterion;
   match: TaskMatch }
 interface DossierAudit { at: number; result: string; mainSha: string; covers: string[];
   reason?: string; exitCode: number | null; out: string; cmd: string; fails?: string[];
@@ -17912,7 +17486,6 @@ function dossierTaskFor(liveSlot: number | null, outcomeTaskId: string | null,
     ...(t.files ? { files: t.files } : {}),
     ...(t.brief ? { brief: t.brief } : {}),
     ...(t.criterion ? { criterion: t.criterion } : {}),
-    ...(t.analysis ? { analysis: t.analysis } : {}),
     match,
   });
   if (liveSlot !== null) {
@@ -18087,15 +17660,13 @@ async function laneDossier(branch: string, repoHint: string | null): Promise<Lan
 //   · enhance `draftId` = sha256(enhanced prompt).slice(0,16), stamped by /api/enhance and echoed
 //     back by the client. Server-side so the join key cannot drift, and so the client needs no
 //     crypto.subtle (unavailable on the plain-http Tailscale origin).
-//   · analysis the `taskId`. The verdict is a reading OF A ROW, and the row id is the only key that
-//     survives everything the owner does next — a re-analysis, a brief recompile, an edit of the
-//     text. Deliberately NOT keyed by `analysis.at`: re-reading the same row does not make the
-//     earlier judgement about it a different thing to have an opinion on, and newest-wins on the
-//     rail already carries "the owner changed their mind".
+// A fourth shape — `analysis`, keyed by the `taskId` — retired with the queue analyst on
+// 2026-09-10. The WRITE door is closed by DISPOSITION_WORKERS (src/protocol.ts); the reader below
+// validates no worker name, so the labels already filed under it stay readable.
 // the worker names and the verdict vocabulary are src/protocol.ts's — the client sends both.
-// No worker gets a ref EXISTENCE check here and `analysis` is no exception: the rail records an
-// owner opinion, and a label for a row that has since been deleted is still a fact about what the
-// analyst produced. The shape gate below (non-empty, ≤200) is the whole contract.
+// No worker gets a ref EXISTENCE check here: the rail records an owner opinion, and a label for a
+// row that has since been deleted is still a fact about what a worker produced. The shape gate
+// below (non-empty, ≤200) is the whole contract.
 const MAX_DISPOSITION_REF = 200;
 interface DispositionRecord {
   at: number; worker: DispositionWorker; ref: string; disposition: DispositionVerdict; source: "owner";
@@ -18439,11 +18010,11 @@ async function runRepair(cwd: string, root: string, branch: string, main: string
   }
 }
 
-// THE IN-FLIGHT FILE SURFACE of the lanes open on a repo — ONE derivation, three readers: the ②
-// reviewer's prompt, GET /api/self/drift, and the queue analyst's collision block. It used to be
-// two derivations: this one, and a second inline one in tickAnalysisSweep that carried no files at
-// all, which is how the dispatcher came to hold rows back "because they touch the same files, says
-// the analyst" while the analyst had never been shown a file.
+// THE IN-FLIGHT FILE SURFACE of the lanes open on a repo — ONE derivation, two readers: the ②
+// reviewer's prompt and GET /api/self/drift. A third (the queue analyst's collision block) retired
+// with the analyst on 2026-09-10; the reason this is ONE derivation is the mistake that one made —
+// a second, inline copy carried no files at all, which is how the dispatcher came to hold rows back
+// "because they touch the same files, says the analyst" while the analyst had never seen a file.
 //
 // THE BASE IS DERIVED FRESH, NEVER READ OFF THE SLOT. `worktree.baseSha` is the immutable fork
 // COMMIT (see Slot.worktree) — PROVENANCE, and the wrong fact to compare against: once a lane is
@@ -18484,8 +18055,7 @@ async function laneSurfaces(repo: string, excludeCwd?: string): Promise<LaneSurf
 // The SKIPPING view, for the two consumers that render a file list as a plain fact about a lane:
 // ②'s prompt and the drift payload. A lane that could not be read is left out entirely rather than
 // shown with an empty list — "changed nothing yet" and "could not be read" must not look identical
-// there. (The analyst gets the three-valued list instead: it is told what unknown means, and to it
-// a silently absent lane would read as "no such lane is running".)
+// there. The three-valued list above keeps the distinction for any consumer that needs it.)
 async function otherOpenLanes(cwd: string, repo: string): Promise<{ branch: string; files: string[] }[]> {
   return (await laneSurfaces(repo, cwd))
     .filter((l): l is { branch: string; files: string[] } => l.files !== null);
@@ -22676,7 +22246,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
   //
   // WHAT IT GRANTS, said exactly: the fleet's dispatch tick may start THIS program's released rows
   // while the GLOBAL dispatcher is stopped. It grants nothing else. The autos kill-switch, the repo
-  // lane cap, the per-program lane cap, the analyst's reading, the collision check, the harness
+  // lane cap, the per-program lane cap, the harness
   // automation bolt and the free-slot requirement all still hold — a permission that lifted those
   // would not be a program-scoped switch, it would be the hand button with a record attached.
   //
@@ -23143,25 +22713,16 @@ if (existsSync(STATE_FILE)) {
           // proposal, and inventing one here would put a hand-edit one owner click from `confirmed`.
           filesProposal: normFilesProposal(t.filesProposal),
           cluster: undefined, // always projected from the current repo index; never trusted off disk
-          // malformed degrades to "not yet analysed", never to a "ready" pass. The predecessor
-          // `eval` field is deliberately NOT migrated — its criteria were judged under a different contract.
+          // malformed degrades to ABSENT, never to a shorter brief. Two predecessor fields are
+          // deliberately NOT migrated and not restored: `eval`, whose criteria were judged under a
+          // different contract, and `analysis`, the retired queue analyst's verdict — a persisted
+          // one is DROPPED here rather than carried, because nothing refreshes it any more and a
+          // reading nobody can re-run is not a weaker reading, it is a claim about a tree that has
+          // since moved. Dropping it at the normalizer is what makes the retirement structural: a
+          // hand-edited state file cannot smuggle a verdict back onto a row.
           brief: t.brief && typeof t.brief.text === "string" && t.brief.text
             ? { text: t.brief.text.slice(0, MAX_TASK_TEXT), at: Number(t.brief.at) || 0,
               model: typeof t.brief.model === "string" ? t.brief.model : "", edited: t.brief.edited === true }
-            : undefined,
-          analysis: t.analysis && ["ready", "needs-you", "unknown"].includes(t.analysis.verdict)
-            && typeof t.analysis.reason === "string"
-            ? { verdict: t.analysis.verdict, reason: t.analysis.reason.slice(0, 2000),
-              blockers: Array.isArray(t.analysis.blockers)
-                ? t.analysis.blockers.filter((b): b is AnalysisBlocker => (ANALYSIS_BLOCKERS as readonly string[]).includes(b)) : [],
-              collides: Array.isArray(t.analysis.collides)
-                ? t.analysis.collides.filter((c): c is string => typeof c === "string").slice(0, 8) : [],
-              at: Number(t.analysis.at) || 0, model: typeof t.analysis.model === "string" ? t.analysis.model : "",
-              head: typeof t.analysis.head === "string" ? t.analysis.head : null,
-              briefAt: Number(t.analysis.briefAt) || null, attempts: Number(t.analysis.attempts) || 0,
-              // the failure record only ever ADDS a warning, so a dropped one costs a label, never a pass.
-              ...(t.analysis.retry && typeof t.analysis.retry.reason === "string"
-                ? { retry: { at: Number(t.analysis.retry.at) || 0, reason: t.analysis.retry.reason.slice(0, 2000) } } : {}) }
             : undefined,
           // a malformed criterion degrades to "none proposed", never to a confirmed one — the
           // confirmation is an owner act and must not be forgeable by editing the state file
@@ -23971,11 +23532,9 @@ setInterval(() => void tickWatches().catch((e: unknown) => logError("tickWatches
 setInterval(() => void tickGit().catch((e: unknown) => logError("tickGit", e)), 10_000);
 void tickGit().catch((e: unknown) => logError("tickGit", e)); // warm the badge cache so the first paint isn't blank
 setInterval(() => void tickDispatch().catch((e: unknown) => logError("tickDispatch", e)), DISPATCH_TICK_MS);
-// FLEET_ANALYSIS_MS=0 switches the analyst off entirely (same shape as FLEET_AUTO_REVIEW_MS) — a
-// harness without a FLEET_ANALYSIS_CMD stand-in MUST set it, or the suite spawns a real agent.
-if (ANALYSIS_ON) setInterval(() => void tickAnalysisSweep().catch((e: unknown) => logError("tickAnalysisSweep", e)), ANALYSIS_TICK_MS);
-// …and the brief compiler on its OWN cadence, off by default: a harness without a FLEET_ENHANCE_CMD
-// stand-in MUST leave FLEET_BRIEF_MS at 0, or the suite spawns a real agent.
+// the brief compiler, off by default: a harness without a FLEET_ENHANCE_CMD stand-in MUST leave
+// FLEET_BRIEF_MS at 0, or the suite spawns a real agent. (A second timer stood beside it until
+// 2026-09-10 — the queue analyst's sweep on FLEET_ANALYSIS_MS.)
 if (BRIEF_ON) setInterval(() => void tickBriefSweep().catch((e: unknown) => logError("tickBriefSweep", e)), BRIEF_TICK_MS);
 setInterval(() => void tickHarvest().catch((e: unknown) => logError("tickHarvest", e)), 5000);
 // the helper-claim lapse sweep, not on the 100 ms poll: liveness is decided by the clock
@@ -27208,10 +26767,10 @@ Bun.serve<WSData>({
         // renders it as "up to N lanes in <repo>", and after a per-repo entry the env number is no
         // longer what the tick counts against — a UI that keeps printing it states a budget nothing uses.
         dispatch: { available: !!DISPATCH_REPO, on: dispatchOn, maxLanes: repoLaneCap(DISPATCH_REPO).max, repo: DISPATCH_REPO },
-        // Global runtime fact, beside dispatch rather than inferred per row from stored verdicts.
-        analysis: { on: ANALYSIS_ON },
-        // The brief compiler's mode is its OWN fact beside the analyst's — one switch used to imply the
-        // other. OMITTED AT ZERO like attentionOpen, for the same 12 KiB reason; absent reads as off.
+        // The brief compiler's mode as a global runtime fact, never inferred per row from a stored
+        // brief. It sat beside an `analysis: { on }` sibling until 2026-09-10; that fact is gone
+        // with the analyst, and a client reading it must not silently degrade to "on".
+        // OMITTED AT ZERO like attentionOpen, for the same 12 KiB reason; absent reads as off.
         ...(BRIEF_ON ? { briefCompiler: { on: true } } : {}),
         autosOn,
         quietHours,
@@ -28734,11 +28293,14 @@ Bun.serve<WSData>({
       if (!dEffort.ok) return json({ error: effortErrFor(dHarness) }, 400);
       const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
       if (!free) return json({ error: "no free slot" }, 409);
-      // A RAW START is one no reading vouched for. This route gates on none of it — an attended click
-      // outranks every advisory — but the UI's acknowledgment (src/client.ts, .qrawack) rides into the
-      // audit detail. Recorded ONLY when the row REALLY was raw: a flag on a ready row would pin a
-      // deliberation that never happened.
-      const rawAck = dBody?.acknowledged === true && (!t.analysis || t.analysis.verdict !== "ready");
+      // A RAW START is one where the lane receives the owner's DRAFT rather than a brief — the
+      // `briefOrigin: "raw"` case at the delivery seam. This route gates on none of it, but the
+      // UI's acknowledgment (src/client.ts, .qrawack) rides into the audit detail. Recorded ONLY
+      // when the row REALLY is raw: a flag on a row that carries a brief would pin a deliberation
+      // that never happened. Until 2026-09-10 "raw" meant "no analyst verdict said ready"; with the
+      // analyst retired the acknowledgment is re-grounded on the fact that outlived it — WHICH
+      // BYTES the lane gets — rather than left standing as a flag that is now true of every row.
+      const rawAck = dBody?.acknowledged === true && !t.brief;
       const r = await dispatchTask(t, free, true, clarify,
         { harness: dHarnessId, model: dModel.model, effort: dEffort.effort });
       if (!r.ok) return json({ error: r.error }, 500);
@@ -28749,30 +28311,12 @@ Bun.serve<WSData>({
         [t.id, clarify ? "clarify" : "", rawAck ? "raw-acknowledged" : "", dHarnessId ? `harness=${dHarnessId}` : ""].filter(Boolean).join(" "));
       return json({ ok: true, slot: r.slot, branch: r.branch, clarify, rawAcknowledged: rawAck });
     }
-    // re-read this task from scratch: drop the verdict so the next sweep judges it again. An
-    // explicit owner act, and the only way to force one — the sweep's own rule (never analysed,
-    // ground moved, or an unknown whose backoff elapsed) deliberately does not re-run a verdict
-    // just because someone is unhappy with it.
-    const taskReanalyse = /^\/api\/tasks\/([a-z0-9]+)\/reanalyse$/.exec(url.pathname);
-    if (req.method === "POST" && taskReanalyse) {
-      const t = tasks.find((x) => x.id === taskReanalyse[1]);
-      if (!t) return json({ error: "unknown task" }, 404);
-      if (t.status !== "pending" && t.status !== "queued")
-        return json({ error: `task is ${t.status} — only a pending or queued task is analysed` }, 409);
-      if (t.kind !== "auftrag") return json({ error: `${t.kind} is advisory, not a work brief — nothing to analyse` }, 409);
-      // The refusal stands whatever the compiler is doing: with no reader this route's writes are pure
-      // deletion, and a running compiler would only recompile the dropped brief — ↻ refine is the attended
-      // way to a new brief; nothing here mints a second verb.
-      if (!ANALYSIS_ON)
-        return json({ error: "no analyst sweep is configured — reanalysis would otherwise only delete the existing analysis and machine-generated brief"
-          + (BRIEF_ON ? "; the brief compiler is on, but it compiles rather than reads, and would simply recompile the deleted brief — use ↻ refine to change one" : "") }, 409);
-      t.analysis = undefined;
-      // an un-edited brief goes too: "analyse this again" means the whole reading, and a brief the
-      // owner never touched is the analyst's own output, not an input worth preserving.
-      if (t.brief && !t.brief.edited) t.brief = undefined;
-      saveState();
-      return json({ ok: true });
-    }
+    // POST /api/tasks/:id/reanalyse stood here until 2026-09-10: the owner's only way to force the
+    // queue analyst to read a row again, which it did by DELETING the stored verdict and any
+    // un-edited machine brief. It is retired with the analyst and deliberately not replaced by a
+    // brief-only variant: what it did to the brief was collateral, and ↻ refine is the attended way
+    // to a new one. The route now 404s like any other unknown path — a retired verb must not answer
+    // `ok:true` for work nothing will do.
     // ↻ refine: hand this task to the brief compiler (briefs/task-refine.md). Async like ⏫ — the
     // worker reads the repository and can take minutes — so the route answers immediately and the
     // proposal appears on the row when it lands. The task itself is never touched by the worker.
@@ -28829,12 +28373,12 @@ Bun.serve<WSData>({
         const id = randomBytes(4).toString("hex");
         return {
           id, originId, ...(t.programId ? { programId: t.programId } : {}), text: refineChildText(c),
-          // source "owner": the owner is confirming this text. NO `brief` and NO `analysis` — a child is a NEW
-          // draft and must reach the sweep as one. `repo` rides along, or the split would silently retarget
+          // source "owner": the owner is confirming this text. NO `brief` — a child is a NEW
+          // draft and must reach the compiler as one. `repo` rides along, or the split would silently retarget
           // the dispatcher default. Children land `pending`, never `queued`: releasing stays a separate owner act.
           source: "owner", from: null, kind: "auftrag", repo: t.repo,
           // the ONE thing a child inherits besides its text: the paths the refiner verified against the tree.
-          // Not a model judgement ABOUT this row the way `brief` and `analysis` are.
+          // Not a model judgement ABOUT this row the way `brief` is.
           ...(c.files.length ? {
             files: c.files.slice(0, MAX_REFINE_FILES), filesOrigin: "confirmed" as const,
           } : {}),
@@ -28932,7 +28476,7 @@ Bun.serve<WSData>({
     }
     // the brief is the one model output the owner may overwrite — it is the exact text a lane will
     // receive. An edited brief is PINNED (`edited`; the sweep never recompiles over it) and invalidates
-    // the analysis, because the verdict was about the other string.
+    // any recompile over it.
     const taskBrief = /^\/api\/tasks\/([a-z0-9]+)\/brief$/.exec(url.pathname);
     if (req.method === "POST" && taskBrief) {
       const t = tasks.find((x) => x.id === taskBrief[1]);
@@ -29035,7 +28579,7 @@ Bun.serve<WSData>({
         if (t.kind !== "notiz") return json({ error: "only a notiz can be adopted as an auftrag" }, 409);
         if (t.status !== "pending") return json({ error: `task is ${t.status} — only a pending notiz can be adopted` }, 409);
         t.kind = "auftrag";
-        t.note = "adopted from an observation — analysed like any brief, still yours to release";
+        t.note = "adopted from an observation — a work brief now, still yours to release";
       } else if (taskAct[2] === "delete") tasks = tasks.filter((x) => x.id !== t.id);
       else if (taskAct[2] === "queue") {
         // AN ADVISORY ROW IS NOT WORK (owner ask 2026-08-05): releasing one produced a `queued` row no tick
@@ -29044,14 +28588,14 @@ Bun.serve<WSData>({
         if (t.kind !== "auftrag") {
           return json({ error: `a ${t.kind} is advisory, not a work brief — change its kind first` }, 409);
         } else {
-          // RELEASING IS THE DECISION, and contradicting the analyst is an override that must leave a trace
-          // (the note is a record, not a warning). "needs-you" ONLY, never "unknown": an unread task carries no
-          // objection to overrule, and booking one would overwrite the dispatcher's "waiting: not analysed yet"
-          // with a verdict never reached (caught by e2e h6). Narrativ: server-narrativ-archiv.md#fetch-task-actions
-          const over = t.analysis?.verdict === "needs-you";
+          // RELEASING IS THE DECISION — and until 2026-09-10 it could also be an OVERRIDE: a
+          // release over the queue analyst's "needs-you" wrote the verdict into `note` and booked a
+          // `task_override` audit line. With the analyst retired there is no objection to overrule,
+          // so neither the note nor the audit event has a producer left. The `task_override` lines
+          // already in audit.jsonl stay readable; nothing mints another.
+          // Narrativ: server-narrativ-archiv.md#fetch-task-actions
           releaseTask(t, "owner");
-          t.note = over ? `released over the analyst's "${t.analysis!.verdict}" — ${t.analysis!.reason}`.slice(0, 200) : null;
-          if (over) audit("task_override", undefined, `${t.id}:${t.analysis!.verdict}`);
+          t.note = null;
         }
       }
       else if (taskAct[2] === "unqueue") t.status = "pending";

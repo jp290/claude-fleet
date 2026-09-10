@@ -1,254 +1,125 @@
-# The queue analyst  (operative — the contract the dispatcher runs under)
+# The queue analyst — RETIRED 2026-09-10  (and the queue contract that outlived it)
 
-*Replaces the eval gate, 2026-08-05. Code: `analysis-prompt.ts`, `server.ts`
-(`tickAnalysisSweep`, `tickDispatch`), `src/client.ts` (`qGroupOf`). Verified by
-`e2e/tasks.ts` section (h) and `e2e/steward-outcomes.ts`.*
+*The analyst is gone from this tree. What is left below is the part of the queue's contract that
+never depended on it: which bytes a lane receives, who releases a row, and what the dispatcher
+actually checks. Restore anchor for the whole subsystem:
+`7ff56eab83f64b0826142139c7f4d1be274ebd2d`. Introduced `500ff63a`, last functional core `64c10e4a`.*
 
-## 1. The split
+*Live code: `server.ts` (`tickBriefSweep`, `compileBriefs`, `tickDispatch`, `releaseTask`),
+`src/client.ts` (`qGroupOf`), `task-waves.ts`. Verified by `e2e/tasks.ts` section (h),
+`e2e/pins.ts` (the retirement rules and the surviving brief/release contract).*
 
-Two questions had been fused into one worker:
+## 0. What was retired, and what that cost
 
-- **What IS this task?** Attributable? In reach? Does it carry a done-criterion? Does it
-  collide with work already running? — useful for **every** task, at every status, and
-  useful **to the owner first**.
-- **May the machine start it without me?** — a policy decision *on top of* that reading.
+The analyst read every dispatchable row against the tree and filed an advisory verdict —
+`ready | needs-you | unknown`, with `blockers` and a `collides` list. It decided nothing: the
+owner's release was always the decision. It also carried, in one sweep, the BRIEF COMPILER, which is
+production and stays.
 
-Because they were the same code, the reader could only ever look at the rows the second
-question applied to: `pending` lane tasks. The analyst answers the first question and
-answers it everywhere. The second question now has a one-word answer: **no.** The
-dispatcher runs `queued` and nothing else, and only the owner puts a row there.
+Gone in one cut: `analysis-prompt.ts`, `analysis-staleness.ts`, `task-analysis-warning.ts`,
+`Task.analysis` and its type, `tickAnalysisSweep` / `analysisDue` / `analysisFailed` /
+`recordAnalysisVerdict` / `analysisStale` and the whole `ANALYSIS_*` configuration, the
+`analysis-verdicts.jsonl` writer, `POST /api/tasks/:id/reanalyse`, the poll's `analysis` digest and
+`analysis: { on }` fact, the client's verdict cache, chip, panel and `↻ re-analyse` action, the
+disposition rail's `analysis` write door, the wave projection's model edges and the running-work
+block they alone could fill, and `register.sh`'s verdict column and `[modell]` collision graph.
 
-## 2. Why — the measurement that ended the gate
+**Why now.** It had been switched OFF on the live deployment since 2026-08-08 for its measured
+false-alarm rate (`FLEET_ANALYSIS_MS=0` in `watchdog.sh`), so the fleet's real behaviour for a month
+was already what this cut makes the only behaviour. Every symbol, field, route and vocabulary
+survived that month, and each one kept promising a reading nobody was doing — a stale verdict on a
+row, a `waiting: not analysed yet` branch nothing could clear, a "trust" state in the wave
+projection that could only ever answer `off`. A reader nobody runs is not a safety property.
 
-Taken off the live deployment before the rewrite:
+**What was NOT replaced.** The collision read went with it and nothing took its place. It was a
+MODEL judgement over predicted file surfaces; a deterministic intersection of declared surfaces is a
+different check with a different failure mode, and proposing one is its own decision.
 
-| | |
-|---|---|
-| verdicts the eval gate had ever produced | **1** |
-| positive verdicts (`auto`) | **0** |
-| `evalAuto` day counter | `{"day":"","count":0}` — never incremented |
-| `FLEET_INTAKE_SECRET` in the running srv's env | **absent** → `/intake` answers 404 |
+**The measurement that built it, kept because it is the same argument.** The eval gate it replaced
+on 2026-08-05 had produced exactly ONE verdict ever and never a positive one: its population was
+empty by construction (intake off, steward files `notiz`, and a task the owner wanted run got
+promoted, which bypassed the gate). Its only real subject was the owner's own un-promoted drafts and
+its only power was starting them behind his back. The analyst answered that by deciding nothing —
+and then, for a month, by not running.
 
-The population was empty by construction. Lane tasks have two producers, the owner and
-`/intake`; intake was off, the steward files `note`, and a task the owner *wanted* run got
-promoted — which bypassed the gate. So its only real subject was the owner's own
-un-promoted drafts, and its only power was starting them behind his back. That is the one
-thing it should never have done.
+## 1. What a lane receives  (the brief)
 
-Four further findings from the same audit, and where each one went:
+The brief is the EXACT bytes a lane is founded on. It is compiled ONCE per draft and never again: it
+depends on the draft, not on the tree, so nothing about it improves after a land.
 
-| finding | resolution |
-|---|---|
-| the gate judged the raw draft; the lane ran a sonnet-tier rewrite of it | the brief is compiled **in a sweep** (§5a — the analyst's, or the compiler's own), stored, judged, and sent verbatim (`Task.brief`) |
-| a verdict never expired, though criterion 1 is time-dependent | the verdict records the integration tip and the brief revision it judged; it expires when the brief changes or when the tree moved **under the row's own files** (`analysisStale` → `analysis-staleness.ts`, §3b) |
-| a worker timeout became a permanent verdict for its whole batch | a failure is an absence with `attempts` and exponential backoff, never a finding — and since 2026-08-07 never a deletion either (§3a) |
-| an override was indistinguishable from an ordinary promote | releasing a flagged row writes a note and a `task_override` audit event |
-| priority inversion: an old pending row pre-empted a fresh promote | gone by construction — `pending` and `queued` no longer compete for a tick |
-| the reader could not see the running fleet | open lanes ride in the prompt; `collides` names branches, not just batch siblings |
-| `collides` was computed every sweep and read by nobody | `tickDispatch` holds a colliding row back (invariant 6) — before that, only the lane cap kept two colliding lanes apart |
+- **Machine-compiled** — `tickBriefSweep` → `compileBriefs` → `runEnhance`, stored as
+  `Task.brief` with `edited: false`. Readable AND editable before the start.
+- **Owner-written** — `POST /api/tasks/:id/brief` pins it (`edited: true`, model `"owner"`), and
+  nothing recompiles over it.
+- **Raw** — no brief on the row: the draft text itself is delivered.
+- **Clarify** — `buildClarifyBrief`'s deterministic frame around the verbatim request; no model
+  call at all.
 
-## 3. The reading
+`briefAndSend` contains **no model call**: it sends `t.brief.text ?? t.text` plus a freshly derived
+ContextPlan anchor block. What was approved is what runs, and an e2e check asserts byte-equality
+with the prompt that reached the pane.
 
-Three criteria, each with a blocker tag the UI shows as a row label:
+`compileBriefs` is the ONE site that writes a machine brief, and since the retirement exactly one
+sweep reaches it (the analyst's own compile step was the second). A third caller would be a new
+producer of the bytes a lane is founded on — pinned in `e2e/pins.ts`.
 
-| criterion | blocker | means |
-|---|---|---|
-| attributable | `attribution` | it maps to real files/symbols, and its claims about the tree hold |
-| in reach | `reach` | nothing leaves the worktree — no publishing, credentials, shared machine state |
-| has a done-criterion | `criterion` | bounded, and the repo's own verification can judge it finished |
-| the brief is the draft, thickened | `brief-drift` | the enhancer added a claim or dropped one |
-
-`brief-drift` has no predecessor. It exists because the enhancer's additive-only contract
-was, until now, a promise in the enhancer's own prompt with nothing checking it.
-
-Verdicts: `ready` · `needs-you` · `unknown`. Three-valued on purpose — `unknown` is the
-analyst failing to *answer*, and that must never be able to read as either judgement.
-
-## 3a. A failure is an absence — and an absence must not delete a reading
-
-`unknown` was built so a broken worker could not produce a finding. It could still produce
-a *deletion*, and for three months it did: a failure rewrote `t.analysis` wholesale for
-every row of the batch, keeping only `attempts`. Verdict, reason, blockers and collides
-were gone, and the row became indistinguishable from one nobody had ever read.
-
-Measured on the live queue, 2026-08-07: at 09:41 one batch of six lost **four `needs-you`
-and two `ready`** to `analyst returned no JSON`. A backoff retry healed the register ~80
-minutes later; at `ANALYSIS_MAX_ATTEMPTS` it would not have healed at all. The sweep sorts
-**released rows first**, so the rows nearest to running went into that window first.
-
-Since then (`analysisFailed`) a failure is filed **beside** the verdict:
-
-| field | after a failed re-reading |
-|---|---|
-| `verdict` `reason` `blockers` `collides` | the last reading that arrived — unchanged |
-| `at` `head` `briefAt` | that reading's own, so the row keeps answering about the tree and brief it was genuinely read against |
-| `attempts` | +1 |
-| `retry` | `{at, reason}` — when the re-reading failed and why |
-
-Two consequences worth stating, because both are load-bearing:
-
-- **Nothing gains trust.** The preserved verdict keeps its old `head`/`briefAt`, so it
-  still answers about the tree and the brief it was genuinely read against, and what
-  schedules the re-read is `analysisDue`'s failure arm (`attempts > 0`), which owns the
-  clock whatever staleness says. The dispatcher's invariant 3 reads it exactly as before —
-  it holds the row back iff the reading has expired under §3b. What changed is that the owner
-  can now read what the last reading said while it waits.
-- **The failure owns the schedule.** `analysisDue` keys the backoff on `retry.at`, not on
-  `at`. Keyed on `at` — which now belongs to the older, successful reading — a preserved
-  verdict would hammer every tick or freeze, decided by nothing but how old it happened to
-  be. Proven in `e2e/tasks.ts` (h5b), which also counter-probes the hammering case.
-
-A row in this state reads `⚠ … · re-analysis failing (N×)` in the queue and
-`verdict(age)!stale?xN` in `register.sh`, with the failure's own words in the detail pane.
-
-## 3b. A verdict expires against its own FLÄCHE, not against the tip
-
-`analysisStale` was a bare equality on the integration tip: any land invalidated the reading
-of **every** open row, whatever that land had touched. A docs-only land expired a verdict
-about a pure `src/client.ts` row.
-
-That is not a rounding error — it is the named reason the sweep was switched off (`ec91075`):
-~59 open rows meant a re-read wave of ~10 workers **per land**, and six lands fell on
-2026-08-06 alone. The knobs that look like the fix (`ANALYSIS_BATCH_CAP`, `ANALYSIS_TICK_MS`)
-only stretch that wave over more ticks; the trigger is what was wrong.
-
-Since 2026-08-18 the rule lives in `analysis-staleness.ts`, pure, and has three arms (the third
-splits into two named reasons, one per unknown side):
-
-| a verdict is stale when | why |
-|---|---|
-| the **brief** changed (`briefAt`) | unchanged — the verdict is about a string nobody will send |
-| the tip moved **and** the files it moved intersect the row's own surface | the ground *this* row stands on actually moved |
-| either surface is **UNKNOWN** | absence of knowledge falls to stale, never to fresh |
-
-- **The row's surface** is the same `taskView`/`deriveTaskMetadata` projection the analyst is
-  fed (§3). `confirmed` and `derived` both count as known; absence is not an empty list.
-- **The moved surface** is `git diff --name-only --no-renames <head> <tip>`, cached per
-  `(repo, head, tip)` — never a spawn per row per tick. It is deliberately **not** a join over
-  `LaneOutcome.filesTouched`: a direct commit in the main checkout is invisible to every
-  land-side ledger (no `fleet/land` note, no `lane-outcomes` line, no post-land audit — measured
-  2026-08-07 on `0e2a672` and `4955444`), so a ledger join would report "nothing moved" for
-  exactly the commits nobody supervised. Two-dot, tree-vs-tree, because after a rebase the tip
-  need not descend from `head` at all. `--no-renames` so a moved file answers under both names.
-- **The sweep prefills it, and that is load-bearing.** The git side fills asynchronously, so the
-  synchronous reader answers UNKNOWN — conservatively stale — until the process returns. On a row
-  badge that is a 2 s flicker; inside `analysisDue` it would undo the whole cut, because the first
-  tick after a land would read UNKNOWN for every row and re-read the queue exactly as the tip
-  comparison did. `tickAnalysisSweep` therefore fills the surfaces immediately after it refreshes
-  the tips, in the same breath and for the same stated reason. Caught by `e2e/tasks.ts` (h9s),
-  which failed on it before the prefill existed.
-- **Unknown never reads as fresh.** A non-zero git, a head GC'd away, *and* an empty diff where
-  the two tips genuinely differ all store UNKNOWN — two commits can share a tree, and "the diff
-  is empty" is indistinguishable here from "the diff did not run". An unknown *tip* stays what
-  it always was: not stale, because a measurement never taken must not paint every row.
-
-**The residual, stated where the rule is.** A `derived` surface is the paths the row's text
-names exactly, so a row that will also touch a file it never named is judged on the narrower
-list. That is a widening of invariant 3, not a neutral refactor. It is bounded by the third arm
-(no surface ⇒ stale) and by the fact that the alternative — expiring every verdict on every
-land — is what took the analyst offline.
-
-`register.sh` renders the same rule from disk (`!head`), for the same reason it renders `!brief`:
-two meanings of "stale" in two readers is the drift this repo keeps paying for.
-
-## 4. Invariants
+## 2. Invariants
 
 1. **Nothing starts unattended that the owner did not release.** `tickDispatch` selects
-   `status === "queued"` only.
-2. **What was judged is what runs.** `briefAndSend` contains no model call; it sends
-   `t.brief.text ?? t.text`. An e2e check asserts byte-equality with the prompt that
-   reached the pane.
-3. **Nothing starts unattended against a tree it was not read on** — read since 2026-08-18
-   as *the part of that tree the row itself touches* (§3b). A released row waits,
-   with the reason on its own row, while its analysis is missing, `unknown`, or stale —
-   *unless no analyst is configured at all* (`FLEET_ANALYSIS_MS=0`), because a guard
-   nobody can clear is a deadlock wearing a safety property's clothes. A running **brief
-   compiler** neither clears nor lifts this: it is not a reader (§5a).
-4. **The verdict never disables an action.** It groups, labels and warns. Every button the
-   owner had, he still has.
-5. **An observation is not work.** A `note` cannot be released (409). `adopt` converts it
-   into a `pending` brief — a conversion the *owner* performs, which is what keeps the
-   steward from ever authoring runnable work.
-6. **Nothing starts unattended on top of work it was told it collides with.** A released
-   row whose `collides` names something *actually running* is held, with the match on its
-   own row, and starts by itself once that work is gone. Three boundaries make this a wait
-   rather than a new gate: it is held only against **running** work (never another queued
-   row — two rows naming each other would deadlock, invisibly, both displaying "waiting");
-   only on a **fresh** analysis (it sits below the staleness check and inside invariant 3's
-   "is there an analyst at all", because a collision list nobody refreshes would pin a row
-   on an expired fact); and it **skips to the next row** rather than stopping the tick,
-   since a collision clears on lane-land timescales and every other wait clears in seconds.
-   The field is mixed — task ids *and* branch names — so both are matched: ids against
-   `sent` rows, branches against open lanes. Reading only ids would look like it worked.
-   The attended button (`POST /api/tasks/:id/dispatch`) is untouched, like every other
-   automation bound. Proven end-to-end in `e2e/tasks.ts` (h10), counter-probe included.
+   `status === "queued"` only. (Three machine paths write that status — the requeue after a failed
+   spawn, the boot reconcile of orphaned `sent` rows, and a bound Program-MAIN's release door — see
+   §4; only the third is a real release, and it stamps `releasedBy: "machine"`.)
+2. **What was approved is what runs.** §1.
+3. **An observation is not work.** A `notiz` cannot be released (409) at either door. `adopt` — or
+   the `/kind` route — converts it into a `pending` `auftrag`, and that conversion is the OWNER's
+   act, which is what keeps the steward from ever authoring runnable work.
+4. **A raw start says it is raw.** `POST /api/tasks/:id/dispatch` gates on nothing — an attended
+   click outranks every advisory — but the UI drops the primary style and requires a second,
+   deliberate tick when the row carries no brief, and the acknowledgment rides into the audit line.
+   Until 2026-09-10 "raw" meant "no analyst verdict said ready"; it is now grounded on WHICH BYTES
+   the lane gets, which is the fact that outlived the reader.
+5. **`unknown` is still `unknown`.** The retirement removed a producer of three-valued readings; it
+   did not weaken the rule that missing or failed evidence is `unknown`, never zero, false or pass
+   (`AGENTS.md`). Nothing in the queue may render an absent brief, an unreadable surface or an
+   unresolvable repo as a pass.
 
-## 5. Knobs
+An invariant that RETIRED with the analyst, named so nobody looks for it: *"nothing starts
+unattended against a tree it was not read on."* There is no reading, so there is no staleness, and a
+guard nobody can clear is a deadlock wearing a safety property's clothes — which is why that guard
+was already written as `if (ANALYSIS_ON) { … }` and had been inert for a month.
+
+## 3. Knobs
 
 | env | default | |
 |---|---|---|
-| `FLEET_ANALYSIS_MS` | 60000 | analyst sweep tick; **0 = analyst off**, and then invariant 3 lifts |
-| `FLEET_BRIEF_MS` | 0 | the BRIEF COMPILER's own tick, §5a; **0 = compiler off**, the default |
-| `FLEET_ANALYSIS_MODEL` | `claude-opus-5` | the interactive tier — the owner's critical look is what is delegated here |
-| `FLEET_ANALYSIS_TIMEOUT_MS` | 420000 | its own, not the summarizer's 180 s: this worker reads files for a whole batch |
-| `FLEET_ANALYSIS_CMD` | — | subprocess stand-in for harnesses |
+| `FLEET_BRIEF_MS` | 0 | the brief compiler's tick; **0 = compiler off**, the default and the live deployment |
+| `FLEET_ENHANCE_CMD` | — | subprocess stand-in for harnesses |
 
-Batch cap 6, max 3 attempts, backoff `60s × 2^attempts` **from the last failure** (§3a),
-brief compiles 3 at a time. A
-harness without a stand-in **must** set `FLEET_ANALYSIS_MS=0` or the suite spawns a real
-agent — the same rule `FLEET_AUTO_REVIEW_MS` already carries, and since §5a the same rule
-applies to `FLEET_BRIEF_MS`, whose tick exists *only* to run the enhancer.
+Batch cap 6, max 3 attempts, backoff `60s × 2^attempts`, 3 compiles at a time. A harness without a
+stand-in **must** leave `FLEET_BRIEF_MS` at 0 or the suite spawns a real agent — the same rule
+`FLEET_AUTO_REVIEW_MS` carries. The compiler's backoff lives in memory only: pacing a worker is not
+a finding about the work, and a fresh server may well have a working enhancer.
 
-## 5a. Two tools, two switches
+The live deployment is machine-checked rather than re-read:
 
-`FLEET_ANALYSIS_MS` used to run two things: the **analyst** (advisory — it reads a row and
-files a verdict) and the **brief compiler** (production — what it writes is the prompt a
-lane is founded on). The compile step sat inside the analyst's sweep, so switching the
-analyst off on 2026-08-08 took the compiler with it: not refuted, just dark, and every lane
-started afterwards began from the raw request.
+<!-- pin:watchdog-spawn FLEET_BRIEF_MS=unset -->
 
-`FLEET_BRIEF_MS` is the compiler's own cadence (`tickBriefSweep`), so four states exist:
+Turning the compiler on is an owner act on `watchdog.sh` plus `launchctl kickstart`.
 
-| analyst | compiler | |
-|---|---|---|
-| off | off | the default, and the live deployment — unchanged in every byte |
-| off | on | drafts get a compiled brief; **no verdict is written, and the verdict ledger gets no line** |
-| on | off | unchanged: the analyst compiles its own batch's briefs, exactly where it always did |
-| on | on | both, and one shared busy flag keeps two enhancers off the same row |
+Selection is `briefDue`: a dispatchable `auftrag` with no brief yet. A row it touched is a row whose
+bytes are settled — nothing in this fleet claims to have READ one.
 
-The live deployment is the first row, and that is machine-checked rather than re-read:
+## 4. What this deliberately is not
 
-<!-- pin:watchdog-spawn FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=unset -->
+It is **not a safety gate**, and since 2026-09-10 there is no worker here that could be mistaken for
+one. The safety boundary is where it always was: no tick calls `mergeJob`, so an unattended lane
+produces a branch that waits for a human.
 
-Turning the compiler on is an owner act on `watchdog.sh` plus `launchctl kickstart`; this
-land ships the capability at its default of off and moves nothing that is running.
 
-Three boundaries, each one a thing the split deliberately does **not** do:
-
-- **The dispatcher gate (invariant 3) still reads `ANALYSIS_ON` alone.** A compiler is not
-  a reader: it writes bytes, it never judges a row against the tree it will run on.
-- **The compiler writes no reading.** No `t.analysis`, no line on `analysis-verdicts.jsonl`
-  — a row it touched is still an unread row, and the queue says so.
-- **`reanalyse` still refuses with 409 when the analyst is off.** Its reason names the
-  running compiler instead of implying deletion is all that would follow. `↻ refine` remains
-  the attended way to a different brief.
-
-Selection is the compiler's own (`briefDue`: a dispatchable `auftrag` with no brief yet),
-never `analysisDue` — the compiler's schedule is a property of the *draft* (compiled once,
-never again), the analyst's of the *tree*. A failed compile backs off in memory only
-(`60s × 2^attempts`, max 3): pacing a worker is not a finding about the work.
-
-## 6. What it deliberately is not
-
-It is **not a safety gate**. It is a reading, and a spend gate on nothing at all. The
-safety boundary is still where it was: no tick calls `mergeJob`, so an unattended lane
-produces a branch that waits for a human. Do not let the presence of a critical-looking
-worker be mistaken for that boundary moving.
-
-## 7. Die Dispatcher-Betriebsreferenz (aus `CLAUDE.md` umgezogen 2026-08-18)
+## 5. Die Dispatcher-Betriebsreferenz (aus `CLAUDE.md` umgezogen 2026-08-18)
 
 Die Vertrauensgrenzen im Präsens stehen in `CLAUDE.md` §Deploy; hier die Vollreferenz im Original
-(kinds, Lane-Deckel, `Task.brief`, Analyse, `FLEET_BRIEF_MS`, ↻ refine, „▸ clarify first"):
+(kinds, Lane-Deckel, `Task.brief`, `FLEET_BRIEF_MS`, ↻ refine, „▸ clarify first"):
 
 - **Der Dispatcher ist AN, startet aber NUR, was der Owner freigegeben hat** (Stand 2026-08-06: `fleet.json`
   trägt `"dispatch": true` — Zustand nie behaupten, ohne `grep '"dispatch"' fleet.json` zu prüfen; diese Zeile
@@ -321,7 +192,7 @@ Die Vertrauensgrenzen im Präsens stehen in `CLAUDE.md` §Deploy; hier die Vollr
       (`server.ts#programDispatchGrant`) — die liegengebliebenen `queued`-Zeilen eines
       abgeschlossenen Programs starten nichts.
     - **Alles andere gilt weiter**: der Autos-Master-Stop (`autosOn`, über `canDeliver`), Repo- und
-      Program-Deckel, die Analyse, die Kollisionslesung, der Harness-Bolt und der freie Slot. Der
+      Program-Deckel, der Harness-Bolt und der freie Slot. Der
       Datensatz öffnet den Dispatcher, nicht den Hand-Knopf.
     - **Quiet Hours werden für genau EIN Paar übergangen**: eine Zeile mit `releasedBy:"machine"` in
       einem Program mit aktivem Zuschlag. Eine owner-freigegebene Zeile desselben Programs wartet
@@ -368,41 +239,36 @@ Die Vertrauensgrenzen im Präsens stehen in `CLAUDE.md` §Deploy; hier die Vollr
     - **Nicht angefasst:** der Hand-Knopf `POST /api/tasks/:id/dispatch` prüft weiterhin KEINEN
       Deckel — er war der Notweg, solange die Zahl nicht je Repo einstellbar war, und bleibt was er
       war: manuelles Routing durch den Owner.
-  - **(c)** Der Brief entsteht NICHT mehr beim Dispatch: `tickAnalysisSweep` kompiliert ihn einmal pro Entwurf
+  - **(c)** Der Brief entsteht NICHT mehr beim Dispatch: `tickBriefSweep` kompiliert ihn einmal pro Entwurf
     und legt ihn als `Task.brief` auf die Zeile — vor dem Start lesbar UND editierbar
-    (`POST /api/tasks/:id/brief`; eine Bearbeitung pinnt ihn als `edited` und macht das Urteil stale).
-    `briefAndSend` hat seither **keinen Modellaufruf mehr** (`next.brief?.text ?? next.text`) — was geprüft
-    wurde, ist damit auch das, was läuft.
-  - **(d) Das Eval-Gate ist GESCHICHTE — seit `500ff63` (2026-08-06) gibt es stattdessen eine ANALYSE, und sie
-    gated nichts.** Prüfbar statt zu glauben: `tickEvalSweep`, `FLEET_EVAL_MAX_AUTO_PER_DAY`, `evalAuto` und
-    die Route `eval-reset` kommen in `server.ts` **null mal** vor. Was es gibt: `tickAnalysisSweep` (Env
-    `FLEET_ANALYSIS_CMD` / `FLEET_ANALYSIS_MS`, **0 = aus**; eine Harness ohne Stand-in MUSS
-    `FLEET_ANALYSIS_MS=0` setzen, sonst spawnt die Suite einen echten Agenten — `server.ts`, grep
-    `FLEET_ANALYSIS_MS=0`) schreibt `Task.analysis` mit dreiwertigem Verdict `ready | needs-you | unknown`
-    plus `blockers`/`collides`/`head`/`briefAt`/`attempts`; `unknown` ist die Absenz einer Antwort
-    (Worker-Fehler, Backoff 60s×2ⁿ) und darf NIE als eines der beiden Urteile gelesen werden. Der Sweep liest
-    `pending` UND `queued` und läuft **unabhängig von `dispatchOn`**. Er ist ADVISORY: die Analyse ist die
-    Evidenz, der Promote ist die Entscheidung. Neu urteilen lassen: `POST /api/tasks/:id/reanalyse`. Warum der
-    Umbau: das Gate hatte in seiner Lebenszeit genau EIN Verdict erzeugt — seine Population waren die
-    un-promoteten Entwürfe des Owners, und seine einzige Macht war, sie hinter seinem Rücken zu starten
-    (Messung im Body von `500ff63`). **Seit `e15d672` (2026-08-18, Programm P3) hat der Brief-Kompiler
-    einen EIGENEN Schalter `FLEET_BRIEF_MS` (Default 0 = aus):** `FLEET_ANALYSIS_MS=0` schaltet nur noch
-    den Analysten ab; ein laufender Kompiler befriedigt das Dispatcher-Gate NICHT und schreibt weder
-    `t.analysis` noch eine Zeile auf `analysis-verdicts.jsonl` (das Verdikt-Ledger aus P1, `bee2576`).
-    Suiten/fremde Harnesses ohne Stand-in müssen BEIDE Werte 0 setzen. Vertrag: `docs/queue-analyst.md` §5a.
-    Owner-Poll trägt `briefCompiler:{on:true}` (bei 0 weggelassen).
+    (`POST /api/tasks/:id/brief`; eine Bearbeitung pinnt ihn als `edited`, und nichts kompiliert darüber).
+    `briefAndSend` hat seither **keinen Modellaufruf mehr** (`next.brief?.text ?? next.text`) — was
+    freigegeben wurde, ist damit auch das, was läuft. Bis 2026-09-10 kompilierte der Analysten-Sweep
+    denselben Brief in seinem eigenen Durchgang mit; seit seiner Stilllegung ist `tickBriefSweep` der
+    EINZIGE Aufrufer von `compileBriefs` (Pin in `e2e/pins.ts`).
+  - **(d) Erst das Eval-Gate, dann der Analyst — BEIDE sind Geschichte.** Prüfbar statt zu glauben:
+    `tickEvalSweep`, `FLEET_EVAL_MAX_AUTO_PER_DAY`, `evalAuto` und die Route `eval-reset` kommen in
+    `server.ts` **null mal** vor; seit dem 2026-09-10 gilt dasselbe für `tickAnalysisSweep`,
+    `Task.analysis`, `FLEET_ANALYSIS_MS`/`FLEET_ANALYSIS_CMD` und `POST /api/tasks/:id/reanalyse`
+    (Negativ-Pins in `e2e/pins.ts`, Rückbauanker `7ff56eab83f64b0826142139c7f4d1be274ebd2d`).
+    Was BLEIBT, ist der Brief-Kompiler mit seinem eigenen Schalter `FLEET_BRIEF_MS` (Default 0 = aus,
+    `e15d672`, 2026-08-18): er schreibt Bytes, er urteilt nicht, und Suiten/fremde Harnesses ohne
+    `FLEET_ENHANCE_CMD`-Stand-in müssen ihn auf 0 lassen. Owner-Poll trägt `briefCompiler:{on:true}`
+    (bei 0 weggelassen); ein `analysis:{on}` daneben gibt es nicht mehr. Die Entscheidung war und
+    bleibt der Release des Owners — nur steht daneben jetzt kein Urteil mehr, das man überstimmen
+    könnte (`task_override` hat keinen Erzeuger mehr; die Zeilen in `audit.jsonl` bleiben lesbar).
   - **(d2) ↻ refine, der Brief-Kompiler** (`POST /api/tasks/:id/refine` async, `…/refine-confirm`
     all-or-nothing; `briefs/task-refine.md`): read-only-Worker, der eine rohe Zeile in 1..N geschnittene
     Kinder mit Done-Kriterium, Verify-Weg und `files` übersetzt — oder mit `unchanged:true` + Begründung
     zurückgibt (Triage-Riegel gegen Aufblähen; hat bei seinem ersten Live-Einsatz korrekt gegriffen).
     Propose/promote wie beim Kriterium: der Lauf fasst den Text der Zeile nie an, erst der Confirm mintet die
-    Kinder — **ohne** `brief` und **ohne** `analysis`, denn ein Kind ist ein neuer Entwurf und trifft die
-    Analyse frisch.
+    Kinder — **ohne** `brief`, denn ein Kind ist ein neuer Entwurf und trifft den Kompiler frisch.
   - **(e) „▸ clarify first"** (Knopf neben „▸ start lane", `POST /api/tasks/:id/dispatch {clarify:true}`, NUR
     attended — kein Tick übergibt es): derselbe Spawn, aber der Gründungsprompt ist `clarify-prompt.ts` statt
     `runEnhance` (bewusst kein Enhancer: er kompiliert ein Done-Kriterium, und genau das fehlt hier; kein
-    `/sharpen3` aus demselben Grund). Der Grund aus `Task.analysis` reist als „prüfen, nicht glauben" mit
-    (`buildClarifyBrief(next.text, next.analysis?.reason ?? null, …)`). Die Lane schlägt via
+    `/sharpen3` aus demselben Grund). `buildClarifyBrief(next.text, …)` nimmt seit 2026-09-10 keinen
+    Vor-Verdict mehr entgegen: der Parameter trug ausschließlich `Task.analysis.reason`, und mit dem
+    Analysten ist sein einziger Erzeuger weg. Die Lane schlägt via
     `POST /api/self/criterion` vor (`confirmedAt:null`), der Owner bestätigt mit eigenem Text
     (`POST /api/tasks/:id/criterion-confirm`) — propose/promote, damit der Produzent nie den Anker schreibt,
     an dem er gemessen wird. Solange sie wartet: `Slot.awaiting="owner"` (persistiert), und

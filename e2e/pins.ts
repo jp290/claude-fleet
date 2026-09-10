@@ -1506,77 +1506,123 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
 }
 
 {
-  // ANALYST MODE IS ONE RUNTIME FACT. A stored verdict cannot say whether the reader exists now,
-  // so every server consumer must read ANALYSIS_ON, the poll must transport that exact fact, and
-  // the client warning must consume the transported value. This is a wiring rule, not a pin of
-  // warning prose or cadence: ANALYSIS_TICK_MS remains free to carry the interval itself.
+  // THE QUEUE ANALYST IS RETIRED (2026-09-10), and a retirement is only real if it is STRUCTURAL.
+  // These are negative rules: not "the feature is off" — off was its state for a month while every
+  // symbol, route and field stayed — but "no producer, no carrier, no door exists". The restore
+  // anchor is 7ff56eab83f64b0826142139c7f4d1be274ebd2d.
   const client = clientU.text;
-  const warning = read("task-analysis-warning.ts");
   const executableServer = server.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
-  const factDefs = [...executableServer.matchAll(/const ANALYSIS_ON = ANALYSIS_TICK_MS > 0;/g)];
-  pin("one plainly named server fact derives analyst mode from the configured cadence",
-    factDefs.length === 1, `${factDefs.length} ANALYSIS_ON definition(s)`);
+  const executableClient = client.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
 
-  const sweepStart = server.indexOf("async function tickAnalysisSweep");
-  const sweepBody = sweepStart < 0 ? "" : server.slice(sweepStart, server.indexOf("function refineChildText", sweepStart));
-  const dispatchStart = server.indexOf("async function tickDispatch");
-  const dispatchBody = dispatchStart < 0 ? "" : server.slice(dispatchStart, server.indexOf("// A freshly seeded socket", dispatchStart));
-  const reanalyseStart = server.indexOf("const taskReanalyse =");
-  const reanalyseBody = reanalyseStart < 0 ? "" : server.slice(reanalyseStart, server.indexOf("const taskRefine =", reanalyseStart));
-  pin("ANALYSIS_ON feeds the sweep guard and its only scheduler registration",
-    /sweepBusy \|\| !ANALYSIS_ON/.test(sweepBody)
-      && /if \(ANALYSIS_ON\) setInterval\([^\n]*tickAnalysisSweep[^\n]*, ANALYSIS_TICK_MS\);/.test(executableServer));
-  pin("ANALYSIS_ON feeds the dispatch analysis invariant and reanalyse refusal",
-    /if \(ANALYSIS_ON\) \{/.test(dispatchBody) && /if \(!ANALYSIS_ON\)/.test(reanalyseBody));
-  pin("the owner poll exposes the same ANALYSIS_ON fact as a global sibling of dispatch",
-    /dispatch: \{[^\n]*\},\s*analysis: \{ on: ANALYSIS_ON \},/.test(executableServer));
+  // 1. THE MODULES ARE GONE. Named individually rather than as a count, so a re-appearance says
+  // which one came back.
+  const retiredModules = ["analysis-prompt.ts", "analysis-staleness.ts", "task-analysis-warning.ts"]
+    .filter((f) => exists(f));
+  pin("the three analyst modules are absent from the tree",
+    retiredModules.length === 0, retiredModules.join(", ") || "none present");
 
-  // Outside its numeric declaration, shared fact, and setInterval delay, the cadence must not be
-  // read directly. Any fourth use is a new derivation/consumer bypassing the named runtime fact.
-  const directCadenceUses = executableServer.split("\n").filter((l) => l.includes("ANALYSIS_TICK_MS"));
-  const cadenceBypasses = directCadenceUses.filter((l) =>
-    !l.includes("const ANALYSIS_TICK_MS =")
-    && !l.includes("const ANALYSIS_ON = ANALYSIS_TICK_MS > 0;")
-    && !/setInterval\([^\n]*tickAnalysisSweep[^\n]*, ANALYSIS_TICK_MS\);/.test(l));
-  pin("no server analyst consumer derives on/off directly from ANALYSIS_TICK_MS",
-    directCadenceUses.length >= 3 && cadenceBypasses.length === 0,
-    `${directCadenceUses.length} cadence use(s); bypasses=[${cadenceBypasses.map((l) => l.trim()).join(" | ")}]`);
-  // THE BRIEF COMPILER IS A SECOND MODE, not a shade of the first. One number used to switch both,
-  // so these rules exist to keep the split from silently collapsing back: its own fact, its own
-  // guard, its own registration, and — the load-bearing one — a sweep that writes no reading.
+  // 2. NO PRODUCER AND NO CARRIER IN EXECUTABLE CODE. Comments are excluded on purpose: this file's
+  // own retirement notes name the retired symbols, and a rule that could not survive being
+  // explained is a rule people delete.
+  const deadSymbols = ["ANALYSIS_ON", "ANALYSIS_TICK_MS", "ANALYSIS_MODEL", "ANALYSIS_CMD",
+    "tickAnalysisSweep", "analysisDue", "analysisFailed", "recordAnalysisVerdict", "analysisStale",
+    "buildAnalysisPrompt", "ANALYSIS_BLOCKERS", "TaskAnalysis", "AnalysisBlocker"];
+  const aliveServer = deadSymbols.filter((sym) => executableServer.includes(sym));
+  pin("no retired analyst symbol survives in executable server code",
+    aliveServer.length === 0, aliveServer.join(", ") || "none");
+  const aliveTypes = deadSymbols.filter((sym) =>
+    read("server/types.ts").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n").includes(sym));
+  pin("the task record declares no analysis field and no analysis type",
+    aliveTypes.length === 0 && !/\banalysis\?:/.test(read("server/types.ts")),
+    aliveTypes.join(", ") || "none");
+
+  // 3. THE ROUTE IS RETIRED, not merely refusing. A door that answers 409 is a door; this one must
+  // not be reachable at all, so the pattern that matched its handler is absent from the file.
+  pin("POST /api/tasks/:id/reanalyse has no handler left",
+    !executableServer.includes("reanalyse"), "");
+
+  // 4. LEGACY STATE IS DROPPED, NOT CARRIED. A fleet.json written before the retirement still holds
+  // `analysis` on its rows. The normalizer must not restore it — the load-bearing half of the cut,
+  // because a restored verdict is a claim about a tree that has since moved and nothing refreshes.
+  const normStart = server.indexOf("filesProposal: normFilesProposal(t.filesProposal)");
+  const normBody = normStart < 0 ? "" : server.slice(normStart, server.indexOf("criterion: t.criterion &&", normStart));
+  pin("the task normalizer restores no persisted analysis onto a reloaded row",
+    normBody !== "" && !normBody.includes("analysis:") && normBody.includes("brief: t.brief"),
+    normBody === "" ? "the normalizer slice was not found" : `${normBody.split("\n").length} lines`);
+
+  // 5. THE WIRE CARRIES NEITHER THE PER-ROW READING NOR THE MODE. Both directions: the poll must not
+  // send them, and the client must not read them — a client that kept reading an absent field would
+  // silently degrade to whatever `undefined` means at that site.
+  pin("neither the 2 s poll nor GET /api/tasks carries an analysis field",
+    !/\banalysis:/.test(executableServer) && !/analysis\?:/.test(executableServer), "");
+  pin("the client reads no analysis digest, cache or runtime mode",
+    !executableClient.includes("analysisOn") && !executableClient.includes("taskAnalysisFull")
+      && !/t\.analysis/.test(executableClient) && !executableClient.includes("classifyAnalystOffWarning"), "");
+
+  // 6. THE DISPOSITION RAIL'S WRITE DOOR IS CLOSED — and only the write door. The reader validates
+  // no worker name, so labels already filed under `analysis` stay readable: retiring a producer
+  // must not rewrite what an owner once said.
+  const protocol = read("src/protocol.ts");
+  pin("the disposition worker set no longer admits `analysis`, while the reader still validates none",
+    /export const DISPOSITION_WORKERS: DispositionWorker\[\] = \["land", "review3", "enhance"\];/.test(protocol)
+      && !/DISPOSITION_WORKERS\.includes/.test(read("server.ts").slice(server.indexOf("async function readDispositions"),
+        server.indexOf("function writeDisposition"))), "");
+
+  // 7. THE WAVE PROJECTION IS DETERMINISTIC OR IT IS NOTHING. Model edges and the running-work block
+  // they alone could fill are gone; what remains must still be the file-surface rule, not an empty
+  // module that reports "no collision" about a question nobody asked.
+  const waves = read("task-waves.ts");
+  const wavesCode = waves.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  pin("the wave projection keeps its file-surface rule and carries no model-edge vocabulary",
+    /const bFiles = new Set\(b\.files \?\? \[\]\);/.test(wavesCode)
+      && /return \(a\.files \?\? \[\]\)\.some\(\(file\) => bFiles\.has\(file\)\);/.test(wavesCode)
+      && !wavesCode.includes("modelEdges") && !wavesCode.includes("analysisOn")
+      && !wavesCode.includes("blockedByRunning") && !wavesCode.includes("trustedCollides"), "");
+
+  // --- AND WHAT SURVIVED IT. The brief compiler was fused to the analyst on one switch until
+  // 2026-08-08 and is the half that stayed; these rules are what keep the cut from having taken it
+  // along. Its own fact, its own guard, its own registration, and a sweep that writes no reading.
   const briefFactDefs = [...executableServer.matchAll(/const BRIEF_ON = BRIEF_TICK_MS > 0;/g)];
   pin("one plainly named server fact derives brief-compiler mode from its own configured cadence",
     briefFactDefs.length === 1, `${briefFactDefs.length} BRIEF_ON definition(s)`);
   const briefStart = server.indexOf("async function tickBriefSweep");
-  const briefBody = briefStart < 0 ? "" : server.slice(briefStart, server.indexOf("async function tickAnalysisSweep", briefStart));
+  const briefBody = briefStart < 0 ? "" : server.slice(briefStart, server.indexOf("// --- ↻ refine", briefStart));
   const briefCode = briefBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   pin("BRIEF_ON feeds the brief sweep guard and its only scheduler registration",
     /sweepBusy \|\| !BRIEF_ON/.test(briefBody)
       && /if \(BRIEF_ON\) setInterval\([^\n]*tickBriefSweep[^\n]*, BRIEF_TICK_MS\);/.test(executableServer));
-  pin("the compiler sweep compiles and never judges: no analyst switch, no verdict, no reading",
-    briefCode.length > 0 && !briefCode.includes("ANALYSIS_ON")
-      && !briefCode.includes("recordAnalysisVerdict") && !briefCode.includes(".analysis"),
+  pin("the compiler sweep compiles and never judges: no verdict, no reading",
+    briefCode.length > 0 && !briefCode.includes("ANALYSIS") && !briefCode.includes(".analysis"),
     briefCode.length ? "" : "tickBriefSweep not found");
-  pin("exactly one site writes a machine-compiled brief, and both sweeps go through it",
+  // ONE site writes a machine brief, and after the retirement exactly ONE caller reaches it — the
+  // analyst's own compile step was the second. A third would be a new producer of the bytes a lane
+  // is founded on, which is the one thing this rule exists to make visible.
+  pin("exactly one site writes a machine-compiled brief, and one sweep goes through it",
     [...executableServer.matchAll(/\.brief = \{ text, at: Date\.now\(\), model: SUMMARY_MODEL, edited: false \}/g)].length === 1
-      && [...executableServer.matchAll(/await compileBriefs\(/g)].length === 2);
+      && [...executableServer.matchAll(/await compileBriefs\(/g)].length === 1);
   pin("the owner poll carries the compiler mode as its own fact, omitted at zero",
-    /analysis: \{ on: ANALYSIS_ON \},\s*\.\.\.\(BRIEF_ON \? \{ briefCompiler: \{ on: true \} \} : \{\}\),/.test(executableServer)
-      && client.includes("briefCompilerOn = data.briefCompiler?.on;")
-      && /classifyAnalystOffWarning\(\{\s*analysisOn,\s*briefCompilerOn,/.test(client)
-      && warning.includes("input.briefCompilerOn === true"));
-
-  pin("the queue warning consumes the owner poll fact and only classifies explicit false as off",
-    client.includes("analysisOn = data.analysis?.on;")
-      && /classifyAnalystOffWarning\(\{\s*analysisOn,/.test(client)
-      && warning.includes("if (input.analysisOn !== false) return null;"));
+    /\.\.\.\(BRIEF_ON \? \{ briefCompiler: \{ on: true \} \} : \{\}\),/.test(executableServer)
+      && client.includes("briefCompilerOn = data.briefCompiler?.on;"));
   pin("every brief exposes one text-free top-level generation that invalidates client full/list/detail caches",
     /& \{ briefAt\?: number; criterion\?:/.test(server)
       && /\.\.\.\(t\.brief \? \{ briefAt: t\.brief\.at \} : \{\}\)/.test(server)
       && client.includes("briefAt?: number;")
       && /const qTaskFullKey =[\s\S]{0,300}?t\.briefAt \?\? 0/.test(client)
-      && /t\.filesOrigin, t\.cluster, t\.briefAt, t\.analysis\?\.at/.test(client)
-      && /t\.note, t\.kind, t\.briefAt, t\.analysis\?\.verdict/.test(client));
+      && /t\.filesOrigin, t\.cluster, t\.briefAt,/.test(client)
+      && /t\.note, t\.kind, t\.briefAt,/.test(client));
+  // THE RELEASE DOOR IS UNCHANGED BY THE CUT, and that has to be said mechanically: releasing was
+  // the decision before the analyst existed and stays the decision after it. What went is the
+  // override arm (`release anyway ▸`, the `task_override` audit line, the note), which had no
+  // producer left once no verdict could contradict a release.
+  const releaseStart = server.indexOf('else if (taskAct[2] === "queue")');
+  const releaseSlice = releaseStart < 0 ? "" : server.slice(releaseStart, server.indexOf('else if (taskAct[2] === "unqueue")', releaseStart));
+  // comments excluded: the retirement note AT that call site names the arm it removed, and a rule
+  // that fails on its own explanation is a rule the next reader deletes
+  const releaseBody = releaseSlice.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  pin("release stays one owner act with no override arm and no verdict to overrule",
+    releaseSlice !== "" && /releaseTask\(t, "owner"\);/.test(releaseBody)
+      && !releaseBody.includes("task_override") && !releaseBody.includes(".analysis"),
+    releaseSlice === "" ? "the queue action was not found" : `${releaseBody.split("\n").length} code lines`);
 
   // register is the offline view of the queue. Visibility in the browser must not turn that shell
   // path into an API client; comments are excluded so a warning about curl would not trip the rule.
@@ -2777,9 +2823,9 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       "enhance:FLEET_WORKER_ROUTE_ENHANCE",
       "summary:FLEET_WORKER_ROUTE_SUMMARY",
     ]), sparkRoutes.join(" | ") || "no Spark routes parsed");
-  pin("the complete worker route table leaves all six unmigrated workers on Claude",
+  pin("the complete worker route table leaves all five unmigrated workers on Claude",
     JSON.stringify(claudeRoutes) === JSON.stringify([
-      "analysis", "cleanReview", "merge", "refine", "repair", "review",
+      "cleanReview", "merge", "refine", "repair", "review",
     ]), claudeRoutes.join(" | ") || "no Claude routes parsed");
   pin("all migrated worker routes share the one exact Codex Spark model value",
     /const CODEX_SPARK_MODEL = "gpt-5\.3-codex-spark";/.test(server)
@@ -3887,36 +3933,27 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   }
 }
 
-// --- STALENESS IS ONE RULE, RENDERED BY TWO READERS. The server decides it in
-// analysis-staleness.ts; register.sh renders `!head` from fleet.json on disk, in Python, with no
-// compiler between them. Until 2026-08-18 both were a bare tip comparison and agreed by accident;
-// now both must intersect what a land MOVED with the row's own file surface and fall to stale when
-// either side is unknown. A reader that quietly reverts to the tip is the regression this fastens
-// shut — it would look like a simplification and would silently expire every open verdict again.
+// --- STALENESS WAS ONE RULE, RENDERED BY TWO READERS, and both readers retired with the queue
+// analyst on 2026-09-10. The rule (analysis-staleness.ts) decided whether a verdict was still about
+// today's tree by intersecting what a land MOVED with the row's own file surface; register.sh
+// rendered the same intersection in Python so the two could not drift. Four pins held them equal.
+//
+// What replaces them is a NEGATIVE: neither reader may come back on its own. A re-grown `!head` arm
+// in register.sh would be a second meaning of "stale" with nothing on the server side to agree
+// with, which is precisely the drift those four pins were paid for.
 {
-  const RULE_STALE = "staleness is the same FLÄCHE rule on both sides";
-  const rule = read("analysis-staleness.ts");
   const reg = read("register.sh");
-  // read the arms off the rule's own reason union, never off a copy of the list kept here
-  const arms = new Set((rule.match(/export type StaleReason =([^;\n]+)/)?.[1] ?? "")
-    .split("|").map((w) => w.trim().replace(/"/g, "")).filter(Boolean));
-  pin(`${RULE_STALE} — the rule keeps a surface arm AND both unknown arms`,
-    arms.has("brief") && arms.has("surface") && arms.has("unknown-surface") && arms.has("unknown-movement"),
-    `[${[...arms].join(",")}]`);
-  // server.ts must DECIDE through the rule and ask git for the moved side, never re-derive either
-  const body = server.match(/function analysisStale\([\s\S]*?\n\}/)?.[0] ?? "";
-  pin(`${RULE_STALE} — analysisStale decides through the rule and asks for the moved surface`,
-    /analysisStaleness\(/.test(body) && /movedSurfaceBetween\(/.test(body) && /surfaceOfView\(/.test(body),
-    body === "" ? "analysisStale not found in server.ts" : `${body.split("\n").length} lines`);
-  // …and register.sh's `!head` arm must do the same two things: intersect a moved set, and treat
-  // an unreadable one as stale. The slice is the arm itself, so a bare tip comparison fails here.
-  const arm = reg.match(/stale = \[\][\s\S]*?stale\.append\("head"\)/)?.[0] ?? "";
-  pin(`${RULE_STALE} — register.sh's !head arm intersects a moved set and falls to stale on unknown`,
-    /moved_since\(/.test(arm) && /is None/.test(arm) && /not known/.test(arm),
-    arm === "" ? "the !head arm was not found in register.sh" : `${arm.split("\n").length} lines`);
-  pin(`${RULE_STALE} — both derive that set the same way: two-dot, rename-blind`,
-    /git diff --name-only --no-renames/.test(reg)
-    && /"diff", "--name-only", "--no-renames"/.test(server), "");
+  const regCode = reg.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
+  pin("register.sh renders no verdict staleness and derives no moved surface of its own",
+    !regCode.includes("moved_since") && !regCode.includes("MAINSHA")
+      && !/git diff --name-only --no-renames/.test(regCode)
+      && !regCode.includes('"analysis"') && !regCode.includes("collides"),
+    "");
+  // …and it still renders the THREE provenance states, which is the half of that section the
+  // retirement does not touch: an unknown surface is not an empty one, before and after.
+  pin("register.sh still separates confirmed, derived and UNKNOWN surface provenance",
+    reg.includes("[bestätigt/mechanisch]") && reg.includes("[abgeleitet]") && reg.includes("UNBEKANNT"),
+    "");
 }
 
 pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (otherwise its runtime checks measure nothing)", /const MIGRATE_PCT = Number\(process\.env\.FLEET_MIGRATE_PCT \?\? 0\) \| 0/.test(server) && /\bFLEET_MIGRATE_PCT=[1-9]\d*\b/.test(read("e2e-isolated.sh")));

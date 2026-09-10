@@ -11,15 +11,14 @@ import { matchTree, treeOf, type TreeNode } from "./filetree";
 import { PLA_ACK_KEY, postLandAlarm } from "./plaudit";
 import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, type FleetEventRow } from "./opsevents";
 import {
-  matchTaskWaveAnalysis, projectTaskWaves,
-  type ProjectedWaveTask, type TaskWaveProjection, type TaskWaveRunningBlock, type TaskWaveUnresolved,
+  projectTaskWaves,
+  type ProjectedWaveTask, type TaskWaveProjection, type TaskWaveUnresolved,
 } from "../task-waves";
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09,
   type LandWave, type LandWaveCosts, type LandWaveProjection } from "../task-land-waves";
 // the same first-sentence reduction the dispatched notes block renders with — imported rather than
 // re-spelled so the wave evidence and the brief's note lines cut a row at the same place
 import { noteFirstSentence } from "../task-notes";
-import { classifyAnalystOffWarning } from "../task-analysis-warning";
 // everything this file and server.ts must say identically — see src/protocol.ts. Importing rather
 // than re-declaring is what makes tsc, which gates every land, the thing that notices a drift.
 import {
@@ -258,7 +257,6 @@ const agentHarnesses = (): HarnessInfo[] => harnesses.filter((h) => (h.role ?? "
 // what the 2 s poll carries per task — mirrors server.ts's TaskDigest. No `text`: the prompt
 // bodies are fetched once from /api/tasks when the queue overlay opens (see loadTaskTexts).
 // The optional fields are absent, not null, when unset.
-type AnalysisVerdict = "ready" | "needs-you" | "unknown";
 interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: string;
   // MIRRORS server.ts's TASK_KINDS — and it is a claim about a foreign surface, not a type the
   // server hands us. It said `"lane" | "note"` for the whole life of the four-kind rename
@@ -268,14 +266,6 @@ interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: 
   kind?: "auftrag" | "richtung" | "notiz" | "betrieb"; status: "pending" | "queued" | "sent" | "done" | "archived"; created: number; slot?: number; note?: string; repo?: string; programId?: string;
   // Bounded generation/presence only; the brief text remains on GET /api/tasks.
   briefAt?: number;
-  // the queue analyst's reading. ADVISORY — it groups and labels a row, it never disables an
-  // action. `reason` here is the poll's 140-char slice; the full one rides /api/tasks.
-  analysis?: { verdict: AnalysisVerdict; blockers: string[]; reason: string;
-    stale: boolean; hasBrief: boolean; at: number;
-    // set while re-reading this row keeps failing. The verdict beside it is the last one that came
-    // back — older than the tree, but a reading; before it was kept, a failed re-read replaced it
-    // with an absence and the row read as "never analysed".
-    retry?: { at: number; attempts: number } };
   // deterministic file/cluster facts from taskDigest. Absence is UNKNOWN, never an empty surface.
   files?: string[]; filesOrigin?: "confirmed" | "derived";
   // the PROPOSED surface (W2), carried WHOLE on the poll rather than as a shape digest: `files`
@@ -356,12 +346,9 @@ function supportsOf(h: string | undefined): HarnessInfo["supports"] {
 let autosList: AutoInfo[] = [];
 let tasksList: TaskInfo[] = [];
 let dispatch: DispatchInfo = { available: false, on: false, maxLanes: 0, repo: "" };
-// Task 684a9d99 will supply this runtime fact. Missing must stay OFF: a verdict's presence does not
-// prove the analyst is configured now, and Waves may not trust model edges on that guess.
-let analysisOn: boolean | undefined;
-// The brief compiler's mode, a SEPARATE runtime fact since the two switches were split: the analyst
-// being off no longer implies that nothing compiles a brief. Omitted at zero on the wire, so
-// `undefined` and `false` mean the same thing here — off.
+// The brief compiler's runtime mode. Omitted at zero on the wire, so `undefined` and `false` mean
+// the same thing here — off. A sibling `analysisOn` stood beside it until 2026-09-10 and retired
+// with the queue analyst.
 let briefCompilerOn: boolean | undefined;
 let intakeOn = false;
 // Whether THIS fleet writes the integration branch (server.ts, FLEET_LANDS). A follower instance
@@ -5364,7 +5351,6 @@ async function refresh() {
     if (!res.ok) return;
     const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string;
       v?: number; autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo; intake?: boolean;
-      analysis?: { on?: boolean };
       // WHICH FLEET ANSWERED — always sent since the dual-host cut, `{name:null}` when unnamed
       instance?: { name?: string | null };
       // absent on a server that predates the flag → treated as "this fleet lands", the old behaviour
@@ -5413,7 +5399,6 @@ async function refresh() {
       typeof l?.name === "string" && INSTANCE_NAME_RE.test(l.name)
       && typeof l.url === "string" && INSTANCE_URL_RE.test(l.url));
     renderInstanceHead();
-    analysisOn = data.analysis?.on;
     briefCompilerOn = data.briefCompiler?.on;
     intakeOn = data.intake ?? false;
     // tier 2's only reader. Rendered on every poll rather than behind the render-key diff below:
@@ -5503,12 +5488,9 @@ async function refresh() {
       if (dk !== qDetailKey) { qDetailKey = dk; renderQueueDetail(); }
     } else if (qShell?.isOpen() && qPick !== null) {
       const t = tasksList.find((x) => x.id === qPick);
-      // `analysis.at` alone stopped being enough when a failed re-reading started leaving the old
-      // verdict (and its timestamp) in place: the attempt counter is then the ONLY thing that
-      // moves, so without it here the pane would keep showing "failed 1×" through every retry.
       const dk = t ? JSON.stringify([t.id, t.status, t.kind, t.note, t.repo,
-        t.files?.join("\n"), t.filesOrigin, t.cluster, t.briefAt, t.analysis?.at,
-        t.analysis?.stale, t.analysis?.retry?.at, t.criterion?.proposedAt, t.criterion?.confirmedAt,
+        t.files?.join("\n"), t.filesOrigin, t.cluster, t.briefAt,
+        t.criterion?.proposedAt, t.criterion?.confirmedAt,
         // a parked file-surface proposal arrives on a poll exactly as the criterion does, and the
         // confirm button removes it — without this the pane would keep offering a spent click
         t.filesProposal?.at, t.filesProposal?.files.join("\n"),
@@ -5520,7 +5502,7 @@ async function refresh() {
         // exactly as a comment does — without them the sources section would keep showing a spent
         // detach button and a verdict list that is one report behind.
         t.notes?.n, t.notes?.at, t.verdicts?.n, t.verdicts?.at,
-        analysisOn, briefCompilerOn,
+        briefCompilerOn,
         // the lane line moves with the SLOTS (state, dirty, a recycled pointer), not with the row
         qLaneKey(new Map([[t.id, qLaneJoinOf(t.id)]])),
         qView === "waves" ? qWaveProjectionKey() : null]) : "gone";
@@ -6040,13 +6022,6 @@ async function openMergeDiff(slotId: number) { await openReview(slotId, "land");
 // it, the list is rebuilt only when the task data actually changed (key comparison, like
 // renderSlots), and the detail pane is rebuilt only when the SELECTION changes.
 const taskText = new Map<string, string>();
-// full analysis per task id, from the same /api/tasks fetch: the 2 s poll's digest carries only a
-// bounded reason slice, and the truncated-reason defect (a review verdict whose visible reason
-// argued for its own opposite) is exactly what this cache exists to prevent in the detail panel
-interface FullAnalysis { verdict: AnalysisVerdict; blockers: string[]; reason: string;
-  collides: string[]; at: number; model: string; attempts: number;
-  retry?: { at: number; reason: string } }
-const taskAnalysisFull = new Map<string, FullAnalysis>();
 // the compiled brief — the exact bytes a lane will receive. Never on the poll (it is a whole
 // prompt); the detail pane shows and edits it from here.
 interface FullBrief { text: string; at: number; model: string; edited: boolean }
@@ -6189,7 +6164,7 @@ interface QLifecycle { stations: readonly QLifeStation[]; current: QLifeMark; re
 type QMainAct = "adopt" | "clarify" | "release" | "start" | "open-lane" | "none";
 interface QMainSlot { act: QMainAct; label: string | null; why: string; slot: number | null }
 interface QHeadRow { status: string; kind?: string; slot?: number; repo?: string; programId?: string;
-  analysisVerdict?: string; blockers?: readonly string[]; hasCriterion: boolean }
+  hasCriterion: boolean }
 // the lane join, reduced to what the head needs: `lane` carries the slot its ▸ open lane names.
 interface QHeadLane { kind: "lane" | "refused" | "none"; slot?: number }
 interface QHeadPlan { status: string; program: string; repo: string; life: QLifecycle; main: QMainSlot }
@@ -6234,16 +6209,16 @@ function qMainActionOf(row: QHeadRow, lane: QHeadLane): QMainSlot {
       : none("an advisory row assigns no work — change its Kind in Actions below to enter the workflow");
   }
   if (row.status === "pending") {
-    // CLARIFY FIRST is the standing answer to a "no done-criterion" blocker, and only while no
-    // criterion exists yet: once one has been proposed, a second clarify lane would settle a
-    // question that is already on this pane, waiting for your confirmation.
-    if ((row.blockers ?? []).includes("criterion") && !row.hasCriterion)
+    // CLARIFY FIRST is offered while NO criterion exists yet: once one has been proposed, a second
+    // clarify lane would settle a question that is already on this pane awaiting confirmation.
+    // Until 2026-09-10 it was gated on the retired analyst's `criterion` blocker as well; with the
+    // reader gone the criterion's own absence is the whole condition, which is the fact the act was
+    // ever about — never "a model said so".
+    if (!row.hasCriterion)
       return { act: "clarify", label: "▸ clarify first", slot: null,
-        why: "the analyst found no done-criterion — this lane settles it WITH you and waits; no code until you confirm" };
-    const over = row.analysisVerdict !== undefined && row.analysisVerdict !== "ready";
-    return { act: "release", label: over ? "release anyway ▸" : "release ▸", slot: null,
-      why: over ? "the analyst flagged this — releasing it is recorded as your override"
-        : "hands it to the dispatcher, which runs released tasks in order" };
+        why: "nothing says what done means yet — this lane settles it WITH you and waits; no code until you confirm" };
+    return { act: "release", label: "release ▸", slot: null,
+      why: "hands it to the dispatcher, which runs released tasks in order" };
   }
   if (row.status === "queued")
     return { act: "start", label: "▸ start by hand", slot: null,
@@ -6367,10 +6342,10 @@ function qSpawnRow(id: string): HTMLElement {
 let qRowId = new Map<HTMLElement, string | null>();
 
 // The generation GET /api/tasks must match before the detail may make absence claims. The poll can
-// announce a new analysis or top-level briefAt while the old full cache is still present; treating
-// that cache as current would briefly call a stored analysis or brief absent.
+// announce a new top-level briefAt while the old full cache is still present; treating that cache
+// as current would briefly call a stored brief absent.
 const qTaskFullKey = () => tasksList.map((t) =>
-  `${t.id}:${t.briefAt ?? 0}:${t.analysis?.at ?? 0}:${t.analysis?.hasBrief ? 1 : 0}:${t.analysis?.retry?.at ?? 0}:${t.criterion?.proposedAt ?? 0}:${t.criterion?.confirmedAt ?? 0}:${t.refine?.at ?? 0}:${t.comments?.n ?? 0}:${t.comments?.at ?? 0}:${t.notes?.n ?? 0}:${t.notes?.at ?? 0}:${t.verdicts?.n ?? 0}:${t.verdicts?.at ?? 0}`
+  `${t.id}:${t.briefAt ?? 0}:${t.criterion?.proposedAt ?? 0}:${t.criterion?.confirmedAt ?? 0}:${t.refine?.at ?? 0}:${t.comments?.n ?? 0}:${t.comments?.at ?? 0}:${t.notes?.n ?? 0}:${t.notes?.at ?? 0}:${t.verdicts?.n ?? 0}:${t.verdicts?.at ?? 0}`
 ).join(",");
 const qTaskFullLoaded = (id: string) => taskText.has(id) && taskTextKey === qTaskFullKey();
 
@@ -6378,8 +6353,6 @@ const qTaskFullLoaded = (id: string) => taskText.has(id) && taskTextKey === qTas
 // pulls them once per id-set, only while the window is actually open, and a task's text never
 // changes after creation, so a cached entry stays valid until the id disappears.
 async function loadTaskTexts() {
-  // `retry.at` rides along for the same reason it is in the detail key: a failed re-reading now
-  // leaves `analysis.at` untouched, and the failure's own text lives only in this fetch.
   const key = qTaskFullKey();
   if (taskTextBusy || key === taskTextKey) return;
   taskTextBusy = true;
@@ -6388,7 +6361,7 @@ async function loadTaskTexts() {
   try {
     const res = await api("/api/tasks");
     if (res.ok) {
-      const data = (await res.json()) as { tasks: { id: string; text: string; analysis?: FullAnalysis;
+      const data = (await res.json()) as { tasks: { id: string; text: string;
         brief?: FullBrief; criterion?: NonNullable<TaskInfo["criterion"]>;
         refine?: TaskRefineFull; comments?: TaskCommentView[]; spawn?: NonNullable<QSpawnRow>;
         notes?: TaskNotePinView[]; verdicts?: TaskNoteVerdictView[] }[] };
@@ -6396,7 +6369,6 @@ async function loadTaskTexts() {
       // that older response under the post-save generation; the retry below fetches the new truth.
       if (epoch === taskTextEpoch) {
         taskText.clear(); // the route returns every task, so this is the whole truth — no stale ids
-        taskAnalysisFull.clear();
         taskBriefFull.clear();
         taskCriterionFull.clear();
         taskRefineFull.clear();
@@ -6407,7 +6379,6 @@ async function loadTaskTexts() {
         for (const t of data.tasks) {
           taskText.set(t.id, t.text);
           if (t.spawn) taskSpawnFull.set(t.id, t.spawn);
-          if (t.analysis) taskAnalysisFull.set(t.id, t.analysis);
           if (t.brief) taskBriefFull.set(t.id, t.brief);
           if (t.criterion) taskCriterionFull.set(t.id, t.criterion);
           if (t.refine) taskRefineFull.set(t.id, t.refine);
@@ -6782,7 +6753,7 @@ function programDispatchState(p: ProgramInfo): {
     sentence: `The tick may start THIS program's released rows while the global dispatcher is`
       + ` stopped, up to ${rec.maxLanes} of its lanes at once — and that number can only LOWER the`
       + " machine-wide per-program budget, never raise it. Nothing else is waived: the autos"
-      + " kill-switch, the repo lane cap, the analyst's reading, the collision check, the harness"
+      + " kill-switch, the repo lane cap, the per-program lane cap, the harness"
       + " automation bolt and the free-slot requirement all still hold. Quiet hours are stepped"
       + " around for this program's MACHINE-released rows only; an owner-released row still waits." };
 }
@@ -7009,11 +6980,11 @@ let qProgSel: HTMLSelectElement | null = null;
 // `pending` vs `queued` is a mechanism detail — it records whether the owner has clicked promote.
 // Grouping by it made the queue answer a question nobody asks. The owner's real questions are
 // "what needs me", "what did I release", "what is running", and everything else is backlog. So the
-// group is DERIVED from status + analysis + kind, in that priority order, and each group is a
+// group is DERIVED from status + criterion + kind, in that priority order, and each group is a
 // standing answer. Nothing here is persisted: change the rule and every row re-sorts itself.
 type QGroup = "needs" | "released" | "running" | "backlog";
 const Q_GROUPS: { k: QGroup; head: string; hint: string }[] = [
-  { k: "needs", head: "Needs you", hint: "flagged by the analyst, or waiting on a decision only you can make" },
+  { k: "needs", head: "Needs you", hint: "waiting on a decision only you can make" },
   { k: "released", head: "Released — runs next", hint: "you promoted these; the dispatcher takes them in this order" },
   { k: "running", head: "Running", hint: "live in a lane" },
   { k: "backlog", head: "Backlog — about to start", hint: "unreleased work and advisory rows; change an advisory Kind to auftrag before dispatch" },
@@ -7033,26 +7004,15 @@ function qGroupOf(t: TaskInfo): QGroup | null {
   // It remains visible workbench input, but Backlog is the only honest one of the four work groups.
   if (qAdvisory(t)) return "backlog";
   if (t.status === "queued") return "released";
-  // an unconfirmed criterion is a lane parked on YOUR answer, which outranks any verdict
+  // an unconfirmed criterion is a lane parked on YOUR answer
   if (t.criterion && t.criterion.confirmedAt === null) return "needs";
-  if (t.analysis && t.analysis.verdict !== "ready") return "needs";
   return "backlog";
 }
-// The compact verdict fact under a row's title. Reasons and blockers belong to Overview, where
-// they can be read without turning the four-fact row into another nine-part middot chain.
-const Q_BLOCKER_LABEL: Record<string, string> = {
-  attribution: "premise doesn't hold", reach: "reaches outside the worktree",
-  criterion: "no done-criterion", "brief-drift": "brief drifted from your draft",
-};
+// The compact brief fact under a row's title. A queue-analyst verdict line stood here until
+// 2026-09-10; what is left is the one thing that still decides WHICH BYTES a lane receives.
 function qVerdictLine(t: TaskInfo): string {
-  const a = t.analysis;
-  if (!a) return qAdvisory(t) ? "" : "not analysed yet";
-  // "stale, re-reading" is a promise the row cannot keep while the re-reading FAILS, and saying it
-  // anyway is how a blind window looked like a busy one. When there is a failure record, it
-  // replaces that phrase — the verdict shown is the last one that came back, and it is not moving.
-  const n = a.retry?.attempts ?? 0;
-  const verdict = a.verdict === "ready" ? "✓ ready" : a.verdict === "unknown" ? "? unknown" : "⚠ needs you";
-  return `${verdict}${n ? ` (re-analysis failing ${n}×)` : a.stale ? " (stale, re-reading)" : ""}`;
+  if (qAdvisory(t)) return "";
+  return t.briefAt ? "brief compiled" : "no brief — the raw request would be sent";
 }
 const qTaskText = (id: string) => taskText.get(id) ?? "";
 // THE ROW NAME. Two rules, both from watching the owner read his own queue and not recognise it.
@@ -7148,7 +7108,7 @@ function qNoteVerdictRows(verdicts: readonly TaskNoteVerdictView[],
 }
 
 // "beruehrt von n Lands, zuletzt <sha7>" — the note's own line on the queue. Only for a `notiz`:
-// on an auftrag the same field would compete with the analyst's verdict, which is the fact that
+// on an auftrag the same field would compete with the brief fact, which is the fact that
 // decides whether that row can start.
 const qTouchedLine = (t: TaskInfo): string => {
   const n = t.touched?.length ?? 0;
@@ -7162,7 +7122,7 @@ function qTaskSummary(t: TaskInfo, text: string, now: number): { title: string; 
   return {
     title: qFirstLine(text),
     facts: [
-      // A NOTE'S FIRST FACT IS ITS LIFECYCLE, not the analyst's silence. `qVerdictLine` is empty
+      // A NOTE'S FIRST FACT IS ITS LIFECYCLE. `qVerdictLine` is empty
       // for every advisory row by construction, so "— advisory" was the whole column — and after
       // N2 there is something to say there: whether any land has moved the ground this observation
       // stands on. Absence keeps the old word, because "nothing recorded" is not "untouched".
@@ -7258,30 +7218,14 @@ function qLaneJoins(tasks: readonly QLaneTask[], slots: readonly QLaneSlot[],
   return out;
 }
 
-function qWaveAnalysis(t: TaskInfo) {
-  const digest = t.analysis;
-  return matchTaskWaveAnalysis(digest ? {
-    at: digest.at,
-    stale: digest.stale,
-    trust: digest.verdict === "unknown" ? "unknown" : "trusted",
-  } : undefined, taskAnalysisFull.get(t.id));
-}
-
 function qWaveProjection(): TaskWaveProjection {
   return projectTaskWaves({
-    tasks: tasksList.map((t) => {
-      const analysis = qWaveAnalysis(t);
-      return {
-        id: t.id, repo: t.repo, kind: t.kind, status: t.status, created: t.created,
-        files: t.files, filesOrigin: t.filesOrigin,
-        ...(analysis ? { analysis } : {}),
-      };
-    }),
+    tasks: tasksList.map((t) => ({
+      id: t.id, repo: t.repo, kind: t.kind, status: t.status, created: t.created,
+      files: t.files, filesOrigin: t.filesOrigin,
+    })),
     dispatchRepo: dispatch.repo,
     maxLanes: dispatch.maxLanes,
-    runningTaskIds: tasksList.filter((t) => t.status === "sent").map((t) => t.id),
-    runningBranches: fleet.filter((s) => s.cwd && s.worktree).map((s) => s.worktree!.branch),
-    analysisOn,
   });
 }
 
@@ -7375,34 +7319,20 @@ async function qStartWave(wave: LandWave): Promise<void> {
 
 function qWaveProjectionKey(): string {
   return JSON.stringify([
-    dispatch.repo, dispatch.maxLanes, analysisOn,
-    fleet.filter((s) => s.cwd && s.worktree).map((s) => s.worktree!.branch).sort(),
-    tasksList.map((t) => {
-      const analysis = qWaveAnalysis(t);
-      return [t.id, t.repo, t.kind, t.status, t.created, t.files, t.filesOrigin, t.programId,
-        t.analysis?.verdict, t.analysis?.at, t.analysis?.stale, analysis?.collides];
-    }),
+    dispatch.repo, dispatch.maxLanes,
+    tasksList.map((t) =>
+      [t.id, t.repo, t.kind, t.status, t.created, t.files, t.filesOrigin, t.programId]),
   ]);
-}
-
-function qWaveModelHint(model: ProjectedWaveTask["modelEdges"]): string {
-  if (model === "trusted") return "fresh trusted model edges used";
-  if (model === "stale") return "stale model edges ignored";
-  if (model === "unknown") return "unknown model reading ignored";
-  return "model edges not used — analyst mode is off or not reported";
 }
 
 type QWaveLocation =
   | { kind: "wave"; item: ProjectedWaveTask; repo: string; wave: number }
-  | { kind: "blocked"; item: TaskWaveRunningBlock }
   | { kind: "unresolved"; item: TaskWaveUnresolved };
 function qWaveLocation(id: string, projection: TaskWaveProjection): QWaveLocation | null {
   for (const repo of projection.repos) for (const wave of repo.waves) {
     const item = wave.tasks.find((task) => task.id === id);
     if (item) return { kind: "wave", item, repo: repo.repo, wave: wave.index };
   }
-  const blocked = projection.blockedByRunning.find((task) => task.id === id);
-  if (blocked) return { kind: "blocked", item: blocked };
   const unresolved = projection.unresolved.find((task) => task.id === id);
   return unresolved ? { kind: "unresolved", item: unresolved } : null;
 }
@@ -8296,7 +8226,7 @@ function renderQueueDetail() {
   const laneJoin = qLaneJoinOf(t.id);
   const head = qHeadPlan({
     status: t.status, kind: t.kind, slot: t.slot, repo: t.repo, programId: t.programId,
-    analysisVerdict: t.analysis?.verdict, blockers: t.analysis?.blockers, hasCriterion: crit !== undefined,
+    hasCriterion: crit !== undefined,
   }, programsList.find((x) => x.id === t.programId)?.title ?? null,
   laneJoin.kind === "lane" ? { kind: "lane", slot: laneJoin.lane.slot } : { kind: laneJoin.kind });
   shell.detail.appendChild(el("div", "rvhead qdhead-status", head.status));
@@ -8360,11 +8290,6 @@ function renderQueueDetail() {
     : t.source === "steward" ? "⚙ steward" : "owner"));
   if (qAdvisory(t)) meta.appendChild(chip(`${t.kind} — not work`, "dim",
     "an advisory row does not assign work. Change its Kind to auftrag to enter the normal workflow"));
-  // the analyst's reading as a one-word chip; the sentence behind it is spelled out below
-  if (t.analysis) meta.appendChild(chip(
-    t.analysis.verdict === "ready" ? "✓ analysed" : t.analysis.verdict === "unknown" ? "? unread" : "⚠ flagged",
-    t.analysis.verdict === "ready" ? "ok" : "warn",
-    "the queue analyst's reading — advisory, it blocks nothing"));
   if (t.refining) meta.appendChild(chip("↻ refining…", "dim",
     "the brief compiler is reading the repo — this can take a few minutes; the proposal appears here when it lands"));
   if (t.repo) meta.appendChild(chip(`⌂ ${t.repo.split("/").pop() || t.repo}`, "dim",
@@ -8423,14 +8348,11 @@ function renderQueueDetail() {
   if (qView === "waves") {
     const location = qWaveLocation(t.id, qWaveProjection());
     if (location?.kind === "wave") overview.appendChild(el("div", "shellhint",
-      `Waves: Wave ${location.wave} in ${baseName(location.repo)} — no known collision; ${qWaveModelHint(location.item.modelEdges)}.`));
-    else if (location?.kind === "blocked") overview.appendChild(el("div", "shellhint",
-      `Waves: outside — a fresh trusted model edge names running work (${location.item.running.join(", ")}).`));
+      `Waves: Wave ${location.wave} in ${baseName(location.repo)} — no known file intersection.`));
     else if (location?.kind === "unresolved") {
       const why = location.item.reason === "unknown-files" ? "file surface unknown"
         : location.item.reason === "unknown-repo" ? "target repo unknown" : "lane capacity is zero";
-      overview.appendChild(el("div", "shellhint",
-        `Waves: outside — ${why}; ${qWaveModelHint(location.item.modelEdges)}.`));
+      overview.appendChild(el("div", "shellhint", `Waves: outside — ${why}.`));
     }
   }
   // N3 · SOURCES / VERDICTS — above the comments, because an assignment is an INSTRUCTION and a
@@ -8496,7 +8418,7 @@ function renderQueueDetail() {
         + ` · ${fmtTs(v.at)}`));
     }
   }
-  // COMMENTS — sits directly under the chips, above the analyst, because it is the only text on
+  // COMMENTS — sits directly under the chips, because it is the only text on
   // this row a HUMAN wrote and the one most likely to overrule everything below it. Always
   // present, even empty: "there was nowhere to leave a remark" is the defect this closes, and a
   // box that appears only once a thread exists has the same problem one click deeper.
@@ -8538,66 +8460,10 @@ function renderQueueDetail() {
   };
   cmacts.appendChild(cmb);
   overview.appendChild(cmacts);
-  // the verdict spelled out in full where it can be READ — the FULL reason from the /api/tasks
-  // fetch, never the digest's bounded slice (the truncated slice once made a verdict read as its
-  // own opposite). The digest is the fallback while that fetch is still in flight.
-  const anFull = taskAnalysisFull.get(t.id);
-  const an = anFull ?? t.analysis;
-  if (an) {
-    const head = an.verdict === "ready" ? "the analyst found nothing to stop you"
-      : an.verdict === "unknown" ? "the analyst could not read this" : "the analyst wants you to look";
-    // …and whether that reading is the CURRENT one. Three states, not two: fresh · stale and being
-    // re-read · stale and the re-read keeps failing. The third used to be invisible because the
-    // failure overwrote the verdict, so the row said "could not read this" and the reasoning that
-    // HAD been produced was gone. Now it says both, in that order: the verdict, then its age.
-    const rn = t.analysis?.retry?.attempts ?? 0;
-    overview.appendChild(el("div", "rvhead",
-      `${head}${rn ? ` · re-reading it has failed ${rn}×` : t.analysis?.stale ? " · stale — the tree moved under its files, it is being re-read" : ""}`));
-    if (an.blockers.length) {
-      const tags = el("div", "ocfacts");
-      for (const b of an.blockers) tags.appendChild(chip(Q_BLOCKER_LABEL[b] ?? b, "warn"));
-      overview.appendChild(tags);
-    }
-    overview.appendChild(el("div", "qdtext", an.reason));
-    if (anFull?.collides.length) overview.appendChild(el("div", "shellhint",
-      `touches the same files as: ${anFull.collides.join(", ")}`));
-    overview.appendChild(el("div", "shellhint",
-      `${anFull ? `${anFull.model}, ` : ""}${fmtTs(an.at)} — advisory: it never blocks an action here`));
-    // WHY it keeps failing, in the analyst's own words — the one thing a "re-analysis failing"
-    // label cannot carry and the only thing that says whether ↻ re-analyse would help.
-    if (anFull?.retry) overview.appendChild(el("div", "shellhint",
-      `the last re-reading failed at ${fmtTs(anFull.retry.at)}: ${anFull.retry.reason}`));
-    // was this READING worth anything? The disposition rail's fourth worker, joined by taskId. It
-    // exists because the analyst's most valuable hit leaves no trace anywhere else: a `needs-you`
-    // the owner agrees with ends in a rewritten row and never becomes a lane, so no outcome join
-    // can ever see it. Same rule as everywhere on the rail — ABSENCE IS NOT APPROVAL, an unlabeled
-    // verdict renders as unlabeled. Nothing here gates anything: the label is an owner opinion
-    // recorded after the fact, and the analysis stays advisory either way.
-    const acur = dispoOf("analysis", t.id);
-    const alab = el("div", "ocdispo-row");
-    alab.appendChild(el("span", "ocdispo-state" + (acur ? ` is-${acur}` : " is-none"),
-      acur ? `dein Urteil: ${DISPO_WORD_UI[acur]}` : "unbewertet"));
-    for (const [verdict, word, why] of [
-      ["accepted", "brauchbar", "the reading was right and you acted on it"],
-      ["edited", "umgeschrieben", "you rewrote this row because of it — the analyst's most valuable hit, invisible to every ledger"],
-      ["ignored", "ignoriert", "you started it anyway"],
-      ["wrong", "falsch", "the reading was wrong about this row"],
-    ] as [DispositionVerdict, string, string][]) {
-      const b = el("button", `ocdispo-btn${acur === verdict ? " active" : ""}`, word) as HTMLButtonElement;
-      b.title = `${why} — records an owner \`${verdict}\` disposition on the rail`;
-      b.onclick = async () => {
-        b.disabled = true;
-        if (await labelDisposition("analysis", t.id, verdict)) renderQueueDetail();
-        else b.disabled = false;
-      };
-      alab.appendChild(b);
-    }
-    overview.appendChild(alab);
-  }
   // THE BRIEF — the exact bytes a lane receives, editable while the task has not been sent.
   // It exists in the UI at all because it used to be compiled at spawn time and fired straight
   // into the pane: unreadable before the fact, and a different string from the one that had been
-  // approved. Editing pins it (the sweep never recompiles over an edit) and re-opens the analysis.
+  // approved. Editing pins it — the sweep never recompiles over an edit.
   if (!qAdvisory(t) && (t.status === "pending" || t.status === "queued")) {
     refinement!.appendChild(el("div", "rvhead",
       brief ? `the brief this lane will receive${brief.edited ? " · yours" : ` · compiled ${fmtTs(brief.at)}`}`
@@ -8607,7 +8473,7 @@ function renderQueueDetail() {
     refinement!.appendChild(bbox);
     const bacts = el("div", "pkdacts");
     const bb = el("button", "shrbtn", "save brief") as HTMLButtonElement;
-    bb.title = "pins this text as the brief — the analyst re-reads it, and nothing recompiles over it";
+    bb.title = "pins this text as the brief — nothing recompiles over it";
     bb.onclick = () => void qAct(t.id, "brief", { text: bbox.value }).then((ok) => {
       if (ok && qBriefDraft?.for === t.id) {
         qBriefDraft.seed = bbox.value;
@@ -8759,31 +8625,30 @@ function renderQueueDetail() {
   } else {
     // "▸ start lane" spawns the lane NOW — independent of the auto dispatcher, which may be off
     const startable = t.status === "pending" || t.status === "queued";
-    // A RAW START is one nothing has vouched for: no analysis at all, or a verdict that asked for
-    // you. The route gates on none of it by design (server.ts, taskDispatch) — and that is exactly
-    // what made this click indistinguishable from starting a `ready` row: same blue button, same
-    // single gesture, same audit line. So a raw start now SAYS what it is starting, drops out of
-    // the primary style, and stays disabled until the line under it is ticked. Not a ban — a
-    // second, deliberate gesture — and the two paths that FIX the state (clarify, refine) stay in
-    // the same row, readable while you decide. The verdict is read from the digest like the
-    // release button's override below, that being the fresher of the two copies.
+    // A RAW START is one where the lane receives the owner's DRAFT rather than a compiled or
+    // owner-written brief. The route gates on none of it by design (server.ts, taskDispatch) —
+    // which is exactly what made this click indistinguishable from starting a row somebody had
+    // sharpened: same blue button, same single gesture, same audit line. So a raw start SAYS what
+    // it is starting, drops out of the primary style, and stays disabled until the line under it is
+    // ticked. Not a ban — a second, deliberate gesture — and the two paths that FIX the state
+    // (clarify, refine) stay in the same row, readable while you decide.
+    //
+    // Until 2026-09-10 "raw" meant "the queue analyst did not say ready". The analyst is retired,
+    // so this is re-grounded on the fact that outlived it — WHICH BYTES the lane gets — rather than
+    // left standing as a flag that would now be true of every row and therefore say nothing.
     // WHAT the lane would start AS, before either act below: the harness/model/effort pickers, the
     // effective triple with its origins, and the server's refusal if the combination cannot run.
     // Both acts read the same pick (qSpawnPick) at click time and stay disabled while it is blocked.
     const spawnProblem = startable ? qSpawnStateOf(t.id).problem : null;
     if (startable) acts.appendChild(qSpawnRow(t.id));
     if (startable) {
-      const raw = !t.analysis || t.analysis.verdict !== "ready";
-      const blockers = (t.analysis?.blockers ?? []).map((b) => Q_BLOCKER_LABEL[b] ?? b).join(" · ");
+      const raw = !brief;
       // the same state twice, in the two places it has to be legible: on the button as a label, and
-      // on the acknowledgment as the CONSEQUENCE — what the lane gets, not what the analyst said
-      const rawWhat = !t.analysis ? "unchecked"
-        : t.analysis.verdict === "unknown" ? "unread" : `flagged${blockers ? `: ${blockers}` : ""}`;
-      const rawWhy = !t.analysis ? "start it unchecked — nothing has read this row yet"
-        : t.analysis.verdict === "unknown" ? "start it unread — the analyst could not read this row"
-        : t.analysis.blockers.includes("criterion")
-          ? "start it without a done-criterion — the lane gets your draft unsharpened, and nothing says what done means"
-          : `start it flagged (${blockers || "the analyst wants you to look"}) — the lane gets your draft as it stands`;
+      // on the acknowledgment as the CONSEQUENCE — what the lane gets
+      const rawWhat = "raw request";
+      const rawWhy = crit?.confirmedAt
+        ? "start it raw — the lane gets your draft as it stands, with the confirmed criterion beside it"
+        : "start it raw — the lane gets your draft as it stands, and nothing says what done means";
       // ▸ START: the body is built at CLICK time from the row's pick (qDispatchBody "start") — the
       // picked triple, plus the acknowledgment only when the row is raw. Nothing else rides along.
       // the head calls this act "▸ start by hand" (a released row the owner starts now); in the
@@ -8838,41 +8703,29 @@ function renderQueueDetail() {
       rb.onclick = () => void qAct(t.id, "refine", {});
       acts.appendChild(rb);
     }
-    // RELEASING is the decision the whole analysis exists to inform, so it says what it does. When
-    // it contradicts the analyst it renames itself and asks once — no dialog for the clean case,
-    // and no silent override for the flagged one.
+    // RELEASING IS THE DECISION, and since 2026-09-10 it is the ONLY one: the queue analyst that
+    // used to file an advisory verdict beside it — which renamed this button "release anyway ▸",
+    // asked once, and booked a `task_override` — is retired, and so is the warning that named its
+    // mode. What the owner is told instead is what the release will actually DO: which bytes the
+    // lane receives. The wrapper stays, because a release-adjacent sentence is the one place that
+    // fact is read before the click rather than after it.
     if (t.status === "pending") {
-      const over = !!t.analysis && t.analysis.verdict !== "ready";
-      const b = el("button", mainCls("release"),
-        over ? "release anyway ▸" : "release ▸") as HTMLButtonElement;
-      b.title = over
-        ? "the analyst flagged this — releasing it is recorded as your override"
-        : "hands it to the dispatcher, which runs released tasks in order";
-      b.onclick = () => {
-        if (over && !confirm(`The analyst flagged this:\n\n${an?.reason ?? ""}\n\nRelease it anyway?`)) return;
-        void qAct(t.id, "queue");
-      };
+      const b = el("button", mainCls("release"), "release ▸") as HTMLButtonElement;
+      b.title = "hands it to the dispatcher, which runs released tasks in order";
+      b.onclick = () => void qAct(t.id, "queue");
+      // ABSENCE IS NOT A CLAIM: while the full fetch is still in flight this pane cannot say
+      // whether a brief exists, and it says so rather than promising the raw request.
       const release = el("div", "qrelease");
-      const warning = classifyAnalystOffWarning({
-        analysisOn,
-        briefCompilerOn,
-        fullDataLoaded: qTaskFullLoaded(t.id),
-        hasStoredAnalysis: taskAnalysisFull.has(t.id),
-        hasStoredBrief: taskBriefFull.has(t.id),
-      });
-      if (warning) {
-        release.appendChild(el("div", "qanalysiswarn", warning.text));
-        release.appendChild(b);
-        place(release, "release");
-      } else {
-        // ON/unknown keeps the established action row byte-for-byte: only the disabled warning's
-        // presence introduces its release-adjacent wrapper.
-        place(b, "release");
-      }
+      release.appendChild(el("div", "qreleasenote", !qTaskFullLoaded(t.id)
+        ? "Which bytes this release sends is still loading."
+        : brief
+          ? `The stored brief will be sent${brief.edited ? " — yours, pinned" : ""}.`
+          : briefCompilerOn === true
+            ? "No brief yet — the raw request will be sent unless the compiler writes one first."
+            : "No brief, and no compiler is running — the raw request will be sent."));
+      release.appendChild(b);
+      place(release, "release");
     }
-    if ((t.status === "pending" || t.status === "queued") && t.analysis)
-      acts.appendChild(mk("↻ re-analyse", "reanalyse", "shrbtn", {},
-        "drops the verdict and the un-edited brief so the analyst reads it from scratch"));
     if (t.status === "queued") acts.appendChild(mk("hold", "unqueue"));
   }
   if (t.status === "archived") acts.appendChild(mk("restore", "unarchive"));
@@ -8930,8 +8783,7 @@ function renderQueue() {
     // the MARK is derived from the slots, so it moves without any program field moving. Leaving
     // it out of the key would freeze a MAIN at `live` for as long as no task changed.
     programsRead, programsList.map((p) => [p.id, p.status, p.title, programMark(p).mark]),
-    [...model.work, ...model.history].map((t) => [t.id, t.status, t.slot, t.note, t.kind, t.briefAt, t.analysis?.verdict,
-      t.analysis?.blockers.join(","), t.analysis?.stale, t.analysis?.retry?.attempts,
+    [...model.work, ...model.history].map((t) => [t.id, t.status, t.slot, t.note, t.kind, t.briefAt,
       t.criterion ? t.criterion.confirmedAt === null : null, taskText.has(t.id),
       t.refine?.at, t.refining, t.comments?.n])]);
   if (key === qKey) return;
@@ -8953,8 +8805,7 @@ function renderQueue() {
   } else if (projection) {
     const placed = projection.repos.reduce((n, repo) =>
       n + repo.waves.reduce((m, wave) => m + wave.tasks.length, 0), 0);
-    shell.setSubtitle(`${placed} with no known collision · ${projection.unresolved.length} unresolved outside`
-      + ` · ${projection.blockedByRunning.length} blocked by running work`);
+    shell.setSubtitle(`${placed} with no known collision · ${projection.unresolved.length} unresolved outside`);
   }
 
   shell.list.replaceChildren();
@@ -8991,8 +8842,7 @@ function renderQueue() {
     add({
       name: summary.title, facts: summary.facts, id: t.id,
       sub: qLaneLine(laneJoins.get(t.id) ?? { kind: "none" }),
-      cls: [`q-${t.status}`, qAdvisory(t) ? "q-obs" : "",
-        t.analysis && t.analysis.verdict !== "ready" ? "q-flag" : ""].filter(Boolean).join(" "),
+      cls: [`q-${t.status}`, qAdvisory(t) ? "q-obs" : ""].filter(Boolean).join(" "),
     });
   };
   const addSection = (name: string, count: number, hint: string, visibleHint = false) => {
@@ -9098,20 +8948,10 @@ function renderQueue() {
     for (const repo of projection.repos) for (const wave of repo.waves) {
       const items = wave.tasks.filter((item) => visibleIds.has(item.id));
       if (!items.length) continue;
-      const evidence = [...new Set(items.map((item) => qWaveModelHint(item.modelEdges)))].join("; ");
       const hint = `Target repo: ${repo.repo}. First-fit, at most ${projection.capacity} lanes.`
-        + ` Known file intersections excluded; ${evidence}.`;
+        + " Known file intersections excluded; an unknown surface never enters a wave.";
       addSection(`${baseName(repo.repo)} · Wave ${wave.index} · no known collision`, items.length, hint, true);
       for (const item of items) {
-        const task = taskById.get(item.id);
-        if (task) { addTask(task); visibleRows++; }
-      }
-    }
-    const blocked = projection.blockedByRunning.filter((item) => visibleIds.has(item.id));
-    if (blocked.length) {
-      addSection("Outside waves · blocked by running work", blocked.length,
-        "A fresh, trusted model edge names a currently running task id or branch.", true);
-      for (const item of blocked) {
         const task = taskById.get(item.id);
         if (task) { addTask(task); visibleRows++; }
       }
@@ -9292,8 +9132,8 @@ function openQueue() {
   }
   shell.tools.appendChild(drow);
 
-  shell.foot.textContent = "backlog → the analyst reads it and compiles its brief → you release ▸"
-    + " → a ⎇ lane runs it → ± review → ⏏ land.  The analyst advises; releasing is yours."
+  shell.foot.textContent = "backlog → its brief is compiled → you release ▸"
+    + " → a ⎇ lane runs it → ± review → ⏏ land.  Releasing is yours."
     + "  Sidebar badge: •N uncommitted · ↑N to push · amber = editing · green = ready to land";
 
   renderQueue();
@@ -10264,7 +10104,6 @@ type DossierTask = { id: string; text: string; kind: string; source: string; sta
   releasedBy?: string; note: string | null; files?: string[];
   brief?: { text: string; at: number; model: string; edited: boolean };
   criterion?: { text: string; proposedAt: number; confirmedAt: number | null };
-  analysis?: { verdict: string; reason: string; blockers: string[]; collides: string[]; at: number };
   match: string };
 type DossierAudit = { at: number; result: string; mainSha: string; covers: string[]; reason?: string;
   exitCode: number | null; out: string; cmd: string; fails?: string[];
@@ -10418,11 +10257,6 @@ function renderAkteDetail(d: Dossier) {
       host.appendChild(el("div", "aktehead", "the brief it was sent"));
       host.appendChild(el("div", "aktepre", t.brief.text));
       host.appendChild(el("div", "shrsub", `${t.brief.model} · ${fmtTs(t.brief.at)}${t.brief.edited ? " · edited by the owner" : ""}`));
-    }
-    if (t.analysis) {
-      host.appendChild(el("div", "aktehead", "what the analyst said before it started"));
-      host.appendChild(el("div", "shrsub", `${t.analysis.verdict} · ${t.analysis.reason}`
-        + `${t.analysis.blockers.length ? ` · blockers: ${t.analysis.blockers.join(", ")}` : ""}`));
     }
   }
 
@@ -11790,7 +11624,7 @@ dropFile.addEventListener("change", () => {
 // --- boot: restore layout + pane assignments (migrates the old fleet.current key) ---
 void (async () => {
   await refresh();
-  void loadDispositions(); // so an already-labeled ③ review or analysis verdict renders its label, not "unbewertet"
+  void loadDispositions(); // so an already-labeled ③ review renders its label, not "unbewertet"
   let view: { layout?: number; panes?: number[]; focused?: number } = {};
   try {
     view = JSON.parse(localStorage.getItem("fleet.view") ?? "{}") as typeof view;

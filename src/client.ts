@@ -7012,7 +7012,7 @@ function qGroupOf(t: TaskInfo): QGroup | null {
 // 2026-09-10; what is left is the one thing that still decides WHICH BYTES a lane receives.
 function qVerdictLine(t: TaskInfo): string {
   if (qAdvisory(t)) return "";
-  return t.briefAt ? "brief compiled" : "no brief — the raw request would be sent";
+  return t.briefAt ? "brief compiled" : "raw request";
 }
 const qTaskText = (id: string) => taskText.get(id) ?? "";
 // THE ROW NAME. Two rules, both from watching the owner read his own queue and not recognise it.

@@ -2795,7 +2795,7 @@ function noteComposed(slotId: number, text: string): void {
 // the journal say a human typed it, and "auto" would say a tick did. Neither is true, and the
 // attribution is the point of writing the line at all.
 function logPrompt(s: Slot, text: string, source: "owner" | "share" | "auto" | "terminal" | "steward" | "supervisor", ts: number,
-  sendId?: string, delivery?: "sent" | "uncertain" | "unobserved"): void {
+  sendId?: string, delivery?: PromptDelivery): void {
   if (source !== "terminal") noteComposed(s.id, text);
   // The six original fields keep their names AND their order (readers only ever add optional keys).
   // What is new is unconditional and is the point of the line: the slot NUMBER identifies a row,
@@ -5377,6 +5377,21 @@ type ComposerRollback = "cleared" | "residue" | "kept:differs" | "kept:unobserva
 class SendNotAccepted extends Error {
   readonly acceptance = "not-observed" as const;
   constructor(message: string, readonly rollback: ComposerRollback | null = null) { super(message); }
+}
+// THE JOURNAL'S DELIVERY WORD. `logPrompt` has carried an optional `delivery` since the owner
+// send receipt; what it never had was a value for the UNATTENDED senders, so 3 120 auto lines were
+// written with no delivery state at all and a failed paste was indistinguishable from a delivered
+// one in the one file that records what Fleet typed. The three receipt words stay exactly as they
+// were (older lines are read against them); an Acceptance rides along verbatim, and a send that
+// THREW names the fact a reader can act on: SendRefused = nothing was typed, SendNotAccepted =
+// typed and the composer kept it. Anything else is an untyped transport failure and must claim
+// neither of those two — "send-failed" says only that the attempt did not complete.
+type PromptDelivery = "sent" | "uncertain" | "unobserved" | Acceptance
+  | "SendRefused" | "SendNotAccepted" | "send-failed";
+function sendFailureDelivery(e: unknown): PromptDelivery {
+  if (e instanceof SendRefused) return "SendRefused";
+  if (e instanceof SendNotAccepted) return "SendNotAccepted";
+  return "send-failed";
 }
 // Env-tunable for the suites only (same reason as READY_WAIT_MS): a stand-in that renders no composer
 // must not pay the full window on every send. Floor 200 ms — below one redraw the answer is noise.
@@ -11951,12 +11966,18 @@ async function tickAuditPing(): Promise<void> {
       if (!s.cwd || s.worktree !== null || s.label === STEWARD_LABEL || s.awaiting === "owner"
         || backlogSessionKey(s) !== session) continue;
       const text = auditPingMessage(row);
+      let acceptance: Acceptance;
       try {
-        await sendText(s, text, true);
+        ({ acceptance } = await sendText(s, text, true, { rollbackOwnPayload: true }));
       } catch (e) {
         // pending stays pending: nothing typed (occupied composer) or not observed accepted. The
-        // next attempt's pre-paste read refuses while the text still sits there, so this is a
-        // retry without a replay.
+        // rollback is what makes that sentence true — an unaccepted payload LEFT in the composer
+        // blocks this channel for every later sender, and it is Fleet's own text, so removing it
+        // is removing nothing of the occupant's (rollbackOwnComposerPayload erases only an exact
+        // match). The journal carries the failure word: a held ping is a fact about DELIVERY, and
+        // until this line it existed only in fleet.json, never in the file that records what was
+        // typed.
+        logPrompt(s, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
         dirty = setAuditPing(auditAt, { status: "pending",
           lastResult: `held — ${String(e instanceof Error ? e.message : e).slice(0, 100)}` }) || dirty;
         continue;
@@ -11969,7 +11990,7 @@ async function tickAuditPing(): Promise<void> {
       await saveStateNow();
       s.history = [...s.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
       saveHistory(s);
-      logPrompt(s, text, "auto", sentAt);
+      logPrompt(s, text, "auto", sentAt, undefined, acceptance);
       return; // at most ONE receiver, and only one audit event, per tick
     }
     const why = held.size ? [...held].sort().join(", ") : "receiver changed during delivery check";
@@ -12008,17 +12029,26 @@ async function tickInboxNudge(): Promise<void> {
         || `${session}|${currentUnreadIds.join(",")}` !== key) continue;
       const text = `[fleet inbox] ${unreadIds.length} ungelesene Eintraege in der Inbox deines Programs ${program.id} — `
         + "GET /api/self/inbox, dann POST /api/self/inbox/<id>/read (x-fleet-self-token aus $FLEET_SELF_TOKEN).";
+      let acceptance: Acceptance;
       try {
-        await sendText(s, text, true);
+        ({ acceptance } = await sendText(s, text, true, { rollbackOwnPayload: true }));
       } catch (e) {
         logError("inboxNudgeSend", e);
+        logPrompt(s, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
+        // THE COOLDOWN IS SPENT, THE DEDUPE KEY IS NOT. Without the stamp the next tick — 250 ms
+        // later on this fleet — walked straight back into the same composer, which is how one
+        // unaccepted paste became eight "composer occupied" errors in thirteen minutes. Writing
+        // `key` here instead would be the opposite error: it would mark THIS unread set as already
+        // nudged and the program would never be told again, so the prior key is carried unchanged
+        // (empty for a first attempt — no real key is ever empty, it always contains a `|`).
+        inboxNudgeTried.set(s.id, { key: prior?.key ?? "", lastAt: Date.now() });
         continue;
       }
       const sentAt = Date.now();
       inboxNudgeTried.set(s.id, { key, lastAt: sentAt });
       s.history = [...s.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
       saveHistory(s);
-      logPrompt(s, text, "auto", sentAt);
+      logPrompt(s, text, "auto", sentAt, undefined, acceptance);
       return;
     }
   } finally {
@@ -12061,10 +12091,17 @@ async function tickBacklogNudge(): Promise<void> {
       if (!s.cwd || s.worktree !== null || s.label === STEWARD_LABEL || s.awaiting === "owner"
         || backlogSessionKey(s) !== session) continue;
       const text = backlogNudgeMessage(open);
+      let acceptance: Acceptance;
       try {
-        await sendText(s, text, true);
+        ({ acceptance } = await sendText(s, text, true, { rollbackOwnPayload: true }));
       } catch (e) {
         logError("backlogNudgeSend", e); // not counted as tried: nothing observed accepted
+        logPrompt(s, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
+        // `count` (the budget) stays where it was — nothing was observed accepted — but the
+        // COOLDOWN is spent, for tickInboxNudge's reason one function up. `openKey` is written
+        // EMPTY rather than with the current backlog: a failed attempt must not dedupe this
+        // backlog away, and no real openKey is empty (the list is non-empty by the guard above).
+        backlogNudgeTried.set(s.id, { session, openKey: "", lastAt: Date.now(), count });
         continue;
       }
       const sentAt = Date.now();
@@ -12073,7 +12110,7 @@ async function tickBacklogNudge(): Promise<void> {
       });
       s.history = [...s.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
       saveHistory(s);
-      logPrompt(s, text, "auto", sentAt);
+      logPrompt(s, text, "auto", sentAt, undefined, acceptance);
       return;
     }
   } finally {
@@ -12122,10 +12159,18 @@ async function tickMigrate(): Promise<void> {
       const verdict = await canDeliver(s, { now, idleMs: MIGRATE_IDLE_MS, quietHours: true });
       if (!verdict.ok || s.sessionId !== attempt.sessionId || !s.cwd || s.worktree !== null) continue;
       const text = migrateMessage(fill);
+      let acceptance: Acceptance;
       try {
-        await sendText(s, text, true);
+        ({ acceptance } = await sendText(s, text, true, { rollbackOwnPayload: true }));
       } catch (e) {
         logError("migrationSend", e);
+        logPrompt(s, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
+        // The nudge BUDGET stays untouched (a failed paste delivered no nudge, as the note below
+        // says), but `lastAt` is stamped so the cooldown covers a failure too. Without it this
+        // loop had no bound at all on the failing path: neither counter moved, so every tick
+        // pasted into the same pane again.
+        attempt.lastAt = Date.now();
+        migrateTried.set(s.id, attempt);
         continue;
       }
       // Like tickBacklogNudge, delivery spends the budget; a tmux failure delivered no nudge and
@@ -12139,7 +12184,7 @@ async function tickMigrate(): Promise<void> {
       }
       s.history = [...s.history, { text, ts: now }].slice(-MAX_HISTORY);
       saveHistory(s);
-      logPrompt(s, text, "auto", now);
+      logPrompt(s, text, "auto", now, undefined, acceptance);
       console.log(`migration: nudged slot ${s.id} at ${fill.pct}% (${attempt.nudges}/${MIGRATE_MAX_NUDGES})`);
     }
   } finally {
@@ -19579,11 +19624,18 @@ async function deliverMergeVerdict(s: Slot, cwd: string, branch: string,
   }
   const main = (s.worktree ? await integrationBranch(s.worktree.repo) : null) ?? "the integration branch";
   const text = mergeVerdictMessage(kind, outcome, main);
+  let acceptance: Acceptance;
   try {
-    await sendText(target, text, true);
+    ({ acceptance } = await sendText(target, text, true, { rollbackOwnPayload: true }));
   } catch (e) {
     // SendRefused typed nothing at all (an owner draft in the composer); anything else may have
     // typed part of it. Neither is retried beyond the shared cap, and both are named in the marker.
+    // The rollback matters MOST here: this verdict is the longest text any tick pastes, and left in
+    // a composer it blocks the receiving MAIN's channel for every later sender, not just for the
+    // one retry this path owns. The journal line is written on the failing path too — with the
+    // coupling the success path already documents: on a lane that never received any owner-or-auto
+    // prompt, laneOwnerPrompts will read THIS text as the founding brief whether it arrived or not.
+    logPrompt(target, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
     await mark(false, e instanceof SendRefused ? "composer-occupied" : "send-failed");
     audit("merge_verdict_skip", target.id, `${branch}: ${kind} — ${String(e instanceof Error ? e.message : e).slice(0, 120)}${suffix}`);
     return;
@@ -19601,7 +19653,7 @@ async function deliverMergeVerdict(s: Slot, cwd: string, branch: string,
   const now = Date.now();
   target.history = [...target.history, { text, ts: now }].slice(-MAX_HISTORY);
   saveHistory(target);
-  logPrompt(target, text, "auto", now);
+  logPrompt(target, text, "auto", now, undefined, acceptance);
   await mark(true);
   audit("merge_verdict_sent", target.id, `${branch}: ${kind}${suffix}`);
 }

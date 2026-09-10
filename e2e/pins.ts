@@ -3767,6 +3767,42 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     recoveryBody === "" ? "recoverFleetReportDelivery not found"
       : JSON.stringify({ latch: recoveryLatch, guard: recoveryGuard, send: recoverySend }));
 
+  // THE FIVE UNATTENDED SENDERS AND THE ROLLBACK, pinned by NAME. Measured 2026-09-09/10
+  // (docs/messungen/2026-09-10-gegencheck-datenschichten-glm.md §2 B1): these five called sendText
+  // without the flag and threw the acceptance value away, so an unaccepted paste STAYED in the
+  // composer and blocked that channel for every later sender (one live case: 1x "prompt not
+  // accepted — still holds 49 chars", then 8x "composer occupied (49 chars)" over thirteen
+  // minutes), while `s.quietUntil` — set only under the flag — left Fleet's own failed paste
+  // counted as occupant OUTPUT in the very idle measurement the retry consults.
+  //
+  // Two rows on purpose. The first is the PROBE's own precondition: a renamed or moved sender must
+  // fail as "this pin could not locate its subject", never as "that sender lost its rollback" —
+  // and never silently as a body of "" whose `includes` are all trivially false.
+  const unattendedSenders = ["tickAuditPing", "tickInboxNudge", "tickBacklogNudge", "tickMigrate",
+    "deliverMergeVerdict"] as const;
+  const senderBodies = unattendedSenders.map((name) => ({
+    name, body: serverU.span(`async function ${name}(`, "\n}\n", 2)?.text ?? "" }));
+  const unlocatable = senderBodies.filter((s) => s.body.length < 200 || !s.body.trimEnd().endsWith("}"));
+  pin("rollback pin precondition: all five unattended sendText callers are locatable as whole bodies in the server universe",
+    unlocatable.length === 0,
+    unlocatable.length === 0 ? `${senderBodies.map((s) => `${s.name}=${s.body.length}B`).join(" ")}`
+      : `not locatable: ${unlocatable.map((s) => `${s.name}(${s.body.length}B)`).join(", ")}`);
+  // …and the rule itself: the flag AND the journal word, per sender. `delivery` is what makes the
+  // failing path readable at all — before this cut prompts.jsonl held 3 120 auto lines and not one
+  // of them carried a delivery state, so a paste that never landed was indistinguishable from a
+  // delivered one in the only file that records what Fleet typed.
+  const senderGaps = senderBodies.filter((s) => s.body.length >= 200
+    && !(/await sendText\([^)]*\{ rollbackOwnPayload: true \}\)/.test(s.body)
+      && s.body.includes("sendFailureDelivery(e)")
+      && /logPrompt\([^;]*undefined, acceptance\)/.test(s.body)));
+  pin("every unattended sendText caller passes rollbackOwnPayload and journals its delivery — the acceptance value when it lands, the failure class when it does not",
+    unlocatable.length === 0 && senderGaps.length === 0
+      && server.includes('if (e instanceof SendRefused) return "SendRefused";')
+      && server.includes('if (e instanceof SendNotAccepted) return "SendNotAccepted";')
+      && server.includes('  sendId?: string, delivery?: PromptDelivery): void {'),
+    senderGaps.length ? `missing rollback and/or delivery: ${senderGaps.map((s) => s.name).join(", ")}`
+      : unlocatable.length ? "precondition failed above" : `${senderBodies.length} senders`);
+
   // THE CAP AND ITS STATE WORD live in three places with no compiler between them: the env default
   // in server.ts, the documented default and state name in docs/self-api.md, and the recovery union
   // the client renders. Measured 2026-09-01 (FleetEvent 8ca8c38e…): unbounded because nothing

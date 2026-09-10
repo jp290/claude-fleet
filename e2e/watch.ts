@@ -5660,4 +5660,122 @@ export async function run(): Promise<void> {
     for (const id of [mainId, lane.slot, stewardId, unknownId]) if (id) await post(`/api/slots/${id}/kill`, {});
     for (const file of usageFiles) rmSync(file, { force: true });
   }
+
+  // === AN UNATTENDED SEND THAT IS NOT ACCEPTED ================================================
+  // The five unattended senders (tickAuditPing, tickInboxNudge, tickBacklogNudge, tickMigrate,
+  // deliverMergeVerdict) pasted without `rollbackOwnPayload` and threw the acceptance value away.
+  // Measured live 2026-09-09/10: one unaccepted paste ("prompt not accepted — still holds 49
+  // chars") left Fleet's OWN text in the composer, and the next eight attempts over thirteen
+  // minutes were refused by it ("composer occupied (49 chars)") — the channel was blocked by the
+  // sender's own residue. Two further halves rode with it: `s.quietUntil` is set only under the
+  // flag, so the failed paste counted as OCCUPANT output in the very idle measurement the retry
+  // consults; and tickInboxNudge stamped its tried-map only after SUCCESS, so the next tick walked
+  // straight back into that composer with no cooldown at all.
+  //
+  // e2e/pins.ts holds the five callers at SOURCE, by name. This block measures the behaviour on
+  // ONE of them, end to end: a real stand-in composer that refuses to consume its buffer (fake-pi
+  // mode "hold" — no branch of its Enter handler matches, so the payload stays), driven by the tick
+  // rather than by a route. Three facts, each falsified by removing exactly one half of the cut:
+  // drop the flag and the composer keeps the payload; drop the tried-map stamp and the 250 ms tick
+  // pastes again and again; drop the delivery word and prompts.jsonl says nothing about either.
+  {
+    const holdSlot = await freeSlot();
+    // `pi`, not `pi-unfenced`: this send goes through canDeliver's foreign-harness WORK-PROMPT gate
+    // (tickInboxNudge waives nothing), and pi-unfenced is `automatable: false` FOREVER — the gate
+    // would refuse before sendText and the block would measure the gate instead of the composer.
+    const holdOpen = holdSlot
+      ? await post(`/api/slots/${holdSlot}/open`, { cwd: REPO, label: "inbox-hold-main", harness: "pi" }) : null;
+    const holdRow = (await (await get("/api/sessions")).json() as
+      { slots: { id: number; openedAt: number; sessionId: string | null; harness?: string }[] })
+      .slots.find((s) => s.id === holdSlot);
+    check("unattended-send fixture: a `pi` MAIN with a real stand-in composer is open",
+      !!holdOpen?.ok && holdSlot > 0 && holdRow?.harness === "pi" && (holdRow?.openedAt ?? 0) > 0,
+      JSON.stringify({ slot: holdSlot, status: holdOpen?.status, row: holdRow ?? null }));
+
+    // The Program is planted, not driven: the inbox nudge asks only for an ACTIVE program whose
+    // main binding names this living occupant and whose inbox has unread entries. Minting those
+    // through their real producers (attention, fleet-report, audit ledger) would measure those
+    // paths, which other blocks already do.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const holdStatePath = `${ROOT}/fleet.json`;
+    const holdProgramId = "c0ffee".repeat(4);
+    const holdImage = JSON.parse(readFileSync(holdStatePath, "utf8")) as
+      { slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[] };
+    const holdSlotRow = holdImage.slots[String(holdSlot)] ?? {};
+    const holdAt = Date.now() - 5000;
+    holdImage.programs = [...(holdImage.programs ?? []), {
+      id: holdProgramId, title: "Unattended send rollback fixture",
+      intent: "Prove a refused paste blocks nothing and is journalled",
+      successCriterion: "The composer is empty, the attempt is stamped, the journal carries delivery",
+      nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+      status: "active", createdAt: holdAt - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: holdAt - 900, activatedAt: holdAt - 800,
+      main: { slot: holdSlot, openedAt: holdSlotRow.openedAt, sessionId: holdSlotRow.sessionId ?? null,
+        boundAt: holdAt - 700 },
+      inbox: { v: 1, dropped: 0, entries: [
+        { id: "a".repeat(24), kind: "audit-red", at: holdAt - 600, ref: String(holdAt - 600), readBy: null, readAt: null },
+        { id: "b".repeat(24), kind: "attention-answer", at: holdAt - 500, ref: "att-hold-fixture", readBy: null, readAt: null },
+      ] },
+    }];
+    writeFileSync(holdStatePath, JSON.stringify(holdImage, null, 2), { mode: 0o600 });
+    // FLEET_HARNESS_AUTOMATION=1 for exactly this restart (the wrapper runs the suite with 0, and
+    // the plain restartSrv at the end of the block puts it back); the idle gate is shrunk because
+    // its default is five minutes, and the tick is shrunk from its 60 s default so the block can
+    // observe more than one round of it.
+    await restartSrv({ FLEET_HARNESS_AUTOMATION: "1", FLEET_INBOX_NUDGE_MS: "250",
+      FLEET_BACKLOG_NUDGE_IDLE_MS: "300" });
+    const holdProgramLive = ((await (await get("/api/programs")).json()) as
+      { programs?: { id: string; status: string; health?: { occupancy?: string };
+        executionStatus?: { inbox?: { unread?: number } } }[] })
+      .programs?.find((p) => p.id === holdProgramId) ?? null;
+    check("unattended-send fixture: the planted program loaded ACTIVE, bound live to that occupant, with two unread inbox entries",
+      holdProgramLive?.status === "active" && holdProgramLive.health?.occupancy === "live"
+        && holdProgramLive.executionStatus?.inbox?.unread === 2,
+      JSON.stringify(holdProgramLive));
+
+    const holdMode = process.env.FLEET_E2E_COMPOSER_MODE ?? "";
+    const holdState = process.env.FLEET_E2E_COMPOSER_STATE ?? "";
+    // "hold" matches no branch of the stand-in's Enter handler, so its buffer survives the submit —
+    // the deterministic form of the live "composer still holds N chars" non-acceptance.
+    writeFileSync(holdMode, "hold\n");
+    // The pane must have been OBSERVED (lastOutput !== 0 is a hard guard in tickInboxNudge, and
+    // absence is never idleness), and then be idle past the shrunk gate. One Enter into an EMPTY
+    // composer redraws it and types nothing.
+    await tmuxOut("send-keys", "-t", `s${holdSlot}`, "Enter");
+    await Bun.sleep(1200);
+    const holdPrompts = async () => (await plogRead())
+      .filter((e) => e.slot === holdSlot && e.text.startsWith("[fleet inbox] "));
+    let holdLines = await holdPrompts();
+    for (let i = 0; i < 100 && holdLines.length === 0; i++) {
+      await Bun.sleep(100);
+      holdLines = await holdPrompts();
+    }
+    const holdStateAfter = holdState && existsSync(holdState) ? readFileSync(holdState, "utf8") : "";
+    const holdComposerBuf = holdStateAfter.slice(holdStateAfter.indexOf("\n") + 1);
+    const holdPhase = holdStateAfter.split("\n")[0] ?? "";
+    check("an unattended send whose payload is NOT accepted rolls its own payload back out of the composer",
+      holdLines.length >= 1 && holdPhase.startsWith("backspace:") && holdComposerBuf === "",
+      JSON.stringify({ lines: holdLines.length, phase: holdPhase, residue: holdComposerBuf.slice(0, 120) }));
+    check("…and the prompt journal carries the DELIVERY state of that attempt, named by its failure class",
+      holdLines.length >= 1 && holdLines[0]?.delivery === "SendNotAccepted"
+        && holdLines[0]?.source === "auto",
+      JSON.stringify(holdLines.map((l) => ({ delivery: l.delivery ?? null, source: l.source }))));
+    // …and the FAILED attempt spends the cooldown. Ten ticks of the shrunk timer: without the stamp
+    // every one of them pastes again, because neither the dedupe key nor lastAt had moved.
+    await Bun.sleep(250 * 10 + 500);
+    const holdAfterTicks = await holdPrompts();
+    check("…and the failed attempt is STAMPED: ten further inbox-nudge ticks paste nothing more into the same composer",
+      holdAfterTicks.length === 1,
+      `${holdAfterTicks.length} attempt(s): ${JSON.stringify(holdAfterTicks.map((l) => l.delivery ?? null))}`);
+
+    writeFileSync(holdMode, "normal\n");
+    if (holdSlot) await post(`/api/slots/${holdSlot}/kill`, {});
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const holdCleaned = JSON.parse(readFileSync(holdStatePath, "utf8")) as { programs?: { id?: string }[] };
+    holdCleaned.programs = (holdCleaned.programs ?? []).filter((p) => p.id !== holdProgramId);
+    writeFileSync(holdStatePath, JSON.stringify(holdCleaned, null, 2), { mode: 0o600 });
+    await restartSrv(); // back to the wrapper's FLEET_HARNESS_AUTOMATION=0 and the default gates
+  }
 }

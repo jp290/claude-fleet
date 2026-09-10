@@ -7076,6 +7076,22 @@ function fleetReportMessage(event: FleetReportFleetEvent): string {
     + `x-fleet-self-token from the FLEET_SELF_TOKEN environment variable.`;
 }
 
+// ONE delivery per lane end. A terminal report makes the done-looking predicate redundant for
+// this exact receiver and lane; merge watches remain armed because a land is a different fact.
+function disarmLaneWatchesForReport(s: Slot,
+  holder: { slot: number; openedAt: number } | null, reportId: string): void {
+  if (!holder) return;
+  for (const w of watches) {
+    if (!w.armed || watchKind(w) !== "lane" || !("target" in w) || w.target !== s.id
+      || w.targetCwd !== s.cwd || w.targetBranch !== s.worktree!.branch
+      || w.slot !== holder.slot || w.slotOpenedAt !== holder.openedAt) continue;
+    w.armed = false;
+    w.lastResult = `the lane filed its own fleet-report ${reportId} — this watch is redundant and will not fire`;
+    audit("watch_superseded", w.slot, `${w.id} report=${reportId} lane=${s.id}`);
+    pruneSpentWatches(w.slot);
+  }
+}
+
 async function openFleetReport(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
   if (!body || Object.keys(body).some((key) => key !== "status" && key !== "text"))
     return json({ error: "body must contain only status and text" }, 400);
@@ -7105,6 +7121,8 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
     audit("fleet_report_open", s.id,
       `${id} receiver=program:${program.id} status=${status} basis=program inbox=${entry.id}`);
     pruneFleetReports();
+    disarmLaneWatchesForReport(s,
+      programOccupancy(program) === "live" ? program.main! : null, id);
     await saveStateNow();
     return json({ ok: true, report, inbox: entry.id });
   }
@@ -7177,6 +7195,7 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
   audit("fleet_report_open", s.id,
     `${id} receiver=${bound ? bound.receiver.slot : "owner-inbox"} status=${status} basis=${report.basis}`);
   pruneFleetReports();
+  disarmLaneWatchesForReport(s, bound?.receiver ?? null, id);
   await saveStateNow();
   return json({ ok: true, report });
 }

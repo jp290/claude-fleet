@@ -29,8 +29,10 @@ import { FLEET_EVENT_TERMINAL } from "../server/types";
 import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, srvEnv, tmuxOut } from "./harness";
 
 interface WatchRow {
-  id: string; slot: number; target: number; targetBranch: string;
+  id: string; slot: number; target: number; targetCwd: string; targetBranch: string;
+  kind?: "lane" | "merge" | "audit" | "deploy" | "transition" | "job";
   slotOpenedAt?: number;
+  created?: number;
   // absent = the legacy pane transport; the server never backfills it (see WatchBase)
   delivery?: "pane" | "inbox";
   armed: boolean; firedAt: number | null; lastResult: string | null;
@@ -2799,21 +2801,27 @@ export async function run(): Promise<void> {
     const rejectLane = await d1Lane();
     const terminalLane = await d1Lane();
     const inboxLane = await d1Lane();
-    check("D1 fixtures: two MAIN occupants and four distinct lanes exist",
+    const programlessLane = await d1Lane();
+    check("D1 fixtures: two MAIN occupants and five distinct lanes exist",
       !!d1MainOpen?.ok && !!d1OtherOpen?.ok
         && new Set([d1Main, d1Other, acceptLane.slot, rejectLane.slot, terminalLane.slot,
-          inboxLane.slot]).size === 6,
-      JSON.stringify({ d1Main, d1Other, lanes: [acceptLane.slot, rejectLane.slot, terminalLane.slot, inboxLane.slot] }));
+          inboxLane.slot, programlessLane.slot]).size === 7,
+      JSON.stringify({ d1Main, d1Other, lanes: [acceptLane.slot, rejectLane.slot, terminalLane.slot,
+        inboxLane.slot, programlessLane.slot] }));
     const d1MainTok = await paneEnv(`s${d1Main}`, "FLEET_SELF_TOKEN") ?? "";
     const d1OtherTok = await paneEnv(`s${d1Other}`, "FLEET_SELF_TOKEN") ?? "";
     const acceptTok = await paneEnv(`s${acceptLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
     const rejectTok = await paneEnv(`s${rejectLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
     const terminalTok = await paneEnv(`s${terminalLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
     const inboxTok = await paneEnv(`s${inboxLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const programlessTok = await paneEnv(`s${programlessLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
     check("D1 fixtures: every participant carries its own exact scoped credential",
-      [d1MainTok, d1OtherTok, acceptTok, rejectTok, terminalTok, inboxTok].every((t) => /^[0-9a-f]{32}$/.test(t))
-        && new Set([d1MainTok, d1OtherTok, acceptTok, rejectTok, terminalTok, inboxTok]).size === 6,
-      `lengths=${[d1MainTok, d1OtherTok, acceptTok, rejectTok, terminalTok, inboxTok].map((t) => t.length).join("/")}`);
+      [d1MainTok, d1OtherTok, acceptTok, rejectTok, terminalTok, inboxTok, programlessTok]
+        .every((t) => /^[0-9a-f]{32}$/.test(t))
+        && new Set([d1MainTok, d1OtherTok, acceptTok, rejectTok, terminalTok, inboxTok,
+          programlessTok]).size === 7,
+      `lengths=${[d1MainTok, d1OtherTok, acceptTok, rejectTok, terminalTok, inboxTok,
+        programlessTok].map((t) => t.length).join("/")}`);
 
     // A REAL queue row, not a string: criterion (d) says the decision never moves Task.status, and
     // a fabricated id could not falsify that. The lane carries it the way a dispatched lane does.
@@ -2848,6 +2856,57 @@ export async function run(): Promise<void> {
     writeFileSync(d1Path, JSON.stringify(d1Plant, null, 2), { mode: 0o600 });
     await restartSrv();
 
+    const mainLaneWatchOpen = await post(`/api/slots/${d1Main}/watch`,
+      { target: acceptLane.slot, idleSec: 3600 });
+    const foreignLaneWatchOpen = await post(`/api/slots/${d1Other}/watch`,
+      { target: acceptLane.slot, idleSec: 3600 });
+    const programlessLaneWatchOpen = await post(`/api/slots/${d1Other}/watch`,
+      { target: programlessLane.slot, idleSec: 3600 });
+    const mainLaneWatch = (await mainLaneWatchOpen.json() as { watch?: WatchRow }).watch;
+    const foreignLaneWatch = (await foreignLaneWatchOpen.json() as { watch?: WatchRow }).watch;
+    const programlessLaneWatch = (await programlessLaneWatchOpen.json() as { watch?: WatchRow }).watch;
+    check("S3d fixtures: MAIN, foreign occupant and programless receiver arm exact lane watches",
+      mainLaneWatchOpen.ok && foreignLaneWatchOpen.ok && programlessLaneWatchOpen.ok
+        && mainLaneWatch?.armed === true && foreignLaneWatch?.armed === true
+        && programlessLaneWatch?.armed === true,
+      JSON.stringify({ mainLaneWatch, foreignLaneWatch, programlessLaneWatch }));
+
+    // Plant only shapes the public watch route cannot create directly: one merge control, two
+    // recycled same-slot lane watches, and five old spent rows that make pruneSpentWatches
+    // observable when the report spends the sixth.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const d3dPlant = JSON.parse(readFileSync(d1Path, "utf8")) as { watches?: WatchRow[] };
+    const persistedMainWatch = d3dPlant.watches?.find((w) => w.id === mainLaneWatch?.id);
+    const persistedProgramlessWatch = d3dPlant.watches?.find((w) => w.id === programlessLaneWatch?.id);
+    const d3dMergeWatchId = "d3d00001";
+    const d3dStaleWatchId = "d3d00002";
+    const d3dOwnerStaleWatchId = "d3d00003";
+    const oldSpent = persistedMainWatch ? Array.from({ length: 5 }, (_, index): WatchRow => ({
+      ...persistedMainWatch,
+      id: (0xd3e00000 + index).toString(16),
+      armed: false,
+      firedAt: null,
+      lastResult: `old spent watch ${index}`,
+      created: Number(persistedMainWatch.created ?? Date.now()) - 10_000 + index,
+    })) : [];
+    const mergeControl: WatchRow | null = persistedMainWatch ? { ...persistedMainWatch,
+      id: d3dMergeWatchId, kind: "merge" as const } : null;
+    const staleControl: WatchRow | null = persistedMainWatch ? { ...persistedMainWatch,
+      id: d3dStaleWatchId, slotOpenedAt: Number(persistedMainWatch.slotOpenedAt) + 1 } : null;
+    const ownerStaleControl: WatchRow | null = persistedProgramlessWatch ? { ...persistedProgramlessWatch,
+      id: d3dOwnerStaleWatchId, target: inboxLane.slot, targetCwd: inboxLane.cwd,
+      targetBranch: inboxLane.branch,
+      slotOpenedAt: Number(persistedProgramlessWatch.slotOpenedAt) + 1 } : null;
+    const plantedControls: WatchRow[] = [];
+    if (mergeControl) plantedControls.push(mergeControl);
+    if (staleControl) plantedControls.push(staleControl);
+    if (ownerStaleControl) plantedControls.push(ownerStaleControl);
+    d3dPlant.watches = [...oldSpent, ...(d3dPlant.watches ?? []),
+      ...plantedControls];
+    writeFileSync(d1Path, JSON.stringify(d3dPlant, null, 2), { mode: 0o600 });
+    await restartSrv();
+
     const d1BudgetBefore = await programBudget(d1ProgramId);
     const d1EventsBefore = (await fleetReportEventRows()).filter((e) => e.receiverSlot === d1Main).length;
     const d1ArmedBefore = (await watchRows()).filter((w) => w.slot === d1Main && w.armed).length;
@@ -2880,14 +2939,110 @@ export async function run(): Promise<void> {
       JSON.stringify({ filed: filed.map((r) => r.status),
         rows: [acceptReport, rejectReport, terminalReport, inboxReport]
           .map((r) => [r?.id, r?.basis, r?.decision ?? null]), inbox: d1Inbox }));
-    // BREAKS IF: the Program branch consults slotDeliveryBudget or mints a FleetEvent.
-    check("fleet-report program budget: three program reports leave the MAIN's delivery budget and FleetEvent count untouched",
-      JSON.stringify(d1BudgetAfter?.deliveryBudget) === JSON.stringify(d1BudgetBefore?.deliveryBudget)
+    const otherAfterOwnerReport = await selfGet(d1OtherTok).then((r) => r.json() as Promise<{
+      watches?: WatchRow[];
+    }>);
+    const programlessFiled = await selfFleetReport(programlessTok,
+      { status: "complete", text: "S3d: the programless lane reports to its watch receiver." });
+    const programlessReport = (await programlessFiled.json() as { report?: FleetReportRow }).report;
+    const mainAfterReports = await selfGet(d1MainTok).then((r) => r.json() as Promise<{
+      watches?: WatchRow[]; events?: FleetEventRow[];
+    }>);
+    const otherAfterReports = await selfGet(d1OtherTok).then((r) => r.json() as Promise<{
+      watches?: WatchRow[]; events?: FleetEventRow[];
+    }>);
+    const exactSpent = mainAfterReports.watches?.find((w) => w.id === mainLaneWatch?.id);
+    const programlessSpent = otherAfterReports.watches?.find((w) => w.id === programlessLaneWatch?.id);
+
+    // BREAKS IF: the report dedupe is absent, or it stamps firedAt as though the predicate fired.
+    check("dedupe: the MAIN's exact lane watch is disarmed with the program report id before any done-looking tick",
+      exactSpent?.armed === false && exactSpent.firedAt === null
+        && exactSpent.lastResult?.includes(acceptReport?.id ?? "missing-report") === true
+        && !(mainAfterReports.events ?? []).some((e) => e.kind === "lane-ready"
+          && e.subjectSlot === acceptLane.slot),
+      JSON.stringify({ watch: exactSpent, events: mainAfterReports.events }));
+    // BREAKS IF: the kind guard, holder comparison, or openedAt comparison is removed.
+    check("dedupe control: the MAIN's merge watch, a foreign lane watch and a recycled same-slot watch stay armed",
+      mainAfterReports.watches?.find((w) => w.id === d3dMergeWatchId)?.armed === true
+        && mainAfterReports.watches?.find((w) => w.id === d3dStaleWatchId)?.armed === true
+        && otherAfterReports.watches?.find((w) => w.id === foreignLaneWatch?.id)?.armed === true,
+      JSON.stringify({ main: mainAfterReports.watches, other: otherAfterReports.watches }));
+    // BREAKS IF: only the Program branch invokes the dedupe helper.
+    check("dedupe programless lane: the lane-watch receiver's own watch is disarmed with its report id",
+      programlessFiled.ok && programlessReport?.basis === "lane-watch"
+        && programlessSpent?.armed === false && programlessSpent.firedAt === null
+        && programlessSpent.lastResult?.includes(programlessReport.id) === true,
+      JSON.stringify({ response: programlessFiled.status, report: programlessReport, watch: programlessSpent }));
+    // BREAKS IF: owner-inbox is assigned a synthetic holder and spends an unattributed same-lane watch.
+    check("dedupe control: an owner-inbox report disarms nothing",
+      inboxReport?.basis === "owner-inbox"
+        && otherAfterOwnerReport.watches?.find((w) => w.id === foreignLaneWatch?.id)?.armed === true
+        && otherAfterOwnerReport.watches?.find((w) => w.id === programlessLaneWatch?.id)?.armed === true
+        && otherAfterOwnerReport.watches?.find((w) => w.id === d3dOwnerStaleWatchId)?.armed === true,
+      JSON.stringify({ report: inboxReport, watches: otherAfterOwnerReport.watches }));
+    // BREAKS IF: the dedupe misses the exact watch or omits pruneSpentWatches after spending it.
+    check("dedupe budget: one reservation is released, delivery debt is unchanged, and the spent tail stays capped",
+      d1BudgetBefore?.deliveryBudget?.armedReservations === 3
+        && d1BudgetAfter?.deliveryBudget?.armedReservations === 2
+        && d1BudgetAfter.deliveryBudget.deliveryDebts === d1BudgetBefore.deliveryBudget.deliveryDebts
+        && mainAfterReports.watches?.filter((w) => !w.armed).length === 5
+        && mainAfterReports.watches.some((w) => w.id === mainLaneWatch?.id)
         && (await fleetReportEventRows()).filter((e) => e.receiverSlot === d1Main).length === d1EventsBefore
-        && (await watchRows()).filter((w) => w.slot === d1Main && w.armed).length === d1ArmedBefore,
+        && (await watchRows()).filter((w) => w.slot === d1Main && w.armed).length === d1ArmedBefore - 1,
       JSON.stringify({ before: d1BudgetBefore?.deliveryBudget, after: d1BudgetAfter?.deliveryBudget,
         events: [d1EventsBefore, (await fleetReportEventRows()).filter((e) => e.receiverSlot === d1Main).length],
-        armed: [d1ArmedBefore, (await watchRows()).filter((w) => w.slot === d1Main && w.armed).length] }));
+        armed: [d1ArmedBefore, (await watchRows()).filter((w) => w.slot === d1Main && w.armed).length],
+        spent: mainAfterReports.watches?.filter((w) => !w.armed).map((w) => w.id) }));
+
+    // Remove only the deliberately recycled watch before the lane becomes done-looking: it proved
+    // the writer-side occupant guard above, but belongs to no live receiver and is not part of the
+    // no-twin assertion. The valid foreign watch remains and may notify its own receiver.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const beforeDone = JSON.parse(readFileSync(d1Path, "utf8")) as {
+      watches?: WatchRow[]; fleetReports?: FleetReportRow[]; events?: FleetEventRow[];
+    };
+    beforeDone.watches = (beforeDone.watches ?? []).filter((w) => w.id !== d3dStaleWatchId);
+    beforeDone.fleetReports = (beforeDone.fleetReports ?? []).filter((r) => r.id !== programlessReport?.id);
+    beforeDone.events = (beforeDone.events ?? []).filter((e) => e.id !== programlessReport?.eventId);
+    writeFileSync(d1Path, JSON.stringify(beforeDone, null, 2), { mode: 0o600 });
+    await Bun.write(`${acceptLane.cwd}/s3d-program-done.txt`, "program lane became done-looking after its report\n");
+    const programAdd = spawnSync("git", ["-C", acceptLane.cwd, "add", "s3d-program-done.txt"]);
+    const programCommit = spawnSync("git", ["-C", acceptLane.cwd, "commit", "-qm", "test: s3d program lane done"]);
+    await Bun.write(`${programlessLane.cwd}/s3d-programless-done.txt`, "programless lane became done-looking after its report\n");
+    const programlessAdd = spawnSync("git", ["-C", programlessLane.cwd, "add", "s3d-programless-done.txt"]);
+    const programlessCommit = spawnSync("git", ["-C", programlessLane.cwd, "commit", "-qm", "test: s3d programless lane done"]);
+    await restartSrv();
+    const d3dStewardToken = (JSON.parse(readFileSync(d1Path, "utf8")) as { stewardToken?: string }).stewardToken ?? "";
+    check("S3d done-looking fixture: the isolated steward projection has its own scoped credential",
+      /^[0-9a-f]{32}$/.test(d3dStewardToken), `length=${d3dStewardToken.length}`);
+    let doneRows: { id: number; doneLooking?: boolean }[] = [];
+    for (let i = 0; i < 60; i++) {
+      doneRows = ((await (await fetch(`${BASE}/api/steward/sessions`, {
+        headers: { authorization: `Bearer ${d3dStewardToken}` },
+      })).json()) as
+        { slots: { id: number; doneLooking?: boolean }[] }).slots;
+      if ([acceptLane.slot, programlessLane.slot]
+        .every((slot) => doneRows.find((row) => row.id === slot)?.doneLooking === true)) break;
+      await Bun.sleep(250);
+    }
+    const mainAfterDone = await selfGet(d1MainTok).then((r) => r.json() as Promise<{ events?: FleetEventRow[] }>);
+    const otherAfterDone = await selfGet(d1OtherTok).then((r) => r.json() as Promise<{ events?: FleetEventRow[] }>);
+    // BREAKS IF: the report leaves its exact lane watch armed, allowing the later predicate to mint
+    // the redundant lane-ready twin to the report's own receiver.
+    check("dedupe: both reported lanes later become done-looking without a lane-ready twin to their report receiver",
+      programAdd.status === 0 && programCommit.status === 0
+        && programlessAdd.status === 0 && programlessCommit.status === 0
+        && [acceptLane.slot, programlessLane.slot]
+          .every((slot) => doneRows.find((row) => row.id === slot)?.doneLooking === true)
+        && !(mainAfterDone.events ?? []).some((e) => e.kind === "lane-ready"
+          && e.subjectSlot === acceptLane.slot)
+        && !(otherAfterDone.events ?? []).some((e) => e.kind === "lane-ready"
+          && e.subjectSlot === programlessLane.slot),
+      JSON.stringify({ git: [programAdd.status, programCommit.status, programlessAdd.status,
+        programlessCommit.status], doneRows: doneRows.filter((row) => [acceptLane.slot,
+        programlessLane.slot].includes(row.id)), mainEvents: mainAfterDone.events,
+        otherEvents: otherAfterDone.events }));
 
     // --- who may NOT open the door. Each refusal names its own reason: a lane is refused as a
     // lane (route level, before any row is looked at), a foreign MAIN as a foreign occupant, an
@@ -3134,6 +3289,7 @@ export async function run(): Promise<void> {
       `${inactiveReport.status} ${inactiveText}`);
 
     for (const slot of [acceptLane.slot, rejectLane.slot, terminalLane.slot, inboxLane.slot,
+      programlessLane.slot,
       d1Main, d1Other]) await post(`/api/slots/${slot}/kill`, {});
     if (d1TaskId) await post(`/api/tasks/${d1TaskId}/delete`, {});
     await tmuxOut("kill-session", "-t", "srv");
@@ -3919,18 +4075,18 @@ export async function run(): Promise<void> {
     const bMain = await freeSlot();
     const bOpen = bMain ? await post(`/api/slots/${bMain}/open`, { cwd: REPO, label: "return-path-main" }) : null;
     const budgetLanes: { slot: number; cwd: string; branch: string }[] = [];
-    for (let i = 0; i < 4; i++)
+    for (let i = 0; i < 5; i++)
       budgetLanes.push((await (await post("/api/lanes", { repo: REPO })).json()) as
         { slot: number; cwd: string; branch: string });
-    check("V1b fixture: one plain MAIN occupant and four distinct lanes exist",
-      !!bOpen?.ok && new Set([bMain, ...budgetLanes.map((l) => l.slot)]).size === 5,
+    check("V1b fixture: one plain MAIN occupant and five distinct lanes exist",
+      !!bOpen?.ok && new Set([bMain, ...budgetLanes.map((l) => l.slot)]).size === 6,
       JSON.stringify({ bMain, lanes: budgetLanes.map((l) => l.slot) }));
     const bMainTok = await paneEnv(`s${bMain}`, "FLEET_SELF_TOKEN") ?? "";
     const laneToks: string[] = [];
     for (const l of budgetLanes) laneToks.push(await paneEnv(`s${l.slot}`, "FLEET_SELF_TOKEN") ?? "");
     check("V1b fixture: every participant carries its own exact scoped credential",
       [bMainTok, ...laneToks].every((t) => /^[0-9a-f]{32}$/.test(t))
-        && new Set([bMainTok, ...laneToks]).size === 5,
+        && new Set([bMainTok, ...laneToks]).size === 6,
       `lengths=${[bMainTok, ...laneToks].map((t) => t.length).join("/")}`);
 
     // The Program binding exists only so the projection can expose this MAIN's budget. The lanes
@@ -3969,7 +4125,7 @@ export async function run(): Promise<void> {
     // FOUR RESERVATIONS. Every target is a fresh lane with no commits, so the done-looking
     // predicate never classifies it and none of these can fire — a fire would DISARM, quietly
     // turning the four the doors count into three with no check noticing.
-    for (const l of budgetLanes) {
+    for (const l of budgetLanes.slice(0, 4)) {
       const armed = await post(`/api/slots/${bMain}/watch`, { target: l.slot, idleSec: 3600 });
       check(`V1b: the MAIN subscribes to lane ${l.slot} — one armed reservation`,
         armed.ok, `${armed.status} ${await armed.text()}`);
@@ -3980,6 +4136,10 @@ export async function run(): Promise<void> {
       { status: "complete", text: "the fifth delivery place is now spent" });
     check("V1b: with four reservations one place is left, and a report spends it",
       firstReport.ok, `${firstReport.status} ${await firstReport.text()}`);
+    const replacementReservation = await post(`/api/slots/${bMain}/watch`,
+      { target: budgetLanes[4]!.slot, idleSec: 3600 });
+    check("V1b: after the report supersedes its own watch, a fifth lane can reserve the released place",
+      replacementReservation.ok, `${replacementReservation.status} ${await replacementReservation.text()}`);
     const closedBudget = await programBudget(budgetProgramId);
     check("V1b: four armed watches plus one delivery debt read as a CLOSED return path — before any lane hits it",
       closedBudget?.deliveryBudget?.state === "known"

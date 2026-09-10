@@ -73,6 +73,11 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
   `/api/self/autos`. Sie kann strukturell in keine fremde Pane tippen.
 - Deckel: **5 armed pro Slot** (`WATCH_MAX_PER_SLOT`, geteilt mit dem Owner-Pfad). Ein zweites noch
   armed Abo auf dasselbe Ziel gibt DENSELBEN Watch zurück (`existing:true`), nie einen zweiten.
+- Reicht eine Lane ihren Fleet-Report selbst ein, entwaffnet der Server den armed Lane-Watch genau des
+  Empfänger-Occupants auf genau diese Lane. `lastResult` nennt die Report-ID, `firedAt` bleibt `null`,
+  und der Watch-Tick mintet danach kein redundantes `lane-ready`-Event. Merge-Watches bleiben armed:
+  ein Land ist ein anderer Fakt. Program-Reports verwenden dafür die lebende Program-MAIN-Bindung,
+  programlose Reports ihre exakte Lane-Watch-Evidenz; ein Owner-Inbox-Report entwaffnet nichts.
 - Ablehnungen, jede sagt „dieser Watch könnte nie feuern": `bad target` (400) ·
   `a session cannot watch itself` (400) · `target slot not active` (400) ·
   `target is not a lane — done-looking only classifies lanes` (409) ·

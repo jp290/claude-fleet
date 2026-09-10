@@ -6843,6 +6843,22 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && autoClose.includes("e.boundAt <= d.at") && autoClose.includes("e.endedAt >= d.at"),
     autoClose === "" ? "laneAutoCloseRefusal not found in server.ts"
       : `program=${autoClose.includes('r.basis === "program"')} lineage=${autoClose.includes("program.lineage.entries.some(")}`);
+  // I9 — the one helper owns both report branches. Only exact lane subscriptions are superseded:
+  // merge is a different fact, firedAt remains proof of a real fire, and a missing helper or call
+  // fails under its own symbol instead of letting an empty extraction satisfy negative checks.
+  const reportDedupe = server.match(/function disarmLaneWatchesForReport\([\s\S]*?\n\}/)?.[0] ?? "";
+  const reportDedupeCalls = (reportOpen.match(/disarmLaneWatchesForReport\(/g) ?? []).length;
+  pin(`${RULE_INBOX} — the report dedupe disarms lane watches only`,
+    reportDedupe !== "" && reportDedupe.includes('watchKind(w) !== "lane"')
+      && reportDedupe.includes('audit("watch_superseded"')
+      && reportDedupe.includes("w.slotOpenedAt !== holder.openedAt")
+      && reportDedupe.includes("pruneSpentWatches(w.slot)")
+      && !reportDedupe.includes('watchKind(w) === "merge"') && !reportDedupe.includes("w.firedAt =")
+      && reportDedupeCalls === 2
+      && reportOpen.includes('programOccupancy(program) === "live" ? program.main! : null')
+      && reportOpen.includes("bound?.receiver ?? null"),
+    reportDedupe === "" ? "disarmLaneWatchesForReport not found in server.ts"
+      : `calls=${reportDedupeCalls} lane=${reportDedupe.includes('watchKind(w) !== "lane"')} merge=${reportDedupe.includes('watchKind(w) === "merge"')} fired=${reportDedupe.includes("w.firedAt =")}`);
   // the doc a MAIN is actually sent to must carry the section and both route paths — the same
   // doc↔route pair RULE_RECEIVER pins for §fleet-report, and for its reason: a route named only in
   // code is a route no session ever learns to call.

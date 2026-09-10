@@ -208,7 +208,7 @@ type AuditEvent =
   | "autos_switch"
   // the doneLooking outbound channel (Watch): Watch rows record signal capture/skip; the typed
   // FleetEvent rows below record transport, acknowledgement and terminal receiver loss separately.
-  | "watch_fire" | "watch_skip"
+  | "watch_fire" | "watch_skip" | "watch_superseded"
   | "fleet_event_delivered" | "fleet_event_send_uncertain" | "fleet_event_held" | "fleet_event_ack" | "fleet_event_owner_ack"
   | "fleet_event_receiver_gone" | "fleet_event_subject_gone" | "fleet_event_prune"
   | "clarification_open" | "clarification_answered" | "clarification_refused" | "clarification_prune"

@@ -1563,10 +1563,11 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   // no worker name, so labels already filed under `analysis` stay readable: retiring a producer
   // must not rewrite what an owner once said.
   const protocol = read("src/protocol.ts");
+  const readerBody = server.slice(server.indexOf("async function readDispositions"),
+    server.indexOf("function writeDisposition"));
   pin("the disposition worker set no longer admits `analysis`, while the reader still validates none",
     /export const DISPOSITION_WORKERS: DispositionWorker\[\] = \["land", "review3", "enhance"\];/.test(protocol)
-      && !/DISPOSITION_WORKERS\.includes/.test(read("server.ts").slice(server.indexOf("async function readDispositions"),
-        server.indexOf("function writeDisposition"))), "");
+      && readerBody !== "" && !readerBody.includes("DISPOSITION_WORKERS"), "");
 
   // 7. THE WAVE PROJECTION IS DETERMINISTIC OR IT IS NOTHING. Model edges and the running-work block
   // they alone could fill are gone; what remains must still be the file-surface rule, not an empty

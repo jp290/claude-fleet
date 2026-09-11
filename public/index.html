@@ -188,6 +188,39 @@
   .msg .code { background: #101010; border: 1px solid var(--line-soft); border-radius: 8px;
     padding: 9px 11px; margin: 8px 0; overflow-x: auto; }
   .msg .code pre { white-space: pre; }
+  /* --- markdown structure, rendered by src/md.ts. Until 2026-09-11 this view had exactly one
+     shape for everything that was not a ``` fence: a flat <pre>. The element vocabulary below is
+     the same on both surfaces (the guest reader repeats it under .rmsg); only the density differs.
+     Everything stays in the board's monospace face on purpose — this is a terminal's conversation,
+     and a proportional serif here would read as a different application. */
+  .msg .mdp { white-space: pre-wrap; word-break: break-word; margin: 0 0 9px; }
+  .msg .mdp:last-child { margin-bottom: 0; }
+  .msg .mdh { font-weight: 700; color: #e6e6ea; line-height: 1.3; margin: 15px 0 7px; }
+  .msg .mdh:first-child { margin-top: 0; }
+  .msg .mdh1 { font-size: 17px; border-bottom: 1px solid var(--line); padding-bottom: 5px; }
+  .msg .mdh2 { font-size: 15px; }
+  .msg .mdh3 { font-size: 13.5px; color: var(--accent); }
+  .msg .mdh4, .msg .mdh5, .msg .mdh6 { font-size: 12.5px; color: #9aa4bd; letter-spacing: 0.03em; }
+  .msg .mdul, .msg .mdol { margin: 0 0 9px; padding-left: 21px; }
+  .msg .mdul { list-style: disc; }
+  .msg .mdol { list-style: decimal; }
+  .msg li { margin: 2px 0; white-space: pre-wrap; word-break: break-word; }
+  .msg li::marker { color: #5f6b86; }
+  .msg li > .mdp, .msg li > .mdul, .msg li > .mdol { margin-bottom: 2px; }
+  .msg .mdq { margin: 0 0 9px; padding: 1px 0 1px 11px; border-left: 2px solid var(--line-soft); color: #9a9aa4; }
+  .msg .mdhr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
+  .msg .mdcode { background: #101010; border: 1px solid var(--line-soft); border-radius: 4px;
+    padding: 0 4px; font-size: 0.94em; color: #c3cf9c; word-break: break-all; }
+  .msg .mdlink { color: var(--accent); text-underline-offset: 2px; word-break: break-all; }
+  /* the fence's language tag: a label on the block, never part of the code you copy */
+  .msg .codelang { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: #5a5a5a; margin: -2px 0 5px; user-select: none; -webkit-user-select: none; }
+  /* a wide table scrolls inside its own box rather than widening the pane */
+  .msg .mdtable { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse;
+    margin: 0 0 10px; font-size: 12px; }
+  .msg .mdtable th, .msg .mdtable td { border: 1px solid var(--line); padding: 4px 8px;
+    text-align: left; vertical-align: top; white-space: pre-wrap; }
+  .msg .mdtable th { background: #1b1b20; color: #b9c0d0; font-weight: 700; }
   /* everything the agent did between two messages: ONE quiet expandable line */
   .toolgroup { margin: 0 0 14px; border: 1px solid #232323; border-radius: 8px; background: #171717; }
   .toolgroup > summary { cursor: pointer; padding: 5px 11px; font-size: 11px; color: #6a7a5f;

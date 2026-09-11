@@ -70,6 +70,34 @@
   .rmsg .code { background: #101013; border: 1px solid var(--line); border-radius: 7px;
     padding: 7px 9px; margin: 4px 0 8px; overflow-x: auto; }
   .rmsg .code pre { white-space: pre; word-break: normal; font-size: 11px; margin: 0; }
+  /* markdown structure (src/md.ts) — the same vocabulary the owner chat view carries, one step
+     smaller: the guest reads a conversation, not a workbench. */
+  .rmsg .mdp { white-space: pre-wrap; word-break: break-word; margin: 0 0 6px; }
+  .rmsg .mdp:last-child { margin-bottom: 0; }
+  .rmsg .mdh { font-weight: 700; color: #e8e8ee; line-height: 1.3; margin: 11px 0 5px; }
+  .rmsg .mdh:first-child { margin-top: 0; }
+  .rmsg .mdh1 { font-size: 15px; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+  .rmsg .mdh2 { font-size: 14px; }
+  .rmsg .mdh3 { font-size: 13px; color: var(--accent); }
+  .rmsg .mdh4, .rmsg .mdh5, .rmsg .mdh6 { font-size: 12.5px; color: var(--dim); letter-spacing: 0.03em; }
+  .rmsg .mdul, .rmsg .mdol { margin: 0 0 6px; padding-left: 20px; }
+  .rmsg .mdul { list-style: disc; }
+  .rmsg .mdol { list-style: decimal; }
+  .rmsg li { margin: 2px 0; white-space: pre-wrap; word-break: break-word; }
+  .rmsg li::marker { color: var(--faint); }
+  .rmsg li > .mdp, .rmsg li > .mdul, .rmsg li > .mdol { margin-bottom: 2px; }
+  .rmsg .mdq { margin: 0 0 6px; padding: 1px 0 1px 10px; border-left: 2px solid var(--line); color: var(--dim); }
+  .rmsg .mdhr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
+  .rmsg .mdcode { background: #101013; border: 1px solid var(--line); border-radius: 4px;
+    padding: 0 4px; font-size: 0.94em; color: #c3cf9c; word-break: break-all; }
+  .rmsg .mdlink { color: var(--accent); text-underline-offset: 2px; word-break: break-all; }
+  .rmsg .codelang { font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--faint); margin: -1px 0 4px; user-select: none; -webkit-user-select: none; }
+  .rmsg .mdtable { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse;
+    margin: 0 0 7px; font-size: 11.5px; }
+  .rmsg .mdtable th, .rmsg .mdtable td { border: 1px solid var(--line); padding: 3px 7px;
+    text-align: left; vertical-align: top; white-space: pre-wrap; }
+  .rmsg .mdtable th { background: var(--panel); color: var(--text); font-weight: 700; }
   .rhead { font-size: 10px; color: var(--faint); margin-bottom: 3px; letter-spacing: 0.05em; }
   .rstep { align-self: flex-start; font-size: 11px; color: var(--faint); padding: 0 4px; }
   .rempty { color: var(--faint); font-size: 12px; padding: 30px 10px; text-align: center; }

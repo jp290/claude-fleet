@@ -524,7 +524,7 @@ function rAppend(e: TEntry) {
       const clock = fmtClock(e.ts);
       head.textContent = (e.role === "user" ? "you" : "claude") + (clock ? ` · ${clock}` : "");
       box.appendChild(head);
-      mdInto(box, b.text); // fences render as code blocks; everything else stays textContent
+      mdInto(box, b.text); // structure becomes nodes, never markup — src/md.ts is the invariant
       reader.appendChild(box);
     } else if (b.t === "tool") {
       const step = document.createElement("div");

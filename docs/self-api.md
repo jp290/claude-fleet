@@ -116,9 +116,13 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
   … bis zur Decke von **12 Ticks** (`HOLD_BACKOFF_BASE_MS`/`HOLD_BACKOFF_MAX_MS` in `server.ts`,
   beide aus `FLEET_AUTOS_TICK_MS` abgeleitet — bei der Default-Kadenz 5 s also 10 s bis maximal
   60 s). Was du daraus lesen darfst:
-  - **Die Decke ist die Zusage:** ist dein Composer frei, wird die Zeile spätestens nach
-    `HOLD_BACKOFF_MAX_MS` wieder angetippt. Ein Backoff wächst nie darüber hinaus; ewiges Schweigen
-    ist kein Erfolg.
+  - **Die Decke ist die Zusage — plus einen Tick, und das ist keine Formalie:** ist dein Composer
+    frei, wird die Zeile nach `HOLD_BACKOFF_MAX_MS` wieder angetippt, aber angetippt wird nur AUF
+    einem Tick. Die belastbare Schranke ist also `HOLD_BACKOFF_MAX_MS + ein Tick` (plus die Dauer
+    der Probe selbst). Gemessen am 2026-09-11 im Abnahmelauf: 3098 ms gegen eine Decke von 3000 ms
+    bei `tickMs 250` — der Worst Case, nicht ein Ausreißer. Der Check in `e2e/watch.ts` prüft gegen
+    6000 ms, also das Doppelte der Decke; er kann diese Differenz daher nicht sehen. Ein Backoff
+    WÄCHST nie über die Decke hinaus; ewiges Schweigen ist kein Erfolg.
   - **Der Zustand ist prozesslokal.** Ein Serverneustart beginnt mit einer FRISCHEN Prüfung (also
     früher als angekündigt, nie später) und stellt nie eine Zustellung fest, die nicht stattfand.
   - **Er gehört dem Paar (Event, Empfänger-Occupant).** Slot + `openedAt` + `sessionId`: ein

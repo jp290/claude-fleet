@@ -4395,10 +4395,10 @@ function renderFileBody(shell: Shell, body: HTMLElement, o: FileViewOpts, r: Fil
   const text = r.text ?? "";
   if (!text && !r.hash) { body.appendChild(el("div", "shellhint", "this file is empty")); return; }
   // EVERY file is shown as its own text, .md included. The tempting move is to run mdInto over
-  // markdown, and it would be a lie dressed as a feature: mdInto gives structure to ``` fences and
-  // nothing else (deliberately — it renders hostile transcript text, so no other markdown may
-  // become markup). A viewer is for reading what the file SAYS; rendering it would hide the source
-  // this one exists to show.
+  // markdown — it has rendered real structure since 2026-09-11 and would look good here — and it
+  // would still be wrong: a viewer is for reading what the file SAYS, and a rendered heading hides
+  // the `##` that is the actual byte on disk. The chat view renders because a transcript is a
+  // conversation; this one does not because a file is a source.
   const pre = el("div", "fvtext");
   pre.textContent = text || "(this file is empty)";
   body.appendChild(pre);

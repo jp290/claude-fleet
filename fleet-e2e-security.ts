@@ -300,10 +300,16 @@ if (INTAKE && DISPATCH_REPO) {
   // change the assignment in any way, or make the table dynamic, and this fails.
   const ALLOWED = "s.innerHTML = PK_ICONS[kind] ?? PK_ICONS.folder;";
   const offenders: string[] = [];
+  // A line that IS a comment is prose and cannot execute; a line that merely ENDS in one is code,
+  // and cutting at its first `//` is a lexical guess that knows nothing of strings or regex
+  // literals. src/md.ts carries an unescaped `//` inside its url pattern, so from here on that
+  // guess would silently drop the rest of such a line — sink included. Whole-line only, measured
+  // against the tree on 2026-09-11: it flags nothing the trailing strip flagged, and it cannot
+  // stop flagging something the trailing strip caught, because it removes strictly less.
   for (const f of readdirSync(`${ROOT}/src`).filter((f) => f.endsWith(".ts"))) {
     for (const [i, line] of readFileSync(`${ROOT}/src/${f}`, "utf8").split("\n").entries()) {
-      const code = line.replace(/\/\/.*$/, "");
-      if (sinks.test(code) && code.trim() !== ALLOWED) offenders.push(`src/${f}:${i + 1}`);
+      if (/^\s*\/\//.test(line)) continue;
+      if (sinks.test(line) && line.trim() !== ALLOWED) offenders.push(`src/${f}:${i + 1}`);
     }
   }
   check("§7 no HTML/eval sink in the client sources beyond the one reviewed static-icon exception",
@@ -322,9 +328,98 @@ if (INTAKE && DISPATCH_REPO) {
   const table = /const PK_ICONS[\s\S]*?\n};/.exec(client)?.[0] ?? "";
   check("§7 the allowlisted icon table is static — no interpolation, no handler, no script",
     !!table && !table.includes("${") && !/javascript:|\son\w+=|<script/i.test(table), table.slice(0, 80));
-  const md = readFileSync(`${ROOT}/src/md.ts`, "utf8");
+  // The renderer's own line, over its CODE and not its prose: the file is expected to NAME the
+  // sinks it refuses in its header comment, and a check that read a comment as a violation would
+  // pay for that documentation by deleting it. The filter drops WHOLE-LINE comments only — it
+  // deliberately does NOT reuse the sink scan's trailing-`//` strip, which is a lexical guess that
+  // knows nothing of strings and regex literals: src/md.ts is the first file here to carry an
+  // unescaped `//` inside a string (its url pattern), and a strip that starts there would swallow
+  // the rest of the line, sink and all. This filter can only ever drop a line that is entirely
+  // prose, so it cannot hide code — the fixture below is what keeps that honest.
+  const notComment = (line: string): boolean => !/^\s*\/\//.test(line);
+  const md = readFileSync(`${ROOT}/src/md.ts`, "utf8").split("\n").filter(notComment).join("\n");
   check("§7 the shared markdown renderer builds nodes and assigns textContent only",
-    md.includes("textContent") && !/innerHTML|createRange|DOMParser/.test(md));
+    md.includes("textContent") && !/innerHTML|createRange|DOMParser|\bsrcdoc\b/.test(md),
+    md.split("\n").filter((l) => /innerHTML|createRange|DOMParser|srcdoc/.test(l)).join(" | ").slice(0, 160));
+  // …proof that the exemption above is bounded: a sink on a CODE line survives the filter even
+  // when that line also carries the `//` of a url, which is exactly what a trailing-strip loses.
+  const FIXTURE = ['const u = "https://x"; el.innerHTML = bad;', "// no innerHTML lives here"];
+  check("§7 …and that whole-line-comment filter cannot hide a sink on a line of code",
+    /innerHTML/.test(FIXTURE.filter(notComment).join("\n"))
+    && FIXTURE.filter(notComment).length === 1,
+    FIXTURE.filter(notComment).join(" | "));
+}
+
+// ---------------------------------------------------------------------------
+// §7b The markdown renderer, exercised. §7 above proves no HTML SINK exists in the source; that
+// was the whole story while src/md.ts only emitted <pre>. Since it renders real structure it also
+// builds the first href in this codebase that is composed from transcript text, and a grep for
+// `.innerHTML` cannot see a `javascript:` URL. So the renderer is RUN here, against a DOM small
+// enough to assert over, and the invariant is asserted as a property of the tree it produces:
+// no script/img/svg/iframe/object node may exist, no attribute may start with "on", and every
+// href must pass the same allowlist the renderer claims to enforce.
+// ---------------------------------------------------------------------------
+{
+  interface Fake { tag: string; kids: Fake[]; attrs: Record<string, string>; style: Record<string, string>;
+    className: string; textContent: string; appendChild(c: Fake): Fake; setAttribute(k: string, v: string): void }
+  const mk = (tag: string): Fake => {
+    const n = { tag, kids: [] as Fake[], attrs: {} as Record<string, string>, style: {} as Record<string, string>,
+      className: "", textContent: "",
+      appendChild(c: Fake) { n.kids.push(c); return c; },
+      setAttribute(k: string, v: string) { n.attrs[k] = v; } };
+    return n as Fake;
+  };
+  (globalThis as unknown as { document: unknown }).document = {
+    createElement: (t: string) => mk(t),
+    createTextNode: (t: string) => { const n = mk("#text"); n.textContent = t; return n; },
+  };
+  const { mdInto } = await import(`${ROOT}/src/md.ts`) as { mdInto: (t: Fake, s: string) => void };
+  const render = (src: string): Fake => { const root = mk("div"); mdInto(root, src); return root; };
+  const tags = (n: Fake): string[] => [n.tag, ...n.kids.flatMap(tags)];
+  const has = (src: string, tag: string): boolean => tags(render(src)).includes(tag);
+
+  // the structure half — these fail the moment the renderer regresses to dumping text into a <pre>
+  check("§7b the renderer builds structure: heading, list, table, code span",
+    has("# t", "div") && has("- a\n- b", "li") && has("| a | b |\n|---|---|\n| 1 | 2 |", "td")
+    && has("x `y` z", "code"),
+    [has("# t", "div"), has("- a\n- b", "li"), has("| a | b |\n|---|---|\n| 1 | 2 |", "td"), has("x `y` z", "code")].join(","));
+
+  // the invariant half — hostile transcript text, asserted over the tree, not over the source
+  const HOSTILE = [
+    "<script>alert(1)</script>",
+    "<img src=x onerror=alert(1)>",
+    "<iframe src=//evil.example></iframe>",
+    "[k](javascript:alert(1))",
+    "[k](JaVaScRiPt:alert(1))",
+    "[k](java\u0000script:alert(1))",
+    "[k](//evil.example/x)",
+    "[k](data:text/html,<script>alert(1)</script>)",
+    "[k](vbscript:msgbox(1))",
+    "**<svg onload=alert(1)>**",
+    "| <script>alert(1)</script> | b |\n|---|---|\n| <img src=x onerror=alert(1)> | 2 |",
+    "> <script>alert(1)</script>",
+    "```\n<script>alert(1)</script>\n```",
+  ];
+  const HREF_OK = /^(?:https?:\/\/|mailto:[^\s]|\/(?!\/)|#)/i;
+  const offenders: string[] = [];
+  const walk = (n: Fake, src: string): void => {
+    if (/^(script|img|svg|iframe|object|embed|link|style|form)$/i.test(n.tag)) offenders.push(`${src.slice(0, 24)} → <${n.tag}>`);
+    for (const [k, v] of Object.entries(n.attrs)) {
+      if (/^on/i.test(k)) offenders.push(`${src.slice(0, 24)} → ${k}=`);
+      if (k === "href" && !HREF_OK.test(v)) offenders.push(`${src.slice(0, 24)} → href ${v}`);
+    }
+    for (const c of n.kids) walk(c, src);
+  };
+  for (const src of HOSTILE) walk(render(src), src);
+  check("§7b hostile transcript text produces no markup node, no handler and no unsafe href",
+    offenders.length === 0, offenders.join(" | ").slice(0, 300));
+  // …and the one safe shape still works, or the check above would pass by rendering nothing at all
+  const findA = (n: Fake): Fake[] => (n.tag === "a" ? [n] : n.kids.flatMap(findA));
+  const anchors = findA(render("see [docs](https://example.com/a) and https://example.com/b"));
+  check("§7b …while an allowlisted url still becomes a link that opens safely",
+    anchors.length === 2 && anchors.every((a) => /^https:\/\/example\.com\//.test(a.attrs.href ?? "")
+      && a.attrs.rel === "noopener noreferrer"),
+    anchors.map((a) => `${a.attrs.href}|${a.attrs.rel}`).join(" "));
 }
 
 // ---------------------------------------------------------------------------

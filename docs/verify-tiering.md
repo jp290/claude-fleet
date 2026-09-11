@@ -1098,6 +1098,43 @@ Ausloesehaeufigkeit rangt, misst heute den Mac und nennt es die Flotte.**
 Lesart fuer den Urteilenden ist **flake**, getragen von Diff und Verteilung — nicht von einem
 gruenen Rerun, den §11.3 hier auch nicht verlangt.
 
+**SIEBTE SICHTUNG 2026-09-11 — und sie steht in EINEM Register, das niemand liest.** Nicht in
+`post-land-audits.jsonl`: es war ein **Lane-Suite-Offer**, der Helfer-Vorschaulauf der leak-pin-Lane
+`fleet/260911153147-0283` (Job `968a80797a57`, Tree `4c63b159`, geclaimt 17:35:03 vom `second-host`,
+gemeldet 18:32:03). `exitCode 1`, **`checks {ran: 4126, failed: 1}`**, und `fails` traegt genau
+einen Namen: *reseed + live bytes are the pane's output exactly once*.
+
+*Die Signatur ist fuer diese Instanz verloren, nicht ungelesen* — dieselbe Lage wie bei der
+fuenften Sichtung, aber aus einem anderen Grund: `/var/lib/fleet-helper/work/run-968a80797a57-…`
+existiert nicht mehr, der Helfer raeumt sein Arbeitsverzeichnis auf. Der in der sechsten Sichtung
+notierte „allgemeine Weg zur Signatur eines Helfer-Rots" ist damit **zeitlich begrenzt** und war es
+bisher nirgends gesagt. Wer eine Signatur will, holt sie, solange der Job frisch ist.
+
+*Die Fehlfaehrte, die dabei fast gegriffen haette, gehoert hierher:* das `suite.log` unter
+`<kept instance>/streams/helper-artifacts/…` ist **Fixture-Inhalt der Suite selbst** und traegt
+eigene `FAIL`-Zeilen (`the land gate refuses a dirty tree (want=0 got=2)`,
+`the drift probe answers UNKNOWN as UNKNOWN`). Sie sind kein Ergebnis dieses Laufs. Wer sie als
+eines liest, adjudiziert eine Familie, die gar nicht gefeuert hat.
+
+*Lesart fuer den Urteilenden:* **flake**, getragen von Flaeche und Ordnung. Die Flaeche: der Diff
+der Lane ist `e2e/pins.ts`, **17 Zeilen**, ein `skip()` plus ein Filter auf Single-Label-Hosts — er
+erreicht weder `e2e/slots.ts` noch den Pane-Strom. Die Ordnung: derselbe Baum, nach dem Land als
+`cd4808e6`, lief am Mac als Post-Land-Audit **4 126 ran / 0 failed** durch — gleiche Suite, gleiche
+Pruefzahl, anderer Host, gruen. Nach §11.3 traegt der gruene Lauf allein nichts; zusammen mit der
+Flaeche traegt er.
+
+*Was die Verteilungstabelle darueber jetzt sagt:* **vier von vier** Helfer-seitigen Sichtungen
+liegen auf dem `second-host`. Diese hier war ausserdem die erste, die NICHT aus einem Post-Land-Audit
+kam — die Tabelle unterzaehlt die Familie also strukturell, weil sie nur ein Register liest.
+
+**UND DIE EIGENTLICHE LUECKE, DIE DIESE SICHTUNG AUFGEDECKT HAT — sie ist groesser als die Familie.**
+Ein ROTER Lane-Vorschaulauf hat **keinen Rueckweg und keinen Rail**: er liegt in
+`fleet.json#laneSuiteJobs`, `POST /api/post-land-audits/adjudicate` erreicht ihn nicht (er ist kein
+Audit), kein Board-Element zeigt ihn, und die Lane, die auf ihn wartete, war beim Eintreffen laengst
+gelandet — das Verdikt kam **18:32**, der Land-Commit traegt **18:24:44**. Das Rot lag danach zwei
+Stunden unbesehen. Dieselbe Klasse wie der Nudge-Befund vom selben Tag: ein Ergebnis, dessen
+Scheitern nur in eine Datei faellt, die niemand liest, ist von „gruen" nicht unterscheidbar.
+
 ### 11.2c A sixth family: the `stalled` fixture's pane-observation race (2026-08-06 → 2026-08-07)
 
 Signature: up to four FAILs inside `e2e/review.ts`'s `stalled` block with **one** root —

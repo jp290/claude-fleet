@@ -1625,9 +1625,10 @@ const sameProgramSession = (p: Program, s: Slot): boolean => p.proposedBy.kind =
 let programs: Program[] = [];
 // The studio inventory — a SHARED source several Programs may bind, so it lives beside `programs`
 // rather than inside one of them, exactly as the Supervisor binding does for the same reason.
-// The cap is HARD and evicts nothing: capPrograms may drop rows because it always has a COMPLETE
-// candidate to drop, and a studio never becomes complete — an eviction here would have no
-// candidate but the owner's own act. Overflow is refused AT THE DOOR (409), never lost in silence.
+// The cap is HARD and evicts nothing: capPrograms may drop rows because a COMPLETE Program is a
+// prunable candidate (since K2, one no open task still names), and a studio never becomes complete
+// — an eviction here would have no candidate but the owner's own act. Overflow is refused AT THE
+// DOOR (409), never lost in silence.
 let studios: Studio[] = [];
 const programBootstrapInflight = new Set<string>();
 let startupStateRefusal: string | null = null;
@@ -1636,13 +1637,34 @@ let supervisor: SupervisorBinding | null = null;
 let supervisorBootstrapInflight = false;
 const SUPERVISOR_LABEL = "🧿 Supervisor";
 const MAX_PROGRAMS = 100;
-function capPrograms(list: Program[]): Program[] {
+// K2: A PROGRAM AN OPEN ROW NAMES IS NOT SPARE CAPACITY — the same bargain capTasks struck for a
+// held source, read in the other direction. A COMPLETE Program is prunable because nothing is owed
+// under it any more; a still-pending/queued/sent task carrying its `programId` is precisely the
+// counter-evidence, and evicting under it would leave that row pointing at nothing — the bracket a
+// dispatch, a phase read and every execution view resolve through would answer `unknown` while the
+// owner's own queue still says the work belongs there.
+// The task list is a PARAMETER and not the module global on purpose: the loader must hand over the
+// task state it has already read back (loadState caps tasks BEFORE it caps Programs), and a
+// parameter is what makes that order a compile-time obligation at every call site instead of a
+// timing accident. A boot that capped Programs first would see an empty `tasks` and evict exactly
+// the rows this guard exists for.
+// LIKE capTasks, THE RETENTION IS ADDITIVE: a referenced COMPLETE Program is kept on top of the
+// tail budget, so the list may stand above MAX_PROGRAMS. That overhang is not a leak — it is
+// reference need, it shrinks by itself the moment the last open row naming it goes terminal, and
+// the alternative (dropping a bracket the queue still names) is the loss this bound was written to
+// prevent. Trimming still takes only UNREFERENCED complete rows, oldest first, as it always did.
+function capPrograms(list: Program[], rows: Task[]): Program[] {
   if (list.length <= MAX_PROGRAMS) return list;
   const live = new Set(list.filter((p) => p.status !== "complete"));
   const keepComplete = Math.max(0, MAX_PROGRAMS - live.size);
   const complete = list.filter((p) => p.status === "complete");
   const keptComplete = new Set(keepComplete > 0 ? complete.slice(-keepComplete) : []);
-  return list.filter((p) => live.has(p) || keptComplete.has(p));
+  // An ABSENT programId is no bracket at all, and a terminal row has nothing left to resolve — so
+  // neither holds. A programId naming a row that is not here is NOT invented into existence: the
+  // set is asked about Programs that exist, never used to conjure one back.
+  const referenced = new Set(rows.filter((t) => !taskTerminal(t) && typeof t.programId === "string" && t.programId)
+    .map((t) => t.programId as string));
+  return list.filter((p) => live.has(p) || keptComplete.has(p) || referenced.has(p.id));
 }
 const programDigest = (p: Program): ProgramDigest => ({ id: p.id, status: p.status,
   title: p.title, createdAt: p.createdAt });
@@ -22331,7 +22353,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     if (!valid.ok) return json({ error: valid.error }, 400);
     const program: Program = { id: randomBytes(12).toString("hex"), ...valid.content,
       status: "proposed", createdAt: Date.now(), proposedBy: { kind: "owner" } };
-    programs = capPrograms([...programs, program]);
+    programs = capPrograms([...programs, program], tasks);
     await saveStateNow();
     return json({ ok: true, program });
   }
@@ -22708,8 +22730,9 @@ async function handleOwnerStudioRoute(req: Request, url: URL): Promise<Response>
         return json({ ok: true, studio: existing });
       return json({ error: `a studio named ${id} already exists — change it with POST /api/studios/${id}, which bumps its rev` }, 409);
     }
-    // HARD CAP, NO EVICTION. capPrograms may drop rows because it always has a COMPLETE candidate;
-    // a studio never becomes complete, so an eviction here could only throw away an owner act.
+    // HARD CAP, NO EVICTION. capPrograms may drop rows because a COMPLETE Program is a prunable
+    // candidate (since K2, one no open task still names); a studio never becomes complete, so an
+    // eviction here could only throw away an owner act.
     if (studios.length >= MAX_STUDIOS)
       return json({ error: `the studio inventory holds its maximum of ${MAX_STUDIOS} — nothing is evicted to make room, because a studio never becomes complete and every row here is an owner decision` }, 409);
     const at = Date.now();
@@ -23320,7 +23343,7 @@ if (existsSync(STATE_FILE)) {
           startupStateRefusal ??= `Programs ${prior} and ${program.id} have duplicate founding target slot ${program.founding.target.slot}`;
         else foundingTargets.set(program.founding.target.slot, program.id);
       }
-      programs = capPrograms(loaded);
+      programs = capPrograms(loaded, tasks);
       for (const { id, error } of unreadableLineages) {
         console.error(`Program ${id} lineage unreadable: ${error} — loaded as absent`);
         audit("program_lineage_unreadable", undefined, `${id} ${error}`);
@@ -25982,7 +26005,7 @@ Bun.serve<WSData>({
       const program: Program = { id: randomBytes(12).toString("hex"), ...valid.content,
         status: "proposed", createdAt: Date.now(),
         proposedBy: { kind: "session", slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId } };
-      programs = capPrograms([...programs, program]);
+      programs = capPrograms([...programs, program], tasks);
       await saveStateNow();
       return json({ ok: true, program });
     }

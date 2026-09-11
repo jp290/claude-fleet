@@ -437,6 +437,44 @@ Basis-Zeile, nicht als Phase: ein `STALLED` zu erfinden wäre eine Qualitätsaus
 Histogramm `{Phase: count}` je Program, keine Zeilen-Bodies. Die Bodies stehen in der View der
 gebundenen MAIN.
 
+### Die Program-Retention haelt fest, was eine offene Zeile nennt (K2)
+
+`MAX_PROGRAMS = 100` ist eine harte Konstante ohne Env-Tuer. Ueber dem Budget kuerzt
+`server.ts#capPrograms` **nur COMPLETE** Programs — ein `proposed`/`confirmed`/`active` Program
+wurde nie verdraengt. **Seit K2 kuerzt sie ausserdem nur UNREFERENZIERTE COMPLETE Programs:** ein
+Task in `pending`, `queued` oder `sent`, dessen `programId` das Program nennt, haelt es fest. Der
+Grund ist die Aufloesung, nicht die Hoeflichkeit — `programId` ist die Klammer, durch die Dispatch
+(`programDispatchOn`), die `phase`-Ableitung und jede Zeile dieser Ausfuehrungssicht das Program
+finden; ein verdraengtes Program liesse genau die Zeilen, die der Owner noch in der Queue sieht,
+auf nichts zeigen.
+
+Vier Saetze, die man dabei braucht:
+
+- **Terminal haelt nicht.** `done` und `archived` nennen nichts mehr; eine Statusaenderung gibt das
+  Program frei — aber **erst beim naechsten Retentionslauf**, denn nichts laesst die Kappung wegen
+  eines geschlossenen Tasks neu laufen. Der Ueberhang ist kein Rueckstand, sondern ein Fakt ueber
+  die Queue zum Zeitpunkt der letzten Kappung.
+- **Die Liste darf ueber dem Budget stehen.** Sind alle kuerzbaren Zeilen genannt, bleiben sie alle
+  — sichtbar als Referenzbedarf. Die Alternative waere der Verlust, gegen den der Deckel hier
+  ueberhaupt aufgeweicht wurde. Live-Zeilen konnten das Budget schon vorher ueberschreiten.
+- **Eine Referenz erfindet nichts.** Ein `programId`, zu dem keine Zeile in der Datei steht, holt
+  kein Program zurueck; und eine Task-Zeile, die der Loader verwirft (malformed), haelt nichts,
+  weil sie nicht existiert.
+- **Die Kappung LIEST die Queue und schreibt sie nie.** Kein Task wird veraendert, umgehaengt oder
+  bereinigt — ein baumelnder Zeiger wird festgehalten, nicht repariert.
+
+Die Reihenfolge ist Teil des Vertrags: `loadState` liest die Task-Liste zurueck (`capTasks`),
+**bevor** es `capPrograms(loaded, tasks)` ruft. Liefe es andersherum, fragte die Referenzpruefung
+beim Boot eine leere Queue und verdraengte genau die Klammern, fuer die sie da ist. Darum ist die
+Task-Liste ein **Parameter** von `capPrograms` und kein gelesenes Modul-Global: jede Aufrufstelle
+muss den Stand benennen, gegen den sie entscheidet. Beweis: `e2e/programs.ts` (gepflanzter Zustand,
+beide Eingaenge, sieben Gegenproben) und zwei Pins in `e2e/pins.ts` fuer Form und Reihenfolge.
+
+**Andere Halter sind damit NICHT versorgt**, und dieser Schnitt gibt sich nicht als vollstaendiger
+Retentionsvertrag aus: eine offene `AttentionRequest` traegt ein PFLICHT-`programId`, eine offene
+Clarification, ein `FleetReport`, eine Lane und eine Outcome-Zeile tragen es als Provenienz. Keiner
+dieser Halter haelt heute ein Program fest.
+
 ## release — `POST /api/self/tasks/:id/release`
 
 **Die Route DISPATCHT NICHT.** Sie schreibt genau einen Übergang, `pending → queued`, und nichts

@@ -4933,6 +4933,38 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
         : `closes=${(landBody.match(/t\.status = "done";/g) ?? []).length} settles=${/v\.landedAt = at;/.test(landBody)}`);
   }
 
+  // K2 · THE SAME BARGAIN ON THE PROGRAM SIDE, and the one half a suite cannot see. e2e/programs.ts
+  // DRIVES the behaviour (planted state, both entrances, seven counter-probes) — that is the proof.
+  // What no test can observe is the ORDER inside loadState: if the Program cap ever ran before the
+  // task list was read back, the reference check would ask an EMPTY queue, evict every bracket an
+  // open row names, and stay green on a fresh state file that has no tasks in it at all. So the
+  // ordering is pinned at the source, together with the shape that makes it an obligation: the task
+  // list is a PARAMETER of capPrograms, which is what forces every call site to name the state it
+  // is deciding against instead of closing over a global that may not be filled yet.
+  {
+    const capBody = server.match(/function capPrograms\([\s\S]*?\n\}/)?.[0] ?? "";
+    const callSites = (server.match(/capPrograms\([^)]*\)/g) ?? []).filter((c) => !c.startsWith("capPrograms(list"));
+    pin(`${RULE_RECEIVER} — capPrograms is asked with a task list, and keeps the COMPLETE rows an open row names (K2)`,
+      capBody !== ""
+        && /function capPrograms\(list: Program\[\], rows: Task\[\]\): Program\[\]/.test(capBody)
+        && /!taskTerminal\(t\)/.test(capBody)
+        && /referenced\.has\(p\.id\)/.test(capBody)
+        // the set is built from rows that EXIST; nothing here reaches back into `programs`
+        && !/programs\./.test(capBody)
+        // every entrance hands over the live queue — a call site that forgot it would not compile,
+        // but one that passed `[]` to silence the compiler would, and that is what is counted here
+        && callSites.length === 3 && callSites.every((c) => c.endsWith(", tasks)")),
+      capBody === "" ? "capPrograms not found"
+        : `callSites=${callSites.length} ${callSites.join(" | ")}`);
+    // THE ORDER, read off the one file that decides it. `tasks = capTasks(tasks)` is the last write
+    // to the task list in loadState; the Program cap must come after it.
+    const tasksCapAt = server.indexOf("      tasks = capTasks(tasks);");
+    const programsCapAt = server.indexOf("      programs = capPrograms(loaded, tasks);");
+    pin(`${RULE_RECEIVER} — loadState reads the task list back BEFORE it caps Programs against it (K2)`,
+      tasksCapAt > 0 && programsCapAt > 0 && tasksCapAt < programsCapAt,
+      `tasksCapAt=${tasksCapAt} programsCapAt=${programsCapAt}`);
+  }
+
   pin(`${RULE_RECEIVER} — the exit footer is appended to mutating briefs only, clarify exempted at the seam`,
     /const deliveredBrief = `\$\{brief\}\$\{notesBlock\}\$\{studioLaneBlock\}\$\{anchorBlock\}\$\{clarify \? "" : LANE_EXIT_FOOTER\}`;/.test(server)
       && (server.split("LANE_EXIT_FOOTER").length - 1) === 2,

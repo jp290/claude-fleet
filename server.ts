@@ -11759,6 +11759,93 @@ async function tickMigrate(): Promise<void> {
   }
 }
 
+// --- THE HOLD BACKOFF, one schedule for both send-back paths below (K1). A pre-paste refusal
+// ("composer occupied": an owner draft) is not a failure of the row — it is a statement about a
+// PANE, and a pane does not change between two ticks 5 s apart. Re-probing it every tick bought
+// nothing and cost a tmux round-trip plus a trail line each time: 14 579 `fleet_event_held` rows
+// with `composer` in the detail in the three days to 2026-09-11
+// (docs/messungen/2026-09-11-knackpunkte-verschlankung-astra.md §K1).
+//
+// THE STATE IS PROCESS-LOCAL AND THAT IS THE CONTRACT, not a shortcut: a restart begins with a
+// fresh probe, never with a claim. Nothing here may read as delivery — `status`/`attempts` on the
+// row still carry that, untouched — and a skipped probe writes NOTHING: no send, no save, no row.
+//
+// KEYED BY EVENT **AND OCCUPANT**: the delay belongs to the pair "this row, that pane". A recycled
+// receiver is a different occupant (slot + openedAt + sessionId) and can never inherit the wait a
+// dead one earned — the entry is dropped the moment the identity differs.
+const holdOccupant = (s: Slot): string => `${s.id}:${s.openedAt}:${s.sessionId ?? ""}`;
+// Expressed in TICKS rather than wall-clock: the cadence IS what is being thinned, so a suite that
+// runs the tick at 250 ms gets the same schedule scaled instead of a hard-coded minute. 2 ticks
+// after the first refusal, doubling to a ceiling of 12 — at the default cadence 10 s up to 60 s,
+// and that ceiling is the whole promise: a cleared composer waits at most HOLD_BACKOFF_MAX_MS.
+const HOLD_BACKOFF_BASE_MS = AUTOS_TICK_MS * 2;
+const HOLD_BACKOFF_MAX_MS = AUTOS_TICK_MS * 12;
+const holdBackoffMs = (holds: number): number =>
+  Math.min(HOLD_BACKOFF_BASE_MS * 2 ** Math.max(0, holds - 1), HOLD_BACKOFF_MAX_MS);
+type ComposerHold = { occupant: string; holds: number; firstAt: number; nextProbeAt: number };
+const composerHolds = new Map<string, ComposerHold>();
+
+// THE ONLY READER. `true` means: this exact row was refused by this exact pane recently enough
+// that the next probe is still owed — skip it whole, before `canDeliver` shells out to ps/pgrep.
+function composerHoldActive(event: FleetEvent, s: Slot, now: number): boolean {
+  const row = composerHolds.get(event.id);
+  if (!row) return false;
+  // A DIFFERENT OCCUPANT ON THE SAME ROW ends the hold rather than dropping it quietly: the wait
+  // was earned by a pane that is gone, and an ending nobody can read is not an ending.
+  if (row.occupant !== holdOccupant(s)) {
+    clearComposerHold(event.id, event.receiverSlot, "hold ended — the receiver occupant was replaced");
+    return false;
+  }
+  return now < row.nextProbeAt;
+}
+
+// THE ONLY WRITER, and the one place a hold reaches the trail. `fleet_event_held` keeps its name
+// and its `<event id> <reason>` detail; what is new is the machine-readable half `audit()` has
+// always offered: `phase` tells hold ENTRY from a later repetition and from the END, `holds` is
+// the running count, `nextProbeInMs` is the promise this row makes about its own silence, and
+// `heldMs` is how long this pane has been holding it. The same numbers come back as a sentence for
+// the recovery row's EXISTING prose field — no persisted field is minted to carry a retry time.
+function noteComposerHold(event: FleetEvent, s: Slot, why: string): { holds: number; waitMs: number; note: string } {
+  const now = Date.now();
+  const occupant = holdOccupant(s);
+  const prev = composerHolds.get(event.id);
+  const row: ComposerHold = prev && prev.occupant === occupant
+    ? prev : { occupant, holds: 0, firstAt: now, nextProbeAt: 0 };
+  row.holds++;
+  const waitMs = holdBackoffMs(row.holds);
+  row.nextProbeAt = now + waitMs;
+  composerHolds.set(event.id, row);
+  audit("fleet_event_held", event.receiverSlot ?? undefined, `${event.id} ${why.slice(0, 120)}`,
+    { phase: row.holds === 1 ? "entry" : "repeat", holds: row.holds, nextProbeInMs: waitMs,
+      heldMs: now - row.firstAt });
+  return { holds: row.holds, waitMs, note: ` (hold ${row.holds}, next probe in ${waitMs}ms)` };
+}
+
+// THE END OF A HOLD IS ITS OWN ROW, so a reader tells "still held" from "was held, then moved" by
+// reading one line instead of counting them. Silent when there was no hold: a first-attempt
+// delivery is not a released one.
+const HOLD_ENDED_TYPED = "hold ended — the composer cleared and Fleet typed into it";
+function clearComposerHold(id: string, receiverSlot: number | null, why: string): void {
+  const row = composerHolds.get(id);
+  if (!row) return;
+  composerHolds.delete(id);
+  audit("fleet_event_held", receiverSlot ?? undefined, `${id} ${why.slice(0, 120)}`,
+    { phase: "end", holds: row.holds, nextProbeInMs: 0, heldMs: Date.now() - row.firstAt });
+}
+
+// …and the sweep that owns every OTHER ending: the row went terminal (subject-gone, receiver-gone,
+// acknowledged), or was pruned out of existence. ONE place instead of a clear in each terminal
+// branch — a branch added later cannot forget it and leave an entry that outlives its row.
+function sweepComposerHolds(): void {
+  for (const id of [...composerHolds.keys()]) {
+    const event = fleetEvents.find((e) => e.id === id);
+    if (event && (event.status === "pending" || (event.kind === "fleet-report"
+      && event.status === "send-uncertain" && event.recovery?.state === "retryable"))) continue;
+    clearComposerHold(id, event?.receiverSlot ?? null,
+      `hold ended — no longer probeable (${event ? event.status : "row gone"})`);
+  }
+}
+
 // --- the OUTBOUND channel for both completion facts (Watch, above). Deliberately its own tick and
 // not a branch inside tickAutoReview: auto-③ remains on doneLooking alone and breaks out at
 // AUTO_REVIEW_MAX_CONCURRENT; folding delivery there would make notification depend on unrelated
@@ -11788,6 +11875,11 @@ async function recoverFleetReportDelivery(event: FleetReportFleetEvent): Promise
       "same FleetEvent and FleetReport remain open; no ACK or land is implied");
     return true;
   }
+  // THE BACKOFF IS READ BEFORE THE PROBE, and before `canDeliver` shells out: a pane that refused
+  // this exact row moments ago is not asked again until its wait is out. A skipped round changes
+  // nothing at all — no recovery state, no save, no trail line — so `false` (not dirty) is the
+  // honest answer.
+  if (composerHoldActive(event, receiver, Date.now())) return false;
   const verdict = await canDeliver(receiver, {
     now: Date.now(), harness: false, quietHours: false, idleMs: event.receiverIdleSec * 1000,
   });
@@ -11815,19 +11907,25 @@ async function recoverFleetReportDelivery(event: FleetReportFleetEvent): Promise
   } catch (e) {
     if (e instanceof SendRefused) {
       event.attempts = attemptsBefore;
-      setFleetReportRecovery(event, "retryable", "recovery send was refused before Fleet typed its payload",
+      // The hold is noted FIRST so the row's own prose can name the wait it just earned. The
+      // sentence is relative to `recovery.updatedAt` and is an UPPER bound on Fleet's silence: a
+      // restart forgets the map and probes sooner, never later.
+      const held = noteComposerHold(event, receiver, `recovery ${e.message}`);
+      setFleetReportRecovery(event, "retryable", "recovery send was refused before Fleet typed its payload"
+        + held.note,
         "retry delivery to the same live receiver occupant when the composer clears",
         "same FleetEvent and FleetReport remain open; no ACK, report acceptance, self-land or land is implied");
-      audit("fleet_event_held", event.receiverSlot ?? undefined, `${event.id} recovery ${e.message.slice(0, 120)}`);
       await saveStateNow();
       return true;
     }
+    clearComposerHold(event.id, event.receiverSlot, HOLD_ENDED_TYPED);
     recordFleetReportNonAcceptance(event, e instanceof SendNotAccepted ? e.rollback : null, "recovery");
     audit("fleet_event_send_uncertain", event.receiverSlot ?? undefined,
       `${event.id} recovery ${event.recovery?.state} ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
     await saveStateNow();
     return true;
   }
+  clearComposerHold(event.id, event.receiverSlot, "hold ended — delivered to the bound receiver occupant");
   const deliveredAt = Date.now();
   receiver.history = [...receiver.history, { text, ts: deliveredAt }].slice(-MAX_HISTORY);
   saveHistory(receiver);
@@ -11844,7 +11942,9 @@ async function recoverFleetReportDelivery(event: FleetReportFleetEvent): Promise
 
 async function tickWatches(): Promise<void> {
   const verdictsDue = verdictRetryDue();
-  if (!verdictsDue.length && !watches.some((w) => w.armed)
+  // …and an outstanding hold entry is work too: without it the round that ends a hold could be the
+  // one the cheap guard below skips, and the END row would never be written.
+  if (!verdictsDue.length && !composerHolds.size && !watches.some((w) => w.armed)
     && !fleetEvents.some((e) => e.status === "pending"
       || (e.kind === "fleet-report" && e.status === "send-uncertain"
         && e.recovery?.state === "retryable"))) return;
@@ -11853,6 +11953,9 @@ async function tickWatches(): Promise<void> {
   try {
     const now = Date.now();
     let dirty = false;
+    // Every hold whose row stopped being probeable ends here, with its totals, before the round
+    // that could mint new ones. Writes trail lines only, never state.
+    sweepComposerHolds();
 
     for (const event of fleetEvents) {
       if (event.kind !== "fleet-report") continue;
@@ -11982,6 +12085,10 @@ async function tickWatches(): Promise<void> {
       // THE UNOBSERVED-PANE HOLE belongs to transport now, not signal capture. lastOutput=0 is
       // unknown rather than epoch-idle; idleSec:0 remains the explicit opt-out.
       if (event.receiverIdleSec > 0 && s.lastOutput === 0) continue;
+      // THE SAME BACKOFF THE RECOVERY PATH READS, and read at the same point: after the terminal
+      // questions (a gone subject/receiver must still go terminal on time) and before `canDeliver`
+      // shells out. A skipped probe is silent by construction — no send, no save, no trail row.
+      if (composerHoldActive(event, s, Date.now())) continue;
       // Two policy gates are waived for this one-shot: quiet hours (as for a one-shot Auto) and the
       // foreign-harness WORK-PROMPT policy — the text is fixed server-generated facts after an
       // explicit subscription; the waiver belongs HERE, to that act, not to any adapter. Kill-switch,
@@ -12048,9 +12155,12 @@ async function tickWatches(): Promise<void> {
           event.status = "pending";
           event.attempts = attemptsBefore;
           await saveStateNow();
-          audit("fleet_event_held", event.receiverSlot ?? undefined, `${event.id} ${e.message.slice(0, 120)}`);
+          noteComposerHold(event, s, e.message);
           continue;
         }
+        // The composer let Fleet type: whatever happened next, the HOLD is over and its totals are
+        // closed here rather than left for the sweep, so the trail dates the release at the probe.
+        clearComposerHold(event.id, event.receiverSlot, HOLD_ENDED_TYPED);
         // tmux may have accepted part of the operation, or the composer observably still holds the
         // text (ACP-25). Preserve the pre-send marker: neither "failed" nor "delivered" is observed,
         // and send-uncertain is replayed only by the bounded fleet-report recovery.
@@ -12063,6 +12173,7 @@ async function tickWatches(): Promise<void> {
           `${event.id}${rollback} ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
         continue;
       }
+      clearComposerHold(event.id, event.receiverSlot, HOLD_ENDED_TYPED);
       if (acceptance === "unobservable") {
         // typed, but no composer could be located to confirm the turn — the honest marker is the
         // one already persisted. Not "delivered": that word now means observed (ACP-25 DONE 4).

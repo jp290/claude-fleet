@@ -228,7 +228,13 @@ interface ProgramBudgetRow {
 const programBudget = async (id: string): Promise<ProgramBudgetRow | undefined> =>
   (((await (await get("/api/programs")).json()) as { programs: ProgramBudgetRow[] }).programs)
     .find((p) => p.id === id);
-interface AuditRow { event?: string; slot?: number; detail?: string }
+interface AuditRow { event?: string; slot?: number; detail?: string; ts?: number;
+  // the machine-readable half `audit()` offers beside the prose detail. `fleet_event_held` uses it
+  // for the hold backoff (server.ts#noteComposerHold): which phase this row is, how many refusals
+  // this row/occupant pair has collected, the silence the server just promised itself, and how
+  // long the pane has been holding. All four come from ONE clock read inside the writer, which is
+  // why `heldMs` can be differenced exactly while two `ts` values cannot.
+  phase?: string; holds?: number; nextProbeInMs?: number; heldMs?: number }
 let auditReadError = "";
 const auditRows = (): AuditRow[] => [
   { file: `${ROOT}/audit.jsonl.1`, required: false },
@@ -758,8 +764,18 @@ export async function run(): Promise<void> {
           && !["acknowledged", "receiver-gone", "subject-gone"].includes(e.status));
       const eventById = async (id: string): Promise<FleetEventRow | undefined> =>
         (await eventRows()).find((e) => e.id === id);
-      const heldRows = (id: string): number =>
-        auditRows().filter((r) => r.event === "fleet_event_held" && (r.detail ?? "").startsWith(id)).length;
+      const holdRowsFor = (id: string): AuditRow[] =>
+        auditRows().filter((r) => r.event === "fleet_event_held" && (r.detail ?? "").startsWith(id));
+      // the PROBES: entry + repeat are the rows a refused send-attempt writes; `end` is the row
+      // that closes a hold and is never an attempt.
+      const holdProbes = (id: string): AuditRow[] =>
+        holdRowsFor(id).filter((r) => r.phase === "entry" || r.phase === "repeat");
+      const heldRows = (id: string): number => holdProbes(id).length;
+      // The schedule server.ts#holdBackoffMs promises, recomputed here from the SUITE's own tick so
+      // the assertion is a contract comparison and not a copy of the number the server printed.
+      const holdWaitMs = (holds: number): number =>
+        Math.min(AUTOS_TICK_MS * 2 * 2 ** Math.max(0, holds - 1), AUTOS_TICK_MS * 12);
+      const HOLD_BACKOFF_MAX_MS = AUTOS_TICK_MS * 12;
       // What the watch DOOR actually counts when it says "max 5 active watches per slot", read at
       // the instant the door is knocked on. A `freed:400` says only "refused"; this says what the
       // receiver still owed, so the next occurrence names its own cause instead of leaving the
@@ -936,9 +952,17 @@ export async function run(): Promise<void> {
             doomedId: doomedEvent?.id ?? null, livingId: livingEvent?.id ?? null,
             settleWaits }));
 
-      // 100+ refusals, counted on the server's own held rows rather than on elapsed time
-      const heldTarget = 100;
-      for (let i = 0; i < 400 && heldRows(livingEvent?.id ?? "x") < heldTarget; i++) await Bun.sleep(250);
+      // THE BOUNDED HOLD, measured on the server's own rows rather than on elapsed time (K1).
+      // Until 2026-09-11 this fixture waited for 100+ refusals, because that is what an occupied
+      // composer bought: one probe and one trail row per tick, forever (14 579 such rows in the
+      // three days to 2026-09-11). The contract now is a BACKOFF — same row, same occupant, a
+      // doubling wait capped at HOLD_BACKOFF_MAX_MS — so the measurable target is a handful of
+      // probes spread over many ticks, and the thing to prove is that the spread is the server's
+      // OWN announced schedule and not a coincidence of timing.
+      const heldTarget = 5;
+      const holdStart = Date.now();
+      for (let i = 0; i < 480 && heldRows(livingEvent?.id ?? "x") < heldTarget; i++) await Bun.sleep(250);
+      const holdElapsed = Date.now() - holdStart;
       const heldCount = heldRows(livingEvent?.id ?? "x");
       const heldDoomed = await settleEvent(await eventById(doomedEvent?.id ?? "x"));
       const heldLiving = await settleEvent(await eventById(livingEvent?.id ?? "x"));
@@ -955,14 +979,66 @@ export async function run(): Promise<void> {
       const heldFrame = composerResidue({ kind: "rules" }, heldFrameRaw);
       const heldIntact = await windowIntact("held refusals", holdWindow, draft);
       if (heldIntact && subjectsSubscribed)
-        check("held: 100+ pre-paste refusals change neither `attempts` nor the owner's composer",
+        check("held: pre-paste refusals change neither `attempts` nor the owner's composer",
           heldCount >= heldTarget && heldDoomed?.status === "pending" && heldDoomed.attempts === 0
           && heldLiving?.status === "pending" && heldLiving.attempts === 0
           && heldDraft.text === draft,
           JSON.stringify({ held: heldCount, doomedAttempts: heldDoomed?.attempts,
             livingAttempts: heldLiving?.attempts, draftBytes: heldDraft.text.length,
             frameBytes: (heldFrame ?? "").length, frameIsDraft: heldFrame === draft,
-            settleWaits }));
+            elapsedMs: holdElapsed, settleWaits }));
+
+      // --- (2b) THE BACKOFF ITSELF, read off the rows the server wrote about its own intentions.
+      // Three separable statements, and the fixture states them separately because they fail for
+      // different reasons: the PHASES are distinguishable (entry once, repeats after it, no `end`
+      // while the composer is still occupied); the announced wait follows the documented schedule
+      // and never exceeds the ceiling; and the NEXT probe really did wait that long. The last one
+      // is differenced on `heldMs`, not on two `ts` values — both come from the single clock read
+      // inside the writer, so `heldMs[k+1] - heldMs[k] >= nextProbeInMs[k]` is exact and needs no
+      // tolerance. A pure rate observation ("fewer rows per second") proves none of this.
+      const livingHolds = holdRowsFor(livingEvent?.id ?? "x");
+      const livingProbes = livingHolds.filter((r) => r.phase === "entry" || r.phase === "repeat");
+      const phasesOk = livingProbes.length >= heldTarget
+        && livingProbes[0]?.phase === "entry" && livingProbes[0]?.holds === 1
+        && livingProbes.slice(1).every((r, i) => r.phase === "repeat" && r.holds === i + 2)
+        && !livingHolds.some((r) => r.phase === "end");
+      const scheduleOk = livingProbes.every((r) => r.nextProbeInMs === holdWaitMs(r.holds ?? 0)
+        && (r.nextProbeInMs ?? 0) <= HOLD_BACKOFF_MAX_MS);
+      const spacingOk = livingProbes.slice(1).every((r, i) => {
+        const prev = livingProbes[i];
+        return (r.heldMs ?? 0) - (prev?.heldMs ?? 0) >= (prev?.nextProbeInMs ?? 0);
+      });
+      if (heldIntact && subjectsSubscribed)
+        check("held backoff: entry/repeat are distinguishable, the announced wait follows the capped schedule, and the next probe honours it",
+          phasesOk && scheduleOk && spacingOk,
+          JSON.stringify({ probes: livingProbes.map((r) => [r.phase, r.holds, r.nextProbeInMs, r.heldMs]),
+            phasesOk, scheduleOk, spacingOk, capMs: HOLD_BACKOFF_MAX_MS, tickMs: AUTOS_TICK_MS }));
+
+      // …and the COST, in the unit the measurement was taken in: a composer occupied across many
+      // ticks must cost at most half as many send probes (and half as many trail rows, which are
+      // one per probe) as there were ticks. Measured inside the window the rows themselves span,
+      // so nothing before the first probe is counted against it.
+      const probeSpanMs = (livingProbes.at(-1)?.ts ?? 0) - (livingProbes[0]?.ts ?? 0);
+      const ticksInSpan = Math.floor(probeSpanMs / AUTOS_TICK_MS);
+      if (heldIntact && subjectsSubscribed)
+        check("held backoff: an occupied composer costs at most half as many send probes and hold rows as there were ticks",
+          livingProbes.length >= heldTarget && ticksInSpan > 0
+          && livingProbes.length * 2 <= ticksInSpan
+          && holdRowsFor(livingEvent?.id ?? "x").length * 2 <= ticksInSpan,
+          JSON.stringify({ probes: livingProbes.length, rows: livingHolds.length,
+            spanMs: probeSpanMs, ticks: ticksInSpan, tickMs: AUTOS_TICK_MS }));
+
+      // TWO INDEPENDENT EVENTS ON ONE OCCUPIED PANE keep separate schedules: the doomed row's
+      // holds are its own, and neither row's count is the other's. A single per-PANE backoff would
+      // show one of them starved at hold 1 while the other counted up.
+      const doomedProbes = holdProbes(doomedEvent?.id ?? "x");
+      if (heldIntact && subjectsSubscribed)
+        check("held backoff: two independent events on the same occupied receiver each count their own holds",
+          doomedProbes.length >= 2 && doomedProbes[0]?.holds === 1
+          && doomedProbes.every((r, i) => r.holds === i + 1)
+          && doomedProbes.every((r) => r.nextProbeInMs === holdWaitMs(r.holds ?? 0)),
+          JSON.stringify({ doomed: doomedProbes.map((r) => [r.phase, r.holds, r.nextProbeInMs]),
+            living: livingProbes.length }));
 
       // --- (3) THE BUDGET, READ THROUGH THE DOOR THAT SPENDS IT — and read RELATIVELY, never as an
       // absolute count. What has to be proven is one difference: the same subscription is refused
@@ -1023,14 +1099,37 @@ export async function run(): Promise<void> {
             doomedRows: await rowsWithId(doomedEvent?.id ?? "x"),
             budgetAtFree: budgetBeforeFree, freedBody: freedBody.slice(0, 80) }));
 
+      // …and the HOLD the dead row was carrying ends as itself. Teardown while a hold stands is
+      // the case the process-local map must not survive: the row is terminal, nothing will ever
+      // probe it again, and the trail has to say so ONCE (with the totals the repeats were
+      // aggregating) instead of leaving a reader to infer an ending from silence. The sweep in
+      // server.ts#tickWatches owns this, which is why no probe row may follow the end row.
+      let doomedEnd: AuditRow | undefined;
+      for (let i = 0; i < 40 && !doomedEnd; i++) {
+        doomedEnd = holdRowsFor(doomedEvent?.id ?? "x").find((r) => r.phase === "end");
+        if (!doomedEnd) await Bun.sleep(250);
+      }
+      const doomedHoldRows = holdRowsFor(doomedEvent?.id ?? "x");
+      if (subjectsSubscribed)
+        check("held backoff: a hold whose row went terminal under it ends once, with its totals, and is never probed again",
+          !!doomedEnd && doomedEnd.holds === doomedHoldRows.filter((r) => r.phase !== "end").length
+          && (doomedEnd.holds ?? 0) >= doomedProbes.length
+          && (doomedEnd.detail ?? "").includes("subject-gone")
+          && doomedHoldRows.filter((r) => r.phase === "end").length === 1
+          && doomedHoldRows.at(-1)?.phase === "end",
+          JSON.stringify({ end: doomedEnd ? [doomedEnd.phase, doomedEnd.holds, doomedEnd.heldMs] : null,
+            probesAtKill: doomedProbes.length, rows: doomedHoldRows.map((r) => [r.phase, r.holds]) }));
+
       // --- (5) THE COUNTERPROBE. The draft goes away; the LIVING subject's event is delivered on
       // its first real attempt, and nothing about the dead lane is ever typed into that pane.
+      const releaseAt = Date.now();
       await tmuxOut("send-keys", "-t", `s${uId}`, "-N", String([...draft].length), "BSpace");
       let deliveredLiving: FleetEventRow | undefined;
       for (let i = 0; i < 160 && deliveredLiving?.status !== "delivered"; i++) {
         deliveredLiving = await eventById(livingEvent?.id ?? "x");
         if (deliveredLiving?.status !== "delivered") await Bun.sleep(250);
       }
+      const deliveredAfterReleaseMs = Date.now() - releaseAt;
       const finalGone = await settleEvent(await eventById(doomedEvent?.id ?? "x"));
       const plog = await plogRead();
       // The composer is deliberately empty from here on, so only the PANE is this window's
@@ -1056,6 +1155,26 @@ export async function run(): Promise<void> {
             flippedBack: goneRow?.status === "subject-gone" && finalGone?.status !== "subject-gone",
             doomedRows: await rowsWithId(doomedEvent?.id ?? "x"),
             livingId: livingEvent?.id ?? null, livingRowId: deliveredLiving?.id ?? null }));
+
+      // THE CEILING IS THE PROMISE: a composer that clears is probed again within
+      // HOLD_BACKOFF_MAX_MS, so the row above is delivered EXACTLY ONCE inside that window and the
+      // hold closes with one `end` row carrying the totals. The measured bound is generous by one
+      // BSpace round-trip and one poll interval — what it must exclude is a backoff that grew past
+      // its cap, which is the one way a bounded retry turns into permanent silence.
+      const livingHoldRows = holdRowsFor(livingEvent?.id ?? "x");
+      const livingEnd = livingHoldRows.filter((r) => r.phase === "end");
+      if (counterIntact && subjectsSubscribed)
+        check("held backoff: the cleared composer is probed again within the documented ceiling and the hold ends exactly once",
+          deliveredLiving?.status === "delivered"
+          && deliveredAfterReleaseMs <= HOLD_BACKOFF_MAX_MS + AUTOS_TICK_MS * 4 + 2000
+          && livingEnd.length === 1
+          && livingEnd[0]?.holds === livingHoldRows.filter((r) => r.phase !== "end").length
+          && (livingEnd[0]?.holds ?? 0) >= heldCount
+          && livingHoldRows.at(-1)?.phase === "end"
+          && (livingEnd[0]?.detail ?? "").includes("typed into it"),
+          JSON.stringify({ afterReleaseMs: deliveredAfterReleaseMs, ceilingMs: HOLD_BACKOFF_MAX_MS,
+            probesAtRelease: heldCount, end: livingEnd.map((r) => [r.holds, r.heldMs]),
+            rows: livingHoldRows.map((r) => [r.phase, r.holds]) }));
 
       // Hand the receiver back empty — later families read this slot's budget and its pane, and on
       // a tree WITHOUT the fix the dead lane's row is still pending and still deliverable, so this

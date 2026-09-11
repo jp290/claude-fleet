@@ -3889,6 +3889,55 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       && recoveryBody.slice(recoverySend).includes('"recovery send was refused before Fleet typed its payload"')
       && !tickBody.includes('setFleetReportRecovery(event, "retryable"'),
     JSON.stringify({ capDefault, capFallback, docsCapDefault }));
+  // THE HOLD BACKOFF (K1, 2026-09-11) lives in three places with no compiler between them: the
+  // schedule in server.ts, the tick counts docs/self-api.md promises a waiting session, and the
+  // two send paths that must read ONE gate and write through ONE writer. A second writer would be
+  // a second, unbounded retry loop — the same failure the recovery cap above pins against — and a
+  // doc that names a different ceiling would promise a silence the server does not keep.
+  const holdBody = server.slice(server.indexOf("const holdOccupant = (s: Slot): string =>"),
+    server.indexOf("async function recoverFleetReportDelivery("));
+  const holdBase = server.match(/const HOLD_BACKOFF_BASE_MS = AUTOS_TICK_MS \* (\d+);/)?.[1] ?? "";
+  const holdMax = server.match(/const HOLD_BACKOFF_MAX_MS = AUTOS_TICK_MS \* (\d+);/)?.[1] ?? "";
+  const selfApiHold = read("docs/self-api.md");
+  const docsHoldBase = selfApiHold.match(/wartet der Server deshalb \*\*(\d+) Ticks\*\*/)?.[1] ?? "";
+  const docsHoldMax = selfApiHold.match(/bis zur Decke von \*\*(\d+) Ticks\*\*/)?.[1] ?? "";
+  const holdTickGate = tickBody.indexOf("if (composerHoldActive(event, s, Date.now())) continue;");
+  const holdTickCanDeliver = tickBody.indexOf("const verdict = await canDeliver(s, {");
+  const holdRecoveryGate = recoveryBody.indexOf("if (composerHoldActive(event, receiver, Date.now())) return false;");
+  const holdRecoveryCanDeliver = recoveryBody.indexOf("const verdict = await canDeliver(receiver, {");
+  pin("hold backoff: one schedule (2 ticks, ceiling 12) in server.ts and docs/self-api.md, one gate read before canDeliver on BOTH send paths, one writer",
+    holdBase === "2" && holdMax === "12" && docsHoldBase === holdBase && docsHoldMax === holdMax
+      && holdTickGate > 0 && holdTickCanDeliver > holdTickGate
+      && holdRecoveryGate > 0 && holdRecoveryCanDeliver > holdRecoveryGate
+      // exactly one writer of a hold row, and both refusal arms go through it
+      && (server.match(/audit\("fleet_event_held"/g)?.length ?? 0) === 2
+      && (holdBody.match(/audit\("fleet_event_held"/g)?.length ?? 0) === 2
+      && tickBody.includes("noteComposerHold(event, s, e.message);")
+      && recoveryBody.includes("const held = noteComposerHold(event, receiver, `recovery ${e.message}`);")
+      // …and the retry time rides the EXISTING recovery prose, not a new persisted field
+      && recoveryBody.includes('"recovery send was refused before Fleet typed its payload"\n        + held.note,')
+      && holdBody.includes("return { holds: row.holds, waitMs, note: ` (hold ${row.holds}, next probe in ${waitMs}ms)` };"),
+    JSON.stringify({ holdBase, holdMax, docsHoldBase, docsHoldMax,
+      tickGateBeforeCanDeliver: holdTickGate > 0 && holdTickCanDeliver > holdTickGate,
+      recoveryGateBeforeCanDeliver: holdRecoveryGate > 0 && holdRecoveryCanDeliver > holdRecoveryGate,
+      writers: server.match(/audit\("fleet_event_held"/g)?.length ?? 0 }));
+
+  // THE STOPLINE, pinned as a property of the block rather than as a promise: the backoff is a
+  // process-local DELAY. It may not touch a row's status, may not persist anything, and may not
+  // spend an attempt — so a reset or an elapsed timer can never turn `send-uncertain` into
+  // `delivered`, which is the one way a retry thinner could invent a delivery that never happened.
+  pin("hold backoff: the backoff block writes no row state, persists nothing and spends no attempt",
+    holdBody.length > 500
+      && !/\bstatus = /.test(holdBody) && !holdBody.includes("saveState")
+      && !holdBody.includes("attempts") && !holdBody.includes("deliveredAt")
+      && !holdBody.includes("sendText") && holdBody.includes("const composerHolds = new Map<string, ComposerHold>();")
+      // the occupant triple IS the key, so a recycled receiver cannot inherit a dead one's wait
+      && holdBody.includes("const holdOccupant = (s: Slot): string => `${s.id}:${s.openedAt}:${s.sessionId ?? \"\"}`;")
+      && holdBody.includes("if (row.occupant !== holdOccupant(s)) {")
+      && holdBody.includes('clearComposerHold(event.id, event.receiverSlot, "hold ended — the receiver occupant was replaced");'),
+    JSON.stringify({ bytes: holdBody.length, status: /\bstatus = /.test(holdBody),
+      save: holdBody.includes("saveState"), attempts: holdBody.includes("attempts") }));
+
   // THE OWN-PASTE WINDOW: an event-transport send opens quietUntil at the paste and closes it to a
   // tail when the send resolves, so neither the paste, the acceptance read nor the rollback repaint
   // stamps lastOutput. Without it every recovery paste re-armed the receiver's idle gate for every

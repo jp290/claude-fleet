@@ -375,6 +375,9 @@ class Pane {
   slot = 0; // 0 = unassigned
   private gen = 0; // bump to suppress a stale socket's reconnect loop
   private pinPending = false; // pin the viewport to the bottom once the next seed lands
+  // which renderer this pane actually ended up on — see the block in the constructor.
+  // Reported in the ⟳ tooltip because a silent one-way downgrade is otherwise invisible.
+  private renderer = "dom";
   private retries = 0; // consecutive failed/flapping reconnects — indexes reconnectDelay()
   private ws: WebSocket | null = null;
   private lastCols = 0;
@@ -453,16 +456,43 @@ class Pane {
     // node — scroll stutter on mobile Safari under streaming output). WebGL is the fastest
     // and crispest; it can fail (no context on old GPUs, context loss later) — fall back to
     // the canvas renderer either way. Addons are disposed by term.dispose().
+    //
+    // WHY THIS IS WORTH SEEING (owner report 2026-09-11: "es wechselt irgendwie immer
+    // zwischen diesen beiden Zuständen" — scrolling is clean, then it stutters, then it is
+    // clean again after a reload). The fallback below is SILENT and ONE-WAY: once a pane's
+    // WebGL context is lost it runs on canvas for the rest of that page load, and nothing
+    // anywhere says so. Two panes side by side can therefore sit on different renderers,
+    // and the same pane can feel different before and after a reload — with no visible
+    // cause. A context is lost for reasons that have nothing to do with Fleet (GPU driver
+    // reset, the tab being backgrounded, the browser reclaiming contexts under memory
+    // pressure) and also for one that does: setLayout() disposes every pane and builds n
+    // new ones, so each layout switch returns n contexts and immediately asks for n more,
+    // and browsers release them lazily.
+    //
+    // So the renderer is RECORDED and shown in the ⟳ button's tooltip. It is deliberately
+    // only a report: nothing here re-acquires WebGL, because a retry that keeps failing
+    // would thrash the very thing it is trying to fix, and the decision of whether to
+    // retry needs this number from a real session first. If a stuttering pane says
+    // "canvas" and a smooth one says "webgl", the mechanism above is confirmed and the
+    // fix belongs in the renderer policy (e.g. WebGL only for the focused pane). If BOTH
+    // say "webgl", the stutter is not the renderer and this comment saved the next reader
+    // the same detour.
     try {
       const webgl = new WebglAddon();
       webgl.onContextLoss(() => {
         webgl.dispose();
         this.term.loadAddon(new CanvasAddon());
+        this.renderer = "canvas (WebGL-Kontext verloren)";
+        this.markRenderer();
+        console.warn(`[fleet] slot ${this.slot}: WebGL context lost — pane fell back to canvas for the rest of this page load`);
       });
       this.term.loadAddon(webgl);
+      this.renderer = "webgl";
     } catch {
       this.term.loadAddon(new CanvasAddon());
+      this.renderer = "canvas (kein WebGL)";
     }
+    this.markRenderer();
     // on touch devices all input goes through the compose bar + key row; inputMode=none
     // lets xterm keep focus for scrolling without popping the on-screen keyboard
     if (isMobile() && this.term.textarea) this.term.textarea.inputMode = "none";
@@ -851,6 +881,12 @@ class Pane {
     this.lastCols = this.term.cols;
     this.lastRows = this.term.rows;
     void post("/resize", { slot: this.slot, cols: this.term.cols, rows: this.term.rows });
+  }
+
+  // the ⟳ tooltip is the only place a pane's renderer is visible, and ⟳ is also the button
+  // that fixes a degraded one (reload rebuilds the Terminal and asks for a fresh context)
+  private markRenderer() {
+    this.reloadBtn.title = `reload this session (reconnect + reseed scrollback)\nrenderer: ${this.renderer}`;
   }
 
   dispose() {

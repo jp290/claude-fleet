@@ -108,3 +108,44 @@ zwei Commits weiter. Grund: beide waren **Direkt-Commits im Haupt-Checkout**, un
 haengt an `recordLand`. Die bekannte Regel „ein Direkt-Commit ist fuer jedes land-seitige Ledger
 unsichtbar" gilt damit auch fuer den **Hub**, und das steht bisher nirgends. Fuer einen Zwei-Host-
 Betrieb ist das die relevantere Haelfte: die zweite Maschine zieht aus dem Hub.
+
+## 7 · NACHTRAG 2026-09-11 ~20:00 — SCHRITT 1 WAR SCHON ERFUELLT, UND DIE QUEUE SAGTE DAS GEGENTEIL
+
+Gemessen von der Owner-MAIN (Slot 9) beim Ausfuehren von §0 Schritt 1. Read-only ssh plus drei
+`git rev-list`; der einzige Schreibakt war das Setzen dreier Zeilen auf `done`.
+
+**Der Befund:** die Queue des `second-host` fuehrte drei `auftrag`-Zeilen als **`pending`**, jede mit
+der Notiz `lane closed before landing — review and requeue if still wanted`. Ihre Arbeit liegt
+**vollstaendig auf dem dortigen `main`** — je `git rev-list --count main..<branch>` == **0**:
+
+| Zeile | Branch | Commit auf main |
+|---|---|---|
+| `084bfe8b` (Act B5) | `fleet/260911044419-ccdf` | `5857975` refactor(sweeps): ein Gate-Modul fuer BA, Welt und ATS |
+| `b750f712` (Act B6) | `fleet/260911044507-8055` | `1d39dc7` feat(jd): elf JD-Volltexte woertlich fuer den Korb vom 10.09. |
+| `a2366439` (Act B7) | `fleet/260911080412-137d` | `a4081e4` fix(sweep): drei gemessene Lecks in der Suche schliessen |
+
+Dazu **zehn verwaiste Worktrees** unter `private-repo-a.worktrees/`, alle 0 Commits vor `main`.
+
+**Die Ursache ist kein Bug, sondern eine Naht, die niemand zu Ende gedacht hat.** Die Briefs dieser
+Zeilen schreiben ausdruecklich vor: *„Dein Ergebnis wird als ein Diff gelesen und von der MAIN
+selbst gemerged."* Der Fleet sieht dadurch **nie ein Land**. Der Requeue-Pfad findet eine Lane, die
+ohne Land geschlossen wurde, stuft die Zeile auf `pending` zurueck und haengt eine Notiz an, die
+das **Gegenteil der Wahrheit** behauptet.
+
+**Das ist §6 in seiner teureren Haelfte.** §6 sagt: der Hub sieht einen Direkt-Commit nicht. Hier
+sieht die **Queue selbst** die erledigte Arbeit nicht — und auf einem Host mit `FLEET_LANDS='0'`
+ist „Abschluss ohne Land" nicht die Ausnahme, sondern **der einzige moegliche Abschluss**. Die
+Folge ist nicht Rauschen: eine Zeile, die „requeue if still wanted" sagt, LAEDT DAZU EIN, gebaute
+Arbeit ein zweites Mal zu bauen. Genau das waere hier beinahe passiert.
+
+**Was daraus folgt und was nicht.** Nicht: Land-Zwang auf dem Folger — `FLEET_LANDS='0'` steht dort
+mit Datum und Begruendung. Sondern: entweder sagt die Notiz **„unbekannt"** statt eine Empfehlung,
+oder es gibt einen Abschluss-Akt, den eine MAIN **ohne Land** vollziehen kann. Die Frage ist als
+**Q1 in den Brief von `f3ca2e05`** geschrieben (Owner-Brief, 2026-09-11 ~20:00) — dieselbe Zeile,
+die §4 als B-foermig zurueckgestellt hat, jetzt auf die Luecke gerichtet, die wirklich weh tut.
+
+**Korrektur an §3 dieser Notiz:** die dortige Tabelle liest „Tasks 11 / Lane-Ergebnisse 11" als
+*nur eine Maschine hat Arbeit*. Das war richtig gezaehlt und falsch gedeutet — der `second-host`
+HATTE Arbeit, sie war nur nicht mehr sichtbar. Stand jetzt: **8 archiviert, 3 done, 0 offen.**
+Schritt 1 des Entscheids ist damit nicht „zu tun", sondern **erfuellt** — was offen bleibt, ist die
+Sichtbarkeit, nicht die Auslastung.

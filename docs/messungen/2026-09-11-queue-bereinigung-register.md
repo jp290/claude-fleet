@@ -214,4 +214,4 @@ ob Astra einzelne P2-Zeilen zwischenzeitlich released hat, die 39 Notizen in akt
   (auftrag 39 · notiz 62 · richtung 4 · betrieb 2).
 - Nicht gebündelt, bewusst: 15 OFFEN-IDEEN (B1…B13, D2 u. a.) und 3 ungetragene Richtungen bleiben einzeln
   pending — Ideen sind Portfolio, keine Befunde; die Richtungen brauchen je einen Regelbuch-/Doc-Ort, keinen Träger.
-- Offen beim Owner: Private-repo-j 9ce08219 (5 Zeilen, zwei am Repo überholt) — Eis oder Schluss.
+- Private-repo-j 9ce08219: **Owner 2026-09-11 11:0x: bleibt auf EIS, „Claude Fleet muss der volle Fokus sein"** — die fünf Zeilen bleiben unangetastet pending, das Program aktiv.

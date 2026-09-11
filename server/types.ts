@@ -1026,7 +1026,21 @@ interface Task {
 // 2026-09-10 — `analysis`, the retired queue analyst's verdict, re-run whenever the tree moved
 // under the row. Nothing reads or writes it any more, and a persisted one is DROPPED at load
 // (server.ts, the task normalizer) rather than carried as a fact nothing refreshes.
-interface TaskBrief { text: string; at: number; model: string; edited: boolean }
+// `by` is WHO wrote a pinned brief, and it exists because `edited` never said so. `edited` is the
+// PIN — "the sweep never recompiles over this" — and until 2026-09-11 it was also read as the
+// authorship: the three render sites turned it into the words "edited by the owner"/"yours", so any
+// holder of the owner bearer who was not the owner produced a false statement about a PERSON. That
+// is a worse artefact than a `suspect:` marking, because a reader sees no suspicion in it.
+//   "owner" — POST /api/tasks/:id/brief, the owner's door at the board
+//   "main"  — POST /api/self/tasks/:id/brief, a bound Program-MAIN sharpening a row of its own
+//             Program. Never read from a body — provenance a caller dictates is none, the same
+//             rule TaskNotePin.by and TaskFilesProposal.by state.
+// ABSENT means the brief was written before this field existed — a DATE, never a third author.
+// Every render therefore keeps reading absence exactly as it read it before, which is why no
+// stored brief changed a byte when the field arrived: the backlog is not made honest by relabelling
+// it, and a migration that guessed an author for it would be the same falsehood with a timestamp.
+type BriefAuthor = "owner" | "main";
+interface TaskBrief { text: string; at: number; model: string; edited: boolean; by?: BriefAuthor }
 // One remark, timestamped and individually deletable. `id` exists for the delete: an index would
 // name a different comment the moment an earlier one goes.
 //
@@ -2079,7 +2093,7 @@ export type {
   HelperCmdCheck,
   SupervisorTransitionEventPayload, SupervisorTransitionFleetEvent, FleetEvent, ClarificationStatus,
   ClarificationRequest, FleetReportDisposition, FleetReportDecision, FleetReportBasis, FleetReport, AttentionKind, AttentionStatus, AttentionRequest, TaskKind,
-  Task, TaskBrief, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskFilesProposal, RefineChild,
+  Task, TaskBrief, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskFilesProposal, RefineChild,
   RefineProposal, TaskRefine, LaneForm, LaneRef, SuccessionRetirement, CodexRecoveryState, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
   PromotionSelfLand, PromotionPolicy, ProgramProfileKind, ProgramProfile, ProgramLineageVia,

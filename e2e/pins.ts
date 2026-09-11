@@ -1988,17 +1988,82 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     && receiptWrites.every((w) => /briefHash: briefHashOf\(deliveredBrief\)/.test(w)
       && /briefSource(: FOUNDING_BRIEF_SOURCE)?,/.test(w)),
     `${receiptWrites.length} writer(s), ${receiptWrites.filter((w) => !/briefHash/.test(w)).length} without briefHash`);
-  // The set is CLOSED at the type, and every literal in it is produced by something: four by the
-  // dispatch-seam derivation, the fifth by the founding constant. A value in the union that no
-  // writer can emit is a category the ledger promises and never delivers.
+  // The set is CLOSED at the type, and every literal in it is produced by something: five by the
+  // dispatch-seam derivation, the sixth by the founding constant. A value in the union that no
+  // writer can emit is a category the ledger promises and never delivers. ("main" joined 2026-09-11
+  // with POST /api/self/tasks/:id/brief — a MAIN-sharpened brief booked as "owner" would put the
+  // very falsehood that door was built to end into a RATE.)
   const briefSourceType = /type BriefSource = ([^;]+);/.exec(server)?.[1] ?? "";
   pin("BriefSource is a closed set whose every literal has a producer",
-    briefSourceType.trim() === '"compiled" | "owner" | "raw" | "clarify" | "founding"'
+    briefSourceType.trim() === '"compiled" | "owner" | "main" | "raw" | "clarify" | "founding"'
     && /if \(clarify\) return "clarify";/.test(server)
     && /if \(!t\.brief\) return "raw";/.test(server)
+    && /if \(t\.brief\.by === "main"\) return "main";/.test(server)
     && /t\.brief\.edited \|\| t\.brief\.model === "owner" \? "owner" : "compiled"/.test(server)
     && /const FOUNDING_BRIEF_SOURCE: BriefSource = "founding";/.test(server),
     briefSourceType.trim() || "no BriefSource type");
+
+  // ACP-25 · THE AUTHORSHIP OF A PINNED BRIEF, held as a SOURCE rule because no runtime probe can
+  // see it: the three sites that turn `TaskBrief.edited` into words live in the client bundle, and
+  // the whole defect this act repaired was that they turned it into a claim about a PERSON. Two
+  // halves, and the second is the one that protects the backlog:
+  //   (1) every site that renders the edited flag consults `by` through the ONE shared reading —
+  //       a fourth site added tomorrow that forgets it would re-mint "edited by the owner" on a
+  //       machine-written brief, which is exactly the sentence this act removed;
+  //   (2) the LEGACY strings survive byte-for-byte on the else branch. A brief carrying no `by`
+  //       was written before authorship was recorded, and a render that merely LOOKED different
+  //       would have re-interpreted every stored entry — the one thing the act was told not to do.
+  const briefClient = clientU.text;
+  const briefServerExec = server.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  const briefEditSites = briefClient.split("\n")
+    .map((l, i) => ({ l, n: i + 1 }))
+    .filter(({ l }) => /\bbrief\.edited\b/.test(l) || /\bt\.brief\.edited\b/.test(l));
+  const unguarded = briefEditSites.filter(({ n }) =>
+    !/briefByMain\(/.test(briefClient.split("\n").slice(n - 1, n + 2).join("\n")));
+  pin("every client site that renders a pinned brief's edited flag reads its AUTHOR through the one shared predicate",
+    briefEditSites.length === 3 && unguarded.length === 0
+      && /const briefByMain = \(b: \{ edited: boolean; by\?: string \} \| undefined\): boolean =>\n\s*!!b && b\.edited && b\.by === "main";/.test(briefClient),
+    `sites=${briefEditSites.length} unguarded=[${unguarded.map((x) => x.n).join(",")}]`);
+  pin("a brief with no recorded author renders in the three legacy strings, unchanged",
+    briefClient.includes('" · edited by the owner"') && briefClient.includes('" · yours"')
+      && briefClient.includes('" — yours, pinned"'),
+    "legacy branches");
+  // …and the SERVER half of the same rule: the author is stamped, never read off a request, and the
+  // normalizer restores only the two literals — a hand-edited state file must not be one word away
+  // from crediting a brief to the owner.
+  pin("TaskBrief.by is stamped at both doors and restored from a closed pair, never taken from a body",
+    /t\.brief = \{ text, at: Date\.now\(\), model: "owner", edited: true, by: "owner" \};/.test(briefServerExec)
+      && /t\.brief = \{ text, at: Date\.now\(\), model: "main", edited: true, by: "main" \};/.test(briefServerExec)
+      && /\.\.\.\(t\.brief\.by === "owner" \|\| t\.brief\.by === "main" \? \{ by: t\.brief\.by \} : \{\}\)/.test(briefServerExec)
+      && !/by: (body|typeof body)/.test(briefServerExec),
+    "stamped");
+  // THE DOOR ITSELF, in the shape its four neighbours are pinned in: program from the binding, repo
+  // from the caller's checkout, and a CLOSED body — plus the two refusals that keep it off the
+  // owner's own text. An unauthored pinned brief is protected by the same line as an owner-authored
+  // one, and that is the point: absence is not harmlessness.
+  const sharpenAt = server.indexOf("async function sharpenBriefForMain");
+  const sharpenBody = sharpenAt < 0 ? "" : server.slice(sharpenAt, server.indexOf("async function releaseTaskForMain", sharpenAt));
+  pin("the brief-sharpening door DERIVES program and repo, closes its body, and refuses the owner's own text",
+    sharpenBody.length > 0
+      && /const bound = boundProgramForMain\(s\);/.test(sharpenBody)
+      && /t\.programId !== program\.id/.test(sharpenBody)
+      && /const mainRepo = await repoKeyOf\(s\);/.test(sharpenBody)
+      && /repoCanon\(target\) !== mainRepo/.test(sharpenBody)
+      && /Object\.keys\(body \?\? \{\}\)\.filter\(\(k\) => k !== "text"\)/.test(sharpenBody)
+      && /t\.brief\?\.edited && t\.brief\.by === "owner"/.test(sharpenBody)
+      && /t\.brief\?\.edited && t\.brief\.by === undefined/.test(sharpenBody)
+      && /audit\("main_brief", s\.id/.test(sharpenBody),
+    sharpenBody.length > 0 ? "derivation" : "sharpenBriefForMain missing");
+  // …and its route's non-lane exclusion, in the family's own shape. Pinned as a PAIR with the
+  // sentence, because a route that silently lost the check would pass every runtime fixture that
+  // only ever calls it as a MAIN.
+  const sharpenRouteAt = server.indexOf("const selfTaskBrief = ");
+  const sharpenRoute = sharpenRouteAt < 0 ? "" : server.slice(sharpenRouteAt, server.indexOf("// ACP-16 · Program-MAIN release", sharpenRouteAt));
+  pin("the brief-sharpening route excludes a lane in its own words and hands the handler the token's own slot",
+    sharpenRouteAt > 0 && /s\.worktree && s\.label !== STEWARD_LABEL/.test(sharpenRoute)
+      && sharpenRoute.includes("a lane may not sharpen a brief")
+      && /return sharpenBriefForMain\(s, selfTaskBrief\[1\]!, await readJson\(req\)\);/.test(sharpenRoute),
+    sharpenRoute.length > 0 ? "lane-excluded" : "brief route missing");
 
   // ...and the READER of that ledger carries the same two sets, in a second file, as literal arrays.
   // tsc holds neither to the other — two independent literal unions are both perfectly well typed —
@@ -2010,7 +2075,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     [...src.matchAll(/"([a-z-]+)"/g)].map((m) => m[1]!).sort();
   const readerSources = literals(/export const BRIEF_SOURCES = \[([^\]]+)\]/.exec(briefstats)?.[1] ?? "");
   pin("briefstats.ts's BRIEF_SOURCES is server.ts's BriefSource union, value for value",
-    readerSources.length === 5 && readerSources.join() === literals(briefSourceType).join(),
+    readerSources.length === 6 && readerSources.join() === literals(briefSourceType).join(),
     `reader=[${readerSources}] server=[${literals(briefSourceType)}]`);
   const dispositionType = /type LaneDisposition = ([^;]+);/.exec(server)?.[1] ?? "";
   const readerDispositions = literals(/export const LANE_DISPOSITIONS = \[([^\]]+)\]/.exec(briefstats)?.[1] ?? "");

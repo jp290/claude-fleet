@@ -435,7 +435,13 @@ class Pane {
     navDn.onclick = (e) => { e.stopPropagation(); this.jumpPrompt(1); };
     this.root.append(termEl, this.chatEl, this.hint, this.jump, this.viewBtn, this.boardBtn, this.reloadBtn, navUp, navDn);
     this.term = new Terminal({
-      scrollback: 50000,
+      // 10k, not the 50k this carried from the first commit (f43e3fb1) without ever being
+      // revisited. The number is a PER-PANE cost and the board shows several at once, so a
+      // six-pane layout was holding 300 000 lines of buffer in one tab — memory xterm walks
+      // on every viewport calculation, which is what scrolling one of them costs. Nothing is
+      // actually lost: the server only ever seeds SEED_LINES (3000) on connect, tmux keeps the
+      // real history, and ⟳ reload re-seeds from it. 10k is still three seeds deep.
+      scrollback: 10000,
       fontSize: isMobile() ? 11 : 12,
       fontFamily: "ui-monospace, Menlo, Consolas, monospace",
       theme: { background: "#141414", foreground: "#d8d8d8" },

@@ -358,7 +358,14 @@ const PRE_AUTH_ROUTES = [
 // `/helper.js` joined this set 2026-08-26 with the remote helper portal, on the same reasoning as
 // `/share.js`: a BUNDLE carries no secret, and the page it belongs to is gated (handleHelperRoute)
 // while its script is not — exactly the split share.html already has.
-const STATIC_ROUTES = ["/", "/app.js", "/share.js", "/helper.js", "/xterm.css", "/manifest.webmanifest", "/icon.svg", "/icon-180.png"];
+// `/hub` and `/hub.js` joined it 2026-09-11, and the class was READ rather than assumed: hub.html is
+// a static shell (115 lines, one `<script src="/hub.js">` and no inline body, no embedded data), and
+// src/hub.ts carries no secret — it fetches /api/sessions, /api/commits and /api/context-receipts
+// with `credentials: "same-origin"`, so every byte it shows arrives through the `fleet=` cookie
+// (server/auth.ts#tokenFrom) over three routes that are NOT in the pre-auth set above and are
+// therefore owner-gated. Serving the shell and its bundle without a token hands an anonymous caller
+// an empty page: exactly the split `/` + `/app.js` already have.
+const STATIC_ROUTES = ["/", "/hub", "/app.js", "/hub.js", "/share.js", "/helper.js", "/xterm.css", "/manifest.webmanifest", "/icon.svg", "/icon-180.png"];
 // The steward token bypasses the owner gate entirely (server.ts ~4499), so its route set is a
 // second pre-auth surface — pinned for the same reason.
 const STEWARD_ROUTES = [

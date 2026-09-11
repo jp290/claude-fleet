@@ -432,7 +432,7 @@ export async function run(): Promise<void> {
   // §E's subject is the same rail from the other end. `public/*.js` is a gitignored BUILD artifact,
   // so `fleet-sync.sh` moving `main` moves `src/` and leaves the JS behind it untouched — or, on a
   // checkout that was cloned and never built, absent. Measured on the follower 2026-09-06 04:14:
-  // `bundleStale {appJsMtime:null, shareJsMtime:null, helperJsMtime:null}` and no `public/*.js` at
+  // `bundleStale {appJsMtime:null, shareJsMtime:null, helperJsMtime:null, hubJsMtime:null}` and no `public/*.js` at
   // all, i.e. a board served as HTML with no client. Four facts are proven below, against the REAL
   // script (not a copy of its logic) and a throwaway canonical/follower pair, with the build itself
   // replaced by a STAND-IN: `bun run build` here would prove the bundler works, which is not the
@@ -484,15 +484,15 @@ export async function run(): Promise<void> {
         seeded.code === 0 && cloned.status === 0 && existsSync(`${fol}/fleet-sync.sh`),
         `seed=${seeded.code} clone=${cloned.status} ${(cloned.stderr ?? "").trim()}`);
 
-      // The stand-in. It writes the three bundles server.ts calls the client and appends ONE line
+      // The stand-in. It writes the four bundles server.ts calls the client and appends ONE line
       // to a marker OUTSIDE the repo — outside because a marker inside would be an untracked file,
       // and the script refuses a dirty tree before it does anything else.
-      const BUILD_OK = `mkdir -p public && for f in app.js share.js helper.js; do echo "// stand-in $f" > public/$f; done && echo ran >> ${MARK}`;
+      const BUILD_OK = `mkdir -p public && for f in app.js share.js helper.js hub.js; do echo "// stand-in $f" > public/$f; done && echo ran >> ${MARK}`;
       const builds = (): number => {
         try { return readFileSync(MARK, "utf8").split("\n").filter(Boolean).length; } catch { return 0; }
       };
       const bundlesHere = (): string[] =>
-        ["app.js", "share.js", "helper.js"].filter((f) => existsSync(`${fol}/public/${f}`));
+        ["app.js", "share.js", "helper.js", "hub.js"].filter((f) => existsSync(`${fol}/public/${f}`));
       const runSync = (buildCmd: string): { code: number; out: string } => {
         const r = spawnSync("sh", [`${fol}/fleet-sync.sh`],
           { cwd: fol, encoding: "utf8", env: { ...process.env, FLEET_SYNC_BUILD_CMD: buildCmd } });
@@ -511,7 +511,7 @@ export async function run(): Promise<void> {
         `bundles=[${bundlesHere()}]`);
       const a = runSync(BUILD_OK);
       check("a follower that is CURRENT but has no client bundle builds one, and still exits 0",
-        a.code === 0 && bundlesHere().length === 3 && builds() === 1,
+        a.code === 0 && bundlesHere().length === 4 && builds() === 1,
         `exit=${a.code} bundles=[${bundlesHere()}] builds=${builds()} :: ${a.out}`);
 
       // --- D: …and having built it, it does NOT build again. The counter-proof to A: a script that
@@ -523,11 +523,11 @@ export async function run(): Promise<void> {
         `exit=${d.code} builds=${beforeD}->${builds()} :: ${d.out}`);
 
       // --- B: the fast-forward case. main moved, so `src/` moved, so the bundle is stale even
-      // though all three files are sitting right there — presence is not currency.
+      // though all four files are sitting right there — presence is not currency.
       const headB = moveCanonical("moved-b.txt");
       const beforeB = builds();
       const b = runSync(BUILD_OK);
-      check("a fast-forward is followed by a build even when all three bundles already exist",
+      check("a fast-forward is followed by a build even when all four bundles already exist",
         b.code === 0 && g(fol, "rev-parse", "HEAD").out === headB && builds() === beforeB + 1,
         `exit=${b.code} head=${g(fol, "rev-parse", "HEAD").out.slice(0, 8)} want=${headB.slice(0, 8)} builds=${beforeB}->${builds()} :: ${b.out}`);
 

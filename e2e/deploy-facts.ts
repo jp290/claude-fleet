@@ -22,6 +22,7 @@ interface Gap {
 }
 interface Bundle {
   appJsMtime: number | null; shareJsMtime: number | null; helperJsMtime: number | null;
+  hubJsMtime: number | null;
   srcNewestMtime: number | null; stale: boolean | null;
 }
 interface Facts { deployGap?: Gap | null; bundleStale?: Bundle | null }
@@ -71,6 +72,7 @@ export async function run(): Promise<void> {
   writeFileSync(`${FIX}/public/app.js`, "// bundle");
   writeFileSync(`${FIX}/public/share.js`, "// bundle");
   writeFileSync(`${FIX}/public/helper.js`, "// bundle");
+  writeFileSync(`${FIX}/public/hub.js`, "// bundle");
   // The fixture carries a real IMPORT GRAPH, not just file names, because that is what the roles
   // are read off since 2026-09-07 (server/deploy-classify.ts). package.json#scripts.build names the
   // bundle entries — the same derivation the real repo uses, so a check here fails for the reason
@@ -192,12 +194,12 @@ export async function run(): Promise<void> {
       for (const file of files) utimesSync(`${FIX}/public/${file}`, when, when);
     };
     const old = new Date(Date.now() - 60 * 60_000);
-    stamp(old, "app.js", "share.js", "helper.js");
+    stamp(old, "app.js", "share.js", "helper.js", "hub.js");
     const f = await settle((x) => x.bundleStale?.stale === true);
     check("§3 a bundle older than src/ is stale — landed client code invisible in the browser",
       f.bundleStale?.stale === true, JSON.stringify(f.bundleStale));
     const now = new Date();
-    stamp(now, "app.js", "share.js", "helper.js");
+    stamp(now, "app.js", "share.js", "helper.js", "hub.js");
     const g = await settle((x) => x.bundleStale?.stale === false);
     check("§3 rebuilding clears it — the fact follows the filesystem, it is not sticky",
       g.bundleStale?.stale === false, JSON.stringify(g.bundleStale));
@@ -260,7 +262,7 @@ export async function run(): Promise<void> {
     };
     // the stand-in build: relative paths on purpose — it only works if the verb runs it in
     // REPO_DIR, and touching the bundles is exactly what a real `bun run build` does to the fact.
-    const BUILD_OK = "printf 'run\\n' >> buildruns; touch public/app.js public/share.js public/helper.js";
+    const BUILD_OK = "printf 'run\\n' >> buildruns; touch public/app.js public/share.js public/helper.js public/hub.js";
     // Planted in THIS process's env so every restartSrv below carries them (the harness whitelist
     // is "every FLEET_* we did not compute ourselves" — a server-only variable would be dropped).
     // RESTORED, never deleted, at the end of the section: an earlier module (restart.ts) plants
@@ -275,6 +277,7 @@ export async function run(): Promise<void> {
       utimesSync(`${FIX}/public/app.js`, old, old);
       utimesSync(`${FIX}/public/share.js`, old, old);
       utimesSync(`${FIX}/public/helper.js`, old, old);
+      utimesSync(`${FIX}/public/hub.js`, old, old);
     };
     // open a gap the deploy has to close, and assert it is really open before asking for a deploy
     const openGap = async (body: string, label: string): Promise<boolean> => {

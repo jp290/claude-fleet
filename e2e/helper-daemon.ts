@@ -14,7 +14,7 @@
 // and had read the wish — so a probe that could not measure fails as ITSELF rather than as the
 // property it was aiming at.
 import { chmodSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync,
-  statSync } from "node:fs";
+  statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { BASE, ROOT, check, get, post } from "./harness";
@@ -32,6 +32,8 @@ interface Row {
   checks?: CheckCount | null;
   covers: { branch: string; mainAfter: string }[];
   remote?: { name: string; claimedAt: number; reportedAt: number; trail?: string; clonedSha?: string };
+  // the ping rail the audit route JOINS onto the row it serves — (HD.11) reads it
+  ping?: { status?: string; lastResult?: string; slot?: number };
 }
 interface CheckCount { ran: number; failed: number; ranIsLowerBound?: true }
 interface HelperJob {
@@ -997,6 +999,119 @@ export async function run(h: {
 
   up2.proc.kill();
   await up2.proc.exited;
+
+  // ===== (HD.11) THE REMOTE HALF OF THE AUDIT-RED RAIL ==========================================
+  // A red measured on the other machine is the SAME fact about the SAME tree as a red measured
+  // here, so it must reach the Program whose land it covers through the same pointer. The two sinks
+  // are different functions (runPostLandAudit / helperResult), and a rail wired into only one is
+  // silently half a rail — the half no local test run would ever notice was missing. e2e/pins.ts
+  // holds the call site textually (I8); this holds the BEHAVIOUR, end to end through a real claim.
+  {
+    const RPROG = "b2".repeat(12);
+    const statePath = `${ROOT}/fleet.json`;
+    interface RemotePlant {
+      slots?: Record<string, { selfToken?: string; openedAt?: number; sessionId?: string | null; programId?: string | null }>;
+      programs?: Record<string, unknown>[];
+    }
+    const remoteState = (): RemotePlant => JSON.parse(readFileSync(statePath, "utf8")) as RemotePlant;
+    interface RemoteInbox { program?: string;
+      entries?: { id: string; kind: string; ref: string; subject: Record<string, unknown> | null }[] }
+    const remoteInbox = async (token: string): Promise<RemoteInbox> =>
+      (await (await fetch(`${BASE}/api/self/inbox`, { headers: { "x-fleet-self-token": token } })).json()) as RemoteInbox;
+
+    for (const s of ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] }).slots)
+      if (s.cwd) await post(`/api/slots/${s.id}/kill`, {});
+    await Bun.sleep(300);
+    const rMain = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+      .slots.find((s) => !s.cwd)?.id ?? 0;
+    const rMainOpen = rMain ? await post(`/api/slots/${rMain}/open`, { cwd: REPO }) : null;
+    const rLane = await openLane(REPO, "hd-remote-prog");
+    await killSrv();
+    const rPlant = remoteState();
+    const rMainRow = rPlant.slots?.[String(rMain)] ?? {};
+    const rBoundAt = Date.now() - 1000;
+    rPlant.programs = [...(rPlant.programs ?? []), {
+      id: RPROG, title: "Remote audit-red fixture", intent: "Receive the remote audit of its own land",
+      successCriterion: "A helper-reported red reaches this program's inbox",
+      nonGoals: [], decisions: [], evidence: [], openQuestions: [], status: "active",
+      createdAt: rBoundAt - 300, proposedBy: { kind: "owner" },
+      confirmedAt: rBoundAt - 200, activatedAt: rBoundAt - 100,
+      main: { slot: rMain, openedAt: rMainRow.openedAt, sessionId: rMainRow.sessionId ?? null, boundAt: rBoundAt },
+      lineage: { v: 1, entries: [{ slot: rMain, openedAt: rMainRow.openedAt, sessionId: rMainRow.sessionId ?? null,
+        boundAt: rBoundAt, via: "bootstrap", endedAt: null, endedBy: null }], dropped: 0 },
+    }];
+    if (rPlant.slots?.[String(rLane.slot)]) rPlant.slots[String(rLane.slot)]!.programId = RPROG;
+    writeFileSync(statePath, JSON.stringify(rPlant, null, 2), { mode: 0o600 });
+    // FLEET_AUDIT_HELPER_GRACE_MS gives the portal first refusal on this repo's audit for 20 s, so
+    // the job below is claimable without racing the local drain — the same knob e2e/helper-portal.ts
+    // uses for the same fixture. The grace only arms while a device is inside the online window, so
+    // the heartbeat below is a precondition of the fixture and not decoration.
+    const rUp = await startSrv({ audit: true, auditPing: true,
+      extra: { FLEET_AUDIT_HELPER_GRACE_MS: "20000" } });
+    check("(HD.11) fixture: a Program bound to a plain session, one lane of it, the ping armed",
+      rMainOpen?.ok === true && rUp, `open=${rMainOpen?.status} up=${rUp}`);
+    const rToken = remoteState().slots?.[String(rMain)]?.selfToken ?? "";
+
+    // Every red already open would compete for the one ping a tick delivers. Adjudication never
+    // greens a row — it only takes it out of the candidate set, which is what this fixture needs.
+    const settleReds = async (note: string): Promise<void> => {
+      for (const prior of await auditRows())
+        if (prior.result === "red")
+          await post("/api/post-land-audits/adjudicate", { at: prior.at, verdict: "unknowable", note });
+    };
+    await settleReds("(HD.11) fixture: not this stage's subject");
+
+    const rBeat = await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME });
+    check("(HD.11) fixture: a device is inside the online window, so the portal's grace actually arms",
+      rBeat.ok, `${rBeat.status}`);
+    const rSince = Date.now();
+    await driveMerge(rLane, rLane.branch);
+    const rJob = await (async (): Promise<HelperJob | undefined> => {
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        const j = await jobFor(REPO);
+        if (j && !j.localRunning && !j.claim) return j;
+        await Bun.sleep(200);
+      }
+      return await jobFor(REPO);
+    })();
+    const rClaim = rJob ? await hpost("/api/helper/claim", { jobId: rJob.id, deviceId: DEVICE }) : null;
+    check("(HD.11) fixture: the Program's land is offered and claimed by a helper before the local drain takes it",
+      rJob !== undefined && rClaim?.status === 200, `job=${JSON.stringify(rJob)} claim=${rClaim?.status}`);
+    const rResult = rJob ? await hpost("/api/helper/result", { jobId: rJob.id, exitCode: 1,
+      tail: "FAIL  remote program check\n1 FAILURES", fails: ["remote program check"] }) : null;
+    // found by its REMOTE key, never by position: a row written by the local drain in the same
+    // window would answer a positional read, and this check is about the helper's row alone.
+    const rRow = (await auditRows()).find((x) => x.at >= rSince && x.remote !== undefined);
+    const rEntries = ((await remoteInbox(rToken)).entries ?? []).filter((e) => e.kind === "audit-red");
+    const rSubject = rEntries[0]?.subject as Record<string, unknown> | undefined;
+    // BREAKS IF: writeAuditInboxEntries is called only from runPostLandAudit — the local path would
+    // stay green and every remote red would silently go back to the quietest pane.
+    check("(HD.11) A HELPER-REPORTED RED REACHES THE SAME INBOX: one audit-red pointer, the helper's own fail names in its subject",
+      rResult?.status === 200 && rRow?.result === "red" && rRow.remote !== undefined
+        && rEntries.length === 1 && rEntries[0]?.ref === String(rRow.at)
+        && JSON.stringify(rSubject?.fails) === JSON.stringify(["remote program check"])
+        && rSubject?.remote === true,
+      JSON.stringify({ result: rRow?.result, entries: rEntries.length, subject: rSubject }).slice(0, 500));
+    await Bun.sleep(1200); // several ping ticks
+    const rPane = (await (await get(`/api/slots/${rMain}/history`)).json()) as { history?: { text: string }[] };
+    const rPinged = (await auditRows()).find((x) => x.at === rRow?.at);
+    check("(HD.11) …and the remote red types into no pane either: program-inbox, and the bound MAIN's history carries no audit ping",
+      rPinged?.ping?.status === "program-inbox"
+        && (rPinged.ping.lastResult ?? "").includes(RPROG)
+        && !(rPane.history ?? []).some((e) => e.text.includes(`at=${rRow?.at}`)),
+      JSON.stringify({ ping: rPinged?.ping, history: (rPane.history ?? []).length }));
+
+    await settleReds("(HD.11) teardown");
+    if (rMain) await post(`/api/slots/${rMain}/kill`, {});
+    await killSrv();
+    const rClean = remoteState();
+    rClean.programs = (rClean.programs ?? []).filter((p) => (p as { id?: string }).id !== RPROG);
+    writeFileSync(statePath, JSON.stringify(rClean, null, 2), { mode: 0o600 });
+    check("(HD.11) teardown: the server is back on the wrapper's default ping configuration",
+      await startSrv({ audit: true }));
+  }
+
   proxy.stop(true);
   rmSync(WORK, { recursive: true, force: true });
   rmSync(UPD, { recursive: true, force: true });

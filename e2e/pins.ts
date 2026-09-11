@@ -6980,6 +6980,92 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       && autoClose.includes("e.boundAt <= d.at") && autoClose.includes("e.endedAt >= d.at"),
     autoClose === "" ? "laneAutoCloseRefusal not found in server.ts"
       : `program=${autoClose.includes('r.basis === "program"')} lineage=${autoClose.includes("program.lineage.entries.some(")}`);
+  // I8 — A RED POST-LAND AUDIT ADDRESSES THE PROGRAM THAT OWNS THE LAND, and the four halves of
+  // that rail are each a must-agree pair no compiler can hold:
+  //  · BOTH audit sinks write it. The local run and the helper report produce the same kind of row
+  //    about the same tree; a rail wired into only one is silently half a rail, and the remote half
+  //    is the one no local test run would ever notice was missing.
+  //  · The join is repo + branch + mainAfter TOGETHER. A branch name is reused; a tip is not. On
+  //    `branch` alone the second land of `fleet/foo` would drag the first land's Program in.
+  //  · The ping is suppressed only on a COMPLETE hand-off (`addressed === row.covers.length`). The
+  //    tempting `addressed > 0` is exactly the bug: a mixed land whose programless half nobody sees.
+  //  · `audit-red` NEVER arms the pane nudge. The kind exists to take a red OFF the composer; a
+  //    nudge on it would put it straight back, into the one pane the owner ruled out of
+  //    merge/audit notification (2026-09-08).
+  const auditInboxWriter = server.match(/async function writeAuditInboxEntries\([\s\S]*?\n\}/)?.[0] ?? "";
+  const auditProgramJoin = server.match(/async function programsForAuditRow\([\s\S]*?\n\}/)?.[0] ?? "";
+  const auditRunBody = server.match(/async function runPostLandAudit\([\s\S]*?\n\}\n/)?.[0] ?? "";
+  const helperResultBody = server.match(/async function helperResult\([\s\S]*?\n\}\n/)?.[0] ?? "";
+  const afterMint = (body: string): boolean => {
+    const mint = body.indexOf("await mintAuditEvents(row);");
+    const write = body.indexOf("await writeAuditInboxEntries(row);");
+    return mint >= 0 && write === mint + "await mintAuditEvents(row);\n  ".length;
+  };
+  pin(`${RULE_INBOX} — a red audit addresses its Program from BOTH sinks, joined on repo+branch+mainAfter, and only a COMPLETE hand-off silences the ping`,
+    auditInboxWriter !== "" && auditProgramJoin !== "" && auditRunBody !== "" && helperResultBody !== ""
+      && afterMint(auditRunBody) && afterMint(helperResultBody)
+      && auditProgramJoin.includes("o.repo !== row.repo") && auditProgramJoin.includes("o.branch !== cover.branch")
+      && auditProgramJoin.includes("o.mainAfter !== cover.mainAfter")
+      && auditProgramJoin.includes('o.disposition !== "landed"')
+      && auditInboxWriter.includes('if (row.result !== "red") return;')
+      && auditInboxWriter.includes('p.status !== "active"')
+      && auditInboxWriter.includes("addressed === row.covers.length")
+      && !/addressed > 0/.test(auditInboxWriter)
+      && auditInboxWriter.includes('appendProgramInbox(p, "audit-red", ref)')
+      && auditInboxWriter.includes('e.kind === "audit-red" && e.ref === ref'),
+    auditInboxWriter === "" ? "writeAuditInboxEntries not found in the server universe"
+      : auditProgramJoin === "" ? "programsForAuditRow not found in the server universe"
+        : auditRunBody === "" || helperResultBody === "" ? "runPostLandAudit or helperResult not found in the server universe"
+          : `local=${afterMint(auditRunBody)} remote=${afterMint(helperResultBody)} tip=${auditProgramJoin.includes("o.mainAfter !== cover.mainAfter")} complete=${auditInboxWriter.includes("addressed === row.covers.length")}`);
+  // …and the state the suppression is EXPRESSED in. `program-inbox` is a fourth status, not a
+  // flavour of `delivered` (nothing was typed), so the tick must skip it and the loader must accept
+  // it back — a loader that dropped it would turn every restart into a repeat paste.
+  const pingLoader = server.match(/\["pending", "delivered", "adjudicated"[^\]]*\]\.includes\(String\(p\.status\)\)/)?.[0] ?? "";
+  const pingTick = server.match(/async function tickAuditPing\([\s\S]*?\n\}/)?.[0] ?? "";
+  const nudgeGate = server.match(/function nudgeableUnread\([\s\S]*?\n\}/)?.[0] ?? "";
+  const nudgeTick = server.match(/async function tickInboxNudge\([\s\S]*?\n\}/)?.[0] ?? "";
+  const pingRender = server.match(/function auditPingMessage\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_INBOX} — program-inbox is a persisted fourth ping status the tick skips, and audit-red never arms the pane nudge`,
+    pingLoader.includes('"program-inbox"')
+      && pingTick !== "" && pingTick.includes('!== "program-inbox"')
+      && nudgeGate !== "" && nudgeGate.includes('entry.kind !== "audit-red"')
+      && nudgeTick !== "" && (nudgeTick.match(/nudgeableUnread\(program\)/g) ?? []).length === 2
+      && !/entries \?\? \[\]\)\s*\n?\s*\.filter\(\(entry\) => entry\.readBy === null\)\.map/.test(nudgeTick),
+    pingLoader === "" ? "the auditPings status loader list not found in the server universe"
+      : nudgeGate === "" ? "nudgeableUnread not found in the server universe"
+        : `loader=${pingLoader.includes('"program-inbox"')} tick=${pingTick.includes('!== "program-inbox"')} nudge=${(nudgeTick.match(/nudgeableUnread\(program\)/g) ?? []).length}`);
+  // …and the ONE derivation behind both readers. The ping and the `audit-red` subject must say the
+  // same thing about the same row, which is only structurally true while both render from
+  // auditSubjectOf — and the ping's twelve labels must stay in the order a reader learned them.
+  // Judged over the RETURN ARRAY, which is the rendered order — not over the whole body, where a
+  // hoisted `const` would read as out-of-sequence while the pane text is unchanged. The twelfth
+  // label lives in that const (RULE_SIGIL needs a statement-terminating literal to read the tail
+  // from), so it is pinned as itself: the const carries it and the array's LAST element is it.
+  const pingArray = pingRender.slice(pingRender.indexOf("return ["),
+    pingRender.indexOf('].join("\n");'));
+  const pingLabels = ["[fleet post-land audit] Unbeurteiltes Audit-Ereignis", "Audit-Baum (Land-SHA):",
+    "covers:", "result:", "checks.ran", "NICHTS wurde gemessen", "Fehlgeschlagene Checks",
+    "Letzte bis zu 15 Zeilen", "--- audit output ---", "--- end audit output ---",
+    "Lege das Urteil ab mit POST /api/post-land-audits/adjudicate"];
+  let labelCursor = -1;
+  let labelsInOrder = pingArray !== "";
+  for (const label of pingLabels) {
+    const at = pingArray.indexOf(label, labelCursor + 1);
+    if (at <= labelCursor) { labelsInOrder = false; break; }
+    labelCursor = at;
+  }
+  const tailNamed = /const closing = "verdict ∈ real\|flake\|stale-test\|unknowable\./.test(pingRender)
+    && /\n\s*closing,\n\s*\]\.join\("\\n"\);/.test(pingRender);
+  const subjectJoin = server.match(/async function auditRedSubject\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_INBOX} — the ping and the audit-red subject render from ONE derivation, and the ping's twelve labels keep their order`,
+    pingRender !== "" && pingRender.includes("auditSubjectOf(row)") && labelsInOrder && tailNamed
+      && subjectJoin !== "" && subjectJoin.includes("auditSubjectOf(raw)")
+      && subjectJoin.includes("is no longer on the trail (retention)")
+      && subjectJoin.includes("not readable as an audit row")
+      && subjectJoin.includes("POST /api/post-land-audits/adjudicate"),
+    pingRender === "" ? "auditPingMessage not found in the server universe"
+      : subjectJoin === "" ? "auditRedSubject not found in the server universe"
+        : `derivation=${pingRender.includes("auditSubjectOf(row)")} order=${labelsInOrder} tail=${tailNamed} subject=${subjectJoin.includes("auditSubjectOf(raw)")}`);
   // I9 — the one helper owns both report branches. Only exact lane subscriptions are superseded:
   // merge is a different fact, firedAt remains proof of a real fire, and a missing helper or call
   // fails under its own symbol instead of letting an empty extraction satisfy negative checks.

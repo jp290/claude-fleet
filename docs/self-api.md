@@ -776,8 +776,9 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   Report-Zeile) oder `null`; löst ein `ref` nicht mehr auf, steht daneben eine Zeile in `unknown`
   (`entry <id> names a <kind> row that is no longer present (retention)`) — beide Zielarten sind
   beschnittene Enden (`pruneAttention`, `pruneFleetReports`), „der Zeiger hat seine Zeile überlebt"
-  ist also ein erwarteter Zustand und keine Panne. **`audit-red` trägt in dieser Fassung immer
-  `subject: null` und erzeugt KEINE `unknown`-Zeile** — der Ledger-Join kommt mit seinem Schreiber.
+  ist also ein erwarteter Zustand und keine Panne. **`audit-red` gehorcht seit seinem Schreiber
+  derselben Regel** (die frühere Fassung „trägt immer `subject: null` und erzeugt KEINE
+  `unknown`-Zeile" ist damit überholt): siehe den eigenen Absatz unten.
 - **`ambient-land` — jemand anders hat eine Zeile DIESES Programs gelandet** (ACP-17). Der Eintrag
   entsteht ausschließlich, wenn ein Land die Integrationsbranch bewegt hat, das mit einem
   Owner-Token **nicht vom Board** (`bearer`/`?token=`) an der Self-Land-Tür des Programs vorbeigefahren
@@ -805,9 +806,36 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   <repo>`) — der Zeiger auf ein Land, das stattfand, hängt nie an einem best-effort-Schreiben.
   Fehlt die Repo-Haelfte ganz, sagt die `unknown`-Zeile genau das (`… without a repo to read its
   land note from`) statt in ein fremdes Object-Database zu greifen und „nicht lesbar" zu melden.
+- **`audit-red` — ein rotes Post-Land-Audit über eine Landung DIESES Programs.** `ref` ist der
+  Zeilenschlüssel der Audit-Zeile (`at`, als String). Die Zuordnung läuft über das
+  Outcome-Ledger und über **drei** Felder zusammen — `repo` UND `branch` UND `mainAfter`
+  (`server.ts#programsForAuditRow`): ein Branch-Name wird wiederverwendet, ein Tip nicht, und ein
+  Join auf den Branch allein zöge das ältere Land desselben Namens in ein fremdes Program. Ein Cover
+  ohne Treffer bleibt **programlos** und wird nie dem nächstbesten Program zugeschlagen.
+  `subject` ist die aufgelöste Audit-Zeile: `{at, mainSha, result, exitCode, covers[], proportional,
+  checks, ranIsLowerBound, displayedRan, fails[], remote, tail, adjudicated, door}` — dieselbe
+  Ableitung, aus der auch der Pane-Ping rendert (`server.ts#auditSubjectOf`), damit beide Leser
+  nicht auseinanderlaufen können. `adjudicated` ist `null`, solange niemand hingesehen hat, sonst
+  `{at, verdict, by, note?}`. `door` sagt die Grenze laut: **die Adjudikation bleibt beim Owner**
+  (`POST /api/post-land-audits/adjudicate`) — die MAIN liest, und wenn eine Entscheidung fällig ist,
+  stellt sie eine Attention. Das Ledger ist ein rotierender Trail, also gibt es hier zwei
+  verschiedene `unknown`-Sätze statt eines: `… which is no longer on the trail (retention)` (die
+  Zeile ist weg) und `… whose ledger line is not readable as an audit row` (die Zeile steht da und
+  ist unlesbar). Ein `ref`, der gar kein Zeilenschlüssel ist, sagt genau das.
+- **Und `audit-red` tippt NIE in eine Pane** (`server.ts#nudgeableUnread`). Das ist der Zweck des
+  Kinds: ein rotes Audit hört auf, ein Paste zu sein, und die gebundene MAIN findet es beim nächsten
+  `GET /api/self/inbox`. Der Inbox-Nudge zählt darum nur die übrigen Kinds und **sagt es in seinem
+  Text**, wenn er ein ungelesenes `audit-red` auslässt — die Zahl in der Pane ist nie als Inbox-Summe
+  zu lesen. Der generische Audit-Ping behält genau die Covers, die KEIN aktives Program besitzt;
+  vollständig adressiert wird er zu `ping.status: "program-inbox"` (nicht `delivered` — es wurde
+  nichts getippt), teilweise adressiert feuert er weiter und nennt die Hälfte, die schon einen Leser
+  hat.
 - **Schreiber:** Eine Owner-Antwort über `POST /api/attention/:id/answer` schreibt genau einen
-  `attention-answer`-Zeiger zusammen mit dem `answered`-Status. `fleet-report` und `audit-red`
-  sind reservierte Kinds; in diesem Baum haben sie noch keinen Producer-Aufruf.
+  `attention-answer`-Zeiger zusammen mit dem `answered`-Status. Einen `audit-red`-Zeiger schreibt
+  **jede der beiden Audit-Senken** (der lokale Lauf und das Helfer-Ergebnis), je aktivem Program
+  genau EINEN pro Audit-Zeile — ein zweiter Aufruf für dieselbe Zeile schreibt nichts. Ein Program,
+  das nicht mehr `active` ist, ist kein Leser: seine Covers bleiben unadressiert und behalten den
+  Ping, statt still zu verschwinden.
 - **Antwort POST read:** `{ok: true, existing: false, entry}` beim ersten Mal, `{ok: true,
   existing: true, entry}` bei jedem weiteren. Die Quittung ist **kein Lock**: ein zweites Lesen
   überschreibt `readBy`/`readAt` nie, denn der erste Leser ist die Tatsache.

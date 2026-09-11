@@ -94,3 +94,46 @@ Die Klasse dahinter ist allgemeiner als dieser Bug: **ein fehlgeschlagener Nudge
 per-Boot-Zaehler `errors`** — also an niemanden, der handeln koennte, und nach dem naechsten Deploy
 auch dort nicht mehr. Ein Zustellkanal, dessen Scheitern nur in einen fluechtigen Zaehler faellt,
 ist von „zugestellt" nicht unterscheidbar. Das gehoert getrennt von der Ursache behandelt.
+
+## 6 · NACHTRAG 2026-09-11 18:0x — DIESELBE KLASSE AUF EINER CLAUDE-PANE, ANDERE URSACHE
+
+Gemessen von der Owner-MAIN (Slot 8) an Slot 4 (claude, Opus 5, Program Fleet-Betrieb), waehrend
+`§4`s Probe noch offen ist. Es ist KEIN Beleg fuer die Laengenschwelle und widerlegt §4 nicht —
+es ist ein zweiter, unabhaengiger Weg, auf dem eine Nachricht zwischen Composer und Turn verschwindet.
+
+**Beobachtung, Schritt fuer Schritt:**
+
+1. Eine Owner-Nachricht (66 Zeichen, „ich hab eine advisory-zeile archiviert, file die beiden
+   korrekturen") stand im Composer von Slot 4. Die Statuszeile sagte `✻ Cooked for 2m 31s · done
+   5:31 PM` — die Session war idle, der Text lag **30 Minuten** ungesendet da.
+2. `tmux -L claudefleet send-keys -t s4 Enter` → **kein Turn**, Text unveraendert im Composer.
+3. `tmux -L claudefleet send-keys -t s4 C-m` → **kein Turn**, Text unveraendert im Composer.
+4. Ein einzelnes Leerzeichen → der Text war **spurlos weg**, Composer leer, **kein Turn gestartet**,
+   und im Transkript steht die Nachricht NICHT. Die Statuszeile blieb bei `done 5:31 PM`.
+5. Dieselbe Nachricht Sekunden spaeter ueber `POST /send` → `acceptance: "observed"`, Turn laeuft.
+   (`sendId 91bbcd50d16816777684c759`)
+
+**Was das trennt — zwei Hypothesen, und die zweite ist die sparsamere:**
+
+- (H1) Enter feuert, der Turn wird verworfen. Dann muesste Schritt 4 erklaert werden, in dem gar
+  keine Taste mit Submit-Bedeutung kam.
+- (H2) **Der gemalte Composer-Inhalt war nicht der Eingabepuffer.** Der Text war Bildschirm-Rest;
+  der Puffer war leer, weshalb Enter (Schritt 2+3) korrekt nichts tat — Claude Code sendet keinen
+  leeren Prompt — und das Leerzeichen einen Repaint ausloeste, der den Rest wegraeumte.
+
+**Warum H2 fuer §0 relevant ist, auch wenn dort codex laeuft:** `awaitComposer` liest die Pane,
+also **denselben gemalten Zustand**. Ist das Malen vom Puffer trennbar, dann ist „composer still
+holds N chars" keine Aussage ueber den Puffer, sondern ueber den Bildschirm — und ein Fix, der auf
+„der Composer haelt noch Text" aufbaut, baut auf einen Sensor, dessen Bedeutung ungeklaert ist.
+
+**UNGEPRUEFT, ausdruecklich:** welche der beiden Hypothesen gilt. Der Diskriminator ist billig und
+gehoert in dieselbe WEGWERF-Pane wie die Probe aus §4: Text hineinmalen lassen, dann OHNE weitere
+Eingabe `capture-pane` gegen den tatsaechlich eingereichten Prompt halten — und pruefen, ob ein
+`send-keys Enter` auf einen NACHWEISLICH gefuellten Puffer einen Turn ausloest. Nie an einer
+lebenden Pane.
+
+**Betrieblich, und unabhaengig von der Ursache:** `POST /send` ist der einzige Weg mit Quittung.
+Ein `tmux send-keys` von Hand hat keine Acceptance-Probe, kein Journal und keinen Receipt — es hat
+hier 66 Zeichen Owner-Text vernichtet, und ohne die Kenntnis des Wortlauts waere die Nachricht
+verloren gewesen. Regel daraus: **eine fremde Pane wird nie per `send-keys` angesprochen**, auch
+nicht „nur fuer ein Enter".

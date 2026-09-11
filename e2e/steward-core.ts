@@ -248,7 +248,7 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   //     on 2026-07-25). Exercised against ctx.gapRepo (FLEET_REPO_DIR), which starts with neither a
   //     public/ nor a src/ — i.e. in the cannot-tell state. ---
   type Bundle = { appJsMtime: number | null; shareJsMtime: number | null; helperJsMtime: number | null;
-    srcNewestMtime: number | null; stale: boolean | null };
+    hubJsMtime: number | null; srcNewestMtime: number | null; stale: boolean | null };
   const readBundle = async (path: string) =>
     ((await (await stewGet(path)).json()) as { bundleStale?: Bundle }).bundleStale;
   const bSet = (rel: string, secs: number) => utimesSync(`${ctx.gapRepo}/${rel}`, secs, secs);
@@ -263,14 +263,16 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   writeFileSync(`${ctx.gapRepo}/public/app.js`, "// bundle\n");
   writeFileSync(`${ctx.gapRepo}/public/share.js`, "// bundle\n");
   writeFileSync(`${ctx.gapRepo}/public/helper.js`, "// bundle\n");
+  writeFileSync(`${ctx.gapRepo}/public/hub.js`, "// bundle\n");
   bSet("src/client.ts", T - 100);
   bSet("public/app.js", T - 50);
   bSet("public/share.js", T - 50);
   bSet("public/helper.js", T - 50);
+  bSet("public/hub.js", T - 50);
   const bs1 = await readBundle("/api/steward/sessions");
   check("bundle-staleness: bundles built AFTER the newest source read fresh (stale=false)",
     bs1?.stale === false && bs1.appJsMtime === (T - 50) * 1000 && bs1.shareJsMtime === (T - 50) * 1000
-      && bs1.helperJsMtime === (T - 50) * 1000
+      && bs1.helperJsMtime === (T - 50) * 1000 && bs1.hubJsMtime === (T - 50) * 1000
       && bs1.srcNewestMtime === (T - 100) * 1000, JSON.stringify(bs1));
   // a NESTED source file flips it — the walk is recursive, so a change in src/<subdir>/ cannot
   // hide behind an untouched top level (the whole point: a false 'fresh' costs another blind hour)
@@ -286,7 +288,7 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   const bs3 = await readBundle("/api/steward/sessions");
   check("bundle-staleness: an absent bundle yields nulls, never a verdict from the other bundles",
     bs3?.appJsMtime === null && bs3.stale === null && bs3.shareJsMtime === (T - 50) * 1000
-      && bs3.helperJsMtime === (T - 50) * 1000
+      && bs3.helperJsMtime === (T - 50) * 1000 && bs3.hubJsMtime === (T - 50) * 1000
       && bs3.srcNewestMtime === (T - 10) * 1000, JSON.stringify(bs3));
   writeFileSync(`${ctx.gapRepo}/public/app.js`, "// bundle\n");
   bSet("public/app.js", T - 50); // leave it STALE for the digest-mirror check below

@@ -72,8 +72,8 @@ wurde, hat überhaupt keins. **Gemessen am 2026-09-06 04:14 am Folger-Poll:**
 dort nicht gefunden — das Board des Folgers war HTML ohne JS.
 
 Darum baut `fleet-sync.sh` selbst, und zwar in genau zwei Fällen: **nach einem erfolgreichen
-Fast-Forward**, und wenn `main` schon aktuell ist, aber eine der drei Dateien aus
-`server.ts#BUNDLES` (`public/app.js`, `public/share.js`, `public/helper.js`) fehlt. Ist der Folger
+Fast-Forward**, und wenn `main` schon aktuell ist, aber eine der vier Dateien aus
+`server.ts#BUNDLES` (`public/app.js`, `public/share.js`, `public/helper.js`, `public/hub.js`) fehlt. Ist der Folger
 aktuell UND vollständig, läuft kein Build — sonst wäre der 15-Minuten-Timer eine Bundler-Schleife.
 Das Kommando ist `${FLEET_SYNC_BUILD_CMD:-bun run build}`, dieselbe Form wie
 `server.ts#DEPLOY_BUILD_CMD`.

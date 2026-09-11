@@ -11,7 +11,7 @@
 // (and, for two sections, one booted WITHOUT), so it lives in the postland harness and runs after
 // its absolute-count sections. Every count here is RELATIVE, per repo, by basename.
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { BASE, check, get, paneEnv, post, restartSrv, tmuxOut } from "./harness";
 import { driveMerge, openLane, seedRepo, settleForMerge, type Lane } from "./lane-helpers";
@@ -22,6 +22,9 @@ interface Row {
   fails?: string[];
   checks?: { ran: number; failed: number } | null;
   covers: { branch: string; mainAfter: string }[];
+  // the two rails the audit route JOINS onto the row it serves — (RW.10) reads both
+  ping?: { status?: string; lastResult?: string; slot?: number };
+  adjudication?: { verdict?: string };
 }
 interface Workers { keys?: string[]; workers?: Record<string, Record<string, string>> }
 interface LiveView {
@@ -404,5 +407,357 @@ exit 0
     resumed?.result === "green" && resumed.cmdSource === "env" && resumed.covers.some((x) => x.branch === ctl3.branch),
     JSON.stringify(resumed).slice(0, 300));
   check("(RW) …and the queue file is gone once every entry has its row", queueFile() === null, JSON.stringify(queueFile()));
+
+  // ===== (RW.10) A RED AUDIT ADDRESSES THE PROGRAM WHOSE LAND IT COVERS ===========================
+  // Tier 2's alarm used to go to whichever non-lane session had been quiet longest — a receiver
+  // chosen by IDLENESS, with no relation to the land that produced the red. The join that fixes it
+  // exists on the OUTCOME ledger (repo + branch + mainAfter -> programId), so a red now lands in the
+  // inbox of the Program whose lane landed, and the generic ping keeps exactly the covers no active
+  // Program owns. Everything below is that one sentence, measured in both directions.
+  const statePath = `${DIR}/fleet.json`;
+  interface PlantState {
+    slots?: Record<string, { selfToken?: string; openedAt?: number; sessionId?: string | null; programId?: string | null }>;
+    programs?: Record<string, unknown>[];
+  }
+  const plantState = (): PlantState => JSON.parse(readFileSync(statePath, "utf8")) as PlantState;
+  const slotToken = (slot: number): string => plantState().slots?.[String(slot)]?.selfToken ?? "";
+  interface InboxEntryView { id: string; kind: string; ref: string; readBy: number | null;
+    subject: Record<string, unknown> | null }
+  interface InboxView { program?: string; unread?: number; entries?: InboxEntryView[]; unknown?: string[]; error?: string }
+  const selfInbox = async (token: string): Promise<InboxView> =>
+    (await (await fetch(`${BASE}/api/self/inbox`, { headers: { "x-fleet-self-token": token } })).json()) as InboxView;
+  const auditRedEntries = async (token: string): Promise<InboxEntryView[]> =>
+    ((await selfInbox(token)).entries ?? []).filter((e) => e.kind === "audit-red");
+  const sessions = async (): Promise<{ id: number; cwd: string | null }[]> =>
+    ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] }).slots;
+  const pane = async (slot: number): Promise<string> =>
+    (await tmuxOut("capture-pane", "-t", `s${slot}`, "-p", "-J", "-S", "-")).out;
+  // Every red that is already open would compete for the one ping this tick delivers, so each stage
+  // starts from "exactly the red I just produced is open". Adjudication never greens a row — it only
+  // takes it out of the ping's candidate set, which is precisely what a fixture needs.
+  const settleOpenReds = async (except: number | null = null): Promise<void> => {
+    for (const prior of await auditRows())
+      if (prior.result === "red" && prior.at !== except)
+        await post("/api/post-land-audits/adjudicate",
+          { at: prior.at, verdict: "unknowable", note: "(RW.10) fixture: not this stage's subject" });
+  };
+  const waitPing = async (at: number, want: (p: { status?: string; lastResult?: string }) => boolean,
+    timeoutMs = 12_000): Promise<Row | undefined> => {
+    const deadline = Date.now() + timeoutMs;
+    let seen: Row | undefined;
+    while (Date.now() < deadline) {
+      seen = (await auditRows()).find((r) => r.at === at);
+      if (seen?.ping && want(seen.ping)) return seen;
+      await Bun.sleep(150);
+    }
+    return seen;
+  };
+
+  await settleOpenReds();
+  for (const s of await sessions()) if (s.cwd) await post(`/api/slots/${s.id}/kill`, {});
+  await Bun.sleep(300);
+  const progMain = (await sessions()).find((s) => !s.cwd)?.id ?? 0;
+  const progMainOpen = progMain ? await post(`/api/slots/${progMain}/open`, { cwd: RW }) : null;
+  check("(RW.10) fixture: a plain (non-lane) session is open — the ping's only eligible receiver",
+    progMainOpen?.ok === true, `${progMain} ${progMainOpen?.status}`);
+  const PROG = "a1".repeat(12);
+  const laneP1 = await openLane(RW, "rw-prog-one");
+  const laneP2 = await openLane(RW, "rw-prog-two");
+  const lanePlain = await openLane(RW, "rw-programless");
+
+  // THE BINDING, planted with srv down — a Program bound to that session and two lanes carrying its
+  // id, which is what the dispatch path stamps and what the outcome row copies at land time.
+  await killSrv();
+  const plant = plantState();
+  const mainRow = plant.slots?.[String(progMain)] ?? {};
+  const boundAt = Date.now() - 1000;
+  plant.programs = [...(plant.programs ?? []), {
+    id: PROG, title: "Audit-red addressing fixture", intent: "Receive the audit of its own lands",
+    successCriterion: "A red audit of this program's land reaches this program's inbox",
+    nonGoals: [], decisions: [], evidence: [], openQuestions: [], status: "active",
+    createdAt: boundAt - 300, proposedBy: { kind: "owner" },
+    confirmedAt: boundAt - 200, activatedAt: boundAt - 100,
+    main: { slot: progMain, openedAt: mainRow.openedAt, sessionId: mainRow.sessionId ?? null, boundAt },
+    lineage: { v: 1, entries: [{ slot: progMain, openedAt: mainRow.openedAt, sessionId: mainRow.sessionId ?? null,
+      boundAt, via: "bootstrap", endedAt: null, endedBy: null }], dropped: 0 },
+  }];
+  for (const ln of [laneP1, laneP2]) if (plant.slots?.[String(ln.slot)]) plant.slots[String(ln.slot)]!.programId = PROG;
+  writeFileSync(statePath, JSON.stringify(plant, null, 2), { mode: 0o600 });
+  // FLEET_INBOX_NUDGE_MS is shrunk on purpose: "audit-red never types into a pane" is only a
+  // measured statement if the nudge tick actually ran many times over an unread audit-red entry.
+  check("(RW.10) fixture: the server is up with the ping and a 250 ms inbox nudge",
+    await startSrv({ audit: true, auditPing: true, extra: { FLEET_INBOX_NUDGE_MS: "250" } }));
+  const progMainToken = slotToken(progMain);
+  await Bun.sleep(1700); // past openSlot's repaint quiet window, as (J) does
+  const progMainProbe = await paneEnv(`s${progMain}`, "FLEET_SELF_SLOT");
+  check("(RW.10) fixture: the bound MAIN is OBSERVED and readable — an unobserved pane would make every negative below vacuous",
+    progMainProbe === String(progMain) && progMainToken.length > 8
+      && (await selfInbox(progMainToken)).program === PROG,
+    `probe=${progMainProbe} token=${progMainToken.length}B inbox=${JSON.stringify((await selfInbox(progMainToken)).program ?? null)}`);
+
+  // --- THE POSITIVE CONTROL FIRST. A programless red on this very server, into this very pane: it
+  //     is what makes "no pane was typed into" below a measurement instead of an absence.
+  await setRwMode("red");
+  const plainHad = (await rowsFor(RW)).length;
+  await land(lanePlain);
+  const plainRow = await waitNewRow(RW, plainHad);
+  const plainPinged = plainRow ? await waitPing(plainRow.at, (p) => p.status === "delivered") : undefined;
+  const plainPane = await pane(progMain);
+  check("(RW.10) control: a red after a PROGRAMLESS land is pinged into the pane exactly as before, and writes no inbox entry",
+    plainRow?.result === "red" && plainPinged?.ping?.status === "delivered" && plainPinged.ping.slot === progMain
+      && plainPane.includes(`at=${plainRow.at}`) && (await auditRedEntries(progMainToken)).length === 0,
+    JSON.stringify({ row: plainRow?.at, ping: plainPinged?.ping, entries: (await auditRedEntries(progMainToken)).length }));
+  await settleOpenReds();
+
+  // --- THE SUBJECT. Two lands of the SAME Program coalesced onto ONE audit row: it proves the
+  //     per-Program dedupe (two covers, one pointer) and the complete hand-off in one fixture.
+  await setAuditMode("slow");
+  const holdLane = await openLane(REPO, "rw-prog-hold");
+  await settleForMerge(holdLane.slot);
+  await settleForMerge(laneP1.slot);
+  await settleForMerge(laneP2.slot);
+  await land(holdLane);
+  await waitLive((l) => l.postLandAuditLive?.running?.repo === base(REPO));
+  const progHad = (await rowsFor(RW)).length;
+  await land(laneP1);
+  await land(laneP2);
+  const progRow = await waitNewRow(RW, progHad, 90_000);
+  check("(RW.10) fixture: both of the Program's lands are on ONE red audit row (coalesced behind the env repo's slow run)",
+    progRow?.result === "red" && progRow.covers.length === 2
+      && [laneP1.branch, laneP2.branch].every((b) => progRow.covers.some((c) => c.branch === b)),
+    JSON.stringify({ result: progRow?.result, covers: progRow?.covers }));
+  await setAuditMode("green");
+
+  const progEntries = await auditRedEntries(progMainToken);
+  const progSubject = progEntries[0]?.subject as Record<string, unknown> | undefined;
+  const progCovers = (progSubject?.covers ?? []) as string[];
+  // BREAKS IF: the writer appends per COVER instead of per Program (two pointers for one row), or the
+  // dedupe reads anything but (kind audit-red, ref = this row's `at`).
+  check("(RW.10) a red audit after a Program's lands lands in THAT Program's inbox — exactly ONE pointer for the row, both covers named in its subject",
+    progEntries.length === 1 && progEntries[0]?.ref === String(progRow?.at)
+      && progCovers.length === 2
+      && [laneP1.branch, laneP2.branch].every((b) => progCovers.some((c) => c.startsWith(`${b} @ `))),
+    JSON.stringify({ entries: progEntries.length, ref: progEntries[0]?.ref, covers: progCovers }));
+  // BREAKS IF: the subject is a copy of the pointer rather than a join onto the ledger row — the
+  // fail names and the tail exist only on that row.
+  check("(RW.10) …and its subject carries the judgement facts: result, fail NAMES, the 15-line tail and the owner-only door",
+    progSubject?.result === "red" && progSubject.exitCode === "1"
+      && JSON.stringify(progSubject.fails) === JSON.stringify([
+        "repo-worker verify: unit tests", "repo-worker verify: (parenthesised) name"])
+      && String(progSubject.tail ?? "").includes("2 FAILURES")
+      && progSubject.adjudicated === null
+      && String(progSubject.door ?? "").includes("POST /api/post-land-audits/adjudicate"),
+    JSON.stringify(progSubject).slice(0, 600));
+  // BREAKS IF: the ping tick does not know `program-inbox` (it would ping anyway), or the writer
+  // reports the hand-off as `delivered` — a paste that never happened.
+  await Bun.sleep(1500); // several ping ticks and several inbox-nudge ticks
+  const progPane = await pane(progMain);
+  const progPinged = (await auditRows()).find((r) => r.at === progRow?.at);
+  check("(RW.10) …and NO pane is typed into: the ping is program-inbox (never delivered), and audit-red never arms the inbox nudge either",
+    progPinged?.ping?.status === "program-inbox"
+      && (progPinged.ping.lastResult ?? "").includes(PROG)
+      && !progPane.includes(`at=${progRow?.at}`)
+      && !progPane.includes("[fleet inbox]"),
+    JSON.stringify({ ping: progPinged?.ping, pingLine: progPane.includes(`at=${progRow?.at}`),
+      nudge: progPane.includes("[fleet inbox]") }));
+
+  // BREAKS IF: the read receipt is treated as a judgement — the one thing a MAIN may NOT do here.
+  const progRead = await fetch(`${BASE}/api/self/inbox/${progEntries[0]?.id ?? "x"}/read`,
+    { method: "POST", headers: { "x-fleet-self-token": progMainToken, "content-type": "application/json" }, body: "{}" });
+  const afterRead = (await auditRows()).find((r) => r.at === progRow?.at);
+  check("(RW.10) reading the pointer is a RECEIPT, never an adjudication: the row stays red, unjudged, and program-inbox",
+    progRead.ok && afterRead?.result === "red" && afterRead.adjudication === undefined
+      && afterRead.ping?.status === "program-inbox",
+    JSON.stringify({ read: progRead.status, result: afterRead?.result,
+      adjudication: afterRead?.adjudication ?? null, ping: afterRead?.ping?.status }));
+
+  // BREAKS IF: the loader drops the fourth status — every restart would then re-open the row for the
+  // ping tick and paste the red the Program has already been handed.
+  await killSrv();
+  check("(RW.10) the server restarts over the program-inbox marker",
+    await startSrv({ audit: true, auditPing: true, extra: { FLEET_INBOX_NUDGE_MS: "250" } }));
+  await Bun.sleep(1500);
+  const afterRestart = (await auditRows()).find((r) => r.at === progRow?.at);
+  const restartPane = await pane(progMain);
+  check("(RW.10) …and program-inbox survives it: no second pointer, no late paste",
+    afterRestart?.ping?.status === "program-inbox"
+      && (await auditRedEntries(progMainToken)).length === 1
+      && !restartPane.includes(`at=${progRow?.at}`),
+    JSON.stringify({ ping: afterRestart?.ping?.status, entries: (await auditRedEntries(progMainToken)).length }));
+
+  // --- MIXED COVERS: one Program land and one programless land on ONE row. The hand-off is partial,
+  //     so the entry is written AND the ping still fires — naming the half that already has a reader.
+  await setAuditMode("slow");
+  const holdLane2 = await openLane(REPO, "rw-mixed-hold");
+  const laneP3 = await openLane(RW, "rw-prog-three");
+  const lanePlain2 = await openLane(RW, "rw-programless-two");
+  await killSrv();
+  const mixPlant = plantState();
+  if (mixPlant.slots?.[String(laneP3.slot)]) mixPlant.slots[String(laneP3.slot)]!.programId = PROG;
+  writeFileSync(statePath, JSON.stringify(mixPlant, null, 2), { mode: 0o600 });
+  check("(RW.10) fixture: the server is up over the mixed-cover plant",
+    await startSrv({ audit: true, auditPing: true, extra: { FLEET_INBOX_NUDGE_MS: "250" } }));
+  await Bun.sleep(1700);
+  await paneEnv(`s${progMain}`, "FLEET_SELF_SLOT");
+  await settleForMerge(holdLane2.slot);
+  await settleForMerge(laneP3.slot);
+  await settleForMerge(lanePlain2.slot);
+  await land(holdLane2);
+  await waitLive((l) => l.postLandAuditLive?.running?.repo === base(REPO));
+  const mixHad = (await rowsFor(RW)).length;
+  await land(laneP3);
+  await land(lanePlain2);
+  const mixRow = await waitNewRow(RW, mixHad, 90_000);
+  check("(RW.10) fixture: one Program land and one programless land share ONE red audit row",
+    mixRow?.result === "red" && mixRow.covers.length === 2
+      && [laneP3.branch, lanePlain2.branch].every((b) => mixRow.covers.some((c) => c.branch === b)),
+    JSON.stringify({ result: mixRow?.result, covers: mixRow?.covers }));
+  await setAuditMode("green");
+  const mixPinged = mixRow ? await waitPing(mixRow.at, (p) => p.status === "delivered") : undefined;
+  const mixPane = await pane(progMain);
+  const mixEntries = await auditRedEntries(progMainToken);
+  // BREAKS IF: `all` is computed as `addressed > 0` — the programless half of a mixed land would then
+  // be silenced along with the addressed half and nobody would ever see it.
+  check("(RW.10) mixed covers: the entry IS written AND the ping still fires, naming the half that already has a reader",
+    mixEntries.length === 2 && mixEntries.some((e) => e.ref === String(mixRow?.at))
+      && mixPinged?.ping?.status === "delivered"
+      && mixPane.includes(`at=${mixRow?.at}`)
+      && mixPane.includes(`bereits in einer Program-Inbox: ${PROG}`)
+      && mixPane.includes(laneP3.branch),
+    JSON.stringify({ entries: mixEntries.length, ping: mixPinged?.ping,
+      addressedLine: mixPane.includes(`bereits in einer Program-Inbox: ${PROG}`) }));
+  await settleOpenReds();
+
+  // --- A POINTER WHOSE ROW IS NOT THERE SAYS SO, and says WHICH of the three things went wrong.
+  //     The audit trail is a rotating append-only file, so "the row aged out from under the pointer"
+  //     is an expected state and not a defect — but it is a different fact from "the line is there
+  //     and this server cannot read it as an audit row", and both differ from a ref that was never a
+  //     row key. Planted rather than aged: retention takes a ledger this suite has no reason to build.
+  const MALFORMED_AT = 1700000000001;
+  // parses as JSON, is NOT an audit row (validAuditRow wants a `mainSha`). It is appended LAST on
+  // purpose: the boot rehydration reads exactly the last line, so this line is also the counterprobe
+  // for that reader — before the fix in the same commit it became `lastPostLandAudit` and every
+  // `/api/sessions` poll 500'd on `r.covers.map` for the rest of the run.
+  appendFileSync(`${DIR}/post-land-audits.jsonl`,
+    `${JSON.stringify({ at: MALFORMED_AT, result: "red", repo: canon, covers: [] })}\n`);
+  await killSrv();
+  const unknownPlant = plantState();
+  const unknownProgram = (unknownPlant.programs ?? []).find((p) => (p as { id?: string }).id === PROG) as
+    { inbox?: { v: 1; entries: Record<string, unknown>[]; dropped: number } } | undefined;
+  const plantedRefs = { bad: "not-a-row-key", gone: "1700000000002", malformed: String(MALFORMED_AT) };
+  const plantedIds = { bad: "d1".repeat(12), gone: "d2".repeat(12), malformed: "d3".repeat(12) };
+  if (unknownProgram) unknownProgram.inbox = { v: 1, dropped: 0, entries: [
+    ...(unknownProgram.inbox?.entries ?? []),
+    ...(["bad", "gone", "malformed"] as const).map((k, i) => ({ id: plantedIds[k], kind: "audit-red",
+      at: Date.now() - 3000 + i, ref: plantedRefs[k], readBy: null, readAt: null })),
+  ] };
+  writeFileSync(statePath, JSON.stringify(unknownPlant, null, 2), { mode: 0o600 });
+  check("(RW.10) fixture: the server is up over three unresolvable audit-red pointers",
+    await startSrv({ audit: true, auditPing: true, extra: { FLEET_INBOX_NUDGE_MS: "250" } }));
+  // The planted line is a RED the ping tick would otherwise chase — and its `at` is older than every
+  // real row here, so it would be the candidate for the rest of this section. Judged out of the
+  // candidate set at once; the row itself stays on the trail, which is what the pointers point at.
+  await post("/api/post-land-audits/adjudicate",
+    { at: MALFORMED_AT, verdict: "unknowable", note: "(RW.10) fixture: an unreadable planted line, not a measurement" });
+  // BREAKS IF: the boot rehydration casts the last trail line instead of validating it — the board's
+  // own poll route is then dead for the rest of this server's life, and every check below would fail
+  // as a JSON parse error rather than as itself.
+  const boardAfterMalformed = await get("/api/sessions");
+  const boardBody = await boardAfterMalformed.clone().json().then(
+    (j) => j as { postLandAudit?: { at?: number } | null }).catch(() => null);
+  check("(RW.10) a trail whose LAST line is not an audit row does not take the board's poll down with it",
+    boardAfterMalformed.ok && boardBody !== null && boardBody.postLandAudit?.at !== MALFORMED_AT,
+    `${boardAfterMalformed.status} lastAudit=${JSON.stringify(boardBody?.postLandAudit ?? null).slice(0, 200)}`);
+  const unknownView = await selfInbox(slotToken(progMain));
+  const unknownLines = unknownView.unknown ?? [];
+  // BREAKS IF: the join reports an absent row and an unreadable one with the same sentence, or
+  // answers a broken pointer with an empty `subject` and no line at all — the shape that made
+  // "nothing arrived" and "the pointer lost its row" indistinguishable for every other kind.
+  check("(RW.10) an audit-red pointer that does not resolve is subject:null PLUS a NAMED line — three different failures, three different sentences",
+    unknownLines.some((l) => l.includes(plantedIds.bad) && l.includes("is not a row key"))
+      && unknownLines.some((l) => l.includes(plantedIds.gone) && l.includes("no longer on the trail (retention)"))
+      && unknownLines.some((l) => l.includes(plantedIds.malformed) && l.includes("not readable as an audit row"))
+      && (unknownView.entries ?? []).filter((e) => Object.values(plantedIds).includes(e.id))
+        .every((e) => e.subject === null),
+    JSON.stringify(unknownLines).slice(0, 700));
+  // BREAKS IF: the nudge counts audit-red — three unread pointers would paste into the bound MAIN,
+  // which is the exact thing this kind exists to stop.
+  await Bun.sleep(1500); // several 250 ms inbox-nudge ticks over three unread audit-red entries
+  check("(RW.10) …and three unread audit-red pointers still arm NO inbox nudge",
+    !(await pane(progMain)).includes("[fleet inbox]"), (await pane(progMain)).slice(-400));
+
+  // --- GREEN: the writer's first line. A green audit of the same Program's land writes nothing.
+  await setRwMode("green");
+  const greenLane = await openLane(RW, "rw-prog-green");
+  await killSrv();
+  const greenPlant = plantState();
+  if (greenPlant.slots?.[String(greenLane.slot)]) greenPlant.slots[String(greenLane.slot)]!.programId = PROG;
+  writeFileSync(statePath, JSON.stringify(greenPlant, null, 2), { mode: 0o600 });
+  check("(RW.10) fixture: the server is up over the green plant",
+    await startSrv({ audit: true, auditPing: true, extra: { FLEET_INBOX_NUDGE_MS: "250" } }));
+  const greenEntriesBefore = (await auditRedEntries(slotToken(progMain))).length;
+  const greenHad = (await rowsFor(RW)).length;
+  await land(greenLane);
+  const greenRow = await waitNewRow(RW, greenHad);
+  check("(RW.10) control: a GREEN audit of the same Program's land writes no pointer at all",
+    greenRow?.result === "green"
+      && (await auditRedEntries(slotToken(progMain))).length === greenEntriesBefore,
+    JSON.stringify({ result: greenRow?.result, before: greenEntriesBefore,
+      after: (await auditRedEntries(slotToken(progMain))).length }));
+
+  // --- THE TIP HALF OF THE JOIN. A landed outcome row carrying this Program's id, this lane's
+  //     branch and a DIFFERENT land sha must not match — a branch name is reused, a tip is not. The
+  //     malformed line beside it proves the reader skips a bad line instead of failing the join.
+  await setRwMode("red");
+  const tipLane = await openLane(RW, "rw-tip-counterprobe");
+  appendFileSync(`${DIR}/lane-outcomes.jsonl`, `${JSON.stringify({
+    ts: Date.now() - 5000, branch: tipLane.branch, disposition: "landed", repo: canon,
+    mainAfter: "0".repeat(40), programId: PROG, base: "0".repeat(40), headSha: "0".repeat(40),
+  })}\n{ this is not json\n`);
+  const tipEntriesBefore = (await auditRedEntries(slotToken(progMain))).length;
+  const tipHad = (await rowsFor(RW)).length;
+  await land(tipLane);
+  const tipRow = await waitNewRow(RW, tipHad);
+  const tipPinged = tipRow ? await waitPing(tipRow.at, (p) => p.status === "delivered") : undefined;
+  check("(RW.10) counterprobe: the same branch at a DIFFERENT land sha does not match — no pointer, and the red is pinged as unowned",
+    tipRow?.result === "red" && tipRow.covers[0]?.branch === tipLane.branch
+      && tipRow.covers[0]?.mainAfter !== "0".repeat(40)
+      && (await auditRedEntries(slotToken(progMain))).length === tipEntriesBefore
+      && tipPinged?.ping?.status === "delivered",
+    JSON.stringify({ cover: tipRow?.covers[0], before: tipEntriesBefore,
+      after: (await auditRedEntries(slotToken(progMain))).length, ping: tipPinged?.ping?.status }));
+  await settleOpenReds();
+
+  // --- A PROGRAM THAT IS NO LONGER ACTIVE IS NO LONGER A READER. Its covers stay UNADDRESSED and
+  //     keep the ping alive: "the program that owned this land is gone" is exactly the case a human
+  //     still has to see, and silently dropping it would be the worst outcome of the whole rail.
+  const goneLane = await openLane(RW, "rw-prog-gone");
+  await killSrv();
+  const gonePlant = plantState();
+  if (gonePlant.slots?.[String(goneLane.slot)]) gonePlant.slots[String(goneLane.slot)]!.programId = PROG;
+  const goneProgram = (gonePlant.programs ?? []).find((p) => (p as { id?: string }).id === PROG);
+  if (goneProgram) (goneProgram as { status?: string }).status = "complete";
+  writeFileSync(statePath, JSON.stringify(gonePlant, null, 2), { mode: 0o600 });
+  check("(RW.10) fixture: the server is up with that Program no longer active",
+    await startSrv({ audit: true, auditPing: true, extra: { FLEET_INBOX_NUDGE_MS: "250" } }));
+  const goneHad = (await rowsFor(RW)).length;
+  await land(goneLane);
+  const goneRow = await waitNewRow(RW, goneHad);
+  const gonePinged = goneRow ? await waitPing(goneRow.at, (p) => p.status === "delivered") : undefined;
+  check("(RW.10) a land whose Program is no longer active stays UNADDRESSED and is pinged — never silently dropped",
+    goneRow?.result === "red" && gonePinged?.ping?.status === "delivered"
+      && (await pane(progMain)).includes(`at=${goneRow?.at}`),
+    JSON.stringify({ result: goneRow?.result, ping: gonePinged?.ping }));
+
+  await settleOpenReds();
+  for (const s of await sessions()) if (s.cwd) await post(`/api/slots/${s.id}/kill`, {});
+  await killSrv();
+  const cleanState = plantState();
+  cleanState.programs = (cleanState.programs ?? []).filter((p) => (p as { id?: string }).id !== PROG);
+  writeFileSync(statePath, JSON.stringify(cleanState, null, 2), { mode: 0o600 });
+  check("(RW.10) teardown: the server is back on the wrapper's default ping configuration",
+    await startSrv({ audit: true }));
+  await setRwMode("green");
+
   await setWorker(RW, "");
 }

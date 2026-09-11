@@ -865,6 +865,9 @@ export async function run(): Promise<void> {
       // occupied. Every tick refuses BEFORE the paste; the measured row counted each of those as a
       // delivery attempt.
       const draft = "owner draft that must survive every held tick";
+      // Everything the no-inheritance check below reads is a row written from HERE on, so an event
+      // whose hold began before this point cannot be mistaken for one that started mid-schedule.
+      const holdAuditStart = auditRows().length;
       // The whole point of the next three fixtures is that the composer is OCCUPIED while events
       // are minted and held. That is a state of a specific pane, so the pane is stamped here and
       // re-read where the events are read (§11.2j).
@@ -1175,6 +1178,37 @@ export async function run(): Promise<void> {
           JSON.stringify({ afterReleaseMs: deliveredAfterReleaseMs, ceilingMs: HOLD_BACKOFF_MAX_MS,
             probesAtRelease: heldCount, end: livingEnd.map((r) => [r.holds, r.heldMs]),
             rows: livingHoldRows.map((r) => [r.phase, r.holds]) }));
+
+      // NOTHING INHERITS A RETRY, asserted across EVERY event this fixture held rather than on the
+      // two it names. The hold is keyed by the pair (event, receiver occupant), so a hold can only
+      // ever begin at `entry`/`holds:1` and count up by one — a row that opened its life on a
+      // `repeat`, or skipped a number, would be a schedule carried over from another row or
+      // another occupant. The second guarantee behind it is older and is proven by the
+      // receiver-gone family: an event does not outlive the occupant it is bound to, so a recycled
+      // receiver has no old row to inherit anything into. Ids already seen before this fixture are
+      // excluded — their first row lies outside the window and a rotation could truncate it.
+      const holdSliceRows = auditRows().slice(holdAuditStart)
+        .filter((r) => r.event === "fleet_event_held");
+      const idsBefore = new Set(auditRows().slice(0, holdAuditStart)
+        .filter((r) => r.event === "fleet_event_held")
+        .map((r) => (r.detail ?? "").slice(0, 24)));
+      const holdGroups = new Map<string, AuditRow[]>();
+      for (const row of holdSliceRows) {
+        const id = (row.detail ?? "").slice(0, 24);
+        if (idsBefore.has(id)) continue;
+        holdGroups.set(id, [...(holdGroups.get(id) ?? []), row]);
+      }
+      const inheritance = [...holdGroups.entries()].filter(([, rows]) => {
+        const probes = rows.filter((r) => r.phase !== "end");
+        return rows[0]?.phase !== "entry" || rows[0]?.holds !== 1
+          || probes.some((r, i) => r.holds !== i + 1);
+      });
+      check("held backoff: every hold in this family starts at entry/holds:1 and counts up — no row inherits another's retry",
+        holdGroups.size >= 2 && inheritance.length === 0,
+        JSON.stringify({ groups: holdGroups.size,
+          shapes: [...holdGroups.entries()].map(([id, rows]) =>
+            `${id.slice(0, 8)}:${rows.map((r) => `${r.phase}${r.holds}`).join(",")}`).slice(0, 6),
+          offenders: inheritance.map(([id]) => id.slice(0, 8)) }));
 
       // Hand the receiver back empty — later families read this slot's budget and its pane, and on
       // a tree WITHOUT the fix the dead lane's row is still pending and still deliverable, so this

@@ -110,6 +110,30 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
   identisch gebunden ist, bleibt dagegen `pending` und wird zugestellt, sobald dein Composer frei
   ist. Ein Halt am belegten Composer zählt dabei NICHT als Zustellversuch (`attempts` bleibt stehen;
   gezählt werden Holds als `fleet_event_held` im Audit-Trail).
+- **Ein belegter Composer wird nicht jeden Tick neu angetippt — der Hold-Backoff (K1, seit
+  2026-09-11).** Eine Vor-Paste-Verweigerung sagt etwas über eine PANE, und die ändert sich zwischen
+  zwei Ticks nicht. Nach der ersten Verweigerung wartet der Server deshalb **2 Ticks**, dann 4, 8,
+  … bis zur Decke von **12 Ticks** (`HOLD_BACKOFF_BASE_MS`/`HOLD_BACKOFF_MAX_MS` in `server.ts`,
+  beide aus `FLEET_AUTOS_TICK_MS` abgeleitet — bei der Default-Kadenz 5 s also 10 s bis maximal
+  60 s). Was du daraus lesen darfst:
+  - **Die Decke ist die Zusage:** ist dein Composer frei, wird die Zeile spätestens nach
+    `HOLD_BACKOFF_MAX_MS` wieder angetippt. Ein Backoff wächst nie darüber hinaus; ewiges Schweigen
+    ist kein Erfolg.
+  - **Der Zustand ist prozesslokal.** Ein Serverneustart beginnt mit einer FRISCHEN Prüfung (also
+    früher als angekündigt, nie später) und stellt nie eine Zustellung fest, die nicht stattfand.
+  - **Er gehört dem Paar (Event, Empfänger-Occupant).** Slot + `openedAt` + `sessionId`: ein
+    recycelter Empfänger erbt den Retry eines toten nie, und zwei Events auf derselben Pane zählen
+    getrennt.
+  - **Der Trail bleibt `fleet_event_held`, wird aber lesbar:** die Zeile trägt neben dem Text
+    `phase` (`entry` = erster Halt · `repeat` = weiterer Halt · `end` = der Hold ist vorbei),
+    `holds` (laufende Zahl), `nextProbeInMs` (die Stille, die sich der Server gerade selbst
+    verspricht) und `heldMs` (wie lange diese Pane die Zeile hält). Genau eine `end`-Zeile schließt
+    einen Hold — beim Zustellen, bei einem Paste, der nicht mehr vorab verweigert wurde, oder wenn
+    die Zeile terminal wurde (`subject-gone`, `receiver-gone`, gepruned).
+  - **Ein übersprungener Tick schreibt NICHTS**: kein Send, kein State-Save, keine Trail-Zeile. Der
+    Report-Pfad nennt seinen Retry-Zeitpunkt zusätzlich im vorhandenen `recovery.reason`
+    („… (hold N, next probe in Xms)", relativ zu `recovery.updatedAt`); ein neues Feld dafür gibt
+    es nicht.
 - **Ein Abo, das du nicht selbst gemacht hast: der terminale Land einer Lane deines Programs.** Landet
   irgendwer — Owner ⏏, Owner ⏫, ein Confirm — eine Lane, deren Task zu einem aktiven Program mit
   GEBUNDENER, lebender MAIN gehört, armt der Server dieser MAIN im letzten Moment vor dem Teardown

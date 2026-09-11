@@ -269,8 +269,15 @@ const SOURCE_DIR = ((): string | null => {
     // permanent red on stage 1 of the land gate, which is where this rule runs. Excluded needles
     // are NAMED below rather than dropped in silence: a check may narrow what it looks at, never
     // hide that it narrowed.
-    const lanOnly = hosts.filter((host) => !host.includes("."));
-    const routable = hosts.filter((host) => host.includes("."));
+    // ...but `new URL()` renders an IP LITERAL in its bracketed form, and that form carries no dot
+    // either: `http://[2001:db8::1]` yields hostname `[2001:db8::1]`, and an IPv4-mapped address is
+    // normalised into pure hex groups (`[::ffff:192.0.2.1]` -> `[::ffff:c000:201]`), so a bracketed
+    // hostname NEVER contains one. Reading it as a LAN name would drop a globally routable address
+    // out of the needle set while the skip() line above called it "not a deploy identity" — a
+    // silent narrowing of a leak sensor, stated as a falsehood. Brackets decide before dots do.
+    const ipLiteral = (host: string) => host.startsWith("[");
+    const lanOnly = hosts.filter((host) => !ipLiteral(host) && !host.includes("."));
+    const routable = hosts.filter((host) => ipLiteral(host) || host.includes("."));
     if (lanOnly.length > 0) {
       skip("leak-pin: single-label LAN names are not deploy identities",
         `not searched: [${lanOnly.join(", ")}]`);

@@ -10025,4 +10025,146 @@ exit 0
   // intentionally remain: persistence and full-list retention are the behavior under test.
   await programPost(ownerCreated.program!.id, "discard");
   check("programs owner token remains the only accepted bearer", TOKEN.length > 0);
+
+  // ——— K2 · A PROGRAM AN OPEN ROW NAMES IS NOT SPARE CAPACITY ———
+  // capPrograms trims COMPLETE Programs once the list passes MAX_PROGRAMS. Until K2 it trimmed them
+  // blindly, so a still-pending task's `programId` could be left pointing at nothing — the bracket
+  // every dispatch, phase read and execution view resolves through, gone while the owner's own queue
+  // still said the work belonged there. MAX_PROGRAMS is a hard constant with no env door, so the
+  // budget is crossed the only way a suite can cross it: by PLANTING the state and restarting. Both
+  // retention entrances are proven — the LOADER (restart) and the runtime call site (POST
+  // /api/programs) — because the loader is the one that would silently evict under an empty task
+  // list if its two reads were ever reordered.
+  const k2Snapshot = readState();
+  const k2Id = (n: number): string => `c2${String(n).padStart(22, "0")}`;
+  const k2At = 1_700_000_000_000;
+  const k2Program = (n: number): Record<string, unknown> => ({
+    id: k2Id(n), ...content, title: `K2 complete ${n}`,
+    status: "complete", createdAt: k2At + n,
+    proposedBy: { kind: "owner" },
+    confirmedAt: k2At + n + 1, activatedAt: k2At + n + 2, completedAt: k2At + n + 3,
+  });
+  // held / free / malformedHeld sit at the FRONT of the array, which is the end capPrograms trims
+  // from (`complete.slice(-keepComplete)` keeps the tail). held and free are the same age by
+  // construction: the only difference between them is who names them.
+  const k2Held = k2Id(1), k2Free = k2Id(2), k2MalformedHeld = k2Id(3), k2Ghost = k2Id(999);
+  const k2Fillers = Array.from({ length: 100 }, (_, i) => k2Program(10 + i));
+  const k2Task = (id: string, status: string, programId: string | null): Record<string, unknown> => ({
+    id, text: `K2 row ${id}`, source: "owner", status, kind: "auftrag",
+    created: k2At, slot: null, note: null, repo: null,
+    ...(programId === null ? {} : { programId }),
+  });
+  // Seven rows, one per counter-probe: two pending on the SAME held program (a second namer must
+  // not double-count and its removal must not release the first), two TERMINAL rows on free (done
+  // and archived name nothing any more), one row with NO programId at all, one pending row naming a
+  // program that is not in the file (a reference never conjures a row back), and one MALFORMED row
+  // — `status: "lane"` is not a task status, so the loader drops it whole, and the program its
+  // `programId` names must fall with it rather than be saved by a row that does not exist.
+  const k2Tasks: Record<string, unknown>[] = [
+    k2Task("k2held1", "pending", k2Held),
+    k2Task("k2held2", "queued", k2Held),
+    k2Task("k2free1", "done", k2Free),
+    k2Task("k2free2", "archived", k2Free),
+    k2Task("k2none1", "pending", null),
+    k2Task("k2ghost1", "pending", k2Ghost),
+    { ...k2Task("k2bad1", "pending", k2MalformedHeld), status: "lane" },
+  ];
+  const k2Plant = async (programs: Record<string, unknown>[], rows: Record<string, unknown>[]): Promise<void> => {
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const planted = readState() as FleetState & Record<string, unknown>;
+    planted.programs = programs as unknown as Program[];
+    planted.tasks = rows;
+    // the fixture Programs carry no founding marker, so nothing in the registry may still claim one,
+    // and the one row type with a REQUIRED programId is taken out of the way rather than left
+    // pointing at a registry this fixture replaces wholesale — the snapshot restores both.
+    delete planted.supervisor;
+    delete planted.attentionRequests;
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(planted, null, 2), { mode: 0o600 });
+    await restartSrv();
+  };
+  const k2Ids = async (): Promise<string[]> => (await ownerPrograms()).map((p) => p.id);
+  const k2TaskRows = async (): Promise<Record<string, unknown>[]> =>
+    ((await (await get("/api/tasks")).json()) as { tasks: Record<string, unknown>[] }).tasks;
+
+  await k2Plant([
+    k2Program(1), k2Program(2), k2Program(3), ...k2Fillers,
+  ], k2Tasks);
+  const k2AfterLoad = await k2Ids();
+  // 103 complete rows, no live row: keepComplete is 100, so the three at the front are the ones the
+  // old rule dropped. Exactly one of them has an open namer.
+  check("programs retention K2: a COMPLETE program a pending task names survives the boot cap, its same-age unreferenced twin does not",
+    k2AfterLoad.includes(k2Held) && !k2AfterLoad.includes(k2Free),
+    `held=${k2AfterLoad.includes(k2Held)} free=${k2AfterLoad.includes(k2Free)} total=${k2AfterLoad.length}`);
+  check("programs retention K2: only terminal namers is no namer — done/archived rows do not hold their program",
+    !k2AfterLoad.includes(k2Free), `free=${k2AfterLoad.includes(k2Free)}`);
+  check("programs retention K2: a task the loader drops holds nothing, and a programId naming no row invents none",
+    !k2AfterLoad.includes(k2MalformedHeld) && !k2AfterLoad.includes(k2Ghost)
+      && k2AfterLoad.length === 101,
+    `malformedHeld=${k2AfterLoad.includes(k2MalformedHeld)} ghost=${k2AfterLoad.includes(k2Ghost)} total=${k2AfterLoad.length}`);
+  // …and the retention read NOTHING into the queue: the rows come back exactly as planted, minus the
+  // one the loader's own filter rejects. A guard that "fixed" a dangling pointer by editing a task
+  // would pass every check above and still be the loss this bound exists to prevent.
+  const k2RowsAfterLoad = await k2TaskRows();
+  const k2Expected = k2Tasks.filter((t) => t.status !== "lane")
+    .map((t) => ({ id: t.id, status: t.status, programId: t.programId ?? null, text: t.text }));
+  check("programs retention K2: every task row survives the boot unchanged — the bound reads the queue and never writes it",
+    JSON.stringify(canonical(k2RowsAfterLoad.map((t) => ({ id: t.id, status: t.status,
+      programId: t.programId ?? null, text: t.text })))) === JSON.stringify(canonical(k2Expected)),
+    JSON.stringify(k2RowsAfterLoad.map((t) => `${String(t.id)}:${String(t.status)}:${String(t.programId ?? "-")}`)));
+
+  // THE RUNTIME ENTRANCE. A new proposed Program makes the list 102 with one live row, so
+  // keepComplete drops to 99 and the two oldest completes fall — `held` among them, were it not
+  // named. Its neighbour in the same window is the control that proves the trim still happens.
+  const k2Neighbour = k2Id(10);
+  const k2Created = await post("/api/programs", { ...content, title: "K2 runtime pressure" });
+  const k2AfterCreate = await k2Ids();
+  check("programs retention K2: the runtime cap keeps the named program and still trims its unnamed neighbour",
+    k2Created.ok && k2AfterCreate.includes(k2Held) && !k2AfterCreate.includes(k2Neighbour),
+    `create=${k2Created.status} held=${k2AfterCreate.includes(k2Held)} neighbour=${k2AfterCreate.includes(k2Neighbour)} total=${k2AfterCreate.length}`);
+
+  // A STATUS CHANGE IS A RELEASE, at the next retention run and not before: nothing re-runs the cap
+  // when a task closes, which is right — the overhang is not a debt, it is a fact about the queue at
+  // the moment the cap last ran. Both namers must go: one alone still holds.
+  const k2Archive1 = await post(`/api/tasks/k2held1/archive`, {});
+  const k2StillHeld = await post("/api/programs", { ...content, title: "K2 one namer left" });
+  const k2AfterOne = await k2Ids();
+  const k2Archive2 = await post(`/api/tasks/k2held2/archive`, {});
+  const k2Release = await post("/api/programs", { ...content, title: "K2 last namer gone" });
+  const k2AfterRelease = await k2Ids();
+  check("programs retention K2: one surviving namer still holds, and the program is released only when the last one goes terminal",
+    k2Archive1.ok && k2Archive2.ok && k2StillHeld.ok && k2Release.ok
+      && k2AfterOne.includes(k2Held) && !k2AfterRelease.includes(k2Held),
+    `archive=${k2Archive1.status}/${k2Archive2.status} afterOne=${k2AfterOne.includes(k2Held)} afterRelease=${k2AfterRelease.includes(k2Held)}`);
+
+  // NO TASKS AT ALL — the pre-K2 behaviour, byte for byte: the front of the list is trimmed to the
+  // budget and nothing is held. This is the arm that fails if the bound ever kept rows for a reason
+  // other than a named one.
+  await k2Plant([k2Program(1), k2Program(2), k2Program(3), ...k2Fillers], []);
+  const k2NoTasks = await k2Ids();
+  check("programs retention K2: with no tasks the cap is exactly the old one — trimmed to the budget, nothing held",
+    k2NoTasks.length === 100 && !k2NoTasks.includes(k2Held) && !k2NoTasks.includes(k2Free)
+      && !k2NoTasks.includes(k2MalformedHeld) && k2NoTasks.includes(k2Id(10)),
+    `total=${k2NoTasks.length} oldestKept=${k2NoTasks[0] ?? "none"}`);
+
+  // …AND WHEN EVERY ROW OVER BUDGET IS NAMED, the list stands ABOVE MAX_PROGRAMS. That overhang is
+  // the honest answer: shrinking it would mean dropping a bracket the queue still points at, and it
+  // shrinks by itself as those rows go terminal.
+  await k2Plant([k2Program(1), k2Program(2), k2Program(3), ...k2Fillers],
+    [k2Task("k2all1", "pending", k2Held), k2Task("k2all2", "sent", k2Free),
+      k2Task("k2all3", "queued", k2MalformedHeld)]);
+  const k2AllHeld = await k2Ids();
+  check("programs retention K2: when every trimmable row is named the list stands above the budget as reference need, not as a leak",
+    k2AllHeld.length === 103 && [k2Held, k2Free, k2MalformedHeld].every((id) => k2AllHeld.includes(id)),
+    `total=${k2AllHeld.length} kept=${[k2Held, k2Free, k2MalformedHeld].filter((id) => k2AllHeld.includes(id)).length}`);
+
+  // Restore the registry the sections after this one read (supervisor.run() binds across it).
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(k2Snapshot, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const k2Restored = await k2Ids();
+  check("programs retention K2 cleanup: the pre-fixture registry is back and no planted row survives",
+    k2Restored.every((id) => !id.startsWith("c20")) && k2Restored.length === (k2Snapshot.programs ?? []).length,
+    `restored=${k2Restored.length} snapshot=${(k2Snapshot.programs ?? []).length}`);
 }

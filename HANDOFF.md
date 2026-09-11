@@ -1,4 +1,102 @@
-# HANDOFF — Owner-MAIN Slot 8 (Opus 5, Haupt-Checkout, Owner-Token): der Zustellkanal war der Stau, nicht Land oder Audit; Host-Aufteilung entschieden; drei Deploys; 2026-09-11, ctx GEMESSEN 35,7 %
+# HANDOFF — Owner-MAIN Slot 9 (Opus 5, Haupt-Checkout, Owner-Token): drei Lands, ein Deploy, zwei rote Previews mit sehr verschiedenem Gewicht; 2026-09-11 20:5x, ctx GEMESSEN 30,3 %
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **MD-RENDERER DARF NICHT GELANDET WERDEN.** Sein Helfer-Vorschaulauf (Job `4b5599e7c78c`,
+  clonedSha `d48217a3`, second-host) kam ROT: `exitCode 1`, **`{ran: 4111, failed: 12}`**,
+  ms 2 272 489. Die zwoelf Fails bilden EINEN Cluster auf genau der Flaeche, die der Branch
+  anfasst — `public/hub.js` als VIERTES Bundle: viermal `§5 precondition … a gap IS open and the
+  bundle IS stale before the deploy`, dreimal `§3`-Staleness, zweimal `bundle-staleness:`,
+  `steward digest serves the same route-computed bundle-staleness`, `a follower that is current
+  WITH its bundle runs no build at all` — und, das sicherheitsrelevante, **`§1 the unauthenticated
+  static map equals the reviewed set (no new file served without a token)`**. Meine Lesart, zum
+  GEGENPRUEFEN und nicht zum Glauben: die Staleness-Rechnung und die Static-Map-Pin kennen `hub.js`
+  nicht. Slot 4 ist gewarnt (sendId `066093fa`), die Lane lebt auf Slot 3. **Der Land-Gate sagt
+  dazu NICHTS** — nur der isolierte Lauf sieht es.
+- **EIN ROTES LANE-PREVIEW HAT KEINEN RAIL.** Es liegt in `fleet.json#laneSuiteJobs`,
+  `POST /api/post-land-audits/adjudicate` erreicht es nicht (es ist kein Audit), kein Board-Element
+  zeigt es, und es stupst niemanden an. Deshalb lag das ERSTE rote Preview des Tages zwei Stunden
+  unbesehen. **Wer auf ein Preview wartet, liest es aktiv.** Festgehalten in `eed732e6`
+  (`docs/verify-tiering.md` §11.2b). Noch NICHT als Queue-Zeile gefilt.
+- **DER NUDGE-BUG LEBT.** `errors` stand um 20:24 wieder bei 3 seit dem 19:57-Boot, alle
+  `inboxNudgeSend`. `fe050453` (gefilt, pending, Program Fleet-Betrieb) behandelt die
+  ZUSTELLZUSAGE von `answerAttention`, nicht die 129-Ursache. Die Ursache hat weiterhin keine Zeile.
+- **ICH HABE GELANDET, UND DAS WAR EINE AUSNAHME MIT GRUND.** Der Antrittsbrief dieser Session sagte
+  „du landest nicht". Bei `cf0d3cd4` griff die Praemisse nicht: Slot 4 darf fremde Programme nicht
+  landen, Astra hatte keine Self-Land-Promotion, und ihre Attention `a0ce321c` hat den Owner-Akt
+  ausdruecklich verlangt. Wer die Regel erbt, erbt auch diese Ausnahmebedingung — nicht mehr.
+
+## 1. WAS DIESE SESSION HINTERLAESST
+
+- **Drei Lands, alle verifiziert:** `c42d4b7e` (capTasks; verify gruen, volle Kette, 140 065 ms,
+  waitMs 0, hubPush ok; Post-Land-Audit **gruen und echt**: ms 2 225 442, 4 134 ran / 0 failed,
+  covers exakt `c42d4b7e`) · `cd4808e6` (leak-pin) · `c37f7e8f` (IPv6-Folgezeile).
+- **Ein Deploy:** `d52decbc`, `ok: true`, `hitTarget: true`, bootHead == head == `3d338a3e`, vom
+  naechsten Boot geschrieben. **Ich habe vor dem Deploy die Programs NICHT gefragt**, deren Beweis
+  an einem Idle-Fenster haengt — ich habe geurteilt, dass keiner laeuft. Urteil, keine Abfrage.
+- **Drei Doc-Commits, alle Direkt-Commits, alle `bun e2e/pins.ts` ALL PASS:** `8f7c30cf` (§6 der
+  Nudge-Notiz: eine Owner-Nachricht kann auch ohne 129-Rest zwischen Composer und Turn sterben) ·
+  `3d338a3e` (§7 des Host-Entscheids) · `eed732e6` (§11.2b siebte Sichtung + die Rail-Luecke).
+  Land-seitige Ledger sehen diese drei nicht.
+- **Eine Zeile gefilt:** `fe050453` (answerAttention, auftrag, pending, Program `f170dc46`).
+- **Ein Brief umformuliert:** `f3ca2e05` traegt jetzt einen Owner-Brief (4 033 Zeichen), der die
+  B-Form ersetzt: vier Fragen, Q1 = „wie erfaehrt eine Queue vom Abschluss, der nicht durch
+  `recordLand` ging", Q2 darf mit einem sauberen NEIN enden.
+- **Eine Notiz archiviert:** `ae7f0f1e` (durch ihre eigene Korrektur `9ecdb29f` ueberholt), um Slot 4
+  die Advisory-Kappe zu oeffnen.
+
+## 2. OWNER-ENTSCHEIDE UND -VORGABEN DIESER SITZUNG
+
+- **„bring jetzt bitte alles ordentlich ans laufen. Mach dir einen plan und dann geh eins nach dem
+  anderen an."** Das war die Freigabe fuer den Owner-Land, fuer die Second-host-Schritte und fuer den
+  Deploy. Es hat die Regel „Lane-Treiben gehoert der Betriebs-MAIN" NICHT aufgehoben.
+- **Schritt 1 des Host-Entscheids ist ERLEDIGT, nicht offen** — siehe §3.
+
+## 3. DER BEFUND, DER MEINE EIGENE PLANUNG UMGESTOSSEN HAT
+
+Ich wollte dem Second-host Arbeit geben (Host-Entscheid §0 Schritt 1). **Er brauchte keine.** Seine
+Queue fuehrte drei `auftrag`-Zeilen als `pending` mit der Notiz `lane closed before landing —
+review and requeue if still wanted`, deren Arbeit **vollstaendig auf dem dortigen `main` liegt**
+(je `git rev-list --count main..<branch>` == 0): `084bfe8b`→`5857975`, `b750f712`→`1d39dc7`,
+`a2366439`→`a4081e4`. **Haette ich requeued, waere gebaute Arbeit ein zweites Mal gebaut worden.**
+
+Ursache, und sie ist eine Naht statt eines Bugs: die Briefs schreiben vor, dass die MAIN den Diff
+SELBST merged. Der Fleet sieht nie ein Land, der Requeue-Pfad stuft auf `pending` zurueck und
+empfiehlt woertlich das Gegenteil der Wahrheit. Auf einem Host mit `FLEET_LANDS='0'` ist
+„Abschluss ohne Land" der EINZIG moegliche Abschluss. Drei Zeilen auf `done` gesetzt; Queue dort
+jetzt **8 archiviert / 3 done / 0 offen**. Volle Fassung: `docs/messungen/2026-09-11-host-aufteilung-entscheid.md` §7.
+
+## 4. WAS GEMESSEN IST UND WAS NUR VERMUTUNG
+
+**GEMESSEN:** alle Zahlen in §1 · die zwoelf Fail-NAMEN von `4b5599e7c78c` · dass der Helfer
+`/var/lib/fleet-helper/work/run-<jobId>-<claimedAt>` aufraeumt (Signatur eines Helfer-Rots ist
+NUR frisch holbar) · dass `<kept instance>/streams/helper-artifacts/…/suite.log` **Fixture-Inhalt**
+ist und eigene FAIL-Zeilen traegt, die kein Ergebnis sind · dass zwei `tmux send-keys Enter` auf
+Slot 4 keinen Turn ausloesten und ein drittes Zeichen 66 Zeichen Owner-Text vernichtete.
+
+**VERMUTUNG, ausdruecklich:** dass die zwoelf md-renderer-Fails an fehlendem `hub.js`-Wissen in
+Staleness-Rechnung und Static-Map liegen — Cluster und Flaeche stuetzen es, gelesen habe ich den
+Code nicht · dass `ae7f0f1e` wirklich entbehrlich war (ihre Korrektur bleibt, geprueft; der
+Volltext nicht abgewogen) · die Zuordnung B5/B6/B7↔Branch ueber Commit-Subjects, nicht ueber Code ·
+dass §11.2b auf dem Second-host haeufiger feuert (meine siebte Sichtung stammt aus einem Register,
+das die Verteilungstabelle gar nicht zaehlt — ich habe sie NICHT neu gerechnet).
+
+## 5. REIHENFOLGE DER NAECHSTEN SCHRITTE, und ihr Warum
+
+1. **`./state.sh` und `./register.sh`, bevor irgendetwas freigegeben wird.** Slot 4 treibt selbst.
+2. **md-renderers rotes Preview zu Ende bringen** (§0). Es ist der einzige offene Punkt mit
+   Sicherheitsanteil. Slot 4 gehoert der Land, dir die Nachfrage.
+3. **Die Rail-Luecke aus §0 als Queue-Zeile filen**, wenn die Kappe es zulaesst — sie hat heute
+   zweimal gekostet und hat kein Zuhause.
+4. **Die 129-Ursache braucht eine eigene Zeile.** `fe050453` deckt sie NICHT ab.
+5. **Zehn verwaiste Worktrees** in `private-repo-a` auf dem Second-host, alle 0 Commits vor `main` —
+   Loeschvorgang auf der anderen Maschine, wartet auf ein Owner-Wort.
+6. **Astra steht bei ctx 67,7-68,1 %** und bewegt sich seit Stunden kaum. Codex kompaktiert selbst;
+   das 25/30-Band gilt fuer sie NICHT. Trotzdem im Blick behalten.
+
+---
+
+# (VORHERIGE UEBERGABE)
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT
 

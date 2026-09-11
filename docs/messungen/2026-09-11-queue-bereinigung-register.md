@@ -185,3 +185,33 @@ e48ab251 0dfff4b1 e45751a5 b1d4f2d5 e7e356e9 a3878547 4ec2cb84 4fc45ae2 4d38bb22
 
 Was diese Session NICHT geprüft hat: das Biber-Repo (nur Existenz von Dateien), Suiten (kein Lauf),
 ob Astra einzelne P2-Zeilen zwischenzeitlich released hat, die 39 Notizen in aktiven Programs.
+
+## 7. Nachtrag 2026-09-11 ~10:5x — Bündelung ausgeführt, Knackpunkte-Doc gelandet, Deploy gefahren
+
+- **Astras Knackpunkte-Dokument** (`docs/messungen/2026-09-11-knackpunkte-verschlankung-astra.md`, Lane f8d9c037,
+  codex/gpt-6-astra/medium) ist von der Betriebs-MAIN Slot 3 gelandet: main `092083c2`, Audit grün. Gegenprobe
+  durch zwei Opus-Lesungen: 16/17 Kostenzahlen wörtlich reproduziert (Abweichung nur die lebende fleet.json-Größe),
+  6/6 Mechanismen am Baum bestätigt, eine Spannung gefunden (Program-Inbox-Einträge lösen `tickInboxNudge` aus,
+  Owner-Entscheid 09-08 für Astras Pane). Daraus drei Zeilen in f170dc46: **f4889e3c** (K1 Backoff),
+  **92ffd17c** (K2 capPrograms-Retention, trägt bf3dd138 F4), **288f6359** Brief nachgezogen (K4 audit-red,
+  trägt 1410a078/9ec887d1). Notiz **27df8a78** an f9dc8e10.
+- **Deploy** `c5279397` (Verb 2): Boot auf `092083c2` = main, `hitTarget:true`, `bundleStale:false`, kein Audit
+  getroffen (Audit war 5 min vorher grün). Attention b57b0287 damit erledigt; der Zustellungs-Fix `5eaf0955` ist live.
+- **Sechs Bündel-Notizen** (Owner-Ziel ≤ 20 Bündel) tragen jetzt die 15 Trägerlosen aus §2b und die 14 offenen
+  Befunde aus §3b, 32 Originale archiviert (Volltexte bleiben in fleet.json unter `archived`):
+
+| Bündel | Program | Inhalt | Originale |
+|---|---|---|---|
+| df55f6c2 | f170dc46 | Zustellung und Lane-Lebenszyklus nach K1 | e4a001b0 07ef9694 f53cb7ac 3d6285f9 1d05c49b 43444dd8 e9e22694 529e5914 d1373cf7 |
+| ba7df947 | f170dc46 | Deploy, Undo-Land, Owner-Zielbild | e229aa2f bf3dd138 ca6dc7a7 606cfbeb |
+| 24bff40e | f170dc46 | Cross-Host-Dispatch Second-host | 6f90781c 7b6c997e |
+| c104ba1d | f170dc46 | Verify, Gate, Audit | f0c28e8f d2e4f219 04fdfc77 6d2a4d4b 563ec115 578e8975 0c190377 6a691420 6a0a9ff2 |
+| 58f61b33 | f170dc46 | Self-API-Ergänzungen | 8b0114e1 c90ea457 18a14e37 11bc0a1c 99c9458f |
+| 9238013d | f9dc8e10 | Owner-Architekturrichtung | c52c49f9 |
+| (K4-Brief) | f170dc46 | über 288f6359 getragen | 1410a078 9ec887d1 |
+
+- Betriebszeilen 4872457b und a9507514 sind done (Übergaben vollzogen). Queue danach: **107 pending**
+  (auftrag 39 · notiz 62 · richtung 4 · betrieb 2).
+- Nicht gebündelt, bewusst: 15 OFFEN-IDEEN (B1…B13, D2 u. a.) und 3 ungetragene Richtungen bleiben einzeln
+  pending — Ideen sind Portfolio, keine Befunde; die Richtungen brauchen je einen Regelbuch-/Doc-Ort, keinen Träger.
+- Offen beim Owner: Private-repo-j 9ce08219 (5 Zeilen, zwei am Repo überholt) — Eis oder Schluss.

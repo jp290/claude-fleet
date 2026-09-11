@@ -1,3 +1,131 @@
+# HANDOFF — Owner-MAIN Slot 8 (Opus 5, Haupt-Checkout, Owner-Token): der Zustellkanal war der Stau, nicht Land oder Audit; Host-Aufteilung entschieden; drei Deploys; 2026-09-11, ctx GEMESSEN 35,7 %
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **DIESE SESSION HAT KEINE LANE GETRIEBEN UND NICHTS GELANDET.** Sie hat gemessen, entschieden,
+  dreimal deployt, zwei Dokumente committet und drei Sessions adressiert. Landen und Lane-Treiben
+  liegt bei der Betriebs-MAIN (Slot 4). Memory: `feedback-lane-driving-belongs-to-betriebs-main`.
+- **DER BEFUND DES TAGES: `answerAttention` FASST DIE PANE NIE AN.** Es haengt die Owner-Antwort in
+  die Program-Inbox und ueberlaesst die Zustellung vollstaendig `tickInboxNudge` — dem Kanal, der
+  heute nachweislich kaputt war. Meine Antwort auf `23c32dc0` lag zwei Minuten unbemerkt; auf einer
+  Codex-Pane laege sie noch da. **Der Attention-Rail ist genau dafuer gebaut, dass Owner-Schweigen
+  von Nichtgesehenhaben unterscheidbar ist — und scheitert am letzten Schritt an einem einzigen
+  ungesicherten Kanal.** Noch NICHT als Queue-Zeile gefilt (Kappe, siehe unten). **Das ist der
+  wichtigste offene Punkt dieser Uebergabe.**
+- **ES GIBT KEINE TUER VON EINER SESSION IN EINE FREMDE PANE.** Alle 27 `/api/self/*`-Routen
+  aufgezaehlt; die einzige, die so aussieht (`POST /api/self/nudge`), ist durch
+  `supervisorRefusal()` verriegelt und gehoert ausschliesslich dem gebundenen Supervisor (Slot 2,
+  Bindung geprueft gueltig). Eine Program-MAIN bekommt dort 409. **Die Attention an den Owner IST
+  ihre einzige Tuer.** Deshalb wurde `3ea89f71` zuerst freigegeben — und hat als Erstes sein
+  eigenes Problem geloest (`6fd73cac`: eine Program-MAIN darf jetzt den Brief ihrer eigenen Zeile
+  schaerfen, ohne sich als Owner auszugeben).
+- **`cf0d3cd4` LAEUFT** (Slot 1, Lane `fleet/260911143011-3e54`, Program f9dc8e10 = Astras
+  Leichtgewicht, NICHT Fleet-Betrieb). Sie startete OHNE die Plan-Auflage im Brief — mein
+  Reihenfolgefehler; nachgeschickt per `POST /send` (sendId `f1f0659f`, acceptance observed).
+  Die Auflage: *capTasks muss offene Quellenverwendungen und Grenzwerte 199/200/201 erhalten.*
+- **DIE QUEUE STEHT AUF 200/200.** Deshalb konnte die Betriebs-MAIN ihren Astra-Befund nicht
+  ablegen, und deshalb laeuft `cf0d3cd4`. Drei der juengsten Zeilen sind meine Notizen — der
+  Engpass ist zum Teil hausgemacht.
+
+## 1. WAS DIESE SESSION HINTERLAESST
+
+- **Drei Deploys, alle verifiziert am naechsten Boot, nie angenommen:** `43be29af` (K1 + K4 live),
+  `1b1f6a9c` (K2 + Bug-Doku), `c3e96bbf` (`6fd73cac` + stale Client-Bundle mitgebaut). Stand jetzt
+  `codeBehind: 0`, `bundleStale: false`.
+- **Zwei Commits:** `512c1abb` (Host-Aufteilung entschieden) und `1d250a87` (der 129-Zeichen-Bug).
+  Beide **Direkt-Commits im Haupt-Checkout**, docs-only, verifiziert per `bun e2e/pins.ts`
+  (ALL PASS) — also keine Land-Note, kein Post-Land-Audit, und `./state.sh`s Land-Zahlen
+  untertreiben den Tag entsprechend.
+- **Drei Notizen gefilt und gepinnt:** `39857582` (Host-Entscheid) an `f3ca2e05` · `144e84ff`
+  (Task-System-Messungen) an `2d020389` **und** `f547e2f0` · `c0ba87df` (Nudge-Bug) an `18e87e67`
+  und `201d0240`.
+- **Attention `23c32dc0` beantwortet:** Freigabe-Folge = erst der Rueckweg (`c62aa3e9` +
+  `3ea89f71`), danach ihr eigener Vorschlag (K3/K5/K6 + `4784b292`).
+- **`a130231c` als Branch `astra/studio-hub-disposition-20260907` gesichert** (kein Branch zeigte
+  darauf, der Commit haette die Worktree-Entfernung nicht ueberlebt), zwei tote
+  `/private/tmp`-Worktrees entfernt.
+
+## 2. OWNER-ENTSCHEIDE DIESER SITZUNG, wortlaut-nah
+
+- **HOST-AUFTEILUNG: „max usability ist mein ziel auf beiden am ende" → erst zwei Listen, spaeter
+  eine, wenn es weh tut.** Der Second-host bekommt eigene Arbeit (alles ausser iOS), der Mac behaelt
+  iOS und Leichtes. Kostet keine Zeile Code. **Die A/B-Gabel aus dem Vorgaenger-Handoff §8 war
+  falsch gestellt** — A opfert den Mac, B den Second-host, das Ziel will beide. Volle Begruendung
+  und alle Messungen: `docs/messungen/2026-09-11-host-aufteilung-entscheid.md`.
+  **Folge: `f3ca2e05` ist B-foermig formuliert und NICHT zu dispatchen, bevor es umformuliert ist.**
+- **`2de3fdc7` ist NICHT disqualifiziert.** Das fruehere „Muell"-Urteil des Owners galt
+  ausdruecklich etwas anderem in einer anderen Session — zurueckgezogen am 2026-09-11.
+- **Die md-renderer-Entscheidung wurde AN MICH DELEGIERT** („entscheide du"). Sie steht in §4.
+
+## 3. WAS ICH GEMESSEN HABE UND WAS NUR VERMUTUNG IST
+
+**GEMESSEN (nachfahrbar):**
+- Die zweite Instanz auf dem `second-host` laeuft seit 5d08h: eigener `claudefleet`-Socket mit `srv`,
+  zwei `bun server.ts`, eigene `fleet.json` (mtime desselben Tages), vier eigene Ledger, 11 tasks,
+  2 programs, `dispatch: true`, vier belegte Slots. `FLEET_LANDS='0'` steht wirklich in der
+  dortigen `.env` mit Datum und Begruendung. Beide Boards sind voneinander erreichbar (HTTP 200 in
+  0,111 s). 16 Kerne, aber **7 GB RAM** — dieselbe Speicherklasse wie der Mac; der Gewinn ist CPU,
+  nicht Speicher. Kein `xcodebuild` dort.
+- Der Nudge-Bug: 129 ist ein **exakter Praefix** der eigenen 177-Zeichen-Nutzlast; Enter IST
+  gefeuert (zwei verschiedene `SendNotAccepted`-Meldungen, wir bekommen die nach-Enter-Variante);
+  ein groesseres `ACCEPT_WAIT_MS` kann es nicht reparieren. Dieselbe Codex-Pane nahm **66 Zeichen**
+  mit `acceptance: observed` an. Volle Fassung: `docs/messungen/2026-09-11-inbox-nudge-composer-129.md`.
+- Der Bereichsschnitt kommt NICHT aus Dateien: 14 von 39 offenen `auftrag`-Zeilen haben keinen
+  Cluster, 19 der uebrigen 25 sind `cross-cutting`. Das Program trennt dagegen sauber
+  (14 Leichtgewicht / 11 Fleet-Betrieb / 9 programlos / 5 Biber).
+- `programId` wird AUSSCHLIESSLICH bei `POST /api/tasks` gelesen. Es gibt keine Umhaenge-Route.
+
+**NUR VERMUTUNG, ausdruecklich ungeprueft:**
+- **Warum** Enter die fuehrenden 129 Zeichen stehen laesst. Verdacht: Zeilenumbruch im
+  Codex-Composer, Enter reicht nur eine Zeile ein. Waere das richtig, ist die Messgroesse die
+  LAENGE, nicht die Zeit. Probe: gestufte Nutzlasten 60/120/130/177 gegen eine **WEGWERF**-Pane,
+  beide Harnesses, nie gegen eine lebende.
+- „Trifft nur codex": alle Vorkommen liegen auf EINER Codex-Pane, die claude-Gegenprobe ist EINE
+  Stichprobe. Kein Beweis.
+- Ob der Second-host seine 16 Kerne bei 7 GB unter echter Last ausspielt (0,38 beweist nichts).
+- Die INHALTE der beiden Second-host-Branches. Ich habe Umfang, Reihenfolge und Flaeche gelesen,
+  **nicht den Code**.
+
+## 4. DIE MD-RENDERER-ENTSCHEIDUNG (an mich delegiert) — und ihr Warum
+
+**ALLE FUENF, ALS EIN LAND, ERST NACH `cf0d3cd4`, MIT ISOLIERTEM VORSCHAULAUF.** Nicht der Split,
+den die Betriebs-MAIN vorschlug. Drei Gruende:
+1. **`956060db` ist der AELTESTE Commit des Branches, nicht der oberste.** Abspalten hiesse, vier
+   fremde Commits von ihrem Fundament wegzurebasen — ihr eigener Einwand gegen einen fremden
+   Fuenf-Commit-Rebase gilt, er trifft nur die andere Variante als vermutet.
+2. **Die Bisect-Sicherheit gibt es billiger:** der Branch fasst `fleet-e2e-security.ts` (+103) und
+   `src/md.ts` (+296) an, und die textContent-Garantie IST eine Sicherheitsflaeche. `e2e/security.ts`
+   laeuft AUSSCHLIESSLICH in `./e2e-isolated.sh` — der Land-Gate sagt dort nichts.
+3. **Es muss ohnehin warten:** der Branch fasst `server.ts` an, `cf0d3cd4` schreibt gerade darin.
+
+**Reihenfolge, die ich der Betriebs-MAIN vorgegeben habe** (sendId `fd3fe3a8`, acceptance observed):
+`second-host/leak-pin-lan-name` (43f3b20a, ein Commit, nur `e2e/pins.ts`) SOFORT — die leak-pin steht
+auf dem Folger **dauerrot**, weil eine ihrer Nadeln ein gewoehnliches Wort ist; bis dahin luegt
+jedes folgerseitige Gate, und ein kaputter Sensor ist teurer als ein fehlendes Feature. DANN
+`cf0d3cd4` auslaufen lassen. DANN md-renderer. `c62aa3e9` unabhaengig, sobald eine Schreibflaeche
+frei ist. **Ich habe ihr ausdruecklich gesagt: haelt einer meiner Gruende am Baum nicht stand,
+anhalten statt ausfuehren.**
+
+## 5. REIHENFOLGE DER NAECHSTEN SCHRITTE, und ihr Warum
+
+1. **Nichts freigeben, ohne vorher `./register.sh` und die Live-Queue zu lesen.** Die Betriebs-MAIN
+   treibt gerade selbst; sie braucht keinen zweiten Treiber.
+2. **Den `answerAttention`-Befund als Queue-Zeile filen** (§0). Er hat heute Geld gekostet und hat
+   noch kein Zuhause. Braucht wahrscheinlich, dass `cf0d3cd4` vorher die Kappe entlastet.
+3. **Astra im Blick behalten.** Sie stand heute zweimal ueber eine Stunde still, beide Male weil
+   niemand sie erreichen konnte. ctx 62,5 % auf 258 400.
+4. **`f3ca2e05` erst umformulieren, dann anfassen** (§2).
+5. **Schritt 1 des Host-Entscheids ist NICHT getan:** der Second-host hat weiterhin 11 Tasks bei
+   16 Kernen und Last ~0,4. Das war die letzte offene Owner-Frage, bevor der Betrieb dazwischenkam.
+
+## 6. WAS ICH NICHT GEPRUEFT HABE
+
+`reportsAwaitingOwner` steht den ganzen Tag unveraendert auf **27** — ich habe keinen einzigen davon
+gelesen. Die Inhalte der Second-host-Branches (§3). Ob die drei Deploys Nebenwirkungen auf Sessions
+hatten, die ich nicht gepollt habe. Die Einzelurteile des Bereinigungs-Registers.
+
+---
+
 # HANDOFF — Owner-MAIN Slot 9 (Opus 5, Haupt-Checkout, Owner-Token): die Notiz-als-Quelle-Kette ist erstmals BENUTZT, der Plan ist geschnitten und committet, und der Owner hat eine NEUE Richtung gesetzt (Second-host als Hauptmaschine); 2026-09-11, ctx GEMESSEN 30 %
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT

@@ -445,6 +445,15 @@ class Pane {
       // actually lost: the server only ever seeds SEED_LINES (3000) on connect, tmux keeps the
       // real history, and ⟳ reload re-seeds from it. 10k is still three seeds deep.
       scrollback: 10000,
+      // Owner-Meldung 2026-09-11: "es stottert doch immernoch pro Zeile". Das war keine
+      // Renderer-Last, sondern die Scroll-GRANULARITAET: xterms Default ist 0, und 0 heisst
+      // laut seiner eigenen API "disable smooth scrolling and scroll instantly" — jeder
+      // Radschritt springt hart eine ganze Zeile weit, ohne Zwischenbild. Genau das fuehlt
+      // sich pro Zeile an. 100 ms interpoliert zwischen Ausgangs- und Zielzeile; hoehere
+      // Werte fuehlen sich nicht weicher an, sondern traege, weil die Animation dann hinter
+      // dem Finger herlaeuft. Reines Bedienungsgefuehl, kein Datenpfad: wer es zurueckdrehen
+      // will, setzt 0 und hat exakt das Verhalten aller Versionen davor.
+      smoothScrollDuration: 100,
       fontSize: isMobile() ? 11 : 12,
       fontFamily: "ui-monospace, Menlo, Consolas, monospace",
       theme: { background: "#141414", foreground: "#d8d8d8" },

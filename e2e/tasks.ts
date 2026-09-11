@@ -5832,4 +5832,187 @@ export async function run(ctx: Ctx): Promise<void> {
         && !(await nSess()).some((x) => x.id === nSlot && x.cwd),
       `left=${(await nAll()).filter((t) => t.text.startsWith("acp25")).length}`);
   }
+
+  // ——— C0 · THE ZERO BUDGET IS A REAL BUDGET ———
+  // capTasks retires TERMINAL rows once the list passes MAX_TASKS, keeping the newest `keepDone` of
+  // them and every non-terminal row whatever the budget says. When the LIVE rows alone already fill
+  // the budget, keepDone is 0 — and `slice(-0)` is `slice(0)`, i.e. the WHOLE terminal list. The one
+  // case the bound exists for was therefore the one case that retired nothing, and the queue grew
+  // live + every terminal row ever minted. This section measures the bound ACROSS that boundary
+  // (budget 1, budget 0, budget 0 with the live rows already over the cap) rather than at one point,
+  // because a null case is exactly where an off-by-one lives.
+  //
+  // MAX_TASKS is a hard constant with no env door, so the budget is crossed the only way a suite can
+  // cross it: by PLANTING the state and restarting — which drives the production `capTasks` through
+  // the LOADER (`loadState` ends with `tasks = capTasks(tasks)`), the same entrance e2e/programs.ts
+  // proves capPrograms at. Nothing here is a copy of the rule; the answer is read back off
+  // GET /api/tasks, which serves the list in list order.
+  {
+    const MAX = 200; // server.ts#MAX_TASKS — a hard constant, mirrored so a change shows up as red here
+    type C0State = Record<string, unknown> & { tasks?: unknown[] };
+    type C0Row = { id: string; status: string };
+    const c0At = 1_700_000_000_000;
+    // Live rows are `notiz`/`pending` ON PURPOSE: the dispatcher's candidate set is
+    // `kind === "auftrag" && status === "queued"`, so a plant of 200+ live rows cannot wake a lane
+    // while this section measures a retention bound. Both halves of that are needed — a queued
+    // auftrag would be dispatched, and an auftrag is also the only kind the release door moves.
+    const c0Row = (id: string, status: string, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+      id, text: `C0 row ${id}`, source: "owner", status, kind: "notiz",
+      created: c0At, slot: null, note: null, repo: null, ...extra,
+    });
+    const c0Live = (n: number): Record<string, unknown> => c0Row(`c0live${String(n).padStart(4, "0")}`, "pending");
+    // done and archived are the two terminal statuses, alternated so neither arm below can pass by
+    // measuring only one of them.
+    const c0Term = (n: number): Record<string, unknown> =>
+      c0Row(`c0term${String(n).padStart(4, "0")}`, n % 2 === 0 ? "done" : "archived");
+    const c0Ids = (rows: Record<string, unknown>[]): string[] => rows.map((r) => String(r.id));
+    const c0Plant = async (rows: Record<string, unknown>[]): Promise<string[]> => {
+      await tmuxOut("kill-session", "-t", "srv");
+      await Bun.sleep(500);
+      const planted = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as C0State;
+      planted.tasks = rows;
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(planted, null, 2), { mode: 0o600 });
+      await restartSrv();
+      return ((await (await get("/api/tasks")).json()) as { tasks: C0Row[] }).tasks.map((t) => t.id);
+    };
+    // RELATIVE ORDER IS PART OF THE CONTRACT, and it is cheap to get wrong: capTasks is written as
+    // one `list.filter`, but a rewrite that re-assembled the survivors from its two keep-sets would
+    // silently sort the terminal rows behind the live ones. The honest reading is "the survivors are
+    // the planted order with the evicted rows removed" — a set comparison would not see it.
+    const c0Ordered = (planted: string[], got: string[]): boolean =>
+      JSON.stringify(got) === JSON.stringify(planted.filter((id) => got.includes(id)));
+    // Every plant REPLACES the queue, so a row this section did not mint can only have been appended
+    // after the boot — and such an append re-runs capTasks with a different live count, which would
+    // move the very numbers below. It has never happened in this instance (FLEET_CMD=true, no queued
+    // auftrag, nothing on a tick mints a row), but a count that is off by one is unreadable without
+    // it, so every detail string names the intruders rather than leaving the reader to guess.
+    const c0Foreign = (got: string[]): string[] => got.filter((id) => !id.startsWith("c0"));
+    // Snapshot the bytes on disk with NO server running, so nothing can save over the restore point.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const c0Snapshot = readFileSync(`${ROOT}/fleet.json`, "utf8");
+    await restartSrv();
+
+    // (a) AT AND UNDER THE BUDGET THE BOUND IS A NO-OP — the `list.length <= MAX_TASKS` early return.
+    // Measured with a MIXED list at EXACTLY the budget, which is the boundary the early return owns:
+    // one row more and the arms below take over. The empty list is the degenerate twin of the same
+    // arm and costs one restart.
+    const c0Under = [...Array.from({ length: 150 }, (_, i) => c0Live(i)),
+      ...Array.from({ length: 50 }, (_, i) => c0Term(i))];
+    const c0UnderGot = await c0Plant(c0Under);
+    const c0EmptyGot = await c0Plant([]);
+    check("(c0-a) at exactly MAX_TASKS and at zero the cap touches nothing — every planted row comes back, in order",
+      c0UnderGot.length === MAX && JSON.stringify(c0UnderGot) === JSON.stringify(c0Ids(c0Under))
+        && c0EmptyGot.length === 0,
+      `under=${c0UnderGot.length} ordered=${JSON.stringify(c0UnderGot) === JSON.stringify(c0Ids(c0Under))}`
+        + ` empty=${c0EmptyGot.length} foreign=${JSON.stringify([...c0Foreign(c0UnderGot), ...c0Foreign(c0EmptyGot)])}`);
+
+    // (a2) 199 / 200 / 201 — THE EARLY RETURN'S OWN BOUNDARY, measured as the triple and not as one
+    // point. This is where the live fleet actually stands (owner, 2026-09-11: fleet.json held exactly
+    // 200 rows at MAX_TASKS = 200, 107 live and 93 terminal — the cap is displacing TODAY, not in
+    // theory), so the three lengths around it are the ones a reader needs proven:
+    //   · 199 rows — one below: untouched, the early return
+    //   · 200 rows — AT the cap: untouched, measured in (a) above with a mixed list
+    //   · 201 rows — the first length that BITES: with 100 live the budget is 100, so exactly the
+    //     OLDEST terminal row goes and nothing else. One row over the line costs exactly one row.
+    // 100 live + 101 terminal is deliberate: a budget that is neither zero nor the whole list, so
+    // this arm keeps measuring the ordinary policy while (c) and (d) measure the null case.
+    const c0At199 = [...Array.from({ length: 100 }, (_, i) => c0Live(i)),
+      ...Array.from({ length: 99 }, (_, i) => c0Term(i))];
+    const c0At199Got = await c0Plant(c0At199);
+    const c0At201 = [...Array.from({ length: 100 }, (_, i) => c0Live(i)),
+      ...Array.from({ length: 101 }, (_, i) => c0Term(i))];
+    const c0At201Got = await c0Plant(c0At201);
+    check("(c0-a2) 199 is untouched and 201 costs exactly its oldest terminal row — the cap's own boundary, where the live fleet stands",
+      c0At199Got.length === 199 && JSON.stringify(c0At199Got) === JSON.stringify(c0Ids(c0At199))
+        && c0At201Got.length === MAX
+        && !c0At201Got.includes("c0term0000") && c0At201Got.includes("c0term0001")
+        && c0At201Got.filter((id) => id.startsWith("c0live")).length === 100
+        && c0Ordered(c0Ids(c0At201), c0At201Got),
+      `at199=${c0At199Got.length} at201=${c0At201Got.length}`
+        + ` droppedOldest=${!c0At201Got.includes("c0term0000")} keptNext=${c0At201Got.includes("c0term0001")}`
+        + ` foreign=${JSON.stringify([...c0Foreign(c0At199Got), ...c0Foreign(c0At201Got)])}`);
+
+    // (b) BUDGET ONE — the positive control that makes the two zero-budget arms below mean something.
+    // 199 live + 5 terminal: keepDone is 1, so the NEWEST terminal row survives and the four older
+    // ones go. If this arm ever goes red with (c) and (d) green, the bug is the policy, not the null
+    // case. `c0term0004` is the last terminal row in planted order, which is the end `slice(-1)` keeps.
+    const c0One = [...Array.from({ length: 199 }, (_, i) => c0Live(i)),
+      ...Array.from({ length: 5 }, (_, i) => c0Term(i))];
+    const c0OneGot = await c0Plant(c0One);
+    const c0OneTerm = c0OneGot.filter((id) => id.startsWith("c0term"));
+    check("(c0-b) budget ONE keeps exactly the newest terminal row and retires the four older ones",
+      c0OneGot.length === MAX && c0OneGot.filter((id) => id.startsWith("c0live")).length === 199
+        && JSON.stringify(c0OneTerm) === JSON.stringify(["c0term0004"])
+        && c0Ordered(c0Ids(c0One), c0OneGot),
+      `total=${c0OneGot.length} terminal=${JSON.stringify(c0OneTerm)} ordered=${c0Ordered(c0Ids(c0One), c0OneGot)}`
+        + ` foreign=${JSON.stringify(c0Foreign(c0OneGot))}`);
+
+    // (c) BUDGET ZERO — THE FIX. 200 live + 4 terminal: the live rows alone fill MAX_TASKS, so the
+    // budget for terminal rows is 0 and every one of them must go. The old `slice(-keepDone)` kept
+    // all four here (`-0` is `0`), which is what made this the one case the bound never bit.
+    const c0Zero = [...Array.from({ length: 200 }, (_, i) => c0Live(i)),
+      ...Array.from({ length: 4 }, (_, i) => c0Term(i))];
+    const c0ZeroGot = await c0Plant(c0Zero);
+    check("(c0-c) budget ZERO retires EVERY terminal row — the live rows alone fill MAX_TASKS",
+      c0ZeroGot.length === MAX && !c0ZeroGot.some((id) => id.startsWith("c0term"))
+        && c0ZeroGot.filter((id) => id.startsWith("c0live")).length === 200
+        && c0Ordered(c0Ids(c0Zero), c0ZeroGot),
+      `total=${c0ZeroGot.length} terminalKept=${c0ZeroGot.filter((id) => id.startsWith("c0term")).length}`
+        + ` foreign=${JSON.stringify(c0Foreign(c0ZeroGot))}`);
+
+    // (d) …AND PAST ZERO, where the subtraction goes NEGATIVE before Math.max clamps it. 205 live +
+    // 4 terminal: all 205 live rows are retained — the list standing ABOVE MAX_TASKS is the stated
+    // policy, not a leak — and no terminal row is. This arm is not a duplicate of (c): (c) measures
+    // the boundary value 0, this one measures that the clamp does not hand `slice` a value of its
+    // own. Both were green before the fix for the wrong reason, keeping all four.
+    const c0Over = [...Array.from({ length: 205 }, (_, i) => c0Live(i)),
+      ...Array.from({ length: 4 }, (_, i) => c0Term(i))];
+    const c0OverGot = await c0Plant(c0Over);
+    check("(c0-d) with the LIVE rows already over the cap every live row is kept and every terminal row goes",
+      c0OverGot.length === 205 && !c0OverGot.some((id) => id.startsWith("c0term"))
+        && c0Ordered(c0Ids(c0Over), c0OverGot),
+      `total=${c0OverGot.length} terminalKept=${c0OverGot.filter((id) => id.startsWith("c0term")).length}`
+        + ` foreign=${JSON.stringify(c0Foreign(c0OverGot))}`);
+
+    // (e) NO LIVE ROW AT ALL — the full budget, which is the arm that would go red if the fix had
+    // reached past the null case into the policy. 250 terminal rows keep the newest 200: the oldest
+    // 50 go, `c0term0049` is the last of them and `c0term0050` the first survivor.
+    const c0AllTerm = Array.from({ length: 250 }, (_, i) => c0Term(i));
+    const c0AllTermGot = await c0Plant(c0AllTerm);
+    check("(c0-e) with no live row the full budget still applies — the newest 200 terminal rows survive, oldest first out",
+      c0AllTermGot.length === MAX && c0AllTermGot[0] === "c0term0050"
+        && c0AllTermGot[MAX - 1] === "c0term0249"
+        && c0Ordered(c0Ids(c0AllTerm), c0AllTermGot),
+      `total=${c0AllTermGot.length} first=${c0AllTermGot[0] ?? "none"} last=${c0AllTermGot[MAX - 1] ?? "none"}`
+        + ` foreign=${JSON.stringify(c0Foreign(c0AllTermGot))}`);
+
+    // (f) THE N3 SOURCE RETENTION UNDER A ZERO BUDGET — the regression guard for the line this fix
+    // changed, and not a re-run of (n3-i): that one measures the bound with a budget to spend, this
+    // one measures it with NONE. `keptDone` is what feeds `survivors`, so emptying it correctly had
+    // to leave the LIVE holders in it. 200 live rows, one of them an auftrag naming a terminal notiz:
+    // the named source survives on top of the budget (201 rows — the stated overhang), its same-age
+    // unnamed twin does not.
+    const c0Named = "c0src0001", c0Twin = "c0src0002";
+    const c0Holder = { ...c0Row("c0holder", "pending", { kind: "auftrag",
+      notes: [{ noteId: c0Named, at: c0At, by: "owner" }] }) };
+    const c0N3 = [c0Holder, ...Array.from({ length: 199 }, (_, i) => c0Live(i)),
+      c0Row(c0Named, "done"), c0Row(c0Twin, "done")];
+    const c0N3Got = await c0Plant(c0N3);
+    check("(c0-f) a zero budget does not release a held source — the named notiz survives on top of it, its unnamed twin does not",
+      c0N3Got.length === MAX + 1 && c0N3Got.includes(c0Named) && !c0N3Got.includes(c0Twin)
+        && c0N3Got.includes("c0holder") && c0Ordered(c0Ids(c0N3), c0N3Got),
+      `total=${c0N3Got.length} named=${c0N3Got.includes(c0Named)} twin=${c0N3Got.includes(c0Twin)}`
+        + ` foreign=${JSON.stringify(c0Foreign(c0N3Got))}`);
+
+    // Leave the queue as this section found it — the planted lists replaced it wholesale.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    writeFileSync(`${ROOT}/fleet.json`, c0Snapshot, { mode: 0o600 });
+    await restartSrv();
+    const c0Restored = ((await (await get("/api/tasks")).json()) as { tasks: C0Row[] }).tasks;
+    check("(c0) cleanup: the pre-fixture queue is back and no planted row survives",
+      !c0Restored.some((t) => t.id.startsWith("c0")),
+      `left=${c0Restored.filter((t) => t.id.startsWith("c0")).length} total=${c0Restored.length}`);
+  }
 }

@@ -2202,7 +2202,17 @@ function capTasks(list: Task[]): Task[] {
   if (list.length <= MAX_TASKS) return list;
   const live = new Set(list.filter((t) => !taskTerminal(t)));
   const keepDone = Math.max(0, MAX_TASKS - live.size);
-  const keptDone = new Set(list.filter(taskTerminal).slice(-keepDone));
+  // THE ZERO BUDGET IS A REAL BUDGET, and `slice(-0)` is not it: `-0` is `0`, so `slice(-keepDone)`
+  // returns the WHOLE terminal list at exactly the moment the budget said to keep none of it. The
+  // one case the bound exists for — a queue whose LIVE rows alone already fill MAX_TASKS — was
+  // therefore the one case that retired nothing, and the list grew live + every terminal row ever
+  // minted. Measured on this function at 200 live and four terminal rows: four kept, zero expected.
+  // Spelled as a branch rather than an `|| []` for the same reason capPrograms spells it that way:
+  // the two bounds are one rule read in two directions, and a reader who has understood one must
+  // not have to re-derive the other. This is the NULL CASE only — the policy above it is unchanged,
+  // and every non-terminal row is still retained whatever the budget says.
+  const terminal = list.filter(taskTerminal);
+  const keptDone = new Set(keepDone > 0 ? terminal.slice(-keepDone) : []);
   // N3: A SOURCE A SURVIVING ROW NAMES IS NOT SPARE CAPACITY. Computed AFTER the two sets above and
   // over BOTH of them — a terminal holder keeps its source exactly as long as it is itself kept,
   // which is the property that makes the retention shrink honestly instead of never. Evicting a

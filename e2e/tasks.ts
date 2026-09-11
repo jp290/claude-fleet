@@ -5585,4 +5585,251 @@ export async function run(ctx: Ctx): Promise<void> {
         && !(await mSess()).some((x) => x.id === mSlot && x.cwd),
       `rows=${(await mAll()).filter((t) => t.source === "main").length}`);
   }
+
+  // --- (n) ACP-25 · POST /api/self/tasks/:id/brief: the SHARPENING door of a bound Program-MAIN,
+  // and the falsehood it exists to end. The owner door beside it hard-writes `model:"owner",
+  // edited:true`, and the three client render sites turn that into the words "edited by the owner" /
+  // "· yours" — so a session sharpening a queue row through the owner bearer necessarily minted a
+  // statement about a PERSON that was not true, and one a reader does not read as a suspicion.
+  //
+  // What this section measures is the pair that repair rests on: the new entry NAMES its writer
+  // (`by:"main"`), and an entry written BEFORE the field existed comes back out of the state file
+  // with no author at all — the render-side half of that (three sites, legacy strings byte-for-byte)
+  // is a source rule in e2e/pins.ts, because the sites live in the client bundle ---
+  {
+    await restartSrv();
+
+    interface NSlot { id: number; cwd: string | null; worktree?: unknown }
+    interface NBrief { text: string; at: number; model: string; edited: boolean; by?: string }
+    interface NRow { id: string; text: string; kind: string; status: string;
+      programId?: string; repo?: string | null; brief?: NBrief }
+    interface NState {
+      slots?: Record<string, { openedAt?: number; sessionId?: string | null; selfToken?: string }>;
+      programs?: { id: string; status?: string; main?: unknown }[];
+      tasks?: NRow[];
+    }
+    const nState = (): NState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as NState;
+    const nSess = async (): Promise<NSlot[]> =>
+      ((await (await get("/api/sessions")).json()) as { slots: NSlot[] }).slots;
+    const nAll = async (): Promise<NRow[]> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: NRow[] }).tasks;
+    const nRow = async (id: string): Promise<NRow | undefined> => (await nAll()).find((t) => t.id === id);
+    const nAuditRows = (): { event?: string; slot?: number; detail?: string }[] =>
+      readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+        .map((line) => JSON.parse(line) as { event?: string; slot?: number; detail?: string });
+    const nSharpen = (token: string, id: string, body: unknown): Promise<Response> =>
+      fetch(`${BASE}/api/self/tasks/${id}/brief`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": token },
+        body: JSON.stringify(body),
+      });
+    const nProgram = async (title: string): Promise<string> => {
+      const made = await post("/api/programs", {
+        title, intent: "ACP-25 brief-sharpening probes.",
+        successCriterion: "The door names its writer.",
+        nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+      });
+      const id = ((await made.json()) as { program?: { id: string } }).program?.id ?? "";
+      await post(`/api/programs/${id}/confirm`, {});
+      await post(`/api/programs/${id}/activate`, {});
+      return id;
+    };
+    // A row filed through the OWNER door, so the fixture owes this section nothing: the bracket and
+    // the target repo are set by the same route the board uses. `program` omitted means UNBRACKETED —
+    // a row that belongs to nobody, which is one of the two refusals (4) measures.
+    const nMake = async (text: string, program?: string): Promise<string> => {
+      const made = await post("/api/tasks",
+        { text, kind: "auftrag", repo: REPO, ...(program ? { programId: program } : {}) });
+      return ((await made.json()) as { task?: { id: string } }).task?.id ?? "";
+    };
+
+    const nBoundProgram = await nProgram("ACP-25 sharpening bracket");
+    const nOtherProgram = await nProgram("ACP-25 foreign bracket");
+    const nSlot = (await nSess()).find((x) => !x.cwd)?.id ?? -1;
+    const nOpen = nSlot < 0 ? null : await post(`/api/slots/${nSlot}/open`, { cwd: REPO, label: "acp25-main" });
+    // The binding is PLANTED through the state file, exactly as section (m) plants its own: the
+    // bootstrap route spawns a session and waits for a harness screen, and none of that founding
+    // path is what this section measures.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const nPlanted = nState();
+    const nSlotRow = nPlanted.slots?.[String(nSlot)];
+    const nProgramRow = nPlanted.programs?.find((p) => p.id === nBoundProgram);
+    if (nProgramRow && nSlotRow?.openedAt)
+      nProgramRow.main = { slot: nSlot, openedAt: nSlotRow.openedAt,
+        sessionId: nSlotRow.sessionId ?? null, boundAt: Date.now() };
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(nPlanted, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const nToken = nState().slots?.[String(nSlot)]?.selfToken ?? "";
+    const nLive = (await nSess()).find((x) => x.id === nSlot);
+    const nBoundSlot = ((await (await get("/api/programs")).json()) as
+      { programs: { id: string; main?: { slot: number } }[] })
+      .programs.find((p) => p.id === nBoundProgram)?.main?.slot;
+    // FIXTURE PRECONDITION, carrying its own check: every success and refusal below is evidence
+    // only if the caller really is the LIVE bound MAIN of an active Program, in a git checkout and
+    // NOT in a worktree lane. A probe that cannot establish its own precondition must fail as
+    // ITSELF, never as the thing it was meant to measure.
+    check("ACP-25 fixture: the sharpening probes run on a live bound NON-LANE MAIN in a git checkout",
+      nSlot >= 0 && !!nOpen?.ok && /^[0-9a-f]{32}$/.test(nToken)
+        && !!nLive?.cwd && !nLive.worktree && nBoundSlot === nSlot,
+      `slot=${nSlot} open=${nOpen?.status} token=${nToken.length} cwd=${nLive?.cwd} bound=${nBoundSlot}`);
+
+    // (1) THE ACT ITSELF — and the ONE fact the whole lane turns on: the stored entry names the
+    // writing principal. `edited` stays true (it is the PIN against the brief sweep, not the
+    // authorship), `by` is "main", and `model` carries the author rather than the literal "owner"
+    // the door next to it writes.
+    const nOkId = await nMake("acp25 row of the bound program", nBoundProgram);
+    const nAuditBefore = nAuditRows().length;
+    const nOkRes = await nSharpen(nToken, nOkId, { text: "sharpened by the MAIN, not by the owner" });
+    const nOkBody = await nOkRes.json() as { ok?: boolean; sessionIdMatch?: string; brief?: NBrief };
+    const nOkRow = await nRow(nOkId);
+    const nOkTrail = nAuditRows().slice(nAuditBefore).filter((r) => r.event === "main_brief");
+    check("ACP-25 (1): a bound non-lane MAIN sharpens its own row — the stored brief names the WRITER (by:main), keeps the recompile pin, and leaves one main_brief line",
+      nOkRes.status === 200 && nOkBody.ok === true && typeof nOkBody.sessionIdMatch === "string"
+        && nOkRow?.brief?.text === "sharpened by the MAIN, not by the owner"
+        && nOkRow.brief.by === "main" && nOkRow.brief.edited === true
+        && nOkRow.brief.model === "main" && nOkRow.status === "pending"
+        && nOkTrail.length === 1 && nOkTrail[0]?.slot === nSlot
+        && nOkTrail[0]?.detail === `${nOkId} program=${nBoundProgram}`,
+      `${nOkRes.status} ${JSON.stringify(nOkBody)} row=${JSON.stringify(nOkRow?.brief)} trail=${JSON.stringify(nOkTrail)}`);
+
+    // (2) THE OWNER'S OWN DOOR now stamps its author POSITIVELY too, on a different row. Absence of
+    // `by` was the only reading available until today; from here the owner's edits SAY so, and the
+    // backlog is the only thing left that carries nothing — which is the shape (7) measures.
+    const nOwnerId = await nMake("acp25 row the owner edits", nBoundProgram);
+    const nOwnerRes = await post(`/api/tasks/${nOwnerId}/brief`, { text: "the owner's own bytes" });
+    const nOwnerRow = await nRow(nOwnerId);
+    check("ACP-25 (2): the OWNER door stamps by:owner — the statement is in the record, not inferred from an absence",
+      nOwnerRes.ok && nOwnerRow?.brief?.by === "owner" && nOwnerRow.brief.model === "owner"
+        && nOwnerRow.brief.edited === true,
+      `${nOwnerRes.status} ${JSON.stringify(nOwnerRow?.brief)}`);
+
+    // (3) …AND A MAIN DOES NOT OVERWRITE IT. Refused by its own sentence, and the row is untouched —
+    // read off the row rather than off the answer, so a response that flattered itself is caught.
+    const nOverOwner = await nSharpen(nToken, nOwnerId, { text: "a MAIN writing over the owner" });
+    const nOverOwnerText = await nOverOwner.text();
+    const nOwnerAfter = await nRow(nOwnerId);
+    check("ACP-25 (3): a brief the OWNER wrote is refused 409 in its own words and stays byte-for-byte as it was",
+      nOverOwner.status === 409 && nOverOwnerText.includes("written by the owner")
+        && nOwnerAfter?.brief?.text === "the owner's own bytes" && nOwnerAfter.brief.by === "owner",
+      `${nOverOwner.status}:${nOverOwnerText} row=${JSON.stringify(nOwnerAfter?.brief)}`);
+
+    // (4) A ROW OF ANOTHER PROGRAM, and an UNBRACKETED row: both refused, both naming the program
+    // the binding decided. The bracket is the same one release and notes-assign state, and the
+    // sentence must not be the lane sentence — it sends the caller to fix a different thing.
+    const nForeignId = await nMake("acp25 row of the other program", nOtherProgram);
+    const nForeignRes = await nSharpen(nToken, nForeignId, { text: "reaching into another program" });
+    const nForeignText = await nForeignRes.text();
+    const nLooseId = await nMake("acp25 unbracketed row");
+    const nLooseRes = await nSharpen(nToken, nLooseId, { text: "reaching into nobody's row" });
+    const nLooseText = await nLooseRes.text();
+    check("ACP-25 (4): a row of ANOTHER program and an UNBRACKETED row are both 409 naming this MAIN's own program — and neither got a brief",
+      nForeignRes.status === 409 && nForeignText.includes(nBoundProgram)
+        && nForeignText.includes("belongs to no program of this MAIN")
+        && nLooseRes.status === 409 && nLooseText.includes(nBoundProgram)
+        && (await nRow(nForeignId))?.brief === undefined
+        && (await nRow(nLooseId))?.brief === undefined,
+      `foreign=${nForeignRes.status}:${nForeignText} loose=${nLooseRes.status}:${nLooseText}`);
+
+    // (5) A LANE IS REFUSED, and this is the loudest exclusion in the family rather than the
+    // quietest: the brief IS the work order a lane was founded on, so a lane writing this field
+    // would rewrite what it is measured against. 409 and never 401, so nobody goes looking for a
+    // credential they already hold. The probe carries its own precondition that the caller is a lane.
+    const nLaneToken = ctx.restartSelfTok ?? "";
+    const nLaneIsLane = (await nSess()).find((x) => x.id === ctx.restartSelfSlot)?.worktree;
+    const nLaneTarget = await nMake("acp25 row a lane will be refused on", nBoundProgram);
+    const nLaneRes = nLaneToken ? await nSharpen(nLaneToken, nLaneTarget, { text: "from a lane" }) : null;
+    const nLaneText = nLaneRes ? await nLaneRes.text() : "";
+    check("ACP-25 (5): a LANE is refused 409 with the reason spelled out — and the row it aimed at has no brief",
+      /^[0-9a-f]{32}$/.test(nLaneToken) && !!nLaneIsLane
+        && nLaneRes?.status === 409
+        && nLaneText.includes("a lane may not sharpen a brief")
+        && (await nRow(nLaneTarget))?.brief === undefined,
+      `token=${nLaneToken.length} lane=${!!nLaneIsLane} ${nLaneRes?.status}:${nLaneText}`);
+
+    // (6) THE BODY IS CLOSED, and the three fields it closes are exactly the ones whose whole point
+    // is that a caller cannot nominate them. Refused as a set rather than dropped — a field
+    // silently ignored is a field the caller believes was honoured — and a body naming the value
+    // the server would have written anyway is refused too, so this is a rule about the FIELD.
+    const nClosedId = await nMake("acp25 row for the closed-body probe", nBoundProgram);
+    const nBodyBy = await nSharpen(nToken, nClosedId, { text: "x", by: "owner" });
+    const nBodyByText = await nBodyBy.text();
+    const nBodyMain = await nSharpen(nToken, nClosedId, { text: "x", by: "main" });
+    const nBodyModel = await nSharpen(nToken, nClosedId, { text: "x", model: "claude-opus-5", edited: true });
+    const nBodyModelText = await nBodyModel.text();
+    const nNoText = await nSharpen(nToken, nClosedId, {});
+    const nBlank = await nSharpen(nToken, nClosedId, { text: "   " });
+    check("ACP-25 (6): by/model/edited in the body are 400 as a closed set — even naming the value the server writes itself — and a missing or blank text never mints a brief",
+      nBodyBy.status === 400 && nBodyByText.includes("[by]")
+        && nBodyByText.includes("this door reads text only")
+        && nBodyMain.status === 400
+        && nBodyModel.status === 400 && nBodyModelText.includes("model") && nBodyModelText.includes("edited")
+        && nNoText.status === 400 && nBlank.status === 400
+        && (await nRow(nClosedId))?.brief === undefined,
+      `by=${nBodyBy.status}:${nBodyByText} byMain=${nBodyMain.status} model=${nBodyModel.status}:${nBodyModelText}`
+        + ` missing=${nNoText.status} blank=${nBlank.status}`);
+
+    const nLegacyId = await nMake("acp25 row carrying a pre-field brief", nBoundProgram);
+    // (7) THE ALT-ZEILEN-GEGENPROBE — the counter-probe the whole constraint rests on. A brief that
+    // was PINNED BEFORE this field existed is planted into the state file exactly as it stood then
+    // (no `by` key at all), the server is rebooted, and the entry must come back with no author:
+    // the normalizer must neither invent one nor drop the brief. Both failures are silent and both
+    // are re-interpretations of the backlog — an invented "owner" would credit the owner with text
+    // they may never have written, and a dropped author on the NEW rows would erase the repair.
+    // The same reload proves the new entry PERSISTS, which no in-memory probe can say.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const nLegacyPlant = nState();
+    const nLegacyRow = nLegacyPlant.tasks?.find((t) => t.id === nLegacyId);
+    if (nLegacyRow) nLegacyRow.brief = { text: "a brief pinned before authors were recorded", at: 1_700_000_000_000, model: "owner", edited: true };
+    // …and a second plant whose author is GARBAGE. It must degrade to ABSENT, never to a value: a
+    // hand-edited state file one word away from crediting a brief to the owner is not provenance.
+    const nGarbageRow = nLegacyPlant.tasks?.find((t) => t.id === nForeignId);
+    if (nGarbageRow) nGarbageRow.brief = { text: "a brief with a forged author", at: 1_700_000_000_000, model: "owner", edited: true, by: "the owner themselves" };
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(nLegacyPlant, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const nLegacyBack = await nRow(nLegacyId);
+    const nGarbageBack = await nRow(nForeignId);
+    const nOkBack = await nRow(nOkId);
+    const nOwnerBack = await nRow(nOwnerId);
+    check("ACP-25 (7): a pre-field brief reloads with NO author and its text intact, a forged author degrades to absent, and both new stamps survive the reload",
+      nLegacyBack?.brief?.text === "a brief pinned before authors were recorded"
+        && nLegacyBack.brief.edited === true && nLegacyBack.brief.by === undefined
+        && nGarbageBack?.brief?.text === "a brief with a forged author"
+        && nGarbageBack.brief.by === undefined
+        && nOkBack?.brief?.by === "main" && nOwnerBack?.brief?.by === "owner",
+      `legacy=${JSON.stringify(nLegacyBack?.brief)} garbage=${JSON.stringify(nGarbageBack?.brief)}`
+        + ` main=${JSON.stringify(nOkBack?.brief)} owner=${JSON.stringify(nOwnerBack?.brief)}`);
+
+    // (8) …and the MAIN may not overwrite that unauthored brief either, by its OWN sentence — a
+    // different refusal from (3), because it says something different: this one cannot be told
+    // apart from the owner's, which is not the same as being the owner's. Absence is never
+    // harmlessness. What a MAIN MAY overwrite is its own earlier sharpening, proven on the same
+    // pass so the rule reads as a boundary rather than as a blanket freeze.
+    const nOverLegacy = await nSharpen(nToken, nLegacyId, { text: "a MAIN writing over an unauthored pin" });
+    const nOverLegacyText = await nOverLegacy.text();
+    const nReSharpen = await nSharpen(nToken, nOkId, { text: "the MAIN sharpening its own sharpening" });
+    const nReRow = await nRow(nOkId);
+    check("ACP-25 (8): an UNAUTHORED pinned brief is 409 in its own words while the MAIN's OWN earlier sharpening is freely replaced",
+      nOverLegacy.status === 409 && nOverLegacyText.includes("NO recorded author")
+        && !nOverLegacyText.includes("written by the owner")
+        && (await nRow(nLegacyId))?.brief?.text === "a brief pinned before authors were recorded"
+        && nReSharpen.status === 200
+        && nReRow?.brief?.text === "the MAIN sharpening its own sharpening"
+        && nReRow.brief.by === "main",
+      `legacy=${nOverLegacy.status}:${nOverLegacyText} own=${nReSharpen.status} row=${JSON.stringify(nReRow?.brief)}`);
+
+    // Leave the board as this section found it: every row it minted is deleted, the planted MAIN's
+    // slot is closed, and both Programs are completed rather than left active for the modules after
+    // this one to inherit.
+    for (const id of [nOkId, nOwnerId, nForeignId, nLooseId, nLaneTarget, nClosedId, nLegacyId])
+      await post(`/api/tasks/${id}/delete`, {});
+    await post(`/api/slots/${nSlot}/kill`, {});
+    await post(`/api/programs/${nBoundProgram}/complete`, {});
+    await post(`/api/programs/${nOtherProgram}/complete`, {});
+    check("ACP-25 cleanup: no row this section minted is left in the queue and the planted MAIN slot is closed",
+      !(await nAll()).some((t) => [nOkId, nOwnerId, nForeignId, nLooseId, nLaneTarget, nClosedId, nLegacyId].includes(t.id))
+        && !(await nSess()).some((x) => x.id === nSlot && x.cwd),
+      `left=${(await nAll()).filter((t) => t.text.startsWith("acp25")).length}`);
+  }
 }

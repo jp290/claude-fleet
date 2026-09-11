@@ -587,6 +587,74 @@ werden im Brief als blanke Ids genannt.
 
 
 
+## brief — `POST /api/self/tasks/:id/brief`
+
+**Den Brief einer EIGENEN Program-Zeile schärfen, und den Schreiber am Datensatz nennen (ACP-25,
+2026-09-11).** Bis dahin hatte eine Session, die eine Queue-Zeile präzisieren wollte, genau eine
+Tür: die Owner-Tür `POST /api/tasks/:id/brief`. Die schreibt hart `model:"owner", edited:true`, und
+beide Renderstellen machen daraus die Worte *„edited by the owner"* / *„· yours"*. Wer den Bearer
+hält, aber nicht der Owner ist, erzeugte damit **zwangsläufig eine Falschaussage über eine Person** —
+und eine, die ein Leser nicht als Verdacht liest, anders als `suspect: owner-token-outside-board`
+auf einer Land-Notiz. Der bisherige Ausweg (die Herkunft als erste Zeile IN den Brieftext) trägt,
+muss aber jede Session neu einhalten; ein Feld muss das nicht.
+
+```
+curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"text":"<die exakten Bytes, die die Lane bekommen soll>"}' \
+  http://<fleet-host>:<port>/api/self/tasks/<taskId>/brief
+```
+
+**Keine lane-only Route** (409 `a lane may not sharpen a brief — …`) — und dieser Ausschluss ist der
+lauteste der Familie, nicht der leiseste. Zwei bestehende Doktrinen zeigen in dieselbe Richtung: der
+Brief IST die Arbeitsanweisung, auf die eine Lane gegründet wurde, also schriebe eine Lane an der
+eigenen Zeile **ihren eigenen Auftrag um** — genau das, wogegen `criterion` und `refine` propose von
+promote trennen („the producer must not be the one who rewrites the work order it was measured
+against"); und an einer FREMDEN Zeile ist es Lane-schreibt-für-Lane, die Kopplung, die
+`/api/self/watch` ablehnt, weil nur der Owner sie sichtbar machen kann. Der `⚙ steward` ist **nicht**
+ausgeschlossen (wie bei `release`/`notes`/`tasks`): ausgeschlossen ist er dort, wo eine stehende
+Rolle einen TERMINALEN Akt als MAIN eines Programs täte (`land`, `succeed`, `retire`) — Schärfen ist
+weder terminal noch programmübergreifend, und eine ungebundene Session lehnt die Bindung ohnehin ab.
+
+**Der Rahmen ist der seiner Nachbarn, wörtlich:** das Program kommt aus der BINDUNG (nie aus dem
+Body), das Repo aus dem eigenen Checkout, die Zeile muss ein `auftrag` dieses Programs sein und
+`pending` oder `queued` — ab `sent` stehen die Bytes schon in einer Pane, und ein späterer Umschrieb
+hieße, der Datensatz widerspräche der Lane, die er gegründet hat.
+
+**Der Body ist GESCHLOSSEN:** nur `text`. `by`, `model`, `edited` werden mit 400 abgelehnt statt
+verworfen — ein still ignoriertes Feld ist ein Feld, das der Aufrufer für berücksichtigt hält, und
+genau diese drei sind die, deren ganzer Sinn ist, dass ein Aufrufer sie nicht benennen kann. Der
+Autor wird aus dem Slot des Tokens gestempelt.
+
+**Und sie überschreibt den Owner nicht.** Ein gepinnter Brief mit `by:"owner"` wird abgelehnt; ein
+gepinnter Brief **ohne** Autor ebenso, mit eigenem Satz — der entstand, bevor Autoren aufgezeichnet
+wurden, ist also von dem des Owners nicht zu unterscheiden, und Abwesenheit ist nie Harmlosigkeit.
+Überschreibbar sind ein maschinell kompilierter Brief (`edited:false`) und die eigene frühere
+Schärfung.
+
+**Was gespeichert wird:** `TaskBrief.by` — ein geschlossenes Paar `"owner" | "main"`, in Form und
+Begründung `TaskNotePin.by`. `edited:true` bleibt, was es immer war: der PIN gegen den
+Brief-Sweep (`briefDue`); `by` ist die Urheberschaft. Die beiden Fakten ritten bis hierher auf einem
+Boolean.
+
+**ABWESENHEIT IST EIN DATUM, KEIN DRITTER AUTOR.** Ein Brief ohne `by` wurde geschrieben, bevor es
+das Feld gab; jede Renderstelle liest diese Abwesenheit exakt so, wie sie vorher `edited` allein las,
+weshalb **kein gespeicherter Brief ein Byte anders rendert als vor der Änderung**. Es gibt keine
+Migration: der Altbestand wird nicht dadurch ehrlich, dass man ihn nachträglich einem Autor zuschreibt.
+
+**Die dritte Stelle, die mitgezogen wurde:** `BriefSource` im Kontext-Receipt bekam den Wert `main`.
+Ein von einer MAIN geschärfter Brief als `owner` verbucht wäre dieselbe Falschaussage an der einen
+Stelle, an der sie eine RATE wird. Alte Receipts bleiben, was sie sind — sie tragen ihren Wert schon.
+
+Die Trail-Zeile ist `main_brief` (`<taskId> program=<programId>`), eigenes Ereignis neben
+`main_task` und aus dessen Grund: eine Zeile anlegen und die Bytes umschreiben, auf die eine Lane
+gegründet wird, sind zwei Akte.
+
+Die OWNER-Tür daneben bleibt **unverändert**: `POST /api/tasks/:id/brief`, jetzt zusätzlich mit
+`by:"owner"` gestempelt, damit die Aussage positiv im Datensatz steht und nicht aus einer Abwesenheit
+erschlossen werden muss.
+
+
+
 ## files-proposal — `POST /api/self/tasks/:id/files-proposal`
 
 **Die VORSCHLAGS-Hälfte des Datei-Flächen-Paares (W2, 2026-09-07).** Du schlägst vor, welche

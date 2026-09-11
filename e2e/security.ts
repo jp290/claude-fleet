@@ -183,6 +183,22 @@ const PRE_AUTH_ROUTES = [
   // thing it changes is which text a FUTURE founding brief will carry, which is a decision the
   // owner can see on the row and undo with one click.
   String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/notes$/`,
+  // ACP-25, 2026-09-11 · THE BRIEF-SHARPENING DOOR — a bound Program-MAIN rewrites the exact bytes a
+  // lane of its own Program will be founded on. REVIEWED, and the review is the entry: this route
+  // exists to REMOVE a falsehood rather than to widen reach. The owner door beside it
+  // (POST /api/tasks/:id/brief, below the gate) hard-writes `edited:true`, which both render sites
+  // turn into "edited by the owner" — so a session sharpening a queue row through the owner bearer
+  // necessarily minted a false statement about a person. What bounds this one: non-lane only (409,
+  // and the loudest exclusion in the family — the brief IS the work order a lane was founded on);
+  // the caller must be the current bound MAIN of an ACTIVE program; the row must belong to THAT
+  // program, be an `auftrag`, be `pending` or `queued`, and target the caller's own checkout; the
+  // body carries `text` and NOTHING else (a closed set — `by`, `model`, `edited` are refused 400,
+  // never dropped) and the author is stamped from the caller's slot; and a brief the OWNER wrote —
+  // or one pinned before authorship was recorded, which cannot be told apart from theirs — is
+  // refused outright. It starts nothing, lands nothing, moves no status, writes into no pane and
+  // reaches no foreign slot: the ONE thing it changes is which bytes a FUTURE lane receives, which
+  // the owner sees on the row and can overwrite with one click.
+  String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/brief$/`,
   // ACP · THE LAND DOOR, and it is by a distance the most consequential entry on this list: it is
   // the only pre-auth route that can move an INTEGRATION BRANCH. It is here for the same structural
   // reason as its neighbours — the exact self principal IS the boundary — but what bounds it is a

@@ -6024,7 +6024,14 @@ async function openMergeDiff(slotId: number) { await openReview(slotId, "land");
 const taskText = new Map<string, string>();
 // the compiled brief — the exact bytes a lane will receive. Never on the poll (it is a whole
 // prompt); the detail pane shows and edits it from here.
-interface FullBrief { text: string; at: number; model: string; edited: boolean }
+// `by` says WHO pinned an edited brief; ABSENT means it was pinned before authorship was recorded,
+// and every site below reads that absence exactly as it read `edited` alone — which is what keeps
+// every stored brief rendering byte-for-byte as it did (server/types.ts, BriefAuthor).
+interface FullBrief { text: string; at: number; model: string; edited: boolean; by?: "owner" | "main" }
+// ONE reading of that pair for every surface, so the board and the Akte cannot drift into two
+// answers about the same brief. Only an explicit "main" stamp says a machine authored it.
+const briefByMain = (b: { edited: boolean; by?: string } | undefined): boolean =>
+  !!b && b.edited && b.by === "main";
 const taskBriefFull = new Map<string, FullBrief>();
 // same reason for the criterion: the poll knows THAT one exists, this knows what it says
 const taskCriterionFull = new Map<string, NonNullable<TaskInfo["criterion"]>>();
@@ -8468,7 +8475,9 @@ function renderQueueDetail() {
   // approved. Editing pins it — the sweep never recompiles over an edit.
   if (!qAdvisory(t) && (t.status === "pending" || t.status === "queued")) {
     refinement!.appendChild(el("div", "rvhead",
-      brief ? `the brief this lane will receive${brief.edited ? " · yours" : ` · compiled ${fmtTs(brief.at)}`}`
+      brief ? `the brief this lane will receive${brief.edited
+        ? (briefByMain(brief) ? ` · sharpened by its Program-MAIN ${fmtTs(brief.at)}` : " · yours")
+        : ` · compiled ${fmtTs(brief.at)}`}`
         : "no compiled brief yet — the lane would receive your raw text"));
     qBriefDraft = qTextDraft(qBriefDraft, t.id, brief?.text ?? qTaskText(t.id), 10);
     const bbox = qBriefDraft.box;
@@ -8721,7 +8730,8 @@ function renderQueueDetail() {
       release.appendChild(el("div", "qreleasenote", !qTaskFullLoaded(t.id)
         ? "Which bytes this release sends is still loading."
         : brief
-          ? `The stored brief will be sent${brief.edited ? " — yours, pinned" : ""}.`
+          ? `The stored brief will be sent${brief.edited
+            ? (briefByMain(brief) ? " — pinned by its Program-MAIN" : " — yours, pinned") : ""}.`
           : briefCompilerOn === true
             ? "No brief yet — the raw request will be sent unless the compiler writes one first."
             : "No brief, and no compiler is running — the raw request will be sent."));
@@ -10104,7 +10114,7 @@ type LandNoteRead = { state: "read" | "absent" | "unreadable"; sha: string;
   note?: Record<string, unknown>; why?: string };
 type DossierTask = { id: string; text: string; kind: string; source: string; status: string;
   releasedBy?: string; note: string | null; files?: string[];
-  brief?: { text: string; at: number; model: string; edited: boolean };
+  brief?: { text: string; at: number; model: string; edited: boolean; by?: "owner" | "main" };
   criterion?: { text: string; proposedAt: number; confirmedAt: number | null };
   match: string };
 type DossierAudit = { at: number; result: string; mainSha: string; covers: string[]; reason?: string;
@@ -10258,7 +10268,8 @@ function renderAkteDetail(d: Dossier) {
     if (t.brief) {
       host.appendChild(el("div", "aktehead", "the brief it was sent"));
       host.appendChild(el("div", "aktepre", t.brief.text));
-      host.appendChild(el("div", "shrsub", `${t.brief.model} · ${fmtTs(t.brief.at)}${t.brief.edited ? " · edited by the owner" : ""}`));
+      host.appendChild(el("div", "shrsub", `${t.brief.model} · ${fmtTs(t.brief.at)}${t.brief.edited
+        ? (briefByMain(t.brief) ? " · sharpened by its Program-MAIN" : " · edited by the owner") : ""}`));
     }
   }
 

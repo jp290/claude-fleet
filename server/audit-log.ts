@@ -96,6 +96,13 @@ type AuditEvent =
   // that pair is separate: filing and releasing are two acts, and a trail that could not tell them
   // apart would make "the machine wrote itself work" and "the machine started work" one line.
   | "main_task"
+  // …and the same MAIN sharpening the brief of a row of its own Program (POST
+  // /api/self/tasks/:id/brief). Its own event beside main_task for that pair's reason: filing a row
+  // and rewriting the bytes a lane will be founded on are two acts, and the one thing a reader
+  // needs from this trail is WHICH of them moved. It is also the only trail record of an authorship
+  // that used to be unrecordable — before 2026-09-11 this act went through the owner door and left
+  // a row that said the owner wrote it.
+  | "main_brief"
   // the owner granted or revoked a Program's self-land permission (POST /api/programs/:id/promotion).
   // On the trail because it is the one act that widens WHO may move an integration branch, and the
   // record it writes is otherwise only visible by reading the Program row.

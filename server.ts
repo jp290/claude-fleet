@@ -8011,6 +8011,74 @@ async function assignNoteForMain(s: Slot, id: string, body: Record<string, unkno
     task: { id: t.id, kind: t.kind, status: t.status, programId: t.programId } });
 }
 
+// THE BRIEF-SHARPENING DOOR — a bound Program-MAIN rewrites the exact bytes a lane of its OWN
+// Program will be founded on, and the record says it was the MAIN.
+//
+// WHY IT EXISTS AT ALL, since the owner door next to it already wrote the same field: that door
+// hard-writes `model:"owner", edited:true`, which both render sites turn into the words "edited by
+// the owner"/"yours". A session holding the owner bearer therefore could not sharpen a queue row
+// without minting a false statement about a PERSON — and one a reader does not read as a suspicion,
+// unlike `suspect: owner-token-outside-board` on a land note. The convention that filled the gap
+// (write the origin as the first line of the brief text) works and has to be remembered by every
+// session, every time; a field does not.
+//
+// THE BRACKET IS ITS NEIGHBOURS', verbatim and for their reasons: the Program comes from the
+// BINDING (never a body), the repo from the caller's own checkout, the row must be an `auftrag`
+// this Program owns, and it must not have been sent yet — past `sent` the bytes are already in a
+// pane and rewriting the record would make the row disagree with the lane it founded.
+//
+// AND IT DOES NOT OVERWRITE THE OWNER. A pinned brief the owner wrote is refused, and so is a
+// pinned brief carrying NO author: that one was written before authorship was recorded, which makes
+// it indistinguishable from the owner's own — absence is not harmlessness, so it buys the stricter
+// answer. What a MAIN may overwrite is a machine-compiled brief and its own earlier sharpening.
+async function sharpenBriefForMain(s: Slot, id: string, body: Record<string, unknown> | null): Promise<Response> {
+  const bound = boundProgramForMain(s);
+  if (!bound.ok) return json({ error: bound.error }, 409);
+  const { program, sessionIdMatch } = bound;
+  const t = tasks.find((x) => x.id === id);
+  if (!t) return json({ error: "unknown task" }, 404);
+  if (t.programId !== program.id)
+    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN sharpens only the briefs of rows of program ${program.id}` }, 409);
+  // the owner door's own two sentences, so one question keeps one answer wherever it is asked
+  if (t.kind !== "auftrag")
+    return json({ error: `${t.kind} is never sent to a lane — it has no brief` }, 409);
+  if (t.status !== "pending" && t.status !== "queued")
+    return json({ error: `task is ${t.status} — its brief has already been sent` }, 409);
+  // Two refusals, not one, because they send the caller to two different places: a brief the owner
+  // demonstrably wrote is theirs to change, and a brief nobody's name is on cannot be told apart
+  // from one.
+  if (t.brief?.edited && t.brief.by === "owner")
+    return json({ error: "the brief on this row was written by the owner — a MAIN does not overwrite it; put the sharpening on the row as a comment instead" }, 409);
+  if (t.brief?.edited && t.brief.by === undefined)
+    return json({ error: "the brief on this row is a pinned hand edit with NO recorded author — written before briefs recorded one, so it cannot be told apart from the owner's own; only the owner's door may replace it" }, 409);
+  const mainRepo = await repoKeyOf(s);
+  if (!mainRepo)
+    return json({ error: "this session's checkout is not a git repository — the brief's target repo cannot be derived" }, 409);
+  const target = t.repo ?? DISPATCH_REPO;
+  if (!target)
+    return json({ error: "no dispatch repo is configured" }, 409);
+  if (repoCanon(target) !== mainRepo)
+    return json({ error: `task targets ${basename(repoCanon(target))} and this MAIN is bound in ${basename(mainRepo)} — a brief never reaches across repositories` }, 409);
+  // A CLOSED BODY, like the filing door's: `by`, `model` and `edited` are refused rather than
+  // dropped, because a field silently ignored is a field the caller believes was honoured — and
+  // these three are exactly the ones whose whole point is that a caller cannot nominate them.
+  const extra = Object.keys(body ?? {}).filter((k) => k !== "text");
+  if (extra.length)
+    return json({ error: `this door reads text only — [${extra.join(", ")}] is not read: the author is stamped from this session's own slot and can never be named in a request` }, 400);
+  const text = typeof body?.text === "string" ? body.text.slice(0, MAX_TASK_TEXT).trim() : "";
+  if (!text) return json({ error: "bad text" }, 400);
+  // `edited:true` is the PIN (briefDue: a row carrying a brief is never recompiled) and `by:"main"`
+  // is the authorship — the two facts that rode on one boolean until now. `model` carries the
+  // author here for the same reason it carries the literal "owner" on the door next door: on a
+  // hand-written brief that field has never named a model.
+  t.brief = { text, at: Date.now(), model: "main", edited: true, by: "main" };
+  audit("main_brief", s.id, `${t.id} program=${program.id}`);
+  await saveStateNow();
+  // sessionIdMatch is REPORTED, never gated — ACP-13's doctrine, as at every neighbouring door.
+  return json({ ok: true, sessionIdMatch, brief: t.brief,
+    task: { id: t.id, kind: t.kind, status: t.status, programId: t.programId } });
+}
+
 async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // The authority bracket answers first and IN ITS OWN WORDS — "not bound" and "ambiguously bound"
   // stay two different refusals, because they tell the caller to go fix two different things.
@@ -9052,15 +9120,22 @@ async function dispatchSourceTree(repo: string): Promise<"fleet" | "foreign"> {
 // never from a later re-read of the mutable row.
 //   compiled — the brief sweep's brief (TaskBrief, edited:false)
 //   owner    — a brief the owner wrote/edited by hand (TaskBrief, edited:true / model "owner")
+//   main     — a brief a bound Program-MAIN sharpened through POST /api/self/tasks/:id/brief
+//              (TaskBrief.by "main"). Its own value and NOT folded into "owner", for the reason the
+//              door exists at all: booking a machine-authored brief as the owner's is the same
+//              false statement the render sites used to make, and here it would become a RATE.
+//              Only rows carrying the explicit stamp reach it — a pre-2026-09-11 row has no `by`
+//              and stays "owner", which is what it was recorded as and what nothing can re-derive.
 //   raw      — no brief on the row: the draft text itself was delivered
 //   clarify  — buildClarifyBrief's deterministic frame; NOT folded into "raw" (a clarify lane
 //              produces no commits by design, so it would read as a raw-brief abort every time it works)
 //   founding — a server-built Program-MAIN/Supervisor founding template; no task text is involved
-type BriefSource = "compiled" | "owner" | "raw" | "clarify" | "founding";
+type BriefSource = "compiled" | "owner" | "main" | "raw" | "clarify" | "founding";
 
 function briefSourceOf(t: Task, clarify: boolean): BriefSource {
   if (clarify) return "clarify";
   if (!t.brief) return "raw";
+  if (t.brief.by === "main") return "main";
   return t.brief.edited || t.brief.model === "owner" ? "owner" : "compiled";
 }
 
@@ -18139,7 +18214,7 @@ async function buildCodeGraph(repo: string, dir: string, ref: string): Promise<s
 // Manifest-declared packs deliberately do NOT reach this seam: a merge worker gets no receipt and
 // no named commit here, and an anchor nobody receipts at a stated HEAD is a pointer into no tree.
 // No receipt is written: context-receipts.jsonl rows are session-shaped (slot, branch, taskId) and
-// briefSource is a closed five-value vocabulary — a worker has none of those, and a sixth value is
+// briefSource is a closed six-value vocabulary — a worker has none of those, and a seventh value is
 // an owner act, not a side effect of this seam. The anchors stay observable in the worker transcript.
 async function landingAnchorBlock(root: string): Promise<string> {
   // AN ADVISORY POINTER MAY NEVER DECIDE A LAND. dispatchSourceTree THROWS when the root cannot be
@@ -23053,7 +23128,12 @@ if (existsSync(STATE_FILE)) {
           // hand-edited state file cannot smuggle a verdict back onto a row.
           brief: t.brief && typeof t.brief.text === "string" && t.brief.text
             ? { text: t.brief.text.slice(0, MAX_TASK_TEXT), at: Number(t.brief.at) || 0,
-              model: typeof t.brief.model === "string" ? t.brief.model : "", edited: t.brief.edited === true }
+              model: typeof t.brief.model === "string" ? t.brief.model : "", edited: t.brief.edited === true,
+              // an unknown or malformed author degrades to ABSENT, which is the "written before the
+              // field existed" reading and the one that changes no render. It must never degrade to
+              // a VALUE: a hand-edited state file would then be one word away from crediting a
+              // brief to the owner, and provenance a file can dictate is not provenance.
+              ...(t.brief.by === "owner" || t.brief.by === "main" ? { by: t.brief.by } : {}) }
             : undefined,
           // a malformed criterion degrades to "none proposed", never to a confirmed one — the
           // confirmation is an owner act and must not be forgeable by editing the state file
@@ -26330,6 +26410,28 @@ Bun.serve<WSData>({
       return assignNoteForMain(s, selfTaskNotes[1]!, await readJson(req));
     }
 
+    // ACP-25 · Program-MAIN brief sharpening. Non-lane only, and the exclusion is the LOUDEST one
+    // in this family rather than the quietest: a lane executes the row it was founded on, and the
+    // brief IS the bytes it was founded on. Letting a lane write this field would let it rewrite
+    // its own work order — precisely what the criterion and refine pairs split propose from promote
+    // to prevent ("the producer must not be the one who rewrites the work order it was measured
+    // against") — and on any OTHER row it is lane-writes-for-lane, the coupling /api/self/watch
+    // already refuses because only the owner can make it visible. The steward is NOT excluded, for
+    // the reason land/succeed/retire exclude it and this act does not meet: sharpening is neither
+    // terminal nor cross-program, and an unbound steward is refused by the binding anyway.
+    // Placed ABOVE the release route on purpose, like the filing door: that route's pin holds
+    // "the release route reads no body" over the source region between its own opening line and the
+    // events-ack line, and this handler reads one.
+    const selfTaskBrief = /^\/api\/self\/tasks\/([a-z0-9]+)\/brief$/.exec(url.pathname);
+    if (selfTaskBrief && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not sharpen a brief — the brief is the work order a lane was founded on, and the producer does not rewrite what it is measured against" }, 409);
+      return sharpenBriefForMain(s, selfTaskBrief[1]!, await readJson(req));
+    }
+
     // ACP-16 · Program-MAIN release. Non-lane only, like its attention neighbour above and for the
     // same "one edge per role" reason: a lane executes the row it was founded on, it does not fill
     // the queue its own MAIN releases from. No body is read here or in the handler — the id comes
@@ -28829,7 +28931,13 @@ Bun.serve<WSData>({
       const body = await readJson(req);
       const text = typeof body?.text === "string" ? body.text.slice(0, MAX_TASK_TEXT).trim() : "";
       if (!text) return json({ error: "bad text" }, 400);
-      t.brief = { text, at: Date.now(), model: "owner", edited: true };
+      // `by` is stamped POSITIVELY rather than left to be inferred from `edited`, and that is the
+      // whole repair: `edited` is the PIN against recompilation, and reading it as authorship is
+      // what let this door — owner-authenticated, but reachable by anything holding the bearer —
+      // mint "edited by the owner" on a brief no owner wrote. From here the owner's own edits say
+      // so; a brief carrying no `by` is one written before the field, and every render still reads
+      // that absence exactly as it did (server/types.ts, BriefAuthor).
+      t.brief = { text, at: Date.now(), model: "owner", edited: true, by: "owner" };
       saveState();
       return json({ ok: true, brief: t.brief });
     }

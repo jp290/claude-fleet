@@ -259,7 +259,23 @@ const SOURCE_DIR = ((): string | null => {
         }
       })
       .filter((host): host is string => host !== null && !publicExamples.test(host) && !reservedDomains.test(host)))];
-    const identities = [...new Set(hosts.flatMap((host) => {
+    // A SINGLE-LABEL host is a LAN name, and a LAN name is not a deploy identity: it routes
+    // nowhere outside this segment, so publishing it discloses nothing — while colliding with
+    // ordinary vocabulary, because this repo NAMES its hosts by role in tracked prose on purpose
+    // (`FLEET_INSTANCE` is "a role word, not a hostname" and stands in every /api/sessions answer).
+    // Measured on the follower 2026-09-11: needle `second-host` hit 406 tracked lines — every one of
+    // them the role word — while the actual secrets, the tailnet IP and both dotted names, hit
+    // ZERO. A rule that cannot distinguish those two is not a leak check on such a host; it is a
+    // permanent red on stage 1 of the land gate, which is where this rule runs. Excluded needles
+    // are NAMED below rather than dropped in silence: a check may narrow what it looks at, never
+    // hide that it narrowed.
+    const lanOnly = hosts.filter((host) => !host.includes("."));
+    const routable = hosts.filter((host) => host.includes("."));
+    if (lanOnly.length > 0) {
+      skip("leak-pin: single-label LAN names are not deploy identities",
+        `not searched: [${lanOnly.join(", ")}]`);
+    }
+    const identities = [...new Set(routable.flatMap((host) => {
       const labels = host.split(".");
       const parent = !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) && labels.length >= 3
         ? labels.slice(1).join(".") : null;

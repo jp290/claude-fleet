@@ -22,6 +22,9 @@ interface ProgramRow {
 interface FleetState {
   supervisor?: SupervisorBinding | null;
   programs?: Record<string, unknown>[];
+  // ACP-18 · the addressed message rail, read only by this module's cleanup assertion
+  messages?: unknown;
+  messagesLost?: unknown;
   slots?: Record<string, { cwd?: string; selfToken?: string; openedAt?: number; sessionId?: string | null;
     label?: string | null; worktree?: string | null; model?: string | null; effort?: string | null }>;
   stewardToken?: string;
@@ -1350,5 +1353,21 @@ export async function run(): Promise<void> {
 
   await post(`/api/slots/${msgMainSlot}/kill`, {});
   await post(`/api/slots/${msgSupSlot2}/kill`, {});
+  // The fixture Program leaves through the same door the ambiguity fixture above does, and for the
+  // identical reason: an active Program of this module's making would otherwise ride the owner poll
+  // through every later module, and one with a binding whose slot was just killed is exactly the
+  // shape several of them measure. The messages it carries go with it — nothing later reads them.
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const msgCleanup = readState() as FleetState & Record<string, unknown>;
+  msgCleanup.programs = (msgCleanup.programs ?? []).filter((p) => p.id !== msgProgramId);
+  delete msgCleanup.messages;
+  delete msgCleanup.messagesLost;
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(msgCleanup, null, 2), { mode: 0o600 });
+  await restartSrv();
+  check("message rail role cleanup: the fixture Program and the rail it carried are gone, so no later module inherits either",
+    !(await ownerRead()).programs.some((p) => p.id === msgProgramId)
+      && readState().messages === undefined,
+    `programs=${(await ownerRead()).programs.length}`);
 
 }

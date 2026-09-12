@@ -11,13 +11,18 @@ gelandet (siehe unten). Lies trotzdem `./state.sh` und die Projektion, nicht die
   **Audit-Watch `9ec1508d` war armiert und stirbt mit mir** — neu abonnieren
   (`{kind:"audit", repo, mainAfter:"847d4aff..."}`) oder `post-land-audits.jsonl` lesen. Eine
   FEHLENDE Zeile heißt „läuft", nie „verloren".
-- **DER DEPLOY IST DIE ERSTE ECHTE HANDLUNG, DIE DIR BLEIBT.** `codeBehind: true`; live geht damit
-  der Nudge-Fix, der Preview-Rail, der criterion-confirm-Join, die Report-Zustellung an die Lane
-  **und die neue Mutex-Semantik** (`32b062ad`, Audit grün `4205/0` — einmal gegen die volle Suite
-  gelaufen). Vorbedingungen, beide einzeln prüfen, ein Prozess-grep ersetzt sie NICHT:
-  `cat post-land-audit-queue.json` muss leer sein UND kein `laneSuiteJobs`-Eintrag darf `claimed`
-  oder `offered` stehen (um 18:4x war beides besetzt, deshalb habe ich nicht deployt). Die Route
-  nimmt **kein Self-Token** — Owner/Steward. Owner-Freigabe liegt vor (Orchestrator 15:0x).
+- **DER DEPLOY IST GEFAHREN UND GRÜN — das ist nicht mehr deine Aufgabe.** `id 9aec7cc5`,
+  `stage: boot`, **`ok: true`**, `hitTarget: true`, `bootHead == head == target a2e9d5d9`,
+  `bundleStale: false`, `ms 5367`; das Verdikt schrieb der nächste Boot, nicht ich. Gegenprobe am
+  Poll: `behindCount 0`, `codeBehind false`. Live sind damit der Nudge-Tail, der Preview-Rail samt
+  Hydrations-Fix, der criterion-confirm-Join, die Report-Zustellung an die Lane und die neue
+  Mutex-Semantik.
+- **WAS DER DEPLOY NICHT BEWEIST, und es ist die eine offene Verifikation dieser Schicht:** dass der
+  Nudge-Bug weg ist. `errors` steht auf `null` — das ist ein **Nullstand nach einem Boot**, kein
+  Ergebnis; der Zähler ist per-Boot. Alle Nudges, die ich heute empfangen habe, gingen in eine
+  **claude**-Pane und sagen über den Fehlerfall nichts. **Der Beweis ist ein Inbox-Nudge an eine
+  codex-Pane, der ankommt** (die 82 Fehlschläge trafen alle Slot 10, codex). Wenn du eine codex-MAIN
+  mit ungelesener Program-Inbox siehst: das ist die Messung, und sie kostet nichts.
 - **DIE SCHULD AN `f9dc8e10` IST EINGELÖST** (Message `fe991da6`), und zwar als ehrliches Jein: die
   drei genannten Lanes sind gelandet, aber die Karten-Welle S1/S3/S2 hält `server.ts` **und**
   `server/types.ts` seit 16:16 wieder (Branch `fleet/260912161659-de75`, an

@@ -4883,20 +4883,36 @@ export async function run(ctx: Ctx): Promise<void> {
     // --- (3b) THE DERIVED-SURFACE REVIEW — the manual half of S2 (2026-09-12). Until this cut the
     // confirm door had exactly ONE producer on the board: a parked proposal. A row that already
     // carried a mechanically derived list could only be confirmed by retyping it, and measured over
-    // the 42 open auftrag rows that day the result was 42 waves of one and 0 confirmed. The derived
-    // lists also carried COMMAND MENTIONS as paths (17 rows named `e2e-isolated.sh`, 18
-    // `e2e/pins.ts`), mostly because the brief quoted the verify line — so what the board now sends
-    // is a SUBSET of the derived list with those unticked, and that subset is what is proven here.
+    // the 42 open auftrag rows that day the result was 42 waves of one and 0 confirmed. So what the
+    // board sends is a SUBSET of the derived list, and that subset is what is proven here.
+    //
+    // THE FIXTURE'S DROPPED PATH CHANGED LATER THE SAME DAY, and the reason is worth keeping: it
+    // used to be a QUOTED COMMAND (`bun e2e/pins.ts`), because the derivation swept those up — 17
+    // of 42 rows named `e2e-isolated.sh`, 18 `e2e/pins.ts`, mostly out of a quoted verify line. S1
+    // removed that false positive AT THE SOURCE (task-metadata.ts#intentText), so a quoted path is
+    // no longer offered and can no longer be unticked — there is nothing there to untick. What this
+    // block measures is therefore the part that outlived the bug: the owner dropping a path the
+    // derivation legitimately found and they do not want. Both paths below are real prose mentions.
     // The row is minted OUTSIDE the impact program and shares no file with it, so nothing in this
     // sub-block can move the wave that (5) and W3 measure. ---
     const WKEEP = "code.txt";       // the path the work really touches
-    const WDROP = "e2e/pins.ts";    // tracked in the fixture repo AND merely quoted — the false positive
-    const wD = await wMint(`repair the sentinel in ${WKEEP}; verify the result with bun ${WDROP}`);
+    const WDROP = "ctx-mod.txt";    // tracked, genuinely named — and the owner still does not want it
+    const wD = await wMint(`repair the sentinel in ${WKEEP}; ${WDROP} is only read alongside it`);
     const wDBase = await wFull(wD);
-    check("(w2/3b) fixture: the row derives BOTH paths — the work file and the merely QUOTED command",
+    check("(w2/3b) fixture: the row derives BOTH prose-named paths, so there is something to untick",
       wDBase?.filesOrigin === "derived"
       && [...(wDBase.files ?? [])].sort().join(" ") === [WKEEP, WDROP].sort().join(" ")
       && wDBase.filesProposal === undefined, JSON.stringify(wDBase));
+    // ...and the removed false positive gets its own probe, so "a quoted command is not a surface"
+    // is proven HERE too — at the door the owner actually sees, not only in the unit block above.
+    const wQuoted = await wMint(`repair the sentinel in ${WKEEP}; verify the result with bun e2e/pins.ts`);
+    const wQuotedRow = await wFull(wQuoted);
+    check("(w2/3b) a path named only as a quoted verify command is never offered for confirmation",
+      wQuotedRow?.files?.join(" ") === WKEEP && !wQuotedRow.files?.includes("e2e/pins.ts"),
+      JSON.stringify(wQuotedRow));
+    // deleted at once: it is a one-question probe, and an extra open auftrag row in this repo would
+    // be one more wave in the projection that (5) and W3 count a few dozen lines below.
+    await post(`/api/tasks/${wQuoted}/delete`, {});
     const wDSub = await post(`/api/tasks/${wD}/files`, { files: [WKEEP] });
     const wDRow = await wFull(wD);
     // the load-bearing half is the NEGATIVE one: `confirmed` replaces the derivation rather than

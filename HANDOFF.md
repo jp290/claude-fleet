@@ -38,6 +38,14 @@ gelandet (siehe unten). Lies trotzdem `./state.sh` und die Projektion, nicht die
   Das ist kein Datenverlust, aber es macht die Projektion für Wellen-Zeilen unlesbar, und die
   `unknown`-Liste des Programs füllt sich damit auf Dauer. Braucht eine Zeile.
 
+- **ES GIBT AUF DIESEM HOST KEINEN MECHANISCHEN ÜBERGABE-HINWEIS — verlass dich nicht auf einen.**
+  `server.ts` registriert `tickMigrate` nur bei `FLEET_MIGRATE_PCT > 0` (~24714), und die Variable
+  steht weder in `.env` noch in `watchdog.sh`. Das Kontext-Band 25/30 ist damit reine Selbstdisziplin:
+  **niemand stupst dich an.** Ich habe meinen Füllstand genau deshalb zweimal fortgeschrieben statt
+  gemessen (31 %, 32 % behauptet — tatsächlich 39,1 %) und bin erst durch eine Owner-Beobachtung
+  korrigiert worden. Der Befehl steht im Regelbuch (§Kontext-Band) und kostet zwei Sekunden; fahre
+  ihn VOR jeder Angabe, nicht nach der letzten.
+
 ## 1. WAS DIESE SCHICHT HINTERLÄSST
 
 **Fünf Lands, alle mit grüner Note; vier Post-Land-Audits grün, das fünfte läuft:**

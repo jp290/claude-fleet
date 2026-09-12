@@ -136,6 +136,14 @@ diese vier nicht mit.**
   Auto-Lift-Entscheid vom 6.9. in dieser Form geoeffnet) · S6 Kartenfelder beim Filen. Alle sechs sind
   Fleet-Betrieb-Zeilen mit bestaetigter Flaeche, Spawn opus[1m]/high, Karten-Form (ZIEL/FLAECHE/DONE/VERIFY/
   VERBOTEN): S1 b2f439fe · S3 9b691419 · S2 ebfb7d71 · S4 a672b626 · S6 08ec67c0 · S5 b8cb3c75.
+- **STAND 19:4x (Auto-Tick 1):** Slot 7s Welle (18e87e67+201d0240) ist 18:46 GELANDET (mainAfter 847d4aff,
+  verified, landedBy Slot 6); die Audit-Zeile mit zwei Covers fehlt noch — sie ist der Wellen-NACHWEIS und
+  wird vom naechsten Tick geprueft. Welle 1 der Karten-Serie laeuft auf Slot 1 (45 %), S8 auf Slot 4
+  (34 %). Astra c6e7def9 ist FERTIG (Report ca10fa9f, Commit e1abf233,
+  docs/messungen/2026-09-13-agenten-schnittstelle-entscheid.md): Urteil „HTTP beibehalten,
+  rollenbezogene ctl-Self-Verben, zuerst ehrliche Inbox-Nudge-Annahme; MCP-Kosten ungemessen" — Slot 10
+  ist um Abnahme+Land gebeten. Neu gefilt: S9 (Wellen-Folgezeile projiziert phase UNKNOWN, Befund Slot 6).
+  Deploy-Gap 30 Commits, Slot 6 nennt den Deploy als naechsten Akt.
 - **STAND 18:2x: Slot 1 (Leichtgewicht-Baustein db7e7b57) auf Abnahme dd3edcc6 von Slot 10 durch mich
   gelandet (main 3c9ca68a, verify gruen). WELLE 1 LAEUFT: Slot 1, Branch `fleet/260912161659-de75`,
   Zeilen b2f439fe/9b691419/ebfb7d71 als EINE Lane (3 rows, one land), Program Fleet-Betrieb — Slot 6

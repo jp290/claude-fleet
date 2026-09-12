@@ -1365,9 +1365,17 @@ export async function run(): Promise<void> {
   delete msgCleanup.messagesLost;
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(msgCleanup, null, 2), { mode: 0o600 });
   await restartSrv();
-  check("message rail role cleanup: the fixture Program and the rail it carried are gone, so no later module inherits either",
-    !(await ownerRead()).programs.some((p) => p.id === msgProgramId)
-      && readState().messages === undefined,
-    `programs=${(await ownerRead()).programs.length}`);
+  // WHAT "GONE" MEANS FOR EACH HALF, and the first helper run is why they are now stated apart.
+  // The Program must be ABSENT — a later module that counted it would be counting this module's
+  // fixture. The RAIL must be EMPTY, which is not the same as absent: the file is written without
+  // the key, but the server boots with the default empty record and persists it again on its next
+  // save, so `undefined` was never the reachable state. Empty is the honest contract — nothing of
+  // this module's traffic survives — and asserting absence was asserting a boot detail instead.
+  const msgCleanProgramGone = !(await ownerRead()).programs.some((p) => p.id === msgProgramId);
+  const msgCleanRail = readState().messages as { entries?: unknown[] } | undefined;
+  const msgCleanRailEmpty = (msgCleanRail?.entries?.length ?? 0) === 0;
+  check("message rail role cleanup: the fixture Program is gone and the rail it carried is empty, so no later module inherits either",
+    msgCleanProgramGone && msgCleanRailEmpty && readState().messagesLost === undefined,
+    `programGone=${msgCleanProgramGone} railEntries=${msgCleanRail?.entries?.length ?? "absent"} scar=${readState().messagesLost === undefined ? "absent" : "PRESENT"} programs=${(await ownerRead()).programs.length}`);
 
 }

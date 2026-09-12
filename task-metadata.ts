@@ -361,9 +361,6 @@ export function surfaceSha(inputs: SurfaceInputs): string {
     inputs.indexStamp ?? "", inputs.graphStamp ?? ""]) h.update(`${part}\u0001`);
   return h.digest("hex").slice(0, 32);
 }
-/** True when a stored surface still describes the inputs it was derived from. */
-export const surfaceFresh = (surface: TaskSurface | undefined, sha: string): boolean =>
-  !!surface && surface.sha === sha;
 
 export function projectLabel(repo: string): string {
   const name = basename(repo).replace(/\.git$/, "");

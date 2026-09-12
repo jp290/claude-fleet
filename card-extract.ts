@@ -89,8 +89,10 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
   // The verify field is checked against the chain this repo actually runs, not against being
   // non-empty: "run the tests" is the shape of an answer, not one.
   if (!verify) gaps.push("verify: no command named");
+  // `\b` before `./e2e-` would never match — a word boundary needs a word character, and `.` is
+  // not one. The two alternatives are therefore anchored differently ON PURPOSE.
   else if (!LOCAL_PROOF_STEPS.some((step) => verify.includes(step))
-    && !/\b(?:bun|bunx|\.\/e2e-)/.test(verify))
+    && !/(?:\bbunx?\b|\.\/e2e-)/.test(verify))
     gaps.push(`verify: "${verify}" names no known chain step (${LOCAL_PROOF_STEPS.join(", ")})`);
 
   const rawRole = (raw.rolle && typeof raw.rolle === "object" ? raw.rolle : {}) as Record<string, unknown>;

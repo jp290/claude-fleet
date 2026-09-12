@@ -3796,3 +3796,39 @@ Maschine und zwei Baeumen ist die beste Kontrolle, die dieser Beweis bekommen ko
 Flake-Beweislaeufe fuer eine Reparatur AN DEN SUITEN bleiben auf dieser Maschine, weil die 13,8 %
 oben eine Mac-Rate sind (ein Helfer-Lauf schreibt kein Trail) und ein Fremd-Plattform-Gruen fuer
 diese Maschine nichts beweist.
+
+### 11.2v Eine dreiundzwanzigste Familie: die s2-Pane-Trias in `e2e/slots.ts` — drei Fails, EINE Zeichenkette, und bis heute in keinem Register (2026-09-12 registriert; Signatur aus dem Lane-Report gelesen, Nicht-Determiniertheit AM SELBEN BAUM bewiesen; NICHT repariert)
+
+Gefunden beim Abnehmen des Reports der Lane `fleet/260912093942-9caf` (Task `dc4ec8b5`,
+criterion-confirm, gelandet als `d7a46af3`). Ihr **Lauf 1** von `./e2e-isolated.sh` war rot mit
+15 Failures. Zwoelf davon waren ihre eigenen und hatten eine einzige Ursache; **drei waren fremd**
+und sind diese Familie:
+
+> `composed text visible in s2 pane` · `export contains session content` · `txt export contains session content`
+
+**Drei Namen, eine Tatsache.** Alle drei pruefen dieselbe Zeichenkette `compose-box-to-slot-two`
+(`e2e/slots.ts:1186/1194/1216`). Wer sie im Trail als drei Sichtungen zaehlt, zaehlt eine Ursache
+dreimal — dieselbe Falle wie in §11.2j.
+
+**Der Beweis ist in der vorgeschriebenen Reihenfolge gefuehrt worden**, und das ist der Grund, warum
+er hier stehen darf: die Lane hat **denselben Baum erneut** laufen lassen (Lauf 2,
+`isolated-20260912T112414Z-75905`, `dirty:false`), alle drei PASS (Zeilen 451/455/461), Gesamtlauf
+`4 174 PASS / 0 FAIL`. Nicht ueber einen frischen HEAD-Worktree — der haette „unser Regress" von
+„der Flake hat nicht gefeuert" nicht getrennt, sich aber wie ein Freispruch gelesen.
+
+**Zwei Stuetzen, die unabhaengig von der Wiederholung tragen:** `e2e/slots.ts` laeuft an Position 18,
+`e2e/attention.ts` (der Diff der Lane) an Position 27 — zur Fail-Zeit hatte kein Pfad ihres Diffs
+ausgefuehrt. Und der Diff beruehrt tmux, Send, Transport und Export nicht.
+
+**Der wahrscheinliche Kontext, ausdruecklich NICHT die bewiesene Ursache:** die Maschine stand unter
+Speicherdruck und hat an diesem Tag mehrfach Hintergrundtasks abgeworfen — drei Suite-Waiter und
+ein `clean-review`-Lauf starben in der Warteschleife, vor jedem `acquired` (gemessen von der Lane
+`fleet/260912102911-ec22`, die nachgesehen hat, dass kein verwaister Runner und kein verwaistes
+tmux-srv zurueckblieb). Ob die Trias davon faellt, ist **nicht gemessen**; die Vermutung steht hier
+als Vermutung.
+
+**Warum die Zeile ueberhaupt noetig war:** `git grep` ueber `main -- docs` findet diese drei Namen
+NUR in `e2e/slots.ts`, in keinem Register. Eine Flake-Familie ohne Registereintrag ist die teuerste
+Form: die naechste Session liest sie korrekt als Regress und sucht in ihrem eigenen Diff.
+**Rate: UNGEZAEHLT** — eine Sichtung, und `docs/e2e-trail.md` ist noch nicht dagegen gerechnet.
+Wer sie das naechste Mal sieht, rechnet sie dort und traegt die Zahl hier nach.

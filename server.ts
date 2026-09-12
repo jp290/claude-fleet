@@ -14970,6 +14970,9 @@ const laneSuiteJobs = new Map<string, LaneSuiteJob>(); // job id -> the offer
 // A settled offer stays readable so the lane that made it can still fetch its verdict after the
 // helper is gone; bounded because nothing else prunes it. Open/claimed offers are never evicted.
 const LANE_SUITE_KEEP = 20;
+// How many UNACKNOWLEDGED red previews may sit in the owner inbox at once. Its own number rather
+// than the shared event cap, for the reason mintLaneSuiteEvents states where it reads it.
+const LANE_SUITE_RED_INBOX_MAX = 20;
 // The prefix of the transient branch a bundle is built through. It lives in the COMMON git dir
 // (a worktree shares refs/heads with its main checkout), so it is visible there for the seconds the
 // bundle takes to build and is deleted in a `finally`. Fleet-owned name, so nothing else collides.
@@ -15148,11 +15151,21 @@ async function mintLaneSuiteEvents(j: LaneSuiteJob): Promise<void> {
       `job=${j.id} ${r.result} the offering occupation is gone (slot ${j.slot} openedAt ${j.slotOpenedAt}) — no pane delivery`);
   }
   if (r.result === "red") {
-    if (ownerInboxDebts() >= FLEET_EVENT_MAX_OPEN_PER_SLOT) {
-      // NAMED, never silent: the owner inbox being full is itself the thing that would hide a red,
-      // and a red that could not be filed must leave the loudest trace this path has.
+    // THE CAP IS THIS RAIL'S OWN, and deliberately NOT `ownerInboxDebts()` against the shared
+    // FLEET_EVENT_MAX_OPEN_PER_SLOT the report door uses. Sharing it was the first shape written
+    // here and it is wrong in the one direction that matters: five unread fleet-reports would then
+    // silence every red preview after them, which is the exact invisibility this whole rail
+    // removes — and it would do it to the OTHER channel's backlog, not to its own. So a red is
+    // crowded out only by other unread REDS, and only past a number at which the owner is already
+    // looking at a pile. LANE_SUITE_KEEP is the sibling bound (settled offers kept) and this is
+    // deliberately the same size: one more open red than there are job rows to join them to.
+    const openReds = fleetEvents.filter((e) => e.kind === "lane-suite" && e.receiverSlot === null
+      && !FLEET_EVENT_TERMINAL.includes(e.status)).length;
+    if (openReds >= LANE_SUITE_RED_INBOX_MAX) {
+      // NAMED, never silent: a red that could NOT be filed is the loudest line this rail has, and
+      // it is the one case where the old failure mode is back — so it must be findable in the trail.
       audit("lane_suite_event_skipped", j.slot,
-        `job=${j.id} RED could not be filed — the owner inbox holds ${ownerInboxDebts()} open rows of ${FLEET_EVENT_MAX_OPEN_PER_SLOT}`);
+        `job=${j.id} RED could not be filed — ${openReds} unacknowledged red previews already sit in the owner inbox (cap ${LANE_SUITE_RED_INBOX_MAX})`);
     } else {
       minted.push({ ...common, id: randomBytes(12).toString("hex"),
         receiverSlot: null, receiverOpenedAt: null, receiverSessionId: null,

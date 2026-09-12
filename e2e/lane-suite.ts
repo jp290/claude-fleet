@@ -690,6 +690,18 @@ export async function run(): Promise<void> {
   check("(LS.9) …and an offer whose LANE WAS KILLED raises nothing either — it was reaped, never reported",
     (await suiteEventsFor(goneId)).length === 0,
     JSON.stringify(await suiteEventsFor(goneId)));
+  // …AND THE RED ROW SURVIVED THE RESTART (LS.6) — the check that makes the new hydration branch
+  // (server/types.ts#fleetEventFrom, `kind === "lane-suite"`) non-vacuous. A validator that
+  // rejected the persisted shape would DROP the row at the next boot, and the drop is silent: the
+  // reds list would simply be empty again, which is byte-for-byte the failure this slice removes.
+  // The row asserted here was acknowledged in (LS.8b), so what is proven is that it hydrates WITH
+  // its payload and its terminal state, not merely that something with the right id came back.
+  const survived = (await suiteEventsFor(redJob)).find((e) => e.receiverSlot === null);
+  check("(LS.9) THE OWNER'S RED ROW HYDRATES ACROSS THE RESTART, payload and terminal state intact",
+    survived?.status === "acknowledged" && survived.delivery === "inbox"
+      && survived.payload?.result === "red" && survived.payload.fails?.length === 2
+      && survived.payload.branch === ln.branch && survived.payload.tail === "2 FAILURES",
+    JSON.stringify({ status: survived?.status, payload: survived?.payload }));
 
   // ===== (LS.9b) A VERDICT FOR A SLOT THAT IS NO LONGER THE OFFERER ==============================
   // Slot ids are recycled, so `openedAt` is the only thing separating the lane that made an offer

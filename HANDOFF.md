@@ -127,6 +127,13 @@ diese vier nicht mit.**
   Auto-Lift-Entscheid vom 6.9. in dieser Form geoeffnet) · S6 Kartenfelder beim Filen. Alle sechs sind
   Fleet-Betrieb-Zeilen mit bestaetigter Flaeche, Spawn opus[1m]/high, Karten-Form (ZIEL/FLAECHE/DONE/VERIFY/
   VERBOTEN): S1 b2f439fe · S3 9b691419 · S2 ebfb7d71 · S4 a672b626 · S6 08ec67c0 · S5 b8cb3c75.
+- **STAND 18:2x: Slot 1 (Leichtgewicht-Baustein db7e7b57) auf Abnahme dd3edcc6 von Slot 10 durch mich
+  gelandet (main 3c9ca68a, verify gruen). WELLE 1 LAEUFT: Slot 1, Branch `fleet/260912161659-de75`,
+  Zeilen b2f439fe/9b691419/ebfb7d71 als EINE Lane (3 rows, one land), Program Fleet-Betrieb — Slot 6
+  landet. S8 ab632dae ist wieder queued (Tick nimmt sie beim naechsten freien Slot). Astra c6e7def9 laeuft
+  auf Slot 3 seit 17:5x. Slot 7 repariert die rote zweite Vorschau (2 Fails, e2e/programs.ts:8250 und
+  e2e/tasks.ts:1283, an Slot 6 gemeldet). Owner unterwegs seit 18:2x; EIN Auto `5bdd17b0` alle 90 min
+  (naechster 19:40) traegt die ganze Kette; die 15-min- und One-Shot-Autos sind geloescht.**
 - **DIE PROJEKTION ZEIGT ZWEI DREIERWELLEN** (`bun task-land-waves.ts --state fleet.json --default-repo
   /Users/owner/claude-fleet` — ohne `--default-repo` fallen Zeilen ohne eigenes `repo` als unknown-repo
   heraus, der Live-Server nimmt FLEET_DISPATCH_REPO): Welle 1 {b2f439fe, 9b691419, ebfb7d71}, Welle 2

@@ -113,7 +113,7 @@ export async function run(): Promise<void> {
   await Bun.sleep(500);
   const planted = JSON.parse(readFileSync(statePath, "utf8")) as {
     slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
-    attentionRequests?: unknown[];
+    attentionRequests?: unknown[]; tasks?: Record<string, unknown>[];
   };
   const programA = "a".repeat(24);
   const programC = "e".repeat(24);
@@ -135,6 +135,18 @@ export async function run(): Promise<void> {
       confirmedAt: Date.now() - 900, activatedAt: Date.now() - 800,
       main: { slot: mainC, openedAt: rowC.openedAt, sessionId: rowC.sessionId, boundAt: Date.now() - 700 },
     }];
+  // …and the row §6b's join needs: ONE task carrying an unconfirmed criterion, sitting on mainA, so
+  // both arms of the join (the row's own text, and "raised by the session this task sits on") have a
+  // subject. `pending` on purpose — a queued auftrag would be dispatched by the tick, and this row is
+  // a fixture for an owner act, not work.
+  const critTask = "c".repeat(12);
+  planted.tasks = [...(planted.tasks ?? []), {
+    id: critTask, text: "criterion fixture: settle what done means for the attention join",
+    source: "owner", from: null, kind: "auftrag", repo: REPO, status: "pending",
+    created: Date.now() - 2000, slot: mainA, note: null,
+    criterion: { text: "done = the confirm answers the row that asked for it\nverified by e2e/attention.ts",
+      proposedAt: Date.now() - 1500, confirmedAt: null },
+  }];
   writeFileSync(statePath, JSON.stringify(planted, null, 2), { mode: 0o600 });
   await restartSrv();
   // BREAKS IF: the loader requires the member instead of defaulting it — every pre-v1 state file
@@ -317,6 +329,88 @@ export async function run(): Promise<void> {
       && legacyInbox.view?.entries.filter((e) => e.ref === reviewReady?.id).length === 1
       && legacyInbox.view?.entries.find((e) => e.ref === reviewReady?.id)?.id === legacyRetryBody.inbox,
     `${differentRetry.status} ${legacyRetry.status} ${JSON.stringify(legacyRetryBody)}`);
+
+  // --- 6b. the criterion-confirm the row asked for ANSWERS the row -------------------------------
+  // The gap this closes, measured: attention 1050d69f asked the owner in so many words to POST
+  // criterion-confirm on task c62aa3e9. The confirm landed 2026-09-12 06:10 and the row stayed
+  // `open` until 11:03 — five hours of a board showing a decision that was already decided.
+  // BREAKS IF: the taskId join goes (then `noTaskRow` and `foreignRow` are answered too), the kind
+  // or status filter goes, or the answer stops carrying the criterion's stand.
+  const namedRow = await raised(await selfRaise(tokA, { kind: "decision", taskId: critTask,
+    text: "BESTAETIGEN: POST /api/tasks/<id>/criterion-confirm, dann baue ich." }));
+  const slotRow = await raised(await selfRaise(tokA, { kind: "decision", taskId: critTask,
+    text: "Is the anchor for this row mine to build against yet?" }));
+  const noTaskRow = await raised(await selfRaise(tokA, { kind: "decision",
+    text: "criterion-confirm for WHICH row? this one names none." }));
+  const foreignRow = await raised(await selfRaise(tokA, { kind: "decision", taskId: "f".repeat(12),
+    text: "criterion-confirm on somebody else's row." }));
+  const inboxBeforeConfirm = await selfInbox(tokA);
+  check("criterion join fixture: four open decision rows, two of them naming the fixture task",
+    [namedRow, slotRow, noTaskRow, foreignRow].every((a) => a?.status === "open")
+      && namedRow?.provenance?.taskId === critTask && slotRow?.provenance?.taskId === critTask
+      && noTaskRow?.provenance?.taskId === null && inboxBeforeConfirm.response.ok,
+    JSON.stringify([namedRow, slotRow, noTaskRow, foreignRow].map((a) => [a?.id, a?.status,
+      a?.provenance?.taskId])));
+
+  const confirmRes = await post(`/api/tasks/${critTask}/criterion-confirm`,
+    { text: "done = the confirm answers the row that asked for it\nverified by e2e/attention.ts" });
+  const confirmBody = await confirmRes.json() as {
+    criterion?: { text: string; proposedAt: number; confirmedAt: number | null };
+    attentionAnswered?: string[];
+  };
+  const confirmedAt = confirmBody.criterion?.confirmedAt ?? 0;
+  const inboxAfterConfirm = await selfInbox(tokA);
+  const joinEntries = (id: string | undefined): InboxEntry[] =>
+    inboxAfterConfirm.view?.entries.filter((e) => e.kind === "attention-answer" && e.ref === id) ?? [];
+  // (1) the two rows the join owns are ANSWERED, each with exactly one pointer, and the answer text
+  // carries the stand (confirmedAt, proposedAt, the criterion's first line) rather than a bare "yes".
+  check("criterion-confirm answers every open decision row that named the task — one inbox pointer each, the answer naming confirmedAt",
+    confirmRes.ok && typeof confirmedAt === "number" && confirmedAt > 0
+      && confirmBody.attentionAnswered?.length === 2
+      && [namedRow?.id, slotRow?.id].every((id) => confirmBody.attentionAnswered?.includes(id ?? ""))
+      && [namedRow?.id, slotRow?.id].every((id) => readRow(id)?.status === "answered"
+        && readRow(id)?.answer?.by === "owner" && readRow(id)?.closedAt !== null
+        && readRow(id)?.refusedReason === null
+        && readRow(id)?.answer?.text.includes(String(confirmedAt)) === true
+        && readRow(id)?.answer?.text.includes(String(confirmBody.criterion?.proposedAt)) === true
+        && readRow(id)?.answer?.text.includes("the confirm answers the row that asked for it") === true
+        && joinEntries(id).length === 1),
+    JSON.stringify({ status: confirmRes.status, answered: confirmBody.attentionAnswered,
+      named: readRow(namedRow?.id)?.answer?.text, slotArm: readRow(slotRow?.id)?.status }));
+  // (2) the negative half, which is the whole join: a row that names no task, and a row that names
+  // another one, are UNTOUCHED — neither answered nor given a pointer.
+  check("criterion-confirm touches no row outside the taskId join: a row without a taskId and a row naming another task stay open and pointerless",
+    readRow(noTaskRow?.id)?.status === "open" && readRow(noTaskRow?.id)?.answer === null
+      && readRow(foreignRow?.id)?.status === "open" && readRow(foreignRow?.id)?.answer === null
+      && joinEntries(noTaskRow?.id).length === 0 && joinEntries(foreignRow?.id).length === 0
+      && inboxAfterConfirm.view?.entries.length === (inboxBeforeConfirm.view?.entries.length ?? -1) + 2,
+    JSON.stringify({ noTask: readRow(noTaskRow?.id)?.status, foreign: readRow(foreignRow?.id)?.status,
+      before: inboxBeforeConfirm.view?.entries.length, after: inboxAfterConfirm.view?.entries.length }));
+  // (3) idempotent: the second confirm is the route's own 409 and writes NOTHING — not a second
+  // pointer, not a second answer, and it does not re-open what the first one closed.
+  const answerAfterFirst = readRow(namedRow?.id)?.answer?.text;
+  const confirmAgain = await post(`/api/tasks/${critTask}/criterion-confirm`, { text: "a wider criterion" });
+  const confirmAgainText = await confirmAgain.text();
+  const inboxAfterSecond = await selfInbox(tokA);
+  check("criterion-confirm twice: the second is 409 already-confirmed and mints no second pointer or answer",
+    confirmAgain.status === 409 && confirmAgainText.includes("criterion already confirmed")
+      && readRow(namedRow?.id)?.answer?.text === answerAfterFirst
+      && inboxAfterSecond.view?.entries.filter((e) => e.kind === "attention-answer"
+        && (e.ref === namedRow?.id || e.ref === slotRow?.id)).length === 2
+      && inboxAfterSecond.view?.entries.length === inboxAfterConfirm.view?.entries.length,
+    `${confirmAgain.status} ${confirmAgainText} entries=${inboxAfterSecond.view?.entries.length}`);
+  // …and a confirm with no attention row of its own changes nothing but the criterion. The lane
+  // fixture carries no founding task, so the 409 here is "no criterion", which is the same evidence
+  // for this question: the route answered without touching a row it does not own.
+  const unrelatedConfirm = await post(`/api/tasks/${"9".repeat(12)}/criterion-confirm`, {});
+  check("a criterion-confirm on a task no attention row names leaves every row where it was",
+    unrelatedConfirm.status === 404
+      && readRow(noTaskRow?.id)?.status === "open" && readRow(foreignRow?.id)?.status === "open",
+    String(unrelatedConfirm.status));
+  // the two survivors are closed by hand, so the rows this section minted reach a terminal state
+  // exactly like every other section's — the final attentionOpen check counts on it.
+  for (const id of [noTaskRow?.id, foreignRow?.id])
+    await post(`/api/attention/${id}/refuse`, { reason: "6b fixture: never part of the join." });
 
   // --- 7. a Program question and its answer cross a real MAIN succession -------------------------
   const successorLabel = "attention-program-successor";

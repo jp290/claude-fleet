@@ -8989,6 +8989,56 @@ async function answerAttention(id: string, body: Record<string, unknown> | null)
   return json({ ok: true, existing: false, request, inbox: entry.id });
 }
 
+// THE JOIN THE TWO DOORS DID NOT HAVE. Attention 1050d69f (kind decision, raised 2026-09-11 21:23)
+// asked the owner in so many words to run `POST /api/tasks/c62aa3e9/criterion-confirm`. The confirm
+// arrived 2026-09-12 06:10; the row stayed `open` until 11:03, when it was answered by hand. For
+// five hours the board showed the owner a decision that was already decided, because answerAttention
+// and the criterion-confirm handler knew nothing of each other.
+//
+// `provenance.taskId` is the join and the ONLY one: a row without it says UNKNOWN about which task
+// it belongs to, and answering such a row off a task would be a guess wearing a receipt's clothes.
+//
+// Deliberately NOT answerAttention: this door answers ZERO OR MORE rows, must never fail the
+// confirm it rides on, and the text is composed rather than typed. It does not persist — the CALLER
+// saves, so the criterion, the row and its inbox pointer are one state cut; a save of its own would
+// be a second cut through the middle of the act.
+function answerAttentionsForCriterion(t: Task): string[] {
+  const c = t.criterion;
+  if (!c?.confirmedAt) return [];
+  // The STAND, not a "done": a MAIN reading this must be able to tell the confirm apart from the
+  // proposal it confirmed, and to find the criterion without a second round trip.
+  const firstLine = c.text.split("\n")[0]?.trim() ?? "";
+  const answer = (`criterion-confirm on task ${t.id}: the owner confirmed this done-criterion at `
+    + `${c.confirmedAt} (${new Date(c.confirmedAt).toISOString()}); proposed at ${c.proposedAt}. `
+    + `First line: ${firstLine}`).slice(0, MAX_ATTENTION_ANSWER);
+  const answered: string[] = [];
+  for (const a of attentionRequests) {
+    // `open` only, and the two terminal states are why: an answered or refused row is somebody's
+    // receipt already. `send-uncertain` is excluded for answerAttention's reason — its text may
+    // already be in the requester's pane, and overwriting that is the one move neither door makes.
+    if (a.status !== "open" || a.kind !== "decision") continue;
+    if (a.provenance?.taskId !== t.id) continue;
+    // Either the row NAMES this act, or it was raised by the very session the task sits on. Both
+    // arms ask the same question; neither widens to "any decision belonging to this task".
+    if (!/criterion-confirm/i.test(a.text) && !(t.slot !== null && a.requester.slot === t.slot)) continue;
+    const program = programs.find((p) => p.id === a.programId);
+    // answerAttention's gate, said the same way: an inactive Program has no bound MAIN to read an
+    // answer, so the row stays OPEN and visible instead of being closed into nobody's inbox.
+    if (!program || program.status !== "active") continue;
+    const at = Date.now();
+    const entry = appendProgramInbox(program, "attention-answer", a.id);
+    a.status = "answered";
+    a.answer = { text: answer, at, by: "owner" };
+    a.refusedReason = null;
+    a.closedAt = at;
+    audit("attention_answered", a.requester.slot,
+      `${a.id} kind=${a.kind} inbox=${entry.id} via=criterion-confirm`);
+    answered.push(a.id);
+  }
+  if (answered.length > 0) pruneAttention();
+  return answered;
+}
+
 // Dismissal WITH a reason. The reason is mandatory because the whole point of this row is that the
 // owner's silence is indistinguishable from not having seen it: a refusal is the receipt that says
 // seen-and-declined, and a receipt without a reason would be the silence again, one field deeper.
@@ -29295,9 +29345,14 @@ Bun.serve<WSData>({
       t.criterion = { text: edited || t.criterion.text, proposedAt: t.criterion.proposedAt, confirmedAt: Date.now() };
       const bound = t.slot === null ? null : slotFrom(t.slot);
       if (bound?.awaiting === "owner") bound.awaiting = null;
+      // …and the attention rows that asked for exactly THIS act are answered by it, in the same
+      // state cut. Before this line the confirm released the lane's wait and left the owner's own
+      // board showing the question as open (2026-09-12: five hours of it).
+      const attentionAnswered = answerAttentionsForCriterion(t);
       saveState();
-      audit("criterion_confirmed", t.slot ?? undefined, t.id);
-      return json({ ok: true, criterion: t.criterion });
+      audit("criterion_confirmed", t.slot ?? undefined,
+        `${t.id}${attentionAnswered.length > 0 ? ` attention=${attentionAnswered.join(",")}` : ""}`);
+      return json({ ok: true, criterion: t.criterion, attentionAnswered });
     }
     const taskAct = /^\/api\/tasks\/([a-z0-9]+)\/(queue|unqueue|done|delete|archive|unarchive|adopt)$/.exec(url.pathname);
     if (req.method === "POST" && taskAct) {

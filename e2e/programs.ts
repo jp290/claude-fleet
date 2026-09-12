@@ -9778,9 +9778,19 @@ exit 0
     // instance, so the file must carry one row for each — a `merged/landed:true` with a round
     // count and a `resolved/landed:false` that is NOT the denial. This is the "one row per verdict
     // FORM" half of the owner's done criterion, read where the rows actually live.
-    const m1Landed = m1Rows.filter((r) => r.status === "merged" && r.landed === true && r.ffRounds === 1);
+    // SCOPED BY ACTOR, and that is what makes "this section produced" true of the filter rather
+    // than only of the sentence. These two forms were minted in (8e), i.e. BEFORE the baseline
+    // above, so they cannot be read out of `m1New` and the whole file has to be filtered instead —
+    // and the whole file is not this section's. Every row of this section comes through the
+    // Program-MAIN self-land door (`actor: "main"`); an ffRounds land driven from the BOARD is a
+    // different form from a different section, and counting it here read as "the ledger merged two
+    // rows". Measured on 2026-09-12, when e2e/merge.ts (C3b) began minting exactly such a row:
+    // `{slot:4, actor:"owner", ffRounds:1}` made `m1Landed.length === 2` and failed a check about
+    // separation with two perfectly separate rows.
+    const m1Landed = m1Rows.filter((r) => r.status === "merged" && r.landed === true
+      && r.ffRounds === 1 && r.actor === "main");
     const m1RedGate = m1Rows.filter((r) => r.status === "resolved" && r.landed === false
-      && r.ffRounds === 1 && r.waitedOut === undefined);
+      && r.ffRounds === 1 && r.waitedOut === undefined && r.actor === "main");
     check("(vii) M1: the ledger separates the three forms this section produced — one land (with its round count), one red retry gate, one denial — and never merges them into one row",
       m1Landed.length === 1 && m1RedGate.length === 1 && m1Denial.length === 1
         && m1Landed[0]?.event === "merge_verdict" && m1Landed[0]?.errorReason === undefined,

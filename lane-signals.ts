@@ -265,10 +265,12 @@ export interface CommandJobWatchEventView {
 // the hydration (server/types.ts#fleetEventFrom). Two copies would let a persisted row be wider
 // than a fresh one, which is exactly the drift a pane budget cannot afford.
 //
-// AND THE NUMBERS ARE SMALL ON PURPOSE. A FleetEvent rides `/api/sessions`, which every open tab
-// polls every 2 s under a MEASURED 14 KiB budget with about 1 300 B of headroom (e2e/tasks.ts,
-// docs/data-saver.md §1). The first version of this payload carried 20 names at 200 chars — 4 KB
-// per red row, i.e. the budget three times over on a single red. The job keeps the full list
+// AND THE NUMBERS ARE SMALL ON PURPOSE. A FleetEvent rode `/api/sessions` WHOLE until 2026-09-13,
+// which every open tab polls every 2 s under a MEASURED 14 KiB budget with about 1 300 B of headroom
+// (e2e/tasks.ts, docs/data-saver.md §1). The first version of this payload carried 20 names at 200
+// chars — 4 KB per red row, i.e. the budget three times over on a single red. The poll now carries
+// only result/branch/failCount of a row (src/opsevents.ts#opsPollRow); the caps still bound the pane
+// text and GET /api/events. The job keeps the full list
 // (50 × 300, `server.ts#helperFailNames`) and `GET /api/self/suite-offer` serves it; this payload
 // is a HINT and is sized like one. `failCount` is what makes the truncation honest: three names
 // and "of twelve" says something a silently cut list does not.

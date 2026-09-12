@@ -65,7 +65,7 @@ interface OfferPayload {
   // module down with a TypeError instead of failing the named check.
   helper?: HelperPresenceView;
 }
-// The event rows as /api/sessions carries them. Every field past `id` is OPTIONAL for the reason
+// The event rows as GET /api/events carries them (the full trail; the poll carries a projected cut). Every field past `id` is OPTIONAL for the reason
 // this module states about `remote` above: what is under test is that the SERVER writes them, and a
 // mandatory field would let a server that stopped writing one take the module down with a TypeError
 // instead of failing the named check.
@@ -168,7 +168,7 @@ export async function run(): Promise<void> {
   // renders — and `reds` is the route this cut adds. Both are read fresh on every call: a snapshot
   // taken once and compared twice would turn a row that arrived late into a row that never came.
   const eventsOf = async (): Promise<EventRow[]> =>
-    (await bodyOf<{ events?: EventRow[] }>(await get("/api/sessions"))).events ?? [];
+    (await bodyOf<{ events?: EventRow[] }>(await get("/api/events"))).events ?? [];
   const suiteEventsFor = async (job: string): Promise<EventRow[]> =>
     (await eventsOf()).filter((e) => e.kind === "lane-suite" && e.subjectJobId === job);
   const redsOf = async (): Promise<RedPreviewRow[]> =>

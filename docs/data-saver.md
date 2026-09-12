@@ -121,9 +121,14 @@ C: deckelt den einzigen unbegrenzten Posten im Budget.
   `curl -s -H "cookie: fleet=<token>" http://100.64.0.1:8790/api/sessions | wc -c` × Pollrate.
   Vorher/Nachher-Zahl gehört in den Report.
 - Die Decke wird seit `e901287` auch maschinell gehalten: `e2e/tasks.ts` prüft „the 16-slot
-  sessions payload stays under 14 KB with a 15 KB task queued and bounded event facts" als
+  sessions payload stays under 14 KB with a 15 KB task queued, events aside" als
   Schwellen-Check (kein Byte-Exakt-Vergleich, darum flake-frei; Herleitung:
-  `docs/messungen/k3-payload-decke-klaerung-2026-08-25.md`).
+  `docs/messungen/k3-payload-decke-klaerung-2026-08-25.md`). **Seit 2026-09-13 ohne `events`:**
+  das Array ritt bis dahin GANZ (`events: fleetEvents`, live gemessen 117 Zeilen = 182 857 B, von
+  denen das Board keine zeigte) und machte die Decke zur Wette auf die Aktivität der Flotte. Der
+  Poll trägt jetzt nur den Schnitt des 📥-Panels, projiziert (`src/opsevents.ts#opsPollRow`), und
+  diese Hälfte hält ein Formcheck statt einer Bytesumme: null unprojizierte Zeilen, jede unter
+  2 KiB. Die volle Spur liegt hinter `GET /api/events`.
 - Zwei fremde Lanes waren am 2026-07-26 in `server.ts` unterwegs (Hunks bei 4755–4819
   und 6008–6029). Keine Überschneidung mit den Regionen oben, aber 6029 liegt nur ~79
   Zeilen vor dem `websocket: {`-Block von B/C — beim Landen hinschauen.

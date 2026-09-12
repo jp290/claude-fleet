@@ -16,6 +16,7 @@ import { projectLandWaves, LAND_WAVE_COSTS_2026_09, LAND_WAVE_RANGE_GAP,
   type LandWaveCosts, type LandWaveProjection, type ProjectLandWavesInput } from "../task-land-waves";
 import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_NAME_RE, INSTANCE_URL_RE, instanceLinksFrom,
   type InstanceLink } from "../src/protocol";
+import { OPS_POLL_PAYLOAD_KEYS, opsPollVisible, type OpsPollSource } from "../src/opsevents";
 import type { Ctx } from "./ctx";
 
 // The first bytes of briefAndSend's LANE_EXIT_FOOTER. Deliberately the HEADING and not the whole
@@ -1270,19 +1271,113 @@ export async function run(ctx: Ctx): Promise<void> {
     check("control: the 15 KB task IS in the polled payload (so the size check below can fail)", !!dig, `${bytes} B`);
     check("the sessions poll carries a task digest, never the prompt text",
       !!dig && dig.text === undefined && !raw.includes(MARK), JSON.stringify(dig));
-    // Typed operation events intentionally ride this poll so an owner can see waiting/spent
-    // subscriptions. They are independently capped; the prompt-text regression this probe guards
-    // is still separated by orders of magnitude. The fixed board is back at 16 slot facts (the
-    // 28-slot experiment is over), so the budget is RE-MEASURED here rather than merely renamed:
-    // 13 033 B and 13 053 B on two runs of this fixed point (2026-08-24) — 20 B of run-to-run
-    // variance. The 16 KiB the 28-slot board needed would now be a ceiling nothing could ever
-    // touch, and a budget with that much slack stops being a budget. 14 KiB leaves ~1 300 B of
-    // headroom over the higher measurement — measured on a bare instance, a slot row
-    // costs 183 B empty and 285 B occupied, so that covers ordinary board movement, while the
-    // regression this check exists for (a 15 KB prompt riding the hot poll) is ~12× the headroom
-    // and still cannot hide under it.
-    check("the 16-slot sessions payload stays under 14 KB with a 15 KB task queued and bounded event facts",
-      bytes < 14 * 1024, `${bytes} B`);
+    // THE EVENT SHARE IS MEASURED AS A SHAPE, THE REST AS BYTES (2026-09-13). Until then this check
+    // weighed the whole body while it carried `events: fleetEvents` whole — every row of every
+    // receiver, terminal or not — so it read 14 742 B on 2026-09-12 because of rows other modules
+    // had minted, and turned red twice that day in THIS section for causes six modules away. The
+    // poll now carries only the ops panel's cut, projected (src/opsevents.ts#opsPollRow), and the
+    // two halves are held by two different kinds of check:
+    //   · everything EXCEPT `events` against the byte budget. The fixed board is 16 slot facts, so
+    //     the budget was RE-MEASURED when the 28-slot experiment ended: 13 033 B and 13 053 B on two
+    //     runs of this fixed point (2026-08-24, events included — they only shrink it). 14 KiB leaves
+    //     ~1 300 B of headroom; a slot row costs 183 B empty and 285 B occupied, so that covers
+    //     ordinary board movement, while the regression this check exists for (a 15 KB prompt on
+    //     the hot poll) is ~12x the headroom and cannot hide under it.
+    //   · `events` as a COUNT OF UNPROJECTED ROWS, which must be zero: every row is one the panel
+    //     can show, carries only the fields it prints, and stays under a per-row ceiling. Its size
+    //     is then bounded by construction (open rows are capped per receiver) instead of by the
+    //     activity of the run, and a check about it cannot be tipped by a module that minted more.
+    // The fixture probe right below is the proof that this property holds and the old one did not.
+    const POLL_ROW_KEYS = new Set(["id", "kind", "status", "delivery", "receiverSlot", "createdAt",
+      "deliveredAt", "acknowledgedAt", "subjectSlot", "subjectBranch", "subjectRepo", "subjectMainAfter",
+      "subjectDeployId", "subjectJobId", "recovery", "payload"]);
+    // three recovery lines at their 300-char hydration cap plus a 200-char branch and the fixed
+    // fields: ~1.7 KB is the widest row the projection can build, so 2 KiB is a ceiling, not a guess
+    const POLL_ROW_MAX_BYTES = 2 * 1024;
+    type PollEvent = OpsPollSource & { payload?: Record<string, unknown>; recovery?: Record<string, unknown> };
+    const pollShape = (body: string): { withoutEvents: number; events: PollEvent[]; unprojected: string[] } => {
+      const j = JSON.parse(body) as { events?: PollEvent[] };
+      const events = j.events ?? [];
+      const unprojected = events.filter((e) => !opsPollVisible(e)
+        || Object.keys(e).some((k) => !POLL_ROW_KEYS.has(k))
+        || Object.keys(e.payload ?? {}).some((k) =>
+          ![...(OPS_POLL_PAYLOAD_KEYS[e.kind] ?? []), "verify", "artifactCount"].includes(k))
+        || (e.recovery !== undefined && "updatedAt" in e.recovery)
+        || Buffer.byteLength(JSON.stringify(e)) > POLL_ROW_MAX_BYTES)
+        .map((e) => `${e.id}:${e.kind}:${e.status}:${Buffer.byteLength(JSON.stringify(e))}B`);
+      return { withoutEvents: Buffer.byteLength(JSON.stringify({ ...j, events: [] })), events, unprojected };
+    };
+    const shape = pollShape(raw);
+    check("the 16-slot sessions payload stays under 14 KB with a 15 KB task queued, events aside",
+      shape.withoutEvents < 14 * 1024,
+      `${shape.withoutEvents} B without events · ${bytes} B whole · ${shape.events.length} event row(s)`);
+    check("the sessions poll carries no unprojected event row — only the ops panel's cut, projected, each under 2 KiB",
+      shape.unprojected.length === 0, `unprojected=[${shape.unprojected.join(", ")}]`);
+
+    // --- THE OLD SHAPE, STAGED: one more event producer must not tip either check. Two families of
+    // lane-suite rows are planted into the persisted trail across a restart — the producer that
+    // landed in cfc69851 with ~1 300 B of room, at its full hydration widths:
+    //   · 20 ACKNOWLEDGED owner rows: terminal, the panel shows none, and on the old poll they rode whole;
+    //   · 3 OPEN owner reds: the panel lists them, so they MUST reach the poll — projected.
+    // The events array is restored WHOLE afterwards (not filtered by id): planting terminal owner rows
+    // can make the boot prune drop older owner rows another module minted, and only the snapshot
+    // brings those back.
+    {
+      await tmuxOut("kill-session", "-t", "srv");
+      await Bun.sleep(500);
+      let fx: Record<string, unknown> | null = null;
+      let fxError = "";
+      try { fx = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as Record<string, unknown>; }
+      catch (e) { fxError = e instanceof Error ? e.message : String(e); }
+      check("precondition: fleet.json is readable for the event-producer fixture", fx !== null, fxError);
+      if (fx) {
+        const priorEvents = fx.events;
+        const now = Date.now();
+        const hex = (n: number, w: number): string => n.toString(16).padStart(w, "0");
+        const suiteRow = (i: number, open: boolean): Record<string, unknown> => ({
+          id: `budgetfx${hex(i, 4)}`, watchId: null, receiverSlot: null, receiverOpenedAt: null,
+          receiverSessionId: null, receiverIdleSec: 0, subjectJobId: hex(0xb0d6e7000000 + i, 12),
+          kind: "lane-suite", createdAt: now - 60_000 + i, status: open ? "inbox" : "acknowledged",
+          attempts: 0, deliveredAt: null, acknowledgedAt: open ? null : now - 30_000 + i, delivery: "inbox",
+          payload: { result: "red", branch: `fleet/budget-fixture-${i}`, exitCode: 1,
+            fails: [1, 2, 3].map((n) => `fixture check ${n} ${"f".repeat(100)}`), failCount: 40,
+            tail: "t".repeat(200) },
+        });
+        const planted = [...Array.from({ length: 20 }, (_, i) => suiteRow(i, false)),
+          ...Array.from({ length: 3 }, (_, i) => suiteRow(20 + i, true))];
+        const plantedIds = new Set(planted.map((r) => String(r.id)));
+        const openIds = planted.filter((r) => r.status === "inbox").map((r) => String(r.id)).sort();
+        const plantedBytes = Buffer.byteLength(JSON.stringify(planted));
+        writeFileSync(`${ROOT}/fleet.json`, JSON.stringify({ ...fx,
+          events: [...(Array.isArray(priorEvents) ? priorEvents : []), ...planted] }), { mode: 0o600 });
+        await restartSrv();
+        const fullIds = ((await (await get("/api/events")).json()) as { events: { id: string }[] }).events
+          .map((e) => e.id).filter((id) => plantedIds.has(id));
+        // THE FIXTURE FAILS AS ITSELF: rows the hydration refused, or a fixture too light to have
+        // tipped the old whole-body check, would make both checks below pass without measuring anything.
+        check("precondition: all 23 planted lane-suite rows hydrated, and together they outweigh the old budget's headroom",
+          fullIds.length === planted.length && bytes + plantedBytes >= 14 * 1024,
+          `hydrated ${fullIds.length}/${planted.length} · planted ${plantedBytes} B on a ${bytes} B body`);
+        const rawFx = await (await get("/api/sessions")).text();
+        const fxShape = pollShape(rawFx);
+        const onPoll = fxShape.events.map((e) => e.id).filter((id) => plantedIds.has(id)).sort();
+        check("an extra event producer tips neither half: the body stays under budget and no row rides unprojected",
+          fxShape.withoutEvents < 14 * 1024 && fxShape.unprojected.length === 0,
+          `${fxShape.withoutEvents} B without events · ${Buffer.byteLength(rawFx)} B whole · `
+            + `unprojected=[${fxShape.unprojected.join(", ")}]`);
+        check("…and the cut is real in both directions: the 3 open reds reach the poll, the 20 acknowledged rows do not",
+          JSON.stringify(onPoll) === JSON.stringify(openIds), JSON.stringify(onPoll));
+
+        await tmuxOut("kill-session", "-t", "srv");
+        await Bun.sleep(500);
+        const back = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as Record<string, unknown>;
+        writeFileSync(`${ROOT}/fleet.json`, JSON.stringify({ ...back, events: priorEvents }), { mode: 0o600 });
+      }
+      await restartSrv();
+      const leftover = ((await (await get("/api/events")).json()) as { events: { id: string }[] }).events
+        .filter((e) => e.id.startsWith("budgetfx")).length;
+      check("event-producer fixture cleanup: no planted row survives the restore", leftover === 0, `${leftover} left`);
+    }
 
     // --- instance identity rides this payload ONCE (dual-host Schnitt 2). The budget check above
     // is this cut's guard rail and stays where it is: the whole reason the name is not a slot field

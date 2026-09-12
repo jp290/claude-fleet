@@ -1575,10 +1575,11 @@ fünf offene Zeilen wären von fünf Lanes einer Stunde verbraucht, und die sech
 ohne Rückweg da. Retention: `FLEET_EVENT_KEEP_TERMINAL_OWNER_INBOX = 25` acked Zeilen —
 `pruneFleetEvents(null)` ist derselbe Mechanismus mit dem Owner als Schlüssel.
 
-Im Board erscheint die Zeile in `📥` wie jede andere Inbox-Zeile — ohne Zusatz-Payload, weil die
-Rows ohnehin als `events` auf `/api/sessions` reiten. Zwei Unterschiede in der Darstellung: der
-Empfänger heißt „filed for you" statt `receiver slot N` (es gibt keinen), und der Report-TEXT wird
-vollständig gerendert statt zusammengefasst — für diese eine Art IST der Text die Zustellung. Bei
+Im Board erscheint die Zeile in `📥` in der eigenen Sektion „Worker reports no session can judge":
+der Poll trägt dafür nur die Zahl `reportsAwaitingOwner`, die Zeilen samt vollständigem Report-TEXT
+lädt das Panel aus `GET /api/fleet-report` — für diese eine Art IST der Text die Zustellung, und er
+reitet darum NICHT auf dem 2-s-Poll (`src/opsevents.ts#opsPollVisible` schneidet Inbox-Reports aus
+`events`; die volle Spur mit Payload: `GET /api/events`). Bei
 Pane-Transport ohne Session-Ack zeigt die Operations-Fläche zusätzlich `recovery.state`,
 `nextAction`, `reason` und `effect`, wenn der Server eine Recovery-Entscheidung gemessen hat.
 

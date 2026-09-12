@@ -45,8 +45,10 @@ import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
 import { trailStats, type TrailRecord, type TrailSummary } from "./trailstats";
 import {
-  deriveTaskMetadata, readTrackedSnapshot, trackedIndexStamp,
-  type TaskFilesOrigin, type TrackedSnapshot,
+  clusterForFiles, deriveTaskMetadata, readTrackedSnapshot, trackedIndexStamp, readSymbolIndexSnapshot,
+  symbolGraphStamp, surfaceSha, surfaceFresh,
+  type TaskFilesOrigin, type TrackedSnapshot, type SymbolIndex, type SymbolIndexSnapshot,
+  type SymbolRange, type TaskSurface,
 } from "./task-metadata";
 import { notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict, NOTE_HUB_FILES,
   type NoteInput, type NoteRow, type KeyedUpsert } from "./task-notes";
@@ -1401,6 +1403,10 @@ const MAX_REFINE_CHILDREN = 4; // the split cap lives HERE, not in the model's j
 // over it is a worker that ignored its contract, and that fails closed like any other (runRefineJob)
 const MAX_REFINE_FIELD = 2000; // doneCriterion/verify/reason are sentences, not documents
 const MAX_REFINE_FILES = 20;
+// A surface's range list is bounded like every other list read off disk. A row that genuinely
+// names more than this many distinct symbols has stopped being one change, and the wave rule this
+// feeds (task-land-waves.ts) reads a NEIGHBOURHOOD, not an exhaustive map.
+const MAX_SURFACE_RANGES = 64;
 // display-only provenance on a parked file-surface proposal (server-derived, see filesProposalBy)
 const MAX_FILES_PROPOSAL_BY = 120;
 
@@ -2484,18 +2490,61 @@ function trackedSnapshotFor(repoRaw: string): TrackedSnapshot | null {
     return null;
   }
 }
+// The graph half of the surface, cached exactly like the tracked snapshot above and for the same
+// reason: it is a REPOSITORY fact shared by every row, and re-reading a 10 000-node graph per row
+// per 2 s poll is not a projection, it is a load. `null` is the lane's honest answer — graphify-out/
+// is gitignored and lives only in the main checkout.
+type SymbolIndexCache = { snapshot: SymbolIndexSnapshot | null; checkedAt: number };
+const symbolIndexCache = new Map<string, SymbolIndexCache>();
+function symbolIndexFor(repoRaw: string): SymbolIndexSnapshot | null {
+  const repo = repoCanon(repoRaw);
+  const now = Date.now();
+  const hit = symbolIndexCache.get(repo);
+  const stamp = symbolGraphStamp(repo);
+  if (hit?.snapshot && hit.snapshot.stamp === stamp) return hit.snapshot;
+  if (hit && !hit.snapshot && stamp === null && now - hit.checkedAt < 5000) return null;
+  const snapshot = readSymbolIndexSnapshot(repo);
+  symbolIndexCache.set(repo, { snapshot, checkedAt: now });
+  return snapshot;
+}
+
+// WHY THE SURFACE IS STORED NOW AND WAS NOT BEFORE. Until 2026-09-12 every reader re-derived it,
+// and `cluster: undefined` below still says what that cost bought: a projection never disagrees
+// with the tree. The range half changed the arithmetic — it reads a graph, not a regex — so the
+// result is kept on the row instead, and `surfaceSha` is what keeps the old property: it hashes the
+// text, the brief, the confirmed files AND the two tree stamps, so a stored surface is reused only
+// while every input it was derived from is unchanged.
+//
+// This function does NOT save. It is called from GET paths on a 2 s cadence, and a state write
+// there would cost two fsyncs per poll against a file that is this fleet's credential store. The
+// row is updated in memory and rides out on the next save any other change makes — which is why
+// `at` is the stamp of the DERIVATION, not of a write.
+function taskSurfaceOf(t: Task, snapshot: TrackedSnapshot | null,
+  index: SymbolIndexSnapshot | null, project: string | null, repoRoot: string | null): TaskSurface | null {
+  const confirmedFiles = t.filesOrigin === "derived" ? undefined : t.files;
+  const sha = surfaceSha({ text: t.text, brief: t.brief?.text ?? null, confirmedFiles,
+    indexStamp: snapshot?.indexStamp ?? null, graphStamp: index?.stamp ?? null });
+  if (surfaceFresh(t.surface, sha)) return t.surface!;
+  const metadata = deriveTaskMetadata({ text: t.text, brief: t.brief?.text ?? null, confirmedFiles },
+    { trackedPaths: snapshot?.paths ?? new Set<string>(), project, repoRoot,
+      symbolIndex: index?.index ?? null });
+  if (!metadata.files?.length || !metadata.filesOrigin) { t.surface = undefined; return null; }
+  t.surface = { files: metadata.files, ranges: metadata.ranges ?? null,
+    origin: metadata.filesOrigin, at: Date.now(), sha };
+  return t.surface;
+}
 function taskView(t: Task): Task {
   const repoRaw = t.repo ?? (DISPATCH_REPO || null);
   const snapshot = repoRaw ? trackedSnapshotFor(repoRaw) : null;
-  const confirmedFiles = t.filesOrigin === "derived" ? undefined : t.files;
-  const metadata = deriveTaskMetadata({
-    text: t.text, brief: t.brief?.text ?? null, confirmedFiles,
-  }, {
-    trackedPaths: snapshot?.paths ?? new Set<string>(),
-    project: snapshot?.project ?? (repoRaw ? basename(repoCanon(repoRaw)).replace(/\.git$/, "") : null),
-    repoRoot: snapshot?.repo ?? (repoRaw ? repoCanon(repoRaw) : null),
-  });
-  return { ...t, files: undefined, filesOrigin: undefined, cluster: undefined, ...metadata,
+  const project = snapshot?.project ?? (repoRaw ? basename(repoCanon(repoRaw)).replace(/\.git$/, "") : null);
+  const repoRoot = snapshot?.repo ?? (repoRaw ? repoCanon(repoRaw) : null);
+  const surface = taskSurfaceOf(t, snapshot, repoRaw ? symbolIndexFor(repoRaw) : null, project, repoRoot);
+  // The cluster stays a pure projection of the files and is NOT stored: its process map moves with
+  // the code, and a stored one would be the one field here that can be wrong about a tree that
+  // never changed.
+  const cluster = surface ? clusterForFiles(surface.files, project) : undefined;
+  return { ...t,
+    files: surface?.files, filesOrigin: surface?.origin, cluster,
     ...(t.refine ? { refine: { ...t.refine, ...refineValidationFor(t, snapshot) } } : {}) };
 }
 // The acceptance that stands between a compiled proposal and the owner's confirm (refine-validate
@@ -10206,6 +10255,37 @@ const normFileList = (v: unknown): string[] | undefined => {
   const f = v.filter((e): e is string => typeof e === "string" && !!e.trim())
     .map((e) => e.trim().slice(0, 300)).slice(0, MAX_REFINE_FILES);
   return f.length ? f : undefined;
+};
+// The DERIVED surface read back off disk. It degrades to ABSENT whole — and unlike the proposal
+// below, the cost of a wrong one is bounded by construction rather than by this parser: every
+// reader compares `sha` against freshly hashed inputs first (taskSurfaceOf), so the worst a
+// hand-edited entry can do is be discarded one microsecond later. What this function therefore
+// guards is SHAPE, not trust: `ranges: null` must survive as null (it is the "no graph here"
+// answer, not an empty list), and an `origin` that is neither of the two known values makes the
+// whole surface unreadable rather than silently "derived".
+const normSurfaceRanges = (v: unknown): SymbolRange[] | null => {
+  if (!Array.isArray(v)) return null; // absent, null and malformed all mean NOT MEASURED
+  const out: SymbolRange[] = [];
+  for (const e of v.slice(0, MAX_SURFACE_RANGES)) {
+    if (!e || typeof e !== "object") continue;
+    const r = e as Partial<SymbolRange>;
+    const start = Number(r.startLine), end = Number(r.endLine);
+    if (typeof r.file !== "string" || !r.file.trim()) continue;
+    if (!Number.isFinite(start) || start < 1 || !Number.isFinite(end) || end < start) continue;
+    out.push({ file: r.file.trim().slice(0, 300),
+      symbol: typeof r.symbol === "string" ? r.symbol.slice(0, 200) : "",
+      startLine: Math.floor(start), endLine: Math.floor(end) });
+  }
+  return out;
+};
+const normTaskSurface = (v: unknown): TaskSurface | undefined => {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const raw = v as Partial<TaskSurface>;
+  const files = normFileList(raw.files);
+  const origin = raw.origin === "confirmed" || raw.origin === "derived" ? raw.origin : null;
+  if (!files || !origin || typeof raw.sha !== "string" || !raw.sha) return undefined;
+  return { files, ranges: normSurfaceRanges(raw.ranges), origin,
+    at: Number(raw.at) || 0, sha: raw.sha.slice(0, 64) };
 };
 // The same shape read back off disk, where anything may have been hand-edited. A proposal that
 // cannot be read degrades to ABSENT rather than to a smaller proposal: this field sits ONE owner
@@ -24089,6 +24169,13 @@ if (existsSync(STATE_FILE)) {
           // proposal, and inventing one here would put a hand-edit one owner click from `confirmed`.
           filesProposal: normFilesProposal(t.filesProposal),
           cluster: undefined, // always projected from the current repo index; never trusted off disk
+          // THE STORED SURFACE comes back as a CACHE, not as a fact. It is restored only whole and
+          // well-formed, and `normTaskSurface` keeps the one property that makes storing it safe:
+          // its `sha` is compared against freshly computed inputs before any reader uses it, so a
+          // hand-edited entry cannot make a reader believe a surface it did not derive. A malformed
+          // one degrades to ABSENT and is re-derived on the first read — never to a partial surface,
+          // because half a file list reads as a narrower change than the row really is.
+          surface: normTaskSurface((t as { surface?: unknown }).surface),
           // malformed degrades to ABSENT, never to a shorter brief. Two predecessor fields are
           // deliberately NOT migrated and not restored: `eval`, whose criteria were judged under a
           // different contract, and `analysis`, the retired queue analyst's verdict — a persisted

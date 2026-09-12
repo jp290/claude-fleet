@@ -307,6 +307,54 @@ geworden, und R2 (gate-ändernde Pfade) hätte danach auf erfundenen Kanten ents
 wird genau die verbleibende Auswahl, gelesen am Klick; eine leere Auswahl sendet nichts. Keine
 neue Route, kein Auto-Heben, keine Änderung an `task-metadata.ts`.
 
+**NACHTRAG 2026-09-12 (b) — die Ableitung trennt jetzt selbst, und die Fläche wird persistiert.**
+Der Nachtrag darüber schob die Trennung von Zitat und Absicht auf den Owner-Klick ab; sie gehört in
+die Ableitung. `task-metadata.ts#intentText` blendet seitdem vor jedem Scan aus: eine Zeile, die mit
+„Verify"/„Verifikation" beginnt, einen Backtick-Abschnitt, der mit `./`, `bun `, `bunx ` oder
+`curl ` anfängt, und ein unquotiertes Kommando ab seinem Kopf bis zum Zeilenende. Gemessen am
+LIVE-`fleet.json`, Repo `claude-fleet` (37 seiner 44 offenen `auftrag`-Zeilen; die übrigen 7 liegen
+in `private-repo-j`). Rahmen ist das Was-wäre-wenn von §2 — abgeleitet als bestätigt gelesen, sonst
+entscheidet R3 alles allein und R2 ist gar nicht sichtbar:
+
+| | vorher (`3c9ca68a`) | nachher |
+|---|---|---|
+| Wellen | 34 | 25 |
+| davon n>1 | 3 | 7 |
+| `gate-aenderer` | **20** | **7** |
+| `keine-flaeche` | 1 | 2 |
+| Ersparnis | 8 575 s | 24 010 s |
+
+**Im UNGERAHMTEN Lauf ändert sich die Zahl nicht, und das ist kein Widerspruch:**
+`bun task-land-waves.ts --state fleet.json` liest heute 30 der 42 Zeilen als
+`flaeche-nur-abgeleitet`, und R3 steht in `classify` VOR R2 — `gate-aenderer` steht dort vorher wie
+nachher auf 1. Die 13 Zeilen sind trotzdem real bewegt; sie sind nur hinter der stärkeren Ablehnung
+unsichtbar, bis eine Fläche bestätigt wird.
+
+Die 13 Zeilen, die `gate-aenderer` verlassen, verlieren ausnahmslos zitierte Gate-Apparatur
+(`e2e-isolated.sh`, `e2e/pins.ts`, die vier Wrapper und die `fleet-e2e*.ts` aus einer zitierten
+`bunx tsc`-Zeile). Die eine Zeile, die neu auf `keine-flaeche` fällt, ist `c269023d`, ein
+DENKAUFTRAG ohne Code-Fläche, dessen einziger Treffer `bun e2e/pins.ts` in seinem Verify-Satz war —
+sie ist danach ehrlicher beschrieben als vorher. **Der bezahlte Preis, benannt:** ein Pfad, den die
+Prosa als `./register.sh` schreibt, gilt als Kommando und nicht mehr als Fläche (`e4409bf2`). Das
+ist die Regel des Owners, wörtlich, und der Fehlschuss ist einseitig — er verliert eine Fläche,
+er erfindet keine.
+
+Zweitens trägt die Zeile die Fläche seitdem als `Task.surface{files, ranges, origin, at, sha}` in
+`fleet.json`, statt sie bei jedem 2-s-Poll neu abzuleiten. Das ist eine Umkehr der alten Regel
+(„nie persistieren, sonst wird die schwächere Herkunft durch einen Reload zur stärkeren") und sie
+ist bezahlt: `sha` hasht ALLE Eingaben der Ableitung — Text, Brief, bestätigte Liste, den
+git-Index-Stempel und den Stempel der Graph-Datei —, also wird ein gespeicherter Wert genau so
+lange wiederverwendet, wie jede einzelne davon unverändert ist. Der Grund für den Umbau ist
+`ranges`: die Bereichsauflösung liest `graphify-out/graph.json` (10 708 Knoten, 137 Dateien,
+~95 ms Aufbau), und das ist keine Projektion mehr, sondern eine Last.
+
+`ranges: null` heißt **kein Symbolindex vorhanden** und ist nicht dasselbe wie `[]`. `graphify-out/`
+ist gitignored und liegt nur im Haupt-Checkout — eine Lane bekommt also ehrlich `null`. Der Graph
+nennt je Symbol nur eine STARTzeile; das Ende wird abgeleitet (nächstes Symbol minus eins, für das
+letzte die Zeilenzahl der Datei), und der Index ist **partiell**: 137 der getrackten Dateien, und
+`task-land-waves.ts` steht heute nicht darin. Ein Symbol, das er nicht kennt, liefert deshalb
+keinen Bereich statt eines geratenen — und die Datei-Ebene trägt die Zeile weiter.
+
 ### S3 — „▸ start wave": ein Owner-Knopf, eine Lane, n Zeilen
 
 Der Knopf gründet EINE Lane auf einen Kandidaten aus S1 (n≤3), mit einem Brief, der die n Zeilen in

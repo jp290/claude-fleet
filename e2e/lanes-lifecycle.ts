@@ -893,5 +893,25 @@ export async function run(lc: LaneCtx): Promise<void> {
       JSON.stringify(batonOutcome ?? null).slice(0, 240));
     spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", batonCwd]);
     await post(`/api/tasks/${batonTaskId}/delete`, {});
+    // …AND THE PLANTED RECORDS GO BACK OUT THE WAY THEY CAME IN. This is not tidiness: an active
+    // Program rides the 2 s /api/sessions poll as a digest FOREVER, and that payload is measured
+    // against a 14 KiB budget by e2e/tasks.ts — which runs after this file. Measured on the run
+    // that first left them standing (2026-09-12): 14 631 B against 14 336 B. A fixture that makes
+    // a later section's budget check fail is a fixture that has to be un-planted, not a budget
+    // that has to be raised. The report row goes with it for the same reason it exists here: it is
+    // the planted Program's, it counts into `reportsAwaitingOwner` once that Program has no live
+    // MAIN, and nothing outside this block ever reads it.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const unplant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { programs?: { id: string }[]; fleetReports?: { id: string }[] };
+    unplant.programs = (unplant.programs ?? []).filter((p) => p.id !== batonProgramId);
+    unplant.fleetReports = (unplant.fleetReports ?? []).filter((r) => r.id !== (handoffBody.report?.id ?? ""));
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(unplant, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const remaining = ((await (await get("/api/programs")).json()) as
+      { programs: { id: string }[] }).programs;
+    check("(baton) fixture cleanup: the planted Program is gone — the 2 s poll must not carry a fixture for the rest of the suite",
+      !remaining.some((p) => p.id === batonProgramId), `${remaining.length} program(s) left`);
   }
 }

@@ -3100,9 +3100,12 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       "enhance:FLEET_WORKER_ROUTE_ENHANCE",
       "summary:FLEET_WORKER_ROUTE_SUMMARY",
     ]), sparkRoutes.join(" | ") || "no Spark routes parsed");
-  pin("the complete worker route table leaves all five unmigrated workers on Claude",
+  // `card` joined the Claude side in 2026-09 and is NOT an unmigrated straggler: it is the one
+  // worker whose model is chosen at the call site (CARD_MODEL, a Haiku), and the codex-exec route
+  // cannot express a per-call model. Named here so the six read as two different reasons.
+  pin("the complete worker route table leaves the five unmigrated workers, plus the per-call card, on Claude",
     JSON.stringify(claudeRoutes) === JSON.stringify([
-      "cleanReview", "merge", "refine", "repair", "review",
+      "card", "cleanReview", "merge", "refine", "repair", "review",
     ]), claudeRoutes.join(" | ") || "no Claude routes parsed");
   pin("all migrated worker routes share the one exact Codex Spark model value",
     /const CODEX_SPARK_MODEL = "gpt-5\.3-codex-spark";/.test(server)
@@ -7799,6 +7802,41 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     exists("e2e/ctl.ts") && runner.includes('import * as ctl from "./e2e/ctl"')
       && runner.includes("await ctl.run();"),
     `module=${exists("e2e/ctl.ts")} imported=${runner.includes('import * as ctl from "./e2e/ctl"')} called=${runner.includes("await ctl.run();")}`);
+}
+
+// --- THE CARD STAMPS THE MODEL THAT RAN (S3, 2026-09-12) -----------------------------------------
+// A must-agree pair whose other side is not a type: `WorkerRunObservation` is what runWorker knows
+// about the run it just made, and nothing forces a caller to read it. The brief compiler does not —
+// it writes `model: SUMMARY_MODEL` at the assignment, so every stored brief names the summary tier
+// whatever route actually answered. That is a false provenance on a live field today, and this pin
+// is what keeps the card from repeating it: the card's model must come from the OBSERVATION.
+//
+// Stated as a rule about the two writers rather than as a snapshot of either line: the card reads
+// the observation, the brief reads the constant, and the day the brief is fixed this pin narrows to
+// its first half rather than failing.
+{
+  const RULE_CARD = "a stored model name is the model that RAN";
+  const srv = read("server.ts");
+  const cardAssign = /return \{ \.\.\.checked\.body, model: observed\.model,/.test(srv);
+  const cardFallback = /model: observed\.model, at: Date\.now\(\), ms, valid: false,/.test(srv);
+  pin(`${RULE_CARD} — extractCard stamps observed.model on BOTH its answer paths, never a constant`,
+    cardAssign && cardFallback, `validated=${cardAssign} unreadable=${cardFallback}`);
+  // the contrast, and it is the reason the rule exists. If this ever stops matching, the brief
+  // compiler was fixed — delete this half, do not widen it.
+  const briefAssign = /t\.brief = \{ text, at: Date\.now\(\), model: SUMMARY_MODEL, edited: false \}/.test(srv);
+  pin(`${RULE_CARD} — the brief compiler still stamps the CONSTANT, which is why the card may not`,
+    briefAssign, `briefStampsConstant=${briefAssign}`);
+  // DEFAULT OFF means no timer, not a guarded one — the property that makes a suite unable to spawn
+  // a real extractor by forgetting a stand-in. Both halves: the arming condition and the const.
+  const cardOff = /const CARD_ON = CARD_TICK_MS > 0;/.test(srv)
+    && /if \(CARD_ON\) setInterval\(\(\) => void tickCardSweep\(\)/.test(srv);
+  pin(`${RULE_CARD} — an unset FLEET_CARD_MS registers NO tick, rather than a tick that returns early`,
+    cardOff, `armedOnly=${cardOff}`);
+  // the extractor is TEXT_ONLY by contract, not by configuration: it makes claims about a text it
+  // was given, and a repository in its hands would only make an unverifiable claim more convincing.
+  const textOnly = /worker: "card", cmd: CARD_CMD, tools: TEXT_ONLY_TOOLS,/.test(srv);
+  pin(`${RULE_CARD} — the card worker runs TEXT_ONLY, with no repository to read`,
+    textOnly, `textOnly=${textOnly}`);
 }
 
 console.log(rows.join("\n"));

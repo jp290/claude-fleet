@@ -14,6 +14,7 @@ import type { RefineValidation } from "../refine-validate";
 import { FLEET_REPORT_STATUSES, INSTANCE_NAME_RE, type FleetReportEventPayload, type FleetReportStatus,
   type LaneAnchor } from "../src/protocol";
 import type { TaskCluster, TaskFilesOrigin, TaskSurface } from "../task-metadata";
+import type { TaskCardBody } from "../card-extract";
 
 const MAX_SLOTS = 16; // fixed places — the sidebar always shows all of them
 
@@ -1097,6 +1098,14 @@ interface Task {
   // the same rule: a stored `confirmed` surface still comes from `files`, never from prose.
   // `ranges: null` means NO SYMBOL INDEX WAS AVAILABLE (a lane has no graphify-out/), which is not
   // the same fact as an empty list — "not measured" against "measured, nothing to point at".
+  card?: TaskCard; // WHAT THIS ROW SAYS ABOUT ITSELF, extracted once from its own text by a small
+  // model and then validated deterministically (card-extract.ts). It is a READING, never an
+  // authority: nothing dispatches from it, `rolle` is not `spawn`, and every value inside it
+  // survived a check this process could run on its own — a tracked path, a resolvable symbol, a
+  // known chain step, a registered harness. What did not survive is in `gaps`, in the extractor's
+  // own words, and is never repaired or defaulted. `valid:false` is therefore a stored fact and
+  // not a discard: "a reading was attempted and here is what it could not establish" is worth more
+  // than an absent field, which reads as "nobody looked".
   status: "pending" | "queued" | "sent" | "done" | "archived";
   releasedBy?: "owner" | "machine"; // WHO handed this draft to the machine — written at the
   // RELEASE (see releaseTask) and by nothing else. NOT a synonym for the outcome row's
@@ -1169,6 +1178,19 @@ interface Task {
 // Every render therefore keeps reading absence exactly as it read it before, which is why no
 // stored brief changed a byte when the field arrived: the backlog is not made honest by relabelling
 // it, and a migration that guessed an author for it would be the same falsehood with a timestamp.
+// The stored card: the validated body plus the provenance of the run that produced it. `model` is
+// the model that ACTUALLY RAN, read back from the worker observation rather than from the constant
+// the call site meant to use — the brief compiler stamps `SUMMARY_MODEL` on every brief regardless
+// of the route that answered it, and that is the mistake this field exists not to repeat.
+// `tokens` is absent unless the transport reported usage; absence is "not reported", never 0.
+interface TaskCard extends TaskCardBody {
+  model: string;
+  at: number;
+  ms: number;
+  tokens?: number;
+  valid: boolean;
+  gaps: string[];
+}
 type BriefAuthor = "owner" | "main";
 interface TaskBrief { text: string; at: number; model: string; edited: boolean; by?: BriefAuthor }
 // One remark, timestamped and individually deletable. `id` exists for the delete: an index would
@@ -2387,7 +2409,7 @@ export type {
   SupervisorTransitionEventPayload, SupervisorTransitionFleetEvent, FleetEvent, ClarificationStatus,
   ClarificationRequest, FleetReportDisposition, FleetReportDecision, FleetReportBasis,
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReport, AttentionKind, AttentionStatus, AttentionRequest, TaskKind,
-  Task, TaskBrief, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskFilesProposal, RefineChild,
+  Task, TaskBrief, TaskCard, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskFilesProposal, RefineChild,
   RefineProposal, TaskRefine, LaneForm, LaneRef, SuccessionRetirement, CodexRecoveryState, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
   PromotionSelfLand, PromotionPolicy, ProgramProfileKind, ProgramProfile, ProgramLineageVia,

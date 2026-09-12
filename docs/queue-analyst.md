@@ -134,6 +134,56 @@ Turning the compiler on is an owner act on `watchdog.sh` plus `launchctl kicksta
 Selection is `briefDue`: a dispatchable `auftrag` with no brief yet. A row it touched is a row whose
 bytes are settled — nothing in this fleet claims to have READ one.
 
+## 3b. Die KARTE — was eine Zeile über sich selbst sagt (S3, 2026-09-12)
+
+Neben dem Brief-Kompiler steht seit `FLEET_CARD_MS` ein zweiter, KLEINERER Tick. Er schreibt die
+Zeile nicht um; er LIEST sie: `card-extract.ts` gibt einem Haiku genau einen String — den Brief,
+sonst den Rohtext — und bekommt ein festes Objekt zurück
+(`{ziel, rolle{harness,model,effort}, surface{files,symbols}, done, verify, verboten, program?}`).
+
+**Der Extraktor bekommt KEIN Repository und keine Werkzeuge** (`tools: TEXT_ONLY_TOOLS`, gepinnt in
+`e2e/pins.ts`). Das ist kein Sparzwang, sondern die Konstruktion: jedes Feld, das er zurückgibt,
+wird danach gegen eine Tatsache geprüft, die dieser Prozess selbst feststellen kann —
+
+| Feld | geprüft gegen |
+|---|---|
+| `surface.files` | `git ls-files` (der Tracked-Snapshot aus `task-metadata.ts`) |
+| `surface.symbols` | `graphify-out/graph.json`; ohne Graph nur die Existenz der Datei, `ranges` bleibt `null` |
+| `verify` | die bekannten Kettenschritte (`verify-proportion.ts#LOCAL_PROOF_STEPS`) |
+| `rolle.*` | die registrierten Harness-/Modell-/Effort-Validatoren |
+
+Was nicht besteht, wird **niemals repariert, ersetzt oder geraten** — es wird eine Zeile in `gaps`,
+in den Worten des Extraktors. `valid` ist das UND dieser Prüfungen, kein Urteil über die Arbeit,
+und eine Karte mit `valid:false` wird trotzdem gespeichert: „hier wurde gelesen, und das hier
+konnte nicht belegt werden" ist mehr wert als ein fehlendes Feld, das sich wie „niemand hat
+geschaut" liest. Beim Laden wird `valid` aus `gaps` NEU BERECHNET, nie geglaubt — eine
+handgeschriebene `fleet.json` kann also nicht die eine Form erzeugen, die eine Lüge wäre.
+
+**Die Karte ist eine LESUNG, keine Autorität.** Nichts dispatcht aus ihr, `rolle` ist nicht
+`Task.spawn`, und `card.model` trägt das Modell, das WIRKLICH LIEF (aus der
+`WorkerRunObservation`), nicht die Konstante der Aufrufstelle — genau der Fehler, den der
+Brief-Kompiler heute noch macht (`t.brief = {… model: SUMMARY_MODEL …}` stempelt die Summary-Stufe,
+gleich welche Route geantwortet hat). Beide Hälften sind in `e2e/pins.ts` befestigt, damit die
+Karte ihn nicht wiederholt.
+
+Jeder Lauf — auch ein gescheiterter — ist eine Zeile in `cards.jsonl`
+(`taskId, model, ms, valid, gaps`). Ein Trail, der nur Erfolge schriebe, sagte, der Extraktor falle
+nie aus, und das ist das Einzige, was er über sich selbst nicht sagen darf.
+
+| env | default | |
+|---|---|---|
+| `FLEET_CARD_MS` | 0 | der Karten-Tick; **0 = kein Timer registriert**, nicht ein Tick, der früh zurückkehrt |
+| `FLEET_CARD_CMD` | — | Subprozess-Stand-in (Tests), wie `FLEET_REVIEW_CMD` |
+| `FLEET_CARD_MODEL` | `claude-haiku-4-5-20251001` | `MODEL_RE`-validiert wie jede andere Modell-Variable |
+
+Batch-Deckel 4, max. 3 Versuche, Backoff `60 s × 2^Versuche`, Timeout 120 s. Alle sieben Suiten
+setzen `FLEET_CARD_MS=0` ausdrücklich. Scharfschalten ist ein **Owner-Akt** auf `watchdog.sh` —
+die Lane, die das gebaut hat, hat die Datei nicht angefasst.
+
+Auswahl ist `cardDue`: eine dispatchbare `auftrag`-Zeile ohne Karte, oder eine, deren Brief jünger
+ist als `card.at`. Eine Eskalation auf ein stärkeres Modell bei `valid:false` ist ein benannter
+Haken und ausdrücklich NICHT gebaut.
+
 ## 4. What this deliberately is not
 
 It is **not a safety gate**, and since 2026-09-10 there is no worker here that could be mistaken for

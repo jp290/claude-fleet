@@ -191,7 +191,7 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 AUTOS_TICK=250
 DISP_TICK=250
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_MODEL= FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_DISPATCH_TICK_MS=$DISP_TICK FLEET_CMD=claude FLEET_ACCEPT_WAIT_MS=300 FLEET_DISPATCH_REPO='$DISPATCH_REPO' FLEET_ENHANCE_CMD='$DIR/fakeenh' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_MODEL= FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_CARD_MS=0 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_DISPATCH_TICK_MS=$DISP_TICK FLEET_CMD=claude FLEET_ACCEPT_WAIT_MS=300 FLEET_DISPATCH_REPO='$DISPATCH_REPO' FLEET_ENHANCE_CMD='$DIR/fakeenh' exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (a loaded dev box can take >2s) instead of a fixed sleep —
 # this suite runs in the pre-land gate, where a slow boot would read as a red gate.
 # ANY HTTP status means it's listening (401 without a token still proves the port is up).
@@ -220,7 +220,7 @@ code=$?
 if [ "$code" = 0 ]; then
   tmux -L "$SOCK" kill-server 2>/dev/null
   tmux -L "$SOCK" new-session -d -s srv \
-    "cd '$DIR2' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_MODEL= FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_CMD=harn FLEET_HARNESS_COMMS=harn FLEET_HARNESS_MODEL_FLAG=--model FLEET_WORKER_HARNESS=container FLEET_DISPATCH_REPO='$WORKER_REPO' FLEET_ENHANCE_CMD='$DIR/fakeenh' exec bun server.ts >> server.log 2>&1"
+    "cd '$DIR2' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_MODEL= FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_CARD_MS=0 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_CMD=harn FLEET_HARNESS_COMMS=harn FLEET_HARNESS_MODEL_FLAG=--model FLEET_WORKER_HARNESS=container FLEET_DISPATCH_REPO='$WORKER_REPO' FLEET_ENHANCE_CMD='$DIR/fakeenh' exec bun server.ts >> server.log 2>&1"
   # default-shell decides what interprets every pane command tmux builds, and one phase-2 check
   # depends on it being zsh: an unquoted glob model is fatal under zsh ("no matches found" aborts
   # the line, pane and all) and HARMLESS under sh, which leaves an unmatched pattern literal. Under
@@ -254,7 +254,7 @@ fi
 if [ "$code" = 0 ]; then
   tmux -L "$SOCK" kill-server 2>/dev/null
   tmux -L "$SOCK" new-session -d -s srv \
-    "cd '$DIR3' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_MODEL= FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_CMD=true FLEET_HARNESS_COMMS= exec bun server.ts >> server.log 2>&1"
+    "cd '$DIR3' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_MODEL= FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_CARD_MS=0 FLEET_CMD=true FLEET_HARNESS_COMMS= exec bun server.ts >> server.log 2>&1"
   _hc=000
   for _ in $(seq 1 60); do
     _hc=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/" 2>/dev/null)

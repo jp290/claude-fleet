@@ -140,28 +140,32 @@ nicht im Outcome-Ledger; der Beleg ist ein eigener Lauf). Welche Slots die 12 Nu
 
 ## Ausführungsreihenfolge S1–S6 — festgeschrieben, weil sie sonst nur in einer Pane stand
 
-Nachgetragen 2026-09-12 17:2x von der Program-MAIN Fleet-Betrieb (Slot 6, Program `f170dc46`).
+Nachgetragen 2026-09-12 17:2x von der Program-MAIN Fleet-Betrieb (Slot 6, Program `f170dc46`),
+**17:3x korrigiert** — die erste Fassung dieses Abschnitts war eine Kette und ist falsch; sie
+stammte aus der ersten Übergabe, die der Orchestrator eine Viertelstunde später selbst korrigiert
+hat. Die Kettenfassung stand ~10 min im Baum; wer sie gelesen hat, lese hier weiter.
 
-Der Orchestrator hat die sechs Karten-Zeilen mit einer Abhängigkeitsordnung übergeben. **Gemessen:
-keine der sechs Zeilen nennt ihre Vorgängerin im eigenen Text** (`grep` über alle sechs Texte nach
-den sechs Ids: null Treffer). Die Ordnung existierte damit ausschließlich als Pane-Nachricht an
-EINE Session — und eine Pane-Nachricht stirbt mit ihrer Insassin. Eine Nachfolgerin hätte S3 vor
-S1 freigeben können, ohne etwas falsch zu machen.
+**MASSGEBLICH: die Serie läuft als ZWEI DREIERWELLEN, nicht als Kette.**
 
-| Reihenfolge | Id | Karte | wartet auf |
-|---|---|---|---|
-| 1 | `b2f439fe` | S1 — Flächen-Ableitung verwechselt Zitat mit Absicht | — (vom Orchestrator `queued`) |
-| 2 | `9b691419` | S3 — Karte per kleinem Modell, ein Tick extrahiert | S1 gelandet |
-| 3 | `ebfb7d71` | S2 — Kollision auf Bereichsebene statt Dateiebene | S1 gelandet |
-| 3 | `a672b626` | S4 — Struktur überlebt die Bestätigung | S3 gelandet |
-| 3 | `08ec67c0` | S6 — Kartenfelder beim Filen | S3 gelandet |
-| 4 | `b8cb3c75` | S5 — Bestätigung der Fläche als Batch der Program-MAIN | S3 gelandet |
+| Welle | Ids | Karten |
+|---|---|---|
+| 1 | `b2f439fe` · `9b691419` · `ebfb7d71` | S1 Flächen-Ableitung · S3 Karte per kleinem Modell · S2 Kollision auf Bereichsebene |
+| 2 | `a672b626` · `08ec67c0` · `b8cb3c75` | S4 Struktur überlebt die Bestätigung · S6 Kartenfelder beim Filen · S5 Bestätigung als Batch |
 
-**Zwei Dinge, die zur Ordnung gehören und nicht in ihr stehen:** S4 und S6 hängen beide nur an S3
-und sind Kandidaten für **eine Welle** — das ist vor der Freigabe an der Wellen-Projektion zu
-prüfen, nicht anzunehmen. Und alle sechs tragen `spawn.model claude-opus-5[1m]`, `effort high`,
-`harness null` (also claude-Default) — geprüft an `fleet.json`, nicht aus der Übergabe übernommen.
+**Wer was tut, und das ist die eigentliche Regel dieses Abschnitts:** der Orchestrator fährt beide
+Wellen über die **Wellen-Tür** selbst (ein Auto bei ihm wartet auf einen freien Slot; `b2f439fe`
+ist dafür wieder `pending`). Die Program-MAIN gibt **KEINE der sechs Zeilen einzeln frei** — eine
+Einzelfreigabe lässt die Wellenmenge zerfallen, und die Ersparnis der Welle ist genau die
+gemeinsame Fläche. Die MAIN **landet die Wellen-Lane**, wie jede andere: Report als Behauptung
+lesen, Diff und zitierte Verify-Ausgabe prüfen, Pane lesen, dann das Land-Tor. Mehr nicht.
+
+**Was daran gemessen und was übernommen ist.** Gemessen an `fleet.json`: keine der sechs Zeilen
+nennt eine andere der sechs in ihrem Text (`grep` nach allen sechs Ids: null Treffer) — deshalb
+steht dieser Abschnitt überhaupt hier, denn ohne ihn existierte die Gruppierung nur als
+Pane-Nachricht an eine einzelne Session und stürbe mit ihr. Ebenfalls gemessen: alle sechs tragen
+`spawn.model claude-opus-5[1m]`, `effort high`, `harness null` (claude-Default). Übernommen und
+NICHT selbst geprüft: dass die Wellen-Projektion genau diese zwei Dreiermengen zeigt — das ist die
+Aussage des Orchestrators, und die Projektion ist seine Tür.
 
 **Owner-Richtung dieses Tages, wörtlich:** „soll gleich laufen, ich will mich nicht weiter
-kuemmern." Die Freigabe ist damit Sache der Program-MAIN, nicht eine Rückfrage — aber sie bleibt
-**nach Landung der Vorgängerin**, nicht auf Sicht.
+kuemmern."

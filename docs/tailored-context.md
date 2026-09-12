@@ -137,6 +137,46 @@ brief lives in the launch, never on disk, and the worktree stays landable. (A co
 file only stays invisible if it is gitignored — the same `.worktreeinclude` rule Fleet
 already applies to `.env`.)
 
+### 6a. The source package (`context-snippets.ts`, 2026-09-12)
+
+> **Status:** the pure building block exists and is checked (`e2e/context-plan.ts`, thirteen
+> `snippets:` checks). It is NOT yet wired into `briefAndSend` — the delivery seam is held by other
+> lanes; the integration is one named hunk waiting on the owning MAIN.
+
+The checklist below asks a brief to "establish the relevant environment". Until now the brief could
+only POINT: the anchor block names a file and a heading and copies no source, and the notes block
+hands over what someone *wrote* about a surface. Neither gets the lane to the code. The measured
+price of that last step is `docs/messungen/opus-lane-kontextkosten-2026-09-12.md` §17-32 — a median
+of 52 Bash calls before an Opus lane's first file change, with 153 of 187 observed lanes reaching
+their first *commit* before any of them.
+
+`context-snippets.ts` closes that one gap and nothing more. It reads the symbols the brief itself
+names — `path#symbol`, a backticked token, or a camelCase token — and returns the exact lines of
+those symbols at ONE named commit, ±20 lines of context, under a hard 8192-byte cap. It persists
+nothing, registers nothing, and adds no read capability: a lane that could not see a file before
+cannot see it now.
+
+Four properties are the whole design, and each was paid for by a wrong first version:
+
+- **Two phases.** `planSnippets` is pure over the brief text plus the tree LISTING and answers which
+  few files may be opened; only then are those files read and `buildSnippetPackage` cuts. A
+  one-phase module would have had to hold the tree to find one symbol — `server.ts` alone is ~1.5 MB.
+- **Coverage before context.** Every symbol is placed at its body alone first; leftover budget buys
+  context afterwards. Taking ±20 greedily displaced two explicitly QUALIFIED references on this
+  module's own brief. No single hit may exceed half the block; an oversized body is CUT and says so.
+- **A label may never out-claim its excerpt.** Overlaps merge only after every range is final: an
+  earlier version fused four symbols 210 lines apart, then clipped the result and shipped a label
+  naming three symbols the delivered lines did not contain.
+- **Every refusal has its own name.** Absolute path, `..` escape, symlink, gitlink, untracked,
+  private overlay, unsupported kind, binary, unreadable, symbol-not-found, symbol-ambiguous,
+  budget-exhausted. A qualified reference that was refused also BLOCKS the bare fallback for that
+  symbol — answering `link.ts#alphaOne` with `alpha.ts#alphaOne` is picking some hit and labelling
+  it as the one asked for.
+
+What it does not do: it never widens a lane's surface, never confirms a `files` list, never judges a
+note, and a CLARIFY lane receives no package at all — for the exit footer's reason, that such a lane
+was told to settle what done means and stop.
+
 ## 7. Checklist for a good brief
 
 - [ ] **Environment:** the files/constraints/interfaces this task actually touches — curated, not exhaustive.

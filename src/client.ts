@@ -11089,7 +11089,7 @@ let opsBusy = false;
 // GET /api/fleet-report when this panel opens and again when that number MOVES while it is open —
 // the attention panel's rule exactly, for its reason.
 interface OwnerReportRow {
-  id: string; reportedAt: number; status: "complete" | "needs-main" | "failed"; text: string;
+  id: string; reportedAt: number; status: "complete" | "needs-main" | "failed" | "handoff"; text: string;
   worker: { slot: number; openedAt: number; sessionId: string | null; cwd: string; branch: string };
   provenance: { taskId: string | null; originId: string | null; programId: string | null;
     instance?: string | null };
@@ -11211,7 +11211,8 @@ function opsRow(e: FleetEventRow): HTMLElement {
   // must not look alike in a list the owner scans.
   const status = String((e.payload ?? {}).status ?? "");
   const chip = e.kind !== "fleet-report" ? "k-review-ready"
-    : status === "failed" ? "k-blocked" : status === "needs-main" ? "k-decision" : "k-review-ready";
+    : status === "failed" ? "k-blocked" : status === "needs-main" ? "k-decision"
+      : status === "handoff" ? "k-handoff" : "k-review-ready";
   head.appendChild(el("span", `attnkind ${chip}`, e.kind));
   head.appendChild(el("span", "attnprog", opsSubject(e)));
   head.appendChild(el("span", "attnmeta", `${opsReceiver(e)} · ${fmtSince(e.createdAt)}`));
@@ -11256,7 +11257,12 @@ function opsRow(e: FleetEventRow): HTMLElement {
 function ownerReportRowEl(r: OwnerReportRow): HTMLElement {
   const row = el("div", "attnrow open");
   const head = el("div", "attnhead");
-  const chip = r.status === "failed" ? "k-blocked" : r.status === "needs-main" ? "k-decision" : "k-review-ready";
+  // a `handoff` is the one status that reports no verdict at all: the lane is still running, one
+  // session further on. Its own chip, so an owner scanning this list never reads a baton as a
+  // finished slice (green) — the two ask for entirely different things from him, which is nothing
+  // and a look, respectively.
+  const chip = r.status === "failed" ? "k-blocked" : r.status === "needs-main" ? "k-decision"
+    : r.status === "handoff" ? "k-handoff" : "k-review-ready";
   if (r.basis === "program") head.appendChild(el("span", "attnkind", "Program"));
   head.appendChild(el("span", `attnkind ${chip}`, r.status));
   head.appendChild(el("span", "attnprog", `slot ${r.worker.slot} · ${r.worker.branch}`));

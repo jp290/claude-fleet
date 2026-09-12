@@ -2721,10 +2721,22 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const foundingSends = (server.match(/await sendText\(free, [A-Za-z]+, true\);/g) ?? []).length;
   const foundingWaits = (server.match(/await waitForFoundingReadiness\(free, /g) ?? []).length;
   const foundingGraces = (server.match(/await Bun\.sleep\(FOUNDING_BOOT_GRACE_MS\);/g) ?? []).length;
-  pin("all SIX founding deliveries are gated — same count of sends, bounded waits and shared boot graces, and no naked 4 s sleep left",
-    foundingSends === 6 && foundingWaits === 6 && foundingGraces === 6
+  // …and the SEVENTH rail (2026-09-12, the lane baton: server.ts#succeedLane) founds into the slot
+  // it ALREADY holds, because the successor keeps the predecessor's worktree. Its three lines
+  // therefore name `s`, not `free`, and counting them in the three numbers above would have meant
+  // widening every regex to a variable name that also matches sends which are not foundings. So it
+  // is asserted as itself, in its own body — the rule is unchanged (no founding delivery without
+  // its grace and its bounded wait), only the shape of the slot it delivers into is.
+  const laneRailStart = server.indexOf("async function succeedLane(");
+  const laneRailBody = laneRailStart < 0 ? ""
+    : server.slice(laneRailStart, server.indexOf("async function handleSelfSucceed", laneRailStart));
+  const laneRailGated = /await Bun\.sleep\(FOUNDING_BOOT_GRACE_MS\);/.test(laneRailBody)
+    && /await waitForFoundingReadiness\(s, stillCurrent\)/.test(laneRailBody)
+    && /await sendText\(s, brief, true\);/.test(laneRailBody);
+  pin("all SEVEN founding deliveries are gated — same count of sends, bounded waits and shared boot graces, and no naked 4 s sleep left",
+    foundingSends === 6 && foundingWaits === 6 && foundingGraces === 7 && laneRailGated
       && !/await Bun\.sleep\(4000\);/.test(server),
-    `sends=${foundingSends} waits=${foundingWaits} graces=${foundingGraces}`);
+    `sends=${foundingSends} waits=${foundingWaits} graces=${foundingGraces} laneRail=${laneRailGated}`);
   // ...and the ONE fixture that has to place a marker on the far side of that grace mirrors its
   // value. `unbound succession` proves the generic rail withholds a founding brief until the ready
   // marker appears, which only holds as a statement about READINESS if the marker lands after the
@@ -4271,6 +4283,11 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
 }
 
 pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (otherwise its runtime checks measure nothing)", /const MIGRATE_PCT = Number\(process\.env\.FLEET_MIGRATE_PCT \?\? 0\) \| 0/.test(server) && /\bFLEET_MIGRATE_PCT=[1-9]\d*\b/.test(read("e2e-isolated.sh")));
+// …and the LANE rail's own threshold beside it. This one is not default-off (40), so the wrapper
+// does not have to arm it for the fixture to fire — which is exactly why it is pinned: a later
+// change of that default to 0 would otherwise turn the lane half of the migration block into a
+// silent no-measurement instead of a failure.
+pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane baton is measured and not merely defaulted into", /const LANE_MIGRATE_PCT = Number\(process\.env\.FLEET_LANE_MIGRATE_PCT \?\? 40\) \| 0/.test(server) && /\bFLEET_LANE_MIGRATE_PCT=[1-9]\d*\b/.test(read("e2e-isolated.sh")));
 
 // --- SLICE A: THE DERIVED PROGRAM PHASE IS A PROJECTION, AND A PROJECTION HAS TO STAY ONE.
 // program-phase.ts computes where a Program row sits on the rail from a closed input list. Three
@@ -4716,7 +4733,11 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   // so a route renamed without it becomes a curl that 404s in every founding brief from then on.
   const selfApi = read("docs/self-api.md");
   const footer = server.match(/const LANE_EXIT_FOOTER = `[\s\S]*?\n`;/)?.[0] ?? "";
-  const statuses = ["complete", "needs-main", "failed"];
+  // The list is quoted here rather than imported so a widening has to be a DELIBERATE edit in two
+  // places: `handoff` (2026-09-12, the lane baton) had to be added to the route's vocabulary and to
+  // this pin, and that is the point — it is the one status that is not a verdict, and a fourth
+  // spelling appearing here unannounced would be exactly what this pin exists to catch.
+  const statuses = ["complete", "needs-main", "failed", "handoff"];
   pin(`${RULE_RECEIVER} — docs/self-api.md carries §fleet-report and §tasks, and the footer names the route (B3)`,
     /^## fleet-report/m.test(selfApi) && /^## tasks/m.test(selfApi)
       && footer.includes("/api/self/fleet-report") && selfApi.includes("/api/self/fleet-report"),
@@ -5307,9 +5328,16 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
       `tasksCapAt=${tasksCapAt} programsCapAt=${programsCapAt}`);
   }
 
+  // THREE mentions since 2026-09-12, not two: the declaration, the dispatch seam, and the LANE
+  // SUCCESSION brief (server.ts#buildLaneSuccessionBrief). The count is still pinned because the
+  // rule it enforces is unchanged — a lane's ending must be appended at a seam, never retyped —
+  // and the successor is a lane that ends exactly like the founding one, so it gets the identical
+  // bytes from the identical constant. A FOURTH mention is a new hand-written copy until proven
+  // otherwise, and that is what should fail here.
   pin(`${RULE_RECEIVER} — the exit footer is appended to mutating briefs only, clarify exempted at the seam`,
     /const deliveredBrief = `\$\{brief\}\$\{notesBlock\}\$\{studioLaneBlock\}\$\{anchorBlock\}\$\{clarify \? "" : LANE_EXIT_FOOTER\}`;/.test(server)
-      && (server.split("LANE_EXIT_FOOTER").length - 1) === 2,
+      && /\]\.join\("\\n"\) \+ LANE_EXIT_FOOTER;/.test(server)
+      && (server.split("LANE_EXIT_FOOTER").length - 1) === 3,
     `LANE_EXIT_FOOTER mentions=${server.split("LANE_EXIT_FOOTER").length - 1}`);
 }
 

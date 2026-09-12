@@ -1423,6 +1423,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   originId: null,
   programId: null,
   releasedBy: null,
+  laneSuccessions: 0,
   selfToken: randomBytes(16).toString("hex"),
   offset: 0,
   lastOutput: 0,
@@ -2830,11 +2831,11 @@ function queueStateSave(): Promise<void> {
     harness: string | null; effort: string | null;
     container: string | null; containerContext: string | null;
     taskId: string | null; originId: string | null; programId: string | null;
-    releasedBy: "owner" | "machine" | null; selfToken: string }> = {};
+    releasedBy: "owner" | "machine" | null; laneSuccessions: number; selfToken: string }> = {};
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, selfToken: s.selfToken };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, helperToken,
@@ -4949,6 +4950,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.releasedBy = null; // ...and the previous occupant's release must never be attributed to this
   // session's outcome row. The dispatcher stamps it back immediately after this call for the one
   // case that has an answer; every other open (hand-opened lane, plain checkout) genuinely has none
+  s.laneSuccessions = 0; // ...and a recycled slot starts a NEW lane's count at zero. succeedLane is
+  // the one caller that stamps it back (prior + 1) right after this call, for the one case where
+  // the slot keeps the same worktree and the same work across the session boundary
   s.selfToken = treeLease?.targetSelfToken ?? randomBytes(16).toString("hex"); // rotate: a recycled slot must not honor
   // whatever session used to hold it
   s.sessionId = null; // ensureSlot pins a new uuid when it creates the pane
@@ -6255,10 +6259,16 @@ function scheduleSuccessionRetirement(s: Slot, pending: SuccessionRetirement): v
   }, Math.max(0, pending.at - Date.now()));
 }
 
-function successionScopeError(s: Slot): Response | null {
+// THE TWO REFUSALS ARE NO LONGER ONE. The steward's holds on both doors — a standing role does not
+// migrate, whatever it is asked. The LANE's holds on /retire only: retiring would end the session
+// and leave the committed work as an orphan worktree, so a lane still has exactly one way out
+// there. On /succeed it now has a rail of its own (succeedLane), which is the opposite of the old
+// sentence's premise: a lane whose context is full cannot always land, and telling it to land was
+// telling it to do the one thing it was too full to do well.
+function successionScopeError(s: Slot, opts: { lane: "refuse" | "own-rail" }): Response | null {
   if (s.label === STEWARD_LABEL)
     return json({ error: "the ⚙ steward is a standing role — it does not migrate" }, 409);
-  if (s.worktree)
+  if (s.worktree && opts.lane === "refuse")
     return json({ error: "a lane lands — it does not migrate" }, 409);
   return null;
 }
@@ -6362,8 +6372,177 @@ async function gameMakerCheckpointError(program: Program, s: Slot): Promise<stri
   return null;
 }
 
+// --- THE LANE'S BATON ---------------------------------------------------------------------------
+// A lane whose measured context is filling used to have exactly one exit: land. That is the wrong
+// instrument for the case this rail exists for — a task of n cuts whose lane is at 48% after cut
+// two has nothing to land yet, and the rulebook's own answer ("stop and report") throws the
+// half-built state away. So the lane hands the baton to a FRESH SESSION ON THE SAME WORKTREE:
+// same branch, same slot, same queue rows, same Program. Nothing lands, nothing is torn down, and
+// the only thing that changes is which conversation is holding the pane.
+//
+// WHAT THE SUCCESSOR INHERITS IS THE TREE, NOT A PROSE SUMMARY. That is why the uncommitted-work
+// refusal below is hard: the branch IS the handover, and a baton passed over a dirty tree is a
+// loss dressed as a handover. The report the predecessor files (status `handoff`) is the second,
+// smaller half — what is open and what comes next — and it reaches the coordinator's inbox through
+// the rail every other lane result already uses.
+const LANE_SUCCESSION_LOG_LINES = 80;   // enough to read a multi-cut lane's own history…
+const LANE_SUCCESSION_LOG_CHARS = 6000; // …bounded, because this is a founding prompt, not a journal
+const LANE_SUCCESSION_STATUS_SHOWN = 20; // how many porcelain lines the refusal quotes back
+
+// The predecessor's own handover text: the LAST `handoff` report THIS occupant filed. Keyed on the
+// occupant (slot + openedAt), never on the slot alone — after one succession the same slot carries
+// the predecessor's row and the successor's, and a lane that succeeds twice must not hand session 3
+// what session 1 wrote. `null` is a real answer (the lane succeeded without filing one) and is
+// rendered as the absence it is rather than silently omitted.
+function laneHandoffReportFor(s: Slot): FleetReport | null {
+  const mine = fleetReports.filter((r) => r.status === "handoff"
+    && r.worker.slot === s.id && r.worker.openedAt === s.openedAt);
+  return mine.length ? mine[mine.length - 1]! : null;
+}
+
+function laneSuccessionRowLines(rows: readonly Task[]): string {
+  if (!rows.length)
+    return "(diese Lane hält keine Queue-Zeile — sie wurde von Hand geöffnet; der Auftrag steht in der Pane-Historie deiner Vorgängerin, die du NICHT mehr lesen kannst. Frage nach, statt zu raten.)";
+  // brief ?? text, exactly the order briefAndSend delivered the first time: a sharpened brief is
+  // the bytes the lane was founded on, and the raw row is what a lane without one received.
+  return rows.map((row, i) => {
+    const head = rows.length > 1 ? `--- Zeile ${i + 1}/${rows.length} (${row.id})\n` : "";
+    return `${head}${row.brief?.text ?? row.text}`;
+  }).join("\n\n");
+}
+
+function buildLaneSuccessionBrief(facts: { branch: string; base: string; session: number;
+  rows: readonly Task[]; log: string; handoff: FleetReport | null }): string {
+  const handoff = facts.handoff
+    ? `fleet-report ${facts.handoff.id}:\n${facts.handoff.text}`
+    : "(kein handoff-Report — deine Vorgängerin hat keinen gefiled. Was offen ist, steht nur im Baum: lies die Commits oben und den Auftrag.)";
+  return [
+    `[fleet staffelstab] Du bist Session ${facts.session} DIESER Lane — gleicher Worktree, gleicher Branch (${facts.branch}), gleicher Slot, gleiche Queue-Zeile(n).`,
+    "Deine Vorgängerin hat übergeben, weil ihr Kontext voll lief; ihre Arbeit ist committet und steht unter dir.",
+    "Der Auftrag ist unverändert. Lies zuerst den Auftrag, dann was schon drin ist, dann die Übergabe.",
+    "",
+    "--- DER AUFTRAG (unverändert, im Wortlaut)",
+    laneSuccessionRowLines(facts.rows),
+    "",
+    `--- WAS SCHON DRIN IST (git log --oneline ${facts.base}..HEAD)`,
+    facts.log || "(noch kein Commit auf diesem Branch)",
+    "",
+    "--- DER BAUM JETZT (git status --porcelain)",
+    "(sauber — das war die Bedingung dieser Übergabe)",
+    "",
+    "--- DIE ÜBERGABE DEINER VORGÄNGERIN",
+    handoff,
+  ].join("\n") + LANE_EXIT_FOOTER;
+}
+
+// the queue rows this lane holds, captured before openSlot's detachSlotTasks answers them, and
+// restored after it. Everything here is what the row said WHILE the lane held it: a succession is
+// not an abort, so the rows must come out of it exactly as they went in.
+interface LaneRowHold { task: Task; note: string | null }
+
+async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn,
+  expected: SuccessionPredecessorIdentity): Promise<Response> {
+  const ref = s.worktree!;
+  const cwd = expected.cwd;
+  // A merge/land in flight owns this tree and this slot; recycling the pane underneath it would
+  // leave the job talking to a session that no longer exists. Same reservation the land path holds.
+  if (mergeInflight.has(s.id))
+    return json({ error: "a merge is running on this lane — hand the baton over after it settles" }, 409);
+  const status = await statusLines(cwd);
+  if (status.code !== 0)
+    return json({ error: "git status could not be read in this worktree — the tree cannot be proved clean, and a baton over an unproven tree is the loss this gate exists to prevent" }, 409);
+  if (status.lines.length)
+    return json({ error: "the worktree is not clean — commit your work (and leave no untracked files) before handing the baton over; a successor inherits the BRANCH, so anything uncommitted is simply lost",
+      status: status.lines.slice(0, LANE_SUCCESSION_STATUS_SHOWN) }, 409);
+
+  // read the successor's facts from the tree BEFORE the pane is recycled
+  const base = ref.base ?? await integrationBranch(ref.repo) ?? "main";
+  const logRead = await gitRead(cwd, "log", "--oneline", `${base}..HEAD`);
+  const log = (logRead.code === 0 ? logRead.out : "(git log konnte nicht gelesen werden)")
+    .split("\n").slice(0, LANE_SUCCESSION_LOG_LINES).join("\n").slice(0, LANE_SUCCESSION_LOG_CHARS);
+  const hold: LaneRowHold[] = waveRowsOf(s.id).map((task) => ({ task, note: task.note }));
+  const session = s.laneSuccessions + 2; // the founding session was 1; this is the n-th successor
+  const brief = buildLaneSuccessionBrief({ branch: ref.branch, base, session,
+    rows: hold.map((h) => h.task), log, handoff: laneHandoffReportFor(s) });
+  // git and the report read are awaits; the owner may have killed or recycled this slot inside them.
+  if (!sameSuccessionOccupant(s, expected))
+    return json({ error: "predecessor session changed during succession preflight — retry from the current occupant" }, 409);
+
+  // carried across openSlot, which clears all four by design (no occupant inherits the previous
+  // one's queue row) — the dispatcher restamps them the same way after its own open.
+  const provenance = { taskId: s.taskId, originId: s.originId, programId: s.programId,
+    releasedBy: s.releasedBy };
+  const harness = s.harness;
+  const box: BoxPin = { container: s.container, containerContext: s.containerContext };
+  const successions = s.laneSuccessions + 1;
+  // the slot briefly has no cwd inside openSlot's teardown; without this reservation the dispatch
+  // tick could read it as free and found a different lane into it mid-handover.
+  laneSpawn.add(s.id);
+  try {
+    try {
+      await openSlot(s, cwd, ref, spawn.model, label, harness, spawn.effort, box);
+    } catch (e) {
+      // The predecessor's pane is already gone at this point and its rows went back to the queue
+      // with detachSlotTasks' reason, which is the recoverable state: the worktree and its commits
+      // are untouched on disk, and the lane can be re-attached. Said here so the caller does not
+      // have to infer it from an empty slot.
+      return json({ error: `successor open failed: ${e instanceof Error ? e.message : e} — the worktree and its commits are intact; re-attach the lane and the rows are back in the queue` }, 500);
+    }
+    s.taskId = provenance.taskId;
+    s.originId = provenance.originId;
+    s.programId = provenance.programId;
+    s.releasedBy = provenance.releasedBy;
+    s.laneSuccessions = successions;
+    // ...and the rows come back exactly as they were. detachSlotTasks reads a recycle as an ABORT
+    // and answers `pending` + "slot recycled before landing"; here the lane did not end, so the
+    // abort's answer is the wrong one and is reversed on the same rows it was written to.
+    for (const { task, note } of hold) {
+      task.status = "sent";
+      task.slot = s.id;
+      task.note = note;
+    }
+    saveState();
+
+    const openedAt = s.openedAt;
+    const stillCurrent = (): boolean => !!s.cwd && s.openedAt === openedAt;
+    await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
+    // NO CLEANUP KILL ON THIS RAIL, unlike the unbound main-session one. There the successor slot
+    // was empty and killing it cost nothing; here the slot holds a worktree with committed work,
+    // and killing it would turn a delivery failure into an orphaned lane. A standing lane whose
+    // brief did not arrive is visible on the board and recoverable with one owner send; an orphan
+    // is neither. Every failure below therefore reports and leaves the session standing.
+    const failed = (reason: string): Response => {
+      audit("lane_succession", s.id, `${ref.branch} session=${session} brief-undelivered: ${reason}`);
+      return json({ error: `successor stands on ${ref.branch} but its founding brief was not delivered (${reason}) — send it by hand`,
+        slot: s.id, successions, delivered: false }, 500);
+    };
+    if (!stillCurrent()) return failed("successor slot changed during boot");
+    const gate = await canDeliver(s, { now: Date.now(), idleMs: 0,
+      killSwitch: false, quietHours: false, harness: false });
+    if (!gate.ok) return failed(`delivery held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})`);
+    const readiness = await waitForFoundingReadiness(s, stillCurrent);
+    if (!readiness.ok) return failed(readiness.reason);
+    if (!stillCurrent()) return failed("successor slot changed before founding delivery");
+    try {
+      await sendText(s, brief, true);
+    } catch (e) {
+      return failed(e instanceof Error ? e.message : String(e));
+    }
+    const now = Date.now();
+    s.history = [...s.history, { text: brief, ts: now }].slice(-MAX_HISTORY);
+    saveHistory(s);
+    logPrompt(s, brief, "auto", now);
+    audit("lane_succession", s.id, `${ref.branch} session=${session} successions=${successions}`);
+    await saveStateNow();
+    return json({ ok: true, slot: s.id, label: s.label, branch: ref.branch,
+      successions, session, delivered: true });
+  } finally {
+    laneSpawn.delete(s.id);
+  }
+}
+
 async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
-  const scoped = successionScopeError(s);
+  const scoped = successionScopeError(s, { lane: "own-rail" });
   if (scoped) return scoped;
   // Slot is one mutable object reused by every occupant. Capture the authenticated occupant before
   // the first await; a later token alone cannot distinguish the old session from a recycled row.
@@ -6401,6 +6580,17 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
       effort: body?.effort !== undefined ? eo.effort : s.effort,
     };
     const predecessor = { cwd: predecessorIdentity.cwd, token: identity };
+
+    // THE LANE RAIL, decided before every question below it — a lane is never a Program-MAIN, never
+    // the Supervisor and never a game-maker, so none of the classification that follows has an
+    // answer for it. `carry` is refused rather than ignored for the game-maker rail's reason: the
+    // `handoff` report IS this rail's one handover channel, and a second, unpersisted one could
+    // disagree with it with no way to tell which the successor obeyed.
+    if (s.worktree) {
+      if (carry !== null)
+        return json({ error: "a lane succession takes no carry — file a fleet-report with status `handoff` (done / open / next step / open numbers) and succeed without one; that report is the handover the successor is shown" }, 409);
+      return await succeedLane(s, label, spawn, predecessorIdentity);
+    }
 
     // WHICH RAIL THIS IS, resolved BEFORE the handover gate rather than after it. The ambiguity
     // refusals never needed a git read to answer, and what a succession must PROVE turns out to be
@@ -6538,7 +6728,7 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
 }
 
 async function handleSelfRetire(s: Slot): Promise<Response> {
-  const scoped = successionScopeError(s);
+  const scoped = successionScopeError(s, { lane: "refuse" });
   if (scoped) return scoped;
   if (successionInflight.has(s.selfToken))
     return json({ error: "cannot retire while succession is in flight for this session" }, 409);
@@ -9596,7 +9786,9 @@ const LANE_EXIT_FOOTER = `
 
    status is exactly one of: ${FLEET_REPORT_STATUSES.join(" · ")} — complete = the slice is done and
    verified, needs-main = you finished what you could and a decision is owed, failed = it did not
-   work and you are saying so. \`text\` is prose for a human reader: what you did, the quoted
+   work and you are saying so, handoff = your context is filling and you are laying the baton down
+   (done / open / next step / open numbers) for a fresh session that continues on THIS worktree —
+   file it, then POST /api/self/succeed. \`text\` is prose for a human reader: what you did, the quoted
    verification result, and one line for anything left unresolved. The body takes ONLY those two
    fields. A report is a MESSAGE, never a state change — it does not move your task's status, does
    not land anything, and does not deploy.
@@ -11705,6 +11897,16 @@ const BACKLOG_NUDGE_MAX = Math.max(0, Number(process.env.FLEET_BACKLOG_NUDGE_MAX
 // into a main pane and can create a successor, so every deployment parameter is explicit and 0 on
 // the threshold means no timer at all — not a 60s no-op that still reads every transcript.
 const MIGRATE_PCT = Number(process.env.FLEET_MIGRATE_PCT ?? 0) | 0;
+// THE LANE'S OWN THRESHOLD, lower than a MAIN's on purpose: a lane is a single cut of work whose
+// output quality is what the fill costs, and the measured case that bought this rule ended at
+// 48.7% of 1M with 111 suite-wrapper lines and 49 FAIL lines in its transcript (Slot 7,
+// 2026-09-12). 0 = off for lanes exactly as MIGRATE_PCT = 0 is off for mains.
+//
+// MIGRATE_PCT REMAINS THE MASTER SWITCH — the timer below is still registered only when it is > 0,
+// so this default arms NOTHING on a deployment that never armed migration at all. That is what
+// keeps "live default off" true while the lane threshold carries a real number: arming is one env
+// line (FLEET_MIGRATE_PCT), and a fleet that arms it gets the lane rail at 40 unless it says otherwise.
+const LANE_MIGRATE_PCT = Number(process.env.FLEET_LANE_MIGRATE_PCT ?? 40) | 0;
 const MIGRATE_IDLE_MS = Number(process.env.FLEET_MIGRATE_IDLE_MS ?? 120_000) | 0;
 const MIGRATE_COOLDOWN_MS = Number(process.env.FLEET_MIGRATE_COOLDOWN_MS ?? 900_000) | 0;
 const MIGRATE_TICK_MS = Number(process.env.FLEET_MIGRATE_TICK_MS ?? 60_000) | 0;
@@ -12393,32 +12595,60 @@ function migrateMessage(fill: ContextFill): string {
     + "(2) POST /api/self/succeed mit dem x-fleet-self-token aus der Umgebungsvariablen FLEET_SELF_TOKEN.";
 }
 
+// THE LANE'S VERSION OF THE SAME EXIT, and the three steps differ because a lane's handover
+// medium is different: it has no HANDOFF.md to commit (that file belongs to the main checkout and
+// a lane's copy would land on the integration branch as noise), it has a typed report rail that
+// already reaches its coordinator, and its successor inherits the SAME worktree — so the state
+// transfer is the branch itself plus one report. Same measured-pct opening as the main message on
+// purpose: both are the server saying what it measured, and a lane must not have to learn a
+// second way of hearing that.
+function laneMigrateMessage(fill: ContextFill): string {
+  return `[fleet] Dein Kontext ist bei ${fill.pct}% (${fill.usedTokens} von ${fill.windowTokens} Tokens im Fenster). `
+    + "Das ist ein Server-Prädikat, keine Meldung von dir. Diese Lane übergibt jetzt den Staffelstab, "
+    + "statt schlechter zu werden — in dieser Reihenfolge: "
+    + "(1) bring den laufenden Schnitt zu Ende und committe (`git status --porcelain` muss leer sein); "
+    + "(2) file einen fleet-report mit status `handoff` (fertig / offen / nächster Schritt / offene Zahlen); "
+    + "(3) POST /api/self/succeed mit dem x-fleet-self-token aus der Umgebungsvariablen FLEET_SELF_TOKEN. "
+    + "Deine Nachfolgerin ist eine frische Session auf DIESEM Worktree, Branch und Slot; "
+    + "sie bekommt den Brief, `git log`, `git status` und deinen handoff-Text als ersten Prompt.";
+}
+
 let migrateTickBusy = false;
 async function tickMigrate(): Promise<void> {
   const now = Date.now();
-  const due: { s: Slot; fill: ContextFill; attempt: MigrateAttempt }[] = [];
+  const due: { s: Slot; fill: ContextFill; lane: boolean; attempt: MigrateAttempt }[] = [];
   for (const s of slots) {
-    if (!s.cwd || s.worktree !== null || s.label === STEWARD_LABEL || s.awaiting === "owner" || !s.sessionId) continue;
+    if (!s.cwd || s.label === STEWARD_LABEL || s.awaiting === "owner" || !s.sessionId) continue;
+    // TWO RAILS, ONE TICK. The kind is read off the slot and decides BOTH the threshold and the
+    // text; a lane is no longer skipped here (it was until 2026-09-12, when the only exit a lane
+    // had was the land it might be nowhere near). `awaiting === "owner"` still covers the clarify
+    // lane above: it was told to stop and wait, and a handover nudge is work it must not start.
+    const lane = s.worktree !== null;
+    const threshold = lane ? LANE_MIGRATE_PCT : MIGRATE_PCT;
+    if (threshold <= 0) continue; // a rail whose own threshold is 0 is off even while the tick runs
     const fill = contextFill(s);
-    if (fill === null || fill.pct < MIGRATE_PCT) continue; // cannot tell is never coerced to zero
+    if (fill === null || fill.pct < threshold) continue; // cannot tell is never coerced to zero
     const prior = migrateTried.get(s.id);
     const attempt = prior?.sessionId === s.sessionId
       ? prior : { sessionId: s.sessionId, nudges: 0, lastAt: 0, gaveUp: false };
     if (attempt.gaveUp || attempt.nudges >= MIGRATE_MAX_NUDGES) continue;
     if (attempt.lastAt && now - attempt.lastAt < MIGRATE_COOLDOWN_MS) continue;
-    due.push({ s, fill, attempt });
+    due.push({ s, fill, lane, attempt });
   }
   if (!due.length) return; // common case: no tmux/ps calls
   if (migrateTickBusy) return;
   migrateTickBusy = true;
   try {
-    for (const { s, fill, attempt } of due) {
+    for (const { s, fill, lane, attempt } of due) {
       // Same unobserved-pane rule as tickWatches: contextFill's null currently masks this for a
       // fresh transcript, but that unrelated absence semantic is not an idle-safety guarantee.
       if (MIGRATE_IDLE_MS > 0 && s.lastOutput === 0) continue;
       const verdict = await canDeliver(s, { now, idleMs: MIGRATE_IDLE_MS, quietHours: true });
-      if (!verdict.ok || s.sessionId !== attempt.sessionId || !s.cwd || s.worktree !== null) continue;
-      const text = migrateMessage(fill);
+      // ...and the KIND is re-checked with the rest of the identity: a slot recycled from a lane
+      // into a plain checkout (or back) during these awaits would otherwise be handed the other
+      // rail's instructions, which name an exit it does not have.
+      if (!verdict.ok || s.sessionId !== attempt.sessionId || !s.cwd || (s.worktree !== null) !== lane) continue;
+      const text = lane ? laneMigrateMessage(fill) : migrateMessage(fill);
       let acceptance: Acceptance;
       try {
         ({ acceptance } = await sendText(s, text, true, { rollbackOwnPayload: true }));
@@ -12445,7 +12675,7 @@ async function tickMigrate(): Promise<void> {
       s.history = [...s.history, { text, ts: now }].slice(-MAX_HISTORY);
       saveHistory(s);
       logPrompt(s, text, "auto", now, undefined, acceptance);
-      console.log(`migration: nudged slot ${s.id} at ${fill.pct}% (${attempt.nudges}/${MIGRATE_MAX_NUDGES})`);
+      console.log(`migration: nudged ${lane ? "lane " : ""}slot ${s.id} at ${fill.pct}% (${attempt.nudges}/${MIGRATE_MAX_NUDGES})`);
     }
   } finally {
     migrateTickBusy = false;
@@ -17971,6 +18201,13 @@ interface LaneOutcome {
   // retention, and reconstructing why this lane was closed means reading that id — never a pane.
   autoClose?: { reportId: string; disposition: FleetReportDisposition; decidedAt: number;
     decidedBySlot: number };
+  // HOW MANY SESSIONS THIS LANE TOOK, minus the first (Slot.laneSuccessions, written by
+  // server.ts#succeedLane). Present only where at least one baton was handed over: a key on every
+  // row would make "ran in one session" and "row predates the field" the same reading, which is the
+  // same honest-absence bargain releasedBy/landedBy/resolvedBy make above. It is the ONLY field on
+  // this row that can say a lane spanned more than one conversation — `sessionMs` measures the last
+  // session alone, so a relay of three reads as short work without this number beside it.
+  successions?: number;
 }
 // total + per-tool tool_result bytes. `byTool` keys are the tool NAMES from the matching tool_use
 // entry; a tool_result whose tool_use id is not in the same file lands under "?" rather than being
@@ -18196,6 +18433,7 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     // none, for the same reason resolvedBy is: a key on every row makes "no queue row" and
     // "release not recorded" the same reading.
     ...(s.releasedBy ? { releasedBy: s.releasedBy } : {}),
+    ...(s.laneSuccessions > 0 ? { successions: s.laneSuccessions } : {}),
     shortstat,
     commitCount,
     filesTouched,
@@ -24260,6 +24498,11 @@ if (existsSync(STATE_FILE)) {
         // "cannot say"); only the two recognised values come back, same stance as `awaiting`.
         const prl = (v as { releasedBy?: unknown }).releasedBy;
         if (prl === "owner" || prl === "machine") s.releasedBy = prl;
+        // ...and the baton count with it: a deploy in the middle of a multi-session lane must not
+        // make the ledger say the lane only ever had one session. A row written before the field
+        // keeps the initialized 0, which is the honest reading for every lane that predates it.
+        const pls = (v as { laneSuccessions?: unknown }).laneSuccessions;
+        if (typeof pls === "number" && Number.isInteger(pls) && pls >= 0) s.laneSuccessions = pls;
         const wt = (v as { worktree?: unknown }).worktree;
         if (typeof wt === "object" && wt !== null
           && typeof (wt as { repo?: unknown }).repo === "string" && typeof (wt as { branch?: unknown }).branch === "string") {

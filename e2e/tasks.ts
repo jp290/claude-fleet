@@ -1663,7 +1663,7 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(d-footer) a MUTATING brief ends with the three exit acts — commit (no untracked), typed fleet-report, idle",
       lifecycleFooter.includes("1. COMMIT") && lifecycleFooter.includes("NO untracked files")
       && lifecycleFooter.includes("/api/self/fleet-report")
-      && ["complete", "needs-main", "failed"].every((status) => lifecycleFooter.includes(status))
+      && ["complete", "needs-main", "failed", "handoff"].every((status) => lifecycleFooter.includes(status))
       && lifecycleFooter.includes("3. THEN GO IDLE"),
       JSON.stringify(lifecycleFooter).slice(0, 400));
     const expectedHead = spawnSync("git", ["-C", REPO, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();

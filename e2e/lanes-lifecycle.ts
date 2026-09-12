@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { lstatSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { laneDoneLooking, laneHostCommitLooking, type LaneSignalView } from "../lane-signals";
-import { BASE, REPO, ROOT, check, get, post, tmuxOut } from "./harness";
+import { BASE, REPO, ROOT, check, get, plogRead, post, restartSrv, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
@@ -714,5 +714,172 @@ export async function run(lc: LaneCtx): Promise<void> {
     await post(`/api/slots/${dflt.slot ?? 0}/kill`, {});
     spawnSync("git", ["-C", cRepo, "worktree", "remove", "--force", dflt.cwd ?? ""]);
     await setMergeMode("blocked");
+  }
+  // === THE LANE'S BATON: a lane whose context filled hands over on the SAME worktree ============
+  // Until 2026-09-12 POST /api/self/succeed answered a lane 409 "a lane lands — it does not
+  // migrate". Measured that day: Slot 7 ended a two-row wave at 48.7 % of a 1M window, its pane
+  // stream carrying 111 suite-wrapper lines and 49 FAIL lines. A lane that full is in the worst
+  // position to do the one thing that refusal told it to do. So it now hands the baton to a fresh
+  // session on the same worktree, branch, slot and queue rows — and what this block proves is that
+  // NOTHING ELSE moves: no land, no second worktree, no row status, and nothing at all when the
+  // tree is dirty.
+  {
+    type BatonState = {
+      slots?: Record<string, { selfToken?: string; openedAt?: number; taskId?: string | null;
+        programId?: string | null; laneSuccessions?: number; worktree?: { branch?: string } | null }>;
+      tasks?: { id: string; status: string; slot: number | null; programId?: string | null }[];
+      programs?: Record<string, unknown>[];
+    };
+    const batonState = (): BatonState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as BatonState;
+    const batonSlot = (id: number) => batonState().slots?.[String(id)];
+    const selfGet = (token: string, path = "/api/self"): Promise<Response> =>
+      fetch(BASE + path, { headers: { "x-fleet-self-token": token } });
+    const selfPost = (token: string, path: string, body: unknown): Promise<Response> =>
+      fetch(BASE + path, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": token },
+        body: JSON.stringify(body) });
+
+    const BATON_TASK_TEXT = "BATON FIXTURE: cut one of three — the relay's founding row, quoted back to the successor verbatim";
+    const BATON_HANDOFF = "BATON HANDOFF: cut one committed and green; cut two is the parser; open number is the 3.4 s wrapper wait.";
+    const lnRes = await post("/api/lanes", { repo: REPO });
+    const ln = (await lnRes.json()) as { ok?: boolean; slot?: number; cwd?: string; branch?: string };
+    const batonCwd = ln.cwd ?? "";
+    const batonBranch = ln.branch ?? "";
+    const batonSlotId = ln.slot ?? 0;
+    check("baton setup: a lane for the succession fixture exists on disk",
+      ln.ok === true && batonSlotId > 0 && batonBranch !== "" && exists(batonCwd), JSON.stringify(ln));
+    const taskRes = await post("/api/tasks", { text: BATON_TASK_TEXT, queue: false });
+    const batonTaskId = ((await taskRes.json()) as { task?: { id: string } }).task?.id ?? "";
+    check("baton setup: the founding queue row exists", batonTaskId !== "", batonTaskId);
+
+    // committed lane work — the successor inherits the BRANCH, so this is the state it must be shown
+    writeFileSync(`${batonCwd}/baton.txt`, "cut one\n");
+    spawnSync("git", ["-C", batonCwd, "add", "baton.txt"]);
+    spawnSync("git", ["-C", batonCwd, "commit", "-qm", "baton: cut one of the relay"]);
+
+    // …and what only the dispatcher writes: the row this lane holds and the Program it belongs to.
+    // Planted through the state file exactly as the migration and acceptance-door fixtures do,
+    // because no owner route binds an EXISTING lane to a row, and the subject of this block is the
+    // handover, not the dispatch that would otherwise have to precede it.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const batonProgramId = "ba7017".padEnd(24, "0");
+    const plant = batonState();
+    const plantedAt = Date.now();
+    plant.programs = [...(plant.programs ?? []), {
+      id: batonProgramId, title: "Baton relay fixture", intent: "Prove a lane hands over on its own worktree",
+      successCriterion: "A successor session continues the same branch", nonGoals: [],
+      decisions: [], evidence: [], openQuestions: [], status: "active",
+      createdAt: plantedAt - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: plantedAt - 900, activatedAt: plantedAt - 800,
+    }];
+    const plantedSlot = plant.slots?.[String(batonSlotId)];
+    if (plantedSlot) { plantedSlot.taskId = batonTaskId; plantedSlot.programId = batonProgramId; }
+    const plantedRow = plant.tasks?.find((t) => t.id === batonTaskId);
+    if (plantedRow) { plantedRow.status = "sent"; plantedRow.slot = batonSlotId; plantedRow.programId = batonProgramId; }
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(plant, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const batonTok = batonSlot(batonSlotId)?.selfToken ?? "";
+    const batonOpenedAt = batonSlot(batonSlotId)?.openedAt ?? 0;
+    check("baton setup: the lane carries its row and its Program, and its credential is readable",
+      /^[0-9a-f]{32}$/.test(batonTok) && batonSlot(batonSlotId)?.taskId === batonTaskId
+        && batonSlot(batonSlotId)?.programId === batonProgramId
+        && batonState().tasks?.find((t) => t.id === batonTaskId)?.status === "sent",
+      JSON.stringify({ task: batonSlot(batonSlotId)?.taskId, program: batonSlot(batonSlotId)?.programId,
+        row: batonState().tasks?.find((t) => t.id === batonTaskId)?.status }));
+
+    // A DIRTY TREE REFUSES, AND SPAWNS NOTHING. The successor inherits the branch and nothing else,
+    // so an uncommitted line is not "unfinished work carried over" — it is work destroyed by a
+    // handover that looked like it worked.
+    writeFileSync(`${batonCwd}/baton-uncommitted.txt`, "this line would be lost\n");
+    const dirtyRes = await selfPost(batonTok, "/api/self/succeed", {});
+    const dirtyBody = (await dirtyRes.json()) as { error?: string; status?: string[] };
+    check("(baton) a lane with an unclean tree is refused 409, and the porcelain lines come back with it",
+      dirtyRes.status === 409 && (dirtyBody.error ?? "").includes("not clean")
+        && (dirtyBody.status ?? []).some((l) => l.includes("baton-uncommitted.txt")),
+      `${dirtyRes.status} ${JSON.stringify(dirtyBody).slice(0, 240)}`);
+    check("(baton) …and that refusal spawned nothing: same occupant, same credential, no baton counted",
+      batonSlot(batonSlotId)?.openedAt === batonOpenedAt
+        && batonSlot(batonSlotId)?.selfToken === batonTok
+        && (batonSlot(batonSlotId)?.laneSuccessions ?? 0) === 0,
+      JSON.stringify(batonSlot(batonSlotId)).slice(0, 200));
+    rmSync(`${batonCwd}/baton-uncommitted.txt`, { force: true });
+
+    // THE HANDOVER DOCUMENT. `handoff` is the fourth report status and the only one that is not a
+    // verdict: it moves no row, needs no HANDOFF.md commit, and lands in the Program's inbox beside
+    // every other result of this lane.
+    const handoffRes = await selfPost(batonTok, "/api/self/fleet-report",
+      { status: "handoff", text: BATON_HANDOFF });
+    const handoffBody = (await handoffRes.json()) as
+      { ok?: boolean; report?: { id: string; status: string; basis: string }; inbox?: string };
+    const programInbox = ((await (await get("/api/programs")).json()) as
+      { programs: { id: string; inbox?: { entries: { id: string; kind: string; ref: string }[] } }[] })
+      .programs.find((p) => p.id === batonProgramId)?.inbox;
+    check("(baton) status `handoff` is accepted and filed into the Program inbox like any other result",
+      handoffRes.ok && handoffBody.report?.status === "handoff" && handoffBody.report?.basis === "program"
+        && (programInbox?.entries ?? []).some((e) => e.kind === "fleet-report" && e.ref === handoffBody.report?.id),
+      `${handoffRes.status} ${JSON.stringify(handoffBody).slice(0, 200)} inbox=${JSON.stringify(programInbox?.entries ?? []).slice(0, 200)}`);
+    check("(baton) the row the lane holds is untouched by the report — a report is a MESSAGE",
+      batonState().tasks?.find((t) => t.id === batonTaskId)?.status === "sent",
+      JSON.stringify(batonState().tasks?.find((t) => t.id === batonTaskId) ?? {}).slice(0, 160));
+
+    // …and `carry` is refused rather than ignored: two handover channels can disagree, and nobody
+    // could then say which one the successor obeyed.
+    const carryRes = await selfPost(batonTok, "/api/self/succeed", { carry: "a second channel" });
+    const carryText = await carryRes.text();
+    check("(baton) a lane succession takes no carry — the handoff report is the one handover channel",
+      carryRes.status === 409 && carryText.includes("takes no carry"),
+      `${carryRes.status} ${carryText.slice(0, 200)}`);
+
+    // THE HANDOVER ITSELF.
+    const promptsBefore = (await plogRead()).filter((e) => e.slot === batonSlotId).length;
+    const succeedRes = await selfPost(batonTok, "/api/self/succeed", {});
+    const succeedBody = (await succeedRes.json()) as { ok?: boolean; slot?: number; branch?: string;
+      successions?: number; session?: number; delivered?: boolean; error?: string };
+    check("(baton) a clean lane succeeds into its OWN slot, on its own branch, counting the baton",
+      succeedRes.ok && succeedBody.slot === batonSlotId && succeedBody.branch === batonBranch
+        && succeedBody.successions === 1 && succeedBody.session === 2 && succeedBody.delivered === true,
+      `${succeedRes.status} ${JSON.stringify(succeedBody)}`);
+    const after = batonSlot(batonSlotId);
+    check("(baton) the successor is a NEW session on the SAME lane: worktree, row and Program held, credential and occupant rotated",
+      after?.worktree?.branch === batonBranch && after?.taskId === batonTaskId
+        && after?.programId === batonProgramId && after?.laneSuccessions === 1
+        && after?.openedAt !== batonOpenedAt && after?.selfToken !== batonTok
+        && exists(batonCwd),
+      JSON.stringify(after).slice(0, 240));
+    const oldTokenNow = (await selfGet(batonTok)).status;
+    check("(baton) the predecessor's credential went with its session — the old token authenticates nothing",
+      oldTokenNow === 401, String(oldTokenNow));
+    const heirTok = after?.selfToken ?? "";
+    const heirSelf = (await (await selfGet(heirTok)).json()) as
+      { slot?: number; lane?: { repo: string; branch: string } | null };
+    check("(baton) GET /api/self of the successor names the SAME lane it inherited",
+      heirSelf.slot === batonSlotId && heirSelf.lane?.branch === batonBranch
+        && typeof heirSelf.lane?.repo === "string",
+      JSON.stringify(heirSelf).slice(0, 200));
+    check("(baton) the queue row never left the lane — still `sent`, still pointing at this slot",
+      batonState().tasks?.find((t) => t.id === batonTaskId)?.status === "sent"
+        && batonState().tasks?.find((t) => t.id === batonTaskId)?.slot === batonSlotId,
+      JSON.stringify(batonState().tasks?.find((t) => t.id === batonTaskId) ?? {}).slice(0, 160));
+
+    const heirPrompts = (await plogRead()).filter((e) => e.slot === batonSlotId);
+    const heirBrief = heirPrompts.length > promptsBefore ? heirPrompts[heirPrompts.length - 1]!.text : "";
+    check("(baton) the successor's FIRST prompt carries the brief, its own git log, the clean-tree proof, the handoff text and the exit footer",
+      heirBrief.includes(BATON_TASK_TEXT) && heirBrief.includes("baton: cut one of the relay")
+        && heirBrief.includes("git status --porcelain") && heirBrief.includes(BATON_HANDOFF)
+        && heirBrief.includes("HOW THIS LANE ENDS") && heirBrief.includes(batonBranch),
+      JSON.stringify(heirBrief).slice(0, 400));
+
+    // …and /retire is untouched by all of this: retiring would end the session and leave the
+    // committed work as an orphan worktree, so a lane still has exactly one exit there.
+    const laneRetire = await selfPost(heirTok, "/api/self/retire", {});
+    const laneRetireText = await laneRetire.text();
+    check("(baton) /api/self/retire still answers a lane 409 — it lands, it does not migrate",
+      laneRetire.status === 409 && laneRetireText.includes("a lane lands"),
+      `${laneRetire.status} ${laneRetireText.slice(0, 160)}`);
+
+    await post(`/api/slots/${batonSlotId}/kill`, {});
+    spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", batonCwd]);
+    await post(`/api/tasks/${batonTaskId}/delete`, {});
   }
 }

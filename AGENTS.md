@@ -152,6 +152,17 @@ already-running act may finish past the band; new deep or open-ended work past ~
 a fresh agent, a handover, or back to your caller with what you have. Name the call in your
 visible output ("at ~28 %, finishing this slice, then reporting") so the decision is inspectable.
 
+**A LANE HAS ITS OWN EXIT FOR THIS, and it is not landing.** From ~40 % fill (`FLEET_LANE_MIGRATE_PCT`,
+the threshold the server nudges a lane at; `FLEET_MIGRATE_PCT` is the master switch that arms the tick
+at all) a lane hands the baton on instead of getting worse: finish the cut in hand, commit until
+`git status --porcelain` is empty, file one `fleet-report` with status `handoff` (done / open / next
+step / open numbers), then `POST /api/self/succeed`. The successor is a FRESH SESSION ON THE SAME
+WORKTREE — same branch, same slot, same queue rows — and its first prompt carries the brief, the lane's
+own `git log`, the clean-tree proof and that handoff text. An n-cut task is therefore a relay of several
+sessions on one branch, not one session that degrades. Two consequences: an uncommitted tree is refused
+(409 — the successor inherits the BRANCH, so anything uncommitted is lost), and nothing lands at the
+handover; landing stays exactly where it was.
+
 ### Collaboration preferences
 
 Prefer simple mechanisms, ambitious but grounded proposals, ceremony proportional to risk, and

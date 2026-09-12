@@ -30,7 +30,13 @@ export interface GitInfo { branch: string; dirty: number; ahead: number; behind:
 // The route, persisted row and FleetEvent payload share this CLOSED vocabulary. Keeping the value
 // here makes a new spelling fail compilation in both the server and its transport probe instead of
 // silently widening one side. These are reported facts only; no promotion path consumes them.
-export const FLEET_REPORT_STATUSES = ["complete", "needs-main", "failed"] as const;
+// `handoff` is the FOURTH and it is not a verdict about the work: it is the baton a lane whose
+// context is filling lays down for the successor session that continues on the SAME worktree
+// (server.ts#succeedLane). It rides this list rather than a separate object for one reason — the
+// coordinator's inbox is where a lane's result already lands, and a handover that landed somewhere
+// else would be a second place a MAIN has to look. It moves no task status either, so a MAIN sees
+// a lane with a successor entry, never a finished slice.
+export const FLEET_REPORT_STATUSES = ["complete", "needs-main", "failed", "handoff"] as const;
 export type FleetReportStatus = typeof FLEET_REPORT_STATUSES[number];
 export interface FleetReportEventPayload {
   reportId: string;

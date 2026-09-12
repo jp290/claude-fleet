@@ -1334,6 +1334,13 @@ interface Slot {
   // Same lifetime and same honesty rule as `model`: set at spawn, cleared on open/kill so a
   // recycled slot never inherits it, null when this lane came from no queue row at all (a
   // hand-opened lane) or from one released before the field existed.
+  // HOW MANY TIMES THIS LANE HAS HANDED ITS BATON ON (server.ts#succeedLane). 0 for every session
+  // that is still the lane's first, and reset by openSlot with the rest of the occupant's record —
+  // a recycled slot that becomes a DIFFERENT lane must not inherit the count. It is on the Slot
+  // (and therefore in fleet.json) because the outcome recorder runs at TEARDOWN, by which time the
+  // slot is the only object that still knows the lane spanned more than one session: `sessionMs`
+  // measures the LAST one alone, so without this a three-session lane reads as a short one.
+  laneSuccessions: number;
   selfToken: string; // scoped credential for POST /api/self/autos — NEVER the owner token.
   // Minted fresh in openSlot every time the slot is (re)activated, so a recycled slot can't
   // be self-scheduled against by a session that was talking to whatever used to live here.

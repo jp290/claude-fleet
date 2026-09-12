@@ -4337,6 +4337,11 @@ export async function run(ctx: Ctx): Promise<void> {
     // nobody confirmed — and every R3 reader downstream treats that word as the owner's act. Written
     // into fleet.json BY HAND and reloaded, which is the shape §(h6) uses for the same class of hole.
     const forgedId = surfaceTask.id;
+    // The dispatch repo is read off the LIVE server and handed back to the restart below, the same
+    // trick §(j) uses: a bare restartSrv() here would silently drop the one env field later
+    // sections still read, and a check that repairs the state it borrowed is the cheaper contract.
+    const forgeDispatchRepo = ((await (await get("/api/sessions")).json()) as
+      { dispatch: { repo: string } }).dispatch.repo;
     await tmuxOut("kill-session", "-t", "srv");
     const forgedRaw = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
       { tasks?: { id: string; surface?: unknown; files?: unknown; filesOrigin?: unknown }[] };
@@ -4345,7 +4350,7 @@ export async function run(ctx: Ctx): Promise<void> {
     if (forgedRow) forgedRow.surface = { files: ["server.ts"], ranges: null,
       origin: "confirmed", at: Date.now(), sha: "0".repeat(32) };
     writeFileSync(`${ROOT}/fleet.json`, `${JSON.stringify(forgedRaw)}\n`);
-    await restartSrv();
+    await restartSrv(forgeDispatchRepo ? { FLEET_DISPATCH_REPO: forgeDispatchRepo } : {});
     const afterForge = await surfaceOf();
     check("surface: a stored origin:'confirmed' on a row that confirmed nothing is DROPPED at load",
       hadSurface && afterForge?.origin === "derived" && !afterForge.files.includes("server.ts"),

@@ -2476,7 +2476,10 @@ export async function run(ctx: Ctx): Promise<void> {
   const msgUnknownText = await msgUnknownProgram.text();
   const msgController = await selfSend(msgAToken, { to: { kind: "role", role: "controller" },
     payload: { kind: "text", text: "the controller" }, idempotencyKey: "rail-controller" });
-  const msgControllerText = await msgController.text();
+  // the PARSED error, not the raw body: the sentence quotes the role name, and a raw-text
+  // `includes` would be comparing against JSON's backslash-escaped quotes and fail on a server
+  // that is answering correctly. (It did, on the first helper run — the probe, not the code.)
+  const msgControllerText = ((await msgController.json()) as { error?: string }).error ?? "";
   const msgRowsAfterRefusals = (readState().messages as { entries?: unknown[] } | undefined)?.entries?.length ?? -1;
   check("message rail: an address that does not resolve is a NAMED 409 that stores nothing — an unknown Program and the named-but-unaddressable Controller role each say which they are",
     msgUnknownProgram.status === 409 && msgUnknownText.includes("unknown program")

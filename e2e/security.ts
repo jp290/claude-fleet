@@ -116,6 +116,25 @@ const PRE_AUTH_ROUTES = [
   // never overwrites an existing receipt, mints nothing, sends into no pane and moves no status.
   '= /api/self/inbox',
   String.raw`~ /^\/api\/self\/inbox\/([0-9a-f]{24})\/read$/`,
+  // ACP-18 · THE ADDRESSED MESSAGE RAIL, and it is broader than the inbox above in exactly one
+  // respect that had to be reviewed rather than assumed: its caller need not be the MAIN of a
+  // Program at all — the bound Supervisor is a principal here too. That is the POINT of the cut (a
+  // role outlives the occupant holding it), so what bounds it is stated rather than inherited:
+  //   · NON-LANE only, and the sender is DERIVED from the caller's own binding — a Program-MAIN
+  //     sends as its Program, the bound Supervisor as `role:supervisor`. The body is closed to
+  //     {to, payload, idempotencyKey, replyTo}; a `from` key is a named 400, so no request can
+  //     claim an address. A session holding BOTH bindings is refused as ambiguous rather than
+  //     silently attributed.
+  //   · It reaches NO pane and NO tick: there is no sendText, no FleetEvent, no Watch, no auto.
+  //     The rail is PULL-only, so the worst a caller can do to another principal is put bounded
+  //     text (2000 chars, the nudge's own cap) into a capped record it must come and read.
+  //   · It confers NOTHING: no owner, release, land or deploy authority travels with a message,
+  //     and no route anywhere reads one as an instruction.
+  //   · Reads and receipts are ADDRESS-scoped: a caller sees only rows addressed to or from an
+  //     address it currently holds, so a recycled occupant reaches no record at all. The receipt
+  //     is the addressee's and never overwrites an existing one.
+  '= /api/self/messages',
+  String.raw`~ /^\/api\/self\/messages\/([0-9a-f]{24})\/read$/`,
   // …and the door that JUDGES one of those rows, deliberately its own route rather than a fold
   // into the event-ack regex: that one is a TRANSPORT receipt for every event kind, this one
   // records what the receiving MAIN did with the work. Who may call it: the exact self principal

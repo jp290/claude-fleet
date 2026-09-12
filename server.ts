@@ -12,7 +12,7 @@ import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessa
   type AuditWatchEventPayload, type DeployWatchEventPayload,
   commandJobWatchMessage, type CommandJobWatchEventPayload, type CommandJobArtifactPayload,
   laneSuiteWatchMessage, type LaneSuiteWatchEventPayload,
-  LANE_SUITE_EVENT_FAILS_MAX, LANE_SUITE_EVENT_TAIL_MAX,
+  LANE_SUITE_EVENT_FAILS_MAX, LANE_SUITE_EVENT_FAIL_NAME_MAX, LANE_SUITE_EVENT_TAIL_MAX,
   type ClarificationBasis,
   laneQuietSince, DONE_LOOKING_PROSE, laneStalled, laneStalledSince, STALLED_PROSE,
   laneSpentLooking,
@@ -15084,7 +15084,10 @@ function commandJobEventPayload(j: CommandJob, r: CommandJobResult): CommandJobW
 function laneSuiteEventPayload(j: LaneSuiteJob, r: LaneSuiteResult): LaneSuiteWatchEventPayload {
   return {
     result: r.result, branch: j.branch.slice(0, 200), exitCode: r.exitCode,
-    fails: r.fails.slice(0, LANE_SUITE_EVENT_FAILS_MAX).map((n) => n.slice(0, 200)),
+    fails: r.fails.slice(0, LANE_SUITE_EVENT_FAILS_MAX)
+      .map((n) => n.slice(0, LANE_SUITE_EVENT_FAIL_NAME_MAX)),
+    // the TRUE total, beside the sample — the job keeps the whole list, this row keeps the number
+    failCount: r.fails.length,
     // the LAST line of the retained tail, not the tail: what a lane needs from a pane hint is the
     // one line a human would read first ("ALL PASS", "12 FAILURES"), and the rest is a file.
     tail: (r.tail.split("\n").filter((l) => l.trim()).pop() ?? "").slice(0, LANE_SUITE_EVENT_TAIL_MAX),
@@ -15195,7 +15198,7 @@ function openRedPreviews(): Record<string, unknown>[] {
       return {
         eventId: e.id, jobId: e.subjectJobId, at: e.createdAt, status: e.status,
         branch: e.payload.branch, result: e.payload.result, exitCode: e.payload.exitCode,
-        fails: e.payload.fails, tail: e.payload.tail,
+        fails: e.payload.fails, failCount: e.payload.failCount, tail: e.payload.tail,
         ...(e.payload.reason ? { reason: e.payload.reason } : {}),
         // the lane side, and every field of it is `null` when the job is gone rather than omitted:
         // an absent key reads as "not applicable", and here it means "no longer answerable".

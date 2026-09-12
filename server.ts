@@ -9648,7 +9648,12 @@ function landWaveProjectionNow(): LandWaveProjection {
         ...(t.repo ? { repo: t.repo } : {}),
         ...(t.programId ? { programId: t.programId } : {}),
         ...(view.files ? { files: view.files } : {}),
-        ...(view.filesOrigin ? { filesOrigin: view.filesOrigin } : {}) };
+        ...(view.filesOrigin ? { filesOrigin: view.filesOrigin } : {}),
+        // The RANGE half, straight off the stored surface and unmodified: `null` travels as null,
+        // because "this checkout has no symbol graph" is the fact the collision rule falls back on,
+        // and an omitted field here would arrive as exactly the same null anyway — spelled out so
+        // the pass-through is visible rather than inferred from a missing line.
+        ranges: t.surface?.ranges ?? null };
     });
   return projectLandWaves({
     tasks: rows,

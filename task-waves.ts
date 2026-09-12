@@ -11,6 +11,21 @@ export type TaskWaveFilesOrigin = "confirmed" | "derived";
 // analyst is retired, so a projection carrying a trust state nothing can ever fill would report
 // "unknown" about a reader that does not exist — which is the one reading the trust vocabulary was
 // built to prevent. What remains is the surface: two rows collide when they name the same file.
+
+// WHERE in a file a row works. Structurally the same record `task-metadata.ts#SymbolRange` produces,
+// declared HERE so the two wave projectors stay browser-safe — task-metadata.ts reaches the
+// filesystem, and src/client.ts imports the land fold.
+//
+// `symbol` is "" for a literal `datei:zeile` reference, which names no symbol. That is a different
+// fact from a resolved one and is kept as one, even though the collision rule below reads only the
+// lines: a same-symbol pair is already the identical-range case, so nothing needs to compare names.
+export interface TaskWaveRange {
+  file: string;
+  symbol: string;
+  startLine: number;
+  endLine: number;
+}
+
 export interface TaskWaveInput {
   id: string;
   repo?: string;
@@ -19,6 +34,12 @@ export interface TaskWaveInput {
   created: number;
   files?: readonly string[];
   filesOrigin?: TaskWaveFilesOrigin;
+  // Read by the LAND fold only, where it is what turns a file-level collision into a range-level
+  // one. `null` and absent both mean NOT MEASURED (no symbol graph in this checkout), and so does
+  // an entry list that carries nothing for the file being compared — all three fall back to the
+  // file. The parallel projection below ignores ranges entirely: two rows that may not RUN at once
+  // are decided by the file, because a lane edits a whole working tree and not a line span.
+  ranges?: readonly TaskWaveRange[] | null;
   // Read by the LAND fold only (task-land-waves.ts), where it is the second bundling criterion
   // beside the file surface. The parallel projection below ignores it: two rows of different
   // programs that touch the same file still collide.

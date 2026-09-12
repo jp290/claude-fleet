@@ -12,7 +12,7 @@ import { deriveTaskMetadata, type SymbolIndex, type TaskCluster } from "../task-
 import { noteFirstSentence, notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict,
   NOTE_HUB_FILES, NOTES_READ_ROUTES_EXIST, NOTES_SENTENCE_MAX, type NoteInput } from "../task-notes";
 import { projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from "../task-waves";
-import { projectLandWaves, LAND_WAVE_COSTS_2026_09,
+import { projectLandWaves, LAND_WAVE_COSTS_2026_09, LAND_WAVE_RANGE_GAP,
   type LandWaveCosts, type LandWaveProjection, type ProjectLandWavesInput } from "../task-land-waves";
 import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_NAME_RE, INSTANCE_URL_RE, instanceLinksFrom,
   type InstanceLink } from "../src/protocol";
@@ -4504,6 +4504,65 @@ export async function run(ctx: Ctx): Promise<void> {
           [["sc1", "sc2"], null, ["src/a.ts"], CODE_LAND_SEC],
         ]),
       JSON.stringify(surface));
+
+    // --- S2: THE COLLISION MEASURE IS A RANGE, NOT A FILE (2026-09-12). Both checks are red on the
+    // old code, where componentsOf unioned every row naming a file to the file's first claimant.
+    const R = (file: string, startLine: number, endLine: number, symbol = "") =>
+      ({ file, symbol, startLine, endLine });
+    const apart = landWavesOf(landProject([
+      landRow("ra", 1, ["server.ts"], { ranges: [R("server.ts", 100, 200)] }),
+      landRow("rb", 2, ["server.ts"], { ranges: [R("server.ts", 5000, 5100)] }),
+    ]));
+    check("land waves: S2 — two rows far apart inside ONE file are separate components, not a wave",
+      JSON.stringify(apart.map((w) => [w.ids, w.sharedFiles, w.savingsSec]))
+        === JSON.stringify([[["ra"], [], 0], [["rb"], [], 0]]), JSON.stringify(apart));
+    const together = landWavesOf(landProject([
+      landRow("rc", 1, ["server.ts"], { ranges: [R("server.ts", 100, 200)] }),
+      landRow("rd", 2, ["server.ts"], { ranges: [R("server.ts", 180, 260)] }),
+    ]));
+    check("land waves: S2 — overlapping ranges in one file still bundle, and the file is the evidence",
+      JSON.stringify(together.map((w) => [w.ids, w.sharedFiles, w.savingsSec]))
+        === JSON.stringify([[["rc", "rd"], ["server.ts"], CODE_LAND_SEC]]), JSON.stringify(together));
+    // The GAP is what makes the rule usable against a graph whose line numbers lag the tree: two
+    // ranges 40 lines apart are one neighbourhood, 41 are two. Both sides, so a future widening of
+    // the window cannot pass as a no-op.
+    const gapEdge = landWavesOf(landProject([
+      landRow("re", 1, ["server.ts"], { ranges: [R("server.ts", 100, 200)] }),
+      landRow("rf", 2, ["server.ts"], { ranges: [R("server.ts", 240, 300)] }),
+    ]));
+    const gapOver = landWavesOf(landProject([
+      landRow("rg", 1, ["server.ts"], { ranges: [R("server.ts", 100, 200)] }),
+      landRow("rh", 2, ["server.ts"], { ranges: [R("server.ts", 241, 300)] }),
+    ]));
+    check(`land waves: S2 — the neighbourhood is exactly ${LAND_WAVE_RANGE_GAP} lines wide on both sides`,
+      gapEdge.length === 1 && gapEdge[0].ids.length === 2 && gapOver.length === 2,
+      JSON.stringify({ atGap: gapEdge.map((w) => w.ids), overGap: gapOver.map((w) => w.ids) }));
+    // ABSENCE IS NOT SEPARATION, in all three of its spellings: no graph (null), a graph that
+    // resolved nothing ([]), and a graph that resolved elsewhere in the tree but not in this file.
+    // Each must fall back to the FILE, because "where in this file is unknown" may never be read as
+    // "not colliding" — the one direction this projector must never fall.
+    const fallbacks: [string, Partial<TaskWaveInput>][] = [
+      ["no graph at all", { ranges: null }],
+      ["a graph that resolved nothing", { ranges: [] }],
+      ["a range for a different file", { ranges: [R("src/other.ts", 1, 10)] }],
+    ];
+    const fellBack = fallbacks.map(([, extra]) => landWavesOf(landProject([
+      landRow("fa", 1, ["server.ts"], extra),
+      landRow("fb", 2, ["server.ts"], { ranges: [R("server.ts", 5000, 5100)] }),
+    ])));
+    check("land waves: S2 — an unmeasured range falls back to the FILE in all three of its spellings",
+      fellBack.every((waves) => waves.length === 1 && waves[0].ids.join(" ") === "fa fb"),
+      JSON.stringify(fallbacks.map(([name], i) => [name, fellBack[i].map((w) => w.ids)])));
+    // A THIRD row is why the union had to become pairwise: under the old first-claimant union the
+    // far row would have joined through the near one, which is the bug this rule exists to fix.
+    const triple = landWavesOf(landProject([
+      landRow("ta", 1, ["server.ts"], { ranges: [R("server.ts", 100, 200)] }),
+      landRow("tb", 2, ["server.ts"], { ranges: [R("server.ts", 180, 260)] }),
+      landRow("tc", 3, ["server.ts"], { ranges: [R("server.ts", 5000, 5100)] }),
+    ]));
+    check("land waves: S2 — a near pair bundles while the far third stays out, so the union is pairwise",
+      JSON.stringify(triple.map((w) => w.ids)) === JSON.stringify([["ta", "tb"], ["tc"]]),
+      JSON.stringify(triple));
 
     const chain = landWavesOf(landProject([
       landRow("ka", 1, ["src/f1.ts"]),

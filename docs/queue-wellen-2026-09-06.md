@@ -171,6 +171,81 @@ die andere 28 Einzelwellen. **Eine Welle, die heute auf `derived` schneidet, sch
 *Falsifiziert durch:* eine Kapazitätserhöhung, die die Wellenzahl senkt — dann war der Deckel doch
 die Grenze.
 
+### R4 — Kollision ist ein BEREICH, keine Datei  (Nachtrag 2026-09-12, S2)
+
+`task-land-waves.ts#componentsOf` verbindet zwei Zeilen auf einer gemeinsamen Datei nur noch, wenn
+ihre Flächen dort **überlappen oder höchstens `LAND_WAVE_RANGE_GAP` = 40 Zeilen auseinander liegen**.
+Zeilen ohne Bereich fallen auf die Dateiebene zurück — und zwar in allen DREI Schreibweisen von
+Abwesenheit: `ranges: null` (kein Graph im Checkout, der Normalfall in einer Lane), `[]` (Graph
+gelesen, nichts aufgelöst) und „Bereiche, aber keiner für DIESE Datei". Alle drei heißen „wo in
+dieser Datei ist unbekannt", und unbekannt darf nie als „kollidiert nicht" gelesen werden.
+
+Gleiches Symbol braucht keinen eigenen Arm: zwei Zeilen, die dasselbe `datei#symbol` nennen, lösen
+über denselben Index auf denselben Bereich auf, und ein Bereich überlappt sich selbst.
+
+Die Union musste dafür PAARWEISE werden. Vorher trug jede Datei einen Erst-Anwärter, an den sich
+alle anderen hängten — das kann keine Bereichsregel ausdrücken: drei Zeilen in `server.ts` bei 100,
+180 und 5000 müssen die dritte draußen lassen, und das ist eine Eigenschaft von PAAREN.
+
+**Warum 40 und nicht 0:** die Bereiche kommen aus einem Graph-Snapshot, dessen Zeilennummern
+zwischen zwei Läufen hinter dem Baum herhinken, und die beiden Fehler kosten nicht dasselbe. Zwei
+Zeilen zu verbinden, die nicht kollidiert wären, kostet eine Welle eine Größe. Zwei zu trennen, die
+kollidiert WÄREN, kostet einen Merge-Konflikt in einer Lane, der man gesagt hat, sie sei allein.
+
+#### Was der Nachweis messen konnte — und was nicht
+
+**Nicht messbar, und das ist selbst ein Befund:** die im Auftrag verlangte Rückschau („hätte die
+Regel die 13 echten Konflikte vorhergesagt?") ist aus den vorhandenen Daten NICHT berechenbar.
+`lane-outcomes.jsonl` schreibt seine Zeile NACH dem Rebase, also sind `base` und `headSha` beide
+Nach-Rebase-Shas; der Fork-Punkt, an dem der Konflikt entstand, steht nirgends. Gemessen an allen 8
+Konflikten dieses Repos: `git merge-base <headSha> <base> == base` und `rev-list --count base..pre`
+= 0 in 8 von 8 Fällen — es gibt keinen Abstand mehr, an dem man rechnen könnte. (Die verbleibenden 5
+der 13 liegen in `private-repo-j`.) Wer diese Rückschau will, muss zuerst den Fork-Punkt in die
+Outcome-Zeile schreiben.
+
+**Messbar, und dieselbe Frage von der anderen Seite:** was trennt die Regel auf ECHTER gelandeter
+Arbeit? Über die letzten 50 Lands dieses Repos, alle Paare, deren Basen höchstens 5 Commits
+auseinander liegen (nur die hätten je eine Welle sein können, und nur bei ihnen ist ein
+40-Zeilen-Fenster überhaupt aussagekräftig):
+
+| | |
+|---|---|
+| Paare im 5-Commit-Fenster | 60 |
+| davon mit gemeinsamer Datei (**die heutige Kante**) | 29 |
+| davon wirklich innerhalb von 40 Zeilen (**die neue Kante**) | **4** |
+| von der Regel getrennt | **25 von 29 (86 %)** |
+
+Die meistgeteilten Dateien dieser 29 Paare sind genau die Naben, die §2 Befund 1 benennt:
+`e2e/pins.ts` (19×), `server.ts` (14×), `docs/self-api.md` (5×). 86 % der heutigen Kanten sind also
+Nabenkanten und keine Kollisionen.
+
+*Falsifiziert durch:* ein gelandetes Paar, dessen Bereiche mehr als 40 Zeilen auseinander lagen und
+das trotzdem den Merge-Resolver brauchte.
+
+#### Was die Regel auf der HEUTIGEN Queue tut — und warum die Komponentenzahl trotzdem steht
+
+`bun task-land-waves.ts --state fleet.json` liefert vorher wie nachher **42 Wellen**, und auch
+ohne den Deckel 3 bleiben es **3 Komponenten der Größen 13, 9, 1**. Das ist kein Nullergebnis,
+sondern ein präzises: über die 37 offenen Zeilen dieses Repos (666 Paare) —
+
+| | |
+|---|---|
+| Paare mit gemeinsamer Datei (**heutige Kante**) | 488 |
+| davon **von der Regel GESCHNITTEN** (beide Seiten hatten Bereiche, keiner lag nah) | **109 (22 %)** |
+| davon durch einen wirklich NAHEN Bereich gehalten | 6 |
+| davon durch den **Datei-Rückfall** gehalten | 373 |
+
+Die Regel schneidet also gut ein Fünftel aller Kanten weg — die Komponenten fallen trotzdem nicht
+auseinander, weil EINE überlebende Rückfall-Kante genügt, um einen Klumpen zusammenzuhalten. Und
+die Rückfälle haben einen Namen: **`server.ts` allein trägt 312 der 373** (danach
+`docs/self-api.md` 36, `AGENTS.md` 36, `src/client.ts` 20). Nur 21 der 37 Zeilen tragen überhaupt
+einen Bereich.
+
+Der Engpass ist damit benannt und liegt NICHT in dieser Regel: `server.ts` steht im Graph mit 931
+Symbolen, aber die Zeilen nennen es in Prosa, ohne `#symbol`. Was die Komponenten aufbricht, ist
+mehr BEREICHS-ABDECKUNG — also S3s `card.surface.symbols` oder eine Zeile, die
+`server.ts#handleX` statt `server.ts` schreibt. Die Regel steht dann schon bereit.
+
 ---
 
 ## 3. Kosten und Nutzen einer Welle von n Zeilen

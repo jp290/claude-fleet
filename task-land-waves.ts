@@ -16,7 +16,7 @@
 // bottom reaches the filesystem and the metadata derivation through Bun globals inside
 // `import.meta.main`, never through a top-level node import, so the client bundle stays clean.
 import { verificationProportionFor } from "./verify-proportion";
-import type { TaskWaveInput } from "./task-waves";
+import type { TaskWaveInput, TaskWaveRange } from "./task-waves";
 
 export type LandWaveClass = "docs" | "code";
 // Every reason a row is alone in its wave. `null` is the fourth case and means the opposite of a
@@ -113,7 +113,45 @@ export const LAND_WAVE_COSTS_2026_09: LandWaveCosts = {
 
 interface ClassifiedRow {
   id: string; created: number; files: string[]; programId: string | null;
+  ranges: readonly TaskWaveRange[] | null;
   klasse: LandWaveClass; reasonAgainst: LandWaveReasonAgainst | null;
+}
+
+// --- THE COLLISION MEASURE IS A RANGE, NOT A FILE (S2, 2026-09-12)
+//
+// `server.ts` stands in 33 of the 41 open surfaces, and until this change that ONE fact connected
+// almost every code row to almost every other. It should not have: of 294 landed lanes that
+// touched server.ts, 7 needed the merge resolver (2.4 %); of 350 that did not, 6 did (1.7 %).
+// A shared file is not evidence of a collision — it is evidence of a shared file
+// (docs/messungen/2026-09-12-spezifizierung-buendelung-befund.md §2, Befund 1).
+//
+// So two rows are connected on a file only when they work in the same NEIGHBOURHOOD of it. The
+// window is deliberately generous: the ranges come from a graph snapshot whose line numbers lag the
+// tree between rebuilds, and the cost of the two errors is not symmetric. Connecting two rows that
+// would not have collided costs a wave one size smaller than it could have been; separating two
+// that WOULD have collided costs a merge conflict in a lane that was told it was alone.
+export const LAND_WAVE_RANGE_GAP = 40;
+
+const rangesIn = (row: ClassifiedRow, file: string): readonly TaskWaveRange[] =>
+  (row.ranges ?? []).filter((range) => range.file === file);
+
+const near = (a: TaskWaveRange, b: TaskWaveRange): boolean =>
+  a.startLine <= b.endLine + LAND_WAVE_RANGE_GAP && b.startLine <= a.endLine + LAND_WAVE_RANGE_GAP;
+
+/**
+ * Do these two rows collide ON THIS FILE? The fallback is the OLD answer and it is reached by three
+ * different absences that mean the same thing: no graph in this checkout (`ranges: null`), a graph
+ * that resolved nothing (`[]`), and a graph that resolved somewhere else in the tree but not in this
+ * file. All three are "where in this file is not known", and not-known must never read as
+ * not-colliding — the whole point of keeping `null` distinct from `[]` one module over.
+ *
+ * Same-symbol needs no separate arm: two rows naming the same `datei#symbol` resolve through one
+ * index to one range, and a range always overlaps itself.
+ */
+function collidesOn(a: ClassifiedRow, b: ClassifiedRow, file: string): boolean {
+  const ra = rangesIn(a, file), rb = rangesIn(b, file);
+  if (!ra.length || !rb.length) return true;
+  return ra.some((x) => rb.some((y) => near(x, y)));
 }
 
 const textOrder = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0;
@@ -143,10 +181,21 @@ function classify(task: TaskWaveInput): ClassifiedRow {
         : task.filesOrigin !== "confirmed" ? "flaeche-nur-abgeleitet"
           : files.some(isGateMachinery) ? "gate-aenderer"
             : null;
-  return { id: task.id, created: task.created, files, programId, klasse, reasonAgainst };
+  return { id: task.id, created: task.created, files, programId,
+    // absent and null are ONE fact here: not measured. Only an array reaches the collision rule.
+    ranges: task.ranges ?? null, klasse, reasonAgainst };
 }
 
-/** Connected components over shared files within one bucket, in first-appearance (created, id) order. */
+/**
+ * Connected components over COLLIDING shared files within one bucket, in first-appearance
+ * (created, id) order.
+ *
+ * The union used to be per file and first-seen — one representative per file, everyone else joined
+ * to it — which is right when the edge is the file itself. It cannot express a range rule: three
+ * rows in server.ts at lines 100, 180 and 5000 must leave the third alone, and that is a property
+ * of PAIRS. So the file's members are compared pairwise. The groups are a single (class, program)
+ * bucket of a queue, tens of rows at most, and the loop is bounded by that rather than by the queue.
+ */
 function componentsOf(rows: readonly ClassifiedRow[]): ClassifiedRow[][] {
   const parent = rows.map((_, i) => i);
   const find = (i: number): number => {
@@ -155,14 +204,20 @@ function componentsOf(rows: readonly ClassifiedRow[]): ClassifiedRow[][] {
     while (parent[i] !== root) { const next = parent[i]; parent[i] = root; i = next; }
     return root;
   };
-  const byFile = new Map<string, number>();
+  const byFile = new Map<string, number[]>();
   rows.forEach((row, i) => {
     for (const file of row.files) {
-      const seen = byFile.get(file);
-      if (seen === undefined) byFile.set(file, i);
-      else { const a = find(seen), b = find(i); if (a !== b) parent[a] = b; }
+      const seen = byFile.get(file) ?? [];
+      seen.push(i);
+      byFile.set(file, seen);
     }
   });
+  for (const [file, members] of byFile)
+    for (let x = 0; x < members.length; x++) for (let y = x + 1; y < members.length; y++) {
+      if (!collidesOn(rows[members[x]], rows[members[y]], file)) continue;
+      const a = find(members[x]), b = find(members[y]);
+      if (a !== b) parent[a] = b;
+    }
   const groups = new Map<number, ClassifiedRow[]>();
   rows.forEach((row, i) => {
     const root = find(i);
@@ -282,7 +337,8 @@ async function cli(): Promise<void> {
   if (!run.success)
     throw new Error(`task-metadata failed: ${run.stderr.toString().trim() || `exit ${run.exitCode}`}`);
   const meta = JSON.parse(run.stdout.toString()) as {
-    tasks?: Record<string, { files?: string[]; filesOrigin?: "confirmed" | "derived" }>;
+    tasks?: Record<string, { files?: string[]; filesOrigin?: "confirmed" | "derived";
+      ranges?: TaskWaveRange[] | null }>;
   };
 
   const rows: TaskWaveInput[] = [];
@@ -298,6 +354,9 @@ async function cli(): Promise<void> {
       ...(typeof task.programId === "string" && task.programId ? { programId: task.programId } : {}),
       ...(derived?.files ? { files: derived.files } : {}),
       ...(derived?.filesOrigin ? { filesOrigin: derived.filesOrigin } : {}),
+      // null when the checkout carries no graphify-out/, which is the honest answer for a lane and
+      // the one that sends collidesOn back to the file level.
+      ranges: derived?.ranges ?? null,
     });
   }
 

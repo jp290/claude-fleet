@@ -457,6 +457,11 @@ function cli(): void {
   const state = JSON.parse(readFileSync(statePath, "utf8")) as { tasks?: unknown };
   const tasks = Array.isArray(state.tasks) ? state.tasks as StateTask[] : [];
   const snapshots = new Map<string, TrackedSnapshot | null>();
+  // One graph read per REPO, like the tracked snapshot beside it. Without this the CLI would answer
+  // `ranges: null` for every row even when run against a checkout that HAS a graph — and the owner
+  // checking a projection after a land would be measuring the absence of a file rather than the
+  // waves.
+  const indexes = new Map<string, SymbolIndexSnapshot | null>();
   const errors: Record<string, string> = {};
   const output: Record<string, TaskMetadata> = {};
   for (const task of tasks) {
@@ -473,6 +478,7 @@ function cli(): void {
         }
       }
       snapshot = snapshots.get(key) ?? null;
+      if (!indexes.has(key)) indexes.set(key, readSymbolIndexSnapshot(snapshot?.repo ?? key));
     }
     const rawFiles = Array.isArray(task.files)
       ? task.files.filter((value): value is string => typeof value === "string" && !!value.trim()) : [];
@@ -487,6 +493,7 @@ function cli(): void {
       trackedPaths: snapshot?.paths ?? new Set<string>(),
       project: snapshot?.project ?? (repoRaw ? projectLabel(repoRaw) : null),
       repoRoot: snapshot?.repo ?? repoRaw,
+      symbolIndex: (repoRaw ? indexes.get(resolve(repoRaw)) : null)?.index ?? null,
     });
   }
   process.stdout.write(`${JSON.stringify({ version: 1, tasks: output, ...(Object.keys(errors).length ? { errors } : {}) })}\n`);

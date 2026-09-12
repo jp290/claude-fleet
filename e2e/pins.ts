@@ -788,7 +788,7 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
       // ENTRY plan keeps a docs-only land out of the queue in the first place (that queue is the
       // 710 s M5 measured), and the authoritative plan gives the hold BACK if it disagrees — a
       // chain with no staged step must never be parked on the machine, whichever plan noticed.
-      const m5Skip = server.includes("if (gateInherited === null && entryPlan && !entryPlan.proportional) {")
+      const m5Skip = server.includes("if (gateInherited === null && entryPlan && !entryPlan.proportional && entryDirty === null) {")
         && server.includes("if (gateProportional && gateHoldPid !== null) {");
       const m5NoMint = server.includes("const gateChildHold = gateProportional ? null : gateHoldBy;");
       const m5CmdIsSuiteless = shortCmd !== "" && !/e2e-[a-z0-9-]*\.sh|e2e-stage/.test(shortCmd);
@@ -4609,16 +4609,22 @@ pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (oth
   // ordering: after the land declaration, before the advance, so a checkout that went dirty during
   // the gate is named rather than re-read as the ff race. Both mints go through ONE builder, so
   // the two sites cannot word the same fact differently.
+  // THREE sites since the take moved in front of the pre-pass rebase (2026-09-12), and the first
+  // of them exists for exactly the sentence above with one word changed: a land that cannot
+  // fast-forward must not pay the QUEUE either. It is read-only and writes nothing — the count of
+  // `errorReason: "dirty-main"` mints below is what holds that, and it stays ONE.
+  const m3Entry = server.indexOf("const entryDirty = entryPlan ? await dirtyMainStop(");
   const m3Pre = server.indexOf("const dirtyStop = cleanPath ? await dirtyMainStop(");
   const m3Plan = server.indexOf("const firstVerifyPlan = dirtyStop ? null : await verifyPlanFor(");
   const m3Second = server.indexOf("const dirtyNow = await dirtyMainStop(");
-  pin(`${RULE_FF} — the dirty-main preflight precedes the verify PLAN, and the second look precedes the advance`,
-    m3Pre > 0 && m3Plan > m3Pre && m3Second > m3Plan && ffAdvance > m3Second
+  pin(`${RULE_FF} — the dirty-main preflight precedes the suite-mutex take AND the verify PLAN, and the second look precedes the advance`,
+    m3Entry > 0 && m3Pre > m3Entry && m3Plan > m3Pre && m3Second > m3Plan && ffAdvance > m3Second
       && ffIntent < m3Second
+      && m3Entry < server.indexOf("gateHeld = await gateRun(() => holdSuiteLock(VERIFY_WAIT_MS, holdOwner));")
       && (server.match(/errorReason: "dirty-main"/g) ?? []).length === 1
-      && (server.match(/await dirtyMainStop\(/g) ?? []).length === 2
+      && (server.match(/await dirtyMainStop\(/g) ?? []).length === 3
       && server.includes("if (dirtyNow) { clearLandIntent(root); res = dirtyNow; break; }"),
-    `pre=${m3Pre} plan=${m3Plan} second=${m3Second} intent=${ffIntent} advance=${ffAdvance}`);
+    `entry=${m3Entry} pre=${m3Pre} plan=${m3Plan} second=${m3Second} intent=${ffIntent} advance=${ffAdvance}`);
   // …and the probe cannot MINT what it could not MEASURE: an unreadable status or diff returns
   // null and the land goes on exactly as it did before M3, where the ff-merge still catches it.
   const m3Body = server.match(/async function dirtyMainOverlap\([\s\S]*?\n\}/)?.[0] ?? "";

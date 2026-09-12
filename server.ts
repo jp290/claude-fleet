@@ -20335,10 +20335,20 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
     //     a clean rebase — the authoritative plan below is still recomputed against the rebased
     //     tree and is the only one any verdict is ever written from. The cost of the exemption,
     //     stated rather than hidden: those lands can still lose a fast-forward, and say so.
+    //   · and a land that CANNOT fast-forward, because the checkout holding main has uncommitted
+    //     work in a path this land writes. M3 (owner 2026-09-06) put that preflight AHEAD of the
+    //     take on purpose — "running the chain first only buys the same answer 107 s and a queue
+    //     later" — and moving the take in front of the rebase must not invert it. The self-land
+    //     route is why that matters rather than being covered twice: the owner merge route makes
+    //     the same check before mergeJob, the self-land route does not.
+    //     TWO GIT READS AND NO VERDICT: this only decides whether to QUEUE. The authoritative
+    //     `dirtyStop` below is still the only site a `dirty-main` verdict is written from, and
+    //     still the SECOND look — after the wait, which is the window M3 built it for.
     const mainAtEntry = (await git(root, "rev-parse", main)).out;
     const entryPlan = await verifyPlanFor(cwd, root, mainAtEntry);
+    const entryDirty = entryPlan ? await dirtyMainStop(root, main, mainAtEntry, branch, {}) : null;
     gateInherited = inheritedSuiteHolder();
-    if (gateInherited === null && entryPlan && !entryPlan.proportional) {
+    if (gateInherited === null && entryPlan && !entryPlan.proportional && entryDirty === null) {
       const askedAt = Date.now();
       for (;;) {
         // inside gateRun, so the board keeps saying "running land gate" while this job is

@@ -1,3 +1,118 @@
+# HANDOFF — Program-MAIN Fleet-Betrieb (Program `f170dc46`), Slot 6, Opus 5; 2026-09-12 18:3x, ctx GEMESSEN 39,1 % (391 288 / 1 000 000)
+
+## 0. WAS BEIM ANTRITT SOFORT GILT
+
+- **EINE LANE LEBT UND IST DEINE: Slot 7, `fleet/260912114433-1188`, die Welle `18e87e67` + `201d0240`**
+  (ein Land für beide, beide gehen gemeinsam auf `done`). Stand: sie hat ihren eigenen Fixture-Leak
+  gefunden und repariert (zwei Commits `29954e44`, `f3de6850`), **noch keinen Vorschaulauf auf dem
+  reparierten Baum**, und wartet auf meinen Auftrag von 18:2x: Rebase auf `32b062ad` → EIN
+  Vorschaulauf über den Suite-Offer → melden → ich lande. Ihr Report `6cc95ab5` steht auf
+  `needs-main` und ist **absichtlich unbeurteilt**: er wird mit dem Preview-Verdikt entschieden.
+- **WARNUNG AN DIESEN REBASE, die kein Check fängt:** `suiteLockHeldHere()` ist mit `32b062ad`
+  **entfernt** — die Funktion WAR die unserialisierte Zeile. Ein Rebase, der sie wiederbelebt, macht
+  das Land von `32b062ad` still rückgängig. Ich habe die Lane gewarnt; prüfe es am Diff, nicht am
+  Wort.
+- **DER DEPLOY IST FÄLLIG UND HAT EINE NEUE BEDINGUNG.** `codeBehind: true`. Er aktiviert mit
+  `32b062ad` eine **Änderung am Suite-Mutex dieses Hosts** (`suiteLockOwner`, Take vor dem Rebase) —
+  das Land-Gate lief im ALTEN Prozess, die neue Sperre ist also verifiziert, aber nie gelaufen.
+  Deshalb: **erst das Post-Land-Audit auf `32b062ad` grün sehen** (Watch `60c97fa6` war armiert und
+  stirbt mit mir — neu abonnieren oder `post-land-audits.jsonl` lesen), dann `POST /api/deploy`.
+  Die Route nimmt **kein Self-Token** (`unauthorized`) — sie ist Owner/Steward. Owner-Freigabe für
+  den Deploy liegt vor (Orchestrator 15:0x, „Idle-Uhren frei").
+- **EINE SCHULD AN EIN FREMDES PROGRAM:** `f9dc8e10` (Leichtgewicht) wartet auf meine Rückmeldung,
+  **sobald `server.ts` frei ist** — das ist genau dann, wenn die Wellen-Lane gelandet oder
+  geschlossen ist. Zugesagt über die Message-Rail (`377b108a`), also nicht pane-flüchtig. Ich habe
+  ausdrücklich **keine Exklusivität** zugesagt, nur ein Fenster.
+
+## 1. WAS DIESE SCHICHT HINTERLÄSST
+
+**Fünf Lands, alle mit grüner Note; vier Post-Land-Audits grün, das fünfte läuft:**
+
+| Land | Zeile | Kern | Audit |
+|---|---|---|---|
+| `af494028` | `2cca4a44` | Leak-Pin: geklammerte Loopback-Form filtern, `skip` statt falschem Rot | grün |
+| `326eaba8` | `0f83a2b1` | Nudge-Tail endet nicht mehr auf `$NAME`; zwei strukturell blinde Pins geschlossen | grün 4170/0 |
+| `d7a46af3` | `dc4ec8b5` | criterion-confirm beantwortet die Attention, die ihn erbat | grün 4176/0 |
+| `cfc69851` | `10ddd013` | Rail für rote Lane-Previews — und er übersteht jetzt einen Boot | grün 4199/0 |
+| `32b062ad` | `f8d9ecf2` | Suite-Mutex serialisiert zwei Lands DESSELBEN Prozesses | **läuft** |
+
+**Vier Direkt-Commits, für jedes land-seitige Ledger UNSICHTBAR** (kein `git notes --ref=fleet/land`,
+keine Zeile in `lane-outcomes.jsonl`, kein Post-Land-Audit). Alle vier docs-only, `bun e2e/pins.ts`
+ALL PASS je vor dem Commit, main war jedes Mal ruhig (`merges` leer):
+`153a41f3` (geerntete Waisenarbeit einer killed-dirty Lane) · `7c35d4de` (Flake-Familie §11.2v +
+Schlangenanteil-Messung) · `57b97e25`/`2c4c80c9` (S1–S6-Ordnung, die zweite korrigiert die erste) ·
+`dd481810` (Speicherdruck gemessen). **Wer die Land-Health-Zahlen von `./state.sh` liest, zählt
+diese vier nicht mit.**
+
+## 2. DREI MESSUNGEN, DIE ÜBER DIESE SCHICHT HINAUS GELTEN
+
+- **Der Schlangenanteil eines Lands** (`docs/messungen/2026-09-12-land-schlangenanteil.md`): die
+  Gate-ARBEIT liegt stabil bei ~110–150 s, aber `326eaba8` verbrachte 91 % und `d7a46af3` **94 %**
+  seiner Wanduhr in der Schlange vor `/tmp/fleet-e2e.lock`. Davon **unabhängig**: `af494028` trägt
+  `ffRounds: 1` bei `waitMs: 0` — es fuhr die ganze Kette zweimal auf LEERER Maschine. Zwei
+  Hälften, nicht eine.
+- **Der Speicherdruck ist gemessen, und er hat meinen eigenen Rückweg getötet** (ebenda, Nachtrag):
+  `vm.swapusage used = 2697M von 4096M`, `memory_pressure` 33 % frei, ~ein Dutzend
+  `claude`-Sessions à 0,15–0,30 GB. **Folge als Regel: ein lokaler `run_in_background`-Watcher ist
+  auf diesem Host KEIN Rückweg** — er stirbt lautlos. Verlässlich ist nur, was im Server lebt
+  (`/api/self/watch`; sonst ein One-Shot `/api/self/autos`).
+- **`done-looking` ist heute zu drei Vierteln Falschalarm** (gefilt als `eb8132be`): Slot 3, 5 und 7
+  meldeten „fertig", während die Lane auf ihre eigene Verifikation wartete (Suite-Schlange,
+  `1 monitor`, `6 shells`); nur Slot 1 war echt. Ursache ist nicht das Prädikat, sondern eine
+  veränderte Arbeitsweise: Lanes fahren ihre Suiten im Hintergrund, also ist die Pane idle. **Der
+  belastbare Kanal ist der Terminalreport, nicht der Watch** — ich habe deshalb für die letzten
+  Lanes bewusst keine Lane-Watches mehr armiert.
+
+## 3. WO ICH FALSCH LAG — beides von einer Lane korrigiert, beides zählt
+
+- **Ich zeigte für ein rotes Preview auf meine eigenen Lands** (`cfc69851` legt Event-Fakten in den
+  Poll, `61f3a93c`/`d7a46af3` fassen die Attention-Fläche an) und schickte es als Hypothese. Die
+  Lane hat zurückgemessen: ihr statischer Byte-Zuwachs war **0 B**. Die Ursache war ihre eigene
+  Aufräum-Naht — `e2e/programs.ts` löscht seine Zeilen in einer Schleife bei **5970**, ihr
+  `makeTask` steht bei **8134**, zweitausend Zeilen dahinter; und `done` ist keine Entfernung.
+  91 B der 406 B sind damit bewiesen ihre, der Rest ausdrücklich unaufgerechnet.
+- **Meine „Sachkorrektur" an ihrem Strukturbefund war selbst falsch.** Ich behauptete, der Poll
+  filtere `events` pro Empfänger-Occupation. Das tut eine ANDERE Route. `server.ts:27791`, im Block
+  von `/api/sessions` (Route 27753): **`events: fleetEvents`** — volles Array, ohne Filter, ohne
+  Feld-Projektion. Gefilt als **`40ec981e`** (meine Seite): ein Byte-Deckel über einem
+  unprojizierten Sammelposten ist keine Zusicherung, sondern eine Wette auf fleetweite Aktivität,
+  und das Rot erscheint dann sechs Module von der Ursache entfernt.
+
+## 4. OFFENE ZEILEN, DIE ICH NICHT MEHR FREIGEGEBEN HABE
+
+- **`40ec981e`** (Owner-Poll projizieren) und **`eb8132be`** (done-looking-Falschalarm) — beide
+  `pending`, beide meine Seite, beide mit hartem Done-Kriterium und Mutationsprobe im Brief.
+- **UNGEFILT, und der Grund ist eine Grenze, keine Vergesslichkeit:** die **Konflikt-Sonde vor dem
+  Suite-Take**. `32b062ad` stellt ein KONFLIKT-Land jetzt vor seinem Rebase in die Schlange; sein
+  Autor erfährt den Konflikt bis zu `(LAND_WAIT_ROUNDS+1) × VERIFY_WAIT_MS` später —
+  `LAND_WAIT_ROUNDS` default **1** (`server.ts:12967`), `FLEET_VERIFY_WAIT_MS` live **2 700 000** →
+  **bis ~90 min**, auf ~4 von 83 Lands. Milderung von der Lane selbst genannt: `tryScriptRebase`
+  ist abort-sauber, also als Sonde VOR dem Take brauchbar. Das ist der bewusst gekaufte Preis
+  dieses Lands und gehört als Zeile nachgezogen.
+- **Der advisory-Deckel ist VOLL: 10/10 pending `notiz`-Zeilen**, seit die fünf Zeilen des
+  geschlossenen Programs `233e1c2b` umgehängt wurden. `POST /api/self/tasks` mit `kind: notiz`
+  antwortet deshalb `program advisory filing cap reached`. Die Urteilstür
+  (`POST /api/self/notes/:id/verdict`) ist **lane-only** — eine MAIN bekommt dort 409. Ich habe
+  Messbelege deshalb ins Repo geschrieben statt in die Queue. **Disponieren kann das nur der Owner.**
+- **Die Karten-Serie S1–S6 ist NICHT meine Freigabe.** Der Orchestrator fährt sie als zwei
+  Dreierwellen über die Wellen-Tür; eine Einzelfreigabe lässt die Wellenmenge zerfallen. Ordnung
+  und Begründung stehen getrackt in
+  `docs/messungen/2026-09-12-spezifizierung-buendelung-befund.md` (die Fassung von `2c4c80c9`, die
+  von `57b97e25` ist dort als falsch benannt). Meine Rolle: **die Wellen-Lane landen, mehr nicht.**
+
+## 5. REIHENFOLGE FÜR DICH, und ihr Warum
+
+1. **`./state.sh`, `./register.sh`, `GET /api/self/program-execution`** — nicht diese Prosa. Sie ist
+   ab dem Lesen veraltet.
+2. **Audit auf `32b062ad`** abwarten/lesen. Es ist der erste Lauf, der die neue Mutex-Semantik gegen
+   die volle Suite stellt.
+3. **Wellen-Lane Slot 7**: auf ihren Preview-Report warten (Report als BEHAUPTUNG lesen, Diff und
+   zitierte Ausgabe prüfen, **Pane lesen** — dreimal heute hätte das Prädikat allein in einen
+   Fehl-Land geführt), dann landen.
+4. **Deploy** (§0).
+5. **Rückmeldung an `f9dc8e10`** (§0).
+6. Danach `40ec981e` / `eb8132be` freigeben, wenn Deckel und Reihenfolge es zulassen.
+
 # HANDOFF — Orchestrator Slot 5 (Fable 5.1, Haupt-Checkout, Owner-Token): Karten-Serie S1–S6 gefilt und als zwei Dreierwellen geplant, Astra-Brief zur Agenten-Schnittstelle queued, Wellen-Nachweis offen; 2026-09-12 17:2x, ctx NICHT MESSBAR (ctx:null am eigenen Slot)
 
 ## 0. WAS BEIM ANTRITT SOFORT GILT
